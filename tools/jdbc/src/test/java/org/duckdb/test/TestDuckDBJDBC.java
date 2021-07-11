@@ -652,31 +652,29 @@ public class TestDuckDBJDBC {
 		} catch (SQLException e) {
 		}
 
-		// FIXME: requires explicit database shutdown
-		// // we can create two parallel read only connections and query them, too
-		// Connection conn_ro1 = DriverManager.getConnection(jdbc_url, ro_prop);
-		// Connection conn_ro2 = DriverManager.getConnection(jdbc_url, ro_prop);
+		// we can create two parallel read only connections and query them, too
+		Connection conn_ro1 = DriverManager.getConnection(jdbc_url, ro_prop);
+		Connection conn_ro2 = DriverManager.getConnection(jdbc_url, ro_prop);
 
-		// assertTrue(conn_ro1.isReadOnly());
-		// assertTrue(conn_ro2.isReadOnly());
+		assertTrue(conn_ro1.isReadOnly());
+		assertTrue(conn_ro2.isReadOnly());
 
-		// Statement stmt1 = conn_ro1.createStatement();
-		// ResultSet rs1 = stmt1.executeQuery("SELECT * FROM test");
-		// rs1.next();
-		// assertEquals(rs1.getInt(1), 42);
-		// rs1.close();
-		// stmt1.close();
+		Statement stmt1 = conn_ro1.createStatement();
+		ResultSet rs1 = stmt1.executeQuery("SELECT * FROM test");
+		rs1.next();
+		assertEquals(rs1.getInt(1), 42);
+		rs1.close();
+		stmt1.close();
 
-		// Statement stmt2 = conn_ro2.createStatement();
-		// ResultSet rs2 = stmt2.executeQuery("SELECT * FROM test");
-		// rs2.next();
-		// assertEquals(rs2.getInt(1), 42);
-		// rs2.close();
-		// stmt2.close();
+		Statement stmt2 = conn_ro2.createStatement();
+		ResultSet rs2 = stmt2.executeQuery("SELECT * FROM test");
+		rs2.next();
+		assertEquals(rs2.getInt(1), 42);
+		rs2.close();
+		stmt2.close();
 
-		// conn_ro1.close();
-		// conn_ro2.close();
-
+		conn_ro1.close();
+		conn_ro2.close();
 	}
 
 	public static void test_hugeint() throws Exception {
