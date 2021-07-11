@@ -875,6 +875,9 @@ jobs:
   linux-python3:
     name: Python 3 Linux
     runs-on: ubuntu-20.04
+    strategy:
+      matrix:
+        arch: [auto, aarch64]
     needs: linux-debug
 
     env:
@@ -895,6 +898,10 @@ jobs:
       with:
         python-version: '3.7'
 
+    - uses: docker/setup-qemu-action@v1
+      if: ${{ matrix.arch == 'aarch64' }}
+      name: Set up QEMU
+
     - name: Install
       run: pip install cibuildwheel twine
 
@@ -904,6 +911,11 @@ jobs:
         python setup.py sdist
         mkdir duckdb_tarball && tar xvf dist/duckdb-*.tar.gz --strip-components=1 -C duckdb_tarball
         cibuildwheel --output-dir wheelhouse duckdb_tarball
+
+    - name: Remove dist for aarch64
+      if: ${{ matrix.arch == 'aarch64' }}
+      run: |
+        rm dist/duckdb-*.tar.gz
 
     - name: Deploy
       run: |
