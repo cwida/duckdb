@@ -335,3 +335,6 @@ tools/pythonpkg/tests/userdata1.parquet
 # node tests
 __nvm
 
+*.vcxproj*
+*.cmake
+*.sln

@@ -264,12 +264,57 @@ py::object DuckDBPyResult::FetchArrowTable() {
 	return from_batches_func(batches, schema_obj);
 }
 
+py::str GetTypeToPython(const LogicalType &type) {
+	switch (type.id()) {
+	case LogicalTypeId::BOOLEAN:
+		return py::str("bool");
+	case LogicalTypeId::TINYINT:
+	case LogicalTypeId::SMALLINT:
+	case LogicalTypeId::INTEGER:
+	case LogicalTypeId::BIGINT:
+	case LogicalTypeId::UTINYINT:
+	case LogicalTypeId::USMALLINT:
+	case LogicalTypeId::UINTEGER:
+	case LogicalTypeId::UBIGINT:
+	case LogicalTypeId::HUGEINT:
+	case LogicalTypeId::FLOAT:
+	case LogicalTypeId::DOUBLE:
+	case LogicalTypeId::DECIMAL: {
+		return py::str("NUMBER");
+	}
+	case LogicalTypeId::VARCHAR:
+		return py::str("STRING");
+	case LogicalTypeId::BLOB:
+		return py::str("BINARY");
+	case LogicalTypeId::TIMESTAMP:
+	case LogicalTypeId::TIMESTAMP_MS:
+	case LogicalTypeId::TIMESTAMP_NS:
+	case LogicalTypeId::TIMESTAMP_SEC: {
+		return py::str("DATETIME");
+	}
+	case LogicalTypeId::TIME: {
+		return py::str("Time");
+	}
+	case LogicalTypeId::DATE: {
+		return py::str("Date");
+	}
+	case LogicalTypeId::MAP:
+	case LogicalTypeId::STRUCT:
+		return py::str("dict");
+	case LogicalTypeId::LIST: {
+		return py::str("list");
+	}
+	default:
+		throw std::runtime_error("unsupported type: " + type.ToString());
+	}
+}
+
 py::list DuckDBPyResult::Description() {
 	py::list desc(result->names.size());
 	for (idx_t col_idx = 0; col_idx < result->names.size(); col_idx++) {
 		py::tuple col_desc(7);
 		col_desc[0] = py::str(result->names[col_idx]);
-		col_desc[1] = py::none();
+		col_desc[1] = GetTypeToPython(result->types[col_idx]);
 		col_desc[2] = py::none();
 		col_desc[3] = py::none();
 		col_desc[4] = py::none();
