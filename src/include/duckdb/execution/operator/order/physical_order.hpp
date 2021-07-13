@@ -44,6 +44,8 @@ public:
 
 	//! Schedule merge tasks until all blocks are merged
 	static void ScheduleMergeTasks(Pipeline &pipeline, ClientContext &context, OrderGlobalState &state);
+	//! Compares two values that are serialized to row format at the given pointers (recursive if type is nested)
+	static inline int CompareValAndAdvance(data_ptr_t &l_ptr, data_ptr_t &r_ptr, const LogicalType &type);
 
 private:
 	//! Sort and re-order local state data when the local state has aggregated SORTING_BLOCK_SIZE data

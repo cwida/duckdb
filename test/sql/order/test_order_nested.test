@@ -1,0 +1,642 @@
+# name: test/sql/order/test_order_nested.test
+# description: Test ORDER BY keyword (nested types)
+# group: [order]
+
+statement ok
+PRAGMA enable_verification
+
+# first iteration runs externally, second runs normally
+statement ok
+PRAGMA force_external
+
+loop i 0 2
+
+# list tests
+statement ok
+CREATE TABLE test0 (i INT[])
+
+statement ok
+INSERT INTO test0 VALUES ([2]), ([1]), ([1, 2]), ([]), ([2, 2]), ([NULL]), (NULL), ([2, 3])
+
+query T
+SELECT * FROM test0 ORDER BY i
+----
+NULL
+[]
+[1]
+[1, 2]
+[2]
+[2, 2]
+[2, 3]
+[NULL]
+
+query T
+SELECT * FROM test0 ORDER BY i NULLS LAST
+----
+[]
+[1]
+[1, 2]
+[2]
+[2, 2]
+[2, 3]
+[NULL]
+NULL
+
+query T
+SELECT * FROM test0 ORDER BY i DESC
+----
+NULL
+[NULL]
+[2, 3]
+[2, 2]
+[2]
+[1, 2]
+[1]
+[]
+
+query T
+SELECT * FROM test0 ORDER BY i DESC NULLS LAST
+----
+[NULL]
+[2, 3]
+[2, 2]
+[2]
+[1, 2]
+[1]
+[]
+NULL
+
+statement ok
+CREATE TABLE test1 (i VARCHAR[])
+
+statement ok
+INSERT INTO test1 VALUES (['2']), (['1']), (['1', '2']), ([]), (['2', '2']), ([NULL]), (NULL), (['2', '3'])
+
+query T
+SELECT * FROM test1 ORDER BY i
+----
+NULL
+[]
+[1]
+[1, 2]
+[2]
+[2, 2]
+[2, 3]
+[NULL]
+
+query T
+SELECT * FROM test1 ORDER BY i DESC
+----
+NULL
+[NULL]
+[2, 3]
+[2, 2]
+[2]
+[1, 2]
+[1]
+[]
+
+statement ok
+CREATE TABLE test2 (i INT[][])
+
+statement ok
+INSERT INTO test2 VALUES ([[2]]), ([[1]]), ([NULL, []]), ([[1], [2]]), ([]), ([[]]), ([[2], [2]]), ([NULL]), (NULL), ([[2], [3]])
+
+query T
+SELECT * FROM test2 ORDER BY i
+----
+NULL
+[]
+[[]]
+[[1]]
+[[1], [2]]
+[[2]]
+[[2], [2]]
+[[2], [3]]
+[NULL]
+[NULL, []]
+
+query T
+SELECT * FROM test2 ORDER BY i DESC
+----
+NULL
+[NULL, []]
+[NULL]
+[[2], [3]]
+[[2], [2]]
+[[2]]
+[[1], [2]]
+[[1]]
+[[]]
+[]
+
+statement ok
+CREATE TABLE test3 (i INT[][])
+
+statement ok
+INSERT INTO test3 VALUES ([[3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5]]), ([[3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5], []]), ([[3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5], [5, 5, 5, 5, 1]]), ([[3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5], [5, 5, 5, 5, NULL]]), ([[3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5], [5, 5, 5, 5, 2]]), ([[3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5], [NULL]]), ([[3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5], NULL])
+
+query T
+SELECT * FROM test3 ORDER BY i
+----
+[[3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5]]
+[[3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5], []]
+[[3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5], [5, 5, 5, 5, 1]]
+[[3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5], [5, 5, 5, 5, 2]]
+[[3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5], [5, 5, 5, 5, NULL]]
+[[3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5], [NULL]]
+[[3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5], NULL]
+
+query T
+SELECT * FROM test3 ORDER BY i DESC
+----
+[[3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5], NULL]
+[[3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5], [NULL]]
+[[3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5], [5, 5, 5, 5, NULL]]
+[[3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5], [5, 5, 5, 5, 2]]
+[[3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5], [5, 5, 5, 5, 1]]
+[[3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5], []]
+[[3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5]]
+
+statement ok
+CREATE TABLE test4 (i VARCHAR[][])
+
+statement ok
+INSERT INTO test4 VALUES ([[NULL, NULL, '0'], ['1', NULL, '1']]), ([[NULL, NULL, '1']]), ([[NULL, NULL, '0'], ['1', NULL, '0']]), ([[0, NULL, NULL, 1]]), ([[0, NULL, NULL, 0]])
+
+query T
+SELECT * FROM test4 ORDER BY i
+----
+[[0, NULL, NULL, 0]]
+[[0, NULL, NULL, 1]]
+[[NULL, NULL, 0], [1, NULL, 0]]
+[[NULL, NULL, 0], [1, NULL, 1]]
+[[NULL, NULL, 1]]
+
+query T
+SELECT * FROM test4 ORDER BY i DESC
+----
+[[NULL, NULL, 1]]
+[[NULL, NULL, 0], [1, NULL, 1]]
+[[NULL, NULL, 0], [1, NULL, 0]]
+[[0, NULL, NULL, 1]]
+[[0, NULL, NULL, 0]]
+
+# struct tests
+statement ok
+CREATE TABLE test10 (s STRUCT(i INT, j INT));
+
+statement ok
+INSERT INTO test10 values ({'i': 2, 'j': NULL}), ({'i': 1, 'j': NULL}), ({'i': 2, 'j': 3}), ({'i': 1, 'j': 2}), ({'i': 2, 'j': 2}), ({'i': NULL, 'j': NULL}), (NULL), ({'i': 2, 'j': 3})
+
+query T
+SELECT * FROM test10 ORDER BY s
+----
+NULL
+{'i': 1, 'j': 2}
+{'i': 1, 'j': NULL}
+{'i': 2, 'j': 2}
+{'i': 2, 'j': 3}
+{'i': 2, 'j': 3}
+{'i': 2, 'j': NULL}
+{'i': NULL, 'j': NULL}
+
+query T
+SELECT * FROM test10 ORDER BY s DESC
+----
+NULL
+{'i': NULL, 'j': NULL}
+{'i': 2, 'j': NULL}
+{'i': 2, 'j': 3}
+{'i': 2, 'j': 3}
+{'i': 2, 'j': 2}
+{'i': 1, 'j': NULL}
+{'i': 1, 'j': 2}
+
+statement ok
+CREATE TABLE test11 (s STRUCT(s1 STRUCT(i INT, j INT)))
+
+statement ok
+INSERT INTO test11 VALUES ({'s1': NULL}), (NULL), ({'s1': {'i': NULL, 'j': 1}}), ({'s1': {'i': 0, 'j': NULL}}), ({'s1': {'i': NULL, 'j': NULL}}), ({'s1': {'i': 0, 'j': 1}})
+
+query T
+SELECT * FROM test11 ORDER BY s
+----
+NULL
+{'s1': {'i': 0, 'j': 1}}
+{'s1': {'i': 0, 'j': NULL}}
+{'s1': {'i': NULL, 'j': 1}}
+{'s1': {'i': NULL, 'j': NULL}}
+{'s1': NULL}
+
+query T
+SELECT * FROM test11 ORDER BY s DESC
+----
+NULL
+{'s1': NULL}
+{'s1': {'i': NULL, 'j': NULL}}
+{'s1': {'i': NULL, 'j': 1}}
+{'s1': {'i': 0, 'j': NULL}}
+{'s1': {'i': 0, 'j': 1}}
+
+statement ok
+CREATE TABLE test12 (s STRUCT(s1 STRUCT(i VARCHAR, j VARCHAR)))
+
+statement ok
+INSERT INTO test12 VALUES ({'s1': NULL}), (NULL), ({'s1': {'i': NULL, 'j': '1'}}), ({'s1': {'i': '0', 'j': NULL}}), ({'s1': {'i': NULL, 'j': NULL}}), ({'s1': {'i': '0', 'j': '1'}})
+
+query T
+SELECT * FROM test12 ORDER BY s
+----
+NULL
+{'s1': {'i': 0, 'j': 1}}
+{'s1': {'i': 0, 'j': NULL}}
+{'s1': {'i': NULL, 'j': 1}}
+{'s1': {'i': NULL, 'j': NULL}}
+{'s1': NULL}
+
+query T
+SELECT * FROM test12 ORDER BY s DESC
+----
+NULL
+{'s1': NULL}
+{'s1': {'i': NULL, 'j': NULL}}
+{'s1': {'i': NULL, 'j': 1}}
+{'s1': {'i': 0, 'j': NULL}}
+{'s1': {'i': 0, 'j': 1}}
+
+statement ok
+CREATE TABLE test13 (s STRUCT(a INT, b INT, c INT, d INT, e INT, f INT, g INT, h INT, i INT, j INT))
+
+statement ok
+INSERT INTO test13 VALUES
+({'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4, 'f': 5, 'g': 6, 'h': 7, 'i': 8, 'j': 9}),
+({'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4, 'f': 5, 'g': 6, 'h': 7, 'i': 8, 'j': 10}),
+({'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': NULL, 'f': NULL, 'g': NULL, 'h': NULL, 'i': 8, 'j': 9}),
+({'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': NULL, 'f': NULL, 'g': NULL, 'h': NULL, 'i': 8, 'j': 10}),
+({'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4, 'f': 5, 'g': 6, 'h': NULL, 'i': NULL, 'j': 9}),
+({'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4, 'f': 5, 'g': 6, 'h': NULL, 'i': NULL, 'j': 10})
+
+query T
+SELECT * FROM test13 ORDER BY s
+----
+{'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4, 'f': 5, 'g': 6, 'h': 7, 'i': 8, 'j': 9}
+{'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4, 'f': 5, 'g': 6, 'h': 7, 'i': 8, 'j': 10}
+{'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4, 'f': 5, 'g': 6, 'h': NULL, 'i': NULL, 'j': 9}
+{'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4, 'f': 5, 'g': 6, 'h': NULL, 'i': NULL, 'j': 10}
+{'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': NULL, 'f': NULL, 'g': NULL, 'h': NULL, 'i': 8, 'j': 9}
+{'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': NULL, 'f': NULL, 'g': NULL, 'h': NULL, 'i': 8, 'j': 10}
+
+query T
+SELECT * FROM test13 ORDER BY s DESC
+----
+{'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': NULL, 'f': NULL, 'g': NULL, 'h': NULL, 'i': 8, 'j': 10}
+{'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': NULL, 'f': NULL, 'g': NULL, 'h': NULL, 'i': 8, 'j': 9}
+{'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4, 'f': 5, 'g': 6, 'h': NULL, 'i': NULL, 'j': 10}
+{'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4, 'f': 5, 'g': 6, 'h': NULL, 'i': NULL, 'j': 9}
+{'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4, 'f': 5, 'g': 6, 'h': 7, 'i': 8, 'j': 10}
+{'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4, 'f': 5, 'g': 6, 'h': 7, 'i': 8, 'j': 9}
+
+statement ok
+CREATE TABLE test14 (s STRUCT(a VARCHAR, b VARCHAR, c VARCHAR, d VARCHAR, e VARCHAR, f VARCHAR, g VARCHAR, h VARCHAR, i VARCHAR, j VARCHAR))
+
+statement ok
+INSERT INTO test14 VALUES
+({'a': '0', 'b': '1', 'c': '2', 'd': '3', 'e': '4', 'f': '5', 'g': '6', 'h': '7', 'i': '8', 'j': '9'}),
+({'a': '0', 'b': '1', 'c': '2', 'd': '3', 'e': '4', 'f': '5', 'g': '6', 'h': '7', 'i': '8', 'j': '10'}),
+({'a': '0', 'b': '1', 'c': '2', 'd': '3', 'e': NULL, 'f': NULL, 'g': NULL, 'h': NULL, 'i': '8', 'j': '9'}),
+({'a': '0', 'b': '1', 'c': '2', 'd': '3', 'e': NULL, 'f': NULL, 'g': NULL, 'h': NULL, 'i': '8', 'j': '10'}),
+({'a': '0', 'b': '1', 'c': '2', 'd': '3', 'e': '4', 'f': '5', 'g': '6', 'h': NULL, 'i': NULL, 'j': '9'}),
+({'a': '0', 'b': '1', 'c': '2', 'd': '3', 'e': '4', 'f': '5', 'g': '6', 'h': NULL, 'i': NULL, 'j': '10'})
+
+query T
+SELECT * FROM test14 ORDER BY s
+----
+{'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4, 'f': 5, 'g': 6, 'h': 7, 'i': 8, 'j': 10}
+{'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4, 'f': 5, 'g': 6, 'h': 7, 'i': 8, 'j': 9}
+{'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4, 'f': 5, 'g': 6, 'h': NULL, 'i': NULL, 'j': 10}
+{'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4, 'f': 5, 'g': 6, 'h': NULL, 'i': NULL, 'j': 9}
+{'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': NULL, 'f': NULL, 'g': NULL, 'h': NULL, 'i': 8, 'j': 10}
+{'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': NULL, 'f': NULL, 'g': NULL, 'h': NULL, 'i': 8, 'j': 9}
+
+query T
+SELECT * FROM test14 ORDER BY s DESC
+----
+{'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': NULL, 'f': NULL, 'g': NULL, 'h': NULL, 'i': 8, 'j': 9}
+{'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': NULL, 'f': NULL, 'g': NULL, 'h': NULL, 'i': 8, 'j': 10}
+{'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4, 'f': 5, 'g': 6, 'h': NULL, 'i': NULL, 'j': 9}
+{'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4, 'f': 5, 'g': 6, 'h': NULL, 'i': NULL, 'j': 10}
+{'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4, 'f': 5, 'g': 6, 'h': 7, 'i': 8, 'j': 9}
+{'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4, 'f': 5, 'g': 6, 'h': 7, 'i': 8, 'j': 10}
+
+# combination of lists and structs
+statement ok
+CREATE TABLE test20 (l STRUCT(i INT)[])
+
+statement ok
+INSERT INTO test20 VALUES
+([{'i': NULL}, {'i': NULL}, {'i': 0}, {'i': NULL}, {'i': NULL}, {'i': 0}]),
+([{'i': NULL}, {'i': NULL}, {'i': 0}, {'i': NULL}, {'i': NULL}, {'i': 1}]),
+([{'i': NULL}, {'i': NULL}, {'i': NULL}, {'i': NULL}, {'i': NULL}, {'i': 1}]),
+([{'i': NULL}, {'i': NULL}, {'i': 0}, {'i': NULL}, {'i': NULL}, {'i': NULL}]),
+([{'i': NULL}, {'i': NULL}, {'i': 1}, {'i': NULL}, {'i': NULL}, {'i': 0}]),
+([{'i': NULL}, {'i': NULL}, {'i': 1}, {'i': NULL}, {'i': NULL}, {'i': 1}]),
+([{'i': NULL}, {'i': NULL}, {'i': NULL}, {'i': NULL}, {'i': NULL}, {'i': 0}]),
+([{'i': NULL}, {'i': NULL}, {'i': 1}, {'i': NULL}, {'i': NULL}, {'i': NULL}])
+
+query T
+SELECT * FROM test20 ORDER BY l
+----
+[{'i': NULL}, {'i': NULL}, {'i': 0}, {'i': NULL}, {'i': NULL}, {'i': 0}]
+[{'i': NULL}, {'i': NULL}, {'i': 0}, {'i': NULL}, {'i': NULL}, {'i': 1}]
+[{'i': NULL}, {'i': NULL}, {'i': 0}, {'i': NULL}, {'i': NULL}, {'i': NULL}]
+[{'i': NULL}, {'i': NULL}, {'i': 1}, {'i': NULL}, {'i': NULL}, {'i': 0}]
+[{'i': NULL}, {'i': NULL}, {'i': 1}, {'i': NULL}, {'i': NULL}, {'i': 1}]
+[{'i': NULL}, {'i': NULL}, {'i': 1}, {'i': NULL}, {'i': NULL}, {'i': NULL}]
+[{'i': NULL}, {'i': NULL}, {'i': NULL}, {'i': NULL}, {'i': NULL}, {'i': 0}]
+[{'i': NULL}, {'i': NULL}, {'i': NULL}, {'i': NULL}, {'i': NULL}, {'i': 1}]
+
+query T
+SELECT * FROM test20 ORDER BY l DESC
+----
+[{'i': NULL}, {'i': NULL}, {'i': NULL}, {'i': NULL}, {'i': NULL}, {'i': 1}]
+[{'i': NULL}, {'i': NULL}, {'i': NULL}, {'i': NULL}, {'i': NULL}, {'i': 0}]
+[{'i': NULL}, {'i': NULL}, {'i': 1}, {'i': NULL}, {'i': NULL}, {'i': NULL}]
+[{'i': NULL}, {'i': NULL}, {'i': 1}, {'i': NULL}, {'i': NULL}, {'i': 1}]
+[{'i': NULL}, {'i': NULL}, {'i': 1}, {'i': NULL}, {'i': NULL}, {'i': 0}]
+[{'i': NULL}, {'i': NULL}, {'i': 0}, {'i': NULL}, {'i': NULL}, {'i': NULL}]
+[{'i': NULL}, {'i': NULL}, {'i': 0}, {'i': NULL}, {'i': NULL}, {'i': 1}]
+[{'i': NULL}, {'i': NULL}, {'i': 0}, {'i': NULL}, {'i': NULL}, {'i': 0}]
+
+statement ok
+CREATE TABLE test21 (l STRUCT(i VARCHAR)[])
+
+statement ok
+INSERT INTO test21 VALUES
+([{'i': NULL}, {'i': NULL}, {'i': '0'}, {'i': NULL}, {'i': NULL}, {'i': '0'}]),
+([{'i': NULL}, {'i': NULL}, {'i': '0'}, {'i': NULL}, {'i': NULL}, {'i': '1'}]),
+([{'i': NULL}, {'i': NULL}, {'i': NULL}, {'i': NULL}, {'i': NULL}, {'i': '1'}]),
+([{'i': NULL}, {'i': NULL}, {'i': '0'}, {'i': NULL}, {'i': NULL}, {'i': NULL}]),
+([{'i': NULL}, {'i': NULL}, {'i': '1'}, {'i': NULL}, {'i': NULL}, {'i': '0'}]),
+([{'i': NULL}, {'i': NULL}, {'i': '1'}, {'i': NULL}, {'i': NULL}, {'i': '1'}]),
+([{'i': NULL}, {'i': NULL}, {'i': NULL}, {'i': NULL}, {'i': NULL}, {'i': '0'}]),
+([{'i': NULL}, {'i': NULL}, {'i': '1'}, {'i': NULL}, {'i': NULL}, {'i': NULL}])
+
+query T
+SELECT * FROM test21 ORDER BY l
+----
+[{'i': NULL}, {'i': NULL}, {'i': 0}, {'i': NULL}, {'i': NULL}, {'i': 0}]
+[{'i': NULL}, {'i': NULL}, {'i': 0}, {'i': NULL}, {'i': NULL}, {'i': 1}]
+[{'i': NULL}, {'i': NULL}, {'i': 0}, {'i': NULL}, {'i': NULL}, {'i': NULL}]
+[{'i': NULL}, {'i': NULL}, {'i': 1}, {'i': NULL}, {'i': NULL}, {'i': 0}]
+[{'i': NULL}, {'i': NULL}, {'i': 1}, {'i': NULL}, {'i': NULL}, {'i': 1}]
+[{'i': NULL}, {'i': NULL}, {'i': 1}, {'i': NULL}, {'i': NULL}, {'i': NULL}]
+[{'i': NULL}, {'i': NULL}, {'i': NULL}, {'i': NULL}, {'i': NULL}, {'i': 0}]
+[{'i': NULL}, {'i': NULL}, {'i': NULL}, {'i': NULL}, {'i': NULL}, {'i': 1}]
+
+query T
+SELECT * FROM test21 ORDER BY l DESC
+----
+[{'i': NULL}, {'i': NULL}, {'i': NULL}, {'i': NULL}, {'i': NULL}, {'i': 1}]
+[{'i': NULL}, {'i': NULL}, {'i': NULL}, {'i': NULL}, {'i': NULL}, {'i': 0}]
+[{'i': NULL}, {'i': NULL}, {'i': 1}, {'i': NULL}, {'i': NULL}, {'i': NULL}]
+[{'i': NULL}, {'i': NULL}, {'i': 1}, {'i': NULL}, {'i': NULL}, {'i': 1}]
+[{'i': NULL}, {'i': NULL}, {'i': 1}, {'i': NULL}, {'i': NULL}, {'i': 0}]
+[{'i': NULL}, {'i': NULL}, {'i': 0}, {'i': NULL}, {'i': NULL}, {'i': NULL}]
+[{'i': NULL}, {'i': NULL}, {'i': 0}, {'i': NULL}, {'i': NULL}, {'i': 1}]
+[{'i': NULL}, {'i': NULL}, {'i': 0}, {'i': NULL}, {'i': NULL}, {'i': 0}]
+
+statement ok
+CREATE TABLE test22 (s STRUCT(i INT[], j INT[]))
+
+statement ok
+INSERT INTO test22 VALUES
+({'i': [0, NULL], 'j': [NULL, 0]}),
+({'i': [0, NULL], 'j': [NULL, 1]}),
+({'i': [0, NULL], 'j': [1, 2]}),
+({'i': [1, NULL], 'j': [2, NULL]}),
+({'i': [0, 2], 'j': [2, NULL]}),
+({'i': NULL, 'j': [2, NULL]}),
+({'i': [0, 2], 'j': NULL}),
+({'i': NULL, 'j': [2, 3]})
+
+query T
+SELECT * FROM test22 ORDER BY s
+----
+{'i': [0, 2], 'j': [2, NULL]}
+{'i': [0, 2], 'j': NULL}
+{'i': [0, NULL], 'j': [1, 2]}
+{'i': [0, NULL], 'j': [NULL, 0]}
+{'i': [0, NULL], 'j': [NULL, 1]}
+{'i': [1, NULL], 'j': [2, NULL]}
+{'i': NULL, 'j': [2, 3]}
+{'i': NULL, 'j': [2, NULL]}
+
+query T
+SELECT * FROM test22 ORDER BY s DESC
+----
+{'i': NULL, 'j': [2, NULL]}
+{'i': NULL, 'j': [2, 3]}
+{'i': [1, NULL], 'j': [2, NULL]}
+{'i': [0, NULL], 'j': [NULL, 1]}
+{'i': [0, NULL], 'j': [NULL, 0]}
+{'i': [0, NULL], 'j': [1, 2]}
+{'i': [0, 2], 'j': NULL}
+{'i': [0, 2], 'j': [2, NULL]}
+
+statement ok
+CREATE TABLE test23 (s STRUCT(i VARCHAR[], j VARCHAR[]))
+
+statement ok
+INSERT INTO test23 VALUES
+({'i': ['0', NULL], 'j': [NULL, '0']}),
+({'i': ['0', NULL], 'j': [NULL, '1']}),
+({'i': ['0', NULL], 'j': ['1', '2']}),
+({'i': ['1', NULL], 'j': ['2', NULL]}),
+({'i': ['0', '2'], 'j': ['2', NULL]}),
+({'i': NULL, 'j': ['2', NULL]}),
+({'i': ['0', '2'], 'j': NULL}),
+({'i': NULL, 'j': ['2', '3']})
+
+query T
+SELECT * FROM test23 ORDER BY s
+----
+{'i': [0, 2], 'j': [2, NULL]}
+{'i': [0, 2], 'j': NULL}
+{'i': [0, NULL], 'j': [1, 2]}
+{'i': [0, NULL], 'j': [NULL, 0]}
+{'i': [0, NULL], 'j': [NULL, 1]}
+{'i': [1, NULL], 'j': [2, NULL]}
+{'i': NULL, 'j': [2, 3]}
+{'i': NULL, 'j': [2, NULL]}
+
+query T
+SELECT * FROM test23 ORDER BY s DESC
+----
+{'i': NULL, 'j': [2, NULL]}
+{'i': NULL, 'j': [2, 3]}
+{'i': [1, NULL], 'j': [2, NULL]}
+{'i': [0, NULL], 'j': [NULL, 1]}
+{'i': [0, NULL], 'j': [NULL, 0]}
+{'i': [0, NULL], 'j': [1, 2]}
+{'i': [0, 2], 'j': NULL}
+{'i': [0, 2], 'j': [2, NULL]}
+
+statement ok
+CREATE TABLE test24 (l STRUCT(l1 STRUCT(i INT)[])[])
+
+statement ok
+INSERT INTO test24 VALUES
+([{'l1': [{'i': 0}]}, {'l1': [{'i': 0}]}]),
+([{'l1': [{'i': 0}]}, {'l1': [{'i': 1}]}]),
+([{'l1': [{'i': 0}]}, {'l1': [{'i': 1}, {'i': 2}]}]),
+([{'l1': [{'i': 0}]}, {'l1': [{'i': 1}, {'i': 1}]}]),
+([{'l1': [{'i': 1}]}, {'l1': [{'i': 0}]}]),
+([{'l1': [{'i': 1}]}, {'l1': [{'i': 1}]}]),
+([{'l1': [{'i': NULL}]}, {'l1': [{'i': 0}]}]),
+([{'l1': [{'i': NULL}]}, {'l1': [{'i': 1}]}]),
+([{'l1': [{'i': 0}]}, {'l1': [{'i': NULL}]}, {'l1': [{'i': NULL}]}]),
+([{'l1': [{'i': 1}]}, {'l1': [{'i': NULL}]}, {'l1': [{'i': 1}]}]),
+([{'l1': [{'i': 0}]}, {'l1': [{'i': NULL}]}]),
+([{'l1': [{'i': 1}]}, {'l1': [{'i': NULL}]}]),
+([{'l1': [{'i': 1}]}, {'l1': [{'i': NULL}]}, {'l1': [{'i': NULL}]}])
+
+query T
+SELECT * FROM test24 ORDER BY l
+----
+[{'l1': [{'i': 0}]}, {'l1': [{'i': 0}]}]
+[{'l1': [{'i': 0}]}, {'l1': [{'i': 1}]}]
+[{'l1': [{'i': 0}]}, {'l1': [{'i': 1}, {'i': 1}]}]
+[{'l1': [{'i': 0}]}, {'l1': [{'i': 1}, {'i': 2}]}]
+[{'l1': [{'i': 0}]}, {'l1': [{'i': NULL}]}]
+[{'l1': [{'i': 0}]}, {'l1': [{'i': NULL}]}, {'l1': [{'i': NULL}]}]
+[{'l1': [{'i': 1}]}, {'l1': [{'i': 0}]}]
+[{'l1': [{'i': 1}]}, {'l1': [{'i': 1}]}]
+[{'l1': [{'i': 1}]}, {'l1': [{'i': NULL}]}]
+[{'l1': [{'i': 1}]}, {'l1': [{'i': NULL}]}, {'l1': [{'i': 1}]}]
+[{'l1': [{'i': 1}]}, {'l1': [{'i': NULL}]}, {'l1': [{'i': NULL}]}]
+[{'l1': [{'i': NULL}]}, {'l1': [{'i': 0}]}]
+[{'l1': [{'i': NULL}]}, {'l1': [{'i': 1}]}]
+
+query T
+SELECT * FROM test24 ORDER BY l DESC
+----
+[{'l1': [{'i': NULL}]}, {'l1': [{'i': 1}]}]
+[{'l1': [{'i': NULL}]}, {'l1': [{'i': 0}]}]
+[{'l1': [{'i': 1}]}, {'l1': [{'i': NULL}]}, {'l1': [{'i': NULL}]}]
+[{'l1': [{'i': 1}]}, {'l1': [{'i': NULL}]}, {'l1': [{'i': 1}]}]
+[{'l1': [{'i': 1}]}, {'l1': [{'i': NULL}]}]
+[{'l1': [{'i': 1}]}, {'l1': [{'i': 1}]}]
+[{'l1': [{'i': 1}]}, {'l1': [{'i': 0}]}]
+[{'l1': [{'i': 0}]}, {'l1': [{'i': NULL}]}, {'l1': [{'i': NULL}]}]
+[{'l1': [{'i': 0}]}, {'l1': [{'i': NULL}]}]
+[{'l1': [{'i': 0}]}, {'l1': [{'i': 1}, {'i': 2}]}]
+[{'l1': [{'i': 0}]}, {'l1': [{'i': 1}, {'i': 1}]}]
+[{'l1': [{'i': 0}]}, {'l1': [{'i': 1}]}]
+[{'l1': [{'i': 0}]}, {'l1': [{'i': 0}]}]
+
+statement ok
+CREATE TABLE test25 (l STRUCT(l1 STRUCT(i VARCHAR)[])[])
+
+statement ok
+INSERT INTO test25 VALUES
+([{'l1': [{'i': '0'}]}, {'l1': [{'i': '0'}]}]),
+([{'l1': [{'i': '0'}]}, {'l1': [{'i': '1'}]}]),
+([{'l1': [{'i': '0'}]}, {'l1': [{'i': '1'}, {'i': '2'}]}]),
+([{'l1': [{'i': '0'}]}, {'l1': [{'i': '1'}, {'i': '1'}]}]),
+([{'l1': [{'i': '1'}]}, {'l1': [{'i': '0'}]}]),
+([{'l1': [{'i': '1'}]}, {'l1': [{'i': '1'}]}]),
+([{'l1': [{'i': NULL}]}, {'l1': [{'i': '0'}]}]),
+([{'l1': [{'i': NULL}]}, {'l1': [{'i': '1'}]}]),
+([{'l1': [{'i': '0'}]}, {'l1': [{'i': NULL}]}, {'l1': [{'i': NULL}]}]),
+([{'l1': [{'i': '1'}]}, {'l1': [{'i': NULL}]}, {'l1': [{'i': '1'}]}]),
+([{'l1': [{'i': '0'}]}, {'l1': [{'i': NULL}]}]),
+([{'l1': [{'i': '1'}]}, {'l1': [{'i': NULL}]}]),
+([{'l1': [{'i': '1'}]}, {'l1': [{'i': NULL}]}, {'l1': [{'i': NULL}]}])
+
+query T
+SELECT * FROM test25 ORDER BY l
+----
+[{'l1': [{'i': 0}]}, {'l1': [{'i': 0}]}]
+[{'l1': [{'i': 0}]}, {'l1': [{'i': 1}]}]
+[{'l1': [{'i': 0}]}, {'l1': [{'i': 1}, {'i': 1}]}]
+[{'l1': [{'i': 0}]}, {'l1': [{'i': 1}, {'i': 2}]}]
+[{'l1': [{'i': 0}]}, {'l1': [{'i': NULL}]}]
+[{'l1': [{'i': 0}]}, {'l1': [{'i': NULL}]}, {'l1': [{'i': NULL}]}]
+[{'l1': [{'i': 1}]}, {'l1': [{'i': 0}]}]
+[{'l1': [{'i': 1}]}, {'l1': [{'i': 1}]}]
+[{'l1': [{'i': 1}]}, {'l1': [{'i': NULL}]}]
+[{'l1': [{'i': 1}]}, {'l1': [{'i': NULL}]}, {'l1': [{'i': 1}]}]
+[{'l1': [{'i': 1}]}, {'l1': [{'i': NULL}]}, {'l1': [{'i': NULL}]}]
+[{'l1': [{'i': NULL}]}, {'l1': [{'i': 0}]}]
+[{'l1': [{'i': NULL}]}, {'l1': [{'i': 1}]}]
+
+query T
+SELECT * FROM test25 ORDER BY l DESC
+----
+[{'l1': [{'i': NULL}]}, {'l1': [{'i': 1}]}]
+[{'l1': [{'i': NULL}]}, {'l1': [{'i': 0}]}]
+[{'l1': [{'i': 1}]}, {'l1': [{'i': NULL}]}, {'l1': [{'i': NULL}]}]
+[{'l1': [{'i': 1}]}, {'l1': [{'i': NULL}]}, {'l1': [{'i': 1}]}]
+[{'l1': [{'i': 1}]}, {'l1': [{'i': NULL}]}]
+[{'l1': [{'i': 1}]}, {'l1': [{'i': 1}]}]
+[{'l1': [{'i': 1}]}, {'l1': [{'i': 0}]}]
+[{'l1': [{'i': 0}]}, {'l1': [{'i': NULL}]}, {'l1': [{'i': NULL}]}]
+[{'l1': [{'i': 0}]}, {'l1': [{'i': NULL}]}]
+[{'l1': [{'i': 0}]}, {'l1': [{'i': 1}, {'i': 2}]}]
+[{'l1': [{'i': 0}]}, {'l1': [{'i': 1}, {'i': 1}]}]
+[{'l1': [{'i': 0}]}, {'l1': [{'i': 1}]}]
+[{'l1': [{'i': 0}]}, {'l1': [{'i': 0}]}]
+
+statement ok
+DROP TABLE test0
+
+statement ok
+DROP TABLE test1
+
+statement ok
+DROP TABLE test2
+
+statement ok
+DROP TABLE test3
+
+statement ok
+DROP TABLE test4
+
+statement ok
+DROP TABLE test10
+
+statement ok
+DROP TABLE test11
+
+statement ok
+DROP TABLE test12
+
+statement ok
+DROP TABLE test13
+
+statement ok
+DROP TABLE test14
+
+statement ok
+DROP TABLE test20
+
+statement ok
+DROP TABLE test21
+
+statement ok
+DROP TABLE test22
+
+statement ok
+DROP TABLE test23
+
+statement ok
+DROP TABLE test24
+
+statement ok
+DROP TABLE test25
+
+statement ok
+PRAGMA disable_force_external
+
+endloop

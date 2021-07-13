@@ -14,10 +14,19 @@ RowDataCollection::RowDataCollection(BufferManager &buffer_manager, idx_t block_
 	D_ASSERT(block_capacity * entry_size >= Storage::BLOCK_SIZE);
 }
 
+static list_entry_t *GetListData(Vector &v) {
+	if (v.GetVectorType() == VectorType::DICTIONARY_VECTOR) {
+		auto &child = DictionaryVector::Child(v);
+		return GetListData(child);
+	}
+	return FlatVector::GetData<list_entry_t>(v);
+}
+
 template <class T>
 void RowDataCollection::TemplatedSerializeVectorSortable(VectorData &vdata, const SelectionVector &sel, idx_t add_count,
                                                          data_ptr_t key_locations[], const bool desc,
-                                                         const bool has_null, const bool nulls_first) {
+                                                         const bool has_null, const bool nulls_first,
+                                                         const idx_t offset) {
 	auto source = (T *)vdata.data;
 	if (has_null) {
 		auto &validity = vdata.validity;
@@ -26,7 +35,7 @@ void RowDataCollection::TemplatedSerializeVectorSortable(VectorData &vdata, cons
 
 		for (idx_t i = 0; i < add_count; i++) {
 			auto idx = sel.get_index(i);
-			auto source_idx = vdata.sel->get_index(idx);
+			auto source_idx = vdata.sel->get_index(idx) + offset;
 			// write validity and according value
 			if (validity.RowIsValid(source_idx)) {
 				key_locations[i][0] = valid;
@@ -46,12 +55,12 @@ void RowDataCollection::TemplatedSerializeVectorSortable(VectorData &vdata, cons
 	} else {
 		for (idx_t i = 0; i < add_count; i++) {
 			auto idx = sel.get_index(i);
-			auto source_idx = vdata.sel->get_index(idx);
+			auto source_idx = vdata.sel->get_index(idx) + offset;
 			// write value
 			EncodeData<T>(key_locations[i], source[source_idx], is_little_endian);
 			// invert bits if desc
 			if (desc) {
-				for (idx_t s = 1; s < sizeof(T); s++) {
+				for (idx_t s = 0; s < sizeof(T); s++) {
 					*(key_locations[i] + s) = ~*(key_locations[i] + s);
 				}
 			}
@@ -62,7 +71,7 @@ void RowDataCollection::TemplatedSerializeVectorSortable(VectorData &vdata, cons
 
 void RowDataCollection::SerializeStringVectorSortable(VectorData &vdata, const SelectionVector &sel, idx_t add_count,
                                                       data_ptr_t key_locations[], const bool desc, const bool has_null,
-                                                      const bool nulls_first, const idx_t prefix_len) {
+                                                      const bool nulls_first, const idx_t prefix_len, idx_t offset) {
 	auto source = (string_t *)vdata.data;
 	if (has_null) {
 		auto &validity = vdata.validity;
@@ -71,7 +80,7 @@ void RowDataCollection::SerializeStringVectorSortable(VectorData &vdata, const S
 
 		for (idx_t i = 0; i < add_count; i++) {
 			auto idx = sel.get_index(i);
-			auto source_idx = vdata.sel->get_index(idx);
+			auto source_idx = vdata.sel->get_index(idx) + offset;
 			// write validity and according value
 			if (validity.RowIsValid(source_idx)) {
 				key_locations[i][0] = valid;
@@ -91,12 +100,12 @@ void RowDataCollection::SerializeStringVectorSortable(VectorData &vdata, const S
 	} else {
 		for (idx_t i = 0; i < add_count; i++) {
 			auto idx = sel.get_index(i);
-			auto source_idx = vdata.sel->get_index(idx);
+			auto source_idx = vdata.sel->get_index(idx) + offset;
 			// write value
 			EncodeStringDataPrefix(key_locations[i], source[source_idx], prefix_len);
 			// invert bits if desc
 			if (desc) {
-				for (idx_t s = 1; s < prefix_len; s++) {
+				for (idx_t s = 0; s < prefix_len; s++) {
 					*(key_locations[i] + s) = ~*(key_locations[i] + s);
 				}
 			}
@@ -105,54 +114,191 @@ void RowDataCollection::SerializeStringVectorSortable(VectorData &vdata, const S
 	}
 }
 
+void RowDataCollection::SerializeListVectorSortable(Vector &v, VectorData &vdata, const SelectionVector &sel,
+                                                    idx_t add_count, data_ptr_t key_locations[], const bool desc,
+                                                    const bool has_null, const bool nulls_first, const idx_t prefix_len,
+                                                    const idx_t width, const idx_t offset) {
+	auto list_data = GetListData(v);
+	auto &child_vector = ListVector::GetEntry(v);
+	auto list_size = ListVector::GetListSize(v);
+
+	// serialize null values
+	if (has_null) {
+		auto &validity = vdata.validity;
+		const data_t valid = nulls_first ? 1 : 0;
+		const data_t invalid = 1 - valid;
+
+		for (idx_t i = 0; i < add_count; i++) {
+			auto idx = sel.get_index(i);
+			auto source_idx = vdata.sel->get_index(idx) + offset;
+			data_ptr_t key_location = key_locations[i] + 1;
+			// write validity and according value
+			if (validity.RowIsValid(source_idx)) {
+				key_locations[i][0] = valid;
+				key_locations[i]++;
+				auto &list_entry = list_data[source_idx];
+				if (list_entry.length > 0) {
+					// denote that the list is not empty with a 1
+					key_locations[i][0] = 1;
+					key_locations[i]++;
+					SerializeVectorSortable(child_vector, list_size, FlatVector::INCREMENTAL_SELECTION_VECTOR, 1,
+					                        key_locations + i, false, has_null, false, prefix_len, width - 1,
+					                        list_entry.offset);
+				} else {
+					// denote that the list is empty with a 0
+					key_locations[i][0] = 0;
+					key_locations[i]++;
+					memset(key_locations[i], '\0', width - 2);
+				}
+				// invert bits if desc
+				if (desc) {
+					for (idx_t s = 0; s < width - 1; s++) {
+						*(key_location + s) = ~*(key_location + s);
+					}
+				}
+			} else {
+				key_locations[i][0] = invalid;
+				memset(key_locations[i] + 1, '\0', width - 1);
+				key_locations[i] += width;
+			}
+		}
+	} else {
+		for (idx_t i = 0; i < add_count; i++) {
+			auto idx = sel.get_index(i);
+			auto source_idx = vdata.sel->get_index(idx) + offset;
+			auto &list_entry = list_data[source_idx];
+			data_ptr_t key_location = key_locations[i];
+			if (list_entry.length > 0) {
+				// denote that the list is not empty with a 1
+				key_locations[i][0] = 1;
+				key_locations[i]++;
+				SerializeVectorSortable(child_vector, list_size, FlatVector::INCREMENTAL_SELECTION_VECTOR, 1,
+				                        key_locations + i, false, has_null, false, prefix_len, width - 1,
+				                        list_entry.offset);
+			} else {
+				// denote that the list is empty with a 0
+				key_locations[i][0] = 0;
+				key_locations[i]++;
+				memset(key_locations[i], '\0', width - 1);
+			}
+			// invert bits if desc
+			if (desc) {
+				for (idx_t s = 0; s < width; s++) {
+					*(key_location + s) = ~*(key_location + s);
+				}
+			}
+		}
+	}
+}
+
+void RowDataCollection::SerializeStructVectorSortable(Vector &v, VectorData &vdata, idx_t vcount,
+                                                      const SelectionVector &sel, idx_t add_count,
+                                                      data_ptr_t key_locations[], const bool desc, const bool has_null,
+                                                      const bool nulls_first, const idx_t prefix_len, idx_t width,
+                                                      const idx_t offset) {
+	// serialize null values
+	if (has_null) {
+		auto &validity = vdata.validity;
+		const data_t valid = nulls_first ? 1 : 0;
+		const data_t invalid = 1 - valid;
+
+		for (idx_t i = 0; i < add_count; i++) {
+			auto idx = sel.get_index(i);
+			auto source_idx = vdata.sel->get_index(idx) + offset;
+			// write validity and according value
+			if (validity.RowIsValid(source_idx)) {
+				key_locations[i][0] = valid;
+			} else {
+				key_locations[i][0] = invalid;
+			}
+			key_locations[i]++;
+		}
+		width--;
+	}
+	// serialize the struct
+	auto &child_vector = *StructVector::GetEntries(v)[0];
+	SerializeVectorSortable(child_vector, vcount, FlatVector::INCREMENTAL_SELECTION_VECTOR, add_count, key_locations,
+	                        false, has_null, false, prefix_len, width, offset);
+	// invert bits if desc
+	if (desc) {
+		for (idx_t i = 0; i < add_count; i++) {
+			for (idx_t s = 0; s < width; s++) {
+				*(key_locations[i] - width + s) = ~*(key_locations[i] - width + s);
+			}
+		}
+	}
+}
+
 void RowDataCollection::SerializeVectorSortable(Vector &v, idx_t vcount, const SelectionVector &sel, idx_t ser_count,
                                                 data_ptr_t key_locations[], bool desc, bool has_null, bool nulls_first,
-                                                idx_t prefix_len) {
+                                                idx_t prefix_len, idx_t width, idx_t offset) {
 	VectorData vdata;
 	v.Orrify(vcount, vdata);
 	switch (v.GetType().InternalType()) {
 	case PhysicalType::BOOL:
 	case PhysicalType::INT8:
-		TemplatedSerializeVectorSortable<int8_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first);
+		TemplatedSerializeVectorSortable<int8_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first,
+		                                         offset);
 		break;
 	case PhysicalType::INT16:
-		TemplatedSerializeVectorSortable<int16_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first);
+		TemplatedSerializeVectorSortable<int16_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first,
+		                                          offset);
 		break;
 	case PhysicalType::INT32:
-		TemplatedSerializeVectorSortable<int32_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first);
+		TemplatedSerializeVectorSortable<int32_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first,
+		                                          offset);
 		break;
 	case PhysicalType::INT64:
-		TemplatedSerializeVectorSortable<int64_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first);
+		TemplatedSerializeVectorSortable<int64_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first,
+		                                          offset);
 		break;
 	case PhysicalType::UINT8:
-		TemplatedSerializeVectorSortable<uint8_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first);
+		TemplatedSerializeVectorSortable<uint8_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first,
+		                                          offset);
 		break;
 	case PhysicalType::UINT16:
-		TemplatedSerializeVectorSortable<uint16_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first);
+		TemplatedSerializeVectorSortable<uint16_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first,
+		                                           offset);
 		break;
 	case PhysicalType::UINT32:
-		TemplatedSerializeVectorSortable<uint32_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first);
+		TemplatedSerializeVectorSortable<uint32_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first,
+		                                           offset);
 		break;
 	case PhysicalType::UINT64:
-		TemplatedSerializeVectorSortable<uint64_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first);
+		TemplatedSerializeVectorSortable<uint64_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first,
+		                                           offset);
 		break;
 	case PhysicalType::INT128:
-		TemplatedSerializeVectorSortable<hugeint_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first);
+		TemplatedSerializeVectorSortable<hugeint_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first,
+		                                            offset);
 		break;
 	case PhysicalType::FLOAT:
-		TemplatedSerializeVectorSortable<float>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first);
+		TemplatedSerializeVectorSortable<float>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first,
+		                                        offset);
 		break;
 	case PhysicalType::DOUBLE:
-		TemplatedSerializeVectorSortable<double>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first);
+		TemplatedSerializeVectorSortable<double>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first,
+		                                         offset);
 		break;
 	case PhysicalType::HASH:
-		TemplatedSerializeVectorSortable<hash_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first);
+		TemplatedSerializeVectorSortable<hash_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first,
+		                                         offset);
 		break;
 	case PhysicalType::INTERVAL:
-		TemplatedSerializeVectorSortable<interval_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first);
+		TemplatedSerializeVectorSortable<interval_t>(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first,
+		                                             offset);
 		break;
 	case PhysicalType::VARCHAR:
-		SerializeStringVectorSortable(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first, prefix_len);
+		SerializeStringVectorSortable(vdata, sel, ser_count, key_locations, desc, has_null, nulls_first, prefix_len,
+		                              offset);
+		break;
+	case PhysicalType::LIST:
+		SerializeListVectorSortable(v, vdata, sel, ser_count, key_locations, desc, has_null, nulls_first, prefix_len,
+		                            width, offset);
+		break;
+	case PhysicalType::STRUCT:
+		SerializeStructVectorSortable(v, vdata, vcount, sel, ser_count, key_locations, desc, has_null, nulls_first,
+		                              prefix_len, width, offset);
 		break;
 	default:
 		throw NotImplementedException("Cannot ORDER BY column with type %s", v.GetType().ToString());
@@ -203,14 +349,6 @@ void RowDataCollection::ComputeStructEntrySizes(Vector &v, idx_t entry_sizes[], 
 	for (auto &struct_vector : struct_vectors) {
 		ComputeEntrySizes(struct_vector, entry_sizes, vcount, ser_count, sel, offset);
 	}
-}
-
-static list_entry_t *GetListData(Vector &v) {
-	if (v.GetVectorType() == VectorType::DICTIONARY_VECTOR) {
-		auto &child = DictionaryVector::Child(v);
-		return GetListData(child);
-	}
-	return FlatVector::GetData<list_entry_t>(v);
 }
 
 void RowDataCollection::ComputeListEntrySizes(Vector &v, VectorData &vdata, idx_t entry_sizes[], idx_t ser_count,

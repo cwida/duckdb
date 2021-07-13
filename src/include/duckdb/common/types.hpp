@@ -558,6 +558,7 @@ bool TypeIsConstantSize(PhysicalType type);
 bool TypeIsIntegral(PhysicalType type);
 bool TypeIsNumeric(PhysicalType type);
 bool TypeIsInteger(PhysicalType type);
+bool TypeIsNested(PhysicalType type);
 
 template <class T>
 bool IsIntegerType() {

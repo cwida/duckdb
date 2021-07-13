@@ -1,12 +1,11 @@
 #include "duckdb/common/types.hpp"
 
 #include "duckdb/common/exception.hpp"
-#include "duckdb/common/types/hash.hpp"
 #include "duckdb/common/serializer.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/common/types/decimal.hpp"
 #include "duckdb/common/types/hash.hpp"
 #include "duckdb/common/types/string_type.hpp"
-#include "duckdb/common/types/decimal.hpp"
 
 #include <cmath>
 
@@ -265,6 +264,10 @@ bool TypeIsNumeric(PhysicalType type) {
 }
 bool TypeIsInteger(PhysicalType type) {
 	return (type >= PhysicalType::UINT8 && type <= PhysicalType::INT64) || type == PhysicalType::INT128;
+}
+
+bool TypeIsNested(PhysicalType type) {
+	return (type == PhysicalType::LIST || type == PhysicalType::STRUCT || type == PhysicalType::MAP);
 }
 
 string LogicalTypeIdToString(LogicalTypeId id) {
