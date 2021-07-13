@@ -16,12 +16,17 @@ select approx_count_distinct(NULL)
 0
 
 query I
-select approx_count_distinct(10) from range(100);
+select approx_count_distinct('hello')
 ----
 1
 
+query II
+select approx_count_distinct(10), approx_count_distinct('hello') from range(100);
+----
+1	1
+
 query I
-select approx_count_distinct (i) from range (100) tbl(i) WHERE 1 == 0;
+select approx_count_distinct(i) from range (100) tbl(i) WHERE 1 == 0;
 ----
 0
 

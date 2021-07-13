@@ -28,13 +28,6 @@ struct TableScanBindData : public FunctionData {
 
 	//! How many chunks we already scanned
 	atomic<idx_t> chunk_count;
-
-	unique_ptr<FunctionData> Copy() override {
-		auto result = make_unique<TableScanBindData>(table);
-		result->is_index_scan = is_index_scan;
-		result->result_ids = result_ids;
-		return move(result);
-	}
 };
 
 //! The table scan function represents a sequential scan over one of DuckDB's base tables.

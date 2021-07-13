@@ -648,24 +648,29 @@ jobs:
 
       - name: Coverage Reset
         run: |
-          lcov --zerocounters --directory .
-          lcov --capture --initial --directory . --base-directory . --no-external --output-file coverage.info
+          lcov --config-file .github/workflows/lcovrc --zerocounters --directory .
+          lcov --config-file .github/workflows/lcovrc --capture --initial --directory . --base-directory . --no-external --output-file coverage.info
 
       - name: Run Tests
         run: |
           mkdir -p build/coverage
-          (cd build/coverage && cmake -E env CXXFLAGS="--coverage" cmake -DCMAKE_BUILD_TYPE=Debug ../.. && make)
+          (cd build/coverage && cmake -E env CXXFLAGS="--coverage" cmake -DBUILD_ARROW_ABI_TEST=1 -DBUILD_PARQUET_EXTENSION=1 -DCMAKE_BUILD_TYPE=Debug ../.. && make)
           build/coverage/test/unittest
+          build/coverage/test/unittest "[intraquery]"
+          build/coverage/test/unittest "[interquery]"
+          build/coverage/test/unittest "[detailed_profiler]"
+          build/coverage/test/unittest "[tpch]"
+          build/coverage/tools/sqlite3_api_wrapper/test_sqlite3_api_wrapper
+          python tools/shell/shell-test.py build/coverage/duckdb
 
       - name: Generate Coverage
         run: |
-          lcov --directory . --base-directory . --no-external --capture --output-file coverage.info
-          lcov --remove coverage.info '/usr*' '*/cl.hpp' '*/tools/*' '*/benchmark/*' '*/examples/*' '*/third_party/*' '*/test/*' '*/extension/*' -o lcov.info
+          lcov --config-file .github/workflows/lcovrc --directory . --base-directory . --no-external --capture --output-file coverage.info
+          lcov --config-file .github/workflows/lcovrc --remove coverage.info '/usr*' '*/cl.hpp' '*/tools/*' '*/benchmark/*' '*/examples/*' '*/third_party/*' '*/test/*' -o lcov.info
 
       - name: CodeCov Upload
         uses: codecov/codecov-action@v1
         with:
-          token: ${{ secrets.CODECOV_API_KEY }} # not required for public repos
           files: lcov.info
           fail_ci_if_error: true
 

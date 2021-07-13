@@ -42,6 +42,10 @@ public:
 		return colname ? string(colname) : string();
 	}
 
+	duckdb_result &InternalResult() {
+		return result;
+	}
+
 public:
 	bool success = false;
 
@@ -83,6 +87,26 @@ int64_t CAPIResult::Fetch(idx_t col, idx_t row) {
 }
 
 template <>
+uint8_t CAPIResult::Fetch(idx_t col, idx_t row) {
+	return duckdb_value_uint8(&result, col, row);
+}
+
+template <>
+uint16_t CAPIResult::Fetch(idx_t col, idx_t row) {
+	return duckdb_value_uint16(&result, col, row);
+}
+
+template <>
+uint32_t CAPIResult::Fetch(idx_t col, idx_t row) {
+	return duckdb_value_uint32(&result, col, row);
+}
+
+template <>
+uint64_t CAPIResult::Fetch(idx_t col, idx_t row) {
+	return duckdb_value_uint64(&result, col, row);
+}
+
+template <>
 float CAPIResult::Fetch(idx_t col, idx_t row) {
 	return duckdb_value_float(&result, col, row);
 }
@@ -95,6 +119,12 @@ double CAPIResult::Fetch(idx_t col, idx_t row) {
 template <>
 duckdb_date CAPIResult::Fetch(idx_t col, idx_t row) {
 	auto data = (duckdb_date *)result.columns[col].data;
+	return data[row];
+}
+
+template <>
+duckdb_time CAPIResult::Fetch(idx_t col, idx_t row) {
+	auto data = (duckdb_time *)result.columns[col].data;
 	return data[row];
 }
 
@@ -349,6 +379,26 @@ TEST_CASE("Test different types of C API", "[capi]") {
 		REQUIRE(result->Fetch<string>(i, 1) == timestamp_string);
 	}
 
+	// time columns
+	REQUIRE_NO_FAIL(tester.Query("CREATE TABLE times(d TIME)"));
+	REQUIRE_NO_FAIL(tester.Query("INSERT INTO times VALUES ('12:00:30.1234'), (NULL), ('02:30:01')"));
+
+	result = tester.Query("SELECT * FROM times ORDER BY d");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->IsNull(0, 0));
+	duckdb_time time_val = result->Fetch<duckdb_time>(0, 1);
+	REQUIRE(time_val.hour == 2);
+	REQUIRE(time_val.min == 30);
+	REQUIRE(time_val.sec == 1);
+	REQUIRE(time_val.micros == 0);
+	REQUIRE(result->Fetch<string>(0, 1) == Value::TIME(2, 30, 1, 0).ToString());
+	time_val = result->Fetch<duckdb_time>(0, 2);
+	REQUIRE(time_val.hour == 12);
+	REQUIRE(time_val.min == 0);
+	REQUIRE(time_val.sec == 30);
+	REQUIRE(time_val.micros == 123400);
+	REQUIRE(result->Fetch<string>(0, 2) == Value::TIME(12, 0, 30, 123400).ToString());
+
 	// blob columns
 	REQUIRE_NO_FAIL(tester.Query("CREATE TABLE blobs(b BLOB)"));
 	REQUIRE_NO_FAIL(tester.Query("INSERT INTO blobs VALUES ('hello\\x12world'), ('\\x00'), (NULL)"));
@@ -414,7 +464,7 @@ TEST_CASE("Test errors in C API", "[capi]") {
 	duckdb_destroy_arrow(&out_arrow);
 }
 
-TEST_CASE("Test prepared statements in C API", "[capi][.]") {
+TEST_CASE("Test prepared statements in C API", "[capi]") {
 	CAPITester tester;
 	unique_ptr<CAPIResult> result;
 	duckdb_result res;
@@ -563,7 +613,7 @@ TEST_CASE("Test prepared statements in C API", "[capi][.]") {
 	duckdb_free(malloced_data);
 }
 
-TEST_CASE("Test appender statements in C API", "[capi][.]") {
+TEST_CASE("Test appender statements in C API", "[capi]") {
 	CAPITester tester;
 	unique_ptr<CAPIResult> result;
 	duckdb_state status;
@@ -573,6 +623,9 @@ TEST_CASE("Test appender statements in C API", "[capi][.]") {
 
 	tester.Query("CREATE TABLE test (i INTEGER, d double, s string)");
 	duckdb_appender appender;
+
+	status = duckdb_appender_create(tester.connection, nullptr, "nonexistant-table", &appender);
+	REQUIRE(status == DuckDBError);
 
 	status = duckdb_appender_create(tester.connection, nullptr, "test", nullptr);
 	REQUIRE(status == DuckDBError);
@@ -658,6 +711,139 @@ TEST_CASE("Test appender statements in C API", "[capi][.]") {
 
 	status = duckdb_appender_destroy(nullptr);
 	REQUIRE(status == DuckDBError);
+
+	// many types
+	REQUIRE_NO_FAIL(tester.Query("CREATE TABLE many_types(bool boolean, t TINYINT, s SMALLINT, b BIGINT, ut UTINYINT, "
+	                             "us USMALLINT, ui UINTEGER, ub UBIGINT, uf REAL, ud DOUBLE, txt VARCHAR, blb BLOB)"));
+	duckdb_appender tappender;
+
+	status = duckdb_appender_create(tester.connection, nullptr, "many_types", &tappender);
+	REQUIRE(status == DuckDBSuccess);
+
+	status = duckdb_appender_begin_row(tappender);
+	REQUIRE(status == DuckDBSuccess);
+
+	status = duckdb_append_bool(tappender, true);
+	REQUIRE(status == DuckDBSuccess);
+
+	status = duckdb_append_int8(tappender, 1);
+	REQUIRE(status == DuckDBSuccess);
+
+	status = duckdb_append_int16(tappender, 1);
+	REQUIRE(status == DuckDBSuccess);
+
+	status = duckdb_append_int64(tappender, 1);
+	REQUIRE(status == DuckDBSuccess);
+
+	status = duckdb_append_uint8(tappender, 1);
+	REQUIRE(status == DuckDBSuccess);
+
+	status = duckdb_append_uint16(tappender, 1);
+	REQUIRE(status == DuckDBSuccess);
+
+	status = duckdb_append_uint32(tappender, 1);
+	REQUIRE(status == DuckDBSuccess);
+
+	status = duckdb_append_uint64(tappender, 1);
+	REQUIRE(status == DuckDBSuccess);
+
+	status = duckdb_append_float(tappender, 0.5f);
+	REQUIRE(status == DuckDBSuccess);
+
+	status = duckdb_append_null(tappender);
+	REQUIRE(status == DuckDBSuccess);
+
+	status = duckdb_append_varchar_length(tappender, "hello world", 5);
+	REQUIRE(status == DuckDBSuccess);
+
+	status = duckdb_append_blob(tappender, "hello", 5);
+	REQUIRE(status == DuckDBSuccess);
+
+	status = duckdb_appender_end_row(tappender);
+	REQUIRE(status == DuckDBSuccess);
+
+	status = duckdb_appender_begin_row(tappender);
+	REQUIRE(status == DuckDBSuccess);
+
+	status = duckdb_append_null(tappender);
+	REQUIRE(status == DuckDBSuccess);
+
+	status = duckdb_append_null(tappender);
+	REQUIRE(status == DuckDBSuccess);
+
+	status = duckdb_append_null(tappender);
+	REQUIRE(status == DuckDBSuccess);
+
+	status = duckdb_append_null(tappender);
+	REQUIRE(status == DuckDBSuccess);
+
+	status = duckdb_append_null(tappender);
+	REQUIRE(status == DuckDBSuccess);
+
+	status = duckdb_append_null(tappender);
+	REQUIRE(status == DuckDBSuccess);
+
+	status = duckdb_append_null(tappender);
+	REQUIRE(status == DuckDBSuccess);
+
+	status = duckdb_append_null(tappender);
+	REQUIRE(status == DuckDBSuccess);
+
+	status = duckdb_append_null(tappender);
+	REQUIRE(status == DuckDBSuccess);
+
+	status = duckdb_append_null(tappender);
+	REQUIRE(status == DuckDBSuccess);
+
+	status = duckdb_append_null(tappender);
+	REQUIRE(status == DuckDBSuccess);
+
+	status = duckdb_append_null(tappender);
+	REQUIRE(status == DuckDBSuccess);
+
+	status = duckdb_appender_end_row(tappender);
+	REQUIRE(status == DuckDBSuccess);
+
+	status = duckdb_appender_flush(tappender);
+	REQUIRE(status == DuckDBSuccess);
+
+	status = duckdb_appender_close(tappender);
+	REQUIRE(status == DuckDBSuccess);
+
+	status = duckdb_appender_destroy(&tappender);
+	REQUIRE(status == DuckDBSuccess);
+
+	result = tester.Query("SELECT * FROM many_types");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->Fetch<bool>(0, 0) == true);
+	REQUIRE(result->Fetch<int8_t>(1, 0) == 1);
+	REQUIRE(result->Fetch<int16_t>(2, 0) == 1);
+	REQUIRE(result->Fetch<int64_t>(3, 0) == 1);
+	REQUIRE(result->Fetch<uint8_t>(4, 0) == 1);
+	REQUIRE(result->Fetch<uint16_t>(5, 0) == 1);
+	REQUIRE(result->Fetch<uint32_t>(6, 0) == 1);
+	REQUIRE(result->Fetch<uint64_t>(7, 0) == 1);
+	REQUIRE(result->Fetch<float>(8, 0) == 0.5f);
+	REQUIRE(result->IsNull(9, 0));
+	REQUIRE(result->Fetch<string>(10, 0) == "hello");
+
+	auto blob = duckdb_value_blob(&result->InternalResult(), 11, 0);
+	REQUIRE(blob.size == 5);
+	REQUIRE(memcmp(blob.data, "hello", 5) == 0);
+	duckdb_free(blob.data);
+
+	REQUIRE(result->IsNull(0, 1));
+	REQUIRE(result->IsNull(1, 1));
+	REQUIRE(result->IsNull(2, 1));
+	REQUIRE(result->IsNull(3, 1));
+	REQUIRE(result->IsNull(4, 1));
+	REQUIRE(result->IsNull(5, 1));
+	REQUIRE(result->IsNull(6, 1));
+	REQUIRE(result->IsNull(7, 1));
+	REQUIRE(result->IsNull(8, 1));
+	REQUIRE(result->IsNull(9, 1));
+	REQUIRE(result->IsNull(10, 1));
+	REQUIRE(result->IsNull(11, 1));
 }
 
 TEST_CASE("Test arrow in C API", "[capi]") {

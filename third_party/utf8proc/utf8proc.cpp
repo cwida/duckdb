@@ -336,7 +336,7 @@ UTF8PROC_DLLEXPORT utf8proc_bool utf8proc_grapheme_break(
 UTF8PROC_DLLEXPORT utf8proc_int32_t utf8proc_codepoint(const char *u_input, int &sz) {
 	auto u = (const unsigned char *) u_input;
 	unsigned char u0 = u[0];
-	if (u0>=0   && u0<=127) {
+	if (u0<=127) {
 		sz = 1;
 		return u0;
 	}

@@ -11,7 +11,8 @@ unique_ptr<PhysicalOperator> PhysicalPlanGenerator::CreatePlan(LogicalProjection
 
 #ifdef DEBUG
 	for (auto &expr : op.expressions) {
-		D_ASSERT(!expr->IsWindow() && !expr->IsAggregate());
+		D_ASSERT(!expr->IsWindow());
+		D_ASSERT(!expr->IsAggregate());
 	}
 #endif
 	if (plan->types.size() == op.types.size()) {

@@ -5,7 +5,7 @@
 using namespace duckdb;
 using namespace std;
 
-TEST_CASE("Vectorized UDF functions using templates", "[udf_function][.]") {
+TEST_CASE("Vectorized UDF functions using templates", "[udf_function]") {
 	unique_ptr<QueryResult> result;
 	DuckDB db(nullptr);
 	Connection con(db);

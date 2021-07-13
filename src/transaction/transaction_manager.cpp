@@ -56,10 +56,10 @@ TransactionManager::~TransactionManager() {
 Transaction *TransactionManager::StartTransaction(ClientContext &context) {
 	// obtain the transaction lock during this function
 	lock_guard<mutex> lock(transaction_lock);
-	if (current_start_timestamp >= TRANSACTION_ID_START) {
-		throw Exception("Cannot start more transactions, ran out of "
-		                "transaction identifiers!");
-	}
+	if (current_start_timestamp >= TRANSACTION_ID_START) { // LCOV_EXCL_START
+		throw InternalException("Cannot start more transactions, ran out of "
+		                        "transaction identifiers!");
+	} // LCOV_EXCL_STOP
 
 	// obtain the start time and transaction ID of this transaction
 	transaction_t start_time = current_start_timestamp++;
@@ -327,21 +327,6 @@ void TransactionManager::RemoveTransaction(Transaction *transaction) noexcept {
 	if (i > 0) {
 		// we garbage collected catalog sets: remove them from the list
 		old_catalog_sets.erase(old_catalog_sets.begin(), old_catalog_sets.begin() + i);
-	}
-}
-
-void TransactionManager::AddCatalogSet(ClientContext &context, unique_ptr<CatalogSet> catalog_set) {
-	// remove the dependencies from all entries of the CatalogSet
-	Catalog::GetCatalog(context).dependency_manager->ClearDependencies(*catalog_set);
-
-	lock_guard<mutex> lock(transaction_lock);
-	if (!active_transactions.empty()) {
-		// if there are active transactions we wait with deleting the objects
-		StoredCatalogSet set;
-		set.stored_set = move(catalog_set);
-		set.highest_active_query = current_start_timestamp;
-
-		old_catalog_sets.push_back(move(set));
 	}
 }
 

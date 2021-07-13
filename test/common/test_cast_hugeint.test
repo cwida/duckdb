@@ -316,3 +316,74 @@ query I
 SELECT 0::HUGEINT::VARCHAR
 ----
 0
+
+# hugeint -> uints
+
+# uint8
+query I
+select '255'::HUGEINT::UINT8
+----
+255
+
+statement error
+select '-1'::hugeint::uint8
+
+statement error
+select '256'::hugeint::uint8
+
+# uint16
+query I
+select '65535'::HUGEINT::UINT16
+----
+65535
+
+statement error
+select '-1'::hugeint::uint16
+
+statement error
+select '65536'::hugeint::uint16
+
+# uint32
+query I
+select '4294967295'::HUGEINT::UINT32
+----
+4294967295
+
+statement error
+select '-1'::hugeint::uint32
+
+statement error
+select '4294967296'::hugeint::uint32
+
+# UINT64
+query I
+select '18446744073709551615'::HUGEINT::UINT64
+----
+18446744073709551615
+
+statement error
+select '-1'::hugeint::UINT64
+
+statement error
+select '18446744073709551616'::hugeint::UINT64
+
+# uint -> hugeint
+query I
+select '255'::UINT8::HUGEINT
+----
+255
+
+query I
+select '65535'::UINT16::HUGEINT
+----
+65535
+
+query I
+select '4294967295'::UINT32::HUGEINT
+----
+4294967295
+
+query I
+select '18446744073709551615'::UINT64::HUGEINT
+----
+18446744073709551615

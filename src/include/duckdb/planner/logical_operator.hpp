@@ -58,6 +58,8 @@ public:
 	virtual string ParamsToString() const;
 	virtual string ToString(idx_t depth = 0) const;
 	void Print();
+	//! Debug method: verify that the integrity of expressions & child nodes are maintained
+	virtual void Verify();
 
 	void AddChild(unique_ptr<LogicalOperator> child) {
 		children.push_back(move(child));

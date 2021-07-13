@@ -42,7 +42,7 @@ public:
 	//! Get the position of the first child that is greater or equal to the specific byte, or INVALID_INDEX if there are
 	//! no children matching the criteria
 	virtual idx_t GetChildGreaterEqual(uint8_t k, bool &equal) {
-		return INVALID_INDEX;
+		throw InternalException("Unimplemented GetChildGreaterEqual for ARTNode");
 	}
 	//! Get the position of the biggest element in node
 	virtual idx_t GetMin();

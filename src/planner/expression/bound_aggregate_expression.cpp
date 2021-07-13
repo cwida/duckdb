@@ -50,7 +50,7 @@ bool BoundAggregateExpression::Equals(const BaseExpression *other_p) const {
 	if (children.size() != other->children.size()) {
 		return false;
 	}
-	if (other->filter != filter) {
+	if (!Expression::Equals(other->filter.get(), filter.get())) {
 		return false;
 	}
 	for (idx_t i = 0; i < children.size(); i++) {
@@ -69,8 +69,8 @@ unique_ptr<Expression> BoundAggregateExpression::Copy() {
 	for (auto &child : children) {
 		new_children.push_back(child->Copy());
 	}
-	auto new_bind_info = bind_info->Copy();
-	auto new_filter = filter->Copy();
+	auto new_bind_info = bind_info ? bind_info->Copy() : nullptr;
+	auto new_filter = filter ? filter->Copy() : nullptr;
 	auto copy = make_unique<BoundAggregateExpression>(function, move(new_children), move(new_filter),
 	                                                  move(new_bind_info), distinct);
 	copy->CopyProperties(*this);

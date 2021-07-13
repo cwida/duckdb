@@ -148,7 +148,7 @@ static void UnnestVector(VectorData &vdata, Vector &source, idx_t list_size, idx
 		break;
 	}
 	default:
-		throw NotImplementedException("Unimplemented type for UNNEST");
+		throw InternalException("Unimplemented type for UNNEST");
 	}
 }
 

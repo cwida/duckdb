@@ -115,7 +115,7 @@ void DataChunk::Append(const DataChunk &other) {
 		return;
 	}
 	if (ColumnCount() != other.ColumnCount()) {
-		throw OutOfRangeException("Column counts of appending chunk doesn't match!");
+		throw InternalException("Column counts of appending chunk doesn't match!");
 	}
 	for (idx_t i = 0; i < ColumnCount(); i++) {
 		D_ASSERT(data[i].GetVectorType() == VectorType::FLAT_VECTOR);

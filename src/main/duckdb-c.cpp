@@ -118,9 +118,11 @@ static duckdb_state duckdb_translate_result(MaterializedQueryResult *result, duc
 		}
 	}
 	out->columns = (duckdb_column *)malloc(sizeof(duckdb_column) * out->column_count);
-	if (!out->columns) {
+	if (!out->columns) { // LCOV_EXCL_START
+		// malloc failure
 		return DuckDBError;
-	}
+	} // LCOV_EXCL_STOP
+
 	// zero initialize the columns (so we can cleanly delete it in case a malloc fails)
 	memset(out->columns, 0, sizeof(duckdb_column) * out->column_count);
 	for (idx_t i = 0; i < out->column_count; i++) {
@@ -128,10 +130,10 @@ static duckdb_state duckdb_translate_result(MaterializedQueryResult *result, duc
 		out->columns[i].name = strdup(result->names[i].c_str());
 		out->columns[i].nullmask = (bool *)malloc(sizeof(bool) * out->row_count);
 		out->columns[i].data = malloc(GetCTypeSize(out->columns[i].type) * out->row_count);
-		if (!out->columns[i].nullmask || !out->columns[i].name || !out->columns[i].data) {
+		if (!out->columns[i].nullmask || !out->columns[i].name || !out->columns[i].data) { // LCOV_EXCL_START
 			// malloc failure
 			return DuckDBError;
-		}
+		} // LCOV_EXCL_STOP
 		// memset data to 0 for VARCHAR columns for safe deletion later
 		if (result->types[i].InternalType() == PhysicalType::VARCHAR) {
 			memset(out->columns[i].data, 0, GetCTypeSize(out->columns[i].type) * out->row_count);
@@ -162,6 +164,18 @@ static duckdb_state duckdb_translate_result(MaterializedQueryResult *result, duc
 			break;
 		case LogicalTypeId::BIGINT:
 			WriteData<int64_t>(out, result->collection, col);
+			break;
+		case LogicalTypeId::UTINYINT:
+			WriteData<uint8_t>(out, result->collection, col);
+			break;
+		case LogicalTypeId::USMALLINT:
+			WriteData<uint16_t>(out, result->collection, col);
+			break;
+		case LogicalTypeId::UINTEGER:
+			WriteData<uint32_t>(out, result->collection, col);
+			break;
+		case LogicalTypeId::UBIGINT:
+			WriteData<uint64_t>(out, result->collection, col);
 			break;
 		case LogicalTypeId::FLOAT:
 			WriteData<float>(out, result->collection, col);
@@ -591,6 +605,14 @@ duckdb_type ConvertCPPTypeToC(LogicalType sql_type) {
 		return DUCKDB_TYPE_INTEGER;
 	case LogicalTypeId::BIGINT:
 		return DUCKDB_TYPE_BIGINT;
+	case LogicalTypeId::UTINYINT:
+		return DUCKDB_TYPE_UTINYINT;
+	case LogicalTypeId::USMALLINT:
+		return DUCKDB_TYPE_USMALLINT;
+	case LogicalTypeId::UINTEGER:
+		return DUCKDB_TYPE_UINTEGER;
+	case LogicalTypeId::UBIGINT:
+		return DUCKDB_TYPE_UBIGINT;
 	case LogicalTypeId::HUGEINT:
 		return DUCKDB_TYPE_HUGEINT;
 	case LogicalTypeId::FLOAT:
@@ -605,7 +627,6 @@ duckdb_type ConvertCPPTypeToC(LogicalType sql_type) {
 		return DUCKDB_TYPE_TIMESTAMP_MS;
 	case LogicalTypeId::TIMESTAMP_NS:
 		return DUCKDB_TYPE_TIMESTAMP_NS;
-
 	case LogicalTypeId::DATE:
 		return DUCKDB_TYPE_DATE;
 	case LogicalTypeId::TIME:
@@ -617,6 +638,7 @@ duckdb_type ConvertCPPTypeToC(LogicalType sql_type) {
 	case LogicalTypeId::INTERVAL:
 		return DUCKDB_TYPE_INTERVAL;
 	default:
+		D_ASSERT(0);
 		return DUCKDB_TYPE_INVALID;
 	}
 }
@@ -633,6 +655,14 @@ idx_t GetCTypeSize(duckdb_type type) {
 		return sizeof(int32_t);
 	case DUCKDB_TYPE_BIGINT:
 		return sizeof(int64_t);
+	case DUCKDB_TYPE_UTINYINT:
+		return sizeof(uint8_t);
+	case DUCKDB_TYPE_USMALLINT:
+		return sizeof(uint16_t);
+	case DUCKDB_TYPE_UINTEGER:
+		return sizeof(uint32_t);
+	case DUCKDB_TYPE_UBIGINT:
+		return sizeof(uint64_t);
 	case DUCKDB_TYPE_HUGEINT:
 		return sizeof(duckdb_hugeint);
 	case DUCKDB_TYPE_FLOAT:
@@ -688,6 +718,14 @@ static Value GetCValue(duckdb_result *result, idx_t col, idx_t row) {
 		return Value::INTEGER(UnsafeFetch<int32_t>(result, col, row));
 	case DUCKDB_TYPE_BIGINT:
 		return Value::BIGINT(UnsafeFetch<int64_t>(result, col, row));
+	case DUCKDB_TYPE_UTINYINT:
+		return Value::TINYINT(UnsafeFetch<uint8_t>(result, col, row));
+	case DUCKDB_TYPE_USMALLINT:
+		return Value::SMALLINT(UnsafeFetch<uint16_t>(result, col, row));
+	case DUCKDB_TYPE_UINTEGER:
+		return Value::INTEGER(UnsafeFetch<uint32_t>(result, col, row));
+	case DUCKDB_TYPE_UBIGINT:
+		return Value::BIGINT(UnsafeFetch<uint64_t>(result, col, row));
 	case DUCKDB_TYPE_FLOAT:
 		return Value(UnsafeFetch<float>(result, col, row));
 	case DUCKDB_TYPE_DOUBLE:
@@ -899,104 +937,105 @@ duckdb_state duckdb_appender_destroy(duckdb_appender *appender) {
 	return DuckDBSuccess;
 }
 
-#define APPENDER_CALL(FUN)                                                                                             \
-	if (!appender) {                                                                                                   \
-		return DuckDBError;                                                                                            \
-	}                                                                                                                  \
-	auto *appender_instance = (Appender *)appender;                                                                    \
-	try {                                                                                                              \
-		appender_instance->FUN();                                                                                      \
-	} catch (...) {                                                                                                    \
-		return DuckDBError;                                                                                            \
-	}                                                                                                                  \
+template <class FUN>
+duckdb_state duckdb_appender_run_function(duckdb_appender appender, FUN &&function) {
+	if (!appender) {
+		return DuckDBError;
+	}
+	auto *appender_instance = (Appender *)appender;
+	try {
+		function(*appender_instance);
+	} catch (...) {
+		return DuckDBError;
+	}
 	return DuckDBSuccess;
-
-#define APPENDER_CALL_PARAM(FUN, PARAM)                                                                                \
-	if (!appender) {                                                                                                   \
-		return DuckDBError;                                                                                            \
-	}                                                                                                                  \
-	auto *appender_instance = (Appender *)appender;                                                                    \
-	try {                                                                                                              \
-		appender_instance->FUN(PARAM);                                                                                 \
-	} catch (...) {                                                                                                    \
-		return DuckDBError;                                                                                            \
-	}                                                                                                                  \
-	return DuckDBSuccess;
+}
 
 duckdb_state duckdb_appender_begin_row(duckdb_appender appender) {
-	APPENDER_CALL(BeginRow);
+	return duckdb_appender_run_function(appender, [&](Appender &appender) { appender.BeginRow(); });
 }
 
 duckdb_state duckdb_appender_end_row(duckdb_appender appender) {
-	APPENDER_CALL(EndRow);
+	return duckdb_appender_run_function(appender, [&](Appender &appender) { appender.EndRow(); });
+}
+
+template <class T>
+duckdb_state duckdb_append_internal(duckdb_appender appender, T value) {
+	if (!appender) {
+		return DuckDBError;
+	}
+	auto *appender_instance = (Appender *)appender;
+	try {
+		appender_instance->Append<T>(value);
+	} catch (...) {
+		return DuckDBError;
+	}
+	return DuckDBSuccess;
 }
 
 duckdb_state duckdb_append_bool(duckdb_appender appender, bool value) {
-	APPENDER_CALL_PARAM(Append<bool>, value);
+	return duckdb_append_internal<bool>(appender, value);
 }
 
 duckdb_state duckdb_append_int8(duckdb_appender appender, int8_t value) {
-	APPENDER_CALL_PARAM(Append<int8_t>, value);
+	return duckdb_append_internal<int8_t>(appender, value);
 }
 
 duckdb_state duckdb_append_int16(duckdb_appender appender, int16_t value) {
-	APPENDER_CALL_PARAM(Append<int16_t>, value);
+	return duckdb_append_internal<int16_t>(appender, value);
 }
 
 duckdb_state duckdb_append_int32(duckdb_appender appender, int32_t value) {
-	APPENDER_CALL_PARAM(Append<int32_t>, value);
+	return duckdb_append_internal<int32_t>(appender, value);
 }
 
 duckdb_state duckdb_append_int64(duckdb_appender appender, int64_t value) {
-	APPENDER_CALL_PARAM(Append<int64_t>, value);
+	return duckdb_append_internal<int64_t>(appender, value);
 }
 
 duckdb_state duckdb_append_uint8(duckdb_appender appender, uint8_t value) {
-	APPENDER_CALL_PARAM(Append<uint8_t>, value);
+	return duckdb_append_internal<uint8_t>(appender, value);
 }
 
 duckdb_state duckdb_append_uint16(duckdb_appender appender, uint16_t value) {
-	APPENDER_CALL_PARAM(Append<uint16_t>, value);
+	return duckdb_append_internal<uint16_t>(appender, value);
 }
 
 duckdb_state duckdb_append_uint32(duckdb_appender appender, uint32_t value) {
-	APPENDER_CALL_PARAM(Append<uint32_t>, value);
+	return duckdb_append_internal<uint32_t>(appender, value);
 }
 
 duckdb_state duckdb_append_uint64(duckdb_appender appender, uint64_t value) {
-	APPENDER_CALL_PARAM(Append<uint64_t>, value);
+	return duckdb_append_internal<uint64_t>(appender, value);
 }
 
 duckdb_state duckdb_append_float(duckdb_appender appender, float value) {
-	APPENDER_CALL_PARAM(Append<float>, value);
+	return duckdb_append_internal<float>(appender, value);
 }
 
 duckdb_state duckdb_append_double(duckdb_appender appender, double value) {
-	APPENDER_CALL_PARAM(Append<double>, value);
+	return duckdb_append_internal<double>(appender, value);
 }
 
 duckdb_state duckdb_append_null(duckdb_appender appender) {
-	APPENDER_CALL_PARAM(Append<std::nullptr_t>, nullptr);
+	return duckdb_append_internal<std::nullptr_t>(appender, nullptr);
 }
 
 duckdb_state duckdb_append_varchar(duckdb_appender appender, const char *val) {
-	auto string_val = Value(val);
-	APPENDER_CALL_PARAM(Append<Value>, string_val);
+	return duckdb_append_internal<Value>(appender, Value(val));
 }
 
 duckdb_state duckdb_append_varchar_length(duckdb_appender appender, const char *val, idx_t length) {
-	auto string_val = Value(string(val, length)); // TODO this copies orr
-	APPENDER_CALL_PARAM(Append<Value>, string_val);
+	return duckdb_append_internal<Value>(appender, Value(string(val, length)));
 }
 duckdb_state duckdb_append_blob(duckdb_appender appender, const void *data, idx_t length) {
-	auto blob_val = Value::BLOB((const_data_ptr_t)data, length);
-	APPENDER_CALL_PARAM(Append<Value>, blob_val);
+	return duckdb_append_internal<Value>(appender, Value::BLOB((const_data_ptr_t)data, length));
 }
 
 duckdb_state duckdb_appender_flush(duckdb_appender appender) {
-	APPENDER_CALL(Flush);
+	return duckdb_appender_run_function(appender, [&](Appender &appender) { appender.Flush(); });
 }
 
 duckdb_state duckdb_appender_close(duckdb_appender appender) {
-	APPENDER_CALL(Close);
+	return duckdb_appender_run_function(appender, [&](Appender &appender) { appender.Close(); });
 }

@@ -1,6 +1,6 @@
-# name: test/sql/parallelism/intraquery/test_over_grouping.test_slow
+# name: test/sql/window/test_over_grouping.test_slow
 # description: Grouping OVER clauses to reduce unnecessary sorting
-# group: [intraquery]
+# group: [window]
 
 require vector_size 512
 

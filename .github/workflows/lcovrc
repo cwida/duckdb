@@ -1,0 +1,1 @@
+lcov_excl_line = default:|InternalException|NotImplementedException|SerializationException|LCOV_EXCL_LINE|Print

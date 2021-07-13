@@ -24,9 +24,9 @@ def test(cmd, out=None, err=None, extra_commands=None, input_file=None):
           command += extra_commands
      if input_file:
           command += [cmd]
-          res = subprocess.run(command, capture_output=True, input=open(input_file, 'rb').read())
+          res = subprocess.run(command, input=open(input_file, 'rb').read(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
      else:
-          res = subprocess.run(command, capture_output=True, input=bytearray(cmd, 'utf8'))
+          res = subprocess.run(command, input=bytearray(cmd, 'utf8'), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
      stdout = res.stdout.decode('utf8').strip()
      stderr = res.stderr.decode('utf8').strip()
 
@@ -78,7 +78,6 @@ CREATE TABLE a (i STRING);
 INSERT INTO a VALUES ('XXXX');
 SELECT CAST(i AS INTEGER) FROM a;
 ''' , err='Could not convert')
-
 
 test('.auth ON', err='sqlite3_set_authorizer')
 test('.auth OFF', err='sqlite3_set_authorizer')
@@ -161,6 +160,11 @@ test("select regexp_matches('abc','abc')", out='true')
 test('.help', 'Show help text for PATTERN')
 
 test('.load %s' % tf(), err="Error")
+
+# error in streaming result
+test('''
+SELECT x::INT FROM (SELECT x::VARCHAR x FROM range(10) tbl(x) UNION ALL SELECT 'hello' x) tbl(x);
+''', err='Could not convert string')
 
 # this should be fixed
 test('.selftest', err='sqlite3_table_column_metadata')

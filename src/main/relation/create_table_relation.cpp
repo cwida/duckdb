@@ -13,10 +13,6 @@ CreateTableRelation::CreateTableRelation(shared_ptr<Relation> child_p, string sc
 	context.TryBindRelation(*this, this->columns);
 }
 
-unique_ptr<QueryNode> CreateTableRelation::GetQueryNode() {
-	throw InternalException("Cannot create a query node from a CreateTableRelation!");
-}
-
 BoundStatement CreateTableRelation::Bind(Binder &binder) {
 	auto select = make_unique<SelectStatement>();
 	select->node = child->GetQueryNode();
@@ -36,7 +32,7 @@ const vector<ColumnDefinition> &CreateTableRelation::Columns() {
 }
 
 string CreateTableRelation::ToString(idx_t depth) {
-	string str = RenderWhitespace(depth) + "Create View\n";
+	string str = RenderWhitespace(depth) + "Create Table\n";
 	return str + child->ToString(depth + 1);
 }
 

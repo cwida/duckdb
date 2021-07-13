@@ -43,7 +43,7 @@ string SetOpRelation::ToString(idx_t depth) {
 		str += "Intersect";
 		break;
 	default:
-		throw Exception("Unknown setop type");
+		throw InternalException("Unknown setop type");
 	}
 	return str + "\n" + left->ToString(depth + 1) + right->ToString(depth + 1);
 }

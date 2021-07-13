@@ -179,9 +179,6 @@ void PhysicalSimpleAggregate::Combine(ExecutionContext &context, GlobalOperatorS
 void PhysicalSimpleAggregate::GetChunkInternal(ExecutionContext &context, DataChunk &chunk,
                                                PhysicalOperatorState *state) const {
 	auto &gstate = (SimpleAggregateGlobalState &)*sink_state;
-	if (state->finished) {
-		return;
-	}
 	// initialize the result chunk with the aggregate values
 	chunk.SetCardinality(1);
 	for (idx_t aggr_idx = 0; aggr_idx < aggregates.size(); aggr_idx++) {

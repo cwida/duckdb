@@ -4,6 +4,10 @@
 
 namespace duckdb {
 
+string TableFunctionRef::ToString() const {
+	return function->ToString();
+}
+
 bool TableFunctionRef::Equals(const TableRef *other_p) const {
 	if (!TableRef::Equals(other_p)) {
 		return false;

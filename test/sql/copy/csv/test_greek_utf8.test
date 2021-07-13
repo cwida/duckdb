@@ -3,6 +3,9 @@
 # group: [csv]
 
 statement ok
+PRAGMA enable_verification
+
+statement ok
 CREATE TABLE greek_utf8 AS SELECT i, nfc_normalize(j) j, k FROM read_csv('test/sql/copy/csv/data/real/greek_utf8.csv', columns=STRUCT_PACK(i := 'INTEGER', j := 'VARCHAR', k := 'INTEGER'), delim='|')
 
 query ITI

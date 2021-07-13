@@ -4,6 +4,7 @@
 
 namespace duckdb {
 
+// LCOV_EXCL_START
 void Printer::Print(const string &str) {
 #ifndef DUCKDB_DISABLE_PRINT
 	fprintf(stderr, "%s\n", str.c_str());
@@ -25,5 +26,6 @@ void Printer::FinishProgressBarPrint(const char *pbstr, int pbwidth) {
 	fflush(stdout);
 #endif
 }
+// LCOV_EXCL_STOP
 
 } // namespace duckdb

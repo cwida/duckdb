@@ -14,22 +14,24 @@ ART::ART(const vector<column_t> &column_ids, const vector<unique_ptr<Expression>
 	tree = nullptr;
 	expression_result.Initialize(logical_types);
 	is_little_endian = IsLittleEndian();
-	switch (types[0]) {
-	case PhysicalType::BOOL:
-	case PhysicalType::INT8:
-	case PhysicalType::INT16:
-	case PhysicalType::INT32:
-	case PhysicalType::INT64:
-	case PhysicalType::UINT8:
-	case PhysicalType::UINT16:
-	case PhysicalType::UINT32:
-	case PhysicalType::UINT64:
-	case PhysicalType::FLOAT:
-	case PhysicalType::DOUBLE:
-	case PhysicalType::VARCHAR:
-		break;
-	default:
-		throw InvalidTypeException(types[0], "Invalid type for index");
+	for (idx_t i = 0; i < types.size(); i++) {
+		switch (types[i]) {
+		case PhysicalType::BOOL:
+		case PhysicalType::INT8:
+		case PhysicalType::INT16:
+		case PhysicalType::INT32:
+		case PhysicalType::INT64:
+		case PhysicalType::UINT8:
+		case PhysicalType::UINT16:
+		case PhysicalType::UINT32:
+		case PhysicalType::UINT64:
+		case PhysicalType::FLOAT:
+		case PhysicalType::DOUBLE:
+		case PhysicalType::VARCHAR:
+			break;
+		default:
+			throw InvalidTypeException(logical_types[i], "Invalid type for index");
+		}
 	}
 }
 
@@ -151,8 +153,9 @@ void ART::GenerateKeys(DataChunk &input, vector<unique_ptr<Key>> &keys) {
 		TemplatedGenerateKeys<string_t>(input.data[0], input.size(), keys, is_little_endian);
 		break;
 	default:
-		throw InvalidTypeException(input.data[0].GetType(), "Invalid type for index");
+		throw InternalException("Invalid type for index");
 	}
+
 	for (idx_t i = 1; i < input.ColumnCount(); i++) {
 		// for each of the remaining columns, concatenate
 		switch (input.data[i].GetType().InternalType()) {
@@ -193,7 +196,7 @@ void ART::GenerateKeys(DataChunk &input, vector<unique_ptr<Key>> &keys) {
 			ConcatenateKeys<string_t>(input.data[i], input.size(), keys, is_little_endian);
 			break;
 		default:
-			throw InvalidTypeException(input.data[0].GetType(), "Invalid type for index");
+			throw InternalException("Invalid type for index");
 		}
 	}
 }
@@ -479,7 +482,7 @@ static unique_ptr<Key> CreateKey(ART &art, PhysicalType type, Value &value) {
 		return Key::CreateKey<string_t>(string_t(value.str_value.c_str(), value.str_value.size()),
 		                                art.is_little_endian);
 	default:
-		throw InvalidTypeException(type, "Invalid type for index");
+		throw InternalException("Invalid type for index");
 	}
 }
 
@@ -836,7 +839,7 @@ bool ART::Scan(Transaction &transaction, DataTable &table, IndexScanState &table
 			success = SearchLess(state, false, max_count, row_ids);
 			break;
 		default:
-			throw NotImplementedException("Operation not implemented");
+			throw InternalException("Operation not implemented");
 		}
 	} else {
 		lock_guard<mutex> l(lock);

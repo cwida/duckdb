@@ -221,7 +221,7 @@ void RowOperations::Scatter(DataChunk &columns, VectorData col_data[], const Row
 			ScatterNestedVector(vec, col, rows, data_locations, sel, count, col_offset, col_no, vcount);
 			break;
 		default:
-			throw Exception("Unsupported type for RowOperations::Scatter");
+			throw InternalException("Unsupported type for RowOperations::Scatter");
 		}
 	}
 }

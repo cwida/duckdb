@@ -36,7 +36,7 @@ void Transformer::TransformCTE(duckdb_libpgquery::PGWithClause *de_with_clause, 
 		}
 		// we need a query
 		if (!cte->ctequery || cte->ctequery->type != duckdb_libpgquery::T_PGSelectStmt) {
-			throw Exception("A CTE needs a SELECT");
+			throw InternalException("A CTE needs a SELECT");
 		}
 
 		// CTE transformation can either result in inlining for non recursive CTEs, or in recursive CTE bindings
@@ -46,16 +46,13 @@ void Transformer::TransformCTE(duckdb_libpgquery::PGWithClause *de_with_clause, 
 		} else {
 			info->query = TransformSelect(cte->ctequery);
 		}
-
-		if (!info->query) {
-			throw Exception("A CTE needs a SELECT");
-		}
+		D_ASSERT(info->query);
 		auto cte_name = string(cte->ctename);
 
 		auto it = select.cte_map.find(cte_name);
 		if (it != select.cte_map.end()) {
 			// can't have two CTEs with same name
-			throw Exception("A CTE needs an unique name");
+			throw ParserException("Duplicate CTE name \"%s\"", cte_name);
 		}
 		select.cte_map[cte_name] = move(info);
 	}
@@ -79,23 +76,11 @@ unique_ptr<SelectStatement> Transformer::TransformRecursiveCTE(duckdb_libpgquery
 		result->right = TransformSelectNode(stmt->rarg);
 		result->aliases = info.aliases;
 
-		if (!result->left || !result->right) {
-			throw Exception("Failed to transform recursive CTE children.");
-		}
+		D_ASSERT(result->left);
+		D_ASSERT(result->right);
 
-		bool select_distinct = true;
-		switch (stmt->op) {
-		case duckdb_libpgquery::PG_SETOP_UNION:
-			// We don't need a DISTINCT operation on top of a recursive UNION CTE.
-			select_distinct = false;
-			break;
-		default:
-			throw Exception("Unexpected setop type for recursive CTE");
-		}
-		// if we compute the distinct result here, we do not have to do this in
-		// the children. This saves a bunch of unnecessary DISTINCTs.
-		if (select_distinct) {
-			result->modifiers.push_back(make_unique<DistinctModifier>());
+		if (stmt->op != duckdb_libpgquery::PG_SETOP_UNION) {
+			throw ParserException("Unsupported setop type for recursive CTE: only UNION or UNION ALL are supported");
 		}
 		break;
 	}

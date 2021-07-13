@@ -44,8 +44,10 @@ void PhysicalOperator::GetChunk(ExecutionContext &context, DataChunk &chunk, Phy
 	chunk.Verify();
 }
 
+// LCOV_EXCL_START
 void PhysicalOperator::Print() {
 	Printer::Print(ToString());
 }
+// LCOV_EXCL_STOP
 
 } // namespace duckdb

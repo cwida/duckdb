@@ -20,3 +20,16 @@ CREATE INDEX i_index ON integers using blabla(i)
 statement error
 CREATE INDEX i_index ON integers(f)
 
+# index on list columns
+statement ok
+create table lists(id int, l int[]);
+
+statement error
+create index i_index on lists(l);
+
+statement error
+create index i_index on lists(id, l);
+
+# index on constant columns
+statement error
+create index i_index on integers(('hello'));

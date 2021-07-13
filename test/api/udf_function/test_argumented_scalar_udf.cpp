@@ -8,7 +8,7 @@
 using namespace duckdb;
 using namespace std;
 
-TEST_CASE("UDF functions with arguments", "[udf_function][.]") {
+TEST_CASE("UDF functions with arguments", "[udf_function]") {
 	unique_ptr<QueryResult> result;
 	DuckDB db(nullptr);
 	Connection con(db);

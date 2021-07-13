@@ -111,9 +111,18 @@ aaa
 aaa
 
 query T
+SELECT s FROM strings WHERE 'aba' NOT ILIKE pat
+----
+
+query T
 SELECT s FROM strings WHERE s ILIKE pat
 ----
 abab
+aaa
+
+query T
+SELECT s FROM strings WHERE s NOT ILIKE pat
+----
 aaa
 
 # unicode
@@ -134,3 +143,8 @@ SELECT s FROM unicode_strings WHERE s ILIKE pat
 ----
 öäb
 aaÄ
+
+query T
+SELECT s FROM unicode_strings WHERE s NOT ILIKE pat
+----
+aaa

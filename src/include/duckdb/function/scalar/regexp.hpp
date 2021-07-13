@@ -14,13 +14,14 @@
 namespace duckdb {
 
 struct RegexpMatchesBindData : public FunctionData {
-	RegexpMatchesBindData(duckdb_re2::RE2::Options options, std::unique_ptr<duckdb_re2::RE2> constant_pattern,
-	                      string range_min, string range_max, bool range_success);
+	RegexpMatchesBindData(duckdb_re2::RE2::Options options, string constant_string);
 	~RegexpMatchesBindData() override;
 
 	duckdb_re2::RE2::Options options;
+	string constant_string;
 	std::unique_ptr<duckdb_re2::RE2> constant_pattern;
-	string range_min, range_max;
+	string range_min;
+	string range_max;
 	bool range_success;
 
 	unique_ptr<FunctionData> Copy() override;

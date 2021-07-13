@@ -26,10 +26,7 @@ unique_ptr<CreateStatement> Transformer::TransformCreateFunction(duckdb_libpgque
 
 	if (stmt->params) {
 		vector<unique_ptr<ParsedExpression>> parameters;
-		auto res = TransformExpressionList(stmt->params, parameters, 0);
-		if (!res) {
-			throw ParserException("Failed to transform macro parameters!");
-		}
+		TransformExpressionList(*stmt->params, parameters, 0);
 		for (auto &param : parameters) {
 			if (param->type == ExpressionType::COMPARE_EQUAL) {
 				// parameters with default value

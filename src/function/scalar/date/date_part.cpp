@@ -49,7 +49,7 @@ DatePartSpecifier GetDatePartSpecifier(string specifier) {
 	} else if (specifier == "doy") {
 		// day of the year (1-365/366)
 		return DatePartSpecifier::DOY;
-	} else if (specifier == "quarter") {
+	} else if (specifier == "quarter" || specifier == "quarters") {
 		// quarter of the year (1-4)
 		return DatePartSpecifier::QUARTER;
 	} else {

@@ -13512,6 +13512,9 @@ static int run_schema_dump_query(
     }
     sqlite3_free(zErr);
     free(zQ2);
+  } else if( zErr ){
+    sqlite3_free(zErr);
+    zErr = 0;
   }
   return rc;
 }
@@ -17629,53 +17632,54 @@ static int do_meta_command(char *zLine, ShellState *p){
   }else
 
   if( c=='f' && strncmp(azArg[0], "fullschema", n)==0 ){
-    ShellState data;
-    char *zErrMsg = 0;
-    int doStats = 0;
-    memcpy(&data, p, sizeof(data));
-    data.showHeader = 0;
-    data.cMode = data.mode = MODE_Semi;
-    if( nArg==2 && optionMatch(azArg[1], "indent") ){
-      data.cMode = data.mode = MODE_Pretty;
-      nArg = 1;
-    }
-    if( nArg!=1 ){
-      raw_printf(stderr, "Usage: .fullschema ?--indent?\n");
-      rc = 1;
-      goto meta_command_exit;
-    }
-    open_db(p, 0);
-    rc = sqlite3_exec(p->db,
-       "SELECT sql FROM"
-       "  (SELECT sql sql, type type, tbl_name tbl_name, name name, rowid x"
-       "     FROM sqlite_schema UNION ALL"
-       "   SELECT sql, type, tbl_name, name, rowid FROM sqlite_temp_schema) "
-       "WHERE type!='meta' AND sql NOTNULL AND name NOT LIKE 'sqlite_%' "
-       "ORDER BY rowid",
-       callback, &data, &zErrMsg
-    );
-    if( rc==SQLITE_OK ){
-      sqlite3_stmt *pStmt;
-      rc = sqlite3_prepare_v2(p->db,
-               "SELECT rowid FROM sqlite_schema"
-               " WHERE name GLOB 'sqlite_stat[134]'",
-               -1, &pStmt, 0);
-      doStats = sqlite3_step(pStmt)==SQLITE_ROW;
-      sqlite3_finalize(pStmt);
-    }
-    if( doStats==0 ){
-      raw_printf(p->out, "/* No STAT tables available */\n");
-    }else{
-      raw_printf(p->out, "ANALYZE sqlite_schema;\n");
-      sqlite3_exec(p->db, "SELECT 'ANALYZE sqlite_schema'",
-                   callback, &data, &zErrMsg);
-      data.cMode = data.mode = MODE_Insert;
-      data.zDestTable = "sqlite_stat1";
-      shell_exec(&data, "SELECT * FROM sqlite_stat1", &zErrMsg);
-      data.zDestTable = "sqlite_stat4";
-      shell_exec(&data, "SELECT * FROM sqlite_stat4", &zErrMsg);
-      raw_printf(p->out, "ANALYZE sqlite_schema;\n");
-    }
+    raw_printf(p->out, "No STAT tables available\n");
+    // ShellState data;
+    // char *zErrMsg = 0;
+    // int doStats = 0;
+    // memcpy(&data, p, sizeof(data));
+    // data.showHeader = 0;
+    // data.cMode = data.mode = MODE_Semi;
+    // if( nArg==2 && optionMatch(azArg[1], "indent") ){
+    //   data.cMode = data.mode = MODE_Pretty;
+    //   nArg = 1;
+    // }
+    // if( nArg!=1 ){
+    //   raw_printf(stderr, "Usage: .fullschema ?--indent?\n");
+    //   rc = 1;
+    //   goto meta_command_exit;
+    // }
+    // open_db(p, 0);
+    // rc = sqlite3_exec(p->db,
+    //    "SELECT sql FROM"
+    //    "  (SELECT sql sql, type type, tbl_name tbl_name, name name, rowid x"
+    //    "     FROM sqlite_schema UNION ALL"
+    //    "   SELECT sql, type, tbl_name, name, rowid FROM sqlite_temp_schema) "
+    //    "WHERE type!='meta' AND sql NOTNULL AND name NOT LIKE 'sqlite_%' "
+    //    "ORDER BY rowid",
+    //    callback, &data, &zErrMsg
+    // );
+    // if( rc==SQLITE_OK ){
+    //   sqlite3_stmt *pStmt;
+    //   rc = sqlite3_prepare_v2(p->db,
+    //            "SELECT rowid FROM sqlite_schema"
+    //            " WHERE name GLOB 'sqlite_stat[134]'",
+    //            -1, &pStmt, 0);
+    //   doStats = sqlite3_step(pStmt)==SQLITE_ROW;
+    //   sqlite3_finalize(pStmt);
+    // }
+    // if( doStats==0 ){
+    //   raw_printf(p->out, "/* No STAT tables available */\n");
+    // }else{
+    //   raw_printf(p->out, "ANALYZE sqlite_schema;\n");
+    //   sqlite3_exec(p->db, "SELECT 'ANALYZE sqlite_schema'",
+    //                callback, &data, &zErrMsg);
+    //   data.cMode = data.mode = MODE_Insert;
+    //   data.zDestTable = "sqlite_stat1";
+    //   shell_exec(&data, "SELECT * FROM sqlite_stat1", &zErrMsg);
+    //   data.zDestTable = "sqlite_stat4";
+    //   shell_exec(&data, "SELECT * FROM sqlite_stat4", &zErrMsg);
+    //   raw_printf(p->out, "ANALYZE sqlite_schema;\n");
+    // }
   }else
 
   if( c=='h' && strncmp(azArg[0], "headers", n)==0 ){

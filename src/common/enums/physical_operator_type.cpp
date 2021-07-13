@@ -2,10 +2,9 @@
 
 namespace duckdb {
 
+// LCOV_EXCL_START
 string PhysicalOperatorToString(PhysicalOperatorType type) {
 	switch (type) {
-	case PhysicalOperatorType::LEAF:
-		return "LEAF";
 	case PhysicalOperatorType::TABLE_SCAN:
 		return "TABLE_SCAN";
 	case PhysicalOperatorType::DUMMY_SCAN:
@@ -14,10 +13,6 @@ string PhysicalOperatorToString(PhysicalOperatorType type) {
 		return "CHUNK_SCAN";
 	case PhysicalOperatorType::DELIM_SCAN:
 		return "DELIM_SCAN";
-	case PhysicalOperatorType::EXTERNAL_FILE_SCAN:
-		return "EXTERNAL_FILE_SCAN";
-	case PhysicalOperatorType::QUERY_DERIVED_SCAN:
-		return "QUERY_DERIVED_SCAN";
 	case PhysicalOperatorType::ORDER_BY:
 		return "ORDER_BY";
 	case PhysicalOperatorType::LIMIT:
@@ -28,8 +23,6 @@ string PhysicalOperatorToString(PhysicalOperatorType type) {
 		return "STREAMING_SAMPLE";
 	case PhysicalOperatorType::TOP_N:
 		return "TOP_N";
-	case PhysicalOperatorType::AGGREGATE:
-		return "AGGREGATE";
 	case PhysicalOperatorType::WINDOW:
 		return "WINDOW";
 	case PhysicalOperatorType::UNNEST:
@@ -40,8 +33,6 @@ string PhysicalOperatorToString(PhysicalOperatorType type) {
 		return "HASH_GROUP_BY";
 	case PhysicalOperatorType::PERFECT_HASH_GROUP_BY:
 		return "PERFECT_HASH_GROUP_BY";
-	case PhysicalOperatorType::SORT_GROUP_BY:
-		return "SORT_GROUP_BY";
 	case PhysicalOperatorType::FILTER:
 		return "FILTER";
 	case PhysicalOperatorType::PROJECTION:
@@ -66,14 +57,10 @@ string PhysicalOperatorToString(PhysicalOperatorType type) {
 		return "UNION";
 	case PhysicalOperatorType::INSERT:
 		return "INSERT";
-	case PhysicalOperatorType::INSERT_SELECT:
-		return "INSERT_SELECT";
 	case PhysicalOperatorType::DELETE_OPERATOR:
 		return "DELETE";
 	case PhysicalOperatorType::UPDATE:
 		return "UPDATE";
-	case PhysicalOperatorType::EXPORT_EXTERNAL_FILE:
-		return "EXPORT_EXTERNAL_FILE";
 	case PhysicalOperatorType::EMPTY_RESULT:
 		return "EMPTY_RESULT";
 	case PhysicalOperatorType::CREATE_TABLE:
@@ -92,8 +79,6 @@ string PhysicalOperatorToString(PhysicalOperatorType type) {
 		return "REC_CTE";
 	case PhysicalOperatorType::RECURSIVE_CTE_SCAN:
 		return "REC_CTE_SCAN";
-	case PhysicalOperatorType::INVALID:
-		return "INVALID";
 	case PhysicalOperatorType::EXPRESSION_SCAN:
 		return "EXPRESSION_SCAN";
 	case PhysicalOperatorType::ALTER:
@@ -122,8 +107,11 @@ string PhysicalOperatorToString(PhysicalOperatorType type) {
 		return "LOAD";
 	case PhysicalOperatorType::INOUT_FUNCTION:
 		return "INOUT_FUNCTION";
+	case PhysicalOperatorType::INVALID:
+		break;
 	}
-	return "UNDEFINED";
+	return "INVALID";
 }
+// LCOV_EXCL_STOP
 
 } // namespace duckdb

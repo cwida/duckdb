@@ -5,6 +5,7 @@ namespace duckdb {
 //===--------------------------------------------------------------------===//
 // Value <--> String Utilities
 //===--------------------------------------------------------------------===//
+// LCOV_EXCL_START
 string LogicalOperatorToString(LogicalOperatorType type) {
 	switch (type) {
 	case LogicalOperatorType::LOGICAL_GET:
@@ -83,8 +84,6 @@ string LogicalOperatorToString(LogicalOperatorType type) {
 		return "CTE_SCAN";
 	case LogicalOperatorType::LOGICAL_SHOW:
 		return "SHOW";
-	case LogicalOperatorType::LOGICAL_INVALID:
-		return "INVALID";
 	case LogicalOperatorType::LOGICAL_ALTER:
 		return "ALTER";
 	case LogicalOperatorType::LOGICAL_CREATE_SEQUENCE:
@@ -105,8 +104,11 @@ string LogicalOperatorToString(LogicalOperatorType type) {
 		return "SET";
 	case LogicalOperatorType::LOGICAL_LOAD:
 		return "LOAD";
+	case LogicalOperatorType::LOGICAL_INVALID:
+		break;
 	}
-	return "UNDEFINED";
+	return "INVALID";
 }
+// LCOV_EXCL_STOP
 
 } // namespace duckdb

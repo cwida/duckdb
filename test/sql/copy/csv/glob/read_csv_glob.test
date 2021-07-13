@@ -2,6 +2,9 @@
 # description: Test globbing CSVs
 # group: [glob]
 
+statement ok
+PRAGMA enable_verification
+
 # simple globbing
 query I
 SELECT * FROM read_csv('test/sql/copy/csv/data/glob/a?/*.csv', auto_detect=1) ORDER BY 1

@@ -4,6 +4,7 @@
 
 namespace duckdb {
 
+// LCOV_EXCL_START
 string ExpressionTypeToString(ExpressionType type) {
 	switch (type) {
 	case ExpressionType::OPERATOR_CAST:
@@ -118,8 +119,6 @@ string ExpressionTypeToString(ExpressionType type) {
 		return "BOUND_FUNCTION";
 	case ExpressionType::BOUND_AGGREGATE:
 		return "BOUND_AGGREGATE";
-	case ExpressionType::INVALID:
-		return "INVALID";
 	case ExpressionType::ARRAY_CONSTRUCTOR:
 		return "ARRAY_CONSTRUCTOR";
 	case ExpressionType::TABLE_STAR:
@@ -132,9 +131,12 @@ string ExpressionTypeToString(ExpressionType type) {
 		return "POSITIONAL_REFERENCE";
 	case ExpressionType::LAMBDA:
 		return "LAMBDA";
+	case ExpressionType::INVALID:
+		break;
 	}
 	return "INVALID";
 }
+// LCOV_EXCL_STOP
 
 string ExpressionTypeToOperator(ExpressionType type) {
 	switch (type) {
@@ -156,8 +158,6 @@ string ExpressionTypeToOperator(ExpressionType type) {
 		return "AND";
 	case ExpressionType::CONJUNCTION_OR:
 		return "OR";
-	case ExpressionType::STAR:
-		return "*";
 	default:
 		return "";
 	}
@@ -184,9 +184,8 @@ ExpressionType NegateComparisionExpression(ExpressionType type) {
 	case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
 		negated_type = ExpressionType::COMPARE_LESSTHAN;
 		break;
-
 	default:
-		throw Exception("Unsupported comparison type in negation");
+		throw InternalException("Unsupported comparison type in negation");
 	}
 	return negated_type;
 }
@@ -212,9 +211,8 @@ ExpressionType FlipComparisionExpression(ExpressionType type) {
 	case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
 		flipped_type = ExpressionType::COMPARE_LESSTHANOREQUALTO;
 		break;
-
 	default:
-		throw Exception("Unsupported comparison type in flip");
+		throw InternalException("Unsupported comparison type in flip");
 	}
 	return flipped_type;
 }

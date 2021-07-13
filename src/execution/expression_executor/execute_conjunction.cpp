@@ -46,7 +46,7 @@ void ExpressionExecutor::Execute(const BoundConjunctionExpression &expr, Express
 				VectorOperations::Or(current_result, result, intermediate, count);
 				break;
 			default:
-				throw NotImplementedException("Unknown conjunction type!");
+				throw InternalException("Unknown conjunction type!");
 			}
 			result.Reference(intermediate);
 		}

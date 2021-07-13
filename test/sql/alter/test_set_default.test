@@ -67,6 +67,21 @@ NULL
 6
 2
 
+# set default on a table with constraints
+statement ok
+CREATE TABLE constrainty(i INTEGER PRIMARY KEY, j INTEGER);
+
+statement ok
+ALTER TABLE constrainty ALTER j SET DEFAULT 3
+
+statement ok
+INSERT INTO constrainty (i) VALUES (2)
+
+query II
+SELECT * FROM constrainty
+----
+2	3
+
 # fail when column does not exist
 statement error
 ALTER TABLE test ALTER blabla SET DEFAULT 3

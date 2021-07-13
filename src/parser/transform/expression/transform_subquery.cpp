@@ -5,14 +5,11 @@
 namespace duckdb {
 
 unique_ptr<ParsedExpression> Transformer::TransformSubquery(duckdb_libpgquery::PGSubLink *root, idx_t depth) {
-	if (!root) {
-		return nullptr;
-	}
+	D_ASSERT(root);
 	auto subquery_expr = make_unique<SubqueryExpression>();
+
 	subquery_expr->subquery = TransformSelect(root->subselect);
-	if (!subquery_expr->subquery) {
-		return nullptr;
-	}
+	D_ASSERT(subquery_expr->subquery);
 	D_ASSERT(subquery_expr->subquery->node->GetSelectList().size() > 0);
 
 	switch (root->subLinkType) {

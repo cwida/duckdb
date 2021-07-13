@@ -122,7 +122,7 @@ idx_t StrfTimeFormat::GetSpecifierLength(StrTimeSpecifier specifier, date_t date
 			len += sec >= 10;
 			break;
 		default:
-			break;
+			throw InternalException("Time specifier mismatch");
 		}
 		return len;
 	}
@@ -133,7 +133,7 @@ idx_t StrfTimeFormat::GetSpecifierLength(StrTimeSpecifier specifier, date_t date
 	case StrTimeSpecifier::YEAR_WITHOUT_CENTURY:
 		return NumericHelper::UnsignedLength<uint32_t>(Date::ExtractYear(date) % 100);
 	default:
-		throw NotImplementedException("Unimplemented specifier for GetSpecifierLength");
+		throw InternalException("Unimplemented specifier for GetSpecifierLength");
 	}
 }
 
@@ -250,7 +250,7 @@ char *StrfTimeFormat::WriteDateSpecifier(StrTimeSpecifier specifier, date_t date
 		break;
 	}
 	default:
-		throw NotImplementedException("Unimplemented date specifier for strftime");
+		throw InternalException("Unimplemented date specifier for strftime");
 	}
 	return target;
 }
@@ -360,7 +360,7 @@ char *StrfTimeFormat::WriteStandardSpecifier(StrTimeSpecifier specifier, int32_t
 		break;
 	}
 	default:
-		throw NotImplementedException("Unimplemented specifier for WriteStandardSpecifier in strftime");
+		throw InternalException("Unimplemented specifier for WriteStandardSpecifier in strftime");
 	}
 	return target;
 }
@@ -442,7 +442,7 @@ string StrTimeFormat::ParseFormatSpecifier(string format_string, StrTimeFormat &
 					specifier = StrTimeSpecifier::DAY_OF_YEAR_DECIMAL;
 					break;
 				default:
-					return "Unrecognized format for strftime/strptime: %-" + string(format_char, 1);
+					return "Unrecognized format for strftime/strptime: %-" + string(1, format_char);
 				}
 			} else {
 				switch (format_char) {
@@ -542,7 +542,7 @@ string StrTimeFormat::ParseFormatSpecifier(string format_string, StrTimeFormat &
 					continue;
 				}
 				default:
-					return "Unrecognized format for strftime/strptime: %" + string(format_char, 1);
+					return "Unrecognized format for strftime/strptime: %" + string(1, format_char);
 				}
 			}
 			format.AddFormatSpecifier(move(current_literal), specifier);

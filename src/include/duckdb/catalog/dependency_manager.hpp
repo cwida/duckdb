@@ -27,8 +27,6 @@ public:
 
 	//! Erase the object from the DependencyManager; this should only happen when the object itself is destroyed
 	void EraseObject(CatalogEntry *object);
-	// //! Clear all the dependencies of all entries in the catalog set
-	void ClearDependencies(CatalogSet &set);
 
 	//! Scans all dependencies, returning pairs of (object, dependent)
 	void Scan(const std::function<void(CatalogEntry *, CatalogEntry *, DependencyType)> &callback);

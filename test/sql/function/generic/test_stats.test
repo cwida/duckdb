@@ -62,3 +62,12 @@ query I
 SELECT STATS(i*-1) FROM integers LIMIT 1;
 ----
 <REGEX>:.*-3.*-1.*
+
+# disabling statistics propagation means there will be no stats
+statement ok
+PRAGMA disable_optimizer
+
+query I
+SELECT STATS(i+1) FROM integers LIMIT 1;
+----
+No statistics

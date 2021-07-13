@@ -42,7 +42,9 @@ void Transformer::TransformWindowDef(duckdb_libpgquery::PGWindowDef *window_spec
 	D_ASSERT(expr);
 
 	// next: partitioning/ordering expressions
-	TransformExpressionList(window_spec->partitionClause, expr->partitions, depth);
+	if (window_spec->partitionClause) {
+		TransformExpressionList(*window_spec->partitionClause, expr->partitions, depth);
+	}
 	TransformOrderBy(window_spec->orderClause, expr->orders);
 }
 
@@ -57,14 +59,12 @@ void Transformer::TransformWindowFrame(duckdb_libpgquery::PGWindowDef *window_sp
 
 	if ((window_spec->frameOptions & FRAMEOPTION_END_UNBOUNDED_PRECEDING) ||
 	    (window_spec->frameOptions & FRAMEOPTION_START_UNBOUNDED_FOLLOWING)) {
-		throw Exception(
+		throw InternalException(
 		    "Window frames starting with unbounded following or ending in unbounded preceding make no sense");
 	}
 
 	if (window_spec->frameOptions & FRAMEOPTION_START_UNBOUNDED_PRECEDING) {
 		expr->start = WindowBoundary::UNBOUNDED_PRECEDING;
-	} else if (window_spec->frameOptions & FRAMEOPTION_START_UNBOUNDED_FOLLOWING) {
-		expr->start = WindowBoundary::UNBOUNDED_FOLLOWING;
 	} else if (window_spec->frameOptions & FRAMEOPTION_START_VALUE_PRECEDING) {
 		expr->start = WindowBoundary::EXPR_PRECEDING;
 	} else if (window_spec->frameOptions & FRAMEOPTION_START_VALUE_FOLLOWING) {
@@ -77,9 +77,7 @@ void Transformer::TransformWindowFrame(duckdb_libpgquery::PGWindowDef *window_sp
 		expr->start = WindowBoundary::CURRENT_ROW_ROWS;
 	}
 
-	if (window_spec->frameOptions & FRAMEOPTION_END_UNBOUNDED_PRECEDING) {
-		expr->end = WindowBoundary::UNBOUNDED_PRECEDING;
-	} else if (window_spec->frameOptions & FRAMEOPTION_END_UNBOUNDED_FOLLOWING) {
+	if (window_spec->frameOptions & FRAMEOPTION_END_UNBOUNDED_FOLLOWING) {
 		expr->end = WindowBoundary::UNBOUNDED_FOLLOWING;
 	} else if (window_spec->frameOptions & FRAMEOPTION_END_VALUE_PRECEDING) {
 		expr->end = WindowBoundary::EXPR_PRECEDING;
@@ -98,7 +96,7 @@ void Transformer::TransformWindowFrame(duckdb_libpgquery::PGWindowDef *window_sp
 	     !expr->start_expr) ||
 	    ((expr->end == WindowBoundary::EXPR_PRECEDING || expr->end == WindowBoundary::EXPR_PRECEDING) &&
 	     !expr->end_expr)) {
-		throw Exception("Failed to transform window boundary expression");
+		throw InternalException("Failed to transform window boundary expression");
 	}
 }
 
@@ -129,17 +127,15 @@ unique_ptr<ParsedExpression> Transformer::TransformFuncCall(duckdb_libpgquery::P
 
 		auto win_fun_type = WindowToExpressionType(lowercase_name);
 		if (win_fun_type == ExpressionType::INVALID) {
-			throw Exception("Unknown/unsupported window function");
+			throw InternalException("Unknown/unsupported window function");
 		}
 
 		auto expr = make_unique<WindowExpression>(win_fun_type, schema, lowercase_name);
 
 		if (root->args) {
 			vector<unique_ptr<ParsedExpression>> function_list;
-			auto res = TransformExpressionList(root->args, function_list, depth);
-			if (!res) {
-				throw Exception("Failed to transform window function children");
-			}
+			TransformExpressionList(*root->args, function_list, depth);
+
 			if (win_fun_type == ExpressionType::WINDOW_AGGREGATE) {
 				for (auto &child : function_list) {
 					expr->children.push_back(move(child));
@@ -267,15 +263,13 @@ static string SQLValueOpToString(duckdb_libpgquery::PGSQLValueFunctionOp op) {
 	case duckdb_libpgquery::PG_SVFOP_CURRENT_SCHEMA:
 		return "current_schema";
 	default:
-		throw Exception("Could not find named SQL value function specification " + to_string((int)op));
+		throw InternalException("Could not find named SQL value function specification " + to_string((int)op));
 	}
 }
 
 unique_ptr<ParsedExpression> Transformer::TransformSQLValueFunction(duckdb_libpgquery::PGSQLValueFunction *node,
                                                                     idx_t depth) {
-	if (!node) {
-		return nullptr;
-	}
+	D_ASSERT(node);
 	vector<unique_ptr<ParsedExpression>> children;
 	auto fname = SQLValueOpToString(node->op);
 	return make_unique<FunctionExpression>(DEFAULT_SCHEMA, fname, move(children));

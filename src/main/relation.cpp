@@ -75,9 +75,8 @@ shared_ptr<Relation> Relation::Filter(const string &expression) {
 shared_ptr<Relation> Relation::Filter(const vector<string> &expressions) {
 	// if there are multiple expressions, we AND them together
 	auto expression_list = StringListToExpressionList(expressions);
-	if (expression_list.empty()) {
-		throw ParserException("Zero filter conditions provided");
-	}
+	D_ASSERT(!expression_list.empty());
+
 	auto expr = move(expression_list[0]);
 	for (idx_t i = 1; i < expression_list.size(); i++) {
 		expr =
@@ -112,9 +111,8 @@ shared_ptr<Relation> Relation::Order(const vector<string> &expressions) {
 
 shared_ptr<Relation> Relation::Join(const shared_ptr<Relation> &other, const string &condition, JoinType type) {
 	auto expression_list = Parser::ParseExpressionList(condition);
-	if (expression_list.empty()) {
-		throw ParserException("Expected a single expression as join condition");
-	}
+	D_ASSERT(!expression_list.empty());
+
 	if (expression_list.size() > 1 || expression_list[0]->type == ExpressionType::COLUMN_REF) {
 		// multiple columns or single column ref: the condition is a USING list
 		vector<string> using_columns;
@@ -235,11 +233,6 @@ void Relation::WriteCSV(const string &csv_file) {
 	}
 }
 
-void Relation::Head(idx_t limit) {
-	auto limit_node = Limit(limit);
-	limit_node->Execute()->Print();
-}
-
 shared_ptr<Relation> Relation::CreateView(const string &name, bool replace, bool temporary) {
 	auto view = make_shared<CreateViewRelation>(shared_from_this(), name, replace, temporary);
 	auto res = view->Execute();
@@ -271,8 +264,8 @@ void Relation::Delete(const string &condition) {
 	throw Exception("DELETE can only be used on base tables!");
 }
 
-shared_ptr<Relation> Relation::TableFunction(const std::string &fname, vector<Value> &values) {
-	return make_shared<TableFunctionRelation>(context, fname, values, shared_from_this());
+shared_ptr<Relation> Relation::TableFunction(const std::string &fname, vector<Value> values) {
+	return make_shared<TableFunctionRelation>(context, fname, move(values), shared_from_this());
 }
 
 string Relation::ToString() {
@@ -291,6 +284,11 @@ string Relation::ToString() {
 	}
 	return str;
 }
+
+void Relation::Head(idx_t limit) { // LCOV_EXCL_START
+	auto limit_node = Limit(limit);
+	limit_node->Execute()->Print();
+} // LCOV_EXCL_STOP
 
 void Relation::Print() {
 	Printer::Print(ToString());

@@ -71,7 +71,7 @@ unique_ptr<FunctionOperatorData> PandasScanFunction::PandasScanInit(ClientContex
 	auto &bind_data = (const PandasScanFunctionData &)*bind_data_p;
 	auto result = make_unique<PandasScanState>(0, bind_data.row_count);
 	result->column_ids = column_ids;
-	return result;
+	return move(result);
 }
 
 idx_t PandasScanFunction::PandasScanMaxThreads(ClientContext &context, const FunctionData *bind_data_p) {

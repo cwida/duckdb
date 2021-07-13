@@ -31,12 +31,12 @@ unique_ptr<FunctionData> CurrentSettingBind(ClientContext &context, ScalarFuncti
 
 	if (key_child->return_type.id() != LogicalTypeId::VARCHAR ||
 	    key_child->return_type.id() != LogicalTypeId::VARCHAR || !key_child->IsFoldable()) {
-		throw Exception("Key name for struct_extract needs to be a constant string");
+		throw ParserException("Key name for struct_extract needs to be a constant string");
 	}
 	Value key_val = ExpressionExecutor::EvaluateScalar(*key_child.get());
 	D_ASSERT(key_val.type().id() == LogicalTypeId::VARCHAR);
 	if (key_val.is_null || key_val.str_value.length() < 1) {
-		throw Exception("Key name for struct_extract needs to be neither NULL nor empty");
+		throw ParserException("Key name for struct_extract needs to be neither NULL nor empty");
 	}
 
 	auto &config_map = context.db->config.set_variables;

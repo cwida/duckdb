@@ -33,11 +33,7 @@ void ExpressionExecutor::Execute(const BoundFunctionExpression &expr, Expression
 	state->profiler.BeginSample();
 	expr.function.function(arguments, *state, result);
 	state->profiler.EndSample(count);
-	if (result.GetType() != expr.return_type) {
-		throw TypeMismatchException(expr.return_type, result.GetType(),
-		                            "expected function to return the former "
-		                            "but the function returned the latter");
-	}
+	D_ASSERT(result.GetType() == expr.return_type);
 }
 
 } // namespace duckdb

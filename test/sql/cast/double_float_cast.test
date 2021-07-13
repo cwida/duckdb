@@ -1,0 +1,15 @@
+# name: test/sql/cast/double_float_cast.test
+# description: Test out of range double -> float casts
+# group: [cast]
+
+statement ok
+PRAGMA enable_verification
+
+statement error
+select 1e308::float;
+
+statement error
+select '1e308'::float;
+
+statement error
+select '1e310'::double;

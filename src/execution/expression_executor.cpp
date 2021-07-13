@@ -121,7 +121,7 @@ unique_ptr<ExpressionState> ExpressionExecutor::InitializeState(const Expression
 	case ExpressionClass::BOUND_PARAMETER:
 		return InitializeState((const BoundParameterExpression &)expr, state);
 	default:
-		throw NotImplementedException("Attempting to initialize state of expression of unknown type!");
+		throw InternalException("Attempting to initialize state of expression of unknown type!");
 	}
 }
 
@@ -162,7 +162,7 @@ void ExpressionExecutor::Execute(const Expression &expr, ExpressionState *state,
 		Execute((const BoundParameterExpression &)expr, state, sel, count, result);
 		break;
 	default:
-		throw NotImplementedException("Attempting to execute expression of unknown type!");
+		throw InternalException("Attempting to execute expression of unknown type!");
 	}
 	Verify(expr, result, count);
 }

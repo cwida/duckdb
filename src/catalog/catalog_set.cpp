@@ -219,11 +219,6 @@ void CatalogSet::CleanupEntry(CatalogEntry *catalog_entry) {
 	}
 }
 
-idx_t CatalogSet::GetEntryIndex(CatalogEntry *entry) {
-	D_ASSERT(mapping.find(entry->name) != mapping.end());
-	return mapping[entry->name]->index;
-}
-
 bool CatalogSet::HasConflict(ClientContext &context, transaction_t timestamp) {
 	auto &transaction = Transaction::GetTransaction(context);
 	return (timestamp >= TRANSACTION_ID_START && timestamp != transaction.transaction_id) ||
@@ -411,12 +406,6 @@ CatalogEntry *CatalogSet::GetEntry(ClientContext &context, const string &name) {
 void CatalogSet::UpdateTimestamp(CatalogEntry *entry, transaction_t timestamp) {
 	entry->timestamp = timestamp;
 	mapping[entry->name]->timestamp = timestamp;
-}
-
-CatalogEntry *CatalogSet::GetRootEntry(const string &name) {
-	lock_guard<mutex> lock(catalog_lock);
-	auto entry = mapping.find(name);
-	return entry == mapping.end() || entry->second->deleted ? nullptr : entries[entry->second->index].get();
 }
 
 void CatalogSet::Undo(CatalogEntry *entry) {

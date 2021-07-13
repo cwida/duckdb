@@ -70,11 +70,8 @@ public:
 		return result;
 	}
 
-	//! Append the prefix to the beginning of each line in str
-	static string Prefix(const string &str, const string &prefix);
-
 	//! Return a string that formats the give number of bytes
-	static string FormatSize(idx_t bytes);
+	static string BytesToHumanReadableString(idx_t bytes);
 
 	//! Convert a string to uppercase
 	static string Upper(const string &str);

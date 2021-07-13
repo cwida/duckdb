@@ -4,6 +4,7 @@
 
 namespace duckdb {
 
+// LCOV_EXCL_START
 string SelectionVector::ToString(idx_t count) const {
 	string result = "Selection Vector (" + to_string(count) + ") [";
 	for (idx_t i = 0; i < count; i++) {
@@ -19,6 +20,7 @@ string SelectionVector::ToString(idx_t count) const {
 void SelectionVector::Print(idx_t count) const {
 	Printer::Print(ToString(count));
 }
+// LCOV_EXCL_STOP
 
 buffer_ptr<SelectionData> SelectionVector::Slice(const SelectionVector &sel, idx_t count) const {
 	auto data = make_buffer<SelectionData>(count);

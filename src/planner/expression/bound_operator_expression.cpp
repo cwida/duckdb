@@ -30,13 +30,8 @@ bool BoundOperatorExpression::Equals(const BaseExpression *other_p) const {
 		return false;
 	}
 	auto other = (BoundOperatorExpression *)other_p;
-	if (children.size() != other->children.size()) {
+	if (!ExpressionUtil::ListEquals(children, other->children)) {
 		return false;
-	}
-	for (idx_t i = 0; i < children.size(); i++) {
-		if (!Expression::Equals(children[i].get(), other->children[i].get())) {
-			return false;
-		}
 	}
 	return true;
 }

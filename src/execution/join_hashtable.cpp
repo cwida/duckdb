@@ -421,7 +421,7 @@ void ScanStructure::Next(DataChunk &keys, DataChunk &left, DataChunk &result) {
 		NextSingleJoin(keys, left, result);
 		break;
 	default:
-		throw Exception("Unhandled join type in JoinHashTable");
+		throw InternalException("Unhandled join type in JoinHashTable");
 	}
 }
 

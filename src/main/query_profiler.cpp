@@ -37,20 +37,16 @@ bool QueryProfiler::OperatorRequiresProfiling(PhysicalOperatorType op_type) {
 	case PhysicalOperatorType::STREAMING_SAMPLE:
 	case PhysicalOperatorType::LIMIT:
 	case PhysicalOperatorType::TOP_N:
-	case PhysicalOperatorType::AGGREGATE:
 	case PhysicalOperatorType::WINDOW:
 	case PhysicalOperatorType::UNNEST:
 	case PhysicalOperatorType::SIMPLE_AGGREGATE:
 	case PhysicalOperatorType::HASH_GROUP_BY:
-	case PhysicalOperatorType::SORT_GROUP_BY:
 	case PhysicalOperatorType::FILTER:
 	case PhysicalOperatorType::PROJECTION:
 	case PhysicalOperatorType::COPY_TO_FILE:
 	case PhysicalOperatorType::TABLE_SCAN:
 	case PhysicalOperatorType::CHUNK_SCAN:
 	case PhysicalOperatorType::DELIM_SCAN:
-	case PhysicalOperatorType::EXTERNAL_FILE_SCAN:
-	case PhysicalOperatorType::QUERY_DERIVED_SCAN:
 	case PhysicalOperatorType::EXPRESSION_SCAN:
 	case PhysicalOperatorType::BLOCKWISE_NL_JOIN:
 	case PhysicalOperatorType::NESTED_LOOP_JOIN:

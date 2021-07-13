@@ -139,10 +139,6 @@ string Time::ToString(dtime_t time) {
 	return string(buffer.get(), length);
 }
 
-string Time::Format(int32_t hour, int32_t minute, int32_t second, int32_t microseconds) {
-	return ToString(Time::FromTime(hour, minute, second, microseconds));
-}
-
 dtime_t Time::FromTime(int32_t hour, int32_t minute, int32_t second, int32_t microseconds) {
 	int64_t result;
 	result = hour;                                             // hours
@@ -152,7 +148,8 @@ dtime_t Time::FromTime(int32_t hour, int32_t minute, int32_t second, int32_t mic
 	return dtime_t(result);
 }
 
-bool Time::IsValidTime(int32_t hour, int32_t minute, int32_t second, int32_t microseconds) {
+// LCOV_EXCL_START
+static bool AssertValidTime(int32_t hour, int32_t minute, int32_t second, int32_t microseconds) {
 	if (hour < 0 || hour >= 24) {
 		return false;
 	}
@@ -167,6 +164,7 @@ bool Time::IsValidTime(int32_t hour, int32_t minute, int32_t second, int32_t mic
 	}
 	return true;
 }
+// LCOV_EXCL_STOP
 
 void Time::Convert(dtime_t dtime, int32_t &hour, int32_t &min, int32_t &sec, int32_t &micros) {
 	int64_t time = dtime.micros;
@@ -177,7 +175,7 @@ void Time::Convert(dtime_t dtime, int32_t &hour, int32_t &min, int32_t &sec, int
 	sec = int32_t(time / Interval::MICROS_PER_SEC);
 	time -= int64_t(sec) * Interval::MICROS_PER_SEC;
 	micros = int32_t(time);
-	D_ASSERT(IsValidTime(hour, min, sec, micros));
+	D_ASSERT(AssertValidTime(hour, min, sec, micros));
 }
 
 } // namespace duckdb

@@ -25,7 +25,7 @@ unique_ptr<ResultModifier> ResultModifier::Deserialize(Deserializer &source) {
 	case ResultModifierType::DISTINCT_MODIFIER:
 		return DistinctModifier::Deserialize(source);
 	default:
-		return nullptr;
+		throw InternalException("Unrecognized ResultModifierType for Deserialization");
 	}
 }
 

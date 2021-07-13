@@ -13,10 +13,6 @@ InsertRelation::InsertRelation(shared_ptr<Relation> child_p, string schema_name,
 	context.TryBindRelation(*this, this->columns);
 }
 
-unique_ptr<QueryNode> InsertRelation::GetQueryNode() {
-	throw Exception("Cannot create a query node from a InsertRelation!");
-}
-
 BoundStatement InsertRelation::Bind(Binder &binder) {
 	InsertStatement stmt;
 	auto select = make_unique<SelectStatement>();

@@ -128,7 +128,7 @@ AggregateFunction GetArgMinMaxFunctionArg2(LogicalTypeId arg_2, const LogicalTyp
 		return AggregateFunction::BinaryAggregate<ArgMinMaxState<T, string_t>, T, string_t, T, OP>(
 		    arg, LogicalType::BLOB, arg);
 	default:
-		throw NotImplementedException("Unimplemented arg_min/arg_max aggregate");
+		throw InternalException("Unimplemented arg_min/arg_max aggregate");
 	}
 }
 
@@ -199,7 +199,7 @@ void GetArgMinMaxFunction(LogicalTypeId arg_1, AggregateFunctionSet &fun) {
 		fun.AddFunction(GetArgMinMaxFunctionArg2<OP, string_t>(LogicalTypeId::BLOB, LogicalType::BLOB));
 		break;
 	default:
-		throw NotImplementedException("Unimplemented arg_min/arg_max aggregate");
+		throw InternalException("Unimplemented arg_min/arg_max aggregate");
 	}
 }
 void ArgMinFun::RegisterFunction(BuiltinFunctions &set) {

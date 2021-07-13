@@ -10,10 +10,7 @@ bool Transformer::TransformParseTree(duckdb_libpgquery::PGList *tree, vector<uni
 	for (auto entry = tree->head; entry != nullptr; entry = entry->next) {
 		SetParamCount(0);
 		auto stmt = TransformStatement((duckdb_libpgquery::PGNode *)entry->data.ptr_value);
-		if (!stmt) {
-			statements.clear();
-			return false;
-		}
+		D_ASSERT(stmt);
 		stmt->n_param = ParamCount();
 		statements.push_back(move(stmt));
 	}

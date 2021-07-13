@@ -6,9 +6,8 @@ namespace duckdb {
 // COALESCE(a,b,c) returns the first argument that is NOT NULL, so
 // rewrite into CASE(a IS NOT NULL, a, CASE(b IS NOT NULL, b, c))
 unique_ptr<ParsedExpression> Transformer::TransformCoalesce(duckdb_libpgquery::PGAExpr *root, idx_t depth) {
-	if (!root) {
-		return nullptr;
-	}
+	D_ASSERT(root);
+
 	auto coalesce_args = reinterpret_cast<duckdb_libpgquery::PGList *>(root->lexpr);
 	D_ASSERT(coalesce_args->length > 0); // parser ensures this already
 

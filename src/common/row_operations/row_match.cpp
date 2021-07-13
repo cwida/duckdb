@@ -209,7 +209,7 @@ static void TemplatedMatchOp(Vector &vec, VectorData &col, const idx_t vcount, c
 		                                       no_match_count);
 		break;
 	default:
-		throw Exception("Unsupported column type for RowOperations::Match");
+		throw InternalException("Unsupported column type for RowOperations::Match");
 	}
 }
 
@@ -247,7 +247,7 @@ static void TemplatedMatch(DataChunk &columns, VectorData col_data[], const RowL
 			                                               no_match_count);
 			break;
 		default:
-			throw NotImplementedException("Unsupported comparison type for RowOperations::Match");
+			throw InternalException("Unsupported comparison type for RowOperations::Match");
 		}
 	}
 }

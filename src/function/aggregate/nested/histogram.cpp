@@ -145,9 +145,6 @@ static void HistogramFinalize(Vector &state_vector, FunctionData *, Vector &resu
 
 unique_ptr<FunctionData> HistogramBindFunction(ClientContext &context, AggregateFunction &function,
                                                vector<unique_ptr<Expression>> &arguments) {
-	if (arguments.size() != 1) {
-		throw Exception("We need exactly one argument for the histogram");
-	}
 	D_ASSERT(arguments.size() == 1);
 	child_list_t<LogicalType> struct_children;
 	struct_children.push_back({"bucket", LogicalType::LIST(arguments[0]->return_type)});
@@ -225,7 +222,7 @@ AggregateFunction GetHistogramFunction(PhysicalType type) {
 		                         AggregateFunction::StateDestroy<HistogramAggState<string>, HistogramFunction>);
 
 	default:
-		throw NotImplementedException("Unimplemented histogram aggregate");
+		throw InternalException("Unimplemented histogram aggregate");
 	}
 }
 

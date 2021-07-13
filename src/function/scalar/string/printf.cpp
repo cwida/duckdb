@@ -137,7 +137,7 @@ static void PrintfFunction(DataChunk &args, ExpressionState &state, Vector &resu
 				break;
 			}
 			default:
-				throw InvalidInputException("Unsupported type for format: \"%s\"!", col.GetType().ToString());
+				throw InternalException("Unexpected type for printf format");
 			}
 		}
 		// finally actually perform the format

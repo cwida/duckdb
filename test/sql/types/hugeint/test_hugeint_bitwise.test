@@ -135,3 +135,24 @@ query I
 select ~(4923847238975289723895239078235::HUGEINT)
 ----
 -4923847238975289723895239078236
+
+# big shifts
+query I
+select 1::hugeint >> 1000;
+----
+0
+
+query I
+select 1 >> 170141183460469231731687303715884105727::hugeint;
+----
+0
+
+query I
+select 1::hugeint << 1000;
+----
+0
+
+query I
+select 1 << 170141183460469231731687303715884105727::hugeint;
+----
+0

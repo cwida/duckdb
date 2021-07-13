@@ -26,9 +26,7 @@ ViewCatalogEntry::ViewCatalogEntry(Catalog *catalog, SchemaCatalogEntry *schema,
 }
 
 unique_ptr<CatalogEntry> ViewCatalogEntry::AlterEntry(ClientContext &context, AlterInfo *info) {
-	if (internal) {
-		throw CatalogException("Cannot use ALTER VIEW to alter a system view");
-	}
+	D_ASSERT(!internal);
 	if (info->type != AlterType::ALTER_VIEW) {
 		throw CatalogException("Can only modify view with ALTER VIEW statement");
 	}

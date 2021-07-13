@@ -267,6 +267,9 @@ unique_ptr<LogicalOperator> FlattenDependentJoins::PushDownDependentJoinInternal
 		if (limit.offset_val > 0) {
 			throw ParserException("OFFSET not supported in correlated subquery");
 		}
+		if (limit.limit) {
+			throw ParserException("Non-constant limit not supported in correlated subquery");
+		}
 		plan->children[0] = PushDownDependentJoinInternal(move(plan->children[0]));
 		if (limit.limit_val == 0) {
 			// limit = 0 means we return zero columns here
@@ -311,8 +314,7 @@ unique_ptr<LogicalOperator> FlattenDependentJoins::PushDownDependentJoinInternal
 	case LogicalOperatorType::LOGICAL_ORDER_BY:
 		throw ParserException("ORDER BY not supported in correlated subquery");
 	default:
-		throw NotImplementedException("Logical operator type \"%s\" for dependent join",
-		                              LogicalOperatorToString(plan->type));
+		throw InternalException("Logical operator type \"%s\" for dependent join", LogicalOperatorToString(plan->type));
 	}
 }
 

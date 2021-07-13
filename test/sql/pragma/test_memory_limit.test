@@ -9,10 +9,22 @@ PRAGMA memory_limit='1GB'
 statement ok
 PRAGMA memory_limit=-1
 
+statement ok
+PRAGMA memory_limit='-1'
+
+statement ok
+PRAGMA memory_limit='none'
+
+statement ok
+PRAGMA memory_limit=' -1'
+
 # different units can be used
 # G and GB = gigabyte
 statement ok
 PRAGMA memory_limit='1G'
+
+statement ok
+PRAGMA memory_limit='   1G'
 
 statement ok
 PRAGMA memory_limit='1GB'
@@ -107,3 +119,5 @@ PRAGMA memory_limit()
 statement error
 PRAGMA memory_limit(1, 2)
 
+statement error
+PRAGMA memory_limit='blabla'

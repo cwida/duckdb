@@ -416,7 +416,6 @@ struct LogicalType {
 	DUCKDB_API string ToString() const;
 	DUCKDB_API bool IsIntegral() const;
 	DUCKDB_API bool IsNumeric() const;
-	DUCKDB_API bool IsMoreGenericThan(LogicalType &other) const;
 	DUCKDB_API hash_t Hash() const;
 
 	DUCKDB_API static LogicalType MaxLogicalType(const LogicalType &left, const LogicalType &right);

@@ -1,0 +1,10 @@
+# name: test/sql/constraints/foreignkey/test_foreignkey.test
+# description: Test foreign key constraint
+# group: [foreignkey]
+
+statement ok
+CREATE TABLE integers(i INTEGER PRIMARY KEY, j BOOLEAN)
+
+# foreign keys are not supported yet
+statement error
+CREATE TABLE other(id INTEGER PRIMARY KEY, i INTEGER, FOREIGN KEY (i) REFERENCES integers(i));

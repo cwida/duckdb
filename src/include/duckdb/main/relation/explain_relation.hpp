@@ -20,7 +20,6 @@ public:
 	vector<ColumnDefinition> columns;
 
 public:
-	unique_ptr<QueryNode> GetQueryNode() override;
 	BoundStatement Bind(Binder &binder) override;
 	const vector<ColumnDefinition> &Columns() override;
 	string ToString(idx_t depth) override;

@@ -1,0 +1,20 @@
+# name: test/sql/pragma/test_query_log.test
+# description: Test query logging
+# group: [pragma]
+
+statement ok
+PRAGMA log_query_path='__TEST_DIR__/query_log.txt'
+
+query I
+SELECT 42
+----
+42
+
+statement ok
+PRAGMA log_query_path=''
+
+query I
+SELECT * FROM read_csv('__TEST_DIR__/query_log.txt', columns={'sql': 'VARCHAR'}, auto_detect=false)
+----
+SELECT 42
+PRAGMA log_query_path=''

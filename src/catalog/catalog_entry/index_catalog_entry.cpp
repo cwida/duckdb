@@ -17,7 +17,7 @@ IndexCatalogEntry::~IndexCatalogEntry() {
 
 string IndexCatalogEntry::ToSQL() {
 	if (sql.empty()) {
-		throw NotImplementedException("Cannot convert INDEX to SQL because it was not created with a SQL statement");
+		throw InternalException("Cannot convert INDEX to SQL because it was not created with a SQL statement");
 	}
 	return sql;
 }

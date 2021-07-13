@@ -173,20 +173,18 @@ Allocator &Allocator::Get(DatabaseInstance &db) {
 }
 
 void DatabaseInstance::Configure(DBConfig &new_config) {
+	config.access_mode = AccessMode::READ_WRITE;
 	if (new_config.access_mode != AccessMode::UNDEFINED) {
 		config.access_mode = new_config.access_mode;
-	} else {
-		config.access_mode = AccessMode::READ_WRITE;
 	}
 	if (new_config.file_system) {
 		config.file_system = move(new_config.file_system);
 	} else {
 		config.file_system = make_unique<VirtualFileSystem>();
 	}
-	if (new_config.maximum_memory == (idx_t)-1) {
+	config.maximum_memory = new_config.maximum_memory;
+	if (config.maximum_memory == (idx_t)-1) {
 		config.maximum_memory = config.file_system->GetAvailableMemory() * 8 / 10;
-	} else {
-		config.maximum_memory = new_config.maximum_memory;
 	}
 	if (new_config.maximum_threads == (idx_t)-1) {
 #ifndef DUCKDB_NO_THREADS

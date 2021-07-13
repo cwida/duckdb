@@ -116,9 +116,6 @@ std::vector<PGSimplifiedToken> tokenize(const char *str) {
 		case NOT_EQUALS:
 			current_token.type = PGSimplifiedTokenType::PG_SIMPLIFIED_TOKEN_OPERATOR;
 			break;
-		case COMMENT:
-			current_token.type = PGSimplifiedTokenType::PG_SIMPLIFIED_TOKEN_COMMENT;
-			break;
 		default:
 			if (token >= 255) {
 				// non-ascii value, probably a keyword

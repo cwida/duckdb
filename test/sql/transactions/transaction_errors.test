@@ -1,0 +1,21 @@
+# name: test/sql/transactions/transaction_errors.test
+# description: Error conditions of transactions
+# group: [transactions]
+
+# nothing to rollback
+statement error
+ROLLBACK;
+
+# nothing to commit
+statement error
+COMMIT;
+
+statement ok
+BEGIN;
+
+# cannot start a transaction in a transaction
+statement error
+BEGIN;
+
+statement ok
+ROLLBACK;

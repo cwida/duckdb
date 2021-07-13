@@ -71,10 +71,11 @@ vector<SimplifiedToken> Parser::Tokenize(const string &query) {
 		case duckdb_libpgquery::PGSimplifiedTokenType::PG_SIMPLIFIED_TOKEN_KEYWORD:
 			token.type = SimplifiedTokenType::SIMPLIFIED_TOKEN_KEYWORD;
 			break;
-		case duckdb_libpgquery::PGSimplifiedTokenType::PG_SIMPLIFIED_TOKEN_COMMENT:
+		// comments are not supported by our tokenizer right now
+		case duckdb_libpgquery::PGSimplifiedTokenType::PG_SIMPLIFIED_TOKEN_COMMENT: // LCOV_EXCL_START
 			token.type = SimplifiedTokenType::SIMPLIFIED_TOKEN_COMMENT;
 			break;
-		}
+		} // LCOV_EXCL_STOP
 		token.start = pg_token.start;
 		result.push_back(token);
 	}
@@ -115,11 +116,12 @@ vector<OrderByNode> Parser::ParseOrderList(const string &select_list) {
 	}
 	auto &select = (SelectStatement &)*parser.statements[0];
 	if (select.node->type != QueryNodeType::SELECT_NODE) {
-		throw ParserException("Expected a single SELECT node");
+		throw InternalException("Expected a single SELECT node");
 	}
 	auto &select_node = (SelectNode &)*select.node;
-	if (select_node.modifiers.empty() || select_node.modifiers[0]->type != ResultModifierType::ORDER_MODIFIER) {
-		throw ParserException("Expected a single ORDER clause");
+	if (select_node.modifiers.empty() || select_node.modifiers[0]->type != ResultModifierType::ORDER_MODIFIER ||
+	    select_node.modifiers.size() != 1) {
+		throw InternalException("Expected a single ORDER clause");
 	}
 	auto &order = (OrderModifier &)*select_node.modifiers[0];
 	return move(order.orders);
@@ -157,7 +159,7 @@ vector<vector<unique_ptr<ParsedExpression>>> Parser::ParseValuesList(const strin
 	}
 	auto &select_node = (SelectNode &)*select.node;
 	if (!select_node.from_table || select_node.from_table->type != TableReferenceType::EXPRESSION_LIST) {
-		throw ParserException("Expected a single VALUES statement");
+		throw InternalException("Expected a single VALUES statement");
 	}
 	auto &values_list = (ExpressionListRef &)*select_node.from_table;
 	return move(values_list.values);
@@ -172,7 +174,7 @@ vector<ColumnDefinition> Parser::ParseColumnList(const string &column_list) {
 	}
 	auto &create = (CreateStatement &)*parser.statements[0];
 	if (create.info->type != CatalogType::TABLE_ENTRY) {
-		throw ParserException("Expected a single CREATE TABLE statement");
+		throw InternalException("Expected a single CREATE TABLE statement");
 	}
 	auto &info = ((CreateTableInfo &)*create.info);
 	return move(info.columns);

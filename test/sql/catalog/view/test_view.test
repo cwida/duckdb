@@ -51,6 +51,9 @@ SELECT * FROM v1
 ----
 42
 
+statement error
+INSERT INTO v1 VALUES (1)
+
 statement ok
 DROP VIEW v1
 
@@ -62,4 +65,3 @@ DROP VIEW IF EXISTS v1
 
 statement error
 CREATE VIEW v1 AS SELECT * FROM dontexist
-

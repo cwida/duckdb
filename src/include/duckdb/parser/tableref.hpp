@@ -33,9 +33,7 @@ public:
 
 public:
 	//! Convert the object to a string
-	virtual string ToString() const {
-		return string();
-	}
+	virtual string ToString() const;
 	void Print();
 
 	virtual bool Equals(const TableRef *other) const;

@@ -379,7 +379,7 @@ hugeint_t Hugeint::Subtract(hugeint_t lhs, hugeint_t rhs) {
 //===--------------------------------------------------------------------===//
 // Hugeint Cast/Conversion
 //===--------------------------------------------------------------------===//
-template <class DST>
+template <class DST, bool SIGNED = true>
 bool HugeintTryCastInteger(hugeint_t input, DST &result) {
 	switch (input.upper) {
 	case 0:
@@ -390,6 +390,9 @@ bool HugeintTryCastInteger(hugeint_t input, DST &result) {
 		}
 		break;
 	case -1:
+		if (!SIGNED) {
+			return false;
+		}
 		// negative number: check if the negative number is in range
 		if (input.lower > NumericLimits<uint64_t>::Maximum() - uint64_t(NumericLimits<DST>::Maximum())) {
 			result = -DST(NumericLimits<uint64_t>::Maximum() - input.lower + 1);
@@ -424,22 +427,22 @@ bool Hugeint::TryCast(hugeint_t input, int64_t &result) {
 
 template <>
 bool Hugeint::TryCast(hugeint_t input, uint8_t &result) {
-	return HugeintTryCastInteger<uint8_t>(input, result);
+	return HugeintTryCastInteger<uint8_t, false>(input, result);
 }
 
 template <>
 bool Hugeint::TryCast(hugeint_t input, uint16_t &result) {
-	return HugeintTryCastInteger<uint16_t>(input, result);
+	return HugeintTryCastInteger<uint16_t, false>(input, result);
 }
 
 template <>
 bool Hugeint::TryCast(hugeint_t input, uint32_t &result) {
-	return HugeintTryCastInteger<uint32_t>(input, result);
+	return HugeintTryCastInteger<uint32_t, false>(input, result);
 }
 
 template <>
 bool Hugeint::TryCast(hugeint_t input, uint64_t &result) {
-	return HugeintTryCastInteger<uint64_t>(input, result);
+	return HugeintTryCastInteger<uint64_t, false>(input, result);
 }
 
 template <>

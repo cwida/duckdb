@@ -6,6 +6,10 @@
 
 namespace duckdb {
 
+string TableRef::ToString() const {
+	return string();
+}
+
 bool TableRef::Equals(const TableRef *other) const {
 	return other && type == other->type && alias == other->alias &&
 	       SampleOptions::Equals(sample.get(), other->sample.get());
@@ -47,7 +51,7 @@ unique_ptr<TableRef> TableRef::Deserialize(Deserializer &source) {
 		break;
 	case TableReferenceType::CTE:
 	case TableReferenceType::INVALID:
-		return nullptr;
+		throw InternalException("Unsupported type for TableRef::Deserialize");
 	}
 	result->alias = alias;
 	result->sample = move(sample);

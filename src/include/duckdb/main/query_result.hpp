@@ -69,7 +69,7 @@ public:
 	DUCKDB_API bool TryFetch(unique_ptr<DataChunk> &result, string &error) {
 		try {
 			result = Fetch();
-			return true;
+			return success;
 		} catch (std::exception &ex) {
 			error = ex.what();
 			return false;

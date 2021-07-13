@@ -118,20 +118,6 @@ void DependencyManager::EraseObjectInternal(CatalogEntry *object) {
 	dependencies_map.erase(object);
 }
 
-void DependencyManager::ClearDependencies(CatalogSet &set) {
-	// obtain the writing lock
-	lock_guard<mutex> write_lock(catalog.write_lock);
-
-	// iterate over the objects in the CatalogSet
-	for (auto &entry : set.entries) {
-		CatalogEntry *centry = entry.second.get();
-		while (centry) {
-			EraseObjectInternal(centry);
-			centry = centry->child.get();
-		}
-	}
-}
-
 void DependencyManager::Scan(const std::function<void(CatalogEntry *, CatalogEntry *, DependencyType)> &callback) {
 	lock_guard<mutex> write_lock(catalog.write_lock);
 	for (auto &entry : dependents_map) {

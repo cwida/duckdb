@@ -1,0 +1,28 @@
+# name: test/sql/storage/types/list/default_list.test
+# description: Test list storage with default values
+# group: [list]
+
+# load the DB from disk
+load __TEST_DIR__/struct_default_test.db
+
+statement ok
+CREATE TABLE a(i INT[] DEFAULT ([1, 2, 3]))
+
+statement ok
+INSERT INTO a VALUES (DEFAULT)
+
+query I
+SELECT * FROM a
+----
+[1, 2, 3]
+
+restart
+
+statement ok
+INSERT INTO a VALUES (DEFAULT)
+
+query I
+SELECT * FROM a
+----
+[1, 2, 3]
+[1, 2, 3]

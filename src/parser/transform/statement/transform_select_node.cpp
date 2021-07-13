@@ -40,9 +40,7 @@ unique_ptr<QueryNode> Transformer::TransformSelectNode(duckdb_libpgquery::PGSele
 			auto target = reinterpret_cast<duckdb_libpgquery::PGNode *>(stmt->distinctClause->head->data.ptr_value);
 			if (target) {
 				//  add the columns defined in the ON clause to the select list
-				if (!TransformExpressionList(stmt->distinctClause, modifier->distinct_on_targets, 0)) {
-					throw Exception("Failed to transform expression list from DISTINCT ON.");
-				}
+				TransformExpressionList(*stmt->distinctClause, modifier->distinct_on_targets, 0);
 			}
 			result->modifiers.push_back(move(modifier));
 		}
@@ -58,9 +56,7 @@ unique_ptr<QueryNode> Transformer::TransformSelectNode(duckdb_libpgquery::PGSele
 				throw ParserException("SELECT clause without selection list");
 			}
 			// select list
-			if (!TransformExpressionList(stmt->targetList, result->select_list, 0)) {
-				throw InternalException("Failed to transform expression list.");
-			}
+			TransformExpressionList(*stmt->targetList, result->select_list, 0);
 			result->from_table = TransformFrom(stmt->fromClause);
 		}
 

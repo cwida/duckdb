@@ -80,12 +80,8 @@ public:
 	static bool HasConflict(ClientContext &context, transaction_t timestamp);
 	static bool UseTimestamp(ClientContext &context, transaction_t timestamp);
 
-	idx_t GetEntryIndex(CatalogEntry *entry);
 	CatalogEntry *GetEntryFromIndex(idx_t index);
 	void UpdateTimestamp(CatalogEntry *entry, transaction_t timestamp);
-
-	//! Returns the root entry with the specified name regardless of transaction (or nullptr if there are none)
-	CatalogEntry *GetRootEntry(const string &name);
 
 private:
 	//! Given a root entry, gets the entry valid for this transaction

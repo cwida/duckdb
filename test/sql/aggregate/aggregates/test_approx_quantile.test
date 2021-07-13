@@ -101,6 +101,9 @@ statement error
 SELECT approx_quantile(r, NULL) FROM quantile
 
 statement error
+SELECT approx_quantile(r, r) FROM quantile
+
+statement error
 SELECT approx_quantile(r::string, 0.5) FROM quantile
 
 statement error
@@ -108,7 +111,6 @@ SELECT approx_quantile(r) FROM quantile
 
 statement error
 SELECT approx_quantile(r, 0.1, 0.2) FROM quantile
-
 
 statement ok
 pragma threads=4
@@ -170,3 +172,15 @@ FROM (
     UNION ALL SELECT 'b' AS a, 1.0 AS b
     ) y
 GROUP BY a
+
+statement error
+SELECT reservoir_quantile(r, r)  from quantile
+
+statement error
+SELECT reservoir_quantile(r, NULL)  from quantile
+
+statement error
+SELECT reservoir_quantile(r, r, r)  from quantile
+
+statement error
+SELECT reservoir_quantile(r, 0.9, NULL)  from quantile

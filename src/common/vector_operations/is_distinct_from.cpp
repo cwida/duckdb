@@ -704,7 +704,7 @@ static void ExecuteDistinct(Vector &left, Vector &right, Vector &result, idx_t c
 		NestedDistinctExecute<OP>(left, right, result, count);
 		break;
 	default:
-		throw InvalidTypeException(left.GetType(), "Invalid type for distinct comparison");
+		throw InternalException("Invalid type for distinct comparison");
 	}
 }
 
@@ -747,7 +747,7 @@ static idx_t TemplatedDistinctSelectOperation(Vector &left, Vector &right, idx_t
 	case PhysicalType::LIST:
 		return DistinctSelectNested<OP, DENSE>(left, right, vcount, sel, count, true_sel, false_sel);
 	default:
-		throw InvalidTypeException(left.GetType(), "Invalid type for distinct selection");
+		throw InternalException("Invalid type for distinct selection");
 	}
 }
 

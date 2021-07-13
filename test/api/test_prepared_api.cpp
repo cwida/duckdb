@@ -119,6 +119,11 @@ TEST_CASE("Alter table and prepared statements", "[api]") {
 	result = prepared->Execute(12);
 	REQUIRE(CHECK_COLUMN(result, 0, {12}));
 
+	REQUIRE(prepared->ColumnCount() == 1);
+	REQUIRE(prepared->GetStatementType() == StatementType::SELECT_STATEMENT);
+	REQUIRE(prepared->GetTypes()[0].id() == LogicalTypeId::TINYINT);
+	REQUIRE(prepared->GetNames()[0] == "i");
+
 	// we can alter the type of the column
 	REQUIRE_NO_FAIL(con2.Query("ALTER TABLE a ALTER i TYPE BIGINT USING i"));
 

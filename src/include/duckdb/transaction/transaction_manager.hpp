@@ -45,8 +45,6 @@ public:
 	string CommitTransaction(ClientContext &context, Transaction *transaction);
 	//! Rollback the given transaction
 	void RollbackTransaction(Transaction *transaction);
-	//! Add the catalog set
-	void AddCatalogSet(ClientContext &context, unique_ptr<CatalogSet> catalog_set);
 
 	transaction_t GetQueryNumber() {
 		return current_query_number++;

@@ -18,6 +18,13 @@ SELECT avg(42) OVER ()
 ----
 42.000000
 
+# window on non-aggregate function
+statement error
+SELECT concat() OVER ()
+
+statement error
+SELECT nonexistingfunction() OVER ()
+
 # nested window functions are not allowed
 statement error
 SELECT avg(row_number() over ()) over ()

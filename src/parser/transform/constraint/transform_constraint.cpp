@@ -22,9 +22,6 @@ unique_ptr<Constraint> Transformer::TransformConstraint(duckdb_libpgquery::PGLis
 		if (expression->HasSubquery()) {
 			throw ParserException("subqueries prohibited in CHECK constraints");
 		}
-		if (expression->IsAggregate()) {
-			throw ParserException("aggregates prohibited in CHECK constraints");
-		}
 		return make_unique<CheckConstraint>(TransformExpression(constraint->raw_expr, 0));
 	}
 	default:

@@ -2,7 +2,7 @@
 
 namespace duckdb {
 
-std::string Transformer::NodetypeToString(duckdb_libpgquery::PGNodeTag type) {
+std::string Transformer::NodetypeToString(duckdb_libpgquery::PGNodeTag type) { // LCOV_EXCL_START
 	switch (type) {
 	case duckdb_libpgquery::T_PGInvalid:
 		return "T_Invalid";
@@ -813,9 +813,8 @@ std::string Transformer::NodetypeToString(duckdb_libpgquery::PGNodeTag type) {
 	case duckdb_libpgquery::T_PGForeignKeyCacheInfo:
 		return "T_ForeignKeyCacheInfo";
 	default:
-		D_ASSERT(0);
-		return "";
+		return "(UNKNOWN)";
 	}
-}
+} // LCOV_EXCL_STOP
 
 } // namespace duckdb

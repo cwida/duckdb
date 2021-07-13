@@ -55,16 +55,4 @@ string_t StringHeap::EmptyString(idx_t len) {
 	return string_t(insert_pos, len);
 }
 
-void StringHeap::MergeHeap(StringHeap &other) {
-	if (!other.tail) {
-		return;
-	}
-	other.tail->prev = move(chunk);
-	this->chunk = move(other.chunk);
-	if (!tail) {
-		tail = this->chunk.get();
-	}
-	other.tail = nullptr;
-}
-
 } // namespace duckdb

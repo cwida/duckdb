@@ -274,9 +274,8 @@ void SetArrowFormat(DuckDBArrowSchemaHolder &root_holder, ArrowSchema &child, co
 		SetArrowMapFormat(root_holder, child, type);
 		break;
 	}
-
 	default:
-		throw NotImplementedException("Unsupported Arrow type " + type.ToString());
+		throw InternalException("Unsupported Arrow type " + type.ToString());
 	}
 }
 

@@ -68,7 +68,7 @@ GroupedAggregateHashTable::GroupedAggregateHashTable(BufferManager &buffer_manag
 		break;
 	}
 	default:
-		throw NotImplementedException("Unknown HT entry width");
+		throw InternalException("Unknown HT entry width");
 	}
 
 	// create additional hash tables for distinct aggrs
@@ -213,9 +213,7 @@ void GroupedAggregateHashTable::Resize(idx_t size) {
 	if (size <= capacity) {
 		throw InternalException("Cannot downsize a hash table!");
 	}
-	if (size < STANDARD_VECTOR_SIZE) {
-		size = STANDARD_VECTOR_SIZE;
-	}
+	D_ASSERT(size >= STANDARD_VECTOR_SIZE);
 
 	// size needs to be a power of 2
 	D_ASSERT((size & (size - 1)) == 0);
@@ -515,7 +513,7 @@ idx_t GroupedAggregateHashTable::FindOrCreateGroups(DataChunk &groups, Vector &g
 	case HtEntryType::HT_WIDTH_32:
 		return FindOrCreateGroupsInternal<aggr_ht_entry_32>(groups, group_hashes, addresses_out, new_groups_out);
 	default:
-		throw NotImplementedException("Unknown HT entry width");
+		throw InternalException("Unknown HT entry width");
 	}
 }
 

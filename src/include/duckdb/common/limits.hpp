@@ -74,8 +74,4 @@ struct NumericLimits<double> {
 	static double Maximum();
 };
 
-//! Returns the minimal type that guarantees an integer value from not
-//! overflowing
-PhysicalType MinimalType(int64_t value);
-
 } // namespace duckdb

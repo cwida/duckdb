@@ -13,10 +13,6 @@ DeleteRelation::DeleteRelation(ClientContext &context, unique_ptr<ParsedExpressi
 	context.TryBindRelation(*this, this->columns);
 }
 
-unique_ptr<QueryNode> DeleteRelation::GetQueryNode() {
-	throw InternalException("Cannot create a query node from a DeleteRelation!");
-}
-
 BoundStatement DeleteRelation::Bind(Binder &binder) {
 	auto basetable = make_unique<BaseTableRef>();
 	basetable->schema_name = schema_name;

@@ -36,3 +36,7 @@ thisisalongstring
 3
 thisisalsoalongstring
 
+query I
+SELECT FIRST(i) FROM (VALUES (NULL::INT32)) tbl(i)
+----
+NULL

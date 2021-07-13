@@ -1,0 +1,23 @@
+# name: test/sql/prepared/invalid_prepare.test
+# description: Test invalid prepare statements
+# group: [prepared]
+
+# start with a higher index than 1
+statement ok
+prepare v1 as select $2::int;
+
+statement error
+execute v1(0);
+
+# cannot cast from varchar to int
+statement ok
+prepare v2 as select $1::int;
+
+statement error
+execute v2('hello');
+
+statement ok
+prepare v3 as select $1::int where 1=0;
+
+statement ok
+execute v3(1);

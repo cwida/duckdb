@@ -350,3 +350,7 @@ select string_split()
 
 statement error
 select string_split('a')
+
+# incorrect regex
+statement error
+SELECT string_split_regex(a, '[') FROM test ORDER BY a;

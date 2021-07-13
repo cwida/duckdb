@@ -264,9 +264,6 @@ void FirstFun::RegisterFunction(BuiltinFunctions &set) {
 			first.AddFunction(FirstFun::GetFunction(type));
 		}
 	}
-	first.AddFunction(FirstFun::GetFunction(LogicalTypeId::LIST));
-	first.AddFunction(FirstFun::GetFunction(LogicalTypeId::STRUCT));
-	first.AddFunction(FirstFun::GetFunction(LogicalTypeId::MAP));
 	set.AddFunction(first);
 	first.name = "arbitrary";
 	set.AddFunction(first);

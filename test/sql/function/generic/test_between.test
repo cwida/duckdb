@@ -219,3 +219,23 @@ query I
 SELECT COUNT(*) FROM integers WHERE 1 BETWEEN 0 AND i-1
 ----
 2
+
+query I
+SELECT * FROM integers WHERE i >= 1 AND i < 2
+----
+1
+
+query I
+SELECT * FROM integers WHERE i > 1 AND i <= 2
+----
+2
+
+query I
+SELECT * FROM range(4) tbl(i) WHERE i >= 1 AND i < 2
+----
+1
+
+query I
+SELECT * FROM range(4) tbl(i) WHERE i > 1 AND i <= 2
+----
+2

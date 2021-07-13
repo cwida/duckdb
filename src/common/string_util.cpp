@@ -1,6 +1,7 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/pair.hpp"
 #include "duckdb/common/to_string.hpp"
+#include "duckdb/common/string_util.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -51,10 +52,7 @@ bool StringUtil::EndsWith(const string &str, const string &suffix) {
 
 string StringUtil::Repeat(const string &str, idx_t n) {
 	std::ostringstream os;
-	if (n == 0 || str.empty()) {
-		return (os.str());
-	}
-	for (int i = 0; i < static_cast<int>(n); i++) {
+	for (idx_t i = 0; i < n; i++) {
 		os << str;
 	}
 	return (os.str());
@@ -74,41 +72,26 @@ string StringUtil::Join(const vector<string> &input, const string &separator) {
 	return StringUtil::Join(input, input.size(), separator, [](const string &s) { return s; });
 }
 
-string StringUtil::Prefix(const string &str, const string &prefix) {
-	vector<string> lines = StringUtil::Split(str, '\n');
-	if (lines.empty()) {
-		return ("");
-	}
-
-	std::ostringstream os;
-	for (idx_t i = 0, cnt = lines.size(); i < cnt; i++) {
-		if (i > 0) {
-			os << std::endl;
-		}
-		os << prefix << lines[i];
-	}
-	return (os.str());
-}
-
-// http://ubuntuforums.org/showpost.php?p=10215516&postcount=5
-string StringUtil::FormatSize(idx_t bytes) {
-	double multiplier = 1024;
-	double kilobytes = multiplier;
-	double megabytes = multiplier * kilobytes;
-	double gigabytes = multiplier * megabytes;
-
-	std::ostringstream os;
-
-	if (bytes >= gigabytes) {
-		os << std::fixed << std::setprecision(2) << (bytes / gigabytes) << " GB";
-	} else if (bytes >= megabytes) {
-		os << std::fixed << std::setprecision(2) << (bytes / megabytes) << " MB";
-	} else if (bytes >= kilobytes) {
-		os << std::fixed << std::setprecision(2) << (bytes / kilobytes) << " KB";
+string StringUtil::BytesToHumanReadableString(idx_t bytes) {
+	string db_size;
+	auto kilobytes = bytes / 1000;
+	auto megabytes = kilobytes / 1000;
+	kilobytes -= megabytes * 1000;
+	auto gigabytes = megabytes / 1000;
+	megabytes -= gigabytes * 1000;
+	auto terabytes = gigabytes / 1000;
+	gigabytes -= terabytes * 1000;
+	if (terabytes > 0) {
+		return to_string(terabytes) + "." + to_string(gigabytes / 100) + "TB";
+	} else if (gigabytes > 0) {
+		return to_string(gigabytes) + "." + to_string(megabytes / 100) + "GB";
+	} else if (megabytes > 0) {
+		return to_string(megabytes) + "." + to_string(kilobytes / 100) + "MB";
+	} else if (kilobytes > 0) {
+		return to_string(kilobytes) + "KB";
 	} else {
-		os << to_string(bytes) + " bytes";
+		return to_string(bytes) + " bytes";
 	}
-	return (os.str());
 }
 
 string StringUtil::Upper(const string &str) {
@@ -146,9 +129,6 @@ vector<string> StringUtil::Split(const string &input, const string &split) {
 }
 
 string StringUtil::Replace(string source, const string &from, const string &to) {
-	if (from.empty()) {
-		return source;
-	}
 	idx_t start_pos = 0;
 	while ((start_pos = source.find(from, start_pos)) != string::npos) {
 		source.replace(start_pos, from.length(), to);

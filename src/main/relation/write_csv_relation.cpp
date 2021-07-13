@@ -11,10 +11,6 @@ WriteCSVRelation::WriteCSVRelation(shared_ptr<Relation> child_p, string csv_file
 	context.TryBindRelation(*this, this->columns);
 }
 
-unique_ptr<QueryNode> WriteCSVRelation::GetQueryNode() {
-	throw InternalException("Cannot create a query node from a WriteCSVRelation!");
-}
-
 BoundStatement WriteCSVRelation::Bind(Binder &binder) {
 	CopyStatement copy;
 	copy.select_statement = child->GetQueryNode();

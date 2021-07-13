@@ -90,7 +90,7 @@ struct ToMilliSecondsOperator {
 		result.days = 0;
 		if (!TryMultiplyOperator::Operation<int64_t, int64_t, int64_t>(input, Interval::MICROS_PER_MSEC,
 		                                                               result.micros)) {
-			throw OutOfRangeException("Interval value %d seconds out of range", input);
+			throw OutOfRangeException("Interval value %d milliseconds out of range", input);
 		}
 		return result;
 	}

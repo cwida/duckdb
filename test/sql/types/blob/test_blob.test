@@ -93,3 +93,6 @@ SELECT * FROM blob_empty
 NULL
 NULL
 
+# convert non-ascii string to blob using cat
+statement error
+select 'ü'::blob;

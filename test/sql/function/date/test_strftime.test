@@ -69,6 +69,20 @@ NULL
 NULL
 NULL
 
+query I
+SELECT strftime(NULL::TIMESTAMP, NULL) FROM range(3);
+----
+NULL
+NULL
+NULL
+
+query I
+SELECT strftime(NULL::TIMESTAMP, '%%%%%% %Y %%%%%%') FROM range(3);
+----
+NULL
+NULL
+NULL
+
 # no specifiers, only constant
 query I
 SELECT strftime(DATE '1992-01-01', 'hello world');

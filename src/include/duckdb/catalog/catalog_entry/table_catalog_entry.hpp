@@ -55,8 +55,6 @@ public:
 	ColumnDefinition &GetColumn(const string &name);
 	//! Returns a list of types of the table
 	vector<LogicalType> GetTypes();
-	//! Returns a list of types of the specified columns of the table
-	vector<LogicalType> GetTypes(const vector<column_t> &column_ids);
 	string ToSQL() override;
 
 	//! Add lower case aliases to a name map (e.g. "Hello" -> "hello" is also acceptable)

@@ -13,10 +13,6 @@ CreateViewRelation::CreateViewRelation(shared_ptr<Relation> child_p, string view
 	context.TryBindRelation(*this, this->columns);
 }
 
-unique_ptr<QueryNode> CreateViewRelation::GetQueryNode() {
-	throw InternalException("Cannot create a query node from a CreateViewRelation!");
-}
-
 BoundStatement CreateViewRelation::Bind(Binder &binder) {
 	auto select = make_unique<SelectStatement>();
 	select->node = child->GetQueryNode();

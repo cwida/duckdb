@@ -35,3 +35,7 @@ query I
 SELECT stats(i) FROM test LIMIT 1
 ----
 <REGEX>:.*1.*2.*
+
+# fail when column does not exist
+statement error
+ALTER TABLE test ALTER nonexistingcolumn SET DATA TYPE INTEGER

@@ -29,6 +29,11 @@ SELECT INTERVAL '2Y 1 month 1 M 3S 20mS';
 2 years 1 month 00:01:03.02
 
 query T
+SELECT INTERVAL '2Y 1 month 02:01:03.02';
+----
+2 years 1 month 02:01:03.02
+
+query T
 SELECT INTERVAL '2Y 1 month 1M 3S 20mS'::VARCHAR;
 ----
 2 years 1 month 00:01:03.02
@@ -47,6 +52,11 @@ SELECT INTERVAL '-2Y 4 days 1 MinUteS 3S 20mS'::VARCHAR;
 # test ago usage
 query T
 SELECT INTERVAL '2Y 4 days 1 MinUteS 3S 20mS ago'::VARCHAR;
+----
+-2 years -4 days -00:01:03.02
+
+query T
+SELECT INTERVAL '2Y 4 days 1 MinUteS 3S 20mS ago  '::VARCHAR;
 ----
 -2 years -4 days -00:01:03.02
 
@@ -216,6 +226,17 @@ SELECT INTERVAL '9223372036854775msecs';
 2562047788:00:54.775
 
 query T
+SELECT INTERVAL '1 week';
+----
+7 days
+
+query T
+SELECT INTERVAL '1 millennium 2 centuries 1 decade 3 quarter';
+----
+1210 years 9 months
+
+
+query T
 SELECT INTERVAL '-2147483647 months -2147483647 days -9223372036854775msecs';
 ----
 -178956970 years -7 months -2147483647 days -2562047788:00:54.775
@@ -237,3 +258,21 @@ SELECT INTERVAL 'aa' DAY;
 
 statement error
 SELECT INTERVAL '100 months' DAY;
+
+statement error
+SELECT '100'::INTERVAL;
+
+statement error
+SELECT '100 unknowns'::INTERVAL;
+
+statement error
+SELECT '100 months a'::INTERVAL;
+
+statement error
+SELECT '100 months axo'::INTERVAL;
+
+statement error
+SELECT '100 months agb'::INTERVAL;
+
+statement error
+SELECT '100 months agob'::INTERVAL;

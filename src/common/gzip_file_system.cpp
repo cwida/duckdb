@@ -159,6 +159,9 @@ void GZipFile::Initialize() {
 
 	// TODO use custom alloc/free methods in miniz to throw exceptions on OOM
 	auto read_count = child_handle->Read(gzip_hdr, GZIP_HEADER_MINSIZE);
+
+	// check for incorrectly formatted files
+	// LCOV_EXCL_START
 	if (read_count != GZIP_HEADER_MINSIZE) {
 		throw Exception("Input is not a GZIP stream");
 	}
@@ -171,6 +174,7 @@ void GZipFile::Initialize() {
 	if (gzip_hdr[3] & GZIP_FLAG_UNSUPPORTED) {
 		throw Exception("Unsupported GZIP archive");
 	}
+	// LCOV_EXCL_STOP
 
 	if (gzip_hdr[3] & GZIP_FLAG_NAME) {
 		child_handle->Seek(data_start);
@@ -180,17 +184,13 @@ void GZipFile::Initialize() {
 	// stream is now set to beginning of payload data
 	auto ret = duckdb_miniz::mz_inflateInit2((duckdb_miniz::mz_streamp)mz_stream_ptr, -MZ_DEFAULT_WINDOW_BITS);
 	if (ret != duckdb_miniz::MZ_OK) {
-		throw Exception("Failed to initialize miniz");
+		throw InternalException("Failed to initialize miniz");
 	}
 }
 
 unique_ptr<FileHandle> GZipFileSystem::OpenCompressedFile(unique_ptr<FileHandle> handle) {
 	auto path = handle->path;
 	return make_unique<GZipFile>(move(handle), path);
-}
-
-void GZipFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) {
-	throw NotImplementedException("Unsupported: Random read in gzip file not supported");
 }
 
 int64_t GZipFile::ReadData(void *buffer, int64_t remaining) {
@@ -262,6 +262,12 @@ int64_t GZipFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes)
 	return gzip_file.ReadData(buffer, nr_bytes);
 }
 
+// unsupported operations
+// LCOV_EXCL_START
+void GZipFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) {
+	throw NotImplementedException("Unsupported: Random read in gzip file not supported");
+}
+
 void GZipFileSystem::Write(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) {
 	throw NotImplementedException("Unsupported: Write to gzip file");
 }
@@ -281,6 +287,7 @@ void GZipFileSystem::FileSync(FileHandle &handle) {
 void GZipFileSystem::Seek(FileHandle &handle, idx_t location) {
 	throw NotImplementedException("Unsupported: Seek within gzip file");
 }
+// LCOV_EXCL_STOP
 
 void GZipFileSystem::Reset(FileHandle &handle) {
 	auto &gzip_file = (GZipFile &)handle;

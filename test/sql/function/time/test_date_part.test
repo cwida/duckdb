@@ -98,3 +98,15 @@ SELECT week(i) FROM times
 
 statement error
 SELECT yearweek(i) FROM times
+
+statement error
+select extract(dow from time '10:00:00');
+
+statement error
+select extract(doy from time '10:00:00');
+
+statement error
+select extract(yearweek from time '10:00:00');
+
+statement error
+select extract(century from time '10:00:00');

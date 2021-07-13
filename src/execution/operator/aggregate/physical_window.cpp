@@ -513,8 +513,7 @@ static void UpdateWindowBoundaries(BoundWindowExpression *wexpr, const idx_t inp
 		bounds.window_start = bounds.peer_start;
 		break;
 	case WindowBoundary::UNBOUNDED_FOLLOWING:
-		D_ASSERT(0); // disallowed
-		break;
+		throw InternalException("UNBOUNDED_FOLLOWING cannot be the start expression of a window");
 	case WindowBoundary::EXPR_PRECEDING: {
 		D_ASSERT(boundary_start_collection.ColumnCount() > 0);
 		bounds.window_start =
@@ -529,15 +528,13 @@ static void UpdateWindowBoundaries(BoundWindowExpression *wexpr, const idx_t inp
 		    boundary_start_collection.GetValue(0, wexpr->start_expr->IsScalar() ? 0 : row_idx).GetValue<int64_t>();
 		break;
 	}
-
 	default:
-		throw NotImplementedException("Unsupported boundary");
+		throw InternalException("Unsupported window start boundary");
 	}
 
 	switch (wexpr->end) {
 	case WindowBoundary::UNBOUNDED_PRECEDING:
-		D_ASSERT(0); // disallowed
-		break;
+		throw InternalException("UNBOUNDED_PRECEDING cannot be the start expression of a window");
 	case WindowBoundary::CURRENT_ROW_ROWS:
 		bounds.window_end = row_idx + 1;
 		break;
@@ -558,10 +555,9 @@ static void UpdateWindowBoundaries(BoundWindowExpression *wexpr, const idx_t inp
 		bounds.window_end =
 		    row_idx +
 		    boundary_end_collection.GetValue(0, wexpr->end_expr->IsScalar() ? 0 : row_idx).GetValue<int64_t>() + 1;
-
 		break;
 	default:
-		throw NotImplementedException("Unsupported boundary");
+		throw InternalException("Unsupported window end boundary");
 	}
 
 	// clamp windows to partitions if they should exceed
@@ -579,7 +575,7 @@ static void UpdateWindowBoundaries(BoundWindowExpression *wexpr, const idx_t inp
 	}
 
 	if (bounds.window_start < 0 || bounds.window_end < 0) {
-		throw Exception("Failed to compute window boundaries");
+		throw InternalException("Failed to compute window boundaries");
 	}
 }
 
@@ -692,7 +688,7 @@ static void ComputeWindowExpression(BoundWindowExpression *wexpr, ChunkCollectio
 		}
 		case ExpressionType::WINDOW_NTILE: {
 			if (payload_collection.ColumnCount() != 1) {
-				throw Exception("NTILE needs a parameter");
+				throw BinderException("NTILE needs a parameter");
 			}
 			auto n_param = payload_collection.GetValue(0, row_idx).GetValue<int64_t>();
 			// With thanks from SQLite's ntileValueFunc()
@@ -757,7 +753,7 @@ static void ComputeWindowExpression(BoundWindowExpression *wexpr, ChunkCollectio
 			break;
 		}
 		default:
-			throw NotImplementedException("Window aggregate type %s", ExpressionTypeToString(wexpr->type));
+			throw InternalException("Window aggregate type %s", ExpressionTypeToString(wexpr->type));
 		}
 
 		output.SetValue(output_col, row_idx, res);

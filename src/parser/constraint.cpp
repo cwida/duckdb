@@ -20,8 +20,7 @@ unique_ptr<Constraint> Constraint::Deserialize(Deserializer &source) {
 	case ConstraintType::UNIQUE:
 		return UniqueConstraint::Deserialize(source);
 	default:
-		// don't know how to serialize this constraint type
-		return nullptr;
+		throw InternalException("Unrecognized constraint type for serialization");
 	}
 }
 

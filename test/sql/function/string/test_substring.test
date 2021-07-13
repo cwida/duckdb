@@ -180,6 +180,14 @@ orld
 (empty)
 NULL
 
+query T
+SELECT substring(substring(s, 2), 2) FROM strings
+----
+llo
+rld
+(empty)
+NULL
+
 # very large offset and length
 query T
 SELECT substring(s, 2147483647, 2147483647) FROM strings

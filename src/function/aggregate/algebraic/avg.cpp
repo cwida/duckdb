@@ -124,7 +124,7 @@ AggregateFunction GetAverageAggregate(PhysicalType type) {
 		return AggregateFunction::UnaryAggregate<AvgState<hugeint_t>, hugeint_t, double, HugeintAverageOperation>(
 		    LogicalType::HUGEINT, LogicalType::DOUBLE);
 	default:
-		throw NotImplementedException("Unimplemented average aggregate");
+		throw InternalException("Unimplemented average aggregate");
 	}
 }
 

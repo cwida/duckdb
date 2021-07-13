@@ -1,0 +1,25 @@
+# name: test/sql/catalog/sequence/test_sequence_dependency.test
+# description: Test Sequence Dependencies
+# group: [sequence]
+
+statement ok
+create sequence seq;
+
+statement ok
+create table integers(i integer default nextval('seq'));
+
+# can't drop the sequence
+statement error
+drop sequence seq;
+
+statement ok
+begin transaction;
+
+statement ok
+drop table integers;
+
+statement ok
+drop sequence seq;
+
+statement ok
+commit

@@ -96,9 +96,9 @@ void DBConfig::SetOption(const ConfigurationOption &option, const Value &value) 
 		maximum_threads = value.GetValue<int64_t>();
 		break;
 	}
-	default:
+	default: // LCOV_EXCL_START
 		break;
-	}
+	} // LCOV_EXCL_STOP
 }
 
 idx_t DBConfig::ParseMemoryLimit(const string &arg) {

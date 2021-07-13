@@ -98,7 +98,6 @@ unique_ptr<BaseStatistics> SumPropagateStats(ClientContext &context, BoundAggreg
 			max_positive = numeric_stats.max.GetValueUnsafe<int64_t>();
 			break;
 		default:
-			// unhandled type here
 			throw InternalException("Unsupported type for propagate sum stats");
 		}
 		auto max_sum_negative = max_negative * hugeint_t(node_stats->max_cardinality);
@@ -152,7 +151,7 @@ AggregateFunction SumFun::GetSumAggregate(PhysicalType type) {
 		return AggregateFunction::UnaryAggregate<SumState<hugeint_t>, hugeint_t, hugeint_t, HugeintSumOperation>(
 		    LogicalType::HUGEINT, LogicalType::HUGEINT);
 	default:
-		throw NotImplementedException("Unimplemented sum aggregate");
+		throw InternalException("Unimplemented sum aggregate");
 	}
 }
 

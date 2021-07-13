@@ -113,9 +113,7 @@ CatalogEntry *Catalog::CreateCollation(ClientContext &context, SchemaCatalogEntr
 }
 
 CatalogEntry *Catalog::CreateSchema(ClientContext &context, CreateSchemaInfo *info) {
-	if (info->schema.empty()) {
-		throw CatalogException("Schema not specified");
-	}
+	D_ASSERT(!info->schema.empty());
 	if (info->schema == TEMP_SCHEMA) {
 		throw CatalogException("Cannot create built-in schema \"%s\"", info->schema);
 	}
@@ -135,9 +133,7 @@ CatalogEntry *Catalog::CreateSchema(ClientContext &context, CreateSchemaInfo *in
 }
 
 void Catalog::DropSchema(ClientContext &context, DropInfo *info) {
-	if (info->name.empty()) {
-		throw CatalogException("Schema not specified");
-	}
+	D_ASSERT(!info->name.empty());
 	ModifyCatalog();
 	if (!schemas->DropEntry(context, info->name, info->cascade)) {
 		if (!info->if_exists) {
@@ -153,15 +149,7 @@ void Catalog::DropEntry(ClientContext &context, DropInfo *info) {
 		DropSchema(context, info);
 	} else {
 		if (info->schema.empty()) {
-			// invalid schema: check the search path
 			info->schema = DEFAULT_SCHEMA;
-			for (idx_t i = 0; i < context.catalog_search_path.size(); i++) {
-				auto entry = GetEntry(context, info->type, context.catalog_search_path[i], info->name, true);
-				if (entry) {
-					info->schema = context.catalog_search_path[i];
-					break;
-				}
-			}
 		}
 		auto schema = GetSchema(context, info->schema);
 		schema->DropEntry(context, info);
@@ -170,9 +158,7 @@ void Catalog::DropEntry(ClientContext &context, DropInfo *info) {
 
 SchemaCatalogEntry *Catalog::GetSchema(ClientContext &context, const string &schema_name,
                                        QueryErrorContext error_context) {
-	if (schema_name.empty()) {
-		throw CatalogException("Schema not specified");
-	}
+	D_ASSERT(!schema_name.empty());
 	if (schema_name == TEMP_SCHEMA) {
 		return context.temporary_objects.get();
 	}
@@ -205,19 +191,6 @@ CatalogEntry *Catalog::GetEntry(ClientContext &context, CatalogType type, string
 	}
 	auto schema = GetSchema(context, schema_name, error_context);
 	return schema->GetEntry(context, type, name, if_exists, error_context);
-}
-
-template <>
-ViewCatalogEntry *Catalog::GetEntry(ClientContext &context, string schema_name, const string &name, bool if_exists,
-                                    QueryErrorContext error_context) {
-	auto entry = GetEntry(context, CatalogType::VIEW_ENTRY, move(schema_name), name, if_exists);
-	if (!entry) {
-		return nullptr;
-	}
-	if (entry->type != CatalogType::VIEW_ENTRY) {
-		throw CatalogException("%s is not a view", name);
-	}
-	return (ViewCatalogEntry *)entry;
 }
 
 template <>

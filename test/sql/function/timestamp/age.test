@@ -137,4 +137,19 @@ SELECT INTERVAL '1' DAY < AGE(DATE '1900-06-13');
 query T
 SELECT AGE(DATE '1900-01-01', DATE '1950-01-01');
 ----
-50 years
+-50 years
+
+query I
+select age(timestamp '1992-01-01 01:01:02.400', timestamp '1992-01-01 01:01:02.200');
+----
+00:00:00.2
+
+query I
+select age(timestamp '1992-01-01 01:01:02.200', timestamp '1992-01-01 01:01:02.400');
+----
+-00:00:00.2
+
+query I
+select age(timestamp '1992-01-01 01:01:01.400', timestamp '1992-01-01 01:01:02.200');
+----
+-00:00:00.8

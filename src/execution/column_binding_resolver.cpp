@@ -78,6 +78,7 @@ unique_ptr<Expression> ColumnBindingResolver::VisitReplace(BoundColumnRefExpress
 			return make_unique<BoundReferenceExpression>(expr.alias, expr.return_type, i);
 		}
 	}
+	// LCOV_EXCL_START
 	// could not bind the column reference, this should never happen and indicates a bug in the code
 	// generate an error message
 	string bound_columns = "[";
@@ -91,6 +92,7 @@ unique_ptr<Expression> ColumnBindingResolver::VisitReplace(BoundColumnRefExpress
 
 	throw InternalException("Failed to bind column reference \"%s\" [%d.%d] (bindings: %s)", expr.alias,
 	                        expr.binding.table_index, expr.binding.column_index, bound_columns);
+	// LCOV_EXCL_STOP
 }
 
 } // namespace duckdb

@@ -112,18 +112,13 @@ AggregateFunction GetApproximateQuantileAggregateFunction(PhysicalType type) {
 		return AggregateFunction::UnaryAggregateDestructor<ApproxQuantileState, int64_t, int64_t,
 		                                                   ApproxQuantileOperation<int64_t>>(LogicalType::BIGINT,
 		                                                                                     LogicalType::BIGINT);
-	case PhysicalType::FLOAT:
-		return AggregateFunction::UnaryAggregateDestructor<ApproxQuantileState, float, float,
-		                                                   ApproxQuantileOperation<float>>(LogicalType::FLOAT,
-		                                                                                   LogicalType::FLOAT);
-
 	case PhysicalType::DOUBLE:
 		return AggregateFunction::UnaryAggregateDestructor<ApproxQuantileState, double, double,
 		                                                   ApproxQuantileOperation<double>>(LogicalType::DOUBLE,
 		                                                                                    LogicalType::DOUBLE);
 
 	default:
-		throw NotImplementedException("Unimplemented quantile aggregate");
+		throw InternalException("Unimplemented quantile aggregate");
 	}
 }
 

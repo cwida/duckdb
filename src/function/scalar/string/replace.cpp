@@ -21,8 +21,6 @@ static idx_t NextNeedle(const char *input_haystack, idx_t size_haystack, const c
 				return string_position;
 			}
 		}
-
-		return size_haystack;
 	}
 	// Did not find the needle
 	return size_haystack;

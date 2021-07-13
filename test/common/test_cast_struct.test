@@ -2,6 +2,9 @@
 # description: Test casting structs
 # group: [common]
 
+statement ok
+PRAGMA enable_verification
+
 # struct to struct casts with different names
 query I
 select struct_extract(struct_pack(b=>42)::struct(a integer), 'a');

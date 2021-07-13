@@ -27,9 +27,7 @@ public:
 	unique_ptr<SelectStatement> subquery;
 
 public:
-	string ToString() const override {
-		return function->ToString();
-	}
+	string ToString() const override;
 
 	bool Equals(const TableRef *other_p) const override;
 

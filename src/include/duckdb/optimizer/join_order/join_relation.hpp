@@ -59,8 +59,8 @@ public:
 	JoinRelationSet *GetJoinRelation(unique_ptr<idx_t[]> relations, idx_t count);
 	//! Union two sets of relations together and create a new relation set
 	JoinRelationSet *Union(JoinRelationSet *left, JoinRelationSet *right);
-	//! Create the set difference of left \ right (i.e. all elements in left that are not in right)
-	JoinRelationSet *Difference(JoinRelationSet *left, JoinRelationSet *right);
+	// //! Create the set difference of left \ right (i.e. all elements in left that are not in right)
+	// JoinRelationSet *Difference(JoinRelationSet *left, JoinRelationSet *right);
 
 private:
 	JoinRelationTreeNode root;

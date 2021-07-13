@@ -21,6 +21,13 @@ TEST_CASE("Test simple relation API", "[relation_api]") {
 	REQUIRE_NOTHROW(result = tbl->Project("i + 1")->Execute());
 	REQUIRE(CHECK_COLUMN(result, 0, {2, 3, 4}));
 
+	REQUIRE_NOTHROW(result = tbl->Project(vector<string> {"i + 1", "i + 2"})->Execute());
+	REQUIRE(CHECK_COLUMN(result, 0, {2, 3, 4}));
+	REQUIRE(CHECK_COLUMN(result, 1, {3, 4, 5}));
+
+	REQUIRE_NOTHROW(result = tbl->Project(vector<string> {"i + 1"}, {"i"})->Execute());
+	REQUIRE(CHECK_COLUMN(result, 0, {2, 3, 4}));
+
 	// we support * expressions
 	REQUIRE_NOTHROW(result = tbl->Project("*")->Execute());
 	REQUIRE(CHECK_COLUMN(result, 0, {1, 2, 3}));
@@ -49,6 +56,10 @@ TEST_CASE("Test simple relation API", "[relation_api]") {
 	REQUIRE_NOTHROW(proj = filter->Project("i + 1"));
 	REQUIRE_NOTHROW(result = proj->Execute());
 	REQUIRE(CHECK_COLUMN(result, 0, {2, 4}));
+
+	// multi filter
+	REQUIRE_NOTHROW(result = tbl->Filter(vector<string> {"i <> 2", "i <> 3"})->Execute());
+	REQUIRE(CHECK_COLUMN(result, 0, {1}));
 
 	// we can reuse the same filter again and perform a different projection
 	REQUIRE_NOTHROW(proj = filter->Project("i * 10"));
@@ -97,6 +108,8 @@ TEST_CASE("Test simple relation API", "[relation_api]") {
 
 	// now test ordering
 	REQUIRE_NOTHROW(result = proj->Order("a DESC")->Execute());
+	REQUIRE(CHECK_COLUMN(result, 0, {4, 2}));
+	REQUIRE_NOTHROW(result = proj->Order(vector<string> {"a DESC", "a ASC"})->Execute());
 	REQUIRE(CHECK_COLUMN(result, 0, {4, 2}));
 
 	// top n
@@ -163,6 +176,23 @@ TEST_CASE("Test simple relation API", "[relation_api]") {
 
 	// test explain
 	REQUIRE_NO_FAIL(multi_join->Explain());
+
+	// incorrect API usage
+	REQUIRE_THROWS(tbl->Project(vector<string> {})->Execute());
+	REQUIRE_THROWS(tbl->Project(vector<string> {"1, 2, 3"})->Execute());
+	REQUIRE_THROWS(tbl->Project(vector<string> {""})->Execute());
+	REQUIRE_THROWS(tbl->Filter("i=1, i=2")->Execute());
+	REQUIRE_THROWS(tbl->Filter("")->Execute());
+	REQUIRE_THROWS(tbl->Filter(vector<string> {})->Execute());
+	REQUIRE_THROWS(tbl->Filter(vector<string> {"1, 2, 3"})->Execute());
+	REQUIRE_THROWS(tbl->Filter(vector<string> {""})->Execute());
+	REQUIRE_THROWS(tbl->Order(vector<string> {})->Execute());
+	REQUIRE_THROWS(tbl->Order(vector<string> {"1, 2, 3"})->Execute());
+	REQUIRE_THROWS(tbl->Order("1 LIMIT 3")->Execute());
+	REQUIRE_THROWS(tbl->Order("1; SELECT 42")->Execute());
+	REQUIRE_THROWS(tbl->Join(tbl, "")->Execute());
+	REQUIRE_THROWS(tbl->Join(tbl, "a, a+1")->Execute());
+	REQUIRE_THROWS(tbl->Join(tbl, "a, bla.bla")->Execute());
 }
 
 TEST_CASE("Test combinations of set operations", "[relation_api]") {
@@ -316,6 +346,8 @@ TEST_CASE("Test combinations of joins", "[relation_api]") {
 	REQUIRE_NOTHROW(result = vjoin->Order("i")->Execute());
 	REQUIRE(CHECK_COLUMN(result, 0, {1, 2, 3}));
 	REQUIRE(CHECK_COLUMN(result, 1, {10, 5, 4}));
+
+	REQUIRE_NO_FAIL(con.Query("SELECT * FROM sqlite_master"));
 }
 
 TEST_CASE("Test view creation of relations", "[relation_api]") {
@@ -327,7 +359,12 @@ TEST_CASE("Test view creation of relations", "[relation_api]") {
 
 	// create some tables
 	REQUIRE_NO_FAIL(con.Query("CREATE TABLE integers(i INTEGER)"));
-	REQUIRE_NO_FAIL(con.Query("INSERT INTO integers VALUES (1), (2), (3)"));
+	REQUIRE_NOTHROW(con.Table("integers")->Insert({{Value::INTEGER(1)}, {Value::INTEGER(2)}, {Value::INTEGER(3)}}));
+
+	// insertion failure because of primary key
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE tbl_pk(i INTEGER PRIMARY KEY)"));
+	REQUIRE_NOTHROW(con.Table("tbl_pk")->Insert({{Value::INTEGER(1)}, {Value::INTEGER(2)}, {Value::INTEGER(3)}}));
+	REQUIRE_THROWS(con.Table("tbl_pk")->Insert({{Value::INTEGER(1)}, {Value::INTEGER(2)}, {Value::INTEGER(3)}}));
 
 	// simple view creation
 	REQUIRE_NOTHROW(tbl = con.Table("integers"));
@@ -370,10 +407,17 @@ TEST_CASE("Test view creation of relations", "[relation_api]") {
 	result = con.Query("SELECT i+1 FROM integers UNION SELECT i+10 FROM integers ORDER BY 1");
 	REQUIRE(CHECK_COLUMN(result, 0, {2, 3, 4, 11, 12, 13}));
 
-	tbl->Project("i + 1")->CreateView("test1");
-	tbl->Project("i + 10")->CreateView("test2");
+	REQUIRE_NOTHROW(tbl->Project("i + 1")->CreateView("test1"));
+	REQUIRE_NOTHROW(tbl->Project("i + 10")->CreateView("test2"));
 	result = con.Query("SELECT * FROM test1 UNION SELECT * FROM test2 ORDER BY 1");
 	REQUIRE(CHECK_COLUMN(result, 0, {2, 3, 4, 11, 12, 13}));
+
+	// project <> alias column count mismatch
+	REQUIRE_THROWS(proj->Project("i + 1, i + 2", "i"));
+	// view already exists
+	REQUIRE_THROWS(tbl->Project("i + 10")->CreateView("test2", false));
+	// table already exists
+	REQUIRE_THROWS(tbl->Project("i + 10")->Create("test2"));
 }
 
 TEST_CASE("Test table creations using the relation API", "[relation_api]") {
@@ -446,6 +490,7 @@ TEST_CASE("Test table deletions and updates", "[relation_api]") {
 TEST_CASE("Test aggregates in relation API", "[relation_api]") {
 	DuckDB db(nullptr);
 	Connection con(db);
+	con.EnableQueryVerification();
 	unique_ptr<QueryResult> result;
 
 	// create a table
@@ -458,6 +503,11 @@ TEST_CASE("Test aggregates in relation API", "[relation_api]") {
 	REQUIRE_NOTHROW(result = tbl->Aggregate("SUM(i), SUM(j)")->Execute());
 	REQUIRE(CHECK_COLUMN(result, 0, {4}));
 	REQUIRE(CHECK_COLUMN(result, 1, {18}));
+
+	REQUIRE_NOTHROW(result = tbl->Aggregate(vector<string> {"SUM(i)", "SUM(j)"})->Execute());
+	REQUIRE(CHECK_COLUMN(result, 0, {4}));
+	REQUIRE(CHECK_COLUMN(result, 1, {18}));
+
 	// we cannot put aggregates in a Project clause
 	REQUIRE_THROWS(result = tbl->Project("SUM(i), SUM(j)")->Execute());
 	REQUIRE_THROWS(result = tbl->Project("i, SUM(j)")->Execute());
@@ -468,6 +518,10 @@ TEST_CASE("Test aggregates in relation API", "[relation_api]") {
 	REQUIRE_NOTHROW(result = tbl->Aggregate("SUM(j), i")->Order("2")->Execute());
 	REQUIRE(CHECK_COLUMN(result, 0, {12, 6}));
 	REQUIRE(CHECK_COLUMN(result, 1, {1, 2}));
+	// explicitly grouped aggregate
+	REQUIRE_NOTHROW(result = tbl->Aggregate(vector<string> {"SUM(j)"}, vector<string> {"i"})->Order("1")->Execute());
+	REQUIRE(CHECK_COLUMN(result, 0, {6, 12}));
+
 	// grouped aggregates can be expressions
 	REQUIRE_NOTHROW(result = tbl->Aggregate("i+1 AS i, SUM(j)")->Order("1")->Execute());
 	REQUIRE(CHECK_COLUMN(result, 0, {2, 3}));
@@ -595,8 +649,8 @@ TEST_CASE("Test interaction of relations with schema changes", "[relation_api]")
 
 	// but what if we recreate an incompatible table?
 	REQUIRE_NO_FAIL(con.Query("DROP TABLE integers"));
-	REQUIRE_NO_FAIL(con.Query("CREATE TABLE integers(i VARCHAR)"));
-	REQUIRE_NO_FAIL(con.Query("INSERT INTO integers VALUES ('hello')"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE integers(i VARCHAR, j INTEGER)"));
+	REQUIRE_NO_FAIL(con.Query("INSERT INTO integers VALUES ('hello', 3)"));
 
 	// this results in a binding error!
 	REQUIRE_FAIL(tbl_scan->Execute());
@@ -612,17 +666,17 @@ TEST_CASE("Test interaction of relations with schema changes", "[relation_api]")
 
 	// change type of column
 	REQUIRE_NO_FAIL(con.Query("DROP TABLE integers"));
-	REQUIRE_NO_FAIL(con.Query("CREATE TABLE integers(i DATE)"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE integers(i DATE, j INTEGER)"));
 	REQUIRE_FAIL(tbl->Execute());
 
 	// different name also results in an error
 	REQUIRE_NO_FAIL(con.Query("DROP TABLE integers"));
-	REQUIRE_NO_FAIL(con.Query("CREATE TABLE integers(k VARCHAR)"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE integers(k VARCHAR, j INTEGER)"));
 	REQUIRE_FAIL(tbl->Execute());
 
 	// but once we go back to the original table it works again!
 	REQUIRE_NO_FAIL(con.Query("DROP TABLE integers"));
-	REQUIRE_NO_FAIL(con.Query("CREATE TABLE integers(i VARCHAR)"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE integers(i VARCHAR, j INTEGER)"));
 	REQUIRE_NO_FAIL(tbl->Execute());
 }
 
@@ -662,6 +716,7 @@ TEST_CASE("We cannot mix statements from multiple databases", "[relation_api]") 
 	REQUIRE_THROWS(i2->Except(i1));
 	REQUIRE_THROWS(i2->Intersect(i1));
 	REQUIRE_THROWS(i2->Join(i1, "i"));
+	REQUIRE_THROWS(i2->Join(i1, "i1.i=i2.i"));
 
 	// FIXME: what about a wrapper to scan data from other databases/connections?
 }
@@ -669,6 +724,7 @@ TEST_CASE("We cannot mix statements from multiple databases", "[relation_api]") 
 TEST_CASE("Test view relations", "[relation_api]") {
 	DuckDB db(nullptr);
 	Connection con(db);
+	con.EnableQueryVerification();
 	unique_ptr<QueryResult> result;
 
 	REQUIRE_NO_FAIL(con.Query("CREATE TABLE integers(i INTEGER)"));
@@ -698,6 +754,7 @@ TEST_CASE("Test view relations", "[relation_api]") {
 TEST_CASE("Test table function relations", "[relation_api]") {
 	DuckDB db(nullptr);
 	Connection con(db);
+	con.EnableQueryVerification();
 	unique_ptr<QueryResult> result;
 
 	REQUIRE_NO_FAIL(con.Query("CREATE TABLE integers(i INTEGER)"));
@@ -719,6 +776,13 @@ TEST_CASE("Test table function relations", "[relation_api]") {
 	REQUIRE(CHECK_COLUMN(result, 1, {1}));
 	REQUIRE(CHECK_COLUMN(result, 2, {"regetni"}));
 
+	// table function that takes a relation as input
+	auto values = con.Values("(42)", {"i"});
+	auto summary = values->TableFunction("summary", vector<Value> {});
+	result = summary->Execute();
+	REQUIRE(CHECK_COLUMN(result, 0, {"[42]"}));
+	REQUIRE(CHECK_COLUMN(result, 1, {"42"}));
+
 	// non-existant table function
 	REQUIRE_THROWS(con.TableFunction("blabla"));
 }
@@ -726,6 +790,7 @@ TEST_CASE("Test table function relations", "[relation_api]") {
 TEST_CASE("Test CSV reading/writing from relations", "[relation_api]") {
 	DuckDB db(nullptr);
 	Connection con(db);
+	con.EnableQueryVerification();
 	unique_ptr<QueryResult> result;
 
 	// write a bunch of values to a CSV
@@ -733,12 +798,20 @@ TEST_CASE("Test CSV reading/writing from relations", "[relation_api]") {
 
 	con.Values("(1), (2), (3)", {"i"})->WriteCSV(csv_file);
 
+	REQUIRE_THROWS(con.Values("(1), (2), (3)", {"i"})->WriteCSV("//fef//gw/g/bla/bla"));
+
 	// now scan the CSV file
 	auto csv_scan = con.ReadCSV(csv_file, {"i INTEGER"});
 	result = csv_scan->Execute();
 	REQUIRE(CHECK_COLUMN(result, 0, {1, 2, 3}));
 
+	// with auto detect
+	auto auto_csv_scan = con.ReadCSV(csv_file);
+	result = auto_csv_scan->Execute();
+	REQUIRE(CHECK_COLUMN(result, 0, {1, 2, 3}));
+
 	REQUIRE_THROWS(con.ReadCSV(csv_file, {"i INTEGER); SELECT 42;--"}));
+	REQUIRE_THROWS(con.ReadCSV(csv_file, {"i INTEGER, j INTEGER"}));
 }
 
 TEST_CASE("Test query relation", "[relation_api]") {
@@ -762,4 +835,8 @@ TEST_CASE("Test query relation", "[relation_api]") {
 	REQUIRE(CHECK_COLUMN(result, 0, {3}));
 
 	REQUIRE_THROWS(tbl->Project("k+1"));
+	// multiple queries
+	REQUIRE_THROWS(con.RelationFromQuery("SELECT 42; SELECT 84"));
+	// not a select statement
+	REQUIRE_THROWS(con.RelationFromQuery("DELETE FROM tbl"));
 }

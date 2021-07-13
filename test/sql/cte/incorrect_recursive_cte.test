@@ -1,0 +1,19 @@
+# name: test/sql/cte/incorrect_recursive_cte.test
+# description: Incorrect recursive ctes
+# group: [cte]
+
+statement ok
+PRAGMA threads=1
+
+# recursive CTE without UNION is just a normal CTE
+query I
+WITH RECURSIVE cte AS (SELECT 42) SELECT * FROM cte;
+----
+42
+
+# we only support recursive ctes with union or union all
+statement error
+with recursive t as (select 1 as x intersect select x+1 from t where x < 3) select * from t order by x
+
+statement error
+with recursive t as (select 1 as x except select x+1 from t where x < 3) select * from t order by x

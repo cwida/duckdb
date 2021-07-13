@@ -7,9 +7,8 @@
 namespace duckdb {
 
 unique_ptr<ParsedExpression> Transformer::TransformTypeCast(duckdb_libpgquery::PGTypeCast *root, idx_t depth) {
-	if (!root) {
-		return nullptr;
-	}
+	D_ASSERT(root);
+
 	// get the type to cast to
 	auto type_name = root->typeName;
 	LogicalType target_type = TransformTypeName(type_name);

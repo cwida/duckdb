@@ -1,0 +1,6 @@
+# name: test/sql/pragma/test_pragma_database_size.test
+# description: Test PRAGMA database_size
+# group: [pragma]
+
+statement ok
+PRAGMA database_size;

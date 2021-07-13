@@ -161,6 +161,7 @@ shared_ptr<Relation> Connection::Values(const string &values, const vector<strin
 shared_ptr<Relation> Connection::ReadCSV(const string &csv_file) {
 	BufferedCSVReaderOptions options;
 	options.file_path = csv_file;
+	options.auto_detect = true;
 	BufferedCSVReader reader(*context, options);
 	vector<ColumnDefinition> column_list;
 	for (idx_t i = 0; i < reader.sql_types.size(); i++) {

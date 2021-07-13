@@ -22,6 +22,11 @@ SELECT * FROM temp.s1
 ----
 42
 
+query I
+SELECT * FROM s1
+----
+42
+
 statement error
 CREATE TABLE temp.integersy(i INTEGER)
 

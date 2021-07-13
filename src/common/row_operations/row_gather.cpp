@@ -113,7 +113,7 @@ void RowOperations::Gather(Vector &rows, const SelectionVector &row_sel, Vector 
 		GatherNestedVector(rows, row_sel, col, col_sel, count, col_offset, col_no);
 		break;
 	default:
-		throw NotImplementedException("Unimplemented type for RowOperations::Gather");
+		throw InternalException("Unimplemented type for RowOperations::Gather");
 	}
 }
 

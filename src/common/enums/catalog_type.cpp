@@ -4,6 +4,7 @@
 
 namespace duckdb {
 
+// LCOV_EXCL_START
 string CatalogTypeToString(CatalogType type) {
 	switch (type) {
 	case CatalogType::COLLATION_ENTRY:
@@ -35,9 +36,10 @@ string CatalogTypeToString(CatalogType type) {
 	case CatalogType::INVALID:
 	case CatalogType::DELETED_ENTRY:
 	case CatalogType::UPDATED_ENTRY:
-		return "Invalid";
+		break;
 	}
-	return "Unknown";
+	return "INVALID";
 }
+// LCOV_EXCL_STOP
 
 } // namespace duckdb

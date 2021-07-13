@@ -4,6 +4,10 @@
 
 namespace duckdb {
 
+string BaseTableRef::ToString() const {
+	return "GET(" + schema_name + "." + table_name + ")";
+}
+
 bool BaseTableRef::Equals(const TableRef *other_p) const {
 	if (!TableRef::Equals(other_p)) {
 		return false;

@@ -32,9 +32,6 @@ enum class JoinType : uint8_t {
 //! Convert join type to string
 string JoinTypeToString(JoinType type);
 
-//! True if join is left, full or right outer join
-bool IsOuterJoin(JoinType type);
-
 //! True if join is left or full outer join
 bool IsLeftOuterJoin(JoinType type);
 

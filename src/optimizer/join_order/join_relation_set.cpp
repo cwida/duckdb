@@ -8,18 +8,18 @@ namespace duckdb {
 
 using JoinRelationTreeNode = JoinRelationSetManager::JoinRelationTreeNode;
 
+// LCOV_EXCL_START
 string JoinRelationSet::ToString() const {
 	string result = "[";
 	result += StringUtil::Join(relations, count, ", ", [](const idx_t &relation) { return to_string(relation); });
 	result += "]";
 	return result;
 }
+// LCOV_EXCL_STOP
 
 //! Returns true if sub is a subset of super
 bool JoinRelationSet::IsSubset(JoinRelationSet *super, JoinRelationSet *sub) {
-	if (sub->count == 0) {
-		return false;
-	}
+	D_ASSERT(sub->count > 0);
 	if (sub->count > super->count) {
 		return false;
 	}
@@ -112,35 +112,35 @@ JoinRelationSet *JoinRelationSetManager::Union(JoinRelationSet *left, JoinRelati
 	return GetJoinRelation(move(relations), count);
 }
 
-JoinRelationSet *JoinRelationSetManager::Difference(JoinRelationSet *left, JoinRelationSet *right) {
-	auto relations = unique_ptr<idx_t[]>(new idx_t[left->count]);
-	idx_t count = 0;
-	// move through the left and right relations
-	idx_t i = 0, j = 0;
-	while (true) {
-		if (i == left->count) {
-			// exhausted left relation, we are done
-			break;
-		} else if (j == right->count) {
-			// exhausted right relation, add remaining of left
-			for (; i < left->count; i++) {
-				relations[count++] = left->relations[i];
-			}
-			break;
-		} else if (left->relations[i] == right->relations[j]) {
-			// equivalent, add nothing
-			i++;
-			j++;
-		} else if (left->relations[i] < right->relations[j]) {
-			// left is smaller, progress left and add it to the set
-			relations[count++] = left->relations[i];
-			i++;
-		} else {
-			// right is smaller, progress right
-			j++;
-		}
-	}
-	return GetJoinRelation(move(relations), count);
-}
+// JoinRelationSet *JoinRelationSetManager::Difference(JoinRelationSet *left, JoinRelationSet *right) {
+// 	auto relations = unique_ptr<idx_t[]>(new idx_t[left->count]);
+// 	idx_t count = 0;
+// 	// move through the left and right relations
+// 	idx_t i = 0, j = 0;
+// 	while (true) {
+// 		if (i == left->count) {
+// 			// exhausted left relation, we are done
+// 			break;
+// 		} else if (j == right->count) {
+// 			// exhausted right relation, add remaining of left
+// 			for (; i < left->count; i++) {
+// 				relations[count++] = left->relations[i];
+// 			}
+// 			break;
+// 		} else if (left->relations[i] == right->relations[j]) {
+// 			// equivalent, add nothing
+// 			i++;
+// 			j++;
+// 		} else if (left->relations[i] < right->relations[j]) {
+// 			// left is smaller, progress left and add it to the set
+// 			relations[count++] = left->relations[i];
+// 			i++;
+// 		} else {
+// 			// right is smaller, progress right
+// 			j++;
+// 		}
+// 	}
+// 	return GetJoinRelation(move(relations), count);
+// }
 
 } // namespace duckdb

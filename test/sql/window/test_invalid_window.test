@@ -17,3 +17,9 @@ INSERT INTO empsalary VALUES ('develop', 10, 5200, '2007-08-01'), ('sales', 1, 5
 statement error
 SELECT depname, min(salary) OVER (PARTITION BY depname ORDER BY salary, empno) m1 FROM empsalary GROUP BY m1 ORDER BY depname, empno
 
+statement error
+select row_number() over (range between unbounded following and unbounded preceding);
+
+statement error
+select row_number() over (range between unbounded preceding and unbounded preceding);
+

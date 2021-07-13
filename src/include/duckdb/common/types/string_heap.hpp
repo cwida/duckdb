@@ -43,8 +43,6 @@ public:
 	string_t AddBlob(const char *data, idx_t len);
 	//! Allocates space for an empty string of size "len" on the heap
 	string_t EmptyString(idx_t len);
-	//! Add all strings from a different string heap to this string heap
-	void MergeHeap(StringHeap &heap);
 
 private:
 	struct StringChunk {

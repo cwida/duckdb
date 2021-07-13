@@ -4,6 +4,9 @@
 
 require notmingw
 
+statement ok
+PRAGMA enable_verification
+
 statement error
 LOAD 'asdf';
 

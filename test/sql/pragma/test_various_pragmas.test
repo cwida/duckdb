@@ -1,0 +1,41 @@
+# name: test/sql/pragma/test_various_pragmas.test
+# description: Test various PRAGMA functions
+# group: [pragma]
+
+statement ok
+PRAGMA enable_checkpoint_on_shutdown
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+statement ok
+PRAGMA force_parallelism
+
+statement ok
+PRAGMA disable_force_parallelism
+
+statement ok
+PRAGMA explain_output='all'
+
+statement error
+PRAGMA explain_output='unknown'
+
+statement ok
+PRAGMA enable_progress_bar
+
+statement ok
+PRAGMA disable_progress_bar
+
+statement ok
+PRAGMA enable_print_progress_bar
+
+statement ok
+PRAGMA disable_print_progress_bar
+
+statement ok
+PRAGMA debug_checkpoint_abort='none'
+
+statement error
+PRAGMA debug_checkpoint_abort='unknown'
+
+

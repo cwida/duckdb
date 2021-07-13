@@ -68,3 +68,23 @@ SELECT (i + 5) - i FROM dates
 5
 NULL
 
+statement error
+SELECT ''::DATE
+
+statement error
+SELECT '  '::DATE
+
+statement error
+SELECT '1992'::DATE
+
+statement error
+SELECT '1992-'::DATE
+
+statement error
+SELECT '1992-01'::DATE
+
+statement error
+SELECT '1992-01-'::DATE
+
+statement error
+SELECT '300307-01-01 (BC)'::DATE

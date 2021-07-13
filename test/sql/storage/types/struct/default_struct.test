@@ -1,0 +1,28 @@
+# name: test/sql/storage/types/struct/default_struct.test
+# description: Test struct storage with default values
+# group: [struct]
+
+# load the DB from disk
+load __TEST_DIR__/struct_default_test.db
+
+statement ok
+CREATE TABLE a(i ROW(a INT, b INT) DEFAULT ({'a': 7, 'b': 2}))
+
+statement ok
+INSERT INTO a VALUES (DEFAULT)
+
+query I
+SELECT * FROM a
+----
+{'a': 7, 'b': 2}
+
+restart
+
+statement ok
+INSERT INTO a VALUES (DEFAULT)
+
+query I
+SELECT * FROM a
+----
+{'a': 7, 'b': 2}
+{'a': 7, 'b': 2}

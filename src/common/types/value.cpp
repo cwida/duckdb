@@ -1125,8 +1125,11 @@ void Value::Serialize(Serializer &serializer) {
 		case PhysicalType::VARCHAR:
 			serializer.WriteString(str_value);
 			break;
-		default:
-			throw NotImplementedException("Value type not implemented for serialization!");
+		default: {
+			Vector v(*this);
+			v.Serialize(1, serializer);
+			break;
+		}
 		}
 	}
 }
@@ -1185,8 +1188,11 @@ Value Value::Deserialize(Deserializer &source) {
 	case PhysicalType::VARCHAR:
 		new_value.str_value = source.Read<string>();
 		break;
-	default:
-		throw NotImplementedException("Value type not implemented for deserialization");
+	default: {
+		Vector v(type);
+		v.Deserialize(1, source);
+		return v.GetValue(0);
+	}
 	}
 	return new_value;
 }

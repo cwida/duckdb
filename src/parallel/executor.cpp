@@ -39,6 +39,9 @@ void Executor::Initialize(PhysicalOperator *plan) {
 
 		// schedule pipelines that do not have dependents
 		for (auto &pipeline : pipelines) {
+#ifdef DEBUG
+			D_ASSERT(!pipeline->ToString().empty());
+#endif
 			if (!pipeline->HasDependencies()) {
 				pipeline->Schedule();
 			}

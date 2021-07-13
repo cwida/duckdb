@@ -18,9 +18,7 @@ static string ExtractColumnFromLambda(ParsedExpression &expr) {
 
 unique_ptr<ParsedExpression> Transformer::TransformLambda(duckdb_libpgquery::PGLambdaFunction *node, idx_t depth) {
 	vector<unique_ptr<ParsedExpression>> parameter_expressions;
-	if (!TransformExpressionList(node->parameters, parameter_expressions, depth + 1)) {
-		throw ParserException("Failed to transform expression list");
-	}
+	TransformExpressionList(*node->parameters, parameter_expressions, depth + 1);
 	vector<string> parameters;
 	parameters.reserve(parameter_expressions.size());
 	for (auto &expr : parameter_expressions) {

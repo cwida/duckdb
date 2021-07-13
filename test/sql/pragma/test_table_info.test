@@ -91,3 +91,7 @@ PRAGMA table_info(tconstraint2)
 1	j	INTEGER	1	NULL	1
 2	k	INTEGER	1	NULL	1
 3	l	INTEGER	0	NULL	0
+
+# incorrect number of parameters
+statement error
+PRAGMA table_info(1,2,3);

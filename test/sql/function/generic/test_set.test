@@ -5,6 +5,9 @@
 statement ok
 PRAGMA enable_verification
 
+statement error
+SELECT CURRENT_SETTING('a');
+
 statement ok
 SET a = 42;
 
@@ -37,3 +40,12 @@ RESET a;
 
 statement error
 RESET ALL;
+
+statement error
+SELECT CURRENT_SETTING(i::VARCHAR) FROM range(1) tbl(i);
+
+statement error
+SELECT CURRENT_SETTING('')
+
+statement error
+SELECT CURRENT_SETTING(NULL)

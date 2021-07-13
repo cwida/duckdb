@@ -43,6 +43,12 @@ PRAGMA table_info('test.v')
 statement error
 SELECT * FROM test.v
 
+statement ok
+CREATE VIEW test.v2 AS SELECT 42
+
+statement ok
+DROP VIEW test.v2
+
 loop i 0 2
 
 # restart the system
@@ -78,5 +84,8 @@ PRAGMA table_info('test.v')
 # drop the table again
 statement ok
 DROP TABLE test.t
+
+statement error
+SELECT * FROM test.v2
 
 endloop

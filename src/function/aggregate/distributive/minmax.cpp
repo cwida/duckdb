@@ -50,7 +50,7 @@ static AggregateFunction GetUnaryAggregate(LogicalType type) {
 	case LogicalTypeId::INTERVAL:
 		return AggregateFunction::UnaryAggregate<MinMaxState<interval_t>, interval_t, interval_t, OP>(type, type);
 	default:
-		throw NotImplementedException("Unimplemented type for min/max aggregate");
+		throw InternalException("Unimplemented type for min/max aggregate");
 	}
 }
 
@@ -278,7 +278,7 @@ static bool TemplatedOptimumValue(Vector &left, idx_t lidx, idx_t lcount, Vector
 	case PhysicalType::STRUCT:
 		return TemplatedOptimumStruct<OP>(left, lidx, lcount, right, ridx, rcount);
 	default:
-		throw InvalidTypeException(left.GetType(), "Invalid type for distinct comparison");
+		throw InternalException("Invalid type for distinct comparison");
 	}
 }
 
@@ -509,22 +509,6 @@ unique_ptr<FunctionData> BindDecimalMinMax(ClientContext &context, AggregateFunc
 	return nullptr;
 }
 
-template <class OP, class OP_STRING>
-static void AddMinMaxOperator(AggregateFunctionSet &set) {
-	for (auto &type : LogicalType::ALL_TYPES) {
-		if (type.id() == LogicalTypeId::VARCHAR || type.id() == LogicalTypeId::BLOB) {
-			set.AddFunction(
-			    AggregateFunction::UnaryAggregateDestructor<MinMaxState<string_t>, string_t, string_t, OP_STRING>(
-			        type.id(), type.id()));
-		} else if (type.id() == LogicalTypeId::DECIMAL) {
-			set.AddFunction(AggregateFunction({type}, type, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-			                                  BindDecimalMinMax<OP>));
-		} else {
-			set.AddFunction(GetUnaryAggregate<OP>(type));
-		}
-	}
-}
-
 template <typename OP, typename STATE>
 static AggregateFunction GetMinMaxFunction(const LogicalType &type) {
 	return AggregateFunction({type}, type, AggregateFunction::StateSize<STATE>,
@@ -534,21 +518,35 @@ static AggregateFunction GetMinMaxFunction(const LogicalType &type) {
 	                         AggregateFunction::StateDestroy<STATE, OP>);
 }
 
+template <class OP, class OP_STRING, class OP_VECTOR>
+static void AddMinMaxOperator(AggregateFunctionSet &set) {
+	for (auto &type : LogicalType::ALL_TYPES) {
+		if (type.id() == LogicalTypeId::VARCHAR || type.id() == LogicalTypeId::BLOB) {
+			set.AddFunction(
+			    AggregateFunction::UnaryAggregateDestructor<MinMaxState<string_t>, string_t, string_t, OP_STRING>(
+			        type.id(), type.id()));
+		} else if (type.id() == LogicalTypeId::DECIMAL) {
+			set.AddFunction(AggregateFunction({type}, type, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+			                                  BindDecimalMinMax<OP>));
+		} else if (type.id() == LogicalTypeId::LIST || type.id() == LogicalTypeId::MAP ||
+		           type.id() == LogicalTypeId::STRUCT) {
+			set.AddFunction(GetMinMaxFunction<OP_VECTOR, VectorMinMaxState>(type));
+
+		} else {
+			set.AddFunction(GetUnaryAggregate<OP>(type));
+		}
+	}
+}
+
 void MinFun::RegisterFunction(BuiltinFunctions &set) {
 	AggregateFunctionSet min("min");
-	AddMinMaxOperator<MinOperation, MinOperationString>(min);
-	min.AddFunction(GetMinMaxFunction<MinOperationVector, VectorMinMaxState>(LogicalTypeId::LIST));
-	min.AddFunction(GetMinMaxFunction<MinOperationVector, VectorMinMaxState>(LogicalTypeId::MAP));
-	min.AddFunction(GetMinMaxFunction<MinOperationVector, VectorMinMaxState>(LogicalTypeId::STRUCT));
+	AddMinMaxOperator<MinOperation, MinOperationString, MinOperationVector>(min);
 	set.AddFunction(min);
 }
 
 void MaxFun::RegisterFunction(BuiltinFunctions &set) {
 	AggregateFunctionSet max("max");
-	AddMinMaxOperator<MaxOperation, MaxOperationString>(max);
-	max.AddFunction(GetMinMaxFunction<MaxOperationVector, VectorMinMaxState>(LogicalTypeId::LIST));
-	max.AddFunction(GetMinMaxFunction<MaxOperationVector, VectorMinMaxState>(LogicalTypeId::MAP));
-	max.AddFunction(GetMinMaxFunction<MaxOperationVector, VectorMinMaxState>(LogicalTypeId::STRUCT));
+	AddMinMaxOperator<MaxOperation, MaxOperationString, MaxOperationVector>(max);
 	set.AddFunction(max);
 }
 

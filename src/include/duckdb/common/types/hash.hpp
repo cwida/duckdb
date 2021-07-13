@@ -56,7 +56,6 @@ hash_t Hash(string_t val);
 template <>
 hash_t Hash(interval_t val);
 hash_t Hash(const char *val, size_t size);
-hash_t Hash(char *val, size_t size);
 hash_t Hash(uint8_t *val, size_t size);
 
 } // namespace duckdb

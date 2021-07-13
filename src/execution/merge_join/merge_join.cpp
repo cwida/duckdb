@@ -35,7 +35,7 @@ static idx_t MergeJoinSwitch(L_ARG &l, R_ARG &r) {
 	case PhysicalType::VARCHAR:
 		return MJ::template Operation<string_t>(l, r);
 	default:
-		throw NotImplementedException("Type not implemented for merge join!");
+		throw InternalException("Type not implemented for merge join!");
 	}
 }
 
@@ -51,7 +51,7 @@ static idx_t MergeJoinComparisonSwitch(L_ARG &l, R_ARG &r, ExpressionType compar
 	case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
 		return MergeJoinSwitch<typename T::GreaterThanEquals, L_ARG, R_ARG>(l, r);
 	default:
-		throw NotImplementedException("Unimplemented comparison type for merge join!");
+		throw InternalException("Unimplemented comparison type for merge join!");
 	}
 }
 

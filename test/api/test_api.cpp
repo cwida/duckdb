@@ -1,5 +1,6 @@
 #include "catch.hpp"
 #include "test_helpers.hpp"
+#include "duckdb/parser/parser.hpp"
 
 #include <chrono>
 #include <thread>
@@ -200,12 +201,77 @@ TEST_CASE("Test multiple result sets", "[api]") {
 	REQUIRE(!result->next);
 }
 
+TEST_CASE("Test streaming API errors", "[api]") {
+	unique_ptr<QueryResult> result, result2;
+	DuckDB db(nullptr);
+	Connection con(db);
+	con.EnableQueryVerification();
+
+	// multiple streaming result
+	result = con.SendQuery("SELECT 42;");
+	result2 = con.SendQuery("SELECT 42;");
+	// "result" is invalidated
+	REQUIRE_THROWS(CHECK_COLUMN(result, 0, {42}));
+	// "result2" we can read
+	REQUIRE(CHECK_COLUMN(result2, 0, {42}));
+
+	// streaming result followed by non-streaming result
+	result = con.SendQuery("SELECT 42;");
+	result2 = con.Query("SELECT 42;");
+	// "result" is invalidated
+	REQUIRE_THROWS(CHECK_COLUMN(result, 0, {42}));
+	// "result2" we can read
+	REQUIRE(CHECK_COLUMN(result2, 0, {42}));
+
+	// error in query
+	result = con.SendQuery("SELECT 'hello'::INT;");
+	REQUIRE(!result->ToString().empty());
+	result = ((StreamQueryResult &)*result).Materialize();
+	REQUIRE_FAIL(result);
+
+	// error in stream that only happens after fetching
+	result = con.SendQuery(
+	    "SELECT x::INT FROM (SELECT x::VARCHAR x FROM range(10) tbl(x) UNION ALL SELECT 'hello' x) tbl(x);");
+	while (result->success) {
+		auto chunk = result->Fetch();
+		if (!chunk || chunk->size() == 0) {
+			break;
+		}
+	}
+	REQUIRE(!result->ToString().empty());
+	REQUIRE_FAIL(result);
+
+	// same query but call Materialize
+	result = con.SendQuery(
+	    "SELECT x::INT FROM (SELECT x::VARCHAR x FROM range(10) tbl(x) UNION ALL SELECT 'hello' x) tbl(x);");
+	REQUIRE(!result->ToString().empty());
+	result = ((StreamQueryResult &)*result).Materialize();
+	REQUIRE_FAIL(result);
+
+	// same query but call materialize after fetching
+	result = con.SendQuery(
+	    "SELECT x::INT FROM (SELECT x::VARCHAR x FROM range(10) tbl(x) UNION ALL SELECT 'hello' x) tbl(x);");
+	while (result->success) {
+		auto chunk = result->Fetch();
+		if (!chunk || chunk->size() == 0) {
+			break;
+		}
+	}
+	REQUIRE(!result->ToString().empty());
+	result = ((StreamQueryResult &)*result).Materialize();
+	REQUIRE_FAIL(result);
+}
+
 TEST_CASE("Test fetch API", "[api]") {
 	DuckDB db(nullptr);
 	Connection con(db);
 	con.EnableQueryVerification();
 
 	unique_ptr<QueryResult> result;
+
+	// fetch from an error
+	result = con.Query("SELECT 'hello'::INT");
+	REQUIRE_THROWS(result->Fetch());
 
 	result = con.SendQuery("CREATE TABLE test (a INTEGER);");
 
@@ -360,4 +426,41 @@ TEST_CASE("Test prepare dependencies with multiple connections", "[catalog]") {
 	REQUIRE_NO_FAIL(con3->Query("DROP TABLE integers CASCADE"));
 	REQUIRE_NO_FAIL(con2->Query("COMMIT"));
 	REQUIRE_NO_FAIL(con3->Query("COMMIT"));
+}
+
+TEST_CASE("Test connection API", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	con.EnableQueryVerification();
+
+	// extract a plan node
+	REQUIRE_NOTHROW(con.ExtractPlan("SELECT 42"));
+	// can only extract one statement at a time
+	REQUIRE_THROWS(con.ExtractPlan("SELECT 42; SELECT 84"));
+
+	// append to a table
+	con.Query("CREATE TABLE integers(i integer);");
+	auto table_info = con.TableInfo("integers");
+
+	DataChunk chunk;
+	REQUIRE_NOTHROW(con.Append(*table_info, chunk));
+
+	// no transaction active
+	REQUIRE_THROWS(con.Commit());
+	REQUIRE_THROWS(con.Rollback());
+
+	// cannot start a transaction within a transaction
+	REQUIRE_NOTHROW(con.BeginTransaction());
+	REQUIRE_THROWS(con.BeginTransaction());
+
+	con.SetAutoCommit(false);
+	REQUIRE(!con.IsAutoCommit());
+
+	con.SetAutoCommit(true);
+	REQUIRE(con.IsAutoCommit());
+}
+
+TEST_CASE("Test parser tokenize", "[api]") {
+	Parser parser;
+	REQUIRE_NOTHROW(parser.Tokenize("SELECT * FROM table WHERE i+1=3 AND j='hello'; --tokenize example query"));
 }

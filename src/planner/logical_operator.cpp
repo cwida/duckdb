@@ -76,6 +76,37 @@ string LogicalOperator::ToString(idx_t depth) const {
 	return renderer.ToString(*this);
 }
 
+void LogicalOperator::Verify() {
+#ifdef DEBUG
+	// verify expressions
+	for (idx_t expr_idx = 0; expr_idx < expressions.size(); expr_idx++) {
+		// verify that we can (correctly) copy this expression
+		auto copy = expressions[expr_idx]->Copy();
+		auto original_hash = expressions[expr_idx]->Hash();
+		auto copy_hash = copy->Hash();
+		// copy should be identical to original
+		D_ASSERT(expressions[expr_idx]->ToString() == copy->ToString());
+		D_ASSERT(original_hash == copy_hash);
+		D_ASSERT(Expression::Equals(expressions[expr_idx].get(), copy.get()));
+
+		D_ASSERT(!Expression::Equals(expressions[expr_idx].get(), nullptr));
+		for (idx_t other_idx = 0; other_idx < expr_idx; other_idx++) {
+			// comparison with other expressions
+			auto other_hash = expressions[other_idx]->Hash();
+			bool expr_equal = Expression::Equals(expressions[expr_idx].get(), expressions[other_idx].get());
+			if (original_hash != other_hash) {
+				// if the hashes are not equal the expressions should not be equal either
+				D_ASSERT(!expr_equal);
+			}
+		}
+	}
+	D_ASSERT(!ToString().empty());
+	for (auto &child : children) {
+		child->Verify();
+	}
+#endif
+}
+
 void LogicalOperator::Print() {
 	Printer::Print(ToString());
 }

@@ -6,9 +6,8 @@
 namespace duckdb {
 
 unique_ptr<ParsedExpression> Transformer::TransformCase(duckdb_libpgquery::PGCaseExpr *root, idx_t depth) {
-	if (!root) {
-		return nullptr;
-	}
+	D_ASSERT(root);
+
 	auto case_node = make_unique<CaseExpression>();
 	for (auto cell = root->args->head; cell != nullptr; cell = cell->next) {
 		CaseCheck case_check;

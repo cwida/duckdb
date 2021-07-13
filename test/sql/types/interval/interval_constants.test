@@ -123,6 +123,9 @@ SELECT interval '9223372036854775807' minutes;
 statement error
 SELECT interval '9223372036854775807' seconds;
 
+statement error
+SELECT interval '9223372036854775807' milliseconds;
+
 # milli/microseconds
 query I
 SELECT interval 3 milliseconds;

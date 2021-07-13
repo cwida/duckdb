@@ -11,7 +11,7 @@ unique_ptr<ParsedExpression> Transformer::TransformColumnRef(duckdb_libpgquery::
 	switch ((reinterpret_cast<duckdb_libpgquery::PGNode *>(fields->head->data.ptr_value))->type) {
 	case duckdb_libpgquery::T_PGString: {
 		if (fields->length < 1) {
-			throw ParserException("Unexpected field length");
+			throw InternalException("Unexpected field length");
 		}
 		string column_name, table_name;
 		if (fields->length == 1) {
@@ -43,9 +43,8 @@ unique_ptr<ParsedExpression> Transformer::TransformColumnRef(duckdb_libpgquery::
 		return make_unique<StarExpression>();
 	}
 	default:
-		break;
+		throw NotImplementedException("ColumnRef not implemented!");
 	}
-	throw NotImplementedException("ColumnRef not implemented!");
 }
 
 } // namespace duckdb

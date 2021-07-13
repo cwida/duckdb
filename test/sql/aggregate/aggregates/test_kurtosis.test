@@ -19,16 +19,25 @@ NULL
 statement error
 select kurtosis(*)
 
-
-# Constant Value (This shoud be an error)
 query I
-select kurtosis (10) from range (5)
+select kurtosis(i) from (values (0), (0), (0), (0), (0), (0)) tbl(i)
+----
+NULL
+
+query I
+select kurtosis(i) from (values (2e304), (2e305), (2e306), (2e307)) tbl(i)
+----
+NULL
+
+# Constant Value (This should be an error)
+query I
+select kurtosis(10) from range (5)
 ----
 NULL
 
 #Empty Table
 query I
-select kurtosis (10) from range (5) where 1 == 0
+select kurtosis(10) from range (5) where 1 == 0
 ----
 NULL
 

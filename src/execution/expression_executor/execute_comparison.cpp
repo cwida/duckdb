@@ -53,7 +53,7 @@ void ExpressionExecutor::Execute(const BoundComparisonExpression &expr, Expressi
 		VectorOperations::NotDistinctFrom(left, right, result, count);
 		break;
 	default:
-		throw NotImplementedException("Unknown comparison type!");
+		throw InternalException("Unknown comparison type!");
 	}
 }
 
@@ -299,7 +299,7 @@ idx_t ExpressionExecutor::Select(const BoundComparisonExpression &expr, Expressi
 	case ExpressionType::COMPARE_NOT_DISTINCT_FROM:
 		return VectorOperations::NotDistinctFrom(left, right, sel, count, true_sel, false_sel);
 	default:
-		throw NotImplementedException("Unknown comparison type!");
+		throw InternalException("Unknown comparison type!");
 	}
 }
 

@@ -39,10 +39,10 @@ void RollbackState::RollbackEntry(UndoFlags type, data_ptr_t data) {
 		info->segment->RollbackUpdate(info);
 		break;
 	}
-	default:
+	default: // LCOV_EXCL_START
 		D_ASSERT(type == UndoFlags::EMPTY_ENTRY);
 		break;
-	}
+	} // LCOV_EXCL_STOP
 }
 
 } // namespace duckdb

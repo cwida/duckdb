@@ -110,8 +110,7 @@ unique_ptr<FunctionData> BindNextAfter(ClientContext &context, ScalarFunction &f
 	    (arguments[0]->return_type != LogicalType::FLOAT && arguments[0]->return_type != LogicalType::DOUBLE)) {
 		throw NotImplementedException("Unimplemented type for NextAfter Function");
 	}
-
-	return make_unique<FunctionData>();
+	return nullptr;
 }
 
 void NextAfterFun::RegisterFunction(BuiltinFunctions &set) {
@@ -312,7 +311,7 @@ void CeilFun::RegisterFunction(BuiltinFunctions &set) {
 			bind_func = BindGenericRoundFunctionDecimal<CeilDecimalOperator>;
 			break;
 		default:
-			throw NotImplementedException("Unimplemented numeric type for function \"ceil\"");
+			throw InternalException("Unimplemented numeric type for function \"ceil\"");
 		}
 		ceil.AddFunction(ScalarFunction({type}, type, func, false, bind_func));
 	}
@@ -368,7 +367,7 @@ void FloorFun::RegisterFunction(BuiltinFunctions &set) {
 			bind_func = BindGenericRoundFunctionDecimal<FloorDecimalOperator>;
 			break;
 		default:
-			throw NotImplementedException("Unimplemented numeric type for function \"floor\"");
+			throw InternalException("Unimplemented numeric type for function \"floor\"");
 		}
 		floor.AddFunction(ScalarFunction({type}, type, func, false, bind_func));
 	}
@@ -574,7 +573,7 @@ void RoundFun::RegisterFunction(BuiltinFunctions &set) {
 			bind_prec_func = BindDecimalRoundPrecision;
 			break;
 		default:
-			throw NotImplementedException("Unimplemented numeric type for function \"floor\"");
+			throw InternalException("Unimplemented numeric type for function \"floor\"");
 		}
 		round.AddFunction(ScalarFunction({type}, type, round_func, false, bind_func));
 		round.AddFunction(ScalarFunction({type, LogicalType::INTEGER}, type, round_prec_func, false, bind_prec_func));

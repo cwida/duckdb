@@ -48,9 +48,12 @@ unique_ptr<MaterializedQueryResult> StreamQueryResult::Materialize() {
 	while (true) {
 		auto chunk = Fetch();
 		if (!chunk || chunk->size() == 0) {
-			return result;
+			break;
 		}
 		result->collection.Append(*chunk);
+	}
+	if (!success) {
+		return make_unique<MaterializedQueryResult>(error);
 	}
 	return result;
 }

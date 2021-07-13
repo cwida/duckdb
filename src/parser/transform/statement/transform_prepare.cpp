@@ -28,7 +28,9 @@ unique_ptr<ExecuteStatement> Transformer::TransformExecute(duckdb_libpgquery::PG
 	auto result = make_unique<ExecuteStatement>();
 	result->name = string(stmt->name);
 
-	TransformExpressionList(stmt->params, result->values, 0);
+	if (stmt->params) {
+		TransformExpressionList(*stmt->params, result->values, 0);
+	}
 	for (auto &expr : result->values) {
 		if (!expr->IsScalar()) {
 			throw Exception("Only scalar parameters or NULL supported for EXECUTE");

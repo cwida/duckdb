@@ -117,6 +117,9 @@ statement error
 PRAGMA default_null_order())
 
 statement error
+PRAGMA default_null_order='UNKNOWN'
+
+statement error
 PRAGMA default_null_order=UNKNOWN)
 
 statement error

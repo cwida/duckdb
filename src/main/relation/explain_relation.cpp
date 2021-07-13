@@ -12,10 +12,6 @@ ExplainRelation::ExplainRelation(shared_ptr<Relation> child_p)
 	context.TryBindRelation(*this, this->columns);
 }
 
-unique_ptr<QueryNode> ExplainRelation::GetQueryNode() {
-	throw InternalException("Cannot create a query node from a ExplainRelation!");
-}
-
 BoundStatement ExplainRelation::Bind(Binder &binder) {
 	auto select = make_unique<SelectStatement>();
 	select->node = child->GetQueryNode();

@@ -23,9 +23,7 @@ public:
 	idx_t size;
 
 public:
-	virtual idx_t Next(const char *input) {
-		return 0;
-	}
+	virtual idx_t Next(const char *input) = 0;
 	bool HasNext() {
 		return offset < size;
 	}
@@ -253,7 +251,7 @@ void StringSplitFun::RegisterFunction(BuiltinFunctions &set) {
 	auto varchar_list_type = LogicalType::LIST(LogicalType::VARCHAR);
 
 	set.AddFunction(
-	    {"string_split", "str_split", "string_to_array"},
+	    {"string_split", "str_split", "string_to_array", "split"},
 	    ScalarFunction({LogicalType::VARCHAR, LogicalType::VARCHAR}, varchar_list_type, StringSplitFunction));
 	set.AddFunction(
 	    {"string_split_regex", "str_split_regex", "regexp_split_to_array"},

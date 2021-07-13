@@ -70,16 +70,6 @@ public:
 	bool Match(Expression *expr_, vector<Expression *> &bindings) override;
 };
 
-class CastExpressionMatcher : public ExpressionMatcher {
-public:
-	CastExpressionMatcher() : ExpressionMatcher(ExpressionClass::BOUND_CAST) {
-	}
-	//! The child expression to match (if any)
-	unique_ptr<ExpressionMatcher> child;
-
-	bool Match(Expression *expr_, vector<Expression *> &bindings) override;
-};
-
 class ComparisonExpressionMatcher : public ExpressionMatcher {
 public:
 	ComparisonExpressionMatcher() : ExpressionMatcher(ExpressionClass::BOUND_COMPARISON) {
@@ -107,18 +97,6 @@ public:
 class ConjunctionExpressionMatcher : public ExpressionMatcher {
 public:
 	ConjunctionExpressionMatcher() : ExpressionMatcher(ExpressionClass::BOUND_CONJUNCTION) {
-	}
-	//! The matchers for the child expressions
-	vector<unique_ptr<ExpressionMatcher>> matchers;
-	//! The set matcher matching policy to use
-	SetMatcher::Policy policy;
-
-	bool Match(Expression *expr_, vector<Expression *> &bindings) override;
-};
-
-class OperatorExpressionMatcher : public ExpressionMatcher {
-public:
-	OperatorExpressionMatcher() : ExpressionMatcher(ExpressionClass::BOUND_OPERATOR) {
 	}
 	//! The matchers for the child expressions
 	vector<unique_ptr<ExpressionMatcher>> matchers;

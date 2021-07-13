@@ -167,3 +167,9 @@ SELECT regexp_matches('asdf', '.*SD.*', 'q')
 statement error
 SELECT regexp_matches('asdf', '.*SD.*', 'g')
 
+# error in non-constant regex
+statement ok
+INSERT INTO regex VALUES ('asdf', '(')
+
+statement error
+SELECT regexp_matches(s, p) FROM regex

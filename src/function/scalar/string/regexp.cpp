@@ -12,18 +12,25 @@
 
 namespace duckdb {
 
-RegexpMatchesBindData::RegexpMatchesBindData(duckdb_re2::RE2::Options options,
-                                             unique_ptr<duckdb_re2::RE2> constant_pattern, string range_min,
-                                             string range_max, bool range_success)
-    : options(options), constant_pattern(move(constant_pattern)), range_min(move(range_min)),
-      range_max(move(range_max)), range_success(range_success) {
+RegexpMatchesBindData::RegexpMatchesBindData(duckdb_re2::RE2::Options options, string constant_string_p)
+    : options(options), constant_string(move(constant_string_p)) {
+	if (!constant_string.empty()) {
+		constant_pattern = make_unique<RE2>(constant_string, options);
+		if (!constant_pattern->ok()) {
+			throw Exception(constant_pattern->error());
+		}
+
+		range_success = constant_pattern->PossibleMatchRange(&range_min, &range_max, 1000);
+	} else {
+		range_success = false;
+	}
 }
 
 RegexpMatchesBindData::~RegexpMatchesBindData() {
 }
 
 unique_ptr<FunctionData> RegexpMatchesBindData::Copy() {
-	return make_unique<RegexpMatchesBindData>(options, move(constant_pattern), range_min, range_max, range_success);
+	return make_unique<RegexpMatchesBindData>(options, constant_string);
 }
 
 static inline duckdb_re2::StringPiece CreateStringPiece(string_t &input) {
@@ -125,17 +132,10 @@ static unique_ptr<FunctionData> RegexpMatchesBind(ClientContext &context, Scalar
 	if (arguments[1]->IsFoldable()) {
 		Value pattern_str = ExpressionExecutor::EvaluateScalar(*arguments[1]);
 		if (!pattern_str.is_null && pattern_str.type().id() == LogicalTypeId::VARCHAR) {
-			auto re = make_unique<RE2>(pattern_str.str_value, options);
-			if (!re->ok()) {
-				throw Exception(re->error());
-			}
-
-			string range_min, range_max;
-			auto range_success = re->PossibleMatchRange(&range_min, &range_max, 1000);
-			return make_unique<RegexpMatchesBindData>(options, move(re), range_min, range_max, range_success);
+			return make_unique<RegexpMatchesBindData>(options, pattern_str.str_value);
 		}
 	}
-	return make_unique<RegexpMatchesBindData>(options, nullptr, "", "", false);
+	return make_unique<RegexpMatchesBindData>(options, "");
 }
 
 static void RegexReplaceFunction(DataChunk &args, ExpressionState &state, Vector &result) {

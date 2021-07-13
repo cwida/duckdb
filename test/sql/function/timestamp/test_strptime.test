@@ -385,3 +385,7 @@ SELECT strptime('20 19', '%W %j')
 # AM/PM out of range
 statement error
 SELECT strptime('Mon 30, December 30, 20:3:5 PM', '%a %d, %B %y, %H:%M:%S %p')
+
+# unrecognized specifier
+statement error
+SELECT strptime('21/10/2018', '%-q/%m/%Y')

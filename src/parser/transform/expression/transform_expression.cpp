@@ -5,9 +5,8 @@
 namespace duckdb {
 
 unique_ptr<ParsedExpression> Transformer::TransformResTarget(duckdb_libpgquery::PGResTarget *root, idx_t depth) {
-	if (!root) {
-		return nullptr;
-	}
+	D_ASSERT(root);
+
 	auto expr = TransformExpression(root->val, depth + 1);
 	if (!expr) {
 		return nullptr;
@@ -19,9 +18,8 @@ unique_ptr<ParsedExpression> Transformer::TransformResTarget(duckdb_libpgquery::
 }
 
 unique_ptr<ParsedExpression> Transformer::TransformNamedArg(duckdb_libpgquery::PGNamedArgExpr *root, idx_t depth) {
-	if (!root) {
-		return nullptr;
-	}
+	D_ASSERT(root);
+
 	auto expr = TransformExpression((duckdb_libpgquery::PGNode *)root->arg, depth + 1);
 	if (root->name) {
 		expr->alias = string(root->name);
@@ -33,6 +31,7 @@ unique_ptr<ParsedExpression> Transformer::TransformExpression(duckdb_libpgquery:
 	if (!node) {
 		return nullptr;
 	}
+
 	if (depth > max_expression_depth) {
 		throw ParserException("Expression tree is too deep (maximum depth %d)", max_expression_depth);
 	}
@@ -83,23 +82,17 @@ unique_ptr<ParsedExpression> Transformer::TransformExpression(duckdb_libpgquery:
 	}
 }
 
-bool Transformer::TransformExpressionList(duckdb_libpgquery::PGList *list, vector<unique_ptr<ParsedExpression>> &result,
+void Transformer::TransformExpressionList(duckdb_libpgquery::PGList &list, vector<unique_ptr<ParsedExpression>> &result,
                                           idx_t depth) {
-	if (!list) {
-		return false;
-	}
-	for (auto node = list->head; node != nullptr; node = node->next) {
+	for (auto node = list.head; node != nullptr; node = node->next) {
 		auto target = reinterpret_cast<duckdb_libpgquery::PGNode *>(node->data.ptr_value);
-		if (!target) {
-			return false;
-		}
+		D_ASSERT(target);
+
 		auto expr = TransformExpression(target, depth + 1);
-		if (!expr) {
-			return false;
-		}
+		D_ASSERT(expr);
+
 		result.push_back(move(expr));
 	}
-	return true;
 }
 
 } // namespace duckdb

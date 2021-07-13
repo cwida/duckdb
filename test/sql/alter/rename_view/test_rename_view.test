@@ -60,3 +60,11 @@ SELECT * FROM vw
 ----
 1000
 101
+
+# cannot rename a system view
+statement error
+ALTER VIEW sqlite_master RENAME TO my_sqlite_master
+
+# cannot rename a view that does not exist
+statement error
+ALTER VIEW nonexistingview RENAME TO my_new_view

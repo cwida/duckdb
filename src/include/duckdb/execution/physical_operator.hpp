@@ -85,10 +85,6 @@ public:
 		auto &types = GetTypes();
 		chunk.Initialize(types);
 	}
-	virtual void InitializeChunkEmpty(DataChunk &chunk) {
-		auto &types = GetTypes();
-		chunk.InitializeEmpty(types);
-	}
 	//! Retrieves a chunk from this operator and stores it in the chunk
 	//! variable.
 	virtual void GetChunkInternal(ExecutionContext &context, DataChunk &chunk, PhysicalOperatorState *state) const = 0;

@@ -37,6 +37,9 @@ statement error
 PRAGMA default_order())
 
 statement error
+PRAGMA default_order='UNKNOWN'
+
+statement error
 PRAGMA default_order=UNKNOWN)
 
 statement error

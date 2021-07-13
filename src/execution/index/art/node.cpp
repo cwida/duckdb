@@ -13,6 +13,7 @@ void Node::CopyPrefix(ART &art, Node *src, Node *dst) {
 	memcpy(dst->prefix.get(), src->prefix.get(), src->prefix_length);
 }
 
+// LCOV_EXCL_START
 unique_ptr<Node> *Node::GetChild(idx_t pos) {
 	D_ASSERT(0);
 	return nullptr;
@@ -22,6 +23,7 @@ idx_t Node::GetMin() {
 	D_ASSERT(0);
 	return 0;
 }
+// LCOV_EXCL_STOP
 
 uint32_t Node::PrefixMismatch(ART &art, Node *node, Key &key, uint64_t depth) {
 	uint64_t pos;
@@ -48,7 +50,7 @@ void Node::InsertLeaf(ART &art, unique_ptr<Node> &node, uint8_t key, unique_ptr<
 		Node256::Insert(art, node, key, new_node);
 		break;
 	default:
-		D_ASSERT(0);
+		throw InternalException("Unrecognized leaf type for insert");
 	}
 }
 
@@ -70,8 +72,7 @@ void Node::Erase(ART &art, unique_ptr<Node> &node, idx_t pos) {
 		Node256::Erase(art, node, pos);
 		break;
 	default:
-		D_ASSERT(0);
-		break;
+		throw InternalException("Unrecognized leaf type for erase");
 	}
 }
 

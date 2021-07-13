@@ -147,7 +147,7 @@ AggregateFunction GetEntropyFunction(PhysicalType type) {
 		                                                                          LogicalType::DOUBLE);
 
 	default:
-		throw NotImplementedException("Unimplemented approximate_count aggregate");
+		throw InternalException("Unimplemented approximate_count aggregate");
 	}
 }
 

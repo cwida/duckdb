@@ -224,7 +224,7 @@ private:
 	bool TransformOrderBy(duckdb_libpgquery::PGList *order, vector<OrderByNode> &result);
 
 	//! Transform a Postgres SELECT clause into a list of Expressions
-	bool TransformExpressionList(duckdb_libpgquery::PGList *list, vector<unique_ptr<ParsedExpression>> &result,
+	void TransformExpressionList(duckdb_libpgquery::PGList &list, vector<unique_ptr<ParsedExpression>> &result,
 	                             idx_t depth);
 
 	//! Transform a Postgres PARTITION BY/ORDER BY specification into lists of expressions

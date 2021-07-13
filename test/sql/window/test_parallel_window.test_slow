@@ -1,6 +1,6 @@
-# name: test/sql/parallelism/intraquery/test_parallel_window.test_slow
+# name: test/sql/window/test_parallel_window.test_slow
 # description: Hashing and parallel execution
-# group: [intraquery]
+# group: [window]
 
 require vector_size 512
 

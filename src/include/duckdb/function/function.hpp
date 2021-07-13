@@ -37,7 +37,7 @@ struct FunctionData {
 	}
 
 	virtual unique_ptr<FunctionData> Copy() {
-		return make_unique<FunctionData>();
+		throw InternalException("Unimplemented copy for FunctionData");
 	};
 	virtual bool Equals(FunctionData &other) {
 		return true;
@@ -54,9 +54,6 @@ struct FunctionData {
 };
 
 struct TableFunctionData : public FunctionData {
-	unique_ptr<FunctionData> Copy() override {
-		throw NotImplementedException("Copy not required for table-producing function");
-	}
 	// used to pass on projections to table functions that support them. NB, can contain COLUMN_IDENTIFIER_ROW_ID
 	vector<idx_t> column_ids;
 };

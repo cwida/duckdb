@@ -23,9 +23,7 @@ void PreparedStatementData::Bind(vector<Value> values) {
 		if (it == value_map.end()) {
 			throw BinderException("Could not find parameter with index %llu", i + 1);
 		}
-		if (it->second.empty()) {
-			throw BinderException("No value found for parameter with index %llu", i + 1);
-		}
+		D_ASSERT(!it->second.empty());
 		if (!values[i].TryCastAs(it->second[0]->type())) {
 			throw BinderException(
 			    "Type mismatch for binding parameter with index %llu, expected type %s but got type %s", i + 1,
@@ -42,9 +40,7 @@ LogicalType PreparedStatementData::GetType(idx_t param_idx) {
 	if (it == value_map.end()) {
 		throw BinderException("Could not find parameter with index %llu", param_idx);
 	}
-	if (it->second.empty()) {
-		throw BinderException("No value found for parameter with index %llu", param_idx);
-	}
+	D_ASSERT(!it->second.empty());
 	return it->second[0]->type();
 }
 

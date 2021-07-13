@@ -25,7 +25,7 @@ unique_ptr<ParsedExpression> Transformer::TransformInterval(duckdb_libpgquery::P
 		expr = make_unique<ConstantExpression>(Value(node->ival));
 		break;
 	default:
-		throw ParserException("Unsupported interval transformation");
+		throw InternalException("Unsupported interval transformation");
 	}
 
 	if (!node->typmods) {
@@ -106,7 +106,7 @@ unique_ptr<ParsedExpression> Transformer::TransformInterval(duckdb_libpgquery::P
 		fname = "to_microseconds";
 		target_type = LogicalType::BIGINT;
 	} else {
-		throw ParserException("Unsupported interval post-fix");
+		throw InternalException("Unsupported interval post-fix");
 	}
 	// first push a cast to the target type
 	expr = make_unique<CastExpression>(target_type, move(expr));

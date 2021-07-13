@@ -1,0 +1,9 @@
+# name: test/sql/setops/test_union_error.test
+# description: Test error in union with cast
+# group: [setops]
+
+statement ok
+PRAGMA enable_verification
+
+statement error
+SELECT x::INT FROM (SELECT x::VARCHAR x FROM range(10) tbl(x) UNION ALL SELECT 'hello' x) tbl(x);

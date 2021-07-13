@@ -170,6 +170,11 @@ SELECT '3' GLOB '\\'
 ----
 0
 
+query T
+SELECT '3' GLOB '\'
+----
+0
+
 # a bunch of asterisks
 query T
 SELECT '3' GLOB '3***'
@@ -215,6 +220,12 @@ SELECT '6' GLOB '[1-35-7]'
 
 query T
 SELECT '4' GLOB '[1-35-7]'
+----
+0
+
+# trailing bracket
+query T
+SELECT '4' GLOB '['
 ----
 0
 

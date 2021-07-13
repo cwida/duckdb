@@ -17,9 +17,8 @@ unique_ptr<ParsedExpression> Transformer::TransformArrayAccess(duckdb_libpgquery
 	// this happens for e.g. more complex accesses (e.g. (foo).field1[42])
 	for (auto node = indirection_node->indirection->head; node != nullptr; node = node->next) {
 		auto target = reinterpret_cast<duckdb_libpgquery::PGNode *>(node->data.ptr_value);
-		if (!target) {
-			break;
-		}
+		D_ASSERT(target);
+
 		switch (target->type) {
 		case duckdb_libpgquery::T_PGAIndices: {
 			// index access (either slice or extract)
@@ -50,7 +49,6 @@ unique_ptr<ParsedExpression> Transformer::TransformArrayAccess(duckdb_libpgquery
 			result = make_unique<OperatorExpression>(ExpressionType::STRUCT_EXTRACT, move(children));
 			break;
 		}
-		case duckdb_libpgquery::T_PGAStar:
 		default:
 			throw NotImplementedException("Unimplemented subscript type");
 		}

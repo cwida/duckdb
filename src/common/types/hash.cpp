@@ -72,10 +72,6 @@ hash_t Hash(const char *val, size_t size) {
 	return Hash<uint32_t>(hash_val);
 }
 
-hash_t Hash(char *val, size_t size) {
-	return Hash((const char *)val, size);
-}
-
 hash_t Hash(uint8_t *val, size_t size) {
 	return Hash((const char *)val, size);
 }

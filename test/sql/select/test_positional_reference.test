@@ -2,6 +2,9 @@
 # description: Positional reference
 # group: [select]
 
+statement ok
+PRAGMA enable_verification
+
 query I
 SELECT #1 FROM range(1)
 ----

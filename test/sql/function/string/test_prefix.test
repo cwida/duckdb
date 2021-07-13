@@ -98,6 +98,11 @@ SELECT prefix('abcdefghijklmnopqrstuvwxyz', 'abcdefghijklmnopqrstuvwx')
 ----
 1
 
+query T
+SELECT prefix('abcdefghijklmnopqrstuvwxyz', 'abcfefghijklmnopqrstuvwx')
+----
+0
+
 # "Empty string and prefix"
 query T
 SELECT prefix('', 'aaa')

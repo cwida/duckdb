@@ -28,6 +28,12 @@ SELECT nextval('seq_cycle')
 ----
 2
 
+statement ok
+CREATE SEQUENCE seq2
+
+statement ok
+DROP SEQUENCE seq2
+
 # restart and check that sequence still works
 restart
 
@@ -46,6 +52,9 @@ query I
 SELECT nextval('seq_cycle')
 ----
 3
+
+statement error
+SELECT nextval('seq2')
 
 # again
 restart
