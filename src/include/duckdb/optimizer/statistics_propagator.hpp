@@ -9,13 +9,13 @@
 #pragma once
 
 #include "duckdb/common/common.hpp"
+#include "duckdb/common/enums/filter_propagate_result.hpp"
+#include "duckdb/common/types/value.hpp"
+#include "duckdb/planner/bound_tokens.hpp"
+#include "duckdb/planner/column_binding_map.hpp"
 #include "duckdb/planner/logical_tokens.hpp"
 #include "duckdb/storage/statistics/base_statistics.hpp"
 #include "duckdb/storage/statistics/node_statistics.hpp"
-#include "duckdb/planner/column_binding_map.hpp"
-#include "duckdb/planner/bound_tokens.hpp"
-#include "duckdb/common/types/value.hpp"
-#include "duckdb/common/enums/filter_propagate_result.hpp"
 
 namespace duckdb {
 class ClientContext;

@@ -117,4 +117,80 @@ void RowOperations::Gather(Vector &rows, const SelectionVector &row_sel, Vector 
 	}
 }
 
+template <class T>
+static void TemplatedFullScanLoop(Vector &rows, Vector &col, idx_t count, idx_t col_offset, idx_t col_no) {
+	// Precompute mask indexes
+	idx_t entry_idx;
+	idx_t idx_in_entry;
+	ValidityBytes::GetEntryIndex(col_no, entry_idx, idx_in_entry);
+
+	auto ptrs = FlatVector::GetData<data_ptr_t>(rows);
+	auto data = FlatVector::GetData<T>(col);
+	auto &col_mask = FlatVector::Validity(col);
+
+	for (idx_t i = 0; i < count; i++) {
+		auto row = ptrs[i];
+		data[i] = Load<T>(row + col_offset);
+		ValidityBytes row_mask(row);
+		if (!row_mask.RowIsValid(row_mask.GetValidityEntry(entry_idx), idx_in_entry)) {
+			col_mask.SetInvalid(i);
+		}
+	}
+}
+
+void RowOperations::FullScanColumn(const RowLayout &layout, Vector &rows, Vector &col, idx_t count, idx_t col_no) {
+	const auto col_offset = layout.GetOffsets()[col_no];
+	col.SetVectorType(VectorType::FLAT_VECTOR);
+	switch (col.GetType().InternalType()) {
+	case PhysicalType::UINT8:
+		TemplatedFullScanLoop<uint8_t>(rows, col, count, col_offset, col_no);
+		break;
+	case PhysicalType::UINT16:
+		TemplatedFullScanLoop<uint16_t>(rows, col, count, col_offset, col_no);
+		break;
+	case PhysicalType::UINT32:
+		TemplatedFullScanLoop<uint32_t>(rows, col, count, col_offset, col_no);
+		break;
+	case PhysicalType::UINT64:
+		TemplatedFullScanLoop<uint64_t>(rows, col, count, col_offset, col_no);
+		break;
+	case PhysicalType::BOOL:
+	case PhysicalType::INT8:
+		TemplatedFullScanLoop<int8_t>(rows, col, count, col_offset, col_no);
+		break;
+	case PhysicalType::INT16:
+		TemplatedFullScanLoop<int16_t>(rows, col, count, col_offset, col_no);
+		break;
+	case PhysicalType::INT32:
+		TemplatedFullScanLoop<int32_t>(rows, col, count, col_offset, col_no);
+		break;
+	case PhysicalType::INT64:
+		TemplatedFullScanLoop<int64_t>(rows, col, count, col_offset, col_no);
+		break;
+	case PhysicalType::INT128:
+		TemplatedFullScanLoop<hugeint_t>(rows, col, count, col_offset, col_no);
+		break;
+	case PhysicalType::FLOAT:
+		TemplatedFullScanLoop<float>(rows, col, count, col_offset, col_no);
+		break;
+	case PhysicalType::DOUBLE:
+		TemplatedFullScanLoop<double>(rows, col, count, col_offset, col_no);
+		break;
+	case PhysicalType::POINTER:
+		TemplatedFullScanLoop<uintptr_t>(rows, col, count, col_offset, col_no);
+		break;
+	case PhysicalType::INTERVAL:
+		TemplatedFullScanLoop<interval_t>(rows, col, count, col_offset, col_no);
+		break;
+	case PhysicalType::HASH:
+		TemplatedFullScanLoop<hash_t>(rows, col, count, col_offset, col_no);
+		break;
+	case PhysicalType::VARCHAR:
+		TemplatedFullScanLoop<string_t>(rows, col, count, col_offset, col_no);
+		break;
+	default:
+		throw NotImplementedException("Unimplemented type for RowOperations::FullScanColumn");
+	}
+}
+
 } // namespace duckdb

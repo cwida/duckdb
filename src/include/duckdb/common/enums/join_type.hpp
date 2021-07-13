@@ -41,4 +41,7 @@ bool IsLeftOuterJoin(JoinType type);
 //! True if join is rght or full outer join
 bool IsRightOuterJoin(JoinType type);
 
+//! True if join is inner join
+bool IsInnerJoin(JoinType type);
+
 } // namespace duckdb

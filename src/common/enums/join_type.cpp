@@ -38,4 +38,8 @@ bool IsRightOuterJoin(JoinType type) {
 	return type == JoinType::OUTER || type == JoinType::RIGHT;
 }
 
+bool IsInnerJoin(JoinType type) {
+	return type == JoinType::INNER;
+}
+
 } // namespace duckdb

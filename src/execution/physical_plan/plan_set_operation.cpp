@@ -36,9 +36,10 @@ unique_ptr<PhysicalOperator> PhysicalPlanGenerator::CreatePlan(LogicalSetOperati
 		}
 		// EXCEPT is ANTI join
 		// INTERSECT is SEMI join
+		PerfectHashJoinStats join_stats; // used in inner joins only
 		JoinType join_type = op.type == LogicalOperatorType::LOGICAL_EXCEPT ? JoinType::ANTI : JoinType::SEMI;
 		return make_unique<PhysicalHashJoin>(op, move(left), move(right), move(conditions), join_type,
-		                                     op.estimated_cardinality);
+		                                     op.estimated_cardinality, join_stats);
 	}
 	}
 }

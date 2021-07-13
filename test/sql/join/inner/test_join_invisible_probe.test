@@ -1,0 +1,84 @@
+# name: test/sql/join/inner/test_join_invisible_probe.test
+# description: Test joins that would generate a perfect hashtable
+# group: [inner]
+
+statement ok
+
+#mode output_hash
+
+
+# create the table integers with the values 0..1000
+statement ok
+CREATE TABLE test3 AS SELECT range r FROM range(0, 1024, 1);
+
+statement ok
+CREATE TABLE test4 AS SELECT range r FROM range(0, 1024, 1);
+
+# START LOOP 0..10
+loop i 0 9
+
+statement ok
+INSERT INTO test4 SELECT * FROM test3;  
+
+endloop
+
+query I
+select test3.r, test4.r from test3,test4 where test3.r=test4.r;
+----
+20480 values hashing to 1bed6a560b72a2421a1e7859d7b4916d
+
+loop i 0 90
+
+statement ok
+INSERT INTO test4 SELECT * FROM test3;  
+
+endloop
+
+query I
+select test3.r, test4.r from test3,test4 where test3.r=test4.r;
+----
+204800 values hashing to 52c83d9805cd0e3d903a3a4f8f93b166
+
+loop i 0 900
+
+statement ok
+INSERT INTO test4 SELECT * FROM test3;  
+
+endloop
+
+
+query I
+select test3.r, test4.r from test3,test4 where test3.r=test4.r;
+----
+2048000 values hashing to 414f5ae39cf62b978a86538bd26090ac
+
+loop i 0 9000
+
+statement ok
+INSERT INTO test4 SELECT * FROM test3;  
+
+endloop
+
+
+#statement ok
+#PRAGMA enable_profiling;
+#
+#statement ok
+#PRAGMA profiling_mode = detailed
+#
+#statement ok
+#PRAGMA profiling_output='__TEST_DIR__/test.json'
+#
+#statement ok
+#PRAGMA all_profiling_output;
+
+query I
+select test3.r, test4.r from test3,test4 where test3.r=test4.r;
+----
+20480000 values hashing to eec5a5e92f6552db50f6ec59bc6cb2ad
+
+#query IIII
+#SELECT * FROM pragma_last_profiling_output()
+
+#query II
+#SELECT EXTRA_INFO, TIME FROM pragma_detailed_profiling_output();

@@ -1,13 +1,13 @@
 #include "duckdb/execution/join_hashtable.hpp"
 
-#include "duckdb/storage/buffer_manager.hpp"
-
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/operator/comparison_operators.hpp"
+#include "duckdb/common/row_operations/row_operations.hpp"
 #include "duckdb/common/types/null_value.hpp"
 #include "duckdb/common/types/row_data_collection.hpp"
-#include "duckdb/common/row_operations/row_operations.hpp"
+#include "duckdb/common/vector_operations/unary_executor.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
-#include "duckdb/common/operator/comparison_operators.hpp"
+#include "duckdb/storage/buffer_manager.hpp"
 
 namespace duckdb {
 
@@ -827,4 +827,24 @@ void JoinHashTable::ScanFullOuter(DataChunk &result, JoinHTScanState &state) {
 	}
 }
 
+idx_t JoinHashTable::FillWithHTOffsets(data_ptr_t *key_locations, JoinHTScanState &state) {
+
+	// iterate over blocks
+	idx_t key_count = 0;
+	while (state.block_position < blocks.size()) {
+		auto &block = blocks[state.block_position];
+		auto handle = buffer_manager.Pin(block.block);
+		auto base_ptr = handle->node->buffer;
+		// go through all the tuples within this block
+		while (state.position < block.count) {
+			auto tuple_base = base_ptr + state.position * entry_size;
+			// store its locations
+			key_locations[key_count++] = tuple_base;
+			state.position++;
+		}
+		state.block_position++;
+		state.position = 0;
+	}
+	return key_count;
+}
 } // namespace duckdb

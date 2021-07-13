@@ -10,12 +10,12 @@
 
 #include "duckdb/common/bitset.hpp"
 #include "duckdb/common/common.hpp"
-#include "duckdb/common/types/selection_vector.hpp"
-#include "duckdb/common/types/value.hpp"
 #include "duckdb/common/enums/vector_type.hpp"
+#include "duckdb/common/types/selection_vector.hpp"
+#include "duckdb/common/types/validity_mask.hpp"
+#include "duckdb/common/types/value.hpp"
 #include "duckdb/common/types/vector_buffer.hpp"
 #include "duckdb/common/vector_size.hpp"
-#include "duckdb/common/types/validity_mask.hpp"
 
 namespace duckdb {
 
@@ -55,7 +55,7 @@ public:
 	explicit Vector(Vector &other, idx_t offset);
 	//! Create a vector of size one holding the passed on value
 	explicit Vector(const Value &value);
-	//! Create an empty standard vector with a type, equivalent to calling Vector(type, true, false)
+	//! Create a vector of size tuple_count (non-standard)
 	explicit Vector(LogicalType type, idx_t capacity = STANDARD_VECTOR_SIZE);
 	//! Create an empty standard vector with a type, equivalent to calling Vector(type, true, false)
 	explicit Vector(const VectorCache &cache);

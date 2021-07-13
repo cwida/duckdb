@@ -8,8 +8,8 @@
 
 #pragma once
 
-#include "duckdb/common/helper.hpp"
 #include "duckdb/common/chrono.hpp"
+#include "duckdb/common/helper.hpp"
 
 namespace duckdb {
 

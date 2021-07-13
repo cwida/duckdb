@@ -10,6 +10,7 @@
 
 #include "duckdb/common/common.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
+#include "duckdb/common/types/null_value.hpp"
 #include "duckdb/common/types/row_layout.hpp"
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/execution/aggregate_hashtable.hpp"
@@ -66,9 +67,6 @@ public:
 		void Next(DataChunk &keys, DataChunk &left, DataChunk &result);
 
 	private:
-		void AdvancePointers();
-		void AdvancePointers(const SelectionVector &sel, idx_t sel_count);
-
 		//! Next operator for the inner join
 		void NextInnerJoin(DataChunk &keys, DataChunk &left, DataChunk &result);
 		//! Next operator for the semi join
@@ -82,8 +80,8 @@ public:
 		//! Next operator for the single join
 		void NextSingleJoin(DataChunk &keys, DataChunk &left, DataChunk &result);
 
-		//! Scan the hashtable for matches of the specified keys, setting the found_match[] array to true or false for
-		//! every tuple
+		//! Scan the hashtable for matches of the specified keys, setting the found_match[] array to true or false
+		//! for every tuple
 		void ScanKeyMatches(DataChunk &keys);
 		template <bool MATCH>
 		void NextSemiOrAntiJoin(DataChunk &keys, DataChunk &left, DataChunk &result);
@@ -92,10 +90,15 @@ public:
 
 		idx_t ScanInnerJoin(DataChunk &keys, SelectionVector &result_vector);
 
+		idx_t ResolvePredicates(DataChunk &keys, SelectionVector &match_sel);
+		idx_t ResolvePredicates(DataChunk &keys, SelectionVector &match_sel, SelectionVector &no_match_sel);
+
+	public:
+		void AdvancePointers();
+		void AdvancePointers(const SelectionVector &sel, idx_t sel_count);
 		void GatherResult(Vector &result, const SelectionVector &result_vector, const SelectionVector &sel_vector,
 		                  const idx_t count, const idx_t col_idx);
 		void GatherResult(Vector &result, const SelectionVector &sel_vector, const idx_t count, const idx_t col_idx);
-
 		idx_t ResolvePredicates(DataChunk &keys, SelectionVector &match_sel, SelectionVector *no_match_sel);
 	};
 
@@ -120,23 +123,25 @@ private:
 	idx_t AppendToBlock(HTDataBlock &block, BufferHandle &handle, vector<BlockAppendEntry> &append_entries,
 	                    idx_t remaining);
 
+public:
 	void Hash(DataChunk &keys, const SelectionVector &sel, idx_t count, Vector &hashes);
 
-public:
 	JoinHashTable(BufferManager &buffer_manager, vector<JoinCondition> &conditions, vector<LogicalType> build_types,
 	              JoinType type);
 	~JoinHashTable();
 
 	//! Add the given data to the HT
 	void Build(DataChunk &keys, DataChunk &input);
-	//! Finalize the build of the HT, constructing the actual hash table and making the HT ready for probing. Finalize
-	//! must be called before any call to Probe, and after Finalize is called Build should no longer be ever called.
+	//! Finalize the build of the HT, constructing the actual hash table and making the HT ready for probing.
+	//! Finalize must be called before any call to Probe, and after Finalize is called Build should no longer be
+	//! ever called.
 	void Finalize();
 	//! Probe the HT with the given input chunk, resulting in the given result
 	unique_ptr<ScanStructure> Probe(DataChunk &keys);
 	//! Scan the HT to construct the final full outer join result after
 	void ScanFullOuter(DataChunk &result, JoinHTScanState &state);
-
+	//! Fill the pointer with all the addresses from the hashtable
+	idx_t FillWithHTOffsets(data_ptr_t *key_locations, JoinHTScanState &state);
 	idx_t size() {
 		return count;
 	}
@@ -168,9 +173,9 @@ public:
 	//! The join type of the HT
 	JoinType join_type;
 	//! Whether or not the HT has been finalized
-	bool finalized;
+	bool finalized {false};
 	//! Whether or not any of the key elements contain NULL
-	bool has_null;
+	bool has_null {false};
 	//! Bitmask for getting relevant bits from the hashes to determine the position
 	uint64_t bitmask;
 	//! The amount of entries stored per block
@@ -178,8 +183,8 @@ public:
 
 	struct {
 		mutex mj_lock;
-		//! The types of the duplicate eliminated columns, only used in correlated MARK JOIN for flattening ANY()/ALL()
-		//! expressions
+		//! The types of the duplicate eliminated columns, only used in correlated MARK JOIN for flattening
+		//! ANY()/ALL() expressions
 		vector<LogicalType> correlated_types;
 		//! The aggregate expression nodes used by the HT
 		vector<unique_ptr<Expression>> correlated_aggregates;
@@ -192,11 +197,11 @@ public:
 		//! Result chunk used for aggregating into correlated_counts
 		DataChunk result_chunk;
 	} correlated_mark_join_info;
-
-private:
 	//! Apply a bitmask to the hashes
 	void ApplyBitmask(Vector &hashes, idx_t count);
 	void ApplyBitmask(Vector &hashes, const SelectionVector &sel, idx_t count, Vector &pointers);
+
+private:
 	//! Insert the given set of locations into the HT with the given set of
 	//! hashes. Caller should hold lock in parallel HT.
 	void InsertHashes(Vector &hashes, idx_t count, data_ptr_t key_locations[]);

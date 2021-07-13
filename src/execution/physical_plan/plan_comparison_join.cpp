@@ -1,3 +1,4 @@
+#include "duckdb/execution/operator/join/perfect_hash_join_executor.hpp"
 #include "duckdb/execution/operator/join/physical_cross_product.hpp"
 #include "duckdb/execution/operator/join/physical_hash_join.hpp"
 #include "duckdb/execution/operator/join/physical_index_join.hpp"
@@ -8,6 +9,7 @@
 #include "duckdb/function/table/table_scan.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
+#include "duckdb/storage/statistics/numeric_statistics.hpp"
 #include "duckdb/transaction/transaction.hpp"
 
 namespace duckdb {
@@ -27,6 +29,51 @@ static bool CanPlanIndexJoin(Transaction &transaction, TableScanBindData *bind_d
 		return false;
 	}
 	return true;
+}
+
+void CheckForPerfectJoinOpt(LogicalComparisonJoin &op, PerfectHashJoinStats &join_state) {
+	// we only do this optimization for inner joins
+	if (op.join_type != JoinType::INNER)
+		return;
+	// with one condition
+	if (op.conditions.size() != 1)
+		return;
+	// with propagated statistics
+	if (op.join_stats.size() <= 0)
+		return;
+	// with equality condition
+	for (auto &&condition : op.conditions) {
+		if (condition.comparison != ExpressionType::COMPARE_EQUAL) {
+			return;
+		}
+	}
+	// with integral types
+	for (auto &&join_stat : op.join_stats) {
+		if (!join_stat->type.IsIntegral() || join_stat->type == LogicalTypeId::HUGEINT) {
+			// perfect join not possible for no integral types or hugeint
+			return;
+		}
+	}
+
+	// and when the build range is smaller than the threshold
+	auto stats_build = reinterpret_cast<NumericStatistics *>(op.join_stats[0].get()); // lhs stats
+	auto build_range = stats_build->max - stats_build->min;                           // Join Keys Range
+
+	// Fill join_stats for invisible join
+	auto stats_probe = reinterpret_cast<NumericStatistics *>(op.join_stats[1].get()); // rhs stats
+	join_state.is_build_small = true;
+	join_state.probe_min = stats_probe->min;
+	join_state.probe_max = stats_probe->max;
+	join_state.build_min = stats_build->min;
+	join_state.build_max = stats_build->max;
+	join_state.estimated_cardinality = op.estimated_cardinality;
+	join_state.build_range = build_range.GetValue<idx_t>(); // cast integer types into idx_t
+
+	if (stats_build->min <= stats_probe->min && stats_probe->max <= stats_build->max) {
+		join_state.is_probe_in_domain = true;
+	}
+
+	return;
 }
 
 void TransformIndexJoin(ClientContext &context, LogicalComparisonJoin &op, Index **left_index, Index **right_index,
@@ -114,10 +161,13 @@ unique_ptr<PhysicalOperator> PhysicalPlanGenerator::CreatePlan(LogicalComparison
 			                                      op.left_projection_map, op.right_projection_map, tbl_scan.column_ids,
 			                                      right_index, true, op.estimated_cardinality);
 		}
-		// equality join: use hash join
+		// Equality join with small number of keys : possible perfect join optimization
+		PerfectHashJoinStats perfect_join_stats;
+		CheckForPerfectJoinOpt(op, perfect_join_stats);
 		plan = make_unique<PhysicalHashJoin>(op, move(left), move(right), move(op.conditions), op.join_type,
 		                                     op.left_projection_map, op.right_projection_map, move(op.delim_types),
-		                                     op.estimated_cardinality);
+		                                     op.estimated_cardinality, perfect_join_stats);
+
 	} else {
 		D_ASSERT(!has_null_equal_conditions); // don't support this for anything but hash joins for now
 		if (op.conditions.size() == 1 && !has_inequality) {

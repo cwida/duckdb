@@ -14,9 +14,6 @@ PRAGMA explain_output = OPTIMIZED_ONLY;
 statement ok
 PRAGMA enable_verification
 
-# we join two tables with i:[1, 3] on the left, and i:[2, 4] on the right
-# the resulting statistic should be [2, 3]
-
 # we can statically prove that i=1 is false
 query II
 EXPLAIN SELECT i=1 FROM integers JOIN integers2 USING (i);

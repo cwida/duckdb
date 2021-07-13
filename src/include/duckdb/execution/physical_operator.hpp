@@ -12,8 +12,8 @@
 #include "duckdb/common/common.hpp"
 #include "duckdb/common/enums/physical_operator_type.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
-#include "duckdb/planner/expression.hpp"
 #include "duckdb/execution/execution_context.hpp"
+#include "duckdb/planner/expression.hpp"
 
 #include <functional>
 #include <utility>

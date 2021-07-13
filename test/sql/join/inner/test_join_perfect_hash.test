@@ -1,0 +1,162 @@
+# name: test/sql/join/inner/test_join_perfect_hash.test
+# description: Test joins that would generate a perfect hashtable
+# group: [inner]
+
+statement ok
+CREATE TABLE test1 (a INTEGER, b INTEGER);
+
+statement ok
+INSERT INTO test1 VALUES (11, 1), (12, 2), (13, 3)
+
+statement ok
+CREATE TABLE test2 (b INTEGER, c INTEGER);
+
+statement ok
+INSERT INTO test2 VALUES (1, 10), (2, 20), (3, 30), (1, 10), (2, 20), (3, 30), (1, 10), (2, 20), (3, 30), (1, 10), (2, 20), (3, 30), (1, 10), (2, 20), (3, 30)
+
+# simple inner join
+query III
+SELECT a, test1.b,c FROM test1, test2 WHERE test1.b = test2.b;
+----
+11	1	10
+12	2	20
+13	3	30
+11	1	10
+12	2	20
+13	3	30
+11	1	10
+12	2	20
+13	3	30
+11	1	10
+12	2	20
+13	3	30
+11	1	10
+12	2	20
+13	3	30
+
+
+statement ok
+CREATE TABLE test3 (a INTEGER, b INTEGER);
+
+statement ok
+INSERT INTO test3 VALUES (-11, -1), (-12, -2), (13, 3)
+
+statement ok
+CREATE TABLE test4 (b INTEGER, c INTEGER);
+
+statement ok
+INSERT INTO test4 VALUES (-1, -10), (-2, -20), (3, 30), (-1, -10), (-2, -20), (3, 30), (-1, -10), (-2, -20), (3, 30), (-1, -10), (-2, -20), (3, 30), (-1, -10), (-2, -20), (3, 30)
+
+# negative  keys inner join
+query III
+SELECT a, test3.b,c FROM test3, test4 WHERE test3.b = test4.b;
+----
+-11	-1	-10
+-12	-2	-20
+13	3	30
+-11	-1	-10
+-12	-2	-20
+13	3	30
+-11	-1	-10
+-12	-2	-20
+13	3	30
+-11	-1	-10
+-12	-2	-20
+13	3	30
+-11	-1	-10
+-12	-2	-20
+13	3	30
+
+
+statement ok
+CREATE TABLE test5 (a INTEGER, b INTEGER);
+
+statement ok
+INSERT INTO test5 VALUES (11, 1), (12, 2), (13, 3), (14, null), (null, 4)
+
+statement ok
+CREATE TABLE test6 (b INTEGER, c INTEGER);
+
+statement ok
+INSERT INTO test6 VALUES (1, 10), (2, 20), (3, 30), (1, 10), (2, 20), (3, 30), (1, 10), (2, 20), (3, 30), (1, 10), (2, 20), (3, 30), (1, 10), (2, 20), (3, 30), (4, 40), (null, 30), (1, null)
+
+# inner join with nulls in the build and probe side
+query III
+SELECT a, test5.b,c FROM test5, test6 WHERE test5.b = test6.b;
+----
+11	1	10
+12	2	20
+13	3	30
+11	1	10
+12	2	20
+13	3	30
+11	1	10
+12	2	20
+13	3	30
+11	1	10
+12	2	20
+13	3	30
+11	1	10
+12	2	20
+13	3	30
+NULL	4	40
+11	1	NULL
+
+
+statement ok
+CREATE TABLE test7 (a INTEGER, b INTEGER);
+
+statement ok
+INSERT INTO test7 VALUES (11, 1), (12, 2), (13, 3), (15, 5)
+
+statement ok
+CREATE TABLE test8 (b INTEGER, c INTEGER);
+
+statement ok
+INSERT INTO test8 VALUES (1, 10), (2, 20), (3, 30), (1, 10), (2, 20), (3, 30), (1, 10), (2, 20), (3, 30), (1, 10), (2, 20), (3, 30), (1, 10), (2, 20), (3, 30), (4, 40)
+
+# inner join with non-matching keys in the build and in the probe side
+query III
+SELECT a, test7.b,c FROM test7, test8 WHERE test7.b = test8.b;
+----
+11	1	10
+12	2	20
+13	3	30
+11	1	10
+12	2	20
+13	3	30
+11	1	10
+12	2	20
+13	3	30
+11	1	10
+12	2	20
+13	3	30
+11	1	10
+12	2	20
+13	3	30
+
+
+statement ok
+
+#mode output_hash
+
+# create the table integers with the values 0..1026
+statement ok
+CREATE TABLE test9 AS SELECT range r FROM range(0, 1026, 1);
+
+statement ok
+CREATE TABLE test10 AS SELECT range r FROM range(0, 1025, 1);
+
+# START LOOP 0..9
+loop i 0 9
+
+statement ok
+INSERT INTO test10 SELECT * FROM test9;  
+
+endloop
+
+# inner join with bigger than vector size tuples
+query I
+select test9.r, test10.r from test9,test10 where test9.r=test10.r;
+----
+20518 values hashing to d510b7d278762ec0843a16591fcf1680

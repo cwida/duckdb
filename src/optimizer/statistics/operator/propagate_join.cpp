@@ -1,9 +1,10 @@
+#include "duckdb/common/types/hugeint.hpp"
 #include "duckdb/optimizer/statistics_propagator.hpp"
-#include "duckdb/planner/operator/logical_join.hpp"
+#include "duckdb/planner/expression/bound_columnref_expression.hpp"
+#include "duckdb/planner/operator/logical_any_join.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
 #include "duckdb/planner/operator/logical_cross_product.hpp"
-#include "duckdb/planner/operator/logical_any_join.hpp"
-#include "duckdb/common/types/hugeint.hpp"
+#include "duckdb/planner/operator/logical_join.hpp"
 #include "duckdb/storage/statistics/validity_statistics.hpp"
 
 namespace duckdb {
@@ -20,6 +21,9 @@ void StatisticsPropagator::PropagateStatistics(LogicalComparisonJoin &join, uniq
 				continue;
 			}
 			auto prune_result = PropagateComparison(*stats_left, *stats_right, condition.comparison);
+			// Add stats to logical_join for perfect hash join
+			join.join_stats.push_back(move(stats_left));
+			join.join_stats.push_back(move(stats_right));
 			switch (prune_result) {
 			case FilterPropagateResult::FILTER_FALSE_OR_NULL:
 			case FilterPropagateResult::FILTER_ALWAYS_FALSE:
@@ -105,9 +109,17 @@ void StatisticsPropagator::PropagateStatistics(LogicalComparisonJoin &join, uniq
 		}
 		switch (join.join_type) {
 		case JoinType::INNER:
-		case JoinType::SEMI:
+		case JoinType::SEMI: {
 			UpdateFilterStatistics(*condition.left, *condition.right, condition.comparison);
+			auto stats_left = PropagateExpression(condition.left);
+			auto stats_right = PropagateExpression(condition.right);
+			// Update join_stats when is already part of the join
+			if (join.join_stats.size() == 2) {
+				join.join_stats[0] = move(stats_left);
+				join.join_stats[1] = move(stats_right);
+			}
 			break;
+		}
 		default:
 			break;
 		}

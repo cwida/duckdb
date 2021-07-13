@@ -3,7 +3,6 @@
 # group: [inner]
 
 statement ok
-PRAGMA enable_verification
 
 # create tables
 statement ok
@@ -17,6 +16,14 @@ CREATE TABLE t2 (a INTEGER, b INTEGER, c INTEGER)
 
 statement ok
 INSERT INTO t2 VALUES (1,2,3), (2,2,4), (1,3,4)
+
+query IIIIIII
+SELECT * FROM t1 JOIN t2 USING(a) JOIN t2 t2b USING (a) ORDER BY 1, 2, 3, 4, 5, 6, 7
+----
+1	2	3	2	3	2	3
+1	2	3	2	3	3	4
+1	2	3	3	4	2	3
+1	2	3	3	4	3	4
 
 # USING join
 query III

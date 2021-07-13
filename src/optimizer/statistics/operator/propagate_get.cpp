@@ -1,8 +1,8 @@
 #include "duckdb/optimizer/statistics_propagator.hpp"
-#include "duckdb/planner/operator/logical_get.hpp"
-#include "duckdb/planner/table_filter.hpp"
 #include "duckdb/planner/filter/conjunction_filter.hpp"
 #include "duckdb/planner/filter/constant_filter.hpp"
+#include "duckdb/planner/operator/logical_get.hpp"
+#include "duckdb/planner/table_filter.hpp"
 
 namespace duckdb {
 
