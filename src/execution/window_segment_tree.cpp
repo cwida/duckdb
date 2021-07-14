@@ -11,18 +11,18 @@ namespace duckdb {
 WindowSegmentTree::WindowSegmentTree(AggregateFunction &aggregate, FunctionData *bind_info,
                                      const LogicalType &result_type_p, ChunkCollection *input)
     : aggregate(aggregate), bind_info(bind_info), result_type(result_type_p), state(aggregate.state_size()),
-      statep(Value::POINTER((idx_t)state.data())), frame(0, 0), result(result_type_p), internal_nodes(0),
-      input_ref(input) {
+      statep(Value::POINTER((idx_t)state.data())), frame(0, 0), result(result_type_p, 1),
+      statev(Value::POINTER((idx_t)state.data())), internal_nodes(0), input_ref(input) {
 #if STANDARD_VECTOR_SIZE < 512
 	throw NotImplementedException("Window functions are not supported for vector sizes < 512");
 #endif
 	statep.Normalify(STANDARD_VECTOR_SIZE);
+	result.SetVectorType(VectorType::CONSTANT_VECTOR);
 
 	if (input_ref && input_ref->ColumnCount() > 0) {
 		inputs.Initialize(input_ref->Types());
 		// if we have a frame-by-frame method, share the single state
 		if (aggregate.window) {
-			result.SetVectorType(VectorType::CONSTANT_VECTOR);
 			AggregateInit();
 		} else if (aggregate.combine) {
 			ConstructTree();
@@ -59,16 +59,14 @@ void WindowSegmentTree::AggregateInit() {
 	aggregate.initialize(state.data());
 }
 
-Value WindowSegmentTree::AggegateFinal() {
-	Vector statev(Value::POINTER((idx_t)state.data()));
-	Vector result(result_type);
+const Vector &WindowSegmentTree::AggegateFinal() {
+	ConstantVector::SetNull(result, false);
 	aggregate.finalize(statev, bind_info, result, 1);
-	result.SetVectorType(VectorType::CONSTANT_VECTOR);
 
 	if (aggregate.destructor) {
 		aggregate.destructor(statev, 1);
 	}
-	return result.GetValue(0);
+	return result;
 }
 
 void WindowSegmentTree::ExtractFrame(idx_t begin, idx_t end) {
@@ -176,12 +174,15 @@ void WindowSegmentTree::ConstructTree() {
 	}
 }
 
-Value WindowSegmentTree::Compute(idx_t begin, idx_t end) {
+const Vector &WindowSegmentTree::Compute(idx_t begin, idx_t end) {
 	D_ASSERT(input_ref);
 
 	// No arguments, so just count
 	if (inputs.ColumnCount() == 0) {
-		return Value::Numeric(result_type, end - begin);
+		D_ASSERT(GetTypeIdSize(result_type.InternalType()) == sizeof(idx_t));
+		auto data = ConstantVector::GetData<idx_t>(result);
+		data[0] = end - begin;
+		return result;
 	}
 
 	// If we have a window function, use that
@@ -196,7 +197,7 @@ Value WindowSegmentTree::Compute(idx_t begin, idx_t end) {
 		ConstantVector::SetNull(result, false);
 
 		aggregate.window(inputs.data.data(), bind_info, inputs.ColumnCount(), state.data(), frame, prev, result);
-		return result.GetValue(0);
+		return result;
 	}
 
 	AggregateInit();

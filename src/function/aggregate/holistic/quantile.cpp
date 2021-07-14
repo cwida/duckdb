@@ -345,6 +345,7 @@ struct QuantileScalarOperation : public QuantileOperation<SAVE_TYPE> {
 		auto &rmask = ConstantVector::Validity(result);
 
 		//  Lazily initialise frame state
+		const auto prev_valid = state->pos == (prev.second - prev.first);
 		state->pos = frame.second - frame.first;
 		state->template Resize<idx_t>(state->pos);
 
@@ -358,7 +359,7 @@ struct QuantileScalarOperation : public QuantileOperation<SAVE_TYPE> {
 		const auto q = bind_data->quantiles[0];
 
 		bool same = false;
-		if (dmask.AllValid() && frame.first == prev.first + 1 && frame.second == prev.second + 1) {
+		if (prev_valid && dmask.AllValid() && frame.first == prev.first + 1 && frame.second == prev.second + 1) {
 			//  Fixed frame size
 			const auto j = ReplaceIndex(state, frame, prev);
 			Interpolator<INPUT_TYPE, RESULT_TYPE, DISCRETE> interp(q, state->pos);
@@ -368,15 +369,14 @@ struct QuantileScalarOperation : public QuantileOperation<SAVE_TYPE> {
 		}
 
 		if (!same) {
-			auto valid = state->pos;
 			if (!dmask.AllValid()) {
 				IndirectNotNull not_null(dmask, MinValue(frame.first, prev.first));
-				valid = std::partition(index, index + valid, not_null) - index;
+				state->pos = std::partition(index, index + state->pos, not_null) - index;
 			}
-			if (valid) {
-				Interpolator<INPUT_TYPE, RESULT_TYPE, DISCRETE> interp(q, valid);
+			if (state->pos) {
+				Interpolator<INPUT_TYPE, RESULT_TYPE, DISCRETE> interp(q, state->pos);
 				IndirectLess<INPUT_TYPE> lt(data);
-				std::nth_element(index, index + interp.FRN, index + valid, lt);
+				std::nth_element(index, index + interp.FRN, index + state->pos, lt);
 				if (interp.CRN != interp.FRN) {
 					std::nth_element(index + interp.CRN, index + interp.CRN, index + interp.n, lt);
 				}
@@ -497,6 +497,7 @@ struct QuantileListOperation : public QuantileOperation<SAVE_TYPE> {
 		auto rdata = FlatVector::GetData<CHILD_TYPE>(result);
 
 		//  Lazily initialise frame state
+		const auto prev_valid = state->pos == (prev.second - prev.first);
 		state->pos = frame.second - frame.first;
 		state->template Resize<idx_t>(state->pos);
 
@@ -505,8 +506,7 @@ struct QuantileListOperation : public QuantileOperation<SAVE_TYPE> {
 
 		bool fixed = false;
 		auto j = state->pos;
-		auto valid = state->pos;
-		if (dmask.AllValid() && frame.first == prev.first + 1 && frame.second == prev.second + 1) {
+		if (prev_valid && dmask.AllValid() && frame.first == prev.first + 1 && frame.second == prev.second + 1) {
 			//  Fixed frame size
 			j = ReplaceIndex(state, frame, prev);
 			fixed = true;
@@ -514,11 +514,11 @@ struct QuantileListOperation : public QuantileOperation<SAVE_TYPE> {
 			ReuseIndexes(index, frame, prev);
 			if (!dmask.AllValid()) {
 				IndirectNotNull not_null(dmask, MinValue(frame.first, prev.first));
-				valid = std::partition(index, index + valid, not_null) - index;
+				state->pos = std::partition(index, index + state->pos, not_null) - index;
 			}
 		}
 
-		if (!valid) {
+		if (!state->pos) {
 			lmask.Set(0, false);
 			return;
 		}
@@ -531,7 +531,7 @@ struct QuantileListOperation : public QuantileOperation<SAVE_TYPE> {
 		for (idx_t i = 0; i < bind_data->order.size(); ++i) {
 			const auto q = bind_data->order[i];
 			const auto &quantile = bind_data->quantiles[q];
-			Interpolator<INPUT_TYPE, CHILD_TYPE, DISCRETE> interp(quantile, valid);
+			Interpolator<INPUT_TYPE, CHILD_TYPE, DISCRETE> interp(quantile, state->pos);
 
 			if (fixed && CanReplace(state, data, j, interp.FRN, interp.CRN)) {
 				rdata[q] = interp(data, index);
@@ -542,13 +542,13 @@ struct QuantileListOperation : public QuantileOperation<SAVE_TYPE> {
 			}
 			lb = interp.CRN + 1;
 		}
-		state->upper.resize(state->lower.size(), valid);
+		state->upper.resize(state->lower.size(), state->pos);
 
 		// Second pass: select the disturbed values
 		for (idx_t i = 0; i < state->disturbed.size(); ++i) {
 			const auto &q = state->disturbed[i];
 			const auto &quantile = bind_data->quantiles[q];
-			Interpolator<INPUT_TYPE, CHILD_TYPE, DISCRETE> interp(quantile, valid);
+			Interpolator<INPUT_TYPE, CHILD_TYPE, DISCRETE> interp(quantile, state->pos);
 
 			IndirectLess<INPUT_TYPE> lt(data);
 			std::nth_element(index + state->lower[i], index + interp.FRN, index + state->upper[i], lt);

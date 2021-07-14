@@ -663,8 +663,12 @@ static void ComputeWindowExpression(BoundWindowExpression *wexpr, ChunkCollectio
 
 		switch (wexpr->type) {
 		case ExpressionType::WINDOW_AGGREGATE: {
-			res = segment_tree->Compute(bounds.window_start, bounds.window_end);
-			break;
+			const auto &source = segment_tree->Compute(bounds.window_start, bounds.window_end);
+			auto &target_chunk = output.GetChunkForRow(row_idx);
+			auto &target = target_chunk.data[output_col];
+			const auto target_offset = row_idx % STANDARD_VECTOR_SIZE;
+			VectorOperations::Copy(source, target, 1, 0, target_offset);
+			continue;
 		}
 		case ExpressionType::WINDOW_ROW_NUMBER: {
 			res = Value::Numeric(wexpr->return_type, row_idx - bounds.partition_start + 1);

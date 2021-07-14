@@ -73,8 +73,10 @@ static void ListFinalize(Vector &state_vector, FunctionData *, Vector &result, i
 
 	D_ASSERT(result.GetType().id() == LogicalTypeId::LIST);
 
-	auto &mask = FlatVector::Validity(result);
+	auto &mask = (result.GetVectorType() == VectorType::CONSTANT_VECTOR) ? ConstantVector::Validity(result)
+	                                                                     : FlatVector::Validity(result);
 	size_t total_len = 0;
+	ListVector::SetListSize(result, total_len);
 	for (idx_t i = 0; i < count; i++) {
 		auto state = states[sdata.sel->get_index(i)];
 		if (!state->list_vector) {
@@ -99,6 +101,8 @@ static void ListFinalize(Vector &state_vector, FunctionData *, Vector &result, i
 		auto &list_vec_to_append = ListVector::GetEntry(list_vec);
 		ListVector::Append(result, list_vec_to_append, ListVector::GetListSize(list_vec));
 	}
+
+	result.Verify(count);
 }
 
 unique_ptr<FunctionData> ListBindFunction(ClientContext &context, AggregateFunction &function,

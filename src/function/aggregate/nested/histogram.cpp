@@ -101,23 +101,30 @@ static void HistogramCombineFunction(Vector &state, Vector &combined, idx_t coun
 	}
 }
 
+static inline ValidityMask &AnyValidity(Vector &v) {
+	return (v.GetVectorType() == VectorType::CONSTANT_VECTOR) ? ConstantVector::Validity(v) : FlatVector::Validity(v);
+}
+
 template <class T>
 static void HistogramFinalize(Vector &state_vector, FunctionData *, Vector &result, idx_t count) {
 	VectorData sdata;
 	state_vector.Orrify(count, sdata);
 	auto states = (HistogramAggState<T> **)sdata.data;
-	result.Initialize();
 
 	idx_t old_len = 0;
 
-	auto &mask = FlatVector::Validity(result);
+	auto &mask = AnyValidity(result);
 
 	auto &child_entries = StructVector::GetEntries(result);
 	auto &bucket_list = child_entries[0];
 	auto &count_list = child_entries[1];
 
-	auto &bucket_validity = FlatVector::Validity(*bucket_list);
-	auto &count_validity = FlatVector::Validity(*count_list);
+	auto &bucket_validity = AnyValidity(*bucket_list);
+	auto &count_validity = AnyValidity(*count_list);
+
+	ListVector::SetListSize(*bucket_list, old_len);
+	ListVector::SetListSize(*count_list, old_len);
+
 	for (idx_t i = 0; i < count; i++) {
 		auto state = states[sdata.sel->get_index(i)];
 		if (!state->hist) {
@@ -141,6 +148,8 @@ static void HistogramFinalize(Vector &state_vector, FunctionData *, Vector &resu
 		list_struct_data[i].offset = old_len;
 		old_len = list_struct_data[i].length;
 	}
+
+	result.Verify(count);
 }
 
 unique_ptr<FunctionData> HistogramBindFunction(ClientContext &context, AggregateFunction &function,

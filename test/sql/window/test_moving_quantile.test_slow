@@ -47,6 +47,20 @@ from (
     from rank100
     ) q;
 
+#   Variable discrete list
+statement ok
+prepare variable_disc_iqr as
+select min(iqr), max(iqr)
+from (
+    select quantile_disc(a, [0.25, 0.5, 0.75]) over (
+        order by b asc
+        rows between mod(b * cast(?1 as integer), cast(?2 as integer)) preceding
+                 and cast(?3 as integer) - mod(b * cast(?1 as integer), cast(?2 as integer)) following
+        )
+        as iqr
+    from rank100
+    ) q;
+
 #   Fixed continuous list
 statement ok
 prepare fixed_cont_iqr as
@@ -73,6 +87,11 @@ query II
 execute fixed_disc_iqr(97)
 ----
 [0, 0, 0]	[26, 50, 74]
+
+query II
+execute variable_disc_iqr(47, 511, 97)
+----
+[0, 0, 0]	[70, 80, 89]
 
 query II
 execute fixed_cont_iqr(97)

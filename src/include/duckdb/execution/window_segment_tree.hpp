@@ -22,14 +22,15 @@ public:
 	                  ChunkCollection *input);
 	~WindowSegmentTree();
 
-	Value Compute(idx_t start, idx_t end);
+	//! First row contains the result.
+	const Vector &Compute(idx_t start, idx_t end);
 
 private:
 	void ConstructTree();
 	void ExtractFrame(idx_t begin, idx_t end);
 	void WindowSegmentValue(idx_t l_idx, idx_t begin, idx_t end);
 	void AggregateInit();
-	Value AggegateFinal();
+	const Vector &AggegateFinal();
 
 	//! The aggregate that the window function is computed over
 	AggregateFunction aggregate;
@@ -48,6 +49,8 @@ private:
 	FrameBounds frame;
 	//! Reused result value container for the window functions (20% of runtime)
 	Vector result;
+	//! Reused result state container for the window functions
+	Vector statev;
 
 	//! The actual window segment tree: an array of aggregate states that represent all the intermediate nodes
 	unique_ptr<data_t[]> levels_flat_native;
