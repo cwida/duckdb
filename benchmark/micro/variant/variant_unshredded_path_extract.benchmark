@@ -1,0 +1,35 @@
+# name: benchmark/micro/variant/variant_unshredded_path_extract.benchmark
+# description: Filter on a small top-level key whose values live in the unshredded Parquet VARIANT value blob (forced via mismatched shredding types so typed_value cannot hold them). Isolates CPU/allocation cost of pushed path extraction versus converting the full root blob; TOTAL_BYTES_READ is expected to stay similar because the root value page must still be read.
+# group: [variant]
+
+name variant_unshredded_path_extract
+group variant
+subgroup parquet
+storage persistent v2.0.0
+
+cache variant_unshredded_path_extract.duckdb
+
+load
+COPY (
+	SELECT {
+		'id': i::INTEGER,
+		'flag': (i % 2 = 0),
+		'payload_a': md5(i::VARCHAR) || md5((i + 1)::VARCHAR) || md5((i + 2)::VARCHAR) || md5((i + 3)::VARCHAR),
+		'payload_b': md5((i + 10)::VARCHAR) || md5((i + 11)::VARCHAR) || md5((i + 12)::VARCHAR) || md5((i + 13)::VARCHAR),
+		'payload_c': md5((i + 20)::VARCHAR) || md5((i + 21)::VARCHAR) || md5((i + 22)::VARCHAR) || md5((i + 23)::VARCHAR),
+		'nested': {
+			'x': (i % 100)::INTEGER,
+			'y': md5((i + 30)::VARCHAR) || md5((i + 31)::VARCHAR)
+		}
+	}::VARIANT AS v
+	FROM range(200000) t(i)
+) TO 'variant_unshredded_path_extract.parquet' (
+	FORMAT PARQUET,
+	SHREDDING {'v': 'VARCHAR'}
+);
+
+run
+SELECT count(*) FROM 'variant_unshredded_path_extract.parquet' WHERE try(v.id::INTEGER) = 12345;
+
+result I
+1

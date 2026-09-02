@@ -192,8 +192,16 @@ idx_t VariantColumnReader::Read(ColumnReaderInput &input, Vector &result) {
 			    "The shredded Variant column did not contain the same amount of values for 'typed_value' and 'value'");
 		}
 	}
-	// convert the actual columns
-	Convert(metadata_intermediate, intermediate_group, result, num_values);
+	// When extract hints a key path and the root is unshredded (or shredded as a primitive leaf),
+	// walk the binary OBJECT and materialize only that subtree instead of every sibling field.
+	const bool binary_path_decode =
+	    !extract_path.empty() && (!typed_value_reader || (!typed_value_reader->Type().IsNested()));
+	if (binary_path_decode) {
+		ParquetVariantConversion::ConvertPath(metadata_intermediate, intermediate_group, result, num_values,
+		                                      extract_path);
+	} else {
+		Convert(metadata_intermediate, intermediate_group, result, num_values);
+	}
 	if (index.IsPushdownExtract()) {
 		D_ASSERT(!extract_path.empty());
 		Vector extract_result(LogicalType::VARIANT(), num_values);

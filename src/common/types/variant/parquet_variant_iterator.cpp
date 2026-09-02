@@ -12,8 +12,10 @@
 #include "duckdb/common/types/uuid.hpp"
 #include "duckdb/common/types/interval.hpp"
 #include "utf8proc_wrapper.hpp"
+#include "duckdb/common/optional_idx.hpp"
 
 #include <algorithm>
+#include <cstring>
 #include <cmath>
 #include <set>
 #include <type_traits>
@@ -81,6 +83,16 @@ struct BinaryObjectReader {
 		//! The child's header byte must be readable
 		CheckBinaryRead(child, 1, end);
 		return child;
+	}
+	//! Compare keys by string so a wrong metadata sorted_strings flag cannot hide a field.
+	optional_idx FindChild(const string &key) const {
+		for (idx_t i = 0; i < count; i++) {
+			auto child_key = Key(i);
+			if (child_key.GetSize() == key.size() && memcmp(child_key.GetData(), key.data(), key.size()) == 0) {
+				return optional_idx(i);
+			}
+		}
+		return optional_idx();
 	}
 
 	const VariantMetadata &metadata;
@@ -453,6 +465,30 @@ ParquetVariantNode ParquetVariantIterator::Root(idx_t row) const {
 	return root.IsMissing() ? ParquetVariantNode::MakeNull() : root;
 }
 
+ParquetVariantNode ParquetVariantNode::FindObjectChild(const string &key) const {
+	if (IsNull() || IsMissing()) {
+		return MakeMissing();
+	}
+	if (GetTypeId() != VariantLogicalType::OBJECT) {
+		return MakeMissing();
+	}
+	if (kind == Kind::BINARY) {
+		BinaryObjectReader reader(state->GetMetadata(), binary, binary_end);
+		auto child_idx = reader.FindChild(key);
+		if (!child_idx.IsValid()) {
+			return MakeMissing();
+		}
+		return MakeBinary(*state, reader.Child(child_idx.GetIndex()), binary_end);
+	}
+	for (auto &entry : GetObjectChildren(VariantIterationOrder::INTERNAL)) {
+		auto &entry_key = entry.key;
+		if (entry_key.GetSize() == key.size() && memcmp(entry_key.GetData(), key.data(), key.size()) == 0) {
+			return entry.value;
+		}
+	}
+	return MakeMissing();
+}
+
 ParquetVariantNode ParquetVariantIterator::BinaryRoot() const {
 	//! The metadata and the value share the same blob: the value bytes start right after the metadata
 	auto &variant_metadata = GetMetadata();
@@ -735,6 +771,63 @@ struct ParquetBinaryVariantSource {
 void ParquetVariantConversion::ConvertBinary(Vector &metadata_and_value, Vector &result, idx_t count) {
 	ParquetVariantIterator iterator(metadata_and_value);
 	ParquetBinaryVariantSource source(iterator, metadata_and_value);
+	BuildVariant(source, count, result);
+}
+
+namespace {
+
+ParquetVariantNode WalkExtractPath(const ParquetVariantNode &root, const vector<VariantPathComponent> &path) {
+	auto current = root;
+	for (auto &component : path) {
+		if (component.lookup_mode != VariantChildLookupMode::BY_KEY) {
+			return ParquetVariantNode::MakeMissing();
+		}
+		current = current.FindObjectChild(component.key);
+	}
+	return current;
+}
+
+void EmitSparsePath(const vector<VariantPathComponent> &path, idx_t depth, const ParquetVariantNode &leaf,
+                    VariantBuilder &builder) {
+	if (depth == path.size()) {
+		EmitIterator(leaf, builder);
+		return;
+	}
+	builder.EmitObject(
+	    1, [&](idx_t) { return string_t(path[depth].key); },
+	    [&](idx_t) { EmitSparsePath(path, depth + 1, leaf, builder); });
+}
+
+struct ParquetPathVariantSource {
+	ParquetPathVariantSource(ParquetVariantIterator &iterator, const vector<VariantPathComponent> &path)
+	    : iterator(iterator), path(path) {
+	}
+
+	bool Emit(idx_t row, VariantBuilder &builder) {
+		iterator.BeginRow(row);
+		auto root = iterator.Root(row);
+		if (root.IsNull()) {
+			return true;
+		}
+		auto leaf = WalkExtractPath(root, path);
+		if (leaf.IsMissing()) {
+			return true;
+		}
+		EmitSparsePath(path, 0, leaf, builder);
+		return false;
+	}
+
+	ParquetVariantIterator &iterator;
+	const vector<VariantPathComponent> &path;
+};
+
+} // namespace
+
+void ParquetVariantConversion::ConvertPath(Vector &metadata, Vector &group, Vector &result, idx_t count,
+                                           const vector<VariantPathComponent> &path) {
+	D_ASSERT(!path.empty());
+	ParquetVariantIterator iterator(metadata, group);
+	ParquetPathVariantSource source(iterator, path);
 	BuildVariant(source, count, result);
 }
 

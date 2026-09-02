@@ -119,6 +119,9 @@ public:
 	DUCKDB_API VariantDecimalProperties GetDecimalProperties() const;
 	DUCKDB_API ParquetObjectIterator GetObjectChildren(VariantIterationOrder order) const;
 	DUCKDB_API ParquetArrayIterator GetArrayChildren() const;
+	//! Locate an OBJECT child by key without decoding sibling values. Returns MISSING when this
+	//! node is not an object or the key is absent.
+	DUCKDB_API ParquetVariantNode FindObjectChild(const string &key) const;
 
 private:
 	explicit ParquetVariantNode(Kind kind) : kind(kind) {
@@ -254,6 +257,10 @@ public:
 	//! struct<metadata BLOB, value BLOB[, typed_value ...]>. This is 'variant_to_parquet_variant's
 	//! conversion, and also the storage of the arrow.parquet.variant canonical extension type.
 	DUCKDB_API static void ToParquetVariant(const Vector &variant, idx_t count, Vector &result);
+	//! Walk 'path' in each row's binary OBJECT and materialize only that terminal subtree, wrapped
+	//! as a sparse object so a following variant_extract still resolves the same keys.
+	DUCKDB_API static void ConvertPath(Vector &metadata, Vector &group, Vector &result, idx_t count,
+	                                   const vector<VariantPathComponent> &path);
 };
 
 } // namespace duckdb

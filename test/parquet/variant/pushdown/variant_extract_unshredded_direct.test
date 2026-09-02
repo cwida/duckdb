@@ -1,0 +1,160 @@
+# name: test/parquet/variant/pushdown/variant_extract_unshredded_direct.test
+# description: Direct path extraction from unshredded / partially shredded Parquet VARIANT blobs
+# group: [pushdown]
+
+require parquet
+
+# Force values into the binary 'value' blob: shred the root as VARCHAR so object fields cannot
+# use the fully-shredded typed_value shortcut. Avoid length-64 strings (writer edge case).
+statement ok
+COPY (
+	FROM (VALUES
+		({'id': 1::INTEGER, 'payload': repeat('a', 80), 'nested': {'x': 10::INTEGER, 'y': 'ten'}, 'arr': [1::INTEGER, 2]}::VARIANT),
+		({'id': 2::INTEGER, 'payload': repeat('b', 80), 'nested': {'x': 20::INTEGER}, 'arr': [3::INTEGER]}::VARIANT),
+		({'id': 3::INTEGER, 'payload': repeat('c', 80), 'nested': NULL, 'arr': []}::VARIANT),
+		({'payload': repeat('d', 80), 'nested': {'x': 40::INTEGER}}::VARIANT),
+		(NULL::VARIANT),
+		({'id': NULL, 'payload': 'e', 'nested': {'x': NULL}}::VARIANT)
+	) t(v)
+) TO '{TEST_DIR}/variant_unshredded_direct.parquet' (SHREDDING {'v': 'VARCHAR'});
+
+# Top-level key extract + filter
+query II nosort
+SELECT v.id::INTEGER, v.payload::VARCHAR
+FROM '{TEST_DIR}/variant_unshredded_direct.parquet'
+WHERE v.id = 2
+----
+2	bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+
+# Nested unshredded key
+query II
+SELECT v.id::INTEGER, v.nested.x::INTEGER
+FROM '{TEST_DIR}/variant_unshredded_direct.parquet'
+WHERE v.nested.x = 20
+----
+2	20
+
+# Absent / case-distinct keys (key lookup is case-sensitive)
+query II
+SELECT
+	count(*) FILTER (WHERE v.missing_key IS NULL),
+	count(*) FILTER (WHERE v.Id IS NULL)
+FROM '{TEST_DIR}/variant_unshredded_direct.parquet'
+----
+6	6
+
+# SQL NULL root, VARIANT_NULL values, missing nested intermediates
+query IIII
+SELECT
+	count(*) FILTER (WHERE v.id IS NULL),
+	count(*) FILTER (WHERE v.nested IS NULL),
+	count(*) FILTER (WHERE v.nested.x IS NULL),
+	count(*) FILTER (WHERE v.id = 1)
+FROM '{TEST_DIR}/variant_unshredded_direct.parquet'
+----
+3	2	3	1
+
+# Non-object intermediate (scalar id) yields NULL for deeper path
+query I
+SELECT count(*) FILTER (WHERE v.id.x IS NULL)
+FROM '{TEST_DIR}/variant_unshredded_direct.parquet'
+----
+6
+
+# Terminal object / array still emit their complete requested subtree
+query TT nosort
+SELECT variant_typeof(v.nested), v.nested::VARCHAR
+FROM '{TEST_DIR}/variant_unshredded_direct.parquet'
+WHERE v.id = 1
+----
+OBJECT(x, y)	{'x': 10, 'y': ten}
+
+query TT
+SELECT variant_typeof(v.arr), v.arr::VARCHAR
+FROM '{TEST_DIR}/variant_unshredded_direct.parquet'
+WHERE v.id = 1
+----
+ARRAY(2)	[1, 2]
+
+# Casts / TRY on the unshredded extract path
+query III
+SELECT
+	count(*) FILTER (WHERE v.id::INTEGER = 2),
+	count(*) FILTER (WHERE TRY(v.id::INTEGER) = 2),
+	count(*) FILTER (WHERE v.nested.x::BIGINT = 20)
+FROM '{TEST_DIR}/variant_unshredded_direct.parquet'
+----
+1	1	1
+
+# Extract pushdown still resolves after DecodePath materializes only the requested key
+query I
+SELECT v.id::INTEGER
+FROM '{TEST_DIR}/variant_unshredded_direct.parquet'
+WHERE v.id = 2
+----
+2
+
+# Partially shredded: typed field + binary overlay fallback
+statement ok
+COPY (
+	FROM (VALUES
+		({'typed': 1::INTEGER, 'overlay': 'one'}::VARIANT),
+		({'typed': 2::INTEGER}::VARIANT),
+		({'overlay': 'only_overlay'}::VARIANT),
+		({'typed': NULL, 'overlay': 'null_typed'}::VARIANT)
+	) t(v)
+) TO '{TEST_DIR}/variant_partial_direct.parquet' (
+	SHREDDING {'v': 'STRUCT(typed INTEGER)'}
+);
+
+query ITT nosort
+SELECT v.typed::INTEGER, v.overlay::VARCHAR, variant_typeof(v)
+FROM '{TEST_DIR}/variant_partial_direct.parquet'
+WHERE v.overlay = 'one' OR v.typed = 2 OR v.overlay = 'only_overlay'
+ORDER BY coalesce(v.typed::INTEGER, -1), coalesce(v.overlay::VARCHAR, '')
+----
+NULL	only_overlay	OBJECT(overlay)
+1	one	OBJECT(overlay, typed)
+2	NULL	OBJECT(typed)
+
+# Mixed files: unshredded + shredded layouts in one scan
+statement ok
+COPY (
+	FROM (VALUES
+		({'id': 100::INTEGER, 'tag': 'shredded'}::VARIANT)
+	) t(v)
+) TO '{TEST_DIR}/variant_mixed_direct_a.parquet' (
+	SHREDDING {'v': 'STRUCT(id INTEGER, tag VARCHAR)'}
+);
+
+statement ok
+COPY (
+	FROM (VALUES
+		({'id': 200::INTEGER, 'tag': 'unshredded'}::VARIANT)
+	) t(v)
+) TO '{TEST_DIR}/variant_mixed_direct_b.parquet' (SHREDDING {'v': 'VARCHAR'});
+
+query II nosort
+SELECT v.id::INTEGER, v.tag::VARCHAR
+FROM '{TEST_DIR}/variant_mixed_direct_*.parquet'
+WHERE v.id IN (100, 200)
+ORDER BY v.id::INTEGER
+----
+100	shredded
+200	unshredded
+
+# Writers may set sorted_strings while dictionary keys stay in insertion order
+statement ok
+COPY (
+	SELECT {'id': i::INTEGER, 'flag': (i % 2 = 0)}::VARIANT AS v
+	FROM range(3) t(i)
+) TO '{TEST_DIR}/variant_unsorted_dict_direct.parquet' (SHREDDING {'v': 'VARCHAR'});
+
+query II
+SELECT v.id::INTEGER, v.flag::BOOLEAN
+FROM '{TEST_DIR}/variant_unsorted_dict_direct.parquet'
+ORDER BY v.id::INTEGER
+----
+0	true
+1	false
+2	true
