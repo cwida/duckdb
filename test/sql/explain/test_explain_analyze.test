@@ -113,3 +113,25 @@ query II
 EXPLAIN ANALYZE SELECT 42;
 ----
 analyzed_plan	<REGEX>:.+Total Time.*
+
+# EXPLAIN ANALYZE always uses default metrics, even if tracked_metrics is empty
+statement ok
+SET tracked_metrics = [];
+
+query II
+EXPLAIN ANALYZE SELECT SUM(i) FROM integers
+----
+analyzed_plan	<REGEX>:.*integers.*
+
+query II
+EXPLAIN (ANALYZE, FORMAT JSON) SELECT SUM(i) FROM integers;
+----
+analyzed_plan	<REGEX>:.*"sql": ".*SELECT SUM\(i\) FROM integers.*".*
+
+query II
+EXPLAIN (ANALYZE, FORMAT JSON) SELECT SUM(i) FROM integers;
+----
+analyzed_plan	<REGEX>:.*"timing".*
+
+statement ok
+RESET tracked_metrics;
