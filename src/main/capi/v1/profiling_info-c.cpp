@@ -63,6 +63,31 @@ duckdb_profiling_info duckdb_get_profiling_info(duckdb_connection connection) {
 	}
 }
 
+extern "C" DUCKDB_C_API duckdb_profiling_info duckdb_get_profiling_info_snapshot(duckdb_connection connection) {
+	if (!connection) {
+		return nullptr;
+	}
+	auto *conn = reinterpret_cast<Connection *>(connection);
+	try {
+		auto &profiler = duckdb::QueryProfiler::Get(*conn->context);
+		auto snapshot = profiler.CopyResult();
+		if (!snapshot) {
+			return nullptr;
+		}
+		return reinterpret_cast<duckdb_profiling_info>(snapshot.release());
+	} catch (...) {
+		return nullptr;
+	}
+}
+
+extern "C" DUCKDB_C_API void duckdb_destroy_profiling_info_snapshot(duckdb_profiling_info *info) {
+	if (!info || !*info) {
+		return;
+	}
+	delete reinterpret_cast<QueryProfileResult *>(*info);
+	*info = nullptr;
+}
+
 duckdb_value duckdb_profiling_info_get_value(duckdb_profiling_info info, const char *key) {
 	if (!info || !key) {
 		return nullptr;

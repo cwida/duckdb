@@ -71,6 +71,17 @@ QueryProfileResult &QueryProfileResult::AppendList() {
 	return ref;
 }
 
+unique_ptr<QueryProfileResult> QueryProfileResult::Copy() const {
+	auto result = make_uniq<QueryProfileResult>();
+	result->kind = kind;
+	result->key = key;
+	result->value = value;
+	for (auto &child : children) {
+		result->children.push_back(child->Copy());
+	}
+	return result;
+}
+
 QueryProfiler::QueryProfiler(ClientContext &context_p)
     : context(context_p), running(false), query_started(false), query_requires_profiling(false),
       is_explain_analyze(false), metrics_finalized(false) {
@@ -1071,6 +1082,17 @@ void QueryProfiler::GetFinalizedProfileUnderLock(
 		return;
 	}
 	callback(metrics.get(), root.get());
+}
+
+unique_ptr<QueryProfileResult> QueryProfiler::CopyResult() {
+	lock_guard<std::mutex> guard(lock);
+	if (!IsEnabled() || !root) {
+		return nullptr;
+	}
+	if (!result_tree) {
+		result_tree = ToResultTree();
+	}
+	return result_tree->Copy();
 }
 
 bool QueryProfiler::HasRoot() const {
