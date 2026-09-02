@@ -202,6 +202,8 @@ private:
 
 	//! Throw an exception if the secret manager is initialized
 	void ThrowOnSettingChangeIfInitialized();
+	//! Throw an exception if the configuration has been locked through the lock_configuration setting
+	void CheckConfigurationLock(const string &operation);
 
 	//! Lock for types, functions, settings and storages
 	mutex manager_lock;

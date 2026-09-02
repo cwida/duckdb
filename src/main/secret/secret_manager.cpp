@@ -17,6 +17,7 @@
 #include "duckdb/main/extension_helper.hpp"
 #include "duckdb/main/secret/secret_storage.hpp"
 #include "duckdb/main/secret/default_secrets.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/parser/parsed_data/create_secret_info.hpp"
 #include "duckdb/parser/statement/create_statement.hpp"
 #include "duckdb/planner/operator/logical_create_secret.hpp"
@@ -158,6 +159,7 @@ void SecretManager::RegisterSecretFunction(CreateSecretFunction function, OnCrea
 unique_ptr<SecretEntry> SecretManager::RegisterSecret(CatalogTransaction transaction,
                                                       unique_ptr<const BaseSecret> secret, OnCreateConflict on_conflict,
                                                       SecretPersistType persist_type, const string &storage) {
+	CheckConfigurationLock("create");
 	InitializeSecrets(transaction);
 	return RegisterSecretInternal(transaction, std::move(secret), on_conflict, persist_type, Identifier(storage));
 }
@@ -256,6 +258,9 @@ optional_ptr<CreateSecretFunction> SecretManager::LookupFunctionInternal(const I
 }
 
 unique_ptr<SecretEntry> SecretManager::CreateSecret(ClientContext &context, const CreateSecretInput &input) {
+	// Note that this happens before looking up the secret function - creating a secret can have side effects
+	// (e.g. fetching a token over HTTP), which must not happen when secrets are locked
+	CheckConfigurationLock("create");
 	// Note that a context is required for CreateSecret, as the CreateSecretFunction expects one
 	auto transaction = CatalogTransaction::GetSystemCatalogTransaction(context);
 	InitializeSecrets(transaction);
@@ -287,6 +292,7 @@ unique_ptr<SecretEntry> SecretManager::CreateSecret(ClientContext &context, cons
 }
 
 BoundStatement SecretManager::BindCreateSecret(CatalogTransaction transaction, CreateSecretInput &info) {
+	CheckConfigurationLock("create");
 	if (info.persist_type == SecretPersistType::TRANSACTION || info.storage_type == TRANSACTION_STORAGE_NAME) {
 		throw BinderException("Transaction-scoped secrets cannot be created through SQL");
 	}
@@ -417,6 +423,7 @@ unique_ptr<SecretEntry> SecretManager::GetSecretByName(CatalogTransaction transa
 void SecretManager::DropSecretByName(CatalogTransaction transaction, const Identifier &name,
                                      OnEntryNotFound on_entry_not_found, SecretPersistType persist_type,
                                      const Identifier &storage) {
+	CheckConfigurationLock("drop");
 	InitializeSecrets(transaction);
 	auto transaction_storage = GetTransactionSecretStorage(transaction);
 	if (storage == TRANSACTION_STORAGE_NAME || persist_type == SecretPersistType::TRANSACTION) {
@@ -583,6 +590,15 @@ vector<CreateSecretFunction> SecretManager::AllSecretFunctions() {
 	}
 
 	return result;
+}
+
+void SecretManager::CheckConfigurationLock(const string &operation) {
+	if (!db) {
+		return;
+	}
+	if (Settings::Get<LockConfigurationSetting>(*db)) {
+		throw PermissionException("Cannot %s secrets - the configuration has been locked", operation);
+	}
 }
 
 void SecretManager::ThrowOnSettingChangeIfInitialized() {

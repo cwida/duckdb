@@ -215,6 +215,15 @@ shared_ptr<AttachedDatabase> DatabaseInstance::CreateAttachedDatabase(ClientCont
 		}
 
 		if (storage_extension->attach != nullptr && storage_extension->create_transaction_manager != nullptr) {
+			// Storage extensions generally do their own I/O (over the network, or through a client library),
+			// bypassing the DuckDB file system and with it the enable_external_access/allowed_directories checks.
+			// Gate them centrally here, rather than relying on every individual extension to do so. The internal
+			// __open_file__ extension is exempt: it reads through the DuckDB file system, which is gated already.
+			if (extension_name != "__open_file__" && !Settings::Get<EnableExternalAccessSetting>(*this)) {
+				throw PermissionException(
+				    "Attaching databases of type \"%s\" is disabled through configuration (enable_external_access)",
+				    options.db_type);
+			}
 			// Use the storage extension to create the initial database.
 			attached_database = make_shared_ptr<AttachedDatabase>(*this, catalog, *storage_extension, context,
 			                                                      info.name, info, options);
