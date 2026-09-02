@@ -826,6 +826,15 @@ public:
 
 		// before instantiating a scan trigger a dynamic filter pushdown if possible
 		auto new_list = MultiFileFilterPushdown(context, bind_data, input.column_indexes, input.filters);
+		// optionally apply sampling pushdown after filter pruning, before any readers open
+		if (input.sample_options) {
+			auto &candidate_list = new_list ? *new_list : *bind_data.file_list;
+			auto sampled_list = bind_data.multi_file_reader->SamplePushdown(
+			    context, candidate_list, bind_data.file_options, *input.sample_options);
+			if (sampled_list) {
+				new_list = std::move(sampled_list);
+			}
+		}
 		if (new_list) {
 			result = make_uniq<MultiFileGlobalState>(std::move(new_list));
 		} else {

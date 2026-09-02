@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "duckdb/common/unordered_map.hpp"
 #include "duckdb/common/winapi.hpp"
 #include "duckdb/main/capi/extension_api.hpp"
 #include "duckdb/main/capi_v2/extension_load_v2.hpp"
@@ -43,9 +44,13 @@ class MetricsManager;
 class ExternalFileCache;
 class ResultSetManager;
 struct ParserCache;
+struct FunctionData;
+class SamplingPushdownRegistry;
+class SampleOptions;
 
 class DatabaseInstance : public enable_shared_from_this<DatabaseInstance> {
 	friend class DuckDB;
+	friend class SamplingPushdownRegistry;
 
 public:
 	DUCKDB_API DatabaseInstance();
@@ -131,6 +136,11 @@ private:
 	unique_ptr<OSUtil> os_util;
 
 	duckdb_ext_api_v1 (*create_api_v1)();
+	//! Sampling pushdown eligibility callbacks registered by extensions (e.g. ducklake).
+	//! Kept on DatabaseInstance (not process-static / not DBConfig) so loadable
+	//! extensions that link libduckdb_static share state with the host optimizer
+	//! without shifting DBConfig field offsets used by prebuilt extensions.
+	unordered_map<string, bool (*)(const FunctionData &, const SampleOptions &)> sampling_pushdown_callbacks;
 	//! Set in Initialize. Loading a V2 C API extension builds the C API function table and opens a connection, both of
 	//! which reach the entire engine. Naming InvokeCAPIV2Entrypoint from the extension loader - which every extension
 	//! links, and which reaches it through autoloading - would therefore keep all of DuckDB alive in extensions that

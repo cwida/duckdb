@@ -60,6 +60,7 @@ add_library_unity(
   window_self_join.cpp
   row_number_rewriter.cpp
   sampling_pushdown.cpp
+  sampling_pushdown_registry.cpp
   type_pushdown.cpp
   scalar_fn_pushdown.cpp
   projection_pullup.cpp

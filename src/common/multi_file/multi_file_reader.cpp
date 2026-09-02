@@ -10,6 +10,7 @@
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/function/function_set.hpp"
 #include "duckdb/function/table_function.hpp"
+#include "duckdb/parser/parsed_data/sample_options.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/common/multi_file/multi_file_column_mapper.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
@@ -613,6 +614,11 @@ MultiFileDynamicPushdownInfo::MultiFileDynamicPushdownInfo(ClientContext &contex
 unique_ptr<MultiFileList> MultiFileReader::DynamicFilterPushdown(const MultiFileList &files,
                                                                  MultiFileDynamicPushdownInfo &pushdown_info) {
 	return files.DynamicFilterPushdown(pushdown_info);
+}
+
+unique_ptr<MultiFileList> MultiFileReader::SamplePushdown(ClientContext &, const MultiFileList &,
+                                                          const MultiFileOptions &, const SampleOptions &) {
+	return nullptr;
 }
 
 bool MultiFileReader::Bind(MultiFileOptions &options, MultiFileList &files, vector<LogicalType> &return_types,
