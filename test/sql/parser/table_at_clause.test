@@ -43,6 +43,6 @@ SELECT * FROM tbl AT (TIMESTAMP => TIMESTAMP '2020-01-01' + a)
 AT clause cannot contain column names
 
 statement error
-SELECT * FROM tbl AT (TIMESTAMP => (SELECT MIN(ts) FROM tbl))
+SELECT * FROM tbl AT (TIMESTAMP => (SELECT MIN(i) FROM tbl))
 ----
-AT clause cannot contain subqueries
+Catalog type does not support time travel

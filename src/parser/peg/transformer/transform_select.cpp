@@ -25,6 +25,7 @@
 #include "duckdb/parser/statement/update_statement.hpp"
 #include "duckdb/parser/statement/delete_statement.hpp"
 #include "duckdb/parser/statement/copy_statement.hpp"
+#include "duckdb/parser/statement/select_statement.hpp"
 #include "duckdb/parser/query_node/insert_query_node.hpp"
 #include "duckdb/parser/query_node/update_query_node.hpp"
 #include "duckdb/parser/query_node/delete_query_node.hpp"
@@ -1587,7 +1588,21 @@ unique_ptr<AtClause> PEGTransformerFactory::TransformAtClause(PEGTransformer &tr
 
 unique_ptr<AtClause> PEGTransformerFactory::TransformAtSpecifier(PEGTransformer &transformer, const string &at_unit,
                                                                  unique_ptr<ParsedExpression> expression) {
-	return make_uniq<AtClause>(Identifier(at_unit), std::move(expression));
+	auto result = make_uniq<AtClause>(Identifier(at_unit), std::move(expression));
+	if (!result->ExpressionMutable()->HasSubquery()) {
+		return result;
+	}
+
+	auto selector_node = make_uniq<SelectNode>();
+	selector_node->select_list.push_back(result->ExpressionMutable()->Copy());
+	selector_node->from_table = make_uniq<EmptyTableRef>();
+	auto selector = make_uniq<SelectStatement>();
+	selector->node = std::move(selector_node);
+	selector->query = selector->ToString();
+
+	result->SetPreBindIndex(transformer.at_clause_subqueries.size());
+	transformer.at_clause_subqueries.push_back(std::move(selector));
+	return result;
 }
 
 unique_ptr<TableRef> PEGTransformerFactory::TransformJoinWithoutOnClause(PEGTransformer &transformer,

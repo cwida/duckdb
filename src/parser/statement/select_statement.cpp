@@ -3,6 +3,9 @@
 namespace duckdb {
 
 SelectStatement::SelectStatement(const SelectStatement &other) : SQLStatement(other), node(other.node->Copy()) {
+	for (auto &selector : other.at_clause_subqueries) {
+		at_clause_subqueries.push_back(unique_ptr_cast<SQLStatement, SelectStatement>(selector->Copy()));
+	}
 }
 
 unique_ptr<SQLStatement> SelectStatement::Copy() const {

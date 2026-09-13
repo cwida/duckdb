@@ -29,6 +29,10 @@
 #include "duckdb/main/relation.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
+#include "duckdb/parser/expression/subquery_expression.hpp"
+#include "duckdb/parser/parsed_expression_iterator.hpp"
+#include "duckdb/parser/tableref/at_clause.hpp"
+#include "duckdb/parser/tableref/basetableref.hpp"
 #include "duckdb/parser/expression/star_expression.hpp"
 #include "duckdb/parser/parsed_data/create_function_info.hpp"
 #include "duckdb/parser/parser.hpp"
@@ -211,6 +215,85 @@ static unique_ptr<SQLStatement> WrapAsSelect(unique_ptr<TableRef> from_ref) {
 	auto select_stmt = make_uniq<SelectStatement>();
 	select_stmt->node = std::move(select_node);
 	return std::move(select_stmt);
+}
+
+static idx_t ResolveAtClauseIndex(QueryNode &node, idx_t selector_index, const Value &value) {
+	idx_t match_count = 0;
+	std::function<void(QueryNode &)> visit_query_node;
+	std::function<void(unique_ptr<ParsedExpression> &)> visit_expression;
+	std::function<void(TableRef &)> visit_table_ref;
+
+	visit_expression = [&](unique_ptr<ParsedExpression> &expression) {
+		if (expression->GetExpressionClass() == ExpressionClass::SUBQUERY) {
+			auto &subquery = expression->Cast<SubqueryExpression>();
+			visit_query_node(*subquery.SubqueryMutable()->node);
+		}
+		for (auto &child : expression->ChildrenMutable()) {
+			visit_expression(child);
+		}
+	};
+	visit_table_ref = [&](TableRef &ref) {
+		if (ref.type != TableReferenceType::BASE_TABLE) {
+			return;
+		}
+		auto &base_table = ref.Cast<BaseTableRef>();
+		if (!base_table.at_clause) {
+			return;
+		}
+		auto prebind_index = base_table.at_clause->GetPreBindIndex();
+		if (prebind_index.IsValid() && prebind_index.GetIndex() == selector_index) {
+			base_table.at_clause->ResolvePreBindExpression(ConstantExpression::FromValue(value));
+			match_count++;
+			return;
+		}
+		visit_expression(base_table.at_clause->ExpressionMutable());
+	};
+	visit_query_node = [&](QueryNode &query_node) {
+		ParsedExpressionIterator::EnumerateQueryNodeChildren(query_node, visit_expression, visit_table_ref);
+	};
+	visit_query_node(node);
+	return match_count;
+}
+
+void ClientContext::ResolveAtClauseSubqueries(ClientContextLock &lock, SelectStatement &statement,
+                                              const QueryParameters &parameters, bool verify) {
+	if (statement.at_clause_subqueries.empty()) {
+		return;
+	}
+	if (!statement.named_param_map.empty() || statement.has_anonymous_parameters ||
+	    (parameters.statement_args && !parameters.statement_args->empty())) {
+		throw NotImplementedException("AT clauses with subqueries cannot be used in prepared statements");
+	}
+
+	vector<unique_ptr<SelectStatement>> selectors;
+	for (auto &selector : statement.at_clause_subqueries) {
+		selectors.push_back(unique_ptr_cast<SQLStatement, SelectStatement>(selector->Copy()));
+	}
+
+	for (idx_t selector_index = 0; selector_index < selectors.size(); selector_index++) {
+		QueryParameters selector_parameters(ChunkFormat::InMemory());
+		auto result = RunStatementInternal(lock, std::move(selectors[selector_index]), selector_parameters, verify);
+		if (result->HasError()) {
+			result->ThrowError();
+		}
+		if (result->ColumnCount() != 1) {
+			throw InternalException("AT clause selector did not produce a single materialized column");
+		}
+		auto &collection = result->Collection();
+		if (collection.Count() != 1) {
+			throw InternalException("AT clause selector did not produce a scalar result");
+		}
+		auto value = collection.GetValue(0, 0);
+
+		idx_t match_count = ResolveAtClauseIndex(*statement.node, selector_index, value);
+		for (idx_t remaining_index = selector_index + 1; remaining_index < selectors.size(); remaining_index++) {
+			match_count += ResolveAtClauseIndex(*selectors[remaining_index]->node, selector_index, value);
+		}
+		if (match_count == 0) {
+			throw InternalException("AT clause selector has no matching expression");
+		}
+	}
+	statement.at_clause_subqueries.clear();
 }
 
 void ClientContext::Destroy() {
@@ -491,6 +574,10 @@ unique_ptr<LogicalOperator> ClientContext::ExtractPlan(const string &query) {
 	}
 	statements[0] = ExpandSingleStatementInternal(*lock, std::move(statements[0]),
 	                                              "ExtractPlan can only prepare a single statement");
+	if (statements[0]->type == StatementType::SELECT_STATEMENT) {
+		QueryParameters parameters;
+		ResolveAtClauseSubqueries(*lock, statements[0]->Cast<SelectStatement>(), parameters, true);
+	}
 
 	unique_ptr<LogicalOperator> plan;
 	RunFunctionInTransactionInternal(*lock, [&]() {
@@ -562,6 +649,10 @@ unique_ptr<PreparedStatement> ClientContext::PrepareInternal(ClientContextLock &
 		return make_uniq<PreparedStatement>(shared_from_this(), std::move(written_statement));
 	}
 	statement = std::move(expanded.statements[0]);
+	if (statement->type == StatementType::SELECT_STATEMENT &&
+	    !statement->Cast<SelectStatement>().at_clause_subqueries.empty()) {
+		throw NotImplementedException("AT clauses with subqueries cannot be used in prepared statements");
+	}
 
 	auto statement_query = statement->query;
 	// prepare the statement under a generated name - the returned PreparedStatement only refers to that name
@@ -606,6 +697,10 @@ unique_ptr<PreparedStatement> ClientContext::Prepare(unique_ptr<SQLStatement> st
 
 StatementSignature ClientContext::BindStatement(unique_ptr<SQLStatement> statement) {
 	auto lock = LockContext();
+	if (statement->type == StatementType::SELECT_STATEMENT) {
+		QueryParameters parameters;
+		ResolveAtClauseSubqueries(*lock, statement->Cast<SelectStatement>(), parameters, true);
+	}
 	StatementSignature signature;
 	ErrorData bind_error;
 	RunFunctionInTransactionInternal(
@@ -799,6 +894,11 @@ unique_ptr<QueryResult> ClientContext::SubmitStatement(ClientContextLock &lock, 
 	try {
 		preprocessed = PreprocessStatementInternal(lock, std::move(statement));
 		auto &statements = preprocessed.statements;
+		for (auto &internal_statement : statements) {
+			if (internal_statement->type == StatementType::SELECT_STATEMENT) {
+				ResolveAtClauseSubqueries(lock, internal_statement->Cast<SelectStatement>(), parameters, verify);
+			}
+		}
 		if (statements.size() > 1 && has_parameters) {
 			throw InvalidInputException(EXPANDING_PARAMETERS_ERROR);
 		}
