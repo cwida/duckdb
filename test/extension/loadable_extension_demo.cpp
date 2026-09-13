@@ -22,6 +22,7 @@
 #include "duckdb/planner/planner_extension.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
+#include "duckdb/planner/operator/logical_cross_product.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/function/cast/cast_function_set.hpp"
 #include "duckdb/function/window/window_executor.hpp"
@@ -124,6 +125,56 @@ static inline void SubPointFunction(DataChunk &args, ExpressionState &state, Vec
 		result.SetVectorType(VectorType::CONSTANT_VECTOR);
 	}
 	result.Verify();
+}
+
+//===--------------------------------------------------------------------===//
+// Multi-TABLE argument functions
+//===--------------------------------------------------------------------===//
+// Exercises TableFunctionBindInput::InputRelations() / TakeInputPlan(): builds a nested cross
+// product of every bound TABLE argument, capped with a projection at the function's bind index.
+static duckdb::unique_ptr<LogicalOperator> MultiTableCrossProductBind(ClientContext &context,
+                                                                      TableFunctionBindInput &input,
+                                                                      TableIndex bind_index,
+                                                                      vector<Identifier> &return_names) {
+	auto &relations = input.InputRelations();
+	if (relations.size() < 2) {
+		throw InvalidInputException("multi_table_cross_product requires at least two TABLE arguments");
+	}
+	duckdb::unique_ptr<LogicalOperator> combined;
+	vector<duckdb::unique_ptr<Expression>> projections;
+	for (idx_t relation_idx = 0; relation_idx < relations.size(); relation_idx++) {
+		auto &relation = relations[relation_idx];
+		auto bindings = relation.plan->GetColumnBindings();
+		for (idx_t column_idx = 0; column_idx < bindings.size(); column_idx++) {
+			auto name = Identifier("arg" + to_string(relation.argument_index) + "_" +
+			                       relation.names[column_idx].GetIdentifierName());
+			projections.push_back(
+			    make_uniq<BoundColumnRefExpression>(name, relation.types[column_idx], bindings[column_idx]));
+			return_names.push_back(name);
+		}
+		auto child = input.TakeInputPlan(relation_idx);
+		combined = combined ? LogicalCrossProduct::Create(std::move(combined), std::move(child)) : std::move(child);
+	}
+	auto projection = make_uniq<LogicalProjection>(bind_index, std::move(projections));
+	projection->children.push_back(std::move(combined));
+	return std::move(projection);
+}
+
+// Deliberately consumes only its first TABLE argument so the binder's leftover-plan check is reachable.
+static duckdb::unique_ptr<LogicalOperator> MultiTablePartialBind(ClientContext &context, TableFunctionBindInput &input,
+                                                                 TableIndex bind_index,
+                                                                 vector<Identifier> &return_names) {
+	auto &first = input.InputRelations()[0];
+	auto bindings = first.plan->GetColumnBindings();
+	vector<duckdb::unique_ptr<Expression>> projections;
+	for (idx_t column_idx = 0; column_idx < bindings.size(); column_idx++) {
+		projections.push_back(make_uniq<BoundColumnRefExpression>(first.names[column_idx], first.types[column_idx],
+		                                                          bindings[column_idx]));
+		return_names.push_back(first.names[column_idx]);
+	}
+	auto projection = make_uniq<LogicalProjection>(bind_index, std::move(projections));
+	projection->children.push_back(input.TakeInputPlan(0));
+	return std::move(projection);
 }
 
 //===--------------------------------------------------------------------===//
@@ -1363,6 +1414,45 @@ DUCKDB_CPP_EXTENSION_ENTRY(loadable_extension_demo, loader) {
 	QuackFunction quack_function;
 	CreateTableFunctionInfo quack_info(quack_function);
 	catalog.CreateTableFunction(client_context, quack_info);
+
+	// Functions taking more than one TABLE argument. A function with a TABLE parameter cannot have
+	// overloads, so each arity gets its own name.
+	{
+		TableFunction pair(Identifier("multi_table_cross_product"), {LogicalType::TABLE, LogicalType::TABLE}, nullptr,
+		                   nullptr);
+		pair.bind_operator = MultiTableCrossProductBind;
+		CreateTableFunctionInfo pair_info(pair);
+		catalog.CreateTableFunction(client_context, pair_info);
+
+		TableFunction triple(Identifier("multi_table_cross_product3"),
+		                     {LogicalType::TABLE, LogicalType::TABLE, LogicalType::TABLE}, nullptr, nullptr);
+		triple.bind_operator = MultiTableCrossProductBind;
+		CreateTableFunctionInfo triple_info(triple);
+		catalog.CreateTableFunction(client_context, triple_info);
+	}
+	{
+		// TABLE, VARCHAR, TABLE - a scalar argument between two relations
+		TableFunction mixed(Identifier("multi_table_mixed"),
+		                    {LogicalType::TABLE, LogicalType::VARCHAR, LogicalType::TABLE}, nullptr, nullptr);
+		mixed.bind_operator = MultiTableCrossProductBind;
+		CreateTableFunctionInfo mixed_info(mixed);
+		catalog.CreateTableFunction(client_context, mixed_info);
+
+		TableFunction partial(Identifier("multi_table_partial"), {LogicalType::TABLE, LogicalType::TABLE}, nullptr,
+		                      nullptr);
+		partial.bind_operator = MultiTablePartialBind;
+		CreateTableFunctionInfo partial_info(partial);
+		catalog.CreateTableFunction(client_context, partial_info);
+
+		// declares two TABLE arguments but is an in-out function, which cannot consume them
+		TableFunction in_out(Identifier("multi_table_in_out"), {LogicalType::TABLE, LogicalType::TABLE}, nullptr,
+		                     nullptr);
+		in_out.in_out_function = [](ExecutionContext &, TableFunctionInput &, DataChunk &, DataChunk &) {
+			return OperatorResultType::NEED_MORE_INPUT;
+		};
+		CreateTableFunctionInfo in_out_info(in_out);
+		catalog.CreateTableFunction(client_context, in_out_info);
+	}
 
 	con.Commit();
 
