@@ -123,6 +123,10 @@ public:
 	virtual OperatorFinalResultType OperatorFinalize(Pipeline &pipeline, Event &event, ClientContext &context,
 	                                                 OperatorFinalizeInput &input) const;
 
+	//! Incorporate intermediate operator progress without changing the upstream work units.
+	virtual ProgressData GetOperatorProgress(ClientContext &context, GlobalOperatorState &gstate,
+	                                         const ProgressData upstream_progress) const;
+
 	virtual bool ParallelOperator() const {
 		return false;
 	}

@@ -516,6 +516,10 @@ public:
 	table_function_to_sql_t to_sql = nullptr;
 	//! (Optional) return how much of the table we have scanned up to this point (% of the data)
 	table_function_progress_t table_scan_progress;
+	//! (Optional) progress for one in-out operator execution, across all input batches and workers.
+	//! Includes pending output and finalization; return [0, 100], or a negative value if unknown.
+	//! Must support concurrent reads during execution; this is not progress within the current input batch.
+	table_function_progress_t table_in_out_progress;
 	//! (Optional) returns the partition info of the current scan operator
 	table_function_get_partition_data_t get_partition_data;
 	//! (Optional) returns extra bind info

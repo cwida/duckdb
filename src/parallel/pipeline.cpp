@@ -111,6 +111,13 @@ void Pipeline::GetDetailedProgress(PipelineProgress &progress) {
 	}
 	progress.pipeline = progress.source;
 	progress.pipeline.Normalize(double(source_cardinality));
+	for (auto &op_ref : operators) {
+		auto &op = op_ref.get();
+		lock_guard<mutex> guard(op.lock);
+		if (op.op_state) {
+			progress.pipeline = op.GetOperatorProgress(client, *op.op_state, progress.pipeline);
+		}
+	}
 	if (sink) {
 		lock_guard<mutex> guard(sink->lock);
 		if (sink->sink_state) {

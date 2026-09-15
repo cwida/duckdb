@@ -160,6 +160,11 @@ TableFunctionParallelism PhysicalOperator::SourceParallelism() const {
 	return TableFunctionParallelism::SELF_MANAGED_PARALLELISM;
 }
 
+ProgressData PhysicalOperator::GetOperatorProgress(ClientContext &context, GlobalOperatorState &gstate,
+                                                   const ProgressData upstream_progress) const {
+	return upstream_progress;
+}
+
 ProgressData PhysicalOperator::GetProgress(ClientContext &context, GlobalSourceState &gstate) const {
 	ProgressData res;
 	res.SetInvalid();

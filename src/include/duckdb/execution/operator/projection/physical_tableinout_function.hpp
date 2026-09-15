@@ -35,6 +35,9 @@ public:
 	OperatorFinalizeResultType FinalExecute(ExecutionContext &context, DataChunk &chunk, GlobalOperatorState &gstate,
 	                                        OperatorState &state) const override;
 
+	ProgressData GetOperatorProgress(ClientContext &context, GlobalOperatorState &gstate,
+	                                 const ProgressData upstream_progress) const override;
+
 	bool ParallelOperator() const override {
 		return true;
 	}
