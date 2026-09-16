@@ -66,6 +66,7 @@
       "reason": "CREATE SECURE VIEW requires v2.0.0 storage.",
       "paths": [
         "test/sql/catalog/view/secure_view.test",
+        "test/sql/catalog/view/describe_secure_view.test",
         "test/sql/optimizer/secure_view_explain.test",
         "test/sql/optimizer/secure_view_pushdown.test",
         "test/sql/pragma/profiling/test_profiling_bytes_scanned_secure_view.test",

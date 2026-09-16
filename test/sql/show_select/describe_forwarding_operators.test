@@ -1,0 +1,68 @@
+# name: test/sql/show_select/describe_forwarding_operators.test
+# description: DESCRIBE traces columns to their base table through operators that forward their children's columns
+# group: [show_select]
+
+statement ok
+CREATE TABLE forwarded(i INTEGER PRIMARY KEY, j INTEGER DEFAULT 42);
+
+statement ok
+CREATE TABLE other(k INTEGER NOT NULL);
+
+# operators that were always traced through
+query IIII
+SELECT column_name, "null", "key", "default" FROM (DESCRIBE SELECT i, j FROM forwarded ORDER BY i LIMIT 1);
+----
+i	NO	PRI	NULL
+j	YES	NULL	42
+
+# a window forwards its input columns and only owns the window outputs
+query IIII
+SELECT column_name, "null", "key", "default" FROM (DESCRIBE SELECT i, j, row_number() OVER () AS rn FROM forwarded);
+----
+i	NO	PRI	NULL
+j	YES	NULL	42
+rn	YES	NULL	NULL
+
+# QUALIFY plans a window and a filter over the scan
+query III
+SELECT column_name, "null", "key" FROM (DESCRIBE SELECT i FROM forwarded QUALIFY row_number() OVER () = 1);
+----
+i	NO	PRI
+
+# an unnest in the select list forwards its input columns and only owns the unnested outputs
+query III
+SELECT column_name, "null", "key" FROM (DESCRIBE SELECT i, unnest([1]) AS u FROM forwarded);
+----
+i	NO	PRI
+u	YES	NULL
+
+# a correlated subquery forwards the outer columns through the delim join
+query III
+SELECT column_name, "null", "key" FROM (DESCRIBE SELECT i, (SELECT max(k) FROM other WHERE k = forwarded.i) AS m FROM forwarded);
+----
+i	NO	PRI
+m	YES	NULL
+
+# a window below a join
+query III
+SELECT column_name, "null", "key" FROM (DESCRIBE SELECT f.i, o.k FROM (SELECT i, row_number() OVER () AS rn FROM forwarded) f JOIN other o ON f.rn = o.k);
+----
+i	NO	PRI
+k	NO	NULL
+
+# operators that produce their own columns are not traced through
+query III
+SELECT column_name, "null", "key" FROM (DESCRIBE SELECT i FROM forwarded UNION ALL SELECT k FROM other);
+----
+i	YES	NULL
+
+query III
+SELECT column_name, "null", "key" FROM (DESCRIBE SELECT i FROM forwarded GROUP BY i);
+----
+i	YES	NULL
+
+# computed columns are not traced
+query III
+SELECT column_name, "null", "key" FROM (DESCRIBE SELECT i + 1 AS k FROM forwarded ORDER BY i);
+----
+k	YES	NULL

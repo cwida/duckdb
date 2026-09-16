@@ -18,6 +18,7 @@
 #include "duckdb/common/error_data.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/common/enums/show_behavior.hpp"
+#include "duckdb/common/algorithm.hpp"
 
 namespace duckdb {
 
@@ -28,12 +29,24 @@ struct BaseTableColumnInfo {
 
 BaseTableColumnInfo FindBaseTableColumn(LogicalOperator &op, ColumnBinding binding) {
 	BaseTableColumnInfo result;
+	if (op.type == LogicalOperatorType::LOGICAL_SECURE_VIEW) {
+		// a secure view hides the tables it reads from
+		return result;
+	}
+	auto table_indices = op.GetTableIndex();
+	if (std::find(table_indices.begin(), table_indices.end(), binding.table_index) == table_indices.end()) {
+		// the operator forwards its children's columns - search in children directly
+		for (auto &child : op.children) {
+			result = FindBaseTableColumn(*child, binding);
+			if (result.table) {
+				return result;
+			}
+		}
+		return result;
+	}
 	switch (op.type) {
 	case LogicalOperatorType::LOGICAL_GET: {
 		auto &get = op.Cast<LogicalGet>();
-		if (get.table_index != binding.table_index) {
-			return result;
-		}
 		auto table = get.GetTable();
 		if (!table) {
 			break;
@@ -52,9 +65,6 @@ BaseTableColumnInfo FindBaseTableColumn(LogicalOperator &op, ColumnBinding bindi
 	}
 	case LogicalOperatorType::LOGICAL_PROJECTION: {
 		auto &projection = op.Cast<LogicalProjection>();
-		if (binding.table_index != projection.table_index) {
-			break;
-		}
 		auto &expr = projection.GetExpression(binding);
 		if (expr.GetExpressionType() == ExpressionType::BOUND_COLUMN_REF) {
 			// if the projection at this index only has a column reference we can directly trace it to the base table
@@ -63,27 +73,8 @@ BaseTableColumnInfo FindBaseTableColumn(LogicalOperator &op, ColumnBinding bindi
 		}
 		break;
 	}
-	case LogicalOperatorType::LOGICAL_LIMIT:
-	case LogicalOperatorType::LOGICAL_ORDER_BY:
-	case LogicalOperatorType::LOGICAL_TOP_N:
-	case LogicalOperatorType::LOGICAL_SAMPLE:
-	case LogicalOperatorType::LOGICAL_DISTINCT:
-	case LogicalOperatorType::LOGICAL_FILTER:
-	case LogicalOperatorType::LOGICAL_COMPARISON_JOIN:
-	case LogicalOperatorType::LOGICAL_JOIN:
-	case LogicalOperatorType::LOGICAL_ANY_JOIN:
-	case LogicalOperatorType::LOGICAL_ASOF_JOIN:
-	case LogicalOperatorType::LOGICAL_CROSS_PRODUCT:
-		// for any "pass-through" operators - search in children directly
-		for (auto &child : op.children) {
-			result = FindBaseTableColumn(*child, binding);
-			if (result.table) {
-				return result;
-			}
-		}
-		break;
 	default:
-		// unsupported operator
+		// the operator produces this column itself and we cannot see through it
 		break;
 	}
 	return result;
