@@ -1,0 +1,35 @@
+# name: test/sql/show_select/describe_metadata.test
+# description: Test comments and tags returned in the DESCRIBE extra column
+# group: [show_select]
+
+statement ok
+CREATE TABLE described_table(i INTEGER, j INTEGER);
+
+statement ok
+COMMENT ON COLUMN described_table.i IS 'identifier "column"';
+
+query TT
+SELECT column_name, extra FROM (DESCRIBE described_table) ORDER BY column_name;
+----
+i	{"comment":"identifier \"column\""}
+j	NULL
+
+# Metadata follows column references through aliases, but not computed expressions
+query TT
+SELECT column_name, extra
+FROM (DESCRIBE SELECT i AS aliased_i, i + 1 AS expression FROM described_table);
+----
+aliased_i	{"comment":"identifier \"column\""}
+expression	NULL
+
+# Metadata passes through operators that forward their children's columns
+query TT
+SELECT column_name, extra FROM (DESCRIBE SELECT i FROM described_table ORDER BY i LIMIT 1);
+----
+i	{"comment":"identifier \"column\""}
+
+# Table functions that do not provide column metadata return no extra information
+query TT
+SELECT column_name, extra FROM (DESCRIBE FROM range(1));
+----
+range	NULL

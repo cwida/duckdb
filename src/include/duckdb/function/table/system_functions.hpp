@@ -19,7 +19,13 @@ struct PragmaCollations {
 };
 
 struct PragmaTableInfo {
+	//! The schema returned by pragma_show / DESCRIBE
+	static void GetShowSchema(vector<LogicalType> &return_types, vector<Identifier> &names);
+	//! Appends a pragma_show / DESCRIBE row for a table column
 	static void GetColumnInfo(TableCatalogEntry &table, const ColumnDefinition &column, DataChunk &output);
+	//! Appends a pragma_show / DESCRIBE row for a column that is not backed by a table column
+	static void GetColumnInfo(const Identifier &name, const LogicalType &type, const Value &comment,
+	                          const InsertionOrderPreservingMap<string> &tags, DataChunk &output);
 
 	static void RegisterFunction(BuiltinFunctions &set);
 };
