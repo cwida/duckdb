@@ -9,6 +9,7 @@
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
+#include "duckdb/catalog/catalog_entry/view_catalog_entry.hpp"
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/main/client_data.hpp"
 #include "duckdb/main/client_context.hpp"
@@ -24,9 +25,29 @@ namespace duckdb {
 struct DescribedColumnInfo {
 	optional_ptr<TableCatalogEntry> table = nullptr;
 	optional_ptr<const ColumnDefinition> column = nullptr;
+	//! Set when the column is read through a view: the view's own column comment then replaces the table's
+	bool from_view = false;
+	Value view_comment;
 };
 
-static DescribedColumnInfo FindDescribedColumn(ClientContext &context, LogicalOperator &op, ColumnBinding binding) {
+static DescribedColumnInfo FindDescribedColumn(ClientContext &context, BindContext &bind_context, LogicalOperator &op,
+                                               ColumnBinding binding);
+
+static optional_ptr<ViewCatalogEntry> FindViewBinding(BindContext &bind_context, TableIndex table_index) {
+	for (auto &binding : bind_context.GetBindingsList()) {
+		if (binding->GetIndex() != table_index || binding->GetBindingType() != BindingType::CATALOG_ENTRY) {
+			continue;
+		}
+		auto entry = binding->GetStandardEntry();
+		if (entry && entry->type == CatalogType::VIEW_ENTRY) {
+			return entry->Cast<ViewCatalogEntry>();
+		}
+	}
+	return nullptr;
+}
+
+static DescribedColumnInfo FindDescribedColumnInternal(ClientContext &context, BindContext &bind_context,
+                                                       LogicalOperator &op, ColumnBinding binding) {
 	DescribedColumnInfo result;
 	switch (op.type) {
 	case LogicalOperatorType::LOGICAL_GET: {
@@ -65,7 +86,7 @@ static DescribedColumnInfo FindDescribedColumn(ClientContext &context, LogicalOp
 		if (expr.GetExpressionType() == ExpressionType::BOUND_COLUMN_REF) {
 			// if the projection at this index only has a column reference we can directly trace it to the base table
 			auto &bound_colref = expr.Cast<BoundColumnRefExpression>();
-			return FindDescribedColumn(context, *projection.children[0], bound_colref.Binding());
+			return FindDescribedColumn(context, bind_context, *projection.children[0], bound_colref.Binding());
 		}
 		break;
 	}
@@ -83,7 +104,7 @@ static DescribedColumnInfo FindDescribedColumn(ClientContext &context, LogicalOp
 	case LogicalOperatorType::LOGICAL_WINDOW:
 		// for any "pass-through" operators - search in children directly
 		for (auto &child : op.children) {
-			result = FindDescribedColumn(context, *child, binding);
+			result = FindDescribedColumn(context, bind_context, *child, binding);
 			if (result.column) {
 				return result;
 			}
@@ -96,9 +117,21 @@ static DescribedColumnInfo FindDescribedColumn(ClientContext &context, LogicalOp
 	return result;
 }
 
-static DescribedColumnInfo FindDescribedColumn(ClientContext &context, LogicalOperator &op, idx_t column_index) {
+static DescribedColumnInfo FindDescribedColumn(ClientContext &context, BindContext &bind_context, LogicalOperator &op,
+                                               ColumnBinding binding) {
+	auto result = FindDescribedColumnInternal(context, bind_context, op, binding);
+	auto view = FindViewBinding(bind_context, binding.table_index);
+	if (view) {
+		result.from_view = true;
+		result.view_comment = view->GetColumnComment(binding.column_index);
+	}
+	return result;
+}
+
+static DescribedColumnInfo FindDescribedColumn(ClientContext &context, BindContext &bind_context, LogicalOperator &op,
+                                               idx_t column_index) {
 	auto bindings = op.GetColumnBindings();
-	return FindDescribedColumn(context, op, bindings[column_index]);
+	return FindDescribedColumn(context, bind_context, op, bindings[column_index]);
 }
 
 BoundStatement Binder::BindDescribeQuery(ShowRef &ref) {
@@ -118,7 +151,7 @@ BoundStatement Binder::BindDescribeQuery(ShowRef &ref) {
 	collection->InitializeAppend(append_state);
 	for (idx_t column_idx = 0; column_idx < plan.types.size(); column_idx++) {
 		// check if we can trace the column to a base table so that we can figure out constraint information
-		auto result = FindDescribedColumn(context, *plan.plan, column_idx);
+		auto result = FindDescribedColumn(context, child_binder->bind_context, *plan.plan, column_idx);
 		idx_t row_index = output.size();
 		auto &alias = plan.names[column_idx];
 		if (result.table) {
@@ -128,11 +161,17 @@ BoundStatement Binder::BindDescribeQuery(ShowRef &ref) {
 			if (alias.GetIdentifierName() != result.column->Name().GetIdentifierName()) {
 				output.data[0].SetValue(row_index, Value(alias));
 			}
+			if (result.from_view) {
+				output.data[5].SetValue(row_index, PragmaTableInfo::GetColumnExtraInfo(
+				                                       result.view_comment, InsertionOrderPreservingMap<string>()));
+			}
 		} else {
 			// the column does not come from a table - read the type/name from the plan instead
 			Value comment;
 			InsertionOrderPreservingMap<string> tags;
-			if (result.column) {
+			if (result.from_view) {
+				comment = result.view_comment;
+			} else if (result.column) {
 				comment = result.column->Comment();
 				tags = result.column->Tags();
 			}

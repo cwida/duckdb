@@ -250,6 +250,10 @@ void PragmaTableInfo::GetShowSchema(vector<LogicalType> &return_types, vector<Id
 	PragmaShowHelper::GetSchema(return_types, names);
 }
 
+Value PragmaTableInfo::GetColumnExtraInfo(const Value &comment, const InsertionOrderPreservingMap<string> &tags) {
+	return PragmaShowHelper::ColumnExtraInfo(comment, tags);
+}
+
 void PragmaTableInfo::GetColumnInfo(const Identifier &name, const LogicalType &type, const Value &comment,
                                     const InsertionOrderPreservingMap<string> &tags, DataChunk &output) {
 	PragmaShowHelper::GetViewColumns(name, type, comment, tags, output);
@@ -301,7 +305,8 @@ static void PragmaTableInfoView(ClientContext &context, PragmaTableOperatorData 
 		if (is_table_info) {
 			PragmaTableInfoHelper::GetViewColumns(i, name, type, output);
 		} else {
-			PragmaShowHelper::GetViewColumns(name, type, Value(), InsertionOrderPreservingMap<string>(), output);
+			PragmaShowHelper::GetViewColumns(name, type, view.GetColumnComment(i),
+			                                 InsertionOrderPreservingMap<string>(), output);
 		}
 	}
 	data.offset = next;

@@ -33,3 +33,34 @@ query TT
 SELECT column_name, extra FROM (DESCRIBE FROM range(1));
 ----
 range	NULL
+
+statement ok
+CREATE VIEW described_view AS SELECT i FROM described_table;
+
+statement ok
+COMMENT ON COLUMN described_view.i IS 'view identifier column';
+
+query TT
+SELECT column_name, extra FROM pragma_show('described_view');
+----
+i	{"comment":"view identifier column"}
+
+# DESCRIBE reports the view's own column comment, not the underlying table column comment
+query TT
+SELECT column_name, extra FROM (DESCRIBE described_view);
+----
+i	{"comment":"view identifier column"}
+
+statement ok
+CREATE VIEW uncommented_view AS SELECT i AS x, j FROM described_table;
+
+query TT
+SELECT column_name, extra FROM (DESCRIBE uncommented_view);
+----
+x	NULL
+j	NULL
+
+query TT
+SELECT column_name, extra FROM (DESCRIBE SELECT i AS aliased_i FROM described_view);
+----
+aliased_i	{"comment":"view identifier column"}
