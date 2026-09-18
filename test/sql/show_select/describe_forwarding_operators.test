@@ -43,6 +43,25 @@ SELECT column_name, "null", "key" FROM (DESCRIBE SELECT i, (SELECT max(k) FROM o
 i	NO	PRI
 m	YES	NULL
 
+# a correlated scalar subquery yields NULL when it finds no row, so it does not report its source column's constraints
+query III
+SELECT column_name, "null", "key" FROM (DESCRIBE SELECT i, (SELECT k FROM other WHERE k = forwarded.i) AS m FROM forwarded);
+----
+i	NO	PRI
+m	YES	NULL
+
+query III
+SELECT column_name, "null", "key" FROM (DESCRIBE SELECT k, (SELECT f.i FROM forwarded f WHERE f.j = o.k) AS m FROM other o);
+----
+k	NO	NULL
+m	YES	NULL
+
+query III
+SELECT column_name, "null", "key" FROM (DESCRIBE SELECT i, (SELECT k FROM other WHERE k > forwarded.i ORDER BY k LIMIT 1) AS m FROM forwarded);
+----
+i	NO	PRI
+m	YES	NULL
+
 # a window below a join
 query III
 SELECT column_name, "null", "key" FROM (DESCRIBE SELECT f.i, o.k FROM (SELECT i, row_number() OVER () AS rn FROM forwarded) f JOIN other o ON f.rn = o.k);

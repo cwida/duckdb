@@ -7,6 +7,7 @@
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/operator/logical_column_data_get.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
+#include "duckdb/planner/operator/logical_join.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/catalog/catalog.hpp"
@@ -27,6 +28,20 @@ struct BaseTableColumnInfo {
 	optional_ptr<const ColumnDefinition> column = nullptr;
 };
 
+static bool ForwardsChildColumns(LogicalOperator &op, idx_t child_idx) {
+	switch (op.type) {
+	case LogicalOperatorType::LOGICAL_DELIM_JOIN:
+	case LogicalOperatorType::LOGICAL_COMPARISON_JOIN:
+	case LogicalOperatorType::LOGICAL_ANY_JOIN:
+	case LogicalOperatorType::LOGICAL_ASOF_JOIN:
+	case LogicalOperatorType::LOGICAL_DEPENDENT_JOIN:
+		// the right side of a SINGLE join is a scalar subquery result, which is NULL when the subquery finds no row
+		return child_idx == 0 || op.Cast<LogicalJoin>().join_type != JoinType::SINGLE;
+	default:
+		return true;
+	}
+}
+
 BaseTableColumnInfo FindBaseTableColumn(LogicalOperator &op, ColumnBinding binding) {
 	BaseTableColumnInfo result;
 	if (op.type == LogicalOperatorType::LOGICAL_SECURE_VIEW) {
@@ -36,8 +51,11 @@ BaseTableColumnInfo FindBaseTableColumn(LogicalOperator &op, ColumnBinding bindi
 	auto table_indices = op.GetTableIndex();
 	if (std::find(table_indices.begin(), table_indices.end(), binding.table_index) == table_indices.end()) {
 		// the operator forwards its children's columns - search in children directly
-		for (auto &child : op.children) {
-			result = FindBaseTableColumn(*child, binding);
+		for (idx_t child_idx = 0; child_idx < op.children.size(); child_idx++) {
+			if (!ForwardsChildColumns(op, child_idx)) {
+				continue;
+			}
+			result = FindBaseTableColumn(*op.children[child_idx], binding);
 			if (result.table) {
 				return result;
 			}
