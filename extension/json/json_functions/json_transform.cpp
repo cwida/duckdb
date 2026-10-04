@@ -925,8 +925,8 @@ static bool TransformArrayToArray(yyjson_val *arrays[], yyjson_alc *alc, Vector 
 
 	// Transform array values
 	auto child_key_tree = key_tree && !key_tree->children.empty() ? key_tree->children[0].get() : nullptr;
-	if (!JSONTransform::Transform(nested_vals, alc, ArrayVector::GetChildMutable(result), child_count, options,
-	                              nullptr, child_key_tree)) {
+	if (!JSONTransform::Transform(nested_vals, alc, ArrayVector::GetChildMutable(result), child_count, options, nullptr,
+	                              child_key_tree)) {
 		success = false;
 	}
 
