@@ -1,0 +1,117 @@
+# name: test/sql/json/issues/issue23143.test
+# description: Case-insensitive duplicate JSON keys are renamed at the top level but error in nested structs
+# group: [issues]
+
+require json
+
+# The top level explodes the detected struct into columns, so the generic column deduplication renames "X" to "X_1"
+statement ok
+COPY (SELECT '{"x":1,"X":2}' AS c) TO '{TEST_DIR}/top.json' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '');
+
+query II
+SELECT x, "X_1" FROM read_json('{TEST_DIR}/top.json');
+----
+1	2
+
+statement ok
+COPY (SELECT '{"outer":{"x":1,"X":2}}' AS c) TO '{TEST_DIR}/nested.json' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '');
+
+query II
+SELECT "outer".x, "outer"."X_1" FROM read_json('{TEST_DIR}/nested.json');
+----
+1	2
+
+# multiple rows
+statement ok
+COPY (SELECT * FROM (VALUES ('{"outer":{"x":1,"X":2}}'), ('{"outer":{"x":3,"X":4}}')) t(c))
+     TO '{TEST_DIR}/nested_rows.json' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '');
+
+query II
+SELECT "outer".x, "outer"."X_1" FROM read_json('{TEST_DIR}/nested_rows.json');
+----
+1	2
+3	4
+
+# the whole nested struct, in one value
+query I
+SELECT "outer" FROM read_json('{TEST_DIR}/nested.json');
+----
+{'x': 1, 'X_1': 2}
+
+# deeply nested structs
+statement ok
+COPY (SELECT '{"outer":{"inner":{"x":1,"X":2}}}' AS c) TO '{TEST_DIR}/deep.json' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '');
+
+query I
+SELECT "outer".inner FROM read_json('{TEST_DIR}/deep.json');
+----
+{'x': 1, 'X_1': 2}
+
+# structs nested in a list
+statement ok
+COPY (SELECT '{"outer":[{"x":1,"X":2},{"x":3,"X":4}]}' AS c) TO '{TEST_DIR}/list.json' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '');
+
+query II
+SELECT "outer"[1].x, "outer"[1]."X_1" FROM read_json('{TEST_DIR}/list.json');
+----
+1	2
+
+query I
+SELECT "outer" FROM read_json('{TEST_DIR}/list.json');
+----
+[{'x': 1, 'X_1': 2}, {'x': 3, 'X_1': 4}]
+
+# non-numeric types
+statement ok
+COPY (SELECT '{"outer":{"s":"a","S":"b"}}' AS c) TO '{TEST_DIR}/strings.json' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '');
+
+query I
+SELECT "outer" FROM read_json('{TEST_DIR}/strings.json');
+----
+{'s': a, 'S_1': b}
+
+# sibling structs that each rename a key to the same name: the renamed structs have identical types, but
+# different JSON keys. Keying the original keys by type instead of by position breaks here (PR #23158).
+statement ok
+COPY (SELECT '{"left":{"a":1,"A":2},"right":{"a":3,"A_1":4}}' AS c) TO '{TEST_DIR}/sibling.json' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '');
+
+query II
+SELECT "left", "right" FROM read_json('{TEST_DIR}/sibling.json');
+----
+{'a': 1, 'A_1': 2}	{'a': 3, 'A_1': 4}
+
+# identical duplicates in two sibling structs must not interfere
+statement ok
+COPY (SELECT '{"left":{"a":1,"A":2},"right":{"a":3,"A":4}}' AS c) TO '{TEST_DIR}/sibling2.json' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '');
+
+query II
+SELECT "left", "right" FROM read_json('{TEST_DIR}/sibling2.json');
+----
+{'a': 1, 'A_1': 2}	{'a': 3, 'A_1': 4}
+
+# three-way collision: mirrors the top level, which yields x, X_1, X_1_1
+statement ok
+COPY (SELECT '{"outer":{"x":1,"X":2,"X_1":3}}' AS c) TO '{TEST_DIR}/three.json' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '');
+
+query III
+SELECT "outer".x, "outer"."X_1", "outer"."X_1_1" FROM read_json('{TEST_DIR}/three.json');
+----
+1	2	3
+
+# a duplicate key nested next to an unrelated duplicate at another depth
+statement ok
+COPY (SELECT '{"l":{"a":{"k":1,"K":2}},"r":{"b":{"k":3,"K":4}}}' AS c) TO '{TEST_DIR}/mixed.json' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '');
+
+query II
+SELECT "l".a, "r".b FROM read_json('{TEST_DIR}/mixed.json');
+----
+{'k': 1, 'K_1': 2}	{'k': 3, 'K_1': 4}
+
+# ignore_errors keeps its meaning: the duplicate is dropped instead of renamed
+statement ok
+COPY (SELECT '{"outer":{"x":1,"X":2}}' AS c) TO '{TEST_DIR}/ignore.json' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '');
+
+query I
+SELECT "outer" FROM read_json('{TEST_DIR}/ignore.json', ignore_errors=true);
+----
+{'x': 1}
