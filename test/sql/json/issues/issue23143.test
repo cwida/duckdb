@@ -32,6 +32,17 @@ SELECT "outer".x, "outer"."X_1" FROM read_json('{TEST_DIR}/nested_rows.json');
 1	2
 3	4
 
+# the duplicate keys may appear in a different order per row: they must be matched by key, not by position
+statement ok
+COPY (SELECT * FROM (VALUES ('{"outer":{"x":1,"X":2}}'), ('{"outer":{"X":40,"x":30}}')) t(c))
+     TO '{TEST_DIR}/reorder.json' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '');
+
+query II
+SELECT "outer".x, "outer"."X_1" FROM read_json('{TEST_DIR}/reorder.json');
+----
+1	2
+30	40
+
 # the whole nested struct, in one value
 query I
 SELECT "outer" FROM read_json('{TEST_DIR}/nested.json');

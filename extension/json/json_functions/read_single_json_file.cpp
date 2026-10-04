@@ -113,6 +113,7 @@ static unique_ptr<FunctionData> ReadSingleJSONFileBind(ClientContext &context, T
 		result->options.name_list = *file_input.expected_names;
 		result->options.sql_type_list = *file_input.expected_types;
 		result->key_names = source.key_names;
+		result->key_trees = source.key_trees;
 		result->feature_columns = source.feature_columns;
 		// the date/timestamp formats that auto-detection settled on are part of how the scan is read
 		result->date_format_map = make_uniq<DateFormatMap>(*source.date_format_map);
@@ -158,6 +159,9 @@ static unique_ptr<GlobalTableFunctionState> ReadSingleJSONFileInitGlobal(ClientC
 			continue;
 		}
 		gstate.names.push_back(json_data.key_names[col_id]);
+		if (!json_data.key_trees.empty()) {
+			gstate.key_trees.push_back(json_data.key_trees[col_id]);
+		}
 		gstate.column_ids.push_back(col_idx);
 		gstate.column_indices.push_back(column_index);
 		if (!json_data.feature_columns.empty()) {
@@ -275,7 +279,8 @@ static unique_ptr<FunctionData> ReadSingleJSONFileCombineSchema(ClientContext &c
 	// the merged structure describes the schema of the scan by itself
 	return_types.clear();
 	names.clear();
-	JSONScan::StructureToColumns(context, result->options, merged, result->feature_columns, return_types, names);
+	JSONScan::StructureToColumns(context, result->options, merged, result->feature_columns, return_types, names,
+	                             result->key_trees);
 
 	// the JSON reader looks columns up by their exact key, so the keys are kept before the column names that are
 	// duplicates for us (e.g. "id" and "Id") are renamed
