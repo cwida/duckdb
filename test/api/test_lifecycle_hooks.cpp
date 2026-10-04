@@ -174,6 +174,45 @@ TEST_CASE("Test ClientContextState", "[api]") {
 		REQUIRE_FAIL(conn.Query("SELECT * FROM my_table2"));
 	}
 }
+struct RejectingQueryBeginState : ClientContextState {
+	bool reject = false;
+
+	void QueryBegin(ClientContext &) override {
+		if (reject) {
+			throw PermissionException("rejected in QueryBegin");
+		}
+	}
+};
+
+TEST_CASE("Test QueryBegin exception does not leak the query state", "[api]") {
+	DuckDB db(nullptr);
+	Connection conn(db);
+	auto state = make_shared_ptr<RejectingQueryBeginState>();
+	conn.context->GetContext().GetRegisteredState().Insert("rejecting_state", state);
+
+	SECTION("Autocommit") {
+		state->reject = true;
+		auto result = conn.Query("SELECT 1");
+		REQUIRE_FAIL(result);
+		REQUIRE_THAT(result->GetError(), Contains("rejected in QueryBegin"));
+		state->reject = false;
+		REQUIRE(!conn.context->transaction.HasActiveTransaction());
+		REQUIRE_NO_FAIL(conn.Query("SELECT 42"));
+	}
+
+	SECTION("Explicit transaction") {
+		REQUIRE_NO_FAIL(conn.Query("BEGIN TRANSACTION"));
+		REQUIRE_NO_FAIL(conn.Query("CREATE TABLE tbl(i INTEGER)"));
+		state->reject = true;
+		REQUIRE_FAIL(conn.Query("SELECT 1"));
+		state->reject = false;
+		// the user's transaction is still open, and behaves like after any other failed statement
+		REQUIRE(conn.context->transaction.HasActiveTransaction());
+		REQUIRE_NO_FAIL(conn.Query("ROLLBACK"));
+		REQUIRE(!conn.context->transaction.HasActiveTransaction());
+		REQUIRE_NO_FAIL(conn.Query("SELECT 42"));
+	}
+}
 // ClientContextState
 
 namespace {

@@ -828,6 +828,9 @@ unique_ptr<QueryResult> ClientContext::SubmitStatement(ClientContextLock &lock, 
 			auto &db_instance = DatabaseInstance::GetDatabase(*this);
 			ValidChecker::Invalidate(db_instance, error.RawMessage());
 		}
+		if (active_query) {
+			EndQueryInternal(lock, false, ErrorInvalidatesQueryTransaction(error.Type()), error);
+		}
 		return ErrorResult<QueryResult>(std::move(error), query);
 	}
 	active_query->outside_local_transaction = outside_local_transaction;
