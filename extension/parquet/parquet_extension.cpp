@@ -80,8 +80,14 @@
 #include "parquet_field_id.hpp"
 #include "parquet_types.h"
 #include "duckdb/common/types/variant/parquet_variant_iterator.hpp"
+#include "duckdb.h"
+
+#include <cstring>
 
 namespace duckdb {
+
+string ParquetVariantBytesToJson(const_data_ptr_t metadata, idx_t metadata_len, const_data_ptr_t value,
+                                 idx_t value_len);
 class ClientContext;
 class DataChunk;
 class PhysicalOperator;
@@ -1179,5 +1185,31 @@ extern "C" {
 
 DUCKDB_CPP_EXTENSION_ENTRY(parquet, loader) { // NOLINT
 	duckdb::LoadInternal(loader);
+}
+
+//! Decodes the metadata and value bytes of a Parquet VARIANT into JSON, freed by the caller with free()
+DUCKDB_EXTENSION_API duckdb_state duckdb_parquet_variant_bytes_to_json(duckdb_database database,
+                                                                       const uint8_t *metadata, idx_t metadata_len,
+                                                                       const uint8_t *value, idx_t value_len,
+                                                                       char **out_json) {
+	if (!database || !out_json) {
+		return DuckDBError;
+	}
+	*out_json = nullptr;
+	if (!metadata || !value) {
+		return DuckDBError;
+	}
+	try {
+		auto json = duckdb::ParquetVariantBytesToJson(metadata, metadata_len, value, value_len);
+		*out_json = strdup(json.c_str());
+		return *out_json ? DuckDBSuccess : DuckDBError;
+	} catch (...) {
+		return DuckDBError;
+	}
+}
+
+//! Kept for client compatibility: core registers `arrow.parquet.variant` on every database.
+DUCKDB_EXTENSION_API duckdb_state duckdb_register_parquet_variant_arrow(duckdb_database database) {
+	return database ? DuckDBSuccess : DuckDBError;
 }
 }

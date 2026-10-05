@@ -36,6 +36,7 @@ set(PARQUET_EXTENSION_FILES
     parquet_geometry.cpp
     parquet_int96.cpp
     serialize_parquet.cpp
+    variant_arrow_capi.cpp
     zstd_file_system.cpp)
 
 if(NOT CLANG_TIDY)
