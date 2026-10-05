@@ -44,6 +44,8 @@ public:
 	//! The offsets that apply at a local (wall clock) time
 	virtual void GetOffsetFromLocal(int64_t millis, LocalOption non_existing, LocalOption duplicated,
 	                                int32_t &raw_offset, int32_t &dst_offset) const = 0;
+	//! The first instant after 'millis' at which the offsets can change, or false if there is none
+	virtual bool TryGetNextTransition(int64_t millis, int64_t &transition) const = 0;
 	//! Whether the two zones describe the same offsets. Aliases of one another are equivalent.
 	bool Equals(const TimeZone &other) const {
 		return id == other.id;
@@ -68,6 +70,7 @@ public:
 	void GetOffset(int64_t millis, int32_t &raw_offset, int32_t &dst_offset) const override;
 	void GetOffsetFromLocal(int64_t millis, LocalOption non_existing, LocalOption duplicated, int32_t &raw_offset,
 	                        int32_t &dst_offset) const override;
+	bool TryGetNextTransition(int64_t millis, int64_t &transition) const override;
 	unique_ptr<TimeZone> Copy() const override;
 
 private:
@@ -92,6 +95,8 @@ private:
 	                             int32_t millis, int32_t millis_delta, const Boundary &rule);
 	//! The total offset that applies to a local standard time
 	int32_t GetOffsetForFields(int32_t year, int8_t month, int8_t dom, int8_t dow, int32_t millis) const;
+	//! The instant at which a rule takes effect in a year
+	int64_t GetRuleTime(int32_t year, const Boundary &rule, bool is_start) const;
 
 	int32_t raw_offset;
 	bool use_daylight;
@@ -109,6 +114,7 @@ public:
 	void GetOffset(int64_t millis, int32_t &raw_offset, int32_t &dst_offset) const override;
 	void GetOffsetFromLocal(int64_t millis, LocalOption non_existing, LocalOption duplicated, int32_t &raw_offset,
 	                        int32_t &dst_offset) const override;
+	bool TryGetNextTransition(int64_t millis, int64_t &transition) const override;
 	unique_ptr<TimeZone> Copy() const override;
 
 private:

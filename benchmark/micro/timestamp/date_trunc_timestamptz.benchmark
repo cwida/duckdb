@@ -1,0 +1,23 @@
+# name: benchmark/micro/timestamp/date_trunc_timestamptz.benchmark
+# description: date_trunc('day') on 10 million TIMESTAMPTZ values
+# group: [timestamp]
+
+#
+# ns/row = timing_seconds * 1e9 / 10000000 = timing_seconds * 100.
+# Compare with date_trunc_timestamp.benchmark on the same instants.
+
+name TIMESTAMPTZ date_trunc day (UTC)
+group timestamp
+subgroup date_trunc
+
+require icu
+
+load
+SET TimeZone='UTC';
+CREATE TABLE ts AS SELECT (TIMESTAMP '2024-01-01 00:00:00' + to_seconds(i))::TIMESTAMPTZ AS ts FROM range(10000000) t(i);
+
+run
+SELECT count(DISTINCT date_trunc('day', ts)) FROM ts;
+
+result I
+116

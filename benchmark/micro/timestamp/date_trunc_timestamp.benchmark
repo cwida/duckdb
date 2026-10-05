@@ -1,0 +1,19 @@
+# name: benchmark/micro/timestamp/date_trunc_timestamp.benchmark
+# description: date_trunc('day') on 10 million naive TIMESTAMP values
+# group: [timestamp]
+
+#
+# Baseline for date_trunc_timestamptz*.benchmark. ns/row = timing_seconds * 100.
+
+name TIMESTAMP date_trunc day
+group timestamp
+subgroup date_trunc
+
+load
+CREATE TABLE ts AS SELECT TIMESTAMP '2024-01-01 00:00:00' + to_seconds(i) AS ts FROM range(10000000) t(i);
+
+run
+SELECT count(DISTINCT date_trunc('day', ts)) FROM ts;
+
+result I
+116

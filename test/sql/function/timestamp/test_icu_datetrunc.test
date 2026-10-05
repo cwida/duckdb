@@ -265,3 +265,195 @@ SELECT date_trunc('microsecond', '1969-12-31 12:34:56.123456789'::TIMESTAMP_NS A
 ----
 1969-12-31 12:34:56.123456+00
 
+# Constant-part truncation on UTC, a fixed offset, and a zone whose offset is constant only after its last transition.
+statement ok
+SET Calendar='gregorian';
+
+statement ok
+SET TimeZone='UTC';
+
+query IIII
+SELECT date_trunc('day', TIMESTAMPTZ '2024-06-15 15:45:30.123456+00'),
+       date_trunc('hour', TIMESTAMPTZ '2024-06-15 15:45:30.123456+00'),
+       date_trunc('minute', TIMESTAMPTZ '2024-06-15 15:45:30.123456+00'),
+       date_trunc('second', TIMESTAMPTZ '2024-06-15 15:45:30.123456+00');
+----
+2024-06-15 00:00:00+00	2024-06-15 15:00:00+00	2024-06-15 15:45:00+00	2024-06-15 15:45:30+00
+
+query II
+SELECT date_trunc('day', TIMESTAMPTZ '1969-12-31 23:30:00+00'), date_trunc('hour', TIMESTAMPTZ '1969-12-31 23:30:45+00');
+----
+1969-12-31 00:00:00+00	1969-12-31 23:00:00+00
+
+query II
+SELECT date_trunc('day', '-infinity'::TIMESTAMPTZ), date_trunc('hour', 'infinity'::TIMESTAMPTZ);
+----
+-infinity	infinity
+
+statement ok
+SET TimeZone='Etc/GMT-5';
+
+query IIII
+SELECT date_trunc('day', TIMESTAMPTZ '2024-06-15 20:00:00+00'),
+       date_trunc('hour', TIMESTAMPTZ '2024-06-15 20:00:00+00'),
+       date_trunc('minute', TIMESTAMPTZ '2024-06-15 20:10:45+00'),
+       date_trunc('second', TIMESTAMPTZ '2024-06-15 20:10:45.9+00');
+----
+2024-06-16 00:00:00+05	2024-06-16 01:00:00+05	2024-06-16 01:10:00+05	2024-06-16 01:10:45+05
+
+# Asia/Kolkata is +05:30 today, with earlier offsets. Local midnight is not UTC midnight.
+statement ok
+SET TimeZone='Asia/Kolkata';
+
+query III
+SELECT date_trunc('day', TIMESTAMPTZ '1942-09-01 00:00:00+00'),
+       date_trunc('hour', TIMESTAMPTZ '1905-06-01 12:00:00+00'),
+       date_trunc('day', TIMESTAMPTZ '2024-01-01 00:00:00+00');
+----
+1942-09-01 01:00:00+06:30	1905-06-01 17:00:00+05:21	2024-01-01 00:00:00+05:30
+
+query IIII
+SELECT date_trunc('day', TIMESTAMPTZ '2024-06-15 15:45:30.123456+00'),
+       date_trunc('hour', TIMESTAMPTZ '2024-06-15 15:45:30.123456+00'),
+       date_trunc('minute', TIMESTAMPTZ '2024-06-15 15:45:30.123456+00'),
+       date_trunc('second', TIMESTAMPTZ '2024-06-15 15:45:30.123456+00');
+----
+2024-06-15 00:00:00+05:30	2024-06-15 21:00:00+05:30	2024-06-15 21:15:00+05:30	2024-06-15 21:15:30+05:30
+
+# America/New_York spring forward: 2024-03-10 02:00 EST becomes 03:00 EDT.
+# 07:00Z is 03:00 EDT; local midnight is 05:00Z, not 04:00Z.
+statement ok
+SET TimeZone='America/New_York';
+
+query IIII
+SELECT ts, date_trunc('day', ts), date_trunc('hour', ts), date_trunc('minute', ts)
+FROM (VALUES
+	(TIMESTAMPTZ '2024-03-10 05:30:00+00'),
+	(TIMESTAMPTZ '2024-03-10 06:30:00+00'),
+	(TIMESTAMPTZ '2024-03-10 06:59:59+00'),
+	(TIMESTAMPTZ '2024-03-10 07:00:00+00'),
+	(TIMESTAMPTZ '2024-03-10 07:30:00+00')
+) v(ts);
+----
+2024-03-10 00:30:00-05	2024-03-10 00:00:00-05	2024-03-10 00:00:00-05	2024-03-10 00:30:00-05
+2024-03-10 01:30:00-05	2024-03-10 00:00:00-05	2024-03-10 01:00:00-05	2024-03-10 01:30:00-05
+2024-03-10 01:59:59-05	2024-03-10 00:00:00-05	2024-03-10 01:00:00-05	2024-03-10 01:59:00-05
+2024-03-10 03:00:00-04	2024-03-10 00:00:00-05	2024-03-10 03:00:00-04	2024-03-10 03:00:00-04
+2024-03-10 03:30:00-04	2024-03-10 00:00:00-05	2024-03-10 03:00:00-04	2024-03-10 03:30:00-04
+
+# Fall back: 2024-11-03 02:00 EDT becomes 01:00 EST. The overlap resolves the way ICU does.
+query IIII
+SELECT ts, date_trunc('day', ts), date_trunc('hour', ts), date_trunc('second', ts)
+FROM (VALUES
+	(TIMESTAMPTZ '2024-11-03 04:30:00+00'),
+	(TIMESTAMPTZ '2024-11-03 05:00:00+00'),
+	(TIMESTAMPTZ '2024-11-03 05:30:00+00'),
+	(TIMESTAMPTZ '2024-11-03 05:59:59+00'),
+	(TIMESTAMPTZ '2024-11-03 06:00:00+00'),
+	(TIMESTAMPTZ '2024-11-03 06:30:00+00')
+) v(ts);
+----
+2024-11-03 00:30:00-04	2024-11-03 00:00:00-04	2024-11-03 00:00:00-04	2024-11-03 00:30:00-04
+2024-11-03 01:00:00-04	2024-11-03 00:00:00-04	2024-11-03 01:00:00-05	2024-11-03 01:00:00-04
+2024-11-03 01:30:00-04	2024-11-03 00:00:00-04	2024-11-03 01:00:00-05	2024-11-03 01:30:00-04
+2024-11-03 01:59:59-04	2024-11-03 00:00:00-04	2024-11-03 01:00:00-05	2024-11-03 01:59:59-04
+2024-11-03 01:00:00-05	2024-11-03 00:00:00-04	2024-11-03 01:00:00-05	2024-11-03 01:00:00-05
+2024-11-03 01:30:00-05	2024-11-03 00:00:00-04	2024-11-03 01:00:00-05	2024-11-03 01:30:00-05
+
+# Bind data follows the session TimeZone and does not reuse an offset from the previous query.
+statement ok
+SET TimeZone='UTC';
+
+query I
+SELECT date_trunc('day', TIMESTAMPTZ '2024-03-10 07:00:00+00');
+----
+2024-03-10 00:00:00+00
+
+statement ok
+SET TimeZone='America/New_York';
+
+query I
+SELECT date_trunc('day', TIMESTAMPTZ '2024-03-10 07:00:00+00');
+----
+2024-03-10 00:00:00-05
+
+statement ok
+SET TimeZone='UTC';
+
+query I
+SELECT date_trunc('day', TIMESTAMPTZ '2024-03-10 07:00:00+00');
+----
+2024-03-10 00:00:00+00
+
+# Non-gregorian calendars stay on ICU. Month boundaries differ from the Gregorian calendar.
+statement ok
+SET Calendar='islamic-civil';
+
+query II
+SELECT date_trunc('day', TIMESTAMPTZ '2024-03-10 12:00:00+00'), date_trunc('month', TIMESTAMPTZ '2024-03-10 12:00:00+00');
+----
+1445-08-29 00:00:00+00	1445-08-01 00:00:00+00
+
+statement ok
+SET Calendar='gregorian';
+
+# Constant parts are truncated arithmetically; a part column forces the ICU path. The two must agree.
+statement ok
+CREATE TABLE trunc_parts AS
+SELECT unnest(['microseconds', 'milliseconds', 'second', 'epoch', 'minute', 'hour', 'day', 'julian']) AS part;
+
+# Dense windows around transitions (New York 2024, 1883 and 1945, Lord Howe 2024, the 1970 epoch, the 2250 end
+# of the transition table), plus a sparse sweep across four centuries. Strides carry µs so every part matters.
+statement ok
+CREATE TABLE trunc_instants AS
+SELECT TIMESTAMPTZ '2024-03-10 04:00:00+00' + to_microseconds(i * 37000123) AS ts FROM range(1000) t(i)
+UNION ALL SELECT TIMESTAMPTZ '2024-11-03 03:00:00+00' + to_microseconds(i * 41000077) FROM range(1000) t(i)
+UNION ALL SELECT TIMESTAMPTZ '1883-11-18 12:00:00+00' + to_microseconds(i * 29000001) FROM range(1000) t(i)
+UNION ALL SELECT TIMESTAMPTZ '1945-09-30 04:00:00+00' + to_microseconds(i * 29000013) FROM range(1000) t(i)
+UNION ALL SELECT TIMESTAMPTZ '2024-10-05 14:00:00+00' + to_microseconds(i * 17000019) FROM range(1000) t(i)
+UNION ALL SELECT TIMESTAMPTZ '2024-04-06 14:00:00+00' + to_microseconds(i * 19000023) FROM range(1000) t(i)
+UNION ALL SELECT TIMESTAMPTZ '1969-12-31 12:00:00+00' + to_microseconds(i * 86399999) FROM range(1000) t(i)
+UNION ALL SELECT TIMESTAMPTZ '2249-10-01 00:00:00+00' + to_microseconds(i * 9000000007) FROM range(1000) t(i)
+UNION ALL SELECT TIMESTAMPTZ '1850-01-01 00:00:00+00' + to_microseconds(i * 2592031000003) FROM range(5500) t(i)
+UNION ALL SELECT unnest(['-infinity'::TIMESTAMPTZ, 'infinity'::TIMESTAMPTZ, NULL]);
+
+statement ok
+CREATE MACRO trunc_mismatches() AS TABLE
+SELECT * FROM (
+	SELECT part, ts, date_trunc(part, ts) AS icu, CASE part
+		WHEN 'microseconds' THEN date_trunc('microseconds', ts)
+		WHEN 'milliseconds' THEN date_trunc('milliseconds', ts)
+		WHEN 'second' THEN date_trunc('second', ts)
+		WHEN 'epoch' THEN date_trunc('epoch', ts)
+		WHEN 'minute' THEN date_trunc('minute', ts)
+		WHEN 'hour' THEN date_trunc('hour', ts)
+		WHEN 'day' THEN date_trunc('day', ts)
+		WHEN 'julian' THEN date_trunc('julian', ts)
+	END AS arithmetic
+	FROM trunc_parts, trunc_instants
+) WHERE icu IS DISTINCT FROM arithmetic;
+
+foreach zone UTC Etc/GMT-5 America/New_York Australia/Lord_Howe Asia/Kolkata Asia/Kathmandu America/St_Johns Europe/Dublin Pacific/Apia Africa/Casablanca Antarctica/Troll
+
+statement ok
+SET TimeZone='{zone}';
+
+query IIII
+SELECT * FROM trunc_mismatches();
+----
+
+endloop
+
+# Calendars other than gregorian keep ICU from a minute up, but sub-minute parts never depend on the calendar.
+statement ok
+SET Calendar='islamic-civil';
+
+statement ok
+SET TimeZone='America/New_York';
+
+query IIII
+SELECT * FROM trunc_mismatches();
+----
+
+statement ok
+SET Calendar='gregorian';

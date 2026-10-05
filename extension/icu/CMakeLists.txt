@@ -41,7 +41,8 @@ set(ICU_EXTENSION_FILES
     icu-table-range.cpp
     icu-strptime.cpp
     icu-timebucket.cpp
-    icu-timezone.cpp)
+    icu-timezone.cpp
+    icu-zone-offsets.cpp)
 
 build_extension_library(icu NO_WARNINGS ${ICU_EXTENSION_FILES})
 link_threads(icu_extension "")

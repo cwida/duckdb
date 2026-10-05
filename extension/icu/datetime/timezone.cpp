@@ -3,6 +3,7 @@
 #include "duckdb/common/string_util.hpp"
 #include "grego.hpp"
 
+#include <algorithm>
 #include <climits>
 #include <cstdio>
 #include <cstdlib>
@@ -206,6 +207,77 @@ void SimpleTimeZone::GetOffsetFromLocal(int64_t millis, LocalOption non_existing
 	dst_offset_out = GetOffsetForFields(year, month, dom, dow, mid) - raw_offset;
 }
 
+int64_t SimpleTimeZone::GetRuleTime(int32_t year, const Boundary &rule, bool is_start) const {
+	const int32_t month_len = Grego::MonthLength(year, rule.month);
+	// adjust the rule day for February 29 rules in non-leap years
+	const int32_t rule_day = MinValue<int32_t>(rule.day, month_len);
+	const auto first_day = Grego::FieldsToDay(year, rule.month, 1);
+
+	int32_t dom = 0;
+	switch (rule.day_mode) {
+	case DayMode::DAY_OF_MONTH:
+		dom = rule_day;
+		break;
+	case DayMode::DAY_OF_WEEK_IN_MONTH:
+		if (rule_day > 0) {
+			const auto first_dow = Grego::DayOfWeek(int32_t(first_day));
+			dom = 1 + (rule_day - 1) * 7 + (7 + rule.day_of_week - first_dow) % 7;
+		} else {
+			const auto last_dow = Grego::DayOfWeek(int32_t(first_day + month_len - 1));
+			dom = month_len + (rule_day + 1) * 7 - (7 + last_dow - rule.day_of_week) % 7;
+		}
+		break;
+	case DayMode::DAY_OF_WEEK_GE_DOM: {
+		const auto day_dow = Grego::DayOfWeek(int32_t(first_day + rule_day - 1));
+		dom = rule_day + (7 + rule.day_of_week - day_dow) % 7;
+		break;
+	}
+	case DayMode::DAY_OF_WEEK_LE_DOM: {
+		const auto day_dow = Grego::DayOfWeek(int32_t(first_day + rule_day - 1));
+		dom = rule_day - (7 + day_dow - rule.day_of_week) % 7;
+		break;
+	}
+	}
+
+	const auto local = (first_day + dom - 1) * MILLIS_PER_DAY + rule.time;
+	switch (rule.time_mode) {
+	case TimeMode::UTC:
+		return local;
+	case TimeMode::STANDARD:
+		return local - raw_offset;
+	default:
+		// the wall clock runs on standard time before the start and on daylight time before the end
+		return local - raw_offset - (is_start ? 0 : dst_savings);
+	}
+}
+
+bool SimpleTimeZone::TryGetNextTransition(int64_t millis, int64_t &transition) const {
+	if (!use_daylight) {
+		return false;
+	}
+	int32_t year;
+	int8_t month, dom, dow;
+	int16_t doy;
+	int32_t mid;
+	if (!Grego::TimeToFields(millis, year, month, dom, dow, doy, mid)) {
+		return false;
+	}
+	// every year has both transitions, so the next one is at most a year away. The rule does not apply before
+	// year 0, so the first transition is in year 0.
+	bool found = false;
+	const auto first_year = MaxValue<int32_t>(year - 1, 0);
+	for (auto candidate_year = first_year; candidate_year <= first_year + 2; candidate_year++) {
+		for (auto is_start : {true, false}) {
+			const auto candidate = GetRuleTime(candidate_year, is_start ? start : end, is_start);
+			if (candidate > millis && (!found || candidate < transition)) {
+				transition = candidate;
+				found = true;
+			}
+		}
+	}
+	return found;
+}
+
 unique_ptr<TimeZone> SimpleTimeZone::Copy() const {
 	return unique_ptr<TimeZone>(new SimpleTimeZone(*this));
 }
@@ -283,6 +355,26 @@ void OlsonTimeZone::GetOffsetFromLocal(int64_t millis, LocalOption non_existing,
 	} else {
 		GetHistoricalOffset(millis, true, non_existing, duplicated, raw_offset, dst_offset);
 	}
+}
+
+bool OlsonTimeZone::TryGetNextTransition(int64_t millis, int64_t &transition) const {
+	if (final_zone && millis >= final_start_millis) {
+		return final_zone->TryGetNextTransition(millis, transition);
+	}
+	const auto sec = FloorDiv::Divide(millis, MILLIS_PER_SECOND);
+	const auto end = data.transitions + data.transition_count;
+	// a transition at second 'sec' starts at or before 'millis'
+	const auto next = std::upper_bound(data.transitions, end, sec);
+	if (next != end && (!final_zone || *next * MILLIS_PER_SECOND < final_start_millis)) {
+		transition = *next * MILLIS_PER_SECOND;
+		return true;
+	}
+	if (final_zone) {
+		// the switch to the recurring rule can change the offsets as well
+		transition = final_start_millis;
+		return true;
+	}
+	return false;
 }
 
 unique_ptr<TimeZone> OlsonTimeZone::Copy() const {

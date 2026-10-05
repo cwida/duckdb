@@ -1,0 +1,23 @@
+# name: benchmark/micro/timestamp/date_trunc_timestamptz_new_york.benchmark
+# description: date_trunc('day') on 10 million TIMESTAMPTZ values across America/New_York transitions
+# group: [timestamp]
+
+#
+# ns/row = timing_seconds * 100. The instants span the 2024 spring-forward transition.
+
+name TIMESTAMPTZ date_trunc day (America/New_York)
+group timestamp
+subgroup date_trunc
+
+require icu
+
+load
+SET TimeZone='UTC';
+CREATE TABLE ts AS SELECT (TIMESTAMP '2024-01-01 00:00:00' + to_seconds(i))::TIMESTAMPTZ AS ts FROM range(10000000) t(i);
+SET TimeZone='America/New_York';
+
+run
+SELECT count(DISTINCT date_trunc('day', ts)) FROM ts;
+
+result I
+117
