@@ -1,0 +1,188 @@
+# name: test/parquet/variant/pushdown/variant_extract_partial_shredding_projection.test
+# description: Extracts from partially shredded VARIANT columns only read the columns that can hold the path
+# group: [pushdown]
+
+require parquet
+
+require json
+
+statement ok
+SET variant_minimum_shredding_size = 0
+
+# env is sometimes stored in its field's untyped 'value', so it is not fully shredded
+statement ok
+COPY (
+	SELECT {
+		'env': CASE WHEN i % 3 = 0 THEN 'staging'::VARIANT WHEN i % 3 = 1 THEN i::VARIANT ELSE NULL::VARIANT END,
+		'nested': {'region': CASE WHEN i % 2 = 0 THEN 'us'::VARIANT ELSE i::VARIANT END, 'zone': i % 5},
+		'payload': repeat('Z', 70),
+		'extra': i
+	}::VARIANT AS v
+	FROM range(6) t(i)
+) TO '{TEST_DIR}/variant_proj_partial.parquet' (
+	SHREDDING {
+		v: 'STRUCT(env VARCHAR, nested STRUCT(region VARCHAR, zone INTEGER), payload VARCHAR)'
+	}
+)
+
+# Shredded top-level key
+query II
+SELECT v.extra::INTEGER AS i, v.env::VARCHAR FROM '{TEST_DIR}/variant_proj_partial.parquet' ORDER BY i
+----
+0	staging
+1	1
+2	NULL
+3	staging
+4	4
+5	NULL
+
+# Nested shredded keys and sibling paths
+query IIII
+SELECT v.extra::INTEGER AS i, v.env::VARCHAR, v.nested.region::VARCHAR, v.nested.zone::INTEGER
+FROM '{TEST_DIR}/variant_proj_partial.parquet'
+ORDER BY i
+----
+0	staging	us	0
+1	1	1	1
+2	NULL	us	2
+3	staging	3	3
+4	4	us	4
+5	NULL	5	0
+
+# variant_extract form
+query II
+SELECT variant_extract(v, 'env')::VARCHAR AS env, variant_extract(variant_extract(v, 'nested'), 'region')::VARCHAR
+FROM '{TEST_DIR}/variant_proj_partial.parquet'
+ORDER BY v.extra::INTEGER
+----
+staging	us
+1	1
+NULL	us
+staging	3
+4	us
+NULL	5
+
+# Filters on extracted paths
+query I
+SELECT count(*) FROM '{TEST_DIR}/variant_proj_partial.parquet' WHERE v.env = 'staging'
+----
+2
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/variant_proj_partial.parquet' WHERE v.nested.region = 'us'
+----
+3
+
+# A key stored in the binary 'value' only, and a key that does not exist
+query II
+SELECT v.extra::INTEGER AS i, v.missing_key IS NULL FROM '{TEST_DIR}/variant_proj_partial.parquet' ORDER BY i
+----
+0	true
+1	true
+2	true
+3	true
+4	true
+5	true
+
+# Unshredded key below a shredded field
+query I
+SELECT count(v.nested.not_shredded) FROM '{TEST_DIR}/variant_proj_partial.parquet'
+----
+0
+
+# The full variant next to extracted paths keeps every field
+query II
+SELECT v.extra::INTEGER AS i, v::VARCHAR FROM '{TEST_DIR}/variant_proj_partial.parquet' WHERE v.env IS NOT NULL ORDER BY i
+----
+0	{'env': staging, 'extra': 0, 'nested': {'region': us, 'zone': 0}, 'payload': ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ}
+1	{'env': 1, 'extra': 1, 'nested': {'region': 1, 'zone': 1}, 'payload': ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ}
+3	{'env': staging, 'extra': 3, 'nested': {'region': 3, 'zone': 3}, 'payload': ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ}
+4	{'env': 4, 'extra': 4, 'nested': {'region': us, 'zone': 4}, 'payload': ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ}
+
+# Rows whose root is not an object
+statement ok
+COPY (
+	SELECT CASE WHEN i = 0 THEN 'not_an_object'::VARIANT
+	            WHEN i = 1 THEN NULL::VARIANT
+	            ELSE {'env': i::VARIANT, 'payload': 'x'}::VARIANT END AS v
+	FROM range(4) t(i)
+) TO '{TEST_DIR}/variant_proj_nonobject.parquet' (
+	SHREDDING { v: 'STRUCT(env VARCHAR, payload VARCHAR)' }
+)
+
+query I
+SELECT v.env::VARCHAR FROM '{TEST_DIR}/variant_proj_nonobject.parquet' ORDER BY 1 NULLS LAST
+----
+2
+3
+NULL
+NULL
+
+# Arrays are not pruned
+statement ok
+COPY (
+	SELECT {'arr': CASE WHEN i % 2 = 0 THEN [i, i + 1]::VARIANT ELSE 'none'::VARIANT END, 'other': i}::VARIANT AS v
+	FROM range(4) t(i)
+) TO '{TEST_DIR}/variant_proj_array.parquet' (
+	SHREDDING { v: 'STRUCT(arr INTEGER[], other INTEGER)' }
+)
+
+query I
+SELECT v.arr[1]::INTEGER FROM '{TEST_DIR}/variant_proj_array.parquet' ORDER BY 1 NULLS LAST
+----
+0
+2
+NULL
+NULL
+
+# Extracting a path reads far fewer bytes than the full variant, for shredded and unshredded keys
+statement ok
+COPY (
+	SELECT {
+		'env': CASE WHEN i % 10 = 0 THEN i::VARIANT ELSE 'staging'::VARIANT END,
+		'payload': repeat(md5(i::VARCHAR), 200),
+		'extra': i
+	}::VARIANT AS v
+	FROM range(3000) t(i)
+) TO '{TEST_DIR}/variant_proj_bytes.parquet' (
+	COMPRESSION 'uncompressed',
+	SHREDDING { v: 'STRUCT(env VARCHAR, payload VARCHAR)' }
+)
+
+statement ok
+SET enable_external_file_cache = false
+
+statement ok
+PRAGMA enable_profiling = 'json'
+
+statement ok
+SET tracked_metrics = ['io.total_bytes_read']
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/variant_proj_shredded_key.json'
+
+statement ok
+SELECT count(v.env) FROM '{TEST_DIR}/variant_proj_bytes.parquet'
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/variant_proj_unshredded_key.json'
+
+statement ok
+SELECT count(v.extra) FROM '{TEST_DIR}/variant_proj_bytes.parquet'
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/variant_proj_full.json'
+
+statement ok
+SELECT count(v::VARCHAR) FROM '{TEST_DIR}/variant_proj_bytes.parquet'
+
+statement ok
+PRAGMA disable_profiling
+
+query II
+SELECT
+	(SELECT io.total_bytes_read FROM '{TEST_DIR}/variant_proj_shredded_key.json') * 4 < full_read.io.total_bytes_read,
+	(SELECT io.total_bytes_read FROM '{TEST_DIR}/variant_proj_unshredded_key.json') * 4 < full_read.io.total_bytes_read
+FROM '{TEST_DIR}/variant_proj_full.json' full_read
+----
+true	true

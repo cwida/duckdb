@@ -900,6 +900,37 @@ static unique_ptr<ColumnReader> CreateInt96StructReader(ClientContext &context, 
 	return std::move(result);
 }
 
+//! Prune a shredded 'typed_value' column to the field a VARIANT extract path starts with. Returns false if the
+//! field is not shredded, in which case it can only be found in the binary 'value'.
+static bool TryCreateVariantPathIndex(idx_t typed_value_idx, const ParquetColumnSchema &typed_value,
+                                      const ColumnIndex &path, ColumnIndex &result) {
+	if (typed_value.type.id() != LogicalTypeId::STRUCT) {
+		return false;
+	}
+	auto field_idx = typed_value.GetChildIndexByName(path.GetFieldName());
+	if (!field_idx.IsValid()) {
+		return false;
+	}
+	ColumnIndex field_index(field_idx.GetIndex());
+	if (path.HasChildren()) {
+		//! Keep the field's own 'value', it holds the nested key when the field is not an object.
+		//! Without a shredded nested key the whole field is read, since an object cannot live in 'value' alone.
+		auto &field = typed_value.GetChildByIndex(field_idx.GetIndex());
+		auto value_idx = field.GetChildIndexByName("value");
+		auto nested_idx = field.GetChildIndexByName("typed_value");
+		ColumnIndex nested_index;
+		if (value_idx.IsValid() && nested_idx.IsValid() &&
+		    TryCreateVariantPathIndex(nested_idx.GetIndex(), field.GetChildByIndex(nested_idx.GetIndex()),
+		                              path.GetChildIndex(0), nested_index)) {
+			field_index.AddChildIndex(ColumnIndex(value_idx.GetIndex()));
+			field_index.AddChildIndex(std::move(nested_index));
+		}
+	}
+	result = ColumnIndex(typed_value_idx);
+	result.AddChildIndex(std::move(field_index));
+	return true;
+}
+
 unique_ptr<ColumnReader> ParquetReader::CreateReaderRecursive(ClientContext &context, const ColumnIndex &column_id,
                                                               const ParquetColumnSchema &schema) const {
 	auto &indexes = column_id.GetChildIndexes();
@@ -992,10 +1023,27 @@ unique_ptr<ColumnReader> ParquetReader::CreateReaderRecursive(ClientContext &con
 				auto typed_value_index = CreateVariantTypedValuePushdown(typed_value_schema, column_id);
 				return CreateReaderRecursive(context, typed_value_index, typed_value_schema);
 			}
-		}
-		for (idx_t child_index = 0; child_index < schema.children.size(); child_index++) {
-			children[child_index] =
-			    CreateReaderRecursive(context, ColumnIndex(child_index), schema.children[child_index]);
+			//! Only read the columns that can hold the extracted path. A shredded field is never also stored in the
+			//! binary 'value' of its object, so either the 'typed_value' field or the 'value' is enough.
+			auto metadata_idx = schema.GetChildIndexByName("metadata");
+			auto value_idx = schema.GetChildIndexByName("value");
+			if (!metadata_idx.IsValid() || !value_idx.IsValid()) {
+				throw InternalException("The Variant column must have 'metadata' and 'value' columns");
+			}
+			children[metadata_idx.GetIndex()] = CreateReaderRecursive(context, ColumnIndex(metadata_idx.GetIndex()),
+			                                                          schema.children[metadata_idx.GetIndex()]);
+			ColumnIndex typed_value_index;
+			if (TryCreateVariantPathIndex(2, typed_value_schema, column_id.GetChildIndex(0), typed_value_index)) {
+				children[2] = CreateReaderRecursive(context, typed_value_index, typed_value_schema);
+			} else {
+				children[value_idx.GetIndex()] = CreateReaderRecursive(context, ColumnIndex(value_idx.GetIndex()),
+				                                                       schema.children[value_idx.GetIndex()]);
+			}
+		} else {
+			for (idx_t child_index = 0; child_index < schema.children.size(); child_index++) {
+				children[child_index] =
+				    CreateReaderRecursive(context, ColumnIndex(child_index), schema.children[child_index]);
+			}
 		}
 		// Create the VariantColumnReader with the column index, so we can perform the extract at Read
 		auto column_reader = make_uniq<VariantColumnReader>(context, *this, schema, std::move(children), column_id);

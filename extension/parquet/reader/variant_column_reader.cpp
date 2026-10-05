@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "duckdb/common/vector/struct_vector.hpp"
+#include "duckdb/common/vector/constant_vector.hpp"
 #include "reader/variant_column_reader.hpp"
 #include "duckdb/common/types/variant/parquet_variant_iterator.hpp"
 #include "column_reader.hpp"
@@ -74,21 +75,25 @@ VariantColumnReader::VariantColumnReader(ClientContext &context, const ParquetRe
 		}
 	}
 
-	if (child_readers.size() < 2 || !child_readers[0] || !child_readers[1]) {
+	//! Pushdown extract may leave out the 'value' or 'typed_value' reader, so look the columns up in the schema
+	if (schema.children.size() < 2) {
 		throw DataCorruptionException("Failed to read file \"%s\": the Variant column must have 'metadata' and 'value' "
 		                              "as the first two columns",
 		                              reader.GetFileName());
 	}
-	if (child_readers[0]->Schema().name == "metadata" && child_readers[1]->Schema().name == "value") {
+	if (schema.children[0].name == "metadata" && schema.children[1].name == "value") {
 		metadata_reader_idx = 0;
 		value_reader_idx = 1;
-	} else if (child_readers[1]->Schema().name == "metadata" && child_readers[0]->Schema().name == "value") {
+	} else if (schema.children[1].name == "metadata" && schema.children[0].name == "value") {
 		metadata_reader_idx = 1;
 		value_reader_idx = 0;
 	} else {
 		throw DataCorruptionException("Failed to read file \"%s\": the Variant column must have 'metadata' and 'value' "
 		                              "as the first two columns",
 		                              reader.GetFileName());
+	}
+	if (!child_readers[metadata_reader_idx]) {
+		throw InternalException("The Variant column reader requires the 'metadata' column");
 	}
 }
 
@@ -173,11 +178,15 @@ idx_t VariantColumnReader::Read(ColumnReaderInput &input, Vector &result) {
 	ColumnReaderInput metadata_reader_input(num_values, define_out, repeat_out);
 	auto metadata_values = child_readers[metadata_reader_idx]->Read(metadata_reader_input, metadata_intermediate);
 
-	ColumnReaderInput value_reader_input(num_values, define_out, repeat_out);
-	auto value_values = child_readers[value_reader_idx]->Read(value_reader_input, value_intermediate);
-
+	idx_t value_values = metadata_values;
+	if (child_readers[value_reader_idx]) {
+		ColumnReaderInput value_reader_input(num_values, define_out, repeat_out);
+		value_values = child_readers[value_reader_idx]->Read(value_reader_input, value_intermediate);
+		D_ASSERT(child_readers[value_reader_idx]->Schema().name == "value");
+	} else {
+		ConstantVector::SetNull(value_intermediate, count_t(num_values));
+	}
 	D_ASSERT(child_readers[metadata_reader_idx]->Schema().name == "metadata");
-	D_ASSERT(child_readers[value_reader_idx]->Schema().name == "value");
 
 	if (metadata_values != value_values) {
 		throw InvalidInputException(
