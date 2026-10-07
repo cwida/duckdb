@@ -81,13 +81,13 @@ insert into t1 values ('2028-02-28 01:00:00.123456789', '2028-02-28 01:00:00.123
 query IIII
 select * from t1;
 ----
-2028-02-28 01:00:00	2028-02-28 01:00:00.123	2028-02-28 01:00:00.123456789	2028-02-28 01:00:00.123456
+2028-02-28 01:00:00	2028-02-28 01:00:00.123	2028-02-28 01:00:00.123456789	2028-02-28 01:00:00.123457
 
 # Casting NS => US now uses rounding (like the othe downcasts)
 query III
 select ts = ts_s::TIMESTAMP, ts = ts_ms::TIMESTAMP, ts = ts_ns::TIMESTAMP from t1;
 ----
-false	false	false
+false	false	true
 
 # ts is more precise than timestamp_s and timestamp_ms, so conversions can happen
 query III
@@ -99,7 +99,7 @@ true	true	false
 query III
 select ts_s::timestamp = timestamp '2028-02-28 01:00:00.123456789', ts_ms::timestamp = timestamp '2028-02-28 01:00:00.123456789', ts_ns::timestamp = timestamp '2028-02-28 01:00:00.123456789'  from t1;
 ----
-false	false	false
+false	false	true
 
 # ts_ms only has micro second precision, so the value of ts_ms is 2028-02-28 01:00:00.123 and not equal to 2028-02-28 01:00:00.123456789
 query II

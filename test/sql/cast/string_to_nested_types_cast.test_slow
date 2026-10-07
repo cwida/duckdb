@@ -182,7 +182,7 @@ query I
 SELECT CAST(struct_pack(A=>timestamp_ns)::VARCHAR AS STRUCT(A TIME)) FROM test_all_types();
 ----
 {'A': '00:00:00'}
-{'A': '23:47:16.854775'}
+{'A': '23:47:16.854776'}
 {'A': NULL}
 
 query I
