@@ -1,0 +1,192 @@
+# name: test/sql/optimizer/join_non_comparison_condition.test
+# description: Statistics propagation classifies non-comparison join conditions and collapses joins that never match
+# group: [optimizer]
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+CREATE TABLE a AS SELECT range::INTEGER AS k FROM range(4);
+
+statement ok
+CREATE TABLE b AS SELECT range::INTEGER AS k FROM range(4);
+
+# constant_or_null(false, e...) is the shape produced by the full-domain ENUM (NOT) IN rewrite and by
+# statistics-proven comparisons. As a join condition it can never match, so the join degenerates.
+# The condition references both sides, so filter pushdown cannot move it into a child - without
+# statistics propagation the join keeps evaluating it.
+
+query II
+EXPLAIN SELECT count(*) FROM a JOIN b ON a.k = b.k AND constant_or_null(FALSE, a.k + b.k);
+----
+physical_plan	<REGEX>:.*EMPTY_RESULT.*
+
+query I
+SELECT count(*) FROM a JOIN b ON a.k = b.k AND constant_or_null(FALSE, a.k + b.k);
+----
+0
+
+# LEFT join: the preserved side keeps every row and the never-matching right side is emptied
+
+query II
+EXPLAIN SELECT count(*) FROM a LEFT JOIN b ON a.k = b.k AND constant_or_null(FALSE, a.k + b.k);
+----
+physical_plan	<REGEX>:.*HASH_JOIN.*Join Type: LEFT.*EMPTY_RESULT.*
+
+query I
+SELECT count(*) FROM a LEFT JOIN b ON a.k = b.k AND constant_or_null(FALSE, a.k + b.k);
+----
+4
+
+# the never-matching side is emptied for the other outer join direction as well
+
+query II
+EXPLAIN SELECT count(*) FROM a RIGHT JOIN b ON a.k = b.k AND constant_or_null(FALSE, a.k + b.k);
+----
+physical_plan	<REGEX>:.*HASH_JOIN.*EMPTY_RESULT.*
+
+query I
+SELECT count(*) FROM a RIGHT JOIN b ON a.k = b.k AND constant_or_null(FALSE, a.k + b.k);
+----
+4
+
+# SEMI join over a never-matching condition produces no rows, ANTI join keeps every row
+
+query I
+SELECT count(*) FROM a WHERE EXISTS (SELECT 1 FROM b WHERE b.k = a.k AND constant_or_null(FALSE, a.k + b.k));
+----
+0
+
+query I
+SELECT count(*) FROM a WHERE NOT EXISTS (SELECT 1 FROM b WHERE b.k = a.k AND constant_or_null(FALSE, a.k + b.k));
+----
+4
+
+# FULL OUTER join still needs both sides, so it is not degenerated - no pair matches
+
+query II
+EXPLAIN SELECT count(*) FROM a FULL OUTER JOIN b ON a.k = b.k AND constant_or_null(FALSE, a.k + b.k);
+----
+physical_plan	<REGEX>:.*Join Type: FULL.*
+
+query I
+SELECT count(*) FROM a FULL OUTER JOIN b ON a.k = b.k AND constant_or_null(FALSE, a.k + b.k);
+----
+8
+
+statement ok
+CREATE TABLE nn_a(k INTEGER NOT NULL);
+
+statement ok
+CREATE TABLE nn_b(k INTEGER NOT NULL);
+
+statement ok
+INSERT INTO nn_a SELECT range FROM range(4);
+
+statement ok
+INSERT INTO nn_b SELECT range FROM range(4);
+
+# An always-true condition is a no-op for matching: it is erased while other conditions remain.
+# The IS NOT NULL is provably true on the NOT NULL columns, so before the erasure the plan reads
+# "Conditions: k = k, (k + k) IS NOT NULL".
+
+query II
+EXPLAIN SELECT count(*) FROM nn_a JOIN nn_b ON nn_a.k = nn_b.k AND nn_a.k + nn_b.k IS NOT NULL;
+----
+physical_plan	<!REGEX>:.*IS NOT NULL.*
+
+query I
+SELECT count(*) FROM nn_a JOIN nn_b ON nn_a.k = nn_b.k AND nn_a.k + nn_b.k IS NOT NULL;
+----
+4
+
+# When it is the only condition an INNER join becomes a cross product
+
+query II
+EXPLAIN SELECT count(*) FROM nn_a JOIN nn_b ON nn_a.k + nn_b.k IS NOT NULL;
+----
+physical_plan	<REGEX>:.*CROSS_PRODUCT.*
+
+query I
+SELECT count(*) FROM nn_a JOIN nn_b ON nn_a.k + nn_b.k IS NOT NULL;
+----
+16
+
+# A single-side always-true condition cannot be pushed into an outer join's preserved side, so it
+# stays in the join until statistics prove it true ("Conditions: k = k, k IS NOT NULL" before)
+
+query II
+EXPLAIN SELECT count(*) FROM nn_a LEFT JOIN nn_b ON nn_a.k = nn_b.k AND nn_a.k IS NOT NULL;
+----
+physical_plan	<!REGEX>:.*IS NOT NULL.*
+
+query I
+SELECT count(*) FROM nn_a LEFT JOIN nn_b ON nn_a.k = nn_b.k AND nn_a.k IS NOT NULL;
+----
+4
+
+# End-to-end: full-domain ENUM NOT IN on a join condition.
+# The expression rewriter (#26707) turns NOT IN over the full enum domain into
+# constant_or_null(false, m). Statistics then classify that non-comparison condition
+# and collapse the join the same way the literal constant_or_null cases above do.
+
+statement ok
+CREATE TYPE mood AS ENUM('sad', 'ok', 'happy');
+
+statement ok
+CREATE TABLE enum_a AS
+SELECT range::INTEGER AS k, ['sad', 'ok', 'happy'][1 + (range % 3)]::mood AS m FROM range(12);
+
+statement ok
+CREATE TABLE enum_b AS SELECT range::INTEGER AS k FROM range(12);
+
+# LEFT join: rewriter produces constant_or_null(false, m); stats empty the never-matching right side
+
+query II
+EXPLAIN SELECT count(*) FROM enum_a LEFT JOIN enum_b ON enum_a.k = enum_b.k AND enum_a.m NOT IN ('sad', 'ok', 'happy');
+----
+physical_plan	<REGEX>:.*HASH_JOIN.*Join Type: LEFT.*constant_or_null\(false, m\).*EMPTY_RESULT.*
+
+query I
+SELECT count(*) FROM enum_a LEFT JOIN enum_b ON enum_a.k = enum_b.k AND enum_a.m NOT IN ('sad', 'ok', 'happy');
+----
+12
+
+# INNER join: the never-matching condition empties the whole join
+
+query II
+EXPLAIN SELECT count(*) FROM enum_a JOIN enum_b ON enum_a.k = enum_b.k AND enum_a.m NOT IN ('sad', 'ok', 'happy');
+----
+physical_plan	<REGEX>:.*EMPTY_RESULT.*
+
+query I
+SELECT count(*) FROM enum_a JOIN enum_b ON enum_a.k = enum_b.k AND enum_a.m NOT IN ('sad', 'ok', 'happy');
+----
+0
+
+# nullable ENUM column: FALSE-or-NULL still never matches, so LEFT keeps every left row
+
+statement ok
+INSERT INTO enum_a VALUES (100, NULL);
+
+query II
+EXPLAIN SELECT count(*) FROM enum_a LEFT JOIN enum_b ON enum_a.k = enum_b.k AND enum_a.m NOT IN ('sad', 'ok', 'happy');
+----
+physical_plan	<REGEX>:.*HASH_JOIN.*Join Type: LEFT.*EMPTY_RESULT.*
+
+query I
+SELECT count(*) FROM enum_a LEFT JOIN enum_b ON enum_a.k = enum_b.k AND enum_a.m NOT IN ('sad', 'ok', 'happy');
+----
+13
+
+# FULL OUTER still needs both sides, so it is not degenerated
+
+query II
+EXPLAIN SELECT count(*) FROM enum_a FULL OUTER JOIN enum_b ON enum_a.k = enum_b.k AND enum_a.m NOT IN ('sad', 'ok', 'happy');
+----
+physical_plan	<REGEX>:.*Join Type: FULL.*
+
+query I
+SELECT count(*) FROM enum_a FULL OUTER JOIN enum_b ON enum_a.k = enum_b.k AND enum_a.m NOT IN ('sad', 'ok', 'happy');
+----
+25
