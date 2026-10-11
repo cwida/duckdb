@@ -1126,20 +1126,21 @@ void JSONReader::FinalizeBufferInternal(JSONReaderScanState &scan_state, Allocat
 		readers = scan_state.is_last ? 1 : 2;
 	}
 
+	if (scan_state.file_read_type == JSONFileReadType::SCAN_PARTIAL) {
+		// if we are not scanning the entire file - copy the remainder of the previous buffer into this buffer
+		// we don't need to do this for the first buffer
+		// we do this before inserting the buffer in the map so that readers of this buffer always see the
+		// fully reconstructed buffer (the copy moves our start position backwards)
+		if (scan_state.buffer_index.GetIndex() != 0) {
+			CopyRemainderFromPreviousBuffer(scan_state);
+		}
+	}
+
 	// Create an entry and insert it into the map
 	auto json_buffer_handle = make_uniq<JSONBufferHandle>(*this, buffer_index, readers, std::move(buffer),
 	                                                      scan_state.buffer_size, scan_state.buffer_offset);
 	scan_state.current_buffer_handle = json_buffer_handle.get();
 	InsertBuffer(buffer_index, std::move(json_buffer_handle));
-
-	if (scan_state.file_read_type == JSONFileReadType::SCAN_PARTIAL) {
-		// if we are not scanning the entire file - copy the remainder of the previous buffer into this buffer
-		// we don't need to do this for the first buffer
-		// we do this after inserting the buffer in the map to ensure we can still read in parallel
-		if (scan_state.buffer_index.GetIndex() != 0) {
-			CopyRemainderFromPreviousBuffer(scan_state);
-		}
-	}
 
 	scan_state.prev_buffer_remainder = 0;
 	scan_state.lines_or_objects_in_buffer = 0;
