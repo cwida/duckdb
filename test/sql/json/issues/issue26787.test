@@ -1,0 +1,49 @@
+# name: test/sql/json/issues/issue26787.test
+# description: Parallel NDJSON scan must not lose an unterminated record that is split across read chunks
+# group: [issues]
+
+require json
+
+statement ok
+SET threads=4
+
+# A parallel read chunk holds maximum_object_size - YYJSON_PADDING_SIZE = 16777212 bytes by default
+# (the user can only increase maximum_object_size, so this is the smallest chunk size we can get).
+# We build a file of exactly 2 chunks + 1 byte (33554425 bytes):
+# - 167771 lines of 100 bytes fill bytes [0, 16777100)
+# - one line of 109 bytes fills bytes [16777100, 16777209), its newline ends chunk 0's tail
+# - the final line occupies bytes [16777209, 33554425): its first 3 bytes ("{\"p") are the last 3
+#   bytes of chunk 0, the rest of the record (newline included, exactly maximum_object_size bytes)
+#   must be reconstructed in the buffer of chunk 1, and its newline is the first byte of chunk 2
+# Before the fix, the buffer handle of chunk 1 was published before the remainder of chunk 0 was
+# copied into it, so the reader of chunk 2 only saw the bytes after the copy target: it reported
+# "Malformed JSON ... in line 167774" (a line that does not exist) - or, with ignore_errors=true,
+# silently replaced the final record with NULL (issue #26787).
+# The file is generated at runtime because it is ~32 MiB (issue #26787).
+statement ok
+COPY (SELECT repeat(CASE WHEN i = 167772 THEN 'g' ELSE 'f' END,
+                    CASE WHEN i = 167772 THEN 16777205 WHEN i = 167771 THEN 98 ELSE 89 END) AS pad
+      FROM range(167773) t(i))
+TO '{TEST_DIR}/ndjson_unterminated_last_line.jsonl' (FORMAT JSON)
+
+# strict mode: the split record is valid JSON, so the scan must not fail and must return all
+# records intact - not truncated (NULL) and not shortened
+query IIII
+SELECT count(*), count(pad), min(length(pad)), max(length(pad)) FROM read_json('{TEST_DIR}/ndjson_unterminated_last_line.jsonl', format='newline_delimited')
+----
+167773	167773	89	16777205
+
+# ignore_errors must not silently replace the final record with NULL either
+query IIII
+SELECT count(*), count(pad), min(length(pad)), max(length(pad)) FROM read_json('{TEST_DIR}/ndjson_unterminated_last_line.jsonl', format='newline_delimited', ignore_errors=true)
+----
+167773	167773	89	16777205
+
+# control: the single-threaded scan reads the file in one go and is not affected
+statement ok
+SET threads=1
+
+query IIII
+SELECT count(*), count(pad), min(length(pad)), max(length(pad)) FROM read_json('{TEST_DIR}/ndjson_unterminated_last_line.jsonl', format='newline_delimited')
+----
+167773	167773	89	16777205
