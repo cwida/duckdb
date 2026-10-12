@@ -1,7 +1,8 @@
 #include "duckdb/optimizer/rule/not_constant_or_null_simplification.hpp"
 
-#include "duckdb/function/scalar/generic_common.hpp"
+#include "duckdb/function/scalar/generic_functions.hpp"
 #include "duckdb/optimizer/expression_rewriter.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
 
@@ -9,34 +10,30 @@ namespace duckdb {
 
 NotConstantOrNullSimplificationRule::NotConstantOrNullSimplificationRule(ExpressionRewriter &rewriter)
     : Rule(rewriter) {
-	auto op = make_uniq<ExpressionMatcher>(ExpressionClass::BOUND_OPERATOR);
-	op->expr_type = make_uniq<SpecificExpressionTypeMatcher>(ExpressionType::OPERATOR_NOT);
-	root = std::move(op);
+	// the operand is a BOOLEAN constant_or_null(<value>, <args...>)
+	auto cornull = make_uniq<FunctionExpressionMatcher>();
+	cornull->type = make_uniq<SpecificTypeMatcher>(LogicalType::BOOLEAN);
+	cornull->function = make_uniq<SpecificFunctionMatcher>(Identifier(ConstantOrNullFun::Name));
+	cornull->policy = SetMatcher::Policy::SOME_ORDERED;
+	cornull->matchers.push_back(make_uniq<ConstantExpressionMatcher>()); // the leading value argument
+
+	auto not_matcher = make_uniq<NotExpressionMatcher>();
+	not_matcher->child = std::move(cornull);
+	root = std::move(not_matcher);
 }
 
+// NOT(constant_or_null(v, e)) => constant_or_null(!v, e)
+// the NULL check on e is preserved, only the constant is negated
 unique_ptr<Expression> NotConstantOrNullSimplificationRule::Apply(LogicalOperator &op,
                                                                   vector<reference<Expression>> &bindings,
                                                                   bool &changes_made, bool is_root) {
 	auto &not_expr = bindings[0].get().Cast<BoundOperatorExpression>();
+	auto &func = bindings[1].get().Cast<BoundFunctionExpression>();
+	auto &value_expr = bindings[2].get().Cast<BoundConstantExpression>();
 	D_ASSERT(not_expr.GetExpressionType() == ExpressionType::OPERATOR_NOT);
-	D_ASSERT(not_expr.GetChildren().size() == 1);
 
-	auto &child = not_expr.GetChildrenMutable()[0];
-
-	// NOT(constant_or_null(v, e)) => constant_or_null(!v, e)
-	// the NULL check on e is preserved, only the constant is negated
-	if (child->GetExpressionClass() != ExpressionClass::BOUND_FUNCTION ||
-	    child->GetReturnType().id() != LogicalTypeId::BOOLEAN) {
-		return nullptr;
-	}
-
-	auto &func = child->Cast<BoundFunctionExpression>();
-	optional<bool> value;
-	if (ConstantOrNull::IsConstantOrNull(func, Value::BOOLEAN(true))) {
-		value = true;
-	} else if (ConstantOrNull::IsConstantOrNull(func, Value::BOOLEAN(false))) {
-		value = false;
-	} else {
+	auto value = value_expr.GetValue();
+	if (value.IsNull()) {
 		return nullptr;
 	}
 
@@ -50,7 +47,7 @@ unique_ptr<Expression> NotConstantOrNullSimplificationRule::Apply(LogicalOperato
 	}
 
 	changes_made = true;
-	return rewriter.ConstantOrNull(GetContext(), std::move(children), Value::BOOLEAN(!value.value()));
+	return rewriter.ConstantOrNull(GetContext(), std::move(children), Value::BOOLEAN(!value.GetValue<bool>()));
 }
 
 } // namespace duckdb
