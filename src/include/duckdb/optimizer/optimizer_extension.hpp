@@ -16,6 +16,7 @@ namespace duckdb {
 struct DBConfig;
 class Optimizer;
 class ClientContext;
+class DatabaseInstance;
 
 //! The OptimizerExtensionInfo holds static information relevant to the optimizer extension
 struct OptimizerExtensionInfo {
@@ -47,6 +48,14 @@ public:
 	shared_ptr<OptimizerExtensionInfo> optimizer_info;
 
 	static void Register(DBConfig &config, OptimizerExtension extension);
+	//! Declare that a pre-optimize function keeps CTE filter dependencies (LogicalMaterializedCTE::filter_dependency)
+	//! intact, so they are not cleared before it runs. The function must then clear them itself
+	//! (CTEFilterPusher::ClearDependencies) whenever it rewrites the plan.
+	//! Registered out-of-band on DatabaseInstance to preserve the OptimizerExtension ABI with prebuilt extensions.
+	DUCKDB_API static void RegisterCTEFilterDependencyPreserving(DatabaseInstance &db,
+	                                                             pre_optimize_function_t pre_optimize_function);
+	DUCKDB_API static bool PreservesCTEFilterDependencies(ClientContext &context,
+	                                                      pre_optimize_function_t pre_optimize_function);
 	static ExtensionCallbackIteratorHelper<OptimizerExtension> Iterate(ClientContext &context) {
 		return ExtensionCallbackManager::Get(context).OptimizerExtensions();
 	}

@@ -240,6 +240,20 @@ void OptimizerExtension::Register(DBConfig &config, OptimizerExtension extension
 	config.GetCallbackManager().Register(std::move(extension));
 }
 
+void OptimizerExtension::RegisterCTEFilterDependencyPreserving(DatabaseInstance &db,
+                                                               pre_optimize_function_t pre_optimize_function) {
+	lock_guard<mutex> guard(db.cte_filter_dependency_preserving_lock);
+	db.cte_filter_dependency_preserving.push_back(pre_optimize_function);
+}
+
+bool OptimizerExtension::PreservesCTEFilterDependencies(ClientContext &context,
+                                                        pre_optimize_function_t pre_optimize_function) {
+	auto &db = DatabaseInstance::GetDatabase(context);
+	lock_guard<mutex> guard(db.cte_filter_dependency_preserving_lock);
+	auto &functions = db.cte_filter_dependency_preserving;
+	return std::find(functions.begin(), functions.end(), pre_optimize_function) != functions.end();
+}
+
 void ParserExtension::Register(DBConfig &config, ParserExtension extension) {
 	config.GetCallbackManager().Register(std::move(extension));
 }

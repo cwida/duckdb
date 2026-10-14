@@ -47,10 +47,13 @@ struct ParserCache;
 struct FunctionData;
 class SamplingPushdownRegistry;
 class SampleOptions;
+struct OptimizerExtensionInput;
+class LogicalOperator;
 
 class DatabaseInstance : public enable_shared_from_this<DatabaseInstance> {
 	friend class DuckDB;
 	friend class SamplingPushdownRegistry;
+	friend class OptimizerExtension;
 
 public:
 	DUCKDB_API DatabaseInstance();
@@ -147,6 +150,10 @@ private:
 	//! without shifting DBConfig field offsets used by prebuilt extensions. Kept last so it does
 	//! not shift any DatabaseInstance field either.
 	unordered_map<string, bool (*)(const FunctionData &, const SampleOptions &)> sampling_pushdown_callbacks;
+	//! Pre-optimize functions that keep CTE filter dependencies intact (see
+	//! OptimizerExtension::RegisterCTEFilterDependencyPreserving). Kept after the other members for the same reason.
+	vector<void (*)(OptimizerExtensionInput &, unique_ptr<LogicalOperator> &)> cte_filter_dependency_preserving;
+	mutex cte_filter_dependency_preserving_lock;
 };
 
 //! A describe function for an extension class, so that loading it by class goes through the same path as linked
