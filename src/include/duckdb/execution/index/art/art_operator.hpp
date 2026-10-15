@@ -136,10 +136,8 @@ public:
 				return ARTConflictType::NO_CONFLICT;
 			}
 
-			if (key.len == 0) {
-				Leaf::New(node_ptr, row_id.GetRowId());
-				return ARTConflictType::NO_CONFLICT;
-			}
+			// Empty keys (NULLs) must be filtered by callers.
+			D_ASSERT(key.len != 0);
 			auto chain = PrefixHandle::New(art, key, depth, key.len);
 			Leaf::New(chain.tail.Child(art), row_id.GetRowId());
 			node_ptr = chain.root_ptr;
