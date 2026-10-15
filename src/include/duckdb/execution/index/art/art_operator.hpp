@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "duckdb/common/optional.hpp"
 #include "duckdb/execution/index/art/art_key.hpp"
 #include "duckdb/execution/index/art/art.hpp"
 #include "duckdb/execution/index/art/const_prefix_handle.hpp"
@@ -339,7 +340,7 @@ public:
 				grandparent_depth = parent_depth;
 				parent_depth = depth;
 
-				auto child_ptr_ref = current_ptr_ref.get().GetChildMutable(art, current_key_ref.get()[depth]);
+				auto child_ptr_ref = current_ptr_ref.get().GetChildMutableUnsafe(art, current_key_ref.get()[depth]);
 				if (!child_ptr_ref) {
 					// No child at the byte: nothing to erase.
 					return false;

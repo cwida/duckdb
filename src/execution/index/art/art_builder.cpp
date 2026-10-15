@@ -77,7 +77,7 @@ ARTConflictType ARTBuilder::Build() {
 			// FIXME: Improve performance by either returning a reference to the child directly,
 			// FIXME: or by calling InsertChild after processing the child (at the end of the stack loop).
 			NodePtr::InsertChild(art, node_ptr_ref, child_byte);
-			auto child_ptr_ref = node_ptr_ref.get().NodePtr::GetChildMutable(art, child_byte, true);
+			auto child_ptr_ref = node_ptr_ref.get().NodePtr::GetChildMutableUnsafe(art, child_byte, true);
 			auto end_offset = i != child_offsets.size() ? child_offsets[i] - 1 : entry.end;
 			s.emplace(*child_ptr_ref, start_offset, end_offset, entry.depth + 1);
 			start_offset = end_offset + 1;
