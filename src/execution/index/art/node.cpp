@@ -230,7 +230,7 @@ const unsafe_optional_ptr<NodePtr> NodePtr::GetChild(ART &art, const uint8_t byt
 	return GetChildInternal(art, *this, byte, false);
 }
 
-unsafe_optional_ptr<NodePtr> NodePtr::GetChildMutable(ART &art, const uint8_t byte, const bool unsafe) const {
+unsafe_optional_ptr<NodePtr> NodePtr::GetChildMutableUnsafe(ART &art, const uint8_t byte, const bool unsafe) const {
 	return GetChildInternal(art, *this, byte, unsafe);
 }
 
