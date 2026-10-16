@@ -1,0 +1,54 @@
+# name: test/sql/profiling/test_failed_query_scan_metrics.test
+# description: A scan whose pipeline fails before it finishes still reports the rows it scanned
+# group: [profiling]
+
+require json
+
+statement ok
+SET threads = 1;
+
+# the operators of the pipeline that failed report the rows they processed before the error
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/failed_pipeline_profile.json';
+
+statement error
+SELECT sum(x) FROM (SELECT CASE WHEN i = 500000 THEN error('boom') ELSE i END AS x FROM range(1000000) t(i));
+----
+boom
+
+statement ok
+PRAGMA disable_profiling;
+
+query I
+SELECT regexp_extract(content, '"intermediate_rows": (\d+),[^{}]*"type": "TABLE_SCAN"', 1)::BIGINT BETWEEN 1 AND 1000000
+FROM read_text('{TEST_DIR}/failed_pipeline_profile.json');
+----
+true
+
+# a table scan reports the rows and row groups it scanned
+statement ok
+CREATE TABLE t AS SELECT i FROM range(1000000) r(i);
+
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/failed_scan_profile.json';
+
+statement error
+SELECT sum(CASE WHEN i = 500000 THEN error('boom') ELSE i END) FROM t;
+----
+boom
+
+statement ok
+PRAGMA disable_profiling;
+
+query II
+SELECT regexp_extract(content, '"row_groups_scanned": (\d+),[^{}]*"type": "TABLE_SCAN"', 1)::BIGINT >= 1,
+       regexp_extract(content, '"rows_scanned": (\d+),[^{}]*"type": "TABLE_SCAN"', 1)::BIGINT BETWEEN 500000 AND 999999
+FROM read_text('{TEST_DIR}/failed_scan_profile.json');
+----
+true	true

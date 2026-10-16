@@ -1,0 +1,108 @@
+# name: test/sql/profiling/test_failed_query_nested_pipelines.test
+# description: Pipelines that are not run by a task of their own still report their metrics when the query fails
+# group: [profiling]
+
+require json
+
+statement ok
+SET threads = 1;
+
+# the pipeline of a recursive CTE reports the rows of the iteration that failed
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/failed_recursive_cte_profile.json';
+
+statement error
+WITH RECURSIVE r(i) AS (
+	SELECT i FROM range(100000) t(i)
+	UNION ALL
+	SELECT CASE WHEN i = 150000 THEN error('boom') ELSE i + 100000 END FROM r WHERE i < 200000
+)
+SELECT count(*) FROM r;
+----
+boom
+
+statement ok
+PRAGMA disable_profiling;
+
+query I
+SELECT regexp_extract(content, '"intermediate_rows": (\d+),[^{}]*"type": "RECURSIVE_CTE_SCAN"', 1)::BIGINT BETWEEN 100001 AND 199999
+FROM read_text('{TEST_DIR}/failed_recursive_cte_profile.json');
+----
+true
+
+# a pipeline that a CTE feeds directly reports the rows it consumed
+statement ok
+SET disabled_optimizers = 'join_order,build_side_probe_side';
+
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/failed_cte_exchange_profile.json';
+
+statement error
+WITH c AS MATERIALIZED (SELECT CASE WHEN i = 500000 THEN error('boom') ELSE i END AS i FROM range(1000000) t(i))
+SELECT count(*) FROM range(10) l(i) JOIN (SELECT i FROM c WHERE i % 2 = 0) c2 ON l.i = c2.i;
+----
+boom
+
+statement ok
+PRAGMA disable_profiling;
+
+statement ok
+RESET disabled_optimizers;
+
+query I
+SELECT regexp_extract(content, '"intermediate_rows": (\d+),[^{}]*"type": "CTE_SCAN"', 1)::BIGINT BETWEEN 1 AND 999999
+FROM read_text('{TEST_DIR}/failed_cte_exchange_profile.json');
+----
+true
+
+# with several threads, the tasks that are cancelled when one fails keep the rows they scanned
+statement ok
+CREATE TABLE t AS SELECT i FROM range(4000000) r(i);
+
+statement ok
+SET threads = 4;
+
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/failed_parallel_scan_profile.json';
+
+statement error
+SELECT sum(CASE WHEN i = 3000000 THEN error('boom') ELSE i END) FROM t;
+----
+boom
+
+statement ok
+PRAGMA disable_profiling;
+
+query I
+SELECT regexp_extract(content, '"rows_scanned": (\d+),[^{}]*"type": "TABLE_SCAN"', 1)::BIGINT BETWEEN 1 AND 4000000
+FROM read_text('{TEST_DIR}/failed_parallel_scan_profile.json');
+----
+true
+
+# a scan that is flushed more than once reports each row once
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/parallel_scan_profile.json';
+
+statement ok
+SELECT sum(i) FROM t;
+
+statement ok
+PRAGMA disable_profiling;
+
+query I
+SELECT regexp_extract(content, '"rows_scanned": (\d+),[^{}]*"type": "TABLE_SCAN"', 1)::BIGINT
+FROM read_text('{TEST_DIR}/parallel_scan_profile.json');
+----
+4000000

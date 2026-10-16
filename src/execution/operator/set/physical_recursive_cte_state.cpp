@@ -4,6 +4,7 @@
 #include "duckdb/logging/logger.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/parallel/pipeline.hpp"
+#include "duckdb/execution/executor.hpp"
 #include "duckdb/parallel/pipeline_executor.hpp"
 
 namespace duckdb {
@@ -454,7 +455,7 @@ void RecursiveCTESchedulerState::CompleteInlineStage(const RecursiveCTEPipelineS
 }
 
 void RecursiveCTESchedulerState::PrepareExecutorEntry(Pipeline &pipeline) {
-	cached_executors.emplace(reference<Pipeline>(pipeline), vector<unique_ptr<PipelineExecutor>>());
+	cached_executors.emplace(reference<Pipeline>(pipeline), vector<shared_ptr<PipelineExecutor>>());
 }
 
 void RecursiveCTESchedulerState::PrepareExecutors(Pipeline &pipeline, idx_t max_threads) {
@@ -469,7 +470,7 @@ void RecursiveCTESchedulerState::PrepareExecutors(Pipeline &pipeline, idx_t max_
 	}
 	if (!allow_executor_reuse) {
 		while (executors.size() < max_threads) {
-			executors.push_back(make_uniq<PipelineExecutor>(pipeline.GetClientContext(), pipeline));
+			executors.push_back(pipeline.executor.CreatePipelineExecutor(pipeline));
 		}
 		return;
 	}
@@ -478,7 +479,7 @@ void RecursiveCTESchedulerState::PrepareExecutors(Pipeline &pipeline, idx_t max_
 	auto pool_entry = executor_pool->executors.find(pipeline);
 	if (pool_entry == executor_pool->executors.end()) {
 		pool_entry =
-		    executor_pool->executors.emplace(reference<Pipeline>(pipeline), vector<unique_ptr<PipelineExecutor>>())
+		    executor_pool->executors.emplace(reference<Pipeline>(pipeline), vector<shared_ptr<PipelineExecutor>>())
 		        .first;
 	}
 	auto &shared_executors = pool_entry->second;
@@ -487,12 +488,12 @@ void RecursiveCTESchedulerState::PrepareExecutors(Pipeline &pipeline, idx_t max_
 			executors.push_back(std::move(shared_executors.back()));
 			shared_executors.pop_back();
 		} else {
-			executors.push_back(make_uniq<PipelineExecutor>(pipeline.GetClientContext(), pipeline));
+			executors.push_back(pipeline.executor.CreatePipelineExecutor(pipeline));
 		}
 	}
 }
 
-vector<unique_ptr<PipelineExecutor>> &RecursiveCTESchedulerState::GetExecutors(Pipeline &pipeline) {
+vector<shared_ptr<PipelineExecutor>> &RecursiveCTESchedulerState::GetExecutors(Pipeline &pipeline) {
 	auto entry = cached_executors.find(pipeline);
 	if (entry == cached_executors.end()) {
 		throw InternalException("Missing recursive pipeline executor cache entry");
@@ -517,7 +518,7 @@ void RecursiveCTESchedulerState::ClearExecutors() {
 	for (auto &entry : cached_executors) {
 		auto pool_entry = executor_pool->executors.find(entry.first.get());
 		if (pool_entry == executor_pool->executors.end()) {
-			pool_entry = executor_pool->executors.emplace(entry.first, vector<unique_ptr<PipelineExecutor>>()).first;
+			pool_entry = executor_pool->executors.emplace(entry.first, vector<shared_ptr<PipelineExecutor>>()).first;
 		}
 		auto &shared_executors = pool_entry->second;
 		for (auto &executor : entry.second) {

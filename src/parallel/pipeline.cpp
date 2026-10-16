@@ -37,9 +37,20 @@ PipelineTask::PipelineTask(Pipeline &pipeline_p, shared_ptr<Event> event_p)
 	}
 }
 
+PipelineTask::~PipelineTask() {
+	if (!pipeline_executor || pipeline_executor->IsFinalized()) {
+		return;
+	}
+	// the task did not finish its pipeline: flush its metrics once no task can still use the source state
+	try {
+		pipeline.executor.AddUnfinishedPipelineExecutor(std::move(pipeline_executor));
+	} catch (...) { // NOLINT
+	}
+}
+
 TaskExecutionResult PipelineTask::ExecuteTask(TaskExecutionMode mode) {
 	if (!pipeline_executor) {
-		pipeline_executor = make_uniq<PipelineExecutor>(pipeline.GetClientContext(), pipeline, reserved_batch_index);
+		pipeline_executor = pipeline.executor.CreatePipelineExecutor(pipeline, reserved_batch_index);
 	}
 
 	pipeline_executor->SetTaskForInterrupts(shared_from_this());

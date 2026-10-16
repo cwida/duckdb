@@ -234,7 +234,7 @@ public:
 
 	void PrepareExecutorEntry(Pipeline &pipeline);
 	void PrepareExecutors(Pipeline &pipeline, idx_t max_threads);
-	vector<unique_ptr<PipelineExecutor>> &GetExecutors(Pipeline &pipeline);
+	vector<shared_ptr<PipelineExecutor>> &GetExecutors(Pipeline &pipeline);
 	bool HasExecutorEntries() const;
 	void ClearExecutors();
 	void InitializeInlinePlan(const RecursiveCTEPipelineSchedulePlan &plan);

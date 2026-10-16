@@ -197,7 +197,7 @@ bool Executor::NextExecutor() {
 		return false;
 	}
 	root_pipelines[root_pipeline_idx]->Reset();
-	root_executor = make_uniq<PipelineExecutor>(context, *root_pipelines[root_pipeline_idx]);
+	root_executor = CreatePipelineExecutor(*root_pipelines[root_pipeline_idx]);
 	root_pipeline_idx++;
 	return true;
 }
@@ -332,6 +332,7 @@ void Executor::CancelTasks() {
 		WorkOnTasks();
 	}
 #endif
+	FlushUnfinishedPipelineExecutors();
 	// Now safe to destroy pipelines, events and states — no tasks reference them
 	lock_guard<mutex> elock(executor_lock);
 	for (auto &rec_cte_ref : recursive_ctes) {
@@ -342,6 +343,51 @@ void Executor::CancelTasks() {
 	root_pipelines.clear();
 	to_be_rescheduled_tasks.clear();
 	events.clear();
+}
+
+shared_ptr<PipelineExecutor> Executor::CreatePipelineExecutor(Pipeline &pipeline, optional_idx reserved_batch_index) {
+	auto pipeline_executor = make_shared_ptr<PipelineExecutor>(context, pipeline, reserved_batch_index);
+	lock_guard<mutex> guard(pipeline_executors_lock);
+	if (pipeline_executors.size() >= pipeline_executors_prune_size) {
+		pipeline_executors.erase(
+		    std::remove_if(pipeline_executors.begin(), pipeline_executors.end(),
+		                   [](const weak_ptr<PipelineExecutor> &entry) { return entry.expired(); }),
+		    pipeline_executors.end());
+		pipeline_executors_prune_size = MaxValue<idx_t>(pipeline_executors.size() * 2, 64);
+	}
+	pipeline_executors.push_back(pipeline_executor);
+	return pipeline_executor;
+}
+
+void Executor::AddUnfinishedPipelineExecutor(shared_ptr<PipelineExecutor> pipeline_executor) {
+	lock_guard<mutex> guard(pipeline_executors_lock);
+	unfinished_pipeline_executors.push_back(std::move(pipeline_executor));
+}
+
+void Executor::FlushUnfinishedPipelineExecutors() {
+	vector<weak_ptr<PipelineExecutor>> executors;
+	vector<shared_ptr<PipelineExecutor>> unfinished;
+	{
+		lock_guard<mutex> guard(pipeline_executors_lock);
+		executors = std::move(pipeline_executors);
+		pipeline_executors.clear();
+		pipeline_executors_prune_size = 0;
+		unfinished = std::move(unfinished_pipeline_executors);
+		unfinished_pipeline_executors.clear();
+	}
+	// no task runs anymore, so the source states the executors read their metrics from are no longer in use
+	for (auto &entry : executors) {
+		auto pipeline_executor = entry.lock();
+		if (!pipeline_executor) {
+			continue;
+		}
+		try {
+			pipeline_executor->FlushUnfinishedProfile();
+		} catch (...) { // NOLINT
+		}
+	}
+	// destroyed here, while the pipelines and global states they refer to are still alive
+	unfinished.clear();
 }
 
 bool Executor::WorkOnTasks() {
@@ -565,6 +611,10 @@ void Executor::Reset() {
 	events.clear();
 	to_be_rescheduled_tasks.clear();
 	execution_result = QueryResultState::NOT_READY;
+	lock_guard<mutex> guard(pipeline_executors_lock);
+	pipeline_executors.clear();
+	pipeline_executors_prune_size = 0;
+	unfinished_pipeline_executors.clear();
 }
 
 shared_ptr<Pipeline> Executor::CreateChildPipeline(Pipeline &current, PhysicalOperator &op) {

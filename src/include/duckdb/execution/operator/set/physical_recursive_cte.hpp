@@ -84,7 +84,7 @@ struct RecursiveCTEReferenceInfo {
 class PhysicalRecursiveCTE : public PhysicalOperator {
 public:
 	static constexpr const PhysicalOperatorType TYPE = PhysicalOperatorType::RECURSIVE_CTE;
-	using executor_cache_t = reference_map_t<Pipeline, vector<unique_ptr<PipelineExecutor>>>;
+	using executor_cache_t = reference_map_t<Pipeline, vector<shared_ptr<PipelineExecutor>>>;
 	friend class RecursiveCTEState;
 	friend class RecursiveCTEUnionState;
 	friend class RecursiveCTEKeyedState;

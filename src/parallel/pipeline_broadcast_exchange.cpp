@@ -6,6 +6,7 @@
 #include "duckdb/logging/log_type.hpp"
 #include "duckdb/logging/logger.hpp"
 #include "duckdb/parallel/pipeline.hpp"
+#include "duckdb/execution/executor.hpp"
 #include "duckdb/parallel/pipeline_executor.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
 #include "duckdb/storage/standard_buffer_manager.hpp"
@@ -593,7 +594,7 @@ PipelineBroadcastExchangeLocalState::PipelineBroadcastExchangeLocalState(ClientC
 	for (auto &pipeline_ref : direct_pipeline_refs) {
 		auto &pipeline = pipeline_ref.get();
 		pipeline.PrepareExternalInput();
-		direct_executors.push_back(make_uniq<PipelineExecutor>(context, pipeline));
+		direct_executors.push_back(pipeline.executor.CreatePipelineExecutor(pipeline));
 		auto input_chunk = make_uniq<DataChunk>();
 		input_chunk->InitializeEmpty(exchange.Types());
 		direct_input_chunks.push_back(std::move(input_chunk));

@@ -103,7 +103,13 @@ private:
 	}
 };
 
-struct TableScanLocalState : public LocalTableFunctionState {
+//! The scan metrics already handed to the profiler, so that each metrics call only reports what is new
+struct TableScanMetricsLocalState : public LocalTableFunctionState {
+	idx_t reported_rows_scanned = 0;
+	idx_t reported_row_groups_scanned = 0;
+};
+
+struct TableScanLocalState : public TableScanMetricsLocalState {
 	//! The current position in the scan.
 	TableScanState scan_state;
 	//! The DataChunk containing all read columns.
@@ -119,7 +125,7 @@ struct TableScanLocalState : public LocalTableFunctionState {
 	idx_t row_groups_scanned = 0;
 };
 
-struct IndexScanLocalState : public LocalTableFunctionState {
+struct IndexScanLocalState : public TableScanMetricsLocalState {
 	//! The batch index, which determines the offset in the row ID vector.
 	idx_t batch_index;
 	//! The DataChunk containing all read columns.
@@ -1121,11 +1127,21 @@ unique_ptr<NodeStatistics> TableScanCardinality(ClientContext &context, const Fu
 	return make_uniq<NodeStatistics>(estimated_cardinality, estimated_cardinality);
 }
 
+//! The part of a running count that has not been reported yet
+static idx_t TakeUnreported(idx_t count, idx_t &reported) {
+	auto result = count >= reported ? count - reported : count;
+	reported = count;
+	return result;
+}
+
 void TableScanGetMetrics(TableFunctionGetMetricsInput &input) {
 	auto &gstate = input.global_state->Cast<TableScanGlobalState>();
 	auto &local_state = *input.local_state;
-	input.operator_metrics.rows_scanned = gstate.TableScanRowsScanned(local_state);
-	input.operator_metrics.row_groups_scanned = gstate.TableScanRowGroupsScanned(local_state);
+	auto &reported = local_state.Cast<TableScanMetricsLocalState>();
+	input.operator_metrics.rows_scanned +=
+	    TakeUnreported(gstate.TableScanRowsScanned(local_state), reported.reported_rows_scanned);
+	input.operator_metrics.row_groups_scanned +=
+	    TakeUnreported(gstate.TableScanRowGroupsScanned(local_state), reported.reported_row_groups_scanned);
 	input.operator_metrics.total_row_groups_to_scan = gstate.total_row_groups_to_scan;
 }
 

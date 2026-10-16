@@ -50,9 +50,10 @@ class PipelineTask : public ExecutorTask {
 
 public:
 	explicit PipelineTask(Pipeline &pipeline_p, shared_ptr<Event> event_p);
+	~PipelineTask() override;
 
 	Pipeline &pipeline;
-	unique_ptr<PipelineExecutor> pipeline_executor;
+	shared_ptr<PipelineExecutor> pipeline_executor;
 	optional_idx reserved_batch_index;
 
 	string TaskType() const override {

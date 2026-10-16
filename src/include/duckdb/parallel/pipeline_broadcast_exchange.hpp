@@ -72,7 +72,7 @@ private:
 	OperatorPartitionData GetSourcePartitionData(const SourcePartitionInfo &partition_info) const;
 	optional_idx GetSourceMinBatchIndex(const SourcePartitionInfo &partition_info) const;
 
-	vector<unique_ptr<PipelineExecutor>> direct_executors;
+	vector<shared_ptr<PipelineExecutor>> direct_executors;
 	vector<unique_ptr<DataChunk>> direct_input_chunks;
 	idx_t direct_idx = 0;
 	idx_t direct_next_batch_idx = 0;
