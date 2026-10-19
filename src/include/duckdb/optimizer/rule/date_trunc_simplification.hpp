@@ -65,7 +65,9 @@ public:
 	unique_ptr<Expression> CreateTruncAdd(const BoundConstantExpression &date_part, const BoundConstantExpression &rhs,
 	                                      const LogicalType &return_type);
 
-	bool DateIsTruncated(const BoundConstantExpression &date_part, const BoundConstantExpression &rhs);
+	//! Whether the truncation check could run - on success, is_truncated holds the outcome
+	bool DateIsTruncated(const BoundConstantExpression &date_part, const BoundConstantExpression &rhs,
+	                     bool &is_truncated);
 	bool IsInfinity(const Value &value);
 	void ReplaceDateTruncWithColumn(unique_ptr<Expression> &column_side, unique_ptr<Expression> &constant_side,
 	                                const BoundColumnRefExpression &column_part);

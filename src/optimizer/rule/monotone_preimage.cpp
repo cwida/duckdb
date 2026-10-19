@@ -1,4 +1,5 @@
 #include "duckdb/optimizer/rule/monotone_preimage.hpp"
+#include "duckdb/main/settings.hpp"
 
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/common/types/timestamp.hpp"
@@ -193,6 +194,10 @@ unique_ptr<Expression> MonotonePreimageRule::Apply(LogicalOperator &op, vector<r
 		return nullptr;
 	}
 
+	// the bisection probes evaluate the function itself, which must not observe its binding environment
+	if (func.ObservesBindingContext() && Settings::Get<PortablePlanSetting>(GetContext())) {
+		return nullptr;
+	}
 	// evaluate the constant and cast it to the function's return type for the corner comparisons
 	if (!ExpressionRewriter::CanConstantFold(GetContext(), constant_expr)) {
 		return nullptr;

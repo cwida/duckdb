@@ -1,0 +1,34 @@
+# name: test/sql/sql_export/portable_plan_icu.test
+# description: The portable_plan profile keeps timezone-observing ICU folds out of generated SQL
+# group: [sql_export]
+
+require icu
+
+statement ok
+SET TimeZone='UTC';
+
+statement ok
+CREATE TABLE iso_obs(ts TIMESTAMPTZ);
+
+statement ok
+INSERT INTO iso_obs VALUES (TIMESTAMPTZ '2024-01-01 00:30:00+00');
+
+statement ok
+SET portable_plan=true;
+
+# the monotone preimage rewrite must not bake timezone-dependent bounds
+query TT
+EXPLAIN (SQL) SELECT ts FROM iso_obs WHERE isoyear(ts) = 2024::BIGINT;
+----
+sql	<REGEX>:(?s).*isoyear.*
+
+# a timezone-observing truncation of a constant stays a call
+query TT
+EXPLAIN (SQL) SELECT date_trunc('day', TIMESTAMPTZ '2020-01-01 12:00:00+00') AS q;
+----
+sql	<REGEX>:(?s).*date_trunc.*
+
+query I
+SELECT count(*) FROM iso_obs WHERE isoyear(ts) = 2024;
+----
+1

@@ -1049,7 +1049,8 @@ static bool FoldConstantArgument(ClientContext &context, unique_ptr<Expression> 
 	if (child->GetExpressionClass() == ExpressionClass::BOUND_LAMBDA || !child->IsFoldable()) {
 		return false;
 	}
-	if (!child->IsConsistent() && Settings::Get<PortablePlanSetting>(context)) {
+	if ((!child->IsConsistent() || child->ObservesBindingContext()) &&
+	    Settings::Get<PortablePlanSetting>(context)) {
 		// an environment observation must not fold into the plan
 		return false;
 	}

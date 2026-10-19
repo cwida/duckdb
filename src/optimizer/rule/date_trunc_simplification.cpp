@@ -102,7 +102,11 @@ unique_ptr<Expression> DateTruncSimplificationRule::Apply(LogicalOperator &op, v
 	}
 
 	// Check whether trunc(date_part, constant_rhs) = constant_rhs.
-	const bool is_truncated = DateIsTruncated(date_part, rhs);
+	// When the check cannot run, the rewrite must be abandoned - an unknown outcome is not a proof.
+	bool is_truncated = false;
+	if (!DateIsTruncated(date_part, rhs, is_truncated)) {
+		return nullptr;
+	}
 
 	switch (rhs_comparison_type) {
 	case ExpressionType::COMPARE_EQUAL:
@@ -381,7 +385,7 @@ unique_ptr<Expression> DateTruncSimplificationRule::CreateTrunc(const BoundConst
 		trunc = BoundCastExpression::AddDefaultCastToType(std::move(trunc), return_type, true);
 	}
 
-	if (trunc->IsFoldable()) {
+	if (ExpressionRewriter::CanConstantFold(rewriter.context, *trunc)) {
 		Value result;
 		if (!ExpressionExecutor::TryEvaluateScalar(rewriter.context, *trunc, result)) {
 			return trunc;
@@ -432,7 +436,7 @@ unique_ptr<Expression> DateTruncSimplificationRule::CreateTruncAdd(const BoundCo
 		trunc = BoundCastExpression::AddDefaultCastToType(std::move(trunc), return_type, true);
 	}
 
-	if (trunc->IsFoldable()) {
+	if (ExpressionRewriter::CanConstantFold(rewriter.context, *trunc)) {
 		Value result;
 		if (!ExpressionExecutor::TryEvaluateScalar(rewriter.context, *trunc, result)) {
 			return trunc;
@@ -445,15 +449,20 @@ unique_ptr<Expression> DateTruncSimplificationRule::CreateTruncAdd(const BoundCo
 }
 
 bool DateTruncSimplificationRule::DateIsTruncated(const BoundConstantExpression &date_part,
-                                                  const BoundConstantExpression &rhs) {
+                                                  const BoundConstantExpression &rhs, bool &is_truncated) {
 	// If the rhs is null, then the date is "truncated" in the sense that date_trunc(..., NULL) is also NULL.
 	if (rhs.GetValue().IsNull()) {
+		is_truncated = true;
 		return true;
 	}
 
 	// Create the node date_trunc(date_part, rhs).
 	auto trunc = CreateTrunc(date_part, rhs, rhs.GetReturnType());
 
+	if (!ExpressionRewriter::CanConstantFold(rewriter.context, *trunc) ||
+	    !ExpressionRewriter::CanConstantFold(rewriter.context, rhs)) {
+		return false;
+	}
 	Value trunc_result, result;
 	if (!ExpressionExecutor::TryEvaluateScalar(rewriter.context, *trunc, trunc_result)) {
 		return false;
@@ -462,7 +471,8 @@ bool DateTruncSimplificationRule::DateIsTruncated(const BoundConstantExpression 
 		return false;
 	}
 
-	return (result == trunc_result);
+	is_truncated = (result == trunc_result);
+	return true;
 }
 
 bool DateTruncSimplificationRule::IsInfinity(const Value &value) {
@@ -494,7 +504,7 @@ void DateTruncSimplificationRule::ReplaceDateTruncWithColumn(unique_ptr<Expressi
 unique_ptr<Expression> DateTruncSimplificationRule::CastAndEvaluate(unique_ptr<Expression> rhs,
                                                                     const LogicalType &return_type) {
 	auto cast = BoundCastExpression::AddDefaultCastToType(std::move(rhs), return_type, true);
-	if (cast->IsFoldable()) {
+	if (ExpressionRewriter::CanConstantFold(rewriter.context, *cast)) {
 		Value result;
 		if (!ExpressionExecutor::TryEvaluateScalar(rewriter.context, *cast, result)) {
 			return cast;

@@ -27,10 +27,6 @@ static unique_ptr<FunctionData> BindIEEEFloatingUnary(BindScalarFunctionInput &i
 	} else {
 		bound_function.SetFunctionCallback(ScalarFunction::UnaryFunction<double, double, ERROR_OP>);
 	}
-	if (Settings::Get<PortablePlanSetting>(input.GetClientContext())) {
-		// the implementation observes ieee_floating_point_ops, folding its result would bake that observation in
-		bound_function.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
-	}
 	return nullptr;
 }
 
@@ -41,10 +37,6 @@ static unique_ptr<FunctionData> BindIEEEFloatingBinary(BindScalarFunctionInput &
 		bound_function.SetFunctionCallback(ScalarFunction::BinaryFunction<double, double, double, IEEE_OP>);
 	} else {
 		bound_function.SetFunctionCallback(ScalarFunction::BinaryFunction<double, double, double, ERROR_OP>);
-	}
-	if (Settings::Get<PortablePlanSetting>(input.GetClientContext())) {
-		// the implementation observes ieee_floating_point_ops, folding its result would bake that observation in
-		bound_function.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 	}
 	return nullptr;
 }

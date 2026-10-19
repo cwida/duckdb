@@ -63,6 +63,12 @@ bool BoundFunctionExpression::IsConsistent() const {
 	       Expression::IsConsistent();
 }
 
+bool BoundFunctionExpression::ObservesBindingContext() const {
+	auto lambda_expr = GetLambdaExpression(*this);
+	return function.ObservesBindingContext() || (lambda_expr && lambda_expr->ObservesBindingContext()) ||
+	       Expression::ObservesBindingContext();
+}
+
 bool BoundFunctionExpression::IsFoldable() const {
 	// functions with side effects cannot be folded: they have to be executed once for every row
 	auto lambda_expr = GetLambdaExpression(*this);

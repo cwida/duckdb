@@ -364,10 +364,6 @@ static unique_ptr<FunctionData> ListGradeUpBind(BindScalarFunctionInput &input) 
 	auto &config = DBConfig::GetConfig(context);
 	order = config.ResolveOrder(context, order);
 	null_order = config.ResolveNullOrder(context, order, null_order);
-	if (Settings::Get<PortablePlanSetting>(context)) {
-		// resolving the default order, null order and collation observes session settings
-		bound_function.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
-	}
 
 	if (arguments[0]->GetReturnType().id() == LogicalTypeId::UNKNOWN) {
 		bound_function.GetArguments()[0] = LogicalTypeId::UNKNOWN;
@@ -384,10 +380,6 @@ static unique_ptr<FunctionData> ListGradeUpBind(BindScalarFunctionInput &input) 
 	bound_function.GetArguments()[0] = arguments[0]->GetReturnType();
 	bound_function.SetReturnType(LogicalType::LIST(LogicalTypeId::BIGINT));
 	auto child_type = ListType::GetChildType(arguments[0]->GetReturnType());
-	if (Settings::Get<PortablePlanSetting>(context)) {
-		// resolving the default order, null order and collation observes session settings
-		bound_function.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
-	}
 	return make_uniq<ListSortBindData>(order, null_order, true, bound_function.GetReturnType(), child_type, context);
 }
 
@@ -410,10 +402,6 @@ static unique_ptr<FunctionData> ListNormalSortBind(BindScalarFunctionInput &inpu
 	auto &config = DBConfig::GetConfig(context);
 	order = config.ResolveOrder(context, order);
 	null_order = config.ResolveNullOrder(context, order, null_order);
-	if (Settings::Get<PortablePlanSetting>(context)) {
-		// resolving the default order, null order and collation observes session settings
-		bound_function.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
-	}
 	return ListSortBind(context, bound_function, arguments, order, null_order);
 }
 
@@ -440,10 +428,6 @@ static unique_ptr<FunctionData> ListReverseSortBind(BindScalarFunctionInput &inp
 		throw InternalException("Unexpected order type in list reverse sort");
 	}
 	null_order = config.ResolveNullOrder(context, order, null_order);
-	if (Settings::Get<PortablePlanSetting>(context)) {
-		// resolving the default order, null order and collation observes session settings
-		bound_function.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
-	}
 	return ListSortBind(context, bound_function, arguments, order, null_order);
 }
 

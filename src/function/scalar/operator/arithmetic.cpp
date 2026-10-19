@@ -1321,23 +1321,18 @@ scalar_function_t GetBinaryFunctionZeroCheck(PhysicalType type, bool null_on_zer
 	return GetBinaryFunctionZeroCheck<OP, false>(type);
 }
 
-//! Division behavior observes error_on_division_by_zero (and the IEEE setting for floating point) unless a
-//! constant divisor proves the zero branch unreachable - under the portable_plan profile such a bind declares
-//! query-level stability so its result does not fold into the plan
+//! Division behavior observes error_on_division_by_zero (and the IEEE setting for floating point), which the
+//! bind-callback default already declares - a provably nonzero constant divisor never reaches the
+//! setting-dependent branch, so such a bound instance is context-insensitive and keeps folding
 template <class INPUT>
-static void MarkDivisionSettingObservation(INPUT &input) {
-	auto &context = input.GetClientContext();
-	if (!Settings::Get<PortablePlanSetting>(context)) {
-		return;
-	}
+static void DeclareDivisorSensitivity(INPUT &input) {
 	auto divisor = input.TryGetConstant(1);
 	if (divisor && !divisor->IsNull()) {
 		auto zero = Value(0).DefaultTryCastAs(divisor->type());
 		if (zero && ValueOperations::DistinctFrom(*divisor, *zero)) {
-			return;
+			input.GetBoundFunction().SetBindingSensitivity(FunctionBindingSensitivity::CONTEXT_INSENSITIVE);
 		}
 	}
-	input.GetBoundFunction().SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 }
 
 template <class OP>
@@ -1347,7 +1342,7 @@ unique_ptr<FunctionData> BindDivisionByZero(BindScalarFunctionInput &input) {
 	auto null_on_zero = !Settings::Get<ErrorOnDivisionByZeroSetting>(context);
 	bound_function.SetFunctionCallback(
 	    GetBinaryFunctionZeroCheck<OP>(bound_function.GetReturnType().InternalType(), null_on_zero));
-	MarkDivisionSettingObservation(input);
+	DeclareDivisorSensitivity(input);
 	return nullptr;
 }
 
@@ -1361,7 +1356,7 @@ unique_ptr<FunctionData> BindIntervalDivide(BindScalarFunctionInput &input) {
 		bound_function.SetFunctionCallback(BinaryScalarFunctionZeroCheck<interval_t, double, interval_t, DivideOperator,
 		                                                                 BinaryZeroCheckWrapper<false>>);
 	}
-	MarkDivisionSettingObservation(input);
+	DeclareDivisorSensitivity(input);
 	return nullptr;
 }
 
@@ -1377,7 +1372,7 @@ unique_ptr<FunctionData> BindBinaryFloatingPoint(BindScalarFunctionInput &input)
 		bound_function.SetFunctionCallback(
 		    GetBinaryFunctionZeroCheck<OP>(bound_function.GetReturnType().InternalType(), null_on_zero));
 	}
-	MarkDivisionSettingObservation(input);
+	DeclareDivisorSensitivity(input);
 	return nullptr;
 }
 
@@ -1461,7 +1456,7 @@ static unique_ptr<FunctionData> BindBignumDivide(BindScalarFunctionInput &input)
 	} else {
 		bound_function.SetFunctionCallback(BignumDivideOperation<false, MODULO>);
 	}
-	MarkDivisionSettingObservation(input);
+	DeclareDivisorSensitivity(input);
 	return nullptr;
 }
 
@@ -1518,7 +1513,7 @@ static void DecimalModuloResolveTypes(ResolveScalarFunctionTypesInput &input) {
 	auto &result_type = bound_function.GetReturnType();
 	auto null_on_zero = !Settings::Get<ErrorOnDivisionByZeroSetting>(input.GetClientContext());
 	bound_function.SetFunctionCallback(GetBinaryFunctionZeroCheck<OP>(result_type.InternalType(), null_on_zero));
-	MarkDivisionSettingObservation(input);
+	DeclareDivisorSensitivity(input);
 }
 
 template <>

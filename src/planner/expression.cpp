@@ -65,6 +65,16 @@ bool Expression::IsConsistent() const {
 	return is_consistent;
 }
 
+bool Expression::ObservesBindingContext() const {
+	bool observes = false;
+	ExpressionIterator::EnumerateChildren(*this, [&](const Expression &child) {
+		if (child.ObservesBindingContext()) {
+			observes = true;
+		}
+	});
+	return observes;
+}
+
 bool Expression::CanThrow() const {
 	bool can_throw = false;
 	ExpressionIterator::EnumerateChildren(*this, [&](const Expression &child) { can_throw |= child.CanThrow(); });

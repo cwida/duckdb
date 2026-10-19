@@ -250,6 +250,21 @@ public:
 public: // Properties
 
 	auto GetStability() const -> FunctionStability { return properties.stability; }
+	auto SetBindingSensitivity(FunctionBindingSensitivity value) -> void {
+		properties.binding_sensitivity = value;
+	}
+	//! Whether binding observes the environment in a way that affects the result - AUTOMATIC resolves
+	//! to sensitive exactly when the function has a bind callback
+	auto ObservesBindingContext() const -> bool {
+		switch (properties.binding_sensitivity) {
+		case FunctionBindingSensitivity::CONTEXT_SENSITIVE:
+			return true;
+		case FunctionBindingSensitivity::CONTEXT_INSENSITIVE:
+			return false;
+		default:
+			return HasBindCallback();
+		}
+	}
 	auto SetStability(FunctionStability value) -> void { properties.stability = value; }
 
 	auto GetNullHandling() const -> FunctionNullHandling { return properties.null_handling; }

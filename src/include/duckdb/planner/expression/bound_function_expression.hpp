@@ -52,6 +52,7 @@ public:
 
 	bool IsVolatile() const override;
 	bool IsConsistent() const override;
+	bool ObservesBindingContext() const override;
 	bool IsFoldable() const override;
 	bool CanThrow() const override;
 	bool RequiresRebind() const override;

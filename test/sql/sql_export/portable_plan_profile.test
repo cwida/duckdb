@@ -144,6 +144,23 @@ SELECT bit_length(bitstring_agg(1 % 2));
 ----
 1
 
+# a truncation proof that cannot run abandons the rewrite instead of counting as unsatisfiable
+statement ok
+CREATE TABLE trunc_obs(ts TIMESTAMP);
+
+statement ok
+INSERT INTO trunc_obs VALUES (TIMESTAMP '2024-01-01 12:00:00');
+
+query I
+SELECT count(*) FROM trunc_obs WHERE date_trunc('day', ts) = make_timestamp(1704067200000000);
+----
+1
+
+query TT
+EXPLAIN (SQL) SELECT count(*) FROM trunc_obs WHERE date_trunc('day', ts) = make_timestamp(1704067200000000);
+----
+sql	<REGEX>:(?s).*date_trunc.*
+
 statement ok
 RESET error_on_division_by_zero;
 
