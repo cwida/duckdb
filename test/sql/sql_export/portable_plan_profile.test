@@ -112,14 +112,37 @@ statement ok
 SET error_on_division_by_zero=false;
 
 query TT
-EXPLAIN (SQL) SELECT i // 0 FROM obs;
+EXPLAIN (SQL) SELECT i // 0 AS q FROM obs;
 ----
-sql	<REGEX>:(?s).*// 0.*
+sql	<REGEX>:(?s).*"//".*CAST\(0.*
 
 query TT
-EXPLAIN (SQL) SELECT 1 // 0;
+EXPLAIN (SQL) SELECT 1 // 0 AS q;
 ----
-sql	<REGEX>:(?s).*//.*
+sql	<REGEX>:(?s).*"//".*
+
+# the floating-point implementation choice observes ieee_floating_point_ops
+query TT
+EXPLAIN (SQL) SELECT 1.5::DOUBLE / 0.0::DOUBLE AS q;
+----
+sql	<REGEX>:(?s).*"/".*0\.0.*
+
+query TT
+EXPLAIN (SQL) SELECT sqrt(-1::DOUBLE) AS q;
+----
+sql	<REGEX>:(?s).*sqrt.*
+
+# resolving list sort defaults observes session settings
+query TT
+EXPLAIN (SQL) SELECT list_sort([2, 1]) AS q;
+----
+sql	<REGEX>:(?s).*list_sort.*
+
+# a provably nonzero constant divisor is setting-independent and keeps folding and statistics
+query I
+SELECT bit_length(bitstring_agg(1 % 2));
+----
+1
 
 statement ok
 RESET error_on_division_by_zero;
