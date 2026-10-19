@@ -1,6 +1,7 @@
 #include "catch.hpp"
 #include "test_helpers.hpp"
 #include "duckdb/common/set.hpp"
+#include "duckdb/common/virtual_file_system.hpp"
 #include "duckdb/storage/temporary_file_manager.hpp"
 
 using namespace duckdb;
@@ -40,3 +41,47 @@ TEST_CASE("Test temporary file owners", "[api]") {
 		REQUIRE(!TryParseTemporaryFileOwner("something_else.tmp", parsed));
 	}
 }
+
+#ifndef _WIN32
+namespace {
+
+//! Makes closing the first owner markers fail
+class FailingMarkerCloseFileSystem : public VirtualFileSystem {
+public:
+	atomic<idx_t> marker_opens {0};
+
+protected:
+	unique_ptr<FileHandle> OpenFileExtended(const OpenFileInfo &file, FileOpenFlags flags,
+	                                        optional_ptr<FileOpener> opener) override {
+		if (!StringUtil::EndsWith(file.path, "owner") || marker_opens++ >= 3) {
+			return VirtualFileSystem::OpenFileExtended(file, flags, opener);
+		}
+		unique_ptr<FileHandle> handle;
+		auto open_file = [&]() {
+			handle = VirtualFileSystem::OpenFileExtended(file, flags, opener);
+		};
+		if (!TestOpenWithFailingClose(file.path, open_file)) {
+			throw InternalException("Could not make closing \"%s\" fail", file.path);
+		}
+		return handle;
+	}
+};
+
+} // namespace
+
+TEST_CASE("A failed close of a temporary directory marker is reported", "[api]") {
+	auto fs = make_uniq<FailingMarkerCloseFileSystem>();
+	auto &marker_fs = *fs;
+	DBConfig config;
+	config.file_system = std::move(fs);
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("SET threads=1"));
+	REQUIRE_NO_FAIL(con.Query("SET temp_directory='" + TestCreatePath("failed_marker_close.tmp") + "'"));
+	REQUIRE_NO_FAIL(con.Query("CREATE TEMP TABLE t AS SELECT i, repeat('y', 80000) AS s FROM range(400) r(i)"));
+	auto result = con.Query("SET memory_limit='10MB'");
+	REQUIRE(result->HasError());
+	REQUIRE(StringUtil::Contains(result->GetError(), "Could not close file"));
+	REQUIRE(marker_fs.marker_opens == 1);
+}
+#endif

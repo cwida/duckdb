@@ -879,16 +879,18 @@ void TemporaryDirectoryHandle::ClaimOwner() {
 	for (;;) {
 		owner.instance = NextInstanceId();
 		auto marker_path = fs.JoinPath(temp_directory, TemporaryOwnerMarkerName(owner));
+		unique_ptr<FileHandle> marker;
 		try {
-			auto marker = fs.OpenFile(marker_path, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW);
-			marker->Close();
-			break;
+			marker = fs.OpenFile(marker_path, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW);
 		} catch (std::exception &) {
 			// taken, by a live instance or by one that died holding it - either way not ours
 			if (!fs.FileExists(marker_path)) {
 				throw;
 			}
+			continue;
 		}
+		marker->Close();
+		break;
 	}
 	file_prefix = TemporaryFilePrefix(owner);
 }
