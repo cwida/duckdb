@@ -76,6 +76,13 @@ EXPLAIN (SQL) SELECT 1 WHERE CAST(current_setting('threads') AS BIGINT) > 0;
 ----
 sql	<REGEX>:(?s).*current_setting.*
 
+# a bind-time-constant argument that observes the environment and evaluates to NULL surfaces the
+# function's own bind requirement instead of short-circuiting the call to NULL
+statement error
+SELECT regexp_matches('abc', 'abc', CASE WHEN current_setting('threads') IS NOT NULL THEN NULL::VARCHAR ELSE 'c' END);
+----
+<REGEX>:.*NULL.*
+
 # cached regex options only apply to literal arguments
 query TT
 EXPLAIN (SQL) SELECT regexp_matches('ABC', 'abc', CASE WHEN current_setting('threads') IS NOT NULL THEN 'c' ELSE 'i' END);
@@ -109,6 +116,11 @@ EXPLAIN (SQL) SELECT i // 0 FROM obs;
 ----
 sql	<REGEX>:(?s).*// 0.*
 
+query TT
+EXPLAIN (SQL) SELECT 1 // 0;
+----
+sql	<REGEX>:(?s).*//.*
+
 statement ok
 RESET error_on_division_by_zero;
 
@@ -129,7 +141,7 @@ statement ok
 CREATE SEQUENCE in_probe_seq START 1;
 
 query I
-SELECT nextval('in_probe_seq') IN (CAST(current_setting('threads') AS BIGINT), -2, -3, -4, -5);
+SELECT nextval('in_probe_seq') IN (CAST(current_setting('threads') AS BIGINT) + 1000000, -2, -3, -4, -5);
 ----
 false
 

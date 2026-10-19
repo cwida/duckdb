@@ -1327,6 +1327,10 @@ unique_ptr<FunctionData> BindDivisionByZero(BindScalarFunctionInput &input) {
 	auto null_on_zero = !Settings::Get<ErrorOnDivisionByZeroSetting>(context);
 	bound_function.SetFunctionCallback(
 	    GetBinaryFunctionZeroCheck<OP>(bound_function.GetReturnType().InternalType(), null_on_zero));
+	if (Settings::Get<PortablePlanSetting>(context)) {
+		// the implementation observes a session setting, folding its result would bake that observation in
+		bound_function.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
+	}
 	return nullptr;
 }
 
@@ -1339,6 +1343,10 @@ unique_ptr<FunctionData> BindIntervalDivide(BindScalarFunctionInput &input) {
 	} else {
 		bound_function.SetFunctionCallback(BinaryScalarFunctionZeroCheck<interval_t, double, interval_t, DivideOperator,
 		                                                                 BinaryZeroCheckWrapper<false>>);
+	}
+	if (Settings::Get<PortablePlanSetting>(context)) {
+		// the implementation observes a session setting, folding its result would bake that observation in
+		bound_function.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 	}
 	return nullptr;
 }
