@@ -4,6 +4,7 @@
 #include "duckdb/function/cast/bound_cast_data.hpp"
 #include "duckdb/function/cast/cast_function_set.hpp"
 #include "duckdb/main/config.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/planner/expression_binder.hpp"
 
 namespace duckdb {
@@ -32,7 +33,8 @@ static unique_ptr<Expression> AddCastExpressionInternal(unique_ptr<Expression> e
 
 static unique_ptr<Expression> AddCastToTypeInternal(unique_ptr<Expression> expr, const LogicalType &target_type,
                                                     CastFunctionSet &cast_functions, GetCastFunctionInput &get_input,
-                                                    bool try_cast, CastBindSource bind_source) {
+                                                    bool try_cast, CastBindSource bind_source,
+                                                    optional_ptr<ClientContext> context) {
 	D_ASSERT(expr);
 	if (expr->GetExpressionClass() == ExpressionClass::BOUND_PARAMETER) {
 		auto &parameter = expr->Cast<BoundParameterExpression>();
@@ -63,9 +65,21 @@ static unique_ptr<Expression> AddCastToTypeInternal(unique_ptr<Expression> expr,
 		// parameter was pinned by an inner cast on this same occurrence (e.g. CAST(CAST($1 AS A) AS B)).
 		// Add a regular cast on top instead of invalidating.
 		if (parameter.GetReturnType() == parameter.ParameterData()->return_type) {
+			// the registration probe is only consulted by profile-gated folding, so skip its cost otherwise
+			const bool classify = context && Settings::Get<PortablePlanSetting>(*context);
+			const bool registered_cast =
+			    classify && cast_functions.CanOverrideDefaultCast(parameter.GetReturnType(), target_type);
 			auto cast_function = cast_functions.GetCastFunction(parameter.GetReturnType(), target_type, get_input);
-			return AddCastExpressionInternal(std::move(expr), target_type, std::move(cast_function), try_cast,
-			                                 bind_source);
+			auto original = expr.get();
+			auto result = AddCastExpressionInternal(std::move(expr), target_type, std::move(cast_function), try_cast,
+			                                        bind_source);
+			if (classify && !registered_cast && result && result.get() != original &&
+			    BoundCastExpression::IsCast(*result)) {
+				// a newly created non-registered cast is determined by the written source and target types alone
+				result->Cast<BoundFunctionExpression>().FunctionMutable().SetBindingSensitivity(
+				    FunctionBindingSensitivity::CONTEXT_INSENSITIVE);
+			}
+			return result;
 		}
 		// invalidate the type
 		parameter.ParameterData()->return_type = LogicalType::INVALID;
@@ -80,8 +94,19 @@ static unique_ptr<Expression> AddCastToTypeInternal(unique_ptr<Expression> expr,
 		return expr;
 	}
 
+	// the registration probe is only consulted by profile-gated folding, so skip its cost otherwise
+	const bool classify = context && Settings::Get<PortablePlanSetting>(*context);
+	const bool registered_cast = classify && cast_functions.CanOverrideDefaultCast(expr->GetReturnType(), target_type);
 	auto cast_function = cast_functions.GetCastFunction(expr->GetReturnType(), target_type, get_input);
-	return AddCastExpressionInternal(std::move(expr), target_type, std::move(cast_function), try_cast, bind_source);
+	auto original = expr.get();
+	auto result =
+	    AddCastExpressionInternal(std::move(expr), target_type, std::move(cast_function), try_cast, bind_source);
+	if (classify && !registered_cast && result && result.get() != original && BoundCastExpression::IsCast(*result)) {
+		// a newly created non-registered cast is determined by the written source and target types alone
+		result->Cast<BoundFunctionExpression>().FunctionMutable().SetBindingSensitivity(
+		    FunctionBindingSensitivity::CONTEXT_INSENSITIVE);
+	}
+	return result;
 }
 
 unique_ptr<Expression> BoundCastExpression::AddDefaultCastToType(unique_ptr<Expression> expr,
@@ -90,7 +115,7 @@ unique_ptr<Expression> BoundCastExpression::AddDefaultCastToType(unique_ptr<Expr
 	GetCastFunctionInput get_input;
 	get_input.query_location = expr->GetQueryLocation();
 	return AddCastToTypeInternal(std::move(expr), target_type, default_set, get_input, try_cast,
-	                             CastBindSource::DEFAULT);
+	                             CastBindSource::DEFAULT, nullptr);
 }
 
 unique_ptr<Expression> BoundCastExpression::AddCastToType(ClientContext &context, unique_ptr<Expression> expr,
@@ -99,7 +124,7 @@ unique_ptr<Expression> BoundCastExpression::AddCastToType(ClientContext &context
 	GetCastFunctionInput get_input(context);
 	get_input.query_location = expr->GetQueryLocation();
 	return AddCastToTypeInternal(std::move(expr), target_type, cast_functions, get_input, try_cast,
-	                             CastBindSource::CONTEXT);
+	                             CastBindSource::CONTEXT, context);
 }
 
 unique_ptr<Expression> BoundCastExpression::AddArrayCastToList(ClientContext &context, unique_ptr<Expression> expr) {

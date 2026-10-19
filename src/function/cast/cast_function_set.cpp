@@ -3,6 +3,7 @@
 
 #include "duckdb/main/settings.hpp"
 
+#include "duckdb/common/error_data.hpp"
 #include "duckdb/common/pair.hpp"
 #include "duckdb/common/types/type_map.hpp"
 #include "duckdb/function/cast_rules.hpp"
@@ -237,7 +238,17 @@ bool CastFunctionSet::CanOverrideDefaultCast(const LogicalType &source, const Lo
 	CastFunctionSet probe;
 	probe.registration_probe = this;
 	GetCastFunctionInput input;
-	probe.GetCastFunction(source, target, input);
+	try {
+		probe.GetCastFunction(source, target, input);
+	} catch (std::exception &ex) {
+		ErrorData error(ex);
+		if (error.Type() == ExceptionType::INTERNAL || Exception::InvalidatesDatabase(error.Type())) {
+			throw;
+		}
+		// the context-free probe can fail where the real resolution succeeds (e.g. union member
+		// selection through registered implicit casts) - an unresolved probe cannot rule out overrides
+		return true;
+	}
 	return probe.registered_cast_found;
 }
 

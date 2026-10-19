@@ -1,0 +1,38 @@
+# name: test/sql/sql_export/portable_plan_json.test
+# description: The portable_plan profile keeps the JSON geometry cast's format observation out of generated SQL
+# group: [sql_export]
+
+require json
+
+statement ok
+SET json_geometry_format='wkt';
+
+statement ok
+SET portable_plan=true;
+
+# the registered GEOMETRY to JSON cast captures json_geometry_format in its bind data
+query TT
+EXPLAIN (SQL) SELECT CAST(CAST('POINT(1 2)' AS GEOMETRY) AS JSON) AS q;
+----
+sql	<REGEX>:(?s).*CAST.*GEOMETRY.*
+
+# a redundant same-type outer cast is a no-op and must not reclassify the registered cast under it
+query TT
+EXPLAIN (SQL) SELECT CAST(CAST(CAST('POINT(1 2)' AS GEOMETRY) AS JSON) AS JSON) AS q;
+----
+sql	<REGEX>:(?s).*CAST.*GEOMETRY.*
+
+# the sensitivity probe must not reject a cast the real resolver supports - the INTEGER to JSON
+# registration is only reachable through UNION member selection
+query I
+SELECT CAST(42 AS UNION(j JSON))::VARCHAR;
+----
+42
+
+statement ok
+SET portable_plan=false;
+
+query I
+SELECT CAST(42 AS UNION(j JSON))::VARCHAR;
+----
+42
