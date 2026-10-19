@@ -15,8 +15,7 @@ static string ExplainSQL(Connection &connection, const string &query) {
 	return result->Collection().GetValue(1, 0).ToString();
 }
 
-TEST_CASE("Profiled export text re-derives data observations, folded text does not",
-          "[sql_export][portable_plan]") {
+TEST_CASE("Profiled export text re-derives data observations, folded text does not", "[sql_export][portable_plan]") {
 	DuckDB db(nullptr);
 	Connection connection(db);
 	REQUIRE_NO_FAIL(connection.Query("CREATE TABLE obs(i INTEGER)"));
