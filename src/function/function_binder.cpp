@@ -739,7 +739,7 @@ static Value FoldArgument(ClientContext &context, Expression &expr) {
 	}
 	if (Settings::Get<PortablePlanSetting>(context) && (!expr.IsConsistent() || expr.ObservesBindingContext())) {
 		// the retained argument is a value, so there is no form that keeps the expression
-		throw BinderException("Argument \"%s\" observes the environment and cannot be planned under "
+		throw BinderException("Argument %s observes the environment and cannot be planned under "
 		                      "portable_plan: this argument is retained as a plain value",
 		                      expr.GetName());
 	}
@@ -1526,9 +1526,9 @@ unique_ptr<Expression> FunctionBinder::BindScalarFunction(const FunctionBinding 
 		if (Settings::Get<PortablePlanSetting>(context) && result_func->Function().ObservesBindingContext()) {
 			// the replacement would bake the observed environment into the plan, and there is no
 			// executable form to fall back to
-			throw BinderException("Function \"%s\" cannot be planned under portable_plan: its binding "
+			throw BinderException("Function %s cannot be planned under portable_plan: its binding "
 			                      "replaces the call with an environment-derived expression",
-			                      result_func->Function().GetName().GetIdentifierName());
+			                      result_func->Function().GetName());
 		}
 		// if a bind_expression callback is registered - call it and emit the resulting expression
 		FunctionBindExpressionInput input(context, result_func->FunctionMutable(), result_func->BindInfoMutable().get(),
