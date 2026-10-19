@@ -194,6 +194,9 @@ unique_ptr<Expression> MonotonePreimageRule::Apply(LogicalOperator &op, vector<r
 	}
 
 	// evaluate the constant and cast it to the function's return type for the corner comparisons
+	if (!ExpressionRewriter::CanConstantFold(GetContext(), constant_expr)) {
+		return nullptr;
+	}
 	Value c;
 	if (!ExpressionExecutor::TryEvaluateScalar(GetContext(), constant_expr, c) || c.IsNull()) {
 		return nullptr;

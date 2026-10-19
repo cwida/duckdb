@@ -204,6 +204,9 @@ unique_ptr<Expression> ComparisonSimplificationRule::Apply(LogicalOperator &op, 
 	// the constant_expr is a scalar expression that we have to fold
 	// use an ExpressionExecutor to execute the expression
 	D_ASSERT(constant_expr.IsFoldable());
+	if (!ExpressionRewriter::CanConstantFold(GetContext(), constant_expr)) {
+		return nullptr;
+	}
 	Value constant_value;
 	if (!ExpressionExecutor::TryEvaluateScalar(GetContext(), constant_expr, constant_value)) {
 		return nullptr;

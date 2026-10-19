@@ -31,6 +31,10 @@ public:
 	//! Adds a custom rule; a rewriter with custom rules skips the default rule set
 	void AddRule(unique_ptr<Rule> rule);
 
+	//! Whether the expression may be evaluated and folded into the plan - under the portable_plan profile,
+	//! environment-dependent expressions must not fold
+	static bool CanConstantFold(ClientContext &context, const Expression &expr);
+
 	// Generates either a constant_or_null(child) expression
 	static unique_ptr<Expression> ConstantOrNull(ClientContext &context, unique_ptr<Expression> child, Value value);
 	static unique_ptr<Expression> ConstantOrNull(ClientContext &context, vector<unique_ptr<Expression>> children,

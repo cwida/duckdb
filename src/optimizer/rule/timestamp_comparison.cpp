@@ -80,6 +80,9 @@ unique_ptr<Expression> TimeStampComparison::Apply(LogicalOperator &op, vector<re
 		return nullptr;
 	}
 
+	if (!ExpressionRewriter::CanConstantFold(context, *constant_expr)) {
+		return nullptr;
+	}
 	auto cast_constant = constant_expr->Copy();
 	auto cast_columnref = BoundCastExpression::Child(*cast_expr).Copy();
 	auto new_expr = make_uniq<BoundConjunctionExpression>(ExpressionType::CONJUNCTION_AND);
