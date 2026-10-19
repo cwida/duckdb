@@ -901,6 +901,41 @@ TEST_CASE("exclusive create fails when the file exists", "[file_system]") {
 	}
 }
 
+#ifndef _WIN32
+TEST_CASE("A failed close of a written file is reported", "[file_system]") {
+	auto fs = FileSystem::CreateLocal();
+	auto fname = TestCreatePath("failed_close_test_file");
+	auto flags = FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE;
+	unique_ptr<FileHandle> handle;
+	auto open_file = [&]() {
+		handle = fs->OpenFile(fname, flags);
+	};
+	fs->TryRemoveFile(fname);
+
+	REQUIRE(TestOpenWithFailingClose(fname, open_file));
+	REQUIRE_THROWS_WITH(handle->Close(), Catch::Matchers::Contains("Could not close file"));
+	REQUIRE_NOTHROW(handle->Close());
+
+	// destroying the handle or aborting the write ignores the error
+	REQUIRE(TestOpenWithFailingClose(fname, open_file));
+	REQUIRE_NOTHROW(handle.reset());
+	fs->RemoveFile(fname);
+	flags |= FileFlags::FILE_FLAGS_EXCLUSIVE_CREATE;
+	REQUIRE(TestOpenWithFailingClose(fname, open_file));
+	REQUIRE_NOTHROW(handle->AbortWrite());
+	REQUIRE(!fs->FileExists(fname));
+
+	// a handle opened for reading ignores the error
+	open_file();
+	handle->Close();
+	flags = FileFlags::FILE_FLAGS_READ;
+	REQUIRE(TestOpenWithFailingClose(fname, open_file));
+	REQUIRE_NOTHROW(handle->Close());
+	handle.reset();
+	fs->RemoveFile(fname);
+}
+#endif
+
 // ------------------------------------------------------------------------------------------------
 // Path struct tests
 // ------------------------------------------------------------------------------------------------
