@@ -2869,6 +2869,25 @@ ForeignKeyType EnumUtil::FromString<ForeignKeyType>(const char *value) {
 	return static_cast<ForeignKeyType>(StringUtil::StringToEnum(GetForeignKeyTypeValues(), 3, "ForeignKeyType", value));
 }
 
+const StringUtil::EnumStringLiteral *GetFunctionBindingSensitivityValues() {
+	static constexpr StringUtil::EnumStringLiteral values[] {
+		{ static_cast<uint32_t>(FunctionBindingSensitivity::AUTOMATIC), "AUTOMATIC" },
+		{ static_cast<uint32_t>(FunctionBindingSensitivity::CONTEXT_INSENSITIVE), "CONTEXT_INSENSITIVE" },
+		{ static_cast<uint32_t>(FunctionBindingSensitivity::CONTEXT_SENSITIVE), "CONTEXT_SENSITIVE" }
+	};
+	return values;
+}
+
+template<>
+const char* EnumUtil::ToChars<FunctionBindingSensitivity>(FunctionBindingSensitivity value) {
+	return StringUtil::EnumToString(GetFunctionBindingSensitivityValues(), 3, "FunctionBindingSensitivity", static_cast<uint32_t>(value));
+}
+
+template<>
+FunctionBindingSensitivity EnumUtil::FromString<FunctionBindingSensitivity>(const char *value) {
+	return static_cast<FunctionBindingSensitivity>(StringUtil::StringToEnum(GetFunctionBindingSensitivityValues(), 3, "FunctionBindingSensitivity", value));
+}
+
 const StringUtil::EnumStringLiteral *GetFunctionCollationHandlingValues() {
 	static constexpr StringUtil::EnumStringLiteral values[] {
 		{ static_cast<uint32_t>(FunctionCollationHandling::PROPAGATE_COLLATIONS), "PROPAGATE_COLLATIONS" },
