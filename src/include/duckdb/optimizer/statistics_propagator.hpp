@@ -154,6 +154,9 @@ private:
 	//! Try to execute aggregates using only the statistics if possible
 	void TryExecuteAggregates(LogicalAggregate &op, unique_ptr<LogicalOperator> &node_ptr);
 	void ReplaceWithEmptyResult(unique_ptr<LogicalOperator> &node);
+	//! Fold the expression to the proven constant, or keep it and return the constant's statistics
+	//! when plan folds are suppressed
+	unique_ptr<BaseStatistics> FoldToConstant(unique_ptr<Expression> &expr_ptr, Value value);
 
 	bool ExpressionIsConstant(Expression &expr, const Value &val);
 	bool ExpressionIsConstantOrNull(Expression &expr, const Value &val);

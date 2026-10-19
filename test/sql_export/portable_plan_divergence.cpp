@@ -40,8 +40,9 @@ TEST_CASE("Profiled export text re-derives data observations, folded text does n
 	}
 
 	// after the data changes, the profiled text sees the change while the folded text repeats
-	// the stale observation - the profile is a semantic choice, not a cosmetic one
-	REQUIRE_NO_FAIL(connection.Query("INSERT INTO obs VALUES (500)"));
+	// the stale observation - the profile is a semantic choice, not a cosmetic one.
+	// the row at 1500 fails the predicate, so a text that dropped the predicate gives 102
+	REQUIRE_NO_FAIL(connection.Query("INSERT INTO obs VALUES (500), (1500)"));
 	auto profiled_result = connection.Query(profiled);
 	REQUIRE_NO_FAIL(*profiled_result);
 	REQUIRE(profiled_result->Collection().GetValue(0, 0) == Value::BIGINT(101));

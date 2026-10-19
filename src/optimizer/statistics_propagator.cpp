@@ -1,4 +1,5 @@
 #include "duckdb/optimizer/statistics_propagator.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
 
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/settings.hpp"
@@ -35,6 +36,16 @@ StatisticsPropagator::StatisticsPropagator(Optimizer &optimizer_p, unique_ptr<Lo
 
 void StatisticsPropagator::ReplaceWithEmptyResult(unique_ptr<LogicalOperator> &node) {
 	node = make_uniq<LogicalEmptyResult>(std::move(node));
+}
+
+unique_ptr<BaseStatistics> StatisticsPropagator::FoldToConstant(unique_ptr<Expression> &expr_ptr, Value value) {
+	if (SuppressPlanFolds()) {
+		// the proven result statistics still hold for costing, but the expression stays in the plan
+		unique_ptr<Expression> proven = make_uniq<BoundConstantExpression>(std::move(value));
+		return PropagateExpression(proven);
+	}
+	expr_ptr = make_uniq<BoundConstantExpression>(std::move(value));
+	return PropagateExpression(expr_ptr);
 }
 
 unique_ptr<NodeStatistics> StatisticsPropagator::PropagateChildren(LogicalOperator &node,
@@ -129,7 +140,7 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalOper
 		result = PropagateChildren(node, node_ptr);
 	}
 
-	if (mode == StatisticsPropagationMode::FULL &&
+	if (mode == StatisticsPropagationMode::FULL && !SuppressPlanFolds() &&
 	    !optimizer.OptimizerDisabled(OptimizerType::COMPRESSED_MATERIALIZATION)) {
 		// compress data based on statistics for materializing operators
 		CompressedMaterialization compressed_materialization(optimizer, *root, propagation_path, statistics_map);

@@ -1275,7 +1275,7 @@ FilterResult FilterCombiner::AddFilter(Expression &expr) {
 			return FilterResult::SUCCESS;
 		}
 	}
-	D_ASSERT(!expr.IsFoldable());
+	D_ASSERT(!ExpressionRewriter::CanConstantFold(context, expr));
 	if (expr.GetExpressionType() == ExpressionType::COMPARE_BETWEEN) {
 		auto &between = expr.Cast<BoundFunctionExpression>();
 		//! check if one of the sides is a scalar value

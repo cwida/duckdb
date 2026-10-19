@@ -195,18 +195,15 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateComparison(BoundFuncti
 	}
 	// propagate the statistics of the comparison operator
 	auto propagate_result = PropagateComparison(*left_stats, *right_stats, expr.GetExpressionType());
-	if (SuppressPlanFolds()) {
-		// the comparison outcome is a data observation that must not rewrite the plan
-		return nullptr;
-	}
 	switch (propagate_result) {
 	case FilterPropagateResult::FILTER_ALWAYS_TRUE:
-		expr_ptr = make_uniq<BoundConstantExpression>(Value::BOOLEAN(true));
-		return PropagateExpression(expr_ptr);
+		return FoldToConstant(expr_ptr, Value::BOOLEAN(true));
 	case FilterPropagateResult::FILTER_ALWAYS_FALSE:
-		expr_ptr = make_uniq<BoundConstantExpression>(Value::BOOLEAN(false));
-		return PropagateExpression(expr_ptr);
+		return FoldToConstant(expr_ptr, Value::BOOLEAN(false));
 	case FilterPropagateResult::FILTER_TRUE_OR_NULL: {
+		if (SuppressPlanFolds()) {
+			return nullptr;
+		}
 		vector<unique_ptr<Expression>> children;
 		children.push_back(std::move(left));
 		children.push_back(std::move(right));
@@ -214,6 +211,9 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateComparison(BoundFuncti
 		return nullptr;
 	}
 	case FilterPropagateResult::FILTER_FALSE_OR_NULL: {
+		if (SuppressPlanFolds()) {
+			return nullptr;
+		}
 		vector<unique_ptr<Expression>> children;
 		children.push_back(std::move(left));
 		children.push_back(std::move(right));

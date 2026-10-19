@@ -1,4 +1,5 @@
 #include "duckdb/optimizer/partitioned_execution.hpp"
+#include "duckdb/main/settings.hpp"
 
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/optimizer/filter_pushdown.hpp"
@@ -534,6 +535,10 @@ void PartitionedExecutionSplitPipeline(Optimizer &optimizer, unique_ptr<LogicalO
 }
 
 void PartitionedExecution::Optimize(unique_ptr<LogicalOperator> &op) {
+	if (Settings::Get<PortablePlanSetting>(optimizer.context)) {
+		// the split arms carry filters derived from observed row-group statistics
+		return;
+	}
 	for (auto &child : op->children) {
 		Optimize(child); // Depth-first
 	}

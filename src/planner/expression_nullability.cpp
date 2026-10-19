@@ -1,4 +1,5 @@
 #include "duckdb/planner/expression_nullability.hpp"
+#include "duckdb/main/settings.hpp"
 
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
@@ -206,6 +207,10 @@ bool NotNullExpressionAnalyzer::IsNotNull(LogicalOperator &op, const Expression 
 		auto &column_index = get.GetColumnIndex(binding);
 		if (!column_index.HasPrimaryIndex() || column_index.HasChildren() ||
 		    column_index.GetPrimaryIndex() == DConstants::INVALID_INDEX) {
+			return false;
+		}
+		if (Settings::Get<PortablePlanSetting>(context)) {
+			// observed non-nullability is a data observation, only structural proofs remain portable
 			return false;
 		}
 		auto stats = table->GetStatistics(context, column_index.GetPrimaryIndex());

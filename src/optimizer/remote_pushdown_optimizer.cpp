@@ -1,4 +1,5 @@
 #include "duckdb/optimizer/remote_pushdown_optimizer.hpp"
+#include "duckdb/main/settings.hpp"
 
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/table_function_catalog_entry.hpp"
@@ -1176,6 +1177,10 @@ RemotePushdownOptimizer::TryConstantFold(unique_ptr<ParsedExpression> &expr) {
 		return ConstantFoldResult::NOT_FOLDABLE;
 	}
 	if (requires_rebind || bound_expr->RequiresRebind()) {
+		if (Settings::Get<PortablePlanSetting>(binder.context)) {
+			// an environment observation must not fold into the statement
+			return ConstantFoldResult::NOT_FOLDABLE;
+		}
 		// functions like now() or strftime() must be re-folded when a prepared statement is re-executed
 		binder.SetAlwaysRequireRebind();
 	}

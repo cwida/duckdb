@@ -62,7 +62,81 @@ sql	<REGEX>:(?s).*min.*max.*
 query TT
 EXPLAIN (SQL) SELECT count(*) FROM obs WHERE i IS NOT NULL;
 ----
-sql	<REGEX>:(?s).*(IS NOT NULL|count).*
+sql	<REGEX>:(?s).*IS NOT NULL.*
+
+# an environment observation nested in another function survives binding
+query TT
+EXPLAIN (SQL) SELECT current_setting('threads') + 1;
+----
+sql	<REGEX>:(?s).*current_setting.*
+
+# an environment-dependent scalar filter stays a filter
+query TT
+EXPLAIN (SQL) SELECT 1 WHERE CAST(current_setting('threads') AS BIGINT) > 0;
+----
+sql	<REGEX>:(?s).*current_setting.*
+
+# cached regex options only apply to literal arguments
+query TT
+EXPLAIN (SQL) SELECT regexp_matches('ABC', 'abc', CASE WHEN current_setting('threads') IS NOT NULL THEN 'c' ELSE 'i' END);
+----
+sql	<REGEX>:(?s).*regexp_matches.*current_setting.*
+
+# the null-safe comparison survives although statistics exclude NULL on both sides
+statement ok
+CREATE TABLE nsa(x INTEGER);
+
+statement ok
+CREATE TABLE nsb(y INTEGER);
+
+statement ok
+INSERT INTO nsa VALUES (1);
+
+statement ok
+INSERT INTO nsb VALUES (1);
+
+query TT
+EXPLAIN (SQL) SELECT x FROM nsa WHERE EXISTS (SELECT 1 FROM nsb WHERE nsa.x IS NOT DISTINCT FROM nsb.y);
+----
+sql	<REGEX>:(?s).*IS NOT DISTINCT\s+FROM.*
+
+# the division-by-zero replacement observes a session setting and must not bake it in
+statement ok
+SET error_on_division_by_zero=false;
+
+query TT
+EXPLAIN (SQL) SELECT i // 0 FROM obs;
+----
+sql	<REGEX>:(?s).*// 0.*
+
+statement ok
+RESET error_on_division_by_zero;
+
+# literal folding is text-derivable and stays enabled under the profile
+query TT
+EXPLAIN (SQL) SELECT 1 + 2;
+----
+sql	<REGEX>:(?s).*3.*
+
+# statistics still flow for consumers that require them
+query I
+SELECT bit_length(bitstring_agg((i IS NULL)::INTEGER)) FROM obs;
+----
+1
+
+# an environment-dependent IN-list value keeps the native IN, evaluating the probe once
+statement ok
+CREATE SEQUENCE in_probe_seq START 1;
+
+query I
+SELECT nextval('in_probe_seq') IN (CAST(current_setting('threads') AS BIGINT), -2, -3, -4, -5);
+----
+false
+
+query I
+SELECT currval('in_probe_seq');
+----
+1
 
 # profiled plans round-trip through the exporter and execute to the same results
 statement ok

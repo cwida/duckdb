@@ -45,13 +45,34 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundOperat
 	}
 	switch (expr.GetExpressionType()) {
 	case ExpressionType::OPERATOR_COALESCE:
+		if (SuppressPlanFolds()) {
+			// the expression stays intact, but only children that can contribute merge their statistics
+			unique_ptr<BaseStatistics> merged;
+			for (idx_t i = 0; i < child_stats.size(); i++) {
+				D_ASSERT(child_stats[i]);
+				if (!child_stats[i]->CanHaveNoNull()) {
+					// this child is always NULL and never contributes
+					continue;
+				}
+				if (merged) {
+					merged->Merge(*child_stats[i]);
+				} else {
+					merged = child_stats[i]->ToUnique();
+				}
+				if (!child_stats[i]->CanHaveNull()) {
+					// later children are unreachable
+					break;
+				}
+			}
+			return merged ? std::move(merged) : std::move(child_stats[0]);
+		}
 		// COALESCE, merge stats of all children
 		for (idx_t i = 0; i < expr.GetChildrenMutable().size(); i++) {
 			D_ASSERT(child_stats[i]);
 			if (!child_stats[i]->CanHaveNoNull()) {
 				// this child is always NULL, we can remove it from the coalesce
 				// UNLESS there is only one node remaining
-				if (!SuppressPlanFolds() && expr.GetChildrenMutable().size() > 1) {
+				if (expr.GetChildrenMutable().size() > 1) {
 					expr.GetChildrenMutable().erase_at(i);
 					child_stats.erase_at(i);
 					i--;
@@ -61,7 +82,7 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundOperat
 				// coalesce child cannot have NULL entries
 				// this is the last coalesce node that influences the result
 				// we can erase any children after this node
-				if (!SuppressPlanFolds() && i + 1 < expr.GetChildrenMutable().size()) {
+				if (i + 1 < expr.GetChildrenMutable().size()) {
 					expr.GetChildrenMutable().erase(expr.GetChildrenMutable().begin() + NumericCast<int64_t>(i + 1),
 					                                expr.GetChildrenMutable().end());
 					child_stats.erase(child_stats.begin() + NumericCast<int64_t>(i + 1), child_stats.end());
@@ -72,7 +93,7 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundOperat
 		}
 		D_ASSERT(!expr.GetChildrenMutable().empty());
 		D_ASSERT(expr.GetChildrenMutable().size() == child_stats.size());
-		if (!SuppressPlanFolds() && expr.GetChildrenMutable().size() == 1) {
+		if (expr.GetChildrenMutable().size() == 1) {
 			// coalesce of one entry: simply return that entry
 			expr_ptr = Expression::PreserveReturnType(expr.GetReturnType(), std::move(expr.GetChildrenMutable()[0]));
 		} else {
@@ -84,33 +105,29 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundOperat
 		}
 		return std::move(child_stats[0]);
 	case ExpressionType::OPERATOR_IS_NULL:
-		if (SuppressPlanFolds() || !CanFoldNullCheck(expr)) {
+		if (!CanFoldNullCheck(expr)) {
 			return nullptr;
 		}
 		if (!child_stats[0]->CanHaveNull()) {
 			// child has no null values: x IS NULL will always be false
-			expr_ptr = make_uniq<BoundConstantExpression>(Value::BOOLEAN(false));
-			return PropagateExpression(expr_ptr);
+			return FoldToConstant(expr_ptr, Value::BOOLEAN(false));
 		}
 		if (!child_stats[0]->CanHaveNoNull()) {
 			// child has no valid values: x IS NULL will always be true
-			expr_ptr = make_uniq<BoundConstantExpression>(Value::BOOLEAN(true));
-			return PropagateExpression(expr_ptr);
+			return FoldToConstant(expr_ptr, Value::BOOLEAN(true));
 		}
 		return nullptr;
 	case ExpressionType::OPERATOR_IS_NOT_NULL:
-		if (SuppressPlanFolds() || !CanFoldNullCheck(expr)) {
+		if (!CanFoldNullCheck(expr)) {
 			return nullptr;
 		}
 		if (!child_stats[0]->CanHaveNull()) {
 			// child has no null values: x IS NOT NULL will always be true
-			expr_ptr = make_uniq<BoundConstantExpression>(Value::BOOLEAN(true));
-			return PropagateExpression(expr_ptr);
+			return FoldToConstant(expr_ptr, Value::BOOLEAN(true));
 		}
 		if (!child_stats[0]->CanHaveNoNull()) {
 			// child has no valid values: x IS NOT NULL will always be false
-			expr_ptr = make_uniq<BoundConstantExpression>(Value::BOOLEAN(false));
-			return PropagateExpression(expr_ptr);
+			return FoldToConstant(expr_ptr, Value::BOOLEAN(false));
 		}
 		return nullptr;
 	default:
