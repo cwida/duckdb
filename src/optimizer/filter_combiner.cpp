@@ -1,4 +1,5 @@
 #include "duckdb/optimizer/filter_combiner.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/optimizer/expression_rewriter.hpp"
 
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
@@ -498,6 +499,11 @@ static unique_ptr<ExpressionFilter> TryCreateMultiColumnExpressionFilter(Logical
 FilterPushdownResult FilterCombiner::TryPushdownGenericExpression(LogicalGet &get, Expression &expr) {
 	if (!get.function.pushdown_expression) {
 		// the scan does not support pushing down generic expressions
+		return FilterPushdownResult::NO_PUSHDOWN;
+	}
+	if (Settings::Get<PortablePlanSetting>(context) && expr.ObservesBindingContext()) {
+		// a retained context-observing expression keeps bind data that scan threads copy during
+		// zone-map checks, which can re-bind through the catalog while holding storage locks
 		return FilterPushdownResult::NO_PUSHDOWN;
 	}
 	// extract the column bindings from this expression
