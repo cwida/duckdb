@@ -10,7 +10,7 @@ INSERT INTO obs SELECT range, range * 10 FROM range(100);
 
 # without the profile, statistics execute the ungrouped aggregate into constants
 query TT
-EXPLAIN (SQL) SELECT count(*) FROM obs WHERE i < 1000;
+EXPLAIN (SQL) SELECT count(*) AS q FROM obs WHERE i < 1000;
 ----
 sql	<REGEX>:(?s).*VALUES\s*\(CAST\(100.*
 
@@ -19,7 +19,7 @@ SET portable_plan=true;
 
 # under the profile, the aggregate and the statistics-decidable predicate survive textually
 query TT
-EXPLAIN (SQL) SELECT count(*) FROM obs WHERE i < 1000;
+EXPLAIN (SQL) SELECT count(*) AS q FROM obs WHERE i < 1000;
 ----
 sql	<REGEX>:(?s).*count.*1000.*
 
@@ -31,7 +31,7 @@ SELECT count(*) FROM obs WHERE i < 1000;
 
 # a statistics-decidable inequality stays in the text instead of folding to a constant
 query TT
-EXPLAIN (SQL) SELECT count(*) FROM obs WHERE i <> 9999;
+EXPLAIN (SQL) SELECT count(*) AS q FROM obs WHERE i <> 9999;
 ----
 sql	<REGEX>:(?s).*9999.*
 
@@ -43,30 +43,30 @@ sql	<REGEX>:(?s).*obs.*1000000.*
 
 # environment observations stay calls
 query TT
-EXPLAIN (SQL) SELECT now() > TIMESTAMP '2020-01-01';
+EXPLAIN (SQL) SELECT now() > TIMESTAMP '2020-01-01' AS q;
 ----
 sql	<REGEX>:(?s).*now\(\).*
 
 query TT
-EXPLAIN (SQL) SELECT current_setting('threads');
+EXPLAIN (SQL) SELECT current_setting('threads') AS q;
 ----
 sql	<REGEX>:(?s).*current_setting.*
 
 # MIN/MAX also survive as aggregates
 query TT
-EXPLAIN (SQL) SELECT min(i), max(i) FROM obs;
+EXPLAIN (SQL) SELECT min(i) AS q1, max(i) AS q2 FROM obs;
 ----
 sql	<REGEX>:(?s).*min.*max.*
 
 # IS NULL on a column without NULL values stays a null check
 query TT
-EXPLAIN (SQL) SELECT count(*) FROM obs WHERE i IS NOT NULL;
+EXPLAIN (SQL) SELECT count(*) AS q FROM obs WHERE i IS NOT NULL;
 ----
 sql	<REGEX>:(?s).*IS NOT NULL.*
 
 # an environment observation nested in another function survives binding
 query TT
-EXPLAIN (SQL) SELECT current_setting('threads') + 1;
+EXPLAIN (SQL) SELECT current_setting('threads') + 1 AS q;
 ----
 sql	<REGEX>:(?s).*current_setting.*
 
@@ -85,7 +85,7 @@ SELECT regexp_matches('abc', 'abc', CASE WHEN current_setting('threads') IS NOT 
 
 # cached regex options only apply to literal arguments
 query TT
-EXPLAIN (SQL) SELECT regexp_matches('ABC', 'abc', CASE WHEN current_setting('threads') IS NOT NULL THEN 'c' ELSE 'i' END);
+EXPLAIN (SQL) SELECT regexp_matches('ABC', 'abc', CASE WHEN current_setting('threads') IS NOT NULL THEN 'c' ELSE 'i' END) AS q;
 ----
 sql	<REGEX>:(?s).*regexp_matches.*current_setting.*
 
@@ -157,9 +157,133 @@ SELECT count(*) FROM trunc_obs WHERE date_trunc('day', ts) = make_timestamp(1704
 1
 
 query TT
-EXPLAIN (SQL) SELECT count(*) FROM trunc_obs WHERE date_trunc('day', ts) = make_timestamp(1704067200000000);
+EXPLAIN (SQL) SELECT count(*) AS q FROM trunc_obs WHERE date_trunc('day', ts) = make_timestamp(1704067200000000);
 ----
 sql	<REGEX>:(?s).*date_trunc.*
+
+# a cached constant_or_null proof over a context-observing argument is not portable
+query I
+SELECT count(*) FROM obs WHERE constant_or_null(list_sort([2, 1]) = [1, 2], i);
+----
+100
+
+query TT
+EXPLAIN (SQL) SELECT count(*) AS q FROM obs WHERE constant_or_null(list_sort([2, 1]) = [1, 2], i);
+----
+sql	<REGEX>:(?s).*constant_or_null.*list_sort.*
+
+# a literal LIMIT stays a constant, correlated flattening keeps working
+query I
+SELECT (SELECT b.i FROM obs b WHERE b.i = a.i LIMIT 1) FROM obs a WHERE a.i = 5;
+----
+5
+
+# a context-observing LIMIT stays an expression instead of freezing the evaluated value
+query TT
+EXPLAIN (SQL) SELECT i FROM obs ORDER BY i LIMIT list_extract(list_sort([1, 2]), 1);
+----
+sql	<REGEX>:(?s).*LIMIT.*list_sort.*
+
+# a context-observing ON condition stays in the join
+query TT
+EXPLAIN (SQL) SELECT a.i FROM obs a JOIN obs b ON list_sort([2, 1]) = [1, 2] AND a.i = b.i;
+----
+sql	<REGEX>:(?s).*list_sort.*
+
+# a bind-expression replacement that observes the environment refuses loudly
+statement error
+SELECT can_cast_implicitly(1, '');
+----
+<REGEX>:.*cannot be planned under portable_plan.*
+
+statement error
+SELECT switch(i, MAP {1: 2}) FROM obs;
+----
+<REGEX>:.*cannot be planned under portable_plan.*
+
+# getvariable keeps folding: a client variable cannot exist where exported text executes
+query I
+SELECT getvariable('undefined_portable_var') IS NULL;
+----
+true
+
+# make_type evaluates its arguments into a constant type and refuses loudly
+statement error
+SELECT make_type('BIGINT');
+----
+<REGEX>:.*cannot be planned under portable_plan.*
+
+# get_type derives its replacement from the argument type and keeps working
+query I
+SELECT get_type(42)::VARCHAR = 'INTEGER';
+----
+true
+
+# a default cast is determined by the written types alone and keeps folding
+query TT
+EXPLAIN (SQL) SELECT 1::BIGINT + 2 AS q;
+----
+sql	<REGEX>:(?s).*CAST\(3 AS BIGINT\) AS q.*
+
+# a hidden minimum-valued constant still widens the negation result type
+query I
+SELECT -(CASE WHEN current_setting('threads') IS NOT NULL THEN (-128)::TINYINT ELSE 0::TINYINT END) AS q;
+----
+128
+
+# the widening is intentional: the profile promotes where the default mode sees the constant
+query I
+SELECT typeof(-(CASE WHEN current_setting('threads') IS NOT NULL THEN (-128)::TINYINT ELSE 0::TINYINT END)) AS q;
+----
+SMALLINT
+
+# a false cached constant_or_null proof must not fold the scan away
+query TT
+EXPLAIN (SQL) SELECT count(*) AS q FROM obs WHERE constant_or_null(list_sort([2, 1]) = [2, 1], i);
+----
+sql	<REGEX>:(?s).*obs.*
+
+# a bind cannot see an environment-observing constant, so date_part keeps its generic form
+query TT
+EXPLAIN (SQL) SELECT date_part(CASE WHEN current_setting('threads') IS NOT NULL THEN 'year' ELSE 'month' END, DATE '2024-05-06') AS q;
+----
+sql	<REGEX>:(?s).*date_part.*current_setting.*
+
+# table function arguments are retained as values and refuse loudly
+statement error
+SELECT count(*) FROM range(CAST(current_setting('threads') AS BIGINT));
+----
+<REGEX>:.*cannot be planned under.*portable_plan.*
+
+# a proven BETWEEN outcome still supplies statistics
+query I
+SELECT bit_length(bitstring_agg(((i + 1) BETWEEN 0 AND 1000)::INTEGER)) FROM obs;
+----
+1
+
+# a context-observing percentile fraction stays in the plan for ascending order,
+# the alias keeps the output name from satisfying the pattern
+query TT
+EXPLAIN (SQL) SELECT percentile_cont(CASE WHEN current_setting('threads') IS NOT NULL THEN 0.5 ELSE 0.0 END) WITHIN GROUP (ORDER BY i) AS q FROM obs;
+----
+sql	<REGEX>:(?s).*current_setting.*
+
+# the kept fraction still validates
+statement error
+SELECT percentile_cont(CASE WHEN current_setting('threads') IS NOT NULL THEN -0.25 ELSE 0.25 END) WITHIN GROUP (ORDER BY i) FROM obs;
+----
+<REGEX>:.*range.*
+
+statement error
+SELECT percentile_cont(CASE WHEN current_setting('threads') IS NOT NULL THEN 0.5 ELSE 0.0 END) WITHIN GROUP (ORDER BY i DESC) FROM obs;
+----
+<REGEX>:.*cannot be planned under portable_plan.*
+
+# list_aggr keeps the written extra argument in the retained SQL
+query TT
+EXPLAIN (SQL) SELECT list_aggr([0, 10], 'quantile_cont', CASE WHEN current_setting('threads') IS NOT NULL THEN 0.5 ELSE 0.0 END) AS q;
+----
+sql	<REGEX>:(?s).*current_setting.*
 
 statement ok
 RESET error_on_division_by_zero;
@@ -222,6 +346,6 @@ statement ok
 SET portable_plan=false;
 
 query TT
-EXPLAIN (SQL) SELECT now() > TIMESTAMP '2020-01-01';
+EXPLAIN (SQL) SELECT now() > TIMESTAMP '2020-01-01' AS q;
 ----
 sql	<REGEX>:(?s)SELECT CAST\(TRUE.*

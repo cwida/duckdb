@@ -780,11 +780,17 @@ static void IntegerNegateResolveTypes(ResolveScalarFunctionTypesInput &input) {
 
 	// only need to promote if the argument is a constant that exactly equals the type's minimum value
 	auto constant = input.TryGetConstant(0);
-	if (!constant || constant->IsNull()) {
-		return;
-	}
 	auto &type = bound_function.GetArguments()[0];
-	if (*constant != Value::MinimumValue(type)) {
+	if (!constant || constant->IsNull()) {
+		auto &argument = input.GetArgument(0);
+		const bool hidden_constant = Settings::Get<PortablePlanSetting>(input.GetClientContext()) &&
+		                             argument.IsFoldable() &&
+		                             (!argument.IsConsistent() || argument.ObservesBindingContext());
+		if (!hidden_constant) {
+			return;
+		}
+		// the hidden value may be the minimum, promote so the negation stays representable
+	} else if (*constant != Value::MinimumValue(type)) {
 		return;
 	}
 	LogicalType promoted_type;

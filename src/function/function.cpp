@@ -1,4 +1,5 @@
 #include "duckdb/function/function.hpp"
+#include "duckdb/main/settings.hpp"
 
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/hash.hpp"
@@ -626,6 +627,8 @@ static bool IsUnresolvedArgument(const Expression &expr) {
 	return false;
 }
 
+//! GetConstant stays ungated under portable_plan: its callers have no generic form to fall back to,
+//! and the exported text re-derives the bind data when it is bound again
 Value BindFunctionInput::GetConstant(idx_t arg_idx, bool accept_null) const {
 	if (arg_idx >= arguments.size()) {
 		throw InternalException("%s: Argument index %llu is out of range", function.GetName(), arg_idx);
@@ -671,6 +674,11 @@ optional<Value> BindFunctionInput::TryGetConstant(idx_t arg_idx) const {
 		return {};
 	}
 	if (!expr.IsFoldable()) {
+		return {};
+	}
+	if (Settings::Get<PortablePlanSetting>(context) && (!expr.IsConsistent() || expr.ObservesBindingContext())) {
+		// binds specialize on constants they can see - an environment observation must stay unseen so the
+		// generic form survives into the plan
 		return {};
 	}
 	Value result;

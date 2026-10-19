@@ -45,7 +45,7 @@ The debug SQL-export verifier is a separate testing facility. `EXPLAIN (SQL)` wo
 
 ## Fragment export
 
-The C++ exporter consumes an already planned logical tree. It does not choose an optimization stage or undo constant folding. Distributed fragment export is experimental: callers must preserve the catalog, data, settings, and transaction assumptions under which the input was planned. Exported field bindings belong to that plan; they are not stable identifiers shared between independent exports. Pre-folding export options and stable fragment identities are not provided by this API. Scalar and aggregate functions can provide unbind callbacks to reconstruct their specialized invocations. The exporter attaches aggregate modifiers to the returned call.
+The C++ exporter consumes an already planned logical tree. It does not choose an optimization stage or undo constant folding. Distributed fragment export is experimental: callers must preserve the catalog, data, settings, and transaction assumptions under which the input was planned. Exported field bindings belong to that plan; they are not stable identifiers shared between independent exports. The portable_plan session setting plans statements without folding planning-time data or environment observations into the plan, so the generated text can re-derive them where it executes - the exporter itself still renders whatever plan it is given. Stable fragment identities are not provided by this API. Scalar and aggregate functions can provide unbind callbacks to reconstruct their specialized invocations. The exporter attaches aggregate modifiers to the returned call.
 
 ## Implementation layout
 

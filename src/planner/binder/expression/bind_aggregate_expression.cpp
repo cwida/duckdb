@@ -97,6 +97,27 @@ static void NegatePercentileFractions(ClientContext &context, unique_ptr<Express
 	if (!bound->IsFoldable()) {
 		return;
 	}
+	if (Settings::Get<PortablePlanSetting>(context) && (!bound->IsConsistent() || bound->ObservesBindingContext())) {
+		if (desc) {
+			throw BinderException("Percentile fractions over a descending order cannot be planned under "
+			                      "portable_plan when they observe the environment");
+		}
+		// no negation is needed and the written expression must stay in the plan,
+		// but the fraction still has to validate
+		Value value = ExpressionExecutor::EvaluateScalar(context, *bound);
+		if (value.type().id() == LogicalTypeId::LIST) {
+			auto &values = ListValue::GetChildren(value);
+			if (values.empty()) {
+				throw BinderException("Empty list in percentile not allowed");
+			}
+			for (const auto &element_val : values) {
+				NegatePercentileValue(element_val, desc);
+			}
+		} else {
+			NegatePercentileValue(value, desc);
+		}
+		return;
+	}
 
 	Value value = ExpressionExecutor::EvaluateScalar(context, *bound);
 	// a NULL list stays NULL, the quantile binder rejects it

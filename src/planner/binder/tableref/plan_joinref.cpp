@@ -1,4 +1,5 @@
 #include "duckdb/execution/expression_executor.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/planner/binder.hpp"
@@ -80,6 +81,10 @@ static void PushFilterToChild(unique_ptr<LogicalOperator> &child, unique_ptr<Exp
 //! Check if a foldable expression evaluates to TRUE and can be eliminated
 static bool CanEliminate(ClientContext &context, JoinType type, unique_ptr<Expression> &expr) {
 	if (!expr->IsFoldable()) {
+		return false;
+	}
+	if (Settings::Get<PortablePlanSetting>(context) && (!expr->IsConsistent() || expr->ObservesBindingContext())) {
+		// an environment observation must not remove the condition from the plan
 		return false;
 	}
 
