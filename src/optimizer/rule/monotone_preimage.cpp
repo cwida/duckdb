@@ -195,7 +195,7 @@ unique_ptr<Expression> MonotonePreimageRule::Apply(LogicalOperator &op, vector<r
 	}
 
 	// the bisection probes evaluate the function itself, which must not observe its binding environment
-	if (func.ObservesBindingContext() && Settings::Get<PortablePlanSetting>(GetContext())) {
+	if (Settings::Get<PortablePlanSetting>(GetContext()) && func.ObservesBindingContext()) {
 		return nullptr;
 	}
 	// evaluate the constant and cast it to the function's return type for the corner comparisons

@@ -41,7 +41,14 @@ bool StatisticsPropagator::ExpressionIsConstantOrNull(Expression &expr, const Va
 		return false;
 	}
 	auto &bound_function = expr.Cast<BoundFunctionExpression>();
-	return ConstantOrNull::IsConstantOrNull(bound_function, val);
+	if (!ConstantOrNull::IsConstantOrNull(bound_function, val)) {
+		return false;
+	}
+	if (SuppressPlanFolds() && !ConstantOrNull::ProofIsPortable(bound_function)) {
+		// the cached value observed the planning environment
+		return false;
+	}
+	return true;
 }
 
 void StatisticsPropagator::SetStatisticsNotNull(ColumnBinding binding) {

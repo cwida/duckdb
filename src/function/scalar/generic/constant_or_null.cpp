@@ -92,6 +92,15 @@ bool ConstantOrNull::IsConstantOrNull(BoundFunctionExpression &expr, const Value
 	return bind_data.value == val;
 }
 
+bool ConstantOrNull::ProofIsPortable(const BoundFunctionExpression &expr) {
+	D_ASSERT(expr.Function().GetName() == "constant_or_null");
+	auto &value_child = *expr.GetChildren()[0];
+	if (value_child.GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
+		return true;
+	}
+	return value_child.IsConsistent() && !value_child.ObservesBindingContext();
+}
+
 ScalarFunction ConstantOrNullFun::GetFunction() {
 	auto fun = ScalarFunction("constant_or_null", {}, LogicalType::ANY, ConstantOrNullFunction);
 	fun.GetSignature().AddParameter("arg1", LogicalType::ANY).AddParameter("arg2", LogicalType::ANY);
