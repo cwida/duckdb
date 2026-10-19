@@ -58,11 +58,7 @@ enum class FunctionStability : uint8_t { CONSISTENT = 0, VOLATILE = 1, CONSISTEN
 //! Whether binding the function observes its environment (settings, catalog state) in a way that
 //! affects the result. AUTOMATIC resolves to CONTEXT_SENSITIVE when the function has a bind callback
 //! and to CONTEXT_INSENSITIVE otherwise, so an unaudited bind cannot leak an observation by accident.
-enum class FunctionBindingSensitivity : uint8_t {
-	AUTOMATIC = 0,
-	CONTEXT_INSENSITIVE = 1,
-	CONTEXT_SENSITIVE = 2
-};
+enum class FunctionBindingSensitivity : uint8_t { AUTOMATIC = 0, CONTEXT_INSENSITIVE = 1, CONTEXT_SENSITIVE = 2 };
 
 //! How to handle collations
 //! PROPAGATE_COLLATIONS        -> this function combines collation from its inputs and emits them again (default)
