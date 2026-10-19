@@ -1,0 +1,101 @@
+# name: test/sql/sql_export/portable_plan_profile.test
+# description: The portable_plan profile keeps data and environment observations out of generated SQL
+# group: [sql_export]
+
+statement ok
+CREATE TABLE obs(i INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO obs SELECT range, range * 10 FROM range(100);
+
+# without the profile, statistics execute the ungrouped aggregate into constants
+query TT
+EXPLAIN (SQL) SELECT count(*) FROM obs WHERE i < 1000;
+----
+sql	<REGEX>:(?s).*VALUES\s*\(CAST\(100.*
+
+statement ok
+SET portable_plan=true;
+
+# under the profile, the aggregate and the statistics-decidable predicate survive textually
+query TT
+EXPLAIN (SQL) SELECT count(*) FROM obs WHERE i < 1000;
+----
+sql	<REGEX>:(?s).*count.*1000.*
+
+# both forms execute identically on the planning snapshot
+query I
+SELECT count(*) FROM obs WHERE i < 1000;
+----
+100
+
+# a statistics-decidable inequality stays in the text instead of folding to a constant
+query TT
+EXPLAIN (SQL) SELECT count(*) FROM obs WHERE i <> 9999;
+----
+sql	<REGEX>:(?s).*9999.*
+
+# an empty-by-statistics branch keeps its scan instead of becoming a constant relation
+query TT
+EXPLAIN (SQL) SELECT i FROM obs WHERE i > 1000000;
+----
+sql	<REGEX>:(?s).*obs.*1000000.*
+
+# environment observations stay calls
+query TT
+EXPLAIN (SQL) SELECT now() > TIMESTAMP '2020-01-01';
+----
+sql	<REGEX>:(?s).*now\(\).*
+
+query TT
+EXPLAIN (SQL) SELECT current_setting('threads');
+----
+sql	<REGEX>:(?s).*current_setting.*
+
+# MIN/MAX also survive as aggregates
+query TT
+EXPLAIN (SQL) SELECT min(i), max(i) FROM obs;
+----
+sql	<REGEX>:(?s).*min.*max.*
+
+# IS NULL on a column without NULL values stays a null check
+query TT
+EXPLAIN (SQL) SELECT count(*) FROM obs WHERE i IS NOT NULL;
+----
+sql	<REGEX>:(?s).*(IS NOT NULL|count).*
+
+# profiled plans round-trip through the exporter and execute to the same results
+statement ok
+SET debug_verify_statement='explain_sql_strict';
+
+query I
+SELECT count(*) FROM obs WHERE i < 1000;
+----
+100
+
+query II
+SELECT min(i), max(i) FROM obs WHERE i <> 9999;
+----
+0	99
+
+query I
+SELECT count(*) FROM obs WHERE i > 1000000;
+----
+0
+
+query I
+SELECT count(*) FROM obs a JOIN obs b ON a.i = b.i WHERE a.i < 1000;
+----
+100
+
+statement ok
+SET debug_verify_statement='none';
+
+# re-enabling folds restores them
+statement ok
+SET portable_plan=false;
+
+query TT
+EXPLAIN (SQL) SELECT now() > TIMESTAMP '2020-01-01';
+----
+sql	<REGEX>:(?s)SELECT CAST\(TRUE.*

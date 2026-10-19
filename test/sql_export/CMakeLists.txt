@@ -3,6 +3,7 @@ add_library_unity(
   OBJECT
   bound_expression_sql_export_test_helpers.cpp
   logical_plan_sql_export_test_helpers.cpp
+  portable_plan_divergence.cpp
   sql_export_expression_aggregates.cpp
   sql_export_expression_functions.cpp
   sql_export_expression_literals.cpp

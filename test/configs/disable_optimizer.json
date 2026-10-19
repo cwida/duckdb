@@ -256,6 +256,12 @@
       ]
     },
     {
+      "reason": "The test contrasts optimizer folding against the portable_plan profile, which requires the optimizer.",
+      "paths": [
+        "test/sql/sql_export/portable_plan_profile.test"
+      ]
+    },
+    {
       "reason": "Checks pruning of a throwing unused secure-view output and safe caller filter pushdown.",
       "paths": [
         "test/sql/sql_export/secure_view_sql_export.test"
