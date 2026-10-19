@@ -16,9 +16,10 @@ INSERT INTO iso_obs VALUES (TIMESTAMPTZ '2024-01-01 00:30:00+00');
 statement ok
 SET portable_plan=true;
 
-# the monotone preimage rewrite must not bake timezone-dependent bounds
+# the monotone preimage rewrite must not bake timezone-dependent bounds - the cast-free
+# BIGINT constant keeps the comparison eligible for the rewrite, so only the function gate holds
 query TT
-EXPLAIN (SQL) SELECT ts FROM iso_obs WHERE isoyear(ts) = 2024::BIGINT;
+EXPLAIN (SQL) SELECT ts FROM iso_obs WHERE isoyear(ts) = (2147485672 - 2147483648);
 ----
 sql	<REGEX>:(?s).*isoyear.*
 
@@ -32,3 +33,17 @@ query I
 SELECT count(*) FROM iso_obs WHERE isoyear(ts) = 2024;
 ----
 1
+
+# an unresolved part must not keep the monotonicity annotations - century truncation reverses
+# order across the BC/AD boundary because ICU years skip year 0
+statement ok
+CREATE TABLE era_obs(ts TIMESTAMPTZ);
+
+statement ok
+INSERT INTO era_obs VALUES ('0001-12-31 (BC)'::TIMESTAMPTZ), (TIMESTAMPTZ '0001-01-01 00:00:00+00');
+
+query I
+SELECT count(*) FROM era_obs
+WHERE date_trunc(CASE WHEN current_setting('threads') IS NOT NULL THEN 'century' ELSE 'day' END, ts) IS NOT NULL;
+----
+2
