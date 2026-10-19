@@ -2217,6 +2217,20 @@ struct PivotLimitSetting {
 	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 };
 
+struct PortablePlanSetting {
+	using RETURN_TYPE = bool;
+	static constexpr const char *Name = "portable_plan";
+	static constexpr const char *Description =
+	    "Plan queries without folding planning-time data or environment observations into the plan, so exported SQL "
+	    "re-derives them where it executes.";
+	static constexpr const char *InputType = "BOOLEAN";
+	static constexpr bool IsDebug = false;
+	static constexpr bool IsDeprecated = false;
+	static constexpr const char *DefaultValue = "false";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+};
+
 struct PreferRangeJoinsSetting {
 	using RETURN_TYPE = bool;
 	static constexpr const char *Name = "prefer_range_joins";

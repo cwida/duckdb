@@ -55,6 +55,7 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalWind
 			auto &aggregate = *over_expr.AggregateFunctionMutable();
 			if (aggregate.GetCallbacks().HasStatisticsCallback()) {
 				AggregateStatisticsInput input(over_expr.BindInfo(), child_stats, node_stats.get());
+	input.allow_plan_rewrite = !SuppressPlanFolds();
 				const idx_t child_count = agg_children.size();
 				// The callback takes a BoundAggregateExpression; a window aggregate has none, so
 				// synthesise one over the same function and children. Callbacks may rewrite both

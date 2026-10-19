@@ -1339,6 +1339,13 @@
         "default_value": "100000"
     },
     {
+        "name": "portable_plan",
+        "description": "Plan queries without folding planning-time data or environment observations into the plan, so exported SQL re-derives them where it executes.",
+        "type": "BOOLEAN",
+        "default_scope": "local",
+        "default_value": "false"
+    },
+    {
         "name": "prefer_range_joins",
         "description": "Force the use of range joins with mixed predicates.",
         "type": "BOOLEAN",

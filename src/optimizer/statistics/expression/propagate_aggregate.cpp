@@ -19,6 +19,7 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundAggreg
 		return nullptr;
 	}
 	AggregateStatisticsInput input(aggr.BindInfo(), stats, node_stats.get());
+	input.allow_plan_rewrite = !SuppressPlanFolds();
 	const idx_t child_count = aggr.GetChildren().size();
 	auto result = aggr.Function().GetCallbacks().GetStatisticsCallback()(context, aggr, input);
 	removed_expressions |= aggr.GetChildren().size() < child_count;

@@ -195,6 +195,10 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateComparison(BoundFuncti
 	}
 	// propagate the statistics of the comparison operator
 	auto propagate_result = PropagateComparison(*left_stats, *right_stats, expr.GetExpressionType());
+	if (SuppressPlanFolds()) {
+		// the comparison outcome is a data observation that must not rewrite the plan
+		return nullptr;
+	}
 	switch (propagate_result) {
 	case FilterPropagateResult::FILTER_ALWAYS_TRUE:
 		expr_ptr = make_uniq<BoundConstantExpression>(Value::BOOLEAN(true));

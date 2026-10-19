@@ -233,6 +233,7 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_SETTING_CALLBACK(PinThreadsSetting),
     DUCKDB_SETTING(PivotFilterThresholdSetting),
     DUCKDB_SETTING(PivotLimitSetting),
+    DUCKDB_SETTING(PortablePlanSetting),
     DUCKDB_SETTING(PreferRangeJoinsSetting),
     DUCKDB_SETTING_CALLBACK(PreserveIdentifierCaseSetting),
     DUCKDB_SETTING(PreserveInsertionOrderSetting),

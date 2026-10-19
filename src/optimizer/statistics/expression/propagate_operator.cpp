@@ -51,7 +51,7 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundOperat
 			if (!child_stats[i]->CanHaveNoNull()) {
 				// this child is always NULL, we can remove it from the coalesce
 				// UNLESS there is only one node remaining
-				if (expr.GetChildrenMutable().size() > 1) {
+				if (!SuppressPlanFolds() && expr.GetChildrenMutable().size() > 1) {
 					expr.GetChildrenMutable().erase_at(i);
 					child_stats.erase_at(i);
 					i--;
@@ -61,7 +61,7 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundOperat
 				// coalesce child cannot have NULL entries
 				// this is the last coalesce node that influences the result
 				// we can erase any children after this node
-				if (i + 1 < expr.GetChildrenMutable().size()) {
+				if (!SuppressPlanFolds() && i + 1 < expr.GetChildrenMutable().size()) {
 					expr.GetChildrenMutable().erase(expr.GetChildrenMutable().begin() + NumericCast<int64_t>(i + 1),
 					                                expr.GetChildrenMutable().end());
 					child_stats.erase(child_stats.begin() + NumericCast<int64_t>(i + 1), child_stats.end());
@@ -72,7 +72,7 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundOperat
 		}
 		D_ASSERT(!expr.GetChildrenMutable().empty());
 		D_ASSERT(expr.GetChildrenMutable().size() == child_stats.size());
-		if (expr.GetChildrenMutable().size() == 1) {
+		if (!SuppressPlanFolds() && expr.GetChildrenMutable().size() == 1) {
 			// coalesce of one entry: simply return that entry
 			expr_ptr = Expression::PreserveReturnType(expr.GetReturnType(), std::move(expr.GetChildrenMutable()[0]));
 		} else {
@@ -84,7 +84,7 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundOperat
 		}
 		return std::move(child_stats[0]);
 	case ExpressionType::OPERATOR_IS_NULL:
-		if (!CanFoldNullCheck(expr)) {
+		if (SuppressPlanFolds() || !CanFoldNullCheck(expr)) {
 			return nullptr;
 		}
 		if (!child_stats[0]->CanHaveNull()) {
@@ -99,7 +99,7 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundOperat
 		}
 		return nullptr;
 	case ExpressionType::OPERATOR_IS_NOT_NULL:
-		if (!CanFoldNullCheck(expr)) {
+		if (SuppressPlanFolds() || !CanFoldNullCheck(expr)) {
 			return nullptr;
 		}
 		if (!child_stats[0]->CanHaveNull()) {

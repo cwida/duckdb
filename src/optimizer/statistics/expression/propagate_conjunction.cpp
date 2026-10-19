@@ -73,6 +73,10 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundConjun
 		if (!child->IsFoldable()) {
 			continue;
 		}
+		if (SuppressPlanFolds() && !child->IsConsistent()) {
+			// evaluating an environment-dependent child would bake the planning environment into the plan
+			continue;
+		}
 		// we have a constant in a conjunction
 		// we (1) either prune the child
 		// or (2) replace the entire conjunction with a constant

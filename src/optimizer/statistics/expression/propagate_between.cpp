@@ -29,6 +29,10 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateBetween(BoundFunctionE
 	if (upper_stats) {
 		upper_prune = PropagateComparison(*input_stats, *upper_stats, upper_comparison);
 	}
+	if (SuppressPlanFolds()) {
+		// the comparison outcomes are data observations that must not rewrite the plan
+		return nullptr;
+	}
 	if (lower_prune == FilterPropagateResult::FILTER_ALWAYS_TRUE &&
 	    upper_prune == FilterPropagateResult::FILTER_ALWAYS_TRUE) {
 		// both filters are always true: replace the between expression with a constant true

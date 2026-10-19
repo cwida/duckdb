@@ -208,6 +208,10 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalGet 
 		// fetch the table filter
 		auto &filter = get.table_filters.GetFilterByColumnIndexMutable(table_filter_column);
 		auto propagate_result = PropagateTableFilter(stats_binding, stats, filter);
+		if (SuppressPlanFolds()) {
+			// the classification is a data observation that must not rewrite the plan
+			propagate_result = FilterPropagateResult::NO_PRUNING_POSSIBLE;
+		}
 		switch (propagate_result) {
 		case FilterPropagateResult::FILTER_ALWAYS_TRUE:
 			// filter is always true; it is useless to execute it

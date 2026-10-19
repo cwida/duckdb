@@ -90,6 +90,8 @@ struct FunctionStatisticsInput {
 	optional_ptr<FunctionData> bind_data;
 	vector<BaseStatistics> &child_stats;
 	unique_ptr<Expression> *expr_ptr;
+	//! When unset, the callback must not rewrite the expression - the plan has to stay free of data observations
+	bool allow_plan_rewrite = true;
 };
 
 struct FunctionModifiedDatabasesInput {

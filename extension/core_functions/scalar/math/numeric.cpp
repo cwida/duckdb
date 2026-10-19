@@ -177,7 +177,9 @@ static unique_ptr<BaseStatistics> PropagateAbsStats(ClientContext &context, Func
 				min_val = 0;
 				max_val = MaxValue(AbsOperator::Operation<double, double>(current_min), current_max);
 			} else {
-				*input.expr_ptr = std::move(input.expr.GetChildrenMutable()[0]);
+				if (input.allow_plan_rewrite) {
+					*input.expr_ptr = std::move(input.expr.GetChildrenMutable()[0]);
+				}
 				return child_stats[0].ToUnique();
 			}
 			new_min = expr.GetReturnType().InternalType() == PhysicalType::FLOAT
@@ -204,7 +206,9 @@ static unique_ptr<BaseStatistics> PropagateAbsStats(ClientContext &context, Func
 				max_val = MaxValue(AbsValue(current_min), current_max);
 			} else {
 				// if both current_min and current_max are > 0, then the abs is a no-op and can be removed entirely
-				*input.expr_ptr = std::move(input.expr.GetChildrenMutable()[0]);
+				if (input.allow_plan_rewrite) {
+					*input.expr_ptr = std::move(input.expr.GetChildrenMutable()[0]);
+				}
 				return child_stats[0].ToUnique();
 			}
 			new_min = Value::Numeric(expr.GetReturnType(), min_val);
@@ -1721,7 +1725,7 @@ static unique_ptr<BaseStatistics> PropagateIsNanStats(ClientContext &, FunctionS
 	NumericStats::SetMin(result, false);
 	NumericStats::SetMax(result, false);
 	result.CopyValidity(child_stats);
-	if (!child_stats.CanHaveNull()) {
+	if (!child_stats.CanHaveNull() && input.allow_plan_rewrite) {
 		*input.expr_ptr = make_uniq<BoundConstantExpression>(Value::BOOLEAN(false));
 	}
 	return result.ToUnique();

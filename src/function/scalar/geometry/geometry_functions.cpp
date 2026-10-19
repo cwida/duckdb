@@ -336,7 +336,9 @@ static auto VertexExtractStats(ClientContext &context, FunctionStatisticsInput &
 
 	if (!types.Has(GeometryType::POINT) || !flags.HasNonEmptyGeometry()) {
 		// No non-empty points present, so vertex extraction will always return NULL
-		*input.expr_ptr = make_uniq<BoundConstantExpression>(Value(LogicalType::DOUBLE));
+		if (input.allow_plan_rewrite) {
+			*input.expr_ptr = make_uniq<BoundConstantExpression>(Value(LogicalType::DOUBLE));
+		}
 		new_stats.Set(StatsInfo::CANNOT_HAVE_VALID_VALUES);
 		new_stats.Set(StatsInfo::CAN_HAVE_NULL_VALUES);
 		return new_stats.ToUnique();
@@ -361,7 +363,9 @@ static auto VertexExtractStats(ClientContext &context, FunctionStatisticsInput &
 		}
 		if (!types.Has(VertexType::XYZ) && !types.Has(VertexType::XYZM)) {
 			// If there are no vertex types with Z, we can guarantee that all rows will yield NULL
-			*input.expr_ptr = make_uniq<BoundConstantExpression>(Value(LogicalType::DOUBLE));
+			if (input.allow_plan_rewrite) {
+				*input.expr_ptr = make_uniq<BoundConstantExpression>(Value(LogicalType::DOUBLE));
+			}
 			new_stats.Set(StatsInfo::CANNOT_HAVE_VALID_VALUES);
 			new_stats.Set(StatsInfo::CAN_HAVE_NULL_VALUES);
 			return new_stats.ToUnique();
@@ -375,7 +379,9 @@ static auto VertexExtractStats(ClientContext &context, FunctionStatisticsInput &
 		}
 		if (!types.Has(VertexType::XYM) && !types.Has(VertexType::XYZM)) {
 			// If there are no vertex types with M, we can guarantee that all rows will yield NULL
-			*input.expr_ptr = make_uniq<BoundConstantExpression>(Value(LogicalType::DOUBLE));
+			if (input.allow_plan_rewrite) {
+				*input.expr_ptr = make_uniq<BoundConstantExpression>(Value(LogicalType::DOUBLE));
+			}
 			new_stats.Set(StatsInfo::CANNOT_HAVE_VALID_VALUES);
 			new_stats.Set(StatsInfo::CAN_HAVE_NULL_VALUES);
 			return new_stats.ToUnique();

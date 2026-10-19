@@ -159,6 +159,10 @@ void StatisticsPropagator::PropagateStatistics(LogicalComparisonJoin &join, uniq
 			// Add stats to logical_join for perfect hash join
 			condition.SetLeftStats(stats_left->ToUnique());
 			condition.SetRightStats(stats_right->ToUnique());
+			if (SuppressPlanFolds()) {
+				// the comparison outcome is a data observation that must not rewrite the plan
+				prune_result = FilterPropagateResult::NO_PRUNING_POSSIBLE;
+			}
 			switch (prune_result) {
 			case FilterPropagateResult::FILTER_FALSE_OR_NULL:
 			case FilterPropagateResult::FILTER_ALWAYS_FALSE:
@@ -436,7 +440,7 @@ void StatisticsPropagator::CreateFilterFromJoinStats(unique_ptr<LogicalOperator>
                                                      const BaseStatistics &stats_before,
                                                      const BaseStatistics &stats_after) {
 	// Defer join-derived filters until after join ordering.
-	if (mode != StatisticsPropagationMode::FULL) {
+	if (mode != StatisticsPropagationMode::FULL || SuppressPlanFolds()) {
 		return;
 	}
 	// Only do this for integral colref's that have stats

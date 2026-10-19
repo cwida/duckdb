@@ -28,7 +28,8 @@ namespace duckdb {
 
 StatisticsPropagator::StatisticsPropagator(Optimizer &optimizer_p, unique_ptr<LogicalOperator> &root_p,
                                            StatisticsPropagationMode mode_p)
-    : optimizer(optimizer_p), context(optimizer.context), mode(mode_p), root(root_p) {
+    : optimizer(optimizer_p), context(optimizer.context), mode(mode_p),
+      portable_plan(Settings::Get<PortablePlanSetting>(optimizer.context)), root(root_p) {
 	root->ResolveOperatorTypes();
 }
 

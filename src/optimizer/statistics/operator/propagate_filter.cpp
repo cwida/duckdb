@@ -22,6 +22,10 @@ bool StatisticsPropagator::ExpressionIsConstant(Expression &expr, const Value &v
 	if (expr.GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
 		expr_value = expr.Cast<BoundConstantExpression>().GetValue();
 	} else if (expr.IsFoldable()) {
+		if (SuppressPlanFolds() && !expr.IsConsistent()) {
+			// evaluating an environment-dependent expression would bake the planning environment into the plan
+			return false;
+		}
 		if (!ExpressionExecutor::TryEvaluateScalar(context, expr, expr_value)) {
 			return false;
 		}

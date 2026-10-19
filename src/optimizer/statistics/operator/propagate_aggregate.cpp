@@ -313,6 +313,10 @@ void CapGroupedAggregateCardinalityByKeyDomain(LogicalAggregate &aggr, optional_
 } // namespace
 
 void StatisticsPropagator::TryExecuteAggregates(LogicalAggregate &aggr, unique_ptr<LogicalOperator> &node_ptr) {
+	if (SuppressPlanFolds()) {
+		// the aggregate results would be constants computed from data observations
+		return;
+	}
 	if (!aggr.groups.empty()) {
 		// not possible with groups
 		return;

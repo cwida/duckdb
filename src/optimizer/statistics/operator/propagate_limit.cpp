@@ -10,8 +10,8 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalLimi
 	// return the node stats, with as expected cardinality the amount specified in the limit
 	if (limit.limit_val.Type() == LimitNodeType::CONSTANT_VALUE) {
 		auto constant_limit = limit.limit_val.GetConstantValue();
-		if (limit.offset_val.Type() == LimitNodeType::UNSET && child_stats && child_stats->has_max_cardinality &&
-		    child_stats->max_cardinality < constant_limit) {
+		if (!SuppressPlanFolds() && limit.offset_val.Type() == LimitNodeType::UNSET && child_stats &&
+		    child_stats->has_max_cardinality && child_stats->max_cardinality < constant_limit) {
 			node_ptr = std::move(limit.children[0]);
 			return child_stats;
 		}
