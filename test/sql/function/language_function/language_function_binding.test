@@ -390,3 +390,62 @@ query ITT
 SELECT chained(), comment, macro_definition FROM duckdb_functions() WHERE function_name = 'chained';
 ----
 3	mid-transaction comment	3
+
+# a failed lambda interpretation retries binding the same call tree: the original call must stay
+# rebindable after member selection (selection runs on a copy)
+statement ok
+SET lambda_syntax = 'ENABLE_SINGLE_ARROW';
+
+statement ok
+CREATE FUNCTION retry_fun(x INTEGER) RETURNS INTEGER LANGUAGE testlang AS '1';
+
+statement error
+SELECT list_transform(retry_fun(1), x -> x);
+----
+<REGEX>:.*(Invalid LIST argument|not found).*
+
+statement ok
+RESET lambda_syntax;
+
+# prepared statements track member mutations: the drop+create bumps the catalog version, so the
+# next EXECUTE re-binds against the new member set
+statement ok
+CREATE FUNCTION pf() RETURNS VARCHAR LANGUAGE testlang AS 'before';
+
+statement ok
+PREPARE p AS SELECT pf();
+
+query T
+EXECUTE p;
+----
+before
+
+statement ok
+CREATE OR REPLACE FUNCTION pf() RETURNS VARCHAR LANGUAGE testlang AS 'after';
+
+query T
+EXECUTE p;
+----
+after
+
+statement ok
+CREATE FUNCTION pf(x INTEGER) RETURNS VARCHAR LANGUAGE testlang AS 'overload';
+
+query T
+EXECUTE p;
+----
+after
+
+# OR REPLACE with a brand-new non-conflicting signature adds the member
+statement ok
+CREATE OR REPLACE FUNCTION pf(x VARCHAR) RETURNS VARCHAR LANGUAGE testlang AS 'added';
+
+query T
+SELECT pf('s'::VARCHAR);
+----
+added
+
+query I
+SELECT count(*) FROM duckdb_functions() WHERE function_name = 'pf';
+----
+3

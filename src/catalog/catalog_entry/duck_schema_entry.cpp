@@ -279,6 +279,10 @@ optional_ptr<CatalogEntry> DuckSchemaEntry::AddLanguageFunctionMember(CatalogTra
 	D_ASSERT(info.macros.size() == 1 && info.macros[0]->type == MacroType::LANGUAGE_MACRO);
 	auto &new_member = info.macros[0]->Cast<LanguageMacroFunction>();
 	auto &name = info.GetFunctionName();
+	if (existing.internal && !info.internal) {
+		// the member rewrite is a drop+create: an internal entry's protection applies to it too
+		throw CatalogException("function %s is an internal system entry: its overloads cannot be modified", name);
+	}
 	auto &existing_language = existing.macros[0]->Cast<LanguageMacroFunction>().language;
 	if (!StringUtil::CIEquals(existing_language, new_member.language)) {
 		throw CatalogException("Cannot create function %s in language \"%s\": the name already belongs to a "

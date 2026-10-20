@@ -106,13 +106,11 @@ public:
 
 	//! Register a new collation
 	DUCKDB_API void RegisterCollation(CreateCollationInfo &info);
-	//! Register a function language in the system catalog (transient, never persisted). Registering a
-	//! language that already exists is rejected unless allow_replace is set.
-	//! Register a function language in the system catalog. allow_replace permits re-registration and
-	//! is meant for semantically equivalent binders (e.g. an extension reload): replacing a
-	//! language's semantics does not re-validate or invalidate existing functions, prepared
-	//! statements, or indexes that were bound with the previous binder, like replacing any other
-	//! extension-registered function.
+	//! Register a function language in the system catalog (transient, never persisted).
+	//! allow_replace permits re-registration and is meant for semantically equivalent binders
+	//! (e.g. an extension reload): replacing a language's semantics does not re-validate or
+	//! invalidate existing functions, prepared statements, or indexes that were bound with the
+	//! previous binder, like replacing any other extension-registered function.
 	DUCKDB_API void RegisterLanguage(const string &language, shared_ptr<LanguageFunctionBinder> binder,
 	                                 bool allow_replace = false);
 
