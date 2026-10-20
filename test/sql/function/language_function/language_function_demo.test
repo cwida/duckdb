@@ -1,0 +1,305 @@
+# name: test/sql/function/language_function/language_function_demo.test
+# description: Language function behavior with a registered binder (testlang demo extension)
+# group: [language_function]
+
+# Language function tests manage their own storage version (persistent entries need v2.1.0+)
+require noforcestorage
+
+require skip_reload
+
+require allow_unsigned_extensions
+
+statement ok
+LOAD '{BUILD_DIRECTORY}/test/extension/language_function_demo.duckdb_extension';
+
+# a testlang function "compiles" to the constant its source denotes
+statement ok
+CREATE FUNCTION answer() RETURNS INTEGER LANGUAGE testlang AS '42';
+
+query I
+SELECT answer();
+----
+42
+
+# the binder validates definitions at CREATE time
+statement error
+CREATE FUNCTION rejected() LANGUAGE testlang AS 'invalid source';
+----
+<REGEX>:.*testlang: the source of "rejected" may not contain.*
+
+# duplicate signatures error at member granularity
+statement error
+CREATE FUNCTION answer() RETURNS INTEGER LANGUAGE testlang AS '43';
+----
+<REGEX>:.*An overload of function "answer" with signature \(\) already exists.*
+
+# IF NOT EXISTS skips the conflicting member
+statement ok
+CREATE FUNCTION IF NOT EXISTS answer() RETURNS INTEGER LANGUAGE testlang AS '99';
+
+query I
+SELECT answer();
+----
+42
+
+# OR REPLACE replaces the single conflicting member
+statement ok
+CREATE OR REPLACE FUNCTION answer() RETURNS INTEGER LANGUAGE testlang AS '43';
+
+query I
+SELECT answer();
+----
+43
+
+# a second overload with a different arity joins the entry
+statement ok
+CREATE FUNCTION answer(x INTEGER) RETURNS VARCHAR LANGUAGE testlang AS 'overload';
+
+query T
+SELECT answer(1);
+----
+overload
+
+query I
+SELECT answer();
+----
+43
+
+# one row per overload member in duckdb_functions, entries are macro-family
+query TTTTT rowsort
+SELECT function_type, language, return_type, parameter_types, macro_definition FROM duckdb_functions() WHERE function_name = 'answer';
+----
+macro	testlang	INTEGER	[]	43
+macro	testlang	VARCHAR	[INTEGER]	overload
+
+# all overloads of one name share one language
+statement error
+CREATE FUNCTION answer(a INTEGER, b INTEGER) LANGUAGE otherlang AS 'x';
+----
+<REGEX>:.*overloads of one name share one language.*
+
+# an untyped parameter conflicts with any member of the same arity
+statement error
+CREATE FUNCTION answer(y) LANGUAGE testlang AS 'untyped';
+----
+<REGEX>:.*already exists.*
+
+# OR REPLACE swaps in the untyped member for the typed one
+statement ok
+CREATE OR REPLACE FUNCTION answer(y) LANGUAGE testlang AS 'untyped';
+
+query T
+SELECT answer(1);
+----
+untyped
+
+# DROP FUNCTION with a parameter type list drops one member, the untyped member owns its arity
+statement ok
+DROP FUNCTION answer(INTEGER);
+
+query I
+SELECT answer();
+----
+43
+
+statement error
+SELECT answer(1);
+----
+<REGEX>:.*does not support the supplied arguments.*
+
+# no member matches the signature
+statement error
+DROP FUNCTION answer(VARCHAR, VARCHAR);
+----
+<REGEX>:.*has no overload with signature \(VARCHAR, VARCHAR\).*
+
+# IF EXISTS at member granularity leaves siblings untouched
+statement ok
+DROP FUNCTION IF EXISTS answer(VARCHAR, VARCHAR);
+
+query I
+SELECT answer();
+----
+43
+
+# dropping the last member drops the whole entry
+statement ok
+DROP FUNCTION answer();
+
+query I
+SELECT count(*) FROM duckdb_functions() WHERE function_name = 'answer';
+----
+0
+
+statement error
+DROP FUNCTION answer;
+----
+
+statement ok
+DROP FUNCTION IF EXISTS answer;
+
+# a macro and a language function compete for the same name
+statement ok
+CREATE MACRO occupied() AS 1;
+
+statement error
+CREATE FUNCTION occupied() LANGUAGE testlang AS 'x';
+----
+<REGEX>:.*already exists.*
+
+statement ok
+CREATE FUNCTION lang_occupied() LANGUAGE testlang AS 'x';
+
+statement error
+CREATE MACRO lang_occupied() AS 1;
+----
+<REGEX>:.*already exists.*
+
+# ... and OR REPLACE swaps the whole entry across kinds
+statement ok
+CREATE OR REPLACE MACRO lang_occupied() AS 1;
+
+query I
+SELECT lang_occupied();
+----
+1
+
+# DROP MACRO drops a language function too (DROP FUNCTION and DROP MACRO are the same statement)
+statement ok
+DROP MACRO lang_occupied;
+
+# a language entry cannot mix members with a plain macro definition
+statement error
+CREATE FUNCTION mixed(x) AS x + 1, (x, y) LANGUAGE testlang AS 'src';
+----
+
+# temporary language functions
+statement ok
+CREATE TEMPORARY FUNCTION temp_answer() RETURNS INTEGER LANGUAGE testlang AS '7';
+
+query I
+SELECT temp_answer();
+----
+7
+
+statement ok
+DROP FUNCTION temp_answer;
+
+# schema-qualified functions and DROP SCHEMA CASCADE
+statement ok
+CREATE SCHEMA s1;
+
+statement ok
+CREATE FUNCTION s1.schema_fun() RETURNS INTEGER LANGUAGE testlang AS '1';
+
+query I
+SELECT s1.schema_fun();
+----
+1
+
+statement ok
+DROP SCHEMA s1 CASCADE;
+
+query I
+SELECT count(*) FROM duckdb_functions() WHERE function_name = 'schema_fun';
+----
+0
+
+# EXPORT DATABASE round-trips the overload set with the binder registered
+statement ok
+CREATE FUNCTION exported() RETURNS INTEGER LANGUAGE testlang AS '10';
+
+statement ok
+CREATE FUNCTION exported(x INTEGER) RETURNS INTEGER LANGUAGE testlang AS '20';
+
+statement ok
+EXPORT DATABASE '{TEST_DIR}/language_function_demo_export';
+
+statement ok
+DROP FUNCTION exported;
+
+statement ok
+DROP MACRO occupied;
+
+statement ok
+IMPORT DATABASE '{TEST_DIR}/language_function_demo_export';
+
+query I
+SELECT exported() + exported(1);
+----
+30
+
+# binder-published descriptions and COMMENT ON survive member mutations
+statement ok
+CREATE FUNCTION documented(x INTEGER) RETURNS INTEGER LANGUAGE testlang AS '1';
+
+statement ok
+COMMENT ON MACRO documented IS 'my comment';
+
+statement ok
+CREATE FUNCTION documented(x VARCHAR) RETURNS INTEGER LANGUAGE testlang AS '2';
+
+query TTT
+SELECT description, comment, parameter_types FROM duckdb_functions() WHERE function_name = 'documented' ORDER BY parameter_types::VARCHAR;
+----
+testlang: 1	my comment	[INTEGER]
+testlang: 2	my comment	[VARCHAR]
+
+# replacing a member replaces its description instead of shadowing it with the old one
+statement ok
+CREATE OR REPLACE FUNCTION documented(x INTEGER) RETURNS INTEGER LANGUAGE testlang AS '3';
+
+query TT
+SELECT description, macro_definition FROM duckdb_functions() WHERE function_name = 'documented' AND parameter_types = ['INTEGER'];
+----
+testlang: 3	3
+
+# a dropped member takes its description with it, re-creating the signature starts fresh
+statement ok
+DROP FUNCTION documented(VARCHAR);
+
+query TT
+SELECT description, comment FROM duckdb_functions() WHERE function_name = 'documented';
+----
+testlang: 3	my comment
+
+statement ok
+CREATE FUNCTION documented(x VARCHAR) RETURNS INTEGER LANGUAGE testlang AS '4';
+
+query T
+SELECT description FROM duckdb_functions() WHERE function_name = 'documented' AND parameter_types = ['VARCHAR'];
+----
+testlang: 4
+
+statement ok
+DROP FUNCTION documented;
+
+# descriptions are member-owned: a wildcard description (ANY, published for an untyped member)
+# leaves with the member it documents instead of shadowing the replacement's description
+statement ok
+CREATE FUNCTION wild(x) RETURNS VARCHAR LANGUAGE testlang AS 'old';
+
+query TT
+SELECT description, macro_definition FROM duckdb_functions() WHERE function_name = 'wild';
+----
+testlang: old	old
+
+statement ok
+CREATE OR REPLACE FUNCTION wild(x) RETURNS VARCHAR LANGUAGE testlang AS 'new';
+
+query TT
+SELECT description, macro_definition FROM duckdb_functions() WHERE function_name = 'wild';
+----
+testlang: new	new
+
+statement ok
+DROP FUNCTION wild;
+
+# existing macro binding still works alongside (protection test)
+statement ok
+CREATE OR REPLACE MACRO plain_macro(a) AS a + 1;
+
+query I
+SELECT plain_macro(41);
+----
+42

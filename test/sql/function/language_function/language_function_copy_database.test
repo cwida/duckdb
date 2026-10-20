@@ -1,0 +1,74 @@
+# name: test/sql/function/language_function/language_function_copy_database.test
+# description: COPY FROM DATABASE copies language functions and respects the target's storage version
+# group: [language_function]
+
+# Language function tests manage their own storage version (persistent entries need v2.1.0+)
+require noforcestorage
+
+# no binder registered: the opaque definition still copies
+statement ok
+CREATE FUNCTION copied_fun(x INTEGER) RETURNS VARCHAR LANGUAGE testlang AS 'copied source';
+
+# ... including a second overload member
+statement ok
+CREATE FUNCTION copied_fun() RETURNS VARCHAR LANGUAGE testlang AS 'no arguments';
+
+statement ok
+ATTACH ':memory:' AS dst;
+
+statement ok
+COPY FROM DATABASE memory TO dst;
+
+query TTTT rowsort
+SELECT function_type, language, return_type, macro_definition FROM duckdb_functions() WHERE function_name = 'copied_fun' AND database_name = 'dst';
+----
+macro	testlang	VARCHAR	copied source
+macro	testlang	VARCHAR	no arguments
+
+# a target below v2.1.0 rejects the copy instead of writing an entry it cannot represent
+statement ok
+ATTACH '{TEST_DIR}/language_function_copy_old.db' AS old_dst (STORAGE_VERSION 'v2.0.0');
+
+statement error
+COPY FROM DATABASE memory TO old_dst;
+----
+<REGEX>:.*only supported for storage versions v2\.1\.0 and higher.*
+
+# a v2.1.0 target accepts it
+statement ok
+ATTACH '{TEST_DIR}/language_function_copy_new.db' AS new_dst (STORAGE_VERSION 'v2.1.0');
+
+statement ok
+COPY FROM DATABASE memory TO new_dst;
+
+query I
+SELECT count(*) FROM duckdb_functions() WHERE function_name = 'copied_fun' AND database_name = 'new_dst';
+----
+2
+
+# a plain macro with a declared RETURNS type is gated the same way
+statement ok
+DROP FUNCTION copied_fun;
+
+statement ok
+CREATE MACRO returns_macro(x) RETURNS BIGINT AS x + 1;
+
+statement error
+COPY FROM DATABASE memory TO old_dst;
+----
+<REGEX>:.*only supported for storage versions v2\.1\.0 and higher.*
+
+statement ok
+DROP MACRO returns_macro;
+
+# a plain macro copies into the old target
+statement ok
+CREATE MACRO plain_copy(x) AS x + 1;
+
+statement ok
+COPY FROM DATABASE memory TO old_dst;
+
+query I
+SELECT count(*) FROM duckdb_functions() WHERE function_name = 'plain_copy' AND database_name = 'old_dst';
+----
+1

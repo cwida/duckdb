@@ -1,0 +1,146 @@
+# name: test/sql/function/language_function/language_function_dependencies.test
+# description: Member mutations are whole-entry drop+create and follow macro dependency semantics
+# group: [language_function]
+
+# Language function tests manage their own storage version (persistent entries need v2.1.0+)
+require noforcestorage
+
+require skip_reload
+
+require allow_unsigned_extensions
+
+statement ok
+LOAD '{BUILD_DIRECTORY}/test/extension/language_function_demo.duckdb_extension';
+
+statement ok
+SET enable_view_dependencies = true;
+
+statement ok
+CREATE FUNCTION f() RETURNS INTEGER LANGUAGE testlang AS '1';
+
+statement ok
+CREATE FUNCTION f(x INTEGER) RETURNS INTEGER LANGUAGE testlang AS '2';
+
+statement ok
+CREATE VIEW v AS SELECT f() AS x;
+
+# a member mutation replaces the entry as a whole: like a macro replacement, a registered
+# dependent blocks it, whichever member the mutation touches
+statement error
+DROP FUNCTION f(INTEGER);
+----
+<REGEX>:.*view "v" depends on macro function "f".*
+
+statement error
+CREATE FUNCTION f(a INTEGER, b INTEGER) RETURNS INTEGER LANGUAGE testlang AS '3';
+----
+<REGEX>:.*view "v" depends on macro function "f".*
+
+statement error
+CREATE OR REPLACE FUNCTION f() RETURNS INTEGER LANGUAGE testlang AS '10';
+----
+<REGEX>:.*view "v" depends on macro function "f".*
+
+# protection test: a plain macro behaves identically under a view dependency
+statement ok
+CREATE MACRO pm(a) AS a + 1;
+
+statement ok
+CREATE VIEW vm AS SELECT pm(1) AS x;
+
+statement error
+CREATE OR REPLACE MACRO pm(a) AS a + 2;
+----
+<REGEX>:.*view "vm" depends on macro function "pm".*
+
+statement ok
+DROP VIEW vm;
+
+statement ok
+DROP MACRO pm;
+
+# dropping the whole entry keeps ordinary dependency semantics
+statement error
+DROP FUNCTION f;
+----
+<REGEX>:.*view "v" depends on macro function "f".*
+
+statement ok
+DROP FUNCTION f CASCADE;
+
+query I
+SELECT count(*) FROM duckdb_views() WHERE view_name = 'v';
+----
+0
+
+# dropping the final member by signature is a whole-entry drop and honors dependency semantics
+statement ok
+CREATE FUNCTION g() RETURNS INTEGER LANGUAGE testlang AS '7';
+
+statement ok
+CREATE VIEW vg AS SELECT g() AS x;
+
+statement error
+DROP FUNCTION g();
+----
+<REGEX>:.*view "vg" depends on macro function "g".*
+
+statement ok
+DROP FUNCTION g() CASCADE;
+
+query I
+SELECT count(*) FROM duckdb_views() WHERE view_name = 'vg';
+----
+0
+
+# without registered dependents, member mutations roll back like any catalog change
+statement ok
+SET enable_view_dependencies = false;
+
+statement ok
+CREATE FUNCTION h() RETURNS INTEGER LANGUAGE testlang AS '1';
+
+statement ok
+BEGIN;
+
+statement ok
+CREATE FUNCTION h(x INTEGER) RETURNS INTEGER LANGUAGE testlang AS '2';
+
+query I
+SELECT h(1);
+----
+2
+
+statement ok
+ROLLBACK;
+
+statement error
+SELECT h(1);
+----
+<REGEX>:.*does not support the supplied arguments.*
+
+statement ok
+BEGIN;
+
+statement ok
+DROP FUNCTION h();
+
+statement ok
+ROLLBACK;
+
+query I
+SELECT h();
+----
+1
+
+statement ok
+BEGIN;
+
+statement ok
+DROP FUNCTION IF EXISTS h(INTEGER, INTEGER, INTEGER);
+
+statement ok
+ROLLBACK;
+
+statement ok
+DROP FUNCTION h;

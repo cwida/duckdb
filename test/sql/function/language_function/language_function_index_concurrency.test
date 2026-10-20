@@ -1,0 +1,111 @@
+# name: test/sql/function/language_function/language_function_index_concurrency.test
+# description: Concurrent index creation and member mutation must not both commit, in either order
+# group: [language_function]
+
+# Language function tests manage their own storage version (persistent entries need v2.1.0+)
+require noforcestorage
+
+require skip_reload
+
+require allow_unsigned_extensions
+
+statement ok
+LOAD '{BUILD_DIRECTORY}/test/extension/language_function_demo.duckdb_extension';
+
+statement ok
+CREATE FUNCTION delta() RETURNS INTEGER LANGUAGE testlang AS '1';
+
+statement ok
+CREATE TABLE t(i INTEGER);
+
+statement ok
+INSERT INTO t VALUES (1);
+
+# ordering 1: the index commits while the replacing transaction holds an older snapshot.
+# The replacement is a drop+create, its commit must fail against the newly created index.
+statement ok con1
+BEGIN;
+
+statement ok con1
+SELECT delta();
+
+statement ok con2
+CREATE UNIQUE INDEX ix ON t((i + delta()));
+
+statement ok con1
+CREATE OR REPLACE FUNCTION delta() RETURNS INTEGER LANGUAGE testlang AS '2';
+
+statement error con1
+COMMIT;
+----
+<REGEX>:.*Could not commit DROP of "delta" because a dependency was created after the transaction started.*
+
+# the index and the surviving definition stay consistent
+statement error
+INSERT INTO t VALUES (1);
+----
+<REGEX>:.*Constraint Error.*Duplicate key.*
+
+query I
+SELECT delta();
+----
+1
+
+statement ok
+DROP INDEX ix;
+
+# ordering 2: the replacement commits while the index-creating transaction holds an older snapshot.
+# The index was compiled against the replaced definition, so its commit must fail instead.
+statement ok con2
+BEGIN;
+
+statement ok con2
+SELECT delta();
+
+statement ok con1
+CREATE OR REPLACE FUNCTION delta() RETURNS INTEGER LANGUAGE testlang AS '2';
+
+statement ok con2
+CREATE UNIQUE INDEX ix ON t((i + delta()));
+
+statement error con2
+COMMIT;
+----
+<REGEX>:.*Could not commit creation of dependency, subject "delta" was dropped and re-created by another transaction.*
+
+query I
+SELECT delta();
+----
+2
+
+query I
+SELECT count(*) FROM duckdb_indexes() WHERE index_name = 'ix';
+----
+0
+
+# after both aborts, a serial index + mutation interaction behaves normally
+statement ok
+CREATE UNIQUE INDEX ix ON t((i + delta()));
+
+statement error
+CREATE OR REPLACE FUNCTION delta() RETURNS INTEGER LANGUAGE testlang AS '3';
+----
+<REGEX>:.*Dependency Error.*index "ix" depends on macro function "delta".*
+
+statement ok
+DROP INDEX ix;
+
+# creating the index and mutating the function in one transaction is caught directly
+statement ok
+BEGIN;
+
+statement ok
+CREATE UNIQUE INDEX ix_tx ON t((i + delta()));
+
+statement error
+CREATE OR REPLACE FUNCTION delta() RETURNS INTEGER LANGUAGE testlang AS '9';
+----
+<REGEX>:.*index "ix_tx" depends on macro function "delta".*
+
+statement ok
+ROLLBACK;

@@ -1,0 +1,202 @@
+# name: test/sql/function/language_function/language_function_no_binder.test
+# description: Language functions are stored opaquely and callable only once a binder is registered
+# group: [language_function]
+
+# Language function tests manage their own storage version (persistent entries need v2.1.0+)
+require noforcestorage
+
+# the testlang extension is deliberately NOT loaded here
+
+statement ok
+CREATE FUNCTION answer() RETURNS INTEGER LANGUAGE testlang AS '42';
+
+# the definition is stored opaquely and visible in the catalog as a macro-family entry
+query TTTTT
+SELECT function_name, function_type, language, return_type, macro_definition FROM duckdb_functions() WHERE function_name = 'answer';
+----
+answer	macro	testlang	INTEGER	42
+
+# calling it requires the language's binder
+statement error
+SELECT answer();
+----
+<REGEX>:.*Missing Extension Error.*answer.*testlang.*no binder for that language is registered.*
+
+# untyped parameters and a missing RETURNS clause are stored as-is
+statement ok
+CREATE FUNCTION opaque_fun(a INTEGER, b) LANGUAGE testlang AS 'whatever the extension makes of this';
+
+query TTT
+SELECT parameters, parameter_types, return_type FROM duckdb_functions() WHERE function_name = 'opaque_fun';
+----
+[a, b]	[INTEGER, NULL]	NULL
+
+# the parameter types must still resolve
+statement error
+CREATE FUNCTION bad_type(a THIS_TYPE_DOES_NOT_EXIST) LANGUAGE testlang AS 'x';
+----
+
+# ... and so must a declared RETURNS type
+statement error
+CREATE FUNCTION bad_return() RETURNS THIS_TYPE_DOES_NOT_EXIST LANGUAGE testlang AS 'x';
+----
+
+# DROP FUNCTION works without the binder
+statement ok
+DROP FUNCTION answer;
+
+statement error
+SELECT answer();
+----
+
+# member-granular drop by signature also works without the binder
+statement ok
+CREATE FUNCTION two_members(x INTEGER) LANGUAGE testlang AS 'int member';
+
+statement ok
+CREATE FUNCTION two_members(x VARCHAR) LANGUAGE testlang AS 'varchar member';
+
+statement ok
+DROP FUNCTION two_members(INTEGER);
+
+query T
+SELECT macro_definition FROM duckdb_functions() WHERE function_name = 'two_members';
+----
+varchar member
+
+statement ok
+DROP FUNCTION two_members(VARCHAR);
+
+query I
+SELECT count(*) FROM duckdb_functions() WHERE function_name = 'two_members';
+----
+0
+
+# EXPORT DATABASE round-trips the stored source text without the extension
+statement ok
+CREATE FUNCTION exported_fun(x INTEGER) RETURNS VARCHAR LANGUAGE testlang AS 'it''s opaque';
+
+statement ok
+EXPORT DATABASE '{TEST_DIR}/language_function_no_binder_export';
+
+statement ok
+DROP FUNCTION exported_fun;
+
+statement ok
+DROP FUNCTION opaque_fun;
+
+statement ok
+IMPORT DATABASE '{TEST_DIR}/language_function_no_binder_export';
+
+query TTTT
+SELECT function_type, language, return_type, macro_definition FROM duckdb_functions() WHERE function_name = 'exported_fun';
+----
+macro	testlang	VARCHAR	it's opaque
+
+# tricky source texts round-trip through EXPORT/IMPORT: newlines, unicode, backslashes,
+# and the token LANGUAGE inside the source
+statement ok
+CREATE FUNCTION tricky_newline() LANGUAGE testlang AS 'line1
+line2';
+
+statement ok
+CREATE FUNCTION tricky_unicode() LANGUAGE testlang AS 'dückdb 🦆';
+
+statement ok
+CREATE FUNCTION tricky_backslash() LANGUAGE testlang AS 'a\b\\c';
+
+statement ok
+CREATE FUNCTION tricky_keyword() LANGUAGE testlang AS 'CREATE FUNCTION f() LANGUAGE testlang AS ''nested''';
+
+statement ok
+EXPORT DATABASE '{TEST_DIR}/language_function_tricky_export';
+
+statement ok
+DROP FUNCTION tricky_newline;
+
+statement ok
+DROP FUNCTION tricky_unicode;
+
+statement ok
+DROP FUNCTION tricky_backslash;
+
+statement ok
+DROP FUNCTION tricky_keyword;
+
+statement ok
+DROP FUNCTION exported_fun;
+
+statement ok
+DROP FUNCTION opaque_fun;
+
+statement ok
+IMPORT DATABASE '{TEST_DIR}/language_function_tricky_export';
+
+query TT rowsort
+SELECT function_name, replace(macro_definition, chr(10), '<NL>') FROM duckdb_functions() WHERE function_name LIKE 'tricky%';
+----
+tricky_backslash	a\b\\c
+tricky_keyword	CREATE FUNCTION f() LANGUAGE testlang AS 'nested'
+tricky_newline	line1<NL>line2
+tricky_unicode	dückdb 🦆
+
+# clean up so the next export section starts from a known catalog
+statement ok
+DROP FUNCTION tricky_newline;
+
+statement ok
+DROP FUNCTION tricky_unicode;
+
+statement ok
+DROP FUNCTION tricky_backslash;
+
+statement ok
+DROP FUNCTION tricky_keyword;
+
+# default parameter values are a macro feature and work for language members too
+statement ok
+CREATE FUNCTION with_default(x := 42) LANGUAGE testlang AS 'defaulted';
+
+query TT
+SELECT parameters, macro_definition FROM duckdb_functions() WHERE function_name = 'with_default';
+----
+[x]	defaulted
+
+statement ok
+DROP FUNCTION with_default;
+
+# nested-schema functions create and round-trip through EXPORT/IMPORT
+statement ok
+CREATE SCHEMA outer_s;
+
+statement ok
+CREATE SCHEMA outer_s.inner_s;
+
+statement ok
+CREATE FUNCTION outer_s.inner_s.nested_fun() RETURNS INTEGER LANGUAGE testlang AS '42';
+
+query TT
+SELECT schema_name, macro_definition FROM duckdb_functions() WHERE function_name = 'nested_fun';
+----
+inner_s	42
+
+statement ok
+EXPORT DATABASE '{TEST_DIR}/language_function_nested_export';
+
+statement ok
+DROP SCHEMA outer_s CASCADE;
+
+# drop the top-level functions too, the import re-creates everything
+statement ok
+DROP FUNCTION opaque_fun;
+
+statement ok
+DROP FUNCTION exported_fun;
+
+statement ok
+IMPORT DATABASE '{TEST_DIR}/language_function_nested_export';
+
+query TT
+SELECT schema_name, macro_definition FROM duckdb_functions() WHERE function_name = 'nested_fun';
+----
+inner_s	42

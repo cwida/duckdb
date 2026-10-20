@@ -1,0 +1,88 @@
+# name: test/sql/function/language_function/language_function_storage_version.test
+# description: Persistent language functions and RETURNS types require storage version v2.1.0
+# group: [language_function]
+
+require noforcestorage
+
+statement ok
+ATTACH '{TEST_DIR}/language_function_old_version.db' AS old_db (STORAGE_VERSION 'v2.0.0');
+
+statement ok
+USE old_db;
+
+statement error
+CREATE FUNCTION gated() RETURNS INTEGER LANGUAGE testlang AS '42';
+----
+<REGEX>:.*only supported for storage versions v2\.1\.0 and higher.*
+
+# a RETURNS type on a plain macro is gated by the same storage version
+statement error
+CREATE MACRO gated_macro(x) RETURNS INTEGER AS x + 1;
+----
+<REGEX>:.*only supported for storage versions v2\.1\.0 and higher.*
+
+# a plain macro without RETURNS is not gated
+statement ok
+CREATE MACRO ungated_macro(x) AS x + 1;
+
+# temporary functions are not gated
+statement ok
+CREATE TEMPORARY FUNCTION ungated() RETURNS INTEGER LANGUAGE testlang AS '42';
+
+statement ok
+USE memory;
+
+# in-memory databases are not gated
+statement ok
+CREATE FUNCTION memory_fun() RETURNS INTEGER LANGUAGE testlang AS '42';
+
+statement ok
+DETACH old_db;
+
+# a v2.1.0 database accepts persistent language functions
+statement ok
+ATTACH '{TEST_DIR}/language_function_new_version.db' AS new_db (STORAGE_VERSION 'v2.1.0');
+
+statement ok
+CREATE FUNCTION new_db.main.allowed() RETURNS INTEGER LANGUAGE testlang AS '42';
+
+query I
+SELECT count(*) FROM duckdb_functions() WHERE function_name = 'allowed' AND database_name = 'new_db';
+----
+1
+
+# the gate examines the resolved destination catalog, not the current database:
+# a two-part name targeting the old database is rejected from anywhere
+statement ok
+ATTACH '{TEST_DIR}/language_function_old_version2.db' AS old_db (STORAGE_VERSION 'v2.0.0');
+
+statement error
+CREATE FUNCTION old_db.gated_two_part() LANGUAGE testlang AS '42';
+----
+<REGEX>:.*only supported for storage versions v2\.1\.0 and higher.*
+
+statement error
+CREATE FUNCTION old_db.main.gated_three_part() LANGUAGE testlang AS '42';
+----
+<REGEX>:.*only supported for storage versions v2\.1\.0 and higher.*
+
+# ... and a two-part name targeting a new-enough database is accepted while an old one is current
+statement ok
+USE old_db;
+
+statement ok
+CREATE FUNCTION new_db.allowed_two_part() RETURNS INTEGER LANGUAGE testlang AS '42';
+
+query I
+SELECT count(*) FROM duckdb_functions() WHERE function_name = 'allowed_two_part' AND database_name = 'new_db';
+----
+1
+
+statement ok
+USE memory;
+
+# nothing gated slipped into the old database
+query I
+SELECT count(*) FROM duckdb_functions() WHERE database_name = 'old_db' AND function_name LIKE 'gated%';
+----
+0

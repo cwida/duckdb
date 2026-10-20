@@ -1,0 +1,116 @@
+# name: test/sql/function/language_function/language_function_index_dependency.test
+# description: Language functions used by an index expression cannot be mutated or dropped while the index exists
+# group: [language_function]
+
+# Language function tests manage their own storage version (persistent entries need v2.1.0+)
+require noforcestorage
+
+require skip_reload
+
+require allow_unsigned_extensions
+
+statement ok
+LOAD '{BUILD_DIRECTORY}/test/extension/language_function_demo.duckdb_extension';
+
+statement ok
+CREATE FUNCTION delta() RETURNS INTEGER LANGUAGE testlang AS '1';
+
+statement ok
+CREATE TABLE t(i INTEGER);
+
+statement ok
+CREATE UNIQUE INDEX ix ON t((i + delta()));
+
+statement ok
+INSERT INTO t VALUES (1);
+
+# the index pins the whole entry: every member mutation is a drop+create and is blocked like a
+# macro replacement, and the error names the blocking dependent
+statement error
+CREATE OR REPLACE FUNCTION delta() RETURNS INTEGER LANGUAGE testlang AS '2';
+----
+<REGEX>:.*index "ix" depends on macro function "delta".*
+
+statement error
+CREATE FUNCTION delta(x INTEGER) RETURNS INTEGER LANGUAGE testlang AS '9';
+----
+<REGEX>:.*index "ix" depends on macro function "delta".*
+
+statement error
+DROP FUNCTION delta;
+----
+<REGEX>:.*Dependency Error.*
+
+# the unique index still enforces its constraint
+statement error
+INSERT INTO t VALUES (1);
+----
+<REGEX>:.*Constraint Error.*Duplicate key.*
+
+query I
+SELECT count(*) FROM t;
+----
+1
+
+# a sibling member cannot be dropped either while the index exists
+statement ok
+DROP INDEX ix;
+
+statement ok
+CREATE FUNCTION delta(x INTEGER) RETURNS INTEGER LANGUAGE testlang AS '9';
+
+statement ok
+CREATE UNIQUE INDEX ix ON t((i + delta()));
+
+statement error
+DROP FUNCTION delta(INTEGER);
+----
+<REGEX>:.*index "ix" depends on macro function "delta".*
+
+# with several indexes, dropping one still leaves the other blocking
+statement ok
+CREATE INDEX ix2 ON t((i * delta()));
+
+statement ok
+DROP INDEX ix;
+
+statement error
+CREATE OR REPLACE FUNCTION delta() RETURNS INTEGER LANGUAGE testlang AS '2';
+----
+<REGEX>:.*index "ix2" depends on macro function "delta".*
+
+# dropping the last index releases the function
+statement ok
+DROP INDEX ix2;
+
+statement ok
+CREATE OR REPLACE FUNCTION delta() RETURNS INTEGER LANGUAGE testlang AS '2';
+
+query I
+SELECT delta();
+----
+2
+
+statement ok
+DROP FUNCTION delta(INTEGER);
+
+statement ok
+DROP FUNCTION delta;
+
+# protection test: a plain macro under an index behaves identically
+statement ok
+CREATE MACRO pm(x) AS x + 1;
+
+statement ok
+CREATE UNIQUE INDEX ixm ON t(pm(i));
+
+statement error
+CREATE OR REPLACE MACRO pm(x) AS x + 2;
+----
+<REGEX>:.*Dependency Error.*
+
+statement ok
+DROP INDEX ixm;
+
+statement ok
+CREATE OR REPLACE MACRO pm(x) AS x + 2;
