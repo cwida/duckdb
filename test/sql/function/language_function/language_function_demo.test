@@ -303,3 +303,50 @@ query I
 SELECT plain_macro(41);
 ----
 42
+
+# an extension-registered aliased collated type keeps its identity through EXPORT/IMPORT,
+# so the aliased and plain members of one overload set re-import without colliding
+statement ok
+ATTACH ':memory:' AS aex;
+
+statement ok
+USE aex;
+
+statement ok
+CREATE FUNCTION aliased_fun(x ci_text) RETURNS ci_text LANGUAGE testlang AS 'aliased';
+
+statement ok
+CREATE FUNCTION aliased_fun(x VARCHAR) RETURNS VARCHAR LANGUAGE testlang AS 'plain';
+
+# ... and a language member with a plain collated parameter renders the constructor form
+statement ok
+CREATE FUNCTION collated_fun(x VARCHAR('nocase')) RETURNS VARCHAR LANGUAGE testlang AS 'collated';
+
+statement ok
+EXPORT DATABASE '{TEST_DIR}/language_function_alias_export';
+
+statement ok
+DROP FUNCTION aliased_fun;
+
+statement ok
+DROP FUNCTION collated_fun;
+
+statement ok
+IMPORT DATABASE '{TEST_DIR}/language_function_alias_export';
+
+query TTT rowsort
+SELECT parameter_types, return_type, macro_definition FROM duckdb_functions() WHERE function_name = 'aliased_fun';
+----
+[VARCHAR]	VARCHAR	plain
+[ci_text]	ci_text	aliased
+
+query TT
+SELECT parameter_types, macro_definition FROM duckdb_functions() WHERE function_name = 'collated_fun';
+----
+[VARCHAR]	collated
+
+statement ok
+USE memory;
+
+statement ok
+DETACH aex;

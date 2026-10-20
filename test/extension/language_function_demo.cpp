@@ -77,5 +77,7 @@ public:
 extern "C" {
 DUCKDB_CPP_EXTENSION_ENTRY(language_function_demo, loader) {
 	loader.RegisterLanguage("testlang", make_shared_ptr<TestLangBinder>());
+	// an aliased collated type, so tests pin that signature rendering preserves type identity
+	loader.RegisterType("ci_text", LogicalType::VARCHAR_COLLATION("nocase").WithAlias("ci_text"));
 }
 }
