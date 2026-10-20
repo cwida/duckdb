@@ -333,9 +333,14 @@ optional_ptr<CatalogEntry> DuckSchemaEntry::AddLanguageFunctionMember(CatalogTra
 	auto new_info_base = existing.GetInfo();
 	auto &new_info = new_info_base->Cast<CreateMacroInfo>();
 	if (replaced.IsValid()) {
+		// descriptions are member-owned: a replaced member's documentation leaves with it
+		MacroCatalogEntry::RemoveMemberDescriptions(new_info.descriptions, *new_info.macros[replaced.GetIndex()]);
 		new_info.macros[replaced.GetIndex()] = std::move(info.macros[0]);
 	} else {
 		new_info.macros.push_back(std::move(info.macros[0]));
+	}
+	for (auto &description : info.descriptions) {
+		new_info.descriptions.push_back(std::move(description));
 	}
 	new_info.temporary = existing.temporary;
 	for (auto &dependency : info.dependencies.Set()) {

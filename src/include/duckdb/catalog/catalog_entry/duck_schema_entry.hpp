@@ -72,9 +72,6 @@ public:
 	//! Add one language member to an existing overload set, replacing the entry as a whole
 	optional_ptr<CatalogEntry> AddLanguageFunctionMember(CatalogTransaction transaction, CreateMacroInfo &info,
 	                                                     MacroCatalogEntry &existing);
-	//! Drop the one member a parameter type list names. Returns false when it is the last member, so
-	//! the caller drops the whole entry instead
-	bool DropMacroFunctionMember(CatalogTransaction transaction, DropInfo &info, MacroCatalogEntry &existing);
 	optional_ptr<CatalogEntry> CreateCoordinateSystem(CatalogTransaction transaction,
 	                                                  CreateCoordinateSystemInfo &info) override;
 	optional_ptr<CatalogEntry> CreateType(CatalogTransaction transaction, CreateTypeInfo &info) override;

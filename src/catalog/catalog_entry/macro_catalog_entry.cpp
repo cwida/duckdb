@@ -60,6 +60,7 @@ unique_ptr<CreateInfo> MacroCatalogEntry::GetInfo() const {
 	}
 	info->extension_name = extension_name;
 	info->dependencies = dependencies;
+	info->descriptions = descriptions;
 	info->comment = comment;
 	info->tags = tags;
 	return std::move(info);
@@ -74,6 +75,22 @@ optional_idx MacroCatalogEntry::FindMember(const vector<LogicalType> &signature)
 		}
 	}
 	return optional_idx();
+}
+
+void MacroCatalogEntry::RemoveMemberDescriptions(vector<FunctionDescription> &descriptions,
+                                                 const MacroFunction &member) {
+	vector<LogicalType> documented;
+	for (idx_t i = 0; i < member.parameters.size(); i++) {
+		auto type = i < member.types.size() ? member.types[i] : LogicalType::UNKNOWN;
+		documented.push_back(type.id() == LogicalTypeId::UNKNOWN ? LogicalType::ANY : type);
+	}
+	vector<FunctionDescription> remaining;
+	for (auto &description : descriptions) {
+		if (description.parameter_types != documented) {
+			remaining.push_back(std::move(description));
+		}
+	}
+	descriptions = std::move(remaining);
 }
 
 string MacroCatalogEntry::ToSQL() const {
@@ -127,6 +144,8 @@ unique_ptr<CatalogEntry> MacroCatalogEntry::AlterEntry(CatalogTransaction transa
 	}
 	auto new_info_base = GetInfo();
 	auto &new_info = new_info_base->Cast<CreateMacroInfo>();
+	// a dropped member takes its documentation with it
+	RemoveMemberDescriptions(new_info.descriptions, *new_info.macros[member_idx.GetIndex()]);
 	new_info.macros.erase(new_info.macros.begin() + NumericCast<int64_t>(member_idx.GetIndex()));
 	new_info.temporary = temporary;
 	// the entry keeps its registered dependencies: AlterObject carries them over when the alter brings no new list

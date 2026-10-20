@@ -36,6 +36,8 @@ public:
 
 	//! The index of the member a parameter type list names, invalid when none matches
 	optional_idx FindMember(const vector<LogicalType> &signature) const;
+	//! Remove the descriptions documenting a member's signature (untyped parameters are documented as ANY)
+	static void RemoveMemberDescriptions(vector<FunctionDescription> &descriptions, const MacroFunction &member);
 	string ToSQL() const override;
 };
 
