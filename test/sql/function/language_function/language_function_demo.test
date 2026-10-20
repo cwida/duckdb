@@ -318,9 +318,15 @@ CREATE FUNCTION aliased_fun(x ci_text) RETURNS ci_text LANGUAGE testlang AS 'ali
 statement ok
 CREATE FUNCTION aliased_fun(x VARCHAR) RETURNS VARCHAR LANGUAGE testlang AS 'plain';
 
-# ... and a language member with a plain collated parameter renders the constructor form
+# ... and a language member with a plain collated parameter renders the constructor form: the
+# echoed argument keeps its case-insensitive comparison semantics across the round trip
 statement ok
-CREATE FUNCTION collated_fun(x VARCHAR('nocase')) RETURNS VARCHAR LANGUAGE testlang AS 'collated';
+CREATE FUNCTION collated_fun(x VARCHAR('nocase')) LANGUAGE testlang AS 'arg:0';
+
+query I
+SELECT collated_fun('A') = 'a';
+----
+true
 
 statement ok
 EXPORT DATABASE '{TEST_DIR}/language_function_alias_export';
@@ -340,10 +346,10 @@ SELECT parameter_types, return_type, macro_definition FROM duckdb_functions() WH
 [VARCHAR]	VARCHAR	plain
 [ci_text]	ci_text	aliased
 
-query TT
-SELECT parameter_types, macro_definition FROM duckdb_functions() WHERE function_name = 'collated_fun';
+query I
+SELECT collated_fun('A') = 'a';
 ----
-[VARCHAR]	collated
+true
 
 statement ok
 USE memory;

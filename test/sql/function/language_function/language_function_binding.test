@@ -449,3 +449,35 @@ query I
 SELECT count(*) FROM duckdb_functions() WHERE function_name = 'pf';
 ----
 3
+
+# dropping the member a prepared statement selected re-binds the next EXECUTE (no stale plan)
+statement ok
+CREATE FUNCTION pfd(x INTEGER) RETURNS VARCHAR LANGUAGE testlang AS 'int member';
+
+statement ok
+CREATE FUNCTION pfd(x VARCHAR) RETURNS VARCHAR LANGUAGE testlang AS 'varchar member';
+
+statement ok
+PREPARE q AS SELECT pfd(1);
+
+query T
+EXECUTE q;
+----
+int member
+
+statement ok
+DROP FUNCTION pfd(INTEGER);
+
+statement error
+EXECUTE q;
+----
+<REGEX>:.*does not support the supplied arguments.*
+
+# ... and adding the member back re-binds to it
+statement ok
+CREATE FUNCTION pfd(x INTEGER) RETURNS VARCHAR LANGUAGE testlang AS 'int member back';
+
+query T
+EXECUTE q;
+----
+int member back

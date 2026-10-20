@@ -8,6 +8,8 @@
 #include "duckdb/catalog/catalog_entry/language_catalog_entry.hpp"
 #include "duckdb/function/language_macro_function.hpp"
 #include "duckdb/function/scalar_macro_function.hpp"
+#include "duckdb/common/serializer/binary_serializer.hpp"
+#include "duckdb/common/serializer/memory_stream.hpp"
 #include "duckdb/parser/expression/cast_expression.hpp"
 #include "duckdb/main/language_function_binder.hpp"
 #include "duckdb/function/table/table_scan.hpp"
@@ -456,17 +458,31 @@ static bool SemanticAliasesEqual(const ParsedExpression &before, const ParsedExp
 	return true;
 }
 
+//! A complete identity for a frozen type: ordinary type equality ignores collations and treats
+//! extension metadata as a wildcard (a missing side or a shorter modifier list compares equal),
+//! so compare the serialized representation, which captures aliases, collations, modifiers, and
+//! nested types exactly
+static string FrozenTypeIdentity(const LogicalType &type) {
+	Allocator allocator;
+	MemoryStream stream(allocator);
+	SerializationOptions options;
+	options.storage_compatibility = StorageCompatibility::Latest();
+	BinarySerializer serializer(stream, options);
+	serializer.Begin();
+	serializer.WriteProperty(100, "type", type);
+	serializer.End();
+	return string(char_ptr_cast(stream.GetData()), stream.GetPosition());
+}
 //! The parts of a definition a language binder's ValidateCreate must leave unchanged: the resolved
 //! signature (parameters, types, defaults, return type) and the language. Sources may be rewritten.
 static bool MacroSignatureEquals(const MacroFunction &before, const MacroFunction &after) {
-	// collation-sensitive type equality: LogicalType::operator== ignores collations, which change
-	// behavior and are serialized type metadata
-	if (before.type != after.type || !before.return_type.EqualsIncludingCollation(after.return_type) ||
-	    before.types.size() != after.types.size() || before.parameters.size() != after.parameters.size()) {
+	if (before.type != after.type || before.types.size() != after.types.size() ||
+	    before.parameters.size() != after.parameters.size() ||
+	    FrozenTypeIdentity(before.return_type) != FrozenTypeIdentity(after.return_type)) {
 		return false;
 	}
 	for (idx_t type_idx = 0; type_idx < before.types.size(); type_idx++) {
-		if (!before.types[type_idx].EqualsIncludingCollation(after.types[type_idx])) {
+		if (FrozenTypeIdentity(before.types[type_idx]) != FrozenTypeIdentity(after.types[type_idx])) {
 			return false;
 		}
 	}
@@ -483,7 +499,10 @@ static bool MacroSignatureEquals(const MacroFunction &before, const MacroFunctio
 		if (other == after.default_parameters.end() || !default_param.second->Equals(*other->second)) {
 			return false;
 		}
-		if (!SemanticAliasesEqual(*default_param.second, *other->second)) {
+		// the alias walk catches named type-constructor arguments the rendered form omits, the
+		// rendered form catches rendering-relevant state outside both Equals and the walk
+		if (!SemanticAliasesEqual(*default_param.second, *other->second) ||
+		    default_param.second->ToString() != other->second->ToString()) {
 			return false;
 		}
 	}

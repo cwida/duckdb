@@ -5,7 +5,12 @@
 #include "duckdb/function/language_macro_function.hpp"
 #include "duckdb/main/language_function_binder.hpp"
 #include "duckdb/parser/expression/cast_expression.hpp"
+#include "duckdb/common/extension_type_info.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
+#include "duckdb/parser/expression/function_expression.hpp"
+#include "duckdb/parser/parsed_data/alter_macro_info.hpp"
+#include "duckdb/parser/parsed_data/drop_info.hpp"
+#include "duckdb/parser/parsed_data/extra_drop_info.hpp"
 #include "duckdb/parser/expression/type_expression.hpp"
 #include "duckdb/parser/parsed_data/create_language_info.hpp"
 #include "duckdb/parser/parsed_data/create_macro_info.hpp"
@@ -102,6 +107,37 @@ TEST_CASE("ValidateCreate guard rejects a semantic alias mutation on a default's
 	REQUIRE(StringUtil::Contains(result->GetError(), "default parameters"));
 }
 
+TEST_CASE("ValidateCreate guard rejects a rendering-state mutation on a default", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	// the folded list default is a list_value function call: flipping its operator flag changes
+	// nothing Equals or the alias walk compare, but makes EXPORT render invalid SQL
+	RegisterTestLanguage(*db.instance, "renderlang", make_shared_ptr<MutatingBinder>([](CreateMacroInfo &info) {
+		auto &default_expr = *info.macros[0]->default_parameters[Identifier("x")];
+		REQUIRE(default_expr.GetExpressionClass() == ExpressionClass::FUNCTION);
+		default_expr.Cast<FunctionExpression>().IsOperatorMutable() = true;
+	}));
+
+	auto result = con.Query("CREATE FUNCTION rendered(x := [1, 2]) LANGUAGE renderlang AS 'arg:0'");
+	REQUIRE_FAIL(result);
+	REQUIRE(StringUtil::Contains(result->GetError(), "default parameters"));
+}
+
+TEST_CASE("ValidateCreate guard rejects an extension metadata mutation on a parameter type", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	// ordinary type equality treats extension metadata as a wildcard: the frozen signature must not
+	RegisterTestLanguage(*db.instance, "extlang", make_shared_ptr<MutatingBinder>([](CreateMacroInfo &info) {
+		auto info_copy = make_uniq<ExtensionTypeInfo>();
+		info_copy->modifiers.emplace_back(Value::INTEGER(10));
+		info.macros[0]->types[0] = info.macros[0]->types[0].WithExtensionInfo(std::move(info_copy));
+	}));
+
+	auto result = con.Query("CREATE FUNCTION ext_mutated(x INTEGER) LANGUAGE extlang AS 'arg:0'");
+	REQUIRE_FAIL(result);
+	REQUIRE(StringUtil::Contains(result->GetError(), "changed the member count, a resolved signature"));
+}
+
 TEST_CASE("Member mutations respect internal entry protection", "[api]") {
 	DuckDB db(nullptr);
 	Connection con(db);
@@ -152,5 +188,34 @@ TEST_CASE("Member mutations respect internal entry protection", "[api]") {
 	// the entry is untouched and still callable
 	result = con.Query("SELECT internal_fun(1), internal_fun('a'::VARCHAR)");
 	REQUIRE(CHECK_COLUMN(result, 0, {"int member"}));
+	REQUIRE(CHECK_COLUMN(result, 1, {"varchar member"}));
+
+	// the drop guard directly: a member drop without authority is rejected ...
+	AlterEntryData drop_data(QualifiedName(Identifier(), Identifier::DefaultSchema(), Identifier("internal_fun")),
+	                         OnEntryNotFound::THROW_EXCEPTION);
+	RemoveMacroOverloadInfo drop_info(drop_data, CatalogType::MACRO_ENTRY, {LogicalType::INTEGER});
+	con.BeginTransaction();
+	bool threw = false;
+	try {
+		schema.Alter(schema.GetCatalogTransaction(*con.context), drop_info);
+	} catch (std::exception &ex) {
+		threw = StringUtil::Contains(ex.what(), "internal system entry");
+	}
+	REQUIRE(threw);
+	con.Rollback();
+
+	// an extension registering internal members one at a time still merges: the internal info
+	// carries the authority the guard checks
+	CreateMacroInfo readd_info(CatalogType::MACRO_ENTRY);
+	readd_info.SetFunctionName(Identifier("internal_fun"));
+	readd_info.internal = true;
+	auto readd_member = make_uniq<LanguageMacroFunction>("intlang", "date member");
+	readd_member->parameters.push_back(make_uniq<ColumnRefExpression>(Identifier("x")));
+	readd_member->types.push_back(LogicalType::DATE);
+	readd_info.macros.push_back(std::move(readd_member));
+	auto readd_data = CatalogTransaction::GetSystemTransaction(*db.instance);
+	schema.CreateFunction(readd_data, readd_info);
+	result = con.Query("SELECT internal_fun(DATE '2020-01-01'), internal_fun('a'::VARCHAR)");
+	REQUIRE(CHECK_COLUMN(result, 0, {"date member"}));
 	REQUIRE(CHECK_COLUMN(result, 1, {"varchar member"}));
 }
