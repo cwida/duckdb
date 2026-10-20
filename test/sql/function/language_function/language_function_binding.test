@@ -149,11 +149,49 @@ SELECT arg_a(c => 9, a => 1), arg_b(c => 9, a => 1), arg_c(c => 9, a => 1);
 ----
 1	20	9
 
+# the parameter cast is applied before the binder sees the argument: no RETURNS is declared
+# here, so the observed type is the handed argument's, not a result cast
+statement ok
+CREATE FUNCTION arg_raw(a INTEGER, b INTEGER := 20) LANGUAGE testlang AS 'arg:0';
+
+statement ok
+CREATE FUNCTION arg_raw_b(a INTEGER, b INTEGER := 20) LANGUAGE testlang AS 'arg:1';
+
+query TTT
+SELECT typeof(arg_raw(1::SMALLINT)), typeof(arg_raw_b(1::SMALLINT)), typeof(arg_raw_b(1, b => 2::TINYINT));
+----
+INTEGER	INTEGER	INTEGER
+
 # the parameter cast is applied before the binder sees the argument
 query T
 SELECT typeof(arg_a(1::SMALLINT));
 ----
 INTEGER
+
+# malformed argument indices in testlang sources are clean binder errors
+statement ok
+CREATE FUNCTION arg_bad(x INTEGER) LANGUAGE testlang AS 'arg:';
+
+statement error
+SELECT arg_bad(1);
+----
+<REGEX>:.*testlang: malformed argument index.*
+
+statement ok
+CREATE FUNCTION arg_trailing(x INTEGER) LANGUAGE testlang AS 'arg:0junk';
+
+statement error
+SELECT arg_trailing(1);
+----
+<REGEX>:.*testlang: malformed argument index.*
+
+statement ok
+CREATE FUNCTION arg_range(x INTEGER) LANGUAGE testlang AS 'arg:7';
+
+statement error
+SELECT arg_range(1);
+----
+<REGEX>:.*testlang: argument index 7 is out of range.*
 
 # ... and an argument without an implicit cast to the parameter type is rejected like a macro call
 statement error

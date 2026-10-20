@@ -432,9 +432,16 @@ void Binder::CheckMacroStorageVersion(Catalog &catalog, const CreateMacroInfo &i
 //! The parts of a definition a language binder's ValidateCreate must leave unchanged: the resolved
 //! signature (parameters, types, defaults, return type) and the language. Sources may be rewritten.
 static bool MacroSignatureEquals(const MacroFunction &before, const MacroFunction &after) {
-	if (before.type != after.type || before.return_type != after.return_type || before.types != after.types ||
-	    before.parameters.size() != after.parameters.size()) {
+	// collation-sensitive type equality: LogicalType::operator== ignores collations, which change
+	// behavior and are serialized type metadata
+	if (before.type != after.type || !before.return_type.EqualsIncludingCollation(after.return_type) ||
+	    before.types.size() != after.types.size() || before.parameters.size() != after.parameters.size()) {
 		return false;
+	}
+	for (idx_t type_idx = 0; type_idx < before.types.size(); type_idx++) {
+		if (!before.types[type_idx].EqualsIncludingCollation(after.types[type_idx])) {
+			return false;
+		}
 	}
 	for (idx_t param_idx = 0; param_idx < before.parameters.size(); param_idx++) {
 		if (!before.parameters[param_idx]->Equals(*after.parameters[param_idx])) {
@@ -744,7 +751,20 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 			for (auto &member : base.macros) {
 				signatures.push_back(member->Copy());
 			}
+			// the fields that determine the DDL's effect are frozen across the callback too
+			const auto frozen_name = base.GetQualifiedName();
+			const auto frozen_on_conflict = base.on_conflict;
+			const auto frozen_temporary = base.temporary;
+			const auto frozen_internal = base.internal;
+			const auto frozen_type = base.type;
 			language_binder->ValidateCreate(context, base);
+			if (frozen_name != base.GetQualifiedName() || frozen_on_conflict != base.on_conflict ||
+			    frozen_temporary != base.temporary || frozen_internal != base.internal || frozen_type != base.type) {
+				throw InternalException(
+				    "The language binder for \"%s\" changed the target, conflict policy, or entry kind of %s() "
+				    "during validation, which is not allowed",
+				    entry_language, base.GetFunctionName());
+			}
 			if (!MacroSignaturesEqual(signatures, base)) {
 				throw InternalException(
 				    "The language binder for \"%s\" changed the member count, a resolved signature, or the default "

@@ -1,5 +1,6 @@
 #include "duckdb.hpp"
 #include "duckdb/catalog/catalog_entry/scalar_macro_catalog_entry.hpp"
+#include "duckdb/common/operator/cast_operators.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/function/language_macro_function.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
@@ -57,7 +58,11 @@ public:
 		// the source 'arg:<n>' compiles to the n-th argument, so tests observe the declaration
 		// order, default insertion, and parameter casts core hands to the language binder
 		if (StringUtil::StartsWith(member.source, "arg:")) {
-			auto argument_idx = std::stoull(member.source.substr(4));
+			idx_t argument_idx;
+			const auto index_text = member.source.substr(4);
+			if (index_text.empty() || !TryCast::Operation<string_t, idx_t>(string_t(index_text), argument_idx)) {
+				return BindResult(BinderException("testlang: malformed argument index \"%s\"", index_text));
+			}
 			if (argument_idx >= bound_arguments.size()) {
 				return BindResult(BinderException("testlang: argument index %llu is out of range", argument_idx));
 			}
