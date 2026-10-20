@@ -475,14 +475,34 @@ static string FrozenTypeIdentity(const LogicalType &type) {
 }
 //! The parts of a definition a language binder's ValidateCreate must leave unchanged: the resolved
 //! signature (parameters, types, defaults, return type) and the language. Sources may be rewritten.
-static bool MacroSignatureEquals(const MacroFunction &before, const MacroFunction &after) {
-	if (before.type != after.type || before.types.size() != after.types.size() ||
+//! A frozen member: a deep copy for the expression comparisons plus type identities captured
+//! BEFORE the callback runs. LogicalType copies share their type info, so an in-place extension
+//! metadata mutation would otherwise change the snapshot together with the definition.
+struct FrozenMemberSignature {
+	unique_ptr<MacroFunction> member;
+	vector<string> type_identities;
+	string return_identity;
+};
+
+static FrozenMemberSignature FreezeMemberSignature(const MacroFunction &member) {
+	FrozenMemberSignature result;
+	result.member = member.Copy();
+	for (auto &type : member.types) {
+		result.type_identities.push_back(FrozenTypeIdentity(type));
+	}
+	result.return_identity = FrozenTypeIdentity(member.return_type);
+	return result;
+}
+
+static bool MacroSignatureEquals(const FrozenMemberSignature &frozen, const MacroFunction &after) {
+	auto &before = *frozen.member;
+	if (before.type != after.type || frozen.type_identities.size() != after.types.size() ||
 	    before.parameters.size() != after.parameters.size() ||
-	    FrozenTypeIdentity(before.return_type) != FrozenTypeIdentity(after.return_type)) {
+	    frozen.return_identity != FrozenTypeIdentity(after.return_type)) {
 		return false;
 	}
-	for (idx_t type_idx = 0; type_idx < before.types.size(); type_idx++) {
-		if (FrozenTypeIdentity(before.types[type_idx]) != FrozenTypeIdentity(after.types[type_idx])) {
+	for (idx_t type_idx = 0; type_idx < after.types.size(); type_idx++) {
+		if (frozen.type_identities[type_idx] != FrozenTypeIdentity(after.types[type_idx])) {
 			return false;
 		}
 	}
@@ -514,12 +534,12 @@ static bool MacroSignatureEquals(const MacroFunction &before, const MacroFunctio
 	return true;
 }
 
-static bool MacroSignaturesEqual(const vector<unique_ptr<MacroFunction>> &before, const CreateMacroInfo &after) {
+static bool MacroSignaturesEqual(const vector<FrozenMemberSignature> &before, const CreateMacroInfo &after) {
 	if (before.size() != after.macros.size()) {
 		return false;
 	}
 	for (idx_t member_idx = 0; member_idx < before.size(); member_idx++) {
-		if (!MacroSignatureEquals(*before[member_idx], *after.macros[member_idx])) {
+		if (!MacroSignatureEquals(before[member_idx], *after.macros[member_idx])) {
 			return false;
 		}
 	}
@@ -796,9 +816,9 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 		auto language_entry = LanguageCatalogEntry::TryGet(context, entry_language);
 		if (language_entry && language_entry->binder) {
 			auto language_binder = language_entry->binder;
-			vector<unique_ptr<MacroFunction>> signatures;
+			vector<FrozenMemberSignature> signatures;
 			for (auto &member : base.macros) {
-				signatures.push_back(member->Copy());
+				signatures.push_back(FreezeMemberSignature(*member));
 			}
 			// the fields that determine the DDL's effect are frozen across the callback too
 			const auto frozen_name = base.GetQualifiedName();

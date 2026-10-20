@@ -481,3 +481,23 @@ query T
 EXECUTE q;
 ----
 int member back
+
+# adding a member that changes selection invalidates a current prepared plan (no DDL in between)
+statement ok
+CREATE FUNCTION pfa(x BIGINT) RETURNS VARCHAR LANGUAGE testlang AS 'big';
+
+statement ok
+PREPARE r AS SELECT pfa(1::INTEGER);
+
+query T
+EXECUTE r;
+----
+big
+
+statement ok
+CREATE FUNCTION pfa(x INTEGER) RETURNS VARCHAR LANGUAGE testlang AS 'int';
+
+query T
+EXECUTE r;
+----
+int
