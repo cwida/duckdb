@@ -224,11 +224,16 @@ BindResult ExpressionBinder::BindMacro(FunctionExpression &function, ScalarMacro
 	optional_ptr<MacroFunction> member;
 	BindResult result;
 	if (is_language_entry) {
-		// validate the arguments, separate positional and named arguments, and select the member to call
+		// validate the arguments, separate positional and named arguments, and select the member to call.
+		// selection moves the argument expressions out of the call, so it runs on a copy: this path
+		// does not replace the expression, and the original must stay rebindable for callers that
+		// retry binding this tree after a soft error
+		auto function_copy_owner = function.Copy();
+		auto &function_copy = function_copy_owner->Cast<FunctionExpression>();
 		vector<unique_ptr<ParsedExpression>> positional_arguments;
 		InsertionOrderPreservingMap<unique_ptr<ParsedExpression>, Identifier, identifier_map_t<idx_t>> named_arguments;
 		binder.lambda_bindings = lambda_bindings;
-		auto macro_result = MacroFunction::BindMacroFunction(binder, macro_func.macros, macro_func.name, function,
+		auto macro_result = MacroFunction::BindMacroFunction(binder, macro_func.macros, macro_func.name, function_copy,
 		                                                     positional_arguments, named_arguments, depth);
 		if (!macro_result.error.empty()) {
 			throw BinderException(*expr, macro_result.error);

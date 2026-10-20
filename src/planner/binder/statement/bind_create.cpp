@@ -429,24 +429,45 @@ void Binder::CheckMacroStorageVersion(Catalog &catalog, const CreateMacroInfo &i
 	}
 }
 
-//! The parts of a definition a language binder's ValidateCreate must leave unchanged
-static vector<string> SnapshotMacroSignatures(const CreateMacroInfo &info) {
-	vector<string> result;
-	for (auto &member : info.macros) {
-		string signature;
-		for (idx_t param_idx = 0; param_idx < member->parameters.size(); param_idx++) {
-			auto &param_name = member->parameters[param_idx]->Cast<ColumnRefExpression>().GetColumnName();
-			signature += param_name.GetIdentifierName() + " ";
-			signature += param_idx < member->types.size() ? member->types[param_idx].ToString() : string("UNKNOWN");
-			signature += ", ";
-		}
-		signature += "RETURNS " + member->return_type.ToString();
-		if (member->type == MacroType::LANGUAGE_MACRO) {
-			signature += " LANGUAGE " + member->Cast<LanguageMacroFunction>().language;
-		}
-		result.push_back(std::move(signature));
+//! The parts of a definition a language binder's ValidateCreate must leave unchanged: the resolved
+//! signature (parameters, types, defaults, return type) and the language. Sources may be rewritten.
+static bool MacroSignatureEquals(const MacroFunction &before, const MacroFunction &after) {
+	if (before.type != after.type || before.return_type != after.return_type || before.types != after.types ||
+	    before.parameters.size() != after.parameters.size()) {
+		return false;
 	}
-	return result;
+	for (idx_t param_idx = 0; param_idx < before.parameters.size(); param_idx++) {
+		if (!before.parameters[param_idx]->Equals(*after.parameters[param_idx])) {
+			return false;
+		}
+	}
+	if (before.default_parameters.size() != after.default_parameters.size()) {
+		return false;
+	}
+	for (auto &default_param : before.default_parameters) {
+		auto other = after.default_parameters.find(default_param.first);
+		if (other == after.default_parameters.end() || !default_param.second->Equals(*other->second)) {
+			return false;
+		}
+	}
+	if (before.type == MacroType::LANGUAGE_MACRO &&
+	    !StringUtil::CIEquals(before.Cast<LanguageMacroFunction>().language,
+	                          after.Cast<LanguageMacroFunction>().language)) {
+		return false;
+	}
+	return true;
+}
+
+static bool MacroSignaturesEqual(const vector<unique_ptr<MacroFunction>> &before, const CreateMacroInfo &after) {
+	if (before.size() != after.macros.size()) {
+		return false;
+	}
+	for (idx_t member_idx = 0; member_idx < before.size(); member_idx++) {
+		if (!MacroSignatureEquals(*before[member_idx], *after.macros[member_idx])) {
+			return false;
+		}
+	}
+	return true;
 }
 void Binder::CheckLanguageMacroStorageVersion(Catalog &catalog, const CreateMacroInfo &info) {
 	bool uses_language_features = false;
@@ -719,12 +740,15 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 		auto language_entry = LanguageCatalogEntry::TryGet(context, entry_language);
 		if (language_entry && language_entry->binder) {
 			auto language_binder = language_entry->binder;
-			const auto signatures = SnapshotMacroSignatures(base);
+			vector<unique_ptr<MacroFunction>> signatures;
+			for (auto &member : base.macros) {
+				signatures.push_back(member->Copy());
+			}
 			language_binder->ValidateCreate(context, base);
-			if (signatures != SnapshotMacroSignatures(base)) {
+			if (!MacroSignaturesEqual(signatures, base)) {
 				throw InternalException(
-				    "The language binder for \"%s\" changed the member count or a resolved signature of %s() during "
-				    "validation, which is not allowed",
+				    "The language binder for \"%s\" changed the member count, a resolved signature, or the default "
+				    "parameters of %s() during validation, which is not allowed",
 				    entry_language, base.GetFunctionName());
 			}
 		}

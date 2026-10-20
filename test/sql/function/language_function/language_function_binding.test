@@ -123,6 +123,91 @@ SELECT pick(x => 1);
 ----
 integer member
 
+# argument declaration order, named arguments, and defaults as the language binder observes them:
+# the testlang source 'arg:<n>' compiles to the n-th argument handed to the binder
+statement ok
+CREATE FUNCTION arg_a(a INTEGER, b INTEGER := 20, c INTEGER := 30) RETURNS INTEGER LANGUAGE testlang AS 'arg:0';
+
+statement ok
+CREATE FUNCTION arg_b(a INTEGER, b INTEGER := 20, c INTEGER := 30) RETURNS INTEGER LANGUAGE testlang AS 'arg:1';
+
+statement ok
+CREATE FUNCTION arg_c(a INTEGER, b INTEGER := 20, c INTEGER := 30) RETURNS INTEGER LANGUAGE testlang AS 'arg:2';
+
+query III
+SELECT arg_a(1), arg_b(1), arg_c(1);
+----
+1	20	30
+
+query III
+SELECT arg_a(1, c => 9, b => 8), arg_b(1, c => 9, b => 8), arg_c(1, c => 9, b => 8);
+----
+1	8	9
+
+query III
+SELECT arg_a(c => 9, a => 1), arg_b(c => 9, a => 1), arg_c(c => 9, a => 1);
+----
+1	20	9
+
+# the parameter cast is applied before the binder sees the argument
+query T
+SELECT typeof(arg_a(1::SMALLINT));
+----
+INTEGER
+
+# ... and an argument without an implicit cast to the parameter type is rejected like a macro call
+statement error
+SELECT arg_a(2147483647::BIGINT * 2);
+----
+<REGEX>:.*does not support the supplied arguments.*
+
+# IF NOT EXISTS adds a non-conflicting sibling
+statement ok
+CREATE FUNCTION IF NOT EXISTS arg_a(x VARCHAR) RETURNS VARCHAR LANGUAGE testlang AS 'varchar sibling';
+
+query T
+SELECT arg_a('s'::VARCHAR);
+----
+varchar sibling
+
+# OR REPLACE refuses to replace several conflicting members at once
+statement ok
+CREATE FUNCTION multi_conf(x INTEGER) LANGUAGE testlang AS '1';
+
+statement ok
+CREATE FUNCTION multi_conf(x VARCHAR) LANGUAGE testlang AS '2';
+
+statement error
+CREATE OR REPLACE FUNCTION multi_conf(y) LANGUAGE testlang AS '3';
+----
+<REGEX>:.*conflicts with several existing overloads.*
+
+# a member-granular drop of a sibling rolls back like any catalog change
+statement ok
+CREATE FUNCTION rb() RETURNS VARCHAR LANGUAGE testlang AS 'zero';
+
+statement ok
+CREATE FUNCTION rb(x INTEGER) RETURNS VARCHAR LANGUAGE testlang AS 'one';
+
+statement ok
+BEGIN;
+
+statement ok
+DROP FUNCTION rb(INTEGER);
+
+statement error
+SELECT rb(1);
+----
+<REGEX>:.*does not support the supplied arguments.*
+
+statement ok
+ROLLBACK;
+
+query TT
+SELECT rb(), rb(1);
+----
+zero	one
+
 # disabling autoload leaves the clean missing-binder error for unknown languages
 statement ok
 SET autoload_known_extensions = false;

@@ -46,14 +46,25 @@ public:
 	                          vector<unique_ptr<ParsedExpression>> arguments, idx_t depth) override {
 		// a testlang constant ignores its arguments, but argument resolution errors must still surface
 		ErrorData error;
+		vector<unique_ptr<Expression>> bound_arguments;
 		for (auto &argument : arguments) {
 			auto bound_argument = binder.BindChild(argument, depth, error);
 			if (error.HasError()) {
 				return BindResult(std::move(error));
 			}
+			bound_arguments.push_back(std::move(bound_argument));
 		}
-		// the compiled form of a testlang function is the constant its source denotes, core
-		// applies the declared RETURNS cast
+		// the source 'arg:<n>' compiles to the n-th argument, so tests observe the declaration
+		// order, default insertion, and parameter casts core hands to the language binder
+		if (StringUtil::StartsWith(member.source, "arg:")) {
+			auto argument_idx = std::stoull(member.source.substr(4));
+			if (argument_idx >= bound_arguments.size()) {
+				return BindResult(BinderException("testlang: argument index %llu is out of range", argument_idx));
+			}
+			return BindResult(std::move(bound_arguments[argument_idx]));
+		}
+		// otherwise the compiled form is the constant the source denotes, core applies the
+		// declared RETURNS cast
 		return BindResult(make_uniq<BoundConstantExpression>(Value(member.source)));
 	}
 };

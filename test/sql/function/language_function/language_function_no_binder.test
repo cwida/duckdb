@@ -109,6 +109,9 @@ statement ok
 CREATE FUNCTION tricky_keyword() LANGUAGE testlang AS 'CREATE FUNCTION f() LANGUAGE testlang AS ''nested''';
 
 statement ok
+CREATE FUNCTION tricky_quoted("a b" INTEGER) LANGUAGE testlang AS 'quoted param';
+
+statement ok
 EXPORT DATABASE '{TEST_DIR}/language_function_tricky_export';
 
 statement ok
@@ -122,6 +125,9 @@ DROP FUNCTION tricky_backslash;
 
 statement ok
 DROP FUNCTION tricky_keyword;
+
+statement ok
+DROP FUNCTION tricky_quoted;
 
 statement ok
 DROP FUNCTION exported_fun;
@@ -138,9 +144,18 @@ SELECT function_name, replace(macro_definition, chr(10), '<NL>') FROM duckdb_fun
 tricky_backslash	a\b\\c
 tricky_keyword	CREATE FUNCTION f() LANGUAGE testlang AS 'nested'
 tricky_newline	line1<NL>line2
+tricky_quoted	quoted param
 tricky_unicode	dückdb 🦆
 
+query T
+SELECT parameters FROM duckdb_functions() WHERE function_name = 'tricky_quoted';
+----
+[a b]
+
 # clean up so the next export section starts from a known catalog
+statement ok
+DROP FUNCTION tricky_quoted;
+
 statement ok
 DROP FUNCTION tricky_newline;
 

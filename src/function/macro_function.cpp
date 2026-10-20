@@ -303,6 +303,11 @@ MacroFunction::GetPositionalParametersForSerialization(Serializer &serializer) c
 	// this runs at the start of member serialization: reject a definition the target storage
 	// version cannot represent instead of silently dropping its fields
 	if (!serializer.ShouldSerialize(StorageVersion::V2_1_0)) {
+		if (type == MacroType::LANGUAGE_MACRO) {
+			throw SerializationException(
+			    "Cannot write a LANGUAGE function for a storage version below v2.1.0. Re-attach "
+			    "with (STORAGE_VERSION 'v2.1.0') or drop the function");
+		}
 		if (return_type.id() != LogicalTypeId::UNKNOWN) {
 			throw SerializationException(
 			    "Cannot write a macro with a declared RETURNS type for a storage version below v2.1.0. Re-attach "
