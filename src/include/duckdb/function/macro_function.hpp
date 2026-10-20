@@ -19,7 +19,7 @@ class FunctionExpression;
 
 class ScalarMacroFunction;
 
-enum class MacroType : uint8_t { VOID_MACRO = 0, TABLE_MACRO = 1, SCALAR_MACRO = 2 };
+enum class MacroType : uint8_t { VOID_MACRO = 0, TABLE_MACRO = 1, SCALAR_MACRO = 2, LANGUAGE_MACRO = 3 };
 
 struct MacroBindResult {
 	explicit MacroBindResult(string error_p) : error(std::move(error_p)) {

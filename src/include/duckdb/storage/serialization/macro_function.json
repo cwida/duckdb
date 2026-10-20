@@ -71,5 +71,25 @@
         "type": "QueryNode*"
       }
     ]
+  },
+  {
+    "class": "LanguageMacroFunction",
+    "base": "MacroFunction",
+    "enum": "LANGUAGE_MACRO",
+    "includes": [
+      "duckdb/function/language_macro_function.hpp"
+    ],
+    "members": [
+      {
+        "id": 200,
+        "name": "language",
+        "type": "string"
+      },
+      {
+        "id": 201,
+        "name": "source",
+        "type": "string"
+      }
+    ]
   }
 ]
