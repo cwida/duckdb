@@ -456,6 +456,11 @@ static bool MacroSignatureEquals(const MacroFunction &before, const MacroFunctio
 		if (other == after.default_parameters.end() || !default_param.second->Equals(*other->second)) {
 			return false;
 		}
+		// Equals ignores aliases, which carry struct field names in type expressions: the rendered
+		// form includes them, so a mutation must collide in both representations to slip through
+		if (default_param.second->ToString() != other->second->ToString()) {
+			return false;
+		}
 	}
 	if (before.type == MacroType::LANGUAGE_MACRO &&
 	    !StringUtil::CIEquals(before.Cast<LanguageMacroFunction>().language,
