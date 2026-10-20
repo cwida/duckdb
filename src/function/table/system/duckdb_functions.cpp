@@ -8,6 +8,7 @@
 #include "duckdb/catalog/catalog_entry/scalar_macro_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/table_macro_catalog_entry.hpp"
 #include "duckdb/function/table_macro_function.hpp"
+#include "duckdb/function/language_macro_function.hpp"
 #include "duckdb/function/scalar_macro_function.hpp"
 #include "duckdb/catalog/catalog_entry/table_function_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/pragma_function_catalog_entry.hpp"
@@ -97,6 +98,9 @@ static unique_ptr<FunctionData> DuckDBFunctionsBind(ClientContext &context, Tabl
 
 	names.emplace_back("categories");
 	return_types.emplace_back(LogicalType::LIST(LogicalType::VARCHAR));
+
+	names.emplace_back("language");
+	return_types.emplace_back(LogicalType::VARCHAR);
 
 	return nullptr;
 }
@@ -207,6 +211,10 @@ struct ScalarFunctionExtractor {
 		                      FunctionStability::VOLATILE);
 	}
 
+	static Value GetLanguage(ScalarFunctionCatalogEntry &entry, idx_t offset) {
+		return Value();
+	}
+
 	static Value ResultType(ScalarFunctionCatalogEntry &entry, idx_t offset) {
 		return FunctionStabilityToValue(entry.functions.GetFunctionByOffset(offset)->GetStability());
 	}
@@ -267,6 +275,10 @@ struct WindowFunctionExtractor {
 
 	static Value IsVolatile(WindowFunctionCatalogEntry &entry, idx_t offset) {
 		return Value::BOOLEAN(false);
+	}
+
+	static Value GetLanguage(WindowFunctionCatalogEntry &entry, idx_t offset) {
+		return Value();
 	}
 
 	static Value ResultType(WindowFunctionCatalogEntry &entry, idx_t offset) {
@@ -332,6 +344,10 @@ struct AggregateFunctionExtractor {
 		                      FunctionStability::VOLATILE);
 	}
 
+	static Value GetLanguage(AggregateFunctionCatalogEntry &entry, idx_t offset) {
+		return Value();
+	}
+
 	static Value ResultType(AggregateFunctionCatalogEntry &entry, idx_t offset) {
 		return FunctionStabilityToValue(entry.functions.GetFunctionByOffset(offset)->GetStability());
 	}
@@ -390,7 +406,10 @@ struct MacroExtractor {
 
 	static Value GetMacroDefinition(ScalarMacroCatalogEntry &entry, idx_t offset) {
 		auto &macro_entry = *entry.macros[offset];
-		D_ASSERT(macro_entry.type == MacroType::SCALAR_MACRO);
+		if (macro_entry.type == MacroType::LANGUAGE_MACRO) {
+			// the verbatim source of a language member
+			return Value(macro_entry.Cast<LanguageMacroFunction>().source);
+		}
 		auto &func = macro_entry.Cast<ScalarMacroFunction>();
 		return func.expression->ToString();
 	}
@@ -400,6 +419,14 @@ struct MacroExtractor {
 	}
 
 	static Value ResultType(ScalarMacroCatalogEntry &entry, idx_t offset) {
+		return Value();
+	}
+
+	static Value GetLanguage(ScalarMacroCatalogEntry &entry, idx_t offset) {
+		auto &macro_entry = *entry.macros[offset];
+		if (macro_entry.type == MacroType::LANGUAGE_MACRO) {
+			return Value(macro_entry.Cast<LanguageMacroFunction>().language);
+		}
 		return Value();
 	}
 };
@@ -461,6 +488,10 @@ struct TableMacroExtractor {
 	}
 
 	static Value IsVolatile(TableMacroCatalogEntry &entry, idx_t offset) {
+		return Value();
+	}
+
+	static Value GetLanguage(TableMacroCatalogEntry &entry, idx_t offset) {
 		return Value();
 	}
 
@@ -542,6 +573,10 @@ struct TableFunctionExtractor {
 		return Value();
 	}
 
+	static Value GetLanguage(TableFunctionCatalogEntry &entry, idx_t offset) {
+		return Value();
+	}
+
 	static Value ResultType(TableFunctionCatalogEntry &entry, idx_t offset) {
 		return Value();
 	}
@@ -607,6 +642,10 @@ struct PragmaFunctionExtractor {
 	}
 
 	static Value IsVolatile(PragmaFunctionCatalogEntry &entry, idx_t offset) {
+		return Value();
+	}
+
+	static Value GetLanguage(PragmaFunctionCatalogEntry &entry, idx_t offset) {
 		return Value();
 	}
 
@@ -769,6 +808,9 @@ bool ExtractFunctionData(CatalogEntry &entry, idx_t function_idx, DataChunk &out
 
 	// categories, LogicalType::LIST(LogicalType::VARCHAR)
 	output.data[col++].Append(Value::LIST(LogicalType::VARCHAR, ToValueVector(function_description.categories)));
+
+	// language, LogicalType::VARCHAR
+	output.data[col++].Append(OP::GetLanguage(function, function_idx));
 
 	return function_idx + 1 == OP::FunctionCount(function);
 }

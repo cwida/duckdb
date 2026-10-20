@@ -349,6 +349,18 @@ void MacroFunction::FinalizeDeserialization() {
 	}
 }
 
+bool MacroFunction::HasUntypedParameter() const {
+	if (types.size() < parameters.size()) {
+		return true;
+	}
+	for (auto &type : types) {
+		if (type.id() == LogicalTypeId::UNKNOWN) {
+			return true;
+		}
+	}
+	return false;
+}
+
 bool MacroFunction::MatchesSignature(const vector<LogicalType> &signature) const {
 	if (parameters.size() != signature.size()) {
 		return false;
@@ -367,6 +379,38 @@ bool MacroFunction::MatchesSignature(const vector<LogicalType> &signature) const
 		}
 	}
 	return true;
+}
+
+bool MacroFunction::ConflictsWith(const MacroFunction &other) const {
+	if (parameters.size() != other.parameters.size()) {
+		return false;
+	}
+	if (HasUntypedParameter() || other.HasUntypedParameter()) {
+		// an untyped member occupies its whole arity
+		return true;
+	}
+	for (idx_t i = 0; i < parameters.size(); i++) {
+		if (types[i] != other.types[i]) {
+			return false;
+		}
+	}
+	return true;
+}
+
+string MacroFunction::SignatureToString() const {
+	string result = "(";
+	for (idx_t i = 0; i < parameters.size(); i++) {
+		if (i > 0) {
+			result += ", ";
+		}
+		const auto &param_name = parameters[i]->Cast<ColumnRefExpression>().GetColumnName();
+		result += SQLIdentifier::ToString(param_name);
+		if (i < types.size() && types[i].id() != LogicalTypeId::UNKNOWN) {
+			result += " " + types[i].ToString();
+		}
+	}
+	result += ")";
+	return result;
 }
 
 string MacroFunction::ToSQL() const {
