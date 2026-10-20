@@ -24,6 +24,7 @@ class TableFunctionCatalogEntry;
 class DatabaseInstance;
 struct CreateMacroInfo;
 struct CreateCollationInfo;
+class LanguageFunctionBinder;
 struct CreateAggregateFunctionInfo;
 struct CreateScalarFunctionInfo;
 struct CreateTableFunctionInfo;
@@ -105,6 +106,10 @@ public:
 
 	//! Register a new collation
 	DUCKDB_API void RegisterCollation(CreateCollationInfo &info);
+	//! Register a function language in the system catalog (transient, never persisted). Registering a
+	//! language that already exists is rejected unless allow_replace is set.
+	DUCKDB_API void RegisterLanguage(const string &language, shared_ptr<LanguageFunctionBinder> binder,
+	                                 bool allow_replace = false);
 
 	//! Register a new coordinate system
 	DUCKDB_API void RegisterCoordinateSystem(CreateCoordinateSystemInfo &info);

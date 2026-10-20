@@ -4066,19 +4066,20 @@ const StringUtil::EnumStringLiteral *GetMacroTypeValues() {
 	static constexpr StringUtil::EnumStringLiteral values[] {
 		{ static_cast<uint32_t>(MacroType::VOID_MACRO), "VOID_MACRO" },
 		{ static_cast<uint32_t>(MacroType::TABLE_MACRO), "TABLE_MACRO" },
-		{ static_cast<uint32_t>(MacroType::SCALAR_MACRO), "SCALAR_MACRO" }
+		{ static_cast<uint32_t>(MacroType::SCALAR_MACRO), "SCALAR_MACRO" },
+		{ static_cast<uint32_t>(MacroType::LANGUAGE_MACRO), "LANGUAGE_MACRO" }
 	};
 	return values;
 }
 
 template<>
 const char* EnumUtil::ToChars<MacroType>(MacroType value) {
-	return StringUtil::EnumToString(GetMacroTypeValues(), 3, "MacroType", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetMacroTypeValues(), 4, "MacroType", static_cast<uint32_t>(value));
 }
 
 template<>
 MacroType EnumUtil::FromString<MacroType>(const char *value) {
-	return static_cast<MacroType>(StringUtil::StringToEnum(GetMacroTypeValues(), 3, "MacroType", value));
+	return static_cast<MacroType>(StringUtil::StringToEnum(GetMacroTypeValues(), 4, "MacroType", value));
 }
 
 const StringUtil::EnumStringLiteral *GetMapInvalidReasonValues() {

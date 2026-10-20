@@ -1,4 +1,6 @@
 #include "duckdb/main/extension/extension_loader.hpp"
+#include "duckdb/catalog/catalog_entry/duck_schema_entry.hpp"
+#include "duckdb/catalog/catalog_entry/language_catalog_entry.hpp"
 
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/parser/parsed_data/create_aggregate_function_info.hpp"
@@ -273,6 +275,18 @@ void ExtensionLoader::RegisterFunction(CreateMacroInfo &info) {
 	auto &system_catalog = Catalog::GetSystemCatalog(db);
 	auto data = CatalogTransaction::GetSystemTransaction(db);
 	system_catalog.CreateFunction(data, info);
+}
+
+void ExtensionLoader::RegisterLanguage(const string &language, shared_ptr<LanguageFunctionBinder> binder,
+                                       bool allow_replace) {
+	CreateLanguageInfo info((Identifier(language)));
+	info.extension_name = GetRegisteredExtensionName();
+	info.binder = std::move(binder);
+	info.on_conflict = allow_replace ? OnCreateConflict::REPLACE_ON_CONFLICT : OnCreateConflict::ERROR_ON_CONFLICT;
+	auto &system_catalog = Catalog::GetSystemCatalog(db);
+	auto data = CatalogTransaction::GetSystemTransaction(db);
+	auto &schema = system_catalog.GetSchema(data, Identifier::DefaultSchema()).Cast<DuckSchemaEntry>();
+	schema.CreateLanguage(data, info);
 }
 
 void ExtensionLoader::RegisterCollation(CreateCollationInfo &info) {
