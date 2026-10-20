@@ -23,6 +23,7 @@
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/planner/column_binding.hpp"
 #include "duckdb/common/enums/collation_type.hpp"
+#include "duckdb/common/insertion_order_preserving_map.hpp"
 
 namespace duckdb {
 

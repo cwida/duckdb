@@ -6,9 +6,13 @@
 #include "duckdb/common/enums/on_entry_not_found.hpp"
 #include "duckdb/common/exception/binder_exception.hpp"
 #include "duckdb/common/unique_ptr.hpp"
+#include "duckdb/catalog/catalog_entry/language_catalog_entry.hpp"
+#include "duckdb/function/language_macro_function.hpp"
 #include "duckdb/function/scalar_macro_function.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/language_function_binder.hpp"
+#include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/parser/expression/conjunction_expression.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/expression/subquery_expression.hpp"
@@ -211,18 +215,53 @@ BindResult ExpressionBinder::BindMacro(FunctionExpression &function, ScalarMacro
 	// expanding nested macros can take a long time, allow the query to be interrupted
 	context.InterruptCheck();
 
-	// unfold the macro expression
-	auto &member = UnfoldMacroExpression(function, macro_func, expr, depth);
+	// a function entry holds either language members or plain macro members, never both: plain
+	// entries keep the original selection, which consumes the call's arguments and replaces the
+	// expression wholesale, so regular macros bind without copying the call
+	const bool is_language_entry =
+	    !macro_func.macros.empty() && macro_func.macros[0]->type == MacroType::LANGUAGE_MACRO;
 
-	// bind the unfolded macro
-	auto result = BindExpression(expr, depth);
+	optional_ptr<MacroFunction> member;
+	BindResult result;
+	if (is_language_entry) {
+		// validate the arguments, separate positional and named arguments, and select the member to call
+		vector<unique_ptr<ParsedExpression>> positional_arguments;
+		InsertionOrderPreservingMap<unique_ptr<ParsedExpression>, Identifier, identifier_map_t<idx_t>> named_arguments;
+		binder.lambda_bindings = lambda_bindings;
+		auto macro_result = MacroFunction::BindMacroFunction(binder, macro_func.macros, macro_func.name, function,
+		                                                     positional_arguments, named_arguments, depth);
+		if (!macro_result.error.empty()) {
+			throw BinderException(*expr, macro_result.error);
+		}
+		member = macro_func.macros[macro_result.function_idx.GetIndex()];
+		auto &language_member = member->Cast<LanguageMacroFunction>();
+		if (expr->GetExpressionClass() == ExpressionClass::WINDOW) {
+			throw BinderException(*expr, "Function \"%s\" is a %s function and cannot be used as a window function",
+			                      macro_func.name, language_member.language);
+		}
+		// flatten the arguments into parameter declaration order, defaults were already filled in
+		auto arguments = std::move(positional_arguments);
+		for (idx_t i = arguments.size(); i < language_member.parameters.size(); i++) {
+			auto &param_name = language_member.parameters[i]->Cast<ColumnRefExpression>().GetColumnName();
+			auto named_it = named_arguments.find(param_name);
+			D_ASSERT(named_it != named_arguments.end());
+			arguments.push_back(std::move(named_it->second));
+		}
+		auto language_binder =
+		    LanguageCatalogEntry::GetBinder(context, language_member.language, macro_func.name.GetIdentifierName());
+		result = language_binder->BindScalarCall(*this, macro_func, language_member, std::move(arguments), depth);
+	} else {
+		// unfold the macro expression and bind the result
+		member = UnfoldMacroExpression(function, macro_func, expr, depth);
+		result = BindExpression(expr, depth);
+	}
 	if (result.HasError()) {
 		return result;
 	}
 	// enforce a declared RETURNS type by casting the member's result to it
-	if (member.return_type.id() != LogicalTypeId::UNKNOWN) {
+	if (member->return_type.id() != LogicalTypeId::UNKNOWN) {
 		result.expression =
-		    BoundCastExpression::AddCastToType(context, std::move(result.expression), member.return_type);
+		    BoundCastExpression::AddCastToType(context, std::move(result.expression), member->return_type);
 	}
 	return result;
 }

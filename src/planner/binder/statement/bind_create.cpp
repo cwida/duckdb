@@ -5,7 +5,10 @@
 #include "duckdb/parser/parsed_data/create_schema_info.hpp"
 #include "duckdb/catalog/catalog_search_path.hpp"
 #include "duckdb/catalog/duck_catalog.hpp"
+#include "duckdb/catalog/catalog_entry/language_catalog_entry.hpp"
+#include "duckdb/function/language_macro_function.hpp"
 #include "duckdb/function/scalar_macro_function.hpp"
+#include "duckdb/main/language_function_binder.hpp"
 #include "duckdb/function/table/table_scan.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/client_context.hpp"
@@ -425,6 +428,25 @@ void Binder::CheckMacroStorageVersion(Catalog &catalog, const CreateMacroInfo &i
 	}
 }
 
+//! The parts of a definition a language binder's ValidateCreate must leave unchanged
+static vector<string> SnapshotMacroSignatures(const CreateMacroInfo &info) {
+	vector<string> result;
+	for (auto &member : info.macros) {
+		string signature;
+		for (idx_t param_idx = 0; param_idx < member->parameters.size(); param_idx++) {
+			auto &param_name = member->parameters[param_idx]->Cast<ColumnRefExpression>().GetColumnName();
+			signature += param_name.GetIdentifierName() + " ";
+			signature += param_idx < member->types.size() ? member->types[param_idx].ToString() : string("UNKNOWN");
+			signature += ", ";
+		}
+		signature += "RETURNS " + member->return_type.ToString();
+		if (member->type == MacroType::LANGUAGE_MACRO) {
+			signature += " LANGUAGE " + member->Cast<LanguageMacroFunction>().language;
+		}
+		result.push_back(std::move(signature));
+	}
+	return result;
+}
 SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 	//! Set to identify exact matches in macro overloads
 	struct VectorOfLogicalTypeHash {
@@ -458,20 +480,45 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 	SearchSchema(info);
 	auto &catalog = Catalog::GetCatalog(context, info.GetQualifiedName().Catalog());
 
-	// Figure out if we can store typed macro parameters
+	// Figure out if we can store typed macro parameters and language/RETURNS members
 	auto &attached = catalog.GetAttached();
 	auto store_types = true;
+	auto store_language_features = true;
 	if (attached.HasStorageManager()) {
 		// If DuckDB is used as a storage, we must check the version.
 		auto &storage_manager = attached.GetStorageManager();
 		const auto since = StorageCompatibility::FromString("v1.4.0").storage_version;
-		store_types = info.temporary || attached.IsTemporary() || storage_manager.InMemory() ||
-		              storage_manager.GetStorageVersion() >= since;
+		const auto always_storable = info.temporary || attached.IsTemporary() || storage_manager.InMemory();
+		store_types = always_storable || storage_manager.GetStorageVersion() >= since;
+		const auto language_since = StorageCompatibility::FromString("v2.1.0").storage_version;
+		store_language_features = always_storable || storage_manager.GetStorageVersion() >= language_since;
 	}
 	// try to bind each of the included functions
 	vector_of_logical_type_set_t type_overloads;
 	auto &base = info.Cast<CreateMacroInfo>();
 	CheckMacroStorageVersion(catalog, base);
+	// a function entry holds either plain macro members or language members of a single language
+	string entry_language;
+	bool has_language_members = false;
+	bool has_plain_members = false;
+	for (auto &function : base.macros) {
+		if (function->type != MacroType::LANGUAGE_MACRO) {
+			has_plain_members = true;
+			continue;
+		}
+		auto &language_member = function->Cast<LanguageMacroFunction>();
+		if (has_language_members && language_member.language != entry_language) {
+			throw BinderException("Macro %s() cannot mix members of languages \"%s\" and \"%s\"",
+			                      base.GetFunctionName(), entry_language, language_member.language);
+		}
+		entry_language = language_member.language;
+		has_language_members = true;
+	}
+	if (has_language_members && has_plain_members) {
+		throw BinderException("Macro %s() cannot mix language function members and plain macro members",
+		                      base.GetFunctionName());
+	}
+
 	for (auto &function : base.macros) {
 		if (!store_types) {
 			for (const auto &type : function->types) {
@@ -482,8 +529,17 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 				}
 			}
 		}
+		if (!store_language_features &&
+		    (function->type == MacroType::LANGUAGE_MACRO || function->return_type.id() != LogicalTypeId::UNKNOWN)) {
+			string msg = "Language functions and RETURNS types are only supported for storage versions v2.1.0 and "
+			             "higher.\n";
+			msg += "Use an in-memory database, ATTACH with (STORAGE_VERSION v2.1.0), or create a TEMP function";
+			throw BinderException(msg);
+		}
 
-		if (info.type == CatalogType::MACRO_ENTRY) {
+		if (function->type == MacroType::LANGUAGE_MACRO) {
+			// the source is stored verbatim, there is no expression to verify here
+		} else if (info.type == CatalogType::MACRO_ENTRY) {
 			auto &scalar_function = function->Cast<ScalarMacroFunction>();
 			if (scalar_function.expression->HasParameter()) {
 				throw BinderException("Parameter expressions within macro's are not supported!");
@@ -595,7 +651,9 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 
 		// bind it to verify the function was defined correctly
 		ErrorData error;
-		if (info.type == CatalogType::MACRO_ENTRY) {
+		if (function->type == MacroType::LANGUAGE_MACRO) {
+			// language sources are validated by the language's binder below, when it is registered
+		} else if (info.type == CatalogType::MACRO_ENTRY) {
 			BoundSelectNode sel_node;
 			SelectBinder binder(*this, context, sel_node);
 			if (should_create_dependencies) {
@@ -637,6 +695,23 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 		// if we cannot resolve parameters we postpone binding until the macro function is used
 		if (error.HasError() && error.Type() != ExceptionType::PARAMETER_NOT_RESOLVED) {
 			error.Throw();
+		}
+	}
+
+	if (has_language_members) {
+		// hand the definition to the language's binder for validation, when the language is registered.
+		// without it the definition is stored unvalidated, so replay and IMPORT work without the extension
+		auto language_entry = LanguageCatalogEntry::TryGet(context, entry_language);
+		if (language_entry && language_entry->binder) {
+			auto language_binder = language_entry->binder;
+			const auto signatures = SnapshotMacroSignatures(base);
+			language_binder->ValidateCreate(context, base);
+			if (signatures != SnapshotMacroSignatures(base)) {
+				throw InternalException(
+				    "The language binder for \"%s\" changed the member count or a resolved signature of %s() during "
+				    "validation, which is not allowed",
+				    entry_language, base.GetFunctionName());
+			}
 		}
 	}
 
