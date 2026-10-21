@@ -388,14 +388,20 @@ bool MacroFunction::MatchesSignature(const vector<LogicalType> &signature) const
 }
 
 bool MacroFunction::ConflictsWith(const MacroFunction &other) const {
-	if (parameters.size() != other.parameters.size()) {
+	// a member occupies its default arity range: f(a) conflicts with f(a, b := 5). Only language
+	// overload sets reach this, plain macro members keep call-time selection
+	const auto shared_arity = MaxValue(parameters.size() - default_parameters.size(),
+	                                   other.parameters.size() - other.default_parameters.size());
+	if (shared_arity > MinValue(parameters.size(), other.parameters.size())) {
+		// the callable arity ranges are disjoint
 		return false;
 	}
 	if (HasUntypedParameter() || other.HasUntypedParameter()) {
-		// an untyped member occupies its whole arity
+		// an untyped member occupies its whole arity range
 		return true;
 	}
-	for (idx_t i = 0; i < parameters.size(); i++) {
+	// the smallest shared arity decides: a call with that many arguments could name either member
+	for (idx_t i = 0; i < shared_arity; i++) {
 		if (types[i] != other.types[i]) {
 			return false;
 		}

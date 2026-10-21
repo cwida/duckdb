@@ -12,6 +12,7 @@
 #include "duckdb/parser/parsed_data/drop_info.hpp"
 #include "duckdb/parser/parsed_data/extra_drop_info.hpp"
 #include "duckdb/parser/expression/type_expression.hpp"
+#include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/statement/create_statement.hpp"
 #include "duckdb/parser/expression/type_expression.hpp"
 #include "duckdb/parser/parsed_data/create_language_info.hpp"
@@ -284,4 +285,74 @@ TEST_CASE("Nested unbound member types resolve at CREATE", "[api]") {
 	                             "FROM duckdb_functions() WHERE function_name = 'aliased_sibling'");
 	REQUIRE(CHECK_COLUMN(alias_types, 0, {2}));
 	REQUIRE(CHECK_COLUMN(alias_types, 1, {true}));
+}
+
+TEST_CASE("Batch member creation follows the overload identity", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	RegisterTestLanguage(*db.instance, "batchlang", make_shared_ptr<MutatingBinder>(nullptr));
+
+	// a dialect may submit several members in one CREATE: the set must satisfy the same conflict
+	// identity as incremental creation, or EXPORT emits a set IMPORT cannot re-create
+	auto make_member = [](const string &source, bool with_default) {
+		auto member = make_uniq<LanguageMacroFunction>("batchlang", source);
+		member->parameters.push_back(make_uniq<ColumnRefExpression>(Identifier("a")));
+		member->types.push_back(LogicalType::INTEGER);
+		if (with_default) {
+			auto default_expr = make_uniq<ConstantExpression>(Literal(LiteralKind::INTEGER, "5"));
+			default_expr->SetAlias(Identifier("c"));
+			member->default_parameters[Identifier("c")] = std::move(default_expr);
+			member->parameters.push_back(make_uniq<ColumnRefExpression>(Identifier("c")));
+			member->types.push_back(LogicalType::INTEGER);
+		}
+		return member;
+	};
+
+	auto info = make_uniq<CreateMacroInfo>(CatalogType::MACRO_ENTRY);
+	info->SetFunctionName(Identifier("batch_fun"));
+	info->macros.push_back(make_member("fixed", false));
+	info->macros.push_back(make_member("ranged", true));
+	auto statement = make_uniq<CreateStatement>();
+	statement->info = std::move(info);
+	unique_ptr<SQLStatement> sql_statement = std::move(statement);
+	auto result = con.Query(std::move(sql_statement));
+	REQUIRE_FAIL(result);
+	REQUIRE(StringUtil::Contains(result->GetError(), "conflicting overload members"));
+
+	// the identity is compared on the resolved signatures: an unresolved spelling of the same
+	// type must not slip past the pairwise check
+	auto spelled_info = make_uniq<CreateMacroInfo>(CatalogType::MACRO_ENTRY);
+	spelled_info->SetFunctionName(Identifier("batch_fun"));
+	auto spelled_member = make_uniq<LanguageMacroFunction>("batchlang", "fixed");
+	spelled_member->parameters.push_back(make_uniq<ColumnRefExpression>(Identifier("a")));
+	spelled_member->types.push_back(UnresolvedUserType("integer"));
+	spelled_info->macros.push_back(std::move(spelled_member));
+	spelled_info->macros.push_back(make_member("ranged", true));
+	auto spelled_statement = make_uniq<CreateStatement>();
+	spelled_statement->info = std::move(spelled_info);
+	unique_ptr<SQLStatement> spelled_sql = std::move(spelled_statement);
+	auto spelled_result = con.Query(std::move(spelled_sql));
+	REQUIRE_FAIL(spelled_result);
+	REQUIRE(StringUtil::Contains(spelled_result->GetError(), "conflicting overload members"));
+
+	// a pairwise valid batch is accepted
+	auto valid_info = make_uniq<CreateMacroInfo>(CatalogType::MACRO_ENTRY);
+	valid_info->SetFunctionName(Identifier("batch_fun"));
+	valid_info->macros.push_back(make_member("fixed", false));
+	auto varchar_member = make_uniq<LanguageMacroFunction>("batchlang", "varchar ranged");
+	varchar_member->parameters.push_back(make_uniq<ColumnRefExpression>(Identifier("a")));
+	varchar_member->types.push_back(LogicalType::VARCHAR);
+	auto default_expr = make_uniq<ConstantExpression>(Literal(LiteralKind::INTEGER, "5"));
+	default_expr->SetAlias(Identifier("c"));
+	varchar_member->default_parameters[Identifier("c")] = std::move(default_expr);
+	varchar_member->parameters.push_back(make_uniq<ColumnRefExpression>(Identifier("c")));
+	varchar_member->types.push_back(LogicalType::INTEGER);
+	valid_info->macros.push_back(std::move(varchar_member));
+	auto valid_statement = make_uniq<CreateStatement>();
+	valid_statement->info = std::move(valid_info);
+	unique_ptr<SQLStatement> valid_sql = std::move(valid_statement);
+	auto valid_result = con.Query(std::move(valid_sql));
+	REQUIRE_NO_FAIL(*valid_result);
+	auto count = con.Query("SELECT count(*) FROM duckdb_functions() WHERE function_name = 'batch_fun'");
+	REQUIRE(CHECK_COLUMN(count, 0, {2}));
 }

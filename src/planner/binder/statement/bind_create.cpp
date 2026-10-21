@@ -811,6 +811,21 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 	}
 
 	if (has_language_members) {
+		// a batch create follows the same overload identity as incremental creation, compared on
+		// the resolved signatures, so a stored set is always one EXPORT can re-create member by
+		// member
+		for (idx_t member_idx = 0; member_idx < base.macros.size(); member_idx++) {
+			for (idx_t other_idx = member_idx + 1; other_idx < base.macros.size(); other_idx++) {
+				if (base.macros[member_idx]->ConflictsWith(*base.macros[other_idx])) {
+					throw BinderException("Macro %s() has conflicting overload members %s and %s",
+					                      base.GetFunctionName(), base.macros[member_idx]->SignatureToString(),
+					                      base.macros[other_idx]->SignatureToString());
+				}
+			}
+		}
+	}
+
+	if (has_language_members) {
 		// hand the definition to the language's binder for validation, when the language is registered.
 		// without it the definition is stored unvalidated, so replay and IMPORT work without the extension
 		auto language_entry = LanguageCatalogEntry::TryGet(context, entry_language);

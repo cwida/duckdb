@@ -560,3 +560,80 @@ USE memory;
 
 statement ok
 DETACH nex;
+
+# a member occupies its whole default arity range: an overload whose range intersects on a
+# matching prefix is rejected at CREATE instead of surfacing as a call-time ambiguity
+statement ok
+CREATE FUNCTION da(a INTEGER) RETURNS VARCHAR LANGUAGE testlang AS 'fixed';
+
+statement error
+CREATE FUNCTION da(b INTEGER, c INTEGER := 5) RETURNS VARCHAR LANGUAGE testlang AS 'ranged';
+----
+<REGEX>:.*conflicts with the existing overload.*
+
+# IF NOT EXISTS skips the conflicting range, OR REPLACE replaces the single conflicting member
+statement ok
+CREATE FUNCTION IF NOT EXISTS da(b INTEGER, c INTEGER := 5) RETURNS VARCHAR LANGUAGE testlang AS 'skipped';
+
+query T
+SELECT da(1);
+----
+fixed
+
+statement ok
+CREATE OR REPLACE FUNCTION da(b INTEGER, c INTEGER := 5) RETURNS VARCHAR LANGUAGE testlang AS 'ranged';
+
+query TT
+SELECT da(1), da(1, 2);
+----
+ranged	ranged
+
+# ranges with a non-matching shared prefix stay distinct, and the set re-creates through EXPORT
+statement ok
+ATTACH ':memory:' AS dex;
+
+statement ok
+USE dex;
+
+statement ok
+CREATE FUNCTION dr(a INTEGER) RETURNS VARCHAR LANGUAGE testlang AS 'int member';
+
+statement ok
+CREATE FUNCTION dr(a VARCHAR, b INTEGER := 5) RETURNS VARCHAR LANGUAGE testlang AS 'varchar ranged';
+
+query TT
+SELECT dr(1), dr('s'::VARCHAR, 2);
+----
+int member	varchar ranged
+
+statement ok
+EXPORT DATABASE '{TEST_DIR}/language_function_arity_export';
+
+statement ok
+DROP FUNCTION dr;
+
+statement ok
+IMPORT DATABASE '{TEST_DIR}/language_function_arity_export';
+
+query TT
+SELECT dr(1), dr('s'::VARCHAR);
+----
+int member	varchar ranged
+
+statement ok
+USE memory;
+
+statement ok
+DETACH dex;
+
+# disjoint arity ranges never conflict
+statement ok
+CREATE FUNCTION dd() RETURNS VARCHAR LANGUAGE testlang AS 'zero';
+
+statement ok
+CREATE FUNCTION dd(a INTEGER, b INTEGER) RETURNS VARCHAR LANGUAGE testlang AS 'two';
+
+query TT
+SELECT dd(), dd(1, 2);
+----
+zero	two
