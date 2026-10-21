@@ -878,9 +878,10 @@ void Binder::BindLogicalType(LogicalType &type) {
 		return;
 	}
 
-	// Replace all unbound types within the type
-	//   Normally, the unbound type is the root type, but it can also be nested within other types if we e.g.
-	//   alter-table and change a struct field.
+	// Replace all unbound types within the type. The unbound type is normally the root type, but
+	// it can also be nested inside a concrete container, e.g. when an ALTER changes a struct field
+	// or a dialect emits a container of an unresolved user type. Untouched subtrees keep their
+	// identity (alias, extension metadata), containers on the changed path are rebuilt without it.
 	type = TypeVisitor::VisitReplace(type, [&](const LogicalType &ty) {
 		if (ty.id() == LogicalTypeId::UNBOUND) {
 			auto &type_expr = UnboundType::GetTypeExpression(ty);

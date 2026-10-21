@@ -260,4 +260,28 @@ TEST_CASE("Nested unbound member types resolve at CREATE", "[api]") {
 	auto types = con.Query("SELECT bool_and(parameter_types[1] NOT LIKE '%mood%') "
 	                       "FROM duckdb_functions() WHERE function_name = 'nested_fun'");
 	REQUIRE(CHECK_COLUMN(types, 0, {true}));
+
+	// bound sibling subtrees keep their aliases: two members whose aliased payloads differ must
+	// stay distinct signatures when the unresolved sibling is bound
+	auto alias_info = make_uniq<CreateMacroInfo>(CatalogType::MACRO_ENTRY);
+	alias_info->SetFunctionName(Identifier("aliased_sibling"));
+	for (auto payload_alias : {"payload_a", "payload_b"}) {
+		auto member = make_uniq<LanguageMacroFunction>("nestlang", payload_alias);
+		member->parameters.push_back(make_uniq<ColumnRefExpression>(Identifier("x")));
+		child_list_t<LogicalType> fields;
+		fields.emplace_back("payload", LogicalType::LIST(LogicalType::INTEGER).WithAlias(payload_alias));
+		fields.emplace_back("m", UnresolvedUserType("mood"));
+		member->types.push_back(LogicalType::STRUCT(std::move(fields)));
+		alias_info->macros.push_back(std::move(member));
+	}
+	auto alias_statement = make_uniq<CreateStatement>();
+	alias_statement->info = std::move(alias_info);
+	unique_ptr<SQLStatement> alias_sql = std::move(alias_statement);
+	auto alias_result = con.Query(std::move(alias_sql));
+	REQUIRE_NO_FAIL(*alias_result);
+	auto alias_types = con.Query("SELECT count(*), bool_and(parameter_types[1] LIKE '%payload_a%' OR "
+	                             "parameter_types[1] LIKE '%payload_b%') "
+	                             "FROM duckdb_functions() WHERE function_name = 'aliased_sibling'");
+	REQUIRE(CHECK_COLUMN(alias_types, 0, {2}));
+	REQUIRE(CHECK_COLUMN(alias_types, 1, {true}));
 }
