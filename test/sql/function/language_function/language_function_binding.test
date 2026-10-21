@@ -501,3 +501,62 @@ query T
 EXECUTE r;
 ----
 int
+
+# nested user types in signatures resolve at CREATE: overload matching selects by the nested type
+statement ok
+CREATE TYPE pt AS ENUM ('p1', 'p2');
+
+statement ok
+CREATE FUNCTION np(x pt[]) RETURNS pt[] LANGUAGE testlang AS 'arg:0';
+
+statement ok
+CREATE FUNCTION np(x VARCHAR[]) RETURNS VARCHAR LANGUAGE testlang AS 'varchar list';
+
+query TT
+SELECT typeof(np(['p1'::pt])), np(['a']);
+----
+ENUM('p1', 'p2')[]	varchar list
+
+statement ok
+CREATE FUNCTION ns(x STRUCT(m pt)) LANGUAGE testlang AS 'struct member';
+
+query T
+SELECT ns({'m': 'p1'::pt});
+----
+struct member
+
+# ... and the resolved nested signature round-trips through EXPORT/IMPORT
+statement ok
+ATTACH ':memory:' AS nex;
+
+statement ok
+USE nex;
+
+statement ok
+CREATE TYPE pt2 AS ENUM ('p1');
+
+statement ok
+CREATE FUNCTION nexp(x pt2[]) RETURNS pt2[] LANGUAGE testlang AS 'arg:0';
+
+statement ok
+EXPORT DATABASE '{TEST_DIR}/language_function_nested_type_export';
+
+statement ok
+DROP FUNCTION nexp;
+
+statement ok
+DROP TYPE pt2;
+
+statement ok
+IMPORT DATABASE '{TEST_DIR}/language_function_nested_type_export';
+
+query T
+SELECT typeof(nexp(['p1'::pt2]));
+----
+ENUM('p1')[]
+
+statement ok
+USE memory;
+
+statement ok
+DETACH nex;

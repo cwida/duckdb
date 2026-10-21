@@ -706,15 +706,15 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 			BindLogicalType(function->return_type);
 		}
 
-		// Resolve any user type arguments
+		// Resolve any user type arguments. BindLogicalType resolves recursively: a dialect may nest
+		// an unresolved type inside a concrete container, unlike the stock grammar's top-level
+		// UNBOUND wrapping
 		for (idx_t param_idx = 0; param_idx < function->types.size(); param_idx++) {
 			auto &type = function->types[param_idx];
 			if (type.id() == LogicalTypeId::UNKNOWN) {
 				continue;
 			}
-			if (type.id() == LogicalTypeId::UNBOUND) {
-				BindLogicalType(type);
-			}
+			BindLogicalType(type);
 			const auto &param_name = function->parameters[param_idx]->Cast<ColumnRefExpression>().GetColumnName();
 			auto it = default_values.find(param_name);
 			if (it != default_values.end()) {

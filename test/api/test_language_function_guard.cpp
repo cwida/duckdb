@@ -12,6 +12,8 @@
 #include "duckdb/parser/parsed_data/drop_info.hpp"
 #include "duckdb/parser/parsed_data/extra_drop_info.hpp"
 #include "duckdb/parser/expression/type_expression.hpp"
+#include "duckdb/parser/statement/create_statement.hpp"
+#include "duckdb/parser/expression/type_expression.hpp"
 #include "duckdb/parser/parsed_data/create_language_info.hpp"
 #include "duckdb/parser/parsed_data/create_macro_info.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
@@ -218,4 +220,44 @@ TEST_CASE("Member mutations respect internal entry protection", "[api]") {
 	result = con.Query("SELECT internal_fun(DATE '2020-01-01'), internal_fun('a'::VARCHAR)");
 	REQUIRE(CHECK_COLUMN(result, 0, {"date member"}));
 	REQUIRE(CHECK_COLUMN(result, 1, {"varchar member"}));
+}
+
+static LogicalType UnresolvedUserType(const string &name) {
+	vector<unique_ptr<ParsedExpression>> no_children;
+	return LogicalType::UNBOUND(make_uniq<TypeExpression>(Identifier(name), std::move(no_children)));
+}
+
+TEST_CASE("Nested unbound member types resolve at CREATE", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	RegisterTestLanguage(*db.instance, "nestlang", make_shared_ptr<MutatingBinder>(nullptr));
+	REQUIRE_NO_FAIL(con.Query("CREATE TYPE mood AS ENUM ('happy', 'sad')"));
+
+	// a dialect transformer may emit a concrete container around an unresolved user type, unlike
+	// the stock grammar, which wraps the whole unresolved type at the top level
+	auto info = make_uniq<CreateMacroInfo>(CatalogType::MACRO_ENTRY);
+	info->SetFunctionName(Identifier("nested_fun"));
+	auto list_member = make_uniq<LanguageMacroFunction>("nestlang", "arg:0");
+	list_member->parameters.push_back(make_uniq<ColumnRefExpression>(Identifier("x")));
+	list_member->types.push_back(LogicalType::LIST(UnresolvedUserType("mood")));
+	list_member->return_type = LogicalType::LIST(UnresolvedUserType("mood"));
+	info->macros.push_back(std::move(list_member));
+	auto struct_member = make_uniq<LanguageMacroFunction>("nestlang", "struct member");
+	struct_member->parameters.push_back(make_uniq<ColumnRefExpression>(Identifier("x")));
+	struct_member->types.push_back(LogicalType::STRUCT({{"m", UnresolvedUserType("mood")}}));
+	info->macros.push_back(std::move(struct_member));
+	auto statement = make_uniq<CreateStatement>();
+	statement->info = std::move(info);
+	unique_ptr<SQLStatement> sql_statement = std::move(statement);
+	auto result = con.Query(std::move(sql_statement));
+	REQUIRE_NO_FAIL(*result);
+
+	// the stored signatures are fully resolved: overload matching selects by the nested user type,
+	// the RETURNS cast applies, and introspection shows resolved types
+	auto call = con.Query("SELECT typeof(nested_fun(['happy'::mood])), nested_fun({'m': 'happy'::mood})");
+	REQUIRE(CHECK_COLUMN(call, 0, {"ENUM('happy', 'sad')[]"}));
+	REQUIRE(CHECK_COLUMN(call, 1, {"struct member"}));
+	auto types = con.Query("SELECT bool_and(parameter_types[1] NOT LIKE '%mood%') "
+	                       "FROM duckdb_functions() WHERE function_name = 'nested_fun'");
+	REQUIRE(CHECK_COLUMN(types, 0, {true}));
 }
