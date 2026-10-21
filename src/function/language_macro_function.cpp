@@ -1,6 +1,6 @@
 #include "duckdb/function/language_macro_function.hpp"
 
-#include "duckdb/parser/keyword_helper.hpp"
+#include "duckdb/common/sql_identifier.hpp"
 
 namespace duckdb {
 
@@ -22,8 +22,7 @@ string LanguageMacroFunction::ToSQL() const {
 	auto prefix = MacroFunction::ToSQL();
 	D_ASSERT(StringUtil::EndsWith(prefix, " AS "));
 	prefix.erase(prefix.size() - 4);
-	return prefix + " LANGUAGE " + KeywordHelper::WriteOptionallyQuoted(language) + " AS " +
-	       KeywordHelper::WriteQuoted(source);
+	return prefix + " LANGUAGE " + SQLIdentifier::ToString(language) + " AS " + SQLString::ToString(source);
 }
 
 } // namespace duckdb
