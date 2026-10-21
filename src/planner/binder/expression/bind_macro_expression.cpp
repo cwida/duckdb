@@ -252,8 +252,7 @@ BindResult ExpressionBinder::BindMacro(FunctionExpression &function, ScalarMacro
 			D_ASSERT(named_it != named_arguments.end());
 			arguments.push_back(std::move(named_it->second));
 		}
-		auto language_binder =
-		    LanguageCatalogEntry::GetBinder(context, language_member.language, macro_func.name);
+		auto language_binder = LanguageCatalogEntry::GetBinder(context, language_member.language, macro_func.name);
 		result = language_binder->BindScalarCall(*this, macro_func, language_member, std::move(arguments), depth);
 	} else {
 		// unfold the macro expression and bind the result
