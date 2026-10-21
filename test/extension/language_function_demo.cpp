@@ -22,8 +22,8 @@ public:
 		for (auto &member : info.macros) {
 			auto &language_member = member->Cast<LanguageMacroFunction>();
 			if (StringUtil::Contains(language_member.source, "invalid")) {
-				throw BinderException("testlang: the source of \"%s\" may not contain the word \"invalid\"",
-				                      info.GetFunctionName().GetIdentifierName());
+				throw BinderException("testlang: the source of %s may not contain the word \"invalid\"",
+				                      info.GetFunctionName());
 			}
 		}
 		// publish per-member documentation: function metadata must survive member mutations

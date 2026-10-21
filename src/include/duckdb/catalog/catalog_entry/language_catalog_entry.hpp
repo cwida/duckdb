@@ -33,7 +33,7 @@ public:
 	//! The language's binder as an owning handle, raising a MissingExtensionException naming the
 	//! function and its language when the language is not registered
 	static shared_ptr<LanguageFunctionBinder> GetBinder(ClientContext &context, const string &language,
-	                                                    const string &function_name);
+	                                                    const Identifier &function_name);
 };
 
 } // namespace duckdb

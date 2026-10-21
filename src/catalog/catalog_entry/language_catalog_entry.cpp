@@ -44,11 +44,11 @@ optional_ptr<LanguageCatalogEntry> LanguageCatalogEntry::TryGet(ClientContext &c
 }
 
 shared_ptr<LanguageFunctionBinder> LanguageCatalogEntry::GetBinder(ClientContext &context, const string &language,
-                                                                   const string &function_name) {
+                                                                   const Identifier &function_name) {
 	auto entry = TryGet(context, language);
 	if (!entry || !entry->binder) {
 		throw MissingExtensionException(
-		    "Function \"%s\" is written in language \"%s\", but no binder for that language is registered. Language "
+		    "Function %s is written in language \"%s\", but no binder for that language is registered. Language "
 		    "support is provided by extensions, e.g.: INSTALL %s; LOAD %s;",
 		    function_name, language, language, language);
 	}
