@@ -27,6 +27,12 @@ CREATE FUNCTION rejected() LANGUAGE testlang AS 'invalid source';
 ----
 <REGEX>:.*testlang: the source of "rejected" may not contain.*
 
+# a quote inside the function name stays escaped in the diagnostic
+statement error
+CREATE FUNCTION "re""jected"() LANGUAGE testlang AS 'invalid source';
+----
+<REGEX>:.*testlang: the source of "re""jected" may not contain.*
+
 # duplicate signatures error at member granularity
 statement error
 CREATE FUNCTION answer() RETURNS INTEGER LANGUAGE testlang AS '43';
