@@ -80,6 +80,9 @@ TEST_CASE("ValidateCreate guard accepts a source-only rewrite", "[api]") {
 	REQUIRE(CHECK_COLUMN(result, 0, {"rewritten"}));
 }
 
+// the guard raises InternalException, which aborts the process when DUCKDB_CRASH_ON_ASSERT is set
+#ifndef DUCKDB_CRASH_ON_ASSERT
+
 TEST_CASE("ValidateCreate guard rejects a return type mutation", "[api]") {
 	DuckDB db(nullptr);
 	Connection con(db);
@@ -140,6 +143,8 @@ TEST_CASE("ValidateCreate guard rejects an extension metadata mutation on a para
 	REQUIRE_FAIL(result);
 	REQUIRE(StringUtil::Contains(result->GetError(), "changed the member count, a resolved signature"));
 }
+
+#endif
 
 TEST_CASE("Member mutations respect internal entry protection", "[api]") {
 	DuckDB db(nullptr);
