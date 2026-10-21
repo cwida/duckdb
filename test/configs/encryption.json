@@ -89,6 +89,20 @@
       ]
     },
     {
+      "reason": "Language functions and RETURNS types require storage version v2.1.0 but encrypted databases use an older default storage version",
+      "paths": [
+        "test/sql/catalog/function/macro_returns_type.test",
+        "test/sql/function/language_function/language_function_binding.test",
+        "test/sql/function/language_function/language_function_copy_database.test",
+        "test/sql/function/language_function/language_function_demo.test",
+        "test/sql/function/language_function/language_function_dependencies.test",
+        "test/sql/function/language_function/language_function_index_concurrency.test",
+        "test/sql/function/language_function/language_function_index_dependency.test",
+        "test/sql/function/language_function/language_function_no_binder.test",
+        "test/sql/function/language_function/language_function_type_identity.test"
+      ]
+    },
+    {
       "reason": "Encrypted persistent storage packs validity into one segment, so zonemap pruning cannot skip rows.",
       "paths": [
         "test/sql/optimizer/nested_null_segment_pruning.test",
