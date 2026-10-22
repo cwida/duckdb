@@ -1948,7 +1948,7 @@ void ActiveGrammarExtensionsSetting::SetLocal(ClientContext &context, const Valu
 	auto &client_config = ClientConfig::GetConfig(context);
 
 	if (input.IsNull()) {
-		client_config.active_grammar_extensions.clear();
+		client_config.active_grammar_extensions.atomic_store(shared_ptr<const vector<string>>());
 		client_config.cached_grammar.atomic_store(shared_ptr<CachedSessionGrammar>());
 		return;
 	}
@@ -1989,9 +1989,10 @@ void ActiveGrammarExtensionsSetting::SetLocal(ClientContext &context, const Valu
 	// compose eagerly: a grammar that fails to compile errors at SET time, leaving the setting unchanged
 	auto registry_version = callback_manager.GrammarRegistryVersion();
 	auto compiled_grammar = CompiledGrammar::ComposeSessionGrammar(context, selected_extensions);
-	client_config.active_grammar_extensions = std::move(selected_extensions);
-	client_config.cached_grammar.atomic_store(
-	    make_shared_ptr<CachedSessionGrammar>(CachedSessionGrammar {std::move(compiled_grammar), registry_version}));
+	auto selection = make_shared_ptr<const vector<string>>(std::move(selected_extensions));
+	client_config.active_grammar_extensions.atomic_store(selection);
+	client_config.cached_grammar.atomic_store(make_shared_ptr<CachedSessionGrammar>(
+	    CachedSessionGrammar {std::move(compiled_grammar), registry_version, std::move(selection)}));
 }
 
 void ActiveGrammarExtensionsSetting::ResetLocal(ClientContext &context) {
@@ -1999,7 +2000,7 @@ void ActiveGrammarExtensionsSetting::ResetLocal(ClientContext &context) {
 		return;
 	}
 	auto &client_config = ClientConfig::GetConfig(context);
-	client_config.active_grammar_extensions.clear();
+	client_config.active_grammar_extensions.atomic_store(shared_ptr<const vector<string>>());
 	client_config.cached_grammar.atomic_store(shared_ptr<CachedSessionGrammar>());
 }
 
@@ -2013,10 +2014,12 @@ bool ActiveGrammarExtensionsSetting::OnLocalReset(ClientContext &context) {
 
 Value ActiveGrammarExtensionsSetting::GetSetting(const ClientContext &context) {
 	auto &client_config = ClientConfig::GetConfig(context);
-	auto &active_extensions = client_config.active_grammar_extensions;
+	auto active_extensions = client_config.active_grammar_extensions.atomic_load();
 	vector<Value> values;
-	for (auto &extension : active_extensions) {
-		values.push_back(extension);
+	if (active_extensions) {
+		for (auto &extension : *active_extensions) {
+			values.push_back(extension);
+		}
 	}
 	return Value::LIST(LogicalType::VARCHAR, std::move(values));
 }

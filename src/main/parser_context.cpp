@@ -52,15 +52,16 @@ shared_ptr<CompiledGrammar> CompiledGrammar::Get(ClientContext &context) {
 		return dialect_extension->GetCompiledGrammar(context);
 	}
 	auto registry_version = callback_manager.GrammarRegistryVersion();
+	auto selection = client_config.active_grammar_extensions.atomic_load();
 	auto cached = client_config.cached_grammar.atomic_load();
-	if (cached && cached->registry_version == registry_version) {
+	if (cached && cached->registry_version == registry_version && cached->selection == selection) {
 		return cached->grammar;
 	}
-	// recompose: either nothing is cached yet, or a grammar extension registered since (e.g. a LOAD
-	// between two statements of this session), so default-active grammar becomes visible here
-	auto grammar = ComposeSessionGrammar(context, client_config.active_grammar_extensions);
+	// recompose: either nothing is cached yet, a grammar extension registered since (e.g. a LOAD
+	// between two statements of this session), or the explicit selection was replaced by a SET
+	auto grammar = ComposeSessionGrammar(context, selection ? *selection : vector<string>());
 	client_config.cached_grammar.atomic_store(
-	    make_shared_ptr<CachedSessionGrammar>(CachedSessionGrammar {grammar, registry_version}));
+	    make_shared_ptr<CachedSessionGrammar>(CachedSessionGrammar {grammar, registry_version, std::move(selection)}));
 	return grammar;
 }
 

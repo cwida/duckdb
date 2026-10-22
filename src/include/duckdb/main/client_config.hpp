@@ -27,10 +27,12 @@ class PreparedStatementData;
 struct CompiledGrammar;
 struct ReplacementScan;
 
-//! The grammar a session parses with and the grammar registry version it was composed at
+//! The grammar a session parses with, together with the grammar registry version and the explicit
+//! selection (compared by identity) it was composed from
 struct CachedSessionGrammar {
 	shared_ptr<CompiledGrammar> grammar;
 	idx_t registry_version;
+	shared_ptr<const vector<string>> selection;
 };
 
 typedef std::function<unique_ptr<PhysicalOperator>(ClientContext &context, PreparedStatementData &data)>
@@ -94,11 +96,14 @@ struct ClientConfig {
 	get_result_collector_t get_result_collector = nullptr;
 
 	optional<string> current_dialect;
-	//! The (ordered) list of explicitly activated grammar extensions (default-active ones are not listed)
-	vector<string> active_grammar_extensions;
-	//! The grammar composed for the connection; recomposed lazily when unset or stale. Grammar and
-	//! registry version form one immutable snapshot, stored and loaded atomically because parsing
-	//! can run without the client context lock
+	//! The (ordered) list of explicitly activated grammar extensions (default-active ones are not
+	//! listed, never set means empty): an immutable snapshot replaced on SET/RESET and loaded
+	//! atomically because parsing can run without the client context lock
+	shared_ptr<const vector<string>> active_grammar_extensions;
+	//! The grammar composed for the connection; recomposed lazily when unset or stale. The snapshot
+	//! is immutable and stored/loaded atomically (see active_grammar_extensions); its validity is
+	//! keyed on the registry version and the selection identity, so a parse that raced a SET cannot
+	//! install a grammar that passes as composed from the new selection
 	shared_ptr<CachedSessionGrammar> cached_grammar;
 	//! The grammar of the database this client is CONNECT-ed to; unset when not connected
 	shared_ptr<CompiledGrammar> connected_grammar;
