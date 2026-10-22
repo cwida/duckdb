@@ -1377,6 +1377,83 @@ TEST_CASE("An explicitly listed default-active grammar takes its explicit positi
 	RequireEight(con);
 }
 
+//! Default-active variant of the eight override, for default-vs-default ordering
+class DefaultActiveEightGrammarExtension final : public GrammarExtension {
+public:
+	explicit DefaultActiveEightGrammarExtension(const string &name)
+	    : GrammarExtension(name, "DefaultActiveEightGrammarExtension") {
+	}
+
+	bool ActiveByDefault() const override {
+		return true;
+	}
+
+	vector<GrammarChange> GetChanges() const override {
+		vector<GrammarChange> changes;
+		changes.push_back(GrammarChange::SetTransformProcess("AdditiveExpression", StartConstantEightTransform, false));
+		return changes;
+	}
+};
+
+TEST_CASE("Default-active grammars compose in sorted name order", "[api][grammar_extension]") {
+	DuckDB db(nullptr);
+	// registered in reverse name order; the composition sorts by name, the later grammar wins
+	GrammarExtension::Register(*db.instance, make_shared_ptr<DefaultActiveSevenGrammarExtension>("b_seven"));
+	GrammarExtension::Register(*db.instance, make_shared_ptr<DefaultActiveEightGrammarExtension>("a_eight"));
+	Connection con(db);
+	RequireSeven(con);
+}
+
+//! Opt-in grammar adding a rule a default-active grammar can reference
+class ProvidingGrammarExtension final : public GrammarExtension {
+public:
+	ProvidingGrammarExtension() : GrammarExtension("providing_grammar", "ProvidingGrammarExtension") {
+	}
+
+	vector<GrammarChange> GetChanges() const override {
+		vector<GrammarChange> changes;
+		changes.push_back(GrammarChange::AddRule("ProvidedTestRule <- 'PROVIDEDTESTTOKEN'"));
+		return changes;
+	}
+};
+
+//! Default-active grammar that only compiles together with the providing grammar
+class DependentDefaultGrammarExtension final : public GrammarExtension {
+public:
+	DependentDefaultGrammarExtension()
+	    : GrammarExtension("dependent_default_grammar", "DependentDefaultGrammarExtension") {
+	}
+
+	bool ActiveByDefault() const override {
+		return true;
+	}
+
+	vector<GrammarChange> GetChanges() const override {
+		vector<GrammarChange> changes;
+		changes.push_back(GrammarChange::AddRule("DependentTestRule <- ProvidedTestRule"));
+		return changes;
+	}
+};
+
+TEST_CASE("Clearing the explicit selection validates the default-only composition eagerly",
+          "[api][grammar_extension]") {
+	DuckDB db(nullptr);
+	GrammarExtension::Register(*db.instance, make_shared_ptr<ProvidingGrammarExtension>());
+	Connection con(db);
+	REQUIRE_NO_FAIL(*con.Query("SET active_grammar_extensions = ['providing_grammar']"));
+	// the default-active grammar compiles only together with the explicitly selected one
+	GrammarExtension::Register(*db.instance, make_shared_ptr<DependentDefaultGrammarExtension>());
+	REQUIRE_NO_FAIL(*con.Query("SELECT 1"));
+	// every way of clearing the selection composes the default-only grammar eagerly, fails, and
+	// leaves the selection and the working grammar unchanged
+	REQUIRE_FAIL(con.Query("SET active_grammar_extensions = []"));
+	REQUIRE_FAIL(con.Query("SET active_grammar_extensions = NULL"));
+	REQUIRE_FAIL(con.Query("RESET active_grammar_extensions"));
+	REQUIRE_NO_FAIL(*con.Query("SELECT 1"));
+	auto setting = con.Query("SELECT current_setting('active_grammar_extensions')")->Collection().GetValue(0, 0);
+	REQUIRE(ListValue::GetChildren(setting).size() == 1);
+}
+
 TEST_CASE("The least recently used grammar for active grammar extensions is evicted", "[api][grammar_extension]") {
 	DuckDB db(nullptr);
 	std::atomic<idx_t> compilations(0);
