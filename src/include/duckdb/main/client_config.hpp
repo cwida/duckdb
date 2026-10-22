@@ -27,6 +27,12 @@ class PreparedStatementData;
 struct CompiledGrammar;
 struct ReplacementScan;
 
+//! The grammar a session parses with and the grammar registry version it was composed at
+struct CachedSessionGrammar {
+	shared_ptr<CompiledGrammar> grammar;
+	idx_t registry_version;
+};
+
 typedef std::function<unique_ptr<PhysicalOperator>(ClientContext &context, PreparedStatementData &data)>
     get_result_collector_t;
 
@@ -90,10 +96,10 @@ struct ClientConfig {
 	optional<string> current_dialect;
 	//! The (ordered) list of explicitly activated grammar extensions (default-active ones are not listed)
 	vector<string> active_grammar_extensions;
-	//! The grammar composed for the connection; recomposed lazily when unset or stale
-	shared_ptr<CompiledGrammar> cached_grammar;
-	//! The grammar registry version `cached_grammar` was composed at (stale when the registry moved)
-	idx_t cached_grammar_version = 0;
+	//! The grammar composed for the connection; recomposed lazily when unset or stale. Grammar and
+	//! registry version form one immutable snapshot, stored and loaded atomically because parsing
+	//! can run without the client context lock
+	shared_ptr<CachedSessionGrammar> cached_grammar;
 	//! The grammar of the database this client is CONNECT-ed to; unset when not connected
 	shared_ptr<CompiledGrammar> connected_grammar;
 

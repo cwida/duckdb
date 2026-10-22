@@ -19,23 +19,20 @@ Parser::Parser(ClientContext &context, IdentifierCaseMode identifier_case_mode) 
 }
 
 //! The grammar extensions a session parses with: the default-active registered extensions (sorted by
-//! name, the registry map is unordered) followed by the explicitly activated list in user order, so
-//! explicit overrides win over default-active ones
+//! name, the registry map is unordered) followed by the explicitly activated list in user order.
+//! An explicitly listed default-active grammar takes its explicit position, so the explicit order
+//! alone decides override precedence among the listed grammars
 static vector<string> ComposeSessionGrammarNames(const ExtensionCallbackManager &callback_manager,
                                                  const vector<string> &explicit_names) {
+	case_insensitive_set_t explicitly_named(explicit_names.begin(), explicit_names.end());
 	vector<string> result;
 	for (auto &entry : callback_manager.GrammarExtensions()) {
-		if (entry.second->ActiveByDefault()) {
+		if (entry.second->ActiveByDefault() && !explicitly_named.count(entry.second->Name())) {
 			result.push_back(entry.second->Name());
 		}
 	}
 	std::sort(result.begin(), result.end());
-	case_insensitive_set_t seen(result.begin(), result.end());
-	for (auto &name : explicit_names) {
-		if (seen.insert(name).second) {
-			result.push_back(name);
-		}
-	}
+	result.insert(result.end(), explicit_names.begin(), explicit_names.end());
 	return result;
 }
 
@@ -55,14 +52,15 @@ shared_ptr<CompiledGrammar> CompiledGrammar::Get(ClientContext &context) {
 		return dialect_extension->GetCompiledGrammar(context);
 	}
 	auto registry_version = callback_manager.GrammarRegistryVersion();
-	if (client_config.cached_grammar && client_config.cached_grammar_version == registry_version) {
-		return client_config.cached_grammar;
+	auto cached = client_config.cached_grammar.atomic_load();
+	if (cached && cached->registry_version == registry_version) {
+		return cached->grammar;
 	}
 	// recompose: either nothing is cached yet, or a grammar extension registered since (e.g. a LOAD
 	// between two statements of this session), so default-active grammar becomes visible here
 	auto grammar = ComposeSessionGrammar(context, client_config.active_grammar_extensions);
-	client_config.cached_grammar = grammar;
-	client_config.cached_grammar_version = registry_version;
+	client_config.cached_grammar.atomic_store(
+	    make_shared_ptr<CachedSessionGrammar>(CachedSessionGrammar {grammar, registry_version}));
 	return grammar;
 }
 
