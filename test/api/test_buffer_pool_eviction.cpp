@@ -439,12 +439,12 @@ TEST_CASE("Temporary buffer cleanup after spill and destruction policy changes",
 			CAPTURE(encrypted, size_multiplier);
 			DuckDB db;
 			Connection con(db);
+			auto &bm = BufferManager::GetBufferManager(*db.instance);
+			bm.SetTemporaryDirectory(TestCreatePath("temporary_buffer_cleanup"));
 			if (encrypted) {
 				REQUIRE_NO_FAIL(con.Query("SET force_mbedtls_unsafe=true"));
 			}
 			REQUIRE_NO_FAIL(con.Query(encrypted ? "SET temp_file_encryption=true" : "SET temp_file_encryption=false"));
-			auto &bm = BufferManager::GetBufferManager(*db.instance);
-			bm.SetTemporaryDirectory(TestCreatePath("temporary_buffer_cleanup"));
 			const auto size = bm.GetBlockSize() * size_multiplier;
 
 			// Exercise discarded buffers both before the first spill and after all spills are cleaned up.
