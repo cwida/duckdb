@@ -1951,7 +1951,7 @@ static void ClearActiveGrammarExtensions(ClientContext &context, ClientConfig &c
 	auto snapshot = make_shared_ptr<CachedSessionGrammar>(
 	    CachedSessionGrammar {std::move(compiled_grammar), registry_version, nullptr});
 	client_config.active_grammar_extensions.atomic_store(shared_ptr<const vector<string>>());
-	client_config.cached_grammar.atomic_store(std::move(snapshot));
+	client_config.cached_grammar.atomic_store(snapshot);
 }
 
 void ActiveGrammarExtensionsSetting::SetLocal(ClientContext &context, const Value &input) {
@@ -2004,8 +2004,8 @@ void ActiveGrammarExtensionsSetting::SetLocal(ClientContext &context, const Valu
 	auto selection = make_shared_ptr<const vector<string>>(std::move(selected_extensions));
 	auto snapshot = make_shared_ptr<CachedSessionGrammar>(
 	    CachedSessionGrammar {std::move(compiled_grammar), registry_version, selection});
-	client_config.active_grammar_extensions.atomic_store(std::move(selection));
-	client_config.cached_grammar.atomic_store(std::move(snapshot));
+	client_config.active_grammar_extensions.atomic_store(selection);
+	client_config.cached_grammar.atomic_store(snapshot);
 }
 
 void ActiveGrammarExtensionsSetting::ResetLocal(ClientContext &context) {
