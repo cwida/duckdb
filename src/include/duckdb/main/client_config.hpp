@@ -88,10 +88,12 @@ struct ClientConfig {
 	get_result_collector_t get_result_collector = nullptr;
 
 	optional<string> current_dialect;
-	//! The (ordered) list of grammar extensions currently used by the parser
+	//! The (ordered) list of explicitly activated grammar extensions (default-active ones are not listed)
 	vector<string> active_grammar_extensions;
-	//! The compiled grammar active for the connection
+	//! The grammar composed for the connection; recomposed lazily when unset or stale
 	shared_ptr<CompiledGrammar> cached_grammar;
+	//! The grammar registry version `cached_grammar` was composed at (stale when the registry moved)
+	idx_t cached_grammar_version = 0;
 	//! The grammar of the database this client is CONNECT-ed to; unset when not connected
 	shared_ptr<CompiledGrammar> connected_grammar;
 

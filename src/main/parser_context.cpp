@@ -1,3 +1,4 @@
+#include "duckdb/common/algorithm.hpp"
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/parser/peg/compiled_grammar.hpp"
 #include "duckdb/parser/peg/dialect_extension.hpp"
@@ -17,6 +18,27 @@ Parser::Parser(ClientContext &context, IdentifierCaseMode identifier_case_mode) 
 	options.identifier_case_mode = identifier_case_mode;
 }
 
+//! The grammar extensions a session parses with: the default-active registered extensions (sorted by
+//! name, the registry map is unordered) followed by the explicitly activated list in user order, so
+//! explicit overrides win over default-active ones
+static vector<string> ComposeSessionGrammarNames(const ExtensionCallbackManager &callback_manager,
+                                                 const vector<string> &explicit_names) {
+	vector<string> result;
+	for (auto &entry : callback_manager.GrammarExtensions()) {
+		if (entry.second->ActiveByDefault()) {
+			result.push_back(entry.second->Name());
+		}
+	}
+	std::sort(result.begin(), result.end());
+	case_insensitive_set_t seen(result.begin(), result.end());
+	for (auto &name : explicit_names) {
+		if (seen.insert(name).second) {
+			result.push_back(name);
+		}
+	}
+	return result;
+}
+
 shared_ptr<CompiledGrammar> CompiledGrammar::Get(ClientContext &context) {
 	auto &client_config = ClientConfig::GetConfig(context);
 	auto &callback_manager = ExtensionCallbackManager::Get(context);
@@ -32,10 +54,27 @@ shared_ptr<CompiledGrammar> CompiledGrammar::Get(ClientContext &context) {
 		}
 		return dialect_extension->GetCompiledGrammar(context);
 	}
-	if (client_config.cached_grammar) {
+	auto registry_version = callback_manager.GrammarRegistryVersion();
+	if (client_config.cached_grammar && client_config.cached_grammar_version == registry_version) {
 		return client_config.cached_grammar;
 	}
-	return DatabaseInstance::GetDatabase(context).GetParserCache().GetMatcher();
+	// recompose: either nothing is cached yet, or a grammar extension registered since (e.g. a LOAD
+	// between two statements of this session), so default-active grammar becomes visible here
+	auto grammar = ComposeSessionGrammar(context, client_config.active_grammar_extensions);
+	client_config.cached_grammar = grammar;
+	client_config.cached_grammar_version = registry_version;
+	return grammar;
+}
+
+shared_ptr<CompiledGrammar> CompiledGrammar::ComposeSessionGrammar(ClientContext &context,
+                                                                   const vector<string> &explicit_names) {
+	auto &callback_manager = ExtensionCallbackManager::Get(context);
+	auto &parser_cache = DatabaseInstance::GetDatabase(context).GetParserCache();
+	auto extension_names = ComposeSessionGrammarNames(callback_manager, explicit_names);
+	if (extension_names.empty()) {
+		return parser_cache.GetMatcher();
+	}
+	return parser_cache.GetMatcher(context, extension_names);
 }
 
 shared_ptr<CompiledGrammar> CompiledGrammar::Create(const ClientContext &context,

@@ -1986,16 +1986,12 @@ void ActiveGrammarExtensionsSetting::SetLocal(ClientContext &context, const Valu
 		throw InvalidInputException("Can't set 'active_grammar_extensions', the following extensions don't exist: %s",
 		                            missing_list);
 	}
-	if (selected_extensions.empty()) {
-		client_config.active_grammar_extensions.clear();
-		client_config.cached_grammar.reset();
-		return;
-	}
-
-	auto compiled_grammar =
-	    DatabaseInstance::GetDatabase(context).GetParserCache().GetMatcher(context, selected_extensions);
+	// compose eagerly: a grammar that fails to compile errors at SET time, leaving the setting unchanged
+	auto registry_version = callback_manager.GrammarRegistryVersion();
+	auto compiled_grammar = CompiledGrammar::ComposeSessionGrammar(context, selected_extensions);
 	client_config.active_grammar_extensions = std::move(selected_extensions);
 	client_config.cached_grammar = std::move(compiled_grammar);
+	client_config.cached_grammar_version = registry_version;
 }
 
 void ActiveGrammarExtensionsSetting::ResetLocal(ClientContext &context) {

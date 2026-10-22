@@ -1244,6 +1244,55 @@ TEST_CASE("Grammars for active grammar extensions are compiled once and outlive 
 	REQUIRE(compilations == 1);
 }
 
+//! Declares itself active in every session once registered, like the grammar of a language extension
+class DefaultActiveSevenGrammarExtension final : public GrammarExtension {
+public:
+	explicit DefaultActiveSevenGrammarExtension(const string &name)
+	    : GrammarExtension(name, "DefaultActiveSevenGrammarExtension") {
+	}
+
+	bool ActiveByDefault() const override {
+		return true;
+	}
+
+	vector<GrammarChange> GetChanges() const override {
+		vector<GrammarChange> changes;
+		changes.push_back(GrammarChange::SetTransformProcess("AdditiveExpression", StartConstantSevenTransform, false));
+		return changes;
+	}
+};
+
+TEST_CASE("A default-active grammar registered mid-session reaches the next statement", "[api][grammar_extension]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	// the session already parsed with the base grammar
+	auto result = con.Query("SELECT 1");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->Collection().GetValue(0, 0) == Value::INTEGER(1));
+	auto base_grammar = CompiledGrammar::Get(*con.context);
+	// an explicitly activated grammar, registered and SET before the default-active one exists
+	RegisterGrammarExtensionTestSyntax(*db.instance);
+	ActivateGrammarExtensionTestSyntax(con);
+	CheckGrammarExtensionTestSyntax(con);
+
+	// mid-session registration (what a LOAD does): the next statement parses with the grammar, no SET
+	// needed, and the default-active grammar composes with the explicitly activated ones: ANSWER still
+	// parses (its atom transform bypasses AdditiveExpression) and ordinary expressions are rewritten
+	GrammarExtension::Register(*db.instance, make_shared_ptr<DefaultActiveSevenGrammarExtension>("default_seven"));
+	CheckGrammarExtensionTestSyntax(con);
+	RequireSeven(con);
+	REQUIRE(CompiledGrammar::Get(*con.context) != base_grammar);
+
+	// connections opened after the registration parse with it without any SET
+	Connection later(db);
+	RequireSeven(later);
+
+	// clearing the explicit list drops ANSWER but does not deactivate the default-active grammar
+	REQUIRE_NO_FAIL(*con.Query("RESET active_grammar_extensions"));
+	RequireSeven(con);
+	REQUIRE_FAIL(con.Query("ANSWER"));
+}
+
 TEST_CASE("The least recently used grammar for active grammar extensions is evicted", "[api][grammar_extension]") {
 	DuckDB db(nullptr);
 	std::atomic<idx_t> compilations(0);

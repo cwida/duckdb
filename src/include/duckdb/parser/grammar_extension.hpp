@@ -35,6 +35,11 @@ public:
 	const string &Description() const {
 		return description;
 	}
+	//! Whether the grammar is active in every session once registered, without an explicit
+	//! SET active_grammar_extensions (the setting adds to default-active grammars, it cannot remove them)
+	virtual bool ActiveByDefault() const {
+		return false;
+	}
 	virtual vector<GrammarChange> GetChanges() const = 0;
 
 private:
