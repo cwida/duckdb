@@ -2,6 +2,8 @@
 #include "duckdb/common/enums/expression_type.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/parser/expression/conjunction_expression.hpp"
+#include "duckdb/parser/expression/constant_expression.hpp"
+#include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/expression/star_expression.hpp"
 #include "duckdb/parser/grammar_extension.hpp"
 #include "duckdb/parser/peg/ast/limit_percent_result.hpp"
@@ -11,6 +13,7 @@
 #include "duckdb/parser/result_modifier.hpp"
 #include "duckdb/parser/statement/select_statement.hpp"
 #include "duckdb/parser/tableref/subqueryref.hpp"
+#include "duckdb/parser/tableref/table_function_ref.hpp"
 
 using namespace duckdb;
 
@@ -165,6 +168,69 @@ static arena_ptr<TransformProcess> StartPipeSelectAtomTransform(PEGTransformer &
 	return transformer.MakeProcess<FinalizeTransformProcess>(transformer, parse_result, FinalizePipeSelectAtom);
 }
 
+static arena_ptr<TransformResultValue> MakeRangeSelectResult(PEGTransformer &transformer, LimitPercentResult limit,
+                                                             LimitPercentResult offset) {
+	vector<unique_ptr<ParsedExpression>> arguments;
+	arguments.push_back(ConstantExpression::Integer(10));
+	auto from_table = make_uniq<TableFunctionRef>();
+	from_table->function = make_uniq<FunctionExpression>("range", std::move(arguments));
+	auto select_node = make_uniq<SelectNode>();
+	select_node->select_list.push_back(make_uniq<StarExpression>());
+	select_node->from_table = std::move(from_table);
+	auto modifier = make_uniq<LimitModifier>();
+	modifier->limit_type = limit.is_percent ? LimitValueType::PERCENTAGE : LimitValueType::ROW_COUNT;
+	modifier->limit = std::move(limit.expression);
+	modifier->offset = std::move(offset.expression);
+	select_node->modifiers.push_back(std::move(modifier));
+	auto statement = make_uniq<SelectStatement>();
+	statement->node = std::move(select_node);
+	return transformer.MakeResult<unique_ptr<SelectStatement>>(std::move(statement));
+}
+
+static arena_ptr<TransformResultValue> FinalizeWrappedSelectAtom(PEGTransformer &transformer,
+                                                                 ParseResult &parse_result) {
+	auto &list = parse_result.Cast<ListParseResult>();
+	LimitPercentResult limit;
+	LimitPercentResult offset;
+	// the choice and optional nodes stand in for the selected clause's result: they copy its name
+	// and are handed to Transform directly, without unwrapping them to the clause's own node first
+	auto &clause = list.Child<ListParseResult>(1).GetChild(0);
+	auto &target = IsRule(clause, "LimitClause") ? limit : offset;
+	target = transformer.Transform<LimitPercentResult>(clause);
+	if (list.Child<OptionalParseResult>(2).HasResult()) {
+		if (offset.expression) {
+			throw ParserException("WRAPPED accepts a single OFFSET clause");
+		}
+		offset = transformer.Transform<LimitPercentResult>(list.GetChild(2));
+	}
+	return MakeRangeSelectResult(transformer, std::move(limit), std::move(offset));
+}
+
+static arena_ptr<TransformResultValue> FinalizeWrappedNestedAtom(PEGTransformer &transformer,
+                                                                 ParseResult &parse_result) {
+	auto &list = parse_result.Cast<ListParseResult>();
+	LimitPercentResult limit;
+	LimitPercentResult offset;
+	// a selected optional limit reaches Transform as a choice node wrapping a present optional node
+	auto &clause = list.Child<ListParseResult>(1).GetChild(0);
+	if (IsRule(clause, "LimitClause")) {
+		limit = transformer.Transform<LimitPercentResult>(clause);
+	} else if (IsRule(clause, "OffsetClause")) {
+		offset = transformer.Transform<LimitPercentResult>(clause);
+	}
+	return MakeRangeSelectResult(transformer, std::move(limit), std::move(offset));
+}
+
+static arena_ptr<TransformProcess> StartWrappedSelectAtomTransform(PEGTransformer &transformer,
+                                                                   ParseResult &parse_result) {
+	return transformer.MakeProcess<FinalizeTransformProcess>(transformer, parse_result, FinalizeWrappedSelectAtom);
+}
+
+static arena_ptr<TransformProcess> StartWrappedNestedAtomTransform(PEGTransformer &transformer,
+                                                                   ParseResult &parse_result) {
+	return transformer.MakeProcess<FinalizeTransformProcess>(transformer, parse_result, FinalizeWrappedNestedAtom);
+}
+
 class PipeSQLGrammarChange final : public GrammarExtension {
 public:
 	PipeSQLGrammarChange()
@@ -204,9 +270,32 @@ public:
 	}
 };
 
+//! A statement whose transform hands choice and optional wrapper nodes to Transform directly
+class WrappedTransformNodesChange final : public GrammarExtension {
+public:
+	WrappedTransformNodesChange()
+	    : GrammarExtension("wrapped_transform_nodes", "Transform limit clauses through wrapper parse nodes") {
+	}
+
+	vector<GrammarChange> GetChanges() const override {
+		vector<GrammarChange> changes;
+		changes.push_back(GrammarChange::AddChoice("UnreservedKeyword", "'WRAPPED'"));
+		changes.push_back(GrammarChange::AddChoice("UnreservedKeyword", "'WRAPPED_NESTED'"));
+		changes.push_back(
+		    GrammarChange::AddRule("WrappedSelectAtom <- 'WRAPPED' (LimitClause / OffsetClause) OffsetClause?",
+		                           StartWrappedSelectAtomTransform));
+		changes.push_back(GrammarChange::AddRule("WrappedNestedAtom <- 'WRAPPED_NESTED' (OffsetClause / LimitClause?)",
+		                                         StartWrappedNestedAtomTransform));
+		changes.push_back(GrammarChange::PrependChoice("SelectAtom", "WrappedSelectAtom"));
+		changes.push_back(GrammarChange::PrependChoice("SelectAtom", "WrappedNestedAtom"));
+		return changes;
+	}
+};
+
 extern "C" {
 
 DUCKDB_CPP_EXTENSION_ENTRY(loadable_grammar_extension_demo, loader) {
 	GrammarExtension::Register(loader.GetDatabaseInstance(), make_shared_ptr<PipeSQLGrammarChange>());
+	GrammarExtension::Register(loader.GetDatabaseInstance(), make_shared_ptr<WrappedTransformNodesChange>());
 }
 }
