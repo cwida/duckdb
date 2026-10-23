@@ -32,6 +32,9 @@ unique_ptr<LogicalOperator> RegexRangeFilter::Rewrite(unique_ptr<LogicalOperator
 			if (func.Function().GetName() != "regexp_full_match" || func.GetChildren().size() != 2) {
 				continue;
 			}
+			if (func.GetChildren()[0]->IsVolatile()) {
+				continue;
+			}
 			auto &info = func.BindInfo()->Cast<RegexpMatchesBindData>();
 			if (!info.range_success) {
 				continue;
