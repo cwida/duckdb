@@ -30,3 +30,16 @@ query T
 SELECT s FROM regex_values WHERE regexp_full_match(s, 'foo');
 ----
 foo
+
+statement ok
+CREATE SEQUENCE regex_seq;
+
+query I
+SELECT count(*) FROM range(1) WHERE regexp_full_match(nextval('regex_seq')::VARCHAR, '1');
+----
+1
+
+query I
+SELECT currval('regex_seq');
+----
+1
