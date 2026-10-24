@@ -46,9 +46,20 @@ struct RangeFunctionBindData : public TableFunctionData {
 			end += increment < 0 ? -1 : 1;
 		}
 
-		cardinality = Hugeint::Cast<idx_t>((end - start) / increment);
-		if ((end - start) % increment != 0) {
-			cardinality += 1;
+		if (increment == 0) {
+			throw BinderException("interval cannot be 0!");
+		}
+		if ((increment > 0 && start > end) || (increment < 0 && start < end)) {
+			return;
+		}
+
+		auto difference = end - start;
+		auto cardinality_huge = difference / increment;
+		if (difference % increment != 0) {
+			cardinality_huge += 1;
+		}
+		if (!Hugeint::TryCast<idx_t>(cardinality_huge, cardinality)) {
+			cardinality = NumericLimits<idx_t>::Maximum();
 		}
 	}
 
@@ -107,7 +118,7 @@ struct RangeFunctionLocalState : public LocalTableFunctionState {
 
 	bool initialized_row = false;
 	idx_t current_input_row = 0;
-	idx_t current_idx = 0;
+	hugeint_t current_idx = 0;
 
 	hugeint_t start;
 	hugeint_t end;
@@ -204,7 +215,7 @@ static OperatorResultType RangeFunction(ExecutionContext &context, TableFunction
 		}
 		auto increment = state.increment;
 		auto end = state.end;
-		hugeint_t current_value = state.start + increment * UnsafeNumericCast<int64_t>(state.current_idx);
+		hugeint_t current_value = state.start + increment * state.current_idx;
 		int64_t current_value_i64;
 		if (!Hugeint::TryCast<int64_t>(current_value, current_value_i64)) {
 			// move to next row
@@ -213,12 +224,19 @@ static OperatorResultType RangeFunction(ExecutionContext &context, TableFunction
 			continue;
 		}
 		int64_t offset = increment < 0 ? 1 : -1;
-		idx_t remaining = MinValue<idx_t>(
-		    Hugeint::Cast<idx_t>((end - current_value + (increment + offset)) / increment), STANDARD_VECTOR_SIZE);
+		auto remaining_huge = (end - current_value + (increment + offset)) / increment;
+		idx_t remaining;
+		if (remaining_huge <= 0) {
+			remaining = 0;
+		} else if (remaining_huge >= STANDARD_VECTOR_SIZE) {
+			remaining = STANDARD_VECTOR_SIZE;
+		} else {
+			remaining = Hugeint::Cast<idx_t>(remaining_huge);
+		}
 		// set the result vector as a sequence vector
 		output.data[0].Sequence(current_value_i64, Hugeint::Cast<int64_t>(increment), remaining);
 		// increment the index pointer by the remaining count
-		state.current_idx += remaining;
+		state.current_idx += Hugeint::Convert(remaining);
 		if (remaining == 0) {
 			// move to next row
 			state.current_input_row++;
