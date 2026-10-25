@@ -235,13 +235,15 @@ unique_ptr<PipelineSchedule> BuildPipelineSchedule(const vector<shared_ptr<MetaP
 				AddDependency(*result, entry.second.execute, dep_entry->second.complete);
 			}
 		}
-		// A dataflow dependency only needs the producer's source and sink state to be initialized.
+		// A dataflow dependency only needs the producer's source and sink state to be initialized to start,
+		// but the consumer cannot finish before the producer has finalized.
 		for (auto &dependency : pipeline.GetDataflowDependencies()) {
 			auto dep = dependency.lock();
 			D_ASSERT(dep);
 			auto dep_entry = stage_map.find(*dep);
 			if (dep_entry != stage_map.end()) {
 				AddDependency(*result, entry.second.execute, dep_entry->second.initialize);
+				AddDependency(*result, entry.second.prepare_finish, dep_entry->second.finish);
 			}
 		}
 	}
