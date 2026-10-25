@@ -285,11 +285,19 @@ static bool HasUnfilterableType(const ArrowType &type) {
 	case LogicalTypeId::BLOB:
 		return type.GetTypeInfo<ArrowStringInfo>().GetSizeType() == ArrowVariableSizeType::VIEW;
 	case LogicalTypeId::STRUCT:
-	case LogicalTypeId::TUPLE:
-	case LogicalTypeId::UNION: {
+	case LogicalTypeId::TUPLE: {
 		const auto &struct_info = type.GetTypeInfo<ArrowStructInfo>();
 		for (idx_t i = 0; i < struct_info.ChildCount(); i++) {
 			if (HasUnfilterableType(struct_info.GetChild(i))) {
+				return true;
+			}
+		}
+		return false;
+	}
+	case LogicalTypeId::UNION: {
+		const auto &union_info = type.GetTypeInfo<ArrowUnionInfo>();
+		for (idx_t i = 0; i < union_info.ChildCount(); i++) {
+			if (HasUnfilterableType(union_info.GetChild(i))) {
 				return true;
 			}
 		}

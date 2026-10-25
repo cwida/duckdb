@@ -828,19 +828,20 @@ const StringUtil::EnumStringLiteral *GetArrowTypeInfoTypeValues() {
 		{ static_cast<uint32_t>(ArrowTypeInfoType::DATE_TIME), "DATE_TIME" },
 		{ static_cast<uint32_t>(ArrowTypeInfoType::STRING), "STRING" },
 		{ static_cast<uint32_t>(ArrowTypeInfoType::ARRAY), "ARRAY" },
-		{ static_cast<uint32_t>(ArrowTypeInfoType::DECIMAL), "DECIMAL" }
+		{ static_cast<uint32_t>(ArrowTypeInfoType::DECIMAL), "DECIMAL" },
+		{ static_cast<uint32_t>(ArrowTypeInfoType::UNION), "UNION" }
 	};
 	return values;
 }
 
 template<>
 const char* EnumUtil::ToChars<ArrowTypeInfoType>(ArrowTypeInfoType value) {
-	return StringUtil::EnumToString(GetArrowTypeInfoTypeValues(), 6, "ArrowTypeInfoType", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetArrowTypeInfoTypeValues(), 7, "ArrowTypeInfoType", static_cast<uint32_t>(value));
 }
 
 template<>
 ArrowTypeInfoType EnumUtil::FromString<ArrowTypeInfoType>(const char *value) {
-	return static_cast<ArrowTypeInfoType>(StringUtil::StringToEnum(GetArrowTypeInfoTypeValues(), 6, "ArrowTypeInfoType", value));
+	return static_cast<ArrowTypeInfoType>(StringUtil::StringToEnum(GetArrowTypeInfoTypeValues(), 7, "ArrowTypeInfoType", value));
 }
 
 const StringUtil::EnumStringLiteral *GetArrowVariableSizeTypeValues() {
