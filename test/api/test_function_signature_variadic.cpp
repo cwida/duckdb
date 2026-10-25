@@ -9,6 +9,107 @@
 
 using namespace duckdb;
 
+struct InOutKeywordData : public TableFunctionData {
+	Value offset;
+	explicit InOutKeywordData(Value offset_p) : offset(std::move(offset_p)) {
+	}
+	unique_ptr<FunctionData> Copy() const override {
+		return make_uniq<InOutKeywordData>(offset);
+	}
+	bool Equals(const FunctionData &other) const override {
+		return Value::NotDistinctFrom(offset, other.Cast<InOutKeywordData>().offset);
+	}
+};
+
+static unique_ptr<FunctionData> InOutKeywordBind(ClientContext &, TableFunctionBindInput &input,
+                                                 vector<LogicalType> &types, vector<Identifier> &names) {
+	if (input.input_table_types != vector<LogicalType> {LogicalType::BIGINT}) {
+		throw BinderException("Only the positional argument belongs in the input table");
+	}
+	types.push_back(LogicalType::BIGINT);
+	names.emplace_back("value");
+	auto delta = input.named_parameters.at("delta");
+	// Distinguish overloads selected by the keyword's type.
+	if (delta.type().id() == LogicalTypeId::BOOLEAN) {
+		delta = Value::BIGINT(delta.GetValue<bool>() ? 100 : 0);
+	}
+	return make_uniq<InOutKeywordData>(std::move(delta));
+}
+
+static OperatorResultType InOutKeywordExecute(ExecutionContext &, TableFunctionInput &input, DataChunk &arguments,
+                                              DataChunk &output) {
+	const auto &offset = input.bind_data->Cast<InOutKeywordData>().offset;
+	for (idx_t row = 0; row < arguments.size(); ++row) {
+		auto value = arguments.GetValue(0, row);
+		output.data[0].Append(value.IsNull() || offset.IsNull()
+		                          ? Value(LogicalType::BIGINT)
+		                          : Value::BIGINT(value.GetValue<int64_t>() + offset.GetValue<int64_t>()));
+	}
+	output.SetChildCardinality(arguments.size());
+	return OperatorResultType::NEED_MORE_INPUT;
+}
+
+TEST_CASE("Correlated table in-out functions retain named scalar options", "[api][table_function][in_out_keywords]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	con.BeginTransaction();
+	FunctionSignature signature;
+	signature.AddPositionalOnly("value", LogicalType::BIGINT);
+	signature.AddKeywordOnly("delta", LogicalType::BIGINT, Value::BIGINT(7));
+	TableFunction function("in_out_keywords", std::move(signature), nullptr, InOutKeywordBind);
+	function.in_out_function = InOutKeywordExecute;
+	CreateTableFunctionInfo info(function);
+	Catalog::GetSystemCatalog(*con.context).CreateFunction(*con.context, info);
+	TableFunctionSet overloads("in_out_overloaded");
+	for (auto &type : {LogicalType::BIGINT, LogicalType::BOOLEAN}) {
+		FunctionSignature overloaded_signature;
+		overloaded_signature.AddPositionalOnly("value", LogicalType::BIGINT);
+		overloaded_signature.AddKeywordOnly("delta", type);
+		TableFunction overload(std::move(overloaded_signature), nullptr, InOutKeywordBind);
+		overload.in_out_function = InOutKeywordExecute;
+		overloads.AddFunction(std::move(overload));
+	}
+	CreateTableFunctionInfo overloaded_info(std::move(overloads));
+	Catalog::GetSystemCatalog(*con.context).CreateFunction(*con.context, overloaded_info);
+	con.Commit();
+
+	auto result = con.Query("SELECT r.value FROM (VALUES (1), (2)) t(x), "
+	                        "LATERAL in_out_keywords(t.x, delta => 4) r ORDER BY r.value");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(CHECK_COLUMN(result, 0, {5, 6}));
+	result = con.Query("SELECT r.value FROM (VALUES (1), (2)) t(x), "
+	                   "in_out_keywords(t.x, delta = '4') r ORDER BY r.value");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(CHECK_COLUMN(result, 0, {5, 6}));
+	result = con.Query("SELECT r.value FROM (VALUES (1), (2)) t(x), "
+	                   "LATERAL in_out_keywords(t.x) r ORDER BY r.value");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(CHECK_COLUMN(result, 0, {8, 9}));
+	result = con.Query("SELECT count(*) FILTER (WHERE r.value IS NULL) FROM (VALUES (1), (2)) t(x), "
+	                   "LATERAL in_out_keywords(t.x, delta => NULL) r");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(CHECK_COLUMN(result, 0, {2}));
+	REQUIRE_FAIL(con.Query("SELECT * FROM (VALUES (1)) t(x), in_out_keywords(t.x, typo => 1)"));
+	REQUIRE_FAIL(con.Query("SELECT * FROM (VALUES (1)) t(x), in_out_keywords(t.x, delta => t.x)"));
+	REQUIRE_FAIL(con.Query("SELECT * FROM (VALUES (1)) t(x), in_out_keywords(t.x, delta => 'wrong')"));
+	REQUIRE_FAIL(con.Query("SELECT * FROM (VALUES (1)) t(x), in_out_keywords(t.x, delta => 1, delta => 2)"));
+	REQUIRE_FAIL(con.Query("SELECT * FROM (VALUES (1)) t(x), in_out_keywords(delta => 1, t.x)"));
+	auto unsupported = con.Query("SELECT * FROM (VALUES (1)) t(x), in_out_keywords(t.x, delta => (SELECT 4))");
+	REQUIRE_FAIL(unsupported);
+	REQUIRE(unsupported->GetError().find("cannot contain subqueries") != string::npos);
+	REQUIRE_NO_FAIL(con.Query("PREPARE keyword_input AS SELECT r.value FROM (VALUES (1)) t(x), "
+	                          "in_out_keywords(t.x, delta => $1) r"));
+	result = con.Query("EXECUTE keyword_input(10)");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(CHECK_COLUMN(result, 0, {11}));
+	result = con.Query("SELECT r.value FROM (VALUES (1)) t(x), in_out_overloaded(t.x, delta => 4::BIGINT) r");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(CHECK_COLUMN(result, 0, {5}));
+	result = con.Query("SELECT r.value FROM (VALUES (1)) t(x), in_out_overloaded(t.x, delta => (1 = 1)) r");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(CHECK_COLUMN(result, 0, {101}));
+}
+
 static void CountArgumentsExec(DataChunk &args, ExpressionState &state, Vector &result) {
 	result.Reference(Value::BIGINT(NumericCast<int64_t>(args.ColumnCount())), count_t(args.size()));
 }
