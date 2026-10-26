@@ -16,10 +16,8 @@ using namespace duckdb;
 //! It exists to exercise the macro-family language function layer from SQL tests.
 class TestLangBinder : public LanguageFunctionBinder {
 public:
-	void ValidateCreate(ClientContext &context, CreateMacroInfo &info) override {
-		// deliberately reallocate the member vector: core must not hold member references across this callback
-		info.macros.reserve(info.macros.capacity() + 1);
-		for (auto &member : info.macros) {
+	void ValidateCreate(ClientContext &context, LanguageFunctionCreateInfo &info) override {
+		for (auto &member : info.Members()) {
 			auto &language_member = member->Cast<LanguageMacroFunction>();
 			if (StringUtil::Contains(language_member.source, "invalid")) {
 				throw BinderException("testlang: the source of %s may not contain the word \"invalid\"",
@@ -27,7 +25,7 @@ public:
 			}
 		}
 		// publish per-member documentation: function metadata must survive member mutations
-		for (auto &member : info.macros) {
+		for (auto &member : info.Members()) {
 			auto &language_member = member->Cast<LanguageMacroFunction>();
 			FunctionDescription description;
 			for (idx_t i = 0; i < member->parameters.size(); i++) {
@@ -39,7 +37,7 @@ public:
 			}
 			// a per-source description, so tests distinguish stale metadata from replaced metadata
 			description.description = "testlang: " + language_member.source;
-			info.descriptions.push_back(std::move(description));
+			info.AddDescription(std::move(description));
 		}
 	}
 

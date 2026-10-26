@@ -30,15 +30,15 @@ using namespace duckdb;
 
 namespace {
 
-//! A binder whose ValidateCreate performs a configurable mutation before core re-checks the definition
-class MutatingBinder : public LanguageFunctionBinder {
+//! A binder whose ValidateCreate performs a configurable action through the narrow create view
+class ViewBinder : public LanguageFunctionBinder {
 public:
-	explicit MutatingBinder(std::function<void(CreateMacroInfo &)> mutation_p) : mutation(std::move(mutation_p)) {
+	explicit ViewBinder(std::function<void(LanguageFunctionCreateInfo &)> action_p) : action(std::move(action_p)) {
 	}
 
-	void ValidateCreate(ClientContext &context, CreateMacroInfo &info) override {
-		if (mutation) {
-			mutation(info);
+	void ValidateCreate(ClientContext &context, LanguageFunctionCreateInfo &info) override {
+		if (action) {
+			action(info);
 		}
 	}
 	BindResult BindScalarCall(ExpressionBinder &binder, ScalarMacroCatalogEntry &entry, LanguageMacroFunction &member,
@@ -48,7 +48,7 @@ public:
 	}
 
 private:
-	std::function<void(CreateMacroInfo &)> mutation;
+	std::function<void(LanguageFunctionCreateInfo &)> action;
 };
 
 //! Register a language the way ExtensionLoader::RegisterLanguage does, without an extension
@@ -65,11 +65,11 @@ static void RegisterTestLanguage(DatabaseInstance &db, const string &language,
 
 } // namespace
 
-TEST_CASE("ValidateCreate guard accepts a source-only rewrite", "[api]") {
+TEST_CASE("ValidateCreate rewrites a member source through the create view", "[api]") {
 	DuckDB db(nullptr);
 	Connection con(db);
-	RegisterTestLanguage(*db.instance, "rewritelang", make_shared_ptr<MutatingBinder>([](CreateMacroInfo &info) {
-		info.macros[0]->Cast<LanguageMacroFunction>().source = "rewritten";
+	RegisterTestLanguage(*db.instance, "rewritelang", make_shared_ptr<ViewBinder>([](LanguageFunctionCreateInfo &info) {
+		info.SetMemberSource(0, "rewritten");
 	}));
 
 	REQUIRE_NO_FAIL(con.Query("CREATE FUNCTION rewritten_fun() LANGUAGE rewritelang AS 'original'"));
@@ -80,76 +80,49 @@ TEST_CASE("ValidateCreate guard accepts a source-only rewrite", "[api]") {
 	REQUIRE(CHECK_COLUMN(result, 0, {"rewritten"}));
 }
 
-// the guard raises InternalException, which aborts the process when DUCKDB_CRASH_ON_ASSERT is set
-#ifndef DUCKDB_CRASH_ON_ASSERT
-
-TEST_CASE("ValidateCreate guard rejects a return type mutation", "[api]") {
+TEST_CASE("ValidateCreate reads members and rejects definitions through the create view", "[api]") {
 	DuckDB db(nullptr);
 	Connection con(db);
-	RegisterTestLanguage(*db.instance, "retlang", make_shared_ptr<MutatingBinder>([](CreateMacroInfo &info) {
-		info.macros[0]->return_type = LogicalType::INTEGER;
+	RegisterTestLanguage(*db.instance, "readlang", make_shared_ptr<ViewBinder>([](LanguageFunctionCreateInfo &info) {
+		REQUIRE(info.Members().size() == 1);
+		auto &member = info.Members()[0]->Cast<LanguageMacroFunction>();
+		if (StringUtil::Contains(member.source, "reject")) {
+			throw BinderException("readlang: rejected %s", info.GetFunctionName().GetIdentifierName());
+		}
 	}));
 
-	auto result = con.Query("CREATE FUNCTION mutated_fun() LANGUAGE retlang AS 'x'");
+	REQUIRE_NO_FAIL(con.Query("CREATE FUNCTION accepted_fun(x INTEGER) LANGUAGE readlang AS 'fine'"));
+	auto result = con.Query("CREATE FUNCTION rejected_fun() LANGUAGE readlang AS 'reject me'");
 	REQUIRE_FAIL(result);
-	REQUIRE(StringUtil::Contains(result->GetError(), "changed the member count, a resolved signature"));
+	REQUIRE(StringUtil::Contains(result->GetError(), "readlang: rejected rejected_fun"));
 }
 
-TEST_CASE("ValidateCreate guard rejects a semantic alias mutation on a default's type arguments", "[api]") {
+TEST_CASE("ValidateCreate publishes documentation through the create view", "[api]") {
 	DuckDB db(nullptr);
 	Connection con(db);
-	// swap the DECIMAL(4,2) modifiers into named form (scale := 4, width := 2): expression equality
-	// ignores aliases, but binding consumes them as named constructor arguments
-	RegisterTestLanguage(*db.instance, "guardlang", make_shared_ptr<MutatingBinder>([](CreateMacroInfo &info) {
-		auto &default_expr = *info.macros[0]->default_parameters[Identifier("x")];
-		auto &args = default_expr.Cast<CastExpression>().TargetTypeMutable().GetChildren();
-		REQUIRE(args.size() == 2);
-		args[0]->SetAlias(Identifier("scale"));
-		args[1]->SetAlias(Identifier("width"));
+	RegisterTestLanguage(*db.instance, "doclang", make_shared_ptr<ViewBinder>([](LanguageFunctionCreateInfo &info) {
+		for (auto &member : info.Members()) {
+			FunctionDescription description;
+			for (idx_t i = 0; i < member->parameters.size(); i++) {
+				auto &param_name = member->parameters[i]->Cast<ColumnRefExpression>().GetColumnName();
+				description.parameter_names.push_back(param_name.GetIdentifierName());
+				const auto &type = member->types[i];
+				description.parameter_types.push_back(type.id() == LogicalTypeId::UNKNOWN ? LogicalType::ANY : type);
+			}
+			description.description = "doclang doc";
+			info.AddDescription(std::move(description));
+		}
 	}));
 
-	auto result = con.Query("CREATE FUNCTION guarded(x := NULL::DECIMAL(4,2)) LANGUAGE guardlang AS 'arg:0'");
-	REQUIRE_FAIL(result);
-	REQUIRE(StringUtil::Contains(result->GetError(), "default parameters"));
+	REQUIRE_NO_FAIL(con.Query("CREATE FUNCTION documented_fun(x INTEGER) LANGUAGE doclang AS 'd'"));
+	auto result = con.Query("SELECT description FROM duckdb_functions() WHERE function_name = 'documented_fun'");
+	REQUIRE(CHECK_COLUMN(result, 0, {"doclang doc"}));
 }
-
-TEST_CASE("ValidateCreate guard rejects a rendering-state mutation on a default", "[api]") {
-	DuckDB db(nullptr);
-	Connection con(db);
-	// the folded list default is a list_value function call: flipping its operator flag changes
-	// nothing Equals or the alias walk compare, but makes EXPORT render invalid SQL
-	RegisterTestLanguage(*db.instance, "renderlang", make_shared_ptr<MutatingBinder>([](CreateMacroInfo &info) {
-		auto &default_expr = *info.macros[0]->default_parameters[Identifier("x")];
-		REQUIRE(default_expr.GetExpressionClass() == ExpressionClass::FUNCTION);
-		default_expr.Cast<FunctionExpression>().IsOperatorMutable() = true;
-	}));
-
-	auto result = con.Query("CREATE FUNCTION rendered(x := [1, 2]) LANGUAGE renderlang AS 'arg:0'");
-	REQUIRE_FAIL(result);
-	REQUIRE(StringUtil::Contains(result->GetError(), "default parameters"));
-}
-
-TEST_CASE("ValidateCreate guard rejects an extension metadata mutation on a parameter type", "[api]") {
-	DuckDB db(nullptr);
-	Connection con(db);
-	// ordinary type equality treats extension metadata as a wildcard: the frozen signature must not
-	RegisterTestLanguage(*db.instance, "extlang", make_shared_ptr<MutatingBinder>([](CreateMacroInfo &info) {
-		auto info_copy = make_uniq<ExtensionTypeInfo>();
-		info_copy->modifiers.emplace_back(Value::INTEGER(10));
-		info.macros[0]->types[0] = info.macros[0]->types[0].WithExtensionInfo(std::move(info_copy));
-	}));
-
-	auto result = con.Query("CREATE FUNCTION ext_mutated(x INTEGER) LANGUAGE extlang AS 'arg:0'");
-	REQUIRE_FAIL(result);
-	REQUIRE(StringUtil::Contains(result->GetError(), "changed the member count, a resolved signature"));
-}
-
-#endif
 
 TEST_CASE("Member mutations respect internal entry protection", "[api]") {
 	DuckDB db(nullptr);
 	Connection con(db);
-	RegisterTestLanguage(*db.instance, "intlang", make_shared_ptr<MutatingBinder>(nullptr));
+	RegisterTestLanguage(*db.instance, "intlang", make_shared_ptr<ViewBinder>(nullptr));
 
 	// register an internal two-member language entry in the system catalog, the way an extension
 	// registering functions does
@@ -236,7 +209,7 @@ static LogicalType UnresolvedUserType(const string &name) {
 TEST_CASE("Nested unbound member types resolve at CREATE", "[api]") {
 	DuckDB db(nullptr);
 	Connection con(db);
-	RegisterTestLanguage(*db.instance, "nestlang", make_shared_ptr<MutatingBinder>(nullptr));
+	RegisterTestLanguage(*db.instance, "nestlang", make_shared_ptr<ViewBinder>(nullptr));
 	REQUIRE_NO_FAIL(con.Query("CREATE TYPE mood AS ENUM ('happy', 'sad')"));
 
 	// a dialect transformer may emit a concrete container around an unresolved user type, unlike
@@ -295,7 +268,7 @@ TEST_CASE("Nested unbound member types resolve at CREATE", "[api]") {
 TEST_CASE("Batch member creation follows the overload identity", "[api]") {
 	DuckDB db(nullptr);
 	Connection con(db);
-	RegisterTestLanguage(*db.instance, "batchlang", make_shared_ptr<MutatingBinder>(nullptr));
+	RegisterTestLanguage(*db.instance, "batchlang", make_shared_ptr<ViewBinder>(nullptr));
 
 	// a dialect may submit several members in one CREATE: the set must satisfy the same conflict
 	// identity as incremental creation, or EXPORT emits a set IMPORT cannot re-create

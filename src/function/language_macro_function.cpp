@@ -1,5 +1,7 @@
 #include "duckdb/function/language_macro_function.hpp"
 
+#include "duckdb/main/language_function_binder.hpp"
+
 #include "duckdb/common/sql_identifier.hpp"
 
 namespace duckdb {
@@ -23,6 +25,10 @@ string LanguageMacroFunction::ToSQL() const {
 	D_ASSERT(StringUtil::EndsWith(prefix, " AS "));
 	prefix.erase(prefix.size() - 4);
 	return prefix + " LANGUAGE " + SQLIdentifier::ToString(language) + " AS " + SQLString::ToString(source);
+}
+
+void LanguageFunctionCreateInfo::SetMemberSource(idx_t member_idx, string source) {
+	members[member_idx]->Cast<LanguageMacroFunction>().source = std::move(source);
 }
 
 } // namespace duckdb

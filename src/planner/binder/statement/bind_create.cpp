@@ -432,121 +432,6 @@ void Binder::CheckMacroStorageVersion(Catalog &catalog, const CreateMacroInfo &i
 	}
 }
 
-//! Equals ignores expression aliases, but type-constructor arguments bind by alias (named type
-//! modifiers, struct field names): compare them recursively, descending into cast target types
-static bool SemanticAliasesEqual(const ParsedExpression &before, const ParsedExpression &after) {
-	if (before.GetAlias() != after.GetAlias()) {
-		return false;
-	}
-	if (before.GetExpressionClass() == ExpressionClass::CAST && after.GetExpressionClass() == ExpressionClass::CAST) {
-		// the cast target type is not part of Children(): descend into it explicitly
-		if (!SemanticAliasesEqual(before.Cast<CastExpression>().TargetType(),
-		                          after.Cast<CastExpression>().TargetType())) {
-			return false;
-		}
-	}
-	auto before_children = before.Children();
-	auto after_children = after.Children();
-	if (before_children.size() != after_children.size()) {
-		return false;
-	}
-	auto before_it = before_children.begin();
-	auto after_it = after_children.begin();
-	for (idx_t child_idx = 0; child_idx < before_children.size(); child_idx++, ++before_it, ++after_it) {
-		if (!SemanticAliasesEqual(*before_it, *after_it)) {
-			return false;
-		}
-	}
-	return true;
-}
-
-//! A complete identity for a frozen type: ordinary type equality ignores collations and treats
-//! extension metadata as a wildcard (a missing side or a shorter modifier list compares equal),
-//! so compare the serialized representation, which captures aliases, collations, modifiers, and
-//! nested types exactly
-static string FrozenTypeIdentity(const LogicalType &type) {
-	Allocator allocator;
-	MemoryStream stream(allocator);
-	SerializationOptions options;
-	options.storage_compatibility = StorageCompatibility::Latest();
-	BinarySerializer serializer(stream, options);
-	serializer.Begin();
-	serializer.WriteProperty(100, "type", type);
-	serializer.End();
-	return string(char_ptr_cast(stream.GetData()), stream.GetPosition());
-}
-//! The parts of a definition a language binder's ValidateCreate must leave unchanged: the resolved
-//! signature (parameters, types, defaults, return type) and the language. Sources may be rewritten.
-//! A frozen member: a deep copy for the expression comparisons plus type identities captured
-//! BEFORE the callback runs. LogicalType copies share their type info, so an in-place extension
-//! metadata mutation would otherwise change the snapshot together with the definition.
-struct FrozenMemberSignature {
-	unique_ptr<MacroFunction> member;
-	vector<string> type_identities;
-	string return_identity;
-};
-
-static FrozenMemberSignature FreezeMemberSignature(const MacroFunction &member) {
-	FrozenMemberSignature result;
-	result.member = member.Copy();
-	for (auto &type : member.types) {
-		result.type_identities.push_back(FrozenTypeIdentity(type));
-	}
-	result.return_identity = FrozenTypeIdentity(member.return_type);
-	return result;
-}
-
-static bool MacroSignatureEquals(const FrozenMemberSignature &frozen, const MacroFunction &after) {
-	auto &before = *frozen.member;
-	if (before.type != after.type || frozen.type_identities.size() != after.types.size() ||
-	    before.parameters.size() != after.parameters.size() ||
-	    frozen.return_identity != FrozenTypeIdentity(after.return_type)) {
-		return false;
-	}
-	for (idx_t type_idx = 0; type_idx < after.types.size(); type_idx++) {
-		if (frozen.type_identities[type_idx] != FrozenTypeIdentity(after.types[type_idx])) {
-			return false;
-		}
-	}
-	for (idx_t param_idx = 0; param_idx < before.parameters.size(); param_idx++) {
-		if (!before.parameters[param_idx]->Equals(*after.parameters[param_idx])) {
-			return false;
-		}
-	}
-	if (before.default_parameters.size() != after.default_parameters.size()) {
-		return false;
-	}
-	for (auto &default_param : before.default_parameters) {
-		auto other = after.default_parameters.find(default_param.first);
-		if (other == after.default_parameters.end() || !default_param.second->Equals(*other->second)) {
-			return false;
-		}
-		// the alias walk catches named type-constructor arguments the rendered form omits, the
-		// rendered form catches rendering-relevant state outside both Equals and the walk
-		if (!SemanticAliasesEqual(*default_param.second, *other->second) ||
-		    default_param.second->ToString() != other->second->ToString()) {
-			return false;
-		}
-	}
-	if (before.type == MacroType::LANGUAGE_MACRO &&
-	    !StringUtil::CIEquals(before.Cast<LanguageMacroFunction>().language,
-	                          after.Cast<LanguageMacroFunction>().language)) {
-		return false;
-	}
-	return true;
-}
-
-static bool MacroSignaturesEqual(const vector<FrozenMemberSignature> &before, const CreateMacroInfo &after) {
-	if (before.size() != after.macros.size()) {
-		return false;
-	}
-	for (idx_t member_idx = 0; member_idx < before.size(); member_idx++) {
-		if (!MacroSignatureEquals(before[member_idx], *after.macros[member_idx])) {
-			return false;
-		}
-	}
-	return true;
-}
 SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 	//! Set to identify exact matches in macro overloads
 	struct VectorOfLogicalTypeHash {
@@ -678,8 +563,9 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 			default_values[param_name] = std::move(default_val);
 		}
 
-		// Resolve a user type in the declared return type
-		if (function->return_type.id() == LogicalTypeId::UNBOUND) {
+		// Resolve a user type in the declared return type. BindLogicalType resolves recursively: a
+		// dialect may nest an unresolved type inside a concrete container
+		if (function->return_type.id() != LogicalTypeId::UNKNOWN) {
 			BindLogicalType(function->return_type);
 		}
 
@@ -808,30 +694,10 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 		auto language_entry = LanguageCatalogEntry::TryGet(context, entry_language);
 		if (language_entry && language_entry->binder) {
 			auto language_binder = language_entry->binder;
-			vector<FrozenMemberSignature> signatures;
-			for (auto &member : base.macros) {
-				signatures.push_back(FreezeMemberSignature(*member));
-			}
-			// the fields that determine the DDL's effect are frozen across the callback too
-			const auto frozen_name = base.GetQualifiedName();
-			const auto frozen_on_conflict = base.on_conflict;
-			const auto frozen_temporary = base.temporary;
-			const auto frozen_internal = base.internal;
-			const auto frozen_type = base.type;
-			language_binder->ValidateCreate(context, base);
-			if (frozen_name != base.GetQualifiedName() || frozen_on_conflict != base.on_conflict ||
-			    frozen_temporary != base.temporary || frozen_internal != base.internal || frozen_type != base.type) {
-				throw InternalException(
-				    "The language binder for \"%s\" changed the target, conflict policy, or entry kind of %s() "
-				    "during validation, which is not allowed",
-				    entry_language, base.GetFunctionName());
-			}
-			if (!MacroSignaturesEqual(signatures, base)) {
-				throw InternalException(
-				    "The language binder for \"%s\" changed the member count, a resolved signature, or the default "
-				    "parameters of %s() during validation, which is not allowed",
-				    entry_language, base.GetFunctionName());
-			}
+			// the info type exposes exactly what the callback may do: read members, rewrite member
+			// sources, and publish documentation. The definition itself stays fixed by construction
+			LanguageFunctionCreateInfo create_info(base.GetQualifiedName().Name(), base.macros, base.descriptions);
+			language_binder->ValidateCreate(context, create_info);
 		}
 	}
 
