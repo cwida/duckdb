@@ -32,6 +32,17 @@ SET GLOBAL default_grammar_extensions = ['dup', 'dup']
 ----
 <REGEX>:.*duplicate value.*
 
+statement error
+SET GLOBAL default_grammar_extensions = [NULL]
+----
+<REGEX>:.*cannot be NULL.*
+
+# the setting has no session scope
+statement error
+SET SESSION default_grammar_extensions = []
+----
+<REGEX>:.*
+
 # plain SET resolves to the global scope for a global setting
 statement error
 SET default_grammar_extensions = ['still_no_such_grammar']

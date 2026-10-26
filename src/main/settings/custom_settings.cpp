@@ -505,6 +505,9 @@ static vector<string> ParseGrammarExtensionList(const char *setting_name, const 
 	case_insensitive_set_t distinct_names;
 	vector<string> names;
 	for (auto &val : ListValue::GetChildren(input)) {
+		if (val.IsNull()) {
+			throw InvalidInputException("'%s' list values cannot be NULL", setting_name);
+		}
 		if (val.type().id() != LogicalTypeId::VARCHAR) {
 			throw InvalidInputException("'%s' list values should be of type VARCHAR, not %s", setting_name,
 			                            val.type().ToString());
@@ -556,8 +559,14 @@ void DefaultGrammarExtensionsSetting::SetGlobal(DatabaseInstance *db, DBConfig &
 		return;
 	}
 	// compose eagerly, like the session setting: a selection that fails to compile errors here and
-	// leaves the default unchanged, so sessions never meet a default they cannot parse with
-	db->GetParserCache().GetMatcher(*db, names);
+	// leaves the default unchanged, so sessions never meet a default they cannot parse with. This
+	// runs under the config lock, so it must not enter the parser cache: its lock is held through
+	// the extension callbacks, which may themselves read locked configuration from the parse path
+	vector<reference<GrammarExtension>> selected;
+	for (auto &name : names) {
+		selected.emplace_back(*config.GetCallbackManager().FindGrammarExtension(name));
+	}
+	CompiledGrammar::Create(selected);
 	config.default_grammar_extensions.atomic_store(make_shared_ptr<const vector<string>>(std::move(names)));
 }
 

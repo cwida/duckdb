@@ -27,8 +27,8 @@ class PreparedStatementData;
 struct CompiledGrammar;
 struct ReplacementScan;
 
-//! The grammar a session parses with, together with the grammar registry version and the explicit
-//! selection (compared by identity) it was composed from
+//! The grammar a session parses with, together with the grammar registry version and the effective
+//! selection snapshot (session or database default, compared by identity) it was composed from
 struct CachedSessionGrammar {
 	shared_ptr<CompiledGrammar> grammar;
 	idx_t registry_version;
@@ -96,9 +96,10 @@ struct ClientConfig {
 	get_result_collector_t get_result_collector = nullptr;
 
 	optional<string> current_dialect;
-	//! The (ordered) list of explicitly activated grammar extensions (default-active ones are not
-	//! listed, never set means empty): an immutable snapshot replaced on SET/RESET and loaded
-	//! atomically because parsing can run without the client context lock
+	//! The (ordered) list of explicitly activated grammar extensions: nullptr means not set (the
+	//! database default applies), a non-null empty list is an explicit opt-out. An immutable
+	//! snapshot replaced on SET/RESET and loaded atomically because parsing can run without the
+	//! client context lock
 	shared_ptr<const vector<string>> active_grammar_extensions;
 	//! The grammar composed for the connection; recomposed lazily when unset or stale. The snapshot
 	//! is immutable and stored/loaded atomically (see active_grammar_extensions); its validity is

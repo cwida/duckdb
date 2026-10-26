@@ -1344,7 +1344,7 @@ static arena_ptr<TransformProcess> StartConstantEightTransform(PEGTransformer &t
 	return transformer.MakeProcess<ConstantEightTransformProcess>(transformer);
 }
 
-//! Overrides the same rule as DefaultActiveSevenGrammarExtension, but is opt-in and yields 8
+//! Overrides the same rule as SevenGrammarExtension and yields 8
 class OverrideAdditiveExpressionEight final : public GrammarExtension {
 public:
 	explicit OverrideAdditiveExpressionEight(const string &name)
@@ -1390,9 +1390,15 @@ TEST_CASE("The session selection replaces the database default", "[api][grammar_
 	RequireSeven(con);
 	session_value = ActiveGrammarExtensionsSetting::GetSetting(*con.context);
 	REQUIRE(ListValue::GetChildren(session_value).empty());
+	// a local NULL also returns to the database default
+	SetActiveGrammarExtensions(con, {Value("explicit_eight")});
+	RequireEight(con);
+	ActiveGrammarExtensionsSetting::SetLocal(*con.context, Value(LogicalType::LIST(LogicalType::VARCHAR)));
+	RequireSeven(con);
 }
 
-//! Opt-in grammar adding a rule a default-active grammar can reference
+
+//! Grammar adding a rule another grammar can reference
 class ProvidingGrammarExtension final : public GrammarExtension {
 public:
 	ProvidingGrammarExtension() : GrammarExtension("providing_grammar", "ProvidingGrammarExtension") {
@@ -1417,6 +1423,37 @@ public:
 		return changes;
 	}
 };
+
+TEST_CASE("The session selection does not compose with the database default", "[api][grammar_extension]") {
+	DuckDB db(nullptr);
+	GrammarExtension::Register(*db.instance, make_shared_ptr<ProvidingGrammarExtension>());
+	GrammarExtension::Register(*db.instance, make_shared_ptr<DependentGrammarExtension>());
+	SetDefaultGrammarExtensions(db, {Value("providing_grammar")});
+	Connection con(db);
+	REQUIRE_NO_FAIL(*con.Query("SELECT 1"));
+	// the dependent grammar compiles only together with the provider: a session selection that
+	// composed WITH the default would succeed here, replacement must fail
+	REQUIRE_THROWS(SetActiveGrammarExtensions(con, {Value("dependent_grammar")}));
+	REQUIRE_NO_FAIL(*con.Query("SELECT 1"));
+	// listing both in the session selection composes
+	SetActiveGrammarExtensions(con, {Value("providing_grammar"), Value("dependent_grammar")});
+	REQUIRE_NO_FAIL(*con.Query("SELECT 1"));
+	// clearing a nonempty database default with an empty list and with NULL deactivates it
+	GrammarExtension::Register(*db.instance, make_shared_ptr<SevenGrammarExtension>("seven_b"));
+	SetDefaultGrammarExtensions(db, {Value("seven_b")});
+	REQUIRE_NO_FAIL(*con.Query("RESET active_grammar_extensions"));
+	RequireSeven(con);
+	SetDefaultGrammarExtensions(db, {});
+	auto result = con.Query("SELECT 1");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->Collection().GetValue(0, 0) == Value::INTEGER(1));
+	SetDefaultGrammarExtensions(db, {Value("seven_b")});
+	RequireSeven(con);
+	DefaultGrammarExtensionsSetting::SetGlobal(db.instance.get(), db.instance->config, Value(LogicalType::LIST(LogicalType::VARCHAR)));
+	result = con.Query("SELECT 1");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->Collection().GetValue(0, 0) == Value::INTEGER(1));
+}
 
 TEST_CASE("The database default rejects values it cannot validate", "[api][grammar_extension]") {
 	DuckDB db(nullptr);
