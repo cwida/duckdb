@@ -3,6 +3,7 @@
 #include "duckdb/main/language_function_binder.hpp"
 
 #include "duckdb/common/sql_identifier.hpp"
+#include "duckdb/parser/expression/columnref_expression.hpp"
 
 namespace duckdb {
 
