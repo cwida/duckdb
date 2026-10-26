@@ -92,7 +92,8 @@ TEST_CASE("A worker thread that cannot deschedule a blocked task tries again", "
 	// the task ran once, and the worker waited before every new attempt
 	REQUIRE(blocked->executions == 1);
 	REQUIRE(blocked->attempts == 6);
-	REQUIRE(blocked->shortest_gap >= RETRY_WAIT);
+	// sleeps can return early, e.g. on Windows, so only require a wait of about half of RETRY_WAIT
+	REQUIRE(blocked->shortest_gap >= RETRY_WAIT / 2);
 
 	// the worker still runs tasks
 	auto next = make_shared_ptr<FinishingTask>();
