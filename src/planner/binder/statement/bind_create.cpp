@@ -430,6 +430,8 @@ void Binder::CheckMacroStorageVersion(Catalog &catalog, const CreateMacroInfo &i
 		msg += "Use an in-memory database, ATTACH with (STORAGE_VERSION v2.1.0), or create a TEMP function";
 		throw BinderException(msg);
 	}
+}
+
 //! Equals ignores expression aliases, but type-constructor arguments bind by alias (named type
 //! modifiers, struct field names): compare them recursively, descending into cast target types
 static bool SemanticAliasesEqual(const ParsedExpression &before, const ParsedExpression &after) {
@@ -544,31 +546,6 @@ static bool MacroSignaturesEqual(const vector<FrozenMemberSignature> &before, co
 		}
 	}
 	return true;
-}
-void Binder::CheckLanguageMacroStorageVersion(Catalog &catalog, const CreateMacroInfo &info) {
-	bool uses_language_features = false;
-	for (auto &member : info.macros) {
-		if (member->type == MacroType::LANGUAGE_MACRO || member->return_type.id() != LogicalTypeId::UNKNOWN) {
-			uses_language_features = true;
-			break;
-		}
-	}
-	if (!uses_language_features) {
-		return;
-	}
-	auto &attached = catalog.GetAttached();
-	if (!attached.HasStorageManager()) {
-		return;
-	}
-	auto &storage_manager = attached.GetStorageManager();
-	const auto since = StorageCompatibility::FromString("v2.1.0").storage_version;
-	if (!info.temporary && !attached.IsTemporary() && !storage_manager.InMemory() &&
-	    storage_manager.GetStorageVersion() < since) {
-		string msg =
-		    "Language functions and RETURNS types are only supported for storage versions v2.1.0 and higher.\n";
-		msg += "Use an in-memory database, ATTACH with (STORAGE_VERSION v2.1.0), or create a TEMP function";
-		throw BinderException(msg);
-	}
 }
 SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 	//! Set to identify exact matches in macro overloads

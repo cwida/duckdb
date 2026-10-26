@@ -33,10 +33,6 @@ unique_ptr<LogicalOperator> Binder::BindCopyDatabaseSchema(Catalog &from_databas
 	auto &target_catalog = Catalog::GetCatalog(context, target_database_name);
 	for (auto &entry : catalog_entries) {
 		auto create_info = entry.get().GetInfo();
-		if (create_info->type == CatalogType::MACRO_ENTRY || create_info->type == CatalogType::TABLE_MACRO_ENTRY) {
-			// this path bypasses the CREATE binder, enforce the storage-version gate here
-			CheckLanguageMacroStorageVersion(target_catalog, create_info->Cast<CreateMacroInfo>());
-		}
 		// re-root the entry (keeping its possibly nested schema path) in the target database
 		create_info->SetQualifiedName(create_info->GetQualifiedName().WithCatalog(target_database_name));
 		if (create_info->type == CatalogType::MACRO_ENTRY || create_info->type == CatalogType::TABLE_MACRO_ENTRY) {
