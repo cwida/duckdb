@@ -1140,18 +1140,31 @@ FindExchangeStarvedBufferedConsumer(PipelineBuildStateData &data, const Pipeline
 		}
 		return false;
 	};
-	auto record_execute_stage = [&](const PipelineBufferedConsumerRecord &record) {
-		for (idx_t stage_idx = 0; stage_idx < stage_count; stage_idx++) {
-			auto &stage = schedule.stages[stage_idx];
-			if (stage.type == PipelineScheduleStageType::EXECUTE &&
-			    RefersToSameObject(*stage.pipeline, record.pipeline.get())) {
-				return optional_idx(stage_idx);
-			}
+	// Index the execute stages once: the stage array is scanned repeatedly below.
+	reference_map_t<Pipeline, idx_t> execute_stages;
+	vector<optional_ptr<ExchangeLiveness>> stage_producing_exchange(stage_count, nullptr);
+	vector<pair<reference<ExchangeLiveness>, idx_t>> producer_execute_stages;
+	for (idx_t stage_idx = 0; stage_idx < stage_count; stage_idx++) {
+		auto &stage = schedule.stages[stage_idx];
+		if (stage.type != PipelineScheduleStageType::EXECUTE) {
+			continue;
 		}
-		return optional_idx();
+		execute_stages.emplace(*stage.pipeline, stage_idx);
+		auto exchange = producing_exchange(stage);
+		stage_producing_exchange[stage_idx] = exchange;
+		if (exchange) {
+			producer_execute_stages.emplace_back(*exchange, stage_idx);
+		}
+	}
+	auto record_execute_stage = [&](const PipelineBufferedConsumerRecord &record) {
+		auto entry = execute_stages.find(record.pipeline.get());
+		return entry == execute_stages.end() ? optional_idx() : optional_idx(entry->second);
 	};
 
 	vector<bool> stage_live(stage_count, false);
+	// An analysis dependency is the mirrored wait on a producer's finalization. When that producer feeds a live
+	// exchange, the wait resolves through the exchange's own progress, so requiring the finish stage itself would
+	// treat every early-stopping producer as if it had to exhaust its input.
 	auto dependencies_live = [&](const PipelineScheduleStage &stage) {
 		for (auto dependency : stage.dependencies) {
 			if (!stage_live[dependency]) {
@@ -1159,7 +1172,40 @@ FindExchangeStarvedBufferedConsumer(PipelineBuildStateData &data, const Pipeline
 			}
 		}
 		for (auto dependency : stage.analysis_dependencies) {
-			if (!stage_live[dependency] && !is_own_producer_eof(stage, dependency)) {
+			if (stage_live[dependency] || is_own_producer_eof(stage, dependency)) {
+				continue;
+			}
+			auto target_exchange = producing_exchange(schedule.stages[dependency]);
+			if (!target_exchange || !target_exchange->live) {
+				return false;
+			}
+		}
+		return true;
+	};
+	// The exchange's producers must be able to run: a live exchange with a producer that is itself gated would
+	// wrongly resolve the finalization waits of its consumers. Ordering between the exchange's own producer
+	// pipelines (a UNION's later branches wait on the base pipeline) resolves with the exchange itself and must
+	// not count as a gate.
+	auto producers_startable = [&](const ExchangeLiveness &exchange) {
+		for (auto &entry : producer_execute_stages) {
+			if (&entry.first.get() != &exchange) {
+				continue;
+			}
+			auto &stage = schedule.stages[entry.second];
+			for (auto dependency : stage.dependencies) {
+				if (stage_live[dependency] || producing_exchange(schedule.stages[dependency]).get() == &exchange) {
+					continue;
+				}
+				return false;
+			}
+			for (auto dependency : stage.analysis_dependencies) {
+				if (stage_live[dependency] || is_own_producer_eof(stage, dependency)) {
+					continue;
+				}
+				auto target_exchange = producing_exchange(schedule.stages[dependency]);
+				if (target_exchange && (target_exchange->live || target_exchange.get() == &exchange)) {
+					continue;
+				}
 				return false;
 			}
 		}
@@ -1171,30 +1217,32 @@ FindExchangeStarvedBufferedConsumer(PipelineBuildStateData &data, const Pipeline
 		changed = false;
 		for (auto &entry : exchanges) {
 			auto &exchange = entry.second;
-			if (exchange.live || exchange.has_direct) {
-				if (!exchange.live) {
-					exchange.live = true;
-					changed = true;
-				}
+			if (exchange.live) {
+				continue;
+			}
+			if (!producers_startable(exchange)) {
 				continue;
 			}
 			bool all_draining = true;
-			for (auto &record_ref : exchange.records) {
-				auto &record = record_ref.get();
-				auto execute_stage = record_execute_stage(record);
-				if (!execute_stage.IsValid()) {
-					continue;
-				}
-				// The consumer must be able to start: everything its execute waits on must be live.
-				if (!dependencies_live(schedule.stages[execute_stage.GetIndex()])) {
-					all_draining = false;
-					break;
-				}
-				// The consumer must be able to drain: pushing into a dead exchange blocks it.
-				auto consumer_sink_exchange = producing_exchange(schedule.stages[execute_stage.GetIndex()]);
-				if (consumer_sink_exchange && !consumer_sink_exchange->live) {
-					all_draining = false;
-					break;
+			if (!exchange.has_direct) {
+				// A direct consumer creates the shared spool; otherwise every buffered consumer must be able
+				// to start (everything its execute waits on is live) and to drain (its own sink's exchange
+				// is live).
+				for (auto &record_ref : exchange.records) {
+					auto &record = record_ref.get();
+					auto execute_stage = record_execute_stage(record);
+					if (!execute_stage.IsValid()) {
+						continue;
+					}
+					if (!dependencies_live(schedule.stages[execute_stage.GetIndex()])) {
+						all_draining = false;
+						break;
+					}
+					auto consumer_sink_exchange = stage_producing_exchange[execute_stage.GetIndex()];
+					if (consumer_sink_exchange && !consumer_sink_exchange->live) {
+						all_draining = false;
+						break;
+					}
 				}
 			}
 			if (all_draining) {
@@ -1210,11 +1258,9 @@ FindExchangeStarvedBufferedConsumer(PipelineBuildStateData &data, const Pipeline
 			if (!dependencies_live(stage)) {
 				continue;
 			}
-			if (stage.type == PipelineScheduleStageType::EXECUTE) {
-				auto exchange = producing_exchange(stage);
-				if (exchange && !exchange->live) {
-					continue;
-				}
+			auto exchange = stage_producing_exchange[stage_idx];
+			if (exchange && !exchange->live) {
+				continue;
 			}
 			stage_live[stage_idx] = true;
 			changed = true;

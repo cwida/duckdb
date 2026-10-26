@@ -51,9 +51,10 @@ public:
 			} while (!cv.wait_for(guard, std::chrono::milliseconds(100), [this]() { return done; }));
 		});
 	}
-	~QueryWatchdog() {
+	//! Stops the watchdog and reports whether it interrupted the query.
+	bool Finish() {
 		if (!watchdog.joinable()) {
-			return;
+			return false;
 		}
 		{
 			std::lock_guard<std::mutex> guard(lock);
@@ -67,6 +68,11 @@ public:
 			// state intact, and if the query was aborted the engine already cleared the flag.
 			connection.context->ClearInterrupt();
 		}
+		return fired;
+	}
+
+	~QueryWatchdog() {
+		Finish();
 	}
 
 private:
@@ -303,6 +309,7 @@ unique_ptr<QueryResult> Command::ExecuteQuery(ExecuteContext &context, reference
 	parameters.format = ChunkFormat::BufferManaged();
 
 	QueryWatchdog watchdog(connection.get(), query_timeout);
+	duckdb::unique_ptr<QueryResult> result;
 	try {
 #ifdef DUCKDB_ALTERNATIVE_VERIFY
 		auto ccontext = connection.get().context;
@@ -315,24 +322,33 @@ unique_ptr<QueryResult> Command::ExecuteQuery(ExecuteContext &context, reference
 		} catch (std::exception &) {
 		}
 		if (statement_count != 1) {
-			return ccontext->Query(context.sql_query, parameters);
+			result = ccontext->Query(context.sql_query, parameters);
+		} else {
+			auto handle = ccontext->Submit(context.sql_query, parameters);
+			if (handle->HasError()) {
+				result = std::move(handle);
+			} else if (handle->MetadataAvailable() &&
+			           handle->GetStatementProperties().return_type != StatementReturnType::QUERY_RESULT) {
+				handle->Complete();
+				result = std::move(handle);
+			} else {
+				result = DrainStream(std::move(handle));
+			}
 		}
-		auto handle = ccontext->Submit(context.sql_query, parameters);
-		if (handle->HasError()) {
-			return handle;
-		}
-		if (handle->MetadataAvailable() &&
-		    handle->GetStatementProperties().return_type != StatementReturnType::QUERY_RESULT) {
-			handle->Complete();
-			return handle;
-		}
-		return DrainStream(std::move(handle));
 #else
-		return connection.get().context->Query(context.sql_query, parameters);
+		result = connection.get().context->Query(context.sql_query, parameters);
 #endif
 	} catch (std::exception &ex) {
-		return make_uniq<QueryResult>(ErrorData(ex));
+		result = make_uniq<QueryResult>(ErrorData(ex));
 	}
+	if (watchdog.Finish() && result && result->HasError() &&
+	    result->GetErrorObject().Type() == ExceptionType::INTERRUPT) {
+		// A timeout must fail the test instead of surfacing as a SQL error: a statement expecting an error
+		// would otherwise silently accept a hang bounded by the watchdog.
+		TEST_FAIL_LINE(file_name, query_line,
+		               StringUtil::Format("query_timeout of %.3f seconds exceeded", query_timeout));
+	}
+	return result;
 }
 
 bool CheckLoopCondition(ExecuteContext &context, const vector<Condition> &conditions) {

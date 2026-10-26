@@ -37,3 +37,35 @@ query I
 SELECT count(*) > 0 FROM duckdb_logs WHERE type = 'PhysicalOperator' AND message LIKE '%reason=GATED%';
 ----
 true
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+SET preserve_insertion_order=false;
+
+# The demotion of the gated probe is a plan-time decision: an early-stopping sibling that could unregister
+# before the exchange watermark must not count as the drainer.
+query I
+WITH c AS MATERIALIZED (SELECT range i FROM range(2000000)), d AS MATERIALIZED (SELECT i FROM c WHERE i % 100000 = 0) SELECT count(*) FROM ((SELECT i FROM c LIMIT 1) UNION ALL (SELECT c.i FROM c JOIN d ON c.i = d.i LIMIT 3) LIMIT 4) q;
+----
+4
+
+query I
+SELECT count(*) > 0 FROM duckdb_logs WHERE type = 'PhysicalOperator' AND message LIKE '%reason=GATED%';
+----
+true
+
+statement ok
+CALL truncate_duckdb_logs();
+
+# Protection: an ordered pair of early-stopping consumers of one producer keeps streaming.
+query I
+WITH c AS MATERIALIZED (SELECT i FROM range(1000000) r(i)) SELECT count(*) FROM ((SELECT i FROM c LIMIT 1) UNION ALL (SELECT i FROM c LIMIT 1) LIMIT 2) q;
+----
+2
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE type = 'PhysicalOperator' AND message LIKE '%mode=MATERIALIZED%';
+----
+0

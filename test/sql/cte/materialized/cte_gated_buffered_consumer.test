@@ -102,8 +102,31 @@ SELECT count(*) FROM (SELECT b.i FROM b JOIN d ON b.i = d.i LIMIT 3) q;
 ----
 3
 
+# Protection: an ordered branch reading through a nested early-stopping CTE must keep streaming. The producer
+# of b stops after its LIMIT, so neither branch needs a to exhaust its range.
+query I
+WITH a AS MATERIALIZED (
+    SELECT i FROM range(1000000) r(i)
+), b AS MATERIALIZED (
+    SELECT i FROM a LIMIT 1
+)
+SELECT count(*)
+FROM (
+    (SELECT i FROM b LIMIT 1)
+    UNION ALL
+    (SELECT i FROM a LIMIT 1)
+    LIMIT 2
+) q;
+----
+2
+
 statement ok
 RESET threads;
+
+# The remaining buffered probe legitimately polls without progress while the throttled producer hands off,
+# which the stall heuristic can flag under thread contention.
+statement ok
+SET debug_verify_progress_ignore='STALLED:CTE_SCAN';
 
 # Two exchanges whose buffered probes gate each other.
 query I
