@@ -1238,6 +1238,10 @@ FindExchangeStarvedBufferedConsumer(PipelineBuildStateData &data, const Pipeline
 						all_draining = false;
 						break;
 					}
+					// Only CTE exchange sinks are modeled as drain obstacles. Blocking batch sinks (batch
+					// INSERT/COPY) cannot stall a consumer here because PhysicalUnion::BuildPipelines forces
+					// ordering edges between sibling pipelines whenever the sink requires a batch index, which
+					// makes that gate visible as scheduled dependencies.
 					auto consumer_sink_exchange = stage_producing_exchange[execute_stage.GetIndex()];
 					if (consumer_sink_exchange && !consumer_sink_exchange->live) {
 						all_draining = false;
@@ -1267,26 +1271,27 @@ FindExchangeStarvedBufferedConsumer(PipelineBuildStateData &data, const Pipeline
 		}
 	}
 
-	for (auto &entry : exchanges) {
-		auto &exchange = entry.second;
-		if (exchange.live) {
+	// Select the victim in registration order: the exchange map is keyed by pointers, and an address-dependent
+	// choice would make the demoted side of mutually gated exchanges differ across runs.
+	optional_ptr<PipelineBufferedConsumerRecord> fallback;
+	for (auto &record : data.buffered_consumers) {
+		if (record.demoted) {
 			continue;
 		}
-		// Prefer a consumer that cannot start, otherwise any consumer of the dead exchange.
-		optional_ptr<PipelineBufferedConsumerRecord> fallback;
-		for (auto &record_ref : exchange.records) {
-			auto &record = record_ref.get();
-			fallback = &record;
-			auto execute_stage = record_execute_stage(record);
-			if (execute_stage.IsValid() && !dependencies_live(schedule.stages[execute_stage.GetIndex()])) {
-				return &record;
-			}
+		auto entry = exchanges.find(record.cte.get());
+		if (entry == exchanges.end() || entry->second.live) {
+			continue;
 		}
-		if (fallback) {
-			return fallback;
+		// Prefer a consumer that cannot start, otherwise any consumer of a dead exchange.
+		auto execute_stage = record_execute_stage(record);
+		if (execute_stage.IsValid() && !dependencies_live(schedule.stages[execute_stage.GetIndex()])) {
+			return &record;
+		}
+		if (!fallback) {
+			fallback = &record;
 		}
 	}
-	return nullptr;
+	return fallback;
 }
 
 void PipelineBuildState::AddCTEPipelineSelection(PhysicalCTE &cte, Pipeline &pipeline,
