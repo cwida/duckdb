@@ -13,6 +13,18 @@ unique_ptr<ExtraDropInfo> ExtraDropTriggerInfo::Copy() const {
 	return make_uniq<ExtraDropTriggerInfo>(*this);
 }
 
+ExtraDropFunctionSignatureInfo::ExtraDropFunctionSignatureInfo()
+    : ExtraDropInfo(ExtraDropInfoType::FUNCTION_SIGNATURE_INFO) {
+}
+
+ExtraDropFunctionSignatureInfo::ExtraDropFunctionSignatureInfo(const ExtraDropFunctionSignatureInfo &info)
+    : ExtraDropInfo(ExtraDropInfoType::FUNCTION_SIGNATURE_INFO), signature(info.signature) {
+}
+
+unique_ptr<ExtraDropInfo> ExtraDropFunctionSignatureInfo::Copy() const {
+	return make_uniq<ExtraDropFunctionSignatureInfo>(*this);
+}
+
 ExtraDropSecretInfo::ExtraDropSecretInfo()
     : ExtraDropInfo(ExtraDropInfoType::SECRET_INFO), persist_mode(SecretPersistType::DEFAULT) {
 }

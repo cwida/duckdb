@@ -61,10 +61,9 @@ PEGTransformerFactory::TransformDropTableFunction(PEGTransformer &transformer, c
 	return result;
 }
 
-unique_ptr<DropStatement>
-PEGTransformerFactory::TransformDropFunction(PEGTransformer &transformer, const bool &function_type_macro,
-                                             const optional<bool> &if_exists,
-                                             const vector<QualifiedName> &function_identifier) {
+unique_ptr<DropStatement> PEGTransformerFactory::TransformDropFunction(
+    PEGTransformer &transformer, const bool &function_type_macro, const optional<bool> &if_exists,
+    const vector<QualifiedName> &function_identifier, const optional<vector<LogicalType>> &drop_function_signature) {
 	auto result = make_uniq<DropStatement>();
 	auto info = make_uniq<DropInfo>();
 	auto catalog_type = CatalogType::MACRO_ENTRY;
@@ -75,8 +74,20 @@ PEGTransformerFactory::TransformDropFunction(PEGTransformer &transformer, const 
 	info->SetQualifiedName(function);
 	info->if_not_found = if_exists ? OnEntryNotFound::RETURN_NULL : OnEntryNotFound::THROW_EXCEPTION;
 	info->type = catalog_type;
+	if (drop_function_signature) {
+		// a parameter type list identifies a single overload member instead of the whole entry
+		auto extra_info = make_uniq<ExtraDropFunctionSignatureInfo>();
+		extra_info->signature = *drop_function_signature;
+		info->extra_drop_info = std::move(extra_info);
+	}
 	result->info = std::move(info);
 	return result;
+}
+
+vector<LogicalType> PEGTransformerFactory::TransformDropFunctionSignature(PEGTransformer &transformer,
+                                                                          const optional<vector<LogicalType>> &type) {
+	// empty parentheses identify the zero-parameter overload
+	return type ? *type : vector<LogicalType>();
 }
 
 unique_ptr<DropStatement> PEGTransformerFactory::TransformDropSchema(PEGTransformer &transformer,

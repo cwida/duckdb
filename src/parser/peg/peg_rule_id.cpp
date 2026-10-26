@@ -465,6 +465,7 @@ static const char *const PEG_RULE_NAMES[] = {
     "DropTable",
     "DropTableFunction",
     "DropFunction",
+    "DropFunctionSignature",
     "DropSchema",
     "DropIndex",
     "QualifiedIndexName",

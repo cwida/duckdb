@@ -1,0 +1,228 @@
+# name: test/sql/catalog/function/drop_function_signature.test
+# description: DROP MACRO/FUNCTION with a parameter type list drops a single overload member
+# group: [function]
+
+statement ok
+CREATE MACRO f(a INTEGER) AS a + 1, (a VARCHAR) AS a || '!', (a INTEGER, b INTEGER) AS a + b;
+
+query TTT
+SELECT f(1), f('x'), f(1, 2);
+----
+2	x!	3
+
+# dropping one overload keeps the siblings
+statement ok
+DROP MACRO f(VARCHAR);
+
+statement error
+SELECT f('x');
+----
+<REGEX>:.*does not support the supplied arguments.*
+
+query TT
+SELECT f(1), f(1, 2);
+----
+2	3
+
+# the dropped signature no longer exists
+statement error
+DROP MACRO f(VARCHAR);
+----
+<REGEX>:.*has no overload with signature \(VARCHAR\).*
+
+# IF EXISTS at member granularity leaves siblings untouched
+statement ok
+DROP MACRO IF EXISTS f(VARCHAR);
+
+query TT
+SELECT f(1), f(1, 2);
+----
+2	3
+
+# both keyword spellings work
+statement ok
+DROP FUNCTION f(INTEGER, INTEGER);
+
+query T
+SELECT f(1);
+----
+2
+
+# dropping the last member drops the whole entry
+statement ok
+DROP MACRO f(INTEGER);
+
+statement error
+SELECT f(1);
+----
+<REGEX>:.*(Catalog Error|not exist).*
+
+# an untyped member is named by any type list of its arity
+statement ok
+CREATE MACRO g(x) AS x + 1, (x, y) AS x + y;
+
+statement ok
+DROP MACRO g(BIGINT);
+
+statement error
+SELECT g(1);
+----
+<REGEX>:.*does not support the supplied arguments.*
+
+query T
+SELECT g(1, 2);
+----
+3
+
+statement ok
+DROP MACRO g(INTEGER, INTEGER);
+
+# empty parentheses name the zero-parameter overload
+statement ok
+CREATE MACRO h() AS 42, (x INTEGER) AS x;
+
+statement ok
+DROP MACRO h();
+
+statement error
+SELECT h();
+----
+<REGEX>:.*does not support the supplied arguments.*
+
+query T
+SELECT h(7);
+----
+7
+
+# a signature naming no overload of that arity errors with the signature
+statement error
+DROP MACRO h(VARCHAR, VARCHAR);
+----
+<REGEX>:.*has no overload with signature \(VARCHAR, VARCHAR\).*
+
+# user types resolve before matching
+statement ok
+CREATE TYPE mood AS ENUM ('ok', 'sad');
+
+statement ok
+CREATE MACRO m(a mood) AS a = 'ok', (a INTEGER) AS a > 0;
+
+statement ok
+DROP MACRO m(mood);
+
+query T
+SELECT m(1);
+----
+true
+
+statement ok
+DROP MACRO m(INTEGER);
+
+# a DROP without a type list keeps dropping the whole entry
+statement ok
+CREATE MACRO whole(a INTEGER) AS a, (a VARCHAR) AS a;
+
+statement ok
+DROP MACRO whole;
+
+statement error
+SELECT whole(1);
+----
+<REGEX>:.*(Catalog Error|not exist).*
+
+# internal entries refuse member drops
+statement error
+DROP MACRO current_role(VARCHAR);
+----
+<REGEX>:.*(internal|no overload|Cannot alter).*
+
+# table functions reject the member path through the macro entry check
+statement error
+DROP TABLE wrong_entry(INTEGER);
+----
+<REGEX>:.*syntax error.*
+
+# member drops are transactional
+statement ok
+CREATE MACRO txn_f(a INTEGER) AS a, (a VARCHAR) AS a;
+
+statement ok
+BEGIN;
+
+statement ok
+DROP MACRO txn_f(INTEGER);
+
+statement ok
+ROLLBACK;
+
+query TT
+SELECT txn_f(1), txn_f('x');
+----
+1	x
+
+# a partially typed signature matches by its typed slots: distinct same-arity members stay apart
+statement ok
+CREATE MACRO pt(x INTEGER, y) AS 1, (x VARCHAR, y) AS 2;
+
+statement ok
+DROP MACRO pt(VARCHAR, INTEGER);
+
+query T
+SELECT pt(1, NULL);
+----
+1
+
+statement ok
+DROP MACRO pt(INTEGER, DATE);
+
+# several compatible wildcard members are ambiguous
+statement ok
+CREATE MACRO amb(x, y) AS 1, (x INTEGER, y) AS 2;
+
+statement error
+DROP MACRO amb(INTEGER, VARCHAR);
+----
+<REGEX>:.*ambiguous.*
+
+statement ok
+DROP MACRO amb(DATE, VARCHAR);
+
+query T
+SELECT amb(1, 'x');
+----
+2
+
+statement ok
+DROP MACRO amb(INTEGER, VARCHAR);
+
+# a member drop replaces the entry like any overload mutation: EXPORT's naive order treats the
+# replacement as newest, so exports taken after mutating a callee entry may need reordering, the
+# same caveat as adding an overload to a called entry
+
+# a member-granular CASCADE has no well-defined scope and is rejected
+statement ok
+CREATE MACRO casc(x INTEGER) AS x, (x VARCHAR) AS x;
+
+statement error
+DROP MACRO casc(INTEGER) CASCADE;
+----
+<REGEX>:.*Cannot drop an overload.*CASCADE.*
+
+# dependencies stay entry-level: a drop blocked by any member's dependency is conservative
+statement ok
+DROP MACRO casc;
+
+# table macro members drop by signature too
+statement ok
+CREATE MACRO tmm(x INTEGER) AS TABLE (SELECT x AS v), (x VARCHAR) AS TABLE (SELECT 0 AS v);
+
+statement ok
+DROP MACRO tmm(VARCHAR);
+
+query T
+SELECT v FROM tmm(7);
+----
+7
+
+statement ok
+DROP MACRO tmm;

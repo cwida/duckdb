@@ -19,7 +19,8 @@ enum class ExtraDropInfoType : uint8_t {
 	INVALID = 0,
 
 	SECRET_INFO = 1,
-	TRIGGER_INFO = 2
+	TRIGGER_INFO = 2,
+	FUNCTION_SIGNATURE_INFO = 3
 };
 
 struct ExtraDropInfo {
@@ -54,6 +55,20 @@ struct ExtraDropTriggerInfo : public ExtraDropInfo {
 
 	//! Table the trigger is on
 	unique_ptr<TableRef> base_table;
+
+public:
+	unique_ptr<ExtraDropInfo> Copy() const override;
+
+	void Serialize(Serializer &serializer) const override;
+	static unique_ptr<ExtraDropInfo> Deserialize(Deserializer &deserializer);
+};
+
+struct ExtraDropFunctionSignatureInfo : public ExtraDropInfo {
+	ExtraDropFunctionSignatureInfo();
+	ExtraDropFunctionSignatureInfo(const ExtraDropFunctionSignatureInfo &info);
+
+	//! The parameter type list identifying the one overload member to drop
+	vector<LogicalType> signature;
 
 public:
 	unique_ptr<ExtraDropInfo> Copy() const override;

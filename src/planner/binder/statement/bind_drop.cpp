@@ -62,6 +62,14 @@ BoundStatement Binder::Bind(DropStatement &stmt) {
 		// attached database, and otherwise the outermost schema of a nested schema path. The entry lookup below
 		// navigates whatever qualification comes out of this.
 		stmt.info->SetQualifiedName(BindTableName(stmt.info->GetQualifiedName()));
+		if (stmt.info->extra_drop_info &&
+		    stmt.info->extra_drop_info->info_type == ExtraDropInfoType::FUNCTION_SIGNATURE_INFO) {
+			// resolve the signature's type names so they compare against stored overload identity
+			auto &extra = stmt.info->extra_drop_info->Cast<ExtraDropFunctionSignatureInfo>();
+			for (auto &type : extra.signature) {
+				BindLogicalType(type);
+			}
+		}
 		auto catalog = Catalog::GetCatalogEntry(context, stmt.info->GetQualifiedName().Catalog());
 		if (catalog) {
 			// mark catalog as accessed

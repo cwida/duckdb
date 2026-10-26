@@ -18,6 +18,9 @@ unique_ptr<ExtraDropInfo> ExtraDropInfo::Deserialize(Deserializer &deserializer)
 	auto info_type = deserializer.ReadProperty<ExtraDropInfoType>(100, "info_type");
 	unique_ptr<ExtraDropInfo> result;
 	switch (info_type) {
+	case ExtraDropInfoType::FUNCTION_SIGNATURE_INFO:
+		result = ExtraDropFunctionSignatureInfo::Deserialize(deserializer);
+		break;
 	case ExtraDropInfoType::SECRET_INFO:
 		result = ExtraDropSecretInfo::Deserialize(deserializer);
 		break;
@@ -28,6 +31,17 @@ unique_ptr<ExtraDropInfo> ExtraDropInfo::Deserialize(Deserializer &deserializer)
 		throw SerializationException("Unsupported type for deserialization of ExtraDropInfo!");
 	}
 	return result;
+}
+
+void ExtraDropFunctionSignatureInfo::Serialize(Serializer &serializer) const {
+	ExtraDropInfo::Serialize(serializer);
+	serializer.WritePropertyWithDefault<vector<LogicalType>>(203, "signature", signature);
+}
+
+unique_ptr<ExtraDropInfo> ExtraDropFunctionSignatureInfo::Deserialize(Deserializer &deserializer) {
+	auto result = duckdb::unique_ptr<ExtraDropFunctionSignatureInfo>(new ExtraDropFunctionSignatureInfo());
+	deserializer.ReadPropertyWithDefault<vector<LogicalType>>(203, "signature", result->signature);
+	return std::move(result);
 }
 
 void ExtraDropSecretInfo::Serialize(Serializer &serializer) const {

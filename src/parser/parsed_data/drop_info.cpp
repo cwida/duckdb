@@ -46,6 +46,18 @@ string DropInfo::ToString() const {
 				result += trigger_info.base_table->Cast<BaseTableRef>().ToString();
 			}
 		}
+		if (extra_drop_info && extra_drop_info->info_type == ExtraDropInfoType::FUNCTION_SIGNATURE_INFO) {
+			// preserve the parameter type list so a member-granular DROP FUNCTION round-trips
+			auto &signature_info = extra_drop_info->Cast<ExtraDropFunctionSignatureInfo>();
+			result += "(";
+			for (idx_t i = 0; i < signature_info.signature.size(); i++) {
+				if (i > 0) {
+					result += ", ";
+				}
+				result += signature_info.signature[i].ToString();
+			}
+			result += ")";
+		}
 		if (type == CatalogType::SECRET_ENTRY && extra_drop_info) {
 			// Preserve the `FROM <storage>` storage specifier so `DROP SECRET <name> FROM <storage>` round-trips.
 			auto &secret_info = extra_drop_info->Cast<ExtraDropSecretInfo>();

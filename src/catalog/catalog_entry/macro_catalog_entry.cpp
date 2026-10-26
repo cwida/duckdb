@@ -61,6 +61,41 @@ unique_ptr<CreateInfo> MacroCatalogEntry::GetInfo() const {
 	return std::move(info);
 }
 
+optional_idx MacroCatalogEntry::FindMember(const vector<LogicalType> &signature) const {
+	// a fully typed member matching the type list exactly is unique by the create-time conflict rules
+	for (idx_t i = 0; i < macros.size(); i++) {
+		if (macros[i]->MatchesSignature(signature)) {
+			return i;
+		}
+	}
+	// otherwise an untyped slot acts as a wildcard, but a destructive operation must name one
+	// member: several compatible candidates are ambiguous
+	optional_idx found;
+	for (idx_t i = 0; i < macros.size(); i++) {
+		auto &member = *macros[i];
+		if (member.parameters.size() != signature.size() || !member.HasUntypedParameter()) {
+			continue;
+		}
+		bool compatible = true;
+		for (idx_t type_idx = 0; type_idx < signature.size(); type_idx++) {
+			if (type_idx < member.types.size() && member.types[type_idx].id() != LogicalTypeId::UNKNOWN &&
+			    member.types[type_idx] != signature[type_idx]) {
+				compatible = false;
+				break;
+			}
+		}
+		if (!compatible) {
+			continue;
+		}
+		if (found.IsValid()) {
+			throw CatalogException("The signature is ambiguous: it can name overload %s or %s of function %s",
+			                       macros[found.GetIndex()]->SignatureToString(), member.SignatureToString(), name);
+		}
+		found = i;
+	}
+	return found;
+}
+
 string MacroCatalogEntry::ToSQL() const {
 	auto create_info = GetInfo();
 	create_info->StripCatalogQualification();

@@ -349,6 +349,46 @@ void MacroFunction::FinalizeDeserialization() {
 	}
 }
 
+bool MacroFunction::HasUntypedParameter() const {
+	if (types.size() < parameters.size()) {
+		return true;
+	}
+	for (auto &type : types) {
+		if (type.id() == LogicalTypeId::UNKNOWN) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool MacroFunction::MatchesSignature(const vector<LogicalType> &signature) const {
+	if (parameters.size() != signature.size() || HasUntypedParameter()) {
+		return false;
+	}
+	for (idx_t i = 0; i < signature.size(); i++) {
+		if (types[i] != signature[i]) {
+			return false;
+		}
+	}
+	return true;
+}
+
+string MacroFunction::SignatureToString() const {
+	string result = "(";
+	for (idx_t i = 0; i < parameters.size(); i++) {
+		if (i > 0) {
+			result += ", ";
+		}
+		const auto &param_name = parameters[i]->Cast<ColumnRefExpression>().GetColumnName();
+		result += SQLIdentifier::ToString(param_name);
+		if (i < types.size() && types[i].id() != LogicalTypeId::UNKNOWN) {
+			result += " " + types[i].ToString();
+		}
+	}
+	result += ")";
+	return result;
+}
+
 string MacroFunction::ToSQL() const {
 	vector<string> param_strings;
 	for (idx_t param_idx = 0; param_idx < parameters.size(); param_idx++) {

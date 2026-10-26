@@ -68,6 +68,13 @@ public:
 	                   InsertionOrderPreservingMap<unique_ptr<ParsedExpression>, Identifier, identifier_map_t<idx_t>>
 	                       &named_arguments);
 
+	//! Whether any parameter is untyped
+	bool HasUntypedParameter() const;
+	//! Whether this member's parameter types equal the given type list exactly (untyped members never match)
+	bool MatchesSignature(const vector<LogicalType> &signature) const;
+	//! The parameter list as "(name TYPE, ...)" for error messages
+	string SignatureToString() const;
+
 	virtual string ToSQL() const;
 
 	virtual void Serialize(Serializer &serializer) const;

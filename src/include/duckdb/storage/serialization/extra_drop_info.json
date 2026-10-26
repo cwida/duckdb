@@ -31,6 +31,18 @@
     ]
   },
   {
+    "class": "ExtraDropFunctionSignatureInfo",
+    "base": "ExtraDropInfo",
+    "enum": "FUNCTION_SIGNATURE_INFO",
+    "members": [
+      {
+        "id": 203,
+        "name": "signature",
+        "type": "vector<LogicalType>"
+      }
+    ]
+  },
+  {
     "class": "ExtraDropTriggerInfo",
     "base": "ExtraDropInfo",
     "enum": "TRIGGER_INFO",
