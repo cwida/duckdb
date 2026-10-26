@@ -44,10 +44,10 @@ public:
 	static shared_ptr<CompiledGrammar> Create();
 	//! Get the (cached) grammar for the selected extensions without changing the client configuration.
 	static shared_ptr<CompiledGrammar> Create(const ClientContext &context, const vector<string> &active_extensions);
-	//! Get the (cached) grammar for the default-active registered extensions plus the explicitly
-	//! activated ones, without changing the client configuration.
+	//! Get the (cached) grammar for the given extension selection, without changing the client
+	//! configuration (the base grammar when the selection is empty).
 	static shared_ptr<CompiledGrammar> ComposeSessionGrammar(ClientContext &context,
-	                                                         const vector<string> &explicit_names);
+	                                                         const vector<string> &extension_names);
 
 private:
 	MatcherAllocator allocator;
@@ -72,6 +72,7 @@ public:
 	shared_ptr<CompiledGrammar> GetMatcher();
 	//! The grammar compiled for the given grammar extensions, in order - shared by all connections that use them
 	shared_ptr<CompiledGrammar> GetMatcher(const ClientContext &context, const vector<string> &active_extensions);
+	shared_ptr<CompiledGrammar> GetMatcher(const DatabaseInstance &db, const vector<string> &active_extensions);
 	//! The grammar that forwards statements instead of interpreting them, used while CONNECT-ed
 	shared_ptr<CompiledGrammar> GetPassthroughMatcher(const ClientContext &context);
 

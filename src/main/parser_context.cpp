@@ -1,4 +1,5 @@
-#include "duckdb/common/algorithm.hpp"
+#include "duckdb/common/string_util.hpp"
+#include "duckdb/main/config.hpp"
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/parser/peg/compiled_grammar.hpp"
 #include "duckdb/parser/peg/dialect_extension.hpp"
@@ -18,22 +19,19 @@ Parser::Parser(ClientContext &context, IdentifierCaseMode identifier_case_mode) 
 	options.identifier_case_mode = identifier_case_mode;
 }
 
-//! The grammar extensions a session parses with: the default-active registered extensions (sorted by
-//! name, the registry map is unordered) followed by the explicitly activated list in user order.
-//! An explicitly listed default-active grammar takes its explicit position, so the explicit order
-//! alone decides override precedence among the listed grammars
-static vector<string> ComposeSessionGrammarNames(const ExtensionCallbackManager &callback_manager,
-                                                 const vector<string> &explicit_names) {
-	case_insensitive_set_t explicitly_named(explicit_names.begin(), explicit_names.end());
-	vector<string> result;
-	for (auto &entry : callback_manager.GrammarExtensions()) {
-		if (entry.second->ActiveByDefault() && !explicitly_named.count(entry.second->Name())) {
-			result.push_back(entry.second->Name());
+//! The names in a session's effective selection that are not registered grammar extensions.
+//! Both settings validate at SET time, so this re-check guards future paths that could publish an
+//! unvalidated default (a broken database default would otherwise make every parse fail, including
+//! the SET that fixes it)
+static vector<string> MissingGrammarExtensions(const ExtensionCallbackManager &callback_manager,
+                                               const vector<string> &names) {
+	vector<string> missing;
+	for (auto &name : names) {
+		if (!callback_manager.FindGrammarExtension(name)) {
+			missing.push_back(name);
 		}
 	}
-	std::sort(result.begin(), result.end());
-	result.insert(result.end(), explicit_names.begin(), explicit_names.end());
-	return result;
+	return missing;
 }
 
 shared_ptr<CompiledGrammar> CompiledGrammar::Get(ClientContext &context) {
@@ -52,13 +50,30 @@ shared_ptr<CompiledGrammar> CompiledGrammar::Get(ClientContext &context) {
 		return dialect_extension->GetCompiledGrammar(context);
 	}
 	auto registry_version = callback_manager.GrammarRegistryVersion();
+	// the session selection wins when set (an explicitly empty list opts out of the database
+	// default), otherwise the database-wide default applies
 	auto selection = client_config.active_grammar_extensions.atomic_load();
+	bool from_database_default = false;
+	if (!selection) {
+		selection = DBConfig::GetConfig(context).default_grammar_extensions.atomic_load();
+		from_database_default = selection != nullptr;
+	}
 	auto cached = client_config.cached_grammar.atomic_load();
 	if (cached && cached->registry_version == registry_version && cached->selection == selection) {
 		return cached->grammar;
 	}
 	// recompose: either nothing is cached yet, a grammar extension registered since (e.g. a LOAD
-	// between two statements of this session), or the explicit selection was replaced by a SET
+	// between two statements of this session), or the effective selection was replaced by a SET
+	// (local or global, both publish fresh immutable snapshots)
+	if (from_database_default) {
+		auto missing = MissingGrammarExtensions(callback_manager, *selection);
+		if (!missing.empty()) {
+			throw InvalidConfigurationException(
+			    "The 'default_grammar_extensions' setting names grammar extensions that are not loaded: %s. LOAD "
+			    "them, change the global setting, or override the session with SET active_grammar_extensions",
+			    StringUtil::Join(missing, ", "));
+		}
+	}
 	auto grammar = ComposeSessionGrammar(context, selection ? *selection : vector<string>());
 	client_config.cached_grammar.atomic_store(
 	    make_shared_ptr<CachedSessionGrammar>(CachedSessionGrammar {grammar, registry_version, std::move(selection)}));
@@ -66,10 +81,8 @@ shared_ptr<CompiledGrammar> CompiledGrammar::Get(ClientContext &context) {
 }
 
 shared_ptr<CompiledGrammar> CompiledGrammar::ComposeSessionGrammar(ClientContext &context,
-                                                                   const vector<string> &explicit_names) {
-	auto &callback_manager = ExtensionCallbackManager::Get(context);
+                                                                   const vector<string> &extension_names) {
 	auto &parser_cache = DatabaseInstance::GetDatabase(context).GetParserCache();
-	auto extension_names = ComposeSessionGrammarNames(callback_manager, explicit_names);
 	if (extension_names.empty()) {
 		return parser_cache.GetMatcher();
 	}
@@ -105,9 +118,14 @@ shared_ptr<CompiledGrammar> ParserCache::GetMatcher() {
 
 shared_ptr<CompiledGrammar> ParserCache::GetMatcher(const ClientContext &context,
                                                     const vector<string> &active_extensions) {
+	return GetMatcher(DatabaseInstance::GetDatabase(context), active_extensions);
+}
+
+shared_ptr<CompiledGrammar> ParserCache::GetMatcher(const DatabaseInstance &db,
+                                                    const vector<string> &active_extensions) {
 	vector<reference<GrammarExtension>> selected_extensions;
 	vector<string> extension_names;
-	auto &callback_manager = ExtensionCallbackManager::Get(context);
+	auto &callback_manager = DBConfig::GetConfig(db).GetCallbackManager();
 	for (auto &name : active_extensions) {
 		auto grammar_extension = callback_manager.FindGrammarExtension(name);
 		if (grammar_extension) {

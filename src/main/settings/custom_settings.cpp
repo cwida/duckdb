@@ -496,6 +496,86 @@ void DefaultOrderSetting::OnSet(SettingCallbackInfo &, Value &input) {
 	}
 }
 
+//! Parse a grammar extension list value: VARCHAR[] without duplicates
+static vector<string> ParseGrammarExtensionList(const char *setting_name, const Value &input) {
+	if (input.type().id() != LogicalTypeId::LIST) {
+		throw InvalidInputException("'%s' setting value should be of type VARCHAR[], not %s", setting_name,
+		                            input.type().ToString());
+	}
+	case_insensitive_set_t distinct_names;
+	vector<string> names;
+	for (auto &val : ListValue::GetChildren(input)) {
+		if (val.type().id() != LogicalTypeId::VARCHAR) {
+			throw InvalidInputException("'%s' list values should be of type VARCHAR, not %s", setting_name,
+			                            val.type().ToString());
+		}
+		auto val_str = val.GetValue<string>();
+		if (!distinct_names.insert(val_str).second) {
+			throw InvalidInputException("'%s' list contains duplicate value '%s'", setting_name, val_str);
+		}
+		names.emplace_back(std::move(val_str));
+	}
+	return names;
+}
+
+//! Reject names that do not match a registered grammar extension
+static void ValidateGrammarExtensionsExist(const char *setting_name, const ExtensionCallbackManager &callback_manager,
+                                           const vector<string> &names) {
+	vector<string> missing;
+	for (auto &ext : names) {
+		if (!callback_manager.FindGrammarExtension(ext)) {
+			missing.push_back(ext);
+		}
+	}
+	if (!missing.empty()) {
+		throw InvalidInputException("Can't set '%s', the following extensions don't exist: %s", setting_name,
+		                            StringUtil::Join(missing, ","));
+	}
+}
+
+//===----------------------------------------------------------------------===//
+// Default Grammar Extensions
+//===----------------------------------------------------------------------===//
+void DefaultGrammarExtensionsSetting::SetGlobal(DatabaseInstance *db, DBConfig &config, const Value &input) {
+	if (input.IsNull()) {
+		config.default_grammar_extensions.atomic_store(shared_ptr<const vector<string>>());
+		return;
+	}
+	// a broken database default must never exist: a session whose parser fails to compose cannot
+	// even parse the SET that would fix it, so the named extensions are validated here, which
+	// requires a running database (startup configuration cannot LOAD the extensions first anyway)
+	if (!db) {
+		throw InvalidConfigurationException(
+		    "'default_grammar_extensions' can only be set on a running database: the named grammar extensions must "
+		    "be registered when the setting is set");
+	}
+	auto names = ParseGrammarExtensionList("default_grammar_extensions", input);
+	ValidateGrammarExtensionsExist("default_grammar_extensions", config.GetCallbackManager(), names);
+	if (names.empty()) {
+		config.default_grammar_extensions.atomic_store(shared_ptr<const vector<string>>());
+		return;
+	}
+	// compose eagerly, like the session setting: a selection that fails to compile errors here and
+	// leaves the default unchanged, so sessions never meet a default they cannot parse with
+	db->GetParserCache().GetMatcher(*db, names);
+	config.default_grammar_extensions.atomic_store(make_shared_ptr<const vector<string>>(std::move(names)));
+}
+
+void DefaultGrammarExtensionsSetting::ResetGlobal(DatabaseInstance *db, DBConfig &config) {
+	config.default_grammar_extensions.atomic_store(shared_ptr<const vector<string>>());
+}
+
+Value DefaultGrammarExtensionsSetting::GetSetting(const ClientContext &context) {
+	auto default_extensions = DBConfig::GetConfig(context).default_grammar_extensions.atomic_load();
+	vector<Value> values;
+	if (default_extensions) {
+		for (auto &extension : *default_extensions) {
+			values.push_back(extension);
+		}
+	}
+	return Value::LIST(LogicalType::VARCHAR, std::move(values));
+}
+
 //===----------------------------------------------------------------------===//
 // Default Secret Storage
 //===----------------------------------------------------------------------===//
@@ -1941,17 +2021,12 @@ Value CurrentDialectSetting::GetSetting(const ClientContext &context) {
 	return Value();
 }
 
-//! Clear the explicit selection. The default-only grammar is composed eagerly, so a failing
-//! default-active grammar errors here and leaves the selection and grammar unchanged, like a SET
-static void ClearActiveGrammarExtensions(ClientContext &context, ClientConfig &client_config) {
-	auto &callback_manager = DatabaseInstance::GetDatabase(context).config.GetCallbackManager();
-	auto registry_version = callback_manager.GrammarRegistryVersion();
-	auto compiled_grammar = CompiledGrammar::ComposeSessionGrammar(context, vector<string>());
-	// allocate before publishing either field, so an allocation failure leaves both unchanged
-	auto snapshot = make_shared_ptr<CachedSessionGrammar>(
-	    CachedSessionGrammar {std::move(compiled_grammar), registry_version, nullptr});
+//! Clear the session selection: the database-wide default (if any) applies again and the grammar is
+//! recomposed lazily on the next parse, so clearing always succeeds even when the database default
+//! is currently broken (the parse-time error then names the global setting)
+static void ClearActiveGrammarExtensions(ClientConfig &client_config) {
 	client_config.active_grammar_extensions.atomic_store(shared_ptr<const vector<string>>());
-	client_config.cached_grammar.atomic_store(snapshot);
+	client_config.cached_grammar.atomic_store(shared_ptr<CachedSessionGrammar>());
 }
 
 void ActiveGrammarExtensionsSetting::SetLocal(ClientContext &context, const Value &input) {
@@ -1961,43 +2036,14 @@ void ActiveGrammarExtensionsSetting::SetLocal(ClientContext &context, const Valu
 	auto &client_config = ClientConfig::GetConfig(context);
 
 	if (input.IsNull()) {
-		ClearActiveGrammarExtensions(context, client_config);
+		ClearActiveGrammarExtensions(client_config);
 		return;
 	}
 
 	auto &config = DatabaseInstance::GetDatabase(context).config;
 	auto &callback_manager = config.GetCallbackManager();
-	case_insensitive_set_t distinct_names;
-	vector<string> selected_extensions;
-	if (input.type().id() != LogicalTypeId::LIST) {
-		throw InvalidInputException("'active_grammar_extensions' setting value should be of type VARCHAR[], not %s",
-		                            input.type().ToString());
-	}
-	auto &list_input = ListValue::GetChildren(input);
-	for (auto &val : list_input) {
-		if (val.type().id() != LogicalTypeId::VARCHAR) {
-			throw InvalidInputException("'active_grammar_extensions' list values should be of type VARCHAR, not %s",
-			                            val.type().ToString());
-		}
-		auto val_str = val.GetValue<string>();
-		if (!distinct_names.insert(val_str).second) {
-			throw InvalidInputException("'active_grammar_extensions' list contains duplicate value '%s'", val_str);
-		}
-		selected_extensions.emplace_back(std::move(val_str));
-	}
-
-	vector<string> missing;
-	for (auto &ext : selected_extensions) {
-		auto extension = callback_manager.FindGrammarExtension(ext);
-		if (!extension) {
-			missing.push_back(ext);
-		}
-	}
-	if (!missing.empty()) {
-		auto missing_list = StringUtil::Join(missing, ",");
-		throw InvalidInputException("Can't set 'active_grammar_extensions', the following extensions don't exist: %s",
-		                            missing_list);
-	}
+	auto selected_extensions = ParseGrammarExtensionList("active_grammar_extensions", input);
+	ValidateGrammarExtensionsExist("active_grammar_extensions", callback_manager, selected_extensions);
 	// compose eagerly: a grammar that fails to compile errors at SET time, leaving the setting unchanged
 	auto registry_version = callback_manager.GrammarRegistryVersion();
 	auto compiled_grammar = CompiledGrammar::ComposeSessionGrammar(context, selected_extensions);
@@ -2013,7 +2059,7 @@ void ActiveGrammarExtensionsSetting::ResetLocal(ClientContext &context) {
 		return;
 	}
 	auto &client_config = ClientConfig::GetConfig(context);
-	ClearActiveGrammarExtensions(context, client_config);
+	ClearActiveGrammarExtensions(client_config);
 }
 
 bool ActiveGrammarExtensionsSetting::OnLocalSet(ClientContext &context, const Value &input) {
