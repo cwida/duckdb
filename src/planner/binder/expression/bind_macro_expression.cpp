@@ -9,7 +9,6 @@
 #include "duckdb/catalog/catalog_entry/language_catalog_entry.hpp"
 #include "duckdb/function/language_macro_function.hpp"
 #include "duckdb/function/scalar_macro_function.hpp"
-#include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/language_function_binder.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"

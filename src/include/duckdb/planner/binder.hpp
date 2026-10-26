@@ -71,7 +71,6 @@ class AtClause;
 class BoundAtClause;
 
 struct CreateInfo;
-struct CreateMacroInfo;
 struct CreateSchemaInfo;
 struct CreateTriggerInfo;
 struct QualifiedName;

@@ -8,8 +8,6 @@
 #include "duckdb/catalog/catalog_entry/language_catalog_entry.hpp"
 #include "duckdb/function/language_macro_function.hpp"
 #include "duckdb/function/scalar_macro_function.hpp"
-#include "duckdb/common/serializer/binary_serializer.hpp"
-#include "duckdb/common/serializer/memory_stream.hpp"
 #include "duckdb/parser/expression/cast_expression.hpp"
 #include "duckdb/main/language_function_binder.hpp"
 #include "duckdb/function/table/table_scan.hpp"

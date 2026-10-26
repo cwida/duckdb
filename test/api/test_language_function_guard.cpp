@@ -24,7 +24,7 @@
 using namespace duckdb;
 
 // These tests exercise the C++ extension contract around ValidateCreate and internal entries. SQL
-// cannot mutate the CreateMacroInfo handed to a language binder, register a language binder, or
+// cannot drive the create view handed to a language binder, register a language binder, or
 // create an internal macro entry, so the setup must be C++. The SQL-observable behavior of valid
 // definitions stays in test/sql/function/language_function.
 
@@ -84,8 +84,8 @@ TEST_CASE("ValidateCreate reads members and rejects definitions through the crea
 	DuckDB db(nullptr);
 	Connection con(db);
 	RegisterTestLanguage(*db.instance, "readlang", make_shared_ptr<ViewBinder>([](LanguageFunctionCreateInfo &info) {
-		REQUIRE(info.Members().size() == 1);
-		auto &member = info.Members()[0]->Cast<LanguageMacroFunction>();
+		REQUIRE(info.MemberCount() == 1);
+		auto &member = info.Member(0).Cast<LanguageMacroFunction>();
 		if (StringUtil::Contains(member.source, "reject")) {
 			throw BinderException("readlang: rejected %s", info.GetFunctionName().GetIdentifierName());
 		}
@@ -101,12 +101,13 @@ TEST_CASE("ValidateCreate publishes documentation through the create view", "[ap
 	DuckDB db(nullptr);
 	Connection con(db);
 	RegisterTestLanguage(*db.instance, "doclang", make_shared_ptr<ViewBinder>([](LanguageFunctionCreateInfo &info) {
-		for (auto &member : info.Members()) {
+		for (idx_t member_idx = 0; member_idx < info.MemberCount(); member_idx++) {
+			auto &member = info.Member(member_idx);
 			FunctionDescription description;
-			for (idx_t i = 0; i < member->parameters.size(); i++) {
-				auto &param_name = member->parameters[i]->Cast<ColumnRefExpression>().GetColumnName();
+			for (idx_t i = 0; i < member.parameters.size(); i++) {
+				auto &param_name = member.parameters[i]->Cast<ColumnRefExpression>().GetColumnName();
 				description.parameter_names.push_back(param_name.GetIdentifierName());
-				const auto &type = member->types[i];
+				const auto &type = member.types[i];
 				description.parameter_types.push_back(type.id() == LogicalTypeId::UNKNOWN ? LogicalType::ANY : type);
 			}
 			description.description = "doclang doc";

@@ -2,13 +2,9 @@
 # description: RETURNS declares a result type on any scalar macro member, enforced as a cast
 # group: [function]
 
-# RETURNS needs storage v2.1.0+, so this test manages persistence itself
-require noforcestorage
-
 
 # RETURNS needs storage v2.1.0+, so this test manages persistence itself
 require noforcestorage
-
 
 statement ok
 CREATE MACRO m(x) RETURNS INTEGER AS x + 1;

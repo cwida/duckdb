@@ -6,7 +6,6 @@
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/main/language_function_binder.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
-#include "duckdb/parser/parsed_data/create_macro_info.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression_binder.hpp"
 
@@ -17,22 +16,23 @@ using namespace duckdb;
 class TestLangBinder : public LanguageFunctionBinder {
 public:
 	void ValidateCreate(ClientContext &context, LanguageFunctionCreateInfo &info) override {
-		for (auto &member : info.Members()) {
-			auto &language_member = member->Cast<LanguageMacroFunction>();
+		for (idx_t member_idx = 0; member_idx < info.MemberCount(); member_idx++) {
+			auto &language_member = info.Member(member_idx).Cast<LanguageMacroFunction>();
 			if (StringUtil::Contains(language_member.source, "invalid")) {
 				throw BinderException("testlang: the source of %s may not contain the word \"invalid\"",
 				                      info.GetFunctionName());
 			}
 		}
 		// publish per-member documentation: function metadata must survive member mutations
-		for (auto &member : info.Members()) {
-			auto &language_member = member->Cast<LanguageMacroFunction>();
+		for (idx_t member_idx = 0; member_idx < info.MemberCount(); member_idx++) {
+			auto &member = info.Member(member_idx);
+			auto &language_member = member.Cast<LanguageMacroFunction>();
 			FunctionDescription description;
-			for (idx_t i = 0; i < member->parameters.size(); i++) {
-				auto &param_name = member->parameters[i]->Cast<ColumnRefExpression>().GetColumnName();
+			for (idx_t i = 0; i < member.parameters.size(); i++) {
+				auto &param_name = member.parameters[i]->Cast<ColumnRefExpression>().GetColumnName();
 				description.parameter_names.push_back(param_name.GetIdentifierName());
 				// an untyped parameter is documented as a wildcard, like built-in function docs
-				const auto &type = member->types[i];
+				const auto &type = member.types[i];
 				description.parameter_types.push_back(type.id() == LogicalTypeId::UNKNOWN ? LogicalType::ANY : type);
 			}
 			// a per-source description, so tests distinguish stale metadata from replaced metadata

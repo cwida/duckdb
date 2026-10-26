@@ -6,6 +6,8 @@
 #include "duckdb/storage/storage_manager.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/common/storage_compatibility.hpp"
+#include "duckdb/function/language_macro_function.hpp"
+#include "duckdb/common/string_util.hpp"
 
 namespace duckdb {
 
@@ -24,6 +26,21 @@ MacroCatalogEntry::MacroCatalogEntry(Catalog &catalog, SchemaCatalogEntry &schem
 
 unique_ptr<MacroCatalogEntry> MacroCatalogEntry::Create(Catalog &catalog, SchemaCatalogEntry &schema,
                                                         CreateMacroInfo &info) {
+	// every producer funnels through here: binder dispatch and member selection rely on an entry
+	// holding either plain members or language members of one language, so enforce it at the boundary
+	for (idx_t member_idx = 1; member_idx < info.macros.size(); member_idx++) {
+		auto &first = *info.macros[0];
+		auto &member = *info.macros[member_idx];
+		if ((first.type == MacroType::LANGUAGE_MACRO) != (member.type == MacroType::LANGUAGE_MACRO)) {
+			throw CatalogException("Macro %s cannot mix language function members and plain macro members",
+			                       info.GetFunctionName());
+		}
+		if (first.type == MacroType::LANGUAGE_MACRO &&
+		    !StringUtil::CIEquals(first.Cast<LanguageMacroFunction>().language,
+		                          member.Cast<LanguageMacroFunction>().language)) {
+			throw CatalogException("Macro %s cannot mix members of different languages", info.GetFunctionName());
+		}
+	}
 	if (info.type == CatalogType::TABLE_MACRO_ENTRY) {
 		return make_uniq<TableMacroCatalogEntry>(catalog, schema, info);
 	}

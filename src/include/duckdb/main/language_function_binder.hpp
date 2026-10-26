@@ -23,11 +23,11 @@ class MacroFunction;
 class ParsedExpression;
 class ScalarMacroCatalogEntry;
 struct BindResult;
-struct CreateMacroInfo;
 
 //! The slice of a definition a ValidateCreate callback can act on: it reads the members, may
 //! rewrite a member's source, and publishes documentation. Everything else about the definition
 //! (the target, the member count, the resolved signatures, the defaults) is out of reach by type.
+//! The view borrows from the definition under validation: it is only valid inside the callback.
 class LanguageFunctionCreateInfo {
 public:
 	LanguageFunctionCreateInfo(const Identifier &function_name, vector<unique_ptr<MacroFunction>> &members,
@@ -39,9 +39,14 @@ public:
 	const Identifier &GetFunctionName() const {
 		return function_name;
 	}
-	//! The members of the definition under validation
-	const vector<unique_ptr<MacroFunction>> &Members() const {
-		return members;
+	//! The number of members in the definition under validation
+	idx_t MemberCount() const {
+		return members.size();
+	}
+	//! Read one member. DuckDB's unique_ptr propagates mutability through const containers, so
+	//! access goes through this accessor, which pins the member itself const
+	const MacroFunction &Member(idx_t member_idx) const {
+		return *members[member_idx];
 	}
 	//! Rewrite one member's stored source
 	void SetMemberSource(idx_t member_idx, string source);

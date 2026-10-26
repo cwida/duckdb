@@ -91,7 +91,6 @@
     {
       "reason": "Language functions and RETURNS types require storage version v2.1.0 but encrypted databases use an older default storage version",
       "paths": [
-        "test/sql/catalog/function/macro_returns_type.test",
         "test/sql/function/language_function/language_function_binding.test",
         "test/sql/function/language_function/language_function_copy_database.test",
         "test/sql/function/language_function/language_function_demo.test",
