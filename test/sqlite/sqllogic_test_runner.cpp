@@ -1185,8 +1185,12 @@ void SQLLogicTestRunner::ExecuteScript(SQLLogicParser &parser, const string &scr
 					parser.Fail("set query_timeout requires a single value (seconds, 0 disables)");
 				}
 				auto timeout = Value(token.parameters[1]).DefaultTryCastAs(LogicalType::DOUBLE);
-				if (!timeout || timeout->GetValue<double>() < 0) {
-					parser.Fail("set query_timeout requires a non-negative number of seconds");
+				static constexpr double MAXIMUM_QUERY_TIMEOUT = 3600;
+				// The explicit range check also rejects NaN and infinity, which the double cast accepts but
+				// which cannot be represented as a condition-variable deadline.
+				if (!timeout || !(timeout->GetValue<double>() >= 0) ||
+				    timeout->GetValue<double>() > MAXIMUM_QUERY_TIMEOUT) {
+					parser.Fail("set query_timeout requires a number of seconds between 0 and 3600 (0 disables)");
 				}
 				query_timeout = timeout->GetValue<double>();
 			} else {

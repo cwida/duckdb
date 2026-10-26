@@ -40,10 +40,15 @@ public:
 		}
 		watchdog = std::thread([this, timeout_seconds]() {
 			std::unique_lock<std::mutex> guard(lock);
-			if (!cv.wait_for(guard, std::chrono::duration<double>(timeout_seconds), [this]() { return done; })) {
-				fired = true;
-				connection.Interrupt();
+			if (cv.wait_for(guard, std::chrono::duration<double>(timeout_seconds), [this]() { return done; })) {
+				return;
 			}
+			// Keep interrupting until the query ends: an interrupt delivered before query startup is erased by
+			// the query's own initial cleanup, so a single shot could be lost.
+			fired = true;
+			do {
+				connection.Interrupt();
+			} while (!cv.wait_for(guard, std::chrono::milliseconds(100), [this]() { return done; }));
 		});
 	}
 	~QueryWatchdog() {
@@ -56,9 +61,10 @@ public:
 		}
 		cv.notify_all();
 		watchdog.join();
-		if (fired) {
+		if (fired && connection.context->IsInterrupted()) {
 			// The interrupt may have raced with a successful query completion. Clear the flag so it cannot
-			// spuriously abort the next statement. If the query was aborted, the engine already cleared it.
+			// spuriously abort the next statement. The IsInterrupted check keeps an INTERRUPTS_SUPPRESSED
+			// state intact, and if the query was aborted the engine already cleared the flag.
 			connection.context->ClearInterrupt();
 		}
 	}
@@ -127,7 +133,7 @@ static Connection &GetConnection(SQLLogicTestRunner &runner,
 	}
 }
 
-Command::Command(SQLLogicTestRunner &runner) : runner(runner) {
+Command::Command(SQLLogicTestRunner &runner) : runner(runner), query_timeout(runner.query_timeout) {
 }
 
 Command::~Command() {
@@ -296,7 +302,7 @@ unique_ptr<QueryResult> Command::ExecuteQuery(ExecuteContext &context, reference
 	QueryParameters parameters;
 	parameters.format = ChunkFormat::BufferManaged();
 
-	QueryWatchdog watchdog(connection.get(), runner.query_timeout);
+	QueryWatchdog watchdog(connection.get(), query_timeout);
 	try {
 #ifdef DUCKDB_ALTERNATIVE_VERIFY
 		auto ccontext = connection.get().context;
