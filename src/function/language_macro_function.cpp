@@ -27,6 +27,34 @@ string LanguageMacroFunction::ToSQL() const {
 	return prefix + " LANGUAGE " + SQLIdentifier::ToString(language) + " AS " + SQLString::ToString(source);
 }
 
+const string &LanguageFunctionCreateInfo::MemberLanguage(idx_t member_idx) const {
+	return members[member_idx]->Cast<LanguageMacroFunction>().language;
+}
+
+const string &LanguageFunctionCreateInfo::MemberSource(idx_t member_idx) const {
+	return members[member_idx]->Cast<LanguageMacroFunction>().source;
+}
+
+idx_t LanguageFunctionCreateInfo::MemberParameterCount(idx_t member_idx) const {
+	return members[member_idx]->parameters.size();
+}
+
+string LanguageFunctionCreateInfo::MemberParameterName(idx_t member_idx, idx_t param_idx) const {
+	return members[member_idx]->parameters[param_idx]->Cast<ColumnRefExpression>().GetColumnName().GetIdentifierName();
+}
+
+LogicalType LanguageFunctionCreateInfo::MemberParameterType(idx_t member_idx, idx_t param_idx) const {
+	auto &member = *members[member_idx];
+	if (param_idx >= member.types.size()) {
+		return LogicalType::UNKNOWN;
+	}
+	return member.types[param_idx];
+}
+
+LogicalType LanguageFunctionCreateInfo::MemberReturnType(idx_t member_idx) const {
+	return members[member_idx]->return_type;
+}
+
 void LanguageFunctionCreateInfo::SetMemberSource(idx_t member_idx, string source) {
 	members[member_idx]->Cast<LanguageMacroFunction>().source = std::move(source);
 }

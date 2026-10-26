@@ -17,26 +17,22 @@ class TestLangBinder : public LanguageFunctionBinder {
 public:
 	void ValidateCreate(ClientContext &context, LanguageFunctionCreateInfo &info) override {
 		for (idx_t member_idx = 0; member_idx < info.MemberCount(); member_idx++) {
-			auto &language_member = info.Member(member_idx).Cast<LanguageMacroFunction>();
-			if (StringUtil::Contains(language_member.source, "invalid")) {
+			if (StringUtil::Contains(info.MemberSource(member_idx), "invalid")) {
 				throw BinderException("testlang: the source of %s may not contain the word \"invalid\"",
 				                      info.GetFunctionName());
 			}
 		}
 		// publish per-member documentation: function metadata must survive member mutations
 		for (idx_t member_idx = 0; member_idx < info.MemberCount(); member_idx++) {
-			auto &member = info.Member(member_idx);
-			auto &language_member = member.Cast<LanguageMacroFunction>();
 			FunctionDescription description;
-			for (idx_t i = 0; i < member.parameters.size(); i++) {
-				auto &param_name = member.parameters[i]->Cast<ColumnRefExpression>().GetColumnName();
-				description.parameter_names.push_back(param_name.GetIdentifierName());
+			for (idx_t i = 0; i < info.MemberParameterCount(member_idx); i++) {
+				description.parameter_names.push_back(info.MemberParameterName(member_idx, i));
 				// an untyped parameter is documented as a wildcard, like built-in function docs
-				const auto &type = member.types[i];
+				const auto &type = info.MemberParameterType(member_idx, i);
 				description.parameter_types.push_back(type.id() == LogicalTypeId::UNKNOWN ? LogicalType::ANY : type);
 			}
 			// a per-source description, so tests distinguish stale metadata from replaced metadata
-			description.description = "testlang: " + language_member.source;
+			description.description = "testlang: " + info.MemberSource(member_idx);
 			info.AddDescription(std::move(description));
 		}
 	}

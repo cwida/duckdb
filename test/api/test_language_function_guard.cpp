@@ -85,8 +85,7 @@ TEST_CASE("ValidateCreate reads members and rejects definitions through the crea
 	Connection con(db);
 	RegisterTestLanguage(*db.instance, "readlang", make_shared_ptr<ViewBinder>([](LanguageFunctionCreateInfo &info) {
 		REQUIRE(info.MemberCount() == 1);
-		auto &member = info.Member(0).Cast<LanguageMacroFunction>();
-		if (StringUtil::Contains(member.source, "reject")) {
+		if (StringUtil::Contains(info.MemberSource(0), "reject")) {
 			throw BinderException("readlang: rejected %s", info.GetFunctionName().GetIdentifierName());
 		}
 	}));
@@ -102,12 +101,10 @@ TEST_CASE("ValidateCreate publishes documentation through the create view", "[ap
 	Connection con(db);
 	RegisterTestLanguage(*db.instance, "doclang", make_shared_ptr<ViewBinder>([](LanguageFunctionCreateInfo &info) {
 		for (idx_t member_idx = 0; member_idx < info.MemberCount(); member_idx++) {
-			auto &member = info.Member(member_idx);
 			FunctionDescription description;
-			for (idx_t i = 0; i < member.parameters.size(); i++) {
-				auto &param_name = member.parameters[i]->Cast<ColumnRefExpression>().GetColumnName();
-				description.parameter_names.push_back(param_name.GetIdentifierName());
-				const auto &type = member.types[i];
+			for (idx_t i = 0; i < info.MemberParameterCount(member_idx); i++) {
+				description.parameter_names.push_back(info.MemberParameterName(member_idx, i));
+				const auto &type = info.MemberParameterType(member_idx, i);
 				description.parameter_types.push_back(type.id() == LogicalTypeId::UNKNOWN ? LogicalType::ANY : type);
 			}
 			description.description = "doclang doc";

@@ -26,7 +26,9 @@ struct BindResult;
 
 //! The slice of a definition a ValidateCreate callback can act on: it reads the members, may
 //! rewrite a member's source, and publishes documentation. Everything else about the definition
-//! (the target, the member count, the resolved signatures, the defaults) is out of reach by type.
+//! (the target, the member count, the resolved signatures, the defaults) is out of reach by type:
+//! members are read through scalar accessors, so the definition's structure cannot be changed
+//! through the view. Type values share DuckDB's interned type metadata like any LogicalType copy.
 //! The view borrows from the definition under validation: it is only valid inside the callback.
 class LanguageFunctionCreateInfo {
 public:
@@ -43,11 +45,18 @@ public:
 	idx_t MemberCount() const {
 		return members.size();
 	}
-	//! Read one member. DuckDB's unique_ptr propagates mutability through const containers, so
-	//! access goes through this accessor, which pins the member itself const
-	const MacroFunction &Member(idx_t member_idx) const {
-		return *members[member_idx];
-	}
+	//! One member's language
+	const string &MemberLanguage(idx_t member_idx) const;
+	//! One member's stored source
+	const string &MemberSource(idx_t member_idx) const;
+	//! The number of parameters a member declares
+	idx_t MemberParameterCount(idx_t member_idx) const;
+	//! A parameter's declared name
+	string MemberParameterName(idx_t member_idx, idx_t param_idx) const;
+	//! A parameter's resolved type, UNKNOWN for an untyped parameter
+	LogicalType MemberParameterType(idx_t member_idx, idx_t param_idx) const;
+	//! A member's declared RETURNS type, UNKNOWN when none was declared
+	LogicalType MemberReturnType(idx_t member_idx) const;
 	//! Rewrite one member's stored source
 	void SetMemberSource(idx_t member_idx, string source);
 	//! Publish documentation. A description must carry a member's parameter types, with ANY for
