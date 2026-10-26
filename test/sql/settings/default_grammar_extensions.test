@@ -63,3 +63,9 @@ query I
 SELECT value FROM duckdb_settings() WHERE name = 'default_grammar_extensions'
 ----
 []
+
+# the session setting shares the element validation
+statement error
+SET active_grammar_extensions = [NULL]
+----
+<REGEX>:.*'active_grammar_extensions' list values cannot be NULL.*
