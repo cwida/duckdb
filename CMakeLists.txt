@@ -267,6 +267,14 @@ if(DUCKDB_OPENHARMONY AND NOT WIN32)
   # Some OHOS SDK versions only embed a .codesign section when the linker is
   # asked to; the on-device SDK signs by default.
   add_link_options(-Wl,--code-sign)
+  # The OHOS toolchain defaults to emulated TLS (__emutls_get_address), but the
+  # OHOS musl runtime provides native TLS; use it for correct thread_local and
+  # exception handling behaviour.
+  add_compile_options(-fno-emulated-tls)
+  # Use the shared C++ runtime: with static libc++ both the host binary and a
+  # loadable extension embed their own C++ runtime, so exceptions thrown inside
+  # an extension are no longer caught as std::exception by the host.
+  add_link_options(-nostdlib++ -lc++_shared)
   find_program(DUCKDB_HOST_C_COMPILER NAMES cc gcc clang)
   if(NOT DUCKDB_HOST_C_COMPILER)
     message(
