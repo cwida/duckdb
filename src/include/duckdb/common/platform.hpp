@@ -58,6 +58,8 @@ std::string DuckDBPlatform() { // NOLINT: allow definition in header
 	os = "osx";
 #elif defined(__FreeBSD__)
 	os = "freebsd";
+#elif defined(__OHOS__)
+	os = "openharmony";
 #endif
 #if defined(__aarch64__) || defined(__ARM_ARCH_ISA_A64)
 	arch = "arm64";

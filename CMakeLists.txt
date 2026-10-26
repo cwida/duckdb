@@ -252,10 +252,22 @@ option(WASM_ENABLED "Are DuckDB-Wasm extensions build enabled" FALSE)
 if(DEFINED ENV{WASM_EXTENSIONS})
   set(WASM_ENABLED "$ENV{WASM_EXTENSIONS}")
 endif()
+
+# OpenHarmony: building on-device reports CMAKE_SYSTEM_NAME=HarmonyOS, while
+# cross-compiling with the OHOS toolchain is detected through the compiler name.
+set(DUCKDB_OPENHARMONY FALSE)
+if(CMAKE_SYSTEM_NAME STREQUAL "HarmonyOS" OR CMAKE_CXX_COMPILER MATCHES "ohos")
+  set(DUCKDB_OPENHARMONY TRUE)
+endif()
+
 option(MUSL_ENABLED "Are Musl extensions build enabled" FALSE)
+if(DUCKDB_OPENHARMONY)
+  set(MUSL_ENABLED ON)
+endif()
 if(DEFINED ENV{DUCKDB_PLATFORM})
   if("$ENV{DUCKDB_PLATFORM}" STREQUAL "linux_amd64_musl"
-     OR "$ENV{DUCKDB_PLATFORM}" STREQUAL "linux_arm64_musl")
+     OR "$ENV{DUCKDB_PLATFORM}" STREQUAL "linux_arm64_musl"
+     OR "$ENV{DUCKDB_PLATFORM}" STREQUAL "openharmony_arm64")
     set(MUSL_ENABLED ON)
   endif()
 endif()
@@ -280,10 +292,18 @@ elseif(FORCE_32_BIT)
   set(OS_ARCH "i386")
 endif()
 
+# On-device OpenHarmony builds report an unknown processor; the OHOS toolchain
+# only targets arm64.
+if(DUCKDB_OPENHARMONY AND CMAKE_SYSTEM_PROCESSOR STREQUAL "unknown")
+  set(OS_ARCH "arm64")
+endif()
+
 if(APPLE)
   set(OS_NAME "osx")
 elseif(WIN32)
   set(OS_NAME "windows")
+elseif(DUCKDB_OPENHARMONY)
+  set(OS_NAME "openharmony")
 elseif(UNIX)
   set(OS_NAME "linux") # sorry BSD
 else()
