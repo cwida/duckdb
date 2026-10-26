@@ -1,0 +1,135 @@
+name: OpenHarmony
+
+on:
+  workflow_dispatch:
+  push:
+    branches-ignore:
+      - 'main'
+      - 'feature'
+      - 'v*.*-*'
+      - 'gh-readonly-queue/**'
+    paths:
+      - '.github/workflows/OHOS.yml'
+      - 'CMakeLists.txt'
+      - 'scripts/ohos-toolchain.cmake'
+      - 'src/include/duckdb/common/platform.hpp'
+      - 'test/CMakeLists.txt'
+  pull_request:
+    types: [opened, reopened, ready_for_review]
+    # Keep the multi-GB SDK download off most pull requests: run this job
+    # only when OpenHarmony-specific files change.
+    paths:
+      - '.github/workflows/OHOS.yml'
+      - 'scripts/ohos-toolchain.cmake'
+      - 'src/include/duckdb/common/platform.hpp'
+
+concurrency:
+  group: openharmony-${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref || '' }}
+  cancel-in-progress: true
+
+env:
+  # Official OpenHarmony 7.0 public SDK (Apache-2.0), Linux x64 host tools.
+  OHOS_SDK_URL: https://repo.huaweicloud.com/openharmony/os/7.0-Release/ohos-sdk-windows_linux-public.tar.gz
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_MAXSIZE: 3G
+
+jobs:
+  build:
+    name: Cross-compile arm64
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ccache
+        run: sudo apt-get update && sudo apt-get install -y ccache
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ohos-ccache-${{ hashFiles('src/**', 'third_party/**', 'extension/**', 'CMakeLists.txt') }}
+          restore-keys: ohos-ccache-
+
+      - name: Download OpenHarmony SDK
+        run: |
+          set -euo pipefail
+          SDK_ARCHIVE="$RUNNER_TEMP/ohos-sdk.tar.gz"
+          curl -fL --retry 3 -o "$SDK_ARCHIVE" "$OHOS_SDK_URL"
+          tar -xzf "$SDK_ARCHIVE" -C "$RUNNER_TEMP" --wildcards 'ohos-sdk/linux/native-*.zip'
+          rm -f "$SDK_ARCHIVE"
+          unzip -q "$RUNNER_TEMP"/ohos-sdk/linux/native-*.zip -d "$RUNNER_TEMP/ohos-sdk/linux"
+          rm -f "$RUNNER_TEMP"/ohos-sdk/linux/native-*.zip
+          echo "OHOS_SDK=$RUNNER_TEMP/ohos-sdk/linux/native" >> "$GITHUB_ENV"
+          # The SDK's lld needs its own libxml2, which is not on the default path.
+          echo "LD_LIBRARY_PATH=$RUNNER_TEMP/ohos-sdk/linux/native/llvm/lib" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/ohos-sdk/linux/native/llvm/bin/clang" --version
+
+      - name: Configure
+        run: |
+          cmake -G Ninja -B build/ohos \
+            -DCMAKE_TOOLCHAIN_FILE="$PWD/scripts/ohos-toolchain.cmake" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DDUCKDB_EXPLICIT_PLATFORM=openharmony_arm64 \
+            -DBUILD_UNITTESTS=OFF
+
+      - name: Build
+        run: |
+          cmake --build build/ohos --parallel 4 --target duckdb duckdb_static json_loadable_extension
+          readelf -h build/ohos/duckdb | grep -q AArch64
+          readelf -d build/ohos/duckdb | grep -q libc++_shared
+          file build/ohos/duckdb
+          ./build/ohos/ohos-selfsign --check build/ohos/extension/json/json.duckdb_extension
+
+      - name: Smoke test (qemu, when a loader is available)
+        run: |
+          set -euo pipefail
+          LOADER=""
+          for candidate in \
+            "$OHOS_SDK/sysroot/lib/ld-musl-aarch64.so.1" \
+            "$OHOS_SDK/sysroot/usr/lib/ld-musl-aarch64.so.1" \
+            "$OHOS_SDK/sysroot/usr/lib/aarch64-linux-ohos/ld-musl-aarch64.so.1"; do
+            if [ -e "$candidate" ]; then
+              LOADER="$candidate"
+              break
+            fi
+          done
+          if [ -z "$LOADER" ]; then
+            echo "No musl loader in the SDK sysroot; skipping the qemu smoke test"
+            exit 0
+          fi
+          sudo apt-get install -y qemu-user
+          qemu-aarch64 -L "$OHOS_SDK/sysroot" build/ohos/duckdb -c "SELECT 42"
+
+      - name: Package library
+        run: |
+          mkdir -p build/ohos/dist
+          zip -j build/ohos/dist/libduckdb-openharmony_arm64.zip \
+            build/ohos/src/libduckdb.so \
+            src/include/duckdb.h \
+            src/include/duckdb_v2.h \
+            src/include/duckdb_extension.h \
+            src/include/duckdb_extension_v2.h \
+            src/include/duckdb_static_extension.h
+
+      - name: Upload release asset to staging
+        if: github.repository == 'duckdb/duckdb' && github.event_name != 'pull_request'
+        env:
+          AWS_ENDPOINT_URL: ${{ secrets.S3_DUCKDB_STAGING_ENDPOINT }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.S3_DUCKDB_STAGING_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.S3_DUCKDB_STAGING_KEY }}
+        run: |
+          ./scripts/upload-assets-to-staging.sh github_release \
+            build/ohos/dist/libduckdb-openharmony_arm64.zip
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: duckdb-cli-openharmony-arm64
+          path: build/ohos/duckdb
+          archive: false
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: libduckdb-openharmony_arm64
+          path: build/ohos/dist/libduckdb-openharmony_arm64.zip
