@@ -260,6 +260,31 @@ if(CMAKE_SYSTEM_NAME STREQUAL "HarmonyOS" OR CMAKE_CXX_COMPILER MATCHES "ohos")
   set(DUCKDB_OPENHARMONY TRUE)
 endif()
 
+# OpenHarmony verifies the .codesign section on exec/dlopen, and DuckDB appends
+# extension metadata after linking, which invalidates the linker-generated
+# signature. Build a small host tool that refreshes the signature in place.
+if(DUCKDB_OPENHARMONY AND NOT WIN32)
+  # Some OHOS SDK versions only embed a .codesign section when the linker is
+  # asked to; the on-device SDK signs by default.
+  add_link_options(-Wl,--code-sign)
+  find_program(DUCKDB_HOST_C_COMPILER NAMES cc gcc clang)
+  if(NOT DUCKDB_HOST_C_COMPILER)
+    message(
+      FATAL_ERROR
+        "OpenHarmony builds need a host C compiler for the self-sign tool")
+  endif()
+  set(OHOS_SELFSIGN_BINARY "${CMAKE_BINARY_DIR}/ohos-selfsign")
+  add_custom_command(
+    OUTPUT "${OHOS_SELFSIGN_BINARY}"
+    COMMAND
+      "${DUCKDB_HOST_C_COMPILER}" -O2
+      "${PROJECT_SOURCE_DIR}/scripts/ohos/selfsign.c" -o
+      "${OHOS_SELFSIGN_BINARY}"
+    DEPENDS "${PROJECT_SOURCE_DIR}/scripts/ohos/selfsign.c"
+    COMMENT "Building OpenHarmony self-sign tool")
+  add_custom_target(ohos_selfsign DEPENDS "${OHOS_SELFSIGN_BINARY}")
+endif()
+
 option(MUSL_ENABLED "Are Musl extensions build enabled" FALSE)
 if(DUCKDB_OPENHARMONY)
   set(MUSL_ENABLED ON)

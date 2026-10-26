@@ -389,6 +389,18 @@ function(build_loadable_extension_directory NAME ABI_TYPE OUTPUT_DIRECTORY EXTEN
             COMMAND
             ${CMAKE_COMMAND} -DABI_TYPE=${ABI_TYPE} -DEXTENSION=$<TARGET_FILE:${TARGET_NAME}>${EXTENSION_POSTFIX} -DPLATFORM_FILE=${DuckDB_BINARY_DIR}/duckdb_platform_out -DVERSION_FIELD="${FOOTER_VERSION_VALUE}" -DEXTENSION_VERSION="${EXTENSION_VERSION}" -DNULL_FILE=${DUCKDB_MODULE_BASE_DIR}/scripts/null.txt -P ${DUCKDB_MODULE_BASE_DIR}/scripts/append_metadata.cmake
     )
+
+    if(DUCKDB_OPENHARMONY AND TARGET ohos_selfsign)
+        # Refresh the OpenHarmony signature after the metadata footer has been
+        # appended; otherwise the ELF cannot be dlopen'ed on device.
+        add_custom_command(
+                TARGET ${TARGET_NAME}
+                POST_BUILD
+                COMMAND ${OHOS_SELFSIGN_BINARY} --refresh $<TARGET_FILE:${TARGET_NAME}>${EXTENSION_POSTFIX}
+                COMMENT "Refreshing OpenHarmony code signature for ${TARGET_NAME}"
+        )
+        add_dependencies(${TARGET_NAME} ohos_selfsign)
+    endif()
     add_dependencies(${TARGET_NAME} duckdb_platform)
     if (NOT ${EXTENSION_CONFIG_BUILD} AND NOT ${EXTENSION_TESTS_ONLY} AND NOT CLANG_TIDY AND NOT PREBUILT_EXTENSION)
         add_dependencies(duckdb_local_extension_repo ${TARGET_NAME})
