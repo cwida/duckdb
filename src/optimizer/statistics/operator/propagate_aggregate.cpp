@@ -547,6 +547,8 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalAggr
 
 	if (is_ungrouped) {
 		// Ungrouped aggregate always returns exactly one row, even over empty input
+		// node_stats holds the input cardinality: do not leak it to the parent operator
+		node_stats.reset();
 		return make_uniq<NodeStatistics>(1U, 1U);
 	}
 	// the max cardinality of an aggregate is the max cardinality of the input (i.e. when every row is a unique
