@@ -89,7 +89,7 @@ void Executor::ScheduleEventsInternal(ScheduleEventData &event_data) {
 	D_ASSERT(events.empty());
 
 	auto schedule = BuildPipelineSchedule(event_data.meta_pipelines);
-	if (schedule->HasCycle()) {
+	if (schedule->HasCycle(PipelineScheduleGraph::SCHEDULED)) {
 		throw InternalException("Cyclic dependency in pipeline schedule");
 	}
 	if (event_data.initial_schedule && recursive_ctes.empty()) {

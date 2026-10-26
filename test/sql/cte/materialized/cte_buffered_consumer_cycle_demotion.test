@@ -1,0 +1,25 @@
+# name: test/sql/cte/materialized/cte_buffered_consumer_cycle_demotion.test
+# description: The nested buffered-consumer cycle must resolve through a CYCLE demotion, not cost selection
+# group: [materialized]
+
+# Skipped in configs that restart the database between statements (the in-memory log does not survive) and
+# with the optimizer disabled (without cardinality estimates the probe is kept materialized by cost, so no
+# cycle forms). The behavioral coverage lives in cte_nested_buffered_consumer_cycle.test.
+
+set query_timeout 60
+
+statement ok
+CALL enable_logging('PhysicalOperator', storage='memory');
+
+statement ok
+SET memory_limit='200MB';
+
+query I
+WITH c2 AS MATERIALIZED (SELECT range AS a FROM range(15000000)), c1 AS MATERIALIZED (SELECT a FROM c2 LIMIT 5) SELECT count(*) FROM c2 JOIN c1 ON c2.a = c1.a;
+----
+5
+
+query I
+SELECT count(*) > 0 FROM duckdb_logs WHERE type = 'PhysicalOperator' AND message LIKE '%reason=CYCLE%';
+----
+true

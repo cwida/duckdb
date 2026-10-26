@@ -17,11 +17,13 @@ WITH c2 AS MATERIALIZED (SELECT range AS a FROM range(15000000)), c1 AS MATERIAL
 5
 
 # Pin the topology: c2 must have a buffered consumer, and with the probe streamed past the fanout budget
-# its materialized consumer can only come from the schedule demoting it to break the cycle.
+# its materialized consumer can only come from the schedule demoting it to break the cycle. The middle
+# anchor keeps all three attributes on c2's operator (c1 reports Buffered Consumers: 0).
+# cte_buffered_consumer_cycle_demotion.test asserts the demotion reason directly through the operator log.
 query II
 EXPLAIN ANALYZE WITH c2 AS MATERIALIZED (SELECT range AS a FROM range(15000000)), c1 AS MATERIALIZED (SELECT a FROM c2 LIMIT 5) SELECT count(*) FROM c2 JOIN c1 ON c2.a = c1.a;
 ----
-analyzed_plan	<REGEX>:.*Fanout Mode: BUFFERED.*Materialized Consumers: 1.*
+analyzed_plan	<REGEX>:.*Fanout Mode: BUFFERED.*Buffered Consumers: 1.*Materialized Consumers: 1.*
 
 statement ok
 SET threads=1;
@@ -30,3 +32,23 @@ query I
 WITH c2 AS MATERIALIZED (SELECT range AS a FROM range(15000000)), c1 AS MATERIALIZED (SELECT a FROM c2 LIMIT 5) SELECT count(*) FROM c2 JOIN c1 ON c2.a = c1.a;
 ----
 5
+
+statement ok
+RESET threads;
+
+# Two ordered early-stopping buffered consumers of one producer. The second consumer must be allowed to
+# start and drain the exchange while the producer is still running: a schedule edge gating its execute on
+# producer finalization deadlocks against exchange backpressure.
+statement ok
+SET preserve_insertion_order=false;
+
+query I
+WITH c AS MATERIALIZED (SELECT i FROM range(1000000) r(i))
+SELECT count(*) FROM (
+    (SELECT i FROM c LIMIT 1)
+    UNION ALL
+    (SELECT i FROM c LIMIT 1)
+    LIMIT 2
+) q;
+----
+2

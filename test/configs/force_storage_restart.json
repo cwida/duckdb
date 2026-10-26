@@ -172,6 +172,12 @@
         "test/sql/attach/external_resource_attach_failure.test",
         "test/sql/attach/external_resource_null_handle.test"
       ]
+    },
+    {
+      "reason": "Asserts the in-memory operator log, which does not survive the forced restarts.",
+      "paths": [
+        "test/sql/cte/materialized/cte_buffered_consumer_cycle_demotion.test"
+      ]
     }
   ]
 }

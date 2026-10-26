@@ -19,6 +19,9 @@ class Pipeline;
 
 enum class PipelineScheduleStageType : uint8_t { INITIALIZE, EXECUTE, PREPARE_FINISH, FINISH, COMPLETE };
 enum class PipelineScheduleMode : uint8_t { COMPLETE, ACTIVE_SUBSET };
+//! Which dependencies participate in a graph traversal: only the scheduled (event) dependencies, or also the
+//! analysis-only dependencies that model runtime completion ordering for cycle detection.
+enum class PipelineScheduleGraph : uint8_t { SCHEDULED, WITH_ANALYSIS };
 
 struct PipelineScheduleStage {
 	PipelineScheduleStage(PipelineScheduleStageType type, shared_ptr<Pipeline> pipeline);
@@ -26,6 +29,10 @@ struct PipelineScheduleStage {
 	PipelineScheduleStageType type;
 	shared_ptr<Pipeline> pipeline;
 	vector<idx_t> dependencies;
+	//! Constraints that hold at runtime but must not gate event scheduling: a dataflow consumer's execute only
+	//! completes once its producer has finalized, yet the consumer must be able to start and drain the exchange,
+	//! otherwise producer backpressure deadlocks. Cycle analysis sees these, the event graph does not.
+	vector<idx_t> analysis_dependencies;
 };
 
 struct PipelineScheduleExternalInputDependency {
@@ -53,8 +60,8 @@ struct PipelineSchedule {
 	vector<reference<Pipeline>> initialize_on_schedule_pipelines;
 	vector<PipelineScheduleExternalInputDependency> external_input_dependencies;
 
-	bool HasCycle() const;
-	vector<PipelineScheduleEdge> GetCycle() const;
+	bool HasCycle(PipelineScheduleGraph graph = PipelineScheduleGraph::WITH_ANALYSIS) const;
+	vector<PipelineScheduleEdge> GetCycle(PipelineScheduleGraph graph = PipelineScheduleGraph::WITH_ANALYSIS) const;
 	bool DependsOn(idx_t dependent, idx_t dependency) const;
 	bool TryAddDependency(idx_t dependent, idx_t dependency);
 };
