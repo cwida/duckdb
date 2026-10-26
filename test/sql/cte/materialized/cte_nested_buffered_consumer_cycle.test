@@ -2,6 +2,9 @@
 # description: A buffered consumer inside another CTE's body must not deadlock against direct consumers
 # group: [materialized]
 
+# The fanout-budget sizes below assume standard vectors.
+require vector_size 2048
+
 # c1's body is a buffered consumer of c2 (the LIMIT blocks direct eligibility). The main query consumes
 # c1 on the build side and c2 on the probe side. The memory limit pushes c2's estimated materialization
 # over the fanout budget, so the probe becomes a direct consumer and the completion cycle runs through

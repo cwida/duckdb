@@ -1,27 +1,57 @@
 # name: test/sql/cte/materialized/cte_gated_buffered_consumer.test
-# description: A buffered consumer scheduled after its own producer's completion must fall back to CTE storage
+# description: Buffered consumers of an exchange that cannot drain must fall back to CTE storage
 # group: [materialized]
 
-# In both queries the only buffered consumer's execute stage is gated behind a pipeline chain that needs the
-# producer's completion (a join build, or an ordered UNION branch behind a full window). The producer throttles
-# at the exchange high watermark waiting for that consumer, which can never start: an idle deadlock that is not
-# a schedule cycle. The consumer must be demoted to read the materialized working table instead. On regression
-# these queries deadlock idle, hence the timeout.
+# The exchange sizes below depend on the 32-chunk high watermark with standard vectors.
+require vector_size 2048
+
+# Each query gates every buffered consumer of some exchange behind a chain that needs that exchange's
+# producer to progress (a join build, an ordered UNION branch, a blocked sink pushing into another gated
+# exchange, or two exchanges gating each other). The producer throttles at the exchange high watermark and
+# the gated consumer can never start: an idle deadlock that is not a schedule cycle. The liveness analysis
+# must demote such consumers to the materialized working table. On regression these queries deadlock idle,
+# hence the timeout.
 set query_timeout 60
 
+# Single-hop gate: the only buffered consumer waits on a join build that needs the producer's completion.
 query I
-WITH c2 AS MATERIALIZED (SELECT range a FROM range(20000000)),
-     d AS MATERIALIZED (SELECT a FROM c2 WHERE a % 1000000 = 0)
+WITH c2 AS MATERIALIZED (SELECT range a FROM range(2000000)),
+     d AS MATERIALIZED (SELECT a FROM c2 WHERE a % 100000 = 0)
 SELECT count(*) FROM (SELECT c2.a FROM c2 JOIN d ON c2.a = d.a LIMIT 3) q;
 ----
 3
 
-statement ok
-SET threads=1;
+# Two-hop gate: the middle hop is itself a buffered consumer whose EOF wait hides the channel.
+query I
+WITH c2 AS MATERIALIZED (SELECT range a FROM range(2000000)),
+     d  AS MATERIALIZED (SELECT a FROM c2 WHERE a % 100000 = 0),
+     e  AS MATERIALIZED (SELECT a FROM d LIMIT 100000000)
+SELECT count(*) FROM (SELECT c2.a FROM c2 JOIN e ON c2.a = e.a LIMIT 3) q;
+----
+3
 
 statement ok
 SET preserve_insertion_order=false;
 
+# An early-stopping sibling can unregister before the watermark, so it must not count as the drainer for
+# the gated join probe.
+query I
+WITH c AS MATERIALIZED (SELECT range i FROM range(2000000)),
+     d AS MATERIALIZED (SELECT i FROM c WHERE i % 100000 = 0)
+SELECT count(*)
+FROM (
+    (SELECT i FROM c LIMIT 1)
+    UNION ALL
+    (SELECT c.i FROM c JOIN d ON c.i = d.i LIMIT 3)
+    LIMIT 4
+) q;
+----
+4
+
+statement ok
+SET threads=1;
+
+# The only buffered consumer is ordered behind a blocking window over the materialized scan.
 query I
 WITH c AS MATERIALIZED (
     SELECT i FROM range(1000000) r(i)
@@ -36,9 +66,54 @@ FROM (
 ----
 500000500000
 
+statement ok
+SET debug_disable_optimizer=true;
+
+# Demoting one gated consumer must not starve the remaining consumer: the chain a -> b -> UNION ordering
+# comes back to a's completion through a blocked sink.
 query I
-WITH c2 AS MATERIALIZED (SELECT range a FROM range(20000000)),
-     d AS MATERIALIZED (SELECT a FROM c2 WHERE a % 1000000 = 0)
-SELECT count(*) FROM (SELECT c2.a FROM c2 JOIN d ON c2.a = d.a LIMIT 3) q;
+WITH a AS MATERIALIZED (
+    SELECT i FROM range(1000000) r(i)
+), b AS MATERIALIZED (
+    SELECT i FROM a LIMIT 1000000
+), d AS MATERIALIZED (
+    SELECT i FROM a WHERE i % 100000 = 0
+)
+SELECT count(*)
+FROM (
+    (SELECT a.i FROM a JOIN d ON a.i = d.i LIMIT 3)
+    UNION ALL
+    (SELECT b.i FROM b LIMIT 3)
+    LIMIT 6
+) q;
+----
+6
+
+# A buffered consumer blocked pushing into another gated exchange.
+query I
+WITH a AS MATERIALIZED (
+    SELECT i FROM range(1000000) r(i)
+), b AS MATERIALIZED (
+    SELECT i FROM a LIMIT 1000000
+), d AS MATERIALIZED (
+    SELECT i FROM a WHERE i % 100000 = 0
+)
+SELECT count(*) FROM (SELECT b.i FROM b JOIN d ON b.i = d.i LIMIT 3) q;
 ----
 3
+
+statement ok
+RESET threads;
+
+# Two exchanges whose buffered probes gate each other.
+query I
+WITH a AS MATERIALIZED (SELECT i FROM range(1000000) r(i)),
+     b AS MATERIALIZED (SELECT i FROM range(1000000) r(i))
+SELECT count(*)
+FROM (
+    (SELECT a.i FROM a JOIN b ON a.i = b.i LIMIT 3)
+    UNION ALL
+    (SELECT b.i FROM b JOIN a ON b.i = a.i LIMIT 3)
+) q;
+----
+6

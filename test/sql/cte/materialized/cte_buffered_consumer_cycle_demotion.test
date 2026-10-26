@@ -2,6 +2,9 @@
 # description: The nested buffered-consumer cycle must resolve through a CYCLE demotion, not cost selection
 # group: [materialized]
 
+# The fanout-budget sizes below assume standard vectors.
+require vector_size 2048
+
 # Skipped in configs that restart the database between statements (the in-memory log does not survive) and
 # with the optimizer disabled (without cardinality estimates the probe is kept materialized by cost, so no
 # cycle forms). The behavioral coverage lives in cte_nested_buffered_consumer_cycle.test.
@@ -26,7 +29,7 @@ true
 
 # A buffered consumer whose execute is scheduled after its own producer's completion is demoted to CTE storage.
 query I
-WITH c2 AS MATERIALIZED (SELECT range a FROM range(20000000)), d AS MATERIALIZED (SELECT a FROM c2 WHERE a % 1000000 = 0) SELECT count(*) FROM (SELECT c2.a FROM c2 JOIN d ON c2.a = d.a LIMIT 3) q;
+WITH c2 AS MATERIALIZED (SELECT range a FROM range(2000000)), d AS MATERIALIZED (SELECT a FROM c2 WHERE a % 100000 = 0) SELECT count(*) FROM (SELECT c2.a FROM c2 JOIN d ON c2.a = d.a LIMIT 3) q;
 ----
 3
 
