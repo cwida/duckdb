@@ -17,7 +17,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <list>
+#include <mutex>
 #include <random>
 #include <thread>
 
@@ -26,6 +28,49 @@ namespace duckdb {
 static void query_break(int line) {
 	(void)line;
 }
+
+//! Interrupts the connection if the query does not finish within the configured timeout. This also bounds
+//! queries that deadlock idle: the executor's wait loop checks the interrupt flag, but not the query deadline,
+//! so SET max_execution_time cannot abort a fully parked schedule.
+class QueryWatchdog {
+public:
+	QueryWatchdog(Connection &connection_p, double timeout_seconds) : connection(connection_p), done(false) {
+		if (timeout_seconds <= 0) {
+			return;
+		}
+		watchdog = std::thread([this, timeout_seconds]() {
+			std::unique_lock<std::mutex> guard(lock);
+			if (!cv.wait_for(guard, std::chrono::duration<double>(timeout_seconds), [this]() { return done; })) {
+				fired = true;
+				connection.Interrupt();
+			}
+		});
+	}
+	~QueryWatchdog() {
+		if (!watchdog.joinable()) {
+			return;
+		}
+		{
+			std::lock_guard<std::mutex> guard(lock);
+			done = true;
+		}
+		cv.notify_all();
+		watchdog.join();
+		if (fired) {
+			// The interrupt may have raced with a successful query completion. Clear the flag so it cannot
+			// spuriously abort the next statement. If the query was aborted, the engine already cleared it.
+			connection.context->ClearInterrupt();
+		}
+	}
+
+private:
+	Connection &connection;
+	std::mutex lock;
+	std::condition_variable cv;
+	bool done;
+	bool fired = false;
+	std::thread watchdog;
+};
 
 static Connection &GetConnection(SQLLogicTestRunner &runner, DuckDB &db,
                                  unordered_map<string, duckdb::unique_ptr<Connection>> &named_connection_map,
@@ -251,6 +296,7 @@ unique_ptr<QueryResult> Command::ExecuteQuery(ExecuteContext &context, reference
 	QueryParameters parameters;
 	parameters.format = ChunkFormat::BufferManaged();
 
+	QueryWatchdog watchdog(connection.get(), runner.query_timeout);
 	try {
 #ifdef DUCKDB_ALTERNATIVE_VERIFY
 		auto ccontext = connection.get().context;

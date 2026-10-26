@@ -1180,6 +1180,15 @@ void SQLLogicTestRunner::ExecuteScript(SQLLogicParser &parser, const string &scr
 					var_value = val.ToString();
 				}
 				environment_variables[var_name] = var_value;
+			} else if (token.parameters[0] == "query_timeout") {
+				if (token.parameters.size() != 2) {
+					parser.Fail("set query_timeout requires a single value (seconds, 0 disables)");
+				}
+				auto timeout = Value(token.parameters[1]).DefaultTryCastAs(LogicalType::DOUBLE);
+				if (!timeout || timeout->GetValue<double>() < 0) {
+					parser.Fail("set query_timeout requires a non-negative number of seconds");
+				}
+				query_timeout = timeout->GetValue<double>();
 			} else {
 				parser.Fail("unrecognized set parameter: %s", token.parameters[0]);
 			}
