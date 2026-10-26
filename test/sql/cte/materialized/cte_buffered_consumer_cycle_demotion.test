@@ -23,3 +23,14 @@ query I
 SELECT count(*) > 0 FROM duckdb_logs WHERE type = 'PhysicalOperator' AND message LIKE '%reason=CYCLE%';
 ----
 true
+
+# A buffered consumer whose execute is scheduled after its own producer's completion is demoted to CTE storage.
+query I
+WITH c2 AS MATERIALIZED (SELECT range a FROM range(20000000)), d AS MATERIALIZED (SELECT a FROM c2 WHERE a % 1000000 = 0) SELECT count(*) FROM (SELECT c2.a FROM c2 JOIN d ON c2.a = d.a LIMIT 3) q;
+----
+3
+
+query I
+SELECT count(*) > 0 FROM duckdb_logs WHERE type = 'PhysicalOperator' AND message LIKE '%reason=GATED%';
+----
+true

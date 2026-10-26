@@ -124,6 +124,8 @@ public:
 	vector<reference<Pipeline>> GetProducerPipelines() const;
 	void SelectBufferedConsumer(idx_t consumer_idx, PipelineBroadcastExchangeScanMode scan_mode);
 	void SelectMaterializedConsumer(idx_t consumer_idx);
+	//! Converts an already registered buffered consumer to a materialized one, before execution starts.
+	void DemoteBufferedConsumerToMaterialized(idx_t consumer_idx);
 	void ResetConsumerRegistrations();
 	void Reset();
 	void SetLogOperator(const PhysicalOperator &op);

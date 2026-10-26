@@ -1,0 +1,44 @@
+# name: test/sql/cte/materialized/cte_gated_buffered_consumer.test
+# description: A buffered consumer scheduled after its own producer's completion must fall back to CTE storage
+# group: [materialized]
+
+# In both queries the only buffered consumer's execute stage is gated behind a pipeline chain that needs the
+# producer's completion (a join build, or an ordered UNION branch behind a full window). The producer throttles
+# at the exchange high watermark waiting for that consumer, which can never start: an idle deadlock that is not
+# a schedule cycle. The consumer must be demoted to read the materialized working table instead. On regression
+# these queries deadlock idle, hence the timeout.
+set query_timeout 60
+
+query I
+WITH c2 AS MATERIALIZED (SELECT range a FROM range(20000000)),
+     d AS MATERIALIZED (SELECT a FROM c2 WHERE a % 1000000 = 0)
+SELECT count(*) FROM (SELECT c2.a FROM c2 JOIN d ON c2.a = d.a LIMIT 3) q;
+----
+3
+
+statement ok
+SET threads=1;
+
+statement ok
+SET preserve_insertion_order=false;
+
+query I
+WITH c AS MATERIALIZED (
+    SELECT i FROM range(1000000) r(i)
+)
+SELECT sum(v)
+FROM (
+    (SELECT row_number() OVER (ORDER BY i) AS v FROM c)
+    UNION ALL
+    (SELECT 0::BIGINT AS v FROM c LIMIT 1)
+    LIMIT 1000001
+) q;
+----
+500000500000
+
+query I
+WITH c2 AS MATERIALIZED (SELECT range a FROM range(20000000)),
+     d AS MATERIALIZED (SELECT a FROM c2 WHERE a % 1000000 = 0)
+SELECT count(*) FROM (SELECT c2.a FROM c2 JOIN d ON c2.a = d.a LIMIT 3) q;
+----
+3

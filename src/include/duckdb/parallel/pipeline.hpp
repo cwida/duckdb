@@ -91,6 +91,8 @@ public:
 	void AddExternalInputCandidate(Pipeline &pipeline, PhysicalOperator &materialized_source,
 	                               PhysicalOperator &external_source, shared_ptr<Pipeline> cte_dependency,
 	                               PhysicalCTE &cte, idx_t consumer_idx);
+	void AddBufferedConsumer(Pipeline &pipeline, PhysicalOperator &materialized_source,
+	                         shared_ptr<Pipeline> cte_dependency, PhysicalCTE &cte, idx_t consumer_idx);
 	void AddCTEPipelineSelection(PhysicalCTE &cte, Pipeline &pipeline, shared_ptr<Pipeline> cte_dependency,
 	                             bool dependency_added);
 	void ResolveExternalInputs(const vector<shared_ptr<MetaPipeline>> &meta_pipelines);
@@ -126,6 +128,7 @@ public:
 
 	void AddDependency(shared_ptr<Pipeline> &pipeline);
 	void AddDataflowDependency(shared_ptr<Pipeline> &pipeline);
+	void RemoveDataflowDependency(const shared_ptr<Pipeline> &pipeline);
 	//! The dependencies of this pipeline on pipelines of other MetaPipelines
 	vector<weak_ptr<Pipeline>> GetDependencies() const;
 	//! The dependencies of this pipeline on pipelines of the same MetaPipeline

@@ -652,6 +652,32 @@ void Pipeline::AddDataflowDependency(shared_ptr<Pipeline> &pipeline) {
 	pipeline->parents.push_back(weak_ptr<Pipeline>(shared_from_this()));
 }
 
+void Pipeline::RemoveDataflowDependency(const shared_ptr<Pipeline> &pipeline) {
+	D_ASSERT(pipeline);
+	bool found_dependency = false;
+	for (auto entry = dataflow_dependencies.begin(); entry != dataflow_dependencies.end(); entry++) {
+		auto dependency = entry->lock();
+		D_ASSERT(dependency);
+		if (RefersToSameObject(*dependency, *pipeline)) {
+			dataflow_dependencies.erase(entry);
+			found_dependency = true;
+			break;
+		}
+	}
+	if (!found_dependency) {
+		throw InternalException("Attempted to remove a missing pipeline dataflow dependency");
+	}
+	for (auto entry = pipeline->parents.begin(); entry != pipeline->parents.end(); entry++) {
+		auto parent = entry->lock();
+		D_ASSERT(parent);
+		if (RefersToSameObject(*parent, *this)) {
+			pipeline->parents.erase(entry);
+			return;
+		}
+	}
+	throw InternalException("Pipeline dataflow dependency had no matching parent");
+}
+
 vector<weak_ptr<Pipeline>> Pipeline::GetDependencies() const {
 	return dependencies;
 }
@@ -829,11 +855,27 @@ struct CTEPipelineSelection {
 	bool stream_serialized_candidates = false;
 };
 
+struct PipelineBufferedConsumerRecord {
+	PipelineBufferedConsumerRecord(Pipeline &pipeline_p, PhysicalOperator &materialized_source_p,
+	                               shared_ptr<Pipeline> cte_dependency_p, PhysicalCTE &cte_p, idx_t consumer_idx_p)
+	    : pipeline(pipeline_p), materialized_source(materialized_source_p), cte_dependency(std::move(cte_dependency_p)),
+	      cte(cte_p), consumer_idx(consumer_idx_p) {
+	}
+
+	reference<Pipeline> pipeline;
+	reference<PhysicalOperator> materialized_source;
+	shared_ptr<Pipeline> cte_dependency;
+	reference<PhysicalCTE> cte;
+	idx_t consumer_idx;
+	bool demoted = false;
+};
+
 class PipelineBuildStateData {
 public:
 	vector<PipelineExternalInputCandidate> external_input_candidates;
 	vector<CTEPipelineSelection> cte_selections;
 	reference_map_t<PhysicalCTE, idx_t> cte_selection_map;
+	vector<PipelineBufferedConsumerRecord> buffered_consumers;
 };
 
 struct RemovedOptionalPipelineDependency {
@@ -1022,6 +1064,61 @@ void PipelineBuildState::AddExternalInputCandidate(Pipeline &pipeline, PhysicalO
 	                                             std::move(cte_dependency), cte, consumer_idx);
 }
 
+void PipelineBuildState::AddBufferedConsumer(Pipeline &pipeline, PhysicalOperator &materialized_source,
+                                             shared_ptr<Pipeline> cte_dependency, PhysicalCTE &cte,
+                                             idx_t consumer_idx) {
+	data->buffered_consumers.emplace_back(pipeline, materialized_source, std::move(cte_dependency), cte, consumer_idx);
+}
+
+//! A buffered consumer whose execute stage can only be scheduled after its own producer has completed can never
+//! drain the exchange: the producer throttles once the exchange buffer is full and then waits for this consumer,
+//! which is a deadlock the schedule graph cannot express as a cycle. Find such a consumer, if any.
+static optional_ptr<PipelineBufferedConsumerRecord>
+FindScheduleGatedBufferedConsumer(PipelineBuildStateData &data, const PipelineSchedule &schedule) {
+	for (auto &record : data.buffered_consumers) {
+		if (record.demoted) {
+			continue;
+		}
+		optional_idx consumer_execute;
+		vector<bool> is_producer_completion(schedule.stages.size(), false);
+		bool has_target = false;
+		for (idx_t stage_idx = 0; stage_idx < schedule.stages.size(); stage_idx++) {
+			auto &stage = schedule.stages[stage_idx];
+			if (stage.type == PipelineScheduleStageType::EXECUTE &&
+			    RefersToSameObject(*stage.pipeline, record.pipeline.get())) {
+				consumer_execute = stage_idx;
+			}
+			if (stage.type != PipelineScheduleStageType::INITIALIZE &&
+			    RefersToSameObject(*stage.pipeline, *record.cte_dependency)) {
+				is_producer_completion[stage_idx] = true;
+				has_target = true;
+			}
+		}
+		if (!consumer_execute.IsValid() || !has_target) {
+			continue;
+		}
+		// Traverse the scheduled dependencies only: these gate when the consumer's execute can start.
+		vector<bool> visited(schedule.stages.size(), false);
+		vector<idx_t> worklist {consumer_execute.GetIndex()};
+		visited[consumer_execute.GetIndex()] = true;
+		while (!worklist.empty()) {
+			auto stage_idx = worklist.back();
+			worklist.pop_back();
+			for (auto dependency : schedule.stages[stage_idx].dependencies) {
+				if (visited[dependency]) {
+					continue;
+				}
+				if (is_producer_completion[dependency]) {
+					return &record;
+				}
+				visited[dependency] = true;
+				worklist.push_back(dependency);
+			}
+		}
+	}
+	return nullptr;
+}
+
 void PipelineBuildState::AddCTEPipelineSelection(PhysicalCTE &cte, Pipeline &pipeline,
                                                  shared_ptr<Pipeline> cte_dependency, bool dependency_added) {
 	D_ASSERT(data->cte_selection_map.find(cte) == data->cte_selection_map.end());
@@ -1030,10 +1127,12 @@ void PipelineBuildState::AddCTEPipelineSelection(PhysicalCTE &cte, Pipeline &pip
 }
 
 void PipelineBuildState::ResolveExternalInputs(const vector<shared_ptr<MetaPipeline>> &meta_pipelines) {
-	if (data->external_input_candidates.empty()) {
+	if (data->external_input_candidates.empty() && data->buffered_consumers.empty()) {
 		return;
 	}
-	SelectExternalInputCandidates(*data);
+	if (!data->external_input_candidates.empty()) {
+		SelectExternalInputCandidates(*data);
+	}
 	auto activate_candidate = [&](PipelineExternalInputCandidate &candidate) {
 		D_ASSERT(candidate.UsesExternalInput());
 		auto &pipeline = candidate.pipeline.get();
@@ -1072,12 +1171,30 @@ void PipelineBuildState::ResolveExternalInputs(const vector<shared_ptr<MetaPipel
 		selection.fallback_dependency_active = false;
 	}
 
+	auto demote_buffered_consumer = [&](PipelineBufferedConsumerRecord &record) {
+		auto &pipeline = record.pipeline.get();
+		pipeline.RemoveDataflowDependency(record.cte_dependency);
+		SetPipelineSource(pipeline, record.materialized_source.get());
+		pipeline.AddDependency(record.cte_dependency);
+		record.cte.get().DemoteBufferedConsumer(record.consumer_idx);
+		record.demoted = true;
+		DUCKDB_LOG(pipeline.GetClientContext(), PhysicalOperatorLogType, record.cte.get(), "PhysicalCTE",
+		           "SelectConsumer",
+		           {{"consumer", to_string(record.consumer_idx)}, {"mode", "MATERIALIZED"}, {"reason", "GATED"}});
+	};
+
 	vector<RemovedOptionalPipelineDependency> removed_dependencies;
 	while (true) {
 		auto schedule = BuildPipelineSchedule(meta_pipelines);
 		auto cycle = schedule->GetCycle();
 		if (cycle.empty()) {
-			break;
+			auto gated = FindScheduleGatedBufferedConsumer(*data, *schedule);
+			if (!gated) {
+				break;
+			}
+			demote_buffered_consumer(*gated);
+			RestoreOptionalDependencies(removed_dependencies);
+			continue;
 		}
 		if (RemoveOptionalDependencyInCycle(*schedule, cycle, removed_dependencies)) {
 			continue;

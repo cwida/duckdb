@@ -23,7 +23,7 @@
       ]
     },
     {
-      "reason": "Asserts the in-memory operator log, which the serializer round-trip does not preserve.",
+      "reason": "Plan serialization discards cardinality estimates, so the probe consumer is kept materialized by cost and no cycle demotion occurs.",
       "paths": [
         "test/sql/cte/materialized/cte_buffered_consumer_cycle_demotion.test"
       ]

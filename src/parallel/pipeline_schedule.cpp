@@ -367,10 +367,12 @@ unique_ptr<PipelineSchedule> BuildPipelineSchedule(const vector<shared_ptr<MetaP
 
 	// A dataflow consumer's execute stage only completes once every dataflow producer has finalized, unless the
 	// consumer stops its source early: the producer's Finalize is what closes the exchange the consumer reads from.
-	// Mirror this runtime constraint onto every stage that waits on such an execute stage, so cycle analysis sees
-	// the complete graph and can demote a direct consumer to break the cycle. The mirrored edges are analysis-only:
-	// as event dependencies they could prevent a buffered consumer from starting while the producer waits on it to
-	// drain the exchange (backpressure), deadlocking schedules that are fine at runtime.
+	// Mirror this runtime constraint onto every stage that waits on such an execute stage, so cycle analysis can
+	// demote a direct consumer to break the cycle. The mirrored edges are analysis-only: as event dependencies they
+	// could prevent a buffered consumer from starting while the producer waits on it to drain the exchange
+	// (backpressure), deadlocking schedules that are fine at runtime. These edges model only the
+	// consumer-waits-for-producer channel; the reverse backpressure channel is handled by demoting buffered
+	// consumers whose execute is scheduled after their producer's completion (FindScheduleGatedBufferedConsumer).
 	unordered_map<idx_t, vector<idx_t>> dataflow_finish_stages;
 	for (auto &entry : stage_map) {
 		for (auto &dependency : entry.first.get().GetDataflowDependencies()) {
