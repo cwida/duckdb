@@ -235,15 +235,14 @@ unique_ptr<PipelineSchedule> BuildPipelineSchedule(const vector<shared_ptr<MetaP
 				AddDependency(*result, entry.second.execute, dep_entry->second.complete);
 			}
 		}
-		// A dataflow dependency only needs the producer's source and sink state to be initialized to start,
-		// but the consumer cannot finish before the producer has finalized.
+		// A dataflow dependency only needs the producer's source and sink state to be initialized to start.
+		// The completion-ordering constraint is added in a separate pass below.
 		for (auto &dependency : pipeline.GetDataflowDependencies()) {
 			auto dep = dependency.lock();
 			D_ASSERT(dep);
 			auto dep_entry = stage_map.find(*dep);
 			if (dep_entry != stage_map.end()) {
 				AddDependency(*result, entry.second.execute, dep_entry->second.initialize);
-				AddDependency(*result, entry.second.prepare_finish, dep_entry->second.finish);
 			}
 		}
 	}
@@ -350,6 +349,39 @@ unique_ptr<PipelineSchedule> BuildPipelineSchedule(const vector<shared_ptr<MetaP
 			}
 			AddExternalInputDependency(*result, entry.second.execute, producer_entry->second.execute, consumer);
 			AddExternalInputDependency(*result, entry.second.prepare_finish, producer_entry->second.execute, consumer);
+		}
+	}
+
+	// A dataflow consumer's execute stage only completes once every dataflow producer has finalized, because the
+	// producer's Finalize closes the exchange the consumer reads from. Mirror this runtime constraint onto every
+	// stage that waits on such an execute stage, so cycle analysis sees the complete graph.
+	unordered_map<idx_t, vector<idx_t>> dataflow_finish_stages;
+	for (auto &entry : stage_map) {
+		for (auto &dependency : entry.first.get().GetDataflowDependencies()) {
+			auto dep = dependency.lock();
+			D_ASSERT(dep);
+			auto dep_entry = stage_map.find(*dep);
+			if (dep_entry != stage_map.end()) {
+				dataflow_finish_stages[entry.second.execute].push_back(dep_entry->second.finish);
+			}
+		}
+	}
+	if (!dataflow_finish_stages.empty()) {
+		auto stage_count = result->stages.size();
+		for (idx_t stage_idx = 0; stage_idx < stage_count; stage_idx++) {
+			auto dependency_count = result->stages[stage_idx].dependencies.size();
+			for (idx_t dependency_idx = 0; dependency_idx < dependency_count; dependency_idx++) {
+				auto dependency = result->stages[stage_idx].dependencies[dependency_idx];
+				auto finish_entry = dataflow_finish_stages.find(dependency);
+				if (finish_entry == dataflow_finish_stages.end()) {
+					continue;
+				}
+				for (auto finish_stage : finish_entry->second) {
+					if (finish_stage != stage_idx) {
+						AddDependency(*result, stage_idx, finish_stage);
+					}
+				}
+			}
 		}
 	}
 

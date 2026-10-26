@@ -1,0 +1,32 @@
+# name: test/sql/cte/materialized/cte_nested_buffered_consumer_cycle.test
+# description: A buffered consumer inside another CTE's body must not deadlock against direct consumers
+# group: [materialized]
+
+# c1's body is a buffered consumer of c2 (the LIMIT blocks direct eligibility). The main query consumes
+# c1 on the build side and c2 on the probe side. The memory limit pushes c2's estimated materialization
+# over the fanout budget, so the probe becomes a direct consumer and the completion cycle runs through
+# the buffered consumer's execute stage. On regression this deadlocks idle, hence the timeout.
+set query_timeout 60
+
+statement ok
+SET memory_limit='200MB';
+
+query I
+WITH c2 AS MATERIALIZED (SELECT range AS a FROM range(15000000)), c1 AS MATERIALIZED (SELECT a FROM c2 LIMIT 5) SELECT count(*) FROM c2 JOIN c1 ON c2.a = c1.a;
+----
+5
+
+# Pin the topology: c2 must have a buffered consumer, and with the probe streamed past the fanout budget
+# its materialized consumer can only come from the schedule demoting it to break the cycle.
+query II
+EXPLAIN ANALYZE WITH c2 AS MATERIALIZED (SELECT range AS a FROM range(15000000)), c1 AS MATERIALIZED (SELECT a FROM c2 LIMIT 5) SELECT count(*) FROM c2 JOIN c1 ON c2.a = c1.a;
+----
+analyzed_plan	<REGEX>:.*Fanout Mode: BUFFERED.*Materialized Consumers: 1.*
+
+statement ok
+SET threads=1;
+
+query I
+WITH c2 AS MATERIALIZED (SELECT range AS a FROM range(15000000)), c1 AS MATERIALIZED (SELECT a FROM c2 LIMIT 5) SELECT count(*) FROM c2 JOIN c1 ON c2.a = c1.a;
+----
+5
