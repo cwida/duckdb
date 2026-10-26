@@ -1397,7 +1397,6 @@ TEST_CASE("The session selection replaces the database default", "[api][grammar_
 	RequireSeven(con);
 }
 
-
 //! Grammar adding a rule another grammar can reference
 class ProvidingGrammarExtension final : public GrammarExtension {
 public:
@@ -1449,7 +1448,8 @@ TEST_CASE("The session selection does not compose with the database default", "[
 	REQUIRE(result->Collection().GetValue(0, 0) == Value::INTEGER(1));
 	SetDefaultGrammarExtensions(db, {Value("seven_b")});
 	RequireSeven(con);
-	DefaultGrammarExtensionsSetting::SetGlobal(db.instance.get(), db.instance->config, Value(LogicalType::LIST(LogicalType::VARCHAR)));
+	DefaultGrammarExtensionsSetting::SetGlobal(db.instance.get(), db.instance->config,
+	                                           Value(LogicalType::LIST(LogicalType::VARCHAR)));
 	result = con.Query("SELECT 1");
 	REQUIRE_NO_FAIL(*result);
 	REQUIRE(result->Collection().GetValue(0, 0) == Value::INTEGER(1));
