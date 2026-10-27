@@ -61,6 +61,9 @@ vector<PipelineScheduleEdge> PipelineSchedule::GetCycle(PipelineScheduleGraph gr
 		}
 		return count;
 	};
+	// Combined indices address the scheduled dependencies first, then the analysis dependencies. External-input
+	// tags always store indices below the scheduled-dependency count, so a combined index of an analysis edge can
+	// never falsely match a tag in GetExternalInputConsumer.
 	auto get_dependency = [&](const PipelineScheduleStage &stage, idx_t dependency_idx) {
 		if (dependency_idx < stage.dependencies.size()) {
 			return stage.dependencies[dependency_idx];

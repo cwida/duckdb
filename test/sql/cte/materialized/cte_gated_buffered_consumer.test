@@ -66,6 +66,8 @@ FROM (
 ----
 500000500000
 
+# The optimizer setting intentionally stays on for the rest of the file: the chained-CTE shapes below
+# depend on the unoptimized plan.
 statement ok
 SET debug_disable_optimizer=true;
 

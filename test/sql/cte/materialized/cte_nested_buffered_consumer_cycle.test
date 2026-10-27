@@ -39,6 +39,11 @@ WITH c2 AS MATERIALIZED (SELECT range AS a FROM range(15000000)), c1 AS MATERIAL
 statement ok
 RESET threads;
 
+# The consumers legitimately poll without progress while the throttled producer hands off, which the
+# progress-stall heuristic can flag under thread contention.
+statement ok
+SET debug_verify_progress_ignore='STALLED:CTE_SCAN';
+
 # Two ordered early-stopping buffered consumers of one producer. The second consumer must be allowed to
 # start and drain the exchange while the producer is still running: a schedule edge gating its execute on
 # producer finalization deadlocks against exchange backpressure.

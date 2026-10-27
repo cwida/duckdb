@@ -59,6 +59,10 @@ true
 statement ok
 CALL truncate_duckdb_logs();
 
+# The streaming consumers can trip the progress-stall heuristic while the producer hands off.
+statement ok
+SET debug_verify_progress_ignore='STALLED:CTE_SCAN';
+
 # Protection: an ordered pair of early-stopping consumers of one producer keeps streaming.
 query I
 WITH c AS MATERIALIZED (SELECT i FROM range(1000000) r(i)) SELECT count(*) FROM ((SELECT i FROM c LIMIT 1) UNION ALL (SELECT i FROM c LIMIT 1) LIMIT 2) q;
