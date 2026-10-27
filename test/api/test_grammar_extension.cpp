@@ -1455,6 +1455,71 @@ TEST_CASE("The session selection does not compose with the database default", "[
 	REQUIRE(result->Collection().GetValue(0, 0) == Value::INTEGER(1));
 }
 
+TEST_CASE("Add and remove grammar extensions act on the effective selection", "[api][grammar_extension]") {
+	DuckDB db(nullptr);
+	GrammarExtension::Register(*db.instance, make_shared_ptr<ProvidingGrammarExtension>());
+	GrammarExtension::Register(*db.instance, make_shared_ptr<SevenGrammarExtension>("seven"));
+	SetDefaultGrammarExtensions(db, {Value("providing_grammar")});
+
+	// a no-op add on a default-driven session must not install a session selection
+	Connection noop_con(db);
+	REQUIRE_NO_FAIL(*noop_con.Query("CALL add_grammar_extension('providing_grammar')"));
+	REQUIRE(ListValue::GetChildren(ActiveGrammarExtensionsSetting::GetSetting(*noop_con.context)).empty());
+
+	// adding snapshots the default into the session selection, keeping its entries in order
+	Connection con(db);
+	REQUIRE_NO_FAIL(*con.Query("CALL add_grammar_extension('seven')"));
+	auto children = ListValue::GetChildren(ActiveGrammarExtensionsSetting::GetSetting(*con.context));
+	REQUIRE(children.size() == 2);
+	REQUIRE(children[0] == Value("providing_grammar"));
+	REQUIRE(children[1] == Value("seven"));
+	RequireSeven(con);
+
+	// the snapshot decouples that session from later default changes, the no-op add did not
+	SetDefaultGrammarExtensions(db, {});
+	RequireSeven(con);
+	// the inherited entry stays in the stored session selection after the default change
+	children = ListValue::GetChildren(ActiveGrammarExtensionsSetting::GetSetting(*con.context));
+	REQUIRE(children.size() == 2);
+	REQUIRE(children[0] == Value("providing_grammar"));
+	auto noop_active =
+	    noop_con.Query("SELECT active FROM duckdb_grammar_extensions() WHERE name = 'providing_grammar'");
+	REQUIRE_NO_FAIL(*noop_active);
+	REQUIRE(noop_active->Collection().GetValue(0, 0) == Value::BOOLEAN(false));
+	// restoring the default re-applies to the no-op session, so the no-op installed no opt-out
+	SetDefaultGrammarExtensions(db, {Value("providing_grammar")});
+	auto noop_follows =
+	    noop_con.Query("SELECT active FROM duckdb_grammar_extensions() WHERE name = 'providing_grammar'");
+	REQUIRE_NO_FAIL(*noop_follows);
+	REQUIRE(noop_follows->Collection().GetValue(0, 0) == Value::BOOLEAN(true));
+	SetDefaultGrammarExtensions(db, {});
+
+	// removing a default-provided grammar opts the session out without touching the default
+	SetDefaultGrammarExtensions(db, {Value("providing_grammar")});
+	Connection removing(db);
+	auto before = removing.Query("SELECT active FROM duckdb_grammar_extensions() WHERE name = 'providing_grammar'");
+	REQUIRE_NO_FAIL(*before);
+	REQUIRE(before->Collection().GetValue(0, 0) == Value::BOOLEAN(true));
+	REQUIRE_NO_FAIL(*removing.Query("CALL remove_grammar_extension('providing_grammar')"));
+	auto after = removing.Query("SELECT active FROM duckdb_grammar_extensions() WHERE name = 'providing_grammar'");
+	REQUIRE_NO_FAIL(*after);
+	REQUIRE(after->Collection().GetValue(0, 0) == Value::BOOLEAN(false));
+	Connection still_default(db);
+	auto fresh_active =
+	    still_default.Query("SELECT active FROM duckdb_grammar_extensions() WHERE name = 'providing_grammar'");
+	REQUIRE_NO_FAIL(*fresh_active);
+	REQUIRE(fresh_active->Collection().GetValue(0, 0) == Value::BOOLEAN(true));
+
+	// a no-op remove of an inactive name leaves the selection untouched: the session still
+	// follows the default rather than holding an installed empty opt-out
+	REQUIRE_NO_FAIL(*still_default.Query("CALL remove_grammar_extension('seven')"));
+	REQUIRE(ListValue::GetChildren(ActiveGrammarExtensionsSetting::GetSetting(*still_default.context)).empty());
+	auto still_follows =
+	    still_default.Query("SELECT active FROM duckdb_grammar_extensions() WHERE name = 'providing_grammar'");
+	REQUIRE_NO_FAIL(*still_follows);
+	REQUIRE(still_follows->Collection().GetValue(0, 0) == Value::BOOLEAN(true));
+}
+
 TEST_CASE("The database default rejects values it cannot validate", "[api][grammar_extension]") {
 	DuckDB db(nullptr);
 	Connection con(db);
