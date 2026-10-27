@@ -21,6 +21,20 @@ enums:
         value: 3
         description: The partitions the scan produces are disjoint ranges.
 
+  TABLE_VIRTUAL_COLUMN:
+    description: |
+      A column a table function can produce next to the columns it declares in bind. A query asks for it by name,
+      but it is not part of the function's result columns. Declared with `[[table_function_add_virtual_column]]`.
+      In the column lists of the scan (e.g. `[[table_function_exec_get_column_index]]`), a virtual column is
+      identified by 2^63 plus its value in this enum.
+    values:
+      TABLE_VIRTUAL_COLUMN_FILE_ROW_NUMBER:
+        value: 0
+        description: |
+          `file_row_number`, a BIGINT holding the position of the row within the file it was read from, counting
+          from 0. A function that reads a single file produces it when it is wrapped in a multi-file function (see
+          `[[multi_file_function_create]]`), which is where the name of the file comes from.
+
 #-----------------------------------------------------------------------------------------------------------------------
 # Handles
 #-----------------------------------------------------------------------------------------------------------------------
@@ -95,6 +109,12 @@ handles:
       A borrowed opaque handle to the arguments supplied to a table function when a scanning thread claims its
       next batch of work. The "claim batch" callback receives this handle and can use it to claim the next part of
       the scan from the shared global state for the thread's local state, and to report whether it claimed one.
+
+  table_function_metrics_info:
+    description: |
+      A borrowed opaque handle to the arguments supplied to a table function when the engine collects the metrics
+      of a scan. The "metrics" callback receives this handle and can use it to report what the scan did, e.g. how
+      many row groups it read.
 
   table_function_get_bind_info_info:
     description: |
@@ -182,6 +202,20 @@ callbacks:
     parameters:
       info:
         type: table_function_progress_info
+        description: Borrowed opaque handle providing access to the information available to the callback.
+      context:
+        type: context
+        description: Borrowed handle to the context of the query currently executing the callback.
+      err:
+        type: error_info
+        indirection: 1
+        description: Borrowed error info handle to use to report errors that occur during the callback.
+    return_type: void
+
+  table_function_metrics_callback:
+    parameters:
+      info:
+        type: table_function_metrics_info
         description: Borrowed opaque handle providing access to the information available to the callback.
       context:
         type: context
@@ -555,6 +589,78 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
     return_type: ERROR
 
+  table_function_add_virtual_column:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-27" ]
+    description: |
+      Declares that the table function can produce the given virtual column.
+
+      A virtual column is not one of the columns declared in bind: the query asks for it by name, and the function
+      only produces it when it is asked for. It then takes up a vector of the exec callback's output chunk, like any
+      other column the scan produces. This requires projection pushdown (see
+      `[[table_function_set_projection_pushdown]]`), which is what lets the engine ask for it. The global init, local
+      init and exec callbacks recognize the vector by its column index, which is 2^63 plus the value of the
+      `[[TABLE_VIRTUAL_COLUMN]]` (see e.g. `[[table_function_exec_get_column_index]]`).
+    parameters:
+      function:
+        type: table_function
+        description: The function to configure.
+      column:
+        type: TABLE_VIRTUAL_COLUMN
+        description: The virtual column the function can produce.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  table_function_set_filter_hints:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-27" ]
+    description: |
+      Sets whether the table function reads the filters of the query. Defaults to false.
+
+      The filters are the predicates the query applies to the function's rows, as far as they apply to a single
+      column of it. The global init callback can look at them (see `[[table_function_init_global_get_filter_count]]`)
+      to skip what the query can never use, e.g. the parts of a file whose statistics rule them out. They are hints
+      only: the engine applies the filters to the rows the function produces itself, so the function does not have to
+      understand them, and may produce rows that do not pass them. This requires projection pushdown (see
+      `[[table_function_set_projection_pushdown]]`) and keeps the columns the filters are applied to in the scan.
+    parameters:
+      function:
+        type: table_function
+        description: The function to configure.
+      enable:
+        type: bool
+        description: Whether the function reads the filters of the query.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  table_function_set_metrics_callback:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-27" ]
+    description: |
+      Sets the optional metrics callback of the table function.
+
+      The metrics callback is invoked when the engine collects the metrics of the scan, e.g. when profiling is
+      enabled, and can report what the scan did through its `[[table_function_metrics_info]]`. It may be invoked
+      while the scan is still running.
+    parameters:
+      function:
+        type: table_function
+        description: The function to set the metrics callback of.
+      callback:
+        type: table_function_metrics_callback
+        description: The metrics callback to set.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
   table_function_set_filter_pushdown_callback:
     lifecycle:
       - [ "unstable", "v2.0.0", "2026-09-03" ]
@@ -880,6 +986,87 @@ functions:
         indirection: 1
         kind: OUT
         description: Receives the index of the declared column.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  table_function_init_global_get_filter_count:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-27" ]
+    description: |
+      Returns the number of filters the query applies to the rows of the scan.
+
+      Only a function that reads the filters (see `[[table_function_set_filter_hints]]`) is told about them; for any
+      other function the count is zero. Valid indices for `[[table_function_init_global_get_filter_column]]` and
+      `[[table_function_init_global_get_filter]]` are `0` up to (but excluding) this count.
+    parameters:
+      info:
+        type: table_function_init_global_info
+        description: The global init info handle.
+      count:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Receives the number of filters.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  table_function_init_global_get_filter_column:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-27" ]
+    description: |
+      Returns the column of the scan that the filter at the given index applies to.
+
+      The result is an index into the scan's columns, which is also the index of the vector of the exec callback's
+      output chunk that holds the column; `[[table_function_init_global_get_column_index]]` tells which declared
+      column that is. Fails if the index is out of bounds.
+    parameters:
+      info:
+        type: table_function_init_global_info
+        description: The global init info handle.
+      index:
+        type: idx
+        description: The index of the filter.
+      column:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Receives the index of the column among the scan's columns.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  table_function_init_global_get_filter:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-27" ]
+    description: |
+      Retrieves the filter at the given index.
+
+      The filter is a bound expression evaluating to `BOOLEAN` on the column returned by
+      `[[table_function_init_global_get_filter_column]]`: every column reference in it, which
+      `[[expression_column_ref_get_index]]` reports as index 0, stands for that column. Inspect it with
+      `[[expression_get_type]]` and the other `expression` functions. A filter the engine applies speculatively, which
+      it may stop applying at any time, is handed out as the predicate it applies. Fails if the index is out of
+      bounds. Borrowed; valid only for the duration of the callback.
+    parameters:
+      info:
+        type: table_function_init_global_info
+        description: The global init info handle.
+      index:
+        type: idx
+        description: The index of the filter to retrieve.
+      filter:
+        type: expression
+        indirection: 1
+        kind: OUT_BORROW
+        description: Receives the borrowed filter.
       err:
         type: error_info
         indirection: 1
@@ -1893,6 +2080,97 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
     return_type: ERROR
 
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # Metrics Callback Functions
+  #---------------------------------------------------------------------------------------------------------------------
+  table_function_metrics_get_user_data:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-27" ]
+    description: Retrieves the user data set via `[[table_function_set_user_data]]`.
+    parameters:
+      info:
+        type: table_function_metrics_info
+        description: The metrics info handle.
+      data:
+        type: void
+        indirection: 2
+        kind: OUT
+        description: Receives the user data pointer, or null if none was set.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  table_function_metrics_get_bind_data:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-27" ]
+    description: Retrieves the bind data set by the function's bind callback.
+    parameters:
+      info:
+        type: table_function_metrics_info
+        description: The metrics info handle.
+      data:
+        type: void
+        indirection: 2
+        kind: OUT
+        description: Receives the bind data pointer, or null if none was set.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  table_function_metrics_get_global_state:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-27" ]
+    description: |
+      Retrieves the global state set by the function's global init callback.
+
+      The metrics callback can run while the scan is still running, so it must read the global state in a
+      thread-safe way. The global state is null if the scan has not been initialized.
+    parameters:
+      info:
+        type: table_function_metrics_info
+        description: The metrics info handle.
+      data:
+        type: void
+        indirection: 2
+        kind: OUT
+        description: Receives the global state pointer, or null if none was set.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  table_function_metrics_set_row_groups:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-27" ]
+    description: |
+      Reports how many row groups the scan has read, out of how many it has found to read.
+
+      A row group is the unit a format lets the scan skip, e.g. a Parquet row group or an ORC stripe. The engine
+      shows the numbers in the metrics of the scan, which tells how much of the data the filters of the query spared.
+      The engine may collect the metrics of a scan more than once, and adds up what it is told: `scanned` is the
+      number of row groups read since the metrics were last collected, `total` is the number of row groups found so
+      far in all.
+    parameters:
+      info:
+        type: table_function_metrics_info
+        description: The metrics info handle.
+      scanned:
+        type: idx
+        description: The number of row groups that were read since the metrics were last collected.
+      total:
+        type: idx
+        description: The number of row groups that were read or skipped, in all.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
 
   #---------------------------------------------------------------------------------------------------------------------
   # Register

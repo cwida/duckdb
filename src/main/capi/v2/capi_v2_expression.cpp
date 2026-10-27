@@ -71,6 +71,9 @@ static auto CV2ExpressionGetType(const Expression &expression) -> DUCKDB_V2_EXPR
 	case ExpressionType::OPERATOR_COALESCE:
 	case ExpressionType::BOUND_COLUMN_REF:
 		return static_cast<DUCKDB_V2_EXPRESSION_TYPE>(expression.GetExpressionType());
+	case ExpressionType::BOUND_REF:
+		// The column of a table filter, which is written against the column it filters
+		return DUCKDB_V2_EXPRESSION_TYPE_BOUND_COLUMN_REF;
 	default:
 		return DUCKDB_V2_EXPRESSION_TYPE_INVALID;
 	}
@@ -215,6 +218,10 @@ DUCKDB_V2_ERROR duckdb_v2_expression_column_ref_get_index(duckdb_v2_expression_h
 	DUCKDB_CHECK_ARG(index);
 	return WithErrorHandler(err, [&]() {
 		const auto &node = *Convert(expression);
+		if (node.GetExpressionType() == duckdb::ExpressionType::BOUND_REF) {
+			*index = node.Cast<duckdb::BoundReferenceExpression>().Index();
+			return;
+		}
 		CV2ExpressionRequireType(node, duckdb::ExpressionType::BOUND_COLUMN_REF,
 		                         "duckdb_v2_expression_column_ref_get_index");
 		*index = node.Cast<duckdb::BoundColumnRefExpression>().Binding().column_index.GetIndex();

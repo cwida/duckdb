@@ -4538,6 +4538,7 @@ public:
 	class ClaimBatchInput;
 	class GetBindInfoInput;
 	class StatsInput;
+	class MetricsInput;
 
 	/// Whether, and how, the scan is partitioned by a set of columns. Reported from the partitioning callback.
 	enum class PartitionInfo : uint8_t {
@@ -4584,6 +4585,29 @@ public:
 	/// Called while the query is optimized, once per declared column the query reads, to narrow that column's
 	/// statistics. Optional; without it the engine knows nothing about the columns. Unstable API.
 	using StatsCallback = void (*)(StatsInput &input);
+	/// Called when the engine collects the metrics of the scan, possibly while the scan is still running, to report
+	/// what the scan did. Optional; unstable API.
+	using MetricsCallback = void (*)(MetricsInput &input);
+
+	/// A column a function can produce next to the columns it declares in bind: a query asks for it by name.
+	enum class VirtualColumn : uint8_t {
+		/// `file_row_number`, a BIGINT holding the position of the row within the file it was read from, counting
+		/// from 0. Produced by a function that reads a single file when it is wrapped in a `MultiFileFunction`.
+		FILE_ROW_NUMBER = 0,
+	};
+
+	/// The first column index that stands for a virtual column rather than a declared one. The index the inputs'
+	/// `GetColumnIndex` and `GetFilterColumn` report for a virtual column is this plus its value in `VirtualColumn`.
+	static constexpr idx_t VIRTUAL_COLUMN_START = static_cast<idx_t>(1) << 63;
+
+	/// Whether a column index reported by `GetColumnIndex` stands for a virtual column.
+	static auto IsVirtualColumn(idx_t column_index) -> bool {
+		return column_index >= VIRTUAL_COLUMN_START;
+	}
+
+	/// The virtual column a column index reported by `GetColumnIndex` stands for.
+	/// @throws InvalidInputException When the index stands for a declared column.
+	static auto GetVirtualColumn(idx_t column_index) -> VirtualColumn;
 
 	TableFunction(TableFunction &&) noexcept = default;
 	TableFunction &operator=(TableFunction &&) noexcept = default;
@@ -4653,6 +4677,23 @@ public:
 	/// output chunk always holds every declared column, and the engine drops the unused ones itself.
 	auto SetProjectionPushdown(bool enable) & -> TableFunction &;
 
+	/// Declares that the function can produce a virtual column, which a query asks for by name. It then takes up a
+	/// vector of the exec callback's output chunk, whose column index (see `GetColumnIndex`) is
+	/// `VIRTUAL_COLUMN_START` plus the value of the column. Requires projection pushdown. Unstable API.
+	auto AddVirtualColumn(VirtualColumn column) & -> TableFunction &;
+
+	/// Declares whether the function reads the filters of the query: the predicates the query applies to the
+	/// function's rows, as far as they apply to a single column of it. The global init callback can look at them
+	/// (`InitGlobalInput::GetFilterCount`) to skip what the query can never use, e.g. the parts of a file whose
+	/// statistics rule them out. They are hints only: the engine applies the filters to the rows the function
+	/// produces itself, so the function does not have to understand them, and may produce rows that do not pass
+	/// them. Defaults to false. Requires projection pushdown, and keeps the columns the filters apply to in the scan.
+	/// Unstable API.
+	auto SetFilterHints(bool enable) & -> TableFunction &;
+
+	/// Lets the function report what the scan did: see `MetricsCallback`. Unstable API.
+	auto SetMetricsCallback(MetricsCallback callback) & -> TableFunction &;
+
 private:
 	explicit TableFunction(void *impl);
 	//! Moves what the callbacks need into the C handle, right before it is registered.
@@ -4671,6 +4712,7 @@ private:
 	ClaimBatchCallback claim_batch_callback = nullptr;
 	GetBindInfoCallback get_bind_info_callback = nullptr;
 	StatsCallback stats_callback = nullptr;
+	MetricsCallback metrics_callback = nullptr;
 	detail::UserData user_data;
 
 public:
@@ -4754,6 +4796,21 @@ public:
 		/// identity without projection pushdown.
 		/// @throws InvalidInputException When the index is out of bounds.
 		auto GetColumnIndex(idx_t index) const -> idx_t;
+
+		/// How many filters the query applies to the rows of the scan, if the function reads them (see
+		/// `SetFilterHints`); zero otherwise.
+		auto GetFilterCount() const -> idx_t;
+		/// The column of the scan that a filter applies to: an index into the scan's columns, which is also the
+		/// index of the vector of the exec callback's output chunk that holds the column. `GetColumnIndex` tells
+		/// which declared column that is.
+		/// @throws InvalidInputException When the index is out of bounds.
+		auto GetFilterColumn(idx_t index) const -> idx_t;
+		/// A filter: a predicate evaluating to `BOOLEAN` on the column returned by `GetFilterColumn`. Every column
+		/// reference in it (`Expression::GetColumnIndex`, which is 0) stands for that column. A filter the engine
+		/// applies speculatively, which it may stop applying at any time, is handed out as the predicate it applies.
+		/// @return A borrowed expression, valid only for the callback duration.
+		/// @throws InvalidInputException When the index is out of bounds.
+		auto GetFilter(idx_t index) const -> Expression;
 
 		/// The scan's context. Borrowed, valid only for the callback duration.
 		auto GetContext() -> Context &;
@@ -4911,6 +4968,14 @@ public:
 			return *static_cast<T *>(GetGlobalStateInternal());
 		}
 
+		/// The global state set via `InitGlobalInput::SetGlobalState`, or nullptr when the scan has not been
+		/// initialized yet -- which is the case when a `MultiFileFunction` asks about a file it has not started on. The
+		/// state must be read in a thread-safe way.
+		template <class T>
+		auto TryGetGlobalState() const -> T * {
+			return static_cast<T *>(TryGetGlobalStateInternal());
+		}
+
 		/// The user data set via `TableFunction::SetUserData`.
 		/// @throws InvalidInputException When none was set.
 		template <class T>
@@ -4935,6 +5000,7 @@ public:
 
 		void *GetBindDataInternal() const;
 		void *GetGlobalStateInternal() const;
+		void *TryGetGlobalStateInternal() const;
 		void *GetUserDataInternal() const;
 	};
 
@@ -5273,6 +5339,56 @@ public:
 		Context context;
 
 		void *GetBindDataInternal() const;
+		void *GetUserDataInternal() const;
+	};
+
+	/// What the metrics callback works with. Borrowed, valid only for the callback duration. Unstable API.
+	///
+	/// The callback runs when the engine collects the metrics of the scan, which can be while the scan is still
+	/// running, and possibly more than once: it adds up what it is told.
+	class MetricsInput {
+		friend detail::HandleFactory;
+
+	public:
+		/// The bind data set via `BindInput::SetBindData`.
+		/// @throws InvalidInputException When none was set.
+		template <class T>
+		auto GetBindData() const -> const T & {
+			return *static_cast<const T *>(GetBindDataInternal());
+		}
+
+		/// The user data set via `TableFunction::SetUserData`.
+		/// @throws InvalidInputException When none was set.
+		template <class T>
+		auto GetUserData() const -> T & {
+			return *static_cast<T *>(GetUserDataInternal());
+		}
+
+		/// The global state set via `InitGlobalInput::SetGlobalState`, or nullptr when the scan has not been
+		/// initialized or set none. The scan can be running, so the state must be read in a thread-safe way.
+		template <class T>
+		auto GetGlobalState() const -> T * {
+			return static_cast<T *>(GetGlobalStateInternal());
+		}
+
+		/// Reports how many row groups the scan has read, out of how many it has found to read. A row group is the
+		/// unit a format lets the scan skip, e.g. a Parquet row group or an ORC stripe.
+		/// @param scanned The number of row groups that were read since the metrics were last collected.
+		/// @param total The number of row groups that were read or skipped, in all.
+		auto SetRowGroups(idx_t scanned, idx_t total) -> void;
+
+		/// The query's context. Borrowed, valid only for the callback duration.
+		auto GetContext() -> Context &;
+
+	private:
+		MetricsInput(void *args, void *context) : args(args), context(detail::HandleFactory::Make<Context>(context)) {
+		}
+
+		void *args;
+		Context context;
+
+		void *GetBindDataInternal() const;
+		void *GetGlobalStateInternal() const;
 		void *GetUserDataInternal() const;
 	};
 };

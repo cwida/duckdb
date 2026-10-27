@@ -4258,6 +4258,7 @@ struct TableFunctionInfo {
 	TableFunction::ClaimBatchCallback claim_batch_callback = nullptr;
 	TableFunction::GetBindInfoCallback get_bind_info_callback = nullptr;
 	TableFunction::StatsCallback stats_callback = nullptr;
+	TableFunction::MetricsCallback metrics_callback = nullptr;
 	detail::UserData user_data;
 
 	TableFunctionInfo(TableFunction::BindCallback bind_callback, TableFunction::InitGlobalCallback init_global_callback,
@@ -4268,13 +4269,14 @@ struct TableFunctionInfo {
 	                  TableFunction::PartitioningCallback partitioning_callback,
 	                  TableFunction::ClaimBatchCallback claim_batch_callback,
 	                  TableFunction::GetBindInfoCallback get_bind_info_callback,
-	                  TableFunction::StatsCallback stats_callback, detail::UserData user_data)
+	                  TableFunction::StatsCallback stats_callback, TableFunction::MetricsCallback metrics_callback,
+	                  detail::UserData user_data)
 	    : bind_callback(bind_callback), init_global_callback(init_global_callback),
 	      init_local_callback(init_local_callback), exec_callback(exec_callback), progress_callback(progress_callback),
 	      filter_pushdown_callback(filter_pushdown_callback), partition_data_callback(partition_data_callback),
 	      partitioning_callback(partitioning_callback), claim_batch_callback(claim_batch_callback),
 	      get_bind_info_callback(get_bind_info_callback), stats_callback(stats_callback),
-	      user_data(std::move(user_data)) {
+	      metrics_callback(metrics_callback), user_data(std::move(user_data)) {
 	}
 
 	bool operator==(const TableFunctionInfo &other) const {
@@ -4286,7 +4288,7 @@ struct TableFunctionInfo {
 		       partitioning_callback == other.partitioning_callback &&
 		       claim_batch_callback == other.claim_batch_callback &&
 		       get_bind_info_callback == other.get_bind_info_callback && stats_callback == other.stats_callback &&
-		       user_data.get() == other.user_data.get();
+		       metrics_callback == other.metrics_callback && user_data.get() == other.user_data.get();
 	}
 };
 
@@ -4646,13 +4648,67 @@ auto TableFunction::SetProjectionPushdown(bool enable) & -> TableFunction & {
 	return *this;
 }
 
+static_assert(static_cast<uint8_t>(TableFunction::VirtualColumn::FILE_ROW_NUMBER) ==
+                  DUCKDB_V2_TABLE_VIRTUAL_COLUMN_FILE_ROW_NUMBER,
+              "TableFunction::VirtualColumn::FILE_ROW_NUMBER mismatch");
+
+auto TableFunction::GetVirtualColumn(idx_t column_index) -> VirtualColumn {
+	if (!IsVirtualColumn(column_index)) {
+		throw InvalidInputException("The column index " + std::to_string(column_index) +
+		                            " stands for a declared column, not a virtual one");
+	}
+	switch (column_index - VIRTUAL_COLUMN_START) {
+	case DUCKDB_V2_TABLE_VIRTUAL_COLUMN_FILE_ROW_NUMBER:
+		return VirtualColumn::FILE_ROW_NUMBER;
+	default:
+		throw InvalidInputException("The column index " + std::to_string(column_index) +
+		                            " stands for an unknown virtual column");
+	}
+}
+
+auto TableFunction::AddVirtualColumn(VirtualColumn column) & -> TableFunction & {
+	CheckedAPICall(duckdb_v2_table_function_add_virtual_column, handle(),
+	               static_cast<DUCKDB_V2_TABLE_VIRTUAL_COLUMN>(column));
+	return *this;
+}
+
+auto TableFunction::SetFilterHints(bool enable) & -> TableFunction & {
+	CheckedAPICall(duckdb_v2_table_function_set_filter_hints, handle(), enable);
+	return *this;
+}
+
+auto TableFunction::SetMetricsCallback(MetricsCallback callback) & -> TableFunction & {
+	if (!callback) {
+		CheckedAPICall(duckdb_v2_table_function_set_metrics_callback, handle(), nullptr);
+		metrics_callback = nullptr;
+		return *this;
+	}
+
+	static auto trampoline = [](duckdb_v2_table_function_metrics_info_handle info, duckdb_v2_context_handle context,
+	                            duckdb_v2_error_info_handle *err) {
+		WithExceptionGuard(err, [&]() {
+			void *user_data = nullptr;
+			CheckedAPICall(duckdb_v2_table_function_metrics_get_user_data, info, &user_data);
+			const auto &function = *static_cast<TableFunctionInfo *>(user_data);
+
+			auto input =
+			    detail::HandleFactory::Make<MetricsInput>(static_cast<void *>(info), static_cast<void *>(context));
+			function.metrics_callback(input);
+		});
+	};
+
+	CheckedAPICall(duckdb_v2_table_function_set_metrics_callback, handle(), trampoline);
+	metrics_callback = callback;
+	return *this;
+}
+
 auto TableFunction::PrepareRegistration() -> void {
 	// The callback table rides the C user_data slot so the trampolines can find
 	// it; the user's own data (SetUserData, moved out here) rides inside it.
 	auto info = std::unique_ptr<TableFunctionInfo>(new TableFunctionInfo(
 	    bind_callback, init_global_callback, init_local_callback, exec_callback, progress_callback,
 	    filter_pushdown_callback, partition_data_callback, partitioning_callback, claim_batch_callback,
-	    get_bind_info_callback, stats_callback, std::move(user_data)));
+	    get_bind_info_callback, stats_callback, metrics_callback, std::move(user_data)));
 	duckdb_v2_opaque opaque {info.get(), detail::TypedDelete<TableFunctionInfo>,
 	                         detail::TypedEquals<TableFunctionInfo>};
 	CheckedAPICall(duckdb_v2_table_function_set_user_data, handle(), &opaque);
@@ -4732,6 +4788,27 @@ auto TableFunction::InitGlobalInput::GetColumnIndex(idx_t index) const -> idx_t 
 	CheckedAPICall(duckdb_v2_table_function_init_global_get_column_index,
 	               static_cast<duckdb_v2_table_function_init_global_info_handle>(args), index, &column_index);
 	return column_index;
+}
+
+auto TableFunction::InitGlobalInput::GetFilterCount() const -> idx_t {
+	idx_t count = 0;
+	CheckedAPICall(duckdb_v2_table_function_init_global_get_filter_count,
+	               static_cast<duckdb_v2_table_function_init_global_info_handle>(args), &count);
+	return count;
+}
+
+auto TableFunction::InitGlobalInput::GetFilterColumn(idx_t index) const -> idx_t {
+	idx_t column = 0;
+	CheckedAPICall(duckdb_v2_table_function_init_global_get_filter_column,
+	               static_cast<duckdb_v2_table_function_init_global_info_handle>(args), index, &column);
+	return column;
+}
+
+auto TableFunction::InitGlobalInput::GetFilter(idx_t index) const -> Expression {
+	duckdb_v2_expression_handle filter = nullptr;
+	CheckedAPICall(duckdb_v2_table_function_init_global_get_filter,
+	               static_cast<duckdb_v2_table_function_init_global_info_handle>(args), index, &filter);
+	return detail::HandleFactory::Make<Expression>(static_cast<void *>(filter));
 }
 
 void TableFunction::InitLocalInput::SetLocalStateInternal(void *data, void (*destructor)(void *)) {
@@ -4849,6 +4926,13 @@ void *TableFunction::ProgressInput::GetGlobalStateInternal() const {
 	return RequireGlobalState(global_state);
 }
 
+void *TableFunction::ProgressInput::TryGetGlobalStateInternal() const {
+	void *global_state = nullptr;
+	CheckedAPICall(duckdb_v2_table_function_progress_get_global_state,
+	               static_cast<duckdb_v2_table_function_progress_info_handle>(args), &global_state);
+	return global_state;
+}
+
 void *TableFunction::ProgressInput::GetUserDataInternal() const {
 	void *user_data = nullptr;
 	CheckedAPICall(duckdb_v2_table_function_progress_get_user_data,
@@ -4863,6 +4947,37 @@ auto TableFunction::ProgressInput::SetProgress(double progress) -> void {
 }
 
 auto TableFunction::ProgressInput::GetContext() -> Context & {
+	return context;
+}
+
+void *TableFunction::MetricsInput::GetBindDataInternal() const {
+	void *bind_data = nullptr;
+	CheckedAPICall(duckdb_v2_table_function_metrics_get_bind_data,
+	               static_cast<duckdb_v2_table_function_metrics_info_handle>(args), &bind_data);
+	return RequireTableBindData(bind_data);
+}
+
+void *TableFunction::MetricsInput::GetGlobalStateInternal() const {
+	void *global_state = nullptr;
+	CheckedAPICall(duckdb_v2_table_function_metrics_get_global_state,
+	               static_cast<duckdb_v2_table_function_metrics_info_handle>(args), &global_state);
+	return global_state;
+}
+
+void *TableFunction::MetricsInput::GetUserDataInternal() const {
+	void *user_data = nullptr;
+	CheckedAPICall(duckdb_v2_table_function_metrics_get_user_data,
+	               static_cast<duckdb_v2_table_function_metrics_info_handle>(args), &user_data);
+	const auto &function = *static_cast<const TableFunctionInfo *>(user_data);
+	return RequireTableUserData(function.user_data);
+}
+
+auto TableFunction::MetricsInput::SetRowGroups(idx_t scanned, idx_t total) -> void {
+	CheckedAPICall(duckdb_v2_table_function_metrics_set_row_groups,
+	               static_cast<duckdb_v2_table_function_metrics_info_handle>(args), scanned, total);
+}
+
+auto TableFunction::MetricsInput::GetContext() -> Context & {
 	return context;
 }
 
