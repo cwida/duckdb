@@ -118,14 +118,9 @@ shared_ptr<CompiledGrammar> ParserCache::GetMatcher() {
 
 shared_ptr<CompiledGrammar> ParserCache::GetMatcher(const ClientContext &context,
                                                     const vector<string> &active_extensions) {
-	return GetMatcher(DatabaseInstance::GetDatabase(context), active_extensions);
-}
-
-shared_ptr<CompiledGrammar> ParserCache::GetMatcher(const DatabaseInstance &db,
-                                                    const vector<string> &active_extensions) {
 	vector<reference<GrammarExtension>> selected_extensions;
 	vector<string> extension_names;
-	auto &callback_manager = DBConfig::GetConfig(db).GetCallbackManager();
+	auto &callback_manager = ExtensionCallbackManager::Get(context);
 	for (auto &name : active_extensions) {
 		auto grammar_extension = callback_manager.FindGrammarExtension(name);
 		if (grammar_extension) {

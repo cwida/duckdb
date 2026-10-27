@@ -72,7 +72,6 @@ public:
 	shared_ptr<CompiledGrammar> GetMatcher();
 	//! The grammar compiled for the given grammar extensions, in order - shared by all connections that use them
 	shared_ptr<CompiledGrammar> GetMatcher(const ClientContext &context, const vector<string> &active_extensions);
-	shared_ptr<CompiledGrammar> GetMatcher(const DatabaseInstance &db, const vector<string> &active_extensions);
 	//! The grammar that forwards statements instead of interpreting them, used while CONNECT-ed
 	shared_ptr<CompiledGrammar> GetPassthroughMatcher(const ClientContext &context);
 
