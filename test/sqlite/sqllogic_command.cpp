@@ -29,6 +29,18 @@ static void query_break(int line) {
 	(void)line;
 }
 
+//! Thrown when the query watchdog interrupted a query in a parallel worker, carrying the failing statement's
+//! location so the worker's failure bookkeeping can report it structurally.
+class QueryTimeoutException : public std::runtime_error {
+public:
+	QueryTimeoutException(string message, string file_p, int line_p)
+	    : std::runtime_error(std::move(message)), file(std::move(file_p)), line(line_p) {
+	}
+
+	string file;
+	int line;
+};
+
 //! Interrupts the connection if the query does not finish within the configured timeout. This also bounds
 //! queries that deadlock idle: the executor's wait loop checks the interrupt flag, but not the query deadline,
 //! so SET max_execution_time cannot abort a fully parked schedule.
@@ -347,12 +359,10 @@ unique_ptr<QueryResult> Command::ExecuteQuery(ExecuteContext &context, reference
 		// would otherwise silently accept a hang bounded by the watchdog.
 		auto message = StringUtil::Format("query_timeout of %.3f seconds exceeded", query_timeout);
 		if (context.is_parallel) {
-			// The parallel worker's exception handler reports std::exception messages, while a Catch
-			// assertion would be swallowed into "Unknown error message". Embed the location.
+			// A Catch assertion would be swallowed into "Unknown error message" by the worker's catch-all.
+			// The dedicated exception carries the failing statement's location for the failure bookkeeping.
 			runner.finished_processing_file = true;
-			context.error_file = file_name;
-			context.error_line = NumericCast<int>(query_line);
-			throw std::runtime_error(StringUtil::Format("%s:%llu: %s", file_name, query_line, message));
+			throw QueryTimeoutException(message, file_name, NumericCast<int>(query_line));
 		}
 		runner.test_failure_locator = StringUtil::Format("%s:%llu", file_name, query_line);
 		TEST_FAIL_LINE(file_name, query_line, message);
@@ -560,6 +570,11 @@ static void ParallelExecuteLoop(ParallelExecuteContext *execute_context) {
 			execute_context->error_file = context.error_file;
 			execute_context->error_line = context.error_line;
 		}
+	} catch (QueryTimeoutException &ex) {
+		execute_context->error_file = ex.file;
+		execute_context->error_line = ex.line;
+		execute_context->error_message = StringUtil::Format("Failure at %s:%d: %s", ex.file, ex.line, ex.what());
+		execute_context->success = false;
 	} catch (std::exception &ex) {
 		execute_context->error_message = StringUtil::Format("Failure at %s:%d: %s", execute_context->error_file,
 		                                                    execute_context->error_line, ex.what());
