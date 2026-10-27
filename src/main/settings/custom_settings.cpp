@@ -559,9 +559,10 @@ void DefaultGrammarExtensionsSetting::SetGlobal(DatabaseInstance *db, DBConfig &
 		return;
 	}
 	// compose eagerly, like the session setting: a selection that fails to compile errors here and
-	// leaves the default unchanged, so sessions never meet a default they cannot parse with. This
-	// runs under the config lock, so it must not enter the parser cache: its lock is held through
-	// the extension callbacks, which may themselves read locked configuration from the parse path
+	// leaves the default unchanged, so sessions never meet a default they cannot parse with. The
+	// result is deliberately discarded, a session compiles the selection on a parser-cache miss:
+	// this runs under the config lock, and the parser cache's lock is held through the extension
+	// callbacks, which may themselves read locked configuration from the parse path
 	vector<reference<GrammarExtension>> selected;
 	for (auto &name : names) {
 		selected.emplace_back(*config.GetCallbackManager().FindGrammarExtension(name));
