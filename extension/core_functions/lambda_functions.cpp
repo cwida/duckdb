@@ -369,6 +369,12 @@ static void ExecuteLambda(DataChunk &args, ExpressionState &state, Vector &resul
 	FlatVector::SetSize(result, count_t(info.row_count));
 }
 
+void LambdaFunctions::ListLambdaResolveTypes(ResolveScalarFunctionTypesInput &input) {
+	if (input.GetArgumentType(0).id() == LogicalTypeId::UNKNOWN) {
+		throw ParameterNotResolvedException();
+	}
+}
+
 unique_ptr<FunctionData> LambdaFunctions::ListLambdaPrepareBind(vector<unique_ptr<Expression>> &arguments,
                                                                 ClientContext &context,
                                                                 BoundScalarFunction &bound_function) {
