@@ -525,13 +525,8 @@ static void AppendToCache(CachingOperatorState &state, DataChunk &source, Client
 				}
 				continue;
 			}
-			// A global dictionary wraps the same entry for the producer's lifetime, so a change is a producer bug
-			// that would desync the downstream sink layout -> fail loudly. A non-global dict rotating is normal.
-			if (slot.entry->global_dictionary) {
-				throw InternalException("dict-surviving cache: global dictionary column %llu changed identity "
-				                        "after being seeded for dictionary caching",
-				                        static_cast<uint64_t>(col_idx));
-			}
+			// an operator above the producer may forward its global dictionary for some chunks only (a CASE branch, a
+			// spilled probe, a cross product): demote the column to flat
 			FlattenDictColumn(state, cache, col_idx, base);
 		}
 		// reached by originally-flat and just-demoted columns
