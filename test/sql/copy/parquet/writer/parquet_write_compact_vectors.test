@@ -104,10 +104,11 @@ endloop
 # dictionary overflows, and the non-dictionary encodings receive constant vectors
 statement ok
 CREATE VIEW branches AS
-SELECT 1::BIGINT AS v, 1.0::DOUBLE AS d, NULL::BIGINT AS nv, 'first' AS s FROM range(4096)
-UNION ALL SELECT 2, 2.0, 20, 'second' FROM range(4096)
-UNION ALL SELECT 3, 3.0, NULL, 'third' FROM range(4096)
-UNION ALL SELECT 4, 4.0, 40, 'fourth' FROM range(4096);
+SELECT 1::BIGINT AS v, 1.0::DOUBLE AS d, NULL::BIGINT AS nv, 'first' AS s, NULL::DOUBLE AS nd, NULL::VARCHAR AS ns
+FROM range(4096)
+UNION ALL SELECT 2, 2.0, 20, 'second', 2.5, 'two' FROM range(4096)
+UNION ALL SELECT 3, 3.0, NULL, 'third', NULL, NULL FROM range(4096)
+UNION ALL SELECT 4, 4.0, 40, 'fourth', 4.5, 'four' FROM range(4096);
 
 statement ok
 CREATE TEMP TABLE branches_expected AS SELECT * FROM branches;
@@ -159,24 +160,18 @@ query TT
 SELECT DISTINCT path_in_schema, encodings FROM parquet_metadata('{TEST_DIR}/compact_branches.parquet') ORDER BY ALL;
 ----
 d	BYTE_STREAM_SPLIT
+nd	BYTE_STREAM_SPLIT
+ns	DELTA_LENGTH_BYTE_ARRAY
 nv	DELTA_BINARY_PACKED
 s	DELTA_LENGTH_BYTE_ARRAY
 v	DELTA_BINARY_PACKED
 
-# dictionary NaN entries mixed with NULLs and ordinary values count every NaN occurrence
-statement ok
-SET force_compression='dict_fsst';
-
+# NaN values mixed with NULLs and ordinary values count every NaN occurrence, also when the dictionary encoding
+# resolves each distinct NaN once
 statement ok
 CREATE TABLE nan_dict AS
 SELECT CASE i % 4 WHEN 0 THEN 'nan'::DOUBLE WHEN 1 THEN NULL WHEN 2 THEN 'nan'::DOUBLE ELSE 7.0 END AS d
 FROM range(100000) t(i);
-
-statement ok
-CHECKPOINT;
-
-statement ok
-SET force_compression='auto';
 
 statement ok
 COPY nan_dict TO '{TEST_DIR}/compact_nan_dict.parquet';
