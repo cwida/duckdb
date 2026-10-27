@@ -345,8 +345,17 @@ unique_ptr<QueryResult> Command::ExecuteQuery(ExecuteContext &context, reference
 	    result->GetErrorObject().Type() == ExceptionType::INTERRUPT) {
 		// A timeout must fail the test instead of surfacing as a SQL error: a statement expecting an error
 		// would otherwise silently accept a hang bounded by the watchdog.
-		TEST_FAIL_LINE(file_name, query_line,
-		               StringUtil::Format("query_timeout of %.3f seconds exceeded", query_timeout));
+		auto message = StringUtil::Format("query_timeout of %.3f seconds exceeded", query_timeout);
+		if (context.is_parallel) {
+			// The parallel worker's exception handler reports std::exception messages, while a Catch
+			// assertion would be swallowed into "Unknown error message". Embed the location.
+			runner.finished_processing_file = true;
+			context.error_file = file_name;
+			context.error_line = NumericCast<int>(query_line);
+			throw std::runtime_error(StringUtil::Format("%s:%llu: %s", file_name, query_line, message));
+		}
+		runner.test_failure_locator = StringUtil::Format("%s:%llu", file_name, query_line);
+		TEST_FAIL_LINE(file_name, query_line, message);
 	}
 	return result;
 }
