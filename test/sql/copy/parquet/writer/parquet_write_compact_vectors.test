@@ -166,8 +166,7 @@ nv	DELTA_BINARY_PACKED
 s	DELTA_LENGTH_BYTE_ARRAY
 v	DELTA_BINARY_PACKED
 
-# NaN values mixed with NULLs and ordinary values count every NaN occurrence, also when the dictionary encoding
-# resolves each distinct NaN once
+# flat input counts every NaN occurrence in the statistics when the column is dictionary encoded
 statement ok
 CREATE TABLE nan_dict AS
 SELECT CASE i % 4 WHEN 0 THEN 'nan'::DOUBLE WHEN 1 THEN NULL WHEN 2 THEN 'nan'::DOUBLE ELSE 7.0 END AS d
