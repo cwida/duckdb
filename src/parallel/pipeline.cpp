@@ -1081,7 +1081,12 @@ FindExchangeStarvedBufferedConsumer(PipelineBuildStateData &data, const Pipeline
 	struct ExchangeLiveness {
 		vector<reference<PipelineBufferedConsumerRecord>> records;
 		bool has_direct = false;
+		//! The producers can run and the buffered consumers can drain, so the producers are never parked forever.
 		bool live = false;
+		//! The exchange can also deliver EOF: live, and every producer's own dataflow inputs can finish. An EOF
+		//! wait must only be discharged by this, never by liveness alone, because a live producer that consumes
+		//! another exchange completes only once that exchange finishes.
+		bool finishes = false;
 	};
 	reference_map_t<PhysicalCTE, ExchangeLiveness> exchanges;
 	for (auto &record : data.buffered_consumers) {
@@ -1161,10 +1166,22 @@ FindExchangeStarvedBufferedConsumer(PipelineBuildStateData &data, const Pipeline
 		return entry == execute_stages.end() ? optional_idx() : optional_idx(entry->second);
 	};
 
+	// The exchange each active dataflow producer pipeline feeds, for resolving EOF waits.
+	reference_map_t<Pipeline, reference<ExchangeLiveness>> producer_pipeline_exchange;
+	for (auto &record : data.buffered_consumers) {
+		if (record.demoted) {
+			continue;
+		}
+		auto entry = exchanges.find(record.cte.get());
+		D_ASSERT(entry != exchanges.end());
+		producer_pipeline_exchange.emplace(*record.cte_dependency, entry->second);
+	}
+
 	vector<bool> stage_live(stage_count, false);
-	// An analysis dependency is the mirrored wait on a producer's finalization. When that producer feeds a live
-	// exchange, the wait resolves through the exchange's own progress, so requiring the finish stage itself would
-	// treat every early-stopping producer as if it had to exhaust its input.
+	// An analysis dependency is the mirrored wait on a producer's finalization. It resolves only once the
+	// producer's exchange can deliver EOF: exchange liveness alone proves the producer can run, not that it can
+	// finish, because the producer may itself wait on another exchange's EOF. The finish stage's own liveness
+	// must not be used either, since a dataflow consumer's execute is considered live without its EOF wait.
 	auto dependencies_live = [&](const PipelineScheduleStage &stage) {
 		for (auto dependency : stage.dependencies) {
 			if (!stage_live[dependency]) {
@@ -1172,11 +1189,15 @@ FindExchangeStarvedBufferedConsumer(PipelineBuildStateData &data, const Pipeline
 			}
 		}
 		for (auto dependency : stage.analysis_dependencies) {
-			if (stage_live[dependency] || is_own_producer_eof(stage, dependency)) {
+			if (is_own_producer_eof(stage, dependency)) {
 				continue;
 			}
 			auto target_exchange = producing_exchange(schedule.stages[dependency]);
-			if (!target_exchange || !target_exchange->live) {
+			if (target_exchange) {
+				if (!target_exchange->finishes) {
+					return false;
+				}
+			} else if (!stage_live[dependency]) {
 				return false;
 			}
 		}
@@ -1251,6 +1272,36 @@ FindExchangeStarvedBufferedConsumer(PipelineBuildStateData &data, const Pipeline
 			}
 			if (all_draining) {
 				exchange.live = true;
+				changed = true;
+			}
+		}
+		for (auto &entry : exchanges) {
+			auto &exchange = entry.second;
+			if (!exchange.live || exchange.finishes) {
+				continue;
+			}
+			// EOF requires every producer's own dataflow inputs to finish as well. CTE references are acyclic,
+			// so this grounds out at exchanges whose producers read no other exchange.
+			bool inputs_finish = true;
+			for (auto &producer_entry : producer_execute_stages) {
+				if (&producer_entry.first.get() != &exchange) {
+					continue;
+				}
+				for (auto &dataflow : schedule.stages[producer_entry.second].pipeline->GetDataflowDependencies()) {
+					auto producer = dataflow.lock();
+					D_ASSERT(producer);
+					auto upstream = producer_pipeline_exchange.find(*producer);
+					if (upstream == producer_pipeline_exchange.end() || !upstream->second.get().finishes) {
+						inputs_finish = false;
+						break;
+					}
+				}
+				if (!inputs_finish) {
+					break;
+				}
+			}
+			if (inputs_finish) {
+				exchange.finishes = true;
 				changed = true;
 			}
 		}

@@ -102,8 +102,8 @@ SELECT count(*) FROM (SELECT b.i FROM b JOIN d ON b.i = d.i LIMIT 3) q;
 ----
 3
 
-# Protection: an ordered branch reading through a nested early-stopping CTE must keep streaming. The producer
-# of b stops after its LIMIT, so neither branch needs a to exhaust its range.
+# An ordered branch reading through a nested CTE is demoted conservatively: whether the nested producer's
+# LIMIT fires before its input is exhausted is data-dependent, so the EOF wait cannot be discharged.
 query I
 WITH a AS MATERIALIZED (
     SELECT i FROM range(1000000) r(i)
@@ -119,6 +119,26 @@ FROM (
 ) q;
 ----
 2
+
+# The same chain with a non-stopping middle CTE: b can only finish once a finishes, so discharging the second
+# branch's EOF wait through b's liveness alone would leave a's producer parked at the watermark forever.
+query I
+WITH a AS MATERIALIZED (
+    SELECT i FROM range(1000000) r(i)
+), d AS MATERIALIZED (
+    SELECT i FROM a WHERE i % 100000 = 0
+), b AS MATERIALIZED (
+    SELECT i FROM d
+)
+SELECT count(*)
+FROM (
+    (SELECT i FROM b LIMIT 100000000)
+    UNION ALL
+    (SELECT i FROM a LIMIT 1)
+    LIMIT 100000001
+) q;
+----
+11
 
 statement ok
 RESET threads;
