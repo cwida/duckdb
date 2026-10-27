@@ -48,6 +48,26 @@ FROM (
 ----
 4
 
+# Two ordered buffered consumers where the first needs more than the exchange high watermark before it
+# completes. The liveness analysis waves this shape through because of the own-producer exclusion, so it
+# stays deadlock-free only through the shared spool the exchange creates with more than one active consumer.
+# This pins that invariant: tightening the spool rule makes this query hang and the timeout diagnoses it.
+query I
+WITH c AS MATERIALIZED (
+    SELECT i FROM range(500000) r(i)
+    UNION ALL
+    SELECT i + 500000 FROM range(500000) r(i)
+)
+SELECT count(*)
+FROM (
+    (SELECT i FROM c LIMIT 100000)
+    UNION ALL
+    (SELECT i FROM c LIMIT 1)
+    LIMIT 100001
+) q;
+----
+100001
+
 statement ok
 SET threads=1;
 

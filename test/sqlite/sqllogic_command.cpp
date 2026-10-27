@@ -356,7 +356,9 @@ unique_ptr<QueryResult> Command::ExecuteQuery(ExecuteContext &context, reference
 	if (watchdog.Finish() && result && result->HasError() &&
 	    result->GetErrorObject().Type() == ExceptionType::INTERRUPT) {
 		// A timeout must fail the test instead of surfacing as a SQL error: a statement expecting an error
-		// would otherwise silently accept a hang bounded by the watchdog.
+		// would otherwise silently accept a hang bounded by the watchdog. Keying on the interrupt type keeps
+		// a genuine error that races a fired watchdog reported as that error: the query terminated on its
+		// own, so no hang is hidden, only the timeout diagnosis.
 		auto message = StringUtil::Format("query_timeout of %.3f seconds exceeded", query_timeout);
 		if (context.is_parallel) {
 			// A Catch assertion would be swallowed into "Unknown error message" by the worker's catch-all.

@@ -1128,7 +1128,11 @@ FindExchangeStarvedBufferedConsumer(PipelineBuildStateData &data, const Pipeline
 		return &entry->second;
 	};
 	// A consumer's execute only completes after its own producer finalized (the mirrored analysis edge), but for
-	// liveness that wait resolves whenever the exchange itself is live, so it must not count as a gate.
+	// liveness that wait resolves whenever the exchange itself is live, so it must not count as a gate. For two
+	// ordered consumers of one exchange this exclusion is sound only together with the exchange's shared-spool
+	// rule: with more than one active consumer the producer spools at the high watermark instead of throttling
+	// (ShouldCreateSharedSpoolLocked), so the pinned later consumer cannot park the producer. Tightening that
+	// spool rule would reintroduce an ordered-pair deadlock invisible to this analysis.
 	auto is_own_producer_eof = [&](const PipelineScheduleStage &stage, idx_t dependency) {
 		if (stage.type != PipelineScheduleStageType::EXECUTE) {
 			return false;
