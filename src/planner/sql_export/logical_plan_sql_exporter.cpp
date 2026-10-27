@@ -1,6 +1,7 @@
 #include "duckdb/planner/sql_export/logical_plan_sql_exporter_internal.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/function/scalar/compressed_materialization_utils.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/planner/logical_plan_sql_exporter.hpp"
 #include "duckdb/planner/sql_export/bound_expression_sql_exporter_internal.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
@@ -44,10 +45,16 @@ static optional<Value> ConstantSQLInput(const Expression &expression, LogicalOpe
 		return ConstantSQLInput(*wrapped, input, context);
 	}
 	if (expression.IsFoldable()) {
+		auto &client_context = context.GetClientContext();
+		if (Settings::Get<PortablePlanSetting>(client_context) &&
+		    (!expression.IsConsistent() || expression.ObservesBindingContext())) {
+			// an environment observation must stay an expression in the exported SQL
+			return {};
+		}
 		// An unfolded constant expression, e.g. a cast of a literal with the expression rewriter disabled.
 		// Fold it like GetConstant does at bind time, so constant-required arguments restore to constants.
 		Value value;
-		if (ExpressionExecutor::TryEvaluateScalar(context.GetClientContext(), expression, value)) {
+		if (ExpressionExecutor::TryEvaluateScalar(client_context, expression, value)) {
 			return value;
 		}
 		return {};
