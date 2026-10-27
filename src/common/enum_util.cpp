@@ -1373,19 +1373,20 @@ const StringUtil::EnumStringLiteral *GetColumnDataRepresentationValues() {
 	static constexpr StringUtil::EnumStringLiteral values[] {
 		{ static_cast<uint32_t>(ColumnDataRepresentation::FLAT), "FLAT" },
 		{ static_cast<uint32_t>(ColumnDataRepresentation::CONSTANT), "CONSTANT" },
-		{ static_cast<uint32_t>(ColumnDataRepresentation::DICTIONARY), "DICTIONARY" }
+		{ static_cast<uint32_t>(ColumnDataRepresentation::DICTIONARY), "DICTIONARY" },
+		{ static_cast<uint32_t>(ColumnDataRepresentation::SHARED_LIST_CHILD), "SHARED_LIST_CHILD" }
 	};
 	return values;
 }
 
 template<>
 const char* EnumUtil::ToChars<ColumnDataRepresentation>(ColumnDataRepresentation value) {
-	return StringUtil::EnumToString(GetColumnDataRepresentationValues(), 3, "ColumnDataRepresentation", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetColumnDataRepresentationValues(), 4, "ColumnDataRepresentation", static_cast<uint32_t>(value));
 }
 
 template<>
 ColumnDataRepresentation EnumUtil::FromString<ColumnDataRepresentation>(const char *value) {
-	return static_cast<ColumnDataRepresentation>(StringUtil::StringToEnum(GetColumnDataRepresentationValues(), 3, "ColumnDataRepresentation", value));
+	return static_cast<ColumnDataRepresentation>(StringUtil::StringToEnum(GetColumnDataRepresentationValues(), 4, "ColumnDataRepresentation", value));
 }
 
 const StringUtil::EnumStringLiteral *GetColumnDataScanPropertiesValues() {
@@ -7505,19 +7506,20 @@ const StringUtil::EnumStringLiteral *GetVectorBufferTypeValues() {
 		{ static_cast<uint32_t>(VectorBufferType::DICTIONARY_BUFFER), "DICTIONARY_BUFFER" },
 		{ static_cast<uint32_t>(VectorBufferType::FSST_BUFFER), "FSST_BUFFER" },
 		{ static_cast<uint32_t>(VectorBufferType::SHREDDED_BUFFER), "SHREDDED_BUFFER" },
-		{ static_cast<uint32_t>(VectorBufferType::SEQUENCE_BUFFER), "SEQUENCE_BUFFER" }
+		{ static_cast<uint32_t>(VectorBufferType::SEQUENCE_BUFFER), "SEQUENCE_BUFFER" },
+		{ static_cast<uint32_t>(VectorBufferType::SHARED_DATA_BUFFER), "SHARED_DATA_BUFFER" }
 	};
 	return values;
 }
 
 template<>
 const char* EnumUtil::ToChars<VectorBufferType>(VectorBufferType value) {
-	return StringUtil::EnumToString(GetVectorBufferTypeValues(), 9, "VectorBufferType", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetVectorBufferTypeValues(), 10, "VectorBufferType", static_cast<uint32_t>(value));
 }
 
 template<>
 VectorBufferType EnumUtil::FromString<VectorBufferType>(const char *value) {
-	return static_cast<VectorBufferType>(StringUtil::StringToEnum(GetVectorBufferTypeValues(), 9, "VectorBufferType", value));
+	return static_cast<VectorBufferType>(StringUtil::StringToEnum(GetVectorBufferTypeValues(), 10, "VectorBufferType", value));
 }
 
 const StringUtil::EnumStringLiteral *GetVectorPrepareStateValues() {
