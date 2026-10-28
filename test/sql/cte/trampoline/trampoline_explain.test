@@ -29,3 +29,18 @@ EXPLAIN WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
 SELECT b, n FROM t;
 ----
 physical_plan	<REGEX>:.*Waves: merged.*
+
+# EXPLAIN (SQL) renders an executable representation of a trampoline query
+statement ok
+EXPLAIN (SQL) WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, 7)
+    BRANCH 1: (SELECT 0, n FROM t)
+)
+SELECT n FROM t;
+
+statement ok
+EXPLAIN (SQL) WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, 1)
+    BRANCH 1: (SELECT 0, sum(n)::INT FROM t)
+)
+SELECT n FROM t;

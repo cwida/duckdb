@@ -4,6 +4,8 @@
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/parser/query_node/recursive_cte_node.hpp"
 #include "duckdb/planner/operator/logical_recursive_cte.hpp"
+#include "duckdb/planner/operator/logical_trampoline.hpp"
+#include "duckdb/parser/query_node/trampoline_cte_node.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/common_table_expression_info.hpp"
@@ -286,6 +288,16 @@ LogicalPlanSQLExportContext::ExportNamedProducer(LogicalOperator &op, const Logi
 			return exported;
 		}
 	}
+	if (op.type == LogicalOperatorType::LOGICAL_TRAMPOLINE) {
+		ancestors.push_back(op);
+		auto exported_trampoline = op.Cast<LogicalTrampoline>().ExportSQLDefinition(*this, path, name);
+		ancestors.pop_back();
+		if (exported_trampoline.HasError()) {
+			return LogicalPlanVerificationResult<LogicalPlanSQLExportedChild>::Failure(exported_trampoline);
+		}
+		return LogicalPlanVerificationResult<LogicalPlanSQLExportedChild>::Success(
+		    {std::move(exported_trampoline.GetValue()), NextRelationAlias()});
+	}
 	if (op.type != LogicalOperatorType::LOGICAL_RECURSIVE_CTE) {
 		return ExportChild(op, path);
 	}
@@ -297,6 +309,61 @@ LogicalPlanSQLExportContext::ExportNamedProducer(LogicalOperator &op, const Logi
 	}
 	return LogicalPlanVerificationResult<LogicalPlanSQLExportedChild>::Success(
 	    {std::move(exported.GetValue()), NextRelationAlias()});
+}
+
+LogicalPlanSQLExportResult LogicalTrampoline::ExportSQLDefinition(LogicalPlanSQLExportContext &export_context,
+                                                                  const LogicalPlanVerificationPath &path,
+                                                                  const Identifier &name) {
+	auto &trampoline = *this;
+	D_ASSERT(trampoline.children.size() >= 2);
+	auto fields = LogicalPlanSQLExportHelpers::CreateFields(trampoline, path);
+	if (fields.HasError()) {
+		return LogicalPlanSQLExportResult::Failure(fields);
+	}
+	auto seed = export_context.Export(*trampoline.children[0], LogicalPlanSQLExportHelpers::PlanChildPath(path, 0));
+	if (seed.HasError()) {
+		return LogicalPlanSQLExportResult::Failure(seed);
+	}
+	auto query = make_uniq<TrampolineCTENode>();
+	query->ctename = name;
+	query->selector = LogicalPlanSQLExportHelpers::FieldIdentifier(trampoline.selector_idx);
+	for (idx_t i = 0; i < fields.GetValue().size(); i++) {
+		query->aliases.push_back(LogicalPlanSQLExportHelpers::FieldIdentifier(i));
+	}
+	query->seed = std::move(seed.GetValue().query);
+	for (idx_t branch_idx = 1; branch_idx < trampoline.children.size(); branch_idx++) {
+		export_context.PushNamedRelation(trampoline.table_index, name, false);
+		auto branch = export_context.Export(*trampoline.children[branch_idx],
+		                                    LogicalPlanSQLExportHelpers::PlanChildPath(path, branch_idx));
+		export_context.PopNamedRelation();
+		if (branch.HasError()) {
+			return LogicalPlanSQLExportResult::Failure(branch);
+		}
+		query->branches.push_back(std::move(branch.GetValue().query));
+	}
+	return LogicalPlanSQLExportResult::Success({std::move(query), std::move(fields.GetValue())});
+}
+
+LogicalPlanSQLExportResult LogicalTrampoline::ToSQL(LogicalPlanSQLExportContext &export_context,
+                                                    const LogicalPlanVerificationPath &path) {
+	auto &trampoline = *this;
+	if (Optimizer::OptimizerDisabled(export_context.GetClientContext(), OptimizerType::CTE_INLINING) ||
+	    Settings::Get<DebugDisableOptimizerSetting>(export_context.GetClientContext())) {
+		return LogicalPlanSQLExportResult::Failure({LogicalPlanSQLExportHelpers::PlanUnsupportedFeature(
+		    path, "trampoline_materialization",
+		    "The SQL wrapper requires CTE inlining to preserve trampoline evaluation")});
+	}
+	auto name = export_context.NextRelationAlias(trampoline.ctename);
+	auto definition = ExportSQLDefinition(export_context, path, name);
+	if (definition.HasError()) {
+		return definition;
+	}
+	auto info = make_uniq<CommonTableExpressionInfo>();
+	info->aliases = definition.GetValue().query->Cast<TrampolineCTENode>().aliases;
+	info->query_node = std::move(definition.GetValue().query);
+	auto select = export_context.CreateNamedSource(name, definition.GetValue().fields);
+	select->cte_map.map.insert(name, std::move(info));
+	return LogicalPlanSQLExportResult::Success({std::move(select), std::move(definition.GetValue().fields)});
 }
 
 LogicalPlanSQLExportResult LogicalRecursiveCTE::ToSQL(LogicalPlanSQLExportContext &export_context,

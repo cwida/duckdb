@@ -20,6 +20,9 @@ class LogicalTrampoline : public LogicalCTE {
 	LogicalTrampoline();
 
 public:
+	LogicalPlanSQLExportResult ToSQL(LogicalPlanSQLExportContext &context,
+	                                 const LogicalPlanVerificationPath &path) override;
+
 	static constexpr const LogicalOperatorType TYPE = LogicalOperatorType::LOGICAL_TRAMPOLINE;
 
 public:
@@ -45,6 +48,12 @@ public:
 	idx_t BranchCount() const {
 		return children.size() - 1;
 	}
+
+private:
+	friend class LogicalPlanSQLExportContext;
+	LogicalPlanVerificationResult<LogicalPlanSQLExportRelation>
+	ExportSQLDefinition(LogicalPlanSQLExportContext &context, const LogicalPlanVerificationPath &path,
+	                    const Identifier &name);
 
 protected:
 	void ResolveTypes() override;
