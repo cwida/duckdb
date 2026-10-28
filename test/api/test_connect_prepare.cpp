@@ -8,6 +8,7 @@
 #include "duckdb/parser/statement/select_statement.hpp"
 #include "duckdb/parser/tableref/emptytableref.hpp"
 #include "duckdb/parser/tableref/subqueryref.hpp"
+#include "duckdb/planner/extension_callback.hpp"
 #include "duckdb/storage/storage_extension.hpp"
 #include "duckdb/transaction/duck_transaction_manager.hpp"
 
@@ -61,6 +62,31 @@ struct RoutingStorageExtension : StorageExtension {
 };
 
 } // namespace
+
+TEST_CASE("Statement checks precede CONNECT routing", "[api][connect][statement_check]") {
+	struct RejectConnected : ExtensionCallback {
+		void OnStatementCheck(ClientContext &context, const SQLStatement &, StatementCheckType) override {
+			if (context.IsConnected()) {
+				throw PermissionException("connected statement denied");
+			}
+		}
+	};
+	DBConfig config;
+	StorageExtension::Register(config, "connect_routing_test", make_shared_ptr<RoutingStorageExtension>());
+	ExtensionCallback::Register(config, make_shared_ptr<RejectConnected>());
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("ATTACH 'routed' AS remote (TYPE connect_routing_test)"));
+	REQUIRE_NO_FAIL(con.Query("CONNECT remote"));
+	routed_queries.clear();
+	auto result = con.Query("SELECT 42");
+	REQUIRE_FAIL(result);
+	REQUIRE(StringUtil::Contains(result->GetError(), "connected statement denied"));
+	auto prepared = con.Prepare("SELECT 42");
+	REQUIRE(prepared->HasError());
+	REQUIRE(StringUtil::Contains(prepared->GetError(), "connected statement denied"));
+	REQUIRE(routed_queries.empty());
+}
 
 TEST_CASE("Prepare statements while CONNECT-ed", "[api][connect]") {
 	DBConfig config;

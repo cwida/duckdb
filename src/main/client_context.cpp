@@ -41,6 +41,7 @@
 #include "duckdb/parser/statement/relation_statement.hpp"
 #include "duckdb/parser/statement/select_statement.hpp"
 #include "duckdb/planner/binder.hpp"
+#include "duckdb/planner/extension_callback.hpp"
 #include "duckdb/planner/logical_plan_verifier.hpp"
 #include "duckdb/planner/planner.hpp"
 #include "duckdb/planner/statement_preprocessor.hpp"
@@ -483,6 +484,20 @@ vector<unique_ptr<SQLStatement>> ClientContext::ParseStatementsInternal(ClientCo
 	}
 }
 
+static void CheckStatement(ClientContext &context, const SQLStatement &statement, StatementCheckType type) {
+	try {
+		for (auto &extension : ExtensionCallback::Iterate(context)) {
+			extension->OnStatementCheck(context, statement, type);
+		}
+	} catch (const std::exception &ex) {
+		ErrorData error(ex);
+		if (Exception::InvalidatesDatabase(error.Type())) {
+			ValidChecker::Invalidate(DatabaseInstance::GetDatabase(context), error.RawMessage());
+		}
+		throw;
+	}
+}
+
 unique_ptr<LogicalOperator> ClientContext::ExtractPlan(const string &query) {
 	auto lock = LockContext();
 
@@ -490,8 +505,10 @@ unique_ptr<LogicalOperator> ClientContext::ExtractPlan(const string &query) {
 	if (statements.size() != 1) {
 		throw InvalidInputException("ExtractPlan can only prepare a single statement");
 	}
+	CheckStatement(*this, *statements[0], StatementCheckType::INSPECTION);
 	statements[0] = ExpandSingleStatementInternal(*lock, std::move(statements[0]),
 	                                              "ExtractPlan can only prepare a single statement");
+	CheckStatement(*this, *statements[0], StatementCheckType::INSPECTION);
 
 	unique_ptr<LogicalOperator> plan;
 	RunFunctionInTransactionInternal(*lock, [&]() {
@@ -534,6 +551,7 @@ static PreparedStatementInfo GetPreparedStatementInfo(PreparedStatementData &dat
 
 unique_ptr<PreparedStatement> ClientContext::PrepareInternal(ClientContextLock &lock,
                                                              unique_ptr<SQLStatement> statement) {
+	CheckStatement(*this, *statement, StatementCheckType::PREPARATION);
 	if (is_connected) {
 		// the connected database runs the statement as written, at each execution
 		if (!statement->named_param_map.empty()) {
@@ -615,6 +633,7 @@ StatementSignature ClientContext::BindStatement(unique_ptr<SQLStatement> stateme
 		    try {
 			    // Expanded inside this transaction, so an expansion error leaves the caller's transaction as a bind
 			    // error does
+			    CheckStatement(*this, *statement, StatementCheckType::INSPECTION);
 			    const bool has_parameters = !statement->named_param_map.empty();
 			    auto expanded = StatementPreprocessor(*this).ExpandStatement(std::move(statement));
 			    if (expanded.statements.empty()) {
@@ -632,6 +651,7 @@ StatementSignature ClientContext::BindStatement(unique_ptr<SQLStatement> stateme
 				    return;
 			    }
 			    auto bound = std::move(expanded.statements[0]);
+			    CheckStatement(*this, *bound, StatementCheckType::INSPECTION);
 			    auto named_param_map = bound->named_param_map;
 			    Planner planner(*this);
 			    planner.CreatePlan(std::move(bound));
@@ -696,6 +716,7 @@ unique_ptr<PreparedStatement> ClientContext::Prepare(const string &query) {
 unique_ptr<QueryResult> ClientContext::SubmitStatementInternal(ClientContextLock &lock,
                                                                unique_ptr<SQLStatement> statement,
                                                                const QueryParameters &parameters) {
+	CheckStatement(*this, *statement, StatementCheckType::SUBMISSION);
 	// prepare the query for execution
 	if (!statement->named_param_map.empty() && parameters.statement_args) {
 		PreparedStatement::VerifyParameters(*parameters.statement_args, statement->named_param_map, this);
@@ -750,6 +771,11 @@ static bool HasBoundParameterValues(const SQLStatement &statement) {
 unique_ptr<QueryResult> ClientContext::SubmitStatement(ClientContextLock &lock, unique_ptr<SQLStatement> statement,
                                                        const QueryParameters &parameters, bool verify,
                                                        Retention retention) {
+	try {
+		CheckStatement(*this, *statement, StatementCheckType::SUBMISSION);
+	} catch (const std::exception &ex) {
+		return ErrorResult<QueryResult>(ErrorData(ex), statement->query);
+	}
 	// CONNECT chokepoint: when connected, non-control SQL is rewritten in place and falls through to
 	// the normal pipeline. No recursion — the rewrite goes through SubmitStatementInternal, not back here.
 	bool outside_local_transaction = false;
@@ -807,6 +833,9 @@ unique_ptr<QueryResult> ClientContext::SubmitStatement(ClientContextLock &lock, 
 			// A later statement binds only once the earlier ones ran, so a statement that expands is verified without
 			// running copies of it
 			for (auto &internal_statement : statements) {
+				if (statements.size() == 1) {
+					CheckStatement(*this, *internal_statement, StatementCheckType::SUBMISSION);
+				}
 				StatementVerification(lock, internal_statement, parameters, statements.size() == 1);
 			}
 		}
@@ -1425,7 +1454,9 @@ unordered_set<string> ClientContext::GetTableNames(const string &query, const bo
 	if (statements.size() != 1) {
 		throw InvalidInputException("Expected a single statement");
 	}
+	CheckStatement(*this, *statements[0], StatementCheckType::INSPECTION);
 	statements[0] = ExpandSingleStatementInternal(*lock, std::move(statements[0]), "Expected a single statement");
+	CheckStatement(*this, *statements[0], StatementCheckType::INSPECTION);
 
 	unordered_set<string> result;
 	RunFunctionInTransactionInternal(*lock, [&]() {
