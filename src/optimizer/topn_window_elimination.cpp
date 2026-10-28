@@ -883,7 +883,7 @@ TopNWindowElimination::UpdateTopmostBindings(TableIndex window_idx, unique_ptr<L
 		auto &new_binding = new_bindings[i];
 		unique_ptr<Expression> proj_expr = make_uniq<BoundColumnRefExpression>(original.types[i], new_binding);
 		if (original.types[i] != types[i]) {
-			proj_expr = BoundCastExpression::AddDefaultCastToType(std::move(proj_expr), types[i]);
+			proj_expr = BoundCastExpression::AddCastToType(context, std::move(proj_expr), types[i]);
 		}
 		proj_exprs.emplace_back(std::move(proj_expr));
 		new_binding.table_index = proj_table;
