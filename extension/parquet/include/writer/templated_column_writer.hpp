@@ -137,8 +137,8 @@ private:
 template <class SRC, class TGT, class OP = ParquetCastOperator, bool ALL_VALID, class INPUT>
 static void TemplatedWritePlain(INPUT input, ColumnWriterStatistics *stats, const idx_t chunk_start,
                                 const idx_t chunk_end, WriteStream &ser) {
-	static constexpr bool COPY_DIRECTLY_FROM_VECTOR = ALL_VALID && INPUT::CONTIGUOUS &&
-	                                                  std::is_same<SRC, TGT>::value && std::is_arithmetic<TGT>::value &&
+	static constexpr bool COPY_DIRECTLY_FROM_VECTOR = ALL_VALID && INPUT::CONTIGUOUS && std::is_same<SRC, TGT>::value &&
+	                                                  std::is_arithmetic<TGT>::value &&
 	                                                  std::is_same<OP, ParquetCastOperator>::value;
 
 	TGT local_write[STANDARD_VECTOR_SIZE];
@@ -801,8 +801,7 @@ private:
 
 	template <bool ALL_VALID, class INPUT>
 	void WriteVectorInternal(WriteStream &temp_writer, ColumnWriterStatistics *stats,
-	                         ColumnWriterPageState *page_state_p, INPUT input, idx_t chunk_start,
-	                         idx_t chunk_end) {
+	                         ColumnWriterPageState *page_state_p, INPUT input, idx_t chunk_start, idx_t chunk_end) {
 		auto &page_state = page_state_p->Cast<StandardWriterPageState<SRC, TGT, OP>>();
 
 		switch (page_state.encoding) {
