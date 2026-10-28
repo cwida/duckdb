@@ -1761,6 +1761,8 @@ FlattenDependentJoins::PushDownCorrelatedNodeInternal(unique_ptr<LogicalOperator
 	}
 	case LogicalOperatorType::LOGICAL_SAMPLE:
 		throw BinderException("Sampling in correlated subqueries is not (yet) supported");
+	case LogicalOperatorType::LOGICAL_TRAMPOLINE:
+		throw NotImplementedException("correlated TRAMPOLINE CTEs are not supported yet");
 	case LogicalOperatorType::LOGICAL_POSITIONAL_JOIN:
 		throw BinderException("Positional join in correlated subqueries is not (yet) supported");
 	default:

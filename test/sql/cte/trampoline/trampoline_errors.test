@@ -163,3 +163,19 @@ WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS MATERIALIZED (
 SELECT * FROM t;
 ----
 <REGEX>:Parser Error.*
+
+# correlation reaching the trampoline through a sibling CTE is also rejected
+statement error
+SELECT *
+FROM (VALUES (1), (2)) v(x),
+LATERAL (
+    WITH RECURSIVE
+        base(n) AS MATERIALIZED (SELECT v.x),
+        t(b, n) USING TRAMPOLINE (b) AS (
+            (SELECT 1, n FROM base)
+            BRANCH 1: (SELECT 0, n FROM t)
+        )
+    SELECT n FROM t
+) s;
+----
+<REGEX>:Not implemented Error.*TRAMPOLINE.*
