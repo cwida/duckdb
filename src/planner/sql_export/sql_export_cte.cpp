@@ -288,17 +288,9 @@ LogicalPlanSQLExportContext::ExportNamedProducer(LogicalOperator &op, const Logi
 			return exported;
 		}
 	}
-	if (op.type == LogicalOperatorType::LOGICAL_TRAMPOLINE) {
-		ancestors.push_back(op);
-		auto exported_trampoline = op.Cast<LogicalTrampoline>().ExportSQLDefinition(*this, path, name);
-		ancestors.pop_back();
-		if (exported_trampoline.HasError()) {
-			return LogicalPlanVerificationResult<LogicalPlanSQLExportedChild>::Failure(exported_trampoline);
-		}
-		return LogicalPlanVerificationResult<LogicalPlanSQLExportedChild>::Success(
-		    {std::move(exported_trampoline.GetValue()), NextRelationAlias()});
-	}
 	if (op.type != LogicalOperatorType::LOGICAL_RECURSIVE_CTE) {
+		// a trampoline producer also takes this path: its ToSQL wraps itself in an
+		// unhinted CTE, so a materialized parent hints the wrapper, which stays parseable
 		return ExportChild(op, path);
 	}
 	ancestors.push_back(op);
