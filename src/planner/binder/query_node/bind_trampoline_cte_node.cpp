@@ -40,8 +40,18 @@ BoundStatement Binder::BindNode(TrampolineCTENode &statement) {
 		throw BinderException("TRAMPOLINE selector column \"%s\" was not found in CTE \"%s\"",
 		                      statement.selector.GetIdentifierName(), ctename.GetIdentifierName());
 	}
-	if (!result.types[selector_idx].IsIntegral()) {
-		throw BinderException("TRAMPOLINE selector column \"%s\" must have an integral type, not %s",
+	switch (result.types[selector_idx].id()) {
+	case LogicalTypeId::TINYINT:
+	case LogicalTypeId::SMALLINT:
+	case LogicalTypeId::INTEGER:
+	case LogicalTypeId::BIGINT:
+	case LogicalTypeId::UTINYINT:
+	case LogicalTypeId::USMALLINT:
+	case LogicalTypeId::UINTEGER:
+	case LogicalTypeId::UBIGINT:
+		break;
+	default:
+		throw BinderException("TRAMPOLINE selector column \"%s\" must have an integer type, not %s",
 		                      statement.selector.GetIdentifierName(), result.types[selector_idx].ToString());
 	}
 

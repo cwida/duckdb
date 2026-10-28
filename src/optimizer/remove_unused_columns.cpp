@@ -839,6 +839,7 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 			}
 			return;
 		}
+		GetCTEMap().insert({op.Cast<LogicalCTE>().table_index, MaterializedCTEInfo()});
 		everything_referenced = true;
 		break;
 	}

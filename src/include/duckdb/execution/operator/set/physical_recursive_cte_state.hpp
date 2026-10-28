@@ -337,6 +337,16 @@ private:
 	MonotonicProgress progress;
 };
 
+//! Shared with the trampoline operator: schedule-plan construction and the single-threaded inline execution helpers
+unique_ptr<RecursiveCTEPipelineSchedulePlan>
+BuildRecursivePipelineSchedulePlan(const vector<shared_ptr<MetaPipeline>> &meta_pipelines,
+                                   const reference_set_t<const MetaPipeline> &invariant_meta_pipelines,
+                                   const PhysicalOperator &recursive_sink);
+void ExecuteRecursivePipelineInline(PipelineExecutor &pipeline_executor);
+void ExecuteRecursivePipelineFinishInline(Pipeline &pipeline, Executor &executor);
+void GatherRecursiveScans(PhysicalOperator &op, TableIndex cte_index,
+                          vector<reference<PhysicalColumnDataScan>> &recursive_scans);
+
 //! The part of the recursion every mode shares: the operator, the scheduler and the metrics of one invocation.
 //! RecursiveCTEUnionState and RecursiveCTEKeyedState own the state of their mode and implement the sink and source
 //! sides of the operator on top of it.

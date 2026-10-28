@@ -58,7 +58,7 @@ WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
 )
 SELECT sum(n)::INT FROM t;
 ----
-40
+88
 
 # a trampoline inside a subquery
 query I
@@ -70,7 +70,7 @@ SELECT (
     SELECT n FROM t
 );
 ----
-8
+16
 
 # recursive CTE and trampoline CTE can coexist in one WITH clause
 query II rowsort

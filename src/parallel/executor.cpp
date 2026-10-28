@@ -6,6 +6,7 @@
 #include "duckdb/execution/operator/helper/physical_result_collector.hpp"
 #include "duckdb/execution/operator/set/physical_cte.hpp"
 #include "duckdb/execution/operator/set/physical_recursive_cte.hpp"
+#include "duckdb/execution/operator/set/physical_trampoline.hpp"
 #include "duckdb/execution/physical_operator.hpp"
 #include "duckdb/main/buffered_data/buffered_data.hpp"
 #include "duckdb/main/client_context.hpp"
@@ -287,6 +288,12 @@ void Executor::InitializeInternal(PhysicalOperator &plan) {
 
 		// ready recursive cte pipelines too
 		for (auto &rec_cte_ref : recursive_ctes) {
+			if (rec_cte_ref.get().type == PhysicalOperatorType::TRAMPOLINE) {
+				for (auto &branch : rec_cte_ref.get().Cast<PhysicalTrampoline>().branch_meta_pipelines) {
+					branch->Ready();
+				}
+				continue;
+			}
 			auto &rec_cte = rec_cte_ref.get().Cast<PhysicalRecursiveCTE>();
 			rec_cte.recursive_meta_pipeline->Ready();
 		}
@@ -352,6 +359,10 @@ void Executor::CancelTasks() {
 	// Now safe to destroy pipelines, events and states — no tasks reference them
 	lock_guard<mutex> elock(executor_lock);
 	for (auto &rec_cte_ref : recursive_ctes) {
+		if (rec_cte_ref.get().type == PhysicalOperatorType::TRAMPOLINE) {
+			rec_cte_ref.get().Cast<PhysicalTrampoline>().branch_meta_pipelines.clear();
+			continue;
+		}
 		auto &rec_cte = rec_cte_ref.get().Cast<PhysicalRecursiveCTE>();
 		rec_cte.recursive_meta_pipeline.reset();
 	}

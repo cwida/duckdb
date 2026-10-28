@@ -1161,11 +1161,11 @@ PEGTransformerFactory::TransformTrampolineBranchClause(PEGTransformer &transform
 	if (label->GetExpressionType() != ExpressionType::VALUE_CONSTANT) {
 		throw ParserException(label->GetQueryLocation(), "BRANCH label must be an integer literal");
 	}
-	auto &label_value = label->Cast<ConstantExpression>().value;
-	if (!label_value.type().IsIntegral()) {
+	auto &label_literal = label->Cast<ConstantExpression>().GetLiteral();
+	int64_t label_number;
+	if (!label_literal.TryGetInt64(label_number)) {
 		throw ParserException(label->GetQueryLocation(), "BRANCH label must be an integer literal");
 	}
-	auto label_number = label_value.GetValue<int64_t>();
 	if (label_number < 1) {
 		throw ParserException(label->GetQueryLocation(), "BRANCH labels start at 1; selector 0 emits a result row");
 	}

@@ -1,0 +1,127 @@
+#include "duckdb/common/types/column/column_data_collection.hpp"
+#include "duckdb/execution/operator/join/physical_join.hpp"
+#include "duckdb/execution/operator/set/physical_trampoline.hpp"
+#include "duckdb/execution/physical_plan_generator.hpp"
+#include "duckdb/planner/operator/logical_trampoline.hpp"
+
+namespace duckdb {
+
+namespace {
+
+enum class TrampolineInputShape : uint8_t { NO_SCAN, LINEAR, NONLINEAR };
+
+//! Whether the given operator is additive in the child subtree at child_idx:
+//! op(..., W1 UNION ALL W2, ...) == op(..., W1, ...) UNION ALL op(..., W2, ...)
+bool OperatorIsAdditiveInChild(const PhysicalOperator &op, idx_t child_idx) {
+	switch (op.type) {
+	case PhysicalOperatorType::PROJECTION:
+	case PhysicalOperatorType::FILTER:
+		return true;
+	case PhysicalOperatorType::UNION:
+	case PhysicalOperatorType::CROSS_PRODUCT:
+		return true;
+	case PhysicalOperatorType::HASH_JOIN:
+	case PhysicalOperatorType::NESTED_LOOP_JOIN:
+	case PhysicalOperatorType::BLOCKWISE_NL_JOIN:
+	case PhysicalOperatorType::PIECEWISE_MERGE_JOIN:
+	case PhysicalOperatorType::IE_JOIN: {
+		const auto join_type = op.Cast<PhysicalJoin>().join_type;
+		switch (join_type) {
+		case JoinType::INNER:
+			return true;
+		case JoinType::LEFT:
+		case JoinType::SEMI:
+		case JoinType::ANTI:
+		case JoinType::MARK:
+		case JoinType::SINGLE:
+			return child_idx == 0;
+		case JoinType::RIGHT:
+		case JoinType::RIGHT_SEMI:
+		case JoinType::RIGHT_ANTI:
+			return child_idx == 1;
+		default:
+			return false;
+		}
+	}
+	case PhysicalOperatorType::ASOF_JOIN: {
+		// nearest-match semantics are not additive in the matched side
+		const auto join_type = op.Cast<PhysicalJoin>().join_type;
+		return (join_type == JoinType::INNER || join_type == JoinType::LEFT) && child_idx == 0;
+	}
+	default:
+		return false;
+	}
+}
+
+//! Classifies how a branch plan consumes the trampoline input. A branch is linear when evaluating
+//! it per wave and over the bag union of all waves provably produces the same bag of rows.
+TrampolineInputShape AnalyzeBranchShape(const PhysicalOperator &op, TableIndex cte_index) {
+	if (op.type == PhysicalOperatorType::RECURSIVE_CTE_SCAN) {
+		auto &scan = op.Cast<PhysicalColumnDataScan>();
+		if (scan.cte_index == cte_index) {
+			return TrampolineInputShape::LINEAR;
+		}
+	}
+	auto children = op.GetChildren();
+	optional_idx scan_child;
+	TrampolineInputShape child_shape = TrampolineInputShape::NO_SCAN;
+	for (idx_t child_idx = 0; child_idx < children.size(); child_idx++) {
+		const auto shape = AnalyzeBranchShape(children[child_idx].get(), cte_index);
+		if (shape == TrampolineInputShape::NO_SCAN) {
+			continue;
+		}
+		if (scan_child.IsValid()) {
+			// several inputs read the trampoline: cross terms between waves are possible
+			return TrampolineInputShape::NONLINEAR;
+		}
+		scan_child = child_idx;
+		child_shape = shape;
+	}
+	if (!scan_child.IsValid()) {
+		return TrampolineInputShape::NO_SCAN;
+	}
+	if (child_shape == TrampolineInputShape::NONLINEAR) {
+		return TrampolineInputShape::NONLINEAR;
+	}
+	return OperatorIsAdditiveInChild(op, scan_child.GetIndex()) ? TrampolineInputShape::LINEAR
+	                                                            : TrampolineInputShape::NONLINEAR;
+}
+
+bool BranchIsLinear(const PhysicalOperator &branch, TableIndex cte_index) {
+	// a branch without a trampoline scan produces rows once per invocation, so wave
+	// boundaries change its output multiplicity: only a scanning, linear branch may merge
+	return AnalyzeBranchShape(branch, cte_index) == TrampolineInputShape::LINEAR;
+}
+
+} // namespace
+
+PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalTrampoline &op) {
+	D_ASSERT(op.children.size() >= 2);
+
+	// placeholder the branch scans are planned against; the operator rebinds them per wave
+	auto working_table = make_shared_ptr<ColumnDataCollection>(context, op.types);
+	recursive_cte_tables[op.table_index] = working_table;
+
+	auto &seed = CreatePlan(*op.children[0]);
+
+	vector<reference<PhysicalOperator>> branches;
+	planning_recursive_cte_depth++;
+	for (idx_t branch_idx = 1; branch_idx < op.children.size(); branch_idx++) {
+		branches.push_back(CreatePlan(*op.children[branch_idx]));
+	}
+	planning_recursive_cte_depth--;
+
+	auto &trampoline = Make<PhysicalTrampoline>(op.ctename, op.table_index, op.types, op.selector_idx, seed, branches,
+	                                            op.estimated_cardinality)
+	                       .Cast<PhysicalTrampoline>();
+	trampoline.working_table = working_table;
+
+	bool all_linear = true;
+	for (auto &branch : branches) {
+		all_linear = all_linear && BranchIsLinear(branch.get(), op.table_index);
+	}
+	trampoline.merge_waves = all_linear;
+	return trampoline;
+}
+
+} // namespace duckdb

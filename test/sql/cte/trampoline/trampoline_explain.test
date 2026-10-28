@@ -9,7 +9,7 @@ EXPLAIN WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
 )
 SELECT b, n FROM t;
 ----
-physical_plan	<REGEX>:.*TRAMPOLINE.*
+physical_plan	<REGEX>:.*Trampoline.*
 
 # a nonlinear branch switches the operator to per-wave evaluation
 query II
