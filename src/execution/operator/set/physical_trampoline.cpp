@@ -65,12 +65,17 @@ public:
 	//! Round-robin cursor over the branches
 	idx_t next_branch = 1;
 	bool initialized = false;
+	bool prepared_executor_entries = false;
 
 	DataChunk route_chunk;
 	vector<SelectionVector> route_selections;
 	vector<idx_t> route_counts;
+	//! Reusable empty collections, bounded to keep at most a few buffers alive
+	static constexpr idx_t RECYCLED_COLLECTIONS = 8;
+	vector<unique_ptr<ColumnDataCollection>> collection_pool;
 
 	void Route(DataChunk &chunk);
+	void Recycle(unique_ptr<ColumnDataCollection> collection);
 	void CloseExecution();
 	bool NextWave(idx_t &branch_idx, unique_ptr<ColumnDataCollection> &wave);
 	SourceResultType GetData(ExecutionContext &context, DataChunk &chunk);
@@ -83,9 +88,22 @@ private:
 
 ColumnDataCollection &TrampolineState::Staged(idx_t target) {
 	if (!staged[target]) {
-		staged[target] = make_uniq<ColumnDataCollection>(context, op.GetTypes());
+		if (!collection_pool.empty()) {
+			staged[target] = std::move(collection_pool.back());
+			collection_pool.pop_back();
+		} else {
+			staged[target] = make_uniq<ColumnDataCollection>(context, op.GetTypes());
+		}
 	}
 	return *staged[target];
+}
+
+void TrampolineState::Recycle(unique_ptr<ColumnDataCollection> collection) {
+	if (!collection || collection_pool.size() >= RECYCLED_COLLECTIONS) {
+		return;
+	}
+	collection->ResetForReuse();
+	collection_pool.push_back(std::move(collection));
 }
 
 template <class T>
@@ -229,9 +247,10 @@ SourceResultType TrampolineState::GetData(ExecutionContext &execution_context, D
 				break;
 			}
 			emit_active = false;
-			emit_table.reset();
+			Recycle(std::move(emit_table));
 		}
 		if (emit_backlog) {
+			Recycle(std::move(emit_table));
 			emit_table = std::move(emit_backlog);
 			emit_table->InitializeScan(emit_scan);
 			emit_active = true;
@@ -248,7 +267,7 @@ SourceResultType TrampolineState::GetData(ExecutionContext &execution_context, D
 			scan_ref.get().collection = *current_input;
 		}
 		op.ExecuteBranchPipelines(execution_context, branch_idx);
-		current_input.reset();
+		Recycle(std::move(current_input));
 		CloseExecution();
 	}
 	return SourceResultType::HAVE_MORE_OUTPUT;
@@ -306,36 +325,22 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 	auto &gstate = sink_state->Cast<TrampolineState>();
 	auto &scheduler = gstate.scheduler;
 
+	auto &branch = branch_pipelines[branch_idx - 1];
 	if (!Settings::Get<EnableCachingOperatorsSetting>(context.client)) {
 		scheduler.ClearExecutors();
 	}
-
-	vector<shared_ptr<MetaPipeline>> meta_pipelines;
-	meta_pipeline.GetMetaPipelines(meta_pipelines, true, false);
+	if (!gstate.prepared_executor_entries) {
+		for (auto &branch_entry : branch_pipelines) {
+			for (auto &pipeline : branch_entry.pipelines) {
+				scheduler.PrepareExecutorEntry(*pipeline);
+			}
+		}
+		gstate.prepared_executor_entries = true;
+	}
 
 	// reset every sink that belongs to the branch plan; the trampoline itself keeps its routed state
-	reference_map_t<const PhysicalOperator, idx_t> sink_producer_counts;
-	for (auto &branch_meta : meta_pipelines) {
-		vector<shared_ptr<Pipeline>> pipelines;
-		branch_meta->GetPipelines(pipelines, false);
-		for (auto &pipeline : pipelines) {
-			auto sink = pipeline->GetSink();
-			if (sink && sink.get() != this) {
-				sink_producer_counts[*sink]++;
-			}
-			scheduler.PrepareExecutorEntry(*pipeline);
-		}
-	}
-	reference_set_t<const PhysicalOperator> reset_sinks;
-	for (auto &branch_meta : meta_pipelines) {
-		vector<shared_ptr<Pipeline>> pipelines;
-		branch_meta->GetPipelines(pipelines, false);
-		for (auto &pipeline : pipelines) {
-			auto sink = pipeline->GetSink();
-			if (sink && sink.get() != this && reset_sinks.insert(*sink).second) {
-				pipeline->ResetSinkForReschedule(1, sink_producer_counts[*sink] == 1);
-			}
-		}
+	for (auto &sink_reset : branch.sink_resets) {
+		sink_reset.first->ResetSinkForReschedule(1, sink_reset.second);
 	}
 
 	for (auto &pipeline : plan.initialize_on_schedule_pipelines) {
@@ -399,6 +404,7 @@ void PhysicalTrampoline::BuildPipelines(Pipeline &current, MetaPipeline &meta_pi
 	branch_meta_pipelines.clear();
 	branch_schedule_plans.clear();
 	branch_recursive_scans.clear();
+	branch_pipelines.clear();
 	{
 		D_ASSERT(shared_executor_pool);
 		lock_guard<mutex> guard(shared_executor_pool->lock);
@@ -430,6 +436,32 @@ void PhysicalTrampoline::BuildPipelines(Pipeline &current, MetaPipeline &meta_pi
 		branch_meta_pipeline->GetMetaPipelines(branch_meta_pipelines_flat, true, false);
 		branch_schedule_plans.push_back(
 		    BuildRecursivePipelineSchedulePlan(branch_meta_pipelines_flat, no_invariant_pipelines, *this));
+
+		TrampolineBranchPipelines branch_entry;
+		reference_map_t<const PhysicalOperator, idx_t> sink_producer_counts;
+		reference_set_t<const Pipeline> seen_pipelines;
+		for (auto &flat_meta : branch_meta_pipelines_flat) {
+			vector<shared_ptr<Pipeline>> flat_pipelines;
+			flat_meta->GetPipelines(flat_pipelines, false);
+			for (auto &pipeline : flat_pipelines) {
+				if (!seen_pipelines.insert(*pipeline).second) {
+					continue;
+				}
+				auto sink = pipeline->GetSink();
+				if (sink && sink.get() != this) {
+					sink_producer_counts[*sink]++;
+				}
+				branch_entry.pipelines.push_back(pipeline);
+			}
+		}
+		reference_set_t<const PhysicalOperator> seen_sinks;
+		for (auto &pipeline : branch_entry.pipelines) {
+			auto sink = pipeline->GetSink();
+			if (sink && sink.get() != this && seen_sinks.insert(*sink).second) {
+				branch_entry.sink_resets.emplace_back(pipeline, sink_producer_counts[*sink] == 1);
+			}
+		}
+		branch_pipelines.push_back(std::move(branch_entry));
 		branch_meta_pipelines.push_back(std::move(branch_meta_pipeline));
 	}
 

@@ -15,8 +15,17 @@
 
 namespace duckdb {
 
+class Pipeline;
 class RecursiveCTEPipelineSchedulePlan;
 struct RecursiveExecutorPool;
+
+//! Per-branch pipeline bookkeeping precomputed at pipeline-construction time
+struct TrampolineBranchPipelines {
+	//! Every pipeline of the branch's meta pipelines, deduplicated
+	vector<shared_ptr<Pipeline>> pipelines;
+	//! One owning pipeline per distinct non-trampoline sink, with its single-producer flag
+	vector<pair<shared_ptr<Pipeline>, bool>> sink_resets;
+};
 
 //! Trampoline-style iteration: rows carry a selector column; selector 0 emits a
 //! row, selector t in 1..n routes it to branch plan t for the next round.
@@ -84,6 +93,8 @@ private:
 	vector<vector<reference<PhysicalColumnDataScan>>> branch_recursive_scans;
 	//! Cached schedule plan per branch
 	vector<unique_ptr<RecursiveCTEPipelineSchedulePlan>> branch_schedule_plans;
+	//! Precomputed pipeline and sink-reset lists per branch
+	vector<TrampolineBranchPipelines> branch_pipelines;
 	mutable shared_ptr<RecursiveExecutorPool> shared_executor_pool;
 
 	friend class TrampolineState;
