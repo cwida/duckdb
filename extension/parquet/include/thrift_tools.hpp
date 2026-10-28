@@ -135,6 +135,14 @@ struct ReadAheadBuffer {
 		}
 	}
 
+	// Add a read head whose bytes are already in memory; the caller keeps them alive while the head exists
+	void AddFilledReadHead(idx_t pos, uint64_t len, const_data_ptr_t data) {
+		read_heads.insert(read_heads.begin(), make_shared_ptr<ReadHead>(pos, len));
+		auto &read_head = *read_heads.front();
+		read_head.buffer_ptr = data;
+		read_head.data_isset = true;
+	}
+
 	// Returns the relevant read head
 	ReadHead *GetReadHead(idx_t pos, idx_t len = 1) {
 		optional_ptr<ReadHead> unfetched_head;
@@ -213,6 +221,11 @@ public:
 
 		location += len;
 		return len;
+	}
+
+	// Serve reads of [pos, pos + len) from bytes that are already in memory
+	void AddFilledReadHead(idx_t pos, uint64_t len, const_data_ptr_t data) {
+		ra_buffer.AddFilledReadHead(pos, len, data);
 	}
 
 	// Prefetch a single buffer

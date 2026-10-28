@@ -1,0 +1,145 @@
+# name: test/sql/copy/parquet/page_index/page_index_cache.test
+# description: Page-level reads with the external file cache: a scan after lookups does not download the file twice
+# group: [page_index]
+
+require parquet
+
+# the page row counts and boundaries below assume the default vector size
+require vector_size 2048
+
+statement ok
+SET threads = 1;
+
+statement ok
+SET parquet_prefetch_column_gap = 16384;
+
+statement ok
+SET cache_local_files = true;
+
+# three row groups of 100000 rows, BIGINT pages of 512 rows, a dictionary-encoded payload with ~2500-row pages;
+# two copies, so each sequence starts with an empty cache for its file
+statement ok
+CREATE TABLE data AS
+	SELECT range AS id, (range * 7919) % 100000 AS v, 'p' || (range % 5000)::VARCHAR AS payload,
+	       'str_' || lpad(range::VARCHAR, 6, '0') AS s
+	FROM range(300000);
+
+statement ok
+COPY data TO '{TEST_DIR}/page_index_cache_on.parquet' (ROW_GROUP_SIZE 100000, DATA_PAGE_SIZE_LIMIT 4096, WRITE_PAGE_INDEX true);
+
+statement ok
+COPY data TO '{TEST_DIR}/page_index_cache_off.parquet' (ROW_GROUP_SIZE 100000, DATA_PAGE_SIZE_LIMIT 4096, WRITE_PAGE_INDEX true);
+
+statement ok
+CREATE MACRO bytes_read(f) AS (SELECT coalesce(sum(bytes), 0) FROM duckdb_logs_parsed('FileSystem') WHERE op = 'READ' AND parse_filename(path) = f);
+
+statement ok
+CREATE MACRO cached_bytes(f) AS (SELECT coalesce(sum(nr_bytes), 0) FROM duckdb_external_file_cache() WHERE parse_filename(path) = f);
+
+# lookups, then a full scan, with the page index
+statement ok
+CALL enable_logging('FileSystem');
+
+query IIII
+SELECT id, v, payload, s FROM '{TEST_DIR}/page_index_cache_on.parquet' WHERE id = 177777
+----
+177777	16063	p2777	str_177777
+
+query IIII
+SELECT id, v, payload, s FROM '{TEST_DIR}/page_index_cache_on.parquet' WHERE id = 42
+----
+42	32598	p42	str_000042
+
+query IIII
+SELECT id, v, payload, s FROM '{TEST_DIR}/page_index_cache_on.parquet' WHERE id = 299999
+----
+299999	92081	p4999	str_299999
+
+statement ok
+CALL disable_logging();
+
+statement ok
+CREATE TABLE lookups_with AS SELECT bytes_read('page_index_cache_on.parquet') AS bytes;
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+CALL enable_logging('FileSystem');
+
+query IIII
+SELECT count(*), sum(v) = (SELECT sum(v) FROM data), max(payload), max(s) FROM '{TEST_DIR}/page_index_cache_on.parquet'
+----
+300000	true	p999	str_299999
+
+statement ok
+CALL disable_logging();
+
+statement ok
+CREATE TABLE scan_with AS SELECT bytes_read('page_index_cache_on.parquet') AS bytes, cached_bytes('page_index_cache_on.parquet') AS cached;
+
+statement ok
+CALL truncate_duckdb_logs();
+
+# the same sequence without the page index, on the second copy
+statement ok
+SET parquet_use_page_index = false;
+
+statement ok
+CALL enable_logging('FileSystem');
+
+query IIII
+SELECT id, v, payload, s FROM '{TEST_DIR}/page_index_cache_off.parquet' WHERE id = 177777
+----
+177777	16063	p2777	str_177777
+
+query IIII
+SELECT id, v, payload, s FROM '{TEST_DIR}/page_index_cache_off.parquet' WHERE id = 42
+----
+42	32598	p42	str_000042
+
+query IIII
+SELECT id, v, payload, s FROM '{TEST_DIR}/page_index_cache_off.parquet' WHERE id = 299999
+----
+299999	92081	p4999	str_299999
+
+statement ok
+CALL disable_logging();
+
+statement ok
+CREATE TABLE lookups_without AS SELECT bytes_read('page_index_cache_off.parquet') AS bytes;
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+CALL enable_logging('FileSystem');
+
+query IIII
+SELECT count(*), sum(v) = (SELECT sum(v) FROM data), max(payload), max(s) FROM '{TEST_DIR}/page_index_cache_off.parquet'
+----
+300000	true	p999	str_299999
+
+statement ok
+CALL disable_logging();
+
+statement ok
+CREATE TABLE scan_without AS SELECT bytes_read('page_index_cache_off.parquet') AS bytes, cached_bytes('page_index_cache_off.parquet') AS cached;
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+SET parquet_use_page_index = true;
+
+# the lookups read less with the index, and so does the whole sequence: the scan after the lookups re-reads the small
+# page blocks the lookups cached (the cache folds them into its larger reads), but not more than the whole file, and
+# the cache holds no duplicate bytes afterwards
+query IIII
+SELECT lookups_with.bytes < lookups_without.bytes,
+       scan_with.bytes <= (SELECT size FROM read_blob('{TEST_DIR}/page_index_cache_on.parquet')),
+       lookups_with.bytes + scan_with.bytes < lookups_without.bytes + scan_without.bytes,
+       scan_with.cached < (SELECT size * 1.05 FROM read_blob('{TEST_DIR}/page_index_cache_on.parquet'))
+FROM lookups_with, scan_with, lookups_without, scan_without
+----
+true	true	true	true
