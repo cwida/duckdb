@@ -252,7 +252,8 @@
         "test/sql/sql_export/correlated_metadata.test",
         "test/sql/sql_export/cte_result_matrices.test",
         "test/sql/sql_export/plan_reconstruction_coverage.test",
-        "test/sql/sql_export/recursive_payload_results.test"
+        "test/sql/sql_export/recursive_payload_results.test",
+        "test/sql/cte/trampoline/trampoline_explain_sql.test"
       ]
     },
     {
