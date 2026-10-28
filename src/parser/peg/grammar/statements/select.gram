@@ -31,11 +31,15 @@ SimpleSelect <- SelectFrom WhereClause? GroupByClause? HavingClause? WindowClaus
 SelectFrom <- SelectFromClause / FromSelectClause
 SelectFromClause <- SelectClause FromClause?
 FromSelectClause <- FromClause SelectClause?
-WithStatement <- ColIdOrString ColumnAliases? UsingKey? 'AS' Materialized? CTEBody
-CTEBody <- CTESelectBody / CTEDMLBody
+WithStatement <- ColIdOrString ColumnAliases? UsingKey? UsingTrampoline? 'AS' Materialized? CTEBody
+CTEBody <- CTETrampolineBody / CTESelectBody / CTEDMLBody
 CTESelectBody <- Parens(SelectStatementInternal)
 CTEDMLBody <- Parens(Statement)
+CTETrampolineBody <- Parens(TrampolineCTEBody)
+TrampolineCTEBody <- SelectParens TrampolineBranchClause+
+TrampolineBranchClause <- 'BRANCH' NumberLiteral ':' SelectParens
 UsingKey <- 'USING' 'KEY' Parens(TargetList)
+UsingTrampoline <- 'USING' 'TRAMPOLINE' Parens(ColId)
 Materialized <- 'NOT'? 'MATERIALIZED'
 WithClause <- 'WITH' Recursive? List(WithStatement)
 Recursive <- 'RECURSIVE'

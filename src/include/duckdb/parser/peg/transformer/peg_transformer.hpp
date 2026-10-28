@@ -186,6 +186,8 @@ DUCKDB_REGISTER_TRANSFORM_RESULT_TYPE("duckdb.transform_result.pair<QualifiedCol
                                       pair<QualifiedColumnName, string>);
 DUCKDB_REGISTER_TRANSFORM_RESULT_TYPE("duckdb.transform_result.pair<SampleMethod, optional_idx>",
                                       pair<SampleMethod, optional_idx>);
+DUCKDB_REGISTER_TRANSFORM_RESULT_TYPE("duckdb.transform_result.pair<idx_t, unique_ptr<SelectStatement>>",
+                                      pair<idx_t, unique_ptr<SelectStatement>>);
 DUCKDB_REGISTER_TRANSFORM_RESULT_TYPE("duckdb.transform_result.pair<string, bool>", pair<string, bool>);
 DUCKDB_REGISTER_TRANSFORM_RESULT_TYPE("duckdb.transform_result.pair<string, unique_ptr<ParsedExpression>>",
                                       pair<string, unique_ptr<ParsedExpression>>);
@@ -2362,6 +2364,10 @@ public:
 	                                                                       GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeCTEDMLBodyTrampoline(PEGTransformer &transformer,
 	                                                                    GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeTrampolineCTEBodyTrampoline(PEGTransformer &transformer,
+	                                                                           GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeTrampolineBranchClauseTrampoline(PEGTransformer &transformer,
+	                                                                                GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeUsingKeyTrampoline(PEGTransformer &transformer,
 	                                                                  GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeMaterializedTrampoline(PEGTransformer &transformer,
@@ -4211,14 +4217,19 @@ public:
 	static unique_ptr<SelectNode> TransformFromSelectClause(PEGTransformer &transformer,
 	                                                        unique_ptr<TableRef> from_clause,
 	                                                        optional<unique_ptr<SelectNode>> select_clause);
-	static pair<Identifier, unique_ptr<CommonTableExpressionInfo>>
-	TransformWithStatement(PEGTransformer &transformer, const Identifier &col_id_or_string,
-	                       const optional<vector<string>> &column_aliases,
-	                       optional<vector<unique_ptr<ParsedExpression>>> using_key, const optional<bool> &materialized,
-	                       unique_ptr<TableRef> cte_body);
+	static pair<Identifier, unique_ptr<CommonTableExpressionInfo>> TransformWithStatement(
+	    PEGTransformer &transformer, const Identifier &col_id_or_string, const optional<vector<string>> &column_aliases,
+	    optional<vector<unique_ptr<ParsedExpression>>> using_key, const optional<Identifier> &using_trampoline,
+	    const optional<bool> &materialized, unique_ptr<TableRef> cte_body);
 	static unique_ptr<TableRef> TransformCTESelectBody(PEGTransformer &transformer,
 	                                                   unique_ptr<SelectStatement> select_statement_internal);
 	static unique_ptr<TableRef> TransformCTEDMLBody(PEGTransformer &transformer, unique_ptr<SQLStatement> statement);
+	static unique_ptr<TableRef> TransformTrampolineCTEBody(PEGTransformer &transformer,
+	                                                       unique_ptr<SelectStatement> seed,
+	                                                       vector<pair<idx_t, unique_ptr<SelectStatement>>> branches);
+	static pair<idx_t, unique_ptr<SelectStatement>> TransformTrampolineBranchClause(PEGTransformer &transformer,
+	                                                                                unique_ptr<ParsedExpression> label,
+	                                                                                unique_ptr<SelectStatement> body);
 	static vector<unique_ptr<ParsedExpression>> TransformUsingKey(PEGTransformer &transformer,
 	                                                              vector<unique_ptr<ParsedExpression>> target_list);
 	static bool TransformMaterialized(PEGTransformer &transformer, const bool &has_result);

@@ -20,6 +20,8 @@
 #include "duckdb/parser/tableref/table_function_ref.hpp"
 #include "duckdb/parser/tableref/at_clause.hpp"
 #include "duckdb/parser/query_node/set_operation_node.hpp"
+#include "duckdb/parser/query_node/trampoline_cte_node.hpp"
+#include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/tableref/pivotref.hpp"
 #include "duckdb/parser/statement/insert_statement.hpp"
 #include "duckdb/parser/statement/update_statement.hpp"
@@ -1068,7 +1070,15 @@ PEGTransformerFactory::FinalizeWithClauseTrampoline(PEGTransformer &transformer,
 
 	auto entry_idx = process.manual_state;
 	auto with_entry = process.TakeResult<pair<Identifier, unique_ptr<CommonTableExpressionInfo>>>(entry_idx);
-	if (is_recursive) {
+	auto &entry_node = with_entry.second->query_node;
+	if (entry_node && entry_node->type == QueryNodeType::TRAMPOLINE_CTE_NODE) {
+		if (!is_recursive) {
+			throw ParserException("USING TRAMPOLINE requires WITH RECURSIVE");
+		}
+		auto &trampoline_node = entry_node->Cast<TrampolineCTENode>();
+		trampoline_node.ctename = with_entry.first;
+		trampoline_node.aliases = with_entry.second->aliases;
+	} else if (is_recursive) {
 		auto &query_node = with_entry.second->query_node;
 		if (!query_node) {
 			throw ParserException("Recursive CTEs with DML statements are not supported");
@@ -1098,6 +1108,7 @@ pair<Identifier, unique_ptr<CommonTableExpressionInfo>>
 PEGTransformerFactory::TransformWithStatement(PEGTransformer &transformer, const Identifier &col_id_or_string,
                                               const optional<vector<string>> &column_aliases,
                                               optional<vector<unique_ptr<ParsedExpression>>> using_key,
+                                              const optional<Identifier> &using_trampoline,
                                               const optional<bool> &materialized, unique_ptr<TableRef> cte_body) {
 	auto result = make_uniq<CommonTableExpressionInfo>();
 	auto cte_name = col_id_or_string;
@@ -1106,6 +1117,23 @@ PEGTransformerFactory::TransformWithStatement(PEGTransformer &transformer, const
 	}
 	if (using_key) {
 		result->key_targets = std::move(*using_key);
+	}
+	D_ASSERT(cte_body->type == TableReferenceType::SUBQUERY);
+	auto &body_node = *cte_body->Cast<SubqueryRef>().subquery->node;
+	const auto is_trampoline_body = body_node.type == QueryNodeType::TRAMPOLINE_CTE_NODE;
+	if (using_trampoline) {
+		if (!is_trampoline_body) {
+			throw ParserException("USING TRAMPOLINE requires a trampoline CTE body with BRANCH clauses");
+		}
+		if (using_key) {
+			throw ParserException("USING KEY and USING TRAMPOLINE cannot be combined");
+		}
+		if (materialized) {
+			throw ParserException("a TRAMPOLINE CTE cannot have a materialization hint");
+		}
+		body_node.Cast<TrampolineCTENode>().selector = *using_trampoline;
+	} else if (is_trampoline_body) {
+		throw ParserException("BRANCH clauses in a CTE require USING TRAMPOLINE");
 	}
 	if (materialized) {
 		// If this has a result, we know it is either NEVER or ALWAYS
@@ -1125,6 +1153,44 @@ unique_ptr<TableRef>
 PEGTransformerFactory::TransformCTESelectBody(PEGTransformer &transformer,
                                               unique_ptr<SelectStatement> select_statement_internal) {
 	return make_uniq<SubqueryRef>(std::move(select_statement_internal));
+}
+
+pair<idx_t, unique_ptr<SelectStatement>>
+PEGTransformerFactory::TransformTrampolineBranchClause(PEGTransformer &transformer, unique_ptr<ParsedExpression> label,
+                                                       unique_ptr<SelectStatement> body) {
+	if (label->GetExpressionType() != ExpressionType::VALUE_CONSTANT) {
+		throw ParserException(label->GetQueryLocation(), "BRANCH label must be an integer literal");
+	}
+	auto &label_value = label->Cast<ConstantExpression>().value;
+	if (!label_value.type().IsIntegral()) {
+		throw ParserException(label->GetQueryLocation(), "BRANCH label must be an integer literal");
+	}
+	auto label_number = label_value.GetValue<int64_t>();
+	if (label_number < 1) {
+		throw ParserException(label->GetQueryLocation(), "BRANCH labels start at 1; selector 0 emits a result row");
+	}
+	return make_pair(NumericCast<idx_t>(label_number), std::move(body));
+}
+
+unique_ptr<TableRef>
+PEGTransformerFactory::TransformTrampolineCTEBody(PEGTransformer &transformer, unique_ptr<SelectStatement> seed,
+                                                  vector<pair<idx_t, unique_ptr<SelectStatement>>> branches) {
+	auto node = make_uniq<TrampolineCTENode>();
+	node->seed = std::move(seed->node);
+	node->branches.resize(branches.size());
+	for (auto &branch : branches) {
+		if (branch.first > branches.size()) {
+			throw ParserException("BRANCH labels must form the contiguous range 1..%llu", branches.size());
+		}
+		auto &slot = node->branches[branch.first - 1];
+		if (slot) {
+			throw ParserException("duplicate BRANCH label %llu", branch.first);
+		}
+		slot = std::move(branch.second->node);
+	}
+	auto statement = make_uniq<SelectStatement>();
+	statement->node = std::move(node);
+	return make_uniq<SubqueryRef>(std::move(statement));
 }
 
 unique_ptr<TableRef> PEGTransformerFactory::TransformCTEDMLBody(PEGTransformer &transformer,

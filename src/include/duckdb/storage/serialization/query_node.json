@@ -181,6 +181,39 @@
     ]
   },
   {
+    "class": "TrampolineCTENode",
+    "base": "QueryNode",
+    "enum": "TRAMPOLINE_CTE_NODE",
+    "members": [
+      {
+        "id": 200,
+        "name": "cte_name",
+        "type": "Identifier",
+        "property": "ctename"
+      },
+      {
+        "id": 201,
+        "name": "selector",
+        "type": "Identifier"
+      },
+      {
+        "id": 202,
+        "name": "seed",
+        "type": "QueryNode*"
+      },
+      {
+        "id": 203,
+        "name": "branches",
+        "type": "vector<QueryNode*>"
+      },
+      {
+        "id": 204,
+        "name": "aliases",
+        "type": "vector<Identifier>"
+      }
+    ]
+  },
+  {
     "class": "CTENode",
     "base": "QueryNode",
     "enum": "CTE_NODE",

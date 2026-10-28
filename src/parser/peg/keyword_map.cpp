@@ -111,6 +111,7 @@ DefaultKeywordMaps DuckDBKeywordHelper::InitializeKeywordMaps() {
 	unreserved_keyword_map.insert("backward");
 	unreserved_keyword_map.insert("before");
 	unreserved_keyword_map.insert("begin");
+	unreserved_keyword_map.insert("branch");
 	unreserved_keyword_map.insert("cache");
 	unreserved_keyword_map.insert("call");
 	unreserved_keyword_map.insert("called");
@@ -394,6 +395,7 @@ DefaultKeywordMaps DuckDBKeywordHelper::InitializeKeywordMaps() {
 	unreserved_keyword_map.insert("temporary");
 	unreserved_keyword_map.insert("text");
 	unreserved_keyword_map.insert("ties");
+	unreserved_keyword_map.insert("trampoline");
 	unreserved_keyword_map.insert("transaction");
 	unreserved_keyword_map.insert("transform");
 	unreserved_keyword_map.insert("trigger");

@@ -3,6 +3,7 @@
 #include "duckdb/parser/query_node/select_node.hpp"
 #include "duckdb/parser/query_node/set_operation_node.hpp"
 #include "duckdb/parser/query_node/recursive_cte_node.hpp"
+#include "duckdb/parser/query_node/trampoline_cte_node.hpp"
 #include "duckdb/parser/query_node/cte_node.hpp"
 #include "duckdb/common/limits.hpp"
 #include "duckdb/parser/common_table_expression_info.hpp"
@@ -28,7 +29,8 @@ string CommonTableExpressionMap::ToString() const {
 	// check if there are any recursive CTEs
 	bool has_recursive = false;
 	for (auto &kv : map) {
-		if (kv.second->query_node && kv.second->query_node->type == QueryNodeType::RECURSIVE_CTE_NODE) {
+		if (kv.second->query_node && (kv.second->query_node->type == QueryNodeType::RECURSIVE_CTE_NODE ||
+		                              kv.second->query_node->type == QueryNodeType::TRAMPOLINE_CTE_NODE)) {
 			has_recursive = true;
 			break;
 		}
@@ -54,6 +56,10 @@ string CommonTableExpressionMap::ToString() const {
 				result += SQLIdentifier(cte.aliases[k]);
 			}
 			result += ")";
+		}
+		if (cte.query_node && cte.query_node->type == QueryNodeType::TRAMPOLINE_CTE_NODE) {
+			auto &trampoline_node = cte.query_node->Cast<TrampolineCTENode>();
+			result += " USING TRAMPOLINE (" + SQLIdentifier(trampoline_node.selector) + ")";
 		}
 		if (!cte.key_targets.empty()) {
 			result += " USING KEY (";
@@ -237,6 +243,18 @@ void QueryNode::VerifyDeserialized(const unique_ptr<QueryNode> &node) {
 		auto &cte_node = node->Cast<RecursiveCTENode>();
 		if (!cte_node.left || !cte_node.right) {
 			throw SerializationException("Failed to deserialize query node: missing recursive CTE child");
+		}
+		break;
+	}
+	case QueryNodeType::TRAMPOLINE_CTE_NODE: {
+		auto &cte_node = node->Cast<TrampolineCTENode>();
+		if (!cte_node.seed || cte_node.branches.empty()) {
+			throw SerializationException("Failed to deserialize query node: incomplete trampoline CTE");
+		}
+		for (auto &branch : cte_node.branches) {
+			if (!branch) {
+				throw SerializationException("Failed to deserialize query node: missing trampoline branch");
+			}
 		}
 		break;
 	}
