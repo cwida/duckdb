@@ -888,7 +888,8 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownAggregate(u
 		auto &aggr_expr = expr->Cast<BoundAggregateExpression>();
 		propagate_null_values &= !aggr_expr.IsVolatile() && aggr_expr.PropagatesNullValues();
 	}
-	auto result = PushDownChild(plan, propagate_null_values, std::move(state));
+	// the aggregate observes child row presence through groups, grouping sets and GROUPING()
+	auto result = PushDownChild(plan, false, std::move(state));
 
 	TableIndex delim_table_index;
 	idx_t delim_column_offset;
@@ -902,20 +903,27 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownAggregate(u
 		delim_table_index = aggr.group_index;
 		delim_column_offset = aggr.groups.size() - correlated_columns.size();
 	}
-	bool ungrouped_join = false;
+	// grouping sets that hold only the delim columns were originally empty - each one emits a row per delim key
+	idx_t empty_set_count = 0;
 	if (aggr.grouping_sets.empty()) {
-		ungrouped_join = aggr.groups.size() == new_group_count;
+		empty_set_count = aggr.groups.size() == new_group_count ? 1 : 0;
 	} else {
 		for (auto &grouping_set : aggr.grouping_sets) {
-			ungrouped_join |= grouping_set.size() == new_group_count;
+			if (grouping_set.size() == new_group_count) {
+				empty_set_count++;
+			}
 		}
 	}
-	if (!ungrouped_join) {
+	if (empty_set_count == 0) {
 		result.bindings = CreateContiguousState(ColumnBinding(delim_table_index, ProjectionIndex(delim_column_offset)));
 		return result;
 	}
 
-	auto join_type = !any_join && propagate_null_values ? JoinType::INNER : JoinType::LEFT;
+	// dropping missing keys is only equivalent when the single recovered row would be all-NULL:
+	// repeated empty sets need one row per set and GROUPING() outputs are non-NULL constants
+	auto drop_missing_keys =
+	    !any_join && propagate_null_values && empty_set_count == 1 && aggr.grouping_functions.empty();
+	auto join_type = drop_missing_keys ? JoinType::INNER : JoinType::LEFT;
 
 	unique_ptr<LogicalComparisonJoin> join = make_uniq<LogicalComparisonJoin>(join_type);
 	auto left_index = binder.GenerateTableIndex();
@@ -933,49 +941,123 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownAggregate(u
 	}
 	vector<ColumnBinding> special_handling_bindings;
 	vector<unique_ptr<Expression>> empty_aggregates;
+	vector<LogicalType> special_handling_types;
 	for (idx_t i = 0, aggregate_count = aggr.expressions.size(); i < aggregate_count; i++) {
 		D_ASSERT(aggr.expressions[i]->GetExpressionClass() == ExpressionClass::BOUND_AGGREGATE);
 		auto &bound_func = aggr.expressions[i]->Cast<BoundAggregateExpression>().Function();
 		if (bound_func.GetNullHandling() == FunctionNullHandling::SPECIAL_HANDLING) {
 			special_handling_bindings.emplace_back(aggr.aggregate_index, ProjectionIndex(i));
+			special_handling_types.push_back(aggr.expressions[i]->GetReturnType());
 			empty_aggregates.push_back(aggr.expressions[i]->Copy());
 		}
 	}
-	unique_ptr<LogicalOperator> empty_aggregate;
-	if (!empty_aggregates.empty()) {
-		aggr.children[0]->ResolveOperatorTypes();
-		auto child_bindings = aggr.children[0]->GetColumnBindings();
-		auto empty_input_bindings =
-		    LogicalOperator::GenerateColumnBindings(binder.GenerateTableIndex(), child_bindings.size());
-		auto empty_input = make_uniq<LogicalEmptyResult>(aggr.children[0]->types, empty_input_bindings);
-		auto empty_aggregate_index = binder.GenerateTableIndex();
-		auto aggregate = make_uniq<LogicalAggregate>(binder.GenerateTableIndex(), empty_aggregate_index,
-		                                             std::move(empty_aggregates));
-		ColumnBindingReplacer replacer;
-		replacer.AddReplacements(child_bindings, empty_input_bindings);
-		replacer.VisitOperatorBindings(*aggregate);
-		aggregate->children.push_back(std::move(empty_input));
-		empty_aggregate = std::move(aggregate);
-
+	// recovered rows belong to an originally empty grouping set: substitute empty-input aggregate values and
+	// GROUPING() masks, and emit one recovered row per empty grouping set
+	auto grouping_count = aggr.grouping_functions.size();
+	bool needs_empty_results = !empty_aggregates.empty() || grouping_count > 0;
+	bool needs_multiplier = empty_set_count > 1;
+	ColumnBinding marker_binding;
+	if (needs_empty_results || needs_multiplier) {
+		// recovered rows are detected by a NULL marker: count(*) is non-NULL for every aggregate row
 		auto marker_index = ProjectionIndex(aggr.expressions.size());
 		FunctionBinder function_binder(binder.context);
 		aggr.expressions.push_back(
 		    function_binder.BindAggregateFunction(GetBuiltinAggregateFunction(binder.context, CountStarFun::Name, {}),
 		                                          {}, nullptr, AggregateType::NON_DISTINCT));
-		auto marker_binding = ColumnBinding(aggr.aggregate_index, marker_index);
-		for (idx_t i = 0; i < special_handling_bindings.size(); i++) {
-			replacement_map[special_handling_bindings[i]] = {marker_binding,
-			                                                 ColumnBinding(empty_aggregate_index, ProjectionIndex(i))};
+		marker_binding = ColumnBinding(aggr.aggregate_index, marker_index);
+	}
+	unique_ptr<LogicalOperator> empty_results;
+	if (needs_empty_results) {
+		auto special_count = empty_aggregates.size();
+		unique_ptr<LogicalOperator> empty_child;
+		TableIndex empty_aggregate_index;
+		if (!empty_aggregates.empty()) {
+			aggr.children[0]->ResolveOperatorTypes();
+			auto child_bindings = aggr.children[0]->GetColumnBindings();
+			auto empty_input_bindings =
+			    LogicalOperator::GenerateColumnBindings(binder.GenerateTableIndex(), child_bindings.size());
+			auto empty_input = make_uniq<LogicalEmptyResult>(aggr.children[0]->types, empty_input_bindings);
+			empty_aggregate_index = binder.GenerateTableIndex();
+			auto aggregate = make_uniq<LogicalAggregate>(binder.GenerateTableIndex(), empty_aggregate_index,
+			                                             std::move(empty_aggregates));
+			ColumnBindingReplacer replacer;
+			replacer.AddReplacements(child_bindings, empty_input_bindings);
+			replacer.VisitOperatorBindings(*aggregate);
+			aggregate->children.push_back(std::move(empty_input));
+			empty_child = std::move(aggregate);
+		} else {
+			empty_child = make_uniq<LogicalDummyScan>(binder.GenerateTableIndex());
+		}
+		vector<ColumnBinding> empty_result_bindings;
+		if (grouping_count == 0) {
+			for (idx_t i = 0; i < special_count; i++) {
+				empty_result_bindings.emplace_back(empty_aggregate_index, ProjectionIndex(i));
+			}
+			empty_results = std::move(empty_child);
+		} else {
+			// project the empty-input aggregate values plus the GROUPING() masks of an empty grouping set
+			vector<unique_ptr<Expression>> empty_exprs;
+			for (idx_t i = 0; i < special_count; i++) {
+				empty_exprs.push_back(make_uniq<BoundColumnRefExpression>(
+				    special_handling_types[i], ColumnBinding(empty_aggregate_index, ProjectionIndex(i))));
+			}
+			for (auto &grouping_function : aggr.grouping_functions) {
+				int64_t grouping_value = 0;
+				for (idx_t i = 0; i < grouping_function.size(); i++) {
+					// no column of an empty grouping set is grouped
+					grouping_value += 1LL << (grouping_function.size() - (i + 1));
+				}
+				empty_exprs.push_back(make_uniq<BoundConstantExpression>(Value::BIGINT(grouping_value)));
+			}
+			auto empty_projection_index = binder.GenerateTableIndex();
+			auto empty_projection = make_uniq<LogicalProjection>(empty_projection_index, std::move(empty_exprs));
+			empty_projection->children.push_back(std::move(empty_child));
+			empty_results = std::move(empty_projection);
+			for (idx_t i = 0; i < special_count + grouping_count; i++) {
+				empty_result_bindings.emplace_back(empty_projection_index, ProjectionIndex(i));
+			}
+		}
+		for (idx_t i = 0; i < special_count; i++) {
+			replacement_map[special_handling_bindings[i]] = {marker_binding, empty_result_bindings[i]};
+		}
+		for (idx_t i = 0; i < grouping_count; i++) {
+			replacement_map[ColumnBinding(aggr.groupings_index, ProjectionIndex(i))] = {
+			    marker_binding, empty_result_bindings[special_count + i]};
 		}
 	}
 	plan = std::move(join);
-	if (empty_aggregate) {
+	if (empty_results) {
 		// The RHS always produces one row, making this equivalent to a cross product.
 		// Keep it non-reorderable because projection maps depend on the output order.
 		auto cross_product = make_uniq<LogicalComparisonJoin>(JoinType::LEFT);
 		cross_product->children.push_back(std::move(plan));
-		cross_product->children.push_back(std::move(empty_aggregate));
+		cross_product->children.push_back(std::move(empty_results));
 		plan = std::move(cross_product);
+	}
+	if (needs_multiplier) {
+		// repeat recovered rows once per empty grouping set: the all-NULL rows match every multiplier row,
+		// aggregate rows match none and are null-extended exactly once
+		auto multiplier_index = binder.GenerateTableIndex();
+		vector<LogicalType> multiplier_types {LogicalType::BIGINT};
+		vector<vector<unique_ptr<Expression>>> multiplier_rows;
+		for (idx_t i = 0; i < empty_set_count; i++) {
+			vector<unique_ptr<Expression>> multiplier_row;
+			multiplier_row.push_back(make_uniq<BoundConstantExpression>(Value(LogicalType::BIGINT)));
+			multiplier_rows.push_back(std::move(multiplier_row));
+		}
+		auto multiplier =
+		    make_uniq<LogicalExpressionGet>(multiplier_index, std::move(multiplier_types), std::move(multiplier_rows));
+		multiplier->children.push_back(make_uniq<LogicalDummyScan>(binder.GenerateTableIndex()));
+		auto multiplier_join = make_uniq<LogicalComparisonJoin>(JoinType::LEFT);
+		JoinCondition multiplier_condition(
+		    make_uniq<BoundColumnRefExpression>(LogicalType::BIGINT, marker_binding),
+		    make_uniq<BoundColumnRefExpression>(LogicalType::BIGINT,
+		                                        ColumnBinding(multiplier_index, ProjectionIndex(0))),
+		    ExpressionType::COMPARE_NOT_DISTINCT_FROM);
+		multiplier_join->conditions.push_back(std::move(multiplier_condition));
+		multiplier_join->children.push_back(std::move(plan));
+		multiplier_join->children.push_back(std::move(multiplier));
+		plan = std::move(multiplier_join);
 	}
 	result.bindings = CreateContiguousState(ColumnBinding(left_index, ProjectionIndex(0)));
 	return result;
@@ -1275,7 +1357,8 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownWindow(uniq
                                                                             bool propagate_null_values,
                                                                             vector<ColumnBinding> state) {
 	auto &window = plan->Cast<LogicalWindow>();
-	auto result = PushDownChild(plan, propagate_null_values, std::move(state));
+	// window functions such as row_number() observe child row presence
+	auto result = PushDownChild(plan, false, std::move(state));
 
 	for (auto &expr : window.expressions) {
 		D_ASSERT(expr->GetExpressionClass() == ExpressionClass::BOUND_WINDOW);
@@ -1298,7 +1381,8 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownSetOperatio
 	}
 #endif
 	for (auto &child : plan->children) {
-		auto child_state = PushDownCorrelatedNode(child, true, std::move(result.bindings));
+		// a dropped all-NULL branch row changes the cardinality observable alongside the other branches
+		auto child_state = PushDownCorrelatedNode(child, false, std::move(result.bindings));
 		result.bindings = child_state.bindings;
 		result.replacement_graph.Merge(child_state.replacement_graph);
 	}
@@ -1326,8 +1410,9 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownSetOperatio
 }
 
 FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownDistinct(unique_ptr<LogicalOperator> &plan,
+                                                                              bool propagate_null_values,
                                                                               vector<ColumnBinding> state) {
-	auto result = PushDownChild(plan, true, std::move(state), false);
+	auto result = PushDownChild(plan, propagate_null_values, std::move(state), false);
 	auto &distinct = plan->Cast<LogicalDistinct>();
 	AppendCorrelatedColumns(distinct.distinct_targets, result.bindings, false);
 	return result;
@@ -1422,7 +1507,8 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownCTE(unique_
 	}
 
 	auto old_left_bindings = plan->children[0]->GetColumnBindings();
-	auto result = PushDownCorrelatedNode(plan->children[0], propagate_null_values, std::move(state));
+	// the CTE definition is scanned in contexts this chain does not see
+	auto result = PushDownCorrelatedNode(plan->children[0], false, std::move(state));
 	ColumnBindingRewrite::ApplyToChild(plan, 0, std::move(old_left_bindings), result.replacement_graph);
 
 	auto &cte = plan->Cast<LogicalCTE>();
@@ -1558,16 +1644,17 @@ FlattenDependentJoins::PushDownCorrelatedNodeInternal(unique_ptr<LogicalOperator
 		return PushDownAggregate(plan, propagate_null_values, std::move(state));
 	}
 	case LogicalOperatorType::LOGICAL_CROSS_PRODUCT: {
-		return PushDownCrossProduct(plan, propagate_null_values, std::move(state));
+		// a dropped all-NULL row multiplies with the other side's rows, which are not all-NULL
+		return PushDownCrossProduct(plan, false, std::move(state));
 	}
 	case LogicalOperatorType::LOGICAL_DEPENDENT_JOIN: {
 		D_ASSERT(plan->children.size() == 2);
-		return DecorrelateSubtree(plan, propagate_null_values, std::move(state));
+		return DecorrelateSubtree(plan, false, std::move(state));
 	}
 	case LogicalOperatorType::LOGICAL_ANY_JOIN:
 	case LogicalOperatorType::LOGICAL_ASOF_JOIN:
 	case LogicalOperatorType::LOGICAL_COMPARISON_JOIN: {
-		return PushDownJoin(plan, propagate_null_values, std::move(state));
+		return PushDownJoin(plan, false, std::move(state));
 	}
 	case LogicalOperatorType::LOGICAL_LIMIT: {
 		return PushDownLimit(plan, propagate_null_values, std::move(state));
@@ -1581,20 +1668,22 @@ FlattenDependentJoins::PushDownCorrelatedNodeInternal(unique_ptr<LogicalOperator
 		return PushDownSetOperation(plan, std::move(state));
 	}
 	case LogicalOperatorType::LOGICAL_DISTINCT: {
-		return PushDownDistinct(plan, std::move(state));
+		return PushDownDistinct(plan, propagate_null_values, std::move(state));
 	}
 	case LogicalOperatorType::LOGICAL_EXPRESSION_GET: {
-		return PushDownExpressionGet(plan, propagate_null_values, std::move(state));
+		// emits its expression rows once per child row
+		return PushDownExpressionGet(plan, false, std::move(state));
 	}
 	case LogicalOperatorType::LOGICAL_INSERT:
 	case LogicalOperatorType::LOGICAL_UPDATE:
 	case LogicalOperatorType::LOGICAL_DELETE: {
-		return PushDownDML(plan, propagate_null_values, std::move(state));
+		// the modified row count is a side effect
+		return PushDownDML(plan, false, std::move(state));
 	}
 	case LogicalOperatorType::LOGICAL_PIVOT:
 		throw BinderException("PIVOT is not supported in correlated subqueries yet");
 	case LogicalOperatorType::LOGICAL_ORDER_BY: {
-		return PushDownChild(plan, true, std::move(state));
+		return PushDownChild(plan, propagate_null_values, std::move(state));
 	}
 	case LogicalOperatorType::LOGICAL_GET: {
 		return PushDownGet(plan, std::move(state));
