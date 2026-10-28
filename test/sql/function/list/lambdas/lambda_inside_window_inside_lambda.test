@@ -1,0 +1,219 @@
+# name: test/sql/function/list/lambdas/lambda_inside_window_inside_lambda.test
+# description: A lambda function inside a window function inside a lambda is not passed the parameters of the enclosing lambda
+# group: [lambdas]
+
+# the window function is computed over the rows of the query, outside the enclosing lambda
+query I
+SELECT list_transform([1], lambda x: min(list_transform([1], lambda y: y)) OVER ()) AS r;
+----
+[[1]]
+
+query I
+SELECT list_transform([1], lambda x: min(list_transform([1], lambda y: y)) OVER ()) AS r FROM range(3);
+----
+[[1]]
+[[1]]
+[[1]]
+
+statement error
+SELECT list_transform([1], lambda x: min(list_transform([1], lambda y: y + x)) OVER ()) AS r;
+----
+window functions cannot reference lambda parameters
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES ([1, 2], 10, 100), ([3], 20, 200), ([0, 5, 6], 30, 300)) v(l, c, d);
+
+# the lambda inside the window function captures columns of the query
+query I
+SELECT list_transform([1], lambda x: sum(list_transform(l, lambda y: y + c)[1]) OVER ()) FROM t;
+----
+[64]
+[64]
+[64]
+
+query I
+SELECT list_transform([1], lambda x: sum(c) OVER ()) FROM t;
+----
+[60]
+[60]
+[60]
+
+query I
+SELECT list_transform([1], lambda x: max(list_transform(l, lambda y: y * d + c)) OVER ()) FROM t;
+----
+[[620]]
+[[620]]
+[[620]]
+
+# the enclosing lambda uses its parameter next to the window function
+query I
+SELECT list_transform([1, 2], lambda x: x + row_number() OVER (ORDER BY c)) FROM t ORDER BY c;
+----
+[2, 3]
+[3, 4]
+[4, 5]
+
+query I
+SELECT list_transform([1], lambda x: sum(list_transform(l, lambda y: y + c)[1]) OVER () + d) FROM t ORDER BY d;
+----
+[164]
+[264]
+[364]
+
+# partitions, orders and frames
+query I
+SELECT list_transform([1], lambda x: sum(list_transform(l, lambda y: y + c)[1]) OVER (PARTITION BY d % 200 ORDER BY d)) FROM t ORDER BY d;
+----
+[11]
+[23]
+[41]
+
+query I
+SELECT list_transform([1], lambda x: sum(list_transform(l, lambda y: y + c)[1]) OVER (ORDER BY d ROWS BETWEEN 1 PRECEDING AND CURRENT ROW)) FROM t ORDER BY d;
+----
+[11]
+[34]
+[53]
+
+query I
+SELECT list_transform([1], lambda x: lag(list_transform(l, lambda y: y + c)[1]) OVER (ORDER BY d)) FROM t ORDER BY d;
+----
+[NULL]
+[11]
+[23]
+
+query I
+SELECT list_transform([1], lambda x: sum(list_transform(l, lambda y: y + c)[1]) FILTER (WHERE d > 100) OVER ()) FROM t;
+----
+[53]
+[53]
+[53]
+
+# two enclosing lambdas
+query I
+SELECT list_transform([1], lambda x: list_transform([2, 3], lambda z: z + sum(list_transform(l, lambda y: y + c)[1]) OVER ())) FROM t;
+----
+[[66, 67]]
+[[66, 67]]
+[[66, 67]]
+
+# the window function next to a lambda of the enclosing lambda
+query I
+SELECT list_transform([1], lambda x: list_transform(l, lambda y: y + sum(list_transform(l, lambda z: z + c)[1]) OVER ())) FROM t ORDER BY c;
+----
+[[65, 66]]
+[[67]]
+[[64, 69, 70]]
+
+# a lambda nested inside the window function's lambda still sees that lambda's parameter
+query I
+SELECT list_transform([1], lambda x: min(list_transform(l, lambda y: list_transform([1, 2], lambda z: z * y + c))) OVER ()) FROM t;
+----
+[[[11, 12], [12, 14]]]
+[[[11, 12], [12, 14]]]
+[[[11, 12], [12, 14]]]
+
+query I
+SELECT c FROM t QUALIFY list_transform([1], lambda x: sum(list_transform(l, lambda y: y + c)[1]) OVER ())[1] = 64 ORDER BY c;
+----
+10
+20
+30
+
+query II
+SELECT c % 20, list_transform([1], lambda x: sum(max(list_transform(l, lambda y: y + d)[1])) OVER ()) FROM t GROUP BY 1 ORDER BY 1;
+----
+0	[503]
+10	[503]
+
+# a macro standing for an aggregate is unfolded first, and what it adds around the aggregate is inside the lambda
+statement ok
+CREATE MACRO m(a, b) AS sum(a) + b;
+
+query I
+SELECT list_transform([1, 2], lambda x: m(c, x) OVER ()) FROM t;
+----
+[61, 62]
+[61, 62]
+[61, 62]
+
+query I
+SELECT list_transform([1, 2], lambda x: m(c, x) FILTER (WHERE c > 10) OVER ()) FROM t;
+----
+[51, 52]
+[51, 52]
+[51, 52]
+
+query I
+SELECT list_transform([1], lambda x: count(DISTINCT list_transform(l, lambda y: y + c)[1] % 2) OVER ()) FROM t;
+----
+[2]
+[2]
+[2]
+
+# no part of the window function can reference the parameters of the enclosing lambda
+statement error
+SELECT list_transform([1], lambda x: sum(list_transform(l, lambda y: y + x)[1]) OVER ()) FROM t;
+----
+window functions cannot reference lambda parameters
+
+statement error
+SELECT list_transform([1], lambda x: sum(x) OVER ()) FROM t;
+----
+window functions cannot reference lambda parameters
+
+statement error
+SELECT list_transform([1], lambda x: sum(c) OVER (PARTITION BY x)) FROM t;
+----
+window functions cannot reference lambda parameters
+
+statement error
+SELECT list_transform([1], lambda x: sum(c) OVER (ORDER BY x)) FROM t;
+----
+window functions cannot reference lambda parameters
+
+statement error
+SELECT list_transform([1], lambda x: sum(c) FILTER (WHERE x > 0) OVER ()) FROM t;
+----
+window functions cannot reference lambda parameters
+
+statement error
+SELECT list_transform([1], lambda x: sum(c) OVER (ROWS BETWEEN x PRECEDING AND CURRENT ROW)) FROM t;
+----
+window functions cannot reference lambda parameters
+
+statement error
+SELECT list_transform([1], lambda x: sum(list_transform(l, lambda y: y + c)[1]) OVER (ORDER BY list_transform(l, lambda y: y + x)[1])) FROM t;
+----
+window functions cannot reference lambda parameters
+
+statement error
+SELECT list_transform([1], lambda x: list_transform([2], lambda z: sum(list_transform(l, lambda y: y + z)[1]) OVER ())) FROM t;
+----
+window functions cannot reference lambda parameters
+
+# the aggregate inside the window function is computed outside the lambda as well
+statement error
+SELECT list_transform([1], lambda x: sum(max(list_transform(l, lambda y: y + x)[1])) OVER ()) FROM t;
+----
+cannot reference lambda parameters
+
+statement error
+SELECT list_transform([1], lambda x: lag(c, x) OVER (ORDER BY c)) FROM t;
+----
+window functions cannot reference lambda parameters
+
+statement error
+SELECT list_transform([1], lambda x: lag(c, 1, x) OVER (ORDER BY c)) FROM t;
+----
+window functions cannot reference lambda parameters
+
+statement error
+SELECT list_transform([1], lambda x: sum(DISTINCT x) OVER ()) FROM t;
+----
+window functions cannot reference lambda parameters
+
+statement error
+SELECT list_transform([1, 2], lambda x: m(x, c) OVER ()) FROM t;
+----
+window functions cannot reference lambda parameters

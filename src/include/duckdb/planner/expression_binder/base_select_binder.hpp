@@ -60,6 +60,8 @@ protected:
 	bool inside_aggregate = false;
 	bool bound_aggregate = false;
 	bool inside_aggregate_filter = false;
+	//! What a window function is called in errors: the aggregate of a MATCH_RECOGNIZE measure is bound as one
+	const char *window_function_kind = "window functions";
 
 	BoundSelectNode &node;
 };

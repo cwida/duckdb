@@ -13,7 +13,7 @@
 namespace duckdb {
 
 //! The number of parameters of the enclosing lambdas that are passed to a nested lambda function, i.e. without the
-//! parameters of the lambdas enclosing an aggregate
+//! parameters of the lambdas enclosing an aggregate or window function
 static idx_t GetLambdaParamCount(vector<DummyBinding> &lambda_bindings, idx_t inaccessible_lambda_binding_count) {
 	idx_t count = 0;
 	for (idx_t i = inaccessible_lambda_binding_count; i < lambda_bindings.size(); i++) {

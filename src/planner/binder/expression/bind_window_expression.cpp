@@ -170,6 +170,7 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 	// consumer; nested subqueries in them bind as plain subqueries
 	const auto save_transport_try_errors = transport_try_errors;
 	transport_try_errors = false;
+	InaccessibleLambdaBindings inaccessible_lambdas(*this, window_function_kind);
 	ErrorData error;
 	vector<unique_ptr<Expression>> bound_args;
 	for (auto &child : window.GetArgumentsMutable()) {

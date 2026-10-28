@@ -120,6 +120,21 @@ public:
 	optional_ptr<vector<DummyBinding>> lambda_bindings;
 	//! The number of (outer) lambda bindings whose parameters can not be referenced, e.g. inside an aggregate
 	idx_t inaccessible_lambda_binding_count = 0;
+	//! The kind of function the inaccessible lambda bindings are enclosing, for the error message
+	const char *inaccessible_lambda_binding_kind = "aggregate functions";
+
+	//! Marks the enclosing lambdas inaccessible while an aggregate, window function or row pattern navigation is bound:
+	//! it is computed over the rows of the query, not over the elements the lambdas are applied to
+	class InaccessibleLambdaBindings {
+	public:
+		InaccessibleLambdaBindings(ExpressionBinder &binder, const char *function_kind);
+		~InaccessibleLambdaBindings();
+
+	private:
+		ExpressionBinder &binder;
+		idx_t previous_count;
+		const char *previous_kind;
+	};
 
 public:
 	unique_ptr<Expression> Bind(unique_ptr<ParsedExpression> &expr, optional_ptr<LogicalType> result_type = nullptr,

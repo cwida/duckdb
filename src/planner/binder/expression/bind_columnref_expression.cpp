@@ -66,10 +66,29 @@ void ExpressionBinder::QualifyColumnNames(ExpressionBinder &expression_binder, u
 	qualifier.QualifyColumnNames(expr, lambda_params);
 }
 
+ExpressionBinder::InaccessibleLambdaBindings::InaccessibleLambdaBindings(ExpressionBinder &binder_p,
+                                                                         const char *function_kind)
+    : binder(binder_p), previous_count(binder_p.inaccessible_lambda_binding_count),
+      previous_kind(binder_p.inaccessible_lambda_binding_kind) {
+	const idx_t count = binder.lambda_bindings ? binder.lambda_bindings->size() : 0;
+	if (count <= binder.inaccessible_lambda_binding_count) {
+		// already inaccessible (e.g. an aggregate inside a window function): the outer function is the one computed
+		// outside the lambdas, and the error names it
+		return;
+	}
+	binder.inaccessible_lambda_binding_count = count;
+	binder.inaccessible_lambda_binding_kind = function_kind;
+}
+
+ExpressionBinder::InaccessibleLambdaBindings::~InaccessibleLambdaBindings() {
+	binder.inaccessible_lambda_binding_count = previous_count;
+	binder.inaccessible_lambda_binding_kind = previous_kind;
+}
+
 BindResult ExpressionBinder::BindExpression(LambdaRefExpression &lambda_ref, idx_t depth) {
 	D_ASSERT(lambda_bindings && lambda_ref.LambdaIndex() < lambda_bindings->size());
 	if (lambda_ref.LambdaIndex() < inaccessible_lambda_binding_count) {
-		throw BinderException(lambda_ref, "aggregate functions cannot reference lambda parameters");
+		throw BinderException(lambda_ref, "%s cannot reference lambda parameters", inaccessible_lambda_binding_kind);
 	}
 	return (*lambda_bindings)[lambda_ref.LambdaIndex()].Bind(lambda_ref, depth);
 }
