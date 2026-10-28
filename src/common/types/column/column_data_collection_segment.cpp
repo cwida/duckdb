@@ -9,6 +9,7 @@
 #include "duckdb/common/types/column/column_data_collection_segment.hpp"
 
 #include "duckdb/common/vector_operations/vector_operations.hpp"
+#include "duckdb/storage/buffer_manager.hpp"
 
 namespace duckdb {
 
