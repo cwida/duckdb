@@ -182,6 +182,9 @@ unique_ptr<LogicalOperator> LogicalOperator::Deserialize(Deserializer &deseriali
 	case LogicalOperatorType::LOGICAL_TOP_N:
 		result = LogicalTopN::Deserialize(deserializer);
 		break;
+	case LogicalOperatorType::LOGICAL_TRAMPOLINE:
+		result = LogicalTrampoline::Deserialize(deserializer);
+		break;
 	case LogicalOperatorType::LOGICAL_TRANSACTION:
 		result = LogicalTransaction::Deserialize(deserializer);
 		break;
@@ -915,6 +918,23 @@ unique_ptr<LogicalOperator> LogicalTopN::Deserialize(Deserializer &deserializer)
 	auto offset = deserializer.ReadPropertyWithDefault<idx_t>(202, "offset");
 	auto result = duckdb::unique_ptr<LogicalTopN>(new LogicalTopN(std::move(orders), limit, offset));
 	deserializer.ReadPropertyWithExplicitDefault<optional_idx>(203, "unpruned_offset", result->unpruned_offset, optional_idx());
+	return std::move(result);
+}
+
+void LogicalTrampoline::Serialize(Serializer &serializer) const {
+	LogicalOperator::Serialize(serializer);
+	serializer.WritePropertyWithDefault<Identifier>(200, "ctename", ctename);
+	serializer.WritePropertyWithDefault<TableIndex>(201, "table_index", table_index);
+	serializer.WritePropertyWithDefault<idx_t>(202, "column_count", column_count);
+	serializer.WritePropertyWithDefault<idx_t>(203, "selector_idx", selector_idx);
+}
+
+unique_ptr<LogicalOperator> LogicalTrampoline::Deserialize(Deserializer &deserializer) {
+	auto result = duckdb::unique_ptr<LogicalTrampoline>(new LogicalTrampoline());
+	deserializer.ReadPropertyWithDefault<Identifier>(200, "ctename", result->ctename);
+	deserializer.ReadPropertyWithDefault<TableIndex>(201, "table_index", result->table_index);
+	deserializer.ReadPropertyWithDefault<idx_t>(202, "column_count", result->column_count);
+	deserializer.ReadPropertyWithDefault<idx_t>(203, "selector_idx", result->selector_idx);
 	return std::move(result);
 }
 

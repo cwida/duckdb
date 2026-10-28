@@ -183,6 +183,7 @@ protected:
 	PhysicalOperator &CreatePlan(LogicalVacuum &op);
 	PhysicalOperator &CreatePlan(LogicalUnnest &op);
 	PhysicalOperator &CreatePlan(LogicalRecursiveCTE &op);
+	PhysicalOperator &CreatePlan(LogicalTrampoline &op);
 	PhysicalOperator &CreatePlan(LogicalMaterializedCTE &op);
 	PhysicalOperator &CreatePlan(LogicalCTERef &op);
 	PhysicalOperator &CreatePlan(LogicalPivot &op);

@@ -1,0 +1,52 @@
+//===----------------------------------------------------------------------===//
+//                         DuckDB
+//
+// duckdb/planner/operator/logical_trampoline.hpp
+//
+//
+//===----------------------------------------------------------------------===//
+
+#pragma once
+
+#include "duckdb/planner/operator/logical_cte.hpp"
+#include "duckdb/planner/logical_operator.hpp"
+#include "duckdb/planner/binder.hpp"
+
+namespace duckdb {
+
+//! Trampoline-style iteration: children[0] is the seed, children[1..n] are the
+//! branch plans. Rows are routed between branches by the selector column.
+class LogicalTrampoline : public LogicalCTE {
+	LogicalTrampoline();
+
+public:
+	static constexpr const LogicalOperatorType TYPE = LogicalOperatorType::LOGICAL_TRAMPOLINE;
+
+public:
+	LogicalTrampoline(Identifier ctename_p, TableIndex table_index, idx_t column_count, idx_t selector_idx,
+	                  unique_ptr<LogicalOperator> seed, vector<unique_ptr<LogicalOperator>> branches);
+
+	//! Index of the selector column in the trampoline schema
+	idx_t selector_idx;
+
+public:
+	InsertionOrderPreservingMap<string> ParamsToString() const override;
+
+	vector<ColumnBinding> GetColumnBindings() override {
+		return GenerateColumnBindings(table_index, column_count);
+	}
+
+	void Serialize(Serializer &serializer) const override;
+	static unique_ptr<LogicalOperator> Deserialize(Deserializer &deserializer);
+
+	vector<TableIndex> GetTableIndex() const override;
+	string GetName() const override;
+
+	idx_t BranchCount() const {
+		return children.size() - 1;
+	}
+
+protected:
+	void ResolveTypes() override;
+};
+} // namespace duckdb

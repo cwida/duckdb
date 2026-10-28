@@ -830,6 +830,18 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 		}
 		return;
 	}
+	case LogicalOperatorType::LOGICAL_TRAMPOLINE: {
+		if (analyze) {
+			LogicalOperatorVisitor::VisitOperatorExpressions(op);
+			for (auto &child : op.children) {
+				RemoveUnusedColumns remove(*this, true);
+				remove.VisitOperator(child);
+			}
+			return;
+		}
+		everything_referenced = true;
+		break;
+	}
 	case LogicalOperatorType::LOGICAL_RECURSIVE_CTE: {
 		if (analyze) {
 			LogicalOperatorVisitor::VisitOperatorExpressions(op);

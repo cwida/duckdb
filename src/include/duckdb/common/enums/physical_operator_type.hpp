@@ -72,6 +72,7 @@ enum class PhysicalOperatorType : uint8_t {
 	RECURSIVE_CTE,
 	RECURSIVE_KEY_CTE,
 	CTE,
+	TRAMPOLINE,
 
 	// -----------------------------
 	// Updates

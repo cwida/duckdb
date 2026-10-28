@@ -700,6 +700,33 @@
     ]
   },
   {
+    "class": "LogicalTrampoline",
+    "base": "LogicalOperator",
+    "enum": "LOGICAL_TRAMPOLINE",
+    "members": [
+      {
+        "id": 200,
+        "name": "ctename",
+        "type": "Identifier"
+      },
+      {
+        "id": 201,
+        "name": "table_index",
+        "type": "TableIndex"
+      },
+      {
+        "id": 202,
+        "name": "column_count",
+        "type": "idx_t"
+      },
+      {
+        "id": 203,
+        "name": "selector_idx",
+        "type": "idx_t"
+      }
+    ]
+  },
+  {
     "class": "LogicalMaterializedCTE",
     "base": "LogicalOperator",
     "enum": "LOGICAL_MATERIALIZED_CTE",

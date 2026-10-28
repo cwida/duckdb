@@ -184,6 +184,8 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlanInternal(LogicalOperator &op)
 		return CreatePlan(op.Cast<LogicalExternalResource>());
 	case LogicalOperatorType::LOGICAL_RECURSIVE_CTE:
 		return CreatePlan(op.Cast<LogicalRecursiveCTE>());
+	case LogicalOperatorType::LOGICAL_TRAMPOLINE:
+		return CreatePlan(op.Cast<LogicalTrampoline>());
 	case LogicalOperatorType::LOGICAL_MATERIALIZED_CTE:
 		return CreatePlan(op.Cast<LogicalMaterializedCTE>());
 	case LogicalOperatorType::LOGICAL_CTE_REF:

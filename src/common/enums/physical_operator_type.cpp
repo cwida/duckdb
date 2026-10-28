@@ -107,6 +107,8 @@ string PhysicalOperatorToString(PhysicalOperatorType type) {
 		return "VACUUM";
 	case PhysicalOperatorType::RECURSIVE_CTE:
 		return "REC_CTE";
+	case PhysicalOperatorType::TRAMPOLINE:
+		return "TRAMPOLINE";
 	case PhysicalOperatorType::RECURSIVE_KEY_CTE:
 		return "REC_KEY_CTE";
 	case PhysicalOperatorType::CTE:

@@ -96,6 +96,8 @@ string LogicalOperatorToString(LogicalOperatorType type) {
 		return "REC_CTE";
 	case LogicalOperatorType::LOGICAL_MATERIALIZED_CTE:
 		return "CTE";
+	case LogicalOperatorType::LOGICAL_TRAMPOLINE:
+		return "TRAMPOLINE";
 	case LogicalOperatorType::LOGICAL_CTE_REF:
 		return "CTE_SCAN";
 	case LogicalOperatorType::LOGICAL_ALTER:

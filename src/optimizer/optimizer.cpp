@@ -159,7 +159,8 @@ static bool ContainsDataSource(const LogicalOperator &op) {
 // table statistics and is deliberately excluded here.
 static bool CTEContainsDML(const LogicalOperator &op) {
 	if (op.type == LogicalOperatorType::LOGICAL_MATERIALIZED_CTE ||
-	    op.type == LogicalOperatorType::LOGICAL_RECURSIVE_CTE) {
+	    op.type == LogicalOperatorType::LOGICAL_RECURSIVE_CTE ||
+	    op.type == LogicalOperatorType::LOGICAL_TRAMPOLINE) {
 		if (!op.children.empty() && ContainsDML(*op.children[0])) {
 			return true;
 		}

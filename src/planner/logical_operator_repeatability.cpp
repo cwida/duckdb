@@ -84,6 +84,7 @@ static LogicalOperatorRepeatability ClassifyOperatorType(LogicalOperator &op) {
 	case LogicalOperatorType::LOGICAL_POSITIONAL_JOIN:
 	case LogicalOperatorType::LOGICAL_DEPENDENT_JOIN:
 	case LogicalOperatorType::LOGICAL_RECURSIVE_CTE:
+	case LogicalOperatorType::LOGICAL_TRAMPOLINE:
 	case LogicalOperatorType::LOGICAL_INSERT:
 	case LogicalOperatorType::LOGICAL_DELETE:
 	case LogicalOperatorType::LOGICAL_UPDATE:

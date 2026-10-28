@@ -36,6 +36,7 @@
 #include "duckdb/planner/operator/logical_prepare.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
 #include "duckdb/planner/operator/logical_recursive_cte.hpp"
+#include "duckdb/planner/operator/logical_trampoline.hpp"
 #include "duckdb/planner/operator/logical_reset.hpp"
 #include "duckdb/planner/operator/logical_sample.hpp"
 #include "duckdb/planner/operator/logical_secure_view.hpp"

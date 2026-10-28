@@ -61,6 +61,7 @@ enum class LogicalOperatorType : uint8_t {
 	LOGICAL_INTERSECT = 77,
 	LOGICAL_RECURSIVE_CTE = 78,
 	LOGICAL_MATERIALIZED_CTE = 79,
+	LOGICAL_TRAMPOLINE = 80,
 
 	// -----------------------------
 	// Updates

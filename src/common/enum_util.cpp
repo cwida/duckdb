@@ -3811,6 +3811,7 @@ const StringUtil::EnumStringLiteral *GetLogicalOperatorTypeValues() {
 		{ static_cast<uint32_t>(LogicalOperatorType::LOGICAL_INTERSECT), "LOGICAL_INTERSECT" },
 		{ static_cast<uint32_t>(LogicalOperatorType::LOGICAL_RECURSIVE_CTE), "LOGICAL_RECURSIVE_CTE" },
 		{ static_cast<uint32_t>(LogicalOperatorType::LOGICAL_MATERIALIZED_CTE), "LOGICAL_MATERIALIZED_CTE" },
+		{ static_cast<uint32_t>(LogicalOperatorType::LOGICAL_TRAMPOLINE), "LOGICAL_TRAMPOLINE" },
 		{ static_cast<uint32_t>(LogicalOperatorType::LOGICAL_INSERT), "LOGICAL_INSERT" },
 		{ static_cast<uint32_t>(LogicalOperatorType::LOGICAL_DELETE), "LOGICAL_DELETE" },
 		{ static_cast<uint32_t>(LogicalOperatorType::LOGICAL_UPDATE), "LOGICAL_UPDATE" },
@@ -3850,12 +3851,12 @@ const StringUtil::EnumStringLiteral *GetLogicalOperatorTypeValues() {
 
 template<>
 const char* EnumUtil::ToChars<LogicalOperatorType>(LogicalOperatorType value) {
-	return StringUtil::EnumToString(GetLogicalOperatorTypeValues(), 68, "LogicalOperatorType", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetLogicalOperatorTypeValues(), 69, "LogicalOperatorType", static_cast<uint32_t>(value));
 }
 
 template<>
 LogicalOperatorType EnumUtil::FromString<LogicalOperatorType>(const char *value) {
-	return static_cast<LogicalOperatorType>(StringUtil::StringToEnum(GetLogicalOperatorTypeValues(), 68, "LogicalOperatorType", value));
+	return static_cast<LogicalOperatorType>(StringUtil::StringToEnum(GetLogicalOperatorTypeValues(), 69, "LogicalOperatorType", value));
 }
 
 const StringUtil::EnumStringLiteral *GetLogicalPlanVerificationIssueCodeValues() {
@@ -5028,6 +5029,7 @@ const StringUtil::EnumStringLiteral *GetPhysicalOperatorTypeValues() {
 		{ static_cast<uint32_t>(PhysicalOperatorType::RECURSIVE_CTE), "RECURSIVE_CTE" },
 		{ static_cast<uint32_t>(PhysicalOperatorType::RECURSIVE_KEY_CTE), "RECURSIVE_KEY_CTE" },
 		{ static_cast<uint32_t>(PhysicalOperatorType::CTE), "CTE" },
+		{ static_cast<uint32_t>(PhysicalOperatorType::TRAMPOLINE), "TRAMPOLINE" },
 		{ static_cast<uint32_t>(PhysicalOperatorType::INSERT), "INSERT" },
 		{ static_cast<uint32_t>(PhysicalOperatorType::BATCH_INSERT), "BATCH_INSERT" },
 		{ static_cast<uint32_t>(PhysicalOperatorType::DELETE_OPERATOR), "DELETE_OPERATOR" },
@@ -5078,12 +5080,12 @@ const StringUtil::EnumStringLiteral *GetPhysicalOperatorTypeValues() {
 
 template<>
 const char* EnumUtil::ToChars<PhysicalOperatorType>(PhysicalOperatorType value) {
-	return StringUtil::EnumToString(GetPhysicalOperatorTypeValues(), 90, "PhysicalOperatorType", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetPhysicalOperatorTypeValues(), 91, "PhysicalOperatorType", static_cast<uint32_t>(value));
 }
 
 template<>
 PhysicalOperatorType EnumUtil::FromString<PhysicalOperatorType>(const char *value) {
-	return static_cast<PhysicalOperatorType>(StringUtil::StringToEnum(GetPhysicalOperatorTypeValues(), 90, "PhysicalOperatorType", value));
+	return static_cast<PhysicalOperatorType>(StringUtil::StringToEnum(GetPhysicalOperatorTypeValues(), 91, "PhysicalOperatorType", value));
 }
 
 const StringUtil::EnumStringLiteral *GetPhysicalTableScanExecutionStrategyValues() {
