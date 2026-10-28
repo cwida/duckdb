@@ -1,0 +1,31 @@
+# name: test/sql/cte/trampoline/trampoline_explain.test
+# description: Trampoline queries plan a dedicated operator
+# group: [trampoline]
+
+query II
+EXPLAIN WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, 0)
+    BRANCH 1: (SELECT CASE WHEN n < 3 THEN 1 ELSE 0 END, n + 1 FROM t)
+)
+SELECT b, n FROM t;
+----
+physical_plan	<REGEX>:.*TRAMPOLINE.*
+
+# a nonlinear branch switches the operator to per-wave evaluation
+query II
+EXPLAIN WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, 0)
+    BRANCH 1: (SELECT 0, sum(n)::INT FROM t)
+)
+SELECT b, n FROM t;
+----
+physical_plan	<REGEX>:.*Waves: per-batch.*
+
+query II
+EXPLAIN WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, 0)
+    BRANCH 1: (SELECT CASE WHEN n < 3 THEN 1 ELSE 0 END, n + 1 FROM t)
+)
+SELECT b, n FROM t;
+----
+physical_plan	<REGEX>:.*Waves: merged.*

@@ -1,0 +1,87 @@
+# name: test/sql/cte/trampoline/trampoline_nested.test
+# description: Trampoline CTEs combined with other query constructs
+# group: [trampoline]
+
+statement ok
+CREATE TABLE edges(src INTEGER, dst INTEGER);
+
+statement ok
+INSERT INTO edges VALUES (0, 1), (1, 2), (2, 3), (1, 4), (4, 5);
+
+# graph reachability from node 0, joining the frontier against a base table
+query I
+WITH RECURSIVE reach(b, node) USING TRAMPOLINE (b) AS (
+    (SELECT 1, 0)
+    BRANCH 1: (SELECT c AS b, node
+               FROM (SELECT e.dst AS node FROM reach JOIN edges e ON e.src = reach.node), (VALUES (0), (1)) tag(c))
+)
+SELECT node FROM reach ORDER BY node;
+----
+1
+2
+3
+4
+5
+
+# a trampoline CTE next to an ordinary CTE in the same WITH clause
+query II
+WITH RECURSIVE
+    base(k) AS (SELECT 3),
+    t(b, n) USING TRAMPOLINE (b) AS (
+        (SELECT 1, 0)
+        BRANCH 1: (SELECT CASE WHEN n < (SELECT k FROM base) THEN 1 ELSE 0 END, n + 1 FROM t)
+    )
+SELECT b, n FROM t;
+----
+0	4
+
+# two trampoline CTEs in one WITH clause
+query II
+WITH RECURSIVE
+    t1(b, n) USING TRAMPOLINE (b) AS (
+        (SELECT 1, 0)
+        BRANCH 1: (SELECT CASE WHEN n < 2 THEN 1 ELSE 0 END, n + 1 FROM t1)
+    ),
+    t2(b, n) USING TRAMPOLINE (b) AS (
+        (SELECT 1, 10)
+        BRANCH 1: (SELECT CASE WHEN n < 12 THEN 1 ELSE 0 END, n + 1 FROM t2)
+    )
+SELECT t1.n, t2.n FROM t1, t2;
+----
+3	13
+
+# trampoline result joined and aggregated in the outer query
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, x FROM (VALUES (1), (2), (3)) v(x))
+    BRANCH 1: (SELECT CASE WHEN n < 10 THEN 1 ELSE 0 END, n * 2 FROM t)
+)
+SELECT sum(n)::INT FROM t;
+----
+40
+
+# a trampoline inside a subquery
+query I
+SELECT (
+    WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+        (SELECT 1, 1)
+        BRANCH 1: (SELECT CASE WHEN n < 8 THEN 1 ELSE 0 END, n * 2 FROM t)
+    )
+    SELECT n FROM t
+);
+----
+8
+
+# recursive CTE and trampoline CTE can coexist in one WITH clause
+query II rowsort
+WITH RECURSIVE
+    r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r WHERE n < 3),
+    t(b, n) USING TRAMPOLINE (b) AS (
+        (SELECT 1, 100)
+        BRANCH 1: (SELECT 0, n FROM t)
+    )
+SELECT r.n, t.n FROM r, t;
+----
+1	100
+2	100
+3	100

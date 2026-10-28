@@ -1,0 +1,76 @@
+# name: test/sql/cte/trampoline/trampoline_programs.test
+# description: Imperative programs expressed as trampoline queries (pc dispatch)
+# group: [trampoline]
+
+# textbook gcd(x, y), one virtual machine per input row.
+# BRANCH 1 tests the loop condition, BRANCH 2 computes t := b; b := a % b,
+# BRANCH 3 copies a := t and jumps back to the loop head.
+statement ok
+CREATE TABLE args(x INTEGER, y INTEGER);
+
+statement ok
+INSERT INTO args VALUES (12, 18), (7, 7), (9, 28), (1071, 462);
+
+query III
+WITH RECURSIVE gcd(pc, x, y, a, b, t) USING TRAMPOLINE (pc) AS (
+    (SELECT 1, x, y, x, y, NULL::INTEGER FROM args)
+    BRANCH 1: (SELECT CASE WHEN b <> 0 THEN 2 ELSE 0 END, x, y, a, b, t FROM gcd)
+    BRANCH 2: (SELECT 3, x, y, a, a % b, b FROM gcd)
+    BRANCH 3: (SELECT 1, x, y, t, b, t FROM gcd)
+)
+SELECT x, y, a FROM gcd ORDER BY x, y;
+----
+7	7	7
+9	28	1
+12	18	6
+1071	462	21
+
+# mutual recursion through branch tags: even/odd as two states that call each other
+query II
+WITH RECURSIVE eo(b, n, origin, even) USING TRAMPOLINE (b) AS (
+    (SELECT 1, v.n, v.n, NULL::INTEGER FROM (VALUES (10), (7), (0)) v(n))
+    BRANCH 1: (SELECT CASE WHEN n = 0 THEN 0 ELSE 2 END,
+                      CASE WHEN n = 0 THEN n ELSE n - 1 END,
+                      origin,
+                      CASE WHEN n = 0 THEN 1 ELSE NULL END
+               FROM eo)
+    BRANCH 2: (SELECT CASE WHEN n = 0 THEN 0 ELSE 1 END,
+                      CASE WHEN n = 0 THEN n ELSE n - 1 END,
+                      origin,
+                      CASE WHEN n = 0 THEN 0 ELSE NULL END
+               FROM eo)
+)
+SELECT origin, even FROM eo ORDER BY origin;
+----
+0	1
+7	0
+10	1
+
+# finite state machine over an ordered sequence: accept the pattern a+ b.
+# state 1 consumes the next input symbol per run; 'a' stays in state 1,
+# 'b' accepts and emits the run, anything else drops the run.
+statement ok
+CREATE TABLE seq(run INTEGER, pos INTEGER, sym VARCHAR);
+
+statement ok
+INSERT INTO seq VALUES
+    (1, 1, 'a'), (1, 2, 'a'), (1, 3, 'b'),
+    (2, 1, 'a'), (2, 2, 'c'),
+    (3, 1, 'b'),
+    (4, 1, 'a'), (4, 2, 'b'), (4, 3, 'a');
+
+query II
+WITH RECURSIVE fsm(state, run, pos, seen_a) USING TRAMPOLINE (state) AS (
+    (SELECT 1, run, 0, 0 FROM (SELECT DISTINCT run FROM seq) runs)
+    BRANCH 1: (SELECT CASE WHEN s.sym = 'a' THEN 1
+                           WHEN s.sym = 'b' AND fsm.seen_a > 0 THEN 0
+                           END,
+                      fsm.run, s.pos,
+                      fsm.seen_a + CASE WHEN s.sym = 'a' THEN 1 ELSE 0 END
+               FROM fsm JOIN seq s ON s.run = fsm.run AND s.pos = fsm.pos + 1
+               WHERE s.sym = 'a' OR (s.sym = 'b' AND fsm.seen_a > 0))
+)
+SELECT run, pos FROM fsm ORDER BY run;
+----
+1	3
+4	2

@@ -1,0 +1,138 @@
+# name: test/sql/cte/trampoline/trampoline_basic.test
+# description: Core semantics of WITH RECURSIVE ... USING TRAMPOLINE
+# group: [trampoline]
+
+# simple counter: seed routes to branch 1, branch 1 loops until n reaches 3, then emits
+query II
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, 0)
+    BRANCH 1: (SELECT CASE WHEN n < 3 THEN 1 ELSE 0 END, n + 1 FROM t)
+)
+SELECT b, n FROM t;
+----
+0	4
+
+# emitted rows keep selector value 0; the selector column stays visible
+query II
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 0, 42)
+    BRANCH 1: (SELECT 0, n FROM t)
+)
+SELECT b, n FROM t;
+----
+0	42
+
+# seed rows with selector 0 are emitted immediately, other rows iterate
+query II rowsort
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT * FROM (VALUES (0, 100), (1, 0)) v(b, n))
+    BRANCH 1: (SELECT CASE WHEN n < 2 THEN 1 ELSE 0 END, n + 1 FROM t)
+)
+SELECT b, n FROM t;
+----
+0	100
+0	3
+
+# empty seed yields an empty result and does not invoke any branch
+query II
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, 1 WHERE false)
+    BRANCH 1: (SELECT 0, n FROM t)
+)
+SELECT b, n FROM t;
+----
+
+# a branch that never receives rows is never invoked, even if it could produce
+# rows on empty input (global aggregate)
+query II
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, 7)
+    BRANCH 1: (SELECT 0, n FROM t)
+    BRANCH 2: (SELECT 0, count(*)::INT FROM t)
+)
+SELECT b, n FROM t;
+----
+0	7
+
+# duplicates are preserved (bag semantics), within the seed and across iterations
+query II rowsort
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT * FROM (VALUES (1, 5), (1, 5)) v(b, n))
+    BRANCH 1: (SELECT 0, n FROM t)
+)
+SELECT b, n FROM t;
+----
+0	5
+0	5
+
+# rows can be dropped by filtering them out in a branch
+query II rowsort
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT * FROM (VALUES (1, 1), (1, 2), (1, 3)) v(b, n))
+    BRANCH 1: (SELECT 0, n FROM t WHERE n % 2 = 1)
+)
+SELECT b, n FROM t;
+----
+0	1
+0	3
+
+# NULL payload values survive routing and emission
+query II
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, 5)
+    BRANCH 1: (SELECT 0, NULL::INTEGER FROM t)
+)
+SELECT b, n FROM t;
+----
+0	NULL
+
+# NULL payloads in the seed survive a full round trip through a branch
+query III rowsort
+WITH RECURSIVE t(b, n, s) USING TRAMPOLINE (b) AS (
+    (SELECT * FROM (VALUES (1, NULL::INT, 'x'), (1, 2, NULL::VARCHAR)) v(b, n, s))
+    BRANCH 1: (SELECT 0, n, s FROM t)
+)
+SELECT b, n, s FROM t;
+----
+0	2	NULL
+0	NULL	x
+
+# the selector does not have to be the first column
+query II
+WITH RECURSIVE t(n, sel) USING TRAMPOLINE (sel) AS (
+    (SELECT 0, 1)
+    BRANCH 1: (SELECT CASE WHEN n < 2 THEN n + 1 ELSE n END, CASE WHEN n < 2 THEN 1 ELSE 0 END FROM t)
+)
+SELECT n, sel FROM t;
+----
+2	0
+
+# branch queries may use per-invocation modifiers inside their parentheses
+query II
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT * FROM (VALUES (1, 1), (1, 2)) v(b, n))
+    BRANCH 1: (SELECT 0, n FROM t ORDER BY n LIMIT 1)
+)
+SELECT b, n FROM t;
+----
+0	1
+
+# the trampoline result can be consumed like any other CTE
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, 0)
+    BRANCH 1: (SELECT CASE WHEN n < 5 THEN 1 ELSE 0 END, n + 1 FROM t)
+)
+SELECT n + 10 FROM t WHERE b = 0;
+----
+16
+
+# a smaller selector type works as long as it is integral
+query II
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1::TINYINT, 0)
+    BRANCH 1: (SELECT (CASE WHEN n < 3 THEN 1 ELSE 0 END)::TINYINT, n + 1 FROM t)
+)
+SELECT b, n FROM t;
+----
+0	4
