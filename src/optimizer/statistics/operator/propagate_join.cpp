@@ -142,8 +142,9 @@ void StatisticsPropagator::PropagateStatistics(LogicalComparisonJoin &join, uniq
 
 		const auto stats_left = PropagateExpression(condition.LeftReference());
 		const auto stats_right = PropagateExpression(condition.RightReference());
-		if (join.join_type != JoinType::MARK) {
+		if (join.join_type != JoinType::MARK && !SuppressPlanFolds()) {
 			// Ordinary joins reject both FALSE and NULL candidate pairs.
+			// The null counts are a data observation that must not rewrite the condition under portable_plan.
 			condition.SetComparisonType(SimplifyDistinctComparison(condition.GetComparisonType(), stats_left.get(),
 			                                                       stats_right.get(), ComparisonContext::JOIN));
 		}

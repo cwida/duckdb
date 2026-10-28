@@ -185,10 +185,13 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateComparison(BoundFuncti
 	auto &right = BoundComparisonExpression::RightMutable(expr);
 	auto left_stats = PropagateExpression(left);
 	auto right_stats = PropagateExpression(right);
-	auto comparison = SimplifyDistinctComparison(expr.GetExpressionType(), left_stats.get(), right_stats.get(),
-	                                             ComparisonContext::SCALAR);
-	if (comparison != expr.GetExpressionType()) {
-		BoundComparisonExpression::SetType(expr, comparison);
+	if (!SuppressPlanFolds()) {
+		// the null counts are a data observation that must not rewrite the comparison under portable_plan
+		auto comparison = SimplifyDistinctComparison(expr.GetExpressionType(), left_stats.get(), right_stats.get(),
+		                                             ComparisonContext::SCALAR);
+		if (comparison != expr.GetExpressionType()) {
+			BoundComparisonExpression::SetType(expr, comparison);
+		}
 	}
 	if (!left_stats || !right_stats) {
 		return nullptr;

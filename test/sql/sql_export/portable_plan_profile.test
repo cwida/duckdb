@@ -107,6 +107,12 @@ EXPLAIN (SQL) SELECT x FROM nsa WHERE EXISTS (SELECT 1 FROM nsb WHERE nsa.x IS N
 ----
 sql	<REGEX>:(?s).*IS NOT DISTINCT\s+FROM.*
 
+# the scalar null-safe comparison survives as well
+query TT
+EXPLAIN (SQL) SELECT x IS NOT DISTINCT FROM 1 AS q FROM nsa;
+----
+sql	<REGEX>:(?s).*IS NOT DISTINCT\s+FROM.*
+
 # the division-by-zero replacement observes a session setting and must not bake it in
 statement ok
 SET error_on_division_by_zero=false;
@@ -349,3 +355,9 @@ query TT
 EXPLAIN (SQL) SELECT now() > TIMESTAMP '2020-01-01' AS q;
 ----
 sql	<REGEX>:(?s)SELECT CAST\(TRUE.*
+
+# without the profile, statistics simplify the null-safe comparisons again
+query TT
+EXPLAIN (SQL) SELECT x FROM nsa WHERE EXISTS (SELECT 1 FROM nsb WHERE nsa.x IS NOT DISTINCT FROM nsb.y);
+----
+sql	<!REGEX>:(?s).*DISTINCT.*
