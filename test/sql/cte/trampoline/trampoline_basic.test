@@ -147,3 +147,20 @@ WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
 SELECT b, n FROM t;
 ----
 0	101
+
+# iteration works with operator caching disabled
+statement ok
+SET enable_caching_operators = false;
+
+query II
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, 0)
+    BRANCH 1: (SELECT CASE WHEN n < 3 THEN 1 ELSE 0 END, n + 1 FROM t)
+    BRANCH 2: (SELECT 0, n FROM t)
+)
+SELECT b, n FROM t;
+----
+0	4
+
+statement ok
+SET enable_caching_operators = true;

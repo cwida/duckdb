@@ -65,7 +65,6 @@ public:
 	//! Round-robin cursor over the branches
 	idx_t next_branch = 1;
 	bool initialized = false;
-	bool prepared_executor_entries = false;
 
 	DataChunk route_chunk;
 	vector<SelectionVector> route_selections;
@@ -329,13 +328,12 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 	if (!Settings::Get<EnableCachingOperatorsSetting>(context.client)) {
 		scheduler.ClearExecutors();
 	}
-	if (!gstate.prepared_executor_entries) {
+	if (!scheduler.HasExecutorEntries()) {
 		for (auto &branch_entry : branch_pipelines) {
 			for (auto &pipeline : branch_entry.pipelines) {
 				scheduler.PrepareExecutorEntry(*pipeline);
 			}
 		}
-		gstate.prepared_executor_entries = true;
 	}
 
 	// reset every sink that belongs to the branch plan; the trampoline itself keeps its routed state

@@ -30,3 +30,19 @@ SELECT b, n FROM t;
 ----
 physical_plan	<REGEX>:.*Waves: merged.*
 
+# without CTE inlining the export declines with a clear error instead of
+# emitting a materialization hint the parser rejects
+statement ok
+SET disabled_optimizers = 'cte_inlining';
+
+statement error
+EXPLAIN (SQL) WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, 7)
+    BRANCH 1: (SELECT 0, n FROM t)
+)
+SELECT b, n FROM t;
+----
+<REGEX>:Not implemented Error.*trampoline.*
+
+statement ok
+SET disabled_optimizers = '';
