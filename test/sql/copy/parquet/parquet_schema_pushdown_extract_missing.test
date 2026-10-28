@@ -1,0 +1,51 @@
+# name: test/sql/copy/parquet/parquet_schema_pushdown_extract_missing.test
+# description: A field extracted from a nested column that a file lacks takes the column's default
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT * FROM (VALUES (1, {'x': 1}), (2, NULL)) t(a, s)) TO '{TEMP_DIR}/extract_missing_1.parquet' (FIELD_IDS {a: 1, s: {__duckdb_field_id: 2, x: 3}})
+
+statement ok
+COPY (SELECT 5 AS a) TO '{TEMP_DIR}/extract_missing_2.parquet' (FIELD_IDS {a: 1})
+
+statement ok
+COPY (SELECT 6 AS a, 'hello'::VARIANT AS v) TO '{TEMP_DIR}/extract_missing_3.parquet' (FIELD_IDS {a: 1, v: 4})
+
+query II
+SELECT a, s.x FROM read_parquet(['{TEMP_DIR}/extract_missing_1.parquet', '{TEMP_DIR}/extract_missing_2.parquet'], schema := MAP {
+	1: {name: 'a', type: 'INTEGER', default_value: NULL},
+	2: {name: 's', type: 'STRUCT(x INTEGER)', default_value: NULL}
+}) ORDER BY a
+----
+1	1
+2	NULL
+5	NULL
+
+query I
+SELECT count(*) FROM read_parquet(['{TEMP_DIR}/extract_missing_1.parquet', '{TEMP_DIR}/extract_missing_2.parquet'], schema := MAP {
+	1: {name: 'a', type: 'INTEGER', default_value: NULL},
+	2: {name: 's', type: 'STRUCT(x INTEGER)', default_value: NULL}
+}) WHERE s.x IS NULL
+----
+2
+
+query II
+SELECT a, s.x FROM read_parquet(['{TEMP_DIR}/extract_missing_1.parquet', '{TEMP_DIR}/extract_missing_2.parquet'], schema := MAP {
+	1: {name: 'a', type: 'INTEGER', default_value: NULL},
+	2: {name: 's', type: 'STRUCT(x INTEGER)', default_value: {'x': 9}}
+}) WHERE s.x > 0 ORDER BY a
+----
+1	1
+5	9
+
+# the same for a field of a VARIANT column that a file lacks
+query II
+SELECT a, v.k::VARCHAR FROM read_parquet(['{TEMP_DIR}/extract_missing_2.parquet', '{TEMP_DIR}/extract_missing_3.parquet'], schema := MAP {
+	1: {name: 'a', type: 'INTEGER', default_value: NULL},
+	4: {name: 'v', type: 'VARIANT', default_value: NULL}
+}) ORDER BY a
+----
+5	NULL
+6	NULL
