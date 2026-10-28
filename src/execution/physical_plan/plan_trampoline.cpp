@@ -3,6 +3,8 @@
 #include "duckdb/execution/operator/set/physical_trampoline.hpp"
 #include "duckdb/execution/physical_plan_generator.hpp"
 #include "duckdb/planner/operator/logical_trampoline.hpp"
+#include "duckdb/planner/logical_operator_visitor.hpp"
+#include "duckdb/planner/expression.hpp"
 
 namespace duckdb {
 
@@ -17,7 +19,6 @@ bool OperatorIsAdditiveInChild(const PhysicalOperator &op, idx_t child_idx) {
 	case PhysicalOperatorType::PROJECTION:
 	case PhysicalOperatorType::FILTER:
 		return true;
-	case PhysicalOperatorType::UNION:
 	case PhysicalOperatorType::CROSS_PRODUCT:
 		return true;
 	case PhysicalOperatorType::HASH_JOIN:
@@ -93,6 +94,37 @@ bool BranchIsLinear(const PhysicalOperator &branch, TableIndex cte_index) {
 	return AnalyzeBranchShape(branch, cte_index) == TrampolineInputShape::LINEAR;
 }
 
+bool LogicalSubtreeIsVolatile(const LogicalOperator &op) {
+	bool found_volatile = false;
+	LogicalOperatorVisitor::EnumerateExpressions(op, [&](const unique_ptr<Expression> *child) {
+		if (*child && (*child)->IsVolatile()) {
+			found_volatile = true;
+		}
+	});
+	if (found_volatile) {
+		return true;
+	}
+	for (auto &child : op.children) {
+		if (LogicalSubtreeIsVolatile(*child)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool PhysicalSubtreeIsRepeatable(const PhysicalOperator &op,
+                                 const reference_set_t<const PhysicalOperator> &non_repeatable_operators) {
+	if (non_repeatable_operators.find(op) != non_repeatable_operators.end()) {
+		return false;
+	}
+	for (auto child : op.GetChildren()) {
+		if (!PhysicalSubtreeIsRepeatable(child.get(), non_repeatable_operators)) {
+			return false;
+		}
+	}
+	return true;
+}
+
 } // namespace
 
 PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalTrampoline &op) {
@@ -116,9 +148,13 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalTrampoline &op) {
 	                       .Cast<PhysicalTrampoline>();
 	trampoline.working_table = working_table;
 
+	// merging waves changes how often a branch is invoked, which is observable through
+	// volatile expressions and non-repeatable subplans, so those branches stay per-wave
 	bool all_linear = true;
-	for (auto &branch : branches) {
-		all_linear = all_linear && BranchIsLinear(branch.get(), op.table_index);
+	for (idx_t branch_idx = 0; branch_idx < branches.size(); branch_idx++) {
+		all_linear = all_linear && BranchIsLinear(branches[branch_idx].get(), op.table_index) &&
+		             !LogicalSubtreeIsVolatile(*op.children[branch_idx + 1]) &&
+		             PhysicalSubtreeIsRepeatable(branches[branch_idx].get(), non_repeatable_operators);
 	}
 	trampoline.merge_waves = all_linear;
 	return trampoline;

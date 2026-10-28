@@ -342,6 +342,14 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 		pipeline.get().ResetSource(true);
 	}
 
+	// operators can be shared between pipelines (e.g. above a UNION), so their global
+	// state is reset once up-front; per-stage resets below only touch the source
+	for (auto &stage : plan.stages) {
+		if (stage.type == PipelineScheduleStageType::EXECUTE) {
+			stage.pipeline.get().ResetOperatorsForReschedule();
+		}
+	}
+
 	scheduler.InitializeInlinePlan(plan);
 	for (idx_t ready_idx = 0; ready_idx < scheduler.ReadyStageCount(); ready_idx++) {
 		const auto stage_idx = scheduler.ReadyStage(ready_idx);
@@ -349,7 +357,7 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 		auto &pipeline = stage.pipeline.get();
 		switch (stage.type) {
 		case PipelineScheduleStageType::EXECUTE: {
-			pipeline.ResetForReschedule(false);
+			pipeline.ResetSourceForReschedule();
 			scheduler.PrepareExecutors(pipeline, 1);
 			auto &executors = scheduler.GetExecutors(pipeline);
 			D_ASSERT(!executors.empty());

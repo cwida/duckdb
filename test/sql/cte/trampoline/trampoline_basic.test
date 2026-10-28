@@ -136,3 +136,14 @@ WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
 SELECT b, n FROM t;
 ----
 0	4
+
+# BRANCH labels may be written in any order; routing follows the labels
+query II
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, 0)
+    BRANCH 2: (SELECT 0, n + 100 FROM t)
+    BRANCH 1: (SELECT 2, n + 1 FROM t)
+)
+SELECT b, n FROM t;
+----
+0	101

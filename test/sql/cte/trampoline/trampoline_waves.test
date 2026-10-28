@@ -101,3 +101,67 @@ SELECT n FROM t;
 ----
 101
 110
+
+# a UNION ALL arm that does not read the trampoline contributes its rows once
+# per invocation, so such a branch must stay on per-wave evaluation
+query I rowsort
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT * FROM (VALUES (1, 10), (2, 20)) v(b, n))
+    BRANCH 1: (SELECT 2, n FROM t)
+    BRANCH 2: (SELECT 0, n FROM t UNION ALL SELECT 0, 99)
+)
+SELECT n FROM t;
+----
+10
+20
+99
+99
+
+# a LIMIT above a union of two trampoline scans applies once per invocation,
+# not once per union arm
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, 7)
+    BRANCH 1: (SELECT 0, n FROM (SELECT n FROM t UNION ALL SELECT n + 1 FROM t) u LIMIT 1)
+)
+SELECT count(*) FROM t;
+----
+1
+
+# volatile expressions observe how often a branch runs, so they disable merging
+statement ok
+CREATE SEQUENCE wave_seq START 1;
+
+query I rowsort
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT * FROM (VALUES (1, 10), (2, 20)) v(b, n))
+    BRANCH 1: (SELECT 2, n FROM t)
+    BRANCH 2: (SELECT 0, s.n::INT FROM t CROSS JOIN (SELECT nextval('wave_seq') AS n) s)
+)
+SELECT n FROM t;
+----
+1
+2
+
+# an anti join testing existence against the routed input is evaluated per wave
+query I rowsort
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT * FROM (VALUES (1, 1), (2, 2)) v(b, n))
+    BRANCH 1: (SELECT 3, n FROM t)
+    BRANCH 2: (SELECT 3, n FROM t)
+    BRANCH 3: (SELECT 0, s.v FROM statics s WHERE NOT EXISTS (SELECT 1 FROM t WHERE t.n = s.v))
+)
+SELECT n FROM t;
+----
+1
+2
+
+# one producing invocation routes a multi-chunk wave; the aggregate sees all of it
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, r::INT FROM range(5000) tbl(r))
+    BRANCH 1: (SELECT 0, count(*)::INT FROM t)
+)
+SELECT n FROM t;
+----
+5000
