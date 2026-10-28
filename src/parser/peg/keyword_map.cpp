@@ -592,6 +592,7 @@ DefaultKeywordMaps DuckDBKeywordHelper::InitializeKeywordMaps() {
 	bare_label_keyword_map.insert("bigint");
 	bare_label_keyword_map.insert("bit");
 	bare_label_keyword_map.insert("boolean");
+	bare_label_keyword_map.insert("branch");
 	bare_label_keyword_map.insert("cache");
 	bare_label_keyword_map.insert("call");
 	bare_label_keyword_map.insert("called");
@@ -875,6 +876,7 @@ DefaultKeywordMaps DuckDBKeywordHelper::InitializeKeywordMaps() {
 	bare_label_keyword_map.insert("ties");
 	bare_label_keyword_map.insert("time");
 	bare_label_keyword_map.insert("timestamp");
+	bare_label_keyword_map.insert("trampoline");
 	bare_label_keyword_map.insert("transaction");
 	bare_label_keyword_map.insert("transform");
 	bare_label_keyword_map.insert("treat");

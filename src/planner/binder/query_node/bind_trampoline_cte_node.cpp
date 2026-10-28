@@ -71,9 +71,9 @@ BoundStatement Binder::BindNode(TrampolineCTENode &statement) {
 			throw NotImplementedException("correlated TRAMPOLINE CTEs are not supported yet");
 		}
 		if (branch.types.size() != result.types.size()) {
-			throw BinderException("BRANCH %llu of TRAMPOLINE CTE \"%s\" returns %llu columns, but the seed defines %llu",
-			                      branch_idx + 1, ctename.GetIdentifierName(), branch.types.size(),
-			                      result.types.size());
+			throw BinderException(
+			    "BRANCH %llu of TRAMPOLINE CTE \"%s\" returns %llu columns, but the seed defines %llu", branch_idx + 1,
+			    ctename.GetIdentifierName(), branch.types.size(), result.types.size());
 		}
 		branch_plans.push_back(CastLogicalOperatorToTypes(branch.types, result.types, std::move(branch.plan)));
 	}

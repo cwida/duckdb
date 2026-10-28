@@ -12,8 +12,7 @@ namespace duckdb {
 
 PhysicalTrampoline::PhysicalTrampoline(PhysicalPlan &physical_plan, Identifier ctename, TableIndex table_index,
                                        vector<LogicalType> types, idx_t selector_idx, PhysicalOperator &seed,
-                                       const vector<reference<PhysicalOperator>> &branches,
-                                       idx_t estimated_cardinality)
+                                       const vector<reference<PhysicalOperator>> &branches, idx_t estimated_cardinality)
     : PhysicalOperator(physical_plan, PhysicalOperatorType::TRAMPOLINE, std::move(types), estimated_cardinality),
       ctename(std::move(ctename)), table_index(table_index), selector_idx(selector_idx),
       shared_executor_pool(make_shared_ptr<RecursiveExecutorPool>()) {
@@ -377,8 +376,7 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 //===--------------------------------------------------------------------===//
 // Pipeline construction
 //===--------------------------------------------------------------------===//
-static void GatherTrampolineCTEScans(const PhysicalOperator &op,
-                                     vector<const_reference<PhysicalOperator>> &cte_scans) {
+static void GatherTrampolineCTEScans(const PhysicalOperator &op, vector<const_reference<PhysicalOperator>> &cte_scans) {
 	if (op.type == PhysicalOperatorType::DELIM_SCAN || op.type == PhysicalOperatorType::CTE_SCAN) {
 		cte_scans.push_back(op);
 	}

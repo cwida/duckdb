@@ -192,7 +192,9 @@ RowOrStruct <- 'ROW' / 'STRUCT'
 List(D) <- D (',' D)* ','?
 Parens(D) <- '(' D ')'
 
-BareLabelKeyword <- 'abort' /
+BareLabelKeyword <- 'BRANCH' /
+'TRAMPOLINE' /
+'abort' /
 'absolute' /
 'access' /
 'action' /
