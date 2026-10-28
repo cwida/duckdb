@@ -48,6 +48,8 @@ public:
 	JoinRelationSet &GetRightSet() const;
 	optional_ptr<JoinRelationSet> GetLeftSetOptional() const;
 	optional_ptr<JoinRelationSet> GetRightSetOptional() const;
+	optional_ptr<JoinRelationSet> GetSemanticLeftSetOptional() const;
+	optional_ptr<JoinRelationSet> GetSemanticRightSetOptional() const;
 	const ColumnBinding &GetStatsBinding(bool left) const;
 	const ColumnBinding &GetEqualityBinding(bool left) const;
 	bool HasValidJoinEndpoints() const;
@@ -125,6 +127,7 @@ public:
 	void AddDirectEqualityPairClass(JoinRelationSet &pair, idx_t equality_class_index, ColumnBinding first_binding,
 	                                ColumnBinding second_binding);
 
+	optional_ptr<const JoinPredicate> GetPredicateByFilterIndex(idx_t filter_index) const;
 	const vector<reference<JoinPredicate>> &GetPredicates() const;
 	const vector<reference<JoinPredicate>> &GetEqualityJoinPredicates() const;
 	const vector<reference<JoinPredicate>> &GetSelectivityPredicates() const;
