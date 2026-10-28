@@ -192,8 +192,7 @@ static arena_ptr<TransformResultValue> FinalizeWrappedSelectAtom(PEGTransformer 
 	auto &list = parse_result.Cast<ListParseResult>();
 	LimitPercentResult limit;
 	LimitPercentResult offset;
-	// the choice and optional nodes stand in for the selected clause's result: they copy its name
-	// and are handed to Transform directly, without unwrapping them to the clause's own node first
+	// the wrapper nodes are passed to Transform without unwrapping on purpose
 	auto &clause = list.Child<ListParseResult>(1).GetChild(0);
 	auto &target = IsRule(clause, "LimitClause") ? limit : offset;
 	target = transformer.Transform<LimitPercentResult>(clause);
@@ -211,14 +210,21 @@ static arena_ptr<TransformResultValue> FinalizeWrappedNestedAtom(PEGTransformer 
 	auto &list = parse_result.Cast<ListParseResult>();
 	LimitPercentResult limit;
 	LimitPercentResult offset;
-	// a selected optional limit reaches Transform as a choice node wrapping a present optional node
-	auto &clause = list.Child<ListParseResult>(1).GetChild(0);
-	if (IsRule(clause, "LimitClause")) {
-		limit = transformer.Transform<LimitPercentResult>(clause);
-	} else if (IsRule(clause, "OffsetClause")) {
-		offset = transformer.Transform<LimitPercentResult>(clause);
+	// the wrapper nodes are passed to Transform without unwrapping on purpose
+	auto &optional = list.Child<OptionalParseResult>(1);
+	if (optional.HasResult()) {
+		auto &choice = optional.GetResult().Cast<ListParseResult>().GetChild(0);
+		auto &target = IsRule(choice, "LimitClause") ? limit : offset;
+		target = transformer.Transform<LimitPercentResult>(list.GetChild(1));
 	}
 	return MakeRangeSelectResult(transformer, std::move(limit), std::move(offset));
+}
+
+static arena_ptr<TransformResultValue> FinalizeWrappedBadAtom(PEGTransformer &transformer, ParseResult &parse_result) {
+	auto &list = parse_result.Cast<ListParseResult>();
+	// the unconditional Transform call exercises the dead-end error paths on purpose
+	auto limit = transformer.Transform<LimitPercentResult>(list.GetChild(1));
+	return MakeRangeSelectResult(transformer, std::move(limit), LimitPercentResult());
 }
 
 static arena_ptr<TransformProcess> StartWrappedSelectAtomTransform(PEGTransformer &transformer,
@@ -229,6 +235,38 @@ static arena_ptr<TransformProcess> StartWrappedSelectAtomTransform(PEGTransforme
 static arena_ptr<TransformProcess> StartWrappedNestedAtomTransform(PEGTransformer &transformer,
                                                                    ParseResult &parse_result) {
 	return transformer.MakeProcess<FinalizeTransformProcess>(transformer, parse_result, FinalizeWrappedNestedAtom);
+}
+
+static arena_ptr<TransformProcess> StartWrappedBadAtomTransform(PEGTransformer &transformer,
+                                                                ParseResult &parse_result) {
+	return transformer.MakeProcess<FinalizeTransformProcess>(transformer, parse_result, FinalizeWrappedBadAtom);
+}
+
+static void InitializeWrappedChildAtom(PEGTransformer &transformer, GeneratedTransformProcess &process) {
+	auto &list = process.parse_result.Cast<ListParseResult>();
+	process.ReserveChildSlots(1);
+	// the wrapper node is pushed without an explicit rule on purpose
+	process.PushChild({list.GetChild(1)}, 0);
+}
+
+static arena_ptr<TransformResultValue> FinalizeWrappedChildAtom(PEGTransformer &transformer,
+                                                                GeneratedTransformProcess &process) {
+	auto &list = process.parse_result.Cast<ListParseResult>();
+	LimitPercentResult limit;
+	LimitPercentResult offset;
+	auto &choice = list.Child<ListParseResult>(1).GetChild(0);
+	auto &target = IsRule(choice, "LimitClause") ? limit : offset;
+	target = process.TakeResult<LimitPercentResult>(0);
+	return MakeRangeSelectResult(transformer, std::move(limit), std::move(offset));
+}
+
+static const TransformFrameOps WRAPPED_CHILD_ATOM_OPS = {"WrappedChildAtom", &InitializeWrappedChildAtom,
+                                                         &FinalizeWrappedChildAtom};
+
+static arena_ptr<TransformProcess> StartWrappedChildAtomTransform(PEGTransformer &transformer,
+                                                                  ParseResult &parse_result) {
+	return transformer.MakeProcess<GeneratedTransformProcess>(transformer, TransformInput(parse_result),
+	                                                          WRAPPED_CHILD_ATOM_OPS);
 }
 
 class PipeSQLGrammarChange final : public GrammarExtension {
@@ -281,13 +319,21 @@ public:
 		vector<GrammarChange> changes;
 		changes.push_back(GrammarChange::AddChoice("UnreservedKeyword", "'WRAPPED'"));
 		changes.push_back(GrammarChange::AddChoice("UnreservedKeyword", "'WRAPPED_NESTED'"));
+		changes.push_back(GrammarChange::AddChoice("UnreservedKeyword", "'WRAPPED_CHILD'"));
+		changes.push_back(GrammarChange::AddChoice("UnreservedKeyword", "'WRAPPED_BAD'"));
 		changes.push_back(
 		    GrammarChange::AddRule("WrappedSelectAtom <- 'WRAPPED' (LimitClause / OffsetClause) OffsetClause?",
 		                           StartWrappedSelectAtomTransform));
-		changes.push_back(GrammarChange::AddRule("WrappedNestedAtom <- 'WRAPPED_NESTED' (OffsetClause / LimitClause?)",
+		changes.push_back(GrammarChange::AddRule("WrappedNestedAtom <- 'WRAPPED_NESTED' (LimitClause / OffsetClause)?",
 		                                         StartWrappedNestedAtomTransform));
+		changes.push_back(GrammarChange::AddRule("WrappedChildAtom <- 'WRAPPED_CHILD' (LimitClause / OffsetClause)",
+		                                         StartWrappedChildAtomTransform));
+		changes.push_back(GrammarChange::AddRule(
+		    "WrappedBadAtom <- 'WRAPPED_BAD' (LimitClause OffsetClause / LimitClause)?", StartWrappedBadAtomTransform));
 		changes.push_back(GrammarChange::PrependChoice("SelectAtom", "WrappedSelectAtom"));
 		changes.push_back(GrammarChange::PrependChoice("SelectAtom", "WrappedNestedAtom"));
+		changes.push_back(GrammarChange::PrependChoice("SelectAtom", "WrappedChildAtom"));
+		changes.push_back(GrammarChange::PrependChoice("SelectAtom", "WrappedBadAtom"));
 		return changes;
 	}
 };

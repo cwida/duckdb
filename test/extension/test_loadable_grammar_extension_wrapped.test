@@ -37,12 +37,7 @@ WRAPPED OFFSET 7 OFFSET 1;
 ----
 <REGEX>:Parser Error:.*single OFFSET.*
 
-statement error
-WRAPPED;
-----
-<REGEX>:Parser Error:.*
-
-# a selected optional limit unwraps across two wrapper levels: a choice node wrapping an optional node
+# a present clause unwraps across three wrapper levels: optional, group list and choice nodes
 query I
 WRAPPED_NESTED LIMIT 2;
 ----
@@ -60,6 +55,38 @@ query I
 SELECT count(*) FROM (WRAPPED_NESTED);
 ----
 10
+
+# a group wrapper node handed to the transform stack through PushChild
+query I
+WRAPPED_CHILD LIMIT 2;
+----
+0
+1
+
+query I
+WRAPPED_CHILD OFFSET 8;
+----
+8
+9
+
+# the misusing transform still works while unwrapping reaches a rule
+query I
+WRAPPED_BAD LIMIT 2;
+----
+0
+1
+
+# an empty optional handed to Transform reaches no rule
+statement error
+WRAPPED_BAD;
+----
+<REGEX>:Not implemented Error.*empty OPTIONAL parse node.*
+
+# a choice that selected an unnamed sequence reaches no rule
+statement error
+WRAPPED_BAD LIMIT 1 OFFSET 2;
+----
+<REGEX>:Not implemented Error.*LIST parse node.*
 
 # the pipe syntax extension from the same demo stays usable alongside
 statement ok
