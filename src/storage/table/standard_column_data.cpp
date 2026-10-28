@@ -340,6 +340,21 @@ PersistentColumnData StandardColumnData::Serialize() {
 void StandardColumnData::InitializeColumn(PersistentColumnData &column_data, BaseStatistics &target_stats) {
 	ColumnData::InitializeColumn(column_data, target_stats);
 	validity->InitializeColumn(column_data.child_columns[0], target_stats);
+	// storage before 2.0 writes no byte size and keeps the NULLs of a column only in its validity statistics
+	bool legacy_segments = false;
+	for (auto &pointer : column_data.pointers) {
+		legacy_segments = legacy_segments || !pointer.byte_size;
+	}
+	bool validity_has_null = false;
+	for (auto &pointer : column_data.child_columns[0].pointers) {
+		validity_has_null = validity_has_null || pointer.statistics.CanHaveNull();
+	}
+	if (!legacy_segments || !validity_has_null) {
+		return;
+	}
+	for (auto &node : data.SegmentNodes()) {
+		node.GetNode().GetStatsMutable().SetHasNull();
+	}
 }
 
 void StandardColumnData::GetColumnSegmentInfo(const QueryContext &context, duckdb::idx_t row_group_index,

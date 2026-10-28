@@ -1,0 +1,48 @@
+# name: test/sql/storage/bc/test_null_stats_v1_5.test
+# description: Filters that accept NULL keep the NULL rows of segments written by v1.5
+# group: [bc]
+
+# data/storage/null_stats_v1_5.db.gz was written by DuckDB v1.5.6 with
+# CREATE TABLE t AS SELECT CASE WHEN i >= 1024 THEN NULL ELSE 1 END::INTEGER AS x FROM range(2048) r(i);
+# CREATE TABLE no_null AS SELECT 1::INTEGER AS x FROM range(2048) r(i);
+# CHECKPOINT;
+unzip data/storage/null_stats_v1_5.db.gz {TEST_DIR}/null_stats_v1_5.db
+
+statement ok
+ATTACH '{TEST_DIR}/null_stats_v1_5.db' AS old
+
+loop i 0 2
+
+query I
+SELECT count(*) FROM old.t WHERE x IS NULL OR x > 2
+----
+1024
+
+query I
+SELECT count(*) FROM old.t WHERE coalesce(x, 5) > 2
+----
+1024
+
+query I
+SELECT count(*) FROM old.t WHERE x IS DISTINCT FROM 1
+----
+1024
+
+query II
+SELECT count(*) FILTER (x > 2), count(*) FILTER (x IS NOT NULL) FROM old.t
+----
+0	1024
+
+query I
+SELECT count(*) FROM old.no_null WHERE x IS NULL OR x > 2
+----
+0
+
+# a checkpoint by this version keeps the answers
+statement ok
+UPDATE old.t SET x = 1 WHERE x = 1
+
+statement ok
+CHECKPOINT old
+
+endloop
