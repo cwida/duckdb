@@ -164,3 +164,31 @@ SELECT b, n FROM t;
 
 statement ok
 SET enable_caching_operators = true;
+
+# prepared trampolines alternate between zero-invocation and iterating executions
+statement ok
+PREPARE p AS WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT $1::INT, 10)
+    BRANCH 1: (SELECT CASE WHEN n < 12 THEN 1 ELSE 0 END, n + 1 FROM t)
+)
+SELECT b, n FROM t;
+
+query II
+EXECUTE p(0);
+----
+0	10
+
+query II
+EXECUTE p(1);
+----
+0	13
+
+query II
+EXECUTE p(0);
+----
+0	10
+
+query II
+EXECUTE p(1);
+----
+0	13
