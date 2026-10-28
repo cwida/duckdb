@@ -589,10 +589,11 @@ BindResult ExpressionBinder::BindLambdaFunction(FunctionExpression &function, Sc
 	// push back (in reverse order) any nested lambda parameters so that we can later use them in the lambda
 	// expression (rhs). This happens after we bound the lambda expression of this depth. So it is relevant for
 	// correctly binding lambdas one level 'out'. Therefore, the current parameter count does not matter here.
+	// The parameters of the lambdas enclosing an aggregate are not passed: the aggregate is computed outside them
 	if (lambda_bindings) {
 		idx_t offset = 0;
 
-		for (idx_t i = lambda_bindings->size(); i > 0; i--) {
+		for (idx_t i = lambda_bindings->size(); i > inaccessible_lambda_binding_count; i--) {
 			auto &binding = (*lambda_bindings)[i - 1];
 			auto &column_names = binding.GetColumnNames();
 			auto &column_types = binding.GetColumnTypes();

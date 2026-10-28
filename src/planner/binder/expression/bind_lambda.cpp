@@ -12,10 +12,12 @@
 
 namespace duckdb {
 
-static idx_t GetLambdaParamCount(vector<DummyBinding> &lambda_bindings) {
+//! The number of parameters of the enclosing lambdas that are passed to a nested lambda function, i.e. without the
+//! parameters of the lambdas enclosing an aggregate
+static idx_t GetLambdaParamCount(vector<DummyBinding> &lambda_bindings, idx_t inaccessible_lambda_binding_count) {
 	idx_t count = 0;
-	for (auto &binding : lambda_bindings) {
-		count += binding.GetColumnCount();
+	for (idx_t i = inaccessible_lambda_binding_count; i < lambda_bindings.size(); i++) {
+		count += lambda_bindings[i].GetColumnCount();
 	}
 	return count;
 }
@@ -207,7 +209,7 @@ void ExpressionBinder::TransformCapturedLambdaColumn(unique_ptr<Expression> &ori
 	// this is not a lambda parameter, get the capture offset
 	idx_t offset = 0;
 	if (lambda_bindings) {
-		offset += GetLambdaParamCount(*lambda_bindings);
+		offset += GetLambdaParamCount(*lambda_bindings, inaccessible_lambda_binding_count);
 	}
 	offset += bound_lambda_expr.ParameterCount();
 	offset += bound_lambda_expr.CapturesMutable().size();
