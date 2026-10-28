@@ -340,7 +340,7 @@ PersistentColumnData StandardColumnData::Serialize() {
 void StandardColumnData::InitializeColumn(PersistentColumnData &column_data, BaseStatistics &target_stats) {
 	ColumnData::InitializeColumn(column_data, target_stats);
 	validity->InitializeColumn(column_data.child_columns[0], target_stats);
-	// storage before 2.0 writes no byte size and keeps the NULLs of a column only in its validity statistics
+	// segments without a byte size come from older storage, which may record NULLs only in the validity statistics
 	bool legacy_segments = false;
 	for (auto &pointer : column_data.pointers) {
 		legacy_segments = legacy_segments || !pointer.byte_size;

@@ -6,6 +6,8 @@
 # CREATE TABLE t AS SELECT CASE WHEN i >= 1024 THEN NULL ELSE 1 END::INTEGER AS x FROM range(2048) r(i);
 # CREATE TABLE no_null AS SELECT 1::INTEGER AS x FROM range(2048) r(i);
 # CHECKPOINT;
+require exact_vector_size 2048
+
 unzip data/storage/null_stats_v1_5.db.gz {TEST_DIR}/null_stats_v1_5.db
 
 statement ok
@@ -46,3 +48,29 @@ statement ok
 CHECKPOINT old
 
 endloop
+
+# a checkpoint that reuses the segment metadata keeps the answers after the database is attached again
+unzip data/storage/null_stats_v1_5.db.gz {TEST_DIR}/null_stats_v1_5_reuse.db
+
+statement ok
+SET experimental_metadata_reuse = false
+
+statement ok
+ATTACH '{TEST_DIR}/null_stats_v1_5_reuse.db' AS reuse (STORAGE_VERSION 'v2.0.0')
+
+statement ok
+CREATE TABLE reuse.touch (i INTEGER)
+
+statement ok
+CHECKPOINT reuse
+
+statement ok
+DETACH reuse
+
+statement ok
+ATTACH '{TEST_DIR}/null_stats_v1_5_reuse.db' AS reuse
+
+query I
+SELECT count(*) FROM reuse.t WHERE x IS NULL OR x > 2
+----
+1024
