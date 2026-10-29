@@ -310,6 +310,18 @@ LogicalPlanSQLExportContext::ExportNamedProducer(LogicalOperator &op, const Logi
 	    {std::move(exported.GetValue()), NextRelationAlias()});
 }
 
+static void DetectFrontierWitness(const LogicalOperator &op, TableIndex cte_index, bool &found) {
+	if (op.type == LogicalOperatorType::LOGICAL_CTE_REF) {
+		auto &ref = op.Cast<LogicalCTERef>();
+		if (ref.is_frontier && ref.cte_index == cte_index) {
+			found = true;
+		}
+	}
+	for (auto &child : op.children) {
+		DetectFrontierWitness(*child, cte_index, found);
+	}
+}
+
 LogicalPlanSQLExportResult LogicalTrampoline::ExportSQLDefinition(LogicalPlanSQLExportContext &export_context,
                                                                   const LogicalPlanVerificationPath &path,
                                                                   const Identifier &name) {
@@ -322,6 +334,20 @@ LogicalPlanSQLExportResult LogicalTrampoline::ExportSQLDefinition(LogicalPlanSQL
 	auto seed = export_context.Export(*trampoline.children[0], LogicalPlanSQLExportHelpers::PlanChildPath(path, 0));
 	if (seed.HasError()) {
 		return LogicalPlanSQLExportResult::Failure(seed);
+	}
+	if (trampoline.reads_frontier) {
+		// the lockstep-round contract was fixed at binding; exporting SQL re-derives it
+		// from frontier references, so a plan whose last reference was optimized away
+		// cannot be represented faithfully
+		bool frontier_witness = false;
+		for (idx_t branch_idx = 1; branch_idx < trampoline.children.size(); branch_idx++) {
+			DetectFrontierWitness(*trampoline.children[branch_idx], trampoline.table_index, frontier_witness);
+		}
+		if (!frontier_witness) {
+			return LogicalPlanSQLExportResult::Failure({LogicalPlanSQLExportHelpers::PlanUnsupportedFeature(
+			    path, "trampoline_round_contract",
+			    "The trampoline requires lockstep rounds but no frontier reference survived optimization")});
+		}
 	}
 	auto query = make_uniq<TrampolineCTENode>();
 	query->ctename = name;

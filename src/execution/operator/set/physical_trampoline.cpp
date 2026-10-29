@@ -10,6 +10,8 @@
 #include "duckdb/parallel/task_scheduler.hpp"
 #include "duckdb/parallel/event.hpp"
 #include "duckdb/execution/aggregate_hashtable.hpp"
+#include "duckdb/execution/operator/join/physical_delim_join.hpp"
+#include "duckdb/execution/operator/aggregate/physical_hash_aggregate.hpp"
 
 #include <cmath>
 
@@ -857,8 +859,12 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 //===--------------------------------------------------------------------===//
 // Pipeline construction
 //===--------------------------------------------------------------------===//
-static void GatherFrontierScans(PhysicalOperator &op, TableIndex cte_index,
-                                vector<reference<PhysicalColumnDataScan>> &frontier_scans) {
+static void GatherFrontierScansInternal(PhysicalOperator &op, TableIndex cte_index,
+                                        vector<reference<PhysicalColumnDataScan>> &frontier_scans,
+                                        reference_set_t<const PhysicalOperator> &visited) {
+	if (!visited.insert(op).second) {
+		return;
+	}
 	if (op.type == PhysicalOperatorType::TRAMPOLINE_FRONTIER_SCAN) {
 		auto &scan = op.Cast<PhysicalColumnDataScan>();
 		if (scan.cte_index == cte_index) {
@@ -866,8 +872,19 @@ static void GatherFrontierScans(PhysicalOperator &op, TableIndex cte_index,
 		}
 	}
 	for (auto &child : op.children) {
-		GatherFrontierScans(child.get(), cte_index, frontier_scans);
+		GatherFrontierScansInternal(child.get(), cte_index, frontier_scans, visited);
 	}
+	if (op.type == PhysicalOperatorType::LEFT_DELIM_JOIN || op.type == PhysicalOperatorType::RIGHT_DELIM_JOIN) {
+		auto &delim_join = op.Cast<PhysicalDelimJoin>();
+		GatherFrontierScansInternal(delim_join.join, cte_index, frontier_scans, visited);
+		GatherFrontierScansInternal(delim_join.distinct, cte_index, frontier_scans, visited);
+	}
+}
+
+static void GatherFrontierScans(PhysicalOperator &op, TableIndex cte_index,
+                                vector<reference<PhysicalColumnDataScan>> &frontier_scans) {
+	reference_set_t<const PhysicalOperator> visited;
+	GatherFrontierScansInternal(op, cte_index, frontier_scans, visited);
 }
 
 static void GatherTrampolineCTEScans(const PhysicalOperator &op, vector<const_reference<PhysicalOperator>> &cte_scans) {

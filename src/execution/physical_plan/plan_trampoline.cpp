@@ -10,6 +10,7 @@
 #include "duckdb/planner/expression/bound_case_expression.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
 
 namespace duckdb {
 
@@ -144,11 +145,16 @@ bool CollectSelectorConstants(ClientContext &context, const Expression &expr, ve
 			return false;
 		}
 		for (auto &value : inner) {
-			auto cast_value = value.DefaultTryCastAs(BoundCastExpression::TargetType(cast_expr));
-			if (!cast_value) {
+			// evaluate through the actual bound cast: a registered cast may map
+			// constants differently from the default cast registry
+			auto evaluated = expr.Copy();
+			auto &copy_cast = evaluated->Cast<BoundFunctionExpression>();
+			BoundCastExpression::ChildMutable(copy_cast) = make_uniq<BoundConstantExpression>(value);
+			Value cast_value;
+			if (!evaluated->IsFoldable() || !ExpressionExecutor::TryEvaluateScalar(context, *evaluated, cast_value)) {
 				return false;
 			}
-			constants.push_back(std::move(*cast_value));
+			constants.push_back(std::move(cast_value));
 		}
 		return true;
 	}

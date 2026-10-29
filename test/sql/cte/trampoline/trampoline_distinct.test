@@ -21,8 +21,8 @@ WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
 query I
 WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
 	(VALUES (2, 0), (1, 0))
-	BRANCH 1: (SELECT 3, x FROM t, (VALUES (1), (2)) v(x))
-	BRANCH 2: (SELECT 3, x FROM t, (VALUES (2), (4)) v(x))
+	BRANCH 1: (SELECT 3, x FROM t, (VALUES (2), (4)) v(x))
+	BRANCH 2: (SELECT 3, x FROM t, (VALUES (1), (2)) v(x))
 	BRANCH 3 DISTINCT: (SELECT 0, sum(n)::INTEGER FROM t)
 ) SELECT n FROM t;
 ----
@@ -177,3 +177,13 @@ statement error
 WITH RECURSIVE r(x) EMIT DISTINCT AS (SELECT 1 UNION ALL SELECT x + 1 FROM r WHERE x < 3) SELECT * FROM r;
 ----
 <REGEX>:Parser Error.*EMIT DISTINCT requires USING TRAMPOLINE.*
+
+# Admission hashes physical values, so collated payloads are rejected until
+# collation-aware equality is wired up.
+statement error
+WITH RECURSIVE t(b, s) USING TRAMPOLINE (b) AS (
+	(SELECT 1, s COLLATE nocase FROM (VALUES ('a'), ('A')) v(s))
+	BRANCH 1 DISTINCT: (SELECT 0, s FROM t)
+) SELECT count(*) FROM t;
+----
+<REGEX>:Not implemented Error.*collated columns.*

@@ -17,12 +17,13 @@ WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
 0	5
 0	14
 
-# Seed order must not matter: the snapshot is frozen per round.
+# Invocation order must not matter: the same program with waiter and competitor
+# labels exchanged, so the competitor's wave executes before the waiter's.
 query II
 WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
-	(VALUES (2, 10), (1, 0))
-	BRANCH 1: (SELECT CASE WHEN EXISTS (SELECT 1 FROM frontier.t f WHERE f.b <> 1) THEN 1 ELSE 0 END, n + 1 FROM t)
-	BRANCH 2: (SELECT CASE WHEN n < 13 THEN 2 ELSE 0 END, n + 1 FROM t)
+	(VALUES (2, 0), (1, 10))
+	BRANCH 1: (SELECT CASE WHEN n < 13 THEN 1 ELSE 0 END, n + 1 FROM t)
+	BRANCH 2: (SELECT CASE WHEN EXISTS (SELECT 1 FROM frontier.t f WHERE f.b <> 2) THEN 2 ELSE 0 END, n + 1 FROM t)
 ) SELECT * FROM t ORDER BY n;
 ----
 0	5
@@ -146,3 +147,48 @@ statement error
 SELECT * FROM frontier.no_such_table;
 ----
 <REGEX>:.*no_such_table.*
+
+# The seed guard answers only frontier-qualified lookups: an unqualified seed
+# reference to a same-named catalog table keeps resolving to the table.
+statement ok
+CREATE TABLE guard_shadow(n INTEGER);
+
+statement ok
+INSERT INTO guard_shadow VALUES (7);
+
+statement ok
+ALTER TABLE guard_shadow RENAME TO t;
+
+query II
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(SELECT 1, n FROM t)
+	BRANCH 1: (SELECT 0, n FROM t)
+) SELECT * FROM t;
+----
+0	7
+
+statement ok
+DROP TABLE t;
+
+# Frontier scans under a physical delim join are rebound per round: the frozen
+# seed frontier is visible to the correlated aggregate.
+statement ok
+SET delim_join_as_cte = false;
+
+statement ok
+SET disabled_optimizers = 'deliminator';
+
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 1), (1, 2))
+	BRANCH 1: (SELECT 0, (SELECT count(*)::INTEGER FROM frontier.t f WHERE f.n <= w.n) FROM t w)
+) SELECT n FROM t ORDER BY n;
+----
+1
+2
+
+statement ok
+SET delim_join_as_cte = true;
+
+statement ok
+SET disabled_optimizers = '';

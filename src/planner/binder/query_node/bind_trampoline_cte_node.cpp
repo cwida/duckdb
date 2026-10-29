@@ -121,6 +121,19 @@ BoundStatement Binder::BindNode(TrampolineCTENode &statement) {
 	root->branch_distinct = statement.branch_distinct;
 	root->branch_distinct.resize(statement.branches.size(), false);
 	root->emit_distinct = statement.emit_distinct;
+	bool wants_admission = statement.emit_distinct;
+	for (auto distinct : root->branch_distinct) {
+		wants_admission = wants_admission || distinct;
+	}
+	if (wants_admission) {
+		// admission hashes physical values; collation-aware equality is not wired up
+		for (auto &type : result.types) {
+			if (type.id() == LogicalTypeId::VARCHAR && !StringType::GetCollation(type).empty()) {
+				throw NotImplementedException(
+				    "DISTINCT admission on a TRAMPOLINE CTE with collated columns is not supported");
+			}
+		}
+	}
 	for (idx_t branch_idx = 1; branch_idx < root->children.size(); branch_idx++) {
 		DetectFrontierReferences(*root->children[branch_idx], setop_index, 0, root->reads_frontier);
 	}
