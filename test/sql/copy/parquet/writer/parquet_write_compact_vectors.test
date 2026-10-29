@@ -194,6 +194,49 @@ SELECT stats_nan_count FROM parquet_metadata('{TEST_DIR}/compact_nan.parquet');
 ----
 1000
 
+# the page index needs per-page bounds, which dictionary-encoded compact input must keep producing
+statement ok
+COPY (SELECT i, s, ns FROM dict) TO '{TEST_DIR}/compact_dict_pi.parquet'
+(FORMAT PARQUET, DATA_PAGE_SIZE_LIMIT 4096, WRITE_PAGE_INDEX true);
+
+statement ok
+COPY (SELECT i, s, ns FROM expected) TO '{TEST_DIR}/flat_dict_pi.parquet'
+(FORMAT PARQUET, DATA_PAGE_SIZE_LIMIT 4096, WRITE_PAGE_INDEX true);
+
+query I
+SELECT count(*) FROM (
+	(SELECT path_in_schema, page_id, first_row_index, num_rows, min_value, max_value, null_count, boundary_order
+	 FROM parquet_page_index('{TEST_DIR}/compact_dict_pi.parquet')
+	 EXCEPT ALL
+	 SELECT path_in_schema, page_id, first_row_index, num_rows, min_value, max_value, null_count, boundary_order
+	 FROM parquet_page_index('{TEST_DIR}/flat_dict_pi.parquet'))
+	UNION ALL
+	(SELECT path_in_schema, page_id, first_row_index, num_rows, min_value, max_value, null_count, boundary_order
+	 FROM parquet_page_index('{TEST_DIR}/flat_dict_pi.parquet')
+	 EXCEPT ALL
+	 SELECT path_in_schema, page_id, first_row_index, num_rows, min_value, max_value, null_count, boundary_order
+	 FROM parquet_page_index('{TEST_DIR}/compact_dict_pi.parquet'))
+);
+----
+0
+
+# every page of a constant column's index carries the constant's bounds
+statement ok
+COPY (SELECT 'constant_value' AS s, 42::BIGINT AS v, i FROM range(100000) t(i))
+TO '{TEST_DIR}/compact_const_pi.parquet' (FORMAT PARQUET, DATA_PAGE_SIZE_LIMIT 4096, WRITE_PAGE_INDEX true);
+
+query IIIII
+SELECT count(*) > 1, bool_and(min_value = max_value), min(min_value), max(max_value), sum(null_count)
+FROM parquet_page_index('{TEST_DIR}/compact_const_pi.parquet') WHERE path_in_schema = 's';
+----
+true	true	constant_value	constant_value	0
+
+query IIII
+SELECT count(*) > 1, bool_and(min_value = max_value), min(min_value), max(max_value)
+FROM parquet_page_index('{TEST_DIR}/compact_const_pi.parquet') WHERE path_in_schema = 'v';
+----
+true	true	42	42
+
 # nested writers keep receiving flat input
 statement ok
 COPY (SELECT [s, s] AS l, {'a': s, 'b': 7} AS st FROM dict) TO '{TEST_DIR}/compact_nested.parquet';
