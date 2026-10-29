@@ -107,6 +107,9 @@ public:
 	vector<unique_ptr<TrampolineWaveQueue>> pending;
 	//! Emitted rows that have not yet been handed to the consumer
 	unique_ptr<ColumnDataCollection> emit_backlog;
+	ColumnDataAppendState backlog_append;
+	DataChunk backlog_scan_chunk;
+	bool backlog_append_valid = false;
 	//! Emitted rows currently being scanned
 	unique_ptr<ColumnDataCollection> emit_table;
 	ColumnDataScanState emit_scan;
@@ -277,10 +280,27 @@ void TrampolineState::CloseExecution() {
 	}
 	auto &emitted = staged[0];
 	if (emitted && emitted->Count() > 0) {
-		if (emit_backlog) {
-			emit_backlog->Combine(*emitted);
-		} else {
+		if (!emit_backlog) {
 			emit_backlog = std::move(emitted);
+			backlog_append_valid = false;
+		} else if (emitted->Count() >= STANDARD_VECTOR_SIZE) {
+			emit_backlog->Combine(*emitted);
+			backlog_append_valid = false;
+		} else {
+			// repack small emissions so the consumer sees full chunks, not one per wave
+			if (!backlog_append_valid) {
+				emit_backlog->InitializeAppend(backlog_append);
+				backlog_append_valid = true;
+			}
+			if (backlog_scan_chunk.data.empty()) {
+				emitted->InitializeScanChunk(backlog_scan_chunk);
+			}
+			ColumnDataScanState emitted_scan;
+			emitted->InitializeScan(emitted_scan);
+			while (emitted->Scan(emitted_scan, backlog_scan_chunk)) {
+				emit_backlog->Append(backlog_append, backlog_scan_chunk);
+			}
+			Recycle(std::move(emitted));
 		}
 	}
 	emitted.reset();
@@ -319,11 +339,20 @@ SourceResultType TrampolineState::GetData(ExecutionContext &execution_context, D
 			Recycle(std::move(emit_table));
 		}
 		if (emit_backlog) {
-			Recycle(std::move(emit_table));
-			emit_table = std::move(emit_backlog);
-			emit_table->InitializeScan(emit_scan);
-			emit_active = true;
-			continue;
+			// emitting tiny chunks costs a scheduler round trip per chunk downstream, so
+			// keep executing waves until a full vector accumulated or no work remains
+			bool waves_pending = false;
+			for (idx_t candidate = 1; candidate <= op.BranchCount(); candidate++) {
+				waves_pending = waves_pending || !pending[candidate]->waves.empty();
+			}
+			if (emit_backlog->Count() >= STANDARD_VECTOR_SIZE || !waves_pending) {
+				Recycle(std::move(emit_table));
+				emit_table = std::move(emit_backlog);
+				emit_table->InitializeScan(emit_scan);
+				emit_active = true;
+				backlog_append_valid = false;
+				continue;
+			}
 		}
 		idx_t branch_idx;
 		unique_ptr<ColumnDataCollection> wave;
