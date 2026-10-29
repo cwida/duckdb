@@ -444,6 +444,19 @@ static optional_ptr<LogicalOperator> FindCorrelatedDomainAttachment(LogicalCTE &
 }
 
 void BuildProbeSideOptimizer::VisitOperator(LogicalOperator &op) {
+	if (op.type == LogicalOperatorType::LOGICAL_TRAMPOLINE) {
+		// branch joins prefer the routed input on the probe side, like recursive members:
+		// a static build side can be materialized once and retained across waves, while a
+		// wave-side build is rebuilt on every invocation
+		auto &cte = op.Cast<LogicalCTE>();
+		VisitOperator(*op.children[0]);
+		active_recursive_cte_indexes.push_back(cte.table_index);
+		for (idx_t branch_idx = 1; branch_idx < op.children.size(); branch_idx++) {
+			VisitOperator(*op.children[branch_idx]);
+		}
+		active_recursive_cte_indexes.pop_back();
+		return;
+	}
 	if (op.type == LogicalOperatorType::LOGICAL_RECURSIVE_CTE) {
 		auto &cte = op.Cast<LogicalCTE>();
 		auto domain_attachment = FindCorrelatedDomainAttachment(cte);

@@ -46,3 +46,39 @@ SELECT b, n FROM t;
 
 statement ok
 SET disabled_optimizers = '';
+
+# branch joins keep the routed input on the probe side so a static build can be
+# retained across waves: the rendered condition shows the flipped orientation
+statement ok
+CREATE TABLE series_plan_check(seq INTEGER, tag VARCHAR);
+
+query II
+EXPLAIN WITH RECURSIVE fsm(state, seq) USING TRAMPOLINE (state) AS (
+    (SELECT 1, s.seq FROM series_plan_check s WHERE s.tag = 'START')
+    BRANCH 1: (SELECT CASE WHEN g.tag = 'UP' THEN 1 ELSE 0 END, g.seq
+               FROM fsm JOIN series_plan_check g ON g.seq = fsm.seq + 1)
+)
+SELECT count(*) FROM fsm;
+----
+physical_plan	<REGEX>:.*Conditions: \(seq \+ 1\) = seq.*
+
+# outside a trampoline the same join keeps its cost-based orientation
+query II
+EXPLAIN SELECT count(*)
+FROM series_plan_check g
+JOIN (SELECT seq FROM series_plan_check WHERE tag = 'START') f ON g.seq = f.seq + 1;
+----
+physical_plan	<REGEX>:.*Conditions: seq = \(seq \+ 1\).*
+
+# a recursive CTE member join keeps the existing recursive probe-side preference
+query II
+EXPLAIN WITH RECURSIVE fsm(state, seq) AS (
+    SELECT 1, s.seq FROM series_plan_check s WHERE s.tag = 'START'
+    UNION ALL
+    SELECT CASE WHEN g.tag = 'UP' THEN 1 ELSE 0 END, g.seq
+    FROM fsm JOIN series_plan_check g ON g.seq = fsm.seq + 1
+    WHERE fsm.state = 1
+)
+SELECT count(*) FROM fsm;
+----
+physical_plan	<REGEX>:.*Conditions: \(seq \+ 1\) = seq.*
