@@ -357,12 +357,16 @@ Allocator &CachingFileHandle::GetBufferAllocator() const {
 	return external_file_cache.GetBufferManager().GetBufferAllocator();
 }
 
+bool CachingFileHandle::ReadsAreCached() {
+	return external_file_cache.IsEnabled() && external_file_cache.ShouldCacheFile(path.path) && CanUseCache();
+}
+
 FileBufferHandleGroup CachingFileHandle::Read(const idx_t nr_bytes, const idx_t location) {
 	if (nr_bytes == 0) {
 		return FileBufferHandleGroup();
 	}
 
-	if (!external_file_cache.IsEnabled() || !external_file_cache.ShouldCacheFile(path.path) || !CanUseCache()) {
+	if (!ReadsAreCached()) {
 		auto buf = AllocateUncachedReadBuffer(external_file_cache.GetBufferManager(), nr_bytes);
 		ReadUncached(buf.GetDataMutable(), nr_bytes, location);
 		vector<FileBufferHandleGroup::MemoryHandle> mem_handles;
