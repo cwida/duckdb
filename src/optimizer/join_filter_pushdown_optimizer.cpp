@@ -14,6 +14,7 @@
 #include "duckdb/planner/operator/logical_aggregate.hpp"
 #include "duckdb/planner/operator/logical_any_join.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
+#include "duckdb/planner/operator/logical_distinct.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
 #include "duckdb/planner/operator/logical_set_operation.hpp"
@@ -159,166 +160,171 @@ static void PushdownProjectionColumns(LogicalProjection &proj, const vector<Join
 	}
 }
 
-void JoinFilterPushdownOptimizer::GetPushdownFilterTargets(LogicalOperator &op,
-                                                           vector<JoinFilterPushdownColumn> columns,
-                                                           vector<PushdownFilterTarget> &targets,
-                                                           bool cross_secure_views) {
-	auto &probe_child = op;
-	switch (probe_child.type) {
-	case LogicalOperatorType::LOGICAL_LIMIT:
-	case LogicalOperatorType::LOGICAL_TOP_N:
-		// LIMIT/TOP_N determines which rows are part of the probe side before the join.
-		// Pushing a join filter below it can change which rows survive the limit/offset.
-		break;
-	case LogicalOperatorType::LOGICAL_ORDER_BY:
-	case LogicalOperatorType::LOGICAL_DISTINCT:
-	case LogicalOperatorType::LOGICAL_CROSS_PRODUCT:
-		// does not affect probe side - recurse into left child
-		// FIXME: we can probably recurse into more operators here (e.g. window, unnest)
-		GetPushdownFilterTargets(*probe_child.children[0], std::move(columns), targets, cross_secure_views);
-		break;
-	case LogicalOperatorType::LOGICAL_FILTER:
-	case LogicalOperatorType::LOGICAL_COMPARISON_JOIN:
-		GetPushdownFilterTargets(*probe_child.children[0], std::move(columns), targets, cross_secure_views);
-		break;
-	case LogicalOperatorType::LOGICAL_ANY_JOIN: {
-		auto &join = probe_child.Cast<LogicalAnyJoin>();
-		// Only remove left rows where that cannot introduce null-extended rows or change volatile predicates.
-		if (join.join_type != JoinType::INNER || join.condition->IsVolatile()) {
+static void PushdownAggregateColumns(LogicalAggregate &aggr, const vector<JoinFilterPushdownColumn> &columns,
+                                     vector<JoinFilterPushdownColumn> &group_columns) {
+	for (auto &filter : columns) {
+		if (filter.probe_column_index.table_index != aggr.group_index) {
+			continue;
+		}
+		const auto group_index = filter.probe_column_index.column_index;
+		bool present_in_all = true;
+		for (auto &grouping_set : aggr.grouping_sets) {
+			present_in_all &= grouping_set.count(group_index) != 0;
+		}
+		if (!present_in_all) {
+			continue;
+		}
+		auto candidate = filter;
+		auto &expr = aggr.GetGroupExpression(group_index);
+		if (!JoinFilterPushdownUtil::PushdownJoinFilterExpression(expr, candidate)) {
+			continue;
+		}
+		group_columns.push_back(std::move(candidate));
+	}
+}
+
+static void FindScanFilterTargets(LogicalGet &get, vector<JoinFilterPushdownColumn> columns,
+                                  vector<PushdownFilterTarget> &targets) {
+	if (!get.function.filter_pushdown || get.ordinality_idx.IsValid()) {
+		return;
+	}
+	get.ResolveOperatorTypes();
+	const auto bindings = get.GetColumnBindings();
+	vector<JoinFilterPushdownColumn> accepted_columns;
+	for (auto &filter : columns) {
+		if (filter.probe_column_index.table_index != get.table_index) {
+			continue;
+		}
+		if (get.function.supports_pushdown_type) {
+			auto column_id = get.GetColumnIndex(filter.probe_column_index).GetPrimaryIndex();
+			if (!get.function.supports_pushdown_type(*get.bind_data, column_id)) {
+				continue;
+			}
+		}
+		for (idx_t i = 0; i < bindings.size(); i++) {
+			if (filter.probe_column_index.column_index == bindings[i].column_index) {
+				filter.storage_type = get.types[i];
+				break;
+			}
+		}
+		D_ASSERT(filter.storage_type != LogicalType::INVALID);
+		const auto reconstructed_type =
+		    filter.runtime_filter_casts.empty() ? filter.storage_type : filter.runtime_filter_casts.back().target_type;
+		if (filter.storage_type.id() == LogicalTypeId::VARIANT &&
+		    filter.mode == JoinFilterPushdownMode::RECONSTRUCT_EXPRESSION &&
+		    reconstructed_type.id() == LogicalTypeId::VARIANT) {
+			continue;
+		}
+		accepted_columns.push_back(std::move(filter));
+	}
+	if (!accepted_columns.empty()) {
+		targets.emplace_back(get, std::move(accepted_columns));
+	}
+}
+
+static void FindSetOperationFilterTargets(LogicalSetOperation &setop, const vector<JoinFilterPushdownColumn> &columns,
+                                          vector<PushdownFilterTarget> &targets) {
+	for (auto &child : setop.children) {
+		vector<JoinFilterPushdownColumn> child_columns;
+		const auto child_bindings = child->GetColumnBindings();
+		for (auto &filter : columns) {
+			if (filter.probe_column_index.table_index != setop.table_index) {
+				continue;
+			}
+			auto candidate = filter;
+			candidate.probe_column_index = child_bindings[filter.probe_column_index.column_index];
+			child_columns.push_back(std::move(candidate));
+		}
+		JoinFilterPushdownOptimizer::GetPushdownFilterTargets(*child, std::move(child_columns), targets);
+		if (setop.type == LogicalOperatorType::LOGICAL_EXCEPT) {
 			break;
 		}
-		GetPushdownFilterTargets(*join.children[0], std::move(columns), targets, cross_secure_views);
+	}
+}
+
+static bool FilterTargetPreservesLeftInput(JoinType type) {
+	switch (type) {
+	case JoinType::INNER:
+	case JoinType::LEFT:
+	case JoinType::SEMI:
+	case JoinType::ANTI:
+	case JoinType::MARK:
+	case JoinType::SINGLE:
+		return true;
+	default:
+		// Filtering a NULL-generating input can create new unmatched rows.
+		return false;
+	}
+}
+
+void JoinFilterPushdownOptimizer::GetPushdownFilterTargets(LogicalOperator &op,
+                                                           vector<JoinFilterPushdownColumn> columns,
+                                                           vector<PushdownFilterTarget> &targets) {
+	if (columns.empty()) {
+		return;
+	}
+	bool is_volatile = false;
+	LogicalOperatorVisitor::EnumerateExpressions(
+	    op, [&](unique_ptr<Expression> *expr) { is_volatile |= (*expr)->IsVolatile(); });
+	if (is_volatile) {
+		return;
+	}
+	switch (op.type) {
+	case LogicalOperatorType::LOGICAL_GET:
+		FindScanFilterTargets(op.Cast<LogicalGet>(), std::move(columns), targets);
+		break;
+	case LogicalOperatorType::LOGICAL_PROJECTION: {
+		vector<JoinFilterPushdownColumn> projected_columns;
+		PushdownProjectionColumns(op.Cast<LogicalProjection>(), columns, projected_columns);
+		GetPushdownFilterTargets(*op.children[0], std::move(projected_columns), targets);
+		break;
+	}
+	case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY: {
+		vector<JoinFilterPushdownColumn> group_columns;
+		PushdownAggregateColumns(op.Cast<LogicalAggregate>(), columns, group_columns);
+		GetPushdownFilterTargets(*op.children[0], std::move(group_columns), targets);
+		break;
+	}
+	case LogicalOperatorType::LOGICAL_ANY_JOIN: {
+		auto &join = op.Cast<LogicalAnyJoin>();
+		// Filtering a NULL-generating input can create new unmatched rows.
+		if (join.join_type != JoinType::INNER) {
+			break;
+		}
+		GetPushdownFilterTargets(*join.children[0], std::move(columns), targets);
 		break;
 	}
 	case LogicalOperatorType::LOGICAL_UNNEST: {
-		auto &unnest = probe_child.Cast<LogicalUnnest>();
-		// check if the filters apply to the unnest index
+		vector<JoinFilterPushdownColumn> input_columns;
 		for (auto &filter : columns) {
-			if (filter.probe_column_index.table_index == unnest.unnest_index) {
-				// the filter applies to the unnest index - bail out
-				return;
+			if (filter.probe_column_index.table_index != op.Cast<LogicalUnnest>().unnest_index) {
+				input_columns.push_back(std::move(filter));
 			}
 		}
-		GetPushdownFilterTargets(*probe_child.children[0], std::move(columns), targets, cross_secure_views);
+		GetPushdownFilterTargets(*op.children[0], std::move(input_columns), targets);
 		break;
 	}
 	case LogicalOperatorType::LOGICAL_EXCEPT:
 	case LogicalOperatorType::LOGICAL_INTERSECT:
-	case LogicalOperatorType::LOGICAL_UNION: {
-		auto &setop = probe_child.Cast<LogicalSetOperation>();
-		for (auto &child : probe_child.children) {
-			// rewrite the filters for each of the children of the union
-			vector<JoinFilterPushdownColumn> child_columns;
-			auto child_bindings = child->GetColumnBindings();
-			child_columns.reserve(columns.size());
-			for (auto &child_column : columns) {
-				if (child_column.probe_column_index.table_index != setop.table_index) {
-					continue;
-				}
-				auto new_col = child_column;
-				new_col.probe_column_index = child_bindings[child_column.probe_column_index.column_index];
-				child_columns.push_back(new_col);
-			}
-			if (child_columns.empty()) {
-				if (probe_child.type == LogicalOperatorType::LOGICAL_EXCEPT) {
-					break;
-				}
-				continue;
-			}
-			// then recurse into the child
-			GetPushdownFilterTargets(*child, std::move(child_columns), targets, cross_secure_views);
-
-			// for EXCEPT we can only recurse into the first (left) child
-			if (probe_child.type == LogicalOperatorType::LOGICAL_EXCEPT) {
-				break;
-			}
+	case LogicalOperatorType::LOGICAL_UNION:
+		FindSetOperationFilterTargets(op.Cast<LogicalSetOperation>(), columns, targets);
+		break;
+	case LogicalOperatorType::LOGICAL_DISTINCT:
+		if (op.Cast<LogicalDistinct>().distinct_type == DistinctType::DISTINCT) {
+			GetPushdownFilterTargets(*op.children[0], std::move(columns), targets);
 		}
 		break;
-	}
-	case LogicalOperatorType::LOGICAL_GET: {
-		// found LogicalGet
-		auto &get = probe_child.Cast<LogicalGet>();
-		if (!get.function.filter_pushdown) {
-			// filter pushdown is not supported - no need to consider this node
-			return;
+	case LogicalOperatorType::LOGICAL_COMPARISON_JOIN:
+		if (FilterTargetPreservesLeftInput(op.Cast<LogicalComparisonJoin>().join_type)) {
+			GetPushdownFilterTargets(*op.children[0], std::move(columns), targets);
 		}
-		get.ResolveOperatorTypes();
-		const auto bindings = get.GetColumnBindings();
-		vector<JoinFilterPushdownColumn> accepted_columns;
-		for (auto &filter : columns) {
-			if (filter.probe_column_index.table_index != get.table_index) {
-				// the filter does not apply to the probe side here - bail-out
-				return;
-			}
-			if (get.function.supports_pushdown_type) {
-				auto column_id = get.GetColumnIndex(filter.probe_column_index).GetPrimaryIndex();
-				if (!get.function.supports_pushdown_type(*get.bind_data, column_id)) {
-					continue;
-				}
-			}
-			// add storage type to columns
-			for (idx_t i = 0; i < bindings.size(); i++) {
-				if (filter.probe_column_index.column_index == bindings[i].column_index) {
-					filter.storage_type = get.types[i];
-					break;
-				}
-			}
-			D_ASSERT(filter.storage_type != LogicalType::INVALID);
-			const auto reconstructed_type = filter.runtime_filter_casts.empty()
-			                                    ? filter.storage_type
-			                                    : filter.runtime_filter_casts.back().target_type;
-			if (filter.storage_type.id() == LogicalTypeId::VARIANT &&
-			    filter.mode == JoinFilterPushdownMode::RECONSTRUCT_EXPRESSION &&
-			    reconstructed_type.id() == LogicalTypeId::VARIANT) {
-				return;
-			}
-			accepted_columns.push_back(std::move(filter));
-		}
-		if (accepted_columns.empty()) {
-			return;
-		}
-		targets.emplace_back(get, std::move(accepted_columns));
 		break;
-	}
-	case LogicalOperatorType::LOGICAL_PROJECTION: {
-		auto &proj = probe_child.Cast<LogicalProjection>();
-		vector<JoinFilterPushdownColumn> projected_columns;
-		projected_columns.reserve(columns.size());
-		PushdownProjectionColumns(proj, columns, projected_columns);
-		if (projected_columns.empty()) {
-			return;
-		}
-		GetPushdownFilterTargets(*probe_child.children[0], std::move(projected_columns), targets, cross_secure_views);
-		break;
-	}
-	case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY: {
-		// we can push filters through aggregates IF they all point to groups
-		auto &aggr = probe_child.Cast<LogicalAggregate>();
-		for (auto &filter : columns) {
-			if (filter.probe_column_index.table_index != aggr.group_index) {
-				// index does not refer to a group - bail-out
-				return;
-			}
-			auto &expr = aggr.GetExpression(filter.probe_column_index);
-			if (!JoinFilterPushdownUtil::PushdownJoinFilterExpression(expr, filter)) {
-				// cannot push through this expression - bail-out
-				return;
-			}
-		}
-		GetPushdownFilterTargets(*probe_child.children[0], std::move(columns), targets, cross_secure_views);
-		break;
-	}
-	case LogicalOperatorType::LOGICAL_SECURE_VIEW:
-		if (!cross_secure_views) {
-			break;
-		}
-		// a join filter enters the view as a pushed WHERE filter would, and needs no barrier: it cannot fail, as a cast
-		// that can fail is a TRY_CAST that keeps the rows it cannot convert for the join
-		// (PreserveRuntimeFilterCastErrors)
-		GetPushdownFilterTargets(*probe_child.children[0], std::move(columns), targets, cross_secure_views);
+	case LogicalOperatorType::LOGICAL_ORDER_BY:
+	case LogicalOperatorType::LOGICAL_FILTER:
+	case LogicalOperatorType::LOGICAL_CROSS_PRODUCT:
+		GetPushdownFilterTargets(*op.children[0], std::move(columns), targets);
 		break;
 	default:
-		// unsupported child type
 		break;
 	}
 }
@@ -345,9 +351,27 @@ bool JoinFilterPushdownOptimizer::IsFiltering(const unique_ptr<LogicalOperator> 
 	}
 }
 
+static bool IsDirectScanFilterPath(const LogicalOperator &op) {
+	switch (op.type) {
+	case LogicalOperatorType::LOGICAL_GET:
+		return true;
+	case LogicalOperatorType::LOGICAL_PROJECTION:
+	case LogicalOperatorType::LOGICAL_FILTER:
+		return IsDirectScanFilterPath(*op.children[0]);
+	default:
+		return false;
+	}
+}
+
 void JoinFilterPushdownOptimizer::GenerateJoinFilters(LogicalComparisonJoin &join) {
 	if (!JoinFilterPushdownUtil::JoinTypeIsSupported(join.join_type)) {
 		return;
+	}
+	for (auto &cond : join.conditions) {
+		auto &expr = cond.IsComparison() ? cond.GetLHS() : cond.GetJoinExpression();
+		if (expr.IsVolatile()) {
+			return;
+		}
 	}
 	// re-order conditions here - otherwise this will happen later on and invalidate the indexes we generate
 	PhysicalComparisonJoin::ReorderConditions(join.conditions);
@@ -367,8 +391,10 @@ void JoinFilterPushdownOptimizer::GenerateJoinFilters(LogicalComparisonJoin &joi
 		case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
 			break;
 		case ExpressionType::COMPARE_NOT_DISTINCT_FROM:
-			// TODO: Need OR predicates
-			continue;
+			if (!IsDirectScanFilterPath(*join.children[0])) {
+				continue;
+			}
+			break;
 		default:
 			continue;
 		}
@@ -388,8 +414,21 @@ void JoinFilterPushdownOptimizer::GenerateJoinFilters(LogicalComparisonJoin &joi
 	}
 	// recurse the query tree to find the LogicalGets in which we can push the filter info
 	vector<PushdownFilterTarget> pushdown_filter_targets;
-	GetPushdownFilterTargets(*join.children[0], pushdown_columns, pushdown_filter_targets, true);
+	GetPushdownFilterTargets(*join.children[0], pushdown_columns, pushdown_filter_targets);
 	for (auto &target : pushdown_filter_targets) {
+		vector<JoinFilterPushdownColumn> get_columns;
+		for (auto &column : target.columns) {
+			const auto comparison =
+			    join.conditions[pushdown_info->join_condition[column.join_filter_idx]].GetComparisonType();
+			if (comparison == ExpressionType::COMPARE_NOT_DISTINCT_FROM &&
+			    column.mode != JoinFilterPushdownMode::RECONSTRUCT_EXPRESSION) {
+				continue;
+			}
+			get_columns.push_back(std::move(column));
+		}
+		if (get_columns.empty()) {
+			continue;
+		}
 		auto &get = target.get;
 		// pushdown info can be applied to this LogicalGet - push the dynamic table filter set
 		if (!get.dynamic_filters) {
@@ -398,7 +437,7 @@ void JoinFilterPushdownOptimizer::GenerateJoinFilters(LogicalComparisonJoin &joi
 
 		JoinFilterPushdownFilter get_filter;
 		get_filter.dynamic_filters = get.dynamic_filters;
-		get_filter.columns = std::move(target.columns);
+		get_filter.columns = std::move(get_columns);
 		if (get.has_estimated_cardinality) {
 			get_filter.estimated_scan_cardinality = get.estimated_cardinality;
 		}

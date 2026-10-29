@@ -138,11 +138,10 @@ optional_ptr<LogicalGet> RowGroupPruner::FindLogicalGet(const LogicalOrder &logi
 	JoinFilterPushdownOptimizer::GetPushdownFilterTargets(*logical_order.children[0], std::move(columns),
 	                                                      pushdown_targets);
 
-	if (pushdown_targets.empty()) {
+	if (pushdown_targets.size() != 1 || pushdown_targets[0].columns.size() != 1) {
 		return nullptr;
 	}
 
-	D_ASSERT(pushdown_targets.size() == 1);
 	auto &pushed_column = pushdown_targets[0].columns[0];
 	if (pushed_column.mode != JoinFilterPushdownMode::RECONSTRUCT_EXPRESSION ||
 	    RuntimeFilterCastUtil::RuntimeFilterUsesTryCast(pushed_column)) {

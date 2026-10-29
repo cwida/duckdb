@@ -1,0 +1,56 @@
+# name: test/sql/join/inner/null_safe_runtime_filter_boundaries.test
+# description: New NULL-safe runtime filter routes stop at non-direct scan paths
+# group: [inner]
+
+statement ok
+SET threads=1;
+
+statement ok
+SET disabled_optimizers='statistics_propagation,join_order,build_side_probe_side,compressed_materialization,cte_filter_pusher';
+
+statement ok
+CREATE TABLE p AS SELECT i a,0 g FROM range(10000)t(i) UNION ALL SELECT NULL::BIGINT,0;
+
+statement ok
+CREATE TABLE b AS SELECT 42::BIGINT b UNION ALL SELECT NULL::BIGINT;
+
+statement ok
+CREATE TABLE aux AS SELECT 1 g;
+
+query II
+EXPLAIN ANALYZE SELECT count(*),sum(n) FROM (SELECT a,count(*) n FROM p GROUP BY a)q JOIN b ON a IS NOT DISTINCT FROM b;
+----
+analyzed_plan	<!REGEX>:(?s).*Dynamic Filters:.*
+
+query II
+EXPLAIN ANALYZE SELECT count(*),sum(n) FROM (SELECT a,unnest([g]) n FROM p)q JOIN b ON a IS NOT DISTINCT FROM b;
+----
+analyzed_plan	<!REGEX>:(?s).*Dynamic Filters:.*
+
+query II
+EXPLAIN ANALYZE SELECT count(*),sum(n) FROM (SELECT p.a,aux.g n FROM p JOIN aux ON p.g<>aux.g)q JOIN b ON a IS NOT DISTINCT FROM b;
+----
+analyzed_plan	<!REGEX>:(?s).*Dynamic Filters:.*
+
+query II
+EXPLAIN ANALYZE SELECT count(*),sum(n) FROM (SELECT a,g n FROM p UNION ALL SELECT a,g n FROM p)q JOIN b ON a IS NOT DISTINCT FROM b;
+----
+analyzed_plan	<!REGEX>:(?s).*Dynamic Filters:.*
+
+query II
+EXPLAIN ANALYZE SELECT count(*),sum(n) FROM (SELECT a,row_number() OVER (PARTITION BY a ORDER BY g) n FROM p)q JOIN b ON a IS NOT DISTINCT FROM b;
+----
+analyzed_plan	<!REGEX>:(?s).*Dynamic Filters:.*
+
+query II
+EXPLAIN ANALYZE SELECT count(*),sum(n) FROM (SELECT a,g n FROM p ORDER BY a NULLS FIRST LIMIT 200)q JOIN b ON a IS NOT DISTINCT FROM b;
+----
+analyzed_plan	<!REGEX>:(?s).*Dynamic Filters:.*
+
+query II
+EXPLAIN ANALYZE SELECT count(*),sum(n) FROM (WITH q AS MATERIALIZED (SELECT a,g n FROM p) SELECT * FROM q)q JOIN b ON a IS NOT DISTINCT FROM b;
+----
+analyzed_plan	<!REGEX>:(?s).*Dynamic Filters:.*
+
+statement ok
+RESET disabled_optimizers;
