@@ -5664,14 +5664,14 @@ static const TransformChildPlan FRAME_CHILDREN_422[] = {{PEGRuleId::SelectClause
 static const TransformFramePlan FRAME_PLAN_437 = {FRAME_CHILDREN_422, 2, 2, false, 0, {}};
 static const TransformChildPlan FRAME_CHILDREN_423[] = {{PEGRuleId::CTEBody,
                                                          TransformChildKind::REQUIRED,
-                                                         6,
+                                                         7,
                                                          5,
                                                          false,
                                                          {0, TRANSFORM_PATH_END, 0},
                                                          {0, TRANSFORM_PATH_END, 0}},
                                                         {PEGRuleId::Materialized,
                                                          TransformChildKind::OPTIONAL,
-                                                         5,
+                                                         6,
                                                          4,
                                                          false,
                                                          {0, TRANSFORM_PATH_END, 0},
@@ -5738,7 +5738,7 @@ static const TransformChildPlan FRAME_CHILDREN_426[] = {{PEGRuleId::TrampolineBr
 static const TransformFramePlan FRAME_PLAN_441 = {FRAME_CHILDREN_426, 2, 2, true, 0, {}};
 static const TransformChildPlan FRAME_CHILDREN_427[] = {{PEGRuleId::SelectParens,
                                                          TransformChildKind::REQUIRED,
-                                                         4,
+                                                         5,
                                                          0,
                                                          false,
                                                          {0, TRANSFORM_PATH_END, 0},
@@ -17732,6 +17732,7 @@ PEGTransformerFactory::FinalizeFromSelectClauseTrampoline(PEGTransformer &transf
 arena_ptr<TransformResultValue>
 PEGTransformerFactory::FinalizeWithStatementTrampoline(PEGTransformer &transformer,
                                                        GeneratedTransformProcess &process) {
+	auto &list_pr = process.parse_result.Cast<ListParseResult>();
 	auto col_id_or_string = process.TakeResult<Identifier>(0);
 	optional<vector<string>> column_aliases {};
 	if (process.child_results[1]) {
@@ -17745,13 +17746,16 @@ PEGTransformerFactory::FinalizeWithStatementTrampoline(PEGTransformer &transform
 	if (process.child_results[3]) {
 		using_trampoline = process.TakeResult<Identifier>(3);
 	}
+	bool has_result {};
+	auto &has_result_opt = list_pr.GetChild(4).Cast<OptionalParseResult>();
+	has_result = has_result_opt.HasResult();
 	optional<bool> materialized {};
 	if (process.child_results[4]) {
 		materialized = process.TakeResult<bool>(4);
 	}
 	auto cte_body = process.TakeResult<unique_ptr<TableRef>>(5);
 	auto result = TransformWithStatement(transformer, col_id_or_string, column_aliases, std::move(using_key),
-	                                     using_trampoline, materialized, std::move(cte_body));
+	                                     using_trampoline, has_result, materialized, std::move(cte_body));
 	return transformer.MakeResult<pair<Identifier, unique_ptr<CommonTableExpressionInfo>>>(std::move(result));
 }
 
@@ -17796,9 +17800,12 @@ PEGTransformerFactory::FinalizeTrampolineBranchClauseTrampoline(PEGTransformer &
 	bool has_result {};
 	auto &has_result_opt = list_pr.GetChild(2).Cast<OptionalParseResult>();
 	has_result = has_result_opt.HasResult();
+	bool has_result_3 {};
+	auto &has_result_3_opt = list_pr.GetChild(3).Cast<OptionalParseResult>();
+	has_result_3 = has_result_3_opt.HasResult();
 	auto select_parens = process.TakeResult<unique_ptr<SelectStatement>>(0);
-	auto result =
-	    TransformTrampolineBranchClause(transformer, std::move(number_literal), has_result, std::move(select_parens));
+	auto result = TransformTrampolineBranchClause(transformer, std::move(number_literal), has_result, has_result_3,
+	                                              std::move(select_parens));
 	return transformer.MakeResult<TrampolineBranch>(std::move(result));
 }
 

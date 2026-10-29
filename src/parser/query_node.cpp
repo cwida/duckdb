@@ -60,6 +60,9 @@ string CommonTableExpressionMap::ToString() const {
 		if (cte.query_node && cte.query_node->type == QueryNodeType::TRAMPOLINE_CTE_NODE) {
 			auto &trampoline_node = cte.query_node->Cast<TrampolineCTENode>();
 			result += " USING TRAMPOLINE (" + SQLIdentifier(trampoline_node.selector) + ")";
+			if (trampoline_node.emit_distinct) {
+				result += " EMIT DISTINCT";
+			}
 		}
 		if (!cte.key_targets.empty()) {
 			result += " USING KEY (";

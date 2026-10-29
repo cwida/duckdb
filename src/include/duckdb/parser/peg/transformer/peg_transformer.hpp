@@ -4220,7 +4220,7 @@ public:
 	static pair<Identifier, unique_ptr<CommonTableExpressionInfo>> TransformWithStatement(
 	    PEGTransformer &transformer, const Identifier &col_id_or_string, const optional<vector<string>> &column_aliases,
 	    optional<vector<unique_ptr<ParsedExpression>>> using_key, const optional<Identifier> &using_trampoline,
-	    const optional<bool> &materialized, unique_ptr<TableRef> cte_body);
+	    bool emit_distinct, const optional<bool> &materialized, unique_ptr<TableRef> cte_body);
 	static unique_ptr<TableRef> TransformCTESelectBody(PEGTransformer &transformer,
 	                                                   unique_ptr<SelectStatement> select_statement_internal);
 	static unique_ptr<TableRef> TransformCTEDMLBody(PEGTransformer &transformer, unique_ptr<SQLStatement> statement);
@@ -4228,7 +4228,7 @@ public:
 	                                                       unique_ptr<SelectStatement> seed,
 	                                                       vector<TrampolineBranch> branches);
 	static TrampolineBranch TransformTrampolineBranchClause(PEGTransformer &transformer,
-	                                                        unique_ptr<ParsedExpression> label, bool tee,
+	                                                        unique_ptr<ParsedExpression> label, bool distinct, bool tee,
 	                                                        unique_ptr<SelectStatement> body);
 	static vector<unique_ptr<ParsedExpression>> TransformUsingKey(PEGTransformer &transformer,
 	                                                              vector<unique_ptr<ParsedExpression>> target_list);

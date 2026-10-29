@@ -738,6 +738,16 @@
         "id": 205,
         "name": "reads_frontier",
         "type": "bool"
+      },
+      {
+        "id": 206,
+        "name": "branch_distinct",
+        "type": "vector<bool>"
+      },
+      {
+        "id": 207,
+        "name": "emit_distinct",
+        "type": "bool"
       }
     ]
   },

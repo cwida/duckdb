@@ -332,6 +332,9 @@ LogicalPlanSQLExportResult LogicalTrampoline::ExportSQLDefinition(LogicalPlanSQL
 	query->seed = std::move(seed.GetValue().query);
 	query->branch_tee = trampoline.branch_tee;
 	query->branch_tee.resize(trampoline.children.size() - 1, false);
+	query->branch_distinct = trampoline.branch_distinct;
+	query->branch_distinct.resize(trampoline.children.size() - 1, false);
+	query->emit_distinct = trampoline.emit_distinct;
 	for (idx_t branch_idx = 1; branch_idx < trampoline.children.size(); branch_idx++) {
 		export_context.PushNamedRelation(trampoline.table_index, name, false);
 		auto branch = export_context.Export(*trampoline.children[branch_idx],

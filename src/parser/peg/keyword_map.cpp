@@ -174,6 +174,7 @@ DefaultKeywordMaps DuckDBKeywordHelper::InitializeKeywordMaps() {
 	unreserved_keyword_map.insert("double");
 	unreserved_keyword_map.insert("drop");
 	unreserved_keyword_map.insert("each");
+	unreserved_keyword_map.insert("emit");
 	unreserved_keyword_map.insert("enable");
 	unreserved_keyword_map.insert("encoding");
 	unreserved_keyword_map.insert("encrypted");
@@ -655,6 +656,7 @@ DefaultKeywordMaps DuckDBKeywordHelper::InitializeKeywordMaps() {
 	bare_label_keyword_map.insert("double");
 	bare_label_keyword_map.insert("drop");
 	bare_label_keyword_map.insert("each");
+	bare_label_keyword_map.insert("emit");
 	bare_label_keyword_map.insert("enable");
 	bare_label_keyword_map.insert("encoding");
 	bare_label_keyword_map.insert("encrypted");

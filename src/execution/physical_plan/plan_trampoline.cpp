@@ -230,6 +230,12 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalTrampoline &op) {
 	trampoline.branch_tee.resize(branches.size(), false);
 	trampoline.reads_frontier = op.reads_frontier;
 	trampoline.frontier_table = frontier_table;
+	trampoline.branch_distinct = op.branch_distinct;
+	trampoline.branch_distinct.resize(branches.size(), false);
+	for (auto distinct : trampoline.branch_distinct) {
+		trampoline.has_distinct_branch = trampoline.has_distinct_branch || distinct;
+	}
+	trampoline.emit_distinct = op.emit_distinct;
 
 	// merging waves changes how often a branch is invoked, which is observable through
 	// volatile expressions and non-repeatable subplans, so those branches stay per-wave
@@ -275,9 +281,10 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalTrampoline &op) {
 			}
 		}
 	}
-	if (op.reads_frontier) {
-		// a readable frontier makes pending input observable, so every branch keeps
-		// per-wave identity within the lockstep rounds
+	if (trampoline.RequiresRounds()) {
+		// a readable frontier makes pending input observable, and distinct admission
+		// is defined at the round boundary, so every branch keeps per-wave identity
+		// within the lockstep rounds
 		std::fill(merge.begin(), merge.end(), false);
 	}
 	trampoline.branch_wave_merge = std::move(merge);

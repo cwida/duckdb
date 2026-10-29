@@ -9,6 +9,7 @@
 #include "duckdb/parallel/pipeline_executor.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
 #include "duckdb/parallel/event.hpp"
+#include "duckdb/execution/aggregate_hashtable.hpp"
 
 #include <cmath>
 
@@ -124,11 +125,12 @@ public:
 		for (idx_t branch_idx = 0; branch_idx <= branch_count; branch_idx++) {
 			pending.push_back(make_uniq<TrampolineWaveQueue>());
 		}
-		if (op.reads_frontier) {
+		if (op.RequiresRounds()) {
 			for (idx_t branch_idx = 0; branch_idx <= branch_count; branch_idx++) {
 				next_pending.push_back(make_uniq<TrampolineWaveQueue>());
 			}
 		}
+		seen.resize(branch_count + 1);
 	}
 
 	const PhysicalTrampoline &op;
@@ -153,6 +155,11 @@ public:
 	vector<unique_ptr<TrampolineWaveQueue>> next_pending;
 	//! Frozen frontier snapshot of the current round: the bag union of its input waves
 	unique_ptr<ColumnDataCollection> frontier_current;
+	//! Per-destination admission tables over every row ever admitted (in-memory)
+	vector<unique_ptr<GroupedAggregateHashTable>> seen;
+	Vector admission_addresses = Vector(LogicalType::POINTER);
+	SelectionVector admission_sel = SelectionVector(STANDARD_VECTOR_SIZE);
+	DataChunk admission_chunk;
 	//! Emitted rows that have not yet been handed to the consumer
 	unique_ptr<ColumnDataCollection> emit_backlog;
 	ColumnDataAppendState backlog_append;
@@ -181,6 +188,7 @@ public:
 	void CloseExecution();
 	bool NextWave(idx_t &branch_idx, unique_ptr<ColumnDataCollection> &wave);
 	bool StartRound();
+	unique_ptr<ColumnDataCollection> FilterSeenRows(idx_t target, ColumnDataCollection &rows);
 	SourceResultType GetData(ExecutionContext &context, DataChunk &chunk, TrampolineGlobalSourceState &source_state);
 };
 
@@ -338,7 +346,7 @@ void TrampolineState::CloseExecution() {
 			branch_staged.reset();
 			continue;
 		}
-		auto &queue = op.reads_frontier ? next_pending[branch_idx]->waves : pending[branch_idx]->waves;
+		auto &queue = op.RequiresRounds() ? next_pending[branch_idx]->waves : pending[branch_idx]->waves;
 		if (op.branch_wave_merge[branch_idx - 1] && !queue.empty()) {
 			queue.back()->Combine(*branch_staged);
 			branch_staged.reset();
@@ -347,6 +355,13 @@ void TrampolineState::CloseExecution() {
 		}
 	}
 	auto &emitted = staged[0];
+	if (emitted && emitted->Count() > 0 && op.emit_distinct) {
+		auto filtered = FilterSeenRows(0, *emitted);
+		Recycle(std::move(emitted));
+		if (filtered->Count() > 0) {
+			emitted = std::move(filtered);
+		}
+	}
 	if (emitted && emitted->Count() > 0) {
 		if (!emit_backlog) {
 			emit_backlog = std::move(emitted);
@@ -391,16 +406,79 @@ bool TrampolineState::NextWave(idx_t &branch_idx, unique_ptr<ColumnDataCollectio
 	return false;
 }
 
+//! Admits the rows of a target not yet in its admission table, in wave order
+unique_ptr<ColumnDataCollection> TrampolineState::FilterSeenRows(idx_t target, ColumnDataCollection &rows) {
+	if (!seen[target]) {
+		seen[target] = make_uniq<GroupedAggregateHashTable>(context, BufferAllocator::Get(context), op.types);
+	}
+	auto admitted = make_uniq<ColumnDataCollection>(context, op.types);
+	ColumnDataAppendState append_state;
+	admitted->InitializeAppend(append_state);
+	if (admission_chunk.data.empty()) {
+		rows.InitializeScanChunk(admission_chunk);
+	}
+	const auto collect_metrics = metrics.Enabled() && epoch_metrics;
+	ColumnDataScanState scan;
+	rows.InitializeScan(scan);
+	while (rows.Scan(scan, admission_chunk)) {
+		const auto candidate_count = admission_chunk.size();
+		const auto admit_start =
+		    collect_metrics ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
+		const auto new_count = seen[target]->FindOrCreateGroups(admission_chunk, admission_addresses, admission_sel);
+		if (collect_metrics) {
+			const auto admit_end = std::chrono::steady_clock::now();
+			metrics.RecordHashRows(candidate_count);
+			epoch_metrics->RecordDistinctGrouping(
+			    candidate_count, new_count,
+			    NumericCast<idx_t>(
+			        std::chrono::duration_cast<std::chrono::nanoseconds>(admit_end - admit_start).count()));
+		}
+		if (new_count == 0) {
+			continue;
+		}
+		admission_chunk.Slice(admission_sel, new_count);
+		admitted->Append(append_state, admission_chunk);
+	}
+	return admitted;
+}
+
 //! Seals the next generation of waves into the current one and freezes the round's
-//! frontier snapshot: the bag union of every input wave, built before any of them runs
+//! frontier snapshot: the bag union of every input wave, built before any of them runs.
+//! DISTINCT destinations are arbitrated first: the surviving rows form one wave.
 bool TrampolineState::StartRound() {
 	const auto branch_count = op.BranchCount();
+	for (idx_t branch_idx = 1; branch_idx <= branch_count; branch_idx++) {
+		if (!op.branch_distinct[branch_idx - 1]) {
+			continue;
+		}
+		auto &waves = next_pending[branch_idx]->waves;
+		if (waves.empty()) {
+			continue;
+		}
+		auto candidates = std::move(waves.front());
+		waves.pop_front();
+		while (!waves.empty()) {
+			candidates->Combine(*waves.front());
+			waves.pop_front();
+		}
+		auto admitted = FilterSeenRows(branch_idx, *candidates);
+		Recycle(std::move(candidates));
+		if (admitted->Count() > 0) {
+			waves.push_back(std::move(admitted));
+		}
+	}
 	bool any_waves = false;
 	for (idx_t branch_idx = 1; branch_idx <= branch_count; branch_idx++) {
 		any_waves = any_waves || !next_pending[branch_idx]->waves.empty();
 	}
 	if (!any_waves) {
 		return false;
+	}
+	if (!op.reads_frontier) {
+		for (idx_t branch_idx = 1; branch_idx <= branch_count; branch_idx++) {
+			std::swap(pending[branch_idx], next_pending[branch_idx]);
+		}
+		return true;
 	}
 	frontier_current = make_uniq<ColumnDataCollection>(context, op.types);
 	ColumnDataAppendState frontier_append;
@@ -427,8 +505,9 @@ SourceResultType TrampolineState::GetData(ExecutionContext &execution_context, D
 				seed_rows += wave->Count();
 			}
 		}
-		if (op.reads_frontier) {
+		if (op.RequiresRounds()) {
 			StartRound();
+			seed_rows = emit_backlog ? emit_backlog->Count() : 0;
 			for (idx_t candidate = 1; candidate <= op.BranchCount(); candidate++) {
 				for (auto &wave : pending[candidate]->waves) {
 					seed_rows += wave->Count();
@@ -455,7 +534,7 @@ SourceResultType TrampolineState::GetData(ExecutionContext &execution_context, D
 			bool waves_pending = false;
 			for (idx_t candidate = 1; candidate <= op.BranchCount(); candidate++) {
 				waves_pending = waves_pending || !pending[candidate]->waves.empty();
-				waves_pending = waves_pending || (op.reads_frontier && !next_pending[candidate]->waves.empty());
+				waves_pending = waves_pending || (op.RequiresRounds() && !next_pending[candidate]->waves.empty());
 			}
 			const auto backlog_rows = emit_backlog->Count();
 			if (backlog_rows >= STANDARD_VECTOR_SIZE || !waves_pending || backlog_rows == last_backlog_rows) {
@@ -472,13 +551,21 @@ SourceResultType TrampolineState::GetData(ExecutionContext &execution_context, D
 		idx_t branch_idx;
 		unique_ptr<ColumnDataCollection> wave;
 		if (!NextWave(branch_idx, wave)) {
-			if (!op.reads_frontier || !StartRound()) {
-				source_state.finished.store(true, std::memory_order_relaxed);
-				return SourceResultType::FINISHED;
+			if (op.RequiresRounds() && StartRound()) {
+				continue;
 			}
-			if (!NextWave(branch_idx, wave)) {
-				throw InternalException("Trampoline round started without a schedulable wave");
+			if (emit_backlog && emit_backlog->Count() > 0) {
+				// the final round admitted nothing; drain the output that batching held back
+				Recycle(std::move(emit_table));
+				emit_table = std::move(emit_backlog);
+				emit_table->InitializeScan(emit_scan);
+				emit_active = true;
+				backlog_append_valid = false;
+				last_backlog_rows = 0;
+				continue;
 			}
+			source_state.finished.store(true, std::memory_order_relaxed);
+			return SourceResultType::FINISHED;
 		}
 		context.InterruptCheck();
 		current_input = std::move(wave);
@@ -573,6 +660,18 @@ InsertionOrderPreservingMap<string> PhysicalTrampoline::ParamsToString() const {
 	}
 	if (!tee_list.empty()) {
 		result["Tee Branches"] = tee_list;
+	}
+	string distinct_list;
+	for (idx_t branch_idx = 0; branch_idx < branch_distinct.size(); branch_idx++) {
+		if (branch_distinct[branch_idx]) {
+			distinct_list += (distinct_list.empty() ? "" : ",") + to_string(branch_idx + 1);
+		}
+	}
+	if (!distinct_list.empty()) {
+		result["Distinct Branches"] = distinct_list;
+	}
+	if (emit_distinct) {
+		result["Emit"] = "distinct";
 	}
 	SetEstimatedCardinality(result, estimated_cardinality);
 	return result;

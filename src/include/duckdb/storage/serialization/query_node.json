@@ -215,6 +215,16 @@
         "id": 205,
         "name": "branch_tee",
         "type": "vector<bool>"
+      },
+      {
+        "id": 206,
+        "name": "branch_distinct",
+        "type": "vector<bool>"
+      },
+      {
+        "id": 207,
+        "name": "emit_distinct",
+        "type": "bool"
       }
     ]
   },

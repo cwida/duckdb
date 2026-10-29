@@ -1107,7 +1107,7 @@ PEGTransformerFactory::FinalizeWithClauseTrampoline(PEGTransformer &transformer,
 pair<Identifier, unique_ptr<CommonTableExpressionInfo>> PEGTransformerFactory::TransformWithStatement(
     PEGTransformer &transformer, const Identifier &col_id_or_string, const optional<vector<string>> &column_aliases,
     optional<vector<unique_ptr<ParsedExpression>>> using_key, const optional<Identifier> &using_trampoline,
-    const optional<bool> &materialized, unique_ptr<TableRef> cte_body) {
+    bool emit_distinct, const optional<bool> &materialized, unique_ptr<TableRef> cte_body) {
 	auto result = make_uniq<CommonTableExpressionInfo>();
 	auto cte_name = col_id_or_string;
 	if (column_aliases) {
@@ -1130,8 +1130,11 @@ pair<Identifier, unique_ptr<CommonTableExpressionInfo>> PEGTransformerFactory::T
 			throw ParserException("a TRAMPOLINE CTE cannot have a materialization hint");
 		}
 		body_node.Cast<TrampolineCTENode>().selector = *using_trampoline;
+		body_node.Cast<TrampolineCTENode>().emit_distinct = emit_distinct;
 	} else if (is_trampoline_body) {
 		throw ParserException("BRANCH clauses in a CTE require USING TRAMPOLINE");
+	} else if (emit_distinct) {
+		throw ParserException("EMIT DISTINCT requires USING TRAMPOLINE");
 	}
 	if (materialized) {
 		// If this has a result, we know it is either NEVER or ALWAYS
@@ -1154,7 +1157,8 @@ PEGTransformerFactory::TransformCTESelectBody(PEGTransformer &transformer,
 }
 
 TrampolineBranch PEGTransformerFactory::TransformTrampolineBranchClause(PEGTransformer &transformer,
-                                                                        unique_ptr<ParsedExpression> label, bool tee,
+                                                                        unique_ptr<ParsedExpression> label,
+                                                                        bool distinct, bool tee,
                                                                         unique_ptr<SelectStatement> body) {
 	if (label->GetExpressionType() != ExpressionType::VALUE_CONSTANT) {
 		throw ParserException(label->GetQueryLocation(), "BRANCH label must be an integer literal");
@@ -1167,7 +1171,7 @@ TrampolineBranch PEGTransformerFactory::TransformTrampolineBranchClause(PEGTrans
 	if (label_number < 1) {
 		throw ParserException(label->GetQueryLocation(), "BRANCH labels start at 1; selector 0 emits a result row");
 	}
-	return TrampolineBranch {NumericCast<idx_t>(label_number), tee, std::move(body)};
+	return TrampolineBranch {NumericCast<idx_t>(label_number), distinct, tee, std::move(body)};
 }
 
 unique_ptr<TableRef> PEGTransformerFactory::TransformTrampolineCTEBody(PEGTransformer &transformer,
@@ -1177,6 +1181,7 @@ unique_ptr<TableRef> PEGTransformerFactory::TransformTrampolineCTEBody(PEGTransf
 	node->seed = std::move(seed->node);
 	node->branches.resize(branches.size());
 	node->branch_tee.resize(branches.size(), false);
+	node->branch_distinct.resize(branches.size(), false);
 	for (auto &branch : branches) {
 		if (branch.label > branches.size()) {
 			throw ParserException("BRANCH labels must form the contiguous range 1..%llu", branches.size());
@@ -1187,6 +1192,7 @@ unique_ptr<TableRef> PEGTransformerFactory::TransformTrampolineCTEBody(PEGTransf
 		}
 		slot = std::move(branch.statement->node);
 		node->branch_tee[branch.label - 1] = branch.tee;
+		node->branch_distinct[branch.label - 1] = branch.distinct;
 	}
 	auto statement = make_uniq<SelectStatement>();
 	statement->node = std::move(node);

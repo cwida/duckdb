@@ -1,0 +1,179 @@
+# name: test/sql/cte/trampoline/trampoline_distinct.test
+# description: BRANCH n DISTINCT round-wide admission and operator-level EMIT DISTINCT
+# group: [trampoline]
+
+statement ok
+SET default_null_order='nulls_first';
+
+# Round-wide arbitration is order-independent: producers route {1,2} and {2,4} to a
+# DISTINCT destination computing a per-wave SUM. The destination receives one wave
+# {1,2,4} regardless of producer order.
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 0), (2, 0))
+	BRANCH 1: (SELECT 3, x FROM t, (VALUES (1), (2)) v(x))
+	BRANCH 2: (SELECT 3, x FROM t, (VALUES (2), (4)) v(x))
+	BRANCH 3 DISTINCT: (SELECT 0, sum(n)::INTEGER FROM t)
+) SELECT n FROM t;
+----
+7
+
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (2, 0), (1, 0))
+	BRANCH 1: (SELECT 3, x FROM t, (VALUES (1), (2)) v(x))
+	BRANCH 2: (SELECT 3, x FROM t, (VALUES (2), (4)) v(x))
+	BRANCH 3 DISTINCT: (SELECT 0, sum(n)::INTEGER FROM t)
+) SELECT n FROM t;
+----
+7
+
+# DISTINCT admission terminates a routing cycle. The tee copy expands before
+# admission, so the rejected continuation's output copy still appears: {A, B, A}.
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 'A'))
+	BRANCH 1 DISTINCT TEE: (SELECT 1, CASE n WHEN 'A' THEN 'B' ELSE 'A' END FROM t)
+) SELECT n FROM t ORDER BY n;
+----
+A
+A
+B
+
+# EMIT DISTINCT deduplicates the output independently: {A, B}.
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) EMIT DISTINCT AS (
+	(VALUES (1, 'A'))
+	BRANCH 1 DISTINCT TEE: (SELECT 1, CASE n WHEN 'A' THEN 'B' ELSE 'A' END FROM t)
+) SELECT n FROM t ORDER BY n;
+----
+A
+B
+
+# UNION-recursion parity for a modular walk: DISTINCT terminates, TEE plus
+# EMIT DISTINCT emits each visited value once.
+query I
+WITH RECURSIVE t(b, x) USING TRAMPOLINE (b) EMIT DISTINCT AS (
+	(VALUES (1, 0))
+	BRANCH 1 DISTINCT TEE: (SELECT 1, (x + 3) % 5 FROM t)
+) SELECT x FROM t ORDER BY x;
+----
+0
+1
+2
+3
+4
+
+query I
+WITH RECURSIVE walk(x) AS (
+	SELECT 0
+	UNION
+	SELECT (x + 3) % 5 FROM walk
+) SELECT x FROM walk ORDER BY x;
+----
+0
+1
+2
+3
+4
+
+# Duplicate seed rows are arbitrated before the first round: the DISTINCT aggregate
+# destination is invoked once over one admitted wave, the bag destination keeps both.
+query II
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 10), (1, 10), (2, 10), (2, 10))
+	BRANCH 1 DISTINCT: (SELECT 0, count(*)::INTEGER FROM t)
+	BRANCH 2: (SELECT 0, count(*)::INTEGER FROM t)
+) SELECT b, n FROM t ORDER BY n;
+----
+0	1
+0	2
+
+# A round whose candidates are all rejected does not invoke the destination: the
+# aggregate would otherwise emit a row for its empty input.
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 7))
+	BRANCH 1 DISTINCT: (SELECT CASE WHEN count(*) > 0 THEN 1 ELSE 1 END, min(n) FROM t)
+) SELECT count(*) FROM t;
+----
+0
+
+# An unchanged waiter at a bag destination next to a DISTINCT destination survives:
+# historical admission applies only where it was requested.
+query II
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 5), (2, 0))
+	BRANCH 1: (SELECT CASE WHEN EXISTS (SELECT 1 FROM frontier.t f WHERE f.b = 2) THEN 1 ELSE 0 END, n FROM t)
+	BRANCH 2 DISTINCT: (SELECT CASE WHEN n < 2 THEN 2 ELSE 0 END, n + 1 FROM t)
+) SELECT b, n FROM t ORDER BY n;
+----
+0	3
+0	5
+
+# NULL payloads compare equal under SQL distinct semantics.
+query II
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, NULL), (1, NULL), (1, 4))
+	BRANCH 1 DISTINCT: (SELECT 0, n FROM t)
+) SELECT b, n FROM t ORDER BY n;
+----
+0	NULL
+0	4
+
+# DISTINCT without any frontier read still activates rounds: both producers of the
+# same round coalesce into one admitted wave for the per-wave aggregate.
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (2, 10), (3, 100))
+	BRANCH 1 DISTINCT: (SELECT 0, sum(n)::INTEGER FROM t)
+	BRANCH 2: (SELECT 1, n + 1 FROM t)
+	BRANCH 3: (SELECT 1, n + 2 FROM t)
+) SELECT n FROM t ORDER BY n;
+----
+113
+
+# The same topology with a bag destination keeps separate producer waves.
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (2, 10), (3, 100))
+	BRANCH 1: (SELECT 0, sum(n)::INTEGER FROM t)
+	BRANCH 2: (SELECT 1, n + 1 FROM t)
+	BRANCH 3: (SELECT 1, n + 2 FROM t)
+) SELECT n FROM t ORDER BY n;
+----
+11
+102
+
+# EMIT DISTINCT also deduplicates across explicit emissions and tee copies: the
+# explicit (0, x) emission precedes the teed copy of the same row, which is then
+# rejected while its continuation still runs.
+query II
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) EMIT DISTINCT AS (
+	(VALUES (0, 1), (2, 0))
+	BRANCH 1 TEE: (SELECT 0, n * 10 FROM t)
+	BRANCH 2: (SELECT 1, n + 1 FROM t)
+) SELECT b, n FROM t ORDER BY n;
+----
+0	1
+0	10
+
+# EXPLAIN surfaces the admission settings.
+query II
+EXPLAIN WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) EMIT DISTINCT AS (
+	(VALUES (1, 0))
+	BRANCH 1 DISTINCT TEE: (SELECT 1, (n + 3) % 5 FROM t)
+) SELECT n FROM t;
+----
+physical_plan	<REGEX>:.*Tee Branches: 1.*Distinct Branches: 1.*Emit: distinct.*
+
+# Rejected combinations.
+statement error
+WITH plain AS (SELECT 1) EMIT DISTINCT SELECT * FROM plain;
+----
+<REGEX>:.*syntax error.*
+
+statement error
+WITH RECURSIVE r(x) EMIT DISTINCT AS (SELECT 1 UNION ALL SELECT x + 1 FROM r WHERE x < 3) SELECT * FROM r;
+----
+<REGEX>:Parser Error.*EMIT DISTINCT requires USING TRAMPOLINE.*

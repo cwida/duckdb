@@ -36,6 +36,10 @@ public:
 	//! Whether any branch reads frontier.<ctename>; decided at binding and kept
 	//! through optimization so pruning a reference cannot change the round contract
 	bool reads_frontier = false;
+	//! Per-branch DISTINCT flag: round-wide admission against all rows ever routed
+	vector<bool> branch_distinct;
+	//! Whether emitted rows are deduplicated against all rows ever emitted
+	bool emit_distinct = false;
 
 public:
 	InsertionOrderPreservingMap<string> ParamsToString() const override;

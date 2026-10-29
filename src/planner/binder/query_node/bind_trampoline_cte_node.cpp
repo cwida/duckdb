@@ -118,6 +118,9 @@ BoundStatement Binder::BindNode(TrampolineCTENode &statement) {
 	                                         std::move(seed_plan), std::move(branch_plans));
 	root->branch_tee = statement.branch_tee;
 	root->branch_tee.resize(statement.branches.size(), false);
+	root->branch_distinct = statement.branch_distinct;
+	root->branch_distinct.resize(statement.branches.size(), false);
+	root->emit_distinct = statement.emit_distinct;
 	for (idx_t branch_idx = 1; branch_idx < root->children.size(); branch_idx++) {
 		DetectFrontierReferences(*root->children[branch_idx], setop_index, 0, root->reads_frontier);
 	}

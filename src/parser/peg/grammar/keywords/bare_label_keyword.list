@@ -1,4 +1,5 @@
 BRANCH
+EMIT
 TEE
 TRAMPOLINE
 abort

@@ -82,6 +82,18 @@ public:
 	//! Whether any branch reads frontier.<ctename>: execution switches to lockstep
 	//! rounds with a frozen frontier snapshot per round
 	bool reads_frontier = false;
+	//! Per-branch DISTINCT flag: the destination receives one admitted wave per
+	//! round, arbitrated at the boundary against all rows ever routed to it
+	vector<bool> branch_distinct;
+	//! Whether any branch destination is DISTINCT
+	bool has_distinct_branch = false;
+	//! Whether emitted rows are deduplicated online against all prior emissions
+	bool emit_distinct = false;
+
+	//! Lockstep rounds are required whenever their boundary is observable
+	bool RequiresRounds() const {
+		return reads_frontier || has_distinct_branch;
+	}
 	//! Placeholder collection the frontier scans are planned against
 	shared_ptr<ColumnDataCollection> frontier_table;
 	//! Operators whose results cannot be retained across waves

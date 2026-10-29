@@ -8,6 +8,7 @@ namespace duckdb {
 //! One parsed BRANCH clause of a trampoline CTE
 struct TrampolineBranch {
 	idx_t label;
+	bool distinct;
 	bool tee;
 	unique_ptr<SelectStatement> statement;
 };

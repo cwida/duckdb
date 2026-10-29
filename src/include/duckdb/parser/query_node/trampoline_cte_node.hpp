@@ -33,6 +33,10 @@ public:
 	vector<unique_ptr<QueryNode>> branches;
 	//! Per-branch TEE flag: every row routed to the branch is also emitted
 	vector<bool> branch_tee;
+	//! Per-branch DISTINCT flag: round-wide admission against all rows ever routed
+	vector<bool> branch_distinct;
+	//! Whether emitted rows are deduplicated against all rows ever emitted
+	bool emit_distinct = false;
 	//! Aliases of the trampoline CTE node
 	vector<Identifier> aliases;
 
