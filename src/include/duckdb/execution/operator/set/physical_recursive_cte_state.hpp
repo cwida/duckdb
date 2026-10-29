@@ -389,6 +389,9 @@ void ConfigureInvariantRecursiveBuildReuse(const reference_set_t<const MetaPipel
 bool InvariantRecursiveBuildsRemainReusable(const reference_set_t<const MetaPipeline> &invariant_meta_pipelines);
 void ScheduleRecursivePlan(const RecursiveCTEPipelineSchedulePlan &plan, const RecursiveSchedulingContext &context,
                            vector<shared_ptr<Event>> &events, const RecursiveCTEParallelism &parallelism);
+void ExecuteRecursivePipelineEventInline(Pipeline &pipeline, const RecursiveSchedulingContext &context,
+                                         idx_t worker_limit, idx_t max_threads,
+                                         RecursiveCTEPipelineMetricType metric_type);
 void WaitForRecursiveEvents(Executor &executor, vector<shared_ptr<Event>> &events);
 
 //! The part of the recursion every mode shares: the operator, the scheduler and the metrics of one invocation.

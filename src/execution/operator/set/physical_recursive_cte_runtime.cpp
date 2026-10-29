@@ -753,6 +753,15 @@ static void WaitForRecursiveEvent(Executor &executor, Event &event) {
 	}
 }
 
+void ExecuteRecursivePipelineEventInline(Pipeline &pipeline, const RecursiveSchedulingContext &context,
+                                         idx_t worker_limit, idx_t max_threads,
+                                         RecursiveCTEPipelineMetricType metric_type) {
+	auto event =
+	    make_shared_ptr<RecursiveCTEPipelineEvent>(pipeline.shared_from_this(), context, worker_limit, metric_type);
+	event->SchedulePrepared(max_threads);
+	WaitForRecursiveEvent(context.executor, *event);
+}
+
 void ScheduleRecursivePlan(const RecursiveCTEPipelineSchedulePlan &plan, const RecursiveSchedulingContext &context,
                            vector<shared_ptr<Event>> &events, const RecursiveCTEParallelism &parallelism) {
 	for (auto &pipeline : plan.initialize_on_schedule_pipelines) {
@@ -841,10 +850,8 @@ static void ExecuteRecursiveInlinePlan(RecursiveCTEState &state, Executor &execu
 				RecursiveSchedulingContext scheduling_context {executor, state.GetScheduler(),
 				                                               collect_metrics ? &state.GetMetrics() : nullptr,
 				                                               collect_metrics ? &state.GetEpochMetrics() : nullptr};
-				auto event = make_shared_ptr<RecursiveCTEPipelineEvent>(pipeline.shared_from_this(), scheduling_context,
-				                                                        worker_limit, stage.metric_type);
-				event->SchedulePrepared(max_threads);
-				WaitForRecursiveEvent(executor, *event);
+				ExecuteRecursivePipelineEventInline(pipeline, scheduling_context, worker_limit, max_threads,
+				                                    stage.metric_type);
 				break;
 			}
 			D_ASSERT(max_threads == 1);
