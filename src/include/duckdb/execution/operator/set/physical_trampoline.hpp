@@ -72,8 +72,6 @@ public:
 	shared_ptr<ColumnDataCollection> working_table;
 	//! One detached meta pipeline per branch, re-executed by the operator
 	vector<shared_ptr<MetaPipeline>> branch_meta_pipelines;
-	//! All branches are linear in the trampoline input, so waves may be merged per branch
-	bool merge_waves = false;
 	//! Per branch, whether its pending waves may merge: true for every branch when all
 	//! are linear and repeatable, and for an individual linear repeatable branch whose
 	//! selector is provably the constant 0 (its output is only ever emitted, so no

@@ -192,7 +192,6 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalTrampoline &op) {
 		emit_only[branch_idx] =
 		    fusable[branch_idx] && BranchOnlyEmits(context, branches[branch_idx].get(), op.selector_idx);
 	}
-	trampoline.merge_waves = all_linear;
 	// an emit-only branch's output never reaches another branch, so no consumer can
 	// observe how its input was partitioned into waves; merging them is sound even
 	// next to nonlinear branches (invocation counts stay unobservable through the
