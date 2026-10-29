@@ -337,6 +337,41 @@ private:
 	MonotonicProgress progress;
 };
 
+//! Worker counts of one recursive epoch; frontier work and independent source tasks can differ
+struct RecursiveCTEParallelism {
+	explicit RecursiveCTEParallelism(idx_t worker_count)
+	    : frontier_worker_count(worker_count), source_task_worker_count(worker_count) {
+	}
+
+	RecursiveCTEParallelism(idx_t frontier_worker_count_p, idx_t source_task_worker_count_p)
+	    : frontier_worker_count(frontier_worker_count_p), source_task_worker_count(source_task_worker_count_p) {
+	}
+
+	idx_t WorkerCount(bool has_source_tasks) const {
+		return has_source_tasks ? source_task_worker_count : frontier_worker_count;
+	}
+
+	idx_t MaxWorkerCount() const {
+		return MaxValue(frontier_worker_count, source_task_worker_count);
+	}
+
+	bool IsInline() const {
+		return MaxWorkerCount() == 1;
+	}
+
+	idx_t frontier_worker_count;
+	idx_t source_task_worker_count;
+};
+
+//! What the shared event-based scheduling of recursive plans needs from its operator:
+//! the executor, the cached-executor state, and optional metrics (both set or both null)
+struct RecursiveSchedulingContext {
+	Executor &executor;
+	RecursiveCTESchedulerState &scheduler;
+	optional_ptr<RecursiveCTEMetrics> metrics;
+	optional_ptr<RecursiveCTEEpochMetrics> epoch_metrics;
+};
+
 //! Shared with the trampoline operator: schedule-plan construction and the single-threaded inline execution helpers
 unique_ptr<RecursiveCTEPipelineSchedulePlan>
 BuildRecursivePipelineSchedulePlan(const vector<shared_ptr<MetaPipeline>> &meta_pipelines,
@@ -352,6 +387,9 @@ FindInvariantRecursiveMetaPipelines(const vector<shared_ptr<MetaPipeline>> &meta
 void ConfigureInvariantRecursiveBuildReuse(const reference_set_t<const MetaPipeline> &invariant_meta_pipelines,
                                            bool preserve_build);
 bool InvariantRecursiveBuildsRemainReusable(const reference_set_t<const MetaPipeline> &invariant_meta_pipelines);
+void ScheduleRecursivePlan(const RecursiveCTEPipelineSchedulePlan &plan, const RecursiveSchedulingContext &context,
+                           vector<shared_ptr<Event>> &events, const RecursiveCTEParallelism &parallelism);
+void WaitForRecursiveEvents(Executor &executor, vector<shared_ptr<Event>> &events);
 
 //! The part of the recursion every mode shares: the operator, the scheduler and the metrics of one invocation.
 //! RecursiveCTEUnionState and RecursiveCTEKeyedState own the state of their mode and implement the sink and source

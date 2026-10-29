@@ -7,8 +7,13 @@
 #include "duckdb/parallel/meta_pipeline.hpp"
 #include "duckdb/parallel/pipeline.hpp"
 #include "duckdb/parallel/pipeline_executor.hpp"
+#include "duckdb/parallel/task_scheduler.hpp"
+#include "duckdb/parallel/event.hpp"
 
 namespace duckdb {
+
+// Waves are often small; aim for about half a vector of input per worker like the recursive runtime
+static constexpr const idx_t TRAMPOLINE_ROWS_PER_THREAD = STANDARD_VECTOR_SIZE / 2;
 
 PhysicalTrampoline::PhysicalTrampoline(PhysicalPlan &physical_plan, Identifier ctename, TableIndex table_index,
                                        vector<LogicalType> types, idx_t selector_idx, PhysicalOperator &seed,
@@ -32,6 +37,47 @@ struct TrampolineWaveQueue {
 	deque<unique_ptr<ColumnDataCollection>> waves;
 };
 
+//! Thread-local routing state: rows are partitioned by selector into private
+//! collections without locking; Combine folds them into the shared staging.
+class TrampolineLocalSinkState : public LocalSinkState {
+public:
+	TrampolineLocalSinkState(ClientContext &context, const PhysicalTrampoline &op) : op(op) {
+		const auto target_count = op.BranchCount() + 1;
+		staged.resize(target_count);
+		appends.resize(target_count);
+		for (idx_t target = 0; target < target_count; target++) {
+			selections.emplace_back(STANDARD_VECTOR_SIZE);
+		}
+		counts.resize(target_count);
+		route_chunk.Initialize(Allocator::Get(context), op.GetTypes());
+	}
+
+	const PhysicalTrampoline &op;
+	//! Routed rows per target; staged[0] holds rows to emit
+	vector<unique_ptr<ColumnDataCollection>> staged;
+	vector<ColumnDataAppendState> appends;
+	vector<SelectionVector> selections;
+	vector<idx_t> counts;
+	DataChunk route_chunk;
+
+	void Route(ClientContext &context, DataChunk &chunk);
+
+	bool SupportsReuse() const override {
+		return true;
+	}
+	void Reset(ExecutionContext &context, GlobalSinkState &gstate) override {
+		// combined collections were handed off; anything left is stale
+		for (auto &collection : staged) {
+			collection.reset();
+		}
+	}
+
+private:
+	template <class T>
+	void GatherTargets(Vector &selector, idx_t count);
+	ColumnDataCollection &Staged(ClientContext &context, idx_t target);
+};
+
 class TrampolineState : public GlobalSinkState {
 public:
 	TrampolineState(ClientContext &context, const PhysicalTrampoline &op)
@@ -39,12 +85,10 @@ public:
 	      scheduler(op.shared_executor_pool, Settings::Get<EnableCachingOperatorsSetting>(context)) {
 		const auto branch_count = op.BranchCount();
 		staged.resize(branch_count + 1);
-		staged_appends.resize(branch_count + 1);
 		invariant_materialized.resize(branch_count, false);
 		for (idx_t branch_idx = 0; branch_idx <= branch_count; branch_idx++) {
 			pending.push_back(make_uniq<TrampolineWaveQueue>());
 		}
-		route_chunk.Initialize(Allocator::Get(context), op.GetTypes());
 	}
 
 	const PhysicalTrampoline &op;
@@ -54,8 +98,6 @@ public:
 	mutex lock;
 	//! Rows routed by the currently executing plan; staged[0] holds rows to emit
 	vector<unique_ptr<ColumnDataCollection>> staged;
-	//! Append state per staged collection, initialized when the collection is taken
-	vector<ColumnDataAppendState> staged_appends;
 	//! Pending waves per branch; index 0 is unused
 	vector<unique_ptr<TrampolineWaveQueue>> pending;
 	//! Emitted rows that have not yet been handed to the consumer
@@ -72,36 +114,33 @@ public:
 	//! Per branch, whether its invariant builds are materialized and retained
 	vector<bool> invariant_materialized;
 
-	DataChunk route_chunk;
-	vector<SelectionVector> route_selections;
-	vector<idx_t> route_counts;
 	//! Reusable empty collections, bounded to keep at most a few buffers alive
 	static constexpr idx_t RECYCLED_COLLECTIONS = 8;
 	vector<unique_ptr<ColumnDataCollection>> collection_pool;
 
-	void Route(DataChunk &chunk);
+	void CombineLocal(TrampolineLocalSinkState &local_state);
 	void Recycle(unique_ptr<ColumnDataCollection> collection);
 	void CloseExecution();
 	bool NextWave(idx_t &branch_idx, unique_ptr<ColumnDataCollection> &wave);
 	SourceResultType GetData(ExecutionContext &context, DataChunk &chunk);
-
-private:
-	template <class T>
-	void GatherTargets(Vector &selector, idx_t count);
-	ColumnDataCollection &Staged(idx_t target);
 };
 
-ColumnDataCollection &TrampolineState::Staged(idx_t target) {
-	if (!staged[target]) {
-		if (!collection_pool.empty()) {
-			staged[target] = std::move(collection_pool.back());
-			collection_pool.pop_back();
-		} else {
-			staged[target] = make_uniq<ColumnDataCollection>(context, op.GetTypes());
+void TrampolineState::CombineLocal(TrampolineLocalSinkState &local_state) {
+	lock_guard<mutex> guard(lock);
+	for (idx_t target = 0; target < local_state.staged.size(); target++) {
+		auto &local_staged = local_state.staged[target];
+		if (!local_staged || local_staged->Count() == 0) {
+			local_staged.reset();
+			continue;
 		}
-		staged[target]->InitializeAppend(staged_appends[target]);
+		if (staged[target]) {
+			staged[target]->Combine(*local_staged);
+			Recycle(std::move(local_staged));
+		} else {
+			staged[target] = std::move(local_staged);
+		}
+		local_staged.reset();
 	}
-	return *staged[target];
 }
 
 void TrampolineState::Recycle(unique_ptr<ColumnDataCollection> collection) {
@@ -112,8 +151,16 @@ void TrampolineState::Recycle(unique_ptr<ColumnDataCollection> collection) {
 	collection_pool.push_back(std::move(collection));
 }
 
+ColumnDataCollection &TrampolineLocalSinkState::Staged(ClientContext &context, idx_t target) {
+	if (!staged[target]) {
+		staged[target] = make_uniq<ColumnDataCollection>(context, op.GetTypes());
+		staged[target]->InitializeAppend(appends[target]);
+	}
+	return *staged[target];
+}
+
 template <class T>
-void TrampolineState::GatherTargets(Vector &selector, idx_t count) {
+void TrampolineLocalSinkState::GatherTargets(Vector &selector, idx_t count) {
 	const auto branch_count = op.BranchCount();
 	auto values = selector.Values<T>();
 	D_ASSERT(values.size() == count);
@@ -132,24 +179,17 @@ void TrampolineState::GatherTargets(Vector &selector, idx_t count) {
 			                            std::to_string(value), branch_count);
 		}
 		const auto target = static_cast<idx_t>(value);
-		route_selections[target].set_index(route_counts[target]++, entry.GetIndex());
+		selections[target].set_index(counts[target]++, entry.GetIndex());
 	}
 }
 
-void TrampolineState::Route(DataChunk &chunk) {
+void TrampolineLocalSinkState::Route(ClientContext &context, DataChunk &chunk) {
 	const auto count = chunk.size();
 	if (count == 0) {
 		return;
 	}
 	const auto target_count = op.BranchCount() + 1;
-	if (route_selections.size() != target_count) {
-		route_selections.clear();
-		for (idx_t target = 0; target < target_count; target++) {
-			route_selections.emplace_back(STANDARD_VECTOR_SIZE);
-		}
-		route_counts.resize(target_count);
-	}
-	std::fill(route_counts.begin(), route_counts.end(), 0);
+	std::fill(counts.begin(), counts.end(), 0);
 
 	auto &selector = chunk.data[op.selector_idx];
 	switch (selector.GetType().InternalType()) {
@@ -182,17 +222,17 @@ void TrampolineState::Route(DataChunk &chunk) {
 	}
 
 	for (idx_t target = 0; target < target_count; target++) {
-		const auto target_rows = route_counts[target];
+		const auto target_rows = counts[target];
 		if (target_rows == 0) {
 			continue;
 		}
 		if (target_rows == count) {
-			Staged(target).Append(staged_appends[target], chunk);
+			Staged(context, target).Append(appends[target], chunk);
 			return;
 		}
 		route_chunk.Reset();
-		route_chunk.Slice(chunk, route_selections[target], target_rows);
-		Staged(target).Append(staged_appends[target], route_chunk);
+		route_chunk.Slice(chunk, selections[target], target_rows);
+		Staged(context, target).Append(appends[target], route_chunk);
 	}
 }
 
@@ -286,11 +326,21 @@ unique_ptr<GlobalSinkState> PhysicalTrampoline::GetGlobalSinkState(ClientContext
 	return make_uniq<TrampolineState>(context, *this);
 }
 
+unique_ptr<LocalSinkState> PhysicalTrampoline::GetLocalSinkState(ExecutionContext &context) const {
+	return make_uniq<TrampolineLocalSinkState>(context.client, *this);
+}
+
 SinkResultType PhysicalTrampoline::Sink(ExecutionContext &context, DataChunk &chunk, OperatorSinkInput &input) const {
-	auto &gstate = input.global_state.Cast<TrampolineState>();
-	lock_guard<mutex> guard(gstate.lock);
-	gstate.Route(chunk);
+	auto &lstate = input.local_state.Cast<TrampolineLocalSinkState>();
+	lstate.Route(context.client, chunk);
 	return SinkResultType::NEED_MORE_INPUT;
+}
+
+SinkCombineResultType PhysicalTrampoline::Combine(ExecutionContext &context, OperatorSinkCombineInput &input) const {
+	auto &gstate = input.global_state.Cast<TrampolineState>();
+	auto &lstate = input.local_state.Cast<TrampolineLocalSinkState>();
+	gstate.CombineLocal(lstate);
+	return SinkCombineResultType::FINISHED;
 }
 
 //===--------------------------------------------------------------------===//
@@ -353,11 +403,36 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 		ConfigureInvariantRecursiveBuildReuse(branch.invariant_meta_pipelines, can_cache_invariant);
 	}
 
+	// one wave is executed by as many workers as its rows and chunks support
+	const auto configured_threads = NumericCast<idx_t>(TaskScheduler::GetScheduler(context.client).NumberOfThreads());
+	idx_t workers = 1;
+	if (gstate.current_input) {
+		const auto scan_count = MaxValue<idx_t>(branch_recursive_scans[branch_idx - 1].size(), 1);
+		const auto input_rows = gstate.current_input->Count() * scan_count;
+		const auto row_limit = (input_rows + TRAMPOLINE_ROWS_PER_THREAD - 1) / TRAMPOLINE_ROWS_PER_THREAD;
+		const auto work_units = MaxValue<idx_t>(gstate.current_input->ChunkCount() * scan_count, 1);
+		workers = MaxValue<idx_t>(MinValue(MinValue(row_limit, work_units), configured_threads), 1);
+	}
+
 	// reset every sink that belongs to the executed plan; the trampoline keeps its routed
 	// state, and materialized invariant builds keep theirs
 	auto &sink_resets = use_active_plan ? branch.active_sink_resets : branch.sink_resets;
 	for (auto &sink_reset : sink_resets) {
-		sink_reset.first->ResetSinkForReschedule(1, sink_reset.second);
+		const auto worker_bound = sink_reset.invariant_build ? configured_threads : workers;
+		sink_reset.pipeline->ResetSinkForReschedule(worker_bound, sink_reset.single_producer);
+	}
+
+	if (workers > 1) {
+		// the shared event-based schedule resets operator and source state itself
+		RecursiveSchedulingContext scheduling_context {executor, scheduler, nullptr, nullptr};
+		vector<shared_ptr<Event>> events;
+		ScheduleRecursivePlan(plan, scheduling_context, events, RecursiveCTEParallelism(workers));
+		WaitForRecursiveEvents(executor, events);
+		if (can_cache_invariant && !materialized &&
+		    InvariantRecursiveBuildsRemainReusable(branch.invariant_meta_pipelines)) {
+			gstate.invariant_materialized[branch_idx - 1] = true;
+		}
+		return;
 	}
 
 	for (auto &pipeline : plan.initialize_on_schedule_pipelines) {
@@ -486,16 +561,21 @@ void PhysicalTrampoline::BuildPipelines(Pipeline &current, MetaPipeline &meta_pi
 			                                                              branch_entry.invariant_meta_pipelines, *this);
 		}
 
-		auto collect = [&](const vector<shared_ptr<MetaPipeline>> &metas,
-		                   vector<pair<shared_ptr<Pipeline>, bool>> &sink_resets,
+		auto collect = [&](const vector<shared_ptr<MetaPipeline>> &metas, vector<TrampolineSinkReset> &sink_resets,
 		                   vector<shared_ptr<Pipeline>> *all_pipelines) {
 			reference_map_t<const PhysicalOperator, idx_t> sink_producer_counts;
 			reference_set_t<const Pipeline> seen_pipelines;
+			reference_set_t<const Pipeline> invariant_pipelines;
 			vector<shared_ptr<Pipeline>> collected;
 			for (auto &flat_meta : metas) {
+				const auto is_invariant = branch_entry.invariant_meta_pipelines.find(*flat_meta) !=
+				                          branch_entry.invariant_meta_pipelines.end();
 				vector<shared_ptr<Pipeline>> flat_pipelines;
 				flat_meta->GetPipelines(flat_pipelines, false);
 				for (auto &pipeline : flat_pipelines) {
+					if (is_invariant) {
+						invariant_pipelines.insert(*pipeline);
+					}
 					if (!seen_pipelines.insert(*pipeline).second) {
 						continue;
 					}
@@ -510,7 +590,8 @@ void PhysicalTrampoline::BuildPipelines(Pipeline &current, MetaPipeline &meta_pi
 			for (auto &pipeline : collected) {
 				auto sink = pipeline->GetSink();
 				if (sink && sink.get() != this && seen_sinks.insert(*sink).second) {
-					sink_resets.emplace_back(pipeline, sink_producer_counts[*sink] == 1);
+					sink_resets.push_back({pipeline, sink_producer_counts[*sink] == 1,
+					                       invariant_pipelines.find(*pipeline) != invariant_pipelines.end()});
 				}
 			}
 			if (all_pipelines) {

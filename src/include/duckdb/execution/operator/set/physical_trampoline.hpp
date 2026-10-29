@@ -22,14 +22,23 @@ struct RecursiveExecutorPool;
 
 class MetaPipeline;
 
+//! One pipeline owning a distinct sink that must be reset before a wave executes
+struct TrampolineSinkReset {
+	shared_ptr<Pipeline> pipeline;
+	//! The sink has exactly one producing pipeline
+	bool single_producer;
+	//! The sink belongs to an invariant build, which parallelizes independently of the wave
+	bool invariant_build;
+};
+
 //! Per-branch pipeline bookkeeping precomputed at pipeline-construction time
 struct TrampolineBranchPipelines {
 	//! Every pipeline of the branch's meta pipelines, deduplicated
 	vector<shared_ptr<Pipeline>> pipelines;
 	//! One owning pipeline per distinct non-trampoline sink, with its single-producer flag
-	vector<pair<shared_ptr<Pipeline>, bool>> sink_resets;
+	vector<TrampolineSinkReset> sink_resets;
 	//! Sink resets of the active subset, excluding retained invariant builds
-	vector<pair<shared_ptr<Pipeline>, bool>> active_sink_resets;
+	vector<TrampolineSinkReset> active_sink_resets;
 	//! Meta pipelines whose materialized state can survive later waves
 	reference_set_t<const MetaPipeline> invariant_meta_pipelines;
 	//! Schedule over every pipeline of the branch
@@ -85,7 +94,9 @@ public:
 public:
 	// Sink interface
 	SinkResultType Sink(ExecutionContext &context, DataChunk &chunk, OperatorSinkInput &input) const override;
+	SinkCombineResultType Combine(ExecutionContext &context, OperatorSinkCombineInput &input) const override;
 	unique_ptr<GlobalSinkState> GetGlobalSinkState(ClientContext &context) const override;
+	unique_ptr<LocalSinkState> GetLocalSinkState(ExecutionContext &context) const override;
 
 	bool IsSink() const override {
 		return true;
