@@ -1,0 +1,132 @@
+# name: test/sql/cte/trampoline/trampoline_logging.test
+# description: Structured PhysicalOperator logging for trampoline runtime metrics
+# group: [trampoline]
+
+statement ok
+SET threads=8;
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+statement ok
+CALL truncate_duckdb_logs();
+
+# Three equally sized parallel waves: the task distribution records per-wave deltas,
+# so the maximum times the epoch count matches the invocation-wide task total.
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(SELECT 1, 0 FROM range(current_setting('standard_vector_size')::BIGINT * 32))
+	BRANCH 1: (SELECT CASE WHEN n < 2 THEN 1 ELSE 0 END, n + 1 FROM t)
+)
+SELECT count(*) = current_setting('standard_vector_size')::BIGINT * 32 FROM t;
+----
+1
+
+statement ok
+CALL disable_logging();
+
+query III
+SELECT info.epochs::UBIGINT = 3,
+       info.scheduled_tasks::UBIGINT = info.scheduled_workers::UBIGINT,
+       info.frontier_rows::UBIGINT = current_setting('standard_vector_size')::UBIGINT * 96
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class = 'PhysicalTrampoline' AND event = 'RuntimeMetrics';
+----
+1	1	1
+
+query IIII
+SELECT info.epochs::UBIGINT = 3,
+       info.tasks_max::UBIGINT = info.workers_max::UBIGINT,
+       info.tasks_max::UBIGINT * info.epochs::UBIGINT =
+           (SELECT info.scheduled_tasks::UBIGINT FROM duckdb_logs_parsed('PhysicalOperator')
+            WHERE class = 'PhysicalTrampoline' AND event = 'RuntimeMetrics'),
+       info.recursive_pipeline_execute_work_ns::UBIGINT > 0
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class = 'PhysicalTrampoline' AND event = 'EpochSummary';
+----
+1	1	1	1
+
+statement ok
+SET threads=1;
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+statement ok
+CALL truncate_duckdb_logs();
+
+# Inline waves record one task per executed pipeline and their pipeline work.
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(SELECT 1, 0 FROM range(8))
+	BRANCH 1: (SELECT CASE WHEN n < 2 THEN 1 ELSE 0 END, n + 1 FROM t)
+)
+SELECT count(*) FROM t;
+----
+8
+
+statement ok
+CALL disable_logging();
+
+query II
+SELECT info.epochs::UBIGINT = 3,
+       info.scheduled_tasks::UBIGINT = 3
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class = 'PhysicalTrampoline' AND event = 'RuntimeMetrics';
+----
+1	1
+
+query III
+SELECT info.tasks_max::UBIGINT = 1,
+       info.tasks_p50_upper_bound::UBIGINT = 1,
+       info.recursive_pipeline_execute_work_ns::UBIGINT > 0
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class = 'PhysicalTrampoline' AND event = 'EpochSummary';
+----
+1	1	1
+
+statement ok
+SET threads=4;
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+CREATE TABLE big AS SELECT i FROM range(1000000) r(i);
+
+statement ok
+CALL truncate_duckdb_logs();
+
+# Tiny waves next to a parallel invariant build: the inline event path records the
+# build tasks and attributes the build work.
+query II
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 0))
+	BRANCH 1: (SELECT CASE WHEN n < 2 THEN 1 ELSE 0 END, n + 1 FROM t JOIN big ON big.i = t.n)
+)
+SELECT count(*), max(n) FROM t;
+----
+1	3
+
+statement ok
+CALL disable_logging();
+
+query II
+SELECT info.epochs::UBIGINT = 3,
+       info.scheduled_tasks::UBIGINT > info.epochs::UBIGINT
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class = 'PhysicalTrampoline' AND event = 'RuntimeMetrics';
+----
+1	1
+
+query III
+SELECT info.tasks_max::UBIGINT > 1,
+       info.recursive_pipeline_execute_work_ns::UBIGINT > 0,
+       info.invariant_build_execute_work_ns::UBIGINT > 0
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class = 'PhysicalTrampoline' AND event = 'EpochSummary';
+----
+1	1	1

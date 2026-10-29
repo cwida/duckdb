@@ -551,6 +551,7 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 	}
 
 	const auto collect_metrics = gstate.metrics.Enabled();
+	const auto epoch_task_start = collect_metrics ? gstate.metrics.TaskCount() : 0;
 	const auto epoch_start =
 	    collect_metrics ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
 	if (go_parallel) {
@@ -571,8 +572,8 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 			    std::chrono::duration_cast<std::chrono::microseconds>(epoch_end - epoch_start).count());
 			const auto &wave = *gstate.current_input;
 			gstate.metrics.RecordEpoch(workers, elapsed_us, wave.Count(), wave.ChunkCount(), input_rows);
-			gstate.epoch_metrics->Record(wave.Count(), workers, gstate.metrics.TaskCount(), elapsed_us,
-			                             wave.SizeInBytes(), wave.AllocationSize());
+			gstate.epoch_metrics->Record(wave.Count(), workers, gstate.metrics.TaskCount() - epoch_task_start,
+			                             elapsed_us, wave.SizeInBytes(), wave.AllocationSize());
 		}
 		return;
 	}
@@ -603,7 +604,9 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 				auto build_threads = pipeline.GetMaxThreads();
 				build_threads = MinValue<idx_t>(MaxValue<idx_t>(build_threads, 1), configured_threads);
 				if (build_threads > 1) {
-					RecursiveSchedulingContext scheduling_context {executor, scheduler, nullptr, nullptr};
+					RecursiveSchedulingContext scheduling_context {
+					    executor, scheduler, collect_metrics ? &gstate.metrics : nullptr,
+					    collect_metrics ? gstate.epoch_metrics.get() : nullptr};
 					ExecuteRecursivePipelineEventInline(pipeline, scheduling_context, configured_threads, build_threads,
 					                                    stage.metric_type);
 					break;
@@ -613,7 +616,18 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 			auto &executors = scheduler.GetExecutors(pipeline);
 			D_ASSERT(!executors.empty());
 			executors[0]->PrepareForExecution();
-			ExecuteRecursivePipelineInline(*executors[0]);
+			if (collect_metrics) {
+				gstate.metrics.RecordTasks(1);
+				const auto execute_start = std::chrono::steady_clock::now();
+				ExecuteRecursivePipelineInline(*executors[0]);
+				const auto execute_end = std::chrono::steady_clock::now();
+				gstate.epoch_metrics->RecordPipelineExecution(
+				    stage.metric_type,
+				    NumericCast<idx_t>(
+				        std::chrono::duration_cast<std::chrono::nanoseconds>(execute_end - execute_start).count()));
+			} else {
+				ExecuteRecursivePipelineInline(*executors[0]);
+			}
 			break;
 		}
 		case PipelineScheduleStageType::PREPARE_FINISH:
@@ -646,8 +660,8 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 		    NumericCast<idx_t>(std::chrono::duration_cast<std::chrono::microseconds>(epoch_end - epoch_start).count());
 		const auto &wave = *gstate.current_input;
 		gstate.metrics.RecordEpoch(1, elapsed_us, wave.Count(), wave.ChunkCount(), input_rows);
-		gstate.epoch_metrics->Record(wave.Count(), 1, gstate.metrics.TaskCount(), elapsed_us, wave.SizeInBytes(),
-		                             wave.AllocationSize());
+		gstate.epoch_metrics->Record(wave.Count(), 1, gstate.metrics.TaskCount() - epoch_task_start, elapsed_us,
+		                             wave.SizeInBytes(), wave.AllocationSize());
 	}
 }
 
