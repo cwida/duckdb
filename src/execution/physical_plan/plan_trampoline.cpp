@@ -7,6 +7,9 @@
 #include "duckdb/planner/expression.hpp"
 #include "duckdb/execution/operator/projection/physical_projection.hpp"
 #include "duckdb/execution/expression_executor.hpp"
+#include "duckdb/planner/expression/bound_case_expression.hpp"
+#include "duckdb/planner/expression/bound_cast_expression.hpp"
+#include "duckdb/planner/expression/bound_function_expression.hpp"
 
 namespace duckdb {
 
@@ -114,9 +117,49 @@ bool LogicalSubtreeIsVolatile(const LogicalOperator &op) {
 	return false;
 }
 
-//! Whether the branch's selector output is provably the constant 0 on every row:
-//! the root is a projection whose selector expression folds to 0
-bool BranchOnlyEmits(ClientContext &context, const PhysicalOperator &branch, idx_t selector_idx) {
+//! Collects every constant the expression can evaluate to: foldable expressions,
+//! CASE arms of constants, and casts thereof. Returns false when the set is unbounded.
+bool CollectSelectorConstants(ClientContext &context, const Expression &expr, vector<Value> &constants) {
+	if (expr.IsFoldable()) {
+		Value value;
+		if (!ExpressionExecutor::TryEvaluateScalar(context, expr, value)) {
+			return false;
+		}
+		constants.push_back(std::move(value));
+		return true;
+	}
+	if (expr.GetExpressionClass() == ExpressionClass::BOUND_CASE) {
+		auto &case_expr = expr.Cast<BoundCaseExpression>();
+		for (auto &check : case_expr.CaseChecks()) {
+			if (!CollectSelectorConstants(context, *check.then_expr, constants)) {
+				return false;
+			}
+		}
+		return CollectSelectorConstants(context, case_expr.Else(), constants);
+	}
+	if (BoundCastExpression::IsCast(expr)) {
+		auto &cast_expr = expr.Cast<BoundFunctionExpression>();
+		vector<Value> inner;
+		if (!CollectSelectorConstants(context, BoundCastExpression::Child(cast_expr), inner)) {
+			return false;
+		}
+		for (auto &value : inner) {
+			auto cast_value = value.DefaultTryCastAs(BoundCastExpression::TargetType(cast_expr));
+			if (!cast_value) {
+				return false;
+			}
+			constants.push_back(std::move(*cast_value));
+		}
+		return true;
+	}
+	return false;
+}
+
+//! The set of selector values a branch can route to, when statically bounded: the root
+//! must be a projection whose selector expression yields a bounded set of constants.
+//! NULL and out-of-range constants raise at execution time, so they make the set unbounded.
+bool AnalyzeSelectorTargets(ClientContext &context, const PhysicalOperator &branch, idx_t selector_idx,
+                            idx_t branch_count, set<idx_t> &targets) {
 	if (branch.type != PhysicalOperatorType::PROJECTION) {
 		return false;
 	}
@@ -124,22 +167,25 @@ bool BranchOnlyEmits(ClientContext &context, const PhysicalOperator &branch, idx
 	if (selector_idx >= projection.select_list.size()) {
 		return false;
 	}
-	auto &selector_expr = *projection.select_list[selector_idx];
-	if (!selector_expr.IsFoldable()) {
+	vector<Value> constants;
+	if (!CollectSelectorConstants(context, *projection.select_list[selector_idx], constants)) {
 		return false;
 	}
-	Value selector_value;
-	if (!ExpressionExecutor::TryEvaluateScalar(context, selector_expr, selector_value)) {
-		return false;
+	for (auto &value : constants) {
+		if (value.IsNull()) {
+			return false;
+		}
+		auto as_bigint = value.DefaultTryCastAs(LogicalType::BIGINT);
+		if (!as_bigint || as_bigint->IsNull()) {
+			return false;
+		}
+		const auto target = BigIntValue::Get(*as_bigint);
+		if (target < 0 || target > NumericCast<int64_t>(branch_count)) {
+			return false;
+		}
+		targets.insert(NumericCast<idx_t>(target));
 	}
-	if (selector_value.IsNull()) {
-		return false;
-	}
-	auto as_bigint = selector_value.DefaultTryCastAs(LogicalType::BIGINT);
-	if (!as_bigint || as_bigint->IsNull()) {
-		return false;
-	}
-	return BigIntValue::Get(*as_bigint) == 0;
+	return true;
 }
 
 bool PhysicalSubtreeIsRepeatable(const PhysicalOperator &op,
@@ -182,24 +228,48 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalTrampoline &op) {
 	// merging waves changes how often a branch is invoked, which is observable through
 	// volatile expressions and non-repeatable subplans, so those branches stay per-wave
 	vector<bool> fusable(branches.size(), false);
-	vector<bool> emit_only(branches.size(), false);
-	bool all_linear = true;
+	vector<set<idx_t>> targets(branches.size());
+	vector<bool> targets_known(branches.size(), false);
 	for (idx_t branch_idx = 0; branch_idx < branches.size(); branch_idx++) {
 		fusable[branch_idx] = BranchIsLinear(branches[branch_idx].get(), op.table_index) &&
 		                      !LogicalSubtreeIsVolatile(*op.children[branch_idx + 1]) &&
 		                      PhysicalSubtreeIsRepeatable(branches[branch_idx].get(), non_repeatable_operators);
-		all_linear = all_linear && fusable[branch_idx];
-		emit_only[branch_idx] =
-		    fusable[branch_idx] && BranchOnlyEmits(context, branches[branch_idx].get(), op.selector_idx);
+		targets_known[branch_idx] = AnalyzeSelectorTargets(context, branches[branch_idx].get(), op.selector_idx,
+		                                                   branches.size(), targets[branch_idx]);
 	}
-	// an emit-only branch's output never reaches another branch, so no consumer can
-	// observe how its input was partitioned into waves; merging them is sound even
-	// next to nonlinear branches (invocation counts stay unobservable through the
-	// volatility and repeatability gates above)
-	trampoline.branch_wave_merge.resize(branches.size());
-	for (idx_t branch_idx = 0; branch_idx < branches.size(); branch_idx++) {
-		trampoline.branch_wave_merge[branch_idx] = all_linear || emit_only[branch_idx];
+	// merging a branch coarsens the wave partitioning of every branch its rows can reach,
+	// transitively: a linear branch maps one input wave to one output wave, so coarsened
+	// input means coarsened output for its own targets. A branch may therefore merge only
+	// when every branch in its forward routing closure is itself unable to observe the
+	// partitioning. Unsafety propagates backward along the routing graph; a statically
+	// unbounded selector routes everywhere. The greatest fixpoint keeps cyclic all-safe
+	// routing graphs merged, and an emit-only branch (targets {0}) merges unconditionally
+	// since no branch can observe how its input was partitioned.
+	vector<bool> merge = fusable;
+	bool changed = true;
+	while (changed) {
+		changed = false;
+		for (idx_t branch_idx = 0; branch_idx < branches.size(); branch_idx++) {
+			if (!merge[branch_idx]) {
+				continue;
+			}
+			bool safe = true;
+			if (!targets_known[branch_idx]) {
+				for (idx_t other_idx = 0; other_idx < branches.size(); other_idx++) {
+					safe = safe && merge[other_idx];
+				}
+			} else {
+				for (auto target : targets[branch_idx]) {
+					safe = safe && (target == 0 || merge[target - 1]);
+				}
+			}
+			if (!safe) {
+				merge[branch_idx] = false;
+				changed = true;
+			}
+		}
 	}
+	trampoline.branch_wave_merge = std::move(merge);
 	return trampoline;
 }
 

@@ -483,6 +483,13 @@ InsertionOrderPreservingMap<string> PhysicalTrampoline::ParamsToString() const {
 		result["Waves"] = "per-batch";
 	} else {
 		result["Waves"] = "mixed";
+		string merged_list;
+		for (idx_t branch_idx = 0; branch_idx < branch_wave_merge.size(); branch_idx++) {
+			if (branch_wave_merge[branch_idx]) {
+				merged_list += (merged_list.empty() ? "" : ",") + to_string(branch_idx + 1);
+			}
+		}
+		result["Merged Branches"] = merged_list;
 	}
 	SetEstimatedCardinality(result, estimated_cardinality);
 	return result;
