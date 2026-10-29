@@ -55,9 +55,12 @@ struct PipelineSchedule {
 
 	bool HasCycle() const;
 	vector<PipelineScheduleEdge> GetCycle() const;
+	bool DependsOn(idx_t dependent, idx_t dependency) const;
+	bool TryAddDependency(idx_t dependent, idx_t dependency);
 };
 
 unique_ptr<PipelineSchedule> BuildPipelineSchedule(const vector<shared_ptr<MetaPipeline>> &meta_pipelines,
                                                    PipelineScheduleMode mode = PipelineScheduleMode::COMPLETE);
+void ScheduleRuntimeFilters(PipelineSchedule &schedule);
 
 } // namespace duckdb

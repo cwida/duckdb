@@ -1,0 +1,126 @@
+# name: test/sql/join/runtime_filter_routes_plan.test
+# description: New scan targets activate only across legal boundaries with timely publication
+# group: [join]
+
+statement ok
+SET threads=4;
+
+statement ok
+SET disabled_optimizers='statistics_propagation,join_order,build_side_probe_side,compressed_materialization,cte_filter_pusher,projection_pullup,projection_placement';
+
+statement ok
+CREATE TABLE a AS SELECT i AS id,i%100 AS k FROM range(10000) t(i);
+
+statement ok
+CREATE TABLE b AS FROM a;
+
+statement ok
+CREATE TABLE c AS SELECT 42::BIGINT AS k,2::BIGINT AS rn;
+
+# Independent join builds may publish opportunistically without new ordering.
+query II
+SELECT p.k,n FROM (
+    SELECT b.k,count(*) AS n FROM a JOIN b USING(id) GROUP BY b.k
+) p JOIN c ON p.k=c.k;
+----
+42	100
+
+query II
+SELECT count(*),sum(p.rn) FROM (
+    SELECT b.k,row_number() OVER (PARTITION BY b.k ORDER BY a.id) AS rn FROM a JOIN b USING(id)
+) p JOIN c ON p.k=c.k;
+----
+100	5050
+
+query II
+SELECT count(*),sum(p.rn) FROM (
+    SELECT b.k,row_number() OVER (PARTITION BY b.k ORDER BY a.id) AS rn FROM a
+    JOIN (SELECT id,k FROM b GROUP BY id,k) b USING(id)
+) p JOIN c ON p.k=c.k;
+----
+100	5050
+
+query II
+EXPLAIN ANALYZE SELECT count(*),sum(p.rn) FROM (
+    SELECT a.k,row_number() OVER (PARTITION BY a.k ORDER BY a.id) AS rn FROM a JOIN b USING(id)
+) p JOIN c ON p.k=c.k;
+----
+analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*k = 42.*
+
+query II
+EXPLAIN ANALYZE SELECT id,p.k,p.rn FROM (
+    SELECT id,k,row_number() OVER (PARTITION BY k ORDER BY id) AS rn FROM a
+) p JOIN c ON p.k=c.k AND p.rn=c.rn;
+----
+analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*k = 42.*
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM (
+    WITH q AS MATERIALIZED (SELECT * FROM c)
+    SELECT a.k FROM a CROSS JOIN q
+) p JOIN c ON p.k=c.k;
+----
+analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*k = 42.*
+
+# Sibling builds share finalization without an intervening pipeline breaker.
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM a JOIN b USING(id) JOIN c ON b.k=c.k;
+----
+analyzed_plan	<!REGEX>:(?s).*Dynamic Filters:.*k = 42.*
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM (
+    SELECT b.k,row_number() OVER () AS rn FROM a JOIN b USING(id)
+) p JOIN c ON p.k=c.k AND p.rn>0;
+----
+analyzed_plan	<!REGEX>:(?s).*Dynamic Filters:.*k = 42.*
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM (
+    SELECT k,row_number() OVER (PARTITION BY k ORDER BY id) AS rn,
+        row_number() OVER (ORDER BY id) AS rn2 FROM a
+) p JOIN c ON p.k=c.k AND p.rn>0 AND p.rn2>0;
+----
+analyzed_plan	<!REGEX>:(?s).*Dynamic Filters:.*k = 42.*
+
+# Crossing a wrapper does not cross a CTE reference into its producer.
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM (
+    WITH q AS MATERIALIZED (SELECT * FROM a)
+    SELECT k FROM q
+) p JOIN c ON p.k=c.k;
+----
+analyzed_plan	<!REGEX>:(?s).*Dynamic Filters:.*k = 42.*
+
+query I
+SELECT count(*) FROM (
+    WITH RECURSIVE r(i) AS (VALUES(0) UNION ALL SELECT i+1 FROM r WHERE i<2)
+    SELECT k,count(*) OVER (PARTITION BY k) AS n FROM a CROSS JOIN r
+) p JOIN c ON p.k=c.k AND n>0;
+----
+300
+
+# The recursive seed remains eligible for join filtering.
+query II
+EXPLAIN ANALYZE WITH RECURSIVE walk(k) AS (
+    SELECT a.k FROM a JOIN c ON a.k=c.k
+    UNION ALL
+    SELECT k+1 FROM walk WHERE k<44
+)
+SELECT count(*) FROM walk;
+----
+analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*k = 42.*
+
+# Join filtering is disabled in the recursive member to preserve build reuse.
+query II
+EXPLAIN ANALYZE WITH RECURSIVE walk(k) AS (
+    VALUES (42::BIGINT)
+    UNION
+    SELECT a.k FROM a JOIN walk w ON a.k=w.k
+)
+SELECT count(*) FROM walk;
+----
+analyzed_plan	<!REGEX>:(?s).*Dynamic Filters:.*
+
+statement ok
+RESET disabled_optimizers;
