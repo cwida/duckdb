@@ -178,6 +178,10 @@ public:
 		return source;
 	}
 
+	bool HasSourceState() {
+		return bool(GetSourceState());
+	}
+
 	//! Returns whether any of the operators in the pipeline care about preserving order
 	bool IsOrderDependent() const;
 	//! Marks this pipeline as fed externally instead of by scheduled source tasks

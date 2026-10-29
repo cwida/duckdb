@@ -92,6 +92,9 @@ void Executor::ScheduleEventsInternal(ScheduleEventData &event_data) {
 	if (schedule->HasCycle()) {
 		throw InternalException("Cyclic dependency in pipeline schedule");
 	}
+	if (event_data.initial_schedule && recursive_ctes.empty()) {
+		ScheduleRuntimeFilters(*schedule);
+	}
 	events.reserve(schedule->stages.size());
 	for (auto &stage : schedule->stages) {
 		events.push_back(CreatePipelineScheduleEvent(stage, event_data.initial_schedule));
