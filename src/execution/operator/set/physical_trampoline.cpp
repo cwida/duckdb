@@ -14,6 +14,9 @@ namespace duckdb {
 
 // Waves are often small; aim for about half a vector of input per worker like the recursive runtime
 static constexpr const idx_t TRAMPOLINE_ROWS_PER_THREAD = STANDARD_VECTOR_SIZE / 2;
+// Pure frontier work (no independent source tasks) must amortize the event-graph setup of a
+// parallel wave; below this input size the inline path wins for cheap branch plans
+static constexpr const idx_t TRAMPOLINE_PARALLEL_MIN_ROWS = 16 * STANDARD_VECTOR_SIZE;
 
 PhysicalTrampoline::PhysicalTrampoline(PhysicalPlan &physical_plan, Identifier ctename, TableIndex table_index,
                                        vector<LogicalType> types, idx_t selector_idx, PhysicalOperator &seed,
@@ -55,6 +58,8 @@ public:
 	const PhysicalTrampoline &op;
 	//! Routed rows per target; staged[0] holds rows to emit
 	vector<unique_ptr<ColumnDataCollection>> staged;
+	//! Emptied collections handed back by Combine for reuse
+	vector<unique_ptr<ColumnDataCollection>> local_pool;
 	vector<ColumnDataAppendState> appends;
 	vector<SelectionVector> selections;
 	vector<idx_t> counts;
@@ -126,20 +131,33 @@ public:
 };
 
 void TrampolineState::CombineLocal(TrampolineLocalSinkState &local_state) {
-	lock_guard<mutex> guard(lock);
-	for (idx_t target = 0; target < local_state.staged.size(); target++) {
-		auto &local_staged = local_state.staged[target];
-		if (!local_staged || local_staged->Count() == 0) {
+	vector<unique_ptr<ColumnDataCollection>> drained;
+	{
+		lock_guard<mutex> guard(lock);
+		for (idx_t target = 0; target < local_state.staged.size(); target++) {
+			auto &local_staged = local_state.staged[target];
+			if (!local_staged) {
+				continue;
+			}
+			if (local_staged->Count() == 0) {
+				drained.push_back(std::move(local_staged));
+			} else if (staged[target]) {
+				staged[target]->Combine(*local_staged);
+				drained.push_back(std::move(local_staged));
+			} else {
+				staged[target] = std::move(local_staged);
+				if (!collection_pool.empty()) {
+					local_state.local_pool.push_back(std::move(collection_pool.back()));
+					collection_pool.pop_back();
+				}
+			}
 			local_staged.reset();
-			continue;
 		}
-		if (staged[target]) {
-			staged[target]->Combine(*local_staged);
-			Recycle(std::move(local_staged));
-		} else {
-			staged[target] = std::move(local_staged);
-		}
-		local_staged.reset();
+	}
+	// resetting buffers can do real work; keep it outside the shared lock
+	for (auto &collection : drained) {
+		collection->ResetForReuse();
+		local_state.local_pool.push_back(std::move(collection));
 	}
 }
 
@@ -153,7 +171,12 @@ void TrampolineState::Recycle(unique_ptr<ColumnDataCollection> collection) {
 
 ColumnDataCollection &TrampolineLocalSinkState::Staged(ClientContext &context, idx_t target) {
 	if (!staged[target]) {
-		staged[target] = make_uniq<ColumnDataCollection>(context, op.GetTypes());
+		if (!local_pool.empty()) {
+			staged[target] = std::move(local_pool.back());
+			local_pool.pop_back();
+		} else {
+			staged[target] = make_uniq<ColumnDataCollection>(context, op.GetTypes());
+		}
 		staged[target]->InitializeAppend(appends[target]);
 	}
 	return *staged[target];
@@ -403,16 +426,24 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 		ConfigureInvariantRecursiveBuildReuse(branch.invariant_meta_pipelines, can_cache_invariant);
 	}
 
-	// one wave is executed by as many workers as its rows and chunks support
+	// one wave is executed by as many workers as its rows and chunks support; branches with
+	// independent source work (table scans) parallelize that work regardless of the wave size,
+	// while pure frontier work must be large enough to amortize the parallel event setup
 	const auto configured_threads = NumericCast<idx_t>(TaskScheduler::GetScheduler(context.client).NumberOfThreads());
-	idx_t workers = 1;
+	idx_t frontier_workers = 1;
+	idx_t input_rows = 0;
 	if (gstate.current_input) {
 		const auto scan_count = MaxValue<idx_t>(branch_recursive_scans[branch_idx - 1].size(), 1);
-		const auto input_rows = gstate.current_input->Count() * scan_count;
+		input_rows = gstate.current_input->Count() * scan_count;
 		const auto row_limit = (input_rows + TRAMPOLINE_ROWS_PER_THREAD - 1) / TRAMPOLINE_ROWS_PER_THREAD;
 		const auto work_units = MaxValue<idx_t>(gstate.current_input->ChunkCount() * scan_count, 1);
-		workers = MaxValue<idx_t>(MinValue(MinValue(row_limit, work_units), configured_threads), 1);
+		frontier_workers = MaxValue<idx_t>(MinValue(MinValue(row_limit, work_units), configured_threads), 1);
 	}
+	const auto source_task_workers = frontier_workers;
+	const auto go_parallel = plan.has_source_tasks
+	                             ? frontier_workers > 1
+	                             : (frontier_workers > 1 && input_rows >= TRAMPOLINE_PARALLEL_MIN_ROWS);
+	const auto workers = go_parallel ? MaxValue(frontier_workers, source_task_workers) : idx_t(1);
 
 	// reset every sink that belongs to the executed plan; the trampoline keeps its routed
 	// state, and materialized invariant builds keep theirs
@@ -422,11 +453,12 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 		sink_reset.pipeline->ResetSinkForReschedule(worker_bound, sink_reset.single_producer);
 	}
 
-	if (workers > 1) {
+	if (go_parallel) {
 		// the shared event-based schedule resets operator and source state itself
 		RecursiveSchedulingContext scheduling_context {executor, scheduler, nullptr, nullptr};
 		vector<shared_ptr<Event>> events;
-		ScheduleRecursivePlan(plan, scheduling_context, events, RecursiveCTEParallelism(workers));
+		ScheduleRecursivePlan(plan, scheduling_context, events,
+		                      RecursiveCTEParallelism(frontier_workers, source_task_workers));
 		WaitForRecursiveEvents(executor, events);
 		if (can_cache_invariant && !materialized &&
 		    InvariantRecursiveBuildsRemainReusable(branch.invariant_meta_pipelines)) {
