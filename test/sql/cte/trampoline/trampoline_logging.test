@@ -100,8 +100,8 @@ CREATE TABLE big AS SELECT i FROM range(1000000) r(i);
 statement ok
 CALL truncate_duckdb_logs();
 
-# Tiny waves next to a parallel invariant build: the inline event path records the
-# build tasks and attributes the build work.
+# Tiny waves next to an invariant build over a parallel table scan: the scan keeps
+# every wave on the parallel path, which records the build tasks and work.
 query II
 WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
 	(VALUES (1, 0))
@@ -130,3 +130,50 @@ FROM duckdb_logs_parsed('PhysicalOperator')
 WHERE class = 'PhysicalTrampoline' AND event = 'EpochSummary';
 ----
 1	1	1
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+statement ok
+CALL truncate_duckdb_logs();
+
+# An invariant build fed by a materialized CTE scan is not a parallel source, so the
+# waves stay inline and the build runs through the inline event path. The event must
+# record its pipeline workers, its tasks, and the build work.
+# Wave 1 schedules 7 tasks (materialization, the four-worker build event, probe work);
+# a duplicate inline task recording or unrecorded event tasks would shift tasks_max.
+# The total depends on invariant retention: 11 with caching operators, 21 without.
+query II
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 0))
+	BRANCH 1: (
+		WITH inv AS MATERIALIZED (SELECT i FROM range(current_setting('standard_vector_size')::BIGINT * 8) r(i))
+		SELECT CASE WHEN n < 2 THEN 1 ELSE 0 END, n + 1 FROM t JOIN inv ON inv.i = t.n
+	)
+)
+SELECT count(*), max(n) FROM t;
+----
+1	3
+
+statement ok
+CALL disable_logging();
+
+query II
+SELECT info.epochs::UBIGINT = 3,
+       info.scheduled_tasks::UBIGINT >= 11
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class = 'PhysicalTrampoline' AND event = 'RuntimeMetrics';
+----
+1	1
+
+query IIIIII
+SELECT info.workers_max::UBIGINT = 1,
+       info.max_pipeline_workers::UBIGINT > 1,
+       info.tasks_max::UBIGINT = 7,
+       info.recursive_pipeline_execute_work_ns::UBIGINT > 0,
+       info.invariant_build_execute_work_ns::UBIGINT > 0,
+       info.invariant_cte_materialization_execute_work_ns::UBIGINT > 0
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class = 'PhysicalTrampoline' AND event = 'EpochSummary';
+----
+1	1	1	1	1	1
