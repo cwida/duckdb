@@ -110,6 +110,8 @@ public:
 	ColumnDataAppendState backlog_append;
 	DataChunk backlog_scan_chunk;
 	bool backlog_append_valid = false;
+	//! Backlog size after the previous wave, to detect waves that emit nothing
+	idx_t last_backlog_rows = 0;
 	//! Emitted rows currently being scanned
 	unique_ptr<ColumnDataCollection> emit_table;
 	ColumnDataScanState emit_scan;
@@ -340,19 +342,23 @@ SourceResultType TrampolineState::GetData(ExecutionContext &execution_context, D
 		}
 		if (emit_backlog) {
 			// emitting tiny chunks costs a scheduler round trip per chunk downstream, so
-			// keep executing waves until a full vector accumulated or no work remains
+			// keep executing waves while every wave keeps adding rows; a wave that adds
+			// nothing flushes immediately so partial output stays live for consumers
 			bool waves_pending = false;
 			for (idx_t candidate = 1; candidate <= op.BranchCount(); candidate++) {
 				waves_pending = waves_pending || !pending[candidate]->waves.empty();
 			}
-			if (emit_backlog->Count() >= STANDARD_VECTOR_SIZE || !waves_pending) {
+			const auto backlog_rows = emit_backlog->Count();
+			if (backlog_rows >= STANDARD_VECTOR_SIZE || !waves_pending || backlog_rows == last_backlog_rows) {
 				Recycle(std::move(emit_table));
 				emit_table = std::move(emit_backlog);
 				emit_table->InitializeScan(emit_scan);
 				emit_active = true;
 				backlog_append_valid = false;
+				last_backlog_rows = 0;
 				continue;
 			}
+			last_backlog_rows = backlog_rows;
 		}
 		idx_t branch_idx;
 		unique_ptr<ColumnDataCollection> wave;
