@@ -346,6 +346,12 @@ void ExecuteRecursivePipelineInline(PipelineExecutor &pipeline_executor);
 void ExecuteRecursivePipelineFinishInline(Pipeline &pipeline, Executor &executor);
 void GatherRecursiveScans(PhysicalOperator &op, TableIndex cte_index,
                           vector<reference<PhysicalColumnDataScan>> &recursive_scans);
+reference_set_t<const MetaPipeline>
+FindInvariantRecursiveMetaPipelines(const vector<shared_ptr<MetaPipeline>> &meta_pipelines, TableIndex cte_index,
+                                    const reference_set_t<const PhysicalOperator> &non_repeatable_operators);
+void ConfigureInvariantRecursiveBuildReuse(const reference_set_t<const MetaPipeline> &invariant_meta_pipelines,
+                                           bool preserve_build);
+bool InvariantRecursiveBuildsRemainReusable(const reference_set_t<const MetaPipeline> &invariant_meta_pipelines);
 
 //! The part of the recursion every mode shares: the operator, the scheduler and the metrics of one invocation.
 //! RecursiveCTEUnionState and RecursiveCTEKeyedState own the state of their mode and implement the sink and source

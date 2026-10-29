@@ -11,6 +11,7 @@
 #include "duckdb/common/deque.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/execution/operator/scan/physical_column_data_scan.hpp"
+#include "duckdb/common/reference_map.hpp"
 #include "duckdb/execution/physical_operator.hpp"
 
 namespace duckdb {
@@ -19,12 +20,26 @@ class Pipeline;
 class RecursiveCTEPipelineSchedulePlan;
 struct RecursiveExecutorPool;
 
+class MetaPipeline;
+
 //! Per-branch pipeline bookkeeping precomputed at pipeline-construction time
 struct TrampolineBranchPipelines {
 	//! Every pipeline of the branch's meta pipelines, deduplicated
 	vector<shared_ptr<Pipeline>> pipelines;
 	//! One owning pipeline per distinct non-trampoline sink, with its single-producer flag
 	vector<pair<shared_ptr<Pipeline>, bool>> sink_resets;
+	//! Sink resets of the active subset, excluding retained invariant builds
+	vector<pair<shared_ptr<Pipeline>, bool>> active_sink_resets;
+	//! Meta pipelines whose materialized state can survive later waves
+	reference_set_t<const MetaPipeline> invariant_meta_pipelines;
+	//! Schedule over every pipeline of the branch
+	unique_ptr<RecursiveCTEPipelineSchedulePlan> plan;
+	//! Schedule without the invariant builds, used once they are materialized
+	unique_ptr<RecursiveCTEPipelineSchedulePlan> active_plan;
+	//! Per-stage flag of `plan`: a FINISH of the trampoline sink with no operator finalization
+	vector<bool> trivial_finish;
+	//! The same flag for `active_plan`
+	vector<bool> active_trivial_finish;
 };
 
 //! Trampoline-style iteration: rows carry a selector column; selector 0 emits a
@@ -50,6 +65,8 @@ public:
 	vector<shared_ptr<MetaPipeline>> branch_meta_pipelines;
 	//! All branches are linear in the trampoline input, so waves may be merged per branch
 	bool merge_waves = false;
+	//! Operators whose results cannot be retained across waves
+	reference_set_t<const PhysicalOperator> non_repeatable_operators;
 
 	idx_t BranchCount() const {
 		return children.size() - 1;
@@ -91,9 +108,7 @@ private:
 private:
 	//! Recursive scans of each branch plan, rebound to the current wave before execution
 	vector<vector<reference<PhysicalColumnDataScan>>> branch_recursive_scans;
-	//! Cached schedule plan per branch
-	vector<unique_ptr<RecursiveCTEPipelineSchedulePlan>> branch_schedule_plans;
-	//! Precomputed pipeline and sink-reset lists per branch
+	//! Precomputed pipelines, schedules and sink-reset lists per branch
 	vector<TrampolineBranchPipelines> branch_pipelines;
 	mutable shared_ptr<RecursiveExecutorPool> shared_executor_pool;
 

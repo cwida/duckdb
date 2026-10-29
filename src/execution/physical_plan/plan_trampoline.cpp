@@ -147,6 +147,7 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalTrampoline &op) {
 	                                            op.estimated_cardinality)
 	                       .Cast<PhysicalTrampoline>();
 	trampoline.working_table = working_table;
+	trampoline.non_repeatable_operators = non_repeatable_operators;
 
 	// merging waves changes how often a branch is invoked, which is observable through
 	// volatile expressions and non-repeatable subplans, so those branches stay per-wave

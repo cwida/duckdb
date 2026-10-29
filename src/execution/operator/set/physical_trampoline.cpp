@@ -39,6 +39,8 @@ public:
 	      scheduler(op.shared_executor_pool, Settings::Get<EnableCachingOperatorsSetting>(context)) {
 		const auto branch_count = op.BranchCount();
 		staged.resize(branch_count + 1);
+		staged_appends.resize(branch_count + 1);
+		invariant_materialized.resize(branch_count, false);
 		for (idx_t branch_idx = 0; branch_idx <= branch_count; branch_idx++) {
 			pending.push_back(make_uniq<TrampolineWaveQueue>());
 		}
@@ -52,6 +54,8 @@ public:
 	mutex lock;
 	//! Rows routed by the currently executing plan; staged[0] holds rows to emit
 	vector<unique_ptr<ColumnDataCollection>> staged;
+	//! Append state per staged collection, initialized when the collection is taken
+	vector<ColumnDataAppendState> staged_appends;
 	//! Pending waves per branch; index 0 is unused
 	vector<unique_ptr<TrampolineWaveQueue>> pending;
 	//! Emitted rows that have not yet been handed to the consumer
@@ -65,6 +69,8 @@ public:
 	//! Round-robin cursor over the branches
 	idx_t next_branch = 1;
 	bool initialized = false;
+	//! Per branch, whether its invariant builds are materialized and retained
+	vector<bool> invariant_materialized;
 
 	DataChunk route_chunk;
 	vector<SelectionVector> route_selections;
@@ -93,6 +99,7 @@ ColumnDataCollection &TrampolineState::Staged(idx_t target) {
 		} else {
 			staged[target] = make_uniq<ColumnDataCollection>(context, op.GetTypes());
 		}
+		staged[target]->InitializeAppend(staged_appends[target]);
 	}
 	return *staged[target];
 }
@@ -180,12 +187,12 @@ void TrampolineState::Route(DataChunk &chunk) {
 			continue;
 		}
 		if (target_rows == count) {
-			Staged(target).Append(chunk);
+			Staged(target).Append(staged_appends[target], chunk);
 			return;
 		}
 		route_chunk.Reset();
 		route_chunk.Slice(chunk, route_selections[target], target_rows);
-		Staged(target).Append(route_chunk);
+		Staged(target).Append(staged_appends[target], route_chunk);
 	}
 }
 
@@ -319,13 +326,13 @@ InsertionOrderPreservingMap<string> PhysicalTrampoline::ParamsToString() const {
 void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t branch_idx) const {
 	D_ASSERT(branch_idx >= 1 && branch_idx <= BranchCount());
 	auto &meta_pipeline = *branch_meta_pipelines[branch_idx - 1];
-	auto &plan = *branch_schedule_plans[branch_idx - 1];
 	auto &executor = meta_pipeline.GetExecutor();
 	auto &gstate = sink_state->Cast<TrampolineState>();
 	auto &scheduler = gstate.scheduler;
 
 	auto &branch = branch_pipelines[branch_idx - 1];
-	if (!Settings::Get<EnableCachingOperatorsSetting>(context.client)) {
+	const auto allow_reuse = Settings::Get<EnableCachingOperatorsSetting>(context.client);
+	if (!allow_reuse) {
 		scheduler.ClearExecutors();
 	}
 	if (!scheduler.HasExecutorEntries()) {
@@ -336,8 +343,20 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 		}
 	}
 
-	// reset every sink that belongs to the branch plan; the trampoline itself keeps its routed state
-	for (auto &sink_reset : branch.sink_resets) {
+	// once the invariant builds of this branch are materialized, later waves skip them
+	const auto can_cache_invariant = allow_reuse && !branch.invariant_meta_pipelines.empty();
+	const bool materialized = gstate.invariant_materialized[branch_idx - 1];
+	const auto use_active_plan = can_cache_invariant && materialized && branch.active_plan;
+	auto &plan = use_active_plan ? *branch.active_plan : *branch.plan;
+	auto &trivial_finish = use_active_plan ? branch.active_trivial_finish : branch.trivial_finish;
+	if (!branch.invariant_meta_pipelines.empty()) {
+		ConfigureInvariantRecursiveBuildReuse(branch.invariant_meta_pipelines, can_cache_invariant);
+	}
+
+	// reset every sink that belongs to the executed plan; the trampoline keeps its routed
+	// state, and materialized invariant builds keep theirs
+	auto &sink_resets = use_active_plan ? branch.active_sink_resets : branch.sink_resets;
+	for (auto &sink_reset : sink_resets) {
 		sink_reset.first->ResetSinkForReschedule(1, sink_reset.second);
 	}
 
@@ -372,6 +391,12 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 			pipeline.PrepareFinalize();
 			break;
 		case PipelineScheduleStageType::FINISH:
+			if (trivial_finish[stage_idx]) {
+				// the trampoline sink has no finalize work and no operator on this
+				// pipeline requires finalization
+				sink_state->state = SinkFinalizeType::READY;
+				break;
+			}
 			ExecuteRecursivePipelineFinishInline(pipeline, executor);
 			break;
 		default:
@@ -381,6 +406,10 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 	}
 	if (scheduler.ReadyStageCount() != plan.stages.size()) {
 		throw InternalException("Trampoline branch plan did not schedule every stage");
+	}
+	if (can_cache_invariant && !materialized &&
+	    InvariantRecursiveBuildsRemainReusable(branch.invariant_meta_pipelines)) {
+		gstate.invariant_materialized[branch_idx - 1] = true;
 	}
 }
 
@@ -400,7 +429,6 @@ void PhysicalTrampoline::BuildPipelines(Pipeline &current, MetaPipeline &meta_pi
 	op_state.reset();
 	sink_state.reset();
 	branch_meta_pipelines.clear();
-	branch_schedule_plans.clear();
 	branch_recursive_scans.clear();
 	branch_pipelines.clear();
 	{
@@ -420,7 +448,6 @@ void PhysicalTrampoline::BuildPipelines(Pipeline &current, MetaPipeline &meta_pi
 	initial_state_pipeline.Build(children[0]);
 
 	// every branch is a detached meta pipeline the trampoline re-executes per wave
-	const reference_set_t<const MetaPipeline> no_invariant_pipelines;
 	for (idx_t branch_idx = 1; branch_idx < children.size(); branch_idx++) {
 		auto branch_meta_pipeline = make_shared_ptr<MetaPipeline>(executor, state, this);
 		branch_meta_pipeline->SetRecursiveCTE();
@@ -430,35 +457,94 @@ void PhysicalTrampoline::BuildPipelines(Pipeline &current, MetaPipeline &meta_pi
 		GatherRecursiveScans(children[branch_idx], table_index, recursive_scans);
 		branch_recursive_scans.push_back(std::move(recursive_scans));
 
+		vector<const_reference<PhysicalOperator>> cte_scan_ops;
+		GatherTrampolineCTEScans(children[branch_idx], cte_scan_ops);
+		bool has_delim_scan = false;
+		for (auto scan_op : cte_scan_ops) {
+			has_delim_scan = has_delim_scan || scan_op.get().type == PhysicalOperatorType::DELIM_SCAN;
+		}
+
 		vector<shared_ptr<MetaPipeline>> branch_meta_pipelines_flat;
 		branch_meta_pipeline->GetMetaPipelines(branch_meta_pipelines_flat, true, false);
-		branch_schedule_plans.push_back(
-		    BuildRecursivePipelineSchedulePlan(branch_meta_pipelines_flat, no_invariant_pipelines, *this));
 
 		TrampolineBranchPipelines branch_entry;
-		reference_map_t<const PhysicalOperator, idx_t> sink_producer_counts;
-		reference_set_t<const Pipeline> seen_pipelines;
-		for (auto &flat_meta : branch_meta_pipelines_flat) {
-			vector<shared_ptr<Pipeline>> flat_pipelines;
-			flat_meta->GetPipelines(flat_pipelines, false);
-			for (auto &pipeline : flat_pipelines) {
-				if (!seen_pipelines.insert(*pipeline).second) {
+		if (!has_delim_scan) {
+			branch_entry.invariant_meta_pipelines =
+			    FindInvariantRecursiveMetaPipelines(branch_meta_pipelines_flat, table_index, non_repeatable_operators);
+		}
+		branch_entry.plan = BuildRecursivePipelineSchedulePlan(branch_meta_pipelines_flat,
+		                                                       branch_entry.invariant_meta_pipelines, *this);
+		vector<shared_ptr<MetaPipeline>> active_meta_pipelines_flat;
+		if (!branch_entry.invariant_meta_pipelines.empty()) {
+			for (auto &flat_meta : branch_meta_pipelines_flat) {
+				if (branch_entry.invariant_meta_pipelines.find(*flat_meta) ==
+				    branch_entry.invariant_meta_pipelines.end()) {
+					active_meta_pipelines_flat.push_back(flat_meta);
+				}
+			}
+			branch_entry.active_plan = BuildRecursivePipelineSchedulePlan(active_meta_pipelines_flat,
+			                                                              branch_entry.invariant_meta_pipelines, *this);
+		}
+
+		auto collect = [&](const vector<shared_ptr<MetaPipeline>> &metas,
+		                   vector<pair<shared_ptr<Pipeline>, bool>> &sink_resets,
+		                   vector<shared_ptr<Pipeline>> *all_pipelines) {
+			reference_map_t<const PhysicalOperator, idx_t> sink_producer_counts;
+			reference_set_t<const Pipeline> seen_pipelines;
+			vector<shared_ptr<Pipeline>> collected;
+			for (auto &flat_meta : metas) {
+				vector<shared_ptr<Pipeline>> flat_pipelines;
+				flat_meta->GetPipelines(flat_pipelines, false);
+				for (auto &pipeline : flat_pipelines) {
+					if (!seen_pipelines.insert(*pipeline).second) {
+						continue;
+					}
+					auto sink = pipeline->GetSink();
+					if (sink && sink.get() != this) {
+						sink_producer_counts[*sink]++;
+					}
+					collected.push_back(pipeline);
+				}
+			}
+			reference_set_t<const PhysicalOperator> seen_sinks;
+			for (auto &pipeline : collected) {
+				auto sink = pipeline->GetSink();
+				if (sink && sink.get() != this && seen_sinks.insert(*sink).second) {
+					sink_resets.emplace_back(pipeline, sink_producer_counts[*sink] == 1);
+				}
+			}
+			if (all_pipelines) {
+				*all_pipelines = std::move(collected);
+			}
+		};
+		collect(branch_meta_pipelines_flat, branch_entry.sink_resets, &branch_entry.pipelines);
+		if (branch_entry.active_plan) {
+			collect(active_meta_pipelines_flat, branch_entry.active_sink_resets, nullptr);
+		}
+
+		auto flag_trivial = [&](const RecursiveCTEPipelineSchedulePlan &schedule, vector<bool> &flags) {
+			flags.resize(schedule.stages.size(), false);
+			for (idx_t stage_idx = 0; stage_idx < schedule.stages.size(); stage_idx++) {
+				auto &stage = schedule.stages[stage_idx];
+				if (stage.type != PipelineScheduleStageType::FINISH) {
 					continue;
 				}
-				auto sink = pipeline->GetSink();
-				if (sink && sink.get() != this) {
-					sink_producer_counts[*sink]++;
+				auto &pipeline = stage.pipeline.get();
+				if (pipeline.GetSink().get() != this) {
+					continue;
 				}
-				branch_entry.pipelines.push_back(pipeline);
+				bool requires_finalize = false;
+				for (auto &op_ref : pipeline.GetIntermediateOperators()) {
+					requires_finalize = requires_finalize || op_ref.get().RequiresOperatorFinalize();
+				}
+				flags[stage_idx] = !requires_finalize;
 			}
+		};
+		flag_trivial(*branch_entry.plan, branch_entry.trivial_finish);
+		if (branch_entry.active_plan) {
+			flag_trivial(*branch_entry.active_plan, branch_entry.active_trivial_finish);
 		}
-		reference_set_t<const PhysicalOperator> seen_sinks;
-		for (auto &pipeline : branch_entry.pipelines) {
-			auto sink = pipeline->GetSink();
-			if (sink && sink.get() != this && seen_sinks.insert(*sink).second) {
-				branch_entry.sink_resets.emplace_back(pipeline, sink_producer_counts[*sink] == 1);
-			}
-		}
+
 		branch_pipelines.push_back(std::move(branch_entry));
 		branch_meta_pipelines.push_back(std::move(branch_meta_pipeline));
 	}

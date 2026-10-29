@@ -604,7 +604,7 @@ static bool PipelineIsRepeatable(Pipeline &pipeline,
 	return !sink || non_repeatable_operators.find(*sink) == non_repeatable_operators.end();
 }
 
-static reference_set_t<const MetaPipeline>
+reference_set_t<const MetaPipeline>
 FindInvariantRecursiveMetaPipelines(const vector<shared_ptr<MetaPipeline>> &meta_pipelines, TableIndex cte_index,
                                     const reference_set_t<const PhysicalOperator> &non_repeatable_operators) {
 	// By default the recursive executor reruns every meta-pipeline in the recursive member each
@@ -716,8 +716,9 @@ FindInvariantRecursiveMetaPipelines(const vector<shared_ptr<MetaPipeline>> &meta
 	return result;
 }
 
-static void ConfigureInvariantRecursiveBuildReuse(const PhysicalRecursiveCTE &op, bool preserve_build) {
-	for (auto &meta_pipeline_ref : op.invariant_meta_pipelines) {
+void ConfigureInvariantRecursiveBuildReuse(const reference_set_t<const MetaPipeline> &invariant_meta_pipelines,
+                                           bool preserve_build) {
+	for (auto &meta_pipeline_ref : invariant_meta_pipelines) {
 		auto sink = meta_pipeline_ref.get().GetSink();
 		if (!sink || sink->type != PhysicalOperatorType::HASH_JOIN) {
 			continue;
@@ -726,12 +727,12 @@ static void ConfigureInvariantRecursiveBuildReuse(const PhysicalRecursiveCTE &op
 	}
 }
 
-static bool InvariantRecursiveBuildsRemainReusable(const PhysicalRecursiveCTE &op) {
+bool InvariantRecursiveBuildsRemainReusable(const reference_set_t<const MetaPipeline> &invariant_meta_pipelines) {
 	// Recursive invariant caching may omit these meta-pipelines entirely after the first materialization.
 	// That is only safe if every invariant HASH_JOIN actually kept a reusable in-memory build side.
 	// External/spilled hash joins run through mutable partition/probe-spill rounds and must therefore
 	// stay in the active recursive schedule instead of being treated as "materialized once".
-	for (auto &meta_pipeline_ref : op.invariant_meta_pipelines) {
+	for (auto &meta_pipeline_ref : invariant_meta_pipelines) {
 		auto sink = meta_pipeline_ref.get().GetSink();
 		if (!sink || sink->type != PhysicalOperatorType::HASH_JOIN) {
 			continue;
@@ -999,7 +1000,7 @@ void PhysicalRecursiveCTE::ExecuteRecursivePipelines(ExecutionContext &context) 
 		Pipeline::InvalidateOperatorStateForReschedule(context.client, op_ref.get());
 	}
 
-	ConfigureInvariantRecursiveBuildReuse(*this, can_cache_invariant_meta_pipelines);
+	ConfigureInvariantRecursiveBuildReuse(invariant_meta_pipelines, can_cache_invariant_meta_pipelines);
 
 	if (!allow_reuse) {
 		gstate.GetScheduler().ClearExecutors();
@@ -1076,7 +1077,7 @@ void PhysicalRecursiveCTE::ExecuteRecursivePipelines(ExecutionContext &context) 
 		gstate.GetEpochMetrics().Record(frontier_rows, max_worker_count, epoch_tasks, elapsed_us,
 		                                frontier_storage_bytes, frontier_allocation_bytes);
 	}
-	if (can_cache_invariant_meta_pipelines && InvariantRecursiveBuildsRemainReusable(*this)) {
+	if (can_cache_invariant_meta_pipelines && InvariantRecursiveBuildsRemainReusable(invariant_meta_pipelines)) {
 		if (collect_metrics && !gstate.HasMaterializedInvariantPipelines()) {
 			for (auto &meta_pipeline : invariant_meta_pipelines) {
 				auto sink = meta_pipeline.get().GetSink();
@@ -1199,7 +1200,8 @@ void PhysicalRecursiveCTE::BuildPipelines(Pipeline &current, MetaPipeline &meta_
 		    FindInvariantRecursiveMetaPipelines(recursive_meta_pipelines, table_index, non_repeatable_operators);
 	}
 
-	recursive_schedule_plan = BuildRecursivePipelineSchedulePlan(recursive_meta_pipelines, invariant_meta_pipelines, *this);
+	recursive_schedule_plan =
+	    BuildRecursivePipelineSchedulePlan(recursive_meta_pipelines, invariant_meta_pipelines, *this);
 	if (!invariant_meta_pipelines.empty()) {
 		vector<shared_ptr<MetaPipeline>> active_meta_pipelines;
 		active_meta_pipelines.reserve(recursive_meta_pipelines.size() - invariant_meta_pipelines.size());
@@ -1208,7 +1210,8 @@ void PhysicalRecursiveCTE::BuildPipelines(Pipeline &current, MetaPipeline &meta_
 				active_meta_pipelines.push_back(meta_pipeline_entry);
 			}
 		}
-		invariant_recursive_schedule_plan = BuildRecursivePipelineSchedulePlan(active_meta_pipelines, invariant_meta_pipelines, *this);
+		invariant_recursive_schedule_plan =
+		    BuildRecursivePipelineSchedulePlan(active_meta_pipelines, invariant_meta_pipelines, *this);
 	}
 
 	for (auto op : ops) {
