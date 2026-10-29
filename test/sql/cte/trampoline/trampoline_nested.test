@@ -102,11 +102,15 @@ SELECT b, n FROM t;
 ----
 0	2000
 
-# a branch probing a large static table from a small wave parallelizes the scan
+# a branch probing a large static table from a small wave parallelizes the scan;
+# the probe must be a real table so the scan is parallel-capable
+statement ok
+CREATE TABLE probe_rows AS SELECT r::INT AS n FROM range(500000) tbl(r);
+
 query I
 WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
     (SELECT 1, i * 7 FROM range(4096) r(i))
-    BRANCH 1: (SELECT 0, p.n FROM (SELECT r::INT AS n FROM range(100000) tbl(r)) p JOIN t ON p.n = t.n)
+    BRANCH 1: (SELECT 0, p.n FROM probe_rows p JOIN t ON p.n = t.n)
 )
 SELECT count(*) FROM t;
 ----
