@@ -1,6 +1,5 @@
 # name: test/sql/sql_export/trampoline_results.test
-# description: Result-bearing trampoline queries whose exported SQL the
-#              statement verification configurations re-execute and compare
+# description: Result-bearing trampoline queries whose exported SQL is re-executed and compared
 # group: [sql_export]
 
 statement ok

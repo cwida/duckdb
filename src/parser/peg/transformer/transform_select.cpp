@@ -1104,12 +1104,10 @@ PEGTransformerFactory::FinalizeWithClauseTrampoline(PEGTransformer &transformer,
 	return transformer.MakeResult<CommonTableExpressionMap>(process.TakeResult<CommonTableExpressionMap>(entry_count));
 }
 
-pair<Identifier, unique_ptr<CommonTableExpressionInfo>>
-PEGTransformerFactory::TransformWithStatement(PEGTransformer &transformer, const Identifier &col_id_or_string,
-                                              const optional<vector<string>> &column_aliases,
-                                              optional<vector<unique_ptr<ParsedExpression>>> using_key,
-                                              const optional<Identifier> &using_trampoline,
-                                              const optional<bool> &materialized, unique_ptr<TableRef> cte_body) {
+pair<Identifier, unique_ptr<CommonTableExpressionInfo>> PEGTransformerFactory::TransformWithStatement(
+    PEGTransformer &transformer, const Identifier &col_id_or_string, const optional<vector<string>> &column_aliases,
+    optional<vector<unique_ptr<ParsedExpression>>> using_key, const optional<Identifier> &using_trampoline,
+    const optional<bool> &materialized, unique_ptr<TableRef> cte_body) {
 	auto result = make_uniq<CommonTableExpressionInfo>();
 	auto cte_name = col_id_or_string;
 	if (column_aliases) {

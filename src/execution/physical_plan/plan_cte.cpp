@@ -8,8 +8,7 @@
 namespace duckdb {
 
 static bool ContainsRecursiveCTE(const LogicalOperator &op) {
-	if (op.type == LogicalOperatorType::LOGICAL_RECURSIVE_CTE ||
-	    op.type == LogicalOperatorType::LOGICAL_TRAMPOLINE) {
+	if (op.type == LogicalOperatorType::LOGICAL_RECURSIVE_CTE || op.type == LogicalOperatorType::LOGICAL_TRAMPOLINE) {
 		return true;
 	}
 	for (auto &child : op.children) {

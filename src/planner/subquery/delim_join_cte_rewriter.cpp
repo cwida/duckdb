@@ -1896,8 +1896,7 @@ GeneratedDomainJoinEliminator::GeneratedDomainJoinEliminator(unique_ptr<LogicalO
 
 void GeneratedDomainJoinEliminator::CollectCTEs(LogicalOperator &op) {
 	if (op.type == LogicalOperatorType::LOGICAL_MATERIALIZED_CTE ||
-	    op.type == LogicalOperatorType::LOGICAL_RECURSIVE_CTE ||
-	    op.type == LogicalOperatorType::LOGICAL_TRAMPOLINE) {
+	    op.type == LogicalOperatorType::LOGICAL_RECURSIVE_CTE || op.type == LogicalOperatorType::LOGICAL_TRAMPOLINE) {
 		ctes.push_back(op.Cast<LogicalCTE>());
 	}
 	for (auto &child : op.children) {
