@@ -216,9 +216,8 @@ LATERAL (
 1	1
 2	2
 
-# Rejected shapes keep clear errors: ungrouped aggregates,
-# set-operation arms independent of the wave, branches that never read the wave,
-# and collated outer keys under admission.
+# Shapes whose output can exist for outer rows with an empty wave are rejected
+# with one provenance error; collated outer keys are rejected under admission.
 statement error
 SELECT * FROM (VALUES (1)) o(k), LATERAL (
 	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
@@ -227,7 +226,7 @@ SELECT * FROM (VALUES (1)) o(k), LATERAL (
 	) SELECT n FROM t
 ) q;
 ----
-<REGEX>:Not implemented Error.*ungrouped aggregates.*
+<REGEX>:Not implemented Error.*derive from its current wave.*
 
 statement error
 SELECT * FROM (VALUES (1)) o(k), LATERAL (
@@ -237,7 +236,7 @@ SELECT * FROM (VALUES (1)) o(k), LATERAL (
 	) SELECT n FROM t
 ) q;
 ----
-<REGEX>:Not implemented Error.*set-operation arms independent of the wave.*
+<REGEX>:Not implemented Error.*derive from its current wave.*
 
 statement error
 SELECT * FROM (VALUES (1)) o(k), LATERAL (
@@ -247,7 +246,7 @@ SELECT * FROM (VALUES (1)) o(k), LATERAL (
 	) SELECT n FROM t
 ) q;
 ----
-<REGEX>:Not implemented Error.*every branch to read the current wave.*
+<REGEX>:Not implemented Error.*derive from its current wave.*
 
 statement error
 SELECT * FROM (SELECT 'a' COLLATE nocase AS k) o, LATERAL (
@@ -263,7 +262,7 @@ SELECT * FROM (SELECT 'a' COLLATE nocase AS k) o, LATERAL (
 query TI
 SELECT * FROM (VALUES ('A'), ('B')) o(dom), LATERAL (
 	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
-		(VALUES (1, 10), (1, 20))
+		(SELECT 1, v.n FROM (VALUES (10), (20)) v(n) WHERE o.dom IS NOT NULL)
 		BRANCH 1: (SELECT 0, row_number() OVER (ORDER BY n)::INTEGER FROM t)
 	) SELECT n FROM t
 ) q ORDER BY dom, n;
@@ -277,7 +276,7 @@ B	2
 query TI
 SELECT * FROM (VALUES ('A'), ('B')) o(dom), LATERAL (
 	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
-		(VALUES (1, 10), (1, 20))
+		(SELECT 1, v.n FROM (VALUES (10), (20)) v(n) WHERE o.dom IS NOT NULL)
 		BRANCH 1: (SELECT 0, n FROM t ORDER BY n LIMIT 1)
 	) SELECT n FROM t
 ) q ORDER BY dom, n;
@@ -295,7 +294,7 @@ SELECT o.k, q.n FROM (VALUES (1), (2)) o(k), LATERAL (
 	) SELECT n FROM t
 ) q;
 ----
-<REGEX>:Not implemented Error.*row-preserving join sides independent of the wave.*
+<REGEX>:Not implemented Error.*derive from its current wave.*
 
 # Empty grouping sets hide an ungrouped aggregate.
 statement error
@@ -306,7 +305,7 @@ SELECT * FROM (VALUES (1)) o(k), LATERAL (
 	) SELECT n FROM t
 ) q;
 ----
-<REGEX>:Not implemented Error.*ungrouped aggregates.*
+<REGEX>:Not implemented Error.*derive from its current wave.*
 
 # A materialized alias of the wave does not launder an ungrouped aggregate.
 statement error
@@ -317,7 +316,7 @@ SELECT * FROM (VALUES (1)) o(k), LATERAL (
 	) SELECT n FROM t
 ) q;
 ----
-<REGEX>:Not implemented Error.*ungrouped aggregates.*
+<REGEX>:Not implemented Error.*derive from its current wave.*
 
 # Correlated DISTINCT: the admission identity includes the hidden domain even when
 # the payload is identical, with a real outer reference in the body.
@@ -372,3 +371,43 @@ SELECT * FROM (SELECT 'a' AS k) o, LATERAL (
 
 statement ok
 RESET default_collation;
+
+# A nested recursive producer with an independent seed could emit rows for
+# domains whose wave is empty: rejected by output provenance.
+statement error
+SELECT o.k, q.n FROM (VALUES (1), (2)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.k WHERE o.k = 1)
+		BRANCH 1: (
+			WITH RECURSIVE r(n) AS (SELECT 99 UNION ALL SELECT t.n FROM r, t WHERE r.n = 0)
+			SELECT 0, n FROM r)
+	) SELECT n FROM t
+) q;
+----
+<REGEX>:Not implemented Error.*derive from its current wave.*
+
+# A wave-seeded nested recursive CTE stays accepted: its output chains to the wave.
+query II
+SELECT o.k, q.n FROM (VALUES (2)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.k)
+		BRANCH 1: (
+			WITH RECURSIVE r(n) AS (SELECT t.n FROM t UNION ALL SELECT n + 1 FROM r WHERE n < 4)
+			SELECT 0, n FROM r WHERE n = 4)
+	) SELECT n FROM t
+) q;
+----
+2	4
+
+# An independent lookup subtree with its own LEFT join is admissible when the
+# branch output is anchored through the wave side of a cross join.
+query II
+SELECT o.k, q.n FROM (VALUES (1), (2)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.k WHERE o.k = 1)
+		BRANCH 1: (SELECT 0, t.n FROM t CROSS JOIN (
+			SELECT v.x FROM (VALUES (1)) v(x) LEFT JOIN (VALUES (2)) w(y) ON v.x = w.y) lookup)
+	) SELECT n FROM t
+) q ORDER BY o.k;
+----
+1	1

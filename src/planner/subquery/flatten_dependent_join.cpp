@@ -1618,124 +1618,118 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownCTE(unique_
 
 namespace {
 
-//! Wave-dependency analysis for correlated trampoline branches. ReadsWave answers
-//! whether a subtree's rows can only exist when the branch's current wave
-//! contributed them; materialized CTE aliases whose definitions read the wave
-//! count as wave reads (frontier references are round state, not the wave).
-struct TrampolineWaveTaint {
-	explicit TrampolineWaveTaint(TableIndex cte_index) : cte_index(cte_index) {
+//! Output-provenance analysis for correlated trampoline branches: a subtree is
+//! wave-anchored when every row it can output requires a row of the branch's
+//! current wave (directly, through a match-requiring join, or through a
+//! materialized alias whose definition is anchored). Decorrelation attaches the
+//! full outer domain to unanchored inputs, so an unanchored branch output would
+//! fabricate rows for outer rows whose wave is empty. Frontier references are
+//! round state, not the wave, and anchor nothing by themselves.
+struct TrampolineWaveAnchoring {
+	explicit TrampolineWaveAnchoring(TableIndex cte_index) : cte_index(cte_index) {
 	}
 
 	TableIndex cte_index;
-	unordered_set<idx_t> tainted_ctes;
+	unordered_set<idx_t> anchored_ctes;
 
-	//! Walks the whole branch once, recording tainted CTE aliases (definitions
-	//! precede their references), and returns whether the subtree reads the wave
-	bool Prime(const LogicalOperator &op) {
-		if (op.type == LogicalOperatorType::LOGICAL_CTE_REF) {
+	bool Anchored(const LogicalOperator &op) {
+		switch (op.type) {
+		case LogicalOperatorType::LOGICAL_CTE_REF: {
 			auto &ref = op.Cast<LogicalCTERef>();
 			if (ref.is_frontier) {
 				return false;
 			}
-			return ref.cte_index == cte_index || tainted_ctes.count(ref.cte_index.index) > 0;
+			return ref.cte_index == cte_index || anchored_ctes.count(ref.cte_index.index) > 0;
 		}
-		if (op.type == LogicalOperatorType::LOGICAL_MATERIALIZED_CTE) {
+		case LogicalOperatorType::LOGICAL_MATERIALIZED_CTE: {
 			auto &cte = op.Cast<LogicalCTE>();
-			if (Prime(*op.children[0])) {
-				tainted_ctes.insert(cte.table_index.index);
+			if (Anchored(*op.children[0])) {
+				anchored_ctes.insert(cte.table_index.index);
 			}
-			// the operator's output is its consumer side
-			return Prime(*op.children[1]);
+			return Anchored(*op.children[1]);
 		}
-		bool reads = false;
-		for (auto &child : op.children) {
-			reads = Prime(*child) || reads;
+		case LogicalOperatorType::LOGICAL_RECURSIVE_CTE:
+		case LogicalOperatorType::LOGICAL_TRAMPOLINE:
+			// nested iteration only runs once its seed produced rows, so every
+			// output row chains back to the seed
+			return Anchored(*op.children[0]);
+		case LogicalOperatorType::LOGICAL_EMPTY_RESULT:
+			// produces no rows at all
+			return true;
+		case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY: {
+			auto &aggregate = op.Cast<LogicalAggregate>();
+			bool has_empty_set = aggregate.groups.empty();
+			for (auto &set : aggregate.grouping_sets) {
+				has_empty_set = has_empty_set || set.empty();
+			}
+			// an empty grouping set produces a row on empty input
+			return !has_empty_set && Anchored(*op.children[0]);
 		}
-		return reads;
-	}
-
-	bool ReadsWave(const LogicalOperator &op) const {
-		if (op.type == LogicalOperatorType::LOGICAL_CTE_REF) {
-			auto &ref = op.Cast<LogicalCTERef>();
-			if (ref.is_frontier) {
+		case LogicalOperatorType::LOGICAL_CROSS_PRODUCT:
+			return JoinAnchored(op, JoinType::INNER);
+		case LogicalOperatorType::LOGICAL_COMPARISON_JOIN:
+		case LogicalOperatorType::LOGICAL_ANY_JOIN:
+		case LogicalOperatorType::LOGICAL_ASOF_JOIN:
+		case LogicalOperatorType::LOGICAL_DEPENDENT_JOIN:
+			return JoinAnchored(op, op.Cast<LogicalJoin>().join_type);
+		case LogicalOperatorType::LOGICAL_UNION: {
+			bool anchored = true;
+			for (auto &child : op.children) {
+				anchored = Anchored(*child) && anchored;
+			}
+			return anchored;
+		}
+		case LogicalOperatorType::LOGICAL_EXCEPT: {
+			auto left = Anchored(*op.children[0]);
+			Anchored(*op.children[1]);
+			return left;
+		}
+		case LogicalOperatorType::LOGICAL_INTERSECT: {
+			auto left = Anchored(*op.children[0]);
+			auto right = Anchored(*op.children[1]);
+			return left || right;
+		}
+		default: {
+			// row-transforming operators are anchored when all inputs are; leaves
+			// (scans, VALUES, dummy scans) have no children and are not anchored
+			if (op.children.empty()) {
 				return false;
 			}
-			if (ref.cte_index == cte_index || tainted_ctes.count(ref.cte_index.index) > 0) {
-				return true;
+			bool anchored = true;
+			for (auto &child : op.children) {
+				anchored = Anchored(*child) && anchored;
 			}
+			return anchored;
 		}
-		for (auto &child : op.children) {
-			if (ReadsWave(*child)) {
-				return true;
-			}
 		}
-		return false;
 	}
-};
 
-//! v1 rejection of branch shapes whose per-domain results exist independently of
-//! their wave: supporting them needs an active-domain contract (one invocation per
-//! domain present in the wave), which decorrelation's empty-aggregate recovery,
-//! empty-preserving joins against domain-attached independent inputs, and
-//! independent-subtree domain attachment would otherwise fabricate.
-void RejectDomainFabricatingBranch(const LogicalOperator &op, const TrampolineWaveTaint &taint, idx_t branch_number) {
-	if (op.type == LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY) {
-		auto &aggregate = op.Cast<LogicalAggregate>();
-		bool has_empty_set = aggregate.groups.empty();
-		for (auto &set : aggregate.grouping_sets) {
-			has_empty_set = has_empty_set || set.empty();
-		}
-		if (has_empty_set && taint.ReadsWave(op)) {
-			throw NotImplementedException("correlated TRAMPOLINE CTEs do not support ungrouped aggregates (or empty "
-			                              "grouping sets) over the wave in BRANCH %llu yet",
-			                              branch_number);
-		}
-	}
-	if (op.type == LogicalOperatorType::LOGICAL_UNION || op.type == LogicalOperatorType::LOGICAL_EXCEPT ||
-	    op.type == LogicalOperatorType::LOGICAL_INTERSECT) {
-		for (auto &child : op.children) {
-			if (!taint.ReadsWave(*child)) {
-				throw NotImplementedException("correlated TRAMPOLINE CTEs do not support set-operation arms "
-				                              "independent of the wave in BRANCH %llu yet",
-				                              branch_number);
-			}
-		}
-	}
-	if (op.type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN || op.type == LogicalOperatorType::LOGICAL_ANY_JOIN ||
-	    op.type == LogicalOperatorType::LOGICAL_ASOF_JOIN || op.type == LogicalOperatorType::LOGICAL_DEPENDENT_JOIN) {
-		auto &join = op.Cast<LogicalJoin>();
-		bool need_left = false;
-		bool need_right = false;
-		switch (join.join_type) {
+private:
+	bool JoinAnchored(const LogicalOperator &op, JoinType join_type) {
+		// evaluate both sides so materialized aliases inside either get recorded
+		auto left = Anchored(*op.children[0]);
+		auto right = op.children.size() > 1 ? Anchored(*op.children[1]) : false;
+		switch (join_type) {
+		case JoinType::INNER:
+		case JoinType::SEMI:
+		case JoinType::RIGHT_SEMI:
+			// output rows require a match, which carries the domain equality
+			return left || right;
 		case JoinType::LEFT:
 		case JoinType::ANTI:
 		case JoinType::MARK:
 		case JoinType::SINGLE:
-			need_left = true;
-			break;
+			return left;
 		case JoinType::RIGHT:
 		case JoinType::RIGHT_ANTI:
-			need_right = true;
-			break;
+			return right;
 		case JoinType::OUTER:
-			need_left = true;
-			need_right = true;
-			break;
+			return left && right;
 		default:
-			// INNER, SEMI, RIGHT_SEMI: output requires a match against the other
-			// side, and domain equality scopes the match
-			break;
-		}
-		if ((need_left && !taint.ReadsWave(*op.children[0])) || (need_right && !taint.ReadsWave(*op.children[1]))) {
-			throw NotImplementedException("correlated TRAMPOLINE CTEs do not support row-preserving join sides "
-			                              "independent of the wave in BRANCH %llu yet",
-			                              branch_number);
+			return false;
 		}
 	}
-	for (auto &child : op.children) {
-		RejectDomainFabricatingBranch(*child, taint, branch_number);
-	}
-}
+};
 
 } // namespace
 
@@ -1744,13 +1738,13 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownTrampoline(
                                                                                 vector<ColumnBinding> state) {
 	auto &trampoline = plan->Cast<LogicalTrampoline>();
 	for (idx_t branch_idx = 1; branch_idx < plan->children.size(); branch_idx++) {
-		TrampolineWaveTaint taint(trampoline.table_index);
-		if (!taint.Prime(*plan->children[branch_idx])) {
+		TrampolineWaveAnchoring anchoring(trampoline.table_index);
+		if (!anchoring.Anchored(*plan->children[branch_idx])) {
 			throw NotImplementedException(
-			    "correlated TRAMPOLINE CTEs require every branch to read the current wave (BRANCH %llu does not)",
+			    "correlated TRAMPOLINE CTEs require every branch's output to derive from its current wave; "
+			    "BRANCH %llu can produce rows for outer rows whose wave is empty",
 			    branch_idx);
 		}
-		RejectDomainFabricatingBranch(*plan->children[branch_idx], taint, branch_idx);
 	}
 	bool wants_admission = trampoline.emit_distinct;
 	for (auto distinct : trampoline.branch_distinct) {
