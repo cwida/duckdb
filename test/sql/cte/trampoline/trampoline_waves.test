@@ -166,8 +166,8 @@ SELECT n FROM t;
 ----
 5000
 
-# merged mode runs independent branches' waves concurrently: duplicates and
-# totals must match the serial semantics exactly
+# a rotation across four linear branches keeps duplicates and totals exact
+# regardless of how rounds are scheduled
 query II
 WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
     (SELECT (r % 4)::INT + 1, 16::BIGINT FROM range(40000) tbl(r))
@@ -180,7 +180,7 @@ SELECT count(*), sum(n)::BIGINT FROM t;
 ----
 40000	40000
 
-# duplicate rows survive concurrent rounds, in the same branch and across branches
+# duplicate rows survive rounds with several pending branches, in the same branch and across branches
 query II
 WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
     (SELECT * FROM (VALUES (1, 5), (1, 5), (2, 5), (2, 5)) v(b, n))

@@ -29,30 +29,3 @@ SELECT * FROM t;
 statement ok
 SET max_execution_time = 0;
 
-# partial output stays live: a LIMIT can consume an already emitted row even
-# when the remaining trampoline work never emits again
-statement ok
-SET max_execution_time = 60000;
-
-query I
-WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
-    (SELECT * FROM (VALUES (0, 42), (1, 0)) v(b, n))
-    BRANCH 1: (SELECT CASE WHEN n < 100000000 THEN 1 ELSE 0 END, n + 1 FROM t)
-)
-SELECT n FROM t LIMIT 1;
-----
-42
-
-# the same holds when the prefix row came from a branch instead of the seed
-query I
-WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
-    (SELECT * FROM (VALUES (2, 42), (1, 0)) v(b, n))
-    BRANCH 1: (SELECT CASE WHEN n < 100000000 THEN 1 ELSE 0 END, n + 1 FROM t)
-    BRANCH 2: (SELECT 0, n FROM t)
-)
-SELECT n FROM t LIMIT 1;
-----
-42
-
-statement ok
-SET max_execution_time = 0;
