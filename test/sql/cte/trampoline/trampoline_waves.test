@@ -219,3 +219,52 @@ SELECT n FROM t;
 ----
 1001
 1010
+
+# a MARK join (IN over the routed input) sees NULL semantics per wave
+query I rowsort
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT * FROM (VALUES (1, NULL::INT), (2, 1)) v(b, n))
+    BRANCH 1: (SELECT 3, n FROM t)
+    BRANCH 2: (SELECT 3, n FROM t)
+    BRANCH 3: (SELECT 0, CASE WHEN 1 IN (SELECT n FROM t) THEN 1
+                              WHEN (1 IN (SELECT n FROM t)) IS NULL THEN -1
+                              ELSE 0 END
+               FROM (VALUES (0)) d)
+)
+SELECT n FROM t;
+----
+-1
+1
+
+# an anti join against a wave containing NULL finds no match in that wave
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT * FROM (VALUES (1, NULL::INT), (2, 1)) v(b, n))
+    BRANCH 1: (SELECT 3, n FROM t)
+    BRANCH 2: (SELECT 3, n FROM t)
+    BRANCH 3: (SELECT 0, s.v FROM (VALUES (1)) s(v) WHERE NOT EXISTS (SELECT 1 FROM t WHERE t.n = s.v))
+)
+SELECT count(*) FROM t;
+----
+1
+
+# a scalar subquery over a multi-row wave raises the single-row error per wave
+statement error
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT * FROM (VALUES (1, 1), (1, 2)) v(b, n))
+    BRANCH 1: (SELECT 0, (SELECT n FROM t) FROM (VALUES (0)) s)
+)
+SELECT * FROM t;
+----
+<REGEX>:.*(single|one) row.*
+
+# selective filters hand sliced vectors to the router
+query II
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, r::INT FROM range(10000) tbl(r))
+    BRANCH 1: (SELECT CASE WHEN n % 3 = 0 THEN 0 ELSE 2 END, n FROM t WHERE n % 2 = 0)
+    BRANCH 2: (SELECT 0, n FROM t)
+)
+SELECT count(*), sum(n)::BIGINT FROM t;
+----
+5000	24995000

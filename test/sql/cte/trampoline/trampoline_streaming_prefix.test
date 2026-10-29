@@ -1,5 +1,6 @@
 # name: test/sql/cte/trampoline/trampoline_streaming_prefix.test
-# description: Partial trampoline output stays consumable under LIMIT (needs CTE inlining)
+# description: Optimizer-dependent trampoline cases: streaming prefixes under LIMIT
+#              (needs CTE inlining) and ASOF matching against routed waves
 # group: [trampoline]
 
 # partial output stays live: a LIMIT can consume an already emitted row even
@@ -29,3 +30,22 @@ SELECT n FROM t LIMIT 1;
 
 statement ok
 SET max_execution_time = 0;
+
+# an ASOF join matching against the routed input matches per wave
+statement ok
+CREATE TABLE asof_probe(x INTEGER);
+
+statement ok
+INSERT INTO asof_probe VALUES (10);
+
+query I rowsort
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT * FROM (VALUES (1, 2), (2, 8)) v(b, n))
+    BRANCH 1: (SELECT 3, n FROM t)
+    BRANCH 2: (SELECT 3, n FROM t)
+    BRANCH 3: (SELECT 0, t.n FROM asof_probe p ASOF JOIN t ON t.n <= p.x)
+)
+SELECT n FROM t;
+----
+2
+8

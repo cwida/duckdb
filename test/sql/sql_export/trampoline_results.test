@@ -1,0 +1,36 @@
+# name: test/sql/sql_export/trampoline_results.test
+# description: Result-bearing trampoline queries whose exported SQL the
+#              statement verification configurations re-execute and compare
+# group: [sql_export]
+
+statement ok
+CREATE TABLE export_edges AS SELECT i AS src, i + 1 AS dst FROM range(64) t(i);
+
+query III
+WITH RECURSIVE gcd(pc, a, b) USING TRAMPOLINE (pc) AS (
+    (SELECT 1, v.x, v.y FROM (VALUES (12, 18), (7, 7), (9, 28)) v(x, y))
+    BRANCH 1: (SELECT CASE WHEN b <> 0 THEN 2 ELSE 0 END, a, b FROM gcd)
+    BRANCH 2: (SELECT 1, b, a % b FROM gcd)
+)
+SELECT count(*), sum(a)::INT, max(a) FROM gcd;
+----
+3	14	7
+
+query II
+WITH RECURSIVE walk(sel, node) USING TRAMPOLINE (sel) AS (
+    (SELECT 1, 0)
+    BRANCH 1: (SELECT CASE WHEN e.dst < 40 THEN 1 ELSE 0 END, e.dst
+               FROM walk w JOIN export_edges e ON e.src = w.node)
+)
+SELECT sel, node FROM walk;
+----
+0	40
+
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, 1)
+    BRANCH 1: (SELECT 0, sum(n)::INT FROM t)
+)
+SELECT n FROM t;
+----
+1

@@ -29,3 +29,13 @@ SELECT * FROM t;
 statement ok
 SET max_execution_time = 0;
 
+
+# after an interrupt the same connection runs trampolines normally again
+query II
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, 0)
+    BRANCH 1: (SELECT CASE WHEN n < 3 THEN 1 ELSE 0 END, n + 1 FROM t)
+)
+SELECT b, n FROM t;
+----
+0	4

@@ -179,3 +179,70 @@ LATERAL (
 ) s;
 ----
 <REGEX>:Not implemented Error.*TRAMPOLINE.*
+
+# selector types outside plain integers are rejected
+statement error
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1::HUGEINT, 0)
+    BRANCH 1: (SELECT 0::HUGEINT, n FROM t)
+)
+SELECT * FROM t;
+----
+<REGEX>:Binder Error.*integer type.*
+
+statement error
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1.0, 0)
+    BRANCH 1: (SELECT 0.0, n FROM t)
+)
+SELECT * FROM t;
+----
+<REGEX>:Binder Error.*integer type.*
+
+statement error
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT true, 0)
+    BRANCH 1: (SELECT false, n FROM t)
+)
+SELECT * FROM t;
+----
+<REGEX>:Binder Error.*integer type.*
+
+# unsigned selector extremes are out of range, not wrapped
+statement error
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 255::UTINYINT, 0)
+    BRANCH 1: (SELECT 0::UTINYINT, n FROM t)
+)
+SELECT * FROM t;
+----
+<REGEX>:Invalid Input Error.*selector.*
+
+statement error
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 18446744073709551615::UBIGINT, 0)
+    BRANCH 1: (SELECT 0::UBIGINT, n FROM t)
+)
+SELECT * FROM t;
+----
+<REGEX>:Invalid Input Error.*selector.*
+
+# a branch value that cannot narrow to the seed type fails cleanly
+statement error
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, 1000::INT)
+    BRANCH 1: (SELECT 0, n * 100000000000 FROM t)
+)
+SELECT * FROM t;
+----
+<REGEX>:.*(Conversion|out of range|cast).*
+
+# the selector name resolves case-insensitively and quoted
+query II
+WITH RECURSIVE t("Branch Col", n) USING TRAMPOLINE ("BRANCH COL") AS (
+    (SELECT 1, 0)
+    BRANCH 1: (SELECT CASE WHEN n < 2 THEN 1 ELSE 0 END, n + 1 FROM t)
+)
+SELECT "Branch Col", n FROM t;
+----
+0	3
