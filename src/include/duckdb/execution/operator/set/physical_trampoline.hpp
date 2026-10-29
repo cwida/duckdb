@@ -49,11 +49,6 @@ struct TrampolineBranchPipelines {
 	vector<bool> trivial_finish;
 	//! The same flag for `active_plan`
 	vector<bool> active_trivial_finish;
-	//! Every stage of `plan` sinks into the trampoline with trivial finalization, so a
-	//! whole wave of this branch can run as one task concurrently with other branches
-	bool simple_inline = false;
-	//! The same flag for `active_plan`
-	bool active_simple_inline = false;
 };
 
 //! Trampoline-style iteration: rows carry a selector column; selector 0 emits a
@@ -120,7 +115,6 @@ public:
 
 private:
 	void ExecuteBranchPipelines(ExecutionContext &context, idx_t branch_idx) const;
-	void ExecuteBranchesConcurrently(ExecutionContext &context, const vector<idx_t> &branch_indexes) const;
 
 private:
 	//! Recursive scans of each branch plan, rebound to the current wave before execution

@@ -90,7 +90,6 @@ public:
 	      scheduler(op.shared_executor_pool, Settings::Get<EnableCachingOperatorsSetting>(context)) {
 		const auto branch_count = op.BranchCount();
 		staged.resize(branch_count + 1);
-		concurrent_inputs.resize(branch_count);
 		invariant_materialized.resize(branch_count, false);
 		for (idx_t branch_idx = 0; branch_idx <= branch_count; branch_idx++) {
 			pending.push_back(make_uniq<TrampolineWaveQueue>());
@@ -114,8 +113,6 @@ public:
 	bool emit_active = false;
 	//! The wave the currently executing branch scans; kept alive during execution
 	unique_ptr<ColumnDataCollection> current_input;
-	//! Waves of a concurrent round, one slot per branch; kept alive during execution
-	vector<unique_ptr<ColumnDataCollection>> concurrent_inputs;
 	//! Round-robin cursor over the branches
 	idx_t next_branch = 1;
 	bool initialized = false;
@@ -328,30 +325,6 @@ SourceResultType TrampolineState::GetData(ExecutionContext &execution_context, D
 			emit_active = true;
 			continue;
 		}
-		if (op.merge_waves) {
-			// merged mode lets independent branches' waves execute concurrently: their
-			// combined routed output per target is exactly what merging produces anyway
-			vector<idx_t> ready;
-			for (idx_t candidate = 1; candidate <= op.BranchCount(); candidate++) {
-				if (!pending[candidate]->waves.empty()) {
-					ready.push_back(candidate);
-				}
-			}
-			if (ready.size() > 1) {
-				context.InterruptCheck();
-				for (auto candidate : ready) {
-					auto &queue = pending[candidate]->waves;
-					concurrent_inputs[candidate - 1] = std::move(queue.front());
-					queue.pop_front();
-				}
-				op.ExecuteBranchesConcurrently(execution_context, ready);
-				for (auto candidate : ready) {
-					Recycle(std::move(concurrent_inputs[candidate - 1]));
-				}
-				CloseExecution();
-				continue;
-			}
-		}
 		idx_t branch_idx;
 		unique_ptr<ColumnDataCollection> wave;
 		if (!NextWave(branch_idx, wave)) {
@@ -562,154 +535,6 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 }
 
 //===--------------------------------------------------------------------===//
-// Concurrent branch execution (merged mode): independent branches' waves overlap
-//===--------------------------------------------------------------------===//
-namespace {
-
-//! One task runs one simple branch's whole wave: reset, execute, trivially finish
-class TrampolineBranchWaveEvent : public Event {
-public:
-	explicit TrampolineBranchWaveEvent(Executor &executor) : Event(executor) {
-	}
-
-	vector<shared_ptr<Task>> branch_tasks;
-
-	void Schedule() override {
-		SetTasks(std::move(branch_tasks));
-	}
-};
-
-class TrampolineBranchWaveTask : public ExecutorTask {
-public:
-	TrampolineBranchWaveTask(Executor &executor, shared_ptr<Event> event_p,
-	                         const RecursiveCTEPipelineSchedulePlan &plan_p, RecursiveCTESchedulerState &scheduler_p)
-	    : ExecutorTask(executor, std::move(event_p)), plan(plan_p), scheduler(scheduler_p) {
-	}
-
-	const RecursiveCTEPipelineSchedulePlan &plan;
-	RecursiveCTESchedulerState &scheduler;
-
-	TaskExecutionResult ExecuteTask(TaskExecutionMode mode) override {
-		// operators can be shared between this branch's pipelines; reset them before any stage runs
-		for (auto &stage : plan.stages) {
-			if (stage.type == PipelineScheduleStageType::EXECUTE) {
-				stage.pipeline.get().ResetOperatorsForReschedule();
-			}
-		}
-		// stages are topologically ordered and every sink is the trampoline, so in-order
-		// single-threaded execution satisfies all dependencies
-		for (auto &stage : plan.stages) {
-			auto &pipeline = stage.pipeline.get();
-			switch (stage.type) {
-			case PipelineScheduleStageType::EXECUTE: {
-				pipeline.ResetSourceForReschedule();
-				// executor construction needs the source state, so prepare after the reset;
-				// each pipeline belongs to exactly one branch and therefore one task
-				scheduler.PrepareExecutors(pipeline, 1);
-				auto &executors = scheduler.GetExecutors(pipeline);
-				D_ASSERT(!executors.empty());
-				executors[0]->PrepareForExecution();
-				ExecuteRecursivePipelineInline(*executors[0]);
-				break;
-			}
-			case PipelineScheduleStageType::PREPARE_FINISH:
-				pipeline.PrepareFinalize();
-				break;
-			case PipelineScheduleStageType::FINISH:
-				// trivial by the simple-inline classification; the sink state is marked once
-				// by the coordinating thread after the round completes
-				break;
-			default:
-				throw InternalException("Unsupported simple trampoline stage");
-			}
-		}
-		event->FinishTask();
-		return TaskExecutionResult::TASK_FINISHED;
-	}
-};
-
-} // namespace
-
-void PhysicalTrampoline::ExecuteBranchesConcurrently(ExecutionContext &context,
-                                                     const vector<idx_t> &branch_indexes) const {
-	auto &gstate = sink_state->Cast<TrampolineState>();
-	auto &scheduler = gstate.scheduler;
-	auto &executor = branch_meta_pipelines[0]->GetExecutor();
-	const auto allow_reuse = Settings::Get<EnableCachingOperatorsSetting>(context.client);
-	if (!allow_reuse) {
-		scheduler.ClearExecutors();
-	}
-	if (!scheduler.HasExecutorEntries()) {
-		for (auto &branch_entry : branch_pipelines) {
-			for (auto &pipeline : branch_entry.pipelines) {
-				scheduler.PrepareExecutorEntry(*pipeline);
-			}
-		}
-	}
-	const auto configured_threads = NumericCast<idx_t>(TaskScheduler::GetScheduler(context.client).NumberOfThreads());
-
-	vector<shared_ptr<Event>> events;
-	auto wave_event = make_shared_ptr<TrampolineBranchWaveEvent>(executor);
-	vector<idx_t> executed_with_invariants;
-	for (auto branch_idx : branch_indexes) {
-		auto &branch = branch_pipelines[branch_idx - 1];
-		const auto can_cache_invariant = allow_reuse && !branch.invariant_meta_pipelines.empty();
-		const bool materialized = gstate.invariant_materialized[branch_idx - 1];
-		const auto use_active_plan = can_cache_invariant && materialized && branch.active_plan;
-		auto &plan = use_active_plan ? *branch.active_plan : *branch.plan;
-		const auto simple = use_active_plan ? branch.active_simple_inline : branch.simple_inline;
-
-		auto &sink_resets = use_active_plan ? branch.active_sink_resets : branch.sink_resets;
-		idx_t frontier_workers = 1;
-		auto &wave = gstate.concurrent_inputs[branch_idx - 1];
-		D_ASSERT(wave);
-		{
-			const auto scan_count = MaxValue<idx_t>(branch_recursive_scans[branch_idx - 1].size(), 1);
-			const auto input_rows = wave->Count() * scan_count;
-			const auto row_limit = (input_rows + TRAMPOLINE_ROWS_PER_THREAD - 1) / TRAMPOLINE_ROWS_PER_THREAD;
-			const auto work_units = MaxValue<idx_t>(wave->ChunkCount() * scan_count, 1);
-			frontier_workers = MaxValue<idx_t>(MinValue(MinValue(row_limit, work_units), configured_threads), 1);
-		}
-		const auto has_independent_source = plan.has_source_tasks || plan.has_parallel_source;
-		const auto workers = has_independent_source ? configured_threads : frontier_workers;
-		for (auto &sink_reset : sink_resets) {
-			const auto worker_bound = sink_reset.invariant_build ? configured_threads : workers;
-			sink_reset.pipeline->ResetSinkForReschedule(worker_bound, sink_reset.single_producer);
-		}
-		if (!branch.invariant_meta_pipelines.empty()) {
-			ConfigureInvariantRecursiveBuildReuse(branch.invariant_meta_pipelines, can_cache_invariant);
-			executed_with_invariants.push_back(branch_idx);
-		}
-		for (auto &scan_ref : branch_recursive_scans[branch_idx - 1]) {
-			scan_ref.get().collection = *wave;
-		}
-
-		if (simple) {
-			wave_event->branch_tasks.push_back(
-			    make_shared_ptr<TrampolineBranchWaveTask>(executor, wave_event, plan, scheduler));
-		} else {
-			RecursiveSchedulingContext scheduling_context {executor, scheduler, nullptr, nullptr, true};
-			ScheduleRecursivePlan(plan, scheduling_context, events,
-			                      RecursiveCTEParallelism(frontier_workers, has_independent_source ? configured_threads
-			                                                                                       : frontier_workers));
-		}
-	}
-	if (!wave_event->branch_tasks.empty()) {
-		wave_event->Schedule();
-		events.push_back(wave_event);
-	}
-	WaitForRecursiveEvents(executor, events);
-	sink_state->state = SinkFinalizeType::READY;
-	for (auto branch_idx : executed_with_invariants) {
-		auto &branch = branch_pipelines[branch_idx - 1];
-		if (allow_reuse && !gstate.invariant_materialized[branch_idx - 1] &&
-		    InvariantRecursiveBuildsRemainReusable(branch.invariant_meta_pipelines)) {
-			gstate.invariant_materialized[branch_idx - 1] = true;
-		}
-	}
-}
-
-//===--------------------------------------------------------------------===//
 // Pipeline construction
 //===--------------------------------------------------------------------===//
 static void GatherTrampolineCTEScans(const PhysicalOperator &op, vector<const_reference<PhysicalOperator>> &cte_scans) {
@@ -826,17 +651,13 @@ void PhysicalTrampoline::BuildPipelines(Pipeline &current, MetaPipeline &meta_pi
 
 		auto flag_trivial = [&](const RecursiveCTEPipelineSchedulePlan &schedule, vector<bool> &flags) {
 			flags.resize(schedule.stages.size(), false);
-			bool simple = true;
 			for (idx_t stage_idx = 0; stage_idx < schedule.stages.size(); stage_idx++) {
 				auto &stage = schedule.stages[stage_idx];
-				auto &pipeline = stage.pipeline.get();
-				const auto sinks_here = pipeline.GetSink().get() == this;
 				if (stage.type != PipelineScheduleStageType::FINISH) {
-					simple = simple && sinks_here;
 					continue;
 				}
-				if (!sinks_here) {
-					simple = false;
+				auto &pipeline = stage.pipeline.get();
+				if (pipeline.GetSink().get() != this) {
 					continue;
 				}
 				bool requires_finalize = false;
@@ -844,14 +665,11 @@ void PhysicalTrampoline::BuildPipelines(Pipeline &current, MetaPipeline &meta_pi
 					requires_finalize = requires_finalize || op_ref.get().RequiresOperatorFinalize();
 				}
 				flags[stage_idx] = !requires_finalize;
-				simple = simple && !requires_finalize;
 			}
-			return simple;
 		};
-		branch_entry.simple_inline = flag_trivial(*branch_entry.plan, branch_entry.trivial_finish);
+		flag_trivial(*branch_entry.plan, branch_entry.trivial_finish);
 		if (branch_entry.active_plan) {
-			branch_entry.active_simple_inline =
-			    flag_trivial(*branch_entry.active_plan, branch_entry.active_trivial_finish);
+			flag_trivial(*branch_entry.active_plan, branch_entry.active_trivial_finish);
 		}
 
 		branch_pipelines.push_back(std::move(branch_entry));
