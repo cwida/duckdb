@@ -435,10 +435,10 @@ BuildRecursivePipelineSchedulePlan(const vector<shared_ptr<MetaPipeline>> &meta_
 					plan->invalidate_operators.push_back(op_ref);
 				}
 			}
-			has_parallel_source = source && source->ParallelSource() &&
-			                      source->type != PhysicalOperatorType::RECURSIVE_CTE_SCAN &&
-			                      source->type != PhysicalOperatorType::RECURSIVE_RECURRING_CTE_SCAN &&
-			                      source->type != PhysicalOperatorType::CTE_SCAN;
+			// capability alone (e.g. a dormant hash-join cleanup source) must not count as
+			// independent source work, so only concrete scans qualify
+			has_parallel_source =
+			    source && source->ParallelSource() && source->type == PhysicalOperatorType::TABLE_SCAN;
 			plan->has_parallel_source = plan->has_parallel_source || has_parallel_source;
 		}
 		recursive_stage_indices[stage_idx] = plan->stages.size();

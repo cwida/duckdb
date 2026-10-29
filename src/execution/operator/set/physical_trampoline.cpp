@@ -488,19 +488,19 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 		auto &pipeline = stage.pipeline.get();
 		switch (stage.type) {
 		case PipelineScheduleStageType::EXECUTE: {
+			pipeline.ResetSourceForReschedule();
 			if (stage.is_invariant_build) {
-				// invariant builds have independent source work even when the wave is tiny
+				// invariant builds have independent source work even when the wave is tiny;
+				// the source state must exist before its parallelism can be read
 				auto build_threads = pipeline.GetMaxThreads();
 				build_threads = MinValue<idx_t>(MaxValue<idx_t>(build_threads, 1), configured_threads);
 				if (build_threads > 1) {
-					pipeline.ResetSourceForReschedule();
 					RecursiveSchedulingContext scheduling_context {executor, scheduler, nullptr, nullptr};
 					ExecuteRecursivePipelineEventInline(pipeline, scheduling_context, configured_threads, build_threads,
 					                                    stage.metric_type);
 					break;
 				}
 			}
-			pipeline.ResetSourceForReschedule();
 			scheduler.PrepareExecutors(pipeline, 1);
 			auto &executors = scheduler.GetExecutors(pipeline);
 			D_ASSERT(!executors.empty());
