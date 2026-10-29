@@ -498,7 +498,8 @@
       {
         "id": 206,
         "name": "is_frontier",
-        "type": "bool"
+        "type": "bool",
+        "version": "v2.1.0"
       }
     ],
     "constructor": [
