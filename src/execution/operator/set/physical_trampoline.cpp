@@ -271,7 +271,7 @@ void TrampolineState::CloseExecution() {
 			continue;
 		}
 		auto &queue = pending[branch_idx]->waves;
-		if (op.merge_waves && !queue.empty()) {
+		if (op.branch_wave_merge[branch_idx - 1] && !queue.empty()) {
 			queue.back()->Combine(*branch_staged);
 			branch_staged.reset();
 		} else {
@@ -417,7 +417,17 @@ InsertionOrderPreservingMap<string> PhysicalTrampoline::ParamsToString() const {
 	result["CTE Name"] = ctename.GetIdentifierName();
 	result["Table Index"] = StringUtil::Format("%llu", table_index.index);
 	result["Branches"] = StringUtil::Format("%llu", BranchCount());
-	result["Waves"] = merge_waves ? "merged" : "per-batch";
+	idx_t merged_branches = 0;
+	for (auto merge_branch : branch_wave_merge) {
+		merged_branches += merge_branch ? 1 : 0;
+	}
+	if (merged_branches == BranchCount()) {
+		result["Waves"] = "merged";
+	} else if (merged_branches == 0) {
+		result["Waves"] = "per-batch";
+	} else {
+		result["Waves"] = "mixed";
+	}
 	SetEstimatedCardinality(result, estimated_cardinality);
 	return result;
 }

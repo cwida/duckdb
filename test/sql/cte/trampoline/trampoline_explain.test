@@ -82,3 +82,14 @@ EXPLAIN WITH RECURSIVE fsm(state, seq) AS (
 SELECT count(*) FROM fsm;
 ----
 physical_plan	<REGEX>:.*Conditions: \(seq \+ 1\) = seq.*
+
+# a nonlinear branch next to an emit-only linear branch yields mixed wave modes
+query II
+EXPLAIN WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, 0)
+    BRANCH 1: (SELECT 0, sum(n)::INT FROM t)
+    BRANCH 2: (SELECT 0, n + 1 FROM t)
+)
+SELECT b, n FROM t;
+----
+physical_plan	<REGEX>:.*Waves: mixed.*

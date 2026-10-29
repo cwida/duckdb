@@ -5,6 +5,8 @@
 #include "duckdb/planner/operator/logical_trampoline.hpp"
 #include "duckdb/planner/logical_operator_visitor.hpp"
 #include "duckdb/planner/expression.hpp"
+#include "duckdb/execution/operator/projection/physical_projection.hpp"
+#include "duckdb/execution/expression_executor.hpp"
 
 namespace duckdb {
 
@@ -112,6 +114,34 @@ bool LogicalSubtreeIsVolatile(const LogicalOperator &op) {
 	return false;
 }
 
+//! Whether the branch's selector output is provably the constant 0 on every row:
+//! the root is a projection whose selector expression folds to 0
+bool BranchOnlyEmits(ClientContext &context, const PhysicalOperator &branch, idx_t selector_idx) {
+	if (branch.type != PhysicalOperatorType::PROJECTION) {
+		return false;
+	}
+	auto &projection = branch.Cast<PhysicalProjection>();
+	if (selector_idx >= projection.select_list.size()) {
+		return false;
+	}
+	auto &selector_expr = *projection.select_list[selector_idx];
+	if (!selector_expr.IsFoldable()) {
+		return false;
+	}
+	Value selector_value;
+	if (!ExpressionExecutor::TryEvaluateScalar(context, selector_expr, selector_value)) {
+		return false;
+	}
+	if (selector_value.IsNull()) {
+		return false;
+	}
+	auto as_bigint = selector_value.DefaultTryCastAs(LogicalType::BIGINT);
+	if (!as_bigint || as_bigint->IsNull()) {
+		return false;
+	}
+	return BigIntValue::Get(*as_bigint) == 0;
+}
+
 bool PhysicalSubtreeIsRepeatable(const PhysicalOperator &op,
                                  const reference_set_t<const PhysicalOperator> &non_repeatable_operators) {
 	if (non_repeatable_operators.find(op) != non_repeatable_operators.end()) {
@@ -151,13 +181,26 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalTrampoline &op) {
 
 	// merging waves changes how often a branch is invoked, which is observable through
 	// volatile expressions and non-repeatable subplans, so those branches stay per-wave
+	vector<bool> fusable(branches.size(), false);
+	vector<bool> emit_only(branches.size(), false);
 	bool all_linear = true;
 	for (idx_t branch_idx = 0; branch_idx < branches.size(); branch_idx++) {
-		all_linear = all_linear && BranchIsLinear(branches[branch_idx].get(), op.table_index) &&
-		             !LogicalSubtreeIsVolatile(*op.children[branch_idx + 1]) &&
-		             PhysicalSubtreeIsRepeatable(branches[branch_idx].get(), non_repeatable_operators);
+		fusable[branch_idx] = BranchIsLinear(branches[branch_idx].get(), op.table_index) &&
+		                      !LogicalSubtreeIsVolatile(*op.children[branch_idx + 1]) &&
+		                      PhysicalSubtreeIsRepeatable(branches[branch_idx].get(), non_repeatable_operators);
+		all_linear = all_linear && fusable[branch_idx];
+		emit_only[branch_idx] =
+		    fusable[branch_idx] && BranchOnlyEmits(context, branches[branch_idx].get(), op.selector_idx);
 	}
 	trampoline.merge_waves = all_linear;
+	// an emit-only branch's output never reaches another branch, so no consumer can
+	// observe how its input was partitioned into waves; merging them is sound even
+	// next to nonlinear branches (invocation counts stay unobservable through the
+	// volatility and repeatability gates above)
+	trampoline.branch_wave_merge.resize(branches.size());
+	for (idx_t branch_idx = 0; branch_idx < branches.size(); branch_idx++) {
+		trampoline.branch_wave_merge[branch_idx] = all_linear || emit_only[branch_idx];
+	}
 	return trampoline;
 }
 

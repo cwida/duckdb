@@ -190,3 +190,32 @@ WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
 SELECT count(*), sum(n) FROM t;
 ----
 4	20
+
+# an emit-only linear branch may merge its waves even when another branch is
+# nonlinear: its output never reaches a consumer that could observe boundaries
+query I rowsort
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT * FROM (VALUES (1, 1), (2, 10)) v(b, n))
+    BRANCH 1: (SELECT 3, n FROM t)
+    BRANCH 2: (SELECT 3, n FROM t)
+    BRANCH 3: (SELECT 0, sum(n)::INT FROM t)
+    BRANCH 4: (SELECT 0, n + 1000 FROM t)
+)
+SELECT n FROM t;
+----
+1
+10
+
+# the same program routing through the emit-only branch keeps bag semantics
+query I rowsort
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT * FROM (VALUES (1, 1), (2, 10)) v(b, n))
+    BRANCH 1: (SELECT 4, n FROM t)
+    BRANCH 2: (SELECT 4, n FROM t)
+    BRANCH 3: (SELECT 0, sum(n)::INT FROM t)
+    BRANCH 4: (SELECT 0, n + 1000 FROM t)
+)
+SELECT n FROM t;
+----
+1001
+1010
