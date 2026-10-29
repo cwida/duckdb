@@ -593,7 +593,7 @@ public:
 
 		// Asserting things are still sane here
 		if (!CanStore(0, 0)) {
-			throw InternalException("Error in bitpacking size calculation");
+			InternalException::Throw("Error in bitpacking size calculation");
 		}
 
 		if (unaligned_offset != metadata_offset) {
@@ -734,7 +734,7 @@ public:
 			D_ASSERT(!AtEnd());
 			D_ASSERT(width > 0);
 			if (!payload) {
-				throw InternalException("Bitpacking algorithm group has no payload");
+				InternalException::Throw("Bitpacking algorithm group has no payload");
 			}
 			auto algorithm_group_index = offset / BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE;
 			D_ASSERT(algorithm_group_index < algorithm_group_count);

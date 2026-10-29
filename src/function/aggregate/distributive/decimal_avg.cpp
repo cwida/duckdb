@@ -40,7 +40,7 @@ struct DecimalAvgOperation {
 	template <class INPUT, class STATE, class OP>
 	static void Operation(STATE &state, const INPUT &input, AggregateUnaryInput &) {
 		if (!Hugeint::TryAddInPlace(state.sum, hugeint_t(input))) {
-			throw OutOfRangeException("decimal_average: intermediate sum overflowed HUGEINT range");
+			OutOfRangeException::Throw("decimal_average: intermediate sum overflowed HUGEINT range");
 		}
 		state.count++;
 	}
@@ -55,7 +55,7 @@ struct DecimalAvgOperation {
 	template <class STATE, class OP>
 	static void Combine(const STATE &source, STATE &target, AggregateInputData &) {
 		if (!Hugeint::TryAddInPlace(target.sum, source.sum)) {
-			throw OutOfRangeException("decimal_average: intermediate sum overflowed HUGEINT range during combine");
+			OutOfRangeException::Throw("decimal_average: intermediate sum overflowed HUGEINT range during combine");
 		}
 		target.count += source.count;
 	}

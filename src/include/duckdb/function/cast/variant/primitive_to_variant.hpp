@@ -6,6 +6,8 @@
 namespace duckdb {
 namespace variant {
 
+[[noreturn]] void ThrowEnumIndexOutOfRange(idx_t index, idx_t size);
+
 namespace {
 
 struct EmptyConversionPayloadToVariant {};
@@ -19,7 +21,7 @@ public:
 public:
 	const string_t &GetString(idx_t index) const {
 		if (index >= size) {
-			throw InternalException("ENUM index %llu is out of range for an ENUM with %llu values", index, size);
+			ThrowEnumIndexOutOfRange(index, size);
 		}
 		return values[index];
 	}
@@ -73,7 +75,7 @@ void WriteData(data_ptr_t ptr, const string_t &val, uint32_t lengths[3], EmptyCo
 
 template <typename T>
 static void WriteData(data_ptr_t ptr, const T &val, uint32_t lengths[3], DecimalConversionPayloadToVariant &payload) {
-	throw InternalException("WriteData not implemented for this type");
+	InternalException::Throw("WriteData not implemented for this type");
 }
 template <>
 void WriteData(data_ptr_t ptr, const int16_t &val, uint32_t lengths[3], DecimalConversionPayloadToVariant &payload) {
@@ -104,7 +106,7 @@ void WriteData(data_ptr_t ptr, const hugeint_t &val, uint32_t lengths[3], Decima
 
 template <typename T>
 static void WriteData(data_ptr_t ptr, const T &val, uint32_t lengths[3], EnumConversionPayload &payload) {
-	throw InternalException("WriteData not implemented for this Enum physical type");
+	InternalException::Throw("WriteData not implemented for this Enum physical type");
 }
 template <>
 void WriteData(data_ptr_t ptr, const uint8_t &val, uint32_t lengths[3], EnumConversionPayload &payload) {
@@ -148,7 +150,7 @@ void GetValueSize(const string_t &val, uint32_t lengths[3], idx_t &lengths_size,
 template <typename T>
 static void GetValueSize(const T &val, uint32_t lengths[3], idx_t &lengths_size,
                          DecimalConversionPayloadToVariant &payload) {
-	throw InternalException("GetValueSize not implemented for this Decimal physical type");
+	InternalException::Throw("GetValueSize not implemented for this Decimal physical type");
 }
 template <>
 void GetValueSize(const int16_t &val, uint32_t lengths[3], idx_t &lengths_size,
@@ -187,7 +189,7 @@ void GetValueSize(const hugeint_t &val, uint32_t lengths[3], idx_t &lengths_size
 
 template <typename T>
 static void GetValueSize(const T &val, uint32_t lengths[3], idx_t &lengths_size, EnumConversionPayload &payload) {
-	throw InternalException("GetValueSize not implemented for this Enum physical type");
+	InternalException::Throw("GetValueSize not implemented for this Enum physical type");
 }
 template <>
 void GetValueSize(const uint8_t &val, uint32_t lengths[3], idx_t &lengths_size, EnumConversionPayload &payload) {
@@ -361,8 +363,7 @@ bool ConvertPrimitiveToVariant(ToVariantSourceData &source, ToVariantGlobalResul
 			return ConvertPrimitiveTemplated<WRITE_DATA, IGNORE_NULLS, VariantLogicalType::DECIMAL, hugeint_t>(
 			    source, result, count, selvec, values_index_selvec, payload, is_root);
 		default:
-			throw NotImplementedException("Can't convert DECIMAL value of physical type: %s",
-			                              EnumUtil::ToString(physical_type));
+			NotImplementedException::Throw("Can't convert DECIMAL value of physical type: %s", physical_type);
 		};
 	}
 	case LogicalTypeId::VARCHAR:
@@ -394,8 +395,7 @@ bool ConvertPrimitiveToVariant(ToVariantSourceData &source, ToVariantGlobalResul
 			return ConvertPrimitiveTemplated<WRITE_DATA, IGNORE_NULLS, VariantLogicalType::VARCHAR, uint32_t>(
 			    source, result, count, selvec, values_index_selvec, payload, is_root);
 		default:
-			throw NotImplementedException("ENUM conversion for PhysicalType (%s) not supported",
-			                              EnumUtil::ToString(physical_type));
+			NotImplementedException::Throw("ENUM conversion for PhysicalType (%s) not supported", physical_type);
 		}
 	}
 	case LogicalTypeId::BIGNUM:
@@ -405,7 +405,7 @@ bool ConvertPrimitiveToVariant(ToVariantSourceData &source, ToVariantGlobalResul
 		return ConvertPrimitiveTemplated<WRITE_DATA, IGNORE_NULLS, VariantLogicalType::BITSTRING, string_t>(
 		    source, result, count, selvec, values_index_selvec, empty_payload, is_root);
 	case LogicalTypeId::TYPE:
-		throw NotImplementedException("Cannot convert TYPE to VARIANT");
+		NotImplementedException::Throw("Cannot convert TYPE to VARIANT");
 	default:
 		throw NotImplementedException("Invalid LogicalType (%s) for ConvertToVariant",
 		                              EnumUtil::ToString(logical_type));

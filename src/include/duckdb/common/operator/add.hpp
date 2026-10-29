@@ -54,7 +54,7 @@ timestamp_t AddOperator::Operation(interval_t left, timestamp_t right);
 struct TryAddOperator {
 	template <class TA, class TB, class TR>
 	static inline bool Operation(TA left, TB right, TR &result) {
-		throw InternalException("Unimplemented type for TryAddOperator");
+		InternalException::Throw("Unimplemented type for TryAddOperator");
 	}
 };
 
@@ -99,7 +99,7 @@ struct AddOperatorOverflowCheck {
 struct TryDecimalAdd {
 	template <class TA, class TB, class TR>
 	static inline bool Operation(TA left, TB right, TR &result) {
-		throw InternalException("Unimplemented type for TryDecimalAdd");
+		InternalException::Throw("Unimplemented type for TryDecimalAdd");
 	}
 };
 

@@ -18,6 +18,10 @@
 namespace duckdb {
 namespace variant {
 
+void ThrowEnumIndexOutOfRange(idx_t index, idx_t size) {
+	throw InternalException("ENUM index %llu is out of range for an ENUM with %llu values", index, size);
+}
+
 void InitializeOffsets(DataChunk &offsets, idx_t count) {
 	auto keys = OffsetData::GetKeys(offsets);
 	auto children = OffsetData::GetChildren(offsets);
