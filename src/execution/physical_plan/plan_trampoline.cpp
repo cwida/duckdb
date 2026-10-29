@@ -209,6 +209,8 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalTrampoline &op) {
 	// placeholder the branch scans are planned against; the operator rebinds them per wave
 	auto working_table = make_shared_ptr<ColumnDataCollection>(context, op.types);
 	recursive_cte_tables[op.table_index] = working_table;
+	auto frontier_table = make_shared_ptr<ColumnDataCollection>(context, op.types);
+	trampoline_frontier_tables[op.table_index] = frontier_table;
 
 	auto &seed = CreatePlan(*op.children[0]);
 
@@ -226,6 +228,8 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalTrampoline &op) {
 	trampoline.non_repeatable_operators = non_repeatable_operators;
 	trampoline.branch_tee = op.branch_tee;
 	trampoline.branch_tee.resize(branches.size(), false);
+	trampoline.reads_frontier = op.reads_frontier;
+	trampoline.frontier_table = frontier_table;
 
 	// merging waves changes how often a branch is invoked, which is observable through
 	// volatile expressions and non-repeatable subplans, so those branches stay per-wave
@@ -270,6 +274,11 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalTrampoline &op) {
 				changed = true;
 			}
 		}
+	}
+	if (op.reads_frontier) {
+		// a readable frontier makes pending input observable, so every branch keeps
+		// per-wave identity within the lockstep rounds
+		std::fill(merge.begin(), merge.end(), false);
 	}
 	trampoline.branch_wave_merge = std::move(merge);
 	return trampoline;

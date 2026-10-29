@@ -132,17 +132,23 @@ LogicalPlanSQLExportResult LogicalCTERef::ToSQL(LogicalPlanSQLExportContext &exp
 	if (fields.HasError()) {
 		return LogicalPlanSQLExportResult::Failure(fields);
 	}
+	Identifier qualifier;
+	if (ref.is_recurring) {
+		qualifier = Identifier("recurring");
+	} else if (ref.is_frontier) {
+		qualifier = Identifier("frontier");
+	}
 	return LogicalPlanSQLExportResult::Success(
-	    {export_context.CreateNamedSource(*name, fields.GetValue(), ref.is_recurring), std::move(fields.GetValue())});
+	    {export_context.CreateNamedSource(*name, fields.GetValue(), qualifier), std::move(fields.GetValue())});
 }
 
 unique_ptr<SelectNode> LogicalPlanSQLExportContext::CreateNamedSource(const Identifier &name,
                                                                       const vector<LogicalPlanSQLExportField> &fields,
-                                                                      bool recurring) {
+                                                                      const Identifier &qualifier) {
 	auto table = make_uniq<BaseTableRef>();
 	table->SetTable(name);
-	if (recurring) {
-		table->SetQualifiedName(Identifier(), Identifier("recurring"), name);
+	if (!qualifier.empty()) {
+		table->SetQualifiedName(Identifier(), qualifier, name);
 	}
 	table->alias = NextRelationAlias();
 	auto select = make_uniq<SelectNode>();
@@ -178,7 +184,8 @@ LogicalPlanSQLExportResult LogicalRecursiveCTE::ExportSQLDefinition(LogicalPlanS
 	}
 	if ((references == 0 && recurring_references == 0) || (cte.ref_recurring && recurring_references == 0)) {
 		// Binding still needs a self reference when optimization removed the recursive scan.
-		auto empty = export_context.CreateNamedSource(name, fields.GetValue(), cte.ref_recurring);
+		auto empty = export_context.CreateNamedSource(name, fields.GetValue(),
+		                                              cte.ref_recurring ? Identifier("recurring") : Identifier());
 		empty->select_list.clear();
 		for (auto &type : cte.internal_types) {
 			auto value = LogicalPlanSQLExportHelpers::ExportTypedNull(type, path);

@@ -91,6 +91,8 @@ public:
 	unordered_map<TableIndex, shared_ptr<PipelineBroadcastExchange>> materialized_cte_exchanges;
 	//! Used to reference the recurring tables
 	unordered_map<TableIndex, shared_ptr<ColumnDataCollection>> recurring_cte_tables;
+	//! Placeholder collections for trampoline frontier scans, rebound per round
+	unordered_map<TableIndex, shared_ptr<ColumnDataCollection>> trampoline_frontier_tables;
 	//! Physical planning information for recursive CTE state references.
 	unordered_map<TableIndex, RecursiveCTEPlanningInfo> recursive_cte_planning;
 	//! Materialized CTE ids must be collected.

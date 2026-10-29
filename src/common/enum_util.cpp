@@ -5011,6 +5011,7 @@ const StringUtil::EnumStringLiteral *GetPhysicalOperatorTypeValues() {
 		{ static_cast<uint32_t>(PhysicalOperatorType::CHUNK_SCAN), "CHUNK_SCAN" },
 		{ static_cast<uint32_t>(PhysicalOperatorType::RECURSIVE_CTE_SCAN), "RECURSIVE_CTE_SCAN" },
 		{ static_cast<uint32_t>(PhysicalOperatorType::RECURSIVE_RECURRING_CTE_SCAN), "RECURSIVE_RECURRING_CTE_SCAN" },
+		{ static_cast<uint32_t>(PhysicalOperatorType::TRAMPOLINE_FRONTIER_SCAN), "TRAMPOLINE_FRONTIER_SCAN" },
 		{ static_cast<uint32_t>(PhysicalOperatorType::CTE_SCAN), "CTE_SCAN" },
 		{ static_cast<uint32_t>(PhysicalOperatorType::DELIM_SCAN), "DELIM_SCAN" },
 		{ static_cast<uint32_t>(PhysicalOperatorType::EXPRESSION_SCAN), "EXPRESSION_SCAN" },
@@ -5080,12 +5081,12 @@ const StringUtil::EnumStringLiteral *GetPhysicalOperatorTypeValues() {
 
 template<>
 const char* EnumUtil::ToChars<PhysicalOperatorType>(PhysicalOperatorType value) {
-	return StringUtil::EnumToString(GetPhysicalOperatorTypeValues(), 91, "PhysicalOperatorType", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetPhysicalOperatorTypeValues(), 92, "PhysicalOperatorType", static_cast<uint32_t>(value));
 }
 
 template<>
 PhysicalOperatorType EnumUtil::FromString<PhysicalOperatorType>(const char *value) {
-	return static_cast<PhysicalOperatorType>(StringUtil::StringToEnum(GetPhysicalOperatorTypeValues(), 91, "PhysicalOperatorType", value));
+	return static_cast<PhysicalOperatorType>(StringUtil::StringToEnum(GetPhysicalOperatorTypeValues(), 92, "PhysicalOperatorType", value));
 }
 
 const StringUtil::EnumStringLiteral *GetPhysicalTableScanExecutionStrategyValues() {

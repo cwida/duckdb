@@ -33,6 +33,9 @@ public:
 	idx_t selector_idx;
 	//! Per-branch TEE flag: every row routed to the branch is also emitted
 	vector<bool> branch_tee;
+	//! Whether any branch reads frontier.<ctename>; decided at binding and kept
+	//! through optimization so pruning a reference cannot change the round contract
+	bool reads_frontier = false;
 
 public:
 	InsertionOrderPreservingMap<string> ParamsToString() const override;

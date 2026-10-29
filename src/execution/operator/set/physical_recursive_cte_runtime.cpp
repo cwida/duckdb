@@ -487,7 +487,8 @@ static bool ContainsVisibleRecursiveScanInternal(const PhysicalOperator &op, Tab
 		return false;
 	}
 	if (op.type == PhysicalOperatorType::RECURSIVE_CTE_SCAN ||
-	    op.type == PhysicalOperatorType::RECURSIVE_RECURRING_CTE_SCAN) {
+	    op.type == PhysicalOperatorType::RECURSIVE_RECURRING_CTE_SCAN ||
+	    op.type == PhysicalOperatorType::TRAMPOLINE_FRONTIER_SCAN) {
 		auto &scan = op.Cast<PhysicalColumnDataScan>();
 		if (scan.cte_index == cte_index) {
 			return true;
@@ -524,7 +525,8 @@ static void CountDirectRecursiveReferences(const PhysicalOperator &op, TableInde
 		return;
 	}
 	if (op.type != PhysicalOperatorType::RECURSIVE_CTE_SCAN &&
-	    op.type != PhysicalOperatorType::RECURSIVE_RECURRING_CTE_SCAN) {
+	    op.type != PhysicalOperatorType::RECURSIVE_RECURRING_CTE_SCAN &&
+	    op.type != PhysicalOperatorType::TRAMPOLINE_FRONTIER_SCAN) {
 		return;
 	}
 	auto &scan = op.Cast<PhysicalColumnDataScan>();
@@ -534,6 +536,7 @@ static void CountDirectRecursiveReferences(const PhysicalOperator &op, TableInde
 	if (op.type == PhysicalOperatorType::RECURSIVE_CTE_SCAN) {
 		references.frontier_scans++;
 	} else {
+		// the trampoline's round snapshot changes between rounds like the recurring table
 		references.recurring_scans++;
 	}
 }

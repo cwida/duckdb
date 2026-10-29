@@ -124,6 +124,11 @@ public:
 		for (idx_t branch_idx = 0; branch_idx <= branch_count; branch_idx++) {
 			pending.push_back(make_uniq<TrampolineWaveQueue>());
 		}
+		if (op.reads_frontier) {
+			for (idx_t branch_idx = 0; branch_idx <= branch_count; branch_idx++) {
+				next_pending.push_back(make_uniq<TrampolineWaveQueue>());
+			}
+		}
 	}
 
 	const PhysicalTrampoline &op;
@@ -144,6 +149,10 @@ public:
 	vector<unique_ptr<ColumnDataCollection>> staged;
 	//! Pending waves per branch; index 0 is unused
 	vector<unique_ptr<TrampolineWaveQueue>> pending;
+	//! Waves produced during the current round, forming the next round (rounds only)
+	vector<unique_ptr<TrampolineWaveQueue>> next_pending;
+	//! Frozen frontier snapshot of the current round: the bag union of its input waves
+	unique_ptr<ColumnDataCollection> frontier_current;
 	//! Emitted rows that have not yet been handed to the consumer
 	unique_ptr<ColumnDataCollection> emit_backlog;
 	ColumnDataAppendState backlog_append;
@@ -171,6 +180,7 @@ public:
 	void Recycle(unique_ptr<ColumnDataCollection> collection);
 	void CloseExecution();
 	bool NextWave(idx_t &branch_idx, unique_ptr<ColumnDataCollection> &wave);
+	bool StartRound();
 	SourceResultType GetData(ExecutionContext &context, DataChunk &chunk, TrampolineGlobalSourceState &source_state);
 };
 
@@ -328,7 +338,7 @@ void TrampolineState::CloseExecution() {
 			branch_staged.reset();
 			continue;
 		}
-		auto &queue = pending[branch_idx]->waves;
+		auto &queue = op.reads_frontier ? next_pending[branch_idx]->waves : pending[branch_idx]->waves;
 		if (op.branch_wave_merge[branch_idx - 1] && !queue.empty()) {
 			queue.back()->Combine(*branch_staged);
 			branch_staged.reset();
@@ -381,6 +391,31 @@ bool TrampolineState::NextWave(idx_t &branch_idx, unique_ptr<ColumnDataCollectio
 	return false;
 }
 
+//! Seals the next generation of waves into the current one and freezes the round's
+//! frontier snapshot: the bag union of every input wave, built before any of them runs
+bool TrampolineState::StartRound() {
+	const auto branch_count = op.BranchCount();
+	bool any_waves = false;
+	for (idx_t branch_idx = 1; branch_idx <= branch_count; branch_idx++) {
+		any_waves = any_waves || !next_pending[branch_idx]->waves.empty();
+	}
+	if (!any_waves) {
+		return false;
+	}
+	frontier_current = make_uniq<ColumnDataCollection>(context, op.types);
+	ColumnDataAppendState frontier_append;
+	frontier_current->InitializeAppend(frontier_append);
+	for (idx_t branch_idx = 1; branch_idx <= branch_count; branch_idx++) {
+		for (auto &wave : next_pending[branch_idx]->waves) {
+			for (auto &chunk : wave->Chunks()) {
+				frontier_current->Append(frontier_append, chunk);
+			}
+		}
+		std::swap(pending[branch_idx], next_pending[branch_idx]);
+	}
+	return true;
+}
+
 SourceResultType TrampolineState::GetData(ExecutionContext &execution_context, DataChunk &chunk,
                                           TrampolineGlobalSourceState &source_state) {
 	if (!initialized) {
@@ -390,6 +425,14 @@ SourceResultType TrampolineState::GetData(ExecutionContext &execution_context, D
 		for (idx_t candidate = 1; candidate <= op.BranchCount(); candidate++) {
 			for (auto &wave : pending[candidate]->waves) {
 				seed_rows += wave->Count();
+			}
+		}
+		if (op.reads_frontier) {
+			StartRound();
+			for (idx_t candidate = 1; candidate <= op.BranchCount(); candidate++) {
+				for (auto &wave : pending[candidate]->waves) {
+					seed_rows += wave->Count();
+				}
 			}
 		}
 		source_state.seed_rows.store(seed_rows, std::memory_order_relaxed);
@@ -412,6 +455,7 @@ SourceResultType TrampolineState::GetData(ExecutionContext &execution_context, D
 			bool waves_pending = false;
 			for (idx_t candidate = 1; candidate <= op.BranchCount(); candidate++) {
 				waves_pending = waves_pending || !pending[candidate]->waves.empty();
+				waves_pending = waves_pending || (op.reads_frontier && !next_pending[candidate]->waves.empty());
 			}
 			const auto backlog_rows = emit_backlog->Count();
 			if (backlog_rows >= STANDARD_VECTOR_SIZE || !waves_pending || backlog_rows == last_backlog_rows) {
@@ -428,13 +472,23 @@ SourceResultType TrampolineState::GetData(ExecutionContext &execution_context, D
 		idx_t branch_idx;
 		unique_ptr<ColumnDataCollection> wave;
 		if (!NextWave(branch_idx, wave)) {
-			source_state.finished.store(true, std::memory_order_relaxed);
-			return SourceResultType::FINISHED;
+			if (!op.reads_frontier || !StartRound()) {
+				source_state.finished.store(true, std::memory_order_relaxed);
+				return SourceResultType::FINISHED;
+			}
+			if (!NextWave(branch_idx, wave)) {
+				throw InternalException("Trampoline round started without a schedulable wave");
+			}
 		}
 		context.InterruptCheck();
 		current_input = std::move(wave);
 		for (auto &scan_ref : op.branch_recursive_scans[branch_idx - 1]) {
 			scan_ref.get().collection = *current_input;
+		}
+		if (op.reads_frontier) {
+			for (auto &scan_ref : op.branch_frontier_scans[branch_idx - 1]) {
+				scan_ref.get().collection = *frontier_current;
+			}
 		}
 		op.ExecuteBranchPipelines(execution_context, branch_idx);
 		Recycle(std::move(current_input));
@@ -704,6 +758,19 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 //===--------------------------------------------------------------------===//
 // Pipeline construction
 //===--------------------------------------------------------------------===//
+static void GatherFrontierScans(PhysicalOperator &op, TableIndex cte_index,
+                                vector<reference<PhysicalColumnDataScan>> &frontier_scans) {
+	if (op.type == PhysicalOperatorType::TRAMPOLINE_FRONTIER_SCAN) {
+		auto &scan = op.Cast<PhysicalColumnDataScan>();
+		if (scan.cte_index == cte_index) {
+			frontier_scans.push_back(scan);
+		}
+	}
+	for (auto &child : op.children) {
+		GatherFrontierScans(child.get(), cte_index, frontier_scans);
+	}
+}
+
 static void GatherTrampolineCTEScans(const PhysicalOperator &op, vector<const_reference<PhysicalOperator>> &cte_scans) {
 	if (op.type == PhysicalOperatorType::DELIM_SCAN || op.type == PhysicalOperatorType::CTE_SCAN) {
 		cte_scans.push_back(op);
@@ -718,6 +785,7 @@ void PhysicalTrampoline::BuildPipelines(Pipeline &current, MetaPipeline &meta_pi
 	sink_state.reset();
 	branch_meta_pipelines.clear();
 	branch_recursive_scans.clear();
+	branch_frontier_scans.clear();
 	branch_pipelines.clear();
 	{
 		D_ASSERT(shared_executor_pool);
@@ -744,6 +812,10 @@ void PhysicalTrampoline::BuildPipelines(Pipeline &current, MetaPipeline &meta_pi
 		vector<reference<PhysicalColumnDataScan>> recursive_scans;
 		GatherRecursiveScans(children[branch_idx], table_index, recursive_scans);
 		branch_recursive_scans.push_back(std::move(recursive_scans));
+
+		vector<reference<PhysicalColumnDataScan>> frontier_scans;
+		GatherFrontierScans(children[branch_idx], table_index, frontier_scans);
+		branch_frontier_scans.push_back(std::move(frontier_scans));
 
 		vector<const_reference<PhysicalOperator>> cte_scan_ops;
 		GatherTrampolineCTEScans(children[branch_idx], cte_scan_ops);

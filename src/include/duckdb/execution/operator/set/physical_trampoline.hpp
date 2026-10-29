@@ -79,6 +79,11 @@ public:
 	vector<bool> branch_wave_merge;
 	//! Per branch, whether every row routed to it is also emitted (BRANCH n TEE)
 	vector<bool> branch_tee;
+	//! Whether any branch reads frontier.<ctename>: execution switches to lockstep
+	//! rounds with a frozen frontier snapshot per round
+	bool reads_frontier = false;
+	//! Placeholder collection the frontier scans are planned against
+	shared_ptr<ColumnDataCollection> frontier_table;
 	//! Operators whose results cannot be retained across waves
 	reference_set_t<const PhysicalOperator> non_repeatable_operators;
 
@@ -125,6 +130,8 @@ private:
 private:
 	//! Recursive scans of each branch plan, rebound to the current wave before execution
 	vector<vector<reference<PhysicalColumnDataScan>>> branch_recursive_scans;
+	//! Frontier scans per branch, rebound to the frozen snapshot each round
+	vector<vector<reference<PhysicalColumnDataScan>>> branch_frontier_scans;
 	//! Precomputed pipelines, schedules and sink-reset lists per branch
 	vector<TrampolineBranchPipelines> branch_pipelines;
 	mutable shared_ptr<RecursiveExecutorPool> shared_executor_pool;

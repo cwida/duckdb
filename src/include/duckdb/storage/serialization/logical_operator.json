@@ -494,6 +494,11 @@
         "id": 205,
         "name": "is_recurring",
         "type": "bool"
+      },
+      {
+        "id": 206,
+        "name": "is_frontier",
+        "type": "bool"
       }
     ],
     "constructor": [
@@ -728,6 +733,11 @@
         "id": 204,
         "name": "branch_tee",
         "type": "vector<bool>"
+      },
+      {
+        "id": 205,
+        "name": "reads_frontier",
+        "type": "bool"
       }
     ]
   },

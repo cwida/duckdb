@@ -1,8 +1,28 @@
 #include "duckdb/parser/query_node/trampoline_cte_node.hpp"
 #include "duckdb/planner/binder.hpp"
+#include "duckdb/planner/operator/logical_cteref.hpp"
 #include "duckdb/planner/operator/logical_trampoline.hpp"
 
 namespace duckdb {
+
+//! Finds frontier references to the given trampoline in a bound branch plan. A
+//! reference below a nested trampoline would cross round scopes and is rejected.
+static void DetectFrontierReferences(const LogicalOperator &op, TableIndex cte_index, idx_t nested_depth,
+                                     bool &reads_frontier) {
+	if (op.type == LogicalOperatorType::LOGICAL_CTE_REF) {
+		auto &ref = op.Cast<LogicalCTERef>();
+		if (ref.is_frontier && ref.cte_index == cte_index) {
+			if (nested_depth > 0) {
+				throw NotImplementedException("frontier references across nested TRAMPOLINE CTEs are not supported");
+			}
+			reads_frontier = true;
+		}
+	}
+	const auto next_depth = nested_depth + (op.type == LogicalOperatorType::LOGICAL_TRAMPOLINE ? 1 : 0);
+	for (auto &child : op.children) {
+		DetectFrontierReferences(*child, cte_index, next_depth, reads_frontier);
+	}
+}
 
 BoundStatement Binder::BindNode(TrampolineCTENode &statement) {
 	D_ASSERT(statement.seed);
@@ -12,6 +32,16 @@ BoundStatement Binder::BindNode(TrampolineCTENode &statement) {
 	auto setop_index = GenerateTableIndex();
 
 	auto seed_binder = Binder::CreateBinder(context, this);
+	{
+		// keep frontier.<name> in scope during the seed so it cannot resolve to an
+		// outer trampoline's frontier, but reject any reference: the frontier does
+		// not exist before the first round
+		auto guard = make_uniq<CTEBinding>(
+		    BindingAlias(Identifier("frontier"), ctename), vector<LogicalType> {LogicalType::INTEGER},
+		    vector<Identifier> {Identifier("frontier_guard")}, setop_index, CTEType::CAN_BE_REFERENCED);
+		guard->frontier_seed_guard = true;
+		seed_binder->bind_context.AddCTEBinding(std::move(guard));
+	}
 	auto seed = seed_binder->BindNode(*statement.seed);
 
 	BoundStatement result;
@@ -66,6 +96,8 @@ BoundStatement Binder::BindNode(TrampolineCTENode &statement) {
 	for (idx_t branch_idx = 0; branch_idx < statement.branches.size(); branch_idx++) {
 		auto branch_binder = Binder::CreateBinder(context, this);
 		branch_binder->bind_context.AddCTEBinding(setop_index, cte_alias, result.names, result.types);
+		branch_binder->bind_context.AddCTEBinding(setop_index, BindingAlias(Identifier("frontier"), ctename),
+		                                          result.names, result.types);
 		auto branch = branch_binder->BindNode(*statement.branches[branch_idx]);
 		if (!branch_binder->correlated_columns.empty()) {
 			throw NotImplementedException("correlated TRAMPOLINE CTEs are not supported yet");
@@ -86,6 +118,9 @@ BoundStatement Binder::BindNode(TrampolineCTENode &statement) {
 	                                         std::move(seed_plan), std::move(branch_plans));
 	root->branch_tee = statement.branch_tee;
 	root->branch_tee.resize(statement.branches.size(), false);
+	for (idx_t branch_idx = 1; branch_idx < root->children.size(); branch_idx++) {
+		DetectFrontierReferences(*root->children[branch_idx], setop_index, 0, root->reads_frontier);
+	}
 	result.plan = std::move(root);
 	return result;
 }

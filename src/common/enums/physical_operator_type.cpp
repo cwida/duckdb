@@ -117,6 +117,8 @@ string PhysicalOperatorToString(PhysicalOperatorType type) {
 		return "REC_CTE_SCAN";
 	case PhysicalOperatorType::RECURSIVE_RECURRING_CTE_SCAN:
 		return "REC_REC_CTE_SCAN";
+	case PhysicalOperatorType::TRAMPOLINE_FRONTIER_SCAN:
+		return "FRONTIER_SCAN";
 	case PhysicalOperatorType::CTE_SCAN:
 		return "CTE_SCAN";
 	case PhysicalOperatorType::EXPRESSION_SCAN:

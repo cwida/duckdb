@@ -313,6 +313,7 @@ static bool BuildSideHasMultipleSources(const PhysicalOperator &op) {
 	case PhysicalOperatorType::CTE_SCAN:
 	case PhysicalOperatorType::RECURSIVE_CTE_SCAN:
 	case PhysicalOperatorType::RECURSIVE_RECURRING_CTE_SCAN:
+	case PhysicalOperatorType::TRAMPOLINE_FRONTIER_SCAN:
 		// CTE producers are not children of their scans and may forward different dictionaries.
 		return true;
 	case PhysicalOperatorType::LEFT_DELIM_JOIN:

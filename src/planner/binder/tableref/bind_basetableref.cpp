@@ -166,11 +166,18 @@ BoundStatement Binder::Bind(BaseTableRef &ref) {
 		bind_context.AddGenericBinding(index, alias, names, ctebinding->GetColumnTypes());
 
 		bool is_recurring = ref.GetQualifiedName().Schema() == "recurring";
+		bool is_frontier = ref.GetQualifiedName().Schema() == "frontier";
+		if (is_frontier && ctebinding->frontier_seed_guard) {
+			throw BinderException(error_context, "frontier.%s cannot be referenced in the seed of TRAMPOLINE CTE %s",
+			                      ref.Table().GetIdentifierName(), ref.Table().GetIdentifierName());
+		}
 
 		BoundStatement result;
 		result.types = ctebinding->GetColumnTypes();
 		result.names = names;
-		result.plan = make_uniq<LogicalCTERef>(index, ctebinding->GetIndex(), result.types, names, is_recurring);
+		auto cteref = make_uniq<LogicalCTERef>(index, ctebinding->GetIndex(), result.types, names, is_recurring);
+		cteref->is_frontier = is_frontier;
+		result.plan = std::move(cteref);
 		return result;
 	}
 
