@@ -154,6 +154,9 @@ public:
 
 	//! Returns the virtual columns for this table
 	virtual virtual_column_map_t GetVirtualColumns() const;
+	//! Returns the virtual columns that DELETE ... RETURNING produces after the table columns. Defaults to
+	//! GetVirtualColumns(); tables whose delete cannot produce every scan virtual column override this.
+	virtual virtual_column_map_t GetDeleteReturningVirtualColumns() const;
 
 	virtual vector<column_t> GetRowIdColumns() const;
 

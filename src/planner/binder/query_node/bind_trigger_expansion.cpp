@@ -283,7 +283,7 @@ static Identifier GetReturningAlias(const QueryNode &node) {
 // Virtual columns exposed to RETURNING — only DELETE, mirroring the no-trigger path.
 static virtual_column_map_t ReturningVirtualColumns(const QueryNode &node, const TableCatalogEntry &table) {
 	if (node.type == QueryNodeType::DELETE_QUERY_NODE) {
-		return table.GetVirtualColumns();
+		return table.GetDeleteReturningVirtualColumns();
 	}
 	return virtual_column_map_t();
 }
