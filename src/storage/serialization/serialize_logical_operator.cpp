@@ -342,9 +342,7 @@ void LogicalCTERef::Serialize(Serializer &serializer) const {
 	serializer.WritePropertyWithDefault<vector<Identifier>>(203, "bound_columns", bound_columns);
 	/* [Deleted] (CTEMaterialize) "materialized_cte" */
 	serializer.WritePropertyWithDefault<bool>(205, "is_recurring", is_recurring);
-	if (serializer.ShouldSerialize(StorageVersion::LATEST)) {
-		serializer.WritePropertyWithDefault<bool>(206, "is_frontier", is_frontier);
-	}
+	serializer.WritePropertyWithDefault<bool>(206, "is_frontier", is_frontier);
 }
 
 unique_ptr<LogicalOperator> LogicalCTERef::Deserialize(Deserializer &deserializer) {

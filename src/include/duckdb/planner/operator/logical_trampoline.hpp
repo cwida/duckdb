@@ -60,6 +60,10 @@ public:
 		return children.size() - 1;
 	}
 
+	//! Whether grouping the type's physical values implements SQL DISTINCT equality
+	//! (no effective collation at any nesting level); admission eligibility uses this
+	static bool TypeUsesPhysicalDistinctEquality(ClientContext &context, const LogicalType &type);
+
 private:
 	friend class LogicalPlanSQLExportContext;
 	LogicalPlanVerificationResult<LogicalPlanSQLExportRelation>

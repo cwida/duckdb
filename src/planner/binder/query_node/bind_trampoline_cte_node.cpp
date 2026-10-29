@@ -6,39 +6,6 @@
 
 namespace duckdb {
 
-//! Whether grouping the type's physical values implements SQL DISTINCT equality:
-//! any effective collation, explicit or from the default-collation setting, at any
-//! nesting level makes SQL equality coarser than physical equality.
-static bool TypeUsesPhysicalDistinctEquality(ClientContext &context, const LogicalType &type) {
-	switch (type.id()) {
-	case LogicalTypeId::VARCHAR: {
-		auto collation = StringType::GetCollation(type);
-		if (collation.empty()) {
-			collation = Settings::Get<DefaultCollationSetting>(context);
-		}
-		collation = StringUtil::Lower(collation);
-		return collation.empty() || collation == "binary" || collation == "c" || collation == "posix";
-	}
-	case LogicalTypeId::STRUCT:
-	case LogicalTypeId::TUPLE:
-	case LogicalTypeId::UNION: {
-		for (auto &entry : StructType::GetChildTypes(type)) {
-			if (!TypeUsesPhysicalDistinctEquality(context, entry.second)) {
-				return false;
-			}
-		}
-		return true;
-	}
-	case LogicalTypeId::LIST:
-	case LogicalTypeId::MAP:
-		return TypeUsesPhysicalDistinctEquality(context, ListType::GetChildType(type));
-	case LogicalTypeId::ARRAY:
-		return TypeUsesPhysicalDistinctEquality(context, ArrayType::GetChildType(type));
-	default:
-		return true;
-	}
-}
-
 //! Finds frontier references to the given trampoline in a bound branch plan. A
 //! reference below a nested trampoline would cross round scopes and is rejected.
 static void DetectFrontierReferences(const LogicalOperator &op, TableIndex cte_index, idx_t nested_depth,
@@ -162,7 +129,7 @@ BoundStatement Binder::BindNode(TrampolineCTENode &statement) {
 	if (wants_admission) {
 		// admission hashes physical values; collation-aware equality is not wired up
 		for (auto &type : result.types) {
-			if (!TypeUsesPhysicalDistinctEquality(context, type)) {
+			if (!LogicalTrampoline::TypeUsesPhysicalDistinctEquality(context, type)) {
 				throw NotImplementedException(
 				    "DISTINCT admission on a TRAMPOLINE CTE with collated columns is not supported");
 			}

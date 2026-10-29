@@ -1,6 +1,7 @@
 #include "duckdb/planner/operator/logical_trampoline.hpp"
 
 #include "duckdb/main/config.hpp"
+#include "duckdb/main/settings.hpp"
 
 namespace duckdb {
 
@@ -40,6 +41,36 @@ string LogicalTrampoline::GetName() const {
 	}
 #endif
 	return LogicalOperator::GetName();
+}
+
+bool LogicalTrampoline::TypeUsesPhysicalDistinctEquality(ClientContext &context, const LogicalType &type) {
+	switch (type.id()) {
+	case LogicalTypeId::VARCHAR: {
+		auto collation = StringType::GetCollation(type);
+		if (collation.empty()) {
+			collation = Settings::Get<DefaultCollationSetting>(context);
+		}
+		collation = StringUtil::Lower(collation);
+		return collation.empty() || collation == "binary" || collation == "c" || collation == "posix";
+	}
+	case LogicalTypeId::STRUCT:
+	case LogicalTypeId::TUPLE:
+	case LogicalTypeId::UNION: {
+		for (auto &entry : StructType::GetChildTypes(type)) {
+			if (!TypeUsesPhysicalDistinctEquality(context, entry.second)) {
+				return false;
+			}
+		}
+		return true;
+	}
+	case LogicalTypeId::LIST:
+	case LogicalTypeId::MAP:
+		return TypeUsesPhysicalDistinctEquality(context, ListType::GetChildType(type));
+	case LogicalTypeId::ARRAY:
+		return TypeUsesPhysicalDistinctEquality(context, ArrayType::GetChildType(type));
+	default:
+		return true;
+	}
 }
 
 void LogicalTrampoline::ResolveTypes() {

@@ -1618,48 +1618,122 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownCTE(unique_
 
 namespace {
 
-//! Whether the subtree reads the trampoline's current wave (frontier reads are
-//! round state, not the wave)
-bool ReadsTrampolineWave(const LogicalOperator &op, TableIndex cte_index) {
-	if (op.type == LogicalOperatorType::LOGICAL_CTE_REF) {
-		auto &ref = op.Cast<LogicalCTERef>();
-		if (ref.cte_index == cte_index && !ref.is_frontier) {
-			return true;
-		}
+//! Wave-dependency analysis for correlated trampoline branches. ReadsWave answers
+//! whether a subtree's rows can only exist when the branch's current wave
+//! contributed them; materialized CTE aliases whose definitions read the wave
+//! count as wave reads (frontier references are round state, not the wave).
+struct TrampolineWaveTaint {
+	explicit TrampolineWaveTaint(TableIndex cte_index) : cte_index(cte_index) {
 	}
-	for (auto &child : op.children) {
-		if (ReadsTrampolineWave(*child, cte_index)) {
-			return true;
+
+	TableIndex cte_index;
+	unordered_set<idx_t> tainted_ctes;
+
+	//! Walks the whole branch once, recording tainted CTE aliases (definitions
+	//! precede their references), and returns whether the subtree reads the wave
+	bool Prime(const LogicalOperator &op) {
+		if (op.type == LogicalOperatorType::LOGICAL_CTE_REF) {
+			auto &ref = op.Cast<LogicalCTERef>();
+			if (ref.is_frontier) {
+				return false;
+			}
+			return ref.cte_index == cte_index || tainted_ctes.count(ref.cte_index.index) > 0;
 		}
+		if (op.type == LogicalOperatorType::LOGICAL_MATERIALIZED_CTE) {
+			auto &cte = op.Cast<LogicalCTE>();
+			if (Prime(*op.children[0])) {
+				tainted_ctes.insert(cte.table_index.index);
+			}
+			// the operator's output is its consumer side
+			return Prime(*op.children[1]);
+		}
+		bool reads = false;
+		for (auto &child : op.children) {
+			reads = Prime(*child) || reads;
+		}
+		return reads;
 	}
-	return false;
-}
+
+	bool ReadsWave(const LogicalOperator &op) const {
+		if (op.type == LogicalOperatorType::LOGICAL_CTE_REF) {
+			auto &ref = op.Cast<LogicalCTERef>();
+			if (ref.is_frontier) {
+				return false;
+			}
+			if (ref.cte_index == cte_index || tainted_ctes.count(ref.cte_index.index) > 0) {
+				return true;
+			}
+		}
+		for (auto &child : op.children) {
+			if (ReadsWave(*child)) {
+				return true;
+			}
+		}
+		return false;
+	}
+};
 
 //! v1 rejection of branch shapes whose per-domain results exist independently of
 //! their wave: supporting them needs an active-domain contract (one invocation per
-//! domain present in the wave), which decorrelation's empty-aggregate recovery and
+//! domain present in the wave), which decorrelation's empty-aggregate recovery,
+//! empty-preserving joins against domain-attached independent inputs, and
 //! independent-subtree domain attachment would otherwise fabricate.
-void RejectDomainFabricatingBranch(const LogicalOperator &op, TableIndex cte_index, idx_t branch_number) {
+void RejectDomainFabricatingBranch(const LogicalOperator &op, const TrampolineWaveTaint &taint, idx_t branch_number) {
 	if (op.type == LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY) {
 		auto &aggregate = op.Cast<LogicalAggregate>();
-		if (aggregate.groups.empty() && ReadsTrampolineWave(op, cte_index)) {
-			throw NotImplementedException(
-			    "correlated TRAMPOLINE CTEs do not support ungrouped aggregates over the wave in BRANCH %llu yet",
-			    branch_number);
+		bool has_empty_set = aggregate.groups.empty();
+		for (auto &set : aggregate.grouping_sets) {
+			has_empty_set = has_empty_set || set.empty();
+		}
+		if (has_empty_set && taint.ReadsWave(op)) {
+			throw NotImplementedException("correlated TRAMPOLINE CTEs do not support ungrouped aggregates (or empty "
+			                              "grouping sets) over the wave in BRANCH %llu yet",
+			                              branch_number);
 		}
 	}
 	if (op.type == LogicalOperatorType::LOGICAL_UNION || op.type == LogicalOperatorType::LOGICAL_EXCEPT ||
 	    op.type == LogicalOperatorType::LOGICAL_INTERSECT) {
 		for (auto &child : op.children) {
-			if (!ReadsTrampolineWave(*child, cte_index)) {
+			if (!taint.ReadsWave(*child)) {
 				throw NotImplementedException("correlated TRAMPOLINE CTEs do not support set-operation arms "
 				                              "independent of the wave in BRANCH %llu yet",
 				                              branch_number);
 			}
 		}
 	}
+	if (op.type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN || op.type == LogicalOperatorType::LOGICAL_ANY_JOIN ||
+	    op.type == LogicalOperatorType::LOGICAL_ASOF_JOIN || op.type == LogicalOperatorType::LOGICAL_DEPENDENT_JOIN) {
+		auto &join = op.Cast<LogicalJoin>();
+		bool need_left = false;
+		bool need_right = false;
+		switch (join.join_type) {
+		case JoinType::LEFT:
+		case JoinType::ANTI:
+		case JoinType::MARK:
+		case JoinType::SINGLE:
+			need_left = true;
+			break;
+		case JoinType::RIGHT:
+		case JoinType::RIGHT_ANTI:
+			need_right = true;
+			break;
+		case JoinType::OUTER:
+			need_left = true;
+			need_right = true;
+			break;
+		default:
+			// INNER, SEMI, RIGHT_SEMI: output requires a match against the other
+			// side, and domain equality scopes the match
+			break;
+		}
+		if ((need_left && !taint.ReadsWave(*op.children[0])) || (need_right && !taint.ReadsWave(*op.children[1]))) {
+			throw NotImplementedException("correlated TRAMPOLINE CTEs do not support row-preserving join sides "
+			                              "independent of the wave in BRANCH %llu yet",
+			                              branch_number);
+		}
+	}
 	for (auto &child : op.children) {
-		RejectDomainFabricatingBranch(*child, cte_index, branch_number);
+		RejectDomainFabricatingBranch(*child, taint, branch_number);
 	}
 }
 
@@ -1670,12 +1744,13 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownTrampoline(
                                                                                 vector<ColumnBinding> state) {
 	auto &trampoline = plan->Cast<LogicalTrampoline>();
 	for (idx_t branch_idx = 1; branch_idx < plan->children.size(); branch_idx++) {
-		if (!ReadsTrampolineWave(*plan->children[branch_idx], trampoline.table_index)) {
+		TrampolineWaveTaint taint(trampoline.table_index);
+		if (!taint.Prime(*plan->children[branch_idx])) {
 			throw NotImplementedException(
 			    "correlated TRAMPOLINE CTEs require every branch to read the current wave (BRANCH %llu does not)",
 			    branch_idx);
 		}
-		RejectDomainFabricatingBranch(*plan->children[branch_idx], trampoline.table_index, branch_idx);
+		RejectDomainFabricatingBranch(*plan->children[branch_idx], taint, branch_idx);
 	}
 	bool wants_admission = trampoline.emit_distinct;
 	for (auto distinct : trampoline.branch_distinct) {
@@ -1684,7 +1759,7 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownTrampoline(
 	if (wants_admission) {
 		// the correlation domain joins the admission identity; its equality must be physical
 		for (auto &corr : correlated_columns) {
-			if (corr.type.id() == LogicalTypeId::VARCHAR && !StringType::GetCollation(corr.type).empty()) {
+			if (!LogicalTrampoline::TypeUsesPhysicalDistinctEquality(binder.context, corr.type)) {
 				throw NotImplementedException(
 				    "DISTINCT admission on a correlated TRAMPOLINE CTE with collated outer columns is not supported");
 			}

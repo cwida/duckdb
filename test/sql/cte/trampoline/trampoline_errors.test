@@ -152,7 +152,7 @@ SELECT * FROM (VALUES (1), (2)) v(x), LATERAL (
     SELECT n FROM t
 ) sq;
 ----
-<REGEX>:Not implemented Error.*ungrouped aggregates over the wave.*
+<REGEX>:Not implemented Error.*ungrouped aggregates.*
 
 # materialization hints are rejected for trampoline CTEs
 statement error

@@ -216,7 +216,7 @@ LATERAL (
 1	1
 2	2
 
-# Rejected shapes keep clear errors: ungrouped aggregates over the wave,
+# Rejected shapes keep clear errors: ungrouped aggregates,
 # set-operation arms independent of the wave, branches that never read the wave,
 # and collated outer keys under admission.
 statement error
@@ -227,7 +227,7 @@ SELECT * FROM (VALUES (1)) o(k), LATERAL (
 	) SELECT n FROM t
 ) q;
 ----
-<REGEX>:Not implemented Error.*ungrouped aggregates over the wave.*
+<REGEX>:Not implemented Error.*ungrouped aggregates.*
 
 statement error
 SELECT * FROM (VALUES (1)) o(k), LATERAL (
@@ -284,3 +284,91 @@ SELECT * FROM (VALUES ('A'), ('B')) o(dom), LATERAL (
 ----
 A	10
 B	10
+
+# Row-preserving join sides independent of the wave are rejected: they would
+# fabricate rows for domains whose seed is empty.
+statement error
+SELECT o.k, q.n FROM (VALUES (1), (2)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.k WHERE o.k = 1)
+		BRANCH 1: (SELECT 0, coalesce(t.n, 99) FROM (VALUES (1)) v(x) LEFT JOIN t ON true)
+	) SELECT n FROM t
+) q;
+----
+<REGEX>:Not implemented Error.*row-preserving join sides independent of the wave.*
+
+# Empty grouping sets hide an ungrouped aggregate.
+statement error
+SELECT * FROM (VALUES (1)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.k)
+		BRANCH 1: (SELECT 0, count(*)::INTEGER FROM t GROUP BY GROUPING SETS ((n), ()))
+	) SELECT n FROM t
+) q;
+----
+<REGEX>:Not implemented Error.*ungrouped aggregates.*
+
+# A materialized alias of the wave does not launder an ungrouped aggregate.
+statement error
+SELECT * FROM (VALUES (1)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.k)
+		BRANCH 1: (WITH w AS MATERIALIZED (SELECT n FROM t) SELECT 0, count(*)::INTEGER FROM w)
+	) SELECT n FROM t
+) q;
+----
+<REGEX>:Not implemented Error.*ungrouped aggregates.*
+
+# Correlated DISTINCT: the admission identity includes the hidden domain even when
+# the payload is identical, with a real outer reference in the body.
+query TI
+SELECT * FROM (VALUES ('A'), ('B')) o(dom), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, 7 WHERE o.dom IS NOT NULL UNION ALL SELECT 1, 7 WHERE o.dom IS NOT NULL)
+		BRANCH 1 DISTINCT: (SELECT 0, n FROM t)
+	) SELECT n FROM t
+) q ORDER BY dom;
+----
+A	7
+B	7
+
+# Correlated EMIT DISTINCT per domain.
+query TI
+SELECT * FROM (VALUES ('A'), ('B')) o(dom), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) EMIT DISTINCT AS (
+		(SELECT 0, 7 WHERE o.dom IS NOT NULL UNION ALL SELECT 0, 7 WHERE o.dom IS NOT NULL)
+		BRANCH 1: (SELECT 0, n FROM t)
+	) SELECT n FROM t
+) q ORDER BY dom;
+----
+A	7
+B	7
+
+# A collated outer key is rejected under admission even when it never appears in
+# the visible payload: the hidden domain joins the admission identity.
+statement error
+SELECT * FROM (SELECT 'a' COLLATE nocase AS k) o, LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, length(o.k)::INTEGER)
+		BRANCH 1 DISTINCT: (SELECT 0, n FROM t)
+	) SELECT n FROM t
+) q;
+----
+<REGEX>:Not implemented Error.*collated outer columns.*
+
+# The default collation also taints the hidden domain.
+statement ok
+SET default_collation = 'nocase';
+
+statement error
+SELECT * FROM (SELECT 'a' AS k) o, LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, length(o.k)::INTEGER)
+		BRANCH 1 DISTINCT: (SELECT 0, n FROM t)
+	) SELECT n FROM t
+) q;
+----
+<REGEX>:Not implemented Error.*collated outer columns.*
+
+statement ok
+RESET default_collation;
