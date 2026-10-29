@@ -79,6 +79,8 @@ struct JoinFilterPushdownFilter {
 	vector<JoinFilterPushdownColumn> columns;
 	//! Target scan estimate for filter costing when intervening operators reduce the probe cardinality.
 	idx_t estimated_scan_cardinality = 0;
+	//! Whether the target scan accepts Bloom and prefix-range filters (TableFunction::runtime_filter_pushdown)
+	bool runtime_filter_pushdown = true;
 };
 
 struct PushdownFilterTarget {

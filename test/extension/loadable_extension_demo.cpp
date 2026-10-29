@@ -31,6 +31,7 @@
 #include "duckdb/common/extension_type_info.hpp"
 #include "duckdb/common/atomic.hpp"
 #include "duckdb/common/vector/struct_vector.hpp"
+#include "duckdb/common/vector/vector_writer.hpp"
 #include "duckdb/parser/sql_statement.hpp"
 #include "duckdb/parser/query_node/select_node.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
@@ -1290,6 +1291,79 @@ static void RegisterNamedArgumentFunction(ExtensionLoader &loader) {
 	}
 }
 
+// A scan that leaves optional join filters to the join, like a scan of a remote system.
+struct RuntimeFilterScan {
+	struct BindData : public TableFunctionData {
+		BindData(idx_t count_p, int64_t step_p) : count(count_p), step(step_p) {
+		}
+
+		unique_ptr<FunctionData> Copy() const override {
+			return make_uniq<BindData>(count, step);
+		}
+
+		bool Equals(const FunctionData &other) const override {
+			auto &rhs = other.Cast<BindData>();
+			return count == rhs.count && step == rhs.step;
+		}
+
+		idx_t count;
+		int64_t step;
+	};
+
+	struct GlobalState : public GlobalTableFunctionState {
+		atomic<idx_t> offset {0};
+	};
+
+	static unique_ptr<FunctionData> Bind(ClientContext &, TableFunctionBindInput &input,
+	                                     vector<LogicalType> &return_types, vector<Identifier> &names) {
+		return_types.emplace_back(LogicalType::BIGINT);
+		names.emplace_back("k");
+		return make_uniq<BindData>(input.inputs[0].GetValue<idx_t>(), input.inputs[1].GetValue<int64_t>());
+	}
+
+	static unique_ptr<NodeStatistics> Cardinality(ClientContext &, const FunctionData *bind_data) {
+		auto count = bind_data->Cast<BindData>().count;
+		return make_uniq<NodeStatistics>(count, count);
+	}
+
+	static unique_ptr<GlobalTableFunctionState> InitGlobal(ClientContext &, TableFunctionInitInput &) {
+		return make_uniq<GlobalState>();
+	}
+
+	static void Scan(ClientContext &, TableFunctionInput &data, DataChunk &output) {
+		auto &bind_data = data.bind_data->Cast<BindData>();
+		auto &state = data.global_state->Cast<GlobalState>();
+		auto offset = state.offset.load(std::memory_order_relaxed);
+		auto count = MinValue<idx_t>(STANDARD_VECTOR_SIZE, bind_data.count - offset);
+		auto writer = FlatVector::Writer<int64_t>(output.data[0], count);
+		for (idx_t i = 0; i < count; i++) {
+			writer.WriteValue(NumericCast<int64_t>(offset + i) * bind_data.step);
+		}
+		state.offset.store(offset + count, std::memory_order_relaxed);
+		output.SetChildCardinality(count);
+	}
+
+	static double Progress(ClientContext &, const FunctionData *bind_data,
+	                       const GlobalTableFunctionState *global_state) {
+		auto count = bind_data->Cast<BindData>().count;
+		auto offset = global_state->Cast<GlobalState>().offset.load(std::memory_order_relaxed);
+		return count == 0 ? 100.0 : 100.0 * static_cast<double>(offset) / static_cast<double>(count);
+	}
+
+	static void Register(ExtensionLoader &loader) {
+		TableFunction function("test_scan_with_runtime_filters", {LogicalType::UBIGINT, LogicalType::BIGINT}, Scan,
+		                       Bind, InitGlobal);
+		function.cardinality = Cardinality;
+		function.table_scan_progress = Progress;
+		function.projection_pushdown = true;
+		function.filter_pushdown = true;
+		loader.RegisterFunction(function);
+		function.SetName("test_scan_without_runtime_filters");
+		function.runtime_filter_pushdown = false;
+		loader.RegisterFunction(function);
+	}
+};
+
 //===--------------------------------------------------------------------===//
 // Extension load + setup
 //===--------------------------------------------------------------------===//
@@ -1299,6 +1373,7 @@ DUCKDB_CPP_EXTENSION_ENTRY(loadable_extension_demo, loader) {
 	    ScalarFunction("test_alias_hello", {}, LogicalType::VARCHAR, TestAliasHello));
 
 	RegisterNamedArgumentFunction(loader);
+	RuntimeFilterScan::Register(loader);
 	AggregateFunction volatile_aggregate(
 	    "test_volatile_aggregate", {LogicalType::INTEGER}, LogicalType::BIGINT,
 	    AggregateFunction::StateSize<VolatileAggregateState>,

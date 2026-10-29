@@ -785,6 +785,7 @@ void JoinFilterPushdownOptimizer::GenerateJoinFilters(LogicalComparisonJoin &joi
 
 		JoinFilterPushdownFilter get_filter;
 		get_filter.dynamic_filters = get.dynamic_filters;
+		get_filter.runtime_filter_pushdown = get.function.runtime_filter_pushdown;
 		get_filter.columns = std::move(get_columns);
 		if (get.has_estimated_cardinality) {
 			get_filter.estimated_scan_cardinality = get.estimated_cardinality;

@@ -557,6 +557,10 @@ public:
 	//! Whether or not the table function supports filter pushdown. If not supported a filter will be added
 	//! that applies the table filter directly.
 	bool filter_pushdown;
+	//! Whether join filter pushdown can push Bloom and prefix-range join filters into the table function. These
+	//! filters reference engine memory; table functions that hand filters to another system set this to false and
+	//! receive IN-list and min/max filters instead (possibly wrapped in an optional_filter).
+	bool runtime_filter_pushdown = true;
 	//! Whether or not the table function can immediately prune out filter columns that are unused in the remainder of
 	//! the query plan, e.g., "SELECT i FROM tbl WHERE j = 42;" - j does not need to leave the table function at all
 	bool filter_prune;

@@ -117,6 +117,7 @@ BoundTableFunction::BoundTableFunction(shared_ptr<const TableFunction> function_
 	verify_serialization = function.verify_serialization;
 	projection_pushdown = function.projection_pushdown;
 	filter_pushdown = function.filter_pushdown;
+	runtime_filter_pushdown = function.runtime_filter_pushdown;
 	filter_prune = function.filter_prune;
 	sampling_pushdown = function.sampling_pushdown;
 	late_materialization = function.late_materialization;
@@ -180,9 +181,9 @@ bool BaseTableFunction::operator==(const BaseTableFunction &rhs) const {
 	       get_row_id_columns == rhs.get_row_id_columns && serialize == rhs.serialize &&
 	       deserialize == rhs.deserialize && verify_serialization == rhs.verify_serialization &&
 	       projection_pushdown == rhs.projection_pushdown && filter_pushdown == rhs.filter_pushdown &&
-	       filter_prune == rhs.filter_prune && sampling_pushdown == rhs.sampling_pushdown &&
-	       late_materialization == rhs.late_materialization && return_type == rhs.return_type &&
-	       global_initialization == rhs.global_initialization;
+	       runtime_filter_pushdown == rhs.runtime_filter_pushdown && filter_prune == rhs.filter_prune &&
+	       sampling_pushdown == rhs.sampling_pushdown && late_materialization == rhs.late_materialization &&
+	       return_type == rhs.return_type && global_initialization == rhs.global_initialization;
 }
 
 bool TableFunction::operator==(const TableFunction &rhs) const {

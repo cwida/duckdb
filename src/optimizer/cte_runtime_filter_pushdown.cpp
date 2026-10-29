@@ -135,6 +135,7 @@ void JoinFilterPushdownOptimizer::GenerateCTEFilters(LogicalMaterializedCTE &cte
 			for (auto &contribution : entry.second) {
 				JoinFilterPushdownFilter filter;
 				filter.dynamic_filters = alternatives[contribution.consumer_idx];
+				filter.runtime_filter_pushdown = get.function.runtime_filter_pushdown;
 				filter.columns.push_back(std::move(contribution.column));
 				filter.estimated_scan_cardinality = get.has_estimated_cardinality ? get.estimated_cardinality : 0;
 				cte_filters[contribution.join].push_back(std::move(filter));

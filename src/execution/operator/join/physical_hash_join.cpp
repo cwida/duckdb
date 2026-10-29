@@ -415,6 +415,12 @@ static bool ShouldBuildBloomFilterInSink(ClientContext &context, const PhysicalH
 	if (!op.filter_pushdown || op.filter_pushdown->probe_info.empty()) {
 		return false;
 	}
+	auto &probe_info = op.filter_pushdown->probe_info;
+	if (std::none_of(probe_info.begin(), probe_info.end(),
+	                 [](const JoinFilterPushdownFilter &info) { return info.runtime_filter_pushdown; })) {
+		// no probe-side scan accepts a bloom filter
+		return false;
+	}
 	idx_t equality_count = 0;
 	for (auto &cond : op.conditions) {
 		const auto cmp = cond.GetComparisonType();
@@ -1986,7 +1992,8 @@ unique_ptr<DataChunk> JoinFilterPushdownInfo::FinalizeFilters(ClientContext &con
 			auto condition_type = min_val.type();
 			auto runtime_filter_input_type =
 			    RuntimeFilterCastUtil::GetRuntimeFilterInputType(pushdown_column, condition_type);
-			bool can_emit_runtime_filters = pushdown_column.mode == JoinFilterPushdownMode::RECONSTRUCT_EXPRESSION;
+			bool can_emit_runtime_filters =
+			    info.runtime_filter_pushdown && pushdown_column.mode == JoinFilterPushdownMode::RECONSTRUCT_EXPRESSION;
 			if (can_emit_runtime_filters && ht) {
 				can_emit_runtime_filters = runtime_filter_input_type == ht->conditions[0].GetLHS().GetReturnType();
 			}
