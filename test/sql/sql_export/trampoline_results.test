@@ -33,3 +33,14 @@ WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
 SELECT n FROM t;
 ----
 1
+
+# a MERGE destination survives export and re-execution
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 0), (2, 0))
+	BRANCH 1: (SELECT 3, x FROM t, (VALUES (2), (4)) v(x))
+	BRANCH 2: (SELECT 3, x FROM t, (VALUES (2), (4)) v(x))
+	BRANCH 3 MERGE: (SELECT 0, sum(n)::INTEGER FROM t)
+) SELECT n FROM t;
+----
+12

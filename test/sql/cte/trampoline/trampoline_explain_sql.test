@@ -25,3 +25,15 @@ EXPLAIN (SQL) WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
     BRANCH 1: (SELECT 0, n FROM t)
 )
 SELECT a.b, a.n, x.b, x.n FROM t AS a CROSS JOIN t AS x;
+
+# a trampoline whose binding-time round contract lost its last frontier
+# reference to optimization cannot be rendered faithfully
+statement error
+EXPLAIN (SQL) WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (VALUES (1, 0), (2, 0))
+    BRANCH 1: (SELECT CASE WHEN EXISTS (SELECT 1 FROM frontier.t WHERE false) THEN 0 ELSE 2 END, n FROM t)
+    BRANCH 2: (SELECT 0, n + 1 FROM t)
+)
+SELECT n FROM t;
+----
+<REGEX>:.*no frontier reference survived optimization.*

@@ -88,14 +88,14 @@ public:
 	//! Per-branch MERGE flag: the destination receives its round's routed rows as
 	//! one bag wave, coalesced at the boundary without admission
 	vector<bool> branch_merge;
-	//! Whether any branch destination is DISTINCT or MERGE
-	bool has_distinct_branch = false;
+	//! Whether any branch destination coalesces its round (DISTINCT or MERGE)
+	bool has_coalescing_branch = false;
 	//! Whether emitted rows are deduplicated online against all prior emissions
 	bool emit_distinct = false;
 
 	//! Lockstep rounds are required whenever their boundary is observable
 	bool RequiresRounds() const {
-		return reads_frontier || has_distinct_branch;
+		return reads_frontier || has_coalescing_branch;
 	}
 	//! Placeholder collection the frontier scans are planned against
 	shared_ptr<ColumnDataCollection> frontier_table;
