@@ -1,0 +1,8 @@
+# name: benchmark/recursive_cte/flummi_connected_components_trampoline.benchmark
+# group: [recursive_cte]
+
+template benchmark/recursive_cte/flummi/recursive_cte_flummi.benchmark.in
+LOAD=connected_components
+QUERY=flummi_connected_components_trampoline
+BENCHMARK_NAME=Flummi connected components, trampoline
+DESCRIPTION=Run the trampoline translation of Flummi's connected-components program

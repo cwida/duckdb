@@ -1,0 +1,12 @@
+# name: benchmark/recursive_cte/gcd_batch.benchmark
+# description: Iterate Euclid's algorithm over a deterministic argument batch
+# group: [recursive_cte]
+
+name GCD argument batch
+group Recursive CTE
+
+load benchmark/recursive_cte/load/performance/gcd_batch.sql
+
+run benchmark/recursive_cte/queries/performance/gcd_batch.sql
+
+result benchmark/recursive_cte/answers/performance/gcd_batch.csv
