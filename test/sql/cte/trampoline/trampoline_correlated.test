@@ -258,3 +258,29 @@ SELECT * FROM (SELECT 'a' COLLATE nocase AS k) o, LATERAL (
 ) q;
 ----
 <REGEX>:Not implemented Error.*collated.*
+
+# Window functions over the wave partition per domain.
+query TI
+SELECT * FROM (VALUES ('A'), ('B')) o(dom), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(VALUES (1, 10), (1, 20))
+		BRANCH 1: (SELECT 0, row_number() OVER (ORDER BY n)::INTEGER FROM t)
+	) SELECT n FROM t
+) q ORDER BY dom, n;
+----
+A	1
+A	2
+B	1
+B	2
+
+# LIMIT inside a branch applies per domain.
+query TI
+SELECT * FROM (VALUES ('A'), ('B')) o(dom), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(VALUES (1, 10), (1, 20))
+		BRANCH 1: (SELECT 0, n FROM t ORDER BY n LIMIT 1)
+	) SELECT n FROM t
+) q ORDER BY dom, n;
+----
+A	10
+B	10
