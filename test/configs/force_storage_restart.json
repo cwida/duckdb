@@ -75,6 +75,7 @@
         "test/sql/copy/parquet/read_ahead/readahead_io_budget.test_slow",
         "test/sql/copy/parquet/read_ahead/readahead_budget_growth.test",
         "test/sql/parallelism/async_task_schedule_pool.test",
+        "test/sql/parallelism/async_task_synchronous_batch.test",
         "test/sql/storage/prefetch/async_native_scan_pool.test",
         "test/sql/storage/prefetch/async_native_scan_read_ahead.test",
         "test/sql/storage/prefetch/prefetch_run_size_cap.test",

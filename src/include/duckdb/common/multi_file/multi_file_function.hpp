@@ -968,8 +968,8 @@ public:
 
 		data.resuming_blocked_scan = res.GetResultType() == AsyncResultType::BLOCKED;
 		if (res.GetResultType() == AsyncResultType::BLOCKED) {
-			return data_p.HandleBlocked(res) ? MultiFileDecodeResult::RETURN_TO_CALLER
-			                                 : MultiFileDecodeResult::CONTINUE;
+			return data_p.HandleBlocked(context, res) ? MultiFileDecodeResult::RETURN_TO_CALLER
+			                                          : MultiFileDecodeResult::CONTINUE;
 		}
 
 		output.SetChildCardinality(scan_chunk.size());
@@ -1026,7 +1026,7 @@ public:
 			auto &job = *lstate.job;
 			auto scheduled = job.reader->ScheduleIO(context, *gstate.global_state, *job.scan_state);
 			lstate.job_state = MultiFileJobState::DECODE;
-			if (scheduled.GetResultType() == AsyncResultType::BLOCKED && input.HandleBlocked(scheduled)) {
+			if (scheduled.GetResultType() == AsyncResultType::BLOCKED && input.HandleBlocked(context, scheduled)) {
 				return ScanReadAheadAcquire::PARKED;
 			}
 		}
