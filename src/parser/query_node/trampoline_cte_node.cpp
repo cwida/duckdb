@@ -8,7 +8,8 @@ string TrampolineCTENode::ToString() const {
 	result = cte_map.ToString();
 	result += "(" + seed->ToString() + ")";
 	for (idx_t branch_idx = 0; branch_idx < branches.size(); branch_idx++) {
-		result += StringUtil::Format(" BRANCH %llu: (", branch_idx + 1);
+		const auto tee = branch_idx < branch_tee.size() && branch_tee[branch_idx];
+		result += StringUtil::Format(" BRANCH %llu%s: (", branch_idx + 1, tee ? " TEE" : "");
 		result += branches[branch_idx]->ToString();
 		result += ")";
 	}
@@ -32,6 +33,9 @@ bool TrampolineCTENode::Equals(const QueryNode *other_p) const {
 	if (branches.size() != other.branches.size()) {
 		return false;
 	}
+	if (branch_tee != other.branch_tee) {
+		return false;
+	}
 	for (idx_t branch_idx = 0; branch_idx < branches.size(); branch_idx++) {
 		if (!branches[branch_idx]->Equals(other.branches[branch_idx].get())) {
 			return false;
@@ -48,6 +52,7 @@ unique_ptr<QueryNode> TrampolineCTENode::Copy() const {
 	for (auto &branch : branches) {
 		result->branches.push_back(branch->Copy());
 	}
+	result->branch_tee = branch_tee;
 	result->aliases = aliases;
 	this->CopyProperties(*result);
 	return std::move(result);

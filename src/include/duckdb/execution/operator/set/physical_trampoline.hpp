@@ -73,11 +73,12 @@ public:
 	shared_ptr<ColumnDataCollection> working_table;
 	//! One detached meta pipeline per branch, re-executed by the operator
 	vector<shared_ptr<MetaPipeline>> branch_meta_pipelines;
-	//! Per branch, whether its pending waves may merge: true for every branch when all
-	//! are linear and repeatable, and for an individual linear repeatable branch whose
-	//! selector is provably the constant 0 (its output is only ever emitted, so no
-	//! consumer can observe its wave boundaries)
+	//! Per branch, whether its pending waves may merge: the branch is linear and
+	//! repeatable, and so is every branch its rows can transitively reach along the
+	//! selector routing graph (coarsened partitioning must stay unobservable)
 	vector<bool> branch_wave_merge;
+	//! Per branch, whether every row routed to it is also emitted (BRANCH n TEE)
+	vector<bool> branch_tee;
 	//! Operators whose results cannot be retained across waves
 	reference_set_t<const PhysicalOperator> non_repeatable_operators;
 

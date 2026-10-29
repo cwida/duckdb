@@ -1771,7 +1771,7 @@ overrides:
     by_value: true
   # select.gram
   TrampolineBranchClause:
-    type: "pair<idx_t, unique_ptr<SelectStatement>>"
+    type: "TrampolineBranch"
     by_value: true
   WithStatement:
     type: "pair<Identifier, unique_ptr<CommonTableExpressionInfo>>"

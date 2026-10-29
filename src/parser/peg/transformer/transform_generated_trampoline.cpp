@@ -5738,7 +5738,7 @@ static const TransformChildPlan FRAME_CHILDREN_426[] = {{PEGRuleId::TrampolineBr
 static const TransformFramePlan FRAME_PLAN_441 = {FRAME_CHILDREN_426, 2, 2, true, 0, {}};
 static const TransformChildPlan FRAME_CHILDREN_427[] = {{PEGRuleId::SelectParens,
                                                          TransformChildKind::REQUIRED,
-                                                         3,
+                                                         4,
                                                          0,
                                                          false,
                                                          {0, TRANSFORM_PATH_END, 0},
@@ -17778,10 +17778,10 @@ PEGTransformerFactory::FinalizeTrampolineCTEBodyTrampoline(PEGTransformer &trans
 	auto dynamic_repeat_children = dynamic_repeat_pr.GetChildren();
 	auto dynamic_child_count = dynamic_repeat_children.size();
 	auto select_parens = process.TakeResult<unique_ptr<SelectStatement>>(0);
-	vector<pair<idx_t, unique_ptr<SelectStatement>>> trampoline_branch_clause;
+	vector<TrampolineBranch> trampoline_branch_clause;
 	trampoline_branch_clause.reserve(dynamic_child_count);
 	for (idx_t i = 1; i < 1 + dynamic_child_count; i++) {
-		trampoline_branch_clause.push_back(process.TakeResult<pair<idx_t, unique_ptr<SelectStatement>>>(i));
+		trampoline_branch_clause.push_back(process.TakeResult<TrampolineBranch>(i));
 	}
 	auto result =
 	    TransformTrampolineCTEBody(transformer, std::move(select_parens), std::move(trampoline_branch_clause));
@@ -17793,9 +17793,13 @@ PEGTransformerFactory::FinalizeTrampolineBranchClauseTrampoline(PEGTransformer &
                                                                 GeneratedTransformProcess &process) {
 	auto &list_pr = process.parse_result.Cast<ListParseResult>();
 	auto number_literal = TransformNumberLiteral(transformer, list_pr.GetChild(1));
+	bool has_result {};
+	auto &has_result_opt = list_pr.GetChild(2).Cast<OptionalParseResult>();
+	has_result = has_result_opt.HasResult();
 	auto select_parens = process.TakeResult<unique_ptr<SelectStatement>>(0);
-	auto result = TransformTrampolineBranchClause(transformer, std::move(number_literal), std::move(select_parens));
-	return transformer.MakeResult<pair<idx_t, unique_ptr<SelectStatement>>>(std::move(result));
+	auto result =
+	    TransformTrampolineBranchClause(transformer, std::move(number_literal), has_result, std::move(select_parens));
+	return transformer.MakeResult<TrampolineBranch>(std::move(result));
 }
 
 arena_ptr<TransformResultValue> PEGTransformerFactory::FinalizeUsingKeyTrampoline(PEGTransformer &transformer,

@@ -31,6 +31,8 @@ public:
 	unique_ptr<QueryNode> seed;
 	//! Branch queries; branches[i] is BRANCH i+1
 	vector<unique_ptr<QueryNode>> branches;
+	//! Per-branch TEE flag: every row routed to the branch is also emitted
+	vector<bool> branch_tee;
 	//! Aliases of the trampoline CTE node
 	vector<Identifier> aliases;
 

@@ -927,6 +927,7 @@ void LogicalTrampoline::Serialize(Serializer &serializer) const {
 	serializer.WritePropertyWithDefault<TableIndex>(201, "table_index", table_index);
 	serializer.WritePropertyWithDefault<idx_t>(202, "column_count", column_count);
 	serializer.WritePropertyWithDefault<idx_t>(203, "selector_idx", selector_idx);
+	serializer.WritePropertyWithDefault<vector<bool>>(204, "branch_tee", branch_tee);
 }
 
 unique_ptr<LogicalOperator> LogicalTrampoline::Deserialize(Deserializer &deserializer) {
@@ -935,6 +936,7 @@ unique_ptr<LogicalOperator> LogicalTrampoline::Deserialize(Deserializer &deseria
 	deserializer.ReadPropertyWithDefault<TableIndex>(201, "table_index", result->table_index);
 	deserializer.ReadPropertyWithDefault<idx_t>(202, "column_count", result->column_count);
 	deserializer.ReadPropertyWithDefault<idx_t>(203, "selector_idx", result->selector_idx);
+	deserializer.ReadPropertyWithDefault<vector<bool>>(204, "branch_tee", result->branch_tee);
 	return std::move(result);
 }
 

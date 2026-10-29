@@ -390,6 +390,7 @@ DefaultKeywordMaps DuckDBKeywordHelper::InitializeKeywordMaps() {
 	unreserved_keyword_map.insert("tables");
 	unreserved_keyword_map.insert("tablespace");
 	unreserved_keyword_map.insert("target");
+	unreserved_keyword_map.insert("tee");
 	unreserved_keyword_map.insert("temp");
 	unreserved_keyword_map.insert("template");
 	unreserved_keyword_map.insert("temporary");
@@ -869,6 +870,7 @@ DefaultKeywordMaps DuckDBKeywordHelper::InitializeKeywordMaps() {
 	bare_label_keyword_map.insert("tables");
 	bare_label_keyword_map.insert("tablespace");
 	bare_label_keyword_map.insert("target");
+	bare_label_keyword_map.insert("tee");
 	bare_label_keyword_map.insert("temp");
 	bare_label_keyword_map.insert("template");
 	bare_label_keyword_map.insert("temporary");

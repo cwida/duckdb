@@ -1,0 +1,99 @@
+# name: test/sql/cte/trampoline/trampoline_tee.test
+# description: BRANCH n TEE routes every arrival to the branch and to the output
+# group: [trampoline]
+
+# Every arrival at the teed branch is emitted once, including the seed arrival;
+# the final CASE-0 row is emitted directly without a tee copy.
+query II
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 1))
+	BRANCH 1 TEE: (SELECT CASE WHEN n < 5 THEN 1 ELSE 0 END, n + 1 FROM t)
+) SELECT b, n FROM t ORDER BY n;
+----
+0	1
+0	2
+0	3
+0	4
+0	5
+0	6
+
+# Bag multiplicity: duplicate seed rows tee twice, and a non-teed branch next to a
+# teed one emits only through its own selector-0 rows.
+query II
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 10), (1, 10), (2, 50))
+	BRANCH 1 TEE: (SELECT 0, n + 1 FROM t)
+	BRANCH 2: (SELECT 0, n FROM t)
+) SELECT b, n FROM t ORDER BY n, b;
+----
+0	10
+0	10
+0	11
+0	11
+0	50
+
+# The emitted copy carries selector 0 while the continuation keeps the branch
+# selector: the continuation still routes with its original value.
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (2, 1))
+	BRANCH 1: (SELECT 0, n * 100 FROM t)
+	BRANCH 2 TEE: (SELECT CASE WHEN n < 3 THEN 2 ELSE 1 END, n + 1 FROM t)
+) SELECT n FROM t ORDER BY n;
+----
+1
+2
+3
+400
+
+# Tee composes with wave merging: the teed branch's selector routes only to itself
+# and the output, so it merges even next to a nonlinear branch.
+query II
+EXPLAIN WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 1), (2, 10))
+	BRANCH 1 TEE: (SELECT CASE WHEN n < 3 THEN 1 ELSE 0 END, n + 1 FROM t)
+	BRANCH 2: (SELECT 0, a.n + b.n FROM t a, t b)
+) SELECT sum(n) FROM t;
+----
+physical_plan	<REGEX>:.*Waves: mixed.*Merged Branches: 1.*Tee Branches: 1.*
+
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 1), (2, 10))
+	BRANCH 1 TEE: (SELECT CASE WHEN n < 3 THEN 1 ELSE 0 END, n + 1 FROM t)
+	BRANCH 2: (SELECT 0, a.n + b.n FROM t a, t b)
+) SELECT sum(n)::INTEGER FROM t;
+----
+30
+
+# An emit-and-continue loop expressed with TEE matches the accumulating recursive
+# CTE row for row.
+query III
+WITH RECURSIVE t(b, i) USING TRAMPOLINE (b) AS (
+	(SELECT 1, 0)
+	BRANCH 1 TEE: (SELECT CASE WHEN i + 1 < 100 THEN 1 ELSE 0 END, i + 1 FROM t)
+)
+SELECT count(*), sum(i)::BIGINT, max(i) FROM t;
+----
+101	5050	100
+
+query III
+WITH RECURSIVE r(i) AS (
+	SELECT 0
+	UNION ALL
+	SELECT i + 1 FROM r WHERE i < 100
+)
+SELECT count(*), sum(i)::BIGINT, max(i) FROM r;
+----
+101	5050	100
+
+# TEE survives parse round-trips and appears in EXPLAIN SQL exports.
+query I
+SELECT count(*) FROM (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(VALUES (1, 1))
+		BRANCH 1 TEE: (SELECT CASE WHEN n < 4 THEN 1 ELSE 0 END, n + 1 FROM t)
+	) SELECT * FROM t
+);
+----
+5

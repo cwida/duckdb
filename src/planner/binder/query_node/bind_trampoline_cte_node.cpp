@@ -84,6 +84,8 @@ BoundStatement Binder::BindNode(TrampolineCTENode &statement) {
 	auto seed_plan = std::move(seed.plan);
 	auto root = make_uniq<LogicalTrampoline>(ctename, setop_index, result.types.size(), selector_idx,
 	                                         std::move(seed_plan), std::move(branch_plans));
+	root->branch_tee = statement.branch_tee;
+	root->branch_tee.resize(statement.branches.size(), false);
 	result.plan = std::move(root);
 	return result;
 }

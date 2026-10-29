@@ -55,6 +55,7 @@ public:
 		}
 		counts.resize(target_count);
 		route_chunk.Initialize(Allocator::Get(context), op.GetTypes());
+		tee_chunk.Initialize(Allocator::Get(context), op.GetTypes());
 	}
 
 	const PhysicalTrampoline &op;
@@ -66,8 +67,10 @@ public:
 	vector<SelectionVector> selections;
 	vector<idx_t> counts;
 	DataChunk route_chunk;
+	DataChunk tee_chunk;
 
 	void Route(ClientContext &context, DataChunk &chunk);
+	void AppendTee(ClientContext &context, DataChunk &routed);
 
 	bool SupportsReuse() const override {
 		return true;
@@ -292,12 +295,29 @@ void TrampolineLocalSinkState::Route(ClientContext &context, DataChunk &chunk) {
 		}
 		if (target_rows == count) {
 			Staged(context, target).Append(appends[target], chunk);
+			if (target != 0 && op.branch_tee[target - 1]) {
+				AppendTee(context, chunk);
+			}
 			return;
 		}
 		route_chunk.Reset();
 		route_chunk.Slice(chunk, selections[target], target_rows);
 		Staged(context, target).Append(appends[target], route_chunk);
+		if (target != 0 && op.branch_tee[target - 1]) {
+			AppendTee(context, route_chunk);
+		}
 	}
+}
+
+void TrampolineLocalSinkState::AppendTee(ClientContext &context, DataChunk &routed) {
+	// the emitted copy carries selector 0; reference the routed payload without
+	// touching the continuation's selector vector
+	tee_chunk.Reset();
+	tee_chunk.Reference(routed);
+	tee_chunk.data[op.selector_idx].Reference(Value::Numeric(tee_chunk.data[op.selector_idx].GetType(), 0),
+	                                          count_t(routed.size()));
+	tee_chunk.SetCardinality(routed.size());
+	Staged(context, 0).Append(appends[0], tee_chunk);
 }
 
 void TrampolineState::CloseExecution() {
@@ -490,6 +510,15 @@ InsertionOrderPreservingMap<string> PhysicalTrampoline::ParamsToString() const {
 			}
 		}
 		result["Merged Branches"] = merged_list;
+	}
+	string tee_list;
+	for (idx_t branch_idx = 0; branch_idx < branch_tee.size(); branch_idx++) {
+		if (branch_tee[branch_idx]) {
+			tee_list += (tee_list.empty() ? "" : ",") + to_string(branch_idx + 1);
+		}
+	}
+	if (!tee_list.empty()) {
+		result["Tee Branches"] = tee_list;
 	}
 	SetEstimatedCardinality(result, estimated_cardinality);
 	return result;

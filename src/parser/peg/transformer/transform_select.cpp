@@ -1153,9 +1153,9 @@ PEGTransformerFactory::TransformCTESelectBody(PEGTransformer &transformer,
 	return make_uniq<SubqueryRef>(std::move(select_statement_internal));
 }
 
-pair<idx_t, unique_ptr<SelectStatement>>
-PEGTransformerFactory::TransformTrampolineBranchClause(PEGTransformer &transformer, unique_ptr<ParsedExpression> label,
-                                                       unique_ptr<SelectStatement> body) {
+TrampolineBranch PEGTransformerFactory::TransformTrampolineBranchClause(PEGTransformer &transformer,
+                                                                        unique_ptr<ParsedExpression> label, bool tee,
+                                                                        unique_ptr<SelectStatement> body) {
 	if (label->GetExpressionType() != ExpressionType::VALUE_CONSTANT) {
 		throw ParserException(label->GetQueryLocation(), "BRANCH label must be an integer literal");
 	}
@@ -1167,24 +1167,26 @@ PEGTransformerFactory::TransformTrampolineBranchClause(PEGTransformer &transform
 	if (label_number < 1) {
 		throw ParserException(label->GetQueryLocation(), "BRANCH labels start at 1; selector 0 emits a result row");
 	}
-	return make_pair(NumericCast<idx_t>(label_number), std::move(body));
+	return TrampolineBranch {NumericCast<idx_t>(label_number), tee, std::move(body)};
 }
 
-unique_ptr<TableRef>
-PEGTransformerFactory::TransformTrampolineCTEBody(PEGTransformer &transformer, unique_ptr<SelectStatement> seed,
-                                                  vector<pair<idx_t, unique_ptr<SelectStatement>>> branches) {
+unique_ptr<TableRef> PEGTransformerFactory::TransformTrampolineCTEBody(PEGTransformer &transformer,
+                                                                       unique_ptr<SelectStatement> seed,
+                                                                       vector<TrampolineBranch> branches) {
 	auto node = make_uniq<TrampolineCTENode>();
 	node->seed = std::move(seed->node);
 	node->branches.resize(branches.size());
+	node->branch_tee.resize(branches.size(), false);
 	for (auto &branch : branches) {
-		if (branch.first > branches.size()) {
+		if (branch.label > branches.size()) {
 			throw ParserException("BRANCH labels must form the contiguous range 1..%llu", branches.size());
 		}
-		auto &slot = node->branches[branch.first - 1];
+		auto &slot = node->branches[branch.label - 1];
 		if (slot) {
-			throw ParserException("duplicate BRANCH label %llu", branch.first);
+			throw ParserException("duplicate BRANCH label %llu", branch.label);
 		}
-		slot = std::move(branch.second->node);
+		slot = std::move(branch.statement->node);
+		node->branch_tee[branch.label - 1] = branch.tee;
 	}
 	auto statement = make_uniq<SelectStatement>();
 	statement->node = std::move(node);

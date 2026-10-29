@@ -193,6 +193,7 @@ List(D) <- D (',' D)* ','?
 Parens(D) <- '(' D ')'
 
 BareLabelKeyword <- 'BRANCH' /
+'TEE' /
 'TRAMPOLINE' /
 'abort' /
 'absolute' /
@@ -1044,6 +1045,7 @@ UnreservedKeyword <- 'ABORT' /
 'TABLES' /
 'TABLESPACE' /
 'TARGET' /
+'TEE' /
 'TEMP' /
 'TEMPLATE' /
 'TEMPORARY' /
@@ -2260,7 +2262,7 @@ CTESelectBody <- Parens(SelectStatementInternal)
 CTEDMLBody <- Parens(Statement)
 CTETrampolineBody <- Parens(TrampolineCTEBody)
 TrampolineCTEBody <- SelectParens TrampolineBranchClause+
-TrampolineBranchClause <- 'BRANCH' NumberLiteral ':' SelectParens
+TrampolineBranchClause <- 'BRANCH' NumberLiteral 'TEE'? ':' SelectParens
 UsingKey <- 'USING' 'KEY' Parens(TargetList)
 UsingTrampoline <- 'USING' 'TRAMPOLINE' Parens(ColId)
 Materialized <- 'NOT'? 'MATERIALIZED'

@@ -31,6 +31,8 @@ public:
 
 	//! Index of the selector column in the trampoline schema
 	idx_t selector_idx;
+	//! Per-branch TEE flag: every row routed to the branch is also emitted
+	vector<bool> branch_tee;
 
 public:
 	InsertionOrderPreservingMap<string> ParamsToString() const override;

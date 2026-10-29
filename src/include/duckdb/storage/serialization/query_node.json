@@ -210,6 +210,11 @@
         "id": 204,
         "name": "aliases",
         "type": "vector<Identifier>"
+      },
+      {
+        "id": 205,
+        "name": "branch_tee",
+        "type": "vector<bool>"
       }
     ]
   },
