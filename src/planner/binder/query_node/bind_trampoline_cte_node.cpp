@@ -20,6 +20,7 @@ static bool TypeUsesPhysicalDistinctEquality(ClientContext &context, const Logic
 		return collation.empty() || collation == "binary" || collation == "c" || collation == "posix";
 	}
 	case LogicalTypeId::STRUCT:
+	case LogicalTypeId::TUPLE:
 	case LogicalTypeId::UNION: {
 		for (auto &entry : StructType::GetChildTypes(type)) {
 			if (!TypeUsesPhysicalDistinctEquality(context, entry.second)) {

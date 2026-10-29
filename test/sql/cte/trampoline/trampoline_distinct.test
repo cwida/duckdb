@@ -305,3 +305,39 @@ WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
 0	401
 0	501
 0	501
+
+# TUPLE is its own payload container: a collated field inside row() is rejected,
+# nested or not.
+statement error
+WITH RECURSIVE t(b, p) USING TRAMPOLINE (b) AS (
+	(SELECT 1, row(s COLLATE nocase) FROM (VALUES ('a'), ('A')) v(s))
+	BRANCH 1 DISTINCT: (SELECT 0, p FROM t)
+) SELECT count(*) FROM t;
+----
+<REGEX>:Not implemented Error.*collated columns.*
+
+statement error
+WITH RECURSIVE t(b, p) USING TRAMPOLINE (b) AS (
+	(SELECT 1, [row(s COLLATE nocase)] FROM (VALUES ('a'), ('A')) v(s))
+	BRANCH 1 DISTINCT: (SELECT 0, p FROM t)
+) SELECT count(*) FROM t;
+----
+<REGEX>:Not implemented Error.*collated columns.*
+
+# Protection: binary-equality payloads still admit, and MERGE without admission
+# accepts collated payloads as a bag.
+query I
+WITH RECURSIVE t(b, s) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 'a'), (1, 'A'), (1, 'a'))
+	BRANCH 1 DISTINCT: (SELECT 0, s FROM t)
+) SELECT count(*) FROM t;
+----
+2
+
+query I
+WITH RECURSIVE t(b, s) USING TRAMPOLINE (b) AS (
+	(SELECT 1, s COLLATE nocase FROM (VALUES ('a'), ('A')) v(s))
+	BRANCH 1 MERGE: (SELECT 0, count(*)::INTEGER FROM t)
+) SELECT s FROM t;
+----
+2
