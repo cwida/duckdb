@@ -3,7 +3,6 @@
 #include "duckdb/common/bit_utils.hpp"
 #include "duckdb/logging/logger.hpp"
 #include "duckdb/main/client_context.hpp"
-#include "duckdb/parallel/event.hpp"
 #include "duckdb/parallel/pipeline.hpp"
 #include "duckdb/parallel/pipeline_executor.hpp"
 
@@ -218,10 +217,20 @@ void RecursiveCTEEpochMetrics::RecordPipelineExecution(RecursiveCTEPipelineMetri
 }
 
 RecursiveCTEMetrics::RecursiveCTEMetrics(ClientContext &context, const PhysicalRecursiveCTE &op_p)
+    : RecursiveCTEMetrics(context, op_p, 0) {
+	if (enabled) {
+		identity->invocation_id = op_p.NextMetricsInvocation();
+	}
+}
+
+RecursiveCTEMetrics::RecursiveCTEMetrics(ClientContext &context, const PhysicalOperator &op_p, idx_t invocation_id)
     : logger(context.GetContext().GetLoggerPtr()),
       enabled(logger && logger->ShouldLog(PhysicalOperatorLogType::NAME, PhysicalOperatorLogType::LEVEL)) {
 	if (enabled) {
-		identity = make_uniq<RecursiveCTELogIdentity>(op_p.type, op_p.NextMetricsInvocation());
+		identity = make_uniq<RecursiveCTELogIdentity>(op_p.type, invocation_id);
+		if (op_p.type == PhysicalOperatorType::TRAMPOLINE) {
+			identity->class_name = "PhysicalTrampoline";
+		}
 		for (const auto &entry : op_p.ParamsToString()) {
 			identity->operator_parameters.emplace_back(entry.first, entry.second);
 		}
@@ -299,7 +308,7 @@ void RecursiveCTEMetrics::LogDistinctPromotion(idx_t partitions, idx_t migrated_
 	}
 	D_ASSERT(identity);
 	DUCKDB_LOG(logger, PhysicalOperatorLogType, identity->operator_type, identity->operator_parameters,
-	           "PhysicalRecursiveCTE", "DistinctPromoted",
+	           identity->class_name, "DistinctPromoted",
 	           {{"invocation_id", to_string(identity->invocation_id)},
 	            {"partitions", to_string(partitions)},
 	            {"migrated_rows", to_string(migrated_rows)},
@@ -318,7 +327,7 @@ void RecursiveCTEMetrics::Log(const vector<unique_ptr<RecursiveCTEPartialKeyInde
 		partial_index_bytes += index->SizeInBytes();
 	}
 	DUCKDB_LOG(logger, PhysicalOperatorLogType, identity->operator_type, identity->operator_parameters,
-	           "PhysicalRecursiveCTE", "RuntimeMetrics",
+	           identity->class_name, "RuntimeMetrics",
 	           {{"invocation_id", to_string(identity->invocation_id)},
 	            {"epochs", to_string(epochs)},
 	            {"scheduled_workers", to_string(scheduled_workers)},
@@ -354,7 +363,7 @@ void RecursiveCTEMetrics::LogEpochSummary(const RecursiveCTEEpochMetrics &epoch_
 	const auto distinct_inserted_rows = epoch_metrics.distinct_inserted_rows.load();
 	D_ASSERT(distinct_inserted_rows <= distinct_candidate_rows);
 	DUCKDB_LOG(
-	    logger, PhysicalOperatorLogType, identity->operator_type, identity->operator_parameters, "PhysicalRecursiveCTE",
+	    logger, PhysicalOperatorLogType, identity->operator_type, identity->operator_parameters, identity->class_name,
 	    "EpochSummary",
 	    {{"invocation_id", to_string(identity->invocation_id)},
 	     {"epochs", to_string(epoch_metrics.frontier_rows.count)},
@@ -408,16 +417,6 @@ void RecursiveCTEMetrics::LogEpochSummary(const RecursiveCTEEpochMetrics &epoch_
 	     {"invariant_build_execute_work_ns", to_string(epoch_metrics.invariant_build_execute_work_ns.load())},
 	     {"invariant_cte_materialization_execute_work_ns",
 	      to_string(epoch_metrics.invariant_cte_materialization_execute_work_ns.load())}});
-}
-
-RecursiveCTEEpochProgress::RecursiveCTEEpochProgress() {
-}
-
-RecursiveCTEEpochProgress::~RecursiveCTEEpochProgress() {
-}
-
-void RecursiveCTEEpochProgress::Reset() {
-	*this = RecursiveCTEEpochProgress();
 }
 
 RecursiveCTESchedulerState::RecursiveCTESchedulerState(shared_ptr<RecursiveExecutorPool> executor_pool_p,

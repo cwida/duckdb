@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "duckdb/common/atomic.hpp"
 #include "duckdb/common/deque.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/execution/operator/scan/physical_column_data_scan.hpp"
@@ -126,6 +127,7 @@ private:
 	//! Precomputed pipelines, schedules and sink-reset lists per branch
 	vector<TrampolineBranchPipelines> branch_pipelines;
 	mutable shared_ptr<RecursiveExecutorPool> shared_executor_pool;
+	mutable atomic<idx_t> metrics_invocations {0};
 
 	friend class TrampolineState;
 };

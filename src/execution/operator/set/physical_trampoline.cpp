@@ -88,8 +88,11 @@ private:
 class TrampolineState : public GlobalSinkState {
 public:
 	TrampolineState(ClientContext &context, const PhysicalTrampoline &op)
-	    : op(op), context(context),
+	    : op(op), context(context), metrics(context, op, op.metrics_invocations.fetch_add(1) + 1),
 	      scheduler(op.shared_executor_pool, Settings::Get<EnableCachingOperatorsSetting>(context)) {
+		if (metrics.Enabled()) {
+			epoch_metrics = make_uniq<RecursiveCTEEpochMetrics>();
+		}
 		const auto branch_count = op.BranchCount();
 		staged.resize(branch_count + 1);
 		invariant_materialized.resize(branch_count, false);
@@ -100,7 +103,16 @@ public:
 
 	const PhysicalTrampoline &op;
 	ClientContext &context;
+	RecursiveCTEMetrics metrics;
+	unique_ptr<RecursiveCTEEpochMetrics> epoch_metrics;
 	RecursiveCTESchedulerState scheduler;
+
+	~TrampolineState() override {
+		metrics.Log({});
+		if (epoch_metrics) {
+			metrics.LogEpochSummary(*epoch_metrics);
+		}
+	}
 
 	mutex lock;
 	//! Rows routed by the currently executing plan; staged[0] holds rows to emit
@@ -529,9 +541,13 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 		ConfigureInvariantRecursiveBuildReuse(branch.invariant_meta_pipelines, can_cache_invariant);
 	}
 
+	const auto collect_metrics = gstate.metrics.Enabled();
+	const auto epoch_start =
+	    collect_metrics ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
 	if (go_parallel) {
 		// the shared event-based schedule resets operator and source state itself
-		RecursiveSchedulingContext scheduling_context {executor, scheduler, nullptr, nullptr, true};
+		RecursiveSchedulingContext scheduling_context {executor, scheduler, collect_metrics ? &gstate.metrics : nullptr,
+		                                               collect_metrics ? gstate.epoch_metrics.get() : nullptr, true};
 		vector<shared_ptr<Event>> events;
 		ScheduleRecursivePlan(plan, scheduling_context, events,
 		                      RecursiveCTEParallelism(frontier_workers, source_task_workers));
@@ -539,6 +555,15 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 		if (can_cache_invariant && !materialized &&
 		    InvariantRecursiveBuildsRemainReusable(branch.invariant_meta_pipelines)) {
 			gstate.invariant_materialized[branch_idx - 1] = true;
+		}
+		if (collect_metrics) {
+			const auto epoch_end = std::chrono::steady_clock::now();
+			const auto elapsed_us = NumericCast<idx_t>(
+			    std::chrono::duration_cast<std::chrono::microseconds>(epoch_end - epoch_start).count());
+			const auto &wave = *gstate.current_input;
+			gstate.metrics.RecordEpoch(workers, elapsed_us, wave.Count(), wave.ChunkCount(), input_rows);
+			gstate.epoch_metrics->Record(wave.Count(), workers, gstate.metrics.TaskCount(), elapsed_us,
+			                             wave.SizeInBytes(), wave.AllocationSize());
 		}
 		return;
 	}
@@ -605,6 +630,15 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 	if (can_cache_invariant && !materialized &&
 	    InvariantRecursiveBuildsRemainReusable(branch.invariant_meta_pipelines)) {
 		gstate.invariant_materialized[branch_idx - 1] = true;
+	}
+	if (collect_metrics && gstate.current_input) {
+		const auto epoch_end = std::chrono::steady_clock::now();
+		const auto elapsed_us =
+		    NumericCast<idx_t>(std::chrono::duration_cast<std::chrono::microseconds>(epoch_end - epoch_start).count());
+		const auto &wave = *gstate.current_input;
+		gstate.metrics.RecordEpoch(1, elapsed_us, wave.Count(), wave.ChunkCount(), input_rows);
+		gstate.epoch_metrics->Record(wave.Count(), 1, gstate.metrics.TaskCount(), elapsed_us, wave.SizeInBytes(),
+		                             wave.AllocationSize());
 	}
 }
 

@@ -234,11 +234,14 @@ struct RecursiveCTELogIdentity {
 	PhysicalOperatorType operator_type;
 	vector<pair<string, string>> operator_parameters;
 	idx_t invocation_id;
+	const char *class_name = "PhysicalRecursiveCTE";
 };
 
 class RecursiveCTEMetrics {
 public:
 	RecursiveCTEMetrics(ClientContext &context, const PhysicalRecursiveCTE &op);
+	//! For other recursive operators (the trampoline), which track their own invocation ids
+	RecursiveCTEMetrics(ClientContext &context, const PhysicalOperator &op, idx_t invocation_id);
 
 	bool Enabled() const {
 		return enabled;
