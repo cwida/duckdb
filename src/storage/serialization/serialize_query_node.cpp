@@ -267,6 +267,7 @@ void TrampolineCTENode::Serialize(Serializer &serializer) const {
 	serializer.WritePropertyWithDefault<vector<bool>>(205, "branch_tee", branch_tee);
 	serializer.WritePropertyWithDefault<vector<bool>>(206, "branch_distinct", branch_distinct);
 	serializer.WritePropertyWithDefault<bool>(207, "emit_distinct", emit_distinct);
+	serializer.WritePropertyWithDefault<vector<bool>>(208, "branch_merge", branch_merge);
 }
 
 unique_ptr<QueryNode> TrampolineCTENode::Deserialize(Deserializer &deserializer) {
@@ -279,6 +280,7 @@ unique_ptr<QueryNode> TrampolineCTENode::Deserialize(Deserializer &deserializer)
 	deserializer.ReadPropertyWithDefault<vector<bool>>(205, "branch_tee", result->branch_tee);
 	deserializer.ReadPropertyWithDefault<vector<bool>>(206, "branch_distinct", result->branch_distinct);
 	deserializer.ReadPropertyWithDefault<bool>(207, "emit_distinct", result->emit_distinct);
+	deserializer.ReadPropertyWithDefault<vector<bool>>(208, "branch_merge", result->branch_merge);
 	return std::move(result);
 }
 

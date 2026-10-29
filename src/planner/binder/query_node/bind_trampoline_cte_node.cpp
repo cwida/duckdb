@@ -120,7 +120,8 @@ BoundStatement Binder::BindNode(TrampolineCTENode &statement) {
 	root->branch_tee.resize(statement.branches.size(), false);
 	root->branch_distinct = statement.branch_distinct;
 	root->branch_distinct.resize(statement.branches.size(), false);
-	root->emit_distinct = statement.emit_distinct;
+	root->branch_merge = statement.branch_merge;
+	root->branch_merge.resize(statement.branches.size(), false);
 	bool wants_admission = statement.emit_distinct;
 	for (auto distinct : root->branch_distinct) {
 		wants_admission = wants_admission || distinct;
@@ -134,6 +135,7 @@ BoundStatement Binder::BindNode(TrampolineCTENode &statement) {
 			}
 		}
 	}
+	root->emit_distinct = statement.emit_distinct;
 	for (idx_t branch_idx = 1; branch_idx < root->children.size(); branch_idx++) {
 		DetectFrontierReferences(*root->children[branch_idx], setop_index, 0, root->reads_frontier);
 	}

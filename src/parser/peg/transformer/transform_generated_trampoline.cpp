@@ -5738,7 +5738,7 @@ static const TransformChildPlan FRAME_CHILDREN_426[] = {{PEGRuleId::TrampolineBr
 static const TransformFramePlan FRAME_PLAN_441 = {FRAME_CHILDREN_426, 2, 2, true, 0, {}};
 static const TransformChildPlan FRAME_CHILDREN_427[] = {{PEGRuleId::SelectParens,
                                                          TransformChildKind::REQUIRED,
-                                                         5,
+                                                         6,
                                                          0,
                                                          false,
                                                          {0, TRANSFORM_PATH_END, 0},
@@ -17803,9 +17803,12 @@ PEGTransformerFactory::FinalizeTrampolineBranchClauseTrampoline(PEGTransformer &
 	bool has_result_3 {};
 	auto &has_result_3_opt = list_pr.GetChild(3).Cast<OptionalParseResult>();
 	has_result_3 = has_result_3_opt.HasResult();
+	bool has_result_4 {};
+	auto &has_result_4_opt = list_pr.GetChild(4).Cast<OptionalParseResult>();
+	has_result_4 = has_result_4_opt.HasResult();
 	auto select_parens = process.TakeResult<unique_ptr<SelectStatement>>(0);
 	auto result = TransformTrampolineBranchClause(transformer, std::move(number_literal), has_result, has_result_3,
-	                                              std::move(select_parens));
+	                                              has_result_4, std::move(select_parens));
 	return transformer.MakeResult<TrampolineBranch>(std::move(result));
 }
 

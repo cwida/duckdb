@@ -85,7 +85,10 @@ public:
 	//! Per-branch DISTINCT flag: the destination receives one admitted wave per
 	//! round, arbitrated at the boundary against all rows ever routed to it
 	vector<bool> branch_distinct;
-	//! Whether any branch destination is DISTINCT
+	//! Per-branch MERGE flag: the destination receives its round's routed rows as
+	//! one bag wave, coalesced at the boundary without admission
+	vector<bool> branch_merge;
+	//! Whether any branch destination is DISTINCT or MERGE
 	bool has_distinct_branch = false;
 	//! Whether emitted rows are deduplicated online against all prior emissions
 	bool emit_distinct = false;

@@ -225,6 +225,11 @@
         "id": 207,
         "name": "emit_distinct",
         "type": "bool"
+      },
+      {
+        "id": 208,
+        "name": "branch_merge",
+        "type": "vector<bool>"
       }
     ]
   },

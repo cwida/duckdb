@@ -9,6 +9,7 @@ namespace duckdb {
 struct TrampolineBranch {
 	idx_t label;
 	bool distinct;
+	bool merge;
 	bool tee;
 	unique_ptr<SelectStatement> statement;
 };

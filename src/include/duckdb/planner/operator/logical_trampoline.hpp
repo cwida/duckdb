@@ -38,6 +38,8 @@ public:
 	bool reads_frontier = false;
 	//! Per-branch DISTINCT flag: round-wide admission against all rows ever routed
 	vector<bool> branch_distinct;
+	//! Per-branch MERGE flag: one bag wave per round, coalesced at the boundary
+	vector<bool> branch_merge;
 	//! Whether emitted rows are deduplicated against all rows ever emitted
 	bool emit_distinct = false;
 

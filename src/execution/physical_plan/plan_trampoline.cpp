@@ -238,8 +238,11 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalTrampoline &op) {
 	trampoline.frontier_table = frontier_table;
 	trampoline.branch_distinct = op.branch_distinct;
 	trampoline.branch_distinct.resize(branches.size(), false);
-	for (auto distinct : trampoline.branch_distinct) {
-		trampoline.has_distinct_branch = trampoline.has_distinct_branch || distinct;
+	trampoline.branch_merge = op.branch_merge;
+	trampoline.branch_merge.resize(branches.size(), false);
+	for (idx_t branch_idx = 0; branch_idx < branches.size(); branch_idx++) {
+		trampoline.has_distinct_branch = trampoline.has_distinct_branch || trampoline.branch_distinct[branch_idx] ||
+		                                 trampoline.branch_merge[branch_idx];
 	}
 	trampoline.emit_distinct = op.emit_distinct;
 

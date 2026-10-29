@@ -1158,8 +1158,11 @@ PEGTransformerFactory::TransformCTESelectBody(PEGTransformer &transformer,
 
 TrampolineBranch PEGTransformerFactory::TransformTrampolineBranchClause(PEGTransformer &transformer,
                                                                         unique_ptr<ParsedExpression> label,
-                                                                        bool distinct, bool tee,
+                                                                        bool distinct, bool merge, bool tee,
                                                                         unique_ptr<SelectStatement> body) {
+	if (distinct && merge) {
+		throw ParserException(label->GetQueryLocation(), "a BRANCH cannot be both DISTINCT and MERGE");
+	}
 	if (label->GetExpressionType() != ExpressionType::VALUE_CONSTANT) {
 		throw ParserException(label->GetQueryLocation(), "BRANCH label must be an integer literal");
 	}
@@ -1171,7 +1174,7 @@ TrampolineBranch PEGTransformerFactory::TransformTrampolineBranchClause(PEGTrans
 	if (label_number < 1) {
 		throw ParserException(label->GetQueryLocation(), "BRANCH labels start at 1; selector 0 emits a result row");
 	}
-	return TrampolineBranch {NumericCast<idx_t>(label_number), distinct, tee, std::move(body)};
+	return TrampolineBranch {NumericCast<idx_t>(label_number), distinct, merge, tee, std::move(body)};
 }
 
 unique_ptr<TableRef> PEGTransformerFactory::TransformTrampolineCTEBody(PEGTransformer &transformer,
@@ -1182,6 +1185,7 @@ unique_ptr<TableRef> PEGTransformerFactory::TransformTrampolineCTEBody(PEGTransf
 	node->branches.resize(branches.size());
 	node->branch_tee.resize(branches.size(), false);
 	node->branch_distinct.resize(branches.size(), false);
+	node->branch_merge.resize(branches.size(), false);
 	for (auto &branch : branches) {
 		if (branch.label > branches.size()) {
 			throw ParserException("BRANCH labels must form the contiguous range 1..%llu", branches.size());
@@ -1193,6 +1197,7 @@ unique_ptr<TableRef> PEGTransformerFactory::TransformTrampolineCTEBody(PEGTransf
 		slot = std::move(branch.statement->node);
 		node->branch_tee[branch.label - 1] = branch.tee;
 		node->branch_distinct[branch.label - 1] = branch.distinct;
+		node->branch_merge[branch.label - 1] = branch.merge;
 	}
 	auto statement = make_uniq<SelectStatement>();
 	statement->node = std::move(node);

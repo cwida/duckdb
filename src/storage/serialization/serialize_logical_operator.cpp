@@ -933,6 +933,7 @@ void LogicalTrampoline::Serialize(Serializer &serializer) const {
 	serializer.WritePropertyWithDefault<bool>(205, "reads_frontier", reads_frontier);
 	serializer.WritePropertyWithDefault<vector<bool>>(206, "branch_distinct", branch_distinct);
 	serializer.WritePropertyWithDefault<bool>(207, "emit_distinct", emit_distinct);
+	serializer.WritePropertyWithDefault<vector<bool>>(208, "branch_merge", branch_merge);
 }
 
 unique_ptr<LogicalOperator> LogicalTrampoline::Deserialize(Deserializer &deserializer) {
@@ -945,6 +946,7 @@ unique_ptr<LogicalOperator> LogicalTrampoline::Deserialize(Deserializer &deseria
 	deserializer.ReadPropertyWithDefault<bool>(205, "reads_frontier", result->reads_frontier);
 	deserializer.ReadPropertyWithDefault<vector<bool>>(206, "branch_distinct", result->branch_distinct);
 	deserializer.ReadPropertyWithDefault<bool>(207, "emit_distinct", result->emit_distinct);
+	deserializer.ReadPropertyWithDefault<vector<bool>>(208, "branch_merge", result->branch_merge);
 	return std::move(result);
 }
 

@@ -4228,8 +4228,8 @@ public:
 	                                                       unique_ptr<SelectStatement> seed,
 	                                                       vector<TrampolineBranch> branches);
 	static TrampolineBranch TransformTrampolineBranchClause(PEGTransformer &transformer,
-	                                                        unique_ptr<ParsedExpression> label, bool distinct, bool tee,
-	                                                        unique_ptr<SelectStatement> body);
+	                                                        unique_ptr<ParsedExpression> label, bool distinct,
+	                                                        bool merge, bool tee, unique_ptr<SelectStatement> body);
 	static vector<unique_ptr<ParsedExpression>> TransformUsingKey(PEGTransformer &transformer,
 	                                                              vector<unique_ptr<ParsedExpression>> target_list);
 	static bool TransformMaterialized(PEGTransformer &transformer, const bool &has_result);

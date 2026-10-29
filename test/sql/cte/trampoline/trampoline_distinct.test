@@ -187,3 +187,54 @@ WITH RECURSIVE t(b, s) USING TRAMPOLINE (b) AS (
 ) SELECT count(*) FROM t;
 ----
 <REGEX>:Not implemented Error.*collated columns.*
+
+# BRANCH n MERGE coalesces the round's routed rows into one bag wave without
+# admission: the per-wave aggregate sees one wave including duplicates.
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 0), (2, 0))
+	BRANCH 1: (SELECT 3, x FROM t, (VALUES (1), (2)) v(x))
+	BRANCH 2: (SELECT 3, x FROM t, (VALUES (2), (4)) v(x))
+	BRANCH 3 MERGE: (SELECT 0, sum(n)::INTEGER FROM t)
+) SELECT n FROM t;
+----
+9
+
+# MERGE keeps unchanged rows alive across rounds, unlike historical admission: the
+# waiter loops until the competitor drains, and every waiting round re-admits it.
+query II
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 5), (2, 0))
+	BRANCH 1 MERGE: (SELECT CASE WHEN EXISTS (SELECT 1 FROM frontier.t f WHERE f.b = 2) THEN 1 ELSE 0 END, n FROM t)
+	BRANCH 2: (SELECT CASE WHEN n < 2 THEN 2 ELSE 0 END, n + 1 FROM t)
+) SELECT b, n FROM t ORDER BY n;
+----
+0	3
+0	5
+
+# MERGE alone activates rounds: the two producers' rows form one wave.
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (2, 10), (3, 100))
+	BRANCH 1 MERGE: (SELECT 0, sum(n)::INTEGER FROM t)
+	BRANCH 2: (SELECT 1, n + 1 FROM t)
+	BRANCH 3: (SELECT 1, n + 2 FROM t)
+) SELECT n FROM t ORDER BY n;
+----
+113
+
+query II
+EXPLAIN WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 0))
+	BRANCH 1 MERGE TEE: (SELECT CASE WHEN n < 3 THEN 1 ELSE 0 END, n + 1 FROM t)
+) SELECT n FROM t;
+----
+physical_plan	<REGEX>:.*Tee Branches: 1.*Merge Branches: 1.*
+
+statement error
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 0))
+	BRANCH 1 DISTINCT MERGE: (SELECT 0, n FROM t)
+) SELECT n FROM t;
+----
+<REGEX>:Parser Error.*cannot be both DISTINCT and MERGE.*

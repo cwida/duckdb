@@ -450,7 +450,8 @@ unique_ptr<ColumnDataCollection> TrampolineState::FilterSeenRows(idx_t target, C
 bool TrampolineState::StartRound() {
 	const auto branch_count = op.BranchCount();
 	for (idx_t branch_idx = 1; branch_idx <= branch_count; branch_idx++) {
-		if (!op.branch_distinct[branch_idx - 1]) {
+		const auto distinct = op.branch_distinct[branch_idx - 1];
+		if (!distinct && !op.branch_merge[branch_idx - 1]) {
 			continue;
 		}
 		auto &waves = next_pending[branch_idx]->waves;
@@ -462,6 +463,11 @@ bool TrampolineState::StartRound() {
 		while (!waves.empty()) {
 			candidates->Combine(*waves.front());
 			waves.pop_front();
+		}
+		if (!distinct) {
+			// MERGE: the round's routed rows form one bag wave, no admission
+			waves.push_back(std::move(candidates));
+			continue;
 		}
 		auto admitted = FilterSeenRows(branch_idx, *candidates);
 		Recycle(std::move(candidates));
@@ -671,6 +677,15 @@ InsertionOrderPreservingMap<string> PhysicalTrampoline::ParamsToString() const {
 	}
 	if (!distinct_list.empty()) {
 		result["Distinct Branches"] = distinct_list;
+	}
+	string merge_list;
+	for (idx_t branch_idx = 0; branch_idx < branch_merge.size(); branch_idx++) {
+		if (branch_merge[branch_idx]) {
+			merge_list += (merge_list.empty() ? "" : ",") + to_string(branch_idx + 1);
+		}
+	}
+	if (!merge_list.empty()) {
+		result["Merge Branches"] = merge_list;
 	}
 	if (emit_distinct) {
 		result["Emit"] = "distinct";
