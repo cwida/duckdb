@@ -10,6 +10,8 @@
 #include "duckdb/parallel/task_scheduler.hpp"
 #include "duckdb/parallel/event.hpp"
 
+#include <cmath>
+
 namespace duckdb {
 
 // Waves are often small; aim for about half a vector of input per worker like the recursive runtime
@@ -112,6 +114,11 @@ public:
 	bool backlog_append_valid = false;
 	//! Backlog size after the previous wave, to detect waves that emit nothing
 	idx_t last_backlog_rows = 0;
+	//! Progress estimation: rows handed to the consumer, the seed size, and completion
+	atomic<idx_t> emitted_rows {0};
+	idx_t seed_rows = 0;
+	atomic<bool> finished {false};
+	MonotonicProgress progress;
 	//! Emitted rows currently being scanned
 	unique_ptr<ColumnDataCollection> emit_table;
 	ColumnDataScanState emit_scan;
@@ -329,12 +336,19 @@ SourceResultType TrampolineState::GetData(ExecutionContext &execution_context, D
 	if (!initialized) {
 		// the seed pipeline has finished sinking; its routed rows form the first waves
 		CloseExecution();
+		for (idx_t candidate = 1; candidate <= op.BranchCount(); candidate++) {
+			for (auto &wave : pending[candidate]->waves) {
+				seed_rows += wave->Count();
+			}
+		}
+		seed_rows += emit_backlog ? emit_backlog->Count() : 0;
 		initialized = true;
 	}
 	while (chunk.size() == 0) {
 		if (emit_active) {
 			emit_table->Scan(emit_scan, chunk);
 			if (chunk.size() != 0) {
+				emitted_rows.fetch_add(chunk.size(), std::memory_order_relaxed);
 				break;
 			}
 			emit_active = false;
@@ -363,6 +377,7 @@ SourceResultType TrampolineState::GetData(ExecutionContext &execution_context, D
 		idx_t branch_idx;
 		unique_ptr<ColumnDataCollection> wave;
 		if (!NextWave(branch_idx, wave)) {
+			finished.store(true, std::memory_order_relaxed);
 			return SourceResultType::FINISHED;
 		}
 		context.InterruptCheck();
@@ -416,6 +431,20 @@ SourceResultType PhysicalTrampoline::GetDataInternal(ExecutionContext &context, 
 
 vector<const_reference<PhysicalOperator>> PhysicalTrampoline::GetSources() const {
 	return {*this};
+}
+
+ProgressData PhysicalTrampoline::GetProgress(ClientContext &context, GlobalSourceState &gstate_p) const {
+	auto &gstate = sink_state->Cast<TrampolineState>();
+	if (gstate.finished.load(std::memory_order_relaxed)) {
+		return ProgressData {1.0, 1.0, false};
+	}
+	// like the recursive CTE, the number of waves is unknown up front: converge towards
+	// 100% logarithmically in the rows emitted relative to the seed
+	const auto emitted = static_cast<double>(gstate.emitted_rows.load(std::memory_order_relaxed));
+	const auto anchor = static_cast<double>(MaxValue<idx_t>(gstate.seed_rows, 1));
+	auto fraction = 1 - 1 / (1 + std::log2(1 + emitted / anchor));
+	fraction = MinValue<double>(fraction, 0.999);
+	return gstate.progress.Update(ProgressData {fraction, 1.0, false});
 }
 
 InsertionOrderPreservingMap<string> PhysicalTrampoline::ParamsToString() const {
