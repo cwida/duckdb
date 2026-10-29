@@ -142,17 +142,17 @@ SELECT * FROM t;
 ----
 <REGEX>:Invalid Input Error.*selector.*
 
-# correlated trampolines are not supported yet
+# correlated shapes that would fabricate per-domain invocations stay rejected
 statement error
 SELECT * FROM (VALUES (1), (2)) v(x), LATERAL (
     WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
         (SELECT 1, v.x)
-        BRANCH 1: (SELECT 0, n FROM t)
+        BRANCH 1: (SELECT 0, count(*)::INTEGER FROM t)
     )
     SELECT n FROM t
 ) sq;
 ----
-<REGEX>:(Binder Error|Not implemented Error).*
+<REGEX>:Not implemented Error.*ungrouped aggregates over the wave.*
 
 # materialization hints are rejected for trampoline CTEs
 statement error
@@ -164,21 +164,8 @@ SELECT * FROM t;
 ----
 <REGEX>:Parser Error.*
 
-# correlation reaching the trampoline through a sibling CTE is also rejected
-statement error
-SELECT *
-FROM (VALUES (1), (2)) v(x),
-LATERAL (
-    WITH RECURSIVE
-        base(n) AS MATERIALIZED (SELECT v.x),
-        t(b, n) USING TRAMPOLINE (b) AS (
-            (SELECT 1, n FROM base)
-            BRANCH 1: (SELECT 0, n FROM t)
-        )
-    SELECT n FROM t
-) s;
-----
-<REGEX>:Not implemented Error.*TRAMPOLINE.*
+# correlation reaching the trampoline through a sibling CTE is supported now;
+# positive coverage lives in trampoline_correlated.test
 
 # selector types outside plain integers are rejected
 statement error

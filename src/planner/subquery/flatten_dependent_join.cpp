@@ -24,6 +24,8 @@
 #include "duckdb/planner/logical_plan_verifier.hpp"
 #include "duckdb/planner/subquery/rewrite_correlated_expressions.hpp"
 #include "duckdb/planner/operator/logical_dependent_join.hpp"
+#include "duckdb/planner/operator/logical_trampoline.hpp"
+#include "duckdb/planner/operator/logical_aggregate.hpp"
 
 #include <algorithm>
 
@@ -1614,6 +1616,114 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownCTE(unique_
 	return result;
 }
 
+namespace {
+
+//! Whether the subtree reads the trampoline's current wave (frontier reads are
+//! round state, not the wave)
+bool ReadsTrampolineWave(const LogicalOperator &op, TableIndex cte_index) {
+	if (op.type == LogicalOperatorType::LOGICAL_CTE_REF) {
+		auto &ref = op.Cast<LogicalCTERef>();
+		if (ref.cte_index == cte_index && !ref.is_frontier) {
+			return true;
+		}
+	}
+	for (auto &child : op.children) {
+		if (ReadsTrampolineWave(*child, cte_index)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+//! v1 rejection of branch shapes whose per-domain results exist independently of
+//! their wave: supporting them needs an active-domain contract (one invocation per
+//! domain present in the wave), which decorrelation's empty-aggregate recovery and
+//! independent-subtree domain attachment would otherwise fabricate.
+void RejectDomainFabricatingBranch(const LogicalOperator &op, TableIndex cte_index, idx_t branch_number) {
+	if (op.type == LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY) {
+		auto &aggregate = op.Cast<LogicalAggregate>();
+		if (aggregate.groups.empty() && ReadsTrampolineWave(op, cte_index)) {
+			throw NotImplementedException(
+			    "correlated TRAMPOLINE CTEs do not support ungrouped aggregates over the wave in BRANCH %llu yet",
+			    branch_number);
+		}
+	}
+	if (op.type == LogicalOperatorType::LOGICAL_UNION || op.type == LogicalOperatorType::LOGICAL_EXCEPT ||
+	    op.type == LogicalOperatorType::LOGICAL_INTERSECT) {
+		for (auto &child : op.children) {
+			if (!ReadsTrampolineWave(*child, cte_index)) {
+				throw NotImplementedException("correlated TRAMPOLINE CTEs do not support set-operation arms "
+				                              "independent of the wave in BRANCH %llu yet",
+				                              branch_number);
+			}
+		}
+	}
+	for (auto &child : op.children) {
+		RejectDomainFabricatingBranch(*child, cte_index, branch_number);
+	}
+}
+
+} // namespace
+
+FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownTrampoline(unique_ptr<LogicalOperator> &plan,
+                                                                                bool propagate_null_values,
+                                                                                vector<ColumnBinding> state) {
+	auto &trampoline = plan->Cast<LogicalTrampoline>();
+	for (idx_t branch_idx = 1; branch_idx < plan->children.size(); branch_idx++) {
+		if (!ReadsTrampolineWave(*plan->children[branch_idx], trampoline.table_index)) {
+			throw NotImplementedException(
+			    "correlated TRAMPOLINE CTEs require every branch to read the current wave (BRANCH %llu does not)",
+			    branch_idx);
+		}
+		RejectDomainFabricatingBranch(*plan->children[branch_idx], trampoline.table_index, branch_idx);
+	}
+	bool wants_admission = trampoline.emit_distinct;
+	for (auto distinct : trampoline.branch_distinct) {
+		wants_admission = wants_admission || distinct;
+	}
+	if (wants_admission) {
+		// the correlation domain joins the admission identity; its equality must be physical
+		for (auto &corr : correlated_columns) {
+			if (corr.type.id() == LogicalTypeId::VARCHAR && !StringType::GetCollation(corr.type).empty()) {
+				throw NotImplementedException(
+				    "DISTINCT admission on a correlated TRAMPOLINE CTE with collated outer columns is not supported");
+			}
+		}
+	}
+
+	auto old_seed_bindings = plan->children[0]->GetColumnBindings();
+	auto result = PushDownCorrelatedNode(plan->children[0], false, std::move(state));
+	ColumnBindingRewrite::ApplyToChild(plan, 0, std::move(old_seed_bindings), result.replacement_graph);
+
+	auto &cte = plan->Cast<LogicalCTE>();
+	cte.correlated_columns = correlated_columns;
+	binder.recursive_ctes[cte.table_index] = &cte;
+	for (idx_t branch_idx = 1; branch_idx < plan->children.size(); branch_idx++) {
+		PatchAccessingOperators(*plan->children[branch_idx], cte.table_index, correlated_columns);
+	}
+	InvalidateAccessCache();
+
+	// every branch starts from the same contiguous appended-domain layout
+	auto cte_state = CreateContiguousState(ColumnBinding(cte.table_index, ProjectionIndex(cte.column_count)));
+	for (idx_t branch_idx = 1; branch_idx < plan->children.size(); branch_idx++) {
+		auto old_bindings = plan->children[branch_idx]->GetColumnBindings();
+		auto branch_state = PushDownCorrelatedNode(plan->children[branch_idx], false, cte_state);
+		ColumnBindingRewrite::ApplyToChild(plan, branch_idx, std::move(old_bindings), branch_state.replacement_graph);
+		result.replacement_graph.Merge(branch_state.replacement_graph);
+	}
+	RewriteCorrelatedBindings(*plan, cte_state);
+
+#ifdef DEBUG
+	for (auto &child : plan->children) {
+		child->ResolveOperatorTypes();
+	}
+#endif
+
+	cte.column_count += correlated_columns.size();
+	result.bindings = std::move(cte_state);
+	return result;
+}
+
 FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownCTERef(unique_ptr<LogicalOperator> &plan) {
 	auto &cteref = plan->Cast<LogicalCTERef>();
 	auto positions = GetCTERefCorrelatedPositions(cteref);
@@ -1762,7 +1872,7 @@ FlattenDependentJoins::PushDownCorrelatedNodeInternal(unique_ptr<LogicalOperator
 	case LogicalOperatorType::LOGICAL_SAMPLE:
 		throw BinderException("Sampling in correlated subqueries is not (yet) supported");
 	case LogicalOperatorType::LOGICAL_TRAMPOLINE:
-		throw NotImplementedException("correlated TRAMPOLINE CTEs are not supported yet");
+		return PushDownTrampoline(plan, propagate_null_values, std::move(state));
 	case LogicalOperatorType::LOGICAL_POSITIONAL_JOIN:
 		throw BinderException("Positional join in correlated subqueries is not (yet) supported");
 	default:

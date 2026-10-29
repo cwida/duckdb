@@ -142,6 +142,8 @@ private:
 	UnnestingState PushDownDML(unique_ptr<LogicalOperator> &plan, bool propagate_null_values,
 	                           vector<ColumnBinding> state);
 	UnnestingState PushDownGet(unique_ptr<LogicalOperator> &plan, vector<ColumnBinding> state);
+	UnnestingState PushDownTrampoline(unique_ptr<LogicalOperator> &plan, bool propagate_null_values,
+	                                  vector<ColumnBinding> state);
 	UnnestingState PushDownCTE(unique_ptr<LogicalOperator> &plan, bool propagate_null_values,
 	                           vector<ColumnBinding> state);
 	UnnestingState PushDownCTERef(unique_ptr<LogicalOperator> &plan);

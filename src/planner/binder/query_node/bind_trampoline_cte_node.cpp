@@ -133,9 +133,10 @@ BoundStatement Binder::BindNode(TrampolineCTENode &statement) {
 		branch_binder->bind_context.AddCTEBinding(setop_index, BindingAlias(Identifier("frontier"), ctename),
 		                                          result.names, result.types);
 		auto branch = branch_binder->BindNode(*statement.branches[branch_idx]);
-		if (!branch_binder->correlated_columns.empty()) {
-			throw NotImplementedException("correlated TRAMPOLINE CTEs are not supported yet");
+		for (auto &corr : seed_binder->correlated_columns) {
+			branch_binder->AddCorrelatedColumn(corr);
 		}
+		MoveCorrelatedExpressions(*branch_binder);
 		if (branch.types.size() != result.types.size()) {
 			throw BinderException(
 			    "BRANCH %llu of TRAMPOLINE CTE \"%s\" returns %llu columns, but the seed defines %llu", branch_idx + 1,
@@ -143,9 +144,7 @@ BoundStatement Binder::BindNode(TrampolineCTENode &statement) {
 		}
 		branch_plans.push_back(CastLogicalOperatorToTypes(branch.types, result.types, std::move(branch.plan)));
 	}
-	if (!seed_binder->correlated_columns.empty()) {
-		throw NotImplementedException("correlated TRAMPOLINE CTEs are not supported yet");
-	}
+	MoveCorrelatedExpressions(*seed_binder);
 
 	auto seed_plan = std::move(seed.plan);
 	auto root = make_uniq<LogicalTrampoline>(ctename, setop_index, result.types.size(), selector_idx,
