@@ -417,6 +417,7 @@ BuildRecursivePipelineSchedulePlan(const vector<shared_ptr<MetaPipeline>> &meta_
 		}
 		auto &pipeline = *stage.pipeline;
 		bool has_source_tasks = false;
+		bool has_parallel_source = false;
 		if (stage.type == PipelineScheduleStageType::EXECUTE) {
 			plan->execute_pipeline_count++;
 			auto source = pipeline.GetSource();
@@ -434,11 +435,16 @@ BuildRecursivePipelineSchedulePlan(const vector<shared_ptr<MetaPipeline>> &meta_
 					plan->invalidate_operators.push_back(op_ref);
 				}
 			}
+			has_parallel_source = source && source->ParallelSource() &&
+			                      source->type != PhysicalOperatorType::RECURSIVE_CTE_SCAN &&
+			                      source->type != PhysicalOperatorType::RECURSIVE_RECURRING_CTE_SCAN &&
+			                      source->type != PhysicalOperatorType::CTE_SCAN;
+			plan->has_parallel_source = plan->has_parallel_source || has_parallel_source;
 		}
 		recursive_stage_indices[stage_idx] = plan->stages.size();
 		auto metric_type = pipeline_metric_types.find(pipeline);
 		D_ASSERT(metric_type != pipeline_metric_types.end());
-		plan->stages.emplace_back(stage.type, pipeline, has_source_tasks, metric_type->second,
+		plan->stages.emplace_back(stage.type, pipeline, has_source_tasks, has_parallel_source, metric_type->second,
 		                          invariant_build_pipelines.find(pipeline) != invariant_build_pipelines.end());
 	}
 	for (idx_t stage_idx = 0; stage_idx < schedule->stages.size(); stage_idx++) {
@@ -773,12 +779,15 @@ void ScheduleRecursivePlan(const RecursiveCTEPipelineSchedulePlan &plan, const R
 	for (auto &stage : plan.stages) {
 		auto pipeline = stage.pipeline.get().shared_from_this();
 		switch (stage.type) {
-		case PipelineScheduleStageType::EXECUTE:
+		case PipelineScheduleStageType::EXECUTE: {
+			const auto source_sized =
+			    stage.has_source_tasks || (context.scan_sources_use_source_workers && stage.has_parallel_source);
 			events.push_back(make_shared_ptr<RecursiveCTEPipelineEvent>(
 			    std::move(pipeline), context,
-			    stage.is_invariant_build ? configured_threads : parallelism.WorkerCount(stage.has_source_tasks),
+			    stage.is_invariant_build ? configured_threads : parallelism.WorkerCount(source_sized),
 			    stage.metric_type));
 			break;
+		}
 		case PipelineScheduleStageType::PREPARE_FINISH:
 			events.push_back(make_shared_ptr<PipelinePrepareFinishEvent>(std::move(pipeline)));
 			break;

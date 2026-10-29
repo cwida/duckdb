@@ -105,14 +105,18 @@ private:
 
 struct RecursiveCTEScheduleStage {
 	RecursiveCTEScheduleStage(PipelineScheduleStageType type_p, Pipeline &pipeline_p, bool has_source_tasks_p,
-	                          RecursiveCTEPipelineMetricType metric_type_p, bool is_invariant_build_p)
+	                          bool has_parallel_source_p, RecursiveCTEPipelineMetricType metric_type_p,
+	                          bool is_invariant_build_p)
 	    : type(type_p), pipeline(pipeline_p), has_source_tasks(has_source_tasks_p),
-	      is_invariant_build(is_invariant_build_p), metric_type(metric_type_p), dependency_count(0) {
+	      has_parallel_source(has_parallel_source_p), is_invariant_build(is_invariant_build_p),
+	      metric_type(metric_type_p), dependency_count(0) {
 	}
 
 	PipelineScheduleStageType type;
 	reference<Pipeline> pipeline;
 	bool has_source_tasks;
+	//! The source parallelizes independently of recursive inputs (e.g. a table scan)
+	bool has_parallel_source;
 	bool is_invariant_build;
 	RecursiveCTEPipelineMetricType metric_type;
 	vector<idx_t> dependents;
@@ -141,6 +145,8 @@ struct RecursiveCTEPipelineSchedulePlan {
 	idx_t execute_pipeline_count = 0;
 	idx_t cte_scan_pipeline_count = 0;
 	bool has_source_tasks = false;
+	//! Any execute stage reads a source that parallelizes independently of recursive inputs
+	bool has_parallel_source = false;
 	bool source_tasks_write_recursive_output = false;
 };
 
@@ -370,6 +376,9 @@ struct RecursiveSchedulingContext {
 	RecursiveCTESchedulerState &scheduler;
 	optional_ptr<RecursiveCTEMetrics> metrics;
 	optional_ptr<RecursiveCTEEpochMetrics> epoch_metrics;
+	//! Give stages with independent parallel sources the source-task worker count;
+	//! off by default so recursive CTE scheduling is unchanged
+	bool scan_sources_use_source_workers = false;
 };
 
 //! Shared with the trampoline operator: schedule-plan construction and the single-threaded inline execution helpers

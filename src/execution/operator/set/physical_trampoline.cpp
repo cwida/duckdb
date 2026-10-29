@@ -422,9 +422,6 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 	const auto use_active_plan = can_cache_invariant && materialized && branch.active_plan;
 	auto &plan = use_active_plan ? *branch.active_plan : *branch.plan;
 	auto &trivial_finish = use_active_plan ? branch.active_trivial_finish : branch.trivial_finish;
-	if (!branch.invariant_meta_pipelines.empty()) {
-		ConfigureInvariantRecursiveBuildReuse(branch.invariant_meta_pipelines, can_cache_invariant);
-	}
 
 	// one wave is executed by as many workers as its rows and chunks support; branches with
 	// independent source work (table scans) parallelize that work regardless of the wave size,
@@ -439,9 +436,10 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 		const auto work_units = MaxValue<idx_t>(gstate.current_input->ChunkCount() * scan_count, 1);
 		frontier_workers = MaxValue<idx_t>(MinValue(MinValue(row_limit, work_units), configured_threads), 1);
 	}
-	const auto source_task_workers = frontier_workers;
-	const auto go_parallel = plan.has_source_tasks
-	                             ? frontier_workers > 1
+	const auto has_independent_source = plan.has_source_tasks || plan.has_parallel_source;
+	const auto source_task_workers = has_independent_source ? configured_threads : frontier_workers;
+	const auto go_parallel = has_independent_source
+	                             ? configured_threads > 1
 	                             : (frontier_workers > 1 && input_rows >= TRAMPOLINE_PARALLEL_MIN_ROWS);
 	const auto workers = go_parallel ? MaxValue(frontier_workers, source_task_workers) : idx_t(1);
 
@@ -452,10 +450,14 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 		const auto worker_bound = sink_reset.invariant_build ? configured_threads : workers;
 		sink_reset.pipeline->ResetSinkForReschedule(worker_bound, sink_reset.single_producer);
 	}
+	// preserve-build flags live in the (re)created sink states, so set them after the resets
+	if (!branch.invariant_meta_pipelines.empty()) {
+		ConfigureInvariantRecursiveBuildReuse(branch.invariant_meta_pipelines, can_cache_invariant);
+	}
 
 	if (go_parallel) {
 		// the shared event-based schedule resets operator and source state itself
-		RecursiveSchedulingContext scheduling_context {executor, scheduler, nullptr, nullptr};
+		RecursiveSchedulingContext scheduling_context {executor, scheduler, nullptr, nullptr, true};
 		vector<shared_ptr<Event>> events;
 		ScheduleRecursivePlan(plan, scheduling_context, events,
 		                      RecursiveCTEParallelism(frontier_workers, source_task_workers));
@@ -491,6 +493,7 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 				auto build_threads = pipeline.GetMaxThreads();
 				build_threads = MinValue<idx_t>(MaxValue<idx_t>(build_threads, 1), configured_threads);
 				if (build_threads > 1) {
+					pipeline.ResetSourceForReschedule();
 					RecursiveSchedulingContext scheduling_context {executor, scheduler, nullptr, nullptr};
 					ExecuteRecursivePipelineEventInline(pipeline, scheduling_context, configured_threads, build_threads,
 					                                    stage.metric_type);
