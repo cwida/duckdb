@@ -85,3 +85,29 @@ SELECT r.n, t.n FROM r, t;
 1	100
 2	100
 3	100
+
+# a static lookup join inside a branch is retained across many waves
+statement ok
+CREATE TABLE step(k BIGINT, v BIGINT);
+
+statement ok
+INSERT INTO step SELECT i, i + 1 FROM range(2001) t(i);
+
+query II
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, 0::BIGINT)
+    BRANCH 1: (SELECT CASE WHEN s.v < 2000 THEN 1 ELSE 0 END, s.v FROM t JOIN step s ON s.k = t.n)
+)
+SELECT b, n FROM t;
+----
+0	2000
+
+# a branch probing a large static table from a small wave parallelizes the scan
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+    (SELECT 1, i * 7 FROM range(4096) r(i))
+    BRANCH 1: (SELECT 0, p.n FROM (SELECT r::INT AS n FROM range(100000) tbl(r)) p JOIN t ON p.n = t.n)
+)
+SELECT count(*) FROM t;
+----
+4096
