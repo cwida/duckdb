@@ -1649,10 +1649,22 @@ struct TrampolineWaveAnchoring {
 			return Anchored(*op.children[1]);
 		}
 		case LogicalOperatorType::LOGICAL_RECURSIVE_CTE:
-		case LogicalOperatorType::LOGICAL_TRAMPOLINE:
-			// nested iteration only runs once its seed produced rows, so every
-			// output row chains back to the seed
-			return Anchored(*op.children[0]);
+		case LogicalOperatorType::LOGICAL_TRAMPOLINE: {
+			// inductive proof for nested iteration: the seed must be anchored, and
+			// every member must stay anchored when the nested recursion's own
+			// references are assumed anchored. The recursive member executes even on
+			// an empty seed, so an independent member arm fabricates rows and seed
+			// anchoring alone proves nothing about the member's output.
+			auto &cte = op.Cast<LogicalCTE>();
+			bool anchored = Anchored(*op.children[0]);
+			if (anchored) {
+				anchored_ctes.insert(cte.table_index.index);
+			}
+			for (idx_t child_idx = 1; child_idx < op.children.size(); child_idx++) {
+				anchored = Anchored(*op.children[child_idx]) && anchored;
+			}
+			return anchored;
+		}
 		case LogicalOperatorType::LOGICAL_EMPTY_RESULT:
 			// produces no rows at all
 			return true;

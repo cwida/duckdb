@@ -411,3 +411,21 @@ SELECT o.k, q.n FROM (VALUES (1), (2)) o(k), LATERAL (
 ) q ORDER BY o.k;
 ----
 1	1
+
+# An independent arm inside a nested recursive MEMBER also fabricates: the member
+# executes even on an empty seed, so seed anchoring alone is not a proof.
+statement error
+SELECT o.k, q.n FROM (VALUES (1), (2)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.k WHERE o.k = 1)
+		BRANCH 1: (
+			WITH RECURSIVE r(n) AS (
+				SELECT t.n FROM t
+				UNION
+				(SELECT r.n FROM r WHERE r.n = 0 UNION ALL SELECT 99)
+			)
+			SELECT 0, n FROM r WHERE n = 99)
+	) SELECT n FROM t
+) q;
+----
+<REGEX>:Not implemented Error.*derive from its current wave.*
