@@ -93,6 +93,8 @@ void Executor::ScheduleEventsInternal(ScheduleEventData &event_data) {
 		throw InternalException("Cyclic dependency in pipeline schedule");
 	}
 	if (event_data.initial_schedule && recursive_ctes.empty()) {
+		// ResolveExternalInputs modeled these edges when selecting exchange consumer modes. Keep the guard
+		// conditions in sync: an edge the analysis never saw can gate a buffered consumer invisibly.
 		ScheduleRuntimeFilters(*schedule);
 	}
 	events.reserve(schedule->stages.size());
@@ -263,7 +265,9 @@ void Executor::InitializeInternal(PhysicalOperator &plan) {
 		// Resolve graph-dependent input modes after every pipeline and dependency has been constructed.
 		vector<shared_ptr<MetaPipeline>> to_schedule;
 		root_pipeline->GetMetaPipelines(to_schedule, true, true);
-		state.ResolveExternalInputs(to_schedule);
+		// Model the runtime-filter ordering edges under the same condition ScheduleRuntimeFilters uses below:
+		// this is the initial schedule, so only recursive CTEs disable them.
+		state.ResolveExternalInputs(to_schedule, recursive_ctes.empty());
 
 		profiler->Initialize(plan);
 		root_pipeline->Ready();

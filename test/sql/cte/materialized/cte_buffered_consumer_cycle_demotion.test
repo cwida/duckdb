@@ -73,3 +73,91 @@ query I
 SELECT count(*) FROM duckdb_logs WHERE type = 'PhysicalOperator' AND message LIKE '%mode=MATERIALIZED%';
 ----
 0
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+SET threads=4;
+
+statement ok
+CREATE TABLE rf_t AS SELECT (range % 2000000)::BIGINT k FROM range(8000000);
+
+# The runtime-filter scheduling edge ordering the rf_t scan after the join build gates the union-ordered
+# buffered consumer of c. The liveness analysis must model that edge and demote the consumer.
+query I
+WITH c AS MATERIALIZED (SELECT range i FROM range(2000000)),
+     d AS MATERIALIZED (SELECT i FROM c WHERE i % 100000 = 0)
+SELECT count(*) FROM (
+    SELECT g.k FROM (
+        SELECT k FROM (
+            (SELECT 0::BIGINT AS k)
+            UNION ALL
+            (SELECT k FROM rf_t GROUP BY k)
+            UNION ALL
+            (SELECT i AS k FROM c LIMIT 3)
+        ) u GROUP BY k
+    ) g JOIN d ON g.k = d.i
+) q;
+----
+20
+
+query I
+SELECT count(*) > 0 FROM duckdb_logs WHERE type = 'PhysicalOperator' AND message LIKE '%reason=GATED%';
+----
+true
+
+statement ok
+CREATE TEMP TABLE gated_with_filters AS
+SELECT count(*) AS demotions FROM duckdb_logs WHERE type = 'PhysicalOperator' AND message LIKE '%reason=GATED%';
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+SET disabled_optimizers='join_filter_pushdown';
+
+# Negative control: without the runtime-filter edge nothing gates the consumer in release builds, so no
+# demotion occurs there. Debug builds force CanSaturateThreads and the join-ordering dependencies, which
+# gate the consumer regardless of runtime filters, so the comparison below only requires that disabling
+# the optimizer never introduces additional demotions.
+query I
+WITH c AS MATERIALIZED (SELECT range i FROM range(2000000)),
+     d AS MATERIALIZED (SELECT i FROM c WHERE i % 100000 = 0)
+SELECT count(*) FROM (
+    SELECT g.k FROM (
+        SELECT k FROM (
+            (SELECT 0::BIGINT AS k)
+            UNION ALL
+            (SELECT k FROM rf_t GROUP BY k)
+            UNION ALL
+            (SELECT i AS k FROM c LIMIT 3)
+        ) u GROUP BY k
+    ) g JOIN d ON g.k = d.i
+) q;
+----
+20
+
+# A buffered consumer must exist either way, or the control is vacuous.
+query I
+SELECT count(*) > 0 FROM duckdb_logs WHERE type = 'PhysicalOperator' AND message LIKE '%mode=BUFFERED%';
+----
+true
+
+query I
+SELECT demotions >= (SELECT count(*) FROM duckdb_logs WHERE type = 'PhysicalOperator' AND message LIKE '%reason=GATED%')
+FROM gated_with_filters;
+----
+true
+
+statement ok
+DROP TABLE gated_with_filters;
+
+statement ok
+RESET disabled_optimizers;
+
+statement ok
+DROP TABLE rf_t;
+
+statement ok
+RESET threads;

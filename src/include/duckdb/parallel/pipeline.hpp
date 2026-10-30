@@ -95,7 +95,9 @@ public:
 	                         shared_ptr<Pipeline> cte_dependency, PhysicalCTE &cte, idx_t consumer_idx);
 	void AddCTEPipelineSelection(PhysicalCTE &cte, Pipeline &pipeline, shared_ptr<Pipeline> cte_dependency,
 	                             bool dependency_added);
-	void ResolveExternalInputs(const vector<shared_ptr<MetaPipeline>> &meta_pipelines);
+	//! model_runtime_filter_edges must mirror the executor's runtime-filter scheduling condition (initial
+	//! schedule without recursive CTEs), so the analysis sees the edges the executor will add.
+	void ResolveExternalInputs(const vector<shared_ptr<MetaPipeline>> &meta_pipelines, bool model_runtime_filter_edges);
 
 private:
 	unique_ptr<PipelineBuildStateData> data;

@@ -69,5 +69,8 @@ struct PipelineSchedule {
 unique_ptr<PipelineSchedule> BuildPipelineSchedule(const vector<shared_ptr<MetaPipeline>> &meta_pipelines,
                                                    PipelineScheduleMode mode = PipelineScheduleMode::COMPLETE);
 void ScheduleRuntimeFilters(PipelineSchedule &schedule);
+//! Adds the same ordering edges as ScheduleRuntimeFilters without clearing filters, so consumer selection can
+//! analyze the graph the executor will actually run.
+void AddRuntimeFilterScheduleDependencies(PipelineSchedule &schedule);
 
 } // namespace duckdb

@@ -1,0 +1,75 @@
+# name: test/sql/cte/materialized/cte_gated_buffered_consumer_runtime_filter.test
+# description: Runtime-filter scheduling edges must be visible to the exchange liveness analysis
+# group: [materialized]
+
+# The union-branch ordering and the exchange watermark sizes assume standard vectors.
+require vector_size 2048
+
+set query_timeout 60
+
+statement ok
+SET threads=4;
+
+statement ok
+CREATE TABLE t AS SELECT (range % 2000000)::BIGINT k FROM range(8000000);
+
+# The executor orders the t scan after the join build through a runtime-filter edge added after consumer
+# selection. The buffered consumer of c is ordered behind the t branch through the union's optional
+# dependency, and the build reads c through d, so the producer of c parks at the exchange watermark unless
+# the liveness analysis models that edge and demotes the buffered consumer. On regression this deadlocks
+# idle, hence the timeout.
+query I
+WITH c AS MATERIALIZED (SELECT range i FROM range(2000000)),
+     d AS MATERIALIZED (SELECT i FROM c WHERE i % 100000 = 0)
+SELECT count(*) FROM (
+    SELECT g.k FROM (
+        SELECT k FROM (
+            (SELECT 0::BIGINT AS k)
+            UNION ALL
+            (SELECT k FROM t GROUP BY k)
+            UNION ALL
+            (SELECT i AS k FROM c LIMIT 3)
+        ) u GROUP BY k
+    ) g JOIN d ON g.k = d.i
+) q;
+----
+20
+
+statement ok
+CREATE TABLE sel AS SELECT (range * 100000)::BIGINT k FROM range(10);
+
+statement ok
+CREATE TABLE t2 AS SELECT (range % 2000000)::BIGINT k FROM range(8000000);
+
+# Coexistence coverage: a runtime filter inside the CTE's own body alongside the union-gated shape. The
+# scan feeding c sits in the outer join's build closure and statistics can push a static filter into t2,
+# so this query need not add a runtime-filter scheduling edge; the modeled-edge demotion is pinned through
+# the operator log in cte_buffered_consumer_cycle_demotion.test instead.
+query I
+WITH c AS MATERIALIZED (SELECT t.k FROM t JOIN sel ON t.k = sel.k),
+     d AS MATERIALIZED (SELECT k FROM c WHERE k % 100000 = 0)
+SELECT count(*) FROM (
+    SELECT g.k FROM (
+        SELECT k FROM (
+            (SELECT 0::BIGINT AS k)
+            UNION ALL
+            (SELECT k FROM t2 GROUP BY k)
+            UNION ALL
+            (SELECT k FROM c LIMIT 3)
+        ) u GROUP BY k
+    ) g JOIN d ON g.k = d.k
+) q;
+----
+40
+
+statement ok
+DROP TABLE t;
+
+statement ok
+DROP TABLE sel;
+
+statement ok
+DROP TABLE t2;
+
+statement ok
+RESET threads;

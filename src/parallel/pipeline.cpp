@@ -1356,7 +1356,8 @@ void PipelineBuildState::AddCTEPipelineSelection(PhysicalCTE &cte, Pipeline &pip
 	data->cte_selections.emplace_back(cte, pipeline, std::move(cte_dependency), dependency_added);
 }
 
-void PipelineBuildState::ResolveExternalInputs(const vector<shared_ptr<MetaPipeline>> &meta_pipelines) {
+void PipelineBuildState::ResolveExternalInputs(const vector<shared_ptr<MetaPipeline>> &meta_pipelines,
+                                               bool model_runtime_filter_edges) {
 	if (data->external_input_candidates.empty() && data->buffered_consumers.empty()) {
 		return;
 	}
@@ -1416,6 +1417,17 @@ void PipelineBuildState::ResolveExternalInputs(const vector<shared_ptr<MetaPipel
 	vector<RemovedOptionalPipelineDependency> removed_dependencies;
 	while (true) {
 		auto schedule = BuildPipelineSchedule(meta_pipelines);
+		if (model_runtime_filter_edges) {
+			// The executor adds runtime-filter ordering edges to the final schedule under the same condition
+			// (Executor::ScheduleEventsInternal, initial schedule without recursive CTEs). Cycle detection and
+			// the exchange liveness analysis must see those edges: an edge they never saw can gate a buffered
+			// exchange consumer invisibly and deadlock the producer at the exchange watermark. The selection is
+			// a deterministic function of the schedule graph, so the final iteration models exactly the edges
+			// the executor will add. A modeled edge can also close a WITH_ANALYSIS cycle (TryAddDependency only
+			// guards against scheduled cycles); such cycles resolve through candidate or starved demotion like
+			// any other, or fail loudly below where the pre-fix behavior was a runtime deadlock.
+			AddRuntimeFilterScheduleDependencies(*schedule);
+		}
 		auto cycle = schedule->GetCycle();
 		if (cycle.empty()) {
 			auto starved = FindExchangeStarvedBufferedConsumer(*data, *schedule);
@@ -1458,7 +1470,15 @@ void PipelineBuildState::ResolveExternalInputs(const vector<shared_ptr<MetaPipel
 	for (auto &selection : data->cte_selections) {
 		selection.cte.get().SetPipelineSelectionResolved();
 	}
-	D_ASSERT(!BuildPipelineSchedule(meta_pipelines)->HasCycle());
+#ifdef D_ASSERT_IS_ENABLED
+	{
+		auto final_schedule = BuildPipelineSchedule(meta_pipelines);
+		if (model_runtime_filter_edges) {
+			AddRuntimeFilterScheduleDependencies(*final_schedule);
+		}
+		D_ASSERT(!final_schedule->HasCycle());
+	}
+#endif
 }
 
 } // namespace duckdb
