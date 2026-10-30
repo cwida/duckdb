@@ -1,0 +1,61 @@
+# name: test/sql/storage/external_file_cache/external_file_cache_exact_small_file.test
+# description: EXACT request sizing reads only the requested bytes of a file that fits in one cache block
+# group: [external_file_cache]
+
+require parquet
+
+# the cache skips local files unless forced, these tests exercise it with local files
+statement ok
+set cache_local_files=true;
+
+statement ok
+set enable_external_file_cache=true;
+
+# make the files fit in one cache block
+statement ok
+set external_file_cache_local_max_block_size=16777216;
+
+statement ok
+copy (select range i, md5(range::varchar) j from range(100000)) to '{TEST_DIR}/small_file_auto.parquet';
+
+statement ok
+copy (select range i, md5(range::varchar) j from range(100000)) to '{TEST_DIR}/small_file_exact.parquet';
+
+# with the default sizing, the first read of a file that fits in one block fetches it whole
+query I
+select count(*) from '{TEST_DIR}/small_file_auto.parquet';
+----
+100000
+
+query I
+select sum(nr_bytes) = (select size from read_blob('{TEST_DIR}/small_file_auto.parquet'))
+from duckdb_external_file_cache() where path like '%small_file_auto.parquet';
+----
+true
+
+# with EXACT, reading only the footer caches only the bytes that were read
+statement ok
+set external_file_cache_request_sizing='EXACT';
+
+query I
+select count(*) from '{TEST_DIR}/small_file_exact.parquet';
+----
+100000
+
+query I
+select sum(nr_bytes) < (select size from read_blob('{TEST_DIR}/small_file_exact.parquet')) / 10
+from duckdb_external_file_cache() where path like '%small_file_exact.parquet';
+----
+true
+
+# a later scan reads the column data and returns the right result
+query II
+select count(*), count(distinct j) from '{TEST_DIR}/small_file_exact.parquet';
+----
+100000	100000
+
+query I
+select sum(nr_bytes) <= (select size from read_blob('{TEST_DIR}/small_file_exact.parquet'))
+from duckdb_external_file_cache() where path like '%small_file_exact.parquet';
+----
+true

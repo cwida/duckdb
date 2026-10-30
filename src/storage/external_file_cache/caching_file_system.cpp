@@ -405,7 +405,8 @@ FileBufferHandleGroup CachingFileHandle::Read(const idx_t nr_bytes, const idx_t 
 	const idx_t min_block_size =
 	    MinValue(external_file_cache.GetCacheMinBlockSize(current_cached_file->path), max_block_size);
 	auto request_sizing = flags.GetRequestSizing();
-	switch (Settings::Get<ExternalFileCacheRequestSizingSetting>(db)) {
+	const auto sizing_setting = Settings::Get<ExternalFileCacheRequestSizingSetting>(db);
+	switch (sizing_setting) {
 	case ExternalFileCacheRequestSizing::GRID:
 		request_sizing = RequestSizing::BY_CACHE;
 		break;
@@ -417,8 +418,9 @@ FileBufferHandleGroup CachingFileHandle::Read(const idx_t nr_bytes, const idx_t 
 	}
 	idx_t fetch_location = location;
 	idx_t fetch_end = location + nr_bytes;
-	if (file_size <= max_block_size) {
-		// fetch a file that fits in one block whole, so later reads of it hit the cache
+	if (file_size <= max_block_size && sizing_setting != ExternalFileCacheRequestSizing::EXACT) {
+		// fetch a file that fits in one block whole, so later reads of it hit the cache, unless EXACT asks for only
+		// the requested bytes
 		fetch_location = 0;
 		fetch_end = file_size;
 	} else if (request_sizing == RequestSizing::BY_CACHE) {
