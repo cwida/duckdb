@@ -897,20 +897,58 @@ void ColumnData::FetchBaseRows(const QueryContext &context, const idx_t *offsets
 	}
 }
 
-idx_t ColumnData::FetchUpdateData(ColumnScanState &state, row_t *row_ids, Vector &base_vector, idx_t row_group_start) {
-	if (row_ids[0] < UnsafeNumericCast<row_t>(row_group_start)) {
-		throw InternalException("ColumnData::FetchUpdateData out of range");
+void ColumnData::FetchUpdateData(ColumnScanState &state, row_t *row_ids, idx_t update_count, Vector &base_vector,
+                                 idx_t row_group_start) {
+	D_ASSERT(update_count > 0 && update_count <= STANDARD_VECTOR_SIZE);
+	if (update_count * 4 > STANDARD_VECTOR_SIZE) {
+		// most of the vector is updated: scanning the whole vector is cheaper than fetching the rows
+		if (row_ids[0] < UnsafeNumericCast<row_t>(row_group_start)) {
+			throw InternalException("ColumnData::FetchUpdateData out of range");
+		}
+		ColumnData::Fetch(state, row_ids[0] - UnsafeNumericCast<row_t>(row_group_start), base_vector);
+		base_vector.Flatten();
+		return;
 	}
-	auto fetch_count = ColumnData::Fetch(state, row_ids[0] - UnsafeNumericCast<row_t>(row_group_start), base_vector);
-	base_vector.Flatten();
-	return fetch_count;
+	// all updated rows are in the same vector: only their base values are read by the update
+	vector<idx_t> offsets(update_count);
+	for (idx_t i = 0; i < update_count; i++) {
+		if (row_ids[i] < UnsafeNumericCast<row_t>(row_group_start)) {
+			throw InternalException("ColumnData::FetchUpdateData out of range");
+		}
+		offsets[i] = UnsafeNumericCast<idx_t>(row_ids[i]) - row_group_start;
+	}
+	const idx_t vector_start = offsets[0] / STANDARD_VECTOR_SIZE * STANDARD_VECTOR_SIZE;
+	Vector fetched(base_vector.GetType(), update_count);
+	FetchBaseRows(state.context, offsets.data(), *FlatVector::IncrementalSelectionVector(), update_count, fetched, 0);
+
+	// place every row at its position within the vector
+	auto &fetched_validity = FlatVector::Validity(fetched);
+	auto &base_validity = FlatVector::ValidityMutable(base_vector);
+	const bool copy_data = type.id() != LogicalTypeId::VALIDITY;
+	const idx_t type_size = GetTypeIdSize(base_vector.GetType().InternalType());
+	auto fetched_data = FlatVector::GetData(fetched);
+	auto base_data = FlatVector::GetDataMutable(base_vector);
+	for (idx_t i = 0; i < update_count; i++) {
+		const idx_t position = offsets[i] - vector_start;
+		D_ASSERT(position < STANDARD_VECTOR_SIZE);
+		if (copy_data) {
+			base_validity.Set(position, fetched_validity.RowIsValid(i));
+			memcpy(base_data + position * type_size, fetched_data + i * type_size, type_size);
+		} else if (!fetched_validity.RowIsValid(i)) {
+			// the validity column only adds NULLs on top of the validity fetched by the data column
+			base_validity.SetInvalid(position);
+		}
+	}
+	if (copy_data && base_vector.GetType().InternalType() == PhysicalType::VARCHAR) {
+		StringVector::AddHeapReference(base_vector, fetched);
+	}
 }
 
 void ColumnData::Update(TransactionData transaction, DuckTableEntry &table_entry, idx_t column_index,
                         Vector &update_vector, row_t *row_ids, idx_t update_count, idx_t row_group_start) {
 	Vector base_vector(type);
 	ColumnScanState state(nullptr);
-	FetchUpdateData(state, row_ids, base_vector, row_group_start);
+	FetchUpdateData(state, row_ids, update_count, base_vector, row_group_start);
 
 	UpdateInternal(transaction, table_entry, column_index, update_vector, row_ids, update_count, base_vector,
 	               row_group_start);

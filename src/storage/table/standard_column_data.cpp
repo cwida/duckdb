@@ -162,8 +162,8 @@ void StandardColumnData::Update(TransactionData transaction, DuckTableEntry &tab
 	ColumnScanState validity_state(nullptr);
 	Vector base_vector(type);
 
-	FetchUpdateData(standard_state, row_ids, base_vector, row_group_start);
-	validity->FetchUpdateData(validity_state, row_ids, base_vector, row_group_start);
+	FetchUpdateData(standard_state, row_ids, update_count, base_vector, row_group_start);
+	validity->FetchUpdateData(validity_state, row_ids, update_count, base_vector, row_group_start);
 
 	UpdateInternal(transaction, table_entry, column_index, update_vector, row_ids, update_count, base_vector,
 	               row_group_start);
