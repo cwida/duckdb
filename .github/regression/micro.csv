@@ -47,6 +47,7 @@ benchmark/micro/parquet/read_ahead_delayed_files.benchmark
 benchmark/micro/update/upsert_select_cast_key.benchmark
 benchmark/micro/update/upsert_enum_key.benchmark
 benchmark/micro/pushdown/view_filter_below_delim_join.benchmark
+benchmark/micro/table_function/lateral_generate_series.benchmark
 benchmark/micro/insert/bulk_insert_commit_batch.benchmark
 benchmark/micro/insert/bulk_insert_commit_parallel.benchmark
 benchmark/micro/insert/bulk_insert_commit_in_memory.benchmark

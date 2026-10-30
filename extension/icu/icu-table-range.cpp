@@ -72,6 +72,11 @@ struct ICUTableRange {
 			end.store(end_p.value, std::memory_order_relaxed);
 			current.store(start_p.value, std::memory_order_relaxed);
 		}
+
+		//! Input rows are independent, so an in-out call can use all threads
+		idx_t MaxThreads() const override {
+			return GlobalTableFunctionState::MAX_THREADS;
+		}
 	};
 
 	struct ICURangeLocalState : public LocalTableFunctionState {
@@ -113,6 +118,8 @@ struct ICUTableRange {
 	template <bool GENERATE_SERIES>
 	static void GenerateRangeDateTimeParameters(DataChunk &input, idx_t row_id, ICURangeLocalState &result) {
 		input.Flatten();
+		// the local state is reused for every input row
+		result.empty_range = false;
 		for (idx_t c = 0; c < input.ColumnCount(); c++) {
 			if (FlatVector::IsNull(input.data[c], row_id)) {
 				result.start = timestamp_tz_t::epoch();
