@@ -417,6 +417,7 @@ bool RelationManager::ExtractJoinRelations(JoinOrderOptimizer &optimizer, Logica
 	optional_ptr<LogicalOperator> limit_op = nullptr;
 	// pass through single child operators (but never past a non-reorderable op such as a DML node, which
 	// must be preserved as its own relation rather than skipped over and dropped during reconstruction)
+	auto filter_chain_start = filter_operators.size();
 	while (op->children.size() == 1 && !OperatorNeedsRelation(op->type) && !OperatorIsNonReorderable(*op)) {
 		if (op->type == LogicalOperatorType::LOGICAL_FILTER) {
 			if (HasNonReorderableChild(*op)) {
@@ -429,6 +430,8 @@ bool RelationManager::ExtractJoinRelations(JoinOrderOptimizer &optimizer, Logica
 		}
 		op = op->children[0].get();
 	}
+	// stacked filters are re-applied in this order: keep the lower (earlier evaluated) filters first
+	std::reverse(filter_operators.begin() + NumericCast<int64_t>(filter_chain_start), filter_operators.end());
 	bool non_reorderable_operation = false;
 	if (OperatorIsNonReorderable(*op)) {
 		// set operation, optimize separately in children
