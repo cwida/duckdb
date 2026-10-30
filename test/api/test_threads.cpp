@@ -5,7 +5,6 @@
 #include "duckdb/parallel/task_scheduler.hpp"
 #include "duckdb/parallel/pipeline.hpp"
 #include "duckdb/execution/executor.hpp"
-#include "duckdb/common/virtual_file_system.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/storage/storage_info.hpp"
 
@@ -67,8 +66,7 @@ TEST_CASE("Test database maximum_threads argument", "[api]") {
 	// FIXME: not yet
 	{
 		DuckDB db(nullptr);
-		auto file_system = make_uniq<VirtualFileSystem>();
-		REQUIRE(db.NumberOfThreads() == DBConfig().GetSystemMaxThreads(*file_system));
+		REQUIRE(db.NumberOfThreads() == DBConfig().GetSystemMaxThreads());
 	}
 	// but we can set another value
 	{
@@ -120,9 +118,8 @@ TEST_CASE("Test external threads", "[api]") {
 	REQUIRE(db.NumberOfThreads() == 13);
 
 	con.Query("RESET threads");
-	auto file_system = make_uniq<VirtualFileSystem>();
-	REQUIRE(config.options.maximum_threads == DBConfig().GetSystemMaxThreads(*file_system));
-	REQUIRE(db.NumberOfThreads() == DBConfig().GetSystemMaxThreads(*file_system));
+	REQUIRE(config.options.maximum_threads == DBConfig().GetSystemMaxThreads());
+	REQUIRE(db.NumberOfThreads() == DBConfig().GetSystemMaxThreads());
 }
 
 #ifndef DUCKDB_NO_THREADS

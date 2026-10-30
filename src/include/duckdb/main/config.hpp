@@ -356,8 +356,8 @@ public:
 	DUCKDB_API TypeManager &GetTypeManager();
 	DUCKDB_API CollationBinding &GetCollationBinding();
 	DUCKDB_API IndexTypeSet &GetIndexTypes();
-	static idx_t GetSystemMaxThreads(FileSystem &fs);
-	static idx_t GetSystemMaxAsyncThreads(FileSystem &fs);
+	static idx_t GetSystemMaxThreads();
+	static idx_t GetSystemMaxAsyncThreads();
 	static idx_t GetSystemAvailableMemory(FileSystem &fs);
 	static optional_idx ParseMemoryLimitSlurm(const string &arg);
 	void SetDefaultMaxMemory();
