@@ -11,6 +11,7 @@
 #include "duckdb/parser/constraints/foreign_key_constraint.hpp"
 #include "duckdb/parser/constraints/not_null_constraint.hpp"
 #include "duckdb/parser/constraints/unique_constraint.hpp"
+#include "duckdb/parser/expression/lambda_expression.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/constraints/bound_check_constraint.hpp"
 #include "duckdb/parser/parsed_expression_iterator.hpp"
@@ -124,9 +125,24 @@ struct ExtraConstraintInfo {
 	vector<Identifier> referenced_columns;
 };
 
-void ExtractReferencedColumns(const ParsedExpression &root_expr, vector<Identifier> &result) {
-	ParsedExpressionIterator::VisitExpression<ColumnRefExpression>(
-	    root_expr, [&](const ColumnRefExpression &colref) { result.emplace_back(colref.GetColumnName()); });
+//! The columns a CHECK reads, named as the CHECK binder resolves them. That is the first name, or the second when the
+//! first is the name of the table, while the names after it are struct fields
+void ExtractReferencedColumns(const TableCatalogEntry &table, const ParsedExpression &expr,
+                              vector<Identifier> &result) {
+	if (expr.GetExpressionClass() == ExpressionClass::LAMBDA &&
+	    expr.Cast<LambdaExpression>().GetLambdaSyntaxType() == LambdaSyntaxType::LAMBDA_KEYWORD) {
+		// the CHECK binder refuses columns in lambdas, so a lambda only names its own parameters. The arrow form is
+		// also the JSON operator, whose operands are read
+		return;
+	}
+	if (expr.GetExpressionClass() == ExpressionClass::COLUMN_REF) {
+		auto &names = expr.Cast<ColumnRefExpression>().ColumnNames();
+		const idx_t column_position = names.size() > 1 && names[0] == table.name ? 1 : 0;
+		result.emplace_back(names[column_position]);
+		return;
+	}
+	ParsedExpressionIterator::EnumerateChildren(
+	    expr, [&](const ParsedExpression &child) { ExtractReferencedColumns(table, child, result); });
 }
 
 ExtraConstraintInfo GetExtraConstraintInfo(const TableCatalogEntry &table, const Constraint &constraint) {
@@ -134,7 +150,7 @@ ExtraConstraintInfo GetExtraConstraintInfo(const TableCatalogEntry &table, const
 	switch (constraint.type) {
 	case ConstraintType::CHECK: {
 		auto &check_constraint = constraint.Cast<CheckConstraint>();
-		ExtractReferencedColumns(*check_constraint.expression, result.column_names);
+		ExtractReferencedColumns(table, *check_constraint.expression, result.column_names);
 		break;
 	}
 	case ConstraintType::NOT_NULL: {

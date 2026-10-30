@@ -6,6 +6,12 @@
   "inherit_skip_tests": "test/configs/force_storage.json",
   "skip_tests": [
     {
+      "reason": "The default of the column calls list_value of core_functions, which is not loaded while the WAL is replayed at the restart.",
+      "paths": [
+        "test/sql/alter/struct/add_col_struct_column_default.test"
+      ]
+    },
+    {
       "reason": "In-memory external resource type registry is instance-scoped and does not survive database restarts.",
       "paths": [
         "test/sql/table_function/external_resource_types.test",

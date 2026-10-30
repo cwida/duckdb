@@ -17,6 +17,12 @@
   "skip_compiled": "true",
   "skip_tests": [
     {
+      "reason": "Older versions cannot read the types of the tables left behind by the test.",
+      "paths": [
+        "test/sql/index/art/create_index_time_zone_dependent.test"
+      ]
+    },
+    {
       "reason": "Contains explicit use of the memory catalog.",
       "paths": [
         "test/sql/show_select/test_describe_all.test",

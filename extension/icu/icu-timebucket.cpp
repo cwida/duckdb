@@ -665,6 +665,7 @@ struct ICUTimeBucket : public ICUDateFunc {
 		set.AddFunction(timezone_fun);
 		set.ApplyToFunctions([](ScalarFunction &func) {
 			func.SetFallible();
+			func.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 			func.SetInitStateCallback(InitCalendarCache);
 			func.SetArgProperties(1, ArgProperties().NonDecreasing());
 		});

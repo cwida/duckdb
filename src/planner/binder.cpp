@@ -637,13 +637,14 @@ optional_ptr<CatalogEntry> Binder::GetCatalogEntry(const EntryLookupInfo &lookup
 }
 
 //! Create a binder whose catalog search path is anchored to the table's catalog+schema
-shared_ptr<Binder> Binder::CreateBinderWithSearchPath(const Identifier &catalog_name, const Identifier &schema_name) {
+shared_ptr<Binder> Binder::CreateBinderWithSearchPath(const Identifier &catalog_name,
+                                                      const vector<Identifier> &schema_path) {
 	shared_ptr<Binder> new_binder = Binder::CreateBinder(context, this);
 
 	vector<CatalogSearchEntry> search_path;
 
-	search_path.emplace_back(catalog_name, schema_name);
-	if (schema_name != DEFAULT_SCHEMA) {
+	search_path.push_back(CatalogSearchEntry::FromSchemaPath(catalog_name, schema_path));
+	if (schema_path.size() != 1 || schema_path[0] != DEFAULT_SCHEMA) {
 		search_path.emplace_back(catalog_name, DEFAULT_SCHEMA);
 	}
 	new_binder->entry_retriever.SetSearchPath(std::move(search_path));

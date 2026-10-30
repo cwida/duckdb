@@ -1,0 +1,237 @@
+# name: test/sql/index/art/create_index_time_zone_dependent.test
+# description: Index keys cannot depend on the TimeZone or Calendar setting, which other sessions bind them again under
+# group: [art]
+
+require icu
+
+statement ok
+SET TimeZone = 'UTC';
+
+statement ok
+CREATE TABLE t (id INTEGER, ts TIMESTAMPTZ, s VARCHAR, naive TIMESTAMP);
+
+statement ok
+INSERT INTO t VALUES (1, '2026-01-01 00:00:00+00', '2026-01-01 00:00:00', '2026-01-01 00:00:00');
+
+foreach expression ts::VARCHAR date_part('hour',ts) strftime(ts,'%H') ts::DATE s::TIMESTAMPTZ ts+INTERVAL'1day' timezone('UTC',ts)::VARCHAR [ts]::VARCHAR [ts]::VARCHAR[] [ts]::TIMESTAMPTZ[1]::VARCHAR[1] row(ts)::VARCHAR map([ts],[1])::MAP(VARCHAR,INTEGER) coalesce(ts::VARCHAR,s)
+
+statement error
+CREATE INDEX i ON t (({expression}));
+----
+Index keys cannot contain expressions with side effects. They also cannot depend on settings such as TimeZone
+
+statement error
+CREATE UNIQUE INDEX i ON t (({expression}));
+----
+Index keys cannot contain expressions with side effects. They also cannot depend on settings such as TimeZone
+
+endloop
+
+# a constant argument is not folded into a value that hides the dependency
+statement error
+CREATE INDEX i ON t ((id + hour(TIMESTAMPTZ '2026-01-01 00:00:00+00')));
+----
+Index keys cannot contain expressions with side effects. They also cannot depend on settings such as TimeZone
+
+# nor when it is folded away to NULL or evaluated by the bind of switch or date_part
+statement error
+CREATE INDEX i ON t ((coalesce(id + CASE WHEN hour(TIMESTAMPTZ '2026-01-01 00:00:00+00') = 0 THEN NULL ELSE 1 END, id)));
+----
+Index keys cannot contain expressions with side effects. They also cannot depend on settings such as TimeZone
+
+statement error
+CREATE INDEX i ON t ((switch(id, MAP {1: hour(TIMESTAMPTZ '2026-01-01 00:00:00+00')}, 99)));
+----
+Index keys cannot contain expressions with side effects. They also cannot depend on settings such as TimeZone
+
+statement error
+CREATE INDEX i ON t ((date_part(CASE WHEN hour(TIMESTAMPTZ '2026-01-01 00:00:00+00') = 0 THEN 'day' ELSE 'year' END, naive)));
+----
+Index keys cannot contain expressions with side effects. They also cannot depend on settings such as TimeZone
+
+# a cast that resolving the argument types adds, which the bind of switch evaluates
+statement error
+CREATE INDEX i ON t ((switch(ts, MAP {TIMESTAMP '2026-01-01 00:00:00': 1}, 0)));
+----
+Index keys cannot contain expressions with side effects. They also cannot depend on settings such as TimeZone
+
+# a cast folded into a constant argument
+statement error
+CREATE INDEX i ON t ((id + epoch_us(TIMESTAMPTZ '2026-01-01 00:00:00')));
+----
+Index keys cannot contain expressions with side effects. They also cannot depend on settings such as TimeZone
+
+# nor is a lambda body skipped
+statement error
+CREATE INDEX i ON t ((list_transform([ts], lambda x: hour(x))[1]));
+----
+Index keys cannot contain expressions with side effects. They also cannot depend on settings such as TimeZone
+
+statement error
+CREATE INDEX i ON t ((list_transform([ts], lambda x: x::VARCHAR)[1]));
+----
+Index keys cannot contain expressions with side effects. They also cannot depend on settings such as TimeZone
+
+# enum, union, map and struct casts forward that a cast of their values reads the TimeZone
+statement ok
+CREATE TYPE ts_enum AS ENUM ('2026-01-01 00:00:00');
+
+statement ok
+CREATE TABLE nested (ts TIMESTAMPTZ, e ts_enum, s VARCHAR);
+
+foreach expression e::TIMESTAMPTZ union_value(v:=ts)::VARCHAR [union_value(v:=ts)]::VARCHAR (map(['k'],[ts])::MAP(VARCHAR,VARCHAR))['k'] map_keys(map([ts],['k'])::MAP(VARCHAR,VARCHAR))[1] ({'k':ts}::MAP(VARCHAR,VARCHAR))['k'] (s::MAP(VARCHAR,TIMESTAMPTZ))['k'] map_keys(s::MAP(TIMESTAMPTZ,VARCHAR))[1]
+
+statement error
+CREATE INDEX i ON nested (({expression}));
+----
+Index keys cannot contain expressions with side effects. They also cannot depend on settings such as TimeZone
+
+endloop
+
+statement error
+CREATE INDEX i ON nested (((union_value(v := ts)::UNION(v VARCHAR)).v));
+----
+Index keys cannot contain expressions with side effects. They also cannot depend on settings such as TimeZone
+
+statement ok
+CREATE INDEX i_enum_text ON nested ((e::VARCHAR));
+
+# a generated column is expanded into the key
+statement ok
+CREATE TABLE generated (ts TIMESTAMPTZ, ts_text AS (ts::VARCHAR), ts_epoch AS (epoch_us(ts)));
+
+statement error
+CREATE INDEX i ON generated (ts_text);
+----
+Index keys cannot contain expressions with side effects. They also cannot depend on settings such as TimeZone
+
+statement ok
+CREATE INDEX i_generated_epoch ON generated (ts_epoch);
+
+# a cast to a union applies only the cast to the member it selects
+statement ok
+CREATE INDEX i_union_member ON t (((naive::UNION(a TIMESTAMPTZ, b TIMESTAMP)).b));
+
+statement ok
+CREATE INDEX i_map_text ON nested (((s::MAP(VARCHAR,VARCHAR))['k']));
+
+# keys that do not depend on the session are still allowed
+statement ok
+CREATE INDEX i_ts ON t (ts);
+
+statement ok
+CREATE INDEX i_epoch ON t ((epoch_us(ts)));
+
+statement ok
+CREATE INDEX i_naive ON t ((naive::VARCHAR));
+
+statement ok
+CREATE INDEX i_epoch_seconds ON t ((epoch(ts)));
+
+statement ok
+CREATE INDEX i_date_part_epoch ON t ((date_part('epoch', ts)));
+
+statement ok
+CREATE INDEX i_date_part_struct_epoch ON t ((date_part(['epoch'], ts).epoch));
+
+statement ok
+CREATE INDEX i_epoch_ns ON t ((epoch(ts::TIMESTAMPTZ_NS)));
+
+statement error
+CREATE INDEX i ON t ((date_part(['epoch', 'hour'], ts).epoch));
+----
+Index keys cannot contain expressions with side effects. They also cannot depend on settings such as TimeZone
+
+# a part that is not a constant can be any part
+statement error
+CREATE INDEX i ON t ((date_part(s, ts)));
+----
+Index keys cannot contain expressions with side effects. They also cannot depend on settings such as TimeZone
+
+# strptime reads the settings only for a format with a time zone
+statement error
+CREATE INDEX i ON t ((strptime(s, '%Y-%m-%d %H:%M:%S %Z')));
+----
+Index keys cannot contain expressions with side effects. They also cannot depend on settings such as TimeZone
+
+statement ok
+CREATE INDEX i_strptime ON t ((strptime(s, '%Y-%m-%d %H:%M:%S')));
+
+# make_timestamptz reads them only for its parts, not for microseconds
+statement error
+CREATE INDEX i ON t ((make_timestamptz(2026, 1, 1, id, 0, 0)));
+----
+Index keys cannot contain expressions with side effects. They also cannot depend on settings such as TimeZone
+
+statement ok
+CREATE INDEX i_make_timestamptz ON t ((make_timestamptz(epoch_us(ts))));
+
+# the age of one timestamp and the local time also depend on the start of the transaction
+foreach expression epoch(age(ts,ts)) epoch(age(ts)) naive<current_localtimestamp() current_localtime()::VARCHAR||s
+
+statement error
+CREATE INDEX i ON t (({expression}));
+----
+Index keys cannot contain expressions with side effects. They also cannot depend on settings such as TimeZone
+
+endloop
+
+statement ok
+SET TimeZone = 'Europe/Amsterdam';
+
+query I
+SELECT count(*) FROM t WHERE epoch_us(ts) = epoch_us(TIMESTAMPTZ '2026-01-01 01:00:00+01');
+----
+1
+
+statement ok
+DELETE FROM t WHERE id = 1;
+
+query I
+SELECT count(*) FROM t;
+----
+0
+
+# the functions stay consistent within a query, so the optimizer keeps rewriting and pruning their filters
+statement ok
+PRAGMA explain_output = OPTIMIZED_ONLY;
+
+statement ok
+CREATE TABLE days AS SELECT TIMESTAMPTZ '2000-01-01 00:00:00+00' + i * INTERVAL '1 day' AS ts FROM range(10000) r(i);
+
+query II
+EXPLAIN SELECT count(*) FROM days WHERE isoyear(ts) = 2010;
+----
+logical_opt	<REGEX>:.*ts >= .*ts <= .*
+
+query II
+EXPLAIN SELECT count(*) FROM days WHERE isoyear(ts) = 2010;
+----
+logical_opt	<!REGEX>:.*isoyear.*
+
+query II
+EXPLAIN SELECT count(*) FROM days WHERE era(ts) = 0;
+----
+logical_opt	<REGEX>:.*Empty Result.*
+
+# a cast that reads TimeZone stays consistent, so it is computed after grouping by its input
+query II
+EXPLAIN SELECT ts, ts::VARCHAR FROM days GROUP BY ts, ts::VARCHAR;
+----
+logical_opt	<REGEX>:.*Groups: ts .*
+
+statement ok
+ATTACH '{TEST_DIR}/create_index_time_zone_pruning.duckdb' AS pruning (ROW_GROUP_SIZE 2048);
+
+statement ok
+CREATE TABLE pruning.days AS SELECT TIMESTAMPTZ '2000-01-01 00:00:00+00' + i * INTERVAL '1 day' AS ts FROM range(8192) r(i);
+
+query I
+SELECT count(*) FROM pruning.days WHERE date_diff('day', TIMESTAMPTZ '2000-01-01 00:00:00+00', ts) = 3000;
+----
+1
+
+query II
+EXPLAIN ANALYZE SELECT ts FROM pruning.days WHERE date_diff('day', TIMESTAMPTZ '2000-01-01 00:00:00+00', ts) = 3000;
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 4.*

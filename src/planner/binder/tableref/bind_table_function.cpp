@@ -421,7 +421,7 @@ BoundStatement Binder::Bind(TableFunctionRef &ref) {
 	// it names an attached database, and otherwise the outermost schema of a (possibly nested) schema path.
 	EntryLookupInfo table_function_lookup(CatalogType::TABLE_FUNCTION_ENTRY, QualifiedName(fexpr.FunctionName()),
 	                                      error_context);
-	auto bound_name = BindTableName(fexpr.GetQualifiedName());
+	auto bound_name = BindTableName(entry_retriever, fexpr.GetQualifiedName());
 	auto &func_catalog =
 	    *GetCatalogEntry(EntryLookupInfo(table_function_lookup, bound_name), OnEntryNotFound::THROW_EXCEPTION);
 
