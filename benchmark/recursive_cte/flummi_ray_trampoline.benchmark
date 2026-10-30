@@ -1,8 +1,0 @@
-# name: benchmark/recursive_cte/flummi_ray_trampoline.benchmark
-# group: [recursive_cte]
-
-template benchmark/recursive_cte/flummi/recursive_cte_flummi.benchmark.in
-LOAD=ray
-QUERY=flummi_ray_trampoline
-BENCHMARK_NAME=Flummi recursive ray tracer, trampoline
-DESCRIPTION=Render the deterministic image through the trampoline translation with a frontier barrier
