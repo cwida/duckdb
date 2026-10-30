@@ -121,15 +121,27 @@ public:
 	void ResetBytesScanned();
 	//! Track memory allocated (thread-safe; always tracked).
 	DUCKDB_API void TrackTotalMemoryAllocated(idx_t amount);
-	//! Add to a metric counter (profiling-only).
+	// The metrics an extension reports for the running query, declared with ExtensionLoader::RegisterMetric. These
+	// calls are thread-safe and take a lock while profiling is enabled, so add up per-row figures locally first. Make
+	// them on threads the query waits for: an update that arrives after the query ends may be lost, or counted for the
+	// next query.
+
+	//! Add to a metric counter (profiling-only, thread-safe).
 	DUCKDB_API void AddToMetricCounter(const string &key, idx_t amount);
+	//! Add time measured elsewhere, in nanoseconds, to a timing metric, which is reported in seconds (profiling-only,
+	//! thread-safe). Unlike a timer it records no start and end time. For time a timer cannot measure, e.g. requests
+	//! that were made on other threads.
+	DUCKDB_API void AddToMetricTiming(const string &key, idx_t elapsed_ns);
 	//! Add parser time measured before the per-statement profiler was started.
 	void AddParserTime(const Profiler &parser_timer, timestamp_t start_time, timestamp_t end_time);
 
-	//! Set an arbitrary metric value (profiling-only; no-op when profiling is disabled).
+	//! Set the value of a metric an extension registered with ExtensionLoader::RegisterMetric, for the running query
+	//! (profiling-only). Any other name, including the profiler's own metrics, is ignored. Thread-safe, and may be
+	//! called while the statement binds or executes; a value set while a prepared statement binds is not kept for its
+	//! executions.
 	DUCKDB_API void SetMetric(const string &key, Value new_value);
-	//! Returns true if the given metric is currently being tracked.
-	//! Always returns false when profiling is disabled.
+	//! Returns true if the given metric is being tracked for the running query, also while the statement binds.
+	//! Always returns false when profiling is disabled or no query is being profiled.
 	DUCKDB_API bool MetricIsTracked(const string &key) const;
 
 	//! Start a timer for a metric identified by its struct type.
@@ -225,6 +237,8 @@ private:
 	unique_ptr<ProfilingNode> root;
 
 	unique_ptr<GatheredMetrics> metrics;
+	//! The tracked_metrics patterns of the running query, for MetricIsTracked before metrics exists
+	unique_ptr<GatheredMetrics> tracked_metric_patterns;
 
 	//! Top level query information.
 	QueryMetrics query_metrics;
