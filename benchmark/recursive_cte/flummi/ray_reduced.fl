@@ -1,0 +1,122 @@
+{
+  -- Reduced ray tracer over the original spheres scene: analytic nearest-hit
+  -- intersection, one bounce loop with reflection and shadow rays, a SYNC
+  -- barrier before image assembly, 96 by 64 image. Compiled with the pinned
+  -- Flummi revision; see README.md for the regeneration commands.
+  FORK px, py = §
+    SELECT x.i, y.i
+    FROM   range(96) AS x(i)
+    CROSS JOIN range(64) AS y(i)
+  §;
+
+  LET ox = §0::real§,
+      oy = §0::real§,
+      oz = §-4.5::real§,
+      step = §0§,
+      att = §1::real§,
+      sray = §false§,
+      cr = §0::real§,
+      cg = §0::real§,
+      cb = §0::real§,
+      live_sum = §0::bigint§;
+
+  LET dx = §((({px} + 0.5) / 96 - 0.5) * 1.5)::real / sqrt(((({px} + 0.5) / 96 - 0.5) * 1.5) ** 2 + ((0.5 - ({py} + 0.5) / 64) * 1.0) ** 2 + 1)§,
+      dy = §((0.5 - ({py} + 0.5) / 64) * 1.0)::real / sqrt(((({px} + 0.5) / 96 - 0.5) * 1.5) ** 2 + ((0.5 - ({py} + 0.5) / 64) * 1.0) ** 2 + 1)§,
+      dz = §1::real / sqrt(((({px} + 0.5) / 96 - 0.5) * 1.5) ** 2 + ((0.5 - ({py} + 0.5) / 64) * 1.0) ** 2 + 1)§;
+
+  LOOP {
+    LET live_sum = §{live_sum} + count(*) OVER ()§;
+
+    FORK hit_id, hit_t = §
+      SELECT coalesce(min_by(h.id, h.t), -1), coalesce(min(h.t), 0::real)
+      FROM (SELECT s.id,
+                   -(({ox} - s.center_x) * {dx} + ({oy} - s.center_y) * {dy} + ({oz} - s.center_z) * {dz})
+                   - sqrt((({ox} - s.center_x) * {dx} + ({oy} - s.center_y) * {dy} + ({oz} - s.center_z) * {dz}) ** 2
+                          - ((({ox} - s.center_x) ** 2 + ({oy} - s.center_y) ** 2 + ({oz} - s.center_z) ** 2) - s.radius ** 2)) AS t
+            FROM spheres AS s
+            WHERE (({ox} - s.center_x) * {dx} + ({oy} - s.center_y) * {dy} + ({oz} - s.center_z) * {dz}) ** 2
+                  > (({ox} - s.center_x) ** 2 + ({oy} - s.center_y) ** 2 + ({oz} - s.center_z) ** 2) - s.radius ** 2) AS h(id, t)
+      WHERE h.t > 0.0001
+    §;
+
+    IF §{sray}§ THEN {
+      LET cr = §{cr} * CASE WHEN coalesce((SELECT s.material = 'l' FROM spheres AS s WHERE s.id = {hit_id}), false) THEN 1::real ELSE 0.25::real END§,
+          cg = §{cg} * CASE WHEN coalesce((SELECT s.material = 'l' FROM spheres AS s WHERE s.id = {hit_id}), false) THEN 1::real ELSE 0.25::real END§,
+          cb = §{cb} * CASE WHEN coalesce((SELECT s.material = 'l' FROM spheres AS s WHERE s.id = {hit_id}), false) THEN 1::real ELSE 0.25::real END§;
+      BREAK
+    } ELSE {
+      IF §{hit_id} < 0§ THEN {
+        LET cr = §{att} * 0.05§,
+            cg = §{att} * 0.05§,
+            cb = §{att} * 0.10§;
+        BREAK
+      } ELSE {
+        FORK snx, sny, snz, mat, shade_r, shade_g, shade_b = §
+          SELECT ({ox} + {dx} * {hit_t} - s.center_x) / s.radius,
+                 ({oy} + {dy} * {hit_t} - s.center_y) / s.radius,
+                 ({oz} + {dz} * {hit_t} - s.center_z) / s.radius,
+                 s.material,
+                 {att} * coalesce(s.r, 1::real),
+                 {att} * coalesce(s.g, 1::real),
+                 {att} * coalesce(s.b, 1::real)
+          FROM   spheres AS s
+          WHERE  s.id = {hit_id}
+        §;
+
+        IF §{mat} = 'l'§ THEN {
+          LET cr = §{shade_r}§,
+              cg = §{shade_g}§,
+              cb = §{shade_b}§;
+          BREAK
+        } ELSE { IF §{mat} = 'r' AND {step} < 6§ THEN {
+          LET dx = §{dx} - {snx} * 2 * ({dx} * {snx} + {dy} * {sny} + {dz} * {snz})§,
+              dy = §{dy} - {sny} * 2 * ({dx} * {snx} + {dy} * {sny} + {dz} * {snz})§,
+              dz = §{dz} - {snz} * 2 * ({dx} * {snx} + {dy} * {sny} + {dz} * {snz})§,
+              ox = §{ox} + {dx} * {hit_t} + {snx} * 0.0001§,
+              oy = §{oy} + {dy} * {hit_t} + {sny} * 0.0001§,
+              oz = §{oz} + {dz} * {hit_t} + {snz} * 0.0001§,
+              att = §{att} * 0.8§,
+              step = §{step} + 1§
+        } ELSE {
+          -- Matte hit: shade into the color, aim a shadow ray at the light.
+          FORK cr, cg, cb, ox, oy, oz, dx, dy, dz, sray = §
+            SELECT {shade_r} * greatest(0.1, {snx} * (s.center_x - ({ox} + {dx} * {hit_t})) / sqrt((s.center_x - ({ox} + {dx} * {hit_t})) ** 2 + (s.center_y - ({oy} + {dy} * {hit_t})) ** 2 + (s.center_z - ({oz} + {dz} * {hit_t})) ** 2)
+                                       + {sny} * (s.center_y - ({oy} + {dy} * {hit_t})) / sqrt((s.center_x - ({ox} + {dx} * {hit_t})) ** 2 + (s.center_y - ({oy} + {dy} * {hit_t})) ** 2 + (s.center_z - ({oz} + {dz} * {hit_t})) ** 2)
+                                       + {snz} * (s.center_z - ({oz} + {dz} * {hit_t})) / sqrt((s.center_x - ({ox} + {dx} * {hit_t})) ** 2 + (s.center_y - ({oy} + {dy} * {hit_t})) ** 2 + (s.center_z - ({oz} + {dz} * {hit_t})) ** 2)),
+                   {shade_g} * greatest(0.1, {snx} * (s.center_x - ({ox} + {dx} * {hit_t})) / sqrt((s.center_x - ({ox} + {dx} * {hit_t})) ** 2 + (s.center_y - ({oy} + {dy} * {hit_t})) ** 2 + (s.center_z - ({oz} + {dz} * {hit_t})) ** 2)
+                                       + {sny} * (s.center_y - ({oy} + {dy} * {hit_t})) / sqrt((s.center_x - ({ox} + {dx} * {hit_t})) ** 2 + (s.center_y - ({oy} + {dy} * {hit_t})) ** 2 + (s.center_z - ({oz} + {dz} * {hit_t})) ** 2)
+                                       + {snz} * (s.center_z - ({oz} + {dz} * {hit_t})) / sqrt((s.center_x - ({ox} + {dx} * {hit_t})) ** 2 + (s.center_y - ({oy} + {dy} * {hit_t})) ** 2 + (s.center_z - ({oz} + {dz} * {hit_t})) ** 2)),
+                   {shade_b} * greatest(0.1, {snx} * (s.center_x - ({ox} + {dx} * {hit_t})) / sqrt((s.center_x - ({ox} + {dx} * {hit_t})) ** 2 + (s.center_y - ({oy} + {dy} * {hit_t})) ** 2 + (s.center_z - ({oz} + {dz} * {hit_t})) ** 2)
+                                       + {sny} * (s.center_y - ({oy} + {dy} * {hit_t})) / sqrt((s.center_x - ({ox} + {dx} * {hit_t})) ** 2 + (s.center_y - ({oy} + {dy} * {hit_t})) ** 2 + (s.center_z - ({oz} + {dz} * {hit_t})) ** 2)
+                                       + {snz} * (s.center_z - ({oz} + {dz} * {hit_t})) / sqrt((s.center_x - ({ox} + {dx} * {hit_t})) ** 2 + (s.center_y - ({oy} + {dy} * {hit_t})) ** 2 + (s.center_z - ({oz} + {dz} * {hit_t})) ** 2)),
+                   {ox} + {dx} * {hit_t} + {snx} * 0.0001,
+                   {oy} + {dy} * {hit_t} + {sny} * 0.0001,
+                   {oz} + {dz} * {hit_t} + {snz} * 0.0001,
+                   (s.center_x - ({ox} + {dx} * {hit_t})) / sqrt((s.center_x - ({ox} + {dx} * {hit_t})) ** 2 + (s.center_y - ({oy} + {dy} * {hit_t})) ** 2 + (s.center_z - ({oz} + {dz} * {hit_t})) ** 2),
+                   (s.center_y - ({oy} + {dy} * {hit_t})) / sqrt((s.center_x - ({ox} + {dx} * {hit_t})) ** 2 + (s.center_y - ({oy} + {dy} * {hit_t})) ** 2 + (s.center_z - ({oz} + {dz} * {hit_t})) ** 2),
+                   (s.center_z - ({oz} + {dz} * {hit_t})) / sqrt((s.center_x - ({ox} + {dx} * {hit_t})) ** 2 + (s.center_y - ({oy} + {dy} * {hit_t})) ** 2 + (s.center_z - ({oz} + {dz} * {hit_t})) ** 2),
+                   true
+            FROM   spheres AS s
+            WHERE  s.material = 'l'
+          §;
+          CONTINUE
+        } }
+      }
+    }
+  };
+
+  LET pixel = §
+    lpad((least({cr}, 1) * 255) :: int :: text, 3, ' ') || ' ' ||
+    lpad((least({cg}, 1) * 255) :: int :: text, 3, ' ') || ' ' ||
+    lpad((least({cb}, 1) * 255) :: int :: text, 3, ' ')
+  §;
+
+  SYNC;
+
+  GATHER pixels = §string_agg({pixel}, E'\n' ORDER BY {py}, {px})§,
+         bounce_rows = §max({live_sum})§;
+
+  LET image = §E'P3\n96 64\n255\n' || {pixels} || E'\n' || {bounce_rows} :: text§;
+  EMIT image;
+  STOP
+}

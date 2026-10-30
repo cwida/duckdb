@@ -24,3 +24,29 @@ ray query is intentionally not part of the RelDebug SQLLogicTest: binding and
 optimizing its 5,800-line plan takes roughly two minutes even when the rendered
 image is reduced further. The other selected programs have scaled correctness
 coverage in `test/sql/cte/recursive_cte_flummi.test_slow`.
+
+## Trampoline formulations
+
+Selected workloads have a `_trampoline` twin produced by
+`translate_trampoline.py`, a mechanical label-per-branch translation of the
+compiled recursive CTE into `WITH ... USING TRAMPOLINE`. A compiled `SYNC`
+barrier becomes a `frontier` read with `MERGE` branches. Each twin validates
+against the same answer as its recursive formulation.
+
+The full ray program translates to roughly 17,000 lines of generated SQL, too
+large to commit, so the trampoline twin for ray is `flummi_ray_reduced`: a
+reduced ray program (`ray_reduced.fl`, analytic sphere intersection, one bounce
+loop with reflection and shadow rays, a `SYNC` barrier before image assembly,
+96 by 64 pixels) over the unchanged spheres scene. The reduced pair preserves
+the structure the trampoline execution exercises: several per-label `MERGE`
+branches, barrier rounds, a frontier read, and a wide carried payload. The
+trampoline file duplicates the member per branch by construction, which puts
+its size floor near 1,500 lines at this payload width.
+
+Regenerate with the pinned Flummi revision:
+
+```bash
+flummi -d <db with load/ray.sql> ray_reduced.fl flummi_ray_reduced.sql
+# replace the trailing SELECT with the image_bytes/image_md5 validation form
+python3 translate_trampoline.py flummi_ray_reduced.sql flummi_ray_reduced_trampoline.sql
+```
