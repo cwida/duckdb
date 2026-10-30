@@ -79,6 +79,9 @@ struct RecursiveCTEScheduleStage {
 struct RecursiveCTEPipelineSchedulePlan {
 	vector<RecursiveCTEScheduleStage> stages;
 	vector<reference<Pipeline>> initialize_on_schedule_pipelines;
+	//! Deduplicated intermediate operators of this plan's execute stages. Their global operator
+	//! state is invalidated exactly once per iteration, before any stage prepares or executes.
+	vector<reference<PhysicalOperator>> invalidate_operators;
 	idx_t execute_pipeline_count = 0;
 	idx_t cte_scan_pipeline_count = 0;
 	bool has_source_tasks = false;

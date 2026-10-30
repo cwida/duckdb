@@ -1498,6 +1498,9 @@ public:
 	static void InitializeCreateMacroStmtTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeCreateMacroStmtTrampoline(PEGTransformer &transformer,
 	                                                                         GeneratedTransformProcess &process);
+	static void InitializeReturnsTypeTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeReturnsTypeTrampoline(PEGTransformer &transformer,
+	                                                                     GeneratedTransformProcess &process);
 	static void InitializeMacroOrFunctionTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeMacroOrFunctionTrampoline(PEGTransformer &transformer,
 	                                                                         GeneratedTransformProcess &process);
@@ -4805,6 +4808,7 @@ public:
 	static bool TransformFunctionKeyword(PEGTransformer &transformer);
 	static unique_ptr<MacroFunction> TransformMacroDefinition(PEGTransformer &transformer,
 	                                                          optional<vector<MacroParameter>> macro_parameters,
+	                                                          const optional<LogicalType> &returns_type,
 	                                                          unique_ptr<MacroFunction> macro_definition_body);
 	static vector<MacroParameter> TransformMacroParameters(PEGTransformer &transformer,
 	                                                       vector<MacroParameter> macro_parameter);

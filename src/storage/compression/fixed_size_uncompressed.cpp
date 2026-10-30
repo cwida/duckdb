@@ -187,21 +187,6 @@ void FixedSizeScan(ColumnSegment &segment, ColumnScanState &state, idx_t scan_co
 }
 
 //===--------------------------------------------------------------------===//
-// Fetch
-//===--------------------------------------------------------------------===//
-template <class T>
-void FixedSizeFetchRow(ColumnSegment &segment, ColumnFetchState &state, row_t row_id, Vector &result,
-                       idx_t result_idx) {
-	auto row_index = NumericCast<idx_t>(row_id);
-	auto &buffer_manager = BufferManager::GetBufferManager(segment.GetDatabase());
-	auto handle = buffer_manager.Pin(state.context, segment.GetBlockHandle());
-	auto reader = CompressionSegmentReader::FromSegment(handle, segment, "fixed-size segment");
-
-	// first fetch the data from the base table
-	FlatVector::GetDataMutable<T>(result)[result_idx] = reader.GetArrayElement<T>(0, segment.count, row_index);
-}
-
-//===--------------------------------------------------------------------===//
 // Append
 //===--------------------------------------------------------------------===//
 static unique_ptr<CompressionAppendState> FixedSizeInitAppend(ColumnSegment &segment) {
@@ -283,7 +268,7 @@ CompressionFunction FixedSizeGetFunction(PhysicalType data_type) {
 	return CompressionFunction(CompressionType::COMPRESSION_UNCOMPRESSED, data_type, FixedSizeInitAnalyze,
 	                           FixedSizeAnalyze, FixedSizeFinalAnalyze<T>, UncompressedFunctions::InitCompression,
 	                           UncompressedFunctions::Compress, UncompressedFunctions::FinalizeCompress,
-	                           FixedSizeInitScan, FixedSizeScan<T>, FixedSizeScanPartial<T>, FixedSizeFetchRow<T>,
+	                           FixedSizeInitScan, FixedSizeScan<T>, FixedSizeScanPartial<T>,
 	                           UncompressedFunctions::EmptySkip, nullptr, FixedSizeInitAppend,
 	                           FixedSizeAppend<T, APPENDER>, FixedSizeFinalizeAppend<T>);
 }

@@ -288,7 +288,7 @@ struct WindowQuantileState {
 				throw InternalException(idx_err.message());
 			}
 		} else {
-			throw InternalException("No accelerator for scalar QUANTILE");
+			InternalException::Throw("No accelerator for scalar QUANTILE");
 		}
 	}
 
@@ -382,7 +382,7 @@ inline Value QuantileNeg(const Value &v) {
 		case PhysicalType::INT128:
 			return Value::DECIMAL(QuantileNeg<hugeint_t>(integral), width, scale);
 		default:
-			throw InternalException("Unknown DECIMAL type");
+			InternalException::Throw("Unknown DECIMAL type");
 		}
 	}
 	default:

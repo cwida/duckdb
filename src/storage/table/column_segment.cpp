@@ -179,16 +179,6 @@ void ColumnSegment::ScanPartial(ColumnScanState &state, idx_t scan_count, Vector
 }
 
 //===--------------------------------------------------------------------===//
-// Fetch
-//===--------------------------------------------------------------------===//
-void ColumnSegment::FetchRow(ColumnFetchState &state, row_t row_id, Vector &result, idx_t result_idx) {
-	if (row_id < 0 || NumericCast<idx_t>(row_id) >= count) {
-		throw InternalException("ColumnSegment::FetchRow - row_id out of range for segment");
-	}
-	function.get().fetch_row(*this, state, row_id, result, result_idx);
-}
-
-//===--------------------------------------------------------------------===//
 // Append
 //===--------------------------------------------------------------------===//
 idx_t ColumnSegment::SegmentSize() const {
@@ -265,6 +255,12 @@ void ColumnSegment::MarkAsPersistent(shared_ptr<BlockHandle> block_p, uint32_t o
 	D_ASSERT(segment_type == ColumnSegmentType::TRANSIENT);
 	block_id = block_p->BlockId();
 	SetBlock(std::move(block_p), offset_p);
+}
+
+void ColumnSegment::UsePackedCopy(const shared_ptr<BlockHandle> &block_p, uint32_t offset_p) {
+	D_ASSERT(segment_type == ColumnSegmentType::TRANSIENT);
+	offset = offset_p;
+	block = block_p;
 }
 
 void ColumnSegment::SetBlock(shared_ptr<BlockHandle> block_p, uint32_t offset_p) {

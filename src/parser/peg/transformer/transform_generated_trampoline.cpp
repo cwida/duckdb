@@ -698,6 +698,9 @@ static const TransformFrameOps NONE_LITERAL_OPS = {"NoneLiteral",
 static const TransformFrameOps CREATE_MACRO_STMT_OPS = {"CreateMacroStmt",
                                                         &PEGTransformerFactory::InitializeCreateMacroStmtTrampoline,
                                                         &PEGTransformerFactory::FinalizeCreateMacroStmtTrampoline};
+static const TransformFrameOps RETURNS_TYPE_OPS = {"ReturnsType",
+                                                   &PEGTransformerFactory::InitializeReturnsTypeTrampoline,
+                                                   &PEGTransformerFactory::FinalizeReturnsTypeTrampoline};
 static const TransformFrameOps MACRO_OR_FUNCTION_OPS = {"MacroOrFunction",
                                                         &PEGTransformerFactory::InitializeMacroOrFunctionTrampoline,
                                                         &PEGTransformerFactory::FinalizeMacroOrFunctionTrampoline};
@@ -3538,6 +3541,7 @@ const case_insensitive_map_t<const TransformFrameOps *> &PEGTransformerFactory::
 	    {"DefArgStringLiteral", &DEF_ARG_STRING_LITERAL_OPS},
 	    {"NoneLiteral", &NONE_LITERAL_OPS},
 	    {"CreateMacroStmt", &CREATE_MACRO_STMT_OPS},
+	    {"ReturnsType", &RETURNS_TYPE_OPS},
 	    {"MacroOrFunction", &MACRO_OR_FUNCTION_OPS},
 	    {"MacroKeyword", &MACRO_KEYWORD_OPS},
 	    {"FunctionKeyword", &FUNCTION_KEYWORD_OPS},
@@ -9006,6 +9010,19 @@ PEGTransformerFactory::FinalizeCreateMacroStmtTrampoline(PEGTransformer &transfo
 	return transformer.MakeResult<unique_ptr<CreateStatement>>(std::move(result));
 }
 
+void PEGTransformerFactory::InitializeReturnsTypeTrampoline(PEGTransformer &transformer,
+                                                            GeneratedTransformProcess &process) {
+	auto &list_pr = process.parse_result.Cast<ListParseResult>();
+	process.ReserveChildSlots(1);
+	process.PushChild({transformer.GetRule(PEGRuleId::Type), list_pr.GetChild(1)}, 0);
+}
+
+arena_ptr<TransformResultValue>
+PEGTransformerFactory::FinalizeReturnsTypeTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process) {
+	auto result = process.TakeResult<LogicalType>(0);
+	return transformer.MakeResult<LogicalType>(result);
+}
+
 void PEGTransformerFactory::InitializeMacroOrFunctionTrampoline(PEGTransformer &transformer,
                                                                 GeneratedTransformProcess &process) {
 	auto &list_pr = process.parse_result.Cast<ListParseResult>();
@@ -9053,8 +9070,12 @@ PEGTransformerFactory::FinalizeFunctionKeywordTrampoline(PEGTransformer &transfo
 void PEGTransformerFactory::InitializeMacroDefinitionTrampoline(PEGTransformer &transformer,
                                                                 GeneratedTransformProcess &process) {
 	auto &list_pr = process.parse_result.Cast<ListParseResult>();
-	process.ReserveChildSlots(2);
-	process.PushChild({transformer.GetRule(PEGRuleId::MacroDefinitionBody), list_pr.GetChild(2)}, 1);
+	process.ReserveChildSlots(3);
+	process.PushChild({transformer.GetRule(PEGRuleId::MacroDefinitionBody), list_pr.GetChild(3)}, 2);
+	auto &returns_type_opt = list_pr.GetChild(1).Cast<OptionalParseResult>();
+	if (returns_type_opt.HasResult()) {
+		process.PushChild({transformer.GetRule(PEGRuleId::ReturnsType), returns_type_opt.GetResult()}, 1);
+	}
 	auto &macro_parameters_opt = ExtractResultFromParens(list_pr.GetChild(0)).Cast<OptionalParseResult>();
 	if (macro_parameters_opt.HasResult()) {
 		process.PushChild({transformer.GetRule(PEGRuleId::MacroParameters), macro_parameters_opt.GetResult()}, 0);
@@ -9068,8 +9089,13 @@ PEGTransformerFactory::FinalizeMacroDefinitionTrampoline(PEGTransformer &transfo
 	if (process.child_results[0]) {
 		macro_parameters = process.TakeResult<vector<MacroParameter>>(0);
 	}
-	auto macro_definition_body = process.TakeResult<unique_ptr<MacroFunction>>(1);
-	auto result = TransformMacroDefinition(transformer, std::move(macro_parameters), std::move(macro_definition_body));
+	optional<LogicalType> returns_type {};
+	if (process.child_results[1]) {
+		returns_type = process.TakeResult<LogicalType>(1);
+	}
+	auto macro_definition_body = process.TakeResult<unique_ptr<MacroFunction>>(2);
+	auto result = TransformMacroDefinition(transformer, std::move(macro_parameters), returns_type,
+	                                       std::move(macro_definition_body));
 	return transformer.MakeResult<unique_ptr<MacroFunction>>(std::move(result));
 }
 

@@ -1,0 +1,124 @@
+# name: test/sql/storage/fetch_consecutive_rows.test
+# description: Rows fetched by row id are scanned or selected per segment instead of fetched row by row; index maintenance and row id fetches stay correct
+# group: [storage]
+
+statement ok
+SET GLOBAL checkpoint_threshold = '10GB';
+
+# Each compression, with isolated rows, gaps and runs: an UPDATE of the key fetches every column
+# by row id. Scanned strings are copied into the result, since only the scan pins the blocks they point into.
+# DICTIONARY and FSST are only written by older storage versions, DICT_FSST only by newer ones. Each vector repeats
+# the strings of p in reverse order in its second half, so selected rows refer back to earlier dictionary entries, and
+# their lengths vary from string to string.
+statement ok
+CREATE MACRO crow(lo, hi) AS TABLE
+SELECT i AS id, i AS o, 'string_value_' || i AS s, 'category_value_' || (i % 10) AS l,
+       CASE WHEN i % 7 = 0 THEN NULL ELSE 'nullable_value_' || i END AS n, i // 100 AS r, i / 3 AS f, 42 AS c,
+       CASE WHEN i % 5 = 0 THEN NULL ELSE {'a': i, 'b': 'struct_value_' || i} END AS st,
+       CASE WHEN i % 3 = 0 THEN NULL ELSE [i, NULL, i + 1] END AS li,
+       'repeat_value_' || (i // 2048 * 1024 + least(i % 2048, 2047 - i % 2048)) ||
+       repeat('x', (i // 2048 * 1024 + least(i % 2048, 2047 - i % 2048)) % 13) AS p
+FROM range(lo, hi) r(i);
+
+foreach version v1.2.0 latest
+
+foreach compression uncompressed rle bitpacking alp alprd roaring dictionary fsst dict_fsst zstd auto
+
+statement ok
+ATTACH '{TEST_DIR}/fetch_consecutive_rows_{version}_{compression}.db' AS cdb (STORAGE_VERSION '{version}');
+
+statement ok
+SET force_compression = '{compression}';
+
+statement ok
+CREATE TABLE cdb.c (id BIGINT PRIMARY KEY, o BIGINT, s VARCHAR, l VARCHAR, n VARCHAR, r BIGINT, f DOUBLE, c INTEGER,
+                    st STRUCT(a BIGINT, b VARCHAR), li BIGINT[], p VARCHAR);
+
+statement ok
+INSERT INTO cdb.c SELECT * FROM crow(0, 20000);
+
+statement ok
+CHECKPOINT cdb;
+
+# Index scans return the columns they fetch by row id: isolated rows, rows whose strings of p go back in the
+# dictionary, a short run, and 40 rows of one vector.
+query II
+SELECT (SELECT count(*) FROM cdb.c WHERE id IN (5, 1100, 1500, 1900, 3148, 3548, 3948, 4101, 9000, 9001, 9002, 9003, 12293, 16389, 19999)),
+       (SELECT count(*) FROM (SELECT * FROM cdb.c WHERE id IN (5, 1100, 1500, 1900, 3148, 3548, 3948, 4101, 9000, 9001, 9002, 9003, 12293, 16389, 19999)
+                              EXCEPT SELECT * FROM crow(0, 20000)));
+----
+15	0
+
+query II
+SELECT (SELECT count(*) FROM cdb.c WHERE id IN (1100, 1101, 1102, 1103, 1104, 1105, 1106, 1107, 1108, 1109, 1110, 1111, 1112, 1113, 1114, 1115, 1116, 1117, 1118, 1119, 1120, 1121, 1122, 1123, 1124, 1125, 1126, 1127, 1128, 1129, 1130, 1131, 1132, 1133, 1134, 1135, 1136, 1137, 1138, 1139)),
+       (SELECT count(*) FROM (SELECT * FROM cdb.c WHERE id IN (1100, 1101, 1102, 1103, 1104, 1105, 1106, 1107, 1108, 1109, 1110, 1111, 1112, 1113, 1114, 1115, 1116, 1117, 1118, 1119, 1120, 1121, 1122, 1123, 1124, 1125, 1126, 1127, 1128, 1129, 1130, 1131, 1132, 1133, 1134, 1135, 1136, 1137, 1138, 1139) EXCEPT SELECT * FROM crow(0, 20000)));
+----
+40	0
+
+# deletes in descending row order within one transaction, so the commit fetches row ids that go backwards
+statement ok
+BEGIN;
+
+statement ok
+DELETE FROM cdb.c WHERE o BETWEEN 15000 AND 15999 AND o % 3 = 0;
+
+statement ok
+DELETE FROM cdb.c WHERE o BETWEEN 8000 AND 8999 AND o % 3 = 0;
+
+statement ok
+DELETE FROM cdb.c WHERE o < 1000 AND o % 3 = 0;
+
+statement ok
+COMMIT;
+
+statement ok
+INSERT INTO cdb.c SELECT * FROM crow(0, 20000)
+WHERE (o BETWEEN 15000 AND 15999 OR o BETWEEN 8000 AND 8999 OR o < 1000) AND o % 3 = 0;
+
+statement error
+INSERT INTO cdb.c SELECT * FROM crow(8001, 8002);
+----
+Duplicate key
+
+# isolated rows
+statement ok
+UPDATE cdb.c SET id = id + 1000000 WHERE o % 4096 = 5;
+
+# single rows with gaps
+statement ok
+UPDATE cdb.c SET id = id + 1000000 WHERE o % 64 = 45;
+
+# runs of 2
+statement ok
+UPDATE cdb.c SET id = id + 1000000 WHERE o % 64 < 2;
+
+# runs of 32
+statement ok
+UPDATE cdb.c SET id = id + 1000000 WHERE o % 64 BETWEEN 8 AND 39;
+
+# everything, in vectors with gaps where the rows above were deleted
+statement ok
+UPDATE cdb.c SET id = id + 1000000;
+
+query II
+SELECT (SELECT count(*) FROM cdb.c),
+       (SELECT count(*) FROM (SELECT * EXCLUDE (id) FROM cdb.c EXCEPT SELECT * EXCLUDE (id) FROM crow(0, 20000)));
+----
+20000	0
+
+query I
+SELECT count(*) FILTER (WHERE id <> o + CASE WHEN o % 4096 = 5 OR o % 64 = 45 OR o % 64 < 2 OR o % 64 BETWEEN 8 AND 39
+                                              THEN 2000000 ELSE 1000000 END)
+FROM cdb.c;
+----
+0
+
+statement ok
+DETACH cdb;
+
+endloop
+
+endloop
+
+statement ok
+SET force_compression = 'auto';

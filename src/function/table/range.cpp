@@ -75,6 +75,11 @@ struct RangeFunctionGlobalState : public GlobalTableFunctionState {
 	//! The number of values of the input rows, and the number of values that were generated
 	atomic<idx_t> total_values {0};
 	atomic<idx_t> generated_values {0};
+
+	//! Input rows are independent, so an in-out call can use all threads
+	idx_t MaxThreads() const override {
+		return GlobalTableFunctionState::MAX_THREADS;
+	}
 };
 
 static unique_ptr<GlobalTableFunctionState> RangeFunctionGlobalInit(ClientContext &context,
@@ -303,6 +308,11 @@ struct RangeDateTimeGlobalState : public GlobalTableFunctionState {
 		start.store(start_p.value, std::memory_order_relaxed);
 		end.store(end_p.value, std::memory_order_relaxed);
 		current.store(start_p.value, std::memory_order_relaxed);
+	}
+
+	//! Input rows are independent, so an in-out call can use all threads
+	idx_t MaxThreads() const override {
+		return GlobalTableFunctionState::MAX_THREADS;
 	}
 };
 

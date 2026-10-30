@@ -6,6 +6,7 @@
 #include "duckdb/function/aggregate/distributive_function_utils.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 #include "duckdb/common/serializer/deserializer.hpp"
+#include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/aggregate_function_catalog_entry.hpp"
 #include "duckdb/function/function_binder.hpp"
@@ -263,10 +264,14 @@ pair<BoundAggregateFunction, unique_ptr<FunctionData>> BindLogicalSum(ClientCont
 
 void SumNoOverflowSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data,
                             const BoundAggregateFunction &function) {
-	return;
+	// record whether the implementation was installed without a statistics proof (bound by name)
+	serializer.WritePropertyWithDefault<bool>(100, "fallible",
+	                                          function.GetErrorMode() == FunctionErrors::CAN_THROW_RUNTIME_ERROR);
 }
 
 unique_ptr<FunctionData> SumNoOverflowDeserialize(Deserializer &deserializer, BoundAggregateFunction &function) {
+	bool fallible = false;
+	deserializer.ReadPropertyWithExplicitDefault<bool>(100, "fallible", fallible, false);
 	auto &context = deserializer.Get<ClientContext &>();
 	auto &return_type = deserializer.Get<const LogicalType &>();
 	auto &children = deserializer.Get<const const_expression_list_t &>();
@@ -281,6 +286,9 @@ unique_ptr<FunctionData> SumNoOverflowDeserialize(Deserializer &deserializer, Bo
 	logical.first.ReplaceImplementation(function);
 	function = std::move(logical.first);
 	function.SetReturnType(return_type);
+	if (fallible) {
+		function.SetFallible();
+	}
 	return nullptr;
 }
 
@@ -334,6 +342,8 @@ unique_ptr<FunctionData> SumNoOverflowBind(BindAggregateFunctionInput &input) {
 	auto logical = BindLogicalSum(input.GetClientContext(), arguments);
 	if (parameter_type.id() != LogicalTypeId::DECIMAL) {
 		logical.first.ReplaceImplementation(GetSumAggregateNoOverflow(parameter_type.InternalType()));
+		// bound by name there is no statistics proof that the int64 accumulator cannot overflow
+		logical.first.SetFallible();
 	}
 	function = std::move(logical.first);
 	return std::move(logical.second);
@@ -447,6 +457,7 @@ AggregateFunction GetSumAggregate(PhysicalType type) {
 		function.GetSignature().GetParameter(0).SetName("arg");
 		function.SetStatisticsCallback(SumPropagateStats);
 		function.SetOrderDependent(AggregateOrderDependent::NOT_ORDER_DEPENDENT);
+		function.SetFallible(); // adding HUGEINT values to the HUGEINT accumulator throws on overflow
 		return function;
 	}
 	default:
@@ -471,8 +482,13 @@ AggregateFunction GetDecimalSumAggregate(PhysicalType type) {
 		return GetDecimalSumAggregate<int32_t, SumToHugeintOperation>(LogicalType::INTEGER);
 	case PhysicalType::INT64:
 		return GetDecimalSumAggregate<int64_t, SumToHugeintOperation>(LogicalType::BIGINT);
-	case PhysicalType::INT128:
-		return GetDecimalSumAggregate<hugeint_t, HugeintSumOperation>(LogicalType::HUGEINT);
+	case PhysicalType::INT128: {
+		auto function = GetDecimalSumAggregate<hugeint_t, HugeintSumOperation>(LogicalType::HUGEINT);
+		// wide decimal sums overflow the HUGEINT accumulator and the DECIMAL(38) bound in finalize - narrower
+		// widths accumulate at most 2^64 values of less than 10^18, which stays below both limits
+		function.SetFallible();
+		return function;
+	}
 	default:
 		// the sum of smaller decimals is accumulated in an int64_t, which always fits in a DECIMAL(38)
 		return GetSumAggregate(type);

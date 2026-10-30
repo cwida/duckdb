@@ -1801,7 +1801,7 @@ string_t CastFromUUIDToBlob::Operation(hugeint_t input, StringHeap &heap) {
 //===--------------------------------------------------------------------===//
 template <>
 bool TryCastToUUID::Operation(string_t input, hugeint_t &result, Vector &result_vector, CastParameters &parameters) {
-	return UUID::FromString(input.GetString(), result, parameters.strict);
+	return UUID::FromString(input, result, parameters.strict);
 }
 
 //===--------------------------------------------------------------------===//

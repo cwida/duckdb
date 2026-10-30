@@ -25,6 +25,7 @@ set(PARQUET_EXTENSION_FILES
     parquet_multi_file_info.cpp
     read_single_parquet_file.cpp
     parquet_metadata.cpp
+    parquet_page_index.cpp
     parquet_prefetch_cost_model.cpp
     parquet_reader.cpp
     parquet_field_id.cpp

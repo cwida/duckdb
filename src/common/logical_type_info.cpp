@@ -304,6 +304,20 @@ PhysicalType EnumTypeInfo::DictType(idx_t size) {
 	}
 }
 
+void EnumTypeInfo::ThrowDuplicateValue(const string_t &value) {
+	throw InvalidInputException("Attempted to create ENUM type with duplicate value %s", value.GetString());
+}
+
+void EnumTypeInfo::ThrowCorruptedIndex(idx_t index, idx_t size) {
+	throw SerializationException("Corrupted enum: string value index %llu exceeds enum size %u", index,
+	                             UnsafeNumericCast<uint32_t>(size));
+}
+
+void EnumTypeInfo::ThrowCorruptedCount(idx_t size, idx_t read_count) {
+	throw SerializationException("Corrupted enum: expected %u values, but found %llu",
+	                             UnsafeNumericCast<uint32_t>(size), read_count);
+}
+
 EnumTypeInfo::EnumTypeInfo(const Vector &values_insert_order_p, idx_t dict_size_p)
     : LogicalTypeInfo(LogicalTypeInfoType::ENUM_TYPE_INFO), values_insert_order(Vector::Ref(values_insert_order_p)),
       dict_type(EnumDictType::VECTOR_DICT), dict_size(dict_size_p) {

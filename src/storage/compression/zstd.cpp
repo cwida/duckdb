@@ -86,8 +86,6 @@ struct ZSTDStorage {
 	static void StringScanPartial(ColumnSegment &segment, ColumnScanState &state, idx_t scan_count, Vector &result,
 	                              idx_t result_offset);
 	static void StringScan(ColumnSegment &segment, ColumnScanState &state, idx_t scan_count, Vector &result);
-	static void StringFetchRow(ColumnSegment &segment, ColumnFetchState &state, row_t row_id, Vector &result,
-	                           idx_t result_idx);
 	static void StringSkip(ColumnSegment &segment, ColumnScanState &state, idx_t skip_count) {
 		// NO OP
 	}
@@ -800,8 +798,8 @@ public:
 			// Not the same vector
 			return false;
 		}
-		if (current_vector->scanned_count != internal_offset) {
-			// Not the same scan offset
+		if (current_vector->scanned_count > internal_offset) {
+			// Already past the scan offset
 			return false;
 		}
 		return true;
@@ -809,6 +807,9 @@ public:
 
 	ZSTDVectorScanState &LoadVector(idx_t vector_idx, idx_t internal_offset) {
 		if (UseVectorStateCache(vector_idx, internal_offset)) {
+			if (internal_offset > current_vector->scanned_count) {
+				Skip(*current_vector, internal_offset - current_vector->scanned_count);
+			}
 			return *current_vector;
 		}
 		auto metadata = GetVectorMetadata(vector_idx);
@@ -1068,15 +1069,6 @@ void ZSTDStorage::StringScan(ColumnSegment &segment, ColumnScanState &state, idx
 }
 
 //===--------------------------------------------------------------------===//
-// Fetch
-//===--------------------------------------------------------------------===//
-void ZSTDStorage::StringFetchRow(ColumnSegment &segment, ColumnFetchState &state, row_t row_id, Vector &result,
-                                 idx_t result_idx) {
-	ZSTDScanState scan_state(state.context, segment);
-	scan_state.ScanPartial(UnsafeNumericCast<idx_t>(row_id), result, result_idx, 1);
-}
-
-//===--------------------------------------------------------------------===//
 // Serialization & Cleanup
 //===--------------------------------------------------------------------===//
 
@@ -1117,11 +1109,11 @@ void ZSTDStorage::VisitBlockIds(const ColumnSegment &segment, BlockIdVisitor &vi
 //===--------------------------------------------------------------------===//
 CompressionFunction ZSTDFun::GetFunction(PhysicalType data_type) {
 	D_ASSERT(data_type == PhysicalType::VARCHAR);
-	auto zstd = CompressionFunction(
-	    CompressionType::COMPRESSION_ZSTD, data_type, ZSTDStorage::StringInitAnalyze, ZSTDStorage::StringAnalyze,
-	    ZSTDStorage::StringFinalAnalyze, ZSTDStorage::InitCompression, ZSTDStorage::Compress,
-	    ZSTDStorage::FinalizeCompress, ZSTDStorage::StringInitScan, ZSTDStorage::StringScan,
-	    ZSTDStorage::StringScanPartial, ZSTDStorage::StringFetchRow, ZSTDStorage::StringSkip);
+	auto zstd =
+	    CompressionFunction(CompressionType::COMPRESSION_ZSTD, data_type, ZSTDStorage::StringInitAnalyze,
+	                        ZSTDStorage::StringAnalyze, ZSTDStorage::StringFinalAnalyze, ZSTDStorage::InitCompression,
+	                        ZSTDStorage::Compress, ZSTDStorage::FinalizeCompress, ZSTDStorage::StringInitScan,
+	                        ZSTDStorage::StringScan, ZSTDStorage::StringScanPartial, ZSTDStorage::StringSkip);
 	zstd.init_segment = ZSTDStorage::StringInitSegment;
 	zstd.serialize_state = ZSTDStorage::SerializeState;
 	zstd.deserialize_state = ZSTDStorage::DeserializeState;

@@ -1,0 +1,210 @@
+# name: test/sql/catalog/function/macro_returns_type.test
+# description: RETURNS declares a result type on any scalar macro member, enforced as a cast
+# group: [function]
+
+# RETURNS needs storage v2.1.0+, so this test manages persistence itself
+require noforcestorage
+
+
+statement ok
+CREATE MACRO m(x) RETURNS INTEGER AS x + 1;
+
+query IT
+SELECT m(1), typeof(m(1));
+----
+2	INTEGER
+
+# RETURNS has standard CAST semantics: NULL passes through
+query I
+SELECT m(NULL);
+----
+NULL
+
+# ... and a value the type cannot represent is a runtime conversion error
+statement error
+SELECT m(2147483647::BIGINT * 2);
+----
+<REGEX>:.*Conversion Error.*
+
+statement ok
+DROP MACRO m;
+
+# the cast narrows a wider body result
+statement ok
+CREATE MACRO wide(x INTEGER) RETURNS SMALLINT AS x * 2;
+
+query T
+SELECT typeof(wide(3));
+----
+SMALLINT
+
+statement error
+SELECT wide(100000);
+----
+<REGEX>:.*Conversion Error.*
+
+# per-member RETURNS in one entry
+statement ok
+CREATE MACRO multi(x INTEGER) RETURNS BIGINT AS x, (x INTEGER, y INTEGER) RETURNS VARCHAR AS x + y;
+
+query TT
+SELECT typeof(multi(1)), typeof(multi(1, 2));
+----
+BIGINT	VARCHAR
+
+# RETURNS applies to window macros too
+statement ok
+CREATE MACRO wm(x) RETURNS DOUBLE AS sum(x);
+
+query T
+SELECT typeof(wm(i) OVER ()) FROM range(3) t(i) LIMIT 1;
+----
+DOUBLE
+
+# the declared type shows in duckdb_functions and renders back in the definition
+query TT rowsort
+SELECT return_type, macro_definition FROM duckdb_functions() WHERE function_name = 'multi';
+----
+BIGINT	x
+VARCHAR	(x + y)
+
+# RETURNS round-trips through EXPORT/IMPORT
+statement ok
+EXPORT DATABASE '{TEST_DIR}/macro_returns_type_export';
+
+statement ok
+DROP MACRO multi;
+
+statement ok
+DROP MACRO wide;
+
+statement ok
+DROP MACRO wm;
+
+statement ok
+IMPORT DATABASE '{TEST_DIR}/macro_returns_type_export';
+
+query TT
+SELECT typeof(multi(1)), typeof(multi(1, 2));
+----
+BIGINT	VARCHAR
+
+# a RETURNS type naming a user type resolves at CREATE
+statement ok
+CREATE TYPE rtype AS ENUM ('a', 'b');
+
+statement ok
+CREATE MACRO typed_return(x) RETURNS rtype AS x;
+
+query T
+SELECT typed_return('a');
+----
+a
+
+statement error
+SELECT typed_return('c');
+----
+<REGEX>:.*Conversion Error.*
+
+# table macros reject RETURNS
+statement error
+CREATE MACRO tm() RETURNS INTEGER AS TABLE SELECT 1;
+----
+<REGEX>:.*RETURNS types are not supported for table macros.*
+
+# protection test: macros without RETURNS keep their inferred types
+statement ok
+CREATE MACRO plain(x) AS x + 1;
+
+query T
+SELECT typeof(plain(1::SMALLINT));
+----
+SMALLINT
+
+# a top-level collation in a parameter or RETURNS type survives EXPORT/IMPORT
+statement ok
+ATTACH ':memory:' AS cex;
+
+statement ok
+USE cex;
+
+statement ok
+CREATE MACRO collated() RETURNS VARCHAR('nocase') AS true;
+
+statement ok
+CREATE MACRO collated_param(p VARCHAR('nocase')) AS p = 'A';
+
+query II
+SELECT collated() = 'TRUE', collated_param('a');
+----
+true	true
+
+statement ok
+EXPORT DATABASE '{TEST_DIR}/macro_collation_export';
+
+statement ok
+DROP MACRO collated;
+
+statement ok
+DROP MACRO collated_param;
+
+statement ok
+IMPORT DATABASE '{TEST_DIR}/macro_collation_export';
+
+query II
+SELECT collated() = 'TRUE', collated_param('a');
+----
+true	true
+
+statement ok
+USE memory;
+
+statement ok
+DETACH cex;
+
+# the FUNCTION keyword with a plain body and RETURNS parses through the CreateMacroStmt path
+statement ok
+CREATE FUNCTION fn_kw(x) RETURNS INTEGER AS x + 1;
+
+query IT
+SELECT fn_kw(1), typeof(fn_kw(1));
+----
+2	INTEGER
+
+statement ok
+DROP FUNCTION fn_kw;
+
+# the create-time gate rejects a persistent RETURNS macro below storage v2.1.0
+statement ok
+ATTACH '{TEST_DIR}/returns_old_version.db' AS old_db (STORAGE_VERSION 'v1.5.0');
+
+statement error
+CREATE MACRO old_db.gated() RETURNS INTEGER AS 1;
+----
+<REGEX>:.*only supported for storage versions v2.1.0 and higher.*
+
+# a TEMP macro is not persisted and passes the gate
+statement ok
+USE old_db;
+
+statement ok
+CREATE TEMP MACRO gated_temp() RETURNS INTEGER AS 1;
+
+query T
+SELECT typeof(gated_temp());
+----
+INTEGER
+
+statement ok
+USE memory;
+
+statement ok
+DETACH old_db;
+
+# plan inspection serializes RETURNS definitions at the complete current representation
+require json
+
+query I
+SELECT json_serialize_plan('CREATE MACRO jm() RETURNS VARCHAR AS 42') LIKE '%"error":false%';
+----
+true

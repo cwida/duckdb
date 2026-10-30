@@ -23,6 +23,12 @@
       ]
     },
     {
+      "reason": "Checks filter reordering performed by the optimizer.",
+      "paths": [
+        "test/optimizer/struct_cast_can_throw_reordering.test"
+      ]
+    },
+    {
       "reason": "Checks evaluation counts after optimizer filter pushdown.",
       "paths": [
         "test/optimizer/pushdown/lateral_projection_evaluation.test",
@@ -55,6 +61,13 @@
         "test/sql/types/geo/geometry_parquet_pushdown.test",
         "test/optimizer/statistics/statistics_filter_pruning.test",
         "test/sql/copy/parquet/parquet_expression_filter_pruning.test",
+        "test/sql/copy/parquet/page_index/page_index_read.test",
+        "test/sql/copy/parquet/page_index/page_index_prefetch.test",
+        "test/sql/copy/parquet/page_index/page_index_reference.test",
+        "test/sql/copy/parquet/page_index/page_index_robustness.test",
+        "test/sql/copy/parquet/page_index/page_index_cache.test",
+        "test/sql/copy/parquet/page_index/page_index_cache_disabled.test",
+        "test/sql/copy/parquet/page_index/page_index_cache_budget.test",
         "test/sql/copy/parquet/parquet_virtual_file_row_group_number.test",
         "test/sql/storage/prefetch/async_native_scan_read_ahead_pruning.test"
       ]

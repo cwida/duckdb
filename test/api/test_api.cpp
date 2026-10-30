@@ -643,6 +643,41 @@ TEST_CASE("Test parser tokenize", "[api]") {
 	REQUIRE(tokens.size() == expected.size());
 }
 
+TEST_CASE("Test parser tokenize of words the grammar matches literally", "[api]") {
+	// REPOSITORY, PREFIX, PUBLIC and KEYS are in none of the keyword lists, the grammar matches them literally;
+	// highlighting shows them as keywords, while names and quoted identifiers stay identifiers
+	string sql = "CREATE EXTENSION REPOSITORY r WITH PREFIX 'p' USING PUBLIC KEYS [\"prefix\"]";
+	auto tokens = Parser::Tokenize(sql);
+
+	using T = SimplifiedTokenType;
+	vector<pair<T, idx_t>> expected {
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 0},          // CREATE
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 7},          // EXTENSION
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 17},         // REPOSITORY
+	    {T::SIMPLIFIED_TOKEN_IDENTIFIER, 28},      // r
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 30},         // WITH
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 35},         // PREFIX
+	    {T::SIMPLIFIED_TOKEN_STRING_CONSTANT, 42}, // 'p'
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 46},         // USING
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 52},         // PUBLIC
+	    {T::SIMPLIFIED_TOKEN_KEYWORD, 59},         // KEYS
+	    {T::SIMPLIFIED_TOKEN_OPERATOR, 64},        // [
+	    {T::SIMPLIFIED_TOKEN_IDENTIFIER, 65},      // "prefix"
+	};
+	REQUIRE(tokens.size() >= expected.size());
+	for (idx_t i = 0; i < expected.size(); i++) {
+		REQUIRE(tokens[i].type == expected[i].first);
+		REQUIRE(tokens[i].start == expected[i].second);
+	}
+
+	// the grammar also matches the quotes of quoted identifiers literally: an unfinished one stays an identifier
+	for (auto &unfinished : {"\"", "`", "SELECT \""}) {
+		auto unfinished_tokens = Parser::Tokenize(unfinished);
+		REQUIRE(!unfinished_tokens.empty());
+		REQUIRE(unfinished_tokens.back().type == T::SIMPLIFIED_TOKEN_IDENTIFIER);
+	}
+}
+
 TEST_CASE("Test opening an invalid database file", "[api]") {
 	duckdb::unique_ptr<DuckDB> db;
 	bool success = false;

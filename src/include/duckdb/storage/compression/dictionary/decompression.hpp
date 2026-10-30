@@ -27,15 +27,13 @@ public:
 	explicit CompressedStringScanState(BufferHandle &&handle_p, const ColumnSegment &segment)
 	    : owned_handle(std::move(handle_p)), layout(ReadLayout(owned_handle, segment)) {
 	}
-	explicit CompressedStringScanState(BufferHandle &handle_p, const ColumnSegment &segment)
-	    : layout(ReadLayout(handle_p, segment)) {
-	}
 
 public:
 	void InitializeDictionary(const ColumnSegment &segment);
-	//! Scans require InitializeDictionary, fetch validates its selected entry instead.
+	//! Scans require InitializeDictionary, COPY_STRINGS scans validate their selected entries instead.
 	template <bool NEEDS_STRING_OFFSET_CHECK = false>
-	void ScanToFlatVector(Vector &result, idx_t result_offset, idx_t start, idx_t scan_count);
+	void ScanToFlatVector(Vector &result, idx_t result_offset, idx_t start, idx_t scan_count,
+	                      StringScanType string_scan_type = StringScanType::STANDARD);
 	void ScanToDictionaryVector(ColumnSegment &segment, Vector &result, idx_t result_offset, idx_t start,
 	                            idx_t scan_count);
 

@@ -21,7 +21,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
-#include <ctime>
 #include <fstream>
 
 #define TESTING_DIRECTORY_NAME "duckdb_unittest_tempdir"
@@ -328,31 +327,9 @@ bool DatabaseDestroyFires(bool success) {
 	}
 }
 
-// RUN_ID auto value: sortable UTC timestamp + mnemonic, e.g. 2026-07-01T14-30-22Z--crimson-torus-07.
-// Same shape as the pytest driver's, but colors+shapes here vs its adjectives+animals -- so an id's
-// vocabulary reveals which side minted it.
-static const char *const TEMP_DIR_COLORS[] = {"crimson", "scarlet", "azure",   "cobalt", "teal",    "olive",
-                                              "maroon",  "indigo",  "violet",  "coral",  "ochre",   "umber",
-                                              "jade",    "ivory",   "slate",   "sienna", "magenta", "cyan",
-                                              "khaki",   "russet",  "saffron", "mauve",  "bronze",  "copper"};
-static const char *const TEMP_DIR_SHAPES[] = {"cube",    "prism",   "sphere",  "cone",  "torus",   "helix",
-                                              "wedge",   "disc",    "ring",    "arch",  "spiral",  "prong",
-                                              "vane",    "cusp",    "node",    "facet", "obelisk", "pylon",
-                                              "lattice", "rhombus", "spindle", "dome",  "ingot",   "girder"};
-
 static string GenerateAutoRunId() {
-	std::time_t now = std::time(nullptr);
-	char ts[24] = {0};
-	std::strftime(ts, sizeof(ts), "%Y-%m-%dT%H-%M-%SZ", std::gmtime(&now));
-	// hugeint_t carries independent entropy in lower/upper; index each bank + the 2 digits.
-	auto uuid = UUID::GenerateRandomUUID();
-	auto n_colors = sizeof(TEMP_DIR_COLORS) / sizeof(TEMP_DIR_COLORS[0]);
-	auto n_shapes = sizeof(TEMP_DIR_SHAPES) / sizeof(TEMP_DIR_SHAPES[0]);
-	const char *color = TEMP_DIR_COLORS[uuid.lower % n_colors];
-	const char *shape = TEMP_DIR_SHAPES[static_cast<uint64_t>(uuid.upper) % n_shapes];
-	auto nn = static_cast<int>((uuid.lower >> 32) % 100);
-	string digits = (nn < 10 ? "0" : "") + std::to_string(nn);
-	return string(ts) + "--" + color + "-" + shape + "-" + digits;
+	// Keep the full UUID without timestamp or mnemonic overhead in Windows paths.
+	return UUID::ToString(UUID::GenerateRandomUUID());
 }
 
 // The caller's --run-id, or a generated one, cached for the invocation. Always resolved, even when
@@ -461,7 +438,7 @@ static void RecordAndCreateLevels(FileSystem &fs, const string &path, vector<str
 
 // Remove `leaf` recursively iff this step created it, then walk `created` bottom-up removing each
 // ancestor iff it is empty and this step created it. Stops at the first level that is neither.
-static void ReclaimLevels(FileSystem &fs, const string &leaf, const vector<string> &created) {
+void ReclaimTestDirectoryLevels(FileSystem &fs, const string &leaf, const vector<string> &created) {
 	// The leaf obeys the same rule as its ancestors: reclaim only what THIS step created. RemoveDirectory
 	// is always recursive, so a run that adopted a pre-existing dir -- a reused --run-id, or $ROOT itself
 	// when --temp-dir-run-id is off -- would otherwise delete contents it does not own.
@@ -483,7 +460,10 @@ static void ReclaimLevels(FileSystem &fs, const string &leaf, const vector<strin
 			break; // shared with someone else's content -> stop
 		}
 		try {
-			fs.RemoveDirectory(level);
+			// Another run may populate this ancestor after the emptiness check.
+			if (!fs.RemoveDirectoryExtended(level, {RemoveDirectoryMode::SINGLE})) {
+				break;
+			}
 		} catch (...) {
 			break;
 		}
@@ -550,13 +530,13 @@ void DestroyTempDir(bool success) {
 	// HOME first: it sits under $ROOT, so leaving it would fail the emptiness check in the ancestor
 	// walk below and strand a root this run owns. Reclaimed on the same created/adopted rule --
 	// co-located batches share one HOME path, and an adopted one may be another batch's live sandbox.
-	ReclaimLevels(*fs, GetTempDirHome(), home_created_levels);
+	ReclaimTestDirectoryLevels(*fs, GetTempDirHome(), home_created_levels);
 	// The root subsumes any leftover per-test dirs; ancestors go only up to a pre-existing $ROOT.
-	ReclaimLevels(*fs, TreeRunIdRoot(LocalRoot()).ToString(), run_created_levels);
+	ReclaimTestDirectoryLevels(*fs, TreeRunIdRoot(LocalRoot()).ToString(), run_created_levels);
 }
 
 // Fired at test end with THIS test's pass/fail. Only the $TEST_ID level is in scope -- $RUN_ID/$ROOT
-// were made by PrepareTempDir, so ReclaimLevels stops there.
+// were made by PrepareTempDir, so ReclaimTestDirectoryLevels stops there.
 void DestroyTestTempDir(bool success) {
 	ActiveTestTempDir entry;
 	{
@@ -570,7 +550,7 @@ void DestroyTestTempDir(bool success) {
 	}
 	if (!entry.leaf.empty() && DestroyFires(temp_dir_destroy, success)) {
 		duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
-		ReclaimLevels(*fs, entry.leaf, entry.created_levels);
+		ReclaimTestDirectoryLevels(*fs, entry.leaf, entry.created_levels);
 	}
 }
 

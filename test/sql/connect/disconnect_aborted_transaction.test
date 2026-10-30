@@ -7,7 +7,9 @@ require quack
 require httpfs
 
 statement ok
-CALL quack_serve('quack:127.0.0.1:9619', token = 'test_token');
+SET VARIABLE server_uri = (SELECT concat('''', listen_uri, '''') FROM quack_serve('quack:127.0.0.1:0', token='test_token'));
+
+set variable server_uri <variable:server_uri>
 
 statement ok
 CREATE TABLE remote_t (i INT);
@@ -16,7 +18,7 @@ statement ok
 CREATE TABLE local_t (i INT);
 
 statement ok
-ATTACH 'quack:127.0.0.1:9619' AS qk (TOKEN 'test_token');
+ATTACH {server_uri} AS qk (TOKEN 'test_token');
 
 statement ok
 BEGIN;
@@ -59,4 +61,4 @@ SELECT (SELECT count(*) FROM local_t), (SELECT count(*) FROM remote_t);
 0	0
 
 statement ok
-CALL quack_stop('quack:127.0.0.1:9619');
+CALL quack_stop({server_uri});

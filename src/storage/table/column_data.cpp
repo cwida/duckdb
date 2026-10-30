@@ -232,11 +232,7 @@ idx_t ColumnData::ScanVector(ColumnScanState &state, Vector &result, idx_t remai
 		idx_t result_offset = base_result_offset + initial_remaining - remaining;
 		if (scan_count > 0) {
 			if (state.scan_options && state.scan_options->force_fetch_row) {
-				for (idx_t i = 0; i < scan_count; i++) {
-					ColumnFetchState fetch_state;
-					current.FetchRow(fetch_state, UnsafeNumericCast<row_t>(state.offset_in_column + i - current_start),
-					                 result, result_offset + i);
-				}
+				FetchScannedRows(state, *FlatVector::IncrementalSelectionVector(), scan_count, result, result_offset);
 			} else {
 				current.Scan(state, scan_count, result, result_offset, scan_type);
 			}
@@ -263,7 +259,7 @@ idx_t ColumnData::ScanVector(ColumnScanState &state, Vector &result, idx_t remai
 }
 
 void ColumnData::SelectVector(ColumnScanState &state, Vector &result, idx_t target_count, const SelectionVector &sel,
-                              idx_t sel_count, ScanVectorType scan_type) {
+                              idx_t sel_count, ScanVectorType scan_type, idx_t result_offset) {
 	BeginScanVectorInternal(state);
 	// scratch space to rebase the selection vector to the start of a segment scan
 	// this owns its data, as compression functions can retain the selection vector (e.g. by slicing the result)
@@ -302,13 +298,10 @@ void ColumnData::SelectVector(ColumnScanState &state, Vector &result, idx_t targ
 				segment_sel = rebased_sel;
 			}
 			if (state.scan_options && state.scan_options->force_fetch_row) {
-				for (idx_t i = 0; i < segment_sel_count; i++) {
-					ColumnFetchState fetch_state;
-					auto source_idx = state.offset_in_column + segment_sel.get().get_index(i) - current_start;
-					current.FetchRow(fetch_state, UnsafeNumericCast<row_t>(source_idx), result, sel_offset + i);
-				}
+				FetchScannedRows(state, segment_sel.get(), segment_sel_count, result, result_offset + sel_offset);
 			} else {
-				current.Select(state, scan_count, result, segment_sel.get(), segment_sel_count, sel_offset, scan_type);
+				current.Select(state, scan_count, result, segment_sel.get(), segment_sel_count,
+				               result_offset + sel_offset, scan_type);
 			}
 			segment_internal_index = state.offset_in_column + scan_count;
 		}
@@ -328,7 +321,7 @@ void ColumnData::SelectVector(ColumnScanState &state, Vector &result, idx_t targ
 	}
 	if (scan_type == ScanVectorType::SCAN_FLAT_VECTOR) {
 		// not every compression function sets the size of the result
-		FlatVector::SetSize(result, count_t(sel_count));
+		FlatVector::SetSize(result, count_t(result_offset + sel_count));
 	}
 	state.internal_index = segment_internal_index;
 }
@@ -784,17 +777,68 @@ void ColumnData::FetchRows(TransactionData transaction, ColumnFetchState &state,
 	FetchRowsAtSegmentLevel(transaction, state, offsets, sel, fetch_count, result, result_offset);
 }
 
+#ifdef D_ASSERT_IS_ENABLED
+//! Verify that no scanned string points into the segment's block, which is unpinned once the fetch is done
+static void VerifyStringsCopied(ColumnSegment &segment, Vector &result, idx_t result_offset, idx_t count) {
+	if (segment.GetType().InternalType() != PhysicalType::VARCHAR || !segment.GetBlockHandle()) {
+		return;
+	}
+	auto &buffer_manager = segment.GetBlockHandle()->GetMemory().GetBufferManager();
+	auto handle = buffer_manager.Pin(segment.GetBlockHandle());
+	auto block_start = handle.Ptr();
+	// transient segments can be smaller than a block, so bound by the pinned buffer rather than the block size
+	auto block_end = block_start + handle.GetFileBuffer().Size();
+	auto strings = FlatVector::GetData<string_t>(result);
+	auto &validity = FlatVector::Validity(result);
+	for (idx_t i = result_offset; i < result_offset + count; i++) {
+		if (!validity.RowIsValid(i) || strings[i].IsInlined()) {
+			continue;
+		}
+		auto str_ptr = const_data_ptr_cast(strings[i].GetData());
+		if (str_ptr >= block_start && str_ptr < block_end) {
+			throw InternalException("FetchRowsAtSegmentLevel: scanned string points into the segment's block, "
+			                        "the compression function ignored StringScanType::COPY_STRINGS");
+		}
+	}
+}
+#endif
+
 void ColumnData::FetchRowsAtSegmentLevel(TransactionData transaction, ColumnFetchState &state, const idx_t *offsets,
                                          const SelectionVector &sel, idx_t fetch_count, Vector &result,
                                          idx_t result_offset) {
 	if (fetch_count == 0) {
 		return;
 	}
+	FetchBaseRows(state.context, offsets, sel, fetch_count, result, result_offset);
+	{
+		const lock_guard<mutex> update_guard(update_lock);
+		if (updates) {
+			updates->FetchRows(transaction, offsets, sel, fetch_count, result, result_offset);
+		}
+	}
+}
 
+void ColumnData::FetchScannedRows(ColumnScanState &state, const SelectionVector &sel, idx_t count, Vector &result,
+                                  idx_t result_offset) {
+	vector<idx_t> offsets(count);
+	for (idx_t i = 0; i < count; i++) {
+		offsets[i] = state.offset_in_column + sel.get_index(i);
+	}
+	FetchBaseRows(state.context, offsets.data(), *FlatVector::IncrementalSelectionVector(), count, result,
+	              result_offset);
+}
+
+void ColumnData::FetchBaseRows(const QueryContext &context, const idx_t *offsets, const SelectionVector &sel,
+                               idx_t fetch_count, Vector &result, idx_t result_offset) {
 	optional_ptr<SegmentNode<ColumnSegment>> current_segment;
 	idx_t segment_start = 0;
 	idx_t segment_end = 0;
-	for (idx_t idx = 0; idx < fetch_count; idx++) {
+	ColumnScanState scan_state(nullptr);
+	scan_state.context = context;
+	scan_state.string_scan_type = StringScanType::COPY_STRINGS;
+	SelectionVector window_sel;
+	idx_t idx = 0;
+	while (idx < fetch_count) {
 		const idx_t offset = offsets[sel.get_index(idx)];
 		if (offset > count) {
 			throw InternalException("ColumnData::FetchRowsAtSegmentLevel - row_id %lld out of range for count %lld",
@@ -805,14 +849,51 @@ void ColumnData::FetchRowsAtSegmentLevel(TransactionData transaction, ColumnFetc
 			segment_start = current_segment->GetRowStart();
 			segment_end = segment_start + current_segment->GetNode().count;
 		}
-		const idx_t index_in_segment = offset - segment_start;
-		current_segment->GetNode().FetchRow(state, NumericCast<row_t>(index_in_segment), result, result_offset + idx);
-	}
-	{
-		const lock_guard<mutex> update_guard(update_lock);
-		if (updates) {
-			updates->FetchRows(transaction, offsets, sel, fetch_count, result, result_offset);
+		auto &segment = current_segment->GetNode();
+		const idx_t window_end = MinValue<idx_t>(segment_end, offset + STANDARD_VECTOR_SIZE);
+		idx_t window_count = 1;
+		idx_t last_offset = offset;
+		while (idx + window_count < fetch_count) {
+			const idx_t next_offset = offsets[sel.get_index(idx + window_count)];
+			if (next_offset <= last_offset || next_offset >= window_end) {
+				break;
+			}
+			last_offset = next_offset;
+			window_count++;
 		}
+		if (scan_state.current.get() == current_segment.get() && scan_state.offset_in_column <= offset) {
+			scan_state.offset_in_column = offset;
+		} else {
+			ColumnData::InitializeScanWithOffset(scan_state, offset);
+		}
+		if (window_count > 1 && segment.GetCompressionFunction().select) {
+			if (!window_sel.IsSet()) {
+				window_sel.Initialize(STANDARD_VECTOR_SIZE);
+			}
+			for (idx_t i = 0; i < window_count; i++) {
+				window_sel.set_index(i, offsets[sel.get_index(idx + i)] - offset);
+			}
+			SelectVector(scan_state, result, last_offset - offset + 1, window_sel, window_count,
+			             ScanVectorType::SCAN_FLAT_VECTOR, result_offset + idx);
+		} else {
+			idx_t run_idx = 0;
+			while (run_idx < window_count) {
+				const idx_t run_offset = offsets[sel.get_index(idx + run_idx)];
+				idx_t run_count = 1;
+				while (run_idx + run_count < window_count &&
+				       offsets[sel.get_index(idx + run_idx + run_count)] == run_offset + run_count) {
+					run_count++;
+				}
+				scan_state.offset_in_column = run_offset;
+				ScanVector(scan_state, result, run_count, ScanVectorType::SCAN_FLAT_VECTOR,
+				           result_offset + idx + run_idx);
+				run_idx += run_count;
+			}
+		}
+#ifdef D_ASSERT_IS_ENABLED
+		VerifyStringsCopied(segment, result, result_offset + idx, window_count);
+#endif
+		idx += window_count;
 	}
 }
 
@@ -921,15 +1002,7 @@ unique_ptr<ColumnCheckpointState> ColumnData::CreateCheckpointState(const RowGro
 
 void ColumnData::CheckpointScan(ColumnSegment &segment, ColumnScanState &state, idx_t count,
                                 Vector &scan_vector) const {
-	if (state.scan_options && state.scan_options->force_fetch_row) {
-		for (idx_t i = 0; i < count; i++) {
-			ColumnFetchState fetch_state;
-			fetch_state.row_group = state.parent->GetRowGroup();
-			segment.FetchRow(fetch_state, UnsafeNumericCast<row_t>(state.offset_in_column + i), scan_vector, i);
-		}
-	} else {
-		segment.Scan(state, count, scan_vector, 0, ScanVectorType::SCAN_FLAT_VECTOR);
-	}
+	segment.Scan(state, count, scan_vector, 0, ScanVectorType::SCAN_FLAT_VECTOR);
 
 	if (updates) {
 		D_ASSERT(scan_vector.GetVectorType() == VectorType::FLAT_VECTOR);
