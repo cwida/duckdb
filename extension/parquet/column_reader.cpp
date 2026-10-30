@@ -609,6 +609,9 @@ void ColumnReader::PreparePageV2(PageHeader &page_hdr) {
 		uncompressed = true;
 	}
 	if (chunk->meta_data.codec == CompressionCodec::UNCOMPRESSED) {
+		uncompressed = true;
+	}
+	if (uncompressed) {
 		if (page_body_size != NumericCast<uint32_t>(page_hdr.uncompressed_page_size)) {
 			// LCOV_EXCL_START
 			const auto &file_name = Reader().GetFileName();
@@ -617,9 +620,6 @@ void ColumnReader::PreparePageV2(PageHeader &page_hdr) {
 			    page_hdr.uncompressed_page_size, page_body_size);
 			// LCOV_EXCL_STOP
 		}
-		uncompressed = true;
-	}
-	if (uncompressed) {
 		ReadData(block->ptr, page_body_size, page_hdr.type);
 		return;
 	}
