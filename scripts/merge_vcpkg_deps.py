@@ -9,6 +9,8 @@ dependencies_str = []
 dependencies_dict = []
 merged_overlay_ports = []
 merged_overlay_triplets = []
+merged_overrides = {}
+override_sources = {}
 
 
 def prefix_overlay_ports_or_triples(overlay_dir, path_to_vcpkg_json):
@@ -33,6 +35,16 @@ for file in sys.argv[1:]:
                 dependencies_dict.append(dep)
             else:
                 raise Exception(f"Unknown entry type found in dependencies: '{dep}'")
+
+    for override in data.get('overrides', []):
+        name = override['name']
+        normalized = {key: value for key, value in override.items() if not key.startswith('$')}
+        if normalized.get('port-version') == 0:
+            del normalized['port-version']
+        if name in merged_overrides and merged_overrides[name] != normalized:
+            raise ValueError(f"Conflicting vcpkg overrides for '{name}' in {override_sources[name]} and {file}")
+        merged_overrides[name] = normalized
+        override_sources[name] = file
 
     if 'vcpkg-configuration' in data:
         if 'overlay-ports' in data['vcpkg-configuration']:
@@ -62,6 +74,11 @@ data = {
     "builtin-baseline": "cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3",  # Release 2026.06.24
     "dependencies": final_deduplicated_deps,
 }
+if merged_overrides:
+    existing_override_names = {override['name'] for override in data.get('overrides', [])}
+    data.setdefault('overrides', []).extend(
+        merged_overrides[name] for name in sorted(merged_overrides) if name not in existing_override_names
+    )
 
 data['vcpkg-configuration'] = {}
 
