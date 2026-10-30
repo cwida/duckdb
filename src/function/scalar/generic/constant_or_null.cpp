@@ -98,7 +98,7 @@ bool ConstantOrNull::ProofIsPortable(const BoundFunctionExpression &expr) {
 	if (value_child.GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
 		return true;
 	}
-	return value_child.IsConsistent() && !value_child.ObservesBindingContext();
+	return value_child.IsConsistent() && !value_child.RequiresRebind() && !value_child.ObservesBindingContext();
 }
 
 ScalarFunction ConstantOrNullFun::GetFunction() {

@@ -97,7 +97,8 @@ static void NegatePercentileFractions(ClientContext &context, unique_ptr<Express
 	if (!bound->IsFoldable()) {
 		return;
 	}
-	if (Settings::Get<PortablePlanSetting>(context) && (!bound->IsConsistent() || bound->ObservesBindingContext())) {
+	if (Settings::Get<PortablePlanSetting>(context) &&
+	    (!bound->IsConsistent() || bound->RequiresRebind() || bound->ObservesBindingContext())) {
 		if (desc) {
 			throw BinderException("Percentile fractions over a descending order cannot be planned under "
 			                      "portable_plan when they observe the environment");

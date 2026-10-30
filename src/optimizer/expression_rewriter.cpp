@@ -156,7 +156,7 @@ bool ExpressionRewriter::CanConstantFold(ClientContext &context, const Expressio
 	if (!expr.IsFoldable()) {
 		return false;
 	}
-	if (expr.IsConsistent() && !expr.ObservesBindingContext()) {
+	if (expr.IsConsistent() && !expr.RequiresRebind() && !expr.ObservesBindingContext()) {
 		return true;
 	}
 	return !Settings::Get<PortablePlanSetting>(context);

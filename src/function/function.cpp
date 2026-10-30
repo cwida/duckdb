@@ -676,7 +676,8 @@ optional<Value> BindFunctionInput::TryGetConstant(idx_t arg_idx) const {
 	if (!expr.IsFoldable()) {
 		return {};
 	}
-	if (Settings::Get<PortablePlanSetting>(context) && (!expr.IsConsistent() || expr.ObservesBindingContext())) {
+	if (Settings::Get<PortablePlanSetting>(context) &&
+	    (!expr.IsConsistent() || expr.RequiresRebind() || expr.ObservesBindingContext())) {
 		// binds specialize on constants they can see - an environment observation must stay unseen so the
 		// generic form survives into the plan
 		return {};

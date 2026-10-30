@@ -47,7 +47,7 @@ static optional<Value> ConstantSQLInput(const Expression &expression, LogicalOpe
 	if (expression.IsFoldable()) {
 		auto &client_context = context.GetClientContext();
 		if (Settings::Get<PortablePlanSetting>(client_context) &&
-		    (!expression.IsConsistent() || expression.ObservesBindingContext())) {
+		    (!expression.IsConsistent() || expression.RequiresRebind() || expression.ObservesBindingContext())) {
 			// an environment observation must stay an expression in the exported SQL
 			return {};
 		}

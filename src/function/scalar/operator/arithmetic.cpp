@@ -783,9 +783,9 @@ static void IntegerNegateResolveTypes(ResolveScalarFunctionTypesInput &input) {
 	auto &type = bound_function.GetArguments()[0];
 	if (!constant || constant->IsNull()) {
 		auto &argument = input.GetArgument(0);
-		const bool hidden_constant = Settings::Get<PortablePlanSetting>(input.GetClientContext()) &&
-		                             argument.IsFoldable() &&
-		                             (!argument.IsConsistent() || argument.ObservesBindingContext());
+		const bool hidden_constant =
+		    Settings::Get<PortablePlanSetting>(input.GetClientContext()) && argument.IsFoldable() &&
+		    (!argument.IsConsistent() || argument.RequiresRebind() || argument.ObservesBindingContext());
 		if (!hidden_constant) {
 			return;
 		}

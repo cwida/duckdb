@@ -737,7 +737,8 @@ static Value FoldArgument(ClientContext &context, Expression &expr) {
 	if (expr.GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
 		return expr.Cast<BoundConstantExpression>().GetValue();
 	}
-	if (Settings::Get<PortablePlanSetting>(context) && (!expr.IsConsistent() || expr.ObservesBindingContext())) {
+	if (Settings::Get<PortablePlanSetting>(context) &&
+	    (!expr.IsConsistent() || expr.RequiresRebind() || expr.ObservesBindingContext())) {
 		// the retained argument is a value, so there is no form that keeps the expression
 		throw BinderException("Argument %s observes the environment and cannot be planned under "
 		                      "portable_plan: this argument is retained as a plain value",
@@ -1055,7 +1056,8 @@ static bool FoldConstantArgument(ClientContext &context, unique_ptr<Expression> 
 	if (child->GetExpressionClass() == ExpressionClass::BOUND_LAMBDA || !child->IsFoldable()) {
 		return false;
 	}
-	if (Settings::Get<PortablePlanSetting>(context) && (!child->IsConsistent() || child->ObservesBindingContext())) {
+	if (Settings::Get<PortablePlanSetting>(context) &&
+	    (!child->IsConsistent() || child->RequiresRebind() || child->ObservesBindingContext())) {
 		// an environment observation must not fold into the plan
 		return false;
 	}

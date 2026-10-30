@@ -83,7 +83,8 @@ static bool CanEliminate(ClientContext &context, JoinType type, unique_ptr<Expre
 	if (!expr->IsFoldable()) {
 		return false;
 	}
-	if (Settings::Get<PortablePlanSetting>(context) && (!expr->IsConsistent() || expr->ObservesBindingContext())) {
+	if (Settings::Get<PortablePlanSetting>(context) &&
+	    (!expr->IsConsistent() || expr->RequiresRebind() || expr->ObservesBindingContext())) {
 		// an environment observation must not remove the condition from the plan
 		return false;
 	}

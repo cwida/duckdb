@@ -97,7 +97,8 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundConjun
 		if (!child->IsFoldable()) {
 			continue;
 		}
-		if (SuppressPlanFolds() && (!child->IsConsistent() || child->ObservesBindingContext())) {
+		if (SuppressPlanFolds() &&
+		    (!child->IsConsistent() || child->RequiresRebind() || child->ObservesBindingContext())) {
 			// evaluating an environment-dependent child would bake the planning environment into the plan
 			continue;
 		}
