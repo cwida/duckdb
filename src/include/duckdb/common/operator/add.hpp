@@ -50,6 +50,12 @@ template <>
 timestamp_t AddOperator::Operation(timestamp_t left, double right);
 template <>
 timestamp_t AddOperator::Operation(interval_t left, timestamp_t right);
+template <>
+timestamp_ns_t AddOperator::Operation(timestamp_ns_t left, interval_t right);
+template <>
+timestamp_ns_t AddOperator::Operation(timestamp_ns_t left, double right);
+template <>
+timestamp_ns_t AddOperator::Operation(interval_t left, timestamp_ns_t right);
 
 struct TryAddOperator {
 	template <class TA, class TB, class TR>
@@ -70,6 +76,8 @@ template <>
 bool TryAddOperator::Operation(date_t left, int32_t right, date_t &result);
 template <>
 bool TryAddOperator::Operation(timestamp_t left, interval_t right, timestamp_t &result);
+template <>
+bool TryAddOperator::Operation(timestamp_ns_t left, interval_t right, timestamp_ns_t &result);
 
 template <>
 bool TryAddOperator::Operation(int8_t left, int8_t right, int8_t &result);
