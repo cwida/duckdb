@@ -3358,6 +3358,10 @@ bool ShellState::SQLIsComplete(const char *zSql) {
 			}
 			statement_start = next_statement_start;
 			prev_word = word;
+			if (word == SQLWordType::AS && block_depth > 0) {
+				// inside a body the word after AS is an alias or type name, never a keyword
+				prev_qualifier = true;
+			}
 			next_state = SQLParseState::NORMAL;
 			break;
 		}

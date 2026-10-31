@@ -111,6 +111,8 @@ class TestBeginEndBodies(object):
             '  SELECT CASE WHEN true THEN t.loop END FROM (VALUES (1)) t(loop);\n'
             '  SELECT CASE WHEN true THEN CASE WHEN true THEN 1 ELSE 2 END ELSE 3 END;\n'
             '  SELECT CASE WHEN true THEN if(true, 1, 2) ELSE 3 END;\n'
+            '  SELECT CASE WHEN true THEN (SELECT 1 AS end) ELSE if(true, 1, 0) END;\n'
+            '  SELECT 1 AS end, 2 AS loop;\n'
             "  SELECT 'escaped' AS marker;\n"
             'END;\n'
             '.print CANARY\n',
