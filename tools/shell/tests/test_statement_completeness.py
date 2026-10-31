@@ -103,8 +103,8 @@ class TestBeginEndBodies(object):
         assert "CANARY" in result.stdout
 
     def test_case_expressions_inside_body(self, shell):
-        # CASE expression keywords inside a body are not procedural - qualified columns named
-        # loop/then/else, nested CASE expressions and if() calls do not change the block depth
+        # CASE expression keywords inside a body are not procedural - nested CASE expressions,
+        # if() calls and qualified columns named loop do not change the block depth
         result = run_lines(
             shell,
             'CREATE PROCEDURE p() AS BEGIN\n'
@@ -120,18 +120,38 @@ class TestBeginEndBodies(object):
         assert "escaped" not in result.stdout
         assert "CANARY" in result.stdout
 
-    def test_multibyte_column_with_keyword_suffix_inside_body(self, shell):
-        # a multi-byte identifier ending in a keyword is one word, not that keyword
+    def test_qualified_keyword_columns_inside_body(self, shell):
+        # qualified columns named end or case are identifiers, not CASE expression delimiters
         result = run_lines(
             shell,
             'CREATE PROCEDURE p() AS BEGIN\n'
-            '  SELECT CASE WHEN true THEN t.éloop END FROM (VALUES (1)) t(éloop);\n'
+            '  SELECT CASE WHEN t.end THEN t.loop END FROM (VALUES (true, 1)) t("end", loop);\n'
+            '  IF t.case THEN\n'
+            '    BEGIN\n'
+            '      SELECT 1;\n'
+            '    END;\n'
+            '  END IF;\n'
             "  SELECT 'escaped' AS marker;\n"
             'END;\n'
             '.print CANARY\n',
         )
         assert result.stderr.count("Parser Error") == 1
+        assert "cannot commit" not in result.stderr
         assert "escaped" not in result.stdout
+        assert "CANARY" in result.stdout
+
+    def test_multibyte_identifier_inside_body(self, shell):
+        # a multi-byte identifier ending in a keyword is one word, not that keyword
+        result = run_lines(
+            shell,
+            'CREATE PROCEDURE p(éloop BOOLEAN) AS BEGIN\n'
+            '  WHILE éloop LOOP\n'
+            '    SELECT 1;\n'
+            '  END LOOP;\n'
+            'END;\n'
+            '.print CANARY\n',
+        )
+        assert result.stderr.count("Parser Error") == 1
         assert "CANARY" in result.stdout
 
     def test_function_body_case_strings_comments(self, shell):
@@ -225,11 +245,14 @@ class TestBeginEndProtection(object):
             'SELECT m2() AS v;\n'
             'CREATE FUNCTION m3() AS 0, (begin) AS begin + 1;\n'
             'SELECT m3(41) AS w;\n'
+            'CREATE FUNCTION m4(begin$arg) AS begin$arg + 1;\n'
+            'SELECT m4(99) AS x;\n'
             '.print CANARY\n',
         )
         result.check_stdout("1")
         result.check_stdout("2")
         result.check_stdout("42")
+        result.check_stdout("100")
         result.check_stdout("CANARY")
 
     def test_native_trigger_with_begin_identifiers(self, shell):

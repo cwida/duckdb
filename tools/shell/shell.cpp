@@ -3002,7 +3002,8 @@ static bool IsSQLWordStart(char c) {
 }
 
 static bool IsSQLWordContinuation(char c) {
-	return IsSQLWordStart(c) || (c >= '0' && c <= '9') || (c >= '\200' && c <= '\377');
+	// the tokenizer accepts dollars inside identifiers - a dollar quote cannot start within a word
+	return IsSQLWordStart(c) || (c >= '0' && c <= '9') || c == '$';
 }
 
 static const char *skipDollarQuotedString(const char *zSql, const char *delimiterStart, idx_t delimiterLength) {
@@ -3044,6 +3045,8 @@ bool ShellState::SQLIsComplete(const char *zSql) {
 	// a statement-initial BEGIN or END inside a body - transaction check against the next token pending
 	bool pending_begin = false;
 	bool pending_end = false;
+	// a word directly after a dot is a qualified identifier, never a keyword
+	bool prev_dot = false;
 	auto head = SQLStatementHead::OTHER;
 	auto prev_word = SQLWordType::OTHER;
 
@@ -3067,6 +3070,7 @@ bool ShellState::SQLIsComplete(const char *zSql) {
 		}
 		statement_start = false;
 		prev_word = SQLWordType::OTHER;
+		prev_dot = false;
 	};
 
 	for (; *zSql; zSql++) {
@@ -3091,6 +3095,7 @@ bool ShellState::SQLIsComplete(const char *zSql) {
 			case_expr_depth = 0;
 			statement_start = true;
 			prev_word = SQLWordType::OTHER;
+			prev_dot = false;
 			break;
 		case ' ':
 		case '\r':
@@ -3208,6 +3213,8 @@ bool ShellState::SQLIsComplete(const char *zSql) {
 					paren_depth++;
 				} else if (*zSql == ')' && paren_depth > 0) {
 					paren_depth--;
+				} else if (*zSql == '.') {
+					prev_dot = true;
 				}
 				next_state = SQLParseState::NORMAL;
 				break;
@@ -3217,7 +3224,8 @@ bool ShellState::SQLIsComplete(const char *zSql) {
 			while (IsSQLWordContinuation(zSql[1])) {
 				zSql++;
 			}
-			auto word = ClassifySQLWord(word_start, idx_t(zSql - word_start) + 1);
+			auto word = prev_dot ? SQLWordType::OTHER : ClassifySQLWord(word_start, idx_t(zSql - word_start) + 1);
+			prev_dot = false;
 			if (pending_end) {
 				pending_end = false;
 				if (word != SQLWordType::TRANSACTION && word != SQLWordType::WORK) {
