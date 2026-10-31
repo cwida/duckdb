@@ -180,6 +180,13 @@ void RowVersionManager::CleanupAppend(VisibilityBound lowest_visibility_bound, i
 
 void RowVersionManager::RevertAppend(idx_t new_count) {
 	lock_guard<mutex> lock(version_lock);
+	idx_t partial_vector_idx = new_count / STANDARD_VECTOR_SIZE;
+	idx_t partial_vector_count = new_count % STANDARD_VECTOR_SIZE;
+	if (partial_vector_count > 0 && partial_vector_idx < vector_info.size() && vector_info[partial_vector_idx]) {
+		// the reverted rows of the partially kept vector must not keep the insert id of the reverted append
+		needs_compression_check = true;
+		vector_info[partial_vector_idx]->RevertAppend(partial_vector_count);
+	}
 	idx_t start_vector_idx = (new_count + (STANDARD_VECTOR_SIZE - 1)) / STANDARD_VECTOR_SIZE;
 	for (idx_t vector_idx = start_vector_idx; vector_idx < vector_info.size(); vector_idx++) {
 		vector_info[vector_idx].reset();

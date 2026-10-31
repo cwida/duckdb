@@ -785,6 +785,19 @@ void ChunkVectorInfo::Append(idx_t start, idx_t end, transaction_t commit_id) {
 	}
 }
 
+void ChunkVectorInfo::RevertAppend(idx_t start) {
+	if (HasConstantInsertionId()) {
+		// an append after the first row of the vector materializes per-row insert ids
+		return;
+	}
+	recheck_compression = true;
+	auto segment = allocator.GetHandle(GetInsertedPointer());
+	auto inserted = segment.GetPtr<transaction_t>();
+	for (idx_t i = start; i < STANDARD_VECTOR_SIZE; i++) {
+		inserted[i] = 0;
+	}
+}
+
 void ChunkVectorInfo::CommitAppend(transaction_t commit_id, idx_t start, idx_t end) {
 	if (HasConstantInsertionId()) {
 		constant_insert_id = commit_id;

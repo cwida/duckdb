@@ -72,6 +72,8 @@ public:
 	string ToString(idx_t max_count) const;
 
 	void Append(idx_t start, idx_t end, transaction_t commit_id);
+	//! Clears the insert ids of the rows from start onwards, which no longer hold appended rows
+	void RevertAppend(idx_t start);
 
 	//! Writes the delete id or update marker into the rows (ids[i] - offset), and outputs what it wrote
 	void WriteRows(TransactionData transaction, const row_t ids[], idx_t count, row_t offset, bool is_update,

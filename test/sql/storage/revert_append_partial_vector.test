@@ -1,0 +1,115 @@
+# name: test/sql/storage/revert_append_partial_vector.test
+# description: A failed commit that appended into a partially filled vector does not cause later appends to be checkpointed as deleted
+# group: [storage]
+
+require skip_reload
+
+require no_alternative_verify
+
+# keep the deletes uncheckpointed until the explicit checkpoints
+statement ok
+SET wal_autocheckpoint = '1TB'
+
+# storage versions below v2.0.0 keep deleted rows of indexed tables in place instead of vacuuming them
+statement ok
+ATTACH '{TEST_DIR}/revert_append_partial_vector.db' AS db (STORAGE_VERSION 'v1.0.0')
+
+statement ok con1
+USE db
+
+statement ok con2
+USE db
+
+statement ok con1
+CREATE TABLE t (id INTEGER PRIMARY KEY, v VARCHAR)
+
+statement ok con1
+INSERT INTO t SELECT i, 'a' FROM range(100) r(i)
+
+statement ok con1
+DELETE FROM t WHERE id < 10
+
+statement ok con1
+CREATE TABLE u (id INTEGER PRIMARY KEY, v VARCHAR)
+
+statement ok con1
+INSERT INTO u SELECT i, 'a' FROM range(100) r(i)
+
+statement ok con1
+DELETE FROM u WHERE id < 10
+
+# the commit fails after appending its rows, because another transaction altered the tables
+statement ok con1
+BEGIN
+
+statement ok con1
+INSERT INTO t SELECT i, 'x' FROM range(100, 600) r(i)
+
+statement ok con2
+COMMENT ON TABLE t IS 'x'
+
+statement error con1
+COMMIT
+----
+another transaction has
+
+statement ok con1
+BEGIN
+
+statement ok con1
+INSERT INTO u SELECT i, 'x' FROM range(100, 600) r(i)
+
+statement ok con2
+ALTER TABLE u RENAME COLUMN v TO w
+
+statement error con1
+COMMIT
+----
+another transaction has
+
+statement ok con1
+CHECKPOINT
+
+statement ok con1
+INSERT INTO t VALUES (1000, 'b')
+
+query II con1
+SELECT count(*), count(*) FILTER (WHERE id >= 1000) FROM t
+----
+91	1
+
+statement ok con1
+USE memory
+
+statement ok con2
+USE memory
+
+statement ok
+DETACH db
+
+statement ok
+ATTACH '{TEST_DIR}/revert_append_partial_vector.db' AS db
+
+query II
+SELECT count(*), count(*) FILTER (WHERE id >= 1000) FROM db.t
+----
+91	1
+
+statement ok
+INSERT INTO db.u SELECT i, 'b' FROM range(1000, 1600) r(i)
+
+query II
+SELECT count(*), count(*) FILTER (WHERE id >= 1000) FROM db.u
+----
+690	600
+
+statement ok
+DETACH db
+
+statement ok
+ATTACH '{TEST_DIR}/revert_append_partial_vector.db' AS db
+
+query II
+SELECT count(*), count(*) FILTER (WHERE id >= 1000) FROM db.u
+----
+690	600
