@@ -10,7 +10,8 @@ using namespace duckdb; // NOLINT
 
 namespace {
 
-idx_t CountPrimaryKeySideConstraints(ClientContext &context, const string &table_name, const string &referencing_table) {
+idx_t CountPrimaryKeySideConstraints(ClientContext &context, const string &table_name,
+                                     const string &referencing_table) {
 	idx_t count = 0;
 	context.RunFunctionInTransaction([&]() {
 		auto &table = Catalog::GetEntry<TableCatalogEntry>(context, QualifiedName::Parse(table_name));
@@ -32,7 +33,8 @@ idx_t CountPrimaryKeySideConstraints(ClientContext &context, const string &table
 
 } // namespace
 
-TEST_CASE("Reopening a database does not duplicate the primary-key side foreign keys", "[api][foreign_key][checkpoint]") {
+TEST_CASE("Reopening a database does not duplicate the primary-key side foreign keys",
+          "[api][foreign_key][checkpoint]") {
 	auto path = TestCreatePath("foreign_key_checkpoint_metadata.db");
 	DeleteDatabase(path);
 
