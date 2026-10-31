@@ -3080,6 +3080,8 @@ bool ShellState::SQLIsComplete(const char *zSql) {
 	bool pending_end = false;
 	// a word after a qualification dot or a lone parameter dollar is an identifier, never a keyword
 	bool prev_qualifier = false;
+	// a word after AS inside a body is an alias or type name, unless it opens a CASE expression (macro body)
+	bool prev_alias = false;
 	auto head = SQLStatementHead::OTHER;
 	auto prev_word = SQLWordType::OTHER;
 
@@ -3104,6 +3106,7 @@ bool ShellState::SQLIsComplete(const char *zSql) {
 		statement_start = false;
 		prev_word = SQLWordType::OTHER;
 		prev_qualifier = false;
+		prev_alias = false;
 	};
 
 	for (; *zSql; zSql++) {
@@ -3129,6 +3132,7 @@ bool ShellState::SQLIsComplete(const char *zSql) {
 			statement_start = true;
 			prev_word = SQLWordType::OTHER;
 			prev_qualifier = false;
+			prev_alias = false;
 			break;
 		case ' ':
 		case '\r':
@@ -3274,7 +3278,12 @@ bool ShellState::SQLIsComplete(const char *zSql) {
 				zSql++;
 			}
 			auto word = prev_qualifier ? SQLWordType::OTHER : ClassifySQLWord(word_start, idx_t(zSql - word_start) + 1);
+			if (prev_alias && word != SQLWordType::CASE) {
+				// an alias or type name - a CASE here starts a macro body expression instead
+				word = SQLWordType::OTHER;
+			}
 			prev_qualifier = false;
+			prev_alias = false;
 			if (pending_end) {
 				pending_end = false;
 				if (word != SQLWordType::TRANSACTION && word != SQLWordType::WORK) {
@@ -3359,8 +3368,8 @@ bool ShellState::SQLIsComplete(const char *zSql) {
 			statement_start = next_statement_start;
 			prev_word = word;
 			if (word == SQLWordType::AS && block_depth > 0) {
-				// inside a body the word after AS is an alias or type name, never a keyword
-				prev_qualifier = true;
+				// inside a body the word after AS is an alias, type name or macro body expression
+				prev_alias = true;
 			}
 			next_state = SQLParseState::NORMAL;
 			break;
