@@ -141,7 +141,8 @@ class TestBeginEndBodies(object):
         assert "CANARY" in result.stdout
 
     def test_numeric_dot_and_parameters_inside_body(self, shell):
-        # a trailing decimal point is not a qualification dot and parameter names are not keywords
+        # numeric literals (trailing dot, digit separators, exponents) are one token and
+        # parameter names are not keywords, whether adjacent, numbered or whitespace-separated
         result = run_lines(
             shell,
             'CREATE PROCEDURE p(x INTEGER) AS BEGIN\n'
@@ -150,9 +151,28 @@ class TestBeginEndBodies(object):
             '      SELECT 1;\n'
             '    END;\n'
             '  END IF;\n'
+            '  IF x > 1_2. THEN\n'
+            '    BEGIN\n'
+            '      SELECT 2;\n'
+            '    END;\n'
+            '  END IF;\n'
+            '  IF CASE WHEN true THEN 1e2END > 0 THEN\n'
+            '    BEGIN\n'
+            '      SELECT 3;\n'
+            '    END;\n'
+            '  END IF;\n'
+            '  IF CASE WHEN true THEN $1END > 0 THEN\n'
+            '    BEGIN\n'
+            '      SELECT 4;\n'
+            '    END;\n'
+            '  END IF;\n'
             '  PREPARE q AS SELECT CASE WHEN $end THEN $loop END;\n'
+            '  PREPARE r AS SELECT CASE WHEN $ /* parameter */ end THEN $ /* parameter */ loop END;\n'
             '  WHILE $loop LOOP\n'
             '    SELECT 0.5 + $1;\n'
+            '  END LOOP;\n'
+            '  WHILE $ loop LOOP\n'
+            '    SELECT 1;\n'
             '  END LOOP;\n'
             "  SELECT 'escaped' AS marker;\n"
             'END;\n'
@@ -167,13 +187,19 @@ class TestBeginEndBodies(object):
         # a qualification dot keeps its effect across comments and whitespace
         result = run_lines(
             shell,
-            'CREATE PROCEDURE p() AS BEGIN\n'
+            'CREATE PROCEDURE p(t STRUCT("case" BOOLEAN)) AS BEGIN\n'
             '  SELECT t. /* comment */ end FROM (VALUES (1)) t("end");\n'
+            '  IF t. /* comment */ case THEN\n'
+            '    BEGIN\n'
+            '      SELECT 1;\n'
+            '    END;\n'
+            '  END IF;\n'
             "  SELECT 'escaped' AS marker;\n"
             'END;\n'
             '.print CANARY\n',
         )
         assert result.stderr.count("Parser Error") == 1
+        assert "cannot commit" not in result.stderr
         assert "escaped" not in result.stdout
         assert "CANARY" in result.stdout
 

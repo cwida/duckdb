@@ -3006,6 +3006,33 @@ static bool IsSQLWordContinuation(char c) {
 	return IsSQLWordStart(c) || (c >= '0' && c <= '9') || c == '$';
 }
 
+static bool IsSQLDigit(char c) {
+	return c >= '0' && c <= '9';
+}
+
+// consumes the remainder of a numeric literal, with digit separators, fraction and exponent
+static const char *SkipNumericLiteral(const char *zSql) {
+	while (IsSQLDigit(zSql[1]) || zSql[1] == '_') {
+		zSql++;
+	}
+	if (zSql[1] == '.') {
+		zSql++;
+		while (IsSQLDigit(zSql[1]) || zSql[1] == '_') {
+			zSql++;
+		}
+	}
+	if (zSql[1] == 'e' || zSql[1] == 'E') {
+		idx_t exp_start = (zSql[2] == '+' || zSql[2] == '-') ? 3 : 2;
+		if (IsSQLDigit(zSql[exp_start])) {
+			zSql += exp_start;
+			while (IsSQLDigit(zSql[1]) || zSql[1] == '_') {
+				zSql++;
+			}
+		}
+	}
+	return zSql;
+}
+
 static const char *skipDollarQuotedString(const char *zSql, const char *delimiterStart, idx_t delimiterLength) {
 	for (; *zSql; zSql++) {
 		if (*zSql == '$') {
@@ -3045,8 +3072,8 @@ bool ShellState::SQLIsComplete(const char *zSql) {
 	// a statement-initial BEGIN or END inside a body - transaction check against the next token pending
 	bool pending_begin = false;
 	bool pending_end = false;
-	// a word directly after a dot is a qualified identifier, never a keyword
-	bool prev_dot = false;
+	// a word after a qualification dot or a lone parameter dollar is an identifier, never a keyword
+	bool prev_qualifier = false;
 	auto head = SQLStatementHead::OTHER;
 	auto prev_word = SQLWordType::OTHER;
 
@@ -3070,7 +3097,7 @@ bool ShellState::SQLIsComplete(const char *zSql) {
 		}
 		statement_start = false;
 		prev_word = SQLWordType::OTHER;
-		prev_dot = false;
+		prev_qualifier = false;
 	};
 
 	for (; *zSql; zSql++) {
@@ -3095,7 +3122,7 @@ bool ShellState::SQLIsComplete(const char *zSql) {
 			case_expr_depth = 0;
 			statement_start = true;
 			prev_word = SQLWordType::OTHER;
-			prev_dot = false;
+			prev_qualifier = false;
 			break;
 		case ' ':
 		case '\r':
@@ -3169,10 +3196,21 @@ bool ShellState::SQLIsComplete(const char *zSql) {
 				break;
 			}
 			if (next_dollar == 0) {
-				// not a dollar quoted string - consume any parameter name ($1, $param) as one token
+				// not a dollar quoted string - a parameter reference
 				HandleOtherToken();
-				while (IsSQLWordContinuation(zSql[1])) {
-					zSql++;
+				if (IsSQLDigit(zSql[1])) {
+					// a numbered parameter consumes digits only ($1END is $1 followed by END)
+					while (IsSQLDigit(zSql[1])) {
+						zSql++;
+					}
+				} else if (IsSQLWordContinuation(zSql[1])) {
+					// a named parameter consumes the name as one token
+					while (IsSQLWordContinuation(zSql[1])) {
+						zSql++;
+					}
+				} else {
+					// a lone dollar - the next word is the parameter name, never a keyword
+					prev_qualifier = true;
 				}
 				next_state = SQLParseState::NORMAL;
 				break;
@@ -3217,18 +3255,10 @@ bool ShellState::SQLIsComplete(const char *zSql) {
 				} else if (*zSql == ')' && paren_depth > 0) {
 					paren_depth--;
 				} else if (*zSql == '.') {
-					prev_dot = true;
-				} else if (*zSql >= '0' && *zSql <= '9') {
+					prev_qualifier = true;
+				} else if (IsSQLDigit(*zSql)) {
 					// consume a numeric literal as one token - its decimal point is not a qualification dot
-					while (zSql[1] >= '0' && zSql[1] <= '9') {
-						zSql++;
-					}
-					if (zSql[1] == '.') {
-						zSql++;
-						while (zSql[1] >= '0' && zSql[1] <= '9') {
-							zSql++;
-						}
-					}
+					zSql = SkipNumericLiteral(zSql);
 				}
 				next_state = SQLParseState::NORMAL;
 				break;
@@ -3238,8 +3268,8 @@ bool ShellState::SQLIsComplete(const char *zSql) {
 			while (IsSQLWordContinuation(zSql[1])) {
 				zSql++;
 			}
-			auto word = prev_dot ? SQLWordType::OTHER : ClassifySQLWord(word_start, idx_t(zSql - word_start) + 1);
-			prev_dot = false;
+			auto word = prev_qualifier ? SQLWordType::OTHER : ClassifySQLWord(word_start, idx_t(zSql - word_start) + 1);
+			prev_qualifier = false;
 			if (pending_end) {
 				pending_end = false;
 				if (word != SQLWordType::TRANSACTION && word != SQLWordType::WORK) {
