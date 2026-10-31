@@ -102,6 +102,38 @@ class TestBeginEndBodies(object):
         assert "cannot commit" not in result.stderr
         assert "CANARY" in result.stdout
 
+    def test_case_expressions_inside_body(self, shell):
+        # CASE expression keywords inside a body are not procedural - qualified columns named
+        # loop/then/else, nested CASE expressions and if() calls do not change the block depth
+        result = run_lines(
+            shell,
+            'CREATE PROCEDURE p() AS BEGIN\n'
+            '  SELECT CASE WHEN true THEN t.loop END FROM (VALUES (1)) t(loop);\n'
+            '  SELECT CASE WHEN true THEN CASE WHEN true THEN 1 ELSE 2 END ELSE 3 END;\n'
+            '  SELECT CASE WHEN true THEN if(true, 1, 2) ELSE 3 END;\n'
+            "  SELECT 'escaped' AS marker;\n"
+            'END;\n'
+            '.print CANARY\n',
+        )
+        assert result.stderr.count("Parser Error") == 1
+        assert "cannot commit" not in result.stderr
+        assert "escaped" not in result.stdout
+        assert "CANARY" in result.stdout
+
+    def test_multibyte_column_with_keyword_suffix_inside_body(self, shell):
+        # a multi-byte identifier ending in a keyword is one word, not that keyword
+        result = run_lines(
+            shell,
+            'CREATE PROCEDURE p() AS BEGIN\n'
+            '  SELECT CASE WHEN true THEN t.éloop END FROM (VALUES (1)) t(éloop);\n'
+            "  SELECT 'escaped' AS marker;\n"
+            'END;\n'
+            '.print CANARY\n',
+        )
+        assert result.stderr.count("Parser Error") == 1
+        assert "escaped" not in result.stdout
+        assert "CANARY" in result.stdout
+
     def test_function_body_case_strings_comments(self, shell):
         # CASE ... END expressions, strings and comments containing END; do not unbalance the body
         result = run_lines(
@@ -127,6 +159,8 @@ class TestBeginEndBodies(object):
             '  BEGIN WORK;\n'
             '  END WORK;\n'
             '  BEGIN READ ONLY;\n'
+            '  COMMIT;\n'
+            '  BEGIN READ WRITE;\n'
             '  COMMIT;\n'
             '  BEGIN;\n'
             '  ROLLBACK;\n'
@@ -182,17 +216,20 @@ class TestBeginEndProtection(object):
         result.check_stdout("CANARY")
 
     def test_macro_with_begin_alias(self, shell):
-        # a begin alias inside a valid macro body does not open body mode
+        # a begin alias or parameter after a later AS inside a valid macro does not open body mode
         result = run_lines(
             shell,
             'CREATE FUNCTION m1() AS TABLE SELECT 1 AS begin;\n'
             'SELECT * FROM m1();\n'
             'CREATE FUNCTION m2() AS (SELECT 2 AS begin);\n'
             'SELECT m2() AS v;\n'
+            'CREATE FUNCTION m3() AS 0, (begin) AS begin + 1;\n'
+            'SELECT m3(41) AS w;\n'
             '.print CANARY\n',
         )
         result.check_stdout("1")
         result.check_stdout("2")
+        result.check_stdout("42")
         result.check_stdout("CANARY")
 
     def test_native_trigger_with_begin_identifiers(self, shell):
@@ -205,10 +242,11 @@ class TestBeginEndProtection(object):
             '  INSERT INTO audit VALUES (1);\n'
             '.print CANARY\n'
             'INSERT INTO target VALUES (42);\n'
-            'SELECT count(*) AS audit_cnt FROM audit;\n',
+            'SELECT count(*) = 1 AS fired FROM audit;\n',
         )
         assert "CANARY" in result.stdout
-        assert "audit_cnt" in result.stdout
+        result.check_stdout("fired")
+        result.check_stdout("true")
 
     def test_multibyte_identifier_with_keyword_suffix(self, shell):
         # a multi-byte identifier ending in a keyword is not classified as that keyword
