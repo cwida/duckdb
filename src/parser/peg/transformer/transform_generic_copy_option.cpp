@@ -61,6 +61,8 @@ static void SetGenericCopyOptionExpression(GenericCopyOption &copy_option, uniqu
 			copy_option.expression = std::move(expression);
 		}
 	} else {
+		// anything that can not be reduced to a literal is kept as an expression, the option consumer
+		// (COPY, ATTACH, CREATE SECRET, ...) binds and evaluates it
 		copy_option.expression = std::move(expression);
 	}
 }

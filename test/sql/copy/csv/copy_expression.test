@@ -35,3 +35,35 @@ query I
 FROM '{TEST_DIR}/prepared_copy.csv'
 ----
 hello world
+
+# option values that are not a constant or a column reference are evaluated as expressions
+statement ok
+COPY (SELECT 'hello' AS a, 'world' AS b) TO '{TEST_DIR}/copy_expression_coalesce.csv' (FORMAT csv, HEADER, DELIMITER COALESCE(';', ','))
+
+query II
+FROM read_csv('{TEST_DIR}/copy_expression_coalesce.csv', delim = ';', header = true)
+----
+hello	world
+
+statement ok
+COPY (SELECT 'hello' AS a, 'world' AS b) TO '{TEST_DIR}/copy_expression_case.csv' (FORMAT csv, HEADER, DELIMITER CASE WHEN 1 = 2 THEN ',' ELSE '|' END)
+
+query II
+FROM read_csv('{TEST_DIR}/copy_expression_case.csv', delim = '|', header = true)
+----
+hello	world
+
+statement ok
+COPY (SELECT 'hello' AS a, 'world' AS b) TO '{TEST_DIR}/copy_expression_operator.csv' (FORMAT csv, HEADER 'a' IS NOT NULL, DELIMITER ';')
+
+query II
+FROM read_csv('{TEST_DIR}/copy_expression_operator.csv', delim = ';', header = true)
+----
+hello	world
+
+# the option type is still checked
+statement error
+COPY (SELECT 1) TO '{TEST_DIR}/copy_expression_bad_type.csv' (FORMAT csv, DELIMITER COALESCE(123, ',', ';'))
+----
+expected an argument of type VARCHAR
+
