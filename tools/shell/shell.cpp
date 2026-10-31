@@ -3010,24 +3010,30 @@ static bool IsSQLDigit(char c) {
 	return c >= '0' && c <= '9';
 }
 
-// consumes the remainder of a numeric literal, with digit separators, fraction and exponent
-static const char *SkipNumericLiteral(const char *zSql) {
-	while (IsSQLDigit(zSql[1]) || zSql[1] == '_') {
+// consumes digits with between-digit separators - zSql points at a consumed digit
+static const char *SkipNumericDigits(const char *zSql) {
+	while (IsSQLDigit(zSql[1]) || (IsSQLDigit(zSql[0]) && zSql[1] == '_' && IsSQLDigit(zSql[2]))) {
 		zSql++;
 	}
+	return zSql;
+}
+
+// consumes the remainder of a numeric literal, with digit separators, fraction and exponent
+static const char *SkipNumericLiteral(const char *zSql) {
+	zSql = SkipNumericDigits(zSql);
 	if (zSql[1] == '.') {
+		// a bare trailing decimal point also belongs to the literal
 		zSql++;
-		while (IsSQLDigit(zSql[1]) || zSql[1] == '_') {
+		if (IsSQLDigit(zSql[1])) {
 			zSql++;
+			zSql = SkipNumericDigits(zSql);
 		}
 	}
 	if (zSql[1] == 'e' || zSql[1] == 'E') {
 		idx_t exp_start = (zSql[2] == '+' || zSql[2] == '-') ? 3 : 2;
 		if (IsSQLDigit(zSql[exp_start])) {
 			zSql += exp_start;
-			while (IsSQLDigit(zSql[1]) || zSql[1] == '_') {
-				zSql++;
-			}
+			zSql = SkipNumericDigits(zSql);
 		}
 	}
 	return zSql;
@@ -3199,10 +3205,9 @@ bool ShellState::SQLIsComplete(const char *zSql) {
 				// not a dollar quoted string - a parameter reference
 				HandleOtherToken();
 				if (IsSQLDigit(zSql[1])) {
-					// a numbered parameter consumes digits only ($1END is $1 followed by END)
-					while (IsSQLDigit(zSql[1])) {
-						zSql++;
-					}
+					// a numbered parameter consumes digits with separators ($1END is $1 followed by END)
+					zSql++;
+					zSql = SkipNumericDigits(zSql);
 				} else if (IsSQLWordContinuation(zSql[1])) {
 					// a named parameter consumes the name as one token
 					while (IsSQLWordContinuation(zSql[1])) {
