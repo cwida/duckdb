@@ -140,6 +140,43 @@ class TestBeginEndBodies(object):
         assert "escaped" not in result.stdout
         assert "CANARY" in result.stdout
 
+    def test_numeric_dot_and_parameters_inside_body(self, shell):
+        # a trailing decimal point is not a qualification dot and parameter names are not keywords
+        result = run_lines(
+            shell,
+            'CREATE PROCEDURE p(x INTEGER) AS BEGIN\n'
+            '  IF x > 1. THEN\n'
+            '    BEGIN\n'
+            '      SELECT 1;\n'
+            '    END;\n'
+            '  END IF;\n'
+            '  PREPARE q AS SELECT CASE WHEN $end THEN $loop END;\n'
+            '  WHILE $loop LOOP\n'
+            '    SELECT 0.5 + $1;\n'
+            '  END LOOP;\n'
+            "  SELECT 'escaped' AS marker;\n"
+            'END;\n'
+            '.print CANARY\n',
+        )
+        assert result.stderr.count("Parser Error") == 1
+        assert "cannot commit" not in result.stderr
+        assert "escaped" not in result.stdout
+        assert "CANARY" in result.stdout
+
+    def test_qualification_across_comments_inside_body(self, shell):
+        # a qualification dot keeps its effect across comments and whitespace
+        result = run_lines(
+            shell,
+            'CREATE PROCEDURE p() AS BEGIN\n'
+            '  SELECT t. /* comment */ end FROM (VALUES (1)) t("end");\n'
+            "  SELECT 'escaped' AS marker;\n"
+            'END;\n'
+            '.print CANARY\n',
+        )
+        assert result.stderr.count("Parser Error") == 1
+        assert "escaped" not in result.stdout
+        assert "CANARY" in result.stdout
+
     def test_multibyte_identifier_inside_body(self, shell):
         # a multi-byte identifier ending in a keyword is one word, not that keyword
         result = run_lines(
@@ -293,7 +330,9 @@ class TestBeginEndProtection(object):
         result = run_lines(
             shell,
             'SELECT $$a; b$$ AS s;\n'
+            'SELECT $end$c; d$end$ AS t;\n'
             '.print CANARY\n',
         )
         result.check_stdout("a; b")
+        result.check_stdout("c; d")
         result.check_stdout("CANARY")

@@ -3169,8 +3169,11 @@ bool ShellState::SQLIsComplete(const char *zSql) {
 				break;
 			}
 			if (next_dollar == 0) {
-				// not a dollar quoted string
+				// not a dollar quoted string - consume any parameter name ($1, $param) as one token
 				HandleOtherToken();
+				while (IsSQLWordContinuation(zSql[1])) {
+					zSql++;
+				}
 				next_state = SQLParseState::NORMAL;
 				break;
 			}
@@ -3215,6 +3218,17 @@ bool ShellState::SQLIsComplete(const char *zSql) {
 					paren_depth--;
 				} else if (*zSql == '.') {
 					prev_dot = true;
+				} else if (*zSql >= '0' && *zSql <= '9') {
+					// consume a numeric literal as one token - its decimal point is not a qualification dot
+					while (zSql[1] >= '0' && zSql[1] <= '9') {
+						zSql++;
+					}
+					if (zSql[1] == '.') {
+						zSql++;
+						while (zSql[1] >= '0' && zSql[1] <= '9') {
+							zSql++;
+						}
+					}
 				}
 				next_state = SQLParseState::NORMAL;
 				break;
