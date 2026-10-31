@@ -65,13 +65,36 @@ class TestBeginEndBodies(object):
         assert "cannot commit" not in result.stderr
         assert "CANARY" in result.stdout
 
-    def test_trigger_body_sqlite_style(self, shell):
-        # sqlite trigger syntax has no AS before BEGIN
+    def test_nested_block_after_loop(self, shell):
+        # a nested block directly after LOOP is still part of the body
         result = run_lines(
             shell,
-            'CREATE TRIGGER tr AFTER INSERT ON t BEGIN\n'
-            '  UPDATE t SET i = 1;\n'
-            '  DELETE FROM t;\n'
+            'CREATE PROCEDURE p() AS BEGIN\n'
+            '  LOOP\n'
+            '    BEGIN\n'
+            '      SELECT 1;\n'
+            '    END;\n'
+            '  END LOOP;\n'
+            "  SELECT 'escaped' AS marker;\n"
+            'END;\n'
+            '.print CANARY\n',
+        )
+        assert result.stderr.count("Parser Error") == 1
+        assert "cannot commit" not in result.stderr
+        assert "escaped" not in result.stdout
+        assert "CANARY" in result.stdout
+
+    def test_nested_if_after_then(self, shell):
+        # a nested IF directly after THEN is still part of the body
+        result = run_lines(
+            shell,
+            'CREATE FUNCTION f4(n INTEGER) RETURNS INTEGER AS BEGIN\n'
+            '  IF n > 0 THEN IF n > 1 THEN\n'
+            '    RETURN 2;\n'
+            '  END;\n'
+            '  END;\n'
+            '  LOOP END LOOP;\n'
+            '  RETURN 0;\n'
             'END;\n'
             '.print CANARY\n',
         )
@@ -95,16 +118,26 @@ class TestBeginEndBodies(object):
         assert "CANARY" in result.stdout
 
     def test_transaction_statements_inside_body(self, shell):
-        # BEGIN TRANSACTION / BEGIN; inside a body do not open nested blocks
+        # transaction statements inside a body do not open or close blocks
         result = run_lines(
             shell,
             'CREATE FUNCTION f3() RETURNS INTEGER AS BEGIN\n'
             '  BEGIN TRANSACTION;\n'
+            '  END TRANSACTION;\n'
+            '  BEGIN WORK;\n'
+            '  END WORK;\n'
+            '  BEGIN READ ONLY;\n'
+            '  COMMIT;\n'
+            '  BEGIN;\n'
+            '  ROLLBACK;\n'
+            "  SELECT 'still inside' AS marker;\n"
             '  RETURN 1;\n'
             'END;\n'
             '.print CANARY\n',
         )
         assert result.stderr.count("Parser Error") == 1
+        assert "cannot commit" not in result.stderr
+        assert "still inside" not in result.stdout
         assert "CANARY" in result.stdout
 
 
@@ -146,6 +179,44 @@ class TestBeginEndProtection(object):
         )
         result.check_stdout("gval")
         result.check_stdout("2")
+        result.check_stdout("CANARY")
+
+    def test_macro_with_begin_alias(self, shell):
+        # a begin alias inside a valid macro body does not open body mode
+        result = run_lines(
+            shell,
+            'CREATE FUNCTION m1() AS TABLE SELECT 1 AS begin;\n'
+            'SELECT * FROM m1();\n'
+            'CREATE FUNCTION m2() AS (SELECT 2 AS begin);\n'
+            'SELECT m2() AS v;\n'
+            '.print CANARY\n',
+        )
+        result.check_stdout("1")
+        result.check_stdout("2")
+        result.check_stdout("CANARY")
+
+    def test_native_trigger_with_begin_identifiers(self, shell):
+        # native triggers have no BEGIN ... END body - identifiers named begin stay identifiers
+        result = run_lines(
+            shell,
+            'CREATE TABLE target(i INTEGER);\n'
+            'CREATE TABLE audit(i INTEGER);\n'
+            'CREATE TRIGGER begin AFTER INSERT ON target FOR EACH STATEMENT\n'
+            '  INSERT INTO audit VALUES (1);\n'
+            '.print CANARY\n'
+            'INSERT INTO target VALUES (42);\n'
+            'SELECT count(*) AS audit_cnt FROM audit;\n',
+        )
+        assert "CANARY" in result.stdout
+        assert "audit_cnt" in result.stdout
+
+    def test_multibyte_identifier_with_keyword_suffix(self, shell):
+        # a multi-byte identifier ending in a keyword is not classified as that keyword
+        result = run_lines(
+            shell,
+            'SELECT 1 AS ébegin;\n'
+            '.print CANARY\n',
+        )
         result.check_stdout("CANARY")
 
     def test_toplevel_case_end(self, shell):
