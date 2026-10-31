@@ -2928,6 +2928,77 @@ static bool _all_whitespace(const char *z) {
 
 enum class SQLParseState { SEMICOLON, WHITESPACE, NORMAL };
 
+// keywords that are relevant for framing BEGIN ... END routine bodies
+enum class SQLWordType {
+	CREATE,
+	OR,
+	REPLACE,
+	TEMP,
+	FUNCTION,
+	PROCEDURE,
+	TRIGGER,
+	AS,
+	BEGIN,
+	END,
+	TRANSACTION,
+	WORK,
+	BLOCK_OPENER,
+	OTHER
+};
+
+// classification of the leading keywords of the current top-level statement
+enum class SQLStatementHead { OTHER, CREATE, CREATE_ROUTINE };
+
+static bool SQLWordEquals(const char *word, idx_t length, const char *keyword) {
+	for (idx_t i = 0; i < length; i++) {
+		if (!keyword[i] || StringUtil::CharacterToLower(word[i]) != keyword[i]) {
+			return false;
+		}
+	}
+	return keyword[length] == '\0';
+}
+
+struct SQLKeywordEntry {
+	const char *keyword;
+	SQLWordType type;
+};
+
+static SQLWordType ClassifySQLWord(const char *word, idx_t length) {
+	static const SQLKeywordEntry keywords[] = {{"create", SQLWordType::CREATE},
+	                                           {"or", SQLWordType::OR},
+	                                           {"replace", SQLWordType::REPLACE},
+	                                           {"temp", SQLWordType::TEMP},
+	                                           {"temporary", SQLWordType::TEMP},
+	                                           {"function", SQLWordType::FUNCTION},
+	                                           {"procedure", SQLWordType::PROCEDURE},
+	                                           {"trigger", SQLWordType::TRIGGER},
+	                                           {"as", SQLWordType::AS},
+	                                           {"begin", SQLWordType::BEGIN},
+	                                           {"end", SQLWordType::END},
+	                                           {"transaction", SQLWordType::TRANSACTION},
+	                                           {"work", SQLWordType::WORK},
+	                                           {"if", SQLWordType::BLOCK_OPENER},
+	                                           {"case", SQLWordType::BLOCK_OPENER},
+	                                           {"loop", SQLWordType::BLOCK_OPENER},
+	                                           {"while", SQLWordType::BLOCK_OPENER},
+	                                           {"for", SQLWordType::BLOCK_OPENER},
+	                                           {"foreach", SQLWordType::BLOCK_OPENER}};
+	for (auto &entry : keywords) {
+		if (SQLWordEquals(word, length, entry.keyword)) {
+			return entry.type;
+		}
+	}
+	return SQLWordType::OTHER;
+}
+
+static bool IsSQLWordStart(char c) {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+}
+
+static bool IsSQLWordContinuation(char c) {
+	return IsSQLWordStart(c) || (c >= '0' && c <= '9') || (c >= '\200' && c <= '\377');
+}
+
 static const char *skipDollarQuotedString(const char *zSql, const char *delimiterStart, idx_t delimiterLength) {
 	for (; *zSql; zSql++) {
 		if (*zSql == '$') {
@@ -2958,12 +3029,44 @@ static const char *skipDollarQuotedString(const char *zSql, const char *delimite
 
 bool ShellState::SQLIsComplete(const char *zSql) {
 	auto state = SQLParseState::NORMAL;
+	// tracking for BEGIN ... END routine bodies (CREATE FUNCTION/PROCEDURE/TRIGGER)
+	idx_t block_depth = 0;
+	bool statement_start = true;
+	// a statement-initial BEGIN inside a body - transaction check against the next token pending
+	bool pending_begin = false;
+	auto head = SQLStatementHead::OTHER;
+	bool trigger_head = false;
+	auto prev_word = SQLWordType::OTHER;
+
+	// handles any significant token that is not a semicolon or a word (strings, operators, numbers, ...)
+	auto HandleOtherToken = [&]() {
+		if (pending_begin) {
+			pending_begin = false;
+			block_depth++;
+		}
+		if (head == SQLStatementHead::CREATE) {
+			head = SQLStatementHead::OTHER;
+		}
+		statement_start = false;
+		prev_word = SQLWordType::OTHER;
+	};
 
 	for (; *zSql; zSql++) {
 		SQLParseState next_state;
 		switch (*zSql) {
 		case ';':
-			next_state = SQLParseState::SEMICOLON;
+			// BEGIN immediately followed by a semicolon starts a transaction - not a block
+			pending_begin = false;
+			if (block_depth > 0) {
+				// semicolons inside a routine body do not complete the input
+				next_state = SQLParseState::NORMAL;
+			} else {
+				next_state = SQLParseState::SEMICOLON;
+				head = SQLStatementHead::OTHER;
+				trigger_head = false;
+			}
+			statement_start = true;
+			prev_word = SQLWordType::OTHER;
 			break;
 		case ' ':
 		case '\r':
@@ -2975,6 +3078,7 @@ bool ShellState::SQLIsComplete(const char *zSql) {
 		}
 		case '/': { /* C-style comments */
 			if (zSql[1] != '*') {
+				HandleOtherToken();
 				next_state = SQLParseState::NORMAL;
 				break;
 			}
@@ -2992,6 +3096,7 @@ bool ShellState::SQLIsComplete(const char *zSql) {
 		}
 		case '-': { /* SQL-style comments from "--" to end of line */
 			if (zSql[1] != '-') {
+				HandleOtherToken();
 				next_state = SQLParseState::NORMAL;
 				break;
 			}
@@ -3036,6 +3141,7 @@ bool ShellState::SQLIsComplete(const char *zSql) {
 			}
 			if (next_dollar == 0) {
 				// not a dollar quoted string
+				HandleOtherToken();
 				next_state = SQLParseState::NORMAL;
 				break;
 			}
@@ -3050,6 +3156,7 @@ bool ShellState::SQLIsComplete(const char *zSql) {
 				// unterminated dollar string
 				return false;
 			}
+			HandleOtherToken();
 			next_state = SQLParseState::WHITESPACE;
 			break;
 		}
@@ -3065,11 +3172,80 @@ bool ShellState::SQLIsComplete(const char *zSql) {
 				// unterminated single or double quoted string
 				return 0;
 			}
+			HandleOtherToken();
 			next_state = SQLParseState::WHITESPACE;
 			break;
 		}
-		default:
+		default: {
+			if (!IsSQLWordStart(*zSql)) {
+				HandleOtherToken();
+				next_state = SQLParseState::NORMAL;
+				break;
+			}
+			// consume the full word and classify it
+			auto word_start = zSql;
+			while (IsSQLWordContinuation(zSql[1])) {
+				zSql++;
+			}
+			auto word = ClassifySQLWord(word_start, idx_t(zSql - word_start) + 1);
+			bool opened_body = false;
+			if (pending_begin) {
+				pending_begin = false;
+				if (word != SQLWordType::TRANSACTION && word != SQLWordType::WORK) {
+					// the BEGIN opened a nested block - this word starts its first statement
+					block_depth++;
+					statement_start = true;
+				}
+			}
+			if (statement_start) {
+				if (block_depth == 0) {
+					// classify the head of a new top-level statement
+					head = word == SQLWordType::CREATE ? SQLStatementHead::CREATE : SQLStatementHead::OTHER;
+				} else {
+					// statement-initial keywords inside a body open and close blocks
+					switch (word) {
+					case SQLWordType::BEGIN:
+						pending_begin = true;
+						break;
+					case SQLWordType::END:
+						block_depth--;
+						break;
+					case SQLWordType::BLOCK_OPENER:
+						block_depth++;
+						break;
+					default:
+						break;
+					}
+				}
+			} else if (block_depth == 0) {
+				if (head == SQLStatementHead::CREATE) {
+					switch (word) {
+					case SQLWordType::OR:
+					case SQLWordType::REPLACE:
+					case SQLWordType::TEMP:
+						break;
+					case SQLWordType::FUNCTION:
+					case SQLWordType::PROCEDURE:
+					case SQLWordType::TRIGGER:
+						head = SQLStatementHead::CREATE_ROUTINE;
+						trigger_head = word == SQLWordType::TRIGGER;
+						break;
+					default:
+						head = SQLStatementHead::OTHER;
+						break;
+					}
+				} else if (head == SQLStatementHead::CREATE_ROUTINE && word == SQLWordType::BEGIN &&
+				           (prev_word == SQLWordType::AS || trigger_head)) {
+					// start of a routine body - the next token starts its first statement
+					block_depth = 1;
+					opened_body = true;
+				}
+			}
+			statement_start = opened_body;
+			prev_word = word;
 			next_state = SQLParseState::NORMAL;
+			break;
+		}
 		}
 		// white space is ignored (no change in state)
 		if (next_state != SQLParseState::WHITESPACE) {
