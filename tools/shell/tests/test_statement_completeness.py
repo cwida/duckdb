@@ -114,6 +114,11 @@ class TestBeginEndBodies(object):
             '  SELECT CASE WHEN true THEN (SELECT 1 AS end) ELSE if(true, 1, 0) END;\n'
             '  SELECT 1 AS end, 2 AS loop, 3 AS case;\n'
             '  CREATE FUNCTION m(x) AS CASE WHEN x > 0 THEN if(x > 1, 1, 0) ELSE 0 END;\n'
+            '  IF (SELECT true AS case) THEN\n'
+            '    BEGIN\n'
+            '      SELECT 7;\n'
+            '    END;\n'
+            '  END IF;\n'
             "  SELECT 'escaped' AS marker;\n"
             'END;\n'
             '.print CANARY\n',

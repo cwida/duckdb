@@ -2946,6 +2946,7 @@ enum class SQLWordType {
 	CASE,
 	LOOP,
 	SEPARATOR,
+	WHEN,
 	OTHER
 };
 
@@ -2986,6 +2987,7 @@ static SQLWordType ClassifySQLWord(const char *word, idx_t length) {
 	                                           {"for", SQLWordType::BLOCK_OPENER},
 	                                           {"foreach", SQLWordType::BLOCK_OPENER},
 	                                           {"loop", SQLWordType::LOOP},
+	                                           {"when", SQLWordType::WHEN},
 	                                           {"then", SQLWordType::SEPARATOR},
 	                                           {"else", SQLWordType::SEPARATOR},
 	                                           {"do", SQLWordType::SEPARATOR}};
@@ -3082,6 +3084,8 @@ bool ShellState::SQLIsComplete(const char *zSql) {
 	bool prev_qualifier = false;
 	// a word after AS inside a body is an alias or type name, unless it opens a CASE expression (macro body)
 	bool prev_alias = false;
+	// CASE after AS - macro body expression if followed by WHEN, otherwise an alias
+	bool pending_alias_case = false;
 	auto head = SQLStatementHead::OTHER;
 	auto prev_word = SQLWordType::OTHER;
 
@@ -3107,6 +3111,7 @@ bool ShellState::SQLIsComplete(const char *zSql) {
 		prev_word = SQLWordType::OTHER;
 		prev_qualifier = false;
 		prev_alias = false;
+		pending_alias_case = false;
 	};
 
 	for (; *zSql; zSql++) {
@@ -3133,6 +3138,7 @@ bool ShellState::SQLIsComplete(const char *zSql) {
 			prev_word = SQLWordType::OTHER;
 			prev_qualifier = false;
 			prev_alias = false;
+			pending_alias_case = false;
 			break;
 		case ' ':
 		case '\r':
@@ -3278,8 +3284,19 @@ bool ShellState::SQLIsComplete(const char *zSql) {
 				zSql++;
 			}
 			auto word = prev_qualifier ? SQLWordType::OTHER : ClassifySQLWord(word_start, idx_t(zSql - word_start) + 1);
-			if (prev_alias && word != SQLWordType::CASE) {
-				// an alias or type name - a CASE here starts a macro body expression instead
+			if (pending_alias_case) {
+				pending_alias_case = false;
+				if (word == SQLWordType::WHEN) {
+					// AS CASE WHEN - a macro body expression, not an alias
+					case_expr_depth++;
+				}
+			}
+			if (prev_alias) {
+				if (word == SQLWordType::CASE) {
+					// defer - AS CASE WHEN starts a macro body expression, any other follower is an alias
+					pending_alias_case = true;
+				}
+				// an alias or type name
 				word = SQLWordType::OTHER;
 			}
 			prev_qualifier = false;
