@@ -2,6 +2,11 @@
 # description: After setseed, samples and random functions return the same values as in earlier releases
 # group: [numeric]
 
+# the values depend on the vector size, and a reload starts a connection without the seed
+require vector_size 2048
+
+require skip_reload
+
 statement ok
 SET threads=1
 
