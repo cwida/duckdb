@@ -209,7 +209,7 @@ static bool ConstructShreddedType(const VariantAnalyzeData &state, LogicalType &
 			for (auto &field : object_data.fields) {
 				field_counts.emplace_back(field.first, field.second.total_count);
 			}
-			auto shredded_fields = VariantSelectShreddedFields(std::move(field_counts), state.total_count);
+			auto shredded_fields = VariantSelectShreddedFields(std::move(field_counts));
 
 			child_list_t<LogicalType> field_types;
 			for (auto &field_name : shredded_fields) {

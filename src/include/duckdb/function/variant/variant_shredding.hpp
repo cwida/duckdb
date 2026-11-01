@@ -13,30 +13,18 @@
 
 namespace duckdb {
 
-//! An object field is only worth shredding if it occurs in at least 1/VARIANT_SHREDDED_FIELD_PRESENCE_DIVISOR of the
-//! objects it belongs to - rarer fields cost more shred type than they save in the unshredded overlay.
-constexpr idx_t VARIANT_SHREDDED_FIELD_PRESENCE_DIVISOR = 100;
-
-//! At most this many fields are shredded per object - every shredded field adds a column, so a long tail of
-//! moderately frequent fields costs more to read and write than it saves.
+//! At most this many fields are shredded per object - every shredded field adds a column, and past this point the
+//! extra columns cost more to read and write than they save.
 constexpr idx_t VARIANT_SHREDDED_FIELD_LIMIT = 32;
 
-//! Whether a field occurring 'field_count' times in 'object_count' objects is frequent enough to shred on
-inline bool VariantFieldIsWorthShredding(idx_t field_count, idx_t object_count) {
-	return field_count * VARIANT_SHREDDED_FIELD_PRESENCE_DIVISOR >= object_count;
-}
-
-//! Returns the names of the fields to shred on for an object that occurs 'object_count' times.
-//! Fields below the presence threshold are dropped, and only the VARIANT_SHREDDED_FIELD_LIMIT most frequent fields
-//! are kept. Fields are returned ordered by decreasing occurrence, ties broken by name so the result is stable.
-inline vector<string> VariantSelectShreddedFields(vector<pair<string, idx_t>> fields, idx_t object_count) {
+//! Returns the names of the VARIANT_SHREDDED_FIELD_LIMIT most frequent fields to shred on.
+//! Fields are returned ordered by decreasing occurrence, ties broken by name so the result is stable.
+inline vector<string> VariantSelectShreddedFields(vector<pair<string, idx_t>> fields) {
 	vector<pair<string, idx_t>> selected;
+	selected.reserve(fields.size());
 	for (auto &field : fields) {
 		if (field.first.empty()) {
 			// a STRUCT field cannot have an empty name, so the empty key stays in the 'value'
-			continue;
-		}
-		if (!VariantFieldIsWorthShredding(field.second, object_count)) {
 			continue;
 		}
 		selected.push_back(std::move(field));

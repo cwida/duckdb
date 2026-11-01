@@ -1,5 +1,5 @@
 # name: test/sql/storage/types/variant/variant_shredding_field_frequency.test
-# description: Test that only object fields that occur in a sufficient fraction of the objects are shredded
+# description: Test that only the 32 most frequent object fields are shredded
 # group: [variant]
 
 require json
@@ -64,7 +64,8 @@ SELECT SUM(col.a::BIGINT) FROM homogeneous
 
 # ------------------------------ Long tail ------------------------------
 
-# Every row adds a key that occurs in that single row only - the 1000 rare keys stay out of the shredded type
+# Every row adds a key that occurs in that single row only - the cap only leaves room for 'a', 'b' and 30 of the
+# 1000 keys, the tail of the keys stays in the overlay
 statement ok
 CREATE TABLE long_tail AS SELECT json_object('a', i, 'b', 'value_' || i::VARCHAR, 'k' || i::VARCHAR,
 	i)::VARIANT AS col FROM range(1000) t(i);
@@ -75,9 +76,9 @@ CHECKPOINT;
 query II
 SELECT shredded_field_count('long_tail'), overlay_key_count('long_tail')
 ----
-2	1000
+32	970
 
-# The rare keys are still readable, they are served from the overlay
+# The keys that did not make the cut are still readable, they are served from the overlay
 query I
 SELECT col.k42::BIGINT FROM long_tail WHERE col.a = 42
 ----
@@ -98,14 +99,14 @@ restart
 query II
 SELECT shredded_field_count('long_tail'), overlay_key_count('long_tail')
 ----
-2	1000
+32	970
 
 query I
 SELECT col.k42::BIGINT FROM long_tail WHERE col.a = 42
 ----
 42
 
-# Appending more rare keys and re-shredding keeps the shred type stable
+# Appending more rare keys keeps the shred type capped at 32 fields
 statement ok
 INSERT INTO long_tail SELECT json_object('a', i + 1000, 'b', 'value_' || (i + 1000)::VARCHAR,
 	'k' || (i + 1000)::VARCHAR, i + 1000)::VARIANT FROM range(1000) t(i);
@@ -116,7 +117,7 @@ CHECKPOINT;
 query II
 SELECT shredded_field_count('long_tail'), overlay_key_count('long_tail')
 ----
-2	2000
+32	1970
 
 query I
 SELECT col.k1420::BIGINT FROM long_tail WHERE col.a = 1420
@@ -125,24 +126,20 @@ SELECT col.k1420::BIGINT FROM long_tail WHERE col.a = 1420
 
 # ------------------------------ Frequent fields ------------------------------
 
-# 'half' occurs in 50% of the objects - that is frequent enough to shred on
+# 'half' occurs in 50% of the objects - it is shredded like any other field
 statement ok
 CREATE TABLE frequent AS SELECT CASE WHEN i % 2 = 0 THEN json_object('a', i, 'b', 'value_' || i::VARCHAR,
 	'half', i) ELSE json_object('a', i, 'b', 'value_' || i::VARCHAR) END::VARIANT AS col FROM range(100) t(i);
 
-# 'one_percent' occurs in exactly 1% of the objects, 'below_one_percent' in 0.9%
+# There is no presence threshold - a field that occurs in 0.9% of the objects is shredded as well
 statement ok
-CREATE TABLE one_percent AS SELECT CASE WHEN i < 10 THEN json_object('a', i, 'one_percent', i) ELSE json_object('a',
-	i) END::VARIANT AS col FROM range(1000) t(i);
-
-statement ok
-CREATE TABLE below_one_percent AS SELECT CASE WHEN i < 9 THEN json_object('a', i, 'below_one_percent', i) ELSE
+CREATE TABLE rare_field AS SELECT CASE WHEN i < 9 THEN json_object('a', i, 'rare', i) ELSE
 	json_object('a', i) END::VARIANT AS col FROM range(1000) t(i);
 
 # An object with many frequent fields is capped - only the 32 most frequent fields are shredded
 statement ok
-CREATE TABLE capped AS SELECT map_from_entries(list_transform(range(40), j -> {'k': 'f' || j::VARCHAR, 'v': j}
-	))::JSON::VARIANT AS col FROM range(100) t(i);
+CREATE TABLE capped AS SELECT obj::JSON::VARIANT AS col FROM range(100) t(i), (SELECT '{' || string_agg('"f' ||
+	j::VARCHAR || '":' || j::VARCHAR, ',') || '}' AS obj FROM range(40) t2(j)) o;
 
 statement ok
 CHECKPOINT;
@@ -157,25 +154,14 @@ SELECT SUM(col.half::BIGINT) FROM frequent
 ----
 2450
 
-# 1% of the objects is the cutoff - at the cutoff the field is still shredded
+# 0.9% of the objects is no reason to keep the field out of the shredded type
 query II
-SELECT shredded_field_count('one_percent'), overlay_key_count('one_percent')
+SELECT shredded_field_count('rare_field'), overlay_key_count('rare_field')
 ----
 2	0
 
 query I
-SELECT SUM(col.one_percent::BIGINT) FROM one_percent
-----
-45
-
-# 0.9% of the objects is below the cutoff - the field stays in the overlay
-query II
-SELECT shredded_field_count('below_one_percent'), overlay_key_count('below_one_percent')
-----
-1	9
-
-query I
-SELECT SUM(col.below_one_percent::BIGINT) FROM below_one_percent
+SELECT SUM(col.rare::BIGINT) FROM rare_field
 ----
 36
 
@@ -192,7 +178,7 @@ SELECT SUM(col.f39::BIGINT), COUNT(*) FROM capped
 
 # ------------------------------ Nested objects ------------------------------
 
-# 'inner' is shredded, but the nested 'rare' field (0.5% of the inner objects) is not
+# 'inner' is shredded, and so is the nested 'rare' field (0.5% of the inner objects) - there is room left in the cap
 statement ok
 CREATE TABLE nested AS SELECT json_object('a', i, 'inner', CASE WHEN i < 5 THEN json_object('x', i, 'rare',
 	i) ELSE json_object('x', i) END)::VARIANT AS col FROM range(1000) t(i);
@@ -203,7 +189,7 @@ CHECKPOINT;
 query II
 SELECT shredded_field_count('nested'), overlay_key_count('nested')
 ----
-2	5
+2	0
 
 query II
 SELECT col.inner.x::BIGINT, TRY_CAST(col.inner.rare AS BIGINT) FROM nested WHERE col.a = 3

@@ -1,5 +1,5 @@
 # name: test/parquet/variant/variant_shredding_field_frequency.test
-# description: Only object fields that occur in a sufficient fraction of the objects are shredded when writing Parquet
+# description: Only the 32 most frequent object fields are shredded when writing Parquet
 # group: [variant]
 
 require parquet
@@ -21,7 +21,8 @@ SELECT SUM(col.a::BIGINT) FROM '{TEST_DIR}/variant_frequency_homogeneous.parquet
 ----
 4950
 
-# Every row adds a key that occurs in that single row only - the 1000 rare keys stay out of the shredded type
+# Every row adds a key that occurs in that single row only - the shredded type is capped at 32 fields, so only the
+# keys that sort first are shredded and the rest stay out of it
 statement ok
 COPY (SELECT json_object('a', i, 'b', 'value_' || i::VARCHAR, 'k' || i::VARCHAR, i)::VARIANT AS col FROM range(1000) t(i))
 TO '{TEST_DIR}/variant_frequency_long_tail.parquet' (FORMAT parquet);
@@ -30,14 +31,14 @@ query I
 SELECT COUNT(*) FROM parquet_schema('{TEST_DIR}/variant_frequency_long_tail.parquet') WHERE regexp_matches(name,
 	'^k[0-9]+$')
 ----
-0
+30
 
 query I
 SELECT COUNT(*) FROM parquet_schema('{TEST_DIR}/variant_frequency_long_tail.parquet') WHERE name IN ('a', 'b')
 ----
 2
 
-# The rare keys are still readable, they are served from the 'value' column
+# Keys that did not make the cut are still readable, they are served from the 'value' column
 query I
 SELECT col.k42::BIGINT FROM '{TEST_DIR}/variant_frequency_long_tail.parquet' WHERE col.a = 42
 ----
@@ -53,7 +54,7 @@ SELECT COUNT(DISTINCT col::VARCHAR) FROM '{TEST_DIR}/variant_frequency_long_tail
 ----
 1000
 
-# 'half' occurs in 50% of the objects - that is frequent enough to shred on
+# 'half' occurs in 50% of the objects - it is shredded like any other field
 statement ok
 COPY (SELECT CASE WHEN i % 2 = 0 THEN json_object('a', i, 'b', 'value_' || i::VARCHAR, 'half', i)
 	ELSE json_object('a', i, 'b', 'value_' || i::VARCHAR) END::VARIANT AS col FROM range(100) t(i))
@@ -69,40 +70,26 @@ SELECT SUM(col.half::BIGINT) FROM '{TEST_DIR}/variant_frequency_half.parquet'
 ----
 2450
 
-# 'one_percent' occurs in exactly 1% of the objects, 'below_one_percent' in 0.9%
+# There is no presence threshold: a field occurring in 0.9% of the objects is still shredded
 statement ok
-COPY (SELECT CASE WHEN i < 10 THEN json_object('a', i, 'one_percent', i) ELSE json_object('a', i) END::VARIANT AS col
-	FROM range(1000) t(i)) TO '{TEST_DIR}/variant_frequency_one_percent.parquet' (FORMAT parquet);
-
-statement ok
-COPY (SELECT CASE WHEN i < 9 THEN json_object('a', i, 'below_one_percent', i) ELSE json_object('a', i) END::VARIANT AS
-	col FROM range(1000) t(i)) TO '{TEST_DIR}/variant_frequency_below_one_percent.parquet' (FORMAT parquet);
+COPY (SELECT CASE WHEN i < 9 THEN json_object('a', i, 'rare', i) ELSE json_object('a', i) END::VARIANT AS col
+	FROM range(1000) t(i)) TO '{TEST_DIR}/variant_frequency_rare.parquet' (FORMAT parquet);
 
 query I
-SELECT COUNT(*) FROM parquet_schema('{TEST_DIR}/variant_frequency_one_percent.parquet') WHERE name = 'one_percent'
+SELECT COUNT(*) FROM parquet_schema('{TEST_DIR}/variant_frequency_rare.parquet') WHERE name = 'rare'
 ----
 1
 
 query I
-SELECT SUM(col.one_percent::BIGINT) FROM '{TEST_DIR}/variant_frequency_one_percent.parquet'
-----
-45
-
-query I
-SELECT COUNT(*) FROM parquet_schema('{TEST_DIR}/variant_frequency_below_one_percent.parquet')
-	WHERE name = 'below_one_percent'
-----
-0
-
-query I
-SELECT SUM(col.below_one_percent::BIGINT) FROM '{TEST_DIR}/variant_frequency_below_one_percent.parquet'
+SELECT SUM(col.rare::BIGINT) FROM '{TEST_DIR}/variant_frequency_rare.parquet'
 ----
 36
 
 # Objects with many frequent fields are capped - only the 32 most frequent fields are shredded
 statement ok
-COPY (SELECT map_from_entries(list_transform(range(40), j -> {'k': 'f' || j::VARCHAR, 'v': j}))::JSON::VARIANT AS col
-	FROM range(100) t(i)) TO '{TEST_DIR}/variant_frequency_cap.parquet' (FORMAT parquet);
+COPY (SELECT obj::JSON::VARIANT AS col FROM range(100) t(i), (SELECT '{' || string_agg('"f' || j::VARCHAR || '":' ||
+	j::VARCHAR, ',') || '}' AS obj FROM range(40) t2(j)) o) TO '{TEST_DIR}/variant_frequency_cap.parquet'
+(FORMAT parquet);
 
 query I
 SELECT COUNT(*) FROM parquet_schema('{TEST_DIR}/variant_frequency_cap.parquet') WHERE regexp_matches(name,
@@ -126,7 +113,7 @@ SELECT COUNT(DISTINCT col::VARCHAR) FROM '{TEST_DIR}/variant_frequency_cap.parqu
 ----
 1
 
-# 'inner' is shredded, but the nested 'rare' field (0.5% of the inner objects) is not
+# 'inner' is shredded, and so is the nested 'rare' field (0.5% of the inner objects) - there is room left in the cap
 statement ok
 COPY (SELECT json_object('a', i, 'inner', CASE WHEN i < 5 THEN json_object('x', i, 'rare', i) ELSE json_object('x',
 	i) END)::VARIANT AS col FROM range(1000) t(i)) TO '{TEST_DIR}/variant_frequency_nested.parquet' (FORMAT parquet);
@@ -134,7 +121,7 @@ COPY (SELECT json_object('a', i, 'inner', CASE WHEN i < 5 THEN json_object('x', 
 query I
 SELECT COUNT(*) FROM parquet_schema('{TEST_DIR}/variant_frequency_nested.parquet') WHERE name IN ('inner', 'x', 'rare')
 ----
-2
+3
 
 query II
 SELECT col.inner.x::BIGINT, TRY_CAST(col.inner.rare AS BIGINT)

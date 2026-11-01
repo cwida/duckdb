@@ -453,8 +453,8 @@ bool VariantShreddingStats::GetShreddedTypeInternal(const VariantColumnStatsData
 			}
 			field_counts.emplace_back(entry.first, GetColumnStats(entry.second).total_count);
 		}
-		// rare fields stay in the unshredded overlay, and the number of shredded fields is capped
-		auto shredded_fields = VariantSelectShreddedFields(std::move(field_counts), column.total_count);
+		// only the most frequent fields are shredded, a long tail of fields stays in the unshredded overlay
+		auto shredded_fields = VariantSelectShreddedFields(std::move(field_counts));
 		for (auto &field_name : shredded_fields) {
 			auto &child_column = GetColumnStats(column.field_stats.at(field_name));
 			LogicalType child_type;
