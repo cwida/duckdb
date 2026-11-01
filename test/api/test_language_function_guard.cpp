@@ -333,15 +333,6 @@ TEST_CASE("Batch member creation follows the overload identity", "[api]") {
 	REQUIRE(CHECK_COLUMN(count, 0, {2}));
 }
 
-//! Build a type the way only the raw C++ constructor can: a parameterless (INVALID) info carrying
-//! extension metadata, which LogicalType normalizes to the serializable GENERIC representation
-static LogicalType RawConstructedType(LogicalTypeId id, int32_t modifier) {
-	auto type_info = make_uniq<LogicalTypeInfo>(LogicalTypeInfoType::INVALID_TYPE_INFO);
-	type_info->extension_info = make_uniq<ExtensionTypeInfo>();
-	type_info->extension_info->modifiers.emplace_back(Value::INTEGER(modifier));
-	return LogicalType(id, std::move(type_info));
-}
-
 //! A zero-parameter language member whose undeclared RETURNS type carries extension metadata
 static unique_ptr<LanguageMacroFunction> UndeclaredReturnsMetadataMember(const string &language) {
 	auto ext_info = make_uniq<ExtensionTypeInfo>();
@@ -380,6 +371,15 @@ TEST_CASE("Metadata on an undeclared RETURNS type is rejected at the catalog bou
 
 // the guard raises InternalException, which aborts the process when DUCKDB_CRASH_ON_ASSERT is set
 #ifndef DUCKDB_CRASH_ON_ASSERT
+
+//! Build a type the way only the raw C++ constructor can: a parameterless (INVALID) info carrying
+//! extension metadata, which LogicalType normalizes to the serializable GENERIC representation
+static LogicalType RawConstructedType(LogicalTypeId id, int32_t modifier) {
+	auto type_info = make_uniq<LogicalTypeInfo>(LogicalTypeInfoType::INVALID_TYPE_INFO);
+	type_info->extension_info = make_uniq<ExtensionTypeInfo>();
+	type_info->extension_info->modifiers.emplace_back(Value::INTEGER(modifier));
+	return LogicalType(id, std::move(type_info));
+}
 
 TEST_CASE("A raw-constructed type representation stays visible to the identity freeze", "[api]") {
 	DuckDB db(nullptr);
