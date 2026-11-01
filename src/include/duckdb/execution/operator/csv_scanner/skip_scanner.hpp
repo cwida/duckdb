@@ -22,6 +22,9 @@ public:
 
 	idx_t row_count = 0;
 	idx_t rows_to_skip;
+	idx_t buffer_start = 0;
+	idx_t line_start = 0;
+	bool line_size_exceeded = false;
 
 	//! Adds a Value to the result
 	static inline void AddValue(SkipResult &result, const idx_t buffer_pos);
@@ -39,6 +42,7 @@ public:
 	static inline bool UnsetComment(SkipResult &result, idx_t buffer_pos);
 	//! Internal code to add a row
 	inline void InternalAddRow();
+	void CheckLineSize(idx_t position);
 };
 
 //! Scanner used to skip lines in a CSV File

@@ -8,7 +8,7 @@ SET default_null_order='nulls_first';
 statement ok
 create view v as
 SELECT a, b, c, d
-FROM  read_csv('{DATA_DIR}/csv/union-by-name/null_padding/*.csv', UNION_BY_NAME=TRUE, sample_size = 1, null_padding = 1)
+FROM  read_csv('{DATA_DIR}/csv/union-by-name/null_padding/*.csv', UNION_BY_NAME=TRUE, sample_size = 2048, null_padding = 1)
 ORDER BY a,b,c,d
 
 query IIII

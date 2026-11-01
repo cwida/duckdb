@@ -100,6 +100,8 @@ public:
 
 	//! Size of the result
 	const idx_t result_size;
+	//! Maximum number of rows returned by the next parse
+	idx_t result_limit;
 
 	CSVStateMachine &state_machine;
 	bool cur_line_starts_as_comment = false;

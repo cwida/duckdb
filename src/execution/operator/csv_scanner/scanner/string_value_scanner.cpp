@@ -879,7 +879,7 @@ bool StringValueResult::AddRowInternal() {
 		D_ASSERT(buffer_handles.find(current_line_position.end.buffer_idx) != buffer_handles.end());
 		line_positions_per_row[static_cast<idx_t>(number_of_rows)] = current_line_position;
 		number_of_rows++;
-		if (static_cast<idx_t>(number_of_rows) >= result_size) {
+		if (static_cast<idx_t>(number_of_rows) >= result_limit) {
 			// We have a full chunk
 			return true;
 		}
@@ -942,7 +942,7 @@ bool StringValueResult::AddRowInternal() {
 	cur_col_id = 0;
 	chunk_col_id = 0;
 	number_of_rows++;
-	if (static_cast<idx_t>(number_of_rows) >= result_size) {
+	if (static_cast<idx_t>(number_of_rows) >= result_limit) {
 		// We have a full chunk
 		return true;
 	}
@@ -1020,7 +1020,7 @@ bool StringValueResult::EmptyLine(StringValueResult &result, const idx_t buffer_
 			}
 			result.number_of_rows++;
 		}
-		if (static_cast<idx_t>(result.number_of_rows) >= result.result_size) {
+		if (static_cast<idx_t>(result.number_of_rows) >= result.result_limit) {
 			// We have a full chunk
 			return true;
 		}
@@ -1082,6 +1082,12 @@ unique_ptr<StringValueScanner> StringValueScanner::GetCSVScanner(ClientContext &
 
 bool StringValueScanner::FinishedIterator() const {
 	return iterator.done;
+}
+
+void StringValueScanner::SetResultLimit(idx_t result_size) {
+	D_ASSERT(sniffing);
+	D_ASSERT(result_size > 0 && result_size <= result.parse_chunk.GetCapacity());
+	result.result_limit = result_size;
 }
 
 StringValueResult &StringValueScanner::ParseChunk() {
@@ -1425,6 +1431,26 @@ void StringValueScanner::ProcessOverBufferValue() {
 
 	string over_buffer_string;
 	auto previous_buffer = previous_buffer_handle->Ptr();
+	bool full_line_comment = result.comment && result.cur_col_id == 0;
+	if (full_line_comment) {
+		for (idx_t i = result.last_position.buffer_pos; i < result.position_before_comment; i++) {
+			if (previous_buffer[i] != ' ') {
+				full_line_comment = false;
+				break;
+			}
+		}
+	}
+	const auto set_comment = [&](idx_t position) {
+		if (!result.comment) {
+			full_line_comment =
+			    result.cur_col_id == 0 && std::all_of(over_buffer_string.begin(), over_buffer_string.end(),
+			                                          [](char character) { return character == ' '; });
+		}
+		result.SetComment(result, position);
+		if (full_line_comment) {
+			result.position_before_comment = result.last_position.buffer_pos;
+		}
+	};
 	idx_t j = 0;
 	result.quoted = false;
 	for (idx_t i = result.last_position.buffer_pos; i < previous_buffer_handle->actual_size; i++) {
@@ -1434,7 +1460,7 @@ void StringValueScanner::ProcessOverBufferValue() {
 		}
 		if (states.NewRow() || states.NewValue()) {
 			break;
-		} else if (!result.comment) {
+		} else if (!result.comment && !states.IsComment()) {
 			over_buffer_string += previous_buffer[i];
 		}
 		if (states.IsQuoted()) {
@@ -1447,7 +1473,7 @@ void StringValueScanner::ProcessOverBufferValue() {
 			result.escaped = true;
 		}
 		if (states.IsComment()) {
-			result.SetComment(result, j);
+			set_comment(j);
 		}
 		if (states.IsInvalid()) {
 			result.InvalidState(result);
@@ -1467,11 +1493,10 @@ void StringValueScanner::ProcessOverBufferValue() {
 			        buffer_handle_ptr[iterator.pos.buffer_pos] == '\r')) {
 				if (buffer_handle_ptr[iterator.pos.buffer_pos] == '\r') {
 					if (result.last_position.buffer_pos <= previous_buffer_handle->actual_size) {
-						// we add the value
-						result.AddValue(result, previous_buffer_handle->actual_size);
 						if (result.IsCommentSet(result)) {
 							result.UnsetComment(result, iterator.pos.buffer_pos);
 						} else {
+							result.AddValue(result, previous_buffer_handle->actual_size);
 							result.AddRow(result, previous_buffer_handle->actual_size);
 						}
 						state_machine->Transition(states, buffer_handle_ptr[iterator.pos.buffer_pos++]);
@@ -1517,7 +1542,7 @@ void StringValueScanner::ProcessOverBufferValue() {
 			result.SetQuoted(result, j);
 		}
 		if (states.IsComment()) {
-			result.SetComment(result, j);
+			set_comment(j);
 		}
 		if (states.IsEscaped() && result.state_machine.dialect_options.state_machine_options.escape != '\0') {
 			result.escaped = true;
@@ -1526,6 +1551,9 @@ void StringValueScanner::ProcessOverBufferValue() {
 			result.InvalidState(result);
 		}
 		j++;
+	}
+	if (result.comment && full_line_comment) {
+		over_buffer_string.clear();
 	}
 	bool skip_value = false;
 	if (result.projecting_columns) {
@@ -1973,7 +2001,7 @@ void StringValueScanner::SetStart() {
 }
 
 void StringValueScanner::FinalizeChunkProcess() {
-	if (static_cast<idx_t>(result.number_of_rows) >= result.result_size || iterator.done) {
+	if (static_cast<idx_t>(result.number_of_rows) >= result.result_limit || iterator.done) {
 		// We are done
 		if (!sniffing) {
 			if (csv_file_scan) {
@@ -2051,12 +2079,12 @@ void StringValueScanner::FinishBoundaryScan(const bool moved) {
 }
 
 void StringValueScanner::ProcessRemainingBuffers() {
-	while (!FinishedFile() && static_cast<idx_t>(result.number_of_rows) < result.result_size) {
+	while (!FinishedFile() && static_cast<idx_t>(result.number_of_rows) < result.result_limit) {
 		if (TryMoveToNextBuffer() == MoveBufferResult::NOT_IN_MEMORY) {
 			suspended = true;
 			return;
 		}
-		if (static_cast<idx_t>(result.number_of_rows) >= result.result_size) {
+		if (static_cast<idx_t>(result.number_of_rows) >= result.result_limit) {
 			return;
 		}
 		if (cur_buffer_handle) {

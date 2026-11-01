@@ -86,7 +86,7 @@ AdaptiveSnifferResult CSVSniffer::MinimalSniff() {
 	vector<LogicalType> return_types;
 	// Column Names detected
 	buffer_manager->sniffing = true;
-	constexpr idx_t result_size = STANDARD_VECTOR_SIZE;
+	const auto result_size = options.GetSampleChunkSize(0);
 
 	auto state_machine =
 	    make_shared_ptr<CSVStateMachine>(options, options.dialect_options.state_machine_options, state_machine_cache);

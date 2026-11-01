@@ -5,6 +5,14 @@
 
 namespace duckdb {
 
+static idx_t DataRowsSniffed(const CSVSniffer &sniffer, const CSVReaderOptions &options) {
+	const auto lines_sniffed = sniffer.LinesSniffed();
+	const idx_t inferred_skip_rows =
+	    options.dialect_options.skip_rows.IsSetByUser() ? 0 : options.dialect_options.skip_rows.GetValue();
+	const idx_t header_rows = options.dialect_options.header.GetValue() ? 1 : 0;
+	return lines_sniffed - MinValue(lines_sniffed, inferred_skip_rows + header_rows);
+}
+
 //! Function to do schema discovery over one CSV file or a list/glob of CSV files
 CSVSchema CSVSchemaDiscovery::SchemaDiscovery(ClientContext &context, shared_ptr<CSVBufferManager> &buffer_manager,
                                               CSVReaderOptions &options, const MultiFileOptions &file_options,
@@ -13,15 +21,21 @@ CSVSchema CSVSchemaDiscovery::SchemaDiscovery(ClientContext &context, shared_ptr
 	vector<CSVSchema> schemas;
 	const auto option_og = options;
 
-	const auto file_paths = multi_file_list.GetAllFiles();
+	MultiFileListScanData file_scan;
+	multi_file_list.InitializeScan(file_scan);
+	OpenFileInfo file;
+	if (!multi_file_list.Scan(file_scan, file)) {
+		throw InvalidInputException("No columns found in CSV files. Provide the columns option or ensure at least one "
+		                            "file contains a header or data row.");
+	}
 
 	// Here what we want to do is to sniff a given number of lines, if we have many files, we might go through them
 	// to reach the number of lines.
-	const idx_t required_number_of_lines = options.sniff_size * options.sample_size_chunks;
+	const idx_t required_number_of_lines = options.GetSampleSize();
 
 	idx_t total_number_of_rows = 0;
 	idx_t current_file = 0;
-	options.file_path = file_paths[current_file].path;
+	options.file_path = file.path;
 
 	buffer_manager = CSVBufferManager::Open(context, options, options.file_path, false);
 	idx_t only_header_or_empty_files = 0;
@@ -29,10 +43,9 @@ CSVSchema CSVSchemaDiscovery::SchemaDiscovery(ClientContext &context, shared_ptr
 	{
 		CSVSniffer sniffer(options, file_options, buffer_manager, CSVStateMachineCache::Get(context));
 		auto sniffer_result = sniffer.SniffCSV();
-		idx_t rows_read = sniffer.LinesSniffed() -
-		                  (options.dialect_options.skip_rows.GetValue() + options.dialect_options.header.GetValue());
+		const auto rows_read = DataRowsSniffed(sniffer, options);
 
-		schemas.emplace_back(sniffer_result.names, sniffer_result.return_types, file_paths[0].path, rows_read,
+		schemas.emplace_back(sniffer_result.names, sniffer_result.return_types, file.path, rows_read,
 		                     buffer_manager->GetBuffer(0)->actual_size == 0);
 		total_number_of_rows += sniffer.LinesSniffed();
 		current_file++;
@@ -42,20 +55,21 @@ CSVSchema CSVSchemaDiscovery::SchemaDiscovery(ClientContext &context, shared_ptr
 	}
 
 	// We do a copy of the options to not pollute the options of the first file.
-	idx_t max_files_to_sniff = static_cast<idx_t>(options.files_to_sniff == -1)
-	                               ? NumericLimits<idx_t>::Maximum()
-	                               : static_cast<idx_t>(options.files_to_sniff);
-	idx_t files_to_sniff = file_paths.size() > max_files_to_sniff ? max_files_to_sniff : file_paths.size();
-	while (total_number_of_rows < required_number_of_lines && current_file < files_to_sniff) {
+	const idx_t max_files_to_sniff =
+	    options.files_to_sniff == -1 ? NumericLimits<idx_t>::Maximum() : NumericCast<idx_t>(options.files_to_sniff);
+	while (total_number_of_rows < required_number_of_lines && current_file < max_files_to_sniff &&
+	       multi_file_list.Scan(file_scan, file)) {
 		auto option_copy = option_og;
-		option_copy.file_path = file_paths[current_file].path;
+		if (required_number_of_lines != NumericLimits<idx_t>::Maximum()) {
+			option_copy.SetSampleSize(required_number_of_lines - total_number_of_rows);
+		}
+		option_copy.file_path = file.path;
 		auto file_buffer_manager = CSVBufferManager::Open(context, option_copy, option_copy.file_path, false);
 		// TODO: We could cache the sniffer to be reused during scanning. Currently that's an exercise left to the
 		// reader
 		CSVSniffer sniffer(option_copy, file_options, file_buffer_manager, CSVStateMachineCache::Get(context));
 		auto sniffer_result = sniffer.SniffCSV();
-		idx_t rows_read = sniffer.LinesSniffed() - (option_copy.dialect_options.skip_rows.GetValue() +
-		                                            option_copy.dialect_options.header.GetValue());
+		const auto rows_read = DataRowsSniffed(sniffer, option_copy);
 		if (file_buffer_manager->GetBuffer(0)->actual_size == 0) {
 			schemas.emplace_back(true);
 		} else {

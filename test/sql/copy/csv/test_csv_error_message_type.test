@@ -31,7 +31,7 @@ SELECT * FROM read_csv('{DATA_DIR}/csv/venue_pipe.csv', types={'venueseats':'INT
 This type was either manually set or derived from an existing table. Select a different type to correctly parse this column.
 
 statement error
-SELECT * FROM read_csv('{DATA_DIR}/csv/venue_pipe_big.csv', sample_size = 1);
+SELECT * FROM read_csv('{DATA_DIR}/csv/venue_pipe_big.csv', sample_size = 2048);
 ----
 This type was auto-detected from the CSV file.
 
@@ -45,7 +45,7 @@ CREATE TABLE venue_2 (
 );
 
 statement ok
-INSERT INTO venue_2 SELECT * FROM read_csv('{DATA_DIR}/csv/venue_pipe_big.csv', sample_size = 1);
+INSERT INTO venue_2 SELECT * FROM read_csv('{DATA_DIR}/csv/venue_pipe_big.csv', sample_size = 2048);
 
 query I
 SELECT COUNT(*) from venue_2
@@ -80,7 +80,7 @@ statement ok
 copy venue_2 from '{DATA_DIR}/csv/venue_pipe_big.csv'
 
 statement error
-SELECT * FROM read_csv('{DATA_DIR}/csv/venue_pipe_big.csv', sample_size = 1);
+SELECT * FROM read_csv('{DATA_DIR}/csv/venue_pipe_big.csv', sample_size = 2048);
 ----
 This type was auto-detected from the CSV file.
 

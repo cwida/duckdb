@@ -4,7 +4,7 @@
 
 # CSV file with very sparse column
 statement ok
-CREATE TABLE test AS SELECT * FROM read_csv_auto ('{DATA_DIR}/csv/auto/issue_811.csv', SAMPLE_SIZE=1);
+CREATE TABLE test AS SELECT * FROM read_csv_auto ('{DATA_DIR}/csv/auto/issue_811.csv', SAMPLE_SIZE=2048);
 
 query IIII
 SELECT typeof(TestInteger), typeof(TestDouble), typeof(TestDate), typeof(TestText) FROM test LIMIT 1

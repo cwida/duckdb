@@ -105,13 +105,17 @@ struct CSVReaderOptions {
 	vector<bool> force_not_null;
 	//! Result size of sniffing phases
 	static constexpr idx_t sniff_size = 2048;
+	//! Default number of rows to sample during auto-detection
+	static constexpr idx_t default_sample_size = 20480;
 
 	//! In case this is a glob or list of multiple files, how many shall be used to sniff.
 	//! -1 means all
 	int64_t files_to_sniff = 10;
 
 	//! Number of sample chunks used in auto-detection
-	idx_t sample_size_chunks = 20480 / sniff_size;
+	idx_t sample_size_chunks = default_sample_size / sniff_size;
+	//! Number of rows used by the final sample chunk
+	idx_t sample_size_last_chunk = sniff_size;
 	//! Consider all columns to be of type varchar
 	bool all_varchar = false;
 	//! Whether to automatically detect dialect and datatypes
@@ -191,6 +195,11 @@ struct CSVReaderOptions {
 	//! expected_names - names expected if the option is "columns"
 	void SetReadOption(const Identifier &loption, const Value &value, const vector<Identifier> &expected_names);
 	void SetWriteOption(const Identifier &loption, const Value &value);
+	//! Configure the exact row budget used by CSV auto-detection
+	void SetSampleSize(idx_t sample_size);
+	idx_t GetSampleSize() const;
+	//! Return the row limit for a specific auto-detection chunk
+	idx_t GetSampleChunkSize(idx_t chunk_idx) const;
 	void SetDateFormat(LogicalTypeId type, const string &format, bool read_format);
 	void ToNamedParameters(named_parameter_map_t &out) const;
 	void FromNamedParameters(const named_argument_map_t &in, ClientContext &context, MultiFileOptions &file_options);

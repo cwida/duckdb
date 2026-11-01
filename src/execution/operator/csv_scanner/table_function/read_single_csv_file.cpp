@@ -95,7 +95,7 @@ static void SniffCSVFile(ClientContext &context, ReadSingleCSVFileData &result, 
 	auto &options = result.options;
 	result.buffer_manager = CSVBufferManager::Open(context, options, options.file_path, false);
 	auto &state_machine_cache = CSVStateMachineCache::Get(context);
-	if (file_schema.Empty()) {
+	if (file_schema.Empty() || options.null_padding) {
 		// the columns of this file are fixed - only its dialect is sniffed
 		CSVSniffer sniffer(options, file_options, result.buffer_manager, state_machine_cache);
 		sniffer.SniffCSV();
@@ -301,6 +301,67 @@ static unique_ptr<FunctionData> ReadSingleCSVFileCombineSchema(ClientContext &co
 	result->csv_types = return_types;
 	result->Finalize();
 	return std::move(result);
+}
+
+class CSVMultiFileWrapper : public TableFunctionMultiFileWrapper {
+public:
+	CSVMultiFileWrapper(TableFunction function, TableFunctionMultiFileSettings settings)
+	    : TableFunctionMultiFileWrapper(std::move(function), std::move(settings)) {
+	}
+
+public:
+	unique_ptr<MultiFileReaderInterface> Copy() override {
+		return make_uniq<CSVMultiFileWrapper>(function, settings);
+	}
+
+	void BindReader(ClientContext &context, vector<LogicalType> &return_types, vector<Identifier> &names,
+	                MultiFileBindData &bind_data) override {
+		auto &data = bind_data.bind_data->Cast<TableFunctionMultiFileData>();
+		if (data.HasExpectedSchema() || bind_data.file_options.union_by_name ||
+		    bind_data.file_list->GetExpandResult() != FileExpandResult::MULTIPLE_FILES) {
+			TableFunctionMultiFileWrapper::BindReader(context, return_types, names, bind_data);
+			return;
+		}
+		auto schema_source = make_shared_ptr<ReadSingleCSVFileData>();
+		auto &options = schema_source->options;
+		for (auto &parameter : data.options.named_parameters) {
+			options.ParseOption(context, parameter.first, parameter.second);
+		}
+		if (!options.auto_detect) {
+			TableFunctionMultiFileWrapper::BindReader(context, return_types, names, bind_data);
+			return;
+		}
+		options.multi_file_reader = true;
+		options.Verify(bind_data.file_options);
+		schema_source->file = bind_data.file_list->GetFirstFile();
+		// Sample files in order so each file receives only the remaining row budget.
+		schema_source->csv_schema = CSVSchemaDiscovery::SchemaDiscovery(
+		    context, schema_source->buffer_manager, options, bind_data.file_options, schema_source->csv_types,
+		    schema_source->csv_names, *bind_data.file_list, true);
+		VerifyForceNotNull(options, schema_source->csv_names);
+		schema_source->Finalize();
+		data.options.expected_names = schema_source->csv_names;
+		data.options.expected_types = schema_source->csv_types;
+		data.options.schema_bind_data = std::move(schema_source);
+		data.options.multi_file_scan = true;
+		bind_data.Initialize(bind_data.multi_file_reader->CreateReader(context, bind_data.file_list->GetFirstFile(),
+		                                                               data.options, bind_data.file_options, *this));
+		return_types = data.options.expected_types;
+		names = data.options.expected_names;
+		bind_data.multi_file_reader->BindOptions(bind_data.file_options, *bind_data.file_list, return_types, names,
+		                                         bind_data.reader_bind);
+	}
+};
+
+static unique_ptr<FunctionData> CSVReaderBind(ClientContext &context, TableFunctionBindInput &input,
+                                              vector<LogicalType> &return_types, vector<Identifier> &names) {
+	if (!input.table_function.function_info) {
+		throw InvalidInputException("Multi-file table function %s was bound without its function info",
+		                            input.table_function.GetName());
+	}
+	auto &info = input.table_function.function_info->Cast<TableFunctionMultiFileInfo>();
+	return MultiFileFunction<TableFunctionMultiFileWrapper>::MultiFileBindInterface(
+	    context, input, return_types, names, make_uniq<CSVMultiFileWrapper>(info.function, info.settings));
 }
 
 static unique_ptr<GlobalTableFunctionState> ReadSingleCSVFileInitGlobal(ClientContext &context,
@@ -509,7 +570,12 @@ TableFunction ReadCSVTableFunction::GetMultiFileFunction(Identifier name) {
 	settings.schedule_io = ReadSingleCSVFileScheduleIO;
 	// the scanner converts to the types the scan asks for while parsing, rather than casting its output
 	settings.supports_cast_map = true;
-	return TableFunctionMultiFileWrapper::CreateFunction(GetSingleFileFunction(), std::move(name), std::move(settings));
+	auto single_file_function = GetSingleFileFunction();
+	auto result =
+	    TableFunctionMultiFileWrapper::CreateFunction(single_file_function, std::move(name), settings, CSVReaderBind);
+	result.function_info =
+	    make_shared_ptr<TableFunctionMultiFileInfo>(std::move(single_file_function), std::move(settings));
+	return result;
 }
 
 } // namespace duckdb

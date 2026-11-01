@@ -1224,6 +1224,13 @@
         "type": "idx_t",
         "property": "options.rejects_line_size_limit",
         "default": "10000"
+      },
+      {
+        "id": 145,
+        "name": "sample_size_last_chunk",
+        "type": "idx_t",
+        "property": "options.sample_size_last_chunk",
+        "default": "CSVReaderOptions::sniff_size"
       }
     ],
     "constructor": [

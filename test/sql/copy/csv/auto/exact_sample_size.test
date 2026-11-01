@@ -1,0 +1,573 @@
+# name: test/sql/copy/csv/auto/exact_sample_size.test
+# description: Exact CSV auto-detection sample budgets and multi-file schema accounting
+# group: [auto]
+
+statement ok
+COPY (
+	SELECT CASE WHEN i < 1000 THEN i::VARCHAR ELSE '1.5' END AS value
+	FROM range(1001) tbl(i)
+) TO '{TEMP_DIR}/exact_sample_size.csv' (HEADER false)
+
+query I
+SELECT column_type FROM (DESCRIBE SELECT * FROM read_csv_auto('{TEMP_DIR}/exact_sample_size.csv', sample_size=1000, header=false))
+----
+BIGINT
+
+statement ok
+COPY (SELECT value FROM (VALUES ('1'), ('1.5')) tbl(value))
+TO '{TEMP_DIR}/exact_sample_size_one_row.csv' (HEADER false)
+
+query I
+SELECT column_type FROM (DESCRIBE SELECT * FROM read_csv_auto('{TEMP_DIR}/exact_sample_size_one_row.csv', sample_size=1, header=false))
+----
+BIGINT
+
+# The partial final sample chunk must be added to the full first chunk.
+# The decimal at row 2501 is inside the sample while the string at row 3001 is outside it.
+statement ok
+COPY (
+	SELECT i::VARCHAR AS key,
+		CASE WHEN i = 2500 THEN '1.5' WHEN i = 3000 THEN 'tail' ELSE i::VARCHAR END AS value
+	FROM range(3001) tbl(i)
+) TO '{TEMP_DIR}/exact_sample_size_3000.csv' (HEADER false)
+
+query I
+SELECT string_agg(column_type, ',' ORDER BY column_name) FROM (
+	DESCRIBE SELECT * FROM read_csv_auto('{TEMP_DIR}/exact_sample_size_3000.csv', sample_size=3000, header=false)
+)
+----
+BIGINT,DOUBLE
+
+# Multiple files share one sample budget. After 500 rows from the first file,
+# only the first 500 rows from the second file may participate in inference.
+statement ok
+COPY (SELECT i::VARCHAR AS inside_marker, i::VARCHAR AS outside_marker FROM range(500) tbl(i))
+TO '{TEMP_DIR}/exact_sample_size_multi_1.csv' (HEADER false)
+
+statement ok
+COPY (
+	SELECT CASE WHEN i = 300 THEN '1.5' ELSE i::VARCHAR END AS inside_marker,
+		CASE WHEN i = 700 THEN '1.5' ELSE i::VARCHAR END AS outside_marker
+	FROM range(1000) tbl(i)
+) TO '{TEMP_DIR}/exact_sample_size_multi_2.csv' (HEADER false)
+
+query I
+SELECT string_agg(column_type, ',' ORDER BY column_name) FROM (
+	DESCRIBE SELECT * FROM read_csv_auto([
+		'{TEMP_DIR}/exact_sample_size_multi_1.csv',
+		'{TEMP_DIR}/exact_sample_size_multi_2.csv'
+	], sample_size=1000, header=false)
+)
+----
+DOUBLE,BIGINT
+
+# Explicitly skipped rows are consumed before sniffing and must not be
+# subtracted again from each file's sampled-row count.
+statement ok
+COPY (SELECT value FROM (VALUES ('skip'), ('1.5')) tbl(value))
+TO '{TEMP_DIR}/exact_sample_size_skip_1.csv' (HEADER false)
+
+statement ok
+COPY (SELECT value FROM (VALUES ('skip'), ('1')) tbl(value))
+TO '{TEMP_DIR}/exact_sample_size_skip_2.csv' (HEADER false)
+
+query I
+SELECT column_type FROM (
+	DESCRIBE SELECT * FROM read_csv_auto([
+		'{TEMP_DIR}/exact_sample_size_skip_1.csv',
+		'{TEMP_DIR}/exact_sample_size_skip_2.csv'
+	], sample_size=2, skip=1, header=false)
+)
+----
+DOUBLE
+
+# Auto-detected preamble and header rows are not data rows. A header-only
+# schema must yield to the schema from a later file that contains data.
+query I
+SELECT column_type FROM (
+	DESCRIBE SELECT * FROM read_csv_auto([
+		'{DATA_DIR}/csv/sampling/exact_sample_preamble_header_only.csv',
+		'{DATA_DIR}/csv/sampling/exact_sample_preamble_data.csv'
+	], sample_size=4)
+)
+----
+BIGINT
+
+# sample_size has no effect when automatic detection is disabled.
+query I
+SELECT count(*) FROM read_csv(
+	'{TEMP_DIR}/exact_sample_size.csv',
+	auto_detect=false,
+	columns={'value': 'VARCHAR'},
+	sample_size=1,
+	header=false
+)
+----
+1001
+
+# Preserve the default 20,480-row budget and -1 full-file behavior.
+statement ok
+COPY (
+	SELECT CASE WHEN i = 20480 THEN '1.5' ELSE i::VARCHAR END AS value
+	FROM range(20481) tbl(i)
+) TO '{TEMP_DIR}/sample_size_defaults.csv' (HEADER false)
+
+query I
+SELECT column_type FROM (DESCRIBE SELECT * FROM read_csv_auto('{TEMP_DIR}/sample_size_defaults.csv', header=false))
+----
+BIGINT
+
+query I
+SELECT column_type FROM (DESCRIBE SELECT * FROM read_csv_auto('{TEMP_DIR}/sample_size_defaults.csv', sample_size=-1, header=false))
+----
+DOUBLE
+
+# A first file spanning multiple chunks must contribute each sampled row once.
+# The decimal in the second file is within the remaining 2500-row budget.
+statement ok
+COPY (SELECT i AS key, i::VARCHAR AS value FROM range(2500) tbl(i))
+TO '{TEMP_DIR}/exact_sample_size_chunked_first.csv' (HEADER false)
+
+statement ok
+COPY (
+	SELECT i AS key, CASE WHEN i = 2000 THEN '1.5' ELSE i::VARCHAR END AS value
+	FROM range(2500) tbl(i)
+) TO '{TEMP_DIR}/exact_sample_size_chunked_second.csv' (HEADER false)
+
+query I
+SELECT string_agg(column_type, ',' ORDER BY column_name) FROM (
+	DESCRIBE SELECT * FROM read_csv_auto([
+		'{TEMP_DIR}/exact_sample_size_chunked_first.csv',
+		'{TEMP_DIR}/exact_sample_size_chunked_second.csv'
+	], sample_size=5000, header=false)
+)
+----
+BIGINT,DOUBLE
+
+# With a single dialect candidate, type refinement must still count the tail
+# of the first file. Only 500 rows remain, so row 701 of the second is excluded.
+statement ok
+COPY (
+	SELECT i AS key, CASE WHEN i = 700 THEN '1.5' ELSE i::VARCHAR END AS value
+	FROM range(1000) tbl(i)
+) TO '{TEMP_DIR}/exact_sample_size_single_candidate.csv' (HEADER false)
+
+query I
+SELECT string_agg(column_type, ',' ORDER BY column_name) FROM (
+	DESCRIBE SELECT * FROM read_csv_auto([
+		'{TEMP_DIR}/exact_sample_size_chunked_first.csv',
+		'{TEMP_DIR}/exact_sample_size_single_candidate.csv'
+	], sample_size=3000, header=false, delim=',', quote='"', escape='"', comment='')
+)
+----
+BIGINT,BIGINT
+
+# Full-line comments do not consume the data-row budget. Verify every column
+# and row with ignore_errors, which previously silently dropped both data rows.
+statement ok
+COPY (SELECT value FROM (VALUES ('#first'), ('#second'), ('1,2'), ('3,4')) tbl(value))
+TO '{TEMP_DIR}/exact_sample_comments.csv' (HEADER false, QUOTE '')
+
+query II
+SELECT * FROM read_csv('{TEMP_DIR}/exact_sample_comments.csv',
+    header=false, sample_size=1, comment='#', delim=',', ignore_errors=true)
+----
+1	2
+3	4
+
+query II
+SELECT * FROM read_csv('{TEMP_DIR}/exact_sample_comments.csv',
+    header=false, sample_size=1, comment='#', delim=',')
+----
+1	2
+3	4
+
+# Retained comment metadata must also support automatic comment detection.
+query II
+SELECT * FROM read_csv('{TEMP_DIR}/exact_sample_comments.csv',
+    header=false, sample_size=1, delim=',')
+----
+1	2
+3	4
+
+# Comments between chunks do not move the exact type-sample boundary.
+statement ok
+COPY (
+    SELECT CASE WHEN i % 2 = 0 THEN '#comment'
+                ELSE ((i - 1) // 2)::VARCHAR || ',' ||
+                     CASE WHEN i = 6001 THEN 'tail' ELSE '42' END END AS value
+    FROM range(6002) tbl(i)
+) TO '{TEMP_DIR}/exact_sample_chunk_comments.csv' (HEADER false, QUOTE '')
+
+query I
+SELECT string_agg(column_type, ',' ORDER BY column_name) FROM (
+    DESCRIBE SELECT * FROM read_csv('{TEMP_DIR}/exact_sample_chunk_comments.csv',
+        header=false, sample_size=3000, comment='#', delim=',')
+)
+----
+BIGINT,BIGINT
+
+# all_varchar skips type casts, but must still account for all sampled chunks.
+# A full first-file sample must not let a later file widen the inferred schema.
+statement ok
+COPY (SELECT i AS a, i AS b FROM range(30000) tbl(i))
+TO '{TEMP_DIR}/exact_sample_varchar_first.csv' (HEADER false)
+
+statement ok
+COPY (SELECT i AS a, i AS b, i AS c FROM range(3) tbl(i))
+TO '{TEMP_DIR}/exact_sample_varchar_second.csv' (HEADER false)
+
+query I
+SELECT string_agg(column_type, ',' ORDER BY column_name) FROM (
+    DESCRIBE SELECT * FROM read_csv_auto([
+        '{TEMP_DIR}/exact_sample_varchar_first.csv',
+        '{TEMP_DIR}/exact_sample_varchar_second.csv'
+    ], sample_size=5000, header=false, all_varchar=true, null_padding=true)
+)
+----
+VARCHAR,VARCHAR
+
+# An explicitly fixed dialect must obey the same budget as multiple candidates.
+query I
+SELECT string_agg(column_type, ',' ORDER BY column_name) FROM (
+    DESCRIBE SELECT * FROM read_csv_auto([
+        '{TEMP_DIR}/exact_sample_varchar_first.csv',
+        '{TEMP_DIR}/exact_sample_varchar_second.csv'
+    ], sample_size=5000, header=false, all_varchar=true, null_padding=true,
+       delim=',', quote='"', escape='"', comment='')
+)
+----
+VARCHAR,VARCHAR
+
+# The omitted sample_size still means a 20,480-row budget.
+query I
+SELECT string_agg(column_type, ',' ORDER BY column_name) FROM (
+    DESCRIBE SELECT * FROM read_csv_auto([
+        '{TEMP_DIR}/exact_sample_varchar_first.csv',
+        '{TEMP_DIR}/exact_sample_varchar_second.csv'
+    ], header=false, all_varchar=true, null_padding=true)
+)
+----
+VARCHAR,VARCHAR
+
+# A short first file must leave budget for discovering the second file's column.
+query I
+SELECT string_agg(column_type, ',' ORDER BY column_name) FROM (
+    DESCRIBE SELECT * FROM read_csv_auto([
+        '{TEMP_DIR}/exact_sample_size_chunked_first.csv',
+        '{TEMP_DIR}/exact_sample_varchar_second.csv'
+    ], sample_size=5000, header=false, all_varchar=true, null_padding=true)
+)
+----
+VARCHAR,VARCHAR,VARCHAR
+
+# Unlimited sampling must still include both files.
+query I
+SELECT string_agg(column_type, ',' ORDER BY column_name) FROM (
+    DESCRIBE SELECT * FROM read_csv_auto([
+        '{TEMP_DIR}/exact_sample_varchar_first.csv',
+        '{TEMP_DIR}/exact_sample_varchar_second.csv'
+    ], sample_size=-1, header=false, all_varchar=true, null_padding=true)
+)
+----
+VARCHAR,VARCHAR,VARCHAR
+
+# An unconfirmed automatic comment candidate must not scan to EOF beyond a
+# bounded lookahead and observe an error outside sample_size.
+statement ok
+COPY (
+    SELECT CASE WHEN i < 3000 THEN '#abcd' ELSE repeat('x', 1000) END AS value
+    FROM range(3001) tbl(i)
+) TO '{TEMP_DIR}/exact_sample_auto_comment_bound.csv' (HEADER false, QUOTE '')
+
+query I
+SELECT column_type FROM (
+    DESCRIBE SELECT * FROM read_csv('{TEMP_DIR}/exact_sample_auto_comment_bound.csv',
+        header=false, sample_size=1, max_line_size=100)
+)
+----
+VARCHAR
+
+# A user-set comment is authoritative and may skip more than the automatic
+# lookahead to find the requested number of data rows.
+statement ok
+COPY (
+    SELECT CASE WHEN i < 3000 THEN '#abcd' ELSE '1,2' END AS value
+    FROM range(3001) tbl(i)
+) TO '{TEMP_DIR}/exact_sample_explicit_comments.csv' (HEADER false, QUOTE '')
+
+query II
+SELECT * FROM read_csv('{TEMP_DIR}/exact_sample_explicit_comments.csv',
+    header=false, sample_size=1, comment='#', delim=',')
+----
+1	2
+
+# Exhausting the automatic-comment lookahead must not end a logical data chunk.
+# The quoted value is data row 1501 and therefore inside sample_size=3000.
+statement ok
+COPY (
+    SELECT value FROM (
+        SELECT i AS position, i::VARCHAR || ',' || i::VARCHAR AS value
+        FROM range(2) tbl(i)
+        UNION ALL
+        SELECT i + 2 AS position, '#comment' AS value
+        FROM range(2048) tbl(i)
+        UNION ALL
+        SELECT i + 2050 AS position,
+               i::VARCHAR || ',' || CASE WHEN i = 1500 THEN '"1500"' ELSE i::VARCHAR END AS value
+        FROM range(2, 3000) tbl(i)
+    ) rows
+    ORDER BY position
+) TO '{TEMP_DIR}/exact_sample_partial_comment_chunk.csv' (HEADER false, QUOTE '')
+
+query I
+SELECT string_agg(column_type, ',' ORDER BY column_name) FROM (
+    DESCRIBE SELECT * FROM read_csv('{TEMP_DIR}/exact_sample_partial_comment_chunk.csv',
+        header=false, sample_size=3000, delim=',')
+)
+----
+BIGINT,BIGINT
+
+query II
+SELECT column1, typeof(column1) FROM read_csv('{TEMP_DIR}/exact_sample_partial_comment_chunk.csv',
+    header=false, sample_size=3000, delim=',') WHERE column0=1500
+----
+1500	BIGINT
+
+# An automatic comment candidate exceeding its lookahead is rejected instead
+# of consuming comment rows as data or scanning to EOF.
+statement ok
+COPY (
+    SELECT CASE WHEN i < 2049 THEN '#comment' ELSE i::VARCHAR || ',' || i::VARCHAR END AS value
+    FROM range(5049) tbl(i)
+) TO '{TEMP_DIR}/exact_sample_auto_comment_rejected.csv' (HEADER false, QUOTE '')
+
+query I
+SELECT Comment FROM sniff_csv('{TEMP_DIR}/exact_sample_auto_comment_rejected.csv',
+    header=false, sample_size=3000, delim=',')
+----
+(empty)
+
+query I
+SELECT Comment FROM sniff_csv('{TEMP_DIR}/exact_sample_auto_comment_rejected.csv',
+    header=false, sample_size=-1, delim=',')
+----
+(empty)
+
+# A leading comment must not discard a quote candidate first observed in a
+# later chunk.
+statement ok
+COPY (
+    SELECT value FROM (
+        SELECT 0 AS position, '#comment' AS value
+        UNION ALL
+        SELECT i + 1 AS position,
+               i::VARCHAR || ',' || CASE WHEN i = 2500 THEN '"2500"' ELSE i::VARCHAR END AS value
+        FROM range(3000) tbl(i)
+    ) rows ORDER BY position
+) TO '{TEMP_DIR}/exact_sample_leading_comment_quote.csv' (HEADER false, QUOTE '')
+
+query II
+SELECT column1, typeof(column1) FROM read_csv('{TEMP_DIR}/exact_sample_leading_comment_quote.csv',
+    header=false, sample_size=3000, delim=',') WHERE column0=2500
+----
+2500	BIGINT
+
+query III
+SELECT count(*), min(column0), max(column0) FROM read_csv(
+    '{TEMP_DIR}/exact_sample_leading_comment_quote.csv',
+    header=false, sample_size=3000, delim=',')
+----
+3000	0	2999
+
+query I
+SELECT SkipRows FROM sniff_csv('{TEMP_DIR}/exact_sample_leading_comment_quote.csv',
+    header=false, sample_size=3000, delim=',')
+----
+0
+
+query II
+SELECT column1, typeof(column1) FROM read_csv('{TEMP_DIR}/exact_sample_leading_comment_quote.csv',
+    header=false, sample_size=-1, delim=',') WHERE column0=2500
+----
+2500	BIGINT
+
+query III
+SELECT count(*), min(column0), max(column0) FROM read_csv(
+    '{TEMP_DIR}/exact_sample_leading_comment_quote.csv',
+    header=false, sample_size=-1, delim=',')
+----
+3000	0	2999
+
+# Whitespace before a comment marker still denotes a full-line comment and
+# must not consume the exact data-row budget.
+statement ok
+COPY (SELECT value FROM (VALUES ('   #meta'), ('1,2'), ('3,4')) tbl(value))
+TO '{TEMP_DIR}/exact_sample_indented_comment.csv' (HEADER false, QUOTE '')
+
+query II
+SELECT * FROM read_csv('{TEMP_DIR}/exact_sample_indented_comment.csv',
+    header=false, sample_size=1, comment='#', delim=',')
+----
+1	2
+3	4
+
+statement ok
+COPY (
+    SELECT CASE WHEN i < 1000 THEN '   #meta'
+                WHEN i = 1000 THEN '1,2' ELSE '3,4' END AS value
+    FROM range(1002) tbl(i)
+) TO '{TEMP_DIR}/exact_sample_many_indented_comments.csv' (HEADER false, QUOTE '')
+
+query II
+SELECT * FROM read_csv('{TEMP_DIR}/exact_sample_many_indented_comments.csv',
+    header=false, sample_size=1000, comment='#', delim=',')
+----
+1	2
+3	4
+
+# A file exhausted by skip contributes no type rows and no shared sample
+# budget; the remaining data comes exclusively from the second file.
+statement ok
+COPY (SELECT 0 AS value) TO '{TEMP_DIR}/exact_sample_skip_empty_first.csv' (HEADER false)
+
+statement ok
+COPY (SELECT value FROM (VALUES ('0'), ('0'), ('1.5')) tbl(value))
+TO '{TEMP_DIR}/exact_sample_skip_second.csv' (HEADER false)
+
+query II
+SELECT column0, typeof(column0) FROM read_csv([
+    '{TEMP_DIR}/exact_sample_skip_empty_first.csv',
+    '{TEMP_DIR}/exact_sample_skip_second.csv'
+], header=false, skip=2, sample_size=1, delim=',')
+----
+1.5	DOUBLE
+
+# The default 20,480-row budget follows the same skip-exhausted semantics.
+statement ok
+COPY (SELECT 0 AS value FROM range(20480))
+TO '{TEMP_DIR}/exact_sample_default_skip_first.csv' (HEADER false)
+
+statement ok
+COPY (
+    SELECT CASE WHEN i = 20481 THEN '1.5' ELSE '0' END AS value
+    FROM range(20482) tbl(i)
+) TO '{TEMP_DIR}/exact_sample_default_skip_second.csv' (HEADER false)
+
+query II
+SELECT column0, typeof(column0) FROM read_csv([
+    '{TEMP_DIR}/exact_sample_default_skip_first.csv',
+    '{TEMP_DIR}/exact_sample_default_skip_second.csv'
+], header=false, skip=20481, delim=',')
+----
+1.5	DOUBLE
+
+# Reject unsupported budgets before attempting inference.
+statement error
+SELECT * FROM read_csv('{TEMP_DIR}/exact_sample_size_one_row.csv', sample_size=0)
+----
+Unsupported parameter for SAMPLE_SIZE
+
+statement error
+SELECT * FROM read_csv('{TEMP_DIR}/exact_sample_size_one_row.csv', sample_size=-2)
+----
+Unsupported parameter for SAMPLE_SIZE
+
+# Error diagnostics preserve the requested budget instead of its rounded chunk size.
+statement error
+SELECT * FROM read_csv('{TEMP_DIR}/exact_sample_size_3000.csv', header=false, sample_size=3000)
+----
+sample_size = 3000
+
+# A file beyond the shared budget must not be opened during schema discovery.
+statement ok
+COPY (SELECT repeat('x', 10000) AS value)
+TO '{TEMP_DIR}/exact_sample_size_unsampled.csv' (HEADER false, QUOTE '')
+
+query I
+SELECT column_type FROM (
+    DESCRIBE SELECT * FROM read_csv([
+        '{TEMP_DIR}/exact_sample_size.csv',
+        '{TEMP_DIR}/exact_sample_size_unsampled.csv'
+    ], header=false, sample_size=1000, max_line_size=100)
+)
+----
+BIGINT
+
+# A later file determines a SQLNULL column's type, including during the actual scan.
+statement ok
+COPY (SELECT 'NULL' AS value) TO '{TEMP_DIR}/exact_sample_null_first.csv' (HEADER false, QUOTE '')
+
+statement ok
+COPY (SELECT 42 AS value) TO '{TEMP_DIR}/exact_sample_integer_second.csv' (HEADER false)
+
+query I
+SELECT column_type FROM (
+    DESCRIBE SELECT * FROM read_csv([
+        '{TEMP_DIR}/exact_sample_null_first.csv',
+        '{TEMP_DIR}/exact_sample_integer_second.csv'
+    ], header=false, nullstr='NULL', sample_size=2)
+)
+----
+BIGINT
+
+query TI
+SELECT typeof(column0), column0 FROM read_csv([
+    '{TEMP_DIR}/exact_sample_null_first.csv',
+    '{TEMP_DIR}/exact_sample_integer_second.csv'
+], header=false, nullstr='NULL', sample_size=2) ORDER BY column0 NULLS FIRST
+----
+BIGINT	NULL
+BIGINT	42
+
+# Headers count as logical sample records in each file.
+statement ok
+COPY (SELECT 1 AS value) TO '{TEMP_DIR}/exact_sample_header_first.csv' (HEADER true)
+
+statement ok
+COPY (SELECT 1.5 AS value) TO '{TEMP_DIR}/exact_sample_header_second.csv' (HEADER true)
+
+foreach sample 2 3
+
+query I
+SELECT column_type FROM (
+    DESCRIBE SELECT * FROM read_csv([
+        '{TEMP_DIR}/exact_sample_header_first.csv',
+        '{TEMP_DIR}/exact_sample_header_second.csv'
+    ], header=true, sample_size={sample})
+)
+----
+BIGINT
+
+endloop
+
+query I
+SELECT column_type FROM (
+    DESCRIBE SELECT * FROM read_csv([
+        '{TEMP_DIR}/exact_sample_header_first.csv',
+        '{TEMP_DIR}/exact_sample_header_second.csv'
+    ], header=true, sample_size=4)
+)
+----
+DOUBLE
+
+# Missing fields are padded during execution using the combined schema.
+query II
+SELECT count(*), count(column2) FROM read_csv([
+    '{TEMP_DIR}/exact_sample_size_chunked_first.csv',
+    '{TEMP_DIR}/exact_sample_varchar_second.csv'
+], sample_size=5000, header=false, all_varchar=true, null_padding=true)
+----
+2503	3
+
+# Skipped long preambles do not constrain the data rows that follow them.
+statement ok
+COPY (SELECT value FROM (VALUES (repeat('prefix', 20)), ('1'), ('2')) tbl(value))
+TO '{TEMP_DIR}/exact_sample_long_skipped_prefix.csv' (HEADER false, QUOTE '')
+
+query III
+SELECT count(*), min(column0), max(column0) FROM read_csv(
+    '{TEMP_DIR}/exact_sample_long_skipped_prefix.csv',
+    skip=1, header=false, sample_size=1, buffer_size=16)
+----
+2	1	2

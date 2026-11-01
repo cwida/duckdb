@@ -235,6 +235,41 @@ CSVOption<string> CSVReaderOptions::GetMultiByteDelimiter() const {
 	return dialect_options.state_machine_options.delimiter;
 }
 
+// Convert the exact sample budget to full chunks and a bounded final chunk.
+void CSVReaderOptions::SetSampleSize(idx_t sample_size) {
+	if (sample_size == NumericLimits<idx_t>().Maximum()) {
+		sample_size_chunks = NumericLimits<idx_t>().Maximum();
+		sample_size_last_chunk = sniff_size;
+		return;
+	}
+	D_ASSERT(sample_size > 0);
+	sample_size_chunks = sample_size / sniff_size;
+	sample_size_last_chunk = sample_size % sniff_size;
+	if (sample_size_last_chunk == 0) {
+		sample_size_last_chunk = sniff_size;
+	} else {
+		sample_size_chunks++;
+	}
+}
+
+// Recover the exact sample budget, preserving the unlimited-file sentinel.
+idx_t CSVReaderOptions::GetSampleSize() const {
+	if (sample_size_chunks == NumericLimits<idx_t>().Maximum()) {
+		return NumericLimits<idx_t>().Maximum();
+	}
+	D_ASSERT(sample_size_chunks > 0);
+	return (sample_size_chunks - 1) * sniff_size + sample_size_last_chunk;
+}
+
+// Return the row limit for a full or final auto-detection chunk.
+idx_t CSVReaderOptions::GetSampleChunkSize(idx_t chunk_idx) const {
+	if (sample_size_chunks == NumericLimits<idx_t>().Maximum()) {
+		return sniff_size;
+	}
+	D_ASSERT(chunk_idx < sample_size_chunks);
+	return chunk_idx + 1 == sample_size_chunks ? sample_size_last_chunk : sniff_size;
+}
+
 void CSVReaderOptions::SetDateFormat(LogicalTypeId type, const string &format, bool read_format) {
 	string error;
 	const string auto_format = StringUtil::Lower(format);
@@ -266,12 +301,9 @@ void CSVReaderOptions::SetReadOption(const Identifier &loption, const Value &val
 		}
 		if (sample_size_option == -1) {
 			// If -1, we basically read the whole thing
-			sample_size_chunks = NumericLimits<idx_t>().Maximum();
+			SetSampleSize(NumericLimits<idx_t>().Maximum());
 		} else {
-			sample_size_chunks = NumericCast<idx_t>(sample_size_option / STANDARD_VECTOR_SIZE);
-			if (sample_size_option % STANDARD_VECTOR_SIZE != 0) {
-				sample_size_chunks++;
-			}
+			SetSampleSize(NumericCast<idx_t>(sample_size_option));
 		}
 
 	} else if (loption == "skip") {
@@ -540,7 +572,9 @@ string CSVReaderOptions::ToString(const String &current_file_path) const {
 	// null padding
 	error += "null_padding = " + std::to_string(null_padding) + "\n  ";
 	// sample_size
-	error += "sample_size = " + std::to_string(sample_size_chunks * STANDARD_VECTOR_SIZE) + "\n  ";
+	error += "sample_size = " +
+	         (GetSampleSize() == NumericLimits<idx_t>().Maximum() ? string("-1") : std::to_string(GetSampleSize())) +
+	         "\n  ";
 	// ignore_errors
 	error += "ignore_errors = " + ignore_errors.FormatValue() + "\n  ";
 	// all_varchar

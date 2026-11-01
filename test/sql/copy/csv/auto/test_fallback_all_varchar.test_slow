@@ -21,7 +21,7 @@ loop i 1 100
 
 # CSV file with irregularity in first column and small sample size
 statement error
-CREATE TABLE test AS SELECT * FROM read_csv_auto ('{DATA_DIR}/csv/auto/test_fallback.csv', SAMPLE_SIZE=1);
+CREATE TABLE test AS SELECT * FROM read_csv_auto ('{DATA_DIR}/csv/auto/test_fallback.csv', SAMPLE_SIZE=2048);
 ----
 Column TestDoubleError is being converted as type DOUBLE
 

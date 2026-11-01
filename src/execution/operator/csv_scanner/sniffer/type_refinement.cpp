@@ -69,25 +69,17 @@ void CSVSniffer::RefineTypes() {
 	auto &sniffing_state_machine = best_candidate->GetStateMachine();
 	// if data types were provided, exit here if the number of columns does not match
 	detected_types.assign(sniffing_state_machine.dialect_options.num_cols, LogicalType::VARCHAR);
-	if (sniffing_state_machine.options.all_varchar) {
-		// return all types varchar
-		return;
-	}
+	const auto all_varchar = sniffing_state_machine.options.all_varchar;
 	for (idx_t i = 1; i < sniffing_state_machine.options.sample_size_chunks; i++) {
-		bool finished_file = best_candidate->FinishedFile();
-		if (finished_file) {
-			// we finished the file: stop
-			// set sql types
-			detected_types.clear();
-			for (idx_t column_idx = 0; column_idx < best_sql_types_candidates_per_column_idx.size(); column_idx++) {
-				LogicalType d_type = best_sql_types_candidates_per_column_idx[column_idx].back();
-				detected_types.push_back(d_type);
-			}
-			return;
+		if (best_candidate->FinishedFile()) {
+			break;
 		}
+		best_candidate->SetResultLimit(sniffing_state_machine.options.GetSampleChunkSize(i));
 		auto &parse_chunk = best_candidate->ParseChunk().ToChunk();
+		// Include each subsequent type sample once, even with only one dialect candidate.
+		lines_sniffed += parse_chunk.size();
 
-		for (idx_t col = 0; col < parse_chunk.ColumnCount(); col++) {
+		for (idx_t col = 0; !all_varchar && col < parse_chunk.ColumnCount(); col++) {
 			vector<LogicalType> &col_type_candidates = best_sql_types_candidates_per_column_idx[col];
 			bool is_bool_type = col_type_candidates.back() == LogicalType::BOOLEAN;
 			while (col_type_candidates.size() > 1) {
@@ -108,6 +100,9 @@ void CSVSniffer::RefineTypes() {
 		}
 		// reset parse chunk for the next iteration
 		parse_chunk.Reset();
+	}
+	if (all_varchar) {
+		return;
 	}
 	detected_types.clear();
 	// set sql types

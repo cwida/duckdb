@@ -342,6 +342,9 @@ public:
 
 	bool FinishedIterator() const;
 
+	//! Limit the number of rows produced by the next parse without reallocating the result
+	void SetResultLimit(idx_t result_size);
+
 	//! Creates a new string with all escaped values removed
 	static string_t RemoveEscape(const char *str_ptr, idx_t end, char escape, char quote, bool strict_mode,
 	                             Vector &vector);

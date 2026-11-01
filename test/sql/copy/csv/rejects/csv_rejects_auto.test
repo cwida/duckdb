@@ -34,7 +34,7 @@ query I
 SELECT SUM(num) FROM read_csv_auto(
 	'{DATA_DIR}/csv/error/mismatch/half1.csv',
 	header=true,
-	sample_size=1,
+	sample_size=2048,
 	store_rejects=true)
 ----
 2464
@@ -56,7 +56,7 @@ SELECT SUM(num) FROM read_csv_auto(
 	'{DATA_DIR}/csv/error/mismatch/half2.csv',
 	header=true,
 	ignore_errors=true,
-	sample_size=1,
+	sample_size=2048,
 	rejects_table='csv_rejects_table');
 ----
 2542

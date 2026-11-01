@@ -43,6 +43,14 @@ public:
 	idx_t current_column_count = 0;
 	bool error = false;
 	idx_t result_position = 0;
+	//! Full-line comments excluded from the current chunk's sample budget
+	idx_t comment_rows = 0;
+	//! Automatic full-line comments accepted across all chunks
+	idx_t automatic_comment_rows = 0;
+	//! Confirmed full-line comments excluded from data sampling and column votes
+	bool full_line_comment = false;
+	//! The current row start follows a CR, possibly before an LF in the next buffer
+	bool row_start_after_carriage_return = false;
 
 	idx_t cur_buffer_idx = 0;
 	idx_t current_buffer_size = 0;
@@ -68,8 +76,13 @@ public:
 
 	//! Returns the column count
 	idx_t GetMostFrequentColumnCount() const;
+	//! Return whether the current chunk's data-row budget is exhausted
+	bool SniffingLimitReached() const;
 
 	inline void InternalAddRow();
+
+private:
+	bool IsCommentPrefixEmpty(idx_t buffer_pos) const;
 };
 
 //! Scanner that goes over the CSV and figures out how many columns each row has. Used for dialect sniffing
@@ -84,6 +97,9 @@ public:
 	ColumnCountResult &GetResult() override;
 
 	unique_ptr<StringValueScanner> UpgradeToStringValueScanner();
+
+	//! Limit the number of rows produced by the next parse without reallocating the result
+	void SetResultLimit(idx_t result_size);
 
 private:
 	void Initialize() override;

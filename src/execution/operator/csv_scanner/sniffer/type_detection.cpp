@@ -537,6 +537,12 @@ void CSVSniffer::DetectTypes() {
 			best_header_row.clear();
 			// we have a new best_options candidate
 			best_candidate = std::move(candidate);
+			// Count the chosen type sample and its inferred preamble once.
+			const idx_t inferred_skip_rows =
+			    options.dialect_options.skip_rows.IsSetByUser()
+			        ? 0
+			        : best_candidate->GetStateMachine().dialect_options.skip_rows.GetValue();
+			lines_sniffed = chunk_size + inferred_skip_rows;
 			min_varchar_cols = varchar_cols;
 			best_candidate_is_strict = !best_candidate->used_unstrictness;
 			best_sql_types_candidates_per_column_idx = info_sql_types_candidates;

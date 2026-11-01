@@ -135,6 +135,7 @@ DialectCandidates::DialectCandidates(const CSVStateMachineOptions &options) {
 void CSVSniffer::GenerateStateMachineSearchSpace(vector<unique_ptr<ColumnCountScanner>> &column_count_scanners,
                                                  const DialectCandidates &dialect_candidates) {
 	// Generate state machines for all option combinations
+	const auto first_chunk_size = options.GetSampleChunkSize(0);
 	NewLineIdentifier new_line_id;
 	if (options.dialect_options.state_machine_options.new_line.IsSetByUser()) {
 		new_line_id = options.dialect_options.state_machine_options.new_line.GetValue();
@@ -158,14 +159,13 @@ void CSVSniffer::GenerateStateMachineSearchSpace(vector<unique_ptr<ColumnCountSc
 						                                          options.dialect_options.skip_rows.GetValue());
 						iterator_set = true;
 					}
-					column_count_scanners.emplace_back(make_uniq<ColumnCountScanner>(
-					    buffer_manager, std::move(sniffing_state_machine), detection_error_handler,
-					    CSVReaderOptions::sniff_size, first_iterator));
+					column_count_scanners.emplace_back(
+					    make_uniq<ColumnCountScanner>(buffer_manager, std::move(sniffing_state_machine),
+					                                  detection_error_handler, first_chunk_size, first_iterator));
 					continue;
 				}
-				column_count_scanners.emplace_back(
-				    make_uniq<ColumnCountScanner>(buffer_manager, std::move(sniffing_state_machine),
-				                                  detection_error_handler, CSVReaderOptions::sniff_size));
+				column_count_scanners.emplace_back(make_uniq<ColumnCountScanner>(
+				    buffer_manager, std::move(sniffing_state_machine), detection_error_handler, first_chunk_size));
 			}
 		}
 	}
@@ -341,9 +341,18 @@ void CSVSniffer::AnalyzeDialectCandidate(unique_ptr<ColumnCountScanner> scanner,
 	const bool more_than_one_column = num_cols > 1;
 
 	// If the start position is valid.
+	const idx_t candidate_start_rows =
+	    !successful_candidates.empty() &&
+	            sniffed_column_counts.state_machine.dialect_options.state_machine_options.delimiter ==
+	                successful_candidates.front()->GetStateMachine().dialect_options.state_machine_options.delimiter &&
+	            sniffed_column_counts.state_machine.dialect_options.state_machine_options.comment ==
+	                successful_candidates.front()->GetStateMachine().dialect_options.state_machine_options.comment &&
+	            dirty_notes == comment_rows + empty_lines
+	        ? dirty_notes_minus_comments
+	        : dirty_notes;
 	const bool start_good =
 	    !successful_candidates.empty() &&
-	    dirty_notes <= successful_candidates.front()->GetStateMachine().dialect_options.skip_rows.GetValue();
+	    candidate_start_rows <= successful_candidates.front()->GetStateMachine().dialect_options.skip_rows.GetValue();
 
 	// If padding happened but it is not allowed.
 	const bool invalid_padding = !allow_padding && padding_count > 0;
@@ -404,7 +413,7 @@ void CSVSniffer::AnalyzeDialectCandidate(unique_ptr<ColumnCountScanner> scanner,
 						}
 						sniffing_state_machine.dialect_options.skip_rows = options.dialect_options.skip_rows.GetValue();
 					} else if (!options.null_padding) {
-						sniffing_state_machine.dialect_options.skip_rows = dirty_notes;
+						sniffing_state_machine.dialect_options.skip_rows = candidate_start_rows;
 					}
 					sniffing_state_machine.dialect_options.num_cols = num_cols;
 					lines_sniffed = sniffed_column_counts.result_position;
@@ -477,7 +486,7 @@ void CSVSniffer::AnalyzeDialectCandidate(unique_ptr<ColumnCountScanner> scanner,
 			}
 			sniffing_state_machine.dialect_options.skip_rows = options.dialect_options.skip_rows.GetValue();
 		} else if (!options.null_padding) {
-			sniffing_state_machine.dialect_options.skip_rows = dirty_notes;
+			sniffing_state_machine.dialect_options.skip_rows = candidate_start_rows;
 		}
 		sniffing_state_machine.dialect_options.num_cols = num_cols;
 		lines_sniffed = sniffed_column_counts.result_position;
@@ -508,9 +517,19 @@ void CSVSniffer::RefineCandidates() {
 		// No candidates to refine
 		return;
 	}
-	if (candidates.size() == 1 || candidates[0]->FinishedFile()) {
-		// Only one candidate nothing to refine, or all candidates already checked
+	if (candidates.size() == 1) {
+		// Only one candidate, nothing to refine
 		return;
+	}
+	const bool finished_at_start = candidates[0]->FinishedFile();
+	if (finished_at_start) {
+		bool has_full_line_comments = false;
+		for (const auto &candidate : candidates) {
+			has_full_line_comments = has_full_line_comments || candidate->GetResult().comment_rows > 0;
+		}
+		if (!has_full_line_comments) {
+			return;
+		}
 	}
 
 	for (idx_t i = 1; i <= options.sample_size_chunks; i++) {
@@ -529,6 +548,7 @@ void CSVSniffer::RefineCandidates() {
 				done = true;
 				continue;
 			}
+			cur_candidate->SetResultLimit(options.GetSampleChunkSize(i));
 			if (RefineCandidateNextChunk(*cur_candidate) && !cur_candidate->GetResult().error) {
 				successful_candidates.push_back(std::move(cur_candidate));
 			}
@@ -561,6 +581,9 @@ void CSVSniffer::RefineCandidates() {
 				candidates.push_back(std::move(cc_best_candidate));
 			}
 		}
+	}
+	if (finished_at_start) {
+		return;
 	}
 	if (candidates.size() > 1) {
 		successful_candidates = std::move(candidates);

@@ -1,0 +1,90 @@
+# name: test/sql/copy/csv/auto/exact_sample_comments.test
+# description: Empty lines before indented comments preserve exact CSV samples and data rows
+# group: [auto]
+
+statement ok
+COPY (SELECT value FROM (VALUES (''), (''), ('   #meta'), ('3,4'), ('5,6')) tbl(value))
+TO '{TEMP_DIR}/exact_sample_blank_comments_lf.csv' (HEADER false, QUOTE '', NEW_LINE '\n')
+
+statement ok
+COPY (SELECT value FROM (VALUES (''), ('   #meta'), ('3,4'), ('5,6')) tbl(value))
+TO '{TEMP_DIR}/exact_sample_blank_comments_crlf.csv' (HEADER false, QUOTE '', NEW_LINE '\r\n')
+
+# Full-line comments must not consume data budget or vote for a one-column dialect.
+foreach newline lf crlf
+
+foreach sample 1 2048
+
+foreach ignore false true
+
+query II
+SELECT * FROM read_csv('{TEMP_DIR}/exact_sample_blank_comments_{newline}.csv',
+    header=false, delim=',', comment='#', sample_size={sample}, ignore_errors={ignore})
+----
+3	4
+5	6
+
+endloop
+
+endloop
+
+endloop
+
+statement ok
+COPY (SELECT value FROM (
+    SELECT i AS position, '' AS value FROM range(16) tbl(i)
+    UNION ALL SELECT 16, '   #meta'
+    UNION ALL SELECT 17, '3,4'
+    UNION ALL SELECT 18, '5,6'
+) rows ORDER BY position)
+TO '{TEMP_DIR}/exact_sample_many_blank_comments_crlf.csv' (HEADER false, QUOTE '', NEW_LINE '\r\n')
+
+# Split each CRLF and the indented prefix at different buffer boundaries.
+loop buffer_size 10 30
+
+foreach ignore false true
+
+query II
+SELECT * FROM read_csv('{TEMP_DIR}/exact_sample_many_blank_comments_crlf.csv',
+    header=false, delim=',', comment='#', sample_size=1, ignore_errors={ignore},
+    buffer_size={buffer_size})
+----
+3	4
+5	6
+
+endloop
+
+endloop
+
+# Empty lines between data rows also advance the comment prefix start.
+statement ok
+COPY (SELECT value FROM (VALUES ('3,4'), (''), (''), ('   #meta'), ('5,6')) tbl(value))
+TO '{TEMP_DIR}/exact_sample_mid_blank_comments.csv' (HEADER false, QUOTE '')
+
+foreach ignore false true
+
+query II
+SELECT * FROM read_csv('{TEMP_DIR}/exact_sample_mid_blank_comments.csv',
+    header=false, delim=',', comment='#', sample_size=2, ignore_errors={ignore})
+----
+3	4
+5	6
+
+endloop
+
+# A skipped prefix can place the first comment in a later buffer.
+statement ok
+COPY (SELECT value FROM (
+    SELECT i AS position, '0,0' AS value FROM range(20) tbl(i)
+    UNION ALL SELECT 20, '   #meta'
+    UNION ALL SELECT 21, '3,4'
+    UNION ALL SELECT 22, '5,6'
+) rows ORDER BY position)
+TO '{TEMP_DIR}/exact_sample_skipped_comment_prefix.csv' (HEADER false, QUOTE '')
+
+query II
+SELECT * FROM read_csv('{TEMP_DIR}/exact_sample_skipped_comment_prefix.csv',
+    header=false, delim=',', comment='#', sample_size=1, skip=20, buffer_size=10)
+----
+3	4
+5	6

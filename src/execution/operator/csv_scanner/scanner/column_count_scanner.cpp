@@ -16,7 +16,9 @@ inline void ColumnCountResult::InternalAddRow() {
 	const idx_t column_count = current_column_count + 1;
 	column_counts[result_position].number_of_columns = column_count;
 	column_counts[result_position].empty_lines = empty_lines;
-	rows_per_column_count[column_count]++;
+	if (!full_line_comment) {
+		rows_per_column_count[column_count]++;
+	}
 	current_column_count = 0;
 }
 
@@ -40,6 +42,10 @@ idx_t ColumnCountResult::GetMostFrequentColumnCount() const {
 	return column_count;
 }
 
+bool ColumnCountResult::SniffingLimitReached() const {
+	return result_position - comment_rows >= result_limit;
+}
+
 bool ColumnCountResult::AddRow(ColumnCountResult &result, idx_t buffer_pos) {
 	const LinePosition cur_position(result.cur_buffer_idx, buffer_pos + 1, result.current_buffer_size);
 	if (cur_position - result.last_position > result.state_machine.options.maximum_line_size.GetValue() &&
@@ -57,8 +63,25 @@ bool ColumnCountResult::AddRow(ColumnCountResult &result, idx_t buffer_pos) {
 		result.error_handler.Error(error);
 		result.error = true;
 	}
+	// Reject unconfirmed comment candidates after a lookahead shared by all chunks.
+	if (result.full_line_comment) {
+		const bool comment_set_by_user =
+		    result.state_machine.options.dialect_options.state_machine_options.comment.IsSetByUser();
+		if (!comment_set_by_user) {
+			if (result.automatic_comment_rows >= CSVReaderOptions::sniff_size) {
+				result.error = true;
+			} else {
+				result.automatic_comment_rows++;
+			}
+		}
+		result.comment_rows++;
+	}
+	if (result.result_position == result.column_counts.size()) {
+		result.column_counts.resize(result.column_counts.size() * 2);
+	}
 	result.InternalAddRow();
 	result.last_position = cur_position;
+	result.row_start_after_carriage_return = result.states.IsCarriageReturn();
 	if (!result.states.EmptyLastValue()) {
 		idx_t col_count_idx = result.result_position;
 		for (idx_t i = 0; i < result.result_position + 1; i++) {
@@ -69,17 +92,50 @@ bool ColumnCountResult::AddRow(ColumnCountResult &result, idx_t buffer_pos) {
 		}
 	}
 	result.result_position++;
-	if (result.result_position >= result.result_size) {
+	if (result.error || result.SniffingLimitReached()) {
 		// We sniffed enough rows
 		return true;
 	}
 	return false;
 }
 
+bool ColumnCountResult::IsCommentPrefixEmpty(idx_t buffer_pos) const {
+	bool skip_line_feed = row_start_after_carriage_return;
+	for (idx_t buffer_idx = last_position.buffer_idx; buffer_idx <= cur_buffer_idx; buffer_idx++) {
+		const auto entry = buffer_handles.find(buffer_idx);
+		if (entry == buffer_handles.end()) {
+			return false;
+		}
+		const auto &buffer = *entry->second;
+		const auto start = buffer_idx == last_position.buffer_idx ? last_position.buffer_pos : 0;
+		const auto end = buffer_idx == cur_buffer_idx ? buffer_pos : buffer.actual_size;
+		for (idx_t i = start; i < end; i++) {
+			const auto character = buffer.Ptr()[i];
+			if (skip_line_feed) {
+				skip_line_feed = false;
+				if (character == '\n') {
+					continue;
+				}
+			}
+			if (character != ' ') {
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
 void ColumnCountResult::SetComment(ColumnCountResult &result, idx_t buffer_pos) {
 	if (!result.states.WasStandard() && !result.states.WasState(CSVState::DELIMITER)) {
 		result.cur_line_starts_as_comment = true;
 	}
+	if (result.comment) {
+		return;
+	}
+	if (result.states.WasStandard()) {
+		result.cur_line_starts_as_comment = result.IsCommentPrefixEmpty(buffer_pos);
+	}
+	result.full_line_comment = result.cur_line_starts_as_comment;
 	result.comment = true;
 }
 
@@ -94,6 +150,7 @@ bool ColumnCountResult::UnsetComment(ColumnCountResult &result, idx_t buffer_pos
 	}
 	result.comment = false;
 	result.cur_line_starts_as_comment = false;
+	result.full_line_comment = false;
 	return done;
 }
 
@@ -104,6 +161,8 @@ void ColumnCountResult::InvalidState(ColumnCountResult &result) {
 
 bool ColumnCountResult::EmptyLine(ColumnCountResult &result, idx_t buffer_pos) {
 	result.empty_lines++;
+	result.last_position = {result.cur_buffer_idx, buffer_pos + 1, result.current_buffer_size};
+	result.row_start_after_carriage_return = result.states.IsCarriageReturn();
 	return false;
 }
 
@@ -121,7 +180,7 @@ ColumnCountScanner::ColumnCountScanner(shared_ptr<CSVBufferManager> buffer_manag
 	idx_t actual_size = 0;
 	if (cur_buffer_handle) {
 		actual_size = cur_buffer_handle->actual_size;
-		result.buffer_handles[0] = cur_buffer_handle;
+		result.buffer_handles[iterator.pos.buffer_idx] = cur_buffer_handle;
 	}
 	result.last_position = {iterator.pos.buffer_idx, iterator.pos.buffer_pos, actual_size};
 	result.current_buffer_size = actual_size;
@@ -131,17 +190,13 @@ ColumnCountScanner::ColumnCountScanner(shared_ptr<CSVBufferManager> buffer_manag
 unique_ptr<StringValueScanner> ColumnCountScanner::UpgradeToStringValueScanner() {
 	idx_t rows_to_skip = state_machine->dialect_options.skip_rows.GetValue();
 	auto iterator = SkipCSVRows(buffer_manager, state_machine, rows_to_skip);
-	if (iterator.done) {
-		CSVIterator it {};
-		return make_uniq<StringValueScanner>(0U, buffer_manager, state_machine, error_handler, nullptr, true, it,
-		                                     result_size);
-	}
 	return make_uniq<StringValueScanner>(0U, buffer_manager, state_machine, error_handler, nullptr, true, iterator,
 	                                     result_size);
 }
 
 ColumnCountResult &ColumnCountScanner::ParseChunk() {
 	result.result_position = 0;
+	result.comment_rows = 0;
 	column_count = 1;
 	if (cur_buffer_handle) {
 		result.current_buffer_size = cur_buffer_handle->actual_size;
@@ -154,17 +209,22 @@ ColumnCountResult &ColumnCountScanner::GetResult() {
 	return result;
 }
 
+void ColumnCountScanner::SetResultLimit(idx_t result_size_p) {
+	D_ASSERT(result_size_p > 0 && result_size_p <= result.result_size);
+	result.result_limit = result_size_p;
+}
+
 void ColumnCountScanner::Initialize() {
 	states.Initialize();
 }
 
 void ColumnCountScanner::FinalizeChunkProcess() {
-	if (result.result_position == result.result_size || result.error) {
+	if (result.error || result.SniffingLimitReached()) {
 		// We are done
 		return;
 	}
 	// We run until we have a full chunk, or we are done scanning
-	while (!FinishedFile() && result.result_position < result.result_size && !result.error) {
+	while (!FinishedFile() && !result.error && !result.SniffingLimitReached()) {
 		if (iterator.pos.buffer_pos == cur_buffer_handle->actual_size) {
 			// Move to next buffer
 			cur_buffer_handle = buffer_manager->GetBuffer(++iterator.pos.buffer_idx);
