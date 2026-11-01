@@ -696,6 +696,9 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 			// sources, and publish documentation. The definition itself stays fixed by construction
 			LanguageFunctionCreateInfo create_info(base.GetQualifiedName().Name(), base.macros, base.descriptions);
 			language_binder->ValidateCreate(context, create_info);
+			// resolved types share interned type metadata with values read through the view, so an
+			// in-place metadata mutation needs no setter: reject any identity change after the callback
+			create_info.VerifyMemberState();
 		}
 	}
 

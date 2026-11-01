@@ -233,6 +233,15 @@ const LogicalTypeInfo &LogicalType::AdoptNewTypeInfo(LogicalTypeId id, unique_pt
 	if (!type_info) {
 		return builtin_type_info;
 	}
+	if (type_info->type == LogicalTypeInfoType::INVALID_TYPE_INFO &&
+	    (!type_info->alias.empty() || type_info->extension_info)) {
+		// serialization drops a parameterless info entirely, losing its metadata: adopt the
+		// serializable representation the stock factories produce instead
+		auto generic_info =
+		    make_uniq<LogicalTypeInfo>(LogicalTypeInfoType::GENERIC_TYPE_INFO, std::move(type_info->alias));
+		generic_info->extension_info = std::move(type_info->extension_info);
+		type_info = std::move(generic_info);
+	}
 	if (!TryGetPhysicalType(id, *type_info, type_info->physical_type)) {
 		throw InternalException("Invalid LogicalType %d", static_cast<uint8_t>(id));
 	}

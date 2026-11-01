@@ -28,14 +28,17 @@ struct BindResult;
 //! rewrite a member's source, and publishes documentation. Everything else about the definition
 //! (the target, the member count, the resolved signatures, the defaults) is out of reach by type:
 //! members are read through scalar accessors, so the definition's structure cannot be changed
-//! through the view. Type values share DuckDB's interned type metadata like any LogicalType copy.
+//! through the view. Type values share DuckDB's interned type metadata like any LogicalType copy;
+//! the resolved parameter and RETURNS types are additionally frozen by serialized identity, so an
+//! in-place metadata mutation reachable through a returned type value is rejected after the
+//! callback. The frozen identity is the storage serialization, which is also exactly what
+//! persists: metadata a type's serialization does not represent is neither durable nor part of
+//! the protected identity.
 //! The view borrows from the definition under validation: it is only valid inside the callback.
 class LanguageFunctionCreateInfo {
 public:
 	LanguageFunctionCreateInfo(const Identifier &function_name, vector<unique_ptr<MacroFunction>> &members,
-	                           vector<FunctionDescription> &descriptions)
-	    : function_name(function_name), members(members), descriptions(descriptions) {
-	}
+	                           vector<FunctionDescription> &descriptions);
 
 	//! The unqualified function name, for error messages
 	const Identifier &GetFunctionName() const {
@@ -66,10 +69,26 @@ public:
 		descriptions.push_back(std::move(description));
 	}
 
+	//! Called by the CREATE binder after the callback: the resolved parameter and RETURNS types
+	//! share interned type metadata with values read through the view, so an in-place metadata
+	//! mutation needs no setter. The frozen identities captured at construction make the
+	//! detached-value convention enforceable
+	void VerifyMemberState() const;
+
+private:
+	//! The frozen copy of one member's resolved signature
+	struct FrozenMemberState {
+		//! serialized identities instead of type values: type copies share their interned metadata
+		vector<string> parameter_type_identities;
+		string return_type_identity;
+	};
+
 private:
 	const Identifier &function_name;
 	vector<unique_ptr<MacroFunction>> &members;
 	vector<FunctionDescription> &descriptions;
+	//! Per member, the frozen state VerifyMemberState compares against after the callback
+	vector<FrozenMemberState> frozen_members;
 };
 
 //! Interface an extension registers to bind calls to macro members written in its language. It

@@ -41,6 +41,18 @@ unique_ptr<MacroCatalogEntry> MacroCatalogEntry::Create(Catalog &catalog, Schema
 			throw CatalogException("Macro %s cannot mix members of different languages", info.GetFunctionName());
 		}
 	}
+	for (auto &member : info.macros) {
+		if (member->type != MacroType::LANGUAGE_MACRO) {
+			continue;
+		}
+		auto &return_type = member->return_type;
+		if (return_type.id() == LogicalTypeId::UNKNOWN && (return_type.HasAlias() || return_type.HasExtensionInfo())) {
+			// an undeclared RETURNS type serializes as its bare default, so attached metadata
+			// would silently vanish on reopen
+			throw CatalogException("Macro %s attaches type metadata to an undeclared RETURNS type",
+			                       info.GetFunctionName());
+		}
+	}
 	if (info.type == CatalogType::TABLE_MACRO_ENTRY) {
 		return make_uniq<TableMacroCatalogEntry>(catalog, schema, info);
 	}
