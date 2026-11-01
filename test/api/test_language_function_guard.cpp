@@ -332,3 +332,235 @@ TEST_CASE("Batch member creation follows the overload identity", "[api]") {
 	auto count = con.Query("SELECT count(*) FROM duckdb_functions() WHERE function_name = 'batch_fun'");
 	REQUIRE(CHECK_COLUMN(count, 0, {2}));
 }
+
+//! Build a type the way only the raw C++ constructor can: a parameterless (INVALID) info carrying
+//! extension metadata, which LogicalType normalizes to the serializable GENERIC representation
+static LogicalType RawConstructedType(LogicalTypeId id, int32_t modifier) {
+	auto type_info = make_uniq<LogicalTypeInfo>(LogicalTypeInfoType::INVALID_TYPE_INFO);
+	type_info->extension_info = make_uniq<ExtensionTypeInfo>();
+	type_info->extension_info->modifiers.emplace_back(Value::INTEGER(modifier));
+	return LogicalType(id, std::move(type_info));
+}
+
+//! A zero-parameter language member whose undeclared RETURNS type carries extension metadata
+static unique_ptr<LanguageMacroFunction> UndeclaredReturnsMetadataMember(const string &language) {
+	auto ext_info = make_uniq<ExtensionTypeInfo>();
+	ext_info->modifiers.emplace_back(Value::INTEGER(1));
+	auto member = make_uniq<LanguageMacroFunction>(language, "x");
+	member->return_type = LogicalType(LogicalTypeId::UNKNOWN).WithExtensionInfo(std::move(ext_info));
+	return member;
+}
+
+TEST_CASE("Metadata on an undeclared RETURNS type is rejected at the catalog boundary", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	// an undeclared RETURNS type serializes as its bare default, so attached metadata would
+	// silently vanish on reopen: the rejection sits at the catalog boundary every producer funnels
+	// through, not only in the CREATE binder
+	RegisterTestLanguage(*db.instance, "unkretlang", make_shared_ptr<ViewBinder>(nullptr));
+
+	auto info = make_uniq<CreateMacroInfo>(CatalogType::MACRO_ENTRY);
+	info->SetFunctionName(Identifier("unk_ret_fun"));
+	info->macros.push_back(UndeclaredReturnsMetadataMember("unkretlang"));
+	auto statement = make_uniq<CreateStatement>();
+	statement->info = std::move(info);
+	auto result = con.Query(std::move(statement));
+	REQUIRE_FAIL(result);
+	REQUIRE(StringUtil::Contains(result->GetError(), "metadata to an undeclared RETURNS type"));
+
+	// the direct registration path an extension uses bypasses the CREATE binder and is rejected too
+	CreateMacroInfo direct_info(CatalogType::MACRO_ENTRY);
+	direct_info.SetFunctionName(Identifier("unk_ret_direct"));
+	direct_info.macros.push_back(UndeclaredReturnsMetadataMember("unkretlang"));
+	auto &system_catalog = Catalog::GetSystemCatalog(*db.instance);
+	auto data = CatalogTransaction::GetSystemTransaction(*db.instance);
+	auto &schema = system_catalog.GetSchema(data, Identifier::DefaultSchema());
+	REQUIRE_THROWS(schema.CreateFunction(data, direct_info));
+}
+
+// the guard raises InternalException, which aborts the process when DUCKDB_CRASH_ON_ASSERT is set
+#ifndef DUCKDB_CRASH_ON_ASSERT
+
+TEST_CASE("A raw-constructed type representation stays visible to the identity freeze", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	// the raw type constructor used to accept a parameterless info carrying extension metadata,
+	// a representation serialization drops entirely: the freeze fingerprints would have matched
+	// before and after this mutation. The constructor now normalizes it to GENERIC info
+	RegisterTestLanguage(*db.instance, "rawlang", make_shared_ptr<ViewBinder>([](LanguageFunctionCreateInfo &info) {
+		auto parameter_type = info.MemberParameterType(0, 0);
+		parameter_type.GetTypeInfo().extension_info->modifiers[0].value = Value::INTEGER(9);
+	}));
+
+	auto info = make_uniq<CreateMacroInfo>(CatalogType::MACRO_ENTRY);
+	info->SetFunctionName(Identifier("raw_mutated"));
+	auto member = make_uniq<LanguageMacroFunction>("rawlang", "x");
+	member->parameters.push_back(make_uniq<ColumnRefExpression>(Identifier("p")));
+	member->types.push_back(RawConstructedType(LogicalTypeId::INTEGER, 1));
+	REQUIRE(member->types[0].GetTypeInfo().type == LogicalTypeInfoType::GENERIC_TYPE_INFO);
+	info->macros.push_back(std::move(member));
+	auto statement = make_uniq<CreateStatement>();
+	statement->info = std::move(info);
+	auto result = con.Query(std::move(statement));
+	REQUIRE_FAIL(result);
+	REQUIRE(StringUtil::Contains(result->GetError(), "changed a resolved signature"));
+}
+
+TEST_CASE("An ANY target type mutation through a returned type copy is rejected", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	// AnyTypeInfo's target is serialized but not visited by the general-purpose TypeVisitor: the
+	// fingerprint must observe a mutation of shared metadata below it
+	RegisterTestLanguage(*db.instance, "anymut", make_shared_ptr<ViewBinder>([](LanguageFunctionCreateInfo &info) {
+		auto parameter_type = info.MemberParameterType(0, 0);
+		auto target = AnyType::GetTargetType(parameter_type);
+		target.GetTypeInfo().extension_info->modifiers[0].value = Value::INTEGER(9);
+	}));
+
+	auto info = make_uniq<CreateMacroInfo>(CatalogType::MACRO_ENTRY);
+	info->SetFunctionName(Identifier("any_mutated"));
+	auto member = make_uniq<LanguageMacroFunction>("anymut", "x");
+	member->parameters.push_back(make_uniq<ColumnRefExpression>(Identifier("p")));
+	member->types.push_back(LogicalType::ANY_PARAMS(RawConstructedType(LogicalTypeId::INTEGER, 1)));
+	info->macros.push_back(std::move(member));
+	auto statement = make_uniq<CreateStatement>();
+	statement->info = std::move(info);
+	auto result = con.Query(std::move(statement));
+	REQUIRE_FAIL(result);
+	REQUIRE(StringUtil::Contains(result->GetError(), "changed a resolved signature"));
+}
+
+TEST_CASE("A modifier value type mutation through a returned type copy is rejected", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	// a modifier Value carries its own type, whose shared metadata is serialized with the Value:
+	// the fingerprint must observe a mutation of metadata nested inside the extension info itself
+	RegisterTestLanguage(*db.instance, "valmut", make_shared_ptr<ViewBinder>([](LanguageFunctionCreateInfo &info) {
+		auto parameter_type = info.MemberParameterType(0, 0);
+		auto &value_type = parameter_type.GetTypeInfo().extension_info->modifiers[0].value.type();
+		value_type.GetTypeInfo().extension_info->modifiers[0].value = Value::INTEGER(9);
+	}));
+
+	auto ext_info = make_uniq<ExtensionTypeInfo>();
+	ext_info->modifiers.emplace_back(Value(RawConstructedType(LogicalTypeId::INTEGER, 1)));
+	auto info = make_uniq<CreateMacroInfo>(CatalogType::MACRO_ENTRY);
+	info->SetFunctionName(Identifier("val_mutated"));
+	auto member = make_uniq<LanguageMacroFunction>("valmut", "x");
+	member->parameters.push_back(make_uniq<ColumnRefExpression>(Identifier("p")));
+	member->types.push_back(LogicalType(LogicalTypeId::INTEGER).WithExtensionInfo(std::move(ext_info)));
+	info->macros.push_back(std::move(member));
+	auto statement = make_uniq<CreateStatement>();
+	statement->info = std::move(info);
+	auto result = con.Query(std::move(statement));
+	REQUIRE_FAIL(result);
+	REQUIRE(StringUtil::Contains(result->GetError(), "changed a resolved signature"));
+}
+
+TEST_CASE("A resolved signature mutation through a returned type copy is rejected", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	// a returned parameter type shares its interned metadata, and extension_info stays a mutable
+	// pointee behind the const LogicalTypeInfo: without the signature freeze this collapses two
+	// distinct overload signatures after the batch conflict check already accepted them
+	RegisterTestLanguage(*db.instance, "sigmut", make_shared_ptr<ViewBinder>([](LanguageFunctionCreateInfo &info) {
+		auto parameter_type = info.MemberParameterType(0, 0);
+		parameter_type.GetTypeInfo().extension_info->modifiers.emplace_back(Value::INTEGER(9));
+	}));
+
+	auto ext_info = make_uniq<ExtensionTypeInfo>();
+	ext_info->modifiers.emplace_back(Value::INTEGER(1));
+	auto info = make_uniq<CreateMacroInfo>(CatalogType::MACRO_ENTRY);
+	info->SetFunctionName(Identifier("sig_mutated"));
+	auto member = make_uniq<LanguageMacroFunction>("sigmut", "x");
+	member->parameters.push_back(make_uniq<ColumnRefExpression>(Identifier("p")));
+	member->types.push_back(LogicalType(LogicalTypeId::INTEGER).WithExtensionInfo(std::move(ext_info)));
+	info->macros.push_back(std::move(member));
+	auto statement = make_uniq<CreateStatement>();
+	statement->info = std::move(info);
+	auto result = con.Query(std::move(statement));
+	REQUIRE_FAIL(result);
+	REQUIRE(StringUtil::Contains(result->GetError(), "changed a resolved signature"));
+}
+
+TEST_CASE("A RETURNS type mutation through a returned type copy is rejected", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	// the declared RETURNS type is a cast boundary core enforces on every call: a retained-metadata
+	// mutation after validation would change the cast the batch check already accepted
+	RegisterTestLanguage(*db.instance, "retmut", make_shared_ptr<ViewBinder>([](LanguageFunctionCreateInfo &info) {
+		auto return_type = info.MemberReturnType(0);
+		return_type.GetTypeInfo().extension_info->modifiers.emplace_back(Value::INTEGER(9));
+	}));
+
+	auto ext_info = make_uniq<ExtensionTypeInfo>();
+	ext_info->modifiers.emplace_back(Value::INTEGER(1));
+	auto info = make_uniq<CreateMacroInfo>(CatalogType::MACRO_ENTRY);
+	info->SetFunctionName(Identifier("ret_mutated"));
+	auto member = make_uniq<LanguageMacroFunction>("retmut", "x");
+	member->return_type = LogicalType(LogicalTypeId::INTEGER).WithExtensionInfo(std::move(ext_info));
+	info->macros.push_back(std::move(member));
+	auto statement = make_uniq<CreateStatement>();
+	statement->info = std::move(info);
+	auto result = con.Query(std::move(statement));
+	REQUIRE_FAIL(result);
+	REQUIRE(StringUtil::Contains(result->GetError(), "changed a resolved signature"));
+}
+
+TEST_CASE("A batch overload collapse through a returned type copy is rejected", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	// the batch conflict check accepted two members distinct only in a modifier value: mutating the
+	// second member's modifier to equal the first collapses the overload identities after the check
+	RegisterTestLanguage(*db.instance, "collapselang",
+	                     make_shared_ptr<ViewBinder>([](LanguageFunctionCreateInfo &info) {
+		                     auto parameter_type = info.MemberParameterType(1, 0);
+		                     parameter_type.GetTypeInfo().extension_info->modifiers[0].value = Value::INTEGER(1);
+	                     }));
+
+	auto info = make_uniq<CreateMacroInfo>(CatalogType::MACRO_ENTRY);
+	info->SetFunctionName(Identifier("collapsed_fun"));
+	for (int32_t modifier = 1; modifier <= 2; modifier++) {
+		auto ext_info = make_uniq<ExtensionTypeInfo>();
+		ext_info->modifiers.emplace_back(Value::INTEGER(modifier));
+		auto member = make_uniq<LanguageMacroFunction>("collapselang", "x");
+		member->parameters.push_back(make_uniq<ColumnRefExpression>(Identifier("p")));
+		member->types.push_back(LogicalType(LogicalTypeId::INTEGER).WithExtensionInfo(std::move(ext_info)));
+		info->macros.push_back(std::move(member));
+	}
+	auto statement = make_uniq<CreateStatement>();
+	statement->info = std::move(info);
+	auto result = con.Query(std::move(statement));
+	REQUIRE_FAIL(result);
+	REQUIRE(StringUtil::Contains(result->GetError(), "changed a resolved signature"));
+}
+
+TEST_CASE("A nested type metadata mutation through a returned type copy is rejected", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	// a returned container type shares its children's interned metadata too: the serialized
+	// identity must observe a mutation below the top level and past parameter index zero
+	RegisterTestLanguage(*db.instance, "nestmut", make_shared_ptr<ViewBinder>([](LanguageFunctionCreateInfo &info) {
+		auto parameter_type = info.MemberParameterType(0, 1);
+		auto &child = StructType::GetChildTypes(parameter_type)[0].second;
+		child.GetTypeInfo().extension_info->modifiers.emplace_back(Value::INTEGER(9));
+	}));
+
+	auto ext_info = make_uniq<ExtensionTypeInfo>();
+	ext_info->modifiers.emplace_back(Value::INTEGER(1));
+	auto inner = LogicalType(LogicalTypeId::INTEGER).WithExtensionInfo(std::move(ext_info));
+	auto info = make_uniq<CreateMacroInfo>(CatalogType::MACRO_ENTRY);
+	info->SetFunctionName(Identifier("nest_mutated"));
+	auto member = make_uniq<LanguageMacroFunction>("nestmut", "x");
+	member->parameters.push_back(make_uniq<ColumnRefExpression>(Identifier("a")));
+	member->types.push_back(LogicalType::INTEGER);
+	member->parameters.push_back(make_uniq<ColumnRefExpression>(Identifier("b")));
+	member->types.push_back(LogicalType::STRUCT({{"i", inner}}));
+	info->macros.push_back(std::move(member));
+	auto statement = make_uniq<CreateStatement>();
+	statement->info = std::move(info);
+	auto result = con.Query(std::move(statement));
+	REQUIRE_FAIL(result);
+	REQUIRE(StringUtil::Contains(result->GetError(), "changed a resolved signature"));
+}
+
+#endif
