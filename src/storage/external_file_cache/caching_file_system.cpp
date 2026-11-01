@@ -256,7 +256,7 @@ shared_ptr<CachingFileHandle::CachedFile> CachingFileHandle::EnsureCachedFileCur
 		if (needs_reopen) {
 			file_handle.reset();
 		}
-		cached_file = external_file_cache.GetOrCreateCachedFile(path);
+		cached_file = external_file_cache.GetOrCreateCachedFile(path.path);
 		current_cached_file = cached_file;
 	}
 
@@ -312,11 +312,7 @@ CachingFileHandle::CachingFileHandle(QueryContext context, CachingFileSystem &ca
       opener(opener_p), validate(ExternalFileCacheUtil::GetCacheValidationMode(path_p, context.GetClientContext(),
                                                                                caching_file_system_p.db)),
       cached_file(nullptr), position(0) {
-	if (path.HasSecretName()) {
-		// the open checks that the file's ephemeral secret serves this read, so the cache serves only an opened file
-		validate = CacheValidationMode::VALIDATE_ALL;
-	}
-	cached_file = external_file_cache.GetOrCreateCachedFile(path);
+	cached_file = external_file_cache.GetOrCreateCachedFile(path_p.path);
 	if (!external_file_cache.IsEnabled() || Validate()) {
 		// If caching is disabled, or if we must validate cache entries, we always have to open the file
 		GetFileHandle();

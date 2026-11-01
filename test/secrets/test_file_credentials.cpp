@@ -13,7 +13,6 @@
 #include "duckdb/main/extension_manager.hpp"
 #include "duckdb/main/secret/secret.hpp"
 #include "duckdb/main/secret/secret_manager.hpp"
-#include "duckdb/storage/object_cache.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -90,7 +89,6 @@ struct MemoryFileHandle : public FileHandle {
 class MemoryFileSystem : public FileSystem {
 public:
 	duckdb::map<string, string> files;
-	bool listing_metadata = false;
 	//! By glob pattern; "" for every pattern
 	duckdb::map<string, string> listing_secrets;
 	duckdb::mutex lock;
@@ -224,10 +222,6 @@ protected:
 			if (!secret_name.empty()) {
 				listed.extended_info->options[ExtendedOpenFileInfo::SECRET_OPTION] = Value(secret_name);
 			}
-			if (listing_metadata) {
-				listed.extended_info->options["last_modified"] = Value::TIMESTAMP(Timestamp::FromEpochSeconds(1000));
-				listed.extended_info->options["etag"] = Value("v1");
-			}
 			result.push_back(std::move(listed));
 		}
 		return make_uniq<SimpleMultiFileList>(std::move(result));
@@ -307,10 +301,9 @@ struct CredentialsFixture {
 		auto handle = FileSystem::GetFileSystem(Context()).OpenFile(file, FileFlags::FILE_FLAGS_READ);
 		return handle->Cast<MemoryFileHandle>().key_id;
 	}
-	//! Runs `scan` in a transaction with an ephemeral secret of key `key_id` on every listed file, and the external
-	//! file cache on; returns the row count
+	//! Runs `scan` in a transaction with an ephemeral secret of key `key_id` on every listed file; returns the row
+	//! count
 	idx_t ScanWith(const string &scan, const string &key_id = "table-key") {
-		REQUIRE_NO_FAIL(con.Query("SET enable_external_file_cache = true"));
 		con.BeginTransaction();
 		fs->listing_secrets = {{"", EphemeralSecret(key_id)}};
 		fs->ClearAccesses();
@@ -319,19 +312,6 @@ struct CredentialsFixture {
 		con.Rollback();
 		REQUIRE_NO_FAIL(*result);
 		return result->RowCount();
-	}
-	//! Whether the Parquet metadata cache holds metadata of `path` for reads by path
-	bool MetadataCached(const string &path) {
-		return ObjectCache::GetObjectCache(Context()).GetObject("parquet_metadata-" + path) != nullptr;
-	}
-	//! Turns on, for `c`, the caches that reads by path fill and are served from
-	void EnableCaches(Connection &c) {
-		REQUIRE_NO_FAIL(c.Query("SET enable_external_file_cache = true"));
-		REQUIRE_NO_FAIL(c.Query("SET cache_local_files = true"));
-		if (db.ExtensionIsLoaded("parquet")) {
-			REQUIRE_NO_FAIL(c.Query("SET parquet_metadata_cache = true"));
-		}
-		REQUIRE_NO_FAIL(c.Query("SET threads = 1"));
 	}
 	//! csv, and json and parquet when they are loaded
 	duckdb::vector<string> Formats() {
@@ -467,119 +447,6 @@ TEST_CASE("A glob with an ephemeral secret lists with it, and each file it lists
 	// the name is an option of the file, so it also travels in a file struct
 	REQUIRE(OpenFileInfo::FromValue(with.ToValue(), Identifier("test")).GetSecretName() == name);
 	f.con.Rollback();
-}
-
-TEST_CASE("Reads with one ephemeral secret share the external file cache and the Parquet metadata cache, and no other "
-          "read shares them",
-          "[file_credentials]") {
-	CredentialsFixture f;
-	if (!f.db.ExtensionIsLoaded("parquet")) {
-		SKIP_TEST("parquet is not loaded");
-		return;
-	}
-	f.WriteFiles("parquet");
-	f.fs->listing_metadata = true;
-	f.EnableCaches(f.con);
-	const string glob = CredentialsFixture::Glob("parquet", "");
-	const string scan = CredentialsFixture::Scan("parquet", glob);
-	const string count = "SELECT count(*) FROM read_parquet('" + glob + "')";
-	const string first = "mem://bucket/table/t1.parquet";
-	// a scan with a new ephemeral secret reads the files itself; a second scan with it is served from the caches, but
-	// still opens the files, which checks that the secret serves it
-	auto cold = f.ScanAlone(f.con, "parquet", glob, "key-a");
-	REQUIRE(cold.second > 0);
-	auto twice = f.ScanAlone(f.con, "parquet", glob, "key-a", 2);
-	REQUIRE(twice.first == 2 * cold.first);
-	REQUIRE(twice.second == cold.second);
-	f.con.BeginTransaction();
-	f.fs->listing_secrets = {{"", f.EphemeralSecret("key-a")}};
-	REQUIRE_NO_FAIL(f.con.Query(scan));
-	// the external file cache lists the blocks under their paths, and so never the name of the secret
-	auto listed =
-	    f.con.Query("SELECT count(*) FILTER (WHERE path = '" + first + "'), count(*) FILTER (WHERE path NOT IN ('" +
-	                first + "', 'mem://bucket/table/t2.parquet')) FROM duckdb_external_file_cache()");
-	REQUIRE_NO_FAIL(*listed);
-	REQUIRE(listed->Collection().GetValue(0, 0).GetValue<int64_t>() > 0);
-	REQUIRE(listed->Collection().GetValue(1, 0).GetValue<int64_t>() == 0);
-	REQUIRE_FALSE(f.MetadataCached(first));
-	// a count(*) with the secret is answered from its cached metadata
-	f.fs->ClearAccesses();
-	auto counted = f.con.Query(count);
-	REQUIRE_NO_FAIL(*counted);
-	REQUIRE(counted->Collection().GetValue(0, 0).GetValue<int64_t>() == 2000);
-	REQUIRE(f.fs->CountKey("read", "key-a") == 0);
-	f.fs->listing_secrets.clear();
-	f.con.Rollback();
-	// a read by path is served from none of it: it reads the files itself, and fills entries of its own
-	f.fs->ClearAccesses();
-	REQUIRE_NO_FAIL(f.con.Query(scan));
-	REQUIRE(f.fs->CountKey("read", "path-key") == cold.second);
-	REQUIRE(f.MetadataCached(first));
-	// and a scan with another ephemeral secret, even one with the same key, is served from neither
-	REQUIRE(f.ScanAlone(f.con, "parquet", glob, "key-a") == cold);
-	f.con.BeginTransaction();
-	f.fs->listing_secrets = {{"", f.EphemeralSecret("key-a")}};
-	f.fs->ClearAccesses();
-	counted = f.con.Query(count);
-	f.fs->listing_secrets.clear();
-	f.con.Rollback();
-	REQUIRE_NO_FAIL(*counted);
-	REQUIRE(counted->Collection().GetValue(0, 0).GetValue<int64_t>() == 2000);
-	REQUIRE(f.fs->CountKey("read", "key-a") > 0);
-	REQUIRE(f.fs->CountKey("read", "path-key") == 0);
-}
-
-TEST_CASE("What reads with an ephemeral secret cached serves no statement that the secret does not serve",
-          "[file_credentials]") {
-	CredentialsFixture f;
-	if (!f.db.ExtensionIsLoaded("parquet")) {
-		SKIP_TEST("parquet is not loaded");
-		return;
-	}
-	Connection other(f.db);
-	f.WriteFiles("parquet");
-	f.fs->listing_metadata = true;
-	f.EnableCaches(f.con);
-	f.EnableCaches(other);
-	f.con.BeginTransaction();
-	auto name = f.EphemeralSecret("key-a");
-	// a file struct that asks the caches to serve the file without validating it
-	auto file = [&](const string &file_name, bool with_secret) {
-		return "{'filename': 'mem://bucket/table/" + file_name + ".parquet', " +
-		       (with_secret ? "'secret': '" + name + "', " : string()) + "'validate_external_file_cache': false}";
-	};
-	const string files = file("t1", true) + ", " + file("t2", true);
-	const string scan = "SELECT sum(i) FROM read_parquet([" + files + "])";
-	// reads only the metadata of the files, so only its open of each file checks the secret
-	const string metadata = "SELECT sum(row_group_num_rows) FROM parquet_metadata([" + files + "])";
-	// the bind opens only the first file, here read by path; then the cached metadata of both answers the count(*)
-	const string count = "SELECT count(*) FROM read_parquet([" + file("t1", false) + ", " + file("t2", true) + "])";
-	REQUIRE_NO_FAIL(f.con.Query("SELECT count(*) FROM read_parquet('mem://bucket/table/t1.parquet')"));
-	REQUIRE_NO_FAIL(f.con.Query(scan));
-	f.fs->ClearAccesses();
-	auto result = f.con.Query(scan);
-	REQUIRE_NO_FAIL(*result);
-	REQUIRE(result->Collection().GetValue(0, 0).ToString() == SAME_FILES_SUM);
-	for (auto &query : {metadata, count}) {
-		INFO(query);
-		result = f.con.Query(query);
-		REQUIRE_NO_FAIL(*result);
-		REQUIRE(result->Collection().GetValue(0, 0).GetValue<int64_t>() == 2000);
-	}
-	REQUIRE(f.fs->CountKey("read", "key-a") == 0);
-	auto require_unavailable = [&](Connection &c) {
-		for (auto &query : {scan, metadata, count}) {
-			INFO(query);
-			auto unavailable = c.Query(query);
-			REQUIRE(unavailable->HasError());
-			REQUIRE(StringUtil::Contains(unavailable->GetError(), "is not available"));
-		}
-	};
-	// another connection, while the transaction of the secret runs
-	require_unavailable(other);
-	f.con.Rollback();
-	// its own connection, once the transaction ended
-	require_unavailable(f.con);
 }
 
 TEST_CASE("read_csv, read_json and read_parquet open and read every listed file with its ephemeral secret",
@@ -799,7 +666,6 @@ TEST_CASE("Opens of one path with two ephemeral secrets each use their own, also
 TEST_CASE("Two scans of the same files in one query each read them with their own ephemeral secret",
           "[file_credentials]") {
 	CredentialsFixture f;
-	f.EnableCaches(f.con);
 	for (auto &format : f.Formats()) {
 		INFO(format);
 		f.WriteFiles(format);
@@ -818,15 +684,11 @@ TEST_CASE("Two scans of the same files in one query each read them with their ow
 		REQUIRE_NO_FAIL(*result);
 		REQUIRE(result->Collection().GetValue(0, 0).ToString() == SAME_FILES_SUM);
 		REQUIRE(result->Collection().GetValue(1, 0).ToString() == SAME_FILES_SUM);
-		// each scan opens and reads every file itself, as often as alone: what the other cached does not serve it; and
-		// nothing reads by path, or caches metadata under the path
+		// each scan opens and reads every file itself, as often as alone, and nothing reads by path
 		f.RequireUses("key-a", alone_a.first, alone_a.second);
 		f.RequireUses("key-b", alone_b.first, alone_b.second);
 		REQUIRE(f.fs->Accesses("open").size() == alone_a.first + alone_b.first);
 		REQUIRE(f.fs->Accesses("read").size() == alone_a.second + alone_b.second);
-		for (auto &file : {"t1.", "t2."}) {
-			REQUIRE_FALSE(f.MetadataCached("mem://bucket/table/" + string(file) + format));
-		}
 	}
 }
 
@@ -834,8 +696,6 @@ TEST_CASE("Two connections reading the same files at once each read them with th
           "[file_credentials]") {
 	CredentialsFixture f;
 	Connection other(f.db);
-	f.EnableCaches(f.con);
-	f.EnableCaches(other);
 	constexpr idx_t RUNS = 5;
 	for (auto &format : f.Formats()) {
 		INFO(format);
@@ -873,7 +733,7 @@ TEST_CASE("Two connections reading the same files at once each read them with th
 			}
 		}
 		// a read that took the other connection's ephemeral secret would fail; one that lost its own would read by
-		// path; and one served from what the other connection's reads cached would read less than alone
+		// path
 		f.RequireUses("key-a", alone_a.first, alone_a.second);
 		f.RequireUses("key-b", alone_b.first, alone_b.second);
 		f.RequireUses("path-key", 0, 0);
@@ -883,11 +743,9 @@ TEST_CASE("Two connections reading the same files at once each read them with th
 TEST_CASE("A scan with an ephemeral secret and a read by path of the same files both succeed, each with its own key",
           "[file_credentials]") {
 	CredentialsFixture f;
-	f.EnableCaches(f.con);
 	// the scan with the ephemeral secret ("secret") and the read by path ("path"), in this order
 	vector<string> order;
 	bool one_query = true;
-	bool cached_by_path = false;
 	SECTION("one query, the scan first") {
 		order = {"secret", "path"};
 	}
@@ -902,21 +760,12 @@ TEST_CASE("A scan with an ephemeral secret and a read by path of the same files 
 		order = {"path", "secret"};
 		one_query = false;
 	}
-	SECTION("one query, with the files cached by an earlier read by path") {
-		order = {"secret", "path"};
-		cached_by_path = true;
-	}
 	for (auto &format : f.Formats()) {
 		INFO(format);
 		f.WriteFiles(format);
 		auto secret_glob = CredentialsFixture::Glob(format, "");
 		auto path_glob = CredentialsFixture::Glob(format, "t");
-		// a scan with an ephemeral secret caches only for reads with that secret, so the caches of the paths are still
-		// empty after it
 		auto alone = f.ScanAlone(f.con, format, secret_glob, "key-a");
-		if (cached_by_path) {
-			REQUIRE_NO_FAIL(f.con.Query(CredentialsFixture::Scan(format, path_glob)));
-		}
 		vector<string> scans;
 		for (auto &read : order) {
 			scans.push_back(CredentialsFixture::Scan(format, read == "secret" ? secret_glob : path_glob));
@@ -938,22 +787,20 @@ TEST_CASE("A scan with an ephemeral secret and a read by path of the same files 
 		}
 		f.fs->listing_secrets.clear();
 		f.con.Rollback();
-		// the scan opened and read every file itself, as often as alone: nothing the read by path cached served it
+		// the scan opened and read every file itself, as often as alone
 		f.RequireUses("key-a", alone.first, alone.second);
 		// every other open and read was the read by path's, with the secret matched to the path
 		REQUIRE(f.fs->Accesses("open").size() == alone.first + f.fs->CountKey("open", "path-key"));
 		REQUIRE(f.fs->Accesses("read").size() == alone.second + f.fs->CountKey("read", "path-key"));
-		if (!cached_by_path) {
-			// with nothing cached before, the read by path read every file itself: the scan cached nothing it shares
-			for (auto &file : {"t1.", "t2."}) {
-				auto path = "mem://bucket/table/" + string(file) + format;
-				INFO(path);
-				bool read_by_path = false;
-				for (auto &access : f.fs->Accesses("read")) {
-					read_by_path = read_by_path || (access.path == path && access.key_id == "path-key");
-				}
-				REQUIRE(read_by_path);
+		// and the read by path read every file itself
+		for (auto &file : {"t1.", "t2."}) {
+			auto path = "mem://bucket/table/" + string(file) + format;
+			INFO(path);
+			bool read_by_path = false;
+			for (auto &access : f.fs->Accesses("read")) {
+				read_by_path = read_by_path || (access.path == path && access.key_id == "path-key");
 			}
+			REQUIRE(read_by_path);
 		}
 	}
 }

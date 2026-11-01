@@ -62,8 +62,7 @@ public:
 	DUCKDB_API static OpenFileInfo FromValue(const Value &input, const Identifier &function_name);
 	//! The inverse of FromValue: the path as a VARCHAR when there are no options, a file struct otherwise
 	DUCKDB_API Value ToValue() const;
-	//! Whether the file is opened with an ephemeral secret. Caches keep what reads of such a file read apart from what
-	//! reads of its path with another secret, or none, read (ObjectCache::GetFileKey)
+	//! Whether the file is opened with an ephemeral secret
 	bool HasSecretName() const {
 		return extended_info && extended_info->options.count(ExtendedOpenFileInfo::SECRET_OPTION) > 0;
 	}

@@ -51,15 +51,14 @@ bool CacheValidationInfo::IsExpired() const {
 
 class ExternalFileCache::ExternalFileCacheObjectCacheEntry : public ObjectCacheEntry {
 public:
-	ExternalFileCacheObjectCacheEntry(ExternalFileCache &cache_p, string key_p, string path_p, idx_t generation_p)
-	    : cache(cache_p), key(std::move(key_p)),
-	      cached_file(make_shared_ptr<CachedFile>(std::move(path_p), generation_p,
-	                                              cache_p.GetBufferManager().GetBufferPool())) {
-		cache.InsertCachedFileKey(key);
+	ExternalFileCacheObjectCacheEntry(ExternalFileCache &cache_p, string path_p, idx_t generation_p)
+	    : cache(cache_p), cached_file(make_shared_ptr<CachedFile>(std::move(path_p), generation_p,
+	                                                              cache_p.GetBufferManager().GetBufferPool())) {
+		cache.InsertCachedFileKey(cached_file->path);
 	}
 
 	~ExternalFileCacheObjectCacheEntry() override {
-		cache.EraseCachedFileKey(key);
+		cache.EraseCachedFileKey(cached_file->path);
 	}
 
 	static string ObjectType() {
@@ -71,9 +70,9 @@ public:
 	}
 
 	optional_idx GetEstimatedCacheMemory() const override {
-		// The key is stored in the object cache and in this entry, the filepath in the cached file object.
+		// Filepath is stored at two places: in the object cache key and in the cached file object.
 		// Block metadata is reserved separately by the cached file as blocks are added and dropped.
-		return key.size() * 2 + cached_file->path.size() + sizeof(CachedFile);
+		return cached_file->path.size() * 2 + sizeof(CachedFile);
 	}
 
 	shared_ptr<CachedFile> GetCachedFile() const {
@@ -82,8 +81,6 @@ public:
 
 private:
 	ExternalFileCache &cache;
-	//! The object cache key of the entry (ObjectCache::GetFileKey)
-	const string key;
 	shared_ptr<CachedFile> cached_file;
 };
 
@@ -299,7 +296,7 @@ vector<CachedFileInformation> ExternalFileCache::GetCachedFileInformation() cons
 	auto &object_cache = buffer_manager.GetDatabase().GetObjectCache();
 	vector<CachedFileInformation> result;
 	for (const auto &key : keys) {
-		auto entry = object_cache.Get<ExternalFileCacheObjectCacheEntry>(key);
+		auto entry = object_cache.GetWithTypePrefix<ExternalFileCacheObjectCacheEntry>(key);
 		if (!entry) {
 			continue;
 		}
@@ -347,51 +344,45 @@ BufferHandle ExternalFileCache::AllocateCacheBuffer(BufferManager &buffer_manage
 	return buffer_manager.Allocate(MemoryTag::EXTERNAL_FILE_CACHE, nr_bytes, !spill);
 }
 
-void ExternalFileCache::DeleteObjectCacheEntries(const vector<string> &keys) {
+void ExternalFileCache::DeleteObjectCacheEntries(const vector<string> &paths) {
 	auto &object_cache = buffer_manager.GetDatabase().GetObjectCache();
-	for (auto &key : keys) {
-		object_cache.Delete(key);
+	for (auto &path : paths) {
+		object_cache.DeleteWithTypePrefix<ExternalFileCacheObjectCacheEntry>(path);
 	}
 }
 
 shared_ptr<ExternalFileCache::CachedFile> ExternalFileCache::GetOrCreateCachedFile(const string &path) {
-	return GetOrCreateCachedFile(OpenFileInfo(path));
-}
-
-shared_ptr<ExternalFileCache::CachedFile> ExternalFileCache::GetOrCreateCachedFile(const OpenFileInfo &file) {
 	auto &object_cache = buffer_manager.GetDatabase().GetObjectCache();
-	const auto key = ObjectCache::GetFileKey<ExternalFileCacheObjectCacheEntry>(file);
-	const auto &path = file.path;
 	while (true) {
 		const auto current_generation = generation.load();
 		if (!enable) {
 			return make_shared_ptr<CachedFile>(path, current_generation, buffer_manager.GetBufferPool());
 		}
 
-		auto entry =
-		    object_cache.GetOrCreate<ExternalFileCacheObjectCacheEntry>(key, *this, key, path, current_generation);
+		auto entry = object_cache.GetOrCreateWithTypePrefix<ExternalFileCacheObjectCacheEntry>(path, *this, path,
+		                                                                                       current_generation);
 		auto cached_file = entry->GetCachedFile();
 
 		if (!enable) {
-			object_cache.Delete(key);
+			object_cache.DeleteWithTypePrefix<ExternalFileCacheObjectCacheEntry>(path);
 			return make_shared_ptr<CachedFile>(path, current_generation, buffer_manager.GetBufferPool());
 		}
 		if (cached_file->generation != current_generation) {
-			object_cache.Delete(key);
+			object_cache.DeleteWithTypePrefix<ExternalFileCacheObjectCacheEntry>(path);
 			continue;
 		}
 		return cached_file;
 	}
 }
 
-void ExternalFileCache::InsertCachedFileKey(const string &key) {
+void ExternalFileCache::InsertCachedFileKey(const string &path) {
 	const annotated_lock_guard<annotated_mutex> guard(lock);
-	cached_file_keys[key]++;
+	cached_file_keys[path]++;
 }
 
-void ExternalFileCache::EraseCachedFileKey(const string &key) {
+void ExternalFileCache::EraseCachedFileKey(const string &path) {
 	const annotated_lock_guard<annotated_mutex> guard(lock);
-	auto entry = cached_file_keys.find(key);
+	auto entry = cached_file_keys.find(path);
 	ALWAYS_ASSERT(entry != cached_file_keys.end());
 	D_ASSERT(entry->second > 0);
 	if (--entry->second == 0) {

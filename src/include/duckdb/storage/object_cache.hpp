@@ -12,7 +12,6 @@
 #include "duckdb/common/enums/memory_tag.hpp"
 #include "duckdb/common/lru_cache.hpp"
 #include "duckdb/common/mutex.hpp"
-#include "duckdb/common/open_file_info.hpp"
 #include "duckdb/common/string.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/unordered_map.hpp"
@@ -173,17 +172,6 @@ public:
 	template <class T>
 	void DeleteWithTypePrefix(const string &key) {
 		Delete(MakeCacheKey<T>(key));
-	}
-
-	//! The key of the entry of type T for what reads of `file` read: the type-prefixed key of its path, or, for a file
-	//! read with an ephemeral secret, one with the name of the secret, which no path's key equals. So only reads with
-	//! the same secret share an entry
-	template <class T>
-	static string GetFileKey(const OpenFileInfo &file) {
-		if (!file.HasSecretName()) {
-			return MakeCacheKey<T>(file.path);
-		}
-		return StringUtil::Format("%s:%s-%s", T::ObjectType(), file.GetSecretName(), file.path);
 	}
 
 	DUCKDB_API static ObjectCache &GetObjectCache(ClientContext &context);

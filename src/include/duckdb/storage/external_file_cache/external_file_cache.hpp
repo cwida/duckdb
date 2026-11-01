@@ -11,7 +11,6 @@
 #include "duckdb/common/atomic.hpp"
 #include "duckdb/common/map.hpp"
 #include "duckdb/common/mutex.hpp"
-#include "duckdb/common/open_file_info.hpp"
 #include "duckdb/common/optional.hpp"
 #include "duckdb/common/optional_idx.hpp"
 #include "duckdb/common/shared_ptr_ipp.hpp"
@@ -118,9 +117,6 @@ public:
 	//! Gets the shared cached file for the given path, creating it if not yet present.
 	//! When caching is disabled, returns a transient CachedFile that is not tracked in the cached file map.
 	shared_ptr<CachedFile> GetOrCreateCachedFile(const string &path);
-	//! As above, for a file: one read with an ephemeral secret shares it only with reads with the same secret
-	//! (ObjectCache::GetFileKey).
-	shared_ptr<CachedFile> GetOrCreateCachedFile(const OpenFileInfo &file);
 
 	//! Allocate a buffer holding a cache block of the given file. Blocks of remote files spill to the
 	//! temporary directory when they are evicted, instead of being dropped and re-fetched from the
@@ -139,12 +135,12 @@ public:
 private:
 	class ExternalFileCacheObjectCacheEntry;
 
-	//! Registers the object cache key of a cached file in the tracked set.
-	void InsertCachedFileKey(const string &key);
-	//! Removes the object cache key of a cached file from the tracked set.
-	void EraseCachedFileKey(const string &key);
-	//! Delete the ObjectCache entries with the given keys.
-	void DeleteObjectCacheEntries(const vector<string> &keys);
+	//! Registers a cached file path in the tracked set.
+	void InsertCachedFileKey(const string &path);
+	//! Removes a cached file path from the tracked set.
+	void EraseCachedFileKey(const string &path);
+	//! Delete the ObjectCache entries for the given cached file paths.
+	void DeleteObjectCacheEntries(const vector<string> &paths);
 
 	//! The BufferManager used to cache files
 	BufferManager &buffer_manager;
@@ -152,8 +148,8 @@ private:
 	atomic<bool> enable;
 	//! Generation counter, incremented whenever cache enablement changes.
 	atomic<idx_t> generation;
-	//! Maps from the object cache key of a cached file (ObjectCache::GetFileKey) to the number of live entries for it.
-	//! A key can have multiple live entries while an evicted entry is still referenced.
+	//! Maps from path to the number of live entries for that path.
+	//! A path can have multiple live entries while an evicted entry is still referenced.
 	unordered_map<string, idx_t> cached_file_keys DUCKDB_GUARDED_BY(lock);
 	//! Lock for accessing cached_file_keys.
 	mutable annotated_mutex lock;
