@@ -440,8 +440,9 @@ bool VariantShreddingStats::GetShreddedTypeInternal(const VariantColumnStatsData
 	if (type_index == static_cast<uint8_t>(VariantLogicalType::OBJECT)) {
 		child_list_t<LogicalType> child_types;
 		case_insensitive_string_set_t field_names;
+		vector<pair<string, idx_t>> field_counts;
+		field_counts.reserve(column.field_stats.size());
 		for (auto &entry : column.field_stats) {
-			auto &child_column = GetColumnStats(entry.second);
 			if (entry.first.empty()) {
 				//! Do not include empty field names in the shredded type!
 				continue;
@@ -450,13 +451,15 @@ bool VariantShreddingStats::GetShreddedTypeInternal(const VariantColumnStatsData
 				//! STRUCT field names are case-insensitive, but VARIANT object keys are case-sensitive.
 				return false;
 			}
-			if (!VariantFieldIsWorthShredding(child_column.total_count, column.total_count)) {
-				//! Field is too rare - keep it in the 'unshredded' overlay instead of shredding on it
-				continue;
-			}
+			field_counts.emplace_back(entry.first, GetColumnStats(entry.second).total_count);
+		}
+		// rare fields stay in the unshredded overlay, and the number of shredded fields is capped
+		auto shredded_fields = VariantSelectShreddedFields(std::move(field_counts), column.total_count);
+		for (auto &field_name : shredded_fields) {
+			auto &child_column = GetColumnStats(column.field_stats.at(field_name));
 			LogicalType child_type;
 			if (GetShreddedTypeInternal(child_column, child_type, total_value_count, force_partial)) {
-				child_types.emplace_back(entry.first, child_type);
+				child_types.emplace_back(field_name, child_type);
 			}
 		}
 		if (child_types.empty()) {

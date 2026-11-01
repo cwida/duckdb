@@ -204,22 +204,22 @@ static bool ConstructShreddedType(const VariantAnalyzeData &state, LogicalType &
 			}
 			auto &object_data = *state.object_data;
 
-			child_list_t<LogicalType> field_types;
+			vector<pair<string, idx_t>> field_counts;
+			field_counts.reserve(object_data.fields.size());
 			for (auto &field : object_data.fields) {
-				if (field.first.empty()) {
-					//! A STRUCT field cannot have an empty name, so the empty key stays in the 'value'
-					continue;
-				}
-				if (!VariantFieldIsWorthShredding(field.second.total_count, state.total_count)) {
-					//! Field is too rare - keep it in the 'value' instead of shredding on it
-					continue;
-				}
+				field_counts.emplace_back(field.first, field.second.total_count);
+			}
+			auto shredded_fields = VariantSelectShreddedFields(std::move(field_counts), state.total_count);
+
+			child_list_t<LogicalType> field_types;
+			for (auto &field_name : shredded_fields) {
+				auto &field = object_data.fields.at(field_name);
 				LogicalType child_type;
-				if (!ConstructShreddedType(field.second, child_type, depth + 1)) {
+				if (!ConstructShreddedType(field, child_type, depth + 1)) {
 					// cannot shred on this field - skip
 					continue;
 				}
-				field_types.emplace_back(field.first, child_type);
+				field_types.emplace_back(field_name, child_type);
 			}
 			if (field_types.empty()) {
 				// no field types to shred on - avoid shredding

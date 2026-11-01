@@ -64,10 +64,10 @@ SELECT SUM(col.a::BIGINT) FROM homogeneous
 
 # ------------------------------ Long tail ------------------------------
 
-# Every row adds a key that occurs in that single row only - the 100 rare keys stay out of the shredded type
+# Every row adds a key that occurs in that single row only - the 1000 rare keys stay out of the shredded type
 statement ok
 CREATE TABLE long_tail AS SELECT json_object('a', i, 'b', 'value_' || i::VARCHAR, 'k' || i::VARCHAR,
-	i)::VARIANT AS col FROM range(100) t(i);
+	i)::VARIANT AS col FROM range(1000) t(i);
 
 statement ok
 CHECKPOINT;
@@ -75,7 +75,7 @@ CHECKPOINT;
 query II
 SELECT shredded_field_count('long_tail'), overlay_key_count('long_tail')
 ----
-2	100
+2	1000
 
 # The rare keys are still readable, they are served from the overlay
 query I
@@ -91,14 +91,14 @@ SELECT SUM(TRY_CAST(col.k7 AS BIGINT)) FROM long_tail
 query I
 SELECT COUNT(DISTINCT col::VARCHAR) FROM long_tail
 ----
-100
+1000
 
 restart
 
 query II
 SELECT shredded_field_count('long_tail'), overlay_key_count('long_tail')
 ----
-2	100
+2	1000
 
 query I
 SELECT col.k42::BIGINT FROM long_tail WHERE col.a = 42
@@ -107,8 +107,8 @@ SELECT col.k42::BIGINT FROM long_tail WHERE col.a = 42
 
 # Appending more rare keys and re-shredding keeps the shred type stable
 statement ok
-INSERT INTO long_tail SELECT json_object('a', i + 100, 'b', 'value_' || (i + 100)::VARCHAR, 'k' || (i + 100)::VARCHAR,
-	i + 100)::VARIANT FROM range(100) t(i);
+INSERT INTO long_tail SELECT json_object('a', i + 1000, 'b', 'value_' || (i + 1000)::VARCHAR,
+	'k' || (i + 1000)::VARCHAR, i + 1000)::VARIANT FROM range(1000) t(i);
 
 statement ok
 CHECKPOINT;
@@ -116,12 +116,12 @@ CHECKPOINT;
 query II
 SELECT shredded_field_count('long_tail'), overlay_key_count('long_tail')
 ----
-2	200
+2	2000
 
 query I
-SELECT col.k142::BIGINT FROM long_tail WHERE col.a = 142
+SELECT col.k1420::BIGINT FROM long_tail WHERE col.a = 1420
 ----
-142
+1420
 
 # ------------------------------ Frequent fields ------------------------------
 
@@ -130,14 +130,19 @@ statement ok
 CREATE TABLE frequent AS SELECT CASE WHEN i % 2 = 0 THEN json_object('a', i, 'b', 'value_' || i::VARCHAR,
 	'half', i) ELSE json_object('a', i, 'b', 'value_' || i::VARCHAR) END::VARIANT AS col FROM range(100) t(i);
 
-# 'ten' occurs in exactly 10% of the objects, 'nine' in 9%
+# 'one_percent' occurs in exactly 1% of the objects, 'below_one_percent' in 0.9%
 statement ok
-CREATE TABLE ten_percent AS SELECT CASE WHEN i < 10 THEN json_object('a', i, 'ten', i) ELSE json_object('a',
-	i) END::VARIANT AS col FROM range(100) t(i);
+CREATE TABLE one_percent AS SELECT CASE WHEN i < 10 THEN json_object('a', i, 'one_percent', i) ELSE json_object('a',
+	i) END::VARIANT AS col FROM range(1000) t(i);
 
 statement ok
-CREATE TABLE nine_percent AS SELECT CASE WHEN i < 9 THEN json_object('a', i, 'nine', i) ELSE json_object('a',
-	i) END::VARIANT AS col FROM range(100) t(i);
+CREATE TABLE below_one_percent AS SELECT CASE WHEN i < 9 THEN json_object('a', i, 'below_one_percent', i) ELSE
+	json_object('a', i) END::VARIANT AS col FROM range(1000) t(i);
+
+# An object with many frequent fields is capped - only the 32 most frequent fields are shredded
+statement ok
+CREATE TABLE capped AS SELECT map_from_entries(list_transform(range(40), j -> {'k': 'f' || j::VARCHAR, 'v': j}
+	))::JSON::VARIANT AS col FROM range(100) t(i);
 
 statement ok
 CHECKPOINT;
@@ -152,34 +157,45 @@ SELECT SUM(col.half::BIGINT) FROM frequent
 ----
 2450
 
-# 10% of the objects is the cutoff - at the cutoff the field is still shredded
+# 1% of the objects is the cutoff - at the cutoff the field is still shredded
 query II
-SELECT shredded_field_count('ten_percent'), overlay_key_count('ten_percent')
+SELECT shredded_field_count('one_percent'), overlay_key_count('one_percent')
 ----
 2	0
 
 query I
-SELECT SUM(col.ten::BIGINT) FROM ten_percent
+SELECT SUM(col.one_percent::BIGINT) FROM one_percent
 ----
 45
 
-# 9% of the objects is below the cutoff - the field stays in the overlay
+# 0.9% of the objects is below the cutoff - the field stays in the overlay
 query II
-SELECT shredded_field_count('nine_percent'), overlay_key_count('nine_percent')
+SELECT shredded_field_count('below_one_percent'), overlay_key_count('below_one_percent')
 ----
 1	9
 
 query I
-SELECT SUM(col.nine::BIGINT) FROM nine_percent
+SELECT SUM(col.below_one_percent::BIGINT) FROM below_one_percent
 ----
 36
 
+# 40 frequent fields, 32 are shredded and the other 8 stay in the overlay
+query II
+SELECT shredded_field_count('capped'), overlay_key_count('capped')
+----
+32	800
+
+query I
+SELECT SUM(col.f39::BIGINT), COUNT(*) FROM capped
+----
+3900	100
+
 # ------------------------------ Nested objects ------------------------------
 
-# 'inner' is shredded, but the nested 'rare' field (5% of the inner objects) is not
+# 'inner' is shredded, but the nested 'rare' field (0.5% of the inner objects) is not
 statement ok
 CREATE TABLE nested AS SELECT json_object('a', i, 'inner', CASE WHEN i < 5 THEN json_object('x', i, 'rare',
-	i) ELSE json_object('x', i) END)::VARIANT AS col FROM range(100) t(i);
+	i) ELSE json_object('x', i) END)::VARIANT AS col FROM range(1000) t(i);
 
 statement ok
 CHECKPOINT;

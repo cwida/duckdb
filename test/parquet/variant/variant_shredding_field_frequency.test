@@ -21,9 +21,9 @@ SELECT SUM(col.a::BIGINT) FROM '{TEST_DIR}/variant_frequency_homogeneous.parquet
 ----
 4950
 
-# Every row adds a key that occurs in that single row only - the 100 rare keys stay out of the shredded type
+# Every row adds a key that occurs in that single row only - the 1000 rare keys stay out of the shredded type
 statement ok
-COPY (SELECT json_object('a', i, 'b', 'value_' || i::VARCHAR, 'k' || i::VARCHAR, i)::VARIANT AS col FROM range(100) t(i))
+COPY (SELECT json_object('a', i, 'b', 'value_' || i::VARCHAR, 'k' || i::VARCHAR, i)::VARIANT AS col FROM range(1000) t(i))
 TO '{TEST_DIR}/variant_frequency_long_tail.parquet' (FORMAT parquet);
 
 query I
@@ -51,7 +51,7 @@ SELECT SUM(TRY_CAST(col.k7 AS BIGINT)) FROM '{TEST_DIR}/variant_frequency_long_t
 query I
 SELECT COUNT(DISTINCT col::VARCHAR) FROM '{TEST_DIR}/variant_frequency_long_tail.parquet'
 ----
-100
+1000
 
 # 'half' occurs in 50% of the objects - that is frequent enough to shred on
 statement ok
@@ -69,39 +69,67 @@ SELECT SUM(col.half::BIGINT) FROM '{TEST_DIR}/variant_frequency_half.parquet'
 ----
 2450
 
-# 'ten' occurs in exactly 10% of the objects, 'nine' in 9%
+# 'one_percent' occurs in exactly 1% of the objects, 'below_one_percent' in 0.9%
 statement ok
-COPY (SELECT CASE WHEN i < 10 THEN json_object('a', i, 'ten', i) ELSE json_object('a', i) END::VARIANT AS col
-	FROM range(100) t(i)) TO '{TEST_DIR}/variant_frequency_ten.parquet' (FORMAT parquet);
+COPY (SELECT CASE WHEN i < 10 THEN json_object('a', i, 'one_percent', i) ELSE json_object('a', i) END::VARIANT AS col
+	FROM range(1000) t(i)) TO '{TEST_DIR}/variant_frequency_one_percent.parquet' (FORMAT parquet);
 
 statement ok
-COPY (SELECT CASE WHEN i < 9 THEN json_object('a', i, 'nine', i) ELSE json_object('a', i) END::VARIANT AS col
-	FROM range(100) t(i)) TO '{TEST_DIR}/variant_frequency_nine.parquet' (FORMAT parquet);
+COPY (SELECT CASE WHEN i < 9 THEN json_object('a', i, 'below_one_percent', i) ELSE json_object('a', i) END::VARIANT AS
+	col FROM range(1000) t(i)) TO '{TEST_DIR}/variant_frequency_below_one_percent.parquet' (FORMAT parquet);
 
 query I
-SELECT COUNT(*) FROM parquet_schema('{TEST_DIR}/variant_frequency_ten.parquet') WHERE name = 'ten'
+SELECT COUNT(*) FROM parquet_schema('{TEST_DIR}/variant_frequency_one_percent.parquet') WHERE name = 'one_percent'
 ----
 1
 
 query I
-SELECT SUM(col.ten::BIGINT) FROM '{TEST_DIR}/variant_frequency_ten.parquet'
+SELECT SUM(col.one_percent::BIGINT) FROM '{TEST_DIR}/variant_frequency_one_percent.parquet'
 ----
 45
 
 query I
-SELECT COUNT(*) FROM parquet_schema('{TEST_DIR}/variant_frequency_nine.parquet') WHERE name = 'nine'
+SELECT COUNT(*) FROM parquet_schema('{TEST_DIR}/variant_frequency_below_one_percent.parquet')
+	WHERE name = 'below_one_percent'
 ----
 0
 
 query I
-SELECT SUM(col.nine::BIGINT) FROM '{TEST_DIR}/variant_frequency_nine.parquet'
+SELECT SUM(col.below_one_percent::BIGINT) FROM '{TEST_DIR}/variant_frequency_below_one_percent.parquet'
 ----
 36
 
-# 'inner' is shredded, but the nested 'rare' field (5% of the inner objects) is not
+# Objects with many frequent fields are capped - only the 32 most frequent fields are shredded
+statement ok
+COPY (SELECT map_from_entries(list_transform(range(40), j -> {'k': 'f' || j::VARCHAR, 'v': j}))::JSON::VARIANT AS col
+	FROM range(100) t(i)) TO '{TEST_DIR}/variant_frequency_cap.parquet' (FORMAT parquet);
+
+query I
+SELECT COUNT(*) FROM parquet_schema('{TEST_DIR}/variant_frequency_cap.parquet') WHERE regexp_matches(name,
+	'^f[0-9]+$')
+----
+32
+
+# The fields that did not make the cut are still readable, they are served from the 'value' column
+query I
+SELECT COUNT(*) FROM (SELECT col.f39::BIGINT FROM '{TEST_DIR}/variant_frequency_cap.parquet')
+----
+100
+
+query I
+SELECT SUM(col.f39::BIGINT) FROM '{TEST_DIR}/variant_frequency_cap.parquet'
+----
+3900
+
+query I
+SELECT COUNT(DISTINCT col::VARCHAR) FROM '{TEST_DIR}/variant_frequency_cap.parquet'
+----
+1
+
+# 'inner' is shredded, but the nested 'rare' field (0.5% of the inner objects) is not
 statement ok
 COPY (SELECT json_object('a', i, 'inner', CASE WHEN i < 5 THEN json_object('x', i, 'rare', i) ELSE json_object('x',
-	i) END)::VARIANT AS col FROM range(100) t(i)) TO '{TEST_DIR}/variant_frequency_nested.parquet' (FORMAT parquet);
+	i) END)::VARIANT AS col FROM range(1000) t(i)) TO '{TEST_DIR}/variant_frequency_nested.parquet' (FORMAT parquet);
 
 query I
 SELECT COUNT(*) FROM parquet_schema('{TEST_DIR}/variant_frequency_nested.parquet') WHERE name IN ('inner', 'x', 'rare')

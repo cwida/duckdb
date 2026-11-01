@@ -1,5 +1,6 @@
 #pragma once
 
+#include "duckdb/common/algorithm.hpp"
 #include "duckdb/common/types/variant.hpp"
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/common/types/selection_vector.hpp"
@@ -8,15 +9,53 @@
 #include "duckdb/common/unordered_set.hpp"
 #include "duckdb/function/scalar/variant_utils.hpp"
 
+#include <utility>
+
 namespace duckdb {
 
 //! An object field is only worth shredding if it occurs in at least 1/VARIANT_SHREDDED_FIELD_PRESENCE_DIVISOR of the
 //! objects it belongs to - rarer fields cost more shred type than they save in the unshredded overlay.
-constexpr idx_t VARIANT_SHREDDED_FIELD_PRESENCE_DIVISOR = 10;
+constexpr idx_t VARIANT_SHREDDED_FIELD_PRESENCE_DIVISOR = 100;
+
+//! At most this many fields are shredded per object - every shredded field adds a column, so a long tail of
+//! moderately frequent fields costs more to read and write than it saves.
+constexpr idx_t VARIANT_SHREDDED_FIELD_LIMIT = 32;
 
 //! Whether a field occurring 'field_count' times in 'object_count' objects is frequent enough to shred on
 inline bool VariantFieldIsWorthShredding(idx_t field_count, idx_t object_count) {
 	return field_count * VARIANT_SHREDDED_FIELD_PRESENCE_DIVISOR >= object_count;
+}
+
+//! Returns the names of the fields to shred on for an object that occurs 'object_count' times.
+//! Fields below the presence threshold are dropped, and only the VARIANT_SHREDDED_FIELD_LIMIT most frequent fields
+//! are kept. Fields are returned ordered by decreasing occurrence, ties broken by name so the result is stable.
+inline vector<string> VariantSelectShreddedFields(vector<pair<string, idx_t>> fields, idx_t object_count) {
+	vector<pair<string, idx_t>> selected;
+	for (auto &field : fields) {
+		if (field.first.empty()) {
+			// a STRUCT field cannot have an empty name, so the empty key stays in the 'value'
+			continue;
+		}
+		if (!VariantFieldIsWorthShredding(field.second, object_count)) {
+			continue;
+		}
+		selected.push_back(std::move(field));
+	}
+	std::sort(selected.begin(), selected.end(), [](const pair<string, idx_t> &a, const pair<string, idx_t> &b) {
+		if (a.second != b.second) {
+			return a.second > b.second;
+		}
+		return a.first < b.first;
+	});
+	if (selected.size() > VARIANT_SHREDDED_FIELD_LIMIT) {
+		selected.resize(VARIANT_SHREDDED_FIELD_LIMIT);
+	}
+	vector<string> result;
+	result.reserve(selected.size());
+	for (auto &field : selected) {
+		result.push_back(std::move(field.first));
+	}
+	return result;
 }
 
 struct VariantColumnStatsData {
