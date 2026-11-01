@@ -17,7 +17,7 @@ struct RandomState {
 	pcg32 pcg;
 };
 
-RandomEngine::RandomEngine(int64_t seed) : random_state(make_uniq<RandomState>()) {
+RandomEngine::RandomEngine(int64_t seed) : random_state(make_uniq<RandomState>()), explicitly_seeded(seed >= 0) {
 	if (seed < 0) {
 #ifdef __linux__
 		idx_t random_seed = 0;
@@ -80,6 +80,15 @@ uint32_t RandomEngine::NextRandomInteger32(uint32_t min, uint32_t max) {
 
 void RandomEngine::SetSeed(uint64_t seed) {
 	random_state->pcg.seed(seed);
+	explicitly_seeded = true;
+}
+
+uint64_t RandomEngine::NextSeed() {
+	if (explicitly_seeded) {
+		return NextRandomInteger64();
+	}
+	RandomEngine fresh;
+	return fresh.NextRandomInteger64();
 }
 
 void RandomEngine::RandomData(duckdb::data_ptr_t data, duckdb::idx_t len) {
