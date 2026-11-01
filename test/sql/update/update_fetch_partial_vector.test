@@ -2,7 +2,7 @@
 # description: Sparse and partial-vector updates on checkpointed (compressed) data
 # group: [update]
 
-load __TEST_DIR__/update_fetch_partial_vector.db
+load {TEST_DIR}/update_fetch_partial_vector.db
 
 statement ok
 CREATE TABLE t AS
