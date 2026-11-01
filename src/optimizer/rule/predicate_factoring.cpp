@@ -126,6 +126,17 @@ static column_binding_map_t<vector<reference<Expression>>> GetDisjunctedPredicat
 	return remaining_binding_map;
 }
 
+static unique_ptr<Expression> CreateConjunction(ExpressionType type, vector<unique_ptr<Expression>> children) {
+	D_ASSERT(!children.empty());
+	if (children.size() == 1) {
+		return std::move(children[0]);
+	}
+
+	auto result = make_uniq<BoundConjunctionExpression>(type);
+	result->GetChildrenMutable() = std::move(children);
+	return std::move(result);
+}
+
 unique_ptr<Expression> PredicateFactoringRule::Apply(LogicalOperator &op, vector<reference<Expression>> &bindings,
                                                      bool &changes_made, bool is_root) {
 	// Only applies to top-level FILTER expressions
@@ -150,33 +161,21 @@ unique_ptr<Expression> PredicateFactoringRule::Apply(LogicalOperator &op, vector
 		return nullptr; // None qualify
 	}
 
-	unique_ptr<Expression> derived_filter;
+	vector<unique_ptr<Expression>> derived_children;
+	derived_children.reserve(binding_map.size());
 	for (auto &entry : binding_map) {
 		D_ASSERT(!entry.second.empty());
 
 		// Create disjunction on single-column predicates
-		unique_ptr<Expression> column_filter;
+		vector<unique_ptr<Expression>> column_children;
+		column_children.reserve(entry.second.size());
 		for (auto &expr : entry.second) {
-			if (!column_filter) {
-				column_filter = expr.get().Copy();
-			} else {
-				auto new_disjunction = make_uniq<BoundConjunctionExpression>(ExpressionType::CONJUNCTION_OR);
-				new_disjunction->GetChildrenMutable().push_back(std::move(column_filter));
-				new_disjunction->GetChildrenMutable().push_back(expr.get().Copy());
-				column_filter = std::move(new_disjunction);
-			}
+			column_children.push_back(expr.get().Copy());
 		}
-
-		// Conjunct each single-column predicate together
-		if (!derived_filter) {
-			derived_filter = std::move(column_filter);
-		} else {
-			auto new_conjunction = make_uniq<BoundConjunctionExpression>(ExpressionType::CONJUNCTION_AND);
-			new_conjunction->GetChildrenMutable().push_back(std::move(column_filter));
-			new_conjunction->GetChildrenMutable().push_back(std::move(derived_filter));
-			derived_filter = std::move(new_conjunction);
-		}
+		derived_children.push_back(
+		    CreateConjunction(ExpressionType::CONJUNCTION_OR, std::move(column_children)));
 	}
+	auto derived_filter = CreateConjunction(ExpressionType::CONJUNCTION_AND, std::move(derived_children));
 
 	// Now add the derived filter as an AND to the original expression
 	auto result = make_uniq<BoundConjunctionExpression>(ExpressionType::CONJUNCTION_AND);
