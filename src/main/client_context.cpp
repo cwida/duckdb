@@ -843,7 +843,9 @@ unique_ptr<QueryResult> ClientContext::SubmitStatement(ClientContextLock &lock, 
 			active_query->handle = handle.get();
 			active_query->SetOpenResult(*handle);
 		}
-		result = SubmitStatementInternal(lock, active_query->TakeNextStatement(), parameters);
+		auto statement = active_query->TakeNextStatement();
+		NotifyStatementBeginInternal(lock);
+		result = SubmitStatementInternal(lock, std::move(statement), parameters);
 		if (!result && ClientConfig::GetConfig(*this).get_result_collector) {
 			result = RunToResultStatementInternal(lock, *handle);
 		}
