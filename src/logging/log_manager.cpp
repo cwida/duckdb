@@ -11,6 +11,9 @@
 namespace duckdb {
 
 unique_ptr<Logger> LogManager::CreateLogger(LoggingContext context, bool thread_safe, bool mutable_settings) {
+	if (!mutable_settings && !logging_enabled.load(std::memory_order_relaxed)) {
+		return make_uniq<NopLogger>(*this);
+	}
 	unique_lock<mutex> lck(lock);
 
 	auto registered_logging_context = RegisterLoggingContextInternal(context);
@@ -66,6 +69,7 @@ bool LogManager::CanScan(LoggingTargetTable table) {
 }
 
 LogManager::LogManager(DatabaseInstance &db, LogConfig config_p) : config(std::move(config_p)), db_instance(db) {
+	logging_enabled = config.enabled;
 	log_storage = make_uniq<InMemoryLogStorage>(db);
 }
 
@@ -135,6 +139,7 @@ void LogManager::RestoreConfig(const LogConfig &config_p, shared_ptr<LogStorage>
 void LogManager::SetEnableLogging(bool enable) {
 	unique_lock<mutex> lck(lock);
 	config.enabled = enable;
+	logging_enabled = enable;
 	global_logger->UpdateConfig(config);
 }
 
@@ -275,6 +280,7 @@ optional_ptr<const LogType> LogManager::LookupLogTypeInternal(const string &type
 void LogManager::SetConfigInternal(LogConfig config_p) {
 	// Apply the remainder of the config
 	config = std::move(config_p);
+	logging_enabled = config.enabled;
 	global_logger->UpdateConfig(config);
 }
 

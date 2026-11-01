@@ -92,6 +92,7 @@ protected:
 protected:
 	mutex lock;
 	LogConfig config;
+	atomic<bool> logging_enabled;
 
 	shared_ptr<Logger> global_logger;
 	shared_ptr<LogStorage> log_storage;

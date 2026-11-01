@@ -898,10 +898,10 @@ SettingLookupResult DBConfig::TryGetCurrentSetting(const Identifier &key, Value 
 
 optional_idx DBConfig::TryGetSettingIndex(const Identifier &name,
                                           optional_ptr<const ConfigurationOption> &option) const {
-	ExtensionOption extension_option;
-	if (TryGetExtensionOption(name, extension_option)) {
+	auto extension_setting_index = user_settings.TryGetExtensionSettingIndex(name);
+	if (extension_setting_index.IsValid()) {
 		// extension setting
-		return extension_option.setting_index;
+		return extension_setting_index;
 	}
 	option = GetOptionByName(name);
 	if (option) {
