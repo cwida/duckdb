@@ -97,6 +97,10 @@ public:
 	               idx_t base_row, const WrittenRows &written);
 	void PushSequenceUsage(SequenceCatalogEntry &entry, const SequenceData &data);
 	void PushAppend(DuckTableEntry &table_entry, idx_t row_start, idx_t row_count);
+	//! Record that an ALTER in this transaction replaced old_storage with new_storage
+	void PushAlteredStorage(DataTable &old_storage, DataTable &new_storage);
+	//! Returns the most recent version of the storage created by ALTER statements in this transaction
+	DataTable &GetLatestStorage(DataTable &storage);
 	UndoBufferReference CreateUpdateInfo(DuckTableEntry &table_entry, idx_t type_size, idx_t capacity,
 	                                     idx_t value_capacity, idx_t row_group_start);
 
@@ -129,6 +133,8 @@ private:
 	mutex sequence_lock;
 	//! Map of all sequences that were used during the transaction and the value they had in this transaction
 	reference_map_t<SequenceCatalogEntry, reference<SequenceValue>> sequence_usage;
+	//! Maps storage replaced by an ALTER in this transaction to the storage that replaced it
+	reference_map_t<DataTable, shared_ptr<DataTable>> altered_storage;
 	//! Flag to prevent auto-checkpointing inside a checkpoint transaction.
 	bool is_checkpoint_transaction = false;
 };

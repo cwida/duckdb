@@ -395,6 +395,14 @@ bool CatalogSet::AlterEntry(CatalogTransaction transaction, const Identifier &na
 	if (new_entry->name != entry->name) {
 		new_entry->SetAsRoot();
 	}
+	if (transaction.transaction && new_entry->type == CatalogType::TABLE_ENTRY) {
+		auto old_table = entry->Cast<TableCatalogEntry>().TryGetDuckTableEntry();
+		auto new_table = new_entry->Cast<TableCatalogEntry>().TryGetDuckTableEntry();
+		if (old_table && new_table && &old_table->GetStorage() != &new_table->GetStorage()) {
+			transaction.transaction->Cast<DuckTransaction>().PushAlteredStorage(old_table->GetStorage(),
+			                                                                    new_table->GetStorage());
+		}
+	}
 
 	read_lock.unlock();
 	write_lock.unlock();

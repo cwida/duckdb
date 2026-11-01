@@ -71,7 +71,8 @@ IndexDataRemover::IndexDataRemover(DuckTransaction &transaction_p, QueryContext 
 }
 
 void IndexDataRemover::PushDelete(DeleteInfo &info) {
-	auto &version_table = info.table->GetStorage();
+	// the table may have been altered after the delete: use the storage the indexes are bound to
+	auto &version_table = transaction.GetLatestStorage(info.table->GetStorage());
 	if (!version_table.HasIndexes()) {
 		// this table has no indexes: no cleanup to be done
 		return;
