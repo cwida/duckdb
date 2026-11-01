@@ -37,10 +37,9 @@ public:
 	uint64_t NextRandomInteger64();
 
 	void SetSeed(uint64_t seed);
-	//! A seed for another generator. Drawn from this engine once it was seeded explicitly, so that its sequence
-	//! repeats; otherwise from fresh entropy, so that processes cloned after this engine was created (fork, VM
-	//! snapshots) do not all repeat one sequence
+	//! A seed for another generator, mixed with OS entropy unless this engine was seeded explicitly
 	uint64_t NextSeed();
+	uint32_t NextSeed32();
 
 	void RandomData(duckdb::data_ptr_t data, duckdb::idx_t len);
 
