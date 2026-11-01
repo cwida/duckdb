@@ -154,7 +154,7 @@ SELECT SUM(col.half::BIGINT) FROM frequent
 ----
 2450
 
-# 0.9% of the objects is no reason to keep the field out of the shredded type
+# No presence threshold: a field seen in 0.9% of the objects is still shredded
 query II
 SELECT shredded_field_count('rare_field'), overlay_key_count('rare_field')
 ----
@@ -171,7 +171,7 @@ SELECT shredded_field_count('capped'), overlay_key_count('capped')
 ----
 32	800
 
-query I
+query II
 SELECT SUM(col.f39::BIGINT), COUNT(*) FROM capped
 ----
 3900	100
