@@ -1126,7 +1126,7 @@ select utc_offset, is_dst
 from pg_timezone_names() 
 where name = 'America/Coyhaique'
 ----
--03:00:00	false
+-03:00:00	true
 
 # 2025c
 # Baja California agreed with California’s DST rules in 1953 and in
@@ -1195,3 +1195,13 @@ query I
 select '2026-11-02'::timestamptz
 ----
 2026-11-02 00:00:00-05
+
+# 2026f
+# Cuba will not fall back 2026-11-01; stays on -04 through 2027-11-07.
+statement ok
+set timezone='America/Havana';
+
+query I
+select '2026-11-02'::timestamptz
+----
+2026-11-02 00:00:00-04

@@ -1123,7 +1123,13 @@ static bool
 tsd_tcache_data_init(tsd_t *tsd, arena_t *arena,
     const cache_bin_info_t tcache_bin_info[TCACHE_NBINS_MAX]) {
 	assert(tcache_bin_info != NULL);
-	return tsd_tcache_data_init_impl(tsd, arena, tcache_bin_info);
+	if (tsd_tcache_data_init_impl(tsd, arena, tcache_bin_info)) {
+		/* DuckDB goes on without a tcache without memory for its bins. */
+		tsd_tcache_enabled_set(tsd, false);
+		tsd_slow_update(tsd);
+		return true;
+	}
+	return false;
 }
 
 /* Created manual tcache for tcache.create mallctl. */
@@ -1188,8 +1194,10 @@ tcache_enabled_set(tsd_t *tsd, bool enabled) {
 	bool was_enabled = tsd_tcache_enabled_get(tsd);
 
 	if (!was_enabled && enabled) {
-		tsd_tcache_data_init(tsd, NULL,
-		    tcache_get_default_ncached_max());
+		if (tsd_tcache_data_init(tsd, NULL,
+		    tcache_get_default_ncached_max())) {
+			enabled = false;
+		}
 	} else if (was_enabled && !enabled) {
 		tcache_cleanup(tsd);
 	}

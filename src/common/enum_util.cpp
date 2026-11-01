@@ -7270,19 +7270,20 @@ const StringUtil::EnumStringLiteral *GetUndoFlagsValues() {
 		{ static_cast<uint32_t>(UndoFlags::DELETE_TUPLE), "DELETE_TUPLE" },
 		{ static_cast<uint32_t>(UndoFlags::UPDATE_TUPLE), "UPDATE_TUPLE" },
 		{ static_cast<uint32_t>(UndoFlags::SEQUENCE_VALUE), "SEQUENCE_VALUE" },
-		{ static_cast<uint32_t>(UndoFlags::ATTACHED_DATABASE), "ATTACHED_DATABASE" }
+		{ static_cast<uint32_t>(UndoFlags::ATTACHED_DATABASE), "ATTACHED_DATABASE" },
+		{ static_cast<uint32_t>(UndoFlags::UPDATE_ROWS), "UPDATE_ROWS" }
 	};
 	return values;
 }
 
 template<>
 const char* EnumUtil::ToChars<UndoFlags>(UndoFlags value) {
-	return StringUtil::EnumToString(GetUndoFlagsValues(), 7, "UndoFlags", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetUndoFlagsValues(), 8, "UndoFlags", static_cast<uint32_t>(value));
 }
 
 template<>
 UndoFlags EnumUtil::FromString<UndoFlags>(const char *value) {
-	return static_cast<UndoFlags>(StringUtil::StringToEnum(GetUndoFlagsValues(), 7, "UndoFlags", value));
+	return static_cast<UndoFlags>(StringUtil::StringToEnum(GetUndoFlagsValues(), 8, "UndoFlags", value));
 }
 
 const StringUtil::EnumStringLiteral *GetUnionInvalidReasonValues() {

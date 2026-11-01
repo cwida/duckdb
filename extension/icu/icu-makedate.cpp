@@ -79,7 +79,7 @@ static unique_ptr<ICUDateFunc::CastData> BindCastToDateData(BindCastInput &input
 		throw BinderException("Casting from TIMESTAMP WITH TIME ZONE to DATE without an explicit time zone "
 		                      "has been disabled  - use \"AT TIME ZONE ...\"");
 	}
-	return make_uniq<ICUDateFunc::CastData>(make_uniq<ICUDateFunc::BindData>(*input.context));
+	return ICUDateFunc::BindCastData(input);
 }
 
 BoundCastInfo ICUMakeDate::BindCastToDate(BindCastInput &input, const LogicalType &source, const LogicalType &target) {
@@ -176,6 +176,7 @@ struct ICUMakeTimestampTZFunc : public ICUDateFunc {
 		    .AddParameter("minute", type)
 		    .AddParameter("seconds", LogicalType::DOUBLE);
 		function.SetFallible();
+		function.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 		function.SetInitStateCallback(InitCalendarCache);
 		return function;
 	}
@@ -192,6 +193,7 @@ struct ICUMakeTimestampTZFunc : public ICUDateFunc {
 		    .AddParameter("seconds", LogicalType::DOUBLE)
 		    .AddParameter("timezone", LogicalType::VARCHAR);
 		function.SetFallible();
+		function.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 		function.SetInitStateCallback(InitCalendarCache);
 		return function;
 	}

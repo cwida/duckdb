@@ -114,6 +114,12 @@
       ]
     },
     {
+      "reason": "The internal EXPLAIN and the generated SQL change the pipelines of the probes, so their logging context spans differ",
+      "paths": [
+        "test/sql/table_function/range_lateral_threads.test"
+      ]
+    },
+    {
       "reason": "FIXME: the exact DECIMAL quantile parameter lives in the bind data while the bound child is a DOUBLE cast, so the rendered SQL rebinds a non-throwing DOUBLE-rank quantile",
       "paths": [
         "test/sql/aggregate/aggregates/quantile_fallible_decimal_param.test"

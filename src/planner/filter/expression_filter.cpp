@@ -306,7 +306,7 @@ static optional_ptr<const BaseStatistics> TryGetExpressionStats(optional_ptr<Cli
 		// No custom callback: fall back to the declared monotonicity (ArgProperties) and derive output
 		// bounds by evaluating the function at the corners of each argument's range. This lets a
 		// f(col) OP const filter prune row groups via the zonemap of the base column.
-		if (func.Function().GetStability() == FunctionStability::CONSISTENT) {
+		if (func.Function().GetStability() != FunctionStability::VOLATILE) {
 			vector<BaseStatistics> child_stats;
 			child_stats.reserve(func.GetChildren().size());
 			for (auto &child_expr : func.GetChildren()) {

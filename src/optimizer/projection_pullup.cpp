@@ -64,7 +64,11 @@ void ProjectionPullup::InsertProjectionBelowOp(unique_ptr<LogicalOperator> &op, 
 		}
 		replacer.VisitOperator(*root);
 	}
-	ProjectionPullup next(optimizer, root);
+	// the projection kept below this operator is a binding barrier: nothing above it
+	// can reference bindings produced underneath, so the subtree runs its own pass
+	// with the projection as replacement root instead of walking the whole plan for
+	// every pull inside it
+	ProjectionPullup next(optimizer, child);
 	next.Optimize(child->children[0]);
 }
 

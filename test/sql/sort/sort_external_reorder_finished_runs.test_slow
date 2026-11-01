@@ -1,0 +1,80 @@
+# name: test/sql/sort/sort_external_reorder_finished_runs.test_slow
+# description: A sort that goes external while one thread still sinks reorders the runs that the other threads sorted in memory
+# group: [sort]
+
+require noforcestorage
+
+statement ok
+CREATE TEMP MACRO payload(i, light_rows) AS CASE WHEN i < light_rows
+	THEN md5(i::VARCHAR) || md5((i + 1)::VARCHAR) || md5((i + 2)::VARCHAR) || md5((i + 3)::VARCHAR)
+	ELSE repeat(md5(i::VARCHAR), 25) END
+
+statement ok
+ATTACH '{TEST_DIR}/sort_external_reorder_finished_runs.db' AS store
+
+statement ok
+USE store
+
+# one row group per thread, the last one with a wide payload
+statement ok
+CREATE TABLE one_group_each AS SELECT i, hash(i) AS k, payload(i, 3 * 122880) AS p FROM range(4 * 122880) r(i)
+
+# two row groups per thread, then one with a wide payload
+statement ok
+CREATE TABLE two_groups_each AS SELECT i, hash(i) AS k, payload(i, 8 * 122880) AS p FROM range(9 * 122880) r(i)
+
+statement ok
+CHECKPOINT store
+
+statement ok
+USE memory
+
+statement ok
+DETACH store
+
+statement ok
+SET threads = 4
+
+statement ok
+ATTACH '{TEST_DIR}/sort_external_reorder_finished_runs.db' AS store
+
+statement ok
+USE store
+
+statement ok
+SET memory_limit = '384MB'
+
+statement ok
+COPY (SELECT k, i, p FROM one_group_each ORDER BY k) TO '{TEST_DIR}/one_group_each.csv' (FORMAT csv)
+
+statement ok
+SET memory_limit = '512MB'
+
+statement ok
+COPY (SELECT k, i, p FROM two_groups_each ORDER BY k) TO '{TEST_DIR}/two_groups_each.csv' (FORMAT csv)
+
+statement ok
+SET memory_limit = '4GB'
+
+# every row once, with its own payload, in the order of the sort key
+query IIII
+SELECT count(*), count(DISTINCT i), count(*) FILTER (WHERE k < previous), count(*) FILTER (WHERE k IS DISTINCT FROM hash(i) OR p IS DISTINCT FROM payload(i, 3 * 122880))
+FROM (SELECT k, i, p, lag(k) OVER (ORDER BY rn) AS previous
+      FROM (SELECT k, i, p, row_number() OVER () AS rn
+            FROM read_csv('{TEST_DIR}/one_group_each.csv', header = true, columns = {'k': 'UBIGINT', 'i': 'BIGINT', 'p': 'VARCHAR'})))
+----
+491520	491520	0	0
+
+query IIII
+SELECT count(*), count(DISTINCT i), count(*) FILTER (WHERE k < previous), count(*) FILTER (WHERE k IS DISTINCT FROM hash(i) OR p IS DISTINCT FROM payload(i, 8 * 122880))
+FROM (SELECT k, i, p, lag(k) OVER (ORDER BY rn) AS previous
+      FROM (SELECT k, i, p, row_number() OVER () AS rn
+            FROM read_csv('{TEST_DIR}/two_groups_each.csv', header = true, columns = {'k': 'UBIGINT', 'i': 'BIGINT', 'p': 'VARCHAR'})))
+----
+1105920	1105920	0	0
+
+statement ok
+USE memory
+
+statement ok
+DETACH store
