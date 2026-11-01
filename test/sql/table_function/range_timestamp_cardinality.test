@@ -1,0 +1,23 @@
+# name: test/sql/table_function/range_timestamp_cardinality.test
+# description: The row count estimate of timestamp range/generate_series is not an upper bound
+# group: [table_function]
+
+# The estimate converts the step to microseconds (a month counts as 30 days, a day as 24 hours), so it can be below
+# the real row count. The optimizer must not treat it as a maximum: that removed LIMITs and pruned filters on sums.
+
+# 2023-02-01 and 2023-03-01 are produced, but a month counts as 30 days
+query I
+SELECT * FROM range(TIMESTAMP '2023-02-01', TIMESTAMP '2023-03-02', INTERVAL 1 MONTH) LIMIT 1
+----
+2023-02-01 00:00:00
+
+query I
+SELECT count(*) FROM (SELECT * FROM range(DATE '2023-02-01', DATE '2023-03-02', INTERVAL 1 MONTH) LIMIT 1)
+----
+1
+
+# the estimate rounds down: 00:00 and 01:00 are produced
+query I
+SELECT s FROM (SELECT sum(1::BIGINT) AS s FROM range(TIMESTAMP '2024-01-01 00:00', TIMESTAMP '2024-01-01 01:30', INTERVAL 1 HOUR)) WHERE s = 2
+----
+2

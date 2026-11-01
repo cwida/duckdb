@@ -294,7 +294,8 @@ unique_ptr<NodeStatistics> RangeDateTimeCardinality(ClientContext &context, cons
 		return nullptr;
 	}
 	auto &bind_data = bind_data_p->Cast<RangeDateTimeBindData>();
-	return make_uniq<NodeStatistics>(bind_data.cardinality, bind_data.cardinality);
+	// Only an estimate: months and days have no fixed length in micros, so it is not a maximum
+	return make_uniq<NodeStatistics>(bind_data.cardinality);
 }
 
 //! Progress of a timestamp range used as a source (i.e. with a single input row)

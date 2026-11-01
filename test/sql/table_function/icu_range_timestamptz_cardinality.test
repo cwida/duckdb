@@ -1,0 +1,50 @@
+# name: test/sql/table_function/icu_range_timestamptz_cardinality.test
+# description: The row count estimate of TIMESTAMPTZ range/generate_series is not an upper bound
+# group: [table_function]
+
+require icu
+
+statement ok
+SET Calendar = 'gregorian';
+
+# March 2024 in New York has a 23-hour day (DST starts on 2024-03-10)
+statement ok
+SET TimeZone = 'America/New_York';
+
+query I
+SELECT count(*) FROM generate_series(TIMESTAMPTZ '2024-03-01', TIMESTAMPTZ '2024-03-31', INTERVAL 1 DAY)
+----
+31
+
+query I
+SELECT count(*) FROM (SELECT * FROM generate_series(TIMESTAMPTZ '2024-03-01', TIMESTAMPTZ '2024-03-31', INTERVAL 1 DAY) LIMIT 30)
+----
+30
+
+query I
+SELECT s FROM (SELECT sum(1::BIGINT) AS s FROM generate_series(TIMESTAMPTZ '2024-03-01', TIMESTAMPTZ '2024-03-31', INTERVAL 1 DAY)) WHERE s = 31
+----
+31
+
+query I
+SELECT count(*) FROM (SELECT * FROM range(TIMESTAMPTZ '2023-02-01', TIMESTAMPTZ '2023-03-02', INTERVAL 1 MONTH) LIMIT 1)
+----
+1
+
+# the inclusive end of generate_series is produced too
+statement ok
+SET TimeZone = 'UTC';
+
+query I
+SELECT s FROM (SELECT sum(1::BIGINT) AS s FROM generate_series(TIMESTAMPTZ '2024-01-01', TIMESTAMPTZ '2024-01-08', INTERVAL 1 DAY)) WHERE s >= 8
+----
+8
+
+# with a wrong maximum, sum switches to an int64 accumulator that overflows
+statement ok
+CREATE TABLE big AS SELECT 1700000000000000000::BIGINT AS v
+
+query II
+SELECT sum(v), count(*) FROM big, generate_series(TIMESTAMPTZ '2024-01-01', TIMESTAMPTZ '2024-01-06', INTERVAL 1 DAY)
+----
+10200000000000000000	6

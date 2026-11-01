@@ -203,7 +203,8 @@ struct ICUTableRange {
 			return nullptr;
 		}
 		auto &bind_data = bind_data_p->Cast<ICURangeBindData>();
-		return make_uniq<NodeStatistics>(bind_data.cardinality, bind_data.cardinality);
+		// Only an estimate: months and days (DST, calendars) have no fixed length in micros, so it is not a maximum
+		return make_uniq<NodeStatistics>(bind_data.cardinality);
 	}
 
 	template <bool GENERATE_SERIES>
