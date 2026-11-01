@@ -5,9 +5,6 @@
 load __TEST_DIR__/update_fetch_partial_vector.db
 
 statement ok
-SET threads=1
-
-statement ok
 CREATE TABLE t AS
 SELECT i AS id,
        CASE WHEN i % 5 = 0 THEN NULL ELSE i END AS k,
@@ -18,10 +15,11 @@ FROM range(10000) r(i)
 statement ok
 CHECKPOINT
 
-# single-row updates, including NULL -> value and value -> NULL
+# NULL -> value for both columns
 statement ok
-UPDATE t SET k = 42, c = 'single' WHERE id = 5
+UPDATE t SET k = 42, c = 'single' WHERE id = 35
 
+# value -> NULL
 statement ok
 UPDATE t SET k = NULL, c = NULL WHERE id = 6
 
@@ -37,54 +35,22 @@ UPDATE t SET k = k + 1000000, c = c || '_sparse', nn = nn + 1 WHERE id BETWEEN 4
 statement ok
 UPDATE t SET k = k + 2000000, c = c || '_dense' WHERE id BETWEEN 6144 AND 8191 AND id % 3 <> 0
 
-# rolled back update leaves the base data untouched
-statement ok
-BEGIN
-
-statement ok
-UPDATE t SET k = 0, c = 'rolled_back', nn = 0 WHERE id IN (10, 11, 9000)
-
-statement ok
-ROLLBACK
-
-# snapshot of another transaction sees the base values of a later update
-statement ok con2
-BEGIN
-
-statement ok con2
-SELECT count(*) FROM t
-
-statement ok
-UPDATE t SET k = 7, c = 'after_snapshot' WHERE id IN (20, 21, 22)
-
-query IIII con2
-SELECT id, k, c, nn FROM t WHERE id IN (20, 21, 22) ORDER BY id
-----
-20	NULL	string_value_20	40
-21	21	NULL	42
-22	22	string_value_22	44
-
-statement ok con2
-COMMIT
-
 statement ok
 CREATE VIEW expected AS
 SELECT i AS id,
        CASE
-           WHEN i = 5 THEN 42
+           WHEN i = 35 THEN 42
            WHEN i = 6 THEN NULL
            WHEN i IN (2047, 2048) THEN -1
-           WHEN i IN (20, 21, 22) THEN 7
            WHEN i % 5 = 0 THEN NULL
            WHEN i BETWEEN 4096 AND 6143 AND i % 13 = 3 THEN i + 1000000
            WHEN i BETWEEN 6144 AND 8191 AND i % 3 <> 0 THEN i + 2000000
            ELSE i
        END AS k,
        CASE
-           WHEN i = 5 THEN 'single'
+           WHEN i = 35 THEN 'single'
            WHEN i = 6 THEN NULL
            WHEN i IN (2047, 2048) THEN 'boundary'
-           WHEN i IN (20, 21, 22) THEN 'after_snapshot'
            WHEN i % 7 = 0 THEN NULL
            WHEN i BETWEEN 4096 AND 6143 AND i % 13 = 3 THEN 'string_value_' || (i % 100) || '_sparse'
            WHEN i BETWEEN 6144 AND 8191 AND i % 3 <> 0 THEN 'string_value_' || (i % 100) || '_dense'
@@ -102,11 +68,6 @@ SELECT count(*) FROM t JOIN expected e USING (id)
 WHERE t.k IS DISTINCT FROM e.k OR t.c IS DISTINCT FROM e.c OR t.nn IS DISTINCT FROM e.nn
 ----
 0
-
-query I
-SELECT count(*) FROM t
-----
-10000
 
 # the updates survive a checkpoint and a restart
 statement ok

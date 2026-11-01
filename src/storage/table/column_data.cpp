@@ -934,9 +934,8 @@ void ColumnData::FetchUpdateData(ColumnScanState &state, row_t *row_ids, idx_t u
 		if (copy_data) {
 			base_validity.Set(position, fetched_validity.RowIsValid(i));
 			memcpy(base_data + position * type_size, fetched_data + i * type_size, type_size);
-		} else if (!fetched_validity.RowIsValid(i)) {
-			// the validity column only adds NULLs on top of the validity fetched by the data column
-			base_validity.SetInvalid(position);
+		} else {
+			base_validity.Set(position, fetched_validity.RowIsValid(i));
 		}
 	}
 	if (copy_data && base_vector.GetType().InternalType() == PhysicalType::VARCHAR) {
