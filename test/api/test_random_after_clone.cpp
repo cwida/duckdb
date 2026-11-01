@@ -8,7 +8,8 @@
 
 using namespace duckdb;
 
-#ifndef _WIN32
+// a child forked from a process with threads hangs under the thread sanitizer
+#if !defined(_WIN32) && !defined(DUCKDB_THREAD_SANITIZER)
 static const vector<string> RANDOM_QUERIES = {
     "SELECT uuid()::VARCHAR", "SELECT gen_random_uuid()::VARCHAR", "SELECT uuidv7()::VARCHAR",
     "SELECT random()::VARCHAR",
