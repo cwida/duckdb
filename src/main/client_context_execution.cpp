@@ -367,7 +367,8 @@ unique_ptr<QueryResult> ClientContext::SubmitPreparedStatementInternal(
 unique_ptr<QueryResult> ClientContext::CompleteDelegatedInternal(ClientContextLock &lock, QueryResult &result) {
 	QueryResultState state;
 	while (!IsObservable(state = ExecuteTaskInternal(lock, result))) {
-		if (state == QueryResultState::BLOCKED) {
+		// As in QueryResult::CompleteInternal: wait while other threads run the remaining tasks, never spin
+		if (state == QueryResultState::BLOCKED || state == QueryResultState::NO_TASKS_AVAILABLE) {
 			WaitForTask(lock, result);
 		}
 	}

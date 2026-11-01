@@ -1,0 +1,31 @@
+# name: test/sql/serialization/function_argument_metadata.test
+# description: Serialized plans record the positional and named argument split explicitly
+# group: [serialization]
+
+require json
+
+# an all-positional call must record its positional count even though it has no named arguments - without
+# the marker a reader cannot tell it from a legacy plan whose argument names travel in the aliases of its
+# trailing children, such as the SUBQUERY alias a flattened scalar subquery leaves behind
+query TT
+SELECT json_extract_string(j, '$..positional_arguments')[1],
+       json_extract_string(j, '$..named_arguments')[1]
+FROM (SELECT json_serialize_plan('SELECT least(10, 20, (SELECT 3))') j) t;
+----
+3	[]
+
+# a genuinely named argument keeps its name in the explicit field
+query TT
+SELECT json_extract_string(j, '$..positional_arguments')[1],
+       json_extract_string(j, '$..named_arguments')[1]
+FROM (SELECT json_serialize_plan('SELECT union_value(k := (SELECT 7))') j) t;
+----
+0	["k"]
+
+# the legacy positional struct_pack call captures its argument names as named arguments
+query TT
+SELECT json_extract_string(j, '$..positional_arguments')[1],
+       json_extract_string(j, '$..named_arguments')[1]
+FROM (SELECT json_serialize_plan('SELECT struct_pack(v, w) FROM (SELECT 1, 2) t(v, w)') j) t;
+----
+0	["v","w"]

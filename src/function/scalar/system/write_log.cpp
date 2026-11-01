@@ -67,38 +67,38 @@ unique_ptr<FunctionData> WriteLogBind(BindScalarFunctionInput &input) {
 	// Default return type
 	bound_function.SetReturnType(LogicalType::VARCHAR);
 
-	auto &names = *input.GetArgumentNames();
 	for (idx_t i = 1; i < arguments.size(); i++) {
 		auto &arg = arguments[i];
+		auto &name = input.GetArgumentName(i);
 		if (arg->HasParameter()) {
 			throw ParameterNotResolvedException();
 		}
-		if (names[i] == "disable_logging") {
+		if (name == "disable_logging") {
 			if (arg->GetReturnType().id() != LogicalTypeId::BOOLEAN) {
 				throw BinderException("write_log: 'disable_logging' argument must be a boolean");
 			}
 			result->disable_logging = BooleanValue::Get(input.GetConstant(i));
-		} else if (names[i] == "scope") {
+		} else if (name == "scope") {
 			if (arg->GetReturnType().id() != LogicalTypeId::VARCHAR) {
 				throw BinderException("write_log: 'scope' argument must be a string");
 			}
 			result->scope = StringValue::Get(input.GetConstant(i));
-		} else if (names[i] == "level") {
+		} else if (name == "level") {
 			if (arg->GetReturnType().id() != LogicalTypeId::VARCHAR) {
 				throw BinderException("write_log: 'level' argument must be a string");
 			}
 			result->level = EnumUtil::FromString<LogLevel>(StringValue::Get(input.GetConstant(i)));
-		} else if (names[i] == "log_type") {
+		} else if (name == "log_type") {
 			if (arg->GetReturnType().id() != LogicalTypeId::VARCHAR) {
 				throw BinderException("write_log: 'log_type' argument must be a string");
 			}
 			result->type = StringValue::Get(input.GetConstant(i));
-		} else if (names[i] == "return_value") {
+		} else if (name == "return_value") {
 			result->return_type = arg->GetReturnType();
 			result->output_col = i;
 			bound_function.SetReturnType(result->return_type);
 		} else {
-			throw BinderException(StringUtil::Format("write_log: Unknown argument %s", names[i]));
+			throw BinderException(StringUtil::Format("write_log: Unknown argument %s", name));
 		}
 	}
 

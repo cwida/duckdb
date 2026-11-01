@@ -433,6 +433,14 @@ public:
 class ScalarFunction : public BaseScalarFunction<ScalarFunction>,
                        public SimpleFunction { // NOLINT: work-around bug in clang-tidy
 public:
+	static constexpr const FunctionKind KIND = FunctionKind::SCALAR;
+	FunctionKind GetKind() const override {
+		return KIND;
+	}
+	//! The properties of the function, for code that only knows it as a SimpleFunction
+	auto GetFunctionProperties() const -> optional_ptr<const FunctionProperties> override {
+		return GetProperties();
+	}
 	DUCKDB_API ScalarFunction(Identifier name, FunctionSignature sig, scalar_function_t function);
 	DUCKDB_API ScalarFunction(Identifier name, vector<LogicalType> arguments, LogicalType return_type,
 	                          scalar_function_t function, bind_scalar_function_t bind = nullptr,
@@ -658,17 +666,9 @@ private:
 class BindScalarFunctionInput : public BindFunctionInput {
 public:
 	BindScalarFunctionInput(ClientContext &context_p, BoundScalarFunction &bound_function_p,
-	                        vector<unique_ptr<Expression>> &arguments_p, const vector<Identifier> &argument_names_p,
-	                        optional_ptr<Binder> binder_p = nullptr)
-	    : BindFunctionInput(context_p, bound_function_p, arguments_p, &argument_names_p),
-	      bound_function(bound_function_p), binder(binder_p) {
-	}
-
-	//! Construct without argument names - looking arguments up by name is not available in this case.
-	BindScalarFunctionInput(ClientContext &context_p, BoundScalarFunction &bound_function_p,
 	                        vector<unique_ptr<Expression>> &arguments_p, optional_ptr<Binder> binder_p = nullptr)
-	    : BindFunctionInput(context_p, bound_function_p, arguments_p, nullptr), bound_function(bound_function_p),
-	      binder(binder_p) {
+	    : BindFunctionInput(context_p, bound_function_p, bound_function_p.GetDefinition()->GetSignature(), arguments_p),
+	      bound_function(bound_function_p), binder(binder_p) {
 	}
 
 	BoundScalarFunction &GetBoundFunction() const {
@@ -693,13 +693,12 @@ private:
 class ResolveScalarFunctionTypesInput : private BindFunctionInput {
 public:
 	ResolveScalarFunctionTypesInput(ClientContext &context_p, BoundScalarFunction &bound_function_p,
-	                                vector<unique_ptr<Expression>> &arguments_p,
-	                                const vector<Identifier> &argument_names_p)
-	    : BindFunctionInput(context_p, bound_function_p, arguments_p, &argument_names_p),
+	                                vector<unique_ptr<Expression>> &arguments_p)
+	    : BindFunctionInput(context_p, bound_function_p, bound_function_p.GetDefinition()->GetSignature(), arguments_p),
 	      bound_function(bound_function_p), arguments(arguments_p) {
 	}
 
-	using BindFunctionInput::GetArgumentNames;
+	using BindFunctionInput::GetArgumentName;
 	using BindFunctionInput::GetClientContext;
 	using BindFunctionInput::GetConstant;
 	using BindFunctionInput::GetNonNullConstant;

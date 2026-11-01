@@ -575,6 +575,7 @@ void PlanEnumerator::InitLeafPlans() {
 		plans[relation_set] = std::move(join_node);
 		cost_model.GetCardinalityEstimator().InitCardinalityEstimatorProps(&relation_set, stats);
 	}
+	cost_model.GetCardinalityEstimator().RestrictFilterDomains(relation_stats);
 }
 
 // the plan enumeration is a straight implementation of the paper "Dynamic Programming Strikes Back" by Guido

@@ -212,7 +212,7 @@ GetCachedPartitionStats(ClientContext &context, const vector<ParquetMetadataCach
 
 	// all caches are valid! we can return the partition stats
 	for (auto &cache : cached_metadata) {
-		ParquetReader::GetPartitionStats(*cache.metadata->metadata, result);
+		ParquetReader::GetPartitionStats(cache.metadata->metadata->file_metadata, result);
 	}
 	return result;
 }
@@ -466,7 +466,7 @@ unique_ptr<NodeStatistics> ParquetMultiFileInfo::GetCardinality(ClientContext &c
 		idx_t cardinality = 0;
 		for (auto &cache : caches) {
 			// note: since this is just an estimate we don't need to look at whether or not the cache is valid
-			cardinality += cache.metadata->metadata->num_rows;
+			cardinality += cache.metadata->metadata->file_metadata.num_rows;
 		}
 		return make_uniq<NodeStatistics>(cardinality);
 	}

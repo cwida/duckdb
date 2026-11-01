@@ -339,7 +339,7 @@ public:
 	template <class T>
 	T TakeResult(idx_t slot) {
 		if (slot >= child_results.size() || !child_results[slot]) {
-			throw InternalException("Missing transformer result for slot %llu in rule '%s'", slot, info.name);
+			ThrowMissingResult(slot);
 		}
 		auto *result_value = TryGetTransformResult<T>(*child_results[slot]);
 		if (!result_value) {
@@ -349,7 +349,7 @@ public:
 				child_results[slot].reset();
 				return bridged_result;
 			}
-			throw InternalException("Unexpected transformer result type for slot %llu in rule '%s'", slot, info.name);
+			ThrowUnexpectedResultType(slot);
 		}
 		auto result = std::move(*result_value);
 		child_results[slot].reset();
@@ -359,14 +359,17 @@ public:
 	template <class T>
 	T &GetResult(idx_t slot) {
 		if (slot >= child_results.size() || !child_results[slot]) {
-			throw InternalException("Missing transformer result for slot %llu in rule '%s'", slot, info.name);
+			ThrowMissingResult(slot);
 		}
 		auto *result_value = TryGetTransformResult<T>(*child_results[slot]);
 		if (!result_value) {
-			throw InternalException("Unexpected transformer result type for slot %llu in rule '%s'", slot, info.name);
+			ThrowUnexpectedResultType(slot);
 		}
 		return *result_value;
 	}
+
+	[[noreturn]] void ThrowMissingResult(idx_t slot) const;
+	[[noreturn]] void ThrowUnexpectedResultType(idx_t slot) const;
 
 	ParseResult &parse_result;
 	const TransformFrameOps &info;
@@ -657,12 +660,14 @@ class PEGTransformerFactory {
 public:
 	static void RegisterDefaultTransforms(ParsedGrammar &grammar);
 
-	//! Match a single TopLevelStatement from `tokens` starting at `token_cursor` and transform it
-	//! into a SQLStatement. Returns nullptr if the matched TLS was separator-only (no statement).
-	//! Throws on syntax error. `token_cursor` is in/out: it's the token index where matching
-	//! starts, and on return holds the token index immediately past the last consumed token.
+	//! Match a single TopLevelStatement from `token_iterator` and transform it into a SQLStatement.
+	//! Returns nullptr if the matched TLS was separator-only (no statement). On success the iterator
+	//! is advanced past the consumed tokens. A syntax error sets `failure_index` to the furthest token
+	//! reached and returns nullptr; the caller builds the error with PEGSyntaxError if it still needs
+	//! one, since composing the message re-parses the statement several times.
 	static unique_ptr<SQLStatement> TransformTopLevelStatement(TokenIterator &token_iterator, ParserOptions &options,
-	                                                           const CompiledGrammar &grammar);
+	                                                           const CompiledGrammar &grammar,
+	                                                           optional_idx &failure_index);
 	static ParseResult &ExtractResultFromParens(ParseResult &parse_result);
 	static vector<reference<ParseResult>> ExtractParseResultsFromList(ParseResult &parse_result);
 	static bool ExpressionIsEmptyStar(const ParsedExpression &expr);
@@ -1493,6 +1498,9 @@ public:
 	static void InitializeCreateMacroStmtTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeCreateMacroStmtTrampoline(PEGTransformer &transformer,
 	                                                                         GeneratedTransformProcess &process);
+	static void InitializeReturnsTypeTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeReturnsTypeTrampoline(PEGTransformer &transformer,
+	                                                                     GeneratedTransformProcess &process);
 	static void InitializeMacroOrFunctionTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeMacroOrFunctionTrampoline(PEGTransformer &transformer,
 	                                                                         GeneratedTransformProcess &process);
@@ -4225,6 +4233,13 @@ public:
 	static void InitializeSetStatementTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeSetStatementTrampoline(PEGTransformer &transformer,
 	                                                                      GeneratedTransformProcess &process);
+	static void InitializeSetKeywordStatementTrampoline(PEGTransformer &transformer,
+	                                                    GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeSetKeywordStatementTrampoline(PEGTransformer &transformer,
+	                                                                             GeneratedTransformProcess &process);
+	static void InitializeVariableAssignmentTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeVariableAssignmentTrampoline(PEGTransformer &transformer,
+	                                                                            GeneratedTransformProcess &process);
 	static void InitializeSetAssignmentOrTimeZoneTrampoline(PEGTransformer &transformer,
 	                                                        GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue>
@@ -4793,6 +4808,7 @@ public:
 	static bool TransformFunctionKeyword(PEGTransformer &transformer);
 	static unique_ptr<MacroFunction> TransformMacroDefinition(PEGTransformer &transformer,
 	                                                          optional<vector<MacroParameter>> macro_parameters,
+	                                                          const optional<LogicalType> &returns_type,
 	                                                          unique_ptr<MacroFunction> macro_definition_body);
 	static vector<MacroParameter> TransformMacroParameters(PEGTransformer &transformer,
 	                                                       vector<MacroParameter> macro_parameter);
@@ -6165,8 +6181,11 @@ public:
 	TransformValuesClause(PEGTransformer &transformer, vector<vector<unique_ptr<ParsedExpression>>> values_expressions);
 	static vector<unique_ptr<ParsedExpression>>
 	TransformValuesExpressions(PEGTransformer &transformer, vector<unique_ptr<ParsedExpression>> expression);
-	static unique_ptr<SQLStatement> TransformSetStatement(PEGTransformer &transformer,
-	                                                      unique_ptr<SetStatement> set_assignment_or_time_zone);
+	static unique_ptr<SQLStatement> TransformSetKeywordStatement(PEGTransformer &transformer,
+	                                                             unique_ptr<SetStatement> set_assignment_or_time_zone);
+	static unique_ptr<SQLStatement> TransformVariableAssignment(PEGTransformer &transformer,
+	                                                            const Identifier &identifier,
+	                                                            unique_ptr<ParsedExpression> expression);
 	static unique_ptr<SQLStatement> TransformResetStatement(PEGTransformer &transformer,
 	                                                        unique_ptr<SQLStatement> reset_target);
 	static unique_ptr<SQLStatement> TransformResetTimeZone(PEGTransformer &transformer,
@@ -6270,6 +6289,7 @@ public:
 	static string TransformIdentifierOrKeyword(PEGTransformer &transformer, ParseResult &parse_result);
 
 private:
+	static idx_t CountParseResultsFromList(ParseResult &parse_result);
 	explicit PEGTransformerFactory(ParsedGrammar &grammar_p);
 	ParsedGrammar &grammar;
 };

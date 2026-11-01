@@ -1774,6 +1774,36 @@ ScalarFunctionSet OperatorModuloFun::GetFunctions() {
 }
 
 //===--------------------------------------------------------------------===//
+// fmod [floored modulo]
+//===--------------------------------------------------------------------===//
+struct FlooredModuloOperator {
+	template <class TA, class TB, class TR>
+	static inline TR Operation(TA left, TB right) {
+		// the remainder is exact, but takes the sign of the dividend
+		auto result = ModuloOperator::Operation<TA, TB, TR>(left, right);
+		// a zero remainder is returned as a positive zero
+		if (result == TR(0)) {
+			return TR(0);
+		}
+		if ((result < TR(0)) != (right < TB(0))) {
+			result += right;
+		}
+		return result;
+	}
+};
+
+ScalarFunctionSet FmodFun::GetFunctions() {
+	ScalarFunctionSet fmod;
+	for (auto &type : {LogicalType::FLOAT, LogicalType::DOUBLE}) {
+		ScalarFunction function({}, type, nullptr, BindBinaryFloatingPoint<FlooredModuloOperator>);
+		function.GetSignature().AddParameter("x", type).AddParameter("y", type);
+		fmod.AddFunction(std::move(function));
+	}
+	fmod.SetFallible();
+	return fmod;
+}
+
+//===--------------------------------------------------------------------===//
 // Linear Interpolation
 //===--------------------------------------------------------------------===//
 

@@ -18,6 +18,12 @@
   "skip_compiled": "true",
   "skip_tests": [
     {
+      "reason": "Older versions cannot read the types of the tables left behind by the test.",
+      "paths": [
+        "test/sql/index/art/create_index_time_zone_dependent.test"
+      ]
+    },
+    {
       "reason": "Contains explicit use of the memory catalog.",
       "paths": [
         "test/sql/show_select/test_describe_all.test",
@@ -109,6 +115,8 @@
     {
       "reason": "Expected forwards compatibility failure.",
       "paths": [
+        "test/sql/catalog/function/default_macro_shadowing.test",
+        "test/sql/catalog/function/default_table_macro_shadowing.test",
         "test/fuzzer/pedro/view_not_rebound_error_no_view_dependencies.test",
         "test/issues/rigger/assertion_scale.test",
         "test/issues/general/test_16662.test",
@@ -183,6 +191,9 @@
         "test/sql/aggregate/aggregates/test_combine_aggr.test",
         "test/sql/aggregate/aggregate_state_export/test_covar_export_state.test",
         "test/sql/aggregate/aggregate_state_export/test_state_export_opaque.test",
+        "test/sql/aggregate/aggregate_state_export/avg_timestamp_export_state.test",
+        "test/optimizer/statistics/statistics_cast_infinity.test",
+        "test/optimizer/statistics/statistics_monotone_infinity.test",
         "test/sql/types/struct/empty_struct.test",
         "test/optimizer/pushdown/cte_domain_join_filter.test",
         "test/sql/subquery/lateral/lateral_domain_join_filter_semantics.test",

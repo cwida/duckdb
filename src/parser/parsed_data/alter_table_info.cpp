@@ -53,12 +53,17 @@ string ChangeOwnershipInfo::ToString() const {
 //===--------------------------------------------------------------------===//
 // SetCommentInfo
 //===--------------------------------------------------------------------===//
-SetCommentInfo::SetCommentInfo(CatalogType entry_catalog_type, Identifier entry_catalog_p, Identifier entry_schema_p,
-                               Identifier entry_name_p, Value new_comment_value_p, OnEntryNotFound if_not_found)
-    : AlterInfo(AlterType::SET_COMMENT,
-                QualifiedName(std::move(entry_catalog_p), std::move(entry_schema_p), std::move(entry_name_p)),
-                if_not_found),
+SetCommentInfo::SetCommentInfo(CatalogType entry_catalog_type, QualifiedName qualified_name, Value new_comment_value_p,
+                               OnEntryNotFound if_not_found)
+    : AlterInfo(AlterType::SET_COMMENT, std::move(qualified_name), if_not_found),
       entry_catalog_type(entry_catalog_type), comment_value(std::move(new_comment_value_p)) {
+}
+
+SetCommentInfo::SetCommentInfo(CatalogType entry_catalog_type, Identifier entry_catalog, Identifier entry_schema,
+                               Identifier entry_name, Value new_comment_value_p, OnEntryNotFound if_not_found)
+    : SetCommentInfo(entry_catalog_type,
+                     QualifiedName(std::move(entry_catalog), std::move(entry_schema), std::move(entry_name)),
+                     std::move(new_comment_value_p), if_not_found) {
 }
 
 CatalogType SetCommentInfo::GetCatalogType() const {
@@ -66,9 +71,8 @@ CatalogType SetCommentInfo::GetCatalogType() const {
 }
 
 unique_ptr<AlterInfo> SetCommentInfo::Copy() const {
-	return make_uniq_base<AlterInfo, SetCommentInfo>(entry_catalog_type, GetQualifiedName().Catalog(),
-	                                                 GetQualifiedName().Schema(), GetQualifiedName().Name(),
-	                                                 comment_value, if_not_found);
+	return make_uniq_base<AlterInfo, SetCommentInfo>(entry_catalog_type, GetQualifiedName(), comment_value,
+	                                                 if_not_found);
 }
 
 string SetCommentInfo::ToString() const {
@@ -411,13 +415,6 @@ string ChangeColumnTypeInfo::ToString() const {
 	result += " TYPE ";
 	if (target_type.IsValid()) {
 		result += target_type.ToString();
-	}
-	auto &type_info = target_type.GetTypeInfo();
-	if (type_info.type == LogicalTypeInfoType::STRING_TYPE_INFO) {
-		auto &string_info = type_info.Cast<StringTypeInfo>();
-		if (!string_info.collation.empty()) {
-			result += " COLLATE " + string_info.collation;
-		}
 	}
 	if (expression) {
 		result += " USING ";

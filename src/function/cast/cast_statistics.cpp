@@ -9,6 +9,50 @@
 
 namespace duckdb {
 
+static bool IsPlainTimestamp(const LogicalTypeId id) {
+	switch (id) {
+	case LogicalTypeId::TIMESTAMP:
+	case LogicalTypeId::TIMESTAMP_SEC:
+	case LogicalTypeId::TIMESTAMP_MS:
+	case LogicalTypeId::TIMESTAMP_NS:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool IsTzTimestamp(const LogicalTypeId id) {
+	return id == LogicalTypeId::TIMESTAMP_TZ || id == LogicalTypeId::TIMESTAMP_TZ_NS;
+}
+
+static bool HasInfinities(const LogicalType &type) {
+	return type.id() == LogicalTypeId::DATE || IsPlainTimestamp(type.id()) || IsTzTimestamp(type.id());
+}
+
+//! Date and timestamp casts are discontinuous at -infinity, which sorts above the smallest finite value
+static bool WidenByInfinities(const BaseStatistics &input, const LogicalType &target, Value &min, Value &max) {
+	auto &source = input.GetType();
+	if (!HasInfinities(source)) {
+		return true;
+	}
+	if (max < min) {
+		std::swap(min, max);
+	}
+	auto source_min = NumericStats::Min(input);
+	auto source_max = NumericStats::Max(input);
+	for (auto &infinity : {Value::NegativeInfinity(source), Value::Infinity(source)}) {
+		if (infinity < source_min || infinity > source_max) {
+			continue;
+		}
+		auto cast_infinity = infinity.DefaultTryCastAs(target);
+		if (!cast_infinity) {
+			return false;
+		}
+		NumericStats::UpdateValue(*cast_infinity, min, max);
+	}
+	return true;
+}
+
 static unique_ptr<BaseStatistics> StatisticsOperationsNumericNumericCast(const BaseStatistics &input,
                                                                          const LogicalType &target) {
 	// Bail out if the stats are not numeric
@@ -25,7 +69,7 @@ static unique_ptr<BaseStatistics> StatisticsOperationsNumericNumericCast(const B
 	}
 	auto min = NumericStats::Min(input).DefaultTryCastAs(target);
 	auto max = NumericStats::Max(input).DefaultTryCastAs(target);
-	if (!min || !max) {
+	if (!min || !max || !WidenByInfinities(input, target, *min, *max)) {
 		// overflow in cast: bailout
 		return nullptr;
 	}
@@ -34,22 +78,6 @@ static unique_ptr<BaseStatistics> StatisticsOperationsNumericNumericCast(const B
 	NumericStats::SetMin(result, *min);
 	NumericStats::SetMax(result, *max);
 	return result.ToUnique();
-}
-
-static bool IsPlainTimestamp(const LogicalTypeId id) {
-	switch (id) {
-	case LogicalTypeId::TIMESTAMP:
-	case LogicalTypeId::TIMESTAMP_SEC:
-	case LogicalTypeId::TIMESTAMP_MS:
-	case LogicalTypeId::TIMESTAMP_NS:
-		return true;
-	default:
-		return false;
-	}
-}
-
-static bool IsTzTimestamp(const LogicalTypeId id) {
-	return id == LogicalTypeId::TIMESTAMP_TZ || id == LogicalTypeId::TIMESTAMP_TZ_NS;
 }
 
 bool CastStatistics::CanPropagate(const LogicalType &source, const LogicalType &target) {

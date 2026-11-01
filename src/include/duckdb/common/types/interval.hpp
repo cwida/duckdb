@@ -156,6 +156,9 @@ public:
 
 	//! Returns the exact difference between two timestamps (days and seconds)
 	static interval_t GetDifference(timestamp_t timestamp_1, timestamp_t timestamp_2);
+	//! Returns the number of whole units of micros_per_unit from start_us to end_us, also when their difference in
+	//! microseconds does not fit an int64
+	DUCKDB_API static int64_t GetDifferenceInUnits(int64_t start_us, int64_t end_us, int64_t micros_per_unit);
 
 	//! Returns the inverted interval
 	static interval_t Invert(interval_t interval);

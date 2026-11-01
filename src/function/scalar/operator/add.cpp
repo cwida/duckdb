@@ -173,15 +173,13 @@ bool TryAddOperator::Operation(date_t left, int32_t right, date_t &result) {
 		result = date_t(left);
 		return true;
 	}
+	// dates below -infinity are out of range, as input and as result
 	int32_t days;
-	if (!TryAddOperator::Operation(left.days, right, days)) {
+	if (left < date_t::ninfinity() || !TryAddOperator::Operation(left.days, right, days)) {
 		return false;
 	}
 	result.days = days;
-	if (!Value::IsFinite(result)) {
-		return false;
-	}
-	return true;
+	return result > date_t::ninfinity() && result < date_t::infinity();
 }
 
 template <>

@@ -1,0 +1,227 @@
+# name: test/optimizer/pushdown/join_filter_pushdown_any_join.test
+# description: Runtime filters through stable inner arbitrary joins
+# group: [pushdown]
+
+require parquet
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+SET disabled_optimizers='join_order,build_side_probe_side';
+
+statement ok
+CREATE TABLE keys AS SELECT i AS k FROM range(100) t(i);
+
+statement ok
+CREATE TABLE days(d BIGINT);
+
+# The build spans the full fact range. Static min/max propagation cannot prune it.
+statement ok
+INSERT INTO days VALUES (0), (999);
+
+statement ok
+COPY (SELECT i AS id, i%1000 AS d, i%100 AS k FROM range(10000) t(i))
+TO '{TEST_DIR}/any_join_fact.parquet';
+
+statement ok
+CREATE VIEW fact AS FROM read_parquet('{TEST_DIR}/any_join_fact.parquet');
+
+# The scalar list keeps an arbitrary INNER join between the hash join and its scan.
+query II
+EXPLAIN ANALYZE
+SELECT sum(id)
+FROM (SELECT * FROM fact WHERE list_contains((SELECT list(k) FROM keys), k)) f
+JOIN days USING(d);
+----
+analyzed_plan	<REGEX>:.*BLOCKWISE_NL_JOIN.*Dynamic Filters:.*d IN.*
+
+query II
+SELECT count(*), sum(id)
+FROM (SELECT * FROM fact WHERE list_contains((SELECT list(k) FROM keys), k)) f
+JOIN days USING(d);
+----
+20	99990
+
+# Remap the target through a projection and an integral cast.
+query II
+EXPLAIN ANALYZE
+SELECT sum(id)
+FROM (SELECT id, d::INTEGER AS renamed_day
+      FROM fact WHERE list_contains((SELECT list(k) FROM keys), k)) f
+JOIN days ON renamed_day=days.d;
+----
+analyzed_plan	<REGEX>:.*Dynamic Filters:.*d IN.*
+
+query II
+SELECT count(*), sum(id)
+FROM (SELECT id, d::INTEGER AS renamed_day
+      FROM fact WHERE list_contains((SELECT list(k) FROM keys), k)) f
+JOIN days ON renamed_day=days.d;
+----
+20	99990
+
+# Repeated list members do not multiply rows. A NULL list member does not match NULL.
+statement ok
+INSERT INTO keys VALUES (0), (NULL);
+
+statement ok
+INSERT INTO days VALUES (0), (NULL);
+
+query II
+SELECT count(*), sum(id)
+FROM (SELECT * FROM fact WHERE list_contains((SELECT list(k) FROM keys), k)) f
+JOIN days USING(d);
+----
+30	144990
+
+query I
+SELECT count(*)
+FROM (SELECT 0 AS d, NULL::BIGINT AS k) f
+JOIN (SELECT list(k) AS ks FROM keys) cfg ON list_contains(cfg.ks, f.k)
+JOIN days USING(d);
+----
+0
+
+statement ok
+DELETE FROM keys;
+
+query I
+SELECT count(*)
+FROM (SELECT * FROM fact WHERE list_contains((SELECT list(k) FROM keys), k)) f
+JOIN days USING(d);
+----
+0
+
+statement ok
+INSERT INTO keys SELECT i FROM range(100) t(i);
+
+# A runtime filter must not cross a volatile arbitrary join predicate.
+statement ok
+CREATE SEQUENCE eval_seq;
+
+query II
+EXPLAIN ANALYZE
+SELECT sum(f.id)
+FROM fact f
+JOIN (SELECT list(k) AS ks FROM keys) cfg ON list_contains(cfg.ks, CASE WHEN nextval('eval_seq') > 0 THEN f.k ELSE NULL END)
+JOIN days USING(d);
+----
+analyzed_plan	<!REGEX>:.*Dynamic Filter.*
+
+query I
+SELECT currval('eval_seq');
+----
+10000
+
+# TopN shares the target finder. Its ordering key can reach the left scan through an INNER join.
+query II
+EXPLAIN ANALYZE
+SELECT f.id
+FROM fact f
+JOIN (SELECT list(k) AS ks FROM keys) cfg ON list_contains(cfg.ks, f.k)
+ORDER BY f.id NULLS FIRST LIMIT 3;
+----
+analyzed_plan	<REGEX>:.*BLOCKWISE_NL_JOIN.*Dynamic Filter.*
+
+query I
+SELECT f.id
+FROM fact f
+JOIN (SELECT list(k) AS ks FROM keys) cfg ON list_contains(cfg.ks, f.k)
+ORDER BY f.id NULLS FIRST LIMIT 3;
+----
+0
+1
+2
+
+# Do not extend the traversal to null-extending joins. Filtering their left input can create
+# unmatched right rows, which TopN with NULLS FIRST would then prefer.
+query II
+EXPLAIN ANALYZE
+SELECT f.id
+FROM fact f
+RIGHT JOIN (SELECT list(k) AS ks FROM keys) cfg ON list_contains(cfg.ks, f.k)
+ORDER BY f.id NULLS FIRST LIMIT 3;
+----
+analyzed_plan	<!REGEX>:.*Dynamic Filter.*
+
+query I
+SELECT f.id
+FROM fact f
+RIGHT JOIN (SELECT list(k) AS ks FROM keys) cfg ON list_contains(cfg.ks, f.k)
+ORDER BY f.id NULLS FIRST LIMIT 3;
+----
+0
+1
+2
+
+query II
+EXPLAIN ANALYZE
+SELECT f.id
+FROM fact f
+FULL JOIN (SELECT list(k) AS ks FROM keys) cfg ON list_contains(cfg.ks, f.k)
+ORDER BY f.id NULLS FIRST LIMIT 3;
+----
+analyzed_plan	<!REGEX>:.*Dynamic Filter.*
+
+query I
+SELECT f.id
+FROM fact f
+FULL JOIN (SELECT list(k) AS ks FROM keys) cfg ON list_contains(cfg.ks, f.k)
+ORDER BY f.id NULLS FIRST LIMIT 3;
+----
+0
+1
+2
+
+# Right-hand bindings cannot be resolved against the arbitrary join's left scan.
+query II
+EXPLAIN ANALYZE
+SELECT count(*) FROM fact f
+JOIN (SELECT list(k) AS ks, i::BIGINT AS d FROM keys, range(2) t(i) GROUP BY i) cfg
+  ON list_contains(cfg.ks, f.k)
+JOIN days ON cfg.d=days.d;
+----
+analyzed_plan	<!REGEX>:.*Dynamic Filter.*
+
+query I
+SELECT count(*) FROM fact f
+JOIN (SELECT list(k) AS ks, i::BIGINT AS d FROM keys, range(2) t(i) GROUP BY i) cfg
+  ON list_contains(cfg.ks, f.k)
+JOIN days ON cfg.d=days.d;
+----
+20000
+
+# Matching rows still evaluate the throwing predicate.
+statement error
+SELECT sum(f.id) FROM fact f
+JOIN (SELECT list(k) AS ks FROM keys) cfg
+  ON CASE WHEN f.id=0 THEN error('matching arbitrary join predicate') ELSE list_contains(cfg.ks, f.k) END
+JOIN days USING(d);
+----
+matching arbitrary join predicate
+
+# A TRY_CAST sort key must not prune NULL results below the arbitrary join.
+query II
+EXPLAIN ANALYZE
+SELECT TRY_CAST(f.id AS TINYINT) AS x
+FROM fact f JOIN (SELECT list(k) AS ks FROM keys) cfg ON list_contains(cfg.ks, f.k)
+ORDER BY x NULLS FIRST LIMIT 3;
+----
+analyzed_plan	<!REGEX>:.*Dynamic Filter.*
+
+query I
+SELECT TRY_CAST(f.id AS TINYINT) AS x
+FROM fact f JOIN (SELECT list(k) AS ks FROM keys) cfg ON list_contains(cfg.ks, f.k)
+ORDER BY x NULLS FIRST LIMIT 3;
+----
+NULL
+NULL
+NULL
+
+statement error
+SELECT CAST(f.id AS TINYINT) AS x
+FROM fact f JOIN (SELECT list(k) AS ks FROM keys) cfg ON list_contains(cfg.ks, f.k)
+ORDER BY x LIMIT 3;
+----
+out of range

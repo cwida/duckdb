@@ -1,6 +1,9 @@
+#include "duckdb/catalog/catalog.hpp"
+#include "duckdb/catalog/catalog_entry/scalar_function_catalog_entry.hpp"
 #include "duckdb/function/aggregate/distributive_functions.hpp"
 #include "duckdb/function/aggregate/distributive_function_utils.hpp"
 #include "duckdb/function/builtin_function_lookup.hpp"
+#include "duckdb/function/scalar/generic_functions.hpp"
 #include "duckdb/main/client_config.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
@@ -100,8 +103,8 @@ static unique_ptr<Expression> PlanExtremumRewrite(Binder &binder, BoundSubqueryE
 
 	auto extremum_fun = GetBuiltinAggregateFunction(binder.context, is_min ? MinFun::Name : MaxFun::Name,
 	                                                {min_max_children[0]->GetReturnType()});
-	auto extremum_aggr = function_binder.BindAggregateFunction(std::move(extremum_fun), std::move(min_max_children),
-	                                                           nullptr, AggregateType::NON_DISTINCT);
+	auto extremum_aggr = function_binder.BindAggregateFunction(extremum_fun, std::move(min_max_children), nullptr,
+	                                                           AggregateType::NON_DISTINCT);
 	auto extremum_type = extremum_aggr->GetReturnType();
 	aggregate_list.push_back(std::move(extremum_aggr));
 
@@ -115,8 +118,8 @@ static unique_ptr<Expression> PlanExtremumRewrite(Binder &binder, BoundSubqueryE
 	count_child_children.push_back(bound_colref->Copy());
 	auto count_fun =
 	    GetBuiltinAggregateFunction(binder.context, CountFun::Name, {count_child_children[0]->GetReturnType()});
-	auto count_child_aggr = function_binder.BindAggregateFunction(std::move(count_fun), std::move(count_child_children),
-	                                                              nullptr, AggregateType::NON_DISTINCT);
+	auto count_child_aggr = function_binder.BindAggregateFunction(count_fun, std::move(count_child_children), nullptr,
+	                                                              AggregateType::NON_DISTINCT);
 	aggregate_list.push_back(std::move(count_child_aggr));
 
 	auto aggr_index = binder.GenerateTableIndex();
@@ -228,7 +231,7 @@ static unique_ptr<Expression> PlanUncorrelatedSubquery(Binder &binder, BoundSubq
 
 		FunctionBinder function_binder(binder);
 		auto count_star =
-		    function_binder.BindAggregateFunction(std::move(count_star_fun), {}, nullptr, AggregateType::NON_DISTINCT);
+		    function_binder.BindAggregateFunction(count_star_fun, {}, nullptr, AggregateType::NON_DISTINCT);
 		auto idx_type = count_star->GetReturnType();
 		vector<unique_ptr<Expression>> aggregate_list;
 		aggregate_list.push_back(std::move(count_star));
@@ -284,7 +287,7 @@ static unique_ptr<Expression> PlanUncorrelatedSubquery(Binder &binder, BoundSubq
 
 		FunctionBinder function_binder(binder);
 		auto first_fun = GetBuiltinAggregateFunction(binder.context, FirstFun::Name, {expr.GetReturnType()});
-		auto first_agg = function_binder.BindAggregateFunction(std::move(first_fun), std::move(first_children), nullptr,
+		auto first_agg = function_binder.BindAggregateFunction(first_fun, std::move(first_children), nullptr,
 		                                                       AggregateType::NON_DISTINCT);
 
 		expressions.push_back(std::move(first_agg));
@@ -768,11 +771,60 @@ unique_ptr<Expression> RecursiveDependentJoinPlanner::VisitReplace(BoundSubquery
 	return binder.PlanSubquery(expr, root);
 }
 
+static unique_ptr<Expression> BindTryRethrowFunction(Binder &binder, const char *name,
+                                                     vector<unique_ptr<Expression>> children) {
+	auto &system_catalog = Catalog::GetSystemCatalog(binder.context);
+	auto &entry = system_catalog.GetEntry<ScalarFunctionCatalogEntry>(
+	    binder.context, QualifiedName(system_catalog.GetName(), DEFAULT_SCHEMA, name));
+	vector<pair<Identifier, unique_ptr<Expression>>> arguments;
+	for (auto &child : children) {
+		arguments.emplace_back(Identifier(), std::move(child));
+	}
+	ErrorData error;
+	FunctionBinder function_binder(binder);
+	auto result = function_binder.BindScalarFunction(entry, std::move(arguments), error, false, &binder);
+	if (!result) {
+		error.Throw();
+	}
+	return result;
+}
+
+//! Replace a TRY subquery that was lowered with an exposed error flag by
+//! __internal_try_rethrow(<error flag>, <masked value>), so that errors captured inside the subquery
+//! are re-raised at the use site, where the enclosing TRY, HAS_ERROR or subquery lowering consumes them.
+//! Only a re-raise in a conditionally evaluated position of an aggregate select item escapes to the
+//! user; the original message is not available here, since HAS_ERROR captures only the fact that an
+//! error occurred, so the fixed message states that.
+static unique_ptr<Expression> CreateTryErrorRethrow(Binder &binder, unique_ptr<Expression> subquery_result) {
+	auto flag_input = subquery_result->Copy();
+
+	vector<unique_ptr<Expression>> value_children;
+	value_children.push_back(std::move(subquery_result));
+	value_children.push_back(make_uniq<BoundConstantExpression>(Value("value")));
+	auto value = BindTryRethrowFunction(binder, "struct_extract", std::move(value_children));
+
+	vector<unique_ptr<Expression>> flag_children;
+	flag_children.push_back(std::move(flag_input));
+	flag_children.push_back(make_uniq<BoundConstantExpression>(Value("error")));
+	auto flag = BindTryRethrowFunction(binder, "struct_extract", std::move(flag_children));
+
+	vector<unique_ptr<Expression>> rethrow_children;
+	rethrow_children.push_back(std::move(flag));
+	rethrow_children.push_back(std::move(value));
+	return BindTryRethrowFunction(binder, TryRethrowFun::Name, std::move(rethrow_children));
+}
+
 unique_ptr<Expression> Binder::PlanSubquery(BoundSubqueryExpression &expr, unique_ptr<LogicalOperator> &root) {
 	D_ASSERT(root);
 	// first we translate the QueryNode of the subquery into a logical plan
 	auto subquery_root = std::move(expr.SubqueryMutable().plan);
 	D_ASSERT(subquery_root);
+
+	if (expr.RethrowsTryErrors()) {
+		// the plan outputs a struct of the masked value and the error flag; the flattened result column
+		// carries that struct until the rethrow wrapper unpacks it below
+		expr.SetReturnType(expr.Subquery().types[0]);
+	}
 
 	// now we actually flatten the subquery
 	auto plan = std::move(subquery_root);
@@ -782,6 +834,9 @@ unique_ptr<Expression> Binder::PlanSubquery(BoundSubqueryExpression &expr, uniqu
 		result_expression = PlanUncorrelatedSubquery(*this, expr, root, std::move(plan));
 	} else {
 		result_expression = PlanCorrelatedSubquery(*this, expr, root, std::move(plan));
+	}
+	if (expr.RethrowsTryErrors()) {
+		result_expression = CreateTryErrorRethrow(*this, std::move(result_expression));
 	}
 	IncreaseDepth();
 	return result_expression;

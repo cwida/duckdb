@@ -1,0 +1,33 @@
+diff --git a/test/sql/stats/filter_pushdown_unsupported_expressions.test b/test/sql/stats/filter_pushdown_unsupported_expressions.test
+index f33d3fd2..b41b5164 100644
+--- a/test/sql/stats/filter_pushdown_unsupported_expressions.test
++++ b/test/sql/stats/filter_pushdown_unsupported_expressions.test
+@@ -34,14 +34,24 @@ EXPLAIN ANALYZE SELECT i FROM dl.t WHERE b = '\x01'::BLOB
+ ----
+ analyzed_plan	<REGEX>:.*Total Files Read: 2.*
+ 
+-# a comparison other than (in)equality and ordering
+-query I
+-SELECT i FROM dl.t WHERE i IS DISTINCT FROM 1
++# NULLs prevent distinctness from simplifying to inequality.
++statement ok
++CREATE TABLE dl.nullable_t (i INTEGER)
++
++statement ok
++INSERT INTO dl.nullable_t VALUES (1)
++
++statement ok
++INSERT INTO dl.nullable_t VALUES (2), (NULL)
++
++query I rowsort
++SELECT i FROM dl.nullable_t WHERE i IS DISTINCT FROM 1
+ ----
+ 2
++NULL
+ 
+ query II
+-EXPLAIN ANALYZE SELECT i FROM dl.t WHERE i IS DISTINCT FROM 1
++EXPLAIN ANALYZE SELECT i FROM dl.nullable_t WHERE i IS DISTINCT FROM 1
+ ----
+ analyzed_plan	<REGEX>:.*Total Files Read: 2.*
+ 

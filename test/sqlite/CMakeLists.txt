@@ -1,6 +1,3 @@
-add_definitions(-DDUCKDB_ROOT_DIRECTORY="${PROJECT_SOURCE_DIR}"
-                -DDUCKDB_BUILD_DIRECTORY="${PROJECT_BINARY_DIR}")
-
 set(SQLITE_TEST_RUNNER_SOURCES
     result_helper.cpp
     sqllogic_command.cpp

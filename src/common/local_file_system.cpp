@@ -489,8 +489,10 @@ void LocalFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes, i
 	int fd = unix_handle.fd;
 	auto read_buffer = char_ptr_cast(buffer);
 	while (nr_bytes > 0) {
+		// macOS rejects a single read above INT_MAX bytes with EINVAL and Linux silently caps it, so read in chunks
+		auto chunk = MinValue<int64_t>(nr_bytes, int64_t(1) << 30);
 		int64_t bytes_read =
-		    pread(fd, read_buffer, UnsafeNumericCast<size_t>(nr_bytes), UnsafeNumericCast<off_t>(location));
+		    pread(fd, read_buffer, UnsafeNumericCast<size_t>(chunk), UnsafeNumericCast<off_t>(location));
 		if (bytes_read == -1) {
 			throw IOException({{"errno", std::to_string(errno)}}, "Could not read from file \"%s\": %s", handle.path,
 			                  strerror(errno));

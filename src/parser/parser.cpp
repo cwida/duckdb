@@ -15,6 +15,7 @@
 #include "duckdb/parser/query_node/update_query_node.hpp"
 #include "duckdb/parser/tableref/expressionlistref.hpp"
 #include "duckdb/parser/peg/transformer/peg_transformer.hpp"
+#include "duckdb/parser/peg/syntax_error.hpp"
 #include "duckdb/parser/peg/tokenizer/parser_tokenizer.hpp"
 #include "duckdb/parser/peg/tokenizer/highlight_tokenizer.hpp"
 #include "utf8proc_wrapper.hpp"
@@ -56,7 +57,8 @@ static bool ReplaceUnicodeSpaces(const string &query, string &new_query, vector<
 	idx_t prev = 0;
 	for (auto &usp : unicode_spaces) {
 		new_query += query.substr(prev, usp.pos - prev);
-		new_query += " ";
+		// Keep byte offsets aligned with the original query for diagnostics.
+		new_query.append(usp.bytes, ' ');
 		prev = usp.pos + usp.bytes;
 	}
 	new_query += query.substr(prev, query.size() - prev);
@@ -289,17 +291,9 @@ void Parser::ParseQuery(const string &query_p) {
 	tokenizer.TokenizeInput(behavior);
 	TokenIterator token_iterator(std::move(owned_tokens));
 	while (token_iterator.Current()) {
-		try {
-			auto stmt = ParseTopLevelStatement(token_iterator);
-			if (stmt) {
-				statements.push_back(std::move(stmt));
-			}
-		} catch (ParserException &e) {
-			auto ext_stmt = TryParseExtensionStatement(token_iterator, query);
-			if (!ext_stmt) {
-				throw;
-			}
-			statements.push_back(std::move(ext_stmt));
+		auto stmt = ParseTopLevelStatement(token_iterator, query);
+		if (stmt) {
+			statements.push_back(std::move(stmt));
 		}
 	}
 
@@ -364,12 +358,35 @@ unique_ptr<SQLStatement> Parser::TryParseExtensionStatement(TokenIterator &token
 	return nullptr;
 }
 
-unique_ptr<SQLStatement> Parser::ParseTopLevelStatement(TokenIterator &token_iterator) {
+unique_ptr<SQLStatement> Parser::ParseTopLevelStatement(TokenIterator &token_iterator, const string &query) {
 	if (!token_iterator.Current()) {
 		return nullptr;
 	}
 	auto &compiled_grammar = GetGrammar();
-	return PEGTransformerFactory::TransformTopLevelStatement(token_iterator, options, compiled_grammar);
+	idx_t statement_start = token_iterator.Position();
+	optional_idx failure_index;
+	unique_ptr<SQLStatement> stmt;
+	try {
+		stmt =
+		    PEGTransformerFactory::TransformTopLevelStatement(token_iterator, options, compiled_grammar, failure_index);
+	} catch (ParserException &) {
+		// the statement matched but could not be transformed - an extension may still claim it
+		token_iterator.SetPosition(statement_start);
+		auto ext_stmt = TryParseExtensionStatement(token_iterator, query);
+		if (!ext_stmt) {
+			throw;
+		}
+		return ext_stmt;
+	}
+	if (!failure_index.IsValid()) {
+		return stmt;
+	}
+	auto ext_stmt = TryParseExtensionStatement(token_iterator, query);
+	if (ext_stmt) {
+		return ext_stmt;
+	}
+	// composing the detailed error re-parses the statement, so only do it once the error is final
+	throw PEGSyntaxError::Create(token_iterator, statement_start, failure_index.GetIndex(), compiled_grammar, options);
 }
 
 vector<SimplifiedToken> Parser::Tokenize(const string &query) {
@@ -390,6 +407,11 @@ vector<SimplifiedToken> Parser::Tokenize(const string &query) {
 		switch (token.type) {
 		case TokenType::KEYWORD:
 			simplified.type = SimplifiedTokenType::SIMPLIFIED_TOKEN_KEYWORD;
+			break;
+		case TokenType::IDENTIFIER:
+			simplified.type = keyword_helper.IsGrammarWord(token.text)
+			                      ? SimplifiedTokenType::SIMPLIFIED_TOKEN_KEYWORD
+			                      : SimplifiedTokenType::SIMPLIFIED_TOKEN_IDENTIFIER;
 			break;
 		case TokenType::STRING_LITERAL:
 			simplified.type = SimplifiedTokenType::SIMPLIFIED_TOKEN_STRING_CONSTANT;

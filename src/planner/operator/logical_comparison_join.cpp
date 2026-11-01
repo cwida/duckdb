@@ -140,7 +140,8 @@ bool LogicalComparisonJoin::TryGetMarkJoinGroupTypes(vector<LogicalType> &group_
 		}
 		auto type_id = condition.GetLHS().GetReturnType().id();
 		// Native UNION quantifiers are supported, but grouped SQL reconstruction is not yet supported.
-		if (type_id == LogicalTypeId::TUPLE || type_id == LogicalTypeId::UNION) {
+		if (type_id == LogicalTypeId::UNION ||
+		    (type_id == LogicalTypeId::TUPLE && condition.GetComparisonType() != ExpressionType::COMPARE_EQUAL)) {
 			return false;
 		}
 		switch (condition.GetComparisonType()) {

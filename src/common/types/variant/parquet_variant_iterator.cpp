@@ -11,11 +11,11 @@
 #include "duckdb/common/numeric_utils.hpp"
 #include "duckdb/common/types/uuid.hpp"
 #include "duckdb/common/types/interval.hpp"
+#include "duckdb/common/string_map_set.hpp"
 #include "utf8proc_wrapper.hpp"
 
 #include <algorithm>
 #include <cmath>
-#include <set>
 #include <type_traits>
 
 namespace duckdb {
@@ -635,23 +635,25 @@ void ParquetObjectIterator::Finalize() {
 ParquetObjectIterator::ParquetObjectIterator(const ParquetVariantIterator &state, const ShreddedGroupView &view,
                                              idx_t index, const_data_ptr_t overlay, const_data_ptr_t overlay_end) {
 	//! Typed (shredded) fields - skipping the ones that are missing for this row
-	std::set<string> typed_keys;
 	for (idx_t i = 0; i < view.fields.size(); i++) {
 		auto node = state.ResolveGroup(*view.fields[i], index);
 		if (node.IsMissing()) {
 			continue;
 		}
 		auto &name = view.field_names[i];
-		typed_keys.insert(name);
 		ordered_entries.push_back(
 		    ParquetObjectEntry {string_t(name.c_str(), NumericCast<uint32_t>(name.size())), node});
 	}
 	//! Leftover (overlay) fields from the binary 'value' - typed fields win on key collisions
 	if (overlay) {
+		string_set_t typed_keys;
+		for (auto &entry : ordered_entries) {
+			typed_keys.insert(entry.key);
+		}
 		BinaryObjectReader reader(state.GetMetadata(), overlay, overlay_end);
 		for (idx_t i = 0; i < reader.count; i++) {
 			auto key = reader.Key(i);
-			if (typed_keys.count(key.GetString())) {
+			if (typed_keys.count(key)) {
 				continue;
 			}
 			ordered_entries.push_back(

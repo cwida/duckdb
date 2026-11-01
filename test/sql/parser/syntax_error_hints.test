@@ -1,0 +1,201 @@
+# name: test/sql/parser/syntax_error_hints.test
+# description: Test the hints the PEG parser adds to syntax errors
+# group: [parser]
+
+statement ok
+CREATE TABLE t(a INTEGER, x INTEGER);
+
+# misspelled keyword at the failure position
+statement error
+SELECT * FROM t WHERE x = 1 GRUOP BY x
+----
+syntax error at or near "GRUOP"
+Did you mean "GROUP"?
+
+statement error
+CREATE TABEL t2(i INTEGER)
+----
+Did you mean "TABLE"?
+
+statement error
+INSERT INTO t VALEUS (1, 2)
+----
+Did you mean "VALUES"?
+
+statement error
+SELECT * FROM t GROUP BY a HAVNG count(*) > 1
+----
+Did you mean "HAVING"?
+
+# the misspelled keyword is the last token
+statement error
+SELECT * FROM t WHERE x = 1 GRUOP
+----
+syntax error at or near "GRUOP"
+Did you mean "GROUP"?
+
+statement error
+SELECT * FROM t WHERE x = 1 ORDR
+----
+Did you mean "ORDER"?
+
+# misspelled keyword that was swallowed as an alias - the error is reported on the misspelling
+statement error
+SELECT a FORM t
+----
+syntax error at or near "FORM"
+Did you mean "FROM"?
+
+statement error
+SELECT * FROM t WERE x = 1
+----
+syntax error at or near "WERE"
+Did you mean "WHERE"?
+
+statement error
+SELECT * FROM t LIMT 5
+----
+syntax error at or near "LIMT"
+Did you mean "LIMIT"?
+
+statement error
+SELEC 1
+----
+syntax error at or near "SELEC"
+Did you mean "SELECT"?
+
+statement error
+UPDATE t SET a = 1 WHRE x = 2
+----
+Did you mean "WHERE"?
+
+statement error
+DELETE FORM t
+----
+Did you mean "FROM"?
+
+statement error
+WITH cte AS (SELECT 1) SELECT * FORM cte
+----
+Did you mean "FROM"?
+
+# no keyword suggestion for unrelated identifiers
+statement error
+SELECT a b c FROM t
+----
+<!REGEX>:.*Did you mean.*
+
+# a single token whose insertion makes the statement valid
+statement error
+SELECT (1 + 2 FROM t
+----
+syntax error at or near "FROM"
+Missing ")"
+
+statement error
+SELECT [1, 2 FROM t
+----
+Missing "]"
+
+statement error
+SELECT {'a': 1 FROM t
+----
+Missing "}"
+
+statement error
+SELECT * FROM t WHERE a IN (1, 2
+----
+syntax error at end of input
+Missing ")"
+
+statement error
+SELECT * FROM read_csv('x.csv', header = true, delim = ',';
+----
+Missing ")"
+
+statement error
+SELECT CASE WHEN x THEN 1 FROM t
+----
+Missing "END"
+
+statement error
+SELECT * FROM t ORDER x
+----
+syntax error at or near "x"
+Missing "BY"
+
+statement error
+SELECT * FROM t GROUP x
+----
+Missing "BY"
+
+statement error
+SELECT a b c FROM t
+----
+syntax error at or near "c"
+Missing ","
+
+# LIMIT ALL would parse, but an expression is what the user most likely forgot
+statement error
+SELECT * FROM t ORDER BY a LIMIT
+----
+<!REGEX>:.*Missing.*
+
+# expected tokens
+statement error
+SELECT a::
+----
+syntax error at end of input
+Expected a type
+
+statement error
+SELECT * FROM t WHERE
+----
+syntax error at end of input
+Expected an expression
+
+statement error
+SELECT * FROM t WHERE a = 1 AND OR x = 2
+----
+syntax error at or near "OR"
+Expected an expression
+
+statement error
+SELECT 1 +
+----
+<REGEX>:.*Expected one of:.*an expression.*
+
+statement error
+SELECT * FROM t AS
+----
+Expected an identifier
+
+statement error
+SELECT * FROM
+----
+<REGEX>:.*Expected one of:.*a table name.*
+
+# no hint when the alternatives are too many to be useful
+statement error
+SELECT 1 2
+----
+<!REGEX>:.*Expected.*
+
+statement error
+SELECT 1 2
+----
+<!REGEX>:.*Missing.*
+
+# errors in later statements of a multi-statement query
+statement error
+SELECT 1; SELECT 2 FORM t; SELECT 3
+----
+syntax error at or near "FORM"
+Did you mean "FROM"?
+
+# the error location points at the reported token
+statement error
+SELECT a FORM t
+----
+<REGEX>:.*LINE 1: SELECT a FORM t\n {17}\^\^\^\^.*
+

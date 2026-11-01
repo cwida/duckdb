@@ -26,6 +26,10 @@
 #include <algorithm>
 #include <chrono>
 
+#ifdef __EMSCRIPTEN_PTHREADS__
+#include <emscripten/threading.h>
+#endif
+
 namespace duckdb {
 
 Executor::Executor(ClientContext &context, bool caller_completes_query)
@@ -89,6 +93,9 @@ void Executor::ScheduleEventsInternal(ScheduleEventData &event_data) {
 	auto schedule = BuildPipelineSchedule(event_data.meta_pipelines);
 	if (schedule->HasCycle()) {
 		throw InternalException("Cyclic dependency in pipeline schedule");
+	}
+	if (event_data.initial_schedule && recursive_ctes.empty()) {
+		ScheduleRuntimeFilters(*schedule);
 	}
 	events.reserve(schedule->stages.size());
 	for (auto &stage : schedule->stages) {
@@ -465,6 +472,10 @@ QueryResultState Executor::ExecuteTask() {
 			TaskScheduler::GetScheduler(context).GetTaskFromProducer(*producer, task);
 		}
 		if (!task && !HasError()) {
+#ifdef __EMSCRIPTEN_PTHREADS__
+			// A positive sleep services the dlopen queue while another worker owns the task.
+			emscripten_thread_sleep(1);
+#endif
 			return IdleState();
 		}
 		if (task) {
@@ -597,6 +608,29 @@ vector<LogicalType> Executor::GetTypes() {
 void Executor::PushError(ErrorData exception) {
 	// push the exception onto the stack
 	error_manager.PushError(std::move(exception));
+	InterruptPipelines();
+}
+
+void Executor::PushTaskError(const std::exception &ex) {
+	error_manager.PushTaskError([&]() { return ErrorData(ex); });
+	TryInterruptPipelines();
+}
+
+void Executor::PushTaskError(const char *message) {
+	error_manager.PushTaskError([&]() { return ErrorData(message); });
+	TryInterruptPipelines();
+}
+
+void Executor::TryInterruptPipelines() {
+	try {
+		InterruptPipelines();
+	} catch (...) { // NOLINT
+		// rescheduling blocked tasks can fail when memory runs out, and the error is recorded, so the main thread
+		// sees it and cancels the remaining tasks
+	}
+}
+
+void Executor::InterruptPipelines() {
 	// interrupt execution of any other pipelines that belong to this executor
 	context.interrupt_state = ClientInterruptState::INTERRUPTED;
 	for (auto &pipeline : pipelines) {

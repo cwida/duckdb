@@ -129,10 +129,10 @@ RadixHTGlobalSinkState::RadixHTGlobalSinkState(ClientContext &context_p, const R
       number_of_threads(TaskScheduler::GetScheduler(context).NumberOfThreads()),
       memory_limit(BufferManager::GetBufferManager(context).GetOperatorMemoryLimit()),
       block_alloc_size(BufferManager::GetBufferManager(context).GetBlockAllocSize()), any_combined(false),
-      any_abandoned(false), radix_ht(radix_ht_p), config(*this), stored_allocators_size(0), finalize_done(0),
-      scan_pin_properties(TupleDataPinProperties::DESTROY_AFTER_DONE), count_before_combining(0),
-      max_partition_size(0) {
-	spill_plan = AggregateStateSpilling::TryCreateSpillPlan(radix_ht.GetLayout());
+      any_abandoned(false), radix_ht(radix_ht_p),
+      spill_plan(AggregateStateSpilling::TryCreateSpillPlan(radix_ht.GetLayout())), config(*this),
+      stored_allocators_size(0), finalize_done(0), scan_pin_properties(TupleDataPinProperties::DESTROY_AFTER_DONE),
+      count_before_combining(0), max_partition_size(0) {
 	spill_phase = SpillPhase::NATIVE_ALLOWED;
 
 	SetReservationFloor(context, MaxValue(config.GetRadixBits(), config.GetMaximumSinkRadixBits()));
@@ -279,9 +279,10 @@ idx_t RadixHTConfig::ExternalRadixBits(const bool dynamic) const {
 	// However, we can't go to, e.g., 256 partitions when we have 8 threads and 200 MiB of memory
 	// Because we'll have too many pages in memory to do the partitioning in the first place
 
-	// Assume we can fill half of RAM with pages, and pessimistically assume 4 pages per partition
+	// Budget row blocks and optional heap or exported-state blocks, with headroom for repartitioning.
 	const auto memory_limit = dynamic ? sink.temporary_memory_state->GetReservation() : sink.memory_limit / 2;
-	const auto max_partitions = memory_limit / sink.number_of_threads / sink.block_alloc_size / 4;
+	const idx_t pages_per_partition = sink.radix_ht.GetLayout().AllConstant() && !sink.spill_plan ? 2 : 4;
+	const auto max_partitions = memory_limit / sink.number_of_threads / sink.block_alloc_size / pages_per_partition;
 
 	// Compute number of bits, rounded down, at least as much as initial bits
 	const auto bits =
@@ -587,11 +588,16 @@ bool ShouldExportStates(RadixHTGlobalSinkState &gstate, RadixHTLocalSinkState &l
 
 void UpdateSinkReservation(ClientContext &context, RadixHTGlobalSinkState &gstate, GroupedAggregateHashTable &ht,
                            idx_t total_size) {
-	if (total_size <= gstate.GetThreadLimit() || gstate.external) {
+	// Include the headroom required by the arena's export threshold.
+	const auto required_size = gstate.spill_plan
+	                               ? MaxValue(total_size, ht.GetAggregateAllocator()->AllocationSize() *
+	                                                          RadixHTConfig::AGGREGATE_STATE_PRESSURE_DIVISOR)
+	                               : total_size;
+	if (required_size <= gstate.GetThreadLimit() || gstate.external) {
 		return;
 	}
 	const annotated_lock_guard<annotated_mutex> guard {gstate.lock};
-	if (total_size <= gstate.GetThreadLimit()) {
+	if (required_size <= gstate.GetThreadLimit() || gstate.external) {
 		return;
 	}
 	auto &temporary_memory_state = *gstate.temporary_memory_state;
@@ -601,9 +607,9 @@ void UpdateSinkReservation(ClientContext &context, RadixHTGlobalSinkState &gstat
 	    (gstate.minimum_reservation + gstate.number_of_threads * gstate.block_alloc_size) / 8 * 10;
 	temporary_memory_state.SetMinimumReservation(aggregate_allocator_size * gstate.number_of_threads +
 	                                             minimum_reservation);
-	// Grow from current usage, not the previous request, which might not have been granted.
+	// Grow from current demand, not the previous request, which might not have been granted.
 	const auto remaining_size =
-	    MaxValue<idx_t>(2 * gstate.number_of_threads * total_size, temporary_memory_state.GetRemainingSize());
+	    MaxValue<idx_t>(2 * gstate.number_of_threads * required_size, temporary_memory_state.GetRemainingSize());
 	temporary_memory_state.SetRemainingSizeAndUpdateReservation(context, remaining_size);
 }
 

@@ -74,5 +74,12 @@ select count(*) from t4 where a[1] < 1001 and list_kurtosis(a) is NOT NULL;
 ----
 1000
 
+# b < 1 must happen first, also when join ordering rebuilds the filters, otherwise get_bit will throw an error
+query II
+SELECT * FROM (VALUES (0)) x(a), (VALUES (2)) y(b) WHERE b < 1 AND get_bit('1'::BIT, b) = 1;
+----
 
-
+query II
+SELECT * FROM (VALUES (0)) x(a), (VALUES (0), (2)) y(b) WHERE b < 1 AND get_bit('1'::BIT, b) = 1;
+----
+0	0

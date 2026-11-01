@@ -1,0 +1,110 @@
+# name: test/sql/cte/recursive_cte_shared_operator_lifecycle.test
+# description: Shared operator state is invalidated once per iteration and lazily reinitialized
+# group: [cte]
+
+# A hash-join probe shared by two unordered union arms, each arm with its own join build. No
+# operator above the union imposes arm ordering, so in release builds the arm pipelines can
+# schedule concurrently and race to initialize the shared probe's state (DEBUG builds order the
+# arms through the thread-saturation heuristic). The result is order-independent: every arm
+# produces the same values, the frontier doubles each productive iteration
+# (5000 + 10000 + 20000 + 40000 = 75000).
+
+statement ok
+CREATE TABLE arm_filter(x INTEGER);
+
+statement ok
+INSERT INTO arm_filter VALUES (2), (3), (4);
+
+statement ok
+CREATE TABLE probe_map(m INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO probe_map VALUES (2, 2), (3, 3), (4, 4);
+
+statement ok
+SET preserve_insertion_order=false;
+
+statement ok
+SET threads=4;
+
+# Event schedule: disabled operator caching forces it regardless of worker heuristics.
+statement ok
+SET enable_caching_operators=false;
+
+query I
+WITH RECURSIVE r(n) AS (
+    SELECT 1 FROM range(5000)
+    UNION ALL
+    (SELECT pm.v FROM (
+        SELECT s.x AS m FROM arm_filter s JOIN r ON s.x = r.n + 1 WHERE r.n < 4
+        UNION ALL
+        SELECT s.x AS m FROM arm_filter s JOIN r ON s.x = r.n + 1 WHERE r.n < 4
+     ) arms JOIN probe_map pm ON pm.m = arms.m)
+)
+SELECT count(*) FROM r;
+----
+75000
+
+# Same query with operator caching enabled: reusable state is reset in place at iteration start,
+# everything else is rebuilt lazily, and the chosen schedule must not change the result.
+statement ok
+RESET enable_caching_operators;
+
+query I
+WITH RECURSIVE r(n) AS (
+    SELECT 1 FROM range(5000)
+    UNION ALL
+    (SELECT pm.v FROM (
+        SELECT s.x AS m FROM arm_filter s JOIN r ON s.x = r.n + 1 WHERE r.n < 4
+        UNION ALL
+        SELECT s.x AS m FROM arm_filter s JOIN r ON s.x = r.n + 1 WHERE r.n < 4
+     ) arms JOIN probe_map pm ON pm.m = arms.m)
+)
+SELECT count(*) FROM r;
+----
+75000
+
+# Single-threaded run takes the inline schedule with caching enabled; the lifecycle is the same.
+statement ok
+SET threads=1;
+
+query I
+WITH RECURSIVE r(n) AS (
+    SELECT 1 FROM range(5000)
+    UNION ALL
+    (SELECT pm.v FROM (
+        SELECT s.x AS m FROM arm_filter s JOIN r ON s.x = r.n + 1 WHERE r.n < 4
+        UNION ALL
+        SELECT s.x AS m FROM arm_filter s JOIN r ON s.x = r.n + 1 WHERE r.n < 4
+     ) arms JOIN probe_map pm ON pm.m = arms.m)
+)
+SELECT count(*) FROM r;
+----
+75000
+
+# Prepared re-execution rebuilds pipelines and repeats the invalidate/initialize lifecycle.
+statement ok
+SET threads=4;
+
+statement ok
+PREPARE p AS
+WITH RECURSIVE r(n) AS (
+    SELECT 1 FROM range(5000)
+    UNION ALL
+    (SELECT pm.v FROM (
+        SELECT s.x AS m FROM arm_filter s JOIN r ON s.x = r.n + 1 WHERE r.n < 4
+        UNION ALL
+        SELECT s.x AS m FROM arm_filter s JOIN r ON s.x = r.n + 1 WHERE r.n < 4
+     ) arms JOIN probe_map pm ON pm.m = arms.m)
+)
+SELECT count(*) FROM r;
+
+query I
+EXECUTE p;
+----
+75000
+
+query I
+EXECUTE p;
+----
+75000

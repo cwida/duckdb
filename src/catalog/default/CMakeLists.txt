@@ -4,6 +4,7 @@ add_library_unity(
   default_coordinate_systems.cpp
   default_functions.cpp
   default_generator.cpp
+  default_macro_qualifier.cpp
   default_schemas.cpp
   default_table_functions.cpp
   default_types.cpp

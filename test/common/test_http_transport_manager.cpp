@@ -19,6 +19,15 @@
 
 namespace duckdb {
 
+TEST_CASE("PUT requests retain their content type", "[http_transport_manager]") {
+	HTTPUtil http;
+	HTTPParams params(http);
+	string content_type = "application/json";
+	PutRequestInfo request("http://localhost/upload", HTTPHeaders(), params, nullptr, 0, content_type);
+	content_type = "text/plain";
+	CHECK(request.content_type == "application/json");
+}
+
 enum class MockResponseMode : uint8_t {
 	SUCCESS,
 	NULL_RESPONSE,
@@ -1068,7 +1077,7 @@ static string ReadExtensionBinary(const string &path) {
 	auto handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ);
 	auto size = NumericCast<idx_t>(handle->GetFileSize());
 	string result(size, '\0');
-	handle->Read(data_ptr_cast(result.data()), size);
+	handle->Read(data_ptr_cast(result.data()), size, 0);
 	return result;
 }
 

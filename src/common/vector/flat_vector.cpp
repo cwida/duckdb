@@ -7,16 +7,28 @@
 
 namespace duckdb {
 StandardVectorBuffer::StandardVectorBuffer(Allocator &allocator, capacity_t capacity_p, idx_t type_size_p)
+    : StandardVectorBuffer(AllocatedData(allocator), capacity_p, type_size_p) {
+	EnsureDataAllocated();
+}
+StandardVectorBuffer::StandardVectorBuffer(AllocatedData allocation, capacity_t capacity_p, idx_t type_size_p)
     : VectorBuffer(VectorType::FLAT_VECTOR, VectorBufferType::STANDARD_BUFFER, count_t(0)), data_ptr(nullptr),
-      type_size(type_size_p), capacity(capacity_p) {
-	if (capacity > 0) {
-		if (type_size == 0) {
-			throw InternalException("StandardVectorBuffer: empty type size");
+      type_size(type_size_p), capacity(capacity_p), allocated_data(std::move(allocation)) {
+	D_ASSERT(!allocated_data.get());
+	validity.Resize(capacity);
+}
+
+data_ptr_t StandardVectorBuffer::GetDataMutable() {
+	EnsureDataAllocated();
+	return data_ptr;
+}
+
+void StandardVectorBuffer::EnsureDataAllocated() {
+	if (!data_ptr && capacity && allocated_data.GetAllocator()) {
+		if (!type_size || capacity > DConstants::MAX_VECTOR_SIZE / type_size) {
+			throw OutOfRangeException("Vector capacity is too large");
 		}
-		allocated_data = allocator.Allocate(capacity * type_size);
+		allocated_data = allocated_data.GetAllocator()->Allocate(capacity * type_size);
 		data_ptr = allocated_data.get();
-		// resize the validity
-		validity.Resize(capacity);
 	}
 }
 StandardVectorBuffer::StandardVectorBuffer(capacity_t capacity, idx_t type_size_p)
@@ -39,6 +51,9 @@ StandardVectorBuffer::StandardVectorBuffer(AllocatedData &&data_p, count_t count
 }
 
 void StandardVectorBuffer::SetVectorType(VectorType new_vector_type) {
+	if (new_vector_type == VectorType::CONSTANT_VECTOR && capacity == 0) {
+		Reserve(1, VectorAppendMode::ALLOW_RESIZE);
+	}
 	vector_type = new_vector_type;
 }
 
@@ -97,7 +112,7 @@ void StandardVectorBuffer::VerifyInternal(const LogicalType &type, const Selecti
 buffer_ptr<VectorBuffer> StandardVectorBuffer::SliceInternal(const LogicalType &type, idx_t offset, idx_t end) {
 	D_ASSERT(end <= capacity);
 	auto count = count_t(end - offset);
-	auto offset_ptr = data_ptr + type_size * offset;
+	auto offset_ptr = data_ptr ? data_ptr + type_size * offset : nullptr;
 	auto result = make_buffer<StandardVectorBuffer>(offset_ptr, count, type_size);
 	result->GetValidityMask().Slice(validity, offset, count);
 	result->AddAuxiliaryData(make_uniq<VectorBufferHolder>(shared_from_this()));
@@ -145,7 +160,9 @@ void StandardVectorBuffer::ReserveInternal(idx_t new_size) {
 	auto stored_allocator = GetAllocator();
 	auto &allocator = stored_allocator ? *stored_allocator : Allocator::DefaultAllocator();
 	auto new_data = allocator.Allocate(target_byte_count);
-	memcpy(new_data.get(), data_ptr, old_byte_count);
+	if (data_ptr) {
+		memcpy(new_data.get(), data_ptr, old_byte_count);
+	}
 
 	// update the buffer structure in-place
 	allocated_data = std::move(new_data);
@@ -282,6 +299,7 @@ void StandardVectorBuffer::CopyInternal(const Vector &source, const SelectionVec
 }
 
 void StandardVectorBuffer::SetValue(const LogicalType &type, idx_t index, const Value &val) {
+	EnsureDataAllocated();
 	if (!val.IsNull() && val.type() != type) {
 		SetValue(type, index, val.DefaultCastAs(type));
 		return;
@@ -469,6 +487,18 @@ Value StandardVectorBuffer::GetValue(const LogicalType &type, idx_t index) const
 	}
 }
 
+void FlatVector::PrepareForWrite(Vector &vector, idx_t size) {
+	vector.CheckCapacity(size);
+	if (vector.GetBufferRef()) {
+		auto &buffer = vector.BufferMutable();
+		if (buffer.GetBufferType() == VectorBufferType::STANDARD_BUFFER ||
+		    buffer.GetBufferType() == VectorBufferType::STRING_BUFFER) {
+			buffer.Cast<StandardVectorBuffer>().EnsureDataAllocated();
+		}
+	}
+	SetSize(vector, size);
+}
+
 void FlatVector::SetData(Vector &vector, data_ptr_t data, count_t count) {
 	VerifyFlatVector(vector);
 	if (vector.GetType().InternalType() == PhysicalType::ARRAY) {
@@ -479,7 +509,7 @@ void FlatVector::SetData(Vector &vector, data_ptr_t data, count_t count) {
 	}
 	// Preserve the validity mask from the old buffer before replacing it.
 	// FIXME: this can maybe be removed in the future - it seems only the Arrow conversion code relies on this behavior
-	auto old_validity = std::move(vector.BufferMutable().GetValidityMask());
+	auto old_validity = vector.Buffer().GetValidityMask();
 	if (vector.GetType().InternalType() == PhysicalType::LIST) {
 		auto &current_buffer = vector.BufferMutable().Cast<VectorListBuffer>();
 		vector.SetBuffer(make_buffer<VectorListBuffer>(data, count, current_buffer.GetChild()));

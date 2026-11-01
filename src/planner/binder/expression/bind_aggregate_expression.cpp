@@ -149,6 +149,10 @@ BindResult BaseSelectBinder::BindAggregate(FunctionExpression &aggr, AggregateFu
 
 	inside_aggregate_filter = true;
 	this->inside_aggregate = true;
+	// aggregate arguments are evaluated below the select list projection of the enclosing node, where
+	// a transported error flag has no consumer; nested subqueries in them bind as plain subqueries
+	const auto save_transport_try_errors = transport_try_errors;
+	transport_try_errors = false;
 	auto initial_bound_column_count = GetBoundColumns().size();
 	// Now we bind the filter (if any)
 	unique_ptr<Expression> bound_filter_child;
@@ -209,6 +213,7 @@ BindResult BaseSelectBinder::BindAggregate(FunctionExpression &aggr, AggregateFu
 	}
 
 	inside_aggregate = false;
+	transport_try_errors = save_transport_try_errors;
 	TruncateBoundColumns(initial_bound_column_count);
 	if (error.HasError()) {
 		// the arguments decided that this level owns the aggregate, so a child that does not bind here is an error

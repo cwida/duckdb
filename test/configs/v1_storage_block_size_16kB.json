@@ -13,6 +13,12 @@
   "inherit_skip_tests": "test/configs/force_storage.json",
   "skip_tests": [
     {
+      "reason": "Explicit constraint check mode requires storage version v2.0.0 or higher.",
+      "paths": [
+        "test/optimizer/remove_redundant_order_keys_deferred.test"
+      ]
+    },
+    {
       "reason": "The AT clause is only serialized with storage version v2.0.0 or higher.",
       "paths": [
         "test/sql/json/test_deserialize_at_clause.test"

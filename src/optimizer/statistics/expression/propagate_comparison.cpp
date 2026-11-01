@@ -146,12 +146,50 @@ FilterPropagateResult StatisticsPropagator::PropagateComparison(const BaseStatis
 	                                NumericStats::Max(rstats), comparison, has_null);
 }
 
+ExpressionType StatisticsPropagator::SimplifyDistinctComparison(ExpressionType comparison,
+                                                                optional_ptr<const BaseStatistics> left,
+                                                                optional_ptr<const BaseStatistics> right,
+                                                                ComparisonContext context) {
+	if (comparison != ExpressionType::COMPARE_NOT_DISTINCT_FROM &&
+	    comparison != ExpressionType::COMPARE_DISTINCT_FROM) {
+		return comparison;
+	}
+	for (auto stats : {left, right}) {
+		if (stats && (stats->GetType().id() == LogicalTypeId::UNION || stats->GetType().id() == LogicalTypeId::TUPLE)) {
+			return comparison;
+		}
+	}
+	const bool left_not_null = left && !left->CanHaveNull();
+	const bool right_not_null = right && !right->CanHaveNull();
+	switch (comparison) {
+	case ExpressionType::COMPARE_NOT_DISTINCT_FROM:
+		if ((left_not_null && right_not_null) ||
+		    (context == ComparisonContext::JOIN && (left_not_null || right_not_null))) {
+			return ExpressionType::COMPARE_EQUAL;
+		}
+		break;
+	case ExpressionType::COMPARE_DISTINCT_FROM:
+		if (left_not_null && right_not_null) {
+			return ExpressionType::COMPARE_NOTEQUAL;
+		}
+		break;
+	default:
+		break;
+	}
+	return comparison;
+}
+
 unique_ptr<BaseStatistics> StatisticsPropagator::PropagateComparison(BoundFunctionExpression &expr,
                                                                      unique_ptr<Expression> &expr_ptr) {
 	auto &left = BoundComparisonExpression::LeftMutable(expr);
 	auto &right = BoundComparisonExpression::RightMutable(expr);
 	auto left_stats = PropagateExpression(left);
 	auto right_stats = PropagateExpression(right);
+	auto comparison = SimplifyDistinctComparison(expr.GetExpressionType(), left_stats.get(), right_stats.get(),
+	                                             ComparisonContext::SCALAR);
+	if (comparison != expr.GetExpressionType()) {
+		BoundComparisonExpression::SetType(expr, comparison);
+	}
 	if (!left_stats || !right_stats) {
 		return nullptr;
 	}

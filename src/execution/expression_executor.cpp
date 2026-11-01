@@ -1,6 +1,7 @@
 #include "duckdb/execution/expression_executor.hpp"
 
 #include "duckdb/common/vector/flat_vector.hpp"
+#include "duckdb/common/vector_operations/unary_executor.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/execution/execution_context.hpp"
 #include "duckdb/storage/statistics/base_statistics.hpp"
@@ -263,7 +264,7 @@ void ExpressionExecutor::Execute(const Expression &expr, ExpressionState *state,
 		if (expr.GetExpressionClass() != ExpressionClass::BOUND_REF &&
 		    expr.GetExpressionClass() != ExpressionClass::BOUND_CONSTANT &&
 		    expr.GetExpressionClass() != ExpressionClass::BOUND_PARAMETER) {
-			D_ASSERT(FlatVector::ValidityMutable(result).CheckAllValid(count));
+			D_ASSERT(FlatVector::Validity(result).CheckAllValid(count));
 		}
 	}
 #endif
@@ -332,47 +333,6 @@ idx_t ExpressionExecutor::Select(const Expression &expr, ExpressionState *state,
 	}
 }
 
-template <bool NO_NULL, bool HAS_TRUE_SEL, bool HAS_FALSE_SEL>
-static inline idx_t DefaultSelectLoop(const SelectionVector *bsel, const uint8_t *__restrict bdata, ValidityMask &mask,
-                                      const SelectionVector *sel, idx_t count, SelectionVector *true_sel,
-                                      SelectionVector *false_sel) {
-	idx_t true_count = 0, false_count = 0;
-	for (idx_t i = 0; i < count; i++) {
-		auto bidx = bsel->get_index(i);
-		auto result_idx = sel->get_index(i);
-		if ((NO_NULL || mask.RowIsValid(bidx)) && bdata[bidx] > 0) {
-			if (HAS_TRUE_SEL) {
-				true_sel->set_index(true_count++, result_idx);
-			}
-		} else {
-			if (HAS_FALSE_SEL) {
-				false_sel->set_index(false_count++, result_idx);
-			}
-		}
-	}
-	if (HAS_TRUE_SEL) {
-		return true_count;
-	} else {
-		return count - false_count;
-	}
-}
-
-template <bool NO_NULL>
-static inline idx_t DefaultSelectSwitch(UnifiedVectorFormat &idata, const SelectionVector *sel, idx_t count,
-                                        SelectionVector *true_sel, SelectionVector *false_sel) {
-	if (true_sel && false_sel) {
-		return DefaultSelectLoop<NO_NULL, true, true>(idata.sel, UnifiedVectorFormat::GetData<uint8_t>(idata),
-		                                              idata.validity, sel, count, true_sel, false_sel);
-	} else if (true_sel) {
-		return DefaultSelectLoop<NO_NULL, true, false>(idata.sel, UnifiedVectorFormat::GetData<uint8_t>(idata),
-		                                               idata.validity, sel, count, true_sel, false_sel);
-	} else {
-		D_ASSERT(false_sel);
-		return DefaultSelectLoop<NO_NULL, false, true>(idata.sel, UnifiedVectorFormat::GetData<uint8_t>(idata),
-		                                               idata.validity, sel, count, true_sel, false_sel);
-	}
-}
-
 idx_t ExpressionExecutor::DefaultSelect(const Expression &expr, ExpressionState *state, const SelectionVector *sel,
                                         idx_t count, SelectionVector *true_sel, SelectionVector *false_sel) {
 	// generic selection of boolean expression:
@@ -382,17 +342,8 @@ idx_t ExpressionExecutor::DefaultSelect(const Expression &expr, ExpressionState 
 	Vector intermediate(LogicalType::BOOLEAN, data_ptr_cast(intermediate_bools), STANDARD_VECTOR_SIZE);
 	Execute(expr, state, sel, count, intermediate);
 
-	UnifiedVectorFormat idata;
-	intermediate.ToUnifiedFormat(idata);
-
-	if (!sel) {
-		sel = FlatVector::IncrementalSelectionVector();
-	}
-	if (idata.validity.CanHaveNull()) {
-		return DefaultSelectSwitch<false>(idata, sel, count, true_sel, false_sel);
-	} else {
-		return DefaultSelectSwitch<true>(idata, sel, count, true_sel, false_sel);
-	}
+	return UnaryExecutor::Select<uint8_t>(
+	    intermediate, sel, count, [](uint8_t value) { return value > 0; }, true_sel, false_sel);
 }
 
 vector<unique_ptr<ExpressionExecutorState>> &ExpressionExecutor::GetStates() {

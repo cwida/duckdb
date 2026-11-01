@@ -1,4 +1,5 @@
 #include "duckdb/planner/sql_export/logical_plan_sql_exporter_internal.hpp"
+#include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/function/scalar/compressed_materialization_utils.hpp"
 #include "duckdb/planner/logical_plan_sql_exporter.hpp"
 #include "duckdb/planner/sql_export/bound_expression_sql_exporter_internal.hpp"
@@ -41,6 +42,15 @@ static optional<Value> ConstantSQLInput(const Expression &expression, LogicalOpe
 	}
 	if (auto wrapped = CMUtils::GetWrappedInput(expression)) {
 		return ConstantSQLInput(*wrapped, input, context);
+	}
+	if (expression.IsFoldable()) {
+		// An unfolded constant expression, e.g. a cast of a literal with the expression rewriter disabled.
+		// Fold it like GetConstant does at bind time, so constant-required arguments restore to constants.
+		Value value;
+		if (ExpressionExecutor::TryEvaluateScalar(context.GetClientContext(), expression, value)) {
+			return value;
+		}
+		return {};
 	}
 	if (context.FindSource(input) || expression.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF ||
 	    input.children.size() != 1) {
@@ -437,7 +447,8 @@ LogicalPlanSQLExporter::ExportWithSources(ClientContext &context, LogicalOperato
 	for (auto &replacement : replacements) {
 		sources.push_back({replacement.op,
 		                   state.NextRelationAlias(Identifier("__export_source")),
-		                   {replacement.relation.query->Copy(), replacement.relation.fields}});
+		                   {replacement.relation.query->Copy(), replacement.relation.fields},
+		                   replacement.materialized});
 	}
 	auto exported = state.ExportRoot(root, LogicalPlanVerificationPath(), sources, options.output_names);
 	if (exported.HasError()) {
@@ -454,7 +465,7 @@ LogicalPlanSQLExporter::ExportWithSources(ClientContext &context, LogicalOperato
 			info->aliases.push_back(LogicalPlanSQLExportHelpers::FieldIdentifier(i));
 		}
 		info->query_node = std::move(source.relation.query);
-		info->materialized = CTEMaterialize::CTE_MATERIALIZE_ALWAYS;
+		info->materialized = source.materialized;
 		definitions.cte_map.map.insert(source.name, std::move(info));
 	}
 	for (auto &consumer : consumers.map) {

@@ -17,14 +17,17 @@ statement ok
 SET temp_file_encryption=true
 
 statement ok
-SET memory_limit='16MB'
+SET memory_limit='1GB'
 
-# Force a spill. A TEMPORARY table keeps the payload alive after CREATE completes,
-# so both accounting sources have data to report when we probe them below.
+# Finish CTAS before spilling. Merging row groups can reload spilled blocks, leaving
+# free slots that count towards file sizes but not live temporary_storage_bytes.
 statement ok
 CREATE TEMPORARY TABLE big AS
     SELECT i AS k, repeat('x', 200)::VARCHAR AS v
     FROM range(500000) t(i)
+
+statement ok
+SET memory_limit='16MB'
 
 # Prevent the accounting queries themselves from triggering more evictions
 statement ok
@@ -41,3 +44,16 @@ SELECT
   = (SELECT COALESCE(sum(temporary_storage_bytes), 0)::BIGINT FROM duckdb_memory())
 ----
 true
+
+statement ok
+DROP TABLE big
+
+query I
+SELECT COALESCE(sum(temporary_storage_bytes), 0)::BIGINT FROM duckdb_memory()
+----
+0
+
+query I
+SELECT count(*) FROM duckdb_temporary_files()
+----
+0

@@ -1,0 +1,99 @@
+# name: test/sql/sql_export/grouped_tuple_mark_roundtrip.test
+# description: SQL export preserves grouped tuple equality, nested NULLs and empty groups
+# group: [sql_export]
+
+# Construct tuples in views so the expression-export test also runs on storage versions
+# that cannot persist TUPLE columns. Keep NULL tuples distinct from tuples containing NULL.
+statement ok
+CREATE TABLE probe_values(id INTEGER,g INTEGER,is_null BOOLEAN,a INTEGER,b INTEGER);
+
+statement ok
+CREATE TABLE candidate_values(g INTEGER,is_null BOOLEAN,a INTEGER,b INTEGER);
+
+statement ok
+CREATE VIEW probes AS SELECT id,g,CASE WHEN is_null THEN NULL::TUPLE(INTEGER,INTEGER) ELSE row(a,b) END AS v FROM probe_values;
+
+statement ok
+CREATE VIEW candidates AS SELECT g,CASE WHEN is_null THEN NULL::TUPLE(INTEGER,INTEGER) ELSE row(a,b) END AS v FROM candidate_values;
+
+statement ok
+INSERT INTO probe_values VALUES(0,0,true,NULL,NULL),(1,1,false,1,2),(2,1,false,9,9),(3,1,true,NULL,NULL),(4,2,false,1,2),(5,2,false,2,2),(6,2,true,NULL,NULL),(7,3,false,1,2),(8,3,true,NULL,NULL),(9,NULL,false,1,2),(10,4,false,1,NULL),(11,4,false,1,2);
+
+statement ok
+INSERT INTO candidate_values VALUES(1,false,1,2),(1,false,1,2),(1,true,NULL,NULL),(2,false,2,2),(NULL,false,1,2),(4,false,1,NULL);
+
+statement ok
+SET debug_verify_statement='explain_sql_strict';
+
+foreach serializer false true
+
+statement ok
+SET debug_verify_serializer={serializer};
+
+foreach external false true
+
+statement ok
+SET debug_force_external={external};
+
+query T
+SELECT list(marker ORDER BY id) FROM (SELECT id,v IN(SELECT c.v FROM candidates c WHERE c.g=p.g) marker FROM probes p);
+----
+[false, true, NULL, NULL, false, true, NULL, false, false, false, true, false]
+
+query T
+SELECT list(marker ORDER BY id) FROM (SELECT id,v NOT IN(SELECT c.v FROM candidates c WHERE c.g=p.g) marker FROM probes p);
+----
+[true, false, NULL, NULL, true, false, NULL, true, true, true, false, true]
+
+query T
+SELECT list(marker ORDER BY id) FROM (SELECT id,v IN(SELECT c.v FROM candidates c WHERE c.g IS NOT DISTINCT FROM p.g) marker FROM probes p);
+----
+[false, true, NULL, NULL, false, true, NULL, false, false, true, true, false]
+
+# Explicit MARK binding reconstructs the same grouping keys and tuple comparison.
+query T
+SELECT list(__mark_join_marker ORDER BY id) FROM probes p JOIN BY(TYPE MARK) candidates c ON p.g IS NOT DISTINCT FROM c.g AND p.v=c.v;
+----
+[false, true, NULL, NULL, false, true, NULL, false, false, true, true, false]
+
+# Tuple equality retains the difference between NULL tuples and tuples containing NULL.
+query I
+SELECT count(*) FROM probes p WHERE p.v IN(SELECT c.v FROM candidates c WHERE c.g=p.g);
+----
+3
+
+endloop
+
+endloop
+
+statement ok
+RESET debug_force_external;
+
+statement ok
+RESET debug_verify_serializer;
+
+statement error
+SELECT __mark_join_marker FROM probes p JOIN BY(TYPE MARK) candidates c ON p.g IS NOT DISTINCT FROM c.g AND p.v<c.v;
+----
+Unsupported explicit MARK join conditions
+
+statement error
+SELECT __mark_join_marker FROM probes p JOIN BY(TYPE MARK) candidates c ON p.g IS NOT DISTINCT FROM c.g AND p.v<>c.v;
+----
+Unsupported explicit MARK join conditions
+
+statement ok
+INSERT INTO candidate_values SELECT 2,false,2,2 FROM range(4096);
+
+query T
+SELECT list(marker ORDER BY id) FROM (SELECT id,v IN(SELECT c.v FROM candidates c WHERE c.g=p.g) marker FROM probes p);
+----
+[false, true, NULL, NULL, false, true, NULL, false, false, false, true, false]
+
+statement ok
+DELETE FROM candidate_values;
+
+query T
+SELECT list(marker ORDER BY id) FROM (SELECT id,v IN(SELECT c.v FROM candidates c WHERE c.g=p.g) marker FROM probes p);
+----
+[false, false, false, false, false, false, false, false, false, false, false, false]

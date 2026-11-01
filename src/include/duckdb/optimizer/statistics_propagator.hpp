@@ -26,6 +26,7 @@ class ClientContext;
 class LogicalOperator;
 class TableFilter;
 struct BoundOrderByNode;
+struct FunctionStatisticsInput;
 
 enum class StatisticsPropagationMode : uint8_t { FILTER_SIMPLIFICATION, FULL };
 
@@ -55,6 +56,9 @@ public:
 	static unique_ptr<BaseStatistics> PropagateMonotoneBounds(ClientContext &context,
 	                                                          const BoundFunctionExpression &func,
 	                                                          const vector<BaseStatistics> &child_stats);
+	//! Statistics callback for monotone functions that return NULL for infinite arguments
+	DUCKDB_API static unique_ptr<BaseStatistics> PropagateFiniteMonotoneBounds(ClientContext &context,
+	                                                                           FunctionStatisticsInput &input);
 	//! Compare two sets of statistics and return whether the comparison is always true or false
 	static FilterPropagateResult PropagateComparison(const BaseStatistics &left, const BaseStatistics &right,
 	                                                 ExpressionType comparison);
@@ -141,6 +145,11 @@ private:
 	unique_ptr<BaseStatistics> PropagateExpression(BoundOperatorExpression &expr, unique_ptr<Expression> &expr_ptr);
 
 	unique_ptr<BaseStatistics> PropagateComparison(BoundFunctionExpression &expr, unique_ptr<Expression> &expr_ptr);
+	enum class ComparisonContext { SCALAR, JOIN };
+	//! Simplify distinctness when NULL cannot affect the comparison's result in this context
+	static ExpressionType SimplifyDistinctComparison(ExpressionType comparison, optional_ptr<const BaseStatistics> left,
+	                                                 optional_ptr<const BaseStatistics> right,
+	                                                 ComparisonContext context);
 
 	//! Try to execute aggregates using only the statistics if possible
 	void TryExecuteAggregates(LogicalAggregate &op, unique_ptr<LogicalOperator> &node_ptr);

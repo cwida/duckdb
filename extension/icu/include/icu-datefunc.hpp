@@ -44,6 +44,21 @@ struct ICUDateFunc {
 		duckdb::unique_ptr<FunctionData> info;
 	};
 
+	template <typename SRC, typename DST>
+	static inline DST TruncCast(const SRC &src) {
+		DST dst;
+		if (SRC::PRECISION == DST::PRECISION) {
+			dst.value = src.value;
+		} else {
+			//	Truncate towards -infinity, not epoch.
+			D_ASSERT(SRC::PRECISION > DST::PRECISION);
+			const int64_t scaling = SRC::PRECISION / DST::PRECISION;
+			int64_t frac;
+			Timestamp::SplitTime(src.value, scaling, dst.value, frac);
+		}
+		return dst;
+	}
+
 	//! Per-thread cache of resolved time zones. Resolving a time zone name looks the name up and
 	//! then builds a zone and a calendar for it, so functions with per-row time zone arguments
 	//! must resolve each distinct zone only once per thread.
@@ -85,6 +100,8 @@ struct ICUDateFunc {
 
 	//! Binds a default calendar object for use by the function
 	static duckdb::unique_ptr<FunctionData> Bind(BindScalarFunctionInput &input);
+	//! Binds the calendar of the TimeZone and Calendar settings for a cast, whose result then depends on them
+	static duckdb::unique_ptr<CastData> BindCastData(BindCastInput &input);
 	//! Initializes a CalendarCacheState from the function's BindData
 	static duckdb::unique_ptr<FunctionLocalState>
 	InitCalendarCache(ExpressionState &state, const BoundFunctionExpression &expr, FunctionData *bind_data);

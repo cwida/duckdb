@@ -1,0 +1,47 @@
+# name: test/sql/filter/default_boolean_selection.test
+# description: Select materialized Boolean results from string and floating-point predicates
+# group: [filter]
+
+statement ok
+CREATE TABLE booleans AS
+SELECT i AS id,
+       CASE WHEN i % 2 = 0 THEN i::DOUBLE ELSE 'Infinity'::DOUBLE END AS d,
+       CASE WHEN i % 2 = 0 THEN 'yes' ELSE 'no' END AS s,
+       CASE WHEN i % 5 = 0 THEN NULL WHEN i % 2 = 0 THEN i::DOUBLE ELSE 'Infinity'::DOUBLE END AS nd,
+       CASE WHEN i % 7 = 0 THEN NULL WHEN i % 2 = 0 THEN 'yes' ELSE 'no' END AS ns
+FROM range(4099) t(i)
+
+query II
+SELECT count(*), sum(id) FROM booleans WHERE isfinite(d)
+----
+2050	4200450
+
+query II
+SELECT count(*), sum(id) FROM booleans WHERE contains(s, 'y')
+----
+2050	4200450
+
+query II
+SELECT count(*), sum(id) FROM booleans WHERE isfinite(nd)
+----
+1640	3362000
+
+query II
+SELECT count(*), sum(id) FROM booleans WHERE contains(ns, 'y')
+----
+1757	3601558
+
+query II
+SELECT count(*), sum(id) FROM booleans WHERE isfinite(nd) OR contains(ns, 'y')
+----
+1991	4080680
+
+query II
+SELECT count(*), sum(id) FROM booleans WHERE id % 3 = 0 AND isfinite(nd)
+----
+547	1122036
+
+query I
+SELECT sum(CASE WHEN isfinite(nd) THEN id ELSE -id END) FROM booleans
+----
+-1674851

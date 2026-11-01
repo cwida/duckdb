@@ -71,6 +71,9 @@ public:
 	bool Read(char *pointer, idx_t &read_size, idx_t requested_size);
 	//! Read at position optionally allows passing a custom handle to read from, otherwise the default one is used
 	void ReadAtPosition(char *pointer, idx_t size, idx_t position, optional_ptr<FileHandle> override_handle = nullptr);
+	//! The bytes of the stored file read since the last call - for a compressed file, its compressed bytes. Bytes read
+	//! again after a reset are only returned once
+	idx_t TakeStoredBytesRead();
 
 private:
 	idx_t ReadInternal(char *pointer, const idx_t requested_size);
@@ -94,6 +97,11 @@ private:
 	atomic<idx_t> requested_reads;
 	atomic<idx_t> actual_reads;
 	atomic<bool> last_read_requested;
+
+	//! The bytes of the stored file read and not yet returned by TakeStoredBytesRead
+	atomic<idx_t> stored_bytes_untaken {0};
+	//! For a compressed file, the compressed bytes added to stored_bytes_untaken since the file was (re)opened
+	idx_t compressed_bytes_counted = 0;
 
 	//! Cached buffers for resetting when reading stream
 	vector<AllocatedData> cached_buffers;
@@ -236,6 +244,13 @@ public:
 	//! Scan progress
 	double GetProgress() const;
 
+	//! Counts what the file was read for as scanned, once a query scans it
+	void CountBytesScanned();
+	//! Set when a query starts scanning the file, so reading samples of it to detect its schema is not counted
+	bool scanning = false;
+	//! The bytes of the stored file scanned but not yet reported to the profiler
+	atomic<idx_t> bytes_scanned_unreported {0};
+
 	void DecrementBufferUsage(JSONBufferHandle &handle, idx_t lines_or_object_in_buffer, AllocatedData &buffer);
 
 private:
@@ -270,6 +285,8 @@ private:
 	OpenFileInfo file;
 	ClientContext &context;
 	JSONReaderOptions options;
+	//! The flags documents are parsed with: numbers are kept as text when a column is or contains a DECIMAL
+	yyjson_read_flag read_flag;
 
 	//! File handle
 	unique_ptr<JSONFileHandle> file_handle;

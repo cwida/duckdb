@@ -39,6 +39,35 @@ TEST_CASE("Test the database instance cache in the C API", "[api][.]") {
 	duckdb_destroy_instance_cache(&instance_cache);
 }
 
+TEST_CASE("Test the database instance cache in the C API with a connection that outlives the database", "[capi]") {
+	auto instance_cache = duckdb_create_instance_cache();
+	auto path = TestCreatePath("instance_cache_in_use.db");
+	duckdb_database db;
+	REQUIRE(duckdb_get_or_create_from_cache(instance_cache, path.c_str(), &db, nullptr, nullptr) == DuckDBSuccess);
+	duckdb_connection con;
+	REQUIRE(duckdb_connect(db, &con) == DuckDBSuccess);
+	REQUIRE(duckdb_query(con, "CREATE TABLE t AS SELECT 42 AS i", nullptr) == DuckDBSuccess);
+	duckdb_close(&db);
+
+	duckdb_database reopened;
+	REQUIRE(duckdb_get_or_create_from_cache(instance_cache, path.c_str(), &reopened, nullptr, nullptr) ==
+	        DuckDBSuccess);
+	duckdb_connection reopened_con;
+	REQUIRE(duckdb_connect(reopened, &reopened_con) == DuckDBSuccess);
+	duckdb_result result;
+	REQUIRE(duckdb_query(reopened_con, "SELECT i FROM t", &result) == DuckDBSuccess);
+	REQUIRE(duckdb_value_int32(&result, 0, 0) == 42);
+	duckdb_destroy_result(&result);
+	duckdb_disconnect(&reopened_con);
+	duckdb_close(&reopened);
+
+	// the first connection outlives both handles
+	REQUIRE(duckdb_query(con, "INSERT INTO t VALUES (43)", nullptr) == DuckDBSuccess);
+	duckdb_disconnect(&con);
+	duckdb_destroy_instance_cache(&instance_cache);
+	TestDeleteFile(path);
+}
+
 TEST_CASE("Test the database instance cache in the C API with a null path", "[capi]") {
 	auto instance_cache = duckdb_create_instance_cache();
 	duckdb_database db;

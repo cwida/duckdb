@@ -19,6 +19,11 @@ WHERE connection_id = current_connection_id() ORDER BY metric_name;
 ----
 io.total_bytes_read	UINT64
 io.total_bytes_written	UINT64
+io.total_read_operations	UINT64
+io.total_read_time	DOUBLE
+io.total_write_operations	UINT64
+io.total_write_time	DOUBLE
+system.total_bytes_spilled	UINT64
 system.total_memory_allocated	UINT64
 
 # without profiling, the counters still start from zero for every query
@@ -39,11 +44,13 @@ CREATE TABLE monitored AS SELECT current_connection_id() AS id;
 statement ok con1
 COPY (SELECT range AS i FROM range(1000000)) TO '{TEST_DIR}/live_query_metrics_1.csv';
 
-query I con2
-SELECT metric_value::UBIGINT > 0 FROM duckdb_live_query_metrics()
-WHERE connection_id = (SELECT id FROM monitored) AND metric_name = 'io.total_bytes_written';
+query II con2
+SELECT metric_name, metric_value::DOUBLE > 0 FROM duckdb_live_query_metrics()
+WHERE connection_id = (SELECT id FROM monitored)
+AND metric_name IN ('io.total_bytes_written', 'io.total_write_operations') ORDER BY metric_name;
 ----
-true
+io.total_bytes_written	true
+io.total_write_operations	true
 
 statement ok con1
 COPY (SELECT range AS i FROM range(1000000)) TO '{TEST_DIR}/live_query_metrics_2.csv';
@@ -51,21 +58,23 @@ COPY (SELECT range AS i FROM range(1000000)) TO '{TEST_DIR}/live_query_metrics_2
 statement ok con1
 SELECT sum(i) FROM read_csv('{TEST_DIR}/live_query_metrics_1.csv');
 
-query I con2
-SELECT metric_value::UBIGINT > 0 FROM duckdb_live_query_metrics()
-WHERE connection_id = (SELECT id FROM monitored) AND metric_name = 'io.total_bytes_read';
+query II con2
+SELECT metric_name, metric_value::DOUBLE > 0 FROM duckdb_live_query_metrics()
+WHERE connection_id = (SELECT id FROM monitored)
+AND metric_name IN ('io.total_bytes_read', 'io.total_read_operations') ORDER BY metric_name;
 ----
-true
+io.total_bytes_read	true
+io.total_read_operations	true
 
 # the next query starts its counters from zero
 statement ok con1
 SELECT 42;
 
 query I con2
-SELECT metric_value::UBIGINT FROM duckdb_live_query_metrics()
-WHERE connection_id = (SELECT id FROM monitored) AND metric_name = 'io.total_bytes_read';
+SELECT bool_and(metric_value::DOUBLE = 0) FROM duckdb_live_query_metrics()
+WHERE connection_id = (SELECT id FROM monitored) AND metric_name LIKE 'io.%';
 ----
-0
+true
 
 # a query that fails keeps the counters of the work it did
 statement error con1

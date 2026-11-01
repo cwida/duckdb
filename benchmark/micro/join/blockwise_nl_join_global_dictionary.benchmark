@@ -1,0 +1,22 @@
+# name: benchmark/micro/join/blockwise_nl_join_global_dictionary.benchmark
+# description: Blockwise NL join whose left side carries a global dictionary column from a hash join
+# group: [join]
+
+name Blockwise NL join over a global dictionary
+group join
+
+load
+CREATE TABLE dim AS SELECT range AS d_sk, 'day_' || range AS d_name FROM range(400);
+CREATE TABLE inv AS SELECT range % 400 AS inv_date_sk, range % 1000 AS inv_item_sk FROM range(3000);
+CREATE TABLE fact AS SELECT range % 1000 AS item_sk, range % 400 AS sold_date_sk, range % 50 AS q FROM range(10000);
+CREATE TABLE ret AS SELECT range % 1000 AS r_item_sk, (range * 7) % 400 AS r_date_sk FROM range(1500);
+
+run
+SELECT count(*), max(d.d_name), sum(f.q)
+FROM inv i
+JOIN dim d ON i.inv_date_sk = d.d_sk
+LEFT JOIN fact f ON i.inv_item_sk = f.item_sk AND f.sold_date_sk = i.inv_date_sk
+LEFT JOIN ret r ON i.inv_item_sk = r.r_item_sk OR r.r_date_sk >= 0;
+
+result III
+22500000	day_99	551250000

@@ -18,12 +18,11 @@
 
 namespace duckdb {
 
-ParquetFileMetadataCache::ParquetFileMetadataCache(unique_ptr<duckdb_parquet::FileMetaData> file_metadata,
-                                                   CachingFileHandle &handle,
+ParquetFileMetadataCache::ParquetFileMetadataCache(unique_ptr<ParquetMetadata> metadata_p, CachingFileHandle &handle,
                                                    unique_ptr<GeoParquetFileMetadata> geo_metadata,
                                                    unique_ptr<FileCryptoMetaData> crypto_metadata,
                                                    string encryption_key_hash_p, idx_t footer_size)
-    : metadata(std::move(file_metadata)), geo_metadata(std::move(geo_metadata)),
+    : metadata(std::move(metadata_p)), geo_metadata(std::move(geo_metadata)),
       crypto_metadata(std::move(crypto_metadata)), encryption_key_hash(std::move(encryption_key_hash_p)),
       footer_size(footer_size), last_modified(handle.GetLastModifiedTime()), version_tag(handle.GetVersionTag()) {
 }
@@ -41,11 +40,7 @@ optional_idx ParquetFileMetadataCache::GetEstimatedCacheMemory() const {
 	idx_t memory = sizeof(*this);
 
 	if (metadata) {
-		const auto num_cols = metadata->schema.size();
-		memory += sizeof(duckdb_parquet::FileMetaData);
-		memory += num_cols * sizeof(duckdb_parquet::SchemaElement);
-		memory += metadata->row_groups.size() * sizeof(duckdb_parquet::RowGroup) +
-		          num_cols * sizeof(duckdb_parquet::ColumnChunk);
+		memory += sizeof(duckdb_parquet::FileMetaData) + metadata->arena.AllocationSize();
 	}
 	if (geo_metadata) {
 		memory +=

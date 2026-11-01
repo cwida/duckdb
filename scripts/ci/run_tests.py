@@ -1085,6 +1085,8 @@ def parse_failure_info(message: str | None, stdout: str, stderr: str, batch, ret
     snippet_lines = []
     if stderr_info.query_failure_lines:
         detail_lines.extend(stderr_info.query_failure_lines)
+    elif message is not None and message.startswith("error: Invalid Filter:"):
+        detail_lines.append(message)
     elif stdout_info.fatal_error_lines:
         detail_lines.extend(stdout_info.fatal_error_lines)
 
@@ -1260,9 +1262,13 @@ def format_test_runner_for_display(unittest_bin: str):
     return format_unittest_bin_for_display(os.fspath(Path(unittest_bin).with_name(runner_name)))
 
 
+def escape_catch_test_name(test_name: str):
+    # Catch treats commas as separators even inside quoted names.
+    return test_name.replace("\\", "\\\\").replace('"', '\\"').replace(",", "\\,")
+
+
 def quote_catch_test_name(test_name: str):
-    escaped_name = test_name.replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{escaped_name}"'
+    return f'"{escape_catch_test_name(test_name)}"'
 
 
 def format_failed_tests_reproducer(
@@ -1623,7 +1629,12 @@ def run_batch(config: TestRunnerConfig, batch):
     # On Windows the child process cannot reopen a NamedTemporaryFile while it
     # is still open here, so keep it after close and unlink it ourselves.
     with tempfile.NamedTemporaryFile(mode="w", encoding="utf8", delete=False) as batch_file:
-        batch_file.write("\n".join(batch))
+        # SQL-only batches are loaded as literal paths by TryReadExactSQLLogicTestFilter.
+        # Quote other batches so every entry goes through Catch, including SQL paths.
+        if all(name.endswith((".test", ".test_slow", ".test_coverage")) for name in batch):
+            batch_file.write("\n".join(batch))
+        else:
+            batch_file.write("\n".join(quote_catch_test_name(name) for name in batch))
         batch_file.write("\n")
         batch_file.flush()
         batch_file_path = Path(batch_file.name)
@@ -1680,11 +1691,17 @@ def run_batch(config: TestRunnerConfig, batch):
             if rss_bytes is not None:
                 peak_rss_bytes = max(peak_rss_bytes, rss_bytes)
             failed = proc.returncode != 0
+            invalid_filters = [line for line in strip_ansi(stdout).splitlines() if line.startswith("Invalid Filter:")]
+            if not failed and invalid_filters:
+                failed = True
+                allow_retry = False
+                message = "error: " + invalid_filters[0]
             if not failed and config.fail_require_skip:
-                require_skip_lines = find_require_skip_lines(stdout)
+                require_skip_lines = find_require_skip_lines(stdout) + find_require_skip_lines(stderr)
                 if require_skip_lines:
                     failed = True
                     message = "error: detected require-based skipped tests: " + require_skip_lines[0]
+
                     allow_retry = False
     except OSError as exc:
         failed = True

@@ -59,6 +59,7 @@ jobs:
     runs-on: ${{ github.repository == 'duckdb/duckdb' && 'namespace-profile-linux-slim;job.priority=1' || 'ubuntu-latest' }}
     outputs:
       duckdb_commit: ${{ steps.version.outputs.duckdb_commit }}
+      runner_linux_slim: ${{ fromJSON(steps.config.outputs.runners).linux_slim }}
       runner_linux_small: ${{ fromJSON(steps.config.outputs.runners).linux_small }}
       runner_linux_x64: ${{ fromJSON(steps.config.outputs.runners).linux_x64 }}
       runner_linux_22_x64: ${{ fromJSON(steps.config.outputs.runners).linux_22_x64 }}
@@ -80,6 +81,7 @@ jobs:
       enabled_jobs: ${{ steps.config.outputs.enabled_jobs }}
       save_cache: ${{ steps.config.outputs.save_cache }}
       reduced_ci_mode: ${{ steps.config.outputs.reduced_ci_mode }}
+      windows_full_matrix: ${{ steps.config.outputs.windows_full_matrix }}
       runner_provider: ${{ steps.runners.outputs.runner_provider }}
       skip_tests: ${{ steps.config.outputs.skip_tests }}
       duckdb_version: ${{ steps.version.outputs.duckdb_version }}
@@ -163,7 +165,6 @@ jobs:
             extensions:
               - .github/config/**
               - .github/patches/**
-              - extension/**
             tests:
               - test/**/*.test
             tests_slow:
@@ -200,6 +201,7 @@ jobs:
             --skip-tests "$skip_tests" \
             --changed-keys "$CHANGED_KEYS" \
             --reduced-ci-mode "${{ (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && !inputs.run_all)) && 'enabled' || 'disabled' }}" \
+            --run-all "${{ github.event_name != 'workflow_dispatch' || inputs.run_all }}" \
             --runners '${{ steps.runners.outputs.runners }}' \
             --runner-provider '${{ steps.runners.outputs.runner_provider }}'
 
@@ -447,23 +449,29 @@ jobs:
         core:
           config: duckdb/.github/config/core.cmake
           extra_toolchains: unixodbc;parser_tools
+          opt_in_archs: '${{ needs.prepare.outputs.extension_opt_in_archs }}'
           toolchain: main
         cloud:
           config: duckdb/.github/config/cloud.cmake
           extra_toolchains: unixodbc;parser_tools
+          opt_in_archs: '${{ needs.prepare.outputs.extension_opt_in_archs }}'
           toolchain: main
         search:
           config: duckdb/.github/config/search.cmake
           extra_toolchains: unixodbc;parser_tools
+          opt_in_archs: '${{ needs.prepare.outputs.extension_opt_in_archs }}'
           toolchain: main
         scanner:
           config: duckdb/.github/config/scanner.cmake
           extra_toolchains: unixodbc;parser_tools
+          opt_in_archs: '${{ needs.prepare.outputs.extension_opt_in_archs }}'
           toolchain: main
         rust:
-          config:
-            - duckdb/.github/config/rust_based_extensions.cmake
-            - duckdb/.github/config/external_extensions.cmake
+          config: duckdb/.github/config/rust_based_extensions.cmake
+          default_exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_rtools;windows_amd64_mingw;linux_amd64_musl
+          toolchain: rust
+        external:
+          config: duckdb/.github/config/external_extensions.cmake
           default_exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_rtools;windows_amd64_mingw;linux_amd64_musl
           toolchain: rust
       extension_repository: duckdb/extension-template
@@ -471,7 +479,6 @@ jobs:
       ci_tools_repository: duckdb/extension-ci-tools
       ci_tools_version: main
       exclude_archs: ${{ needs.prepare.outputs.extensions_extra_exclude_archs }}
-      opt_in_archs: '${{ needs.prepare.outputs.extension_opt_in_archs }}'
       allow_failure_archs: ${{ needs.prepare.outputs.extension_allow_failure_archs }}
       vcpkg_commit: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3 # Release 2026.06.24
       windows_vcpkg_toolchain: cl
@@ -1119,7 +1126,7 @@ jobs:
       runners: ${{ needs.prepare.outputs.runners }}
       runner_provider: ${{ needs.prepare.outputs.runner_provider }}
       skip_tests: ${{ fromJson(needs.prepare.outputs.skip_tests) }}
-      run_all: ${{ github.event_name != 'workflow_dispatch' || inputs.run_all }}
+      run_all: ${{ fromJson(needs.prepare.outputs.windows_full_matrix) }}
 
  osx:
     if: ${{ contains(fromJson(needs.prepare.outputs.enabled_jobs), 'osx') }}
@@ -1385,7 +1392,9 @@ jobs:
  summary:
     name: Summary
     if: ${{ always() }}
-    runs-on: ${{ fromJSON(needs.prepare.outputs.runners).linux_slim }}
+    # No fromJSON here: when prepare is skipped (draft PRs, non-member synchronize) its outputs are
+    # empty and fromJSON('') makes the whole run fail with every job skipped.
+    runs-on: ${{ needs.prepare.outputs.runner_linux_slim || 'ubuntu-slim' }}
     needs:
       - prepare
       - linux-relassert

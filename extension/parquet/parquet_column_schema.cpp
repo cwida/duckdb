@@ -164,7 +164,7 @@ ParquetColumnSchema ParquetColumnSchema::FileRowGroupNumber() {
 
 unique_ptr<BaseStatistics> ParquetColumnSchema::Stats(const FileMetaData &file_meta_data,
                                                       const ParquetOptions &parquet_options, idx_t row_group_idx_p,
-                                                      const vector<ColumnChunk> &columns) const {
+                                                      const duckdb_parquet::ColumnChunkList &columns) const {
 	if (schema_type == ParquetColumnSchemaType::EXPRESSION) {
 		return nullptr;
 	}

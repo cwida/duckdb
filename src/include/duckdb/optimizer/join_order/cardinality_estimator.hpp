@@ -16,6 +16,7 @@ namespace duckdb {
 class FilterInfo;
 class JoinPredicateModel;
 struct CardinalityEstimatorState;
+struct CardinalityHelper;
 struct CompositeJoinPairStats;
 struct DenomInfo;
 struct DenominatorState;
@@ -25,7 +26,6 @@ struct Subgraph2Denominator;
 
 class CardinalityEstimator {
 public:
-	static constexpr double DEFAULT_SEMI_ANTI_SELECTIVITY = 5;
 	CardinalityEstimator(JoinRelationSetManager &set_manager, const JoinPredicateModel &predicate_model);
 	~CardinalityEstimator();
 
@@ -35,6 +35,7 @@ public:
 	void InitEquivalentRelations();
 
 	void InitCardinalityEstimatorProps(optional_ptr<JoinRelationSet> set, RelationStats &stats);
+	void RestrictFilterDomains(const vector<RelationStats> &relation_stats);
 
 	//! cost model needs estimated cardinalities to the fraction since the formula captures
 	//! distinct count selectivities and multiplicities. Hence the template
@@ -47,6 +48,9 @@ public:
 
 private:
 	double GetNumerator(JoinRelationSet &set);
+	double GetSubgraphCardinality(const Subgraph2Denominator &subgraph);
+	const CardinalityHelper &GetCardinalityBeforeFilters(JoinRelationSet &set);
+	optional<double> EstimateTopLevelSemiAnti(JoinRelationSet &set);
 	DenomInfo GetDenominator(JoinRelationSet &set);
 	void ProcessDenominatorEdge(FilterInfoWithTotalDomains &edge, JoinRelationSet &requested_set,
 	                            DenominatorState &state);
@@ -73,7 +77,7 @@ private:
 	                                             FilterInfoWithTotalDomains &filter);
 	double CalculateLeftJoinDenom(Subgraph2Denominator &left, Subgraph2Denominator &right,
 	                              FilterInfoWithTotalDomains &filter);
-	double CalculateSemiAntiJoinDenom(double base_denom, Subgraph2Denominator &left, Subgraph2Denominator &right,
+	double CalculateSemiAntiJoinDenom(Subgraph2Denominator &left, Subgraph2Denominator &right,
 	                                  FilterInfoWithTotalDomains &filter);
 	bool ApplyJoinIncrement(double &target_denom, FilterInfoWithTotalDomains &edge,
 	                        reference_map_t<JoinRelationSet, CompositeJoinPairStats> &inner_join_pair_stats,

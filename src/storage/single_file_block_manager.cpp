@@ -296,6 +296,9 @@ void DatabaseHeader::SetStorageVersionInDatabaseHeader(DatabaseHeader &header, S
 		case StorageVersion::V2_0_0:
 			header.storage_compatibility = StorageVersion::V2_0_0;
 			break;
+		case StorageVersion::V2_1_0:
+			header.storage_compatibility = StorageVersion::V2_1_0;
+			break;
 			// new versions should be added here
 		default:
 			if (static_cast<idx_t>(read_version) > VERSION_NUMBER_UPPER) {
@@ -538,6 +541,7 @@ void SingleFileBlockManager::CreateNewDatabase(QueryContext context) {
 
 	options.version_number = GetVersionNumber();
 	db.GetStorageManager().SetStorageVersion(options.storage_version);
+	GetMetadataManager().SetStorageVersion(options.storage_version);
 	AddStorageVersionTag();
 
 	MainHeader main_header = ConstructMainHeader(options.version_number);
@@ -854,6 +858,7 @@ void SingleFileBlockManager::Initialize(const DatabaseHeader &header, const opti
 	}
 
 	db.GetStorageManager().SetStorageVersion(options.storage_version);
+	GetMetadataManager().SetStorageVersion(options.storage_version);
 
 	if (block_alloc_size.IsValid() && block_alloc_size.GetIndex() != header.block_alloc_size) {
 		throw InvalidInputException(

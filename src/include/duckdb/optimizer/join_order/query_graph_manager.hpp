@@ -25,11 +25,12 @@ class QueryGraphEdges;
 
 struct GenerateJoinRelation {
 public:
-	GenerateJoinRelation(optional_ptr<JoinRelationSet> set, unique_ptr<LogicalOperator> op_p);
+	GenerateJoinRelation(optional_ptr<JoinRelationSet> set, unique_ptr<LogicalOperator> op_p, idx_t cardinality_p);
 
 public:
 	optional_ptr<JoinRelationSet> set;
 	unique_ptr<LogicalOperator> op;
+	idx_t cardinality;
 };
 
 //! The QueryGraphManager manages the process of extracting the reorderable and nonreorderable operations
@@ -43,10 +44,11 @@ public:
 	//! Extract the join relations, optimizing non-reoderable relations when encountered
 	bool Build(JoinOrderOptimizer &optimizer, LogicalOperator &op);
 	//! Reconstruct the logical plan using the plan found by the plan enumerator
-	unique_ptr<LogicalOperator> Reconstruct(unique_ptr<LogicalOperator> plan);
+	unique_ptr<LogicalOperator> Reconstruct(unique_ptr<LogicalOperator> plan,
+	                                        const vector<RelationStats> &relation_stats);
 	//! Plan enumerator may not find a full plan and therefore will need to create cross  products to create edges.
 	void CreateQueryGraphCrossProduct(JoinRelationSet &left, JoinRelationSet &right);
-	//! Add the explicit cross-product edges required to connect the predicate graph.
+	//! Admit original cross-product edges when the current hyperedges cannot complete enumeration.
 	bool ActivateRequiredCrossProducts();
 	//! Whether the predicate graph still has disconnected components.
 	bool RequiresCrossProduct() const;
@@ -76,7 +78,8 @@ private:
 	idx_t GetGraphComponent(RelationIndex relation) const;
 	void ConnectGraphComponents(const JoinRelationSet &left, const JoinRelationSet &right);
 
-	GenerateJoinRelation GenerateJoins(vector<unique_ptr<LogicalOperator>> &extracted_relations, JoinRelationSet &set);
+	GenerateJoinRelation GenerateJoins(vector<unique_ptr<LogicalOperator>> &extracted_relations, JoinRelationSet &set,
+	                                   const vector<RelationStats> &relation_stats);
 
 public:
 	ClientContext &context;

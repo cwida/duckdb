@@ -1,16 +1,16 @@
 #pragma once
 
-#include "duckdb/common/primitive_dictionary.hpp"
-#include "duckdb/common/typedefs.hpp"
-#include "duckdb/storage/compression/dict_fsst/common.hpp"
-#include "duckdb/storage/compression/dict_fsst/analyze.hpp"
-#include "duckdb/function/compression_function.hpp"
 #include "duckdb/common/bitpacking.hpp"
+#include "duckdb/common/primitive_dictionary.hpp"
+#include "duckdb/common/types/string_heap.hpp"
+#include "duckdb/storage/compression/dict_fsst/common.hpp"
 #include "duckdb/storage/compression/standard_compression_state.hpp"
-#include "duckdb/storage/table/column_data_checkpointer.hpp"
+#include "duckdb/storage/statistics/stats_writer.hpp"
 
 namespace duckdb {
 namespace dict_fsst {
+
+struct DictFSSTAnalyzeState;
 
 // Dictionary compression uses a combination of bitpacking and a dictionary to compress string segments. The data is
 // stored across three buffers: the index buffer, the selection buffer and the dictionary. Firstly the Index buffer

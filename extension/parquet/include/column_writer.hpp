@@ -27,6 +27,7 @@
 #include "duckdb/common/types.hpp"
 #include "duckdb/common/unique_ptr.hpp"
 #include "duckdb/common/vector.hpp"
+#include "parquet_arena.h"
 
 namespace duckdb_parquet {
 class RowGroup;
@@ -176,7 +177,7 @@ public:
 
 	virtual bool TryExportPreparedShreddingType(ShreddingType &result) const;
 
-	virtual idx_t FinalizeSchema(vector<duckdb_parquet::SchemaElement> &schemas) = 0;
+	virtual idx_t FinalizeSchema(duckdb_parquet::SchemaElementList &schemas) = 0;
 
 	//! Create the column writer for a specific type recursively
 	static unique_ptr<ColumnWriter> CreateWriterRecursive(ClientContext &context, ParquetWriter &writer,

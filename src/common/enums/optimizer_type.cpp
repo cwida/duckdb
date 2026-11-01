@@ -46,6 +46,7 @@ static const DefaultOptimizerType internal_optimizer_types[] = {
     {"common_subplan", OptimizerType::COMMON_SUBPLAN},
     {"join_elimination", OptimizerType::JOIN_ELIMINATION},
     {"window_self_join", OptimizerType::WINDOW_SELF_JOIN},
+    {"window_join_pushdown", OptimizerType::WINDOW_JOIN_PUSHDOWN},
     {"projection_pullup", OptimizerType::PROJECTION_PULLUP},
     {"outer_join_simplification", OptimizerType::OUTER_JOIN_SIMPLIFICATION},
     {"window_rewriter", OptimizerType::ROW_NUMBER_REWRITER},

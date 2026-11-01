@@ -158,7 +158,7 @@ SELECT * FROM integers WHERE a>2 AND (a=3 OR a=5) ORDER BY a
 query II
 EXPLAIN SELECT * FROM integers WHERE (a<2 OR a>3) AND (a=1 OR a=4)
 ----
-physical_plan	<REGEX>:.*SEQ_SCAN.*Filters.*a.*<.*2.*OR.*a.*>.*3.*AND.*a.*=.*1.*OR.*a.*=.*4.*
+physical_plan	<REGEX>:.*SEQ_SCAN.*Filters.*a.*<.*2.*OR.*a.*>.*3.*AND.*a IN \(1, 4\).*
 
 query II
 SELECT * FROM integers WHERE (a<2 OR a>3) AND (a=1 OR a=4)
@@ -169,7 +169,7 @@ SELECT * FROM integers WHERE (a<2 OR a>3) AND (a=1 OR a=4)
 query II
 EXPLAIN SELECT * FROM integers WHERE (a<2 OR a>3) AND (a=1 OR a=4) AND (b=1 OR b<5)
 ----
-physical_plan	<REGEX>:.*SEQ_SCAN.*Filters.*a.*<.*2.*OR.*a.*>.*3.*AND.*a.*=.*1.*OR.*a.*=.*4.*b.*=.*1.*OR.*b.*<.*5.*
+physical_plan	<REGEX>:.*SEQ_SCAN.*Filters.*a.*<.*2.*OR.*a.*>.*3.*AND.*a IN \(1, 4\).*b.*=.*1.*OR.*b.*<.*5.*
 
 query II
 SELECT * FROM integers WHERE (a<2 OR a>3) AND (a=1 OR a=4) AND (b=1 OR b<5)
@@ -219,7 +219,7 @@ SELECT * FROM integers WHERE a=1 OR (CASE WHEN a=2 THEN true WHEN a=4 THEN true 
 query II
 EXPLAIN SELECT * FROM integers WHERE (a=1 OR a=4) AND (a=1 OR (CASE WHEN a%2=0 THEN true ELSE false END)) AND (concat(a=1, b=1)='truetrue' OR a=2) AND (a::CHAR LIKE '1' OR a=5)
 ----
-physical_plan	<REGEX>:.*SEQ_SCAN.*Filters.*a = 1.*OR.*a.*=.*4.*|$
+physical_plan	<REGEX>:.*SEQ_SCAN.*Filters.*a IN \(1, 4\).*|$
 
 query II
 SELECT * FROM integers WHERE (a=1 OR a=4) AND (a=1 OR (CASE WHEN a%2=0 THEN true ELSE false END)) AND (concat(a=1, b=1)='truetrue' OR a=2) AND (a::CHAR LIKE '1' OR a=5)

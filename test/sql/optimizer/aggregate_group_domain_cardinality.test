@@ -1,0 +1,80 @@
+# name: test/sql/optimizer/aggregate_group_domain_cardinality.test
+# description: A GROUP BY's estimated cardinality is capped by the group-key domain (min/max range and narrow type domains)
+# group: [optimizer]
+
+statement ok
+CREATE TYPE mood AS ENUM ('happy', 'sad', 'ok', 'meh');
+
+# 200K rows. For a group key that is an expression (not a direct base-table column reference) the join-order
+# optimizer cannot use the table's min/max and falls back to an input-proportional estimate (here input / 2 =
+# 100000). The group-key domain cap tightens that to an upper bound on the distinct group-key combinations.
+statement ok
+CREATE TABLE t AS SELECT (range % 500)::INTEGER AS k, range AS id FROM range(200000);
+
+# BOOLEAN key: the domain is {true, false, NULL} -> at most 3 groups
+query II
+EXPLAIN (FORMAT compact) SELECT (id % 2 = 0) AS g, count(*) FROM t GROUP BY (id % 2 = 0);
+----
+physical_plan	<REGEX>:(?s).*GROUP_BY \(est=3\).*
+
+# ENUM key: at most the dictionary size (4) + a NULL group = 5
+query II
+EXPLAIN (FORMAT compact) SELECT (CASE WHEN id % 2 = 0 THEN 'happy' ELSE 'sad' END)::mood AS g, count(*) FROM t GROUP BY (CASE WHEN id % 2 = 0 THEN 'happy' ELSE 'sad' END)::mood;
+----
+physical_plan	<REGEX>:(?s).*GROUP_BY \(est=5\).*
+
+# integer key whose propagated statistics have min/max [0, 299]: at most max - min + 1 = 300 distinct values
+query II
+EXPLAIN (FORMAT compact) SELECT (k % 300)::SMALLINT AS g, count(*) FROM t GROUP BY (k % 300)::SMALLINT;
+----
+physical_plan	<REGEX>:(?s).*GROUP_BY \(est=300\).*
+
+# multiple keys: the bound is the (saturating) product of the per-key domains -> 3 * 3 = 9
+query II
+EXPLAIN (FORMAT compact) SELECT (id % 2 = 0) AS a, (id % 3 = 0) AS b, count(*) FROM t GROUP BY (id % 2 = 0), (id % 3 = 0);
+----
+physical_plan	<REGEX>:(?s).*GROUP_BY \(est=9\).*
+
+# correctness guard: the cap is only ever an upper bound - the real group count never exceeds it
+# (the same GROUP BY queries as above, so they take the LogicalAggregate path the cap applies to)
+query I
+SELECT count(*) FROM (SELECT (id % 2 = 0) AS g, count(*) FROM t GROUP BY (id % 2 = 0));
+----
+2
+
+query I
+SELECT count(*) FROM (SELECT (CASE WHEN id % 2 = 0 THEN 'happy' ELSE 'sad' END)::mood AS g, count(*) FROM t GROUP BY (CASE WHEN id % 2 = 0 THEN 'happy' ELSE 'sad' END)::mood);
+----
+2
+
+query I
+SELECT count(*) FROM (SELECT (k % 300)::SMALLINT AS g, count(*) FROM t GROUP BY (k % 300)::SMALLINT);
+----
+300
+
+query I
+SELECT count(*) FROM (SELECT (id % 2 = 0) AS a, (id % 3 = 0) AS b, count(*) FROM t GROUP BY (id % 2 = 0), (id % 3 = 0));
+----
+4
+
+# the input's estimated cardinality is not an upper bound: a cross product is estimated as the larger of its
+# inputs (100), yet it has 100 * 100 = 10000 real groups. The cap must not lower the estimate to the input estimate.
+statement ok
+CREATE TABLE domain_input AS SELECT range::INTEGER AS k FROM range(100);
+
+query I
+SELECT count(*) FROM (SELECT l.k * 100 + r.k AS g, count(*) FROM domain_input l CROSS JOIN domain_input r GROUP BY g);
+----
+10000
+
+query II
+EXPLAIN (FORMAT compact) SELECT l.k * 100 + r.k AS g, count(*) FROM domain_input l CROSS JOIN domain_input r GROUP BY g;
+----
+physical_plan	<!REGEX>:(?s).*GROUP_BY \(est=[0-9]{1,3}\).*
+
+# a VARCHAR key has no finite domain bound here (CHAR(n) is normalized to width-less VARCHAR), so the estimate
+# is left untouched and stays input-proportional: it must NOT be tightened to the tiny real group count
+query II
+EXPLAIN (FORMAT compact) SELECT (id % 2 = 0)::VARCHAR AS g, count(*) FROM t GROUP BY (id % 2 = 0)::VARCHAR;
+----
+physical_plan	<!REGEX>:(?s).*GROUP_BY \(est=[0-9]\).*

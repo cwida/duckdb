@@ -8,9 +8,7 @@
 
 #pragma once
 
-#include "duckdb/common/shared_ptr_ipp.hpp"
-#include "duckdb/common/typedefs.hpp"
-#include "duckdb/storage/partial_block_manager.hpp"
+#include "duckdb/storage/block_packable.hpp"
 #include "duckdb/storage/buffer/block_handle.hpp"
 #include "duckdb/storage/buffer/buffer_handle.hpp"
 #include "duckdb/storage/block_manager.hpp"
@@ -18,23 +16,11 @@
 namespace duckdb {
 
 class FixedSizeAllocator;
-class MetadataWriter;
-
-struct PartialBlockForIndex : public PartialBlock {
-public:
-	PartialBlockForIndex(PartialBlockState state, BlockManager &block_manager,
-	                     const shared_ptr<BlockHandle> &block_handle);
-	~PartialBlockForIndex() override {};
-
-public:
-	void Flush(QueryContext context, const idx_t free_space_left) override;
-	void Clear() override;
-	void Merge(PartialBlock &other, idx_t offset, idx_t other_size) override;
-};
+class PartialBlockManager;
 
 //! A fixed-size buffer holds fixed-size segments of data. It lazily deserializes a buffer, if on-disk and not
 //! in memory, and it only serializes dirty and non-written buffers to disk during serialization.
-class FixedSizeBuffer {
+class FixedSizeBuffer : public BlockPackable {
 	friend class FixedSizeAllocator;
 	friend class SegmentHandle;
 
@@ -44,6 +30,8 @@ public:
 	static constexpr uint8_t SHIFT[] = {32, 16, 8, 4, 2, 1};
 
 public:
+	//! Constructor for checkpoint metadata awaiting its packed backing buffer
+	FixedSizeBuffer(BlockManager &block_manager, idx_t segment_count, idx_t allocation_size);
 	//! Constructor for a new in-memory buffer
 	explicit FixedSizeBuffer(BlockManager &block_manager, MemoryTag memory_tag);
 	FixedSizeBuffer(BlockManager &block_manager, const idx_t segment_count, const idx_t allocation_size,
@@ -52,7 +40,10 @@ public:
 	FixedSizeBuffer(BlockManager &block_manager, const idx_t segment_count, const idx_t allocation_size,
 	                const BlockPointer &block_pointer);
 
-	~FixedSizeBuffer();
+	~FixedSizeBuffer() override;
+
+public:
+	void Finalize(shared_ptr<BlockHandle> block_handle_p, uint32_t offset) override;
 
 public:
 	bool IsEmpty() const {

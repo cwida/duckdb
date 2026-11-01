@@ -45,7 +45,7 @@ select count(*) from t where b in (1, 3) ;
 query II
 explain select count(*) from t where b = 1 or b = 3 ;
 ----
-physical_plan	<REGEX>:.*Filters:.*optional:.*b = 1.*OR.*b = 3.*
+physical_plan	<REGEX>:.*Filters:.*optional:.*b IN.*1, 3.*
 
 query I
 select count(*) from t where b = 1 or b = 3 ;

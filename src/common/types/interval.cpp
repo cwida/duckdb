@@ -5,6 +5,7 @@
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/common/types/time.hpp"
+#include "duckdb/common/types/hugeint.hpp"
 #include "duckdb/common/types/cast_helpers.hpp"
 #include "duckdb/common/operator/add.hpp"
 #include "duckdb/common/operator/multiply.hpp"
@@ -532,10 +533,32 @@ interval_t Interval::GetDifference(timestamp_t timestamp_1, timestamp_t timestam
 	const auto us_1 = Timestamp::GetEpochMicroSeconds(timestamp_1);
 	const auto us_2 = Timestamp::GetEpochMicroSeconds(timestamp_2);
 	int64_t delta_us;
-	if (!TrySubtractOperator::Operation(us_1, us_2, delta_us)) {
+	if (TrySubtractOperator::Operation(us_1, us_2, delta_us)) {
+		return FromMicro(delta_us);
+	}
+	// the days between two finite timestamps always fit, even when their microseconds do not
+	const auto delta = Hugeint::Convert(us_1) - Hugeint::Convert(us_2);
+	const auto micros_per_day = Hugeint::Convert(Interval::MICROS_PER_DAY);
+	interval_t result;
+	result.months = 0;
+	if (!Hugeint::TryCast(delta / micros_per_day, result.days) ||
+	    !Hugeint::TryCast(delta % micros_per_day, result.micros)) {
 		throw ConversionException("Timestamp difference is out of bounds");
 	}
-	return FromMicro(delta_us);
+	return result;
+}
+
+int64_t Interval::GetDifferenceInUnits(int64_t start_us, int64_t end_us, int64_t micros_per_unit) {
+	int64_t delta_us;
+	if (TrySubtractOperator::Operation(end_us, start_us, delta_us)) {
+		return delta_us / micros_per_unit;
+	}
+	const auto delta = Hugeint::Convert(end_us) - Hugeint::Convert(start_us);
+	int64_t units;
+	if (!Hugeint::TryCast(delta / Hugeint::Convert(micros_per_unit), units)) {
+		throw OutOfRangeException("Overflow in the difference of two timestamps");
+	}
+	return units;
 }
 
 interval_t Interval::FromMicro(int64_t delta_us) {

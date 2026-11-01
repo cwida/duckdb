@@ -87,6 +87,8 @@ public:
 	static idx_t GetEstimatedCPUId();
 
 private:
+	struct WorkerTask;
+
 	TaskSchedulerPool &GetPool(TaskSchedulerType pool_type);
 	TaskSchedulerQueue &GetQueue(TaskSchedulerType pool_type) const;
 	//! Actual CPU selected by a successful worker pin; unset for other threads.
@@ -94,8 +96,8 @@ private:
 
 	//! Fetches a task, returns true if successful or false if no tasks were available
 	bool GetTaskInternal(ConsumerToken &consumer, shared_ptr<Task> &task);
-	bool TryDequeueAndProcessTask(const DBConfig &config, TaskSchedulerQueue &queue, ConsumerToken &consumer,
-	                              shared_ptr<Task> &task);
+	bool TryDequeueTask(TaskSchedulerQueue &queue, ConsumerToken &consumer, WorkerTask &worker_task);
+	void ProcessTask(const DBConfig &config, WorkerTask &worker_task);
 
 	void SetThreadsInternal(TaskSchedulerType pool_type, idx_t n);
 	void Signal(TaskSchedulerType pool_type, idx_t n);
