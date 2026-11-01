@@ -189,6 +189,7 @@ CachedGlobalSettings::CachedGlobalSettings(const GlobalUserSettings &global_user
                                            const identifier_map_t<ExtensionOption> &extension_parameters)
     : global_user_settings(global_user_settings_p), version(version), settings(std::move(settings_p)),
       uuid(global_user_settings_p.GetUUID()) {
+	extension_setting_indexes.reserve(extension_parameters.size());
 	for (auto &entry : extension_parameters) {
 		extension_setting_indexes.emplace(entry.first, entry.second.setting_index.GetIndex());
 	}
