@@ -18,7 +18,7 @@ namespace duckdb {
 struct ExtendedOpenFileInfo {
 	unordered_map<string, Value> options;
 
-	//! The option that names the ephemeral secret to open the file with (SecretManager::RegisterEphemeralSecret)
+	//! The option that names the secret to open the file with, instead of the one that matches its path
 	static constexpr const char *SECRET_OPTION = "secret";
 
 public:
@@ -26,7 +26,7 @@ public:
 	//! that cannot be read as a T. Only the types specialized below are supported
 	template <class T>
 	bool TryGetOption(const string &name, T &result) const;
-	//! The name of the ephemeral secret to open the file with - false when the file names none
+	//! The name of the secret to open the file with - false when the file names none
 	DUCKDB_API bool TryGetSecretName(string &name) const;
 };
 
@@ -62,15 +62,6 @@ public:
 	DUCKDB_API static OpenFileInfo FromValue(const Value &input, const Identifier &function_name);
 	//! The inverse of FromValue: the path as a VARCHAR when there are no options, a file struct otherwise
 	DUCKDB_API Value ToValue() const;
-	//! Whether the file is opened with an ephemeral secret
-	bool HasSecretName() const {
-		return extended_info && extended_info->options.count(ExtendedOpenFileInfo::SECRET_OPTION) > 0;
-	}
-	//! The name of the ephemeral secret the file is opened with - "" when it has none
-	DUCKDB_API string GetSecretName() const;
-	//! This file with the ephemeral secret `name` when it has none. The extended information is copied, because copies
-	//! of an OpenFileInfo share it
-	DUCKDB_API OpenFileInfo WithSecretName(const string &name) const;
 
 	bool operator<(const OpenFileInfo &rhs) const {
 		return path < rhs.path;

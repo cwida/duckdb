@@ -16,27 +16,12 @@
 #include "duckdb/main/secret/secret_storage.hpp"
 #include "duckdb/parser/parsed_data/create_secret_info.hpp"
 
-#include <functional>
-
 namespace duckdb {
 
 struct BoundStatement;
 struct DBConfig;
 class SecretManager;
 class SchemaCatalogEntry;
-
-//! Returns the secret of an ephemeral secret (SecretManager::RegisterEphemeralSecret): on first use, and again on a
-//! refresh
-using ephemeral_secret_vend_t = std::function<shared_ptr<const KeyValueSecret>(ClientContext &context)>;
-
-//! How long an ephemeral secret lives, and what it serves meanwhile (SecretManager::RegisterEphemeralSecret)
-enum class EphemeralSecretLifetime : uint8_t {
-	//! The transaction that registers it, until it ends
-	TRANSACTION,
-	//! The connection that registers it, in and outside transactions, until it closes. Only for a connection that runs
-	//! no queries but those of the registrant
-	CONNECTION
-};
 
 //! A Secret Entry in the secret manager
 struct SecretEntry {
@@ -155,22 +140,6 @@ public:
 	                                 const Identifier &storage = "");
 	//! List all secrets from all secret storages
 	DUCKDB_API vector<SecretEntry> AllSecrets(CatalogTransaction transaction);
-
-	//! Registers an ephemeral secret on the connection of `context` and returns its name. It lives as long as
-	//! `lifetime` says: by default only the current transaction, which must be active, so register one per table and
-	//! transaction, and name it on every scan of the table. Meanwhile it serves reads of the files under `scope` whose
-	//! "secret" option names it (ExtendedOpenFileInfo::SECRET_OPTION), with the secret `vend` returns on first use, and
-	//! again on a refresh. The name is 128 random bits, and no lookup by path, listing of secrets or lookup by name
-	//! sees the secret, so only a statement that is given the name can use it
-	DUCKDB_API string RegisterEphemeralSecret(ClientContext &context, string scope, ephemeral_secret_vend_t vend,
-	                                          EphemeralSecretLifetime lifetime = EphemeralSecretLifetime::TRANSACTION);
-	//! The ephemeral secret `name` for reading `path`; throws when the connection of `context` has no such secret that
-	//! serves its current transaction, or when `path` is outside its scope
-	DUCKDB_API shared_ptr<SecretEntry> GetEphemeralSecret(ClientContext &context, const string &name,
-	                                                      const string &path);
-	//! Vends the ephemeral secret `name` again, after the store rejected it as expired; false when the connection of
-	//! `context` has no such secret that serves its current transaction
-	DUCKDB_API bool RefreshEphemeralSecret(ClientContext &context, const string &name);
 
 	//! List all secret types
 	DUCKDB_API vector<SecretType> AllSecretTypes();

@@ -32,7 +32,7 @@ struct FileOpenerInfo {
 	    : file(std::move(file_p)) {
 	}
 
-	//! The file, with the options it is opened with, e.g. the ephemeral secret to open it with
+	//! The file, with the options it is opened with, e.g. the secret to open it with
 	OpenFileInfo file;
 };
 

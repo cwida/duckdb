@@ -214,22 +214,32 @@ KeyValueSecretReader::KeyValueSecretReader(FileOpener &opener_p, optional_ptr<Fi
 	}
 	string secret_name;
 	if (info && info->file.extended_info && info->file.extended_info->TryGetSecretName(secret_name)) {
-		// the open names its ephemeral secret: look up none by path
-		if (!context) {
-			throw InvalidConfigurationException("The ephemeral secret for '%s' is not available without a client",
-			                                    path);
+		// the file names the secret to open it with: look up none by path
+		if (!db) {
+			throw InvalidConfigurationException("Secret '%s' named by '%s' cannot be looked up without a database",
+			                                    secret_name, path);
 		}
-		secret_entry = SecretManager::Get(*context).GetEphemeralSecret(*context, secret_name, path);
-		auto &type = secret_entry->secret->GetType();
+		auto transaction = context ? CatalogTransaction::GetSystemCatalogTransaction(*context)
+		                           : CatalogTransaction::GetSystemTransaction(*db);
+		secret_entry = db->GetSecretManager().GetSecretByName(transaction, secret_name);
+		if (!secret_entry) {
+			throw InvalidConfigurationException("Secret '%s' named by '%s' not found", secret_name, path);
+		}
+		auto &named_secret = *secret_entry->secret;
+		if (named_secret.MatchScore(path) == NumericLimits<int64_t>::Minimum()) {
+			throw InvalidConfigurationException(
+			    "Secret '%s' named by '%s' does not apply to it: the path is outside the secret's scope", secret_name,
+			    path);
+		}
+		auto &type = named_secret.GetType();
 		for (idx_t i = 0; i < secret_types_len; i++) {
 			if (StringUtil::CIEquals(type.GetIdentifierName(), secret_types[i])) {
-				secret = secret_entry->secret->Cast<KeyValueSecret>();
-				is_ephemeral_secret = true;
+				secret = named_secret.Cast<KeyValueSecret>();
 				return;
 			}
 		}
-		throw InvalidConfigurationException(
-		    "The ephemeral secret for '%s' is a secret of type %s, which this read does not take", path, type);
+		throw InvalidConfigurationException("Secret '%s' named by '%s' is of type %s, which this read does not take",
+		                                    secret_name, path, type);
 	}
 
 	Initialize(secret_types, secret_types_len);
@@ -249,10 +259,6 @@ SettingLookupResult KeyValueSecretReader::TryGetSecretKeyOrSetting(const Identif
                                                                    const Identifier &setting_name, Value &result) {
 	if (secret && secret->TryGetValue(secret_key, result)) {
 		return SettingLookupResult(SettingScope::SECRET);
-	}
-	if (is_ephemeral_secret) {
-		// a setting is something the query's caller can change
-		return SettingLookupResult();
 	}
 	if (context) {
 		auto res = context->TryGetCurrentSetting(setting_name, result);

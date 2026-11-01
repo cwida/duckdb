@@ -29,8 +29,6 @@ struct FileGlobInput {
 	FileGlobOptions behavior;
 	bool allow_empty;
 	string extension;
-	//! The name of the ephemeral secret to list with; every file the glob lists carries it in its "secret" option
-	string secret_name;
 };
 
 } // namespace duckdb

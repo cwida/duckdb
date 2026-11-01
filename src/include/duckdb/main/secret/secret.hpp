@@ -342,8 +342,6 @@ protected:
 	optional_ptr<const KeyValueSecret> secret;
 	//! Optionally an owning pointer to the secret entry
 	shared_ptr<SecretEntry> secret_entry;
-	//! Whether `secret` is the ephemeral secret the open names; no setting then fills a key it lacks
-	bool is_ephemeral_secret = false;
 
 	//! Secrets/settings will be fetched either through a context (local + global settings) or a databaseinstance
 	//! (global only)
