@@ -1,0 +1,103 @@
+# name: test/sql/error/test_try_in_clause.test
+# description: The IN-to-mark-join rewrite must not move a probe out of TRY or a guarded arm
+# group: [error]
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES (0::BIGINT, true), (100::BIGINT, false)) v(b, ok);
+
+# the probe of a large IN below TRY stays inside the capture
+query II
+SELECT b, TRY((100 // b) IN (1, 3, 7, 11, 13)) FROM t ORDER BY b;
+----
+0	NULL
+100	true
+
+query II
+SELECT b, TRY((100 // b) NOT IN (1, 3, 7, 11, 13)) FROM t ORDER BY b;
+----
+0	NULL
+100	false
+
+# below the threshold the IN stays an expression anyway
+query II
+SELECT b, TRY((100 // b) IN (1, 3)) FROM t ORDER BY b;
+----
+0	NULL
+100	true
+
+# a large IN inside a short-circuited CASE arm keeps its guard
+query II
+SELECT b, CASE WHEN b = 0 THEN false ELSE (100 // b) IN (1, 3, 7, 11, 13) END FROM t ORDER BY b;
+----
+0	false
+100	true
+
+# and inside a later COALESCE operand, which evaluates on remaining rows only
+query II
+SELECT b, COALESCE(ok, (100 // b) IN (1, 3, 7, 11, 13)) FROM (VALUES (0::BIGINT, true), (100::BIGINT, NULL::BOOLEAN)) v(b, ok) ORDER BY b;
+----
+0	true
+100	true
+
+# a short-circuited conjunction inside a CASE condition keeps its guard
+query II
+SELECT b, CASE WHEN b <> 0 AND (100 // b) IN (1, 3, 7, 11, 13) THEN 1 ELSE 0 END FROM t ORDER BY b;
+----
+0	0
+100	1
+
+query II
+SELECT b, CASE WHEN b = 0 OR (100 // b) IN (1, 3, 7, 11, 13) THEN 1 ELSE 0 END FROM t ORDER BY b;
+----
+0	1
+100	1
+
+# the list_contains spelling reaches the same rewrite through the IN conversion rule
+query II
+SELECT b, TRY(list_contains([1, 3, 7, 11, 13], 100 // b)) FROM t ORDER BY b;
+----
+0	NULL
+100	true
+
+# has_error captures the probe's error the same way TRY does
+query II
+SELECT b, has_error((100 // b) IN (1, 3, 7, 11, 13)) FROM t ORDER BY b;
+----
+0	true
+100	false
+
+# plan: the probe below TRY stays an expression
+query II
+EXPLAIN SELECT b, TRY((100 // b) IN (1, 3, 7, 11, 13)) FROM t;
+----
+physical_plan	<!REGEX>:.*MARK.*
+
+# protection: an unguarded large IN still rewrites to the mark join
+query II
+EXPLAIN SELECT b FROM t WHERE (b + 1) IN (1, 3, 7, 11, 13, 17, 19, 23);
+----
+physical_plan	<REGEX>:.*MARK.*
+
+# protection: a large IN in the first conjunct evaluates unconditionally and still rewrites
+query II
+EXPLAIN SELECT (b + 1) IN (1, 3, 7, 11, 13, 17, 19, 23) AND b <> 0 FROM t;
+----
+physical_plan	<REGEX>:.*MARK.*
+
+# protection: split filter conjuncts are separate expressions, the IN still rewrites
+query II
+EXPLAIN SELECT b FROM t WHERE ok AND (b + 1) IN (1, 3, 7, 11, 13, 17, 19, 23);
+----
+physical_plan	<REGEX>:.*MARK.*
+
+# protection: NOT is an eager wrapper, the IN below it still rewrites
+query II
+EXPLAIN SELECT NOT ((b + 1) IN (1, 3, 7, 11, 13, 17, 19, 23)) FROM t;
+----
+physical_plan	<REGEX>:.*MARK.*
+
+# and an unguarded probe that raises still raises
+statement error
+SELECT (100 // b) IN (1, 3, 7, 11, 13) FROM t ORDER BY b;
+----
+Division by zero

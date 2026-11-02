@@ -82,13 +82,16 @@ static unique_ptr<FunctionData> VariantExtractBind(BindScalarFunctionInput &inpu
 	}
 }
 
-static bool TryShreddedExtractRecursive(const Vector &input, const vector<VariantPathComponent> &components,
-                                        Vector &result, idx_t count, idx_t path_index = 0) {
+enum class ShreddedExtractResult : uint8_t { SUCCESS, NOT_SUPPORTED, KEY_NOT_FOUND };
+
+static ShreddedExtractResult TryShreddedExtractRecursive(const Vector &input,
+                                                         const vector<VariantPathComponent> &components, Vector &result,
+                                                         idx_t count, idx_t path_index = 0) {
 	if (path_index >= components.size()) {
 		// reached the end of the path - shred
 		if (input.GetType().IsNested()) {
 			// we only support this for non-nested types for now
-			return false;
+			return ShreddedExtractResult::NOT_SUPPORTED;
 		}
 		// create the shredded vector with an empty unshredded part
 		auto shredded_type = VariantUtils::ShreddedType(input.GetType());
@@ -105,27 +108,27 @@ static bool TryShreddedExtractRecursive(const Vector &input, const vector<Varian
 
 		FlatVector::SetSize(shredded_vector, count_t(count));
 		result.Shred(shredded_vector, count);
-		return true;
+		return ShreddedExtractResult::SUCCESS;
 	}
 	auto &component = components[path_index];
 	if (component.lookup_mode != VariantChildLookupMode::BY_KEY) {
 		// only by key supported
-		return false;
+		return ShreddedExtractResult::NOT_SUPPORTED;
 	}
 	if (input.GetType().id() != LogicalTypeId::STRUCT) {
 		//! Not shredded on OBJECT, can't extract a key
-		return false;
+		return ShreddedExtractResult::NOT_SUPPORTED;
 	}
 	// first entry is "typed_value"
 	auto &typed_entries = StructVector::GetEntries(input);
 	if (typed_entries.empty()) {
 		// An empty shredded STRUCT has no typed_value child.
-		return false;
+		return ShreddedExtractResult::NOT_SUPPORTED;
 	}
 	auto &typed_value = typed_entries[0];
 	if (typed_value.GetType().id() != LogicalTypeId::STRUCT) {
 		// A shredded wrapper can also contain a primitive or an array.
-		return false;
+		return ShreddedExtractResult::NOT_SUPPORTED;
 	}
 
 	// find the type in the struct type
@@ -138,8 +141,8 @@ static bool TryShreddedExtractRecursive(const Vector &input, const vector<Varian
 			return TryShreddedExtractRecursive(child_entries[child_idx], components, result, count, path_index + 1);
 		}
 	}
-	// key not found - bail (FIXME: could we emit constant NULL here?)
-	return false;
+	// the vector is fully shredded, so a key outside the shredded type is NULL in every row
+	return ShreddedExtractResult::KEY_NOT_FOUND;
 }
 
 static bool TryFromShreddedExtract(const Vector &variant_vec, const vector<VariantPathComponent> &components,
@@ -153,7 +156,15 @@ static bool TryFromShreddedExtract(const Vector &variant_vec, const vector<Varia
 		return false;
 	}
 	auto &shredded_vec = ShreddedVector::GetShreddedVector(variant_vec);
-	return TryShreddedExtractRecursive(shredded_vec, components, result, count);
+	switch (TryShreddedExtractRecursive(shredded_vec, components, result, count)) {
+	case ShreddedExtractResult::SUCCESS:
+		return true;
+	case ShreddedExtractResult::KEY_NOT_FOUND:
+		ConstantVector::SetNull(result, count_t(count));
+		return true;
+	default:
+		return false;
+	}
 }
 
 void VariantUtils::VariantExtract(const Vector &variant_vec, const vector<VariantPathComponent> &components,

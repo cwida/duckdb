@@ -173,6 +173,8 @@ public:
 		return optional_idx();
 	}
 	virtual unique_ptr<BaseStatistics> GetStatistics(ClientContext &context, const Identifier &name);
+	DUCKDB_API virtual unique_ptr<BaseStatistics> GetVirtualColumnStatistics(ClientContext &context,
+	                                                                         column_t virtual_column_id);
 
 public:
 	template <class TARGET>

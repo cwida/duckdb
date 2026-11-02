@@ -102,6 +102,6 @@ SELECT min(v, 2), arg_max(v, v, 2) FROM vals;
 [1, 2]	[3, 2]
 
 query I
-SELECT approx_top_k(v, 2) FROM (VALUES (1), (1), (2)) t(v);
+SELECT list_sort(approx_top_k(v, 2)) FROM (VALUES (1), (1), (2)) t(v);
 ----
 [1, 2]

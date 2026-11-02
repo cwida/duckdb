@@ -5,6 +5,7 @@
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/view_catalog_entry.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/function/table/system_catalog_scanner.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/client_data.hpp"
 #include "duckdb/parser/constraints/not_null_constraint.hpp"
@@ -22,6 +23,7 @@ struct DuckDBColumnsData : public GlobalTableFunctionState {
 	vector<reference<CatalogEntry>> entries;
 	atomic<idx_t> offset;
 	idx_t column_offset;
+	SystemCatalogScannerStats stats;
 };
 
 static unique_ptr<FunctionData> DuckDBColumnsBind(ClientContext &context, TableFunctionBindInput &input,
@@ -89,18 +91,14 @@ static unique_ptr<FunctionData> DuckDBColumnsBind(ClientContext &context, TableF
 	names.emplace_back("generation_expression");
 	return_types.emplace_back(LogicalType::VARCHAR);
 
-	return nullptr;
+	return SystemCatalogScanner::CreateBindData(names, return_types, "table_name", "table_oid");
 }
 
 static unique_ptr<GlobalTableFunctionState> DuckDBColumnsInit(ClientContext &context, TableFunctionInitInput &input) {
 	auto result = make_uniq<DuckDBColumnsData>();
 
-	// scan all the schemas for tables and views and collect them
-	auto schemas = Catalog::GetAllSchemas(context);
-	for (auto &schema : schemas) {
-		schema.get().Scan(context, CatalogType::TABLE_ENTRY,
-		                  [&](CatalogEntry &entry) { result->entries.push_back(entry); });
-	}
+	// collect the tables and views that survive the pushed-down filters
+	result->entries = SystemCatalogScanner::GetEntries(context, input, CatalogType::TABLE_ENTRY, result->stats);
 	return std::move(result);
 }
 
@@ -428,8 +426,14 @@ static double DuckDBColumnsProgress(ClientContext &context, const FunctionData *
 	return 100.0 * static_cast<double>(data.offset) / static_cast<double>(data.entries.size());
 }
 
+static void DuckDBColumnsGetMetrics(TableFunctionGetMetricsInput &input) {
+	SystemCatalogScanner::ReportMetrics(input, input.global_state->Cast<DuckDBColumnsData>().stats);
+}
+
 void DuckDBColumnsFun::RegisterFunction(BuiltinFunctions &set) {
 	TableFunction columns("duckdb_columns", {}, DuckDBColumnsFunction, DuckDBColumnsBind, DuckDBColumnsInit);
+	SystemCatalogScanner::RegisterPushdown(columns);
+	columns.get_metrics = DuckDBColumnsGetMetrics;
 	columns.table_scan_progress = DuckDBColumnsProgress;
 	set.AddFunction(columns);
 }
