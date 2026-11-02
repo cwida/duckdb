@@ -1,0 +1,49 @@
+# name: test/sql/copy/parquet/parquet_pruned_file_stats.test
+# description: Column statistics follow the surviving file after union pruning
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT 42 AS i) TO '{TEST_DIR}/metadata_prune_a.parquet';
+
+statement ok
+COPY (SELECT 84 AS i) TO '{TEST_DIR}/metadata_prune_b.parquet';
+
+# Pruning the first file must retain the second file's statistics.
+query III
+SELECT i, stats(i).min::INTEGER, stats(i).max::INTEGER
+FROM read_parquet(['{TEST_DIR}/metadata_prune_a.parquet', '{TEST_DIR}/metadata_prune_b.parquet'],
+                  union_by_name = true, filename = true)
+WHERE filename = '{TEST_DIR}/metadata_prune_b.parquet';
+----
+84	84	84
+
+# Without union_by_name, only the first file's metadata is cached.
+# It must not rule out matching rows from another file.
+query I
+SELECT i FROM read_parquet(['{TEST_DIR}/metadata_prune_a.parquet', '{TEST_DIR}/metadata_prune_b.parquet'])
+WHERE i = 84;
+----
+84
+
+# The cache may cover a prefix of the list, including repeated files.
+query I
+SELECT count(*) FROM read_parquet(['{TEST_DIR}/metadata_prune_a.parquet', '{TEST_DIR}/metadata_prune_b.parquet',
+                                  '{TEST_DIR}/metadata_prune_a.parquet'])
+WHERE i = 42;
+----
+2
+
+# Pruning can either retain or discard that cached prefix.
+query I
+SELECT i FROM read_parquet(['{TEST_DIR}/metadata_prune_a.parquet', '{TEST_DIR}/metadata_prune_b.parquet'], filename = true)
+WHERE filename = '{TEST_DIR}/metadata_prune_a.parquet';
+----
+42
+
+query I
+SELECT i FROM read_parquet(['{TEST_DIR}/metadata_prune_a.parquet', '{TEST_DIR}/metadata_prune_b.parquet'], filename = true)
+WHERE filename = '{TEST_DIR}/metadata_prune_b.parquet';
+----
+84

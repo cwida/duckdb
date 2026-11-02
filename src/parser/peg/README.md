@@ -60,7 +60,7 @@ SelectClause <- 'SELECT' DistinctClause? TargetList?
 
 ```
 IsExpression <- IsDistinctFromExpression IsTest*
-CaseExpression <- 'CASE' Expression? CaseWhenThen+ CaseElse? 'END'
+SearchedCaseExpression <- 'CASE' CaseWhenThen+ CaseElse? 'END'
 ```
 
 ### Grouping with Parentheses

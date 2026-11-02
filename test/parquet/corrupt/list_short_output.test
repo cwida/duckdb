@@ -1,0 +1,16 @@
+# name: test/parquet/corrupt/list_short_output.test
+# description: Reject short list columns before consuming unread list entries
+# group: [corrupt]
+
+require parquet
+
+# The row group declares eight rows, but y contains only four lists.
+statement error
+SELECT x, y[1] FROM read_parquet('data/parquet-testing/corrupt/list_short_output.parquet') WHERE x > 0;
+----
+Mismatch in parquet read
+
+statement error
+SELECT x, y[1] FROM read_parquet('data/parquet-testing/corrupt/list_short_output.parquet');
+----
+Mismatch in parquet read

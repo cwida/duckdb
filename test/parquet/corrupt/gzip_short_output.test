@@ -1,0 +1,11 @@
+# name: test/parquet/corrupt/gzip_short_output.test
+# description: Reject GZIP pages that decompress to fewer bytes than declared
+# group: [corrupt]
+
+require parquet
+
+# The page declares 100 uncompressed bytes, but the GZIP member produces only four.
+statement error
+SELECT * FROM read_parquet('data/parquet-testing/corrupt/gzip_short_output.parquet');
+----
+<REGEX>:Data Corruption Error: Failed to read file ".*": GZIP uncompressed data size mismatch \(expected 100, actual: 4\).*

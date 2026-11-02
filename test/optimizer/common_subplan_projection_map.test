@@ -81,3 +81,31 @@ JOIN (
 ) y USING (customer_id);
 ----
 physical_plan	<REGEX>:.*__common_subplan.*CTE Scan.*CTE Scan.*
+
+# The repeated view is also materialized when the approximate join order algorithm is used
+statement ok
+CREATE TABLE approx_order AS SELECT range AS order_id, range % 200 AS customer_id FROM range(10000);
+
+statement ok
+CREATE TABLE approx_del AS SELECT order_id FROM approx_order WHERE order_id % 3 = 0;
+
+statement ok
+CREATE TABLE approx_item AS SELECT range AS item_id, range % 200 AS customer_id FROM range(1000);
+
+statement ok
+CREATE VIEW approx_orders AS SELECT o.* FROM approx_order o ANTI JOIN approx_del d USING (order_id);
+
+statement ok
+SET approximate_join_order_threshold=2;
+
+query II
+EXPLAIN
+SELECT count(*), sum(y.n)
+FROM approx_orders o
+LEFT JOIN approx_item i USING (customer_id)
+LEFT JOIN (SELECT customer_id, count(*) AS n FROM approx_orders GROUP BY customer_id) y USING (customer_id);
+----
+physical_plan	<REGEX>:.*__common_subplan.*CTE Scan.*CTE Scan.*
+
+statement ok
+RESET approximate_join_order_threshold;

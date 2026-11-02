@@ -1,0 +1,78 @@
+# name: test/sql/copy/parquet/bloom_filter_pruned_row_groups.test
+# description: A row group that the min/max of one filter rules out does not read the Bloom filters of other filters
+# group: [parquet]
+
+require parquet
+
+require noforcestorage
+
+# one tenant per row group, item and direction min/max never rule a row group out
+statement ok
+COPY (
+	SELECT printf('T%03d', i // 2048) AS tenant, ((i % 50) * 20 + i // 2048)::INTEGER AS item, (i % 2)::VARCHAR AS direction
+	FROM range(20480) t(i)
+) TO '{TEST_DIR}/bloom_pruned_row_groups.parquet' (FORMAT parquet, ROW_GROUP_SIZE 2048)
+
+query II
+SELECT count(DISTINCT row_group_id), count(*)
+FROM parquet_metadata('{TEST_DIR}/bloom_pruned_row_groups.parquet')
+WHERE path_in_schema IN ('item', 'direction') AND bloom_filter_offset IS NOT NULL
+----
+10	20
+
+statement ok
+SET VARIABLE bloom_offsets = (
+	SELECT list(bloom_filter_offset) FROM parquet_metadata('{TEST_DIR}/bloom_pruned_row_groups.parquet')
+)
+
+# without prefetching each Bloom filter is a separate read
+statement ok
+SET enable_external_file_cache = false
+
+statement ok
+SET disable_parquet_prefetching = true
+
+statement ok
+CALL enable_logging('FileSystem')
+
+# only the row group that tenant min/max keeps reads its direction Bloom filter
+query I
+SELECT count(*) FROM '{TEST_DIR}/bloom_pruned_row_groups.parquet' WHERE tenant = 'T003' AND direction = '1'
+----
+1024
+
+query I
+SELECT count(DISTINCT pos) FROM duckdb_logs_parsed('FileSystem')
+WHERE op = 'READ' AND list_contains(getvariable('bloom_offsets'), pos)
+----
+1
+
+statement ok
+CALL truncate_duckdb_logs()
+
+# item 21 belongs to T001: the remaining row group reads its item Bloom filter, which rules it out
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM '{TEST_DIR}/bloom_pruned_row_groups.parquet' WHERE tenant = 'T003' AND item = 21
+----
+analyzed_plan	<REGEX>:(?s).*Row Groups Scanned: 0 / 10.*
+
+query I
+SELECT count(DISTINCT pos) FROM duckdb_logs_parsed('FileSystem')
+WHERE op = 'READ' AND list_contains(getvariable('bloom_offsets'), pos)
+----
+1
+
+statement ok
+CALL truncate_duckdb_logs()
+
+# every row group reads its item Bloom filter, only T001's row group also reads its direction Bloom filter
+query I
+SELECT count(*) FROM '{TEST_DIR}/bloom_pruned_row_groups.parquet' WHERE item = 21 AND direction = '1'
+----
+41
+
+query I
+SELECT count(DISTINCT pos) FROM duckdb_logs_parsed('FileSystem')
+WHERE op = 'READ' AND list_contains(getvariable('bloom_offsets'), pos)
+----
+11
