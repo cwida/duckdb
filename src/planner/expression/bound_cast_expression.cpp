@@ -3,6 +3,7 @@
 #include "duckdb/planner/expression/bound_parameter_expression.hpp"
 #include "duckdb/function/cast/bound_cast_data.hpp"
 #include "duckdb/function/cast/cast_function_set.hpp"
+#include "duckdb/common/limits.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/planner/expression_binder.hpp"
 
@@ -351,23 +352,29 @@ static bool NestedCastCanThrow(const LogicalType &source_type, const LogicalType
 }
 
 //! The decimal digits that every value of an integer type fits in, e.g. 5 for SMALLINT: no five-digit DECIMAL
-//! overflows for 32767 or -32768. 0 for other types, and for HUGEINT and UHUGEINT, whose 39-digit values no DECIMAL
-//! holds
-static uint8_t IntegerTypeDecimalDigits(const LogicalType &type) {
+//! overflows for 32767 or -32768. 0 for other types. HUGEINT and UHUGEINT have 39 digits, more than any DECIMAL holds
+static idx_t IntegerTypeDecimalDigits(const LogicalType &type) {
 	switch (type.id()) {
 	case LogicalTypeId::TINYINT:
+		return NumericLimits<int8_t>::Digits();
 	case LogicalTypeId::UTINYINT:
-		return 3;
+		return NumericLimits<uint8_t>::Digits();
 	case LogicalTypeId::SMALLINT:
+		return NumericLimits<int16_t>::Digits();
 	case LogicalTypeId::USMALLINT:
-		return 5;
+		return NumericLimits<uint16_t>::Digits();
 	case LogicalTypeId::INTEGER:
+		return NumericLimits<int32_t>::Digits();
 	case LogicalTypeId::UINTEGER:
-		return 10;
+		return NumericLimits<uint32_t>::Digits();
 	case LogicalTypeId::BIGINT:
-		return 19;
+		return NumericLimits<int64_t>::Digits();
 	case LogicalTypeId::UBIGINT:
-		return 20;
+		return NumericLimits<uint64_t>::Digits();
+	case LogicalTypeId::HUGEINT:
+		return NumericLimits<hugeint_t>::Digits();
+	case LogicalTypeId::UHUGEINT:
+		return NumericLimits<uhugeint_t>::Digits();
 	default:
 		return 0;
 	}
@@ -376,12 +383,12 @@ static uint8_t IntegerTypeDecimalDigits(const LogicalType &type) {
 //! Whether a DECIMAL target holds every value of the source type, so that the cast cannot overflow
 static bool DecimalHoldsEveryValue(const LogicalType &source_type, const LogicalType &target_type) {
 	D_ASSERT(target_type.id() == LogicalTypeId::DECIMAL);
-	const auto target_integral_digits = DecimalType::GetWidth(target_type) - DecimalType::GetScale(target_type);
+	const idx_t target_integral_digits = DecimalType::GetWidth(target_type) - DecimalType::GetScale(target_type);
 	if (source_type.id() == LogicalTypeId::DECIMAL) {
 		// The target needs the digits of the source on both sides of the decimal point: scaling up multiplies by a
 		// power of ten and keeps every digit, but scaling down rounds, which can carry into one more integral digit
 		// (9.99 -> DECIMAL(2,1) rounds to 10.0)
-		const auto source_integral_digits = DecimalType::GetWidth(source_type) - DecimalType::GetScale(source_type);
+		const idx_t source_integral_digits = DecimalType::GetWidth(source_type) - DecimalType::GetScale(source_type);
 		return DecimalType::GetScale(target_type) >= DecimalType::GetScale(source_type) &&
 		       target_integral_digits >= source_integral_digits;
 	}
