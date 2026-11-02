@@ -54,6 +54,7 @@
         "test/sql/optimizer/false_or_null_segment_pruning.test",
         "test/sql/optimizer/struct_segment_pruning.test",
         "test/sql/optimizer/list_contains_row_group_pruning.test",
+        "test/sql/optimizer/list_transform_row_group_pruning.test",
         "test/sql/copy/parquet/list_contains_row_group_pruning.test",
         "test/sql/optimizer/map_extract_row_group_pruning.test",
         "test/sql/copy/parquet/map_extract_row_group_pruning.test",

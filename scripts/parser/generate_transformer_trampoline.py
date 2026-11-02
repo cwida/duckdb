@@ -118,21 +118,149 @@ def norm_ws(value):
     return re.sub(r"\s+\)", ")", value)
 
 
-def ops_name(rule_name):
-    result = []
-    for idx, char in enumerate(rule_name):
-        if idx > 0 and char.isupper() and not rule_name[idx - 1].isupper():
-            result.append("_")
-        result.append(char.upper())
-    return "".join(result) + "_OPS"
-
-
 def init_name(rule_name):
     return f"Initialize{rule_name}Trampoline"
 
 
 def finalize_name(rule_name):
     return f"Finalize{rule_name}Trampoline"
+
+
+# Shared trampolines driven by TransformFrameOps::plan, see transform_frame_plan.cpp
+PLANNED_INITIALIZE = "InitializePlannedTrampoline"
+PLANNED_CHOICE_INITIALIZE = "InitializePlannedChoiceTrampoline"
+PASSTHROUGH_FINALIZE = "FinalizePassthroughTrampoline"
+
+LIST_CHILD_RE = re.compile(r"^list_pr\.GetChild\((\d+)\)$")
+OPTIONAL_CONTENT_RE = re.compile(r"^\{opt\}\.GetResult\(\)$")
+NESTED_CHILD_RE = re.compile(r"^(.*)\.Cast<ListParseResult>\(\)\.GetChild\((\d+)\)$")
+PARENS_PREFIX = "ExtractResultFromParens("
+
+
+def _wraps_whole(expr):
+    """True when the ExtractResultFromParens( at the start of expr closes at its last character."""
+    depth = 0
+    for idx, char in enumerate(expr):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return idx == len(expr) - 1
+    return False
+
+
+def _strip_parens(expr):
+    count = 0
+    while expr.startswith(PARENS_PREFIX) and _wraps_whole(expr):
+        expr = expr[len(PARENS_PREFIX) : -1]
+        count += 1
+    return expr, count
+
+
+@dataclass
+class ChildPath:
+    """TransformChildPath: parens to strip, then optionally a child of the nested sequence and its parens."""
+
+    parens: int = 0
+    nested_child: "int | None" = None
+    nested_parens: int = 0
+
+    def cpp(self):
+        nested_child = "TRANSFORM_PATH_END" if self.nested_child is None else str(self.nested_child)
+        return f"{{{self.parens}, {nested_child}, {self.nested_parens}}}"
+
+
+class RuleNotPlannable(Exception):
+    """The generator has no plan for this rule: it is reported as unsupported, and --write fails on it."""
+
+
+def planned_path(expr, base_re):
+    """Split a generated parse expression into its base match and the TransformChildPath that follows it."""
+    expr, trailing_parens = _strip_parens(expr)
+    path = ChildPath()
+    nested = NESTED_CHILD_RE.match(expr)
+    if nested:
+        path.nested_child = int(nested.group(2))
+        path.nested_parens = trailing_parens
+        expr, path.parens = _strip_parens(nested.group(1))
+    else:
+        path.parens = trailing_parens
+    match = base_re.match(expr)
+    if not match:
+        raise RuleNotPlannable(f"parse expression '{expr}' cannot be planned")
+    return match, path
+
+
+def planned_child_expr(parse_expr):
+    """The list child index and the path from it, for `ExtractResultFromParens(list_pr.GetChild(i))...`."""
+    match, path = planned_path(parse_expr, LIST_CHILD_RE)
+    return int(match.group(1)), path
+
+
+def planned_optional_content(result_expr_template):
+    """The path from the content of an optional child."""
+    return planned_path(result_expr_template, OPTIONAL_CONTENT_RE)[1]
+
+
+def cpp_bool(value):
+    return "true" if value else "false"
+
+
+@dataclass
+class PlannedChild:
+    kind: str
+    rule_name: str
+    parse_child: int
+    slot: int
+    after_dynamic: bool
+    path: ChildPath
+    content_path: ChildPath
+
+    def cpp(self):
+        return (
+            f"{{PEGRuleId::{self.rule_name}, TransformChildKind::{self.kind}, {self.parse_child}, {self.slot}, "
+            f"{cpp_bool(self.after_dynamic)}, {self.path.cpp()}, {self.content_path.cpp()}}}"
+        )
+
+
+@dataclass
+class ChoiceDispatch:
+    early_types: list
+    fallback_types: list
+    early_empty_name: bool
+    throw_without_process: bool
+    fallback_names: list
+
+
+@dataclass
+class FramePlan:
+    """The TransformFramePlan of a rule: the children of a sequence rule, or the dispatch of a choice rule."""
+
+    children: list
+    fixed_slots: int
+    has_dynamic: bool
+    choice: "ChoiceDispatch | None" = None
+
+
+class StaticDataEmitter:
+    """Emits each distinct static initializer once and hands out its name."""
+
+    def __init__(self):
+        self.names = {}
+        self.counts = {}
+        self.lines = []
+
+    def intern(self, prefix, cpp_type, body, array=False):
+        key = (prefix, body)
+        if key in self.names:
+            return self.names[key]
+        name = f"{prefix}_{self.counts.get(prefix, 0)}"
+        self.counts[prefix] = self.counts.get(prefix, 0) + 1
+        suffix = "[]" if array else ""
+        self.lines.append(f"static const {cpp_type} {name}{suffix} = {body};")
+        self.names[key] = name
+        return name
 
 
 class ManualTransformRegistry:
@@ -287,6 +415,8 @@ class RuleCapability:
 
 class UseGramPreviewEmitter:
     def __init__(self, rules, rule_types, excluded_rules, matcher_overrides, rule_config):
+        self.frame_plans = None
+        self.passthrough_slots = None
         self.rules = rules
         self.rule_types = rule_types
         self.excluded_rules = excluded_rules
@@ -367,6 +497,9 @@ class UseGramPreviewEmitter:
         config = self.rule_config_entry(rule_name)
         if config is not None and config.init:
             return config.init
+        plan = self.frame_plan_of(rule_name)
+        if plan is not None:
+            return PLANNED_CHOICE_INITIALIZE if plan.choice is not None else PLANNED_INITIALIZE
         return init_name(rule_name)
 
     def finalize_hook(self, rule_name):
@@ -375,7 +508,226 @@ class UseGramPreviewEmitter:
         config = self.rule_config_entry(rule_name)
         if config is not None and config.finalize:
             return config.finalize
+        if self.passthrough_slot_of(rule_name) is not None:
+            return PASSTHROUGH_FINALIZE
         return finalize_name(rule_name)
+
+    def prepare_plans(self):
+        """Compute the shared-trampoline data for every emitted rule."""
+        if self.frame_plans is not None:
+            return
+        self.frame_plans = {}
+        self.passthrough_slots = {}
+        for rule_name in self.emitted_rules():
+            if self.is_manual_rule(rule_name):
+                continue
+            ast = None
+            if rule_name not in self.matcher_overrides:
+                ast = tokens_to_ast(self.rules[rule_name].tokens)
+            config = self.rule_config_entry(rule_name)
+            plan = None
+            if config is None or not config.init:
+                plan = self.frame_plan(rule_name, ast)
+                self.frame_plans[rule_name] = plan
+            # FinalizePassthroughTrampoline reads the result slot from the plan, so a rule with a configured
+            # initializer (and therefore no plan) keeps its generated finalizer even when it forwards one child
+            if plan is not None and (config is None or not config.finalize):
+                slot = self.passthrough_slot(rule_name, ast)
+                if slot is not None:
+                    self.passthrough_slots[rule_name] = slot
+
+    def frame_plan_of(self, rule_name):
+        self.prepare_plans()
+        return self.frame_plans.get(rule_name)
+
+    def passthrough_slot_of(self, rule_name):
+        self.prepare_plans()
+        return self.passthrough_slots.get(rule_name)
+
+    def frame_plan(self, rule_name, ast):
+        """The data for the shared initializer, mirroring the dispatch of emit_rule."""
+        if rule_name in self.matcher_overrides:
+            return FramePlan([], 0, False)
+        if self.is_forward_rule(rule_name):
+            sequence_ast = ast if isinstance(ast, SequenceNode) else SequenceNode([ast])
+            return self.sequence_frame_plan(rule_name, sequence_ast)
+        if (
+            literal_string_values(ast) is not None
+            or self.is_no_arg_syntax_only_rule(rule_name, ast)
+            or self.is_parse_result_syntax_only_rule(rule_name, ast)
+        ):
+            return FramePlan([], 0, False)
+        if isinstance(ast, ChoiceNode):
+            return self.choice_frame_plan(rule_name, ast)
+        if isinstance(ast, SequenceNode):
+            return self.sequence_frame_plan(rule_name, ast)
+        if isinstance(ast, (ReferenceNode, ParensNode, ListMacroNode, RepeatNode, OptionalNode)):
+            return self.sequence_frame_plan(rule_name, SequenceNode([ast]))
+        raise RuleNotPlannable(f"unsupported preview shape for {rule_name}: {type(ast).__name__}")
+
+    def sequence_frame_plan(self, rule_name, ast):
+        plan = plan_trampoline_sequence_rule_with_terminals(
+            ast,
+            self.matcher_overrides,
+            self.syntax_only_rules,
+            allow_dynamic_stack_followers=True,
+            allow_top_level_repeat=True,
+        )
+        if plan.trailing_optional_stack_child is not None:
+            raise RuleNotPlannable("trailing optional stack child cannot be planned")
+        frame_children = [arg for arg in plan.finalize_args if isinstance(arg, (StackChild, OptionalStackChild))]
+        fixed_slots = max([arg.slot_idx + 1 for arg in frame_children], default=0)
+        dynamic_child = self.dynamic_child(plan)
+        children_before_dynamic = frame_children
+        children_after_dynamic = []
+        if dynamic_child:
+            children_before_dynamic = [arg for arg in frame_children if arg.slot_idx < dynamic_child.slot_start]
+            children_after_dynamic = [arg for arg in frame_children if arg.slot_idx > dynamic_child.slot_start]
+            fixed_slots = max(fixed_slots, dynamic_child.slot_start + 1)
+
+        def stack_entry(child):
+            parse_child, path = planned_child_expr(child.parse_expr)
+            kind = "REQUIRED"
+            content_path = ChildPath()
+            if isinstance(child, OptionalStackChild):
+                kind = "OPTIONAL"
+                content_path = planned_optional_content(child.result_expr_template)
+            after_dynamic = dynamic_child is not None and child.slot_idx > dynamic_child.slot_start
+            return PlannedChild(kind, child.rule_name, parse_child, child.slot_idx, after_dynamic, path, content_path)
+
+        # children are pushed last-first, so the first child in grammar order is transformed first
+        children = [stack_entry(child) for child in reversed(children_after_dynamic)]
+        if dynamic_child:
+            parse_child, path = planned_child_expr(dynamic_child.parse_expr)
+            content_path = ChildPath()
+            if plan.list_child:
+                kind = "LIST"
+            elif plan.optional_list_child:
+                kind = "OPTIONAL_LIST"
+                content_path = planned_optional_content(dynamic_child.result_expr_template)
+            elif plan.required_repeat_child:
+                kind = "REPEAT"
+            else:
+                kind = "OPTIONAL_REPEAT"
+            children.append(
+                PlannedChild(
+                    kind, dynamic_child.rule_name, parse_child, dynamic_child.slot_start, False, path, content_path
+                )
+            )
+        children.extend(stack_entry(child) for child in reversed(children_before_dynamic))
+        return FramePlan(children, fixed_slots, dynamic_child is not None)
+
+    def choice_frame_plan(self, rule_name, ast):
+        syntax_only_alternatives = self.choice_syntax_only_alternative_names(ast)
+        child_cpp_types = set()
+        for alternative in ast.alternatives:
+            if isinstance(alternative, ReferenceNode) and alternative.name in self.rule_types:
+                child_cpp_types.add(self.cpp_type(alternative.name))
+        direct_string_names = [
+            alternative.name
+            for alternative in ast.alternatives
+            if isinstance(alternative, ReferenceNode)
+            and alternative.name in self.rule_types
+            and self.cpp_type(alternative.name) == "string"
+        ]
+        external_string_names = [name for name in direct_string_names if name not in self.rules]
+        has_string_child_manual_transform = (
+            len(child_cpp_types) == 1
+            and self.cpp_type(rule_name) not in child_cpp_types
+            and "string" in child_cpp_types
+            and manual_body_exists(rule_name)
+        )
+        dispatch = ChoiceDispatch([], [], False, not self.is_parse_result_manual_choice_rule(rule_name, ast), [])
+        # the finalize step reads identifier-like alternatives straight from the parse result
+        if self.cpp_type(rule_name) == "Identifier":
+            dispatch.early_empty_name = True
+            dispatch.early_types += ["IDENTIFIER", "KEYWORD", "STRING"]
+            dispatch.fallback_names += direct_string_names
+        if self.cpp_type(rule_name) == "string":
+            dispatch.early_types += ["IDENTIFIER", "KEYWORD", "STRING", "OPERATOR"]
+            dispatch.fallback_names += external_string_names
+        dispatch.fallback_names += syntax_only_alternatives
+        if has_string_child_manual_transform:
+            dispatch.fallback_types += ["IDENTIFIER", "KEYWORD", "STRING", "OPERATOR", "CHOICE", "LIST"]
+        dispatch.fallback_names = list(dict.fromkeys(dispatch.fallback_names))
+        return FramePlan([], 1, False, dispatch)
+
+    def static_slot(self, plan, child_arg):
+        """The slot of a forwarded child when it does not shift with a dynamic child, else None."""
+        if self.adjusted_slot_expr(plan, child_arg.slot_idx) != str(child_arg.slot_idx):
+            return None
+        return child_arg.slot_idx
+
+    def passthrough_slot(self, rule_name, ast):
+        """The slot a rule returns unchanged, when its result is exactly one child's result of the same type."""
+        if self.is_manual_finalize_rule(rule_name) or rule_name in self.matcher_overrides:
+            return None
+        if self.is_forward_rule(rule_name):
+            sequence_ast = ast if isinstance(ast, SequenceNode) else SequenceNode([ast])
+            plan = self.sequence_plan(sequence_ast)
+            child_arg = self.sequence_forward_child(rule_name, plan)
+            return None if child_arg is None else self.static_slot(plan, child_arg)
+        if (
+            literal_string_values(ast) is not None
+            or self.is_no_arg_syntax_only_rule(rule_name, ast)
+            or self.is_parse_result_syntax_only_rule(rule_name, ast)
+        ):
+            return None
+        if isinstance(ast, ChoiceNode):
+            cpp_type = self.cpp_type(rule_name)
+            if self.is_parse_result_manual_choice_rule(rule_name, ast) or cpp_type in ("string", "Identifier"):
+                return None
+            if self.choice_syntax_only_alternative_names(ast):
+                return None
+            for alternative in ast.alternatives:
+                if not isinstance(alternative, ReferenceNode) or alternative.name not in self.rule_types:
+                    return None
+                if self.cpp_type(alternative.name) != cpp_type:
+                    return None
+            return 0
+        sequence_ast = ast if isinstance(ast, SequenceNode) else SequenceNode([ast])
+        plan = self.sequence_plan(sequence_ast)
+        child_arg = self.auto_sequence_forward_child(rule_name, plan)
+        return None if child_arg is None else self.static_slot(plan, child_arg)
+
+    def sequence_plan(self, ast):
+        return plan_trampoline_sequence_rule_with_terminals(
+            ast,
+            self.matcher_overrides,
+            self.syntax_only_rules,
+            allow_dynamic_stack_followers=True,
+            allow_top_level_repeat=True,
+        )
+
+    def emit_frame_plan(self, data, rule_name):
+        plan = self.frame_plan_of(rule_name)
+        children = "nullptr"
+        if plan.children:
+            body = "{" + ", ".join(child.cpp() for child in plan.children) + "}"
+            children = data.intern("FRAME_CHILDREN", "TransformChildPlan", body, array=True)
+        choice = "{}"
+        if plan.choice is not None:
+            names = "nullptr"
+            if plan.choice.fallback_names:
+                body = "{" + ", ".join(f'"{name}"' for name in plan.choice.fallback_names) + "}"
+                names = data.intern("FRAME_NAMES", "char *const", body, array=True)
+
+            def type_mask(types):
+                if not types:
+                    return "0"
+                return " | ".join(f"ParseResultTypeBit(ParseResultType::{name})" for name in types)
+
+            choice = (
+                f"{{{type_mask(plan.choice.early_types)}, {type_mask(plan.choice.fallback_types)}, "
+                f"{cpp_bool(plan.choice.early_empty_name)}, {cpp_bool(plan.choice.throw_without_process)}, "
+                f"{len(plan.choice.fallback_names)}, {names}}}"
+            )
+        result_slot = self.passthrough_slot_of(rule_name) or 0
+        body = (
+            f"{{{children}, {len(plan.children)}, {plan.fixed_slots}, {cpp_bool(plan.has_dynamic)}, {result_slot}, "
+            f"{choice}}}"
+        )
+        return data.intern("FRAME_PLAN", "TransformFramePlan", body)
 
     def emit_header_declarations(self):
         lines = []
@@ -398,14 +750,16 @@ class UseGramPreviewEmitter:
         for rule_name in self.emitted_rules():
             if self.is_manual_rule(rule_name):
                 continue
-            lines.append(
-                f"\tstatic void {self.initialize_hook(rule_name)}(PEGTransformer &transformer, "
-                f"GeneratedTransformProcess &process);\n"
-            )
-            lines.append(
-                f"\tstatic arena_ptr<TransformResultValue> {self.finalize_hook(rule_name)}(PEGTransformer &transformer, "
-                f"GeneratedTransformProcess &process);\n"
-            )
+            if self.frame_plan_of(rule_name) is None:
+                lines.append(
+                    f"\tstatic void {self.initialize_hook(rule_name)}(PEGTransformer &transformer, "
+                    f"GeneratedTransformProcess &process);\n"
+                )
+            if self.passthrough_slot_of(rule_name) is None:
+                lines.append(
+                    f"\tstatic arena_ptr<TransformResultValue> {self.finalize_hook(rule_name)}(PEGTransformer &transformer, "
+                    f"GeneratedTransformProcess &process);\n"
+                )
         for rule_name in self.emitted_rules():
             lines.extend(manual_transform_registry().get_declarations(rule_name))
         return "".join(lines)
@@ -422,7 +776,7 @@ class UseGramPreviewEmitter:
         if rule_name in self.matcher_overrides and rule_name in self.rule_types:
             try:
                 self.emit_matcher_override_rule(rule_name)
-            except NotImplementedError as e:
+            except RuleNotPlannable as e:
                 return RuleCapability(rule_name, RuleCapabilityStatus.UNSUPPORTED, str(e))
             return RuleCapability(
                 rule_name,
@@ -456,8 +810,8 @@ class UseGramPreviewEmitter:
             )
         if self.is_manual_finalize_rule(rule_name):
             try:
-                self.emit_initialize_rule(rule_name, ast)
-            except NotImplementedError as e:
+                self.frame_plan(rule_name, ast)
+            except RuleNotPlannable as e:
                 return RuleCapability(
                     rule_name,
                     RuleCapabilityStatus.UNSUPPORTED,
@@ -466,6 +820,8 @@ class UseGramPreviewEmitter:
                 )
             return RuleCapability(rule_name, RuleCapabilityStatus.MANUAL_FINALIZE, ast=ast)
         try:
+            self.frame_plan(rule_name, ast)
+            self.passthrough_slot(rule_name, ast)
             self.emit_rule(rule_name, ast)
         except KeyError as e:
             return RuleCapability(
@@ -474,7 +830,7 @@ class UseGramPreviewEmitter:
                 f"child rule '{e.args[0]}' is missing from grammar_types.yml",
                 ast,
             )
-        except NotImplementedError as e:
+        except RuleNotPlannable as e:
             return RuleCapability(rule_name, RuleCapabilityStatus.UNSUPPORTED, str(e), ast)
         return RuleCapability(rule_name, RuleCapabilityStatus.GENERATED, ast=ast)
 
@@ -509,6 +865,23 @@ class UseGramPreviewEmitter:
             result.append(capability)
         return result
 
+    def unsupported_rules(self):
+        return [c for c in self.rule_capabilities.values() if c.status == RuleCapabilityStatus.UNSUPPORTED]
+
+    def validate_all_supported(self):
+        """Every rule must be generated, provided, excluded or configured; an unsupported one fails the generation."""
+        unsupported = self.unsupported_rules()
+        if not unsupported:
+            return
+        print("Error: the generator cannot plan these rules:", file=sys.stderr)
+        for capability in unsupported:
+            print(f"  {capability.rule_name}: {capability.reason}", file=sys.stderr)
+        print(
+            "Extend the generator, configure the rule in transformer_trampoline.yml or exclude it in grammar_types.yml.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     def validate_grammar_types(self):
         missing = self.missing_grammar_type_errors()
         if not missing:
@@ -535,12 +908,20 @@ class UseGramPreviewEmitter:
         )
         lines.append("namespace duckdb {\n\n")
         lines.append("")
+        data = StaticDataEmitter()
+        plan_names = {}
+        for rule_name in self.emitted_ops_rules():
+            if self.frame_plan_of(rule_name) is not None:
+                plan_names[rule_name] = "&" + self.emit_frame_plan(data, rule_name)
+        lines.extend(data.lines)
+        lines.append("")
+        lines.append("static const TransformFrameOps GENERATED_FRAME_OPS[] = {")
         for rule_name in self.emitted_ops_rules():
             lines.append(
-                f"static const TransformFrameOps {ops_name(rule_name)} = "
-                f'{{"{rule_name}", &PEGTransformerFactory::{self.initialize_hook(rule_name)}, '
-                f"&PEGTransformerFactory::{self.finalize_hook(rule_name)}}};"
+                f'    {{"{rule_name}", &PEGTransformerFactory::{self.initialize_hook(rule_name)}, '
+                f"&PEGTransformerFactory::{self.finalize_hook(rule_name)}, {plan_names.get(rule_name, 'nullptr')}}},"
             )
+        lines.append("};")
         lines.append("")
         lines.extend(self.emit_ops_lookup())
         lines.append("")
@@ -576,13 +957,20 @@ class UseGramPreviewEmitter:
 
     def emit_ops_lookup(self):
         lines = []
+        lines.append("static case_insensitive_map_t<const TransformFrameOps *> BuildGeneratedTransformFrameOps() {")
+        lines.append("\tcase_insensitive_map_t<const TransformFrameOps *> result;")
+        lines.append("\tfor (auto &ops : GENERATED_FRAME_OPS) {")
+        lines.append("\t\tresult.emplace(ops.name, &ops);")
+        lines.append("\t}")
+        lines.append("\treturn result;")
+        lines.append("}")
+        lines.append("")
         lines.append(
             "const case_insensitive_map_t<const TransformFrameOps *> &PEGTransformerFactory::GeneratedTransformFrameOps() {"
         )
-        lines.append("\tstatic const case_insensitive_map_t<const TransformFrameOps *> result = {")
-        for rule_name in self.emitted_ops_rules():
-            lines.append(f'\t    {{"{rule_name}", &{ops_name(rule_name)}}},')
-        lines.append("\t};")
+        lines.append(
+            "\tstatic const case_insensitive_map_t<const TransformFrameOps *> result = BuildGeneratedTransformFrameOps();"
+        )
         lines.append("\treturn result;")
         lines.append("}")
         return lines
@@ -650,7 +1038,7 @@ class UseGramPreviewEmitter:
             return self.emit_syntax_only_rule(rule_name, ast)
         if isinstance(ast, ChoiceNode):
             if self.is_manual_finalize_rule(rule_name):
-                raise NotImplementedError("manual_finalize choice rules are not currently supported")
+                raise RuleNotPlannable("manual_finalize choice rules are not currently supported")
             return self.emit_choice_rule(rule_name, ast)
         if isinstance(ast, SequenceNode):
             return self.emit_sequence_rule(rule_name, ast)
@@ -664,18 +1052,11 @@ class UseGramPreviewEmitter:
             return self.emit_sequence_rule(rule_name, SequenceNode([ast]))
         if isinstance(ast, OptionalNode):
             return self.emit_sequence_rule(rule_name, SequenceNode([ast]))
-        raise NotImplementedError(f"unsupported preview shape for {rule_name}: {type(ast).__name__}")
+        raise RuleNotPlannable(f"unsupported preview shape for {rule_name}: {type(ast).__name__}")
 
     def emit_matcher_override_rule(self, rule_name):
         result_expr = self.matcher_transform_expr(rule_name, "process.parse_result")
         lines = []
-        lines.append(
-            f"void PEGTransformerFactory::{init_name(rule_name)}(PEGTransformer &transformer, "
-            f"GeneratedTransformProcess &process) {{"
-        )
-        lines.append("\tprocess.ReserveChildSlots(0);")
-        lines.append("}")
-        lines.append("")
         lines.append(
             f"arena_ptr<TransformResultValue> PEGTransformerFactory::{finalize_name(rule_name)}(PEGTransformer &transformer, "
             f"GeneratedTransformProcess &process) {{"
@@ -710,29 +1091,6 @@ class UseGramPreviewEmitter:
             for alternative in ast.alternatives
             if isinstance(alternative, ReferenceNode) and alternative.name in self.syntax_only_rules
         ]
-
-    def emit_initialize_rule(self, rule_name, ast):
-        if (
-            self.is_no_arg_syntax_only_rule(rule_name, ast)
-            or self.is_parse_result_syntax_only_rule(rule_name, ast)
-            or literal_string_values(ast) is not None
-        ):
-            return self.emit_syntax_only_initialize(rule_name)
-        if isinstance(ast, ChoiceNode):
-            return self.emit_choice_initialize(rule_name, ast)
-        if isinstance(ast, SequenceNode):
-            return self.emit_sequence_initialize(rule_name, ast)
-        if isinstance(ast, ReferenceNode):
-            return self.emit_sequence_initialize(rule_name, SequenceNode([ast]))
-        if isinstance(ast, ParensNode):
-            return self.emit_sequence_initialize(rule_name, SequenceNode([ast]))
-        if isinstance(ast, ListMacroNode):
-            return self.emit_sequence_initialize(rule_name, SequenceNode([ast]))
-        if isinstance(ast, RepeatNode):
-            return self.emit_sequence_initialize(rule_name, SequenceNode([ast]))
-        if isinstance(ast, OptionalNode):
-            return self.emit_sequence_initialize(rule_name, SequenceNode([ast]))
-        raise NotImplementedError(f"unsupported preview shape for {rule_name}: {type(ast).__name__}")
 
     def identifier_var_name(self, rule_name):
         return to_snake_case(rule_name)
@@ -775,25 +1133,6 @@ class UseGramPreviewEmitter:
         if dynamic_child and slot_idx > dynamic_child.slot_start:
             return f"{slot_idx} + dynamic_child_count - 1"
         return str(slot_idx)
-
-    def emit_stack_child_push(self, lines, plan, stack_child, indent="\t"):
-        if isinstance(stack_child, OptionalStackChild):
-            slot_expr = self.adjusted_slot_expr(plan, stack_child.slot_idx)
-            lines.append(
-                f"{indent}auto &{stack_child.var_name}_opt = {stack_child.parse_expr}.Cast<OptionalParseResult>();"
-            )
-            lines.append(f"{indent}if ({stack_child.var_name}_opt.HasResult()) {{")
-            child_expr = stack_child.result_expr_template.format(opt=f"{stack_child.var_name}_opt")
-            lines.append(
-                f'{indent}\tprocess.PushChild({{transformer.GetRule(PEGRuleId::{stack_child.rule_name}), {child_expr}}}, {slot_expr});'
-            )
-            lines.append(f"{indent}}}")
-        else:
-            slot_expr = self.adjusted_slot_expr(plan, stack_child.slot_idx)
-            lines.append(
-                f'{indent}process.PushChild({{transformer.GetRule(PEGRuleId::{stack_child.rule_name}), {stack_child.parse_expr}}}, '
-                f"{slot_expr});"
-            )
 
     def emit_dynamic_child_count(self, plan):
         dynamic_child = self.dynamic_child(plan)
@@ -864,10 +1203,11 @@ class UseGramPreviewEmitter:
         )
         child_arg = self.sequence_forward_child(rule_name, plan)
         if child_arg is None:
-            raise NotImplementedError("forward rules must have exactly one stack child")
+            raise RuleNotPlannable("forward rules must have exactly one stack child")
+        if self.passthrough_slot(rule_name, ast) is not None:
+            return []
 
-        lines = self.emit_sequence_initialize(rule_name, sequence_ast)
-        lines.append("")
+        lines = []
         lines.append(
             f"arena_ptr<TransformResultValue> PEGTransformerFactory::{finalize_name(rule_name)}(PEGTransformer &transformer, "
             f"GeneratedTransformProcess &process) {{"
@@ -876,13 +1216,12 @@ class UseGramPreviewEmitter:
         return lines
 
     def emit_syntax_only_rule(self, rule_name, ast):
-        lines = self.emit_syntax_only_initialize(rule_name)
         if self.is_manual_finalize_rule(rule_name):
-            return lines
+            return []
         cpp_type = self.cpp_type(rule_name)
         by_value = self.by_value(rule_name)
         literal_values = literal_string_values(ast)
-        lines.append("")
+        lines = []
         lines.append(
             f"arena_ptr<TransformResultValue> PEGTransformerFactory::{finalize_name(rule_name)}(PEGTransformer &transformer, "
             f"GeneratedTransformProcess &process) {{"
@@ -907,20 +1246,10 @@ class UseGramPreviewEmitter:
         lines.append("}")
         return lines
 
-    def emit_syntax_only_initialize(self, rule_name):
-        lines = []
-        lines.append(
-            f"void PEGTransformerFactory::{init_name(rule_name)}(PEGTransformer &transformer, "
-            f"GeneratedTransformProcess &process) {{"
-        )
-        lines.append("\tprocess.ReserveChildSlots(0);")
-        lines.append("}")
-        return lines
-
     def emit_choice_rule(self, rule_name, ast):
-        lines = self.emit_choice_initialize(rule_name, ast)
-        if self.is_manual_finalize_rule(rule_name):
-            return lines
+        if self.is_manual_finalize_rule(rule_name) or self.passthrough_slot(rule_name, ast) is not None:
+            return []
+        lines = []
         cpp_type = self.cpp_type(rule_name)
         by_value = self.by_value(rule_name)
         syntax_only_alternatives = self.choice_syntax_only_alternative_names(ast)
@@ -934,7 +1263,6 @@ class UseGramPreviewEmitter:
             and "string" in child_cpp_types
             and manual_body_exists(rule_name)
         )
-        lines.append("")
         lines.append(
             f"arena_ptr<TransformResultValue> PEGTransformerFactory::{finalize_name(rule_name)}(PEGTransformer &transformer, "
             f"GeneratedTransformProcess &process) {{"
@@ -1022,113 +1350,14 @@ class UseGramPreviewEmitter:
         lines.append("}")
         return lines
 
-    def emit_choice_initialize(self, rule_name, ast):
-        lines = []
-        lines.append(
-            f"void PEGTransformerFactory::{init_name(rule_name)}(PEGTransformer &transformer, "
-            f"GeneratedTransformProcess &process) {{"
-        )
-        lines.append("\tauto &list_pr = process.parse_result.Cast<ListParseResult>();")
-        lines.append("\tauto &choice_pr = list_pr.Child<ChoiceParseResult>(0);")
-        lines.append("\tauto &choice_result = choice_pr.GetResult();")
-        lines.append("\tprocess.ReserveChildSlots(1);")
-        lines.append("\tauto child_rule = choice_result.GetRule();")
-        lines.append("\tauto has_transform_process = child_rule && child_rule->transform_process;")
-        syntax_only_alternatives = self.choice_syntax_only_alternative_names(ast)
-        child_cpp_types = set()
-        for alternative in ast.alternatives:
-            if isinstance(alternative, ReferenceNode) and alternative.name in self.rule_types:
-                child_cpp_types.add(self.cpp_type(alternative.name))
-        direct_string_names = [
-            alternative.name
-            for alternative in ast.alternatives
-            if isinstance(alternative, ReferenceNode)
-            and alternative.name in self.rule_types
-            and self.cpp_type(alternative.name) == "string"
-        ]
-        external_string_names = [name for name in direct_string_names if name not in self.rules]
-        has_string_child_manual_transform = (
-            len(child_cpp_types) == 1
-            and self.cpp_type(rule_name) not in child_cpp_types
-            and "string" in child_cpp_types
-            and manual_body_exists(rule_name)
-        )
-        if self.cpp_type(rule_name) == "Identifier":
-            direct_conditions = [
-                "choice_result.Name().empty()",
-                "choice_result.type == ParseResultType::IDENTIFIER",
-                "choice_result.type == ParseResultType::KEYWORD",
-                "choice_result.type == ParseResultType::STRING",
-            ]
-            lines.append("\tif (" + " || ".join(direct_conditions) + ") {")
-            lines.append("\t\treturn;")
-            lines.append("\t}")
-            if direct_string_names:
-                direct_string_conditions = [f'choice_result.Name() == "{name}"' for name in direct_string_names]
-                lines.append("\tif (!has_transform_process && (" + " || ".join(direct_string_conditions) + ")) {")
-                lines.append("\t\treturn;")
-                lines.append("\t}")
-        if self.cpp_type(rule_name) == "string":
-            direct_conditions = [
-                "choice_result.type == ParseResultType::IDENTIFIER",
-                "choice_result.type == ParseResultType::KEYWORD",
-                "choice_result.type == ParseResultType::STRING",
-                "choice_result.type == ParseResultType::OPERATOR",
-            ]
-            lines.append("\tif (" + " || ".join(direct_conditions) + ") {")
-            lines.append("\t\treturn;")
-            lines.append("\t}")
-            if external_string_names:
-                external_string_conditions = [f'choice_result.Name() == "{name}"' for name in external_string_names]
-                lines.append("\tif (!has_transform_process && (" + " || ".join(external_string_conditions) + ")) {")
-                lines.append("\t\treturn;")
-                lines.append("\t}")
-        if syntax_only_alternatives:
-            syntax_only_conditions = [f'choice_result.Name() == "{name}"' for name in syntax_only_alternatives]
-            lines.append("\tif (!has_transform_process && (" + " || ".join(syntax_only_conditions) + ")) {")
-            lines.append("\t\treturn;")
-            lines.append("\t}")
-        if has_string_child_manual_transform:
-            direct_conditions = [
-                "choice_result.type == ParseResultType::IDENTIFIER",
-                "choice_result.type == ParseResultType::KEYWORD",
-                "choice_result.type == ParseResultType::STRING",
-                "choice_result.type == ParseResultType::OPERATOR",
-                "choice_result.type == ParseResultType::CHOICE",
-                "choice_result.type == ParseResultType::LIST",
-            ]
-            lines.append("\tif (!has_transform_process && (" + " || ".join(direct_conditions) + ")) {")
-            lines.append("\t\treturn;")
-            lines.append("\t}")
-        if self.is_parse_result_manual_choice_rule(rule_name, ast):
-            lines.append("\tif (!has_transform_process) {")
-            lines.append("\t\treturn;")
-            lines.append("\t}")
-        else:
-            lines.append("\tif (!has_transform_process) {")
-            lines.append(
-                "\t\tthrow InternalException(\"No transform process registered for rule '%s'\", choice_result.Name());"
-            )
-            lines.append("\t}")
-        lines.append("\tprocess.PushChild({*child_rule, choice_result}, 0);")
-        lines.append("}")
-        return lines
-
     def emit_sequence_rule(self, rule_name, ast):
-        lines = self.emit_sequence_initialize(rule_name, ast)
-        if self.is_manual_finalize_rule(rule_name):
-            return lines
-        plan = plan_trampoline_sequence_rule_with_terminals(
-            ast,
-            self.matcher_overrides,
-            self.syntax_only_rules,
-            allow_dynamic_stack_followers=True,
-            allow_top_level_repeat=True,
-        )
+        if self.is_manual_finalize_rule(rule_name) or self.passthrough_slot(rule_name, ast) is not None:
+            return []
+        plan = self.sequence_plan(ast)
         cpp_type = self.cpp_type(rule_name)
         by_value = self.by_value(rule_name)
 
-        lines.append("")
+        lines = []
         lines.append(
             f"arena_ptr<TransformResultValue> PEGTransformerFactory::{finalize_name(rule_name)}(PEGTransformer &transformer, "
             f"GeneratedTransformProcess &process) {{"
@@ -1328,156 +1557,12 @@ class UseGramPreviewEmitter:
                 lines.append("\t}")
                 arg_names.append(self.transform_arg_expr(arg.rule_name, var_name))
             else:
-                raise NotImplementedError(f"unsupported finalize argument: {type(arg).__name__}")
+                raise RuleNotPlannable(f"unsupported finalize argument: {type(arg).__name__}")
         transform_args = ["transformer"] + arg_names
         if self.rule_types[rule_name].pass_location:
             transform_args.append("process.parse_result.GetOffset()")
         lines.append(f"\tauto result = Transform{rule_name}({', '.join(transform_args)});")
         lines.append(f"\treturn {typed_result_expr(cpp_type, 'result', by_value)};")
-        lines.append("}")
-        return lines
-
-    def emit_sequence_initialize(self, rule_name, ast):
-        plan = plan_trampoline_sequence_rule_with_terminals(
-            ast,
-            self.matcher_overrides,
-            self.syntax_only_rules,
-            allow_dynamic_stack_followers=True,
-            allow_top_level_repeat=True,
-        )
-        lines = []
-        lines.append(
-            f"void PEGTransformerFactory::{init_name(rule_name)}(PEGTransformer &transformer, "
-            f"GeneratedTransformProcess &process) {{"
-        )
-        frame_children = [arg for arg in plan.finalize_args if isinstance(arg, (StackChild, OptionalStackChild))]
-        fixed_child_slots = max([arg.slot_idx + 1 for arg in frame_children], default=0)
-        trailing_optional = plan.trailing_optional_stack_child
-        dynamic_child = self.dynamic_child(plan)
-        frame_children_before_dynamic = frame_children
-        frame_children_after_dynamic = []
-        if dynamic_child:
-            frame_children_before_dynamic = [arg for arg in frame_children if arg.slot_idx < dynamic_child.slot_start]
-            frame_children_after_dynamic = [arg for arg in frame_children if arg.slot_idx > dynamic_child.slot_start]
-        logical_child_slots = fixed_child_slots
-        if dynamic_child:
-            logical_child_slots = max(logical_child_slots, dynamic_child.slot_start + 1)
-        if frame_children or dynamic_child:
-            lines.append("\tauto &list_pr = process.parse_result.Cast<ListParseResult>();")
-        if dynamic_child:
-            if plan.list_child:
-                list_child = plan.list_child
-                lines.append(f"\tauto list_items = ExtractParseResultsFromList({list_child.parse_expr});")
-                lines.append("\tauto dynamic_child_count = list_items.size();")
-                if trailing_optional:
-                    lines.append(
-                        f"\tauto &{trailing_optional.var_name}_opt = {trailing_optional.parse_expr}.Cast<OptionalParseResult>();"
-                    )
-                    lines.append(
-                        f"\tprocess.ReserveChildSlots({logical_child_slots} + dynamic_child_count - 1 + ({trailing_optional.var_name}_opt.HasResult() ? 1 : 0));"
-                    )
-                    for stack_child in reversed(frame_children_after_dynamic):
-                        self.emit_stack_child_push(lines, plan, stack_child)
-                    lines.append(f"\tif ({trailing_optional.var_name}_opt.HasResult()) {{")
-                    child_expr = trailing_optional.result_expr_template.format(opt=f"{trailing_optional.var_name}_opt")
-                    lines.append(
-                        f'\t\tprocess.PushChild({{transformer.GetRule(PEGRuleId::{trailing_optional.rule_name}), {child_expr}}}, '
-                        f"{logical_child_slots} + dynamic_child_count - 1);"
-                    )
-                    lines.append("\t}")
-                else:
-                    lines.append(f"\tprocess.ReserveChildSlots({logical_child_slots} + dynamic_child_count - 1);")
-                    for stack_child in reversed(frame_children_after_dynamic):
-                        self.emit_stack_child_push(lines, plan, stack_child)
-                lines.append("\tfor (idx_t i = list_items.size(); i > 0; i--) {")
-                lines.append("\t\tauto child_idx = i - 1;")
-                lines.append(
-                    f'\t\tprocess.PushChild({{transformer.GetRule(PEGRuleId::{list_child.rule_name}), list_items[child_idx].get()}}, '
-                    f"{list_child.slot_start} + child_idx);"
-                )
-                lines.append("\t}")
-            elif plan.optional_list_child:
-                list_child = plan.optional_list_child
-                lines.append(f"\tauto &list_opt = {list_child.parse_expr}.Cast<OptionalParseResult>();")
-                lines.append("\tidx_t dynamic_child_count = 0;")
-                lines.append("\tif (list_opt.HasResult()) {")
-                child_expr = list_child.result_expr_template.format(opt="list_opt")
-                lines.append(f"\t\tauto list_items = ExtractParseResultsFromList({child_expr});")
-                lines.append("\t\tdynamic_child_count = list_items.size();")
-                lines.append(f"\t\tprocess.ReserveChildSlots({logical_child_slots} + dynamic_child_count - 1);")
-                for stack_child in reversed(frame_children_after_dynamic):
-                    self.emit_stack_child_push(lines, plan, stack_child, "\t\t")
-                lines.append("\t\tfor (idx_t i = list_items.size(); i > 0; i--) {")
-                lines.append("\t\t\tauto child_idx = i - 1;")
-                lines.append(
-                    f'\t\t\tprocess.PushChild({{transformer.GetRule(PEGRuleId::{list_child.rule_name}), list_items[child_idx].get()}}, '
-                    f"{list_child.slot_start} + child_idx);"
-                )
-                lines.append("\t\t}")
-                lines.append("\t} else {")
-                lines.append(f"\t\tprocess.ReserveChildSlots({logical_child_slots} - 1);")
-                for stack_child in reversed(frame_children_after_dynamic):
-                    self.emit_stack_child_push(lines, plan, stack_child, "\t\t")
-                lines.append("\t}")
-            elif plan.required_repeat_child:
-                repeat_child = plan.required_repeat_child
-                lines.append(f"\tauto &repeat_pr = {repeat_child.parse_expr}.Cast<RepeatParseResult>();")
-                lines.append("\tauto repeat_children = repeat_pr.GetChildren();")
-                lines.append("\tauto dynamic_child_count = repeat_children.size();")
-                if trailing_optional:
-                    lines.append(
-                        f"\tauto &{trailing_optional.var_name}_opt = {trailing_optional.parse_expr}.Cast<OptionalParseResult>();"
-                    )
-                    lines.append(
-                        f"\tprocess.ReserveChildSlots({logical_child_slots} + dynamic_child_count - 1 + ({trailing_optional.var_name}_opt.HasResult() ? 1 : 0));"
-                    )
-                    for stack_child in reversed(frame_children_after_dynamic):
-                        self.emit_stack_child_push(lines, plan, stack_child)
-                    lines.append(f"\tif ({trailing_optional.var_name}_opt.HasResult()) {{")
-                    child_expr = trailing_optional.result_expr_template.format(opt=f"{trailing_optional.var_name}_opt")
-                    lines.append(
-                        f'\t\tprocess.PushChild({{transformer.GetRule(PEGRuleId::{trailing_optional.rule_name}), {child_expr}}}, '
-                        f"{logical_child_slots} + dynamic_child_count - 1);"
-                    )
-                    lines.append("\t}")
-                else:
-                    lines.append(f"\tprocess.ReserveChildSlots({logical_child_slots} + dynamic_child_count - 1);")
-                    for stack_child in reversed(frame_children_after_dynamic):
-                        self.emit_stack_child_push(lines, plan, stack_child)
-                lines.append("\tfor (idx_t i = repeat_children.size(); i > 0; i--) {")
-                lines.append("\t\tauto child_idx = i - 1;")
-                lines.append(
-                    f'\t\tprocess.PushChild({{transformer.GetRule(PEGRuleId::{repeat_child.rule_name}), repeat_children[child_idx].get()}}, '
-                    f"{repeat_child.slot_start} + child_idx);"
-                )
-                lines.append("\t}")
-            else:
-                repeat_child = plan.repeat_child
-                lines.append(f"\tauto &repeat_opt = {repeat_child.parse_expr}.Cast<OptionalParseResult>();")
-                lines.append("\tidx_t dynamic_child_count = 0;")
-                lines.append("\tif (repeat_opt.HasResult()) {")
-                lines.append("\t\tauto &repeat_pr = repeat_opt.GetResult().Cast<RepeatParseResult>();")
-                lines.append("\t\tauto repeat_children = repeat_pr.GetChildren();")
-                lines.append("\t\tdynamic_child_count = repeat_children.size();")
-                lines.append(f"\t\tprocess.ReserveChildSlots({logical_child_slots} + dynamic_child_count - 1);")
-                for stack_child in reversed(frame_children_after_dynamic):
-                    self.emit_stack_child_push(lines, plan, stack_child, "\t\t")
-                lines.append("\t\tfor (idx_t i = repeat_children.size(); i > 0; i--) {")
-                lines.append("\t\t\tauto child_idx = i - 1;")
-                lines.append(
-                    f'\t\t\tprocess.PushChild({{transformer.GetRule(PEGRuleId::{repeat_child.rule_name}), repeat_children[child_idx].get()}}, '
-                    f"{repeat_child.slot_start} + child_idx);"
-                )
-                lines.append("\t\t}")
-                lines.append("\t} else {")
-                lines.append(f"\t\tprocess.ReserveChildSlots({logical_child_slots} - 1);")
-                for stack_child in reversed(frame_children_after_dynamic):
-                    self.emit_stack_child_push(lines, plan, stack_child, "\t\t")
-                lines.append("\t}")
-        else:
-            lines.append(f"\tprocess.ReserveChildSlots({fixed_child_slots});")
-        for stack_child in reversed(frame_children_before_dynamic):
-            self.emit_stack_child_push(lines, plan, stack_child)
         lines.append("}")
         return lines
 
@@ -1491,7 +1576,7 @@ class UseGramPreviewEmitter:
             return f"{parse_expr}.Cast<OperatorParseResult>().operator_token"
         if matcher in ("identifier", "identifier_string"):
             return f"{parse_expr}.Cast<IdentifierParseResult>().identifier.GetIdentifierName()"
-        raise NotImplementedError(f"unsupported matcher override: {matcher}")
+        raise RuleNotPlannable(f"unsupported matcher override: {matcher}")
 
 
 def matcher_override_expr(rule_name, override):
@@ -1715,6 +1800,7 @@ def main():
     if args.write:
         if args.grammar is not None:
             arg_parser.error("--write always generates all statement grammar files")
+        emitter.validate_all_supported()
         additional_result_types = load_additional_transform_result_types(grammar_types_file)
         result_types = generate_transform_result_types(rule_types, additional_result_types)
         write_hpp(emitter.emit_header_declarations(), result_types)

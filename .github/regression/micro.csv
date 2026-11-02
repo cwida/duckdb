@@ -54,5 +54,6 @@ benchmark/micro/table_function/lateral_generate_series.benchmark
 benchmark/micro/insert/bulk_insert_commit_batch.benchmark
 benchmark/micro/insert/bulk_insert_commit_parallel.benchmark
 benchmark/micro/insert/bulk_insert_commit_in_memory.benchmark
+benchmark/micro/optimizer/right_semi_distinct_filter.benchmark
 benchmark/micro/order/order_external_after_early_finish.benchmark
 benchmark/micro/json/lateral_json_each.benchmark

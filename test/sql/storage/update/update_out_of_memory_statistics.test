@@ -1,0 +1,90 @@
+# name: test/sql/storage/update/update_out_of_memory_statistics.test
+# description: An UPDATE that fails with out of memory leaves no values in the statistics (duckdblabs/bot-issue-tracker#643)
+# group: [update]
+
+require block_size 262144
+
+load {TEST_DIR}/update_out_of_memory_statistics.db
+
+statement ok
+SET threads=1
+
+statement ok
+SET checkpoint_threshold='1TB'
+
+statement ok
+SET force_compression='uncompressed'
+
+# a later UPDATE of the NULL rows publishes the statistics of the column, with nothing of the failed UPDATE
+statement ok
+CREATE TABLE t1 AS SELECT CASE WHEN range%2=0 THEN NULL ELSE range END i FROM range(512)
+
+statement ok
+CHECKPOINT
+
+statement ok a
+BEGIN
+
+statement ok
+SET memory_limit='400KB'
+
+statement error a
+UPDATE t1 SET i=1000000
+----
+Out of Memory
+
+statement ok
+SET memory_limit='1GB'
+
+statement ok a
+ROLLBACK
+
+statement ok
+UPDATE t1 SET i=i WHERE i IS NULL
+
+query II
+SELECT count(i), sum(i) FROM t1
+----
+256	65536
+
+query III
+SELECT min(i), max(i), count(*) FROM t1
+----
+1	511	512
+
+query I
+SELECT count(*) FROM t1 WHERE i > 511
+----
+0
+
+# as does a later UPDATE that writes the current values
+statement ok
+CREATE TABLE t2 AS SELECT range i FROM range(512)
+
+statement ok
+CHECKPOINT
+
+statement ok a
+BEGIN
+
+statement ok
+SET memory_limit='400KB'
+
+statement error a
+UPDATE t2 SET i=-5
+----
+Out of Memory
+
+statement ok
+SET memory_limit='1GB'
+
+statement ok a
+ROLLBACK
+
+statement ok
+UPDATE t2 SET i=i WHERE i=3
+
+query III
+SELECT min(i), max(i), count(*) FROM t2
+----
+0	511	512
