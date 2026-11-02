@@ -291,6 +291,14 @@ bool Binder::IsInsideSubquery() const {
 	return inside_subquery;
 }
 
+void Binder::SetBindingIndexKey(bool binding_index_key_p) {
+	binding_index_key = binding_index_key_p;
+}
+
+bool Binder::IsBindingIndexKey() const {
+	return binding_index_key;
+}
+
 void Binder::BeginSubqueryBind(Binder &parent, ExpressionBinder &binder) {
 	// this binder already inherited a copy of the enclosing scopes when it was created, so replace them
 	// rather than appending the parent's on top: appending would list every scope twice per level of

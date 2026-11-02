@@ -402,6 +402,7 @@ public:
 
 		// Lookup the function (and the correct overload)
 		FunctionBinder binder(context);
+		binder.arguments_collated = true;
 		ErrorData error;
 		const auto func_idx =
 		    binder.BindFunction(qualified_name.Name(), functions, positional_types, keyword_types, error);
