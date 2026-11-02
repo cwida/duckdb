@@ -25,6 +25,7 @@ class PipelineExecutor;
 class Pipeline;
 class PipelineBuildStateData;
 class PhysicalCTE;
+struct PipelineSchedule;
 
 enum class PipelineInputMode : uint8_t { SCHEDULED_SOURCE, EXTERNAL_INPUT };
 enum class PipelineDependencyType : uint8_t { REQUIRED, OPTIONAL_DEPENDENCY };
@@ -97,7 +98,10 @@ public:
 	                             bool dependency_added);
 	//! model_runtime_filter_edges must mirror the executor's runtime-filter scheduling condition (initial
 	//! schedule without recursive CTEs), so the analysis sees the edges the executor will add.
-	void ResolveExternalInputs(const vector<shared_ptr<MetaPipeline>> &meta_pipelines, bool model_runtime_filter_edges);
+	//! Returns the validated schedule (with runtime-filter edges modeled when requested) so the executor can
+	//! reuse it instead of rebuilding and re-deriving the edges, or nullptr when nothing needed resolution.
+	unique_ptr<PipelineSchedule> ResolveExternalInputs(const vector<shared_ptr<MetaPipeline>> &meta_pipelines,
+	                                                   bool model_runtime_filter_edges);
 
 private:
 	unique_ptr<PipelineBuildStateData> data;

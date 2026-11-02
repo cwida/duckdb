@@ -98,9 +98,9 @@ static PipelineSchedule RuntimeFilterDependencyCheck(const PipelineSchedule &sch
 
 // The dependency check above refuses edges that would cycle through streaming EOF waits. Edges that pass it can
 // still gate a buffered exchange consumer through producer backpressure, which is not a cycle in the augmented
-// graph; the exchange liveness analysis in ResolveExternalInputs handles those. Both call paths below add edges
+// graph; the exchange liveness analysis in ResolveExternalInputs handles those. Both edge-adding call paths go
 // through this one function, so the analysis always sees the edge set the executor runs.
-static void ScheduleRuntimeFiltersInternal(PipelineSchedule &schedule, bool clear_filters) {
+static void ScheduleRuntimeFiltersInternal(PipelineSchedule &schedule, bool clear_filters, bool add_edges) {
 	reference_map_t<PhysicalComparisonJoin, vector<idx_t>> publications;
 	vector<reference<PhysicalComparisonJoin>> producers;
 	for (idx_t stage_idx = 0; stage_idx < schedule.stages.size(); stage_idx++) {
@@ -157,6 +157,9 @@ static void ScheduleRuntimeFiltersInternal(PipelineSchedule &schedule, bool clea
 				// Clear previous executions before any scan can take its filter snapshot.
 				target.dynamic_filters->ClearFilters(producer);
 			}
+			if (!add_edges) {
+				continue;
+			}
 			auto source = sources.find(*target.dynamic_filters);
 			if (publication.size() != 1 || source == sources.end() ||
 			    build_estimate >= MaxValue(probe_estimate, target.estimated_scan_cardinality)) {
@@ -172,18 +175,21 @@ static void ScheduleRuntimeFiltersInternal(PipelineSchedule &schedule, bool clea
 }
 
 void ScheduleRuntimeFilters(PipelineSchedule &schedule) {
-	// Executor entry point for the final schedule: adds the ordering edges and clears stale filters before any
-	// scan snapshot (clearing is idempotent and sink initialization clears again). The same edges were modeled
-	// during consumer selection, so keep the guard conditions at the two call sites
-	// (Executor::ScheduleEventsInternal and PipelineBuildState::ResolveExternalInputs) in sync: edges the
-	// analysis never saw can gate a buffered exchange consumer invisibly and deadlock.
-	ScheduleRuntimeFiltersInternal(schedule, true);
+	// Executor entry point when no resolved schedule was handed over: adds the ordering edges and clears stale
+	// filters before any scan snapshot (clearing is idempotent and sink initialization clears again).
+	ScheduleRuntimeFiltersInternal(schedule, true, true);
+}
+
+void ClearRuntimeFilters(PipelineSchedule &schedule) {
+	// Executor entry point for a schedule reused from ResolveExternalInputs: the ordering edges are already in
+	// the graph the analysis validated, so only the stale filters need clearing.
+	ScheduleRuntimeFiltersInternal(schedule, true, false);
 }
 
 void AddRuntimeFilterScheduleDependencies(PipelineSchedule &schedule) {
 	// Pure edge addition for the schedules ResolveExternalInputs analyzes: no filter clearing, which belongs to
 	// the executor pass on the final schedule.
-	ScheduleRuntimeFiltersInternal(schedule, false);
+	ScheduleRuntimeFiltersInternal(schedule, false, true);
 }
 
 } // namespace duckdb
