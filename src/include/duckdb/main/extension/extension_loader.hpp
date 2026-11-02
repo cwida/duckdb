@@ -138,7 +138,8 @@ public:
 	//! Registers a rule for combining two types in implicit type resolution (LogicalType::TryGetMaxLogicalType)
 	DUCKDB_API void RegisterCombineTypesRule(CombineTypesRule rule);
 
-	//! Registers a custom metric so it appears in duckdb_available_metrics.
+	//! Registers a custom metric so it appears in duckdb_available_metrics, and so QueryProfiler::SetMetric accepts it.
+	//! The profiler's own metrics cannot be registered.
 	DUCKDB_API void RegisterMetric(MetricInfo info);
 
 private:

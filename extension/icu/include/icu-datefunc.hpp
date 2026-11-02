@@ -47,7 +47,7 @@ struct ICUDateFunc {
 	template <typename SRC, typename DST>
 	static inline DST TruncCast(const SRC &src) {
 		DST dst;
-		if (SRC::PRECISION == DST::PRECISION) {
+		if (SRC::PRECISION == DST::PRECISION || !src.IsFinite()) {
 			dst.value = src.value;
 		} else {
 			//	Truncate towards -infinity, not epoch.

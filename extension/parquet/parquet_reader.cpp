@@ -279,7 +279,7 @@ static uint64_t DetermineAcceptedColumnGap(ClientContext &context, ParquetReader
 }
 
 static void ParseParquetFooter(const_data_ptr_t buffer, const string &file_path, idx_t file_size,
-                               const shared_ptr<const ParquetEncryptionConfig> &encryption_config, uint32_t &footer_len,
+                               const shared_ptr<const ParquetEncryptionConfig> &encryption_config, idx_t &footer_len,
                                bool &footer_encrypted) {
 	if (memcmp(buffer + 4, "PAR1", 4) == 0) {
 		footer_encrypted = false;
@@ -298,7 +298,7 @@ static void ParseParquetFooter(const_data_ptr_t buffer, const string &file_path,
 	// read four-byte footer length from just before the end magic bytes
 	footer_len = Load<uint32_t>(buffer);
 	if (footer_len == 0 || file_size < 12 + footer_len) {
-		throw InvalidInputException("Footer length error in file '%s'", file_path);
+		throw DataCorruptionException("Footer length error in file '%s'", file_path);
 	}
 }
 
@@ -314,7 +314,7 @@ LoadMetadata(ClientContext &context, Allocator &allocator, CachingFileHandle &fi
 	}
 
 	bool footer_encrypted;
-	uint32_t footer_len;
+	idx_t footer_len;
 	// footer size is not provided - read it from the back
 	if (!footer_size.IsValid()) {
 		// We have to do two reads here:
@@ -353,7 +353,7 @@ LoadMetadata(ClientContext &context, Allocator &allocator, CachingFileHandle &fi
 		    file_size < 12 + provided_footer_len) {
 			throw InvalidInputException("Invalid footer length provided for file '%s'", file_handle.GetPath());
 		}
-		footer_len = UnsafeNumericCast<uint32_t>(provided_footer_len);
+		footer_len = provided_footer_len;
 
 		idx_t total_footer_len = footer_len + 8;
 		auto metadata_pos = file_size - total_footer_len;
@@ -363,7 +363,7 @@ LoadMetadata(ClientContext &context, Allocator &allocator, CachingFileHandle &fi
 		auto read_head = transport.GetReadHead(metadata_pos);
 		auto data_ptr = read_head->buffer_ptr;
 
-		uint32_t read_footer_len;
+		idx_t read_footer_len;
 		ParseParquetFooter(data_ptr + footer_len, file_handle.GetPath(), file_size, encryption_config, read_footer_len,
 		                   footer_encrypted);
 		if (read_footer_len != footer_len) {

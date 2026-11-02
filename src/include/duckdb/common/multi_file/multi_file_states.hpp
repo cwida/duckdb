@@ -89,7 +89,8 @@ struct MultiFileBindData : public TableFunctionData {
 	//! Table column names - set when using COPY tbl FROM file.parquet
 	vector<string> table_columns;
 	shared_ptr<BaseFileReader> initial_reader;
-	// The union readers are created (when the union_by_name option is on) during binding
+	//! Bound file descriptions, retained independently of consumable readers.
+	//! Contains the first file or all files opened for schema discovery.
 	vector<shared_ptr<BaseUnionData>> union_readers;
 
 	void Initialize(shared_ptr<BaseFileReader> reader) {

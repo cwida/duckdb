@@ -178,6 +178,10 @@ unique_ptr<Expression> InstrPrefixRule::Apply(LogicalOperator &op, vector<refere
 	if (position.GetValue().IsNull() || position.GetValue().GetValue<int64_t>() != 1) {
 		return nullptr;
 	}
+	// prefix with a NULL needle binds to a NULL constant, not to a function
+	if (needle.GetValue().IsNull()) {
+		return nullptr;
+	}
 
 	auto &children = func.GetChildrenMutable();
 	D_ASSERT(children.size() == 2);
