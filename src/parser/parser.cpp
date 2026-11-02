@@ -391,8 +391,6 @@ unique_ptr<SQLStatement> Parser::ParseTopLevelStatement(TokenIterator &token_ite
 	throw PEGSyntaxError::Create(token_iterator, statement_start, failure_index.GetIndex(), compiled_grammar, options);
 }
 
-namespace {
-
 //! Tokenizes like ParserTokenizerBehavior, but pushes unterminated trailing tokens with their
 //! `unterminated` flag set instead of throwing - completeness checks treat them as "needs more input".
 class CompletenessTokenizerBehavior : public TokenizerBehavior {
@@ -419,8 +417,6 @@ public:
 		tokens.emplace_back(";", pos, TokenType::TERMINATOR);
 	}
 };
-
-} // namespace
 
 bool Parser::IsQueryComplete(const string &query_p) {
 	string query;
