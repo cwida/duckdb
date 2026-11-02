@@ -2559,7 +2559,7 @@ LIMIT 5)");
 		if (!style.layout_on.empty()) {
 			style.layout_off = ShellHighlight::ResetTerminalCode();
 		}
-		if (linenoiseGetTerminalColorMode() == LINENOISE_LIGHT_MODE) {
+		if (highlight_mode == HighlightMode::LIGHT_MODE) {
 			style.heading_on = ShellHighlight::TerminalCode(PrintColor::BLACK, PrintIntensity::BOLD);
 			style.path_on = ShellHighlight::TerminalCode(PrintColor::BLACK, PrintIntensity::STANDARD);
 		} else {
@@ -3959,8 +3959,6 @@ int RunShell(int argc, const char **argv) {
 		data.PrintAgentHelp(PrintOutput::STDERR, true);
 	}
 
-	data.DetectDarkLightMode();
-
 	/* Make a second pass through the command-line argument and set
 	** options.  This second pass is delayed until after the initialization
 	** file is processed so that the command-line arguments will override
@@ -4037,6 +4035,8 @@ int RunShell(int argc, const char **argv) {
 #endif
 			ShellHistory history(data, zHistory);
 			data.in = 0;
+			// the line editor needs the colors up front
+			data.DetectDarkLightMode();
 			rc = data.ProcessInput(InputMode::STANDARD);
 		} else {
 			data.in = stdin;

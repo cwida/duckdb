@@ -456,6 +456,11 @@ bool Terminal::TryGetBackgroundColor(TerminalColor &color) {
 	color.b = 0;
 	return true;
 #else
+	auto term = getenv("TERM");
+	if (!term || !term[0] || IsUnsupportedTerm()) {
+		// no terminal that can answer the query
+		return false;
+	}
 	int ifd = STDIN_FILENO;
 	int ofd = STDOUT_FILENO;
 	if (!isatty(ifd)) {

@@ -74,4 +74,72 @@ def test_deprecated_highlight_constant(shell):
     result.check_stderr(".constant has been split into numeric_constant and string_constant")
     result.check_stderr(".highlight_colors numeric_constant brightred and .highlight_colors string_constant brightred")
 
+def run_in_pty(shell, arguments, term, response=None):
+    # runs the shell on a pseudo-terminal that either stays silent or answers the background color query
+    import pty, select, time
+    master, slave = pty.openpty()
+    env = ShellTest(shell).get_environment()
+    env.pop('NO_COLOR', None)
+    env.pop('TERM', None)
+    if term is not None:
+        env['TERM'] = term
+    start = time.monotonic()
+    process = subprocess.Popen([shell, '-no-init', *arguments], stdin=slave, stdout=slave, stderr=slave, env=env)
+    os.close(slave)
+    output = b''
+    answered = False
+    try:
+        while process.poll() is None and time.monotonic() - start < 20:
+            if select.select([master], [], [], 0.05)[0]:
+                try:
+                    output += os.read(master, 4096)
+                except OSError:
+                    break
+            if response and not answered and b'\x1b]11;?' in output:
+                os.write(master, response)
+                answered = True
+        process.wait(timeout=5)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        os.close(master)
+    return process.returncode, output, time.monotonic() - start
+
+# a headless pseudo-terminal (CI runner, docker run -t) never answers the background color query
+@pytest.mark.skipif(os.name == 'nt', reason="requires a POSIX pseudo-terminal")
+@pytest.mark.parametrize("term, arguments", [
+    ('xterm-256color', ['--version']),
+    ('xterm-256color', ['-json', '-c', 'SELECT 42']),
+    ('xterm-256color', ['-csv', '-c', 'SELECT 42']),
+    ('xterm-256color', ['-agent', '-c', 'SELECT 42']),
+    ('xterm-256color', ['-dark-mode', '-manual', 'list_contains']),
+    ('xterm-256color', ['-light-mode', '-c', 'SELECT 42']),
+    ('dumb', ['-c', 'SELECT 42']),
+    ('dumb', ['-help']),
+    (None, ['-c', 'SELECT 42']),
+    (None, ['-help']),
+])
+def test_no_color_probe_when_not_needed(shell, term, arguments):
+    status, output, elapsed = run_in_pty(shell, arguments, term)
+    assert status == 0, output
+    assert b'\x1b]11;?' not in output
+    assert b'Timeout trying to read terminal background color' not in output
+    assert elapsed < 4
+
+@pytest.mark.skipif(os.name == 'nt', reason="requires a POSIX pseudo-terminal")
+def test_color_probe_answered_by_terminal(shell):
+    response = b'\x1b]11;rgb:ffff/ffff/ffff\x07\x1b[?62c'
+    status, output, _ = run_in_pty(shell, ['-c', 'SELECT missing_column'], 'xterm-256color', response)
+    assert status != 0, output
+    assert b'\x1b]11;?' in output
+    assert b'\x1b[38;5;124m' in output  # light-mode error color
+
+@pytest.mark.skipif(os.name == 'nt', reason="requires a POSIX pseudo-terminal")
+def test_manual_uses_detected_color_mode(shell):
+    response = b'\x1b]11;rgb:ffff/ffff/ffff\x07\x1b[?62c'
+    status, output, _ = run_in_pty(shell, ['-manual', 'list_contains'], 'xterm-256color', response)
+    assert status == 0, output
+    assert output.count(b'\x1b]11;?') == 1
+
 # fmt: on
