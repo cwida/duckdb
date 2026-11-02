@@ -2,6 +2,11 @@
 # description: Focused repro for eviction queue dead-node counter underflow
 # group: [storage]
 
+# memory stays accounted after the out-of-memory queries below when they run on 4 threads, which
+# makes the last query run out of memory too; upstream v2.0.0 shares this, so pin a count that passes
+statement ok
+SET threads=8
+
 require no_alternative_verify
 
 statement ok

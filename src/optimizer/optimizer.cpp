@@ -583,8 +583,8 @@ unique_ptr<LogicalOperator> Optimizer::Optimize(unique_ptr<LogicalOperator> plan
 		RunOptimizer(OptimizerType::EXTENSION, [&]() {
 			OptimizerExtensionInput input {GetContext(), *this, pre_optimizer_extension.optimizer_info.get()};
 			if (pre_optimizer_extension.pre_optimize_function) {
-				if (!OptimizerExtension::PreservesCTEFilterDependencies(context,
-				                                                        pre_optimizer_extension.pre_optimize_function)) {
+				if (!OptimizerExtension::PreservesCTEFilterDependencies(
+				        context, pre_optimizer_extension.pre_optimize_function)) {
 					CTEFilterPusher::ClearDependencies(*plan);
 				}
 				pre_optimizer_extension.pre_optimize_function(input, plan);
