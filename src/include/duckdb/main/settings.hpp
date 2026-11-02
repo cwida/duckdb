@@ -573,6 +573,45 @@ struct CustomUserAgentSetting {
 	static Value GetSetting(const ClientContext &context);
 };
 
+struct DbschedQueryTagSetting {
+	using RETURN_TYPE = string;
+	static constexpr const char *Name = "dbsched_query_tag";
+	static constexpr const char *Description = "A tag recorded with each query in the pipeline tracer, to map traced "
+	                                           "queries back to the workload that submitted them.";
+	static constexpr const char *InputType = "VARCHAR";
+	static constexpr bool IsDebug = false;
+	static constexpr bool IsDeprecated = false;
+	static constexpr const char *DefaultValue = "";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::LOCAL_DEFAULT;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+};
+
+struct DbschedSchedulerModeSetting {
+	using RETURN_TYPE = string;
+	static constexpr const char *Name = "dbsched_scheduler_mode";
+	static constexpr const char *Description = "Thread-assignment hook for the progress simulator: off, deferred "
+	                                           "(threads change pipeline only at ticks), or immediate.";
+	static constexpr const char *InputType = "VARCHAR";
+	static constexpr bool IsDebug = false;
+	static constexpr bool IsDeprecated = false;
+	static constexpr const char *DefaultValue = "off";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::GLOBAL_ONLY;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+};
+
+struct DbschedTickIntervalUsSetting {
+	using RETURN_TYPE = idx_t;
+	static constexpr const char *Name = "dbsched_tick_interval_us";
+	static constexpr const char *Description =
+	    "Tick interval of the pipeline tracer for the progress simulator, in microseconds. 0 turns tracing off.";
+	static constexpr const char *InputType = "UBIGINT";
+	static constexpr bool IsDebug = false;
+	static constexpr bool IsDeprecated = false;
+	static constexpr const char *DefaultValue = "0";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::GLOBAL_ONLY;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+};
+
 struct DebugAbortOnWalFailureSetting {
 	using RETURN_TYPE = bool;
 	static constexpr const char *Name = "debug_abort_on_wal_failure";

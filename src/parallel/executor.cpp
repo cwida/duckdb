@@ -6,6 +6,7 @@
 #include "duckdb/execution/operator/helper/physical_result_collector.hpp"
 #include "duckdb/execution/operator/set/physical_cte.hpp"
 #include "duckdb/execution/operator/set/physical_recursive_cte.hpp"
+#include "duckdb/execution/operator/scan/physical_table_scan.hpp"
 #include "duckdb/execution/physical_operator.hpp"
 #include "duckdb/main/buffered_data/buffered_data.hpp"
 #include "duckdb/main/client_context.hpp"
@@ -19,6 +20,8 @@
 #include "duckdb/parallel/pipeline_initialize_event.hpp"
 #include "duckdb/parallel/pipeline_prepare_finish_event.hpp"
 #include "duckdb/parallel/pipeline_schedule.hpp"
+#include "duckdb/parallel/pipeline_hook.hpp"
+#include "duckdb/parallel/pipeline_tracer.hpp"
 #include "duckdb/parallel/progress_verifier.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
 #include "duckdb/parallel/thread_context.hpp"
@@ -74,7 +77,8 @@ static shared_ptr<Event> CreatePipelineScheduleEvent(const PipelineScheduleStage
 	case PipelineScheduleStageType::FINISH:
 		return make_shared_ptr<PipelineFinishEvent>(stage.pipeline);
 	case PipelineScheduleStageType::COMPLETE:
-		return make_shared_ptr<PipelineCompleteEvent>(stage.pipeline->executor, initial_schedule);
+		return make_shared_ptr<PipelineCompleteEvent>(stage.pipeline->executor, initial_schedule,
+		                                              stage.pipeline->trace);
 	default:
 		throw InternalException("Unsupported pipeline schedule stage");
 	}
@@ -233,6 +237,27 @@ void Executor::Initialize(PhysicalOperator &plan) {
 	InitializeInternal(plan);
 }
 
+//! Whether every pipeline that reads data reads it from a dbsched_* table function: the queries that drive the tracer
+//! and the hook, which are not traced, so that they never wait for threads themselves
+static bool IsTracerControlQuery(const vector<shared_ptr<Pipeline>> &pipelines) {
+	bool any_control = false;
+	for (auto &pipeline : pipelines) {
+		auto source = pipeline->GetSource();
+		if (!source || source->type == PhysicalOperatorType::RESULT_COLLECTOR) {
+			continue;
+		}
+		if (source->type != PhysicalOperatorType::TABLE_SCAN) {
+			return false;
+		}
+		auto &scan = source->Cast<PhysicalTableScan>();
+		if (!StringUtil::StartsWith(scan.function.GetName().GetIdentifierName(), "dbsched_")) {
+			return false;
+		}
+		any_control = true;
+	}
+	return any_control;
+}
+
 void Executor::InitializeInternal(PhysicalOperator &plan) {
 	auto &scheduler = TaskScheduler::GetScheduler(context);
 	{
@@ -277,6 +302,19 @@ void Executor::InitializeInternal(PhysicalOperator &plan) {
 		// collect all pipelines from the root pipelines (recursively) for the progress bar and verify them
 		root_pipeline->GetPipelines(pipelines, true);
 
+		// register the pipelines with the tracer for the progress simulator, when tracing is on
+		auto &tracer = scheduler.GetTracer();
+		auto tick_interval_us = Settings::Get<DbschedTickIntervalUsSetting>(context);
+		// the hook only takes tasks of traced pipelines: without ticks nothing is traced, and the hook does nothing
+		auto hook_mode = PipelineHook::ParseMode(Settings::Get<DbschedSchedulerModeSetting>(context));
+		tracer.SetTickInterval(tick_interval_us);
+		scheduler.GetHook().SetMode(hook_mode);
+		// only SELECTs are traced: the simulator models queries, not SET, PRAGMA, or DDL statements
+		if (tick_interval_us > 0 && context.IsCurrentStatementSelect() && !IsTracerControlQuery(pipelines)) {
+			trace = tracer.RegisterQuery(*this, pipelines, Settings::Get<DbschedQueryTagSetting>(context),
+			                             context.GetCurrentQuery());
+		}
+
 		// finally, verify and schedule
 		VerifyPipelines();
 		ScheduleEvents(to_schedule);
@@ -284,6 +322,7 @@ void Executor::InitializeInternal(PhysicalOperator &plan) {
 }
 
 void Executor::CancelTasks() {
+	FinishTrace(true);
 	task.reset();
 	{
 		lock_guard<mutex> guard(result_buffer_lock);
@@ -448,8 +487,15 @@ QueryResultState Executor::ExecuteTask() {
 		return execution_result;
 	}
 	if (completed_pipelines < total_pipelines) {
+		auto &scheduler = TaskScheduler::GetScheduler(context);
 		if (!task) {
-			TaskScheduler::GetScheduler(context).GetTaskFromProducer(*producer, task);
+			scheduler.GetTaskFromProducer(*producer, task);
+			// with the thread-assignment hook on, this query's own queue holds only what the hook leaves out
+			// (initialize tasks, untraced statements); any other task goes to the hook, to run on a worker
+			auto &hook = scheduler.GetHook();
+			if (task && hook.IsActive() && hook.TryEnqueue(task)) {
+				task.reset();
+			}
 		}
 		if (!task && !HasError()) {
 			return IdleState();
@@ -521,6 +567,7 @@ void Executor::FailExecution() {
 
 QueryResultState Executor::FinishExecution() {
 	D_ASSERT(!task);
+	FinishTrace(HasError());
 	lock_guard<mutex> elock(executor_lock);
 	if (progress_verifier && !HasError()) {
 		auto progress_error = progress_verifier->Finalize(pipelines);
@@ -539,7 +586,22 @@ QueryResultState Executor::FinishExecution() {
 	return execution_result;
 }
 
+void Executor::FinishTrace(bool error) {
+	if (!trace) {
+		return;
+	}
+	auto &scheduler = TaskScheduler::GetScheduler(context);
+	// tasks still queued in the hook are handed back and destroyed here, which unregisters them from this executor:
+	// callers must not hold executor_lock
+	vector<shared_ptr<Task>> dropped;
+	scheduler.GetHook().RemoveQuery(*trace, dropped);
+	scheduler.GetTracer().FinishQuery(*trace, error);
+	trace.reset();
+	dropped.clear();
+}
+
 void Executor::Reset() {
+	FinishTrace(true);
 	lock_guard<mutex> elock(executor_lock);
 	physical_plan = nullptr;
 	cancelled = false;

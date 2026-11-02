@@ -17,6 +17,7 @@
 #include "duckdb/parallel/pipeline_event.hpp"
 #include "duckdb/parallel/pipeline_executor.hpp"
 #include "duckdb/parallel/pipeline_schedule.hpp"
+#include "duckdb/parallel/pipeline_tracer.hpp"
 #include "duckdb/parallel/progress_verifier.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
 #include "duckdb/main/settings.hpp"
@@ -44,6 +45,24 @@ TaskExecutionResult PipelineTask::ExecuteTask(TaskExecutionMode mode) {
 
 	pipeline_executor->SetTaskForInterrupts(shared_from_this());
 
+	// trace the thread running this task until it returns, whatever the result
+	struct TraceGuard {
+		optional_ptr<PipelineTracer> tracer;
+		optional_ptr<PipelineTraceEntry> entry;
+		int64_t start_ns = 0;
+		~TraceGuard() {
+			if (entry) {
+				tracer->TaskFinished(*entry, start_ns);
+			}
+		}
+	} trace_guard;
+	if (pipeline.trace) {
+		trace_guard.tracer = TaskScheduler::GetScheduler(pipeline.GetClientContext()).GetTracer();
+		trace_guard.entry = pipeline.trace.get();
+		trace_guard.start_ns = trace_guard.tracer->Now();
+		trace_guard.tracer->TaskStarted(*pipeline.trace);
+	}
+
 	if (mode == TaskExecutionMode::PROCESS_PARTIAL) {
 		auto res = pipeline_executor->Execute(PARTIAL_CHUNK_COUNT);
 
@@ -67,6 +86,10 @@ TaskExecutionResult PipelineTask::ExecuteTask(TaskExecutionMode mode) {
 		}
 	}
 
+	pipeline_executor->FlushTraceCounters();
+	if (trace_guard.entry) {
+		trace_guard.tracer->TaskCompleted(*trace_guard.entry);
+	}
 	event->FinishTask();
 	pipeline_executor.reset();
 	return TaskExecutionResult::TASK_FINISHED;
@@ -121,6 +144,9 @@ void Pipeline::GetDetailedProgress(PipelineProgress &progress) {
 void Pipeline::ScheduleSequentialTask(shared_ptr<Event> &event) {
 	vector<shared_ptr<Task>> tasks;
 	tasks.push_back(make_uniq<PipelineTask>(*this, event));
+	if (trace) {
+		trace->task_count = 1;
+	}
 	event->SetTasks(std::move(tasks));
 }
 
@@ -321,6 +347,9 @@ void Pipeline::Schedule(shared_ptr<Event> &event) {
 		return;
 	}
 	Reset();
+	if (trace) {
+		trace->SetOnce(trace->scheduled_ns, TaskScheduler::GetScheduler(GetClientContext()).GetTracer().Now());
+	}
 	if (!ScheduleParallel(event)) {
 		// could not parallelize this pipeline: push a sequential task instead
 		ScheduleSequentialTask(event);
@@ -338,6 +367,9 @@ bool Pipeline::LaunchScanTasks(shared_ptr<Event> &event, idx_t max_threads) {
 	vector<shared_ptr<Task>> tasks;
 	for (idx_t i = 0; i < max_threads; i++) {
 		tasks.push_back(make_uniq<PipelineTask>(*this, event));
+	}
+	if (trace) {
+		trace->task_count = NumericCast<int64_t>(max_threads);
 	}
 	event->SetTasks(std::move(tasks));
 	return true;

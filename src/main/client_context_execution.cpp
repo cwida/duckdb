@@ -202,6 +202,11 @@ const string &ClientContext::GetCurrentQuery() {
 	return active_query->query;
 }
 
+bool ClientContext::IsCurrentStatementSelect() {
+	return active_query && active_query->prepared &&
+	       active_query->prepared->statement_type == StatementType::SELECT_STATEMENT;
+}
+
 void BindPreparedStatementParameters(ClientContext &context, PreparedStatementData &statement,
                                      const QueryParameters &parameters) {
 	identifier_map_t<BoundParameterData> owned_values;

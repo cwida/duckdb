@@ -21,6 +21,8 @@ namespace duckdb {
 class ClientContext;
 struct DBConfig;
 class DatabaseInstance;
+class PipelineHook;
+class PipelineTracer;
 class TaskScheduler;
 class TaskSchedulerPool;
 class TaskSchedulerQueue;
@@ -41,6 +43,8 @@ public:
 	unique_ptr<ProducerToken> CreateProducer();
 	//! Returns the number of threads
 	DUCKDB_API idx_t NumberOfThreads();
+	//! Returns the number of background worker threads in the regular pool, without external threads
+	idx_t NumberOfWorkerThreads();
 	//! Returns the number of async threads
 	DUCKDB_API idx_t NumberOfAsyncThreads();
 
@@ -83,6 +87,15 @@ public:
 	//! Result do not need to be exact 'return 0' is a valid fallback strategy
 	static idx_t GetEstimatedCPUId();
 
+	//! The pipeline tracer for the progress simulator
+	PipelineTracer &GetTracer() {
+		return *tracer;
+	}
+	//! The thread-assignment hook for the progress simulator
+	PipelineHook &GetHook() {
+		return *hook;
+	}
+
 private:
 	TaskSchedulerPool &GetPool(TaskSchedulerType pool_type);
 	TaskSchedulerQueue &GetQueue(TaskSchedulerType pool_type) const;
@@ -91,6 +104,8 @@ private:
 	bool GetTaskInternal(ConsumerToken &consumer, shared_ptr<Task> &task);
 	bool TryDequeueAndProcessTask(const DBConfig &config, TaskSchedulerQueue &queue, ConsumerToken &consumer,
 	                              shared_ptr<Task> &task);
+	//! Runs a task the hook gave to a worker
+	void ProcessHookTask(const DBConfig &config, shared_ptr<Task> &task, idx_t worker_idx);
 
 	void SetThreadsInternal(TaskSchedulerType pool_type, idx_t n);
 	void Signal(TaskSchedulerType pool_type, idx_t n);
@@ -105,6 +120,10 @@ private:
 	array<unique_ptr<TaskSchedulerPool>, TASK_SCHEDULER_TYPE_COUNT> pools;
 	//! The task queues
 	array<unique_ptr<TaskSchedulerQueue>, TASK_SCHEDULER_TYPE_COUNT> queues;
+	//! The pipeline tracer
+	unique_ptr<PipelineTracer> tracer;
+	//! The thread-assignment hook
+	unique_ptr<PipelineHook> hook;
 };
 
 } // namespace duckdb

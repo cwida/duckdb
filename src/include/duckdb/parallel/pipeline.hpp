@@ -25,6 +25,7 @@ class PipelineExecutor;
 class Pipeline;
 class PipelineBuildStateData;
 class PhysicalCTE;
+struct PipelineTraceEntry;
 
 enum class PipelineInputMode : uint8_t { SCHEDULED_SOURCE, EXTERNAL_INPUT };
 enum class PipelineDependencyType : uint8_t { REQUIRED, OPTIONAL_DEPENDENCY };
@@ -120,6 +121,8 @@ public:
 	explicit Pipeline(Executor &execution_context);
 
 	Executor &executor;
+	//! Trace state for the progress simulator, set when tracing is on (see PipelineTracer)
+	shared_ptr<PipelineTraceEntry> trace;
 
 public:
 	ClientContext &GetClientContext();

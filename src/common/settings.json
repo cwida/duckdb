@@ -294,6 +294,27 @@
         ]
     },
     {
+        "name": "dbsched_query_tag",
+        "description": "A tag recorded with each query in the pipeline tracer, to map traced queries back to the workload that submitted them.",
+        "type": "VARCHAR",
+        "default_scope": "local",
+        "default_value": ""
+    },
+    {
+        "name": "dbsched_scheduler_mode",
+        "description": "Thread-assignment hook for the progress simulator: off, deferred (threads change pipeline only at ticks), or immediate.",
+        "type": "VARCHAR",
+        "scope": "global",
+        "default_value": "off"
+    },
+    {
+        "name": "dbsched_tick_interval_us",
+        "description": "Tick interval of the pipeline tracer for the progress simulator, in microseconds. 0 turns tracing off.",
+        "type": "UBIGINT",
+        "scope": "global",
+        "default_value": "0"
+    },
+    {
         "name": "debug_abort_on_wal_failure",
         "description": "Whether or not to abort if a serialization exception is thrown during WAL playback.",
         "type": "BOOLEAN",

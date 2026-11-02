@@ -59,6 +59,9 @@ class PipelineExecutor {
 public:
 	PipelineExecutor(ClientContext &context, Pipeline &pipeline, optional_idx reserved_batch_index = optional_idx());
 
+	//! Counts the source chunk in flight as completed for the pipeline tracer, at the end of the executor's task
+	void FlushTraceCounters();
+
 	//! Fully execute a pipeline with a source and a sink until the source is completely exhausted
 	PipelineExecuteResult Execute();
 	//! Execute a pipeline with a source and a sink until finished, or until max_chunks were processed from the source
@@ -175,6 +178,8 @@ private:
 	bool external_batch_initialized = false;
 	//! Rows of the last source chunk that have not been reported to the progress verifier yet
 	idx_t unsampled_progress_rows = 0;
+	//! Rows of the source chunk in flight, counted for the pipeline tracer once it has passed through the pipeline
+	idx_t trace_pending_rows = 0;
 
 private:
 	void StartOperator(PhysicalOperator &op);

@@ -5,7 +5,9 @@
 #include "duckdb/main/client_context.hpp"
 
 #include "duckdb/main/settings.hpp"
+#include "duckdb/parallel/pipeline_tracer.hpp"
 #include "duckdb/parallel/progress_verifier.hpp"
+#include "duckdb/parallel/task_scheduler.hpp"
 
 #ifdef DUCKDB_DEBUG_ASYNC_SINK_SOURCE
 #include <chrono>
@@ -842,7 +844,21 @@ SinkResultType PipelineExecutor::Sink(DataChunk &chunk, OperatorSinkInput &input
 		return SinkResultType::BLOCKED;
 	}
 #endif
-	return pipeline.sink->Sink(context, chunk, input);
+	auto rows = chunk.size();
+	auto result = pipeline.sink->Sink(context, chunk, input);
+	if (pipeline.trace && result != SinkResultType::BLOCKED) {
+		pipeline.trace->sink_rows += rows;
+	}
+	return result;
+}
+
+void PipelineExecutor::FlushTraceCounters() {
+	if (!pipeline.trace || trace_pending_rows == 0) {
+		return;
+	}
+	pipeline.trace->source_chunks++;
+	pipeline.trace->source_rows += trace_pending_rows;
+	trace_pending_rows = 0;
 }
 
 SinkNextBatchType PipelineExecutor::UpdateMinBatchIndex() {
@@ -861,6 +877,7 @@ PipelineExecutor::SourceFetchResult PipelineExecutor::FetchFromSource(DataChunk 
 	D_ASSERT(local_source_state);
 	// the previous chunk has been pushed through the pipeline
 	SampleProgress();
+	FlushTraceCounters();
 	StartOperator(*pipeline.source);
 
 	OperatorSourceInput source_input = {*global_source_state, *local_source_state, interrupt_state};
@@ -871,7 +888,14 @@ PipelineExecutor::SourceFetchResult PipelineExecutor::FetchFromSource(DataChunk 
 	D_ASSERT(fetch_result.result != SourceResultType::BLOCKED || result.size() == 0);
 	D_ASSERT(fetch_result.batch_index_state != SourceBatchIndexState::ADVANCED ||
 	         fetch_result.result == SourceResultType::BLOCKED);
+	if (pipeline.trace) {
+		trace_pending_rows = result.size();
+	}
 	if (fetch_result.result == SourceResultType::FINISHED) {
+		if (pipeline.trace) {
+			auto &tracer = TaskScheduler::GetScheduler(context.client).GetTracer();
+			pipeline.trace->SetMax(pipeline.trace->last_source_ns, tracer.Now());
+		}
 		// final call into the source - finish source execution
 		NotifySourceFinished();
 		context.thread.profiler.FinishSource(*global_source_state, *local_source_state);

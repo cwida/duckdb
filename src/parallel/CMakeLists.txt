@@ -14,9 +14,11 @@ add_library_unity(
   pipeline_event.cpp
   pipeline_executor.cpp
   pipeline_finish_event.cpp
+  pipeline_hook.cpp
   pipeline_initialize_event.cpp
   pipeline_prepare_finish_event.cpp
   pipeline_schedule.cpp
+  pipeline_tracer.cpp
   progress_verifier.cpp
   scan_read_ahead.cpp
   task_executor.cpp

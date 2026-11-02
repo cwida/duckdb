@@ -1,4 +1,5 @@
 #include "duckdb/parallel/task_scheduler_pool.hpp"
+#include "duckdb/parallel/pipeline_tracer.hpp"
 
 #include "duckdb/parallel/task_scheduler.hpp"
 #include "duckdb/main/database.hpp"
@@ -151,7 +152,11 @@ static vector<int> GetAvailableCPUsForPinning(TaskSchedulerType pool_type, Threa
 #endif
 
 #ifndef DUCKDB_NO_THREADS
-static void ThreadExecuteTasks(TaskScheduler *scheduler, atomic<bool> *marker, const TaskSchedulerType pool_type) {
+static void ThreadExecuteTasks(TaskScheduler *scheduler, atomic<bool> *marker, const TaskSchedulerType pool_type,
+                               idx_t worker_idx) {
+	if (pool_type == TaskSchedulerType::REGULAR) {
+		PipelineTracer::SetCurrentWorker(worker_idx);
+	}
 	scheduler->ExecuteForever(marker, pool_type);
 }
 #endif
@@ -171,6 +176,7 @@ void TaskSchedulerPool::RelaunchThreads(TaskScheduler &scheduler, bool destroy) 
 
 	if (threads.size() == new_thread_count) {
 		current_thread_count = threads.size() + (pool_type == TaskSchedulerType::REGULAR ? external_threads : 0);
+		worker_thread_count = threads.size();
 		return;
 	}
 	if (threads.size() != new_thread_count) {
@@ -199,7 +205,8 @@ void TaskSchedulerPool::RelaunchThreads(TaskScheduler &scheduler, bool destroy) 
 			auto marker = unique_ptr<atomic<bool>>(new atomic<bool>(true));
 			unique_ptr<thread> worker_thread;
 			try {
-				worker_thread = make_uniq<thread>(ThreadExecuteTasks, &scheduler, marker.get(), pool_type);
+				worker_thread =
+				    make_uniq<thread>(ThreadExecuteTasks, &scheduler, marker.get(), pool_type, threads.size());
 				if (!available_cpus.empty()) {
 					SetThreadAffinity(*worker_thread, available_cpus, threads.size());
 				}
@@ -215,6 +222,7 @@ void TaskSchedulerPool::RelaunchThreads(TaskScheduler &scheduler, bool destroy) 
 		}
 	}
 	current_thread_count = threads.size() + (pool_type == TaskSchedulerType::REGULAR ? external_threads : 0);
+	worker_thread_count = threads.size();
 	// on destroy the scheduler flushes once after every pool is joined
 	if (!destroy) {
 		BlockAllocator::Get(db).FlushAll();

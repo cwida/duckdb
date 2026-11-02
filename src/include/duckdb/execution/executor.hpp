@@ -27,6 +27,7 @@ class DataChunk;
 class PhysicalOperator;
 class PipelineExecutor;
 class ProgressVerifier;
+struct QueryTraceEntry;
 class OperatorState;
 class QueryProfiler;
 class ThreadContext;
@@ -57,6 +58,8 @@ public:
 	void Initialize(unique_ptr<PhysicalOperator> physical_plan);
 
 	void CancelTasks();
+	//! Closes this query's record in the pipeline tracer, if it has one
+	void FinishTrace(bool error);
 	//! Whether the thread driving ExecuteTask holds a partially processed task.
 	//! `task` is owned by that thread alone, so only it may call this.
 	bool HasTaskInProgress() const {
@@ -178,6 +181,8 @@ private:
 	mutex executor_lock;
 	//! All pipelines of the query plan
 	vector<shared_ptr<Pipeline>> pipelines;
+	//! This query's record in the pipeline tracer, set when tracing is on
+	shared_ptr<QueryTraceEntry> trace;
 	//! The root pipelines of the query
 	vector<shared_ptr<Pipeline>> root_pipelines;
 	//! The recursive CTE's in this query plan

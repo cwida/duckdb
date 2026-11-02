@@ -34,6 +34,7 @@ add_library_unity(
   duckdb_sequences.cpp
   duckdb_triggers.cpp
   duckdb_settings.cpp
+  dbsched_trace.cpp
   duckdb_tables.cpp
   duckdb_temporary_files.cpp
   duckdb_types.cpp

@@ -1,4 +1,6 @@
 #include "duckdb/parallel/task_scheduler.hpp"
+#include "duckdb/parallel/pipeline_hook.hpp"
+#include "duckdb/parallel/pipeline_tracer.hpp"
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/numeric_utils.hpp"
@@ -27,7 +29,9 @@
 
 namespace duckdb {
 
-TaskScheduler::TaskScheduler(DatabaseInstance &db) : db(db) {
+TaskScheduler::TaskScheduler(DatabaseInstance &db)
+    : db(db), tracer(make_uniq<PipelineTracer>()), hook(make_uniq<PipelineHook>(*this, *tracer)) {
+	tracer->SetHook(*hook);
 	for (uint8_t i = 0; i < TASK_SCHEDULER_TYPE_COUNT; i++) {
 		pools[i] = make_uniq<TaskSchedulerPool>(db, static_cast<TaskSchedulerType>(i));
 		queues[i] = make_uniq<TaskSchedulerQueue>(static_cast<TaskSchedulerType>(i));
@@ -94,12 +98,28 @@ void TaskScheduler::SetThreadsInternal(TaskSchedulerType pool_type, idx_t n) {
 }
 
 void TaskScheduler::ScheduleTask(ProducerToken &token, shared_ptr<Task> task, TaskSchedulerType pool_type) {
+	if (pool_type == TaskSchedulerType::REGULAR) {
+		hook->NoteScheduled(*task);
+		if (hook->TryEnqueue(task)) {
+			return;
+		}
+	}
 	GetQueue(pool_type).Enqueue(token, std::move(task));
 	SignalForTaskType(pool_type, 1);
 }
 
 void TaskScheduler::ScheduleTasks(ProducerToken &producer, vector<shared_ptr<Task>> &tasks,
                                   TaskSchedulerType pool_type) {
+	if (pool_type == TaskSchedulerType::REGULAR) {
+		if (!tasks.empty()) {
+			hook->NoteScheduled(*tasks[0]);
+		}
+		// tasks of traced pipelines go to the thread-assignment hook's per-pipeline queues
+		hook->TryEnqueue(tasks);
+		if (tasks.empty()) {
+			return;
+		}
+	}
 	GetQueue(pool_type).EnqueueBulk(producer, tasks);
 	SignalForTaskType(pool_type, tasks.size());
 }
@@ -153,6 +173,31 @@ bool TaskScheduler::TryDequeueAndProcessTask(const DBConfig &config, TaskSchedul
 	return false;
 }
 
+void TaskScheduler::ProcessHookTask(const DBConfig &config, shared_ptr<Task> &task, idx_t worker_idx) {
+	auto process_mode = TaskExecutionMode::PROCESS_ALL;
+	if (Settings::Get<SchedulerProcessPartialSetting>(config)) {
+		process_mode = TaskExecutionMode::PROCESS_PARTIAL;
+	}
+	auto execute_result = task->Execute(process_mode);
+	hook->TaskDone(worker_idx);
+	switch (execute_result) {
+	case TaskExecutionResult::TASK_FINISHED:
+	case TaskExecutionResult::TASK_ERROR:
+		task.reset();
+		break;
+	case TaskExecutionResult::TASK_NOT_FINISHED: {
+		// back to its pipeline's queue, through the hook
+		auto &token = *task->token;
+		ScheduleTask(token, std::move(task));
+		break;
+	}
+	case TaskExecutionResult::TASK_BLOCKED:
+		task->Deschedule();
+		task.reset();
+		break;
+	}
+}
+
 void TaskScheduler::ExecuteForever(atomic<bool> *marker, const TaskSchedulerType pool_type) {
 #ifndef DUCKDB_NO_THREADS
 	static constexpr int64_t INITIAL_FLUSH_WAIT = 500000; // initial wait time of 0.5s (in mus) before flushing
@@ -165,6 +210,32 @@ void TaskScheduler::ExecuteForever(atomic<bool> *marker, const TaskSchedulerType
 	shared_ptr<Task> task;
 	// loop until the marker is set to false
 	while (*marker) {
+		auto worker = PipelineTracer::GetCurrentWorker();
+		if (pool_type == TaskSchedulerType::REGULAR && hook->IsActive() && worker.IsValid() &&
+		    worker.GetIndex() < PipelineTracer::MAX_WORKERS) {
+			// the thread-assignment hook decides which pipeline this worker runs tasks of
+			static constexpr int64_t HOOK_WAIT_USECS = 1000;
+			auto worker_idx = worker.GetIndex();
+			if (hook->TryGetTask(worker_idx, task)) {
+				ProcessHookTask(config, task, worker_idx);
+				continue;
+			}
+			// tasks the hook does not handle (pipelines' initialize tasks, untraced statements) run on any worker
+			// with nothing pending, without changing what it is attached to
+			bool ran_task = false;
+			for (auto &queue : queues) {
+				if (TryDequeueAndProcessTask(config, *queue, consumer, task)) {
+					ran_task = true;
+					break;
+				}
+			}
+			if (ran_task) {
+				hook->CountUntracedTask();
+				continue;
+			}
+			hook->WaitForWork(worker_idx, HOOK_WAIT_USECS);
+			continue;
+		}
 		if (!block_allocator.SupportsFlush()) {
 			// allocator can't flush, just start an untimed wait
 			pool.Wait();
@@ -276,6 +347,10 @@ void TaskScheduler::ExecuteTasks(idx_t max_tasks) {
 
 idx_t TaskScheduler::NumberOfThreads() {
 	return GetPool(TaskSchedulerType::REGULAR).NumberOfThreads();
+}
+
+idx_t TaskScheduler::NumberOfWorkerThreads() {
+	return GetPool(TaskSchedulerType::REGULAR).NumberOfWorkerThreads();
 }
 
 idx_t TaskScheduler::NumberOfAsyncThreads() {

@@ -291,6 +291,8 @@ public:
 
 	//! Returns the current query string (if any)
 	const string &GetCurrentQuery();
+	//! Whether the running statement is a SELECT
+	bool IsCurrentStatementSelect();
 
 	connection_t GetConnectionId() const;
 

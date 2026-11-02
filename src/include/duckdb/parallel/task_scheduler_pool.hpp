@@ -29,6 +29,10 @@ public:
 public:
 	void SetThreads(idx_t n);
 	idx_t NumberOfThreads();
+	//! The number of background worker threads, without external threads
+	idx_t NumberOfWorkerThreads() {
+		return worker_thread_count.load();
+	}
 	void RelaunchThreads(TaskScheduler &scheduler, bool destroy);
 	void Signal(idx_t n);
 #ifndef DUCKDB_NO_THREADS
@@ -48,6 +52,8 @@ private:
 	atomic<idx_t> requested_thread_count;
 	//! The amount of threads currently running
 	atomic<idx_t> current_thread_count;
+	//! The amount of background worker threads currently running
+	atomic<idx_t> worker_thread_count {0};
 #ifndef DUCKDB_NO_THREADS
 	//! Semaphore to signal threads in this pool to wake up and execute a task
 	unique_ptr<LightWeightSemaphoreWrapper> semaphore;
