@@ -1284,8 +1284,15 @@ CatalogEntryLookup Catalog::TryLookupDefaultTable(CatalogEntryRetriever &retriev
 		auto transaction = catalog_by_name->GetCatalogTransaction(retriever.GetContext());
 		QueryErrorContext context;
 
-		auto table_schema = catalog_by_name->GetDefaultTableSchema();
-		auto table_name = catalog_by_name->GetDefaultTable();
+		// read the schema and the table under one lock: ATTACH can change both while we look them up
+		Identifier table_schema;
+		Identifier table_name;
+		{
+			lock_guard<mutex> guard(catalog_by_name->default_table_lock);
+			table_schema = !catalog_by_name->default_table_schema.empty() ? catalog_by_name->default_table_schema
+			                                                              : Identifier(DEFAULT_SCHEMA);
+			table_name = catalog_by_name->default_table;
+		}
 
 		optional_ptr<BoundAtClause> at_clause;
 		if (!catalog_by_name->SupportsTimeTravel() && allow_ignore_at_clause) {
