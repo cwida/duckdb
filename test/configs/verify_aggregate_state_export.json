@@ -91,6 +91,7 @@
         "test/sql/prepared/prepared_statistics_optimization.test",
         "test/sql/types/struct/struct_equality_bug.test",
         "test/sql/types/timestamp/test_infinite_time.test",
+        "test/sql/types/variant/variant_cast_type_null.test",
         "test/sql/variant/variant_comparator.test",
         "test/sql/window/test_window_agg_stats_propagation.test",
         "test/sql/sql_export/call_values.test",

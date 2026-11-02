@@ -142,6 +142,7 @@ BlockPointer PartialBlock::Store(BlockPackable &packable, const BufferHandle &so
 	}
 
 	memcpy(dst.GetDataMutable() + offset, source.Ptr(), byte_size);
+	packable.UsePackedCopy(block_handle, offset);
 	return FinishStore(packable, std::move(dst), byte_size);
 }
 

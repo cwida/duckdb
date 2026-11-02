@@ -374,6 +374,9 @@ BufferHandle StandardBufferManager::Pin(const QueryContext &context, shared_ptr<
 
 	idx_t required_memory;
 	auto &block_memory = handle->GetMemory();
+	if (block_memory.TryIncrementPinnedReaders()) {
+		return BufferHandle(handle, block_memory.GetBuffer());
+	}
 	{
 		// lock the block
 		auto lock = block_memory.GetLock();
@@ -459,14 +462,16 @@ void StandardBufferManager::VerifyZeroReaders(BlockLock &lock, shared_ptr<BlockH
 void StandardBufferManager::Unpin(shared_ptr<BlockHandle> &handle) {
 	bool purge = false;
 	auto &block_memory = handle->GetMemory();
+	if (block_memory.TryDecrementPinnedReaders()) {
+		return;
+	}
 	{
 		auto lock = block_memory.GetLock();
-		if (!block_memory.GetBuffer(lock) || block_memory.GetBufferType() == FileBufferType::TINY_BUFFER) {
-			return;
-		}
 		D_ASSERT(block_memory.GetReaders() > 0);
 		auto new_readers = block_memory.DecrementReaders(lock);
-		if (new_readers == 0) {
+		// Tiny buffers are never evicted, and a block converted to a persistent block has no buffer left
+		if (new_readers == 0 && block_memory.GetBuffer(lock) &&
+		    block_memory.GetBufferType() != FileBufferType::TINY_BUFFER) {
 			VerifyZeroReaders(lock, handle);
 			if (block_memory.MustAddToEvictionQueue()) {
 				purge = buffer_pool.AddToEvictionQueue(lock, handle);
