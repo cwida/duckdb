@@ -222,10 +222,6 @@ public:
 	//! (optional) function that will be called before Finalize
 	//! For now, its only use is to to communicate memory usage in multi-join pipelines through TemporaryMemoryManager
 	virtual void PrepareFinalize(ClientContext &context, GlobalSinkState &sink_state) const;
-	//! Whether completed sink inputs can be finalized without optional coordination dependencies.
-	virtual bool CanFinalizeIndependently(ClientContext &context, GlobalSinkState &sink_state) const {
-		return false;
-	}
 	//! The finalize is called when ALL threads are finished execution. It is called only once per pipeline, and is
 	//! entirely single threaded.
 	//! If Finalize returns SinkResultType::Finished, the sink is marked as finished

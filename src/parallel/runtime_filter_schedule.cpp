@@ -63,7 +63,7 @@ static vector<bool> CollectJoinBuildStages(const PipelineSchedule &schedule) {
 		}
 		build_stages[stage_idx] = true;
 		for (auto dependency : schedule.stages[stage_idx].dependencies) {
-			pending.push_back(dependency.index);
+			pending.push_back(dependency);
 		}
 	}
 	return build_stages;
@@ -129,9 +129,7 @@ void ScheduleRuntimeFilters(PipelineSchedule &schedule) {
 				continue;
 			}
 			for (auto execution : source->second) {
-				if (!schedule.TryAddDependency(execution, publication[0])) {
-					schedule.TryAddOptionalDependency(execution, publication[0]);
-				}
+				schedule.TryAddDependency(execution, publication[0]);
 			}
 		}
 	}

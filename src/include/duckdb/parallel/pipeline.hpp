@@ -163,7 +163,6 @@ public:
 	void ClearSource();
 	void Schedule(shared_ptr<Event> &event);
 	void PrepareFinalize();
-	bool CanFinalizeIndependently();
 
 	//! Compute the maximum number of threads for parallel execution of this pipeline
 	//! Returns 1 if the pipeline cannot be parallelized

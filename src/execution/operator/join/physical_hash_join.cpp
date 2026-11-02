@@ -1047,17 +1047,6 @@ static idx_t GetBuildSpaceRequirement(ClientContext &context, const JoinHashTabl
 	return GetPartitioningSpaceRequirement(context, layout->GetTypes(), ht.GetRadixBits(), num_threads);
 }
 
-bool PhysicalHashJoin::CanFinalizeIndependently(ClientContext &context, GlobalSinkState &global_state) const {
-	if (Settings::Get<DebugForceExternalSetting>(context)) {
-		return false;
-	}
-	auto &state = global_state.Cast<HashJoinGlobalSinkState>();
-	idx_t max_partition_size;
-	idx_t max_partition_count;
-	const auto size = state.hash_table->GetTotalSize(state.local_hash_tables, max_partition_size, max_partition_count);
-	return size <= state.temporary_memory_state->GetMinimumReservation();
-}
-
 void PhysicalHashJoin::PrepareFinalize(ClientContext &context, GlobalSinkState &global_state) const {
 	auto &gstate = global_state.Cast<HashJoinGlobalSinkState>();
 	// If no Sink chunk ever arrived, the layout was never published. Fall back to a default layout

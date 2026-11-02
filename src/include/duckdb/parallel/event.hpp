@@ -16,27 +16,6 @@
 namespace duckdb {
 class Executor;
 class Task;
-class Event;
-
-class OptionalEventDependency {
-public:
-	explicit OptionalEventDependency(const shared_ptr<Event> &dependent);
-	void Complete();
-
-private:
-	weak_ptr<Event> dependent;
-	atomic<bool> completed {false};
-};
-
-struct EventDependent {
-	weak_ptr<Event> event;
-	shared_ptr<OptionalEventDependency> optional_dependency;
-};
-
-struct OptionalEventDependencies {
-	vector<shared_ptr<OptionalEventDependency>> prerequisites;
-	vector<shared_ptr<OptionalEventDependency>> dependents;
-};
 
 class Event : public enable_shared_from_this<Event> {
 public:
@@ -55,16 +34,11 @@ public:
 	//! Called after the event is entirely finished
 	virtual void FinalizeFinish() {
 	}
-	//! Decide whether to bypass the group's prerequisites or release its optional dependents.
-	virtual bool CanSkipOptionalDependencies() {
-		return false;
-	}
 
 	void FinishTask();
 	void Finish();
 
-	shared_ptr<OptionalEventDependency> AddDependency(Event &event,
-	                                                  PipelineDependencyType type = PipelineDependencyType::REQUIRED);
+	void AddDependency(Event &event);
 	bool HasDependencies() const {
 		return total_dependencies != 0;
 	}
@@ -73,8 +47,7 @@ public:
 	}
 	const vector<reference<Event>> &GetParentsVerification() const;
 
-	void CompleteDependency(PipelineDependencyType type = PipelineDependencyType::REQUIRED);
-	void SetOptionalDependencies(unique_ptr<OptionalEventDependencies> dependencies);
+	void CompleteDependency();
 
 	void SetTasks(vector<shared_ptr<Task>> tasks);
 
@@ -107,16 +80,15 @@ protected:
 	//! The maximum amount of threads that can work on the event
 	atomic<idx_t> total_tasks;
 
-	//! The event starts after every dependency has finished or been released.
+	//! The amount of completed dependencies
+	//! The event can only be started after the dependencies have finished executing
 	atomic<idx_t> finished_dependencies;
+	//! The total amount of dependencies
 	idx_t total_dependencies;
-	atomic<idx_t> finished_required_dependencies {0};
-	idx_t total_required_dependencies = 0;
-	unique_ptr<OptionalEventDependencies> optional_dependencies;
 
 	//! The events that depend on this event to run
-	vector<EventDependent> parents;
-	//! Required edges must remain acyclic even when optional edges can be released.
+	vector<weak_ptr<Event>> parents;
+	//! Raw pointers to the parents (used for verification only)
 	vector<reference<Event>> parents_raw;
 
 	//! Whether or not the event is finished executing

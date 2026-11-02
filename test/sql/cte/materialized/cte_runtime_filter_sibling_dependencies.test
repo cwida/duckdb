@@ -1,5 +1,5 @@
-# name: test/sql/cte/materialized/cte_runtime_filter_optional_dependencies.test
-# description: Small CTE filter producers bypass sibling waits and large producers release filter waits
+# name: test/sql/cte/materialized/cte_runtime_filter_sibling_dependencies.test
+# description: Small CTE filter producers finalize independently of sibling builds
 # group: [materialized]
 
 statement ok
@@ -47,23 +47,23 @@ JOIN (SELECT p.* FROM p JOIN c USING(g)) y ON x.g=y.g-400;
 ----
 analyzed_plan	<REGEX>:(?s).*"Table": "[^"]*[.]dates"[^}]*"Dynamic Filters": "[^"]* OR [^"]*"[^}]*},\s*"intermediate_rows": 4000,.*
 
-# Both UNION inputs must finish before the producer decides whether to bypass.
+# Both UNION inputs must finish before the producer publishes its filter.
 query II
 WITH p AS MATERIALIZED (SELECT d.g,sum(f.v) v FROM facts f JOIN dates d USING(k) GROUP BY d.g)
 SELECT sum(x.v),sum(y.v)
-FROM (SELECT p.* FROM p JOIN (FROM b UNION ALL FROM b) t USING(g)) x
+FROM (SELECT p.* FROM p JOIN (FROM b WHERE g<200 UNION ALL FROM b WHERE g>=200) t USING(g)) x
 JOIN (SELECT p.* FROM p JOIN c USING(g)) y ON x.g=y.g-400;
 ----
-7759960000	8079960000
+3879980000	4039980000
 
-# Non-scan inputs retain conservative scheduling, even when estimated as one row.
+# Underestimated non-scan builds still produce the complete filter.
 query II
 WITH p AS MATERIALIZED (SELECT d.g,sum(f.v) v FROM facts f JOIN dates d USING(k) GROUP BY d.g)
 SELECT sum(x.v),sum(y.v)
-FROM (SELECT p.* FROM p JOIN (SELECT 100+unnest(range(500000))%200 AS g) t USING(g)) x
+FROM (SELECT p.* FROM p JOIN (SELECT 100+unnest(range(20000))%200 AS g) t USING(g)) x
 JOIN (SELECT p.* FROM p JOIN c USING(g)) y ON x.g=y.g-400;
 ----
-9699950000000	10099950000000
+387998000000	403998000000
 
 endloop
 
@@ -94,7 +94,7 @@ EXECUTE consumers;
 ----
 385198000	401198000
 
-# Keep the native table on the build side as its actual size grows.
+# Keep the native table on the build side as its estimated size grows.
 statement ok
 SET memory_limit='128MB';
 
@@ -123,16 +123,16 @@ JOIN (SELECT p.* FROM p JOIN c USING(g)) y ON x.g=y.g-400;
 analyzed_plan	<REGEX>:(?s).*"Table": "[^"]*[.]dates"[^}]*"Dynamic Filters": "[^"]* OR [^"]*"[^}]*},\s*"intermediate_rows": 400,.*
 
 statement ok
-INSERT INTO b SELECT 100100+i%200 FROM range(499800) t(i);
+INSERT INTO b SELECT 100100+i%200 FROM range(999800) t(i);
 
-# The same eligible scan producer now releases its filter wait instead of bypassing coordination.
+# At one million rows the producer retains its sibling coordination waits.
 query II
 WITH p AS MATERIALIZED (SELECT d.g,sum(f.v) v FROM facts f JOIN dates d USING(k) GROUP BY d.g)
 SELECT sum(x.v),sum(y.v)
 FROM (SELECT p.* FROM p JOIN b USING(g)) x
 JOIN (SELECT p.* FROM p JOIN c USING(g)) y ON x.g=y.g-400;
 ----
-100199500000	100599500000
+200399000000	201199000000
 
 query II
 EXPLAIN (ANALYZE, FORMAT JSON)

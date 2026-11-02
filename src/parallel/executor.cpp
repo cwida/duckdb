@@ -95,37 +95,16 @@ void Executor::ScheduleEventsInternal(ScheduleEventData &event_data) {
 	for (auto &stage : schedule->stages) {
 		events.push_back(CreatePipelineScheduleEvent(stage, event_data.initial_schedule));
 	}
-	vector<unique_ptr<OptionalEventDependencies>> dependency_groups(events.size());
 	for (idx_t stage_idx = 0; stage_idx < schedule->stages.size(); stage_idx++) {
-		auto &stage = schedule->stages[stage_idx];
-		for (auto &dependency : stage.dependencies) {
-			auto edge = events[stage_idx]->AddDependency(*events[dependency.index], dependency.type);
-			if (!edge) {
-				continue;
-			}
-			const bool prerequisite = stage.type == PipelineScheduleStageType::PREPARE_FINISH ||
-			                          stage.type == PipelineScheduleStageType::FINISH;
-			auto group = prerequisite ? stage.dependency_group : schedule->stages[dependency.index].dependency_group;
-			if (!group.IsValid()) {
-				continue;
-			}
-			auto &edges = dependency_groups[group.GetIndex()];
-			if (!edges) {
-				edges = make_uniq<OptionalEventDependencies>();
-			}
-			(prerequisite ? edges->prerequisites : edges->dependents).push_back(std::move(edge));
-		}
-	}
-	for (idx_t i = 0; i < dependency_groups.size(); i++) {
-		if (dependency_groups[i]) {
-			events[i]->SetOptionalDependencies(std::move(dependency_groups[i]));
+		for (auto dependency : schedule->stages[stage_idx].dependencies) {
+			events[stage_idx]->AddDependency(*events[dependency]);
 		}
 	}
 	for (auto &pipeline : schedule->initialize_on_schedule_pipelines) {
 		pipeline.get().ResetSource(true);
 	}
 
-	// Required dependencies must remain acyclic.
+	// verify that we have no cyclic dependencies
 	VerifyScheduledEvents(events);
 
 	// schedule the pipelines that do not have dependencies

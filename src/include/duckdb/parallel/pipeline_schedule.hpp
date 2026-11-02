@@ -9,10 +9,8 @@
 #pragma once
 
 #include "duckdb/common/common.hpp"
-#include "duckdb/common/optional_idx.hpp"
 #include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/common/reference_map.hpp"
-#include "duckdb/parallel/pipeline.hpp"
 
 namespace duckdb {
 
@@ -22,23 +20,12 @@ class Pipeline;
 enum class PipelineScheduleStageType : uint8_t { INITIALIZE, EXECUTE, PREPARE_FINISH, FINISH, COMPLETE };
 enum class PipelineScheduleMode : uint8_t { COMPLETE, ACTIVE_SUBSET };
 
-struct PipelineScheduleDependency {
-	PipelineScheduleDependency(idx_t index_p, PipelineDependencyType type_p = PipelineDependencyType::REQUIRED)
-	    : index(index_p), type(type_p) {
-	}
-
-	idx_t index;
-	PipelineDependencyType type;
-};
-
 struct PipelineScheduleStage {
 	PipelineScheduleStage(PipelineScheduleStageType type, shared_ptr<Pipeline> pipeline);
 
 	PipelineScheduleStageType type;
 	shared_ptr<Pipeline> pipeline;
-	vector<PipelineScheduleDependency> dependencies;
-	//! The stage that resolves optional dependencies for this prepare/finish/complete group.
-	optional_idx dependency_group;
+	vector<idx_t> dependencies;
 };
 
 struct PipelineScheduleExternalInputDependency {
@@ -68,15 +55,8 @@ struct PipelineSchedule {
 
 	bool HasCycle() const;
 	vector<PipelineScheduleEdge> GetCycle() const;
-	//! REQUIRED restricts traversal to paths containing only required dependencies.
-	bool DependsOn(idx_t dependent, idx_t dependency,
-	               PipelineDependencyType type = PipelineDependencyType::OPTIONAL_DEPENDENCY) const;
+	bool DependsOn(idx_t dependent, idx_t dependency) const;
 	bool TryAddDependency(idx_t dependent, idx_t dependency);
-	bool TryAddOptionalDependency(idx_t dependent, idx_t dependency);
-
-private:
-	//! Inputs to an admitted decision must remain free of additional waits.
-	vector<bool> decision_inputs;
 };
 
 unique_ptr<PipelineSchedule> BuildPipelineSchedule(const vector<shared_ptr<MetaPipeline>> &meta_pipelines,

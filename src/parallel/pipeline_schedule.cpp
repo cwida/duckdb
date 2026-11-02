@@ -30,9 +30,8 @@ static idx_t AddStage(PipelineSchedule &result, PipelineScheduleStageType type, 
 	return result.stages.size() - 1;
 }
 
-static void AddDependency(PipelineSchedule &result, idx_t dependent, idx_t dependency,
-                          PipelineDependencyType type = PipelineDependencyType::REQUIRED) {
-	result.stages[dependent].dependencies.emplace_back(dependency, type);
+static void AddDependency(PipelineSchedule &result, idx_t dependent, idx_t dependency) {
+	result.stages[dependent].dependencies.push_back(dependency);
 }
 
 static void AddExternalInputDependency(PipelineSchedule &result, idx_t dependent, idx_t dependency,
@@ -71,7 +70,7 @@ vector<PipelineScheduleEdge> PipelineSchedule::GetCycle() const {
 				stack.pop_back();
 				continue;
 			}
-			auto dependency = dependencies[entry.second++].index;
+			auto dependency = dependencies[entry.second++];
 			D_ASSERT(dependency < stages.size());
 			if (states[dependency] == CycleVisitState::UNVISITED) {
 				states[dependency] = CycleVisitState::VISITING;
@@ -90,7 +89,7 @@ vector<PipelineScheduleEdge> PipelineSchedule::GetCycle() const {
 			for (idx_t path_idx = cycle_start; path_idx + 1 < stack.size(); path_idx++) {
 				auto dependent = stack[path_idx].first;
 				auto dependency_idx = stack[path_idx].second - 1;
-				result.emplace_back(dependent, stages[dependent].dependencies[dependency_idx].index,
+				result.emplace_back(dependent, stages[dependent].dependencies[dependency_idx],
 				                    GetExternalInputConsumer(*this, dependent, dependency_idx));
 			}
 			auto dependent = stack.back().first;
@@ -106,7 +105,7 @@ bool PipelineSchedule::HasCycle() const {
 	return !GetCycle().empty();
 }
 
-bool PipelineSchedule::DependsOn(idx_t dependent, idx_t dependency, PipelineDependencyType type) const {
+bool PipelineSchedule::DependsOn(idx_t dependent, idx_t dependency) const {
 	D_ASSERT(dependent < stages.size() && dependency < stages.size());
 	vector<bool> visited(stages.size(), false);
 	vector<idx_t> pending {dependent};
@@ -120,72 +119,20 @@ bool PipelineSchedule::DependsOn(idx_t dependent, idx_t dependency, PipelineDepe
 			continue;
 		}
 		visited[current] = true;
-		for (auto &child : stages[current].dependencies) {
-			if (type != PipelineDependencyType::REQUIRED || child.type == PipelineDependencyType::REQUIRED) {
-				pending.push_back(child.index);
-			}
+		for (auto child : stages[current].dependencies) {
+			pending.push_back(child);
 		}
 	}
 	return false;
 }
 
 bool PipelineSchedule::TryAddDependency(idx_t dependent, idx_t dependency) {
-	if ((!decision_inputs.empty() && decision_inputs[dependent]) || dependent == dependency ||
-	    DependsOn(dependency, dependent)) {
+	if (dependent == dependency || DependsOn(dependency, dependent)) {
 		return false;
 	}
-	if (!DependsOn(dependent, dependency, PipelineDependencyType::REQUIRED)) {
+	if (!DependsOn(dependent, dependency)) {
 		stages[dependent].dependencies.push_back(dependency);
 	}
-	return true;
-}
-
-bool PipelineSchedule::TryAddOptionalDependency(idx_t dependent, idx_t dependency) {
-	auto group = stages[dependency].dependency_group;
-	if (dependent == dependency || stages[dependent].type != PipelineScheduleStageType::EXECUTE || !group.IsValid() ||
-	    stages[dependency].type != PipelineScheduleStageType::COMPLETE ||
-	    (!decision_inputs.empty() && decision_inputs[dependent])) {
-		return false;
-	}
-	auto &decision = stages[group.GetIndex()];
-	vector<idx_t> pending;
-	for (auto &input : decision.dependencies) {
-		if (input.type == PipelineDependencyType::REQUIRED) {
-			pending.push_back(input.index);
-		}
-	}
-	vector<bool> inputs(stages.size(), false);
-	while (!pending.empty()) {
-		auto index = pending.back();
-		pending.pop_back();
-		if (index == dependent) {
-			return false;
-		}
-		if (inputs[index]) {
-			continue;
-		}
-		inputs[index] = true;
-		auto &stage = stages[index];
-		if (stage.type != PipelineScheduleStageType::INITIALIZE && stage.type != PipelineScheduleStageType::EXECUTE) {
-			return false;
-		}
-		if (stage.type == PipelineScheduleStageType::EXECUTE) {
-			auto source = stage.pipeline->GetSource();
-			// Blocking and streaming inputs can wait for other stages before reaching the decision.
-			if (stage.pipeline->IsExternalInput() || !source || source->type != PhysicalOperatorType::TABLE_SCAN ||
-			    stage.pipeline->GetSink() != decision.pipeline->GetSink()) {
-				return false;
-			}
-		}
-		for (auto &input : stage.dependencies) {
-			pending.push_back(input.index);
-		}
-	}
-	decision_inputs.resize(stages.size(), false);
-	for (idx_t i = 0; i < inputs.size(); i++) {
-		decision_inputs[i] = decision_inputs[i] || inputs[i];
-	}
-	stages[dependent].dependencies.emplace_back(dependency, PipelineDependencyType::OPTIONAL_DEPENDENCY);
 	return true;
 }
 
@@ -200,9 +147,6 @@ static PipelineScheduleStageStack AddBasePipeline(PipelineSchedule &result, cons
 	AddDependency(result, prepare_finish, execute);
 	AddDependency(result, finish, prepare_finish);
 	AddDependency(result, complete, finish);
-	for (auto index : {prepare_finish, finish, complete}) {
-		result.stages[index].dependency_group = prepare_finish;
-	}
 	return PipelineScheduleStageStack(initialize, execute, prepare_finish, finish, complete);
 }
 
@@ -249,10 +193,6 @@ static void AddMetaPipeline(PipelineSchedule &result, MetaPipeline &meta_pipelin
 			AddDependency(result, prepare_finish, execute);
 			AddDependency(result, finish, prepare_finish);
 			AddDependency(result, base_stack.complete, finish);
-			result.stages[prepare_finish].dependency_group = prepare_finish;
-			result.stages[finish].dependency_group = prepare_finish;
-			// Completion now covers more than one independently finalized group.
-			result.stages[base_stack.complete].dependency_group.SetInvalid();
 			stage_map.emplace(*pipeline, PipelineScheduleStageStack(base_stack.initialize, execute, prepare_finish,
 			                                                        finish, base_stack.complete));
 		} else {
@@ -318,7 +258,54 @@ unique_ptr<PipelineSchedule> BuildPipelineSchedule(const vector<shared_ptr<MetaP
 				}
 				continue;
 			}
-			AddDependency(*result, entry.second.execute, dependency_entry->second.execute, intra_dependency.type);
+			AddDependency(*result, entry.second.execute, dependency_entry->second.execute);
+		}
+	}
+
+	// These dependencies make sibling join builds run in this order:
+	// 1. all child pipelines execute through Combine
+	// 2. all child pipelines run PrepareFinalize
+	// 3. all child pipelines run Finalize
+	// Operators communicate their memory usage through the TemporaryMemoryManager in PrepareFinalize. When the
+	// child pipelines Finalize, all required memory is known and the manager can make an informed decision.
+	for (auto &meta_pipeline : meta_pipelines) {
+		vector<shared_ptr<MetaPipeline>> children;
+		meta_pipeline->GetMetaPipelines(children, false, true);
+		for (auto &child1 : children) {
+			if (child1->Type() != MetaPipelineType::JOIN_BUILD) {
+				continue;
+			}
+			// Small builds can finalize without coordinating memory reservations with their siblings.
+			if (child1->GetSink()->children[1].get().estimated_cardinality < 1000000) {
+				continue;
+			}
+			auto child1_entry = stage_map.find(*child1->GetBasePipeline());
+			if (child1_entry == stage_map.end()) {
+				if (!allow_missing_meta_pipelines) {
+					throw InternalException("Missing sibling join-build pipeline");
+				}
+				continue;
+			}
+
+			for (auto &child2 : children) {
+				if (child2->Type() != MetaPipelineType::JOIN_BUILD || RefersToSameObject(*child1, *child2)) {
+					continue;
+				}
+				if (!RefersToSameObject(*child1->GetParent(), *child2->GetParent())) {
+					continue;
+				}
+				auto child2_entry = stage_map.find(*child2->GetBasePipeline());
+				if (child2_entry == stage_map.end()) {
+					if (!allow_missing_meta_pipelines) {
+						throw InternalException("Missing sibling join-build dependency pipeline");
+					}
+					continue;
+				}
+				// All children must finish Combine before any child enters PrepareFinalize.
+				AddDependency(*result, child1_entry->second.prepare_finish, child2_entry->second.execute);
+				// All children must finish PrepareFinalize before any child enters Finalize.
+				AddDependency(*result, child1_entry->second.finish, child2_entry->second.prepare_finish);
+			}
 		}
 	}
 
@@ -361,54 +348,6 @@ unique_ptr<PipelineSchedule> BuildPipelineSchedule(const vector<shared_ptr<MetaP
 			}
 			AddExternalInputDependency(*result, entry.second.execute, producer_entry->second.execute, consumer);
 			AddExternalInputDependency(*result, entry.second.prepare_finish, producer_entry->second.execute, consumer);
-		}
-	}
-
-	// These dependencies make coordinated sibling join builds run in this order:
-	// 1. all child pipelines execute through Combine
-	// 2. all child pipelines run PrepareFinalize
-	// 3. all child pipelines run Finalize
-	// Operators communicate their memory usage through the TemporaryMemoryManager in PrepareFinalize. When the
-	// child pipelines Finalize, all required memory is known and the manager can make an informed decision.
-	for (auto &meta_pipeline : meta_pipelines) {
-		vector<shared_ptr<MetaPipeline>> children;
-		meta_pipeline->GetMetaPipelines(children, false, true);
-		for (auto &child1 : children) {
-			if (child1->Type() != MetaPipelineType::JOIN_BUILD) {
-				continue;
-			}
-			auto child1_entry = stage_map.find(*child1->GetBasePipeline());
-			if (child1_entry == stage_map.end()) {
-				if (!allow_missing_meta_pipelines) {
-					throw InternalException("Missing sibling join-build pipeline");
-				}
-				continue;
-			}
-			for (auto &child2 : children) {
-				if (child2->Type() != MetaPipelineType::JOIN_BUILD || RefersToSameObject(*child1, *child2)) {
-					continue;
-				}
-				if (!RefersToSameObject(*child1->GetParent(), *child2->GetParent())) {
-					continue;
-				}
-				auto child2_entry = stage_map.find(*child2->GetBasePipeline());
-				if (child2_entry == stage_map.end()) {
-					if (!allow_missing_meta_pipelines) {
-						throw InternalException("Missing sibling join-build dependency pipeline");
-					}
-					continue;
-				}
-				// Include every input feeding the sibling's prepare event.
-				for (auto &input : result->stages[child2_entry->second.prepare_finish].dependencies) {
-					if (input.type == PipelineDependencyType::REQUIRED) {
-						AddDependency(*result, child1_entry->second.prepare_finish, input.index,
-						              PipelineDependencyType::OPTIONAL_DEPENDENCY);
-					}
-				}
-				// All children must finish PrepareFinalize before any child enters Finalize.
-				AddDependency(*result, child1_entry->second.finish, child2_entry->second.prepare_finish,
-				              PipelineDependencyType::OPTIONAL_DEPENDENCY);
-			}
 		}
 	}
 

@@ -6,10 +6,6 @@ PipelinePrepareFinishEvent::PipelinePrepareFinishEvent(shared_ptr<Pipeline> pipe
     : BasePipelineEvent(std::move(pipeline_p)) {
 }
 
-bool PipelinePrepareFinishEvent::CanSkipOptionalDependencies() {
-	return pipeline->CanFinalizeIndependently();
-}
-
 class PipelinePreFinishTask : public ExecutorTask {
 public:
 	explicit PipelinePreFinishTask(Pipeline &pipeline_p, shared_ptr<Event> event_p)

@@ -377,10 +377,6 @@ void Pipeline::ResetSinkForReschedule(idx_t scheduled_workers, bool single_produ
 	sink->sink_state->reschedule_single_producer = single_producer;
 }
 
-bool Pipeline::CanFinalizeIndependently() {
-	return sink && sink->CanFinalizeIndependently(GetClientContext(), *sink->sink_state);
-}
-
 void Pipeline::PrepareFinalize() {
 	if (sink) {
 		if (!sink->IsSink()) {
