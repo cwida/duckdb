@@ -5,6 +5,10 @@
 statement ok
 SET threads=1;
 
+# retention requires cached operators; force the setting so config sweeps measure the mechanism
+statement ok
+SET enable_caching_operators=true;
+
 statement ok
 CREATE TABLE a AS SELECT i FROM range(10000) r(i);
 
