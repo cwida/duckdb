@@ -124,7 +124,7 @@ void ColumnLifetimeAnalyzer::VisitOperator(LogicalOperator &op) {
 	case LogicalOperatorType::LOGICAL_EXCEPT:
 	case LogicalOperatorType::LOGICAL_INTERSECT:
 	case LogicalOperatorType::LOGICAL_RECURSIVE_CTE: {
-		// for set operations/materialized CTEs we don't remove anything, just recursively visit the children
+		// for set operations/recursive CTEs we don't remove anything, just recursively visit the children
 		// FIXME: for UNION we can remove unreferenced columns as long as everything_referenced is false (i.e. we
 		// encounter a UNION node that is not preceded by a DISTINCT)
 		ColumnLifetimeAnalyzer analyzer(optimizer, root, true);

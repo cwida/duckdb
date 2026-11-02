@@ -1384,7 +1384,7 @@ private:
 			result.bindings.emplace(canonical_bindings[i], expanded_bindings[i]);
 		}
 		for (auto &scan : scans) {
-			if (!GetExpandableScan(scan)) {
+			if (!CanExpandScan(scan)) {
 				continue;
 			}
 			const auto table_index = to_canonical_table_index.at(scan.get().table_index);
@@ -1475,19 +1475,9 @@ private:
 		        IsSelectiveMultiTablePlan(*subplan, subplan->estimated_cardinality));
 	}
 
-	static optional_ptr<LogicalGet> GetExpandableScan(LogicalOperator &op) {
-		if (op.type == LogicalOperatorType::LOGICAL_FILTER) {
-			return GetExpandableScan(*op.children[0]);
-		}
-		if (op.type != LogicalOperatorType::LOGICAL_GET) {
-			return nullptr;
-		}
-		auto &get = op.Cast<LogicalGet>();
-		if (!get.children.empty() || get.has_pushed_projection || get.extra_info.sample_options ||
-		    get.dynamic_filters) {
-			return nullptr;
-		}
-		return get;
+	static bool CanExpandScan(const LogicalGet &get) {
+		return get.children.empty() && !get.has_pushed_projection && !get.extra_info.sample_options &&
+		       !get.dynamic_filters;
 	}
 
 	static SubplanStats GetSubplanStats(const LogicalOperator &op) {

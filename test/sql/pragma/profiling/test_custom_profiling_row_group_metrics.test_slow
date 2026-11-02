@@ -308,7 +308,7 @@ SELECT * FROM cumulative_metrics;
 ----
 2	5
 
-# --- Different filters keep two scans: the same table's row groups are counted once per scan operator ---
+# --- Repeated scan query: same table's row groups are counted once per scan operator ---
 
 statement ok
 PRAGMA enable_profiling = 'json';
@@ -320,7 +320,7 @@ statement ok
 SET tracked_metrics = ['operator.row_groups_scanned', 'operator.total_row_groups_to_scan', 'operator.type', 'query.total_row_groups_scanned', 'query.total_row_groups_to_scan'];
 
 statement ok
-SELECT count(*) FROM t a, t b WHERE a.i < 100 AND b.i < 200;
+SELECT count(*) FROM t a, t b WHERE a.i < 100 AND b.i < 100;
 
 statement ok
 PRAGMA disable_profiling;
