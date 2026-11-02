@@ -1534,6 +1534,11 @@ static constexpr ExtensionEntry EXTENSION_SECRET_TYPES[] = {
     {"uc", "unity_catalog"},     {"unity_catalog", "unity_catalog"},
 }; // END_OF_EXTENSION_SECRET_TYPES
 
+// Resource types registered by extensions: CREATE/REGISTER EXTERNAL RESOURCE '<type>' autoloads the extension
+static constexpr ExtensionEntry EXTENSION_EXTERNAL_RESOURCE_TYPES[] = {
+    {"aws:cloudformation:quack-on-ec2", "aws"},
+}; // END_OF_EXTENSION_EXTERNAL_RESOURCE_TYPES
+
 // Note: these are currently hardcoded in scripts/generate_extensions_function.py
 // TODO: automate by passing though to script via duckdb
 static constexpr ExtensionEntry EXTENSION_COPY_FUNCTIONS[] = {
