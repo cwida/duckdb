@@ -180,13 +180,6 @@ void RowVersionManager::CleanupAppend(VisibilityBound lowest_visibility_bound, i
 
 void RowVersionManager::RevertAppend(idx_t new_count) {
 	lock_guard<mutex> lock(version_lock);
-	idx_t partial_vector_idx = new_count / STANDARD_VECTOR_SIZE;
-	idx_t partial_vector_count = new_count % STANDARD_VECTOR_SIZE;
-	if (partial_vector_count > 0 && partial_vector_idx < vector_info.size() && vector_info[partial_vector_idx]) {
-		// the reverted rows of the partially kept vector must not keep the insert id of the reverted append
-		needs_compression_check = true;
-		vector_info[partial_vector_idx]->RevertAppend(partial_vector_count);
-	}
 	idx_t start_vector_idx = (new_count + (STANDARD_VECTOR_SIZE - 1)) / STANDARD_VECTOR_SIZE;
 	for (idx_t vector_idx = start_vector_idx; vector_idx < vector_info.size(); vector_idx++) {
 		vector_info[vector_idx].reset();
@@ -233,7 +226,12 @@ void RowVersionManager::RollbackWrite(idx_t vector_idx, const uint16_t rows[], i
 	GetVectorInfo(vector_idx).RollbackWrite(rows, count, previous_ids, previous_id_count);
 }
 
-void RowVersionManager::CompressVersionIds(VisibilityBound lowest_visibility_bound) {
+static idx_t VectorRowCount(idx_t vector_idx, idx_t row_count) {
+	idx_t vector_start = vector_idx * STANDARD_VECTOR_SIZE;
+	return row_count > vector_start ? MinValue<idx_t>(row_count - vector_start, STANDARD_VECTOR_SIZE) : 0;
+}
+
+void RowVersionManager::CompressVersionIds(VisibilityBound lowest_visibility_bound, idx_t row_count) {
 	lock_guard<mutex> lock(version_lock);
 	if (!needs_compression_check) {
 		// no version ids were modified since the last pass, and the last pass left nothing
@@ -251,8 +249,10 @@ void RowVersionManager::CompressVersionIds(VisibilityBound lowest_visibility_bou
 		return;
 	}
 	bool pending = false;
-	for (auto &info : vector_info) {
-		if (info && info->CompressVersionIds(lowest_visibility_bound) == VersionCompressionResult::PENDING) {
+	for (idx_t vector_idx = 0; vector_idx < vector_info.size(); vector_idx++) {
+		auto &info = vector_info[vector_idx];
+		if (info && info->CompressVersionIds(lowest_visibility_bound, VectorRowCount(vector_idx, row_count)) ==
+		                VersionCompressionResult::PENDING) {
 			// some ids can still compress once the lowest active start advances - check again next pass
 			pending = true;
 		}
@@ -263,7 +263,7 @@ void RowVersionManager::CompressVersionIds(VisibilityBound lowest_visibility_bou
 	allocator.RemoveEmptyBuffers();
 }
 
-vector<MetaBlockPointer> RowVersionManager::Checkpoint(RowGroupWriter &writer) {
+vector<MetaBlockPointer> RowVersionManager::Checkpoint(RowGroupWriter &writer, idx_t row_count) {
 	lock_guard<mutex> lock(version_lock);
 	auto &manager = *writer.GetMetadataManager();
 	auto options = writer.GetCheckpointOptions();
@@ -282,7 +282,12 @@ vector<MetaBlockPointer> RowVersionManager::Checkpoint(RowGroupWriter &writer) {
 		if (!chunk_info) {
 			continue;
 		}
-		if (!chunk_info->HasDeletes(options.visibility_bound)) {
+		auto vector_row_count = VectorRowCount(vector_idx, row_count);
+		if (vector_row_count == 0) {
+			// the vector holds no rows - there is nothing to write
+			continue;
+		}
+		if (!chunk_info->HasDeletes(options.visibility_bound, vector_row_count)) {
 			continue;
 		}
 		to_serialize.emplace_back(vector_idx, *chunk_info);
@@ -298,7 +303,7 @@ vector<MetaBlockPointer> RowVersionManager::Checkpoint(RowGroupWriter &writer) {
 			auto &vector_idx = entry.first;
 			auto &chunk_info = entry.second.get();
 			metadata_writer.Write<idx_t>(vector_idx);
-			chunk_info.Write(metadata_writer, options.visibility_bound);
+			chunk_info.Write(metadata_writer, options.visibility_bound, VectorRowCount(vector_idx, row_count));
 		}
 		metadata_writer.Flush();
 	}
