@@ -14,6 +14,53 @@ SELECT i::INTEGER AS k, (i % 2)::INTEGER AS bucket FROM range(10) t(i);
 statement ok
 SET explain_output='optimized_only';
 
+statement ok
+CREATE TABLE projected_plan AS
+SELECT 'a' || i::VARCHAR s, repeat('b', i % 5) u FROM range(1000) t(i);
+
+# Differing computed projections can feed a single shared aggregate producer.
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(length(s)), avg(length(s)) FROM projected_plan
+UNION ALL SELECT sum(length(u)), avg(length(u)) FROM projected_plan;
+----
+logical_opt	<REGEX>:.*"CTE".*"AGGREGATE".*"PROJECTION".*length\(s\).*length\(u\).*CTE_SCAN.*CTE_SCAN.*__common_subplan_.*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(length(s)), avg(length(s)) FROM projected_plan
+UNION ALL SELECT sum(length(u)), avg(length(u)) FROM projected_plan;
+----
+logical_opt	<!REGEX>:.*"AGGREGATE".*"AGGREGATE".*
+
+# Projections alone do not justify sharing their scan.
+query II
+EXPLAIN (FORMAT JSON) SELECT length(s) FROM projected_plan
+UNION ALL SELECT length(u) FROM projected_plan;
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+# Matching projection inputs does not make predicates on different outputs equivalent.
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(length(s)), avg(length(s)) FROM projected_plan WHERE length(s) > 1
+UNION ALL SELECT sum(length(u)), avg(length(u)) FROM projected_plan WHERE length(u) > 1;
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+# Fallible projected expressions cannot be added to a shared producer.
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(s::INTEGER), avg(s::INTEGER) FROM projected_plan
+UNION ALL SELECT sum(u::INTEGER), avg(u::INTEGER) FROM projected_plan;
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+# Identical positional inputs still allow aggregate sharing above UNION ALL.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT sum(x) FROM (SELECT length(s) x FROM projected_plan UNION ALL SELECT length(u) FROM projected_plan) p
+UNION ALL
+SELECT max(x) FROM (SELECT length(s) x FROM projected_plan UNION ALL SELECT length(u) FROM projected_plan) p;
+----
+logical_opt	<REGEX>:.*"CTE".*"AGGREGATE".*"UNION".*CTE_SCAN.*CTE_SCAN.*__common_subplan_.*
+
 # No individual scan reads all aggregate payloads.
 query II
 EXPLAIN (FORMAT JSON) SELECT (SELECT count(*) FROM plan_fact WHERE k < 5),
