@@ -24,12 +24,39 @@ unique_ptr<Logger> LogManager::CreateLogger(LoggingContext context, bool thread_
 	if (!thread_safe) {
 		// TODO: implement ThreadLocalLogger and return it here
 	}
-	return make_uniq<ThreadSafeLogger>(config, registered_logging_context, *this);
+	return make_uniq<ThreadSafeLogger>(config_snapshot, registered_logging_context, *this);
+}
+
+unique_ptr<Logger> LogManager::CreateLogger(LoggingContext context, const LogConfigSnapshot &snapshot) {
+	if (snapshot.config && snapshot.version == config_version.load()) {
+		return CreateLoggerInternal(context, snapshot.config);
+	}
+	shared_ptr<const LogConfig> current_config;
+	{
+		lock_guard<mutex> guard(lock);
+		current_config = config_snapshot;
+	}
+	return CreateLoggerInternal(context, current_config);
+}
+
+unique_ptr<Logger> LogManager::CreateLoggerInternal(LoggingContext &context,
+                                                    const shared_ptr<const LogConfig> &config_p) {
+	if (!config_p->enabled) {
+		return make_uniq<NopLogger>(*this);
+	}
+	return make_uniq<ThreadSafeLogger>(config_p, RegisterLoggingContextInternal(context), *this);
+}
+
+void LogManager::RefreshConfigSnapshot(LogConfigSnapshot &snapshot) {
+	if (snapshot.config && snapshot.version == config_version.load()) {
+		return;
+	}
+	lock_guard<mutex> guard(lock);
+	snapshot.config = config_snapshot;
+	snapshot.version = config_version.load();
 }
 
 RegisteredLoggingContext LogManager::RegisterLoggingContext(LoggingContext &context) {
-	unique_lock<mutex> lck(lock);
-
 	return RegisterLoggingContextInternal(context);
 }
 
@@ -65,7 +92,9 @@ bool LogManager::CanScan(LoggingTargetTable table) {
 	return log_storage->CanScan(table);
 }
 
-LogManager::LogManager(DatabaseInstance &db, LogConfig config_p) : config(std::move(config_p)), db_instance(db) {
+LogManager::LogManager(DatabaseInstance &db, LogConfig config_p)
+    : config(std::move(config_p)), config_version(0), db_instance(db), next_registered_logging_context_index(0) {
+	config_snapshot = make_shared_ptr<const LogConfig>(config);
 	log_storage = make_uniq<InMemoryLogStorage>(db);
 }
 
@@ -84,15 +113,11 @@ LogManager &LogManager::Get(ClientContext &context) {
 }
 
 RegisteredLoggingContext LogManager::RegisterLoggingContextInternal(LoggingContext &context) {
-	RegisteredLoggingContext result = {next_registered_logging_context_index, context};
-
-	next_registered_logging_context_index += 1;
-
-	if (next_registered_logging_context_index == NumericLimits<idx_t>::Maximum()) {
+	auto context_id = next_registered_logging_context_index.fetch_add(1);
+	if (context_id >= NumericLimits<idx_t>::Maximum() - 1) {
 		throw InternalException("Ran out of available log context ids.");
 	}
-
-	return result;
+	return {context_id, context};
 }
 
 void LogManager::WriteLogEntry(timestamp_t timestamp, const char *log_type, LogLevel log_level, const char *log_message,
@@ -135,19 +160,19 @@ void LogManager::RestoreConfig(const LogConfig &config_p, shared_ptr<LogStorage>
 void LogManager::SetEnableLogging(bool enable) {
 	unique_lock<mutex> lck(lock);
 	config.enabled = enable;
-	global_logger->UpdateConfig(config);
+	PublishConfigInternal();
 }
 
 void LogManager::SetLogMode(LogMode mode) {
 	unique_lock<mutex> lck(lock);
 	config.mode = mode;
-	global_logger->UpdateConfig(config);
+	PublishConfigInternal();
 }
 
 void LogManager::SetLogLevel(LogLevel level) {
 	unique_lock<mutex> lck(lock);
 	config.level = level;
-	global_logger->UpdateConfig(config);
+	PublishConfigInternal();
 }
 
 void LogManager::SetEnabledLogTypes(optional_ptr<unordered_set<string>> enabled_log_types) {
@@ -157,7 +182,7 @@ void LogManager::SetEnabledLogTypes(optional_ptr<unordered_set<string>> enabled_
 	} else {
 		config.enabled_log_types = {};
 	}
-	global_logger->UpdateConfig(config);
+	PublishConfigInternal();
 }
 
 void LogManager::SetDisabledLogTypes(optional_ptr<unordered_set<string>> disabled_log_types) {
@@ -167,7 +192,7 @@ void LogManager::SetDisabledLogTypes(optional_ptr<unordered_set<string>> disable
 	} else {
 		config.disabled_log_types = {};
 	}
-	global_logger->UpdateConfig(config);
+	PublishConfigInternal();
 }
 
 void LogManager::SetLogStorage(DatabaseInstance &db, const string &storage_name) {
@@ -182,6 +207,7 @@ void LogManager::SetLogStorage(DatabaseInstance &db, const string &storage_name)
 		    "Use CALL enable_logging(storage='file', storage_path='...') instead.");
 	}
 	SetLogStorageInternal(db, storage_name);
+	PublishConfigInternal();
 }
 
 void LogManager::SetLogStorageInternal(DatabaseInstance &db, const string &storage_name) {
@@ -275,6 +301,12 @@ optional_ptr<const LogType> LogManager::LookupLogTypeInternal(const string &type
 void LogManager::SetConfigInternal(LogConfig config_p) {
 	// Apply the remainder of the config
 	config = std::move(config_p);
+	PublishConfigInternal();
+}
+
+void LogManager::PublishConfigInternal() {
+	config_snapshot = make_shared_ptr<const LogConfig>(config);
+	config_version++;
 	global_logger->UpdateConfig(config);
 }
 

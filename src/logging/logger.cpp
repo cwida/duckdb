@@ -51,23 +51,28 @@ ThreadSafeLogger::ThreadSafeLogger(LogConfig &config_p, LoggingContext &context_
 }
 
 ThreadSafeLogger::ThreadSafeLogger(LogConfig &config_p, RegisteredLoggingContext context_p, LogManager &manager)
-    : Logger(manager), config(config_p), context(context_p) {
+    : ThreadSafeLogger(make_shared_ptr<const LogConfig>(config_p), context_p, manager) {
+}
+
+ThreadSafeLogger::ThreadSafeLogger(shared_ptr<const LogConfig> config_p, RegisteredLoggingContext context_p,
+                                   LogManager &manager)
+    : Logger(manager), config(std::move(config_p)), context(context_p) {
 	// NopLogger should be used instead
-	D_ASSERT(config_p.enabled);
+	D_ASSERT(config && config->enabled);
 }
 
 bool ThreadSafeLogger::ShouldLog(const char *log_type, LogLevel log_level) {
-	if (config.level > log_level) {
+	if (config->level > log_level) {
 		return false;
 	}
 
 	// TODO: improve these: they are currently fairly expensive due to requiring allocations when looking up const char*
 	//       also, we would ideally do prefix matching, not string matching here
-	if (config.mode == LogMode::ENABLE_SELECTED) {
-		return config.enabled_log_types.find(log_type) != config.enabled_log_types.end();
+	if (config->mode == LogMode::ENABLE_SELECTED) {
+		return config->enabled_log_types.find(log_type) != config->enabled_log_types.end();
 	}
-	if (config.mode == LogMode::DISABLE_SELECTED) {
-		return config.disabled_log_types.find(log_type) == config.disabled_log_types.end();
+	if (config->mode == LogMode::DISABLE_SELECTED) {
+		return config->disabled_log_types.find(log_type) == config->disabled_log_types.end();
 	}
 	return true;
 }

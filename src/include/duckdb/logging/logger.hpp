@@ -113,6 +113,8 @@ class ThreadSafeLogger : public Logger {
 public:
 	explicit ThreadSafeLogger(LogConfig &config_p, LoggingContext &context_p, LogManager &manager);
 	explicit ThreadSafeLogger(LogConfig &config_p, RegisteredLoggingContext context_p, LogManager &manager);
+	explicit ThreadSafeLogger(shared_ptr<const LogConfig> config_p, RegisteredLoggingContext context_p,
+	                          LogManager &manager);
 
 	// Main Logger API
 	bool ShouldLog(const char *log_type, LogLevel log_level) override;
@@ -123,11 +125,11 @@ public:
 		return true;
 	}
 	const LogConfig &GetConfig() const override {
-		return config;
+		return *config;
 	}
 
 protected:
-	const LogConfig config;
+	const shared_ptr<const LogConfig> config;
 	mutex lock;
 	const RegisteredLoggingContext context;
 };

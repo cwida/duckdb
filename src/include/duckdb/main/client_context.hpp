@@ -22,6 +22,7 @@
 #include "duckdb/common/pair.hpp"
 #include "duckdb/common/unordered_set.hpp"
 #include "duckdb/common/winapi.hpp"
+#include "duckdb/logging/logging.hpp"
 #include "duckdb/main/client_config.hpp"
 #include "duckdb/main/client_context_state.hpp"
 #include "duckdb/main/client_properties.hpp"
@@ -132,6 +133,8 @@ public:
 	unique_ptr<RegisteredStateManager> registered_state;
 	//! The logger to be used by this ClientContext
 	shared_ptr<Logger> logger;
+	//! The log config used to create loggers for this ClientContext, refreshed whenever the logger is
+	LogConfigSnapshot log_config;
 	//! The client configuration
 	ClientConfig config;
 	//! The set of client-specific data

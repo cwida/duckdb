@@ -34,6 +34,10 @@ public:
 
 	DUCKDB_API static LogManager &Get(ClientContext &context);
 	unique_ptr<Logger> CreateLogger(LoggingContext context, bool thread_safe = true, bool mutable_settings = false);
+	//! Creates a logger from the snapshot without locking, unless the config changed since the snapshot was taken
+	unique_ptr<Logger> CreateLogger(LoggingContext context, const LogConfigSnapshot &snapshot);
+	//! Brings the snapshot up to date, only locking if the config changed since it was taken
+	void RefreshConfigSnapshot(LogConfigSnapshot &snapshot);
 
 	RegisteredLoggingContext RegisterLoggingContext(LoggingContext &context);
 
@@ -88,16 +92,23 @@ protected:
 	optional_ptr<const LogType> LookupLogTypeInternal(const string &type);
 
 	void SetConfigInternal(LogConfig config);
+	//! Publishes the current config to the global logger and to newly created loggers
+	void PublishConfigInternal();
+	unique_ptr<Logger> CreateLoggerInternal(LoggingContext &context, const shared_ptr<const LogConfig> &config);
 
 protected:
 	mutex lock;
 	LogConfig config;
+	//! Immutable copy of config, replaced (under lock) whenever config changes
+	shared_ptr<const LogConfig> config_snapshot;
+	//! Incremented (under lock) whenever config_snapshot is replaced
+	atomic<idx_t> config_version;
 
 	shared_ptr<Logger> global_logger;
 	shared_ptr<LogStorage> log_storage;
 	DatabaseInstance &db_instance;
 
-	idx_t next_registered_logging_context_index = 0;
+	atomic<idx_t> next_registered_logging_context_index;
 
 	// Any additional LogStorages registered (by extensions for example)
 	case_insensitive_map_t<shared_ptr<LogStorage>> registered_log_storages;

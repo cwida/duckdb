@@ -1,0 +1,40 @@
+# name: test/sql/logging/logging_config_change_other_connection.test
+# description: A logging config change made on one connection is used by loggers created on other connections
+# group: [logging]
+
+require noforcestorage
+
+# con2 creates its loggers before logging is enabled
+statement ok con2
+SELECT 1
+
+statement ok con1
+CALL enable_logging(level := 'warning');
+
+statement ok con2
+SELECT write_log('filtered_out', level := 'info', log_type := 'config_change_test')
+
+statement ok con1
+SET logging_level = 'info';
+
+statement ok con2
+SELECT write_log('logged', level := 'info', log_type := 'config_change_test')
+
+query I con1
+SELECT message FROM duckdb_logs WHERE type = 'config_change_test' ORDER BY timestamp
+----
+logged
+
+statement ok con1
+SET enable_logging = false;
+
+statement ok con2
+SELECT write_log('disabled', level := 'info', log_type := 'config_change_test')
+
+statement ok con1
+SET enable_logging = true;
+
+query I con1
+SELECT message FROM duckdb_logs WHERE type = 'config_change_test' ORDER BY timestamp
+----
+logged
