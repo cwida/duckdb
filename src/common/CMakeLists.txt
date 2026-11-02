@@ -74,6 +74,7 @@ add_library_unity(
   enum_util.cpp
   storage_compatibility.cpp
   symbols.cpp
+  sync_point.cpp
   render_tree.cpp
   thread_util.cpp
   time_point.cpp

@@ -28,6 +28,7 @@
 #include "test_config.hpp"
 #include <sstream>
 #include <iostream>
+#include <thread>
 
 namespace duckdb {
 
@@ -169,6 +170,19 @@ const duckdb::set<string> &GetEnvPassthroughNames();
 //! false + `error` set if a --env-passthrough name is reserved by the runner, or absent from the env.
 bool ValidateEnvPassthrough(string &error);
 // -----------------------------------------------------------------------------
+
+//! Joins the thread on destruction, so a running test thread is never leaked
+//! when a REQUIRE fails. Declare any ThreadJoiner BEFORE a sync point guard:
+//! destruction is in reverse declaration order, so the guard releases the
+//! parked thread before the joiner joins.
+struct ThreadJoiner {
+	std::thread thread;
+	~ThreadJoiner() {
+		if (thread.joinable()) {
+			thread.join();
+		}
+	}
+};
 
 bool NO_FAIL(QueryResult &result);
 bool NO_FAIL(duckdb::unique_ptr<QueryResult> result);

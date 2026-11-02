@@ -3,6 +3,7 @@
 #include "duckdb/common/enums/expression_type.hpp"
 #include "duckdb/common/helper.hpp"
 #include "duckdb/common/numeric_utils.hpp"
+#include "duckdb/common/sync_point.hpp"
 #include "duckdb/common/types.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/common/unique_ptr.hpp"
@@ -539,6 +540,9 @@ void StatisticsPropagator::TryExecuteAggregates(LogicalAggregate &aggr, unique_p
 		// skips partitions by their index in the row-group list. That list can change in between
 		// (concurrent appends, checkpoints), in which case a skipped partition is scanned again and its
 		// rows are counted twice. Only the full precomputation (no scan) is safe.
+		// TODO: when this early return is removed, the race regression test
+		// (partial_aggregate_precomputation_race.cpp) must REQUIRE(precompute_active)
+		// instead of falling back to a plain correctness check.
 		return;
 	}
 	if (need_to_scan) {
@@ -583,6 +587,9 @@ void StatisticsPropagator::TryExecuteAggregates(LogicalAggregate &aggr, unique_p
 
 		// Tell the scan to only scan partitions whose aggregates were NOT pre-computed
 		get.SetPartitionsToScan(std::move(scan_partition_indices));
+		// tests can park the query here to mutate the row-group list between the
+		// plan-time index capture and the execution-time scan
+		SYNC_POINT("optimizer.partial_precompute.indices_captured");
 
 		// Create LogicalProjection above the aggregate
 		auto projection = make_uniq<LogicalProjection>(proj_index, std::move(proj_expressions));
