@@ -45,4 +45,8 @@ unique_ptr<BaseStatistics> BaseUnionData::GetStatistics(ClientContext &context, 
 	return nullptr;
 }
 
+unique_ptr<BaseStatistics> BaseUnionData::GetVirtualColumnStatistics(ClientContext &, column_t) {
+	return nullptr;
+}
+
 } // namespace duckdb
