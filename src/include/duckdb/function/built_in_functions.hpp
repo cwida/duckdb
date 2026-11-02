@@ -20,6 +20,9 @@ public:
 
 	//! Initialize a catalog with all built-in functions
 	void Initialize();
+	//! Register the autoloading placeholders for extension functions; runs after the function list, since some of
+	//! them are overloads of functions registered there
+	void RegisterExtensionOverloads();
 
 public:
 	void AddFunction(AggregateFunctionSet set);
@@ -54,8 +57,6 @@ private:
 	void RegisterArrowFunctions();
 	void RegisterSnifferFunction();
 	void RegisterCopyFunctions();
-
-	void RegisterExtensionOverloads();
 
 	// pragmas
 	void RegisterPragmaFunctions();

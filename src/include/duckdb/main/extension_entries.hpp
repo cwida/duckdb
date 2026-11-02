@@ -1062,6 +1062,10 @@ static constexpr ExtensionFunctionEntry EXTENSION_FUNCTIONS[] = {
 }; // END_OF_EXTENSION_FUNCTIONS
 
 static constexpr ExtensionFunctionOverloadEntry EXTENSION_FUNCTION_OVERLOADS[] = {
+    {"+", "icu", CatalogType::SCALAR_FUNCTION_ENTRY, "[INTERVAL,TIMESTAMPTZ]>TIMESTAMPTZ"},
+    {"+", "icu", CatalogType::SCALAR_FUNCTION_ENTRY, "[TIMESTAMPTZ,INTERVAL]>TIMESTAMPTZ"},
+    {"-", "icu", CatalogType::SCALAR_FUNCTION_ENTRY, "[TIMESTAMPTZ,INTERVAL]>TIMESTAMPTZ"},
+    {"-", "icu", CatalogType::SCALAR_FUNCTION_ENTRY, "[TIMESTAMPTZ,TIMESTAMPTZ]>INTERVAL"},
     {"age", "core_functions", CatalogType::SCALAR_FUNCTION_ENTRY, "[TIMESTAMP]>INTERVAL"},
     {"age", "core_functions", CatalogType::SCALAR_FUNCTION_ENTRY, "[TIMESTAMP,TIMESTAMP]>INTERVAL"},
     {"age", "icu", CatalogType::SCALAR_FUNCTION_ENTRY, "[TIMESTAMPTZ]>INTERVAL"},

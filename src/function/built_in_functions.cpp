@@ -134,6 +134,9 @@ static unique_ptr<Expression> BindExtensionFunction(FunctionBindExpressionInput 
 void BuiltinFunctions::AddExtensionFunction(ScalarFunctionSet set) {
 	CreateScalarFunctionInfo info(std::move(set));
 	info.internal = true;
+	// a function the engine already has (an operator such as +, which icu extends with TIMESTAMPTZ overloads) gets
+	// the placeholders added to its set; the extension's own overloads replace them when it loads
+	info.on_conflict = OnCreateConflict::ALTER_ON_CONFLICT;
 	catalog.CreateFunction(transaction, info);
 }
 
@@ -142,6 +145,8 @@ void BuiltinFunctions::RegisterExtensionOverloads() {
 	// do not insert auto loading placeholders when generating extension entries
 	return;
 #endif
+	// the table is sorted by name, so the overloads of one function are consecutive; a function the engine lacks
+	// gets a set of placeholders, one it has gets them added to its existing set
 	ScalarFunctionSet current_set;
 	for (auto &entry : EXTENSION_FUNCTION_OVERLOADS) {
 		vector<LogicalType> arguments;

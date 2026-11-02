@@ -3,6 +3,7 @@ import csv
 import re
 import argparse
 import glob
+import subprocess
 import sys
 from typing import Set, Tuple, cast
 import pathlib
@@ -446,6 +447,23 @@ def get_secret_types(load="") -> Set[str]:
     return res
 
 
+# Whether the bare engine knows a type. Placeholders are registered before any extension is loaded, so their
+# signatures can only use those types: an extension's own types (INET) and template types (T) do not exist yet
+base_type_cache: Dict[str, bool] = {}
+
+
+def base_engine_has_type(logical_type: LogicalType) -> bool:
+    name = logical_type.type
+    if name == 'ANY':
+        return True
+    if name not in base_type_cache:
+        # with autoloading off, so that a cast to INET does not load inet
+        query = f'SET autoload_known_extensions=false; SELECT NULL::{name}'
+        result = subprocess.run([DUCKDB_PATH, '-c', query], capture_output=True)
+        base_type_cache[name] = result.returncode == 0
+    return base_type_cache[name]
+
+
 class ExtensionData:
     def __init__(self):
         # Map of extension -> ExtensionFunction
@@ -462,6 +480,8 @@ class ExtensionData:
         self.base_settings: Set[str] = set()
         self.base_secret_types: Set[str] = set()
         self.base_functions: Set[Function] = set()
+        # The signatures the bare engine has for each of its functions
+        self.base_function_overloads: Dict[Function, List[FunctionOverload]] = {}
 
         self.extension_settings: Dict[str, Set[str]] = {}
         self.extension_secret_types: Dict[str, Set[str]] = {}
@@ -481,6 +501,7 @@ class ExtensionData:
     def set_base(self):
         (functions, function_overloads) = get_functions()
         self.base_functions: Set[Function] = functions
+        self.base_function_overloads = function_overloads
         self.base_settings: Set[str] = get_settings()
         self.base_secret_types: Set[str] = get_secret_types()
 
@@ -620,6 +641,25 @@ Please double check if '{args.extension_repository}' is the right location to lo
         added_functions: Set[Function] = set(function_list) - base_functions
 
         self.extension_functions[extension_name] = added_functions
+
+        # A function the bare engine has can still gain overloads from the extension (icu adds TIMESTAMPTZ
+        # overloads to + and -): those signatures become placeholders in the engine's own set, so only the
+        # signatures the engine lacks are recorded, and only for scalar functions, which is what the placeholders
+        # support. A placeholder's types must exist in the bare engine
+        for function in set(function_list) & self.base_functions:
+            if function.type != CatalogType.SCALAR or function not in overloads:
+                continue
+            base_signatures = {
+                (overload.parameters, overload.return_type) for overload in self.base_function_overloads[function]
+            }
+            new_overloads = [
+                overload
+                for overload in overloads[function]
+                if (overload.parameters, overload.return_type) not in base_signatures
+                and all(base_engine_has_type(t) for t in (*overload.parameters, overload.return_type))
+            ]
+            if new_overloads:
+                self.function_overloads.setdefault(function, []).extend(new_overloads)
 
         functions_to_add: Dict[Function, ExtensionFunction] = {}
         for function in added_functions:

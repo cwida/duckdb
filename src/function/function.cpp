@@ -263,8 +263,6 @@ void BuiltinFunctions::Initialize() {
 	AddCollation("nocase", LowerFun::GetFunction(), true);
 	AddCollation("noaccent", StripAccentsFun::GetFunction(), true);
 	AddCollation("nfc", NFCNormalizeFun::GetFunction());
-
-	RegisterExtensionOverloads();
 }
 
 hash_t FunctionSignature::Hash() const {

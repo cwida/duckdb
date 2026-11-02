@@ -41,6 +41,10 @@ void DuckCatalog::Initialize(bool load_builtin) {
 
 		// initialize default functions
 		FunctionList::RegisterFunctions(*this, data);
+
+		// the autoloading placeholders for extension functions come last: some of them are overloads of functions
+		// registered above (icu's TIMESTAMPTZ overloads of + and -) and join those sets
+		builtin.RegisterExtensionOverloads();
 	}
 
 	Verify();

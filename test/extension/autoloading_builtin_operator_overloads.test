@@ -1,0 +1,59 @@
+# name: test/extension/autoloading_builtin_operator_overloads.test
+# description: An extension's overloads of an operator the engine already has are autoloading placeholders too
+# group: [extension]
+
+# This test assumes icu is not statically linked, it is only available for autoloading
+# -> this should be the case for our autoloading tests where we have the local_extension_repo variable set
+require-env LOCAL_EXTENSION_REPO
+
+require icu
+
+statement ok
+set extension_directory='{TEST_DIR}/autoloading_builtin_operator_overloads'
+
+statement ok
+set autoinstall_known_extensions=false
+
+statement ok
+set autoload_known_extensions=false
+
+# without autoloading the engine's own + has no TIMESTAMPTZ overload, and says which extension has it
+statement error
+SELECT '2024-01-01 00:00:00+00'::TIMESTAMPTZ + INTERVAL 1 DAY
+----
+icu
+
+statement ok
+set autoinstall_known_extensions=true
+
+statement ok
+set autoload_known_extensions=true
+
+# the placeholder in + autoloads icu, whose overload then replaces it (compared as values: the rendering depends
+# on the session time zone icu brings along)
+query I
+SELECT '2024-01-01 00:00:00+00'::TIMESTAMPTZ + INTERVAL 1 DAY = '2024-01-02 00:00:00+00'::TIMESTAMPTZ
+----
+true
+
+restart
+
+statement ok
+set extension_directory='{TEST_DIR}/autoloading_builtin_operator_overloads'
+
+statement ok
+set autoinstall_known_extensions=true
+
+statement ok
+set autoload_known_extensions=true
+
+query I
+SELECT '2024-01-02 00:00:00+00'::TIMESTAMPTZ - '2024-01-01 00:00:00+00'::TIMESTAMPTZ = INTERVAL 1 DAY
+----
+true
+
+# the engine's own overloads are untouched
+query I
+SELECT 1 + 2
+----
+3
