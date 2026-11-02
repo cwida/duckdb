@@ -425,6 +425,9 @@ public:
 	void SetAlwaysRequireRebind();
 	void SetInsideSubquery();
 	bool IsInsideSubquery() const;
+	//! Set while binding the key expressions of an index
+	void SetBindingIndexKey(bool binding_index_key);
+	bool IsBindingIndexKey() const;
 	void SetBindingTrySubquery();
 	bool IsBindingTrySubquery() const;
 	const TrySubqueryPlanIndexes &GetTrySubqueryPlanIndexes() const;
@@ -461,6 +464,8 @@ private:
 	bool legacy_can_contain_nulls = false;
 	//! Whether this binder is inside a subquery boundary
 	bool inside_subquery = false;
+	//! Whether the key expressions of an index are being bound
+	bool binding_index_key = false;
 	//! Whether this binder binds a TRY subquery, which lowers TRY onto the bound plan after binding
 	bool binding_try_subquery = false;
 	//! The plan indexes of the TRY subquery's top select node, recorded while planning it

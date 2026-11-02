@@ -20,3 +20,41 @@ query I
 SELECT count(*) FROM range(TIMESTAMP '294247-01-01', TIMESTAMP '294247-01-10', INTERVAL 3 DAY);
 ----
 3
+
+# a descending series ends when its next step leaves the range, also when the end lies below -infinity
+# (duckdblabs/bot-issue-tracker#632)
+query I
+SELECT count(*) FROM range(TIMESTAMP '2000-01-01', make_timestamp(-9223372036854775806), -INTERVAL 100000 YEAR);
+----
+3
+
+query I
+SELECT count(*) FROM range(TIMESTAMP '2000-01-01', make_timestamp(-9223372036854775807 - 1), -INTERVAL 100000 YEAR);
+----
+3
+
+query I
+SELECT count(*) FROM generate_series(TIMESTAMP '2000-01-01', make_timestamp(-9223372036854775807 - 1), -INTERVAL 100000 YEAR);
+----
+3
+
+query I
+SELECT count(*) FILTER (WHERE NOT isfinite(r)) FROM generate_series(TIMESTAMP '2000-01-01', make_timestamp(-9223372036854775807 - 1), -INTERVAL 100000 YEAR) t(r);
+----
+0
+
+# a series that crosses a vector before it leaves the range
+query I
+SELECT count(*) FROM generate_series(TIMESTAMP '2000-01-01', make_timestamp(-9223372036854775807 - 1), -INTERVAL 100 YEAR);
+----
+2924
+
+# every input row starts its series again after the previous one left the range, with an end computed per row as
+# a constant INT64_MIN timestamp there fails with a conversion error on main as well
+query IIIII
+SELECT y, count(r), count(DISTINCT r), min(r), max(r)
+FROM (VALUES (2000), (2001)) inputs(y), LATERAL generate_series(make_timestamp(y, 1, 1, 0, 0, 0), make_timestamp(-9223372036854775807 - 1 + y * 0), -INTERVAL 100000 YEAR) t(r)
+GROUP BY y ORDER BY y;
+----
+2000	3	3	198001-01-01 (BC) 00:00:00	2000-01-01 00:00:00
+2001	3	3	198000-01-01 (BC) 00:00:00	2001-01-01 00:00:00
