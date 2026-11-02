@@ -1,0 +1,123 @@
+# name: test/sql/optimizer/list_transform_row_group_pruning.test
+# description: list_contains prunes row groups through list_transform, unless the lambda can throw or has side effects
+# group: [optimizer]
+
+statement ok
+ATTACH '{TEST_DIR}/list_transform_row_group_pruning.duckdb' AS db (ROW_GROUP_SIZE 2048);
+
+statement ok
+USE db;
+
+statement ok
+CREATE TABLE lists AS
+SELECT [i] AS l, [i + 0.5] AS ld, [i * INTERVAL '1 day'] AS li, i % 2 AS c
+FROM range(6144) tbl(i);
+
+# a monotone lambda over the element alone keeps the min/max of the elements
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM lists WHERE list_contains(list_transform(ld, lambda x: floor(x)), 3000);
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*
+
+query I
+SELECT count(*) FROM lists WHERE list_contains(list_transform(ld, lambda x: floor(x)), 3000);
+----
+1
+
+query I
+SELECT count(*) FROM lists WHERE list_contains(list_transform(li, lambda x: normalized_interval(x)), INTERVAL '3000 days');
+----
+1
+
+# lambdas that can throw, or that read another column or the index, find their rows
+query I
+SELECT count(*) FROM lists WHERE list_contains(list_transform(l, lambda x: x + 1), 3001);
+----
+1
+
+query II
+SELECT count(*) FILTER (WHERE list_contains(list_transform(l, lambda x: x + c), 3000)), count(*) FILTER (WHERE l[1] + c = 3000)
+FROM lists
+----
+2	2
+
+query I
+SELECT count(*) FROM lists WHERE list_contains(list_transform(l, lambda x, i: x + i), 3001);
+----
+1
+
+# the statistics do not skip a lambda or a list whose error TRY has to catch
+statement ok
+CREATE TABLE big_lists AS SELECT [9223372036854775807] AS l;
+
+query I
+SELECT TRY(list_transform(l, lambda x: x + 1) IS NULL) FROM big_lists
+----
+NULL
+
+query I
+SELECT TRY(list_transform([l[1] + 1], lambda x: x) IS NULL) FROM big_lists
+----
+NULL
+
+# nor a lambda or a list with side effects
+statement ok
+CREATE SEQUENCE lambda_seq;
+
+query I
+SELECT coalesce(list_position(list_transform(l, lambda x: CASE WHEN nextval('lambda_seq') > 0 THEN 1 ELSE 2 END), 3), 99)
+FROM big_lists
+----
+99
+
+query I
+SELECT nextval('lambda_seq')
+----
+2
+
+query I
+SELECT coalesce(list_position(list_transform(CASE WHEN nextval('lambda_seq') > 0 THEN [1] ELSE [2] END, lambda x: x), 3), 99)
+----
+99
+
+query I
+SELECT nextval('lambda_seq')
+----
+4
+
+# nor a list built by a lower projection with side effects, when the lambda alone bounds the result
+query I
+SELECT coalesce(list_position(list_transform(l, lambda x: 1), 2), 99) FROM (SELECT [nextval('lambda_seq')] AS l) q
+----
+99
+
+query I
+SELECT nextval('lambda_seq')
+----
+6
+
+query I
+SELECT coalesce(list_position(list_transform(l, lambda x: epoch(x)), -1::DOUBLE), 99)
+FROM (SELECT [make_time(nextval('lambda_seq') % 24, 0, 0)] AS l) q
+----
+99
+
+query I
+SELECT nextval('lambda_seq')
+----
+8
+
+# nor a list from a lower projection, whose producer the folded statistics would let the optimizer remove
+statement ok
+CREATE SEQUENCE review_seq;
+
+query I
+SELECT coalesce(list_position(list_transform(l, lambda x: x), 3), 99)
+FROM (SELECT CASE WHEN nextval('review_seq') > 0 THEN [1] ELSE [2] END AS l) q;
+----
+99
+
+query I
+SELECT nextval('review_seq');
+----
+2
