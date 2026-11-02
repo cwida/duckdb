@@ -6,6 +6,7 @@
 #include "duckdb/common/progress_bar/progress_bar.hpp"
 #include "duckdb/execution/executor.hpp"
 #include "duckdb/execution/operator/helper/physical_result_collector.hpp"
+#include "duckdb/execution/physical_plan_generator.hpp"
 #include "duckdb/execution/operator/helper/physical_result_sink.hpp"
 #include "duckdb/logging/log_manager.hpp"
 #include "duckdb/logging/log_type.hpp"
@@ -257,6 +258,10 @@ unique_ptr<QueryResult> ClientContext::SubmitPreparedStatementInternal(
 	// Get the result collector and initialize the executor.
 	auto collector = get_collector(*this, statement_data);
 	D_ASSERT(collector->type == PhysicalOperatorType::RESULT_COLLECTOR);
+	// the collector is created per execution, outside the plan: it takes the id after the plan's operators
+	if (collector->operator_id == DConstants::INVALID_INDEX && statement_data.physical_plan) {
+		collector->operator_id = statement_data.physical_plan->OperatorCount();
+	}
 	// A custom hook can hand back the default sink, which is then served like any other query
 	const bool delegating = collector->Cast<PhysicalResultCollector>().BuildsOwnResult();
 	if (delegating && expands && !active_query->inside_submission) {

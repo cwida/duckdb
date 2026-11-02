@@ -432,7 +432,7 @@ void OperatorProfiler::StartOperator(optional_ptr<const PhysicalOperator> phys_o
 	if (!OperatorMetricsIsInitialized(*active_operator)) {
 		// first time calling into this operator - fetch the info
 		auto &info = GetOperatorMetrics(*active_operator);
-		info.SetExtraInfo(active_operator->ParamsToString());
+		info.SetExtraInfo(active_operator->ParamsToStringWithId());
 	}
 
 	// Start the timing of the current operator.
@@ -1050,7 +1050,7 @@ unique_ptr<ProfilingNode> QueryProfiler::CreateTree(const PhysicalOperator &root
 
 	info.name = EnumUtil::ToString(root_p.type);
 	info.operator_type = root_p.type;
-	auto params = root_p.ParamsToString();
+	auto params = root_p.ParamsToStringWithId();
 	info.SetExtraInfo(std::move(params));
 
 	tree_map.insert(make_pair(reference<const PhysicalOperator>(root_p), reference<ProfilingNode>(*node)));

@@ -60,6 +60,14 @@ void PhysicalOperator::SetEstimatedCardinality(InsertionOrderPreservingMap<strin
 	result[RenderTreeNode::ESTIMATED_CARDINALITY] = StringUtil::Format("%llu", estimated_cardinality);
 }
 
+InsertionOrderPreservingMap<string> PhysicalOperator::ParamsToStringWithId() const {
+	auto result = ParamsToString();
+	if (operator_id != DConstants::INVALID_INDEX) {
+		result["Operator Id"] = StringUtil::Format("%llu", operator_id);
+	}
+	return result;
+}
+
 idx_t PhysicalOperator::EstimatedThreadCount() const {
 	idx_t result = 0;
 	if (children.empty()) {

@@ -62,6 +62,8 @@ public:
 	vector<LogicalType> types;
 	//! The estimated cardinality.
 	idx_t estimated_cardinality;
+	//! Stable id within the physical plan: the operator's creation order, the same for EXPLAIN and execution
+	idx_t operator_id = DConstants::INVALID_INDEX;
 
 	//! The global sink state. Published under `lock` by Pipeline::ResetSink on a worker;
 	//! a reader racing pipeline initialization must hold `lock` to observe it safely
@@ -73,6 +75,8 @@ public:
 
 public:
 	virtual string GetName() const;
+	//! ParamsToString plus the operator id, for EXPLAIN and profiler output
+	InsertionOrderPreservingMap<string> ParamsToStringWithId() const;
 	virtual InsertionOrderPreservingMap<string> ParamsToString() const {
 		return InsertionOrderPreservingMap<string>();
 	}

@@ -52,8 +52,14 @@ public:
 	PhysicalOperator &Make(ARGS &&... args) {
 		static_assert(std::is_base_of<PhysicalOperator, T>::value, "T must be a physical operator");
 		auto ptr = arena.Make<T>(*this, std::forward<ARGS>(args)...);
+		ptr->operator_id = ops.size();
 		ops.push_back(*ptr);
 		return *ptr;
+	}
+
+	//! The number of operators the plan created, which is also the next operator id
+	idx_t OperatorCount() const {
+		return ops.size();
 	}
 
 	PhysicalOperator &Root() {
