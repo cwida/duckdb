@@ -17,18 +17,40 @@ public:
 	idx_t GetDistinctCount() const;
 	bool HasReliableDistinctCount() const;
 	idx_t GetReliableDistinctCount() const;
-	void Update(const DistinctCount &distinct_count);
+	void Update(const DistinctCount &distinct_count, idx_t relation_cardinality);
 	void Restrict(idx_t bound);
 
 private:
 	optional<DistinctCount> estimate;
+	//! The smallest relation behind an HLL/EXACT distinct count
+	idx_t reliable_relation_cardinality = NumericLimits<idx_t>::Maximum();
+	//! The smallest relation behind a min/max distinct count
+	idx_t min_max_relation_cardinality = NumericLimits<idx_t>::Maximum();
+	//! Capped min/max spans and scan row counts (no distinct count or span) that can raise a stronger distinct count
+	vector<idx_t> key_domain_candidates;
 };
 
 DomainEstimate::DomainEstimate() {
 }
 
+// The domain is the smallest candidate above the count; candidates above its smallest relation are dropped
 idx_t DomainEstimate::GetDistinctCount() const {
-	return estimate ? estimate->distinct_count : NumericLimits<idx_t>::Maximum();
+	if (!estimate) {
+		return NumericLimits<idx_t>::Maximum();
+	}
+	auto result = estimate->distinct_count;
+	if (estimate->source == DistinctCountSource::CARDINALITY) {
+		return result;
+	}
+	auto relation_cardinality =
+	    HasReliableDistinctCount() ? reliable_relation_cardinality : min_max_relation_cardinality;
+	auto key_domain = NumericLimits<idx_t>::Maximum();
+	for (auto candidate : key_domain_candidates) {
+		if (candidate > result && candidate <= relation_cardinality) {
+			key_domain = MinValue(key_domain, candidate);
+		}
+	}
+	return key_domain == NumericLimits<idx_t>::Maximum() ? result : key_domain;
 }
 
 bool DomainEstimate::HasReliableDistinctCount() const {
@@ -45,9 +67,23 @@ idx_t DomainEstimate::GetReliableDistinctCount() const {
 void DomainEstimate::Restrict(idx_t bound) {
 	D_ASSERT(estimate);
 	estimate->distinct_count = MinValue(estimate->distinct_count, bound);
+	// the filter bound holds for every column of the class; no candidate overrides it
+	key_domain_candidates.clear();
 }
 
-void DomainEstimate::Update(const DistinctCount &distinct_count) {
+void DomainEstimate::Update(const DistinctCount &distinct_count, idx_t relation_cardinality) {
+	if (distinct_count.source == DistinctCountSource::HLL || distinct_count.source == DistinctCountSource::EXACT) {
+		reliable_relation_cardinality = MinValue(reliable_relation_cardinality, relation_cardinality);
+	} else if (distinct_count.source == DistinctCountSource::MIN_MAX) {
+		min_max_relation_cardinality = MinValue(min_max_relation_cardinality, relation_cardinality);
+		if (distinct_count.is_scan_domain) {
+			// capped at the filtered rows: a filter is taken to keep a key range (e.g. a year of a date dimension)
+			key_domain_candidates.push_back(MinValue(distinct_count.distinct_count, relation_cardinality));
+		}
+	} else if (distinct_count.is_scan_domain) {
+		// not capped: with no span a filter is taken to keep a sample of the keys, so its rows are not the domain
+		key_domain_candidates.push_back(distinct_count.distinct_count);
+	}
 	if (!estimate) {
 		estimate = distinct_count;
 		return;
@@ -932,7 +968,7 @@ void CardinalityEstimator::UpdateTotalDomains(RelationIndex relation_id, const R
 			if (i_set.find(key) == i_set.end()) {
 				continue;
 			}
-			relation_to_tdom.domain_estimate.Update(distinct_count);
+			relation_to_tdom.domain_estimate.Update(distinct_count, stats.cardinality);
 		}
 	}
 }

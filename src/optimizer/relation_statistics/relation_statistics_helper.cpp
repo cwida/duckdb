@@ -202,6 +202,8 @@ optional<RelationStats> RelationStatisticsHelper::ExtractProjectionStats(Logical
 				return {};
 			}
 			distinct_count = child_column->total_domain;
+			// any other expression, a cast too, is computed and may repeat values
+			distinct_count.is_scan_domain &= expression.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF;
 		}
 		auto current_domain = distinct_count;
 		if (child_column) {
@@ -622,6 +624,10 @@ optional<RelationStats> RelationStatisticsHelper::ExtractLimitStats(LogicalLimit
 		break;
 	}
 	ApplyCardinality(*result, cardinality);
+	for (auto &column : result->columns) {
+		// a limit keeps the first rows (e.g. after an ORDER BY), not a sample of the keys: a raise may under-estimate
+		column.total_domain.is_scan_domain = false;
+	}
 	return result;
 }
 

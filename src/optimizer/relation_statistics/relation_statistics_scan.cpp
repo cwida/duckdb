@@ -403,6 +403,8 @@ RelationStats RelationStatisticsHelper::ExtractGetStats(LogicalGet &get, ClientC
 		if (total_domain.distinct_count == 0) {
 			total_domain = DistinctCount(base_table_cardinality, DistinctCountSource::CARDINALITY);
 		}
+		total_domain.is_scan_domain = total_domain.source == DistinctCountSource::MIN_MAX ||
+		                              total_domain.source == DistinctCountSource::CARDINALITY;
 		result.columns.emplace_back(binding, total_domain,
 		                            Identifier(get.GetName() + "." + get.GetColumnName(column_id)));
 		if (column_statistics && column_statistics->GetType().EqualsIncludingCollation(get.GetColumnType(column_id))) {

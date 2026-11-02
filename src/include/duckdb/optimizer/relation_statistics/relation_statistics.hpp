@@ -25,6 +25,8 @@ public:
 public:
 	idx_t distinct_count;
 	DistinctCountSource source;
+	//! Whether this is the min/max span or row count of a scanned column, which is its key domain if it is a key
+	bool is_scan_domain = false;
 };
 
 struct SemiAntiJoinDomainEvidence {
