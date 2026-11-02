@@ -44,7 +44,7 @@ string Decimal::ToString(hugeint_t value, uint32_t width, uint32_t scale) {
 	return string(data.get(), UnsafeNumericCast<uint32_t>(len));
 }
 
-string Decimal::ToString(string_t value, uint32_t width, uint32_t scale) {
+string Decimal::ToString(bignum_t value, uint32_t width, uint32_t scale) {
 	auto result = BignumDecimal::ToString(value, scale);
 	if (width == scale && scale > 0) {
 		// like the fixed-size decimals, a decimal without integer digits prints no leading zero: .100, -.100

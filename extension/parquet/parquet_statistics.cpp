@@ -1,5 +1,7 @@
 #include "parquet_statistics.hpp"
 
+#include "duckdb/common/bignum.hpp"
+
 #include <cmath>
 #include <memory>
 #include <utility>
@@ -257,10 +259,11 @@ Value ParquetStatisticsUtils::ConvertValueInternal(const LogicalType &type, cons
 				return ParquetDecimalStatsValue(
 				    ParquetDecimalUtils::ReadDecimalValue<hugeint_t>(stats_data, stats.size(), schema_ele), width,
 				    scale);
-			case PhysicalType::VARCHAR:
+			case PhysicalType::VARCHAR: {
 				// wide decimal stored as a BIGNUM blob
-				return Value::WIDEDECIMAL(ParquetDecimalUtils::ReadWideDecimalValue(stats_data, stats.size()), width,
-				                          scale);
+				auto blob = ParquetDecimalUtils::ReadWideDecimalValue(stats_data, stats.size());
+				return Value::DECIMAL(bignum_t(string_t(blob)), width, scale);
+			}
 			default:
 				throw InvalidInputException("Unsupported internal type for decimal");
 			}

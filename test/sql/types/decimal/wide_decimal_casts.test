@@ -131,7 +131,7 @@ SELECT ('-123.5'::DECIMAL(45,2))::INTEGER, ('123.5'::DECIMAL(45,2))::UINTEGER, (
 statement error
 SELECT ('1e40'::DECIMAL(45,2))::BIGINT
 ----
-Failed to cast decimal value 10000000000000000000000000000000000000000.00 to type BIGINT
+Failed to cast decimal value 10000000000000000000000000000000000000000.00 to type INT64
 
 # floating point: a DOUBLE is converted exactly, so 1e40 shows the binary value of the double
 query IIII

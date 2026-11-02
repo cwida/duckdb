@@ -149,24 +149,24 @@ public:
 public:
 	string GetStats(const string &blob) {
 		string result(byte_length, '\0');
-		ParquetDecimalUtils::WriteWideDecimal(string_t(blob), byte_length, data_ptr_cast(&result[0]));
+		ParquetDecimalUtils::WriteWideDecimal(bignum_t(string_t(blob)), byte_length, data_ptr_cast(&result[0]));
 		return result;
 	}
 	bool HasStats() override {
 		return has_stats;
 	}
-	void Update(const string_t &val) {
+	void Update(const bignum_t &val) {
 		if (!has_stats) {
-			min = val.GetString();
-			max = val.GetString();
+			min = val.data.GetString();
+			max = val.data.GetString();
 			has_stats = true;
 			return;
 		}
-		if (LessThan::Operation(val, string_t(min))) {
-			min = val.GetString();
+		if (LessThan::Operation(val.data, string_t(min))) {
+			min = val.data.GetString();
 		}
-		if (GreaterThan::Operation(val, string_t(max))) {
-			max = val.GetString();
+		if (GreaterThan::Operation(val.data, string_t(max))) {
+			max = val.data.GetString();
 		}
 	}
 	string GetMin() override {
@@ -197,7 +197,7 @@ void WideDecimalColumnWriter::WriteVector(WriteStream &temp_writer, ColumnWriter
                                           ColumnWriterPageState *page_state, Vector &input_column, idx_t chunk_start,
                                           idx_t chunk_end) {
 	auto &mask = FlatVector::ValidityMutable(input_column);
-	auto *ptr = FlatVector::GetData<string_t>(input_column);
+	auto *ptr = FlatVector::GetData<bignum_t>(input_column);
 	auto &stats = stats_p->Cast<WideDecimalStatistics>();
 	vector<data_t> temp_buffer(byte_length);
 	for (idx_t r = chunk_start; r < chunk_end; r++) {

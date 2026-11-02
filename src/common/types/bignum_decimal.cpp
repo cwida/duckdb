@@ -27,9 +27,12 @@ struct OwnedBignum {
 	BignumIntermediate intermediate;
 };
 
-//! An intermediate over a blob that lives elsewhere (the bignum_t must stay alive as long as the intermediate is used)
+//! An intermediate over a blob that lives elsewhere (the blob must stay alive as long as the intermediate is used). The
+//! bignum_t is kept as a member: the intermediate points into it when the blob is short enough to be stored inline.
 struct BorrowedBignum {
-	explicit BorrowedBignum(const string_t &blob) : value(blob), intermediate(value) {
+	explicit BorrowedBignum(const bignum_t &value_p) : value(value_p), intermediate(value) {
+	}
+	explicit BorrowedBignum(const string &blob) : BorrowedBignum(bignum_t(string_t(blob))) {
 	}
 	BorrowedBignum(const BorrowedBignum &) = delete;
 	BorrowedBignum &operator=(const BorrowedBignum &) = delete;
@@ -142,7 +145,7 @@ string FractionDigits(uint64_t fraction, idx_t bits, idx_t max_digits) {
 }
 
 bool FitsWidthInternal(const BignumIntermediate &value, uint32_t width) {
-	BorrowedBignum limit(string_t(BignumDecimal::PowerOfTen(width)));
+	BorrowedBignum limit(BignumDecimal::PowerOfTen(width));
 	return value.IsAbsoluteBigger(limit.intermediate) == SMALLER;
 }
 
@@ -162,7 +165,7 @@ const string &BignumDecimal::PowerOfTen(idx_t exponent) {
 	return POWERS[exponent];
 }
 
-bool BignumDecimal::FitsWidth(const string_t &value, uint32_t width) {
+bool BignumDecimal::FitsWidth(const bignum_t &value, uint32_t width) {
 	BorrowedBignum borrowed(value);
 	return FitsWidthInternal(borrowed.intermediate, width);
 }
@@ -171,18 +174,17 @@ bool BignumDecimal::FitsWidth(const BignumIntermediate &value, uint32_t width) {
 	return FitsWidthInternal(value, width);
 }
 
-bool BignumDecimal::IsNegative(const string_t &value) {
-	return (value.GetData()[0] & 0x80) == 0;
+bool BignumDecimal::IsNegative(const bignum_t &value) {
+	return (value.data.GetData()[0] & 0x80) == 0;
 }
 
-bool BignumDecimal::IsZero(const string_t &value) {
-	return value.GetSize() == Bignum::BIGNUM_HEADER_SIZE + 1 && !IsNegative(value) &&
-	       value.GetData()[Bignum::BIGNUM_HEADER_SIZE] == 0;
+bool BignumDecimal::IsZero(const bignum_t &value) {
+	return value.data.GetSize() == Bignum::BIGNUM_HEADER_SIZE + 1 && !IsNegative(value) &&
+	       value.data.GetData()[Bignum::BIGNUM_HEADER_SIZE] == 0;
 }
 
-string BignumDecimal::ToString(const string_t &value, uint32_t scale) {
-	const bignum_t bignum(value);
-	auto digits = Bignum::BignumToVarchar(bignum);
+string BignumDecimal::ToString(const bignum_t &value, uint32_t scale) {
+	auto digits = Bignum::BignumToVarchar(value);
 	if (scale == 0) {
 		return digits;
 	}
@@ -306,30 +308,30 @@ bool BignumDecimal::TryParse(const char *data, idx_t size, uint32_t width, uint3
 	return true;
 }
 
-bool BignumDecimal::TryRescale(const string_t &value, uint32_t source_scale, uint32_t target_width,
+bool BignumDecimal::TryRescale(const bignum_t &value, uint32_t source_scale, uint32_t target_width,
                                uint32_t target_scale, string &result) {
 	BorrowedBignum source(value);
 	if (target_scale == source_scale) {
 		if (!FitsWidthInternal(source.intermediate, target_width)) {
 			return false;
 		}
-		result = value.GetString();
+		result = value.data.GetString();
 		return true;
 	}
 	StringHeap heap;
 	// the operands have at most Decimal::MAX_WIDTH_DECIMAL digits, so no interrupt polling is needed
 	BignumArithmeticState state;
 	if (target_scale > source_scale) {
-		BorrowedBignum factor(string_t(PowerOfTen(target_scale - source_scale)));
-		auto scaled = BignumIntermediate::Multiply(heap, state, source.intermediate, factor.intermediate);
+		BorrowedBignum factor(PowerOfTen(target_scale - source_scale));
+		auto scaled = bignum_t(BignumIntermediate::Multiply(heap, state, source.intermediate, factor.intermediate));
 		if (!FitsWidth(scaled, target_width)) {
 			return false;
 		}
-		result = scaled.GetString();
+		result = scaled.data.GetString();
 		return true;
 	}
 	// scaling down divides by the power of ten and rounds half away from zero
-	BorrowedBignum divisor(string_t(PowerOfTen(source_scale - target_scale)));
+	BorrowedBignum divisor(PowerOfTen(source_scale - target_scale));
 	string_t quotient;
 	string_t remainder;
 	if (!BignumIntermediate::TryDivMod(heap, state, source.intermediate, divisor.intermediate, quotient, remainder)) {
@@ -339,16 +341,19 @@ bool BignumDecimal::TryRescale(const string_t &value, uint32_t source_scale, uin
 	static const OwnedBignum TWO(Bignum::VarcharToBignum(string_t("2")));
 	static const OwnedBignum ONE(Bignum::VarcharToBignum(string_t("1")));
 	static const OwnedBignum MINUS_ONE(Bignum::VarcharToBignum(string_t("-1")));
-	BorrowedBignum remainder_value(remainder);
+	const bignum_t remainder_bignum(remainder);
+	BorrowedBignum remainder_value(remainder_bignum);
 	auto twice_remainder = BignumIntermediate::Multiply(heap, state, remainder_value.intermediate, TWO.intermediate);
-	BorrowedBignum twice_remainder_value(twice_remainder);
+	const bignum_t twice_remainder_bignum(twice_remainder);
+	BorrowedBignum twice_remainder_value(twice_remainder_bignum);
 	if (twice_remainder_value.intermediate.IsAbsoluteBigger(divisor.intermediate) != SMALLER) {
 		// |remainder| >= divisor / 2 rounds away from zero
 		auto &one = source.intermediate.is_negative ? MINUS_ONE : ONE;
-		BorrowedBignum quotient_value(quotient);
+		const bignum_t quotient_bignum(quotient);
+		BorrowedBignum quotient_value(quotient_bignum);
 		quotient = BignumIntermediate::Add(heap, quotient_value.intermediate, one.intermediate);
 	}
-	if (!FitsWidth(quotient, target_width)) {
+	if (!FitsWidth(bignum_t(quotient), target_width)) {
 		return false;
 	}
 	result = quotient.GetString();
@@ -385,17 +390,17 @@ string BignumDecimal::FromInteger(hugeint_t value) {
 	return blob;
 }
 
-bool BignumDecimal::TryToUhugeint(const string_t &value, uhugeint_t &result) {
+bool BignumDecimal::TryToUhugeint(const bignum_t &value, uhugeint_t &result) {
 	bool strict = false;
-	return Bignum::BignumToInt(bignum_t(value), result, strict);
+	return Bignum::BignumToInt(value, result, strict);
 }
 
-bool BignumDecimal::TryToHugeint(const string_t &value, hugeint_t &result) {
+bool BignumDecimal::TryToHugeint(const bignum_t &value, hugeint_t &result) {
 	bool strict = false;
-	return Bignum::BignumToInt(bignum_t(value), result, strict);
+	return Bignum::BignumToInt(value, result, strict);
 }
 
-double BignumDecimal::ToDouble(const string_t &value, uint32_t scale) {
+double BignumDecimal::ToDouble(const bignum_t &value, uint32_t scale) {
 	auto text = ToString(value, scale);
 	double result;
 	if (!TryCast::Operation(string_t(text), result, false)) {
@@ -436,7 +441,7 @@ string BignumDecimal::FromTwosComplement(const_data_ptr_t data, idx_t size, bool
 	return Bignum::FromByteArray(magnitude.data() + start, size - start, negative);
 }
 
-void BignumDecimal::ToTwosComplement(const string_t &value, data_ptr_t result, idx_t size, bool big_endian) {
+void BignumDecimal::ToTwosComplement(const bignum_t &value, data_ptr_t result, idx_t size, bool big_endian) {
 	BorrowedBignum borrowed(value);
 	auto &intermediate = borrowed.intermediate;
 	const idx_t start = intermediate.GetStartDataPos();

@@ -5,6 +5,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
 #include "duckdb/common/operator/decimal_cast_operators.hpp"
+#include "duckdb/common/bignum.hpp"
 #include "duckdb/common/types/decimal.hpp"
 #include "duckdb/common/operator/string_cast.hpp"
 #include "duckdb/common/string_util.hpp"
@@ -102,26 +103,22 @@ void BaseAppender::AppendDecimalValueInternal(Vector &col, SRC input) {
 		auto scale = DecimalType::GetScale(type);
 		CastParameters parameters;
 		auto &result = FlatVector::GetDataMutable<DST>(col)[chunk.size()];
-		TryCastToDecimal::Operation<SRC, DST>(input, result, parameters, width, scale);
+		VectorDecimalCast::Operation<TryCastToDecimal, SRC, DST>(input, result, col, parameters, width, scale);
 		return;
 	}
 	case AppenderType::PHYSICAL: {
-		AppendValueInternal<SRC, DST>(col, input);
+		if constexpr (std::is_same<DST, bignum_t>::value) {
+			// the bignum_t tier has no physical representation among the appended types
+			throw InternalException("Physical appends are not supported for DECIMAL types wider than %d digits",
+			                        Decimal::MAX_WIDTH_INT128);
+		} else {
+			AppendValueInternal<SRC, DST>(col, input);
+		}
 		return;
 	}
 	default:
 		InternalException::Throw("Type not implemented for AppenderType");
 	}
-}
-
-template <class SRC>
-void BaseAppender::AppendWideDecimalValueInternal(Vector &col, SRC input) {
-	auto &type = col.GetType();
-	D_ASSERT(type.id() == LogicalTypeId::DECIMAL && type.InternalType() == PhysicalType::VARCHAR);
-	// every source type is converted with its regular cast to the column type
-	auto value = Value::CreateValue<SRC>(input).DefaultCastAs(type);
-	FlatVector::GetDataMutable<string_t>(col)[chunk.size()] =
-	    StringVector::AddStringOrBlob(col, StringValue::Get(value));
 }
 
 template <class T>
@@ -185,7 +182,7 @@ void BaseAppender::AppendValueInternal(T input) {
 			AppendDecimalValueInternal<T, hugeint_t>(col, input);
 			break;
 		case PhysicalType::VARCHAR:
-			AppendWideDecimalValueInternal<T>(col, input);
+			AppendDecimalValueInternal<T, bignum_t>(col, input);
 			break;
 		default:
 			InternalException::Throw("Internal type not recognized for Decimal");

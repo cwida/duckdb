@@ -311,9 +311,11 @@ Value Value::MinimumValue(const LogicalType &type) {
 			return Value::DECIMAL(int64_t(-NumericHelper::POWERS_OF_TEN[width] + 1), width, scale);
 		case PhysicalType::INT128:
 			return Value::DECIMAL(-Hugeint::POWERS_OF_TEN[width] + 1, width, scale);
-		case PhysicalType::VARCHAR:
+		case PhysicalType::VARCHAR: {
 			// the minimum wide decimal is -(10^width - 1)
-			return Value::WIDEDECIMAL(Bignum::VarcharToBignum(string_t("-" + string(width, '9'))), width, scale);
+			auto blob = Bignum::VarcharToBignum(string_t("-" + string(width, '9')));
+			return Value::DECIMAL(bignum_t(string_t(blob)), width, scale);
+		}
 		default:
 			throw InternalException("Unknown decimal type");
 		}
@@ -412,9 +414,11 @@ Value Value::MaximumValue(const LogicalType &type) {
 			return Value::DECIMAL(int64_t(NumericHelper::POWERS_OF_TEN[width] - 1), width, scale);
 		case PhysicalType::INT128:
 			return Value::DECIMAL(Hugeint::POWERS_OF_TEN[width] - 1, width, scale);
-		case PhysicalType::VARCHAR:
+		case PhysicalType::VARCHAR: {
 			// the maximum wide decimal is 10^width - 1
-			return Value::WIDEDECIMAL(Bignum::VarcharToBignum(string_t(string(width, '9'))), width, scale);
+			auto blob = Bignum::VarcharToBignum(string_t(string(width, '9')));
+			return Value::DECIMAL(bignum_t(string_t(blob)), width, scale);
+		}
 		default:
 			throw InternalException("Unknown decimal type");
 		}
@@ -655,7 +659,7 @@ Value Value::DECIMAL(int64_t value, uint32_t width, uint32_t scale) {
 		break;
 	case PhysicalType::VARCHAR:
 		// the unscaled value of a wide decimal is a BIGNUM blob
-		return Value::WIDEDECIMAL(BignumDecimal::FromInteger(hugeint_t(value)), width, scale);
+		return Value::DECIMAL(hugeint_t(value), width, scale);
 	default:
 		result.value_.hugeint = value;
 		break;
@@ -668,7 +672,8 @@ Value Value::DECIMAL(int64_t value, uint32_t width, uint32_t scale) {
 Value Value::DECIMAL(hugeint_t value, uint32_t width, uint32_t scale) {
 	if (Decimal::IsWide(width)) {
 		// the unscaled value of a wide decimal is a BIGNUM blob
-		return Value::WIDEDECIMAL(BignumDecimal::FromInteger(value), width, scale);
+		auto blob = BignumDecimal::FromInteger(value);
+		return Value::DECIMAL(bignum_t(string_t(blob)), width, scale);
 	}
 	D_ASSERT(width >= Decimal::MAX_WIDTH_INT64 && width <= Decimal::MAX_WIDTH_INT128);
 	Value result(LogicalType::DECIMAL(width, scale));
@@ -677,11 +682,18 @@ Value Value::DECIMAL(hugeint_t value, uint32_t width, uint32_t scale) {
 	return result;
 }
 
-Value Value::WIDEDECIMAL(const string &unscaled_bignum, uint32_t width, uint32_t scale) {
-	D_ASSERT(Decimal::IsWide(width));
+Value Value::DECIMAL(bignum_t value, uint32_t width, uint32_t scale) {
+	if (!Decimal::IsWide(width)) {
+		// the fixed-size tiers hold the unscaled value as an integer
+		hugeint_t unscaled;
+		if (!BignumDecimal::TryToHugeint(value, unscaled)) {
+			throw InternalException("Value::DECIMAL: the BIGNUM does not fit a DECIMAL(%d,%d)", width, scale);
+		}
+		return Value::DECIMAL(unscaled, width, scale);
+	}
 	Value result(LogicalType::DECIMAL(width, scale));
 	result.is_null = false;
-	result.value_info_ = make_shared_ptr<StringValueInfo>(unscaled_bignum);
+	result.value_info_ = make_shared_ptr<StringValueInfo>(value.data.GetString());
 	return result;
 }
 
@@ -2444,7 +2456,7 @@ static bool ValueIsValidShallow(const Value &value) {
 		}
 		case PhysicalType::VARCHAR:
 			// wide decimals hold their unscaled value as a BIGNUM blob
-			return BignumDecimal::FitsWidth(string_t(StringValue::Get(value)), width);
+			return BignumDecimal::FitsWidth(value.GetValueUnsafe<bignum_t>(), width);
 		default:
 			throw InternalException("Invalid physical type for DECIMAL");
 		}

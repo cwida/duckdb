@@ -8,6 +8,8 @@
 
 #pragma once
 
+#include "duckdb/common/bignum.hpp"
+
 #include "column_reader.hpp"
 #include "reader/templated_column_reader.hpp"
 
@@ -57,7 +59,7 @@ public:
 	//! The number of bytes a FIXED_LEN_BYTE_ARRAY needs to hold decimals of the given width
 	static idx_t WideDecimalByteLength(uint32_t width);
 	//! Writes the BIGNUM blob of a wide decimal as a big-endian two's complement value of byte_length bytes
-	static void WriteWideDecimal(const string_t &blob, idx_t byte_length, data_ptr_t result);
+	static void WriteWideDecimal(const bignum_t &value, idx_t byte_length, data_ptr_t result);
 };
 
 template <>

@@ -6,8 +6,8 @@
 #include "duckdb/common/operator/integer_cast_operator.hpp"
 #include "duckdb/common/string.hpp"
 #include "duckdb/common/types/bignum.hpp"
+#include "duckdb/common/types/bignum_decimal.hpp"
 #include "duckdb/common/types/time.hpp"
-#include "duckdb/execution/operator/csv_scanner/csv_casting.hpp"
 #include "duckdb/execution/operator/csv_scanner/sniffer/csv_sniffer.hpp"
 
 namespace duckdb {
@@ -251,9 +251,9 @@ bool CSVSniffer::CanYouCastIt(ClientContext &context, const string_t value, cons
 		uint32_t width, scale;
 		type.GetDecimalProperties(width, scale);
 		if (type.InternalType() == PhysicalType::VARCHAR) {
-			// wide decimal
+			// the bignum_t tier (width > 38)
 			string dummy_value;
-			return CSVCast::TryParseWideDecimal(value_ptr, value_size, decimal_separator, width, scale, dummy_value);
+			return BignumDecimal::TryParse(value_ptr, value_size, width, scale, dummy_value, decimal_separator);
 		}
 		if (decimal_separator == ',') {
 			switch (type.InternalType()) {

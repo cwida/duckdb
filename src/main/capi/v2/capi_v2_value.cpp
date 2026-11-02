@@ -363,7 +363,7 @@ DUCKDB_V2_ERROR duckdb_v2_value_get_decimal(duckdb_v2_value_handle value, duckdb
 		case duckdb::PhysicalType::VARCHAR: {
 			// the BIGNUM storage of a wide decimal may not fit in 128 bits
 			duckdb::hugeint_t unscaled;
-			if (!duckdb::BignumDecimal::TryToHugeint(duckdb::string_t(duckdb::StringValue::Get(v)), unscaled)) {
+			if (!duckdb::BignumDecimal::TryToHugeint(v.GetValueUnsafe<duckdb::bignum_t>(), unscaled)) {
 				throw duckdb::OutOfRangeException(
 				    "duckdb_v2_value_get_decimal: the value does not fit in 128 bits; read its storage with "
 				    "value_get_blob and bignum_decode, or convert it with value_cast");

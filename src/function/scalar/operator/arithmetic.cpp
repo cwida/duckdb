@@ -147,7 +147,7 @@ static void WideDecimalAddSubtract(DataChunk &args, ExpressionState &state, Vect
 			    const BignumIntermediate rhs(b);
 			    sum = BignumIntermediate::Add(heap, lhs, rhs);
 		    }
-		    if (CHECK_WIDTH && !BignumDecimal::FitsWidth(sum, width)) {
+		    if (CHECK_WIDTH && !BignumDecimal::FitsWidth(bignum_t(sum), width)) {
 			    ThrowWideDecimalOverflow(IS_SUBTRACT ? "subtraction" : "addition", result_type);
 		    }
 		    return sum;
@@ -165,7 +165,7 @@ static void WideDecimalMultiply(DataChunk &args, ExpressionState &state, Vector 
 		    const BignumIntermediate lhs(a);
 		    const BignumIntermediate rhs(b);
 		    auto product = BignumIntermediate::Multiply(heap, arithmetic_state, lhs, rhs);
-		    if (CHECK_WIDTH && !BignumDecimal::FitsWidth(product, width)) {
+		    if (CHECK_WIDTH && !BignumDecimal::FitsWidth(bignum_t(product), width)) {
 			    ThrowWideDecimalOverflow("multiplication", result_type);
 		    }
 		    return product;

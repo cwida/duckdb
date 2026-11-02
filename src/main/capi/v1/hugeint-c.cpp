@@ -51,7 +51,7 @@ duckdb_decimal duckdb_double_to_decimal(double val, uint8_t width, uint8_t scale
 		std::string blob;
 		duckdb::hugeint_t hugeint;
 		if (!duckdb::BignumDecimal::TryFromDouble(val, width, scale, blob) ||
-		    !duckdb::BignumDecimal::TryToHugeint(duckdb::string_t(blob), hugeint)) {
+		    !duckdb::BignumDecimal::TryToHugeint(duckdb::bignum_t(duckdb::string_t(blob)), hugeint)) {
 			return duckdb::FetchDefaultValue::Operation<duckdb_decimal>();
 		}
 		return {width, scale, {hugeint.lower, hugeint.upper}};

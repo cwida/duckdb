@@ -13,6 +13,7 @@
 #include "duckdb/common/vector.hpp"
 #include "duckdb/common/optional_ptr.hpp"
 #include <stdint.h>
+#include "duckdb/common/types/null_value.hpp"
 #include "duckdb/common/types/string_type.hpp"
 
 namespace duckdb {
@@ -36,6 +37,11 @@ struct bignum_t {
 
 	void Print() const;
 };
+
+template <>
+inline bignum_t NullValue() {
+	return bignum_t(NullValue<string_t>());
+}
 
 enum AbsoluteNumberComparison : uint8_t {
 	// If number is equal

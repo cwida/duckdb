@@ -96,8 +96,9 @@ struct VectorDecimalCastOperator {
 	template <class INPUT_TYPE, class RESULT_TYPE>
 	static RESULT_TYPE Operation(INPUT_TYPE input, ValidityMask &mask, idx_t idx, VectorDecimalCastData &data) {
 		RESULT_TYPE result_value;
-		if (!OP::template Operation<INPUT_TYPE, RESULT_TYPE>(input, result_value, data.vector_cast_data.parameters,
-		                                                     data.width, data.scale)) {
+		if (!VectorDecimalCast::Operation<OP, INPUT_TYPE, RESULT_TYPE>(
+		        input, result_value, data.vector_cast_data.result, data.vector_cast_data.parameters, data.width,
+		        data.scale)) {
 			return HandleVectorCastError::Operation<RESULT_TYPE>("Failed to cast decimal value", mask, idx,
 			                                                     data.vector_cast_data);
 		}
@@ -172,7 +173,7 @@ struct VectorCastHelpers {
 			return TemplatedDecimalCast<T, hugeint_t, TryCastToDecimal>(source, result, count, parameters, width,
 			                                                            scale);
 		case PhysicalType::VARCHAR:
-			return DefaultCasts::ToWideDecimalCast(source, result, count, parameters);
+			return TemplatedDecimalCast<T, bignum_t, TryCastToDecimal>(source, result, count, parameters, width, scale);
 		default:
 			InternalException::Throw("Unimplemented internal type for decimal");
 		}

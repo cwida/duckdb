@@ -1,4 +1,5 @@
 #include "parquet_writer.hpp"
+#include "duckdb/common/bignum.hpp"
 #include "duckdb/common/types/decimal.hpp"
 
 #include <functional>
@@ -1138,10 +1139,12 @@ struct WideDecimalStatsUnifier : public ColumnStatsUnifier {
 		if (stats.empty()) {
 			return string();
 		}
-		return Value::WIDEDECIMAL(Decode(stats), width, scale).ToString();
+		auto blob = Decode(stats);
+		return Value::DECIMAL(bignum_t(string_t(blob)), width, scale).ToString();
 	}
 
 	void UnifyMinMax(const string &new_min, const string &new_max) override {
+		// the byte order of the BIGNUM blobs is their numeric order
 		if (!min_is_set || LessThan::Operation(string_t(Decode(new_min)), string_t(Decode(global_min)))) {
 			global_min = new_min;
 			min_is_set = true;

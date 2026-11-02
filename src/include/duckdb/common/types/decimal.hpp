@@ -8,8 +8,8 @@
 
 #pragma once
 
+#include "duckdb/common/bignum.hpp"
 #include "duckdb/common/types.hpp"
-#include "duckdb/common/types/string_type.hpp"
 #include "duckdb/storage/storage_info.hpp"
 
 namespace duckdb {
@@ -71,6 +71,6 @@ public:
 	static string ToString(int64_t value, uint32_t width, uint32_t scale);
 	static string ToString(hugeint_t value, uint32_t width, uint32_t scale);
 	//! Formats the unscaled value of a wide decimal (a BIGNUM blob)
-	static string ToString(string_t value, uint32_t width, uint32_t scale);
+	static string ToString(bignum_t value, uint32_t width, uint32_t scale);
 };
 } // namespace duckdb

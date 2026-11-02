@@ -10,7 +10,6 @@ add_library_unity(
   cast_function_set.cpp
   cast_statistics.cpp
   decimal_cast.cpp
-  wide_decimal_cast.cpp
   default_casts.cpp
   enum_casts.cpp
   geo_casts.cpp

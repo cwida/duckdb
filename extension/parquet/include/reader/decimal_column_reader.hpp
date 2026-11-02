@@ -61,7 +61,7 @@ class WideDecimalColumnReader;
 template <bool FIXED_LENGTH>
 struct WideDecimalParquetValueConversion {
 	template <bool CHECKED>
-	static string_t PlainRead(ByteBuffer &plain_data, ColumnReader &reader);
+	static bignum_t PlainRead(ByteBuffer &plain_data, ColumnReader &reader);
 
 	template <bool CHECKED>
 	static void PlainSkip(ByteBuffer &plain_data, ColumnReader &reader) {
@@ -83,7 +83,7 @@ struct WideDecimalParquetValueConversion {
 template <class PARQUET_TYPE>
 struct WideDecimalFromIntegerConversion {
 	template <bool CHECKED>
-	static string_t PlainRead(ByteBuffer &plain_data, ColumnReader &reader);
+	static bignum_t PlainRead(ByteBuffer &plain_data, ColumnReader &reader);
 
 	template <bool CHECKED>
 	static void PlainSkip(ByteBuffer &plain_data, ColumnReader &reader) {
@@ -121,19 +121,19 @@ public:
 		current_result = &result;
 		switch (Schema().parquet_type) {
 		case duckdb_parquet::Type::INT32:
-			PlainTemplated<string_t, WideDecimalFromIntegerConversion<int32_t>>(plain_data, defines, num_values,
+			PlainTemplated<bignum_t, WideDecimalFromIntegerConversion<int32_t>>(plain_data, defines, num_values,
 			                                                                    result_offset, result);
 			break;
 		case duckdb_parquet::Type::INT64:
-			PlainTemplated<string_t, WideDecimalFromIntegerConversion<int64_t>>(plain_data, defines, num_values,
+			PlainTemplated<bignum_t, WideDecimalFromIntegerConversion<int64_t>>(plain_data, defines, num_values,
 			                                                                    result_offset, result);
 			break;
 		case duckdb_parquet::Type::FIXED_LEN_BYTE_ARRAY:
-			PlainTemplated<string_t, WideDecimalParquetValueConversion<true>>(plain_data, defines, num_values,
+			PlainTemplated<bignum_t, WideDecimalParquetValueConversion<true>>(plain_data, defines, num_values,
 			                                                                  result_offset, result);
 			break;
 		default:
-			PlainTemplated<string_t, WideDecimalParquetValueConversion<false>>(plain_data, defines, num_values,
+			PlainTemplated<bignum_t, WideDecimalParquetValueConversion<false>>(plain_data, defines, num_values,
 			                                                                   result_offset, result);
 			break;
 		}
@@ -160,17 +160,17 @@ public:
 
 template <class PARQUET_TYPE>
 template <bool CHECKED>
-string_t WideDecimalFromIntegerConversion<PARQUET_TYPE>::PlainRead(ByteBuffer &plain_data, ColumnReader &reader) {
+bignum_t WideDecimalFromIntegerConversion<PARQUET_TYPE>::PlainRead(ByteBuffer &plain_data, ColumnReader &reader) {
 	auto value = CHECKED ? plain_data.read<PARQUET_TYPE>() : plain_data.unsafe_read<PARQUET_TYPE>();
 	auto blob = BignumDecimal::FromInteger(hugeint_t(value));
 	auto &wide_reader = reader.Cast<WideDecimalColumnReader>();
 	D_ASSERT(wide_reader.current_result);
-	return StringVector::AddStringOrBlob(*wide_reader.current_result, blob.data(), blob.size());
+	return bignum_t(StringVector::AddStringOrBlob(*wide_reader.current_result, blob.data(), blob.size()));
 }
 
 template <bool FIXED_LENGTH>
 template <bool CHECKED>
-string_t WideDecimalParquetValueConversion<FIXED_LENGTH>::PlainRead(ByteBuffer &plain_data, ColumnReader &reader) {
+bignum_t WideDecimalParquetValueConversion<FIXED_LENGTH>::PlainRead(ByteBuffer &plain_data, ColumnReader &reader) {
 	idx_t byte_len;
 	if (FIXED_LENGTH) {
 		byte_len = reader.Schema().type_length;
@@ -182,7 +182,7 @@ string_t WideDecimalParquetValueConversion<FIXED_LENGTH>::PlainRead(ByteBuffer &
 	plain_data.inc(byte_len);
 	auto &wide_reader = reader.Cast<WideDecimalColumnReader>();
 	D_ASSERT(wide_reader.current_result);
-	return StringVector::AddStringOrBlob(*wide_reader.current_result, blob.data(), blob.size());
+	return bignum_t(StringVector::AddStringOrBlob(*wide_reader.current_result, blob.data(), blob.size()));
 }
 
 template <class DUCKDB_PHYSICAL_TYPE, bool FIXED_LENGTH>

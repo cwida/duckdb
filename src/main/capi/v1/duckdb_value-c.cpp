@@ -173,7 +173,7 @@ duckdb_decimal duckdb_get_decimal(duckdb_value val) {
 	duckdb::hugeint_t hugeint;
 	if (type.InternalType() == duckdb::PhysicalType::VARCHAR) {
 		// the BIGNUM blob of a wide decimal is only representable if it fits in 128 bits
-		if (!duckdb::BignumDecimal::TryToHugeint(duckdb::string_t(duckdb::StringValue::Get(v)), hugeint)) {
+		if (!duckdb::BignumDecimal::TryToHugeint(v.GetValueUnsafe<duckdb::bignum_t>(), hugeint)) {
 			return duckdb::FetchDefaultValue::Operation<duckdb_decimal>();
 		}
 	} else {

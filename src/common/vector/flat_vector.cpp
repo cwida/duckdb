@@ -426,7 +426,7 @@ Value StandardVectorBuffer::GetValue(const LogicalType &type, idx_t index) const
 			return Value::DECIMAL(reinterpret_cast<const hugeint_t *>(data_ptr)[index], width, scale);
 		case PhysicalType::VARCHAR:
 			// the unscaled value of a wide decimal is a BIGNUM blob
-			return Value::WIDEDECIMAL(reinterpret_cast<const string_t *>(data_ptr)[index].GetString(), width, scale);
+			return Value::DECIMAL(reinterpret_cast<const bignum_t *>(data_ptr)[index], width, scale);
 		default:
 			throw InternalException("Unimplemented physical type '%s' for DECIMAL",
 			                        TypeIdToString(type.InternalType()));

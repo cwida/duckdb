@@ -2,6 +2,7 @@
 #include "duckdb/function/cast/vector_cast_helpers.hpp"
 
 #include "duckdb/common/vector_operations/general_cast.hpp"
+#include "duckdb/common/types/bignum_decimal.hpp"
 #include "duckdb/common/types/decimal.hpp"
 #include "duckdb/common/vector_operations/unary_executor.hpp"
 #include "duckdb/common/types/cast_helpers.hpp"
@@ -26,6 +27,9 @@ static bool FromDecimalCast(Vector &source, Vector &result, idx_t count, CastPar
 	case PhysicalType::INT128:
 		return VectorCastHelpers::TemplatedDecimalCast<hugeint_t, T, TryCastFromDecimal>(source, result, count,
 		                                                                                 parameters, width, scale);
+	case PhysicalType::VARCHAR:
+		return VectorCastHelpers::TemplatedDecimalCast<bignum_t, T, TryCastFromDecimal>(source, result, count,
+		                                                                                parameters, width, scale);
 	default:
 		throw InternalException("Unimplemented internal type for decimal");
 	}
@@ -182,6 +186,89 @@ static bool TemplatedDecimalScaleDown(Vector &source, Vector &result, idx_t coun
 	}
 }
 
+//===--------------------------------------------------------------------===//
+// Decimal -> Decimal through BIGNUM: the source or the target is of the bignum_t tier (width > 38)
+//===--------------------------------------------------------------------===//
+struct BignumDecimalScaleInput {
+	BignumDecimalScaleInput(Vector &result_p, CastParameters &parameters, uint32_t source_width_p,
+	                        uint32_t source_scale_p, uint32_t target_width_p, uint32_t target_scale_p)
+	    : result(result_p), vector_cast_data(result, parameters), source_width(source_width_p),
+	      source_scale(source_scale_p), target_width(target_width_p), target_scale(target_scale_p) {
+	}
+
+	Vector &result;
+	VectorTryCastData vector_cast_data;
+	uint32_t source_width;
+	uint32_t source_scale;
+	uint32_t target_width;
+	uint32_t target_scale;
+};
+
+//! The unscaled value of a decimal as a BIGNUM (the blob of a fixed-size tier is written into "blob")
+static bignum_t UnscaledBignum(bignum_t input, string &blob) {
+	return input;
+}
+
+template <class INPUT_TYPE>
+static bignum_t UnscaledBignum(INPUT_TYPE input, string &blob) {
+	blob = BignumDecimal::FromInteger(hugeint_t(input));
+	return bignum_t(string_t(blob));
+}
+
+struct BignumDecimalScaleOperator {
+	template <class INPUT_TYPE, class RESULT_TYPE>
+	static RESULT_TYPE Operation(INPUT_TYPE input, ValidityMask &mask, idx_t idx, BignumDecimalScaleInput &data) {
+		string unscaled_blob;
+		auto unscaled = UnscaledBignum(input, unscaled_blob);
+		string rescaled;
+		if (!BignumDecimal::TryRescale(unscaled, data.source_scale, data.target_width, data.target_scale, rescaled)) {
+			auto error = StringUtil::Format("Casting value \"%s\" to type %s failed: value is out of range!",
+			                                Decimal::ToString(input, data.source_width, data.source_scale),
+			                                data.result.GetType().ToString());
+			return HandleVectorCastError::Operation<RESULT_TYPE>(std::move(error), mask, idx, data.vector_cast_data);
+		}
+		if constexpr (std::is_same<RESULT_TYPE, bignum_t>::value) {
+			return bignum_t(StringVector::AddStringOrBlob(data.result, rescaled.data(), rescaled.size()));
+		} else {
+			// the checked width guarantees the value fits the integer
+			hugeint_t value;
+			if (!BignumDecimal::TryToHugeint(bignum_t(string_t(rescaled)), value)) {
+				throw InternalException("Rescaled decimal does not fit a HUGEINT despite the width check");
+			}
+			return Cast::Operation<hugeint_t, RESULT_TYPE>(value);
+		}
+	}
+};
+
+template <class SOURCE, class DEST>
+static bool TemplatedBignumDecimalScale(Vector &source, Vector &result, idx_t count, CastParameters &parameters) {
+	BignumDecimalScaleInput input(result, parameters, DecimalType::GetWidth(source.GetType()),
+	                              DecimalType::GetScale(source.GetType()), DecimalType::GetWidth(result.GetType()),
+	                              DecimalType::GetScale(result.GetType()));
+	UnaryExecutor::GenericExecute<SOURCE, DEST, BignumDecimalScaleOperator>(source, result, count, input,
+	                                                                        parameters.error_message);
+	return input.vector_cast_data.all_converted;
+}
+
+static bool BignumDecimalDecimalCastSwitch(Vector &source, Vector &result, idx_t count, CastParameters &parameters) {
+	source.GetType().Verify();
+	result.GetType().Verify();
+	switch (result.GetType().InternalType()) {
+	case PhysicalType::INT16:
+		return TemplatedBignumDecimalScale<bignum_t, int16_t>(source, result, count, parameters);
+	case PhysicalType::INT32:
+		return TemplatedBignumDecimalScale<bignum_t, int32_t>(source, result, count, parameters);
+	case PhysicalType::INT64:
+		return TemplatedBignumDecimalScale<bignum_t, int64_t>(source, result, count, parameters);
+	case PhysicalType::INT128:
+		return TemplatedBignumDecimalScale<bignum_t, hugeint_t>(source, result, count, parameters);
+	case PhysicalType::VARCHAR:
+		return TemplatedBignumDecimalScale<bignum_t, bignum_t>(source, result, count, parameters);
+	default:
+		throw NotImplementedException("Unimplemented internal type for decimal");
+	}
+}
+
 template <class SOURCE, class POWERS_SOURCE>
 static bool DecimalDecimalCastSwitch(Vector &source, Vector &result, idx_t count, CastParameters &parameters) {
 	auto source_scale = DecimalType::GetScale(source.GetType());
@@ -205,6 +292,8 @@ static bool DecimalDecimalCastSwitch(Vector &source, Vector &result, idx_t count
 		case PhysicalType::INT128:
 			return TemplatedDecimalScaleUp<SOURCE, hugeint_t, POWERS_SOURCE, Hugeint>(source, result, count,
 			                                                                          parameters);
+		case PhysicalType::VARCHAR:
+			return TemplatedBignumDecimalScale<SOURCE, bignum_t>(source, result, count, parameters);
 		default:
 			throw NotImplementedException("Unimplemented internal type for decimal");
 		}
@@ -219,6 +308,8 @@ static bool DecimalDecimalCastSwitch(Vector &source, Vector &result, idx_t count
 			return TemplatedDecimalScaleDown<SOURCE, int64_t, POWERS_SOURCE>(source, result, count, parameters);
 		case PhysicalType::INT128:
 			return TemplatedDecimalScaleDown<SOURCE, hugeint_t, POWERS_SOURCE>(source, result, count, parameters);
+		case PhysicalType::VARCHAR:
+			return TemplatedBignumDecimalScale<SOURCE, bignum_t>(source, result, count, parameters);
 		default:
 			throw NotImplementedException("Unimplemented internal type for decimal");
 		}
@@ -255,10 +346,6 @@ static bool DecimalToStringCast(Vector &source, Vector &result, idx_t count, Cas
 
 BoundCastInfo DefaultCasts::DecimalCastSwitch(BindCastInput &input, const LogicalType &source,
                                               const LogicalType &target) {
-	if (source.InternalType() == PhysicalType::VARCHAR) {
-		// wide decimal source
-		return FromWideDecimalCastSwitch(input, source, target);
-	}
 	// now switch on the result type
 	switch (target.id()) {
 	case LogicalTypeId::BOOLEAN:
@@ -284,12 +371,8 @@ BoundCastInfo DefaultCasts::DecimalCastSwitch(BindCastInput &input, const Logica
 	case LogicalTypeId::UHUGEINT:
 		return FromDecimalCast<uhugeint_t>;
 	case LogicalTypeId::BIGNUM:
-		return DecimalToBignumCast;
+		return FromDecimalCast<bignum_t>;
 	case LogicalTypeId::DECIMAL: {
-		if (target.InternalType() == PhysicalType::VARCHAR) {
-			// fixed-size decimal to wide decimal
-			return ToWideDecimalCast;
-		}
 		// decimal to decimal cast
 		// first we need to figure out the source and target internal types
 		switch (source.InternalType()) {
@@ -301,6 +384,8 @@ BoundCastInfo DefaultCasts::DecimalCastSwitch(BindCastInput &input, const Logica
 			return DecimalDecimalCastSwitch<int64_t, NumericHelper>;
 		case PhysicalType::INT128:
 			return DecimalDecimalCastSwitch<hugeint_t, Hugeint>;
+		case PhysicalType::VARCHAR:
+			return BignumDecimalDecimalCastSwitch;
 		default:
 			throw NotImplementedException("Unimplemented internal type for decimal in decimal_decimal cast");
 		}
@@ -319,6 +404,8 @@ BoundCastInfo DefaultCasts::DecimalCastSwitch(BindCastInput &input, const Logica
 			return DecimalToStringCast<int64_t>;
 		case PhysicalType::INT128:
 			return DecimalToStringCast<hugeint_t>;
+		case PhysicalType::VARCHAR:
+			return DecimalToStringCast<bignum_t>;
 		default:
 			throw InternalException("Unimplemented internal decimal type");
 		}

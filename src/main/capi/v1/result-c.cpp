@@ -305,7 +305,7 @@ duckdb_state deprecated_duckdb_translate_column(QueryResult &result, duckdb_colu
 			break;
 		}
 		case PhysicalType::VARCHAR: {
-			WriteData<string_t, duckdb_hugeint, CWideDecimalConverter>(column, collection, column_ids);
+			WriteData<bignum_t, duckdb_hugeint, CWideDecimalConverter>(column, collection, column_ids);
 			break;
 		}
 		default:

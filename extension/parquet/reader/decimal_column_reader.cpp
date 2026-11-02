@@ -86,8 +86,8 @@ idx_t ParquetDecimalUtils::WideDecimalByteLength(uint32_t width) {
 	return static_cast<idx_t>(std::ceil((static_cast<double>(width) * 3.3219280948873626 + 1) / 8.0));
 }
 
-void ParquetDecimalUtils::WriteWideDecimal(const string_t &blob, idx_t byte_length, data_ptr_t result) {
-	BignumDecimal::ToTwosComplement(blob, result, byte_length, true);
+void ParquetDecimalUtils::WriteWideDecimal(const bignum_t &value, idx_t byte_length, data_ptr_t result) {
+	BignumDecimal::ToTwosComplement(value, result, byte_length, true);
 }
 
 } // namespace duckdb
