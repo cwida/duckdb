@@ -9,6 +9,7 @@ set(TEST_API_OBJECTS
     test_api.cpp
     test_multi_file_column_mapper.cpp
     test_process_util.cpp
+    test_random_after_clone.cpp
     test_remove_directory_extended.cpp
     test_temporary_file_owner.cpp
     test_task_error_out_of_memory.cpp

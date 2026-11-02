@@ -1099,7 +1099,11 @@ void ColumnReader::Select(ColumnReaderInput &input, Vector &result, const Select
 		DirectSelect(input, result, sel, approved_tuple_count);
 		return;
 	}
-	Read(input, result);
+	const auto rows_read = Read(input, result);
+	if (rows_read != num_values) {
+		throw DataCorruptionException("Mismatch in parquet read for column \"%s\", expected %llu rows, got %llu",
+		                              Schema().name, num_values, rows_read);
+	}
 }
 
 void ColumnReader::DirectSelect(ColumnReaderInput &input, Vector &result, const SelectionVector &sel,
