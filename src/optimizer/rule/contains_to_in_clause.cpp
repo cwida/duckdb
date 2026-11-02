@@ -51,6 +51,10 @@ unique_ptr<Expression> ContainsToInClauseRule::Apply(LogicalOperator &op, vector
 	// No non-NULL elements: never contains any value.
 	if (non_null_elements.empty()) {
 		changes_made = true;
+		if (ListValue::GetChildren(list_val).empty()) {
+			// An empty list never contains anything, not even NULL.
+			return make_uniq<BoundConstantExpression>(Value::BOOLEAN(false));
+		}
 		return ExpressionRewriter::ConstantOrNull(GetContext(), probe_arg->Copy(), Value::BOOLEAN(false));
 	}
 

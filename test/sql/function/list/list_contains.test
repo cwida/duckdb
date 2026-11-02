@@ -226,6 +226,13 @@ NULL
 NULL
 false
 
+# a constant list with a non-constant needle: an empty list never contains NULL, a list of only NULLs gives NULL
+query TTT
+SELECT x, list_contains([]::INT[], x), list_contains([NULL]::INT[], x) FROM (SELECT CASE WHEN i = 0 THEN NULL ELSE i END AS x FROM range(2) t(i)) ORDER BY x NULLS FIRST
+----
+NULL	false	NULL
+1	false	false
+
 query T
 SELECT list_contains([NULL,7], 7)
 ----
