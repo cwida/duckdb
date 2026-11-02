@@ -3,7 +3,7 @@
 # group: [materialized]
 
 # The exchange sizes below assume standard vectors.
-require vector_size 2048
+require exact_vector_size 2048
 
 set query_timeout 60
 

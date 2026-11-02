@@ -1358,7 +1358,14 @@ FindExchangeStarvedBufferedConsumer(PipelineBuildStateData &data, const Pipeline
 				worklist.push_back(dependency);
 			}
 			for (auto dependency : stage.analysis_dependencies) {
-				if (!stage_live[dependency]) {
+				if (is_own_producer_eof(stage, dependency)) {
+					// Exempted waits are not gates, so descending through them only surfaces noise candidates.
+					continue;
+				}
+				// An EOF wait resolves through the target exchange's finishes bit, so the gate can run through
+				// a live-but-unfinishing exchange even when the finish stage itself is live.
+				auto target_exchange = producing_exchange(schedule.stages[dependency]);
+				if (!stage_live[dependency] || (target_exchange && !target_exchange->finishes)) {
 					worklist.push_back(dependency);
 				}
 			}
@@ -1522,6 +1529,27 @@ PipelineBuildState::ResolveExternalInputs(const vector<shared_ptr<MetaPipeline>>
 		}
 		restore_materialized_candidate(*candidate);
 		RestoreOptionalDependencies(removed_dependencies);
+	}
+
+	// Re-add removed orderings the accepted graph does not need. A removal that failed to revive an exchange
+	// is only superseded by a later removal or demotion, and dropping it permanently would lose a
+	// memory-protecting sibling ordering for nothing. Each re-add is verified against the full analysis and
+	// reverted when the graph stops being accepted.
+	for (idx_t removed_idx = removed_dependencies.size(); removed_idx > 0; removed_idx--) {
+		auto &removed = removed_dependencies[removed_idx - 1];
+		MetaPipeline::AddOptionalDependency(removed.pipeline, removed.dependency);
+		auto probe_schedule = BuildPipelineSchedule(meta_pipelines);
+		if (model_runtime_filter_edges) {
+			AddRuntimeFilterScheduleDependencies(*probe_schedule);
+		}
+		vector<pair<reference<Pipeline>, reference<Pipeline>>> probe_candidates;
+		if (!probe_schedule->HasCycle() &&
+		    !FindExchangeStarvedBufferedConsumer(*data, *probe_schedule, probe_candidates)) {
+			validated_schedule = std::move(probe_schedule);
+			removed_dependencies.erase(removed_dependencies.begin() + NumericCast<int64_t>(removed_idx - 1));
+		} else {
+			MetaPipeline::RemoveOptionalDependency(removed.pipeline, removed.dependency);
+		}
 	}
 
 	for (auto &candidate : data->external_input_candidates) {

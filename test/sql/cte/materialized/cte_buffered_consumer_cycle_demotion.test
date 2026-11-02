@@ -3,7 +3,7 @@
 # group: [materialized]
 
 # The fanout-budget sizes below assume standard vectors.
-require vector_size 2048
+require exact_vector_size 2048
 
 # Skipped in configs that restart the database between statements (the in-memory log does not survive) and
 # with the optimizer disabled (without cardinality estimates the probe is kept materialized by cost, so no
@@ -119,10 +119,10 @@ CALL truncate_duckdb_logs();
 statement ok
 SET disabled_optimizers='join_filter_pushdown';
 
-# Negative control: without the runtime-filter edge nothing gates the consumer in release builds, so no
-# demotion occurs there. Debug builds force CanSaturateThreads and the join-ordering dependencies, which
-# gate the consumer regardless of runtime filters, so the comparison below only requires that disabling
-# the optimizer never introduces additional demotions.
+# Negative control: without the runtime-filter edge nothing gates the consumer in release builds. Debug
+# builds force CanSaturateThreads and the join-ordering dependencies, but those orderings are optional, so
+# the starvation resolution drops them instead of demoting in both build types. The comparison below only
+# requires that disabling the optimizer never introduces additional demotions.
 query I
 WITH c AS MATERIALIZED (SELECT range i FROM range(2000000)),
      d AS MATERIALIZED (SELECT i FROM c WHERE i % 100000 = 0)
