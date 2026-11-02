@@ -24,6 +24,7 @@ set(TEST_API_OBJECTS
     test_config.cpp
     test_connect_prepare.cpp
     test_remote_pushdown_macro_arguments.cpp
+    test_remote_pushdown_merge.cpp
     test_compression_select.cpp
     test_os_util.cpp
     test_connection_secrets.cpp
