@@ -33,9 +33,7 @@ unique_ptr<Expression> ConstantFoldingRule::Apply(LogicalOperator &op, vector<re
 
 	// use an ExpressionExecutor to execute the expression
 	Value result_value;
-	// large nested results are left to be computed at runtime
-	if (!ExpressionExecutor::TryEvaluateScalar(GetContext(), root, result_value,
-	                                           ExpressionExecutor::MAX_FOLDED_NESTED_ELEMENTS)) {
+	if (!ExpressionExecutor::TryEvaluateScalar(GetContext(), root, result_value)) {
 		return nullptr;
 	}
 	D_ASSERT(result_value.type().InternalType() == root.GetReturnType().InternalType());

@@ -50,7 +50,7 @@ public:
 	virtual ~WriteAheadLog();
 
 public:
-	//! Replay and initialize the WAL
+	//! Replay and initialize the WAL, QueryContext is passed for metric collection purposes only!!
 	static unique_ptr<WriteAheadLog> Replay(QueryContext context, StorageManager &storage_manager,
 	                                        const string &wal_path);
 
