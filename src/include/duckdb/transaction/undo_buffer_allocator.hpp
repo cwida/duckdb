@@ -71,14 +71,23 @@ struct UndoBufferPointer {
 };
 
 struct UndoBufferAllocator {
-	explicit UndoBufferAllocator(BufferManager &buffer_manager);
+	UndoBufferAllocator(BufferManager &buffer_manager, bool hold_head_pin);
 
 	UndoBufferReference Allocate(idx_t alloc_len);
+	//! Unpins the head block, so that it can be evicted again
+	void ReleaseHeadPin() {
+		head_pin.Destroy();
+	}
 
 	mutex lock;
 	BufferManager &buffer_manager;
 	unique_ptr<UndoBufferEntry> head;
 	optional_ptr<UndoBufferEntry> tail;
+
+private:
+	bool hold_head_pin;
+	//! Keeps the head block pinned if hold_head_pin is set
+	BufferHandle head_pin;
 };
 
 } // namespace duckdb

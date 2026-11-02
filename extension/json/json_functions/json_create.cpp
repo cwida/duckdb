@@ -1412,8 +1412,9 @@ static unique_ptr<FunctionData> JSONCopyToGeoJSONBind(INPUT &input) {
 		property_indices.push_back(i);
 	}
 
-	const auto write_bbox =
-	    BooleanValue::Get(ExpressionExecutor::EvaluateScalar(input.GetClientContext(), *arguments[5]));
+	// like the column options, a NULL write_bbox means the option was not given
+	const auto write_bbox_value = input.GetConstant(5);
+	const auto write_bbox = !write_bbox_value.IsNull() && BooleanValue::Get(write_bbox_value);
 
 	StructNames const_struct_names;
 	auto &bound_arguments = bound_function.GetArguments();

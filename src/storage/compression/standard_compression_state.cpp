@@ -1,4 +1,5 @@
 #include "duckdb/storage/compression/standard_compression_state.hpp"
+#include "duckdb/storage/storage_manager.hpp"
 #include "duckdb/storage/table/column_data_checkpointer.hpp"
 
 namespace duckdb {

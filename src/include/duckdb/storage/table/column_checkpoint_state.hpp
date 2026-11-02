@@ -13,7 +13,6 @@
 #include "duckdb/storage/data_pointer.hpp"
 #include "duckdb/storage/table/column_segment.hpp"
 #include "duckdb/storage/table/column_data.hpp"
-#include "duckdb/storage/partial_block_manager.hpp"
 
 namespace duckdb {
 class ColumnData;
@@ -65,36 +64,6 @@ public:
 		DynamicCastCheck<TARGET>(this);
 		return reinterpret_cast<const TARGET &>(*this);
 	}
-};
-
-struct PartialBlockForCheckpoint : public PartialBlock {
-	struct PartialColumnSegment {
-		PartialColumnSegment(ColumnData &data, ColumnSegment &segment, uint32_t offset_in_block)
-		    : data(data), segment(segment), offset_in_block(offset_in_block) {
-		}
-
-		ColumnData &data;
-		ColumnSegment &segment;
-		uint32_t offset_in_block;
-	};
-
-public:
-	PartialBlockForCheckpoint(ColumnData &data, ColumnSegment &segment, PartialBlockState state,
-	                          BlockManager &block_manager);
-	~PartialBlockForCheckpoint() override;
-
-	// We will copy all segment data into the memory of the shared block.
-	// Once the block is full (or checkpoint is complete) we'll invoke Flush().
-	// This will cause the block to get written to storage (via BlockManger::ConvertToPersistent),
-	// and all segments to have their references updated (via ColumnSegment::ConvertToPersistent)
-	vector<PartialColumnSegment> segments;
-
-public:
-	bool IsFlushed();
-	void Flush(QueryContext context, const idx_t free_space_left) override;
-	void Merge(PartialBlock &other, idx_t offset, idx_t other_size) override;
-	void AddSegmentToTail(ColumnData &data, ColumnSegment &segment, uint32_t offset_in_block) override;
-	void Clear() override;
 };
 
 } // namespace duckdb

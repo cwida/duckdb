@@ -1,23 +1,13 @@
-#include "duckdb/common/vector/map_vector.hpp"
-#include "duckdb/common/vector/struct_vector.hpp"
 #include "duckdb/storage/table/column_segment.hpp"
 
-#include "duckdb/common/limits.hpp"
-#include "duckdb/common/types/null_value.hpp"
 #include "duckdb/common/types/vector.hpp"
-#include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/main/config.hpp"
-#include "duckdb/planner/expression/bound_comparison_expression.hpp"
-#include "duckdb/planner/expression/bound_constant_expression.hpp"
-#include "duckdb/planner/expression/bound_reference_expression.hpp"
-#include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/filter/expression_filter.hpp"
 #include "duckdb/planner/table_filter.hpp"
 #include "duckdb/storage/data_pointer.hpp"
 #include "duckdb/storage/table/append_state.hpp"
 #include "duckdb/storage/table/scan_state.hpp"
 #include "duckdb/planner/table_filter_state.hpp"
-#include "duckdb/planner/filter/bloom_filter.hpp"
 
 #include <cstring>
 
@@ -189,16 +179,6 @@ void ColumnSegment::ScanPartial(ColumnScanState &state, idx_t scan_count, Vector
 }
 
 //===--------------------------------------------------------------------===//
-// Fetch
-//===--------------------------------------------------------------------===//
-void ColumnSegment::FetchRow(ColumnFetchState &state, row_t row_id, Vector &result, idx_t result_idx) {
-	if (row_id < 0 || NumericCast<idx_t>(row_id) >= count) {
-		throw InternalException("ColumnSegment::FetchRow - row_id out of range for segment");
-	}
-	function.get().fetch_row(*this, state, row_id, result, result_idx);
-}
-
-//===--------------------------------------------------------------------===//
 // Append
 //===--------------------------------------------------------------------===//
 idx_t ColumnSegment::SegmentSize() const {
@@ -258,28 +238,14 @@ void ColumnSegment::RevertAppend(idx_t new_count) {
 //===--------------------------------------------------------------------===//
 // Convert To Persistent
 //===--------------------------------------------------------------------===//
-void ColumnSegment::ConvertToPersistent(QueryContext context, optional_ptr<BlockManager> block_manager,
-                                        const block_id_t block_id_p) {
+void ColumnSegment::ConvertToPersistentConstant() {
 	D_ASSERT(segment_type == ColumnSegmentType::TRANSIENT);
+	D_ASSERT(stats.statistics.IsConstant());
+
 	segment_type = ColumnSegmentType::PERSISTENT;
-	block_id = block_id_p;
+	block_id = INVALID_BLOCK;
 	offset = 0;
 
-	if (block_id != INVALID_BLOCK) {
-		D_ASSERT(!stats.statistics.IsConstant());
-		// Non-constant block: write the block to disk.
-		// The block data already exists in memory, so we alter the metadata,
-		// which ensures that the buffer points to an on-disk block.
-		// transient segments are tagged IN_MEMORY_TABLE, once written they are part of the base table
-		block = block_manager->ConvertToPersistent(context, block_id, std::move(block),
-		                                           ConvertToPersistentMode::DESTRUCTIVE, MemoryTag::BASE_TABLE);
-		return;
-	}
-
-	// Constant block: no need to write anything to disk besides the stats (metadata).
-	// I.e., we do not need to write an actual block.
-	// Thus, we set the compression function to constant and reset the block buffer.
-	D_ASSERT(stats.statistics.IsConstant());
 	auto &config = DBConfig::GetConfig(db);
 	function = config.GetCompressionFunction(CompressionType::COMPRESSION_CONSTANT, GetType().InternalType());
 	block.reset();
@@ -289,6 +255,12 @@ void ColumnSegment::MarkAsPersistent(shared_ptr<BlockHandle> block_p, uint32_t o
 	D_ASSERT(segment_type == ColumnSegmentType::TRANSIENT);
 	block_id = block_p->BlockId();
 	SetBlock(std::move(block_p), offset_p);
+}
+
+void ColumnSegment::UsePackedCopy(const shared_ptr<BlockHandle> &block_p, uint32_t offset_p) {
+	D_ASSERT(segment_type == ColumnSegmentType::TRANSIENT);
+	offset = offset_p;
+	block = block_p;
 }
 
 void ColumnSegment::SetBlock(shared_ptr<BlockHandle> block_p, uint32_t offset_p) {

@@ -455,7 +455,7 @@ public:
 		}
 		auto io_result = AsyncResult::FromTasks(std::move(io_tasks), TaskSchedulerType::ASYNC);
 		// on resume the prepared vector is decoded without registering I/O again
-		if (io_result.GetResultType() == AsyncResultType::BLOCKED && data_p.HandleBlocked(io_result)) {
+		if (io_result.GetResultType() == AsyncResultType::BLOCKED && data_p.HandleBlocked(context, io_result)) {
 			return PersistentScanResult::YIELD;
 		}
 		EmitChunk(l_state, output, [&](DataChunk &chunk) { table_state.ProcessPreparedScan(tx, chunk); });
@@ -492,6 +492,14 @@ public:
 		return job;
 	}
 
+	//! Drops a settled job's row group when a filter set since it was produced prunes it
+	static void RecheckJob(TableScanLocalState &l_state) {
+		if (!l_state.job->scan_state->table_state.RecheckPreparedRowGroup()) {
+			// the row group is dropped without being scanned
+			l_state.row_groups_scanned--;
+		}
+	}
+
 	// Try to return control to the executor instead of looping back within the scan.
 	static bool TryYieldControl(TableFunctionInput &data_p) {
 		if (data_p.results_execution_mode != AsyncResultsExecutionMode::TASK_EXECUTOR) {
@@ -508,6 +516,7 @@ public:
 			if (l_state.job && l_state.job->io_completion) {
 				// resuming after parking, the job's I/O has completed
 				read_ahead->WaitForJob(*l_state.job);
+				RecheckJob(l_state);
 			}
 			if (!l_state.job) {
 				unique_ptr<ScanReadAheadJob> claimed;
@@ -523,6 +532,7 @@ public:
 				if (acquired == ScanReadAheadAcquire::PARKED) {
 					return true;
 				}
+				RecheckJob(l_state);
 			}
 			auto &job_scan = *l_state.job->scan_state;
 			// the job's I/O was registered when it was produced, so no I/O is scheduled here
@@ -565,7 +575,7 @@ public:
 #ifdef DUCKDB_DEBUG_ASYNC_SINK_SOURCE
 		{
 			AsyncResult test_result;
-			if (AsyncResult::TryGenerateTestResult(test_result) && data_p.HandleBlocked(test_result)) {
+			if (AsyncResult::TryGenerateTestResult(test_result) && data_p.HandleBlocked(context, test_result)) {
 				return;
 			}
 		}

@@ -406,7 +406,7 @@
     },
     {
         "name": "debug_force_fetch_row",
-        "description": "Force per-row fetching during scans.",
+        "description": "Read the rows of scans through the fetch by row id.",
         "type": "BOOLEAN",
         "default_scope": "local",
         "default_value": "false",

@@ -1,0 +1,205 @@
+# name: test/sql/copy/parquet/page_index/page_index_prefetch.test
+# description: With the page index only the pages that may match are read from the file
+# group: [page_index]
+
+require parquet
+
+# the page row counts and boundaries below assume the default vector size
+require vector_size 2048
+
+# three row groups of 100000 rows, BIGINT pages of 512 rows, a dictionary-encoded payload with ~2500-row pages
+statement ok
+CREATE TABLE data AS
+	SELECT range AS id, (range * 7919) % 100000 AS v, 'p' || (range % 5000)::VARCHAR AS payload,
+	       'str_' || lpad(range::VARCHAR, 6, '0') AS s
+	FROM range(300000);
+
+statement ok
+COPY data TO '{TEST_DIR}/page_index_prefetch.parquet' (ROW_GROUP_SIZE 100000, DATA_PAGE_SIZE_LIMIT 4096, WRITE_PAGE_INDEX true);
+
+statement ok
+SET threads = 1;
+
+# the bytes read below depend on how far apart two pages may be to be read together, pin it
+statement ok
+SET parquet_prefetch_column_gap = 16384;
+
+statement ok
+CREATE MACRO bytes_read() AS (SELECT coalesce(sum(bytes), 0) FROM duckdb_logs_parsed('FileSystem') WHERE op = 'READ' AND parse_filename(path) = 'page_index_prefetch.parquet');
+
+statement ok
+CREATE MACRO largest_read() AS (SELECT coalesce(max(bytes), 0) FROM duckdb_logs_parsed('FileSystem') WHERE op = 'READ' AND parse_filename(path) = 'page_index_prefetch.parquet');
+
+# a point lookup in the middle of the second row group, all columns projected
+statement ok
+CALL enable_logging('FileSystem');
+
+query IIII
+SELECT id, v, payload, s FROM '{TEST_DIR}/page_index_prefetch.parquet' WHERE id = 177777
+----
+177777	16063	p2777	str_177777
+
+statement ok
+CALL disable_logging();
+
+statement ok
+CREATE TABLE with_index AS SELECT bytes_read() AS bytes, largest_read() AS largest;
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+SET parquet_use_page_index = false;
+
+statement ok
+CALL enable_logging('FileSystem');
+
+query IIII
+SELECT id, v, payload, s FROM '{TEST_DIR}/page_index_prefetch.parquet' WHERE id = 177777
+----
+177777	16063	p2777	str_177777
+
+statement ok
+CALL disable_logging();
+
+statement ok
+CREATE TABLE without_index AS SELECT bytes_read() AS bytes, largest_read() AS largest;
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+SET parquet_use_page_index = true;
+
+# without the index the whole row group is read, with it a few pages: at least five times fewer bytes, and no read
+# touches a page the index ruled out (the row group is several MB, no read with the index is larger than 1 MB)
+query III
+SELECT with_index.bytes * 5 < without_index.bytes, without_index.bytes > 1000000, with_index.largest < 1000000
+FROM with_index, without_index
+----
+true	true	true
+
+# a skipped first page of the dictionary-encoded payload: the reader jumps from the dictionary page to the page it
+# needs without reading the header of the first page (which would fall back to a 1 MB read)
+statement ok
+CALL enable_logging('FileSystem');
+
+query III
+SELECT count(*), min(payload), max(s) FROM '{TEST_DIR}/page_index_prefetch.parquet' WHERE id BETWEEN 150000 AND 150010
+----
+11	p0	str_150010
+
+statement ok
+CALL disable_logging();
+
+query II
+SELECT bytes_read() < 1000000, largest_read() < 500000
+----
+true	true
+
+statement ok
+CALL truncate_duckdb_logs();
+
+# three row groups, one match each: every row group reads only its matching pages
+statement ok
+CALL enable_logging('FileSystem');
+
+query II
+SELECT count(*), list(id ORDER BY id) FROM '{TEST_DIR}/page_index_prefetch.parquet' WHERE id IN (77777, 177777, 277777)
+----
+3	[77777, 177777, 277777]
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT bytes_read() < 1500000
+----
+true
+
+statement ok
+CALL truncate_duckdb_logs();
+
+# a filter that keeps 60% of the rows of every row group with every column projected: without the index this is a
+# whole-group read, with it only the pages that may match are read, however many rows the index keeps
+statement ok
+CALL enable_logging('FileSystem');
+
+query IIII
+SELECT count(*), sum(v), max(payload), max(s) FROM '{TEST_DIR}/page_index_prefetch.parquet' WHERE id BETWEEN 0 AND 60000 OR id BETWEEN 100000 AND 160000 OR id BETWEEN 200000 AND 260000
+----
+180003	8999310000	p999	str_260000
+
+statement ok
+CALL disable_logging();
+
+statement ok
+CREATE TABLE partial_with_index AS SELECT bytes_read() AS bytes;
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+SET parquet_use_page_index = false;
+
+statement ok
+CALL enable_logging('FileSystem');
+
+query IIII
+SELECT count(*), sum(v), max(payload), max(s) FROM '{TEST_DIR}/page_index_prefetch.parquet' WHERE id BETWEEN 0 AND 60000 OR id BETWEEN 100000 AND 160000 OR id BETWEEN 200000 AND 260000
+----
+180003	8999310000	p999	str_260000
+
+statement ok
+CALL disable_logging();
+
+statement ok
+CREATE TABLE partial_without_index AS SELECT bytes_read() AS bytes;
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+SET parquet_use_page_index = true;
+
+query I
+SELECT partial_with_index.bytes < partial_without_index.bytes * 0.85 FROM partial_with_index, partial_without_index
+----
+true
+
+# the prefetch log lists every column of a page-level read, also the ones whose first page was skipped
+statement ok
+CALL enable_logging('ParquetPrefetch');
+
+query IIII
+SELECT id, v, payload, s FROM '{TEST_DIR}/page_index_prefetch.parquet' WHERE id = 177777
+----
+177777	16063	p2777	str_177777
+
+statement ok
+CALL disable_logging();
+
+query III
+SELECT row_group_id, strategy, list_sort(flatten(prefetch_groups)) FROM duckdb_logs_parsed('ParquetPrefetch') WHERE file_path LIKE '%page_index_prefetch.parquet' ORDER BY row_group_id
+----
+1	column_wise_eager_pages	[id, payload, s, v]
+
+statement ok
+CALL truncate_duckdb_logs();
+
+# the whole_group strategy is still honoured when asked for, and reads the whole row group
+statement ok
+CALL enable_logging('FileSystem');
+
+query IIII
+SELECT id, v, payload, s FROM read_parquet('{TEST_DIR}/page_index_prefetch.parquet', prefetch_strategy = 'whole_group') WHERE id = 177777
+----
+177777	16063	p2777	str_177777
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT bytes_read() > 1000000
+----
+true

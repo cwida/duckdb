@@ -4,6 +4,7 @@ add_library_unity(
   peg_transformer.cpp
   peg_transformer_factory.cpp
   transform_generated_trampoline.cpp
+  transform_frame_plan.cpp
   transform_alter.cpp
   transform_analyze.cpp
   transform_attach.cpp

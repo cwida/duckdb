@@ -1,0 +1,22 @@
+# name: test/optimizer/struct_cast_can_throw_reordering.test
+# description: Filter reordering treats name-paired non-throwing STRUCT casts as such
+# group: [optimizer]
+
+statement ok
+CREATE TABLE structs(g VARCHAR, s STRUCT(a INTEGER, b TINYINT));
+
+statement ok
+INSERT INTO structs VALUES ('keep', {'a': 1, 'b': 1});
+
+# every name-matched field cast widens, so the cast cannot throw:
+# the heuristics reorder the cheap cast comparison before the LIKE
+query II
+EXPLAIN SELECT g FROM structs WHERE g LIKE 'ke%' OR CAST(s AS STRUCT(b SMALLINT, a BIGINT)) = {'b': 1, 'a': 1}::STRUCT(b SMALLINT, a BIGINT)
+----
+physical_plan	<REGEX>:.*CAST\(s AS STRUCT\(b SMALLINT, a BIGINT\)\).*OR prefix.*
+
+# the name-matched cast a -> SMALLINT can throw: the disjunction keeps its original order
+query II
+EXPLAIN SELECT g FROM structs WHERE g LIKE 'ke%' OR CAST(s AS STRUCT(b BIGINT, a SMALLINT)) = {'b': 1, 'a': 1}::STRUCT(b BIGINT, a SMALLINT)
+----
+physical_plan	<REGEX>:.*prefix.*OR .*CAST\(s AS STRUCT\(b BIGINT, a SMALLINT\)\).*

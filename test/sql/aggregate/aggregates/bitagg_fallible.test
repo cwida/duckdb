@@ -1,0 +1,44 @@
+# name: test/sql/aggregate/aggregates/bitagg_fallible.test
+# description: BIT overloads of bit_and/bit_or/bit_xor validate lengths and must be registered as fallible
+# group: [aggregates]
+
+# mismatched bit string lengths raise as regular errors
+
+statement error
+SELECT bit_and(v) FROM (VALUES ('1'::BIT), ('10'::BIT)) t(v);
+----
+Cannot AND bit strings of different sizes
+
+statement error
+SELECT bit_or(v) FROM (VALUES ('1'::BIT), ('10'::BIT)) t(v);
+----
+Cannot OR bit strings of different sizes
+
+statement error
+SELECT bit_xor(v) FROM (VALUES ('1'::BIT), ('10'::BIT)) t(v);
+----
+Cannot XOR bit strings of different sizes
+
+# the EXPLAIN (SQL) pivot default export fixtures live in fallible_pivot_default_export.test,
+# which is excluded from the aggregate state export verification config
+
+# the scalarized window form keeps working under dictionary vector verification
+
+statement ok
+SET debug_verify_vector='dictionary_expression';
+
+query I rowsort
+SELECT bit_xor(v) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW) FROM (VALUES ('10'::BIT), ('01'::BIT)) t(v);
+----
+01
+10
+
+statement ok
+RESET debug_verify_vector;
+
+# matching lengths keep working
+
+query III
+SELECT bit_and(v), bit_or(v), bit_xor(v) FROM (VALUES ('10'::BIT), ('11'::BIT)) t(v);
+----
+10	11	01

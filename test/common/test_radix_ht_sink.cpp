@@ -80,19 +80,26 @@ public:
 		radix->Combine(context, *global, *locals[index]);
 	}
 
-	idx_t ScanGroupCount() {
+	idx_t ScanGroupCount(optional_ptr<const Value> expected_aggregate = nullptr) {
 		radix->Finalize(*con.context, *global);
 		radix->MaxThreads(*global);
 		auto source = radix->GetGlobalSourceState(*con.context);
 		auto local_source = radix->GetLocalSourceState(context);
 		OperatorSourceInput input {*source, *local_source, interrupt};
 		DataChunk output;
-		output.Initialize(Allocator::Get(*con.context), chunk.GetTypes());
+		auto types = chunk.GetTypes();
+		types.insert(types.end(), op.aggregate_return_types.begin(), op.aggregate_return_types.end());
+		output.Initialize(Allocator::Get(*con.context), types);
 		idx_t count = 0;
 		while (true) {
 			output.Reset();
 			const auto result = radix->GetData(context, output, *global, input);
 			REQUIRE(result != SourceResultType::BLOCKED);
+			if (expected_aggregate) {
+				for (idx_t row = 0; row < output.size(); row++) {
+					REQUIRE(output.GetValue(1, row) == *expected_aggregate);
+				}
+			}
 			count += output.size();
 			if (result == SourceResultType::FINISHED) {
 				return count;
@@ -182,6 +189,77 @@ TEST_CASE("Increasing the reservation preserves an underfull aggregate table", "
 	REQUIRE(global.GetThreadLimit() > old_limit);
 	REQUIRE(local.ht->Count() == old_count + STANDARD_VECTOR_SIZE);
 	REQUIRE_FALSE(local.spilling);
+}
+
+TEST_CASE("Arena pressure requests enough reservation to keep aggregate states resident", "[radix_ht_sink]") {
+	for (const bool combine_other_worker : {false, true}) {
+		CAPTURE(combine_other_worker);
+		RadixSinkFixture fixture("1GB", true);
+		fixture.Keys(0, STANDARD_VECTOR_SIZE);
+		fixture.Sink();
+		if (combine_other_worker) {
+			fixture.Sink(1);
+			fixture.Combine(1);
+		}
+		auto &local = fixture.Local();
+		auto &global = fixture.Global();
+		auto &ht = *local.ht;
+		const Value payload(string(8 * 1024 * 1024 / STANDARD_VECTOR_SIZE, 'p'));
+		fixture.SetPayload(payload);
+		// Grow real states on hits, stopping before the sink makes its pressure decision.
+		ht.AddChunk(fixture.chunk, fixture.payload, fixture.filter);
+		const auto total_size = ht.GetSizeInBytes();
+		const auto arena_size = ht.GetAggregateAllocator()->AllocationSize();
+		REQUIRE(arena_size * 5 > total_size * 4);
+		REQUIRE(ht.Count() + STANDARD_VECTOR_SIZE < ht.ResizeThreshold());
+		global.temporary_memory_state->SetRemainingSizeAndUpdateReservation(
+		    *fixture.con.context, 3 * global.number_of_threads * total_size / 2);
+		const auto old_limit = global.GetThreadLimit();
+		REQUIRE(total_size <= old_limit);
+		REQUIRE(global.StatePressureExceeded(ht));
+
+		fixture.SetPayload(Value(LogicalType::VARCHAR));
+		fixture.Sink();
+		REQUIRE(global.GetThreadLimit() > old_limit);
+		REQUIRE_FALSE(global.StatePressureExceeded(ht));
+		REQUIRE_FALSE(global.external);
+		REQUIRE_FALSE(local.spilling);
+		REQUIRE(local.abandoned_exported_data.empty());
+		REQUIRE(ht.Count() == STANDARD_VECTOR_SIZE);
+		REQUIRE(ht.GetAdaptivityState().HLLEnabled());
+		fixture.Combine(0);
+		REQUIRE(fixture.ScanGroupCount(payload) == STANDARD_VECTOR_SIZE);
+	}
+}
+
+TEST_CASE("Arena pressure still exports when the reservation cannot grow enough", "[radix_ht_sink]") {
+	for (const bool force_external : {false, true}) {
+		CAPTURE(force_external);
+		RadixSinkFixture fixture("64MB", true);
+		if (force_external) {
+			REQUIRE_NO_FAIL(fixture.con.Query("SET debug_force_external=true"));
+		}
+		fixture.Keys(0, STANDARD_VECTOR_SIZE);
+		fixture.Sink();
+		auto &local = fixture.Local();
+		auto &global = fixture.Global();
+		auto &ht = *local.ht;
+		const Value payload(string(8 * 1024 * 1024 / STANDARD_VECTOR_SIZE, 'p'));
+		fixture.SetPayload(payload);
+		ht.AddChunk(fixture.chunk, fixture.payload, fixture.filter);
+		REQUIRE(ht.Count() + STANDARD_VECTOR_SIZE < ht.ResizeThreshold());
+		REQUIRE(global.StatePressureExceeded(ht));
+
+		fixture.SetPayload(Value(LogicalType::VARCHAR));
+		fixture.Sink();
+		REQUIRE(global.temporary_memory_state->GetReservation() < global.temporary_memory_state->GetRemainingSize());
+		REQUIRE(global.external);
+		REQUIRE(local.spilling);
+		REQUIRE_FALSE(local.abandoned_exported_data.empty());
+		REQUIRE(ht.GetAggregateAllocator()->AllocationSize() == 0);
+		fixture.Combine(0);
+		REQUIRE(fixture.ScanGroupCount(payload) == STANDARD_VECTOR_SIZE);
+	}
 }
 
 TEST_CASE("A reduced reservation does not prevent external aggregation", "[radix_ht_sink]") {

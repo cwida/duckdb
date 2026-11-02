@@ -24,8 +24,11 @@
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
 #include "duckdb/storage/statistics/base_statistics.hpp"
+#include "duckdb/storage/statistics/node_statistics.hpp"
+#include "duckdb/storage/statistics/numeric_stats.hpp"
 #include "duckdb/storage/statistics/string_stats.hpp"
 #include "duckdb/storage/storage_index.hpp"
+#include "duckdb/common/types/hugeint.hpp"
 
 namespace duckdb {
 
@@ -169,6 +172,142 @@ bool GroupingSetCanIntroduceNull(const LogicalAggregate &aggr, idx_t group_idx) 
 		}
 	}
 	return false;
+}
+
+template <class T>
+hugeint_t GroupKeyRangeHugeint(const BaseStatistics &nstats) {
+	return Hugeint::Convert(NumericStats::GetMax<T>(nstats)) - Hugeint::Convert(NumericStats::GetMin<T>(nstats));
+}
+
+// Upper bound on the number of distinct values a single group key can take on.
+//
+// This lifts the group-key domain bound that the physical planner already derives in
+// CanUsePerfectHashAggregate (src/execution/physical_plan/plan_aggregate.cpp) up into the logical
+// cardinality estimate, which otherwise ignores it. Two sources, in order of preference:
+//   1. min/max statistics for integer and temporal keys: the key takes at most (max - min + 1) values;
+//   2. the finite domain of a few narrow types when there are no usable statistics (BOOLEAN, 1- and
+//      2-byte integers, ENUM - whose dictionary size is an exact bound on its non-NULL values).
+// A NULL value forms its own group, so one extra slot is added. Returns false when no finite bound can
+// be derived (e.g. a wide integer key without statistics, or a VARCHAR key) - the caller then leaves
+// the estimate untouched. Note: CHAR(n) is normalized to width-less VARCHAR in DuckDB, so fixed-width
+// character keys produce no bound here.
+bool TryGetGroupKeyDistinctUpperBound(const Expression &group, optional_ptr<BaseStatistics> stats, hugeint_t &result) {
+	const auto &type = group.GetReturnType();
+
+	// 1) min/max range for integer and temporal keys
+	if (stats && (type.IsIntegral() || type.IsTemporal()) && stats->GetStatsType() == StatisticsType::NUMERIC_STATS &&
+	    NumericStats::HasMinMax(*stats)) {
+		bool have_range = true;
+		hugeint_t range;
+		switch (type.InternalType()) {
+		case PhysicalType::INT8:
+			range = GroupKeyRangeHugeint<int8_t>(*stats);
+			break;
+		case PhysicalType::INT16:
+			range = GroupKeyRangeHugeint<int16_t>(*stats);
+			break;
+		case PhysicalType::INT32:
+			range = GroupKeyRangeHugeint<int32_t>(*stats);
+			break;
+		case PhysicalType::INT64:
+			range = GroupKeyRangeHugeint<int64_t>(*stats);
+			break;
+		case PhysicalType::UINT8:
+			range = GroupKeyRangeHugeint<uint8_t>(*stats);
+			break;
+		case PhysicalType::UINT16:
+			range = GroupKeyRangeHugeint<uint16_t>(*stats);
+			break;
+		case PhysicalType::UINT32:
+			range = GroupKeyRangeHugeint<uint32_t>(*stats);
+			break;
+		case PhysicalType::UINT64:
+			range = GroupKeyRangeHugeint<uint64_t>(*stats);
+			break;
+		default:
+			// e.g. HUGEINT (INT128) - too wide to be a useful bound
+			have_range = false;
+			break;
+		}
+		if (have_range) {
+			result = range + 1; // the range is inclusive of both endpoints
+			if (stats->CanHaveNull()) {
+				result += 1; // NULL forms its own group
+			}
+			return true;
+		}
+	}
+
+	// 2) finite type domain for narrow types (no statistics required); the conservative +1 covers a NULL group
+	switch (type.id()) {
+	case LogicalTypeId::BOOLEAN:
+		result = 2 + 1;
+		return true;
+	case LogicalTypeId::TINYINT:
+	case LogicalTypeId::UTINYINT:
+		result = 256 + 1;
+		return true;
+	case LogicalTypeId::SMALLINT:
+	case LogicalTypeId::USMALLINT:
+		result = 65536 + 1;
+		return true;
+	case LogicalTypeId::ENUM:
+		result = hugeint_t(NumericCast<int64_t>(EnumType::GetSize(type))) + 1;
+		return true;
+	default:
+		return false;
+	}
+}
+
+// Tighten a plain GROUP BY's estimated cardinality using an upper bound on the number of distinct
+// group-key combinations: the saturating product over the group keys of each key's distinct-value
+// upper bound (see TryGetGroupKeyDistinctUpperBound). The estimate is only ever lowered - we take the
+// min of the bound, the existing estimate and the input's maximum cardinality when that is known.
+void CapGroupedAggregateCardinalityByKeyDomain(LogicalAggregate &aggr, optional_ptr<NodeStatistics> input_stats) {
+	if (aggr.groups.empty()) {
+		return; // ungrouped aggregate: handled separately (always one row)
+	}
+	if (aggr.grouping_sets.size() > 1) {
+		// multiple grouping sets emit a key combination per set - the simple product bound does not apply
+		return;
+	}
+	if (aggr.group_stats.size() != aggr.groups.size()) {
+		return;
+	}
+
+	// saturate the product at the maximum idx_t so it can never overflow or raise the estimate.
+	// NB: hugeint_t's implicit constructor takes int64_t, so build UINT64_MAX via the {upper, lower} form -
+	// passing the uint64 value directly would wrap to -1.
+	const hugeint_t ceiling(0, NumericLimits<idx_t>::Maximum());
+	hugeint_t domain_bound = 1;
+	for (idx_t group_idx = 0; group_idx < aggr.groups.size(); group_idx++) {
+		hugeint_t key_bound;
+		if (!TryGetGroupKeyDistinctUpperBound(*aggr.groups[group_idx], aggr.group_stats[group_idx].get(), key_bound)) {
+			// one key with an unbounded domain makes the whole product unbounded: no useful cap
+			return;
+		}
+		if (key_bound > ceiling) {
+			key_bound = ceiling;
+		}
+		if (!Hugeint::TryMultiply(domain_bound, key_bound, domain_bound) || domain_bound > ceiling) {
+			domain_bound = ceiling;
+		}
+	}
+
+	idx_t bound;
+	if (!Hugeint::TryCast<idx_t>(domain_bound, bound)) {
+		return;
+	}
+	// the result of an aggregate can never have more rows than its input: clamp with the input's maximum
+	// cardinality, not its estimate - an estimate is not an upper bound (a cross product is estimated as the
+	// larger of its inputs, not their product)
+	if (input_stats && input_stats->has_max_cardinality) {
+		bound = MinValue<idx_t>(bound, input_stats->max_cardinality);
+	}
+	// only ever tighten the estimate
+	if (!aggr.has_estimated_cardinality || bound < aggr.estimated_cardinality) {
+		aggr.SetEstimatedCardinality(bound);
+	}
 }
 
 } // namespace
@@ -553,6 +692,12 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalAggr
 	}
 	// the max cardinality of an aggregate is the max cardinality of the input (i.e. when every row is a unique
 	// group)
+	// The join-order optimizer bounds a group key's distinct count by its table's min/max only for keys that are
+	// a direct base-table column reference; a key that is an expression or arrives through another operator falls
+	// back to an input-proportional guess. Now that the propagated group statistics are available, tighten the
+	// estimate by an upper bound on the number of distinct group-key combinations - the same group-key domain the
+	// physical perfect-hash-aggregate path derives from min/max and type.
+	CapGroupedAggregateCardinalityByKeyDomain(aggr, node_stats.get());
 	return std::move(node_stats);
 }
 

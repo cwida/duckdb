@@ -1476,7 +1476,7 @@ void TupleDataSortKeyGather(const TupleDataLayout &layout, Vector &row_locations
                             const SelectionVector &scan_sel, const idx_t scan_count, Vector &target,
                             const SelectionVector &target_sel, optional_ptr<Vector>,
                             const vector<TupleDataGatherFunction> &) {
-	throw NotImplementedException("Unimplemented type for TupleDataSortKeyGather");
+	NotImplementedException::Throw("Unimplemented type for TupleDataSortKeyGather");
 }
 
 static void TupleDataStructGather(const TupleDataLayout &layout, Vector &row_locations, const idx_t col_idx,

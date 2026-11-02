@@ -31,6 +31,9 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
 #include "column_reader.hpp"
+#include "parquet_page_index.hpp"
+#include "duckdb/common/allocator.hpp"
+#include "duckdb/common/mutex.hpp"
 #include "parquet_prefetch_cost_model.hpp"
 #include "parquet_file_metadata_cache.hpp"
 #include "parquet_rle_bp_decoder.hpp"
@@ -106,9 +109,11 @@ struct ParquetReaderPrefetchConfig {
 
 enum class ParquetPrefetchStrategy : uint8_t {
 	NONE,
-	WHOLE_GROUP,      //! Prefetches the whole group
-	PREFETCH_FILTERS, //! Used when we have fully selective filters, so they are prefetched earlier
-	COLUMN_WISE_EAGER //! Used when we have projections and optional only filters
+	WHOLE_GROUP,             //! Prefetches the whole group
+	PREFETCH_FILTERS,        //! Used when we have fully selective filters, so they are prefetched earlier
+	COLUMN_WISE_EAGER,       //! Used when we have projections and optional only filters
+	PREFETCH_FILTERS_PAGES,  //! PREFETCH_FILTERS, reading only the pages the page index keeps
+	COLUMN_WISE_EAGER_PAGES, //! COLUMN_WISE_EAGER, reading only the pages the page index keeps
 };
 
 const char *ParquetPrefetchStrategyToString(ParquetPrefetchStrategy strategy);
@@ -251,6 +256,15 @@ public:
 	vector<ParquetScanFilter> scan_filters;
 	//! true once the filter at this index has driven the surviving row count to zero
 	vector<bool> filter_eliminated_all_rows;
+
+	//! Whether the page index (ColumnIndex / OffsetIndex) is used to skip pages, see parquet_use_page_index
+	bool use_page_index = true;
+	//! The page index of the current row group, filled when it rules out pages
+	ParquetRowGroupPageIndex page_index;
+	//! Whether page_index.row_ranges restricts the rows the scan reads from the current row group
+	bool page_index_active = false;
+	//! The entry of page_index.row_ranges the scan is at
+	idx_t page_index_range_idx = 0;
 
 	//! (optional) pointer to the PhysicalOperator for logging
 	optional_ptr<const PhysicalOperator> op;
@@ -483,6 +497,16 @@ private:
 	                                                    ColumnReader &column_reader, const TableFilter &filter);
 	bool DynamicFiltersExcludeRowGroup(ClientContext &context, ParquetReaderScanState &state);
 	void PrepareRowGroupBuffer(ClientContext &context, ParquetReaderScanState &state, idx_t out_col_idx);
+	//! Reads the page index of the row group and works out which rows may match the filters; a page index that
+	//! cannot be read or evaluated is ignored
+	void PreparePageIndex(ClientContext &context, ParquetReaderScanState &state);
+	void PreparePageIndexInternal(ClientContext &context, ParquetReaderScanState &state);
+	//! Serves the page index of the whole file from one buffer that is read once per reader and shared by every row
+	//! group and thread, when the index fits the transport's accepted column gap; returns false when it does not
+	bool TryAttachPageIndexBuffer(ThriftFileTransport &transport) const;
+	//! Moves the scan to the next rows of the row group that may match according to the page index, skipping the
+	//! rows in between in every column reader; returns the number of rows to scan next (0 if none are left)
+	idx_t SkipToPageIndexRows(ParquetReaderScanState &state);
 	//! Whole-group prefetch strategy.
 	ParquetPrefetchStrategy WholeGroupPrefetch(ParquetReaderScanState &state, ThriftFileTransport &trans,
 	                                           const duckdb_parquet::RowGroup &group, uint64_t total_row_group_span,
@@ -528,6 +552,14 @@ private:
 private:
 	unique_ptr<CachingFileHandle> file_handle;
 	mutable OnceFlag scan_handle_initialized;
+	//! The byte range of the file that holds the page indexes of every row group (0 if there is none), computed once
+	mutable OnceFlag page_index_span_computed;
+	mutable idx_t page_index_span_begin = 0;
+	mutable idx_t page_index_span_end = 0;
+	//! The bytes of that range, read once and shared by every scan state of this reader
+	mutable mutex page_index_buffer_lock;
+	mutable AllocatedData page_index_buffer;
+	mutable bool page_index_buffer_loaded = false;
 	//! Scan handle shared by all scan states of this reader
 	mutable shared_ptr<CachingFileHandle> shared_scan_handle;
 	mutable annotated_mutex variant_stats_lock;

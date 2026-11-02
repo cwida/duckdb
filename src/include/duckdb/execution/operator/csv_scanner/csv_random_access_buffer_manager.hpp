@@ -26,6 +26,11 @@ public:
 	void ResetBufferManager() override;
 
 private:
+	//! Creates the buffer at `pos`, counting its stored bytes the first time - a buffer released and read again is
+	//! not counted again
+	shared_ptr<CSVBuffer> CreateBuffer(idx_t pos);
+	//! The buffers created at least once
+	vector<bool> created;
 	//! Sizes the buffer table and eagerly materializes the first buffer (sniffing and newline detection
 	//! always read it)
 	void Initialize();

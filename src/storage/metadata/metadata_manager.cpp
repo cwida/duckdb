@@ -437,6 +437,20 @@ void MetadataManager::ClearModifiedBlocks(const vector<MetaBlockPointer> &pointe
 	if (pointers.empty()) {
 		return;
 	}
+	vector<MetaBlockPointer> next_pointers;
+	if (keep_next_blocks) {
+		// several pointers can be in one block, whose header is read once
+		unordered_set<idx_t> kept_blocks;
+		for (auto &pointer : pointers) {
+			if (!kept_blocks.insert(pointer.block_pointer).second) {
+				continue;
+			}
+			auto next_block = GetNextBlock(pointer);
+			if (next_block.IsValid()) {
+				next_pointers.push_back(next_block);
+			}
+		}
+	}
 	unique_lock<mutex> guard(block_lock);
 	for (auto &pointer : pointers) {
 		auto block_id = pointer.GetBlockId();
@@ -449,6 +463,24 @@ void MetadataManager::ClearModifiedBlocks(const vector<MetaBlockPointer> &pointe
 		// unset the bit
 		modified_list &= ~(1ULL << block_index);
 	}
+	for (auto &pointer : next_pointers) {
+		// the next block was in use before this checkpoint, otherwise it is left as it is
+		auto entry = modified_blocks.find(pointer.GetBlockId());
+		if (entry != modified_blocks.end()) {
+			entry->second &= ~(1ULL << pointer.GetBlockIndex());
+		}
+	}
+}
+
+void MetadataManager::SetStorageVersion(StorageVersion storage_version) {
+	keep_next_blocks = storage_version < StorageVersion::V1_5_0;
+}
+
+MetaBlockPointer MetadataManager::GetNextBlock(MetaBlockPointer pointer) {
+	auto metadata_pointer = FromDiskPointer(pointer);
+	auto handle = Pin(metadata_pointer);
+	auto next_block = Load<idx_t>(handle.handle.Ptr() + metadata_pointer.index * GetMetadataBlockSize());
+	return MetaBlockPointer(next_block, 0);
 }
 
 bool MetadataManager::BlockIsModified(const MetaBlockPointer &pointer) {

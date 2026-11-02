@@ -60,6 +60,31 @@ unique_ptr<LogicalOperator> InClauseRewriter::Rewrite(unique_ptr<LogicalOperator
 	return op;
 }
 
+void InClauseRewriter::VisitExpression(unique_ptr<Expression> *expression) {
+	auto &expr = **expression;
+	const auto expression_type = expr.GetExpressionType();
+	if (expression_type == ExpressionType::OPERATOR_TRY || expression_type == ExpressionType::OPERATOR_HAS_ERROR) {
+		// an IN below an error capture must stay an expression, the mark join would raise outside the capture
+		return;
+	}
+	// in conjunctions, CASE, and COALESCE only the first child evaluates unconditionally, the mark
+	// join would evaluate a guarded arm's probe for every row (the Select paths run later children
+	// on a remaining-row selection, so untaken arms never raise)
+	if (expr.GetExpressionClass() == ExpressionClass::BOUND_CONJUNCTION ||
+	    expr.GetExpressionClass() == ExpressionClass::BOUND_CASE ||
+	    expression_type == ExpressionType::OPERATOR_COALESCE) {
+		bool first = true;
+		ExpressionIterator::EnumerateChildren(expr, [&](unique_ptr<Expression> &child) {
+			if (first) {
+				VisitExpression(&child);
+			}
+			first = false;
+		});
+		return;
+	}
+	LogicalOperatorVisitor::VisitExpression(expression);
+}
+
 unique_ptr<Expression> InClauseRewriter::VisitReplace(BoundOperatorExpression &expr, unique_ptr<Expression> *expr_ptr) {
 	if (expr.GetExpressionType() != ExpressionType::COMPARE_IN &&
 	    expr.GetExpressionType() != ExpressionType::COMPARE_NOT_IN) {

@@ -119,6 +119,19 @@ void ColumnWriterStatistics::WriteGeoStats(duckdb_parquet::GeospatialStatistics 
 	D_ASSERT(false); // this should never be called
 }
 
+void ColumnWriterStatistics::Merge(const ColumnWriterStatistics &other) {
+	// an accumulator that tracks statistics must fold them in, or the column chunk statistics would be lost
+	D_ASSERT(!HasStats());
+}
+
+int ColumnWriterStatistics::CompareMin(const ColumnWriterStatistics &other) const {
+	return 0;
+}
+
+int ColumnWriterStatistics::CompareMax(const ColumnWriterStatistics &other) const {
+	return 0;
+}
+
 //===--------------------------------------------------------------------===//
 // ColumnWriter
 //===--------------------------------------------------------------------===//

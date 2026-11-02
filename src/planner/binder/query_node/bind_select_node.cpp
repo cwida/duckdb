@@ -689,7 +689,13 @@ BoundStatement Binder::BindSelectNode(SelectNode &statement, BoundStatement from
 		bool is_window = statement.select_list[i]->IsWindow();
 		idx_t unnest_count = result.unnests.SelectList().size();
 		LogicalType result_type;
+		// the select item of a TRY subquery transports the error flags of nested scalar subqueries to
+		// the TRY lowering of this node; GROUP BY ALL may move the item into the group expressions,
+		// where the flag would have no consumer, so such items bind as plain subqueries
+		select_binder.SetTransportTryErrors(i == 0 && IsBindingTrySubquery() &&
+		                                    statement.aggregate_handling != AggregateHandling::FORCE_AGGREGATES);
 		auto expr = select_binder.Bind(statement.select_list[i], &result_type, true);
+		select_binder.SetTransportTryErrors(false);
 		bool is_original_column = i < result.column_count;
 		bool can_group_by_all =
 		    statement.aggregate_handling == AggregateHandling::FORCE_AGGREGATES && is_original_column;

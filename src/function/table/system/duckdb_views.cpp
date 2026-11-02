@@ -61,18 +61,14 @@ static unique_ptr<FunctionData> DuckDBViewsBind(ClientContext &context, TableFun
 	names.emplace_back("is_bound");
 	return_types.emplace_back(LogicalType::BOOLEAN);
 
-	return SystemCatalogScanner::CreateBindData(names);
+	return SystemCatalogScanner::CreateBindData(names, return_types, "view_name", "view_oid");
 }
 
 unique_ptr<GlobalTableFunctionState> DuckDBViewsInit(ClientContext &context, TableFunctionInitInput &input) {
 	auto result = make_uniq<DuckDBViewsData>();
 
-	// scan the surviving schemas for views and collect them
-	auto schemas = SystemCatalogScanner::GetSchemas(context, input, result->stats);
-	for (auto &schema : schemas) {
-		schema.get().Scan(context, CatalogType::VIEW_ENTRY,
-		                  [&](CatalogEntry &entry) { result->entries.push_back(entry); });
-	};
+	// collect the views that survive the pushed-down filters
+	result->entries = SystemCatalogScanner::GetEntries(context, input, CatalogType::VIEW_ENTRY, result->stats);
 	result->column_ids = input.column_indexes;
 	return std::move(result);
 }

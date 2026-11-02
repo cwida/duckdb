@@ -287,7 +287,7 @@ bool JSONScan::ParseOption(ClientContext &context, const Identifier &key, const 
 	}
 	if (key == "dateformat" || key == "date_format") {
 		auto format_string = StringValue::Get(value);
-		if (StringUtil::Lower(format_string) == "iso") {
+		if (StringUtil::CIEquals(format_string, "iso")) {
 			format_string = "%Y-%m-%d";
 		}
 		options.date_format = format_string;
@@ -301,7 +301,7 @@ bool JSONScan::ParseOption(ClientContext &context, const Identifier &key, const 
 	}
 	if (key == "timestampformat" || key == "timestamp_format") {
 		auto format_string = StringValue::Get(value);
-		if (StringUtil::Lower(format_string) == "iso") {
+		if (StringUtil::CIEquals(format_string, "iso")) {
 			format_string = "%Y-%m-%dT%H:%M:%S.%fZ";
 		}
 		options.timestamp_format = format_string;

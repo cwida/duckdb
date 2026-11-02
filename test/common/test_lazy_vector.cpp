@@ -1,4 +1,5 @@
 #include "catch.hpp"
+#include "duckdb/common/atomic.hpp"
 #include "duckdb/common/serializer/binary_deserializer.hpp"
 #include "duckdb/common/serializer/binary_serializer.hpp"
 #include "duckdb/common/serializer/memory_stream.hpp"
@@ -25,9 +26,9 @@ using namespace duckdb; // NOLINT
 
 namespace {
 struct LazyAllocationState : PrivateAllocatorData {
-	idx_t allocations = 0;
-	idx_t live_bytes = 0;
-	bool fail = false;
+	atomic<idx_t> allocations {0};
+	atomic<idx_t> live_bytes {0};
+	atomic<bool> fail {false};
 
 	static data_ptr_t Allocate(PrivateAllocatorData *data, idx_t size) {
 		auto &state = data->Cast<LazyAllocationState>();
@@ -298,7 +299,7 @@ TEST_CASE("Nested payloads remain lazy through empty reads and recover from allo
 	auto value = Value::LIST(structure.type(), {structure, Value(structure.type())});
 	for (idx_t capacity : {idx_t(0), idx_t(2)}) {
 		DataChunk chunk;
-		auto initial_allocations = allocations.allocations;
+		auto initial_allocations = allocations.allocations.load();
 		chunk.Initialize(allocator, {value.type()}, capacity);
 		auto &column = chunk.data[0];
 		RequireLazyNestedStorage(column, allocator, capacity);
@@ -346,7 +347,7 @@ TEST_CASE("Recursive reset releases nested dictionary inputs", "[lazy_vector]") 
 		                                                           : column;
 		auto &elements = ListVector::GetChildMutable(lists);
 		auto capacity = FlatVector::GetCapacity(elements);
-		auto before = allocations.allocations;
+		auto before = allocations.allocations.load();
 		elements.Slice(ListVector::GetChild(input), sel, 2);
 		lists.Slice(input, sel, 2);
 		for (idx_t iteration = 0; iteration < 3; iteration++) {
@@ -446,7 +447,7 @@ TEST_CASE("Nested reset buffers support list mutations and preserve grown capaci
 	ListVector::Reserve(children, 12);
 	auto capacity = ListVector::GetListCapacity(lists);
 	auto child_capacity = ListVector::GetListCapacity(children);
-	auto before = allocations.allocations;
+	auto before = allocations.allocations.load();
 	for (idx_t iteration = 0; iteration < 2; iteration++) {
 		chunk.Reset();
 		REQUIRE(chunk.GetCapacity() == 2);
@@ -474,7 +475,7 @@ TEST_CASE("Reset retains grown STRUCT, ARRAY and LIST storage", "[lazy_vector]")
 	auto &column = chunk.data[0];
 	column.Append(value, VectorAppendMode::ALLOW_RESIZE);
 	column.Reserve(8);
-	auto before = allocations.allocations;
+	auto before = allocations.allocations.load();
 	for (idx_t iteration = 0; iteration < 3; iteration++) {
 		chunk.Reset();
 		REQUIRE(chunk.GetCapacity() == 0);
@@ -591,7 +592,7 @@ TEST_CASE("Cached buffers retain the destination allocator and survive chunk des
 		chunk.Initialize(allocator, {value.type()}, 16);
 		Vector input(value, count_t(1));
 		input.Flatten();
-		auto before = allocations.allocations;
+		auto before = allocations.allocations.load();
 		chunk.data[0].Slice(input, sel, 1);
 		chunk.Reset();
 		REQUIRE(allocations.allocations == before);

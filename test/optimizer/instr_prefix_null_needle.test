@@ -1,0 +1,35 @@
+# name: test/optimizer/instr_prefix_null_needle.test
+# description: instr(x, needle) = 1 with a needle that folds to NULL is not rewritten to prefix (duckdblabs/bot-issue-tracker#695)
+# group: [optimizer]
+
+query I
+SELECT instr(x, CASE WHEN true THEN NULL ELSE x END) = 1 FROM (VALUES ('a'), ('b'), (NULL)) t(x);
+----
+NULL
+NULL
+NULL
+
+query I
+SELECT instr(x, CASE WHEN true THEN NULL ELSE x END) <> 1 FROM (VALUES ('a')) t(x);
+----
+NULL
+
+statement ok
+CREATE TABLE s AS SELECT 'abc' AS x UNION ALL SELECT 'xyz';
+
+query I
+SELECT count(*) FROM s WHERE instr(x, CASE WHEN true THEN NULL ELSE 'a' END) = 1;
+----
+0
+
+# a needle that is not NULL is still rewritten to prefix
+query II
+EXPLAIN SELECT instr(x, 'ab') = 1 FROM s;
+----
+physical_plan	<REGEX>:.*prefix.*
+
+query I
+SELECT instr(x, 'ab') = 1 FROM s ORDER BY x;
+----
+true
+false

@@ -13,6 +13,7 @@
     {
       "reason": "Synthetic verification projections intentionally hide the direct recursive-state scan.",
       "paths": [
+        "test/sql/cte/recursive_cte_key_finalize_owned_state.test",
         "test/sql/cte/recursive_cte_key_probe.test",
         "test/sql/cte/recursive_cte_key_union_plan.test",
         "test/sql/cte/recursive_cte_logging.test",

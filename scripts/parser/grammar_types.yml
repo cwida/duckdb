@@ -1271,6 +1271,7 @@ LogicalType:
   by_value: false
   rules:
     - Type
+    - ReturnsType
 
 LogicalTypeList:
   type: "vector<LogicalType>"
