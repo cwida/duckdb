@@ -429,3 +429,46 @@ SELECT o.k, q.n FROM (VALUES (1), (2)) o(k), LATERAL (
 ) q;
 ----
 <REGEX>:Not implemented Error.*derive from its current wave.*
+
+# The non-key recurring collection starts empty for every nested invocation: a
+# second wave or domain must not replay the previous invocation's rows.
+statement ok
+SET max_execution_time=5000;
+
+query II
+SELECT o.k, q.n
+FROM (VALUES (1), (2)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.k)
+		BRANCH 1 DISTINCT: (
+			WITH RECURSIVE r(n) AS MATERIALIZED (
+				SELECT n FROM t
+				UNION
+				SELECT n FROM recurring.r
+			)
+			SELECT CASE WHEN n = 2 THEN 1 ELSE 0 END, n + 1
+			FROM r
+		)
+	)
+	SELECT n FROM t
+) q
+ORDER BY o.k, q.n;
+----
+1	2
+2	4
+
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(SELECT 1, 1)
+	BRANCH 1: (
+		WITH RECURSIVE r(m) AS MATERIALIZED (
+			SELECT n FROM t UNION SELECT m FROM recurring.r
+		)
+		SELECT CASE WHEN m < 3 THEN 1 ELSE 0 END, m + 1 FROM r
+	)
+) SELECT n FROM t ORDER BY n;
+----
+4
+
+statement ok
+RESET max_execution_time;
