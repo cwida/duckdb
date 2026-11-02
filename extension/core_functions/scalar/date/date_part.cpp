@@ -144,6 +144,18 @@ struct DatePart {
 		}
 	};
 
+	template <typename TA, typename TR = timestamp_t>
+	static inline TR Truncate(const TA &input) {
+		if (!input.IsFinite()) {
+			return TR(input.value);
+		}
+		const auto scaling = TA::PRECISION / TR::PRECISION;
+		TR result;
+		int64_t frac;
+		Timestamp::SplitTime(input.value, scaling, result.value, frac);
+		return result;
+	}
+
 	template <class T, class OP, class TR = int64_t>
 	static unique_ptr<BaseStatistics> PropagateDatePartStatistics(vector<BaseStatistics> &child_stats,
 	                                                              const LogicalType &stats_type = LogicalType::BIGINT) {
@@ -484,7 +496,7 @@ struct DatePart {
 	struct EpochMicrosecondsOperator {
 		template <class TA, class TR>
 		static inline TR Operation(TA input) {
-			return Timestamp::GetEpochMicroSeconds(input);
+			return Timestamp::GetEpochMicroSeconds(Truncate(input));
 		}
 
 		template <class T>
@@ -707,7 +719,7 @@ struct DatePart {
 	struct JulianDayOperator {
 		template <class TA, class TR>
 		static inline TR Operation(TA input) {
-			return Timestamp::GetJulianDay(input);
+			return Timestamp::GetJulianDay(Truncate(input));
 		}
 
 		template <class T>
@@ -912,6 +924,11 @@ int64_t DatePart::YearOperator::Operation(timestamp_t input) {
 }
 
 template <>
+int64_t DatePart::YearOperator::Operation(timestamp_ns_t input) {
+	return YearOperator::Operation<date_t, int64_t>(Timestamp::GetDateNS(input));
+}
+
+template <>
 int64_t DatePart::YearOperator::Operation(interval_t input) {
 	return input.months / Interval::MONTHS_PER_YEAR;
 }
@@ -937,6 +954,11 @@ int64_t DatePart::MonthOperator::Operation(timestamp_t input) {
 }
 
 template <>
+int64_t DatePart::MonthOperator::Operation(timestamp_ns_t input) {
+	return MonthOperator::Operation<date_t, int64_t>(Timestamp::GetDateNS(input));
+}
+
+template <>
 int64_t DatePart::MonthOperator::Operation(interval_t input) {
 	return input.months % Interval::MONTHS_PER_YEAR;
 }
@@ -959,6 +981,11 @@ int64_t DatePart::MonthOperator::Operation(dtime_tz_t input) {
 template <>
 int64_t DatePart::DayOperator::Operation(timestamp_t input) {
 	return DayOperator::Operation<date_t, int64_t>(Timestamp::GetDate(input));
+}
+
+template <>
+int64_t DatePart::DayOperator::Operation(timestamp_ns_t input) {
+	return DayOperator::Operation<date_t, int64_t>(Timestamp::GetDateNS(input));
 }
 
 template <>
@@ -1032,6 +1059,11 @@ int64_t DatePart::QuarterOperator::Operation(timestamp_t input) {
 }
 
 template <>
+int64_t DatePart::QuarterOperator::Operation(timestamp_ns_t input) {
+	return QuarterOperator::Operation<date_t, int64_t>(Timestamp::GetDateNS(input));
+}
+
+template <>
 int64_t DatePart::QuarterOperator::Operation(interval_t input) {
 	return MonthOperator::Operation<interval_t, int64_t>(input) / Interval::MONTHS_PER_QUARTER + 1;
 }
@@ -1054,6 +1086,11 @@ int64_t DatePart::QuarterOperator::Operation(dtime_tz_t input) {
 template <>
 int64_t DatePart::DayOfWeekOperator::Operation(timestamp_t input) {
 	return DayOfWeekOperator::Operation<date_t, int64_t>(Timestamp::GetDate(input));
+}
+
+template <>
+int64_t DatePart::DayOfWeekOperator::Operation(timestamp_ns_t input) {
+	return DayOfWeekOperator::Operation<date_t, int64_t>(Timestamp::GetDateNS(input));
 }
 
 template <>
@@ -1082,6 +1119,11 @@ int64_t DatePart::ISODayOfWeekOperator::Operation(timestamp_t input) {
 }
 
 template <>
+int64_t DatePart::ISODayOfWeekOperator::Operation(timestamp_ns_t input) {
+	return ISODayOfWeekOperator::Operation<date_t, int64_t>(Timestamp::GetDateNS(input));
+}
+
+template <>
 int64_t DatePart::ISODayOfWeekOperator::Operation(interval_t input) {
 	throw NotImplementedException("interval units \"isodow\" not recognized");
 }
@@ -1104,6 +1146,11 @@ int64_t DatePart::ISODayOfWeekOperator::Operation(dtime_tz_t input) {
 template <>
 int64_t DatePart::DayOfYearOperator::Operation(timestamp_t input) {
 	return DayOfYearOperator::Operation<date_t, int64_t>(Timestamp::GetDate(input));
+}
+
+template <>
+int64_t DatePart::DayOfYearOperator::Operation(timestamp_ns_t input) {
+	return DayOfYearOperator::Operation<date_t, int64_t>(Timestamp::GetDateNS(input));
 }
 
 template <>
@@ -1132,6 +1179,11 @@ int64_t DatePart::WeekOperator::Operation(timestamp_t input) {
 }
 
 template <>
+int64_t DatePart::WeekOperator::Operation(timestamp_ns_t input) {
+	return WeekOperator::Operation<date_t, int64_t>(Timestamp::GetDateNS(input));
+}
+
+template <>
 int64_t DatePart::WeekOperator::Operation(interval_t input) {
 	throw NotImplementedException("interval units \"week\" not recognized");
 }
@@ -1154,6 +1206,11 @@ int64_t DatePart::WeekOperator::Operation(dtime_tz_t input) {
 template <>
 int64_t DatePart::ISOYearOperator::Operation(timestamp_t input) {
 	return ISOYearOperator::Operation<date_t, int64_t>(Timestamp::GetDate(input));
+}
+
+template <>
+int64_t DatePart::ISOYearOperator::Operation(timestamp_ns_t input) {
+	return ISOYearOperator::Operation<date_t, int64_t>(Timestamp::GetDateNS(input));
 }
 
 template <>
@@ -1182,6 +1239,11 @@ int64_t DatePart::YearWeekOperator::Operation(timestamp_t input) {
 }
 
 template <>
+int64_t DatePart::YearWeekOperator::Operation(timestamp_ns_t input) {
+	return YearWeekOperator::Operation<date_t, int64_t>(Timestamp::GetDateNS(input));
+}
+
+template <>
 int64_t DatePart::YearWeekOperator::Operation(interval_t input) {
 	const auto yyyy = YearOperator::Operation<interval_t, int64_t>(input);
 	const auto ww = WeekOperator::Operation<interval_t, int64_t>(input);
@@ -1204,9 +1266,9 @@ int64_t DatePart::YearWeekOperator::Operation(dtime_tz_t input) {
 }
 
 template <>
-int64_t DatePart::EpochNanosecondsOperator::Operation(timestamp_t input) {
+int64_t DatePart::EpochNanosecondsOperator::Operation(timestamp_tz_ns_t input) {
 	D_ASSERT(input.IsFinite());
-	return Timestamp::GetEpochNanoSeconds(input);
+	return Timestamp::GetEpochNanoSeconds(timestamp_ns_t(input.value));
 }
 
 template <>
@@ -1314,6 +1376,11 @@ int64_t DatePart::MicrosecondsOperator::Operation(timestamp_t input) {
 }
 
 template <>
+int64_t DatePart::MicrosecondsOperator::Operation(timestamp_ns_t input) {
+	return Operation<timestamp_t, int64_t>(Truncate(input));
+}
+
+template <>
 int64_t DatePart::MicrosecondsOperator::Operation(interval_t input) {
 	// remove everything but the second & microsecond part
 	return input.micros % Interval::MICROS_PER_MINUTE;
@@ -1342,6 +1409,11 @@ int64_t DatePart::MillisecondsOperator::Operation(timestamp_t input) {
 }
 
 template <>
+int64_t DatePart::MillisecondsOperator::Operation(timestamp_ns_t input) {
+	return Operation<timestamp_t, int64_t>(Truncate(input));
+}
+
+template <>
 int64_t DatePart::MillisecondsOperator::Operation(interval_t input) {
 	return MicrosecondsOperator::Operation<interval_t, int64_t>(input) / Interval::MICROS_PER_MSEC;
 }
@@ -1365,6 +1437,11 @@ template <>
 int64_t DatePart::SecondsOperator::Operation(timestamp_t input) {
 	D_ASSERT(input.IsFinite());
 	return MicrosecondsOperator::Operation<timestamp_t, int64_t>(input) / Interval::MICROS_PER_SEC;
+}
+
+template <>
+int64_t DatePart::SecondsOperator::Operation(timestamp_ns_t input) {
+	return Operation<timestamp_t, int64_t>(Truncate(input));
 }
 
 template <>
@@ -1396,6 +1473,11 @@ int64_t DatePart::MinutesOperator::Operation(timestamp_t input) {
 }
 
 template <>
+int64_t DatePart::MinutesOperator::Operation(timestamp_ns_t input) {
+	return Operation<timestamp_t, int64_t>(Truncate(input));
+}
+
+template <>
 int64_t DatePart::MinutesOperator::Operation(interval_t input) {
 	// remove the hour part, and truncate to minutes
 	return (input.micros % Interval::MICROS_PER_HOUR) / Interval::MICROS_PER_MINUTE;
@@ -1421,6 +1503,11 @@ template <>
 int64_t DatePart::HoursOperator::Operation(timestamp_t input) {
 	D_ASSERT(input.IsFinite());
 	return Timestamp::GetTime(input).value / Interval::MICROS_PER_HOUR;
+}
+
+template <>
+int64_t DatePart::HoursOperator::Operation(timestamp_ns_t input) {
+	return Operation<timestamp_t, int64_t>(Truncate(input));
 }
 
 template <>
@@ -1451,6 +1538,11 @@ int64_t DatePart::DayParentOperator::Operation(date_t input) {
 template <>
 int64_t DatePart::DayParentOperator::Operation(timestamp_t input) {
 	return Timestamp::GetDate(input).days;
+}
+
+template <>
+int64_t DatePart::DayParentOperator::Operation(timestamp_ns_t input) {
+	return Timestamp::GetDateNS(input).days;
 }
 
 // a time-of-day value always lies within a single day
@@ -1493,6 +1585,11 @@ template <>
 double DatePart::EpochOperator::Operation(timestamp_t input) {
 	D_ASSERT(input.IsFinite());
 	return double(Timestamp::GetEpochMicroSeconds(input)) / double(Interval::MICROS_PER_SEC);
+}
+
+template <>
+double DatePart::EpochOperator::Operation(timestamp_ns_t input) {
+	return EpochOperator::Operation<timestamp_t, double>(Truncate(input));
 }
 
 template <>
@@ -1545,6 +1642,11 @@ template <>
 int64_t DatePart::EraOperator::Operation(timestamp_t input) {
 	D_ASSERT(input.IsFinite());
 	return EraOperator::Operation<date_t, int64_t>(Timestamp::GetDate(input));
+}
+
+template <>
+int64_t DatePart::EraOperator::Operation(timestamp_ns_t input) {
+	return EraOperator::Operation<date_t, int64_t>(Timestamp::GetDateNS(input));
 }
 
 template <>
@@ -1840,6 +1942,12 @@ void DatePart::StructOperator::Operation(bigint_vec &bigint_values, double_vec &
 }
 
 template <>
+void DatePart::StructOperator::Operation(bigint_vec &bigint_values, double_vec &double_values, const timestamp_ns_t &ns,
+                                         const idx_t idx, const part_mask_t mask) {
+	Operation(bigint_values, double_values, Truncate(ns), idx, mask);
+}
+
+template <>
 void DatePart::StructOperator::Operation(bigint_vec &bigint_values, double_vec &double_values, const interval_t &input,
                                          const idx_t idx, const part_mask_t mask) {
 	int64_t *part_data;
@@ -1999,8 +2107,10 @@ static scalar_function_t DatePartUnaryCallback(LogicalTypeId type) {
 	case LogicalType::TIMESTAMP:
 	case LogicalType::TIMESTAMP_S:
 	case LogicalType::TIMESTAMP_MS:
-	case LogicalType::TIMESTAMP_NS:
 		result = DatePart::UnaryFunction<timestamp_t, RESULT_TYPE, OP>;
+		break;
+	case LogicalType::TIMESTAMP_NS:
+		result = DatePart::UnaryFunction<timestamp_ns_t, RESULT_TYPE, OP>;
 		break;
 	case LogicalType::DATE:
 		result = DatePart::UnaryFunction<date_t, RESULT_TYPE, OP>;
@@ -2213,10 +2323,11 @@ ScalarFunctionSet GetDatePartFunction() {
 }
 
 ScalarFunctionSet GetGenericTimePartFunction(const LogicalType &result_type, scalar_function_t date_func,
-                                             scalar_function_t ts_func, scalar_function_t interval_func,
-                                             scalar_function_t time_func, scalar_function_t time_ns_func,
-                                             scalar_function_t timetz_func, function_statistics_t date_stats,
-                                             function_statistics_t ts_stats, function_statistics_t time_stats,
+                                             scalar_function_t ts_func, scalar_function_t ts_ns_func,
+                                             scalar_function_t interval_func, scalar_function_t time_func,
+                                             scalar_function_t time_ns_func, scalar_function_t timetz_func,
+                                             function_statistics_t date_stats, function_statistics_t ts_stats,
+                                             function_statistics_t ts_ns_stats, function_statistics_t time_stats,
                                              function_statistics_t time_ns_stats, function_statistics_t timetz_stats,
                                              const Identifier &param_name = "ts") {
 	ScalarFunctionSet operator_set;
@@ -2226,6 +2337,9 @@ ScalarFunctionSet GetGenericTimePartFunction(const LogicalType &result_type, sca
 	ScalarFunction ts_fun({}, result_type, std::move(ts_func), nullptr, ts_stats);
 	ts_fun.GetSignature().AddParameter(param_name, LogicalType::TIMESTAMP);
 	operator_set.AddFunction(ts_fun);
+	ScalarFunction ts_ns_fun({}, result_type, std::move(ts_ns_func), nullptr, ts_ns_stats);
+	ts_ns_fun.GetSignature().AddParameter(param_name, LogicalType::TIMESTAMP_NS);
+	operator_set.AddFunction(ts_ns_fun);
 	ScalarFunction interval_fun({}, result_type, std::move(interval_func));
 	interval_fun.GetSignature().AddParameter(param_name, LogicalType::INTERVAL);
 	operator_set.AddFunction(interval_fun);
@@ -2246,9 +2360,10 @@ ScalarFunctionSet GetTimePartFunction(const LogicalType &result_type = LogicalTy
                                       const Identifier &param_name = "ts") {
 	return GetGenericTimePartFunction(
 	    result_type, DatePart::UnaryFunction<date_t, TR, OP>, DatePart::UnaryFunction<timestamp_t, TR, OP>,
-	    ScalarFunction::UnaryFunction<interval_t, TR, OP>, ScalarFunction::UnaryFunction<dtime_t, TR, OP>,
-	    ScalarFunction::UnaryFunction<dtime_ns_t, TR, OP>, ScalarFunction::UnaryFunction<dtime_tz_t, TR, OP>,
-	    OP::template PropagateStatistics<date_t>, OP::template PropagateStatistics<timestamp_t>,
+	    DatePart::UnaryFunction<timestamp_ns_t, TR, OP>, ScalarFunction::UnaryFunction<interval_t, TR, OP>,
+	    ScalarFunction::UnaryFunction<dtime_t, TR, OP>, ScalarFunction::UnaryFunction<dtime_ns_t, TR, OP>,
+	    ScalarFunction::UnaryFunction<dtime_tz_t, TR, OP>, OP::template PropagateStatistics<date_t>,
+	    OP::template PropagateStatistics<timestamp_t>, StatisticsPropagator::PropagateFiniteMonotoneBounds,
 	    OP::template PropagateStatistics<dtime_t>, OP::template PropagateStatistics<dtime_ns_t>,
 	    OP::template PropagateStatistics<dtime_tz_t>, param_name);
 }
@@ -2581,23 +2696,23 @@ ScalarFunctionSet EpochNsFun::GetFunctions() {
 	using OP = DatePart::EpochNanosecondsOperator;
 	auto operator_set = GetTimePartFunction<OP>(LogicalType::BIGINT, "temporal");
 
-	//	TIMESTAMP WITH TIME ZONE has the same representation as TIMESTAMP so no need to defer to ICU
+	//	TIMESTAMP(NS) WITH TIME ZONE has the same representation as TIMESTAMP(NS) so no need to defer to ICU
 	auto tstz_func = DatePart::UnaryFunction<timestamp_t, int64_t, OP>;
 	auto tstz_stats = OP::template PropagateStatistics<timestamp_t>;
 	ScalarFunction tstz_fun({}, LogicalType::BIGINT, tstz_func, nullptr, tstz_stats);
 	tstz_fun.GetSignature().AddParameter("temporal", LogicalType::TIMESTAMP_TZ);
 	operator_set.AddFunction(tstz_fun);
+
 	auto tsns_func = DatePart::UnaryFunction<timestamp_ns_t, int64_t, OP>;
 	auto tsns_stats = StatisticsPropagator::PropagateFiniteMonotoneBounds;
-	ScalarFunction tsns_fun({}, LogicalType::BIGINT, tsns_func, nullptr, tsns_stats);
-	tsns_fun.GetSignature().AddParameter("temporal", LogicalType::TIMESTAMP_NS);
-	operator_set.AddFunction(tsns_fun);
 	ScalarFunction tstz_ns_fun({}, LogicalType::BIGINT, tsns_func, nullptr, tsns_stats);
 	tstz_ns_fun.GetSignature().AddParameter("temporal", LogicalType::TIMESTAMP_TZ_NS);
 	operator_set.AddFunction(tstz_ns_fun);
+
 	operator_set.SetUnaryArgProperties(ArgProperties().NonDecreasing());
 	// these overflow at the representable extremes, so the failure must be reportable
 	operator_set.SetFallible();
+
 	return operator_set;
 }
 
@@ -2658,9 +2773,6 @@ ScalarFunctionSet NanosecondsFun::GetFunctions() {
 
 	auto ns_func = DatePart::UnaryFunction<timestamp_ns_t, TR, OP>;
 	auto ns_stats = OP::template PropagateStatistics<timestamp_ns_t>;
-	ScalarFunction ns_fun({}, result_type, ns_func, nullptr, ns_stats);
-	ns_fun.GetSignature().AddParameter("tsns", LogicalType::TIMESTAMP_NS);
-	operator_set.AddFunction(ns_fun);
 	ScalarFunction tz_ns_fun({}, result_type, ns_func, nullptr, ns_stats);
 	tz_ns_fun.GetSignature().AddParameter("tsns", LogicalType::TIMESTAMP_TZ_NS);
 	operator_set.AddFunction(tz_ns_fun);
@@ -2792,6 +2904,9 @@ ScalarFunctionSet DatePartFun::GetFunctions() {
 	    ScalarFunction({}, LogicalType::DOUBLE, DatePartFunction<date_t>, DatePartBind), LogicalType::DATE));
 	date_part.AddFunction(NamePartTsArguments(
 	    ScalarFunction({}, LogicalType::DOUBLE, DatePartFunction<timestamp_t>, DatePartBind), LogicalType::TIMESTAMP));
+	date_part.AddFunction(
+	    NamePartTsArguments(ScalarFunction({}, LogicalType::DOUBLE, DatePartFunction<timestamp_ns_t>, DatePartBind),
+	                        LogicalType::TIMESTAMP_NS));
 	date_part.AddFunction(NamePartTsArguments(
 	    ScalarFunction({}, LogicalType::DOUBLE, DatePartFunction<dtime_t>, DatePartBind), LogicalType::TIME));
 	date_part.AddFunction(NamePartTsArguments(
@@ -2804,6 +2919,7 @@ ScalarFunctionSet DatePartFun::GetFunctions() {
 	// struct variants
 	date_part.AddFunction(StructDatePart::GetFunction<date_t>(LogicalType::DATE));
 	date_part.AddFunction(StructDatePart::GetFunction<timestamp_t>(LogicalType::TIMESTAMP));
+	date_part.AddFunction(StructDatePart::GetFunction<timestamp_ns_t>(LogicalType::TIMESTAMP_NS));
 	date_part.AddFunction(StructDatePart::GetFunction<dtime_t>(LogicalType::TIME));
 	date_part.AddFunction(StructDatePart::GetFunction<dtime_ns_t>(LogicalType::TIME_NS));
 	date_part.AddFunction(StructDatePart::GetFunction<interval_t>(LogicalType::INTERVAL));
