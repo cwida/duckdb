@@ -78,3 +78,69 @@ FROM (SELECT count(*), sum(a) FROM plan_fact JOIN plan_dim USING (k) WHERE bucke
      (SELECT count(*), sum(a) FROM plan_fact JOIN plan_dim USING (k) WHERE bucket = 1) b;
 ----
 logical_opt	<REGEX>:.*"CTE".*COMPARISON_JOIN.*CTE_SCAN.*CTE_SCAN.*__common_subplan_.*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT *
+FROM (SELECT count(*), sum(a) FROM plan_fact JOIN plan_dim USING (k) WHERE bucket = 0) a,
+     (SELECT count(*), sum(a) FROM plan_fact JOIN plan_dim USING (k) WHERE bucket = 1) b;
+----
+logical_opt	<!REGEX>:.*COMPARISON_JOIN.*COMPARISON_JOIN.*
+
+statement ok
+CREATE TABLE outlier_fact AS SELECT i AS a, i % 100 AS b FROM range(20000) t(i);
+
+statement ok
+CREATE TABLE outlier_dim AS SELECT i AS a, i % 10 AS g FROM range(0, 20000, 97) t(i);
+
+# A consumer differing on both inputs must not prevent the other two from sharing their join.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b < 10),
+       (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b > 90),
+       (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b = 50 AND d.g = 0);
+----
+logical_opt	<REGEX>:.*"CTE".*CTE_SCAN.*CTE_SCAN.*__common_subplan_.*
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b < 10),
+       (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b > 90),
+       (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b = 50 AND d.g = 0);
+----
+logical_opt	<!REGEX>:.*COMPARISON_JOIN.*COMPARISON_JOIN.*COMPARISON_JOIN.*
+
+# Finding the incompatible consumer first must still leave a shareable pair.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b = 50 AND d.g = 0),
+       (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b < 10),
+       (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b > 90);
+----
+logical_opt	<REGEX>:.*"CTE".*CTE_SCAN.*CTE_SCAN.*__common_subplan_.*
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b = 50 AND d.g = 0),
+       (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b < 10),
+       (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b > 90);
+----
+logical_opt	<!REGEX>:.*COMPARISON_JOIN.*COMPARISON_JOIN.*COMPARISON_JOIN.*
+
+# Each compatible subset can have its own shared join.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b < 10),
+       (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b > 90),
+       (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b = 50 AND d.g = 0),
+       (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b = 60 AND d.g = 0);
+----
+logical_opt	<REGEX>:.*"CTE".*"CTE".*__common_subplan_.*
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b < 10),
+       (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b > 90),
+       (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b = 50 AND d.g = 0),
+       (SELECT count(*) FROM outlier_fact f JOIN outlier_dim d ON f.a = d.a WHERE f.b = 60 AND d.g = 0);
+----
+logical_opt	<!REGEX>:.*COMPARISON_JOIN.*COMPARISON_JOIN.*COMPARISON_JOIN.*

@@ -1389,6 +1389,41 @@ class CommonJoinFilters {
 		vector<reference<unique_ptr<LogicalOperator>>> scans;
 	};
 
+	struct CandidateGroup {
+		explicit CandidateGroup(Candidate &candidate) {
+			candidates.emplace_back(candidate);
+		}
+
+		bool TryAdd(Candidate &candidate) {
+			auto &primary = candidates[0].get();
+			if (candidate.scans.size() != primary.scans.size()) {
+				return false;
+			}
+			auto varying_scan = differing_scan;
+			for (idx_t i = 0; i < primary.scans.size(); i++) {
+				auto &left = primary.scans[i].get()->Cast<LogicalGet>();
+				auto &right = candidate.scans[i].get()->Cast<LogicalGet>();
+				if (left.GetColumnIds() != right.GetColumnIds()) {
+					return false;
+				}
+				if (left.table_filters.Equals(right.table_filters)) {
+					continue;
+				}
+				// One varying input avoids cross-combinations between independent filter disjunctions.
+				if (varying_scan.IsValid() && varying_scan.GetIndex() != i) {
+					return false;
+				}
+				varying_scan = i;
+			}
+			differing_scan = varying_scan;
+			candidates.emplace_back(candidate);
+			return true;
+		}
+
+		vector<reference<Candidate>> candidates;
+		optional_idx differing_scan;
+	};
+
 public:
 	explicit CommonJoinFilters(ClientContext &context) : state(context) {
 	}
@@ -1396,7 +1431,22 @@ public:
 	void Normalize(unique_ptr<LogicalOperator> &op) {
 		FindCandidates(op);
 		for (auto &entry : candidates) {
-			NormalizeGroup(entry.second);
+			vector<CandidateGroup> groups;
+			for (auto &candidate : entry.second) {
+				bool added = false;
+				for (auto &group : groups) {
+					if (group.TryAdd(candidate)) {
+						added = true;
+						break;
+					}
+				}
+				if (!added) {
+					groups.emplace_back(candidate);
+				}
+			}
+			for (auto &group : groups) {
+				NormalizeGroup(group);
+			}
 		}
 	}
 
@@ -1506,41 +1556,21 @@ private:
 		}
 	}
 
-	void NormalizeGroup(vector<Candidate> &group) {
-		if (group.size() < 2) {
+	void NormalizeGroup(CandidateGroup &candidate_group) {
+		auto &group = candidate_group.candidates;
+		auto differing_scan = candidate_group.differing_scan;
+		if (group.size() < 2 || !differing_scan.IsValid()) {
 			return;
 		}
-		auto &primary = group[0];
-		optional_idx differing_scan;
+		auto &primary = group[0].get();
 		idx_t cardinality = 0;
-		for (auto &candidate : group) {
+		for (Candidate &candidate : group) {
 			auto &op = *candidate.op.get();
 			if (!op.has_estimated_cardinality ||
 			    op.estimated_cardinality > NumericLimits<idx_t>::Maximum() - cardinality) {
 				return;
 			}
 			cardinality += op.estimated_cardinality;
-			if (candidate.scans.size() != primary.scans.size()) {
-				return;
-			}
-			for (idx_t i = 0; i < primary.scans.size(); i++) {
-				auto &left = primary.scans[i].get()->Cast<LogicalGet>();
-				auto &right = candidate.scans[i].get()->Cast<LogicalGet>();
-				if (left.GetColumnIds() != right.GetColumnIds()) {
-					return;
-				}
-				if (left.table_filters.Equals(right.table_filters)) {
-					continue;
-				}
-				// One varying input avoids cross-combinations between independent filter disjunctions.
-				if (differing_scan.IsValid() && differing_scan.GetIndex() != i) {
-					return;
-				}
-				differing_scan = i;
-			}
-		}
-		if (!differing_scan.IsValid()) {
-			return;
 		}
 		if (!CommonSubplanFinder::IsSelectiveMultiTablePlan(*primary.op.get(), cardinality)) {
 			return;
@@ -1548,13 +1578,13 @@ private:
 
 		vector<unique_ptr<Expression>> predicates;
 		vector<TableIndex> table_indexes;
-		for (auto &candidate : group) {
+		for (Candidate &candidate : group) {
 			auto &get = candidate.scans[differing_scan.GetIndex()].get()->Cast<LogicalGet>();
 			predicates.push_back(ScanPredicate(get));
 			table_indexes.push_back(get.table_index);
 		}
 		for (idx_t i = 0; i < group.size(); i++) {
-			auto &candidate = group[i];
+			auto &candidate = group[i].get();
 			auto &op = candidate.op.get();
 			const auto old_cardinality = op->estimated_cardinality;
 			const auto old_bindings = op->GetColumnBindings();
