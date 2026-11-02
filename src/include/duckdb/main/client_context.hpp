@@ -421,6 +421,8 @@ private:
 	void BeginStatementInternal(ClientContextLock &lock, const string &query);
 	//! Refreshes the logger for the statement that begins
 	void RefreshLoggerInternal();
+	//! Replaces the logger with one created from the up-to-date log config
+	void ResetLoggerInternal(LoggingContext logging_context);
 	//! Ends the statement of a query that expands into several once it finished, and starts the next one
 	QueryResultState StartNextStatementInternal(ClientContextLock &lock);
 	//! Ends the statement that finished and starts the next one. Returns the result object a collector built for it,

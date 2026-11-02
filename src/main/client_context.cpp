@@ -145,10 +145,7 @@ ClientContext::ClientContext(shared_ptr<DatabaseInstance> database)
 #ifdef DEBUG
 	registered_state->GetOrCreate<DebugClientContextState>("debug_client_context_state");
 #endif
-	LoggingContext context(LogContextScope::CONNECTION);
-	auto &log_manager = db->GetLogManager();
-	log_manager.RefreshConfigSnapshot(log_config);
-	logger = log_manager.CreateLogger(context, log_config);
+	ResetLoggerInternal(LoggingContext(LogContextScope::CONNECTION));
 	client_data = make_uniq<ClientData>(*this);
 
 #ifdef __APPLE__

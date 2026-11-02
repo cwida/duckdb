@@ -89,10 +89,14 @@ void ClientContext::RefreshLoggerInternal() {
 	logging_context.connection_id = connection_id;
 	logging_context.transaction_id = transaction.ActiveTransaction().global_transaction_id;
 	logging_context.query_id = transaction.GetActiveQuery();
+	ResetLoggerInternal(logging_context);
+	DUCKDB_LOG(*this, QueryLogType, active_query->query);
+}
+
+void ClientContext::ResetLoggerInternal(LoggingContext logging_context) {
 	auto &log_manager = db->GetLogManager();
 	log_manager.RefreshConfigSnapshot(log_config);
 	logger = log_manager.CreateLogger(logging_context, log_config);
-	DUCKDB_LOG(*this, QueryLogType, active_query->query);
 }
 
 ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success, bool invalidate_transaction,
@@ -141,9 +145,7 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 	logger->Flush();
 	LoggingContext context(LogContextScope::CONNECTION);
 	context.connection_id = connection_id;
-	auto &log_manager = db->GetLogManager();
-	log_manager.RefreshConfigSnapshot(log_config);
-	logger = log_manager.CreateLogger(context, log_config);
+	ResetLoggerInternal(context);
 
 	// Notify any registered state of query end
 	for (auto const &s : registered_state->States()) {
