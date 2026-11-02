@@ -756,12 +756,19 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 		ConfigureInvariantRecursiveBuildReuse(branch.invariant_meta_pipelines, can_cache_invariant);
 	}
 
+	// Invalidate global operator state from the coordinating thread while nothing executes:
+	// reusable state is reset in place, everything else is destroyed. Both schedules recreate
+	// missing state after a stage's dependencies finished, because state construction may
+	// consume dependency-produced sink state (shared lifecycle contract).
+	for (auto &op_ref : plan.invalidate_operators) {
+		Pipeline::InvalidateOperatorStateForReschedule(context.client, op_ref.get());
+	}
+
 	const auto collect_metrics = gstate.metrics.Enabled();
 	const auto epoch_task_start = collect_metrics ? gstate.metrics.TaskCount() : 0;
 	const auto epoch_start =
 	    collect_metrics ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
 	if (go_parallel) {
-		// the shared event-based schedule resets operator and source state itself
 		RecursiveSchedulingContext scheduling_context {executor, scheduler, collect_metrics ? &gstate.metrics : nullptr,
 		                                               collect_metrics ? gstate.epoch_metrics.get() : nullptr, true};
 		vector<shared_ptr<Event>> events;
@@ -784,78 +791,11 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 		return;
 	}
 
-	for (auto &pipeline : plan.initialize_on_schedule_pipelines) {
-		pipeline.get().ResetSource(true);
-	}
-
-	// operators can be shared between pipelines (e.g. above a UNION), so their global
-	// state is reset once up-front; per-stage resets below only touch the source
-	for (auto &stage : plan.stages) {
-		if (stage.type == PipelineScheduleStageType::EXECUTE) {
-			stage.pipeline.get().ResetOperatorsForReschedule();
-		}
-	}
-
-	scheduler.InitializeInlinePlan(plan);
-	for (idx_t ready_idx = 0; ready_idx < scheduler.ReadyStageCount(); ready_idx++) {
-		const auto stage_idx = scheduler.ReadyStage(ready_idx);
-		auto &stage = plan.stages[stage_idx];
-		auto &pipeline = stage.pipeline.get();
-		switch (stage.type) {
-		case PipelineScheduleStageType::EXECUTE: {
-			pipeline.ResetSourceForReschedule();
-			if (stage.is_invariant_build) {
-				// invariant builds have independent source work even when the wave is tiny;
-				// the source state must exist before its parallelism can be read
-				auto build_threads = pipeline.GetMaxThreads();
-				build_threads = MinValue<idx_t>(MaxValue<idx_t>(build_threads, 1), configured_threads);
-				if (build_threads > 1) {
-					RecursiveSchedulingContext scheduling_context {
-					    executor, scheduler, collect_metrics ? &gstate.metrics : nullptr,
-					    collect_metrics ? gstate.epoch_metrics.get() : nullptr};
-					ExecuteRecursivePipelineEventInline(pipeline, scheduling_context, configured_threads, build_threads,
-					                                    stage.metric_type);
-					break;
-				}
-			}
-			scheduler.PrepareExecutors(pipeline, 1);
-			auto &executors = scheduler.GetExecutors(pipeline);
-			D_ASSERT(!executors.empty());
-			executors[0]->PrepareForExecution();
-			if (collect_metrics) {
-				gstate.metrics.RecordTasks(1);
-				const auto execute_start = std::chrono::steady_clock::now();
-				ExecuteRecursivePipelineInline(*executors[0]);
-				const auto execute_end = std::chrono::steady_clock::now();
-				gstate.epoch_metrics->RecordPipelineExecution(
-				    stage.metric_type,
-				    NumericCast<idx_t>(
-				        std::chrono::duration_cast<std::chrono::nanoseconds>(execute_end - execute_start).count()));
-			} else {
-				ExecuteRecursivePipelineInline(*executors[0]);
-			}
-			break;
-		}
-		case PipelineScheduleStageType::PREPARE_FINISH:
-			pipeline.PrepareFinalize();
-			break;
-		case PipelineScheduleStageType::FINISH:
-			if (trivial_finish[stage_idx]) {
-				// the trampoline sink has no finalize work and no operator on this
-				// pipeline requires finalization
-				sink_state->state = SinkFinalizeType::READY;
-				break;
-			}
-			ExecuteRecursivePipelineFinishInline(pipeline, executor);
-			break;
-		default:
-			throw InternalException("Unsupported trampoline schedule stage");
-		}
-		scheduler.CompleteInlineStage(plan, stage_idx);
-	}
-	if (scheduler.ReadyStageCount() != plan.stages.size()) {
-		throw InternalException("Trampoline branch plan did not schedule every stage");
-	}
+	// single-threaded wave: run the shared inline plan executor, which creates missing operator
+	// state per ready stage and skips the finish event machinery for flagged trivial stages
+	RecursiveSchedulingContext scheduling_context {executor, scheduler, collect_metrics ? &gstate.metrics : nullptr,
+	                                               collect_metrics ? gstate.epoch_metrics.get() : nullptr};
+	ExecuteRecursiveInlinePlan(scheduling_context, executor, plan, &trivial_finish);
 	if (can_cache_invariant && !materialized &&
 	    InvariantRecursiveBuildsRemainReusable(branch.invariant_meta_pipelines)) {
 		gstate.invariant_materialized[branch_idx - 1] = true;

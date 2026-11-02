@@ -391,6 +391,11 @@ BuildRecursivePipelineSchedulePlan(const vector<shared_ptr<MetaPipeline>> &meta_
                                    const PhysicalOperator &recursive_sink);
 void ExecuteRecursivePipelineInline(PipelineExecutor &pipeline_executor);
 void ExecuteRecursivePipelineFinishInline(Pipeline &pipeline, Executor &executor);
+//! Run a schedule plan single-threaded with the shared operator-state lifecycle: missing state is
+//! created per ready stage, after its dependencies finished. Stages flagged in trivial_finish
+//! (optional, indexed like plan.stages) skip the finish event machinery and mark the sink READY.
+void ExecuteRecursiveInlinePlan(const RecursiveSchedulingContext &context, Executor &executor,
+                                const RecursiveCTEPipelineSchedulePlan &plan, const vector<bool> *trivial_finish);
 void GatherRecursiveScans(PhysicalOperator &op, TableIndex cte_index,
                           vector<reference<PhysicalColumnDataScan>> &recursive_scans);
 reference_set_t<const MetaPipeline>

@@ -834,16 +834,17 @@ void ExecuteRecursivePipelineFinishInline(Pipeline &pipeline, Executor &executor
 }
 
 template <bool COLLECT_METRICS>
-static void ExecuteRecursiveInlinePlan(RecursiveCTEState &state, Executor &executor,
-                                       const RecursiveCTEPipelineSchedulePlan &plan) {
+static void ExecuteRecursiveInlinePlanInternal(RecursiveSchedulingContext context, Executor &executor,
+                                               const RecursiveCTEPipelineSchedulePlan &plan,
+                                               const vector<bool> *trivial_finish) {
 	for (auto &pipeline : plan.initialize_on_schedule_pipelines) {
 		pipeline.get().ResetSource(true);
 	}
 
-	state.GetScheduler().InitializeInlinePlan(plan);
+	context.scheduler.InitializeInlinePlan(plan);
 
-	for (idx_t ready_idx = 0; ready_idx < state.GetScheduler().ReadyStageCount(); ready_idx++) {
-		auto stage_idx = state.GetScheduler().ReadyStage(ready_idx);
+	for (idx_t ready_idx = 0; ready_idx < context.scheduler.ReadyStageCount(); ready_idx++) {
+		auto stage_idx = context.scheduler.ReadyStage(ready_idx);
 		auto &stage = plan.stages[stage_idx];
 		auto &pipeline = stage.pipeline.get();
 		switch (stage.type) {
@@ -858,29 +859,24 @@ static void ExecuteRecursiveInlinePlan(RecursiveCTEState &state, Executor &execu
 			    stage.is_invariant_build ? TaskScheduler::GetScheduler(executor.context).NumberOfThreads() : idx_t(1);
 			const auto max_threads = GetRecursivePipelineMaxThreads(pipeline, worker_limit);
 			if (max_threads > 1) {
-				const auto collect_metrics = state.GetMetrics().Enabled();
-				RecursiveSchedulingContext scheduling_context {executor, state.GetScheduler(),
-				                                               collect_metrics ? &state.GetMetrics() : nullptr,
-				                                               collect_metrics ? &state.GetEpochMetrics() : nullptr};
-				ExecuteRecursivePipelineEventInline(pipeline, scheduling_context, worker_limit, max_threads,
-				                                    stage.metric_type);
+				ExecuteRecursivePipelineEventInline(pipeline, context, worker_limit, max_threads, stage.metric_type);
 				break;
 			}
 			D_ASSERT(max_threads == 1);
 			AdjustRecursiveSinkWorkers(pipeline, max_threads);
-			state.GetScheduler().PrepareExecutors(pipeline, max_threads);
-			auto &executors = state.GetScheduler().GetExecutors(pipeline);
+			context.scheduler.PrepareExecutors(pipeline, max_threads);
+			auto &executors = context.scheduler.GetExecutors(pipeline);
 			D_ASSERT(executors.size() >= max_threads);
 			executors[0]->PrepareForExecution();
 			if constexpr (COLLECT_METRICS) {
-				state.GetMetrics().RecordTasks(1);
+				context.metrics->RecordTasks(1);
 			}
 			const auto execute_start =
 			    COLLECT_METRICS ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
 			ExecuteRecursivePipelineInline(*executors[0]);
 			if constexpr (COLLECT_METRICS) {
 				const auto execute_end = std::chrono::steady_clock::now();
-				state.GetEpochMetrics().RecordPipelineExecution(
+				context.epoch_metrics->RecordPipelineExecution(
 				    stage.metric_type,
 				    NumericCast<idx_t>(
 				        std::chrono::duration_cast<std::chrono::nanoseconds>(execute_end - execute_start).count()));
@@ -891,17 +887,32 @@ static void ExecuteRecursiveInlinePlan(RecursiveCTEState &state, Executor &execu
 			pipeline.PrepareFinalize();
 			break;
 		case PipelineScheduleStageType::FINISH:
+			if (trivial_finish && (*trivial_finish)[stage_idx]) {
+				// the sink has no finalize work and no operator on this pipeline requires
+				// finalization, so the finish event machinery is skipped
+				pipeline.GetSink()->sink_state->state = SinkFinalizeType::READY;
+				break;
+			}
 			ExecuteRecursivePipelineFinishInline(pipeline, executor);
 			break;
 		default:
 			throw InternalException("Unsupported recursive inline stage");
 		}
 
-		state.GetScheduler().CompleteInlineStage(plan, stage_idx);
+		context.scheduler.CompleteInlineStage(plan, stage_idx);
 	}
 
-	if (state.GetScheduler().ReadyStageCount() != plan.stages.size()) {
+	if (context.scheduler.ReadyStageCount() != plan.stages.size()) {
 		throw InternalException("Recursive inline plan did not schedule every stage");
+	}
+}
+
+void ExecuteRecursiveInlinePlan(const RecursiveSchedulingContext &context, Executor &executor,
+                                const RecursiveCTEPipelineSchedulePlan &plan, const vector<bool> *trivial_finish) {
+	if (context.metrics) {
+		ExecuteRecursiveInlinePlanInternal<true>(context, executor, plan, trivial_finish);
+	} else {
+		ExecuteRecursiveInlinePlanInternal<false>(context, executor, plan, trivial_finish);
 	}
 }
 
@@ -1052,16 +1063,12 @@ void PhysicalRecursiveCTE::ExecuteRecursivePipelines(ExecutionContext &context) 
 	    collect_metrics ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
 	auto inline_execution = allow_reuse && parallelism.IsInline();
 
+	RecursiveSchedulingContext scheduling_context {executor, gstate.GetScheduler(),
+	                                               collect_metrics ? &gstate.GetMetrics() : nullptr,
+	                                               collect_metrics ? &gstate.GetEpochMetrics() : nullptr};
 	if (inline_execution) {
-		if (collect_metrics) {
-			ExecuteRecursiveInlinePlan<true>(gstate, executor, *schedule_plan);
-		} else {
-			ExecuteRecursiveInlinePlan<false>(gstate, executor, *schedule_plan);
-		}
+		ExecuteRecursiveInlinePlan(scheduling_context, executor, *schedule_plan, nullptr);
 	} else {
-		RecursiveSchedulingContext scheduling_context {executor, gstate.GetScheduler(),
-		                                               collect_metrics ? &gstate.GetMetrics() : nullptr,
-		                                               collect_metrics ? &gstate.GetEpochMetrics() : nullptr};
 		vector<shared_ptr<Event>> events;
 		ScheduleRecursivePlan(*schedule_plan, scheduling_context, events, parallelism);
 		WaitForRecursiveEvents(executor, events);
