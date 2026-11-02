@@ -350,7 +350,7 @@ void CommitState::CommitEntry(UndoFlags type, data_ptr_t data, CommitInfo &info)
 		CatalogSet::UpdateTimestamp(old_entry.Parent(), commit_id);
 
 		// drop any blocks associated with the catalog entry if possible (e.g. in case of a DROP or ALTER)
-		CommitEntryDrop(old_entry, data + sizeof(CatalogEntry *), info);
+		CommitEntryDrop(old_entry, data + sizeof(CatalogEntry *) + sizeof(idx_t), info);
 		break;
 	}
 	case UndoFlags::INSERT_TUPLE: {

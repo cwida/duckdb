@@ -730,14 +730,15 @@ idx_t DuckTransactionManager::GetCatalogVersion(Transaction &transaction_p) {
 }
 
 void DuckTransactionManager::PushCatalogEntry(Transaction &transaction_p, duckdb::CatalogEntry &entry,
-                                              duckdb::data_ptr_t extra_data, duckdb::idx_t extra_data_size) {
+                                              duckdb::data_ptr_t extra_data, duckdb::idx_t extra_data_size,
+                                              duckdb::idx_t estimated_size) {
 	auto &transaction = transaction_p.Cast<DuckTransaction>();
 	if (!db.IsSystem() && !db.IsTemporary() && transaction.IsReadOnly()) {
 		throw InternalException("Attempting to do catalog changes on a transaction that is read-only - "
 		                        "this should not be possible");
 	}
 	transaction.catalog_version = ++last_uncommitted_catalog_version;
-	transaction.PushCatalogEntry(entry, extra_data, extra_data_size);
+	transaction.PushCatalogEntry(entry, extra_data, extra_data_size, estimated_size);
 }
 
 void DuckTransactionManager::PushAttach(Transaction &transaction_p, AttachedDatabase &attached_db) {

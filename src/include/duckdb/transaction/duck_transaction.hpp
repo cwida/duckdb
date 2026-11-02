@@ -64,7 +64,7 @@ public:
 	static DuckTransaction &Get(ClientContext &context, Catalog &catalog);
 	LocalStorage &GetLocalStorage();
 
-	void PushCatalogEntry(CatalogEntry &entry, data_ptr_t extra_data, idx_t extra_data_size);
+	void PushCatalogEntry(CatalogEntry &entry, data_ptr_t extra_data, idx_t extra_data_size, idx_t estimated_size = 0);
 	void PushAttach(AttachedDatabase &db);
 
 	void SetModifications(DatabaseModificationType type) override;
