@@ -2564,7 +2564,7 @@ LIMIT 5)");
 		if (!style.layout_on.empty()) {
 			style.layout_off = ShellHighlight::ResetTerminalCode();
 		}
-		if (linenoiseGetTerminalColorMode() == LINENOISE_LIGHT_MODE) {
+		if (highlight_mode == HighlightMode::LIGHT_MODE) {
 			style.heading_on = ShellHighlight::TerminalCode(PrintColor::BLACK, PrintIntensity::BOLD);
 			style.path_on = ShellHighlight::TerminalCode(PrintColor::BLACK, PrintIntensity::STANDARD);
 		} else {
@@ -3767,6 +3767,10 @@ void ShellState::PrintQueryEstimate(const string &sql, const duckdb::SQLStatemen
 void ShellState::DetectDarkLightMode() {
 #ifdef HAVE_LINENOISE
 	ShellHighlight highlight(*this);
+	if (!ShellHighlight::IsEnabled()) {
+		// no colors are printed - no need to detect
+		return;
+	}
 	if (highlight_mode != HighlightMode::AUTOMATIC) {
 		// highlight mode is specified by the user - avoid setting manually
 		return;
@@ -3847,6 +3851,12 @@ int RunShell(int argc, const char **argv) {
 	data.stderr_is_console = IsStdStreamAConsole(2);
 
 	data.Initialize();
+
+	auto no_color = getenv("NO_COLOR");
+	if (no_color && no_color[0]) {
+		// https://no-color.org - can still be turned on explicitly with .highlighting on
+		ShellHighlight::SetHighlighting(false);
+	}
 
 	/* On Windows, we must translate command-line arguments into UTF-8.
 	 */
@@ -3965,8 +3975,6 @@ int RunShell(int argc, const char **argv) {
 		data.PrintAgentHelp(PrintOutput::STDERR, true);
 	}
 
-	data.DetectDarkLightMode();
-
 	/* Make a second pass through the command-line argument and set
 	** options.  This second pass is delayed until after the initialization
 	** file is processed so that the command-line arguments will override
@@ -4043,6 +4051,8 @@ int RunShell(int argc, const char **argv) {
 #endif
 			ShellHistory history(data, zHistory);
 			data.in = 0;
+			// the line editor needs the colors up front
+			data.DetectDarkLightMode();
 			rc = data.ProcessInput(InputMode::STANDARD);
 		} else {
 			data.in = stdin;
