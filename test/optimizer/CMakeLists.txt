@@ -12,6 +12,7 @@ add_library_unity(
   join_order_conflict_detector.cpp
   join_order_enumeration.cpp
   logical_plan_verification.cpp
+  multi_file_metadata.cpp
   relation_statistics.cpp
   remove_unused_columns.cpp
   runtime_filter_schedule.cpp
