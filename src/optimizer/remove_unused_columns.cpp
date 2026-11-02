@@ -934,6 +934,7 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 				}
 			}
 
+			cte.column_count = expressions.size();
 			auto projection = make_uniq<LogicalProjection>(binder.GenerateTableIndex(), std::move(expressions));
 			projection->children.push_back(std::move(cte.children[0]));
 			cte.children[0] = std::move(projection);

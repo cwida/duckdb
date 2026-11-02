@@ -224,14 +224,18 @@ static vector<PartitionStatistics> ParquetMultiFileGetPartitionStats(ClientConte
 	auto &bind_data = input.bind_data->Cast<MultiFileBindData>();
 	if (bind_data.file_list->GetExpandResult() == FileExpandResult::SINGLE_FILE) {
 		auto result = TableFunctionMultiFileWrapper::GetPartitionStats(context, input);
-		if (!bind_data.file_options.bound_schema.empty()) {
-			// Column accessors address physical ordinals and types, not the mapped output or generated roles.
-			const bool identity =
-			    bind_data.initial_reader && bind_data.HasIdentityMapping(bind_data.initial_reader->GetColumns());
-			if (!identity) {
-				for (auto &partition : result) {
-					partition.partition_row_group.reset();
-				}
+		// Column accessors address physical ordinals and types, not the mapped output or generated roles.
+		bool identity = false;
+		if (bind_data.initial_reader) {
+			identity = bind_data.HasIdentityMapping(bind_data.initial_reader->GetColumns());
+		} else if (!bind_data.union_readers.empty()) {
+			auto &file = *bind_data.union_readers[0];
+			identity = bind_data.HasIdentityMapping(
+			    MultiFileColumnDefinition::ColumnsFromNamesAndTypes(StringsToIdentifiers(file.names), file.types));
+		}
+		if (!identity) {
+			for (auto &partition : result) {
+				partition.partition_row_group.reset();
 			}
 		}
 		return result;

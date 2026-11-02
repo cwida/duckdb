@@ -49,6 +49,7 @@ public:
 	using RowSet = std::unordered_set<idx_t, HashRow, EqualRow>;
 
 	WindowNaiveLocalState(ExecutionContext &context, const WindowNaiveAggregator &aggregator);
+	~WindowNaiveLocalState() override;
 
 	void Finalize(ExecutionContext &context, WindowAggregatorGlobalState &gastate, CollectionPtr collection) override;
 
@@ -78,6 +79,8 @@ protected:
 	SelectionVector update_sel;
 	//! Count of buffered values
 	idx_t flush_count;
+	//! The number of initialised result states
+	idx_t live_count;
 	//! The frame boundaries, used for EXCLUDE
 	SubFrames frames;
 	//! The optional hash table used for DISTINCT
@@ -99,7 +102,8 @@ protected:
 
 WindowNaiveLocalState::WindowNaiveLocalState(ExecutionContext &context, const WindowNaiveAggregator &aggregator)
     : WindowAggregatorLocalState(context), aggregator(aggregator), state(aggregator.state_size * STANDARD_VECTOR_SIZE),
-      statef(LogicalType::POINTER), statep((LogicalType::POINTER)), flush_count(0), hashes(LogicalType::HASH) {
+      statef(LogicalType::POINTER), statep((LogicalType::POINTER)), flush_count(0), live_count(0),
+      hashes(LogicalType::HASH) {
 	InitSubFrames(frames, aggregator.exclude_mode);
 
 	update_sel.Initialize();
@@ -113,6 +117,15 @@ WindowNaiveLocalState::WindowNaiveLocalState(ExecutionContext &context, const Wi
 	for (idx_t i = 0; i < STANDARD_VECTOR_SIZE; ++i) {
 		fdata[i] = state_ptr;
 		state_ptr += aggregator.state_size;
+	}
+}
+
+WindowNaiveLocalState::~WindowNaiveLocalState() {
+	// destroy any states left live by an exception during evaluation
+	const auto &aggr = aggregator.aggr;
+	if (live_count && aggr.function.HasStateDestructorCallback()) {
+		AggregateFinalizeInputData aggr_input_data(aggr, allocator);
+		aggr.function.GetStateDestructorCallback()(statef, aggr_input_data, live_count);
 	}
 }
 
@@ -238,6 +251,7 @@ void WindowNaiveLocalState::Evaluate(ExecutionContext &context, const WindowAggr
 	WindowAggregator::EvaluateSubFrames(bounds, aggregator.exclude_mode, count, row_idx, frames, [&](idx_t rid) {
 		data_ptr_t agg_state = fdata[rid];
 		aggr.function.GetStateInitCallback()(state_input, &agg_state, 1);
+		live_count = rid + 1;
 
 		//	Reset the DISTINCT hash table
 		row_set.clear();
@@ -361,6 +375,7 @@ void WindowNaiveLocalState::Evaluate(ExecutionContext &context, const WindowAggr
 		aggr.function.GetStateDestructorCallback()(statef, aggr_input_data, count);
 		allocator.FreeAll();
 	}
+	live_count = 0;
 }
 
 unique_ptr<LocalSinkState> WindowNaiveAggregator::GetLocalState(ExecutionContext &context,

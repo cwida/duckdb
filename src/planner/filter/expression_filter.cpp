@@ -283,6 +283,11 @@ static optional_ptr<const BaseStatistics> TryGetExpressionStats(optional_ptr<Cli
 			vector<BaseStatistics> child_stats;
 			child_stats.reserve(func.GetChildren().size());
 			for (auto &child_expr : func.GetChildren()) {
+				if (child_expr->GetExpressionClass() == ExpressionClass::BOUND_LAMBDA) {
+					// a lambda has no value, the callback of its function derives what it produces
+					child_stats.push_back(BaseStatistics::CreateUnknown(child_expr->GetReturnType()));
+					continue;
+				}
 				auto child_stat = TryGetExpressionStats(context_p, *child_expr, input_stats, owned_stats);
 				if (!child_stat) {
 					return nullptr;

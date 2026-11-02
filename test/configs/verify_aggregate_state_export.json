@@ -26,6 +26,7 @@
         "test/sql/copy/parquet/read_single_parquet_file.test",
         "test/sql/optimizer/aggregate_stats_propagation.test",
         "test/sql/optimizer/sum_aggregate_stats_propagation.test",
+        "test/sql/optimizer/test_common_subplan_matching_plan.test",
         "test/sql/optimizer/expression/test_common_aggregate.test",
         "test/sql/pragma/profiling/test_custom_profiling_row_group_metrics_local_storage.test",
         "test/sql/sql_export/scope_reuse_plan.test",

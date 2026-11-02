@@ -7174,6 +7174,28 @@ TransactionType EnumUtil::FromString<TransactionType>(const char *value) {
 	return static_cast<TransactionType>(StringUtil::StringToEnum(GetTransactionTypeValues(), 4, "TransactionType", value));
 }
 
+const StringUtil::EnumStringLiteral *GetTransformChildKindValues() {
+	static constexpr StringUtil::EnumStringLiteral values[] {
+		{ static_cast<uint32_t>(TransformChildKind::REQUIRED), "REQUIRED" },
+		{ static_cast<uint32_t>(TransformChildKind::OPTIONAL), "OPTIONAL" },
+		{ static_cast<uint32_t>(TransformChildKind::LIST), "LIST" },
+		{ static_cast<uint32_t>(TransformChildKind::OPTIONAL_LIST), "OPTIONAL_LIST" },
+		{ static_cast<uint32_t>(TransformChildKind::REPEAT), "REPEAT" },
+		{ static_cast<uint32_t>(TransformChildKind::OPTIONAL_REPEAT), "OPTIONAL_REPEAT" }
+	};
+	return values;
+}
+
+template<>
+const char* EnumUtil::ToChars<TransformChildKind>(TransformChildKind value) {
+	return StringUtil::EnumToString(GetTransformChildKindValues(), 6, "TransformChildKind", static_cast<uint32_t>(value));
+}
+
+template<>
+TransformChildKind EnumUtil::FromString<TransformChildKind>(const char *value) {
+	return static_cast<TransformChildKind>(StringUtil::StringToEnum(GetTransformChildKindValues(), 6, "TransformChildKind", value));
+}
+
 const StringUtil::EnumStringLiteral *GetTriggerEventTypeValues() {
 	static constexpr StringUtil::EnumStringLiteral values[] {
 		{ static_cast<uint32_t>(TriggerEventType::INSERT_EVENT), "INSERT" },
@@ -7295,19 +7317,20 @@ const StringUtil::EnumStringLiteral *GetUndoFlagsValues() {
 		{ static_cast<uint32_t>(UndoFlags::DELETE_TUPLE), "DELETE_TUPLE" },
 		{ static_cast<uint32_t>(UndoFlags::UPDATE_TUPLE), "UPDATE_TUPLE" },
 		{ static_cast<uint32_t>(UndoFlags::SEQUENCE_VALUE), "SEQUENCE_VALUE" },
-		{ static_cast<uint32_t>(UndoFlags::ATTACHED_DATABASE), "ATTACHED_DATABASE" }
+		{ static_cast<uint32_t>(UndoFlags::ATTACHED_DATABASE), "ATTACHED_DATABASE" },
+		{ static_cast<uint32_t>(UndoFlags::UPDATE_ROWS), "UPDATE_ROWS" }
 	};
 	return values;
 }
 
 template<>
 const char* EnumUtil::ToChars<UndoFlags>(UndoFlags value) {
-	return StringUtil::EnumToString(GetUndoFlagsValues(), 7, "UndoFlags", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetUndoFlagsValues(), 8, "UndoFlags", static_cast<uint32_t>(value));
 }
 
 template<>
 UndoFlags EnumUtil::FromString<UndoFlags>(const char *value) {
-	return static_cast<UndoFlags>(StringUtil::StringToEnum(GetUndoFlagsValues(), 7, "UndoFlags", value));
+	return static_cast<UndoFlags>(StringUtil::StringToEnum(GetUndoFlagsValues(), 8, "UndoFlags", value));
 }
 
 const StringUtil::EnumStringLiteral *GetUnionInvalidReasonValues() {

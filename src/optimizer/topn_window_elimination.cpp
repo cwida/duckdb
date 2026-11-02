@@ -616,6 +616,12 @@ bool TopNWindowElimination::CanOptimize(LogicalOperator &op) {
 		const auto current_column_ref = column_references.begin()->first;
 		column_references.clear();
 		D_ASSERT(current_column_ref.table_index == projection.table_index);
+		// The filter has to name the window column itself. An expression that only mentions it, such as
+		// row_number + 10, is a different predicate, and following the inner reference would drop that expression.
+		auto &proj_expr = *projection.expressions[current_column_ref.column_index];
+		if (proj_expr.GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
+			return false;
+		}
 		VisitExpression(&projection.expressions[current_column_ref.column_index]);
 
 		child = *child.get().children[0];
