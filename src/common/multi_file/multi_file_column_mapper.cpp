@@ -728,6 +728,10 @@ static PushdownExtractMapping GetPushdownExtractMapping(ClientContext &context,
 		return PushdownExtractMapping::WHOLE_COLUMN;
 	}
 	auto &local_column = local_columns[local_idx];
+	if (local_column.type.id() == LogicalTypeId::SQLNULL) {
+		// an explicitly NULL field is NULL whatever is extracted from it
+		return PushdownExtractMapping::NULL_VALUE;
+	}
 	if (!global_index.IsPushdownExtract() || global_column.type.id() != LogicalTypeId::STRUCT ||
 	    local_column.type.id() != LogicalTypeId::STRUCT) {
 		return PushdownExtractMapping::PUSHDOWN;
