@@ -39,8 +39,9 @@ WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
 ----
 0	5
 
-# protection: the pre-planning analysis still classifies volatility, observably through
-# wave merging: a constant subquery argument merges, a volatile one stays per-batch
+# wave-policy protection: a constant subquery argument merges, a volatile one stays
+# per-batch. Volatile subplans are also caught by the repeatability analysis, so these
+# cases pin the observable policy, and the merged case rejects an always-volatile capture
 query II
 EXPLAIN WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
 	(VALUES (1, 0))
