@@ -69,6 +69,33 @@ static vector<bool> CollectJoinBuildStages(const PipelineSchedule &schedule) {
 	return build_stages;
 }
 
+static PipelineSchedule RuntimeFilterDependencyCheck(const PipelineSchedule &schedule) {
+	PipelineSchedule result;
+	result.stages = schedule.stages;
+	reference_map_t<Pipeline, idx_t> completions;
+	for (idx_t i = 0; i < result.stages.size(); i++) {
+		auto &stage = result.stages[i];
+		if (stage.type == PipelineScheduleStageType::COMPLETE) {
+			completions.emplace(*stage.pipeline, i);
+		}
+	}
+	for (auto &stage : result.stages) {
+		if (stage.type != PipelineScheduleStageType::EXECUTE) {
+			continue;
+		}
+		// Streaming consumers can wait for producer rows despite depending only on initialization.
+		for (auto &dependency : stage.pipeline->GetDataflowDependencies()) {
+			auto producer = dependency.lock();
+			D_ASSERT(producer);
+			auto completion = completions.find(*producer);
+			if (completion != completions.end()) {
+				stage.dependencies.push_back(completion->second);
+			}
+		}
+	}
+	return result;
+}
+
 void ScheduleRuntimeFilters(PipelineSchedule &schedule) {
 	reference_map_t<PhysicalComparisonJoin, vector<idx_t>> publications;
 	vector<reference<PhysicalComparisonJoin>> producers;
@@ -90,24 +117,30 @@ void ScheduleRuntimeFilters(PipelineSchedule &schedule) {
 		return;
 	}
 
+	auto dependency_check = RuntimeFilterDependencyCheck(schedule);
 	auto join_build_stages = CollectJoinBuildStages(schedule);
 	reference_map_t<DynamicTableFilterSet, vector<idx_t>> sources;
 	for (idx_t stage_idx = 0; stage_idx < schedule.stages.size(); stage_idx++) {
 		auto &stage = schedule.stages[stage_idx];
 		auto &pipeline = *stage.pipeline;
 		auto source = pipeline.GetSource();
-		if (stage.type != PipelineScheduleStageType::EXECUTE || join_build_stages[stage_idx] || !source ||
+		if (stage.type != PipelineScheduleStageType::EXECUTE || !source ||
 		    source->type != PhysicalOperatorType::TABLE_SCAN || pipeline.HasSourceState() ||
 		    pipeline.IsExternalInput()) {
 			continue;
 		}
 		auto &scan = source->Cast<PhysicalTableScan>();
 		if (!scan.dynamic_filters ||
-		    scan.function.global_initialization == TableFunctionInitialization::INITIALIZE_ON_SCHEDULE ||
-		    (scan.table_filters && (scan.table_filters->HasFilters() || scan.table_filters->HasMultiColumnFilters()))) {
+		    scan.function.global_initialization == TableFunctionInitialization::INITIALIZE_ON_SCHEDULE) {
 			continue;
 		}
-		sources[*scan.dynamic_filters].push_back(stage_idx);
+		if (!join_build_stages[stage_idx] && (!scan.table_filters || (!scan.table_filters->HasFilters() &&
+		                                                              !scan.table_filters->HasMultiColumnFilters()))) {
+			sources[*scan.dynamic_filters].push_back(stage_idx);
+		}
+		for (auto &filters : scan.dynamic_filters->GetDisjunctionFilters()) {
+			sources[filters.get()].push_back(stage_idx);
+		}
 	}
 
 	for (auto &producer_ref : producers) {
@@ -124,7 +157,9 @@ void ScheduleRuntimeFilters(PipelineSchedule &schedule) {
 				continue;
 			}
 			for (auto execution : source->second) {
-				schedule.TryAddDependency(execution, publication[0]);
+				if (dependency_check.TryAddDependency(execution, publication[0])) {
+					schedule.TryAddDependency(execution, publication[0]);
+				}
 			}
 		}
 	}
