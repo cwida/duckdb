@@ -673,9 +673,7 @@ bool RelationManager::ExtractJoinRelations(JoinOrderOptimizer &optimizer, Logica
 
 		if (delim_join.join_type == JoinType::SEMI || delim_join.join_type == JoinType::ANTI ||
 		    delim_join.join_type == JoinType::RIGHT_SEMI || delim_join.join_type == JoinType::RIGHT_ANTI) {
-			auto estimate = RelationStatisticsHelper::EstimateSemiAntiJoinCardinality(delim_join, lhs_stats, rhs_stats);
-			auto cardinality = LossyNumericCast<idx_t>(estimate.cardinality);
-			RelationStatisticsHelper::ApplyCardinality(dj_stats, cardinality);
+			RelationStatisticsHelper::ApplySemiAntiJoinStats(delim_join, lhs_stats, rhs_stats, dj_stats);
 		} else {
 			for (auto &column : dj_stats.columns) {
 				column.semi_anti_join_domain_evidence.Invalidate();

@@ -70,6 +70,8 @@ public:
 	static optional<RelationStats> ProjectOutputStats(const RelationStats &stats, LogicalOperator &op);
 	static optional<RelationStats> RebindOutputStats(const RelationStats &stats, LogicalOperator &op);
 	static optional<DistinctCount> SelectTotalDomain(const vector<DistinctCount> &domains);
+	static void ApplySemiAntiJoinStats(LogicalComparisonJoin &join, const RelationStats &left,
+	                                   const RelationStats &right, RelationStats &result);
 	static idx_t CardinalityFromDouble(double cardinality);
 	static idx_t EstimateDistinctCardinality(const vector<DistinctCount> &distinct_counts, idx_t input_cardinality);
 	static DistinctCount EstimateCurrentDomain(const DistinctCount &current_domain, idx_t input_cardinality,
