@@ -34,17 +34,18 @@ idx_t ListSearchSimpleOp(const Vector &input_list, const Vector &list_child, con
 
 		const bool target_valid = target_entry.IsValid();
 
+		// An empty list never contains anything, not even NULL.
+		if (list.length == 0 && !return_pos) {
+			result_data.WriteValue(RETURN_TYPE(false));
+			continue;
+		}
+
 		// We are finished, if we are not looking for NULL, and the target is NULL.
 		const auto finished = !FIND_NULLS && !target_valid;
 		// We did not find the target (finished, or list is empty).
 		if (finished || list.length == 0) {
-			if (finished || return_pos) {
-				// Return NULL as the position.
-				result_data.WriteNull();
-			} else {
-				// Set 'contains' to false.
-				result_data.WriteValue(RETURN_TYPE(false));
-			}
+			// Return NULL as the position.
+			result_data.WriteNull();
 			continue;
 		}
 

@@ -1,0 +1,66 @@
+# name: test/sql/types/struct/unnest_struct_distinct.test
+# description: DISTINCT covers all columns produced by an UNNEST of a struct
+# group: [struct]
+
+# the struct expands into two columns, the list into a third: all three rows differ
+query III
+SELECT DISTINCT unnest({'a': 44, 'b': 88}), unnest([1, 2, 3]) ORDER BY 3;
+----
+44	88	1
+44	88	2
+44	88	3
+
+# the same with the struct last
+query III
+SELECT DISTINCT unnest([1, 2, 3]), unnest({'a': 44, 'b': 88}) ORDER BY 1;
+----
+1	44	88
+2	44	88
+3	44	88
+
+# rows that only differ in the second struct field are distinct
+query II
+SELECT DISTINCT unnest({'a': 1, 'b': x}) FROM (VALUES (1), (2), (1)) t(x) ORDER BY 2;
+----
+1	1
+1	2
+
+# rows that are equal in every expanded column collapse
+query III
+SELECT DISTINCT unnest({'a': 1, 'b': 2}), unnest([7, 7, 7]);
+----
+1	2	7
+
+# two struct unnests
+query IIII
+SELECT DISTINCT unnest({'a': 1, 'b': 2}), unnest({'c': x, 'd': 4}) FROM (VALUES (3), (3), (5)) t(x) ORDER BY 3;
+----
+1	2	3	4
+1	2	5	4
+
+# DISTINCT ON next to a struct unnest is unchanged
+query III
+SELECT DISTINCT ON (x) x, unnest({'a': x, 'b': 0}) FROM (VALUES (1), (1), (2)) t(x) ORDER BY x;
+----
+1	1	0
+2	2	0
+
+# with a regular column before the struct
+query III
+SELECT DISTINCT x, unnest({'a': x, 'b': 0}) FROM (VALUES (1), (1), (2)) t(x) ORDER BY 1;
+----
+1	1	0
+2	2	0
+
+# an ORDER BY on a column that is not in the select list is not part of the DISTINCT
+query II
+SELECT DISTINCT unnest({'a': x, 'b': 0}) FROM (VALUES (2), (1), (1)) t(x) ORDER BY x DESC;
+----
+2	0
+1	0
+
+# a collated struct field
+query II
+SELECT DISTINCT unnest({'a': s COLLATE NOCASE, 'b': 1}) FROM (VALUES ('a'), ('A')) t(s);
+----
+a	1

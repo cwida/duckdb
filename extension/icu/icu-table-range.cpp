@@ -203,7 +203,7 @@ struct ICUTableRange {
 			return nullptr;
 		}
 		auto &bind_data = bind_data_p->Cast<ICURangeBindData>();
-		return make_uniq<NodeStatistics>(bind_data.cardinality, bind_data.cardinality);
+		return make_uniq<NodeStatistics>(bind_data.cardinality);
 	}
 
 	template <bool GENERATE_SERIES>
