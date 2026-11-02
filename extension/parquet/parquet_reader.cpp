@@ -1900,12 +1900,15 @@ FilterPropagateResult ParquetReader::CheckRowGroupFilterStatistics(ClientContext
 	return prune_result;
 }
 
-bool ParquetReader::DynamicFiltersExcludeRowGroup(ClientContext &context, ParquetReaderScanState &state) {
+bool ParquetReader::FiltersExcludeRowGroup(ClientContext &context, ParquetReaderScanState &state,
+                                           bool dynamic_filters_only) {
 	for (auto &scan_filter : state.scan_filters) {
-		auto &expr_filter =
-		    ExpressionFilter::GetExpressionFilter(scan_filter.filter, "ParquetReader::DynamicFiltersExcludeRowGroup");
-		if (!ExpressionFilter::ContainsInternalFunction(*expr_filter.expr, DynamicFilterScalarFun::NAME)) {
-			continue;
+		if (dynamic_filters_only) {
+			auto &expr_filter =
+			    ExpressionFilter::GetExpressionFilter(scan_filter.filter, "ParquetReader::FiltersExcludeRowGroup");
+			if (!ExpressionFilter::ContainsInternalFunction(*expr_filter.expr, DynamicFilterScalarFun::NAME)) {
+				continue;
+			}
 		}
 		auto &column_reader = state.GetColumnReader(MultiFileLocalIndex(scan_filter.filter_idx));
 		auto prune_result = CheckRowGroupFilterStatistics(context, state, column_reader, scan_filter.filter);
@@ -1934,6 +1937,11 @@ void ParquetReader::PrepareRowGroupBuffer(ClientContext &context, ParquetReaderS
 		                            GetFileName(), group.num_rows);
 	}
 	auto row_group_num_rows = NumericCast<idx_t>(group.num_rows);
+
+	if (filters && row_group_num_rows > 0 && state.offset_in_group == row_group_num_rows) {
+		// the row group is already ruled out (statistics pass or an earlier column): no Bloom filter reads
+		return;
+	}
 
 	if (filters) {
 		// filters contain output chunk index, not file col idx!
@@ -2593,6 +2601,11 @@ ParquetPrefetchStrategy ParquetReader::RegisterRowGroupReads(ClientContext &cont
 	state.group_offset = GetRowGroupOffset(*this, state.group_index);
 
 	auto &group = GetGroup(state);
+	// rule the row group out on the statistics of all filters before any column reads a Bloom filter
+	if (filters && group.num_rows > 0 && FiltersExcludeRowGroup(context, state, false)) {
+		rows_read += NumericCast<idx_t>(group.num_rows);
+		state.offset_in_group = NumericCast<idx_t>(group.num_rows);
+	}
 	// several readers can read the same column chunk (e.g. two fields of one variant column), count each chunk once
 	unordered_set<idx_t> scanned_column_chunks;
 	for (idx_t i = 0; i < column_ids.size(); i++) {
@@ -2851,7 +2864,7 @@ AsyncResult ParquetReader::Process(ClientContext &context, ParquetReaderScanStat
 	    Logger::Get(context).ShouldLog(ParquetPrefetchLogType::NAME, ParquetPrefetchLogType::LEVEL);
 	const idx_t group_num_rows = GetGroup(state).num_rows;
 	// Queued row groups may predate the current dynamic filter. Do not revisit a partially decoded chunk.
-	if (state.offset_in_group == 0 && !state.resuming_payload && DynamicFiltersExcludeRowGroup(context, state)) {
+	if (state.offset_in_group == 0 && !state.resuming_payload && FiltersExcludeRowGroup(context, state, true)) {
 		rows_read += group_num_rows;
 		state.offset_in_group = group_num_rows;
 	}
