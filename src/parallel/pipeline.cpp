@@ -1076,8 +1076,13 @@ void PipelineBuildState::AddBufferedConsumer(Pipeline &pipeline, PhysicalOperato
 //! itself live. This computes a least fixed point of stage and exchange liveness over the scheduled and analysis
 //! dependencies and returns a buffered consumer of an exchange that cannot be proven live, if any. Such a consumer
 //! is demoted to the materialized working table, which removes the producer's dependence on it.
+//! Before demoting, the caller tries the optional_candidates: execute-to-execute edges in the dead exchanges'
+//! gating regions. When such an edge is an optional ordering (cross product and union siblings are ordered for
+//! memory, not correctness), removing it can revive the exchange and preserve streaming, which beats falling back
+//! to a full materialization.
 static optional_ptr<PipelineBufferedConsumerRecord>
-FindExchangeStarvedBufferedConsumer(PipelineBuildStateData &data, const PipelineSchedule &schedule) {
+FindExchangeStarvedBufferedConsumer(PipelineBuildStateData &data, const PipelineSchedule &schedule,
+                                    vector<pair<reference<Pipeline>, reference<Pipeline>>> &optional_candidates) {
 	struct ExchangeLiveness {
 		vector<reference<PipelineBufferedConsumerRecord>> records;
 		bool has_direct = false;
@@ -1326,6 +1331,58 @@ FindExchangeStarvedBufferedConsumer(PipelineBuildStateData &data, const Pipeline
 		}
 	}
 
+	// Collect candidate ordering edges in the dead exchanges' gating regions, in registration order for
+	// deterministic removal: walk from each record's and producer's execute stage through non-live stages and
+	// record every execute-to-execute edge onto a non-live dependency. Only edges that are optional orderings
+	// can actually be removed; the caller filters by attempting the removal.
+	vector<bool> walked(stage_count, false);
+	auto collect_gating_edges = [&](idx_t seed_stage) {
+		vector<idx_t> worklist {seed_stage};
+		while (!worklist.empty()) {
+			auto stage_idx = worklist.back();
+			worklist.pop_back();
+			if (walked[stage_idx]) {
+				continue;
+			}
+			walked[stage_idx] = true;
+			auto &stage = schedule.stages[stage_idx];
+			for (auto dependency : stage.dependencies) {
+				if (stage_live[dependency]) {
+					continue;
+				}
+				auto &target = schedule.stages[dependency];
+				if (stage.type == PipelineScheduleStageType::EXECUTE &&
+				    target.type == PipelineScheduleStageType::EXECUTE) {
+					optional_candidates.emplace_back(*stage.pipeline, *target.pipeline);
+				}
+				worklist.push_back(dependency);
+			}
+			for (auto dependency : stage.analysis_dependencies) {
+				if (!stage_live[dependency]) {
+					worklist.push_back(dependency);
+				}
+			}
+		}
+	};
+	for (auto &record : data.buffered_consumers) {
+		if (record.demoted) {
+			continue;
+		}
+		auto entry = exchanges.find(record.cte.get());
+		if (entry == exchanges.end() || entry->second.live) {
+			continue;
+		}
+		auto execute_stage = record_execute_stage(record);
+		if (execute_stage.IsValid()) {
+			collect_gating_edges(execute_stage.GetIndex());
+		}
+		for (auto &producer_entry : producer_execute_stages) {
+			if (&producer_entry.first.get() == &entry->second) {
+				collect_gating_edges(producer_entry.second);
+			}
+		}
+	}
+
 	// Select the victim in registration order: the exchange map is keyed by pointers, and an address-dependent
 	// choice would make the demoted side of mutually gated exchanges differ across runs.
 	optional_ptr<PipelineBufferedConsumerRecord> fallback;
@@ -1356,10 +1413,11 @@ void PipelineBuildState::AddCTEPipelineSelection(PhysicalCTE &cte, Pipeline &pip
 	data->cte_selections.emplace_back(cte, pipeline, std::move(cte_dependency), dependency_added);
 }
 
-void PipelineBuildState::ResolveExternalInputs(const vector<shared_ptr<MetaPipeline>> &meta_pipelines,
-                                               bool model_runtime_filter_edges) {
+unique_ptr<PipelineSchedule>
+PipelineBuildState::ResolveExternalInputs(const vector<shared_ptr<MetaPipeline>> &meta_pipelines,
+                                          bool model_runtime_filter_edges) {
 	if (data->external_input_candidates.empty() && data->buffered_consumers.empty()) {
-		return;
+		return nullptr;
 	}
 	if (!data->external_input_candidates.empty()) {
 		SelectExternalInputCandidates(*data);
@@ -1415,6 +1473,7 @@ void PipelineBuildState::ResolveExternalInputs(const vector<shared_ptr<MetaPipel
 	};
 
 	vector<RemovedOptionalPipelineDependency> removed_dependencies;
+	unique_ptr<PipelineSchedule> validated_schedule;
 	while (true) {
 		auto schedule = BuildPipelineSchedule(meta_pipelines);
 		if (model_runtime_filter_edges) {
@@ -1430,9 +1489,25 @@ void PipelineBuildState::ResolveExternalInputs(const vector<shared_ptr<MetaPipel
 		}
 		auto cycle = schedule->GetCycle();
 		if (cycle.empty()) {
-			auto starved = FindExchangeStarvedBufferedConsumer(*data, *schedule);
+			vector<pair<reference<Pipeline>, reference<Pipeline>>> optional_candidates;
+			auto starved = FindExchangeStarvedBufferedConsumer(*data, *schedule, optional_candidates);
 			if (!starved) {
+				validated_schedule = std::move(schedule);
 				break;
+			}
+			// An optional ordering (cross product and union siblings) in the gating region can starve the
+			// exchange. Dropping the ordering preserves streaming and beats a full materialization, so try
+			// that before demoting, mirroring the cycle path below.
+			bool removed_optional = false;
+			for (auto &candidate : optional_candidates) {
+				if (MetaPipeline::RemoveOptionalDependency(candidate.first.get(), candidate.second.get())) {
+					removed_dependencies.emplace_back(candidate.first.get(), candidate.second.get());
+					removed_optional = true;
+					break;
+				}
+			}
+			if (removed_optional) {
+				continue;
 			}
 			demote_buffered_consumer(*starved);
 			RestoreOptionalDependencies(removed_dependencies);
@@ -1479,6 +1554,9 @@ void PipelineBuildState::ResolveExternalInputs(const vector<shared_ptr<MetaPipel
 		D_ASSERT(!final_schedule->HasCycle());
 	}
 #endif
+	// Hand the validated graph to the executor: the consumer registrations above change modes and batch
+	// preferences, never schedule edges, so this is the graph the analysis proved live and acyclic.
+	return validated_schedule;
 }
 
 } // namespace duckdb
