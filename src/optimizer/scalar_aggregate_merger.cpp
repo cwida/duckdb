@@ -53,33 +53,10 @@ static bool IsMergeableAggregateFunction(const BoundAggregateExpression &aggrega
 	return argument_count == 1 && (name == "count" || name == "sum" || name == "avg" || name == "min" || name == "max");
 }
 
-//! Whether evaluating `expr` on rows it was not evaluated on before can throw (a failing cast, an error()).
-//! A subtree that reads no column is one value on every row, so more rows cannot make it throw.
-static bool CanThrowOnOtherRows(const Expression &expr) {
-	if (expr.IsFoldable() || !expr.CanThrow()) {
-		return false;
-	}
-	bool child_can_throw = false;
-	ExpressionIterator::EnumerateChildren(expr, [&](const Expression &child) { child_can_throw |= child.CanThrow(); });
-	if (!child_can_throw) {
-		// what throws is this expression itself
-		return true;
-	}
-	if (expr.GetExpressionClass() == ExpressionClass::BOUND_FUNCTION) {
-		auto &function = expr.Cast<BoundFunctionExpression>().Function();
-		if (function.GetErrorMode() == FunctionErrors::CAN_THROW_RUNTIME_ERROR || function.HasBindLambdaCallback()) {
-			return true;
-		}
-	}
-	bool can_throw = false;
-	ExpressionIterator::EnumerateChildren(
-	    expr, [&](const Expression &child) { can_throw = can_throw || CanThrowOnOtherRows(child); });
-	return can_throw;
-}
-
-//! An expression that may be evaluated on more rows than before: neither volatile nor able to throw on them
+//! An expression that may be evaluated on more rows than before: neither volatile nor able to throw. A foldable
+//! subtree that can throw failed to fold, and a CASE or OR above it decides per row whether it is reached.
 static bool IsSafeOnOtherRows(const Expression &expr) {
-	return !expr.IsVolatile() && !CanThrowOnOtherRows(expr);
+	return !expr.IsVolatile() && !expr.CanThrow();
 }
 
 static bool IsMergeableAggregate(const Expression &expr) {

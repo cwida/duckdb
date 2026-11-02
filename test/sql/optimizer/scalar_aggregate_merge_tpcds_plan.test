@@ -1,0 +1,609 @@
+# name: test/sql/optimizer/scalar_aggregate_merge_tpcds_plan.test
+# description: TPC-DS q9, q28, q88 and q90 read their fact table once
+# group: [optimizer]
+
+require tpcds
+
+statement ok
+CALL dsdgen(sf=0.01)
+
+# q9: fifteen scalar subqueries of store_sales become one scan
+query II
+EXPLAIN SELECT CASE
+           WHEN
+                  (SELECT count(*)
+                   FROM store_sales
+                   WHERE ss_quantity BETWEEN 1 AND 20) > 74129 THEN
+                  (SELECT avg(ss_ext_discount_amt)
+                   FROM store_sales
+                   WHERE ss_quantity BETWEEN 1 AND 20)
+           ELSE
+                  (SELECT avg(ss_net_paid)
+                   FROM store_sales
+                   WHERE ss_quantity BETWEEN 1 AND 20)
+       END bucket1,
+       CASE
+           WHEN
+                  (SELECT count(*)
+                   FROM store_sales
+                   WHERE ss_quantity BETWEEN 21 AND 40) > 122840 THEN
+                  (SELECT avg(ss_ext_discount_amt)
+                   FROM store_sales
+                   WHERE ss_quantity BETWEEN 21 AND 40)
+           ELSE
+                  (SELECT avg(ss_net_paid)
+                   FROM store_sales
+                   WHERE ss_quantity BETWEEN 21 AND 40)
+       END bucket2,
+       CASE
+           WHEN
+                  (SELECT count(*)
+                   FROM store_sales
+                   WHERE ss_quantity BETWEEN 41 AND 60) > 56580 THEN
+                  (SELECT avg(ss_ext_discount_amt)
+                   FROM store_sales
+                   WHERE ss_quantity BETWEEN 41 AND 60)
+           ELSE
+                  (SELECT avg(ss_net_paid)
+                   FROM store_sales
+                   WHERE ss_quantity BETWEEN 41 AND 60)
+       END bucket3,
+       CASE
+           WHEN
+                  (SELECT count(*)
+                   FROM store_sales
+                   WHERE ss_quantity BETWEEN 61 AND 80) > 10097 THEN
+                  (SELECT avg(ss_ext_discount_amt)
+                   FROM store_sales
+                   WHERE ss_quantity BETWEEN 61 AND 80)
+           ELSE
+                  (SELECT avg(ss_net_paid)
+                   FROM store_sales
+                   WHERE ss_quantity BETWEEN 61 AND 80)
+       END bucket4,
+       CASE
+           WHEN
+                  (SELECT count(*)
+                   FROM store_sales
+                   WHERE ss_quantity BETWEEN 81 AND 100) > 165306 THEN
+                  (SELECT avg(ss_ext_discount_amt)
+                   FROM store_sales
+                   WHERE ss_quantity BETWEEN 81 AND 100)
+           ELSE
+                  (SELECT avg(ss_net_paid)
+                   FROM store_sales
+                   WHERE ss_quantity BETWEEN 81 AND 100)
+       END bucket5
+FROM reason
+WHERE r_reason_sk = 1
+----
+physical_plan	<REGEX>:[\s\S]*Table: (\S*\.)?store_sales\b[\s\S]*
+
+query II
+EXPLAIN SELECT CASE
+           WHEN
+                  (SELECT count(*)
+                   FROM store_sales
+                   WHERE ss_quantity BETWEEN 1 AND 20) > 74129 THEN
+                  (SELECT avg(ss_ext_discount_amt)
+                   FROM store_sales
+                   WHERE ss_quantity BETWEEN 1 AND 20)
+           ELSE
+                  (SELECT avg(ss_net_paid)
+                   FROM store_sales
+                   WHERE ss_quantity BETWEEN 1 AND 20)
+       END bucket1,
+       CASE
+           WHEN
+                  (SELECT count(*)
+                   FROM store_sales
+                   WHERE ss_quantity BETWEEN 21 AND 40) > 122840 THEN
+                  (SELECT avg(ss_ext_discount_amt)
+                   FROM store_sales
+                   WHERE ss_quantity BETWEEN 21 AND 40)
+           ELSE
+                  (SELECT avg(ss_net_paid)
+                   FROM store_sales
+                   WHERE ss_quantity BETWEEN 21 AND 40)
+       END bucket2,
+       CASE
+           WHEN
+                  (SELECT count(*)
+                   FROM store_sales
+                   WHERE ss_quantity BETWEEN 41 AND 60) > 56580 THEN
+                  (SELECT avg(ss_ext_discount_amt)
+                   FROM store_sales
+                   WHERE ss_quantity BETWEEN 41 AND 60)
+           ELSE
+                  (SELECT avg(ss_net_paid)
+                   FROM store_sales
+                   WHERE ss_quantity BETWEEN 41 AND 60)
+       END bucket3,
+       CASE
+           WHEN
+                  (SELECT count(*)
+                   FROM store_sales
+                   WHERE ss_quantity BETWEEN 61 AND 80) > 10097 THEN
+                  (SELECT avg(ss_ext_discount_amt)
+                   FROM store_sales
+                   WHERE ss_quantity BETWEEN 61 AND 80)
+           ELSE
+                  (SELECT avg(ss_net_paid)
+                   FROM store_sales
+                   WHERE ss_quantity BETWEEN 61 AND 80)
+       END bucket4,
+       CASE
+           WHEN
+                  (SELECT count(*)
+                   FROM store_sales
+                   WHERE ss_quantity BETWEEN 81 AND 100) > 165306 THEN
+                  (SELECT avg(ss_ext_discount_amt)
+                   FROM store_sales
+                   WHERE ss_quantity BETWEEN 81 AND 100)
+           ELSE
+                  (SELECT avg(ss_net_paid)
+                   FROM store_sales
+                   WHERE ss_quantity BETWEEN 81 AND 100)
+       END bucket5
+FROM reason
+WHERE r_reason_sk = 1
+----
+physical_plan	<!REGEX>:[\s\S]*Table: (\S*\.)?store_sales\b[\s\S]*Table: (\S*\.)?store_sales\b[\s\S]*
+
+# q28: six derived tables with DISTINCT aggregates become one scan
+query II
+EXPLAIN SELECT *
+FROM
+  (SELECT avg(ss_list_price) B1_LP,
+          count(ss_list_price) B1_CNT,
+          count(DISTINCT ss_list_price) B1_CNTD
+   FROM store_sales
+   WHERE ss_quantity BETWEEN 0 AND 5
+     AND (ss_list_price BETWEEN 8 AND 8+10
+          OR ss_coupon_amt BETWEEN 459 AND 459+1000
+          OR ss_wholesale_cost BETWEEN 57 AND 57+20)) B1,
+  (SELECT avg(ss_list_price) B2_LP,
+          count(ss_list_price) B2_CNT,
+          count(DISTINCT ss_list_price) B2_CNTD
+   FROM store_sales
+   WHERE ss_quantity BETWEEN 6 AND 10
+     AND (ss_list_price BETWEEN 90 AND 90+10
+          OR ss_coupon_amt BETWEEN 2323 AND 2323+1000
+          OR ss_wholesale_cost BETWEEN 31 AND 31+20)) B2,
+  (SELECT avg(ss_list_price) B3_LP,
+          count(ss_list_price) B3_CNT,
+          count(DISTINCT ss_list_price) B3_CNTD
+   FROM store_sales
+   WHERE ss_quantity BETWEEN 11 AND 15
+     AND (ss_list_price BETWEEN 142 AND 142+10
+          OR ss_coupon_amt BETWEEN 12214 AND 12214+1000
+          OR ss_wholesale_cost BETWEEN 79 AND 79+20)) B3,
+  (SELECT avg(ss_list_price) B4_LP,
+          count(ss_list_price) B4_CNT,
+          count(DISTINCT ss_list_price) B4_CNTD
+   FROM store_sales
+   WHERE ss_quantity BETWEEN 16 AND 20
+     AND (ss_list_price BETWEEN 135 AND 135+10
+          OR ss_coupon_amt BETWEEN 6071 AND 6071+1000
+          OR ss_wholesale_cost BETWEEN 38 AND 38+20)) B4,
+  (SELECT avg(ss_list_price) B5_LP,
+          count(ss_list_price) B5_CNT,
+          count(DISTINCT ss_list_price) B5_CNTD
+   FROM store_sales
+   WHERE ss_quantity BETWEEN 21 AND 25
+     AND (ss_list_price BETWEEN 122 AND 122+10
+          OR ss_coupon_amt BETWEEN 836 AND 836+1000
+          OR ss_wholesale_cost BETWEEN 17 AND 17+20)) B5,
+  (SELECT avg(ss_list_price) B6_LP,
+          count(ss_list_price) B6_CNT,
+          count(DISTINCT ss_list_price) B6_CNTD
+   FROM store_sales
+   WHERE ss_quantity BETWEEN 26 AND 30
+     AND (ss_list_price BETWEEN 154 AND 154+10
+          OR ss_coupon_amt BETWEEN 7326 AND 7326+1000
+          OR ss_wholesale_cost BETWEEN 7 AND 7+20)) B6
+LIMIT 100
+----
+physical_plan	<REGEX>:[\s\S]*Table: (\S*\.)?store_sales\b[\s\S]*
+
+query II
+EXPLAIN SELECT *
+FROM
+  (SELECT avg(ss_list_price) B1_LP,
+          count(ss_list_price) B1_CNT,
+          count(DISTINCT ss_list_price) B1_CNTD
+   FROM store_sales
+   WHERE ss_quantity BETWEEN 0 AND 5
+     AND (ss_list_price BETWEEN 8 AND 8+10
+          OR ss_coupon_amt BETWEEN 459 AND 459+1000
+          OR ss_wholesale_cost BETWEEN 57 AND 57+20)) B1,
+  (SELECT avg(ss_list_price) B2_LP,
+          count(ss_list_price) B2_CNT,
+          count(DISTINCT ss_list_price) B2_CNTD
+   FROM store_sales
+   WHERE ss_quantity BETWEEN 6 AND 10
+     AND (ss_list_price BETWEEN 90 AND 90+10
+          OR ss_coupon_amt BETWEEN 2323 AND 2323+1000
+          OR ss_wholesale_cost BETWEEN 31 AND 31+20)) B2,
+  (SELECT avg(ss_list_price) B3_LP,
+          count(ss_list_price) B3_CNT,
+          count(DISTINCT ss_list_price) B3_CNTD
+   FROM store_sales
+   WHERE ss_quantity BETWEEN 11 AND 15
+     AND (ss_list_price BETWEEN 142 AND 142+10
+          OR ss_coupon_amt BETWEEN 12214 AND 12214+1000
+          OR ss_wholesale_cost BETWEEN 79 AND 79+20)) B3,
+  (SELECT avg(ss_list_price) B4_LP,
+          count(ss_list_price) B4_CNT,
+          count(DISTINCT ss_list_price) B4_CNTD
+   FROM store_sales
+   WHERE ss_quantity BETWEEN 16 AND 20
+     AND (ss_list_price BETWEEN 135 AND 135+10
+          OR ss_coupon_amt BETWEEN 6071 AND 6071+1000
+          OR ss_wholesale_cost BETWEEN 38 AND 38+20)) B4,
+  (SELECT avg(ss_list_price) B5_LP,
+          count(ss_list_price) B5_CNT,
+          count(DISTINCT ss_list_price) B5_CNTD
+   FROM store_sales
+   WHERE ss_quantity BETWEEN 21 AND 25
+     AND (ss_list_price BETWEEN 122 AND 122+10
+          OR ss_coupon_amt BETWEEN 836 AND 836+1000
+          OR ss_wholesale_cost BETWEEN 17 AND 17+20)) B5,
+  (SELECT avg(ss_list_price) B6_LP,
+          count(ss_list_price) B6_CNT,
+          count(DISTINCT ss_list_price) B6_CNTD
+   FROM store_sales
+   WHERE ss_quantity BETWEEN 26 AND 30
+     AND (ss_list_price BETWEEN 154 AND 154+10
+          OR ss_coupon_amt BETWEEN 7326 AND 7326+1000
+          OR ss_wholesale_cost BETWEEN 7 AND 7+20)) B6
+LIMIT 100
+----
+physical_plan	<!REGEX>:[\s\S]*Table: (\S*\.)?store_sales\b[\s\S]*Table: (\S*\.)?store_sales\b[\s\S]*
+
+# q88: eight count(*)s over the same join of four tables become one join: time_dim is read once, and the OR of the
+# eight time_dim predicates is factored into a t_hour filter on its scan (the merged OR goes through the rewriter)
+query II
+EXPLAIN SELECT *
+FROM
+  (SELECT count(*) h8_30_to_9
+   FROM store_sales,
+        household_demographics,
+        time_dim,
+        store
+   WHERE ss_sold_time_sk = time_dim.t_time_sk
+     AND ss_hdemo_sk = household_demographics.hd_demo_sk
+     AND ss_store_sk = s_store_sk
+     AND time_dim.t_hour = 8
+     AND time_dim.t_minute >= 30
+     AND ((household_demographics.hd_dep_count = 4
+           AND household_demographics.hd_vehicle_count<=4+2)
+          OR (household_demographics.hd_dep_count = 2
+              AND household_demographics.hd_vehicle_count<=2+2)
+          OR (household_demographics.hd_dep_count = 0
+              AND household_demographics.hd_vehicle_count<=0+2))
+     AND store.s_store_name = 'ese') s1,
+  (SELECT count(*) h9_to_9_30
+   FROM store_sales,
+        household_demographics,
+        time_dim,
+        store
+   WHERE ss_sold_time_sk = time_dim.t_time_sk
+     AND ss_hdemo_sk = household_demographics.hd_demo_sk
+     AND ss_store_sk = s_store_sk
+     AND time_dim.t_hour = 9
+     AND time_dim.t_minute < 30
+     AND ((household_demographics.hd_dep_count = 4
+           AND household_demographics.hd_vehicle_count<=4+2)
+          OR (household_demographics.hd_dep_count = 2
+              AND household_demographics.hd_vehicle_count<=2+2)
+          OR (household_demographics.hd_dep_count = 0
+              AND household_demographics.hd_vehicle_count<=0+2))
+     AND store.s_store_name = 'ese') s2,
+  (SELECT count(*) h9_30_to_10
+   FROM store_sales,
+        household_demographics,
+        time_dim,
+        store
+   WHERE ss_sold_time_sk = time_dim.t_time_sk
+     AND ss_hdemo_sk = household_demographics.hd_demo_sk
+     AND ss_store_sk = s_store_sk
+     AND time_dim.t_hour = 9
+     AND time_dim.t_minute >= 30
+     AND ((household_demographics.hd_dep_count = 4
+           AND household_demographics.hd_vehicle_count<=4+2)
+          OR (household_demographics.hd_dep_count = 2
+              AND household_demographics.hd_vehicle_count<=2+2)
+          OR (household_demographics.hd_dep_count = 0
+              AND household_demographics.hd_vehicle_count<=0+2))
+     AND store.s_store_name = 'ese') s3,
+  (SELECT count(*) h10_to_10_30
+   FROM store_sales,
+        household_demographics,
+        time_dim,
+        store
+   WHERE ss_sold_time_sk = time_dim.t_time_sk
+     AND ss_hdemo_sk = household_demographics.hd_demo_sk
+     AND ss_store_sk = s_store_sk
+     AND time_dim.t_hour = 10
+     AND time_dim.t_minute < 30
+     AND ((household_demographics.hd_dep_count = 4
+           AND household_demographics.hd_vehicle_count<=4+2)
+          OR (household_demographics.hd_dep_count = 2
+              AND household_demographics.hd_vehicle_count<=2+2)
+          OR (household_demographics.hd_dep_count = 0
+              AND household_demographics.hd_vehicle_count<=0+2))
+     AND store.s_store_name = 'ese') s4,
+  (SELECT count(*) h10_30_to_11
+   FROM store_sales,
+        household_demographics,
+        time_dim,
+        store
+   WHERE ss_sold_time_sk = time_dim.t_time_sk
+     AND ss_hdemo_sk = household_demographics.hd_demo_sk
+     AND ss_store_sk = s_store_sk
+     AND time_dim.t_hour = 10
+     AND time_dim.t_minute >= 30
+     AND ((household_demographics.hd_dep_count = 4
+           AND household_demographics.hd_vehicle_count<=4+2)
+          OR (household_demographics.hd_dep_count = 2
+              AND household_demographics.hd_vehicle_count<=2+2)
+          OR (household_demographics.hd_dep_count = 0
+              AND household_demographics.hd_vehicle_count<=0+2))
+     AND store.s_store_name = 'ese') s5,
+  (SELECT count(*) h11_to_11_30
+   FROM store_sales,
+        household_demographics,
+        time_dim,
+        store
+   WHERE ss_sold_time_sk = time_dim.t_time_sk
+     AND ss_hdemo_sk = household_demographics.hd_demo_sk
+     AND ss_store_sk = s_store_sk
+     AND time_dim.t_hour = 11
+     AND time_dim.t_minute < 30
+     AND ((household_demographics.hd_dep_count = 4
+           AND household_demographics.hd_vehicle_count<=4+2)
+          OR (household_demographics.hd_dep_count = 2
+              AND household_demographics.hd_vehicle_count<=2+2)
+          OR (household_demographics.hd_dep_count = 0
+              AND household_demographics.hd_vehicle_count<=0+2))
+     AND store.s_store_name = 'ese') s6,
+  (SELECT count(*) h11_30_to_12
+   FROM store_sales,
+        household_demographics,
+        time_dim,
+        store
+   WHERE ss_sold_time_sk = time_dim.t_time_sk
+     AND ss_hdemo_sk = household_demographics.hd_demo_sk
+     AND ss_store_sk = s_store_sk
+     AND time_dim.t_hour = 11
+     AND time_dim.t_minute >= 30
+     AND ((household_demographics.hd_dep_count = 4
+           AND household_demographics.hd_vehicle_count<=4+2)
+          OR (household_demographics.hd_dep_count = 2
+              AND household_demographics.hd_vehicle_count<=2+2)
+          OR (household_demographics.hd_dep_count = 0
+              AND household_demographics.hd_vehicle_count<=0+2))
+     AND store.s_store_name = 'ese') s7,
+  (SELECT count(*) h12_to_12_30
+   FROM store_sales,
+        household_demographics,
+        time_dim,
+        store
+   WHERE ss_sold_time_sk = time_dim.t_time_sk
+     AND ss_hdemo_sk = household_demographics.hd_demo_sk
+     AND ss_store_sk = s_store_sk
+     AND time_dim.t_hour = 12
+     AND time_dim.t_minute < 30
+     AND ((household_demographics.hd_dep_count = 4
+           AND household_demographics.hd_vehicle_count<=4+2)
+          OR (household_demographics.hd_dep_count = 2
+              AND household_demographics.hd_vehicle_count<=2+2)
+          OR (household_demographics.hd_dep_count = 0
+              AND household_demographics.hd_vehicle_count<=0+2))
+     AND store.s_store_name = 'ese') s8
+----
+physical_plan	<REGEX>:[\s\S]*Table: (\S*\.)?time_dim\b[\s\S]*Filters:[\s\S]*t_hour = 8[\s\S]*t_hour = 12[\s\S]*
+
+query II
+EXPLAIN SELECT *
+FROM
+  (SELECT count(*) h8_30_to_9
+   FROM store_sales,
+        household_demographics,
+        time_dim,
+        store
+   WHERE ss_sold_time_sk = time_dim.t_time_sk
+     AND ss_hdemo_sk = household_demographics.hd_demo_sk
+     AND ss_store_sk = s_store_sk
+     AND time_dim.t_hour = 8
+     AND time_dim.t_minute >= 30
+     AND ((household_demographics.hd_dep_count = 4
+           AND household_demographics.hd_vehicle_count<=4+2)
+          OR (household_demographics.hd_dep_count = 2
+              AND household_demographics.hd_vehicle_count<=2+2)
+          OR (household_demographics.hd_dep_count = 0
+              AND household_demographics.hd_vehicle_count<=0+2))
+     AND store.s_store_name = 'ese') s1,
+  (SELECT count(*) h9_to_9_30
+   FROM store_sales,
+        household_demographics,
+        time_dim,
+        store
+   WHERE ss_sold_time_sk = time_dim.t_time_sk
+     AND ss_hdemo_sk = household_demographics.hd_demo_sk
+     AND ss_store_sk = s_store_sk
+     AND time_dim.t_hour = 9
+     AND time_dim.t_minute < 30
+     AND ((household_demographics.hd_dep_count = 4
+           AND household_demographics.hd_vehicle_count<=4+2)
+          OR (household_demographics.hd_dep_count = 2
+              AND household_demographics.hd_vehicle_count<=2+2)
+          OR (household_demographics.hd_dep_count = 0
+              AND household_demographics.hd_vehicle_count<=0+2))
+     AND store.s_store_name = 'ese') s2,
+  (SELECT count(*) h9_30_to_10
+   FROM store_sales,
+        household_demographics,
+        time_dim,
+        store
+   WHERE ss_sold_time_sk = time_dim.t_time_sk
+     AND ss_hdemo_sk = household_demographics.hd_demo_sk
+     AND ss_store_sk = s_store_sk
+     AND time_dim.t_hour = 9
+     AND time_dim.t_minute >= 30
+     AND ((household_demographics.hd_dep_count = 4
+           AND household_demographics.hd_vehicle_count<=4+2)
+          OR (household_demographics.hd_dep_count = 2
+              AND household_demographics.hd_vehicle_count<=2+2)
+          OR (household_demographics.hd_dep_count = 0
+              AND household_demographics.hd_vehicle_count<=0+2))
+     AND store.s_store_name = 'ese') s3,
+  (SELECT count(*) h10_to_10_30
+   FROM store_sales,
+        household_demographics,
+        time_dim,
+        store
+   WHERE ss_sold_time_sk = time_dim.t_time_sk
+     AND ss_hdemo_sk = household_demographics.hd_demo_sk
+     AND ss_store_sk = s_store_sk
+     AND time_dim.t_hour = 10
+     AND time_dim.t_minute < 30
+     AND ((household_demographics.hd_dep_count = 4
+           AND household_demographics.hd_vehicle_count<=4+2)
+          OR (household_demographics.hd_dep_count = 2
+              AND household_demographics.hd_vehicle_count<=2+2)
+          OR (household_demographics.hd_dep_count = 0
+              AND household_demographics.hd_vehicle_count<=0+2))
+     AND store.s_store_name = 'ese') s4,
+  (SELECT count(*) h10_30_to_11
+   FROM store_sales,
+        household_demographics,
+        time_dim,
+        store
+   WHERE ss_sold_time_sk = time_dim.t_time_sk
+     AND ss_hdemo_sk = household_demographics.hd_demo_sk
+     AND ss_store_sk = s_store_sk
+     AND time_dim.t_hour = 10
+     AND time_dim.t_minute >= 30
+     AND ((household_demographics.hd_dep_count = 4
+           AND household_demographics.hd_vehicle_count<=4+2)
+          OR (household_demographics.hd_dep_count = 2
+              AND household_demographics.hd_vehicle_count<=2+2)
+          OR (household_demographics.hd_dep_count = 0
+              AND household_demographics.hd_vehicle_count<=0+2))
+     AND store.s_store_name = 'ese') s5,
+  (SELECT count(*) h11_to_11_30
+   FROM store_sales,
+        household_demographics,
+        time_dim,
+        store
+   WHERE ss_sold_time_sk = time_dim.t_time_sk
+     AND ss_hdemo_sk = household_demographics.hd_demo_sk
+     AND ss_store_sk = s_store_sk
+     AND time_dim.t_hour = 11
+     AND time_dim.t_minute < 30
+     AND ((household_demographics.hd_dep_count = 4
+           AND household_demographics.hd_vehicle_count<=4+2)
+          OR (household_demographics.hd_dep_count = 2
+              AND household_demographics.hd_vehicle_count<=2+2)
+          OR (household_demographics.hd_dep_count = 0
+              AND household_demographics.hd_vehicle_count<=0+2))
+     AND store.s_store_name = 'ese') s6,
+  (SELECT count(*) h11_30_to_12
+   FROM store_sales,
+        household_demographics,
+        time_dim,
+        store
+   WHERE ss_sold_time_sk = time_dim.t_time_sk
+     AND ss_hdemo_sk = household_demographics.hd_demo_sk
+     AND ss_store_sk = s_store_sk
+     AND time_dim.t_hour = 11
+     AND time_dim.t_minute >= 30
+     AND ((household_demographics.hd_dep_count = 4
+           AND household_demographics.hd_vehicle_count<=4+2)
+          OR (household_demographics.hd_dep_count = 2
+              AND household_demographics.hd_vehicle_count<=2+2)
+          OR (household_demographics.hd_dep_count = 0
+              AND household_demographics.hd_vehicle_count<=0+2))
+     AND store.s_store_name = 'ese') s7,
+  (SELECT count(*) h12_to_12_30
+   FROM store_sales,
+        household_demographics,
+        time_dim,
+        store
+   WHERE ss_sold_time_sk = time_dim.t_time_sk
+     AND ss_hdemo_sk = household_demographics.hd_demo_sk
+     AND ss_store_sk = s_store_sk
+     AND time_dim.t_hour = 12
+     AND time_dim.t_minute < 30
+     AND ((household_demographics.hd_dep_count = 4
+           AND household_demographics.hd_vehicle_count<=4+2)
+          OR (household_demographics.hd_dep_count = 2
+              AND household_demographics.hd_vehicle_count<=2+2)
+          OR (household_demographics.hd_dep_count = 0
+              AND household_demographics.hd_vehicle_count<=0+2))
+     AND store.s_store_name = 'ese') s8
+----
+physical_plan	<!REGEX>:[\s\S]*Table: (\S*\.)?time_dim\b[\s\S]*Table: (\S*\.)?time_dim\b[\s\S]*
+
+# q90: two count(*)s over the same join of four tables become one join
+query II
+EXPLAIN SELECT case when pmc=0 then null else cast(amc AS decimal(15,4))/cast(pmc AS decimal(15,4)) end am_pm_ratio
+FROM
+  (SELECT count(*) amc
+   FROM web_sales,
+        household_demographics,
+        time_dim,
+        web_page
+   WHERE ws_sold_time_sk = time_dim.t_time_sk
+     AND ws_ship_hdemo_sk = household_demographics.hd_demo_sk
+     AND ws_web_page_sk = web_page.wp_web_page_sk
+     AND time_dim.t_hour BETWEEN 8 AND 8+1
+     AND household_demographics.hd_dep_count = 6
+     AND web_page.wp_char_count BETWEEN 5000 AND 5200) at_,
+  (SELECT count(*) pmc
+   FROM web_sales,
+        household_demographics,
+        time_dim,
+        web_page
+   WHERE ws_sold_time_sk = time_dim.t_time_sk
+     AND ws_ship_hdemo_sk = household_demographics.hd_demo_sk
+     AND ws_web_page_sk = web_page.wp_web_page_sk
+     AND time_dim.t_hour BETWEEN 19 AND 19+1
+     AND household_demographics.hd_dep_count = 6
+     AND web_page.wp_char_count BETWEEN 5000 AND 5200) pt
+ORDER BY am_pm_ratio
+LIMIT 100
+----
+physical_plan	<REGEX>:[\s\S]*Table: (\S*\.)?web_sales\b[\s\S]*
+
+query II
+EXPLAIN SELECT case when pmc=0 then null else cast(amc AS decimal(15,4))/cast(pmc AS decimal(15,4)) end am_pm_ratio
+FROM
+  (SELECT count(*) amc
+   FROM web_sales,
+        household_demographics,
+        time_dim,
+        web_page
+   WHERE ws_sold_time_sk = time_dim.t_time_sk
+     AND ws_ship_hdemo_sk = household_demographics.hd_demo_sk
+     AND ws_web_page_sk = web_page.wp_web_page_sk
+     AND time_dim.t_hour BETWEEN 8 AND 8+1
+     AND household_demographics.hd_dep_count = 6
+     AND web_page.wp_char_count BETWEEN 5000 AND 5200) at_,
+  (SELECT count(*) pmc
+   FROM web_sales,
+        household_demographics,
+        time_dim,
+        web_page
+   WHERE ws_sold_time_sk = time_dim.t_time_sk
+     AND ws_ship_hdemo_sk = household_demographics.hd_demo_sk
+     AND ws_web_page_sk = web_page.wp_web_page_sk
+     AND time_dim.t_hour BETWEEN 19 AND 19+1
+     AND household_demographics.hd_dep_count = 6
+     AND web_page.wp_char_count BETWEEN 5000 AND 5200) pt
+ORDER BY am_pm_ratio
+LIMIT 100
+----
+physical_plan	<!REGEX>:[\s\S]*Table: (\S*\.)?web_sales\b[\s\S]*Table: (\S*\.)?web_sales\b[\s\S]*
