@@ -1,0 +1,24 @@
+# name: test/sql/join/cross_product/test_cross_product_large_string.test
+# description: Cross product of large strings and blobs
+# group: [cross_product]
+
+statement ok
+CREATE TABLE cross_payloads (id INTEGER, txt VARCHAR, payload BLOB);
+
+statement ok
+INSERT INTO cross_payloads VALUES
+    (1, repeat('x', 3 * 1024 * 1024), repeat('z', 3 * 1024 * 1024)::BLOB),
+    (2, NULL, NULL),
+    (3, 'hi', 'q'::BLOB);
+
+query IIIII
+SELECT count(*),
+       sum(CASE WHEN id = 1 AND length(txt) = 3145728 AND left(txt, 1) = 'x'
+                     AND right(txt, 1) = 'x' AND octet_length(payload) = 3145728
+                     AND payload = repeat('z', 3 * 1024 * 1024)::BLOB THEN 1 ELSE 0 END),
+       sum(CASE WHEN id = 2 AND txt IS NULL AND payload IS NULL THEN 1 ELSE 0 END),
+       sum(CASE WHEN id = 3 AND txt = 'hi' AND payload = 'q'::BLOB THEN 1 ELSE 0 END),
+       count(txt)
+FROM cross_payloads, range(4097)
+----
+12291	4097	4097	4097	8194

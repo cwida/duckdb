@@ -78,3 +78,34 @@ TEST_CASE("Constant slices keep a single physical validity entry", "[vector_buff
 		}
 	}
 }
+
+TEST_CASE("Constant string references retain their source heap", "[vector_buffer]") {
+	const string large_string(64, 'x');
+	const Value expected(large_string);
+
+	SECTION("source and target are the same vector") {
+		Vector vector(expected, count_t(1));
+		ConstantVector::Reference(vector, count_t(3), vector, 0, 1);
+		REQUIRE(vector.GetValue(2) == expected);
+	}
+	SECTION("source is released before reading the target") {
+		Vector source(expected, count_t(1));
+		Vector target(LogicalType::VARCHAR, 1);
+		ConstantVector::Reference(target, count_t(3), source, 0, 1);
+		source.Initialize();
+		REQUIRE(target.GetValue(2) == expected);
+	}
+	SECTION("dictionary source is released before reading the target") {
+		Vector source(expected, count_t(1));
+		source.Flatten();
+		SelectionVector selection(1);
+		selection.set_index(0, 0);
+		auto dictionary = Vector::Ref(source);
+		dictionary.Slice(selection, 1);
+		Vector target(LogicalType::VARCHAR, 1);
+		ConstantVector::Reference(target, count_t(3), dictionary, 0, 1);
+		dictionary.Initialize();
+		source.Initialize();
+		REQUIRE(target.GetValue(2) == expected);
+	}
+}

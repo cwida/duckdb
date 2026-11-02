@@ -225,6 +225,24 @@ void ConstantVector::Reference(Vector &vector, count_t count, const Vector &sour
 		FlatVector::SetSize(vector, count);
 		break;
 	}
+	case PhysicalType::VARCHAR: {
+		UnifiedVectorFormat vdata;
+		source.ToUnifiedFormat(vdata);
+		auto source_idx = vdata.sel->get_index(position);
+		if (!vdata.validity.RowIsValid(source_idx)) {
+			SetNull(vector, count);
+			break;
+		}
+
+		auto value = UnifiedVectorFormat::GetData<string_t>(vdata)[source_idx];
+		auto source_reference = Vector::Ref(source);
+		vector.Initialize(VectorDataInitialization::UNINITIALIZED, 1);
+		FlatVector::GetDataMutable<string_t>(vector)[0] = value;
+		vector.SetVectorType(VectorType::CONSTANT_VECTOR);
+		FlatVector::SetSize(vector, count);
+		vector.AddHeapReference(source_reference);
+		break;
+	}
 	default:
 		// default behavior: get a value from the vector and reference it
 		// this is not that expensive for scalar types
