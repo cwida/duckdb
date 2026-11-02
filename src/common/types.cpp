@@ -987,13 +987,14 @@ bool LogicalType::GetDecimalProperties(uint32_t &width, uint32_t &scale) const {
 }
 
 //! Grows Decimal width/scale when appropriate
-static LogicalType DecimalSizeCheck(const LogicalType &left, const LogicalType &right) {
+static LogicalType DecimalSizeCheck(optional_ptr<ClientContext> context, const LogicalType &left,
+                                    const LogicalType &right) {
 	D_ASSERT(left.id() == LogicalTypeId::DECIMAL || right.id() == LogicalTypeId::DECIMAL);
 	D_ASSERT(left.id() != right.id());
 
 	//! Make sure the 'right' is the DECIMAL type
 	if (left.id() == LogicalTypeId::DECIMAL) {
-		return DecimalSizeCheck(right, left);
+		return DecimalSizeCheck(context, right, left);
 	}
 	auto width = DecimalType::GetWidth(right);
 	auto scale = DecimalType::GetScale(right);
@@ -1009,8 +1010,9 @@ static LogicalType DecimalSizeCheck(const LogicalType &left, const LogicalType &
 	if (other_width > effective_width) {
 		uint32_t new_width = other_width + scale;
 		//! Cap the width at max, if an actual value exceeds this, an exception will be thrown later
-		if (new_width > Decimal::MAX_WIDTH_DECIMAL) {
-			new_width = Decimal::MAX_WIDTH_DECIMAL;
+		const auto width_limit = Decimal::MaxResultWidth(context, width);
+		if (new_width > width_limit) {
+			new_width = width_limit;
 		}
 		return LogicalType::DECIMAL(new_width, scale);
 	}
@@ -1105,7 +1107,7 @@ static bool TryCombineViaImplicitCast(LogicalTypeResolver &logical_type_resolver
 				//! Prefer VARIANT always
 				result = left;
 			} else {
-				result = DecimalSizeCheck(left, right);
+				result = DecimalSizeCheck(logical_type_resolver.context, left, right);
 			}
 		} else {
 			result = right;
@@ -1120,7 +1122,7 @@ static bool TryCombineViaImplicitCast(LogicalTypeResolver &logical_type_resolver
 				//! Prefer VARIANT always
 				result = right;
 			} else {
-				result = DecimalSizeCheck(right, left);
+				result = DecimalSizeCheck(logical_type_resolver.context, right, left);
 			}
 		} else {
 			result = left;

@@ -192,11 +192,14 @@ DuckTableEntry::DuckTableEntry(Catalog &catalog, SchemaCatalogEntry &schema, Bou
 		return;
 	}
 
+	// the types of all columns are written to the catalog, those of the generated columns included
+	for (auto &col_def : columns.Logical()) {
+		CheckTypeIsSupported(col_def.Type(), catalog.GetAttached());
+	}
+
 	// create the physical storage
 	vector<ColumnDefinition> column_defs;
 	for (auto &col_def : columns.Physical()) {
-		CheckTypeIsSupported(col_def.Type(), catalog.GetAttached());
-
 		column_defs.push_back(col_def.Copy());
 	}
 	storage = make_shared_ptr<DataTable>(catalog.GetAttached(), StorageManager::Get(catalog).GetTableIOManager(&info),

@@ -145,9 +145,11 @@ static bool CombineEqualDecimal(LogicalTypeResolver &logical_type_resolver, cons
 	auto extra_width = MaxValue<uint32_t>(extra_width_left, extra_width_right);
 	auto scale = MaxValue<uint32_t>(DecimalType::GetScale(left), DecimalType::GetScale(right));
 	uint32_t width = extra_width + scale;
-	if (width > Decimal::MAX_WIDTH_DECIMAL) {
+	const auto width_limit = Decimal::MaxResultWidth(
+	    logical_type_resolver.context, MaxValue<uint32_t>(DecimalType::GetWidth(left), DecimalType::GetWidth(right)));
+	if (width > width_limit) {
 		// if the resulting decimal does not fit, we truncate the scale
-		width = Decimal::MAX_WIDTH_DECIMAL;
+		width = width_limit;
 		scale = width - extra_width;
 	}
 	result = LogicalType::DECIMAL(width, scale);

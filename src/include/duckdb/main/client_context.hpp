@@ -138,6 +138,10 @@ public:
 	unique_ptr<ClientData> client_data;
 	//! Data for the currently running transaction
 	TransactionContext transaction;
+	//! Set while the keys of an index in a database written before wide decimals are bound: the result types of
+	//! decimal arithmetic and type combination then stay within 38 digits, as the engines of that storage version
+	//! bind them, so the bound keys match the keys that are stored (see IndexBinder)
+	bool legacy_decimal_result_types = false;
 
 public:
 	//! Connect this client to a remote-style AttachedDatabase. Subsequent non-control SQL routes via

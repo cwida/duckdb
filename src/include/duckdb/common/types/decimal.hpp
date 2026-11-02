@@ -38,6 +38,8 @@ struct DecimalWidth<hugeint_t> {
 	static constexpr uint32_t max = 38;
 };
 
+class ClientContext;
+
 //! The Decimal class is a static class that holds helper functions for the Decimal type
 class Decimal {
 public:
@@ -62,8 +64,13 @@ public:
 	static bool IsWide(uint32_t width) {
 		return width > MAX_WIDTH_INT128 || force_wide.load(std::memory_order_relaxed);
 	}
+	//! The widest result of combining decimals, given the widest DECIMAL among the inputs. The result grows up to
+	//! MAX_WIDTH_DECIMAL, except under the legacy rule of databases written before wide decimals (see
+	//! ClientContext::legacy_decimal_result_types), where fixed-size inputs stay within MAX_WIDTH_INT128.
+	static uint32_t MaxResultWidth(optional_ptr<ClientContext> context, uint32_t max_input_width);
 	//! DEBUG SETTING: store decimals of every width as BIGNUM blobs. The physical type of a DECIMAL is computed
-	//! without a database, so the switch is process-wide: the database instance created last sets it.
+	//! without a database, so the switch is process-wide: it is turned on by a database instance that is created with
+	//! the setting, and never turned off again.
 	static void SetForceWide(bool force);
 	static bool ForceWide();
 	static string ToString(int16_t value, uint32_t width, uint32_t scale);

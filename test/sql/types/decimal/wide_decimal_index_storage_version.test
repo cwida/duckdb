@@ -1,0 +1,144 @@
+# name: test/sql/types/decimal/wide_decimal_index_storage_version.test
+# description: Index keys with decimal arithmetic are bound to the key type of the storage version the index is stored in
+# group: [decimal]
+
+# The engines of the storage versions before wide decimals clamp DECIMAL(38,2) * DECIMAL(38,2) to DECIMAL(38,4) and
+# DECIMAL(38,2) + DECIMAL(38,2) to DECIMAL(38,2), and the ART keys of an expression index they write have that type.
+# In a database of such a storage version this engine binds the index keys the same way, in both directions: the
+# stored keys of an index written by those engines are matched, and an index written here is read back by them.
+
+foreach version v1.4.0 v2.0.0
+
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_index_{version}.db' AS old (STORAGE_VERSION '{version}');
+
+statement ok
+CREATE TABLE old.t(a DECIMAL(38,2), b DECIMAL(38,2));
+
+statement ok
+CREATE UNIQUE INDEX i_mul ON old.t((a * b));
+
+statement ok
+CREATE UNIQUE INDEX i_add ON old.t((a + b));
+
+statement ok
+INSERT INTO old.t VALUES (1.5, 2.5), (2, 3);
+
+# a duplicate product or sum is rejected
+statement error
+INSERT INTO old.t VALUES (0.75, 5);
+----
+Duplicate key "(a * b): 3.7500"
+
+statement error
+INSERT INTO old.t VALUES (1, 3);
+----
+Duplicate key "(a + b): 4.00"
+
+# a product that does not fit the 38-digit key type is rejected, as those engines reject it
+statement error
+INSERT INTO old.t VALUES (repeat('9', 36)::DECIMAL(38,2), 10);
+----
+<REGEX>:.*Overflow in multiplication.*
+
+# only the index keys are bound to the legacy type, queries compute the exact result
+query II
+SELECT typeof(a * b), typeof(a + b) FROM old.t LIMIT 1
+----
+DECIMAL(76,4)	DECIMAL(39,2)
+
+query II
+SELECT a * b, a + b FROM old.t ORDER BY a
+----
+3.7500	4.00
+6.0000	5.00
+
+# the index is bound again from storage with the same key type
+statement ok
+DETACH old
+
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_index_{version}.db' AS old;
+
+statement error
+INSERT INTO old.t VALUES (0.75, 5);
+----
+Duplicate key "(a * b): 3.7500"
+
+statement error
+INSERT INTO old.t VALUES (1, 3);
+----
+Duplicate key "(a + b): 4.00"
+
+statement ok
+INSERT INTO old.t VALUES (0.5, 0.5);
+
+query II
+SELECT a, b FROM old.t WHERE a * b = 3.75
+----
+1.50	2.50
+
+query II
+SELECT a, b FROM old.t WHERE a + b = 1
+----
+0.50	0.50
+
+query I
+SELECT count(*) FROM old.t
+----
+3
+
+# the type of a generated column is written to the catalog as well, a wide one is refused like a wide column
+statement error
+CREATE TABLE old.g(a DECIMAL(38,0), b DECIMAL(38,0), c AS (a * b))
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to
+
+statement ok
+CREATE TABLE old.g(a DECIMAL(38,0), b DECIMAL(38,0), c AS ((a * b)::DECIMAL(38,0)))
+
+statement ok
+DETACH old
+
+endloop
+
+# a database of the current storage version keeps the exact (wide) key type
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_index_latest.db' AS new (STORAGE_VERSION 'latest');
+
+statement ok
+CREATE TABLE new.t(a DECIMAL(38,2), b DECIMAL(38,2));
+
+statement ok
+CREATE UNIQUE INDEX i_mul ON new.t((a * b));
+
+statement ok
+INSERT INTO new.t VALUES (1.5, 2.5), (repeat('9', 36)::DECIMAL(38,2), 10);
+
+# the wide multiplication casts its inputs to its own width, which shows in the key
+statement error
+INSERT INTO new.t VALUES (0.75, 5);
+----
+<REGEX>:.*Duplicate key.*3\.7500.*
+
+statement ok
+DETACH new
+
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_index_latest.db' AS new;
+
+statement error
+INSERT INTO new.t VALUES (0.75, 5);
+----
+<REGEX>:.*Duplicate key.*3\.7500.*
+
+query I
+SELECT a * b FROM new.t WHERE a > 1000
+----
+9999999999999999999999999999999999990.0000
+
+statement ok
+CREATE TABLE new.g(a DECIMAL(38,0), b DECIMAL(38,0), c AS (a * b))
+
+statement ok
+DETACH new

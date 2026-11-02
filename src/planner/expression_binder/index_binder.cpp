@@ -15,8 +15,37 @@
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/function/table/table_scan.hpp"
 #include "duckdb/planner/operator/logical_create_index.hpp"
+#include "duckdb/common/types/decimal.hpp"
+#include "duckdb/main/attached_database.hpp"
+#include "duckdb/storage/storage_manager.hpp"
 
 namespace duckdb {
+
+namespace {
+
+//! Binds index keys under the decimal result-type rule of the storage version the index is stored in. An engine of a
+//! version before wide decimals clamps the result of decimal arithmetic to 38 digits, and the keys of an index it
+//! writes have that type: binding the same keys to a wide type here would leave the stored keys unmatched (a UNIQUE
+//! index would accept duplicates). Such a database therefore binds its index keys as those engines do, in both
+//! directions: an index this engine writes into it is read back by them with the same key type.
+class LegacyDecimalIndexKeyScope {
+public:
+	LegacyDecimalIndexKeyScope(ClientContext &context, AttachedDatabase &db)
+	    : context(context), previous(context.legacy_decimal_result_types) {
+		context.legacy_decimal_result_types =
+		    db.HasStorageManager() &&
+		    StorageManager::IsPriorToVersion(Decimal::WIDE_VERSION_ADDED, db.GetStorageManager().GetStorageVersion());
+	}
+	~LegacyDecimalIndexKeyScope() {
+		context.legacy_decimal_result_types = previous;
+	}
+
+private:
+	ClientContext &context;
+	bool previous;
+};
+
+} // namespace
 
 IndexBinder::IndexBinder(Binder &binder, ClientContext &context, optional_ptr<TableCatalogEntry> table,
                          optional_ptr<CreateIndexInfo> info)
@@ -40,9 +69,12 @@ unique_ptr<BoundIndex> IndexBinder::BindIndex(const UnboundIndex &unbound_index)
 	// bind the parsed expressions to create unbound expressions
 	vector<unique_ptr<Expression>> unbound_expressions;
 	unbound_expressions.reserve(parsed_expressions.size());
-	for (auto &expr : parsed_expressions) {
-		auto copy = expr->Copy();
-		unbound_expressions.push_back(Bind(copy));
+	{
+		LegacyDecimalIndexKeyScope key_scope(context, unbound_index.db);
+		for (auto &expr : parsed_expressions) {
+			auto copy = expr->Copy();
+			unbound_expressions.push_back(Bind(copy));
+		}
 	}
 
 	CreateIndexInput input(context, unbound_index.table_io_manager, unbound_index.db, create_info.constraint_type,
@@ -103,13 +135,16 @@ unique_ptr<LogicalOperator> IndexBinder::BindCreateIndex(ClientContext &context,
 	auto &properties = binder.GetStatementProperties();
 	const auto statement_requires_rebind = properties.always_require_rebind;
 	vector<unique_ptr<Expression>> expressions;
-	for (auto &expr : create_index_info->expressions) {
-		properties.always_require_rebind = false;
-		expressions.push_back(Bind(expr));
-		// casts are bound without the binder, so a cast that reads settings such as TimeZone is found in the key
-		if (properties.always_require_rebind || expressions.back()->RequiresRebind()) {
-			throw BinderException("Index keys cannot contain expressions with side effects. They also cannot depend on "
-			                      "settings such as TimeZone.");
+	{
+		LegacyDecimalIndexKeyScope key_scope(context, table_entry.ParentCatalog().GetAttached());
+		for (auto &expr : create_index_info->expressions) {
+			properties.always_require_rebind = false;
+			expressions.push_back(Bind(expr));
+			// casts are bound without the binder, so a cast that reads settings such as TimeZone is found in the key
+			if (properties.always_require_rebind || expressions.back()->RequiresRebind()) {
+				throw BinderException("Index keys cannot contain expressions with side effects. They also cannot "
+				                      "depend on settings such as TimeZone.");
+			}
 		}
 	}
 	properties.always_require_rebind = statement_requires_rebind;
