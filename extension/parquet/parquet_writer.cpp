@@ -343,8 +343,8 @@ void ParquetWriter::SetSchemaProperties(const LogicalType &duckdb_type, duckdb_p
 		break;
 	case LogicalTypeId::DECIMAL:
 		schema_ele.converted_type = ConvertedType::DECIMAL;
-		schema_ele.precision = DecimalType::GetWidth(duckdb_type);
-		schema_ele.scale = DecimalType::GetScale(duckdb_type);
+		schema_ele.precision = NumericCast<int32_t>(DecimalType::GetWidth(duckdb_type));
+		schema_ele.scale = NumericCast<int32_t>(DecimalType::GetScale(duckdb_type));
 		schema_ele.__isset.converted_type = true;
 		schema_ele.__isset.precision = true;
 		schema_ele.__isset.scale = true;

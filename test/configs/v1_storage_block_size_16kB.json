@@ -87,10 +87,11 @@
       ]
     },
     {
-      "reason": "Stored aggregate-state and TUPLE columns require v2.0.0 storage.",
+      "reason": "Stored aggregate-state and TUPLE columns (generated columns included) require v2.0.0 storage.",
       "paths": [
         "test/sql/sql_export/empty_aggregate_state.test",
         "test/sql/sql_export/mark_condition_shapes.test",
+        "test/sql/types/type_expression_roundtrip.test",
         "test/sql/types/variant/variant_struct_field_subquery.test"
       ]
     },
