@@ -179,6 +179,28 @@ SELECT count(*) FROM '{TEST_DIR}/sizes-fpp.parquet' WHERE unique_bigint = (hash(
 ----
 1
 
+# Fallback filters larger than half the compressed column are dropped after writing.
+statement ok
+CREATE TABLE wrapped AS SELECT ((i // 2 + 20000) % 30000)::INTEGER AS n FROM range(122880) t(i)
+
+statement ok
+COPY wrapped TO '{TEST_DIR}/wrapped-snappy.parquet' (FORMAT PARQUET)
+
+statement ok
+COPY wrapped TO '{TEST_DIR}/wrapped-zstd.parquet' (FORMAT PARQUET, COMPRESSION ZSTD)
+
+statement ok
+COPY wrapped TO '{TEST_DIR}/wrapped-zstd-v2.parquet' (FORMAT PARQUET, COMPRESSION ZSTD, PARQUET_VERSION V2)
+
+query TI
+SELECT parse_filename(file_name), count(bloom_filter_length)
+FROM parquet_metadata('{TEST_DIR}/wrapped-*.parquet')
+GROUP BY ALL ORDER BY ALL
+----
+wrapped-snappy.parquet	1
+wrapped-zstd-v2.parquet	0
+wrapped-zstd.parquet	0
+
 # Sortedness of strings carries over between vectors, whose memory may be released in between.
 statement ok
 COPY (SELECT lpad(i::VARCHAR, 20, '0') AS s FROM range(10000) t(i)) TO '{TEST_DIR}/sorted-strings.parquet'

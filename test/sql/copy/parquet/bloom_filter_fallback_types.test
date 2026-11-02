@@ -94,7 +94,7 @@ endloop
 foreach position 0 2000
 
 statement ok
-COPY (SELECT CASE WHEN i = {position} THEN 'nan'::DOUBLE ELSE i::DOUBLE END AS n FROM range(2048) t(i))
+COPY (SELECT CASE WHEN i = {position} THEN 'nan'::DOUBLE ELSE (hash(i) >> 11)::DOUBLE END AS n FROM range(2048) t(i))
 TO '{TEST_DIR}/nan-{position}.parquet' (FORMAT PARQUET, DICTIONARY_SIZE_LIMIT 100)
 
 query I
