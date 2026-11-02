@@ -1,5 +1,5 @@
-# name: test/sql/optimizer/test_common_subplan_scan_columns.test
-# description: Share identical filtered scans with different requested columns
+# name: test/sql/optimizer/test_common_subplan_aggregate_columns.test
+# description: Share ungrouped aggregates over identical inputs with different output expressions
 # group: [optimizer]
 
 statement ok
@@ -50,7 +50,7 @@ v1	10.00
 v2	2
 v2	20.00
 
-# A filter that remains above the scan can share the same widened input.
+# A filter that remains above the scan preserves the aggregate input.
 statement ok
 SET disabled_optimizers='filter_pushdown';
 
@@ -97,7 +97,7 @@ EXECUTE scan_columns_p(5, 5, 5);
 ----
 5	7	100
 
-# An ineligible repeated projection must not suppress its shareable scan.
+# Repeated projections retain their results without sharing bare scans.
 query RR
 SELECT sum(x), avg(x)
 FROM (
@@ -107,3 +107,52 @@ FROM (
 );
 ----
 20	3.3333333333333335
+
+# Aggregate modifiers and bind data are part of output expression identity.
+statement ok
+CREATE TABLE aggregate_modifiers AS SELECT (i % 3)::INTEGER AS a FROM range(5) t(i);
+
+query RRRR
+SELECT (SELECT avg(DISTINCT a) FROM aggregate_modifiers),
+       (SELECT avg(a) FROM aggregate_modifiers),
+       (SELECT quantile_cont(a, 0.25) FROM aggregate_modifiers),
+       (SELECT quantile_cont(a, 0.75) FROM aggregate_modifiers);
+----
+1	0.8	0	1
+
+query II
+SELECT (SELECT sum(a) FILTER (WHERE k > 1) FROM scan_columns WHERE k < 5),
+       (SELECT sum(b) FILTER (WHERE k > 2)::BIGINT FROM scan_columns WHERE k < 5);
+----
+6	70
+
+# Ordered aggregates retain their independent ordering and payloads.
+query TT
+SELECT (SELECT list(a ORDER BY k) FROM scan_columns WHERE k < 5),
+       (SELECT list(b ORDER BY k DESC) FROM scan_columns WHERE k < 5);
+----
+[NULL, 1, 2, NULL, 4]	[40.00, 30.00, 20.00, 10.00, 0.00]
+
+# A parent must distinguish the canonical aggregate output it reads.
+query IIII
+SELECT (SELECT sum(a) FROM scan_columns WHERE k < 5),
+       (SELECT sum(b)::BIGINT FROM scan_columns WHERE k < 5),
+       (SELECT sum(x)::BIGINT FROM (SELECT sum(a) x FROM scan_columns WHERE k < 5) q),
+       (SELECT sum(x)::BIGINT FROM (SELECT sum(b) x FROM scan_columns WHERE k < 5) q);
+----
+7	100	7	100
+
+# Volatile aggregates must retain all evaluations.
+statement ok
+CREATE SEQUENCE aggregate_calls;
+
+query II
+SELECT (SELECT count(nextval('aggregate_calls')) FROM scan_columns WHERE k < 5),
+       (SELECT count(nextval('aggregate_calls')) FROM scan_columns WHERE k < 5);
+----
+5	5
+
+query I
+SELECT nextval('aggregate_calls');
+----
+11

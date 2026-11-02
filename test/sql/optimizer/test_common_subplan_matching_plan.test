@@ -1,5 +1,5 @@
 # name: test/sql/optimizer/test_common_subplan_matching_plan.test
-# description: Plan coverage for shared scans, overlapping columns, and filtered join inputs
+# description: Plan coverage for shared aggregate outputs, overlapping columns, and filtered join inputs
 # group: [optimizer]
 
 statement ok
@@ -27,15 +27,15 @@ statement ok
 SET disabled_optimizers='filter_pushdown';
 
 query II
-EXPLAIN (FORMAT JSON) SELECT (SELECT sum(a) FROM plan_fact WHERE k % 5 = 1),
-                            (SELECT sum(b) FROM plan_fact WHERE k % 5 = 1);
+EXPLAIN (FORMAT JSON) SELECT (SELECT sum(a) FROM plan_fact WHERE k < 5),
+                            (SELECT sum(b) FROM plan_fact WHERE k < 5);
 ----
 logical_opt	<REGEX>:.*"CTE".*CTE_SCAN.*CTE_SCAN.*__common_subplan_.*
 
 statement ok
 SET disabled_optimizers='';
 
-# Different predicates and unfiltered scans do not justify a shared producer.
+# Different predicates must retain their own aggregate inputs.
 query II
 EXPLAIN (FORMAT JSON) SELECT (SELECT sum(a) FROM plan_fact WHERE k < 5),
                             (SELECT sum(b) FROM plan_fact WHERE a < 5);
@@ -45,9 +45,9 @@ logical_opt	<!REGEX>:.*__common_subplan_.*
 query II
 EXPLAIN (FORMAT JSON) SELECT (SELECT sum(a) FROM plan_fact), (SELECT sum(b) FROM plan_fact);
 ----
-logical_opt	<!REGEX>:.*__common_subplan_.*
+logical_opt	<REGEX>:.*"CTE".*"AGGREGATE".*CTE_SCAN.*CTE_SCAN.*__common_subplan_.*
 
-# An ineligible repeated projection must not suppress its shareable scan.
+# Repeated filtered scans alone do not justify a shared producer.
 query II
 EXPLAIN (FORMAT JSON) SELECT sum(x), avg(x)
 FROM (
@@ -56,7 +56,71 @@ FROM (
 	SELECT a + 1 AS x FROM plan_fact WHERE k < 5
 );
 ----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+# Merge the aggregate results, not just their scan, even with unselective filters.
+query II
+EXPLAIN (FORMAT JSON) SELECT (SELECT avg(a) FROM plan_fact WHERE k < 990),
+                            (SELECT avg(b) FROM plan_fact WHERE k < 990);
+----
+logical_opt	<REGEX>:.*"CTE".*"AGGREGATE".*CTE_SCAN.*CTE_SCAN.*__common_subplan_.*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT (SELECT avg(a) FROM plan_fact WHERE k < 990),
+                            (SELECT avg(b) FROM plan_fact WHERE k < 990);
+----
+logical_opt	<!REGEX>:.*"AGGREGATE".*"AGGREGATE".*
+
+# A high-retention self-join must not materialize its repeated filtered scans.
+query II
+EXPLAIN (FORMAT JSON) SELECT count(*)
+FROM (SELECT a FROM plan_fact WHERE k < 990) x
+JOIN (SELECT a FROM plan_fact WHERE k < 990) y USING (a);
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+# Grouped aggregate output union is outside this rule.
+query II
+EXPLAIN (FORMAT JSON) SELECT k, sum(a) FROM plan_fact GROUP BY k
+UNION ALL SELECT k, sum(b) FROM plan_fact GROUP BY k;
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+# Growing states and execution wrappers retain separate aggregate producers.
+query II
+EXPLAIN (FORMAT JSON) SELECT len(list(a)) FROM plan_fact
+UNION ALL SELECT len(list(b)) FROM plan_fact;
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT count(DISTINCT a) FROM plan_fact
+UNION ALL SELECT count(DISTINCT b) FROM plan_fact;
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT quantile_cont(a, 0.5) FROM plan_fact
+UNION ALL SELECT quantile_cont(b, 0.5) FROM plan_fact;
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+# Existing exact aggregate sharing still supports growing states.
+query II
+EXPLAIN (FORMAT JSON) SELECT len(list(a)) FROM plan_fact
+UNION ALL SELECT len(list(a)) FROM plan_fact;
+----
 logical_opt	<REGEX>:.*"CTE".*CTE_SCAN.*CTE_SCAN.*__common_subplan_.*
+
+# Generic expression safety rejects even a guarded throwing argument.
+statement ok
+CREATE TABLE throwing_input AS SELECT i AS k, CASE WHEN i < 5 THEN i::VARCHAR ELSE 'invalid' END AS v FROM range(10) t(i);
+
+query II
+EXPLAIN (FORMAT JSON) SELECT (SELECT sum(v::INTEGER) FROM throwing_input WHERE k < 5),
+                            (SELECT max(v::INTEGER) FROM throwing_input WHERE k < 5);
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
 
 # Joins reading different payloads share one producer exposing their union.
 query II
