@@ -423,12 +423,17 @@ void TableIndexList::Bind(ClientContext &context, DataTableInfo &table_info, con
 
 		// Apply any outstanding buffered replays and replace the unbound index with a bound index.
 		unique_ptr<BoundIndex> bound_idx;
-		{
+		try {
 			vector<LogicalType> physical_column_types;
 			for (auto &col : table.GetColumns().Physical()) {
 				physical_column_types.push_back(col.Type());
 			}
 			bound_idx = index_entry->Bind(idx_binder, physical_column_types);
+		} catch (...) {
+			// Leave the index unbound, so that a later attempt binds it instead of waiting for this one forever.
+			lock.lock();
+			index_entry->SetBindState(IndexBindState::UNBOUND);
+			throw;
 		}
 
 		// Commit the bound index to the index entry.

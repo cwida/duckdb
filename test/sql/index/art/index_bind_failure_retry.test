@@ -1,0 +1,62 @@
+# name: test/sql/index/art/index_bind_failure_retry.test
+# description: An index whose bind throws stays unbound, so later statements fail with the same error instead of waiting for the failed bind forever
+# group: [art]
+
+statement ok
+ATTACH '{TEMP_DIR}/idx_bind_failure.db' AS w;
+
+# the macro lives in another catalog, so the index cannot register a dependency on it
+statement ok
+CREATE MACRO m(x) AS x + 1;
+
+statement ok
+CREATE TABLE w.t(v BIGINT);
+
+statement ok
+CREATE INDEX i ON w.t(m(v));
+
+statement ok
+INSERT INTO w.t VALUES (1), (2);
+
+statement ok
+DETACH w;
+
+statement ok
+DROP MACRO m;
+
+# the index is loaded unbound and bound on first use, which fails without the macro
+statement ok
+ATTACH '{TEMP_DIR}/idx_bind_failure.db' AS w;
+
+statement error
+INSERT INTO w.t VALUES (3);
+----
+m
+
+# the second attempt binds again and fails the same way, instead of waiting for the first attempt
+statement error
+INSERT INTO w.t VALUES (3);
+----
+m
+
+statement error
+DELETE FROM w.t WHERE v = 1;
+----
+m
+
+# once the macro exists again the index binds and the table is usable
+statement ok
+CREATE MACRO m(x) AS x + 1;
+
+statement ok
+INSERT INTO w.t VALUES (3);
+
+query I
+SELECT count(*) FROM w.t WHERE m(v) = 4;
+----
+1
+
+query I
+SELECT count(*) FROM w.t;
+----
+3
