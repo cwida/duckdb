@@ -577,7 +577,14 @@ unique_ptr<LogicalOperator> ScalarAggregateMerger::MergeBranches(vector<Branch> 
 				alternatives.push_back(predicate->Copy());
 			}
 		}
-		filters.push_back(MakeConjunction(ExpressionType::CONJUNCTION_OR, std::move(alternatives)));
+		// the OR is a new expression: the rewrite rules that ran before the merge (predicate factoring) derive from it
+		// the single-column filters that the pushdown places on the scan and that the cardinality estimates see
+		LogicalFilter rewritten;
+		rewritten.expressions.push_back(MakeConjunction(ExpressionType::CONJUNCTION_OR, std::move(alternatives)));
+		optimizer.rewriter.VisitOperator(rewritten);
+		for (auto &expr : rewritten.expressions) {
+			filters.push_back(std::move(expr));
+		}
 	}
 	if (!filters.empty()) {
 		auto filter = make_uniq<LogicalFilter>();

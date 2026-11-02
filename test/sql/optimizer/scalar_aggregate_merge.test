@@ -191,6 +191,16 @@ EXPLAIN SELECT * FROM
 ----
 physical_plan	<!REGEX>:[\s\S]*Table: (\S*\.)?dim2\b[\s\S]*Table: (\S*\.)?dim2\b[\s\S]*
 
+# the OR of the branches' own predicates is a new expression and goes through the expression rewriter: predicate
+# factoring derives the filter on h from it, and the scan of dim2 carries that filter
+query II
+EXPLAIN SELECT * FROM
+    (SELECT count(*) AS c1 FROM sales, dim1, dim2 WHERE sales.k = dim1.dk AND sales.q = dim2.qk AND dim1.dname = 'a' AND dim2.h = 1 AND dim2.qk < 50) s1,
+    (SELECT count(*) AS c2 FROM sales, dim1, dim2 WHERE sales.k = dim1.dk AND sales.q = dim2.qk AND dim1.dname = 'a' AND dim2.h = 2 AND dim2.qk >= 50) s2,
+    (SELECT count(*) AS c3 FROM sales, dim1, dim2 WHERE sales.k = dim1.dk AND sales.q = dim2.qk AND dim1.dname = 'a' AND dim2.h = 3 AND dim2.qk < 50) s3
+----
+physical_plan	<REGEX>:[\s\S]*Table: (\S*\.)?dim2\b[\s\S]*Filters:[\s\S]*h = 1[\s\S]*h = 3[\s\S]*
+
 query II
 EXPLAIN SELECT (SELECT sum(paid) FROM sales, dim1 WHERE sales.k = dim1.dk AND dim1.dname = 'a') AS a,
        (SELECT avg(disc) FROM sales, dim1 WHERE sales.k = dim1.dk AND dim1.dname = 'b') AS b,

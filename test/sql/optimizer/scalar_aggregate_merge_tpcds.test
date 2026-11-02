@@ -284,7 +284,8 @@ LIMIT 100
 ----
 physical_plan	<!REGEX>:[\s\S]*Table: (\S*\.)?store_sales\b[\s\S]*Table: (\S*\.)?store_sales\b[\s\S]*
 
-# q88: eight count(*)s over the same join of four tables become one join: time_dim is read once
+# q88: eight count(*)s over the same join of four tables become one join: time_dim is read once, and the OR of the
+# eight time_dim predicates is factored into a t_hour filter on its scan (the merged OR goes through the rewriter)
 query II
 EXPLAIN SELECT *
 FROM
@@ -425,7 +426,7 @@ FROM
               AND household_demographics.hd_vehicle_count<=0+2))
      AND store.s_store_name = 'ese') s8
 ----
-physical_plan	<REGEX>:[\s\S]*Table: (\S*\.)?time_dim\b[\s\S]*
+physical_plan	<REGEX>:[\s\S]*Table: (\S*\.)?time_dim\b[\s\S]*Filters:[\s\S]*t_hour = 8[\s\S]*t_hour = 12[\s\S]*
 
 query II
 EXPLAIN SELECT *
