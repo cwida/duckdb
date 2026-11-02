@@ -955,7 +955,6 @@ public:
 	void ConvertSubplansToCTEs(Optimizer &optimizer, unique_ptr<LogicalOperator> &op) {
 		const auto sorted_subplans = GetSortedSubplans();
 		idx_t index = 1;
-		bool converted_subplans = false;
 		for (auto &entry : sorted_subplans) {
 			auto &subplan_info = entry.get().second;
 			if (!ShouldMaterialize(subplan_info)) {
@@ -1125,12 +1124,6 @@ public:
 				}
 				break;
 			}
-			converted_subplans = true;
-		}
-		if (converted_subplans) {
-			// Subplan replacement changes child output bindings under existing positional projection maps.
-			// Invalidate them here; column lifetime runs again later and rebuilds the maps.
-			ClearProjectionMaps(*op);
 		}
 	}
 
