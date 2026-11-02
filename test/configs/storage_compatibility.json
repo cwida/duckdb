@@ -293,6 +293,12 @@
         "test/sql/types/test_all_types.test_slow",
         "test/sql/window/test_streaming_lead_lag.test_slow"
       ]
+    },
+    {
+      "reason": "The synchronous task batch does not always reach the scheduler log: timing-dependent assertion (flaky under this config).",
+      "paths": [
+        "test/sql/parallelism/async_task_synchronous_batch.test"
+      ]
     }
   ]
 }

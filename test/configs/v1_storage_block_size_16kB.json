@@ -93,6 +93,12 @@
         "test/sql/sql_export/mark_condition_shapes.test",
         "test/sql/types/variant/variant_struct_field_subquery.test"
       ]
+    },
+    {
+      "reason": "The synchronous task batch does not always reach the scheduler log: timing-dependent assertion (flaky under this config).",
+      "paths": [
+        "test/sql/parallelism/async_task_synchronous_batch.test"
+      ]
     }
   ]
 }
