@@ -1,5 +1,6 @@
 -- Trampoline formulation of asql_marching_squares.sql: DISTINCT admission
--- replaces the UNION-recursion deduplication, TEE emits each admitted cell
+-- replaces the UNION-recursion deduplication, TEE emits each arrival before
+-- admission, and EMIT DISTINCT keeps the output unique
 -- ("Trampoline-Style Queries for SQL", CIDR 2025).
 WITH RECURSIVE
 pixels(x, y, filled) AS (

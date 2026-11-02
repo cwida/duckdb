@@ -1,0 +1,36 @@
+# name: test/sql/cte/trampoline/trampoline_frontier_sizing.test
+# description: Frontier snapshot work participates in a branch wave's worker sizing
+# group: [trampoline]
+
+statement ok
+SET threads=8;
+
+statement ok
+CALL enable_logging('PhysicalOperator', storage='memory');
+
+statement ok
+CALL truncate_duckdb_logs();
+
+# Branch 1 holds a one-row wave but counts a large frontier each round, so its waves must
+# parallelize on the snapshot size. Branch 2 emits its whole population in round one.
+# Sizing by the destination wave alone schedules 14 tasks over 10 workers instead.
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(SELECT 2, r::BIGINT FROM range(current_setting('standard_vector_size')::BIGINT * 32) q(r)
+	 UNION ALL SELECT 1, -1::BIGINT)
+	BRANCH 1: (SELECT CASE WHEN (SELECT count(*) FROM frontier.t f WHERE f.b = 2) > 0
+	                       THEN 1 ELSE 0 END, n - 1 FROM t)
+	BRANCH 2: (SELECT 0, n FROM t)
+) SELECT count(*) = current_setting('standard_vector_size')::BIGINT * 32 + 1 FROM t;
+----
+true
+
+statement ok
+CALL disable_logging();
+
+query II
+SELECT info.scheduled_tasks::UBIGINT, info.scheduled_workers::UBIGINT
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class = 'PhysicalTrampoline' AND event = 'RuntimeMetrics';
+----
+21	17
