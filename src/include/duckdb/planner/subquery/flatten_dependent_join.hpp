@@ -104,6 +104,11 @@ private:
 	                             const vector<optional_idx> &positions, const vector<ColumnBinding> &state) const;
 	void AddCorrelatedJoinConditions(LogicalJoin &join, const vector<ColumnBinding> &left_state,
 	                                 const vector<ColumnBinding> &right_state) const;
+	bool ContainsCorrelatedReference(const Expression &expr) const;
+	void GetConditionDomainRequirements(const LogicalOperator &op, bool &left_requires_domain,
+	                                    bool &right_requires_domain) const;
+	void RewriteConditionOperands(LogicalOperator &op, const vector<ColumnBinding> &left_state,
+	                              const vector<ColumnBinding> &right_state);
 	vector<ColumnBinding> CreateDelimCrossProduct(unique_ptr<LogicalOperator> &plan,
 	                                              unique_ptr<LogicalOperator> delim_scan,
 	                                              vector<ColumnBinding> state) const;

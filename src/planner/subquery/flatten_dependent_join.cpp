@@ -583,6 +583,52 @@ void FlattenDependentJoins::AddCorrelatedJoinConditions(LogicalJoin &join, const
 	}
 }
 
+bool FlattenDependentJoins::ContainsCorrelatedReference(const Expression &expr) const {
+	bool correlated = false;
+	ExpressionIterator::VisitExpression<BoundColumnRefExpression>(expr, [&](const BoundColumnRefExpression &colref) {
+		correlated |= colref.Depth() > 0 && correlated_aliases.find(colref.Binding()) != correlated_aliases.end();
+	});
+	return correlated;
+}
+
+void FlattenDependentJoins::GetConditionDomainRequirements(const LogicalOperator &op, bool &left_requires_domain,
+                                                           bool &right_requires_domain) const {
+	if (op.type != LogicalOperatorType::LOGICAL_COMPARISON_JOIN && op.type != LogicalOperatorType::LOGICAL_ASOF_JOIN) {
+		return;
+	}
+	auto &join = op.Cast<LogicalComparisonJoin>();
+	for (auto &condition : join.conditions) {
+		if (!condition.IsComparison()) {
+			continue;
+		}
+		// a condition operand resolves against exactly one child, so a correlated
+		// reference inside an operand requires that child to carry the domain
+		left_requires_domain = left_requires_domain || ContainsCorrelatedReference(condition.GetLHS());
+		right_requires_domain = right_requires_domain || ContainsCorrelatedReference(condition.GetRHS());
+	}
+}
+
+void FlattenDependentJoins::RewriteConditionOperands(LogicalOperator &op, const vector<ColumnBinding> &left_state,
+                                                     const vector<ColumnBinding> &right_state) {
+	if (op.type != LogicalOperatorType::LOGICAL_COMPARISON_JOIN && op.type != LogicalOperatorType::LOGICAL_ASOF_JOIN) {
+		return;
+	}
+	if (correlated_aliases.empty()) {
+		return;
+	}
+	auto &join = op.Cast<LogicalComparisonJoin>();
+	for (auto &condition : join.conditions) {
+		if (!condition.IsComparison()) {
+			continue;
+		}
+		RewriteCorrelatedExpressions::RewriteExpression(condition.LeftReference(), GetCurrentBindings(left_state),
+		                                                correlated_aliases);
+		RewriteCorrelatedExpressions::RewriteExpression(condition.RightReference(), GetCurrentBindings(right_state),
+		                                                correlated_aliases);
+	}
+	InvalidateAccessCache();
+}
+
 vector<ColumnBinding> FlattenDependentJoins::CreateDelimCrossProduct(unique_ptr<LogicalOperator> &plan,
                                                                      unique_ptr<LogicalOperator> delim_scan,
                                                                      vector<ColumnBinding> state) const {
@@ -1097,6 +1143,7 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownFullOuterJo
 	auto right_state = PushDownChild(plan, propagate_null_values, left_state.bindings, false, 1);
 
 	AddCorrelatedJoinConditions(plan->Cast<LogicalJoin>(), left_state.bindings, right_state.bindings);
+	RewriteConditionOperands(*plan, left_state.bindings, right_state.bindings);
 	RewriteCorrelatedBindings(*plan, right_state.bindings);
 
 	for (auto &binding : left_payload) {
@@ -1157,6 +1204,7 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownJoin(unique
 	D_ASSERT(plan->children.size() == 2);
 	bool left_requires_domain = RequiresDomain(*plan->children[0]);
 	bool right_requires_domain = RequiresDomain(*plan->children[1]);
+	GetConditionDomainRequirements(*plan, left_requires_domain, right_requires_domain);
 
 	// An ASOF join selects at most one match per left row from its entire right input. If the right input
 	// varies per domain, the left input must carry the domain too, so the selection partitions per domain.
@@ -1194,6 +1242,7 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownJoin(unique
 			auto right_state = PushDownChild(plan, propagate_null_values, state, false, 1);
 			auto left_state = AttachDelimToIndependentJoinLeft(plan);
 			AddCorrelatedJoinConditions(plan->Cast<LogicalJoin>(), left_state.bindings, right_state.bindings);
+			RewriteConditionOperands(*plan, left_state.bindings, right_state.bindings);
 			RewriteCorrelatedBindings(*plan, left_state.bindings);
 			right_state.replacement_graph.Merge(left_state.replacement_graph);
 			right_state.bindings = std::move(left_state.bindings);
@@ -1209,6 +1258,7 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownJoin(unique
 			                           ColumnBindingLayout(plan->children[0]->GetColumnBindings()),
 			                           left_state.bindings);
 			AddCorrelatedJoinConditions(rewritten_join, left_state.bindings, right_state.bindings);
+			RewriteConditionOperands(*plan, left_state.bindings, right_state.bindings);
 			RewriteCorrelatedBindings(*plan, left_state.bindings);
 			left_state.replacement_graph.Merge(right_state.replacement_graph);
 			return left_state;
@@ -1234,6 +1284,7 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownJoin(unique
 			for (auto &condition : conditions) {
 				comparison_join.conditions.push_back(std::move(condition));
 			}
+			RewriteConditionOperands(*plan, left_state.bindings, right_state.bindings);
 			RewriteCorrelatedBindings(*plan, left_state.bindings);
 			left_state.replacement_graph.Merge(right_state.replacement_graph);
 			return left_state;
@@ -1263,6 +1314,7 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownJoin(unique
 	auto right_state = PushDownChild(plan, propagate_null_values, left_state.bindings, false, 1);
 
 	AddCorrelatedJoinConditions(plan->Cast<LogicalJoin>(), left_state.bindings, right_state.bindings);
+	RewriteConditionOperands(*plan, left_state.bindings, right_state.bindings);
 	RewriteCorrelatedBindings(*plan, right_state.bindings);
 	left_state.replacement_graph.Merge(right_state.replacement_graph);
 

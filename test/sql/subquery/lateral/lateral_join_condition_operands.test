@@ -1,0 +1,322 @@
+# name: test/sql/subquery/lateral/lateral_join_condition_operands.test
+# description: Outer references inside join condition operands bind to the owning child's domain state
+# group: [lateral]
+
+statement ok
+CREATE TABLE probes AS SELECT range % 7 AS k, range AS x FROM range(200);
+
+statement ok
+CREATE TABLE prices AS SELECT range * 3 AS ts, range AS p FROM range(50);
+
+# run the comparison blocks under both ASOF strategies
+foreach threshold 0 64
+
+statement ok
+SET asof_loop_join_threshold={threshold};
+
+# outer reference in the right operand, correlated left child
+query III
+SELECT o.k, q.x, q.ts
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT v.x, r.ts
+    FROM (SELECT o.k + 2 AS x) v
+    ASOF JOIN (VALUES (0), (2)) r(ts)
+        ON v.x >= r.ts + o.k
+) q ORDER BY ALL;
+----
+1	3	2
+2	4	2
+
+# outer reference in the right operand, both children uncorrelated
+query III
+SELECT o.k, q.x, q.ts
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT v.x, r.ts
+    FROM (VALUES (4)) v(x)
+    ASOF JOIN (VALUES (0), (2)) r(ts)
+        ON v.x >= r.ts + o.k
+) q ORDER BY ALL;
+----
+1	4	2
+2	4	2
+
+# the matching partitions per domain for RIGHT ASOF as well
+query III
+SELECT o.k, q.x, q.ts
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT v.x, r.ts
+    FROM (VALUES (4)) v(x)
+    ASOF RIGHT JOIN (VALUES (0), (2)) r(ts)
+        ON v.x >= r.ts + o.k
+) q ORDER BY ALL;
+----
+1	4	2
+1	NULL	0
+2	4	2
+2	NULL	0
+
+# outer reference in the left operand, correlated right child
+query III
+SELECT o.k, q.x, q.ts
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT v.x, r.ts
+    FROM (VALUES (4)) v(x)
+    ASOF JOIN (SELECT o.k * 2 AS ts) r
+        ON v.x - o.k >= r.ts
+) q ORDER BY ALL;
+----
+1	4	2
+
+# both children correlated, outer reference in the left operand
+query III
+SELECT o.k, q.x, q.ts
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT v.x, r.ts
+    FROM (SELECT o.k + 2 AS x) v
+    ASOF JOIN (SELECT o.k * 2 AS ts) r
+        ON v.x - o.k >= r.ts
+) q ORDER BY ALL;
+----
+1	3	2
+
+# outer references in both operands, both children uncorrelated
+query III
+SELECT o.k, q.x, q.ts
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT v.x, r.ts
+    FROM (VALUES (4)) v(x)
+    ASOF JOIN (VALUES (0), (2)) r(ts)
+        ON v.x - o.k >= r.ts + o.k - o.k
+) q ORDER BY ALL;
+----
+1	4	2
+2	4	2
+
+# oracle: explicit correlation of the probe side gives the same per-domain matches
+query III
+SELECT o.k, q.x, q.ts
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT v.x, r.ts
+    FROM (SELECT o.k + 2 AS x, o.k AS k) v
+    ASOF JOIN (VALUES (0), (2)) r(ts)
+        ON v.x - v.k >= r.ts
+) q ORDER BY ALL;
+----
+1	3	2
+2	4	2
+
+# LEFT ASOF pads unmatched domains per domain
+query III
+SELECT o.k, q.x, q.ts
+FROM (VALUES (1), (5)) o(k), LATERAL (
+    SELECT v.x, r.ts
+    FROM (SELECT o.k + 2 AS x) v
+    ASOF LEFT JOIN (VALUES (0), (2)) r(ts)
+        ON v.x >= r.ts + o.k * 2
+) q ORDER BY ALL;
+----
+1	3	0
+5	7	NULL
+
+# equality condition next to the correlated inequality
+query III
+SELECT o.k, q.x, q.ts
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT v.x, r.ts
+    FROM (SELECT o.k + 2 AS x, 10 AS g) v
+    ASOF JOIN (VALUES (10, 0), (10, 2), (11, 2)) r(g, ts)
+        ON v.g = r.g AND v.x >= r.ts + o.k
+) q ORDER BY ALL;
+----
+1	3	2
+2	4	2
+
+# strict inequality
+query III
+SELECT o.k, q.x, q.ts
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT v.x, r.ts
+    FROM (SELECT o.k + 2 AS x) v
+    ASOF JOIN (VALUES (0), (2)) r(ts)
+        ON v.x > r.ts + o.k
+) q ORDER BY ALL;
+----
+1	3	0
+2	4	0
+
+# reversed inequality direction
+query III
+SELECT o.k, q.x, q.ts
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT v.x, r.ts
+    FROM (SELECT o.k + 2 AS x) v
+    ASOF JOIN (VALUES (0), (2)) r(ts)
+        ON v.x <= r.ts + o.k
+) q ORDER BY ALL;
+----
+1	3	2
+2	4	2
+
+# a NULL domain value still matches through the null-safe domain keys
+query III
+SELECT o.k, q.x, q.ts
+FROM (VALUES (1), (NULL)) o(k), LATERAL (
+    SELECT v.x, r.ts
+    FROM (SELECT coalesce(o.k, 0) + 2 AS x) v
+    ASOF JOIN (VALUES (0), (2)) r(ts)
+        ON v.x >= r.ts + coalesce(o.k, 0)
+) q ORDER BY ALL;
+----
+1	3	2
+NULL	2	2
+
+# NULL outer value inside the comparison disables the match, INNER drops the domain
+query III
+SELECT o.k, q.x, q.ts
+FROM (VALUES (1), (NULL)) o(k), LATERAL (
+    SELECT v.x, r.ts
+    FROM (SELECT coalesce(o.k, 0) + 2 AS x) v
+    ASOF JOIN (VALUES (0), (2)) r(ts)
+        ON v.x >= r.ts + o.k
+) q ORDER BY ALL;
+----
+1	3	2
+
+# duplicate outer rows keep their multiplicity
+query III
+SELECT o.k, q.x, q.ts
+FROM (VALUES (1), (1), (2)) o(k), LATERAL (
+    SELECT v.x, r.ts
+    FROM (SELECT o.k + 2 AS x) v
+    ASOF JOIN (VALUES (0), (2)) r(ts)
+        ON v.x >= r.ts + o.k
+) q ORDER BY ALL;
+----
+1	3	2
+1	3	2
+2	4	2
+
+# depth-two reference inside the right operand
+query III
+SELECT p.g, s.k, s.ts
+FROM (VALUES (10), (20)) p(g), LATERAL (
+    SELECT o.k, q.ts
+    FROM (VALUES (1), (2)) o(k), LATERAL (
+        SELECT r.ts
+        FROM (SELECT o.k + 2 AS x) v
+        ASOF JOIN (VALUES (0), (2)) r(ts)
+            ON v.x >= r.ts + o.k - p.g + p.g
+    ) q
+) s ORDER BY ALL;
+----
+10	1	2
+10	2	2
+20	1	2
+20	2	2
+
+# protection: correlated child without condition correlation
+query III
+SELECT o.k, q.x, q.ts
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT v.x, r.ts
+    FROM (SELECT o.k + 2 AS x) v
+    ASOF JOIN (VALUES (0), (2)) r(ts)
+        ON v.x >= r.ts
+) q ORDER BY ALL;
+----
+1	3	2
+2	4	2
+
+# protection: uncorrelated ASOF inside LATERAL
+query III
+SELECT o.k, q.x, q.ts
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT v.x, r.ts
+    FROM (VALUES (3)) v(x)
+    ASOF JOIN (VALUES (0), (2)) r(ts)
+        ON v.x >= r.ts
+) q ORDER BY ALL;
+----
+1	3	2
+2	3	2
+
+# scalar subquery variant routes through the SINGLE join path
+query II
+SELECT o.k, (
+    SELECT r.ts
+    FROM (SELECT o.k + 2 AS x) v
+    ASOF JOIN (VALUES (0), (2)) r(ts)
+        ON v.x >= r.ts + o.k
+) AS ts
+FROM (VALUES (1), (2)) o(k) ORDER BY ALL;
+----
+1	2
+2	2
+
+# larger per-domain oracle comparison
+query I
+WITH direct AS (
+    SELECT o.k, o.x, q.ts, q.p
+    FROM probes o, LATERAL (
+        SELECT r.ts, r.p FROM (SELECT o.x + 1 AS x) v
+        ASOF JOIN prices r ON v.x >= r.ts + o.k
+    ) q
+), oracle AS (
+    SELECT o.k, o.x, r.ts, r.p
+    FROM probes o, prices r
+    WHERE o.x + 1 >= r.ts + o.k
+      AND r.ts = (SELECT max(r2.ts) FROM prices r2 WHERE o.x + 1 >= r2.ts + o.k)
+)
+SELECT count(*) FROM (
+    (SELECT * FROM direct EXCEPT ALL SELECT * FROM oracle)
+    UNION ALL
+    (SELECT * FROM oracle EXCEPT ALL SELECT * FROM direct)
+);
+----
+0
+
+endloop
+
+statement ok
+RESET asof_loop_join_threshold;
+
+# the recursive member path runs with the default strategy: the sorted ASOF
+# operator is not supported inside recursive CTEs
+# the same shape behind an ordinary recursive CTE member
+query II
+WITH RECURSIVE rec(k, n) AS (
+    SELECT k, 0 FROM (VALUES (1), (2)) o(k)
+    UNION ALL
+    SELECT rec.k, q.ts
+    FROM rec, LATERAL (
+        SELECT r.ts
+        FROM (SELECT rec.k + 2 AS x) v
+        ASOF JOIN (VALUES (0), (2)) r(ts)
+            ON v.x >= r.ts + rec.k
+    ) q
+    WHERE rec.n = 0
+)
+SELECT k, n FROM rec WHERE n > 0 ORDER BY ALL;
+----
+1	2
+2	2
+
+
+# window-based debug strategy over timestamp keys
+statement ok
+SET debug_asof_iejoin=true;
+
+query II
+SELECT o.k, q.ts::VARCHAR
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT r.ts
+    FROM (SELECT TIMESTAMP '2000-01-01' + to_days(o.k + 2) AS t) v
+    ASOF JOIN (VALUES (TIMESTAMP '2000-01-01'), (TIMESTAMP '2000-01-03')) r(ts)
+        ON v.t >= r.ts + to_days(o.k)
+) q ORDER BY ALL;
+----
+1	2000-01-03 00:00:00
+2	2000-01-03 00:00:00
+
+statement ok
+SET debug_asof_iejoin=false;

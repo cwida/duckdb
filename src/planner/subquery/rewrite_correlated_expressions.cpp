@@ -22,6 +22,13 @@ void RewriteCorrelatedExpressions::Rewrite(LogicalOperator &op, column_binding_m
 	rewriter.VisitOperator(op);
 }
 
+void RewriteCorrelatedExpressions::RewriteExpression(unique_ptr<Expression> &expr,
+                                                     column_binding_map_t<ColumnBinding> current_binding_map,
+                                                     column_binding_map_t<ColumnBinding> &correlated_aliases) {
+	RewriteCorrelatedExpressions rewriter(std::move(current_binding_map), correlated_aliases);
+	rewriter.VisitExpression(&expr);
+}
+
 void RewriteCorrelatedExpressions::RegisterCorrelatedBinding(const ColumnBinding &source_binding,
                                                              const ColumnBinding &target_binding) {
 	auto source_entry = correlated_aliases.find(source_binding);
