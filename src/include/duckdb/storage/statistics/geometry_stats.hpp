@@ -195,12 +195,14 @@ public:
 		return result_found;
 	}
 
-	void AddWKBType(int32_t wkb_type) {
-		const auto vert_idx = static_cast<uint8_t>((wkb_type / 1000) % 10);
-		const auto geom_idx = static_cast<uint8_t>(wkb_type % 1000);
-		D_ASSERT(vert_idx < VERT_TYPES);
-		D_ASSERT(geom_idx < PART_TYPES);
+	bool TryAddWKBType(int32_t wkb_type) {
+		const auto vert_idx = wkb_type / 1000;
+		const auto geom_idx = wkb_type % 1000;
+		if (vert_idx < 0 || vert_idx >= VERT_TYPES || geom_idx < 1 || geom_idx >= PART_TYPES) {
+			return false;
+		}
 		sets[vert_idx] |= (1 << geom_idx);
+		return true;
 	}
 
 	vector<int32_t> ToWKBList() const {

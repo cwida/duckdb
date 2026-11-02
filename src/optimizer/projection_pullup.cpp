@@ -178,6 +178,10 @@ void ProjectionPullup::PullUpNonColrefProjection(unique_ptr<LogicalOperator> &op
 			}
 		}
 	}
+
+	// The caller's traversal no longer reaches the subtree left behind by the moved projection.
+	ProjectionPullup next(optimizer, root);
+	next.Optimize(op);
 }
 
 static bool HasJoinBelow(const LogicalOperator &op) {

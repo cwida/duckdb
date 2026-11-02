@@ -840,12 +840,16 @@ public:
 
 		if (file_list.IsEmpty()) {
 			result->readers.clear();
-		} else if (!bind_data.union_readers.empty()) {
-			for (auto &reader : bind_data.union_readers) {
-				result->readers.push_back(make_uniq<MultiFileReaderData>(reader));
-			}
-			if (result->readers.size() != file_list.GetTotalFileCount()) {
-				result->readers.clear();
+		} else if (!bind_data.union_readers.empty() &&
+		           (bind_data.union_readers.size() == 1
+		                ? bind_data.union_readers[0]->GetFileName() == file_list.GetFirstFile().path
+		                : bind_data.union_readers.size() == file_list.GetTotalFileCount())) {
+			for (auto &file : bind_data.union_readers) {
+				if (bind_data.initial_reader && bind_data.initial_reader->GetFileName() == file->GetFileName()) {
+					result->readers.push_back(make_uniq<MultiFileReaderData>(std::move(bind_data.initial_reader)));
+				} else {
+					result->readers.push_back(make_uniq<MultiFileReaderData>(file));
+				}
 			}
 		} else if (bind_data.initial_reader) {
 			// we can only use the initial reader if it was constructed from the first file
@@ -1144,8 +1148,8 @@ public:
 		auto &bind_data = input.bind_data->Cast<MultiFileBindData>();
 		auto &column_index = input.column_index;
 
-		if (!bind_data.initial_reader) {
-			// no reader
+		optional_ptr<BaseUnionData> file = bind_data.union_readers.empty() ? nullptr : bind_data.union_readers[0].get();
+		if (!file && !bind_data.initial_reader) {
 			return nullptr;
 		}
 		// scanning single file and we have the metadata read already
@@ -1161,8 +1165,10 @@ public:
 			if (bind_data.file_list->GetExpandResult() == FileExpandResult::MULTIPLE_FILES) {
 				return nullptr;
 			}
-			return bind_data.initial_reader->GetVirtualColumnStatistics(
-			    context, MultiFileReader::COLUMN_IDENTIFIER_FILE_ROW_NUMBER);
+			return bind_data.initial_reader
+			           ? bind_data.initial_reader->GetVirtualColumnStatistics(
+			                 context, MultiFileReader::COLUMN_IDENTIFIER_FILE_ROW_NUMBER)
+			           : file->GetVirtualColumnStatistics(context, MultiFileReader::COLUMN_IDENTIFIER_FILE_ROW_NUMBER);
 		}
 
 		// a hive partitioning column overrides any file column of the same name - the statistics stored in the
@@ -1192,14 +1198,16 @@ public:
 		}
 		// NOTE: we do not want to parse the file metadata for the sole purpose of getting column statistics
 		const bool multiple_files = bind_data.file_list->GetExpandResult() == FileExpandResult::MULTIPLE_FILES;
-		if (multiple_files && !bind_data.file_options.union_by_name) {
-			// multiple files, but no union_by_name: no luck!
+		if (multiple_files && (!bind_data.file_options.union_by_name ||
+		                       bind_data.union_readers.size() != bind_data.file_list->GetTotalFileCount())) {
 			return nullptr;
 		}
-		auto result = bind_data.initial_reader->GetStatistics(context, col_name);
-		if (result && !bind_data.file_options.bound_schema.empty() &&
-		    !bind_data.MatchesPhysicalColumn(primary_index, col_name, result->GetType())) {
-			// Check the whole root before interpreting an extracted child's positional statistics.
+		auto result = bind_data.initial_reader ? bind_data.initial_reader->GetStatistics(context, col_name)
+		                                       : file->GetStatistics(context, col_name);
+		if (result && (result->GetType() != bind_data.types[primary_index] ||
+		               (!bind_data.file_options.bound_schema.empty() &&
+		                !bind_data.MatchesPhysicalColumn(primary_index, col_name, result->GetType())))) {
+			// Positional child statistics require the physical root to match the scan's output layout.
 			return nullptr;
 		}
 		if (result && multiple_files) {
@@ -1290,7 +1298,8 @@ public:
 		if (file_list_cardinality_estimate) {
 			return file_list_cardinality_estimate;
 		}
-		if (data.file_options.union_by_name) {
+		if (data.file_options.union_by_name && !data.union_readers.empty() &&
+		    data.union_readers.size() == data.file_list->GetTotalFileCount()) {
 			// for UNION BY NAME - check if we can get a cardinality estimate from the (already opened) union readers
 			bool has_exact_cardinality = true;
 			idx_t cardinality = 0;
