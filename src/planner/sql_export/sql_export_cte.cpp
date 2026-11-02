@@ -394,14 +394,22 @@ LogicalPlanSQLExportResult LogicalTrampoline::ExportSQLDefinition(LogicalPlanSQL
 	}
 	if (trampoline.reads_frontier) {
 		// the lockstep-round contract was fixed at binding; re-binding the exported SQL
-		// re-derives it from frontier references, so the check runs on the exported text:
-		// optimization or a source replacement can remove the last reference, and silently
-		// re-binding without rounds would change scheduling observably
-		bool frontier_witness = false;
-		for (auto &branch_node : query->branches) {
-			DetectExportedFrontierReference(*branch_node, name, frontier_witness);
+		// re-derives it from frontier references or coalescing branch markers, so the
+		// check runs on the exported text: optimization or a source replacement can
+		// remove the last frontier reference, and silently re-binding without rounds
+		// would change scheduling observably. A surviving MERGE or DISTINCT branch
+		// forces rounds on rebind by itself.
+		bool rounds_witness = false;
+		for (auto merge : query->branch_merge) {
+			rounds_witness = rounds_witness || merge;
 		}
-		if (!frontier_witness) {
+		for (auto distinct : query->branch_distinct) {
+			rounds_witness = rounds_witness || distinct;
+		}
+		for (auto &branch_node : query->branches) {
+			DetectExportedFrontierReference(*branch_node, name, rounds_witness);
+		}
+		if (!rounds_witness) {
 			return LogicalPlanSQLExportResult::Failure({LogicalPlanSQLExportHelpers::PlanUnsupportedFeature(
 			    path, "trampoline_round_contract",
 			    "The trampoline requires lockstep rounds but no frontier reference survived in the exported SQL")});

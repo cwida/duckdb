@@ -37,3 +37,24 @@ EXPLAIN (SQL) WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
 SELECT n FROM t;
 ----
 <REGEX>:.*no frontier reference survived in the exported SQL.*
+
+# a surviving MERGE branch forces rounds on rebind by itself, so losing the frontier
+# reference to optimization does not block the export; the verify config re-executes
+# the exported text and compares results
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 0))
+	BRANCH 1 MERGE: (SELECT CASE WHEN n < 1 OR EXISTS (SELECT 1 FROM frontier.t WHERE 1 = 0)
+	                             THEN CASE WHEN n < 1 THEN 1 ELSE 0 END ELSE 0 END, n + 1 FROM t)
+) SELECT n FROM t;
+----
+2
+
+query II
+EXPLAIN (SQL) WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 0))
+	BRANCH 1 MERGE: (SELECT CASE WHEN n < 1 OR EXISTS (SELECT 1 FROM frontier.t WHERE 1 = 0)
+	                             THEN CASE WHEN n < 1 THEN 1 ELSE 0 END ELSE 0 END, n + 1 FROM t)
+) SELECT n FROM t;
+----
+sql	<REGEX>:.*MERGE.*
