@@ -507,12 +507,13 @@ idx_t CachingFileHandle::GetSplitBlockSize(idx_t nr_bytes, idx_t max_block_size)
 		const annotated_lock_guard<annotated_mutex> guard(file_handle_mutex);
 		handle = file_handle;
 	}
-	// only ask a handle that is open, so that reads served from the cache do not open the file
+	// the host estimate first, it keeps the lowest latency seen, then an open handle, so that reads served from
+	// the cache do not open the file
 	NetworkThroughputEstimate estimate;
 	if (!ExternalFileCache::TryParseDebugThroughput(Settings::Get<DebugNetworkThroughputEstimateSetting>(db),
 	                                                estimate) &&
-	    !(handle && handle->TryGetNetworkThroughput(estimate)) &&
-	    !external_file_cache.TryGetHostNetworkThroughput(path.path, estimate)) {
+	    !external_file_cache.TryGetHostNetworkThroughput(path.path, estimate) &&
+	    !(handle && handle->TryGetNetworkThroughput(estimate))) {
 		return max_block_size;
 	}
 	// readers that size their own reads (Parquet) fetch them in parallel, others rely on the split for parallelism

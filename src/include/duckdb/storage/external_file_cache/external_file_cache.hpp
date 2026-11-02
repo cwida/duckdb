@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/common/atomic.hpp"
+#include "duckdb/common/chrono.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/map.hpp"
 #include "duckdb/common/mutex.hpp"
@@ -67,6 +68,8 @@ public:
 	static constexpr idx_t ADAPTIVE_LATENCY_FACTOR = 4;
 	//! Large reads of readers that rely on the split for parallelism keep at least this many requests
 	static constexpr idx_t ADAPTIVE_MIN_BLOCKS_PER_READ = 8;
+	//! Host throughput estimates older than this are not used
+	static constexpr double ADAPTIVE_ESTIMATE_TTL_SECONDS = 60.0;
 
 public:
 	//! Get the maximum cache block size for a given file path.
@@ -81,10 +84,14 @@ public:
 	DUCKDB_API static idx_t GetAdaptiveBlockSize(idx_t nr_bytes, idx_t block_size,
 	                                             const NetworkThroughputEstimate &estimate,
 	                                             idx_t min_blocks_per_read = 1);
-	//! Remember the latest throughput estimate of the host of a remote file.
-	void SetHostNetworkThroughput(const string &path, const NetworkThroughputEstimate &estimate);
-	//! The latest throughput estimate of the host of a remote file, for handles that have not measured their own yet.
-	bool TryGetHostNetworkThroughput(const string &path, NetworkThroughputEstimate &result) const;
+	//! Fold a measured estimate into the one of the host of a remote file, keeping the lowest latency seen while
+	//! the entry stays fresh (the time to first byte of a request includes queueing on a busy link) and the latest
+	//! bandwidth
+	void SetHostNetworkThroughput(const string &path, const NetworkThroughputEstimate &estimate,
+	                              time_point<steady_clock> now = steady_clock::now());
+	//! The throughput estimate of the host of a remote file, unless it is older than the TTL.
+	bool TryGetHostNetworkThroughput(const string &path, NetworkThroughputEstimate &result,
+	                                 time_point<steady_clock> now = steady_clock::now()) const;
 	//! Parse a debug_network_throughput_estimate value, false for the empty string
 	DUCKDB_API static bool TryParseDebugThroughput(const string &value, NetworkThroughputEstimate &result);
 
@@ -188,8 +195,13 @@ private:
 	//! Lock for accessing cached_file_keys.
 	mutable annotated_mutex lock;
 
-	//! Latest throughput estimate per remote host (scheme and authority of the path)
-	unordered_map<string, NetworkThroughputEstimate> host_throughput DUCKDB_GUARDED_BY(throughput_lock);
+	//! A throughput estimate and when it was last updated
+	struct HostThroughput {
+		NetworkThroughputEstimate estimate;
+		time_point<steady_clock> last_update;
+	};
+	//! Throughput estimate per remote host (scheme and authority of the path)
+	unordered_map<string, HostThroughput> host_throughput DUCKDB_GUARDED_BY(throughput_lock);
 	//! Lock for accessing host_throughput.
 	mutable annotated_mutex throughput_lock;
 };

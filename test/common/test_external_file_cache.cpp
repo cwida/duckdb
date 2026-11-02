@@ -489,6 +489,79 @@ TEST_CASE("Large reads of remote files are split into blocks sized from the netw
 	}
 }
 
+TEST_CASE("Host throughput estimates keep the lowest fresh latency and expire", "[external_file_cache]") {
+	DuckDB db(nullptr);
+	auto &cache = db.instance->GetExternalFileCache();
+	NetworkThroughputEstimate est;
+	NetworkThroughputEstimate out;
+	const auto t0 = steady_clock::now();
+	est.latency_seconds = 0.05;
+	est.bandwidth_bytes_per_s = 1e6;
+	cache.SetHostNetworkThroughput("s3://efc-host/a.bin", est, t0);
+
+	// a higher latency keeps the lower one, the bandwidth follows the latest sample
+	est.latency_seconds = 0.2;
+	est.bandwidth_bytes_per_s = 2e6;
+	cache.SetHostNetworkThroughput("s3://efc-host/b.bin", est, t0 + milliseconds(1000));
+	REQUIRE(cache.TryGetHostNetworkThroughput("s3://efc-host/c.bin", out, t0 + milliseconds(2000)));
+	REQUIRE(out.latency_seconds == 0.05);
+	REQUIRE(out.bandwidth_bytes_per_s == 2e6);
+
+	// a lower latency replaces it
+	est.latency_seconds = 0.01;
+	cache.SetHostNetworkThroughput("s3://efc-host/a.bin", est, t0 + milliseconds(2000));
+	REQUIRE(cache.TryGetHostNetworkThroughput("s3://efc-host/a.bin", out, t0 + milliseconds(2000)));
+	REQUIRE(out.latency_seconds == 0.01);
+
+	// entries expire
+	REQUIRE(!cache.TryGetHostNetworkThroughput("s3://efc-host/a.bin", out, t0 + milliseconds(63000)));
+
+	// an estimate after the expiry starts over instead of keeping the old minimum
+	est.latency_seconds = 0.3;
+	est.bandwidth_bytes_per_s = 3e6;
+	cache.SetHostNetworkThroughput("s3://efc-host/a.bin", est, t0 + milliseconds(120000));
+	REQUIRE(cache.TryGetHostNetworkThroughput("s3://efc-host/a.bin", out, t0 + milliseconds(120000)));
+	REQUIRE(out.latency_seconds == 0.3);
+}
+
+TEST_CASE("The lowest latency seen at a host sizes its reads", "[external_file_cache]") {
+	DuckDB db(nullptr);
+	auto &db_instance = *db.instance;
+	auto remote_fs = make_uniq<ThroughputReportingFileSystem>();
+	Connection con(db);
+
+	const idx_t BLOCK_SIZE = 4096;
+	REQUIRE(
+	    !con.Query(StringUtil::Format("SET external_file_cache_remote_max_block_size=%llu", BLOCK_SIZE))->HasError());
+	remote_fs->estimate.latency_seconds = 0.01;
+	remote_fs->estimate.bandwidth_bytes_per_s = 1e6;
+	const idx_t SPLIT_SIZE = 10 * BLOCK_SIZE;
+	const idx_t FILE_SIZE = 80 * BLOCK_SIZE + 100;
+	auto content = MakeTestContent(FILE_SIZE);
+	EFCTestFileGuard first_file("test_efc_min_latency_first.bin", content);
+	EFCTestFileGuard second_file("test_efc_min_latency_second.bin", content);
+	EFCTestFileGuard third_file("test_efc_min_latency_third.bin", content);
+
+	CachingFileSystem cfs(*remote_fs, db_instance);
+	auto first =
+	    cfs.OpenFile(MakeTestOpenFileInfo(CACHING_TEST_REMOTE_PREFIX + first_file.GetPath()), ReaderSizedFlags());
+	REQUIRE(ReadFull(*first, FILE_SIZE) == content);
+	REQUIRE(remote_fs->TakeReads() == SplitReads(0, FILE_SIZE, SPLIT_SIZE));
+
+	// the reads of another file publish a larger measured latency
+	remote_fs->estimate.latency_seconds = 0.05;
+	auto second =
+	    cfs.OpenFile(MakeTestOpenFileInfo(CACHING_TEST_REMOTE_PREFIX + second_file.GetPath()), ReaderSizedFlags());
+	REQUIRE(ReadFull(*second, FILE_SIZE) == content);
+	REQUIRE(remote_fs->TakeReads() == SplitReads(0, FILE_SIZE, SPLIT_SIZE));
+
+	// the lower latency stays the one that sizes the blocks while it is fresh
+	auto third =
+	    cfs.OpenFile(MakeTestOpenFileInfo(CACHING_TEST_REMOTE_PREFIX + third_file.GetPath()), ReaderSizedFlags());
+	REQUIRE(ReadFull(*third, FILE_SIZE) == content);
+	REQUIRE(remote_fs->TakeReads() == SplitReads(0, FILE_SIZE, SPLIT_SIZE));
+}
+
 TEST_CASE("The first reads of a remote file are sized from other files of its host", "[external_file_cache]") {
 	DuckDB db(nullptr);
 	auto &db_instance = *db.instance;

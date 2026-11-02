@@ -135,10 +135,18 @@ idx_t ExternalFileCache::GetAdaptiveBlockSize(idx_t nr_bytes, idx_t block_size,
 	return MaxValue(result, block_size);
 }
 
-void ExternalFileCache::SetHostNetworkThroughput(const string &path, const NetworkThroughputEstimate &estimate) {
+void ExternalFileCache::SetHostNetworkThroughput(const string &path, const NetworkThroughputEstimate &estimate,
+                                                 time_point<steady_clock> now) {
 	auto host = GetHostKey(path);
 	const annotated_lock_guard<annotated_mutex> guard(throughput_lock);
-	host_throughput[std::move(host)] = estimate;
+	auto &entry = host_throughput[std::move(host)];
+	const bool fresh = duration<double>(now - entry.last_update).count() <= ADAPTIVE_ESTIMATE_TTL_SECONDS;
+	if (!fresh || !(entry.estimate.latency_seconds > 0) ||
+	    estimate.latency_seconds < entry.estimate.latency_seconds) {
+		entry.estimate.latency_seconds = estimate.latency_seconds;
+	}
+	entry.estimate.bandwidth_bytes_per_s = estimate.bandwidth_bytes_per_s;
+	entry.last_update = now;
 }
 
 bool ExternalFileCache::TryParseDebugThroughput(const string &value, NetworkThroughputEstimate &result) {
@@ -160,14 +168,16 @@ bool ExternalFileCache::TryParseDebugThroughput(const string &value, NetworkThro
 	return true;
 }
 
-bool ExternalFileCache::TryGetHostNetworkThroughput(const string &path, NetworkThroughputEstimate &result) const {
+bool ExternalFileCache::TryGetHostNetworkThroughput(const string &path, NetworkThroughputEstimate &result,
+                                                    time_point<steady_clock> now) const {
 	const auto host = GetHostKey(path);
 	const annotated_lock_guard<annotated_mutex> guard(throughput_lock);
 	auto entry = host_throughput.find(host);
-	if (entry == host_throughput.end()) {
+	if (entry == host_throughput.end() ||
+	    duration<double>(now - entry->second.last_update).count() > ADAPTIVE_ESTIMATE_TTL_SECONDS) {
 		return false;
 	}
-	result = entry->second;
+	result = entry->second.estimate;
 	return true;
 }
 
