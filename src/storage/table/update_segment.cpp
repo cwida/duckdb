@@ -1272,8 +1272,8 @@ UpdateSegment::statistics_update_function_t GetStatisticsUpdateFunction(Physical
 //===--------------------------------------------------------------------===//
 // Get Effective Updates
 //===--------------------------------------------------------------------===//
-idx_t GetEffectiveUpdatesValidity(UnifiedVectorFormat &update, row_t *ids, idx_t count, SelectionVector &sel,
-                                  Vector &base_data, idx_t id_offset) {
+// base_data is dense and aligned with the update vector: index i is update row i
+idx_t GetEffectiveUpdatesValidity(UnifiedVectorFormat &update, idx_t count, SelectionVector &sel, Vector &base_data) {
 	auto &original_validity = FlatVector::ValidityMutable(base_data);
 
 	SelectionVector new_sel;
@@ -1283,8 +1283,7 @@ idx_t GetEffectiveUpdatesValidity(UnifiedVectorFormat &update, row_t *ids, idx_t
 	for (idx_t i = 0; i < count; i++) {
 		auto sel_idx = sel.get_index(i);
 		auto update_idx = update.sel->get_index(sel_idx);
-		auto original_idx = UnsafeNumericCast<idx_t>(ids[sel_idx]) - id_offset;
-		if (original_validity.RowIsValid(original_idx) == update.validity.RowIsValid(update_idx)) {
+		if (original_validity.RowIsValid(sel_idx) == update.validity.RowIsValid(update_idx)) {
 			continue;
 		}
 		new_sel.set_index(effective_count++, sel_idx);
@@ -1294,8 +1293,7 @@ idx_t GetEffectiveUpdatesValidity(UnifiedVectorFormat &update, row_t *ids, idx_t
 }
 
 template <class T>
-idx_t TemplatedGetEffectiveUpdates(UnifiedVectorFormat &update, row_t *ids, idx_t count, SelectionVector &sel,
-                                   Vector &base_data, idx_t id_offset) {
+idx_t TemplatedGetEffectiveUpdates(UnifiedVectorFormat &update, idx_t count, SelectionVector &sel, Vector &base_data) {
 	auto data = UnifiedVectorFormat::GetData<T>(update);
 
 	auto original_data = FlatVector::GetData<T>(base_data);
@@ -1308,10 +1306,9 @@ idx_t TemplatedGetEffectiveUpdates(UnifiedVectorFormat &update, row_t *ids, idx_
 	for (idx_t i = 0; i < count; i++) {
 		auto sel_idx = sel.get_index(i);
 		auto update_idx = update.sel->get_index(sel_idx);
-		auto original_idx = UnsafeNumericCast<idx_t>(ids[sel_idx]) - id_offset;
 		// NULL values in the updates should have been filtered out before
 		D_ASSERT(update.validity.RowIsValid(update_idx));
-		if (original_validity.RowIsValid(original_idx) && data[update_idx] == original_data[original_idx]) {
+		if (original_validity.RowIsValid(sel_idx) && data[update_idx] == original_data[sel_idx]) {
 			// data is equivalent - skip
 			continue;
 		}
@@ -1492,7 +1489,9 @@ void UpdateSegment::Update(TransactionData transaction, DuckTableEntry &table_en
 		// if updates have the same value as the base row we can skip them
 		// we only do that if we have no updates for this vector
 		// we could do it otherwise - but that would require merging updates in order to find the current values
-		count = get_effective_updates(update_format, ids, count, sel, base_data, vector_offset);
+		// base_data[i] is the base value of ids[i]
+		D_ASSERT(base_data.GetVectorType() == VectorType::FLAT_VECTOR);
+		count = get_effective_updates(update_format, count, sel, base_data);
 		if (count == 0) {
 			MergeStatistics(update_stats);
 			return;

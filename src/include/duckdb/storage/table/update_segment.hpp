@@ -86,8 +86,8 @@ public:
 	                                      idx_t vector_offset, Vector &result, idx_t result_offset);
 	typedef idx_t (*statistics_update_function_t)(UpdateSegment *segment, SegmentStatistics &stats,
 	                                              UnifiedVectorFormat &update, idx_t count, SelectionVector &sel);
-	typedef idx_t (*get_effective_updates_t)(UnifiedVectorFormat &update_format, row_t *ids, idx_t count,
-	                                         SelectionVector &sel, Vector &base_data, idx_t id_offset);
+	typedef idx_t (*get_effective_updates_t)(UnifiedVectorFormat &update_format, idx_t count, SelectionVector &sel,
+	                                         Vector &base_data);
 
 private:
 	merge_update_function_t merge_update_function;

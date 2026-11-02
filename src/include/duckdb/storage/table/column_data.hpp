@@ -187,9 +187,8 @@ public:
 	//! Fetches the base data of a batch of row offsets, without updates
 	void FetchBaseRows(const QueryContext &context, const idx_t *offsets, const SelectionVector &sel, idx_t count,
 	                   Vector &result, idx_t result_offset);
-	//! Fetches the base data of the updated rows into their position within the vector of the first row
-	void FetchUpdateData(ColumnScanState &state, row_t *row_ids, idx_t update_count, Vector &base_vector,
-	                     idx_t row_group_start);
+	//! Fetches base values of row_ids into result, densely and in the same order, without updates
+	void FetchBaseRows(row_t *row_ids, idx_t count, Vector &result, idx_t row_group_start);
 	//! Reads the selected rows of a scan through FetchBaseRows (debug_force_fetch_row)
 	void FetchScannedRows(ColumnScanState &state, const SelectionVector &sel, idx_t count, Vector &result,
 	                      idx_t result_offset);
