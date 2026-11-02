@@ -74,13 +74,15 @@ def test_deprecated_highlight_constant(shell):
     result.check_stderr(".constant has been split into numeric_constant and string_constant")
     result.check_stderr(".highlight_colors numeric_constant brightred and .highlight_colors string_constant brightred")
 
-def run_in_pty(shell, arguments, term, response=None):
+def run_in_pty(shell, arguments, term, response=None, no_color=None):
     # runs the shell on a pseudo-terminal that either stays silent or answers the background color query
     import pty, select, time
     master, slave = pty.openpty()
     env = ShellTest(shell).get_environment()
     env.pop('NO_COLOR', None)
     env.pop('TERM', None)
+    if no_color is not None:
+        env['NO_COLOR'] = no_color
     if term is not None:
         env['TERM'] = term
     start = time.monotonic()
@@ -125,6 +127,21 @@ def test_no_color_probe_when_not_needed(shell, term, arguments):
     assert status == 0, output
     assert b'\x1b]11;?' not in output
     assert b'Timeout trying to read terminal background color' not in output
+    assert elapsed < 4
+
+@pytest.mark.skipif(os.name == 'nt', reason="requires a POSIX pseudo-terminal")
+@pytest.mark.parametrize("arguments", [
+    ['-c', 'SELECT 42'],
+    ['-c', 'SELECT missing_column'],
+    ['-help'],
+    ['-manual', 'list_contains'],
+])
+def test_no_color_environment_variable(shell, arguments):
+    import re
+    status, output, elapsed = run_in_pty(shell, arguments, 'xterm-256color', no_color='1')
+    assert status in (0, 1), output
+    assert b'\x1b]11;?' not in output
+    assert not re.search(rb'\x1b\[[0-9;]*m', output)
     assert elapsed < 4
 
 @pytest.mark.skipif(os.name == 'nt', reason="requires a POSIX pseudo-terminal")

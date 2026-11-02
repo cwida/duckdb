@@ -3762,6 +3762,10 @@ void ShellState::PrintQueryEstimate(const string &sql, const duckdb::SQLStatemen
 void ShellState::DetectDarkLightMode() {
 #ifdef HAVE_LINENOISE
 	ShellHighlight highlight(*this);
+	if (!ShellHighlight::IsEnabled()) {
+		// no colors are printed - no need to detect
+		return;
+	}
 	if (highlight_mode != HighlightMode::AUTOMATIC) {
 		// highlight mode is specified by the user - avoid setting manually
 		return;
@@ -3841,6 +3845,12 @@ int RunShell(int argc, const char **argv) {
 	data.stderr_is_console = IsStdStreamAConsole(2);
 
 	data.Initialize();
+
+	auto no_color = getenv("NO_COLOR");
+	if (no_color && no_color[0]) {
+		// https://no-color.org - can still be turned on explicitly with .highlighting on
+		ShellHighlight::SetHighlighting(false);
+	}
 
 	/* On Windows, we must translate command-line arguments into UTF-8.
 	 */

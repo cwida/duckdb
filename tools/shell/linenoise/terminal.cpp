@@ -496,9 +496,8 @@ bool Terminal::TryGetBackgroundColor(TerminalColor &color) {
 			if (!HasMoreData(ifd, 5000000)) {
 				// we didn't get data for 5s...
 				fprintf(stderr, "Timeout trying to read terminal background color (> 5s elapsed).\n");
-				fprintf(
-				    stderr,
-				    "Disable terminal background color detection by using duckdb -dark-mode or duckdb -light-mode.\n");
+				fprintf(stderr, "Disable terminal background color detection by using duckdb -dark-mode, duckdb "
+				                "-light-mode or NO_COLOR=1.\n");
 				fprintf(stderr, "This likely means duckdb does not correctly support your CLI.\n");
 				fprintf(stderr, "Please file an issue.\n");
 				break;
