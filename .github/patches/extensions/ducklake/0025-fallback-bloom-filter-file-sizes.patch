@@ -1,0 +1,52 @@
+diff --git a/test/sql/compaction/merge_adjacent_target_size_heuristics.test b/test/sql/compaction/merge_adjacent_target_size_heuristics.test
+index 2fc578d5..e2aa7797 100644
+--- a/test/sql/compaction/merge_adjacent_target_size_heuristics.test
++++ b/test/sql/compaction/merge_adjacent_target_size_heuristics.test
+@@ -16,7 +16,7 @@ ATTACH 'ducklake:{DUCKLAKE_CONNECTION}' AS ducklake (DATA_PATH '{DATA_PATH}/merg
+ statement ok
+ USE ducklake
+ 
+-# two files of about 4KB each, which barely compress
++# two files of about 5KB each, which barely compress
+ statement ok
+ CREATE TABLE t(i UBIGINT)
+ 
+@@ -27,13 +27,13 @@ statement ok
+ INSERT INTO t SELECT hash(i + 1000) FROM range(500) t(i)
+ 
+ query I
+-SELECT count(*) FROM ducklake_list_files('ducklake', 't') WHERE data_file_size_bytes BETWEEN 3500 AND 4900
++SELECT count(*) FROM ducklake_list_files('ducklake', 't') WHERE data_file_size_bytes BETWEEN 4500 AND 5900
+ ----
+ 2
+ 
+-# with a 5KB target, merging both files ends up further from the target than either file on its own
++# with a 6KB target, merging both files ends up further from the target than either file on its own
+ statement ok
+-CALL ducklake.set_option('target_file_size', '5KB')
++CALL ducklake.set_option('target_file_size', '6KB')
+ 
+ query III
+ SELECT table_name, files_processed, files_created FROM ducklake_merge_adjacent_files('ducklake', 't', max_compacted_files => 1)
+diff --git a/test/sql/compaction/merge_adjacent_tiered.test_slow b/test/sql/compaction/merge_adjacent_tiered.test_slow
+index 8bb785eb..762f0c65 100644
+--- a/test/sql/compaction/merge_adjacent_tiered.test_slow
++++ b/test/sql/compaction/merge_adjacent_tiered.test_slow
+@@ -44,7 +44,7 @@ CALL ducklake_merge_adjacent_files('ducklake', 'tiered', max_file_size=>10000);
+ query I
+ SELECT count(*) FROM __ducklake_metadata_ducklake.ducklake_data_file WHERE end_snapshot IS NULL
+ ----
+-47
++52
+ 
+ # Tier 1 → Tier 2: merge medium files (10KB-100KB) into ~200KB files
+ statement ok
+@@ -56,7 +56,7 @@ CALL ducklake_merge_adjacent_files('ducklake', 'tiered', min_file_size=>10000, m
+ query I
+ SELECT count(*) FROM __ducklake_metadata_ducklake.ducklake_data_file WHERE end_snapshot IS NULL
+ ----
+-12
++13
+ 
+ # Tier 2 → Tier 3: merge large files (100KB-500KB) into ~1MB files
+ statement ok
