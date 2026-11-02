@@ -7,9 +7,11 @@ add_library_unity(
   column_binding_rewrite.cpp
   common_subplan.cpp
   common_subplan_nonserializable.cpp
+  dynamic_filter_groups.cpp
   expression_type_serialization.cpp
   filter_pushdown_alias.cpp
   function_invocation_serialization.cpp
+  join_filter_optimizer_hooks.cpp
   join_order_conflict_detector.cpp
   join_order_enumeration.cpp
   logical_plan_verification.cpp
