@@ -122,3 +122,116 @@ SELECT o.k, q.n FROM (VALUES (2)) o(k), LATERAL (
 	) SELECT n FROM t
 ) q ORDER BY ALL;
 ----
+
+# a frontier read is also restricted to active domains: branch 1 never runs for domain 2,
+# so its grouped computation must not evaluate domain 2's frontier rows
+query II
+SELECT o.k, q.n
+FROM (VALUES (1), (2)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT o.k, o.k)
+		BRANCH 1: (
+			WITH w AS MATERIALIZED (
+				SELECT n, CASE WHEN n = 2 THEN CAST('inactive' AS INTEGER) ELSE max(n) END AS m
+				FROM frontier.t GROUP BY n
+			)
+			SELECT 0, (SELECT max(m) FROM w) FROM t
+		)
+		BRANCH 2: (SELECT 0, n FROM t)
+	) SELECT n FROM t
+) q ORDER BY ALL;
+----
+1	1
+2	2
+
+# protection: an active domain keeps the whole frontier, including rows routed to the
+# other branch within that domain
+query II
+SELECT o.k, q.n
+FROM (VALUES (1), (2)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT s.c, o.k FROM (VALUES (1), (2)) s(c) WHERE o.k = 1)
+		BRANCH 1: (SELECT 0, (SELECT count(*) FROM frontier.t)::INTEGER FROM t)
+		BRANCH 2: (SELECT 0, n FROM t)
+	) SELECT n FROM t
+) q ORDER BY ALL;
+----
+1	1
+1	2
+
+# two correlated columns restrict as a tuple
+query III
+SELECT o.k, o.j, q.n FROM (VALUES (1, 10), (2, 20)) o(k, j), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.k + o.j WHERE o.k = 1)
+		BRANCH 1: (
+			WITH agg AS MATERIALIZED (
+				SELECT CASE WHEN count(*) = 0 THEN CAST('inactive' AS INTEGER) ELSE max(n) END AS m FROM t)
+			SELECT 0, (SELECT m FROM agg) FROM t)
+	) SELECT n FROM t
+) q ORDER BY ALL;
+----
+1	10	11
+
+# a NULL domain value is an active domain under null-safe domain equality
+query II
+SELECT coalesce(o.k, -1), q.n FROM (VALUES (NULL::INTEGER), (5)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, 7 WHERE o.k IS NULL)
+		BRANCH 1: (
+			WITH agg AS MATERIALIZED (
+				SELECT CASE WHEN count(*) = 0 THEN CAST('inactive' AS INTEGER) ELSE max(n) END AS m FROM t)
+			SELECT 0, (SELECT m FROM agg) FROM t)
+	) SELECT n FROM t
+) q ORDER BY ALL;
+----
+-1	7
+
+# the frontier restriction matches the whole domain tuple: with (1, 10) and (2, 20)
+# active in branch 1 and (1, 20) active only in branch 2, component-wise matching would
+# admit (1, 20)'s frontier row into branch 1 and raise the cast error
+query III
+SELECT o.k, o.j, q.n FROM (VALUES (1, 10), (2, 20), (1, 20)) o(k, j), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT CASE WHEN (o.k, o.j) IN ((1, 10), (2, 20)) THEN 1 ELSE 2 END, o.k * 100 + o.j)
+		BRANCH 1: (
+			WITH w AS MATERIALIZED (
+				SELECT CASE WHEN n = 120 THEN CAST('leaked' AS INTEGER) ELSE n END AS m FROM frontier.t)
+			SELECT 0, (SELECT max(m) FROM w) FROM t
+		)
+		BRANCH 2: (SELECT 0, n FROM t)
+	) SELECT n FROM t
+) q ORDER BY ALL;
+----
+1	10	110
+1	20	120
+2	20	220
+
+# a NULL active domain keeps its frontier rows under null-safe domain equality
+query II
+SELECT coalesce(o.k, -1), q.n FROM (VALUES (NULL::INTEGER), (5)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT CASE WHEN o.k IS NULL THEN 1 ELSE 2 END, coalesce(o.k, 0))
+		BRANCH 1: (SELECT 0, (SELECT count(*) FROM frontier.t)::INTEGER FROM t)
+		BRANCH 2: (SELECT 0, n FROM t)
+	) SELECT n FROM t
+) q ORDER BY ALL;
+----
+-1	1
+5	5
+
+# smoke: a frontier read inside a SEMI join ON subquery (lowered by the dependent join
+# planner before the restriction runs) binds the restricted snapshot
+statement ok
+CREATE TABLE ninetynine AS SELECT 99 AS n;
+
+query II
+SELECT o.k, q.n FROM (VALUES (1), (2)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.k WHERE o.k = 1)
+		BRANCH 1: (SELECT 0, t.n FROM t SEMI JOIN ninetynine x
+		           ON EXISTS (SELECT 1 FROM frontier.t f WHERE f.n < 100))
+	) SELECT n FROM t
+) q ORDER BY ALL;
+----
+1	1
