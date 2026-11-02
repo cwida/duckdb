@@ -1,0 +1,40 @@
+# name: test/sql/timezone/timestamptz_ns_to_timestamp.test
+# description: TIMESTAMPTZ_NS to TIMESTAMP uses the session time zone like TIMESTAMPTZ to TIMESTAMP
+# group: [timezone]
+
+require icu
+
+statement ok
+SET TimeZone='America/Los_Angeles'
+
+# nanoseconds round to the nearest microsecond, like the other nanosecond to microsecond casts
+query TT
+SELECT CAST(CAST('2020-01-02 03:04:05.123456789+00' AS TIMESTAMPTZ_NS) AS TIMESTAMP), CAST(CAST('2020-01-02 03:04:05.123456499+00' AS TIMESTAMPTZ_NS) AS TIMESTAMP)
+----
+2020-01-01 19:04:05.123457	2020-01-01 19:04:05.123456
+
+query TT
+SELECT CAST(CAST('1969-12-31 23:59:59.123456789+00' AS TIMESTAMPTZ_NS) AS TIMESTAMP), CAST(CAST('1969-12-31 23:59:59.999999999+00' AS TIMESTAMPTZ_NS) AS TIMESTAMP)
+----
+1969-12-31 15:59:59.123457	1969-12-31 16:00:00
+
+query TTT
+SELECT CAST('infinity'::TIMESTAMPTZ_NS AS TIMESTAMP), CAST('-infinity'::TIMESTAMPTZ_NS AS TIMESTAMP), CAST(NULL::TIMESTAMPTZ_NS AS TIMESTAMP)
+----
+infinity	-infinity	NULL
+
+statement ok
+SET TimeZone='UTC'
+
+query T
+SELECT CAST(CAST('2020-01-02 03:04:05.123456789+00' AS TIMESTAMPTZ_NS) AS TIMESTAMP)
+----
+2020-01-02 03:04:05.123457
+
+statement ok
+SET disable_timestamptz_casts=true
+
+statement error
+SELECT CAST(CAST('2020-01-02 03:04:05.123456789+00' AS TIMESTAMPTZ_NS) AS TIMESTAMP)
+----
+<REGEX>:Binder Error.*AT TIME ZONE.*

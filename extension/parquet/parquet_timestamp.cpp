@@ -141,6 +141,14 @@ static T ParquetWrapTime(const T &raw, const T day) {
 	return modulus + (modulus < 0) * day;
 }
 
+int64_t ParquetTimeTZToUTCMicros(const dtime_tz_t &timetz) {
+	// Keep the end of the UTC day, which NormalizeTimeTZ wraps to its start
+	if (timetz.time().value - timetz.offset() * Interval::MICROS_PER_SEC == Interval::MICROS_PER_DAY) {
+		return Interval::MICROS_PER_DAY;
+	}
+	return Time::NormalizeTimeTZ(timetz).value;
+}
+
 bool ParquetTimeIsValid(const int64_t &raw, const int64_t day) {
 	return raw >= 0 && raw <= day;
 }

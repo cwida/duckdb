@@ -1744,6 +1744,12 @@ overrides:
   OtherOperatorTail:
     type: "OtherOperatorTail"
     by_value: true
+  AnyAllSubqueryTail:
+    type: "OtherOperatorTail"
+    by_value: true
+  OtherOperatorExpressionTail:
+    type: "OtherOperatorTail"
+    by_value: true
   AdditiveExpressionTail:
     type: "BinaryExpressionTail"
     by_value: true

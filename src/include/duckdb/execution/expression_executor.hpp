@@ -81,6 +81,13 @@ public:
 	                                       bool allow_unfoldable = false);
 	//! Try to evaluate a scalar expression and fold it into a single value, returns false if an exception is thrown
 	DUCKDB_API static bool TryEvaluateScalar(ClientContext &context, const Expression &expr, Value &result);
+	//! As above, but also returns false when the result is a nested value with more than max_nested_elements
+	//! elements. A Value holds one object per element, so folding large nested results is slower and larger than
+	//! evaluating the expression at runtime.
+	DUCKDB_API static bool TryEvaluateScalar(ClientContext &context, const Expression &expr, Value &result,
+	                                         idx_t max_nested_elements);
+	//! The default limit on the number of nested elements that are folded into a constant Value
+	static constexpr idx_t MAX_FOLDED_NESTED_ELEMENTS = STANDARD_VECTOR_SIZE * 32;
 
 	//! Initialize the state of a given expression
 	static unique_ptr<ExpressionState> InitializeState(const Expression &expr, ExpressionExecutorState &state);

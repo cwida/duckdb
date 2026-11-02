@@ -11,18 +11,6 @@ DatabaseHandle::DatabaseHandle(unique_ptr<FileHandle> handle_p) : handle(std::mo
 DatabaseHandle::DatabaseHandle(unique_ptr<MemoryMappedFile> mmap_handle_p) : mmap_handle(std::move(mmap_handle_p)) {
 }
 
-//! The file system to open the database file with. The handle outlives the statement that opens it, but file systems
-//! take what they need from the opener when the file is opened: through the client's file system, a remote database
-//! file uses the settings of the session that attached it (http_proxy, ca_cert_file, ...) and reports its requests to
-//! that session's logger. Without a client, the database-wide file system only sees global settings.
-static FileSystem &GetDatabaseFileSystem(QueryContext context, AttachedDatabase &db) {
-	auto client_context = context.GetClientContext();
-	if (client_context) {
-		return FileSystem::GetFileSystem(*client_context);
-	}
-	return FileSystem::Get(db);
-}
-
 unique_ptr<DatabaseHandle> DatabaseHandle::Open(QueryContext context, AttachedDatabase &db, const string &path,
                                                 const StorageManagerOptions &options, DatabaseOpenMode open_mode) {
 	if (options.io_mode == FileIOMode::MMAP) {
@@ -52,7 +40,7 @@ unique_ptr<DatabaseHandle> DatabaseHandle::OpenFile(QueryContext context, Attach
 	file_flags |= FileFlags::FILE_FLAGS_PARALLEL_ACCESS;
 	file_flags |= FileFlags::FILE_FLAGS_MULTI_CLIENT_ACCESS;
 
-	auto &fs = GetDatabaseFileSystem(context, db);
+	auto &fs = FileSystem::Get(context, db);
 	auto file_handle = fs.OpenFile(path, file_flags);
 	if (!file_handle) {
 		// this can only happen in read-only mode - as that is when we set FILE_FLAGS_NULL_IF_NOT_EXISTS
@@ -89,7 +77,7 @@ unique_ptr<DatabaseHandle> DatabaseHandle::OpenMemoryMap(QueryContext context, A
 			mmap_flags |= FileFlags::FILE_FLAGS_FILE_CREATE;
 		}
 	}
-	auto &fs = GetDatabaseFileSystem(context, db);
+	auto &fs = FileSystem::Get(context, db);
 	auto mmap_handle = fs.MemoryMapFile(path, mmap_flags, mmap_options);
 	if (!mmap_handle) {
 		// Only happens in read-only mode, where FILE_FLAGS_NULL_IF_NOT_EXISTS is set.

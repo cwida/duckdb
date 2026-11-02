@@ -20,6 +20,7 @@
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/capi/extension_api.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/common/query_context.hpp"
 #include "duckdb/main/connection_manager.hpp"
 #include "duckdb/main/database_file_opener.hpp"
 #include "duckdb/main/database_file_path_manager.hpp"
@@ -167,6 +168,14 @@ FileSystem &FileSystem::GetLocal(DatabaseInstance &db) {
 
 FileSystem &FileSystem::Get(AttachedDatabase &db) {
 	return FileSystem::GetFileSystem(db.GetDatabase());
+}
+
+FileSystem &FileSystem::Get(QueryContext context, AttachedDatabase &db) {
+	auto client_context = context.GetClientContext();
+	if (client_context) {
+		return FileSystem::GetFileSystem(*client_context);
+	}
+	return FileSystem::Get(db);
 }
 
 DBConfig &DBConfig::GetConfig(DatabaseInstance &db) {

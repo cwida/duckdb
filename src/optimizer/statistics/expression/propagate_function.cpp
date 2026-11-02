@@ -21,7 +21,27 @@ bool TryEvaluateAtConstants(ClientContext &context, const BoundFunctionExpressio
 	// Functions such as alias() inspect expression metadata during execution.
 	auto clone = func.Copy();
 	clone->Cast<BoundFunctionExpression>().GetChildrenMutable() = std::move(children);
-	return ExpressionExecutor::TryEvaluateScalar(context, *clone, result);
+	// a nested result with many elements is not worth materializing as a Value just to derive statistics
+	return ExpressionExecutor::TryEvaluateScalar(context, *clone, result,
+	                                             ExpressionExecutor::MAX_FOLDED_NESTED_ELEMENTS);
+}
+
+// Whether [lo, hi] holds -infinity and another value. The smallest finite DATE or TIMESTAMP sorts below -infinity.
+bool HoldsNegativeInfinity(const Value &lo, const Value &hi) {
+	switch (lo.type().id()) {
+	case LogicalTypeId::DATE:
+	case LogicalTypeId::TIMESTAMP:
+	case LogicalTypeId::TIMESTAMP_SEC:
+	case LogicalTypeId::TIMESTAMP_MS:
+	case LogicalTypeId::TIMESTAMP_NS:
+	case LogicalTypeId::TIMESTAMP_TZ:
+	case LogicalTypeId::TIMESTAMP_TZ_NS: {
+		auto ninfinity = Value::NegativeInfinity(lo.type());
+		return lo < hi && lo <= ninfinity && ninfinity <= hi;
+	}
+	default:
+		return false;
+	}
 }
 
 // Whether [lo, hi] holds -infinity and another value. The smallest finite DATE or TIMESTAMP sorts below -infinity.

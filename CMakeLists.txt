@@ -196,8 +196,11 @@ if(WIN32)
 endif()
 
 # Split functions and data into separate sections in release builds so unused
-# sections can be discarded by the linker
-if("${CMAKE_CXX_COMPILER_ID}" MATCHES "GNU|Clang" AND NOT MSVC)
+# sections can be discarded by the linker. DuckDB's own MinGW links don't enable
+# section garbage collection, so there the flags mainly add metadata.
+if("${CMAKE_CXX_COMPILER_ID}" MATCHES "GNU|Clang"
+   AND NOT MSVC
+   AND NOT MINGW)
   set(CMAKE_CXX_FLAGS_RELEASE
       "${CMAKE_CXX_FLAGS_RELEASE} -ffunction-sections -fdata-sections")
 elseif(WIN32 AND MSVC)

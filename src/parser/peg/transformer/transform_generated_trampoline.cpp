@@ -15190,9 +15190,43 @@ PEGTransformerFactory::FinalizeInfixOtherOperatorExpressionTrampoline(PEGTransfo
 arena_ptr<TransformResultValue>
 PEGTransformerFactory::FinalizeOtherOperatorTailTrampoline(PEGTransformer &transformer,
                                                            GeneratedTransformProcess &process) {
+	auto result = process.TakeResult<OtherOperatorTail>(0);
+	return transformer.MakeResult<OtherOperatorTail>(std::move(result));
+}
+
+void PEGTransformerFactory::InitializeAnyAllSubqueryTailTrampoline(PEGTransformer &transformer,
+                                                                   GeneratedTransformProcess &process) {
+	auto &list_pr = process.parse_result.Cast<ListParseResult>();
+	process.ReserveChildSlots(2);
+	process.PushChild({transformer.GetRule(PEGRuleId::SubqueryReference), list_pr.GetChild(1)}, 1);
+	process.PushChild({transformer.GetRule(PEGRuleId::AnyAllParsedOperator), list_pr.GetChild(0)}, 0);
+}
+
+arena_ptr<TransformResultValue>
+PEGTransformerFactory::FinalizeAnyAllSubqueryTailTrampoline(PEGTransformer &transformer,
+                                                            GeneratedTransformProcess &process) {
+	auto any_all_parsed_operator = process.TakeResult<ParsedOperator>(0);
+	auto subquery_reference = process.TakeResult<unique_ptr<TableRef>>(1);
+	auto result =
+	    TransformAnyAllSubqueryTail(transformer, std::move(any_all_parsed_operator), std::move(subquery_reference));
+	return transformer.MakeResult<OtherOperatorTail>(std::move(result));
+}
+
+void PEGTransformerFactory::InitializeOtherOperatorExpressionTailTrampoline(PEGTransformer &transformer,
+                                                                            GeneratedTransformProcess &process) {
+	auto &list_pr = process.parse_result.Cast<ListParseResult>();
+	process.ReserveChildSlots(2);
+	process.PushChild({transformer.GetRule(PEGRuleId::BitwiseExpression), list_pr.GetChild(1)}, 1);
+	process.PushChild({transformer.GetRule(PEGRuleId::OtherOperator), list_pr.GetChild(0)}, 0);
+}
+
+arena_ptr<TransformResultValue>
+PEGTransformerFactory::FinalizeOtherOperatorExpressionTailTrampoline(PEGTransformer &transformer,
+                                                                     GeneratedTransformProcess &process) {
 	auto other_operator = process.TakeResult<ParsedOperator>(0);
 	auto bitwise_expression = process.TakeResult<unique_ptr<ParsedExpression>>(1);
-	auto result = TransformOtherOperatorTail(transformer, std::move(other_operator), std::move(bitwise_expression));
+	auto result =
+	    TransformOtherOperatorExpressionTail(transformer, std::move(other_operator), std::move(bitwise_expression));
 	return transformer.MakeResult<OtherOperatorTail>(std::move(result));
 }
 

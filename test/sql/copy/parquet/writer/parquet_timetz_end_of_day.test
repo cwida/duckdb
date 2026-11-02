@@ -1,0 +1,55 @@
+# name: test/sql/copy/parquet/writer/parquet_timetz_end_of_day.test
+# description: TIMETZ values at 24:00:00 UTC keep the end of the day when written to Parquet
+# group: [writer]
+
+require parquet
+
+statement ok
+COPY (SELECT * FROM (VALUES
+	(1, TIMETZ '24:00:00+00'),
+	(2, TIMETZ '23:00:00-01'),
+	(3, TIMETZ '12:00:00+00'),
+	(4, TIMETZ '08:00:01-15:59:59'),
+	(5, TIMETZ '00:00:00+00'),
+	(6, TIMETZ '01:00:00+01')
+) t(i, tz)) TO '{TEST_DIR}/timetz_end_of_day.parquet'
+
+query II
+SELECT i, tz::VARCHAR FROM '{TEST_DIR}/timetz_end_of_day.parquet' ORDER BY i
+----
+1	24:00:00+00
+2	24:00:00+00
+3	12:00:00+00
+4	24:00:00+00
+5	00:00:00+00
+6	00:00:00+00
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/timetz_end_of_day.parquet' WHERE tz = TIMETZ '24:00:00+00'
+----
+3
+
+query I
+SELECT max(tz)::VARCHAR FROM '{TEST_DIR}/timetz_end_of_day.parquet'
+----
+24:00:00+00
+
+# a dictionary encoded file has a bloom filter that finds the value
+statement ok
+COPY (SELECT (i % 3) AS i, CASE i % 3 WHEN 0 THEN TIMETZ '24:00:00+00' WHEN 1 THEN TIMETZ '12:00:00+00' ELSE TIMETZ '06:00:00+00' END AS tz
+FROM range(3000) t(i)) TO '{TEST_DIR}/timetz_end_of_day_dictionary.parquet' (DICTIONARY_SIZE_LIMIT 1000)
+
+query I
+SELECT bool_and(bloom_filter_offset IS NOT NULL) FROM parquet_metadata('{TEST_DIR}/timetz_end_of_day_dictionary.parquet') WHERE path_in_schema = 'tz'
+----
+true
+
+query I
+SELECT bool_or(bloom_filter_excludes) FROM parquet_bloom_probe('{TEST_DIR}/timetz_end_of_day_dictionary.parquet', 'tz', TIMETZ '24:00:00+00')
+----
+false
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/timetz_end_of_day_dictionary.parquet' WHERE tz = TIMETZ '24:00:00+00'
+----
+1000

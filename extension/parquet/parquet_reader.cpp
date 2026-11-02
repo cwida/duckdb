@@ -1420,6 +1420,8 @@ void ParquetReader::AddVirtualColumn(column_t virtual_column_id) {
 
 ParquetOptions::ParquetOptions(ClientContext &context) {
 	context.TryGetCurrentSetting("binary_as_string", binary_as_string);
+	// a can_have_nan option of the scan is parsed after this, so it overrides the setting
+	context.TryGetCurrentSetting("parquet_can_have_nan", can_have_nan);
 	context.TryGetCurrentSetting("debug_delta_only_variant_encoding_enabled", variant_legacy_encoding);
 }
 

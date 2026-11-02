@@ -1066,6 +1066,41 @@ void DBConfig::ResetAllowedPaths() {
 	options.allowed_paths = DBConfigOptions().allowed_paths;
 }
 
+void DBConfig::SetAllowedDirectories(const vector<string> &paths) {
+	decltype(options.allowed_directories) new_directories;
+	for (auto &path : paths) {
+		auto allowed_directory = SanitizeAllowedPath(path);
+		if (allowed_directory.empty()) {
+			throw InvalidInputException("Cannot provide an empty string for allowed_directory");
+		}
+		if (!StringUtil::EndsWith(allowed_directory, "/")) {
+			allowed_directory += "/";
+		}
+		new_directories.insert(std::move(allowed_directory));
+	}
+	lock_guard<mutex> guard(allowed_paths_lock);
+	options.allowed_directories = std::move(new_directories);
+}
+
+void DBConfig::SetAllowedPaths(const vector<string> &paths) {
+	decltype(options.allowed_paths) new_paths;
+	for (auto &path : paths) {
+		new_paths.insert(SanitizeAllowedPath(path));
+	}
+	lock_guard<mutex> guard(allowed_paths_lock);
+	options.allowed_paths = std::move(new_paths);
+}
+
+void DBConfig::ResetAllowedDirectories() {
+	lock_guard<mutex> guard(allowed_paths_lock);
+	options.allowed_directories = DBConfigOptions().allowed_directories;
+}
+
+void DBConfig::ResetAllowedPaths() {
+	lock_guard<mutex> guard(allowed_paths_lock);
+	options.allowed_paths = DBConfigOptions().allowed_paths;
+}
+
 void DBConfig::AddAllowedPath(const string &path) {
 	auto allowed_path = SanitizeAllowedPath(path);
 	lock_guard<mutex> guard(allowed_paths_lock);

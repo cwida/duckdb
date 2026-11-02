@@ -338,7 +338,7 @@ struct ParquetUUIDOperator : public BaseParquetOperator {
 struct ParquetTimeTZOperator : public BaseParquetOperator {
 	template <class SRC, class TGT>
 	static TGT Operation(SRC input) {
-		return Time::NormalizeTimeTZ(input).value;
+		return ParquetTimeTZToUTCMicros(input);
 	}
 
 	template <class SRC, class TGT>

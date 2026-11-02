@@ -1,0 +1,28 @@
+# name: test/sql/optimizer/constant_folding_large_nested.test
+# description: Large nested results are not constant folded into a Value
+# group: [optimizer]
+
+statement ok
+PRAGMA explain_output='optimized_only';
+
+# small nested results are folded into a constant
+query II
+EXPLAIN SELECT range(0, 5)
+----
+logical_opt	<!REGEX>:.*"range".*
+
+# a list with a million elements is left to be computed at runtime
+query II
+EXPLAIN SELECT range(0, 1000000)
+----
+logical_opt	<REGEX>:.*"range".*
+
+query I
+SELECT count(*) FROM (SELECT unnest(range(0, 1000000)))
+----
+1000000
+
+query I
+SELECT sum(x) FROM (SELECT unnest(range(0, 1000000)) x)
+----
+499999500000

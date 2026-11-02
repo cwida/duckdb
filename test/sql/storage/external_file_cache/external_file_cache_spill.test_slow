@@ -14,6 +14,9 @@ statement ok
 SET threads=4;
 
 statement ok
+SET threads=4;
+
+statement ok
 SET external_file_cache_spill=true;
 
 statement ok

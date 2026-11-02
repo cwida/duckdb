@@ -528,4 +528,6 @@ struct PagerState {
 	uint32_t win_console_cp_before_pager = 0;
 };
 
+void IgnoreInterrupts();
+
 } // namespace duckdb_shell

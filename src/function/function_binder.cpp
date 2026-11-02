@@ -1053,7 +1053,8 @@ static bool FoldConstantArgument(ClientContext &context, unique_ptr<Expression> 
 		binder->SetAlwaysRequireRebind();
 	}
 	Value result;
-	if (!ExpressionExecutor::TryEvaluateScalar(context, *child, result)) {
+	if (!ExpressionExecutor::TryEvaluateScalar(context, *child, result,
+	                                           ExpressionExecutor::MAX_FOLDED_NESTED_ELEMENTS)) {
 		// the argument cannot be evaluated: leave it in place so that the error surfaces at execution
 		return false;
 	}

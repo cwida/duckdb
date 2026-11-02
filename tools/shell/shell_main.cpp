@@ -41,6 +41,7 @@ int wmain(int argc, wchar_t **wargv) {
 			shell_state->PrintExitHint(rc);
 		}
 		// destroy shell state prior to program clean-up
+		IgnoreInterrupts();
 		if (shell_state) {
 			delete shell_state;
 		}

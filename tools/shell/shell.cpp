@@ -3831,6 +3831,19 @@ static bool IsStdStreamAConsole(int std_fd) {
 #endif
 }
 
+struct ShellHistory {
+	ShellHistory(ShellState &state, const char *path) : state(state), path(path) {
+	}
+	~ShellHistory() {
+		if (path) {
+			state.ShellSetHistoryMaxLength(2000);
+			state.ShellSaveHistory(path);
+		}
+	}
+	ShellState &state;
+	const char *path;
+};
+
 int RunShell(int argc, const char **argv) {
 	int rc = 0;
 	vector<string> extra_commands;
