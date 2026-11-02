@@ -98,37 +98,23 @@ void DuckTransaction::PushAttach(AttachedDatabase &db) {
 	Store<CatalogEntry *>(&db, ptr);
 }
 
-void DuckTransaction::PushDelete(DuckTableEntry &table_entry, RowVersionManager &info, idx_t vector_idx, row_t rows[],
-                                 idx_t count, idx_t base_row) {
-	bool is_consecutive = true;
-	// check if the rows are consecutive
-	for (idx_t i = 0; i < count; i++) {
-		if (rows[i] != row_t(i)) {
-			is_consecutive = false;
-			break;
-		}
-	}
-	idx_t alloc_size = sizeof(DeleteInfo);
-	if (!is_consecutive) {
-		// if rows are not consecutive we need to allocate row identifiers
-		alloc_size += sizeof(uint16_t) * count;
-	}
+void DuckTransaction::PushWrite(UndoFlags type, DuckTableEntry &table_entry, RowVersionManager &info, idx_t vector_idx,
+                                idx_t base_row, const WrittenRows &written) {
+	auto alloc_size = DeleteInfo::GetAllocationSize(written.count, written.is_consecutive, written.previous_id_count);
 
-	auto undo_entry = undo_buffer.CreateEntry(UndoFlags::DELETE_TUPLE, alloc_size);
+	auto undo_entry = undo_buffer.CreateEntry(type, alloc_size);
 	auto delete_info = reinterpret_cast<DeleteInfo *>(undo_entry.GetDataMutable());
 	delete_info->version_info = &info;
 	delete_info->vector_idx = vector_idx;
 	delete_info->table = &table_entry;
-	delete_info->count = count;
+	delete_info->count = written.count;
 	delete_info->base_row = base_row;
-	delete_info->is_consecutive = is_consecutive;
-	if (!is_consecutive) {
-		// if rows are not consecutive
-		auto delete_rows = delete_info->GetRows();
-		for (idx_t i = 0; i < count; i++) {
-			delete_rows[i] = NumericCast<uint16_t>(rows[i]);
-		}
+	delete_info->is_consecutive = written.is_consecutive;
+	delete_info->previous_id_count = written.previous_id_count;
+	if (!written.is_consecutive) {
+		std::copy_n(written.rows, written.count, delete_info->GetRows());
 	}
+	std::copy_n(written.previous_ids, written.previous_id_count, delete_info->GetPreviousIds());
 }
 
 void DuckTransaction::PushAppend(DuckTableEntry &table_entry, idx_t start_row, idx_t row_count) {
