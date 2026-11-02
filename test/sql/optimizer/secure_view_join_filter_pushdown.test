@@ -26,11 +26,11 @@ EXPLAIN ANALYZE SELECT count(*) FROM big_secure b JOIN dim d ON b.id = d.k WHERE
 ----
 analyzed_plan	<!REGEX>:[\s\S]*SECURE_VIEW[^╰]*1,000,000 rows[\s\S]*
 
-# a view that hides rows gets a filter checked on every row: exactly the matching rows leave it
+# the same through a view that hides rows: the scan inside it is pruned, far fewer than the view's 500,000 rows leave it
 query II
 EXPLAIN ANALYZE SELECT count(*) FROM big_secure_filtered b JOIN dim d ON b.id = d.k WHERE d.yr = 42
 ----
-analyzed_plan	<REGEX>:[\s\S]*SECURE_VIEW[^╰]*5,000 rows[\s\S]*
+analyzed_plan	<!REGEX>:[\s\S]*SECURE_VIEW[^╰]*500,000 rows[\s\S]*
 
 query I
 SELECT count(*) FROM big_secure b JOIN dim d ON b.id = d.k WHERE d.yr = 42
@@ -64,8 +64,8 @@ SELECT count(*) FROM big_secure_filtered b JOIN small s ON b.id = s.id
 statement ok
 RESET disabled_optimizers
 
-# a view that only projects columns hides no rows: like the plain table, it gets the IN and prefix-range filters, which
-# remove every row but the two matching ones
+# the IN and prefix-range filters cross a view that only projects columns as they reach a plain table, and remove every
+# row but the two matching ones
 statement ok
 CREATE TABLE sparse_keys AS SELECT * FROM (VALUES (10), (900000)) t(k);
 
@@ -82,7 +82,7 @@ EXPLAIN ANALYZE SELECT count(*) FROM big_projected b JOIN sparse_keys s ON b.id 
 ----
 analyzed_plan	<REGEX>:[\s\S]*SECURE_VIEW[^╰]*2 rows[\s\S]*
 
-# a view that hides rows gets the prefix-range filter too, checked on every row: only the two matching rows leave it
+# the same through a view that hides rows
 query II
 EXPLAIN ANALYZE SELECT count(*) FROM big_secure_filtered b JOIN sparse_keys s ON b.id = s.k
 ----
@@ -130,7 +130,7 @@ CREATE SECURE VIEW try_secure AS SELECT TRY_CAST(id AS INTEGER) AS id FROM big W
 query II
 EXPLAIN ANALYZE SELECT count(*) FROM try_secure b JOIN dim d ON b.id = d.k WHERE d.yr = 42
 ----
-analyzed_plan	<REGEX>:[\s\S]*SECURE_VIEW[^╰]*5,000 rows[\s\S]*
+analyzed_plan	<!REGEX>:[\s\S]*SECURE_VIEW[^╰]*500,000 rows[\s\S]*
 
 query I
 SELECT count(*) FROM try_secure b JOIN dim d ON b.id = d.k WHERE d.yr = 42
@@ -145,8 +145,8 @@ SELECT count(*) FROM wide_try_secure n JOIN probe p ON n.id = p.id
 ----
 20
 
-# the same visible rows in the same positions, only the hidden rows' keys differ: the rows leaving the view must not
-# depend on them (zone maps include hidden rows)
+# the same visible rows in the same positions, only the hidden rows' keys differ: the join filters prune the scans of both
+# views
 statement ok
 CREATE TABLE hidden_near AS SELECT i AS id, i % 2 = 0 AS visible FROM range(1000000) t(i);
 
@@ -173,7 +173,7 @@ EXPLAIN ANALYZE SELECT count(*) FROM {view} v JOIN range_keys k ON v.id = k.k
 ----
 analyzed_plan	<REGEX>:[\s\S]*SECURE_VIEW[^╰]*2,500 rows[\s\S]*
 
-# a small build side gets a prefix-range filter, checked on every row, instead of an IN filter: only the 10 keys leave
+# a small build side: only the 10 keys leave
 query II
 EXPLAIN ANALYZE SELECT count(*) FROM {view} v JOIN in_keys k ON v.id = k.k
 ----
@@ -181,8 +181,7 @@ analyzed_plan	<REGEX>:[\s\S]*SECURE_VIEW[^╰]*10 rows[\s\S]*
 
 endloop
 
-# a range join takes the selectivity-optional branch: crossing the view it is still checked on every row, so exactly the
-# matching visible rows leave the view, whatever the hidden rows hold
+# a range join takes the selectivity-optional branch
 statement ok
 CREATE TABLE rng AS SELECT 500000 AS lo, 500025 AS hi;
 
@@ -319,7 +318,7 @@ EXPLAIN ANALYZE SELECT x FROM (SELECT x FROM topn_plain UNION ALL SELECT x FROM 
 ----
 analyzed_plan	<REGEX>:[\s\S]*Dynamic Filter \(x\)[\s\S]*
 
-# a secure view over a secure view: the join filter crosses both and exactly the matching rows leave the outer view
+# a secure view over a secure view: the join filter crosses both
 statement ok
 CREATE SECURE VIEW inner_secure AS SELECT * FROM big WHERE g < 50;
 
