@@ -20,6 +20,8 @@
 #include "duckdb/planner/operator/logical_projection.hpp"
 #include "duckdb/planner/operator/logical_window.hpp"
 
+#include <cmath>
+
 using namespace duckdb;
 
 static RelationStats CreateStats(const vector<ColumnBinding> &bindings, const vector<idx_t> &distinct_counts,
@@ -189,6 +191,129 @@ TEST_CASE("Empty multi-relation preserved SEMI remains exact", "[optimizer][rela
 static unique_ptr<Expression> CreateJoinComparison(ColumnBinding left, ColumnBinding right, ExpressionType type) {
 	return BoundComparisonExpression::Create(type, make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, left),
 	                                         make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, right));
+}
+
+TEST_CASE("Join cardinality divides large products before converting to double",
+          "[optimizer][relation_statistics][cardinality_arithmetic]") {
+	const idx_t count = 20;
+	const idx_t population = idx_t(1) << 60;
+	for (idx_t rows : {population, population >> 4}) {
+		for (bool equality : {false, true}) {
+			CAPTURE(rows, equality);
+			JoinRelationSetManager sets;
+			JoinPredicateModel model;
+			vector<unique_ptr<FilterInfo>> filters;
+			vector<RelationStats> stats;
+			JoinEqualityClass group;
+			group.index = 0;
+			auto root = &sets.GetJoinRelation(RelationIndex(0));
+			for (idx_t i = 0; i < count; i++) {
+				auto binding = ColumnBinding(TableIndex(i), ProjectionIndex(0));
+				auto &relation = sets.GetJoinRelation(RelationIndex(i));
+				stats.push_back(CreateStats({binding}, {rows}, rows));
+				stats.back().columns[0].total_domain = DistinctCount(population, DistinctCountSource::EXACT);
+				group.columns.insert(binding);
+				group.relations.insert(RelationIndex(i));
+				if (i > 0) {
+					auto previous = ColumnBinding(TableIndex(i - 1), ProjectionIndex(0));
+					auto &left = sets.GetJoinRelation(RelationIndex(i - 1));
+					if (equality) {
+						auto filter = make_uniq<FilterInfo>(
+						    CreateJoinComparison(previous, binding, ExpressionType::COMPARE_EQUAL),
+						    sets.Union(left, relation), i - 1);
+						filter->SetLeftSet(left);
+						filter->SetRightSet(relation);
+						filter->left_binding = previous;
+						filter->right_binding = binding;
+						auto &predicate =
+						    model.RegisterPredicate(*filter, JoinPredicateClass::INNER_EQUALITY, previous, binding);
+						predicate.SetEqualityClassIndex(optional_idx(0));
+						group.edges.emplace_back(predicate, RelationIndex(i - 1), RelationIndex(i), previous, binding);
+						filters.push_back(std::move(filter));
+					}
+					root = &sets.Union(*root, relation);
+				}
+			}
+			if (equality) {
+				model.AddEqualityClass(std::move(group));
+			}
+			CardinalityEstimator estimator(sets, model);
+			estimator.InitEquivalentRelations();
+			for (idx_t i = 0; i < count; i++) {
+				estimator.InitCardinalityEstimatorProps(sets.GetJoinRelation(RelationIndex(i)), stats[i]);
+			}
+			if (equality) {
+				// Neither product fits in a double. The quotients are 2^60 and 2^-20.
+				auto expected = rows == population ? double(population) : std::ldexp(1.0, -20);
+				REQUIRE(estimator.EstimateCardinalityWithSet<double>(*root) == Approx(expected));
+				REQUIRE(estimator.EstimateCardinalityWithSet<idx_t>(*root) == idx_t(expected));
+			} else {
+				REQUIRE(std::isinf(estimator.EstimateCardinalityWithSet<double>(*root)));
+				REQUIRE(estimator.EstimateCardinalityWithSet<idx_t>(*root) == NumericLimits<idx_t>::Maximum());
+			}
+		}
+	}
+}
+
+TEST_CASE("SEMI and ANTI estimator arithmetic preserves fractional inputs and outputs",
+          "[optimizer][relation_statistics][cardinality_arithmetic]") {
+	for (bool fractional_input : {false, true}) {
+		for (auto join_type : {JoinType::SEMI, JoinType::ANTI}) {
+			for (idx_t rhs_rows : {idx_t(0), idx_t(1)}) {
+				CAPTURE(fractional_input, join_type, rhs_rows);
+				JoinRelationSetManager sets;
+				auto &left = sets.GetJoinRelation(RelationIndex(0));
+				auto &second = sets.GetJoinRelation(RelationIndex(1));
+				auto &rhs = sets.GetJoinRelation(RelationIndex(2));
+				auto &pair = sets.Union(left, second);
+				auto &preserved = fractional_input ? pair : left;
+				auto &root = sets.Union(preserved, rhs);
+				auto a = ColumnBinding(TableIndex(0), ProjectionIndex(0));
+				auto b = ColumnBinding(TableIndex(1), ProjectionIndex(0));
+				auto c = ColumnBinding(TableIndex(2), ProjectionIndex(0));
+				FilterInfo equality(CreateJoinComparison(a, b, ExpressionType::COMPARE_EQUAL), pair, 0);
+				equality.SetLeftSet(left);
+				equality.SetRightSet(second);
+				equality.left_binding = a;
+				equality.right_binding = b;
+				FilterInfo semi(CreateJoinComparison(a, c, ExpressionType::COMPARE_EQUAL), root, 1, join_type);
+				semi.SetLeftSet(preserved);
+				semi.SetRightSet(rhs);
+				semi.semantic_left_set = preserved;
+				semi.semantic_right_set = rhs;
+				JoinPredicateModel model;
+				if (fractional_input) {
+					auto &predicate = model.RegisterPredicate(equality, JoinPredicateClass::INNER_EQUALITY, a, b);
+					predicate.SetEqualityClassIndex(optional_idx(0));
+					JoinEqualityClass group;
+					group.index = 0;
+					group.columns = {a, b};
+					group.relations = {RelationIndex(0), RelationIndex(1)};
+					group.edges.emplace_back(predicate, RelationIndex(0), RelationIndex(1), a, b);
+					model.AddEqualityClass(std::move(group));
+				}
+				model.RegisterPredicate(semi, JoinPredicateClass::SEMI_ANTI_JOIN, a, c);
+				auto left_stats =
+				    CreateStats({a}, {fractional_input ? idx_t(2) : idx_t(102)}, fractional_input ? 2 : 102);
+				auto second_stats = CreateStats({b}, {1}, 1);
+				if (fractional_input) {
+					left_stats.columns[0].total_domain = DistinctCount(4, DistinctCountSource::EXACT);
+					second_stats.columns[0].total_domain = DistinctCount(4, DistinctCountSource::EXACT);
+				}
+				auto rhs_stats = CreateStats({c}, {rhs_rows}, rhs_rows);
+				CardinalityEstimator estimator(sets, model);
+				estimator.InitEquivalentRelations();
+				estimator.InitCardinalityEstimatorProps(left, left_stats);
+				estimator.InitCardinalityEstimatorProps(second, second_stats);
+				estimator.InitCardinalityEstimatorProps(rhs, rhs_stats);
+				double input = fractional_input ? 0.5 : 102;
+				auto expected = rhs_rows ? (fractional_input ? 0.5 : 20.4) : (join_type == JoinType::ANTI ? input : 0);
+				REQUIRE(estimator.EstimateCardinalityWithSet<double>(root) == Approx(expected));
+				REQUIRE(estimator.EstimateCardinalityWithSet<double>(preserved) == Approx(input));
+				REQUIRE(estimator.EstimateCardinalityWithSet<double>(root) == Approx(expected));
+			}
+		}
+	}
 }
 
 TEST_CASE("Deferred OR selectivity is applied once through nested SEMI joins", "[optimizer][relation_statistics]") {
