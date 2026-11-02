@@ -43,7 +43,7 @@ static GeometryExtent MakeLonArc(double lo, double hi) {
 
 static void ExtendLon(GeometryExtent &e, double x) {
 	VertexXY v {x, 0.0};
-	e.Extend(v, true);
+	e.Extend(v, GeometryModel::GEODETIC);
 }
 
 TEST_CASE("Geodetic extent: point extension covers every inserted longitude exactly", "[geometry]") {
@@ -68,7 +68,7 @@ TEST_CASE("Geodetic extent: point extension covers every inserted longitude exac
 			// ...and the pruning predicate agrees when queried with a point extent at the coordinate
 			auto q = GeometryExtent::Empty();
 			ExtendLon(q, x);
-			REQUIRE(q.IntersectsXY(e, true));
+			REQUIRE(q.IntersectsXY(e, GeometryModel::GEODETIC));
 		}
 		// Endpoints are actual coordinates (or the canonical full circle)
 		const bool full = e.x_min == -180.0 && e.x_max == 180.0;
@@ -94,7 +94,7 @@ TEST_CASE("Geodetic extent: merge covers both inputs", "[geometry]") {
 			xs.push_back(x);
 			ExtendLon(i % 2 ? e1 : e2, x);
 		}
-		e1.Merge(e2, true);
+		e1.Merge(e2, GeometryModel::GEODETIC);
 		for (auto x : xs) {
 			REQUIRE(LonExtentContains(e1.x_min, e1.x_max, x));
 		}
@@ -133,9 +133,9 @@ TEST_CASE("Geodetic extent: intersection is exact on integer arcs", "[geometry]"
 					}
 					// Arc endpoints all lie on the integer grid, so the sweep decides intersection
 					// exactly, and the epsilon guard band cannot flip any of these cases.
-					if (a.IntersectsXY(b, true) != oracle) {
+					if (a.IntersectsXY(b, GeometryModel::GEODETIC) != oracle) {
 						INFO("A=[" << alo << "," << ahi << "] B=[" << blo << "," << bhi << "]");
-						REQUIRE(a.IntersectsXY(b, true) == oracle);
+						REQUIRE(a.IntersectsXY(b, GeometryModel::GEODETIC) == oracle);
 					}
 				}
 			}
@@ -159,7 +159,7 @@ TEST_CASE("Geodetic extent: containment has no false positives", "[geometry]") {
 				for (auto bhi : grid) {
 					auto a = MakeLonArc(alo, ahi);
 					auto b = MakeLonArc(blo, bhi);
-					if (!a.ContainsXY(b, true)) {
+					if (!a.ContainsXY(b, GeometryModel::GEODETIC)) {
 						continue;
 					}
 					for (auto p : pts) {
@@ -180,8 +180,8 @@ TEST_CASE("Geodetic extent: antimeridian seam and degenerate cases", "[geometry]
 	ExtendLon(e180, 180.0);
 	auto eneg180 = GeometryExtent::Empty();
 	ExtendLon(eneg180, -180.0);
-	REQUIRE(e180.IntersectsXY(eneg180, true));
-	REQUIRE(eneg180.IntersectsXY(e180, true));
+	REQUIRE(e180.IntersectsXY(eneg180, GeometryModel::GEODETIC));
+	REQUIRE(eneg180.IntersectsXY(e180, GeometryModel::GEODETIC));
 
 	// Merging the two seam representations yields a point extent, not the full circle
 	auto seam = GeometryExtent::Empty();
@@ -200,51 +200,51 @@ TEST_CASE("Geodetic extent: antimeridian seam and degenerate cases", "[geometry]
 		ExtendLon(q, x);
 		return q;
 	};
-	REQUIRE(wrapped.IntersectsXY(probe(180.0), true));
-	REQUIRE(wrapped.IntersectsXY(probe(-180.0), true));
-	REQUIRE(wrapped.IntersectsXY(probe(175.0), true));
-	REQUIRE(wrapped.IntersectsXY(probe(-175.0), true));
-	REQUIRE(!wrapped.IntersectsXY(probe(0.0), true));
-	REQUIRE(!wrapped.IntersectsXY(probe(90.0), true));
+	REQUIRE(wrapped.IntersectsXY(probe(180.0), GeometryModel::GEODETIC));
+	REQUIRE(wrapped.IntersectsXY(probe(-180.0), GeometryModel::GEODETIC));
+	REQUIRE(wrapped.IntersectsXY(probe(175.0), GeometryModel::GEODETIC));
+	REQUIRE(wrapped.IntersectsXY(probe(-175.0), GeometryModel::GEODETIC));
+	REQUIRE(!wrapped.IntersectsXY(probe(0.0), GeometryModel::GEODETIC));
+	REQUIRE(!wrapped.IntersectsXY(probe(90.0), GeometryModel::GEODETIC));
 
 	// Two half-circle arcs merge into the canonical full circle
 	auto h1 = MakeLonArc(-90, 90);
 	auto h2 = MakeLonArc(90, -90);
-	h1.Merge(h2, true);
+	h1.Merge(h2, GeometryModel::GEODETIC);
 	REQUIRE(h1.x_min == -180.0);
 	REQUIRE(h1.x_max == 180.0);
 	// ...which intersects and contains everything
-	REQUIRE(h1.IntersectsXY(probe(123.0), true));
-	REQUIRE(h1.ContainsXY(MakeLonArc(170, -170), true));
+	REQUIRE(h1.IntersectsXY(probe(123.0), GeometryModel::GEODETIC));
+	REQUIRE(h1.ContainsXY(MakeLonArc(170, -170), GeometryModel::GEODETIC));
 }
 
 TEST_CASE("Extent: NaN ordinates degrade the axis to unknown instead of losing coverage", "[geometry]") {
 	// A NaN ordinate must not shrink-wrap the extent around the remaining values: min/max comparisons
 	// silently drop NaN, which used to let a NaN row erase previously merged coverage.
-	for (bool geodetic : {false, true}) {
+	for (auto model : {GeometryModel::PLANAR, GeometryModel::GEODETIC}) {
 		auto e = GeometryExtent::Empty();
 		VertexXY v1 {0.0, 0.0};
-		e.Extend(v1, geodetic);
+		e.Extend(v1, model);
 		VertexXY v2 {std::numeric_limits<double>::quiet_NaN(), 1.0};
-		e.Extend(v2, geodetic);
+		e.Extend(v2, model);
 		VertexXY v3 {5.0, 2.0};
-		e.Extend(v3, geodetic);
+		e.Extend(v3, model);
 		// X axis is unknown (covers everything), Y axis is still exact
 		REQUIRE(!e.HasX());
 		REQUIRE(e.y_min == 0.0);
 		REQUIRE(e.y_max == 2.0);
 		// Unknown intersects everything: no row can be lost
-		REQUIRE(e.IntersectsXY(MakeLonArc(0, 1), geodetic));
+		REQUIRE(e.IntersectsXY(MakeLonArc(0, 1), model));
 
 		// Merging a NaN extent into an accumulated extent must not drop the accumulated range
 		auto acc = GeometryExtent::Empty();
-		acc.Merge(MakeLonArc(0, 10), geodetic);
+		acc.Merge(MakeLonArc(0, 10), model);
 		auto poisoned = GeometryExtent::Empty();
 		poisoned.x_min = std::numeric_limits<double>::quiet_NaN();
 		poisoned.x_max = std::numeric_limits<double>::quiet_NaN();
-		acc.Merge(poisoned, geodetic);
-		acc.Merge(MakeLonArc(50, 60), geodetic);
-		REQUIRE(acc.IntersectsXY(MakeLonArc(5, 5), geodetic));
+		acc.Merge(poisoned, model);
+		acc.Merge(MakeLonArc(50, 60), model);
+		REQUIRE(acc.IntersectsXY(MakeLonArc(5, 5), model));
 	}
 }
 
@@ -335,7 +335,7 @@ TEST_CASE("Geodetic extent: covers sampled points along geodesic edges", "[geome
 		const auto wkb = MakeLineStringWKB({ll_a, ll_b});
 
 		auto extent = GeometryExtent::Empty();
-		Geometry::GetExtent(string_t(wkb.data(), uint32_t(wkb.size())), extent, true);
+		Geometry::GetExtent(string_t(wkb.data(), uint32_t(wkb.size())), extent, GeometryModel::GEODETIC);
 
 		for (int s = 0; s <= 32; s++) {
 			const auto p = ToLonLat(Slerp(a, b, double(s) / 32.0));
@@ -353,7 +353,7 @@ TEST_CASE("Geodetic extent: covers sampled points along geodesic edges", "[geome
 TEST_CASE("Geodetic extent: polygon interiors follow the interior-on-the-left rule", "[geometry]") {
 	auto get_extent = [](const std::string &wkb) {
 		auto extent = GeometryExtent::Empty();
-		Geometry::GetExtent(string_t(wkb.data(), uint32_t(wkb.size())), extent, true);
+		Geometry::GetExtent(string_t(wkb.data(), uint32_t(wkb.size())), extent, GeometryModel::GEODETIC);
 		return extent;
 	};
 
@@ -472,7 +472,7 @@ TEST_CASE("Geodetic extent: edge apex stays accurate close to the pole", "[geome
 			const double lon1 = -90.0 + d / 2, lon2 = 90.0 - d / 2;
 			auto e = GeometryExtent::Empty();
 			const auto wkb = MakeLineStringWKB({{lon1, phi0}, {lon2, phi0}});
-			Geometry::GetExtent(string_t(wkb.data(), uint32_t(wkb.size())), e, true);
+			Geometry::GetExtent(string_t(wkb.data(), uint32_t(wkb.size())), e, GeometryModel::GEODETIC);
 			const double half = (lon2 - lon1) / 2 * TEST_PI / 180.0;
 			const double apex = atan(tan(phi0 * TEST_PI / 180.0) / cos(half)) * 180.0 / TEST_PI;
 			INFO("phi0=" << phi0 << " d=" << d << " apex=" << apex << " y_max=" << e.y_max);
@@ -503,7 +503,7 @@ TEST_CASE("Geodetic extent: known ULP regression cases", "[geometry]") {
 			REQUIRE(LonExtentContains(e.x_min, e.x_max, x));
 			auto q = GeometryExtent::Empty();
 			ExtendLon(q, x);
-			REQUIRE(q.IntersectsXY(e, true));
+			REQUIRE(q.IntersectsXY(e, GeometryModel::GEODETIC));
 		}
 	}
 }

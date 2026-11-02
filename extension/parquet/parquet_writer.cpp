@@ -1076,15 +1076,14 @@ struct BlobStatsUnifier : public BaseStringStatsUnifier {
 };
 
 struct GeoStatsUnifier : public ColumnStatsUnifier {
-	//! GEOGRAPHY uses antimeridian-aware (geodetic) extent math when merging.
-	explicit GeoStatsUnifier(bool geodetic) : geodetic(geodetic) {
+	explicit GeoStatsUnifier(GeometryModel geometry_model) : geometry_model(geometry_model) {
 	}
 
-	bool geodetic;
+	GeometryModel geometry_model;
 
 	void UnifyGeoStats(const GeometryStatsData &other) override {
 		if (geo_stats) {
-			geo_stats->Merge(other, geodetic);
+			geo_stats->Merge(other, geometry_model);
 		} else {
 			// Make copy (GeometryStatsData is trivially constructible, so copy every member explicitly)
 			geo_stats = make_uniq<GeometryStatsData>();
@@ -1213,7 +1212,7 @@ static unique_ptr<ColumnStatsUnifier> GetBaseStatsUnifier(const LogicalType &typ
 		return make_uniq<BlobStatsUnifier>();
 	case LogicalTypeId::GEOMETRY:
 	case LogicalTypeId::GEOGRAPHY:
-		return make_uniq<GeoStatsUnifier>(type.id() == LogicalTypeId::GEOGRAPHY);
+		return make_uniq<GeoStatsUnifier>(Geometry::GetModel(type));
 	case LogicalTypeId::VARCHAR:
 		return make_uniq<StringStatsUnifier>();
 	case LogicalTypeId::UUID:

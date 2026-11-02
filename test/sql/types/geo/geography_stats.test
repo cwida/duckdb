@@ -304,3 +304,28 @@ query I
 SELECT count(*) FROM t_empty WHERE g && 'POINT(10 10)'::GEOGRAPHY;
 ----
 1
+
+# ---------------------------------------------------------------------------------------------------
+# A CRS-only cast keeps the statistics; a cast to GEOMETRY does not
+# ---------------------------------------------------------------------------------------------------
+
+query IIII
+SELECT s.extent.x_min, s.extent.x_max, s.extent.y_min, s.extent.y_max
+FROM (SELECT stats(g::GEOGRAPHY('OGC:CRS84')) s FROM t_wrap LIMIT 1);
+----
+170.0	-170.0	10.0	20.0
+
+query II
+SELECT s.extent.x_min, s.extent.x_max FROM (SELECT stats(g::GEOMETRY) s FROM t_wrap LIMIT 1);
+----
+-inf	inf
+
+query II
+EXPLAIN SELECT count(*) FROM t_wrap WHERE g::GEOGRAPHY('OGC:CRS84') && 'POINT(0 15)'::GEOGRAPHY('OGC:CRS84');
+----
+physical_plan	<REGEX>:[\s\S]*Empty Result[\s\S]*
+
+query I
+SELECT count(*) FROM t_wrap WHERE g::GEOGRAPHY('OGC:CRS84') && 'POINT(180 15)'::GEOGRAPHY('OGC:CRS84');
+----
+1

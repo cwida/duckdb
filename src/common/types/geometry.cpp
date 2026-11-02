@@ -2009,7 +2009,7 @@ public:
 private:
 	template <class VERTEX_TYPE>
 	void AddVertex(const VERTEX_TYPE &vertex) {
-		extent.Extend(vertex, false);
+		extent.Extend(vertex, GeometryModel::PLANAR);
 		vertex_count++;
 	}
 };
@@ -2070,7 +2070,7 @@ public:
 private:
 	template <class VERTEX_TYPE>
 	void AddVertex(const VERTEX_TYPE &vertex) {
-		extent.Extend(vertex, true);
+		extent.Extend(vertex, GeometryModel::GEODETIC);
 		vertex_count++;
 		if (in_ring) {
 			ring.AddVertex(extent, {vertex.x, vertex.y});
@@ -2097,22 +2097,22 @@ uint32_t GetExtentInternal(const string_t &wkb, GeometryExtent &extent, bool &ha
 
 } // namespace
 
-uint32_t Geometry::GetExtent(const string_t &wkb, GeometryExtent &extent, bool geodetic) {
+uint32_t Geometry::GetExtent(const string_t &wkb, GeometryExtent &extent, GeometryModel model) {
 	bool has_any_empty = false;
-	return GetExtent(wkb, extent, has_any_empty, geodetic);
+	return GetExtent(wkb, extent, has_any_empty, model);
 }
 
-uint32_t Geometry::GetExtent(const string_t &wkb, GeometryExtent &extent, bool &has_any_empty, bool geodetic) {
-	if (geodetic) {
+uint32_t Geometry::GetExtent(const string_t &wkb, GeometryExtent &extent, bool &has_any_empty, GeometryModel model) {
+	if (model == GeometryModel::GEODETIC) {
 		return GetExtentInternal<GeodeticExtentVisitor>(wkb, extent, has_any_empty);
 	}
 	return GetExtentInternal<PlanarExtentVisitor>(wkb, extent, has_any_empty);
 }
 
 bool Geometry::IsValidGeography(const string_t &wkb) {
-	// Coordinates must lie within X in [-180, 180] and Y in [-90, 90], so the non-geodetic extent suffices
+	// Coordinates must lie within X in [-180, 180] and Y in [-90, 90], so the planar extent suffices
 	auto extent = GeometryExtent::Empty();
-	const auto vertex_count = GetExtent(wkb, extent, false);
+	const auto vertex_count = GetExtent(wkb, extent, GeometryModel::PLANAR);
 	if (vertex_count == 0) {
 		return true;
 	}

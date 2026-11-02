@@ -353,18 +353,17 @@ public:
 
 class GeoStatisticsState final : public ColumnWriterStatistics {
 public:
-	explicit GeoStatisticsState(bool geodetic = false) : has_stats(false), geodetic(geodetic) {
+	explicit GeoStatisticsState(GeometryModel geometry_model) : has_stats(false), geometry_model(geometry_model) {
 		geo_stats.SetEmpty();
 	}
 
 	bool has_stats;
-	//! GEOGRAPHY uses antimeridian-aware (circular longitude) extent math.
-	bool geodetic;
+	GeometryModel geometry_model;
 	GeometryStatsData geo_stats;
 
 public:
 	void Update(const string_t &val) {
-		geo_stats.Update(val, geodetic);
+		geo_stats.Update(val, geometry_model);
 		has_stats = true;
 	}
 	bool HasGeoStats() override {
@@ -378,8 +377,8 @@ public:
 		if (!other.has_stats) {
 			return;
 		}
-		D_ASSERT(geodetic == other.geodetic);
-		geo_stats.Merge(other.geo_stats, geodetic);
+		D_ASSERT(geometry_model == other.geometry_model);
+		geo_stats.Merge(other.geo_stats, geometry_model);
 		has_stats = true;
 	}
 	void WriteGeoStats(duckdb_parquet::GeospatialStatistics &stats) override {

@@ -281,9 +281,9 @@ private:
 };
 
 //! Geometry statistics. The struct itself does not know whether it belongs to a GEOMETRY or a
-//! GEOGRAPHY column: the `geodetic` argument of Merge/Update (which enables the antimeridian-aware,
+//! GEOGRAPHY column: the GeometryModel argument of Merge/Update (GEODETIC enables the antimeridian-aware,
 //! circular longitude extent math used by GEOGRAPHY) must be derived from the column type by the
-//! caller, i.e. `type.id() == LogicalTypeId::GEOGRAPHY`.
+//! caller, i.e. `Geometry::GetModel(type)`.
 struct GeometryStatsData {
 	GeometryTypeSet types;
 	GeometryExtent extent;
@@ -301,13 +301,13 @@ struct GeometryStatsData {
 		flags = GeometryStatsFlags::Unknown();
 	}
 
-	void Merge(const GeometryStatsData &other, bool geodetic) {
+	void Merge(const GeometryStatsData &other, GeometryModel model) {
 		types.Merge(other.types);
-		extent.Merge(other.extent, geodetic);
+		extent.Merge(other.extent, model);
 		flags.Merge(other.flags);
 	}
 
-	void Update(const string_t &geom_blob, bool geodetic) {
+	void Update(const string_t &geom_blob, GeometryModel model) {
 		// Parse type
 		const auto type_info = Geometry::GetType(geom_blob);
 		types.Add(type_info.first, type_info.second);
@@ -318,8 +318,8 @@ struct GeometryStatsData {
 		// and the row-level && operator compares against that per-row bounding box.
 		auto row_extent = GeometryExtent::Empty();
 		bool has_any_empty = false;
-		const auto vert_count = Geometry::GetExtent(geom_blob, row_extent, has_any_empty, geodetic);
-		extent.Merge(row_extent, geodetic);
+		const auto vert_count = Geometry::GetExtent(geom_blob, row_extent, has_any_empty, model);
+		extent.Merge(row_extent, model);
 
 		// Update flags
 		if (has_any_empty) {

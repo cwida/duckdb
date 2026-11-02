@@ -10,6 +10,7 @@
 #include "duckdb/common/types/geometry_crs.hpp"
 #include "duckdb/common/json_document.hpp"
 #include "duckdb/common/vector/struct_vector.hpp"
+#include "duckdb/common/vector/vector_iterator.hpp"
 #include "duckdb/common/types/variant/parquet_variant_iterator.hpp"
 
 namespace duckdb {
@@ -538,15 +539,8 @@ struct ArrowGeometry {
 		}
 		// GEOGRAPHY coordinates must lie within the canonical ranges: the geodetic statistics math
 		// relies on it, so imported data is validated just like ST_GeogFromWKB.
-		UnifiedVectorFormat vdata;
-		result.ToUnifiedFormat(vdata);
-		const auto blobs = UnifiedVectorFormat::GetData<string_t>(vdata);
-		for (idx_t i = 0; i < count; i++) {
-			const auto idx = vdata.sel->get_index(i);
-			if (!vdata.validity.RowIsValid(idx)) {
-				continue;
-			}
-			if (!Geometry::IsValidGeography(blobs[idx])) {
+		for (auto entry : result.ValidValues<string_t>()) {
+			if (!Geometry::IsValidGeography(entry.GetValue())) {
 				throw InvalidInputException("GEOGRAPHY import: coordinates are outside the canonical ranges "
 				                            "(longitude/X must be within [-180, 180], latitude/Y within [-90, 90])");
 			}

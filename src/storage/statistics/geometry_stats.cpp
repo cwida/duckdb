@@ -86,11 +86,6 @@ BaseStatistics GeometryStats::CreateEmpty(LogicalType type) {
 	return result;
 }
 
-//! Whether the antimeridian-aware (geodetic) extent math applies to statistics of this type
-static bool StatsAreGeodetic(const BaseStatistics &stats) {
-	return stats.GetType().id() == LogicalTypeId::GEOGRAPHY;
-}
-
 void GeometryStats::Serialize(const BaseStatistics &stats, Serializer &serializer) {
 	// Should we serialize as old extension geometry type for backwards compatibility?
 	// (in that case, write unknown string stats)
@@ -194,7 +189,7 @@ child_list_t<Value> GeometryStats::ToStruct(const BaseStatistics &stats) {
 
 void GeometryStats::Update(BaseStatistics &stats, const string_t &value) {
 	auto &data = GetDataUnsafe(stats);
-	data.Update(value, StatsAreGeodetic(stats));
+	data.Update(value, Geometry::GetModel(stats.GetType()));
 }
 
 void GeometryStats::Merge(BaseStatistics &stats, const BaseStatistics &other) {
@@ -207,7 +202,7 @@ void GeometryStats::Merge(BaseStatistics &stats, const BaseStatistics &other) {
 
 	auto &target = GetDataUnsafe(stats);
 	auto &source = GetDataUnsafe(other);
-	target.Merge(source, StatsAreGeodetic(stats));
+	target.Merge(source, Geometry::GetModel(stats.GetType()));
 }
 
 void GeometryStats::Verify(const BaseStatistics &stats, const Vector &vector, const SelectionVector &sel, idx_t count) {

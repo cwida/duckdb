@@ -145,3 +145,33 @@ query I
 SELECT count(*) FROM '{TEST_DIR}/geography_bulge.parquet' WHERE g && 'POINT(-165.000000 -45.000000)'::GEOGRAPHY;
 ----
 1
+
+# A file with an out-of-range longitude (written by DuckDB, then patched to POINT(517.25 2), bbox included).
+# Its metadata and other columns are readable, but reading the GEOGRAPHY values is rejected.
+query I
+SELECT typeof(g) FROM 'data/parquet-testing/broken/geography_out_of_range.parquet' LIMIT 1;
+----
+GEOGRAPHY
+
+query I
+SELECT id FROM 'data/parquet-testing/broken/geography_out_of_range.parquet' ORDER BY id;
+----
+1
+2
+3
+
+query II
+SELECT geo_bbox.xmin, geo_bbox.xmax FROM parquet_metadata('data/parquet-testing/broken/geography_out_of_range.parquet')
+WHERE path_in_schema = 'g';
+----
+1.0	517.25
+
+statement error
+SELECT g FROM 'data/parquet-testing/broken/geography_out_of_range.parquet';
+----
+Invalid Input Error: ST_GeogFromWKB: coordinates are outside the canonical GEOGRAPHY ranges
+
+statement error
+SELECT count(*) FROM 'data/parquet-testing/broken/geography_out_of_range.parquet' WHERE g && 'POINT(100 2)'::GEOGRAPHY;
+----
+Invalid Input Error: ST_GeogFromWKB: coordinates are outside the canonical GEOGRAPHY ranges

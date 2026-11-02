@@ -160,16 +160,15 @@ ScalarFunctionSet StAstextFun::GetFunctions() {
 	return set;
 }
 
-template <bool GEODETIC>
+template <GeometryModel MODEL>
 static void IntersectsExtentFunction(DataChunk &input, ExpressionState &state, Vector &result) {
 	BinaryExecutor::Execute<string_t, string_t, bool>(
 	    input.data[0], input.data[1], result, [](const string_t &lhs_geom, const string_t &rhs_geom) {
 		    auto lhs_extent = GeometryExtent::Empty();
 		    auto rhs_extent = GeometryExtent::Empty();
 
-		    // GEODETIC enables antimeridian-aware (circular longitude) bounding boxes for GEOGRAPHY.
-		    const auto lhs_is_empty = Geometry::GetExtent(lhs_geom, lhs_extent, GEODETIC) == 0;
-		    const auto rhs_is_empty = Geometry::GetExtent(rhs_geom, rhs_extent, GEODETIC) == 0;
+		    const auto lhs_is_empty = Geometry::GetExtent(lhs_geom, lhs_extent, MODEL) == 0;
+		    const auto rhs_is_empty = Geometry::GetExtent(rhs_geom, rhs_extent, MODEL) == 0;
 
 		    if (lhs_is_empty || rhs_is_empty) {
 			    // One of the geometries is empty
@@ -177,7 +176,7 @@ static void IntersectsExtentFunction(DataChunk &input, ExpressionState &state, V
 		    }
 
 		    // Don't take Z and M into account for intersection test
-		    return lhs_extent.IntersectsXY(rhs_extent, GEODETIC);
+		    return lhs_extent.IntersectsXY(rhs_extent, MODEL);
 	    });
 }
 
@@ -185,7 +184,7 @@ static void IntersectsExtentFunction(DataChunk &input, ExpressionState &state, V
 // boxes intersect. One argument must be a constant geometry; the other is the column we prune against. Both
 // operands' statistics are derived for us (the constant's geometry stats already carry its bounding box, and
 // the column's look through any CRS-only cast), so this works regardless of which side the constant is on.
-template <bool GEODETIC>
+template <GeometryModel MODEL>
 static FilterPropagateResult IntersectsExtentFilterPrune(const FunctionStatisticsPruneInput &input) {
 	auto &children = input.function.GetChildren();
 	if (children.size() != 2) {
@@ -222,11 +221,11 @@ static FilterPropagateResult IntersectsExtentFilterPrune(const FunctionStatistic
 		// An empty constant geometry never intersects anything.
 		return FilterPropagateResult::FILTER_ALWAYS_FALSE;
 	}
-	if (!const_extent.IntersectsXY(col_extent, GEODETIC)) {
+	if (!const_extent.IntersectsXY(col_extent, MODEL)) {
 		// The column zonemap does not intersect the constant: no row can match.
 		return FilterPropagateResult::FILTER_ALWAYS_FALSE;
 	}
-	if (const_extent.ContainsXY(col_extent, GEODETIC)) {
+	if (const_extent.ContainsXY(col_extent, MODEL)) {
 		// The constant fully covers the column zonemap, so every row that is represented in the zonemap
 		// matches. Rows that are not represented in it do not: NULL rows (the predicate evaluates to NULL
 		// for them) and empty geometries (which contribute no vertices, but never intersect anything).
@@ -242,18 +241,18 @@ static FilterPropagateResult IntersectsExtentFilterPrune(const FunctionStatistic
 ScalarFunctionSet StIntersectsExtentFun::GetFunctions() {
 	ScalarFunctionSet set;
 
-	ScalarFunction geom_func({}, LogicalType::BOOLEAN, IntersectsExtentFunction<false>);
+	ScalarFunction geom_func({}, LogicalType::BOOLEAN, IntersectsExtentFunction<GeometryModel::PLANAR>);
 	geom_func.GetSignature()
 	    .AddParameter("geom1", LogicalType::GEOMETRY())
 	    .AddParameter("geom2", LogicalType::GEOMETRY());
-	geom_func.SetFilterPruneCallback(IntersectsExtentFilterPrune<false>);
+	geom_func.SetFilterPruneCallback(IntersectsExtentFilterPrune<GeometryModel::PLANAR>);
 	set.AddFunction(geom_func);
 
-	ScalarFunction geog_func({}, LogicalType::BOOLEAN, IntersectsExtentFunction<true>);
+	ScalarFunction geog_func({}, LogicalType::BOOLEAN, IntersectsExtentFunction<GeometryModel::GEODETIC>);
 	geog_func.GetSignature()
 	    .AddParameter("geom1", LogicalType::GEOGRAPHY())
 	    .AddParameter("geom2", LogicalType::GEOGRAPHY());
-	geog_func.SetFilterPruneCallback(IntersectsExtentFilterPrune<true>);
+	geog_func.SetFilterPruneCallback(IntersectsExtentFilterPrune<GeometryModel::GEODETIC>);
 	set.AddFunction(geog_func);
 
 	return set;
@@ -454,9 +453,9 @@ static auto VertexExtractStats(ClientContext &context, FunctionStatisticsInput &
 	if (bind_data.vertex_index == 0 && extent.HasXY()) { // X
 		// A GEOGRAPHY extent is a longitude arc (it may wrap, and +180/-180 are the same longitude), so
 		// it is converted to a plain numeric range over the stored coordinate values.
-		const bool geodetic = input.child_stats[0].GetType().id() == LogicalTypeId::GEOGRAPHY;
+		const auto geometry_model = Geometry::GetModel(input.child_stats[0].GetType());
 		double x_min, x_max;
-		extent.GetNumericXRange(geodetic, x_min, x_max);
+		extent.GetNumericXRange(geometry_model, x_min, x_max);
 		NumericStats::SetMin(new_stats, x_min);
 		NumericStats::SetMax(new_stats, x_max);
 		return new_stats.ToUnique();

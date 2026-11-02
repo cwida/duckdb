@@ -133,7 +133,7 @@ struct StatsWriter<string_t> : public BaseStatsWriter {
 	explicit StatsWriter(const LogicalType &type)
 	    : is_varchar(type.id() == LogicalTypeId::VARCHAR),
 	      is_geometry(type.id() == LogicalTypeId::GEOMETRY || type.id() == LogicalTypeId::GEOGRAPHY),
-	      geodetic(type.id() == LogicalTypeId::GEOGRAPHY) {
+	      geometry_model(Geometry::GetModel(type)) {
 		Clear();
 	}
 
@@ -155,8 +155,7 @@ struct StatsWriter<string_t> : public BaseStatsWriter {
 	inline void Update(const string_t &value) {
 		SetHasValid();
 		if (is_geometry) {
-			// GEOGRAPHY uses antimeridian-aware (geodetic) extent math.
-			geometry_stats.Update(value, geodetic);
+			geometry_stats.Update(value, geometry_model);
 			return;
 		}
 		auto data = const_data_ptr_cast(value.GetData());
@@ -242,7 +241,7 @@ struct StatsWriter<string_t> : public BaseStatsWriter {
 	void Merge(BaseStatistics &other) const {
 		MergeBase(other);
 		if (is_geometry) {
-			GeometryStats::GetDataUnsafe(other).Merge(geometry_stats, geodetic);
+			GeometryStats::GetDataUnsafe(other).Merge(geometry_stats, geometry_model);
 		} else {
 			StringStats::Merge(other, *this);
 		}
@@ -260,7 +259,7 @@ private:
 	idx_t total_string_length;
 	bool is_varchar;
 	bool is_geometry;
-	bool geodetic;
+	GeometryModel geometry_model;
 	GeometryStatsData geometry_stats;
 };
 

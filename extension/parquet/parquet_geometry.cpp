@@ -209,7 +209,7 @@ void GeoParquetFileMetadata::AddGeoParquetStats(ClientContext &context, const st
 
 	// GeoParquet only describes planar GEOMETRY columns (GEOGRAPHY is never added to this metadata),
 	// but derive the extent math from the type explicitly regardless.
-	const bool geodetic = type.id() == LogicalTypeId::GEOGRAPHY;
+	const auto geometry_model = Geometry::GetModel(type);
 
 	const auto it = geometry_columns.find(column_name);
 	if (it == geometry_columns.end()) {
@@ -222,11 +222,11 @@ void GeoParquetFileMetadata::AddGeoParquetStats(ClientContext &context, const st
 		}
 
 		// Merge the stats
-		column.stats.Merge(stats, geodetic);
+		column.stats.Merge(stats, geometry_model);
 		column.insertion_index = geometry_columns.size() - 1;
 
 	} else {
-		it->second.stats.Merge(stats, geodetic);
+		it->second.stats.Merge(stats, geometry_model);
 	}
 }
 

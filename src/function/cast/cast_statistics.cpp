@@ -242,6 +242,10 @@ unique_ptr<BaseStatistics> CastStatistics::TryPropagate(const BaseStatistics &st
 		// type set and null-ness are unchanged: propagate the statistics as-is.
 		return stats.Copy().ToUnique();
 	}
+	if (source.id() == LogicalTypeId::GEOGRAPHY && target.id() == LogicalTypeId::GEOGRAPHY) {
+		// Same as geometry -> geometry: only the CRS changes, so the (geodetic) statistics carry over as-is.
+		return stats.Copy().ToUnique();
+	}
 	if (source.id() == LogicalTypeId::ARRAY && target.id() == LogicalTypeId::LIST) {
 		return StatisticsPropagateArrayToList(stats, source, target);
 	}
