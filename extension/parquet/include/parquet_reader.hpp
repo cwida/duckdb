@@ -507,6 +507,10 @@ private:
 	//! Serves the page index of the whole file from one buffer that is read once per reader and shared by every row
 	//! group and thread, when the index fits the transport's accepted column gap; returns false when it does not
 	bool TryAttachPageIndexBuffer(ThriftFileTransport &transport) const;
+	struct BloomFilterReadPlan;
+	BloomFilterReadPlan PlanBloomFilterReads(ClientContext &context, ThriftFileTransport &transport,
+	                                         ColumnReader &column_reader, const TableFilter &filter, bool nested_filter,
+	                                         idx_t column_chunk_idx);
 	bool TryAttachBloomFilterReadHead(ClientContext &context, ParquetReaderScanState &state,
 	                                  ColumnReader &column_reader, const TableFilter &filter, bool nested_filter,
 	                                  idx_t column_chunk_idx);
