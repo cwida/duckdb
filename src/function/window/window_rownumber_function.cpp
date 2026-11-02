@@ -235,6 +235,7 @@ WindowFunction NtileFun::GetFunction() {
 	                   WindowNtileExecutor::GetData);
 	fun.SetIsRanking(true);
 	fun.GetSignature().AddParameter("num_buckets", LogicalType::BIGINT);
+	fun.SetFallible(); // non-positive bucket counts are rejected at runtime
 	return fun;
 }
 

@@ -13,8 +13,18 @@ CSVRandomAccessBufferManager::CSVRandomAccessBufferManager(ClientContext &contex
 void CSVRandomAccessBufferManager::Initialize() {
 	const idx_t buffer_count = KnownBufferCount();
 	cached_buffers.resize(buffer_count);
-	cached_buffers[0] = make_shared_ptr<CSVBuffer>(context, buffer_size, KnownBufferSize(0), 0, 0, buffer_count == 1);
+	created.assign(buffer_count, false);
+	cached_buffers[0] = CreateBuffer(0);
 	cached_buffers[0]->LoadRandomAccess(*file_handle);
+}
+
+shared_ptr<CSVBuffer> CSVRandomAccessBufferManager::CreateBuffer(idx_t pos) {
+	if (!created[pos]) {
+		created[pos] = true;
+		file_handle->AddStoredBytesRead(KnownBufferSize(pos));
+	}
+	return make_shared_ptr<CSVBuffer>(context, buffer_size, KnownBufferSize(pos), pos * buffer_size, pos,
+	                                  pos + 1 == cached_buffers.size());
 }
 
 shared_ptr<CSVBufferHandle> CSVRandomAccessBufferManager::GetBuffer(const idx_t pos) {
@@ -25,8 +35,7 @@ shared_ptr<CSVBufferHandle> CSVRandomAccessBufferManager::GetBuffer(const idx_t 
 			return nullptr;
 		}
 		if (!cached_buffers[pos]) {
-			cached_buffers[pos] = make_shared_ptr<CSVBuffer>(context, buffer_size, KnownBufferSize(pos),
-			                                                 pos * buffer_size, pos, pos + 1 == cached_buffers.size());
+			cached_buffers[pos] = CreateBuffer(pos);
 		}
 		buffer = cached_buffers[pos];
 	}

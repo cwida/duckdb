@@ -25,6 +25,11 @@ bool BoundWindowExpression::IsVolatile() const {
 	return stability == FunctionStability::VOLATILE || Expression::IsVolatile();
 }
 
+bool BoundWindowExpression::CanThrow() const {
+	auto errors = aggregate ? aggregate->GetErrorMode() : window->GetErrorMode();
+	return errors == FunctionErrors::CAN_THROW_RUNTIME_ERROR || Expression::CanThrow();
+}
+
 string BoundWindowExpression::ToString() const {
 	string function_name =
 	    aggregate.get() ? aggregate->GetName().GetIdentifierName() : window->GetName().GetIdentifierName();

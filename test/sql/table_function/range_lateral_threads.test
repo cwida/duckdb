@@ -1,0 +1,78 @@
+# name: test/sql/table_function/range_lateral_threads.test
+# description: range and generate_series called per input row schedule as many pipeline tasks as unnest
+# group: [table_function]
+
+# the logs of a restarted database start over
+require skip_reload
+
+statement ok
+SET threads = 4;
+
+# plan unnest with the same delim join as range
+statement ok
+SET disabled_optimizers = 'unnest_rewriter';
+
+statement ok
+CALL enable_logging('QueryLog');
+
+# every pipeline task allocates a logging context, so the context ids between two probes grow with the tasks of the first
+statement ok
+CREATE VIEW probe_spans AS
+SELECT probe, lead(first_context) OVER (ORDER BY first_context) - first_context AS span
+FROM (
+    SELECT split_part(message, ' ', 4) AS probe, min(context_id) AS first_context
+    FROM duckdb_logs()
+    WHERE type = 'QueryLog' AND starts_with(message, 'SELECT count(*) AS probe_')
+    GROUP BY probe
+);
+
+statement ok
+SELECT count(*) AS probe_unnest FROM range(10000) t(i), LATERAL unnest([i]) r(x);
+
+statement ok
+SELECT count(*) AS probe_range FROM range(10000) t(i), LATERAL range(i, i + 1) r(x);
+
+statement ok
+SELECT count(*) AS probe_generate_series FROM range(10000) t(i), LATERAL generate_series(i, i) r(x);
+
+statement ok
+SELECT count(*) AS probe_timestamp_unnest FROM range(10000) t(i), LATERAL unnest([TIMESTAMP '2020-01-01' + i * INTERVAL 1 DAY]) r(x);
+
+statement ok
+SELECT count(*) AS probe_timestamp_range FROM range(10000) t(i), LATERAL range(TIMESTAMP '2020-01-01' + i * INTERVAL 1 DAY, TIMESTAMP '2020-01-02' + i * INTERVAL 1 DAY, INTERVAL 1 DAY) r(x);
+
+statement ok
+SELECT count(*) AS probe_end FROM range(1);
+
+query II
+SELECT probe, span = (SELECT span FROM probe_spans WHERE probe = 'probe_unnest')
+FROM probe_spans WHERE probe IN ('probe_range', 'probe_generate_series') ORDER BY probe;
+----
+probe_generate_series	true
+probe_range	true
+
+query I
+SELECT span = (SELECT span FROM probe_spans WHERE probe = 'probe_timestamp_unnest')
+FROM probe_spans WHERE probe = 'probe_timestamp_range';
+----
+true
+
+require icu
+
+statement ok
+SET TimeZone='UTC';
+
+statement ok
+SELECT count(*) AS probe_timestamptz_unnest FROM range(10000) t(i), LATERAL unnest([TIMESTAMPTZ '2020-01-01 00:00:00+00' + i * INTERVAL 1 DAY]) r(x);
+
+statement ok
+SELECT count(*) AS probe_timestamptz_range FROM range(10000) t(i), LATERAL range(TIMESTAMPTZ '2020-01-01 00:00:00+00' + i * INTERVAL 1 DAY, TIMESTAMPTZ '2020-01-02 00:00:00+00' + i * INTERVAL 1 DAY, INTERVAL 1 DAY) r(x);
+
+statement ok
+SELECT count(*) AS probe_timestamptz_end FROM range(1);
+
+query I
+SELECT span = (SELECT span FROM probe_spans WHERE probe = 'probe_timestamptz_unnest')
+FROM probe_spans WHERE probe = 'probe_timestamptz_range';
+----
+true

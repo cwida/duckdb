@@ -23,6 +23,8 @@ functions:
     return_type: date
     description: |
       Re-compose a `duckdb_date` from year, month and date (`duckdb_date_struct`).
+
+      If the year, month and day do not form a valid date the result will be 0.
     return_description: The `duckdb_date` element.
   is_finite_date:
     offset: 32
@@ -111,6 +113,8 @@ functions:
     return_type: timestamp
     description: |
       Re-compose a `duckdb_timestamp` from a duckdb_timestamp_struct.
+
+      If the date is not valid or the timestamp is out of range the result will be 0.
     return_description: The `duckdb_timestamp` element.
   is_finite_timestamp:
     offset: 39

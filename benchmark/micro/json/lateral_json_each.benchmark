@@ -1,0 +1,18 @@
+# name: benchmark/micro/json/lateral_json_each.benchmark
+# description: json_each called per row of a table uses all threads
+# group: [json]
+
+name Lateral json_each
+group json
+
+require json
+
+load
+SET threads = 4;
+CREATE TABLE j AS SELECT json_object('a', i, 'b', [i, i + 1]) AS doc FROM range(2000000) t(i);
+
+run
+SELECT count(*), sum(id) FROM j, LATERAL json_each(j.doc);
+
+result II
+4000000	12000000

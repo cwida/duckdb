@@ -40,31 +40,41 @@ private:
 
 public:
 	CompressedStringScanState(ColumnSegment &segment, BufferHandle &&handle_p)
-	    : segment(segment), owned_handle(std::move(handle_p)), layout(ReadLayout(owned_handle, segment)) {
-	}
-	CompressedStringScanState(ColumnSegment &segment, BufferHandle &handle_p)
-	    : segment(segment), owned_handle(), layout(ReadLayout(handle_p, segment)) {
+	    : segment(segment), handle(std::move(handle_p)), layout(ReadLayout(handle, segment)) {
 	}
 
 	~CompressedStringScanState() override;
 
 public:
-	void Initialize(bool initialize_dictionary = true);
-	void ScanToFlatVector(Vector &result, idx_t result_offset, idx_t start, idx_t scan_count);
+	void Initialize();
+	void ScanToFlatVector(Vector &result, idx_t result_offset, idx_t start, idx_t scan_count,
+	                      StringScanType string_scan_type = StringScanType::STANDARD);
 	void ScanToDictionaryVector(ColumnSegment &segment, Vector &result, idx_t result_offset, idx_t start,
 	                            idx_t scan_count);
 	const SelectionVector &GetSelVec(idx_t start, idx_t scan_count);
-	void Select(Vector &result, idx_t result_offset, idx_t start, const SelectionVector &sel, idx_t sel_count);
+	void Select(Vector &result, idx_t result_offset, idx_t start, const SelectionVector &sel, idx_t sel_count,
+	            StringScanType string_scan_type = StringScanType::STANDARD);
 
 	bool AllowDictionaryScan(idx_t scan_count);
 
 private:
 	static SegmentLayout ReadLayout(const BufferHandle &handle, const ColumnSegment &segment);
-	string_t FetchStringFromDict(Vector &result, uint32_t dict_offset, idx_t dict_idx);
+	//! With COPY_STRINGS the string is owned by the result instead of pointing into the block
+	string_t FetchStringFromDict(Vector &result, uint32_t dict_offset, idx_t dict_idx,
+	                             StringScanType string_scan_type = StringScanType::STANDARD);
+	//! Builds the dictionary on first use, returns false if this scan has no dictionary
+	bool EnsureDictionary();
+	//! A string's offset from a running sum, restarted on a step back if allowed and cheap, else from all offsets
+	uint32_t GetStringOffset(idx_t string_number, bool allow_restart);
+	//! Unpacks the length of every string, which scans need; a few fetched strings only unpack the groups they use
+	void LoadStringLengths();
+	const uint32_t *GetStringLengthGroup(idx_t group_start);
+	uint32_t GetStringLength(idx_t dict_idx);
+	idx_t SumStringLengths(idx_t start, idx_t end);
 
 public:
 	ColumnSegment &segment;
-	BufferHandle owned_handle;
+	BufferHandle handle;
 	SegmentLayout layout;
 
 	buffer_ptr<SelectionVector> sel_vec;
@@ -77,6 +87,12 @@ public:
 	//! Decoded lengths for layout.dict_count entries, followed by unpacking padding.
 	//! The NULL length is zero and the total length does not exceed the dictionary size.
 	vector<uint32_t> string_lengths;
+	//! The last group of string lengths unpacked without unpacking all of them
+	uint32_t string_length_group[BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE];
+	idx_t string_length_group_start = DConstants::INVALID_INDEX;
+	vector<uint32_t> string_offsets;
+	//! String lengths summed by GetStringOffset so far
+	idx_t summed_lengths = 0;
 
 	buffer_ptr<DictionaryEntry> dictionary;
 	void *decoder = nullptr;

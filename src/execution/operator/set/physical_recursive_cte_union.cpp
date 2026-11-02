@@ -24,6 +24,12 @@ RecursiveCTEUnionState::RecursiveCTEUnionState(ClientContext &context, const Phy
 	if (!op.UnionAll()) {
 		ht = make_uniq<GroupedAggregateHashTable>(context, BufferAllocator::Get(context), op.distinct_types);
 	}
+	if (op.recurring_table) {
+		// the recurring collection is owned by the operator and must start empty for every
+		// invocation: a nested recursion re-entered per outer iteration, and a re-executed
+		// prepared plan, would otherwise read the previous invocation's rows
+		op.recurring_table->Reset();
+	}
 }
 
 RecursiveCTEUnionState::~RecursiveCTEUnionState() {

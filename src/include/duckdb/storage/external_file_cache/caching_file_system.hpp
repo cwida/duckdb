@@ -66,6 +66,10 @@ public:
 	//! Read [nr_bytes] bytes at the requested [location].
 	//! Returns a buffer handle group that keeps the data pinned in memory.
 	DUCKDB_API FileBufferHandleGroup Read(idx_t nr_bytes, idx_t location);
+	//! Read [nr_bytes] bytes at [location]; within absorb_ranges ([begin, end) pairs), smaller cached blocks are
+	//! re-fetched with the gaps around them when that saves a request (see ExternalFileCache::AcquireBlocks)
+	DUCKDB_API FileBufferHandleGroup Read(idx_t nr_bytes, idx_t location,
+	                                      const vector<pair<idx_t, idx_t>> &absorb_ranges);
 	//! Read [nr_bytes] bytes and sets [nr_bytes] to the actually read bytes.
 	DUCKDB_API FileBufferHandleGroup Read(idx_t &nr_bytes);
 	//! Read and record time
@@ -81,7 +85,16 @@ public:
 	DUCKDB_API bool CanSeek();
 	DUCKDB_API bool IsRemoteFile() const;
 	DUCKDB_API bool OnDiskFile();
+	//! Whether reads through this handle go through the external file cache (enabled, file cacheable, metadata valid)
+	DUCKDB_API bool ReadsAreCached();
 	DUCKDB_API bool TryGetNetworkThroughput(NetworkThroughputEstimate &result);
+	//! The number of small cached blocks of this file whose data is still available (resident or spilled) that
+	//! overlap [location, location + nr_bytes); 0 without a cache
+	DUCKDB_API idx_t CountCachedBlocks(idx_t location, idx_t nr_bytes);
+	//! Whether the cache can serve all of [location, location + nr_bytes) without a read; false without a cache
+	DUCKDB_API bool IsCached(idx_t location, idx_t nr_bytes);
+	//! The memory limit of the buffer manager that holds the cached blocks
+	DUCKDB_API idx_t GetMaxMemory() const;
 	DUCKDB_API idx_t SeekPosition();
 	DUCKDB_API void Seek(idx_t location);
 

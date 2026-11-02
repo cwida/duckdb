@@ -408,6 +408,11 @@ vector<SimplifiedToken> Parser::Tokenize(const string &query) {
 		case TokenType::KEYWORD:
 			simplified.type = SimplifiedTokenType::SIMPLIFIED_TOKEN_KEYWORD;
 			break;
+		case TokenType::IDENTIFIER:
+			simplified.type = keyword_helper.IsGrammarWord(token.text)
+			                      ? SimplifiedTokenType::SIMPLIFIED_TOKEN_KEYWORD
+			                      : SimplifiedTokenType::SIMPLIFIED_TOKEN_IDENTIFIER;
+			break;
 		case TokenType::STRING_LITERAL:
 			simplified.type = SimplifiedTokenType::SIMPLIFIED_TOKEN_STRING_CONSTANT;
 			break;

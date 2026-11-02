@@ -67,8 +67,9 @@ TaskExecutionResult PipelineTask::ExecuteTask(TaskExecutionMode mode) {
 		}
 	}
 
-	event->FinishTask();
+	// release the local states and their buffer pins before the sink can be finalized
 	pipeline_executor.reset();
+	event->FinishTask();
 	return TaskExecutionResult::TASK_FINISHED;
 }
 
@@ -392,6 +393,10 @@ void Pipeline::PrepareFinalize() {
 
 void Pipeline::ResetSinkAndOperators() {
 	ResetSink();
+	InitializeOperatorState();
+}
+
+void Pipeline::InitializeOperatorState() {
 	for (auto &op_ref : operators) {
 		auto &op = op_ref.get();
 		lock_guard<mutex> guard(op.lock);
@@ -407,17 +412,13 @@ void Pipeline::Reset() {
 	initialized = true;
 }
 
-void Pipeline::ResetOperatorsForReschedule() {
-	auto &client = GetClientContext();
+void Pipeline::InvalidateOperatorStateForReschedule(ClientContext &client, PhysicalOperator &op) {
 	auto allow_reuse = Settings::Get<EnableCachingOperatorsSetting>(client);
-	for (auto &op_ref : operators) {
-		auto &op = op_ref.get();
-		lock_guard<mutex> guard(op.lock);
-		if (allow_reuse && op.op_state && op.ResetGlobalOperatorState(client, *op.op_state)) {
-			continue;
-		}
-		op.op_state = op.GetGlobalOperatorState(client);
+	lock_guard<mutex> guard(op.lock);
+	if (allow_reuse && op.op_state && op.ResetGlobalOperatorState(client, *op.op_state)) {
+		return;
 	}
+	op.op_state.reset();
 }
 
 void Pipeline::ResetSourceForReschedule() {
@@ -438,14 +439,6 @@ void Pipeline::ResetSourceForReschedule() {
 		ResetBatchIndexes();
 	}
 	initialized = true;
-}
-
-void Pipeline::ResetForReschedule(bool reset_sink) {
-	if (reset_sink) {
-		ResetSinkForReschedule(TaskScheduler::GetScheduler(executor.context).NumberOfThreads(), false);
-	}
-	ResetOperatorsForReschedule();
-	ResetSourceForReschedule();
 }
 
 void Pipeline::NotifyProgressReset() {

@@ -22,7 +22,7 @@ unique_ptr<LogicalOperator> SamplingPushdown::Optimize(unique_ptr<LogicalOperato
 			if (is_row_count_sampling) {
 				if (!sample_op.sample_options->seed.IsValid()) {
 					auto &random_engine = RandomEngine::Get(context);
-					sample_op.sample_options->SetSeed(random_engine.NextRandomInteger());
+					sample_op.sample_options->SetSeed(random_engine.NextSeed32());
 				}
 				// For row-count sampling, calculate the sampling rate based on estimated cardinality.
 				// Use EstimateCardinality which can query table function stats if has_estimated_cardinality is not set.

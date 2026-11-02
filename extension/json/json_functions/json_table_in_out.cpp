@@ -54,6 +54,11 @@ struct JSONTableInOutGlobalState : GlobalTableFunctionState {
 	//! that were produced
 	atomic<idx_t> total_rows {0};
 	atomic<idx_t> produced_rows {0};
+
+	//! Input rows are independent, so an in-out call can use all threads
+	idx_t MaxThreads() const override {
+		return GlobalTableFunctionState::MAX_THREADS;
+	}
 };
 
 static unique_ptr<GlobalTableFunctionState> JSONTableInOutInitGlobal(ClientContext &, TableFunctionInitInput &input) {

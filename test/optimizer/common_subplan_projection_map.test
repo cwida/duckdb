@@ -58,3 +58,26 @@ select (select sum(a_amt) from (from v where typ in ('A','B') limit 10)),
        (select sum(b_amt) from (from v where typ in ('A','B') limit 10));
 ----
 11.00	22.00
+
+# Projection pullup must not prevent materialization of a repeated view
+statement ok
+CREATE TABLE snap_order(order_id BIGINT, customer_id BIGINT);
+
+statement ok
+CREATE TABLE del_order(order_id BIGINT);
+
+statement ok
+CREATE VIEW orders AS SELECT o.* FROM snap_order o ANTI JOIN del_order d USING (order_id);
+
+query II
+EXPLAIN
+SELECT count(*)
+FROM orders o
+JOIN (
+    SELECT customer_id, count(*) AS n
+    FROM orders
+    WHERE customer_id + order_id > 5
+    GROUP BY customer_id
+) y USING (customer_id);
+----
+physical_plan	<REGEX>:.*__common_subplan.*CTE Scan.*CTE Scan.*

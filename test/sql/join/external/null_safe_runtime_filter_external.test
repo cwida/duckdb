@@ -1,0 +1,75 @@
+# name: test/sql/join/external/null_safe_runtime_filter_external.test
+# description: External NULL-safe filters preserve raw and cast-produced NULLs
+# group: [external]
+
+statement ok
+SET disabled_optimizers='statistics_propagation,join_order,build_side_probe_side,compressed_materialization';
+
+statement ok
+SET dynamic_or_filter_threshold=0;
+
+statement ok
+CREATE TABLE probe AS
+SELECT CASE WHEN i%101=0 THEN NULL ELSE (i%4000)*1000000 END a FROM range(2000000)t(i);
+
+# Exceed the probe partition buffers even with four threads.
+statement ok
+CREATE TABLE build AS
+SELECT CASE WHEN i%97=0 THEN NULL ELSE (i%2000)*1000000 END b FROM range(2000000)t(i);
+
+foreach threads 1 4
+
+statement ok
+SET threads={threads};
+
+statement ok
+SET debug_force_external=true;
+
+# Keep the query and its in-memory log in one transaction.
+statement ok
+BEGIN;
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM probe p SEMI JOIN build b ON p.a IS NOT DISTINCT FROM b.b;
+----
+analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*IN BF.*
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT bool_or(info.external::BOOLEAN)::INTEGER
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class='PhysicalHashJoin' AND event='Finalize';
+----
+1
+
+statement ok
+COMMIT;
+
+query I
+SELECT count(*) FROM probe p SEMI JOIN build b ON p.a IS NOT DISTINCT FROM b.b;
+----
+1009901
+
+query I
+SELECT count(*) FROM probe p SEMI JOIN build b ON TRY_CAST(p.a AS INTEGER) IS NOT DISTINCT FROM b.b;
+----
+1926732
+
+statement ok
+SET debug_force_external=false;
+
+endloop
+
+statement ok
+RESET disabled_optimizers;
+
+statement ok
+RESET dynamic_or_filter_threshold;

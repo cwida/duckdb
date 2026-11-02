@@ -7,10 +7,12 @@ require quack
 require httpfs
 
 statement ok
-CALL quack_serve('quack:127.0.0.1:9618', token = 'test_token');
+SET VARIABLE server_uri = (SELECT concat('''', listen_uri, '''') FROM quack_serve('quack:127.0.0.1:0', token='test_token'));
+
+set variable server_uri <variable:server_uri>
 
 statement ok
-ATTACH 'quack:127.0.0.1:9618' AS qk (TOKEN 'test_token');
+ATTACH {server_uri} AS qk (TOKEN 'test_token');
 
 # the server answers PREPARE without rows, so a failure at run time arrives while the rows are fetched
 statement ok
@@ -117,7 +119,7 @@ statement ok
 INSERT INTO local_t VALUES (4);
 
 statement ok
-CONNECT 'quack:127.0.0.1:9618' (TOKEN 'test_token');
+CONNECT {server_uri} (TOKEN 'test_token');
 
 statement error
 SELECT * FROM no_such_table;
@@ -136,4 +138,4 @@ SELECT sum(i) FROM local_t;
 10
 
 statement ok
-CALL quack_stop('quack:127.0.0.1:9618');
+CALL quack_stop({server_uri});

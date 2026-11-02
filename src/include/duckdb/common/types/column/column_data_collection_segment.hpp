@@ -118,6 +118,8 @@ struct VectorMetaData {
 struct ChunkMetaData {
 	//! The set of vectors of the chunk
 	vector<VectorDataIndex> vector_data;
+	//! Allocated bytes per column, including its child vectors and buffer-managed string heaps
+	vector<idx_t> allocation_sizes;
 	//! The block ids referenced by the chunk
 	unordered_set<uint32_t> block_ids;
 	//! The number of entries in the chunk
@@ -204,6 +206,8 @@ public:
 	idx_t AllocationSize() const;
 	//! Get the allocation size of the chunk
 	idx_t GetChunkAllocationSize(idx_t chunk_index) const;
+	//! Get the allocation size of selected columns of the chunk
+	idx_t GetChunkAllocationSize(idx_t chunk_index, const vector<column_t> &column_ids) const;
 
 	void FetchChunk(idx_t chunk_idx, DataChunk &result);
 	void FetchChunk(idx_t chunk_idx, DataChunk &result, const vector<column_t> &column_ids);

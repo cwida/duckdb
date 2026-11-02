@@ -28,6 +28,7 @@ using duckdb_parquet::Encoding;
 using duckdb_parquet::PageType;
 
 constexpr const idx_t PrimitiveColumnWriter::MAX_UNCOMPRESSED_PAGE_SIZE;
+constexpr const idx_t PrimitiveColumnWriter::DEFAULT_DATA_PAGE_SIZE_LIMIT;
 constexpr const idx_t PrimitiveColumnWriter::MAX_UNCOMPRESSED_DICT_PAGE_SIZE;
 
 class ParquetPagePayloadBuffer : public AsyncWriteBuffer {
@@ -128,6 +129,17 @@ void PrimitiveColumnWriter::Prepare(ColumnWriterState &state_p, ColumnWriterStat
 		page_info.estimated_page_size += GetRowSize(vector, vector_index, state) * vcount;
 	} else {
 		for (idx_t i = 0; i < vcount; i++) {
+			if (i == 0 && !vector_can_span_multiple_pages && writer.WritePageIndex()) {
+				// a vector that cannot span multiple pages (the values of lists) starts on a new page when the current
+				// page is full, so that every page begins at a row boundary as the OffsetIndex requires
+				auto &page_info = page_info_ref.get();
+				if (page_info.row_count > 0 && page_info.estimated_page_size >= page_size_limit) {
+					PageInformation new_info;
+					new_info.offset = page_info.offset + page_info.row_count;
+					state.page_info.push_back(new_info);
+					page_info_ref = state.page_info.back();
+				}
+			}
 			auto &page_info = page_info_ref.get();
 			page_info.row_count++;
 			if (check_parent_empty && parent->is_empty[parent_index + i]) {
@@ -136,8 +148,10 @@ void PrimitiveColumnWriter::Prepare(ColumnWriterState &state_p, ColumnWriterStat
 			}
 			if (validity.RowIsValid(vector_index)) {
 				page_info.estimated_page_size += GetRowSize(vector, vector_index, state);
-				// a vector that cannot span multiple pages stays on the page it started on
-				if (page_info.estimated_page_size >= page_size_limit && (vector_can_span_multiple_pages || i == 0)) {
+				// a vector that cannot span pages splits after its first value, unless the page index made it start
+				// on a fresh page above
+				if (page_info.estimated_page_size >= page_size_limit &&
+				    (vector_can_span_multiple_pages || (i == 0 && !writer.WritePageIndex()))) {
 					PageInformation new_info;
 					new_info.offset = page_info.offset + page_info.row_count;
 					state.page_info.push_back(new_info);
@@ -189,6 +203,30 @@ void PrimitiveColumnWriter::BeginWrite(ColumnWriterState &state_p) {
 
 		write_info.compressed_size = 0;
 		write_info.compressed_data = nullptr;
+
+		if (writer.WritePageIndex()) {
+			// the page index needs the statistics, the row count and the null count of every page
+			write_info.page_stats = InitializeStatsState();
+			write_info.num_rows = page_info.row_count;
+			if (MaxRepeat() > 0) {
+				// a repeated column has several values per row: a row starts at every repetition level of zero
+				write_info.num_rows = 0;
+				for (idx_t i = page_info.offset; i < page_info.offset + page_info.row_count; i++) {
+					write_info.num_rows += state.repetition_levels[i] == 0;
+				}
+				if (state.repetition_levels[page_info.offset] != 0) {
+					// the OffsetIndex requires pages to begin at row boundaries
+					state.pages_start_at_rows = false;
+				}
+			}
+			if (MaxDefine() > 0) {
+				// every value below the maximum definition level is a NULL (of this column or of a parent)
+				const auto max_define = NumericCast<uint16_t>(MaxDefine());
+				for (idx_t i = page_info.offset; i < page_info.offset + page_info.row_count; i++) {
+					write_info.null_count += state.definition_levels[i] != max_define;
+				}
+			}
+		}
 
 		state.write_info.push_back(std::move(write_info));
 	}
@@ -270,6 +308,10 @@ void PrimitiveColumnWriter::FlushPage(PrimitiveColumnWriterState &state) {
 	auto &hdr = write_info.page_header;
 
 	FlushPageState(temp_writer, write_info.page_state.get());
+	if (write_info.page_stats && state.stats_state) {
+		// the statistics of the column chunk are the merged statistics of its pages
+		state.stats_state->Merge(*write_info.page_stats);
+	}
 
 	// now that we have finished writing the data we know the uncompressed size
 	if (temp_writer.GetPosition() > idx_t(NumericLimits<int32_t>::Maximum())) {
@@ -312,8 +354,9 @@ void PrimitiveColumnWriter::Write(ColumnWriterState &state_p, Vector &vector, id
 		idx_t write_count = MinValue<idx_t>(remaining, write_info.max_write_count - write_info.write_count);
 		D_ASSERT(write_count > 0);
 
-		WriteVector(temp_writer, state.stats_state.get(), write_info.page_state.get(), vector, offset,
-		            offset + write_count);
+		// with a page index every page tracks its own statistics, which are merged into the chunk when it is flushed
+		auto stats = write_info.page_stats ? write_info.page_stats.get() : state.stats_state.get();
+		WriteVector(temp_writer, stats, write_info.page_state.get(), vector, offset, offset + write_count);
 
 		write_info.write_count += write_count;
 		if (write_info.write_count == write_info.max_write_count) {
@@ -482,17 +525,26 @@ void PrimitiveColumnWriter::FinalizeWrite(ColumnWriterState &state_p) {
 	SetParquetStatistics(state, column_chunk);
 
 	// write the individual pages to disk
+	const bool write_page_index = writer.WritePageIndex();
+	ParquetPageIndexEntry page_index(writer.GetMetadataArena());
+	idx_t first_row_index = 0;
 	idx_t total_uncompressed_size = 0;
 	for (auto &write_info : state.write_info) {
+		const bool is_data_page =
+		    write_info.page_header.type == PageType::DATA_PAGE || write_info.page_header.type == PageType::DATA_PAGE_V2;
+		const auto page_offset = column_writer.GetTotalWritten();
 		// set the data page offset whenever we see the *first* data page
-		if (column_chunk.meta_data.data_page_offset == 0 && (write_info.page_header.type == PageType::DATA_PAGE ||
-		                                                     write_info.page_header.type == PageType::DATA_PAGE_V2)) {
-			column_chunk.meta_data.data_page_offset = UnsafeNumericCast<int64_t>(column_writer.GetTotalWritten());
+		if (column_chunk.meta_data.data_page_offset == 0 && is_data_page) {
+			column_chunk.meta_data.data_page_offset = UnsafeNumericCast<int64_t>(page_offset);
 		}
 		D_ASSERT(write_info.prepared_header);
 		D_ASSERT(write_info.prepared_payload);
+		const auto header_size = write_info.prepared_header->Size();
+		if (write_page_index && is_data_page) {
+			AddPageToPageIndex(state, write_info, page_offset, header_size, page_index, first_row_index);
+		}
 		// total uncompressed size in the column chunk includes the header size (!)
-		total_uncompressed_size += write_info.prepared_header->Size();
+		total_uncompressed_size += header_size;
 		total_uncompressed_size += write_info.page_header.uncompressed_page_size;
 		writer.WriteData(std::move(write_info.prepared_header));
 		writer.WriteData(std::move(write_info.prepared_payload));
@@ -502,11 +554,83 @@ void PrimitiveColumnWriter::FinalizeWrite(ColumnWriterState &state_p) {
 	column_chunk.meta_data.total_uncompressed_size = UnsafeNumericCast<int64_t>(total_uncompressed_size);
 	state.row_group.total_byte_size += column_chunk.meta_data.total_uncompressed_size;
 
+	// a chunk with a single page carries no page index: the footer statistics already describe that page, and the
+	// index would only add bytes to small files
+	if (write_page_index && state.pages_start_at_rows && page_index.offset_index.page_locations.size() > 1) {
+		FinalizePageIndex(state, page_index);
+		writer.BufferPageIndex(state.col_idx, std::move(page_index));
+	}
 	if (state.bloom_filter) {
 		writer.BufferBloomFilter(state.col_idx, std::move(state.bloom_filter));
 	}
 	// finalize the stats
 	writer.FlushColumnStats(state.col_idx, column_chunk, state.stats_state.get());
+}
+
+void PrimitiveColumnWriter::AddPageToPageIndex(PrimitiveColumnWriterState &state,
+                                               const PageWriteInformation &write_info, idx_t page_offset,
+                                               idx_t header_size, ParquetPageIndexEntry &page_index,
+                                               idx_t &first_row_index) {
+	// OffsetIndex: where the page is, and the first row it holds
+	duckdb_parquet::PageLocation location;
+	location.offset = NumericCast<int64_t>(page_offset);
+	location.compressed_page_size = NumericCast<int32_t>(header_size + write_info.compressed_size);
+	location.first_row_index = NumericCast<int64_t>(first_row_index);
+	page_index.offset_index.page_locations.push_back(location);
+	first_row_index += write_info.num_rows;
+
+	// ColumnIndex: the bounds of the page - a page without any value has none (and neither has a type without
+	// statistics, which rules out the ColumnIndex in FinalizePageIndex)
+	auto &column_index = page_index.column_index;
+	optional_ptr<ColumnWriterStatistics> stats = write_info.page_stats.get();
+	const bool null_page = !stats || !stats->HasStats();
+	column_index.null_pages.push_back(null_page);
+	const string min_value = null_page ? string() : stats->GetMinValue();
+	const string max_value = null_page ? string() : stats->GetMaxValue();
+	column_index.min_values.emplace_back().assign(min_value.data(), min_value.size());
+	column_index.max_values.emplace_back().assign(max_value.data(), max_value.size());
+	column_index.null_counts.push_back(NumericCast<int64_t>(write_info.null_count));
+	column_index.__isset.null_counts = true;
+}
+
+void PrimitiveColumnWriter::FinalizePageIndex(PrimitiveColumnWriterState &state, ParquetPageIndexEntry &page_index) {
+	auto &column_index = page_index.column_index;
+	// the ColumnIndex needs min/max for every page that has values: types without statistics get none, and neither
+	// do floating point columns with NaN values (the ColumnIndex cannot express them, unlike the chunk statistics)
+	page_index.has_column_index = true;
+	optional_ptr<const ColumnWriterStatistics> previous;
+	bool ascending = true;
+	bool descending = true;
+	idx_t page_idx = 0;
+	for (auto &write_info : state.write_info) {
+		if (write_info.page_header.type != PageType::DATA_PAGE &&
+		    write_info.page_header.type != PageType::DATA_PAGE_V2) {
+			continue;
+		}
+		optional_ptr<ColumnWriterStatistics> stats = write_info.page_stats.get();
+		const bool null_page = column_index.null_pages[page_idx++];
+		// a page with values but without statistics, or with NaN values, rules out the ColumnIndex
+		const bool page_has_values = write_info.null_count < write_info.max_write_count;
+		if ((null_page && page_has_values) || (stats && stats->HasNaN())) {
+			page_index.has_column_index = false;
+			return;
+		}
+		if (null_page) {
+			continue;
+		}
+		if (previous) {
+			ascending = ascending && previous->CompareMin(*stats) <= 0 && previous->CompareMax(*stats) <= 0;
+			descending = descending && previous->CompareMin(*stats) >= 0 && previous->CompareMax(*stats) >= 0;
+		}
+		previous = stats.get();
+	}
+	if (ascending) {
+		column_index.boundary_order = duckdb_parquet::BoundaryOrder::ASCENDING;
+	} else if (descending) {
+		column_index.boundary_order = duckdb_parquet::BoundaryOrder::DESCENDING;
+	} else {
+		column_index.boundary_order = duckdb_parquet::BoundaryOrder::UNORDERED;
+	}
 }
 
 void PrimitiveColumnWriter::FlushDictionary(PrimitiveColumnWriterState &state, ColumnWriterStatistics *stats) {

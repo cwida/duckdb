@@ -170,7 +170,7 @@ unique_ptr<Expression> MonotonePreimageRule::Apply(LogicalOperator &op, vector<r
 
 	// the matched function must be a monotone, deterministic unary function of a bare column
 	if (func.GetChildren().size() != 1 || !func.Function().HasArgProperties() ||
-	    func.Function().GetStability() != FunctionStability::CONSISTENT) {
+	    func.Function().GetStability() == FunctionStability::VOLATILE) {
 		return nullptr;
 	}
 	auto m = func.Function().GetArgProperties(0).monotonicity;

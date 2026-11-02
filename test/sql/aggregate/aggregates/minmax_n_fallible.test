@@ -1,0 +1,107 @@
+# name: test/sql/aggregate/aggregates/minmax_n_fallible.test
+# description: N-variant min/max aggregates validate n at runtime and must be registered as fallible
+# group: [aggregates]
+
+statement ok
+CREATE TABLE vals(v INTEGER, g INTEGER);
+
+statement ok
+INSERT INTO vals VALUES (1, 1), (2, 1), (3, 2);
+
+# the runtime n validation raises as a regular error in plain aggregation
+
+statement error
+SELECT min(v, 0) FROM vals;
+----
+Invalid input for MIN/MAX: n value must be > 0
+
+statement error
+SELECT max(v, -1) FROM vals;
+----
+Invalid input for MIN/MAX: n value must be > 0
+
+statement error
+SELECT arg_min(v, v, 0) FROM vals;
+----
+Invalid input for arg_min/arg_max: n value must be > 0
+
+statement error
+SELECT arg_max(v, v, g - g) FROM vals;
+----
+Invalid input for arg_min/arg_max: n value must be > 0
+
+statement error
+SELECT min_by(v, v, NULL) FROM vals;
+----
+Invalid input for arg_min/arg_max: n value cannot be NULL
+
+statement error
+SELECT approx_top_k(v, 0) FROM vals;
+----
+Invalid input for approx_top_k: k value must be > 0
+
+# the degenerate CURRENT ROW frame scalarizes the aggregate into a window scalar function that
+# copies the aggregate's properties - the error must stay a regular error instead of becoming an
+# internal "not marked as fallible" error
+
+statement error
+SELECT min(v, 0) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW) FROM vals;
+----
+Invalid input for MIN/MAX: n value must be > 0
+
+statement error
+SELECT arg_min(v, v, 0) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW) FROM vals;
+----
+Invalid input for arg_min/arg_max: n value must be > 0
+
+statement error
+SELECT approx_top_k(v, 0) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW) FROM vals;
+----
+Invalid input for approx_top_k: k value must be > 0
+
+# a fallible error mode blocks whole-dictionary execution of the scalarized aggregate, which would
+# evaluate unselected dictionary entries
+
+statement ok
+SET debug_verify_vector='dictionary_expression';
+
+query I rowsort
+SELECT min(v, 2) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW) FROM vals;
+----
+[1]
+[2]
+[3]
+
+query I rowsort
+SELECT arg_max(v, v, 1) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW) FROM vals;
+----
+[1]
+[2]
+[3]
+
+query I rowsort
+SELECT approx_top_k(v, 1) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW) FROM vals;
+----
+[1]
+[2]
+[3]
+
+statement error
+SELECT max(v, 0) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW) FROM vals;
+----
+Invalid input for MIN/MAX: n value must be > 0
+
+statement ok
+RESET debug_verify_vector;
+
+# valid n values keep working in all positions
+
+query II
+SELECT min(v, 2), arg_max(v, v, 2) FROM vals;
+----
+[1, 2]	[3, 2]
+
+query I
+SELECT approx_top_k(v, 2) FROM (VALUES (1), (1), (2)) t(v);
+----
+[1, 2]

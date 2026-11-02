@@ -144,7 +144,7 @@ private:
 		case ExpressionType::COMPARE_LESSTHANOREQUALTO:
 			return SelectOperation<T, LessThanEquals>(vdata, sel, approved_tuple_count);
 		default:
-			throw InternalException("Unsupported comparison type for comparison filter executor");
+			InternalException::Throw("Unsupported comparison type for comparison filter executor");
 		}
 	}
 
@@ -181,7 +181,7 @@ private:
 		case PhysicalType::VARCHAR:
 			return SelectTyped<string_t>(vdata, sel, approved_tuple_count);
 		default:
-			throw InternalException("Unsupported physical type for comparison filter executor");
+			InternalException::Throw("Unsupported physical type for comparison filter executor");
 		}
 	}
 

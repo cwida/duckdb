@@ -597,7 +597,7 @@ public:
 
 		// Asserting things are still sane here
 		if (!CanStore(0, 0)) {
-			throw InternalException("Error in bitpacking size calculation");
+			InternalException::Throw("Error in bitpacking size calculation");
 		}
 
 		if (unaligned_offset != metadata_offset) {
@@ -747,7 +747,7 @@ public:
 				return;
 			}
 			if (!payload) {
-				throw InternalException("Bitpacking algorithm group has no payload");
+				InternalException::Throw("Bitpacking algorithm group has no payload");
 			}
 			auto algorithm_group_offset = algorithm_group_index * algorithm_group_size;
 			auto packed_groups = payload->SubArray(algorithm_group_offset, groups * algorithm_group_size);
@@ -1140,62 +1140,8 @@ void BitpackingScan(ColumnSegment &segment, ColumnScanState &state, idx_t scan_c
 }
 
 //===--------------------------------------------------------------------===//
-// Fetch
+// Skip
 //===--------------------------------------------------------------------===//
-template <class T, class T_U = typename MakeUnsigned<T>::type>
-void BitpackingFetchRow(ColumnSegment &segment, ColumnFetchState &state, row_t row_id, Vector &result,
-                        idx_t result_idx) {
-	D_ASSERT(row_id >= 0);
-	auto row_index = NumericCast<idx_t>(row_id);
-	D_ASSERT(row_index < segment.count);
-	auto &buffer_manager = BufferManager::GetBufferManager(segment.GetDatabase());
-	auto handle = buffer_manager.Pin(state.context, segment.GetBlockHandle());
-	BitpackingScanState<T> scan_state(std::move(handle), segment);
-	scan_state.Skip(row_index);
-
-	if (!scan_state.HasCurrentGroup()) {
-		ThrowBitpackingReadPastEnd();
-	}
-	auto &group = scan_state.GetCurrentGroup();
-	D_ASSERT(!group.AtEnd());
-
-	D_ASSERT(result.GetVectorType() == VectorType::FLAT_VECTOR);
-	T *result_data = FlatVector::GetDataMutable<T>(result);
-	T *current_result_ptr = result_data + result_idx;
-
-	if (group.metadata.mode == BitpackingMode::CONSTANT) {
-		*current_result_ptr = group.constant;
-		return;
-	}
-
-	if (group.metadata.mode == BitpackingMode::CONSTANT_DELTA) {
-		// Operands read from disk can contain any T value, so use defined wrapping.
-		idx_t multiplier = group.offset;
-		*current_result_ptr = static_cast<T>((static_cast<T_U>(group.constant) * multiplier) +
-		                                     static_cast<T_U>(group.frame_of_reference));
-		return;
-	}
-
-	D_ASSERT(group.metadata.mode == BitpackingMode::FOR || group.metadata.mode == BitpackingMode::DELTA_FOR);
-
-	idx_t offset_in_compression_group = group.offset % BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE;
-
-	group.UnpackAlgorithmGroups(
-	    unsafe_array_ptr<T>(scan_state.decompression_buffer, BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE));
-
-	// Use unsigned arithmetic to avoid signed overflow on corrupt data.
-	T_U value = static_cast<T_U>(scan_state.decompression_buffer[offset_in_compression_group]);
-	value += static_cast<T_U>(group.frame_of_reference);
-
-	if (group.metadata.mode == BitpackingMode::DELTA_FOR) {
-		value += static_cast<T_U>(group.delta_offset);
-	}
-	*current_result_ptr = static_cast<T>(value);
-	if (scan_state.is_bool) {
-		VerifyBooleanValues(current_result_ptr, 1);
-	}
-}
-
 template <class T>
 void BitpackingSkip(ColumnSegment &segment, ColumnScanState &state, idx_t skip_count) {
 	if (skip_count == 0) {
@@ -1238,7 +1184,7 @@ CompressionFunction GetBitpackingFunction(PhysicalType data_type) {
 	    CompressionType::COMPRESSION_BITPACKING, data_type, BitpackingInitAnalyze<T>, BitpackingAnalyze<T>,
 	    BitpackingFinalAnalyze<T>, BitpackingInitCompression<T, WRITE_STATISTICS>,
 	    BitpackingCompress<T, WRITE_STATISTICS>, BitpackingFinalizeCompress<T, WRITE_STATISTICS>, BitpackingInitScan<T>,
-	    BitpackingScan<T>, BitpackingScanPartial<T>, BitpackingFetchRow<T>, BitpackingSkip<T>);
+	    BitpackingScan<T>, BitpackingScanPartial<T>, BitpackingSkip<T>);
 	bitpacking.get_segment_info = BitpackingGetSegmentInfo<T>;
 	return bitpacking;
 }

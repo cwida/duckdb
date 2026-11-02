@@ -5,6 +5,7 @@
 #include "duckdb/function/compression_function.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
+#include "duckdb/storage/storage_manager.hpp"
 #include "duckdb/storage/table/column_data_checkpointer.hpp"
 #include "duckdb/storage/table/column_segment.hpp"
 #include "duckdb/storage/table/scan_state.hpp"
@@ -264,30 +265,8 @@ void RoaringScanBoolean(ColumnSegment &segment, ColumnScanState &state, idx_t sc
 }
 
 //===--------------------------------------------------------------------===//
-// Fetch
+// Skip
 //===--------------------------------------------------------------------===//
-void RoaringFetchRow(ColumnSegment &segment, ColumnFetchState &state, row_t row_id, Vector &result, idx_t result_idx) {
-	RoaringScanState scan_state(state.context, segment);
-
-	idx_t internal_offset;
-	idx_t container_idx = scan_state.GetContainerIndex(static_cast<idx_t>(row_id), internal_offset);
-	auto &container_state = scan_state.LoadContainer(container_idx, internal_offset);
-
-	scan_state.ScanInternal(container_state, 1, FlatVector::ValidityMutable(result), result_idx);
-}
-void RoaringFetchRowBoolean(ColumnSegment &segment, ColumnFetchState &state, row_t row_id, Vector &result,
-                            idx_t result_idx) {
-	RoaringScanState scan_state(state.context, segment);
-
-	idx_t internal_offset;
-	idx_t container_idx = scan_state.GetContainerIndex(static_cast<idx_t>(row_id), internal_offset);
-	auto &container_state = scan_state.LoadContainer(container_idx, internal_offset);
-
-	ValidityMask validity(1);
-	scan_state.ScanInternal(container_state, 1, validity, 0);
-	ExtractValidityMaskToData(validity, result, result_idx, 1);
-}
-
 void RoaringSkip(ColumnSegment &segment, ColumnScanState &state, idx_t skip_count) {
 	// NO OP
 	// We skip inside scan instead, if the container boundary gets crossed we can avoid a bunch of work anyways
@@ -310,7 +289,6 @@ CompressionFunction GetCompressionFunction(PhysicalType data_type) {
 	compression_compress_data_t compress = nullptr;
 	compression_scan_vector_t scan = nullptr;
 	compression_scan_partial_t scan_partial = nullptr;
-	compression_fetch_row_t fetch_row = nullptr;
 
 	switch (data_type) {
 	case PhysicalType::BIT: {
@@ -318,7 +296,6 @@ CompressionFunction GetCompressionFunction(PhysicalType data_type) {
 		compress = roaring::RoaringCompress<PhysicalType::BIT>;
 		scan = roaring::RoaringScan;
 		scan_partial = roaring::RoaringScanPartial;
-		fetch_row = roaring::RoaringFetchRow;
 		break;
 	}
 	case PhysicalType::BOOL: {
@@ -326,7 +303,6 @@ CompressionFunction GetCompressionFunction(PhysicalType data_type) {
 		compress = roaring::RoaringCompress<PhysicalType::BOOL>;
 		scan = roaring::RoaringScanBoolean;
 		scan_partial = roaring::RoaringScanPartialBoolean;
-		fetch_row = roaring::RoaringFetchRowBoolean;
 		break;
 	}
 	default:
@@ -335,7 +311,7 @@ CompressionFunction GetCompressionFunction(PhysicalType data_type) {
 	return CompressionFunction(CompressionType::COMPRESSION_ROARING, data_type, roaring::RoaringInitAnalyze, analyze,
 	                           roaring::RoaringFinalAnalyze, roaring::RoaringInitCompression, compress,
 	                           roaring::RoaringFinalizeCompress, roaring::RoaringInitScan, scan, scan_partial,
-	                           fetch_row, roaring::RoaringSkip, roaring::RoaringInitSegment);
+	                           roaring::RoaringSkip, roaring::RoaringInitSegment);
 }
 
 CompressionFunction RoaringCompressionFun::GetFunction(PhysicalType type) {
