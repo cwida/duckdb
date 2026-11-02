@@ -879,7 +879,7 @@ static ColumnIndex CreateVariantTypedValuePushdown(const ParquetColumnSchema &sc
 //! in which case the entire group has to be read.
 static unique_ptr<ColumnIndex> CreateVariantProjectionPrune(const ParquetColumnSchema &shred_group, idx_t group_index,
                                                             const ColumnIndex &extract_path) {
-	D_ASSERT(shred_group.type.id() == LogicalTypeId::STRUCT);
+	D_ASSERT(StructType::IsStruct(shred_group.type));
 	D_ASSERT(extract_path.HasChildren());
 	auto &component = extract_path.GetChildIndexes()[0];
 	if (component.HasPrimaryIndex()) {
@@ -902,7 +902,9 @@ static unique_ptr<ColumnIndex> CreateVariantProjectionPrune(const ParquetColumnS
 			auto nested = CreateVariantProjectionPrune(nested_schema, nested_typed_value_index.GetIndex(), component);
 			if (nested) {
 				//! 'value' is the fallback for the field, so it always has to be read alongside 'typed_value'
-				field_children.emplace_back(value_index.GetIndex());
+				ColumnIndex value_child(value_index.GetIndex());
+				value_child.SetType(field_schema.GetChildByIndex(value_index.GetIndex()).type);
+				field_children.push_back(std::move(value_child));
 				field_children.push_back(std::move(*nested));
 			}
 		}
@@ -1049,10 +1051,10 @@ unique_ptr<ColumnReader> ParquetReader::CreateReaderRecursive(ClientContext &con
 				auto typed_value_index = CreateVariantTypedValuePushdown(typed_value_schema, column_id);
 				return CreateReaderRecursive(context, typed_value_index, typed_value_schema);
 			}
-			if (StructType::IsStruct(typed_value_schema.type)) {
-				auto &component = column_id.GetChildIndexes()[0];
-				if (!component.HasPrimaryIndex() &&
-				    typed_value_schema.GetChildIndexByName(component.GetFieldName()).IsValid()) {
+			auto &component = column_id.GetChildIndexes()[0];
+			if (!component.HasPrimaryIndex() && StructType::IsStruct(typed_value_schema.type)) {
+				//! Only a field path can be matched against the shredded fields
+				if (typed_value_schema.GetChildIndexByName(component.GetFieldName()).IsValid()) {
 					//! Only read the shredded fields that the extracted path can descend into
 					typed_value_projection =
 					    CreateVariantProjectionPrune(typed_value_schema, typed_value_idx, column_id);

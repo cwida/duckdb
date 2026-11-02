@@ -223,9 +223,13 @@ idx_t VariantColumnReader::Read(ColumnReaderInput &input, Vector &result) {
 		//! 'Convert' then rebuilds just that field instead of every shredded field in the object
 		narrow_group = make_uniq<Vector>(typed_value_field_group, num_values);
 		auto &narrow_entries = StructVector::GetEntries(*narrow_group);
+		auto &narrow_typed_value = narrow_entries[1];
 		narrow_entries[0].Reference(value_intermediate);
-		StructVector::GetEntries(narrow_entries[1])[0].Reference(
+		StructVector::GetEntries(narrow_typed_value)[0].Reference(
 		    StructVector::GetEntries(group_entries[1])[typed_value_field.GetIndex()]);
+		//! This struct is built here, so it has to inherit the validity of 'typed_value': a row that is not a
+		//! shredded object has no shredded value and has to fall back to the binary 'value'
+		FlatVector::ValidityMutable(narrow_typed_value).CopyRange(FlatVector::Validity(group_entries[1]), num_values);
 		group_to_convert = *narrow_group;
 	}
 	Convert(metadata_intermediate, *group_to_convert, result, num_values);

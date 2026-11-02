@@ -8,7 +8,7 @@ require parquet
 # hold identical rows, so every query below has to return the same result with and without shredding.
 foreach shredded true false
 
-onlyif shredded=true
+onlyif shredded=false
 statement ok
 COPY (
 	FROM (VALUES
@@ -27,7 +27,7 @@ COPY (
 	) t(id, v)
 ) TO '{TEST_DIR}/variant_shred_read_pruning.parquet' (SHREDDING {'v': 'NULL'});
 
-onlyif shredded=false
+onlyif shredded=true
 statement ok
 COPY (
 	FROM (VALUES
@@ -272,3 +272,90 @@ SELECT id, v.other::VARCHAR FROM '{TEST_DIR}/variant_shred_read_pruning_all_type
 3	3
 4	4
 5	5
+
+# Rows that are not shredded objects have no 'typed_value', so they have to fall back to the value column
+foreach shredded true false
+
+onlyif shredded=true
+statement ok
+COPY (
+	FROM (VALUES
+		(1, {'a': 1, 'b': 100}::VARIANT),
+		(2, 42::VARIANT),
+		(3, [1, 2, 3]::VARIANT),
+		(4, 'str'::VARIANT),
+		(5, NULL::VARIANT),
+		(6, {'a': 6, 'b': 600}::VARIANT)
+	) t(id, v)
+) TO '{TEST_DIR}/variant_shred_read_pruning_non_object.parquet' (
+	SHREDDING {'v': 'STRUCT(a INTEGER, b INTEGER)'}
+);
+
+onlyif shredded=false
+statement ok
+COPY (
+	FROM (VALUES
+		(1, {'a': 1, 'b': 100}::VARIANT),
+		(2, 42::VARIANT),
+		(3, [1, 2, 3]::VARIANT),
+		(4, 'str'::VARIANT),
+		(5, NULL::VARIANT),
+		(6, {'a': 6, 'b': 600}::VARIANT)
+	) t(id, v)
+) TO '{TEST_DIR}/variant_shred_read_pruning_non_object.parquet' (SHREDDING {'v': 'NULL'});
+
+query II
+SELECT id, v::VARCHAR FROM '{TEST_DIR}/variant_shred_read_pruning_non_object.parquet' ORDER BY id
+----
+1	{'a': 1, 'b': 100}
+2	42
+3	[1, 2, 3]
+4	str
+5	NULL
+6	{'a': 6, 'b': 600}
+
+query II
+SELECT id, v.a::VARCHAR FROM '{TEST_DIR}/variant_shred_read_pruning_non_object.parquet' ORDER BY id
+----
+1	1
+2	NULL
+3	NULL
+4	NULL
+5	NULL
+6	6
+
+query II
+SELECT id, v.b::VARCHAR FROM '{TEST_DIR}/variant_shred_read_pruning_non_object.parquet' ORDER BY id
+----
+1	100
+2	NULL
+3	NULL
+4	NULL
+5	NULL
+6	600
+
+endloop
+
+# A list shredding type leaves 'typed_value' a LIST, so a field extract can only come from the value column
+statement ok
+COPY (
+	FROM (VALUES
+		(1, [1, 2, 3]::VARIANT),
+		(2, {'a': 42}::VARIANT),
+		(3, NULL::VARIANT)
+	) t(id, v)
+) TO '{TEST_DIR}/variant_shred_read_pruning_list.parquet' (SHREDDING {'v': 'INTEGER[]'});
+
+query II
+SELECT id, v::VARCHAR FROM '{TEST_DIR}/variant_shred_read_pruning_list.parquet' ORDER BY id
+----
+1	[1, 2, 3]
+2	{'a': 42}
+3	NULL
+
+query II
+SELECT id, v.a::VARCHAR FROM '{TEST_DIR}/variant_shred_read_pruning_list.parquet' ORDER BY id
+----
+1	NULL
+2	42
+3	NULL
