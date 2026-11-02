@@ -1,0 +1,274 @@
+# name: test/parquet/variant/pushdown/variant_extract_shred_read_pruning.test
+# description: Extracting one field from a shredded VARIANT must not read the other shredded fields
+# group: [pushdown]
+
+require parquet
+
+# The reader prunes the shredded `typed_value` subtree down to the extracted field path. Both files
+# hold identical rows, so every query below has to return the same result with and without shredding.
+foreach shredded true false
+
+onlyif shredded=true
+statement ok
+COPY (
+	FROM (VALUES
+		(1, {'a': 1, 'b': 100, 's': 'x'}::VARIANT),
+		(2, {'a': 2, 'b': NULL, 's': NULL}::VARIANT),
+		(3, {'a': NULL, 'b': 300}::VARIANT),
+		(4, {'b': 400}::VARIANT),
+		(5, {'a': 'str', 'b': 500}::VARIANT),
+		(6, {'a': '600', 'b': 600}::VARIANT),
+		(7, {'a': 7, 'b': 700, 'nested': {'lat': 1.5, 'lon': 2.5}}::VARIANT),
+		(8, {'a': 8, 'items': [{'x': 1, 'y': 10}, {'x': 2, 'y': 20}]}::VARIANT),
+		(9, {'a': 9, 'items': []}::VARIANT),
+		(10, {'a': 10, 'items': NULL}::VARIANT),
+		(11, {'nested': {'lat': 11.5, 'lon': 12.5}, 'items': [{'x': 3, 'y': 30}]}::VARIANT),
+		(12, NULL::VARIANT)
+	) t(id, v)
+) TO '{TEST_DIR}/variant_shred_read_pruning.parquet' (SHREDDING {'v': 'NULL'});
+
+onlyif shredded=false
+statement ok
+COPY (
+	FROM (VALUES
+		(1, {'a': 1, 'b': 100, 's': 'x'}::VARIANT),
+		(2, {'a': 2, 'b': NULL, 's': NULL}::VARIANT),
+		(3, {'a': NULL, 'b': 300}::VARIANT),
+		(4, {'b': 400}::VARIANT),
+		(5, {'a': 'str', 'b': 500}::VARIANT),
+		(6, {'a': '600', 'b': 600}::VARIANT),
+		(7, {'a': 7, 'b': 700, 'nested': {'lat': 1.5, 'lon': 2.5}}::VARIANT),
+		(8, {'a': 8, 'items': [{'x': 1, 'y': 10}, {'x': 2, 'y': 20}]}::VARIANT),
+		(9, {'a': 9, 'items': []}::VARIANT),
+		(10, {'a': 10, 'items': NULL}::VARIANT),
+		(11, {'nested': {'lat': 11.5, 'lon': 12.5}, 'items': [{'x': 3, 'y': 30}]}::VARIANT),
+		(12, NULL::VARIANT)
+	) t(id, v)
+) TO '{TEST_DIR}/variant_shred_read_pruning.parquet' (SHREDDING {'v': 'STRUCT(a INTEGER, b INTEGER, nested STRUCT(lat DOUBLE, lon DOUBLE), items STRUCT(x INTEGER, y INTEGER)[])'});
+
+# The whole VARIANT is selected, so nothing is pruned
+query II
+SELECT id, v::VARCHAR FROM '{TEST_DIR}/variant_shred_read_pruning.parquet' ORDER BY id
+----
+1	{'a': 1, 'b': 100, 's': x}
+2	{'a': 2, 'b': NULL, 's': NULL}
+3	{'a': NULL, 'b': 300}
+4	{'b': 400}
+5	{'a': str, 'b': 500}
+6	{'a': 600, 'b': 600}
+7	{'a': 7, 'b': 700, 'nested': {'lat': 1.5, 'lon': 2.5}}
+8	{'a': 8, 'items': [{'x': 1, 'y': 10}, {'x': 2, 'y': 20}]}
+9	{'a': 9, 'items': []}
+10	{'a': 10, 'items': NULL}
+11	{'items': [{'x': 3, 'y': 30}], 'nested': {'lat': 11.5, 'lon': 12.5}}
+12	NULL
+
+# 'a' is shredded as INTEGER, 'str'/'600' have to fall back to the value column
+query II
+SELECT id, v.a::VARCHAR FROM '{TEST_DIR}/variant_shred_read_pruning.parquet' ORDER BY id
+----
+1	1
+2	2
+3	NULL
+4	NULL
+5	str
+6	600
+7	7
+8	8
+9	9
+10	10
+11	NULL
+12	NULL
+
+query II
+SELECT id, try_cast(v.a AS INTEGER)::VARCHAR FROM '{TEST_DIR}/variant_shred_read_pruning.parquet' ORDER BY id
+----
+1	1
+2	2
+3	NULL
+4	NULL
+5	NULL
+6	600
+7	7
+8	8
+9	9
+10	10
+11	NULL
+12	NULL
+
+query II
+SELECT id, variant_extract(v, 'a')::VARCHAR FROM '{TEST_DIR}/variant_shred_read_pruning.parquet' ORDER BY id
+----
+1	1
+2	2
+3	NULL
+4	NULL
+5	str
+6	600
+7	7
+8	8
+9	9
+10	10
+11	NULL
+12	NULL
+
+query II
+SELECT id, v.b::VARCHAR FROM '{TEST_DIR}/variant_shred_read_pruning.parquet' ORDER BY id
+----
+1	100
+2	NULL
+3	300
+4	400
+5	500
+6	600
+7	700
+8	NULL
+9	NULL
+10	NULL
+11	NULL
+12	NULL
+
+# 's' is not shredded, so the typed_value subtree is skipped entirely
+query II
+SELECT id, v.s::VARCHAR FROM '{TEST_DIR}/variant_shred_read_pruning.parquet' ORDER BY id
+----
+1	x
+2	NULL
+3	NULL
+4	NULL
+5	NULL
+6	NULL
+7	NULL
+8	NULL
+9	NULL
+10	NULL
+11	NULL
+12	NULL
+
+query II
+SELECT id, v.nested::VARCHAR FROM '{TEST_DIR}/variant_shred_read_pruning.parquet' ORDER BY id
+----
+1	NULL
+2	NULL
+3	NULL
+4	NULL
+5	NULL
+6	NULL
+7	{'lat': 1.5, 'lon': 2.5}
+8	NULL
+9	NULL
+10	NULL
+11	{'lat': 11.5, 'lon': 12.5}
+12	NULL
+
+# 'nested' is shredded into a sub-shredded struct
+query II
+SELECT id, v.nested.lat::VARCHAR FROM '{TEST_DIR}/variant_shred_read_pruning.parquet' ORDER BY id
+----
+1	NULL
+2	NULL
+3	NULL
+4	NULL
+5	NULL
+6	NULL
+7	1.5
+8	NULL
+9	NULL
+10	NULL
+11	11.5
+12	NULL
+
+query II
+SELECT id, v.nested.lon::VARCHAR FROM '{TEST_DIR}/variant_shred_read_pruning.parquet' ORDER BY id
+----
+1	NULL
+2	NULL
+3	NULL
+4	NULL
+5	NULL
+6	NULL
+7	2.5
+8	NULL
+9	NULL
+10	NULL
+11	12.5
+12	NULL
+
+query II
+SELECT id, v.items::VARCHAR FROM '{TEST_DIR}/variant_shred_read_pruning.parquet' ORDER BY id
+----
+1	NULL
+2	NULL
+3	NULL
+4	NULL
+5	NULL
+6	NULL
+7	NULL
+8	[{'x': 1, 'y': 10}, {'x': 2, 'y': 20}]
+9	[]
+10	NULL
+11	[{'x': 3, 'y': 30}]
+12	NULL
+
+# 'items' is a shredded list of shredded structs
+query II
+SELECT id, v.items[1].x::VARCHAR FROM '{TEST_DIR}/variant_shred_read_pruning.parquet' ORDER BY id
+----
+1	NULL
+2	NULL
+3	NULL
+4	NULL
+5	NULL
+6	NULL
+7	NULL
+8	1
+9	NULL
+10	NULL
+11	3
+12	NULL
+
+# project several extracted fields at once
+query III
+SELECT v.a::VARCHAR, v.b::VARCHAR, v.nested.lat::VARCHAR FROM '{TEST_DIR}/variant_shred_read_pruning.parquet' WHERE id = 7
+----
+7	700	1.5
+
+query I
+SELECT count(*)::VARCHAR FROM '{TEST_DIR}/variant_shred_read_pruning.parquet' WHERE v.b::INTEGER = 700
+----
+1
+
+query II
+SELECT id, v.a::VARCHAR FROM '{TEST_DIR}/variant_shred_read_pruning.parquet' WHERE try_cast(v.a AS INTEGER) > 8 ORDER BY id
+----
+6	600
+9	9
+10	10
+
+endloop
+
+statement ok
+COPY (
+	FROM (SELECT i AS id, {'a': CAST(i * 10 AS INTEGER), 'other': CAST(i AS INTEGER)}::VARIANT AS v
+	      FROM range(1, 6) t(i))
+) TO '{TEST_DIR}/variant_shred_read_pruning_all_typed.parquet' (SHREDDING {'v': 'STRUCT(a INTEGER)'}, ROW_GROUP_SIZE 2);
+
+# 'a' is fully typed, so the per-field value column is NULL in every row group
+query II
+SELECT id, v.a::VARCHAR FROM '{TEST_DIR}/variant_shred_read_pruning_all_typed.parquet' ORDER BY id
+----
+1	10
+2	20
+3	30
+4	40
+5	50
+
+# 'other' is not shredded and has to come from the value column
+query II
+SELECT id, v.other::VARCHAR FROM '{TEST_DIR}/variant_shred_read_pruning_all_typed.parquet' ORDER BY id
+----
+1	1
+2	2
+3	3
+4	4
+5	5

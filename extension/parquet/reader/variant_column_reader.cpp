@@ -90,6 +90,22 @@ VariantColumnReader::VariantColumnReader(ClientContext &context, const ParquetRe
 		                              "as the first two columns",
 		                              reader.GetFileName());
 	}
+
+	if (!index.IsPushdownExtract() || extract_path.empty() || child_readers.size() < 3 || !child_readers[2]) {
+		return;
+	}
+	if (extract_path[0].lookup_mode != VariantChildLookupMode::BY_KEY) {
+		//! An array index cannot be matched against the shredded object fields
+		return;
+	}
+	auto &typed_value_schema = child_readers[2]->Schema();
+	if (!StructType::IsStruct(typed_value_schema.type)) {
+		return;
+	}
+	auto field_index = typed_value_schema.GetChildIndexByName(extract_path[0].key);
+	if (field_index.IsValid()) {
+		typed_value_field = field_index;
+	}
 }
 
 VariantColumnReader::VariantColumnReader(ClientContext &context, const ParquetReader &reader,
@@ -194,7 +210,26 @@ idx_t VariantColumnReader::Read(ColumnReaderInput &input, Vector &result) {
 		}
 	}
 	// convert the actual columns
-	Convert(metadata_intermediate, intermediate_group, result, num_values);
+	unique_ptr<Vector> narrow_group;
+	optional_ptr<Vector> group_to_convert(intermediate_group);
+	if (typed_value_field.IsValid()) {
+		//! Only the extracted field can contribute to the result, so drop the sibling shredded fields here:
+		//! 'Convert' then rebuilds just that field instead of every shredded field in the object
+		auto field_index = typed_value_field.GetIndex();
+		auto &wide_types = StructType::GetChildTypes(group_entries[1].GetType());
+		auto &wide_entries = StructVector::GetEntries(group_entries[1]);
+		D_ASSERT(field_index < wide_entries.size());
+		auto typed_value_children =
+		    child_list_t<LogicalType> {{wide_types[field_index].first, wide_entries[field_index].GetType()}};
+		auto group_children = child_list_t<LogicalType> {
+		    {"value", LogicalType::BLOB}, {"typed_value", LogicalType::STRUCT(std::move(typed_value_children))}};
+		narrow_group = make_uniq<Vector>(LogicalType::STRUCT(std::move(group_children)), num_values);
+		auto &narrow_entries = StructVector::GetEntries(*narrow_group);
+		narrow_entries[0].Reference(value_intermediate);
+		StructVector::GetEntries(narrow_entries[1])[0].Reference(wide_entries[field_index]);
+		group_to_convert = *narrow_group;
+	}
+	Convert(metadata_intermediate, *group_to_convert, result, num_values);
 	if (index.IsPushdownExtract()) {
 		D_ASSERT(!extract_path.empty());
 		Vector extract_result(LogicalType::VARIANT(), num_values);
