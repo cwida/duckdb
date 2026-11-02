@@ -379,12 +379,22 @@ Allocator &CachingFileHandle::GetBufferAllocator() const {
 	return external_file_cache.GetBufferManager().GetBufferAllocator();
 }
 
+bool CachingFileHandle::ReadsAreCached() {
+	return external_file_cache.IsEnabled() && external_file_cache.ShouldCacheFile(path.path) && CanUseCache();
+}
+
 FileBufferHandleGroup CachingFileHandle::Read(const idx_t nr_bytes, const idx_t location) {
+	static const vector<pair<idx_t, idx_t>> no_absorb_ranges;
+	return Read(nr_bytes, location, no_absorb_ranges);
+}
+
+FileBufferHandleGroup CachingFileHandle::Read(const idx_t nr_bytes, const idx_t location,
+                                              const vector<pair<idx_t, idx_t>> &absorb_ranges) {
 	if (nr_bytes == 0) {
 		return FileBufferHandleGroup();
 	}
 
-	if (!external_file_cache.IsEnabled() || !external_file_cache.ShouldCacheFile(path.path) || !CanUseCache()) {
+	if (!ReadsAreCached()) {
 		auto buf = AllocateUncachedReadBuffer(external_file_cache.GetBufferManager(), nr_bytes);
 		ReadUncached(buf.GetDataMutable(), nr_bytes, location);
 		vector<FileBufferHandleGroup::MemoryHandle> mem_handles;
@@ -426,7 +436,7 @@ FileBufferHandleGroup CachingFileHandle::Read(const idx_t nr_bytes, const idx_t 
 	}
 	fetch_end = MinValue(fetch_end, file_size);
 	auto blocks = external_file_cache.AcquireBlocks(*current_cached_file, fetch_location, fetch_end - fetch_location,
-	                                                max_block_size);
+	                                                max_block_size, absorb_ranges.empty() ? nullptr : &absorb_ranges);
 	const idx_t num_blocks = blocks.size();
 
 	// Schedule block fetch tasks for all blocks.
@@ -634,6 +644,31 @@ bool CachingFileHandle::TryGetNetworkThroughput(NetworkThroughputEstimate &resul
 		return true;
 	}
 	return throughput_estimator.TryEstimate(result);
+}
+
+idx_t CachingFileHandle::CountCachedBlocks(idx_t location, idx_t nr_bytes) {
+	if (nr_bytes == 0 || !external_file_cache.IsEnabled() || !external_file_cache.ShouldCacheFile(path.path) ||
+	    !CanUseCache()) {
+		return 0;
+	}
+	auto current_cached_file = EnsureCachedFileCurrent();
+	return ExternalFileCache::CountSmallAvailableBlocks(*current_cached_file, location, nr_bytes,
+	                                                    external_file_cache.GetCacheMaxBlockSize(path.path));
+}
+
+bool CachingFileHandle::IsCached(idx_t location, idx_t nr_bytes) {
+	if (!external_file_cache.IsEnabled() || !external_file_cache.ShouldCacheFile(path.path) || !CanUseCache()) {
+		return false;
+	}
+	if (nr_bytes == 0) {
+		return true;
+	}
+	auto current_cached_file = EnsureCachedFileCurrent();
+	return ExternalFileCache::IsRangeAvailable(*current_cached_file, location, nr_bytes);
+}
+
+idx_t CachingFileHandle::GetMaxMemory() const {
+	return external_file_cache.GetBufferManager().GetMaxMemory();
 }
 
 void CachingFileHandle::ReadAndRecord(QueryContext context, data_ptr_t buffer, idx_t nr_bytes, idx_t location) {

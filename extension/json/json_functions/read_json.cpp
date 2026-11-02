@@ -119,6 +119,8 @@ public:
 			node.RefineCandidateTypes(scan_state.values, next, string_vector, allocator,
 			                          auto_detect_state.date_format_map, user_specified_timestamp_format);
 		}
+		// release the current buffer, otherwise the sampled reader keeps it alive after the bind
+		scan_state.ClearBufferHandle();
 		auto_detect_state.total_file_size += file_size;
 		auto_detect_state.bytes_scanned += total_read_size;
 		auto_detect_state.tuples_scanned += total_tuple_count;

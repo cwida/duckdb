@@ -411,14 +411,18 @@ AggregateFunction GetAverageAggregate(PhysicalType type) {
 		        LogicalType::BIGINT, LogicalType::DOUBLE));
 	}
 	case PhysicalType::INT128: {
-		return NameXParameter(
+		auto function =
 		    AggregateFunction::UnaryAggregate<AvgState<hugeint_t>, hugeint_t, double, HugeintAverageOperation>(
-		        LogicalType::HUGEINT, LogicalType::DOUBLE));
+		        LogicalType::HUGEINT, LogicalType::DOUBLE);
+		function.SetFallible(); // adding HUGEINT values to the HUGEINT accumulator throws on overflow
+		return NameXParameter(std::move(function));
 	}
 	case PhysicalType::INTERVAL: {
-		return NameXParameter(
+		auto function =
 		    AggregateFunction::UnaryAggregate<IntervalAvgState, interval_t, interval_t, IntervalAverageOperation>(
-		        LogicalType::INTERVAL, LogicalType::INTERVAL));
+		        LogicalType::INTERVAL, LogicalType::INTERVAL);
+		function.SetFallible(); // interval addition throws on overflow of any field
+		return NameXParameter(std::move(function));
 	}
 	default:
 		throw InternalException("Unimplemented average aggregate");

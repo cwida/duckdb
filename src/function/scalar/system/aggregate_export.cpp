@@ -1045,6 +1045,8 @@ AggregateFunction CombineAggrFun::GetFunction() {
 	                                  CombineAggrBind, nullptr, nullptr, nullptr);
 	function.GetSignature().AddParameter("arg", LogicalTypeId::ANY);
 	function.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+	// importing states validates them, and the underlying combine can throw (e.g. mismatched approx_top_k k values)
+	function.SetFallible();
 	return function;
 }
 
@@ -1056,6 +1058,8 @@ AggregateFunctionSet CombineAggrFun::GetFunctions() {
 	                                  CombineAggrBind, nullptr, nullptr, nullptr);
 	repeated.GetSignature().AddParameter("arg", LogicalTypeId::ANY).AddParameter("multiplicities", LogicalType::BIGINT);
 	repeated.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+	// importing states validates them, and the repeated combine throws on multiplicity overflow
+	repeated.SetFallible();
 	set.AddFunction(std::move(repeated));
 	return set;
 }

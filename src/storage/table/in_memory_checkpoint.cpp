@@ -8,6 +8,7 @@
 #include "duckdb/common/serializer/binary_serializer.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/storage/data_table.hpp"
+#include "duckdb/storage/partial_block_manager.hpp"
 #include "duckdb/storage/storage_manager.hpp"
 #include "duckdb/storage/table/column_segment.hpp"
 #include "duckdb/storage/table/table_index_list.hpp"
@@ -92,7 +93,6 @@ void InMemoryCheckpointer::WriteTable(TableCatalogEntry &table, Serializer &seri
 
 	// Write the table data
 	table.GetStorage().Checkpoint(data_writer, serializer);
-	partial_block_manager.FlushPartialBlocks();
 }
 
 InMemoryRowGroupWriter::InMemoryRowGroupWriter(TableDataWriter &writer, TableCatalogEntry &table,
@@ -143,6 +143,8 @@ unique_ptr<TableIndexWriter> InMemoryTableDataWriter::GetTableIndexWriter(Storag
 };
 
 void InMemoryTableDataWriter::FlushPartialBlocks() {
+	// Finalize packed buffers before the checkpoint row groups become visible.
+	checkpoint_manager.GetPartialBlockManager().FlushPartialBlocks();
 }
 
 CheckpointOptions InMemoryTableDataWriter::GetCheckpointOptions() const {
@@ -151,33 +153,6 @@ CheckpointOptions InMemoryTableDataWriter::GetCheckpointOptions() const {
 
 MetadataManager &InMemoryTableDataWriter::GetMetadataManager() {
 	return checkpoint_manager.GetMetadataManager();
-}
-
-InMemoryPartialBlock::InMemoryPartialBlock(ColumnData &data, ColumnSegment &segment, PartialBlockState state,
-                                           BlockManager &block_manager)
-    : PartialBlock(state, block_manager, segment.GetBlockHandle()) {
-	InMemoryPartialBlock::AddSegmentToTail(data, segment, 0);
-}
-
-InMemoryPartialBlock::~InMemoryPartialBlock() {
-}
-
-void InMemoryPartialBlock::Flush(QueryContext context, const idx_t free_space_left) {
-	Clear();
-}
-
-void InMemoryPartialBlock::Merge(PartialBlock &other_p, idx_t offset, idx_t other_size) {
-	auto &other = other_p.Cast<InMemoryPartialBlock>();
-	other.Clear();
-}
-
-void InMemoryPartialBlock::AddSegmentToTail(ColumnData &data, ColumnSegment &segment, uint32_t offset_in_block) {
-	segment.SetBlock(block_handle, offset_in_block);
-}
-
-void InMemoryPartialBlock::Clear() {
-	uninitialized_regions.clear();
-	block_handle.reset();
 }
 
 } // namespace duckdb

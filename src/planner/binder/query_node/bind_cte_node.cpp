@@ -50,6 +50,10 @@ BoundStatement Binder::BindNode(QueryNode &node) {
 			++dml_cte_count;
 		}
 		bound_ctes.push_back(current_binder.get().PrepareCTE(cte.first, *cte.second));
+		if (current_binder.get().IsBindingTrySubquery()) {
+			// the child binder binds the same query node, so TRY lowering follows it
+			bound_ctes.back().child_binder->SetBindingTrySubquery();
+		}
 		current_binder = *bound_ctes.back().child_binder;
 	}
 	BoundStatement result;
@@ -84,6 +88,10 @@ BoundStatement Binder::BindNode(QueryNode &node) {
 		break;
 	default:
 		throw InternalException("Unsupported query node type");
+	}
+	if (!bound_ctes.empty() && IsBindingTrySubquery()) {
+		// carry the plan indexes of the TRY select node back across the CTE binder handoff
+		GetTrySubqueryPlanIndexesMutable() = current_binder.get().GetTrySubqueryPlanIndexes();
 	}
 	for (idx_t i = bound_ctes.size(); i > 0; i--) {
 		auto &finish_binder = i == 1 ? *this : *bound_ctes[i - 2].child_binder;

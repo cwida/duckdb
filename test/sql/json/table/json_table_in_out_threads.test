@@ -1,0 +1,98 @@
+# name: test/sql/json/table/json_table_in_out_threads.test
+# description: json_each and json_tree called per input row schedule as many pipeline tasks as unnest (duckdblabs/bot-issue-tracker#651)
+# group: [table]
+
+require json
+
+# the logs of a restarted database start over
+require skip_reload
+
+statement ok
+SET threads = 4;
+
+# plan unnest with the same delim join as the JSON functions
+statement ok
+SET disabled_optimizers = 'unnest_rewriter';
+
+statement ok
+CREATE TABLE j AS SELECT json_object('a', i, 'b', [i, i + 1]) AS doc FROM range(10000) t(i);
+
+statement ok
+CALL enable_logging('QueryLog');
+
+# every pipeline task allocates a logging context, so the context ids between two probes grow with the tasks of the first
+statement ok
+CREATE VIEW probe_spans AS
+SELECT probe, lead(first_context) OVER (ORDER BY first_context) - first_context AS span
+FROM (
+    SELECT split_part(message, ' ', 4) AS probe, min(context_id) AS first_context
+    FROM duckdb_logs()
+    WHERE type = 'QueryLog' AND starts_with(message, 'SELECT count(*) AS probe_')
+    GROUP BY probe
+);
+
+statement ok
+SELECT count(*) AS probe_unnest FROM j, LATERAL unnest([j.doc]) r(x);
+
+statement ok
+SELECT count(*) AS probe_json_each FROM j, LATERAL json_each(j.doc);
+
+statement ok
+SELECT count(*) AS probe_json_tree FROM j, LATERAL json_tree(j.doc);
+
+statement ok
+SELECT count(*) AS probe_end FROM range(1);
+
+query II
+SELECT probe, span = (SELECT span FROM probe_spans WHERE probe = 'probe_unnest')
+FROM probe_spans WHERE probe IN ('probe_json_each', 'probe_json_tree') ORDER BY probe;
+----
+probe_json_each	true
+probe_json_tree	true
+
+# the results stay the same with several threads
+query II
+SELECT count(*), sum(id) FROM j, LATERAL json_each(j.doc);
+----
+20000	60000
+
+query II
+SELECT count(*), count(DISTINCT path) FROM j, LATERAL json_tree(j.doc);
+----
+50000	2
+
+# every node with its values, parent and path is the same as with one thread
+statement ok
+SET threads = 1;
+
+statement ok
+CREATE TABLE tree_one_thread AS SELECT j.doc, t.* FROM j, LATERAL json_tree(j.doc) t;
+
+statement ok
+CREATE TABLE each_one_thread AS SELECT j.doc, e.* FROM j, LATERAL json_each(j.doc) e;
+
+statement ok
+SET threads = 4;
+
+query I
+SELECT count(*) FROM (
+	(SELECT j.doc, t.* FROM j, LATERAL json_tree(j.doc) t EXCEPT ALL SELECT * FROM tree_one_thread)
+	UNION ALL
+	(SELECT * FROM tree_one_thread EXCEPT ALL SELECT j.doc, t.* FROM j, LATERAL json_tree(j.doc) t)
+);
+----
+0
+
+query I
+SELECT count(*) FROM (
+	(SELECT j.doc, e.* FROM j, LATERAL json_each(j.doc) e EXCEPT ALL SELECT * FROM each_one_thread)
+	UNION ALL
+	(SELECT * FROM each_one_thread EXCEPT ALL SELECT j.doc, e.* FROM j, LATERAL json_each(j.doc) e)
+);
+----
+0
+
+query I
+SELECT count(*) FROM tree_one_thread WHERE parent IS NOT NULL;
+----
+40000

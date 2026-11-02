@@ -738,7 +738,7 @@ struct DebugForceExternalSetting {
 struct DebugForceFetchRowSetting {
 	using RETURN_TYPE = bool;
 	static constexpr const char *Name = "debug_force_fetch_row";
-	static constexpr const char *Description = "Force per-row fetching during scans.";
+	static constexpr const char *Description = "Read the rows of scans through the fetch by row id.";
 	static constexpr const char *InputType = "BOOLEAN";
 	static constexpr bool IsDebug = true;
 	static constexpr bool IsDeprecated = false;

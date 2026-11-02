@@ -336,6 +336,28 @@ TEST_CASE("Custom casts without statistics callbacks are not specialized", "[opt
 	REQUIRE(CHECK_COLUMN(reverse_result, 0, {8128}));
 }
 
+TEST_CASE("Join filters preserve registered integer casts", "[optimizer][cast]") {
+	DuckDB db;
+	Connection connection(db);
+	auto &casts = CastFunctionSet::Get(*connection.context);
+	casts.RegisterCastFunction(LogicalType::BIGINT, LogicalType::TINYINT, BoundCastInfo(BigintToTinyintOffsetCast));
+	REQUIRE_NO_FAIL(
+	    connection.Query("SET disabled_optimizers="
+	                     "'statistics_propagation,join_order,build_side_probe_side,compressed_materialization'"));
+	REQUIRE_NO_FAIL(connection.Query("CREATE TABLE probe AS SELECT 100::BIGINT k FROM range(10000)"));
+	unique_ptr<QueryResult> result;
+	SECTION("An intermediate cast changes the value") {
+		REQUIRE_NO_FAIL(connection.Query("CREATE TABLE build AS SELECT 101::BIGINT k"));
+		result = connection.Query("SELECT count(*) FROM probe p JOIN build b ON p.k::TINYINT::BIGINT=b.k");
+	}
+	SECTION("A direct cast would introduce an override") {
+		REQUIRE_NO_FAIL(connection.Query("CREATE TABLE build AS SELECT 100::TINYINT k"));
+		result = connection.Query("SELECT count(*) FROM probe p JOIN build b ON p.k::SMALLINT::TINYINT=b.k");
+	}
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(CHECK_COLUMN(result, 0, {10000}));
+}
+
 TEST_CASE("Compressed materialization uses value-preserving default casts", "[optimizer][cast]") {
 	DuckDB db;
 	Connection connection(db);

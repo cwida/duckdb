@@ -492,6 +492,33 @@ TEST_CASE("decompose every finite timestamp with duckdb_from_timestamp", "[capi]
 	}
 }
 
+TEST_CASE("recompose invalid dates and timestamps without throwing", "[capi]") {
+	duckdb_time_struct midnight {0, 0, 0, 0};
+
+	// invalid or out of range dates become 0
+	for (auto date :
+	     {duckdb_date_struct {2021, 2, 30}, duckdb_date_struct {2021, 2, 29}, duckdb_date_struct {2021, 13, 1},
+	      duckdb_date_struct {2021, 0, 1}, duckdb_date_struct {2021, 1, 0}, duckdb_date_struct {2021, 4, 31},
+	      duckdb_date_struct {NumericLimits<int32_t>::Maximum(), 1, 1},
+	      duckdb_date_struct {NumericLimits<int32_t>::Minimum(), 1, 1}}) {
+		CAPTURE(date.year, date.month, date.day);
+		REQUIRE(duckdb_to_date(date).days == 0);
+		REQUIRE(duckdb_to_timestamp(duckdb_timestamp_struct {date, midnight}).micros == 0);
+	}
+
+	// valid dates outside the timestamp range become 0 as timestamps
+	for (auto date : {duckdb_date_struct {294248, 1, 1}, duckdb_date_struct {-290309, 1, 1}}) {
+		CAPTURE(date.year);
+		REQUIRE(duckdb_to_date(date).days != 0);
+		REQUIRE(duckdb_to_timestamp(duckdb_timestamp_struct {date, midnight}).micros == 0);
+	}
+
+	// valid parts still convert
+	REQUIRE(duckdb_to_date(duckdb_date_struct {2024, 2, 29}).days == 19782);
+	auto ts = duckdb_to_timestamp(duckdb_timestamp_struct {{2024, 2, 29}, {1, 2, 3, 4}});
+	REQUIRE(ts.micros == 1709168523000004);
+}
+
 TEST_CASE("create time_tz value") {
 	duckdb_time_struct time;
 	time.hour = 4;

@@ -58,6 +58,28 @@ void ExpressionExecutor::Execute(const BoundConjunctionExpression &expr, Express
 	}
 }
 
+//! Merges the first "source_count" entries of "source" into the sorted first "target_count" entries of "target"
+static void MergeSortedSelection(SelectionVector &target, idx_t target_count, SelectionVector &source,
+                                 idx_t source_count) {
+	for (idx_t i = 1; i < source_count; i++) {
+		if (source.get_index(i - 1) > source.get_index(i)) {
+			source.Sort(source_count);
+			break;
+		}
+	}
+	// merge from the back so the merge can be done in-place
+	idx_t target_idx = target_count;
+	idx_t source_idx = source_count;
+	idx_t result_idx = target_count + source_count;
+	while (source_idx > 0) {
+		if (target_idx > 0 && target.get_index(target_idx - 1) > source.get_index(source_idx - 1)) {
+			target.set_index(--result_idx, target.get_index(--target_idx));
+		} else {
+			target.set_index(--result_idx, source.get_index(--source_idx));
+		}
+	}
+}
+
 idx_t ExpressionExecutor::Select(const BoundConjunctionExpression &expr, ExpressionState *state_p,
                                  const SelectionVector *sel, idx_t count, SelectionVector *true_sel,
                                  SelectionVector *false_sel) {
@@ -125,18 +147,14 @@ idx_t ExpressionExecutor::Select(const BoundConjunctionExpression &expr, Express
 			                      current_sel, current_count, temp_true.get(), false_sel);
 			if (tcount > 0) {
 				if (true_sel) {
-					// tuples passed, move them into the actual result vector
-					for (idx_t i = 0; i < tcount; i++) {
-						true_sel->set_index(result_count++, temp_true->get_index(i));
-					}
+					// tuples passed, merge them into the sorted result vector
+					MergeSortedSelection(*true_sel, result_count, *temp_true, tcount);
+					result_count += tcount;
 				}
 				// now move on to check only the non-passing tuples
 				current_count -= tcount;
 				current_sel = false_sel;
 			}
-		}
-		if (true_sel) {
-			true_sel->Sort(result_count);
 		}
 
 		// adapt runtime statistics

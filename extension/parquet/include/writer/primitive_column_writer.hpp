@@ -31,6 +31,7 @@ class Vector;
 class WriteStream;
 struct ParquetColumnSchema;
 struct PrimitiveDictionaryTargetData;
+struct ParquetPageIndexEntry;
 
 struct PageInformation {
 	idx_t offset = 0;
@@ -47,6 +48,12 @@ struct PageWriteInformation {
 	duckdb_parquet::PageHeader page_header;
 	unique_ptr<MemoryStream> temp_writer;
 	unique_ptr<ColumnWriterPageState> page_state;
+	//! Statistics of this page alone, only tracked when the page index is written
+	unique_ptr<ColumnWriterStatistics> page_stats;
+	//! The number of (top-level) rows that start in this page, for the OffsetIndex
+	idx_t num_rows = 0;
+	//! The number of NULL values in this page (including NULLs inherited from a parent), for the ColumnIndex
+	idx_t null_count = 0;
 	idx_t write_page_idx = 0;
 	idx_t write_count = 0;
 	idx_t max_write_count = 0;
@@ -72,6 +79,8 @@ public:
 	vector<PageWriteInformation> write_info;
 	unique_ptr<ColumnWriterStatistics> stats_state;
 	idx_t current_page = 0;
+	//! Whether every data page starts at a row boundary, which the page index requires
+	bool pages_start_at_rows = true;
 
 	unique_ptr<ParquetBloomFilter> bloom_filter;
 };
@@ -85,6 +94,10 @@ public:
 	//! We limit the uncompressed page size to 100MB
 	//! The max size in Parquet is 2GB, but we choose a more conservative limit
 	static constexpr const idx_t MAX_UNCOMPRESSED_PAGE_SIZE = 104857600ULL;
+	//! The default uncompressed page size when the page index is written: 1 MiB, like parquet-mr (Spark), Arrow and
+	//! parquet-rs. Pages are the unit readers skip with the page index, so a column chunk is split into several pages.
+	//! Without the page index the default stays MAX_UNCOMPRESSED_PAGE_SIZE: one page per column chunk.
+	static constexpr const idx_t DEFAULT_DATA_PAGE_SIZE_LIMIT = 1048576ULL;
 	//! Dictionary pages must be below 2GB. Unlike data pages, there's only one dictionary page.
 	//! For this reason we go with a much higher, but still a conservative upper bound of 1GB;
 	static constexpr const idx_t MAX_UNCOMPRESSED_DICT_PAGE_SIZE = 1073741824ULL;
@@ -134,6 +147,12 @@ protected:
 
 	void SetParquetStatistics(PrimitiveColumnWriterState &state, duckdb_parquet::ColumnChunk &column);
 	void RegisterToRowGroup(duckdb_parquet::RowGroup &row_group);
+	//! Adds a page to the page index of the column chunk
+	void AddPageToPageIndex(PrimitiveColumnWriterState &state, const PageWriteInformation &write_info,
+	                        idx_t page_offset, idx_t header_size, ParquetPageIndexEntry &page_index,
+	                        idx_t &first_row_index);
+	//! Completes the page index of the column chunk (boundary order, whether a ColumnIndex can be written)
+	void FinalizePageIndex(PrimitiveColumnWriterState &state, ParquetPageIndexEntry &page_index);
 };
 
 } // namespace duckdb

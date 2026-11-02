@@ -116,7 +116,7 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalCreateIndex &op) {
 	// E.g., get_current_timestamp(), random(), and sequence values cannot be index keys.
 	for (idx_t i = 0; i < op.unbound_expressions.size(); i++) {
 		auto &expr = op.unbound_expressions[i];
-		if (!expr->IsConsistent()) {
+		if (!expr->IsConsistent() || expr->RequiresRebind()) {
 			throw BinderException("Index keys cannot contain expressions with side effects.");
 		}
 	}

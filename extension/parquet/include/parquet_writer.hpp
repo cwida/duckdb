@@ -97,6 +97,19 @@ struct ParquetBloomFilterEntry {
 	idx_t column_idx;
 };
 
+//! The page index of one column chunk, buffered until the footer is written
+struct ParquetPageIndexEntry {
+	explicit ParquetPageIndexEntry(ArenaAllocator &arena) : column_index(arena), offset_index(arena) {
+	}
+
+	idx_t row_group_idx = 0;
+	idx_t column_idx = 0;
+	//! The ColumnIndex is only written when every page has (or needs no) min/max statistics
+	bool has_column_index = false;
+	duckdb_parquet::ColumnIndex column_index;
+	duckdb_parquet::OffsetIndex offset_index;
+};
+
 enum class ParquetVersion : uint8_t {
 	V1 = 1, //! Excludes DELTA_BINARY_PACKED, DELTA_LENGTH_BYTE_ARRAY, BYTE_STREAM_SPLIT
 	V2 = 2, //! Includes the encodings above
@@ -182,6 +195,8 @@ struct ParquetWriterOptions {
 	idx_t data_page_size_limit;
 	//! Whether to use bloom filters or not
 	bool enable_bloom_filters;
+	//! Whether to write the page index (ColumnIndex and OffsetIndex per column chunk)
+	bool write_page_index;
 	//! Maximum ratio of false-positives to allow in the written bloom filter
 	double bloom_filter_false_positive_ratio;
 	//! For the given 'codec', the compression level to use
@@ -250,6 +265,10 @@ public:
 	bool EnableBloomFilters() const {
 		return options.enable_bloom_filters;
 	}
+	bool WritePageIndex() const {
+		// the page index of an encrypted file would have to be encrypted as well - not supported (yet)
+		return options.write_page_index && !options.encryption_config;
+	}
 	double BloomFilterFalsePositiveRatio() const {
 		return options.bloom_filter_false_positive_ratio;
 	}
@@ -289,6 +308,11 @@ public:
 	                              bool write_timestamp_as_int96 = false);
 
 	void BufferBloomFilter(idx_t col_idx, unique_ptr<ParquetBloomFilter> bloom_filter);
+	void BufferPageIndex(idx_t col_idx, ParquetPageIndexEntry page_index);
+	//! The arena that backs the Thrift metadata of the file, including the page indexes
+	ArenaAllocator &GetMetadataArena() {
+		return metadata_arena;
+	}
 	void SetWrittenStatistics(CopyFunctionFileStatistics &written_stats);
 	void FlushColumnStats(idx_t col_idx, duckdb_parquet::ColumnChunk &chunk,
 	                      optional_ptr<ColumnWriterStatistics> writer_stats);
@@ -326,6 +350,7 @@ private:
 
 	unique_ptr<GeoParquetFileMetadata> geoparquet_data;
 	vector<ParquetBloomFilterEntry> bloom_filters;
+	vector<ParquetPageIndexEntry> page_indexes;
 
 	optional_ptr<CopyFunctionFileStatistics> written_stats;
 	unique_ptr<ParquetStatsAccumulator> stats_accumulator;

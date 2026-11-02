@@ -412,6 +412,21 @@ void CollectionScanState::ProcessPreparedScan(DuckTransaction &transaction, Data
 	pinned_row_group->ProcessPreparedScan(options, *this, result);
 }
 
+bool CollectionScanState::RecheckPreparedRowGroup() {
+	if (!row_group || prepared_vector.prepare_state == VectorPrepareState::NONE) {
+		return true;
+	}
+	if (pinned_row_group->CheckZonemap(context.GetClientContext(), GetFilterInfo(), row_group->GetRowStart())) {
+		return true;
+	}
+	// the prepared vector was counted as scanned when it was prepared, it is never decoded
+	D_ASSERT(rows_scanned >= prepared_vector.visible_count);
+	rows_scanned -= prepared_vector.visible_count;
+	prepared_vector.Reset();
+	SetRowGroup(nullptr);
+	return false;
+}
+
 PreparedScanVector::PreparedScanVector() : sample_sel(STANDARD_VECTOR_SIZE) {
 }
 

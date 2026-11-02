@@ -84,11 +84,10 @@ uint64_t ListColumnData::FetchListOffset(idx_t row_idx) {
 	if (row_idx >= count) {
 		throw DataCorruptionException("Corrupted database: list offset row ID is out of range");
 	}
-	auto segment = data.GetSegment(row_idx);
-	ColumnFetchState fetch_state;
+	ColumnScanState offset_state(nullptr);
+	ColumnData::InitializeScanWithOffset(offset_state, row_idx);
 	Vector result(LogicalType::UBIGINT, 1);
-	auto index_in_segment = UnsafeNumericCast<row_t>(row_idx - segment->GetRowStart());
-	segment->GetNode().FetchRow(fetch_state, index_in_segment, result, 0U);
+	ScanVector(offset_state, result, 1, ScanVectorType::SCAN_FLAT_VECTOR);
 	auto offset = FlatVector::GetData<uint64_t>(result)[0];
 	ValidateListOffset(offset, child_column->GetMaxEntry());
 
@@ -320,12 +319,31 @@ void ListColumnData::FetchRows(TransactionData transaction, ColumnFetchState &st
 	validity->FetchRowsAtSegmentLevel(transaction, *state.child_states[0], offsets, sel, fetch_count, result,
 	                                  result_offset);
 
-	auto &validity_mask = FlatVector::ValidityMutable(result);
-	auto list_data = FlatVector::GetDataMutable<list_entry_t>(result);
+	// each list ends at its own offset and starts at the offset of the row before it
+	Vector end_offsets(LogicalType::UBIGINT, fetch_count);
+	FetchRowsAtSegmentLevel(transaction, state, offsets, sel, fetch_count, end_offsets, 0);
+	auto previous_rows = make_unsafe_uniq_array<idx_t>(fetch_count);
+	SelectionVector previous_sel(fetch_count);
+	idx_t previous_count = 0;
 	for (idx_t idx = 0; idx < fetch_count; idx++) {
 		const auto row_id = offsets[sel.get_index(idx)];
-		auto start_offset = row_id == 0 ? 0 : FetchListOffset(row_id - 1);
-		auto end_offset = FetchListOffset(row_id);
+		if (row_id > 0) {
+			previous_rows[idx] = row_id - 1;
+			previous_sel.set_index(previous_count++, idx);
+		}
+	}
+	Vector start_offsets(LogicalType::UBIGINT, fetch_count);
+	FetchRowsAtSegmentLevel(transaction, state, previous_rows.get(), previous_sel, previous_count, start_offsets, 0);
+	auto end_data = FlatVector::GetData<uint64_t>(end_offsets);
+	auto start_data = FlatVector::GetData<uint64_t>(start_offsets);
+
+	auto &validity_mask = FlatVector::ValidityMutable(result);
+	auto list_data = FlatVector::GetDataMutable<list_entry_t>(result);
+	idx_t start_idx = 0;
+	for (idx_t idx = 0; idx < fetch_count; idx++) {
+		const auto row_id = offsets[sel.get_index(idx)];
+		auto start_offset = row_id == 0 ? 0 : start_data[start_idx++];
+		auto end_offset = end_data[idx];
 		auto length = GetListLength(start_offset, end_offset, child_column->GetMaxEntry());
 		auto result_idx = result_offset + idx;
 		auto &list_entry = list_data[result_idx];

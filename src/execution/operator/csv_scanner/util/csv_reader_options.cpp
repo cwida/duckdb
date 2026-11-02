@@ -404,7 +404,7 @@ void CSVReaderOptions::SetWriteOption(const Identifier &loption, const Value &va
 		SetDateFormat(LogicalTypeId::DATE, format, false);
 	} else if (loption == "timestamp_format" || loption == "timestampformat") {
 		string format = ParseString(value, loption);
-		if (StringUtil::Lower(format) == "iso") {
+		if (StringUtil::CIEquals(format, "iso")) {
 			format = "%Y-%m-%dT%H:%M:%S.%fZ";
 		}
 		SetDateFormat(LogicalTypeId::TIMESTAMP, format, false);

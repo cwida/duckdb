@@ -172,6 +172,18 @@ public:
 		cumulative_.reserve(MinimumInt(maxProcessed_ + 1, INITIAL_CAPACITY));
 	}
 
+	TDigest(duckdb::ArenaAllocator &allocator, const TDigest &other)
+	    : compression_(other.compression_), min_(other.min_), max_(other.max_), maxProcessed_(other.maxProcessed_),
+	      maxUnprocessed_(other.maxUnprocessed_), processedWeight_(other.processedWeight_),
+	      unprocessedWeight_(other.unprocessedWeight_), processed_(other.processed_, allocator),
+	      unprocessed_(other.unprocessed_, allocator), cumulative_(other.cumulative_, allocator) {
+		reserveForProcess();
+	}
+
+	duckdb::ArenaAllocator &getAllocator() const {
+		return processed_.get_allocator().GetAllocator();
+	}
+
 	TDigest(duckdb::arena_vector<Centroid> &&processed, duckdb::arena_vector<Centroid> &&unprocessed, Value compression,
 	        Index unmergedSize, Index mergedSize)
 	    : TDigest(processed.get_allocator().GetAllocator(), compression, unmergedSize, mergedSize) {

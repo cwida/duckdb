@@ -116,7 +116,8 @@ query I
 SELECT table_name FROM duckdb_tables WHERE schema_name = gen_random_uuid()::VARCHAR;
 ----
 
-# join filter pushdown on a non-identity column (table_oid) is ignored by the scan and checked by the join
+# join filter pushdown on table_oid: the optional filter reaches the scan, where it is either not yet populated
+# (skipped) or evaluated against the build-side keys; the join re-checks it either way
 query I
 SELECT t.table_name FROM duckdb_tables t JOIN duckdb_columns c ON t.table_oid = c.table_oid
 WHERE t.database_name = 'db1' AND c.column_name = 'i' ORDER BY t.table_name;
@@ -167,9 +168,15 @@ EXPLAIN SELECT table_name FROM duckdb_tables WHERE lower(schema_name) = 's1';
 ----
 physical_plan	<REGEX>:.*Filters:.*lower\(schema_name\).*s1.*
 
-# a non-identity predicate is not a table filter on the scan
+# an entry identity predicate is a table filter on the scan too
 query II
 EXPLAIN SELECT schema_name FROM duckdb_tables WHERE table_name = 't1';
+----
+physical_plan	<REGEX>:.*Filters:.*table_name.*t1.*
+
+# a non-identity predicate is not a table filter on the scan
+query II
+EXPLAIN SELECT schema_name FROM duckdb_tables WHERE comment = 'x';
 ----
 physical_plan	<!REGEX>:.*Filters:.*
 

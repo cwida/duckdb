@@ -89,7 +89,7 @@ bool TryInferConstantBounds(const BaseStatistics &stats, Value &constant) {
 unique_ptr<BaseStatistics> StatisticsPropagator::PropagateConstantInputs(ClientContext &context,
                                                                          const BoundFunctionExpression &func,
                                                                          const vector<BaseStatistics> &child_stats) {
-	if (func.Function().GetStability() != FunctionStability::CONSISTENT || func.GetChildren().empty()) {
+	if (func.Function().GetStability() == FunctionStability::VOLATILE || func.GetChildren().empty()) {
 		return nullptr;
 	}
 	// Lambda arguments are placeholders, not SQL values that can be evaluated independently.
@@ -126,7 +126,7 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateMonotoneBounds(ClientC
 	if (!func.Function().HasArgProperties() || func.GetChildren().empty()) {
 		return nullptr;
 	}
-	if (func.Function().GetStability() != FunctionStability::CONSISTENT) {
+	if (func.Function().GetStability() == FunctionStability::VOLATILE) {
 		return nullptr;
 	}
 	if (BaseStatistics::GetStatsType(func.GetReturnType()) != StatisticsType::NUMERIC_STATS ||

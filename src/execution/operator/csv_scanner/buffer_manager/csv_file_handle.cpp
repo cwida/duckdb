@@ -61,6 +61,8 @@ bool CSVFileHandle::OnDiskFile() const {
 
 void CSVFileHandle::Reset() {
 	file_handle->Reset();
+	stored_bytes_untaken = 0;
+	stored_bytes_counted = 0;
 	encoder.Reset();
 	finished = false;
 	requested_bytes = 0;
@@ -93,12 +95,29 @@ idx_t CSVFileHandle::Read(void *buffer, idx_t nr_bytes) {
 	}
 
 	requested_bytes += nr_bytes;
+	const idx_t encoded_before = encoder.EncodedBytesRead();
 	// if this is a plain file source OR we can seek we are not caching anything
 	idx_t bytes_read = 0;
 	if (encoder.encoding_name == "utf-8") {
 		bytes_read = static_cast<idx_t>(file_handle->Read(context, buffer, nr_bytes));
 	} else {
 		bytes_read = encoder.Encode(*file_handle, static_cast<char *>(buffer), nr_bytes);
+	}
+	// the position in the stored file: the compressed bytes consumed for a compressed file (a gzip header included),
+	// and the bytes before decoding for an encoding other than utf-8
+	idx_t stored_position;
+	if (compression_type != FileCompressionType::UNCOMPRESSED) {
+		stored_position = file_handle->GetProgress();
+	} else if (can_seek) {
+		stored_position = file_handle->SeekPosition();
+	} else if (encoder.encoding_name == "utf-8") {
+		stored_position = stored_bytes_counted + bytes_read;
+	} else {
+		stored_position = stored_bytes_counted + encoder.EncodedBytesRead() - encoded_before;
+	}
+	if (stored_position > stored_bytes_counted) {
+		stored_bytes_untaken += stored_position - stored_bytes_counted;
+		stored_bytes_counted = stored_position;
 	}
 	if (!finished) {
 		finished = bytes_read == 0;

@@ -1,0 +1,34 @@
+# name: test/sql/window/window_fallible_scalarized_aggregate.test
+# description: Scalarized window execution of a fallible aggregate must not evaluate unselected dictionary entries
+# group: [window]
+
+# The degenerate CURRENT ROW frame executes the aggregate as a scalar window function that copies
+# the aggregate's properties. A fallible error mode must block whole-dictionary execution, which
+# evaluates unselected dictionary entries.
+
+statement ok
+SET debug_verify_vector='dictionary_expression';
+
+query I rowsort
+SELECT bitstring_agg(coalesce(v, 5), 1, 3) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW) AS b
+FROM (VALUES (1), (2)) t(v);
+----
+010
+100
+
+statement ok
+RESET debug_verify_vector;
+
+query I rowsort
+SELECT bitstring_agg(coalesce(v, 5), 1, 3) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW) AS b
+FROM (VALUES (1), (2)) t(v);
+----
+010
+100
+
+# out-of-range values still raise through the scalarized window path
+statement error
+SELECT bitstring_agg(v, 1, 3) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW)
+FROM (VALUES (1), (5)) t(v);
+----
+Out of Range Error: Value 5 is outside of provided min and max range (1 <-> 3)

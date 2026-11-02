@@ -172,7 +172,7 @@ struct VectorCastHelpers {
 			return TemplatedDecimalCast<T, hugeint_t, TryCastToDecimal>(source, result, count, parameters, width,
 			                                                            scale);
 		default:
-			throw InternalException("Unimplemented internal type for decimal");
+			InternalException::Throw("Unimplemented internal type for decimal");
 		}
 	}
 

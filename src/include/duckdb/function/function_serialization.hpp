@@ -133,20 +133,19 @@ public:
 		}
 	}
 
-	//! Only written if the function was called with keyword-only or "**kwargs" arguments
+	//! How the arguments split into positional and named ones. Always written for current-version plans, so that a
+	//! reader can tell an all-positional call from a plan written before the names were serialized
 	template <class FUNC>
 	static void SerializeNamedArguments(Serializer &serializer, const FUNC &function) {
 		auto &named_arguments = function.GetNamedArguments();
-		if (named_arguments.empty()) {
-			return;
-		}
-		if constexpr (std::is_same_v<FUNC, BoundTableFunction>) {
-			if (!serializer.ShouldSerialize(StorageVersion::V2_0_0)) {
+		if (!serializer.ShouldSerialize(StorageVersion::V2_0_0)) {
+			if (named_arguments.empty()) {
+				return;
+			}
+			if constexpr (std::is_same_v<FUNC, BoundTableFunction>) {
 				// older versions read a table function's options from the operator's named parameters instead
 				return;
 			}
-		}
-		if (!serializer.ShouldSerialize(StorageVersion::V2_0_0)) {
 			if (named_arguments.size() > function.GetKwargsCount()) {
 				throw SerializationException("Function %s has keyword-only parameters, which cannot be serialized "
 				                             "to a storage version older than v2.0.0",
@@ -156,7 +155,7 @@ public:
 			return;
 		}
 		serializer.WriteProperty(508, "positional_arguments", function.GetPositionalArgumentCount());
-		serializer.WriteProperty(509, "named_arguments", named_arguments);
+		serializer.WritePropertyWithDefault(509, "named_arguments", named_arguments);
 	}
 
 	//! Plans written by versions whose binds erased the arguments they folded into their bind data record the
@@ -307,7 +306,9 @@ public:
 	}
 
 	//! Plans written before the argument names were serialized hold the names of the named arguments in the aliases
-	//! of the trailing arguments. Only the arguments behind the standard parameters can have been named.
+	//! of the trailing arguments. Only the arguments behind the standard parameters can have been named, and only
+	//! where the function cannot take them positionally - a "*args" function folds its "**kwargs" into "*args", so
+	//! a trailing alias there is a genuine alias, not an argument name.
 	template <class FUNCTION_SET>
 	static void RestoreNamesFromAliases(const FUNCTION_SET &functions, const vector<unique_ptr<Expression>> &children,
 	                                    idx_t &positional_count, vector<Identifier> &named_arguments) {
@@ -315,7 +316,7 @@ public:
 		idx_t standard_count = 0;
 		for (auto &function : functions.functions) {
 			auto &signature = function->GetSignature();
-			if (!signature.GetKwargs()) {
+			if (!signature.GetKwargs() || signature.GetArgs()) {
 				continue;
 			}
 			takes_named = true;
@@ -386,8 +387,13 @@ public:
 
 		// If there are no argument names serialized, treat all arguments as positional
 		if (named_arguments.empty()) {
+			// a current-version plan always records its positional count - only a plan written before the argument
+			// names were serialized leaves both fields empty and holds the names in the aliases of its children
+			const bool argument_names_serialized = positional_count != 0;
 			positional_count = arguments.size();
-			RestoreNamesFromAliases(functions, children, positional_count, named_arguments);
+			if (!argument_names_serialized) {
+				RestoreNamesFromAliases(functions, children, positional_count, named_arguments);
+			}
 		}
 
 		// Sanity check: The named arguments are the last arguments, so the number of arguments has to add up
@@ -413,6 +419,7 @@ public:
 
 		// Lookup the function (and the correct overload)
 		FunctionBinder binder(context);
+		binder.arguments_collated = true;
 		const auto func_idx = FunctionBinder::SelectFunction(context, functions, {positional_types, keyword_types});
 
 		// Ensure the function overload was found
