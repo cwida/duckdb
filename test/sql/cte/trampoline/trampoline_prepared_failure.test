@@ -1,0 +1,82 @@
+# name: test/sql/cte/trampoline/trampoline_prepared_failure.test
+# description: A mid-round failure leaves the prepared operator reusable
+# group: [trampoline]
+
+foreach caching true false
+
+statement ok
+SET enable_caching_operators={caching};
+
+statement ok
+PREPARE p AS WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) EMIT DISTINCT AS (
+	(VALUES (1, 0))
+	BRANCH 1 DISTINCT: (SELECT CASE WHEN n < 1 THEN $1 ELSE 0 END
+	                           + 0 * (SELECT count(*) FROM frontier.t)::INTEGER, n + 1 FROM t)
+) SELECT * FROM t;
+
+# the first execution fails inside a round: admission and frontier state must reset
+statement error
+EXECUTE p(9);
+----
+<REGEX>:.*Invalid TRAMPOLINE branch selector value 9.*
+
+query II
+EXECUTE p(1);
+----
+0	2
+
+query II
+EXECUTE p(1);
+----
+0	2
+
+statement ok
+DEALLOCATE p;
+
+endloop
+
+statement ok
+SET enable_caching_operators=true;
+
+# a TEE branch emits before the failing round, so recovery is also covered with
+# populated emission and admission state
+foreach caching true false
+
+statement ok
+SET enable_caching_operators={caching};
+
+statement ok
+PREPARE q AS WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) EMIT DISTINCT AS (
+	(VALUES (1, 0))
+	BRANCH 1 DISTINCT TEE: (SELECT CASE WHEN n < 1 THEN 1 ELSE $1 END
+	                               + 0 * (SELECT count(*) FROM frontier.t)::INTEGER, n + 1 FROM t)
+) SELECT * FROM t ORDER BY n;
+
+statement error
+EXECUTE q(9);
+----
+<REGEX>:.*Invalid TRAMPOLINE branch selector value 9.*
+
+# every arrival tees an emission: the seed wave, the continued wave, and the final
+# transformed row
+query II
+EXECUTE q(0);
+----
+0	0
+0	1
+0	2
+
+query II
+EXECUTE q(0);
+----
+0	0
+0	1
+0	2
+
+statement ok
+DEALLOCATE q;
+
+endloop
+
+statement ok
+SET enable_caching_operators=true;

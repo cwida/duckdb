@@ -235,3 +235,73 @@ SELECT o.k, q.n FROM (VALUES (1), (2)) o(k), LATERAL (
 ) q ORDER BY ALL;
 ----
 1	1
+
+# the restriction holds on the parallel event schedule: large per-domain waves with the
+# tuple and NULL shapes; the frontier count equals the single active wave, not a multiple
+statement ok
+SET threads=8;
+
+query III
+SELECT o.k, o.j, q.v = current_setting('standard_vector_size')::BIGINT * 32 FROM (VALUES (1, 10), (2, 20), (1, 20)) o(k, j), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT CASE WHEN (o.k, o.j) IN ((1, 10), (2, 20)) THEN 1 ELSE 2 END, r::INTEGER
+		 FROM range(current_setting('standard_vector_size')::BIGINT * 32) q(r))
+		BRANCH 1: (
+			WITH w AS MATERIALIZED (
+				SELECT CASE WHEN count(*) = 0 THEN CAST('leaked' AS INTEGER) ELSE count(*)::INTEGER END AS m
+				FROM frontier.t)
+			SELECT 0, (SELECT max(m) FROM w) FROM t WHERE n = 0
+		)
+		BRANCH 2: (SELECT 0, (SELECT count(*) FROM frontier.t)::INTEGER FROM t WHERE n = 0)
+	) SELECT max(n) AS v FROM t
+) q ORDER BY ALL;
+----
+1	10	true
+1	20	true
+2	20	true
+
+query II
+SELECT coalesce(o.k, -1), q.v = current_setting('standard_vector_size')::BIGINT * 32 FROM (VALUES (NULL::INTEGER), (5)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT CASE WHEN o.k IS NULL THEN 1 ELSE 2 END, r::INTEGER
+		 FROM range(current_setting('standard_vector_size')::BIGINT * 32) q(r))
+		BRANCH 1: (SELECT 0, (SELECT count(*) FROM frontier.t)::INTEGER FROM t WHERE n = 0)
+		BRANCH 2: (SELECT 0, (SELECT count(*) FROM frontier.t)::INTEGER FROM t WHERE n = 0)
+	) SELECT max(n) AS v FROM t
+) q ORDER BY ALL;
+----
+-1	true
+5	true
+
+statement ok
+SET threads=1;
+
+# probe variant: inactive-domain frontier rows carry marker values, and the branch
+# evaluates a per-row expression that fails on any leaked marker, so this detects the
+# frontier restriction itself rather than downstream filtering
+statement ok
+SET threads=8;
+
+query III
+SELECT o.k, o.j, q.v = current_setting('standard_vector_size')::BIGINT * 32 FROM (VALUES (1, 10), (2, 20), (1, 20)) o(k, j), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT CASE WHEN (o.k, o.j) IN ((1, 10), (2, 20)) THEN 1 ELSE 2 END,
+		        r::INTEGER + o.k * 10000000 + o.j * 100000
+		 FROM range(current_setting('standard_vector_size')::BIGINT * 32) q(r))
+		BRANCH 1: (
+			WITH w AS MATERIALIZED (
+				SELECT CASE WHEN n BETWEEN 12000000 AND 12999999 THEN CAST('leaked' AS INTEGER)
+				            ELSE 1 END AS probe
+				FROM frontier.t)
+			SELECT 0, (SELECT sum(probe)::INTEGER FROM w) FROM t WHERE n % 100000 = 0
+		)
+		BRANCH 2: (SELECT 0, (SELECT count(*) FROM frontier.t)::INTEGER FROM t WHERE n % 100000 = 0)
+	) SELECT max(n) AS v FROM t
+) q ORDER BY ALL;
+----
+1	10	true
+1	20	true
+2	20	true
+
+statement ok
+SET threads=1;
