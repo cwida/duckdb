@@ -600,7 +600,9 @@ ParquetStatisticsUtils::TransformParquetStatistics(const LogicalType &type, cons
 				if (!types.empty()) {
 					stats_types.Clear();
 					for (auto &geom_type : types) {
-						stats_types.AddWKBType(geom_type);
+						if (!stats_types.TryAddWKBType(geom_type)) {
+							throw DataCorruptionException("Invalid geometry type in Parquet file");
+						}
 					}
 				}
 			}
