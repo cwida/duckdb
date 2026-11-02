@@ -275,44 +275,44 @@ SELECT count(*) FROM test WHERE ({col} >= 2 AND {col} <= 7) OR ({col} > 8 AND {c
 endloop
 
 query II
-EXPLAIN SELECT count(*) FROM test WHERE (g >= '2' AND g < '7') OR (g > '8' AND g < '10');
+EXPLAIN SELECT count(*) FROM test WHERE (g >= '2' AND g < '7') OR (g >= '1' AND g <= '10');
 ----
-physical_plan	<REGEX>:.*Filters:.*g >= '2'.*g < '7'.*OR.*g > '8'.*g < '10'.*
+physical_plan	<REGEX>:.*Filters:.*g >= '2'.*g < '7'.*OR.*g >= '1'.*g <= '10'.*
 
 query I
-SELECT count(*) FROM test WHERE (g >= '2' AND g < '7') OR (g > '8' AND g < '10');
+SELECT count(*) FROM test WHERE (g >= '2' AND g < '7') OR (g >= '1' AND g <= '10');
 ----
-8
+10
 
 query II
-EXPLAIN SELECT count(*) FROM test WHERE (g > '2' AND g < '7') OR (g > '8' AND g < '10');
+EXPLAIN SELECT count(*) FROM test WHERE (g > '2' AND g < '7') OR (g >= '1' AND g <= '10');
 ----
-physical_plan	<REGEX>:.*Filters:.*g > '2'.*g < '7'.*OR.*g > '8'.*g < '10'.*
+physical_plan	<REGEX>:.*Filters:.*g > '2'.*g < '7'.*OR.*g >= '1'.*g <= '10'.*
 
 query I
-SELECT count(*) FROM test WHERE (g > '2' AND g < '7') OR (g > '8' AND g < '10');
-----
-7
-
-query II
-EXPLAIN SELECT count(*) FROM test WHERE (g > '2' AND g <= '7') OR (g > '8' AND g < '10');
-----
-physical_plan	<REGEX>:.*Filters:.*g > '2'.*g <= '7'.*OR.*g > '8'.*g < '10'.*
-
-query I
-SELECT count(*) FROM test WHERE (g > '2' AND g <= '7') OR (g > '8' AND g < '10');
-----
-8
-
-query II
-EXPLAIN SELECT count(*) FROM test WHERE (g >= '2' AND g <= '7') OR (g > '8' AND g < '10');
-----
-physical_plan	<REGEX>:.*Filters:.*g >= '2'.*g <= '7'.*OR.*g > '8'.*g < '10'.*
-
-query I
-SELECT count(*) FROM test WHERE (g >= '2' AND g <= '7') OR (g > '8' AND g < '10');
+SELECT count(*) FROM test WHERE (g > '2' AND g < '7') OR (g >= '1' AND g <= '10');
 ----
 9
+
+query II
+EXPLAIN SELECT count(*) FROM test WHERE (g > '2' AND g <= '7') OR (g >= '1' AND g <= '10');
+----
+physical_plan	<REGEX>:.*Filters:.*g > '2'.*g <= '7'.*OR.*g >= '1'.*g <= '10'.*
+
+query I
+SELECT count(*) FROM test WHERE (g > '2' AND g <= '7') OR (g >= '1' AND g <= '10');
+----
+10
+
+query II
+EXPLAIN SELECT count(*) FROM test WHERE (g >= '2' AND g <= '7') OR (g >= '1' AND g <= '10');
+----
+physical_plan	<REGEX>:.*Filters:.*g >= '2'.*g <= '7'.*OR.*g >= '1'.*g <= '10'.*
+
+query I
+SELECT count(*) FROM test WHERE (g >= '2' AND g <= '7') OR (g >= '1' AND g <= '10');
+----
+11
 
 # 5.3) Casting
 statement ok

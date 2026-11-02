@@ -5,6 +5,7 @@
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/common/algorithm.hpp"
 
 namespace duckdb {
@@ -55,6 +56,22 @@ bool SupportsRangeMerge(const LogicalType &type) {
 	default:
 		return false;
 	}
+}
+
+//! Whether the expression holds a constant anywhere in its tree
+bool HasConstant(const Expression &expr) {
+	if (expr.GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
+		return true;
+	}
+	bool found = false;
+	ExpressionIterator::EnumerateChildren(expr, [&](const Expression &child) { found = found || HasConstant(child); });
+	return found;
+}
+
+//! Whether equal inputs compute the same value: constants compare by value, so an input that holds one may only
+//! look the same (v + INTERVAL '1 month' and v + INTERVAL '30 days', atan2(x, 0.0) and atan2(x, -0.0))
+bool IsMergeableInput(const Expression &input) {
+	return !input.IsVolatile() && !HasConstant(input);
 }
 
 //! A constant bound: a non-NULL BoundConstantExpression with the type of the input
@@ -140,7 +157,7 @@ bool TryGetRange(Expression &expr, optional_ptr<Expression> &input, RangeBound &
 			return false;
 		}
 		// one lower and one upper bound on the same expression
-		return lower.present && upper.present && input->Equals(*second_input);
+		return lower.present && upper.present && input->Equals(*second_input) && IsMergeableInput(*input);
 	}
 	default:
 		return TryGetComparisonRange(expr, input, lower, upper);
@@ -282,7 +299,8 @@ unique_ptr<Expression> OrRangeMergeRule::Apply(LogicalOperator &op, vector<refer
 		if (!TryGetRange(*children[child_idx], input, lower, upper)) {
 			continue;
 		}
-		if (!SupportsRangeMerge(input->GetReturnType()) || input->IsVolatile() || !IsNonEmptyRange(lower, upper)) {
+		if (!SupportsRangeMerge(input->GetReturnType()) || !IsMergeableInput(*input) ||
+		    !IsNonEmptyRange(lower, upper)) {
 			continue;
 		}
 		ranges.emplace_back(child_idx, *input, std::move(lower), std::move(upper));

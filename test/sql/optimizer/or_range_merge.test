@@ -240,16 +240,54 @@ SELECT count(*) FROM t WHERE abs(x) BETWEEN 1 AND 20 OR abs(x) BETWEEN 21 AND 40
 ----
 80
 
-query I nosort arithmetic_input
-SELECT count(*) FROM t WHERE x + 1 BETWEEN 1 AND 20 OR x + 1 BETWEEN 21 AND 40;
-----
-40
-
 # a volatile input is left alone
 query II
 EXPLAIN SELECT count(*) FROM t WHERE (random() * 100)::INTEGER BETWEEN 1 AND 20 OR (random() * 100)::INTEGER BETWEEN 21 AND 40;
 ----
 logical_opt	<REGEX>:.*BETWEEN 1 AND 20.* OR .*BETWEEN 21 AND 40.*
+
+# ---- an input that holds a constant is left alone: constants compare by value, so equal inputs need not compute the same ----
+
+query II
+EXPLAIN SELECT count(*) FROM t WHERE x + 1 BETWEEN 1 AND 20 OR x + 1 BETWEEN 21 AND 40;
+----
+logical_opt	<REGEX>:.*\(x \+ 1\) BETWEEN 1 AND 20.* OR .*\(x \+ 1\) BETWEEN 21 AND 40.*
+
+query I nosort arithmetic_input
+SELECT count(*) FROM t WHERE x + 1 BETWEEN 1 AND 20 OR x + 1 BETWEEN 21 AND 40;
+----
+40
+
+statement ok
+CREATE TABLE iv AS SELECT INTERVAL '15 days' AS v UNION ALL SELECT INTERVAL '40 days';
+
+# INTERVAL '1 month' equals INTERVAL '30 days', but shifting by either gives a different day
+query II
+EXPLAIN SELECT v FROM iv WHERE day(v + INTERVAL '1 month') BETWEEN 0 AND 10 OR day(v + INTERVAL '30 days') BETWEEN 10 AND 20;
+----
+logical_opt	<REGEX>:.*'1 month'.* OR .*'30 days'.*
+
+query I nosort interval_shift
+SELECT v FROM iv WHERE day(v + INTERVAL '1 month') BETWEEN 0 AND 10 OR day(v + INTERVAL '30 days') BETWEEN 10 AND 20;
+----
+
+# 0.0 equals -0.0, but atan2 tells them apart
+query I nosort signed_zero
+SELECT x FROM (VALUES (0.0), (1.0), (-1.0)) t(x) WHERE atan2(x, 0.0::DOUBLE) BETWEEN 1 AND 2 OR atan2(x, -0.0::DOUBLE) BETWEEN 2 AND 4 ORDER BY x;
+----
+0.0
+1.0
+
+# an expression input without a constant still merges
+query II
+EXPLAIN SELECT count(*) FROM iv WHERE day(v) BETWEEN 1 AND 10 OR day(v) BETWEEN 11 AND 20;
+----
+logical_opt	<REGEX>:.*day.*\(v\) BETWEEN 1 AND 20.*
+
+query I nosort day_input
+SELECT count(*) FROM iv WHERE day(v) BETWEEN 1 AND 10 OR day(v) BETWEEN 11 AND 20;
+----
+1
 
 # ---- an empty range is left alone ----
 
@@ -525,6 +563,18 @@ SELECT count(*) FROM t WHERE abs(x) BETWEEN 1 AND 20 OR abs(x) BETWEEN 21 AND 40
 
 query I nosort arithmetic_input
 SELECT count(*) FROM t WHERE x + 1 BETWEEN 1 AND 20 OR x + 1 BETWEEN 21 AND 40;
+----
+
+query I nosort interval_shift
+SELECT v FROM iv WHERE day(v + INTERVAL '1 month') BETWEEN 0 AND 10 OR day(v + INTERVAL '30 days') BETWEEN 10 AND 20;
+----
+
+query I nosort signed_zero
+SELECT x FROM (VALUES (0.0), (1.0), (-1.0)) t(x) WHERE atan2(x, 0.0::DOUBLE) BETWEEN 1 AND 2 OR atan2(x, -0.0::DOUBLE) BETWEEN 2 AND 4 ORDER BY x;
+----
+
+query I nosort day_input
+SELECT count(*) FROM iv WHERE day(v) BETWEEN 1 AND 10 OR day(v) BETWEEN 11 AND 20;
 ----
 
 query I nosort empty_range
