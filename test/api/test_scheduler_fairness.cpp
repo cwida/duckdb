@@ -41,11 +41,11 @@ TEST_CASE("An older query is not starved by newer queries", "[scheduler]") {
 	REQUIRE_NO_FAIL(con.Query("SET scheduler_process_partial=true"));
 
 	// every TaskExecutor has its own producer, like the Executor of a query
-	TaskExecutor old_query(con.context->Services());
+	TaskExecutor old_query(*con.context);
 	atomic<bool> stop {false};
 	vector<unique_ptr<TaskExecutor>> new_queries;
 	for (idx_t i = 0; i < 3; i++) {
-		new_queries.push_back(make_uniq<TaskExecutor>(con.context->Services()));
+		new_queries.push_back(make_uniq<TaskExecutor>(*con.context));
 		new_queries.back()->ScheduleTask(make_uniq<EndlessTask>(*new_queries.back(), stop));
 	}
 

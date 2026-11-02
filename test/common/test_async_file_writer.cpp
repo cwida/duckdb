@@ -829,7 +829,7 @@ private:
 class AsyncThreadBlocker {
 public:
 	AsyncThreadBlocker(ClientContext &context, idx_t task_count_p)
-	    : task_count(task_count_p), executor(context.Services(), TaskSchedulerType::ASYNC) {
+	    : task_count(task_count_p), executor(context, TaskSchedulerType::ASYNC) {
 		for (idx_t task_idx = 0; task_idx < task_count; task_idx++) {
 			executor.ScheduleTask(make_uniq<BlockingAsyncTask>(executor, state));
 		}

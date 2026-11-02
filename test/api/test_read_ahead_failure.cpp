@@ -138,7 +138,7 @@ private:
 //! Parks the only async worker, so every read-ahead task runs inline on the scan thread in queue order
 class AsyncPoolBlocker {
 public:
-	explicit AsyncPoolBlocker(ClientContext &context) : executor(context.Services(), TaskSchedulerType::ASYNC) {
+	explicit AsyncPoolBlocker(ClientContext &context) : executor(context, TaskSchedulerType::ASYNC) {
 		executor.ScheduleTask(make_uniq<AsyncPoolBlockerTask>(executor, state));
 	}
 

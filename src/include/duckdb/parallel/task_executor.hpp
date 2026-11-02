@@ -64,6 +64,7 @@ protected:
 //! The TaskExecutor is a helper class that enables parallel scheduling and execution of tasks
 class TaskExecutor {
 public:
+	explicit TaskExecutor(ClientContext &context, TaskSchedulerType type = TaskSchedulerType::REGULAR);
 	explicit TaskExecutor(ExecutionServices &services, TaskSchedulerType type = TaskSchedulerType::REGULAR);
 	explicit TaskExecutor(TaskScheduler &scheduler, TaskSchedulerType type = TaskSchedulerType::REGULAR);
 	~TaskExecutor();

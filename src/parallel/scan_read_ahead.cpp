@@ -154,7 +154,7 @@ ScanReadAhead::ScanReadAhead(ClientContext &context, idx_t read_ahead_depth_p,
       open_file_budget(GetOpenFileBudget(context)) {
 	D_ASSERT(read_ahead_depth_p > 0);
 	backlog_budget = memory_governor ? memory_governor->BackpressureBudget() : NumericLimits<idx_t>::Maximum();
-	executor = make_shared_ptr<TaskExecutor>(context.Services(), TaskSchedulerType::ASYNC);
+	executor = make_shared_ptr<TaskExecutor>(context, TaskSchedulerType::ASYNC);
 }
 
 ScanReadAhead::~ScanReadAhead() {

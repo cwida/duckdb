@@ -207,7 +207,7 @@ public:
 		if (sorted_runs.empty()) {
 			return;
 		}
-		TaskExecutor executor(context.Services());
+		TaskExecutor executor(context);
 		vector<unique_ptr<BaseExecutorTask>> tasks;
 		tasks.reserve(sorted_runs.size());
 		for (auto &sorted_run : sorted_runs) {

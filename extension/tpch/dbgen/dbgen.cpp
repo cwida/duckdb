@@ -1366,7 +1366,7 @@ private:
 			return false;
 		}
 		if (parallel_work_offset < parallel_work_items.size()) {
-			TaskExecutor executor(context.Services());
+			TaskExecutor executor(context);
 
 			vector<unique_ptr<TPCHDataAppender>> new_appenders;
 			new_appenders.reserve(parallel_thread_count);

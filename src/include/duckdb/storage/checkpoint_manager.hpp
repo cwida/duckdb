@@ -172,8 +172,6 @@ public:
 	void WriteTable(TableCatalogEntry &table, Serializer &serializer) override;
 
 private:
-	//! The client context of the query that triggered the checkpoint (if any)
-	optional_ptr<ClientContext> context;
 	//! Context of the checkpoint transaction, used for catalog lookups during the checkpoint.
 	//! Only set while CreateCheckpoint runs, which owns the connection it belongs to.
 	optional_ptr<ClientContext> checkpoint_context;

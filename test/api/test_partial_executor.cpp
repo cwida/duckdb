@@ -39,7 +39,7 @@ TEST_CASE("TaskExecutor drains tasks that are in flight when the workers are rem
 	Connection con {db};
 	REQUIRE_NO_FAIL(con.Query("SET threads=5"));
 	REQUIRE_NO_FAIL(con.Query("SET scheduler_process_partial=true"));
-	TaskExecutor executor {con.context->Services()};
+	TaskExecutor executor {*con.context};
 
 	// One task per background worker (threads=5, external=1 -> 4 workers).
 	for (auto i = 0; i < 4; i++) {
@@ -67,7 +67,7 @@ TEST_CASE("TaskExecutor runs exactly one of ExecuteTask or Cancel for every sche
 	std::atomic<int> executed {0};
 	std::atomic<int> cancelled {0};
 	{
-		TaskExecutor executor {con.context->Services()};
+		TaskExecutor executor {*con.context};
 		for (auto i = 0; i < TASK_COUNT; i++) {
 			executor.ScheduleTask(make_uniq<CountingTask>(executor, executed, cancelled));
 		}
@@ -98,7 +98,7 @@ TEST_CASE("TaskExecutor drains an incremental task to completion") {
 	DuckDB db;
 	Connection con {db};
 	std::atomic<int> steps {0};
-	TaskExecutor executor {con.context->Services()};
+	TaskExecutor executor {*con.context};
 	executor.ScheduleTask(make_uniq<SteppingTask>(executor, steps, STEPS));
 	// WorkOnTasks drains inline with PROCESS_ALL, which must loop the steps to completion
 	executor.WorkOnTasks();
@@ -168,7 +168,7 @@ TEST_CASE("TaskExecutor drains empty, single and multi-task batches", "[api][tas
 		for (idx_t task_count : {0, 1, 64, 1025}) {
 			auto counts = make_shared_ptr<BatchTaskCounts>();
 			{
-				TaskExecutor executor(con.context->Services(), pool);
+				TaskExecutor executor(*con.context, pool);
 				vector<unique_ptr<BaseExecutorTask>> tasks;
 				for (idx_t i = 0; i < task_count; i++) {
 					tasks.push_back(make_uniq<BatchTask>(executor, counts, 3));
@@ -188,7 +188,7 @@ TEST_CASE("TaskExecutor drains batch execution and cancellation failures", "[api
 	Connection con(db);
 	REQUIRE_NO_FAIL(con.Query("SET threads=1"));
 	auto counts = make_shared_ptr<BatchTaskCounts>();
-	TaskExecutor executor(con.context->Services());
+	TaskExecutor executor(*con.context);
 	vector<unique_ptr<BaseExecutorTask>> tasks;
 	tasks.push_back(make_uniq<FailingBatchTask>(executor, counts));
 	for (idx_t i = 1; i < 64; i++) {
@@ -215,7 +215,7 @@ TEST_CASE("TaskExecutor accepts concurrent batch submissions", "[api][task_batch
 	Connection con(db);
 	REQUIRE_NO_FAIL(con.Query("SET threads=8"));
 	auto counts = make_shared_ptr<BatchTaskCounts>();
-	TaskExecutor executor(con.context->Services());
+	TaskExecutor executor(*con.context);
 	vector<std::thread> producers;
 	for (idx_t p = 0; p < 4; p++) {
 		producers.emplace_back([&] {
