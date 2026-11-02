@@ -45,9 +45,10 @@ void ClientContext::BeginQueryInternal(ClientContextLock &lock, PreprocessedStat
 	active_query = make_uniq<ActiveQueryContext>(std::move(statements));
 	active_query->format = parameters.format;
 	if (retention == Retention::RETAINED_AT_SUBMISSION) {
-		// the submission is completed by the same call, which executes the tasks itself
+		// the submission is completed by the same call, which executes the tasks itself, unless a custom collector
+		// hands out its result before the query completes
 		active_query->retention = ResultLifetime::RETAINED;
-		active_query->caller_completes_query = true;
+		active_query->caller_completes_query = !ClientConfig::GetConfig(*this).get_result_collector;
 	}
 	if (transaction.IsAutoCommit() && !transaction.HasActiveTransaction()) {
 		transaction.BeginTransaction();

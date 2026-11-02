@@ -33,7 +33,11 @@
 namespace duckdb {
 
 Executor::Executor(ClientContext &context, bool caller_completes_query)
-    : context(context), executor_tasks(0), caller_completes_query(caller_completes_query), blocked_thread_time(0) {
+    : context(context), executor_tasks(0), caller_completes_query(caller_completes_query),
+#ifndef DUCKDB_NO_THREADS
+      caller_thread(std::this_thread::get_id()),
+#endif
+      blocked_thread_time(0) {
 }
 
 Executor::~Executor() {
@@ -381,13 +385,23 @@ void Executor::UnregisterTask() {
 
 void Executor::ScheduleTasks(vector<shared_ptr<Task>> &tasks) {
 	auto &scheduler = TaskScheduler::GetScheduler(context);
-	auto threads_to_wake = tasks.size();
-	// the caller runs tasks until the query completes, and is woken when the scheduling task finishes,
-	// so wake no thread for one of the tasks
-	if (caller_completes_query && scheduler.GetTaskCountForProducer(GetToken()) == 0) {
-		threads_to_wake--;
+	// worker threads never run a kept task, so only the caller keeps one, which it runs once its current task is done
+	if (OnCompletingThread()) {
+		scheduler.ScheduleTasksKeepingOne(GetToken(), tasks);
+	} else {
+		scheduler.ScheduleTasks(GetToken(), tasks);
 	}
-	scheduler.ScheduleTasks(GetToken(), tasks, threads_to_wake);
+}
+
+bool Executor::OnCompletingThread() const {
+	if (!caller_completes_query) {
+		return false;
+	}
+#ifndef DUCKDB_NO_THREADS
+	return std::this_thread::get_id() == caller_thread;
+#else
+	return true;
+#endif
 }
 
 void Executor::WaitForTask() {
