@@ -389,6 +389,85 @@ unique_ptr<SQLStatement> Parser::ParseTopLevelStatement(TokenIterator &token_ite
 	throw PEGSyntaxError::Create(token_iterator, statement_start, failure_index.GetIndex(), compiled_grammar, options);
 }
 
+namespace {
+
+//! Tokenizes like ParserTokenizerBehavior, but pushes unterminated trailing tokens with their
+//! `unterminated` flag set instead of throwing - completeness checks treat them as "needs more input".
+class CompletenessTokenizerBehavior : public TokenizerBehavior {
+public:
+	using TokenizerBehavior::TokenizerBehavior;
+
+	//! The input ended inside a block comment or dollar-quoted string - the token itself may be
+	//! dropped from the stream (comments), so the flag has to be recorded here
+	bool unterminated_input = false;
+
+	void PushToken(idx_t start, idx_t end, TokenType type, bool unterminated = false) override {
+		if (unterminated) {
+			unterminated_input = true;
+		}
+		TokenizerBehavior::PushToken(start, end, type, unterminated);
+	}
+
+	void OnStatementEnd(idx_t pos) override {
+		tokens.emplace_back(";", pos, TokenType::TERMINATOR);
+	}
+};
+
+} // namespace
+
+bool Parser::IsQueryComplete(const string &query_p) {
+	string query;
+	try {
+		query = NormalizeSQLString(query_p);
+	} catch (std::exception &) {
+		// invalid UTF-8 - submit the input so the error surfaces
+		return true;
+	}
+	auto &grammar = GetGrammar();
+	auto owned_tokens = make_uniq<vector<MatcherToken>>();
+	CompletenessTokenizerBehavior behavior(query, *owned_tokens);
+	grammar.GetTokenizer().TokenizeInput(behavior);
+	if (behavior.unterminated_input) {
+		return false;
+	}
+	// the final statement must be terminated by a top-level semicolon
+	bool terminated = false;
+	for (auto &token : *owned_tokens) {
+		switch (token.type) {
+		case TokenType::END_OF_INPUT:
+		case TokenType::END_OF_INPUT_AUTOCOMPLETE:
+			break;
+		default:
+			if (token.unterminated) {
+				// the input ends inside a string, quoted identifier, comment or dollar-quoted string
+				return false;
+			}
+			terminated = token.type == TokenType::TERMINATOR;
+			break;
+		}
+	}
+	if (!terminated) {
+		return false;
+	}
+	TokenIterator token_iterator(std::move(owned_tokens));
+	while (!token_iterator.AtEnd()) {
+		optional_idx failure_index;
+		try {
+			PEGTransformerFactory::TransformTopLevelStatement(token_iterator, options, grammar, failure_index);
+		} catch (std::exception &) {
+			// the grammar matched but the statement could not be transformed - execution reports the error
+			return true;
+		}
+		if (!failure_index.IsValid()) {
+			continue;
+		}
+		auto index = MinValue<idx_t>(failure_index.GetIndex(), token_iterator.Size() - 1);
+		// a parse that fails at the end of the input can be completed by more input
+		return token_iterator.GetToken(index).type != TokenType::END_OF_INPUT;
+	}
+	return true;
+}
+
 vector<SimplifiedToken> Parser::Tokenize(const string &query) {
 	auto &keyword_helper = DuckDBKeywordHelper::Instance();
 	vector<MatcherToken> tokens;
