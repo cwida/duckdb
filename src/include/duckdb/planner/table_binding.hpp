@@ -163,6 +163,8 @@ public:
 	vector<unique_ptr<ParsedExpression>> *arguments;
 	//! The name of the dummy binding
 	Identifier dummy_name;
+	//! Internal lambda parameters are addressed only by explicit LambdaRefExpression nodes.
+	bool internal_parameters = false;
 
 public:
 	//! Binding macros

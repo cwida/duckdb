@@ -56,6 +56,9 @@ ConstChildrenView ParsedExpression::Children() const {
 			result.Append(*check.then_expr);
 		}
 		result.Append(cast_expr.Else());
+		if (cast_expr.CaseOperand()) {
+			result.Append(*cast_expr.CaseOperand());
+		}
 		break;
 	}
 	case ExpressionClass::CAST: {
@@ -214,6 +217,9 @@ ChildrenView ParsedExpression::ChildrenMutable() {
 			result.Append(check.then_expr);
 		}
 		result.Append(cast_expr.ElseMutable());
+		if (cast_expr.CaseOperandMutable()) {
+			result.Append(cast_expr.CaseOperandMutable());
+		}
 		break;
 	}
 	case ExpressionClass::CAST: {
@@ -409,6 +415,9 @@ bool CaseExpression::Equals(const ParsedExpression &other) const {
 	if (!ParsedExpression::Equals(else_expr, other_p.else_expr)) {
 		return false;
 	}
+	if (!ParsedExpression::Equals(case_operand, other_p.case_operand)) {
+		return false;
+	}
 	return true;
 }
 
@@ -422,6 +431,7 @@ unique_ptr<ParsedExpression> CaseExpression::Copy() const {
 		copy->case_checks.push_back(std::move(new_check));
 	}
 	copy->else_expr = else_expr ? else_expr->Copy() : nullptr;
+	copy->case_operand = case_operand ? case_operand->Copy() : nullptr;
 	copy->CopyBase(*this);
 	return std::move(copy);
 }

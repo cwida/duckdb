@@ -1,0 +1,170 @@
+# name: test/sql/projection/test_simple_case_subqueries.test
+# description: Deterministic CASE subqueries preserve branch support and registered operand expressions
+# group: [projection]
+
+query T
+SELECT CASE (SELECT 2) WHEN 1 THEN (SELECT 'a') WHEN 2 THEN 'b' END
+----
+b
+
+query I
+SELECT CASE (SELECT 2) WHEN 1 THEN unnest([10]) WHEN 2 THEN unnest([20]) END
+----
+20
+
+query I
+SELECT CASE (SELECT NULL::INTEGER) WHEN NULL THEN 1 WHEN 2 THEN 2 ELSE 3 END
+----
+3
+
+query I
+SELECT CASE (SELECT x) WHEN 1 THEN (SELECT 10) WHEN 2 THEN 20 ELSE 30 END FROM range(1, 4) t(x) ORDER BY x
+----
+10
+20
+30
+
+query I
+SELECT (SELECT CASE (SELECT t.x) WHEN 1 THEN (SELECT 10) WHEN 2 THEN 20 ELSE 30 END)
+FROM range(1, 4) t(x) ORDER BY x
+----
+10
+20
+30
+
+statement ok
+CREATE SEQUENCE subquery_aggregate_case_seq
+
+query T
+SELECT CASE (SELECT sum(x + nextval('subquery_aggregate_case_seq')))
+    WHEN 1 THEN (SELECT 'a') WHEN 2 THEN 'b' END FROM range(1) t(x)
+----
+a
+
+query I
+SELECT currval('subquery_aggregate_case_seq')
+----
+1
+
+statement ok
+CREATE MACRO case_subquery(x) AS (SELECT x)
+
+query I
+SELECT CASE case_subquery(x) + 0 WHEN 1 THEN (SELECT 10) WHEN 2 THEN 20 ELSE 30 END
+FROM range(1, 4) t(x) ORDER BY x
+----
+10
+20
+30
+
+query T
+SELECT CASE (SELECT [1, 2]) WHEN [2, 3] THEN (SELECT 'other') WHEN [1, 2] THEN 'match' END
+----
+match
+
+query T
+SELECT CASE (SELECT 'A' COLLATE nocase) WHEN 'a' THEN (SELECT 'match') WHEN 'b' THEN 'other' END
+----
+match
+
+statement ok
+PREPARE parameter_case_subquery AS SELECT CASE (SELECT $1) WHEN 1 THEN (SELECT 'a') WHEN 2 THEN 'b' END
+
+query T
+EXECUTE parameter_case_subquery(2)
+----
+b
+
+statement ok
+CREATE SEQUENCE subquery_window_case_seq
+
+query T
+SELECT CASE sum(nextval('subquery_window_case_seq')) OVER () + (SELECT 0)
+    WHEN 1 THEN (SELECT 'a') WHEN 2 THEN 'b' END FROM range(1)
+----
+a
+
+query I
+SELECT currval('subquery_window_case_seq')
+----
+1
+
+statement ok
+CREATE SEQUENCE subquery_unnest_case_seq
+
+query T rowsort
+SELECT CASE unnest([nextval('subquery_unnest_case_seq')]) + (SELECT 0)
+    WHEN 1 THEN (SELECT 'a') WHEN 2 THEN 'b' ELSE 'c' END FROM range(3)
+----
+a
+b
+c
+
+query I
+SELECT currval('subquery_unnest_case_seq')
+----
+3
+
+# The compared child of an ANY subquery also retains its window registration.
+statement ok
+CREATE SEQUENCE subquery_any_case_seq
+
+query T
+SELECT CASE sum(nextval('subquery_any_case_seq')) OVER () IN (SELECT 1)
+    WHEN true THEN (SELECT 'a') WHEN false THEN 'b' END FROM range(1)
+----
+a
+
+query I
+SELECT currval('subquery_any_case_seq')
+----
+1
+
+query T
+SELECT CASE (1, 2) IN (SELECT 1, 2) WHEN true THEN (SELECT 'a') WHEN false THEN 'b' END
+----
+a
+
+query I
+SELECT CASE (CASE (SELECT x) WHEN 1 THEN 10 WHEN 2 THEN 20 ELSE 30 END)
+    WHEN 10 THEN (SELECT 1) WHEN 20 THEN 2 ELSE 3 END
+FROM range(1, 4) t(x) ORDER BY x
+----
+1
+2
+3
+
+# Volatile subquery operands still use invoke and reject incompatible branches.
+statement ok
+CREATE SEQUENCE volatile_subquery_case_seq
+
+statement error
+SELECT CASE (SELECT nextval('volatile_subquery_case_seq')) WHEN 1 THEN (SELECT 10) WHEN 2 THEN 20 END
+----
+subqueries in lambda expressions are not supported
+
+query I
+SELECT CASE (SELECT nextval('volatile_subquery_case_seq')) WHEN 1 THEN 10 WHEN 2 THEN 20 END
+----
+10
+
+# Operand copies retain TRY error transport from scalar subqueries.
+query I
+SELECT TRY(CASE (SELECT CAST('x' AS INTEGER)) WHEN 1 THEN 1 WHEN 2 THEN 2 ELSE 3 END)
+----
+NULL
+
+query I
+SELECT CASE TRY((SELECT CAST('x' AS INTEGER))) WHEN 1 THEN 1 WHEN 2 THEN 2 ELSE 3 END
+----
+3
+
+query I
+SELECT TRY(CASE (SELECT CAST('2' AS INTEGER)) WHEN 1 THEN 1 WHEN 2 THEN 2 ELSE 3 END)
+----
+2
+
+query I
+SELECT TRY(CASE (SELECT (SELECT CAST('x' AS INTEGER))) WHEN 1 THEN 1 WHEN 2 THEN 2 ELSE 3 END)
+----
+NULL

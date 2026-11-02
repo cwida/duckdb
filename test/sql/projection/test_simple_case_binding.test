@@ -1,0 +1,155 @@
+# name: test/sql/projection/test_simple_case_binding.test
+# description: Internal CASE parameters do not capture user names or change expression identity
+# group: [projection]
+
+query II
+SELECT 42 AS "random()", CASE random() WHEN -1 THEN 1 WHEN 2 THEN 2 ELSE "random()" END
+----
+42	42
+
+query I
+SELECT 42 AS "random()" WHERE CASE random() WHEN -1 THEN false WHEN 2 THEN false ELSE "random()" = 42 END
+----
+42
+
+statement ok
+CREATE MACRO case_alias("random()") AS "random()"
+
+query II
+SELECT 42 AS "random()", CASE random() WHEN -1 THEN 1 WHEN 2 THEN 2 ELSE case_alias(42) END
+----
+42	42
+
+query I
+SELECT CASE random() WHEN -1 THEN 1 WHEN 2 THEN 2 ELSE t."random()" END FROM (VALUES (42)) t("random()")
+----
+42
+
+query T
+SELECT list_transform([42], lambda "random()": CASE random() WHEN -1 THEN 1 WHEN 2 THEN 2 ELSE "random()" END)
+----
+[42]
+
+query T
+SELECT list_transform([{'x': 42}], lambda "random()":
+    CASE random() WHEN -1 THEN 1 WHEN 2 THEN 2 ELSE "random()".x END)
+----
+[42]
+
+statement error
+SELECT CASE random() WHEN -1 THEN missing_case_column WHEN 2 THEN 0 ELSE 1 END
+----
+missing_case_column
+
+query T
+SELECT list_transform([1, 2], lambda x: x + 1)
+----
+[2, 3]
+
+# A simple CASE key is constant even when its searched spelling can fall through.
+statement ok
+CREATE SEQUENCE distinct_case_seq
+
+query I
+SELECT count(*) FROM (
+    SELECT DISTINCT ON (CASE nextval('distinct_case_seq') % 2 WHEN 0 THEN 1 WHEN 1 THEN 1 ELSE 0 END)
+        CASE nextval('distinct_case_seq') % 2 WHEN 0 THEN 1 WHEN 1 THEN 1 ELSE 0 END AS simple,
+        CASE WHEN nextval('distinct_case_seq') % 2 = 0 THEN 1
+             WHEN nextval('distinct_case_seq') % 2 = 1 THEN 1 ELSE 0 END AS searched
+    FROM range(100)
+)
+----
+1
+
+statement ok
+CREATE SEQUENCE update_case_seq
+
+statement ok
+CREATE TABLE update_case AS SELECT i, '' AS v FROM range(3) t(i)
+
+statement ok
+UPDATE update_case SET v = CASE nextval('update_case_seq') WHEN 1 THEN 'a' WHEN 2 THEN 'b' ELSE 'c' END
+
+query T rowsort
+SELECT v FROM update_case
+----
+a
+b
+c
+
+query I
+SELECT currval('update_case_seq')
+----
+3
+
+# DISTINCT and ORDER BY resolve exact expressions before the SELECT list is bound.
+statement ok
+CREATE SEQUENCE matching_distinct_seq
+
+query I
+SELECT DISTINCT ON (CASE nextval('matching_distinct_seq')%2 WHEN 0 THEN 0 ELSE 1 END)
+       CASE nextval('matching_distinct_seq')%2 WHEN 0 THEN 0 ELSE 1 END AS k
+FROM range(4) ORDER BY CASE nextval('matching_distinct_seq')%2 WHEN 0 THEN 0 ELSE 1 END
+----
+0
+1
+
+query I
+SELECT currval('matching_distinct_seq')
+----
+4
+
+# MATCH_RECOGNIZE binds DEFINE and MEASURES in separate SELECT scopes.
+query II
+SELECT k, k_copy FROM (VALUES (1), (2), (3)) t(i) MATCH_RECOGNIZE (
+    ORDER BY i
+    MEASURES CASE sum(A.i) WHEN 6 THEN 10 WHEN 7 THEN 20 ELSE 30 END AS k, k+1 AS k_copy
+    ONE ROW PER MATCH PATTERN (A+)
+    DEFINE A AS CASE count(A.i) WHEN 1 THEN true WHEN 2 THEN true ELSE A.i=3 END
+)
+----
+10	11
+
+statement ok
+CREATE SEQUENCE matching_measure_seq
+
+query I
+SELECT k FROM (VALUES (1), (2)) t(i) MATCH_RECOGNIZE (
+    ORDER BY i
+    MEASURES CASE sum(nextval('matching_measure_seq')) WHEN -1 THEN 10 WHEN -2 THEN 20 ELSE 30 END AS k
+    ONE ROW PER MATCH PATTERN (A+) DEFINE A AS true
+)
+----
+30
+
+query I
+SELECT currval('matching_measure_seq')
+----
+2
+
+# Reconstructed SQL must also distinguish the generated and captured parameters.
+statement ok
+SET debug_verify_statement='explain_sql_strict'
+
+query T
+SELECT list_transform([42], lambda "random()", "random()_1":
+    CASE random() WHEN -1 THEN 1 WHEN 2 THEN 2 ELSE "random()" + "random()_1" END)
+----
+[43]
+
+# Internal CASE parameters cannot hide a CHECK column with the same name.
+statement ok
+CREATE TABLE case_check_name("random()" INT, CHECK(CASE random() WHEN -1 THEN false WHEN -2 THEN false ELSE "random()" > 0 END))
+
+statement ok
+INSERT INTO case_check_name VALUES (1)
+
+statement error
+INSERT INTO case_check_name VALUES (-1)
+----
+CHECK constraint failed
+
+query I
+SELECT * FROM case_check_name
+----
+1

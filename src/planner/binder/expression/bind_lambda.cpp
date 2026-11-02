@@ -12,6 +12,31 @@
 
 namespace duckdb {
 
+namespace {
+
+class LambdaBindingGuard {
+public:
+	LambdaBindingGuard(optional_ptr<vector<DummyBinding>> &bindings_p, DummyBinding binding)
+	    : bindings(bindings_p), previous_bindings(bindings_p) {
+		if (!bindings) {
+			bindings = &local_bindings;
+		}
+		bindings->push_back(std::move(binding));
+	}
+
+	~LambdaBindingGuard() {
+		bindings->pop_back();
+		bindings = previous_bindings;
+	}
+
+private:
+	optional_ptr<vector<DummyBinding>> &bindings;
+	optional_ptr<vector<DummyBinding>> previous_bindings;
+	vector<DummyBinding> local_bindings;
+};
+
+} // namespace
+
 static idx_t GetLambdaParamCount(vector<DummyBinding> &lambda_bindings) {
 	idx_t count = 0;
 	for (auto &binding : lambda_bindings) {
@@ -86,7 +111,8 @@ static unique_ptr<ParsedExpression> RestructureArrowChain(LambdaExpression &expr
 BindResult ExpressionBinder::BindExpression(LambdaExpression &expr, idx_t depth,
                                             const vector<LogicalType> &function_child_types,
                                             optional_ptr<bind_lambda_function_t> bind_lambda_function,
-                                            optional_ptr<BindLambdaContext> bind_lambda_context) {
+                                            optional_ptr<BindLambdaContext> bind_lambda_context,
+                                            bool internal_parameters) {
 	if (expr.GetLambdaSyntaxType() == LambdaSyntaxType::LAMBDA_KEYWORD && !bind_lambda_function) {
 		return BindResult("invalid lambda expression");
 	}
@@ -134,24 +160,14 @@ BindResult ExpressionBinder::BindExpression(LambdaExpression &expr, idx_t depth,
 	}
 
 	// create a lambda binding and push it to the lambda bindings vector
-	vector<DummyBinding> local_bindings;
-	if (!lambda_bindings) {
-		lambda_bindings = &local_bindings;
-	}
 	DummyBinding new_lambda_binding(column_types, column_names, table_alias);
-	lambda_bindings->push_back(new_lambda_binding);
+	new_lambda_binding.internal_parameters = internal_parameters;
+	LambdaBindingGuard lambda_binding_guard(lambda_bindings, std::move(new_lambda_binding));
 
 	if (expr.CopiedExprMutable()) {
 		expr.RightMutable() = std::move(expr.CopiedExprMutable());
 	}
 	auto result = BindExpression(expr.RightMutable(), depth, false);
-	lambda_bindings->pop_back();
-
-	// successfully bound a subtree of nested lambdas, set this to nullptr in case other parts of the
-	// query also contain lambdas
-	if (lambda_bindings->empty()) {
-		lambda_bindings = nullptr;
-	}
 
 	if (result.HasError()) {
 		result.error.Throw();
@@ -237,8 +253,10 @@ void ExpressionBinder::CaptureLambdaColumns(BoundLambdaExpression &bound_lambda_
 	}
 
 	// these expression classes do not have children, transform them
+	// Unnamed bound references are binder inputs; named ones already address a surrounding lambda frame.
+	auto capture_bound_reference = expr->GetExpressionClass() == ExpressionClass::BOUND_REF && expr->GetAlias().empty();
 	if (expr->GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF ||
-	    expr->GetExpressionClass() == ExpressionClass::BOUND_PARAMETER ||
+	    expr->GetExpressionClass() == ExpressionClass::BOUND_PARAMETER || capture_bound_reference ||
 	    expr->GetExpressionClass() == ExpressionClass::BOUND_LAMBDA_REF) {
 		if (expr->GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
 			// Search for UNNEST.

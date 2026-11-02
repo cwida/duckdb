@@ -44,9 +44,11 @@ class ColumnAliasBinder;
 class LogicalOperator;
 class LogicalProjection;
 class LogicalAggregate;
+class CaseOperandBinding;
 
 struct TrySubqueryPlanIndexes;
 struct DummyBinding;
+struct BoundStatement;
 struct SelectBindState;
 
 struct BoundColumnReferenceInfo {
@@ -91,6 +93,7 @@ struct BindResult {
 
 class ExpressionBinder {
 	friend class StackChecker<ExpressionBinder>;
+	friend class CaseOperandBinding;
 
 public:
 	ExpressionBinder(Binder &binder, ClientContext &context);
@@ -286,7 +289,7 @@ protected:
 
 	BindResult BindExpression(LambdaExpression &expr, idx_t depth, const vector<LogicalType> &function_child_types,
 	                          optional_ptr<bind_lambda_function_t> bind_lambda_function,
-	                          optional_ptr<BindLambdaContext> bind_lambda_context);
+	                          optional_ptr<BindLambdaContext> bind_lambda_context, bool internal_parameters = false);
 	BindResult BindExpression(OperatorExpression &expr, idx_t depth);
 	BindResult BindOperatorAsFunction(OperatorExpression &op, const Identifier &function_name,
 	                                  vector<unique_ptr<Expression>> children);
@@ -309,6 +312,7 @@ protected:
 	//! inputs. Returns false when a shape cannot be gated and strict is unset (throws otherwise).
 	bool GateTryAggregates(const ParsedExpression &location, LogicalAggregate &aggregate,
 	                       const vector<idx_t> &aggregate_positions, bool strict, unique_ptr<Expression> &gate);
+	BoundStatement BindSubqueryNode(QueryNode &node, shared_ptr<Binder> &subquery_binder, bool try_subquery = false);
 	BindResult BindPositionalReference(unique_ptr<ParsedExpression> &expr, idx_t depth, bool root_expression);
 
 	void TransformCapturedLambdaColumn(unique_ptr<Expression> &original, unique_ptr<Expression> &replacement,
@@ -335,7 +339,10 @@ protected:
 protected:
 	virtual BindResult BindGroupingFunction(OperatorExpression &op, idx_t depth);
 	virtual BindResult BindFunction(FunctionExpression &expr, ScalarFunctionCatalogEntry &function, idx_t depth);
-	virtual BindResult BindLambdaFunction(FunctionExpression &expr, ScalarFunctionCatalogEntry &function, idx_t depth);
+	//! Reuse supplied bound arguments; null entries are bound from the parsed arguments.
+	virtual BindResult BindLambdaFunction(FunctionExpression &expr, ScalarFunctionCatalogEntry &function, idx_t depth,
+	                                      vector<unique_ptr<Expression>> bound_children = {},
+	                                      bool internal_parameters = false);
 	virtual BindResult BindAggregate(FunctionExpression &expr, AggregateFunctionCatalogEntry &function, idx_t depth);
 	virtual BindResult BindWindow(FunctionExpression &expr, WindowFunctionCatalogEntry &function, idx_t depth);
 	virtual BindResult BindUnnest(FunctionExpression &expr, idx_t depth, bool root_expression);
@@ -362,6 +369,7 @@ protected:
 	bool bind_try_subquery = false;
 	//! Set while binding the select item of a TRY subquery, see SetTransportTryErrors
 	bool transport_try_errors = false;
+	optional_ptr<CaseOperandBinding> case_operand_binding;
 
 	BindResult TryBindLambdaOrJson(FunctionExpression &function, idx_t depth, CatalogEntry &func,
 	                               const LambdaSyntaxType syntax_type);

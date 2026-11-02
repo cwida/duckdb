@@ -1,0 +1,172 @@
+# name: test/sql/projection/test_simple_case_operand_registration.test
+# description: Simple CASE operand binding registers window and UNNEST expressions once
+# group: [projection]
+
+# A volatile operand must not leave behind an unused window expression.
+statement ok
+CREATE SEQUENCE case_window_seq
+
+query T
+SELECT CASE sum(nextval('case_window_seq')) OVER () + random() * 0
+	WHEN 1 THEN 'a'
+	WHEN 2 THEN 'b'
+END FROM range(1)
+----
+a
+
+query I
+SELECT currval('case_window_seq')
+----
+1
+
+# A volatile operand must not register its UNNEST twice.
+statement ok
+CREATE SEQUENCE case_unnest_seq
+
+query T rowsort
+SELECT CASE unnest([nextval('case_unnest_seq')]) + random() * 0
+	WHEN 1 THEN 'a'
+	WHEN 2 THEN 'b'
+	WHEN 3 THEN 'c'
+END FROM range(3)
+----
+a
+b
+c
+
+query I
+SELECT currval('case_unnest_seq')
+----
+3
+
+# An extra UNNEST with a different list length would also change the row count.
+statement ok
+CREATE SEQUENCE case_unnest_length_seq
+
+query II
+SELECT count(*), count(*) FILTER (WHERE result = 'a') FROM (
+	SELECT CASE unnest(range(nextval('case_unnest_length_seq'))) + random() * 0
+		WHEN 0 THEN 'a'
+		WHEN 1 THEN 'b'
+	END AS result FROM range(1)
+)
+----
+1	1
+
+query I
+SELECT currval('case_unnest_length_seq')
+----
+1
+
+# Macro expansion must not cause the operand to be bound a second time.
+statement ok
+CREATE SEQUENCE case_macro_window_seq
+
+statement ok
+CREATE MACRO case_window_operand() AS sum(nextval('case_macro_window_seq')) OVER () + random() * 0
+
+query T
+SELECT CASE case_window_operand() WHEN 1 THEN 'a' WHEN 2 THEN 'b' END FROM range(1)
+----
+a
+
+query I
+SELECT currval('case_macro_window_seq')
+----
+1
+
+statement ok
+CREATE SEQUENCE case_macro_unnest_seq
+
+statement ok
+CREATE MACRO case_unnest_operand() AS unnest(range(nextval('case_macro_unnest_seq'))) + random() * 0
+
+query II
+SELECT count(*), count(*) FILTER (WHERE result = 'a') FROM (
+	SELECT CASE case_unnest_operand() WHEN 0 THEN 'a' WHEN 1 THEN 'b' END AS result FROM range(1)
+)
+----
+1	1
+
+query I
+SELECT currval('case_macro_unnest_seq')
+----
+1
+
+# Window expressions registered earlier in the select list remain intact.
+statement ok
+CREATE SEQUENCE preceding_window_seq
+
+statement ok
+CREATE SEQUENCE case_following_window_seq
+
+query IT
+SELECT sum(nextval('preceding_window_seq')) OVER (),
+	CASE sum(nextval('case_following_window_seq')) OVER () + random() * 0
+		WHEN 1 THEN 'a'
+		WHEN 2 THEN 'b'
+	END FROM range(1)
+----
+1	a
+
+query II
+SELECT currval('preceding_window_seq'), currval('case_following_window_seq')
+----
+1	1
+
+# UNNEST expressions registered at the same level remain intact.
+statement ok
+CREATE SEQUENCE preceding_unnest_seq START 10
+
+statement ok
+CREATE SEQUENCE case_following_unnest_seq
+
+query IT rowsort
+SELECT unnest([nextval('preceding_unnest_seq')]),
+	CASE unnest([nextval('case_following_unnest_seq')]) + random() * 0
+		WHEN 1 THEN 'a'
+		WHEN 2 THEN 'b'
+		WHEN 3 THEN 'c'
+	END FROM range(3)
+----
+10	a
+11	b
+12	c
+
+query II
+SELECT currval('preceding_unnest_seq'), currval('case_following_unnest_seq')
+----
+12	3
+
+# Reusing the bound operand preserves references to enclosing lambda parameters.
+statement ok
+CREATE SEQUENCE case_lambda_window_seq
+
+query T
+SELECT list_transform([1, 2], lambda x:
+	CASE sum(nextval('case_lambda_window_seq')) OVER () + x + random() * 0
+		WHEN 2 THEN 'a'
+		WHEN 3 THEN 'b'
+	END
+) FROM range(1)
+----
+[a, b]
+
+query I
+SELECT currval('case_lambda_window_seq')
+----
+1
+
+# The deterministic fast path can copy references to an already registered window.
+statement ok
+CREATE SEQUENCE case_window_reference_seq
+
+query T
+SELECT CASE sum(nextval('case_window_reference_seq')) OVER () WHEN 1 THEN 'a' WHEN 2 THEN 'b' END FROM range(1)
+----
+a
+
+query I
+SELECT currval('case_window_reference_seq')
+----
+1

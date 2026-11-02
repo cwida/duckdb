@@ -44,9 +44,13 @@ BindResult ExpressionBinder::BindQualifiedColumnName(ColumnRefExpression &colref
 }
 
 BindResult CheckBinder::BindCheckColumn(ColumnRefExpression &colref) {
-	if (lambda_bindings && !lambda_bindings->empty()) {
-		// FIXME: support lambda parameters and captured columns in CHECK constraints
-		throw NotImplementedException("Lambda functions are currently not supported in CHECK constraints.");
+	if (lambda_bindings) {
+		for (auto &binding : *lambda_bindings) {
+			if (!binding.internal_parameters) {
+				// FIXME: support lambda parameters and captured columns in CHECK constraints
+				throw NotImplementedException("Lambda functions are currently not supported in CHECK constraints.");
+			}
+		}
 	}
 
 	if (colref.ColumnNames().size() > 1) {

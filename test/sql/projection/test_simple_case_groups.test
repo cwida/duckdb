@@ -1,0 +1,163 @@
+# name: test/sql/projection/test_simple_case_groups.test
+# description: Simple and searched CASE retain distinct grouping identities
+# group: [projection]
+
+# Each spelling matches an identical group expression.
+query TI
+SELECT CASE x WHEN 1 THEN 'a' ELSE 'b' END AS k, count(*) FROM range(3) t(x)
+GROUP BY CASE x WHEN 1 THEN 'a' ELSE 'b' END ORDER BY k
+----
+a	1
+b	2
+
+query TI
+SELECT CASE WHEN x=1 THEN 'a' ELSE 'b' END AS k, count(*) FROM range(3) t(x)
+GROUP BY CASE WHEN x=1 THEN 'a' ELSE 'b' END ORDER BY k
+----
+a	1
+b	2
+
+statement error
+SELECT CASE x WHEN 1 THEN 'a' ELSE 'b' END FROM range(3) t(x)
+GROUP BY CASE WHEN x=1 THEN 'a' ELSE 'b' END
+----
+must appear in the GROUP BY clause
+
+statement error
+SELECT CASE WHEN x=1 THEN 'a' ELSE 'b' END FROM range(3) t(x)
+GROUP BY CASE x WHEN 1 THEN 'a' ELSE 'b' END
+----
+must appear in the GROUP BY clause
+
+# Grouping individual comparisons does not group the simple CASE operand.
+statement error
+SELECT CASE x WHEN 1 THEN 'a' WHEN 2 THEN 'b' ELSE 'c' END FROM range(3) t(x)
+GROUP BY x=1, x=2
+----
+must appear in the GROUP BY clause
+
+query T rowsort
+SELECT CASE WHEN x=1 THEN 'a' WHEN x=2 THEN 'b' ELSE 'c' END FROM range(3) t(x)
+GROUP BY x=1, x=2
+----
+a
+b
+c
+
+# Aliases and ordinals reuse the selected expression.
+query TI
+SELECT CASE x WHEN 1 THEN 'a' ELSE 'b' END AS k, count(*) FROM range(3) t(x)
+GROUP BY k HAVING k <> 'z' ORDER BY k
+----
+a	1
+b	2
+
+query TI
+SELECT CASE x WHEN 1 THEN 'a' ELSE 'b' END AS k, count(*) FROM range(3) t(x)
+GROUP BY 1 ORDER BY k
+----
+a	1
+b	2
+
+query TI
+SELECT CASE i WHEN 1 THEN 'a' ELSE 'b' END AS k, count(*) FROM range(3) t(i)
+GROUP BY ALL HAVING CASE i WHEN 1 THEN 'a' ELSE 'b' END <> 'z' ORDER BY k
+----
+a	1
+b	2
+
+# A different HAVING expression makes GROUP BY ALL infer an additional key for i.
+query TI
+SELECT CASE i WHEN 1 THEN 'a' ELSE 'b' END AS k, count(*) FROM range(3) t(i)
+GROUP BY ALL HAVING CASE WHEN i=1 THEN 'a' ELSE 'b' END <> 'z' ORDER BY k
+----
+a	1
+b	1
+b	1
+
+# Different spellings have independent grouping-set indices.
+query TTIII rowsort
+SELECT CASE i WHEN 1 THEN 'a' ELSE 'b' END AS simple,
+       CASE WHEN i=1 THEN 'a' ELSE 'b' END AS searched, count(*),
+       grouping(CASE i WHEN 1 THEN 'a' ELSE 'b' END),
+       grouping(CASE WHEN i=1 THEN 'a' ELSE 'b' END)
+FROM range(3) t(i)
+GROUP BY GROUPING SETS ((CASE i WHEN 1 THEN 'a' ELSE 'b' END),
+                       (CASE WHEN i=1 THEN 'a' ELSE 'b' END))
+----
+NULL	a	1	1	0
+NULL	b	2	1	0
+a	NULL	1	0	1
+b	NULL	2	0	1
+
+# Identical keys still share an index; repeated grouping sets preserve multiplicity.
+query TI rowsort
+SELECT CASE i WHEN 1 THEN 'a' ELSE 'b' END AS k, count(*) FROM range(3) t(i)
+GROUP BY GROUPING SETS ((CASE i WHEN 1 THEN 'a' ELSE 'b' END),
+                       (CASE i WHEN 1 THEN 'a' ELSE 'b' END))
+----
+a	1
+a	1
+b	2
+b	2
+
+statement ok
+CREATE SEQUENCE grouped_case_seq
+
+# Identical volatile CASE expressions use the group value without evaluating it again.
+query TI rowsort
+SELECT CASE nextval('grouped_case_seq') WHEN 1 THEN 'a' WHEN 2 THEN 'b' ELSE 'c' END AS k, count(*)
+FROM range(3) GROUP BY CASE nextval('grouped_case_seq') WHEN 1 THEN 'a' WHEN 2 THEN 'b' ELSE 'c' END
+----
+a	1
+b	1
+c	1
+
+query I
+SELECT currval('grouped_case_seq')
+----
+3
+
+statement ok
+CREATE SEQUENCE case_result_seq
+
+query I
+SELECT CASE i WHEN 1 THEN nextval('case_result_seq') ELSE 0 END AS k FROM range(3) t(i)
+GROUP BY CASE i WHEN 1 THEN nextval('case_result_seq') ELSE 0 END ORDER BY k
+----
+0
+1
+
+# Matching inside scalar subqueries and lambdas also uses the original spelling.
+query I
+SELECT (SELECT CASE i WHEN 1 THEN nextval('case_result_seq') ELSE 0 END) AS k FROM range(3) t(i)
+GROUP BY (SELECT CASE i WHEN 1 THEN nextval('case_result_seq') ELSE 0 END) ORDER BY k
+----
+0
+2
+
+query T
+SELECT list_transform([i], lambda x: CASE x WHEN 1 THEN nextval('case_result_seq') ELSE 0 END) AS k
+FROM range(3) t(i)
+GROUP BY list_transform([i], lambda x: CASE x WHEN 1 THEN nextval('case_result_seq') ELSE 0 END) ORDER BY k
+----
+[0]
+[3]
+
+query I
+SELECT currval('case_result_seq')
+----
+3
+
+statement error
+SELECT (SELECT CASE i WHEN 1 THEN nextval('case_result_seq') ELSE 0 END) FROM range(3) t(i)
+GROUP BY (SELECT CASE WHEN i=1 THEN nextval('case_result_seq') ELSE 0 END)
+----
+must appear in the GROUP BY clause
+
+statement error
+SELECT list_transform([i], lambda x: CASE x WHEN 1 THEN nextval('case_result_seq') ELSE 0 END)
+FROM range(3) t(i)
+GROUP BY list_transform([i], lambda x: CASE WHEN x=1 THEN nextval('case_result_seq') ELSE 0 END)
+----
+must appear in the GROUP BY clause

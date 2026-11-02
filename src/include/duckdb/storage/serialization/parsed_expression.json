@@ -90,6 +90,7 @@
       {
         "id": 200,
         "name": "case_checks",
+        "serialize_property": "GetCaseChecksForSerialization(serializer)",
         "type": "vector<CaseCheck>",
         "accessor_mut": "CaseChecksMutable()",
         "accessor": "CaseChecks()"
@@ -100,6 +101,15 @@
         "type": "ParsedExpression*",
         "accessor_mut": "ElseMutable()",
         "accessor": "Else()"
+      },
+      {
+        "id": 202,
+        "name": "case_operand",
+        "type": "ParsedExpression*",
+        "version": "v2.1.0",
+        "accessor_mut": "CaseOperandMutable()",
+        "accessor": "CaseOperand()",
+        "nullable": true
       }
     ]
   },

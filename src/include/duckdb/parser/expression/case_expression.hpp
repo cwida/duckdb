@@ -12,7 +12,6 @@
 #include "duckdb/common/vector.hpp"
 
 namespace duckdb {
-
 struct CaseCheck {
 	unique_ptr<ParsedExpression> when_expr;
 	unique_ptr<ParsedExpression> then_expr;
@@ -36,12 +35,20 @@ public:
 	const ParsedExpression &Else() const {
 		return *else_expr;
 	}
+	optional_ptr<const ParsedExpression> CaseOperand() const {
+		return case_operand.get();
+	}
 	vector<CaseCheck> &CaseChecksMutable() {
 		return case_checks;
 	}
 	unique_ptr<ParsedExpression> &ElseMutable() {
 		return else_expr;
 	}
+	unique_ptr<ParsedExpression> &CaseOperandMutable() {
+		return case_operand;
+	}
+
+	const vector<CaseCheck> &GetCaseChecksForSerialization(Serializer &serializer) const;
 
 public:
 	string ToString() const override;
@@ -69,5 +76,6 @@ public:
 private:
 	vector<CaseCheck> case_checks;
 	unique_ptr<ParsedExpression> else_expr;
+	unique_ptr<ParsedExpression> case_operand;
 };
 } // namespace duckdb

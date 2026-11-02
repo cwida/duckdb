@@ -2722,15 +2722,13 @@ unique_ptr<ParsedExpression> PEGTransformerFactory::TransformCaseExpression(
     PEGTransformer &transformer, optional<unique_ptr<ParsedExpression>> expression, vector<CaseCheck> case_when_then,
     optional<unique_ptr<ParsedExpression>> case_else) {
 	auto result = make_uniq<CaseExpression>();
+	if (expression) {
+		result->CaseOperandMutable() = std::move(*expression);
+	}
 
 	for (auto &case_expr : case_when_then) {
 		CaseCheck new_case;
-		if (expression) {
-			new_case.when_expr = make_uniq<ComparisonExpression>(ExpressionType::COMPARE_EQUAL, (*expression)->Copy(),
-			                                                     std::move(case_expr.when_expr));
-		} else {
-			new_case.when_expr = std::move(case_expr.when_expr);
-		}
+		new_case.when_expr = std::move(case_expr.when_expr);
 		new_case.then_expr = std::move(case_expr.then_expr);
 		result->CaseChecksMutable().push_back(std::move(new_case));
 	}

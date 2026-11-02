@@ -4,6 +4,7 @@
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/expression/bound_subquery_expression.hpp"
 #include "duckdb/planner/expression_binder.hpp"
+#include "duckdb/planner/expression_binder/case_operand_binding.hpp"
 #include "duckdb/common/string_util.hpp"
 
 namespace duckdb {
@@ -59,6 +60,34 @@ static void ExtractSubqueryChildren(unique_ptr<Expression> &child, vector<unique
 	}
 }
 
+BoundStatement ExpressionBinder::BindSubqueryNode(QueryNode &node, shared_ptr<Binder> &subquery_binder,
+                                                  bool try_subquery) {
+	// bind the subquery in its own binder
+	subquery_binder = Binder::CreateBinder(context, binder);
+	subquery_binder->SetCanContainNulls(true);
+	subquery_binder->SetInsideSubquery();
+	if (try_subquery) {
+		// TRY is lowered onto the bound plan of this subquery after binding
+		subquery_binder->SetBindingTrySubquery();
+	}
+
+	subquery_binder->BeginSubqueryBind(binder, *this);
+	auto bound_node = subquery_binder->BindNode(node);
+	subquery_binder->FinishSubqueryBind();
+
+	// check the correlated columns of the subquery for correlated columns with depth > 1
+	for (idx_t i = 0; i < subquery_binder->correlated_columns.size(); i++) {
+		CorrelatedColumnInfo corr = subquery_binder->correlated_columns[i];
+		if (corr.depth > 1) {
+			// depth > 1, the column references the query ABOVE the current one
+			// add to the set of correlated columns for THIS query
+			corr.depth -= 1;
+			binder.AddCorrelatedColumn(corr);
+		}
+	}
+	return bound_node;
+}
+
 BindResult ExpressionBinder::BindExpression(SubqueryExpression &expr, idx_t depth) {
 	// consume the one-shot marker BindTrySubquery sets for the subquery it is about to bind
 	const bool try_subquery = bind_try_subquery;
@@ -81,29 +110,9 @@ BindResult ExpressionBinder::BindExpression(SubqueryExpression &expr, idx_t dept
 		rethrow_try_errors = true;
 		tolerant_lowering = true;
 	}
-	// bind the subquery in its own binder
-	auto subquery_binder = Binder::CreateBinder(context, binder);
-	subquery_binder->SetCanContainNulls(true);
-	subquery_binder->SetInsideSubquery();
-	if (try_subquery || rethrow_try_errors) {
-		// TRY is lowered onto the bound plan of this subquery after binding
-		subquery_binder->SetBindingTrySubquery();
-	}
-
-	subquery_binder->BeginSubqueryBind(binder, *this);
-	auto bound_node = subquery_binder->BindNode(*expr.Subquery()->node);
-	subquery_binder->FinishSubqueryBind();
-
-	// check the correlated columns of the subquery for correlated columns with depth > 1
-	for (idx_t i = 0; i < subquery_binder->correlated_columns.size(); i++) {
-		CorrelatedColumnInfo corr = subquery_binder->correlated_columns[i];
-		if (corr.depth > 1) {
-			// depth > 1, the column references the query ABOVE the current one
-			// add to the set of correlated columns for THIS query
-			corr.depth -= 1;
-			binder.AddCorrelatedColumn(corr);
-		}
-	}
+	auto original_expression = case_operand_binding ? expr.Copy() : nullptr;
+	shared_ptr<Binder> subquery_binder;
+	auto bound_node = BindSubqueryNode(*expr.Subquery()->node, subquery_binder, try_subquery || rethrow_try_errors);
 	// bind the child expression the subquery is compared against, if any; the child ends up in the
 	// join condition of the flattened subquery, where a transported error flag has no consumer
 	unique_ptr<Expression> bound_child;
@@ -226,6 +235,10 @@ BindResult ExpressionBinder::BindExpression(SubqueryExpression &expr, idx_t dept
 			// lowering can consume, so that lowering must not fall back to the plain subquery
 			binder.GetTrySubqueryPlanIndexesMutable().nested_transport = true;
 		}
+	}
+
+	if (original_expression) {
+		case_operand_binding->Remember(*result, original_expression->Cast<SubqueryExpression>(), try_subquery);
 	}
 
 	return BindResult(std::move(result));

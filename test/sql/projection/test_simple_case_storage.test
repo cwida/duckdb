@@ -1,0 +1,178 @@
+# name: test/sql/projection/test_simple_case_storage.test
+# description: Simple CASE persistence requires v2.1.0 and preserves expression identity
+# group: [projection]
+
+load {TEST_DIR}/case_latest.db readwrite v2.1.0
+
+statement ok
+CREATE SEQUENCE stored_case_seq
+
+statement ok
+CREATE VIEW stored_case AS SELECT CASE nextval('stored_case_seq') % 3
+    WHEN 0 THEN 'a' WHEN 1 THEN 'b' WHEN 2 THEN 'c' ELSE 'other' END AS result FROM range(10000)
+
+statement ok
+CREATE MACRO stored_case_macro() AS CASE nextval('stored_case_seq') % 3
+    WHEN 0 THEN 'a' WHEN 1 THEN 'b' WHEN 2 THEN 'c' ELSE 'other' END
+
+statement ok
+CREATE VIEW stored_case_name AS SELECT CASE 2 WHEN 1 THEN 42 WHEN 2 THEN 84 ELSE 999 END
+
+statement ok
+CREATE VIEW stored_case_dependent AS SELECT "CASE (2) WHEN (1) THEN (42) WHEN (2) THEN (84) ELSE 999 END" AS result
+FROM stored_case_name
+
+# The current format preserves both CASE spellings and their grouping identities.
+statement ok
+CREATE VIEW stored_case_groups AS
+SELECT CASE i WHEN 1 THEN 'a' ELSE 'b' END AS simple,
+       CASE WHEN i=1 THEN 'a' ELSE 'b' END AS searched, count(*) AS n
+FROM range(3) t(i)
+GROUP BY GROUPING SETS ((CASE i WHEN 1 THEN 'a' ELSE 'b' END),
+                       (CASE WHEN i=1 THEN 'a' ELSE 'b' END))
+
+statement ok
+CREATE VIEW stored_case_same_group AS
+SELECT CASE i WHEN 1 THEN 'a' ELSE 'b' END AS k, count(*) AS n
+FROM range(3) t(i) GROUP BY CASE i WHEN 1 THEN 'a' ELSE 'b' END
+
+statement ok
+CREATE TABLE stored_case_table(i INT DEFAULT CASE 1 WHEN 1 THEN 2 ELSE 0 END,
+    k INT GENERATED ALWAYS AS (CASE i WHEN 2 THEN 84 ELSE 0 END),
+    CHECK(CASE i WHEN 2 THEN true ELSE false END))
+
+restart
+
+query I
+SELECT count(*) FROM stored_case WHERE result = 'other'
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT stored_case_macro() AS result FROM range(10000)) WHERE result = 'other'
+----
+0
+
+query I
+SELECT * FROM stored_case_dependent
+----
+84
+
+query TTI rowsort
+SELECT * FROM stored_case_groups
+----
+NULL	a	1
+NULL	b	2
+a	NULL	1
+b	NULL	2
+
+query TI
+SELECT * FROM stored_case_same_group ORDER BY k
+----
+a	1
+b	2
+
+statement ok
+INSERT INTO stored_case_table DEFAULT VALUES
+
+query II
+SELECT * FROM stored_case_table
+----
+2	84
+
+# Older formats reject simple CASE instead of changing its representation.
+statement ok
+ATTACH '{TEST_DIR}/case_v200.db' AS legacy (STORAGE_VERSION 'v2.0.0')
+
+statement error
+CREATE VIEW legacy.case_view AS SELECT CASE 2 WHEN 1 THEN 42 WHEN 2 THEN 84 ELSE 999 END AS k
+----
+Simple CASE expressions require storage version v2.1.0 or higher
+
+statement error
+CREATE MACRO legacy.case_macro(x) AS CASE x WHEN 1 THEN 42 WHEN 2 THEN 84 ELSE 999 END
+----
+Simple CASE expressions require storage version v2.1.0 or higher
+
+statement error
+CREATE VIEW legacy.case_deferred WITH (DEFER_BINDING) AS SELECT CASE i WHEN 1 THEN 42 ELSE 0 END FROM missing_table
+----
+Simple CASE expressions require storage version v2.1.0 or higher
+
+statement error
+CREATE TABLE legacy.case_default(i INT DEFAULT CASE 2 WHEN 1 THEN 42 ELSE 84 END)
+----
+Simple CASE expressions require storage version v2.1.0 or higher
+
+statement error
+CREATE TABLE legacy.case_check(i INT, CHECK(CASE i WHEN 1 THEN true ELSE false END))
+----
+Simple CASE expressions require storage version v2.1.0 or higher
+
+statement error
+CREATE TABLE legacy.case_generated(i INT, k INT GENERATED ALWAYS AS (CASE i WHEN 1 THEN 42 ELSE 0 END))
+----
+Simple CASE expressions require storage version v2.1.0 or higher
+
+# Failed catalog writes leave no entries behind.
+query I
+SELECT count(*) FROM duckdb_views() WHERE database_name='legacy' AND view_name LIKE 'case_%'
+----
+0
+
+query I
+SELECT count(*) FROM duckdb_tables() WHERE database_name='legacy' AND table_name LIKE 'case_%'
+----
+0
+
+query I
+SELECT count(*) FROM duckdb_functions() WHERE database_name='legacy' AND function_name='case_macro'
+----
+0
+
+# Searched CASE remains supported, including reuse of the failed object names.
+statement ok
+CREATE VIEW legacy.case_view AS SELECT CASE WHEN 2=1 THEN 42 WHEN 2=2 THEN 84 ELSE 999 END AS k
+
+statement ok
+CREATE MACRO legacy.case_macro(x) AS CASE WHEN x=1 THEN 42 WHEN x=2 THEN 84 ELSE 999 END
+
+statement ok
+CREATE TABLE legacy.case_default(i INT DEFAULT CASE WHEN 2=1 THEN 42 ELSE 84 END)
+
+statement ok
+INSERT INTO legacy.case_default DEFAULT VALUES
+
+statement ok
+DETACH legacy
+
+statement ok
+ATTACH '{TEST_DIR}/case_v200.db' AS legacy
+
+query I
+SELECT * FROM legacy.case_view
+----
+84
+
+query I
+SELECT legacy.case_macro(2)
+----
+84
+
+query I
+SELECT * FROM legacy.case_default
+----
+84
+
+statement ok
+ATTACH '{TEST_DIR}/case_v150.db' AS older (STORAGE_VERSION 'v1.5.0')
+
+statement error
+CREATE VIEW older.case_view AS SELECT CASE 2 WHEN 1 THEN 42 WHEN 2 THEN 84 ELSE 999 END
+----
+Simple CASE expressions require storage version v2.1.0 or higher
+
+query I
+SELECT count(*) FROM duckdb_views() WHERE database_name='older' AND view_name='case_view'
+----
+0
