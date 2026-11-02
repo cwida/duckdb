@@ -95,8 +95,8 @@ public:
 	}
 
 	//! Iterates over inserted values
-	template <typename U = SRC, typename std::enable_if<!std::is_same<U, string_t>::value, int>::type = 0>
-	void IterateValues(const std::function<void(const SRC &, const TGT &)> &fun) const {
+	template <class FUNC, typename U = SRC, typename std::enable_if<!std::is_same<U, string_t>::value, int>::type = 0>
+	void IterateValues(FUNC &&fun) const {
 		const auto target_values = reinterpret_cast<const TGT *>(allocated_target.get());
 		for (idx_t i = 0; i < capacity; i++) {
 			auto &entry = dictionary[i];
@@ -108,14 +108,36 @@ public:
 	}
 
 	//! Specialized template to iterate over string_t values
-	template <typename U = SRC, typename std::enable_if<std::is_same<U, string_t>::value, int>::type = 0>
-	void IterateValues(const std::function<void(const SRC &, const TGT &)> &fun) const {
+	template <class FUNC, typename U = SRC, typename std::enable_if<std::is_same<U, string_t>::value, int>::type = 0>
+	void IterateValues(FUNC &&fun) const {
 		for (idx_t i = 0; i < capacity; i++) {
 			auto &entry = dictionary[i];
 			if (entry.IsEmpty()) {
 				continue;
 			}
 			fun(entry.value, entry.value);
+		}
+	}
+
+	//! Iterates over the target values in insertion order
+	template <class FUNC, typename U = SRC, typename std::enable_if<!std::is_same<U, string_t>::value, int>::type = 0>
+	void IterateTargetValues(FUNC &&fun) const {
+		const auto target_values = reinterpret_cast<const TGT *>(allocated_target.get());
+		for (idx_t i = 0; i < size; i++) {
+			fun(target_values[i]);
+		}
+	}
+
+	//! Specialized template to iterate over length-prefixed string_t target values
+	template <class FUNC, typename U = SRC, typename std::enable_if<std::is_same<U, string_t>::value, int>::type = 0>
+	void IterateTargetValues(FUNC &&fun) const {
+		auto ptr = const_data_ptr_cast(allocated_target.get());
+		const auto end = ptr + target_stream.GetPosition();
+		while (ptr < end) {
+			const auto length = Load<uint32_t>(ptr);
+			ptr += sizeof(uint32_t);
+			fun(string_t(const_char_ptr_cast(ptr), length));
+			ptr += length;
 		}
 	}
 

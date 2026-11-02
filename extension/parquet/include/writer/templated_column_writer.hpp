@@ -522,11 +522,19 @@ private:
 		if (!bloom_filter) {
 			return;
 		}
+		auto &filter = *bloom_filter;
 		bool seedable = true;
-		state.dictionary.IterateValues([&](const SRC &src_value, const TGT &tgt_value) {
-			seedable = seedable && OP::template CanSeedBloomFilter<SRC, TGT>(tgt_value);
-			InsertBloomFilterValue(*bloom_filter, src_value, tgt_value);
-		});
+		if (OP::template BloomFilterEntriesPerValue<SRC, TGT>() == 1) {
+			state.dictionary.IterateTargetValues([&](const TGT &tgt_value) {
+				seedable = seedable && OP::template CanSeedBloomFilter<SRC, TGT>(tgt_value);
+				filter.FilterInsert(OP::template XXHash64<SRC, TGT>(tgt_value));
+			});
+		} else {
+			state.dictionary.IterateValues([&](const SRC &src_value, const TGT &tgt_value) {
+				seedable = seedable && OP::template CanSeedBloomFilter<SRC, TGT>(tgt_value);
+				InsertBloomFilterValue(filter, src_value, tgt_value);
+			});
+		}
 		state.dictionary.Reset();
 		if (seedable) {
 			state.bloom_filter = std::move(bloom_filter);
