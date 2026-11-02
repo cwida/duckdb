@@ -811,20 +811,6 @@ struct DebugForceWalFsyncFailureSetting {
 	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 };
 
-struct DebugForceWideDecimalSetting {
-	using RETURN_TYPE = bool;
-	static constexpr const char *Name = "debug_force_wide_decimal";
-	static constexpr const char *Description =
-	    "DEBUG SETTING: store DECIMAL values of every width as BIGNUM blobs, so the wide-decimal code paths run for "
-	    "all decimals (process-wide, set it before creating any decimal)";
-	static constexpr const char *InputType = "BOOLEAN";
-	static constexpr bool IsDebug = true;
-	static constexpr bool IsDeprecated = false;
-	static void SetGlobal(DatabaseInstance *db, DBConfig &config, const Value &parameter);
-	static void ResetGlobal(DatabaseInstance *db, DBConfig &config);
-	static Value GetSetting(const ClientContext &context);
-};
-
 struct DebugLocalFileSystemDelayMsSetting {
 	using RETURN_TYPE = idx_t;
 	static constexpr const char *Name = "debug_local_file_system_delay_ms";

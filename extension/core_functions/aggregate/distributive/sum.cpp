@@ -503,10 +503,8 @@ unique_ptr<FunctionData> BindDecimalSum(BindAggregateFunctionInput &input) {
 	auto &arguments = input.GetArguments();
 	auto decimal_type = BindDecimalArgument(input.GetClientContext(), arguments[0], "sum");
 	if (decimal_type.InternalType() == PhysicalType::VARCHAR) {
-		// wide decimals sum their BIGNUM blobs into the widest decimal of the same scale; a decimal that is only
-		// stored as a BIGNUM blob because of debug_force_wide_decimal keeps the DECIMAL(38,s) result of its width
-		auto result_width = DecimalType::GetWidth(decimal_type) > Decimal::MAX_WIDTH_INT128 ? Decimal::MAX_WIDTH_DECIMAL
-		                                                                                    : Decimal::MAX_WIDTH_INT128;
+		// wide decimals sum their BIGNUM blobs into the widest decimal of the same scale
+		const auto result_width = Decimal::MAX_WIDTH_DECIMAL;
 		function.ReplaceImplementation(GetWideDecimalSumAggregate());
 		function.SetName("sum");
 		function.GetArguments()[0] = decimal_type;

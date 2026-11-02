@@ -425,24 +425,6 @@ void CustomUserAgentSetting::ResetGlobal(DatabaseInstance *db, DBConfig &config)
 }
 
 //===----------------------------------------------------------------------===//
-// Debug Force Wide Decimal
-//===----------------------------------------------------------------------===//
-void DebugForceWideDecimalSetting::SetGlobal(DatabaseInstance *db, DBConfig &config, const Value &input) {
-	config.options.debug_force_wide_decimal = input.GetValue<bool>();
-	// the physical type of a DECIMAL is computed without a database, so the switch is process-wide
-	Decimal::SetForceWide(config.options.debug_force_wide_decimal);
-}
-
-void DebugForceWideDecimalSetting::ResetGlobal(DatabaseInstance *db, DBConfig &config) {
-	config.options.debug_force_wide_decimal = false;
-	Decimal::SetForceWide(false);
-}
-
-Value DebugForceWideDecimalSetting::GetSetting(const ClientContext &context) {
-	return Value::BOOLEAN(DBConfig::GetConfig(context).options.debug_force_wide_decimal);
-}
-
-//===----------------------------------------------------------------------===//
 // Debug Verification Mode
 //===----------------------------------------------------------------------===//
 void DebugVerificationModeSetting::SetGlobal(DatabaseInstance *db, DBConfig &config, const Value &input) {

@@ -141,8 +141,6 @@ struct DBConfigOptions {
 	vector<string> extension_directories;
 	//! Debug setting - how to initialize  blocks in the storage layer when allocating
 	DebugInitialize debug_initialize = DebugInitialize::NO_INITIALIZE;
-	//! Debug setting - store decimals of every width as BIGNUM blobs (see Decimal::IsWide)
-	bool debug_force_wide_decimal = false;
 	//! Debug setting - how to verify ORDER BY results (e.g. by rewriting ORDER BY into create_sort_key)
 	DebugOrderVerification debug_order_verification = DebugOrderVerification::NONE;
 	//! The set of user-provided options

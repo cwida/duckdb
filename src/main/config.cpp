@@ -126,7 +126,6 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_SETTING(ForceUpdateToDelAndInsertSetting),
     DUCKDB_GLOBAL(ForceVariantShredding),
     DUCKDB_SETTING(DebugForceWalFsyncFailureSetting),
-    DUCKDB_GLOBAL(DebugForceWideDecimalSetting),
     DUCKDB_SETTING(DebugLocalFileSystemDelayMsSetting),
     DUCKDB_GLOBAL(DebugOrderVerificationSetting),
     DUCKDB_SETTING_CALLBACK(DebugPhysicalTableScanExecutionStrategySetting),

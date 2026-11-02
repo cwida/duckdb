@@ -6,16 +6,6 @@
 
 namespace duckdb {
 constexpr uint32_t Decimal::MAX_WIDTH_DECIMAL;
-atomic<bool> Decimal::force_wide {false};
-
-void Decimal::SetForceWide(bool force) {
-	force_wide.store(force, std::memory_order_relaxed);
-}
-
-bool Decimal::ForceWide() {
-	return force_wide.load(std::memory_order_relaxed);
-}
-
 uint32_t Decimal::MaxResultWidth(optional_ptr<ClientContext> context, uint32_t max_input_width) {
 	if (max_input_width > MAX_WIDTH_INT128) {
 		// a wide input never existed before wide decimals, its result is not bound by the legacy rule

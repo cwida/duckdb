@@ -39,9 +39,7 @@ enum class TPCDSAppendType : uint8_t {
 	DECIMAL16,
 	DECIMAL32,
 	DECIMAL64,
-	DECIMAL128,
-	//! A decimal column stored as BIGNUM blobs (debug_force_wide_decimal)
-	DECIMAL_WIDE
+	DECIMAL128
 };
 
 enum class TPCDSAppendMode : uint8_t { APPENDER, OPTIMISTIC };

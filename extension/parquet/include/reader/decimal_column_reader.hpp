@@ -78,8 +78,8 @@ struct WideDecimalParquetValueConversion {
 	}
 };
 
-//! INT32/INT64-backed Parquet decimals read into a wide decimal: a DECIMAL(9,2) column, say, while every decimal is
-//! stored as a BIGNUM blob (debug_force_wide_decimal), or a file that declares a width above 38 for an integer column
+//! INT32/INT64-backed Parquet decimals read into a wide decimal: a file that declares a width above 38 for a column
+//! stored as an integer
 template <class PARQUET_TYPE>
 struct WideDecimalFromIntegerConversion {
 	template <bool CHECKED>
