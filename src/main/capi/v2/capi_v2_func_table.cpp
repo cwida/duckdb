@@ -352,7 +352,6 @@ public:
 	duckdb_v2_table_function_stats_callback_fn stats_cb = nullptr;
 	duckdb_v2_table_function_claim_batch_callback_fn claim_batch_cb = nullptr;
 	duckdb_v2_table_function_get_bind_info_callback_fn get_bind_info_cb = nullptr;
-	duckdb_v2_table_function_stats_callback_fn stats_cb = nullptr;
 	shared_ptr<CV2UserData> user_data = nullptr;
 	bool projection_pushdown = false;
 

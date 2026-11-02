@@ -730,14 +730,6 @@ unique_ptr<GlobalTableFunctionState> DuckIndexScanInitGlobal(ClientContext &cont
 	g_state->vacuum_lock = std::move(vacuum_lock);
 
 	auto &duck_table = bind_data.table.Cast<DuckTableEntry>();
-	// Tasks claim STANDARD_VECTOR_SIZE row IDs at a time, and one more task can scan the transaction-local rows.
-	auto local_table = LocalStorage::Get(context, duck_table.catalog).GetStorage(duck_table.GetStorage());
-	idx_t useful_threads = (g_state->row_id_count + STANDARD_VECTOR_SIZE - 1) / STANDARD_VECTOR_SIZE;
-	if (local_table && local_table->GetCollection().GetTotalRows() > 0) {
-		useful_threads++;
-	}
-	g_state->max_threads = MinValue<idx_t>(g_state->max_threads, MaxValue<idx_t>(useful_threads, 1));
-
 	if (input.CanRemoveFilterColumns()) {
 		g_state->projection_ids = input.projection_ids;
 	}

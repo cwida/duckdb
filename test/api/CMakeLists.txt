@@ -23,7 +23,6 @@ set(TEST_API_OBJECTS
     test_remote_pushdown_macro_arguments.cpp
     test_os_util.cpp
     test_compression_select.cpp
-    test_os_util.cpp
     test_connection_secrets.cpp
     test_copy_output_lifecycle.cpp
     test_custom_allocator.cpp
