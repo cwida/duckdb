@@ -21,9 +21,7 @@ bool TryEvaluateAtConstants(ClientContext &context, const BoundFunctionExpressio
 	// Functions such as alias() inspect expression metadata during execution.
 	auto clone = func.Copy();
 	clone->Cast<BoundFunctionExpression>().GetChildrenMutable() = std::move(children);
-	// a nested result with many elements is not worth materializing as a Value just to derive statistics
-	return ExpressionExecutor::TryEvaluateScalar(context, *clone, result,
-	                                             ExpressionExecutor::MAX_FOLDED_NESTED_ELEMENTS);
+	return ExpressionExecutor::TryEvaluateScalar(context, *clone, result);
 }
 
 // Whether [lo, hi] holds -infinity and another value. The smallest finite DATE or TIMESTAMP sorts below -infinity.
