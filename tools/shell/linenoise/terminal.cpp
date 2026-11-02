@@ -448,6 +448,34 @@ void Terminal::BufferAvailableInput() {
 	}
 }
 
+#if !defined(_WIN32) && !defined(WIN32)
+//! Reads the background color from COLORFGBG ("fg;bg" or "fg;default;bg", ANSI color indexes)
+static bool TryGetBackgroundColorFromEnvironment(TerminalColor &color) {
+	auto value = getenv("COLORFGBG");
+	if (!value) {
+		return false;
+	}
+	auto last_separator = strrchr(value, ';');
+	if (!last_separator) {
+		return false;
+	}
+	char *end = nullptr;
+	auto index = strtol(last_separator + 1, &end, 10);
+	if (end == last_separator + 1 || *end != '\0' || index < 0 || index > 15) {
+		return false;
+	}
+	// 7 (light gray) and 9-15 are light backgrounds
+	bool is_light = index == 7 || index >= 9;
+	color.r = color.g = color.b = is_light ? 255 : 0;
+	return true;
+}
+
+static bool IsContinuousIntegrationEnvironment() {
+	auto value = getenv("CI");
+	return value && value[0] && strcmp(value, "0") != 0 && strcasecmp(value, "false") != 0;
+}
+#endif
+
 bool Terminal::TryGetBackgroundColor(TerminalColor &color) {
 #if defined(_WIN32) || defined(WIN32)
 	// FIXME: always emit black background on Windows
@@ -456,11 +484,20 @@ bool Terminal::TryGetBackgroundColor(TerminalColor &color) {
 	color.b = 0;
 	return true;
 #else
+	if (TryGetBackgroundColorFromEnvironment(color)) {
+		return true;
+	}
+	if (IsContinuousIntegrationEnvironment()) {
+		// no terminal emulator is attached in CI
+		return false;
+	}
 	auto term = getenv("TERM");
 	if (!term || !term[0] || IsUnsupportedTerm()) {
 		// no terminal that can answer the query
 		return false;
 	}
+	// buffer any available input - we need to interact with stdin
+	BufferAvailableInput();
 	int ifd = STDIN_FILENO;
 	int ofd = STDOUT_FILENO;
 	if (!isatty(ifd)) {

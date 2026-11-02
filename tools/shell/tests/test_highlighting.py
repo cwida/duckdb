@@ -74,13 +74,16 @@ def test_deprecated_highlight_constant(shell):
     result.check_stderr(".constant has been split into numeric_constant and string_constant")
     result.check_stderr(".highlight_colors numeric_constant brightred and .highlight_colors string_constant brightred")
 
-def run_in_pty(shell, arguments, term, response=None, no_color=None):
+def run_in_pty(shell, arguments, term, response=None, no_color=None, extra_env=None):
     # runs the shell on a pseudo-terminal that either stays silent or answers the background color query
     import pty, select, time
     master, slave = pty.openpty()
     env = ShellTest(shell).get_environment()
     env.pop('NO_COLOR', None)
     env.pop('TERM', None)
+    env.pop('CI', None)
+    env.pop('COLORFGBG', None)
+    env.update(extra_env or {})
     if no_color is not None:
         env['NO_COLOR'] = no_color
     if term is not None:
@@ -142,6 +145,27 @@ def test_no_color_environment_variable(shell, arguments):
     assert status in (0, 1), output
     assert b'\x1b]11;?' not in output
     assert not re.search(rb'\x1b\[[0-9;]*m', output)
+    assert elapsed < 4
+
+@pytest.mark.skipif(os.name == 'nt', reason="requires a POSIX pseudo-terminal")
+def test_no_color_probe_in_ci(shell):
+    status, output, elapsed = run_in_pty(shell, ['-c', 'SELECT missing_column'], 'xterm-256color', extra_env={'CI': 'true'})
+    assert status != 0, output
+    assert b'\x1b]11;?' not in output
+    assert b'\x1b[' in output  # still colored
+    assert elapsed < 4
+
+@pytest.mark.skipif(os.name == 'nt', reason="requires a POSIX pseudo-terminal")
+@pytest.mark.parametrize("colorfgbg, error_color", [
+    ('0;15', b'\x1b[38;5;124m'),  # light background
+    ('15;0', b'\x1b[38;5;203m'),  # dark background
+    ('15;default;0', b'\x1b[38;5;203m'),
+])
+def test_colorfgbg(shell, colorfgbg, error_color):
+    status, output, elapsed = run_in_pty(shell, ['-c', 'SELECT missing_column'], 'xterm-256color', extra_env={'COLORFGBG': colorfgbg})
+    assert status != 0, output
+    assert b'\x1b]11;?' not in output
+    assert error_color in output
     assert elapsed < 4
 
 @pytest.mark.skipif(os.name == 'nt', reason="requires a POSIX pseudo-terminal")
