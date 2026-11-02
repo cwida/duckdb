@@ -1540,6 +1540,9 @@ unique_ptr<BaseStatistics> ParquetUnionData::GetStatistics(ClientContext &contex
 	if (reader) {
 		return reader->Cast<ParquetReader>().GetStatistics(context, name);
 	}
+	if (!root_schema) {
+		return nullptr;
+	}
 	return ParquetReader::ReadStatistics(context, *this, name);
 }
 
