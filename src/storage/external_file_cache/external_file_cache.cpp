@@ -141,8 +141,7 @@ void ExternalFileCache::SetHostNetworkThroughput(const string &path, const Netwo
 	const annotated_lock_guard<annotated_mutex> guard(throughput_lock);
 	auto &entry = host_throughput[std::move(host)];
 	const bool fresh = duration<double>(now - entry.last_update).count() <= ADAPTIVE_ESTIMATE_TTL_SECONDS;
-	if (!fresh || !(entry.estimate.latency_seconds > 0) ||
-	    estimate.latency_seconds < entry.estimate.latency_seconds) {
+	if (!fresh || !(entry.estimate.latency_seconds > 0) || estimate.latency_seconds < entry.estimate.latency_seconds) {
 		entry.estimate.latency_seconds = estimate.latency_seconds;
 	}
 	entry.estimate.bandwidth_bytes_per_s = estimate.bandwidth_bytes_per_s;
