@@ -96,6 +96,7 @@ ScalarFunction ListContainsFun::GetFunction() {
 	fun.GetSignature()
 	    .AddParameter("list", LogicalType::LIST(LogicalType::TEMPLATE("T")))
 	    .AddParameter("element", LogicalType::TEMPLATE("T"));
+	fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	fun.SetCollationHandling(FunctionCollationHandling::PUSH_COMBINABLE_COLLATIONS);
 	fun.SetFilterPruneCallback(ListContainsFilterPrune);
 	return fun;

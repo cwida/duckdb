@@ -211,7 +211,20 @@ SELECT list_contains([NULL, 0],1)
 query T
 SELECT list_contains([],NULL)
 ----
+false
+
+query TTTT
+SELECT contains([], NULL), list_contains([]::VARCHAR[], NULL), list_contains([1], NULL), list_contains(NULL::INT[], NULL)
+----
+false	false	NULL	NULL
+
+query T
+SELECT list_contains(l, x) FROM (VALUES ([]::INT[], NULL::INT), ([1], NULL), (NULL, 1), ([], 1)) t(l, x)
+----
+false
 NULL
+NULL
+false
 
 query T
 SELECT list_contains([NULL,7], 7)
