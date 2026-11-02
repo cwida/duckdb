@@ -1,0 +1,57 @@
+# name: test/sql/cte/trampoline/trampoline_build_retention.test
+# description: Static joins inside branches stay repeatable: no runtime filters, one retained build
+# group: [trampoline]
+
+statement ok
+SET threads=1;
+
+statement ok
+CREATE TABLE a AS SELECT i FROM range(10000) r(i);
+
+statement ok
+CREATE TABLE b AS SELECT i FROM range(10000) r(i);
+
+# Join-filter pushdown must skip trampoline branches like it skips recursive members:
+# a runtime filter on the static grouped join would make it non-repeatable, defeating
+# invariant build retention and wave merging.
+query II
+EXPLAIN WITH RECURSIVE t(sel, n) USING TRAMPOLINE (sel) AS (
+	(VALUES (1, 0))
+	BRANCH 1: (
+		SELECT CASE WHEN n < 2 THEN 1 ELSE 0 END, n + 1
+		FROM t
+		JOIN (SELECT a.i, count(*) FROM a JOIN b USING (i) GROUP BY a.i) s ON s.i = t.n
+	)
+) SELECT * FROM t;
+----
+physical_plan	<REGEX>:.*Waves: merged.*
+
+statement ok
+CALL enable_logging('PhysicalOperator', storage='memory');
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query II
+WITH RECURSIVE t(sel, n) USING TRAMPOLINE (sel) AS (
+	(VALUES (1, 0))
+	BRANCH 1: (
+		SELECT CASE WHEN n < 2 THEN 1 ELSE 0 END, n + 1
+		FROM t
+		JOIN (SELECT a.i, count(*) FROM a JOIN b USING (i) GROUP BY a.i) s ON s.i = t.n
+	)
+) SELECT * FROM t;
+----
+0	3
+
+statement ok
+CALL disable_logging();
+
+# The 10,000-row lookup hash is built once and retained across the three waves.
+query I
+SELECT count(*)
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class = 'JoinHashTable' AND event = 'Build'
+  AND parameters['Conditions'] = 'CAST(n AS BIGINT) = i';
+----
+1
