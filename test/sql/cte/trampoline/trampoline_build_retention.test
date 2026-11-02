@@ -24,7 +24,7 @@ EXPLAIN WITH RECURSIVE t(sel, n) USING TRAMPOLINE (sel) AS (
 	BRANCH 1: (
 		SELECT CASE WHEN n < 2 THEN 1 ELSE 0 END, n + 1
 		FROM t
-		JOIN (SELECT a.i, count(*) FROM a JOIN b USING (i) GROUP BY a.i) s ON s.i = t.n
+		JOIN (SELECT a.i % 100 AS i, count(*) FROM a JOIN b USING (i) GROUP BY a.i % 100) s ON s.i = t.n
 	)
 ) SELECT * FROM t;
 ----
@@ -42,7 +42,7 @@ WITH RECURSIVE t(sel, n) USING TRAMPOLINE (sel) AS (
 	BRANCH 1: (
 		SELECT CASE WHEN n < 2 THEN 1 ELSE 0 END, n + 1
 		FROM t
-		JOIN (SELECT a.i, count(*) FROM a JOIN b USING (i) GROUP BY a.i) s ON s.i = t.n
+		JOIN (SELECT a.i % 100 AS i, count(*) FROM a JOIN b USING (i) GROUP BY a.i % 100) s ON s.i = t.n
 	)
 ) SELECT * FROM t;
 ----
@@ -51,11 +51,13 @@ WITH RECURSIVE t(sel, n) USING TRAMPOLINE (sel) AS (
 statement ok
 CALL disable_logging();
 
-# The 10,000-row lookup hash is built once and retained across the three waves.
+# The 100-row lookup hash is built once and retained across the three waves. The build is
+# identified by its row count, which survives expression renaming in reconstructed SQL,
+# and is distinct from the inner 10,000-row a-b build.
 query I
 SELECT count(*)
 FROM duckdb_logs_parsed('PhysicalOperator')
 WHERE class = 'JoinHashTable' AND event = 'Build'
-  AND parameters['Conditions'] = 'CAST(n AS BIGINT) = i';
+  AND info['rows']::UBIGINT = 100;
 ----
 1
