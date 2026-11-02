@@ -278,7 +278,7 @@ inline LogicalType BindDecimalArgument(ClientContext &context, unique_ptr<Expres
 	if (type.id() == LogicalTypeId::DECIMAL) {
 		return type;
 	}
-	uint8_t width, scale;
+	uint32_t width, scale;
 	if (!type.GetDecimalProperties(width, scale)) {
 		throw BinderException("%s: cannot compute the DECIMAL aggregate of type %s", function_name, type.ToString());
 	}

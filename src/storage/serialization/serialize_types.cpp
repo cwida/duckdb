@@ -7,6 +7,7 @@
 #include "duckdb/common/serializer/deserializer.hpp"
 #include "duckdb/common/extension_type_info.hpp"
 #include "duckdb/common/logical_type_info.hpp"
+#include "duckdb/common/numeric_utils.hpp"
 
 namespace duckdb {
 
@@ -101,14 +102,14 @@ unique_ptr<LogicalTypeInfo> ArrayTypeInfo::Deserialize(Deserializer &deserialize
 
 void DecimalTypeInfo::Serialize(Serializer &serializer) const {
 	LogicalTypeInfo::Serialize(serializer);
-	serializer.WritePropertyWithDefault<uint8_t>(200, "width", width);
-	serializer.WritePropertyWithDefault<uint8_t>(201, "scale", scale);
+	serializer.WritePropertyWithDefault<uint8_t>(200, "width", NumericCast<uint8_t>(width));
+	serializer.WritePropertyWithDefault<uint8_t>(201, "scale", NumericCast<uint8_t>(scale));
 }
 
 unique_ptr<LogicalTypeInfo> DecimalTypeInfo::Deserialize(Deserializer &deserializer) {
-	auto result = duckdb::unique_ptr<DecimalTypeInfo>(new DecimalTypeInfo());
-	deserializer.ReadPropertyWithDefault<uint8_t>(200, "width", result->width);
-	deserializer.ReadPropertyWithDefault<uint8_t>(201, "scale", result->scale);
+	auto width = deserializer.ReadPropertyWithDefault<uint8_t>(200, "width");
+	auto scale = deserializer.ReadPropertyWithDefault<uint8_t>(201, "scale");
+	auto result = duckdb::unique_ptr<DecimalTypeInfo>(new DecimalTypeInfo(width, scale));
 	return std::move(result);
 }
 

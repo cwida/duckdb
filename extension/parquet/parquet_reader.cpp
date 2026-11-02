@@ -599,7 +599,7 @@ LogicalType ParquetReader::DeriveLogicalType(const SchemaElement &s_ele, const P
 				throw IOException(
 				    "DECIMAL converted type can only be set for value of Type::(FIXED_LEN_)BYTE_ARRAY/INT32/INT64");
 			}
-			return LogicalType::DECIMAL(s_ele.precision, s_ele.scale);
+			return LogicalType::DECIMAL(NumericCast<uint32_t>(s_ele.precision), NumericCast<uint32_t>(s_ele.scale));
 		case ConvertedType::UTF8:
 		case ConvertedType::ENUM:
 			switch (s_ele.type) {

@@ -128,7 +128,7 @@ Value ParquetStatisticsUtils::ConvertValue(const LogicalType &type, const Parque
 }
 //! Statistics values that do not fit in the width of the decimal are ignored
 template <class T>
-static Value ParquetDecimalStatsValue(T value, uint8_t width, uint8_t scale) {
+static Value ParquetDecimalStatsValue(T value, uint32_t width, uint32_t scale) {
 	const auto max_value = Hugeint::POWERS_OF_TEN[width];
 	const auto hugeint_value = hugeint_t(value);
 	if (hugeint_value >= max_value || hugeint_value <= -max_value) {

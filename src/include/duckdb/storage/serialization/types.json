@@ -74,17 +74,26 @@
     "class": "DecimalTypeInfo",
     "base": "LogicalTypeInfo",
     "enum": "DECIMAL_TYPE_INFO",
+    "includes": [
+      "duckdb/common/numeric_utils.hpp"
+    ],
     "members": [
       {
         "id": 200,
         "name": "width",
-        "type": "uint8_t"
+        "type": "uint8_t",
+        "serialize_property": "NumericCast<uint8_t>(width)"
       },
       {
         "id": 201,
         "name": "scale",
-        "type": "uint8_t"
+        "type": "uint8_t",
+        "serialize_property": "NumericCast<uint8_t>(scale)"
       }
+    ],
+    "constructor": [
+      "width",
+      "scale"
     ]
   },
   {

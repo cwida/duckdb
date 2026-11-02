@@ -173,8 +173,8 @@ bool BoundCastExpression::CastIsInvertible(const LogicalType &source_type, const
 		return false;
 	}
 	if (source_type.id() == LogicalTypeId::DECIMAL || target_type.id() == LogicalTypeId::DECIMAL) {
-		uint8_t source_width, target_width;
-		uint8_t source_scale, target_scale;
+		uint32_t source_width, target_width;
+		uint32_t source_scale, target_scale;
 		// cast to or from decimal
 		// cast is only invertible if the cast is strictly widening
 		if (!source_type.GetDecimalProperties(source_width, source_scale)) {
