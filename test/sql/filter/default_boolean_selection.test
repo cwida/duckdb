@@ -45,3 +45,27 @@ query I
 SELECT sum(CASE WHEN isfinite(nd) THEN id ELSE -id END) FROM booleans
 ----
 -1674851
+
+query IIII
+SELECT count(*) FILTER (WHERE isfinite(d)),
+       sum(id) FILTER (WHERE contains(s, 'y')),
+       count(*) FILTER (WHERE isfinite(nd)),
+       sum(id) FILTER (WHERE contains(ns, 'y'))
+FROM booleans
+----
+2050	4200450	1640	3601558
+
+query I
+SELECT count(DISTINCT id % 4) FILTER (WHERE isfinite(d)) FROM booleans
+----
+2
+
+query III
+SELECT id % 3 AS g, count(*) FILTER (WHERE isfinite(d)), sum(id) FILTER (WHERE contains(s, 'y'))
+FROM booleans
+GROUP BY g
+ORDER BY g
+----
+0	684	1401516
+1	683	1400150
+2	683	1398784
