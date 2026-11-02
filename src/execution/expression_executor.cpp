@@ -1,9 +1,6 @@
 #include "duckdb/execution/expression_executor.hpp"
 
-#include "duckdb/common/vector/array_vector.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
-#include "duckdb/common/vector/list_vector.hpp"
-#include "duckdb/common/vector/struct_vector.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/execution/execution_context.hpp"
 #include "duckdb/storage/statistics/base_statistics.hpp"
@@ -160,48 +157,6 @@ Value ExpressionExecutor::EvaluateScalar(ClientContext &context, const Expressio
 bool ExpressionExecutor::TryEvaluateScalar(ClientContext &context, const Expression &expr, Value &result) {
 	try {
 		result = EvaluateScalar(context, expr);
-		return true;
-	} catch (InternalException &ex) {
-		throw;
-	} catch (...) {
-		return false;
-	}
-}
-
-static idx_t CountNestedElements(const Vector &vec, idx_t count) {
-	switch (vec.GetType().InternalType()) {
-	case PhysicalType::LIST: {
-		const auto child_count = ListVector::GetListSize(vec);
-		return child_count + CountNestedElements(ListVector::GetChild(vec), child_count);
-	}
-	case PhysicalType::ARRAY: {
-		const auto child_count = count * ArrayType::GetSize(vec.GetType());
-		return child_count + CountNestedElements(ArrayVector::GetChild(vec), child_count);
-	}
-	case PhysicalType::STRUCT: {
-		idx_t result = 0;
-		for (auto &child : StructVector::GetEntries(vec)) {
-			result += CountNestedElements(child, count);
-		}
-		return result;
-	}
-	default:
-		return 0;
-	}
-}
-
-bool ExpressionExecutor::TryEvaluateScalar(ClientContext &context, const Expression &expr, Value &result,
-                                           idx_t max_nested_elements) {
-	try {
-		D_ASSERT(expr.IsFoldable() && expr.IsScalar());
-		ExpressionExecutor executor(context, expr);
-		Vector result_vector(expr.GetReturnType());
-		executor.ExecuteExpression(result_vector);
-		D_ASSERT(result_vector.GetVectorType() == VectorType::CONSTANT_VECTOR);
-		if (CountNestedElements(result_vector, 1) > max_nested_elements) {
-			return false;
-		}
-		result = result_vector.GetValue(0).WithType(expr.GetReturnType());
 		return true;
 	} catch (InternalException &ex) {
 		throw;
