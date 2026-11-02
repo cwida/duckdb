@@ -61,9 +61,12 @@ void JoinFilterPushdownOptimizer::GetPushdownFilterTargets(LogicalOperator &op,
 	auto &probe_child = op;
 	switch (probe_child.type) {
 	case LogicalOperatorType::LOGICAL_LIMIT:
+	case LogicalOperatorType::LOGICAL_TOP_N:
+		// LIMIT/TOP_N determines which rows are part of the probe side before the join.
+		// Pushing a join filter below it can change which rows survive the limit/offset.
+		break;
 	case LogicalOperatorType::LOGICAL_FILTER:
 	case LogicalOperatorType::LOGICAL_ORDER_BY:
-	case LogicalOperatorType::LOGICAL_TOP_N:
 	case LogicalOperatorType::LOGICAL_DISTINCT:
 	case LogicalOperatorType::LOGICAL_COMPARISON_JOIN:
 	case LogicalOperatorType::LOGICAL_CROSS_PRODUCT:
