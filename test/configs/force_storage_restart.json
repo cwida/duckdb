@@ -51,6 +51,7 @@
     {
       "reason": "Logging setting doesn't survive restarts",
       "paths": [
+        "test/sql/copy/parquet/bloom_filter_coalesced_reads.test",
         "test/sql/storage/compression/zstd/zstd_compression_ratio.test_slow",
         "test/sql/logging/logging_memory_after_truncate.test",
         "test/sql/logging/physical_operator_logging.test_slow",
