@@ -2,6 +2,9 @@
 # description: Statistics propagation through arithmetic on decimals wider than 38 digits, which carry string statistics
 # group: [decimal]
 
+# wide decimal columns need the latest storage version, the configs that force the default one on disk cannot hold them
+require no_force_storage
+
 statement ok
 CREATE TABLE t(w DECIMAL(40,2), n DECIMAL(10,2));
 

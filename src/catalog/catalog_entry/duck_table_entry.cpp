@@ -102,8 +102,9 @@ static void CheckTypeIsSupported(const LogicalType &logical_type, AttachedDataba
 
 			// (the width decides, not Decimal::IsWide: a database written with debug_force_wide_decimal is only
 			// meant to be read by the process that wrote it)
-			if (storage_version < StorageVersion::V2_0_0 && DecimalType::GetWidth(type) > Decimal::MAX_WIDTH_INT128) {
-				auto required = GetStorageVersionName(StorageVersion::V2_0_0, false);
+			if (storage_version < Decimal::WIDE_VERSION_ADDED &&
+			    DecimalType::GetWidth(type) > Decimal::MAX_WIDTH_INT128) {
+				auto required = GetStorageVersionName(Decimal::WIDE_VERSION_ADDED, false);
 				auto current = GetStorageVersionName(storage_version, false);
 
 				throw InvalidInputException(

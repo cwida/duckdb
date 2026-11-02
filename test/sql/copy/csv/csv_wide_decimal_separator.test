@@ -2,6 +2,9 @@
 # description: Wide decimals in CSV files with the decimal_separator and thousands options
 # group: [csv]
 
+# wide decimal columns need the latest storage version, the configs that force the default one on disk cannot hold them
+require no_force_storage
+
 statement ok
 CREATE TABLE wide AS SELECT (i::VARCHAR || '1234567890123456789012345678901234567890.' || (i % 100)::VARCHAR)::DECIMAL(50,2) AS d FROM range(5000) t(i);
 

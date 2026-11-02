@@ -11,6 +11,7 @@
 #include "duckdb/common/atomic.hpp"
 #include "duckdb/common/types.hpp"
 #include "duckdb/common/types/string_type.hpp"
+#include "duckdb/storage/storage_info.hpp"
 
 namespace duckdb {
 
@@ -47,6 +48,9 @@ public:
 	static constexpr uint32_t MAX_WIDTH_INT128 = DecimalWidth<hugeint_t>::max;
 	//! The maximum width of a decimal, widths above MAX_WIDTH_INT128 store the unscaled value as a BIGNUM blob
 	static constexpr uint32_t MAX_WIDTH_DECIMAL = 255;
+	//! The storage version from which DECIMAL columns wider than MAX_WIDTH_INT128 digits can be stored: the engines of
+	//! the versions before it read a DECIMAL width as a single byte and bind decimal arithmetic within 38 digits
+	static constexpr StorageVersion WIDE_VERSION_ADDED = StorageVersion::V2_1_0;
 
 public:
 	//! Whether width/scale form a valid DECIMAL type: width in [1, MAX_WIDTH_DECIMAL] and scale not exceeding width.

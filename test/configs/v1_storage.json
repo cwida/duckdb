@@ -12,17 +12,6 @@
   "skip_compiled": "true",
   "skip_tests": [
     {
-      "reason": "DECIMAL columns wider than 38 digits require storage version v2.0.0 or higher.",
-      "paths": [
-        "test/sql/copy/csv/csv_wide_decimal_separator.test",
-        "test/sql/types/decimal/wide_decimal_arithmetic.test",
-        "test/sql/types/decimal/wide_decimal_casts.test",
-        "test/sql/types/decimal/wide_decimal_literals.test",
-        "test/sql/types/decimal/wide_decimal_statistics.test",
-        "test/sql/types/decimal/wide_decimal_storage.test"
-      ]
-    },
-    {
       "reason": "Explicit constraint check mode requires storage version v2.0.0 or higher.",
       "paths": [
         "test/optimizer/remove_redundant_order_keys_deferred.test"

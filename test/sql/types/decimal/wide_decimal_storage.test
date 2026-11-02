@@ -4,6 +4,13 @@
 
 load {TEST_DIR}/wide_decimal.db
 
+# wide decimal columns need the latest storage version
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_latest.db' AS wd (STORAGE_VERSION 'latest');
+
+statement ok
+USE wd;
+
 statement ok
 CREATE TABLE t AS
 SELECT (i::VARCHAR || '12345678901234567890123456789012345678901234567890.' || (i % 100)::VARCHAR)::DECIMAL(60,2) AS d, i
@@ -136,7 +143,17 @@ Overflow in SUM
 statement ok
 CHECKPOINT
 
+# the restart restores the search path before the attached database is back
+statement ok
+USE wide_decimal;
+
 restart
+
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_latest.db' AS wd;
+
+statement ok
+USE wd;
 
 query IIII
 SELECT count(*), count(d), min(d), max(d) FROM t

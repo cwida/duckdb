@@ -4,6 +4,13 @@
 
 load {TEST_DIR}/wide_decimal_review.db
 
+# wide decimal columns need the latest storage version
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_review_latest.db' AS wd (STORAGE_VERSION 'latest');
+
+statement ok
+USE wd;
+
 # subtraction leaves the right operand intact, its bytes can be shared with the left operand
 statement ok
 CREATE TABLE t AS SELECT '123456789012345678901234567890.12'::DECIMAL(50,2) AS d;
@@ -188,8 +195,18 @@ SELECT c, typeof(c) FROM generated
 ----
 9999999999999999999999999999999999999800000000000000000000000000000000000001	DECIMAL(76,0)
 
-# the stored expressions are bound again after a restart
+# the stored expressions are bound again after a restart (which restores the search path before the attached
+# database is back)
+statement ok
+USE wide_decimal_review;
+
 restart
+
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_review_latest.db' AS wd;
+
+statement ok
+USE wd;
 
 statement error
 INSERT INTO prod VALUES (3, 2)
@@ -209,7 +226,7 @@ SELECT count(*) FROM prod WHERE a * b = repeat('9', 38)::DECIMAL(38,0) * repeat(
 ----
 1
 
-# wide decimal columns need storage version v2.0.0
+# wide decimal columns need storage version v2.1.0
 statement ok
 ATTACH '{TEST_DIR}/wide_decimal_v1.db' AS old (STORAGE_VERSION 'v1.4.0');
 
