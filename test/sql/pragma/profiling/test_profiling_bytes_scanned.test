@@ -175,22 +175,19 @@ EXPLAIN ANALYZE (FORMAT json) SELECT sum(i) FROM '{TEST_DIR}/bytes_scanned_1.par
 analyzed_plan	<REGEX>:[\s\S]*"bytes_scanned": [1-9][\s\S]*
 
 # a query with a scan that doesn't count the bytes it scans leaves the total out, rather than undercounting
-statement ok
-COPY (SELECT range AS i FROM range(100000)) TO '{TEST_DIR}/bytes_scanned_uncounted.csv';
-
 query II
-EXPLAIN ANALYZE (FORMAT json) SELECT sum(i) FROM '{TEST_DIR}/bytes_scanned_uncounted.csv'
+EXPLAIN ANALYZE (FORMAT json) SELECT sum(i) FROM native
 ----
 analyzed_plan	<!REGEX>:[\s\S]*bytes_scanned[\s\S]*
 
 query II
 EXPLAIN ANALYZE (FORMAT json)
-SELECT sum(p.i) FROM '{TEST_DIR}/bytes_scanned_1.parquet' p JOIN '{TEST_DIR}/bytes_scanned_uncounted.csv' c USING (i)
+SELECT sum(p.i) FROM '{TEST_DIR}/bytes_scanned_1.parquet' p JOIN native n USING (i)
 ----
 analyzed_plan	<!REGEX>:[\s\S]*"total_bytes_scanned"[\s\S]*
 
 query II
 EXPLAIN ANALYZE (FORMAT json)
-SELECT sum(p.i) FROM '{TEST_DIR}/bytes_scanned_1.parquet' p JOIN '{TEST_DIR}/bytes_scanned_uncounted.csv' c USING (i)
+SELECT sum(p.i) FROM '{TEST_DIR}/bytes_scanned_1.parquet' p JOIN native n USING (i)
 ----
 analyzed_plan	<REGEX>:[\s\S]*"bytes_scanned": [1-9][\s\S]*

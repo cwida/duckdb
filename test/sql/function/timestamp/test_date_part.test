@@ -981,3 +981,21 @@ FROM parts;
 epoch	1684144800
 julian	2460080.125
 year	2023
+
+# Don't round nanoseconds
+query IIIIIII
+SELECT t,
+       hour(t) AS h, 
+       minute(t) AS m, 
+       second(t) AS s,
+       date_part('second', t) AS dp_second,
+       extract('microsecond' FROM t) AS us,
+       epoch_ns(t) % 1000000000 AS ns_of_second
+FROM (VALUES ('2026-07-01 09:59:59.999999533'::TIMESTAMP_NS),
+             ('2026-07-01 09:32:06.999999533'::TIMESTAMP_NS),
+             ('2026-07-01 09:32:06.999999499'::TIMESTAMP_NS)) v(t);
+----
+2026-07-01 09:59:59.999999533	9	59	59	59	59999999	999999533
+2026-07-01 09:32:06.999999533	9	32	6	6	6999999	999999533
+2026-07-01 09:32:06.999999499	9	32	6	6	6999999	999999499
+
