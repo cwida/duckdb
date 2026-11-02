@@ -21,9 +21,10 @@
       ]
     },
     {
-      "reason": "Cost-aware projection placement tests assert topology changed by synthetic verification projections.",
+      "reason": "Projection placement and pullup tests assert topology changed by synthetic verification projections.",
       "paths": [
-        "test/optimizer/projection_placement.test"
+        "test/optimizer/projection_placement.test",
+        "test/optimizer/projection_pullup_nested_plan.test"
       ]
     },
     {
