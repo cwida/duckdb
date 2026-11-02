@@ -536,10 +536,10 @@ void Optimizer::RunBuiltInOptimizers() {
 		partitioned_execution.Optimize(plan);
 	});
 
-	// perform join filter pushdown after the dust has settled
+	// Generate join filters before row-number and scan-expression rewrites.
 	RunOptimizer(OptimizerType::JOIN_FILTER_PUSHDOWN, [&]() {
 		JoinFilterPushdownOptimizer join_filter_pushdown(*this);
-		join_filter_pushdown.VisitOperator(*plan);
+		join_filter_pushdown.Optimize(*plan);
 	});
 
 	// Rewrite ROW_NUMBER() OVER() window functions to use the row_number virtual column
