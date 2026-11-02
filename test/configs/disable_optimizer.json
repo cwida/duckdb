@@ -38,7 +38,8 @@
       "reason": "Checks evaluation counts after optimizer filter pushdown.",
       "paths": [
         "test/optimizer/pushdown/lateral_projection_evaluation.test",
-        "test/optimizer/pushdown/cte_domain_join_filter.test"
+        "test/optimizer/pushdown/cte_domain_join_filter.test",
+        "test/sql/table_function/external_resources_type_pushdown.test"
       ]
     },
     {

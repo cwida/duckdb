@@ -1,5 +1,6 @@
 #include "duckdb/function/table/system_functions.hpp"
 
+#include "duckdb/catalog/schema_scan_filters.hpp"
 #include "duckdb/common/error_data.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/map.hpp"
@@ -10,6 +11,7 @@
 #include "duckdb/main/external_resource_type_registry.hpp"
 #include "duckdb/main/external_resources_manager.hpp"
 #include "duckdb/parser/qualified_name.hpp"
+#include "duckdb/planner/table_filter_set.hpp"
 
 namespace duckdb {
 
@@ -20,6 +22,9 @@ namespace duckdb {
 // the locally registered resources (managed = true) and stays local. `discover := true` also calls each
 // resource type's `list` callback to discover resources that exist externally, unioning in the ones not
 // locally registered (managed = false) — the reconciliation view that feeds REGISTER.
+//
+// A filter on `type` is pushed into the scan: discovery then only calls the list callbacks of the types the
+// filter accepts, so `WHERE type = '...'` costs one provider call rather than one per type.
 //===--------------------------------------------------------------------===//
 
 struct ExternalResourceRow {
@@ -43,6 +48,28 @@ struct ExternalResourcesGlobalState : public GlobalTableFunctionState {
 	vector<ExternalResourceRow> rows;
 	idx_t offset;
 };
+
+//! The `type` column of the listing: the one column whose filters are pushed into the scan.
+static constexpr idx_t TYPE_COLUMN_INDEX = 1;
+
+// supports_pushdown_type: filters on any other column are re-applied above the scan by the planner.
+static bool ExternalResourcesSupportsPushdown(const FunctionData &bind_data, idx_t col_idx) {
+	return col_idx == TYPE_COLUMN_INDEX;
+}
+
+//! The pushed-down filter on `type`, if any. Filters are keyed by position in input.column_indexes.
+static optional_ptr<const TableFilter> TypeFilter(TableFunctionInitInput &input) {
+	if (!input.filters) {
+		return nullptr;
+	}
+	for (auto &entry : *input.filters) {
+		auto &column = input.column_indexes[entry.GetIndex().GetIndex()];
+		if (column.GetPrimaryIndex() == TYPE_COLUMN_INDEX) {
+			return &entry.Filter();
+		}
+	}
+	return nullptr;
+}
 
 static unique_ptr<FunctionData> ExternalResourcesBind(ClientContext &context, TableFunctionBindInput &input,
                                                       vector<LogicalType> &return_types, vector<Identifier> &names) {
@@ -159,10 +186,19 @@ static unique_ptr<GlobalTableFunctionState> ExternalResourcesInit(ClientContext 
 	auto &bind_data = input.bind_data->Cast<ExternalResourcesBindData>();
 	auto result = make_uniq<ExternalResourcesGlobalState>();
 
+	// The scan owns the pushed-down filter on `type`: it prunes the local rows and the types discovery lists.
+	auto type_filter = TypeFilter(input);
+	auto accepts_type = [&](const string &type_name) {
+		return SchemaScanFilters::Satisfies(context, type_filter, Value(type_name));
+	};
+
 	// Locally registered resources — always shown (managed = true).
 	// Handles of the locally registered resources, bucketed per type - handles are only comparable within a type.
 	map<string, set<string>> managed_handles;
 	for (auto &instance : ExternalResourcesManager::Get(context).List()) {
+		if (!accepts_type(instance.type)) {
+			continue;
+		}
 		ExternalResourceRow row;
 		row.name = instance.name;
 		row.type = instance.type;
@@ -178,7 +214,7 @@ static unique_ptr<GlobalTableFunctionState> ExternalResourcesInit(ClientContext 
 	// are not locally managed.
 	if (bind_data.discover) {
 		for (auto &type : ExternalResourceTypeRegistry::Get(context).List()) {
-			if (type.list_function.empty()) {
+			if (type.list_function.empty() || !accepts_type(type.name)) {
 				continue;
 			}
 			// operator[] gives an empty bucket for a type with nothing registered locally
@@ -215,6 +251,8 @@ void DuckDBExternalResourcesFun::RegisterFunction(BuiltinFunctions &set) {
 	                 ExternalResourcesInit);
 	fn.GetSignature().WithTypedKwargs("options",
 	                                  [](TypedKwargs &options) { options.Add("discover", LogicalType::BOOLEAN); });
+	fn.filter_pushdown = true;
+	fn.supports_pushdown_type = ExternalResourcesSupportsPushdown;
 	set.AddFunction(fn);
 }
 

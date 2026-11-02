@@ -1,0 +1,149 @@
+# name: test/sql/table_function/external_resources_type_pushdown.test
+# description: A filter on `type` is pushed into duckdb_external_resources(): only the accepted types' list callbacks run
+# group: [table_function]
+
+# Each list callback bumps its own sequence, so the sequences count how often discovery called it.
+statement ok
+CREATE SEQUENCE calls_a;
+
+statement ok
+CREATE SEQUENCE calls_b;
+
+statement ok
+CREATE MACRO list_a(opts) AS TABLE
+    SELECT MAP {'id': 'a' || nextval('calls_a')::VARCHAR} AS handle, 'a-ref' AS reference, 'running' AS state;
+
+statement ok
+CREATE MACRO list_b(opts) AS TABLE
+    SELECT MAP {'id': 'b' || nextval('calls_b')::VARCHAR} AS handle, 'b-ref' AS reference, 'running' AS state;
+
+statement ok
+CALL register_external_resource_type('a@pd', kind := 'catalog', create_function := 'noop_create', list_function := 'list_a');
+
+statement ok
+CALL register_external_resource_type('b@pd', kind := 'catalog', create_function := 'noop_create', list_function := 'list_b');
+
+# currval needs a prior nextval
+query II
+SELECT nextval('calls_a'), nextval('calls_b');
+----
+1	1
+
+# Unfiltered discovery calls both callbacks.
+query I
+SELECT count(*) FROM duckdb_external_resources(discover := true);
+----
+2
+
+query II
+SELECT currval('calls_a'), currval('calls_b');
+----
+2	2
+
+# Equality on type: only that type's callback runs.
+query T
+SELECT type FROM duckdb_external_resources(discover := true) WHERE type = 'a@pd';
+----
+a@pd
+
+query II
+SELECT currval('calls_a'), currval('calls_b');
+----
+3	2
+
+# IN
+query T
+SELECT type FROM duckdb_external_resources(discover := true) WHERE type IN ('b@pd', 'none@pd');
+----
+b@pd
+
+query II
+SELECT currval('calls_a'), currval('calls_b');
+----
+3	3
+
+# LIKE with a prefix
+query T
+SELECT type FROM duckdb_external_resources(discover := true) WHERE type LIKE 'a@%';
+----
+a@pd
+
+query II
+SELECT currval('calls_a'), currval('calls_b');
+----
+4	3
+
+# <>
+query T
+SELECT type FROM duckdb_external_resources(discover := true) WHERE type <> 'a@pd';
+----
+b@pd
+
+query II
+SELECT currval('calls_a'), currval('calls_b');
+----
+4	4
+
+# A type no registered type matches calls no callback at all.
+query I
+SELECT count(*) FROM duckdb_external_resources(discover := true) WHERE type = 'none@pd';
+----
+0
+
+query II
+SELECT currval('calls_a'), currval('calls_b');
+----
+4	4
+
+# A filter on another column is not pushed into the scan: both callbacks run, the filter applies to the result.
+query T
+SELECT type FROM duckdb_external_resources(discover := true) WHERE reference = 'b-ref';
+----
+b@pd
+
+query II
+SELECT currval('calls_a'), currval('calls_b');
+----
+5	5
+
+# Combined: the type filter prunes the callbacks, the other filter the rows.
+query I
+SELECT count(*) FROM duckdb_external_resources(discover := true) WHERE type = 'a@pd' AND reference = 'b-ref';
+----
+0
+
+query II
+SELECT currval('calls_a'), currval('calls_b');
+----
+6	5
+
+# The scan applies the type filter to the locally registered resources as well.
+statement ok
+CALL register_external_resource('a@pd', 'local_a', MAP {'id': 'x'});
+
+query TT
+SELECT name, type FROM duckdb_external_resources() WHERE type = 'a@pd';
+----
+local_a	a@pd
+
+query I
+SELECT count(*) FROM duckdb_external_resources() WHERE type = 'b@pd';
+----
+0
+
+query TTT
+SELECT name, type, managed FROM duckdb_external_resources(discover := true) WHERE type = 'a@pd' ORDER BY managed DESC;
+----
+local_a	a@pd	true
+NULL	a@pd	false
+
+# Only the type predicate becomes a filter of the scan.
+query II
+EXPLAIN SELECT type FROM duckdb_external_resources(discover := true) WHERE type = 'a@pd' AND reference = 'x';
+----
+physical_plan	<REGEX>:.*Filters:.*type.*a@pd.*
+
+query II
+EXPLAIN SELECT type FROM duckdb_external_resources(discover := true) WHERE reference = 'x';
+----
+physical_plan	<!REGEX>:.*Filters:.*
