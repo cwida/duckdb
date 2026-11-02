@@ -20,13 +20,11 @@ static bool ContainsRecursiveCTE(const LogicalOperator &op) {
 	return false;
 }
 
-void JoinFilterPushdownOptimizer::OptimizeCTEFilters(LogicalOperator &op) {
+void JoinFilterPushdownOptimizer::Optimize(LogicalOperator &op) {
 	if (!ContainsRecursiveCTE(op)) {
 		CollectCTEFilters(op);
 	}
-	for (auto &entry : cte_filters) {
-		GenerateJoinFilters(entry.first.get());
-	}
+	VisitOperator(op);
 }
 
 void JoinFilterPushdownOptimizer::CollectCTEFilters(LogicalOperator &op) {

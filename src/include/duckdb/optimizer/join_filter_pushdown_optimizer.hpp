@@ -26,8 +26,8 @@ public:
 	explicit JoinFilterPushdownOptimizer(Optimizer &optimizer);
 
 public:
+	void Optimize(LogicalOperator &op);
 	void VisitOperator(LogicalOperator &op) override;
-	void OptimizeCTEFilters(LogicalOperator &op);
 	//! Find scan targets independently for each column, allowing both NULL-retaining and NULL-rejecting filters.
 	//! Equality propagation can return multiple equivalent columns per scan; single-column callers leave it disabled.
 	static void GetPushdownFilterTargets(LogicalOperator &op, vector<JoinFilterPushdownColumn> columns,

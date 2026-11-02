@@ -521,7 +521,7 @@ void Optimizer::RunBuiltInOptimizers() {
 
 	RunOptimizer(OptimizerType::JOIN_FILTER_PUSHDOWN, [&]() {
 		JoinFilterPushdownOptimizer join_filter_pushdown(*this);
-		join_filter_pushdown.VisitOperator(*plan);
+		join_filter_pushdown.Optimize(*plan);
 	});
 }
 
@@ -572,12 +572,6 @@ unique_ptr<LogicalOperator> Optimizer::Optimize(unique_ptr<LogicalOperator> plan
 			}
 		});
 	}
-
-	// Collect complete CTE consumer groups after extensions have finished rewriting the plan.
-	RunOptimizer(OptimizerType::JOIN_FILTER_PUSHDOWN, [&]() {
-		JoinFilterPushdownOptimizer join_filter_pushdown(*this);
-		join_filter_pushdown.OptimizeCTEFilters(*plan);
-	});
 
 	Planner::VerifyPlan(context, plan);
 
