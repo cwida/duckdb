@@ -1,5 +1,5 @@
 # name: test/sql/optimizer/plan/test_except_empty_rhs.test
-# description: EXCEPT should keep its logical operator even when the RHS is empty
+# description: EXCEPT with an empty RHS returns the distinct rows of its LHS
 # group: [plan]
 
 statement ok
@@ -20,7 +20,21 @@ EXPLAIN SELECT * FROM (SELECT 1) lhs
 EXCEPT
 SELECT * FROM (SELECT 1 WHERE 1=0) rhs
 ----
-logical_opt	<REGEX>:.*EXCEPT.*
+logical_opt	<REGEX>:.*DISTINCT.*
+
+query II
+EXPLAIN SELECT * FROM (SELECT 1) lhs
+EXCEPT
+SELECT * FROM (SELECT 1 WHERE 1=0) rhs
+----
+logical_opt	<!REGEX>:.*ANTI.*
+
+query I
+SELECT * FROM (SELECT 1 UNION ALL SELECT 1) lhs
+EXCEPT
+SELECT * FROM (SELECT 1 WHERE 1=0) rhs
+----
+1
 
 query I
 SELECT * FROM (SELECT 42 EXCEPT SELECT 43) tbl(i) WHERE i = 42

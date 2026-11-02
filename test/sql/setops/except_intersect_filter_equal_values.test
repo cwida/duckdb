@@ -1,0 +1,258 @@
+# name: test/sql/setops/except_intersect_filter_equal_values.test
+# description: A filter around EXCEPT or INTERSECT that tells apart values the operation treats as equal keeps its result
+# group: [setops]
+
+statement ok
+CREATE TABLE a (s VARCHAR COLLATE NOCASE);
+
+statement ok
+CREATE TABLE b (s VARCHAR COLLATE NOCASE);
+
+statement ok
+INSERT INTO a VALUES ('ABC');
+
+statement ok
+INSERT INTO b VALUES ('abc');
+
+statement ok
+CREATE TABLE plain_a (s VARCHAR);
+
+statement ok
+CREATE TABLE plain_b (s VARCHAR);
+
+statement ok
+INSERT INTO plain_a VALUES ('ABC');
+
+statement ok
+INSERT INTO plain_b VALUES ('abc');
+
+# the result of EXCEPT is empty, so no filter can add a row
+query I
+SELECT count(*) FROM (SELECT s FROM a UNION ALL SELECT s FROM b EXCEPT SELECT s FROM b) WHERE hex(s) = hex('ABC');
+----
+0
+
+# a filter above the operation
+query I
+SELECT count(*) FROM (SELECT s FROM a EXCEPT SELECT s FROM b) WHERE hex(s) = hex('ABC');
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT s FROM a EXCEPT ALL SELECT s FROM b) WHERE hex(s) = hex('ABC');
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT s FROM a INTERSECT SELECT s FROM b) WHERE hex(s) = hex('ABC');
+----
+1
+
+query I
+SELECT count(*) FROM (SELECT s FROM a INTERSECT ALL SELECT s FROM b) WHERE hex(s) = hex('ABC');
+----
+1
+
+# a filter on the left child
+query I
+SELECT count(*) FROM (SELECT s FROM a WHERE hex(s) = hex('ABC') EXCEPT SELECT s FROM b);
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT s FROM a WHERE hex(s) = hex('ABC') EXCEPT ALL SELECT s FROM b);
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT s FROM a WHERE hex(s) = hex('ABC') INTERSECT SELECT s FROM b);
+----
+1
+
+# a filter on the right child
+query I
+SELECT count(*) FROM (SELECT s FROM a INTERSECT SELECT s FROM b WHERE hex(s) = hex('abc'));
+----
+1
+
+query I
+SELECT count(*) FROM (SELECT s FROM a INTERSECT ALL SELECT s FROM b WHERE hex(s) = hex('abc'));
+----
+1
+
+# the collation of either child applies
+query I
+SELECT count(*) FROM (SELECT s FROM plain_a EXCEPT SELECT s FROM b) WHERE hex(s) = hex('ABC');
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT s FROM a EXCEPT SELECT s FROM plain_b) WHERE hex(s) = hex('ABC');
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT s FROM plain_a INTERSECT SELECT s FROM b WHERE hex(s) = hex('abc'));
+----
+1
+
+# the collation of the child without the filter applies
+query I
+SELECT count(*) FROM (SELECT s FROM a INTERSECT SELECT s FROM plain_b WHERE hex(s) = hex('abc'));
+----
+1
+
+query I
+SELECT count(*) FROM (SELECT s FROM plain_a WHERE hex(s) = hex('ABC') EXCEPT SELECT s FROM b);
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT s FROM plain_a WHERE hex(s) = hex('ABC') EXCEPT ALL SELECT s FROM b);
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT s FROM plain_a WHERE hex(s) = hex('ABC') INTERSECT SELECT s FROM b);
+----
+1
+
+# a filter with another collation than the one the operation compares with
+query I
+SELECT count(*) FROM (SELECT s FROM a EXCEPT SELECT s FROM b) WHERE s COLLATE noaccent = 'ABC';
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT s FROM a INTERSECT SELECT s FROM b) WHERE s COLLATE noaccent = 'ABC';
+----
+1
+
+# the default collation
+statement ok
+SET default_collation = 'nocase';
+
+query I
+SELECT count(*) FROM (SELECT s FROM plain_a EXCEPT SELECT s FROM plain_b) WHERE hex(s) = hex('ABC');
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT s FROM plain_a INTERSECT SELECT s FROM plain_b) WHERE hex(s) = hex('ABC');
+----
+1
+
+statement ok
+RESET default_collation;
+
+query I
+SELECT count(*) FROM (SELECT s FROM plain_a EXCEPT SELECT s FROM plain_b) WHERE hex(s) = hex('ABC');
+----
+1
+
+# -0.0 equals 0.0
+statement ok
+CREATE TABLE d (x DOUBLE);
+
+statement ok
+CREATE TABLE z (x DOUBLE);
+
+statement ok
+INSERT INTO d VALUES (-0.0::DOUBLE), (1.5);
+
+statement ok
+INSERT INTO z VALUES (0.0);
+
+query I
+SELECT count(*) FROM (SELECT x FROM d EXCEPT SELECT x FROM z) WHERE 1 / x < 0;
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT x FROM d INTERSECT SELECT x FROM z) WHERE 1 / x < 0;
+----
+1
+
+query I
+SELECT count(*) FROM (SELECT x FROM d EXCEPT SELECT x FROM z) WHERE x <= 0;
+----
+0
+
+# INTERVAL '30 days' equals INTERVAL '1 month'
+query I
+SELECT count(*) FROM (SELECT INTERVAL 30 DAY AS i EXCEPT SELECT INTERVAL 1 MONTH) WHERE i::VARCHAR = '30 days';
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT INTERVAL 30 DAY AS i INTERSECT SELECT INTERVAL 1 MONTH) WHERE i::VARCHAR = '30 days';
+----
+1
+
+# a filter that cannot tell apart equal values still reaches both children
+statement ok
+CREATE TABLE ints_a AS SELECT range AS i FROM range(100);
+
+statement ok
+CREATE TABLE ints_b AS SELECT range AS i FROM range(50);
+
+query II
+EXPLAIN SELECT * FROM (SELECT i FROM ints_a EXCEPT SELECT i FROM ints_b) WHERE i = 7;
+----
+physical_plan	<REGEX>:.*Filters: i = 7.*Filters: i = 7.*
+
+# a direct comparison does not tell apart -0.0 and 0.0
+statement ok
+CREATE TABLE doubles_a AS SELECT range::DOUBLE AS x FROM range(100);
+
+statement ok
+CREATE TABLE doubles_b AS SELECT range::DOUBLE AS x FROM range(50);
+
+query II
+EXPLAIN SELECT * FROM (SELECT x FROM doubles_a EXCEPT SELECT x FROM doubles_b) WHERE x = 7;
+----
+physical_plan	<REGEX>:.*Filters: x = 7.0.*Filters: x = 7.0.*
+
+query II
+EXPLAIN SELECT * FROM (SELECT x FROM doubles_a EXCEPT SELECT x FROM doubles_b) WHERE 1 / x = 7;
+----
+physical_plan	<!REGEX>:.*1.0 / x.*1.0 / x.*
+
+# a comparison by the collation key the operation compares with still reaches both children
+statement ok
+CREATE TABLE intervals_a AS SELECT to_days(range::INTEGER) AS i FROM range(100);
+
+statement ok
+CREATE TABLE intervals_b AS SELECT to_days(range::INTEGER) AS i FROM range(50);
+
+query II
+EXPLAIN SELECT * FROM (SELECT i FROM intervals_a EXCEPT SELECT i FROM intervals_b) WHERE i < INTERVAL 10 DAY;
+----
+physical_plan	<REGEX>:.*normalized_interval\(i\) < .*normalized_interval\(i\) < .*
+
+statement ok
+CREATE TABLE nocase_a AS SELECT range::VARCHAR COLLATE NOCASE AS s FROM range(100);
+
+statement ok
+CREATE TABLE nocase_b AS SELECT range::VARCHAR COLLATE NOCASE AS s FROM range(50);
+
+query II
+EXPLAIN SELECT * FROM (SELECT s FROM nocase_a EXCEPT SELECT s FROM nocase_b) WHERE s = '7';
+----
+physical_plan	<REGEX>:.*Filters: lower\(s\) = '7'.*Filters: lower\(s\) = '7'.*
+
+# a volatile filter is not copied into both inputs
+query II
+EXPLAIN SELECT * FROM (SELECT i FROM ints_a INTERSECT SELECT i FROM ints_b) WHERE random() < 0.5;
+----
+physical_plan	<REGEX>:.*random\(\).*
+
+query II
+EXPLAIN SELECT * FROM (SELECT i FROM ints_a INTERSECT SELECT i FROM ints_b) WHERE random() < 0.5;
+----
+physical_plan	<!REGEX>:.*random\(\).*random\(\).*
+
+query II
+EXPLAIN SELECT i FROM ints_a WHERE random() < 0.5 INTERSECT SELECT i FROM ints_b;
+----
+physical_plan	<!REGEX>:.*random\(\).*random\(\).*
