@@ -1,0 +1,259 @@
+# name: test/sql/pragma/profiling/test_profiling_bytes_scanned_csv.test
+# description: Test query.total_bytes_scanned and operator.bytes_scanned for CSV scans
+# group: [profiling]
+
+require json
+
+statement ok
+COPY (SELECT range AS i, 'value ' || range AS s FROM range(100000)) TO '{TEST_DIR}/bytes_scanned_1.csv';
+
+statement ok
+COPY (SELECT range AS i, 'value ' || range AS s FROM range(100000)) TO '{TEST_DIR}/bytes_scanned_2.csv';
+
+statement ok
+COPY (SELECT range AS i, 'value ' || range AS s FROM range(100000)) TO '{TEST_DIR}/bytes_scanned_1.csv.gz' (COMPRESSION gzip);
+
+# 16384 lines of 8 bytes: 131072 bytes, an exact multiple of the 65536-byte buffer
+statement ok
+COPY (SELECT lpad(range::VARCHAR, 7, '0') AS v FROM range(16384)) TO '{TEST_DIR}/bytes_scanned_exact.csv.gz' (HEADER false, COMPRESSION gzip);
+
+statement ok
+COPY (SELECT range AS i, 'value ' || range AS s FROM range(100000)) TO '{TEST_DIR}/bytes_scanned_many_1.csv';
+
+statement ok
+COPY (SELECT range AS i, 'value ' || range AS s FROM range(100000)) TO '{TEST_DIR}/bytes_scanned_many_2.csv';
+
+statement ok
+COPY (SELECT range AS i, 'value ' || range AS s FROM range(100000)) TO '{TEST_DIR}/bytes_scanned_many_3.csv';
+
+statement ok
+COPY (SELECT range AS i, 'value ' || range AS s FROM range(100000)) TO '{TEST_DIR}/bytes_scanned_many_4.csv';
+
+statement ok
+COPY (SELECT range AS i, 'value ' || range AS s FROM range(100000)) TO '{TEST_DIR}/bytes_scanned_many_5.csv';
+
+statement ok
+CREATE TABLE sizes AS SELECT filename, size FROM read_blob(['{TEST_DIR}/bytes_scanned_*.csv*', 'data/csv/encodings/latin1.csv']);
+
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+SET tracked_metrics = ['query.total_bytes_scanned', 'operator.bytes_scanned', 'operator.type'];
+
+# a scan of the whole file counts every byte of it
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/bytes_scanned_csv_one.json';
+
+statement ok
+SELECT sum(i) FROM '{TEST_DIR}/bytes_scanned_1.csv';
+
+statement ok
+PRAGMA disable_profiling;
+
+query I
+SELECT query.total_bytes_scanned = (SELECT size FROM sizes WHERE filename LIKE '%bytes_scanned_1.csv')
+FROM '{TEST_DIR}/bytes_scanned_csv_one.json';
+----
+true
+
+query II
+EXPLAIN ANALYZE (FORMAT json) SELECT sum(i) FROM '{TEST_DIR}/bytes_scanned_1.csv'
+----
+analyzed_plan	<REGEX>:[\s\S]*"bytes_scanned": [1-9][\s\S]*
+
+# a compressed file counts its compressed bytes
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/bytes_scanned_csv_gzip.json';
+
+statement ok
+SELECT sum(i) FROM '{TEST_DIR}/bytes_scanned_1.csv.gz';
+
+statement ok
+PRAGMA disable_profiling;
+
+query I
+SELECT query.total_bytes_scanned = (SELECT size FROM sizes WHERE filename LIKE '%bytes_scanned_1.csv.gz')
+FROM '{TEST_DIR}/bytes_scanned_csv_gzip.json';
+----
+true
+
+# several files count each of them
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/bytes_scanned_csv_two.json';
+
+statement ok
+SELECT sum(i) FROM read_csv(['{TEST_DIR}/bytes_scanned_1.csv', '{TEST_DIR}/bytes_scanned_2.csv']);
+
+statement ok
+PRAGMA disable_profiling;
+
+query I
+SELECT query.total_bytes_scanned = (SELECT sum(size) FROM sizes WHERE filename SIMILAR TO '.*bytes_scanned_[12]\.csv')
+FROM '{TEST_DIR}/bytes_scanned_csv_two.json';
+----
+true
+
+# a file scanned twice counts twice
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/bytes_scanned_csv_twice.json';
+
+statement ok
+SELECT (SELECT sum(i) FROM '{TEST_DIR}/bytes_scanned_1.csv') + (SELECT sum(i) FROM '{TEST_DIR}/bytes_scanned_1.csv');
+
+statement ok
+PRAGMA disable_profiling;
+
+query I
+SELECT query.total_bytes_scanned = 2 * (SELECT size FROM sizes WHERE filename LIKE '%bytes_scanned_1.csv')
+FROM '{TEST_DIR}/bytes_scanned_csv_twice.json';
+----
+true
+
+# a LIMIT counts only the buffers it scans, not the whole file
+statement ok
+SET threads = 1;
+
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/bytes_scanned_csv_limit.json';
+
+statement ok
+SELECT * FROM read_csv('{TEST_DIR}/bytes_scanned_1.csv', buffer_size = 65536) LIMIT 10;
+
+statement ok
+PRAGMA disable_profiling;
+
+query II
+SELECT query.total_bytes_scanned > 0,
+       query.total_bytes_scanned < (SELECT size FROM sizes WHERE filename LIKE '%bytes_scanned_1.csv')
+FROM '{TEST_DIR}/bytes_scanned_csv_limit.json';
+----
+true	true
+
+statement ok
+SET threads = 2;
+
+# a file read in several buffers counts every one, also when its scan is finished before its last buffer is
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/bytes_scanned_csv_serial.json';
+
+statement ok
+SELECT sum(i) FROM read_csv('{TEST_DIR}/bytes_scanned_1.csv', parallel = false, buffer_size = 65536);
+
+statement ok
+PRAGMA disable_profiling;
+
+query I
+SELECT query.total_bytes_scanned = (SELECT size FROM sizes WHERE filename LIKE '%bytes_scanned_1.csv')
+FROM '{TEST_DIR}/bytes_scanned_csv_serial.json';
+----
+true
+
+# more files than threads, each read in several buffers
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/bytes_scanned_csv_many.json';
+
+statement ok
+SELECT sum(i) FROM read_csv('{TEST_DIR}/bytes_scanned_many_*.csv', buffer_size = 65536);
+
+statement ok
+PRAGMA disable_profiling;
+
+query I
+SELECT query.total_bytes_scanned = (SELECT sum(size) FROM sizes WHERE filename SIMILAR TO '.*bytes_scanned_many_[1-5]\.csv')
+FROM '{TEST_DIR}/bytes_scanned_csv_many.json';
+----
+true
+
+# rows skipped over several buffers count too, for a plain and a compressed file
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/bytes_scanned_csv_skip.json';
+
+statement ok
+SELECT count(*) FROM read_csv('{TEST_DIR}/bytes_scanned_1.csv', skip = 90000, header = false, buffer_size = 65536);
+
+statement ok
+PRAGMA disable_profiling;
+
+query I
+SELECT query.total_bytes_scanned = (SELECT size FROM sizes WHERE filename LIKE '%bytes_scanned_1.csv')
+FROM '{TEST_DIR}/bytes_scanned_csv_skip.json';
+----
+true
+
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/bytes_scanned_csv_skip_gzip.json';
+
+statement ok
+SELECT count(*) FROM read_csv('{TEST_DIR}/bytes_scanned_1.csv.gz', skip = 90000, header = false, buffer_size = 65536);
+
+statement ok
+PRAGMA disable_profiling;
+
+query I
+SELECT query.total_bytes_scanned = (SELECT size FROM sizes WHERE filename LIKE '%bytes_scanned_1.csv.gz')
+FROM '{TEST_DIR}/bytes_scanned_csv_skip_gzip.json';
+----
+true
+
+# a compressed file whose decompressed size fills its last buffer exactly counts its trailer
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/bytes_scanned_csv_exact.json';
+
+statement ok
+SELECT count(*) FROM read_csv('{TEST_DIR}/bytes_scanned_exact.csv.gz', header = false, buffer_size = 65536);
+
+statement ok
+PRAGMA disable_profiling;
+
+query I
+SELECT query.total_bytes_scanned = (SELECT size FROM sizes WHERE filename LIKE '%bytes_scanned_exact.csv.gz')
+FROM '{TEST_DIR}/bytes_scanned_csv_exact.json';
+----
+true
+
+# an encoding other than utf-8 counts the bytes of the file, not the decoded ones
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/bytes_scanned_csv_latin1.json';
+
+statement ok
+SELECT count(*) FROM read_csv('data/csv/encodings/latin1.csv', encoding = 'latin-1');
+
+statement ok
+PRAGMA disable_profiling;
+
+query I
+SELECT query.total_bytes_scanned = (SELECT size FROM sizes WHERE filename LIKE '%encodings/latin1.csv')
+FROM '{TEST_DIR}/bytes_scanned_csv_latin1.json';
+----
+true

@@ -1,6 +1,7 @@
 #include "duckdb/function/table/system_catalog_scanner.hpp"
 
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/catalog/entry_scan_filters.hpp"
 #include "duckdb/catalog/schema_scan_filters.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/numeric_utils.hpp"
@@ -17,20 +18,14 @@
 
 namespace duckdb {
 
+static bool Matches(const optional_idx &idx, idx_t column_index) {
+	return idx.IsValid() && idx.GetIndex() == column_index;
+}
+
 bool SystemCatalogScannerData::IsIdentityColumn(idx_t column_index) const {
-	if (database_name_idx.IsValid() && database_name_idx.GetIndex() == column_index) {
-		return true;
-	}
-	if (database_oid_idx.IsValid() && database_oid_idx.GetIndex() == column_index) {
-		return true;
-	}
-	if (schema_name_idx.IsValid() && schema_name_idx.GetIndex() == column_index) {
-		return true;
-	}
-	if (schema_oid_idx.IsValid() && schema_oid_idx.GetIndex() == column_index) {
-		return true;
-	}
-	return false;
+	return Matches(database_name_idx, column_index) || Matches(database_oid_idx, column_index) ||
+	       Matches(schema_name_idx, column_index) || Matches(schema_oid_idx, column_index) ||
+	       Matches(entry_name_idx, column_index) || Matches(entry_oid_idx, column_index);
 }
 
 unique_ptr<FunctionData> SystemCatalogScannerData::Copy() const {
@@ -39,26 +34,45 @@ unique_ptr<FunctionData> SystemCatalogScannerData::Copy() const {
 	result->database_oid_idx = database_oid_idx;
 	result->schema_name_idx = schema_name_idx;
 	result->schema_oid_idx = schema_oid_idx;
+	result->entry_name_idx = entry_name_idx;
+	result->entry_oid_idx = entry_oid_idx;
 	return std::move(result);
 }
 
 bool SystemCatalogScannerData::Equals(const FunctionData &other_p) const {
 	auto &other = other_p.Cast<SystemCatalogScannerData>();
 	return database_name_idx == other.database_name_idx && database_oid_idx == other.database_oid_idx &&
-	       schema_name_idx == other.schema_name_idx && schema_oid_idx == other.schema_oid_idx;
+	       schema_name_idx == other.schema_name_idx && schema_oid_idx == other.schema_oid_idx &&
+	       entry_name_idx == other.entry_name_idx && entry_oid_idx == other.entry_oid_idx;
 }
 
-unique_ptr<FunctionData> SystemCatalogScanner::CreateBindData(const vector<Identifier> &names) {
+// the filters are evaluated against a VARCHAR (names) or BIGINT (oids) value, so only a column of that type can be
+// an identity column
+static bool IsIdentityType(const LogicalType &type, bool is_oid) {
+	return type.id() == (is_oid ? LogicalTypeId::BIGINT : LogicalTypeId::VARCHAR);
+}
+
+unique_ptr<FunctionData> SystemCatalogScanner::CreateBindData(const vector<Identifier> &names,
+                                                              const vector<LogicalType> &return_types,
+                                                              const char *entry_name_column,
+                                                              const char *entry_oid_column) {
+	D_ASSERT(names.size() == return_types.size());
 	auto result = make_uniq<SystemCatalogScannerData>();
 	for (idx_t i = 0; i < names.size(); i++) {
-		if (names[i] == "database_name") {
+		auto &name = names[i];
+		auto &type = return_types[i];
+		if (name == "database_name" && IsIdentityType(type, false)) {
 			result->database_name_idx = i;
-		} else if (names[i] == "database_oid") {
+		} else if (name == "database_oid" && IsIdentityType(type, true)) {
 			result->database_oid_idx = i;
-		} else if (names[i] == "schema_name") {
+		} else if (name == "schema_name" && IsIdentityType(type, false)) {
 			result->schema_name_idx = i;
-		} else if (names[i] == "schema_oid") {
+		} else if (name == "schema_oid" && IsIdentityType(type, true)) {
 			result->schema_oid_idx = i;
+		} else if (entry_name_column && name == entry_name_column && IsIdentityType(type, false)) {
+			result->entry_name_idx = i;
+		} else if (entry_oid_column && name == entry_oid_column && IsIdentityType(type, true)) {
+			result->entry_oid_idx = i;
 		}
 	}
 	return std::move(result);
@@ -88,37 +102,50 @@ static bool SupportsPushdown(const FunctionData &bind_data, idx_t col_idx) {
 	return bind_data.Cast<SystemCatalogScannerData>().IsIdentityColumn(col_idx);
 }
 
-static bool Matches(const optional_idx &idx, idx_t column_index) {
-	return idx.IsValid() && idx.GetIndex() == column_index;
-}
+namespace {
 
-vector<reference<SchemaCatalogEntry>> SystemCatalogScanner::GetSchemas(ClientContext &context,
-                                                                       TableFunctionInitInput &input,
-                                                                       SystemCatalogScannerStats &stats) {
-	if (!input.bind_data || !input.filters || !input.filters->HasFilters()) {
-		return Catalog::GetAllSchemas(context);
+//! The pushed-down filters of a scan, bucketed by identity column.
+struct ScanFilters {
+	optional_ptr<const TableFilter> database_name;
+	optional_ptr<const TableFilter> database_oid;
+	SchemaScanFilters schema;
+	EntryScanFilters entry;
+
+	bool HasSchemaLevelFilters() const {
+		return database_name || database_oid || schema.GetSchemaName() || schema.GetSchemaOid();
 	}
-	auto &data = input.bind_data->Cast<SystemCatalogScannerData>();
+};
 
-	// filters are keyed by position in input.column_indexes. A filter on any other column is either re-applied above
-	// the scan by the planner (supports_pushdown_type) or an optional join filter the join re-checks; skip it.
-	optional_ptr<const TableFilter> database_name_filter;
-	optional_ptr<const TableFilter> database_oid_filter;
-	SchemaScanFilters schema_filters;
+// filters are keyed by position in input.column_indexes. A filter on any other column is either re-applied above
+// the scan by the planner (supports_pushdown_type) or an optional join filter the join re-checks; skip it.
+ScanFilters CollectFilters(TableFunctionInitInput &input, const SystemCatalogScannerData &data) {
+	ScanFilters result;
+	if (!input.filters) {
+		return result;
+	}
 	for (auto &entry : *input.filters) {
 		auto &column = input.column_indexes[entry.GetIndex().GetIndex()];
 		auto column_index = column.GetPrimaryIndex();
 		if (Matches(data.database_name_idx, column_index)) {
-			database_name_filter = &entry.Filter();
+			result.database_name = &entry.Filter();
 		} else if (Matches(data.database_oid_idx, column_index)) {
-			database_oid_filter = &entry.Filter();
+			result.database_oid = &entry.Filter();
 		} else if (Matches(data.schema_name_idx, column_index)) {
-			schema_filters.schema_name = &entry.Filter();
+			result.schema.SetSchemaName(&entry.Filter());
 		} else if (Matches(data.schema_oid_idx, column_index)) {
-			schema_filters.schema_oid = &entry.Filter();
+			result.schema.SetSchemaOid(&entry.Filter());
+		} else if (Matches(data.entry_name_idx, column_index)) {
+			result.entry.SetName(&entry.Filter());
+		} else if (Matches(data.entry_oid_idx, column_index)) {
+			result.entry.SetOid(&entry.Filter());
 		}
 	}
-	if (!database_name_filter && !database_oid_filter && !schema_filters.schema_name && !schema_filters.schema_oid) {
+	return result;
+}
+
+vector<reference<SchemaCatalogEntry>> GetSchemasWithFilters(ClientContext &context, const ScanFilters &filters,
+                                                            SystemCatalogScannerStats &stats) {
+	if (!filters.HasSchemaLevelFilters()) {
 		return Catalog::GetAllSchemas(context);
 	}
 
@@ -130,16 +157,16 @@ vector<reference<SchemaCatalogEntry>> SystemCatalogScanner::GetSchemas(ClientCon
 		}
 		auto &catalog = database->GetCatalog();
 		stats.catalogs_total++;
-		if (!SchemaScanFilters::Satisfies(context, database_name_filter, Value(catalog.GetName())) ||
-		    !SchemaScanFilters::Satisfies(context, database_oid_filter,
+		if (!SchemaScanFilters::Satisfies(context, filters.database_name, Value(catalog.GetName())) ||
+		    !SchemaScanFilters::Satisfies(context, filters.database_oid,
 		                                  Value::BIGINT(NumericCast<int64_t>(catalog.GetOid())))) {
 			continue;
 		}
 		stats.catalogs_scanned++;
-		for (auto &schema : catalog.GetSchemasForScan(context, schema_filters)) {
+		for (auto &schema : catalog.GetSchemasForScan(context, filters.schema)) {
 			stats.schemas_total++;
 			// the catalog may return schemas the filters reject
-			if (!schema_filters.Accepts(context, schema.get())) {
+			if (!filters.schema.Accepts(context, schema.get())) {
 				continue;
 			}
 			stats.schemas_scanned++;
@@ -162,11 +189,69 @@ vector<reference<SchemaCatalogEntry>> SystemCatalogScanner::GetSchemas(ClientCon
 	return result;
 }
 
+} // namespace
+
+vector<reference<SchemaCatalogEntry>> SystemCatalogScanner::GetSchemas(ClientContext &context,
+                                                                       TableFunctionInitInput &input,
+                                                                       SystemCatalogScannerStats &stats) {
+	if (!input.bind_data) {
+		return Catalog::GetAllSchemas(context);
+	}
+	auto &data = input.bind_data->Cast<SystemCatalogScannerData>();
+	return GetSchemasWithFilters(context, CollectFilters(input, data), stats);
+}
+
+EntryScanFilters SystemCatalogScanner::GetEntryFilters(TableFunctionInitInput &input) {
+	if (!input.bind_data) {
+		return EntryScanFilters();
+	}
+	return CollectFilters(input, input.bind_data->Cast<SystemCatalogScannerData>()).entry;
+}
+
+vector<reference<CatalogEntry>> SystemCatalogScanner::GetSchemaEntries(ClientContext &context,
+                                                                       SchemaCatalogEntry &schema, CatalogType type,
+                                                                       const EntryScanFilters &filters,
+                                                                       SystemCatalogScannerStats &stats) {
+	vector<reference<CatalogEntry>> result;
+	std::function<void(CatalogEntry &)> collect = [&](CatalogEntry &entry) {
+		stats.entries_total++;
+		// the schema may return entries the filters reject
+		if (!filters.Accepts(context, entry)) {
+			return;
+		}
+		stats.entries_scanned++;
+		result.push_back(entry);
+	};
+	SchemaScanInfo info {type, collect, &filters};
+	schema.Scan(context, info);
+	return result;
+}
+
+vector<reference<CatalogEntry>> SystemCatalogScanner::GetEntries(ClientContext &context, TableFunctionInitInput &input,
+                                                                 CatalogType type, SystemCatalogScannerStats &stats) {
+	vector<reference<CatalogEntry>> result;
+	if (!input.bind_data) {
+		for (auto &schema : Catalog::GetAllSchemas(context)) {
+			schema.get().Scan(context, type, [&](CatalogEntry &entry) { result.push_back(entry); });
+		}
+		return result;
+	}
+	auto &data = input.bind_data->Cast<SystemCatalogScannerData>();
+	auto filters = CollectFilters(input, data);
+	for (auto &schema : GetSchemasWithFilters(context, filters, stats)) {
+		auto entries = GetSchemaEntries(context, schema.get(), type, filters.entry, stats);
+		result.insert(result.end(), entries.begin(), entries.end());
+	}
+	return result;
+}
+
 void SystemCatalogScanner::ReportMetrics(TableFunctionGetMetricsInput &input, const SystemCatalogScannerStats &stats) {
 	input.operator_metrics.AddExtraInfo("Catalogs Scanned",
 	                                    to_string(stats.catalogs_scanned) + "/" + to_string(stats.catalogs_total));
 	input.operator_metrics.AddExtraInfo("Schemas Scanned",
 	                                    to_string(stats.schemas_scanned) + "/" + to_string(stats.schemas_total));
+	input.operator_metrics.AddExtraInfo("Entries Scanned",
+	                                    to_string(stats.entries_scanned) + "/" + to_string(stats.entries_total));
 }
 
 void SystemCatalogScanner::RegisterPushdown(TableFunction &function) {

@@ -1,0 +1,11 @@
+# name: test/parquet/corrupt/geometry_add_wkb_type_oob.test
+# description: Reject invalid geometry type codes in Parquet statistics
+# group: [corrupt]
+
+require parquet
+
+# The geospatial type code -1001 would index outside the geometry type set.
+statement error
+SELECT * FROM read_parquet('data/parquet-testing/corrupt/geometry_add_wkb_type_oob.parquet');
+----
+Invalid geometry type in Parquet file

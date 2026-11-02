@@ -106,6 +106,8 @@ private:
 	DatabaseInstance &db;
 	//! Lock for modifying the thread count
 	mutex thread_lock;
+	//! Set when the thread count changed
+	atomic<bool> relaunch_requested;
 	//! The thread pools
 	array<unique_ptr<TaskSchedulerPool>, TASK_SCHEDULER_TYPE_COUNT> pools;
 	//! The task queues
