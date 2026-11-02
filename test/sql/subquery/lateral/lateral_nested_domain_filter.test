@@ -1,0 +1,185 @@
+# name: test/sql/subquery/lateral/lateral_nested_domain_filter.test
+# description: Nested correlation restrictions preserve independent recursive partitions
+# group: [lateral]
+
+statement ok
+SET max_execution_time=10000;
+
+statement ok
+CREATE TABLE person(id BIGINT PRIMARY KEY, selected BOOLEAN);
+
+statement ok
+INSERT INTO person SELECT i, i IN (3,17,51) FROM range(1000) t(i);
+
+statement ok
+CREATE VIEW nested_walk AS
+SELECT *
+FROM (
+    SELECT o.id, o.selected, q.x
+    FROM person o,
+    LATERAL (
+        SELECT r.x
+        FROM person i,
+        LATERAL (
+            WITH RECURSIVE walk(x) USING KEY(x) AS (
+                SELECT i.id
+                UNION
+                SELECT w.x + 1
+                FROM walk w
+                WHERE w.x < i.id + 2
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM recurring.walk visited
+                      WHERE visited.x = w.x + 1
+                  )
+            )
+            SELECT max(x) AS x FROM walk
+        ) r
+        WHERE i.id = o.id
+        UNION ALL
+        SELECT -1
+    ) q
+) result
+;
+
+query I
+SELECT max(x) FROM nested_walk WHERE id=3;
+----
+5
+
+# Several sparse keys selected by a non-key attribute must preserve their partitions.
+query III
+SELECT count(*), sum(x), max(x) FROM nested_walk WHERE selected;
+----
+6	74	53
+
+query I
+SELECT count(*) FROM nested_walk WHERE id=-1;
+----
+0
+
+query II
+SELECT count(*), sum(x) FROM nested_walk;
+----
+2000	500500
+
+# Different partitions update the same user key and terminate after different iteration counts.
+statement ok
+CREATE VIEW nested_updates AS
+SELECT o.id, o.selected, q.x
+FROM person o, LATERAL (
+    SELECT r.x FROM person i, LATERAL (
+        WITH RECURSIVE walk(k, v) USING KEY(k) AS (
+            SELECT 0, i.id * 0
+            UNION
+            SELECT k, v+1 FROM walk WHERE v < i.id % 3 + 1
+        ) SELECT max(v) x FROM walk
+    ) r WHERE i.id=o.id
+    UNION ALL SELECT -1
+) q;
+
+query III
+SELECT count(*), sum(x), max(x) FROM nested_updates WHERE selected;
+----
+6	2	3
+
+# A second materialized ancestor can itself supply the restricted key set.
+statement ok
+CREATE VIEW deeply_nested AS
+SELECT o.id, o.selected, q.x
+FROM person o, LATERAL (
+    SELECT middle_result.x
+    FROM person m, LATERAL (
+        SELECT r.x FROM person i, LATERAL (
+            WITH RECURSIVE walk(x) USING KEY(x) AS (
+                SELECT i.id
+                UNION
+                SELECT x+1 FROM walk WHERE x<i.id+2
+            ) SELECT max(x) x FROM walk
+        ) r WHERE i.id=m.id
+        UNION ALL SELECT -1
+    ) middle_result WHERE m.id=o.id
+    UNION ALL SELECT -1
+) q;
+
+query III
+SELECT count(*),sum(x),max(x) FROM deeply_nested WHERE selected;
+----
+9	71	53
+
+# An ancestor's volatile projection is materialized once, including when it gains a reader.
+statement ok
+CREATE SEQUENCE source_calls;
+
+query II
+WITH o AS MATERIALIZED (SELECT id,nextval('source_calls') v FROM person WHERE selected)
+SELECT sum(q.x),sum(o.v) FROM o JOIN (
+    SELECT i.id,r.x FROM person i, LATERAL (
+        WITH RECURSIVE walk(x) AS (
+            SELECT i.id UNION ALL SELECT x+1 FROM walk WHERE x<i.id+2
+        ) SELECT max(x) x FROM walk
+    ) r
+) q ON o.id=q.id;
+----
+77	6
+
+query I
+SELECT currval('source_calls');
+----
+3
+
+# A volatile projection on the target path prevents the relational restriction from crossing it.
+statement ok
+CREATE SEQUENCE target_calls;
+
+query II
+WITH o AS MATERIALIZED (SELECT id FROM person WHERE selected)
+SELECT count(*),sum(q.v)>0 FROM o JOIN (
+    SELECT i.id,nextval('target_calls') v,r.x FROM person i, LATERAL (
+        WITH RECURSIVE walk(x) AS (
+            SELECT i.id UNION ALL SELECT x+1 FROM walk WHERE x<i.id+2
+        ) SELECT max(x) x FROM walk
+    ) r
+) q ON o.id=q.id;
+----
+3	true
+
+query I
+SELECT currval('target_calls');
+----
+1000
+
+# Exercise the same result contracts when individual optimizer passes are disabled.
+foreach disabled cte_filter_pusher filter_pushdown cte_inlining deliminator
+
+statement ok
+SET disabled_optimizers='{disabled}';
+
+query III
+SELECT count(*), sum(x), max(x) FROM nested_walk WHERE selected;
+----
+6	74	53
+
+query III
+SELECT count(*), sum(x), max(x) FROM nested_updates WHERE selected;
+----
+6	2	3
+
+endloop
+
+statement ok
+RESET disabled_optimizers;
+
+statement ok
+SET debug_verify_serializer=true;
+
+query III
+SELECT count(*), sum(x), max(x) FROM nested_walk WHERE selected;
+----
+6	74	53
+
+statement ok
+RESET debug_verify_serializer;
+
+statement ok
+RESET max_execution_time;

@@ -1,0 +1,158 @@
+# name: test/sql/logging/http_url_log_redaction.test
+# description: Core HTTP logging redacts URL query strings and fragments
+# group: [logging]
+
+require noforcestorage
+
+require skip_reload
+
+statement ok
+SET extension_directory = '{TEST_DIR}/http_url_log_redaction';
+
+statement ok
+SET autoload_known_extensions = false;
+
+statement ok
+SET autoinstall_known_extensions = false;
+
+statement ok
+CALL enable_logging('HTTP', storage = 'memory');
+
+# INSTALL over HTTP uses core's built-in client without HTTPFS. GitHub redirects to HTTPS
+# or rejects the request target. Redirects are not followed, so no extension is installed.
+foreach redact true false
+
+statement ok
+SET redact_http_logs = {redact};
+
+# URLs without sensitive components retain the host and path.
+statement ok
+CALL truncate_duckdb_logs();
+
+statement maybe
+INSTALL 'http://github.com/duckdb/duckdb';
+----
+
+query I
+SELECT count(*) > 0 AND bool_and(request.url = 'http://github.com/duckdb/duckdb')
+FROM duckdb_logs_parsed('HTTP');
+----
+true
+
+# Redact the entire query, including unknown keys and values containing '@'.
+statement ok
+CALL truncate_duckdb_logs();
+
+statement maybe
+INSTALL 'http://github.com/duckdb/duckdb?custom_token=dummy-token&email=dummy@example.com';
+----
+
+query I
+SELECT count(*) > 0 AND bool_and(request.url = CASE WHEN {redact}
+    THEN 'http://github.com/duckdb/duckdb?redacted'
+    ELSE 'http://github.com/duckdb/duckdb?custom_token=dummy-token&email=dummy@example.com'
+END)
+FROM duckdb_logs_parsed('HTTP');
+----
+true
+
+# Fragments in the supplied URL can contain credentials.
+statement ok
+CALL truncate_duckdb_logs();
+
+statement maybe
+INSTALL 'http://github.com/duckdb/duckdb#dummy-token';
+----
+
+query I
+SELECT count(*) > 0 AND bool_and(request.url = CASE WHEN {redact}
+    THEN 'http://github.com/duckdb/duckdb#redacted'
+    ELSE 'http://github.com/duckdb/duckdb#dummy-token'
+END)
+FROM duckdb_logs_parsed('HTTP');
+----
+true
+
+# Redact the query and any following fragment together.
+statement ok
+CALL truncate_duckdb_logs();
+
+statement maybe
+INSTALL 'http://github.com/duckdb/duckdb?token=dummy-token#dummy-fragment';
+----
+
+query I
+SELECT count(*) > 0 AND bool_and(request.url = CASE WHEN {redact}
+    THEN 'http://github.com/duckdb/duckdb?redacted'
+    ELSE 'http://github.com/duckdb/duckdb?token=dummy-token#dummy-fragment'
+END)
+FROM duckdb_logs_parsed('HTTP');
+----
+true
+
+# A question mark inside a fragment must not leave the fragment exposed.
+statement ok
+CALL truncate_duckdb_logs();
+
+statement maybe
+INSTALL 'http://github.com/duckdb/duckdb#dummy-fragment?token=dummy-token';
+----
+
+query I
+SELECT count(*) > 0 AND bool_and(request.url = CASE WHEN {redact}
+    THEN 'http://github.com/duckdb/duckdb#redacted'
+    ELSE 'http://github.com/duckdb/duckdb#dummy-fragment?token=dummy-token'
+END)
+FROM duckdb_logs_parsed('HTTP');
+----
+true
+
+# An '@' in the path is not userinfo.
+statement ok
+CALL truncate_duckdb_logs();
+
+statement maybe
+INSTALL 'http://github.com/duckdb/duckdb@dummy';
+----
+
+query I
+SELECT count(*) > 0 AND bool_and(request.url = 'http://github.com/duckdb/duckdb@dummy')
+FROM duckdb_logs_parsed('HTTP');
+----
+true
+
+# Encoded delimiters in the path do not begin a query or fragment.
+statement ok
+CALL truncate_duckdb_logs();
+
+statement maybe
+INSTALL 'http://github.com/duckdb/duckdb%3Fdummy%23dummy%40dummy';
+----
+
+query I
+SELECT count(*) > 0 AND bool_and(request.url = 'http://github.com/duckdb/duckdb%3Fdummy%23dummy%40dummy')
+FROM duckdb_logs_parsed('HTTP');
+----
+true
+
+# An empty query still retains its delimiter and gets a redaction marker.
+statement ok
+CALL truncate_duckdb_logs();
+
+statement maybe
+INSTALL 'http://github.com/duckdb/duckdb?';
+----
+
+query I
+SELECT count(*) > 0 AND bool_and(request.url = CASE WHEN {redact}
+    THEN 'http://github.com/duckdb/duckdb?redacted'
+    ELSE 'http://github.com/duckdb/duckdb?'
+END)
+FROM duckdb_logs_parsed('HTTP');
+----
+true
+
+endloop
+
+statement ok
+RESET redact_http_logs;

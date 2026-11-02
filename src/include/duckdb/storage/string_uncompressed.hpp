@@ -12,6 +12,7 @@
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/function/compression_function.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
+#include "duckdb/storage/compression/compression_segment_reader.hpp"
 #include "duckdb/storage/segment/uncompressed.hpp"
 #include "duckdb/storage/table/column_segment.hpp"
 #include "duckdb/storage/table/scan_state.hpp"
@@ -31,7 +32,59 @@ struct StringDictionaryContainer {
 	}
 };
 
+struct StringDictionaryEntry {
+	unsafe_array_ptr<const uint8_t> data;
+	bool is_overflow;
+};
+
+struct ValidatedStringRange {
+public:
+	StringDictionaryEntry GetEntry(idx_t index) const {
+		D_ASSERT(index < offsets.size());
+		const auto current_offset = offsets[index];
+		const auto dictionary_offset = UnsafeNumericCast<uint32_t>(AbsValue<int32_t>(current_offset));
+		const auto previous_offset = index > 0 ? UnsafeNumericCast<uint32_t>(AbsValue<int32_t>(offsets[index - 1]))
+		                                       : preceding_dictionary_offset;
+		const auto string_length = dictionary_offset - previous_offset;
+		return {dictionary_data.SubArray(dictionary_data.size() - dictionary_offset, string_length),
+		        current_offset < 0 && string_length > 0};
+	}
+
+private:
+	friend struct StringSegmentLayout;
+	ValidatedStringRange(unsafe_array_ptr<const uint8_t> dictionary_data_p, unsafe_array_ptr<const int32_t> offsets_p,
+	                     uint32_t preceding_dictionary_offset_p)
+	    : dictionary_data(dictionary_data_p), offsets(offsets_p),
+	      preceding_dictionary_offset(preceding_dictionary_offset_p) {
+	}
+
+	unsafe_array_ptr<const uint8_t> dictionary_data;
+	unsafe_array_ptr<const int32_t> offsets;
+	uint32_t preceding_dictionary_offset;
+};
+
+struct StringSegmentLayout {
+public:
+	static StringSegmentLayout Read(const BufferHandle &handle, const ColumnSegment &segment);
+	StringDictionaryEntry ValidateAndGetEntry(idx_t row_index) const;
+	ValidatedStringRange ValidateRange(idx_t start, idx_t count) const;
+
+private:
+	StringSegmentLayout(const unsafe_array_ptr<const uint8_t> dictionary_data_p,
+	                    const unsafe_array_ptr<const int32_t> offsets_p)
+	    : dictionary_data(dictionary_data_p), offsets(offsets_p) {
+	}
+
+	//! Dictionary bytes [DICTIONARY_HEADER_SIZE + segment.count * sizeof(int32_t), dictionary end)
+	unsafe_array_ptr<const uint8_t> dictionary_data;
+	//! Dictionary offsets read from the segment after validating the array's byte range.
+	unsafe_array_ptr<const int32_t> offsets;
+};
+
 struct StringScanState : public SegmentScanState {
+public:
+	explicit StringScanState(BufferHandle handle);
+
 	BufferHandle handle;
 };
 
@@ -67,10 +120,8 @@ public:
 	                              idx_t result_offset);
 	static void StringScan(ColumnSegment &segment, ColumnScanState &state, idx_t scan_count, Vector &result);
 	static void Select(ColumnSegment &segment, ColumnScanState &state, idx_t vector_count, Vector &result,
-	                   const SelectionVector &sel, idx_t sel_count);
+	                   const SelectionVector &sel, idx_t sel_count, idx_t result_offset, ScanVectorType scan_type);
 
-	static void StringFetchRow(ColumnSegment &segment, ColumnFetchState &state, row_t row_id, Vector &result,
-	                           idx_t result_idx);
 	static unique_ptr<CompressedSegmentState> StringInitSegment(ColumnSegment &segment, block_id_t block_id,
 	                                                            optional_ptr<ColumnSegmentState> segment_state);
 
@@ -224,18 +275,16 @@ public:
 public:
 	static void SetDictionary(ColumnSegment &segment, BufferHandle &handle, StringDictionaryContainer dict);
 	static StringDictionaryContainer GetDictionary(ColumnSegment &segment, BufferHandle &handle);
-	static uint32_t GetDictionaryEnd(ColumnSegment &segment, BufferHandle &handle);
 	static idx_t RemainingSpace(ColumnSegment &segment, BufferHandle &handle);
 	static void WriteString(ColumnSegment &segment, string_t string, block_id_t &result_block, int32_t &result_offset);
 	static void WriteStringMemory(ColumnSegment &segment, string_t string, block_id_t &result_block,
 	                              int32_t &result_offset);
 	static string_t ReadOverflowString(const QueryContext &context, ColumnSegment &segment, Vector &result,
 	                                   block_id_t block, int32_t offset);
-	static string_t ReadString(data_ptr_t target, int32_t offset, uint32_t string_length);
-	static string_t ReadStringWithLength(data_ptr_t target, int32_t offset);
+	static string_t ReadStringWithLength(CompressionSegmentReader reader, int32_t offset);
 	static void WriteStringMarker(data_ptr_t target, block_id_t block_id, int32_t offset);
-	static void ReadStringMarker(data_ptr_t target, block_id_t &block_id, int32_t &offset);
 
+	// FIXME: Remove this raw pointer helper once FSST no longer needs it.
 	inline static string_t FetchStringFromDict(const QueryContext &context, ColumnSegment &segment,
 	                                           uint32_t dict_end_offset, Vector &result, data_ptr_t base_ptr,
 	                                           int32_t dict_offset, uint32_t string_length) {
@@ -244,7 +293,6 @@ public:
 			// regular string - fetch from dictionary
 			auto dict_end = base_ptr + dict_end_offset;
 			auto dict_pos = dict_end - dict_offset;
-
 			auto str_ptr = char_ptr_cast(dict_pos);
 			return string_t(str_ptr, string_length);
 		} else if (string_length == 0) {
@@ -258,9 +306,25 @@ public:
 			return string_t(char_ptr_cast(base_ptr), 0);
 		} else {
 			// read overflow string
-			block_id_t block_id;
-			int32_t offset;
-			ReadStringMarker(base_ptr + dict_end_offset - AbsValue<int32_t>(dict_offset), block_id, offset);
+			auto marker = base_ptr + dict_end_offset - AbsValue<int32_t>(dict_offset);
+			block_id_t block_id = Load<block_id_t>(marker);
+			int32_t offset = Load<int32_t>(marker + sizeof(block_id_t));
+
+			return ReadOverflowString(context, segment, result, block_id, offset);
+		}
+	}
+
+	inline static string_t FetchStringFromEntry(const QueryContext &context, ColumnSegment &segment, Vector &result,
+	                                            const StringDictionaryEntry &entry) {
+		if (DUCKDB_LIKELY(!entry.is_overflow)) {
+			// regular string - fetch from dictionary
+			auto str_ptr = const_char_ptr_cast(entry.data.data());
+			return string_t(str_ptr, NumericCast<uint32_t>(entry.data.size()));
+		} else {
+			// read overflow string
+			D_ASSERT(entry.data.size() == BIG_STRING_MARKER_SIZE);
+			auto block_id = Load<block_id_t>(entry.data.data());
+			auto offset = Load<int32_t>(entry.data.data() + sizeof(block_id_t));
 
 			return ReadOverflowString(context, segment, result, block_id, offset);
 		}

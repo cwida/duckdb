@@ -37,3 +37,34 @@ statement error
 CREATE UNIQUE INDEX idx ON merge_violation(id);
 ----
 <REGEX>:.*Constraint Error.*contains duplicates on indexed column.*
+
+# CREATE UNIQUE INDEX after local rows exist must also create its local delete index.
+statement ok
+CREATE TABLE local_index(i INTEGER);
+
+statement ok
+INSERT INTO local_index VALUES (1);
+
+statement ok
+BEGIN TRANSACTION;
+
+statement ok
+INSERT INTO local_index VALUES (2);
+
+statement ok
+CREATE UNIQUE INDEX local_idx ON local_index(i);
+
+statement ok
+DELETE FROM local_index WHERE i = 1;
+
+statement ok
+INSERT INTO local_index VALUES (1);
+
+statement ok
+COMMIT;
+
+query I rowsort
+SELECT i FROM local_index;
+----
+1
+2

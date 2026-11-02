@@ -58,6 +58,8 @@ VacuumOptions PEGTransformerFactory::TransformVacuumParensOptions(PEGTransformer
 		}
 		if (StringUtil::CIEquals(option, "analyze")) {
 			options.analyze = true;
+		} else {
+			throw ParserException("unrecognized VACUUM option \"%s\"", option);
 		}
 	}
 	return options;

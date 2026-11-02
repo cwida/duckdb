@@ -22,6 +22,7 @@
 #include "duckdb/common/insertion_order_preserving_map.hpp"
 
 #include <cmath>
+#include <functional>
 
 namespace duckdb {
 
@@ -85,6 +86,8 @@ public:
 	inline bool IsNull() const {
 		return is_null;
 	}
+	//! Whether the value is within the domain of its type (e.g. valid UTF-8, ENUM index within the dictionary)
+	DUCKDB_API bool IsValid() const;
 
 	//! Create the lowest possible value of a given type (numeric only)
 	DUCKDB_API static Value MinimumValue(const LogicalType &type);
@@ -251,6 +254,9 @@ public:
 	DUCKDB_API string ToString() const;
 	//! Convert this value to a SQL-parseable string
 	DUCKDB_API string ToSQLString() const;
+	//! Render a nested value as SQL via child_to_sql
+	DUCKDB_API static string NestedToSQLString(const Value &value,
+	                                           const std::function<string(const Value &)> &child_to_sql);
 
 	DUCKDB_API uintptr_t GetPointer() const;
 

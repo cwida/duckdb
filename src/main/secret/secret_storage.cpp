@@ -71,7 +71,7 @@ void TransactionSecretStorage::DropSecretByName(const Identifier &name, OnEntryN
 	auto entry = secrets.find(name);
 	if (entry == secrets.end()) {
 		if (on_entry_not_found == OnEntryNotFound::THROW_EXCEPTION) {
-			throw InvalidInputException("Failed to remove non-existent transaction secret '%s'", name);
+			throw InvalidInputException("Failed to remove non-existent transaction secret %s", name);
 		}
 		return;
 	}
@@ -178,7 +178,7 @@ void CatalogSetSecretStorage::DropSecretByName(const Identifier &name, OnEntryNo
 		if (on_entry_not_found == OnEntryNotFound::THROW_EXCEPTION) {
 			string persist_string = persistent ? "persistent" : "temporary";
 			string storage_string = persistent ? " in secret storage '" + storage_name + "'" : "";
-			throw InvalidInputException("Failed to remove non-existent %s secret '%s'%s", persist_string, name,
+			throw InvalidInputException("Failed to remove non-existent %s secret %s%s", persist_string, name,
 			                            storage_string);
 		}
 		return;

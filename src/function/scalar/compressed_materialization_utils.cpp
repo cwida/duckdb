@@ -42,6 +42,17 @@ CMExpressionType CMUtils::GetExpressionType(const BoundFunctionExpression &expre
 	return type;
 }
 
+optional_ptr<const Expression> CMUtils::GetWrappedInput(const Expression &expression) {
+	if (expression.GetExpressionClass() != ExpressionClass::BOUND_FUNCTION) {
+		return nullptr;
+	}
+	auto &function = expression.Cast<BoundFunctionExpression>();
+	if (function.GetChildren().empty() || GetExpressionType(function) == CMExpressionType::NONE) {
+		return nullptr;
+	}
+	return function.GetChildren()[0].get();
+}
+
 const vector<LogicalType> CMUtils::IntegralTypes() {
 	return {LogicalType::UTINYINT, LogicalType::USMALLINT, LogicalType::UINTEGER, LogicalType::UBIGINT};
 }

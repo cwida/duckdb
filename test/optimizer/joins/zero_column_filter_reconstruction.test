@@ -1,0 +1,137 @@
+# name: test/optimizer/joins/zero_column_filter_reconstruction.test
+# description: Preserve filters without column references during join order reconstruction
+# group: [joins]
+
+# filter_pullup leaves the WHERE filter between the scalar subquery cross products
+statement ok
+SET disabled_optimizers='filter_pushdown';
+
+statement ok
+CREATE TABLE t0(c0 INTEGER);
+
+statement ok
+INSERT INTO t0 VALUES (1);
+
+statement ok
+CREATE TABLE t1(c0 INTEGER);
+
+statement ok
+INSERT INTO t1 VALUES (1);
+
+query II
+SELECT (SELECT 1) AS a0, (SELECT 2) AS a1 FROM t0 WHERE NULL;
+----
+
+query II
+SELECT (SELECT 1) AS a0, (SELECT 2) AS a1 FROM t0 WHERE random() > 2;
+----
+
+query II
+SELECT (SELECT 1) AS a0, (SELECT 2) AS a1 FROM t0 WHERE random() < 2;
+----
+1	2
+
+query I
+SELECT count(*) FROM (SELECT (SELECT 1), (SELECT 2) FROM t0 JOIN t1 ON t0.c0 = t1.c0 WHERE NULL);
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT (SELECT 1), (SELECT 2) FROM t0 LEFT JOIN t1 ON t0.c0 = t1.c0 WHERE NULL);
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT (SELECT 1), (SELECT 2) FROM t0 WHERE c0 IN (SELECT c0 FROM t1) AND NULL);
+----
+0
+
+# a filter above the join tree is evaluated once per row
+statement ok
+CREATE SEQUENCE root_filter_calls;
+
+query II
+SELECT a, b
+FROM (VALUES (1)) l(a), (VALUES (2)) r(b)
+WHERE nextval('root_filter_calls') > 0;
+----
+1	2
+
+query I
+SELECT currval('root_filter_calls');
+----
+1
+
+# identical volatile filters are not deduplicated
+statement ok
+CREATE SEQUENCE duplicate_filter_calls;
+
+query II
+SELECT a, b
+FROM (VALUES (1)) l(a), (VALUES (2)) r(b)
+WHERE nextval('duplicate_filter_calls') > 0 AND nextval('duplicate_filter_calls') > 0;
+----
+1	2
+
+query I
+SELECT currval('duplicate_filter_calls');
+----
+2
+
+statement ok
+RESET disabled_optimizers;
+
+# a volatile filter on a leaf must run before the join duplicates its input
+statement ok
+CREATE SEQUENCE leaf_filter_calls;
+
+query I
+SELECT count(*)
+FROM (SELECT * FROM range(1) t(i) WHERE nextval('leaf_filter_calls') = 1) a
+JOIN (VALUES (0), (0)) b(i) USING (i);
+----
+2
+
+query I
+SELECT currval('leaf_filter_calls');
+----
+1
+
+# the same boundary is preserved on the other join input
+statement ok
+CREATE SEQUENCE right_filter_calls;
+
+query I
+SELECT count(*)
+FROM (VALUES (0), (0)) a(i)
+JOIN (SELECT * FROM range(1) t(i) WHERE nextval('right_filter_calls') = 1) b USING (i);
+----
+2
+
+query I
+SELECT currval('right_filter_calls');
+----
+1
+
+statement ok
+SET disabled_optimizers='filter_pushdown';
+
+# preserve a volatile filter between joins while optimizing its child join
+statement ok
+CREATE SEQUENCE intermediate_filter_calls;
+
+query I
+SELECT count(*)
+FROM (
+	SELECT l.i
+	FROM range(1) l(i) JOIN (VALUES (0), (0)) r(i) USING (i)
+	WHERE nextval('intermediate_filter_calls') = 1
+) a
+JOIN (VALUES (0), (0), (0)) b(i) USING (i);
+----
+3
+
+query I
+SELECT currval('intermediate_filter_calls');
+----
+2

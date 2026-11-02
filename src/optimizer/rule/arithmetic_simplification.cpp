@@ -15,12 +15,11 @@ ArithmeticSimplificationRule::ArithmeticSimplificationRule(ExpressionRewriter &r
 	op->matchers.push_back(make_uniq<ConstantExpressionMatcher>());
 	op->matchers.push_back(make_uniq<ExpressionMatcher>());
 	op->policy = SetMatcher::Policy::SOME;
-	// we only match on simple arithmetic expressions (+, -, *, /)
-	op->function = make_uniq<ManyFunctionMatcher>(identifier_set_t {"+", "-", "*", "//"});
+	op->function = make_uniq<ManyFunctionMatcher>(identifier_set_t {"+", "-", "*", "/", "//"});
 	// and only with numeric results
-	op->type = make_uniq<IntegerTypeMatcher>();
-	op->matchers[0]->type = make_uniq<IntegerTypeMatcher>();
-	op->matchers[1]->type = make_uniq<IntegerTypeMatcher>();
+	op->type = make_uniq<NumericTypeMatcher>();
+	op->matchers[0]->type = make_uniq<NumericTypeMatcher>();
+	op->matchers[1]->type = make_uniq<NumericTypeMatcher>();
 	root = std::move(op);
 }
 
@@ -36,6 +35,17 @@ unique_ptr<Expression> ArithmeticSimplificationRule::Apply(LogicalOperator &op, 
 		return make_uniq<BoundConstantExpression>(Value(root.GetReturnType()));
 	}
 	auto &func_name = root.Function().GetName();
+	if (func_name == "/") {
+		if (constant_child == 1 && constant.GetValue() == 1 &&
+		    (root.GetChildren()[0]->GetReturnType().id() == LogicalTypeId::FLOAT ||
+		     root.GetChildren()[0]->GetReturnType().id() == LogicalTypeId::DOUBLE)) {
+			return std::move(root.GetChildrenMutable()[0]);
+		}
+		return nullptr;
+	}
+	if (!root.GetReturnType().IsIntegral()) {
+		return nullptr;
+	}
 	if (func_name == "+") {
 		if (constant.GetValue() == 0) {
 			// addition with 0

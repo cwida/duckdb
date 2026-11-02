@@ -1,0 +1,26 @@
+# name: test/sql/sql_export/variant_key_rejection.test
+# description: SQL export rejects VARIANT keys that cannot become struct literals
+# group: [sql_export]
+
+require json
+
+foreach payload {"":1} {"":3,"a":1} {"a":1,"":2} {"outer":{"":1,"x":2}} [{"":1}] {"a":1,"A":2} {"outer":{"a":1,"A":2}} [{"a":1,"A":2}]
+
+statement error
+EXPLAIN (SQL) SELECT '{payload}'::JSON::VARIANT;
+----
+<REGEX>:.*EXPLAIN \(SQL\) cannot render this query: VARIANT object keys cannot be represented by a struct literal.*
+
+endloop
+
+statement ok
+CREATE MACRO bad_key() AS '{"":1}'::JSON::VARIANT;
+
+foreach wrapper [bad_key()] {'v':bad_key()} [bad_key()]::VARIANT[1] map(['v'],[bad_key()]) union_value(v:=bad_key())
+
+statement error
+EXPLAIN (SQL) SELECT {wrapper};
+----
+<REGEX>:.*EXPLAIN \(SQL\) cannot render this query: VARIANT object keys cannot be represented by a struct literal.*
+
+endloop

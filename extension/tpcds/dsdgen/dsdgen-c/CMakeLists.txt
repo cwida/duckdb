@@ -19,7 +19,6 @@ add_library(
   permute.cpp
   pricing.cpp
   r_params.cpp
-  release.cpp
   scaling.cpp
   scd.cpp
   sparse.cpp

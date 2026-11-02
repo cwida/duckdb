@@ -140,7 +140,7 @@ TEST_CASE("Aggregate state size and init callbacks receive bind data", "[api][ag
 	{
 		auto result = con.Query("SELECT offset_sum(v, 100) FROM (VALUES (1),(2),(3)) t(v)");
 		REQUIRE_NO_FAIL(*result);
-		REQUIRE(result->GetValue(0, 0) == Value::BIGINT(106));
+		REQUIRE(result->Collection().GetValue(0, 0) == Value::BIGINT(106));
 	}
 
 	// Grouped aggregation: every group's state must be seeded with the same bound offset.
@@ -148,29 +148,29 @@ TEST_CASE("Aggregate state size and init callbacks receive bind data", "[api][ag
 		auto result = con.Query("SELECT k, offset_sum(v, 10) FROM (VALUES ('a', 1), ('a', 2), ('b', 5)) t(k, v) "
 		                        "GROUP BY k ORDER BY k");
 		REQUIRE_NO_FAIL(*result);
-		REQUIRE(result->GetValue(1, 0) == Value::BIGINT(13)); // a: 10 + (1 + 2)
-		REQUIRE(result->GetValue(1, 1) == Value::BIGINT(15)); // b: 10 + 5
+		REQUIRE(result->Collection().GetValue(1, 0) == Value::BIGINT(13)); // a: 10 + (1 + 2)
+		REQUIRE(result->Collection().GetValue(1, 1) == Value::BIGINT(15)); // b: 10 + 5
 	}
 
 	// Windowed aggregation exercises the window state size and init call sites.
 	{
 		auto result = con.Query("SELECT offset_sum(v, 1000) OVER () FROM (VALUES (1),(2),(3)) t(v)");
 		REQUIRE_NO_FAIL(*result);
-		REQUIRE(result->GetValue(0, 0) == Value::BIGINT(1006));
+		REQUIRE(result->Collection().GetValue(0, 0) == Value::BIGINT(1006));
 	}
 
 	// A different offset must produce a different result: proves init reads the value, not a constant.
 	{
 		auto result = con.Query("SELECT offset_sum(v, 0) FROM (VALUES (1),(2),(3)) t(v)");
 		REQUIRE_NO_FAIL(*result);
-		REQUIRE(result->GetValue(0, 0) == Value::BIGINT(6));
+		REQUIRE(result->Collection().GetValue(0, 0) == Value::BIGINT(6));
 	}
 
 	// NULL values are skipped, but the offset still seeds the state.
 	{
 		auto result = con.Query("SELECT offset_sum(v, 7) FROM (VALUES (1), (NULL), (2)) t(v)");
 		REQUIRE_NO_FAIL(*result);
-		REQUIRE(result->GetValue(0, 0) == Value::BIGINT(10)); // 7 + (1 + 2)
+		REQUIRE(result->Collection().GetValue(0, 0) == Value::BIGINT(10)); // 7 + (1 + 2)
 	}
 }
 
@@ -183,6 +183,6 @@ TEST_CASE("USING KEY UNION falls back for an aggregate without combine", "[api][
 	                        "VALUES (1::BIGINT, 1::BIGINT) UNION SELECT k, v + 1 FROM t WHERE v < 4) TABLE t");
 	REQUIRE_NO_FAIL(*result);
 	REQUIRE(result->RowCount() == 1);
-	REQUIRE(result->GetValue(0, 0) == Value::BIGINT(1));
-	REQUIRE(result->GetValue(1, 0) == Value::BIGINT(7));
+	REQUIRE(result->Collection().GetValue(0, 0) == Value::BIGINT(1));
+	REQUIRE(result->Collection().GetValue(1, 0) == Value::BIGINT(7));
 }

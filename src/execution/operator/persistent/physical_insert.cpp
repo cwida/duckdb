@@ -4,6 +4,7 @@
 #include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/common/types/conflict_manager.hpp"
+#include "duckdb/common/types/constraint_conflict_info.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/execution/operator/persistent/collection_merger.hpp"
@@ -117,12 +118,11 @@ unique_ptr<GlobalSinkState> PhysicalInsert::GetGlobalSinkState(ClientContext &co
 		// CREATE TABLE AS
 		D_ASSERT(!insert_table);
 		auto &catalog = schema->catalog;
-		table = &catalog.CreateTable(catalog.GetCatalogTransaction(context), *schema.get_mutable(), *info)
-		             ->Cast<DuckTableEntry>();
+		table = &catalog.CreateTable(catalog.GetCatalogTransaction(context), *schema, *info)->Cast<DuckTableEntry>();
 	} else {
 		D_ASSERT(insert_table);
 		D_ASSERT(insert_table->IsDuckTable());
-		table = insert_table.get_mutable();
+		table = insert_table;
 	}
 	auto result = make_uniq<InsertGlobalState>(context, GetTypes(), *table);
 	return std::move(result);
@@ -669,7 +669,8 @@ SinkCombineResultType PhysicalInsert::Combine(ExecutionContext &context, Operato
 	const idx_t row_group_size = storage.GetRowGroupSize();
 
 	// parallel append: finalize the append
-	auto tdata = TransactionData::Unversioned();
+	// the transaction id keeps the rows invisible to other transactions until the commit
+	TransactionData tdata(DuckTransaction::Get(context.client, table.catalog));
 	auto &data_table = gstate.table.GetStorage();
 	auto &optimistic_collection = data_table.GetOptimisticCollection(context.client, lstate.collection_index);
 	auto &collection = *optimistic_collection.collection;

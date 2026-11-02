@@ -10,7 +10,7 @@ lifecycle_states:
     guard: DUCKDB_API_NO_DEPRECATED
   unstable:
     visibility: opt_in
-    guard: DUCKDB_API_ALLOW_UNSTABLE
+    guard: DUCKDB_EXTENSION_API_VERSION_UNSTABLE
 suffixes:
   handles: "_handle"
   callbacks: "_fn"

@@ -21,7 +21,7 @@ struct ReadSingleCSVFileGlobalState : public GlobalTableFunctionState {
 public:
 	ReadSingleCSVFileGlobalState(ClientContext &context, ReadSingleCSVFileData &csv_data,
 	                             const TableFunctionInitInput &input)
-	    : state(context, csv_data, csv_data.csv_names, input.file_count, input.op) {
+	    : state(context, csv_data, csv_data.csv_names, TableFunctionFileInitInput::Get(input).file_count, input.op) {
 	}
 
 public:
@@ -113,6 +113,7 @@ static void SniffCSVFile(ClientContext &context, ReadSingleCSVFileData &result, 
 
 static unique_ptr<FunctionData> ReadSingleCSVFileBind(ClientContext &context, TableFunctionBindInput &input,
                                                       vector<LogicalType> &return_types, vector<Identifier> &names) {
+	auto &file_input = TableFunctionFileBindInput::Get(input);
 	auto result = make_uniq<ReadSingleCSVFileData>();
 	auto &options = result->options;
 	for (auto &kv : input.named_parameters) {
@@ -121,12 +122,15 @@ static unique_ptr<FunctionData> ReadSingleCSVFileBind(ClientContext &context, Ta
 	if (input.inputs[0].IsNull()) {
 		throw BinderException("read_single_csv_file requires a non-NULL file name");
 	}
-	result->file = OpenFileInfo(StringValue::Get(input.inputs[0]));
+	result->file = TableFunctionFileBindInput::GetFile(input);
+	if (result->file.path.empty()) {
+		throw BinderException("read_single_csv_file requires a non-empty file name");
+	}
 
 	// the options of the scan this file is part of steer the sniffer - the file list is this single file
 	MultiFileOptions file_options;
-	if (input.multi_file_options) {
-		file_options = *input.multi_file_options;
+	if (file_input.multi_file_options) {
+		file_options = *file_input.multi_file_options;
 	}
 	SimpleMultiFileList file_list(vector<OpenFileInfo> {result->file});
 
@@ -134,20 +138,20 @@ static unique_ptr<FunctionData> ReadSingleCSVFileBind(ClientContext &context, Ta
 	//! the scan only when this file is the whole scan
 	bool verify_against_file = false;
 	optional_ptr<const ReadSingleCSVFileData> schema_source;
-	if (input.HasExpectedSchema()) {
-		if (input.expected_bind_data) {
+	if (file_input.HasExpectedSchema()) {
+		if (file_input.expected_bind_data) {
 			// the schema of the scan was determined on (other) files of this scan - start from the options it was
 			// determined with, so that this file is read with the same dialect
-			schema_source = input.expected_bind_data->Cast<ReadSingleCSVFileData>();
+			schema_source = file_input.expected_bind_data->Cast<ReadSingleCSVFileData>();
 			options = schema_source->options;
 			options.force_not_null.clear();
-			names = *input.expected_names;
-			return_types = *input.expected_types;
+			names = *file_input.expected_names;
+			return_types = *file_input.expected_types;
 		} else {
 			// the columns are known but the dialect of this file is not - this is the case for COPY, which takes
 			// its columns from the target table
-			options.name_list = *input.expected_names;
-			options.sql_type_list = *input.expected_types;
+			options.name_list = *file_input.expected_names;
+			options.sql_type_list = *file_input.expected_types;
 			options.columns_set = true;
 			options.sql_types_per_column.clear();
 			for (idx_t i = 0; i < options.name_list.size(); i++) {
@@ -160,14 +164,14 @@ static unique_ptr<FunctionData> ReadSingleCSVFileBind(ClientContext &context, Ta
 	options.file_path = result->file.path;
 	// when several files are read, options like "names" describe the scan and not this file - the sniffer is then
 	// lenient about a file whose columns do not line up with them exactly
-	options.multi_file_reader = input.multi_file_scan;
+	options.multi_file_reader = file_input.multi_file_scan;
 	options.Verify(file_options);
 
 	// when the schema of the scan is known upfront the options are verified against it before this file is
 	// sniffed, so that an option that does not match it is reported before any error in the file itself
-	if (input.HasExpectedSchema()) {
-		VerifyForceNotNull(options, *input.expected_names);
-	} else if (!input.multi_file_scan) {
+	if (file_input.HasExpectedSchema()) {
+		VerifyForceNotNull(options, *file_input.expected_names);
+	} else if (!file_input.multi_file_scan) {
 		// this file is the whole scan, so its own columns are the schema the options are verified against
 		verify_against_file = true;
 	}
@@ -177,7 +181,7 @@ static unique_ptr<FunctionData> ReadSingleCSVFileBind(ClientContext &context, Ta
 		if (options.auto_detect) {
 			SniffCSVFile(context, *result, result->csv_schema, file_options, return_types, names);
 		}
-	} else if (input.HasExpectedSchema()) {
+	} else if (file_input.HasExpectedSchema()) {
 		if (options.auto_detect) {
 			SniffCSVFile(context, *result, CSVSchema(), file_options, return_types, names);
 		}
@@ -301,6 +305,7 @@ static unique_ptr<FunctionData> ReadSingleCSVFileCombineSchema(ClientContext &co
 
 static unique_ptr<GlobalTableFunctionState> ReadSingleCSVFileInitGlobal(ClientContext &context,
                                                                         TableFunctionInitInput &input) {
+	auto &file_input = TableFunctionFileInitInput::Get(input);
 	auto &csv_data = input.bind_data->CastNoConst<ReadSingleCSVFileData>();
 
 	// create the temporary rejects table
@@ -331,11 +336,11 @@ static unique_ptr<GlobalTableFunctionState> ReadSingleCSVFileInitGlobal(ClientCo
 		file_scan.column_ids.push_back(MultiFileLocalColumnId(col_id));
 	}
 	// the index of this file in the scan it is part of - it identifies the file in the rejects tables
-	file_scan.file_list_idx = input.file_index.IsValid() ? input.file_index.GetIndex() : 0;
-	if (input.cast_map) {
+	file_scan.file_list_idx = file_input.file_index.IsValid() ? file_input.file_index.GetIndex() : 0;
+	if (file_input.cast_map) {
 		// our caller needs some columns as a different type than this file has them - the scanner converts to those
 		// types while parsing, so that "ignore_errors" applies to the conversions that fail
-		for (auto &entry : *input.cast_map) {
+		for (auto &entry : *file_input.cast_map) {
 			file_scan.cast_map[entry.first] = entry.second;
 		}
 	}
@@ -381,8 +386,11 @@ static bool ReadSingleCSVFileClaimBatch(ClientContext &context, TableFunctionInp
 }
 
 //! The CSV scanner can be read ahead when the buffers of the file can be addressed individually
-static bool ReadSingleCSVFileSupportsReadAhead(const FunctionData &bind_data) {
-	auto &csv_data = bind_data.Cast<ReadSingleCSVFileData>();
+static bool ReadSingleCSVFileSupportsReadAhead(optional_ptr<const FunctionData> bind_data) {
+	if (!bind_data) {
+		return false;
+	}
+	auto &csv_data = bind_data->Cast<ReadSingleCSVFileData>();
 	return csv_data.buffer_manager && csv_data.buffer_manager->file_handle &&
 	       csv_data.buffer_manager->file_handle->HasKnownBufferRanges();
 }
@@ -461,25 +469,25 @@ static unique_ptr<NodeStatistics> ReadSingleCSVFileCardinality(ClientContext &co
 	// determined through the scientific method as the average amount of rows in a CSV file
 	idx_t per_file_cardinality = 42;
 	if (csv_data.buffer_manager && csv_data.buffer_manager->file_handle) {
+		auto &file_handle = *csv_data.buffer_manager->file_handle;
 		auto estimated_row_width = csv_data.csv_types.size() * 5;
-		per_file_cardinality = csv_data.buffer_manager->file_handle->FileSize() / estimated_row_width;
+		auto file_size = file_handle.FileSize();
+		if (file_handle.IsPipe()) {
+			// a pipe has no size, the bytes the sniffer read are a lower bound for it
+			file_size = MaxValue<idx_t>(file_size, file_handle.UncompressedBytesRead());
+		}
+		per_file_cardinality = file_size / estimated_row_width;
 	}
 	return make_uniq<NodeStatistics>(per_file_cardinality);
 }
 
 TableFunction ReadCSVTableFunction::GetSingleFileFunction() {
-	TableFunction read_csv("read_single_csv_file", {LogicalType::VARCHAR}, ReadSingleCSVFileFunction,
-	                       ReadSingleCSVFileBind, ReadSingleCSVFileInitGlobal, ReadSingleCSVFileInitLocal);
-	read_csv.combine_schema = ReadSingleCSVFileCombineSchema;
-	read_csv.claim_batch = ReadSingleCSVFileClaimBatch;
-	read_csv.finish_batch = ReadSingleCSVFileFinishBatch;
-	read_csv.supports_read_ahead = ReadSingleCSVFileSupportsReadAhead;
-	read_csv.schedule_io = ReadSingleCSVFileScheduleIO;
+	TableFunction read_csv("read_single_csv_file", FunctionSignature().AddPositionalOnly("file", LogicalType::ANY),
+	                       ReadSingleCSVFileFunction, ReadSingleCSVFileBind, ReadSingleCSVFileInitGlobal,
+	                       ReadSingleCSVFileInitLocal);
 	read_csv.table_scan_progress = ReadSingleCSVFileProgress;
 	read_csv.cardinality = ReadSingleCSVFileCardinality;
 	read_csv.projection_pushdown = true;
-	// the scanner converts to the types the caller asks for while parsing, rather than casting its output
-	read_csv.supports_cast_map = true;
 	ReadCSVAddNamedParameters(read_csv);
 	return read_csv;
 }
@@ -494,6 +502,13 @@ TableFunction ReadCSVTableFunction::GetMultiFileFunction(Identifier name) {
 	settings.sample_files_parameter = "files_to_sniff";
 	// the schemas of the sampled files are reconciled with one another - every file must have every column
 	settings.sampled_schema_is_union = false;
+	settings.combine_schema = ReadSingleCSVFileCombineSchema;
+	settings.claim_batch = ReadSingleCSVFileClaimBatch;
+	settings.finish_batch = ReadSingleCSVFileFinishBatch;
+	settings.supports_read_ahead = ReadSingleCSVFileSupportsReadAhead;
+	settings.schedule_io = ReadSingleCSVFileScheduleIO;
+	// the scanner converts to the types the scan asks for while parsing, rather than casting its output
+	settings.supports_cast_map = true;
 	return TableFunctionMultiFileWrapper::CreateFunction(GetSingleFileFunction(), std::move(name), std::move(settings));
 }
 

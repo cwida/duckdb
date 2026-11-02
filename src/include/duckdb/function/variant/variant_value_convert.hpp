@@ -105,8 +105,9 @@ struct ValueConverter {
 		}
 	}
 
-	static Value VisitArray(const UnifiedVariantVectorData &variant, idx_t row, const VariantNestedData &nested_data) {
-		auto array_items = VariantVisitor<ValueConverter>::VisitArrayItems(variant, row, nested_data);
+	static Value VisitArray(const UnifiedVariantVectorData &variant, idx_t row, const VariantNestedData &nested_data,
+	                        idx_t depth) {
+		auto array_items = VariantVisitor<ValueConverter>::VisitArrayItems(variant, row, nested_data, depth);
 		if (array_items.empty()) {
 			return Value::LIST(LogicalType::VARIANT(), std::move(array_items));
 		}
@@ -119,8 +120,14 @@ struct ValueConverter {
 		return Value::LIST(child_type, std::move(array_items));
 	}
 
-	static Value VisitObject(const UnifiedVariantVectorData &variant, idx_t row, const VariantNestedData &nested_data) {
-		auto object_children = VariantVisitor<ValueConverter>::VisitObjectItems(variant, row, nested_data);
+	static Value VisitObject(const UnifiedVariantVectorData &variant, idx_t row, const VariantNestedData &nested_data,
+	                         idx_t depth) {
+		auto object_children = VariantVisitor<ValueConverter>::VisitObjectItems(variant, row, nested_data, depth);
+		if (object_children.size() == 1 && object_children[0].first.empty()) {
+			// an empty key can't be a STRUCT member name (it would become a TUPLE) - use a MAP instead
+			auto &child = object_children[0].second;
+			return Value::MAP(LogicalType::VARCHAR, child.type(), {Value("")}, {child});
+		}
 		return Value::STRUCT(std::move(object_children));
 	}
 

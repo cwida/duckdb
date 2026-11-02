@@ -110,17 +110,58 @@ COPY sales TO '{TEST_DIR}/partition_path_empty_dot' (FORMAT parquet, PARTITION_B
 ----
 PARTITION_PATH evaluated to an empty path for partition
 
-# a partition directory cannot contain the directory of another partition
+# a partition directory can be nested inside the directory of another partition
 statement ok
-CREATE TABLE countries AS SELECT * FROM (VALUES (1, 'eu', NULL), (2, 'eu', 'de'), (3, 'us', NULL)) v(id, region, country);
+CREATE TABLE countries AS SELECT * FROM (VALUES (1, 'eu', NULL), (2, 'eu', 'de'), (3, 'us', NULL), (4, 'eu', 'fr'))
+v(id, region, country);
 
-statement error
+statement ok
 COPY countries TO '{TEST_DIR}/partition_path_nested' (FORMAT parquet, PARTITION_BY (region, country),
 PARTITION_PATH CASE WHEN country IS NULL THEN region ELSE region || '/' || country END);
-----
-in overlapping directories
 
-# directories are compared by whole components, eu does not contain europe
+query II
+SELECT regexp_extract(replace(filename, '\', '/'), 'partition_path_nested/(.*)/[^/]*$', 1) AS dir, list(id ORDER BY id)
+FROM read_parquet(['{TEST_DIR}/partition_path_nested/*/*.parquet', '{TEST_DIR}/partition_path_nested/*/*/*.parquet'],
+hive_partitioning = false)
+GROUP BY dir ORDER BY dir;
+----
+eu	[1]
+eu/de	[2]
+eu/fr	[4]
+us	[3]
+
+# the nested partitions can also be several levels deep
+statement ok
+COPY countries TO '{TEST_DIR}/partition_path_nested_deep' (FORMAT parquet, PARTITION_BY (region, country),
+PARTITION_PATH CASE WHEN country IS NULL THEN region ELSE region || '/a/b/' || country END);
+
+query II
+SELECT regexp_extract(replace(filename, '\', '/'), 'partition_path_nested_deep/(.*)/[^/]*$', 1) AS dir, list(id)
+FROM read_parquet('{TEST_DIR}/partition_path_nested_deep/**/*.parquet', hive_partitioning = false)
+GROUP BY dir ORDER BY dir;
+----
+eu	[1]
+eu/a/b/de	[2]
+eu/a/b/fr	[4]
+us	[3]
+
+# a custom partition location can be nested inside the hive directory of another partition
+statement ok
+COPY countries TO '{TEST_DIR}/partition_path_nested_hive' (FORMAT parquet, PARTITION_BY (region, country),
+PARTITION_PATH CASE WHEN region = 'eu' AND country = 'fr' THEN 'region=us/country=__HIVE_DEFAULT_PARTITION__/other'
+ELSE path_join(hive_partition_component('region', region), hive_partition_component('country', country)) END);
+
+query II
+SELECT regexp_extract(replace(filename, '\', '/'), 'partition_path_nested_hive/(.*)/[^/]*$', 1) AS dir, list(id)
+FROM read_parquet('{TEST_DIR}/partition_path_nested_hive/**/*.parquet', hive_partitioning = false)
+GROUP BY dir ORDER BY dir;
+----
+region=eu/country=__HIVE_DEFAULT_PARTITION__	[1]
+region=eu/country=de	[2]
+region=us/country=__HIVE_DEFAULT_PARTITION__	[3]
+region=us/country=__HIVE_DEFAULT_PARTITION__/other	[4]
+
+# partition directories sharing a name prefix are distinct
 statement ok
 COPY (FROM (VALUES (1, 'eu'), (2, 'europe'), (3, 'eu-west')) v(id, region)) TO '{TEST_DIR}/partition_path_prefix'
 (FORMAT parquet, PARTITION_BY (region), PARTITION_PATH region);

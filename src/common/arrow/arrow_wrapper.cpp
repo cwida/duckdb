@@ -1,15 +1,7 @@
 #include "duckdb/common/arrow/arrow_wrapper.hpp"
-#include "duckdb/common/arrow/arrow_util.hpp"
-#include "duckdb/common/arrow/arrow_converter.hpp"
 
 #include "duckdb/common/assert.hpp"
 #include "duckdb/common/exception.hpp"
-
-#include "duckdb/common/arrow/result_arrow_wrapper.hpp"
-#include "duckdb/common/arrow/arrow_appender.hpp"
-#include "duckdb/main/query_result.hpp"
-#include "duckdb/main/chunk_scan_state/query_result.hpp"
-#include "duckdb/function/table/arrow/arrow_duck_schema.hpp"
 
 namespace duckdb {
 
@@ -61,114 +53,5 @@ shared_ptr<ArrowArrayWrapper> ArrowArrayStreamWrapper::GetNextChunk() {
 const char *ArrowArrayStreamWrapper::GetError() { // LCOV_EXCL_START
 	return arrow_array_stream.get_last_error(&arrow_array_stream);
 } // LCOV_EXCL_STOP
-
-int ResultArrowArrayStreamWrapper::MyStreamGetSchema(struct ArrowArrayStream *stream, struct ArrowSchema *out) {
-	if (!stream->release) {
-		return -1;
-	}
-	out->release = nullptr;
-	auto my_stream = reinterpret_cast<ResultArrowArrayStreamWrapper *>(stream->private_data);
-	if (!my_stream->column_types.empty()) {
-		try {
-			ArrowConverter::ToArrowSchema(out, my_stream->column_types, my_stream->column_names,
-			                              my_stream->result->client_properties);
-		} catch (std::runtime_error &e) {
-			my_stream->last_error = ErrorData(e);
-			return -1;
-		}
-		return 0;
-	}
-
-	auto &result = *my_stream->result;
-	if (result.HasError()) {
-		my_stream->last_error = result.GetErrorObject();
-		return -1;
-	}
-	if (my_stream->column_types.empty()) {
-		my_stream->column_types = result.GetTypes();
-		my_stream->column_names = IdentifiersToStrings(result.GetNames());
-	}
-	try {
-		ArrowConverter::ToArrowSchema(out, my_stream->column_types, my_stream->column_names,
-		                              my_stream->result->client_properties);
-	} catch (std::runtime_error &e) {
-		my_stream->last_error = ErrorData(e);
-		return -1;
-	}
-	return 0;
-}
-
-int ResultArrowArrayStreamWrapper::MyStreamGetNext(struct ArrowArrayStream *stream, struct ArrowArray *out) {
-	if (!stream->release) {
-		return -1;
-	}
-	auto my_stream = reinterpret_cast<ResultArrowArrayStreamWrapper *>(stream->private_data);
-	auto &result = *my_stream->result;
-	auto &scan_state = *my_stream->scan_state;
-	if (result.HasError()) {
-		my_stream->last_error = result.GetErrorObject();
-		return -1;
-	}
-	if (my_stream->column_types.empty()) {
-		my_stream->column_types = result.GetTypes();
-		my_stream->column_names = IdentifiersToStrings(result.GetNames());
-	}
-
-	try {
-		idx_t result_count;
-		ErrorData error;
-		if (!ArrowUtil::TryFetchChunk(scan_state, result.client_properties, my_stream->batch_size, out, result_count,
-		                              error, my_stream->extension_types)) {
-			D_ASSERT(error.HasError());
-			my_stream->last_error = error;
-			return -1;
-		}
-		if (result_count == 0) {
-			// Nothing to output
-			out->release = nullptr;
-		}
-	} catch (std::exception &e) {
-		my_stream->last_error = ErrorData(e);
-		return -1;
-	}
-
-	return 0;
-}
-
-void ResultArrowArrayStreamWrapper::MyStreamRelease(struct ArrowArrayStream *stream) {
-	if (!stream || !stream->release) {
-		return;
-	}
-	stream->release = nullptr;
-	delete reinterpret_cast<ResultArrowArrayStreamWrapper *>(stream->private_data);
-}
-
-const char *ResultArrowArrayStreamWrapper::MyStreamGetLastError(struct ArrowArrayStream *stream) {
-	if (!stream->release) {
-		return "stream was released";
-	}
-	D_ASSERT(stream->private_data);
-	auto my_stream = reinterpret_cast<ResultArrowArrayStreamWrapper *>(stream->private_data);
-	return my_stream->last_error.Message().c_str();
-}
-
-ResultArrowArrayStreamWrapper::ResultArrowArrayStreamWrapper(unique_ptr<QueryResult> result_p, idx_t batch_size_p)
-    : result(std::move(result_p)), scan_state(make_uniq<QueryResultChunkScanState>(*result)) {
-	//! We first initialize the private data of the stream
-	stream.private_data = this;
-	//! Ceil Approx_Batch_Size/STANDARD_VECTOR_SIZE
-	if (batch_size_p == 0) {
-		throw std::runtime_error("Approximate Batch Size of Record Batch MUST be higher than 0");
-	}
-	batch_size = batch_size_p;
-	//! We initialize the stream functions
-	stream.get_schema = ResultArrowArrayStreamWrapper::MyStreamGetSchema;
-	stream.get_next = ResultArrowArrayStreamWrapper::MyStreamGetNext;
-	stream.release = ResultArrowArrayStreamWrapper::MyStreamRelease;
-	stream.get_last_error = ResultArrowArrayStreamWrapper::MyStreamGetLastError;
-
-	extension_types =
-	    ArrowTypeExtensionData::GetExtensionTypes(*result->client_properties.client_context, result->GetTypes());
-}
 
 } // namespace duckdb

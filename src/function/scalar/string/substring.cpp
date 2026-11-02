@@ -115,6 +115,16 @@ string_t SubstringUnicode(Vector &result, string_t input, int64_t offset, int64_
 
 	AssertInSupportedRange(input_size, offset, length);
 
+	if (offset > 0) {
+		// the result only depends on the first offset-1+max(length,0) code points; if those bytes are
+		// ASCII, code points and bytes coincide and we can slice directly
+		const auto needed =
+		    MinValue<int64_t>(UnsafeNumericCast<int64_t>(input_size), offset - 1 + MaxValue<int64_t>(length, 0));
+		if (IsAscii(input_data, UnsafeNumericCast<idx_t>(needed))) {
+			return SubstringASCII(result, input, offset, length);
+		}
+	}
+
 	if (length == 0) {
 		return SubstringEmptyString(result);
 	}
@@ -223,7 +233,9 @@ string_t SubstringGrapheme(Vector &result, string_t input, int64_t offset, int64
 		// we first need to count the number of characters in the string
 		idx_t num_characters = Utf8Proc::GraphemeCount(input_data, input_size);
 		// now call substring start and end again, but with the number of unicode characters this time
-		SubstringASCIIBounds(UnsafeNumericCast<int64_t>(num_characters), offset, length, start, end);
+		if (!SubstringASCIIBounds(UnsafeNumericCast<int64_t>(num_characters), offset, length, start, end)) {
+			return SubstringEmptyString(result);
+		}
 	}
 
 	// now scan the graphemes of the string to find the positions of the start and end characters
@@ -394,7 +406,7 @@ unique_ptr<BaseStatistics> SubstringStatsFromSharedPrefix(FunctionStatisticsInpu
 
 	optional_idx max_output_length;
 	if (has_parameters && parameters.character_count.IsValid()) {
-		auto bytes_per_character = StringStats::CanContainUnicode(input.child_stats[0]) ? 4 : 1;
+		idx_t bytes_per_character = StringStats::CanContainUnicode(input.child_stats[0]) ? 4 : 1;
 		auto character_count = parameters.character_count.GetIndex();
 		if (character_count <= NumericLimits<uint32_t>::Maximum() / bytes_per_character) {
 			max_output_length = character_count * bytes_per_character;

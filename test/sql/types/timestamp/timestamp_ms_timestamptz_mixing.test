@@ -1,0 +1,43 @@
+# name: test/sql/types/timestamp/timestamp_ms_timestamptz_mixing.test
+# description: Second and millisecond timestamps combine with timestamps with time zone like microsecond timestamps do
+# group: [timestamp]
+
+require icu
+
+statement ok
+SET TimeZone='UTC'
+
+query T
+SELECT typeof(CASE WHEN true THEN CAST('2020-01-02 03:04:05.123' AS TIMESTAMP_MS) ELSE CAST('2020-01-02 03:04:05+00' AS TIMESTAMPTZ) END)
+----
+TIMESTAMP WITH TIME ZONE
+
+query T
+SELECT CASE WHEN false THEN CAST('2020-01-02 03:04:05.123' AS TIMESTAMP_MS) ELSE CAST('2020-01-02 03:04:05+00' AS TIMESTAMPTZ) END
+----
+2020-01-02 03:04:05+00
+
+query T
+SELECT typeof(CASE WHEN true THEN CAST('2020-01-02' AS TIMESTAMP_S) ELSE CAST('2020-01-02 03:04:05+00' AS TIMESTAMPTZ) END)
+----
+TIMESTAMP WITH TIME ZONE
+
+query I
+SELECT date_diff('day', CAST('2020-01-01' AS TIMESTAMP_MS), CAST('2020-02-01 00:00:00+00' AS TIMESTAMPTZ))
+----
+31
+
+query I
+SELECT date_diff('hour', CAST('2020-02-01 00:00:00+00' AS TIMESTAMPTZ), CAST('2020-02-01 06:00:00' AS TIMESTAMP_S))
+----
+6
+
+query T
+SELECT CAST('2020-01-02 03:04:05.123' AS TIMESTAMP_MS) = CAST('2020-01-02 03:04:05.123+00' AS TIMESTAMPTZ)
+----
+true
+
+query T
+SELECT typeof(COALESCE(CAST('2020-01-02' AS TIMESTAMP_MS), CAST('2020-01-02 03:04:05+00' AS TIMESTAMPTZ_NS)))
+----
+TIMESTAMPTZ_NS

@@ -2,6 +2,16 @@
 # description: Most basic window function
 # group: [window]
 
+statement error
+SELECT x, MAX(x) OVER none FROM (VALUES (1)) t(x);
+----
+Parser Error: window "none" does not exist
+
+statement error
+SELECT x, MAX(x) OVER "has""quote" FROM (VALUES (1)) t(x);
+----
+Parser Error: window "has""quote" does not exist
+
 statement ok
 CREATE TABLE empsalary (depname varchar, empno bigint, salary int, enroll_date date)
 

@@ -17,7 +17,7 @@ CALL enable_logging(['QueryLog', 'FileSystem']);
 statement error
 CALL dbgen(sf=0.01, children=-1);
 ----
-<REGEX>:Invalid Input Error.*Failed to cast value.*
+<REGEX>:Invalid Input Error.*Could not cast value -1 to named parameter "children".*
 
 statement ok
 CALL dbgen(sf=0.1);

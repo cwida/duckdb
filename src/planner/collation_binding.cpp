@@ -2,7 +2,10 @@
 #include "duckdb/catalog/catalog_entry/collate_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/scalar_function_catalog_entry.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/planner/expression/bound_case_expression.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_lambda_expression.hpp"
+#include "duckdb/planner/expression/bound_operator_expression.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/settings.hpp"
@@ -109,21 +112,79 @@ void CollationBinding::RegisterCollation(CollationCallback callback) {
 //! Binds the scalar function with the given name (looked up from the system catalog) around "source".
 static unique_ptr<Expression> ApplyCollationFunction(ClientContext &context, const string &function_name,
                                                      unique_ptr<Expression> source) {
-	auto &catalog = Catalog::GetSystemCatalog(context);
-	auto &function_entry = catalog.GetEntry<ScalarFunctionCatalogEntry>(
-	    context, QualifiedName(catalog.GetName(), Identifier::DefaultSchema(), Identifier(function_name)));
 	auto source_alias = source->GetAlias();
 	vector<unique_ptr<Expression>> children;
 	children.push_back(std::move(source));
-
 	FunctionBinder function_binder(context);
-	ErrorData error;
-	auto function = function_binder.BindScalarFunction(function_entry, std::move(children), error);
-	if (!function) {
-		error.Throw();
-	}
+	auto function =
+	    function_binder.BindScalarFunction(Identifier::DefaultSchema(), Identifier(function_name), std::move(children));
 	function->SetAlias(source_alias);
 	return function;
+}
+
+//! Pushes collations into STRUCT/TUPLE fields using invoke with a lambda that rebuilds the value and preserves NULLs.
+//! Evaluates the source once. Returns false if no fields require collation.
+static bool PushStructCollation(ClientContext &context, unique_ptr<Expression> &source, const LogicalType &sql_type,
+                                CollationType type, const CollationBinding &binding) {
+	const Identifier lambda_parameter("x");
+	auto lambda_parameter_expr = make_uniq<BoundReferenceExpression>(lambda_parameter, sql_type, idx_t(0));
+	const bool is_tuple = sql_type.id() == LogicalTypeId::TUPLE;
+	vector<unique_ptr<Expression>> fields;
+	FunctionBinder function_binder(context);
+
+	auto &child_types = StructType::GetChildTypes(sql_type);
+	// check whether any field requires a collation first: binding the field extracts is linear in the number of
+	// fields per field
+	bool any_field_requires_collation = false;
+	for (auto &child_type : child_types) {
+		unique_ptr<Expression> field_ref = make_uniq<BoundReferenceExpression>(child_type.second, idx_t(0));
+		if (binding.PushCollation(context, field_ref, child_type.second, type)) {
+			any_field_requires_collation = true;
+			break;
+		}
+	}
+	if (!any_field_requires_collation) {
+		return false;
+	}
+
+	bool requires_collation = false;
+	for (idx_t i = 0; i < child_types.size(); i++) {
+		vector<unique_ptr<Expression>> arguments;
+		arguments.push_back(lambda_parameter_expr->Copy());
+		arguments.push_back(make_uniq<BoundConstantExpression>(Value::BIGINT(NumericCast<int64_t>(i + 1))));
+		auto field = function_binder.BindScalarFunction(Identifier::DefaultSchema(),
+		                                                Identifier(is_tuple ? "struct_extract" : "struct_extract_at"),
+		                                                std::move(arguments));
+		// Wrap the extracted field in its collation functions, recursing into nested fields.
+		requires_collation |= binding.PushCollation(context, field, child_types[i].second, type);
+		field->SetAlias(Identifier(child_types[i].first));
+		fields.push_back(std::move(field));
+	}
+
+	if (!requires_collation) {
+		return false;
+	}
+
+	// Rebuild with the transformed field types, as the fields type can change
+	auto result = function_binder.BindScalarFunction(Identifier::DefaultSchema(),
+	                                                 Identifier(is_tuple ? "row" : "struct_pack"), std::move(fields));
+	// A NULL struct must remain distinct from a struct containing only NULL fields.
+	auto is_null = make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_IS_NULL, LogicalType::BOOLEAN);
+	is_null->GetChildrenMutable().push_back(lambda_parameter_expr->Copy());
+	auto null_result = make_uniq<BoundConstantExpression>(Value(result->GetReturnType()));
+	auto body = make_uniq<BoundCaseExpression>(std::move(is_null), std::move(null_result), std::move(result));
+	auto lambda =
+	    make_uniq<BoundLambdaExpression>(ExpressionType::LAMBDA, LogicalType::LAMBDA, std::move(body), idx_t(1));
+	lambda->SetParameterNames({lambda_parameter});
+
+	// Invoke evaluates the source once, even when several fields need collations.
+	auto source_alias = source->GetAlias();
+	vector<unique_ptr<Expression>> arguments;
+	arguments.push_back(std::move(lambda));
+	arguments.push_back(std::move(source));
+	source = function_binder.BindScalarFunction(Identifier::DefaultSchema(), "invoke", std::move(arguments));
+	source->SetAlias(source_alias);
+	return true;
 }
 
 //! Pushes a collation into a LIST/ARRAY type by wrapping the source in a list_transform that applies the collation to
@@ -167,11 +228,17 @@ static bool PushNestedCollation(ClientContext &context, unique_ptr<Expression> &
 
 bool CollationBinding::PushCollation(ClientContext &context, unique_ptr<Expression> &source,
                                      const LogicalType &sql_type, CollationType type) const {
-	if (sql_type.id() == LogicalTypeId::LIST) {
-		return PushNestedCollation(context, source, ListType::GetChildType(sql_type), type, *this);
-	}
-	if (sql_type.id() == LogicalTypeId::ARRAY) {
-		return PushNestedCollation(context, source, ArrayType::GetChildType(sql_type), type, *this);
+	// Leave collation of aliased structs, lists and arrays to the registered callbacks.
+	if (!sql_type.HasAlias()) {
+		if (StructType::IsStruct(sql_type)) {
+			return PushStructCollation(context, source, sql_type, type, *this);
+		}
+		if (sql_type.id() == LogicalTypeId::LIST) {
+			return PushNestedCollation(context, source, ListType::GetChildType(sql_type), type, *this);
+		}
+		if (sql_type.id() == LogicalTypeId::ARRAY) {
+			return PushNestedCollation(context, source, ArrayType::GetChildType(sql_type), type, *this);
+		}
 	}
 	for (auto &collation : collations) {
 		auto functions = collation.get_collation_functions(context, sql_type, type);

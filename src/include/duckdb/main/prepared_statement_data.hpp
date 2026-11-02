@@ -8,7 +8,6 @@
 
 #pragma once
 
-#include "duckdb/common/enums/query_result_memory_type.hpp"
 #include "duckdb/common/enums/statement_type.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/common/unordered_map.hpp"
@@ -45,8 +44,6 @@ public:
 
 	//! The map of parameter index to the actual value entry
 	bound_parameter_map_t value_map;
-	//! Whether we are creating a buffer-managed result or not
-	QueryResultMemoryType memory_type;
 
 public:
 	void CheckParameterCount(idx_t parameter_count);
@@ -61,5 +58,8 @@ public:
 	//! Try to get the expected SQL Type of the bound parameter
 	DUCKDB_API bool TryGetType(const Identifier &identifier, LogicalType &result);
 };
+
+DUCKDB_API bool CheckCatalogIdentity(ClientContext &context, const Identifier &catalog_name,
+                                     StatementProperties::CatalogIdentity catalog_identity);
 
 } // namespace duckdb

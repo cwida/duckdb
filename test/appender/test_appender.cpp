@@ -327,7 +327,7 @@ TEST_CASE("Test default value appender", "[appender]") {
 		con.Query("BEGIN TRANSACTION");
 		result = con.Query("select now()");
 		auto &materialized_result = *result;
-		auto current_time = materialized_result.GetValue(0, 0);
+		auto current_time = materialized_result.Collection().GetValue(0, 0);
 		{
 			Appender appender(con, "integers");
 			appender.BeginRow();

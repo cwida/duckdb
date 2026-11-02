@@ -72,3 +72,18 @@ SELECT * FROM integers WHERE i > 0 ORDER BY 1
 6	6
 100	100
 
+# table constraints before columns do not affect inline constraint indexes
+statement ok
+CREATE TABLE constraint_order (PRIMARY KEY (i), i INTEGER, j INTEGER UNIQUE, k INTEGER NOT NULL)
+
+statement ok
+INSERT INTO constraint_order VALUES (1, 1, 1)
+
+statement error
+INSERT INTO constraint_order VALUES (2, 1, 2)
+----
+
+statement error
+INSERT INTO constraint_order VALUES (3, 3, NULL)
+----
+

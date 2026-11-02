@@ -1,3 +1,4 @@
+#include "duckdb/common/atomic.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/operator/subtract.hpp"
 #include "duckdb/common/types/interval.hpp"
@@ -19,20 +20,10 @@ struct ICUTableRange {
 		      calendar(other.calendar->Copy()), cardinality(other.cardinality) {
 		}
 
-		explicit ICURangeBindData(ClientContext &context, const vector<Value> &inputs) {
-			Value tz_value;
-			if (context.TryGetCurrentSetting("TimeZone", tz_value)) {
-				tz_setting = tz_value.ToString();
-			}
+		explicit ICURangeBindData(ClientContext &context, const vector<Value> &inputs) : cal_setting("gregorian") {
+			context.TryGetCurrentSetting("TimeZone", tz_setting);
+			context.TryGetCurrentSetting("Calendar", cal_setting);
 			auto tz = TimeZone::TryCreate(tz_setting);
-
-			Value cal_value;
-			if (context.TryGetCurrentSetting("Calendar", cal_value)) {
-				cal_setting = cal_value.ToString();
-			} else {
-				cal_setting = "gregorian";
-			}
-
 			calendar = Calendar::TryCreate(cal_setting, tz ? std::move(tz) : TimeZone::TryCreate("UTC"));
 			if (!calendar) {
 				throw InternalException("Unable to create calendar.");
@@ -69,9 +60,31 @@ struct ICUTableRange {
 		idx_t cardinality;
 	};
 
-	struct ICURangeLocalState : public LocalTableFunctionState {
-		ICURangeLocalState() {
+	//! Progress of a range used as a source (i.e. with a single input row)
+	struct ICURangeGlobalState : public GlobalTableFunctionState {
+		//! The bounds of the range, and the timestamp that is generated next
+		atomic<int64_t> start {0};
+		atomic<int64_t> end {0};
+		atomic<int64_t> current {0};
+
+		void Initialize(timestamp_tz_t start_p, timestamp_tz_t end_p) {
+			start.store(start_p.value, std::memory_order_relaxed);
+			end.store(end_p.value, std::memory_order_relaxed);
+			current.store(start_p.value, std::memory_order_relaxed);
 		}
+
+		//! Input rows are independent, so an in-out call can use all threads
+		idx_t MaxThreads() const override {
+			return GlobalTableFunctionState::MAX_THREADS;
+		}
+	};
+
+	struct ICURangeLocalState : public LocalTableFunctionState {
+		explicit ICURangeLocalState(optional_ptr<GlobalTableFunctionState> global_state)
+		    : global_state(global_state ? &global_state->Cast<ICURangeGlobalState>() : nullptr) {
+		}
+
+		optional_ptr<ICURangeGlobalState> global_state;
 
 		bool initialized_row = false;
 		idx_t current_input_row = 0;
@@ -105,6 +118,8 @@ struct ICUTableRange {
 	template <bool GENERATE_SERIES>
 	static void GenerateRangeDateTimeParameters(DataChunk &input, idx_t row_id, ICURangeLocalState &result) {
 		input.Flatten();
+		// the local state is reused for every input row
+		result.empty_range = false;
 		for (idx_t c = 0; c < input.ColumnCount(); c++) {
 			if (FlatVector::IsNull(input.data[c], row_id)) {
 				result.start = timestamp_tz_t::epoch();
@@ -163,7 +178,24 @@ struct ICUTableRange {
 	static unique_ptr<LocalTableFunctionState> RangeDateTimeLocalInit(ExecutionContext &context,
 	                                                                  TableFunctionInitInput &input,
 	                                                                  GlobalTableFunctionState *global_state) {
-		return make_uniq<ICURangeLocalState>();
+		return make_uniq<ICURangeLocalState>(global_state);
+	}
+
+	static unique_ptr<GlobalTableFunctionState> RangeDateTimeGlobalInit(ClientContext &context,
+	                                                                    TableFunctionInitInput &input) {
+		return make_uniq<ICURangeGlobalState>();
+	}
+
+	static double Progress(ClientContext &context, const FunctionData *bind_data,
+	                       const GlobalTableFunctionState *global_state) {
+		auto &state = global_state->Cast<ICURangeGlobalState>();
+		auto start = static_cast<double>(state.start.load(std::memory_order_relaxed));
+		auto range = static_cast<double>(state.end.load(std::memory_order_relaxed)) - start;
+		if (range == 0) {
+			return 0;
+		}
+		auto fraction = (static_cast<double>(state.current.load(std::memory_order_relaxed)) - start) / range;
+		return 100.0 * MaxValue<double>(MinValue<double>(fraction, 1.0), 0.0);
 	}
 
 	static unique_ptr<NodeStatistics> Cardinality(ClientContext &context, const FunctionData *bind_data_p) {
@@ -192,6 +224,9 @@ struct ICUTableRange {
 				GenerateRangeDateTimeParameters<GENERATE_SERIES>(input, state.current_input_row, state);
 				state.initialized_row = true;
 				state.current_state = state.start;
+				if (state.global_state) {
+					state.global_state->Initialize(state.start, state.end);
+				}
 			}
 			if (state.empty_range) {
 				// empty range
@@ -219,15 +254,22 @@ struct ICUTableRange {
 				continue;
 			}
 			output.SetChildCardinality(size);
+			if (state.global_state) {
+				state.global_state->current.store(state.current_state.value, std::memory_order_relaxed);
+			}
 			return OperatorResultType::HAVE_MORE_OUTPUT;
 		}
 	}
 
 	static void AddICUTableRangeFunction(ExtensionLoader &loader) {
+		const auto timestamps = FunctionSignature()
+		                            .AddPositionalOnly("start", LogicalType::TIMESTAMP_TZ)
+		                            .AddPositionalOnly("stop", LogicalType::TIMESTAMP_TZ)
+		                            .AddPositionalOnly("step", LogicalType::INTERVAL);
 		TableFunctionSet range("range");
-		TableFunction range_function({LogicalType::TIMESTAMP_TZ, LogicalType::TIMESTAMP_TZ, LogicalType::INTERVAL},
-		                             nullptr, Bind<false>, nullptr, RangeDateTimeLocalInit);
+		TableFunction range_function(timestamps, nullptr, Bind<false>, RangeDateTimeGlobalInit, RangeDateTimeLocalInit);
 		range_function.in_out_function = ICUTableRangeFunction<false>;
+		range_function.table_scan_progress = Progress;
 		range_function.cardinality = Cardinality;
 		range_function.return_type = TableFunctionReturnType::SET_RETURNING_FUNCTION;
 		range.AddFunction(range_function);
@@ -236,10 +278,10 @@ struct ICUTableRange {
 
 		// generate_series: similar to range, but inclusive instead of exclusive bounds on the RHS
 		TableFunctionSet generate_series("generate_series");
-		TableFunction generate_series_function(
-		    {LogicalType::TIMESTAMP_TZ, LogicalType::TIMESTAMP_TZ, LogicalType::INTERVAL}, nullptr, Bind<true>, nullptr,
-		    RangeDateTimeLocalInit);
+		TableFunction generate_series_function(timestamps, nullptr, Bind<true>, RangeDateTimeGlobalInit,
+		                                       RangeDateTimeLocalInit);
 		generate_series_function.in_out_function = ICUTableRangeFunction<true>;
+		generate_series_function.table_scan_progress = Progress;
 		generate_series_function.cardinality = Cardinality;
 		generate_series_function.return_type = TableFunctionReturnType::SET_RETURNING_FUNCTION;
 		generate_series.AddFunction(generate_series_function);

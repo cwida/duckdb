@@ -4,6 +4,7 @@
 */tools/shell/*
 */tools/sqlite3_api_wrapper/*
 */benchmark/*
+*/build/*
 */examples/*
 */third_party/*
 */test/*
@@ -15,7 +16,6 @@
 */extension/tpch/*
 */extension/json/yyjson/*
 */extension_helper.cpp
-*/generated_extension_loader.hpp
 */adbc/*
 */enum_util.cpp
 */enums/expression_type.cpp

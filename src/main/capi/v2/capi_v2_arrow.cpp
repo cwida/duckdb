@@ -2,24 +2,15 @@
 
 #include "duckdb/common/arrow/arrow_appender.hpp"
 #include "duckdb/common/arrow/arrow_converter.hpp"
-#include "duckdb/common/arrow/arrow_util.hpp"
+#include "duckdb/common/arrow/arrow_format.hpp"
 #include "duckdb/common/arrow/arrow_wrapper.hpp"
-#include "duckdb/common/arrow/nanoarrow/nanoarrow.hpp"
 #include "duckdb/function/table/arrow.hpp"
 #include "duckdb/function/table/arrow/arrow_duck_schema.hpp"
-#include "duckdb/main/chunk_scan_state.hpp"
 
 #include <cerrno>
 #include <deque>
 
 namespace duckdb::capiv2 {
-namespace {
-
-//! What batch_size 0 selects for a result stream: 64 vectors in a default build, so one Arrow array gathers a clean 64
-//! engine chunks.
-constexpr idx_t CV2_DEFAULT_ARROW_BATCH_SIZE = 131072;
-
-} // namespace
 
 //----------------------------------------------------------------------------------------------------------------------
 // arrow_importer
@@ -138,172 +129,38 @@ auto Convert(CV2ArrowExporter *exporter) -> duckdb_v2_arrow_exporter_handle {
 namespace {
 
 //----------------------------------------------------------------------------------------------------------------------
-// result_to_arrow_stream
-//----------------------------------------------------------------------------------------------------------------------
-
-//! Drives a V2 result through the engine's chunk-cursor interface, so ArrowUtil::TryFetchChunk (offset tracking plus
-//! appender coalescing) can pull from it. End of stream is signalled the way QueryResultChunkScanState signals it: a
-//! null current chunk.
-class CV2ArrowScanState : public ChunkScanState {
-public:
-	explicit CV2ArrowScanState(ResultWrapperV2 &wrapper) : wrapper(wrapper) {
-	}
-
-	bool LoadNextChunk(ErrorData &error) override {
-		if (finished) {
-			current_chunk = nullptr;
-			return true;
-		}
-		try {
-			current_chunk = wrapper.FetchChunkBlocking();
-		} catch (std::exception &ex) {
-			scan_error = ErrorData(ex);
-			has_scan_error = true;
-			finished = true;
-			current_chunk = nullptr;
-			error = scan_error;
-			return false;
-		}
-		offset = 0;
-		if (!current_chunk) {
-			finished = true;
-		}
-		return true;
-	}
-	bool HasError() const override {
-		return has_scan_error;
-	}
-	ErrorData &GetError() override {
-		return scan_error;
-	}
-	const vector<LogicalType> &Types() const override {
-		return wrapper.types;
-	}
-	const vector<Identifier> &Names() const override {
-		return wrapper.names;
-	}
-
-private:
-	ResultWrapperV2 &wrapper;
-	ErrorData scan_error;
-	bool has_scan_error = false;
-};
-
-//! The stream's private_data. Owns the result state machine -- and through it the query's transaction and the
-//! connection's live-result slot -- the cursor driving it, and the schema cached while the producing transaction was
-//! still live.
-struct CV2ArrowStream {
-	unique_ptr<ResultWrapperV2> wrapper;
-	unique_ptr<ChunkScanState> scan_state;
-	ArrowSchema cached_schema {};
-	unordered_map<idx_t, const shared_ptr<ArrowTypeExtensionData>> extension_types;
-	ClientProperties client_properties;
-	idx_t batch_size = CV2_DEFAULT_ARROW_BATCH_SIZE;
-	ErrorData last_error;
-
-	~CV2ArrowStream() {
-		if (cached_schema.release) {
-			cached_schema.release(&cached_schema);
-		}
-		// The scan state holds a reference into *wrapper, so drop it first.
-		scan_state.reset();
-	}
-};
-
-//! An Arrow callback must not let an exception cross the C ABI, so each one is wrapped whole and reports through the
-//! errno-style return code the interface specifies.
-int CV2ArrowStreamGetSchema(ArrowArrayStream *stream, ArrowSchema *out) {
-	if (!stream->release || !stream->private_data) {
-		return EINVAL;
-	}
-	auto &self = *static_cast<CV2ArrowStream *>(stream->private_data);
-	try {
-		if (!self.cached_schema.release) {
-			self.last_error = ErrorData("arrow stream: the schema is unavailable");
-			return EINVAL;
-		}
-		// The consumer owns what get_schema returns and releases it independently of the stream, so hand out a deep
-		// copy. Copying the cached schema is pure: it never re-reads the catalog, which is the point of having cached
-		// it.
-		if (duckdb_nanoarrow::ArrowSchemaDeepCopy(&self.cached_schema, out) != NANOARROW_OK) {
-			self.last_error = ErrorData("arrow stream: failed to copy the schema");
-			return ENOMEM;
-		}
-		return 0;
-	} catch (std::exception &ex) {
-		// Recording the message is itself best-effort under memory pressure; the return code is what the consumer must
-		// rely on.
-		try {
-			self.last_error = ErrorData(ex);
-		} catch (...) { // NOLINT: best-effort
-		}
-		return EIO;
-	} catch (...) {
-		return EIO;
-	}
-}
-
-int CV2ArrowStreamGetNext(ArrowArrayStream *stream, ArrowArray *out) {
-	if (!stream->release || !stream->private_data) {
-		return EINVAL;
-	}
-	auto &self = *static_cast<CV2ArrowStream *>(stream->private_data);
-	out->release = nullptr;
-	try {
-		idx_t result_count = 0;
-		ErrorData error;
-		if (!ArrowUtil::TryFetchChunk(*self.scan_state, self.client_properties, self.batch_size, out, result_count,
-		                              error, self.extension_types)) {
-			self.last_error = error;
-			return EIO;
-		}
-		if (result_count == 0) {
-			// End of stream, which the interface spells as a released array.
-			out->release = nullptr;
-		}
-	} catch (std::exception &ex) {
-		self.last_error = ErrorData(ex);
-		return EIO;
-	} catch (...) {
-		return EIO;
-	}
-	return 0;
-}
-
-const char *CV2ArrowStreamGetLastError(ArrowArrayStream *stream) {
-	if (!stream->release || !stream->private_data) {
-		return "arrow stream was released";
-	}
-	auto &self = *static_cast<CV2ArrowStream *>(stream->private_data);
-	return self.last_error.Message().c_str();
-}
-
-void CV2ArrowStreamRelease(ArrowArrayStream *stream) {
-	if (!stream || !stream->release) {
-		return;
-	}
-	stream->release = nullptr;
-	auto self = static_cast<CV2ArrowStream *>(stream->private_data);
-	stream->private_data = nullptr;
-	if (!self) {
-		return;
-	}
-	// Mirror result_destroy: close the engine result and roll back any transaction the bridge injected, before freeing.
-	// A release callback must not throw across the C ABI.
-	self->scan_state.reset();
-	try {
-		if (self->wrapper) {
-			self->wrapper->Finalize();
-		}
-	} catch (...) { // NOLINT: best-effort cleanup
-	}
-	// Frees the cached schema, and the wrapper, whose destructor releases the busy slot.
-	delete self;
-}
-
-//----------------------------------------------------------------------------------------------------------------------
 // Import conversion
 //----------------------------------------------------------------------------------------------------------------------
+
+//! The record-batch struct may carry a validity bitmap of its own: a clear bit marks the whole row null, so
+//! it has to apply to every column alike. Returns null when the array carries no bitmap, or no row is null.
+auto CV2TopLevelValidity(const ArrowArray &array, idx_t from, idx_t rows) -> unique_ptr<ValidityMask> {
+	if (array.null_count == 0 || array.n_buffers == 0 || !array.buffers || !array.buffers[0]) {
+		return nullptr;
+	}
+	auto bits = static_cast<const uint8_t *>(array.buffers[0]);
+	auto mask = make_uniq<ValidityMask>(rows);
+	for (idx_t row = 0; row < rows; row++) {
+		auto index = NumericCast<idx_t>(array.offset) + from + row;
+		if (!(bits[index / 8] & (1 << (index % 8)))) {
+			mask->SetInvalid(row);
+		}
+	}
+	if (!mask->CanHaveNull()) {
+		return nullptr;
+	}
+	return mask;
+}
+
+//! Marks the rows the record batch calls null as null in this vector too.
+void CV2ApplyTopLevelMask(Vector &vector, const ValidityMask &top_level_mask, idx_t rows) {
+	auto &mask = FlatVector::ValidityMutable(vector);
+	for (idx_t row = 0; row < rows; row++) {
+		if (!top_level_mask.RowIsValid(row)) {
+			mask.SetInvalid(row);
+		}
+	}
+}
 
 //! Converts `rows` rows starting at `from` of `array` into a fresh chunk, through the resolved per-column Arrow types.
 //! `owner` is the shared owner the chunk's zero-copy vectors keep alive; it is null when the caller kept the array, in
@@ -316,29 +173,37 @@ auto CV2ConvertArrowSlice(ClientContext &context, CV2ArrowImporter &importer, Ar
 	auto chunk = make_uniq<DataChunk>();
 	chunk->Initialize(Allocator::DefaultAllocator(), types, MaxValue<idx_t>(rows, 1));
 	chunk->SetChildCardinality(rows);
+	auto top_level_mask = CV2TopLevelValidity(array, from, rows);
 	for (idx_t i = 0; i < chunk->ColumnCount(); i++) {
 		auto *child_array = array.children[i];
 		auto arrow_type = arrow_types.at(i);
 		// A fresh scan state per slice, so nothing cached for one array leaks into the next. The cost is re-decoding a
 		// dictionary per chunk.
 		auto array_state = make_uniq<ArrowArrayScanState>(context);
-		array_state->owned_data = owner;
+		// The dictionary conversion requires a non-null owned_data to attach to its vectors. When
+		// there is no owner the chunk is materialized below, so an inert wrapper is enough.
+		array_state->owned_data = owner ? owner : duckdb::make_shared_ptr<duckdb::ArrowArrayWrapper>();
 		switch (arrow_type->GetPhysicalType()) {
 		case ArrowArrayPhysicalType::DICTIONARY_ENCODED:
 			if (!child_array->dictionary) {
 				throw InvalidInputException("Dictionary-encoded Arrow array has no dictionary");
 			}
+			// the dictionary conversion folds the mask into its selection vector itself
 			ArrowToDuckDBConversion::ColumnArrowToDuckDBDictionary(chunk->data[i], *child_array, from, *array_state,
-			                                                       rows, *arrow_type);
+			                                                       rows, *arrow_type, -1, top_level_mask.get());
 			break;
 		case ArrowArrayPhysicalType::RUN_END_ENCODED:
 			ArrowToDuckDBConversion::ColumnArrowToDuckDBRunEndEncoded(chunk->data[i], *child_array, from, *array_state,
-			                                                          rows, *arrow_type);
+			                                                          rows, *arrow_type, -1, top_level_mask.get());
 			break;
 		case ArrowArrayPhysicalType::DEFAULT:
 			ArrowToDuckDBConversion::SetValidityMask(chunk->data[i], *child_array, from, rows, array.offset, -1);
+			// Merging before the conversion lets a struct or union column propagate the nulls to its children.
+			if (top_level_mask) {
+				CV2ApplyTopLevelMask(chunk->data[i], *top_level_mask, rows);
+			}
 			ArrowToDuckDBConversion::ColumnArrowToDuckDB(chunk->data[i], *child_array, from, *array_state, rows,
-			                                             *arrow_type);
+			                                             *arrow_type, -1, top_level_mask.get());
 			break;
 		default:
 			throw NotImplementedException("Only default Arrow physical types are currently supported");
@@ -346,6 +211,10 @@ auto CV2ConvertArrowSlice(ClientContext &context, CV2ArrowImporter &importer, Ar
 		// Re-assert the size after the conversion, mirroring the engine's own scan loop: a dictionary or run-end
 		// conversion replaces the vector rather than filling it.
 		FlatVector::SetSize(chunk->data[i], count_t(rows));
+		// A conversion may rebuild the validity mask from its own buffers, so the top-level nulls go in again.
+		if (top_level_mask && chunk->data[i].GetVectorType() == VectorType::FLAT_VECTOR) {
+			CV2ApplyTopLevelMask(chunk->data[i], *top_level_mask, rows);
+		}
 	}
 	chunk->CheckCardinality(rows);
 	if (owner) {
@@ -378,9 +247,106 @@ void CV2ValidateArrowArray(CV2ArrowImporter &importer, ArrowArray &array) {
 			throw InvalidInputException("Arrow array child length does not match the array length");
 		}
 	}
+	// A positive null count is only meaningful with the validity bitmap to read it from.
+	if (array.null_count > 0 && (array.n_buffers == 0 || !array.buffers || !array.buffers[0])) {
+		throw InvalidInputException("Arrow array has a non-zero null count but no validity bitmap");
+	}
+}
+
+//----------------------------------------------------------------------------------------------------------------------
+// arrow_result
+//----------------------------------------------------------------------------------------------------------------------
+
+//! 64 vectors in a default build.
+constexpr idx_t DEFAULT_ARROW_RESULT_BATCH_SIZE = 131072;
+
+//! The wrapper behind an Arrow result, as the chunk functions that do not depend on the format take it.
+auto AsResult(duckdb_v2_arrow_result_handle result) -> duckdb_v2_result_handle {
+	return Convert(Convert(result));
+}
+
+void FetchArrowArray(ResultWrapperV2 &wrapper, ArrowArray &out) {
+	out.release = nullptr;
+	auto array = wrapper.FetchBlocking<ArrowFormat>();
+	if (array) {
+		array->MoveTo(out);
+	}
+}
+
+void CopyResultSchema(ResultWrapperV2 &wrapper, ArrowSchema &out) {
+	out.release = nullptr;
+	wrapper.RequireMetadata();
+	CopyArrowSchema(wrapper.arrow_schema.arrow_schema, out);
+}
+
+//! The private_data of an ArrowArrayStream made from an Arrow result.
+struct CV2ArrowResultStream {
+	unique_ptr<ResultWrapperV2> wrapper;
+	//! What get_last_error returns, kept until the next call.
+	string last_error;
+};
+
+//! No exception may cross the C ABI, so a failure becomes an errno code and the message waits for get_last_error.
+template <class FUNC>
+int CallArrowResultStream(ArrowArrayStream *stream, FUNC callback) {
+	if (!stream || !stream->release || !stream->private_data) {
+		return EINVAL;
+	}
+	auto &self = *static_cast<CV2ArrowResultStream *>(stream->private_data);
+	try {
+		callback(*self.wrapper);
+		self.last_error.clear();
+		return 0;
+	} catch (std::exception &ex) {
+		try {
+			self.last_error = ErrorData(ex).Message();
+		} catch (...) { // NOLINT: the code is what the consumer relies on
+			self.last_error.clear();
+		}
+	} catch (...) { // NOLINT: the code is what the consumer relies on
+		self.last_error.clear();
+	}
+	return EIO;
+}
+
+int ArrowResultStreamGetSchema(ArrowArrayStream *stream, ArrowSchema *out) {
+	return CallArrowResultStream(stream, [&](ResultWrapperV2 &wrapper) {
+		wrapper.AdvanceToMetadata<ArrowFormat>();
+		CopyResultSchema(wrapper, *out);
+	});
+}
+
+int ArrowResultStreamGetNext(ArrowArrayStream *stream, ArrowArray *out) {
+	return CallArrowResultStream(stream, [&](ResultWrapperV2 &wrapper) { FetchArrowArray(wrapper, *out); });
+}
+
+const char *ArrowResultStreamGetLastError(ArrowArrayStream *stream) {
+	if (!stream || !stream->release || !stream->private_data) {
+		return nullptr;
+	}
+	auto &self = *static_cast<CV2ArrowResultStream *>(stream->private_data);
+	return self.last_error.empty() ? nullptr : self.last_error.c_str();
+}
+
+void ArrowResultStreamRelease(ArrowArrayStream *stream) {
+	if (!stream || !stream->release) {
+		return;
+	}
+	unique_ptr<CV2ArrowResultStream> self(static_cast<CV2ArrowResultStream *>(stream->private_data));
+	stream->release = nullptr;
+	stream->private_data = nullptr;
+	try {
+		self->wrapper->Finalize();
+	} catch (...) { // NOLINT: release has no error channel
+	}
 }
 
 } // namespace
+
+auto ArrowResultFormat(idx_t batch_size) -> shared_ptr<ResultFormat> {
+	return make_shared_ptr<ArrowFormat>(batch_size == 0 ? DEFAULT_ARROW_RESULT_BATCH_SIZE : batch_size);
+}
+
 } // namespace duckdb::capiv2
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -388,71 +354,6 @@ void CV2ValidateArrowArray(CV2ArrowImporter &importer, ArrowArray &array) {
 //----------------------------------------------------------------------------------------------------------------------
 
 using namespace duckdb::capiv2;
-
-DUCKDB_V2_ERROR duckdb_v2_result_to_arrow_stream(duckdb_v2_result_handle *result, idx_t batch_size,
-                                                 struct ArrowArrayStream *out_stream,
-                                                 duckdb_v2_error_info_handle *err) {
-	// Validate before taking ownership, so a rejection leaves the caller's result intact.
-	DUCKDB_CHECK_ARG(result);
-	DUCKDB_CHECK_ARG(*result);
-	DUCKDB_CHECK_ARG(out_stream);
-	return WithErrorHandler(err, [&]() {
-		// Adopt by transfer; consumed on success and failure alike.
-		auto wrapper = duckdb::unique_ptr<ResultWrapperV2>(Convert(*result));
-		*result = nullptr;
-		try {
-			// The schema must be built while the query's transaction is live, so advance to the principal fragment if
-			// its metadata is not available yet. No rows can be produced before that fragment is prepared, so stepping
-			// here never drops data.
-			while (!wrapper->metadata_available) {
-				duckdb::unique_ptr<duckdb::DataChunk> discard;
-				auto status = wrapper->Step(discard);
-				if (status == DUCKDB_V2_RESULT_STEP_STATUS_WAITING) {
-					wrapper->Wait();
-					continue;
-				}
-				if (status == DUCKDB_V2_RESULT_STEP_STATUS_CHUNK) {
-					throw duckdb::InternalException(
-					    "arrow stream: a row was produced before result metadata was available");
-				}
-				break; // FINISHED / CANCELLED: no row-producing fragment.
-			}
-			if (!wrapper->context) {
-				throw duckdb::InvalidInputException("result is not associated with an active context");
-			}
-			auto &context = *wrapper->context;
-
-			auto self = duckdb::make_uniq<CV2ArrowStream>();
-			self->batch_size = batch_size == 0 ? CV2_DEFAULT_ARROW_BATCH_SIZE : batch_size;
-			self->client_properties = context.GetClientProperties();
-			// Cache the schema and the extension type map now, under the live transaction: populate-schema callbacks
-			// and ENUM dictionaries read the catalog, which get_schema cannot do once the transaction is gone.
-			self->extension_types = duckdb::ArrowTypeExtensionData::GetExtensionTypes(context, wrapper->types);
-			duckdb::ArrowConverter::ToArrowSchema(&self->cached_schema, wrapper->types,
-			                                      duckdb::IdentifiersToStrings(wrapper->names),
-			                                      self->client_properties);
-			self->scan_state = duckdb::make_uniq<CV2ArrowScanState>(*wrapper);
-			self->wrapper = std::move(wrapper);
-
-			out_stream->get_schema = CV2ArrowStreamGetSchema;
-			out_stream->get_next = CV2ArrowStreamGetNext;
-			out_stream->get_last_error = CV2ArrowStreamGetLastError;
-			out_stream->release = CV2ArrowStreamRelease;
-			out_stream->private_data = self.release();
-		} catch (...) {
-			// A throw before ownership moved into the stream leaves the result with us. Finalize it so a failed export
-			// cleans up exactly as result_destroy would, rather than leaving the query open until the local pointer
-			// goes out of scope.
-			if (wrapper) {
-				try {
-					wrapper->Finalize();
-				} catch (...) { // NOLINT: never mask the original error
-				}
-			}
-			throw;
-		}
-	});
-}
 
 //----------------------------------------------------------------------------------------------------------------------
 // arrow_importer
@@ -467,9 +368,9 @@ DUCKDB_V2_ERROR duckdb_v2_arrow_importer_create(duckdb_v2_context_handle context
 	*out_importer = nullptr;
 	return WithErrorHandler(err, [&]() {
 		auto importer = duckdb::make_uniq<CV2ArrowImporter>();
-		importer->context = Convert(context);
+		importer->context = &Convert(context)->context;
 		importer->batch_size = batch_size;
-		duckdb::ArrowTableFunction::PopulateArrowTableSchema(*Convert(context), importer->table, *schema);
+		duckdb::ArrowTableFunction::PopulateArrowTableSchema(Convert(context)->context, importer->table, *schema);
 		*out_importer = Convert(importer.release());
 	});
 }
@@ -608,7 +509,7 @@ DUCKDB_V2_ERROR duckdb_v2_arrow_exporter_create(duckdb_v2_context_handle context
 		return NullArgumentError(err, __func__, "names");
 	}
 	return WithErrorHandler(err, [&]() {
-		auto &ctx = *Convert(context);
+		auto &ctx = Convert(context)->context;
 		auto exporter = duckdb::make_uniq<CV2ArrowExporter>();
 		exporter->batch_size = batch_size;
 		exporter->types.reserve(count);
@@ -617,11 +518,12 @@ DUCKDB_V2_ERROR duckdb_v2_arrow_exporter_create(duckdb_v2_context_handle context
 			if (!types[i]) {
 				throw duckdb::InvalidInputException("null logical type at index %llu", i);
 			}
-			if (IsNullArgument(names[i])) {
+			if (IsNullArgument(&names[i])) {
 				throw duckdb::InvalidInputException("malformed column name at index %llu", i);
 			}
-			exporter->types.push_back(*Convert(types[i]));
-			exporter->names.emplace_back(Convert(names[i]));
+			auto type = Convert(types[i]);
+			exporter->types.push_back(*type);
+			exporter->names.emplace_back(ConvertIdentifierName(names[i]));
 		}
 		// Pin the settings and the extension map now: the schema below and every array this exporter produces are built
 		// from them, which is what keeps the two consistent.
@@ -706,5 +608,120 @@ DUCKDB_V2_ERROR duckdb_v2_arrow_exporter_destroy(duckdb_v2_arrow_exporter_handle
 			delete Convert(*exporter);
 			*exporter = nullptr;
 		}
+	});
+}
+
+//----------------------------------------------------------------------------------------------------------------------
+// arrow_result
+//----------------------------------------------------------------------------------------------------------------------
+
+DUCKDB_V2_ERROR duckdb_v2_statement_execute_arrow(duckdb_v2_connection_handle conn,
+                                                  duckdb_v2_sql_statement_handle statement,
+                                                  const duckdb_v2_identifier_t *parameter_names,
+                                                  const duckdb_v2_value_handle *parameter_values, idx_t parameter_count,
+                                                  idx_t batch_size, duckdb_v2_arrow_result_handle *out_result,
+                                                  duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(out_result);
+	*out_result = nullptr;
+	DUCKDB_CHECK_ARG(conn);
+	DUCKDB_CHECK_ARG(statement);
+	if (parameter_count > 0 && !parameter_values) {
+		return NullArgumentError(err, __func__, "parameter_values");
+	}
+	return WithErrorHandler(err, [&]() {
+		*out_result = ConvertArrowResult(ExecuteStatementV2(Convert(conn)->context, *Convert(statement),
+		                                                    parameter_names, parameter_values, parameter_count,
+		                                                    __func__, ArrowResultFormat(batch_size))
+		                                     .release());
+	});
+}
+
+DUCKDB_V2_ERROR duckdb_v2_arrow_result_destroy(duckdb_v2_arrow_result_handle *result) {
+	return WithErrorHandler(nullptr, [&]() {
+		if (!result || !*result) {
+			return;
+		}
+		duckdb::unique_ptr<ResultWrapperV2> wrapper(Convert(*result));
+		*result = nullptr;
+		wrapper->Finalize();
+	});
+}
+
+DUCKDB_V2_ERROR duckdb_v2_arrow_result_step(duckdb_v2_arrow_result_handle result, struct ArrowArray *out_array,
+                                            DUCKDB_V2_RESULT_STEP_STATUS *out_status,
+                                            duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(result);
+	DUCKDB_CHECK_ARG(out_array);
+	DUCKDB_CHECK_ARG(out_status);
+	out_array->release = nullptr;
+	return WithErrorHandler(err, [&]() {
+		duckdb::unique_ptr<duckdb::ArrowArrayWrapper> array;
+		*out_status = Convert(result)->Step<duckdb::ArrowFormat>(array);
+		if (array) {
+			array->MoveTo(*out_array);
+		}
+	});
+}
+
+DUCKDB_V2_ERROR duckdb_v2_arrow_result_fetch_array(duckdb_v2_arrow_result_handle result, struct ArrowArray *out_array,
+                                                   duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(result);
+	DUCKDB_CHECK_ARG(out_array);
+	out_array->release = nullptr;
+	return WithErrorHandler(err, [&]() { FetchArrowArray(*Convert(result), *out_array); });
+}
+
+DUCKDB_V2_ERROR duckdb_v2_arrow_result_wait(duckdb_v2_arrow_result_handle result, duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(result);
+	return duckdb_v2_result_wait(AsResult(result), err);
+}
+
+DUCKDB_V2_ERROR duckdb_v2_arrow_result_drain(duckdb_v2_arrow_result_handle result, idx_t *out_rows_changed,
+                                             duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(result);
+	DUCKDB_CHECK_ARG(out_rows_changed);
+	return WithErrorHandler(err, [&]() { *out_rows_changed = Convert(result)->Drain<duckdb::ArrowFormat>(); });
+}
+
+DUCKDB_V2_ERROR duckdb_v2_arrow_result_get_result_type(duckdb_v2_arrow_result_handle result,
+                                                       DUCKDB_V2_RESULT_TYPE *out_type,
+                                                       duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(result);
+	DUCKDB_CHECK_ARG(out_type);
+	return duckdb_v2_result_get_result_type(AsResult(result), out_type, err);
+}
+
+DUCKDB_V2_ERROR duckdb_v2_arrow_result_get_statement_type(duckdb_v2_arrow_result_handle result,
+                                                          DUCKDB_V2_STATEMENT_TYPE *out_type,
+                                                          duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(result);
+	DUCKDB_CHECK_ARG(out_type);
+	return duckdb_v2_result_get_statement_type(AsResult(result), out_type, err);
+}
+
+DUCKDB_V2_ERROR duckdb_v2_arrow_result_get_schema(duckdb_v2_arrow_result_handle result, struct ArrowSchema *out_schema,
+                                                  duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(result);
+	DUCKDB_CHECK_ARG(out_schema);
+	out_schema->release = nullptr;
+	return WithErrorHandler(err, [&]() { CopyResultSchema(*Convert(result), *out_schema); });
+}
+
+DUCKDB_V2_ERROR duckdb_v2_arrow_result_to_arrow_c_stream(duckdb_v2_arrow_result_handle *result,
+                                                         struct ArrowArrayStream *out_stream,
+                                                         duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(out_stream);
+	out_stream->release = nullptr;
+	DUCKDB_CHECK_ARG(result);
+	DUCKDB_CHECK_ARG(*result);
+	return WithErrorHandler(err, [&]() {
+		auto self = duckdb::make_uniq<CV2ArrowResultStream>();
+		self->wrapper = duckdb::unique_ptr<ResultWrapperV2>(Convert(*result));
+		*result = nullptr;
+		out_stream->get_schema = ArrowResultStreamGetSchema;
+		out_stream->get_next = ArrowResultStreamGetNext;
+		out_stream->get_last_error = ArrowResultStreamGetLastError;
+		out_stream->release = ArrowResultStreamRelease;
+		out_stream->private_data = self.release();
 	});
 }

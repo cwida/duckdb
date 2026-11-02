@@ -152,7 +152,7 @@ create table blob_key as select MAP_FROM_ENTRIES(ARRAY[('\xF0\x9F\xA6\x86'::BLOB
 query I
 select * from blob_key;
 ----
-{\xF0\x9F\xA6\x86=x, \xF0\x9F\xA6\x87=y}
+{'\\xF0\\x9F\\xA6\\x86'=x, '\\xF0\\x9F\\xA6\\x87'=y}
 
 query I
 select col['\xF0\x9F\xA6\x86'::BLOB] from blob_key;

@@ -6,6 +6,7 @@ add_library_unity(
   alter_table_function_info.cpp
   alter_table_info.cpp
   alter_database_info.cpp
+  alter_schema_info.cpp
   attach_info.cpp
   comment_on_column_info.cpp
   connect_info.cpp

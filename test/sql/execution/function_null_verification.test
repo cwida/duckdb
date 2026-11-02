@@ -1,0 +1,37 @@
+# name: test/sql/execution/function_null_verification.test
+# description: Verify scalar and aggregate function NULL handling
+# group: [execution]
+
+statement ok
+SET debug_verification_mode = 'verify_functions'
+
+query I
+SELECT abs(i)
+FROM (VALUES (1), (NULL), (-2)) t(i)
+----
+1
+NULL
+2
+
+query II
+SELECT abs(a + b), greatest(a, b)
+FROM (VALUES (1, 2), (NULL, 3), (4, NULL)) t(a, b)
+----
+3	2
+NULL	3
+NULL	4
+
+query III
+SELECT count(*), sum(i), min(i)
+FROM range(0) t(i)
+----
+0	NULL	NULL
+
+query II
+SELECT count(DISTINCT i), sum(DISTINCT i)
+FROM (VALUES (1), (1), (2), (NULL)) t(i)
+----
+2	3
+
+statement ok
+RESET debug_verification_mode

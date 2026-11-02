@@ -1,0 +1,54 @@
+# name: test/sql/order/test_limit_nested_types.test
+# description: Non-constant LIMIT and OFFSET over nested types
+# group: [order]
+
+query I
+SELECT [1] LIMIT (SELECT 5);
+----
+[1]
+
+query I
+SELECT map {1:2} LIMIT (SELECT 5);
+----
+{1=2}
+
+query I
+SELECT {'a': 1} OFFSET (SELECT 0);
+----
+{'a': 1}
+
+query I
+SELECT {'a': 1} LIMIT 1 + random()::INT;
+----
+{'a': 1}
+
+query I
+SELECT [1,2]::INT[2] LIMIT (SELECT 5);
+----
+[1, 2]
+
+query I
+SELECT 1::VARIANT LIMIT (SELECT 5);
+----
+1
+
+statement ok
+CREATE TABLE t AS SELECT [i] l, {'a': i} s, [i, i]::BIGINT[2] a, i::VARIANT v, i FROM range(5000) t(i);
+
+query IIIII
+SELECT * FROM t LIMIT (SELECT 3);
+----
+[0]	{'a': 0}	[0, 0]	0	0
+[1]	{'a': 1}	[1, 1]	1	1
+[2]	{'a': 2}	[2, 2]	2	2
+
+query I
+SELECT count(*) FROM (SELECT * FROM t LIMIT (SELECT 3000) OFFSET (SELECT 1000));
+----
+3000
+
+query II
+SELECT l, s FROM t ORDER BY i DESC LIMIT (SELECT 2);
+----
+[4999]	{'a': 4999}
+[4998]	{'a': 4998}

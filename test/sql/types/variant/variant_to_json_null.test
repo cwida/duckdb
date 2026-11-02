@@ -1,0 +1,66 @@
+# name: test/sql/types/variant/variant_to_json_null.test
+# description: Casting a VARIANT to JSON must keep a SQL NULL row a SQL NULL
+# group: [variant]
+
+require json
+
+# a SQL NULL row used to render as the JSON token `null`, a four-character non-NULL string
+
+query II
+SELECT (v::VARIANT::JSON) IS NULL, (v::VARIANT::JSON)::VARCHAR FROM (VALUES (NULL::INTEGER), (7)) t(v);
+----
+true	NULL
+false	7
+
+query I
+SELECT to_json(v::VARIANT) IS NULL FROM (VALUES (NULL::INTEGER), (7)) t(v);
+----
+true
+false
+
+# count() and coalesce() see it as NULL, which was the user-visible symptom
+
+query I
+SELECT count(j) FROM (SELECT (v::VARIANT::JSON) AS j FROM (VALUES (NULL::INTEGER)) t(v));
+----
+0
+
+query I
+SELECT coalesce(j::VARCHAR, 'fallback') FROM (SELECT (v::VARIANT::JSON) AS j FROM (VALUES (NULL::INTEGER)) t(v));
+----
+fallback
+
+# nulls nested inside a value are still JSON tokens, not SQL NULL
+
+query I
+SELECT ('{"a":null,"b":1}'::JSON::VARIANT::JSON)::VARCHAR;
+----
+{"a":null,"b":1}
+
+query I
+SELECT ('[1,null,3]'::JSON::VARIANT::JSON)::VARCHAR;
+----
+[1,null,3]
+
+query I
+SELECT ('{"a":{"b":[null]}}'::JSON::VARIANT::JSON)::VARCHAR;
+----
+{"a":{"b":[null]}}
+
+query I
+SELECT ({'a': NULL::INTEGER, 'b': 1}::VARIANT::JSON)::VARCHAR;
+----
+{"a":null,"b":1}
+
+query I
+SELECT ([1, NULL, 3]::VARIANT::JSON)::VARCHAR;
+----
+[1,null,3]
+
+# other casts from VARIANT were already correct and stay so
+
+query I
+SELECT (v::VARIANT::VARCHAR) IS NULL FROM (VALUES (NULL::INTEGER), (7)) t(v);
+----
+true
+false

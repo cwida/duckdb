@@ -2,6 +2,7 @@
 
 #include "duckdb/common/uhugeint.hpp"
 #include "duckdb/execution/expression_executor.hpp"
+#include "duckdb/function/table_function.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
@@ -28,7 +29,7 @@ GetKnownColumnValues(const string &filename, const HivePartitioningFilterInfo &f
 
 	auto &column_map = filter_info.column_map;
 	if (filter_info.filename_enabled) {
-		auto lookup_column_id = column_map.find("filename");
+		auto lookup_column_id = column_map.find(filter_info.filename_column);
 		if (lookup_column_id != column_map.end()) {
 			result.insert(make_pair(lookup_column_id->second, PartitioningColumnValue(filename)));
 		}
@@ -37,7 +38,7 @@ GetKnownColumnValues(const string &filename, const HivePartitioningFilterInfo &f
 	if (filter_info.hive_enabled) {
 		auto partitions = HivePartitioning::Parse(filename);
 		for (auto &partition : partitions) {
-			auto lookup_column_id = column_map.find(partition.first);
+			auto lookup_column_id = column_map.find(Identifier(partition.first));
 			if (lookup_column_id != column_map.end()) {
 				result.insert(
 				    make_pair(lookup_column_id->second, PartitioningColumnValue(partition.first, partition.second)));
@@ -252,7 +253,8 @@ void HivePartitioning::ApplyFiltersToFileList(ClientContext &context, vector<Ope
 				    representable = false;
 				    return;
 			    }
-			    column.BindingMutable() = ColumnBinding(TableIndex(0), ProjectionIndex(index.GetPrimaryIndex()));
+			    column.BindingMutable() = ColumnBinding(TableIndex(ExtraOperatorInfo::FILE_FILTER_TABLE_INDEX),
+			                                            ProjectionIndex(index.GetPrimaryIndex()));
 		    });
 		if (!representable) {
 			info.extra_info.file_filter_expressions.reset();

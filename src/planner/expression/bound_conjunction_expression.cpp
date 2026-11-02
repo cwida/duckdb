@@ -15,6 +15,17 @@ BoundConjunctionExpression::BoundConjunctionExpression(ExpressionType type, uniq
 	children.push_back(std::move(right));
 }
 
+unique_ptr<Expression> BoundConjunctionExpression::Create(ExpressionType type,
+                                                          vector<unique_ptr<Expression>> children) {
+	D_ASSERT(!children.empty());
+	if (children.size() == 1) {
+		return std::move(children[0]);
+	}
+	auto result = make_uniq<BoundConjunctionExpression>(type);
+	result->children = std::move(children);
+	return std::move(result);
+}
+
 string BoundConjunctionExpression::ToString() const {
 	return ConjunctionExpression::ToString<BoundConjunctionExpression, Expression>(*this);
 }

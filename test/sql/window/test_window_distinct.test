@@ -7,6 +7,16 @@ SELECT COUNT(DISTINCT 42) OVER ()
 ----
 1
 
+statement error
+SELECT COUNT(DISTINCT) OVER () FROM range(3)
+----
+Parser Error: DISTINCT requires at least one argument
+
+statement error
+SELECT COUNT(ALL) OVER () FROM range(3)
+----
+Parser Error: ALL requires at least one argument
+
 # DISTINCT with an aggregate-local ORDER BY keeps that ordering even when it
 # matches the window ORDER BY.
 query I

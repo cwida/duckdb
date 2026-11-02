@@ -71,3 +71,9 @@ opener_type	0	2	2
 global_type	NULL	NULL	NULL
 global_type	NULL	NULL	NULL
 global_type	NULL	NULL	NULL
+
+# An unknown scope is an ordinary error, not an internal one
+statement error
+SELECT write_log('hello', scope := 'thread');
+----
+Invalid Input Error: write_log: 'scope' argument unknown: 'thread'

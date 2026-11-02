@@ -1,0 +1,422 @@
+module: log sink
+#
+# Receiving DuckDB's log entries in code of your own. A log sink is built with the setters below and registered on an
+# instance under a name, which makes it available to DuckDB's logging configuration: once the configuration directs
+# entries to it, by its name, its write callback receives them. Currently a sink is selected with
+# `SET logging_storage = '<name>'`.
+#
+# A log sink only receives entries: they cannot be read back through `duckdb_logs`.
+#
+# Which entries a sink receives, and when and on which thread its callbacks run, are up to DuckDB. The callbacks must
+# not assume they run on the thread that logged, must be safe to run concurrently, and must not log or change the
+# logging configuration themselves. Logging happens inside arbitrary operations, so an error a callback reports never
+# fails the operation that logged.
+#
+# Registration is not transactional: a registered log sink lives for as long as the instance does.
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Enums
+#-----------------------------------------------------------------------------------------------------------------------
+enums:
+  LOG_SCOPE:
+    description: The scope a log entry was written in, which decides which of its ids are present.
+    # The values match duckdb::LogContextScope
+    values:
+      LOG_SCOPE_DATABASE:
+        value: 10
+        description: Written for the database as a whole, carrying no connection, transaction or query id.
+      LOG_SCOPE_CONNECTION:
+        value: 20
+        description: Written by a connection, carrying its connection id and, inside one, the transaction and query ids.
+      LOG_SCOPE_THREAD:
+        value: 30
+        description: Written by a thread executing a query, carrying the thread id next to the connection's ids.
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Handles
+#-----------------------------------------------------------------------------------------------------------------------
+handles:
+  log_sink:
+    description: |
+      An owned opaque handle to a log sink being built. Created with `[[log_sink_create]]`, configured with
+      `[[log_sink_set_name]]`, `[[log_sink_set_write_callback]]` and the other setters, made available with
+      `[[instance_register_log_sink]]` or `[[extension_register_log_sink]]`, and destroyed with
+      `[[log_sink_destroy]]`.
+
+  log_sink_write_info:
+    description: |
+      A borrowed opaque handle to the context of a log entry, received by a log sink's write callback next to the
+      entry itself, and valid only for the duration of that call. Read the ids `duckdb_logs` reports for the entry
+      through its getters, e.g. `[[log_sink_write_info_get_connection_id]]`.
+
+  log_sink_flush_info:
+    description: |
+      A borrowed opaque handle received by a log sink's flush callback, and valid only for the duration of that call.
+      It carries nothing yet.
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Callbacks
+#-----------------------------------------------------------------------------------------------------------------------
+callbacks:
+  log_sink_write_callback:
+    parameters:
+      info:
+        type: log_sink_write_info
+        description: Borrowed opaque handle to the context of the entry, giving access to its ids.
+      user_data:
+        type: void
+        indirection: 1
+        description: The user data set via `[[log_sink_set_user_data]]`, or null if none was set.
+      timestamp:
+        type: i64
+        description: When the entry was written, as a TIMESTAMP WITH TIME ZONE - microseconds since the epoch.
+      level:
+        type: LOG_LEVEL
+        description: The severity of the entry.
+      scope:
+        type: LOG_SCOPE
+        description: The scope the entry was written in, which decides which of its ids are present.
+      type:
+        type: str
+        indirection: 1
+        const: true
+        kind: IN
+        description: The log type the entry was written under, e.g. `QueryLog`. Borrowed for the duration of the call.
+      message:
+        type: str
+        indirection: 1
+        const: true
+        kind: IN
+        description: The message of the entry. Borrowed for the duration of the call.
+      err:
+        type: error_info
+        indirection: 1
+        description: |
+          Borrowed error info handle to report a failure to receive the entry through. A reported error drops the
+          entry; it never fails the operation that logged.
+    return_type: void
+
+  log_sink_flush_callback:
+    parameters:
+      info:
+        type: log_sink_flush_info
+        description: Borrowed opaque handle to the flush. Carries nothing yet.
+      user_data:
+        type: void
+        indirection: 1
+        description: The user data set via `[[log_sink_set_user_data]]`, or null if none was set.
+      err:
+        type: error_info
+        indirection: 1
+        description: |
+          Borrowed error info handle to report a failure to flush through. A reported error is dropped; it never
+          fails the operation that flushed.
+    return_type: void
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Functions
+#-----------------------------------------------------------------------------------------------------------------------
+functions:
+  #---------------------------------------------------------------------------------------------------------------------
+  # Constructors
+  #---------------------------------------------------------------------------------------------------------------------
+  log_sink_create:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: |
+      Creates a new log sink through a factory.
+
+      The log sink starts out empty: configure it with the setter functions, then make it available with
+      `[[instance_register_log_sink]]` or `[[extension_register_log_sink]]`. The caller owns the returned handle and
+      must destroy it with `[[log_sink_destroy]]`, also after registration.
+
+      The log sink can only be registered on the instance the factory belongs to.
+    role: constructor
+    belongs_to: log_sink
+    parameters:
+      factory:
+        type: factory
+        description: The factory to create the log sink through.
+      sink:
+        type: log_sink
+        indirection: 1
+        kind: OUT
+        description: On success, receives the newly created log sink. Owned by the caller.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # Properties
+  #---------------------------------------------------------------------------------------------------------------------
+  log_sink_set_name:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: |
+      Sets the name the logging configuration refers to the log sink by.
+
+      Names are matched case-insensitively. The name is borrowed and copied. Calling this again replaces the previous
+      name. A name must be set before registration.
+    parameters:
+      sink:
+        type: log_sink
+        description: The log sink to set the name of.
+      name:
+        type: identifier
+        indirection: 1
+        const: true
+        kind: IN
+        description: The name to set. Borrowed and copied.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  log_sink_set_user_data:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: |
+      Sets arbitrary user data on the log sink.
+
+      Associates an opaque pointer with the sink, handed to its write and flush callbacks. The opaque handle bundles
+      the pointer with an optional destructor, invoked when the data is no longer needed: when the instance is
+      destroyed if the sink was registered, else when the log sink handle is.
+    parameters:
+      sink:
+        type: log_sink
+        description: The log sink to set the user data of.
+      data:
+        type: opaque
+        indirection: 1
+        description: Opaque handle bundling the user data pointer plus an optional destructor.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  log_sink_set_write_callback:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: |
+      Sets the write callback of the log sink, invoked for every entry the logging configuration directs to the sink.
+
+      The callback must return quickly, must be safe to run concurrently and on any thread, and must not log or change
+      the logging configuration. A write callback must be set before registration.
+    parameters:
+      sink:
+        type: log_sink
+        description: The log sink to set the write callback of.
+      callback:
+        type: log_sink_write_callback
+        description: The write callback to set.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  log_sink_set_flush_callback:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: |
+      Sets the optional flush callback of the log sink, invoked when DuckDB flushes its log, so entries the sink holds
+      on to can be written out. When DuckDB flushes is up to DuckDB; entries still held when the instance is destroyed
+      are for the user data's destructor to write out.
+
+      Like the write callback, it must be safe to run on any thread, and must not log or change the logging
+      configuration.
+    parameters:
+      sink:
+        type: log_sink
+        description: The log sink to set the flush callback of.
+      callback:
+        type: log_sink_flush_callback
+        description: The flush callback to set.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # Write Info
+  #---------------------------------------------------------------------------------------------------------------------
+  log_sink_write_info_get_connection_id:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: |
+      Retrieves the id of the connection that wrote the entry, as `duckdb_logs` reports it. An entry written for the
+      database as a whole has none: `present` then receives false and `id` is left untouched.
+    parameters:
+      info:
+        type: log_sink_write_info
+        description: The write info handle of the entry.
+      id:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Receives the connection id, if present.
+      present:
+        type: bool
+        indirection: 1
+        kind: OUT
+        description: Receives whether the entry has a connection id.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  log_sink_write_info_get_transaction_id:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: |
+      Retrieves the id of the transaction the entry was written in, as `duckdb_logs` reports it. An entry written
+      outside a transaction has none: `present` then receives false and `id` is left untouched.
+    parameters:
+      info:
+        type: log_sink_write_info
+        description: The write info handle of the entry.
+      id:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Receives the transaction id, if present.
+      present:
+        type: bool
+        indirection: 1
+        kind: OUT
+        description: Receives whether the entry has a transaction id.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  log_sink_write_info_get_query_id:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: |
+      Retrieves the id of the query the entry was written for, as `duckdb_logs` reports it. An entry written outside
+      a query has none: `present` then receives false and `id` is left untouched.
+    parameters:
+      info:
+        type: log_sink_write_info
+        description: The write info handle of the entry.
+      id:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Receives the query id, if present.
+      present:
+        type: bool
+        indirection: 1
+        kind: OUT
+        description: Receives whether the entry has a query id.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  log_sink_write_info_get_thread_id:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: |
+      Retrieves the id of the thread that wrote the entry, as `duckdb_logs` reports it. Only an entry written in the
+      thread scope has one: otherwise `present` receives false and `id` is left untouched. The id identifies the
+      thread that logged, which need not be the thread the write callback runs on.
+    parameters:
+      info:
+        type: log_sink_write_info
+        description: The write info handle of the entry.
+      id:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Receives the thread id, if present.
+      present:
+        type: bool
+        indirection: 1
+        kind: OUT
+        description: Receives whether the entry has a thread id.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # Register
+  #---------------------------------------------------------------------------------------------------------------------
+  instance_register_log_sink:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: |
+      Registers the log sink on the instance, making it available to the logging configuration under its name.
+
+      Registering does not direct any entries to the sink by itself; the logging configuration does. Registration is
+      not transactional, requires a name and a write callback, and fails when the name is taken: by a sink DuckDB
+      provides itself, such as `memory`, `stdout` or `file`, or by a sink registered before. The log sink must have
+      been created through a factory of the same instance. Its user data passes to the registered sink. The caller
+      still owns the handle after registration and must destroy it with `[[log_sink_destroy]]`, which does not
+      affect the registered sink.
+    role: method
+    belongs_to: instance
+    parameters:
+      instance:
+        type: instance
+        description: The instance to register on.
+      sink:
+        type: log_sink
+        description: The log sink to register.
+      err:
+        type: error_info
+        indirection: 1
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
+
+  extension_register_log_sink:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: |
+      Registers the log sink on the loading extension's instance, making it available to the logging configuration
+      under its name.
+
+      Use this from the extension's load callback. Registration follows the rules of `[[instance_register_log_sink]]`.
+    role: method
+    belongs_to: extension
+    parameters:
+      extension:
+        type: extension
+        description: The loading extension.
+      sink:
+        type: log_sink
+        description: The log sink to register.
+      err:
+        type: error_info
+        indirection: 1
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # Destroy
+  #---------------------------------------------------------------------------------------------------------------------
+  log_sink_destroy:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: |
+      Destroys the log sink, releasing its resources.
+
+      Null-safe: passing a null pointer or null handle is a no-op. The handle is set to null on return to
+      prevent double-destruction. Destroying the handle after registration does not affect the registered sink.
+    parameters:
+      sink:
+        type: log_sink
+        description: The log sink to destroy.
+        indirection: 1
+    return_type: ERROR

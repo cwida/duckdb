@@ -77,11 +77,11 @@ DROP TYPE mood;
 ----
 Dependency
 
+mode unskip
+
 query TT
 select * from person
 ----
 Moe	happy
-
-mode unskip
 
 endloop

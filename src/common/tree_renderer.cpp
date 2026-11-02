@@ -5,6 +5,7 @@
 #include "duckdb/common/tree_renderer/graphviz_tree_renderer.hpp"
 #include "duckdb/common/tree_renderer/yaml_tree_renderer.hpp"
 #include "duckdb/common/tree_renderer/mermaid_tree_renderer.hpp"
+#include "duckdb/common/tree_renderer/compact_tree_renderer.hpp"
 #include "duckdb/main/profiler/profiler_print_format.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
@@ -61,6 +62,7 @@ static const ProfilerPrintFormatEntry PRINT_FORMATS[] = {
     {"graphviz", MakeRenderer<GRAPHVIZTreeRenderer>},
     {"yaml", MakeRenderer<YAMLTreeRenderer>},
     {"mermaid", MakeRenderer<MermaidTreeRenderer>},
+    {"compact", MakeRenderer<CompactTreeRenderer>},
 };
 
 //! Look up the registry entry for a format name, throwing InvalidInputException (listing valid names) when unknown.

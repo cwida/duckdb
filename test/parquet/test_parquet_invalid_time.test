@@ -1,0 +1,36 @@
+# name: test/parquet/test_parquet_invalid_time.test
+# description: Parquet files with TIME values outside of a day
+# group: [parquet]
+
+require parquet
+
+foreach file time_h100 time_neg time_huge
+
+statement error
+SELECT t FROM 'data/parquet-testing/invalid_time/{file}.parquet'
+----
+TIME values must be within a day
+
+# the statistics are ignored
+query III
+SELECT path_in_schema, stats_min, stats_max FROM parquet_metadata('data/parquet-testing/invalid_time/{file}.parquet') ORDER BY ALL
+----
+t	NULL	NULL
+tn	23:59:59.999999999	23:59:59.999999999
+
+query I
+SELECT tn FROM 'data/parquet-testing/invalid_time/{file}.parquet'
+----
+23:59:59.999999999
+
+endloop
+
+statement error
+SELECT tn FROM 'data/parquet-testing/invalid_time/timens_h100.parquet'
+----
+TIME values must be within a day
+
+query I
+SELECT t FROM 'data/parquet-testing/invalid_time/timens_h100.parquet'
+----
+23:59:59.999999

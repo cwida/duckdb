@@ -1,0 +1,43 @@
+# name: test/sql/catalog/quoted_search_path.test
+# description: Search paths retain escaped quotes and their permissive quoting rules
+# group: [catalog]
+
+statement ok
+CREATE SCHEMA "sch,ema""name";
+
+statement ok
+SET search_path = '"sch,ema""name"';
+
+statement ok
+CREATE TABLE t AS SELECT 42 AS i;
+
+query I
+SELECT * FROM "sch,ema""name".t;
+----
+42
+
+query I
+SELECT current_schema();
+----
+sch,ema"name
+
+statement ok
+CREATE SCHEMA prequotedsuffix;
+
+statement ok
+SET search_path = 'pre"quoted"suffix,"sch,ema""name"';
+
+query I
+SELECT current_schema();
+----
+prequotedsuffix
+
+query I
+SELECT * FROM t;
+----
+42
+
+statement error
+SET search_path = '"unterminated';
+----
+Unterminated quote in qualified name

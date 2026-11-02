@@ -1,0 +1,21 @@
+# name: test/sql/optimizer/string_stats_merge_truncated_prefix.test
+# description: Merging truncated prefix string statistics with longer exact strings preserves truncated bounds
+# group: [optimizer]
+
+statement ok
+CREATE TABLE t AS SELECT 'abcdefghijklzzzz' AS s, true AS c;
+
+query I
+SELECT (CASE WHEN c THEN s ELSE 'abcdefghijklA' END) > 'abcdefghijklB' FROM t;
+----
+true
+
+query I
+SELECT count(*) FROM t WHERE (CASE WHEN c THEN s ELSE 'abcdefghijklA' END) > 'abcdefghijklB';
+----
+1
+
+query I
+SELECT (CASE WHEN NOT c THEN 'abcdefghijklA' ELSE s END) > 'abcdefghijklB' FROM t;
+----
+true

@@ -20,11 +20,13 @@ enum class ParserWorkload : uint8_t {
 	TPCH,
 	TPCDS,
 	FLUMMI,
-	AOC
+	AOC,
+	STRESS,
+	VALUES_LIST
 };
 
 struct ParserBenchmarkState : public BenchmarkState {
-	ParserOptions options;
+	ParserOptions options = ParserOptions::Builtin();
 	vector<string> queries;
 	idx_t statements_parsed = 0;
 	idx_t parser_errors = 0;
@@ -42,7 +44,6 @@ public:
 	unique_ptr<BenchmarkState> Initialize(BenchmarkConfiguration &config) override {
 		auto state = make_uniq<ParserBenchmarkState>();
 		state->queries = LoadQueries();
-		state->options.compiled_grammar = CompiledGrammar::Create();
 		// Keep malformed-input backtracking under the runner's timeout in Run.
 		if (workload == ParserWorkload::MALFORMED_SELECT) {
 			return std::move(state);
@@ -160,6 +161,8 @@ public:
 		case ParserWorkload::TPCDS:
 		case ParserWorkload::FLUMMI:
 		case ParserWorkload::AOC:
+		case ParserWorkload::STRESS:
+		case ParserWorkload::VALUES_LIST:
 			return StringUtil::Join(LoadQueries(), "\n");
 		default:
 			throw InternalException("Unknown parser benchmark workload");
@@ -213,6 +216,10 @@ private:
 		switch (workload) {
 		case ParserWorkload::FLUMMI:
 			return {ReadQuery("benchmark/recursive_cte/queries/performance/flummi_ray.sql")};
+		case ParserWorkload::STRESS:
+			return {ReadQuery("benchmark/micro/parser/parser_stress.sql")};
+		case ParserWorkload::VALUES_LIST:
+			return {ReadQuery("benchmark/micro/parser/parser_values_list.sql")};
 		case ParserWorkload::TPCH:
 			prefix = "extension/tpch/dbgen/queries/q";
 			break;
@@ -238,15 +245,17 @@ private:
 	idx_t statement_count;
 };
 
-ParserMicroBenchmark parser_keyword_identifiers("ParserKeywordIdentifiers", ParserWorkload::KEYWORD_IDENTIFIERS, 2000);
-ParserMicroBenchmark parser_wide_select("ParserWideSelect", ParserWorkload::WIDE_SELECT, 500);
-ParserMicroBenchmark parser_nested_expressions("ParserNestedExpressions", ParserWorkload::NESTED_EXPRESSIONS, 1000);
-ParserMicroBenchmark parser_malformed_select("ParserMalformedSelect", ParserWorkload::MALFORMED_SELECT, 1000, 0);
-ParserMicroBenchmark parser_statements("ParserStatements", ParserWorkload::STATEMENTS, 1000, 32);
-ParserMicroBenchmark parser_tpch("ParserTPCH", ParserWorkload::TPCH, 50);
-ParserMicroBenchmark parser_tpcds("ParserTPCDS", ParserWorkload::TPCDS, 10);
-ParserMicroBenchmark parser_flummi("ParserFlummi", ParserWorkload::FLUMMI, 5);
-ParserMicroBenchmark parser_aoc("ParserAoC", ParserWorkload::AOC, 10);
+ParserMicroBenchmark parser_keyword_identifiers("ParserKeywordIdentifiers", ParserWorkload::KEYWORD_IDENTIFIERS, 650);
+ParserMicroBenchmark parser_wide_select("ParserWideSelect", ParserWorkload::WIDE_SELECT, 55);
+ParserMicroBenchmark parser_nested_expressions("ParserNestedExpressions", ParserWorkload::NESTED_EXPRESSIONS, 250);
+ParserMicroBenchmark parser_malformed_select("ParserMalformedSelect", ParserWorkload::MALFORMED_SELECT, 400, 0);
+ParserMicroBenchmark parser_statements("ParserStatements", ParserWorkload::STATEMENTS, 700, 32);
+ParserMicroBenchmark parser_tpch("ParserTPCH", ParserWorkload::TPCH, 12);
+ParserMicroBenchmark parser_tpcds("ParserTPCDS", ParserWorkload::TPCDS, 1);
+ParserMicroBenchmark parser_flummi("ParserFlummi", ParserWorkload::FLUMMI, 1);
+ParserMicroBenchmark parser_aoc("ParserAoC", ParserWorkload::AOC, 2);
+ParserMicroBenchmark parser_stress("ParserStress", ParserWorkload::STRESS, 7);
+ParserMicroBenchmark parser_values_list("ParserValuesList", ParserWorkload::VALUES_LIST, 8);
 
 struct ParserGrammarConstructionState : public BenchmarkState {
 	idx_t grammars_constructed = 0;
@@ -303,7 +312,7 @@ public:
 	}
 
 private:
-	static constexpr idx_t ITERATIONS = 500;
+	static constexpr idx_t ITERATIONS = 250;
 };
 
 ParserGrammarConstructionBenchmark parser_grammar_construction;

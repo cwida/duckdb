@@ -19,11 +19,16 @@
 #include "duckdb/parallel/pipeline_initialize_event.hpp"
 #include "duckdb/parallel/pipeline_prepare_finish_event.hpp"
 #include "duckdb/parallel/pipeline_schedule.hpp"
+#include "duckdb/parallel/progress_verifier.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
 #include "duckdb/parallel/thread_context.hpp"
 
 #include <algorithm>
 #include <chrono>
+
+#ifdef __EMSCRIPTEN_PTHREADS__
+#include <emscripten/threading.h>
+#endif
 
 namespace duckdb {
 
@@ -86,6 +91,9 @@ void Executor::ScheduleEventsInternal(ScheduleEventData &event_data) {
 	auto schedule = BuildPipelineSchedule(event_data.meta_pipelines);
 	if (schedule->HasCycle()) {
 		throw InternalException("Cyclic dependency in pipeline schedule");
+	}
+	if (event_data.initial_schedule && recursive_ctes.empty()) {
+		ScheduleRuntimeFilters(*schedule);
 	}
 	events.reserve(schedule->stages.size());
 	for (auto &stage : schedule->stages) {
@@ -240,6 +248,12 @@ void Executor::InitializeInternal(PhysicalOperator &plan) {
 
 		this->profiler = ClientData::Get(context).profiler;
 		this->producer = scheduler.CreateProducer();
+
+		auto verify_progress = Settings::Get<DebugVerifyProgressSetting>(context);
+		if (verify_progress != DebugProgressVerification::NONE) {
+			progress_verifier = make_uniq<ProgressVerifier>(context, verify_progress,
+			                                                Settings::Get<DebugVerifyProgressIgnoreSetting>(context));
+		}
 
 		// build and ready the pipelines
 		PipelineBuildState state;
@@ -445,6 +459,10 @@ QueryResultState Executor::ExecuteTask() {
 			TaskScheduler::GetScheduler(context).GetTaskFromProducer(*producer, task);
 		}
 		if (!task && !HasError()) {
+#ifdef __EMSCRIPTEN_PTHREADS__
+			// A positive sleep services the dlopen queue while another worker owns the task.
+			emscripten_thread_sleep(1);
+#endif
 			return IdleState();
 		}
 		if (task) {
@@ -515,6 +533,12 @@ void Executor::FailExecution() {
 QueryResultState Executor::FinishExecution() {
 	D_ASSERT(!task);
 	lock_guard<mutex> elock(executor_lock);
+	if (progress_verifier && !HasError()) {
+		auto progress_error = progress_verifier->Finalize(pipelines);
+		if (!progress_error.empty()) {
+			error_manager.PushError(ErrorData(ExceptionType::INVALID_INPUT, progress_error));
+		}
+	}
 	pipelines.clear();
 	NextExecutor();
 	if (HasError()) { // LCOV_EXCL_START
@@ -536,6 +560,7 @@ void Executor::Reset() {
 	completed_pipelines = 0;
 	total_pipelines = 0;
 	error_manager.Reset();
+	progress_verifier.reset();
 	pipelines.clear();
 	events.clear();
 	to_be_rescheduled_tasks.clear();
@@ -570,6 +595,29 @@ vector<LogicalType> Executor::GetTypes() {
 void Executor::PushError(ErrorData exception) {
 	// push the exception onto the stack
 	error_manager.PushError(std::move(exception));
+	InterruptPipelines();
+}
+
+void Executor::PushTaskError(const std::exception &ex) {
+	error_manager.PushTaskError([&]() { return ErrorData(ex); });
+	TryInterruptPipelines();
+}
+
+void Executor::PushTaskError(const char *message) {
+	error_manager.PushTaskError([&]() { return ErrorData(message); });
+	TryInterruptPipelines();
+}
+
+void Executor::TryInterruptPipelines() {
+	try {
+		InterruptPipelines();
+	} catch (...) { // NOLINT
+		// rescheduling blocked tasks can fail when memory runs out, and the error is recorded, so the main thread
+		// sees it and cancels the remaining tasks
+	}
+}
+
+void Executor::InterruptPipelines() {
 	// interrupt execution of any other pipelines that belong to this executor
 	context.interrupt_state = ClientInterruptState::INTERRUPTED;
 	for (auto &pipeline : pipelines) {
@@ -591,12 +639,11 @@ void Executor::ThrowException() {
 }
 
 void Executor::Flush(ThreadContext &thread_context) {
-	auto global_profiler = profiler;
-	if (global_profiler) {
-		global_profiler->Flush(thread_context.profiler);
+	if (profiler) {
+		profiler->Flush(thread_context.profiler);
 
 		auto blocked_time = blocked_thread_time.load();
-		global_profiler->SetBlockedTime(double(blocked_time) / 1000.0 / 1000.0);
+		profiler->SetBlockedTime(double(blocked_time) / 1000.0 / 1000.0);
 	}
 }
 

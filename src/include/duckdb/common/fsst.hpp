@@ -38,6 +38,8 @@ private:
 		uint64_t extra_space[string_t::INLINE_BYTES];
 	};
 
+	[[noreturn]] static void ThrowInvalidCompressedString();
+
 public:
 	static string_t DecompressValue(void *duckdb_fsst_decoder, ArenaAllocator &str_allocator,
 	                                const char *compressed_string, const idx_t compressed_string_len) {
@@ -47,6 +49,9 @@ public:
 		const auto target_ptr = StringVector::AllocateShrinkableBuffer(str_allocator, max_uncompressed_length);
 		const auto decompressed_string_size = duckdb_fsst_decompress(
 		    fsst_decoder, compressed_string_len, compressed_string_ptr, max_uncompressed_length, target_ptr);
+		if (decompressed_string_size == DUCKDB_FSST_DECOMPRESS_INVALID_INPUT) {
+			ThrowInvalidCompressedString();
+		}
 		return StringVector::FinalizeShrinkableBuffer(str_allocator, target_ptr, max_uncompressed_length,
 		                                              decompressed_string_size);
 	}
@@ -59,6 +64,9 @@ public:
 		const auto decompressed_string_size =
 		    duckdb_fsst_decompress(fsst_decoder, compressed_string_len, compressed_string_ptr,
 		                           string_t::INLINE_LENGTH + sizeof(StringWithExtraSpace::extra_space), target_ptr);
+		if (decompressed_string_size == DUCKDB_FSST_DECOMPRESS_INVALID_INPUT) {
+			ThrowInvalidCompressedString();
+		}
 		if (decompressed_string_size > string_t::INLINE_LENGTH) {
 			throw DataCorruptionException(
 			    "Corrupt database file: decoded FSST string of >=%llu bytes (should be <=%llu bytes)",

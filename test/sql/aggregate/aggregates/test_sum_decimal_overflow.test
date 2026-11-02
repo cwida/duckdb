@@ -1,0 +1,54 @@
+# name: test/sql/aggregate/aggregates/test_sum_decimal_overflow.test
+# description: The sum of a DECIMAL must fit in a DECIMAL(38)
+# group: [aggregates]
+
+statement ok
+CREATE TABLE decimals AS SELECT * FROM (VALUES
+    (1, 99999999999999999999999999999999999999::DECIMAL(38,0), 9999999999999999999999999999999999.9999::DECIMAL(38,4)),
+    (2, 1::DECIMAL(38,0), 0.0001::DECIMAL(38,4))) t(i, d, d4);
+
+statement error
+SELECT sum(d) FROM decimals;
+----
+Overflow in SUM of DECIMAL
+
+statement error
+SELECT sum(d4) FROM decimals;
+----
+Overflow in SUM of DECIMAL
+
+statement error
+SELECT -sum(-d) FROM decimals;
+----
+Overflow in SUM of DECIMAL
+
+statement error
+SELECT sum(d) OVER (ORDER BY i ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) FROM decimals;
+----
+Overflow in SUM of DECIMAL
+
+query II
+SELECT sum(d), sum(d4) FROM decimals WHERE i = 1;
+----
+99999999999999999999999999999999999999	9999999999999999999999999999999999.9999
+
+query I
+SELECT sum(x) FROM (VALUES (99999999999999999999999999999999999999::DECIMAL(38,0)), (-1::DECIMAL(38,0))) t(x);
+----
+99999999999999999999999999999999999998
+
+# imported states are checked as well
+statement error
+SELECT finalize(to_aggregate_state(100000000000000000000000000000000000000, 'sum', ['DECIMAL(38,2)']))::DOUBLE;
+----
+Overflow in SUM of DECIMAL
+
+statement error
+SELECT finalize(to_aggregate_state(-100000000000000000000000000000000000000, 'sum', ['DECIMAL(18,2)']));
+----
+Overflow in SUM of DECIMAL
+
+query I
+SELECT finalize(to_aggregate_state(99999999999999999999999999999999999999, 'sum', ['DECIMAL(38,2)']));
+----
+999999999999999999999999999999999999.99

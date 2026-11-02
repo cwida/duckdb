@@ -1,0 +1,19 @@
+# name: test/sql/copy/csv/test_copy_csv_multibyte_delimiter.test
+# description: COPY TO CSV with delimiters that consist of multiple bytes
+# group: [csv]
+
+statement ok
+COPY (SELECT 1 a, 'xéy' b, 'z' c) TO '{TEST_DIR}/multibyte_delimiter.csv' (DELIMITER 'é');
+
+query III
+SELECT * FROM read_csv('{TEST_DIR}/multibyte_delimiter.csv', delim='é')
+----
+1	xéy	z
+
+statement ok
+COPY (SELECT 1 a, 'x||y' b) TO '{TEST_DIR}/multichar_delimiter.csv' (DELIMITER '||');
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/multichar_delimiter.csv', delim='||')
+----
+1	x||y

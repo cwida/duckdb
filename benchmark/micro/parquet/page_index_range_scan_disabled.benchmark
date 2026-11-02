@@ -1,0 +1,26 @@
+# name: benchmark/micro/parquet/page_index_range_scan_disabled.benchmark
+# description: Range scan on a sorted column with wide payload columns without using the page index (baseline)
+# group: [parquet]
+
+name Page Index Range Scan (disabled)
+group micro
+subgroup parquet
+
+require parquet
+
+load
+COPY (
+	SELECT range AS id,
+	       (range * 7919) % 1000000 AS v,
+	       'payload_' || lpad(range::VARCHAR, 9, '0') || '_' || repeat('x', (range % 13)::INTEGER) AS s,
+	       (range / 7)::DOUBLE AS d,
+	       (range * 31) % 100003 AS w
+	FROM range(10000000)
+) TO '${BENCHMARK_DIR}/page_index_range_scan.parquet' (ROW_GROUP_SIZE 10000000, DATA_PAGE_SIZE_LIMIT 1048576, WRITE_PAGE_INDEX true);
+SET parquet_use_page_index = false;
+
+run
+SELECT count(*), sum(v), sum(w), max(s), sum(d) FROM '${BENCHMARK_DIR}/page_index_range_scan.parquet' WHERE id BETWEEN 2000000 AND 2200000
+
+result IIIII
+200001	99985900000	10000009756	payload_002200000_xxxxxxxxxx	60000300000.0

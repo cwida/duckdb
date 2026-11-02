@@ -1,0 +1,181 @@
+# name: test/sql/copy/csv/code_cov/csv_scanner_conversion.test
+# description: Cover CSV scanner conversions, empty values, and schema merging
+# group: [code_cov]
+
+# Exercise the direct scanner conversions for unsigned integers, BIGNUM, and every DECIMAL storage width.
+statement ok
+COPY (
+	SELECT
+		4294967295::UINTEGER AS ui,
+		340282366920938463463374607431768211455::UHUGEINT AS uhi,
+		340282366920938463463374607431768211456::BIGNUM AS bn,
+		12.34::DECIMAL(4, 2) AS d16,
+		1234567.89::DECIMAL(9, 2) AS d32,
+		1234567890123456.78::DECIMAL(18, 2) AS d64,
+		123456789012345678901234567890123456.78::DECIMAL(38, 2) AS d128
+) TO '{TEST_DIR}/scanner_numbers.csv' (FORMAT CSV, HEADER false)
+
+query IIIIIII
+SELECT *
+FROM read_csv(
+	'{TEST_DIR}/scanner_numbers.csv',
+	auto_detect = false,
+	header = false,
+	columns = {
+		'ui': 'UINTEGER',
+		'uhi': 'UHUGEINT',
+		'bn': 'BIGNUM',
+		'd16': 'DECIMAL(4, 2)',
+		'd32': 'DECIMAL(9, 2)',
+		'd64': 'DECIMAL(18, 2)',
+		'd128': 'DECIMAL(38, 2)'
+	}
+)
+----
+4294967295	340282366920938463463374607431768211455	340282366920938463463374607431768211456	12.34	1234567.89	1234567890123456.78	123456789012345678901234567890123456.78
+
+# Comma decimals use separate conversion templates for each physical DECIMAL type.
+statement ok
+COPY (
+	SELECT *
+	FROM (VALUES ('12,34', '1234567,89', '1234567890123456,78', '123456789012345678901234567890123456,78'))
+		t(d16, d32, d64, d128)
+) TO '{TEST_DIR}/scanner_comma_decimals.csv' (FORMAT CSV, HEADER false, DELIMITER ';', QUOTE '')
+
+query IIII
+SELECT *
+FROM read_csv(
+	'{TEST_DIR}/scanner_comma_decimals.csv',
+	auto_detect = false,
+	header = false,
+	delim = ';',
+	decimal_separator = ',',
+	columns = {
+		'd16': 'DECIMAL(4, 2)',
+		'd32': 'DECIMAL(9, 2)',
+		'd64': 'DECIMAL(18, 2)',
+		'd128': 'DECIMAL(38, 2)'
+	}
+)
+----
+12.34	1234567.89	1234567890123456.78	123456789012345678901234567890123456.78
+
+# A failed BIGNUM conversion follows its exception-based conversion path.
+statement ok
+COPY (SELECT 'not-a-number') TO '{TEST_DIR}/scanner_bad_bignum.csv' (FORMAT CSV, HEADER false, QUOTE '')
+
+query I
+SELECT count(value)
+FROM read_csv(
+	'{TEST_DIR}/scanner_bad_bignum.csv',
+	auto_detect = false,
+	header = false,
+	ignore_errors = true,
+	columns = {'value': 'BIGNUM'}
+)
+----
+0
+
+# Escaped values cannot be converted directly to numbers.
+statement ok
+COPY (SELECT '1"2') TO '{TEST_DIR}/scanner_escaped_integer.csv' (FORMAT CSV, HEADER false, FORCE_QUOTE *)
+
+statement error
+SELECT *
+FROM read_csv(
+	'{TEST_DIR}/scanner_escaped_integer.csv',
+	auto_detect = false,
+	header = false,
+	columns = {'value': 'INTEGER'}
+)
+----
+Could not convert string
+
+# An empty line forced to be non-NULL is returned as an empty string.
+statement ok
+COPY (SELECT '\x0A'::BLOB) TO '{TEST_DIR}/scanner_empty_line.csv' (FORMAT BLOB)
+
+query II
+SELECT value IS NULL, length(value)
+FROM read_csv(
+	'{TEST_DIR}/scanner_empty_line.csv',
+	auto_detect = false,
+	header = false,
+	nullstr = [''],
+	force_not_null = ['value'],
+	columns = {'value': 'VARCHAR'}
+)
+----
+false	0
+
+# Null padding extends the merged schema when a later file has additional columns.
+statement ok
+COPY (SELECT 1 AS a) TO '{TEST_DIR}/scanner_schema_1.csv' (FORMAT CSV, HEADER)
+
+statement ok
+COPY (SELECT 2 AS a, 3 AS b) TO '{TEST_DIR}/scanner_schema_2.csv' (FORMAT CSV, HEADER)
+
+query II
+SELECT column_name, column_type
+FROM (
+	DESCRIBE SELECT *
+	FROM read_csv(
+		['{TEST_DIR}/scanner_schema_1.csv', '{TEST_DIR}/scanner_schema_2.csv'],
+		null_padding = true,
+		files_to_sniff = -1
+	)
+)
+ORDER BY column_name
+----
+a	BIGINT
+b	BIGINT
+
+# Restricting auto detection exposes the integral widening steps used while merging file schemas.
+statement ok
+COPY (SELECT 1) TO '{TEST_DIR}/scanner_merge_tinyint.csv' (FORMAT CSV, HEADER false)
+
+statement ok
+COPY (SELECT 1000) TO '{TEST_DIR}/scanner_merge_smallint.csv' (FORMAT CSV, HEADER false)
+
+statement ok
+COPY (SELECT 100000) TO '{TEST_DIR}/scanner_merge_integer.csv' (FORMAT CSV, HEADER false)
+
+statement ok
+COPY (SELECT 10000000000) TO '{TEST_DIR}/scanner_merge_bigint.csv' (FORMAT CSV, HEADER false)
+
+query T
+SELECT typeof(column0)
+FROM read_csv(
+	[
+		'{TEST_DIR}/scanner_merge_tinyint.csv',
+		'{TEST_DIR}/scanner_merge_smallint.csv',
+		'{TEST_DIR}/scanner_merge_integer.csv',
+		'{TEST_DIR}/scanner_merge_bigint.csv'
+	],
+	header = false,
+	files_to_sniff = -1,
+	auto_type_candidates = ['TINYINT', 'SMALLINT', 'INTEGER', 'BIGINT', 'VARCHAR']
+)
+LIMIT 1
+----
+BIGINT
+
+# HUGEINT and BIGNUM files merge to the wider BIGNUM type.
+statement ok
+COPY (SELECT 12345678901234567890) TO '{TEST_DIR}/scanner_merge_hugeint.csv' (FORMAT CSV, HEADER false)
+
+statement ok
+COPY (SELECT 340282366920938463463374607431768211456::BIGNUM)
+TO '{TEST_DIR}/scanner_merge_bignum.csv' (FORMAT CSV, HEADER false)
+
+query T
+SELECT typeof(column0)
+FROM read_csv(
+	['{TEST_DIR}/scanner_merge_hugeint.csv', '{TEST_DIR}/scanner_merge_bignum.csv'],
+	header = false,
+	files_to_sniff = -1,
+	auto_type_candidates = ['HUGEINT', 'BIGNUM', 'VARCHAR']
+)
+LIMIT 1
+----
+BIGNUM

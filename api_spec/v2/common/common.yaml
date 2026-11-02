@@ -1,36 +1,67 @@
 module: common
+enums:
+  ORDER_PRESERVATION:
+    description: |
+      The order guarantee a producer of rows makes about its output, which decides whether the rows it produces
+      must be kept in order downstream.
+    values:
+      ORDER_PRESERVATION_NO_ORDER:
+        value: 0
+        description: |
+          The rows have no meaningful order. The engine may reorder them freely, and consumers that otherwise keep
+          insertion order, such as query results, INSERT and COPY, run in parallel without ordering them.
+      ORDER_PRESERVATION_INSERTION_ORDER:
+        value: 1
+        description: |
+          The rows are produced in insertion order, which the engine keeps unless the `preserve_insertion_order`
+          setting is disabled.
+      ORDER_PRESERVATION_FIXED_ORDER:
+        value: 2
+        description: |
+          The rows are produced in an order that must be kept, as if sorted by an `ORDER BY`, even when the
+          `preserve_insertion_order` setting is disabled.
 handles:
   environment:
     description: |
       An opaque, owned handle to the V2 environment: the required root through
-      which database handles are created. All databases under one environment
+      which instance handles are created. All instances under one environment
       share an instance cache, so file-level conflicts — the same database
       file opened twice — are detected across them. Destroying the
-      environment refuses with ERROR_RESOURCE_IN_USE while any database
+      environment refuses with ERROR_RESOURCE_IN_USE while any instance
       created through it is still alive; destroy those first.
     cleanup_with: environment_destroy
-  database:
+  instance:
     description: |
       An opaque, owned handle to a DuckDB database instance: a buffer pool, a
       scheduler, a set of GLOBAL settings, and the databases attached to it.
-      Created empty by `[[database_create]]`; databases are attached with
-      `[[database_attach]]`, made the default with `[[database_set_default]]`, and detached with
-      `[[database_detach]]`. Always destroy via `[[database_destroy]]`.
-    cleanup_with: database_destroy
+      Created empty by `[[instance_create]]`; databases are attached with
+      `[[instance_attach]]`, made the default with `[[instance_set_default]]`, and detached with
+      `[[instance_detach]]`. Always destroy via `[[instance_destroy]]`.
+    cleanup_with: instance_destroy
   connection:
     description: |
       An opaque, owned handle to a DuckDB connection: a session on a database
       instance with its own LOCAL settings and transaction state. Always
       destroy via `[[connection_destroy]]`.
     cleanup_with: connection_destroy
+  config:
+    description: |
+      A borrowed handle to the scope config options are read from and written
+      at. Taken from an instance (`[[instance_get_config]]`), a connection
+      (`[[connection_get_config]]`) or a context (`[[context_get_config]]`),
+      and valid for as long as its source is; the caller never destroys it.
+      An instance's config is the GLOBAL scope alone; a connection's or a context's config reads that client's cascade
+      (its SESSION value, else the GLOBAL one, else the default) and writes at
+      any scope the option supports.
   option:
     description: |
-      An opaque, owned, read-only descriptor of a single config option as seen
-      from a database, connection, or context: its canonical name, current
-      setting, default setting, description, target scope, and aliases.
-      Returned by the *_get_option and *_get_option_by_index functions; the
-      caller always destroys it via `[[option_destroy]]`. Options are written with
-      the *_set_option functions, which take a name and a setting directly.
+      An opaque, owned, read-only descriptor of a single config option as
+      registered on an instance: its canonical name, default value,
+      description, the scopes it may be written at, and aliases. It carries no
+      current value: read that with the *_get_option_value functions, and
+      write it with the *_set_option functions. Returned by the
+      *_get_option_by_name and *_get_option_by_index functions; the caller
+      always destroys it via `[[option_destroy]]`.
     cleanup_with: option_destroy
   # Error reporting. Every fallible function takes a trailing
   # `error_info *err` out-parameter.
@@ -75,10 +106,10 @@ handles:
       step from one thread at a time.
 
       A result is a cursor on the connection's execution, not a box of data.
-      While it is live — not finished, cancelled, errored, or destroyed — the
-      connection refuses new queries with ERROR_RESOURCE_IN_USE, and the
-      query's transaction stays open, deferring version cleanup and
-      checkpointing, so drain or destroy it promptly. Side-effecting statements
+      While its statement runs — at most until it is finished, cancelled,
+      errored, or destroyed — the connection refuses new queries with
+      ERROR_RESOURCE_IN_USE, and the query's transaction stays open, deferring
+      version cleanup and checkpointing, so drain or destroy it promptly. Side-effecting statements
       (PRAGMA, ALTER, ...) take effect only once the result is drained. Always
       destroy via `[[result_destroy]]`, which is safe even on a partially consumed
       stream.
@@ -108,11 +139,21 @@ handles:
       DuckDB. Handed out within DuckDB-managed scopes — function bind / init /
       exec callbacks, replacement scans, and the extension entrypoint — and
       valid only for the duration of that scope; the caller never destroys it.
-      A context is the scope for reading (settings, the file system) and for
-      constructing values and types, not for registration: catalog entries and
-      database-level hooks are installed through an extension or a connection.
-      A transaction is always active while a context is handed out, which is
-      what the context-scoped constructors assume.
+      Within that scope a transaction is already active. A context reaches
+      the same capabilities a connection does, through
+      `[[context_get_factory]]`, `[[context_get_config]]`,
+      `[[context_get_file_system]]` and `[[context_log]]`.
+  factory:
+    description: |
+      A borrowed handle to the scope values, types, data chunks and column
+      data collections are created in. Taken from an instance
+      (`[[instance_get_factory]]`), a connection
+      (`[[connection_get_factory]]`) or a context (`[[context_get_factory]]`),
+      and valid for as long as its source is; the caller never destroys it.
+      A factory resolves in the scope of its source: a connection's or a
+      context's factory reaches the catalog and the client's settings, while an
+      instance's factory knows only the built-in types and casts, with
+      default settings, and refuses anything that needs a catalog.
 structs:
   str:
     description: |
@@ -125,6 +166,11 @@ structs:
       and `ptr` must not be dereferenced when `len` is 0. Not to be confused
       with `bytes`, the transparent 16-byte *storage* format for a
       variable-size value in a vector.
+
+      Functions take an input view as a `const str *`, which must not be
+      NULL; a NULL pointer, or a view whose `ptr` is NULL while `len` is
+      nonzero, fails with ERROR_INPUT_INVALID. Point at a `{NULL, 0}` view to
+      pass an empty string.
 
       Text inputs, such as VARCHAR values and names, must contain valid UTF-8.
       The caller is responsible for ensuring this; API functions do not
@@ -172,7 +218,7 @@ callbacks:
       single view.
 
       The view is borrowed for the duration of the call only. Copy what you
-      need before returning, and do not retain `text.ptr`. The bytes are NOT guaranteed to be null-terminated.
+      need before returning, and do not retain `text` or `text->ptr`. The bytes are NOT guaranteed to be null-terminated.
 
       `err` is a live error slot, never NULL. Populate it with
       `[[error_info_set_code]]` / `[[error_info_set_text]]` to signal failure to DuckDB. Do not destroy it yourself.
@@ -183,6 +229,9 @@ callbacks:
     parameters:
       text:
         type: str
+        indirection: 1
+        const: true
+        kind: IN
         description: Borrowed view of the complete text. Valid only until the sink returns.
       user_data:
         type: void
@@ -262,6 +311,9 @@ aliases:
       render one into SQL through the identifier-quoting entry point rather
       than embedding it raw. The catalog preserves casing; some registries
       (config settings) canonicalize to lowercase.
+
+      An identifier passed into the API must be valid UTF-8; otherwise the
+      call fails with `ERROR_INPUT_INVALID`.
 constants:
   BYTES_INLINE_LENGTH:
     value: 12

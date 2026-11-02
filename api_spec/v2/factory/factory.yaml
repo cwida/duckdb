@@ -1,0 +1,92 @@
+module: factory
+#
+# Where a factory comes from. A factory is the scope values, types, data
+# chunks and column data collections are created in; the constructors live
+# with what they create and take a factory as their first parameter.
+
+functions:
+  instance_get_factory:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-07" ]
+    description: |
+      Borrows the factory of an instance.
+
+      The factory creates the built-in types and their values, casts with the
+      built-in casts only, and allocates data chunks and column data
+      collections through the instance.
+      Anything that needs a catalog — catalog-registered types, qualified type
+      names — returns ERROR_INPUT_INVALID. The returned handle is borrowed: it
+      is valid for as long as the instance is, and must not be destroyed.
+    role: getter
+    belongs_to: instance
+    parameters:
+      instance:
+        type: instance
+        description: "The instance."
+      out_factory:
+        type: factory
+        indirection: 1
+        kind: OUT
+        description: "Receives the borrowed factory."
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
+
+  connection_get_factory:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-07" ]
+    description: |
+      Borrows the factory of a connection.
+
+      The factory reaches the connection's catalog and settings. Catalog
+      lookups run in the connection's active transaction, or in a transaction
+      of their own when none is open; nothing else opens a transaction. The
+      returned handle is borrowed: it is valid for as long as the connection
+      is, and must not be destroyed.
+    role: getter
+    belongs_to: connection
+    parameters:
+      conn:
+        type: connection
+        description: "The connection."
+      out_factory:
+        type: factory
+        indirection: 1
+        kind: OUT
+        description: "Receives the borrowed factory."
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
+
+  context_get_factory:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-07" ]
+    description: |
+      Borrows the factory of a context.
+
+      The factory reaches the context's catalog and settings, within the
+      transaction the context already has. The returned handle is borrowed:
+      it is valid for as long as the context is, and must not be destroyed.
+    role: getter
+    belongs_to: context
+    parameters:
+      ctx:
+        type: context
+        description: "The context."
+      out_factory:
+        type: factory
+        indirection: 1
+        kind: OUT
+        description: "Receives the borrowed factory."
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR

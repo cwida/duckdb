@@ -1,0 +1,24 @@
+# name: test/sql/alter/add_col/test_add_col_unique.test
+# description: ADD COLUMN preserves and enforces UNIQUE constraints
+# group: [add_col]
+
+statement ok
+CREATE TABLE t(a INTEGER);
+
+statement ok
+INSERT INTO t VALUES (1);
+
+statement ok
+ALTER TABLE t ADD COLUMN b INTEGER UNIQUE;
+
+statement ok
+INSERT INTO t VALUES (2, 5);
+
+# Duplicate on the UNIQUE column must be rejected.
+statement error
+INSERT INTO t VALUES (3, 5);
+----
+<REGEX>:Constraint Error.*(unique|UNIQUE).*
+
+statement ok
+INSERT INTO t VALUES (4, NULL), (5, NULL);

@@ -42,6 +42,9 @@ BoundStatement Binder::BindNode(RecursiveCTENode &statement) {
 	// names are picked from the LHS, unless aliases are explicitly specified
 	result.names = left.names;
 	for (idx_t i = 0; i < statement.aliases.size() && i < result.names.size(); i++) {
+		if (statement.aliases[i].empty()) {
+			throw BinderException("column alias cannot be empty");
+		}
 		result.names[i] = statement.aliases[i];
 	}
 
@@ -50,7 +53,6 @@ BoundStatement Binder::BindNode(RecursiveCTENode &statement) {
 
 	// Create temporary binder to bind expressions
 	auto aggregate_binder = Binder::CreateBinder(context, nullptr);
-	ErrorData error;
 	FunctionBinder function_binder(*aggregate_binder);
 	aggregate_binder->bind_context.AddGenericBinding(setop_index, statement.ctename, result.names, result.types);
 	ExpressionBinder expression_binder(*aggregate_binder, context);
@@ -116,14 +118,11 @@ BoundStatement Binder::BindNode(RecursiveCTENode &statement) {
 			}
 			auto &func = entry->Cast<AggregateFunctionCatalogEntry>();
 
-			vector<LogicalType> aggregation_input_types;
 			vector<unique_ptr<Expression>> bound_children;
 
 			// Bind the children of the aggregate function
 			for (auto &child : func_expr.GetArgumentsMutable()) {
-				auto bound_child = expression_binder.Bind(child.GetExpressionMutable());
-				aggregation_input_types.push_back(bound_child->GetReturnType());
-				bound_children.push_back(std::move(bound_child));
+				bound_children.push_back(expression_binder.Bind(child.GetExpressionMutable()));
 			}
 
 			ProjectionIndex aggregate_idx;
@@ -133,7 +132,7 @@ BoundStatement Binder::BindNode(RecursiveCTENode &statement) {
 				auto names_iter = find(result.names.begin(), result.names.end(), func_expr.GetAlias());
 				if (names_iter == result.names.end()) {
 					throw BinderException(expr->GetQueryLocation(),
-					                      "Could not find column with name '%s' to bind aggregate to.",
+					                      "Could not find column with name %s to bind aggregate to.",
 					                      func_expr.GetAlias());
 				}
 				aggregate_idx = ProjectionIndex(NumericCast<idx_t>(std::distance(result.names.begin(), names_iter)));
@@ -148,27 +147,23 @@ BoundStatement Binder::BindNode(RecursiveCTENode &statement) {
 				aggregate_idx = bound_children[0]->Cast<BoundColumnRefExpression>().Binding().column_index;
 			}
 
-			// Find the best matching aggregate function
-			auto best_function_idx =
-			    function_binder.BindFunction(func.name, func.functions, aggregation_input_types, error);
-			if (!best_function_idx.IsValid()) {
+			// Bind the best matching aggregate function
+			ErrorData error;
+			auto aggregate = function_binder.BindAggregateFunction(func, std::move(bound_children), error);
+			if (!aggregate) {
 				throw BinderException("No matching aggregate function\n%s", error.Message());
 			}
-			// Found a matching function, bind it as an aggregate
-			const auto &best_function = func.functions.GetFunctionByOffset(best_function_idx.GetIndex());
-			auto aggregate = function_binder.BindAggregateFunction(best_function, std::move(bound_children), nullptr,
-			                                                       AggregateType::NON_DISTINCT);
 
 			if (payload_references.find(aggregate_idx) != payload_references.end()) {
 				throw BinderException(func_expr.GetQueryLocation(),
-				                      "Column '%s' referenced multiple times in USING KEY clause.\n"
+				                      "Column %s referenced multiple times in USING KEY clause.\n"
 				                      "Try using an alias for one of the aggregates.",
 				                      result.names[aggregate_idx]);
 			}
 
 			if (key_references.find(aggregate_idx) != key_references.end()) {
 				throw BinderException(func_expr.GetQueryLocation(),
-				                      "Column '%s' cannot be used as both key and aggregate in USING KEY clause.\n"
+				                      "Column %s cannot be used as both key and aggregate in USING KEY clause.\n"
 				                      "Try using an alias for the aggregation.",
 				                      result.names[aggregate_idx]);
 			}
@@ -206,8 +201,8 @@ BoundStatement Binder::BindNode(RecursiveCTENode &statement) {
 
 					// Create a last aggregate for the newly bound column reference
 					auto last_fun = GetBuiltinAggregateFunction(context, LastFun::Name, {result.types[i]});
-					auto first_aggregate = function_binder.BindAggregateFunction(
-					    std::move(last_fun), std::move(first_children), nullptr, AggregateType::NON_DISTINCT);
+					auto first_aggregate = function_binder.BindAggregateFunction(last_fun, std::move(first_children),
+					                                                             nullptr, AggregateType::NON_DISTINCT);
 
 					payload_aggregates.push_back(std::move(first_aggregate));
 				} else {
@@ -286,7 +281,7 @@ BoundStatement Binder::BindNode(RecursiveCTENode &statement) {
 				first_children.push_back(std::move(uncollated_group));
 				FunctionBinder function_binder(*this);
 				auto first_fun = GetBuiltinAggregateFunction(context, FirstFun::Name, {group_type});
-				auto first = function_binder.BindAggregateFunction(std::move(first_fun), std::move(first_children));
+				auto first = function_binder.BindAggregateFunction(first_fun, std::move(first_children));
 				first->SetAlias("__collated_group");
 				collated_group_bindings[column_index] = ProjectionIndex(payload_aggregates.size());
 				payload_aggregates.push_back(std::move(first));

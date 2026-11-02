@@ -1,0 +1,16 @@
+# name: benchmark/micro/table_function/lateral_generate_series.benchmark
+# description: generate_series called per row of a table uses all threads
+# group: [table_function]
+
+name Lateral generate_series
+group table_function
+
+load
+set threads=4;
+CREATE TABLE t AS SELECT i AS val1 FROM range(1, 2000001) t(i);
+
+run
+SELECT count(*), sum(series) FROM t CROSS JOIN generate_series(1, CASE WHEN t.val1 % 10 = 0 THEN 0 WHEN t.val1 % 100 = 71 THEN 2 ELSE 1 END) AS g(series);
+
+result II
+1820000	1840000

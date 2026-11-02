@@ -91,6 +91,21 @@ void CompressedMaterialization::CompressAggregate(unique_ptr<LogicalOperator> &o
 	// Create info for compression
 	CompressedMaterializationInfo info(*op, {0}, referenced_bindings);
 
+	// Columns that the aggregate does not read cannot be referenced above it, so leave them uncompressed
+	column_binding_set_t used_bindings;
+	for (const auto &group : groups) {
+		GetReferencedBindings(*group, used_bindings);
+	}
+	for (const auto &expr : aggregate.expressions) {
+		GetReferencedBindings(*expr, used_bindings);
+	}
+	auto &child_info = info.child_info[0];
+	for (idx_t binding_idx = 0; binding_idx < child_info.bindings_before.size(); binding_idx++) {
+		if (used_bindings.find(child_info.bindings_before[binding_idx]) == used_bindings.end()) {
+			child_info.can_compress[binding_idx] = false;
+		}
+	}
+
 	// Create binding mapping
 	const auto bindings_out = aggregate.GetColumnBindings();
 	const auto &types = aggregate.types;

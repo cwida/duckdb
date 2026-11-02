@@ -1,0 +1,90 @@
+# name: test/optimizer/pushdown/join_filter_pushdown_bloom_cast.test
+# description: Bloom filters on cast expressions preserve selections, NULLs, and cast errors
+# group: [pushdown]
+
+load {TEST_DIR}/join_filter_pushdown_bloom_cast.db
+
+statement ok
+PRAGMA force_compression='rle';
+
+statement ok
+SET disabled_optimizers='join_order,build_side_probe_side';
+
+statement ok
+SET dynamic_or_filter_threshold=0;
+
+# The sparse key range selects a Bloom filter rather than a prefix-range filter.
+statement ok
+CREATE TABLE probe AS SELECT (i % 2000) * 1000000 AS k, i FROM range(20000) t(i);
+
+statement ok
+CREATE TABLE build AS SELECT (i * 1000000)::INTEGER AS k FROM range(0, 2000, 5) t(i);
+
+statement ok
+CHECKPOINT;
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM probe p JOIN build b ON CAST(p.k AS INTEGER)=b.k;
+----
+analyzed_plan	<REGEX>:.*IN BF.*
+
+query I
+SELECT count(*) FROM probe p JOIN build b ON CAST(p.k AS INTEGER)=b.k;
+----
+4000
+
+# Another predicate leaves a selection before the cast is evaluated.
+query I
+SELECT count(*) FROM probe p JOIN build b ON CAST(p.k AS INTEGER)=b.k WHERE p.i % 3 = 0;
+----
+1334
+
+statement ok
+INSERT INTO probe VALUES (NULL, 20000), (3000000000, 20001);
+
+statement ok
+CHECKPOINT;
+
+query I
+SELECT count(*) FROM probe p JOIN build b ON TRY_CAST(p.k AS INTEGER)=b.k;
+----
+4000
+
+# Failed casts cannot be filtered away before the original throwing cast runs.
+statement error
+SELECT count(*) FROM probe p JOIN build b ON CAST(p.k AS INTEGER)=b.k;
+----
+<REGEX>:Conversion Error:.*out of range.*
+
+statement ok
+INSERT INTO build VALUES (NULL);
+
+query I
+SELECT count(*) FROM probe p JOIN build b ON TRY_CAST(p.k AS INTEGER) IS NOT DISTINCT FROM b.k;
+----
+4002
+
+# Repeated and NULL inputs also exercise constant vectors and changing vector sizes.
+statement ok
+CREATE TABLE repeated AS
+SELECT CASE WHEN i < 5000 THEN NULL WHEN i < 10000 THEN 5000000 ELSE 6000000 END::BIGINT AS k
+FROM range(15000) t(i);
+
+statement ok
+CHECKPOINT;
+
+query I
+SELECT count(*) FROM repeated p JOIN build b ON CAST(p.k AS INTEGER)=b.k;
+----
+5000
+
+query I
+SELECT count(*) FROM repeated p JOIN build b ON CAST(p.k AS INTEGER) IS NOT DISTINCT FROM b.k;
+----
+10000
+
+statement ok
+RESET disabled_optimizers;
+
+statement ok
+RESET dynamic_or_filter_threshold;

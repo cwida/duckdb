@@ -27,6 +27,15 @@ SELECT regexp_matches(c0, '') from t0;
 ----
 1
 
+# Literal control characters cannot be rewritten to a contains expression
+query T
+SELECT regexp_matches(s, E'a\n')
+FROM (VALUES ('a'), (E'a\n')) values_table(s)
+ORDER BY length(s)
+----
+0
+1
+
 # partial matches okay
 query T
 SELECT regexp_matches(c0, 'sd') from t0;

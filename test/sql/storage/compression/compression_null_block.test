@@ -1,0 +1,71 @@
+# name: test/sql/storage/compression/compression_null_block.test
+# description: Constant and Empty Validity segments can be read without backing blocks
+# group: [compression]
+
+load {TEST_DIR}/compression_null_block.db readwrite v1.3.0
+
+statement ok
+CREATE TABLE constants AS SELECT 42::INTEGER AS a, NULL::DOUBLE AS b FROM range(6000);
+
+statement ok
+SET force_compression='dict_fsst';
+
+statement ok
+CREATE TABLE strings AS
+SELECT CASE WHEN i % 3 = 0 THEN NULL ELSE 'value-' || (i % 2)::VARCHAR END AS s
+FROM range(6000) t(i);
+
+statement ok
+CHECKPOINT
+
+restart
+
+# Constant data and validity segments store their values in the statistics.
+query TTTI
+SELECT DISTINCT column_name, segment_type, compression, block_id
+FROM pragma_storage_info('constants') ORDER BY ALL;
+----
+a	INTEGER	Constant	-1
+a	VALIDITY	Constant	-1
+b	DOUBLE	Constant	-1
+b	VALIDITY	Constant	-1
+
+# DICT_FSST carries validity in the data segment, leaving no separate validity block.
+query TTI
+SELECT DISTINCT segment_type, compression, block_id
+FROM pragma_storage_info('strings') WHERE segment_type='VALIDITY';
+----
+VALIDITY	Empty Validity	-1
+
+query T
+SELECT DISTINCT compression FROM pragma_storage_info('strings') WHERE segment_type='VARCHAR';
+----
+DICT_FSST
+
+foreach fetch_mode false true
+
+restart
+
+statement ok
+SET debug_force_fetch_row={fetch_mode};
+
+query III
+SELECT count(*), sum(a), count(b) FROM constants;
+----
+6000	252000	0
+
+query II
+SELECT a, b FROM constants WHERE rowid IN (0, 2048, 5999) ORDER BY rowid;
+----
+42	NULL
+42	NULL
+42	NULL
+
+query TI
+SELECT s, count(*) FROM strings GROUP BY s ORDER BY s NULLS FIRST;
+----
+NULL	2000
+value-0	2000
+value-1	2000
+
+endloop

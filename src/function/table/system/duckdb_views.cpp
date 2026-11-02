@@ -4,6 +4,7 @@
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/view_catalog_entry.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/function/table/system_catalog_scanner.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/client_data.hpp"
 
@@ -16,6 +17,7 @@ struct DuckDBViewsData : public GlobalTableFunctionState {
 	vector<reference<CatalogEntry>> entries;
 	vector<ColumnIndex> column_ids;
 	idx_t offset;
+	SystemCatalogScannerStats stats;
 };
 
 static unique_ptr<FunctionData> DuckDBViewsBind(ClientContext &context, TableFunctionBindInput &input,
@@ -59,14 +61,14 @@ static unique_ptr<FunctionData> DuckDBViewsBind(ClientContext &context, TableFun
 	names.emplace_back("is_bound");
 	return_types.emplace_back(LogicalType::BOOLEAN);
 
-	return nullptr;
+	return SystemCatalogScanner::CreateBindData(names);
 }
 
 unique_ptr<GlobalTableFunctionState> DuckDBViewsInit(ClientContext &context, TableFunctionInitInput &input) {
 	auto result = make_uniq<DuckDBViewsData>();
 
-	// scan all the schemas for tables and collect them and collect them
-	auto schemas = Catalog::GetAllSchemas(context);
+	// scan the surviving schemas for views and collect them
+	auto schemas = SystemCatalogScanner::GetSchemas(context, input, result->stats);
 	for (auto &schema : schemas) {
 		schema.get().Scan(context, CatalogType::VIEW_ENTRY,
 		                  [&](CatalogEntry &entry) { result->entries.push_back(entry); });
@@ -165,9 +167,15 @@ void DuckDBViewsFunction(ClientContext &context, TableFunctionInput &data_p, Dat
 	}
 }
 
+static void DuckDBViewsGetMetrics(TableFunctionGetMetricsInput &input) {
+	SystemCatalogScanner::ReportMetrics(input, input.global_state->Cast<DuckDBViewsData>().stats);
+}
+
 void DuckDBViewsFun::RegisterFunction(BuiltinFunctions &set) {
 	TableFunction duckdb_views("duckdb_views", {}, DuckDBViewsFunction, DuckDBViewsBind, DuckDBViewsInit);
 	duckdb_views.projection_pushdown = true;
+	SystemCatalogScanner::RegisterPushdown(duckdb_views);
+	duckdb_views.get_metrics = DuckDBViewsGetMetrics;
 	set.AddFunction(std::move(duckdb_views));
 }
 

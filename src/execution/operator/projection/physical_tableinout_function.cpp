@@ -33,7 +33,8 @@ public:
 };
 
 PhysicalTableInOutFunction::PhysicalTableInOutFunction(PhysicalPlan &physical_plan, vector<LogicalType> types,
-                                                       TableFunction function_p, unique_ptr<FunctionData> bind_data_p,
+                                                       BoundTableFunction function_p,
+                                                       unique_ptr<FunctionData> bind_data_p,
                                                        vector<ColumnIndex> column_ids_p, vector<idx_t> projection_ids_p,
                                                        unique_ptr<TableFilterSet> table_filters_p,
                                                        idx_t estimated_cardinality, vector<column_t> project_input_p)
@@ -154,7 +155,7 @@ InsertionOrderPreservingMap<string> PhysicalTableInOutFunction::ParamsToString()
 			result[it.first] = it.second;
 		}
 	} else {
-		result["Name"] = function.name.GetIdentifierName();
+		result["Name"] = function.GetName().GetIdentifierName();
 	}
 	SetEstimatedCardinality(result, estimated_cardinality);
 	return result;

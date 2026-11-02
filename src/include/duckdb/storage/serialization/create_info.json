@@ -222,7 +222,13 @@
     "includes": [
       "duckdb/parser/parsed_data/create_schema_info.hpp"
     ],
-    "members": []
+    "members": [
+      {
+        "id": 200,
+        "name": "options",
+        "type": "case_insensitive_map_t<ParsedExpression*>"
+      }
+    ]
   },
   {
     "class": "CreateViewInfo",

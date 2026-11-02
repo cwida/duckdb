@@ -1,0 +1,54 @@
+# name: test/sql/storage/temp_directory/ctas_adaptive_segments.test_slow
+# description: Adaptive column segments share transient blocks across CTAS append states
+# group: [temp_directory]
+
+require vector_size 2048
+
+statement ok
+SET temp_directory = '{TEST_DIR}/ctas_adaptive_segments.tmp'
+
+# Measure transient storage without automatic checkpoint workspace.
+statement ok
+SET wal_autocheckpoint = '1TB'
+
+statement ok
+SET threads = 4
+
+statement ok
+SET memory_limit = '32MB'
+
+statement ok
+SET max_temp_directory_size = '48MB'
+
+statement ok
+SET initial_column_segment_size = 2048
+
+statement ok
+CREATE TABLE integers AS SELECT (hash(range) % 16_777_216)::FLOAT AS value FROM range(10_000_000)
+
+query I
+SELECT COUNT(*) FROM integers
+----
+10000000
+
+query I
+SELECT temporary_storage_bytes < 32_000_000
+FROM duckdb_memory()
+WHERE tag = 'IN_MEMORY_TABLE'
+----
+true
+
+query II
+WITH expected AS (
+    SELECT SUM(value) AS total, BIT_XOR(hash(value)) AS checksum
+    FROM (SELECT (hash(range) % 16_777_216)::FLOAT AS value FROM range(10_000_000))
+), actual AS (
+    SELECT SUM(value) AS total, BIT_XOR(hash(value)) AS checksum FROM integers
+)
+SELECT actual.total = expected.total, actual.checksum = expected.checksum
+FROM actual, expected
+----
+true	true
+
+statement ok
+DROP TABLE integers

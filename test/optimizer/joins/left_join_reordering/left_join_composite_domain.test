@@ -1,0 +1,230 @@
+# name: test/optimizer/joins/left_join_reordering/left_join_composite_domain.test
+# description: Composite equality domains for LEFT joins
+# group: [left_join_reordering]
+
+require vector_size 2048
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+SET disabled_optimizers='statistics_propagation';
+
+statement ok
+CREATE TABLE composite_left AS
+SELECT (i % 256)::INTEGER a, ((i // 256) % 4)::INTEGER b
+FROM range(2048) r(i);
+
+statement ok
+CREATE TABLE composite_right AS
+SELECT (i % 256)::INTEGER x, ((i // 256) % 4)::INTEGER y
+FROM range(1024) r(i);
+
+# Neither column is unique; the composite domain can account for both keys.
+query II
+EXPLAIN SELECT * FROM composite_left
+LEFT JOIN composite_right ON a = x AND b = y;
+----
+physical_plan	<REGEX>:.*HASH_JOIN[^~]*~2.048 rows.*
+
+query I
+SELECT count(*) FROM composite_left
+LEFT JOIN composite_right ON a = x AND b = y;
+----
+2048
+
+# Comparison orientation and NULL-safe equality have the same domain evidence.
+query II
+EXPLAIN SELECT * FROM composite_left
+LEFT JOIN composite_right ON x = a AND b IS NOT DISTINCT FROM y;
+----
+physical_plan	<REGEX>:.*HASH_JOIN[^~]*~2.048 rows.*
+
+query I
+SELECT count(*) FROM composite_left
+LEFT JOIN composite_right ON x = a AND b IS NOT DISTINCT FROM y;
+----
+2048
+
+# Projections and aliases retain the original columns' statistics.
+query II
+EXPLAIN WITH projected AS (SELECT x AS key_x, y AS key_y FROM composite_right)
+SELECT * FROM composite_left AS l
+LEFT JOIN projected AS r ON l.a = r.key_x AND r.key_y = l.b;
+----
+physical_plan	<REGEX>:.*HASH_JOIN[^~]*~2.048 rows.*
+
+# Reusing one column on either side does not provide a composite key.
+statement ok
+SET disabled_optimizers='statistics_propagation,filter_pushdown';
+
+query II
+EXPLAIN SELECT * FROM composite_left
+LEFT JOIN composite_right ON a = x AND a = y;
+----
+physical_plan	<REGEX>:.*HASH_JOIN[^~]*~[3-9].[0-9][0-9][0-9] rows.*
+
+query I
+SELECT count(*) FROM composite_left
+LEFT JOIN composite_right ON a = x AND a = y;
+----
+2048
+
+query II
+EXPLAIN SELECT * FROM composite_left
+LEFT JOIN composite_right ON a = x AND b = x;
+----
+physical_plan	<REGEX>:.*HASH_JOIN[^~]*~[3-9].[0-9][0-9][0-9] rows.*
+
+query I
+SELECT count(*) FROM composite_left
+LEFT JOIN composite_right ON a = x AND b = x;
+----
+2072
+
+# An inequality is not another equality-key component.
+query II
+EXPLAIN SELECT * FROM composite_left
+LEFT JOIN composite_right ON a = x AND b < y;
+----
+physical_plan	<REGEX>:.*HASH_JOIN[^~]*~[3-9].[0-9][0-9][0-9] rows.*
+
+query I
+SELECT count(*) FROM composite_left
+LEFT JOIN composite_right ON a = x AND b < y;
+----
+3584
+
+# Expressions without direct column-domain evidence retain the fallback.
+query II
+EXPLAIN SELECT * FROM composite_left
+LEFT JOIN composite_right ON a + 1 = x AND b = y;
+----
+physical_plan	<REGEX>:.*HASH_JOIN[^~]*~[3-9].[0-9][0-9][0-9] rows.*
+
+query I
+SELECT count(*) FROM composite_left
+LEFT JOIN composite_right ON a + 1 = x AND b = y;
+----
+2048
+
+statement ok
+SET disabled_optimizers='statistics_propagation';
+
+# The existing composite heuristic excludes broad many-to-many domains.
+statement ok
+CREATE TABLE repeated_left AS
+SELECT (i % 4)::INTEGER a, ((i // 4) % 4)::INTEGER b
+FROM range(256) r(i);
+
+statement ok
+CREATE TABLE repeated_right AS
+SELECT (i % 4)::INTEGER x, ((i // 4) % 4)::INTEGER y
+FROM range(256) r(i);
+
+query II
+EXPLAIN SELECT * FROM repeated_left
+LEFT JOIN repeated_right ON a = x AND b = y;
+----
+physical_plan	<REGEX>:.*HASH_JOIN[^~]*~[1-9][0-9].[0-9][0-9][0-9] rows.*
+
+query I
+SELECT count(*) FROM repeated_left
+LEFT JOIN repeated_right ON a = x AND b = y;
+----
+4096
+
+# Connected equalities describe one key component, regardless of their order.
+statement ok
+SET disabled_optimizers='statistics_propagation,filter_pushdown';
+
+statement ok
+CREATE TABLE connected_left AS
+SELECT (i % 256)::INTEGER a, (i % 256)::INTEGER b FROM range(2048) r(i);
+
+statement ok
+CREATE TABLE connected_right AS
+SELECT (i % 256)::INTEGER x, (i % 256)::INTEGER y FROM range(2048) r(i);
+
+query II
+EXPLAIN SELECT * FROM connected_left
+LEFT JOIN connected_right ON a = x AND a = y AND b = x;
+----
+physical_plan	<REGEX>:.*HASH_JOIN[^~]*~1[0-9].[0-9][0-9][0-9] rows.*
+
+query II
+EXPLAIN SELECT * FROM connected_left
+LEFT JOIN connected_right ON b = x AND a = y AND a = x;
+----
+physical_plan	<REGEX>:.*HASH_JOIN[^~]*~1[0-9].[0-9][0-9][0-9] rows.*
+
+query I
+SELECT count(*) FROM connected_left
+LEFT JOIN connected_right ON b = x AND a = y AND a = x;
+----
+16384
+
+# Same-side residual equalities belong to the same ON-clause component.
+query II
+EXPLAIN SELECT * FROM connected_left
+LEFT JOIN connected_right ON a = x AND b = y AND a = b;
+----
+physical_plan	<REGEX>:.*HASH_JOIN[^~]*~1[0-9].[0-9][0-9][0-9] rows.*
+
+query II
+EXPLAIN SELECT * FROM connected_left
+LEFT JOIN connected_right ON a = x AND b = y AND a IS NOT DISTINCT FROM b;
+----
+physical_plan	<REGEX>:.*HASH_JOIN[^~]*~1[0-9].[0-9][0-9][0-9] rows.*
+
+query I
+SELECT count(*) FROM connected_left
+LEFT JOIN connected_right ON a = x AND b = y AND a = b;
+----
+16384
+
+statement ok
+SET disabled_optimizers='statistics_propagation';
+
+# NULLs and missing matches still preserve the left input.
+statement ok
+INSERT INTO composite_left VALUES (NULL, NULL), (-1, -1);
+
+statement ok
+INSERT INTO composite_right VALUES (NULL, NULL), (NULL, NULL);
+
+query I
+SELECT count(*) FROM composite_left
+LEFT JOIN composite_right ON a = x AND b = y;
+----
+2050
+
+query I
+SELECT count(*) FROM composite_left
+LEFT JOIN composite_right ON a IS NOT DISTINCT FROM x AND b IS NOT DISTINCT FROM y;
+----
+2051
+
+statement ok
+PREPARE composite_join AS
+SELECT count(*) FROM composite_left
+LEFT JOIN composite_right ON a = x AND b = y;
+
+query I
+EXECUTE composite_join;
+----
+2050
+
+statement ok
+DELETE FROM composite_right;
+
+query I
+EXECUTE composite_join;
+----
+2050
+
+query I
+SELECT count(*) FROM composite_left
+LEFT JOIN composite_right ON a IS NOT DISTINCT FROM x AND b IS NOT DISTINCT FROM y;
+----
+2050

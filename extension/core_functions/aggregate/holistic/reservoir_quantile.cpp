@@ -17,6 +17,10 @@ namespace duckdb {
 
 namespace {
 
+//! The quantile defaults to the median
+constexpr double DEFAULT_QUANTILE = 0.5;
+constexpr int32_t DEFAULT_SAMPLE_SIZE = 8192;
+
 template <typename T>
 struct ReservoirQuantileState {
 	T *v;
@@ -50,6 +54,8 @@ struct ReservoirQuantileState {
 			D_ASSERT(r_samp->next_index_to_sample >= r_samp->num_entries_to_skip_b4_next_sample);
 			if (r_samp->next_index_to_sample == r_samp->num_entries_to_skip_b4_next_sample) {
 				ReplaceElement(element);
+			} else {
+				r_samp->num_entries_to_skip_b4_next_sample++;
 			}
 		}
 	}
@@ -303,6 +309,9 @@ double CheckReservoirQuantile(const Value &quantile_val) {
 		throw BinderException("RESERVOIR_QUANTILE QUANTILE parameter cannot be NULL");
 	}
 	auto quantile = quantile_val.GetValue<double>();
+	if (Value::IsNan(quantile)) {
+		throw BinderException("RESERVOIR_QUANTILE parameter cannot be NaN");
+	}
 	if (quantile < 0 || quantile > 1) {
 		throw BinderException("RESERVOIR_QUANTILE can only take parameters in the range [0, 1]");
 	}
@@ -312,8 +321,6 @@ double CheckReservoirQuantile(const Value &quantile_val) {
 //! Binds the quantile parameter and the sample size into the bind data. They stay part of the expression tree, and
 //! the aggregate is handed them along with the input - the update callbacks only consume the leading input argument
 unique_ptr<FunctionData> BindReservoirQuantile(BindAggregateFunctionInput &input) {
-	auto &arguments = input.GetArguments();
-	D_ASSERT(arguments.size() >= 2);
 	Value quantile_val = input.GetConstant(1);
 	vector<double> quantiles;
 	if (quantile_val.type().id() != LogicalTypeId::LIST) {
@@ -324,19 +331,13 @@ unique_ptr<FunctionData> BindReservoirQuantile(BindAggregateFunctionInput &input
 		}
 	}
 
-	idx_t sample_size = 8192ULL;
-
-	if (arguments.size() == 3) {
-		auto sample_size_val = input.GetNonNullConstant(2);
-		auto sample_size_int = sample_size_val.GetValue<int32_t>();
-
-		if (sample_size_val.IsNull() || sample_size_int <= 0) {
-			throw BinderException("Size of the RESERVOIR_QUANTILE sample must be bigger than 0");
-		}
-		sample_size = NumericCast<idx_t>(sample_size_int);
+	auto sample_size_val = input.GetNonNullConstant(2);
+	auto sample_size = sample_size_val.GetValue<int32_t>();
+	if (sample_size <= 0) {
+		throw BinderException("Size of the RESERVOIR_QUANTILE sample must be bigger than 0");
 	}
 
-	return make_uniq<ReservoirQuantileBindData>(quantiles, sample_size);
+	return make_uniq<ReservoirQuantileBindData>(quantiles, NumericCast<idx_t>(sample_size));
 }
 
 static unique_ptr<FunctionData> DeserializeReservoirQuantileDecimal(Deserializer &deserializer,
@@ -421,7 +422,7 @@ AggregateFunction GetReservoirQuantileAggregate(PhysicalType type) {
 	fun.SetDeserializeCallback(ReservoirQuantileBindData::Deserialize);
 	// temporarily push an argument so we can bind the actual quantile
 	fun.GetSignature().GetParameter(0).SetName("x");
-	fun.GetSignature().AddParameter("quantile", LogicalType::DOUBLE);
+	fun.GetSignature().AddParameter("quantile", LogicalType::DOUBLE, Value::DOUBLE(DEFAULT_QUANTILE));
 	return fun;
 }
 
@@ -438,18 +439,14 @@ AggregateFunction GetReservoirQuantileListAggregate(const LogicalType &type) {
 }
 
 void DefineReservoirQuantile(AggregateFunctionSet &set, const LogicalType &type) {
-	//    Four versions: type, scalar/list[, count]
+	//    Two versions: type, scalar/list
 	auto fun = GetReservoirQuantileAggregate(type.InternalType());
+	fun.GetSignature().AddParameter("sample_size", LogicalType::INTEGER, Value::INTEGER(DEFAULT_SAMPLE_SIZE));
 	set.AddFunction(fun);
 
-	fun.GetSignature().AddParameter("sample_size", LogicalType::INTEGER);
-	set.AddFunction(fun);
-
-	// List variants
+	// List variant
 	fun = GetReservoirQuantileListAggregate(type);
-	set.AddFunction(fun);
-
-	fun.GetSignature().AddParameter("sample_size", LogicalType::INTEGER);
+	fun.GetSignature().AddParameter("sample_size", LogicalType::INTEGER, Value::INTEGER(DEFAULT_SAMPLE_SIZE));
 	set.AddFunction(fun);
 }
 
@@ -462,11 +459,12 @@ void GetReservoirQuantileDecimalFunction(AggregateFunctionSet &set, const vector
 	fun.SetDeserializeCallback(DeserializeReservoirQuantileDecimal);
 
 	fun.GetSignature().GetParameter(0).SetName("x");
-	fun.GetSignature().AddParameter("quantile", arguments[1]);
-
-	set.AddFunction(fun);
-
-	fun.GetSignature().AddParameter("sample_size", LogicalType::INTEGER);
+	if (arguments[1].id() == LogicalTypeId::LIST) {
+		fun.GetSignature().AddParameter("quantile", arguments[1]);
+	} else {
+		fun.GetSignature().AddParameter("quantile", arguments[1], Value::DOUBLE(DEFAULT_QUANTILE));
+	}
+	fun.GetSignature().AddParameter("sample_size", LogicalType::INTEGER, Value::INTEGER(DEFAULT_SAMPLE_SIZE));
 	set.AddFunction(fun);
 }
 

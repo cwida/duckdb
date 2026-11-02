@@ -1,0 +1,48 @@
+# name: test/sql/order/order_by_negative_zero.test
+# description: Test that ORDER BY does not turn -0.0 into 0.0 for FLOAT/DOUBLE
+# group: [order]
+
+# checkpointing loses the sign of zero regardless of ORDER BY; unrelated bug, see issue #25580
+require noforcestorage
+
+statement ok
+CREATE TABLE zero_probe(id INTEGER, v DOUBLE, vf FLOAT);
+
+statement ok
+INSERT INTO zero_probe VALUES (1, '-0.0', '-0.0'), (2, '0.0', '0.0');
+
+# sanity check: signbit is preserved without sorting
+query III
+SELECT id, signbit(v), signbit(vf) FROM zero_probe ORDER BY id;
+----
+1	true	true
+2	false	false
+
+# sorting by the double/float column itself must not flip the sign of zero
+query III
+SELECT id, signbit(v), signbit(vf) FROM zero_probe ORDER BY v, id;
+----
+1	true	true
+2	false	false
+
+query II
+SELECT v, 1.0 / v FROM zero_probe ORDER BY v, id;
+----
+-0.0	-inf
+0.0	inf
+
+# projecting the sort column out of a materialized CTE must also preserve it
+statement ok
+CREATE TEMP TABLE srs_zero_probe(id INTEGER, v DOUBLE);
+
+statement ok
+INSERT INTO srs_zero_probe VALUES (1, '-0.0'), (2, '0.0');
+
+query IIII
+WITH q AS MATERIALIZED (
+    SELECT id, v FROM srs_zero_probe ORDER BY v, id
+)
+SELECT id, v, signbit(v), 1.0 / v FROM q ORDER BY id;
+----
+1	-0.0	true	-inf
+2	0.0	false	inf

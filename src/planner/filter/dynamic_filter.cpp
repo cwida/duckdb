@@ -5,7 +5,6 @@
 #include "duckdb/storage/statistics/base_statistics.hpp"
 #include "duckdb/storage/statistics/numeric_stats.hpp"
 #include "duckdb/storage/statistics/string_stats.hpp"
-#include "duckdb/planner/expression/bound_constant_expression.hpp"
 
 namespace duckdb {
 
@@ -17,25 +16,21 @@ LegacyDynamicFilter::LegacyDynamicFilter(shared_ptr<DynamicFilterData> filter_da
 }
 
 unique_ptr<Expression> LegacyDynamicFilter::ToExpression(const Expression &column) const {
-	if (!filter_data || !filter_data->initialized) {
-		auto bound_constant = make_uniq<BoundConstantExpression>(Value(true));
-		return std::move(bound_constant);
-	}
-	lock_guard<mutex> l(filter_data->lock);
-	return filter_data->ToExpression(column);
+	// emit the dynamic filter even without filter data (e.g. after deserialization), so it can be set later
+	return CreateDynamicFilterExpression(filter_data, column.GetReturnType(), column.Copy());
 }
 
 void DynamicFilterData::SetValue(Value val) {
 	if (val.IsNull()) {
 		return;
 	}
-	lock_guard<mutex> l(lock);
+	annotated_lock_guard<annotated_shared_mutex> l(lock);
 	constant = std::move(val);
 	initialized = true;
 }
 
 void DynamicFilterData::Reset() {
-	lock_guard<mutex> l(lock);
+	annotated_lock_guard<annotated_shared_mutex> l(lock);
 	initialized = false;
 }
 

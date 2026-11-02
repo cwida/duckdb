@@ -1,0 +1,62 @@
+# name: test/parquet/variant/variant_shredding_empty_keys.test
+# description: VARIANT objects with an empty key keep the key when they are written to Parquet
+# group: [variant]
+
+require parquet
+
+require json
+
+statement ok
+CREATE MACRO data() AS TABLE (
+	FROM (VALUES
+		('{"": 1, "x": 2}'::JSON::VARIANT),
+		('{"x": {"": "t"}}'::JSON::VARIANT),
+		('{"": {"y": true}, "x": 3}'::JSON::VARIANT),
+		('{"x": 4}'::JSON::VARIANT)
+	) t(v)
+)
+
+statement ok
+COPY (FROM data()) TO '{TEST_DIR}/variant_empty_keys.parquet'
+
+query I
+SELECT v::JSON FROM '{TEST_DIR}/variant_empty_keys.parquet'
+----
+{"":1,"x":2}
+{"x":{"":"t"}}
+{"":{"y":true},"x":3}
+{"x":4}
+
+# the other keys are still shredded
+query I
+SELECT count(*) > 0 FROM parquet_schema('{TEST_DIR}/variant_empty_keys.parquet') WHERE name = 'x'
+----
+true
+
+query I
+SELECT count(*) FROM parquet_schema('{TEST_DIR}/variant_empty_keys.parquet') WHERE name = '' OR name LIKE 'element%'
+----
+0
+
+# an object with only an empty key is not shredded
+statement ok
+COPY (SELECT '{"": "t"}'::JSON::VARIANT AS v) TO '{TEST_DIR}/variant_only_empty_key.parquet'
+
+query I
+SELECT v::JSON FROM '{TEST_DIR}/variant_only_empty_key.parquet'
+----
+{"":"t"}
+
+# an empty key in a nested object keeps the other keys of that object shredded
+statement ok
+COPY (SELECT '{"x": {"": 1, "y": 2}}'::JSON::VARIANT AS v FROM range(3)) TO '{TEST_DIR}/variant_nested_empty_key.parquet'
+
+query I
+SELECT DISTINCT v::JSON FROM '{TEST_DIR}/variant_nested_empty_key.parquet'
+----
+{"x":{"":1,"y":2}}
+
+query I
+SELECT count(*) > 0 FROM parquet_schema('{TEST_DIR}/variant_nested_empty_key.parquet') WHERE name = 'y'
+----
+true

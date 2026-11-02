@@ -17,10 +17,7 @@ bool ConvertStructToVariant(ToVariantSourceData &source, ToVariantGlobalResultDa
 	auto blob_offset_data = OffsetData::GetBlob(result.offsets);
 	auto children_offset_data = OffsetData::GetChildren(result.offsets);
 	auto &type = source.vec.GetType();
-	// unnamed STRUCTs can't be represented as a VARIANT OBJECT (duplicate empty keys lose data) - they should be TUPLEs
-	if (StructType::IsUnnamed(type)) {
-		throw ConversionException("Can't cast unnamed struct to VARIANT");
-	}
+	D_ASSERT(type.id() == LogicalTypeId::STRUCT);
 
 	auto &source_format = source.source_format;
 	auto &source_validity = source_format.validity;

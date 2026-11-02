@@ -129,6 +129,14 @@ TEST_CASE("Test Scalar Functions C API", "[capi]") {
 	for (idx_t row = 0; row < 10000; row++) {
 		REQUIRE(result->Fetch<int64_t>(0, row) == static_cast<int64_t>(1000000 + row));
 	}
+
+	// v1 declares no parameter names, so the synthetic ones it is given cannot be used by a caller
+	result = tester.Query("SELECT my_addition(col0 := 40, col1 := 2)");
+	REQUIRE(result->HasError());
+	REQUIRE(duckdb::StringUtil::Contains(result->ErrorMessage(), "No function matches"));
+	result = tester.Query("SELECT my_addition(40, col1 := 2)");
+	REQUIRE(result->HasError());
+	REQUIRE(duckdb::StringUtil::Contains(result->ErrorMessage(), "No function matches"));
 }
 
 void ReturnStringInfo(duckdb_function_info info, duckdb_data_chunk input, duckdb_vector output) {

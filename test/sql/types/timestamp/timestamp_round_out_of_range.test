@@ -1,0 +1,23 @@
+# name: test/sql/types/timestamp/timestamp_round_out_of_range.test
+# description: Rounding timestamps to a lower precision cannot go past the largest timestamp
+# group: [timestamp]
+
+statement error
+SELECT TIMESTAMP '294247-01-10 04:00:54.775806'::TIMESTAMP_S
+----
+can't be cast
+
+statement error
+SELECT TIMESTAMP '294247-01-10 04:00:54.6'::TIMESTAMP_S::TIMESTAMPTZ
+----
+can't be cast
+
+query II
+SELECT TRY_CAST(TIMESTAMP '294247-01-10 04:00:54.775806' AS TIMESTAMP_S)::VARCHAR, TRY_CAST(TIMESTAMP '294247-01-10 04:00:54.775806' AS TIMESTAMP_MS)
+----
+NULL	NULL
+
+query II
+SELECT TIMESTAMP '294247-01-10 04:00:54.4'::TIMESTAMP_S, TIMESTAMP '2024-01-01 10:00:00.6'::TIMESTAMP_S
+----
+294247-01-10 04:00:54	2024-01-01 10:00:01

@@ -1,0 +1,62 @@
+# name: test/sql/storage/concurrent_list_skip_scan.test_slow
+# description: Scans of a LIST column concurrent with storage-modifying statements must not read offset[-1] in Skip
+# group: [storage]
+
+load {TEST_DIR}/concurrent_list_skip_scan.db
+
+statement ok
+SET threads=4
+
+statement ok
+SET checkpoint_threshold='1MB'
+
+statement ok
+CREATE TABLE t(id BIGINT, s VARCHAR, l INT[])
+
+statement ok
+INSERT INTO t SELECT i, repeat('x', i % 50) || i, [i::INT] FROM range(300000) r(i)
+
+concurrentloop threadid 0 8
+
+loop k 0 15
+
+statement maybe
+SELECT count(*), max(length(s)), sum(len(l)) FROM t WHERE id % 3 = 0
+----
+
+statement maybe
+DELETE FROM t WHERE id % 7 = {k} % 7
+----
+
+statement maybe
+CHECKPOINT
+----
+
+statement maybe
+VACUUM t
+----
+
+statement maybe
+INSERT INTO t SELECT i, i::VARCHAR, [i::INT] FROM range(20000) r(i)
+----
+
+statement maybe
+CREATE OR REPLACE TABLE tmp_{threadid} AS SELECT * FROM t WHERE id < 1000
+----
+
+statement maybe
+DROP TABLE IF EXISTS tmp_{threadid}
+----
+
+statement maybe
+SELECT sum(id::BIGINT) FROM t a JOIN (SELECT id FROM t WHERE id < 5000) b USING (id)
+----
+
+endloop
+
+endloop
+
+query I
+SELECT count(*) >= 0 FROM t
+----
+true

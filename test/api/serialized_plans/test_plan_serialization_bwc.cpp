@@ -3,6 +3,7 @@
 #include "duckdb/common/serializer/buffered_file_writer.hpp"
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/planner/planner.hpp"
+#include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/parser/statement/logical_plan_statement.hpp"
 #include "duckdb/common/serializer/binary_serializer.hpp"
 #include "duckdb/common/serializer/binary_deserializer.hpp"
@@ -54,7 +55,7 @@ TEST_CASE("Generate serialized plans file", "[.][serialization]") {
 	string query;
 	while (std::getline(queries, query)) {
 		con.BeginTransaction();
-		Parser p;
+		Parser p(*con.context);
 		p.ParseQuery(query);
 
 		Planner planner(*con.context);
@@ -96,6 +97,8 @@ static std::vector<string> read_case_statements(const string &sql_file) {
 // Writes cases/<name>.bin for every case named in the GEN_PLAN_CASES environment variable (comma separated, without
 // the extension). The generated files capture the plan format of the build that generated them, so committing them
 // guards against future backwards compatibility breaks - note that regenerating an existing file defeats that purpose.
+// Cases named optimized_* are serialized after optimization, which covers state that only the optimizer adds to a
+// plan (e.g. table filters pushed into scans).
 TEST_CASE("Generate specific serialized plans", "[.][serialization]") {
 	auto cases = std::getenv("GEN_PLAN_CASES");
 	if (cases == nullptr) {
@@ -116,11 +119,15 @@ TEST_CASE("Generate specific serialized plans", "[.][serialization]") {
 			REQUIRE_NO_FAIL(con.Query(statements[i]));
 		}
 
-		Parser p;
+		Parser p(*con.context);
 		p.ParseQuery(statements.back());
 		Planner planner(*con.context);
 		planner.CreatePlan(std::move(p.statements[0]));
 		auto plan = std::move(planner.plan);
+		if (StringUtil::StartsWith(name, "optimized_")) {
+			Optimizer optimizer(*planner.binder, *con.context);
+			plan = optimizer.Optimize(std::move(plan));
+		}
 
 		BufferedFileWriter target(fs, fs.JoinPath(dir_location, name + ".bin"));
 		BinarySerializer serializer(target);
@@ -192,12 +199,23 @@ TEST_CASE("Test specific serialized plans", "[.][serialization]") {
 		auto deserialized_results = con.Query(make_uniq<LogicalPlanStatement>(std::move(deserialized_plan)));
 		REQUIRE_NO_FAIL(*deserialized_results);
 
+		// Reset the state, so that statements that modify data (e.g. DELETE) see the same input
+		con.Rollback();
+		con.BeginTransaction();
+		for (idx_t i = 0; i < statements.size() - 1; i++) {
+			REQUIRE_NO_FAIL(con.Query(statements[i]));
+		}
+
 		// Now execute the original statement as well and compare results
-		Parser p;
+		Parser p(*con.context);
 		p.ParseQuery(target_stmt);
 		Planner planner(*con.context);
 		planner.CreatePlan(std::move(p.statements[0]));
 		auto expected_plan = std::move(planner.plan);
+		if (StringUtil::StartsWith(fs.ExtractName(bin_file), "optimized_")) {
+			Optimizer optimizer(*planner.binder, *con.context);
+			expected_plan = optimizer.Optimize(std::move(expected_plan));
+		}
 		expected_plan->ResolveOperatorTypes();
 		auto expected_results = con.Query(target_stmt);
 		REQUIRE_NO_FAIL(*expected_results);
@@ -261,7 +279,7 @@ void test_deserialization(const string &file_location) {
 		auto deserialized_results = con.Query(make_uniq<LogicalPlanStatement>(std::move(deserialized_plan)));
 		REQUIRE_NO_FAIL(*deserialized_results);
 
-		Parser p;
+		Parser p(*con.context);
 		p.ParseQuery(query);
 		Planner planner(*con.context);
 		planner.CreatePlan(std::move(p.statements[0]));

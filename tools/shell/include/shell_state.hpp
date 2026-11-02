@@ -80,6 +80,8 @@ enum class PrintOutput { STDOUT, STDERR };
 
 enum class InputMode { STANDARD, FILE, DUCKDB_RC };
 
+enum class OutputCommand { OUTPUT, ONCE, EXCEL };
+
 enum class LargeNumberRendering { NONE = 0, FOOTER = 1, ALL = 2, DEFAULT = 3 };
 
 /*
@@ -101,6 +103,13 @@ enum class PagerMode { PAGER_AUTOMATIC, PAGER_ON, PAGER_OFF };
 
 enum class MetadataResult : uint8_t { SUCCESS = 0, FAIL = 1, EXIT = 2, PRINT_USAGE = 3 };
 enum class HighlightMode : uint32_t { AUTOMATIC, MIXED_MODE, DARK_MODE, LIGHT_MODE };
+
+// Deliberately not a std::exception: command error handlers must not consume an explicit exit.
+struct ShellExitException {
+	explicit ShellExitException(int exit_code) : exit_code(exit_code) {
+	}
+	int exit_code;
+};
 
 enum class ExecuteSQLSingleValueResult {
 	SUCCESS,
@@ -191,7 +200,9 @@ public:
 	string zDbFilename;                       /* name of the database file */
 	FILE *pLog = nullptr;                     /* Write log output here */
 	size_t max_rows = 0;                      /* The maximum number of rows to render in DuckBox mode */
-	size_t max_width = 0; /* The maximum number of characters to render horizontally in DuckBox mode */
+	size_t max_width = 0;      /* The maximum number of characters to render horizontally in DuckBox mode */
+	size_t max_bytes = 0;      /* The maximum number of bytes of rows to render in markdown mode (0 = all) */
+	size_t max_cell_width = 0; /* The maximum number of characters to render per cell in markdown mode (0 = all) */
 	//! The maximum number of rows to analyze in order to determine column widths in DuckBox mode
 	idx_t max_analyze_rows = 0;
 	//! Decimal separator (if any)
@@ -243,6 +254,21 @@ public:
 	*/
 	bool stdout_is_console = true;
 	bool stderr_is_console = true;
+
+	//! Whether to render for an AI coding agent: forced on/off from the command line, or auto-detected (DEFAULT)
+	OptionType agent_mode = OptionType::DEFAULT;
+	//! Whether agent mode is active (see DetectAgentMode)
+	bool agent_mode_active = false;
+	//! The name of the detected agent (e.g. "claude-code"), if any
+	string agent_name;
+	//! The environment variable that switched agent mode on (e.g. "CLAUDECODE"), empty when forced with -agent
+	string agent_marker;
+	//! Whether DUCKDB_AGENT_MODE forced agent mode on or off (no -agent / -no-agent was given)
+	bool agent_mode_from_environment = false;
+	//! Whether an output mode was given on the command line (-csv, -json, ...): detected agent mode then stays off
+	bool output_mode_flag = false;
+	//! Whether the exit hint (see PrintExitHint) went out already
+	bool exit_hint_printed = false;
 
 	//! True if an interrupt (Control-C) has been received.
 	atomic<idx_t> seenInterrupt;
@@ -320,7 +346,7 @@ public:
 	bool SetOutputMode(const string &mode, const char *tbl_name);
 	bool ImportData(const vector<string> &args);
 	bool OpenDatabase(const vector<string> &args);
-	bool SetOutputFile(const vector<string> &args, char output_mode);
+	bool SetOutputFile(const vector<string> &args, OutputCommand output_command);
 	bool ReadFromFile(const string &file);
 	bool DisplaySchemas(const vector<string> &args);
 	MetadataResult DisplayEntries(const vector<string> &args, char type);
@@ -329,7 +355,8 @@ public:
 	void ShowConfiguration();
 	void ClearInterrupt();
 
-	static void Exit(int exit_code);
+	[[noreturn]] static void Exit(int exit_code);
+	static void IgnoreInterrupts();
 	static idx_t RenderLength(const char *str, idx_t str_len);
 	static idx_t RenderLength(duckdb::string_t str);
 	static idx_t RenderLength(const string &str);
@@ -366,6 +393,8 @@ public:
 	void RenderTableMetadata(vector<ShellTableInfo> &result);
 
 	void PrintDatabaseError(const string &zErr);
+	//! Print an error, either with its location in the query (default) or as JSON (agent mode)
+	void PrintDatabaseError(ErrorData error, const string &query = string());
 	int RunInitialCommand(const char *sql, bool bail);
 	//! Expand `{parameter|default}` placeholders in a command using the parameters set on the command line
 	bool ExpandCommandParameters(const string &command, string &result);
@@ -411,7 +440,7 @@ public:
 	int ShellLoadHistory(const char *path);
 	int ShellSaveHistory(const char *path);
 	int ShellSetHistoryMaxLength(idx_t max_length);
-	char *OneInputLine(FILE *in, char *zPrior, int isContinuation);
+	char *OneInputLine(FILE *in, char *&zPrior, int isContinuation);
 
 	int RunOneSqlLine(InputMode mode, char *zSql);
 	string GetDefaultDuckDBRC();
@@ -430,6 +459,17 @@ public:
 	static void Sleep(idx_t ms);
 	void PrintUsage();
 	void DetectDarkLightMode();
+	//! Decide whether agent mode is active, from the -agent/-no-agent flags or the environment (see agent_mode)
+	void DetectAgentMode();
+	//! Whether the environment marks the shell as being run by an AI coding agent, which one, and by which variable
+	static bool DetectAgentEnvironment(string &agent_name, string &marker);
+	//! Print how agent mode renders and the engine features an agent should know about; `startup` is the one-line
+	//! form printed before anything runs
+	void PrintAgentHelp(PrintOutput output, bool startup);
+	//! On a failed run through a pipe with no agent detected and no -agent/-no-agent given: point at -agent
+	void PrintExitHint(int rc);
+	//! Print the planner's estimate of what a statement will read and return to stderr (agent mode)
+	void PrintQueryEstimate(const string &sql, const duckdb::SQLStatement &statement);
 #if defined(_WIN32) || defined(WIN32)
 	static std::wstring Win32Utf8ToUnicode(const string &zText);
 	static std::wstring Win32Utf8ToUnicode(const char *) = delete;
@@ -453,7 +493,7 @@ public:
 	SuccessState RenderQuery(ShellRenderer &renderer, const string &query, PagerMode pager_overwrite);
 	SuccessState RenderQueryResult(ShellRenderer &renderer, duckdb::QueryResult &result,
 	                               PagerMode pager_overwrite = PagerMode::PAGER_AUTOMATIC);
-	SuccessState RenderQueryResult(ShellRenderer &renderer, duckdb::QueryResultStream &stream,
+	SuccessState RenderQueryResult(ShellRenderer &renderer, duckdb::QueryResultStream<> &stream,
 	                               PagerMode pager_overwrite = PagerMode::PAGER_AUTOMATIC);
 	SuccessState RenderPreparedResult(ShellRenderer &renderer, RenderingQueryResult &render_result,
 	                                  PagerMode pager_overwrite);

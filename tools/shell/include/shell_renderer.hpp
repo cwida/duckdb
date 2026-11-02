@@ -19,7 +19,7 @@ struct RenderingResultIterator;
 
 struct ResultMetadata {
 	explicit ResultMetadata(duckdb::QueryResult &result);
-	explicit ResultMetadata(duckdb::QueryResultStream &stream);
+	explicit ResultMetadata(duckdb::QueryResultStream<> &stream);
 	ResultMetadata(const vector<duckdb::Identifier> &names, const vector<duckdb::LogicalType> &result_types);
 
 	vector<string> column_names;
@@ -39,12 +39,12 @@ struct RowData {
 
 struct RenderingQueryResult {
 	RenderingQueryResult(duckdb::QueryResult &result, ShellRenderer &renderer);
-	RenderingQueryResult(duckdb::QueryResultStream &stream, ShellRenderer &renderer);
+	RenderingQueryResult(duckdb::QueryResultStream<> &stream, ShellRenderer &renderer);
 
 	//! The retained result, or null when the rows come from a stream
 	duckdb::optional_ptr<duckdb::QueryResult> result;
 	//! The stream the rows come from, or null when they come from a retained result
-	duckdb::optional_ptr<duckdb::QueryResultStream> stream;
+	duckdb::optional_ptr<duckdb::QueryResultStream<>> stream;
 	ShellRenderer &renderer;
 	ResultMetadata metadata;
 	vector<unique_ptr<duckdb::DataChunk>> chunks;
@@ -57,6 +57,8 @@ struct RenderingQueryResult {
 	bool TryConvertChunk();
 	//! Runs the result to completion without rendering it. Stops early on an interrupt
 	void Drain(ShellState &state);
+	//! Whether the query failed while its rows were streamed: Fetch then returns null, like a clean end
+	bool HasError() const;
 
 public:
 	RenderingResultIterator begin(); // NOLINT: match stl API

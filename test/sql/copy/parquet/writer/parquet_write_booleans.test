@@ -29,3 +29,16 @@ query I
 SELECT typeof(b) FROM '{TEST_DIR}/bools.parquet' LIMIT 1
 ----
 BOOLEAN
+
+# A later no-NULL input chunk uses the packed boolean fast path after statistics are established.
+statement ok
+COPY (
+	SELECT i % 3 = 0 AS b
+	FROM range(2056) t(i)
+) TO '{TEST_DIR}/bools_no_null.parquet' (FORMAT parquet)
+
+query III
+SELECT count(*), count_if(b), count_if(NOT b)
+FROM '{TEST_DIR}/bools_no_null.parquet'
+----
+2056	686	1370

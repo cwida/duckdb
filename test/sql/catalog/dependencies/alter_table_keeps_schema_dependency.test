@@ -1,0 +1,71 @@
+# name: test/sql/catalog/dependencies/alter_table_keeps_schema_dependency.test
+# description: An altered table must keep its dependency on the owning schema
+# group: [dependencies]
+
+load {TEST_DIR}/alter_keeps_schema_dependency.db
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+statement ok
+SET debug_skip_checkpoint_on_commit=true
+
+statement ok
+CREATE SCHEMA s
+
+statement ok
+CREATE TABLE s.t AS SELECT range AS i, range::VARCHAR AS v FROM range(1000)
+
+statement ok
+ALTER TABLE s.t ADD COLUMN j INTEGER
+
+statement ok
+ALTER TABLE s.t DROP COLUMN v
+
+statement ok
+ALTER TABLE s.t RENAME COLUMN j TO k
+
+statement ok
+ALTER TABLE s.t ALTER COLUMN k SET DEFAULT 42
+
+# the schema still knows about the (altered) table
+statement error
+DROP SCHEMA s
+----
+Cannot drop entry "s" because there are entries that depend on it
+
+query I
+SELECT count(*) FROM duckdb_tables() WHERE schema_name = 's'
+----
+1
+
+statement ok
+CHECKPOINT
+
+# the CASCADE drop has to cascade to the altered table as well: the DROP TABLE goes into the WAL
+statement ok
+DROP SCHEMA s CASCADE
+
+# replay the WAL that holds the schema drop (no checkpoint on shutdown)
+restart
+
+query I
+SELECT count(*) FROM duckdb_tables() WHERE schema_name = 's'
+----
+0
+
+statement ok
+CREATE SCHEMA s
+
+statement ok
+CREATE TABLE s.t(i INTEGER)
+
+statement ok
+ALTER TABLE s.t ADD COLUMN j INTEGER
+
+statement ok
+DROP TABLE s.t
+
+# with the table gone the plain DROP SCHEMA works again
+statement ok
+DROP SCHEMA s

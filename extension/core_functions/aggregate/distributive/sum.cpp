@@ -6,6 +6,7 @@
 #include "duckdb/function/aggregate/distributive_function_utils.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 #include "duckdb/common/serializer/deserializer.hpp"
+#include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/aggregate_function_catalog_entry.hpp"
 #include "duckdb/function/function_binder.hpp"
@@ -230,37 +231,68 @@ struct HugeintSumOperation
 	}
 };
 
-unique_ptr<FunctionData> SumNoOverflowBind(BindAggregateFunctionInput &input) {
-	throw BinderException("sum_no_overflow is for internal use only!");
+//! The sum of a DECIMAL is a DECIMAL(38) - finalizing throws if the sum does not fit in it
+template <class OP>
+struct DecimalSumOperation : public OP {
+	template <class T, class STATE>
+	static void Finalize(STATE &state, T &target, AggregateFinalizeData &finalize_data) {
+		OP::template Finalize<T, STATE>(state, target, finalize_data);
+		if (!state.is_set) {
+			return;
+		}
+		const auto &max_value = Hugeint::POWERS_OF_TEN[Decimal::MAX_WIDTH_DECIMAL];
+		if (target >= max_value || target <= -max_value) {
+			throw OutOfRangeException("Overflow in SUM of DECIMAL: the result does not fit in DECIMAL(%d)",
+			                          Decimal::MAX_WIDTH_DECIMAL);
+		}
+	}
+};
+
+//! Binds the regular sum that sum_no_overflow is a specialized implementation of
+pair<BoundAggregateFunction, unique_ptr<FunctionData>> BindLogicalSum(ClientContext &context,
+                                                                      vector<unique_ptr<Expression>> &arguments) {
+	auto &entry = Catalog::GetEntry<AggregateFunctionCatalogEntry>(
+	    context, QualifiedName(Identifier::SystemCatalog(), Identifier::DefaultSchema(), Identifier("sum")));
+	vector<pair<Identifier, unique_ptr<Expression>>> keyword_args;
+	auto selection = FunctionBinder::SelectFunction(context, entry.functions, {arguments, keyword_args});
+	if (!selection.IsSuccess()) {
+		selection.GetError().Throw();
+	}
+	FunctionBinder binder(context);
+	return binder.ResolveAggregateFunction(selection.GetBinding(), arguments, keyword_args);
 }
 
 void SumNoOverflowSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data,
                             const BoundAggregateFunction &function) {
-	return;
+	// record whether the implementation was installed without a statistics proof (bound by name)
+	serializer.WritePropertyWithDefault<bool>(100, "fallible",
+	                                          function.GetErrorMode() == FunctionErrors::CAN_THROW_RUNTIME_ERROR);
 }
 
 unique_ptr<FunctionData> SumNoOverflowDeserialize(Deserializer &deserializer, BoundAggregateFunction &function) {
+	bool fallible = false;
+	deserializer.ReadPropertyWithExplicitDefault<bool>(100, "fallible", fallible, false);
 	auto &context = deserializer.Get<ClientContext &>();
 	auto &return_type = deserializer.Get<const LogicalType &>();
 	auto &children = deserializer.Get<const const_expression_list_t &>();
 	vector<unique_ptr<Expression>> arguments;
-	vector<LogicalType> argument_types;
 	for (auto &child : children) {
 		arguments.push_back(child.get().Copy());
-		argument_types.push_back(child.get().GetReturnType());
 	}
-	auto &entry = Catalog::GetEntry<AggregateFunctionCatalogEntry>(
-	    context, QualifiedName(Identifier::SystemCatalog(), Identifier::DefaultSchema(), Identifier("sum")));
-	FunctionBinder binder(context);
-	auto logical = binder.ResolveFunction(entry.functions.GetFunctionByArguments(context, argument_types), arguments);
+	auto logical = BindLogicalSum(context, arguments);
 	if (logical.second || (!return_type.IsAggregateState() && logical.first.GetReturnType() != return_type)) {
 		throw SerializationException("Cannot reconstruct the logical sum signature");
 	}
 	logical.first.ReplaceImplementation(function);
 	function = std::move(logical.first);
 	function.SetReturnType(return_type);
+	if (fallible) {
+		function.SetFallible();
+	}
 	return nullptr;
 }
+
+unique_ptr<FunctionData> SumNoOverflowBind(BindAggregateFunctionInput &input);
 
 AggregateFunction GetSumAggregateNoOverflow(PhysicalType type) {
 	switch (type) {
@@ -299,6 +331,22 @@ AggregateFunction GetSumAggregateNoOverflowDecimal() {
 	aggr.SetSerializeCallback(SumNoOverflowSerialize);
 	aggr.SetDeserializeCallback(SumNoOverflowDeserialize);
 	return aggr;
+}
+
+//! Binding sum_no_overflow by name (e.g. when re-binding an exported aggregate state) delegates to the regular sum,
+//! with the no-overflow implementation swapped in as statistics propagation does
+unique_ptr<FunctionData> SumNoOverflowBind(BindAggregateFunctionInput &input) {
+	auto &function = input.GetBoundFunction();
+	auto &arguments = input.GetArguments();
+	const auto parameter_type = function.GetArguments()[0];
+	auto logical = BindLogicalSum(input.GetClientContext(), arguments);
+	if (parameter_type.id() != LogicalTypeId::DECIMAL) {
+		logical.first.ReplaceImplementation(GetSumAggregateNoOverflow(parameter_type.InternalType()));
+		// bound by name there is no statistics proof that the int64 accumulator cannot overflow
+		logical.first.SetFallible();
+	}
+	function = std::move(logical.first);
+	return std::move(logical.second);
 }
 
 unique_ptr<BaseStatistics> SumPropagateStats(ClientContext &context, BoundAggregateExpression &expr,
@@ -409,6 +457,7 @@ AggregateFunction GetSumAggregate(PhysicalType type) {
 		function.GetSignature().GetParameter(0).SetName("arg");
 		function.SetStatisticsCallback(SumPropagateStats);
 		function.SetOrderDependent(AggregateOrderDependent::NOT_ORDER_DEPENDENT);
+		function.SetFallible(); // adding HUGEINT values to the HUGEINT accumulator throws on overflow
 		return function;
 	}
 	default:
@@ -416,11 +465,41 @@ AggregateFunction GetSumAggregate(PhysicalType type) {
 	}
 }
 
+template <class INPUT_TYPE, class OP>
+AggregateFunction GetDecimalSumAggregate(const LogicalType &input_type) {
+	auto function =
+	    AggregateFunction::UnaryAggregate<SumState<hugeint_t>, INPUT_TYPE, hugeint_t, DecimalSumOperation<OP>>(
+	        input_type, LogicalType::HUGEINT);
+	function.GetSignature().GetParameter(0).SetName("arg");
+	function.SetStatisticsCallback(SumPropagateStats);
+	function.SetOrderDependent(AggregateOrderDependent::NOT_ORDER_DEPENDENT);
+	return function;
+}
+
+AggregateFunction GetDecimalSumAggregate(PhysicalType type) {
+	switch (type) {
+	case PhysicalType::INT32:
+		return GetDecimalSumAggregate<int32_t, SumToHugeintOperation>(LogicalType::INTEGER);
+	case PhysicalType::INT64:
+		return GetDecimalSumAggregate<int64_t, SumToHugeintOperation>(LogicalType::BIGINT);
+	case PhysicalType::INT128: {
+		auto function = GetDecimalSumAggregate<hugeint_t, HugeintSumOperation>(LogicalType::HUGEINT);
+		// wide decimal sums overflow the HUGEINT accumulator and the DECIMAL(38) bound in finalize - narrower
+		// widths accumulate at most 2^64 values of less than 10^18, which stays below both limits
+		function.SetFallible();
+		return function;
+	}
+	default:
+		// the sum of smaller decimals is accumulated in an int64_t, which always fits in a DECIMAL(38)
+		return GetSumAggregate(type);
+	}
+}
+
 unique_ptr<FunctionData> BindDecimalSum(BindAggregateFunctionInput &input) {
 	auto &function = input.GetBoundFunction();
 	auto &arguments = input.GetArguments();
-	auto decimal_type = arguments[0]->GetReturnType();
-	function.ReplaceImplementation(GetSumAggregate(decimal_type.InternalType()));
+	auto decimal_type = BindDecimalArgument(input.GetClientContext(), arguments[0], "sum");
+	function.ReplaceImplementation(GetDecimalSumAggregate(decimal_type.InternalType()));
 	function.SetName("sum");
 	function.GetArguments()[0] = decimal_type;
 	function.SetReturnType(LogicalType::DECIMAL(Decimal::MAX_WIDTH_DECIMAL, DecimalType::GetScale(decimal_type)));

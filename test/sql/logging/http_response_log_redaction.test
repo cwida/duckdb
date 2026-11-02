@@ -1,0 +1,72 @@
+# name: test/sql/logging/http_response_log_redaction.test
+# description: Core HTTP response logging redacts headers unless explicitly enabled
+# group: [logging]
+
+require noforcestorage
+
+require skip_reload
+
+statement ok
+SET extension_directory = '{TEST_DIR}/http_response_log_redaction';
+
+statement ok
+SET autoload_known_extensions = false;
+
+statement ok
+SET autoinstall_known_extensions = false;
+
+statement ok
+CALL enable_logging('HTTP', storage = 'memory');
+
+# INSTALL over HTTP uses core's built-in client without HTTPFS. GitHub redirects to HTTPS,
+# which this path does not follow, so installation fails without installing an extension.
+# The redirect still produces a response log with Location and allowed protocol headers.
+statement maybe
+INSTALL 'http://github.com/duckdb/duckdb';
+----
+
+query TI rowsort
+SELECT lower(entry.key), bool_and(CASE lower(entry.key)
+    WHEN 'location' THEN entry.value = 'redacted'
+    WHEN 'content-length' THEN TRY_CAST(entry.value AS BIGINT) >= 0
+END)
+FROM duckdb_logs_parsed('HTTP'), UNNEST(map_entries(response.headers)) AS headers(entry)
+WHERE lower(entry.key) IN ('location', 'content-length')
+GROUP BY lower(entry.key);
+----
+content-length	true
+location	true
+
+statement ok
+SET redact_http_logs = false;
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement maybe
+INSTALL 'http://github.com/duckdb/duckdb';
+----
+
+query I
+SELECT count(*) > 0 AND bool_and(entry.value = 'https://github.com/duckdb/duckdb')
+FROM duckdb_logs_parsed('HTTP'), UNNEST(map_entries(response.headers)) AS headers(entry)
+WHERE lower(entry.key) = 'location';
+----
+true
+
+statement ok
+RESET redact_http_logs;
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement maybe
+INSTALL 'http://github.com/duckdb/duckdb';
+----
+
+query I
+SELECT count(*) > 0 AND bool_and(entry.value = 'redacted')
+FROM duckdb_logs_parsed('HTTP'), UNNEST(map_entries(response.headers)) AS headers(entry)
+WHERE lower(entry.key) = 'location';
+----
+true

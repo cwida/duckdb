@@ -1,0 +1,30 @@
+# name: test/sql/cast/decimal_hugeint_zero_to_double.test
+# description: casting a zero DECIMAL(38, s) (hugeint physical type) to DOUBLE/FLOAT must not read an uninitialized sign flag
+# group: [cast]
+
+# the sign flag was uninitialized for a zero hugeint-backed decimal; the result must never be negative zero
+query I
+SELECT count(*) FROM (SELECT (i*0)::DECIMAL(38,34)::DOUBLE d FROM range(5000) t(i)) WHERE d::VARCHAR LIKE '-%';
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT (i*0)::DECIMAL(38,34)::FLOAT f FROM range(5000) t(i)) WHERE f::VARCHAR LIKE '-%';
+----
+0
+
+query I
+SELECT 0::DECIMAL(38,34)::DOUBLE;
+----
+0.0
+
+query I
+SELECT 0::DECIMAL(38,0)::DOUBLE;
+----
+0.0
+
+# non-zero hugeint-backed decimals still cast correctly, including negatives
+query I
+SELECT (-1.5)::DECIMAL(38,2)::DOUBLE;
+----
+-1.5

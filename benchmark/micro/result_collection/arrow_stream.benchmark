@@ -1,0 +1,17 @@
+# name: benchmark/micro/result_collection/arrow_stream.benchmark
+# description: Arrow result stream: worker threads convert, the consumer drops the arrays
+# group: [result_collection]
+
+name arrow_stream
+group micro
+subgroup result_collection
+
+resultmode arrow_stream 131072
+
+cache stream_drain_data.duckdb
+
+load
+create table tbl as select 'this is a reasonably long string ' || i as a from range(25000000) t(i);
+
+run
+select * from tbl;

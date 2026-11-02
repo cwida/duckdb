@@ -1,0 +1,114 @@
+# name: test/sql/function/timestamp/date_sub_diff.test
+# description: Test date_sub and date_diff execution paths
+# group: [timestamp]
+
+# Non-constant date parts use the ternary execution path
+query TII rowsort
+WITH parts(part) AS (
+	VALUES ('year'), ('isoyear'), ('month'), ('day'), ('decade'), ('century'), ('millennium'),
+	       ('quarter'), ('week'), ('microseconds'), ('milliseconds'), ('second'), ('minute'), ('hour')
+)
+SELECT
+	part,
+	date_sub(part, DATE '2000-01-02', DATE '2010-02-03'),
+	date_diff(part, TIMESTAMP '2000-01-02 03:04:05.006007', TIMESTAMP '2010-02-03 05:06:07.008009')
+FROM parts
+ORDER BY part;
+----
+century	0	0
+day	3685	3685
+decade	1	1
+hour	88440	88442
+isoyear	10	11
+microseconds	318384000000000	318391322002002
+millennium	0	0
+milliseconds	318384000000	318391322002
+minute	5306400	5306522
+month	121	121
+quarter	40	40
+second	318384000	318391322
+week	526	526
+year	10	10
+
+# Constant date parts dispatch to specialized TIMESTAMP implementations
+query IIIIIIIIIIIIII
+SELECT
+	date_sub('year', s, e),
+	date_sub('isoyear', s, e),
+	date_sub('month', s, e),
+	date_sub('day', s, e),
+	date_sub('decade', s, e),
+	date_sub('century', s, e),
+	date_sub('millennium', s, e),
+	date_sub('quarter', s, e),
+	date_sub('week', s, e),
+	date_sub('microseconds', s, e),
+	date_sub('milliseconds', s, e),
+	date_sub('second', s, e),
+	date_sub('minute', s, e),
+	date_sub('hour', s, e)
+FROM (VALUES (
+	TIMESTAMP '2000-01-02 03:04:05.006007',
+	TIMESTAMP '2010-02-03 05:06:07.008009'
+)) dates(s, e);
+----
+10	10	121	3685	1	0	0	40	526	318391322002002	318391322002	318391322	5306522	88442
+
+# Constant date parts dispatch to specialized DATE implementations
+query IIIIIIIIIIIIII
+SELECT
+	date_diff('year', s, e),
+	date_diff('isoyear', s, e),
+	date_diff('month', s, e),
+	date_diff('day', s, e),
+	date_diff('decade', s, e),
+	date_diff('century', s, e),
+	date_diff('millennium', s, e),
+	date_diff('quarter', s, e),
+	date_diff('week', s, e),
+	date_diff('microseconds', s, e),
+	date_diff('milliseconds', s, e),
+	date_diff('second', s, e),
+	date_diff('minute', s, e),
+	date_diff('hour', s, e)
+FROM (VALUES (DATE '2000-01-02', DATE '2010-02-03')) dates(s, e);
+----
+10	11	121	3685	1	0	0	40	526	318384000000000	318384000000	318384000	5306400	88440
+
+# TIME supports sub-day units
+query IIIIIIIIII
+SELECT
+	date_sub('microseconds', s, e),
+	date_sub('milliseconds', s, e),
+	date_sub('second', s, e),
+	date_sub('minute', s, e),
+	date_sub('hour', s, e),
+	date_diff('microseconds', s, e),
+	date_diff('milliseconds', s, e),
+	date_diff('second', s, e),
+	date_diff('minute', s, e),
+	date_diff('hour', s, e)
+FROM (VALUES (TIME '01:02:03.004005', TIME '03:04:05.006007')) times(s, e);
+----
+7322002002	7322002	7322	122	2	7322002002	7322002	7322	122	2
+
+# Ragged months, reverse order, and infinite inputs
+query IIII
+SELECT
+	date_sub('month', TIMESTAMP '2004-01-31 12:00:00', TIMESTAMP '2004-02-29 13:00:00'),
+	date_sub('month', TIMESTAMP '2004-02-29 13:00:00', TIMESTAMP '2004-01-31 12:00:00'),
+	date_sub('day', DATE '-infinity', DATE '2000-01-01') IS NULL,
+	date_diff('day', DATE '2000-01-01', DATE 'infinity') IS NULL;
+----
+1	-1	1	1
+
+# Non-constant date parts preserve NULL results for infinite dates
+query TII rowsort
+SELECT part, date_sub(part, s, e) IS NULL, date_diff(part, s, e) IS NULL
+FROM (VALUES
+	('day', DATE '-infinity', DATE '2000-01-01'),
+	('month', DATE '2000-01-01', DATE '2000-02-01')
+) dates(part, s, e);
+----
+day	1	1
+month	0	0

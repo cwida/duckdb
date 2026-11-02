@@ -1,0 +1,114 @@
+# name: test/sql/multi_file/multi_file_schema.test
+# description: The "schema" option works for every multi-file reader, not only for parquet
+# group: [multi_file]
+
+require json
+
+# two CSV files that have their columns in a different order, and one of them lacks a column
+statement ok
+COPY (SELECT 1 AS a, 'x' AS b, 10 AS c) TO '{TEMP_DIR}/schema_1.csv'
+
+statement ok
+COPY (SELECT 'y' AS b, 2 AS a) TO '{TEMP_DIR}/schema_2.csv'
+
+# the files are mapped onto the schema by name - the map key is the name of the column in the file, "name" the
+# name the scan gives it. A column a file lacks gets its default value
+query III
+SELECT * FROM read_csv('{TEMP_DIR}/schema_*.csv', schema=map {
+	'a': {name: 'id', type: 'BIGINT', default_value: NULL},
+	'b': {name: 'label', type: 'VARCHAR', default_value: NULL},
+	'c': {name: 'extra', type: 'INTEGER', default_value: 42}
+}) ORDER BY id
+----
+1	x	10
+2	y	42
+
+query II
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM read_csv('{TEMP_DIR}/schema_*.csv', schema=map {
+	'a': {name: 'id', type: 'BIGINT', default_value: NULL},
+	'b': {name: 'label', type: 'VARCHAR', default_value: NULL}
+}))
+----
+id	BIGINT
+label	VARCHAR
+
+# columns of the files that are not in the schema are not read
+query I
+SELECT sum(id) FROM read_csv('{TEMP_DIR}/schema_*.csv', schema=map {
+	'a': {name: 'id', type: 'BIGINT', default_value: NULL}
+})
+----
+3
+
+# the same holds for JSON
+statement ok
+COPY (SELECT 1 AS a, 'x' AS b) TO '{TEMP_DIR}/schema_1.json'
+
+statement ok
+COPY (SELECT 'y' AS b) TO '{TEMP_DIR}/schema_2.json'
+
+query II
+SELECT * FROM read_json('{TEMP_DIR}/schema_*.json', schema=map {
+	'a': {name: 'id', type: 'BIGINT', default_value: -1},
+	'b': {name: 'label', type: 'VARCHAR', default_value: NULL}
+}) ORDER BY label
+----
+1	x
+-1	y
+
+# the filename column still works with a schema
+query II
+SELECT id, parse_filename(filename) FROM read_csv('{TEMP_DIR}/schema_*.csv', schema=map {
+	'a': {name: 'id', type: 'BIGINT', default_value: NULL}
+}, filename=true) ORDER BY id
+----
+1	schema_1.csv
+2	schema_2.csv
+
+# hive partitioning adds the partition column after the schema's columns
+statement ok
+COPY (SELECT range AS a, 'v' || range AS b, range % 2 AS k FROM range(4)) TO '{TEMP_DIR}/schema_hive_csv' (FORMAT csv, PARTITION_BY (k))
+
+query IIII
+SELECT id, label, k, typeof(k) FROM read_csv('{TEMP_DIR}/schema_hive_csv/*/*.csv', schema=map {
+	'a': {name: 'id', type: 'BIGINT', default_value: NULL},
+	'b': {name: 'label', type: 'VARCHAR', default_value: NULL}
+}, hive_partitioning=true) ORDER BY id
+----
+0	v0	0	BIGINT
+1	v1	1	BIGINT
+2	v2	0	BIGINT
+3	v3	1	BIGINT
+
+statement ok
+COPY (SELECT range AS a, 'v' || range AS b, range % 2 AS k FROM range(4)) TO '{TEMP_DIR}/schema_hive_json' (FORMAT json, PARTITION_BY (k))
+
+query IIII
+SELECT id, label, k, typeof(k) FROM read_json('{TEMP_DIR}/schema_hive_json/*/*.json', schema=map {
+	'a': {name: 'id', type: 'BIGINT', default_value: NULL},
+	'b': {name: 'label', type: 'VARCHAR', default_value: NULL}
+}, hive_types={'k': 'INTEGER'}) ORDER BY id
+----
+0	v0	0	INTEGER
+1	v1	1	INTEGER
+2	v2	0	INTEGER
+3	v3	1	INTEGER
+
+statement error
+SELECT * FROM read_csv('{TEMP_DIR}/schema_*.csv', union_by_name=true, schema=map {
+	'a': {name: 'id', type: 'BIGINT', default_value: NULL}
+})
+----
+Binder Error: 'schema' cannot be combined with union_by_name=true
+
+statement error
+SELECT * FROM read_csv('{TEMP_DIR}/schema_*.csv', schema=42)
+----
+Invalid Input Error: 'schema' expects a value of type MAP, not INTEGER
+
+statement error
+SELECT * FROM read_json('{TEMP_DIR}/schema_*.json', schema=map {
+	'a': {name: 'id', type: 'BIGINT', default_value: 'not a number'}
+})
+----
+Binder Error: Unable to cast 'schema' default_value "not a number" to BIGINT

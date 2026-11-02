@@ -72,22 +72,21 @@ static ShreddingType ConvertShreddingTypeRecursive(const LogicalType &type) {
 		return ShreddingType(LogicalType(LogicalTypeId::ANY));
 	}
 	if (!type.IsNested()) {
+		// the values are written without further conversion or validation, so types with an alias (e.g., JSON) and
+		// types without a Parquet typed_value representation cannot be shredded on
+		if (type.HasAlias() || type.id() == LogicalTypeId::BIT || type.id() == LogicalTypeId::BIGNUM) {
+			throw BinderException("VARIANT cannot be shredded on type %s in Parquet", type.ToString());
+		}
 		return ShreddingType(type);
 	}
 
 	switch (type.id()) {
-	case LogicalTypeId::STRUCT: {
-		ShreddingType res(type);
-		auto &children = StructType::GetChildTypes(type);
-		for (auto &entry : children) {
-			res.AddChild(entry.first, ConvertShreddingTypeRecursive(entry.second));
-		}
-		return res;
-	}
+	case LogicalTypeId::STRUCT:
 	case LogicalTypeId::LIST: {
 		ShreddingType res(type);
-		const auto &child = ListType::GetChildType(type);
-		res.AddChild("element", ConvertShreddingTypeRecursive(child));
+		for (auto &entry : LogicalType::GetNamedChildTypes(type)) {
+			res.AddChild(entry.first, ConvertShreddingTypeRecursive(entry.second));
+		}
 		return res;
 	}
 	default:

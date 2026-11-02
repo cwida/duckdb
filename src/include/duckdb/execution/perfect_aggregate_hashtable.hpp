@@ -28,6 +28,10 @@ public:
 	//! Combines the target perfect aggregate HT into this one
 	void Combine(PerfectAggregateHashTable &other);
 
+	idx_t Capacity() const {
+		return total_groups;
+	}
+
 	//! Scan the HT starting from the scan_position
 	void Scan(idx_t &scan_position, DataChunk &result);
 

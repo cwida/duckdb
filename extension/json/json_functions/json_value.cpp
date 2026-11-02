@@ -14,10 +14,12 @@ static void GetValueFunctionsInternal(ScalarFunctionSet &set, const LogicalType 
 	ScalarFunction index_fun({}, LogicalType::VARCHAR, ValueFunction, JSONReadFunctionData::Bind, nullptr,
 	                         JSONFunctionLocalState::Init);
 	index_fun.GetSignature().AddParameter("json", input_type).AddParameter("index", LogicalType::BIGINT);
+	index_fun.SetResolveTypesCallback(JSONReadFunctionData::ResolveTypes);
 	set.AddFunction(index_fun);
 	ScalarFunction path_fun({}, LogicalType::VARCHAR, ValueFunction, JSONReadFunctionData::Bind, nullptr,
 	                        JSONFunctionLocalState::Init);
 	path_fun.GetSignature().AddParameter("json", input_type).AddParameter("path", LogicalType::VARCHAR);
+	path_fun.SetResolveTypesCallback(JSONReadFunctionData::ResolveTypes);
 	set.AddFunction(path_fun);
 	ScalarFunction many_fun({}, LogicalType::LIST(LogicalType::VARCHAR), ValueManyFunction,
 	                        JSONReadManyFunctionData::Bind, nullptr, JSONFunctionLocalState::Init);

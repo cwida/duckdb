@@ -1,0 +1,71 @@
+# name: test/sql/projection/reference_only_output.test
+# description: Reference-only projection outputs survive empty batches and nested values
+# group: [projection]
+
+statement ok
+SET threads=4
+
+statement ok
+CREATE TABLE projection_input AS
+SELECT i, CASE WHEN i % 7 = 0 THEN NULL ELSE 'long value carried through a projection ' || i::VARCHAR END AS s,
+       [i, NULL, i + 1] AS l, {'x': i, 'y': i::VARCHAR} AS r
+FROM range(5003) t(i)
+
+query IIIIII
+WITH p AS MATERIALIZED (
+    SELECT s, r, i AS j, l, i AS duplicate FROM projection_input WHERE i % 2 = 1
+)
+SELECT count(*), sum(j), count(s), bool_and(j = duplicate),
+       bool_and(l[1] = j AND l[2] IS NULL AND l[3] = j + 1),
+       bool_and(r.x = j AND r.y = j::VARCHAR AND (s IS NOT DISTINCT FROM
+           CASE WHEN j % 7 = 0 THEN NULL ELSE 'long value carried through a projection ' || j::VARCHAR END))
+FROM p
+----
+2501	6255001	2144	true	true	true
+
+# Empty input produces no rows.
+query I
+WITH p AS MATERIALIZED (SELECT s, i, l, r FROM projection_input WHERE i < 0)
+SELECT count(*) FROM p
+----
+0
+
+# Some source chunks produce rows and later chunks are entirely filtered out.
+query II
+WITH p AS MATERIALIZED (
+    SELECT s, r, i AS j, l, i AS duplicate FROM projection_input
+    WHERE i < 2 OR md5(i::VARCHAR) = ''
+)
+SELECT count(*), sum(j) FROM p
+----
+2	1
+
+statement ok
+PREPARE reference_output AS
+WITH p AS MATERIALIZED (SELECT s, l, i, r FROM projection_input WHERE i < $1)
+SELECT count(*), coalesce(sum(i), 0), count(s) FROM p
+
+query III
+EXECUTE reference_output(100)
+----
+100	4950	85
+
+query III
+EXECUTE reference_output(0)
+----
+0	0	0
+
+query III
+EXECUTE reference_output(5003)
+----
+5003	12512503	4288
+
+# The computed projection remains allocated when recursive execution reuses its state.
+query III
+WITH RECURSIVE r(i, s) AS (
+    SELECT 0, 'long value carried through a recursive projection'
+    UNION ALL SELECT i + 1, s FROM r WHERE i < 20
+)
+SELECT count(*), sum(i), count(DISTINCT s) FROM r
+----
+21	210	1

@@ -67,7 +67,10 @@ void DuckDBWhichSecretFunction(ClientContext &context, TableFunctionInput &data_
 }
 
 void DuckDBWhichSecretFun::RegisterFunction(BuiltinFunctions &set) {
-	set.AddFunction(TableFunction("which_secret", {duckdb::LogicalType::VARCHAR, duckdb::LogicalType::VARCHAR},
+	set.AddFunction(TableFunction("which_secret",
+	                              FunctionSignature()
+	                                  .AddPositionalOnly("path", LogicalType::VARCHAR)
+	                                  .AddPositionalOnly("type", LogicalType::VARCHAR),
 	                              DuckDBWhichSecretFunction, DuckDBWhichSecretBind, DuckDBWhichSecretInit));
 }
 

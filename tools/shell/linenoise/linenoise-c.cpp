@@ -6,6 +6,10 @@
 #include "duckdb/common/string_util.hpp"
 #include "shell_highlight.hpp"
 
+#if defined(_WIN32) || defined(WIN32)
+#define strdup _strdup
+#endif
+
 using duckdb::Highlighting;
 using duckdb::History;
 using duckdb::idx_t;

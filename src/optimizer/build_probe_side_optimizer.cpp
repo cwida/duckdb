@@ -117,7 +117,8 @@ static idx_t MaxDynamicFilterTargetCardinality(LogicalOperator &op, const Expres
 
 	vector<JoinFilterPushdownColumn> columns {std::move(column)};
 	vector<PushdownFilterTarget> targets;
-	JoinFilterPushdownOptimizer::GetPushdownFilterTargets(op, std::move(columns), targets);
+	JoinFilterPushdownOptimizer::GetPushdownFilterTargets(op, std::move(columns), targets,
+	                                                      EqualityPropagation::ENABLED);
 
 	// Dynamic filters are applied at the scan target found here. Estimate the work that the
 	// filter can avoid at that point, even if later filters reduce the cardinality at the join.
@@ -218,7 +219,7 @@ double BuildProbeSideOptimizer::GetBuildSize(vector<LogicalType> types, const id
 	// This is a not a smooth cost function, so instead we do the average, which is ~3 * sizeof(ht_entry_t)
 	row_width += 3 * sizeof(ht_entry_t);
 
-	return static_cast<double>(row_width * cardinality);
+	return MaxValue<double>(static_cast<double>(row_width) * static_cast<double>(cardinality), sizeof(ht_entry_t));
 }
 
 idx_t BuildProbeSideOptimizer::ChildHasJoins(LogicalOperator &op) {

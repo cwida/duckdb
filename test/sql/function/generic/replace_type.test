@@ -76,3 +76,39 @@ query I
 select replace_type([3.141592653589793, 2.718281828459045]::DOUBLE[2], NULL::DOUBLE, NULL::DECIMAL(15,2))
 ----
 [3.14, 2.72]
+
+# Keep heterogeneous children in their original positions.
+query I
+SELECT replace_type({'a': 42, 'b': 'duck', 'c': true}, NULL::INTEGER, NULL::BIGINT)
+----
+{'a': 42, 'b': duck, 'c': true}
+
+query I
+SELECT replace_type((42, 'duck', true), NULL::INTEGER, NULL::BIGINT)
+----
+(42, duck, true)
+
+query I
+SELECT replace_type('duck'::UNION(a INTEGER, b VARCHAR, c BOOLEAN), NULL::INTEGER, NULL::BIGINT)
+----
+duck
+
+query I
+SELECT typeof(replace_type(NULL::STRUCT(a INTEGER, b VARCHAR, c BOOLEAN), NULL::INTEGER, NULL::BIGINT))
+----
+STRUCT(a BIGINT, b VARCHAR, c BOOLEAN)
+
+query I
+SELECT typeof(replace_type(NULL::TUPLE(INTEGER, VARCHAR, BOOLEAN), NULL::INTEGER, NULL::BIGINT))
+----
+TUPLE(BIGINT, VARCHAR, BOOLEAN)
+
+query I
+SELECT typeof(replace_type(NULL::UNION(a INTEGER, b VARCHAR, c BOOLEAN), NULL::INTEGER, NULL::BIGINT))
+----
+UNION(a BIGINT, b VARCHAR, c BOOLEAN)
+
+query I
+SELECT typeof(replace_type(NULL::MAP(INTEGER, STRUCT(a VARCHAR, b INTEGER[2], c BOOLEAN[])), NULL::INTEGER, NULL::BIGINT))
+----
+MAP(BIGINT, STRUCT(a VARCHAR, b BIGINT[2], c BOOLEAN[]))

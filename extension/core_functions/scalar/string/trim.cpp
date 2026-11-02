@@ -3,6 +3,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/common/vector_operations/unary_executor.hpp"
+#include "duckdb/function/scalar/string_common.hpp"
 #include "utf8proc.hpp"
 
 #include <string.h>
@@ -16,20 +17,17 @@ struct TrimOperator {
 		auto data = input.GetData();
 		auto size = input.GetSize();
 
-		utf8proc_int32_t codepoint;
-		auto str = reinterpret_cast<const utf8proc_uint8_t *>(data);
+		int32_t codepoint;
 
 		// Find the first character that is not left trimmed
 		idx_t begin = 0;
 		if (LTRIM) {
 			while (begin < size) {
-				auto bytes =
-				    utf8proc_iterate(str + begin, UnsafeNumericCast<utf8proc_ssize_t>(size - begin), &codepoint);
-				D_ASSERT(bytes > 0);
+				auto bytes = DecodeCodepoint(data + begin, size - begin, codepoint);
 				if (utf8proc_category(codepoint) != UTF8PROC_CATEGORY_ZS) {
 					break;
 				}
-				begin += UnsafeNumericCast<idx_t>(bytes);
+				begin += bytes;
 			}
 		}
 
@@ -38,9 +36,7 @@ struct TrimOperator {
 		if (RTRIM) {
 			end = begin;
 			for (auto next = begin; next < size;) {
-				auto bytes = utf8proc_iterate(str + next, UnsafeNumericCast<utf8proc_ssize_t>(size - next), &codepoint);
-				D_ASSERT(bytes > 0);
-				next += UnsafeNumericCast<idx_t>(bytes);
+				next += DecodeCodepoint(data + next, size - next, codepoint);
 				if (utf8proc_category(codepoint) != UTF8PROC_CATEGORY_ZS) {
 					end = next;
 				}
@@ -64,14 +60,13 @@ static void UnaryTrimFunction(DataChunk &args, ExpressionState &state, Vector &r
 	UnaryExecutor::ExecuteString<string_t, string_t, TrimOperator<LTRIM, RTRIM>>(args.data[0], result);
 }
 
-static void GetIgnoredCodepoints(string_t ignored, unordered_set<utf8proc_int32_t> &ignored_codepoints) {
-	auto dataptr = reinterpret_cast<const utf8proc_uint8_t *>(ignored.GetData());
+static void GetIgnoredCodepoints(string_t ignored, unordered_set<int32_t> &ignored_codepoints) {
+	auto dataptr = ignored.GetData();
 	auto size = ignored.GetSize();
 	idx_t pos = 0;
 	while (pos < size) {
-		utf8proc_int32_t codepoint;
-		pos += UnsafeNumericCast<idx_t>(
-		    utf8proc_iterate(dataptr + pos, UnsafeNumericCast<utf8proc_ssize_t>(size - pos), &codepoint));
+		int32_t codepoint;
+		pos += DecodeCodepoint(dataptr + pos, size - pos, codepoint);
 		ignored_codepoints.insert(codepoint);
 	}
 }
@@ -83,22 +78,20 @@ static void BinaryTrimFunction(DataChunk &input, ExpressionState &state, Vector 
 		    auto data = input.GetData();
 		    auto size = input.GetSize();
 
-		    unordered_set<utf8proc_int32_t> ignored_codepoints;
+		    unordered_set<int32_t> ignored_codepoints;
 		    GetIgnoredCodepoints(ignored, ignored_codepoints);
 
-		    utf8proc_int32_t codepoint;
-		    auto str = reinterpret_cast<const utf8proc_uint8_t *>(data);
+		    int32_t codepoint;
 
 		    // Find the first character that is not left trimmed
 		    idx_t begin = 0;
 		    if (LTRIM) {
 			    while (begin < size) {
-				    auto bytes =
-				        utf8proc_iterate(str + begin, UnsafeNumericCast<utf8proc_ssize_t>(size - begin), &codepoint);
+				    auto bytes = DecodeCodepoint(data + begin, size - begin, codepoint);
 				    if (ignored_codepoints.find(codepoint) == ignored_codepoints.end()) {
 					    break;
 				    }
-				    begin += UnsafeNumericCast<idx_t>(bytes);
+				    begin += bytes;
 			    }
 		    }
 
@@ -107,10 +100,7 @@ static void BinaryTrimFunction(DataChunk &input, ExpressionState &state, Vector 
 		    if (RTRIM) {
 			    end = begin;
 			    for (auto next = begin; next < size;) {
-				    auto bytes =
-				        utf8proc_iterate(str + next, UnsafeNumericCast<utf8proc_ssize_t>(size - next), &codepoint);
-				    D_ASSERT(bytes > 0);
-				    next += UnsafeNumericCast<idx_t>(bytes);
+				    next += DecodeCodepoint(data + next, size - next, codepoint);
 				    if (ignored_codepoints.find(codepoint) == ignored_codepoints.end()) {
 					    end = next;
 				    }

@@ -4,7 +4,8 @@
 # via a static extension that reaches the shared library).
 
 add_library(duckdb_cpp_api STATIC duckdb_cpp.cpp)
-target_include_directories(duckdb_cpp_api PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(
+  duckdb_cpp_api PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>)
 set_target_properties(duckdb_cpp_api PROPERTIES CXX_VISIBILITY_PRESET hidden
                                                 VISIBILITY_INLINES_HIDDEN ON)
 
@@ -27,3 +28,11 @@ target_compile_definitions(
 set_target_properties(
   duckdb_cpp_api_loadable PROPERTIES CXX_VISIBILITY_PRESET hidden
                                      VISIBILITY_INLINES_HIDDEN ON)
+
+# Statically linked extensions written against the C++ API link the archive, so
+# it is part of the export set
+install(
+  TARGETS duckdb_cpp_api
+  EXPORT "${DUCKDB_EXPORT_SET}"
+  LIBRARY DESTINATION "${INSTALL_LIB_DIR}"
+  ARCHIVE DESTINATION "${INSTALL_LIB_DIR}")

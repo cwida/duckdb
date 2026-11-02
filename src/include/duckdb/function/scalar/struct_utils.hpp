@@ -66,4 +66,32 @@ inline bool TryGetStructExtractChildIndex(const BoundFunctionExpression &func, i
 	return true;
 }
 
+struct StructExtractPathEntry {
+	idx_t child_idx;
+	//! Empty when the input struct is unnamed
+	Identifier child_name;
+};
+
+//! Strips struct extracts, appending the path base first
+inline const Expression &PeelStructExtractPath(const Expression &expr, vector<StructExtractPathEntry> &path) {
+	if (expr.GetExpressionClass() != ExpressionClass::BOUND_FUNCTION) {
+		return expr;
+	}
+	auto &func = expr.Cast<BoundFunctionExpression>();
+	idx_t child_idx;
+	if (!TryGetStructExtractChildIndex(func, child_idx) || func.GetChildren().empty()) {
+		return expr;
+	}
+	auto &base = PeelStructExtractPath(*func.GetChildren()[0], path);
+	auto &input_type = func.GetChildren()[0]->GetReturnType();
+	Identifier child_name;
+	if (input_type.id() == LogicalTypeId::STRUCT) {
+		child_name = StructType::GetChildName(input_type, child_idx);
+	}
+	path.push_back({child_idx, std::move(child_name)});
+	return base;
+}
+
+const Expression &PeelStructExtractPath(Expression &&expr, vector<StructExtractPathEntry> &path) = delete;
+
 } // namespace duckdb

@@ -134,11 +134,21 @@ static LikeString LikeMatchFromRegex(duckdb_re2::RE2 &pattern) {
 			}
 			break;
 		}
-		case duckdb_re2::kRegexpEndText:
-		case duckdb_re2::kRegexpEmptyMatch:
-		case duckdb_re2::kRegexpBeginText: {
+		case duckdb_re2::kRegexpBeginText:
+			// anchors are represented by the absence of a leading / trailing '%', so they must be at the edges
+			if (cur_sub_index != 0) {
+				ret.exists = false;
+				return ret;
+			}
 			break;
-		}
+		case duckdb_re2::kRegexpEndText:
+			if (cur_sub_index + 1 != num_subs) {
+				ret.exists = false;
+				return ret;
+			}
+			break;
+		case duckdb_re2::kRegexpEmptyMatch:
+			break;
 		default:
 			// some other regexp op that doesn't have an equivalent to a like string
 			// return false;
@@ -163,7 +173,10 @@ unique_ptr<Expression> RegexOptimizationRule::Apply(LogicalOperator &op, vector<
 	}
 	auto regexp_bind_data = root.BindInfo().get()->Cast<RegexpMatchesBindData>();
 
-	auto constant_value = ExpressionExecutor::EvaluateScalar(GetContext(), constant_expr);
+	Value constant_value;
+	if (!ExpressionExecutor::TryEvaluateScalar(GetContext(), constant_expr, constant_value)) {
+		return nullptr;
+	}
 	D_ASSERT(constant_value.type() == constant_expr.GetReturnType());
 
 	duckdb_re2::RE2::Options parsed_options = regexp_bind_data.options;
@@ -285,6 +298,10 @@ unique_ptr<Expression> RegexpReplaceExtractRule::Apply(LogicalOperator &op, vect
 	const auto &pattern = bind_data.constant_string;
 	duckdb_re2::RE2 compiled(duckdb_re2::StringPiece(pattern.c_str(), pattern.size()), bind_data.options);
 	if (!compiled.ok() || !RegexpHasWholeTextAnchors(compiled.Regexp())) {
+		return nullptr;
+	}
+	if (group_index > compiled.NumberOfCapturingGroups()) {
+		// leave reporting the invalid back-reference to regexp_replace
 		return nullptr;
 	}
 

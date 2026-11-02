@@ -198,12 +198,11 @@ public:
 
 public:
 	void ExecuteInternal(ExecuteContext &context) const override;
-
-	static SleepUnit ParseUnit(const string &unit);
-
 	bool SupportsConcurrent() const override {
 		return true;
 	}
+
+	static SleepUnit ParseUnit(const string &unit);
 
 private:
 	idx_t duration;

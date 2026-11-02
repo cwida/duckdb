@@ -1,0 +1,159 @@
+# name: test/sql/sql_export/structural_expressions.test
+# description: SQL export retains ordinary expression syntax and semantics
+# group: [sql_export]
+
+foreach serializer false true
+
+statement ok
+SET debug_verify_serializer={serializer};
+
+statement ok
+PRAGMA disable_optimizer;
+
+query T
+SELECT TRY_CAST(CAST(42 AS INTEGER) AS BIGINT);
+----
+42
+
+query T
+SELECT 1 = 2;
+----
+0
+
+query T
+SELECT 1 != 2;
+----
+1
+
+query T
+SELECT 1 < 2;
+----
+1
+
+query T
+SELECT 1 > 2;
+----
+0
+
+query T
+SELECT 1 <= 2;
+----
+1
+
+query T
+SELECT 1 >= 2;
+----
+0
+
+query T
+SELECT 1 IS DISTINCT FROM 2;
+----
+1
+
+query T
+SELECT 1 IS NOT DISTINCT FROM 2;
+----
+0
+
+query T
+SELECT 2 BETWEEN 1 AND 3;
+----
+1
+
+query T
+SELECT (1=1) AND ((2=2) AND (3=3));
+----
+1
+
+query T
+SELECT CASE WHEN false THEN 10 WHEN true THEN 20 ELSE 30 END;
+----
+20
+
+query T
+SELECT NOT true;
+----
+0
+
+query T
+SELECT NULL::INTEGER IS NULL;
+----
+1
+
+query T
+SELECT NULL::INTEGER IS NOT NULL;
+----
+0
+
+query T
+SELECT 1 IN (2,3);
+----
+0
+
+query T
+SELECT 1 NOT IN (2,3);
+----
+1
+
+query T
+SELECT coalesce(NULL::INTEGER,4);
+----
+4
+
+query T
+SELECT TRY(5);
+----
+5
+
+query T
+SELECT TRY(CAST('not an integer' AS INTEGER));
+----
+NULL
+
+query T
+SELECT value FROM (SELECT row(42) AS value);
+----
+(42,)
+
+statement ok
+PRAGMA enable_optimizer;
+
+query I
+SELECT r >= 0 AND r < 1 FROM (SELECT random() AS r);
+----
+1
+
+endloop
+
+statement ok
+SET debug_verify_serializer=false;
+
+statement ok
+CREATE TABLE scalar_values(i INTEGER,s VARCHAR);
+
+statement ok
+INSERT INTO scalar_values VALUES (-7,'AbC'),(7,'Def');
+
+query TTTT
+SELECT abs(i), i + 2, struct_pack(value := i), NOT (i = 7) FROM scalar_values ORDER BY i;
+----
+7	-5	{'value': -7}	1
+7	9	{'value': 7}	0
+
+query T
+SELECT log2(CAST(exported_0 AS DOUBLE)) FROM (VALUES (1),(2)) v(exported_0) ORDER BY exported_0;
+----
+0.0
+1.0
+
+query T
+SELECT power(CAST(exported_0 AS DOUBLE),2.0) FROM (VALUES (1),(2)) v(exported_0) ORDER BY exported_0;
+----
+1.0
+4.0
+
+query T
+SELECT alias(i % 2) AS p FROM scalar_values;
+----
+p
+p

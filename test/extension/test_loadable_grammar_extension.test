@@ -50,3 +50,46 @@ FROM produce
   |> SELECT item, sales, doubled_sales;
 ----
 cashews	30	60
+
+# a stage keyword directly after an expression must not be swallowed as an operand of the host's
+# generic infix operator |> (AGGREGATE is an unreserved keyword in the host grammar)
+query I
+FROM produce
+  |> WHERE sales > 25
+  |> AGGREGATE COUNT(*);
+----
+2
+
+query TI
+FROM produce
+  |> SELECT item, sales > 25 AS big
+  |> AGGREGATE COUNT(*) GROUP BY big
+  |> ORDER BY big;
+----
+false	3
+true	2
+
+query I
+FROM produce
+  |> WHERE category = 'fruit'
+  |> AGGREGATE SUM(sales);
+----
+45
+
+# a SET active_grammar_extensions between the statements of one multi-statement string must reach
+# the later statements of that string (con2 is a fresh connection without the setting)
+statement ok con2
+LOAD '{BUILD_DIRECTORY}/test/extension/loadable_grammar_extension_demo.duckdb_extension'; SET active_grammar_extensions = ['pipe_query_syntax']; CREATE TABLE mid_string AS FROM range(3) t(i) |> EXTEND i * 2 AS d |> SELECT d;
+
+query I con2
+FROM mid_string |> ORDER BY d;
+----
+0
+2
+4
+
+# without the SET the grammar extension stays inactive on this connection
+statement error con3
+FROM range(3) t(i) |> EXTEND i * 2 AS d |> SELECT d;
+----
+Parser Error

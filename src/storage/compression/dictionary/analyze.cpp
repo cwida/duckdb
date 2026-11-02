@@ -4,7 +4,7 @@ namespace duckdb {
 
 DictionaryAnalyzeState::DictionaryAnalyzeState(BlockManager &block_manager)
     : AnalyzeState(block_manager), segment_count(0), current_tuple_count(0), current_unique_count(0),
-      current_dict_size(0), current_width(0), next_width(0) {
+      current_dict_size(0), heap(block_manager.buffer_manager.GetBufferAllocator()), current_width(0), next_width(0) {
 }
 
 bool DictionaryAnalyzeState::LookupString(string_t str) {

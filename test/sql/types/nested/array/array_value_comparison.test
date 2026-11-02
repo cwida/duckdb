@@ -1,0 +1,63 @@
+# name: test/sql/types/nested/array/array_value_comparison.test
+# description: Ordering comparisons between equal fixed-size arrays
+# group: [array]
+
+statement ok
+CREATE TABLE arr_test (arr INT[3]);
+
+statement ok
+INSERT INTO arr_test VALUES (ARRAY[1,2,3]::INT[3]), (ARRAY[1,2,4]::INT[3]), (ARRAY[1,2,2]::INT[3]);
+
+query IIIIII
+SELECT
+	count(*) FILTER (arr > ARRAY[1,2,3]::INT[3]),
+	count(*) FILTER (arr >= ARRAY[1,2,3]::INT[3]),
+	count(*) FILTER (arr < ARRAY[1,2,3]::INT[3]),
+	count(*) FILTER (arr <= ARRAY[1,2,3]::INT[3]),
+	count(*) FILTER (arr = ARRAY[1,2,3]::INT[3]),
+	count(*) FILTER (arr <> ARRAY[1,2,3]::INT[3]),
+FROM arr_test
+----
+1	2	1	2	1	2
+
+query I
+SELECT count(*) FROM arr_test WHERE arr > ARRAY[1,2,3]::INT[3] AND arr = ARRAY[1,2,3]::INT[3]
+----
+0
+
+query I
+SELECT count(*) FROM arr_test WHERE arr >= ARRAY[1,2,3]::INT[3] AND arr = ARRAY[1,2,3]::INT[3]
+----
+1
+
+query I
+SELECT count(*) FROM arr_test WHERE arr < ARRAY[1,2,3]::INT[3] AND arr = ARRAY[1,2,3]::INT[3]
+----
+0
+
+query I
+SELECT count(*) FROM arr_test WHERE arr <= ARRAY[1,2,3]::INT[3] AND arr = ARRAY[1,2,3]::INT[3]
+----
+1
+
+query I
+SELECT count(*) FROM arr_test WHERE arr > ARRAY[1,2,3]::INT[3] AND arr = ARRAY[1,2,4]::INT[3]
+----
+1
+
+query I
+SELECT count(*) FROM arr_test WHERE arr > ARRAY[1,2,3]::INT[3] AND arr = ARRAY[1,2,2]::INT[3]
+----
+0
+
+# constant comparisons
+query IIIIII
+SELECT
+	ARRAY[1,2,3]::INT[3] > ARRAY[1,2,3]::INT[3],
+	ARRAY[1,2,3]::INT[3] >= ARRAY[1,2,3]::INT[3],
+	ARRAY[1,2,3]::INT[3] < ARRAY[1,2,3]::INT[3],
+	ARRAY[1,2,3]::INT[3] <= ARRAY[1,2,3]::INT[3],
+	ARRAY[1,2,3]::INT[3] = ARRAY[1,2,3]::INT[3],
+	ARRAY[1,2,3]::INT[3] <> ARRAY[1,2,3]::INT[3]
+----
+false	true	false	true	true	false

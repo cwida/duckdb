@@ -21,6 +21,10 @@ struct ManagedAsyncMemoryConfig {
 	static constexpr idx_t MAX_PENDING_BYTES_PER_THREAD = 64ULL * 1024ULL * 1024ULL;
 	//! Minimum async reservation requested per regular execution thread.
 	static constexpr idx_t MIN_PENDING_BYTES_PER_THREAD = 8ULL * 1024ULL * 1024ULL;
+	//! Maximum fraction of the memory limit the async backlog may claim.
+	static constexpr idx_t MAX_PENDING_MEMORY_LIMIT_DIVISOR = 8ULL;
+	//! Maximum fraction of the memory limit the minimum async reservation may claim.
+	static constexpr idx_t MIN_PENDING_MEMORY_LIMIT_DIVISOR = 16ULL;
 	//! Below this reservation, do not retain an async backlog (behave close to synchronous draining).
 	static constexpr idx_t MIN_RESERVATION_FOR_BACKLOG = 8ULL * 1024ULL * 1024ULL;
 };

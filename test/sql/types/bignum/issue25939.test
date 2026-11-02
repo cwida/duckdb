@@ -1,0 +1,8 @@
+# name: test/sql/types/bignum/issue25939.test
+# description: Test BIGNUM casting bounds for powers of 2
+# group: [bignum]
+
+query III
+SELECT count(*), min(i), max(i) FROM range(72057594037927930, 72057594037928236) t(i) WHERE (i::BIGINT::BIGNUM)::VARCHAR <> i::VARCHAR;
+----
+0	NULL	NULL

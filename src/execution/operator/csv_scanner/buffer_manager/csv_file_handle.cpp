@@ -103,7 +103,7 @@ idx_t CSVFileHandle::Read(void *buffer, idx_t nr_bytes) {
 	if (!finished) {
 		finished = bytes_read == 0;
 	}
-	uncompressed_bytes_read += static_cast<idx_t>(bytes_read);
+	uncompressed_bytes_read.fetch_add(static_cast<idx_t>(bytes_read), std::memory_order_relaxed);
 	return UnsafeNumericCast<idx_t>(bytes_read);
 }
 

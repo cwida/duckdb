@@ -12,6 +12,16 @@ SELECT COUNT(*), COUNT(1), COUNT(100), COUNT(NULL), COUNT(DISTINCT 1)
 0
 1
 
+statement error
+SELECT COUNT(DISTINCT)
+----
+Parser Error: DISTINCT requires at least one argument
+
+statement error
+SELECT COUNT(ALL)
+----
+Parser Error: ALL requires at least one argument
+
 # test counts on a set of values
 statement ok
 CREATE TABLE integers(i INTEGER);

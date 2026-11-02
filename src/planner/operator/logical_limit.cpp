@@ -19,9 +19,15 @@ idx_t LogicalLimit::EstimateCardinality(ClientContext &context) {
 			child_cardinality = limit_val.GetConstantValue();
 		}
 		break;
-	case LimitNodeType::CONSTANT_PERCENTAGE:
-		child_cardinality = idx_t(double(child_cardinality) * limit_val.GetConstantPercentage());
+	case LimitNodeType::CONSTANT_PERCENTAGE: {
+		// GetConstantPercentage() returns the raw percentage (e.g. 50 for 50%); divide by 100 and clamp to the
+		// child cardinality so the idx_t conversion cannot overflow for a large child cardinality
+		auto estimate = double(child_cardinality) * limit_val.GetConstantPercentage() / 100.0;
+		if (estimate < double(child_cardinality)) {
+			child_cardinality = idx_t(estimate);
+		}
 		break;
+	}
 	default:
 		break;
 	}

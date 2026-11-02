@@ -1,0 +1,43 @@
+# name: test/sql/sql_export/sql_export_quantiles.test
+# description: SQL export preserves descending quantiles, signed zero and result types
+# group: [sql_export]
+
+query R
+SELECT quantile_cont(x, 0.0 ORDER BY x DESC) FROM (VALUES (1), (2), (2), (NULL)) t(x)
+----
+2.0
+
+query I
+SELECT quantile_disc(x, 0.0 ORDER BY x DESC) FROM (VALUES (1), (2), (2), (NULL)) t(x)
+----
+2
+
+query T
+SELECT quantile_cont(x, [0.0] ORDER BY x DESC) FROM (VALUES (1), (2), (2), (NULL)) t(x)
+----
+[2.0]
+
+query T
+SELECT quantile_disc(x, [0.0] ORDER BY x DESC) FROM (VALUES (1), (2), (2), (NULL)) t(x)
+----
+[2]
+
+query R
+SELECT quantile_cont(x, 0.5 ORDER BY x DESC) FROM (VALUES (1), (2), (2), (NULL)) t(x)
+----
+2.0
+
+query I
+SELECT quantile_disc(x, 0.0 ORDER BY x ASC) FROM (VALUES (1), (2), (2), (NULL)) t(x)
+----
+1
+
+query R
+SELECT quantile_cont(x, 0.0 ORDER BY x DESC) FROM (VALUES (1), (2), (2), (NULL)) t(x) WHERE x > 10
+----
+NULL
+
+query TTTT
+SELECT typeof(quantile_cont(x, 0.0 ORDER BY x DESC)), typeof(quantile_disc(x, 0.0 ORDER BY x DESC)), typeof(quantile_cont(x, [0.0] ORDER BY x DESC)), typeof(quantile_disc(x, [0.0] ORDER BY x DESC)) FROM (VALUES (1), (2), (2), (NULL)) t(x)
+----
+DOUBLE	INTEGER	DOUBLE[]	INTEGER[]

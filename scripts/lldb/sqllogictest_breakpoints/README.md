@@ -16,7 +16,9 @@ command script import <duckdb repository root>/scripts/lldb/sqllogictest_breakpo
 b <some breakpoint>
 r
 sql_current_statement
+sql_current_statement --json
 sql_next_statement
+sql_next_matching_statement --sql "JOIN"
 sql_next_matching_statement --kind query
 sql_next_matching_statement --kind statement_ok
 sql_next_matching_statement --kind statement_error
@@ -40,6 +42,7 @@ command script import <duckdb repository root>/scripts/lldb/sqllogictest_breakpo
 
 - `sql_current_statement`
   - prints the sqllogictest file, line, kind, connection, SQL, and active loop values
+  - `--json` returns the same context as a JSON object for programmatic inspection
 - `sql_next_statement`
   - continues until the next sqllogictest statement/query
 - `sql_next_matching_statement`
@@ -63,8 +66,36 @@ command script import <duckdb repository root>/scripts/lldb/sqllogictest_breakpo
 - `--line-max <n>`
 - `--kind query|statement|statement_ok|statement_error`
 - `--connection <name>`
+- `--sql <substring>` (case-sensitive match against the expanded SQL)
 - `--loop <name>`
 - `--loop <name>=<value>`
+
+Filters combine with AND. Quote arguments containing spaces. The navigation commands
+skip the runner's duplicate hook for a single `statement`, so advancing moves to the
+next statement/query.
+
+### JSON Context
+
+After stopping, use `sql_current_statement --json` to retrieve a structured snapshot:
+
+```json
+{
+  "kind": "query",
+  "statement_expectation": null,
+  "file_name": "test/example.test",
+  "query_line": 23,
+  "sql_text": "SELECT 2 - 2 AS loop_value",
+  "connection_name": "con2",
+  "running_loops": [{"name": "i", "value": "2"}],
+  "loop_values": {"i": "2"}
+}
+```
+
+Unavailable fields are `null`; no active loops yields an empty array and object.
+`query_line` is the runner's one-based directive line. Loop values are strings.
+Use `sql_next_matching_statement --sql "AS loop_value"` to find SQL without a fixed
+line number, then retrieve JSON at the resulting stop. If driving LLDB through its
+Python API, read the output and success status from `SBCommandReturnObject`.
 
 ### Watch Behavior
 

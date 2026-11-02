@@ -12,9 +12,14 @@
 
 namespace duckdb {
 
+struct LogicalPlanSQLExportField;
+
 //! LogicalExpressionGet represents a scan operation over a set of to-be-executed expressions
 class LogicalExpressionGet : public LogicalOperator {
 public:
+	LogicalPlanSQLExportResult ToSQL(LogicalPlanSQLExportContext &context,
+	                                 const LogicalPlanVerificationPath &path) override;
+
 	static constexpr const LogicalOperatorType TYPE = LogicalOperatorType::LOGICAL_EXPRESSION_GET;
 
 public:
@@ -43,6 +48,11 @@ public:
 	}
 	vector<TableIndex> GetTableIndex() const override;
 	string GetName() const override;
+
+private:
+	LogicalPlanVerificationResult<LogicalPlanSQLExportRelation>
+	ExportSQLInput(LogicalPlanSQLExportContext &context, const LogicalPlanVerificationPath &path,
+	               vector<LogicalPlanSQLExportField> fields);
 
 protected:
 	void ResolveTypes() override {

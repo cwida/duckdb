@@ -1,0 +1,51 @@
+# name: test/sql/binder/empty_column_alias.test
+# description: Empty column aliases in table and CTE alias lists
+# group: [binder]
+
+statement error
+WITH x('') AS (SELECT 1) SELECT * FROM x;
+----
+column alias cannot be empty
+
+statement error
+SELECT * FROM (SELECT 1) t('');
+----
+column alias cannot be empty
+
+statement error
+SELECT * FROM (SELECT 1, 2) t(a, '');
+----
+column alias cannot be empty
+
+statement error
+WITH RECURSIVE r('') AS (SELECT 1 UNION ALL SELECT 2) SELECT * FROM r;
+----
+column alias cannot be empty
+
+statement ok
+CREATE TABLE tbl(i INT);
+
+statement error
+SELECT * FROM tbl t('');
+----
+column alias cannot be empty
+
+statement error
+SELECT * FROM range(3) t('');
+----
+column alias cannot be empty
+
+statement error
+CREATE VIEW v('') AS SELECT 1;
+----
+<REGEX>:Parser Error: syntax error.*
+
+query II
+SELECT * FROM (SELECT 1, 2) t(a, "b c");
+----
+1	2
+
+query I
+WITH x(a) AS (SELECT 42) SELECT a FROM x;
+----
+42

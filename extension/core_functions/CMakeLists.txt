@@ -13,9 +13,7 @@ add_subdirectory(scalar)
 set(CORE_FUNCTION_FILES ${CORE_FUNCTION_FILES} core_functions_extension.cpp
                         function_list.cpp lambda_functions.cpp)
 
-build_static_extension(core_functions ${CORE_FUNCTION_FILES})
-set(PARAMETERS "-warnings")
-build_loadable_extension(core_functions ${PARAMETERS} ${CORE_FUNCTION_FILES})
+build_extension_library(core_functions ${CORE_FUNCTION_FILES})
 target_link_libraries(core_functions_loadable_extension duckdb_skiplistlib)
 
 install(

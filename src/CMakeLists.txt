@@ -24,15 +24,6 @@ if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" OR "${CMAKE_CXX_COMPILER_ID}"
   )
 endif()
 
-set(DUCKDB_SYSTEM_LIBS ${CMAKE_DL_LIBS})
-
-if(MSVC OR MINGW)
-  set(DUCKDB_SYSTEM_LIBS ${DUCKDB_SYSTEM_LIBS} ws2_32 rstrtmgr)
-endif()
-if(MSVC)
-  set(DUCKDB_SYSTEM_LIBS ${DUCKDB_SYSTEM_LIBS} bcrypt)
-endif()
-
 if(MSVC)
   add_compile_options("/bigobj")
 endif()
@@ -92,6 +83,7 @@ endforeach(LINK_LIB)
 add_library(duckdb_static STATIC ${ALL_OBJECT_FILES} ${LINK_OBJECTS})
 target_link_libraries(duckdb_static PUBLIC ${DUCKDB_SYSTEM_LIBS})
 link_threads(duckdb_static PUBLIC)
+duckdb_make_native_lto_archive(duckdb_static)
 
 #
 # FIXME file(COPY ${CMAKE_SOURCE_DIR}/libduckdb_static.a  DESTINATION
@@ -100,7 +92,13 @@ link_threads(duckdb_static PUBLIC)
 # ${CMAKE_CURRENT_BINARY_DIR}/libduckdb_static.a)
 #
 
-add_library(duckdb SHARED ${ALL_OBJECT_FILES} ${LINK_OBJECTS})
+if(NATIVE_LTO_STATIC_LIBRARIES)
+  add_library(duckdb SHARED)
+  target_link_libraries(duckdb PRIVATE -Wl,--whole-archive duckdb_static
+                                       -Wl,--no-whole-archive)
+else()
+  add_library(duckdb SHARED ${ALL_OBJECT_FILES} ${LINK_OBJECTS})
+endif()
 target_link_libraries(duckdb PUBLIC ${DUCKDB_SYSTEM_LIBS})
 link_extension_libraries(duckdb PRIVATE)
 
@@ -143,6 +141,7 @@ install(
   FILES "${PROJECT_SOURCE_DIR}/src/include/duckdb.hpp"
         "${PROJECT_SOURCE_DIR}/src/include/duckdb.h"
         "${PROJECT_SOURCE_DIR}/src/include/duckdb_extension.h"
+        "${PROJECT_SOURCE_DIR}/src/include/duckdb_static_extension.h"
   DESTINATION "${INSTALL_INCLUDE_DIR}")
 
 install(

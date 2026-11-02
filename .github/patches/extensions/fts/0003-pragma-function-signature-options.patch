@@ -1,0 +1,57 @@
+diff --git a/src/fts_extension.cpp b/src/fts_extension.cpp
+index f33ddcf..2b407c1 100644
+--- a/src/fts_extension.cpp
++++ b/src/fts_extension.cpp
+@@ -207,28 +207,34 @@ static void LoadInternal(ExtensionLoader &loader) {
+       LogicalType::LIST(LogicalType::VARCHAR),
+       OpenSearchStandardTokenizeFunction);
+ 
++  FunctionSignature create_fts_index_signature;
++  create_fts_index_signature.AddParameter("input_table", LogicalType::VARCHAR)
++	  .AddParameter("input_id", LogicalType::VARCHAR)
++	  .AddArgs("input_values", LogicalType::VARCHAR)
++	  .WithTypedKwargs("options", [&](TypedKwargs &options) {
++		  options.Add("stemmer", LogicalType::VARCHAR)
++		      .Add("tokenizer", LogicalType::VARCHAR)
++		      .Add("stopwords", LogicalType::VARCHAR)
++		      .Add("ignore", LogicalType::VARCHAR)
++		      .Add("strip_accents", LogicalType::BOOLEAN)
++		      .Add("lower", LogicalType::BOOLEAN)
++		      .Add("overwrite", LogicalType::BOOLEAN)
++		      .Add("incremental", LogicalType::BOOLEAN)
++		      .Add("cluster_terms", LogicalType::BOOLEAN)
++		      .Add("layered_search", LogicalType::BOOLEAN);
++	  });
+   auto create_fts_index_func = PragmaFunction::PragmaCall(
+       "create_fts_index", FTSIndexing::CreateFTSIndexQuery,
+-      {LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::VARCHAR);
+-  create_fts_index_func.named_parameters["stemmer"] = LogicalType::VARCHAR;
+-  create_fts_index_func.named_parameters["tokenizer"] = LogicalType::VARCHAR;
+-  create_fts_index_func.named_parameters["stopwords"] = LogicalType::VARCHAR;
+-  create_fts_index_func.named_parameters["ignore"] = LogicalType::VARCHAR;
+-  create_fts_index_func.named_parameters["strip_accents"] =
+-      LogicalType::BOOLEAN;
+-  create_fts_index_func.named_parameters["lower"] = LogicalType::BOOLEAN;
+-  create_fts_index_func.named_parameters["overwrite"] = LogicalType::BOOLEAN;
+-  create_fts_index_func.named_parameters["incremental"] = LogicalType::BOOLEAN;
+-  create_fts_index_func.named_parameters["cluster_terms"] =
+-      LogicalType::BOOLEAN;
+-  create_fts_index_func.named_parameters["layered_search"] =
+-      LogicalType::BOOLEAN;
+-
+-  auto drop_fts_index_func = PragmaFunction::PragmaCall(
+-      "drop_fts_index", FTSIndexing::DropFTSIndexQuery, {LogicalType::VARCHAR});
++      std::move(create_fts_index_signature));
++
++  FunctionSignature input_table_signature;
++  input_table_signature.AddParameter("input_table", LogicalType::VARCHAR);
++  auto drop_fts_index_func =
++      PragmaFunction::PragmaCall("drop_fts_index", FTSIndexing::DropFTSIndexQuery,
++                                 input_table_signature);
+   auto create_fts_boolean_query_macros_func = PragmaFunction::PragmaCall(
+       "create_fts_boolean_query_macros",
+-      FTSIndexing::CreateFTSBooleanQueryMacrosQuery, {LogicalType::VARCHAR});
++      FTSIndexing::CreateFTSBooleanQueryMacrosQuery, input_table_signature);
+ 
+   loader.RegisterFunction(stem_func);
+   loader.RegisterFunction(opensearch_standard_tokenize_func);

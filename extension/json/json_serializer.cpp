@@ -105,6 +105,7 @@ void JsonSerializer::OnObjectEnd() {
 			yyjson_mut_val *item;
 			yyjson_mut_val *key;
 			const char *found;
+			// NOLINTNEXTLINE(cppcoreguidelines-pro-type-cstyle-cast): yyjson iteration macro
 			yyjson_mut_obj_foreach(parent, idx, max, key, item) {
 				if (item == obj) {
 					found = yyjson_mut_get_str(key);
@@ -185,7 +186,7 @@ void JsonSerializer::WriteValue(uhugeint_t value) {
 }
 
 yyjson_mut_val *DoubleToJSONValue(yyjson_mut_doc *doc, double value) {
-	if (Value::FloatIsFinite(value)) {
+	if (Value::DoubleIsFinite(value)) {
 		// simple - finite json
 		return yyjson_mut_real(doc, value);
 	}

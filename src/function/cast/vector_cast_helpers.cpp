@@ -130,23 +130,31 @@ static string_t HandleString(Vector &vec, const char *buf, idx_t start, idx_t en
 	for (idx_t i = 0; i < length; i++) {
 		auto current_char = buf[start + i];
 		if (!escaped) {
-			if (scopes.empty() && current_char == '\\') {
-				if (quoted || (start + i + 1 < end && (buf[start + i + 1] == '\'' || buf[start + i + 1] == '"'))) {
+			if (current_char == '\\') {
+				if (quoted || (scopes.empty() && start + i + 1 < end &&
+				               (buf[start + i + 1] == '\'' || buf[start + i + 1] == '"'))) {
 					//! Start of escape
 					escaped = true;
+					if (!scopes.empty()) {
+						string_data[copied_count++] = current_char;
+					}
 					continue;
 				}
 			}
-			if (scopes.empty() && (current_char == '\'' || current_char == '"')) {
+			if (current_char == '\'' || current_char == '"') {
 				if (quoted && current_char == quote_char) {
 					quoted = false;
-					//! Skip the ending quote
-					continue;
+					if (scopes.empty()) {
+						//! Skip the ending quote
+						continue;
+					}
 				} else if (!quoted) {
 					quoted = true;
 					quote_char = current_char;
-					//! Skip the starting quote
-					continue;
+					if (scopes.empty()) {
+						//! Skip the starting quote
+						continue;
+					}
 				}
 			}
 			if (!quoted && !scopes.empty() && current_char == scopes.top()) {
@@ -470,6 +478,7 @@ bool VectorStringToStruct::SplitStruct(const string_t &input, vector<Vector> &va
 
 	if (end_char == '}') {
 		//! Regular struct, in the form of `{name: value, name_2: value_2, ...}`
+		vector<bool> seen_children(varchar_vectors.size(), false);
 		while (pos < len) {
 			optional_idx start_pos;
 			idx_t end_pos;
@@ -523,6 +532,10 @@ bool VectorStringToStruct::SplitStruct(const string_t &input, vector<Vector> &va
 				return false; // false key
 			}
 			child_idx = it->second;
+			if (seen_children[child_idx]) {
+				return false; // duplicate key
+			}
+			seen_children[child_idx] = true;
 
 			start_pos = optional_idx();
 			pos++;

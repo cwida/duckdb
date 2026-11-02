@@ -26,7 +26,7 @@ timed. This measures warm-grammar parsing, not first-query startup or just match
 Parser options use their production defaults, including the choice of matcher.
 There is no parsed-result cache shared between calls.
 
-`ParserGrammarConstruction` is the exception: it times 500 independent calls to
+`ParserGrammarConstruction` is the exception: it times 250 independent calls to
 `CompiledGrammar::Create()`, including destruction of each resulting grammar.
 That includes reading/parsing the base grammar definition, constructing its keyword
 helper/tables, and building its matchers. No compiled grammar is reused between
@@ -38,16 +38,21 @@ Grammar extensions are not included in any of these benchmarks.
 
 | Benchmark | Input | Calls per timed batch | Statements per call |
 |---|---|---:|---:|
-| `ParserKeywordIdentifiers` | SELECT with keyword identifiers, filtering and ordering | 2,000 | 1 |
-| `ParserWideSelect` | 128 arithmetic projection expressions and aliases | 500 | 1 |
-| `ParserNestedExpressions` | 32 nested `coalesce` calls | 1,000 | 1 |
-| `ParserMalformedSelect` | `select (((((((((((((;` (13 unmatched opening parentheses) | 1,000 | Expected syntax error |
-| `ParserStatements` | 32 SELECT statements, quoted aliases and comments | 1,000 | 32 |
-| `ParserTPCH` | All 22 TPC-H queries, repeated 50 times | 1,100 | 1 |
-| `ParserTPCDS` | All 99 TPC-DS query files, repeated 10 times | 990 | 1 |
-| `ParserFlummi` | The approximately 373 KiB generated Flummi ray-tracing query, repeated 5 times | 5 | 1 |
-| `ParserAoC` | All 25 Advent of Code 2024 query files, repeated 10 times | 250 | 1 |
-| `ParserGrammarConstruction` | Construct and destroy the base grammar | 500 constructions | No SQL parsing |
+| `ParserKeywordIdentifiers` | SELECT with keyword identifiers, filtering and ordering | 650 | 1 |
+| `ParserWideSelect` | 128 arithmetic projection expressions and aliases | 55 | 1 |
+| `ParserNestedExpressions` | 32 nested `coalesce` calls | 250 | 1 |
+| `ParserMalformedSelect` | `select (((((((((((((;` (13 unmatched opening parentheses) | 400 | Expected syntax error |
+| `ParserStatements` | 32 SELECT statements, quoted aliases and comments | 700 | 32 |
+| `ParserTPCH` | All 22 TPC-H queries, repeated 12 times | 264 | 1 |
+| `ParserTPCDS` | All 99 TPC-DS query files, parsed once | 99 | 1 |
+| `ParserFlummi` | The approximately 373 KiB generated Flummi ray-tracing query, parsed once | 1 | 1 |
+| `ParserAoC` | All 25 Advent of Code 2024 query files, repeated twice | 50 | 1 |
+| `ParserStress` | One statement with an extreme instance of every expression shape the grammar treats differently | 7 | 1 |
+| `ParserValuesList` | One large `VALUES` list | 8 | 1 |
+| `ParserGrammarConstruction` | Construct and destroy the base grammar | 250 constructions | No SQL parsing |
+
+The batch sizes target roughly 300 ms using representative median timings. Corpus workloads round
+to a whole number of corpus repetitions, so their batch times can differ more from the target.
 
 The small synthetic cases help isolate regressions. TPC-H and TPC-DS cover realistic
 joins, subqueries, aggregation, CTEs and window functions; Flummi stresses parsing
@@ -59,6 +64,8 @@ SQL sources, loaded in numeric query order:
 
 - TPC-H: `extension/tpch/dbgen/queries/q01.sql` through `q22.sql`.
 - TPC-DS: `extension/tpcds/dsdgen/queries/01.sql` through `99.sql`.
+- Stress: `benchmark/micro/parser/parser_stress.sql`.
+- Values list: `benchmark/micro/parser/parser_values_list.sql`.
 - Flummi: `benchmark/recursive_cte/queries/performance/flummi_ray.sql`.
 - AoC: `benchmark/aoc24/queries/day01.sql` through `day25.sql`; provenance and license
   are documented in `benchmark/aoc24/README.md` and `benchmark/aoc24/LICENSE`.
@@ -70,7 +77,7 @@ TPC scale factors do not apply: only the SQL text is parsed, without generating 
 The runner reports **seconds per fixed batch**. To calculate microseconds per
 `ParseQuery` call, multiply seconds by 1,000,000 and divide by the call count.
 For `ParserStatements`, divide by another 32 for time per statement.
-For `ParserGrammarConstruction`, divide batch seconds by 500 for seconds per
+For `ParserGrammarConstruction`, divide batch seconds by 250 for seconds per
 grammar construction/destruction cycle; do not interpret that result as SQL parsing time.
 
 Keep the SQL files, input sizes and iteration counts unchanged when comparing revisions. If a

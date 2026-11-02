@@ -113,7 +113,7 @@ DUCKDB_V2_ERROR duckdb_v2_column_description_get_type(duckdb_v2_column_descripti
 	DUCKDB_CHECK_ARG(type);
 	*type = nullptr;
 	// Borrowed: the column definition owns the type for as long as the description lives.
-	return WithErrorHandler(err, [&]() { *type = Convert(&Convert(column)->TypeMutable()); });
+	return WithErrorHandler(err, [&]() { *type = ConvertBorrowed(Convert(column)->Type()); });
 }
 
 DUCKDB_V2_ERROR duckdb_v2_column_description_has_default(duckdb_v2_column_description_handle column, bool *has_default,

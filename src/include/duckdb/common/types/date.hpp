@@ -213,6 +213,8 @@ public:
 	DUCKDB_API static int32_t ExtractWeekNumberRegular(date_t date, bool monday_first = true);
 	//! Returns the date of the monday of the current week.
 	DUCKDB_API static date_t GetMondayOfCurrentWeek(date_t date);
+	//! Subtract a number of days from a (finite) date, throwing if the result is out of range
+	DUCKDB_API static date_t SubtractDays(date_t date, int64_t days);
 
 	//! Helper function to parse two digits from a string (e.g. "30" -> 30, "03" -> 3, "3" -> 3)
 	DUCKDB_API static bool ParseDoubleDigit(const char *buf, idx_t len, idx_t &pos, int32_t &result);

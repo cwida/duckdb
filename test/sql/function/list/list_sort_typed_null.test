@@ -1,0 +1,43 @@
+# name: test/sql/function/list/list_sort_typed_null.test
+# description: list_sort and list_grade_up on a typed NULL list keep the list return type
+# group: [list]
+
+statement ok
+CREATE TABLE t(i INT);
+
+statement ok
+INSERT INTO t VALUES (1);
+
+query IIIII
+SELECT typeof(list_sort(NULL::INT[])), typeof(list_reverse_sort(NULL::INT[])), typeof(array_sort(NULL::INT[3])),
+	typeof(list_grade_up(NULL::INT[])), typeof(list_sort(NULL::VARCHAR[], 'DESC'));
+----
+INTEGER[]	INTEGER[]	INTEGER[]	BIGINT[]	VARCHAR[]
+
+query II
+SELECT typeof(list_sort(NULL::INT[])[1]), list_sort(NULL::INT[])[1];
+----
+INTEGER	NULL
+
+query I
+SELECT list_transform(list_filter(list_sort(NULL::INT[]), lambda x: x > i), lambda x: x + 1) FROM t;
+----
+NULL
+
+statement ok
+CREATE TABLE t2 AS SELECT list_sort(NULL::INT[]) l, list_grade_up(NULL::INT[]) g;
+
+query II
+SELECT typeof(l), typeof(g) FROM t2;
+----
+INTEGER[]	BIGINT[]
+
+query II
+SELECT list_sort([3, 1, 2]), list_grade_up([3, 1, 2]);
+----
+[1, 2, 3]	[2, 3, 1]
+
+query I
+SELECT list_sort(NULL);
+----
+NULL

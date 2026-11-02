@@ -1,0 +1,55 @@
+# name: test/sql/profiling/test_io_time_metrics.test
+# description: Test io.total_read_time / io.total_write_time profiling metrics
+# group: [profiling]
+
+require parquet
+
+require json
+
+require no_vector_verification
+
+# writing a parquet file issues storage writes, which are timed
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/io_time_write.json';
+
+statement ok
+SET tracked_metrics = ['io.total_bytes_written', 'io.total_write_time'];
+
+statement ok
+COPY (SELECT range AS id FROM range(100000)) TO '{TEST_DIR}/io_time.parquet' (FORMAT parquet);
+
+statement ok
+PRAGMA disable_profiling;
+
+# timing is machine-dependent, so only check write_time is present (>= 0)
+query II
+SELECT prof.io.total_bytes_written > 0, prof.io.total_write_time >= 0
+FROM read_json('{TEST_DIR}/io_time_write.json') prof;
+----
+true	true
+
+# reading it back issues storage reads, which are timed
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/io_time_read.json';
+
+statement ok
+SET tracked_metrics = ['io.total_bytes_read', 'io.total_read_time'];
+
+statement ok
+SELECT sum(id) FROM read_parquet('{TEST_DIR}/io_time.parquet');
+
+statement ok
+PRAGMA disable_profiling;
+
+# a re-read can be served from the buffer cache, so bytes_read may be 0
+query II
+SELECT prof.io.total_bytes_read >= 0, prof.io.total_read_time >= 0
+FROM read_json('{TEST_DIR}/io_time_read.json') prof;
+----
+true	true

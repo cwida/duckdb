@@ -30,7 +30,9 @@ shared_ptr<CSVRejectsTable> CSVRejectsTable::GetOrCreate(ClientContext &context,
 		throw BinderException("The names of the rejects scan and rejects error tables can't be the same. Use different "
 		                      "names for these tables.");
 	}
-	auto key = StringUtil::Format("CSV_REJECTS_TABLE_CACHE_ENTRY_%s_%s", StringUtil::Upper(rejects_scan),
+	// length-prefix the scan name so that different name pairs can't produce the same key
+	auto upper_scan = StringUtil::Upper(rejects_scan);
+	auto key = StringUtil::Format("CSV_REJECTS_TABLE_CACHE_ENTRY_%llu_%s_%s", upper_scan.size(), upper_scan,
 	                              StringUtil::Upper(rejects_error));
 	auto &cache = ObjectCache::GetObjectCache(context);
 	auto &catalog = Catalog::GetCatalog(context, Identifier::TempCatalog());

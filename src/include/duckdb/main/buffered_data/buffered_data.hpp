@@ -21,6 +21,7 @@
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/shared_ptr.hpp"
 #include "duckdb/common/thread_annotation.hpp"
+#include "duckdb/main/result_format.hpp"
 #include "duckdb/main/result_unit.hpp"
 
 namespace duckdb {
@@ -46,7 +47,9 @@ protected:
 	enum class Type { SIMPLE, BATCHED };
 
 public:
-	BufferedData(Type type, ClientContext &context, ResultLifetime lifetime);
+	//! Runs the format's InitGlobal on the constructing thread, before any worker sees it. A null format means chunks
+	BufferedData(Type type, ClientContext &context, ResultLifetime lifetime, ResultFormatContext format_context,
+	             shared_ptr<ResultFormat> format);
 	virtual ~BufferedData();
 
 public:
@@ -54,8 +57,28 @@ public:
 	ResultLifetime Lifetime() const {
 		return lifetime;
 	}
-	//! Settle the retention and wake the producers parked on it. The first decision stands
+	//! The first decision stands
 	ResultLifetime Decide(ResultLifetime decision);
+	//! Fixed at construction; safe to read without synchronization
+	ResultFormat &Format() const {
+		D_ASSERT(format);
+		return *format;
+	}
+	//! Fixed at construction; safe to read without synchronization
+	ResultFormatGlobalState &FormatState() const {
+		D_ASSERT(format_state);
+		return *format_state;
+	}
+	const shared_ptr<ResultFormat> &SharedFormat() const {
+		return format;
+	}
+	const shared_ptr<ResultFormatGlobalState> &SharedFormatState() const {
+		return format_state;
+	}
+	//! Fixed at construction; safe to read without synchronization
+	const ResultFormatContext &FormatContext() const {
+		return format_context;
+	}
 	//! Choose draining, as every fetch-shaped call does. Throws when the result is being materialized
 	void DecideDraining();
 	//! Park a producer until the retention is decided. False when it already is
@@ -76,8 +99,10 @@ public:
 	shared_ptr<ClientContext> GetContext() {
 		return context.lock();
 	}
-	//! The highest number of bytes the buffer ever held.
+	//! The highest number of bytes the buffer ever queued. This is what the cap governs
 	virtual idx_t PeakBufferedBytes() = 0;
+	//! Queued bytes plus the units parked producers hold, as system.peak_streaming_buffer_size reports
+	virtual idx_t PeakStreamingBytes() = 0;
 	//! Whether a producer is parked for space.
 	virtual bool HasBlockedSink() = 0;
 	//! Whether a unit is ready for the consumer to pop.
@@ -102,7 +127,7 @@ public:
 	template <class TARGET>
 	TARGET &Cast() {
 		if (TARGET::TYPE != type) {
-			throw InternalException("Failed to cast buffered data to type - buffered data type mismatch");
+			InternalException::Throw("Failed to cast buffered data to type - buffered data type mismatch");
 		}
 		return reinterpret_cast<TARGET &>(*this);
 	}
@@ -110,7 +135,7 @@ public:
 	template <class TARGET>
 	const TARGET &Cast() const {
 		if (TARGET::TYPE != type) {
-			throw InternalException("Failed to cast buffered data to type - buffered data type mismatch");
+			InternalException::Throw("Failed to cast buffered data to type - buffered data type mismatch");
 		}
 		return reinterpret_cast<const TARGET &>(*this);
 	}
@@ -137,6 +162,10 @@ protected:
 	atomic<ResultLifetime> lifetime;
 	//! Producers parked with their first chunk unconsumed, until the retention is decided
 	vector<InterruptState> undecided_sinks DUCKDB_GUARDED_BY(glock);
+	const ResultFormatContext format_context;
+	//! Set at construction and never changed afterwards, so workers read these without synchronization
+	shared_ptr<ResultFormat> format;
+	shared_ptr<ResultFormatGlobalState> format_state;
 };
 
 } // namespace duckdb

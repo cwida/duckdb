@@ -1,0 +1,29 @@
+# name: test/sql/table_function/table_function_positional_by_name.test
+# description: A positional-only parameter of a table function cannot be passed by name
+# group: [table_function]
+
+query I
+SELECT * FROM range(1, 5)
+----
+1
+2
+3
+4
+
+statement error
+SELECT * FROM range(1, stop := 5)
+----
+Invalid named parameter "stop" for function range
+
+statement error
+SELECT * FROM range(col0 := 3)
+----
+Invalid named parameter "col0" for function range
+
+statement ok
+CREATE TABLE t (a INTEGER, b VARCHAR)
+
+statement error
+SELECT name FROM pragma_table_info(table_name := 't')
+----
+Invalid named parameter "table_name" for function pragma_table_info

@@ -6,3 +6,8 @@ statement error
 FROM read_csv('{DATA_DIR}/csv/15473.csv', max_line_size = 10)
 ----
 Possible Solution: Change the maximum length size, e.g., max_line_size=19
+
+statement error
+FROM read_csv('{DATA_DIR}/csv/15473.csv', max_line_size = 1152921504606846976)
+----
+MAX_LINE_SIZE option was set to 1152921504606846976, which is too large

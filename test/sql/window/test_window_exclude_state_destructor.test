@@ -1,0 +1,33 @@
+# name: test/sql/window/test_window_exclude_state_destructor.test
+# description: Window aggregates with EXCLUDE must destroy the right-part segment tree states
+# group: [window]
+
+# The right part of an EXCLUDE frame uses a second set of aggregate states that are re-initialized on
+# every chunk. They must be destroyed after being combined, or aggregates whose state owns heap memory
+# (histogram, reservoir_quantile, ...) leak once per output row. Run under ASan/LSan to catch the leak.
+
+require core_functions
+
+query I
+SELECT count(x) FROM (
+    SELECT histogram(i) OVER (ORDER BY i ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING EXCLUDE CURRENT ROW) x
+    FROM range(3) t(i)
+);
+----
+3
+
+query I
+SELECT count(x) FROM (
+    SELECT reservoir_quantile(i, 0.5) OVER (ORDER BY i ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING EXCLUDE CURRENT ROW) x
+    FROM range(2000) t(i)
+);
+----
+2000
+
+query I
+SELECT count(x) FROM (
+    SELECT entropy(i) OVER (ORDER BY i ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING EXCLUDE TIES) x
+    FROM range(500) t(i)
+);
+----
+500

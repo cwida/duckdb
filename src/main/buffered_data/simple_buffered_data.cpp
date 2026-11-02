@@ -7,8 +7,10 @@
 
 namespace duckdb {
 
-SimpleBufferedData::SimpleBufferedData(ClientContext &context, ResultLifetime lifetime)
-    : BufferedData(BufferedData::Type::SIMPLE, context, lifetime), buffered_count(0), buffer_size(total_buffer_size) {
+SimpleBufferedData::SimpleBufferedData(ClientContext &context, ResultLifetime lifetime,
+                                       ResultFormatContext format_context, shared_ptr<ResultFormat> format)
+    : BufferedData(BufferedData::Type::SIMPLE, context, lifetime, std::move(format_context), std::move(format)),
+      buffered_count(0), buffer_size(total_buffer_size) {
 }
 
 SimpleBufferedData::~SimpleBufferedData() {
@@ -22,6 +24,11 @@ bool SimpleBufferedData::BufferSaturated() {
 idx_t SimpleBufferedData::PeakBufferedBytes() {
 	annotated_lock_guard<annotated_mutex> lock(glock);
 	return peak_buffered_bytes;
+}
+
+idx_t SimpleBufferedData::PeakStreamingBytes() {
+	annotated_lock_guard<annotated_mutex> lock(glock);
+	return peak_streaming_bytes;
 }
 
 bool SimpleBufferedData::HasBlockedSink() {
@@ -49,9 +56,12 @@ void SimpleBufferedData::CollectRestartableSinks(annotated_lock_guard<annotated_
 		// Deposit the parked unit, so it is visible before the producer wakes.
 		// Parks always carry their unit; the guard keeps a null from corrupting the queue
 		if (front.pending_unit) {
-			buffered_count += front.pending_unit->byte_size;
+			const idx_t pending_bytes = front.pending_unit->byte_size;
+			parked_bytes -= pending_bytes;
+			buffered_count += pending_bytes;
 			unread_units.push(std::move(front.pending_unit));
 			peak_buffered_bytes = MaxValue<idx_t>(peak_buffered_bytes, buffered_count);
+			peak_streaming_bytes = MaxValue<idx_t>(peak_streaming_bytes, buffered_count + parked_bytes);
 		}
 		to_unblock.push_back(std::move(front));
 		blocked_sinks.pop();
@@ -123,12 +133,15 @@ bool SimpleBufferedData::AppendOrBlock(unique_ptr<ResultUnit> unit, const Interr
 	// The buffer admits a unit that fits, and always one unit when empty
 	if (buffered_count > 0 && buffered_count + unit_data_size > BufferSize()) {
 		// Park holding the finished unit. Restart selection deposits it at wake time
+		parked_bytes += unit_data_size;
+		peak_streaming_bytes = MaxValue<idx_t>(peak_streaming_bytes, buffered_count + parked_bytes);
 		blocked_sinks.push(BlockedSink {blocked_sink, std::move(unit)});
 		return true;
 	}
 	unread_units.push(std::move(unit));
 	buffered_count += unit_data_size;
 	peak_buffered_bytes = MaxValue<idx_t>(peak_buffered_bytes, buffered_count);
+	peak_streaming_bytes = MaxValue<idx_t>(peak_streaming_bytes, buffered_count + parked_bytes);
 	return false;
 }
 

@@ -1,0 +1,34 @@
+# name: test/sql/order/limit_invalid_index_value.test
+# description: LIMIT/OFFSET subqueries evaluating to values beyond the maximum raise a regular error
+# group: [order]
+
+statement error
+SELECT * FROM range(5) LIMIT (SELECT 18446744073709551615);
+----
+Max value 18446744073709551615 for LIMIT/OFFSET is 4611686018427387904
+
+statement error
+SELECT * FROM range(5) OFFSET (SELECT 18446744073709551615);
+----
+Max value 18446744073709551615 for LIMIT/OFFSET
+
+statement error
+SELECT * FROM range(5) ORDER BY 1 LIMIT 2 OFFSET (SELECT 18446744073709551615);
+----
+Max value 18446744073709551615 for LIMIT/OFFSET
+
+statement error
+SELECT * FROM range(5) LIMIT (SELECT 9223372036854775807::UBIGINT + 1);
+----
+Max value 9223372036854775808 for LIMIT/OFFSET
+
+query I
+SELECT * FROM range(5) LIMIT (SELECT 2) OFFSET (SELECT 1);
+----
+1
+2
+
+statement error
+SELECT * FROM range(5) LIMIT 50% OFFSET (SELECT 18446744073709551615);
+----
+Max value 18446744073709551615 for LIMIT/OFFSET

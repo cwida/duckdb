@@ -6,16 +6,22 @@ handles:
   aggregate_function:
     description: |
       An owned opaque handle to a custom aggregate function being built. Created with
-      `[[aggregate_function_create_with_connection]]` or `[[aggregate_function_create_with_extension]]`, configured with
+      `[[aggregate_function_create]]`, configured with
       the setter functions (e.g. `[[aggregate_function_set_name]]`, `[[aggregate_function_set_update_callback]]`, etc.)
       and the signature obtained via `[[aggregate_function_get_signature]]`, made available with
-      `[[aggregate_function_register]]`, and destroyed with `[[aggregate_function_destroy]]`.
+      `[[connection_register_aggregate_function]]` or `[[extension_register_aggregate_function]]`, and destroyed with `[[aggregate_function_destroy]]`.
 
   aggregate_function_bind_info:
     description: |
-      A borrowed opaque handle to the arguments supplied to an aggregate function during the query preparation
-      "bind" phase. The "bind" callback receives this handle and can use it to e.g. inspect the arguments given
-      to the function, initialize some constant state and set the return type.
+      A borrowed opaque handle to the result of an aggregate function's "bind" phase. The "bind" callback receives
+      this handle next to a `[[function_bind_info]]`, which gives access to the arguments, the user data and the
+      bind data, and can use it to set the return type of the call site being bound.
+
+  aggregate_function_stats_info:
+    description: |
+      A borrowed opaque handle to the arguments supplied to an aggregate function during the "stats" phase of query
+      optimization. The "stats" callback receives this handle and can use it to read the statistics of the arguments
+      of the call site and narrow the statistics of its result.
 
   aggregate_function_size_info:
     description: |
@@ -59,7 +65,26 @@ callbacks:
   aggregate_function_bind_callback:
     parameters:
       info:
+        type: function_bind_info
+        description: |
+          Borrowed opaque handle providing access to the arguments of the call site being bound, the user data and
+          the bind data.
+      result:
         type: aggregate_function_bind_info
+        description: Borrowed opaque handle to set the return type of the call site being bound through.
+      context:
+        type: context
+        description: Borrowed handle to the context of the query currently executing the callback.
+      err:
+        type: error_info
+        indirection: 1
+        description: Borrowed error info handle to use to report errors that occur during the callback.
+    return_type: void
+
+  aggregate_function_stats_callback:
+    parameters:
+      info:
+        type: aggregate_function_stats_info
         description: Borrowed opaque handle providing access to the information available to the callback.
       context:
         type: context
@@ -142,48 +167,24 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   # Constructors
   #---------------------------------------------------------------------------------------------------------------------
-  aggregate_function_create_with_connection:
+  aggregate_function_create:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: |
-      Creates a new aggregate function that will be registered on the connection's database.
+      Creates a new aggregate function through a factory.
 
-      The function starts out empty: configure it with the setter functions (e.g.
-      `[[aggregate_function_set_name]]`, `[[aggregate_function_set_update_callback]]`, etc.) and the
-      signature obtained via `[[aggregate_function_get_signature]]`, then make it available with
-      `[[aggregate_function_register]]`. The caller owns the returned handle and must destroy it with
-      `[[aggregate_function_destroy]]`, also after registration.
-    parameters:
-      connection:
-        type: connection
-        description: The connection to create the function in.
-      function:
-        type: aggregate_function
-        indirection: 1
-        kind: OUT
-        description: On success, receives the newly created aggregate function. Owned by the caller.
-      err:
-        type: error_info
-        indirection: 1
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
-    return_type: ERROR
-
-  aggregate_function_create_with_extension:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
-    description: |
-      Creates a new aggregate function that will be registered on the loading extension's database.
-
-      Use this from an extension load callback, where an extension handle is available. The function starts out
-      empty: configure it with the setter functions (e.g. `[[aggregate_function_set_name]]`,
+      The function starts out empty: configure it with the setter functions (e.g. `[[aggregate_function_set_name]]`,
       `[[aggregate_function_set_update_callback]]`, etc.) and the signature obtained via
-      `[[aggregate_function_get_signature]]`, then make it available with `[[aggregate_function_register]]`.
-      The caller owns the returned handle and must destroy it with `[[aggregate_function_destroy]]`, also after
-      registration.
+      `[[aggregate_function_get_signature]]`, then make it available with `[[connection_register_aggregate_function]]` or `[[extension_register_aggregate_function]]`. The caller owns the returned handle and must destroy it with
+      `[[aggregate_function_destroy]]`, also after registration.
+
+      The aggregate function can only be registered on the database the factory belongs to.
+    role: constructor
+    belongs_to: aggregate_function
     parameters:
-      extension:
-        type: extension
-        description: The extension to create the function in.
+      factory:
+        type: factory
+        description: The factory to create the aggregate function through.
       function:
         type: aggregate_function
         indirection: 1
@@ -200,7 +201,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   aggregate_function_set_name:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: |
       Sets the name of the aggregate function.
 
@@ -211,8 +212,10 @@ functions:
         type: aggregate_function
         description: The function to set the name of.
       name:
-        type: str
+        type: identifier
         indirection: 1
+        const: true
+        kind: IN
         description: The name to set. Borrowed and copied.
       err:
         type: error_info
@@ -220,14 +223,41 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
     return_type: ERROR
 
+
+  aggregate_function_get_docs:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-09" ]
+    description: |
+      Returns the documentation of the function so it can be filled in.
+
+      Set a description with `[[function_docs_set_description]]`, and add examples and categories with
+      `[[function_docs_add_example]]` and `[[function_docs_add_category]]`. The documentation is modified in place, describes this overload only, and is
+      registered with the function. Optional.
+    parameters:
+      function:
+        type: aggregate_function
+        kind: IN
+        description: The function to get the documentation of.
+      docs:
+        type: function_docs
+        indirection: 1
+        kind: OUT
+        description: The returned documentation. Borrowed and valid for the lifetime of the function handle.
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
   aggregate_function_get_signature:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: |
       Returns the function's signature so it can be configured.
 
-      Add parameters with `[[function_signature_add_parameter]]`, set a variadic tail with
-      `[[function_signature_set_varargs]]` and set the return type with `[[function_signature_set_return_type]]`.
+      Add parameters with `[[function_signature_add_parameter]]` and set the return type with
+      `[[function_signature_set_return_type]]`.
       The signature is modified in place; the function must be given a signature with a return type before
       registration.
     parameters:
@@ -249,12 +279,12 @@ functions:
 
   aggregate_function_set_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: |
       Sets arbitrary user data on the aggregate function.
 
       Associates an opaque pointer with the function, retrievable from each callback via its user data accessor
-      (e.g. `[[aggregate_function_bind_get_user_data]]`, `[[aggregate_function_update_get_user_data]]`, etc.).
+      (e.g. `[[function_bind_get_user_data]]`, `[[aggregate_function_update_get_user_data]]`, etc.).
       The opaque handle bundles the pointer with an optional destructor, invoked when the data is no longer
       needed.
     parameters:
@@ -273,7 +303,7 @@ functions:
 
   aggregate_function_set_property:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-31" ]
+      - [ "unstable", "v2.0.0", "2026-08-31" ]
     description: |
       Sets a property on the aggregate function.
 
@@ -299,13 +329,14 @@ functions:
 
   aggregate_function_set_bind_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: |
       Sets the optional bind callback of the aggregate function.
 
-      The bind callback is invoked during query planning for each call site of the function. It can inspect the
-      argument types and constant argument values, set a concrete return type, and set "bind data" that is
-      shared with the other callbacks.
+      The bind callback is invoked during query planning for each call site of the function. Through its
+      `[[function_bind_info]]` it can inspect the argument types and constant argument values and set "bind data"
+      that is shared with the other callbacks. Through its `[[aggregate_function_bind_info]]` it can set a concrete
+      return type.
     parameters:
       function:
         type: aggregate_function
@@ -321,7 +352,7 @@ functions:
 
   aggregate_function_set_size_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: |
       Sets the size callback of the aggregate function.
 
@@ -343,7 +374,7 @@ functions:
 
   aggregate_function_set_init_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: |
       Sets the init callback of the aggregate function.
 
@@ -364,7 +395,7 @@ functions:
 
   aggregate_function_set_update_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: |
       Sets the update callback of the aggregate function.
 
@@ -386,7 +417,7 @@ functions:
 
   aggregate_function_set_combine_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: |
       Sets the combine callback of the aggregate function.
 
@@ -407,7 +438,7 @@ functions:
 
   aggregate_function_set_finalize_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: |
       Sets the finalize callback of the aggregate function.
 
@@ -428,7 +459,7 @@ functions:
 
   aggregate_function_set_destroy_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: |
       Sets the destroy callback for the aggregate function. Optional: only
       needed when aggregate states own resources that must be released. The
@@ -447,131 +478,35 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
     return_type: ERROR
 
+  aggregate_function_set_stats_callback:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-02" ]
+    description: |
+      Sets the optional stats callback of the aggregate function.
+
+      The stats callback is invoked during query optimization for each call site of the function, after it has been
+      bound. Through its `[[aggregate_function_stats_info]]` it reads the statistics of the arguments and narrows the
+      statistics of the result, which the engine then uses to simplify the query. A function without a stats callback
+      gives the engine no statistics for its result.
+    parameters:
+      function:
+        type: aggregate_function
+        description: The function to set the stats callback of.
+      callback:
+        type: aggregate_function_stats_callback
+        description: The stats callback to set.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
   #---------------------------------------------------------------------------------------------------------------------
   # Bind Callback Functions
   #---------------------------------------------------------------------------------------------------------------------
-  aggregate_function_bind_get_user_data:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
-    description: Retrieves the user data set via `[[aggregate_function_set_user_data]]`.
-    parameters:
-      info:
-        type: aggregate_function_bind_info
-        description: The bind info handle.
-      data:
-        type: void
-        indirection: 2
-        kind: OUT
-        description: Receives the user data pointer, or null if none was set.
-      err:
-        type: error_info
-        indirection: 1
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
-    return_type: ERROR
-
-  aggregate_function_bind_set_bind_data:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
-    description: |
-      Sets the function's "bind data" from the bind callback.
-
-      The bind data is stored with the bound call site and retrievable from the other callbacks.
-      The opaque handle bundles the pointer with an optional destructor, invoked when the bind data is no
-      longer needed, and an optional equality callback used when comparing two bound call sites; without one,
-      pointer equality is used.
-    parameters:
-      info:
-        type: aggregate_function_bind_info
-        description: The bind info handle.
-      data:
-        type: opaque
-        indirection: 1
-        description: Opaque handle bundling the bind data pointer plus optional destructor and equality callbacks.
-      err:
-        type: error_info
-        indirection: 1
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
-    return_type: ERROR
-
-  aggregate_function_bind_get_arg_count:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
-    description: |
-      Returns the number of arguments of the call site being bound.
-
-      Variadic tail arguments are included. Valid indices for `[[aggregate_function_bind_get_arg_type]]` and
-      `[[aggregate_function_bind_get_arg_value]]` are [0, count).
-    parameters:
-      info:
-        type: aggregate_function_bind_info
-        description: The bind info handle.
-      count:
-        type: idx
-        indirection: 1
-        kind: OUT
-        description: Receives the number of arguments.
-      err:
-        type: error_info
-        indirection: 1
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
-    return_type: ERROR
-
-  aggregate_function_bind_get_arg_type:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
-    description: |
-      Retrieves the type of the argument at the given index.
-
-      Fails if the index is out of bounds. The returned type is owned by the caller and must be destroyed
-      via `[[logical_type_destroy]]`.
-    parameters:
-      info:
-        type: aggregate_function_bind_info
-        description: The bind info handle.
-      index:
-        type: idx
-        description: The index of the argument to get the type of.
-      type:
-        type: logical_type
-        indirection: 1
-        kind: OUT
-        description: Receives the argument type. Owned by the caller; destroy via `[[logical_type_destroy]]`.
-      err:
-        type: error_info
-        indirection: 1
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
-    return_type: ERROR
-
-  aggregate_function_bind_get_arg_value:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
-    description: |
-      Folds the argument at the given index to a constant value.
-
-      The argument must be foldable to a constant (e.g. a literal or a constant expression); otherwise the call
-      fails with an error, as it does when the index is out of bounds. The resulting value may be NULL.
-      The returned value is owned by the caller and must be destroyed via `[[value_destroy]]`.
-    parameters:
-      info:
-        type: aggregate_function_bind_info
-        description: The bind info handle.
-      index:
-        type: idx
-        description: The index of the argument to extract a constant value from.
-      value:
-        type: value
-        indirection: 1
-        kind: OUT
-        description: Receives the constant value. Owned by the caller; destroy via `[[value_destroy]]`.
-      err:
-        type: error_info
-        indirection: 1
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
-    return_type: ERROR
-
   aggregate_function_bind_set_return_type:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: |
       Sets the concrete return type of the call site being bound.
 
@@ -596,7 +531,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   aggregate_function_size_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: Retrieves the user data set via `[[aggregate_function_set_user_data]]`.
     parameters:
       info:
@@ -615,7 +550,7 @@ functions:
 
   aggregate_function_size_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: Retrieves the bind data set by the function's bind callback.
     parameters:
       info:
@@ -634,7 +569,7 @@ functions:
 
   aggregate_function_size_set_state_size:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: |
       Sets the size of a single aggregate state, in bytes. The size callback
       must set this; DuckDB uses it to allocate state memory.
@@ -656,7 +591,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   aggregate_function_init_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: Retrieves the user data set via `[[aggregate_function_set_user_data]]`.
     parameters:
       info:
@@ -675,7 +610,7 @@ functions:
 
   aggregate_function_init_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: Retrieves the bind data set by the function's bind callback.
     parameters:
       info:
@@ -694,7 +629,7 @@ functions:
 
   aggregate_function_init_get_state_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: |
       Returns how many aggregate states this invocation must initialize.
       This is the length of the array returned by
@@ -716,7 +651,7 @@ functions:
 
   aggregate_function_init_get_states:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: |
       Returns the array of aggregate states to initialize, one pointer per
       state. Each state points to uninitialized memory of the size reported by
@@ -742,7 +677,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   aggregate_function_update_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: Retrieves the user data set via `[[aggregate_function_set_user_data]]`.
     parameters:
       info:
@@ -761,7 +696,7 @@ functions:
 
   aggregate_function_update_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: Retrieves the bind data set by the function's bind callback.
     parameters:
       info:
@@ -780,7 +715,7 @@ functions:
 
   aggregate_function_update_get_row_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: |
       Returns how many input rows this invocation carries. This is the length
       of the argument vectors and of the state array: row i of every argument
@@ -802,20 +737,37 @@ functions:
 
   aggregate_function_update_get_arg_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: |
-      Returns how many argument vectors this invocation carries: one per
-      argument of the call, variadic tail arguments included. Valid indices
-      for `[[aggregate_function_update_get_arg]]` are [0, count).
+      Returns how many argument vectors this invocation carries, split into the four parts of the argument list.
+
+      The parts and their order are those the bind callback saw through `[[function_bind_get_arg_count]]`, and the
+      vectors are at the same indices. Valid indices for `[[aggregate_function_update_get_arg]]` are [0, the sum of the four
+      counts). Every out-parameter may be NULL, in which case nothing is written to it.
     parameters:
       info:
         type: aggregate_function_update_info
         description: The update info handle.
-      count:
-        type: u32
+      positional_fixed:
+        type: idx
         indirection: 1
         kind: OUT
-        description: Receives the number of argument vectors.
+        description: Optional. Receives the number of positional-only and standard parameters.
+      positional_variadic:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Optional. Receives the number of arguments `*args` received, 0 when the signature has none.
+      named_fixed:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Optional. Receives the number of named-only parameters.
+      named_variadic:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Optional. Receives the number of arguments `**kwargs` received, 0 when the signature has none.
       err:
         type: error_info
         indirection: 1
@@ -824,20 +776,20 @@ functions:
 
   aggregate_function_update_get_arg:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: |
       Retrieves the argument vector at the given index.
 
-      The vector holds the argument's values for the current batch; use
-      `[[aggregate_function_update_get_row_count]]` for the number of rows. Fails if the index is out of
-      bounds. Borrowed; valid only for the duration of the callback.
+      The index is the one the bind callback used for the argument, e.g. the index `[[function_bind_get_arg_index]]`
+      found for a name. The vector holds the argument's values for the current batch; use `[[aggregate_function_update_get_row_count]]` for the
+      number of rows. Fails if the index is out of bounds. Borrowed; valid only for the duration of the callback.
     parameters:
       info:
         type: aggregate_function_update_info
         description: The update info handle.
       index:
-        type: u32
-        description: The index of the argument vector to get.
+        type: idx
+        description: The index of the argument.
       vector:
         type: vector
         indirection: 1
@@ -851,7 +803,7 @@ functions:
 
   aggregate_function_update_get_states:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: |
       Returns the array of aggregate states to update, one pointer per input
       row: row i of every argument vector must be aggregated into state i.
@@ -876,7 +828,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   aggregate_function_combine_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: Retrieves the user data set via `[[aggregate_function_set_user_data]]`.
     parameters:
       info:
@@ -895,7 +847,7 @@ functions:
 
   aggregate_function_combine_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: Retrieves the bind data set by the function's bind callback.
     parameters:
       info:
@@ -914,7 +866,7 @@ functions:
 
   aggregate_function_combine_get_state_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: |
       Returns how many source/target state pairs this invocation must combine.
       This is the length of both the sources and the targets array.
@@ -935,7 +887,7 @@ functions:
 
   aggregate_function_combine_get_sources:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: |
       Returns the array of source aggregate states, one pointer per pair.
       Source i must be combined into target i; the source must not be
@@ -957,7 +909,7 @@ functions:
 
   aggregate_function_combine_get_targets:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: |
       Returns the array of target aggregate states, one pointer per pair.
       Source i must be combined into target i.
@@ -981,7 +933,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   aggregate_function_finalize_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: Retrieves the user data set via `[[aggregate_function_set_user_data]]`.
     parameters:
       info:
@@ -1000,7 +952,7 @@ functions:
 
   aggregate_function_finalize_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: Retrieves the bind data set by the function's bind callback.
     parameters:
       info:
@@ -1019,7 +971,7 @@ functions:
 
   aggregate_function_finalize_get_state_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: |
       Returns how many aggregate states this invocation must finalize. This is
       the length of the state array and the number of rows to write to the
@@ -1041,7 +993,7 @@ functions:
 
   aggregate_function_finalize_get_states:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: |
       Returns the array of aggregate states to finalize, one pointer per
       state. State i must be finalized into result row offset + i.
@@ -1062,7 +1014,7 @@ functions:
 
   aggregate_function_finalize_get_result:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: |
       Retrieves the result vector the finalize callback must write into.
 
@@ -1086,7 +1038,7 @@ functions:
 
   aggregate_function_finalize_get_result_offset:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: |
       Returns the offset in the result vector at which to start writing:
       state i must be finalized into result row offset + i.
@@ -1110,7 +1062,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   aggregate_function_destroy_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: Retrieves the user data set via `[[aggregate_function_set_user_data]]`.
     parameters:
       info:
@@ -1129,7 +1081,7 @@ functions:
 
   aggregate_function_destroy_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: Retrieves the bind data set by the function's bind callback.
     parameters:
       info:
@@ -1148,7 +1100,7 @@ functions:
 
   aggregate_function_destroy_get_state_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: |
       Returns how many aggregate states this invocation must destroy. This is
       the length of the state array.
@@ -1169,7 +1121,7 @@ functions:
 
   aggregate_function_destroy_get_states:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: |
       Returns the array of aggregate states to destroy, one pointer per state.
       The callback must release any resources the states own.
@@ -1189,27 +1141,194 @@ functions:
     return_type: ERROR
 
   #---------------------------------------------------------------------------------------------------------------------
-  # Register
+  # Stats Callback Functions
   #---------------------------------------------------------------------------------------------------------------------
-  aggregate_function_register:
+  aggregate_function_stats_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
-    description: |
-      Registers the aggregate function, making it available for use in SQL queries.
-
-      The function is registered on the target given at creation: the connection's database or the loading
-      extension. Registration requires a name, the size, init, update, combine and finalize callbacks, and a
-      signature with a complete return type; an ANY return type is accepted only together with a bind callback
-      that sets the concrete type per call site. The caller still owns the handle after registration and must
-      destroy it with `[[aggregate_function_destroy]]`, which does not affect the registered function.
+      - [ "unstable", "v2.0.0", "2026-10-02" ]
+    description: Retrieves the user data set via `[[aggregate_function_set_user_data]]`.
     parameters:
-      function:
-        type: aggregate_function
-        description: The function to register.
+      info:
+        type: aggregate_function_stats_info
+        description: The stats info handle.
+      data:
+        type: void
+        indirection: 2
+        kind: OUT
+        description: Receives the user data pointer, or null if none was set.
       err:
         type: error_info
         indirection: 1
         description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  aggregate_function_stats_get_bind_data:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-02" ]
+    description: Retrieves the bind data set by the function's bind callback.
+    parameters:
+      info:
+        type: aggregate_function_stats_info
+        description: The stats info handle.
+      data:
+        type: void
+        indirection: 2
+        kind: OUT
+        description: Receives the bind data pointer, or null if none was set.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+
+  aggregate_function_stats_get_arg_count:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-02" ]
+    description: |
+      Returns how many arguments the call site has, split into the four parts of the argument list.
+
+      The parts and their order are those the bind callback saw through `[[function_bind_get_arg_count]]`, and the
+      arguments are at the same indices. Valid indices for `[[aggregate_function_stats_get_arg_stats]]` are [0, the sum of
+      the four counts). Every out-parameter may be NULL, in which case nothing is written to it.
+    parameters:
+      info:
+        type: aggregate_function_stats_info
+        description: The stats info handle.
+      positional_fixed:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Optional. Receives the number of positional-only and standard parameters.
+      positional_variadic:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Optional. Receives the number of arguments `*args` received, 0 when the signature has none.
+      named_fixed:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Optional. Receives the number of named-only parameters.
+      named_variadic:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Optional. Receives the number of arguments `**kwargs` received, 0 when the signature has none.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  aggregate_function_stats_get_arg_stats:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-02" ]
+    description: |
+      Retrieves the statistics of the argument at the given index.
+
+      The index is the one the bind callback used for the argument. The statistics are read-only. Fails if the index
+      is out of bounds. Borrowed; valid only for the duration of the callback.
+    parameters:
+      info:
+        type: aggregate_function_stats_info
+        description: The stats info handle.
+      index:
+        type: idx
+        description: The index of the argument.
+      stats:
+        type: stats
+        indirection: 1
+        kind: OUT
+        description: Receives the borrowed, read-only statistics of the argument.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+
+  aggregate_function_stats_get_result_stats:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-02" ]
+    description: |
+      Retrieves the statistics of the call site's result, for the callback to narrow.
+
+      The statistics start out unknown, with every kind of value possible. They describe every result the
+      aggregate produces, including the result of a group with no input rows, such as an ungrouped aggregate over
+      an empty table. Borrowed; valid only for the duration of the callback.
+    parameters:
+      info:
+        type: aggregate_function_stats_info
+        description: The stats info handle.
+      stats:
+        type: stats
+        indirection: 1
+        kind: OUT
+        description: Receives the borrowed, writable statistics of the call site's result.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # Register
+  #---------------------------------------------------------------------------------------------------------------------
+  connection_register_aggregate_function:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
+    description: |
+      Registers the aggregate function, making it available for use in SQL queries.
+
+      The function is registered on the connection's database, visible to every connection, in the connection's
+      transaction: inside an explicit transaction, it is invisible to other connections until the transaction commits,
+      and a rollback undoes it. Registration requires a name, the size, init, update, combine and finalize callbacks,
+      and a signature with a complete return type; an ANY return type is accepted only together with a bind callback
+      that sets the concrete type per call site. The aggregate function must have been created through a factory of the
+      same database. The caller still owns the handle after registration and must destroy it with
+      `[[aggregate_function_destroy]]`, which does not affect the registered function.
+    role: method
+    belongs_to: connection
+    parameters:
+      conn:
+        type: connection
+        description: The connection to register on.
+      function:
+        type: aggregate_function
+        description: The aggregate function to register.
+      err:
+        type: error_info
+        indirection: 1
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
+
+  extension_register_aggregate_function:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
+    description: |
+      Registers the aggregate function, making it available for use in SQL queries.
+
+      The function is registered on the loading extension's database and attributed to the extension. Use this from the
+      extension's load callback. Registration requires a name, the size, init, update, combine and finalize callbacks,
+      and a signature with a complete return type; an ANY return type is accepted only together with a bind callback
+      that sets the concrete type per call site. The aggregate function must have been created through a factory of the
+      same database. The caller still owns the handle after registration and must destroy it with
+      `[[aggregate_function_destroy]]`, which does not affect the registered function.
+    role: method
+    belongs_to: extension
+    parameters:
+      extension:
+        type: extension
+        description: The loading extension.
+      function:
+        type: aggregate_function
+        description: The aggregate function to register.
+      err:
+        type: error_info
+        indirection: 1
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
     return_type: ERROR
 
   #---------------------------------------------------------------------------------------------------------------------
@@ -1217,7 +1336,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   aggregate_function_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-28" ]
+      - [ "unstable", "v2.0.0", "2026-08-28" ]
     description: |
       Destroys the aggregate function, releasing its resources.
 

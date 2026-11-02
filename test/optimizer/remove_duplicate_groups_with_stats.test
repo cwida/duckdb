@@ -1,0 +1,20 @@
+# name: test/optimizer/remove_duplicate_groups_with_stats.test
+# description: Removing duplicate groups from an aggregate whose group statistics were already computed
+# group: [optimizer]
+
+statement ok
+CREATE TABLE t(x INTEGER, y INTEGER);
+
+statement ok
+INSERT INTO t VALUES (1, 1), (2, 2), (2, 3), (NULL, 4);
+
+query III
+SELECT * FROM (SELECT x, x AS x2, sum(y) s FROM t GROUP BY x, x2) WHERE s > x ORDER BY x;
+----
+2	2	5
+
+query IIII
+SELECT x, x2, s, c FROM (SELECT x, x AS x2, sum(y) s, count(*) c FROM t GROUP BY x, x2) WHERE s > x OR x IS NULL ORDER BY x NULLS LAST;
+----
+2	2	5	2
+NULL	NULL	4	1

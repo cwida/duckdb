@@ -15,6 +15,7 @@
 #include "duckdb/execution/operator/csv_scanner/csv_schema.hpp"
 #include "duckdb/execution/operator/csv_scanner/csv_validator.hpp"
 #include "duckdb/common/multi_file/multi_file_data.hpp"
+#include "duckdb/execution/progress_data.hpp"
 
 namespace duckdb {
 struct ReadCSVData;
@@ -72,6 +73,8 @@ public:
 	shared_ptr<CSVStateMachine> state_machine;
 	//! How many bytes were read up to this point
 	atomic<idx_t> bytes_read {0};
+	//! The progress of a compressed file is estimated - keeps it monotonic
+	MonotonicProgress compressed_progress;
 	//! Size of this file
 	idx_t file_size;
 	//! Line Info used in error messages

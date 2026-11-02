@@ -1,0 +1,27 @@
+# name: test/sql/window/test_window_constant_aggregate.test_slow
+# description: Test "constant" aggregation (single result for each partition) at scale
+# group: [window]
+
+statement ok 
+SET threads = 20; 
+
+statement ok 
+SET memory_limit = '4GB';
+
+statement ok 
+CREATE TABLE t AS
+	SELECT i AS id, (hash(i) % 1000000)::FLOAT / 10 AS x, (hash(i * 3) % 100000)::DOUBLE AS y
+	FROM range(13000000) r(i);
+
+statement ok 
+CREATE TABLE w AS
+    SELECT id, last_value(y) OVER win AS last_y, sum(x) OVER win AS sum_x
+    FROM (SELECT t.*, t.id AS grp FROM t)
+    WINDOW win AS (PARTITION BY grp ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING);
+
+query I
+SELECT 
+	count(*) FILTER (abs(w.sum_x - t.x) > 1e-3) AS wrong_sum, 
+FROM w JOIN t USING (id);
+----
+0

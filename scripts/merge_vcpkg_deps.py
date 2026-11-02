@@ -74,14 +74,14 @@ if merged_overlay_ports:
 if merged_overlay_triplets:
     data['vcpkg-configuration']['overlay-triplets'] = merged_overlay_triplets
 
-REGISTRY_BASELINE = 'f13de79b66345fe31d3f9c119517613023d194a8'
+REGISTRY_BASELINE = '4a39aaaace793e256039aaf0cf4f10a96cfe08b3'
 # NOTE: use 'scripts/list_vcpkg_registry_packages.py --baseline <baseline>' to generate the list of packages
 data['vcpkg-configuration']['registries'] = [
     {
         "kind": "git",
         "repository": "https://github.com/duckdb/vcpkg-duckdb-ports",
         "baseline": REGISTRY_BASELINE,
-        "packages": ['avro-c', 'vcpkg-cmake'],
+        "packages": ['avro-c', 'aws-sdk-cpp', 'vcpkg-cmake'],
     }
 ]
 

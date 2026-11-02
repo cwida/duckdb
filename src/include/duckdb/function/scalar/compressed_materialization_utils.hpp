@@ -23,6 +23,8 @@ struct CMUtils {
 
 	static unique_ptr<FunctionData> Bind(BindScalarFunctionInput &input);
 	static CMExpressionType GetExpressionType(const BoundFunctionExpression &expression);
+	//! The input wrapped by a compressed materialization expression, or nullptr for any other expression
+	static optional_ptr<const Expression> GetWrappedInput(const Expression &expression);
 	static void MarkCast(BoundFunctionExpression &expression);
 
 private:

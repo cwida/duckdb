@@ -1,0 +1,31 @@
+# name: test/sql/copy/parquet/batched_write/read_ahead_memory_limit.test_slow
+# description: Default read-ahead must respect the memory limit of a batched parquet copy
+# group: [batched_write]
+
+require parquet
+
+set seed 0.72
+
+statement ok
+COPY (SELECT uuid()::VARCHAR AS varchar, uuid() AS uuid FROM range(5000000) t(i)) TO '{TEST_DIR}/read_ahead_uuids.parquet'
+
+# pin the thread count, the read-ahead memory floor scales with it
+statement ok
+SET threads=16
+
+statement ok
+SET memory_limit='200MB'
+
+# with read-ahead disabled this copy fits comfortably
+statement ok
+SET read_ahead_depth=0
+
+statement ok
+COPY '{TEST_DIR}/read_ahead_uuids.parquet' TO '{TEST_DIR}/read_ahead_uuids_copy.parquet'
+
+# the default read-ahead depth must fit in the same limit
+statement ok
+RESET read_ahead_depth
+
+statement ok
+COPY '{TEST_DIR}/read_ahead_uuids.parquet' TO '{TEST_DIR}/read_ahead_uuids_copy.parquet'

@@ -1,5 +1,6 @@
 #include "json_common.hpp"
 #include "json_functions.hpp"
+#include "json_stack.hpp"
 
 namespace duckdb {
 
@@ -9,15 +10,14 @@ static void StripNulls(yyjson_mut_val *val) {
 		yyjson_mut_val *val;
 	};
 
-	auto stack = vector<stack_item>();
-	stack.emplace_back(stack_item {val});
+	Stack<stack_item> stack;
+	stack.Push(stack_item {val});
 
-	while (!stack.empty()) {
-		auto curr_val = stack.back().val;
-		stack.pop_back();
+	while (!stack.Empty()) {
+		auto curr_val = stack.Pop().val;
 
-		if (!curr_val) {
-			return;
+		if (!curr_val) { // TODO: at any point would we push something onto the stack that is a nullptr val?
+			return;      // TODO: maybe put this as continue
 		}
 		if (yyjson_mut_is_obj(curr_val)) {
 			yyjson_mut_obj_iter iter;
@@ -28,14 +28,16 @@ static void StripNulls(yyjson_mut_val *val) {
 				if (unsafe_yyjson_is_null(child)) {
 					yyjson_mut_obj_iter_remove(&iter);
 				} else {
-					stack.emplace_back(stack_item {child});
+					stack.Push(stack_item {child});
 				}
 			}
-		} else if (yyjson_mut_is_arr(curr_val)) {
+		} else if (yyjson_mut_is_arr(curr_val)) { // TODO: this is exceptionally stupid bc you never check if array
+			                                      // items are  null ?????????
+			// TODO: plus this logic could probably be combined with obj logic, its just the iterator ...
 			idx_t idx, max;
 			yyjson_mut_val *elem;
 			yyjson_mut_arr_foreach(curr_val, idx, max, elem) {
-				stack.emplace_back(stack_item {elem});
+				stack.Push(stack_item {elem});
 			}
 		}
 	}

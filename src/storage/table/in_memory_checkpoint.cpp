@@ -1,13 +1,18 @@
 #include "duckdb/storage/table/in_memory_checkpoint.hpp"
 #include "duckdb/main/attached_database.hpp"
 
+#include "duckdb/catalog/catalog_entry/duck_schema_entry.hpp"
 #include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
 #include "duckdb/catalog/duck_catalog.hpp"
 #include "duckdb/common/enums/checkpoint_abort.hpp"
 #include "duckdb/common/serializer/binary_serializer.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/storage/data_table.hpp"
+#include "duckdb/storage/partial_block_manager.hpp"
+#include "duckdb/storage/storage_manager.hpp"
 #include "duckdb/storage/table/column_segment.hpp"
+#include "duckdb/storage/table/table_index_list.hpp"
+#include "duckdb/transaction/duck_transaction_manager.hpp"
 
 namespace duckdb {
 
@@ -22,15 +27,32 @@ InMemoryCheckpointer::InMemoryCheckpointer(QueryContext context, AttachedDatabas
 }
 
 void InMemoryCheckpointer::CreateCheckpoint() {
-	vector<reference<SchemaCatalogEntry>> schemas;
-	// we scan the set of committed schemas
+	auto &transaction_manager = DuckTransactionManager::Get(db);
+	// appends that run alongside the checkpoint start new row groups, index changes go to the checkpoint deltas
+	ActiveCheckpointWrapper active_checkpoint(context, db, transaction_manager);
+	{
+		unique_lock<mutex> commit_lock;
+		if (!options.commit_lock) {
+			// a checkpoint instead of a WAL write already holds the commit lock
+			commit_lock = storage_manager.GetCommitLock();
+		}
+		if (options.type == CheckpointType::FULL_CHECKPOINT &&
+		    transaction_manager.GetLastCommit() >= transaction_manager.LowestVisibilityBound()) {
+			// an active snapshot still needs state a full checkpoint would vacuum away
+			options.type = CheckpointType::CONCURRENT_CHECKPOINT;
+		}
+		active_checkpoint.Begin(options);
+	}
+
+	vector<reference<DuckSchemaEntry>> schemas;
+	// the schemas and tables committed before the checkpoint's bound
 	auto &catalog = Catalog::GetCatalog(db).Cast<DuckCatalog>();
-	catalog.ScanSchemas([&](SchemaCatalogEntry &entry) { schemas.push_back(entry); });
+	catalog.ScanSchemas(options.visibility_bound, [&](DuckSchemaEntry &entry) { schemas.push_back(entry); });
 
 	vector<reference<TableCatalogEntry>> tables;
 	for (const auto &schema_ref : schemas) {
 		auto &schema = schema_ref.get();
-		schema.Scan(CatalogType::TABLE_ENTRY, [&](CatalogEntry &entry) {
+		schema.Scan(CatalogType::TABLE_ENTRY, options.visibility_bound, [&](CatalogEntry &entry) {
 			if (entry.type == CatalogType::TABLE_ENTRY) {
 				tables.push_back(entry.Cast<TableCatalogEntry>());
 			}
@@ -47,7 +69,13 @@ void InMemoryCheckpointer::CreateCheckpoint() {
 			throw IOException("In-memory checkpoint aborted because of PRAGMA debug_checkpoint_abort flag");
 		}
 	}
+	for (auto &table : tables) {
+		// index entries added or removed while the checkpoint ran went to delta indexes
+		auto &index_list = table.get().GetStorage().GetDataTableInfo()->GetIndexes();
+		index_list.MergeCheckpointDeltas(options.checkpoint_id);
+	}
 	storage_manager.SetWALSize(0);
+	active_checkpoint.Commit();
 }
 
 MetadataWriter &InMemoryCheckpointer::GetMetadataWriter() {
@@ -64,11 +92,7 @@ void InMemoryCheckpointer::WriteTable(TableCatalogEntry &table, Serializer &seri
 	InMemoryTableDataWriter data_writer(*this, table);
 
 	// Write the table data
-	auto table_lock = table.GetStorage().GetCheckpointLock();
 	table.GetStorage().Checkpoint(data_writer, serializer);
-	// flush any partial blocks BEFORE releasing the table lock
-	// flushing partial blocks updates where data lives and is not thread-safe
-	partial_block_manager.FlushPartialBlocks();
 }
 
 InMemoryRowGroupWriter::InMemoryRowGroupWriter(TableDataWriter &writer, TableCatalogEntry &table,
@@ -103,7 +127,9 @@ void InMemoryTableDataWriter::WriteUnchangedTable(MetaBlockPointer pointer,
 }
 
 void InMemoryTableDataWriter::FinalizeTable(const TableStatistics &global_stats, DataTableInfo &info,
-                                            RowGroupCollection &collection, Serializer &serializer) {
+                                            RowGroupCollection &collection,
+                                            const vector<shared_ptr<const IndexStorageInfo>> &index_infos,
+                                            Serializer &serializer) {
 	// nop: no need to write anything
 }
 
@@ -112,7 +138,13 @@ unique_ptr<RowGroupWriter> InMemoryTableDataWriter::GetRowGroupWriter(RowGroup &
 	                                         checkpoint_manager);
 }
 
+unique_ptr<TableIndexWriter> InMemoryTableDataWriter::GetTableIndexWriter(StorageVersion) {
+	return nullptr;
+};
+
 void InMemoryTableDataWriter::FlushPartialBlocks() {
+	// Finalize packed buffers before the checkpoint row groups become visible.
+	checkpoint_manager.GetPartialBlockManager().FlushPartialBlocks();
 }
 
 CheckpointOptions InMemoryTableDataWriter::GetCheckpointOptions() const {
@@ -121,33 +153,6 @@ CheckpointOptions InMemoryTableDataWriter::GetCheckpointOptions() const {
 
 MetadataManager &InMemoryTableDataWriter::GetMetadataManager() {
 	return checkpoint_manager.GetMetadataManager();
-}
-
-InMemoryPartialBlock::InMemoryPartialBlock(ColumnData &data, ColumnSegment &segment, PartialBlockState state,
-                                           BlockManager &block_manager)
-    : PartialBlock(state, block_manager, segment.GetBlockHandle()) {
-	InMemoryPartialBlock::AddSegmentToTail(data, segment, 0);
-}
-
-InMemoryPartialBlock::~InMemoryPartialBlock() {
-}
-
-void InMemoryPartialBlock::Flush(QueryContext context, const idx_t free_space_left) {
-	Clear();
-}
-
-void InMemoryPartialBlock::Merge(PartialBlock &other_p, idx_t offset, idx_t other_size) {
-	auto &other = other_p.Cast<InMemoryPartialBlock>();
-	other.Clear();
-}
-
-void InMemoryPartialBlock::AddSegmentToTail(ColumnData &data, ColumnSegment &segment, uint32_t offset_in_block) {
-	segment.SetBlock(block_handle, offset_in_block);
-}
-
-void InMemoryPartialBlock::Clear() {
-	uninitialized_regions.clear();
-	block_handle.reset();
 }
 
 } // namespace duckdb

@@ -1,0 +1,65 @@
+# name: test/sql/sql_export/empty_enum.test
+# description: Empty ENUM types fail SQL reconstruction explicitly and report mode preserves native results
+# group: [sql_export]
+
+statement ok
+CREATE TYPE empty_enum AS ENUM ();
+
+statement ok
+CREATE TYPE nonempty_enum AS ENUM ('a', 'b');
+
+statement ok
+CREATE TABLE empty_enum_values AS SELECT NULL::empty_enum AS e;
+
+foreach optimizer enable disable
+
+statement ok
+PRAGMA {optimizer}_optimizer;
+
+foreach mode none explain_sql
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+query TTTT
+SELECT NULL::empty_enum, []::empty_enum[], {'e': NULL::empty_enum}, map([1], [NULL::empty_enum]);
+----
+NULL	[]	{'e': NULL}	{1=NULL}
+
+statement error
+EXPLAIN (SQL) SELECT NULL::empty_enum;
+----
+<REGEX>:Not implemented Error: EXPLAIN \(SQL\) cannot render this query: .*has no SQL.*
+
+statement error
+EXPLAIN (SQL) SELECT []::empty_enum[];
+----
+<REGEX>:Not implemented Error: EXPLAIN \(SQL\) cannot render this query: .*has no SQL.*
+
+statement error
+EXPLAIN (SQL) SELECT {'e': NULL::empty_enum};
+----
+<REGEX>:Not implemented Error: EXPLAIN \(SQL\) cannot render this query: .*has no SQL.*
+
+statement error
+EXPLAIN (SQL) SELECT get_type(NULL::empty_enum);
+----
+<REGEX>:Not implemented Error: EXPLAIN \(SQL\) cannot render this query: .*has no SQL.*
+
+endloop
+
+statement ok
+SET debug_verify_statement='explain_sql_strict';
+
+# A named table retains the type without requiring an inline ENUM definition.
+query T
+SELECT e FROM empty_enum_values;
+----
+NULL
+
+query TTT
+SELECT NULL::nonempty_enum, 'a'::nonempty_enum, ['a', NULL]::nonempty_enum[];
+----
+NULL	a	[a, NULL]
+
+endloop

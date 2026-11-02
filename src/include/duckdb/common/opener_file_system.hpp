@@ -285,11 +285,7 @@ protected:
 	}
 
 	unique_ptr<MultiFileList> GlobFilesExtended(const string &path, const FileGlobInput &input,
-	                                            optional_ptr<FileOpener> opener) override {
-		VerifyNoOpener(opener);
-		VerifyCanAccessFile(path);
-		return GetFileSystem().Glob(path, input, GetOpener());
-	}
+	                                            optional_ptr<FileOpener> opener) override;
 
 	bool SupportsGlobExtended() const override {
 		return true;

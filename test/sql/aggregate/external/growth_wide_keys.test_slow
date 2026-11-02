@@ -1,0 +1,24 @@
+# name: test/sql/aggregate/external/growth_wide_keys.test_slow
+# description: Memory checks continue after aggregate table growth when key width increases
+# group: [external]
+
+# These memory budgets assume standard-sized vectors.
+require vector_size 2048
+
+statement ok
+SET threads=4;
+
+statement ok
+SET memory_limit='128MB';
+
+statement ok
+CREATE TABLE input AS SELECT i FROM range(3000000) t(i);
+
+query I
+SELECT count(*) FROM (
+    SELECT CASE WHEN i < 2500000 THEN (i % 65536)::VARCHAR
+                ELSE repeat('x', 800) || i::VARCHAR END AS k
+    FROM input GROUP BY k
+);
+----
+565536

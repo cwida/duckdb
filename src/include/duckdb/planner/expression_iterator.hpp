@@ -32,6 +32,8 @@ public:
 	                                 const std::function<void(const Expression &child)> &callback);
 	static void VisitExpressionClassMutable(unique_ptr<Expression> &expr, ExpressionClass expr_class,
 	                                        const std::function<void(unique_ptr<Expression> &child)> &callback);
+	static unique_ptr<Expression> ReplaceExpression(const Expression &expr, const Expression &target,
+	                                                const Expression &replacement);
 
 	template <class T>
 	static void VisitExpressionMutable(unique_ptr<Expression> &expr,

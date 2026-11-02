@@ -37,7 +37,7 @@ SELECT * FROM repeat_row(1, num_rows=10000)
 statement error
 SELECT * FROM repeat_row(1)
 ----
-<REGEX>:Binder Error.*repeat_rows requires num_rows to be specified.*
+<REGEX>:Binder Error.*No function matches.*repeat_row.*
 
 # no columns specified
 statement error
@@ -49,7 +49,7 @@ SELECT * FROM repeat_row(num_rows=3)
 statement error
 SELECT * FROM repeat_row()
 ----
-<REGEX>:Binder Error.*repeat_rows requires num_rows to be specified.*
+<REGEX>:Binder Error.*No function matches.*repeat_row.*
 
 # num_rows is NULL
 statement error

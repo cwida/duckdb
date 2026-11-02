@@ -1,0 +1,46 @@
+# name: test/parquet/test_parquet_invalid_decimal.test
+# description: Parquet files with invalid DECIMAL types or statistics
+# group: [parquet]
+
+require parquet
+
+statement error
+SELECT * FROM 'data/parquet-testing/invalid_decimal/dec_s20.parquet'
+----
+Invalid DECIMAL precision 9 and scale 20
+
+statement error
+SELECT * FROM 'data/parquet-testing/invalid_decimal/dec_s63.parquet'
+----
+Invalid DECIMAL precision 9 and scale 63
+
+statement error
+SELECT * FROM 'data/parquet-testing/invalid_decimal/dec_pneg.parquet'
+----
+Invalid DECIMAL precision -1 and scale 2
+
+statement error
+SELECT * FROM 'data/parquet-testing/invalid_decimal/dec_sneg.parquet'
+----
+Invalid DECIMAL precision 9 and scale -1
+
+statement error
+SELECT * FROM 'data/parquet-testing/invalid_decimal/dec_p0.parquet'
+----
+Invalid DECIMAL precision 0 and scale 0
+
+statement error
+CREATE TABLE t AS SELECT * FROM 'data/parquet-testing/invalid_decimal/dec_s20.parquet'
+----
+Invalid DECIMAL precision 9 and scale 20
+
+# statistics that do not fit in the decimal are ignored
+query II
+SELECT stats_min, stats_max FROM parquet_metadata('data/parquet-testing/invalid_decimal/dec4_stats.parquet')
+----
+NULL	NULL
+
+query II
+SELECT d, typeof(d) FROM 'data/parquet-testing/invalid_decimal/dec4_stats.parquet' WHERE d > 1
+----
+1.23	DECIMAL(4,2)

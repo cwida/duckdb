@@ -98,3 +98,12 @@ NULL	0
 2	1
 3	0
 
+
+# COUNT over a qualified star returns 0 for an empty correlated subquery, just like COUNT(*)
+query II
+SELECT i, (SELECT COUNT(i2.*) FROM integers i2 WHERE i2.i>i1.i) FROM integers i1 ORDER BY i;
+----
+NULL	0
+1	2
+2	1
+3	0

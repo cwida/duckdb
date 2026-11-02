@@ -34,11 +34,11 @@ private:
 
 public:
 	//! Get a new BaseNode handle and initialize the base node.
-	static NodeHandle New(ART &art, NodePtr &node) {
-		node = NodePtr::GetAllocator(art, TYPE).New();
-		node.SetMetadata(static_cast<uint8_t>(TYPE));
+	static NodeHandle New(ART &art, NodePtr &node_ptr) {
+		node_ptr = NodePtr::GetAllocator(art, TYPE).New();
+		node_ptr.SetMetadata(static_cast<uint8_t>(TYPE));
 
-		NodeHandle handle(art, node);
+		NodeHandle handle(art, node_ptr);
 		auto &n = handle.Get<BaseNode>();
 
 		// Reset the node (count).
@@ -53,14 +53,14 @@ public:
 	}
 
 	//! Replace the child at byte.
-	static void ReplaceChild(BaseNode &n, const uint8_t byte, const NodePtr child) {
+	static void ReplaceChild(BaseNode &n, const uint8_t byte, const NodePtr child_ptr) {
 		D_ASSERT(n.count != 0);
 		for (uint8_t i = 0; i < n.count; i++) {
 			if (n.key[i] == byte) {
 				auto status = n.children[i].GetGateStatus();
-				n.children[i] = child;
+				n.children[i] = child_ptr;
 
-				if (status == GateStatus::GATE_SET && child.HasMetadata()) {
+				if (status == GateStatus::GATE_SET && child_ptr.HasMetadata()) {
 					n.children[i].SetGateStatus(status);
 				}
 				return;
@@ -153,8 +153,8 @@ public:
 	}
 
 private:
-	static void InsertChildInternal(BaseNode &n, const uint8_t byte, const NodePtr child);
-	static NodeHandle DeleteChildInternal(ART &art, NodePtr &node, const uint8_t byte);
+	static void InsertChildInternal(BaseNode &n, const uint8_t byte, const NodePtr child_ptr);
+	static NodeHandle DeleteChildInternal(ART &art, NodePtr &node_ptr, const uint8_t byte);
 };
 
 //! Node4 holds up to four children sorted by their key byte.
@@ -167,12 +167,13 @@ public:
 
 public:
 	//! Insert a child at byte.
-	static void InsertChild(ART &art, NodePtr &node, const uint8_t byte, const NodePtr child);
+	static void InsertChild(ART &art, NodePtr &node_ptr, const uint8_t byte, const NodePtr child_ptr);
 	//! Delete the child at byte.
-	static void DeleteChild(ART &art, NodePtr &node, NodePtr &prefix, const uint8_t byte, const GateStatus status);
+	static void DeleteChild(ART &art, NodePtr &node_ptr, NodePtr &parent_ptr, const uint8_t byte,
+	                        const GateStatus status);
 
 private:
-	static void ShrinkNode16(ART &art, NodePtr &node4, NodePtr &node16);
+	static void ShrinkNode16(ART &art, NodePtr &node4_ptr, NodePtr &node16_ptr);
 };
 
 class Node16 : public BaseNode<16, NType::NODE_16> {
@@ -185,14 +186,14 @@ public:
 
 public:
 	//! Insert a child at byte.
-	static void InsertChild(ART &art, NodePtr &node, const uint8_t byte, const NodePtr child);
+	static void InsertChild(ART &art, NodePtr &node_ptr, const uint8_t byte, const NodePtr child_ptr);
 	//! Delete the child at byte.
-	static void DeleteChild(ART &art, NodePtr &node, const uint8_t byte);
+	static void DeleteChild(ART &art, NodePtr &node_ptr, const uint8_t byte);
 
 private:
-	static void GrowNode4(ART &art, NodePtr &node16, NodePtr &node4);
+	static void GrowNode4(ART &art, NodePtr &node16_ptr, NodePtr &node4_ptr);
 	//! We shrink at < Node48::SHRINK_THRESHOLD.
-	static void ShrinkNode48(ART &art, NodePtr &node16, NodePtr &node48);
+	static void ShrinkNode48(ART &art, NodePtr &node16_ptr, NodePtr &node48_ptr);
 };
 
 } // namespace duckdb

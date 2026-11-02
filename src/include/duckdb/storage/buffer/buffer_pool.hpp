@@ -97,6 +97,8 @@ protected:
 
 	//! Evict object cache entries if needed.
 	EvictionResult EvictObjectCacheEntries(MemoryTag tag, idx_t extra_memory, idx_t memory_limit);
+	//! Flush bulk allocations and accumulated fallback frees using the remaining headroom.
+	void FlushForAllocation(idx_t extra_memory, idx_t memory_limit);
 
 	//! Purge all blocks that haven't been pinned within the last N seconds
 	idx_t PurgeAgedBlocks(uint32_t max_age_sec);
@@ -128,16 +130,23 @@ protected:
 	};
 
 	struct MemoryUsage {
-		//! The maximum difference between memory statistics and actual usage is 2MB (64 * 32k)
+		//! Total memory accounting differs from actual usage by at most 2MB (64 * 32k)
 		static constexpr idx_t MEMORY_USAGE_CACHE_COUNT = 64;
 		static constexpr idx_t MEMORY_USAGE_CACHE_THRESHOLD = 32 << 10;
+		//! Per-tag statistics are flushed when read and can use a larger cache threshold.
+		static constexpr idx_t MEMORY_USAGE_TAG_CACHE_THRESHOLD = 1 << 20;
 		static constexpr idx_t TOTAL_MEMORY_USAGE_INDEX = MEMORY_TAG_COUNT;
 		using MemoryUsageCounters = array<atomic<int64_t>, MEMORY_TAG_COUNT + 1>;
+
+		//! Keep neighboring caches separate on machines with 64- or 128-byte cache lines.
+		struct alignas(128) MemoryUsageCache {
+			MemoryUsageCounters counters;
+		};
 
 		//! global memory usage counters
 		MemoryUsageCounters memory_usage;
 		//! cache memory usage to improve performance
-		array<MemoryUsageCounters, MEMORY_USAGE_CACHE_COUNT> memory_usage_caches;
+		array<MemoryUsageCache, MEMORY_USAGE_CACHE_COUNT> memory_usage_caches;
 
 		MemoryUsage();
 
@@ -156,7 +165,7 @@ protected:
 			}
 			int64_t cached = 0;
 			for (auto &cache : memory_usage_caches) {
-				cached += cache[index].exchange(0, std::memory_order_relaxed);
+				cached += cache.counters[index].exchange(0, std::memory_order_relaxed);
 			}
 			auto used_memory = memory_usage[index].fetch_add(cached, std::memory_order_relaxed) + cached;
 			return used_memory > 0 ? static_cast<idx_t>(used_memory) : 0;

@@ -4,11 +4,13 @@
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/parser/qualified_name.hpp"
 
+#include "duckdb/common/atomic.hpp"
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/execution/partition_info.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
 #include "duckdb/storage/data_table.hpp"
 #include "duckdb/storage/table/row_group_collection.hpp"
+#include "duckdb/storage/table/row_group_segment_tree.hpp"
 #include "duckdb/storage/table_storage_info.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/common/enums/column_segment_info_scan_type.hpp"
@@ -31,6 +33,9 @@ struct PragmaStorageGlobalState : public GlobalTableFunctionState {
 	mutex lock;
 	idx_t max_threads;
 	ColumnSegmentInfoScanState scan_state;
+	//! The total number of row groups and the number of row groups that were scanned (for progress)
+	idx_t total_row_groups = 0;
+	atomic<idx_t> scanned_row_groups {0};
 
 	idx_t MaxThreads() const override {
 		return max_threads;
@@ -92,10 +97,16 @@ static unique_ptr<FunctionData> PragmaStorageInfoBind(ClientContext &context, Ta
 	ColumnSegmentInfoScanOptions options;
 	auto include_entry = input.named_parameters.find("include_segment_info");
 	if (include_entry != input.named_parameters.end()) {
+		if (include_entry->second.IsNull()) {
+			throw InvalidInputException("Cannot use NULL as argument for include_segment_info");
+		}
 		options.include_segment_info = include_entry->second.GetValue<bool>();
 	}
 	auto loaded_only_entry = input.named_parameters.find("loaded_segments_only");
 	if (loaded_only_entry != input.named_parameters.end()) {
+		if (loaded_only_entry->second.IsNull()) {
+			throw InvalidInputException("Cannot use NULL as argument for loaded_segments_only");
+		}
 		options.loaded_segments_only = loaded_only_entry->second.GetValue<bool>();
 	}
 
@@ -108,7 +119,11 @@ static unique_ptr<FunctionData> PragmaStorageInfoBind(ClientContext &context, Ta
 	names.emplace_back("additional_block_ids");
 	return_types.emplace_back(LogicalType::LIST(LogicalTypeId::BIGINT));
 
-	auto qname = QualifiedName::Parse(input.inputs[0].GetValue<string>());
+	QualifiedName qname;
+	string error;
+	if (!QualifiedName::TryParse(input.inputs[0].GetValue<string>(), qname, error)) {
+		throw ParserException(error);
+	}
 
 	// look up the table name in the catalog
 	CatalogEntryRetriever retriever(context);
@@ -125,6 +140,12 @@ unique_ptr<GlobalTableFunctionState> PragmaStorageInfoInitGlobal(ClientContext &
 	auto gstate = make_uniq<PragmaStorageGlobalState>(max_threads);
 	gstate->scan_state.options = bind_data.options;
 	bind_data.table_entry.InitializeColumnSegmentInfoScan(gstate->scan_state);
+	if (gstate->scan_state.row_groups) {
+		for (auto &row_group : gstate->scan_state.row_groups->SegmentNodes()) {
+			(void)row_group;
+			gstate->total_row_groups++;
+		}
+	}
 	return std::move(gstate);
 }
 
@@ -177,6 +198,9 @@ static void PragmaStorageInfoFunction(ClientContext &context, TableFunctionInput
 			{
 				lock_guard<mutex> guard(gstate.lock);
 				has_more = bind_data.table_entry.ScanColumnSegmentInfo(query_context, gstate.scan_state, lstate.buffer);
+				if (has_more) {
+					gstate.scanned_row_groups.fetch_add(1, std::memory_order_relaxed);
+				}
 			}
 			if (!has_more) {
 				break;
@@ -228,6 +252,16 @@ static void PragmaStorageInfoFunction(ClientContext &context, TableFunctionInput
 	}
 }
 
+static double PragmaStorageInfoProgress(ClientContext &context, const FunctionData *bind_data_p,
+                                        const GlobalTableFunctionState *global_state) {
+	auto &gstate = global_state->Cast<PragmaStorageGlobalState>();
+	if (gstate.total_row_groups == 0) {
+		return 100.0;
+	}
+	auto scanned = MinValue<idx_t>(gstate.scanned_row_groups, gstate.total_row_groups);
+	return 100.0 * static_cast<double>(scanned) / static_cast<double>(gstate.total_row_groups);
+}
+
 static OperatorPartitionData PragmaStorageInfoGetPartitionData(ClientContext &context,
                                                                TableFunctionGetPartitionInput &input) {
 	auto &lstate = input.local_state->Cast<PragmaStorageLocalState>();
@@ -235,11 +269,14 @@ static OperatorPartitionData PragmaStorageInfoGetPartitionData(ClientContext &co
 }
 
 void PragmaStorageInfo::RegisterFunction(BuiltinFunctions &set) {
-	TableFunction storage_info("pragma_storage_info", {LogicalType::VARCHAR}, PragmaStorageInfoFunction,
-	                           PragmaStorageInfoBind, PragmaStorageInfoInitGlobal, PragmaStorageInfoInitLocal);
+	TableFunction storage_info(
+	    "pragma_storage_info", FunctionSignature().AddPositionalOnly("table_name", LogicalType::VARCHAR),
+	    PragmaStorageInfoFunction, PragmaStorageInfoBind, PragmaStorageInfoInitGlobal, PragmaStorageInfoInitLocal);
 	storage_info.get_partition_data = PragmaStorageInfoGetPartitionData;
-	storage_info.named_parameters["include_segment_info"] = LogicalType::BOOLEAN;
-	storage_info.named_parameters["loaded_segments_only"] = LogicalType::BOOLEAN;
+	storage_info.table_scan_progress = PragmaStorageInfoProgress;
+	storage_info.GetSignature().WithTypedKwargs("options", [](TypedKwargs &options) {
+		options.Add("include_segment_info", LogicalType::BOOLEAN).Add("loaded_segments_only", LogicalType::BOOLEAN);
+	});
 	set.AddFunction(std::move(storage_info));
 }
 

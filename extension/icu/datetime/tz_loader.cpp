@@ -114,7 +114,7 @@ static unique_ptr<TZBlock> Decompress() {
 	const auto data_offsets = reader.Read<uint32_t>(header->zone_data_count);
 	const auto name_offsets = reader.Read<uint32_t>(header->zone_count);
 	const auto rule_values = reader.Read<int32_t>(header->rule_count * RULE_FIELD_COUNT);
-	const auto windows_entries = reader.Read<uint32_t>(header->windows_zone_count * 3);
+	const auto windows_entries = reader.Read<uint32_t>(static_cast<idx_t>(header->windows_zone_count) * 3);
 	reader.Align(sizeof(uint16_t));
 	const auto data_indexes = reader.Read<uint16_t>(header->zone_count);
 	const auto pool = reinterpret_cast<const char *>(reader.Read<uint8_t>(header->pool_size));

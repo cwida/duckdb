@@ -26,6 +26,7 @@ class ClientContext;
 class DataChunk;
 class PhysicalOperator;
 class PipelineExecutor;
+class ProgressVerifier;
 class OperatorState;
 class QueryProfiler;
 class ThreadContext;
@@ -74,6 +75,9 @@ public:
 
 	//! Push a new error
 	void PushError(ErrorData exception);
+	//! Push the error of a task, which reports an out of memory error when memory runs out while recording it
+	void PushTaskError(const std::exception &ex);
+	void PushTaskError(const char *message);
 
 	ErrorData GetError();
 
@@ -136,6 +140,11 @@ public:
 		return completed_pipelines.load();
 	}
 
+	//! The progress verifier of this query (if debug_verify_progress is enabled)
+	optional_ptr<ProgressVerifier> GetProgressVerifier() {
+		return progress_verifier.get();
+	}
+
 private:
 	//! Whether the result sink waits on the consumer: a producer is parked for the retention
 	//! decision, or for space that only a pop frees
@@ -153,6 +162,10 @@ private:
 	                                          vector<bool> &visited, vector<bool> &recursion_stack);
 
 	bool NextExecutor();
+	//! Interrupt the execution of the pipelines of this executor after an error
+	void InterruptPipelines();
+	//! Interrupt them from a task, where an exception would end the process
+	void TryInterruptPipelines();
 	//! The state to report when this thread has no task to run
 	QueryResultState IdleState();
 	//! Cancel all tasks and throw the recorded error
@@ -188,6 +201,8 @@ private:
 	shared_ptr<QueryProfiler> profiler;
 	//! Task error manager
 	TaskErrorManager error_manager;
+	//! Verifies the progress reported by the pipelines (debug setting)
+	unique_ptr<ProgressVerifier> progress_verifier;
 
 	//! The amount of completed pipelines of the query
 	atomic<idx_t> completed_pipelines;

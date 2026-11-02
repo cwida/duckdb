@@ -151,6 +151,7 @@ static unique_ptr<FunctionData> CastFunctionDeserialize(Deserializer &deserializ
 	if (BoundCastCanThrow(bound_cast, source_type, target_type, try_cast)) {
 		function.SetErrorMode(FunctionErrors::CAN_THROW_RUNTIME_ERROR);
 	}
+	function.SetStability(bound_cast.GetStability());
 	SetCastNullHandling(function, target_type);
 	return make_uniq<CastFunctionData>(source_type, target_type, std::move(bound_cast), try_cast, is_default_cast);
 }
@@ -180,6 +181,7 @@ static unique_ptr<Expression> CreateCastExpression(unique_ptr<Expression> child,
 	children.push_back(std::move(child));
 
 	auto can_throw = BoundCastCanThrow(bound_cast, source_type, target_type, try_cast);
+	auto stability = bound_cast.GetStability();
 	auto function_data =
 	    make_uniq<CastFunctionData>(source_type, target_type, std::move(bound_cast), try_cast, is_default_cast);
 
@@ -188,6 +190,7 @@ static unique_ptr<Expression> CreateCastExpression(unique_ptr<Expression> child,
 	if (can_throw) {
 		scalar_function.SetErrorMode(FunctionErrors::CAN_THROW_RUNTIME_ERROR);
 	}
+	scalar_function.SetStability(stability);
 	SetCastNullHandling(scalar_function, target_type);
 
 	BoundScalarFunction bound_function(scalar_function);
@@ -258,6 +261,10 @@ BoundCastInfo &BoundCastExpression::GetBoundCastMutable(BoundFunctionExpression 
 unique_ptr<BaseStatistics> BoundCastExpression::PropagateStatistics(BoundFunctionExpression &cast_expr,
                                                                     const BaseStatistics &child_stats,
                                                                     optional_ptr<ClientContext> context) {
+	if (!child_stats.CanHaveNoNull() &&
+	    cast_expr.Function().GetNullHandling() == FunctionNullHandling::DEFAULT_NULL_HANDLING) {
+		return BaseStatistics::FromConstant(Value(cast_expr.GetReturnType())).ToUnique();
+	}
 	auto &cast_data = cast_expr.BindInfoMutable()->Cast<CastFunctionData>();
 	auto result =
 	    cast_data.bound_cast.PropagateStatistics(cast_data.source_type, cast_data.target_type, child_stats, context);

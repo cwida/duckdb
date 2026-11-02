@@ -210,6 +210,15 @@ RowGroupReorderer::RowGroupReorderer(const RowGroupOrderOptions &options_p, Tran
     : options(options_p), transaction(transaction_p), offset(0), initialized(false) {
 }
 
+idx_t RowGroupReorderer::ScanRowCount() const {
+	D_ASSERT(initialized);
+	idx_t count = 0;
+	for (auto &row_group : ordered_row_groups) {
+		count += row_group.get().GetNode().count;
+	}
+	return count;
+}
+
 optional_ptr<SegmentNode<RowGroup>> RowGroupReorderer::GetNextRowGroup(SegmentNode<RowGroup> &row_group) {
 	D_ASSERT(RefersToSameObject(ordered_row_groups[offset].get(), row_group));
 	if (offset >= ordered_row_groups.size() - 1) {

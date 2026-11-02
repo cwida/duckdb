@@ -62,7 +62,7 @@ string KeywordHelper::WriteQuoted(const string &text, char quote) {
 static bool RequiresQuotesForPrinting(const string &text, bool allow_caps) {
 	// After a qualification dot, an underscore followed by a digit can begin a decimal literal.
 	const bool ambiguous_after_dot = text.size() > 1 && text[0] == '_' && StringUtil::CharacterIsDigit(text[1]);
-	return ambiguous_after_dot || KeywordHelper::RequiresQuotes(text, allow_caps);
+	return text.empty() || ambiguous_after_dot || KeywordHelper::RequiresQuotes(text, allow_caps);
 }
 
 string KeywordHelper::WriteOptionallyQuoted(const string &text, char quote, bool allow_caps) {

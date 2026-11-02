@@ -42,6 +42,8 @@ public:
 	//! Builds the parsed expression for a value: a literal when it re-binds to the same value, the constructor
 	//! call the parser produces for a nested value, or a cast otherwise
 	DUCKDB_API static unique_ptr<ParsedExpression> FromValue(const Value &value);
+	//! Whether SQL needs a value constructor to preserve the type's metadata
+	DUCKDB_API static bool RequiresTypeWitness(const LogicalType &type);
 
 public:
 	string ToString() const override;

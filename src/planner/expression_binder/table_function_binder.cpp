@@ -11,9 +11,9 @@
 namespace duckdb {
 
 TableFunctionBinder::TableFunctionBinder(Binder &binder, ClientContext &context, string table_function_name_p,
-                                         string clause_p)
+                                         string clause_p, IdentifierConversionPolicy identifier_conversion_policy_p)
     : ExpressionBinder(binder, context), table_function_name(std::move(table_function_name_p)),
-      clause(std::move(clause_p)) {
+      clause(std::move(clause_p)), identifier_conversion_policy(identifier_conversion_policy_p) {
 }
 
 BindResult TableFunctionBinder::BindLambdaReference(LambdaRefExpression &expr, idx_t depth) {
@@ -32,11 +32,11 @@ BindResult TableFunctionBinder::BindColumnReference(unique_ptr<ParsedExpression>
 			return BindLambdaReference(lambda_ref->Cast<LambdaRefExpression>(), depth);
 		}
 
-		if (binder.macro_binding && binder.macro_binding->HasMatchingBinding(Identifier(col_ref.GetName()))) {
+		if (binder.macro_binding && binder.macro_binding->HasMatchingBinding(col_ref.GetColumnName())) {
 			throw ParameterNotResolvedException();
 		}
 	} else if (col_ref.ColumnNames()[0].StartsWith(DummyBinding::DUMMY_NAME) && binder.macro_binding &&
-	           binder.macro_binding->HasMatchingBinding(Identifier(col_ref.GetName()))) {
+	           binder.macro_binding->HasMatchingBinding(col_ref.GetColumnName())) {
 		throw ParameterNotResolvedException();
 	}
 
@@ -60,7 +60,7 @@ BindResult TableFunctionBinder::BindColumnReference(unique_ptr<ParsedExpression>
 		}
 	}
 
-	if (accept_sql_value_functions) {
+	if (identifier_conversion_policy != IdentifierConversionPolicy::ALLOW) {
 		auto value_function = ExpressionBinder::GetSQLValueFunction(column_names.back());
 		if (value_function) {
 			return BindExpression(value_function, depth, root_expression);
@@ -78,7 +78,9 @@ BindResult TableFunctionBinder::BindColumnReference(unique_ptr<ParsedExpression>
 		                      result_name);
 	}
 
-	auto setting = Settings::Get<TableFunctionIdentifierConversionSetting>(context);
+	auto setting = identifier_conversion_policy == IdentifierConversionPolicy::ALLOW
+	                   ? TableFunctionIdentifierConversion::ENABLE_IMPLICIT_STRING
+	                   : Settings::Get<TableFunctionIdentifierConversionSetting>(context);
 	auto implicit_conversion_disabled = setting == TableFunctionIdentifierConversion::DISABLE_IMPLICIT_STRING;
 	auto warn_implicit_conversion = setting == TableFunctionIdentifierConversion::DEFAULT;
 	const auto msg =

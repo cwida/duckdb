@@ -120,11 +120,11 @@ unique_ptr<LogicalOperator> PushdownOptimize(ClientContext &context, unique_ptr<
 			if (expr == nullptr) { // Conflict for column
 				continue;
 			}
-			if (analysis.get.GetColumnIds()[column_index].IsVirtualColumn()) {
-				continue;
-			}
+			// Resolve() never yields a virtual column as a candidate
+			D_ASSERT(!analysis.get.GetColumnIds()[column_index].IsVirtualColumn());
 			TableFunctionProjectionExpressionInput input {analysis.get, *expr, column_index};
 			if (analysis.get.function.projection_expression_pushdown(context, input)) {
+				analysis.get.has_pushed_projection = true;
 				analysis.get.returned_types[analysis.StorageIndex(column_index)] = expr->GetReturnType();
 				if (!analysis.get.types.empty()) {
 					analysis.get.ResolveOperatorTypes();

@@ -10,13 +10,13 @@ set seed 0.8675309
 statement ok
 create table quantile as select range r, random() from range(10000) union all values (NULL, 0.1), (NULL, 0.5), (NULL, 0.9) order by 2;
 
-# Verify that there are two versions of each return type (with and without the count)
+# Verify that there is one version of each return type (the count has a default value)
 query II
 SELECT return_type, count(*) AS defined
 FROM duckdb_functions()
 WHERE function_name = 'reservoir_quantile'
 GROUP BY ALL
-HAVING defined <> 2
+HAVING defined <> 1
 ORDER BY ALL;
 ----
 
@@ -106,11 +106,11 @@ SELECT CASE
 ----
 1
 
-# TIMETZ Support. Note this is not exact because we use DOUBLEs internally.
+# TIMETZ Support. The result is the normalized time at +00.
 query I
 SELECT approx_quantile('1:02:03.000000+05:30'::TIMETZ, 0.5);
 ----
-01:02:42+05:30:39
+19:32:03+00
 
 # TIME test, fixes issue 19874
 query I
@@ -201,6 +201,11 @@ SELECT approx_quantile(42, CAST(NULL AS INT[]));
 ----
 must not be NULL
 
+statement error
+SELECT approx_quantile(r, 'nan'::FLOAT) FROM quantile
+----
+cannot be NaN
+
 statement ok
 pragma threads=4
 
@@ -284,6 +289,16 @@ SELECT reservoir_quantile(r, r)  from quantile
 statement error
 SELECT reservoir_quantile(r, NULL)  from quantile
 ----
+
+statement error
+SELECT reservoir_quantile(r, 'nan'::DOUBLE)  from quantile
+----
+cannot be NaN
+
+statement error
+SELECT reservoir_quantile(r, [0.5, 'nan'::DOUBLE])  from quantile
+----
+cannot be NaN
 
 statement error
 SELECT reservoir_quantile(r, r, r)  from quantile

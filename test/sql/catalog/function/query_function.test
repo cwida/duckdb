@@ -73,11 +73,11 @@ SELECT * FROM query('WITH a(i) AS (SELECT 1) SELECT a1.i AS i1, a2.i AS i2 FROM 
 ----
 1	1
 
-# test incorrect usage, if using the peg parser this is now valid. 
-statement maybe
+# test incorrect usage: NULL is rejected
+statement error
 SELECT * FROM query(NULL);
 ----
-<REGEX>:Parser Error.*NULL.*
+<REGEX>:Binder Error.*NULL.*
 
 statement error
 SELECT * FROM query(' ');
@@ -180,20 +180,26 @@ FROM query_table(NULL);
 ----
 <REGEX>:.*Cannot use NULL.*
 
+# the empty list is cast to the declared VARCHAR[] like any other argument, so the function itself reports it
 statement error
 FROM query_table([]);
 ----
-Expected a table or a list with tables as input
+Input list is empty
 
 statement error
 FROM query_table(['']);
 ----
-Parser Error: syntax error 
+Parser Error: Zero-length identifier in qualified name!
+
+statement error
+FROM query_table('main..tbl_int');
+----
+Parser Error: Zero-length identifier in qualified name!
 
 statement error
 FROM query_table('tbl_int', 'tbl_varchar', tbl2_varchar);
 ----
-Binder Error: No function matches the given name and argument types 'query_table(VARCHAR, VARCHAR, VARCHAR)'.
+Binder Error: No function matches the given name and argument types 'query_table(STRING_LITERAL, STRING_LITERAL, STRING_LITERAL)'.
 
 statement error
 FROM query_table([tbl_int, tbl2]);
@@ -290,10 +296,13 @@ FROM query_table(true);
 ----
 Binder Error: No function matches the given name and argument types 'query_table(BOOLEAN)'.
 
-statement error
+# a single table name is accepted alongside by_name - the string satisfies the VARCHAR[] parameter
+query III
 FROM query_table(tbl2, true);
 ----
-Binder Error: No function matches the given name and argument types 'query_table(VARCHAR, BOOLEAN)'.
+9	8	7
+6	5	4
+3	2	1
 
 statement error
 FROM query_table(['tbl_int', 'tbl_varchar', 'tbl_empty', '(select ''I am a subquery'')'], false);

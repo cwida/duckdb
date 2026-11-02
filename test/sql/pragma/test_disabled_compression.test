@@ -21,3 +21,13 @@ statement error
 PRAGMA disabled_compression_methods='xzx'
 ----
 unrecognized value
+
+statement error
+SET disabled_compression_methods='ENUM_SIZE'
+----
+unrecognized value
+
+statement error
+SET disabled_compression_methods='COMPRESSION_COUNT'
+----
+unrecognized value

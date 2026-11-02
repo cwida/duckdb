@@ -1,0 +1,199 @@
+# name: test/sql/sql_export/window_unnest_results.test
+# description: SQL export preserves window frames, QUALIFY, ordinality and zipped UNNEST
+# group: [sql_export]
+
+statement ok
+SET disabled_optimizers='window_self_join,top_n_window_elimination';
+
+query III rowsort
+SELECT x,y,row_number() OVER () FROM (VALUES (1,10),(2,20),(2,NULL),(3,30),(NULL,40)) t(x,y);
+----
+1	10	1
+2	20	2
+2	NULL	3
+3	30	4
+NULL	40	5
+
+query IIIIRRI rowsort
+SELECT x,y,rank() OVER (ORDER BY x),dense_rank() OVER (ORDER BY x),cume_dist() OVER (ORDER BY x),percent_rank() OVER (ORDER BY x),ntile(2) OVER (ORDER BY x) FROM (VALUES (1,10),(2,20),(2,NULL),(3,30),(NULL,40)) t(x,y);
+----
+1	10	1	1	0.2	0.0	1
+2	20	2	2	0.6	0.25	1
+2	NULL	2	2	0.6	0.25	1
+3	30	4	3	0.8	0.75	2
+NULL	40	5	4	1.0	1.0	2
+
+query IIII rowsort
+SELECT x,y,lag(y,1,0) OVER (ORDER BY x,y),lead(y) OVER (ORDER BY x,y) FROM (VALUES (1,10),(2,20),(2,NULL),(3,30),(NULL,40)) t(x,y);
+----
+1	10	0	20
+2	20	10	NULL
+2	NULL	20	30
+3	30	NULL	40
+NULL	40	30	NULL
+
+# Break ties for order-sensitive values, including the NULL argument.
+query IIIII rowsort
+SELECT x,y,first_value(y IGNORE NULLS) OVER (ORDER BY x,y),last_value(y) OVER (ORDER BY x,y),nth_value(y,2) OVER (ORDER BY x,y) FROM (VALUES (1,10),(2,20),(2,NULL),(3,30),(NULL,40)) t(x,y);
+----
+1	10	10	10	NULL
+2	20	10	20	20
+2	NULL	10	NULL	20
+3	30	10	30	20
+NULL	40	10	40	20
+
+# Equal peer values retain RANGE-frame coverage without depending on peer order.
+query IIIII rowsort
+SELECT x,y,first_value(y IGNORE NULLS) OVER (ORDER BY x),last_value(y) OVER (ORDER BY x),nth_value(y,3) OVER (ORDER BY x) FROM (VALUES (1,10),(2,20),(2,20),(3,NULL),(NULL,40)) t(x,y);
+----
+1	10	10	10	NULL
+2	20	10	20	20
+2	20	10	20	20
+3	NULL	10	NULL	20
+NULL	40	10	40	20
+
+query III rowsort
+SELECT x,y,sum(y) OVER (PARTITION BY x) FROM (VALUES (1,10),(2,20),(2,NULL),(3,30),(NULL,40)) t(x,y);
+----
+1	10	10
+2	20	20
+2	NULL	20
+3	30	30
+NULL	40	40
+
+# Either peer can precede the other; compare the counts without attaching them to y.
+query II rowsort
+SELECT x,count(*) OVER (ORDER BY x ROWS BETWEEN 1 PRECEDING AND CURRENT ROW EXCLUDE TIES) FROM (VALUES (1,10),(2,20),(2,NULL),(3,30),(NULL,40)) t(x,y);
+----
+1	1
+2	1
+2	2
+3	2
+NULL	2
+
+query III rowsort
+SELECT x,y,sum(y) OVER (ORDER BY x GROUPS BETWEEN 1 PRECEDING AND 1 FOLLOWING EXCLUDE GROUP) FROM (VALUES (1,10),(2,20),(2,NULL),(3,30),(NULL,40)) t(x,y);
+----
+1	10	20
+2	20	40
+2	NULL	40
+3	30	60
+NULL	40	30
+
+query III rowsort
+SELECT x,y,sum(y) OVER (ORDER BY x RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW EXCLUDE CURRENT ROW) FROM (VALUES (1,10),(2,20),(2,NULL),(3,30),(NULL,40)) t(x,y);
+----
+1	10	NULL
+2	20	10
+2	NULL	30
+3	30	30
+NULL	40	60
+
+query III rowsort
+SELECT x,y,sum(DISTINCT y) FILTER (WHERE y>10) OVER (ORDER BY x ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) FROM (VALUES (1,10),(2,20),(2,NULL),(3,30),(NULL,40)) t(x,y);
+----
+1	10	90
+2	20	90
+2	NULL	90
+3	30	90
+NULL	40	90
+
+query III rowsort
+SELECT x,y,first_value(y ORDER BY y DESC NULLS FIRST) OVER (PARTITION BY x ORDER BY y) FROM (VALUES (1,10),(2,20),(2,NULL),(3,30),(NULL,40)) t(x,y);
+----
+1	10	10
+2	20	20
+2	NULL	NULL
+3	30	30
+NULL	40	40
+
+query II
+SELECT x,row_number() OVER (PARTITION BY x ORDER BY y) AS n FROM (VALUES (1,10),(2,20),(2,NULL),(3,30),(NULL,40)) t(x,y) WHERE y IS NOT NULL QUALIFY n=1 ORDER BY x;
+----
+1	1
+2	1
+3	1
+NULL	1
+
+query I rowsort
+SELECT row_number() OVER () FROM (SELECT 1 WHERE false);
+----
+
+statement ok
+SET disabled_optimizers='';
+
+query II
+SELECT unnest(x),y FROM (VALUES([1,NULL,2],10),([]::INTEGER[],20),(NULL,30))t(x,y);
+----
+1	10
+NULL	10
+2	10
+
+query III
+SELECT unnest(x),unnest(y),z FROM (VALUES([1,2],[10],1),([3],[20,30],2),([]::INTEGER[],[]::INTEGER[],3),(NULL,[40],4))t(x,y,z);
+----
+1	10	1
+2	NULL	1
+3	20	2
+NULL	30	2
+NULL	40	4
+
+query IT
+SELECT unnest(x),x FROM (VALUES([1,2]),([1,2]),(NULL),([]::INTEGER[]))t(x);
+----
+1	[1, 2]
+2	[1, 2]
+1	[1, 2]
+2	[1, 2]
+
+query I
+SELECT unnest(x,recursive:=true) FROM (VALUES([[1,NULL],[2]]),([[3]]))t(x);
+----
+1
+NULL
+2
+3
+
+query T
+SELECT unnest(x) FROM (VALUES([{'a':1},{'a':NULL}]),([]::STRUCT(a INTEGER)[]))t(x);
+----
+{'a': 1}
+{'a': NULL}
+
+query I
+SELECT * FROM (SELECT unnest(x) AS y FROM (VALUES([1,2,3]),([4,5]))t(x)) WHERE y>1 LIMIT 2;
+----
+2
+3
+
+query II
+SELECT * FROM range(5) WITH ORDINALITY WHERE range % 2 = 0 ORDER BY ordinality;
+----
+0	1
+2	3
+4	5
+
+query II
+SELECT r, o FROM range((SELECT 10)) WITH ORDINALITY t(r,o) WHERE o > 4 ORDER BY r, o;
+----
+4	5
+5	6
+6	7
+7	8
+8	9
+9	10
+
+query II
+SELECT * FROM unnest([4, NULL, 4, 7]) WITH ORDINALITY ORDER BY ordinality;
+----
+4	1
+NULL	2
+4	3
+7	4
+
+query II
+SELECT * FROM generate_series(5, 1, -2) WITH ORDINALITY ORDER BY ordinality;
+----
+5	1
+3	2
+1	3

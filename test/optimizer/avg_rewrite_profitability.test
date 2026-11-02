@@ -1,0 +1,237 @@
+# name: test/optimizer/avg_rewrite_profitability.test
+# description: Grouped AVG decomposition needs reusable SUM or COUNT work
+# group: [optimizer]
+
+statement ok
+CREATE TABLE avg_inputs(g INTEGER, x INTEGER, y INTEGER, d DECIMAL(12,2));
+
+statement ok
+INSERT INTO avg_inputs VALUES (1,10,100,1.5),(1,NULL,200,NULL),(1,20,NULL,3.5),(2,NULL,NULL,NULL),(2,NULL,400,NULL);
+
+statement ok
+PRAGMA explain_output='optimized_only';
+
+# A standalone grouped AVG and an unrelated STDDEV do not share work.
+query II
+EXPLAIN SELECT g, avg(x) AS a0 FROM avg_inputs GROUP BY g;
+----
+logical_opt	<REGEX>:.*avg\(x\).*
+
+query II
+EXPLAIN SELECT g, avg(x) AS a0, stddev_samp(x) FROM avg_inputs GROUP BY g;
+----
+logical_opt	<REGEX>:.*avg\(x\).*
+
+query IRR
+SELECT g, avg(x) AS a0, round(stddev_samp(x),2) FROM avg_inputs GROUP BY g ORDER BY g;
+----
+1	15	7.07
+2	NULL	NULL
+
+# Duplicated AVG calls already share a native state.
+query II
+EXPLAIN SELECT g, avg(x) AS a0, avg(x) AS a1 FROM avg_inputs GROUP BY g;
+----
+logical_opt	<REGEX>:.*avg\(x\).*
+
+# An existing SUM or COUNT of the same nullable argument is reusable in either order.
+query II
+EXPLAIN SELECT g, avg(x) AS a0, sum(x) FROM avg_inputs GROUP BY g;
+----
+logical_opt	<!REGEX>:.*avg\(x\).*
+
+query II
+EXPLAIN SELECT g, sum(x), avg(x) AS a0 FROM avg_inputs GROUP BY g;
+----
+logical_opt	<!REGEX>:.*avg\(x\).*
+
+query II
+EXPLAIN SELECT g, avg(x) AS a0, count(x) FROM avg_inputs GROUP BY g;
+----
+logical_opt	<!REGEX>:.*avg\(x\).*
+
+query II
+EXPLAIN SELECT g, count(x), avg(x) AS a0 FROM avg_inputs GROUP BY g;
+----
+logical_opt	<!REGEX>:.*avg\(x\).*
+
+query IRIRR
+SELECT g, avg(x) AS a0, count(x), sum(x), avg(d) AS a1 FROM avg_inputs GROUP BY g ORDER BY g;
+----
+1	15	2	30	2.5
+2	NULL	0	NULL	NULL
+
+# Different NULL patterns cannot share a count.
+query II
+EXPLAIN SELECT g, avg(x) AS a0, avg(y) AS a1, count(*) FROM avg_inputs GROUP BY g;
+----
+logical_opt	<REGEX>:.*avg\(x\).*avg\(y\).*
+
+query II
+EXPLAIN SELECT g, avg(x) AS a0, count(y) FROM avg_inputs GROUP BY g;
+----
+logical_opt	<REGEX>:.*avg\(x\).*
+
+query IRRI
+SELECT g, avg(x) AS a0, avg(y) AS a1, count(*) FROM avg_inputs GROUP BY g ORDER BY g;
+----
+1	15	150	3
+2	NULL	400	2
+
+# FILTER/DISTINCT/ORDER BY/exported aggregates cannot supply an ordinary state.
+query II
+EXPLAIN SELECT g, avg(x) AS a0, sum(x) FILTER (WHERE y=100), count(DISTINCT x) FROM avg_inputs GROUP BY g;
+----
+logical_opt	<REGEX>:.*avg\(x\).*
+
+query II
+EXPLAIN SELECT g, avg(x::DOUBLE) AS a, sum(x::DOUBLE ORDER BY y) AS s FROM avg_inputs GROUP BY g;
+----
+logical_opt	<REGEX>:.*avg\(.*
+
+query II
+EXPLAIN SELECT g, avg(x) AS a0, sum(x) EXPORT_STATE FROM avg_inputs GROUP BY g;
+----
+logical_opt	<REGEX>:.*avg\(x\).*
+
+query II
+EXPLAIN SELECT g, avg(DISTINCT x) AS a0, sum(x) FROM avg_inputs GROUP BY g;
+----
+logical_opt	<REGEX>:.*avg\(.*
+
+# Volatile AVG arguments remain independent.
+query II
+EXPLAIN SELECT g, avg(random()) AS a, count(*) FROM avg_inputs GROUP BY g;
+----
+logical_opt	<REGEX>:.*avg\(.*
+
+# Known non-NULL arguments can share COUNT(*) or the count from another AVG.
+statement ok
+CREATE TABLE avg_nonnull AS SELECT i%2 AS g, i AS x, (i+10)::DECIMAL(12,2) AS y FROM range(6) t(i);
+
+query II
+EXPLAIN SELECT g, avg(x) AS a0, count(*) FROM avg_nonnull GROUP BY g;
+----
+logical_opt	<!REGEX>:.*avg\(x\).*
+
+query II
+EXPLAIN SELECT g, avg(x) AS a0, avg(y) AS a1 FROM avg_nonnull GROUP BY g;
+----
+logical_opt	<!REGEX>:.*avg\(.*
+
+query II
+EXPLAIN SELECT g, avg(y) AS a0, avg(x) AS a1 FROM avg_nonnull GROUP BY g;
+----
+logical_opt	<!REGEX>:.*avg\(.*
+
+query IRR
+SELECT g, avg(x) AS a0, avg(y) AS a1 FROM avg_nonnull GROUP BY g ORDER BY g;
+----
+0	2	12
+1	3	13
+
+query II
+EXPLAIN WITH renamed AS MATERIALIZED (SELECT g, x AS a, y AS b FROM avg_nonnull)
+SELECT g, avg(a) AS a0, avg(b) AS a1, count(*) FROM renamed GROUP BY g;
+----
+logical_opt	<!REGEX>:.*avg\(.*
+
+query II
+EXPLAIN SELECT g, avg(a) AS a0, avg(b) AS a1 FROM (SELECT g,x AS a,y AS b FROM avg_nonnull) t GROUP BY g;
+----
+logical_opt	<!REGEX>:.*avg\(.*
+
+query II
+EXPLAIN SELECT g, avg(x) AS a0, count(*) FROM avg_inputs WHERE x IS NOT NULL GROUP BY g;
+----
+logical_opt	<!REGEX>:.*avg\(x\).*
+
+# A nullable outer-join side must not inherit the input table's non-NULL proof.
+query II
+EXPLAIN SELECT a.g, avg(b.x), count(*) FROM avg_inputs a LEFT JOIN avg_nonnull b ON a.x=b.x*10 GROUP BY a.g;
+----
+logical_opt	<REGEX>:.*avg\(x\).*
+
+query IRI
+SELECT a.g, avg(b.x), count(*) FROM avg_inputs a LEFT JOIN avg_nonnull b ON a.x=b.x*10 GROUP BY a.g ORDER BY a.g;
+----
+1	1.5	3
+2	NULL	2
+
+# Sharing with a real SUM remains valid for grouping sets.
+query IRR
+SELECT g, avg(x) AS a0, sum(x) FROM avg_inputs GROUP BY GROUPING SETS ((g),()) ORDER BY g NULLS LAST;
+----
+1	15	30
+2	NULL	NULL
+NULL	15	30
+
+# Scalar AVG retains the useful SUM implementation even without another aggregate.
+query II
+EXPLAIN SELECT avg(x) AS a0 FROM avg_inputs;
+----
+logical_opt	<!REGEX>:.*avg\(x\).*
+
+query R
+SELECT avg(x) AS a0 FROM avg_inputs WHERE FALSE;
+----
+NULL
+
+# Prepared execution and uncommitted NULLs retain correct COUNT semantics.
+statement ok
+PREPARE grouped_avg AS SELECT g, avg(x) AS a0, count(*) FROM avg_nonnull GROUP BY g ORDER BY g;
+
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO avg_nonnull VALUES (0,NULL,NULL);
+
+query IRI
+EXECUTE grouped_avg;
+----
+0	2	4
+1	3	3
+
+statement ok
+ROLLBACK;
+
+query IRI
+EXECUTE grouped_avg;
+----
+0	2	3
+1	3	3
+
+# No normalization means no predicted COUNT(*) sharing, but exact SUM reuse still works.
+statement ok
+SET disabled_optimizers='statistics_propagation';
+
+query II
+EXPLAIN SELECT g, avg(x) AS a0, count(*) FROM avg_nonnull GROUP BY g;
+----
+logical_opt	<REGEX>:.*avg\(x\).*
+
+query II
+EXPLAIN SELECT g, avg(x) AS a0, sum(x) FROM avg_inputs GROUP BY g;
+----
+logical_opt	<!REGEX>:.*avg\(x\).*
+
+statement ok
+SET disabled_optimizers='common_aggregate';
+
+query II
+EXPLAIN SELECT g, avg(x) AS a0, sum(x) FROM avg_inputs GROUP BY g;
+----
+logical_opt	<REGEX>:.*avg\(x\).*
+
+statement ok
+SET disabled_optimizers='aggregate_function_rewriter';
+
+query IRIRR
+SELECT g, avg(x) AS a0, count(x), sum(x), avg(d) AS a1 FROM avg_inputs GROUP BY g ORDER BY g;
+----
+1	15	2	30	2.5
+2	NULL	0	NULL	NULL
+
+statement ok
+RESET disabled_optimizers;

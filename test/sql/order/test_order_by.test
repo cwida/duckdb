@@ -153,11 +153,13 @@ SELECT a-10 AS k FROM test UNION SELECT a-10 AS l FROM test ORDER BY l;
 2
 3
 
-# computations with aliases are not allowed though
-statement error
+# computations over the result columns are evaluated over the set operation result
+query I
 SELECT a-10 AS k FROM test UNION SELECT a-10 AS l FROM test ORDER BY 1-k;
 ----
-<REGEX>:Binder Error:.*Could not ORDER BY column.*
+3
+2
+1
 
 # but ordering on computation elements should work
 query I

@@ -21,9 +21,9 @@ struct StringChunk {
 	duckdb_v2_vector_handle vec = nullptr;
 
 	explicit StringChunk(DUCKDB_V2_LOGICAL_TYPE_ID id) {
-		auto t = MakeType(env.conn, id);
+		auto t = MakeType(env.factory, id);
 		duckdb_v2_logical_type_handle types[1] = {t};
-		auto rc = duckdb_v2_data_chunk_create(types, 1, &chunk, nullptr);
+		auto rc = duckdb_v2_data_chunk_create(env.factory, types, 1, &chunk, nullptr);
 		duckdb_v2_logical_type_destroy(&t);
 		REQUIRE(rc == DUCKDB_V2_ERROR_NONE);
 		// A REQUIRE throw in a ctor skips the dtor: destroy before failing.
@@ -248,7 +248,7 @@ TEST_CASE("V2: arena write on constant vector", "[capi_v2][arena]") {
 	EnvFixture fx;
 	StringChunk fixture(DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR);
 
-	duckdb_v2_value_handle value = MakeVarcharValue(fx.conn, "init");
+	duckdb_v2_value_handle value = MakeVarcharValue(fx.factory, "init");
 	REQUIRE(duckdb_v2_vector_make_constant(fixture.vec, value, 3, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_value_destroy(&value) == DUCKDB_V2_ERROR_NONE);
 

@@ -195,6 +195,9 @@ public:
 
 	virtual void Serialize(Serializer &serializer) const;
 	static unique_ptr<ParsedExpression> Deserialize(Deserializer &deserializer);
+	//! Throws a SerializationException if a deserialized expression does not have a valid shape
+	//! Only this expression is verified - its children are verified when they are deserialized
+	void VerifyDeserialized();
 
 	//! Copies the base class properties (type, expression_class, alias, query_location) from other into this
 	void CopyBase(const ParsedExpression &other);

@@ -12,7 +12,7 @@ Columns with names: "a" do not exist in the CSV File
 statement error
 select * from read_csv_auto('{DATA_DIR}/csv/test/multi_column_string.csv',  COLUMN_TYPES=1)
 ----
-"COLUMN_TYPES" requires a struct or list as input
+"column_types" requires a struct or list as input
 
 # An empty struct for COLUMN_TYPES provides no column type overrides (no-op)
 statement ok

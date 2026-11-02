@@ -119,7 +119,7 @@ bool GroupBinder::TryResolveAliasReference(ColumnRefExpression &colref, idx_t de
 		return false;
 	}
 	result = BindResult(BinderException(
-	    colref, "Alias with name \"%s\" exists, but aliases cannot be used as part of an expression in the GROUP BY",
+	    colref, "Alias with name %s exists, but aliases cannot be used as part of an expression in the GROUP BY",
 	    alias_name));
 	return true;
 }

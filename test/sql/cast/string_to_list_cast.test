@@ -447,6 +447,21 @@ SELECT '[{a: hii}, {a: "{" }]'::STRUCT(a VARCHAR)[] FROM struct_tbl1;
 ----
 [{'a': hii}, {'a': '{'}]
 
+query I
+SELECT '[{''name'':''a}b''}]'::STRUCT(name VARCHAR)[];
+----
+[{'name': 'a}b'}]
+
+query I
+SELECT '[{"name":"a}b"}]'::STRUCT(name VARCHAR)[];
+----
+[{'name': 'a}b'}]
+
+query I
+SELECT CAST(list_value(struct_pack(name := 'a}b')) AS VARCHAR)::STRUCT(name VARCHAR)[];
+----
+[{'name': 'a}b'}]
+
 
 # ---------------------------------------------------
 statement ok
@@ -540,7 +555,7 @@ select '[{"bar":"\"\"\\\"\"\"\\"}]'::STRUCT(bar VARCHAR)[] a, CAST(a::VARCHAR AS
 query III
 select $$[\  \\abc\\ \ , def, ghi]$$::VARCHAR[] a, a[1], len(a[1])
 ----
-[\  \\abc\\ \, def, ghi]	\  \\abc\\ \	12
+['\\  \\\\abc\\\\ \\', def, ghi]	\  \\abc\\ \	12
 
 query III
 select $$["\  \\abc\\ \ ", def, ghi]$$::VARCHAR[] a, a[1], len(a[1])

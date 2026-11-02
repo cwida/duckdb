@@ -1,0 +1,24 @@
+# name: benchmark/micro/match_recognize/match_recognize_optional_prefix.benchmark
+# description: n optional repetitions followed by n mandatory ones, over exactly n rows
+# group: [match_recognize]
+
+# Every prefix of the run can be taken by the optional repetitions or left to the mandatory ones, so
+# there are as many ways to split it as there are rows, and only one of them fits. A matcher that
+# tries the splits one at a time takes exponential time on this; one that remembers the states it has
+# already walked does not.
+
+name MatchRecognize Optional Prefix
+group micro
+subgroup match_recognize
+
+load
+CREATE TABLE run AS SELECT i::INTEGER AS i, 'a' AS c FROM range(0, 4000) t(i);
+
+run
+SELECT count(*) FROM run MATCH_RECOGNIZE(
+    ORDER BY i
+    MEASURES count(*) AS len
+    ONE ROW PER MATCH
+    PATTERN ((A{0,1}){4000} A{4000})
+    DEFINE A AS A.c = 'a'
+);

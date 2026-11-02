@@ -8,8 +8,8 @@
 
 namespace duckdb {
 
-static unique_ptr<SubqueryRef> ParseSubquery(const string &query, const ParserOptions &options, const string &err_msg) {
-	Parser parser(options);
+static unique_ptr<SubqueryRef> ParseSubquery(const string &query, ClientContext &context, const string &err_msg) {
+	Parser parser(context);
 	parser.ParseQuery(query);
 	if (parser.statements.size() != 1) {
 		throw ParserException(err_msg);
@@ -31,6 +31,32 @@ static unique_ptr<SubqueryRef> ParseSubquery(const string &query, const ParserOp
 	}
 }
 
+//! Whether the argument is a file path or URL rather than a (qualified) table name: a path separator outside of quotes
+static bool IsFilePath(const string &input) {
+	bool quoted = false;
+	for (auto c : input) {
+		if (c == '"') {
+			quoted = !quoted;
+		} else if (!quoted && (c == '/' || c == '\\')) {
+			return true;
+		}
+	}
+	return false;
+}
+
+//! Renders the argument as a table reference: file paths are passed as string literals, like FROM 'file.parquet'
+static string TableReference(const string &input) {
+	if (IsFilePath(input)) {
+		return SQLString::ToString(input);
+	}
+	QualifiedName qname;
+	string error;
+	if (!QualifiedName::TryParse(input, qname, error)) {
+		throw ParserException(error);
+	}
+	return qname.ToString(QualifiedNameToStringMode::HIDE_DEFAULT_SCHEMA);
+}
+
 static string UnionTablesQuery(TableFunctionBindInput &input) {
 	for (auto &input_val : input.inputs) {
 		if (input_val.IsNull()) {
@@ -43,9 +69,7 @@ static string UnionTablesQuery(TableFunctionBindInput &input) {
 	                     ? "BY NAME "
 	                     : ""; // 'by_name' variable defaults to false
 	if (input.inputs[0].type().id() == LogicalTypeId::VARCHAR) {
-		auto from_path = input.inputs[0].ToString();
-		auto qualified_name = QualifiedName::Parse(from_path);
-		result += "FROM " + qualified_name.ToString(QualifiedNameToStringMode::HIDE_DEFAULT_SCHEMA);
+		result += "FROM " + TableReference(input.inputs[0].ToString());
 	} else if (input.inputs[0].type() == LogicalType::LIST(LogicalType::VARCHAR)) {
 		string union_all_clause = " UNION ALL " + by_name + "FROM ";
 		const auto &children = ListValue::GetChildren(input.inputs[0]);
@@ -53,12 +77,14 @@ static string UnionTablesQuery(TableFunctionBindInput &input) {
 		if (children.empty()) {
 			throw InvalidInputException("Input list is empty");
 		}
-		auto qualified_name = QualifiedName::Parse(children[0].ToString());
-		result += "FROM " + qualified_name.ToString(QualifiedNameToStringMode::HIDE_DEFAULT_SCHEMA);
+		for (auto &child : children) {
+			if (child.IsNull()) {
+				throw BinderException("Cannot use NULL as function argument");
+			}
+		}
+		result += "FROM " + TableReference(children[0].ToString());
 		for (size_t i = 1; i < children.size(); ++i) {
-			auto child = children[i].ToString();
-			auto qualified_name = QualifiedName::Parse(child);
-			result += union_all_clause + qualified_name.ToString(QualifiedNameToStringMode::HIDE_DEFAULT_SCHEMA);
+			result += union_all_clause + TableReference(children[i].ToString());
 		}
 	} else {
 		throw InvalidInputException("Expected a table or a list with tables as input");
@@ -67,32 +93,41 @@ static string UnionTablesQuery(TableFunctionBindInput &input) {
 }
 
 static unique_ptr<TableRef> QueryBindReplace(ClientContext &context, TableFunctionBindInput &input) {
+	if (input.inputs[0].IsNull()) {
+		throw BinderException("Cannot use NULL as function argument");
+	}
 	auto query = input.inputs[0].ToString();
-	auto subquery_ref = ParseSubquery(query, context.GetParserOptions(), "Expected a single SELECT statement");
+	auto subquery_ref = ParseSubquery(query, context, "Expected a single SELECT statement");
 	return std::move(subquery_ref);
 }
 
 static unique_ptr<TableRef> TableBindReplace(ClientContext &context, TableFunctionBindInput &input) {
 	auto query = UnionTablesQuery(input);
-	auto subquery_ref =
-	    ParseSubquery(query, context.GetParserOptions(), "Expected a table or a list with tables as input");
+	auto subquery_ref = ParseSubquery(query, context, "Expected a table or a list with tables as input");
 	return std::move(subquery_ref);
 }
 
 void QueryTableFunction::RegisterFunction(BuiltinFunctions &set) {
-	TableFunction query("query", {LogicalType::VARCHAR}, nullptr, nullptr);
+	TableFunction query("query", FunctionSignature().AddPositionalOnly("query", LogicalType::VARCHAR), nullptr,
+	                    nullptr);
 	query.bind_replace = QueryBindReplace;
 	set.AddFunction(query);
 
 	TableFunctionSet query_table("query_table");
-	TableFunction query_table_function({LogicalType::VARCHAR}, nullptr, nullptr);
+	TableFunction query_table_function(FunctionSignature().AddPositionalOnly("table_name", LogicalType::VARCHAR),
+	                                   nullptr, nullptr);
 	query_table_function.bind_replace = TableBindReplace;
 	query_table.AddFunction(query_table_function);
 
-	query_table_function.GetArguments() = {LogicalType::LIST(LogicalType::VARCHAR)};
+	query_table_function.GetSignature() =
+	    FunctionSignature().AddPositionalOnly("table_names", LogicalType::LIST(LogicalType::VARCHAR));
 	query_table.AddFunction(query_table_function);
-	// add by_name option
-	query_table_function.GetArguments().emplace_back(LogicalType::BOOLEAN);
+	// add by_name option, for a single table name as well as for a list of them
+	query_table_function.GetSignature().AddPositionalOnly("by_name", LogicalType::BOOLEAN);
+	query_table.AddFunction(query_table_function);
+	query_table_function.GetSignature() = FunctionSignature()
+	                                          .AddPositionalOnly("table_name", LogicalType::VARCHAR)
+	                                          .AddPositionalOnly("by_name", LogicalType::BOOLEAN);
 	query_table.AddFunction(query_table_function);
 	set.AddFunction(query_table);
 }

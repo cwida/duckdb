@@ -52,7 +52,7 @@ void TableScanState::Initialize(vector<StorageIndex> column_ids_p, optional_ptr<
 			sampling_info.sample_phase = random.NextRandom();
 		}
 		if (table_sampling->seed.IsValid()) {
-			table_state.random.SetSeed(table_sampling->seed.GetIndex());
+			table_state.GetRandomEngine().SetSeed(table_sampling->seed.GetIndex());
 		}
 	}
 }
@@ -190,6 +190,16 @@ void ColumnScanState::Next(idx_t count) {
 	}
 }
 
+void ColumnScanState::ReleasePins() {
+	current = nullptr;
+	initialized = false;
+	scan_state.reset();
+	previous_states.clear();
+	for (auto &child_state : child_states) {
+		child_state.ReleasePins();
+	}
+}
+
 const vector<StorageIndex> &CollectionScanState::GetColumnIds() {
 	return parent.GetColumnIds();
 }
@@ -209,7 +219,7 @@ TableScanOptions &CollectionScanState::GetOptions() {
 }
 
 ParallelCollectionScanState::ParallelCollectionScanState()
-    : collection(nullptr), current_row_group(nullptr), processed_rows(0) {
+    : collection(nullptr), current_row_group(nullptr), skipped_rows(0) {
 }
 
 void ParallelCollectionScanState::AssignRowGroup(optional_ptr<SegmentNode<RowGroup>> row_group) {
@@ -236,7 +246,14 @@ ParallelCollectionScanState::GetNextRowGroup(RowGroupSegmentTree &row_groups, Se
 
 CollectionScanState::CollectionScanState(TableScanState &parent_p)
     : vector_index(0), max_row_group_row(0), row_groups(nullptr), max_row(0), batch_index(0),
-      valid_sel(STANDARD_VECTOR_SIZE), random(-1), row_group(nullptr), parent(parent_p) {
+      valid_sel(STANDARD_VECTOR_SIZE), row_group(nullptr), parent(parent_p) {
+}
+
+RandomEngine &CollectionScanState::GetRandomEngine() {
+	if (!random) {
+		random = make_uniq<RandomEngine>();
+	}
+	return *random;
 }
 
 optional_ptr<SegmentNode<RowGroup>> CollectionScanState::GetRowGroup() const {
@@ -369,6 +386,20 @@ void TableScanState::InitializeColumnScans() {
 	local_state.InitializeColumnScans();
 }
 
+void CollectionScanState::ReleasePins() {
+	SetRowGroup(nullptr);
+	prepared_vector.Reset();
+	column_scans_pending = false;
+	for (auto &column_scan : column_scans) {
+		column_scan.ReleasePins();
+	}
+}
+
+void TableScanState::ReleasePins() {
+	table_state.ReleasePins();
+	local_state.ReleasePins();
+}
+
 idx_t CollectionScanState::RemainingAssignmentRows() const {
 	const idx_t current_row = vector_index * STANDARD_VECTOR_SIZE;
 	return current_row < max_row_group_row ? max_row_group_row - current_row : 0;
@@ -379,6 +410,21 @@ void CollectionScanState::ProcessPreparedScan(DuckTransaction &transaction, Data
 	D_ASSERT(prepared_vector.prepare_state == VectorPrepareState::IO_REGISTERED);
 	ScanOptions options {TransactionData(transaction)};
 	pinned_row_group->ProcessPreparedScan(options, *this, result);
+}
+
+bool CollectionScanState::RecheckPreparedRowGroup() {
+	if (!row_group || prepared_vector.prepare_state == VectorPrepareState::NONE) {
+		return true;
+	}
+	if (pinned_row_group->CheckZonemap(context.GetClientContext(), GetFilterInfo(), row_group->GetRowStart())) {
+		return true;
+	}
+	// the prepared vector was counted as scanned when it was prepared, it is never decoded
+	D_ASSERT(rows_scanned >= prepared_vector.visible_count);
+	rows_scanned -= prepared_vector.visible_count;
+	prepared_vector.Reset();
+	SetRowGroup(nullptr);
+	return false;
 }
 
 PreparedScanVector::PreparedScanVector() : sample_sel(STANDARD_VECTOR_SIZE) {

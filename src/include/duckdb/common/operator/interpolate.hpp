@@ -28,6 +28,8 @@ double InterpolateOperator::Operation(const double &lo, const double d, const do
 template <>
 dtime_t InterpolateOperator::Operation(const dtime_t &lo, const double d, const dtime_t &hi);
 template <>
+dtime_tz_t InterpolateOperator::Operation(const dtime_tz_t &lo, const double d, const dtime_tz_t &hi);
+template <>
 timestamp_t InterpolateOperator::Operation(const timestamp_t &lo, const double d, const timestamp_t &hi);
 template <>
 hugeint_t InterpolateOperator::Operation(const hugeint_t &lo, const double d, const hugeint_t &hi);

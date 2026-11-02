@@ -6,7 +6,14 @@ from python_helpers import open_utf8
 import re
 import tempfile
 
-excluded_objects = ['utf8proc_data.cpp', 'dummy_static_extension_loader.cpp']
+excluded_objects = ['utf8proc_data.cpp']
+# the built-in httplib client, registered like a static extension when it is packaged
+httplib_source = os.path.join('src', 'main', 'http', 'http_client_httplib.cpp')
+# installing and loading external extensions, registered like a static extension when it is packaged
+loadable_extensions_sources = [
+    os.path.join('src', 'main', 'extension', 'extension_install_dynamic.cpp'),
+    os.path.join('src', 'main', 'extension', 'extension_load_dynamic.cpp'),
+]
 
 
 def third_party_includes():
@@ -185,6 +192,26 @@ def git_dev_version():
     return 'v{}.0-dev{}'.format(release_version(), git_commit_count())
 
 
+def capi_version():
+    """The C API version this source tree offers, as vMAJOR.MINOR.PATCH"""
+    header = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'src', 'include', 'duckdb_extension.h')
+    with open_utf8(header, 'r') as f:
+        text = f.read()
+    parts = []
+    for part in ['MAJOR', 'MINOR', 'PATCH']:
+        match = re.search('#define DUCKDB_EXTENSION_API_VERSION_{} ([0-9]+)'.format(part), text)
+        if not match:
+            raise ValueError('could not find DUCKDB_EXTENSION_API_VERSION_{} in {}'.format(part, header))
+        parts.append(match.group(1))
+    return 'v{}.{}.{}'.format(*parts)
+
+
+def normalized_duckdb_version():
+    """What a build of this tree stamps as the DuckDB version, as DUCKDB_NORMALIZED_VERSION does"""
+    version = git_dev_version()
+    return git_commit_hash() if re.search('-dev[0-9]+$', version) else version
+
+
 def include_package(pkg_name, pkg_dir, include_files, include_list, source_list):
     import amalgamation
 
@@ -218,6 +245,8 @@ def build_package(
     folder_name='duckdb',
     short_paths=False,
     default_linked_extensions=None,
+    builtin_httplib=True,
+    extension_load=True,
 ):
     if not os.path.isdir(target_dir):
         os.mkdir(target_dir)
@@ -247,6 +276,11 @@ def build_package(
 
     # obtain the list of source files from the amalgamation
     source_list = amalgamation.list_sources()
+    builtin_httplib = builtin_httplib and extension_load
+    excluded_sources = [] if extension_load else list(loadable_extensions_sources)
+    if not builtin_httplib:
+        excluded_sources.append(httplib_source)
+    source_list = [x for x in source_list if x not in excluded_sources]
     include_list = amalgamation.list_include_dirs()
     include_files = amalgamation.list_includes()
 
@@ -264,12 +298,28 @@ def build_package(
 
     # include the main extension helper
     include_files += [os.path.join('src', 'include', 'duckdb', 'main', 'extension_helper.hpp')]
-    # include the separate extensions
-    ext_register_body = ''
+    include_files += [os.path.join('src', 'include', 'duckdb_static_extension.h')]
+    # include the separate extensions, and generate their describe functions plus the object that registers the linked ones.
+    # The registration only runs before main if the package's objects end up in the program: a consumer that archives
+    # them first has to force-link the archive or call duckdb_register_static_extensions itself.
     ext_loader_defines = ''
-    ext_headers = ''
-    ext_name_vector_initializer = ''
-    ext_capi_declarations = ''
+    ext_describers = ''
+    ext_registrations = ''
+    # the httplib client and the loadable extensions support are not extensions, but register the same way, first
+    registered_first = (['httplib'] if builtin_httplib else []) + (['loadable_extensions'] if extension_load else [])
+    for name in registered_first:
+        ext_describers += (
+            f'extern "C" int32_t duckdb_extension_{name}_describe(duckdb_extension_descriptor *descriptor);\n\n'
+        )
+        ext_registrations += (
+            f"\tif (duckdb_register_static_extension(duckdb_extension_{name}_describe) != 0) {{\n"
+            "\t\tresult = 1;\n"
+            "\t}\n"
+        )
+    with open(
+        os.path.join(scripts_dir, '..', 'extension', 'loader', 'extension_describe.c.in')
+    ) as describe_template_file:
+        describe_template = describe_template_file.read()
     for ext in extensions:
         ext_path = os.path.join(scripts_dir, '..', 'extension', ext)
         ext_kind = include_package(ext, ext_path, include_files, include_list, source_list)
@@ -281,64 +331,76 @@ def build_package(
             f"#ifndef {ext_linked_define}\n" f"#define {ext_linked_define} {ext_linked_default}\n" "#endif\n\n"
         )
 
-        # handle generated_extension_loader
-        # this - beautifully - approximates code in extension/CMakeLists.txt
+        # the same describe function duckdb_add_extension_describe generates in extension/extension_build_tools.cmake
         if ext_kind == 'CAPI':
-            ext_capi_declarations += (
-                f'#if {ext_linked_define}\n'
-                f'extern "C" bool {ext}_init_c_api(duckdb_extension_info, duckdb_extension_access *);\n'
-                "#endif\n"
-            )
-            ext_register_body += (
-                f"#if {ext_linked_define}\n"
-                f"    config.linked_extensions.push_back({{\"{ext}\", [](DuckDB &db) {{\n"
-                f"        db.LoadStaticCAPIExtension(\"{ext}\", {ext}_init_c_api);\n"
-                "    }});\n"
-                "#endif\n"
-            )
+            entry_name, entry_field = f'{ext}_init_c_api', 'entry_capi_v1'
+            # takes a duckdb_extension_info and a duckdb_extension_access pointer, returns bool
+            entry_declaration = f'extern "C" int {entry_name}(void *info, void *access);'
         elif ext_kind == 'CAPI_V2':
-            ext_capi_declarations += (
-                f'#if {ext_linked_define}\n'
-                f'extern "C" void {ext}_init_c_api_v2(struct duckdb_v2_extension_input *);\n'
-                "#endif\n"
-            )
-            ext_loader_body += (
-                f"#if {ext_linked_define}\n"
-                f"    if (extension==\"{ext}\") {{\n"
-                f"        db.LoadStaticCAPIExtensionV2(\"{ext}\", {ext}_init_c_api_v2);\n"
-                "        return ExtensionLoadResult::LOADED_EXTENSION;\n"
-                "    }\n"
-                "#endif\n"
-            )
+            entry_name, entry_field = f'{ext}_init_c_api_v2', 'entry_capi_v2'
+            # takes a duckdb_v2_extension_input pointer
+            entry_declaration = f'extern "C" void {entry_name}(void *input);'
         else:
-            ext_headers += f'#if {ext_linked_define}\n#include "{ext}_extension.hpp"\n#endif\n'
-            ext_name_camelcase = ext.replace('_', ' ').title().replace(' ', '')
-            ext_register_body += (
-                f"#if {ext_linked_define}\n"
-                f"    config.linked_extensions.push_back({{\"{ext}\", [](DuckDB &db) {{\n"
-                f"        db.LoadStaticExtension<{ext_name_camelcase}Extension>();\n"
-                "    }});\n"
-                "#endif\n"
-            )
+            entry_name, entry_field = f'{ext}_duckdb_cpp_init', 'entry_cpp'
+            entry_declaration = f'extern "C" void {entry_name}(duckdb::ExtensionLoader &loader);'
+        version_define = f'EXT_VERSION_{ext.upper()}'
+        # what the entrypoint was built against, as extension_build_tools.cmake stamps it
+        api_version = capi_version() if ext_kind in ('CAPI', 'CAPI_V2') else normalized_duckdb_version()
+        describe = describe_template
+        for key, value in {
+            'NAME': ext,
+            'ENTRY_DECLARATION': entry_declaration,
+            'ENTRY_NAME': entry_name,
+            'ENTRY_FIELD': entry_field,
+            'EXTENSION_VERSION': version_define,
+            'API_VERSION': '"{}"'.format(api_version),
+        }.items():
+            describe = describe.replace(f'@{key}@', value)
 
-        ext_name_vector_initializer += f"\n#if {ext_linked_define}\n" f"        \"{ext}\",\n" "#endif"
+        ext_describers += (
+            f"#if {ext_linked_define}\n"
+            f"#ifndef {version_define}\n"
+            f'#define {version_define} ""\n'
+            "#endif\n"
+            f"{describe}"
+            "#endif\n\n"
+        )
+        ext_registrations += (
+            f"#if {ext_linked_define}\n"
+            f"\tif (duckdb_register_static_extension(duckdb_extension_{ext}_describe) != 0) {{\n"
+            "\t\tresult = 1;\n"
+            "\t}\n"
+            "#endif\n"
+        )
 
-    loader_code = open(os.path.join('extension', 'generated_extension_loader.cpp.in'), 'rb').read().decode('utf8')
+    # the same shape as extension/loader/static_extension_loader.c.in, with the describe functions inlined above it
     loader_code = (
-        loader_code.replace('${EXT_REGISTER_BODY}', ext_register_body)
-        .replace('${EXT_CAPI_DECLARATIONS}', ext_capi_declarations)
-        .replace('${EXT_NAME_VECTOR_INITIALIZER}', ext_name_vector_initializer)
-        .replace('${EXT_TEST_PATH_INITIALIZER}', '')
-        .replace('CMake', 'package_build.py')
+        "// Generated by package_build.py. Do not edit.\n"
+        + ext_loader_defines
+        + '#include "duckdb/main/extension/extension_loader.hpp"\n'
+        + '#include "duckdb_static_extension.h"\n\n'
+        + ext_describers
+        + "#ifndef DUCKDB_STATIC_EXTENSION_LOADER_API\n"
+        + "#if defined(__GNUC__) || defined(__clang__)\n"
+        + '#define DUCKDB_STATIC_EXTENSION_LOADER_API __attribute__((visibility("hidden")))\n'
+        + "#else\n"
+        + "#define DUCKDB_STATIC_EXTENSION_LOADER_API\n"
+        + "#endif\n"
+        + "#endif\n\n"
+        + 'extern "C" DUCKDB_STATIC_EXTENSION_LOADER_API int32_t duckdb_register_static_extensions(void) {\n'
+        + "\tint32_t result = 0;\n"
+        + ext_registrations
+        + "\treturn result;\n"
+        + "}\n"
     )
-
-    loader_code = ext_loader_defines + ext_headers + loader_code
 
     loader_name = 'generated_extension_loader_package_build.cpp'
     f = open(loader_name, 'wb')
     f.write(loader_code.encode('utf8'))
     f.close()
 
+    # the static initializer that calls the loader before main is already in the amalgamation source list, and only
+    # runs if its object is linked into the program
     source_list += [loader_name]
 
     for src in source_list:

@@ -18,7 +18,49 @@ CopyOption::CopyOption() : type(LogicalType::ANY), mode(CopyOptionMode::READ_WRI
 CopyOption::CopyOption(LogicalType type_p, CopyOptionMode mode_p) : type(std::move(type_p)), mode(mode_p) {
 }
 
+bool CopyFunctionReturnsColumnTypes(CopyFunctionReturnType return_type) {
+	switch (return_type) {
+	case CopyFunctionReturnType::CHANGED_ROWS_AND_COLUMN_TYPES:
+	case CopyFunctionReturnType::CHANGED_ROWS_AND_FILE_LIST_AND_COLUMN_TYPES:
+	case CopyFunctionReturnType::WRITTEN_FILE_STATISTICS_AND_COLUMN_TYPES:
+		return true;
+	default:
+		return false;
+	}
+}
+
+CopyFunctionReturnType GetCopyFunctionBaseReturnType(CopyFunctionReturnType return_type) {
+	switch (return_type) {
+	case CopyFunctionReturnType::CHANGED_ROWS_AND_COLUMN_TYPES:
+		return CopyFunctionReturnType::CHANGED_ROWS;
+	case CopyFunctionReturnType::CHANGED_ROWS_AND_FILE_LIST_AND_COLUMN_TYPES:
+		return CopyFunctionReturnType::CHANGED_ROWS_AND_FILE_LIST;
+	case CopyFunctionReturnType::WRITTEN_FILE_STATISTICS_AND_COLUMN_TYPES:
+		return CopyFunctionReturnType::WRITTEN_FILE_STATISTICS;
+	default:
+		return return_type;
+	}
+}
+
+CopyFunctionReturnType GetCopyFunctionReturnTypeWithColumnTypes(CopyFunctionReturnType return_type) {
+	switch (return_type) {
+	case CopyFunctionReturnType::CHANGED_ROWS:
+		return CopyFunctionReturnType::CHANGED_ROWS_AND_COLUMN_TYPES;
+	case CopyFunctionReturnType::CHANGED_ROWS_AND_FILE_LIST:
+		return CopyFunctionReturnType::CHANGED_ROWS_AND_FILE_LIST_AND_COLUMN_TYPES;
+	case CopyFunctionReturnType::WRITTEN_FILE_STATISTICS:
+		return CopyFunctionReturnType::WRITTEN_FILE_STATISTICS_AND_COLUMN_TYPES;
+	default:
+		return return_type;
+	}
+}
+
 vector<Identifier> GetCopyFunctionReturnNames(CopyFunctionReturnType return_type) {
+	if (CopyFunctionReturnsColumnTypes(return_type)) {
+		auto names = GetCopyFunctionReturnNames(GetCopyFunctionBaseReturnType(return_type));
+		names.emplace_back("columns");
+		return names;
+	}
 	switch (return_type) {
 	case CopyFunctionReturnType::CHANGED_ROWS:
 		return {"Count"};
@@ -33,6 +75,13 @@ vector<Identifier> GetCopyFunctionReturnNames(CopyFunctionReturnType return_type
 }
 
 vector<LogicalType> GetCopyFunctionReturnLogicalTypes(CopyFunctionReturnType return_type) {
+	if (CopyFunctionReturnsColumnTypes(return_type)) {
+		auto types = GetCopyFunctionReturnLogicalTypes(GetCopyFunctionBaseReturnType(return_type));
+		//! columns: the name and type of every copied column
+		types.push_back(
+		    LogicalType::LIST(LogicalType::STRUCT({{"name", LogicalType::VARCHAR}, {"type", LogicalType::TYPE()}})));
+		return types;
+	}
 	switch (return_type) {
 	case CopyFunctionReturnType::CHANGED_ROWS:
 		return {LogicalType::BIGINT};

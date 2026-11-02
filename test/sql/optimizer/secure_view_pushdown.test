@@ -265,3 +265,68 @@ query III
 SELECT * FROM filtered_regular_view
 ----
 42	2	42
+
+# --------------------------------------------------------------------------------------------------------------
+# a filter of the view that can throw is not pushed through a projection inside the view - the barrier stays on top
+# of the projection with it, rather than being pushed below the projection and evaluated before it
+# --------------------------------------------------------------------------------------------------------------
+
+statement ok
+CREATE SECURE VIEW visible_modulo AS SELECT * FROM (SELECT i, s FROM mixed) WHERE i % 100 >= 50
+
+statement ok
+CREATE SECURE VIEW visible_abs AS SELECT * FROM (SELECT i, s FROM mixed) WHERE abs(i) >= 50
+
+statement ok
+CREATE SECURE VIEW visible_cast AS SELECT * FROM (SELECT i, s FROM mixed) WHERE i::VARCHAR::INT >= 50
+
+query I
+SELECT count(*) FROM visible_modulo WHERE s::INT > 0
+----
+50
+
+query I
+SELECT count(*) FROM visible_abs WHERE s::INT > 0
+----
+50
+
+query I
+SELECT count(*) FROM visible_cast WHERE s::INT > 0
+----
+50
+
+query I
+SELECT count(*) FROM visible_modulo WHERE s::INT = 55
+----
+1
+
+# the same holds for a barrier written out over a subquery
+query I
+SELECT count(*) FROM (SELECT * FROM (SELECT i, s FROM mixed) WHERE i % 100 >= 50) WHERE __internal_barrier(s::INT > 0)
+----
+50
+
+# a filter that cannot throw is pushed through the projection, and the barrier with it
+statement ok
+CREATE SECURE VIEW visible_projected AS SELECT * FROM (SELECT i, s FROM mixed) WHERE i >= 50
+
+query I
+SELECT count(*) FROM visible_projected WHERE s::INT > 0
+----
+50
+
+# A throwing view filter retained above a projection must run before the caller's barrier.
+statement ok
+CREATE TABLE guard_rows(b VARCHAR, c VARCHAR, d INTEGER)
+
+statement ok
+INSERT INTO guard_rows VALUES ('hidden', '-1', 0), ('shown', '1', 0), ('shown', '1', 0), ('hidden', NULL, 0)
+
+statement ok
+CREATE SECURE VIEW guarded_view AS
+WITH src AS (SELECT b,c,d FROM guard_rows) SELECT * FROM src WHERE c::INTEGER>d
+
+query I
+SELECT count(*) FROM guarded_view WHERE CASE WHEN b='hidden' THEN error('hidden row') ELSE true END
+----
+2

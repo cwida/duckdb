@@ -12,6 +12,7 @@
 #include "duckdb/common/helper.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
 #include "duckdb/common/unique_ptr.hpp"
+#include "duckdb/common/vector.hpp"
 #include "duckdb/common/winapi.hpp"
 
 namespace duckdb {

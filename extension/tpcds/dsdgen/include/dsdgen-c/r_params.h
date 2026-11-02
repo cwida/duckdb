@@ -61,7 +61,6 @@ typedef struct OPTION_T {
 /*
  * function declarations
  */
-int process_options(int count, const char **args);
 char *get_str(const char *var);
 void set_str(const char *param, const char *value);
 int get_int(const char *var);
@@ -70,14 +69,11 @@ double get_dbl(const char *var);
 int is_set(const char *flag);
 void clr_flg(const char *flag);
 int find_table(const char *szParamName, const char *tname);
-int read_file(const char *param_name, const char *arg);
-int usage(const char *param_name, const char *msg);
 char *GetParamName(int nParam);
 char *GetParamValue(int nParam);
 int load_param(int nParam, const char *value);
 int fnd_param(const char *name);
 int init_params(void);
-int set_option(const char *pname, const char *value);
 void load_params(void);
 int IsIntParam(const char *szName);
 int IsStrParam(const char *szName);

@@ -117,7 +117,7 @@ void VariantNormalizer::VisitBitstring(const string_t &bits, VariantNormalizerSt
 }
 
 void VariantNormalizer::VisitArray(const UnifiedVariantVectorData &variant, idx_t row,
-                                   const VariantNestedData &nested_data, VariantNormalizerState &state) {
+                                   const VariantNestedData &nested_data, idx_t depth, VariantNormalizerState &state) {
 	state.blob_size += VarintEncode(nested_data.child_count, state.GetDestination());
 	if (!nested_data.child_count) {
 		return;
@@ -136,12 +136,12 @@ void VariantNormalizer::VisitArray(const UnifiedVariantVectorData &variant, idx_
 		result_children_idx++;
 
 		//! Visit the child value
-		VariantVisitor<VariantNormalizer>::Visit(variant, row, values_index, state);
+		VariantVisitor<VariantNormalizer>::Visit(variant, row, values_index, depth + 1, state);
 	}
 }
 
 void VariantNormalizer::VisitObject(const UnifiedVariantVectorData &variant, idx_t row,
-                                    const VariantNestedData &nested_data, VariantNormalizerState &state) {
+                                    const VariantNestedData &nested_data, idx_t depth, VariantNormalizerState &state) {
 	state.blob_size += VarintEncode(nested_data.child_count, state.GetDestination());
 	if (!nested_data.child_count) {
 		return;
@@ -176,7 +176,7 @@ void VariantNormalizer::VisitObject(const UnifiedVariantVectorData &variant, idx
 		state.keys_indexes[children_idx] = keys_idx;
 		children_idx++;
 		keys_idx++;
-		VariantVisitor<VariantNormalizer>::Visit(variant, row, values_index, state);
+		VariantVisitor<VariantNormalizer>::Visit(variant, row, values_index, depth + 1, state);
 	}
 }
 
@@ -238,7 +238,7 @@ void VariantNormalizer::Normalize(const Vector &variant_vec, Vector &result) {
 
 		//! Visit the source to populate the result
 		VariantNormalizerState visitor_state(i, variant_data, dictionary, keys_selvec);
-		VariantVisitor<VariantNormalizer>::Visit(variant, i, 0, visitor_state);
+		VariantVisitor<VariantNormalizer>::Visit(variant, i, 0, 0, visitor_state);
 
 		blob_data.SetSizeAndFinalize(visitor_state.blob_size, original_data.GetSize());
 		keys_list_entry.length = visitor_state.keys_size;
@@ -269,6 +269,7 @@ ScalarFunction VariantNormalizeFun::GetFunction() {
 	auto variant_type = LogicalType::VARIANT();
 	ScalarFunction fun("variant_normalize", {}, variant_type, VariantNormalizeFunction, nullptr, VariantNormalizeStats);
 	fun.GetSignature().AddParameter("input_variant", variant_type);
+	fun.SetFallible();
 	return fun;
 }
 

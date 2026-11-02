@@ -6,10 +6,74 @@
 #include "duckdb/planner/operator/logical_filter.hpp"
 #include "duckdb/function/scalar/generic_functions.hpp"
 #include "duckdb/function/scalar/generic_common.hpp"
+#include "duckdb/optimizer/rule/contains_to_in_clause.hpp"
+#include "duckdb/optimizer/rule/distinct_aggregate_optimizer.hpp"
+#include "duckdb/optimizer/rule/empty_needle_removal.hpp"
+#include "duckdb/optimizer/rule/equal_or_null_simplification.hpp"
+#include "duckdb/optimizer/rule/in_clause_simplification.hpp"
+#include "duckdb/optimizer/rule/join_dependent_filter.hpp"
+#include "duckdb/optimizer/rule/list.hpp"
+#include "duckdb/optimizer/rule/monotone_preimage.hpp"
+#include "duckdb/optimizer/rule/predicate_factoring.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
-#include "duckdb/planner/expression/bound_function_expression.hpp"
 
 namespace duckdb {
+
+const vector<unique_ptr<Rule>> &ExpressionRewriter::GetRules() {
+	if (!rules.empty()) {
+		return rules;
+	}
+	rules.push_back(make_uniq<ConstantOrderNormalizationRule>(*this));
+	rules.push_back(make_uniq<ConstantFoldingRule>(*this));
+	rules.push_back(make_uniq<StructExtractStructPackFoldingRule>(*this));
+	rules.push_back(make_uniq<DistributivityRule>(*this));
+	rules.push_back(make_uniq<ArithmeticSimplificationRule>(*this));
+	rules.push_back(make_uniq<LeastGreatestSimplificationRule>(*this));
+	rules.push_back(make_uniq<CaseSimplificationRule>(*this));
+	rules.push_back(make_uniq<ConjunctionSimplificationRule>(*this));
+	rules.push_back(make_uniq<DatePartSimplificationRule>(*this));
+	rules.push_back(make_uniq<DateTruncSimplificationRule>(*this));
+	rules.push_back(make_uniq<ComparisonSimplificationRule>(*this));
+	rules.push_back(make_uniq<RowComparisonSimplificationRule>(*this));
+	rules.push_back(make_uniq<InClauseSimplificationRule>(*this));
+	rules.push_back(make_uniq<InEnumSimplificationRule>(*this));
+	rules.push_back(make_uniq<EnumCompareSimplificationRule>(*this));
+	rules.push_back(make_uniq<EqualOrNullSimplification>(*this));
+	rules.push_back(make_uniq<MoveConstantsRule>(*this));
+	rules.push_back(make_uniq<MoveUnaryMinusRule>(*this));
+	rules.push_back(make_uniq<MonotonePreimageRule>(*this));
+	rules.push_back(make_uniq<LikeOptimizationRule>(*this));
+	rules.push_back(make_uniq<StringPrefixRule>(*this));
+	rules.push_back(make_uniq<InstrPrefixRule>(*this));
+	rules.push_back(make_uniq<OrderedAggregateOptimizer>(*this));
+	rules.push_back(make_uniq<DistinctAggregateOptimizer>(*this));
+	rules.push_back(make_uniq<DistinctWindowedOptimizer>(*this));
+	rules.push_back(make_uniq<RegexOptimizationRule>(*this));
+	rules.push_back(make_uniq<RegexpReplaceExtractRule>(*this));
+	rules.push_back(make_uniq<EmptyNeedleRemovalRule>(*this));
+	rules.push_back(make_uniq<NoopReplaceRemovalRule>(*this));
+	rules.push_back(make_uniq<EnumComparisonRule>(*this));
+	rules.push_back(make_uniq<JoinDependentFilterRule>(*this));
+	rules.push_back(make_uniq<TimeStampComparison>(*this));
+	rules.push_back(make_uniq<PredicateFactoringRule>(*this));
+	rules.push_back(make_uniq<ListComprehensionRewriteRule>(*this));
+	rules.push_back(make_uniq<ContainsToInClauseRule>(*this));
+	rules.push_back(make_uniq<NotComparisonSimplificationRule>(*this));
+	rules.push_back(make_uniq<NotConjunctionSimplificationRule>(*this));
+
+#ifdef DEBUG
+	for (auto &rule : rules) {
+		// root not defined in rule
+		D_ASSERT(rule->root);
+	}
+#endif
+	return rules;
+}
+
+void ExpressionRewriter::AddRule(unique_ptr<Rule> rule) {
+	D_ASSERT(rule->root);
+	rules.push_back(std::move(rule));
+}
 
 struct RewriteFrame {
 	reference<unique_ptr<Expression>> expr;
@@ -95,8 +159,8 @@ unique_ptr<Expression> ExpressionRewriter::ConstantOrNull(ClientContext &context
 unique_ptr<Expression> ExpressionRewriter::ConstantOrNull(ClientContext &context,
                                                           vector<unique_ptr<Expression>> children, Value value) {
 	children.insert(children.begin(), make_uniq<BoundConstantExpression>(std::move(value)));
-	// the bind of constant_or_null derives the return type and the bind data from the leading constant
-	return BindBuiltinScalarFunction(context, ConstantOrNullFun::Name, std::move(children));
+	// constant_or_null has the type of the leading constant, also when a typed NULL child folds the call
+	return BindBuiltinScalarExpression(context, ConstantOrNullFun::Name, std::move(children));
 }
 
 void ExpressionRewriter::VisitOperator(LogicalOperator &op) {
@@ -104,7 +168,7 @@ void ExpressionRewriter::VisitOperator(LogicalOperator &op) {
 	this->op = &op;
 
 	to_apply_rules.clear();
-	for (auto &rule : rules) {
+	for (auto &rule : GetRules()) {
 		to_apply_rules.push_back(*rule);
 	}
 

@@ -1,0 +1,34 @@
+# name: test/sql/function/enum/enum_range_large.test
+# description: enum_range over a large enum and over many rows
+# group: [enum]
+
+statement ok
+CREATE TYPE big AS ENUM (SELECT 'value_' || i FROM range(100000) t(i));
+
+# the whole enum comes back, in insertion order
+query III
+SELECT length(r), r[1], r[100000] FROM (SELECT enum_range(NULL::big) r);
+----
+100000	value_0	value_99999
+
+# the same list is returned for every input row
+query II
+SELECT count(*), count(DISTINCT length(enum_range(e))) FROM (SELECT ('value_' || i)::big e FROM range(3000) t(i));
+----
+3000	1
+
+query I
+SELECT enum_range(e)[i + 1] = e::VARCHAR FROM (SELECT ('value_' || i)::big e, i FROM range(5) t(i)) ORDER BY ALL;
+----
+true
+true
+true
+true
+true
+
+# NULL input still yields the full range
+query I
+SELECT length(enum_range(e)) FROM (SELECT NULL::big e UNION ALL SELECT 'value_7'::big) ORDER BY ALL;
+----
+100000
+100000

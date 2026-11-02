@@ -9,9 +9,13 @@
 #pragma once
 
 #include "duckdb/common/atomic.hpp"
+#include "duckdb/common/map.hpp"
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/optional.hpp"
 #include "duckdb/common/optional_idx.hpp"
+#include "duckdb/common/optional_ptr.hpp"
+#include "duckdb/common/pair.hpp"
+#include "duckdb/common/vector.hpp"
 #include "duckdb/common/shared_ptr_ipp.hpp"
 #include "duckdb/common/string.hpp"
 #include "duckdb/common/thread_annotation.hpp"
@@ -22,6 +26,7 @@
 #include "duckdb/common/vector.hpp"
 #include "duckdb/common/winapi.hpp"
 #include "duckdb/storage/buffer/buffer_handle.hpp"
+#include "duckdb/storage/buffer/buffer_pool_reservation.hpp"
 #include "duckdb/storage/buffer/temporary_file_information.hpp"
 #include "duckdb/storage/external_file_cache/external_file_cache_block.hpp"
 
@@ -31,6 +36,7 @@ namespace duckdb {
 class ClientContext;
 class DatabaseInstance;
 class BufferManager;
+class BufferPool;
 
 //! File metadata used to determine whether cached file data is still valid.
 struct CacheValidationInfo {
@@ -54,25 +60,33 @@ struct CacheValidationInfo {
 
 class ExternalFileCache {
 public:
-	//! Get the cache block size for a given file path.
-	DUCKDB_API idx_t GetCacheBlockSize(const string &path) const;
+	//! Get the maximum cache block size for a given file path.
+	DUCKDB_API idx_t GetCacheMaxBlockSize(const string &path) const;
+	//! Get the block size that reads of a given file path are rounded out to.
+	DUCKDB_API idx_t GetCacheMinBlockSize(const string &path) const;
 	//! Whether reads of the given file should go through the cache (remote files only, unless forced).
 	DUCKDB_API bool ShouldCacheFile(const string &path) const;
 
 	//! Cached files
 	struct CachedFile {
 	public:
-		CachedFile(string path_p, idx_t generation_p);
+		CachedFile(string path_p, idx_t generation_p, BufferPool &buffer_pool);
+
+	public:
+		//! Resize the block metadata reservation to the current number of blocks.
+		void UpdateBlockReservation() DUCKDB_REQUIRES(map_lock);
 
 	public:
 		const string path;
 		const idx_t generation;
 
 		mutable annotated_mutex map_lock;
-		//! The block size used to index the current block map. Invalid if no blocks have been cached yet.
-		optional_idx cached_block_size DUCKDB_GUARDED_BY(map_lock);
-		//! Maps from block index to cached block.
-		unordered_map<idx_t, shared_ptr<CacheBlock>> blocks DUCKDB_GUARDED_BY(map_lock);
+		//! Non-overlapping cached blocks, keyed by file offset.
+		map<idx_t, shared_ptr<CacheBlock>> blocks DUCKDB_GUARDED_BY(map_lock);
+		//! Incremented whenever the blocks of the file are dropped.
+		idx_t content_generation DUCKDB_GUARDED_BY(map_lock) = 0;
+		//! Memory reserved for the metadata of the blocks.
+		TempBufferPoolReservation block_reservation DUCKDB_GUARDED_BY(map_lock);
 
 		mutable annotated_mutex meta_lock;
 		//! Metadata for validating the cached blocks against the current file.
@@ -95,13 +109,21 @@ public:
 	//! Number of files tracked in the ObjectCache, exposed for testing.
 	idx_t GetCachedFileCount() const;
 
-	//! Re-index to `current_block_size` if it differs from the cache block size.
-	//! Return the blocks cached for the given range.
-	vector<shared_ptr<CacheBlock>> ReindexAndAcquireBlocks(CachedFile &cached_file, idx_t current_block_size,
-	                                                       idx_t first_block, idx_t num_blocks);
-	//! Remove an acquired block range from the cache without mutating blocks that may still be used by readers.
-	//! A block is only removed when it is still the current entry for its index.
-	void RetireBlocks(CachedFile &cached_file, idx_t first_block, const vector<shared_ptr<CacheBlock>> &blocks);
+	//! Get the blocks covering [location, location + nr_bytes), creating empty blocks for the missing bytes.
+	//! Within absorb_ranges ([begin, end) pairs), every smaller cached block is re-fetched with the gaps around it
+	//! when that saves a request; elsewhere only blocks below an eighth of max_block_size are
+	vector<shared_ptr<CacheBlock>>
+	AcquireBlocks(CachedFile &cached_file, idx_t location, idx_t nr_bytes, idx_t max_block_size,
+	              optional_ptr<const vector<pair<idx_t, idx_t>>> absorb_ranges = nullptr);
+	//! Drop all blocks of a file, e.g. because the file changed. Readers keep the blocks they hold.
+	void DropBlocks(CachedFile &cached_file);
+	idx_t GetContentGeneration(CachedFile &cached_file);
+	//! The number of cached blocks smaller than max_block_size that overlap [location, location + nr_bytes) and whose
+	//! data is still available (resident or spilled, not evicted)
+	static idx_t CountSmallAvailableBlocks(CachedFile &cached_file, idx_t location, idx_t nr_bytes,
+	                                       idx_t max_block_size);
+	//! Whether [location, location + nr_bytes) is fully covered by cached blocks whose data is still available
+	static bool IsRangeAvailable(CachedFile &cached_file, idx_t location, idx_t nr_bytes);
 
 	BufferManager &GetBufferManager() const;
 	//! Gets the shared cached file for the given path, creating it if not yet present.
@@ -124,10 +146,6 @@ public:
 
 private:
 	class ExternalFileCacheObjectCacheEntry;
-
-	//! Re-index blocks of a single cached file.
-	void ReindexCachedFileCore(CachedFile &cached_file, idx_t file_size, idx_t old_block_size, idx_t new_block_size)
-	    DUCKDB_REQUIRES(cached_file.map_lock);
 
 	//! Registers a cached file path in the tracked set.
 	void InsertCachedFileKey(const string &path);

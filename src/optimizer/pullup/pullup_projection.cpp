@@ -80,6 +80,13 @@ unique_ptr<LogicalOperator> FilterPullup::PullupProjection(unique_ptr<LogicalOpe
 	op->children[0] = Rewrite(std::move(op->children[0]));
 	if (!filters_expr_pullup.empty()) {
 		auto &proj = op->Cast<LogicalProjection>();
+		for (auto &expr : filters_expr_pullup) {
+			if (expr->CanThrow()) {
+				// Keep fallible predicates and their guards below the projection.
+				RevertFilterPullup(proj, filters_expr_pullup);
+				return op;
+			}
+		}
 		// INTERSECT, EXCEPT, and DISTINCT
 		if (!can_add_column) {
 			// special treatment for operators that cannot add columns, e.g., INTERSECT, EXCEPT, and DISTINCT

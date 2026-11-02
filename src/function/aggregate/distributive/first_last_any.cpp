@@ -30,12 +30,7 @@ unique_ptr<Expression> RewriteOrderedFirst(AggregateRewriteInput &input) {
 	}
 	aggregate->GetOrderBysMutable().reset();
 
-	ErrorData error;
-	auto sort_key =
-	    binder.BindScalarFunction(Identifier::DefaultSchema(), "create_sort_key", std::move(sort_children), error);
-	if (!sort_key) {
-		error.Throw();
-	}
+	auto sort_key = binder.BindScalarFunction(Identifier::DefaultSchema(), "create_sort_key", std::move(sort_children));
 
 	auto children = std::move(aggregate->GetChildrenMutable());
 	children.emplace_back(std::move(sort_key));
@@ -86,24 +81,25 @@ struct FirstStringStateBase {
 	bool value_is_valid;
 	//! Whether the state has been set (i.e. we have seen a row)
 	bool is_set;
-	//! The size of the arena allocation for a non-inlined string value - not part of the exported state
-	uint32_t alloc_size;
+	//! The size of the arena allocation for a non-inlined string value - not part of the exported state.
+	//! Must be wide enough for NextPowerOfTwo(MAX_STRING_SIZE), which does not fit in a uint32_t.
+	idx_t alloc_size;
 
 	void Assign(string_t input, AggregateInputData &input_data) {
 		if (input.IsInlined()) {
 			value = input;
 			alloc_size = 0;
 		} else {
-			auto len = UnsafeNumericCast<uint32_t>(input.GetSize());
+			auto len = input.GetSize();
 			char *ptr;
 			if (alloc_size >= len) {
 				ptr = value.GetDataWriteable();
 			} else {
-				alloc_size = UnsafeNumericCast<uint32_t>(NextPowerOfTwo(len));
+				alloc_size = NextPowerOfTwo(len);
 				ptr = char_ptr_cast(input_data.allocator.Allocate(alloc_size));
 			}
 			memcpy(ptr, input.GetData(), len);
-			value = string_t(ptr, len);
+			value = string_t(ptr, UnsafeNumericCast<uint32_t>(len));
 		}
 	}
 };

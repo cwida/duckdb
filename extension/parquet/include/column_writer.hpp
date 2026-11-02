@@ -27,6 +27,7 @@
 #include "duckdb/common/types.hpp"
 #include "duckdb/common/unique_ptr.hpp"
 #include "duckdb/common/vector.hpp"
+#include "parquet_arena.h"
 
 namespace duckdb_parquet {
 class RowGroup;
@@ -163,6 +164,9 @@ public:
 		return child_writers;
 	}
 
+	//! Mark this writer (and descendants) as REQUIRED in the Parquet schema
+	void MarkRepetitionRequired();
+
 	virtual void AnalyzeSchema(ParquetAnalyzeSchemaState &state, Vector &input, idx_t count) {
 		throw NotImplementedException("Writer doesn't require an AnalyzeSchema pass");
 	}
@@ -173,7 +177,7 @@ public:
 
 	virtual bool TryExportPreparedShreddingType(ShreddingType &result) const;
 
-	virtual idx_t FinalizeSchema(vector<duckdb_parquet::SchemaElement> &schemas) = 0;
+	virtual idx_t FinalizeSchema(duckdb_parquet::SchemaElementList &schemas) = 0;
 
 	//! Create the column writer for a specific type recursively
 	static unique_ptr<ColumnWriter> CreateWriterRecursive(ClientContext &context, ParquetWriter &writer,
@@ -227,6 +231,8 @@ protected:
 
 	void CompressPage(MemoryStream &temp_writer, size_t &compressed_size, data_ptr_t &compressed_data,
 	                  AllocatedData &compressed_buf);
+
+	void DecrementMaxDefineRecursive();
 
 public:
 	ParquetWriter &writer;

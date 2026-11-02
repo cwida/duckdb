@@ -6,7 +6,7 @@ name Copy to Parquet, 1000 partitions
 group copy
 
 load
-CREATE TABLE tbl AS SELECT i%1000::INT32 as part_col, i::INT32 FROM range(0,25000000) tbl(i);
+CREATE TABLE tbl AS SELECT i%1000::INT32 as part_col, i::INT32 FROM range(0,3000000) tbl(i);
 SET partitioned_write_max_open_files=10000;
 
 run

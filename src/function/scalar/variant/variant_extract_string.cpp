@@ -25,7 +25,7 @@ public:
 			return;
 		}
 
-		const auto json_value = VariantCasts::ConvertVariantToJSON(holder.GetDocument(), *node, false);
+		const auto json_value = VariantCasts::ConvertVariantToJSON(holder.GetDocument(), *node);
 		if (!json_value) {
 			throw SerializationException("Failed to convert VARIANT value to JSON object");
 		}
@@ -59,8 +59,10 @@ static void VariantExtractStringFunction(DataChunk &input, ExpressionState &stat
 }
 
 ScalarFunctionSet VariantExtractStringFun::GetFunctions() {
-	return VariantPathFunction::CreateFunctionSet("variant_extract_string", VariantExtractStringFunction,
-	                                              LogicalType::VARCHAR, false);
+	auto functions = VariantPathFunction::CreateFunctionSet("variant_extract_string", VariantExtractStringFunction,
+	                                                        LogicalType::VARCHAR, false);
+	functions.SetFallible();
+	return functions;
 }
 
 } // namespace duckdb

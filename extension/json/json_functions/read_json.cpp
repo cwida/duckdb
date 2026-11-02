@@ -3,7 +3,7 @@
 #include "duckdb/common/multi_file/multi_file_reader.hpp"
 #include "json_functions.hpp"
 #include "json_scan.hpp"
-#include "json_structure.hpp"
+#include "json_schema_inference.hpp"
 #include "json_transform.hpp"
 #include "duckdb/parallel/task_executor.hpp"
 
@@ -21,7 +21,7 @@ static inline LogicalType RemoveDuplicateStructKeys(const LogicalType &type, con
 					continue;
 				}
 				throw NotImplementedException(
-				    "Duplicate name \"%s\" in struct auto-detected in JSON, try ignore_errors=true", child_type.first);
+				    "Duplicate name %s in struct auto-detected in JSON, try ignore_errors=true", child_type.first);
 			} else {
 				child_types.emplace_back(child_type.first, RemoveDuplicateStructKeys(child_type.second, ignore_errors));
 			}
@@ -77,7 +77,8 @@ public:
 		auto &reader = *json_reader;
 		auto_detect_state.sampled_readers[file_idx] = std::move(json_reader);
 
-		auto &global_allocator = Allocator::Get(context);
+		// the sampled readers keep their first buffer for the scan, so it has to count against the memory limit
+		auto &global_allocator = BufferAllocator::Get(context);
 		idx_t buffer_capacity = json_data.options.maximum_object_size * 2;
 		JSONReaderScanState scan_state(context, global_allocator, buffer_capacity);
 		auto &options = json_data.options;
@@ -118,6 +119,8 @@ public:
 			node.RefineCandidateTypes(scan_state.values, next, string_vector, allocator,
 			                          auto_detect_state.date_format_map, user_specified_timestamp_format);
 		}
+		// release the current buffer, otherwise the sampled reader keeps it alive after the bind
+		scan_state.ClearBufferHandle();
 		auto_detect_state.total_file_size += file_size;
 		auto_detect_state.bytes_scanned += total_read_size;
 		auto_detect_state.tuples_scanned += total_tuple_count;
@@ -240,8 +243,8 @@ unique_ptr<JSONStructureNode> JSONScan::DetectStructure(ClientContext &context, 
                                                         const vector<OpenFileInfo> &files,
                                                         vector<shared_ptr<JSONReader>> &sampled_readers) {
 	MutableDateFormatMap date_format_map(*json_data.date_format_map);
-	auto node = make_uniq<JSONStructureNode>();
 	auto &options = json_data.options;
+	auto node = make_uniq<JSONStructureNode>(options.case_insensitive_keys);
 	auto file_count = MinValue<idx_t>(options.maximum_sample_files, files.size());
 	sampled_readers.resize(files.empty() ? 0 : files.size());
 
@@ -249,7 +252,11 @@ unique_ptr<JSONStructureNode> JSONScan::DetectStructure(ClientContext &context, 
 	const auto num_threads = TaskScheduler::GetScheduler(context).NumberOfThreads();
 	const auto files_per_task = (file_count + num_threads - 1) / num_threads;
 	const auto num_tasks = (file_count + files_per_task - 1) / files_per_task;
-	vector<JSONStructureNode> task_nodes(num_tasks);
+	vector<JSONStructureNode> task_nodes;
+	task_nodes.reserve(num_tasks);
+	for (idx_t task_idx = 0; task_idx < num_tasks; task_idx++) {
+		task_nodes.emplace_back(options.case_insensitive_keys);
+	}
 
 	// Same idea as in union_by_name.hpp
 	TaskExecutor executor(context);

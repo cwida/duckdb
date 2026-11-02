@@ -1,0 +1,28 @@
+// Generated from src/main/extension/local_extension_repository/local_extension_repository.cpp.in. Do not edit.
+// The local_extension_repository capability: automatic installs default to the extension repository of the build
+// that produced it, instead of the core repository.
+
+#include "duckdb/main/database.hpp"
+#include "duckdb_static_extension.h"
+
+namespace duckdb {
+
+static void UseLocalExtensionRepository(DatabaseInstance &db) {
+	auto &options = db.config.options;
+	if (options.default_autoinstall_repository.empty()) {
+		options.default_autoinstall_repository = "@LOCAL_EXTENSION_REPOSITORY@";
+	}
+}
+
+} // namespace duckdb
+
+extern "C" int32_t duckdb_extension_local_extension_repository_describe(duckdb_extension_descriptor *descriptor) {
+	if (descriptor->version < 2) {
+		descriptor->set_error(descriptor, "local_extension_repository needs descriptor layout 2");
+		return 1;
+	}
+	descriptor->version = 2;
+	descriptor->name = "local_extension_repository";
+	descriptor->database_callback = reinterpret_cast<void (*)(void)>(duckdb::UseLocalExtensionRepository);
+	return 0;
+}

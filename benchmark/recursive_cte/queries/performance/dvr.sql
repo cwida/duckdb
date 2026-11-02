@@ -1,6 +1,6 @@
 WITH RECURSIVE
 params(node_count) AS (
-	VALUES (200)
+	VALUES (150)
 ),
 edges(person1id, person2id) AS (
 	SELECT node::BIGINT, ((node + edge_offset) % node_count)::BIGINT

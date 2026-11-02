@@ -1,0 +1,187 @@
+row_group_id,column_id,path_in_schema,page_id,page_offset,compressed_page_size,first_row_index,num_rows,null_page,min_value,max_value,null_count,boundary_order
+0,0,id,0,4,556,0,128,false,0,127,0,ASCENDING
+0,0,id,1,560,554,128,128,false,128,255,0,ASCENDING
+0,0,id,2,1114,554,256,128,false,256,383,0,ASCENDING
+0,0,id,3,1668,554,384,128,false,384,511,0,ASCENDING
+0,0,id,4,2222,556,512,128,false,512,639,0,ASCENDING
+0,0,id,5,2778,554,640,128,false,640,767,0,ASCENDING
+0,0,id,6,3332,554,768,128,false,768,895,0,ASCENDING
+0,0,id,7,3886,458,896,104,false,896,999,0,ASCENDING
+0,1,v,0,4344,1053,0,256,false,0,993,0,UNORDERED
+0,1,v,1,5397,1053,256,256,false,2,999,0,UNORDERED
+0,1,v,2,6450,1053,512,256,false,1,998,0,UNORDERED
+0,1,v,3,7503,957,768,232,false,10,997,0,UNORDERED
+0,2,s,0,8460,587,0,128,false,long_000000_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy,s_000127,0,ASCENDING
+0,2,s,1,9047,586,128,128,false,long_000194_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy,s_000255,0,ASCENDING
+0,2,s,2,9633,586,256,128,false,long_000291_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy,s_000383,0,ASCENDING
+0,2,s,3,10219,595,384,128,false,long_000388_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy,s_000511,0,ASCENDING
+0,2,s,4,10814,588,512,128,false,long_000582_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy,s_000639,0,ASCENDING
+0,2,s,5,11402,590,640,128,false,long_000679_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy,s_000767,0,ASCENDING
+0,2,s,6,11992,598,768,128,false,long_000776_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy,s_000895,0,ASCENDING
+0,2,s,7,12590,488,896,104,false,long_000970_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy,s_000999,0,ASCENDING
+0,3,f,0,13078,1053,0,256,false,-0.0,31.875,0,ASCENDING
+0,3,f,1,14131,1053,256,256,false,32.0,63.875,0,ASCENDING
+0,3,f,2,15184,1053,512,256,false,64.0,95.875,0,ASCENDING
+0,3,f,3,16237,957,768,232,false,96.0,124.875,0,ASCENDING
+0,4,dec,0,17194,1081,0,256,false,0.00,63.75,0,ASCENDING
+0,4,dec,1,18275,1083,256,256,false,64.00,127.75,0,ASCENDING
+0,4,dec,2,19358,1083,512,256,false,128.00,191.75,0,ASCENDING
+0,4,dec,3,20441,985,768,232,false,192.00,249.75,0,ASCENDING
+0,5,n,0,21426,1304,0,384,false,1,383,77,ASCENDING
+0,5,n,1,22730,1304,384,384,false,384,767,77,ASCENDING
+0,5,n,2,24034,800,768,232,false,768,999,46,ASCENDING
+0,6,ts,0,24834,812,0,128,false,2024-01-01 00:00:00,2024-01-01 00:02:07,0,ASCENDING
+0,6,ts,1,25646,813,128,128,false,2024-01-01 00:02:08,2024-01-01 00:04:15,0,ASCENDING
+0,6,ts,2,26459,812,256,128,false,2024-01-01 00:04:16,2024-01-01 00:06:23,0,ASCENDING
+0,6,ts,3,27271,812,384,128,false,2024-01-01 00:06:24,2024-01-01 00:08:31,0,ASCENDING
+0,6,ts,4,28083,814,512,128,false,2024-01-01 00:08:32,2024-01-01 00:10:39,0,ASCENDING
+0,6,ts,5,28897,812,640,128,false,2024-01-01 00:10:40,2024-01-01 00:12:47,0,ASCENDING
+0,6,ts,6,29709,813,768,128,false,2024-01-01 00:12:48,2024-01-01 00:14:55,0,ASCENDING
+0,6,ts,7,30522,667,896,104,false,2024-01-01 00:14:56,2024-01-01 00:16:39,0,ASCENDING
+0,7,"arr, list, element",0,31189,835,0,128,false,0,128,0,ASCENDING
+0,7,"arr, list, element",1,32024,835,128,128,false,128,256,0,ASCENDING
+0,7,"arr, list, element",2,32859,835,256,128,false,256,384,0,ASCENDING
+0,7,"arr, list, element",3,33694,835,384,128,false,384,512,0,ASCENDING
+0,7,"arr, list, element",4,34529,835,512,128,false,512,640,0,ASCENDING
+0,7,"arr, list, element",5,35364,835,640,128,false,640,768,0,ASCENDING
+0,7,"arr, list, element",6,36199,836,768,128,false,768,896,0,ASCENDING
+0,7,"arr, list, element",7,37035,685,896,104,false,896,1000,0,ASCENDING
+1,0,id,0,37720,556,0,128,false,1000,1127,0,ASCENDING
+1,0,id,1,38276,556,128,128,false,1128,1255,0,ASCENDING
+1,0,id,2,38832,556,256,128,false,1256,1383,0,ASCENDING
+1,0,id,3,39388,554,384,128,false,1384,1511,0,ASCENDING
+1,0,id,4,39942,556,512,128,false,1512,1639,0,ASCENDING
+1,0,id,5,40498,556,640,128,false,1640,1767,0,ASCENDING
+1,0,id,6,41054,556,768,128,false,1768,1895,0,ASCENDING
+1,0,id,7,41610,458,896,104,false,1896,1999,0,ASCENDING
+1,1,v,0,42068,1053,0,256,false,0,993,0,UNORDERED
+1,1,v,1,43121,1053,256,256,false,2,999,0,UNORDERED
+1,1,v,2,44174,1053,512,256,false,1,998,0,UNORDERED
+1,1,v,3,45227,957,768,232,false,10,997,0,UNORDERED
+1,2,s,0,46184,582,0,128,false,long_001067_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy,s_001127,0,ASCENDING
+1,2,s,1,46766,588,128,128,false,long_001164_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy,s_001255,0,ASCENDING
+1,2,s,2,47354,594,256,128,false,long_001261_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy,s_001383,0,ASCENDING
+1,2,s,3,47948,589,384,128,false,long_001455_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy,s_001511,0,ASCENDING
+1,2,s,4,48537,588,512,128,false,long_001552_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy,s_001639,0,ASCENDING
+1,2,s,5,49125,598,640,128,false,long_001649_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy,s_001767,0,ASCENDING
+1,2,s,6,49723,590,768,128,false,long_001843_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy,s_001895,0,ASCENDING
+1,2,s,7,50313,489,896,104,false,long_001940_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy,s_001999,0,ASCENDING
+1,3,f,0,50802,1053,0,256,false,125.0,156.875,0,ASCENDING
+1,3,f,1,51855,1053,256,256,false,157.0,188.875,0,ASCENDING
+1,3,f,2,52908,1053,512,256,false,189.0,220.875,0,ASCENDING
+1,3,f,3,53961,957,768,232,false,221.0,249.875,0,ASCENDING
+1,4,dec,0,54918,1084,0,256,false,250.00,313.75,0,ASCENDING
+1,4,dec,1,56002,1084,256,256,false,314.00,377.75,0,ASCENDING
+1,4,dec,2,57086,1084,512,256,false,378.00,441.75,0,ASCENDING
+1,4,dec,3,58170,985,768,232,false,442.00,499.75,0,ASCENDING
+1,5,n,0,59155,28,0,1000,true,,,1000,UNORDERED
+1,6,ts,0,59183,812,0,128,false,2024-01-01 00:16:40,2024-01-01 00:18:47,0,ASCENDING
+1,6,ts,1,59995,812,128,128,false,2024-01-01 00:18:48,2024-01-01 00:20:55,0,ASCENDING
+1,6,ts,2,60807,812,256,128,false,2024-01-01 00:20:56,2024-01-01 00:23:03,0,ASCENDING
+1,6,ts,3,61619,812,384,128,false,2024-01-01 00:23:04,2024-01-01 00:25:11,0,ASCENDING
+1,6,ts,4,62431,812,512,128,false,2024-01-01 00:25:12,2024-01-01 00:27:19,0,ASCENDING
+1,6,ts,5,63243,813,640,128,false,2024-01-01 00:27:20,2024-01-01 00:29:27,0,ASCENDING
+1,6,ts,6,64056,814,768,128,false,2024-01-01 00:29:28,2024-01-01 00:31:35,0,ASCENDING
+1,6,ts,7,64870,667,896,104,false,2024-01-01 00:31:36,2024-01-01 00:33:19,0,ASCENDING
+1,7,"arr, list, element",0,65537,835,0,128,false,1000,1128,0,ASCENDING
+1,7,"arr, list, element",1,66372,835,128,128,false,1128,1256,0,ASCENDING
+1,7,"arr, list, element",2,67207,835,256,128,false,1256,1384,0,ASCENDING
+1,7,"arr, list, element",3,68042,835,384,128,false,1384,1512,0,ASCENDING
+1,7,"arr, list, element",4,68877,835,512,128,false,1512,1640,0,ASCENDING
+1,7,"arr, list, element",5,69712,835,640,128,false,1640,1768,0,ASCENDING
+1,7,"arr, list, element",6,70547,835,768,128,false,1768,1896,0,ASCENDING
+1,7,"arr, list, element",7,71382,685,896,104,false,1896,2000,0,ASCENDING
+2,0,id,0,72067,556,0,128,false,2000,2127,0,ASCENDING
+2,0,id,1,72623,554,128,128,false,2128,2255,0,ASCENDING
+2,0,id,2,73177,557,256,128,false,2256,2383,0,ASCENDING
+2,0,id,3,73734,554,384,128,false,2384,2511,0,ASCENDING
+2,0,id,4,74288,556,512,128,false,2512,2639,0,ASCENDING
+2,0,id,5,74844,554,640,128,false,2640,2767,0,ASCENDING
+2,0,id,6,75398,556,768,128,false,2768,2895,0,ASCENDING
+2,0,id,7,75954,458,896,104,false,2896,2999,0,ASCENDING
+2,1,v,0,76412,1053,0,256,false,0,993,0,UNORDERED
+2,1,v,1,77465,1053,256,256,false,2,999,0,UNORDERED
+2,1,v,2,78518,1053,512,256,false,1,998,0,UNORDERED
+2,1,v,3,79571,957,768,232,false,10,997,0,UNORDERED
+2,2,s,0,80528,582,0,128,false,long_002037_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy,s_002127,0,ASCENDING
+2,2,s,1,81110,595,128,128,false,long_002134_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy,s_002255,0,ASCENDING
+2,2,s,2,81705,587,256,128,false,long_002328_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy,s_002383,0,ASCENDING
+2,2,s,3,82292,589,384,128,false,long_002425_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy,s_002511,0,ASCENDING
+2,2,s,4,82881,596,512,128,false,long_002522_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy,s_002639,0,ASCENDING
+2,2,s,5,83477,592,640,128,false,long_002716_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy,s_002767,0,ASCENDING
+2,2,s,6,84069,590,768,128,false,long_002813_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy,s_002895,0,ASCENDING
+2,2,s,7,84659,488,896,104,false,long_002910_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy,s_002999,0,ASCENDING
+2,3,f,0,85147,1053,0,256,false,250.0,281.875,0,ASCENDING
+2,3,f,1,86200,1053,256,256,false,282.0,313.875,0,ASCENDING
+2,3,f,2,87253,1053,512,256,false,314.0,345.875,0,ASCENDING
+2,3,f,3,88306,957,768,232,false,346.0,374.875,0,ASCENDING
+2,4,dec,0,89263,1083,0,256,false,500.00,563.75,0,ASCENDING
+2,4,dec,1,90346,1083,256,256,false,564.00,627.75,0,ASCENDING
+2,4,dec,2,91429,1083,512,256,false,628.00,691.75,0,ASCENDING
+2,4,dec,3,92512,987,768,232,false,692.00,749.75,0,ASCENDING
+2,5,n,0,93499,1304,0,384,false,2001,2383,77,ASCENDING
+2,5,n,1,94803,1304,384,384,false,2384,2767,77,ASCENDING
+2,5,n,2,96107,800,768,232,false,2768,2999,46,ASCENDING
+2,6,ts,0,96907,811,0,128,false,2024-01-01 00:33:20,2024-01-01 00:35:27,0,ASCENDING
+2,6,ts,1,97718,812,128,128,false,2024-01-01 00:35:28,2024-01-01 00:37:35,0,ASCENDING
+2,6,ts,2,98530,815,256,128,false,2024-01-01 00:37:36,2024-01-01 00:39:43,0,ASCENDING
+2,6,ts,3,99345,812,384,128,false,2024-01-01 00:39:44,2024-01-01 00:41:51,0,ASCENDING
+2,6,ts,4,100157,812,512,128,false,2024-01-01 00:41:52,2024-01-01 00:43:59,0,ASCENDING
+2,6,ts,5,100969,812,640,128,false,2024-01-01 00:44:00,2024-01-01 00:46:07,0,ASCENDING
+2,6,ts,6,101781,814,768,128,false,2024-01-01 00:46:08,2024-01-01 00:48:15,0,ASCENDING
+2,6,ts,7,102595,667,896,104,false,2024-01-01 00:48:16,2024-01-01 00:49:59,0,ASCENDING
+2,7,"arr, list, element",0,103262,835,0,128,false,2000,2128,0,ASCENDING
+2,7,"arr, list, element",1,104097,835,128,128,false,2128,2256,0,ASCENDING
+2,7,"arr, list, element",2,104932,835,256,128,false,2256,2384,0,ASCENDING
+2,7,"arr, list, element",3,105767,836,384,128,false,2384,2512,0,ASCENDING
+2,7,"arr, list, element",4,106603,835,512,128,false,2512,2640,0,ASCENDING
+2,7,"arr, list, element",5,107438,836,640,128,false,2640,2768,0,ASCENDING
+2,7,"arr, list, element",6,108274,835,768,128,false,2768,2896,0,ASCENDING
+2,7,"arr, list, element",7,109109,685,896,104,false,2896,3000,0,ASCENDING
+3,0,id,0,109794,558,0,128,false,3000,3127,0,ASCENDING
+3,0,id,1,110352,554,128,128,false,3128,3255,0,ASCENDING
+3,0,id,2,110906,556,256,128,false,3256,3383,0,ASCENDING
+3,0,id,3,111462,556,384,128,false,3384,3511,0,ASCENDING
+3,0,id,4,112018,556,512,128,false,3512,3639,0,ASCENDING
+3,0,id,5,112574,554,640,128,false,3640,3767,0,ASCENDING
+3,0,id,6,113128,556,768,128,false,3768,3895,0,ASCENDING
+3,0,id,7,113684,460,896,104,false,3896,3999,0,ASCENDING
+3,1,v,0,114144,1053,0,256,false,0,993,0,UNORDERED
+3,1,v,1,115197,1053,256,256,false,2,999,0,UNORDERED
+3,1,v,2,116250,1053,512,256,false,1,998,0,UNORDERED
+3,1,v,3,117303,957,768,232,false,10,997,0,UNORDERED
+3,2,s,0,118260,590,0,128,false,long_003007_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy,s_003127,0,ASCENDING
+3,2,s,1,118850,590,128,128,false,long_003201_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy,s_003255,0,ASCENDING
+3,2,s,2,119440,584,256,128,false,long_003298_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy,s_003383,0,ASCENDING
+3,2,s,3,120024,596,384,128,false,long_003395_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy,s_003511,0,ASCENDING
+3,2,s,4,120620,586,512,128,false,long_003589_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy,s_003639,0,ASCENDING
+3,2,s,5,121206,591,640,128,false,long_003686_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy,s_003767,0,ASCENDING
+3,2,s,6,121797,597,768,128,false,long_003783_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy,s_003895,0,ASCENDING
+3,2,s,7,122394,488,896,104,false,long_003977_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy,s_003999,0,ASCENDING
+3,3,f,0,122882,1053,0,256,false,375.0,406.875,0,ASCENDING
+3,3,f,1,123935,1053,256,256,false,407.0,438.875,0,ASCENDING
+3,3,f,2,124988,1053,512,256,false,439.0,470.875,0,ASCENDING
+3,3,f,3,126041,957,768,232,false,471.0,499.875,0,ASCENDING
+3,4,dec,0,126998,1086,0,256,false,750.00,813.75,0,ASCENDING
+3,4,dec,1,128084,1085,256,256,false,814.00,877.75,0,ASCENDING
+3,4,dec,2,129169,1085,512,256,false,878.00,941.75,0,ASCENDING
+3,4,dec,3,130254,987,768,232,false,942.00,999.75,0,ASCENDING
+3,5,n,0,131241,1304,0,384,false,3001,3383,77,ASCENDING
+3,5,n,1,132545,1304,384,384,false,3384,3767,77,ASCENDING
+3,5,n,2,133849,800,768,232,false,3768,3999,46,ASCENDING
+3,6,ts,0,134649,814,0,128,false,2024-01-01 00:50:00,2024-01-01 00:52:07,0,ASCENDING
+3,6,ts,1,135463,811,128,128,false,2024-01-01 00:52:08,2024-01-01 00:54:15,0,ASCENDING
+3,6,ts,2,136274,815,256,128,false,2024-01-01 00:54:16,2024-01-01 00:56:23,0,ASCENDING
+3,6,ts,3,137089,813,384,128,false,2024-01-01 00:56:24,2024-01-01 00:58:31,0,ASCENDING
+3,6,ts,4,137902,811,512,128,false,2024-01-01 00:58:32,2024-01-01 01:00:39,0,ASCENDING
+3,6,ts,5,138713,811,640,128,false,2024-01-01 01:00:40,2024-01-01 01:02:47,0,ASCENDING
+3,6,ts,6,139524,813,768,128,false,2024-01-01 01:02:48,2024-01-01 01:04:55,0,ASCENDING
+3,6,ts,7,140337,668,896,104,false,2024-01-01 01:04:56,2024-01-01 01:06:39,0,ASCENDING
+3,7,"arr, list, element",0,141005,835,0,128,false,3000,3128,0,ASCENDING
+3,7,"arr, list, element",1,141840,835,128,128,false,3128,3256,0,ASCENDING
+3,7,"arr, list, element",2,142675,835,256,128,false,3256,3384,0,ASCENDING
+3,7,"arr, list, element",3,143510,835,384,128,false,3384,3512,0,ASCENDING
+3,7,"arr, list, element",4,144345,835,512,128,false,3512,3640,0,ASCENDING
+3,7,"arr, list, element",5,145180,835,640,128,false,3640,3768,0,ASCENDING
+3,7,"arr, list, element",6,146015,835,768,128,false,3768,3896,0,ASCENDING
+3,7,"arr, list, element",7,146850,685,896,104,false,3896,4000,0,ASCENDING

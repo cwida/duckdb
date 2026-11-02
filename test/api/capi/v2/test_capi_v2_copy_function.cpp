@@ -1,3 +1,4 @@
+#include "duckdb_v2.h"
 #include "test_capi_v2.hpp"
 
 #include <atomic>
@@ -23,7 +24,7 @@ namespace {
 // Create a copy function on the connection with the given name.
 duckdb_v2_copy_function_handle MakeCopy(duckdb_v2_connection_handle conn, const char *name) {
 	duckdb_v2_copy_function_handle function = nullptr;
-	REQUIRE(duckdb_v2_copy_function_create_with_connection(conn, &function, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_copy_function_create(FactoryOf(conn), &function, nullptr) == DUCKDB_V2_ERROR_NONE);
 	auto str = Convert(name);
 	REQUIRE(duckdb_v2_copy_function_set_name(function, &str, nullptr) == DUCKDB_V2_ERROR_NONE);
 	return function;
@@ -370,7 +371,7 @@ void RegisterProbeCopyTo(duckdb_v2_connection_handle conn, const char *name = "p
 	REQUIRE(duckdb_v2_copy_to_set_flush_callback(function, ProbeToFlush, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_copy_to_set_finalize_callback(function, ProbeToFinalize, nullptr) == DUCKDB_V2_ERROR_NONE);
 
-	REQUIRE(duckdb_v2_copy_function_register(function, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_connection_register_copy_function(conn, function, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_copy_function_destroy(&function) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(function == nullptr);
 }
@@ -384,20 +385,29 @@ void ToNoopFlush(duckdb_v2_copy_to_flush_info_handle, duckdb_v2_context_handle, 
 // Fail the query through a callback's error slot.
 void FailingToBind(duckdb_v2_copy_to_bind_info_handle, duckdb_v2_context_handle, duckdb_v2_error_info_handle *err) {
 	duckdb_v2_error_info_set_code(*err, DUCKDB_V2_ERROR_IO_GENERAL);
-	duckdb_v2_error_info_set_text(*err, Convert("copy to bind failed on purpose"));
+	auto text_str = Convert("copy to bind failed on purpose");
+	duckdb_v2_error_info_set_text(*err, &text_str);
 }
 void FailingToBatch(duckdb_v2_copy_to_batch_info_handle, duckdb_v2_context_handle, duckdb_v2_error_info_handle *err) {
 	duckdb_v2_error_info_set_code(*err, DUCKDB_V2_ERROR_IO_GENERAL);
-	duckdb_v2_error_info_set_text(*err, Convert("copy to batch failed on purpose"));
+	auto text_str = Convert("copy to batch failed on purpose");
+	duckdb_v2_error_info_set_text(*err, &text_str);
 }
 void FailingToBatchSize(duckdb_v2_copy_to_batch_size_info_handle, duckdb_v2_context_handle,
                         duckdb_v2_error_info_handle *err) {
 	duckdb_v2_error_info_set_code(*err, DUCKDB_V2_ERROR_IO_GENERAL);
-	duckdb_v2_error_info_set_text(*err, Convert("copy to batch size failed on purpose"));
+	auto text_str = Convert("copy to batch size failed on purpose");
+	duckdb_v2_error_info_set_text(*err, &text_str);
 }
 // Leaves the target unset, which the engine refuses.
 void EmptyToBatchSize(duckdb_v2_copy_to_batch_size_info_handle, duckdb_v2_context_handle,
                       duckdb_v2_error_info_handle *) {
+}
+
+// Sets the target to an invalid (0) value.
+void ZeroToBatchSize(duckdb_v2_copy_to_batch_size_info_handle info, duckdb_v2_context_handle,
+                     duckdb_v2_error_info_handle *) {
+	duckdb_v2_copy_to_batch_size_set_target(info, 0, NULL);
 }
 
 // ---------------------------------------------------------------------------
@@ -652,7 +662,7 @@ void RegisterProbeCopyFrom(duckdb_v2_connection_handle conn, const char *name = 
 	REQUIRE(duckdb_v2_copy_from_set_exec_callback(function, ProbeFromExec, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_copy_from_set_progress_callback(function, ProbeFromProgress, nullptr) == DUCKDB_V2_ERROR_NONE);
 
-	REQUIRE(duckdb_v2_copy_function_register(function, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_connection_register_copy_function(conn, function, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_copy_function_destroy(&function) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(function == nullptr);
 }
@@ -663,11 +673,13 @@ void FromNoopExec(duckdb_v2_copy_from_exec_info_handle, duckdb_v2_context_handle
 }
 void FailingFromBind(duckdb_v2_copy_from_bind_info_handle, duckdb_v2_context_handle, duckdb_v2_error_info_handle *err) {
 	duckdb_v2_error_info_set_code(*err, DUCKDB_V2_ERROR_IO_GENERAL);
-	duckdb_v2_error_info_set_text(*err, Convert("copy from bind failed on purpose"));
+	auto text_str = Convert("copy from bind failed on purpose");
+	duckdb_v2_error_info_set_text(*err, &text_str);
 }
 void FailingFromExec(duckdb_v2_copy_from_exec_info_handle, duckdb_v2_context_handle, duckdb_v2_error_info_handle *err) {
 	duckdb_v2_error_info_set_code(*err, DUCKDB_V2_ERROR_IO_GENERAL);
-	duckdb_v2_error_info_set_text(*err, Convert("copy from exec failed on purpose"));
+	auto text_str = Convert("copy from exec failed on purpose");
+	duckdb_v2_error_info_set_text(*err, &text_str);
 }
 
 } // namespace
@@ -784,7 +796,7 @@ TEST_CASE("V2 copy: COPY TO optional callbacks and empty data slots", "[capi_v2]
 	auto function = MakeCopy(fx.conn, "bare_copy");
 	REQUIRE(duckdb_v2_copy_to_set_batch_callback(function, ProbeToBatch, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_copy_to_set_flush_callback(function, ProbeToFlush, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_copy_function_register(function, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_connection_register_copy_function(fx.conn, function, nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_copy_function_destroy(&function);
 
 	const auto path = duckdb::TestCreatePath("v2_copy_bare.out");
@@ -813,7 +825,7 @@ TEST_CASE("V2 copy: COPY TO optional callbacks and empty data slots", "[capi_v2]
 	auto untaken = MakeCopy(fx.conn, "untaken_copy");
 	REQUIRE(duckdb_v2_copy_to_set_batch_callback(untaken, ToNoopBatch, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_copy_to_set_flush_callback(untaken, ToNoopFlush, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_copy_function_register(untaken, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_connection_register_copy_function(fx.conn, untaken, nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_copy_function_destroy(&untaken);
 	REQUIRE(RunCopy(fx.conn, CopyToStatement("SELECT r FROM range(10) t(r)", path, "untaken_copy")) == 10);
 
@@ -902,12 +914,13 @@ TEST_CASE("V2 copy: callback errors propagate to the result", "[capi_v2][copy_fu
 		}
 		REQUIRE(duckdb_v2_copy_to_set_batch_callback(function, batch, nullptr) == DUCKDB_V2_ERROR_NONE);
 		REQUIRE(duckdb_v2_copy_to_set_flush_callback(function, ToNoopFlush, nullptr) == DUCKDB_V2_ERROR_NONE);
-		REQUIRE(duckdb_v2_copy_function_register(function, nullptr) == DUCKDB_V2_ERROR_NONE);
+		REQUIRE(duckdb_v2_connection_register_copy_function(fx.conn, function, nullptr) == DUCKDB_V2_ERROR_NONE);
 		duckdb_v2_copy_function_destroy(&function);
 	};
 	register_to("to_batch_fails", nullptr, nullptr, FailingToBatch);
 	register_to("to_bind_fails", FailingToBind, nullptr, ToNoopBatch);
 	register_to("to_batch_size_fails", nullptr, FailingToBatchSize, ToNoopBatch);
+	register_to("to_batch_size_zero", nullptr, ZeroToBatchSize, ToNoopBatch);
 	register_to("to_batch_size_empty", nullptr, EmptyToBatchSize, ToNoopBatch);
 
 	// Registers a COPY FROM function with the given bind and exec callbacks.
@@ -916,7 +929,7 @@ TEST_CASE("V2 copy: callback errors propagate to the result", "[capi_v2][copy_fu
 		auto function = MakeCopy(fx.conn, name);
 		REQUIRE(duckdb_v2_copy_from_set_bind_callback(function, bind, nullptr) == DUCKDB_V2_ERROR_NONE);
 		REQUIRE(duckdb_v2_copy_from_set_exec_callback(function, exec, nullptr) == DUCKDB_V2_ERROR_NONE);
-		REQUIRE(duckdb_v2_copy_function_register(function, nullptr) == DUCKDB_V2_ERROR_NONE);
+		REQUIRE(duckdb_v2_connection_register_copy_function(fx.conn, function, nullptr) == DUCKDB_V2_ERROR_NONE);
 		duckdb_v2_copy_function_destroy(&function);
 	};
 	register_from("from_bind_fails", FailingFromBind, FromNoopExec);
@@ -929,13 +942,16 @@ TEST_CASE("V2 copy: callback errors propagate to the result", "[capi_v2][copy_fu
 	REQUIRE(RunFailingCopy(fx.conn, CopyToStatement(source, path, "to_bind_fails")) == DUCKDB_V2_ERROR_IO_GENERAL);
 	REQUIRE(RunFailingCopy(fx.conn, CopyToStatement(source, path, "to_batch_size_fails")) ==
 	        DUCKDB_V2_ERROR_IO_GENERAL);
-	// A batch size callback that sets no target fails the statement.
-	REQUIRE(RunFailingCopy(fx.conn, CopyToStatement(source, path, "to_batch_size_empty")) ==
+	// A batch size of 0 should fail.
+	REQUIRE(RunFailingCopy(fx.conn, CopyToStatement(source, path, "to_batch_size_zero")) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(RunFailingCopy(fx.conn, CopyFromStatement("target", path, "from_bind_fails")) ==
 	        DUCKDB_V2_ERROR_IO_GENERAL);
 	REQUIRE(RunFailingCopy(fx.conn, CopyFromStatement("target", path, "from_exec_fails")) ==
 	        DUCKDB_V2_ERROR_IO_GENERAL);
+
+	// A batch size callback that sets no target does not fail.
+	REQUIRE(RunFailingCopy(fx.conn, CopyToStatement(source, path, "to_batch_size_empty")) == DUCKDB_V2_ERROR_NONE);
 }
 
 TEST_CASE("V2 copy: registration refusals", "[capi_v2][copy_function]") {
@@ -944,17 +960,19 @@ TEST_CASE("V2 copy: registration refusals", "[capi_v2][copy_function]") {
 	// No name.
 	{
 		duckdb_v2_copy_function_handle function = nullptr;
-		REQUIRE(duckdb_v2_copy_function_create_with_connection(fx.conn, &function, nullptr) == DUCKDB_V2_ERROR_NONE);
+		REQUIRE(duckdb_v2_copy_function_create(fx.factory, &function, nullptr) == DUCKDB_V2_ERROR_NONE);
 		REQUIRE(duckdb_v2_copy_to_set_batch_callback(function, ToNoopBatch, nullptr) == DUCKDB_V2_ERROR_NONE);
 		REQUIRE(duckdb_v2_copy_to_set_flush_callback(function, ToNoopFlush, nullptr) == DUCKDB_V2_ERROR_NONE);
-		REQUIRE(duckdb_v2_copy_function_register(function, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+		REQUIRE(duckdb_v2_connection_register_copy_function(fx.conn, function, nullptr) ==
+		        DUCKDB_V2_ERROR_INPUT_INVALID);
 		duckdb_v2_copy_function_destroy(&function);
 	}
 
 	// Neither side set.
 	{
 		auto function = MakeCopy(fx.conn, "copy_no_side");
-		REQUIRE(duckdb_v2_copy_function_register(function, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+		REQUIRE(duckdb_v2_connection_register_copy_function(fx.conn, function, nullptr) ==
+		        DUCKDB_V2_ERROR_INPUT_INVALID);
 		duckdb_v2_copy_function_destroy(&function);
 	}
 
@@ -962,13 +980,15 @@ TEST_CASE("V2 copy: registration refusals", "[capi_v2][copy_function]") {
 	{
 		auto function = MakeCopy(fx.conn, "copy_to_no_batch");
 		REQUIRE(duckdb_v2_copy_to_set_flush_callback(function, ToNoopFlush, nullptr) == DUCKDB_V2_ERROR_NONE);
-		REQUIRE(duckdb_v2_copy_function_register(function, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+		REQUIRE(duckdb_v2_connection_register_copy_function(fx.conn, function, nullptr) ==
+		        DUCKDB_V2_ERROR_INPUT_INVALID);
 		duckdb_v2_copy_function_destroy(&function);
 	}
 	{
 		auto function = MakeCopy(fx.conn, "copy_to_no_flush");
 		REQUIRE(duckdb_v2_copy_to_set_batch_callback(function, ToNoopBatch, nullptr) == DUCKDB_V2_ERROR_NONE);
-		REQUIRE(duckdb_v2_copy_function_register(function, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+		REQUIRE(duckdb_v2_connection_register_copy_function(fx.conn, function, nullptr) ==
+		        DUCKDB_V2_ERROR_INPUT_INVALID);
 		duckdb_v2_copy_function_destroy(&function);
 	}
 
@@ -976,13 +996,15 @@ TEST_CASE("V2 copy: registration refusals", "[capi_v2][copy_function]") {
 	{
 		auto function = MakeCopy(fx.conn, "copy_from_no_bind");
 		REQUIRE(duckdb_v2_copy_from_set_exec_callback(function, FromNoopExec, nullptr) == DUCKDB_V2_ERROR_NONE);
-		REQUIRE(duckdb_v2_copy_function_register(function, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+		REQUIRE(duckdb_v2_connection_register_copy_function(fx.conn, function, nullptr) ==
+		        DUCKDB_V2_ERROR_INPUT_INVALID);
 		duckdb_v2_copy_function_destroy(&function);
 	}
 	{
 		auto function = MakeCopy(fx.conn, "copy_from_no_exec");
 		REQUIRE(duckdb_v2_copy_from_set_bind_callback(function, FromNoopBind, nullptr) == DUCKDB_V2_ERROR_NONE);
-		REQUIRE(duckdb_v2_copy_function_register(function, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+		REQUIRE(duckdb_v2_connection_register_copy_function(fx.conn, function, nullptr) ==
+		        DUCKDB_V2_ERROR_INPUT_INVALID);
 		duckdb_v2_copy_function_destroy(&function);
 	}
 
@@ -992,7 +1014,8 @@ TEST_CASE("V2 copy: registration refusals", "[capi_v2][copy_function]") {
 		REQUIRE(duckdb_v2_copy_to_set_batch_callback(function, ToNoopBatch, nullptr) == DUCKDB_V2_ERROR_NONE);
 		REQUIRE(duckdb_v2_copy_to_set_flush_callback(function, ToNoopFlush, nullptr) == DUCKDB_V2_ERROR_NONE);
 		REQUIRE(duckdb_v2_copy_from_set_bind_callback(function, FromNoopBind, nullptr) == DUCKDB_V2_ERROR_NONE);
-		REQUIRE(duckdb_v2_copy_function_register(function, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+		REQUIRE(duckdb_v2_connection_register_copy_function(fx.conn, function, nullptr) ==
+		        DUCKDB_V2_ERROR_INPUT_INVALID);
 		duckdb_v2_copy_function_destroy(&function);
 	}
 }
@@ -1001,17 +1024,16 @@ TEST_CASE("V2 copy: null arguments and destroy null-safety", "[capi_v2][copy_fun
 	EnvFixture fx;
 
 	duckdb_v2_copy_function_handle function = nullptr;
-	REQUIRE(duckdb_v2_copy_function_create_with_connection(nullptr, &function, nullptr) ==
-	        DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_copy_function_create(nullptr, &function, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(function == nullptr);
-	REQUIRE(duckdb_v2_copy_function_create_with_connection(fx.conn, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_copy_function_create(fx.factory, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 
-	REQUIRE(duckdb_v2_copy_function_create_with_connection(fx.conn, &function, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_copy_function_create(fx.factory, &function, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_copy_function_set_name(function, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_copy_function_set_user_data(function, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_copy_to_set_batch_callback(nullptr, ToNoopBatch, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_copy_from_set_exec_callback(nullptr, FromNoopExec, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(duckdb_v2_copy_function_register(nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_connection_register_copy_function(fx.conn, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 
 	idx_t count = 0;
 	duckdb_v2_logical_type_handle type = nullptr;
@@ -1040,6 +1062,18 @@ TEST_CASE("V2 copy: null arguments and destroy null-safety", "[capi_v2][copy_fun
 	REQUIRE(duckdb_v2_copy_function_destroy(nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_copy_function_handle null_function = nullptr;
 	REQUIRE(duckdb_v2_copy_function_destroy(&null_function) == DUCKDB_V2_ERROR_NONE);
+}
+
+TEST_CASE("V2 copy: set_file_extension", "[capi_v2][copy_function]") {
+	EnvFixture fx;
+	auto function = MakeCopy(fx.conn, "v2_copy_ext");
+	auto extension = Convert("summary");
+	REQUIRE(duckdb_v2_copy_function_set_file_extension(function, &extension, nullptr) == DUCKDB_V2_ERROR_NONE);
+	auto dotted = Convert(".summary");
+	REQUIRE(duckdb_v2_copy_function_set_file_extension(function, &dotted, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_copy_function_set_file_extension(function, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_copy_function_set_file_extension(nullptr, &extension, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	duckdb_v2_copy_function_destroy(&function);
 }
 
 } // namespace test_capi_v2

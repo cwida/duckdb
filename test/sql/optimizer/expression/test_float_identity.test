@@ -1,0 +1,149 @@
+# name: test/sql/optimizer/expression/test_float_identity.test
+# description: Floating division identities and lossless integer comparisons
+# group: [expression]
+
+statement ok
+PRAGMA explain_output = OPTIMIZED_ONLY;
+
+foreach type FLOAT DOUBLE
+
+statement ok
+CREATE OR REPLACE TABLE floats(x {type});
+
+statement ok
+INSERT INTO floats VALUES (NULL), ('NaN'), ('Infinity'), ('-Infinity'), ('-0.0'), (0), (2), (1e-30);
+
+query I nosort identity_{type}
+EXPLAIN SELECT x FROM floats;
+----
+
+query I nosort identity_{type}
+EXPLAIN SELECT x / 1 FROM floats;
+----
+
+foreach ieee true false
+
+statement ok
+SET ieee_floating_point_ops={ieee};
+
+query II
+SELECT bool_and((x / 1) IS NOT DISTINCT FROM x), bool_and(signbit(x / 1) = signbit(x)) FILTER (WHERE x = 0) FROM floats;
+----
+true	true
+
+# Other floating operations must not acquire the integer identity rules.
+query II
+SELECT isnan(x * 0), isnan(0 / x) FROM floats WHERE isnan(x);
+----
+true	true
+
+query I
+SELECT 1 / x FROM floats WHERE x = 2;
+----
+0.5
+
+endloop
+
+endloop
+
+statement ok
+RESET ieee_floating_point_ops;
+
+foreach type TINYINT UTINYINT SMALLINT USMALLINT INTEGER UINTEGER
+
+statement ok
+CREATE OR REPLACE TABLE integers(i {type});
+
+statement ok
+INSERT INTO integers VALUES (NULL), (0), (1), (2);
+
+query I nosort comparison_{type}
+EXPLAIN SELECT i FROM integers WHERE i = 1;
+----
+
+query I nosort comparison_{type}
+EXPLAIN SELECT i FROM integers WHERE i / 1 = 1;
+----
+
+query I nosort comparison_{type}
+EXPLAIN SELECT i FROM integers WHERE 1::DOUBLE = i::DOUBLE;
+----
+
+query IIII
+SELECT i::DOUBLE = 1, i::DOUBLE < 1.5, i::DOUBLE IS DISTINCT FROM NULL, i::DOUBLE IS NOT DISTINCT FROM 1
+FROM integers
+ORDER BY i NULLS FIRST;
+----
+NULL	NULL	false	false
+false	true	true	false
+true	true	true	true
+false	false	true	false
+
+# Fractional, out-of-range, and non-finite constants must not be rounded into the integer domain.
+query IIII
+SELECT
+	count(*) FILTER (WHERE i::DOUBLE = 1.5),
+	count(*) FILTER (WHERE i::DOUBLE = 1e30),
+	count(*) FILTER (WHERE i::DOUBLE = 'NaN'::DOUBLE),
+	count(*) FILTER (WHERE i::DOUBLE = 'Infinity'::DOUBLE)
+FROM integers;
+----
+0	0	0	0
+
+endloop
+
+foreach type TINYINT UTINYINT SMALLINT USMALLINT
+
+statement ok
+CREATE OR REPLACE TABLE small_integers(i {type});
+
+query I nosort float_comparison_{type}
+EXPLAIN SELECT i FROM small_integers WHERE i = 1;
+----
+
+query I nosort float_comparison_{type}
+EXPLAIN SELECT i FROM small_integers WHERE i::FLOAT / 1 = 1::FLOAT;
+----
+
+endloop
+
+statement ok
+CREATE TABLE wide_integers AS SELECT * FROM (VALUES (9007199254740992::BIGINT), (9007199254740993::BIGINT)) t(i);
+
+# BIGINT to DOUBLE is not injective, even when the constant round-trips exactly.
+query I
+SELECT count(*) FROM wide_integers WHERE i / 1 = 9007199254740992::DOUBLE;
+----
+2
+
+statement ok
+CREATE TABLE rounded_integers AS SELECT * FROM (VALUES (16777216::INTEGER), (16777217::INTEGER)) t(i);
+
+# INTEGER to FLOAT is not injective either.
+query I
+SELECT count(*) FROM rounded_integers WHERE i::FLOAT / 1 = 16777216::FLOAT;
+----
+2
+
+# Removing division must retain its implicit cast and DOUBLE return type.
+query I
+SELECT typeof(i / 1) FROM rounded_integers LIMIT 1;
+----
+DOUBLE
+
+foreach type,min,max TINYINT,-128,127 UTINYINT,0,255 SMALLINT,-32768,32767 USMALLINT,0,65535 INTEGER,-2147483648,2147483647 UINTEGER,0,4294967295
+
+statement ok
+CREATE OR REPLACE TABLE boundaries AS
+SELECT * FROM (VALUES (CAST({min} AS {type})), (CAST({max} AS {type})), (NULL::{type})) t(i);
+
+query III
+SELECT
+	count(*) FILTER (WHERE i::DOUBLE = {min}::DOUBLE),
+	count(*) FILTER (WHERE {max}::DOUBLE = TRY_CAST(i AS DOUBLE)),
+	count(*) FILTER (WHERE i::DOUBLE IS NOT DISTINCT FROM NULL)
+FROM boundaries;
+----
+1	1	1
+
+endloop

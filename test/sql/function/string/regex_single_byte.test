@@ -1,0 +1,117 @@
+# name: test/sql/function/string/regex_single_byte.test
+# description: \C matches a single byte - regex functions must not return a partial multi-byte character
+# group: [string]
+
+statement ok
+CREATE TABLE t AS SELECT 'ä' AS s, 'aäb' AS s2, '\C' AS p, 'a\C' AS p2
+
+# constant patterns
+statement error
+SELECT regexp_replace('ä', '\C', 'x')
+----
+\C matched part of a character
+
+statement error
+SELECT regexp_extract('ä', '\C')
+----
+\C matched part of a character
+
+statement error
+SELECT regexp_extract('ä', '(\C)', ['g'])
+----
+\C matched part of a character
+
+statement error
+SELECT regexp_extract_all('ä', '\C')
+----
+\C matched part of a character
+
+statement error
+SELECT regexp_extract_all('ä', '(\C)', ['g'])
+----
+\C matched part of a character
+
+statement error
+SELECT string_split_regex('aäb', 'a\C')
+----
+\C matched part of a character
+
+statement error
+SELECT regexp_split_to_array('aäb', 'a\C')
+----
+\C matched part of a character
+
+# per-row patterns
+statement error
+SELECT regexp_replace(s, p, 'x') FROM t
+----
+\C matched part of a character
+
+statement error
+SELECT regexp_replace(s2, p2, '', 'g') FROM t
+----
+\C matched part of a character
+
+statement error
+SELECT regexp_extract(s, p) FROM t
+----
+\C matched part of a character
+
+statement error
+SELECT regexp_extract_all(s, p) FROM t
+----
+\C matched part of a character
+
+statement error
+SELECT string_split_regex(s2, p2) FROM t
+----
+\C matched part of a character
+
+# the invalid string never reaches downstream string functions
+statement error
+SELECT strip_accents(regexp_replace(s, p, '')) FROM t
+----
+\C matched part of a character
+
+statement error
+SELECT instr(regexp_replace(s, p, '') || 'b', 'b') FROM t
+----
+\C matched part of a character
+
+# \C is fine as long as it does not split a character
+query I
+SELECT regexp_replace('abc', '\C', 'x')
+----
+xbc
+
+query I
+SELECT regexp_replace('äb', '\C\C', 'x')
+----
+xb
+
+query I
+SELECT regexp_replace(s, p, '', 'g') FROM t
+----
+(empty)
+
+query I
+SELECT string_split_regex('ä', '\C')
+----
+['', '', '']
+
+query I
+SELECT regexp_matches('ä', '\C')
+----
+true
+
+# an empty match can land in the middle of a character
+query I
+SELECT regexp_extract_all(s2, '([a])\C|', 1) FROM t
+----
+[a, NULL, NULL, NULL]
+
+# plain string_split does not use regular expressions
+query I
+SELECT string_split('aäb', 'a\C')
+----
+[aäb]

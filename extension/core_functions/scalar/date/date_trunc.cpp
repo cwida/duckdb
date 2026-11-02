@@ -2,6 +2,7 @@
 #include "duckdb/common/enums/date_part_specifier.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
+#include "duckdb/common/operator/multiply.hpp"
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/common/types/time.hpp"
 #include "duckdb/common/types/timestamp.hpp"
@@ -83,9 +84,7 @@ struct DateTrunc {
 		template <class TA, class TR>
 		static inline TR Operation(TA input) {
 			date_t date = Date::GetMondayOfCurrentWeek(input);
-			date.days -= (Date::ExtractISOWeekNumber(date) - 1) * Interval::DAYS_PER_WEEK;
-
-			return date;
+			return Date::SubtractDays(date, int64_t(Date::ExtractISOWeekNumber(date) - 1) * Interval::DAYS_PER_WEEK);
 		}
 	};
 
@@ -104,7 +103,11 @@ struct DateTrunc {
 		const int64_t v = ts.value;
 		// Round towards negative infinity instead of 0
 		const int64_t q = v / interval_us - (v % interval_us != 0 && v < 0 ? 1 : 0);
-		return timestamp_t(q * interval_us);
+		int64_t result;
+		if (!TryMultiplyOperator::Operation(q, interval_us, result) || result == NumericLimits<int64_t>::Minimum()) {
+			throw ConversionException("Date out of range in timestamp conversion");
+		}
+		return timestamp_t(result);
 	}
 
 	struct HourOperator {
@@ -496,8 +499,16 @@ unique_ptr<BaseStatistics> DateTruncStatistics(vector<BaseStatistics> &child_sta
 	}
 
 	// Infinite values are unmodified
-	auto min_part = DateTrunc::UnaryFunction<TA, TR, OP>(min);
-	auto max_part = DateTrunc::UnaryFunction<TA, TR, OP>(max);
+	TR min_part;
+	TR max_part;
+	try {
+		min_part = DateTrunc::UnaryFunction<TA, TR, OP>(min);
+		max_part = DateTrunc::UnaryFunction<TA, TR, OP>(max);
+	} catch (const ConversionException &) {
+		// the bounds are not in the range of the result type (e.g. a DATE beyond the TIMESTAMP range) - the rows
+		// holding them may not even reach the function, so do not propagate statistics
+		return nullptr;
+	}
 
 	auto min_value = Value::CreateValue(min_part);
 	auto max_value = Value::CreateValue(max_part);

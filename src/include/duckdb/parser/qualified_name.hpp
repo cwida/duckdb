@@ -50,6 +50,30 @@ struct QualifiedName {
 	QualifiedName(vector<Identifier> schema_path_p, Identifier name_p) : path(std::move(schema_path_p)) {
 		path.push_back(std::move(name_p));
 	}
+	//! Construct from a complete path, including its final name.
+	static QualifiedName FromPath(vector<Identifier> path) {
+		QualifiedName result;
+		result.path = std::move(path);
+		return result;
+	}
+	//! Qualify a schema path with an explicit catalog, without inferring a catalog from the path's length.
+	static QualifiedName FromCatalogSchema(Identifier catalog, vector<Identifier> schema_path, Identifier name) {
+		if (schema_path.empty()) {
+			return QualifiedName(std::move(catalog), Identifier(), std::move(name));
+		}
+		if (!catalog.empty()) {
+			schema_path.insert(schema_path.begin(), std::move(catalog));
+		}
+		return QualifiedName(std::move(schema_path), std::move(name));
+	}
+	//! Return the qualification as a name in its own right.
+	QualifiedName Parent() const {
+		auto result = *this;
+		if (!result.path.empty()) {
+			result.path.pop_back();
+		}
+		return result;
+	}
 
 	//! The catalog is the first element of the path, but only when the path is fully qualified ([catalog,
 	//! schema..., name])
@@ -63,6 +87,16 @@ struct QualifiedName {
 	//! The name is the last element of the path
 	const Identifier &Name() const {
 		return path.empty() ? empty : path.back();
+	}
+	//! The (possibly nested) schema qualification between the catalog and the name
+	vector<Identifier> SchemaPath() const {
+		vector<Identifier> result;
+		for (idx_t i = path.size() >= 3 ? 1 : 0; i + 1 < path.size(); i++) {
+			if (!path[i].empty()) {
+				result.push_back(path[i]);
+			}
+		}
+		return result;
 	}
 	//! The full underlying path. Most callers should use Catalog()/Schema()/Name(); this is for multi-level schema
 	//! support (e.g. nested CREATE SCHEMA), where the qualification can be deeper than [catalog, schema].
@@ -116,6 +150,8 @@ struct QualifiedName {
 	//! Parse the (optional) schema and a name from a string in the format of e.g. "schema"."table"; if there is no dot
 	//! the schema will be set to INVALID_SCHEMA
 	static QualifiedName Parse(const string &input);
+	//! Parse a qualified name, returning false and setting the error if it is malformed or any component is empty
+	static bool TryParse(const string &input, QualifiedName &result, string &error);
 	static vector<Identifier> ParseComponents(const string &input);
 	string ToString(QualifiedNameToStringMode mode = QualifiedNameToStringMode::DEFAULT) const;
 	//! Render only the qualification (every component before the name), with a trailing "." after each component

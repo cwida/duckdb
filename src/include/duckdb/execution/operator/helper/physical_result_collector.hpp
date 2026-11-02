@@ -10,13 +10,11 @@
 
 #include "duckdb/execution/physical_operator.hpp"
 #include "duckdb/main/query_result.hpp"
-#include "duckdb/common/enums/query_result_memory_type.hpp"
 #include "duckdb/common/enums/statement_type.hpp"
 
 namespace duckdb {
 
 class PreparedStatementData;
-class ColumnDataCollection;
 
 //! PhysicalResultCollector is an abstract class that is used to generate the final result of a query
 class PhysicalResultCollector : public PhysicalOperator {
@@ -28,7 +26,6 @@ public:
 
 	StatementType statement_type;
 	StatementProperties properties;
-	QueryResultMemoryType memory_type;
 	PhysicalOperator &plan;
 	vector<Identifier> names;
 
@@ -57,9 +54,10 @@ public:
 	virtual bool IsStreaming() const {
 		return false;
 	}
-
-protected:
-	unique_ptr<ColumnDataCollection> CreateCollection(ClientContext &context) const;
+	//! Whether this collector builds its own result object, rather than serving it through a result buffer
+	virtual bool BuildsOwnResult() const {
+		return true;
+	}
 };
 
 } // namespace duckdb

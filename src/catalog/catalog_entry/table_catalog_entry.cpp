@@ -4,7 +4,8 @@
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
 #include "duckdb/common/algorithm.hpp"
 #include "duckdb/common/exception.hpp"
-#include "duckdb/common/extra_type_info.hpp"
+#include "duckdb/common/enum_util.hpp"
+#include "duckdb/common/logical_type_info.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/parser/constraints/list.hpp"
@@ -118,8 +119,8 @@ string TableCatalogEntry::ColumnsToSQL(const ColumnList &columns, const vector<u
 
 	// find all columns that have NOT NULL specified, but are NOT primary key columns
 	logical_index_set_t not_null_columns;
-	logical_index_set_t unique_columns;
-	logical_index_set_t pk_columns;
+	logical_index_map_t<vector<ConstraintCheckMode>> unique_columns;
+	logical_index_map_t<vector<ConstraintCheckMode>> pk_columns;
 	identifier_set_t multi_key_pks;
 	vector<string> extra_constraints;
 	for (auto &constraint : constraints) {
@@ -131,9 +132,9 @@ string TableCatalogEntry::ColumnsToSQL(const ColumnList &columns, const vector<u
 			if (pk.HasIndex()) {
 				// no columns specified: single column constraint
 				if (pk.IsPrimaryKey()) {
-					pk_columns.insert(pk.GetIndex());
+					pk_columns[pk.GetIndex()].push_back(pk.check_mode);
 				} else {
-					unique_columns.insert(pk.GetIndex());
+					unique_columns[pk.GetIndex()].push_back(pk.check_mode);
 				}
 			} else {
 				// multi-column constraint, this constraint needs to go at the end after all columns
@@ -171,11 +172,21 @@ string TableCatalogEntry::ColumnsToSQL(const ColumnList &columns, const vector<u
 		}
 		if (is_single_key_pk) {
 			// single column pk: insert constraint here
-			ss << " PRIMARY KEY";
+			for (auto check_mode : pk_columns.at(column.Logical())) {
+				ss << " PRIMARY KEY";
+				if (check_mode != ConstraintCheckMode::DEFAULT) {
+					ss << " " << EnumUtil::ToString(check_mode);
+				}
+			}
 		}
 		if (is_unique) {
 			// single column unique: insert constraint here
-			ss << " UNIQUE";
+			for (auto check_mode : unique_columns.at(column.Logical())) {
+				ss << " UNIQUE";
+				if (check_mode != ConstraintCheckMode::DEFAULT) {
+					ss << " " << EnumUtil::ToString(check_mode);
+				}
+			}
 		}
 	}
 	// print any extra constraints that still need to be printed
@@ -232,7 +243,8 @@ DataTable &TableCatalogEntry::GetStorage() {
 // LCOV_EXCL_STOP
 
 void LogicalUpdate::BindExtraColumns(TableCatalogEntry &table, LogicalGet &get, LogicalProjection &proj,
-                                     LogicalUpdate &update, physical_index_set_t &bound_columns) {
+                                     LogicalUpdate &update, physical_index_set_t &bound_columns,
+                                     bool reuse_projected_columns) {
 	if (bound_columns.size() <= 1) {
 		return;
 	}
@@ -255,15 +267,28 @@ void LogicalUpdate::BindExtraColumns(TableCatalogEntry &table, LogicalGet &get, 
 			}
 			// column is not projected yet: project it by adding the clause "i=i" to the set of updated columns
 			auto &column = table.GetColumns().GetColumn(physical_id);
-			auto proj_ref = make_uniq<BoundColumnRefExpression>(
-			    column.Type(), ColumnBinding(get.table_index, ProjectionIndex(get.GetColumnIds().size())));
+			auto column_id = column.Logical().index;
+			auto get_index = reuse_projected_columns ? get.TryGetProjectionIndex(column_id) : ProjectionIndex();
+			if (!get_index.IsValid()) {
+				get_index = get.AddColumnId(column_id);
+			}
+			auto proj_ref =
+			    make_uniq<BoundColumnRefExpression>(column.Type(), ColumnBinding(get.table_index, get_index));
 			auto proj_index = ColumnBinding::PushExpression(proj.expressions, std::move(proj_ref));
 			update.expressions.push_back(
 			    make_uniq<BoundColumnRefExpression>(column.Type(), ColumnBinding(proj.table_index, proj_index)));
-			get.AddColumnId(column.Logical().index);
 			update.columns.push_back(physical_id);
 		}
 	}
+}
+
+void LogicalUpdate::BindAllColumns(TableCatalogEntry &table, LogicalGet &get, LogicalProjection &proj,
+                                   LogicalUpdate &update, bool reuse_projected_columns) {
+	physical_index_set_t all_columns;
+	for (auto &column : table.GetColumns().Physical()) {
+		all_columns.insert(column.Physical());
+	}
+	BindExtraColumns(table, get, proj, update, all_columns, reuse_projected_columns);
 }
 
 vector<ColumnSegmentInfo> TableCatalogEntry::GetColumnSegmentInfo(const QueryContext &context,
@@ -295,11 +320,7 @@ void TableCatalogEntry::BindUpdateConstraints(Binder &binder, LogicalGet &get, L
 		}
 	}
 	if (update.return_chunk) {
-		physical_index_set_t all_columns;
-		for (auto &column : GetColumns().Physical()) {
-			all_columns.insert(column.Physical());
-		}
-		LogicalUpdate::BindExtraColumns(*this, get, proj, update, all_columns);
+		LogicalUpdate::BindAllColumns(*this, get, proj, update);
 	}
 	// for index updates we always turn any update into an insert and a delete
 	// we thus need all the columns to be available, hence we check if the update touches any index columns
@@ -328,11 +349,7 @@ void TableCatalogEntry::BindUpdateConstraints(Binder &binder, LogicalGet &get, L
 	if (update.update_is_del_and_insert) {
 		// the update updates a column required by an index or requires returning the updated rows,
 		// push projections for all columns
-		physical_index_set_t all_columns;
-		for (auto &column : GetColumns().Physical()) {
-			all_columns.insert(column.Physical());
-		}
-		LogicalUpdate::BindExtraColumns(*this, get, proj, update, all_columns);
+		LogicalUpdate::BindAllColumns(*this, get, proj, update);
 	}
 }
 
@@ -394,7 +411,9 @@ optional_ptr<CatalogEntry> TableCatalogEntry::GetTrigger(CatalogTransaction tran
 }
 
 bool TableCatalogEntry::DropTrigger(CatalogTransaction transaction, const Identifier &name, bool cascade) {
-	throw NotImplementedException("Triggers are not supported for this table type");
+	// Default: no triggers, so there is nothing to drop. Returning false instead of throwing lets DROP TRIGGER IF
+	// EXISTS be a no-op.
+	return false;
 }
 
 vector<const_reference<TriggerCatalogEntry>> TableCatalogEntry::GetTriggersForEvent(CatalogTransaction transaction,

@@ -1,0 +1,55 @@
+# name: test/sql/sql_export/execution_once.test
+# description: Execute exported SQL once and verify its results and subsequent state
+# group: [sql_export]
+
+# These checks depend on session state across statements.
+require skip_reload
+
+statement ok
+CREATE SEQUENCE exported_calls;
+
+statement ok
+SET debug_verify_statement='explain_sql_strict';
+
+query II
+SELECT x,x FROM (SELECT nextval('exported_calls') AS x FROM (VALUES (1),(2),(2)) t(i)) q
+----
+1	1
+2	2
+3	3
+
+query I
+SELECT nextval('exported_calls')
+----
+4
+
+statement error
+SELECT CASE WHEN nextval('exported_calls')=5 THEN error('generated execution failed') ELSE 0 END
+----
+generated execution failed
+
+query I
+SELECT nextval('exported_calls')
+----
+6
+
+query I
+SELECT count(*) FROM range(10) WHERE random() BETWEEN 0 AND 1
+----
+10
+
+statement ok
+CREATE TABLE hinted_values AS SELECT i, i%7 v FROM range(100)t(i)
+
+statement ok
+CREATE SEQUENCE hinted_calls
+
+query II
+SELECT count(*),sum(i) FROM hinted_values WHERE i>v AND nextval('hinted_calls')>0
+----
+93	4929
+
+query I
+SELECT currval('hinted_calls')
+----
+93

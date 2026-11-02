@@ -1,0 +1,7 @@
+{
+  "description": "Run on persistent databases with an artificial 10ms delay on each WAL fsync, emulating high-latency durable storage under group commit. Deliberately NOT in the Makefile's TEST_CONFIGS: a 10ms delay per fsync makes a full suite run impractical for per-PR CI. Intended for targeted manual stress runs, e.g. test/unittest --test-config test/configs/wal_fsync_delay.json 'test/sql/parallelism/interquery/*'",
+  "initial_db": "{TEST_DIR}/{BASE_TEST_NAME}__test__config__wal_fsync_delay.db",
+  "on_init": "SET debug_wal_fsync_sleep_ms=10;",
+  "skip_compiled": "true",
+  "inherit_skip_tests": "test/configs/force_storage.json"
+}

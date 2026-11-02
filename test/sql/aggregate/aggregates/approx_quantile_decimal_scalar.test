@@ -1,0 +1,35 @@
+# name: test/sql/aggregate/aggregates/approx_quantile_decimal_scalar.test
+# description: approx_quantile with a scalar quantile keeps the DECIMAL type of its input
+# group: [aggregates]
+
+query IIII
+SELECT approx_quantile(x, 0.5), typeof(approx_quantile(x, 0.5)), approx_quantile(x, [0.5]), quantile_cont(x, 0.5)
+FROM (VALUES (1.5::DECIMAL(4,1)), (2.5), (3.5)) v(x);
+----
+2.5	DECIMAL(4,1)	[2.5]	2.5
+
+query I
+SELECT approx_quantile(x, 0.5) FROM (VALUES (0.25::DECIMAL(18,2)), (0.25), (0.25)) v(x);
+----
+0.25
+
+query II
+SELECT approx_quantile(x, 0.5), typeof(approx_quantile(x, 0.5)) FROM (VALUES (0.5::DECIMAL(2,1)), (0.5), (0.5)) v(x);
+----
+0.5	DECIMAL(2,1)
+
+query II
+SELECT approx_quantile(x, 0.5), typeof(approx_quantile(x, 0.5)) FROM (VALUES (12.75::DECIMAL(38,2)), (12.75), (12.75)) v(x);
+----
+12.75	DECIMAL(38,2)
+
+query II
+SELECT g, approx_quantile(x, 0.5) FROM (VALUES (1, 1.25::DECIMAL(9,2)), (1, 1.25), (2, 7.75), (2, 7.75)) v(g, x) GROUP BY g ORDER BY g;
+----
+1	1.25
+2	7.75
+
+query I
+SELECT approx_quantile(x, 0.5) FROM (VALUES (NULL::DECIMAL(9,2))) v(x);
+----
+NULL

@@ -28,10 +28,10 @@ public:
 				result = task->ExecuteTaskStep();
 			} while (result == TaskExecutionResult::TASK_NOT_FINISHED && mode == TaskExecutionMode::PROCESS_ALL);
 		} catch (std::exception &ex) {
-			executor.PushError(ErrorData(ex));
+			executor.PushTaskError(ex);
 			return TaskExecutionResult::TASK_ERROR;
 		} catch (...) { // LCOV_EXCL_START
-			executor.PushError(ErrorData("Unknown exception during task execution"));
+			executor.PushTaskError("Unknown exception during task execution");
 			return TaskExecutionResult::TASK_ERROR;
 		} // LCOV_EXCL_STOP
 		if (result == TaskExecutionResult::TASK_NOT_FINISHED) {
@@ -56,8 +56,12 @@ public:
 	}
 
 	//! Retire a task that never made it into the queue, without touching the executor's accounting
-	void Retire() {
-		RunGuarded([&]() { task->Cancel(); }, "Unknown exception while cancelling a task");
+	void Retire() noexcept {
+		try {
+			RunGuarded([&]() { task->Cancel(); }, "Unknown exception while cancelling a task");
+		} catch (...) {
+			// Preserve the submission exception if reporting a cancellation error fails.
+		}
 	}
 
 private:
@@ -86,10 +90,10 @@ private:
 		try {
 			callback();
 		} catch (std::exception &ex) {
-			executor.PushError(ErrorData(ex));
+			executor.PushTaskError(ex);
 			return TaskExecutionResult::TASK_ERROR;
 		} catch (...) { // LCOV_EXCL_START
-			executor.PushError(ErrorData(unknown_error));
+			executor.PushTaskError(unknown_error);
 			return TaskExecutionResult::TASK_ERROR;
 		} // LCOV_EXCL_STOP
 		return TaskExecutionResult::TASK_FINISHED;
@@ -122,6 +126,14 @@ void TaskExecutor::PushError(ErrorData error) {
 	error_manager.PushError(std::move(error));
 }
 
+void TaskExecutor::PushTaskError(const std::exception &ex) {
+	error_manager.PushTaskError([&]() { return ErrorData(ex); });
+}
+
+void TaskExecutor::PushTaskError(const char *message) {
+	error_manager.PushTaskError([&]() { return ErrorData(message); });
+}
+
 bool TaskExecutor::HasError() {
 	return error_manager.HasError();
 }
@@ -140,7 +152,16 @@ bool TaskExecutor::IsCancelled() const {
 
 void TaskExecutor::ScheduleTask(unique_ptr<BaseExecutorTask> task) {
 	// wrap before taking ownership of a slot, so that a failure to allocate the wrapper needs no rollback
-	auto scheduled_task = make_shared_ptr<TaskExecutorTask>(*this, std::move(task));
+	shared_ptr<TaskExecutorTask> scheduled_task;
+	try {
+		scheduled_task = make_shared_ptr<TaskExecutorTask>(*this, std::move(task));
+	} catch (...) {
+		if (task) {
+			TaskExecutorTask unscheduled_task(*this, std::move(task));
+			unscheduled_task.Retire();
+		}
+		throw;
+	}
 	{
 		const annotated_lock_guard<annotated_mutex> lock(token->producer_lock);
 		++total_tasks;
@@ -160,6 +181,55 @@ void TaskExecutor::ScheduleTask(unique_ptr<BaseExecutorTask> task) {
 		throw;
 	}
 }
+
+void TaskExecutor::ScheduleTasks(vector<unique_ptr<BaseExecutorTask>> tasks) {
+	if (tasks.empty()) {
+		return;
+	}
+	if (tasks.size() == 1) {
+		ScheduleTask(std::move(tasks.front()));
+		return;
+	}
+	vector<shared_ptr<Task>> scheduled_tasks;
+	bool accounted = false;
+	try {
+#ifdef DUCKDB_NO_THREADS
+		// The no-threads bulk queue can publish a prefix before an allocation fails.
+		for (auto &task : tasks) {
+			ScheduleTask(std::move(task));
+		}
+#else
+		scheduled_tasks.reserve(tasks.size());
+		for (auto &task : tasks) {
+			scheduled_tasks.push_back(make_shared_ptr<TaskExecutorTask>(*this, std::move(task)));
+		}
+		{
+			const annotated_lock_guard<annotated_mutex> lock(token->producer_lock);
+			total_tasks += tasks.size();
+		}
+		accounted = true;
+		// The threaded bulk queue publishes all tasks or none, moving ownership on success.
+		scheduler.ScheduleTasks(*token, scheduled_tasks, type);
+#endif
+	} catch (...) {
+		if (accounted) {
+			const annotated_lock_guard<annotated_mutex> lock(token->producer_lock);
+			total_tasks -= tasks.size();
+			token->producer_cv.notify_one();
+		}
+		for (auto &task : scheduled_tasks) {
+			static_cast<TaskExecutorTask &>(*task).Retire();
+		}
+		for (auto &task : tasks) {
+			if (task) {
+				TaskExecutorTask unscheduled_task(*this, std::move(task));
+				unscheduled_task.Retire();
+			}
+		}
+		throw;
+	}
+}
+
 void TaskExecutor::FinishTask() {
 	const annotated_lock_guard<annotated_mutex> lk(token->producer_lock);
 	++completed_tasks;

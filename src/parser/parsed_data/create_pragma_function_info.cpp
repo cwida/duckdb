@@ -5,12 +5,16 @@ namespace duckdb {
 CreatePragmaFunctionInfo::CreatePragmaFunctionInfo(PragmaFunction function)
     : CreateFunctionInfo(CatalogType::PRAGMA_FUNCTION_ENTRY), functions(function.name) {
 	SetFunctionName(function.name);
+	function.GetSignature().Verify();
 	functions.AddFunction(std::move(function));
 	internal = true;
 }
 CreatePragmaFunctionInfo::CreatePragmaFunctionInfo(PragmaFunctionSet functions_p)
     : CreateFunctionInfo(CatalogType::PRAGMA_FUNCTION_ENTRY), functions(std::move(functions_p)) {
 	SetFunctionName(functions.name);
+	for (auto &func : functions.functions) {
+		func->GetSignature().Verify();
+	}
 	internal = true;
 }
 CreatePragmaFunctionInfo::CreatePragmaFunctionInfo(Identifier name, PragmaFunctionSet functions_p)

@@ -1,0 +1,24 @@
+# name: benchmark/micro/compression/string/string_scan_full.benchmark
+# description: Full scan of five million uncompressed 16-byte strings
+# group: [string]
+
+name Scan Uncompressed String Column (16-byte strings)
+group string
+storage persistent
+cache string_scan_full.db
+
+load
+CREATE TABLE string_values(s VARCHAR USING COMPRESSION UNCOMPRESSED);
+INSERT INTO string_values SELECT 'string-' || lpad(i::VARCHAR, 9, '0') FROM range(5_000_000) t(i);
+CHECKPOINT;
+
+assert III
+SELECT DISTINCT compression, persistent, (SELECT count(*) FROM string_values) FROM pragma_storage_info('string_values') WHERE column_name='s' AND segment_type='VARCHAR';
+----
+Uncompressed	true	5000000
+
+run
+SELECT SUM(strlen(s)) FROM string_values;
+
+result I
+80000000

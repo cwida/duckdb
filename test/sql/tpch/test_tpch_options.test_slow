@@ -8,7 +8,7 @@ require tpch
 statement error
 CALL dbgen(sf=0.01, children=-1);
 ----
-Invalid Input Error: Failed to cast value: Type INT32 with value -1 can't be cast because the value is out of range for the destination type UINT32
+Invalid Input Error: Could not cast value -1 to named parameter "children" of type UINTEGER: Type INT32 with value -1 can't be cast because the value is out of range for the destination type UINT32
 
 statement error
 CALL dbgen(sf=0.01, children=2);
@@ -42,9 +42,9 @@ statement ok
 CALL dbgen(sf=1, children =100, step = 0);
 
 query IIII
-select * from nation
+select n_nationkey, n_name, n_regionkey, n_comment = ' haggle. carefully final deposits detect slyly agai' from nation
 ----
-0	ALGERIA	0	furiously regular requests. platelets affix furious
+0	ALGERIA	0	true
 
 query I
 select count(*) from lineitem

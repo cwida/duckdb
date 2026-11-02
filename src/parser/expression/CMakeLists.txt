@@ -15,6 +15,7 @@ add_library_unity(
   lambdaref_expression.cpp
   operator_expression.cpp
   parameter_expression.cpp
+  pattern_expression.cpp
   positional_reference_expression.cpp
   star_expression.cpp
   subquery_expression.cpp

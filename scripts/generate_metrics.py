@@ -106,7 +106,14 @@ def generate_header(data: dict) -> str:
             "};",
         ]
 
+    live_metrics = [to_pascal_case(f"{group}.{name}") for group, name, info in iter_metrics(data) if info.get("live")]
     lines += [
+        "",
+        "template <class... METRICS>",
+        "struct MetricList {};",
+        "",
+        '// The metrics marked "live": they can be read while the query runs',
+        f"using LiveMetrics = MetricList<{', '.join(live_metrics)}>;",
         "",
         "} // namespace duckdb",
         "",

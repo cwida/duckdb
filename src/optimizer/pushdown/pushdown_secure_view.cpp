@@ -34,14 +34,14 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownSecureView(unique_ptr<Logica
 	// cannot be observed from the outside. Expressions that can throw an error or have side effects are wrapped in
 	// a barrier: those are never pushed past an operator inside the view that removes rows, and are always
 	// evaluated after the filters they end up next to.
-	//
+	auto &secure_view = op->Cast<LogicalSecureView>();
 	// freeze the cardinality estimate of the view before anything is pushed into it - otherwise the estimate of the
-	// boundary node reports what the statistics of the view contents say about the caller's predicate
-	if (!filters.empty() && !op->has_estimated_cardinality) {
+	// boundary node reports what the statistics of the view contents say about the caller's predicate. Views whose
+	// statistics are exposed anyway do not need this - the caller can derive the same estimate above the boundary
+	if (!filters.empty() && !secure_view.propagate_statistics && !op->has_estimated_cardinality) {
 		op->SetEstimatedCardinality(op->children[0]->EstimateCardinality(optimizer.GetContext()));
 	}
 
-	auto &secure_view = op->Cast<LogicalSecureView>();
 	FilterPushdown child_pushdown(optimizer, convert_mark_joins, projection_mode);
 	for (auto &f : filters) {
 		auto expr = std::move(f->filter);

@@ -32,6 +32,7 @@ public:
 	unique_ptr<FunctionData> Copy() const override;
 	bool Equals(const FunctionData &other_p) const override;
 	static JSONCommon::JSONPathType CheckPath(const Value &path_val, string &path, idx_t &len);
+	static void ResolveTypes(ResolveScalarFunctionTypesInput &input);
 	static unique_ptr<FunctionData> Bind(BindScalarFunctionInput &input);
 
 public:

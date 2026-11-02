@@ -113,8 +113,17 @@ unique_ptr<BaseSecret> SecretManager::DeserializeSecret(Deserializer &deserializ
 
 	switch (serialization_type) {
 	// This allows us to skip looking up the secret type for deserialization altogether
-	case SecretSerializationType::KEY_VALUE_SECRET:
-		return KeyValueSecret::Deserialize<KeyValueSecret>(deserializer, BaseSecret(scope, type, provider, name));
+	case SecretSerializationType::KEY_VALUE_SECRET: {
+		auto result =
+		    KeyValueSecret::Deserialize<KeyValueSecret>(deserializer, BaseSecret(scope, type, provider, name));
+		if (type == "http") {
+			// Preserve stored keys and apply current HTTP redaction rules to older secrets.
+			const auto keys = CreateHTTPSecretFunctions::GetRedactedKeys();
+			auto &secret = result->Cast<KeyValueSecret>();
+			secret.redact_keys.insert(keys.begin(), keys.end());
+		}
+		return result;
+	}
 	// Continues below: we need to do a type lookup to find the secret deserialize method
 	case SecretSerializationType::CUSTOM:
 		break;
@@ -184,8 +193,7 @@ unique_ptr<SecretEntry> SecretManager::RegisterSecretInternal(CatalogTransaction
 	//! Resolve storage
 	string resolved_storage;
 	if (storage.empty()) {
-		resolved_storage =
-		    persist_type == SecretPersistType::PERSISTENT ? config.default_persistent_storage : TEMPORARY_STORAGE_NAME;
+		resolved_storage = persist_type == SecretPersistType::PERSISTENT ? DefaultStorage() : TEMPORARY_STORAGE_NAME;
 	} else {
 		resolved_storage = storage.GetIdentifierName();
 	}
@@ -542,8 +550,8 @@ vector<SecretEntry> SecretManager::AllSecrets(CatalogTransaction transaction) {
 	}
 
 	// Add results from all backends to the result set
-	for (const auto &backend : secret_storages) {
-		auto backend_result = backend.second->AllSecrets(&transaction);
+	for (const auto &backend : GetSecretStorages()) {
+		auto backend_result = backend.get().AllSecrets(&transaction);
 		for (const auto &it : backend_result) {
 			result.push_back(it);
 		}
@@ -599,14 +607,17 @@ bool SecretManager::PersistentSecretsEnabled() {
 }
 
 void SecretManager::SetDefaultStorage(const string &storage) {
+	lock_guard<mutex> lck(manager_lock);
 	config.default_persistent_storage = storage;
 }
 
 void SecretManager::ResetDefaultStorage() {
+	lock_guard<mutex> lck(manager_lock);
 	config.default_persistent_storage = SecretManager::LOCAL_FILE_STORAGE_NAME;
 }
 
 string SecretManager::DefaultStorage() {
+	lock_guard<mutex> lck(manager_lock);
 	return config.default_persistent_storage;
 }
 
@@ -807,7 +818,7 @@ unique_ptr<CatalogEntry> DefaultSecretGenerator::CreateDefaultEntryInternal(cons
 		}
 	}
 
-	throw SerializationException("Failed to deserialize secret '%s' from '%s': file appears empty! Please remove the "
+	throw SerializationException("Failed to deserialize secret %s from '%s': file appears empty! Please remove the "
 	                             "file, restart and try again",
 	                             entry_name, secret_path);
 }

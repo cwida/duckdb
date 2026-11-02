@@ -29,7 +29,8 @@ LaunchedResource ProvisionExternalResource(ClientContext &client, const string &
 	    Value::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR, std::move(param_keys), std::move(param_values));
 
 	// Provision on a separate internal connection (the current connection's context lock is held).
-	Connection con(DatabaseInstance::GetDatabase(client));
+	auto callback_con = CreateExternalResourceCallbackConnection(DatabaseInstance::GetDatabase(client), &client);
+	auto &con = *callback_con;
 	// resource_name is forwarded only for observability (it labels the recipe-call log entries).
 	auto name_arg = resource_name.empty() ? string() : ", resource_name := " + Value(resource_name).ToSQLString();
 	// A handle skips create and resolves the given one instead (REGISTER).
@@ -47,11 +48,12 @@ LaunchedResource ProvisionExternalResource(ClientContext &client, const string &
 	LaunchedResource out;
 	// Read the deleter binding first: the resource now exists but nothing owns it yet, so if it turns out
 	// to be unusable below, this is the only chance to tear it down rather than strand it.
-	auto del_fn = res->GetValue(3, 0);
+	auto rows = res->Collection().GetRows();
+	auto del_fn = rows.GetValue(3, 0);
 	out.deleter_function = del_fn.IsNull() ? string() : StringValue::Get(del_fn);
-	out.deleter_payload = res->GetValue(4, 0);
+	out.deleter_payload = rows.GetValue(4, 0);
 
-	auto uri_val = res->GetValue(0, 0);
+	auto uri_val = rows.GetValue(0, 0);
 	if (uri_val.IsNull()) {
 		// A resource without an endpoint is legal (it just cannot be attached), but one provisioned
 		// solely in order to attach to it is useless now, so reap it rather than strand it. Only ever
@@ -66,9 +68,9 @@ LaunchedResource ProvisionExternalResource(ClientContext &client, const string &
 		throw IOException("EXTERNAL RESOURCE: provisioning '%s' returned a NULL uri", provider);
 	}
 	out.uri = uri_val.ToString();
-	auto type_val = res->GetValue(1, 0);
+	auto type_val = rows.GetValue(1, 0);
 	out.attached_db_type = type_val.IsNull() ? string() : type_val.ToString();
-	out.result = res->GetValue(2, 0);
+	out.result = rows.GetValue(2, 0);
 	return out;
 }
 

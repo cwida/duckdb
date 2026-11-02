@@ -13,7 +13,6 @@ BoundStatement Binder::Bind(DetachStatement &stmt) {
 	result.types = {LogicalType::BOOLEAN};
 
 	auto &properties = GetStatementProperties();
-	properties.result_eagerness = ResultEagerness::FORCED;
 	properties.return_type = StatementReturnType::NOTHING;
 	return result;
 }

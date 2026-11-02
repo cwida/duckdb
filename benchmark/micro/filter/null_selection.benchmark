@@ -1,0 +1,17 @@
+# name: benchmark/micro/filter/null_selection.benchmark
+# description: Generic NULL selection over a computed value
+# group: [filter]
+
+name Direct NULL selection
+group micro
+subgroup filter
+
+load
+CREATE TABLE null_inputs AS
+SELECT CASE WHEN i%4=0 THEN NULL ELSE i END AS n FROM range(10000000) t(i);
+
+run
+SELECT count(*) FROM null_inputs WHERE (n%17) IS NOT NULL;
+
+result I
+7500000

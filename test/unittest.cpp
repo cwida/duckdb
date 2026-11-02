@@ -15,6 +15,7 @@
 #if defined(__linux__)
 #include <features.h>
 #include <pthread.h>
+#include <sys/mman.h>
 #include <unistd.h>
 #endif
 
@@ -73,21 +74,31 @@ static void *MinimumThreadStackProbe(void *) {
 	return nullptr;
 }
 
+// Probes run on a stack this function maps itself to not pollute the glibc stack cache with stacks created during these
+// probes.
 static ThreadStackProbeResult TryThreadStackSize(size_t stack_size, string &error) {
 	pthread_attr_t attributes;
-	auto result = pthread_getattr_default_np(&attributes);
+	auto result = pthread_attr_init(&attributes);
 	if (result != 0) {
-		error = PthreadError("pthread_getattr_default_np", result);
+		error = PthreadError("pthread_attr_init", result);
 		return ThreadStackProbeResult::ERROR;
 	}
 
-	result = pthread_attr_setstacksize(&attributes, stack_size);
+	auto stack = mmap(nullptr, stack_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
+	if (stack == MAP_FAILED) {
+		pthread_attr_destroy(&attributes);
+		error = "Failed to map a " + to_string(stack_size) + " byte probe stack";
+		return ThreadStackProbeResult::ERROR;
+	}
+
+	result = pthread_attr_setstack(&attributes, stack, stack_size);
 	if (result != 0) {
 		pthread_attr_destroy(&attributes);
+		munmap(stack, stack_size);
 		if (result == EINVAL) {
 			return ThreadStackProbeResult::TOO_SMALL;
 		}
-		error = PthreadError("pthread_attr_setstacksize", result);
+		error = PthreadError("pthread_attr_setstack", result);
 		return ThreadStackProbeResult::ERROR;
 	}
 
@@ -95,6 +106,7 @@ static ThreadStackProbeResult TryThreadStackSize(size_t stack_size, string &erro
 	result = pthread_create(&probe, &attributes, MinimumThreadStackProbe, nullptr);
 	auto destroy_result = pthread_attr_destroy(&attributes);
 	if (result != 0) {
+		munmap(stack, stack_size);
 		if (result == EINVAL) {
 			return ThreadStackProbeResult::TOO_SMALL;
 		}
@@ -102,6 +114,8 @@ static ThreadStackProbeResult TryThreadStackSize(size_t stack_size, string &erro
 		return ThreadStackProbeResult::ERROR;
 	}
 	auto join_result = pthread_join(probe, nullptr);
+	// only once the thread is gone is the stack free to unmap
+	munmap(stack, stack_size);
 	if (join_result != 0) {
 		error = PthreadError("pthread_join", join_result);
 		return ThreadStackProbeResult::ERROR;
@@ -327,7 +341,7 @@ int main(int argc_in, char *argv[]) {
 		return 1;
 	}
 
-	string test_directory = DUCKDB_ROOT_DIRECTORY;
+	string test_directory = TestRootDirectory();
 
 	// route the sqllogictest runner's verdicts into the Catch session
 	static CatchTestReporter catch_reporter;

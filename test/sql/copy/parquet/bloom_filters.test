@@ -476,6 +476,7 @@ COPY (
         (TIMESTAMP '2000-01-01' +
          (2 * (i % 2048)) * INTERVAL 1 SECOND)::TIMESTAMPTZ_NS AS ts_tz_ns,
         (TIME '00:00:00' + (2 * (i % 2048)) * INTERVAL 1 SECOND)::TIME AS tm,
+        (TIME '00:00:00' + (2 * (i % 2048)) * INTERVAL 1 SECOND)::TIME_NS AS tm_ns,
         (TIMETZ '12:00:00+02' + (2 * (i % 2048)) * INTERVAL 1 SECOND)::TIMETZ AS tm_tz
     FROM range(8192) t(i)
 ) TO '{TEST_DIR}/bloom_temporal.parquet' (
@@ -500,6 +501,7 @@ ORDER BY column_id;
 6	true	true
 7	true	true
 8	true	true
+9	true	true
 
 # Verify the DuckDB logical types and physical Parquet timestamp units under test
 query TTIIIT
@@ -514,6 +516,7 @@ ORDER BY name;
 ----
 dt	INT32	false	false	false	DATE
 tm	INT64	false	true	false	TIME
+tm_ns	INT64	false	false	true	TIME_NS
 tm_tz	INT64	false	true	false	TIME WITH TIME ZONE
 ts	INT64	false	true	false	TIMESTAMP
 ts_ms	INT64	true	false	false	TIMESTAMP
@@ -576,6 +579,12 @@ FROM parquet_bloom_probe('{TEST_DIR}/bloom_temporal.parquet', 'tm', TIME '00:16:
 ----
 true
 
+query I
+SELECT bool_and(bloom_filter_excludes)
+FROM parquet_bloom_probe('{TEST_DIR}/bloom_temporal.parquet', 'tm_ns', TIME_NS '00:16:41');
+----
+true
+
 # Parquet normalizes TIME WITH TIME ZONE to UTC before hashing
 query I
 SELECT bool_or(bloom_filter_excludes)
@@ -634,6 +643,12 @@ analyzed_plan	<REGEX>:(?s).*Row Groups Scanned: 0 / 4.*
 query II
 EXPLAIN ANALYZE SELECT count(*) FROM '{TEST_DIR}/bloom_temporal.parquet'
 WHERE tm = TIME '00:16:41';
+----
+analyzed_plan	<REGEX>:(?s).*Row Groups Scanned: 0 / 4.*
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM '{TEST_DIR}/bloom_temporal.parquet'
+WHERE tm_ns = TIME_NS '00:16:41';
 ----
 analyzed_plan	<REGEX>:(?s).*Row Groups Scanned: 0 / 4.*
 
@@ -941,3 +956,24 @@ FROM read_parquet('{TEST_DIR}/bloom_nan.parquet')
 WHERE x IS NOT DISTINCT FROM 'NaN'::DOUBLE;
 ----
 2048
+
+# Division by one and the lossless INTEGER-to-DOUBLE cast must expose the Bloom probe.
+query II
+EXPLAIN ANALYZE SELECT sum(payload) FROM read_parquet('{TEST_DIR}/bloom_in.parquet') WHERE r / 1 = 101;
+----
+analyzed_plan	<REGEX>:(?s).*Row Groups Scanned: 0 / 10.*
+
+query II
+EXPLAIN ANALYZE SELECT sum(payload) FROM read_parquet('{TEST_DIR}/bloom_in.parquet') WHERE r::DOUBLE = 101;
+----
+analyzed_plan	<REGEX>:(?s).*Row Groups Scanned: 0 / 10.*
+
+query I
+SELECT sum(payload) FROM read_parquet('{TEST_DIR}/bloom_in.parquet') WHERE r / 1 = 101;
+----
+NULL
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/bloom_in.parquet') WHERE r / 1 = 100;
+----
+205

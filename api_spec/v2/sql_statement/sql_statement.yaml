@@ -1,9 +1,11 @@
 module: sql_statement
 #
 # Turn a SQL string into individual statements. parse_sql parses and nothing
-# more: no binding, no catalog access, no transaction. The connection supplies
-# the parser state — its options and the parser extensions loaded on it — so a
-# statement parsed on one connection should be executed on that connection.
+# more: no binding and no catalog access. The connection supplies the parser
+# state — its options and the parser extensions loaded on it — so a statement
+# parsed on one connection should be executed on that connection. The caller
+# chooses whether a parse error invalidates the connection's active
+# transaction, according to the transaction invalidation policy.
 # Statements are raw parser output; statement-level rewrites (pragma
 # reparsing, statement expansion, transaction wrapping) happen inside
 # statement_execute, so one user statement is always one handle.
@@ -110,20 +112,27 @@ enums:
         value: 32
       STATEMENT_TYPE_EXTERNAL_RESOURCE:
         value: 33
+      STATEMENT_TYPE_PASSTHROUGH:
+        value: 34
 functions:
   parse_sql:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Parses a SQL string into an iterator over its statements.
 
-      Parses and nothing more: no binding, no catalog access, no transaction.
-      The connection supplies the parser options and parser extensions, and is
-      not otherwise touched. Statements are raw parser output; statement-level
-      rewrites happen inside statement_execute. The SQL string is copied, so
-      the caller may free it once this call returns. An input with no
-      statements — empty, whitespace, or separators only — yields an iterator
-      that is immediately exhausted.
+      Parses and nothing more: no binding and no catalog access. The connection
+      supplies the parser options and parser extensions. With
+      apply_invalidation_policy, a parse error invalidates the connection's
+      active transaction according to the transaction invalidation policy, like
+      an error from running the statement would; pass that when the statements
+      are parsed to be run. Without it, a parse error leaves the transaction
+      usable, for callers that only inspect the statements, for example with
+      `[[statement_bind]]`.
+      Statements are raw parser output; statement-level rewrites happen inside
+      statement_execute. The SQL string is copied, so the caller may free it
+      once this call returns. An input with no statements — empty, whitespace,
+      or separators only — yields an iterator that is immediately exhausted.
     role: constructor
     belongs_to: statement_iterator
     parameters:
@@ -135,6 +144,9 @@ functions:
         indirection: 1
         const: true
         description: Null-terminated SQL string; may contain any number of statements.
+      apply_invalidation_policy:
+        type: bool
+        description: Whether a parse error invalidates the active transaction, according to the transaction invalidation policy.
       out_iterator:
         type: statement_iterator
         indirection: 1
@@ -149,7 +161,7 @@ functions:
 
   statement_iterator_next:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Yields the next statement, or NULL when exhausted.
 
@@ -180,7 +192,7 @@ functions:
 
   statement_bind:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Binds a parsed statement without executing, yielding its schema signature.
 
@@ -199,10 +211,10 @@ functions:
       alongside a paused stream. It is single-consumer like the stepping
       functions, so bind concurrently only on a second connection.
       Prepare-time errors — binder, catalog, preprocessing — surface here. A
-      statement that preprocessing expands into a group (a dynamic PIVOT, or
+      statement that expands into a group (a dynamic PIVOT, or
       statement-expanding DDL such as ALTER ADD COLUMN with a non-constant
-      DEFAULT) cannot be bound and is rejected with ERROR_INPUT_INVALID;
-      execute it instead.
+      DEFAULT) has a schema known only at execution, and is reported with
+      ERROR_INPUT_METADATA_DEFERRED; execute it instead.
 
       *out_schema and *out_parameters are set to NULL on failure.
     role: method
@@ -231,67 +243,61 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
     return_type: ERROR
 
-#  statement_add_collection:
-#    lifecycle:
-#      - [ "stable", "v2.0.0", "2026-08-04" ]
-#    description: |
-#      Binds a filled column data collection to the statement under a name.
-#
-#      Makes the collection visible to the statement as a table named name, by
-#      injecting a common table expression into the parsed statement. The
-#      statement can then be bound, prepared, or executed through the existing
-#      surface; each execution scans the collection's contents at that moment.
-#      Supported statement types are SELECT, INSERT, UPDATE, DELETE, and MERGE
-#      INTO; any other type is rejected with ERROR_INPUT_INVALID.
-#
-#      name is a borrowed string view and must be non-empty. A name already
-#      present in the statement's CTE map (from the SQL text or a prior call) is
-#      rejected with ERROR_INPUT_INVALID. The binding shadows any catalog table
-#      named name, following standard CTE semantics.
-#
-#      By default the collection's columns bind as col1..colN. Pass column_names
-#      to bind them under caller-chosen names instead, so the statement can
-#      reference them directly (FROM buf) without an alias. When supplied,
-#      column_count must equal the collection's column count; a mismatch is
-#      rejected with ERROR_INPUT_INVALID. Pass (NULL, 0) for the col1..colN
-#      default.
-#
-#      The collection is borrowed: the caller keeps ownership and must keep it
-#      alive while the statement, any prepared statement created from it, and any
-#      result executed from it are live, and must not reset or destroy it while
-#      such a result is live, because result scans reference the collection's
-#      buffers. An empty collection is a valid binding. Multiple collections
-#      attach under distinct names.
-#    role: method
-#    belongs_to: sql_statement
-#    parameters:
-#      statement:
-#        type: sql_statement
-#        description: The statement to bind the collection into. Borrowed; mutated in place.
-#      name:
-#        type: identifier
-#        description: The non-empty identifier the statement references. The empty view {NULL, 0} is rejected.
-#      collection:
-#        type: column_data_collection
-#        description: The filled collection to make visible. Borrowed; the caller keeps ownership.
-#      column_names:
-#        type: identifier
-#        indirection: 1
-#        const: true
-#        description: Optional. An array of column_count names for the collection's columns, in order. Pass NULL to bind them as col1..colN.
-#      column_count:
-#        type: idx
-#        description: The number of names in column_names. Pass 0 to bind the columns as col1..colN; otherwise it must equal the collection's column count.
-#      err:
-#        type: error_info
-#        indirection: 1
-#        kind: OUT
-#        description: Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.
-#    return_type: ERROR
+  statement_add_collection:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-12" ]
+    description: |
+      Binds a column data collection to the statement under a name.
+
+      Makes the collection visible to the statement as a table named `name`, by adding a common table expression to
+      the parsed statement. The statement can then be bound, prepared or executed as usual; each execution reads the
+      collection's contents at that moment, so a prepared statement can be executed again after the collection was
+      cleared and refilled. Supported statement types are SELECT, INSERT, UPDATE, DELETE and MERGE INTO; any other
+      type is rejected with `ERROR_INPUT_INVALID`.
+
+      A name the statement already defines as a common table expression, in its SQL text or by a prior call, is
+      rejected with `ERROR_INPUT_INVALID`. The binding shadows any catalog table named `name`, as a common table
+      expression does.
+
+      By default the collection's columns are named col1..colN. Pass `column_names` to name them instead; when
+      supplied, `column_count` must equal the collection's column count. Pass NULL and 0 for the default names.
+
+      The collection is borrowed: the caller keeps ownership and must keep it alive, and must not clear, reset or
+      destroy it, for as long as the statement, any statement copied or prepared from it, or any result executing it
+      is live. An empty collection is a valid binding. Several collections can be bound under distinct names.
+    role: method
+    belongs_to: sql_statement
+    parameters:
+      statement:
+        type: sql_statement
+        description: The statement to bind the collection to. Modified in place.
+      name:
+        type: identifier
+        indirection: 1
+        const: true
+        kind: IN
+        description: The non-empty name the statement refers to the collection by. Borrowed and copied.
+      collection:
+        type: column_data_collection
+        description: The collection to bind. Borrowed; the caller keeps ownership and must keep it alive.
+      column_names:
+        type: identifier
+        indirection: 1
+        const: true
+        description: Optional. An array of `column_count` names for the collection's columns, in order. Pass NULL for col1..colN.
+      column_count:
+        type: idx
+        description: The number of names in `column_names`. 0 for the default names; otherwise the collection's column count.
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
 
   sql_statement_get_type:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-11" ]
+      - [ "unstable", "v2.0.0", "2026-09-11" ]
     description: |
       Returns the statement's type as classified by the parser.
 
@@ -299,8 +305,10 @@ functions:
       `[[statement_execute]]` applies, if any. So a PRAGMA reports PRAGMA even
       where execution rewrites it into a SELECT or a CALL.
       `[[result_get_statement_type]]` on the executed result reports the
-      rewritten type. A statement the parser expands into a group reports
-      MULTI. Its parts are not visible here, and statement_bind rejects it.
+      rewritten type of a statement that rewrites into one. A statement the
+      parser expands into a group reports MULTI, here and on its result. Its
+      parts are not visible here, and statement_bind reports
+      ERROR_INPUT_METADATA_DEFERRED for it.
     role: getter
     belongs_to: sql_statement
     parameters:
@@ -321,7 +329,7 @@ functions:
 
   sql_statement_get_text:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-11" ]
+      - [ "unstable", "v2.0.0", "2026-09-11" ]
     description: |
       Borrows the statement's own SQL text.
 
@@ -352,7 +360,7 @@ functions:
 
   sql_statement_get_parameter_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-11" ]
+      - [ "unstable", "v2.0.0", "2026-09-11" ]
     description: |
       Returns the number of distinct parameters the statement declares.
 
@@ -379,7 +387,7 @@ functions:
 
   sql_statement_get_parameter_name:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-11" ]
+      - [ "unstable", "v2.0.0", "2026-09-11" ]
     description: |
       Borrows the name of one parameter, in binding order.
 
@@ -414,7 +422,7 @@ functions:
 
   sql_statement_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Destroys a statement handle.
 
@@ -433,7 +441,7 @@ functions:
 
   statement_iterator_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Destroys a statement iterator handle.
 

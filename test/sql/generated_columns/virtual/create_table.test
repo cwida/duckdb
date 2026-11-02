@@ -53,7 +53,7 @@ CREATE TABLE unit (
     amount_sold INTEGER,
 );
 ----
-<REGEX>:.*Parser Error.*isn't allowed.*
+Parser Error: Expression of generated column "total_profit" contains a subquery, which isn't allowed
 
 statement ok
 CREATE MACRO my_macro() AS (

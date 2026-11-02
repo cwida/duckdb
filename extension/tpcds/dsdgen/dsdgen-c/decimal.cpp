@@ -320,9 +320,7 @@ int decimal_t_op(decimal_t *dest, int op, decimal_t *d1, decimal_t *d2) {
 		dest->number = (int)(f1 / f2);
 		break;
 	default:
-		printf("decimal_t_op does not support op %d\n", op);
-		exit(1);
-		break;
+		INTERNAL("decimal_t_op does not support op");
 	}
 
 	return (0);

@@ -1,4 +1,6 @@
 #include "duckdb/common/types/type_manager.hpp"
+
+#include "duckdb/common/type_visitor.hpp"
 #include "duckdb/function/cast/cast_function_set.hpp"
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/planner/binder.hpp"
@@ -12,13 +14,17 @@ CastFunctionSet &TypeManager::GetCastFunctions() {
 	return *cast_functions;
 }
 
-static LogicalType TransformStringToUnboundType(const string &str) {
-	if (StringUtil::Lower(str) == "null") {
+const CastFunctionSet &TypeManager::GetCastFunctions() const {
+	return *cast_functions;
+}
+
+static LogicalType TransformStringToUnboundType(const string &str, ClientContext &context) {
+	if (StringUtil::CIEquals(str, "null")) {
 		return LogicalType::SQLNULL;
 	}
 	ColumnList column_list;
 	try {
-		column_list = Parser::ParseColumnList("dummy " + str);
+		column_list = Parser(context).ParseColumnList("dummy " + str);
 	} catch (const std::runtime_error &e) {
 		const vector<string> suggested_types {"BIGINT",
 		                                      "INT8",
@@ -82,7 +88,7 @@ static LogicalType TransformStringToUnboundType(const string &str) {
 // This has to be called with a level of indirection (through "parse_function") in order to avoid being included in
 // extensions that statically link the core DuckDB library.
 static LogicalType ParseLogicalTypeInternal(const string &type_str, ClientContext &context) {
-	auto type = TransformStringToUnboundType(type_str);
+	auto type = TransformStringToUnboundType(type_str, context);
 	if (type.IsUnbound()) {
 		if (!context.transaction.HasActiveTransaction()) {
 			throw InternalException(
@@ -96,6 +102,14 @@ static LogicalType ParseLogicalTypeInternal(const string &type_str, ClientContex
 
 LogicalType TypeManager::ParseLogicalType(const string &type_str, ClientContext &context) const {
 	return parse_function(type_str, context);
+}
+
+LogicalType TypeManager::ParseLogicalType(const string &type_str) const {
+	auto type = UnboundType::TryParseAndDefaultBind(type_str);
+	if (TypeVisitor::Contains(type, LogicalTypeId::UNBOUND)) {
+		throw InvalidInputException("Type \"%s\" is not a built-in type", type_str);
+	}
+	return type;
 }
 
 TypeManager &TypeManager::Get(DatabaseInstance &db) {

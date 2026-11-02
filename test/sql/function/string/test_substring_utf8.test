@@ -57,6 +57,18 @@ SELECT {FUN}(s, 5) FROM strings
 ----
 three₡four🦆end
 
+# ASCII prefix in front of a non-ASCII suffix: the byte-slice path may only be taken while
+# the code points that determine the result are ASCII
+query T
+SELECT {FUN}(s, 1, 3) FROM strings
+----
+two
+
+query T
+SELECT {FUN}(s, 2, 3) FROM strings
+----
+woñ
+
 # very large negative offset with a small positive length: the requested window is
 # entirely before the start of the string, so the result should be empty
 query T
@@ -70,3 +82,10 @@ SELECT {FUN}(s, -2147483648, 2) FROM strings
 (empty)
 
 endloop
+
+# negative offset past the start of a multi-byte string: the byte-based window overlaps the
+# string, but the grapheme-based window might not
+query TTT
+SELECT substring_grapheme('ääääää', -10, 2), substring_grapheme('ääääää', -10, 5), substring_grapheme('ääääää', -10, 6)
+----
+(empty)	ä	ää

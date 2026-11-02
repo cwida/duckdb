@@ -80,6 +80,9 @@ public:
 		case ExpressionType::OPERATOR_TRY: {
 			return StringUtil::Format("TRY(%s)", children[0]->ToString());
 		}
+		case ExpressionType::OPERATOR_HAS_ERROR: {
+			return StringUtil::Format("HAS_ERROR(%s)", children[0]->ToString());
+		}
 		case ExpressionType::OPERATOR_NOT: {
 			string result = "(";
 			result += ExpressionTypeToString(entry.GetExpressionType());

@@ -113,6 +113,12 @@ void FileBuffer::Resize(BlockManager &block_manager) {
 
 void FileBuffer::Read(QueryContext context, FileHandle &handle, uint64_t location) {
 	D_ASSERT(type != FileBufferType::TINY_BUFFER);
+	if (handle.file_system.IsLocalFileSystem()) {
+		// Pre-fault local read buffers before the kernel fills them.
+		for (idx_t offset = 0; offset < internal_size; offset += 4096) {
+			internal_buffer[offset] = 0;
+		}
+	}
 	handle.Read(context, internal_buffer, internal_size, location);
 }
 

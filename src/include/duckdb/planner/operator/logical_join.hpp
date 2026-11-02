@@ -17,6 +17,9 @@ namespace duckdb {
 //! LogicalJoin represents a join between two relations
 class LogicalJoin : public LogicalOperator {
 public:
+	LogicalPlanSQLExportResult ToSQL(LogicalPlanSQLExportContext &context,
+	                                 const LogicalPlanVerificationPath &path) override;
+
 	static constexpr const LogicalOperatorType TYPE = LogicalOperatorType::LOGICAL_INVALID;
 
 public:
@@ -28,6 +31,10 @@ public:
 	static void GetExpressionBindings(const Expression &expr, unordered_set<TableIndex> &bindings);
 	//! Moves the state shared by all logical joins when replacing one join operator with another
 	static void MoveJoinState(LogicalJoin &source, LogicalJoin &target);
+	//! Replaces a join by one of its sides while keeping the join's output layout: the side's projection map, if
+	//! any, is carried by a filter without conditions so that operators above the join keep seeing the same columns
+	static unique_ptr<LogicalOperator> PromoteJoinSide(unique_ptr<LogicalOperator> child,
+	                                                   vector<ProjectionIndex> projection_map);
 
 	bool HasProjectionMap() const override {
 		return !left_projection_map.empty() || !right_projection_map.empty();

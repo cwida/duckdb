@@ -1,0 +1,54 @@
+# name: test/sql/copy/csv/code_cov/csv_core_encodings.test
+# description: Test UTF-16 and Latin-1 decoding at buffer boundaries
+# group: [code_cov]
+
+# UTF-16LE with a three-byte UTF-8 character spanning the output buffer boundary
+statement ok
+COPY (
+	SELECT from_hex('fffe760061006c00750065000a006100620063006400650066006700680069006a006b006c006d0003260a00')
+) TO '{TEST_DIR}/utf16_boundary.csv' (FORMAT BLOB)
+
+query I
+SELECT value
+FROM read_csv('{TEST_DIR}/utf16_boundary.csv', encoding = 'utf-16', buffer_size = 23)
+----
+abcdefghijklm☃
+
+query I
+SELECT value
+FROM read_csv('{TEST_DIR}/utf16_boundary.csv', encoding = 'utf-16', buffer_size = 24)
+----
+abcdefghijklm☃
+
+# Latin-1 with the final character spanning the output buffer boundary
+statement ok
+COPY (
+	SELECT from_hex('76616c75650a6162636465666768696a6b6c6d6e6f70e90a')
+) TO '{TEST_DIR}/latin1_boundary.csv' (FORMAT BLOB)
+
+query I
+SELECT value
+FROM read_csv('{TEST_DIR}/latin1_boundary.csv', encoding = 'latin-1', buffer_size = 23)
+----
+abcdefghijklmnopé
+
+# Invalid surrogate and control code point
+statement ok
+COPY (
+	SELECT from_hex('fffe760061006c00750065000a0000d80a00')
+) TO '{TEST_DIR}/invalid_utf16.csv' (FORMAT BLOB)
+
+statement error
+FROM read_csv('{TEST_DIR}/invalid_utf16.csv', encoding = 'utf-16')
+----
+File is not utf-16 encoded
+
+statement ok
+COPY (
+	SELECT from_hex('76616c75650a800a')
+) TO '{TEST_DIR}/invalid_latin1.csv' (FORMAT BLOB)
+
+statement error
+FROM read_csv('{TEST_DIR}/invalid_latin1.csv', encoding = 'latin-1')
+----
+File is not latin-1 encoded

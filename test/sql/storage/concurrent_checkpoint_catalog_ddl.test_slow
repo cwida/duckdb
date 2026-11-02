@@ -1,0 +1,624 @@
+# name: test/sql/storage/concurrent_checkpoint_catalog_ddl.test_slow
+# description: DDL that keeps table storage and sequence use commit while a checkpoint runs, and replay from the WAL
+# group: [storage]
+
+load {TEST_DIR}/concurrent_checkpoint_catalog_ddl.db
+
+statement ok
+SET checkpoint_threshold='1TB'
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+statement ok
+CREATE TABLE t (i INTEGER, j INTEGER);
+
+statement ok
+INSERT INTO t SELECT i, i FROM range(100000) t(i);
+
+statement ok
+CREATE SEQUENCE seq
+
+statement ok
+CREATE TABLE ids (id BIGINT DEFAULT nextval('seq'), k INTEGER)
+
+statement ok
+CREATE VIEW v_old AS SELECT 1 AS one
+
+statement ok
+CHECKPOINT
+
+# the checkpoint sleeps for three seconds before it scans the catalog, and for three seconds after it wrote a table
+statement ok
+SET debug_checkpoint_sleep_ms=3000
+
+statement ok
+SET debug_checkpoint_scan_sleep_ms=3000
+
+concurrentloop threadid 0 4
+
+# thread 3 is a reader that needs the state from before the insert below, so that this is a concurrent checkpoint
+onlyif threadid=3
+statement ok
+BEGIN TRANSACTION
+
+onlyif threadid=3
+query I
+SELECT COUNT(*) FROM t
+----
+100000
+
+# thread 2 keeps a transaction with a view and sequence use open while the checkpoint runs
+onlyif threadid=2
+statement ok
+BEGIN TRANSACTION
+
+onlyif threadid=2
+statement ok
+CREATE VIEW open_view AS SELECT 42 AS x
+
+onlyif threadid=2
+statement ok
+INSERT INTO ids (k) SELECT range FROM range(10)
+
+sleep 500 millisecond
+
+onlyif threadid=0
+statement ok
+INSERT INTO t VALUES (-1, -1)
+
+onlyif threadid=0
+statement ok
+CHECKPOINT
+
+sleep 1000 millisecond
+
+# during the sleep before the catalog scan
+onlyif threadid=1
+statement ok
+CREATE SCHEMA s2
+
+onlyif threadid=1
+statement ok
+CREATE TYPE mood AS ENUM ('a', 'b')
+
+onlyif threadid=1
+statement ok
+CREATE MACRO plus1(x) AS x + 1
+
+onlyif threadid=1
+statement ok
+CREATE VIEW v_new AS SELECT plus1(41) AS answer
+
+onlyif threadid=1
+statement ok
+DROP VIEW v_old
+
+onlyif threadid=1
+statement ok
+CREATE SEQUENCE seq2
+
+onlyif threadid=1
+statement ok
+INSERT INTO ids (k) VALUES (100)
+
+sleep 3000 millisecond
+
+# during the sleep after table t was written, before it is installed
+onlyif threadid=1
+statement ok
+ALTER TABLE t RENAME TO t2
+
+onlyif threadid=1
+statement ok
+ALTER TABLE t2 ALTER COLUMN j SET DEFAULT 5
+
+onlyif threadid=1
+statement ok
+COMMENT ON TABLE t2 IS 'renamed'
+
+onlyif threadid=1
+statement ok
+INSERT INTO t2 (i) VALUES (100000)
+
+# creating table storage still waits for the checkpoint
+onlyif threadid=1
+statement ok
+CREATE TABLE created AS SELECT i FROM range(1000) t(i)
+
+# also in a transaction that inserted into a table the checkpoint writes later
+onlyif threadid=2
+statement ok
+CREATE TABLE in_txn AS SELECT 1 AS one
+
+sleep 6000 millisecond
+
+onlyif threadid=2
+statement ok
+INSERT INTO ids (k) VALUES (200)
+
+onlyif threadid=2
+statement ok
+COMMIT
+
+onlyif threadid=3
+statement ok
+COMMIT
+
+endloop
+
+statement ok
+SET debug_checkpoint_sleep_ms=0
+
+statement ok
+SET debug_checkpoint_scan_sleep_ms=0
+
+loop k 0 2
+
+query III
+SELECT COUNT(*), SUM(i), SUM(j) FROM t2
+----
+100002	5000049999	4999950004
+
+query T
+SELECT comment FROM duckdb_tables() WHERE table_name = 't2'
+----
+renamed
+
+query II
+SELECT COUNT(*), SUM(i) FROM created
+----
+1000	499500
+
+query I
+SELECT one FROM in_txn
+----
+1
+
+query III
+SELECT COUNT(*), COUNT(DISTINCT id), MAX(id) FROM ids
+----
+12	12	12
+
+query I
+SELECT nextval('seq') > 12
+----
+true
+
+query I
+SELECT answer FROM v_new
+----
+42
+
+query I
+SELECT x FROM open_view
+----
+42
+
+query I
+SELECT COUNT(*) FROM duckdb_views() WHERE view_name = 'v_old'
+----
+0
+
+query I
+SELECT COUNT(*) FROM duckdb_schemas() WHERE schema_name = 's2'
+----
+1
+
+query I
+SELECT 'a'::mood
+----
+a
+
+query I
+SELECT COUNT(*) FROM duckdb_sequences() WHERE sequence_name = 'seq2'
+----
+1
+
+# replay the WAL as after a crash
+restart
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+endloop
+
+statement ok
+CHECKPOINT
+
+restart
+
+query III
+SELECT COUNT(*), SUM(i), SUM(j) FROM t2
+----
+100002	5000049999	4999950004
+
+query III
+SELECT COUNT(*), COUNT(DISTINCT id), MAX(id) FROM ids
+----
+12	12	12
+
+# an open transaction keeps checkpoints from running only if its DDL changes table storage
+statement ok
+CREATE TABLE u (i INTEGER)
+
+statement ok con1
+BEGIN TRANSACTION
+
+statement ok con1
+CREATE VIEW w AS SELECT 1
+
+statement ok
+INSERT INTO t2 VALUES (1, 1)
+
+statement ok
+CHECKPOINT
+
+statement ok con1
+ROLLBACK
+
+statement ok con1
+BEGIN TRANSACTION
+
+statement ok con1
+CREATE MACRO m(x) AS x
+
+statement ok
+INSERT INTO t2 VALUES (1, 1)
+
+statement ok
+CHECKPOINT
+
+statement ok con1
+ROLLBACK
+
+statement ok con1
+BEGIN TRANSACTION
+
+statement ok con1
+CREATE SEQUENCE s3
+
+statement ok
+INSERT INTO t2 VALUES (1, 1)
+
+statement ok
+CHECKPOINT
+
+statement ok con1
+ROLLBACK
+
+statement ok con1
+BEGIN TRANSACTION
+
+statement ok con1
+SELECT nextval('seq')
+
+statement ok
+INSERT INTO t2 VALUES (1, 1)
+
+statement ok
+CHECKPOINT
+
+statement ok con1
+ROLLBACK
+
+statement ok con1
+BEGIN TRANSACTION
+
+statement ok con1
+ALTER TABLE u RENAME TO u2
+
+statement ok
+INSERT INTO t2 VALUES (1, 1)
+
+statement ok
+CHECKPOINT
+
+statement ok con1
+ROLLBACK
+
+statement ok con1
+BEGIN TRANSACTION
+
+statement ok con1
+ALTER TABLE u ALTER COLUMN i SET DEFAULT 1
+
+statement ok
+INSERT INTO t2 VALUES (1, 1)
+
+statement ok
+CHECKPOINT
+
+statement ok con1
+ROLLBACK
+
+statement ok con1
+BEGIN TRANSACTION
+
+statement ok con1
+COMMENT ON TABLE u IS 'c'
+
+statement ok
+INSERT INTO t2 VALUES (1, 1)
+
+statement ok
+CHECKPOINT
+
+statement ok con1
+ROLLBACK
+
+statement ok con1
+BEGIN TRANSACTION
+
+statement ok con1
+DROP VIEW v_new
+
+statement ok
+INSERT INTO t2 VALUES (1, 1)
+
+statement ok
+CHECKPOINT
+
+statement ok con1
+ROLLBACK
+
+# DDL that changes table storage keeps them from running
+
+statement ok con1
+BEGIN TRANSACTION
+
+statement ok con1
+CREATE TABLE x (i INTEGER)
+
+statement ok
+INSERT INTO t2 VALUES (1, 1)
+
+statement error
+CHECKPOINT
+----
+Cannot CHECKPOINT
+
+statement ok con1
+ROLLBACK
+
+statement ok con1
+BEGIN TRANSACTION
+
+statement ok con1
+CREATE INDEX u_idx ON u(i)
+
+statement ok
+INSERT INTO t2 VALUES (1, 1)
+
+statement error
+CHECKPOINT
+----
+Cannot CHECKPOINT
+
+statement ok con1
+ROLLBACK
+
+statement ok con1
+BEGIN TRANSACTION
+
+statement ok con1
+ALTER TABLE u ADD PRIMARY KEY (i)
+
+statement ok
+INSERT INTO t2 VALUES (1, 1)
+
+statement error
+CHECKPOINT
+----
+Cannot CHECKPOINT
+
+statement ok con1
+ROLLBACK
+
+statement ok con1
+BEGIN TRANSACTION
+
+statement ok con1
+ALTER TABLE u ADD COLUMN k INTEGER
+
+statement ok
+INSERT INTO t2 VALUES (1, 1)
+
+statement error
+CHECKPOINT
+----
+Cannot CHECKPOINT
+
+statement ok con1
+ROLLBACK
+
+statement ok con1
+BEGIN TRANSACTION
+
+statement ok con1
+ALTER TABLE u ALTER i TYPE BIGINT
+
+statement ok
+INSERT INTO t2 VALUES (1, 1)
+
+statement error
+CHECKPOINT
+----
+Cannot CHECKPOINT
+
+statement ok con1
+ROLLBACK
+
+# SET NOT NULL builds new table storage that shares the row groups of the old one
+statement ok con1
+BEGIN TRANSACTION
+
+statement ok con1
+ALTER TABLE u ALTER COLUMN i SET NOT NULL
+
+statement ok
+INSERT INTO t2 VALUES (1, 1)
+
+statement error
+CHECKPOINT
+----
+Cannot CHECKPOINT
+
+statement ok con1
+ROLLBACK
+
+statement ok con1
+BEGIN TRANSACTION
+
+statement ok con1
+DROP TABLE u
+
+statement ok
+INSERT INTO t2 VALUES (1, 1)
+
+statement error
+CHECKPOINT
+----
+Cannot CHECKPOINT
+
+statement ok con1
+ROLLBACK
+
+statement ok con1
+BEGIN TRANSACTION
+
+statement ok con1
+DROP SCHEMA s2 CASCADE
+
+statement ok
+INSERT INTO t2 VALUES (1, 1)
+
+statement error
+CHECKPOINT
+----
+Cannot CHECKPOINT
+
+statement ok con1
+ROLLBACK
+
+# the checkpoints above ran while the DDL was uncommitted: none of it is in them, and the rollbacks left no trace
+restart
+
+query I
+SELECT COUNT(*) FROM duckdb_views() WHERE view_name IN ('w', 'v_new')
+----
+1
+
+query I
+SELECT COUNT(*) FROM duckdb_functions() WHERE function_name = 'm'
+----
+0
+
+query I
+SELECT COUNT(*) FROM duckdb_sequences() WHERE sequence_name = 's3'
+----
+0
+
+query II
+SELECT COUNT(*) FILTER (WHERE table_name = 'u'), COUNT(*) FILTER (WHERE table_name IN ('u2', 'x')) FROM duckdb_tables()
+----
+1	0
+
+query T
+SELECT comment FROM duckdb_tables() WHERE table_name = 'u'
+----
+NULL
+
+query I
+SELECT COUNT(*) FROM duckdb_indexes() WHERE table_name = 'u'
+----
+0
+
+query I
+SELECT COUNT(*) FROM duckdb_columns() WHERE table_name = 'u'
+----
+1
+
+query T
+SELECT data_type FROM duckdb_columns() WHERE table_name = 'u'
+----
+INTEGER
+
+query I
+SELECT COUNT(*) FROM duckdb_schemas() WHERE schema_name = 's2'
+----
+1
+
+# an automatic checkpoint at commit runs while a transaction with such DDL and sequence use is open
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+statement ok con1
+BEGIN TRANSACTION
+
+statement ok con1
+CREATE VIEW auto_view AS SELECT 5 AS five
+
+statement ok con1
+INSERT INTO ids (k) VALUES (400)
+
+# rows that are logged to the WAL, not written to blocks, so that the WAL outgrows the threshold
+statement ok
+SET checkpoint_threshold='100KB'
+
+statement ok
+INSERT INTO t2 SELECT range, range FROM range(50000)
+
+query I
+SELECT wal_size FROM pragma_database_size()
+----
+0 bytes
+
+statement ok
+SET checkpoint_threshold='1TB'
+
+# a transaction with such DDL and sequence use stays open across two checkpoints
+statement ok con2
+BEGIN TRANSACTION
+
+statement ok con2
+CREATE VIEW long_view AS SELECT 7 AS seven
+
+statement ok con2
+INSERT INTO ids (k) VALUES (500)
+
+statement ok
+INSERT INTO t2 VALUES (2, 2)
+
+statement ok
+CHECKPOINT
+
+statement ok
+INSERT INTO t2 VALUES (3, 3)
+
+statement ok
+CHECKPOINT
+
+statement ok con1
+COMMIT
+
+statement ok con2
+COMMIT
+
+# replay the WAL as after a crash
+restart
+
+query II
+SELECT (SELECT five FROM auto_view), (SELECT seven FROM long_view)
+----
+5	7
+
+query II
+SELECT COUNT(*) FILTER (WHERE k IN (400, 500)), COUNT(DISTINCT id) = COUNT(*) FROM ids
+----
+2	true
+
+query I
+SELECT nextval('seq') > (SELECT MAX(id) FROM ids)
+----
+true

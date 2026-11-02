@@ -292,7 +292,7 @@ private:
 	idx_t active_consumers = 0;
 	bool has_batch_scan_consumer DUCKDB_GUARDED_BY(lock) = false;
 	atomic<idx_t> produced_rows {0};
-	ProducerState producer_state = ProducerState::ACTIVE;
+	ProducerState producer_state DUCKDB_GUARDED_BY(lock) = ProducerState::ACTIVE;
 	WatermarkState watermark_state = WatermarkState::BELOW_HIGH_WATERMARK;
 	optional_ptr<const PhysicalOperator> log_operator;
 };

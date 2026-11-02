@@ -1,0 +1,26 @@
+# name: test/sql/types/variant/variant_object_key_order_json.test
+# description: the JSON cast orders object keys the same way the other VARIANT renderings do
+# group: [variant]
+
+require json
+
+# TODO: "Force storage" will use default storage version, but variant requires v1.5.0, so skip for now
+require no_force_storage
+
+query IIII
+SELECT variant_typeof(v), CAST(v AS VARCHAR), CAST(v AS JSON), CAST(variant_keys(v) AS VARCHAR)
+FROM (SELECT {'o': {'x': 42}, 'l': [42]}::VARIANT AS v);
+----
+OBJECT(l, o)	{'l': [42], 'o': {'x': 42}}	{"l":[42],"o":{"x":42}}	[l, o]
+
+query I
+SELECT CAST(v AS JSON)
+FROM (SELECT {'o': {'y': 1, 'x': 2}, 'l': [42]}::VARIANT AS v);
+----
+{"l":[42],"o":{"x":2,"y":1}}
+
+query I
+SELECT CAST(v AS JSON)
+FROM (SELECT {'a': [2], 'B': 1}::VARIANT AS v);
+----
+{"B":1,"a":[2]}

@@ -224,3 +224,28 @@ ok
 
 statement ok
 DROP TABLE post_checkpoint_mem
+
+# suballocation state must survive append-state recreation within a row group
+statement ok
+SET initial_column_segment_size = 2048
+
+statement ok
+CREATE TABLE persistent_suballocation AS SELECT range::FLOAT AS value FROM range(1_000_000)
+
+query I
+SELECT CASE WHEN memory_usage_bytes < 8_000_000
+            THEN 'ok'
+            ELSE error(concat('expected < 8000000 bytes, got ', memory_usage_bytes))
+       END
+FROM duckdb_memory()
+WHERE tag = 'IN_MEMORY_TABLE'
+----
+ok
+
+query II
+SELECT COUNT(*), SUM(value)::BIGINT FROM persistent_suballocation
+----
+1000000	499999500000
+
+statement ok
+DROP TABLE persistent_suballocation

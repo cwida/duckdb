@@ -1,0 +1,74 @@
+# name: test/sql/sql_export/mark_condition_shapes.test
+# description: SQL export retains supported MARK comparison shapes
+# group: [sql_export]
+
+statement ok
+SET debug_verify_statement='explain_sql_strict';
+
+query III
+SELECT a,b,__mark_join_marker FROM (VALUES (1,1),(2,2),(NULL,2)) l(a,b)
+JOIN BY (TYPE MARK) (VALUES (1,1),(1,1),(2,NULL)) r(c,d) ON a=c AND b=d
+ORDER BY a NULLS LAST;
+----
+1	1	true
+2	2	NULL
+NULL	2	NULL
+
+query III
+SELECT a,b,__mark_join_marker FROM (VALUES (1,1),(2,2),(NULL,2)) l(a,b)
+JOIN BY (TYPE MARK) (VALUES (1,1),(1,1),(2,NULL)) r(c,d)
+ON a IS NOT DISTINCT FROM c AND b IS NOT DISTINCT FROM d ORDER BY a NULLS LAST;
+----
+1	1	true
+2	2	false
+NULL	2	false
+
+query II
+SELECT a,__mark_join_marker FROM (VALUES (1),(3),(NULL)) l(a)
+JOIN BY (TYPE MARK) (VALUES (2)) r(b) ON a<b ORDER BY a NULLS LAST;
+----
+1	true
+3	false
+NULL	NULL
+
+query II
+SELECT a,__mark_join_marker FROM (VALUES (1),(NULL)) l(a)
+JOIN BY (TYPE MARK) (SELECT 1 b WHERE false) r ON a=b ORDER BY a NULLS LAST;
+----
+1	false
+NULL	false
+
+# Direct MARK syntax retains the operator's native NULL handling.
+statement ok
+SET debug_verify_serializer=true;
+
+statement ok
+CREATE TABLE mark_boundary_l(i INTEGER,t TUPLE(INTEGER,INTEGER));
+
+statement ok
+CREATE TABLE mark_boundary_r(i INTEGER,t TUPLE(INTEGER,INTEGER));
+
+statement ok
+INSERT INTO mark_boundary_l VALUES (NULL,(1,NULL)),(1,(2,3));
+
+statement ok
+INSERT INTO mark_boundary_r VALUES (NULL,(1,2)),(2,(3,4));
+
+query II
+SELECT l.i,__mark_join_marker FROM mark_boundary_l l JOIN BY (TYPE MARK) mark_boundary_r r ON l.i IS DISTINCT FROM r.i ORDER BY l.i NULLS FIRST;
+----
+NULL	true
+1	true
+
+foreach comparison < > <= >=
+
+query II
+SELECT l.i,__mark_join_marker FROM mark_boundary_l l JOIN BY (TYPE MARK) mark_boundary_r r ON l.t{comparison}r.t ORDER BY l.i NULLS FIRST;
+----
+NULL	true
+1	true
+
+endloop
+
+statement ok
+SET debug_verify_serializer=false;

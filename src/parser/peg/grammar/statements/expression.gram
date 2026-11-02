@@ -128,6 +128,10 @@ ListComprehensionFilter <- 'IF' Expression
 
 ParensExpression <- Parens(Expression)
 
+# RUNNING and FINAL say how much of a MATCH_RECOGNIZE match the call below them reads. They are only
+# meaningful in MEASURES, which is where the binder checks for them.
+MeasureSemanticsExpression <- MeasureSemantics FunctionExpression
+
 SingleExpression <-
     ParensExpression /
 	LiteralExpression /
@@ -142,6 +146,7 @@ SingleExpression <-
     CastExpression /
     GroupingExpression /
     MapExpression /
+    MeasureSemanticsExpression /
     FunctionExpression /
     ColumnReference /
     ListComprehensionExpression /
@@ -170,7 +175,14 @@ LogicalNotExpression <- NotExpression? IsExpression
 NotExpression <- NotKeyword+
 NotKeyword <- 'NOT'
 # LEVEL 4
-IsExpression <- IsDistinctFromExpression IsTest*
+IsExpression <- IsDistinctFromExpression IsExpressionContinuation?
+IsExpressionContinuation <- IsTest IsExpressionTail*
+IsExpressionTail <- IsTestTail / IsDistinctTail / IsComparisonTail / IsOtherOperatorTail / IsCastTail
+IsTestTail <- IsTest
+IsDistinctTail <- IsDistinctFromTail
+IsComparisonTail <- ComparisonExpressionTail
+IsOtherOperatorTail <- OtherOperatorTail
+IsCastTail <- CastOperator
 IsTest <- IsLiteral / NotNull / IsNull
 IsLiteral <- 'IS' 'NOT'? IsLiteralValue
 IsLiteralValue <- TrueLiteral / FalseLiteral / NullLiteral / UnknownLiteral
@@ -180,13 +192,16 @@ NotNullKeyword <- 'NOT' 'NULL'
 NotNullOperator <- 'NOTNULL'
 IsNull <- IsNullOperator
 IsNullOperator <- 'ISNULL'
-# LEVEL 5 (Split because IsDistinctFromExpression allows post expression while IsOperator does not)
+# LEVEL 5 (IS DISTINCT FROM retains the comparison binding)
 IsDistinctFromExpression <- ComparisonExpression IsDistinctFromTail*
 IsDistinctFromTail <- IsDistinctFromOp ComparisonExpression
 IsDistinctFromOp <- 'IS' 'NOT'? 'DISTINCT' 'FROM'
 # LEVEL 6
 ComparisonExpression <- BetweenInLikeExpression ComparisonExpressionTail*
-ComparisonExpressionTail <- ComparisonOperator NotExpression? BetweenInLikeExpression
+ComparisonExpressionTail <- ComparisonOperator ComparisonOperand
+ComparisonOperand <- NotComparisonOperand / BetweenInLikeExpression
+# NOT after a comparison operator binds everything up to the IS level: a < NOT b IS NULL is a < (NOT (b IS NULL))
+NotComparisonOperand <- NotExpression IsExpression
 ComparisonOperator <-
     OperatorEqual /
     OperatorNotEqual /
@@ -202,11 +217,12 @@ OperatorGreaterThan <- '>'
 OperatorLessThanEquals <- '<='
 OperatorGreaterThanEquals <- '>='
 # LEVEL 7
-BetweenInLikeExpression <- OtherOperatorExpression BetweenInLikeOp?
-BetweenInLikeOp <- 'NOT'? BetweenInLikeOpExpression
-BetweenInLikeOpExpression <- BetweenClause / InClause / LikeClause
+BetweenInLikeExpression <- OtherOperatorExpression InPredicate* BetweenLikeOp?
+InPredicate <- 'NOT'? InClause CastOperator*
+BetweenLikeOp <- 'NOT'? BetweenLikeOpExpression
+BetweenLikeOpExpression <- BetweenClause / LikeClause
 LikeClause <- LikeVariations OtherOperatorExpression EscapeClause?
-EscapeClause <- 'ESCAPE' ComparisonExpression
+EscapeClause <- 'ESCAPE' OtherOperatorExpression
 
 LikeVariations <- SimilarToToken / RegexInsensitiveMatchToken / RegexMatchToken / ILikeToken / LikeToken / GlobToken / NotILikeOp / NotLikeOp / NotRegexInsensitiveMatchOp / NotSimilarToOp
 LikeToken      <- 'LIKE' / '~~'
@@ -225,9 +241,11 @@ InExpression <- InExpressionList / InSelectStatement / InContainsExpression
 InContainsExpression <- OtherOperatorExpression
 InExpressionList <- Parens(List(Expression))
 InSelectStatement <- Parens(SelectStatementInternal)
-BetweenClause <- 'BETWEEN' OtherOperatorExpression 'AND' OtherOperatorExpression
+BetweenClause <- 'BETWEEN' Asymmetric? OtherOperatorExpression 'AND' OtherOperatorExpression
+Asymmetric <- 'ASYMMETRIC'
 # LEVEL 8
-OtherOperatorExpression <- BitwiseExpression OtherOperatorTail*
+OtherOperatorExpression <- InfixOtherOperatorExpression
+InfixOtherOperatorExpression <- BitwiseExpression OtherOperatorTail*
 OtherOperatorTail <- OtherOperator BitwiseExpression
 OtherOperator <-
     AnyAllParsedOperator / NamedOtherOperator
@@ -238,14 +256,16 @@ OperatorLiteral <- Identifier
 AnyOperatorLiteral <- Identifier
 AnyAllOperator <- AnyOperatorLiteral AnyOrAll
 AnyOrAll <- SubqueryAny / SubqueryAll
-SubqueryAny <- 'ANY'
+SubqueryAny <- 'ANY' / 'SOME'
 SubqueryAll <- 'ALL'
 QualifiedOperator <- 'OPERATOR' Parens(QualifiedOperatorContents)
 QualifiedOperatorContents <- ColIdDot* AnyOperatorLiteral
 # LEVEL 9
-BitwiseExpression <- AdditiveExpression BitwiseExpressionTail*
-BitwiseExpressionTail <- BitOperator AdditiveExpression
+BitwiseExpression <- TildeExpression BitwiseExpressionTail*
+BitwiseExpressionTail <- BitOperator TildeExpression
 BitOperator <- '&' / '|' / '<<' / '>>'
+# LEVEL 9.5
+TildeExpression <- TildePrefixOperator* AdditiveExpression
 # LEVEL 10
 AdditiveExpression <- MultiplicativeExpression AdditiveExpressionTail*
 AdditiveExpressionTail <- Term MultiplicativeExpression
@@ -263,12 +283,14 @@ CollateExpression <- AtTimeZoneExpression CollateExpressionTail*
 CollateExpressionTail <- CollateOperator AtTimeZoneExpression
 CollateOperator <- 'COLLATE'
 # LEVEL 14
-AtTimeZoneExpression <- PrefixExpression AtTimeZoneExpressionTail*
-AtTimeZoneExpressionTail <- AtTimeZoneOperator PrefixExpression
+AtTimeZoneExpression <- UnaryExpression AtTimeZoneExpressionTail*
+AtTimeZoneExpressionTail <- AtTimeZoneOperator UnaryExpression
 AtTimeZoneOperator <- 'AT' 'TIME' 'ZONE'
 # LEVEL 15
+UnaryExpression <- PrefixExpression / CustomPrefixExpression
 PrefixExpression <- PrefixOperator* BaseExpression
-PrefixOperator <- QualifiedOperator / MinusPrefixOperator / PlusPrefixOperator / TildePrefixOperator
+CustomPrefixExpression <- OperatorLiteral TildeExpression
+PrefixOperator <- QualifiedOperator / MinusPrefixOperator / PlusPrefixOperator
 MinusPrefixOperator <- '-'
 PlusPrefixOperator <- '+'
 TildePrefixOperator <- '~'
@@ -286,10 +308,11 @@ MethodExpressionArguments <- Parens(MethodExpressionArgumentList)
 MethodExpressionArgumentList <- DistinctOrAll? MethodFunctionArguments? OrderByClause? IgnoreOrRespectNulls?
 MethodFunctionArguments <- List(FunctionArgument)
 SliceExpression <- '[' SliceBound ']'
-SliceBound <- Expression? EndSliceBound? StepSliceBound?
-EndSliceBound <- ':' EndSliceValue?
-EndSliceValue <- Expression / EndSliceMinus
-EndSliceMinus <- '-'
+SliceBound <- Expression? SliceUpperBound?
+SliceUpperBound <- MinusStepSliceBound / EndStepSliceBound
+MinusStepSliceBound <- ':' '-' StepSliceBound
+EndStepSliceBound <- EndSliceBound StepSliceBound?
+EndSliceBound <- ':' Expression?
 StepSliceBound <- ':' Expression?
 PostfixOperator <- '!'
 

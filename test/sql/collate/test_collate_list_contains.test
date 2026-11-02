@@ -106,3 +106,141 @@ query I
 SELECT list_contains([1, 2, 3], 2)
 ----
 true
+
+# the collation is pushed into struct elements too
+query I
+SELECT list_contains([{'x': 'hello'}, {'x': 'world'}], {'x': 'HELLO' COLLATE NOCASE})
+----
+true
+
+query I
+SELECT list_position([{'x': 'hello'}, {'x': 'world'}], {'x': 'WORLD' COLLATE NOCASE})
+----
+2
+
+query I
+SELECT contains([{'x': 'hello'}], {'x': 'HELLO' COLLATE NOCASE})
+----
+true
+
+# combined collations on a struct field
+query I
+SELECT list_contains([{'x': 'héllo'}], {'x': 'HELLO' COLLATE NOACCENT.NOCASE})
+----
+true
+
+# list fields inside struct elements
+query I
+SELECT list_contains([{'x': ['hello']}], {'x': ['HELLO' COLLATE NOCASE]})
+----
+true
+
+# struct elements without a collation remain case-sensitive
+query I
+SELECT list_contains([{'x': 'hello'}], {'x': 'HELLO'})
+----
+false
+
+# the collation can come from either argument
+query II
+SELECT id, list_contains([{'x': 'Apple'}, {'x': 'Banana'}], {'x': needle})
+FROM t ORDER BY id
+----
+1	true
+2	false
+3	false
+
+query II
+SELECT id, list_position([{'x': 'Apple'}, {'x': 'Banana'}], {'x': needle})
+FROM t ORDER BY id
+----
+1	2
+2	NULL
+3	NULL
+
+query II
+SELECT id, list_contains([{'x': needle}], {'x': 'BANANA'})
+FROM t ORDER BY id
+----
+1	true
+2	false
+3	false
+
+# a field's collation does not apply to other fields
+query I
+SELECT list_contains([{'x': 'a', 'y': 'b'}], {'x': 'A' COLLATE NOCASE, 'y': 'B'})
+----
+false
+
+# different fields can use different collations
+query I
+SELECT list_contains([{'x': 'a', 'y': 'é'}], {'x': 'A' COLLATE NOCASE, 'y': 'e' COLLATE NOACCENT})
+----
+true
+
+query I
+SELECT list_contains([{'x': 'A' COLLATE NOCASE, 'y': 'e' COLLATE NOACCENT}], {'x': 'a', 'y': 'é'})
+----
+true
+
+# Collations on different fields can come from different arguments.
+query I
+SELECT list_contains([{'x': 'HELLO' COLLATE NOCASE, 'y': 'é'}], {'x': 'hello', 'y': 'e' COLLATE NOACCENT})
+----
+true
+
+query I
+SELECT list_position([{'x': 'hello', 'y': 'e' COLLATE NOACCENT}], {'x': 'HELLO' COLLATE NOCASE, 'y': 'é'})
+----
+1
+
+# Field names, rather than their order, determine which collations apply.
+query I
+SELECT list_contains([{'x': 'HELLO', 'y': 'é'}], {'y': 'e' COLLATE NOACCENT, 'x': 'hello' COLLATE NOCASE})
+----
+true
+
+# Tuple fields retain separate collations too.
+query I
+SELECT list_contains([('HELLO', 'é')], ('hello' COLLATE NOCASE, 'e' COLLATE NOACCENT))
+----
+true
+
+# Fixed-size arrays use the same comparison as lists.
+query I
+SELECT list_contains([{'x': 'HELLO'}]::STRUCT(x VARCHAR)[1], {'x': 'hello' COLLATE NOCASE})
+----
+true
+
+# Normalization can change a field's type before list search.
+query I
+SELECT list_position([{'x': '10:00:00+00'::TIMETZ}], {'x': '10:00:00+00'::TIMETZ})
+----
+1
+
+# A NULL tuple must still match a NULL element after collation is applied.
+query I
+SELECT list_position([('hello' COLLATE NOCASE, 1), NULL], NULL)
+----
+2
+
+# Constructing values is allowed; comparing conflicting collations is not.
+query I
+SELECT len([{'x': 'hello' COLLATE NOCASE}, {'x': 'hello' COLLATE NOACCENT}])
+----
+2
+
+statement error
+SELECT list_contains([{'x': 'hello' COLLATE NOCASE}], {'x': 'hello' COLLATE NOACCENT})
+----
+Cannot combine types with different collation
+
+statement error
+SELECT list_position([{'x': 'hello' COLLATE NOACCENT}], {'x': 'hello' COLLATE NOCASE})
+----
+Cannot combine types with different collation
+
+statement error
+SELECT list_contains([{'x': ['hello' COLLATE NOCASE]}], {'x': ['hello' COLLATE NOACCENT]})
+----
+Cannot combine types with different collation

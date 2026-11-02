@@ -1,0 +1,77 @@
+# name: test/sql/sql_export/explain_sql_formatting.test
+# description: SQL explain formats executable SQL without loading extensions
+# group: [sql_export]
+
+statement ok
+SET autoload_known_extensions=false;
+
+statement ok
+SET autoinstall_known_extensions=false;
+
+query I
+SELECT count(*) FROM duckdb_extensions() WHERE extension_name='autocomplete' AND loaded;
+----
+0
+
+query TT
+EXPLAIN (SQL) SELECT sum(i) AS total FROM range(5) t(i) WHERE i > 1;
+----
+sql	<REGEX>:(?s)SELECT.*\n *FROM .*"range".*\n *WHERE .* > CAST\(1 AS BIGINT\).*
+
+statement ok
+CREATE SEQUENCE formatted_explain_sequence;
+
+query TT
+EXPLAIN (SQL) SELECT nextval('formatted_explain_sequence') FROM range(2);
+----
+sql	<REGEX>:(?s)SELECT.*nextval.*formatted_explain_sequence.*\nFROM.*
+
+query I
+SELECT last_value IS NULL FROM duckdb_sequences() WHERE sequence_name='formatted_explain_sequence';
+----
+true
+
+statement ok
+SET debug_verify_statement='explain_sql_strict';
+
+query II
+WITH t AS MATERIALIZED (SELECT * FROM (VALUES (1), (1), (NULL), (2)) v(i))
+SELECT l.i, r.i FROM t l LEFT JOIN t r ON l.i=r.i ORDER BY l.i, r.i;
+----
+1	1
+1	1
+1	1
+1	1
+2	2
+NULL	NULL
+
+query II
+SELECT "select" AS "same name", "select"::BIGINT AS "same name"
+FROM (VALUES (1), (NULL), (1)) t("select") ORDER BY 1;
+----
+1	1
+1	1
+NULL	NULL
+
+query TI
+SELECT s, i FROM (VALUES ('first
+FROM literal
+last', 1), ('it''s a duck 🦆', 2)) t(s,i) ORDER BY i;
+----
+<REGEX>:first\nFROM literal\nlast	1
+it's a duck 🦆	2
+
+query TT
+SELECT [i, NULL] AS l, {'number': i, 'text': 'a,b FROM x'} AS s FROM range(3) t(i) ORDER BY i;
+----
+[0, NULL]	{'number': 0, 'text': 'a,b FROM x'}
+[1, NULL]	{'number': 1, 'text': 'a,b FROM x'}
+[2, NULL]	{'number': 2, 'text': 'a,b FROM x'}
+
+statement ok
+SET debug_verify_statement='none';
+
+query I
+SELECT count(*) FROM duckdb_extensions() WHERE extension_name='autocomplete' AND loaded;
+----
+0

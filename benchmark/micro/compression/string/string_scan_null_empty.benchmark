@@ -1,0 +1,24 @@
+# name: benchmark/micro/compression/string/string_scan_null_empty.benchmark
+# description: Scan Uncompressed Strings with NULLs and Empty Strings
+# group: [string]
+
+name Scan Uncompressed Strings with NULLs and Empty Strings
+group string
+storage persistent
+cache string_scan_null_empty.db
+
+load
+CREATE TABLE string_values(s VARCHAR USING COMPRESSION UNCOMPRESSED);
+INSERT INTO string_values SELECT CASE WHEN i % 5 = 0 THEN NULL WHEN i % 5 = 1 THEN '' ELSE 'string-' || lpad(i::VARCHAR, 9, '0') END FROM range(5_000_000) t(i);
+CHECKPOINT;
+
+assert I
+SELECT DISTINCT compression FROM pragma_storage_info('string_values') WHERE column_name='s' AND segment_type='VARCHAR';
+----
+Uncompressed
+
+run
+SELECT SUM(strlen(s)) FROM string_values;
+
+result I
+48000000

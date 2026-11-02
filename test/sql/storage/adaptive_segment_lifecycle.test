@@ -1,0 +1,97 @@
+# name: test/sql/storage/adaptive_segment_lifecycle.test
+# description: Shared transient blocks survive append, vacuum, schema changes, and reload
+# group: [storage]
+
+require skip_reload
+
+foreach segment_size 8 2048
+
+statement ok
+SET initial_column_segment_size = {segment_size}
+
+statement ok
+SET wal_autocheckpoint = '1TB'
+
+statement ok
+ATTACH '{TEST_DIR}/adaptive_segment_lifecycle_{segment_size}.db' AS adaptive (ROW_GROUP_SIZE 2048)
+
+statement ok
+CREATE MACRO adaptive.source_rows(first_row, last_row) AS TABLE
+SELECT i,
+       (i % 127)::TINYINT AS tiny,
+       CASE WHEN i % 7 = 0 THEN NULL ELSE i::FLOAT END AS f,
+       CASE WHEN i % 11 = 0 THEN NULL ELSE repeat('x', 40) || i END AS s,
+       {'items': [i, NULL, i + 1], 'array': [i, NULL]::BIGINT[2]} AS nested
+FROM range(first_row, last_row) r(i)
+
+statement ok
+CREATE TABLE adaptive.t AS FROM adaptive.source_rows(0, 1000)
+
+# Recreate append states, including appends across row-group boundaries.
+loop batch 1 7
+
+statement ok
+INSERT INTO adaptive.t FROM adaptive.source_rows({batch} * 1000, ({batch} + 1) * 1000)
+
+endloop
+
+query I
+SELECT COUNT(*) FROM (
+    (FROM adaptive.t EXCEPT ALL FROM adaptive.source_rows(0, 7000))
+    UNION ALL
+    (FROM adaptive.source_rows(0, 7000) EXCEPT ALL FROM adaptive.t)
+)
+----
+0
+
+# Replace the schema while the columns still share transient blocks.
+statement ok
+DELETE FROM adaptive.t WHERE i % 3 = 0
+
+statement ok
+ALTER TABLE adaptive.t ADD COLUMN extra INTEGER DEFAULT 42
+
+statement ok
+ALTER TABLE adaptive.t DROP COLUMN extra
+
+statement ok
+INSERT INTO adaptive.t FROM adaptive.source_rows(7000, 10000)
+
+query I
+WITH expected AS (
+    FROM adaptive.source_rows(0, 10000) WHERE i >= 7000 OR i % 3 != 0
+)
+SELECT COUNT(*) FROM (
+    (FROM adaptive.t EXCEPT ALL FROM expected)
+    UNION ALL
+    (FROM expected EXCEPT ALL FROM adaptive.t)
+)
+----
+0
+
+# Compact multiple partially deleted row groups, then reload.
+statement ok
+CHECKPOINT adaptive
+
+statement ok
+DETACH adaptive
+
+statement ok
+ATTACH '{TEST_DIR}/adaptive_segment_lifecycle_{segment_size}.db' AS adaptive
+
+query I
+WITH expected AS (
+    FROM adaptive.source_rows(0, 10000) WHERE i >= 7000 OR i % 3 != 0
+)
+SELECT COUNT(*) FROM (
+    (FROM adaptive.t EXCEPT ALL FROM expected)
+    UNION ALL
+    (FROM expected EXCEPT ALL FROM adaptive.t)
+)
+----
+0
+
+statement ok
+DETACH adaptive
+
+endloop

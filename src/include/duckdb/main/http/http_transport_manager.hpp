@@ -129,7 +129,6 @@ private:
 	void Close() noexcept DUCKDB_EXCLUDES(lock);
 	static idx_t CalculateCapacity(idx_t system_concurrency, optional_idx file_descriptor_limit,
 	                               idx_t io_concurrency = 0);
-	static optional_idx GetFileDescriptorLimit();
 	static bool AdvanceConnectionEpoch(uint64_t &connection_epoch, bool &reuse_poisoned) noexcept;
 	void SetHTTPUtil(const shared_ptr<HTTPUtil> &new_http_util) DUCKDB_EXCLUDES(lock);
 	HTTPUtil &GetHTTPUtil() const DUCKDB_EXCLUDES(lock);

@@ -137,10 +137,12 @@ public:
 	static ExtensionLoadResult LoadExtension(DuckDB &db, const std::string &extension);
 	void SkipTest(const string &reason, TestSkipKind kind = TestSkipKind::REQUIREMENT);
 	static string GetSkipReasonSummary();
-	//! Statement tallies, plus the begin/end JSON events emitted under --emit-test-events.
+	//! Statement tallies and lifecycle JSON events emitted under --emit-test-events.
 	void CountStatement(bool passed);
 	void CountSkipMode();
 	void EmitBegin(const string &test_name);
+	void EmitExecutionComplete(const string &test_name, const string &status, const string &data);
+	static void EmitError(const string &test_name, const string &data);
 	void EmitEnd(const string &test_name, const string &status, const string &data);
 	NewDatabaseConnection CreateDatabase(const string &db_path, bool load_database);
 	unique_ptr<Connection> ConnectToDatabase(DuckDB &db_ref);
@@ -148,15 +150,19 @@ public:
 	Value GetVariableReplacement(const string &token_name, string &variable_name);
 
 private:
+	void EmitStatusEvent(const string &event, const string &test_name, const string &status, const string &data);
 	void ExecuteInternal(SQLLogicParser &parser, const string &script);
 	RequireResult CheckRequire(SQLLogicParser &parser, const vector<string> &params);
-	void ConfigureDefaultInMemoryTemporaryDirectory(const string &script);
+	void ConfigureDefaultInMemoryTemporaryDirectory(DuckDB &database, const string &db_path);
 	static void AddSkipReason(const string &reason);
 
 private:
-	//! The TEMP_DIR the harness assigned this test, snapshotted by EmitBegin. Both events report it, so
+	//! The TEMP_DIR the harness assigned this test, snapshotted by EmitBegin. All events report it, so
 	//! a body that rewrites TEMP_DIR via test-env cannot make them name different invocations.
 	string emit_temp_dir;
+	bool execution_complete_emitted = false;
+	//! Explicit mode-skip reasons encountered while processing this test.
+	unordered_set<string> partial_skip_reasons;
 
 	//! This test's temp dir, snapshotted at construction for the destructor's loaded-database
 	//! ownership check. Resolving it there instead would call a MATERIALIZING accessor after

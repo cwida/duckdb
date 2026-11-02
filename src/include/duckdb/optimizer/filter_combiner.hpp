@@ -44,6 +44,8 @@ public:
 	};
 
 	FilterResult AddFilter(unique_ptr<Expression> expr);
+	//! Splits on AND and adds each conjunct
+	FilterResult AddConjuncts(unique_ptr<Expression> expr);
 
 	//! Returns whether or not a set of integral values is a dense range (i.e. 1, 2, 3, 4, 5)
 	//! If this returns true - this sorts "in_list" as a side-effect

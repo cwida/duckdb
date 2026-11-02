@@ -120,3 +120,41 @@ SELECT finalize(to_aggregate_state({
 }, 'approx_top_k', ['VARCHAR', 'BIGINT']));
 ----
 <REGEX>:Invalid Input Error: Invalid approx_top_k state.*
+
+# importing a state with a zero count is an error
+statement error
+SELECT finalize(to_aggregate_state({
+	'k': 2::UBIGINT,
+	'values': [
+		{'value': 'a'::VARCHAR, 'count': 0::UBIGINT}
+	]::STRUCT("value" VARCHAR, "count" UBIGINT)[],
+	'filter': list_transform(range(64), lambda x: 0::UBIGINT)
+}, 'approx_top_k', ['VARCHAR', 'BIGINT']));
+----
+<REGEX>:Invalid Input Error: Invalid approx_top_k state.*count > 0.*
+
+# importing a state whose counts are not in descending order is an error
+statement error
+SELECT finalize(to_aggregate_state({
+	'k': 2::UBIGINT,
+	'values': [
+		{'value': 'a'::VARCHAR, 'count': 1::UBIGINT},
+		{'value': 'b'::VARCHAR, 'count': 5::UBIGINT}
+	]::STRUCT("value" VARCHAR, "count" UBIGINT)[],
+	'filter': list_transform(range(64), lambda x: 0::UBIGINT)
+}, 'approx_top_k', ['VARCHAR', 'BIGINT']));
+----
+<REGEX>:Invalid Input Error: Invalid approx_top_k state.*descending count.*
+
+# equal counts and a valid descending state still import
+query I
+SELECT finalize(to_aggregate_state({
+	'k': 2::UBIGINT,
+	'values': [
+		{'value': 'a'::VARCHAR, 'count': 5::UBIGINT},
+		{'value': 'b'::VARCHAR, 'count': 5::UBIGINT}
+	]::STRUCT("value" VARCHAR, "count" UBIGINT)[],
+	'filter': list_transform(range(64), lambda x: 0::UBIGINT)
+}, 'approx_top_k', ['VARCHAR', 'BIGINT']));
+----
+[a, b]

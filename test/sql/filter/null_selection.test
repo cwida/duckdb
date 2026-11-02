@@ -1,0 +1,223 @@
+# name: test/sql/filter/null_selection.test
+# description: Direct NULL selection preserves row mappings and child evaluation
+# group: [filter]
+
+load {TEST_DIR}/null_selection.db
+
+statement ok
+PRAGMA disable_optimizer;
+
+statement ok
+SET threads=1;
+
+statement ok
+CREATE TABLE null_inputs AS
+SELECT i,
+       CASE WHEN i%4<>0 THEN i END AS n,
+       CASE WHEN i%4<>0 THEN repeat('value', 5) || i::VARCHAR END AS s,
+       CASE WHEN i%4<>0 THEN [CASE WHEN i%7<>0 THEN i END] END AS l,
+       CASE WHEN i%4<>0 THEN {'v': CASE WHEN i%7<>0 THEN i END} END AS st,
+       CASE WHEN i%4<>0 THEN map(['v'], [CASE WHEN i%7<>0 THEN i END]) END AS m
+FROM range(5003) t(i);
+
+foreach mode none dictionary_expression
+
+statement ok
+SET debug_verify_vector='{mode}';
+
+foreach col n s l st m
+
+# AND compacts selections in place; OR retains both passing and failing rows.
+query I
+WITH actual AS (
+    SELECT 0 AS kind, i FROM null_inputs WHERE {col} IS NULL
+    UNION ALL
+    SELECT 1, i FROM null_inputs WHERE {col} IS NOT NULL
+    UNION ALL
+    SELECT 2, i FROM null_inputs WHERE i%3=1 AND {col} IS NULL
+    UNION ALL
+    SELECT 3, i FROM null_inputs WHERE {col} IS NOT NULL AND i%3=1
+    UNION ALL
+    SELECT 4, i FROM null_inputs
+    WHERE (i%3=1 AND {col} IS NULL) OR (i%5=2 AND {col} IS NOT NULL)
+), expected AS (
+    SELECT 0 AS kind, i FROM null_inputs WHERE i%4=0
+    UNION ALL
+    SELECT 1, i FROM null_inputs WHERE i%4<>0
+    UNION ALL
+    SELECT 2, i FROM null_inputs WHERE i%3=1 AND i%4=0
+    UNION ALL
+    SELECT 3, i FROM null_inputs WHERE i%4<>0 AND i%3=1
+    UNION ALL
+    SELECT 4, i FROM null_inputs
+    WHERE (i%3=1 AND i%4=0) OR (i%5=2 AND i%4<>0)
+)
+SELECT count(*) FROM (
+    (TABLE actual EXCEPT ALL TABLE expected)
+    UNION ALL
+    (TABLE expected EXCEPT ALL TABLE actual)
+);
+----
+0
+
+# Later CASE branches receive partial selections and write both output selections.
+query I
+SELECT count(*) FROM null_inputs WHERE
+    CASE WHEN i%3=1 THEN 10
+         WHEN {col} IS NULL THEN 20
+         WHEN i%5=2 OR {col} IS NOT NULL THEN 30
+         ELSE 40 END
+    IS DISTINCT FROM
+    CASE WHEN i%3=1 THEN 10
+         WHEN i%4=0 THEN 20
+         WHEN i%5=2 OR i%4<>0 THEN 30
+         ELSE 40 END;
+----
+0
+
+query I
+SELECT count(*) FROM null_inputs WHERE
+    CASE WHEN i%3=1 THEN {col}
+         ELSE COALESCE({col}, (SELECT {col} FROM null_inputs WHERE i=1)) END IS NULL;
+----
+417
+
+endloop
+
+# Constants must still populate the caller's current row selection.
+query II
+SELECT count(*), sum(i) FROM null_inputs
+WHERE i%5=2 AND NULL::INTEGER IS NULL AND 42 IS NOT NULL;
+----
+1001	2504502
+
+query I
+SELECT count(*) FROM null_inputs WHERE 42 IS NULL OR NULL::INTEGER IS NOT NULL;
+----
+0
+
+# No rows should evaluate the throwing child.
+query I
+SELECT count(*) FROM null_inputs WHERE i<0 AND CAST(s AS INTEGER) IS NULL;
+----
+0
+
+endloop
+
+statement ok
+RESET debug_verify_vector;
+
+# Evaluation of throwing and volatile children remains observable.
+statement error
+SELECT count(*) FROM null_inputs WHERE CAST(s AS INTEGER) IS NULL;
+----
+Could not convert string
+
+query II
+SELECT count(*), sum(i) FROM null_inputs
+WHERE TRY_CAST(s AS INTEGER) IS NULL;
+----
+5003	12512503
+
+statement ok
+CREATE SEQUENCE null_selection_seq;
+
+query I
+SELECT count(*) FROM range(5003) WHERE nextval('null_selection_seq') IS NOT NULL;
+----
+5003
+
+query I
+SELECT currval('null_selection_seq');
+----
+5003
+
+query I
+SELECT count(*) FROM range(5003) WHERE nextval('null_selection_seq') IS NULL;
+----
+0
+
+query I
+SELECT currval('null_selection_seq');
+----
+10006
+
+# Arbitrary dictionary selections include repeated and reordered rows.
+query I
+WITH actual AS (
+    SELECT true AS is_null, n FROM test_vector_types(NULL::INTEGER, all_flat=false) t(n) WHERE n IS NULL
+    UNION ALL
+    SELECT false AS is_null, n FROM test_vector_types(NULL::INTEGER, all_flat=false) t(n) WHERE n IS NOT NULL
+), expected AS (
+    SELECT n IS NULL AS is_null, n FROM test_vector_types(NULL::INTEGER, all_flat=true) t(n)
+)
+SELECT count(*) FROM (
+    (TABLE actual EXCEPT ALL TABLE expected)
+    UNION ALL
+    (TABLE expected EXCEPT ALL TABLE actual)
+);
+----
+0
+
+statement ok
+PRAGMA enable_optimizer;
+
+statement ok
+DROP TABLE null_inputs;
+
+statement ok
+DROP SEQUENCE null_selection_seq;
+
+# Persisted RLE inputs retain their NULL partition.
+statement ok
+SET force_compression='rle';
+
+statement ok
+CREATE TABLE null_runs AS
+SELECT i, CASE WHEN i%7<>0 THEN i%31 END AS n FROM range(20003) t(i);
+
+statement ok
+CHECKPOINT;
+
+query I
+WITH actual AS (
+    SELECT i FROM null_runs WHERE n IS NULL OR (n IS NOT NULL AND n%3=0)
+), expected AS (
+    SELECT i FROM null_runs WHERE i%7=0 OR (i%7<>0 AND (i%31)%3=0)
+)
+SELECT count(*) FROM (
+    (TABLE actual EXCEPT ALL TABLE expected)
+    UNION ALL
+    (TABLE expected EXCEPT ALL TABLE actual)
+);
+----
+0
+
+query I
+SELECT count(*) FROM null_runs WHERE n IS NULL;
+----
+2858
+
+query I
+SELECT count(*) FROM null_runs WHERE n IS NOT NULL;
+----
+17145
+
+# Computed NULLs over non-null RLE runs reach non-owning output selection views.
+statement ok
+CREATE TABLE non_null_runs AS SELECT i AS n FROM range(20003) t(i);
+
+statement ok
+CHECKPOINT;
+
+restart
+
+query II
+SELECT count(*), sum(n) FROM non_null_runs WHERE NULLIF(n,7) IS NOT NULL;
+----
+20002	200049996
+
+query II
+SELECT count(*), sum(n) FROM non_null_runs WHERE NULLIF(n,7) IS NULL;
+----
+1	7

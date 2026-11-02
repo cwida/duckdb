@@ -1,0 +1,89 @@
+# name: test/sql/multi_file/multi_file_file_row_number.test
+# description: The file_row_number option is handled by the multi-file reader, on top of the row number virtual column
+# group: [multi_file]
+
+require parquet
+
+statement ok
+COPY (SELECT i * 10 AS v FROM range(3) t(i)) TO '{TEMP_DIR}/frn_1.parquet'
+
+statement ok
+COPY (SELECT i * 100 AS v FROM range(2) t(i)) TO '{TEMP_DIR}/frn_2.parquet'
+
+# the row numbers restart for every file, and the column comes before the filename column
+query III
+SELECT * FROM read_parquet('{TEMP_DIR}/frn_*.parquet', file_row_number=true, filename=true) ORDER BY filename, v
+----
+0	0	{TEMP_DIR}/frn_1.parquet
+10	1	{TEMP_DIR}/frn_1.parquet
+20	2	{TEMP_DIR}/frn_1.parquet
+0	0	{TEMP_DIR}/frn_2.parquet
+100	1	{TEMP_DIR}/frn_2.parquet
+
+query II
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM read_parquet('{TEMP_DIR}/frn_*.parquet', file_row_number=true))
+----
+v	BIGINT
+file_row_number	BIGINT
+
+# filters on the column
+query I
+SELECT v FROM read_parquet('{TEMP_DIR}/frn_*.parquet', file_row_number=true) WHERE file_row_number = 2
+----
+20
+
+# union_by_name
+query II
+SELECT v, file_row_number FROM read_parquet('{TEMP_DIR}/frn_*.parquet', file_row_number=true, union_by_name=true)
+ORDER BY v
+----
+0	0
+0	0
+10	1
+20	2
+100	1
+
+# the column comes before hive partitioning columns too
+statement ok
+COPY (SELECT i AS v, i % 2 AS part FROM range(4) t(i)) TO '{TEMP_DIR}/frn_hive' (FORMAT parquet, PARTITION_BY part)
+
+query III
+SELECT * FROM read_parquet('{TEMP_DIR}/frn_hive/*/*.parquet', file_row_number=true, hive_partitioning=true)
+ORDER BY v
+----
+0	0	0
+1	0	1
+2	1	0
+3	1	1
+
+# the column cannot clash with a column of the file
+statement ok
+COPY (SELECT 1 AS file_row_number) TO '{TEMP_DIR}/frn_clash.parquet'
+
+statement error
+SELECT * FROM read_parquet('{TEMP_DIR}/frn_clash.parquet', file_row_number=true)
+----
+Binder Error: Option file_row_number adds column "file_row_number"
+
+# COPY ... FROM, into a table that has a column for it
+statement ok
+CREATE TABLE t(v BIGINT, file_row_number BIGINT)
+
+statement ok
+COPY t FROM '{TEMP_DIR}/frn_1.parquet' (FORMAT parquet, file_row_number)
+
+query II
+SELECT * FROM t ORDER BY v
+----
+0	0
+10	1
+20	2
+
+# readers without a row number virtual column do not support the option
+statement ok
+COPY (SELECT 1 AS v) TO '{TEMP_DIR}/frn.csv'
+
+statement error
+SELECT * FROM read_csv('{TEMP_DIR}/frn.csv', file_row_number=true)
+----
+Binder Error: The file_row_number option is not supported by this reader

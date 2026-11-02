@@ -28,7 +28,10 @@ void TableStatistics::Initialize(const vector<LogicalType> &types, PersistentTab
 void TableStatistics::InitializeEmpty(const TableStatistics &other) {
 	D_ASSERT(Empty());
 	D_ASSERT(!table_sample);
+	D_ASSERT(other.stats_lock);
 
+	// hold other's lock while reading its stats - a concurrent ANALYZE/VACUUM can replace them (e.g. SetDistinct)
+	lock_guard<mutex> l(*other.stats_lock);
 	stats_lock = make_shared_ptr<mutex>();
 	if (other.table_sample) {
 		D_ASSERT(other.table_sample->type == SampleType::RESERVOIR_SAMPLE);
@@ -191,12 +194,6 @@ void TableStatistics::DestroyTableSample(TableStatisticsLock &lock) const {
 	if (table_sample) {
 		table_sample->Destroy();
 	}
-}
-
-void TableStatistics::SetStats(TableStatistics &other) {
-	TableStatisticsLock lock(*stats_lock);
-	column_stats = std::move(other.column_stats);
-	table_sample = std::move(other.table_sample);
 }
 
 unique_ptr<BaseStatistics> TableStatistics::CopyStats(const StorageIndex &index) {

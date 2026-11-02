@@ -1,0 +1,50 @@
+# name: test/sql/sql_export/ci_reconstruction.test
+# description: Preserve optimized field names and binary ordering during SQL reconstruction
+# group: [sql_export]
+
+statement ok
+CREATE TABLE ci_structs(s STRUCT(c1 VARCHAR, c2 INTEGER));
+
+statement ok
+INSERT INTO ci_structs VALUES ({'c1': 'unused', 'c2': 2}), ({'c1': 'unused', 'c2': NULL}), ({'c1': 'unused', 'c2': 2});
+
+foreach serializer false true
+
+statement ok
+SET debug_verify_serializer={serializer};
+
+query I rowsort
+SELECT pack.v2 FROM (SELECT {'a': 42, 'v2': s.c2, 'b': 21} AS pack FROM ci_structs) sub;
+----
+2
+2
+NULL
+
+endloop
+
+statement ok
+CREATE TABLE ci_collated(s VARCHAR COLLATE NOACCENT);
+
+statement ok
+INSERT INTO ci_collated VALUES ('résumé'), ('é'), ('resume'), (NULL);
+
+query T
+SELECT s FROM ci_collated ORDER BY s COLLATE C NULLS LAST;
+----
+resume
+résumé
+é
+NULL
+
+query T
+SELECT string_agg(s, ',' ORDER BY s COLLATE C) FROM ci_collated;
+----
+resume,résumé,é
+
+query TI
+SELECT s, row_number() OVER (ORDER BY s COLLATE C NULLS LAST) FROM ci_collated ORDER BY 2;
+----
+resume	1
+résumé	2
+é	3
+NULL	4

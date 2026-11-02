@@ -26,9 +26,9 @@
 
 namespace duckdb {
 
-StatisticsPropagator::StatisticsPropagator(Optimizer &optimizer_p, LogicalOperator &root_p,
+StatisticsPropagator::StatisticsPropagator(Optimizer &optimizer_p, unique_ptr<LogicalOperator> &root_p,
                                            StatisticsPropagationMode mode_p)
-    : optimizer(optimizer_p), context(optimizer.context), mode(mode_p), root(&root_p) {
+    : optimizer(optimizer_p), context(optimizer.context), mode(mode_p), root(root_p) {
 	root->ResolveOperatorTypes();
 }
 
@@ -44,8 +44,28 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateChildren(LogicalOperat
 	return nullptr;
 }
 
+void StatisticsPropagator::ResetAdditiveStatistics(const vector<ColumnBinding> &bindings) {
+	// additive statistics (e.g. total_string_length) describe a fixed row population - an operator that can emit an
+	// input row more than once invalidates them for all pass-through columns
+	for (auto &binding : bindings) {
+		auto entry = statistics_map.find(binding);
+		if (entry != statistics_map.end() && entry->second) {
+			entry->second->ResetAdditiveStatistics();
+		}
+	}
+}
+
+void StatisticsPropagator::ResetAdditiveVerificationStats(Expression &expr) {
+	auto &stats = expr.GetVerificationStats();
+	if (stats) {
+		stats->ResetAdditiveStatistics();
+	}
+	ExpressionIterator::EnumerateChildren(expr, [&](Expression &child) { ResetAdditiveVerificationStats(child); });
+}
+
 unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalOperator &node,
                                                                      unique_ptr<LogicalOperator> &node_ptr) {
+	propagation_path.emplace_back(node_ptr);
 	unique_ptr<NodeStatistics> result;
 	switch (node.type) {
 	case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY:
@@ -99,6 +119,11 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalOper
 	case LogicalOperatorType::LOGICAL_WINDOW:
 		result = PropagateStatistics(node.Cast<LogicalWindow>(), node_ptr);
 		break;
+	case LogicalOperatorType::LOGICAL_UNNEST:
+		result = PropagateChildren(node, node_ptr);
+		// unnest emits its input row once per unnested entry
+		ResetAdditiveStatistics(node.children[0]->GetColumnBindings());
+		break;
 	default:
 		result = PropagateChildren(node, node_ptr);
 	}
@@ -106,10 +131,11 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalOper
 	if (mode == StatisticsPropagationMode::FULL &&
 	    !optimizer.OptimizerDisabled(OptimizerType::COMPRESSED_MATERIALIZATION)) {
 		// compress data based on statistics for materializing operators
-		CompressedMaterialization compressed_materialization(optimizer, *root, statistics_map);
+		CompressedMaterialization compressed_materialization(optimizer, *root, propagation_path, statistics_map);
 		compressed_materialization.Compress(node_ptr);
 	}
 
+	propagation_path.pop_back();
 	return result;
 }
 
@@ -120,10 +146,27 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(unique_ptr<
 unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalCopyToFile &op,
                                                                      unique_ptr<LogicalOperator> &node_ptr) {
 	auto stats = PropagateChildren(op, node_ptr);
-	if (!op.function.copy_to_propagate_statistics || !op.bind_data || op.children.empty()) {
+	if (op.children.empty()) {
 		return stats;
 	}
 	auto bindings = op.children[0]->GetColumnBindings();
+	if (op.partition_output) {
+		// the partition column statistics let the partitioned write pick its partitioning scheme
+		op.partition_stats.clear();
+		for (auto &col : op.partition_columns) {
+			unique_ptr<BaseStatistics> partition_stats;
+			if (col < bindings.size()) {
+				auto entry = statistics_map.find(bindings[col]);
+				if (entry != statistics_map.end() && entry->second) {
+					partition_stats = entry->second->ToUnique();
+				}
+			}
+			op.partition_stats.push_back(std::move(partition_stats));
+		}
+	}
+	if (!op.function.copy_to_propagate_statistics || !op.bind_data) {
+		return stats;
+	}
 	vector<optional_ptr<BaseStatistics>> column_stats(bindings.size());
 	for (idx_t i = 0; i < bindings.size(); i++) {
 		auto entry = statistics_map.find(bindings[i]);

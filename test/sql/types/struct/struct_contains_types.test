@@ -1,0 +1,36 @@
+# name: test/sql/types/struct/struct_contains_types.test
+# description: struct_contains / struct_position compare the members with the value by their logical type
+# group: [struct]
+
+# members of a different type are not compared with the value
+query II
+SELECT struct_contains((DATE '1970-01-02', 5), 1), struct_position((DATE '1970-01-02', 5), 1)
+----
+false	NULL
+
+query II
+SELECT struct_contains(('a'::ENUM('a','b'), 0::UTINYINT), 0::UTINYINT), struct_contains(('a'::ENUM('a','b'), 1::UTINYINT), 0::UTINYINT)
+----
+true	false
+
+# all members that can be compared with the value are cast to a common type
+query II
+SELECT struct_contains((1::INT, 2::BIGINT), 1::TINYINT), struct_position((1::INT, 2::BIGINT), 1::TINYINT)
+----
+true	1
+
+query II
+SELECT struct_contains((1, 'a'), 'a'), struct_position((1.5, 2), 2)
+----
+true	2
+
+# struct_position returns the first match
+query II
+SELECT struct_position((1, 1, 1), 1), struct_position((NULL::INT, 1, NULL::INT), NULL::INT)
+----
+1	1
+
+query II
+SELECT struct_position(([1], 'a', [2]), [2]), struct_contains(([1], 'a'), 'a')
+----
+3	true

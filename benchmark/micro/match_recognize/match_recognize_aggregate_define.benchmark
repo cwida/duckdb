@@ -1,0 +1,21 @@
+# name: benchmark/micro/match_recognize/match_recognize_aggregate_define.benchmark
+# description: A condition that reads an aggregate of the rows the variable has matched so far
+# group: [match_recognize]
+
+name MatchRecognize Aggregate Define
+group micro
+subgroup match_recognize
+
+load
+CREATE TABLE readings AS
+    SELECT i::INTEGER AS i, (i::BIGINT * 2654435761 % 1000003 % 100)::INTEGER AS v
+    FROM range(0, 1000000) t(i);
+
+run
+SELECT count(*) FROM readings MATCH_RECOGNIZE(
+    ORDER BY i
+    MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (A+)
+    DEFINE A AS A.v >= avg(A.v)
+);

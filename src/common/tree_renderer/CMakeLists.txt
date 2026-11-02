@@ -1,6 +1,7 @@
 add_library_unity(
   duckdb_common_tree_renderer
   OBJECT
+  compact_tree_renderer.cpp
   json_tree_renderer.cpp
   html_tree_renderer.cpp
   graphviz_tree_renderer.cpp

@@ -1,0 +1,161 @@
+# name: test/sql/sql_export/slices_and_limits.test
+# description: SQL export preserves omitted slice bounds, scalar limits and filtered projections
+# group: [sql_export]
+
+statement ok
+CREATE TABLE slice_input(id INTEGER, b INTEGER[][], s VARCHAR);
+
+statement ok
+INSERT INTO slice_input VALUES (1, [[1,2],[3,NULL]], 'abcdef'), (2, []::INTEGER[][], ''), (3, NULL, NULL);
+
+query ITT
+SELECT id,b[:],s[:] FROM slice_input ORDER BY id;
+----
+1	[[1, 2], [3, NULL]]	abcdef
+2	[]	(empty)
+3	NULL	NULL
+
+query TT
+EXPLAIN (SQL) SELECT id,b[:],s[:] FROM slice_input ORDER BY id;
+----
+sql	<!REGEX>:.*array_slice.*
+
+query ITT
+SELECT id,b[:2],s[:3] FROM slice_input ORDER BY id;
+----
+1	[[1, 2], [3, NULL]]	abc
+2	[]	(empty)
+3	NULL	NULL
+
+query TT
+EXPLAIN (SQL) SELECT id,b[:2],s[:3] FROM slice_input ORDER BY id;
+----
+sql	<!REGEX>:.*array_slice.*
+
+query ITT
+SELECT id,b[2:],s[2:] FROM slice_input ORDER BY id;
+----
+1	[[3, NULL]]	bcdef
+2	[]	(empty)
+3	NULL	NULL
+
+query TT
+EXPLAIN (SQL) SELECT id,b[2:],s[2:] FROM slice_input ORDER BY id;
+----
+sql	<!REGEX>:.*array_slice.*
+
+query IT
+SELECT id,b[1:-:2] FROM slice_input ORDER BY id;
+----
+1	[[1, 2]]
+2	[]
+3	NULL
+
+query TT
+EXPLAIN (SQL) SELECT id,b[1:-:2] FROM slice_input ORDER BY id;
+----
+sql	<!REGEX>:.*array_slice.*
+
+query ITT
+SELECT id,b[:id+1],s[:id+1] FROM slice_input ORDER BY id;
+----
+1	[[1, 2], [3, NULL]]	ab
+2	[]	(empty)
+3	NULL	NULL
+
+query TT
+EXPLAIN (SQL) SELECT id,b[:id+1],s[:id+1] FROM slice_input ORDER BY id;
+----
+sql	<!REGEX>:.*array_slice.*
+
+statement ok
+PRAGMA disable_optimizer;
+
+query T
+SELECT ([1,2,3])[:];
+----
+[1, 2, 3]
+
+query T
+SELECT array_slice([1,2,3], 1, 2);
+----
+[1, 2]
+
+query TT
+EXPLAIN (SQL) SELECT ([1,2,3])[:];
+----
+sql	<!REGEX>:.*array_slice.*
+
+statement ok
+PRAGMA enable_optimizer;
+
+query TT
+EXPLAIN (SQL) SELECT b[CASE WHEN id=1 THEN error('slice bound')::BIGINT ELSE 1 END:] FROM slice_input ORDER BY id;
+----
+sql	<!REGEX>:.*array_slice.*
+
+statement error
+SELECT b[CASE WHEN id=1 THEN error('slice bound')::BIGINT ELSE 1 END:] FROM slice_input ORDER BY id;
+----
+<REGEX>:Invalid Input Error:.*slice bound.*
+
+query I
+SELECT i FROM range(10) t(i) ORDER BY i LIMIT (SELECT max(j) FROM range(4) t(j)) OFFSET (SELECT min(j)+2 FROM range(4) t(j));
+----
+2
+3
+4
+
+statement ok
+SET disabled_optimizers='compressed_materialization';
+
+statement ok
+CREATE TABLE filter_join_input AS SELECT i::INTEGER i,CASE WHEN i%4=0 THEN NULL ELSE (i%7)::INTEGER END v FROM range(12)t(i);
+
+statement ok
+CREATE TABLE filter_lists AS SELECT * FROM (VALUES(0,[1,NULL,3]::INTEGER[]),(2,[]::INTEGER[]),(4,[4]::INTEGER[]),(30,[5]::INTEGER[]))t(i,a);
+
+query IT
+SELECT l.i,a FROM filter_lists l LEFT JOIN filter_join_input USING(i) WHERE v IS NULL ORDER BY ALL;
+----
+0	[1, NULL, 3]
+4	[4]
+30	[5]
+
+query II
+SELECT l.i,unnest(a) FROM filter_lists l LEFT JOIN filter_join_input USING(i) WHERE v IS NULL ORDER BY ALL;
+----
+0	1
+0	3
+0	NULL
+4	4
+30	5
+
+query II
+SELECT l.i,row_number() OVER () FROM filter_lists l LEFT JOIN filter_join_input USING(i) WHERE v IS NULL ORDER BY ALL;
+----
+0	1
+4	2
+30	3
+
+statement ok
+CREATE SCHEMA slice_shadow;
+
+statement ok
+CREATE MACRO slice_shadow.array_slice(a,b,c) AS [99];
+
+statement ok
+SET search_path='slice_shadow,main';
+
+statement error
+SELECT b[:] FROM slice_input ORDER BY id;
+----
+<REGEX>:Binder Error:.*array_slice is not a scalar function.*
+
+statement error
+EXPLAIN (SQL) SELECT b[:] FROM slice_input ORDER BY id;
+----
+<REGEX>:Binder Error:.*array_slice is not a scalar function.*
+
+statement ok
+SET search_path='main';

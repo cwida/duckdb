@@ -45,7 +45,7 @@ public:
 	}
 	//! Called instead of ExecuteTask when the task is retired without running its work, because another task errored,
 	//! because the executor was cancelled, or because the task could not be queued at all. Exactly one of ExecuteTask
-	//! or Cancel runs for every task passed to TaskExecutor::ScheduleTask.
+	//! or Cancel runs for every task passed to TaskExecutor::ScheduleTask or ScheduleTasks.
 	//! Anything a waiter watches must change on every exit path, or that waiter never wakes up. Either settle it here
 	//! as well as in ExecuteTask, or settle it in the destructor, which also covers a task that was constructed but
 	//! never scheduled. A destructor settle runs after the executor has already counted the task as finished, so it
@@ -69,6 +69,9 @@ public:
 
 	//! Push an error into the TaskExecutor
 	void PushError(ErrorData error);
+	//! Push the error of a task, which reports an out of memory error when memory runs out while recording it
+	void PushTaskError(const std::exception &ex);
+	void PushTaskError(const char *message);
 	//! Whether or not any task has encountered an error
 	bool HasError();
 	//! Throw an error that was encountered during execution (if HasError() is true)
@@ -80,6 +83,8 @@ public:
 
 	//! Schedule a new task
 	void ScheduleTask(unique_ptr<BaseExecutorTask> task);
+	//! Schedule a batch, cancelling unscheduled tasks if submission fails.
+	void ScheduleTasks(vector<unique_ptr<BaseExecutorTask>> tasks);
 
 	//! Work on tasks until all tasks are finished. Throws an exception if any error occurred while executing the tasks.
 	void WorkOnTasks();

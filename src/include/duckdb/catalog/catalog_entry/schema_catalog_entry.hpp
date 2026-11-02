@@ -45,26 +45,37 @@ public:
 	static constexpr const char *Name = "schema";
 
 public:
-	SchemaCatalogEntry(Catalog &catalog, CreateSchemaInfo &info);
+	SchemaCatalogEntry(Catalog &catalog, CreateSchemaInfo &info,
+	                   optional_ptr<SchemaCatalogEntry> parent_schema = nullptr);
 
 public:
 	unique_ptr<CreateInfo> GetInfo() const override;
 
 	//! The parent schema if this is a nested schema, or nullptr for a top-level schema
 	virtual optional_ptr<SchemaCatalogEntry> GetParentSchema() const {
-		return nullptr;
+		return parent_schema;
 	}
 
 	//! The full path of this schema (its parent chain outermost first, ending with this schema's own name)
 	vector<Identifier> GetSchemaPath() const;
+	//! The schema path formatted as a SQL name, without the catalog.
+	DUCKDB_API string GetSchemaName() const;
 	//! The fully qualified name of an entry in this schema: [catalog, schema path..., entry_name]
 	QualifiedName GetQualifiedName(const Identifier &entry_name) const;
 
 	//! Scan the specified catalog set, invoking the callback method for every entry
 	virtual void Scan(ClientContext &context, CatalogType type,
 	                  const std::function<void(CatalogEntry &)> &callback) = 0;
+	//! Scan using an existing transaction. Override when scans can run under catalog locks.
+	DUCKDB_API virtual void Scan(CatalogTransaction transaction, CatalogType type,
+	                             const std::function<void(CatalogEntry &)> &callback);
 	//! Scan the specified catalog set, invoking the callback method for every committed entry
 	virtual void Scan(CatalogType type, const std::function<void(CatalogEntry &)> &callback) = 0;
+	//! Visit this schema and its descendants in depth-first, parent-before-child order.
+	DUCKDB_API void ScanSchemaTree(CatalogTransaction transaction,
+	                               const std::function<void(SchemaCatalogEntry &)> &callback);
+	//! Visit the committed schema tree in the same order.
+	DUCKDB_API void ScanSchemaTree(const std::function<void(SchemaCatalogEntry &)> &callback);
 
 	string ToSQL() const override;
 
@@ -82,15 +93,23 @@ public:
 	virtual optional_ptr<CatalogEntry> CreateSequence(CatalogTransaction transaction, CreateSequenceInfo &info) = 0;
 	//! Create a table function within the given schema
 	virtual optional_ptr<CatalogEntry> CreateTableFunction(CatalogTransaction transaction,
-	                                                       CreateTableFunctionInfo &info) = 0;
+	                                                       CreateTableFunctionInfo &info) {
+		throw NotImplementedException("Table functions are not supported in schema %s", name);
+	}
 	//! Create a copy function within the given schema
 	virtual optional_ptr<CatalogEntry> CreateCopyFunction(CatalogTransaction transaction,
-	                                                      CreateCopyFunctionInfo &info) = 0;
+	                                                      CreateCopyFunctionInfo &info) {
+		throw NotImplementedException("Copy functions are not supported in schema %s", name);
+	}
 	//! Create a pragma function within the given schema
 	virtual optional_ptr<CatalogEntry> CreatePragmaFunction(CatalogTransaction transaction,
-	                                                        CreatePragmaFunctionInfo &info) = 0;
+	                                                        CreatePragmaFunctionInfo &info) {
+		throw NotImplementedException("Pragma functions are not supported in schema %s", name);
+	}
 	//! Create a collation within the given schema
-	virtual optional_ptr<CatalogEntry> CreateCollation(CatalogTransaction transaction, CreateCollationInfo &info) = 0;
+	virtual optional_ptr<CatalogEntry> CreateCollation(CatalogTransaction transaction, CreateCollationInfo &info) {
+		throw NotImplementedException("Collations are not supported in schema %s", name);
+	}
 	//! Create a coordinate system within the given schema
 	virtual optional_ptr<CatalogEntry> CreateCoordinateSystem(CatalogTransaction transaction,
 	                                                          CreateCoordinateSystemInfo &info) {
@@ -118,5 +137,8 @@ public:
 	virtual void Alter(CatalogTransaction transaction, AlterInfo &info) = 0;
 
 	CatalogTransaction GetCatalogTransaction(ClientContext &context);
+
+protected:
+	optional_ptr<SchemaCatalogEntry> parent_schema;
 };
 } // namespace duckdb

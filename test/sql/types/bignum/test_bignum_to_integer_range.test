@@ -1,0 +1,77 @@
+# name: test/sql/types/bignum/test_bignum_to_integer_range.test
+# description: Casting BIGNUM values that are out of range of an integer type
+# group: [bignum]
+
+query IIII
+SELECT TRY_CAST('300'::BIGNUM AS TINYINT), TRY_CAST('-129'::BIGNUM AS TINYINT), TRY_CAST('-1'::BIGNUM AS UBIGINT), TRY_CAST(('1' || repeat('0', 400))::BIGNUM AS HUGEINT);
+----
+NULL	NULL	NULL	NULL
+
+query IIII
+SELECT TRY_CAST('127'::BIGNUM AS TINYINT), TRY_CAST('-128'::BIGNUM AS TINYINT), TRY_CAST('255'::BIGNUM AS UTINYINT), TRY_CAST('0'::BIGNUM AS UINTEGER);
+----
+127	-128	255	0
+
+statement error
+SELECT '300'::BIGNUM::TINYINT
+----
+Conversion Error
+
+# values wider than 128 bits
+statement error
+SELECT '87112285931760246646623899502532662132741'::BIGNUM::BIGINT
+----
+Conversion Error
+
+statement error
+SELECT ('1' || repeat('0', 400))::BIGNUM::HUGEINT
+----
+Conversion Error
+
+statement error
+SELECT ('-1' || repeat('0', 400))::BIGNUM::HUGEINT
+----
+Conversion Error
+
+# negative values for unsigned types
+statement error
+SELECT '-1'::BIGNUM::UINTEGER
+----
+Conversion Error
+
+statement error
+SELECT '-1'::BIGNUM::UHUGEINT
+----
+Conversion Error
+
+statement error
+SELECT '-256'::BIGNUM::UTINYINT
+----
+Conversion Error
+
+# the limits of the integer types
+query IIII
+SELECT '-170141183460469231731687303715884105728'::BIGNUM::HUGEINT, '170141183460469231731687303715884105727'::BIGNUM::HUGEINT, '340282366920938463463374607431768211455'::BIGNUM::UHUGEINT, '-9223372036854775808'::BIGNUM::BIGINT;
+----
+-170141183460469231731687303715884105728	170141183460469231731687303715884105727	340282366920938463463374607431768211455	-9223372036854775808
+
+statement error
+SELECT '-170141183460469231731687303715884105729'::BIGNUM::HUGEINT
+----
+Conversion Error
+
+statement error
+SELECT '340282366920938463463374607431768211456'::BIGNUM::UHUGEINT
+----
+Conversion Error
+
+query I
+SELECT TRY_CAST(300::BIGNUM::VARIANT AS TINYINT);
+----
+NULL
+
+# round trip of all integer types through BIGNUM
+query I
+SELECT count(*) FROM (SELECT * FROM test_all_types()) t WHERE tinyint::BIGNUM::TINYINT IS DISTINCT FROM tinyint OR utinyint::BIGNUM::UTINYINT IS DISTINCT FROM utinyint OR bigint::BIGNUM::BIGINT IS DISTINCT FROM bigint OR ubigint::BIGNUM::UBIGINT IS DISTINCT FROM ubigint OR hugeint::BIGNUM::HUGEINT IS DISTINCT FROM hugeint OR uhugeint::BIGNUM::UHUGEINT IS DISTINCT FROM uhugeint;
+----
+0

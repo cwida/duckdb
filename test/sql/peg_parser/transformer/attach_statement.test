@@ -27,6 +27,11 @@ statement ok
 ATTACH ':memory:' AS db1 (TYPE getvariable('db_type'));
 
 statement error
+ATTACH ':memory:' AS duplicate_options (TYPE duckdb, TYPE sqlite);
+----
+duplicate option
+
+statement error
 ATTACH '{TEST_DIR}/encrypted.duckdb' AS encrypted (ENCRYPTION_KEY);
 ----
 Binder Error: "true" is not a valid key. A key must be of type VARCHAR

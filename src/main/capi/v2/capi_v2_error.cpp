@@ -20,8 +20,8 @@ DUCKDB_V2_ERROR duckdb_v2_error_info_get_raw_text(duckdb_v2_error_info_handle in
 	return DUCKDB_V2_ERROR_NONE;
 }
 
-DUCKDB_V2_ERROR duckdb_v2_error_info_set_text(duckdb_v2_error_info_handle info, duckdb_v2_str text) {
-	if (!info || (!text.ptr && text.len > 0)) {
+DUCKDB_V2_ERROR duckdb_v2_error_info_set_text(duckdb_v2_error_info_handle info, const duckdb_v2_str *text) {
+	if (!info || IsNullArgument(text)) {
 		return DUCKDB_V2_ERROR_INPUT_INVALID;
 	}
 	auto *ei = Convert(info);

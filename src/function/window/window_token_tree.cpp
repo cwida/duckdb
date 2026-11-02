@@ -55,8 +55,9 @@ idx_t WindowTokenTree::MeasurePayloadBlocks() {
 	return count;
 }
 
-template <typename T>
-static void BuildTokens(WindowTokenTree &token_tree, vector<T> &tokens) {
+template <typename TOKENS>
+static void BuildTokens(WindowTokenTree &token_tree, TOKENS &tokens) {
+	using T = typename TOKENS::value_type;
 	auto &collection = *token_tree.sorted;
 	if (!collection.Count()) {
 		return;

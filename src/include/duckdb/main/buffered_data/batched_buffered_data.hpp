@@ -37,7 +37,8 @@ public:
 	static constexpr const BufferedData::Type TYPE = BufferedData::Type::BATCHED;
 
 public:
-	BatchedBufferedData(ClientContext &context, ResultLifetime lifetime);
+	BatchedBufferedData(ClientContext &context, ResultLifetime lifetime, ResultFormatContext format_context,
+	                    shared_ptr<ResultFormat> format);
 
 public:
 	//! Buffer the finished unit under its batch, or block the sink when the unit does not fit. Returns true on block.
@@ -62,6 +63,10 @@ public:
 	idx_t PeakBufferedBytes() override {
 		annotated_lock_guard<annotated_mutex> lock(glock);
 		return peak_buffered_bytes;
+	}
+	idx_t PeakStreamingBytes() override {
+		annotated_lock_guard<annotated_mutex> lock(glock);
+		return peak_streaming_bytes;
 	}
 
 protected:
@@ -92,12 +97,15 @@ protected:
 	idx_t read_queue_byte_count DUCKDB_GUARDED_BY(glock);
 
 	map<idx_t, BlockedSink> blocked_sinks DUCKDB_GUARDED_BY(glock);
+	//! Counted by the streaming peak, never against the cap
+	idx_t parked_bytes DUCKDB_GUARDED_BY(glock) = 0;
 
 	idx_t min_batch DUCKDB_GUARDED_BY(glock);
 	//! Debug variable to verify that order is preserved correctly.
 	idx_t lowest_moved_batch DUCKDB_GUARDED_BY(glock) = 0;
 	//! The highest number of bytes ever buffered
 	idx_t peak_buffered_bytes DUCKDB_GUARDED_BY(glock) = 0;
+	idx_t peak_streaming_bytes DUCKDB_GUARDED_BY(glock) = 0;
 	//! The largest single unit seen so far
 	idx_t max_seen_unit_bytes DUCKDB_GUARDED_BY(glock) = 0;
 };

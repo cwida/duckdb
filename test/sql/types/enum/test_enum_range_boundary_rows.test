@@ -1,0 +1,31 @@
+# name: test/sql/types/enum/test_enum_range_boundary_rows.test
+# description: enum_range_boundary is computed for every row
+# group: [enum]
+
+statement ok
+CREATE TYPE e AS ENUM ('a', 'b', 'c', 'd');
+
+statement ok
+CREATE TABLE t AS SELECT x::e e FROM (VALUES ('a'), ('c'), ('d')) t(x);
+
+query IIII
+SELECT e, enum_range_boundary(NULL, e), enum_range_boundary(e, NULL), enum_range_boundary(e, 'c'::e) FROM t ORDER BY e
+----
+a	[a]	[a, b, c, d]	[a, b, c]
+c	[a, b, c]	[c, d]	[c]
+d	[a, b, c, d]	[d]	[]
+
+# a NULL value in an enum column means the range is unbounded on that side
+statement ok
+CREATE TABLE t2 AS SELECT x::e e FROM (VALUES (NULL), ('c')) t(x);
+
+query I
+SELECT enum_range_boundary(e, NULL) FROM t2 ORDER BY e NULLS FIRST
+----
+[a, b, c, d]
+[c, d]
+
+query II
+SELECT enum_range_boundary(NULL, 'b'::e), enum_range_boundary('b'::e, 'a'::e)
+----
+[a, b]	[]

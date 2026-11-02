@@ -7,12 +7,14 @@
       "reason": "Explain/profiling output is different due to verification",
       "paths": [
         "test/optimizer/aggregate_reuse.test",
+        "test/optimizer/avg_rewrite_profitability.test",
         "test/optimizer/deliminator.test",
         "test/optimizer/pushdown/filter_cannot_pushdown.test",
         "test/optimizer/eager_aggregate_execution.test",
         "test/optimizer/eager_aggregate_execution_parquet.test",
         "test/optimizer/partial_aggregate_precomputation.test",
         "test/optimizer/partition_stats_exactness.test",
+        "test/optimizer/remove_redundant_order.test",
         "test/optimizer/statistics/statistics_count_not_null_join_pruning.test",
         "test/optimizer/statistics/statistics_count_not_null_pruning.test",
         "test/optimizer/test_aggregate_function_rewrite.test",
@@ -21,10 +23,27 @@
         "test/sql/copy/parquet/parquet_glob_cache.test",
         "test/sql/copy/parquet/parquet_expression_filter_pruning.test",
         "test/sql/copy/parquet/parquet_stats.test",
+        "test/sql/copy/parquet/read_single_parquet_file.test",
         "test/sql/optimizer/aggregate_stats_propagation.test",
         "test/sql/optimizer/sum_aggregate_stats_propagation.test",
         "test/sql/optimizer/expression/test_common_aggregate.test",
-        "test/sql/pragma/profiling/test_custom_profiling_row_group_metrics_local_storage.test"
+        "test/sql/pragma/profiling/test_custom_profiling_row_group_metrics_local_storage.test",
+        "test/sql/sql_export/scope_reuse_plan.test",
+        "test/sql/sql_export/composition_q1_plan.test",
+        "test/sql/sql_export/composition_plan.test",
+        "test/sql/sql_export/function_result_types.test",
+        "test/sql/sql_export/aggregate_results.test",
+        "test/sql/sql_export/aggregate_topn_rewrites.test",
+        "test/sql/sql_export/rewrite_qualification.test"
+      ]
+    },
+    {
+      "reason": "The exported aggregate states change the number of aggregates the PIVOT binder expects",
+      "paths": [
+        "test/sql/pivot/pivot_identical_aggregates_names.test",
+        "test/sql/pivot/pivot_value_collisions.test",
+        "test/sql/pivot/pivot_aggregate_filter.test",
+        "test/sql/pivot/pivot_value_group_name_clash.test"
       ]
     },
     {
@@ -37,39 +56,52 @@
         "test/fuzzer/pedro/first_value_window_crash.test",
         "test/fuzzer/pedro/non_boolean_aggregate_filter.test",
         "test/fuzzer/sqlsmith/bitstring_agg_overflow.test",
+        "test/sql/aggregate/aggregates/test_bitstring_agg_small_types.test",
         "test/issues/general/test_5072.test",
         "test/sql/aggregate/aggregates/arg_min_max_n.test",
         "test/sql/aggregate/aggregates/arg_min_max_n_tpch.test",
         "test/sql/aggregate/aggregates/arg_min_max_nulls_last.test",
+        "test/sql/aggregate/aggregates/minmax_n_fallible.test",
         "test/sql/aggregate/aggregates/bitstring_agg_empty.test",
         "test/sql/aggregate/aggregates/bitstring_agg_memory_limit.test",
+        "test/sql/aggregate/aggregates/first_last_alloc_reuse.test",
         "test/sql/aggregate/aggregates/histogram_exact.test",
         "test/sql/aggregate/aggregates/histogram_table_function.test",
+        "test/sql/catalog/function/default_table_macro_shadowing.test",
         "test/sql/aggregate/aggregates/max_n_all_types_grouped.test",
-        "test/sql/aggregate/aggregates/mode_rewrite_memory.test",
         "test/sql/aggregate/aggregates/mode_rewrite.test",
+        "test/sql/aggregate/aggregates/mode_rewrite_memory.test",
         "test/sql/aggregate/aggregates/test_aggregate_types_scalar.test",
         "test/sql/aggregate/aggregates/test_approx_quantile.test",
         "test/sql/aggregate/aggregates/test_binned_histogram.test",
         "test/sql/aggregate/aggregates/test_bitstring_agg.test",
+        "test/sql/types/bit/bit_sort_key_order.test",
+        "test/sql/types/time/timetz_minmax_order.test",
         "test/sql/aggregate/aggregates/test_entropy.test",
         "test/sql/aggregate/aggregates/test_histogram.test",
         "test/sql/aggregate/aggregates/test_histogram_3529.test",
         "test/sql/aggregate/aggregates/test_mode.test",
+        "test/sql/aggregate/aggregates/test_ordered_aggregate_inner_error.test",
         "test/sql/aggregate/aggregates/test_ordered_aggregates.test",
         "test/sql/aggregate/aggregates/test_reservoir_quantile_decimal.test",
+        "test/sql/aggregate/aggregates/test_reservoir_quantile_sampling.test",
+        "test/sql/aggregate/group/aggregate_combine_grow_arena.test",
         "test/sql/function/list/aggregates/histogram_decimal.test",
         "test/sql/pivot/pivot_operator_expression.test",
         "test/sql/prepared/prepared_statistics_optimization.test",
         "test/sql/types/struct/struct_equality_bug.test",
         "test/sql/types/timestamp/test_infinite_time.test",
+        "test/sql/types/variant/variant_cast_type_null.test",
         "test/sql/variant/variant_comparator.test",
-        "test/sql/window/test_window_agg_stats_propagation.test"
+        "test/sql/window/test_window_agg_stats_propagation.test",
+        "test/sql/sql_export/call_values.test",
+        "test/sql/sql_export/quantile_constant_arguments.test"
       ]
     },
     {
-      "reason": "FIXME: aggregate functions missing state type callback (approx_count_distinct, sum over VARINT, test_named_agg_inspect, test_volatile_aggregate)",
+      "reason": "FIXME: aggregate functions missing state type callback (approx_count_distinct, sum over VARINT, test_named_agg_inspect, test_args_agg, test_volatile_aggregate)",
       "paths": [
+        "test/extension/test_function_args_kwargs.test",
         "test/extension/test_function_named_args.test",
         "test/extension/volatile_aggregate.test",
         "test/issues/general/test_24049.test",
@@ -92,8 +124,13 @@
     {
       "reason": "FIXME: pivot aggregate count mismatch - the verification rewrite adds aggregates that break PIVOT detection",
       "paths": [
+        "test/sql/aggregate/aggregates/fallible_pivot_default_export.test",
         "test/sql/pivot/pivot_case_insensitive.test",
-        "test/sql/pivot/test_pivot_duplicate_aggregates.test"
+        "test/sql/pivot/pivot_empty_string_value.test",
+        "test/sql/pivot/pivot_identical_aggregates_names.test",
+        "test/sql/pivot/test_pivot_duplicate_aggregates.test",
+        "test/sql/sql_export/pivot_list_results.test",
+        "test/sql/sql_export/pivot_sql_export.test"
       ]
     },
     {
@@ -107,6 +144,12 @@
       "reason": "FIXME: correlated COUNT(*) subqueries return NULL instead of 0 - empty groups produce NULL aggregate states",
       "paths": [
         "test/sql/subquery/scalar/test_count_star_subquery.test"
+      ]
+    },
+    {
+      "reason": "SQL export explicitly rejects nested collations in synthetic aggregate-state results.",
+      "paths": [
+        "test/sql/sql_export/rewritten_functions.test"
       ]
     }
   ]

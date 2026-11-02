@@ -94,21 +94,26 @@ EXPLAIN SELECT count(*) FROM (SELECT id + 1 AS next_id FROM walk_rows) q WHERE n
 ----
 physical_plan	<!REGEX>:[\s\S]*Filters: id = 3[\s\S]*
 
-# Unsafe projections and operator boundaries are not crossed.
+# These projections are above the filtered join; producer restriction does not move their expressions.
+statement ok
+SET enable_optimizer=true;
+
 query II
 EXPLAIN SELECT sum(v) FROM (SELECT id, random() AS v FROM walk_rows) q WHERE id = 3;
 ----
-physical_plan	<!REGEX>:[\s\S]*Filters: id = 3[\s\S]*
+physical_plan	<REGEX>:[\s\S]*Filters: id = 3[\s\S]*
 
 query II
 EXPLAIN SELECT sum(v) FROM (SELECT id, id::VARCHAR::INTEGER AS v FROM walk_rows) q WHERE id = 3;
 ----
-physical_plan	<!REGEX>:[\s\S]*Filters: id = 3[\s\S]*
+physical_plan	<REGEX>:[\s\S]*Filters: id = 3[\s\S]*
 
 query II
 EXPLAIN SELECT sum(v) FROM (SELECT id, __internal_barrier(id) AS v FROM walk_rows) q WHERE id = 3;
 ----
-physical_plan	<!REGEX>:[\s\S]*Filters: id = 3[\s\S]*
+physical_plan	<REGEX>:[\s\S]*Filters: id = 3[\s\S]*
+
+# Global limits and observable predicates remain barriers to producer restriction.
 
 query II
 EXPLAIN SELECT count(*) FROM (SELECT * FROM walk_rows LIMIT 1) q WHERE id = 3;
@@ -200,4 +205,3 @@ LATERAL (
 ) q WHERE id = 3;
 ----
 0
-

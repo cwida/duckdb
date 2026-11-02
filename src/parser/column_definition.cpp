@@ -3,7 +3,9 @@
 #include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/expression/cast_expression.hpp"
 #include "duckdb/common/exception/parser_exception.hpp"
-#include "duckdb/common/extra_type_info.hpp"
+#include "duckdb/common/logical_type_info.hpp"
+#include "duckdb/common/sql_identifier.hpp"
+#include "duckdb/common/string_util.hpp"
 
 namespace duckdb {
 
@@ -131,23 +133,7 @@ string ColumnDefinition::ToSQLString() const {
 	string result = SQLIdentifier(Name()) + " ";
 	auto &column_type = Type();
 	if (column_type.id() != LogicalTypeId::ANY) {
-		result += Type().ToString();
-	}
-	auto extra_type_info = column_type.AuxInfo();
-	if (extra_type_info) {
-		if (extra_type_info->type == ExtraTypeInfoType::STRING_TYPE_INFO) {
-			auto &string_info = extra_type_info->Cast<StringTypeInfo>();
-			if (!string_info.collation.empty()) {
-				result += " COLLATE " + string_info.collation;
-			}
-		}
-		if (extra_type_info->type == ExtraTypeInfoType::UNBOUND_TYPE_INFO) {
-			// TODO
-			// auto &colllation = UnboundType::GetCollation(column_type);
-			// if (!colllation.empty()) {
-			//	ss << " COLLATE " + colllation;
-			//}
-		}
+		result += column_type.ToString();
 	}
 	if (Generated()) {
 		reference<const ParsedExpression> generated_expression = GeneratedExpression();
@@ -212,7 +198,7 @@ void ColumnDefinition::SetGeneratedExpression(unique_ptr<ParsedExpression> new_e
 	category = TableColumnType::GENERATED;
 
 	if (new_expr->HasSubquery()) {
-		throw ParserException("Expression of generated column \"%s\" contains a subquery, which isn't allowed", name);
+		throw ParserException("Expression of generated column %s contains a subquery, which isn't allowed", name);
 	}
 
 	VerifyColumnRefs(*new_expr);

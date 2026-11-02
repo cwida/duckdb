@@ -55,6 +55,8 @@ public:
 	static void AddKeyToCache(DatabaseInstance &db, data_ptr_t key, const string &key_name, bool wipe = true);
 	static string AddKeyToCache(DatabaseInstance &db, data_ptr_t key);
 	static void AddTempKeyToCache(DatabaseInstance &db);
+	//! Fill key with cryptographically random bytes
+	DUCKDB_API static void GenerateRandomKey(DatabaseInstance &db, data_ptr_t key, idx_t key_length);
 
 	//! Encryption Functions
 	static void EncryptBlock(AttachedDatabase &attached_db, const string &key_id, FileBuffer &block,

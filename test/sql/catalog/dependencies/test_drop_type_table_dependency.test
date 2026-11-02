@@ -1,0 +1,62 @@
+# name: test/sql/catalog/dependencies/test_drop_type_table_dependency.test
+# description: A table depends on the user types of its columns
+# group: [dependencies]
+
+load {TEST_DIR}/drop_type_table_dependency.db
+
+statement ok
+CREATE TYPE mood AS ENUM ('sad', 'ok', 'happy');
+
+statement ok
+CREATE TYPE name_type AS VARCHAR;
+
+statement ok
+CREATE TABLE person (name name_type, current_mood mood);
+
+statement ok
+CREATE TABLE moods (history mood[], last STRUCT(m mood));
+
+statement ok
+INSERT INTO person VALUES ('a', 'ok');
+
+statement error
+DROP TYPE mood;
+----
+<REGEX>:Dependency Error: Cannot drop entry "mood" because there are entries that depend on it.*table "person" depends on type "mood".*
+
+statement error
+DROP TYPE name_type;
+----
+<REGEX>:Dependency Error: Cannot drop entry "name_type" because there are entries that depend on it.*table "person" depends on type "name_type".*
+
+restart
+
+statement error
+DROP TYPE mood;
+----
+Cannot drop entry "mood" because there are entries that depend on it
+
+statement ok
+DROP TABLE person;
+
+# the nested use in moods still holds the type
+statement error
+DROP TYPE mood;
+----
+<REGEX>:.*table "moods" depends on type "mood".*
+
+statement ok
+DROP TYPE name_type;
+
+statement ok
+DROP TYPE mood CASCADE;
+
+statement error
+SELECT * FROM moods;
+----
+Table with name moods does not exist
+
+query I
+SELECT count(*) FROM duckdb_types() WHERE type_name IN ('mood', 'name_type');
+----
+0

@@ -62,7 +62,7 @@ TEST_CASE("Test transactional integrity when facing process aborts", "[persisten
 		Connection con(*db);
 		auto res = con.Query("SELECT COUNT(*) FROM a");
 		// there may be an off-by-one if we kill exactly between query and count increment
-		REQUIRE(std::abs((int64_t)(res->GetValue(0, 0).GetValue<int64_t>() - *count)) < 2);
+		REQUIRE(std::abs((int64_t)(res->Collection().GetValue(0, 0).GetValue<int64_t>() - *count)) < 2);
 	} else {
 		FAIL();
 	}

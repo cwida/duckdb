@@ -1,8 +1,10 @@
 #include "json_common.hpp"
 #include "json_functions.hpp"
+#include "json_stack.hpp"
 
 namespace duckdb {
 
+//! RFC 7396 merge patch; a missing or non-object orig is treated as an empty object
 static inline yyjson_mut_val *MergePatch(yyjson_mut_doc *doc, yyjson_mut_val *orig, yyjson_mut_val *patch) {
 	if ((yyjson_mut_get_tag(orig) != (YYJSON_TYPE_OBJ | YYJSON_SUBTYPE_NONE)) ||
 	    (yyjson_mut_get_tag(patch) != (YYJSON_TYPE_OBJ | YYJSON_SUBTYPE_NONE))) {
@@ -11,7 +13,61 @@ static inline yyjson_mut_val *MergePatch(yyjson_mut_doc *doc, yyjson_mut_val *or
 	}
 
 	// Both are object, do the merge
-	return yyjson_mut_merge_patch(doc, orig, patch);
+	auto root_builder = yyjson_mut_obj(doc);
+
+	struct stack_item {
+		yyjson_mut_val *key;
+		yyjson_mut_val *orig;
+		yyjson_mut_val *patch;
+		yyjson_mut_val *builder;
+	};
+	Stack<stack_item> stack;
+	stack.Push(stack_item {nullptr, orig, patch, root_builder});
+
+	while (!stack.Empty()) {
+		auto nodes = stack.Pop();
+
+		if (!yyjson_mut_is_obj(nodes.orig)) {
+			// yyjson_mut_obj_getn on a non-object returns nullptr, so lookups below need no special case
+			nodes.orig = nullptr;
+		}
+
+		// Copy orig keys that the patch does not touch
+		if (nodes.orig) {
+			idx_t idx, max;
+			yyjson_mut_val *key, *orig_val;
+			// NOLINTNEXTLINE(cppcoreguidelines-pro-type-cstyle-cast): yyjson iteration macro
+			yyjson_mut_obj_foreach(nodes.orig, idx, max, key, orig_val) {
+				auto patch_val =
+				    yyjson_mut_obj_getn(nodes.patch, unsafe_yyjson_get_str(key), unsafe_yyjson_get_len(key));
+				if (!patch_val) {
+					yyjson_mut_obj_add(nodes.builder, JSONCommon::MutValMutCopy(doc, key),
+					                   JSONCommon::MutValMutCopy(doc, orig_val));
+				}
+			}
+		}
+
+		// Merge patch keys; null removes the key
+		idx_t idx, max;
+		yyjson_mut_val *key, *patch_val;
+		// NOLINTNEXTLINE(cppcoreguidelines-pro-type-cstyle-cast): yyjson iteration macro
+		yyjson_mut_obj_foreach(nodes.patch, idx, max, key, patch_val) {
+			if (unsafe_yyjson_is_null(patch_val)) {
+				continue;
+			}
+			auto mut_key = JSONCommon::MutValMutCopy(doc, key);
+			if (!yyjson_mut_is_obj(patch_val)) {
+				yyjson_mut_obj_add(nodes.builder, mut_key, JSONCommon::MutValMutCopy(doc, patch_val));
+				continue;
+			}
+			auto orig_val = yyjson_mut_obj_getn(nodes.orig, unsafe_yyjson_get_str(key), unsafe_yyjson_get_len(key));
+			auto child_builder = yyjson_mut_obj(doc);
+			yyjson_mut_obj_add(nodes.builder, mut_key, child_builder);
+			stack.Push(stack_item {mut_key, orig_val, patch_val, child_builder});
+		}
+	}
+
+	return root_builder;
 }
 
 static inline void ReadObjects(yyjson_mut_doc *doc, const Vector &input, yyjson_mut_val *objs[]) {
@@ -75,7 +131,7 @@ ScalarFunctionSet JSONFunctions::GetMergePatchFunction() {
 	ScalarFunction fun("json_merge_patch", {}, LogicalType::JSON(), MergePatchFunction, nullptr, nullptr,
 	                   JSONFunctionLocalState::Init);
 	fun.GetSignature().AddParameter("json1", LogicalType::JSON()).AddParameter("json2", LogicalType::JSON());
-	fun.SetVarArgs(LogicalType::JSON());
+	fun.GetSignature().AddArgs("args", LogicalType::JSON());
 	fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 
 	return ScalarFunctionSet(fun);

@@ -42,7 +42,11 @@ CSVReaderOptions ReadCSVRelationBind(const shared_ptr<ClientContext> &context, c
 	CSVReaderOptions csv_options;
 	csv_options.file_path = file_name.path;
 	vector<string> empty;
-	csv_options.FromNamedParameters(options, *context, file_options);
+	named_argument_map_t named_arguments;
+	for (auto &option : options) {
+		named_arguments.insert(option.first, option.second);
+	}
+	csv_options.FromNamedParameters(named_arguments, *context, file_options);
 
 	// Run the auto-detect, populating the options with the detected settings
 	SimpleMultiFileList multi_file_list(files);

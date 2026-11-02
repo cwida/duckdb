@@ -1,0 +1,41 @@
+# name: test/sql/types/nested/test_deeply_nested_types.test
+# description: Test deeply nested LIST, ARRAY, STRUCT, MAP and UNION types without stack overflow
+# group: [nested]
+
+statement ok
+SET max_expression_depth = 300000;
+
+# Deeply nested LIST
+statement ok
+SELECT list_contains(CAST(NULL AS INTEGER[][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][]), NULL);
+
+# Deeply nested ARRAY
+statement ok
+SELECT CAST(NULL AS INTEGER[1][1][1][1][1][1][1][1][1][1][1][1][1][1][1][1][1][1][1][1][1][1][1][1][1][1][1][1][1][1][1][1][1][1][1][1][1][1][1][1][1][1][1][1][1][1][1][1][1][1]);
+
+# Mixed LIST and ARRAY
+query T
+SELECT typeof(CAST(NULL AS INTEGER[][2][][2][][2][][2][][2]));
+----
+INTEGER[][2][][2][][2][][2][][2]
+
+# Test ToString on nested list
+query T
+SELECT typeof(CAST(NULL AS INTEGER[][][][][]));
+----
+INTEGER[][][][][]
+
+# Collation propagation on nested LIST
+statement ok
+SELECT list_contains(CAST(NULL AS VARCHAR[][][][][]), [[[['abc' COLLATE NOCASE]]]]);
+
+query I
+SELECT list_contains([[[[['ABC']]]]]::VARCHAR[][][][][], [[[['abc' COLLATE NOCASE]]]]);
+----
+true
+
+# Mixed STRUCT, MAP, UNION, LIST and ARRAY nesting (parsed and bound type names)
+query TT
+SELECT column_name, column_type FROM (DESCRIBE SELECT CAST(n AS STRUCT(a INTEGER[3], "b c" MAP(VARCHAR, UNION(x INTEGER, y VARCHAR[]))[])[][2]) FROM (SELECT NULL AS n));
+----
+CAST(n AS STRUCT(a INTEGER[3], "b c" MAP(VARCHAR, UNION(x INTEGER, y VARCHAR[]))[])[][2])	STRUCT(a INTEGER[3], "b c" MAP(VARCHAR, UNION(x INTEGER, y VARCHAR[]))[])[][2]

@@ -6,67 +6,67 @@
 #include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/common/serializer/deserializer.hpp"
 #include "duckdb/common/extension_type_info.hpp"
-#include "duckdb/common/extra_type_info.hpp"
+#include "duckdb/common/logical_type_info.hpp"
 
 namespace duckdb {
 
-void ExtraTypeInfo::Serialize(Serializer &serializer) const {
-	serializer.WriteProperty<ExtraTypeInfoType>(100, "type", type);
+void LogicalTypeInfo::Serialize(Serializer &serializer) const {
+	serializer.WriteProperty<LogicalTypeInfoType>(100, "type", type);
 	serializer.WritePropertyWithDefault<string>(101, "alias", alias);
 	/* [Deleted] (vector<Value>) "modifiers" */
 	serializer.WritePropertyWithDefault<unique_ptr<ExtensionTypeInfo>>(103, "extension_info", extension_info);
 }
 
-shared_ptr<ExtraTypeInfo> ExtraTypeInfo::Deserialize(Deserializer &deserializer) {
-	auto type = deserializer.ReadProperty<ExtraTypeInfoType>(100, "type");
+unique_ptr<LogicalTypeInfo> LogicalTypeInfo::Deserialize(Deserializer &deserializer) {
+	auto type = deserializer.ReadProperty<LogicalTypeInfoType>(100, "type");
 	auto alias = deserializer.ReadPropertyWithDefault<string>(101, "alias");
 	deserializer.ReadDeletedProperty<vector<Value>>(102, "modifiers");
 	auto extension_info = deserializer.ReadPropertyWithDefault<unique_ptr<ExtensionTypeInfo>>(103, "extension_info");
-	shared_ptr<ExtraTypeInfo> result;
+	unique_ptr<LogicalTypeInfo> result;
 	switch (type) {
-	case ExtraTypeInfoType::ANY_TYPE_INFO:
+	case LogicalTypeInfoType::ANY_TYPE_INFO:
 		result = AnyTypeInfo::Deserialize(deserializer);
 		break;
-	case ExtraTypeInfoType::ARRAY_TYPE_INFO:
+	case LogicalTypeInfoType::ARRAY_TYPE_INFO:
 		result = ArrayTypeInfo::Deserialize(deserializer);
 		break;
-	case ExtraTypeInfoType::DECIMAL_TYPE_INFO:
+	case LogicalTypeInfoType::DECIMAL_TYPE_INFO:
 		result = DecimalTypeInfo::Deserialize(deserializer);
 		break;
-	case ExtraTypeInfoType::ENUM_TYPE_INFO:
+	case LogicalTypeInfoType::ENUM_TYPE_INFO:
 		result = EnumTypeInfo::Deserialize(deserializer);
 		break;
-	case ExtraTypeInfoType::GENERIC_TYPE_INFO:
-		result = make_shared_ptr<ExtraTypeInfo>(type);
+	case LogicalTypeInfoType::GENERIC_TYPE_INFO:
+		result = make_uniq<LogicalTypeInfo>(type);
 		break;
-	case ExtraTypeInfoType::GEO_TYPE_INFO:
+	case LogicalTypeInfoType::GEO_TYPE_INFO:
 		result = GeoTypeInfo::Deserialize(deserializer);
 		break;
-	case ExtraTypeInfoType::INTEGER_LITERAL_TYPE_INFO:
+	case LogicalTypeInfoType::INTEGER_LITERAL_TYPE_INFO:
 		result = IntegerLiteralTypeInfo::Deserialize(deserializer);
 		break;
-	case ExtraTypeInfoType::INVALID_TYPE_INFO:
+	case LogicalTypeInfoType::INVALID_TYPE_INFO:
 		return nullptr;
-	case ExtraTypeInfoType::LEGACY_AGGREGATE_STATE_TYPE_INFO:
+	case LogicalTypeInfoType::LEGACY_AGGREGATE_STATE_TYPE_INFO:
 		result = LegacyAggregateStateTypeInfo::Deserialize(deserializer);
 		break;
-	case ExtraTypeInfoType::LIST_TYPE_INFO:
+	case LogicalTypeInfoType::LIST_TYPE_INFO:
 		result = ListTypeInfo::Deserialize(deserializer);
 		break;
-	case ExtraTypeInfoType::STRING_TYPE_INFO:
+	case LogicalTypeInfoType::STRING_TYPE_INFO:
 		result = StringTypeInfo::Deserialize(deserializer);
 		break;
-	case ExtraTypeInfoType::STRUCT_TYPE_INFO:
+	case LogicalTypeInfoType::STRUCT_TYPE_INFO:
 		result = StructTypeInfo::Deserialize(deserializer);
 		break;
-	case ExtraTypeInfoType::TEMPLATE_TYPE_INFO:
+	case LogicalTypeInfoType::TEMPLATE_TYPE_INFO:
 		result = TemplateTypeInfo::Deserialize(deserializer);
 		break;
-	case ExtraTypeInfoType::UNBOUND_TYPE_INFO:
+	case LogicalTypeInfoType::UNBOUND_TYPE_INFO:
 		result = UnboundTypeInfo::Deserialize(deserializer);
 		break;
 	default:
-		throw SerializationException("Unsupported type for deserialization of ExtraTypeInfo!");
+		throw SerializationException("Unsupported type for deserialization of LogicalTypeInfo!");
 	}
 	result->alias = std::move(alias);
 	result->extension_info = std::move(extension_info);
@@ -74,39 +74,39 @@ shared_ptr<ExtraTypeInfo> ExtraTypeInfo::Deserialize(Deserializer &deserializer)
 }
 
 void AnyTypeInfo::Serialize(Serializer &serializer) const {
-	ExtraTypeInfo::Serialize(serializer);
+	LogicalTypeInfo::Serialize(serializer);
 	serializer.WriteProperty<LogicalType>(200, "target_type", target_type);
 	serializer.WritePropertyWithDefault<idx_t>(201, "cast_score", cast_score);
 }
 
-shared_ptr<ExtraTypeInfo> AnyTypeInfo::Deserialize(Deserializer &deserializer) {
-	auto result = duckdb::shared_ptr<AnyTypeInfo>(new AnyTypeInfo());
+unique_ptr<LogicalTypeInfo> AnyTypeInfo::Deserialize(Deserializer &deserializer) {
+	auto result = duckdb::unique_ptr<AnyTypeInfo>(new AnyTypeInfo());
 	deserializer.ReadProperty<LogicalType>(200, "target_type", result->target_type);
 	deserializer.ReadPropertyWithDefault<idx_t>(201, "cast_score", result->cast_score);
 	return std::move(result);
 }
 
 void ArrayTypeInfo::Serialize(Serializer &serializer) const {
-	ExtraTypeInfo::Serialize(serializer);
+	LogicalTypeInfo::Serialize(serializer);
 	serializer.WriteProperty<LogicalType>(200, "child_type", child_type);
 	serializer.WritePropertyWithDefault<uint32_t>(201, "size", size);
 }
 
-shared_ptr<ExtraTypeInfo> ArrayTypeInfo::Deserialize(Deserializer &deserializer) {
+unique_ptr<LogicalTypeInfo> ArrayTypeInfo::Deserialize(Deserializer &deserializer) {
 	auto child_type = deserializer.ReadProperty<LogicalType>(200, "child_type");
 	auto size = deserializer.ReadPropertyWithDefault<uint32_t>(201, "size");
-	auto result = duckdb::shared_ptr<ArrayTypeInfo>(new ArrayTypeInfo(std::move(child_type), size));
+	auto result = duckdb::unique_ptr<ArrayTypeInfo>(new ArrayTypeInfo(std::move(child_type), size));
 	return std::move(result);
 }
 
 void DecimalTypeInfo::Serialize(Serializer &serializer) const {
-	ExtraTypeInfo::Serialize(serializer);
+	LogicalTypeInfo::Serialize(serializer);
 	serializer.WritePropertyWithDefault<uint8_t>(200, "width", width);
 	serializer.WritePropertyWithDefault<uint8_t>(201, "scale", scale);
 }
 
-shared_ptr<ExtraTypeInfo> DecimalTypeInfo::Deserialize(Deserializer &deserializer) {
-	auto result = duckdb::shared_ptr<DecimalTypeInfo>(new DecimalTypeInfo());
+unique_ptr<LogicalTypeInfo> DecimalTypeInfo::Deserialize(Deserializer &deserializer) {
+	auto result = duckdb::unique_ptr<DecimalTypeInfo>(new DecimalTypeInfo());
 	deserializer.ReadPropertyWithDefault<uint8_t>(200, "width", result->width);
 	deserializer.ReadPropertyWithDefault<uint8_t>(201, "scale", result->scale);
 	return std::move(result);
@@ -125,35 +125,35 @@ unique_ptr<ExtensionTypeInfo> ExtensionTypeInfo::Deserialize(Deserializer &deser
 }
 
 void GeoTypeInfo::Serialize(Serializer &serializer) const {
-	ExtraTypeInfo::Serialize(serializer);
+	LogicalTypeInfo::Serialize(serializer);
 	serializer.WriteProperty<CoordinateReferenceSystem>(200, "crs", crs);
 }
 
-shared_ptr<ExtraTypeInfo> GeoTypeInfo::Deserialize(Deserializer &deserializer) {
-	auto result = duckdb::shared_ptr<GeoTypeInfo>(new GeoTypeInfo());
+unique_ptr<LogicalTypeInfo> GeoTypeInfo::Deserialize(Deserializer &deserializer) {
+	auto result = duckdb::unique_ptr<GeoTypeInfo>(new GeoTypeInfo());
 	deserializer.ReadProperty<CoordinateReferenceSystem>(200, "crs", result->crs);
 	return std::move(result);
 }
 
 void IntegerLiteralTypeInfo::Serialize(Serializer &serializer) const {
-	ExtraTypeInfo::Serialize(serializer);
+	LogicalTypeInfo::Serialize(serializer);
 	serializer.WriteProperty<Value>(200, "constant_value", constant_value);
 }
 
-shared_ptr<ExtraTypeInfo> IntegerLiteralTypeInfo::Deserialize(Deserializer &deserializer) {
-	auto result = duckdb::shared_ptr<IntegerLiteralTypeInfo>(new IntegerLiteralTypeInfo());
+unique_ptr<LogicalTypeInfo> IntegerLiteralTypeInfo::Deserialize(Deserializer &deserializer) {
+	auto result = duckdb::unique_ptr<IntegerLiteralTypeInfo>(new IntegerLiteralTypeInfo());
 	deserializer.ReadProperty<Value>(200, "constant_value", result->constant_value);
 	return std::move(result);
 }
 
 void LegacyAggregateStateTypeInfo::Serialize(Serializer &serializer) const {
-	ExtraTypeInfo::Serialize(serializer);
+	LogicalTypeInfo::Serialize(serializer);
 	/* [Deleted] (string) "function_name" */
 	/* [Deleted] (LogicalType) "return_type" */
 	/* [Deleted] (vector<LogicalType>) "bound_argument_types" */
 }
 
-shared_ptr<ExtraTypeInfo> LegacyAggregateStateTypeInfo::Deserialize(Deserializer &deserializer) {
+unique_ptr<LogicalTypeInfo> LegacyAggregateStateTypeInfo::Deserialize(Deserializer &deserializer) {
 	deserializer.ReadDeletedProperty<string>(200, "function_name");
 	deserializer.ReadDeletedProperty<LogicalType>(201, "return_type");
 	deserializer.ReadDeletedProperty<vector<LogicalType>>(202, "bound_argument_types");
@@ -162,12 +162,12 @@ shared_ptr<ExtraTypeInfo> LegacyAggregateStateTypeInfo::Deserialize(Deserializer
 }
 
 void ListTypeInfo::Serialize(Serializer &serializer) const {
-	ExtraTypeInfo::Serialize(serializer);
+	LogicalTypeInfo::Serialize(serializer);
 	serializer.WriteProperty<LogicalType>(200, "child_type", child_type);
 }
 
-shared_ptr<ExtraTypeInfo> ListTypeInfo::Deserialize(Deserializer &deserializer) {
-	auto result = duckdb::shared_ptr<ListTypeInfo>(new ListTypeInfo());
+unique_ptr<LogicalTypeInfo> ListTypeInfo::Deserialize(Deserializer &deserializer) {
+	auto result = duckdb::unique_ptr<ListTypeInfo>(new ListTypeInfo());
 	deserializer.ReadProperty<LogicalType>(200, "child_type", result->child_type);
 	return std::move(result);
 }
@@ -185,34 +185,34 @@ LogicalTypeModifier LogicalTypeModifier::Deserialize(Deserializer &deserializer)
 }
 
 void StringTypeInfo::Serialize(Serializer &serializer) const {
-	ExtraTypeInfo::Serialize(serializer);
+	LogicalTypeInfo::Serialize(serializer);
 	serializer.WritePropertyWithDefault<string>(200, "collation", collation);
 }
 
-shared_ptr<ExtraTypeInfo> StringTypeInfo::Deserialize(Deserializer &deserializer) {
-	auto result = duckdb::shared_ptr<StringTypeInfo>(new StringTypeInfo());
+unique_ptr<LogicalTypeInfo> StringTypeInfo::Deserialize(Deserializer &deserializer) {
+	auto result = duckdb::unique_ptr<StringTypeInfo>(new StringTypeInfo());
 	deserializer.ReadPropertyWithDefault<string>(200, "collation", result->collation);
 	return std::move(result);
 }
 
 void StructTypeInfo::Serialize(Serializer &serializer) const {
-	ExtraTypeInfo::Serialize(serializer);
+	LogicalTypeInfo::Serialize(serializer);
 	serializer.WritePropertyWithDefault<child_list_t<LogicalType>>(200, "child_types", child_types);
 }
 
-shared_ptr<ExtraTypeInfo> StructTypeInfo::Deserialize(Deserializer &deserializer) {
-	auto result = duckdb::shared_ptr<StructTypeInfo>(new StructTypeInfo());
+unique_ptr<LogicalTypeInfo> StructTypeInfo::Deserialize(Deserializer &deserializer) {
+	auto result = duckdb::unique_ptr<StructTypeInfo>(new StructTypeInfo());
 	deserializer.ReadPropertyWithDefault<child_list_t<LogicalType>>(200, "child_types", result->child_types);
 	return std::move(result);
 }
 
 void TemplateTypeInfo::Serialize(Serializer &serializer) const {
-	ExtraTypeInfo::Serialize(serializer);
+	LogicalTypeInfo::Serialize(serializer);
 	serializer.WritePropertyWithDefault<string>(200, "name", name);
 }
 
-shared_ptr<ExtraTypeInfo> TemplateTypeInfo::Deserialize(Deserializer &deserializer) {
-	auto result = duckdb::shared_ptr<TemplateTypeInfo>(new TemplateTypeInfo());
+unique_ptr<LogicalTypeInfo> TemplateTypeInfo::Deserialize(Deserializer &deserializer) {
+	auto result = duckdb::unique_ptr<TemplateTypeInfo>(new TemplateTypeInfo());
 	deserializer.ReadPropertyWithDefault<string>(200, "name", result->name);
 	return std::move(result);
 }

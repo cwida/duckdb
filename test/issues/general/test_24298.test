@@ -1,0 +1,87 @@
+# name: test/issues/general/test_24298.test
+# description: Case-sensitive VARIANT keys that collide as STRUCT fields remain unshredded
+# group: [general]
+
+load {TEST_DIR}/variant_case_insensitive_field_collision.db readwrite v1.5.0
+
+statement ok
+SET variant_minimum_shredding_size = 0
+
+statement ok
+CREATE TABLE top_level(v VARIANT)
+
+statement ok
+INSERT INTO top_level VALUES ({'a': 1}::VARIANT), ({'A': 2}::VARIANT)
+
+statement ok
+FORCE CHECKPOINT
+
+query I
+SELECT stats(v).fully_shredded IS NULL FROM top_level LIMIT 1
+----
+true
+
+query I
+SELECT DISTINCT vector_type(v) FROM top_level
+----
+FLAT_VECTOR
+
+query III rowsort
+SELECT variant_keys(v), variant_extract(v, 'a')::INTEGER, variant_extract(v, 'A')::INTEGER
+FROM top_level
+----
+[A]	NULL	2
+[a]	1	NULL
+
+# A collision in a nested object must not prevent unrelated fields from being
+# shredded, and both spellings must survive in the unshredded overlay.
+statement ok
+CREATE TABLE nested(v VARIANT)
+
+statement ok
+INSERT INTO nested VALUES
+    ({'outer': {'a': 1}, 'other': 10}::VARIANT),
+    ({'outer': {'A': 2}, 'other': 20}::VARIANT)
+
+statement ok
+FORCE CHECKPOINT
+
+query I
+SELECT stats(v).shredding_state FROM nested LIMIT 1
+----
+SHREDDED
+
+query II
+SELECT stats(v).fully_shredded.other.stats.min,
+       stats(v).fully_shredded.other.stats.max
+FROM nested LIMIT 1
+----
+10	20
+
+query III rowsort
+SELECT variant_keys(variant_extract(v, 'outer')),
+       variant_extract(variant_extract(v, 'outer'), 'a')::INTEGER,
+       variant_extract(variant_extract(v, 'outer'), 'A')::INTEGER
+FROM nested
+----
+[A]	NULL	2
+[a]	1	NULL
+
+# Type binding rejects case-insensitive collisions in forced shredding schemas.
+statement error
+SET force_variant_shredding = 'STRUCT("a" INTEGER, "A" INTEGER)'
+----
+Could not parse type string
+
+# The check applies to nested STRUCTs as well.
+statement error
+SET force_variant_shredding = 'STRUCT(obj STRUCT("a" INTEGER, "A" INTEGER))'
+----
+Could not parse type string
+
+# A forced shredding type without colliding fields is still accepted.
+statement ok
+SET force_variant_shredding = 'STRUCT("a" INTEGER, "b" INTEGER)'
+
+statement ok
+RESET force_variant_shredding

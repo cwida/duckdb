@@ -91,3 +91,30 @@ SELECT stats_null_count FROM parquet_metadata('{TEST_DIR}/stats.parquet')
 ----
 2
 1
+
+# a NULL struct inside a list is one NULL for the leaf, not two (#26803)
+statement ok
+COPY (SELECT [NULL, {'x': i}] AS ls FROM range(5) t(i)) TO '{TEST_DIR}/stats.parquet' (FORMAT PARQUET);
+
+query III
+SELECT path_in_schema, stats_null_count, num_values FROM parquet_metadata('{TEST_DIR}/stats.parquet')
+----
+ls, list, element, x	5	10
+
+# a NULL list row counts once for the leaf as well
+statement ok
+COPY (SELECT CASE WHEN i = 0 THEN NULL ELSE [NULL, {'x': i}] END AS ls FROM range(5) t(i)) TO '{TEST_DIR}/stats.parquet' (FORMAT PARQUET);
+
+query III
+SELECT path_in_schema, stats_null_count, num_values FROM parquet_metadata('{TEST_DIR}/stats.parquet')
+----
+ls, list, element, x	5	9
+
+# a NULL struct nested in a struct
+statement ok
+COPY (SELECT {'o': CASE WHEN i % 2 = 0 THEN NULL ELSE {'x': i} END} AS s FROM range(5) t(i)) TO '{TEST_DIR}/stats.parquet' (FORMAT PARQUET);
+
+query III
+SELECT path_in_schema, stats_null_count, num_values FROM parquet_metadata('{TEST_DIR}/stats.parquet')
+----
+s, o, x	3	5

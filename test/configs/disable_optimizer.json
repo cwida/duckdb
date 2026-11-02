@@ -5,6 +5,43 @@
   "inherit_skip_tests": "test/configs/stats_dependent_tests.json",
   "skip_tests": [
     {
+      "reason": "Counts the evaluations of volatile filters that only the optimizer pushes down or keeps above.",
+      "paths": [
+        "test/optimizer/pushdown/volatile_filter_aggregate_distinct.test"
+      ]
+    },
+    {
+      "reason": "Checks that the optimizer removed ORDER BY operators from the plan.",
+      "paths": [
+        "test/optimizer/remove_redundant_order.test"
+      ]
+    },
+    {
+      "reason": "Checks barrier ordering and scan pushdown performed by the optimizer.",
+      "paths": [
+        "test/sql/optimizer/barrier_projection_siblings.test"
+      ]
+    },
+    {
+      "reason": "Checks filter reordering performed by the optimizer.",
+      "paths": [
+        "test/optimizer/struct_cast_can_throw_reordering.test"
+      ]
+    },
+    {
+      "reason": "Checks evaluation counts after optimizer filter pushdown.",
+      "paths": [
+        "test/optimizer/pushdown/lateral_projection_evaluation.test",
+        "test/optimizer/pushdown/cte_domain_join_filter.test"
+      ]
+    },
+    {
+      "reason": "The error depends on the optimizer folding the cast of the constant",
+      "paths": [
+        "test/sql/cast/string_to_map_null_keys.test"
+      ]
+    },
+    {
       "reason": "Requires the join order optimizer to enforce debug_force_no_cross_product.",
       "paths": [
         "test/optimizer/joins/required_cross_product_activation.test"
@@ -24,8 +61,28 @@
         "test/sql/types/geo/geometry_parquet_pushdown.test",
         "test/optimizer/statistics/statistics_filter_pruning.test",
         "test/sql/copy/parquet/parquet_expression_filter_pruning.test",
+        "test/sql/copy/parquet/page_index/page_index_read.test",
+        "test/sql/copy/parquet/page_index/page_index_prefetch.test",
+        "test/sql/copy/parquet/page_index/page_index_reference.test",
+        "test/sql/copy/parquet/page_index/page_index_robustness.test",
+        "test/sql/copy/parquet/page_index/page_index_cache.test",
+        "test/sql/copy/parquet/page_index/page_index_cache_disabled.test",
+        "test/sql/copy/parquet/page_index/page_index_cache_budget.test",
         "test/sql/copy/parquet/parquet_virtual_file_row_group_number.test",
         "test/sql/storage/prefetch/async_native_scan_read_ahead_pruning.test"
+      ]
+    },
+    {
+      "reason": "Fetching only the selected rows requires filter pushdown from optimizer.",
+      "paths": [
+        "test/sql/storage/overflow_strings/blob_row_fetch.test"
+      ]
+    },
+    {
+      "reason": "Value-returning DISTINCT collation handling requires the multi-stage aggregate rewrite.",
+      "paths": [
+        "test/sql/collate/collate_distinct_aggregate.test",
+        "test/sql/collate/collate_distinct_aggregate_icu.test"
       ]
     },
     {
@@ -59,7 +116,8 @@
         "test/sql/types/geo/geometry_vertex_extract.test",
         "test/sql/copy/parquet/parquet_glob_cache.test",
         "test/optimizer/joins/fkpk_composite_key_ce.test",
-        "test/sql/cast/signed_cast_repro.test"
+        "test/sql/cast/signed_cast_repro.test",
+        "test/optimizer/remove_redundant_order_keys_side_effects.test"
       ]
     },
     {
@@ -82,6 +140,23 @@
       ]
     },
     {
+      "reason": "Calibrates exact memory-fit boundaries that shift when the optimizer is disabled.",
+      "paths": [
+        "test/sql/copy/parquet/parquet_prefetch_tracked_memory.test"
+      ]
+    },
+    {
+      "reason": "Parquet prefetch strategies and I/O metrics require optimizer rewrites.",
+      "paths": [
+        "test/sql/copy/parquet/parquet_prefetch_first_group_cost.test",
+        "test/sql/copy/parquet/parquet_prefetch_overlapping_ranges.test",
+        "test/sql/copy/parquet/read_ahead/readahead_dynamic_pruning.test",
+        "test/sql/copy/parquet/read_ahead/readahead_dynamic_pruning_nulls_first.test",
+        "test/sql/copy/parquet/read_ahead/recheck_prefetch_log.test",
+        "test/sql/copy/parquet/read_ahead/readahead_dynamic_pruning.test_slow"
+      ]
+    },
+    {
       "reason": "Recursive CTE relies on short-circuiting optimization.",
       "paths": [
         "test/sql/cte/recursive_cte_limit.test",
@@ -99,9 +174,11 @@
         "test/sql/copy/csv/parallel/csv_parallel_null_option.test",
         "test/sql/transactions/concurrent_drop_table.test",
         "test/sql/index/art/scan/test_art_prepared_scan.test",
+        "test/sql/index/art/storage/test_art_corrupt_pointer.test",
         "test/sql/copy/parquet/multi_file/adaptive_filter_carryover.test",
         "test/sql/copy/parquet/parquet_prefetch_row_group_outcome.test",
         "test/sql/copy/parquet/parquet_prefetch_projection.test",
+        "test/sql/copy/parquet/parquet_prefetch_shared_column_chunks.test",
         "test/sql/copy/parquet/parquet_prefetch_metrics_multifile.test",
         "test/sql/copy/parquet/parquet_prefetch_strategy_option.test",
         "test/sql/copy/parquet/parquet_prefetch_cost_model.test",
@@ -134,6 +211,29 @@
       "reason": "FIXME: binding bug.",
       "paths": [
         "test/sql/join/natural/natural_join.test"
+      ]
+    },
+    {
+      "reason": "SQL export of these recursive plans requires CTE inlining to preserve evaluation.",
+      "paths": [
+        "test/sql/sql_export/explain_sql_roundtrip.test",
+        "test/sql/sql_export/correlated_metadata.test",
+        "test/sql/sql_export/cte_result_matrices.test",
+        "test/sql/sql_export/plan_reconstruction_coverage.test",
+        "test/sql/sql_export/recursive_payload_results.test"
+      ]
+    },
+    {
+      "reason": "Checks pruning of a throwing unused secure-view output and safe caller filter pushdown.",
+      "paths": [
+        "test/sql/sql_export/secure_view_sql_export.test"
+      ]
+    },
+    {
+      "reason": "An early LIMIT over an unbounded recursion only terminates through the optimizer's limit pushdown",
+      "paths": [
+        "test/sql/sql_export/recursive_state.test",
+        "test/sql/sql_export/single_child_union.test"
       ]
     }
   ]

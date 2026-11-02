@@ -3,11 +3,13 @@
 #include "duckdb/common/cgroups.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/main/http/http_transport_manager.hpp"
+#include "duckdb/main/extension/external_extension_provider.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
 #include "duckdb/common/operator/multiply.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/settings.hpp"
+#include "duckdb/logging/logger.hpp"
 #include "duckdb/main/extension_helper.hpp"
 #include "duckdb/storage/storage_extension.hpp"
 #include "duckdb/common/serializer/serializer.hpp"
@@ -96,7 +98,6 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_SETTING(AutoinstallExtensionRepositorySetting),
     DUCKDB_SETTING(AutoinstallKnownExtensionsSetting),
     DUCKDB_SETTING(AutoloadKnownExtensionsSetting),
-    DUCKDB_GLOBAL(BlockAllocatorMemorySetting),
     DUCKDB_SETTING(CacheLocalFilesSetting),
     DUCKDB_SETTING(CatalogErrorMaxSchemasSetting),
     DUCKDB_SETTING_CALLBACK(CheckpointOnDetachSetting),
@@ -105,13 +106,16 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_SETTING_CALLBACK(CurrentTransactionInvalidationPolicySetting),
     DUCKDB_SETTING(CustomExtensionRepositorySetting),
     DUCKDB_GLOBAL(CustomUserAgentSetting),
+    DUCKDB_GLOBAL(DebugAbortOnWalFailureSetting),
     DUCKDB_SETTING(DebugAsofIejoinSetting),
     DUCKDB_SETTING_CALLBACK(DebugCheckpointAbortSetting),
+    DUCKDB_SETTING(DebugCheckpointScanSleepMsSetting),
     DUCKDB_SETTING(DebugCheckpointSleepMsSetting),
     DUCKDB_GLOBAL(DebugDeltaOnlyVariantEncodingEnabledSetting),
     DUCKDB_SETTING(DebugDisableOptimizerSetting),
     DUCKDB_SETTING(EnableCachingOperatorsSetting),
     DUCKDB_SETTING(DebugEvictionQueueSleepMicroSecondsSetting),
+    DUCKDB_SETTING(DebugFileDescriptorLimitSetting),
     DUCKDB_SETTING_CALLBACK(ForceBitpackingModeSetting),
     DUCKDB_SETTING(DebugForceCommitFailureSetting),
     DUCKDB_SETTING(DebugForceCommitRevertFailureSetting),
@@ -121,6 +125,7 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_SETTING(DebugForceNoCrossProductSetting),
     DUCKDB_SETTING(ForceUpdateToDelAndInsertSetting),
     DUCKDB_GLOBAL(ForceVariantShredding),
+    DUCKDB_SETTING(DebugForceWalFsyncFailureSetting),
     DUCKDB_SETTING(DebugLocalFileSystemDelayMsSetting),
     DUCKDB_GLOBAL(DebugOrderVerificationSetting),
     DUCKDB_SETTING_CALLBACK(DebugPhysicalTableScanExecutionStrategySetting),
@@ -130,10 +135,13 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_SETTING(DebugVerifyAggregateStateExportSetting),
     DUCKDB_SETTING(DebugVerifyBlocksSetting),
     DUCKDB_SETTING(DebugVerifyColumnBindingsSetting),
+    DUCKDB_SETTING_CALLBACK(DebugVerifyProgressSetting),
+    DUCKDB_SETTING(DebugVerifyProgressIgnoreSetting),
     DUCKDB_SETTING(DebugVerifySerializerSetting),
     DUCKDB_SETTING_CALLBACK(DebugVerifyStatementSetting),
     DUCKDB_SETTING(DebugVerifyStatsSetting),
     DUCKDB_SETTING_CALLBACK(DebugVerifyVectorSetting),
+    DUCKDB_SETTING(DebugWalFsyncSleepMsSetting),
     DUCKDB_SETTING_CALLBACK(DebugWindowModeSetting),
     DUCKDB_SETTING_CALLBACK(DefaultBlockSizeSetting),
     DUCKDB_SETTING_CALLBACK(DefaultCollationSetting),
@@ -141,7 +149,7 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_SETTING_CALLBACK(DefaultOrderSetting),
     DUCKDB_GLOBAL(DefaultSecretStorageSetting),
     DUCKDB_SETTING_CALLBACK(DefaultTransactionInvalidationPolicySetting),
-    DUCKDB_SETTING_CALLBACK(DelimJoinAsCteSetting),
+    DUCKDB_SETTING(DelimJoinAsCteSetting),
     DUCKDB_SETTING_CALLBACK(DialectCompatibilityModeSetting),
     DUCKDB_SETTING_CALLBACK(DisableDatabaseInvalidationSetting),
     DUCKDB_SETTING(DisableTimestamptzCastsSetting),
@@ -151,13 +159,14 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_GLOBAL(DisabledOptimizersSetting),
     DUCKDB_SETTING_CALLBACK(DuckDBAPISetting),
     DUCKDB_SETTING(DynamicOrFilterThresholdSetting),
+    DUCKDB_GLOBAL(EnableBlockAllocatorSetting),
     DUCKDB_SETTING_CALLBACK(EnableExternalAccessSetting),
     DUCKDB_SETTING_CALLBACK(EnableExternalFileCacheSetting),
     DUCKDB_SETTING(EnableFSSTVectorsSetting),
     DUCKDB_SETTING(EnableHTTPMetadataCacheSetting),
     DUCKDB_GLOBAL(EnableLogging),
     DUCKDB_SETTING(EnableMacroDependenciesSetting),
-    DUCKDB_SETTING_CALLBACK(EnableObjectCacheSetting),
+    DUCKDB_SETTING(EnableObjectCacheSetting),
     DUCKDB_SETTING(EnableOptimisticWriteSetting),
     DUCKDB_SETTING(EnableOptimizerSetting),
     DUCKDB_LOCAL(EnableProfilingSetting),
@@ -165,19 +174,21 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_LOCAL(EnableProgressBarPrintSetting),
     DUCKDB_SETTING(EnableViewDependenciesSetting),
     DUCKDB_GLOBAL(EnabledLogTypes),
-    DUCKDB_SETTING_CALLBACK(ErrorOnDivisionByZeroSetting),
+    DUCKDB_SETTING(ErrorOnDivisionByZeroSetting),
     DUCKDB_SETTING(ErrorsAsJSONSetting),
-    DUCKDB_SETTING_CALLBACK(ExperimentalMetadataReuseSetting),
+    DUCKDB_SETTING(ExperimentalMetadataReuseSetting),
     DUCKDB_SETTING_CALLBACK(ExplainOutputSetting),
     DUCKDB_GLOBAL(ExtensionDirectoriesSetting),
-    DUCKDB_SETTING_CALLBACK(ExtensionDirectorySetting),
+    DUCKDB_SETTING(ExtensionDirectorySetting),
     DUCKDB_SETTING_CALLBACK(ExtensionRepositoryDirectorySetting),
-    DUCKDB_SETTING_CALLBACK(ExternalFileCacheLocalBlockSizeSetting),
-    DUCKDB_SETTING_CALLBACK(ExternalFileCacheRemoteBlockSizeSetting),
+    DUCKDB_SETTING_CALLBACK(ExternalFileCacheLocalMaxBlockSizeSetting),
+    DUCKDB_SETTING_CALLBACK(ExternalFileCacheRemoteMaxBlockSizeSetting),
+    DUCKDB_SETTING_CALLBACK(ExternalFileCacheRemoteMinBlockSizeSetting),
+    DUCKDB_SETTING_CALLBACK(ExternalFileCacheRequestSizingSetting),
     DUCKDB_SETTING(ExternalFileCacheSpillSetting),
     DUCKDB_SETTING_CALLBACK(ExternalThreadsSetting),
     DUCKDB_SETTING(FileSearchPathSetting),
-    DUCKDB_SETTING_CALLBACK(ForceColumnMetadataReuseSetting),
+    DUCKDB_SETTING(ForceColumnMetadataReuseSetting),
     DUCKDB_SETTING_CALLBACK(ForceCompressionSetting),
     DUCKDB_SETTING_CALLBACK(FsyncModeSetting),
     DUCKDB_SETTING(GeometryMinimumShreddingSize),
@@ -195,13 +206,14 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_SETTING(IntegerDivisionSetting),
     DUCKDB_SETTING_CALLBACK(LambdaSyntaxSetting),
     DUCKDB_SETTING(LateMaterializationMaxRowsSetting),
-    DUCKDB_SETTING_CALLBACK(LegacyDisableNullTypeSetting),
-    DUCKDB_SETTING_CALLBACK(LegacyMetricsFormatSetting),
+    DUCKDB_SETTING(LegacyDisableNullTypeSetting),
+    DUCKDB_SETTING(LegacyMetricsFormatSetting),
     DUCKDB_SETTING(LockConfigurationSetting),
     DUCKDB_SETTING_CALLBACK(LogQueryPathSetting),
     DUCKDB_GLOBAL(LoggingLevel),
     DUCKDB_GLOBAL(LoggingMode),
     DUCKDB_GLOBAL(LoggingStorage),
+    DUCKDB_SETTING(MatchRecognizeMaxStatesSetting),
     DUCKDB_SETTING(MaxExecutionTimeSetting),
     DUCKDB_SETTING(MaxExpressionDepthSetting),
     DUCKDB_GLOBAL(MaxMemorySetting),
@@ -210,7 +222,7 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_SETTING(MaxVacuumTasksSetting),
     DUCKDB_SETTING(MergeJoinThresholdSetting),
     DUCKDB_SETTING(NestedLoopJoinThresholdSetting),
-    DUCKDB_SETTING_CALLBACK(OldImplicitCastingSetting),
+    DUCKDB_SETTING(OldImplicitCastingSetting),
     DUCKDB_LOCAL(OperatorMemoryLimitSetting),
     DUCKDB_SETTING(OrderByNonIntegerLiteralSetting),
     DUCKDB_SETTING_CALLBACK(OrderedAggregateThresholdSetting),
@@ -224,13 +236,14 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_SETTING(PreferRangeJoinsSetting),
     DUCKDB_SETTING_CALLBACK(PreserveIdentifierCaseSetting),
     DUCKDB_SETTING(PreserveInsertionOrderSetting),
-    DUCKDB_SETTING_CALLBACK(ProduceArrowStringViewSetting),
+    DUCKDB_SETTING(ProduceArrowStringViewSetting),
     DUCKDB_LOCAL(ProfilingCoverageSetting),
     DUCKDB_LOCAL(ProfilingModeSetting),
     DUCKDB_LOCAL(ProfilingOutputSetting),
     DUCKDB_LOCAL(ProfilingRendererSettingsSetting),
     DUCKDB_LOCAL(ProgressBarTimeSetting),
     DUCKDB_SETTING_CALLBACK(ReadAheadDepthSetting),
+    DUCKDB_SETTING(RedactHttpLogsSetting),
     DUCKDB_SETTING_CALLBACK(RegexMatchOperatorSemanticsSetting),
     DUCKDB_SETTING(ScalarSubqueryErrorOnMultipleRowsSetting),
     DUCKDB_SETTING(SchedulerProcessPartialSetting),
@@ -297,6 +310,19 @@ SettingCallbackInfo::SettingCallbackInfo(DBConfig &config, optional_ptr<Database
     : config(config), db(db), context(nullptr), scope(SetScope::GLOBAL) {
 }
 
+void SettingCallbackInfo::WarnDeprecated(const string &name) const {
+	if (is_reset) {
+		return;
+	}
+	auto message = StringUtil::Format("The '%s' setting is deprecated and will be removed in a future release.", name);
+	if (context) {
+		DUCKDB_LOG_WARNING(*context, message);
+	} else if (db) {
+		DUCKDB_LOG_WARNING(*db, message);
+	}
+	// a setting in the startup config has no database to log to yet
+}
+
 idx_t DBConfig::GetOptionCount() {
 	return sizeof(internal_options) / sizeof(ConfigurationOption) - 1;
 }
@@ -352,6 +378,19 @@ optional_ptr<const ConfigurationOption> DBConfig::GetOptionByName(const Identifi
 	return nullptr;
 }
 
+idx_t DBConfig::GetWriteBufferMemoryLimit() const {
+	std::lock_guard<std::recursive_mutex> guard(config_lock);
+	if (options.write_buffer_row_group_memory_limit.IsValid()) {
+		return options.write_buffer_row_group_memory_limit.GetIndex();
+	}
+	return options.maximum_memory / 5 / (options.maximum_threads + 1);
+}
+
+vector<string> DBConfig::GetExtensionDirectories() const {
+	std::lock_guard<std::recursive_mutex> guard(config_lock);
+	return options.extension_directories;
+}
+
 void DBConfig::SetOption(const ConfigurationOption &option, const Value &value) {
 	SetOption(nullptr, option, value);
 }
@@ -388,9 +427,13 @@ void DBConfig::SetOption(optional_ptr<DatabaseInstance> db, const ConfigurationO
 	Value input = value.DefaultCastAs(ParseLogicalType(option.parameter_type));
 	if (option.default_value) {
 		// generic option
+		SettingCallbackInfo info(*this, db);
 		if (option.set_callback) {
-			SettingCallbackInfo info(*this, db);
 			option.set_callback(info, input);
+		}
+		// after the callback, which may still refuse the value
+		if (option.is_deprecated) {
+			info.WarnDeprecated(option.name);
 		}
 		user_settings.SetUserSetting(option.setting_idx.GetIndex(), std::move(input));
 		return;
@@ -398,7 +441,7 @@ void DBConfig::SetOption(optional_ptr<DatabaseInstance> db, const ConfigurationO
 	if (!option.set_global) {
 		throw InvalidInputException("Could not set option \"%s\" as a global option", option.name);
 	}
-	lock_guard<mutex> guard(config_lock);
+	std::lock_guard<std::recursive_mutex> guard(config_lock);
 	D_ASSERT(option.reset_global);
 	option.set_global(db.get(), *this, input);
 }
@@ -412,7 +455,7 @@ void DBConfig::ResetOption(optional_ptr<DatabaseInstance> db, const Configuratio
 	if (!option.reset_global) {
 		throw InternalException("Could not reset option \"%s\" as a global option", option.name);
 	}
-	lock_guard<mutex> guard(config_lock);
+	std::lock_guard<std::recursive_mutex> guard(config_lock);
 	D_ASSERT(option.set_global);
 	option.reset_global(db.get(), *this);
 }
@@ -541,6 +584,24 @@ LogicalType DBConfig::ParseLogicalType(const string &type) {
 	return type_id;
 }
 
+ExtensionOptionInfo::~ExtensionOptionInfo() {
+}
+
+SetScope ExtensionOption::ResolveScope(const Identifier &name, SetScope scope) const {
+	if (scope == SetScope::AUTOMATIC) {
+		scope = default_scope;
+	}
+	if (scope == SetScope::GLOBAL && !supports_global) {
+		throw InvalidInputException("Setting %s cannot be set as a global variable - it can only be set per session",
+		                            name);
+	}
+	if (scope == SetScope::SESSION && !supports_session) {
+		throw InvalidInputException("Setting %s cannot be set as a session variable - it can only be set globally",
+		                            name);
+	}
+	return scope;
+}
+
 bool DBConfig::HasExtensionOption(const Identifier &name) const {
 	return user_settings.HasExtensionOption(name);
 }
@@ -552,8 +613,12 @@ bool DBConfig::TryGetExtensionOption(const Identifier &name, ExtensionOption &re
 void DBConfig::AddExtensionOption(const Identifier &name, string description, LogicalType parameter,
                                   const Value &default_value, set_option_callback_t function, SetScope default_scope,
                                   bool is_debug, bool is_deprecated) {
-	ExtensionOption extension_option(std::move(description), std::move(parameter), function, default_value,
-	                                 default_scope, is_debug, is_deprecated);
+	AddExtensionOption(name, ExtensionOption(std::move(description), std::move(parameter), function, default_value,
+	                                         default_scope, is_debug, is_deprecated));
+}
+
+void DBConfig::AddExtensionOption(const Identifier &name, ExtensionOption extension_option) {
+	auto default_value = extension_option.default_value;
 	auto setting_index = user_settings.AddExtensionOption(name, std::move(extension_option));
 	// copy over unrecognized options, if they match the new extension option
 	auto iter = options.unrecognized_options.find(name);
@@ -588,6 +653,11 @@ bool DBConfig::IsInMemoryDatabase(const char *database_path) {
 
 CastFunctionSet &DBConfig::GetCastFunctions() {
 	return type_manager->GetCastFunctions();
+}
+
+const CastFunctionSet &DBConfig::GetCastFunctions() const {
+	const auto &manager = *type_manager;
+	return manager.GetCastFunctions();
 }
 
 TypeManager &DBConfig::GetTypeManager() {
@@ -642,7 +712,7 @@ void DBConfig::CheckLock(const Identifier &name) {
 		}
 	}
 	// not allowed!
-	throw InvalidInputException("Cannot change configuration option \"%s\" - the configuration has been locked", name);
+	throw InvalidInputException("Cannot change configuration option %s - the configuration has been locked", name);
 }
 
 idx_t DBConfig::GetSystemMaxThreads(FileSystem &fs) {
@@ -706,10 +776,10 @@ idx_t DBConfig::GetSystemAvailableMemory(FileSystem &fs) {
 	return available_memory;
 }
 
-idx_t DBConfig::ParseMemoryLimit(const string &arg) {
+optional_idx DBConfig::ParseMemoryLimit(const string &arg) {
 	if (arg[0] == '-' || arg == "null" || arg == "none") {
-		// infinite
-		return NumericLimits<idx_t>::Maximum();
+		// unlimited
+		return optional_idx();
 	}
 
 	idx_t result;
@@ -717,13 +787,19 @@ idx_t DBConfig::ParseMemoryLimit(const string &arg) {
 
 	if (!error.empty()) {
 		if (error == "Memory cannot be negative") {
-			result = DConstants::INVALID_INDEX;
-		} else {
-			throw ParserException(error);
+			return optional_idx();
 		}
+		throw ParserException(error);
 	}
-
+	if (result == DConstants::INVALID_INDEX) {
+		return optional_idx();
+	}
 	return result;
+}
+
+idx_t DBConfig::ParseMemoryLimitOrMaximum(const string &arg) {
+	auto limit = ParseMemoryLimit(arg);
+	return limit.IsValid() ? limit.GetIndex() : NumericLimits<idx_t>::Maximum();
 }
 
 optional_idx DBConfig::ParseMemoryLimitSlurm(const string &arg) {
@@ -776,7 +852,8 @@ optional_idx DBConfig::ParseMemoryLimitSlurm(const string &arg) {
 
 // Right now we only really care about access mode when comparing DBConfigs
 bool DBConfigOptions::operator==(const DBConfigOptions &other) const {
-	return other.access_mode == access_mode && other.user_options == user_options;
+	return other.access_mode == access_mode && other.user_options == user_options &&
+	       other.configuration_env == configuration_env;
 }
 
 bool DBConfig::operator==(const DBConfig &other) {
@@ -881,8 +958,8 @@ const ExtensionCallbackManager &DBConfig::GetCallbackManager() const {
 	return *callback_manager;
 }
 
-string DBConfig::SanitizeAllowedPath(const string &path_p) const {
-	auto result = file_system->CanonicalizePath(path_p);
+string DBConfig::SanitizeAllowedPath(const string &path_p, optional_ptr<FileOpener> opener) const {
+	auto result = file_system->CanonicalizePath(FileSystem::ExpandPath(path_p, opener));
 	// allowed_directories/allowed_path always uses forward slashes regardless of the OS
 	auto path_sep = file_system->PathSeparator(path_p);
 	if (path_sep != "/") {
@@ -935,6 +1012,60 @@ void DBConfig::AddAllowedDirectory(const string &path) {
 	options.allowed_directories.insert(allowed_directory);
 }
 
+bool DBConfig::IsOptimizerDisabled(OptimizerType type) const {
+	if (!has_disabled_optimizers.load()) {
+		return false;
+	}
+	lock_guard<mutex> guard(disabled_optimizers_lock);
+	return options.disabled_optimizers.find(type) != options.disabled_optimizers.end();
+}
+
+set<OptimizerType> DBConfig::GetDisabledOptimizers() const {
+	lock_guard<mutex> guard(disabled_optimizers_lock);
+	return options.disabled_optimizers;
+}
+
+void DBConfig::SetDisabledOptimizers(set<OptimizerType> disabled_optimizers) {
+	lock_guard<mutex> guard(disabled_optimizers_lock);
+	options.disabled_optimizers = std::move(disabled_optimizers);
+	has_disabled_optimizers.store(!options.disabled_optimizers.empty());
+}
+
+void DBConfig::SetAllowedDirectories(const vector<string> &paths) {
+	decltype(options.allowed_directories) new_directories;
+	for (auto &path : paths) {
+		auto allowed_directory = SanitizeAllowedPath(path);
+		if (allowed_directory.empty()) {
+			throw InvalidInputException("Cannot provide an empty string for allowed_directory");
+		}
+		if (!StringUtil::EndsWith(allowed_directory, "/")) {
+			allowed_directory += "/";
+		}
+		new_directories.insert(std::move(allowed_directory));
+	}
+	lock_guard<mutex> guard(allowed_paths_lock);
+	options.allowed_directories = std::move(new_directories);
+}
+
+void DBConfig::SetAllowedPaths(const vector<string> &paths) {
+	decltype(options.allowed_paths) new_paths;
+	for (auto &path : paths) {
+		new_paths.insert(SanitizeAllowedPath(path));
+	}
+	lock_guard<mutex> guard(allowed_paths_lock);
+	options.allowed_paths = std::move(new_paths);
+}
+
+void DBConfig::ResetAllowedDirectories() {
+	lock_guard<mutex> guard(allowed_paths_lock);
+	options.allowed_directories = DBConfigOptions().allowed_directories;
+}
+
+void DBConfig::ResetAllowedPaths() {
+	lock_guard<mutex> guard(allowed_paths_lock);
+	options.allowed_paths = DBConfigOptions().allowed_paths;
+}
+
 void DBConfig::AddAllowedPath(const string &path) {
 	auto allowed_path = SanitizeAllowedPath(path);
 	lock_guard<mutex> guard(allowed_paths_lock);
@@ -958,12 +1089,12 @@ vector<string> DBConfig::GetAllowedPaths() const {
 	return vector<string>(options.allowed_paths.begin(), options.allowed_paths.end());
 }
 
-bool DBConfig::CanAccessFile(const string &input_path, FileType type) {
+bool DBConfig::CanAccessFile(const string &input_path, FileType type, optional_ptr<FileOpener> opener) {
 	if (Settings::Get<EnableExternalAccessSetting>(*this)) {
 		// all external access is allowed
 		return true;
 	}
-	string path = SanitizeAllowedPath(input_path);
+	string path = SanitizeAllowedPath(input_path, opener);
 
 	lock_guard<mutex> guard(allowed_paths_lock);
 	if (options.allowed_paths.count(path) > 0) {
@@ -1004,6 +1135,17 @@ SerializationOptions::SerializationOptions(AttachedDatabase &db) {
 
 void DBConfig::SetHTTPUtil(const shared_ptr<HTTPUtil> &new_http_util) {
 	http_transport_manager->SetHTTPUtil(new_http_util);
+}
+
+void DBConfig::SetExternalExtensionProvider(const shared_ptr<ExternalExtensionProvider> &new_provider) {
+	if (!new_provider) {
+		throw InvalidInputException("External extension provider cannot be null");
+	}
+	external_extension_provider = new_provider;
+}
+
+ExternalExtensionProvider &DBConfig::GetExternalExtensionProvider() const {
+	return *external_extension_provider;
 }
 
 HTTPUtil &DBConfig::GetHTTPUtil() const {

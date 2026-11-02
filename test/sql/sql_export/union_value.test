@@ -1,0 +1,102 @@
+# name: test/sql/sql_export/union_value.test
+# description: SQL export retains UNION member names independently of expression and output aliases
+# group: [sql_export]
+
+statement ok
+CREATE TABLE union_export_input(i INTEGER);
+
+statement ok
+INSERT INTO union_export_input VALUES (42), (NULL), (42), (-7);
+
+foreach serializer false true
+
+statement ok
+SET debug_verify_serializer={serializer};
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+query TI rowsort
+SELECT union_tag(u), union_extract(u, 'Member')
+FROM (SELECT union_value("Member" := i) AS different_output_alias FROM union_export_input) t(u);
+----
+Member	-7
+Member	42
+Member	42
+Member	NULL
+
+query TI rowsort
+SELECT union_tag(u), union_extract(u, 'a"b')
+FROM (SELECT union_value("a""b" := i + 1) u FROM union_export_input);
+----
+a"b	-6
+a"b	43
+a"b	43
+a"b	NULL
+
+query TIT rowsort
+SELECT union_tag(u), union_extract(u, 'Member'), typeof(u)
+FROM (SELECT union_value("Member" := i)::UNION("Member" INTEGER, other VARCHAR) u FROM union_export_input);
+----
+Member	-7	UNION(Member INTEGER, other VARCHAR)
+Member	42	UNION(Member INTEGER, other VARCHAR)
+Member	42	UNION(Member INTEGER, other VARCHAR)
+Member	NULL	UNION(Member INTEGER, other VARCHAR)
+
+query TTI rowsort
+SELECT union_tag(u), union_tag(union_extract(u, 'outer member')),
+       union_extract(union_extract(u, 'outer member'), 'inner member')
+FROM (SELECT union_value("outer member" := union_value("inner member" := i)) u FROM union_export_input);
+----
+outer member	inner member	-7
+outer member	inner member	42
+outer member	inner member	42
+outer member	inner member	NULL
+
+query TI rowsort
+SELECT union_tag(u), union_extract(u, 'items')[1]
+FROM (SELECT union_value(items := [i, i + 1]) u FROM union_export_input);
+----
+items	-7
+items	42
+items	42
+items	NULL
+
+query I
+SELECT count(*) FROM (SELECT union_value(empty_member := i) u FROM union_export_input WHERE false);
+----
+0
+
+endloop
+
+endloop
+
+statement ok
+RESET debug_verify_serializer;
+
+statement ok
+SET debug_verify_statement='explain_sql_strict';
+
+statement ok
+PREPARE union_export_parameter AS SELECT union_extract(union_value(parameter_member := i + $1::INTEGER), 'parameter_member') FROM union_export_input ORDER BY i NULLS LAST;
+
+query I
+EXECUTE union_export_parameter(2);
+----
+-5
+44
+44
+NULL
+
+query I
+EXECUTE union_export_parameter(3);
+----
+-4
+45
+45
+NULL
+
+statement ok
+RESET debug_verify_statement;

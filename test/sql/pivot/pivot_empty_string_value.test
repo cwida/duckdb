@@ -1,0 +1,32 @@
+# name: test/sql/pivot/pivot_empty_string_value.test
+# description: PIVOT on an empty string value does not create a column with an empty name
+# group: [pivot]
+
+statement ok
+SET pivot_filter_threshold = 1
+
+statement ok
+CREATE TABLE z AS PIVOT (SELECT * FROM (VALUES (''), ('a')) t(v)) ON v USING count(*)
+
+query I
+SELECT column_name FROM duckdb_columns() WHERE table_name = 'z' ORDER BY ALL
+----
+''
+a
+
+statement ok
+RESET pivot_filter_threshold
+
+statement ok
+CREATE TABLE z2 AS PIVOT (SELECT * FROM (VALUES (''), ('a')) t(v)) ON v USING count(*)
+
+query I
+SELECT column_name FROM duckdb_columns() WHERE table_name = 'z2' ORDER BY ALL
+----
+''
+a
+
+query I
+SELECT count(*) FROM (PIVOT (SELECT CASE WHEN r = 0 THEN '' ELSE 'x' || r END v FROM range(21) t(r)) ON v USING count(*))
+----
+1

@@ -575,7 +575,7 @@ ORDER BY 2
 ----
 NULL	NULL
 {'era': NULL, 'year': NULL, 'month': NULL, 'day': NULL, 'julian': NULL}	-infinity
-{'era': 0, 'year': 44, 'month': 3, 'day': 13, 'julian': 1705426.0699535608}	0044-03-13 (BC) 01:40:43.987654-07:52
+{'era': 0, 'year': 44, 'month': 3, 'day': 13, 'julian': 1705426.0699535608}	0044-03-13 (BC) 01:40:43.987654-07:52:58
 {'era': 1, 'year': 1962, 'month': 7, 'day': 31, 'julian': 2437877.2227792065}	1962-07-31 05:20:48.123456-07
 {'era': 1, 'year': 2020, 'month': 12, 'day': 31, 'julian': 2459215.6666666665}	2020-12-31 16:00:00-08
 {'era': 1, 'year': 2021, 'month': 2, 'day': 1, 'julian': 2459247.6666666665}	2021-02-01 16:00:00-08
@@ -593,7 +593,7 @@ ORDER BY 2
 ----
 NULL	NULL
 {'hour': NULL, 'minute': NULL, 'microsecond': NULL}	-infinity
-{'hour': 1, 'minute': 40, 'microsecond': 43987654}	0044-03-13 (BC) 01:40:43.987654-07:52
+{'hour': 1, 'minute': 40, 'microsecond': 43987654}	0044-03-13 (BC) 01:40:43.987654-07:52:58
 {'hour': 5, 'minute': 20, 'microsecond': 48123456}	1962-07-31 05:20:48.123456-07
 {'hour': 16, 'minute': 0, 'microsecond': 0}	2020-12-31 16:00:00-08
 {'hour': 16, 'minute': 0, 'microsecond': 0}	2021-02-01 16:00:00-08
@@ -611,7 +611,7 @@ ORDER BY 2
 ----
 NULL	NULL
 {'millennium': NULL, 'century': NULL, 'decade': NULL, 'quarter': NULL}	-infinity
-{'millennium': -1, 'century': -1, 'decade': 4, 'quarter': 1}	0044-03-13 (BC) 01:40:43.987654-07:52
+{'millennium': -1, 'century': -1, 'decade': 4, 'quarter': 1}	0044-03-13 (BC) 01:40:43.987654-07:52:58
 {'millennium': 2, 'century': 20, 'decade': 196, 'quarter': 3}	1962-07-31 05:20:48.123456-07
 {'millennium': 3, 'century': 21, 'decade': 202, 'quarter': 4}	2020-12-31 16:00:00-08
 {'millennium': 3, 'century': 21, 'decade': 202, 'quarter': 1}	2021-02-01 16:00:00-08
@@ -629,7 +629,7 @@ ORDER BY 2
 ----
 NULL	NULL
 {'weekday': NULL, 'isodow': NULL, 'doy': NULL}	-infinity
-{'weekday': 3, 'isodow': 3, 'doy': 72}	0044-03-13 (BC) 01:40:43.987654-07:52
+{'weekday': 3, 'isodow': 3, 'doy': 72}	0044-03-13 (BC) 01:40:43.987654-07:52:58
 {'weekday': 2, 'isodow': 2, 'doy': 212}	1962-07-31 05:20:48.123456-07
 {'weekday': 4, 'isodow': 4, 'doy': 366}	2020-12-31 16:00:00-08
 {'weekday': 1, 'isodow': 1, 'doy': 32}	2021-02-01 16:00:00-08
@@ -647,7 +647,7 @@ ORDER BY 2
 ----
 NULL	NULL
 {'isoyear': NULL, 'week': NULL, 'yearweek': NULL}	-infinity
-{'isoyear': -43, 'week': 11, 'yearweek': -4311}	0044-03-13 (BC) 01:40:43.987654-07:52
+{'isoyear': -43, 'week': 11, 'yearweek': -4311}	0044-03-13 (BC) 01:40:43.987654-07:52:58
 {'isoyear': 1962, 'week': 31, 'yearweek': 196231}	1962-07-31 05:20:48.123456-07
 {'isoyear': 2020, 'week': 53, 'yearweek': 202053}	2020-12-31 16:00:00-08
 {'isoyear': 2021, 'week': 5, 'yearweek': 202105}	2021-02-01 16:00:00-08
@@ -665,7 +665,7 @@ ORDER BY 2
 ----
 NULL	NULL
 {'epoch': NULL, 'second': NULL, 'timezone': NULL, 'timezone_hour': NULL, 'timezone_minute': NULL}	-infinity
-{'epoch': -63517962378.012344, 'second': 43, 'timezone': -28378, 'timezone_hour': -7, 'timezone_minute': -52}	0044-03-13 (BC) 01:40:43.987654-07:52
+{'epoch': -63517962378.012344, 'second': 43, 'timezone': -28378, 'timezone_hour': -7, 'timezone_minute': -52}	0044-03-13 (BC) 01:40:43.987654-07:52:58
 {'epoch': -234185951.876544, 'second': 48, 'timezone': -25200, 'timezone_hour': -7, 'timezone_minute': 0}	1962-07-31 05:20:48.123456-07
 {'epoch': 1609459200.0, 'second': 0, 'timezone': -28800, 'timezone_hour': -8, 'timezone_minute': 0}	2020-12-31 16:00:00-08
 {'epoch': 1612224000.0, 'second': 0, 'timezone': -28800, 'timezone_hour': -8, 'timezone_minute': 0}	2021-02-01 16:00:00-08
@@ -745,7 +745,7 @@ SELECT ts, LAST_DAY(ts), LAST_DAY(ts::TIMESTAMP) FROM februaries;
 query TTT
 SELECT ts, LAST_DAY(ts), LAST_DAY(ts::TIMESTAMP) FROM timestamps;
 ----
-0044-03-13 (BC) 01:40:43.987654-07:52	0044-03-31 (BC)	0044-03-31 (BC)
+0044-03-13 (BC) 01:40:43.987654-07:52:58	0044-03-31 (BC)	0044-03-31 (BC)
 1962-07-31 05:20:48.123456-07	1962-07-31	1962-07-31
 2020-12-31 16:00:00-08	2020-12-31	2020-12-31
 2021-02-01 16:00:00-08	2021-02-28	2021-02-28

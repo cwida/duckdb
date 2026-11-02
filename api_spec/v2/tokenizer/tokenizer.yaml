@@ -49,7 +49,7 @@ enums:
 functions:
   tokenize_sql:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-11" ]
+      - [ "unstable", "v2.0.0", "2026-09-11" ]
     description: |
       Tokenizes a SQL string into an iterator over its tokens.
 
@@ -67,6 +67,9 @@ functions:
         description: The connection supplying the grammar.
       sql:
         type: str
+        indirection: 1
+        const: true
+        kind: IN
         description: The SQL text. Borrowed for the call only; may contain interior null bytes. {NULL, 0} is the empty input.
       out_iterator:
         type: token_iterator
@@ -82,7 +85,7 @@ functions:
 
   token_iterator_next:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-11" ]
+      - [ "unstable", "v2.0.0", "2026-09-11" ]
     description: |
       Yields the next token, or END_OF_INPUT once exhausted.
 
@@ -119,7 +122,7 @@ functions:
 
   token_iterator_ends_unterminated:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-11" ]
+      - [ "unstable", "v2.0.0", "2026-09-11" ]
     description: |
       Reports whether the input ended before the closing delimiter of its last token.
 
@@ -148,7 +151,7 @@ functions:
 
   token_iterator_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-11" ]
+      - [ "unstable", "v2.0.0", "2026-09-11" ]
     description: |
       Destroys a token iterator handle.
     role: destructor

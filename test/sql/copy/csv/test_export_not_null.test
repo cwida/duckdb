@@ -56,4 +56,4 @@ IMPORT DATABASE '{TEST_DIR}/multiple';
 query IIII
 select * from tbl_2
 ----
-(empty)	(empty)	(empty)	NULL
+(empty)	(empty)	(empty)	(empty)

@@ -1,0 +1,63 @@
+diff --git a/src/avro_reader.cpp b/src/avro_reader.cpp
+index 113f1cb..d31b404 100644
+--- a/src/avro_reader.cpp
++++ b/src/avro_reader.cpp
+@@ -401,51 +401,14 @@ static void TransformValue(avro_value *avro_val, const AvroType &avro_type, Vect
+ 			break;
+ 		}
+ 		case PhysicalType::INT128: {
+-			int64_t upper_val = 0;
+-			uint64_t lower_val = 0;
+-
+-			// Calculate how many bytes go into upper and lower parts
+-			idx_t upper_bytes;
+-			if (bytes_size == 8) {
+-				int64_t lower_val_signed = 0;
+-				for (idx_t i = 0; i < bytes_size; i++) {
+-					int64_t raw_byte = raw[i];
+-					lower_val_signed |= (raw_byte << ((7 - i) * 8));
+-				}
+-				upper_bytes = 0;
+-				auto ret = hugeint_t(lower_val_signed);
+-				FlatVector::GetDataMutable<hugeint_t>(target)[out_idx] = ret;
+-				break;
+-			} else {
+-				upper_bytes = (bytes_size <= sizeof(uint64_t)) ? bytes_size : (bytes_size - sizeof(uint64_t));
+-			}
+-
+-			// Read upper part (big-endian)
+-			// TODO: upper part might be sign extended bti.
+-			for (idx_t i = 0; i < upper_bytes; i++) {
+-				upper_val = (upper_val << 8) | raw[i];
+-			}
+-
+-			// Handle sign extension for negative numbers
+-			if (bytes_size > 0 && (raw[0] & 0x80)) {
+-				// Fill remaining bytes with 1s for negative numbers
+-				if (upper_bytes < sizeof(int64_t)) {
+-					// Create a mask with 1s in the upper bits that need to be filled
+-					int64_t mask = ((int64_t)1 << ((sizeof(int64_t) - upper_bytes) * 8)) - 1;
+-					mask = mask << (upper_bytes * 8);
+-					upper_val |= mask;
+-				}
+-			}
+-
+-			// Read lower part if there are remaining bytes
+-			if (bytes_size > sizeof(int64_t)) {
+-				for (idx_t i = upper_bytes; i < bytes_size; i++) {
+-					lower_val = (lower_val << 8) | raw[i];
+-				}
++			// Shift the big-endian two's complement bytes through both halves, sign-extending from the first byte
++			uint64_t upper_val = negative ? ~0ULL : 0;
++			uint64_t lower_val = negative ? ~0ULL : 0;
++			for (idx_t i = 0; i < bytes_size; i++) {
++				upper_val = (upper_val << 8) | (lower_val >> 56);
++				lower_val = (lower_val << 8) | raw[i];
+ 			}
+-
+-			auto ret = hugeint_t(upper_val, lower_val);
+-			FlatVector::GetDataMutable<hugeint_t>(target)[out_idx] = ret;
++			FlatVector::GetDataMutable<hugeint_t>(target)[out_idx] = hugeint_t(static_cast<int64_t>(upper_val), lower_val);
+ 			break;
+ 		}
+ 		default:

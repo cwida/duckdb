@@ -21,12 +21,23 @@
 
 namespace duckdb {
 
+static unique_ptr<Expression> BindStructExtract(ClientContext &context, vector<unique_ptr<Expression>> arguments,
+                                                const LogicalType &child_type) {
+	auto result = BindBuiltinScalarExpression(context, StructExtractFun::Name, std::move(arguments));
+	if (result->GetReturnType() != child_type) {
+		// a NULL input is folded into an untyped NULL constant
+		result = BoundCastExpression::AddCastToType(context, std::move(result), child_type);
+	}
+	return result;
+}
+
 static unique_ptr<Expression> CreateBoundStructExtract(ClientContext &context, unique_ptr<Expression> expr,
-                                                       const vector<string> &key_path, bool keep_parent_names) {
+                                                       const LogicalType &child_type, const vector<string> &key_path,
+                                                       bool keep_parent_names) {
 	vector<unique_ptr<Expression>> arguments;
 	arguments.push_back(std::move(expr));
 	arguments.push_back(make_uniq<BoundConstantExpression>(Value(key_path.back())));
-	auto result = BindBuiltinScalarFunction(context, StructExtractFun::Name, std::move(arguments));
+	auto result = BindStructExtract(context, std::move(arguments), child_type);
 
 	if (keep_parent_names) {
 		auto alias = StringUtil::Join(key_path, ".");
@@ -37,18 +48,18 @@ static unique_ptr<Expression> CreateBoundStructExtract(ClientContext &context, u
 	} else {
 		result->SetAlias(Identifier(key_path[0]));
 	}
-	return std::move(result);
+	return result;
 }
 
 static unique_ptr<Expression> CreateBoundStructExtractIndex(ClientContext &context, unique_ptr<Expression> expr,
-                                                            idx_t key) {
+                                                            const LogicalType &child_type, idx_t key) {
 	vector<unique_ptr<Expression>> arguments;
 	arguments.push_back(std::move(expr));
 	arguments.push_back(make_uniq<BoundConstantExpression>(Value::BIGINT(int64_t(key))));
-	auto result = BindBuiltinScalarFunction(context, StructExtractFun::Name, std::move(arguments));
+	auto result = BindStructExtract(context, std::move(arguments), child_type);
 
 	result->SetAlias(Identifier("element" + to_string(key)));
-	return std::move(result);
+	return result;
 }
 
 void SelectBinder::ThrowIfUnnestInLambda(const ColumnBinding &column_binding) {
@@ -153,7 +164,13 @@ BindResult UnnestBinder::Bind(FunctionExpression &function, idx_t depth, bool ro
 			if (error.HasError()) {
 				return BindResult(std::move(error));
 			}
+			if (!const_child->IsFoldable()) {
+				throw BinderException(function, "UNNEST parameter %s must be a constant", alias);
+			}
 			auto value = ExpressionExecutor::EvaluateScalar(context, *const_child, true);
+			if (value.IsNull()) {
+				throw BinderException(function, "UNNEST parameter %s cannot be NULL", alias);
+			}
 			if (alias == "recursive") {
 				auto recursive = value.GetValue<bool>();
 				if (recursive) {
@@ -281,8 +298,8 @@ BindResult UnnestBinder::Bind(FunctionExpression &function, idx_t depth, bool ro
 					auto &child_types = StructType::GetChildTypes(expr->GetReturnType());
 					if (expr->GetReturnType().id() == LogicalTypeId::TUPLE) {
 						for (idx_t child_index = 0; child_index < child_types.size(); child_index++) {
-							new_expressions.push_back(
-							    CreateBoundStructExtractIndex(context, expr->Copy(), child_index + 1));
+							new_expressions.push_back(CreateBoundStructExtractIndex(
+							    context, expr->Copy(), child_types[child_index].second, child_index + 1));
 						}
 					} else {
 						for (auto &entry : child_types) {
@@ -292,8 +309,8 @@ BindResult UnnestBinder::Bind(FunctionExpression &function, idx_t depth, bool ro
 								current_key_path.emplace_back(expr->GetAlias());
 							}
 							current_key_path.emplace_back(entry.first);
-							new_expressions.push_back(
-							    CreateBoundStructExtract(context, expr->Copy(), current_key_path, keep_parent_names));
+							new_expressions.push_back(CreateBoundStructExtract(context, expr->Copy(), entry.second,
+							                                                   current_key_path, keep_parent_names));
 						}
 					}
 					has_structs = true;

@@ -1,0 +1,179 @@
+# name: test/optimizer/recursive_cte_projection_join_order.test
+# description: Preserve recursive join-order restrictions through projection wrappers
+# group: [optimizer]
+
+statement ok
+SET max_execution_time=10000;
+
+# direct
+query IIII
+WITH RECURSIVE nodes(i, h) AS MATERIALIZED (
+    SELECT i, i % 3 FROM range(256) t(i)
+), walks(i, h, step) AS (
+    SELECT i, h, 0 FROM nodes WHERE i = 128
+    UNION ALL
+    SELECT n.i, n.h, w.step + 1
+    FROM (VALUES (-1), (1)) d(delta)
+    JOIN walks w ON true
+    JOIN nodes n ON w.i + d.delta = n.i AND w.h <= n.h + 1
+    WHERE w.step < 6
+)
+SELECT count(*), sum(i), sum(h), max(step) FROM walks;
+----
+33	4160	38	6
+
+query TT
+EXPLAIN (FORMAT JSON) WITH RECURSIVE nodes(i, h) AS MATERIALIZED (
+    SELECT i, i % 3 FROM range(256) t(i)
+), walks(i, h, step) AS (
+    SELECT i, h, 0 FROM nodes WHERE i = 128
+    UNION ALL
+    SELECT n.i, n.h, w.step + 1
+    FROM (VALUES (-1), (1)) d(delta)
+    JOIN walks w ON true
+    JOIN nodes n ON w.i + d.delta = n.i AND w.h <= n.h + 1
+    WHERE w.step < 6
+)
+SELECT count(*), sum(i), sum(h), max(step) FROM walks;
+----
+physical_plan	<REGEX>:.*HASH_JOIN.*
+
+# projection
+query IIII
+WITH RECURSIVE nodes(i, h) AS MATERIALIZED (
+    SELECT i, i % 3 FROM range(256) t(i)
+), walks(i, h, step) AS (
+    SELECT i, h, 0 FROM nodes WHERE i = 128
+    UNION ALL
+    SELECT n.i, n.h, w.step + 1
+    FROM (VALUES (-1), (1)) d(delta)
+    JOIN (SELECT * FROM walks) w ON true
+    JOIN nodes n ON w.i + d.delta = n.i AND w.h <= n.h + 1
+    WHERE w.step < 6
+)
+SELECT count(*), sum(i), sum(h), max(step) FROM walks;
+----
+33	4160	38	6
+
+query TT
+EXPLAIN (FORMAT JSON) WITH RECURSIVE nodes(i, h) AS MATERIALIZED (
+    SELECT i, i % 3 FROM range(256) t(i)
+), walks(i, h, step) AS (
+    SELECT i, h, 0 FROM nodes WHERE i = 128
+    UNION ALL
+    SELECT n.i, n.h, w.step + 1
+    FROM (VALUES (-1), (1)) d(delta)
+    JOIN (SELECT * FROM walks) w ON true
+    JOIN nodes n ON w.i + d.delta = n.i AND w.h <= n.h + 1
+    WHERE w.step < 6
+)
+SELECT count(*), sum(i), sum(h), max(step) FROM walks;
+----
+physical_plan	<REGEX>:.*HASH_JOIN.*
+
+# nested_projection
+query IIII
+WITH RECURSIVE nodes(i, h) AS MATERIALIZED (
+    SELECT i, i % 3 FROM range(256) t(i)
+), walks(i, h, step) AS (
+    SELECT i, h, 0 FROM nodes WHERE i = 128
+    UNION ALL
+    SELECT n.i, n.h, w.step + 1
+    FROM (VALUES (-1), (1)) d(delta)
+    JOIN (SELECT i, h, step FROM (SELECT * FROM walks WHERE i IS NOT NULL) filtered) w ON true
+    JOIN nodes n ON w.i + d.delta = n.i AND w.h <= n.h + 1
+    WHERE w.step < 6
+)
+SELECT count(*), sum(i), sum(h), max(step) FROM walks;
+----
+33	4160	38	6
+
+query TT
+EXPLAIN (FORMAT JSON) WITH RECURSIVE nodes(i, h) AS MATERIALIZED (
+    SELECT i, i % 3 FROM range(256) t(i)
+), walks(i, h, step) AS (
+    SELECT i, h, 0 FROM nodes WHERE i = 128
+    UNION ALL
+    SELECT n.i, n.h, w.step + 1
+    FROM (VALUES (-1), (1)) d(delta)
+    JOIN (SELECT i, h, step FROM (SELECT * FROM walks WHERE i IS NOT NULL) filtered) w ON true
+    JOIN nodes n ON w.i + d.delta = n.i AND w.h <= n.h + 1
+    WHERE w.step < 6
+)
+SELECT count(*), sum(i), sum(h), max(step) FROM walks;
+----
+physical_plan	<REGEX>:.*HASH_JOIN.*
+
+# Equality joins must still reorder: join the recursive input to the small range first.
+statement ok
+SET disabled_optimizers='build_side_probe_side';
+
+query II
+WITH RECURSIVE r(i) AS (
+    VALUES (0)
+    UNION ALL
+    SELECT x.i + 1
+    FROM range(1000) n(i)
+    JOIN (SELECT * FROM r) x ON x.i = n.i
+    JOIN range(3) tiny(j) ON tiny.j = n.i
+    WHERE x.i < 3
+)
+SELECT count(*), sum(i) FROM r;
+----
+4	6
+
+query TT
+EXPLAIN (FORMAT JSON) WITH RECURSIVE r(i) AS (
+    VALUES (0)
+    UNION ALL
+    SELECT x.i + 1
+    FROM range(1000) n(i)
+    JOIN (SELECT * FROM r) x ON x.i = n.i
+    JOIN range(3) tiny(j) ON tiny.j = n.i
+    WHERE x.i < 3
+)
+SELECT count(*), sum(i) FROM r;
+----
+physical_plan	<REGEX>:.*HASH_JOIN.*RANGE.*HASH_JOIN.*
+
+statement ok
+RESET disabled_optimizers;
+
+# Duplicates and NULLs survive a computed projection over the recursive input.
+query III
+WITH RECURSIVE r(i, label) AS (
+    VALUES (0, NULL::VARCHAR), (0, 'x'), (0, 'x')
+    UNION ALL
+    SELECT x.i + d.delta, x.label
+    FROM (VALUES (1)) d(delta)
+    JOIN (SELECT i + 0 AS i, label FROM r) x ON true
+    JOIN range(4) n(i) ON x.i + d.delta = n.i
+    WHERE x.i < 3
+)
+SELECT count(*), count(label), sum(i) FROM r;
+----
+12	8	18
+
+# A projected ordinary CTE remains reorderable under a cross product.
+query II
+WITH nodes(i, h) AS MATERIALIZED (
+    SELECT i, i % 3 FROM range(256) t(i)
+), frontier(i, h) AS MATERIALIZED (VALUES (128, 2))
+SELECT n.*
+FROM (VALUES (-1), (1)) d(delta)
+JOIN (SELECT * FROM frontier) w ON true
+JOIN nodes n ON w.i + d.delta = n.i AND w.h <= n.h + 1;
+----
+127	1
+
+# Either cost-based order is valid for an ordinary CTE.
+query TT
+EXPLAIN (FORMAT JSON) WITH nodes(i, h) AS MATERIALIZED (
+    SELECT i, i % 3 FROM range(256) t(i)
+), frontier(i, h) AS MATERIALIZED (VALUES (128, 2))
+SELECT n.*
+FROM (VALUES (-1), (1)) d(delta)
+JOIN (SELECT * FROM frontier) w ON true
+JOIN nodes n ON w.i + d.delta = n.i AND w.h <= n.h + 1;
+----
+physical_plan	<REGEX>:.*(NESTED_LOOP_JOIN|HASH_JOIN).*

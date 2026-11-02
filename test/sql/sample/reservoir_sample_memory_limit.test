@@ -1,0 +1,18 @@
+# name: test/sql/sample/reservoir_sample_memory_limit.test
+# description: Reservoir samples are allocated through the buffer manager and respect the memory limit
+# group: [sample]
+
+statement ok
+PRAGMA memory_limit='100MB'
+
+# a 50% reservoir sample of 300MB of strings does not fit in the 100MB limit
+statement error
+SELECT sum(length(s)) FROM (SELECT repeat('x', 1000) s FROM range(300000)) USING SAMPLE 50 PERCENT (reservoir)
+----
+Out of Memory
+
+# a small sample does
+query I
+SELECT sum(length(s)) FROM (SELECT repeat('x', 1000) s FROM range(300000)) USING SAMPLE 1000 ROWS (reservoir)
+----
+1000000

@@ -38,12 +38,7 @@ static unique_ptr<BoundAggregateExpression> BindAggregate(ClientContext &context
 static unique_ptr<Expression> BindScalar(ClientContext &context, const char *name,
                                          vector<unique_ptr<Expression>> children) {
 	FunctionBinder function_binder(context);
-	ErrorData error;
-	auto result = function_binder.BindScalarFunction(Identifier::DefaultSchema(), name, std::move(children), error);
-	if (!result) {
-		error.Throw();
-	}
-	return result;
+	return function_binder.BindScalarFunction(Identifier::DefaultSchema(), name, std::move(children));
 }
 
 template <class MAP_TYPE>

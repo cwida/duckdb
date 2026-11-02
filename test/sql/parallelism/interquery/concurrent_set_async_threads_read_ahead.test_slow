@@ -1,0 +1,57 @@
+# name: test/sql/parallelism/interquery/concurrent_set_async_threads_read_ahead.test_slow
+# description: SET async_threads=0 while multi-file read-ahead scans are in flight must not wedge them
+# group: [interquery]
+
+require parquet
+
+statement ok
+SET threads=2
+
+# keep every scan scheduling real async I/O, a cache hit schedules none
+statement ok
+SET enable_external_file_cache=false
+
+# the synchronous strategy waits for read-ahead I/O by spinning without draining it inline
+statement ok
+SET debug_physical_table_scan_execution_strategy='SYNCHRONOUS'
+
+loop i 0 8
+
+statement ok
+COPY (SELECT range AS i FROM range(500000)) TO '{TEST_DIR}/ra_race_{i}.parquet' (FORMAT parquet, ROW_GROUP_SIZE 2048)
+
+endloop
+
+concurrentloop threadid 0 3
+
+loop i 0 100
+
+onlyif threadid=0
+query I
+SELECT sum(i) FROM '{TEST_DIR}/ra_race_*.parquet'
+----
+999998000000
+
+onlyif threadid=1
+query I
+SELECT sum(i) FROM '{TEST_DIR}/ra_race_*.parquet'
+----
+999998000000
+
+endloop
+
+onlyif threadid=2
+statement ok
+SELECT sleep_ms(100)
+
+onlyif threadid=2
+statement ok
+SET async_threads=0
+
+endloop
+
+# the database must remain usable afterwards
+query I
+SELECT 42
+----
+42

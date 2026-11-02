@@ -177,11 +177,7 @@ ErrorData BoundIndex::MergeCheckpointDelta(IndexDeltaType, BoundIndex &) {
 	throw InternalException("BoundIndex::MergeCheckpointDelta is not supported for this index type");
 }
 
-IndexStorageInfo BoundIndex::SerializeToDisk(QueryContext context, const case_insensitive_map_t<Value> &options) {
-	throw NotImplementedException("The implementation of this index disk serialization does not exist.");
-}
-
-IndexStorageInfo BoundIndex::SerializeToWAL(const case_insensitive_map_t<Value> &options) {
+IndexStorageInfo BoundIndex::SerializeToWAL(const StorageVersion) {
 	throw NotImplementedException("The implementation of this index WAL serialization does not exist.");
 }
 

@@ -1,0 +1,107 @@
+# name: test/sql/sql_export/grouped_mark_roundtrip.test
+# description: SQL reconstruction retains grouped MARK NULL semantics and empty groups
+# group: [sql_export]
+
+statement ok
+CREATE TABLE probes(id INTEGER,g VARCHAR COLLATE nocase,h INTEGER[],v INTEGER);
+
+statement ok
+INSERT INTO probes VALUES (0,'missing',[0],NULL),(1,'A',[1,NULL],NULL),(2,'a',[1,NULL],2),(3,'b',NULL,4),(4,NULL,[2],3),(5,'empty',[3],NULL);
+
+statement ok
+CREATE TABLE candidates(g VARCHAR COLLATE nocase,h INTEGER[],v INTEGER);
+
+statement ok
+INSERT INTO candidates VALUES ('a',[1,NULL],2),('a',[1,NULL],NULL),('B',NULL,4),(NULL,[2],3),(NULL,[2],3);
+
+statement ok
+SET debug_verify_statement='explain_sql_strict';
+
+foreach serializer false true
+
+statement ok
+SET debug_verify_serializer={serializer};
+
+foreach disable false true
+
+statement ok
+SET debug_disable_optimizer={disable};
+
+foreach external false true
+
+statement ok
+SET debug_force_external={external};
+
+query II
+SELECT id,v IN (SELECT c.v FROM candidates c WHERE p.g IS NOT DISTINCT FROM c.g AND p.h IS NOT DISTINCT FROM c.h) FROM probes p ORDER BY id;
+----
+0	false
+1	NULL
+2	true
+3	true
+4	true
+5	false
+
+query II
+SELECT id,v NOT IN (SELECT c.v FROM candidates c WHERE p.g IS NOT DISTINCT FROM c.g AND p.h IS NOT DISTINCT FROM c.h) FROM probes p ORDER BY id;
+----
+0	true
+1	NULL
+2	false
+3	false
+4	false
+5	true
+
+foreach comparison = <> < <= > >=
+
+# A scalar aggregate provides an independent three-valued quantifier oracle.
+query I
+WITH actual AS (SELECT id,v {comparison} ANY(SELECT c.v FROM candidates c WHERE p.g IS NOT DISTINCT FROM c.g AND p.h IS NOT DISTINCT FROM c.h) m FROM probes p), expected AS (SELECT id,(SELECT CASE WHEN bool_or(p.v {comparison} c.v) THEN true WHEN bool_or((p.v {comparison} c.v) IS NULL) THEN NULL ELSE false END FROM candidates c WHERE p.g IS NOT DISTINCT FROM c.g AND p.h IS NOT DISTINCT FROM c.h) m FROM probes p) SELECT count(*) FROM actual a JOIN expected e USING(id) WHERE a.m IS DISTINCT FROM e.m;
+----
+0
+
+query I
+WITH actual AS (SELECT id,v {comparison} ALL(SELECT c.v FROM candidates c WHERE p.g IS NOT DISTINCT FROM c.g AND p.h IS NOT DISTINCT FROM c.h) m FROM probes p), expected AS (SELECT id,(SELECT CASE WHEN bool_or(NOT (p.v {comparison} c.v)) THEN false WHEN bool_or((p.v {comparison} c.v) IS NULL) THEN NULL ELSE true END FROM candidates c WHERE p.g IS NOT DISTINCT FROM c.g AND p.h IS NOT DISTINCT FROM c.h) m FROM probes p) SELECT count(*) FROM actual a JOIN expected e USING(id) WHERE a.m IS DISTINCT FROM e.m;
+----
+0
+
+endloop
+
+endloop
+
+endloop
+
+endloop
+
+statement ok
+RESET debug_force_external;
+
+statement ok
+RESET debug_disable_optimizer;
+
+# Duplicate candidates span multiple build chunks.
+statement ok
+INSERT INTO candidates SELECT 'a',[1,NULL],CASE WHEN i%3=0 THEN NULL ELSE 2 END FROM range(8192) t(i);
+
+query II
+SELECT id,v=ANY(SELECT c.v FROM candidates c WHERE p.g IS NOT DISTINCT FROM c.g AND p.h IS NOT DISTINCT FROM c.h) FROM probes p ORDER BY id;
+----
+0	false
+1	NULL
+2	true
+3	true
+4	true
+5	false
+
+statement ok
+DELETE FROM candidates;
+
+query II
+SELECT id,v=ANY(SELECT c.v FROM candidates c WHERE p.g IS NOT DISTINCT FROM c.g AND p.h IS NOT DISTINCT FROM c.h) FROM probes p ORDER BY id;
+----
+0	false
+1	false
+2	false
+3	false
+4	false
+5	false

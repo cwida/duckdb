@@ -123,6 +123,7 @@ enum class ExpressionType : uint8_t {
 	ARRAY_CONSTRUCTOR = 156,
 	ARROW = 157,
 	OPERATOR_TRY = 158,
+	OPERATOR_HAS_ERROR = 159,
 
 	// -----------------------------
 	// Subquery IN/EXISTS
@@ -133,6 +134,11 @@ enum class ExpressionType : uint8_t {
 	// Parser
 	// -----------------------------
 	STAR = 200,
+	// MATCH_RECOGNIZE
+	QUANTIFIER = 210,
+	CONCATENATION = 211,
+	ALTERNATION = 212,
+	ANCHOR = 213,
 	TABLE_STAR = 201,
 	PLACEHOLDER = 202,
 	COLUMN_REF = 203,
@@ -183,6 +189,7 @@ enum class ExpressionClass : uint8_t {
 	BETWEEN = 19,
 	LAMBDA_REF = 20,
 	TYPE = 21,
+	PATTERN = 22,
 	//===--------------------------------------------------------------------===//
 	// Bound Expressions
 	//===--------------------------------------------------------------------===//

@@ -27,10 +27,6 @@ struct AggregateRewriteHelper {
 	                                                const vector<Identifier> &input_names,
 	                                                const vector<ColumnBinding> &input_bindings,
 	                                                column_binding_map_t<ColumnBinding> &replacement_map);
-	//! Projects the definition onto the given bindings so CTE references can rely on a stable column layout
-	static unique_ptr<LogicalOperator> PinColumnOrder(Optimizer &optimizer, unique_ptr<LogicalOperator> definition,
-	                                                  const vector<LogicalType> &types,
-	                                                  const vector<ColumnBinding> &bindings);
 };
 
 } // namespace duckdb

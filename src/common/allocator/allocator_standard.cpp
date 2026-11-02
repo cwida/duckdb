@@ -37,6 +37,10 @@ optional_idx Allocator::DecayDelay() {
 	return optional_idx();
 }
 
+optional_idx Allocator::GetMappedMemory() const {
+	return optional_idx();
+}
+
 bool Allocator::SupportsFlush() {
 #if defined(__GLIBC__)
 	return true;

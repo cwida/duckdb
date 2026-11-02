@@ -26,7 +26,6 @@ BoundStatement Binder::Bind(LogicalPlanStatement &stmt) {
 	result.plan = std::move(stmt.plan);
 
 	auto &properties = GetStatementProperties();
-	properties.result_eagerness = ResultEagerness::AUTO;
 	properties.return_type = StatementReturnType::QUERY_RESULT; // TODO could also be something else
 
 	if (parent) {

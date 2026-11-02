@@ -198,31 +198,14 @@
         "description": "Whether known extensions are allowed to be automatically installed when a query depends on them.",
         "type": "BOOLEAN",
         "scope": "global",
-        "default_value": "false",
-        "conditional_defaults": {
-            "#if defined(DUCKDB_EXTENSION_AUTOINSTALL_DEFAULT) && DUCKDB_EXTENSION_AUTOINSTALL_DEFAULT": "true"
-        }
+        "default_value": "true"
     },
     {
         "name": "autoload_known_extensions",
         "description": "Whether known extensions are allowed to be automatically loaded when a query depends on them.",
         "type": "BOOLEAN",
         "scope": "global",
-        "default_value": "false",
-        "conditional_defaults": {
-            "#if defined(DUCKDB_EXTENSION_AUTOLOAD_DEFAULT) && DUCKDB_EXTENSION_AUTOLOAD_DEFAULT": "true"
-        }
-    },
-    {
-        "name": "block_allocator_memory",
-        "description": "Physical memory that the block allocator is allowed to use. This memory is allocated once, never freed, and cannot be reduced.",
-        "type": "VARCHAR",
-        "scope": "global",
-        "custom_implementation": [
-            "get",
-            "set",
-            "reset"
-        ]
+        "default_value": "true"
     },
     {
         "name": "cache_local_files",
@@ -300,6 +283,14 @@
         ]
     },
     {
+        "name": "debug_abort_on_wal_failure",
+        "description": "Whether or not to abort if a serialization exception is thrown during WAL playback.",
+        "type": "BOOLEAN",
+        "scope": "global",
+        "internal_setting": "abort_on_wal_failure",
+        "is_debug": true
+    },
+    {
         "name": "debug_asof_iejoin",
         "description": "Force the use of an IEJoin to implement ASOF joins.",
         "type": "BOOLEAN",
@@ -314,6 +305,13 @@
         "default_scope": "global",
         "default_value": "NONE",
         "is_debug": true
+    },
+    {
+        "name": "debug_checkpoint_scan_sleep_ms",
+        "description": "DEBUG SETTING: time to sleep after a checkpoint has written a table's row groups, before it installs them",
+        "type": "UBIGINT",
+        "default_scope": "global",
+        "default_value": "0"
     },
     {
         "name": "debug_checkpoint_sleep_ms",
@@ -363,6 +361,14 @@
         "is_debug": true
     },
     {
+        "name": "debug_file_descriptor_limit",
+        "description": "Override the file descriptor limit that bounds how many files a scan opens ahead. 0 uses the limit of the process.",
+        "type": "UBIGINT",
+        "default_scope": "local",
+        "default_value": "0",
+        "is_debug": true
+    },
+    {
         "name": "debug_force_bitpacking_mode",
         "description": "Forces a specific bitpacking mode.",
         "type": "ENUM<BitpackingMode>",
@@ -400,7 +406,7 @@
     },
     {
         "name": "debug_force_fetch_row",
-        "description": "Force per-row fetching during scans.",
+        "description": "Read the rows of scans through the fetch by row id.",
         "type": "BOOLEAN",
         "default_scope": "local",
         "default_value": "false",
@@ -449,6 +455,14 @@
             "force_variant_shredding"
         ],
         "struct": "ForceVariantShredding"
+    },
+    {
+        "name": "debug_force_wal_fsync_failure",
+        "description": "DEBUG SETTING: makes every WAL fsync fail, used for testing durability error handling",
+        "type": "BOOLEAN",
+        "default_scope": "global",
+        "default_value": "false",
+        "is_debug": true
     },
     {
         "name": "debug_local_file_system_delay_ms",
@@ -522,6 +536,22 @@
         "is_debug": true
     },
     {
+        "name": "debug_verify_progress",
+        "description": "Verify that operators report well-formed, monotonic and complete progress during execution (NONE, LOG or ERROR).",
+        "type": "ENUM<DebugProgressVerification>",
+        "default_scope": "local",
+        "default_value": "NONE",
+        "is_debug": true
+    },
+    {
+        "name": "debug_verify_progress_ignore",
+        "description": "Comma-separated list of progress violations to ignore, as INVARIANT or INVARIANT:OPERATOR (e.g. UNSUPPORTED_SOURCE:WINDOW).",
+        "type": "VARCHAR",
+        "default_scope": "local",
+        "default_value": "",
+        "is_debug": true
+    },
+    {
         "name": "debug_verify_serializer",
         "description": "Verify the logical plan serializer.",
         "type": "BOOLEAN",
@@ -551,6 +581,14 @@
         "type": "ENUM<DebugVectorVerification>",
         "default_scope": "global",
         "default_value": "NONE",
+        "is_debug": true
+    },
+    {
+        "name": "debug_wal_fsync_sleep_ms",
+        "description": "DEBUG SETTING: time to sleep during each WAL fsync, emulating high-latency durable storage",
+        "type": "UBIGINT",
+        "default_scope": "global",
+        "default_value": "0",
         "is_debug": true
     },
     {
@@ -624,9 +662,7 @@
         "type": "BOOLEAN",
         "default_scope": "local",
         "default_value": "true",
-        "on_callbacks": [
-            "set"
-        ]
+        "is_deprecated": true
     },
     {
         "name": "dialect_compatibility_mode",
@@ -700,6 +736,13 @@
         "default_value": "50"
     },
     {
+        "name": "enable_block_allocator",
+        "description": "Enable new allocations from the fixed-size block pool (64-bit only; disabled by default on MinGW). Disabling preserves existing allocations and the virtual memory reservation.",
+        "type": "BOOLEAN",
+        "scope": "global",
+        "custom_implementation": true
+    },
+    {
         "name": "enable_external_access",
         "description": "Allow the database to access external state, e.g. through loading/installing modules, COPY TO/FROM, CSV readers, pandas replacement scans, etc.",
         "type": "BOOLEAN",
@@ -756,9 +799,6 @@
         "type": "BOOLEAN",
         "default_scope": "global",
         "default_value": "false",
-        "on_callbacks": [
-            "set"
-        ],
         "is_deprecated": true
     },
     {
@@ -820,9 +860,7 @@
         "type": "BOOLEAN",
         "default_scope": "local",
         "default_value": "true",
-        "on_callbacks": [
-            "set"
-        ]
+        "is_deprecated": true
     },
     {
         "name": "errors_as_json",
@@ -838,9 +876,7 @@
         "type": "BOOLEAN",
         "scope": "global",
         "default_value": "true",
-        "on_callbacks": [
-            "set"
-        ]
+        "is_deprecated": true
     },
     {
         "name": "explain_output",
@@ -862,10 +898,7 @@
         "type": "VARCHAR",
         "scope": "global",
         "default_value": "",
-        "is_deprecated": true,
-        "on_callbacks": [
-            "set"
-        ]
+        "is_deprecated": true
     },
     {
         "name": "extension_repository_directory",
@@ -878,10 +911,10 @@
         ]
     },
     {
-        "name": "external_file_cache_local_block_size",
-        "description": "Block size in bytes for the external file cache when reading local (non-remote) files.",
+        "name": "external_file_cache_local_max_block_size",
+        "description": "Maximum size in bytes of an external file cache block for local (non-remote) files. Larger reads are split into blocks of this size, which are fetched in parallel.",
         "type": "UBIGINT",
-        "default_scope": "global",
+        "scope": "global",
         "default_value": "16384",
         "custom_implementation": [
             "set"
@@ -891,10 +924,10 @@
         ]
     },
     {
-        "name": "external_file_cache_remote_block_size",
-        "description": "Block size in bytes for the external file cache when reading remote files (e.g. HTTP/S3).",
+        "name": "external_file_cache_remote_max_block_size",
+        "description": "Maximum size in bytes of an external file cache block for remote files (e.g. HTTP/S3). Larger reads are split into blocks of this size, which are fetched in parallel.",
         "type": "UBIGINT",
-        "default_scope": "global",
+        "scope": "global",
         "default_value": "2097152",
         "custom_implementation": [
             "set"
@@ -902,6 +935,26 @@
         "on_callbacks": [
             "set"
         ]
+    },
+    {
+        "name": "external_file_cache_remote_min_block_size",
+        "description": "Reads of remote files are rounded out to aligned blocks of this size, so tiny reads do not each cost a request.",
+        "type": "UBIGINT",
+        "scope": "global",
+        "default_value": "4096",
+        "custom_implementation": [
+            "set"
+        ],
+        "on_callbacks": [
+            "set"
+        ]
+    },
+    {
+        "name": "external_file_cache_request_sizing",
+        "description": "How reads of cached files are sized: AUTO lets each reader choose, GRID reads the aligned blocks of the cache block size around each read, EXACT reads exactly the requested bytes. Reads of files that are not cached are always exact.",
+        "type": "ENUM<ExternalFileCacheRequestSizing>",
+        "scope": "global",
+        "default_value": "AUTO"
     },
     {
         "name": "external_file_cache_spill",
@@ -933,9 +986,7 @@
         "type": "BOOLEAN",
         "scope": "global",
         "default_value": "false",
-        "on_callbacks": [
-            "set"
-        ]
+        "is_deprecated": true
     },
     {
         "name": "force_compression",
@@ -1083,9 +1134,7 @@
         "type": "BOOLEAN",
         "default_scope": "local",
         "default_value": "false",
-        "on_callbacks": [
-            "set"
-        ]
+        "is_deprecated": true
     },
     {
         "name": "legacy_metrics_format",
@@ -1093,9 +1142,6 @@
         "type": "BOOLEAN",
         "default_scope": "local",
         "default_value": "false",
-        "on_callbacks": [
-            "set"
-        ],
         "is_deprecated": true
     },
     {
@@ -1140,6 +1186,13 @@
         "custom_implementation": true
     },
     {
+        "name": "match_recognize_max_states",
+        "description": "The maximum number of pattern states MATCH_RECOGNIZE explores for a single match, before it refuses the pattern (0 = no limit). A match is never refused below what matching the pattern without backtracking would take.",
+        "type": "UBIGINT",
+        "default_scope": "local",
+        "default_value": "1000000"
+    },
+    {
         "name": "max_execution_time",
         "description": "The maximum execution time per query in milliseconds (0 = no limit).",
         "type": "BIGINT",
@@ -1165,7 +1218,7 @@
     },
     {
         "name": "max_streaming_buffer_size",
-        "description": "The maximum number of bytes a streaming query result buffers (e.g. 1GB). Buffered bytes stay under this cap plus at most one chunk. An oversized chunk is only admitted into an empty queue.",
+        "description": "The maximum number of bytes a streaming query result buffers (e.g. 1GB). Queued output stays under this cap, and each engine thread may hold, beyond the queue, the units it is still building or handing over from its current chunk.",
         "type": "VARCHAR",
         "scope": "local",
         "custom_implementation": true,
@@ -1207,10 +1260,7 @@
         "type": "BOOLEAN",
         "default_scope": "global",
         "default_value": "false",
-        "is_deprecated": true,
-        "on_callbacks": [
-            "set"
-        ]
+        "is_deprecated": true
     },
     {
         "name": "operator_memory_limit",
@@ -1318,10 +1368,7 @@
         "type": "BOOLEAN",
         "default_scope": "global",
         "default_value": "false",
-        "is_deprecated": true,
-        "on_callbacks": [
-            "set"
-        ]
+        "is_deprecated": true
     },
     {
         "name": "profiling_coverage",
@@ -1373,6 +1420,13 @@
         ]
     },
     {
+        "name": "redact_http_logs",
+        "description": "Redact HTTP header values in logs unless their names are explicitly allowed.",
+        "type": "BOOLEAN",
+        "scope": "global",
+        "default_value": "true"
+    },
+    {
         "name": "regex_match_operator_semantics",
         "description": "Configures whether regex match operators use partial or full string matching.",
         "type": "ENUM<RegexMatchOperatorSemantics>",
@@ -1380,7 +1434,8 @@
         "default_value": "partial",
         "custom_implementation": [
             "set"
-        ]
+        ],
+        "is_deprecated": true
     },
     {
         "name": "scalar_subquery_error_on_multiple_rows",
@@ -1460,7 +1515,8 @@
         "default_value": "DEFAULT",
         "custom_implementation": [
             "set"
-        ]
+        ],
+        "is_deprecated": true
     },
     {
         "name": "temp_directory",
@@ -1508,10 +1564,11 @@
     },
     {
         "name": "vacuum_rebuild_indexes",
-        "description": "(Experimental) Allow vacuum to compact row groups on tables with bound ART indexes, rebuilding the indexes afterward. Tables with a row count exceeding this threshold are skipped. 0 = disabled. Can also be set per-database via the 'vacuum_rebuild_indexes' ATTACH option, which overrides this default.",
+        "description": "Deprecated compatibility setting: maximum table row count for rebuilding bound ART indexes when checkpoint vacuum cannot remap their row IDs. 0 disables the rebuild fallback but does not disable index remapping on v2.0 storage. The 'vacuum_rebuild_indexes' ATTACH option overrides this default per database.",
         "type": "UBIGINT",
         "default_scope": "global",
         "default_value": "0",
+        "is_deprecated": true,
         "on_callbacks": [
             "set"
         ]

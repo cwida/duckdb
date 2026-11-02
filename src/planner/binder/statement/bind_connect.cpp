@@ -19,7 +19,7 @@ BoundStatement Binder::Bind(ConnectStatement &stmt) {
 		TableFunctionBinder option_binder(*this, context, "Connect", "Connect parameter");
 		for (auto &entry : stmt.info->parsed_options) {
 			auto bound_expr = option_binder.Bind(entry.second);
-			auto val = ExpressionExecutor::EvaluateScalar(context, *bound_expr);
+			auto val = ExpressionExecutor::EvaluateScalar(context, *bound_expr, true);
 			if (val.IsNull()) {
 				throw BinderException("NULL is not supported as a valid option for CONNECT option \"" + entry.first +
 				                      "\"");
@@ -37,7 +37,6 @@ BoundStatement Binder::Bind(ConnectStatement &stmt) {
 	result.plan = make_uniq<LogicalConnect>(std::move(stmt.info));
 
 	auto &properties = GetStatementProperties();
-	properties.result_eagerness = ResultEagerness::FORCED;
 	properties.return_type = StatementReturnType::NOTHING;
 	return result;
 }
@@ -50,8 +49,9 @@ BoundStatement Binder::Bind(DisconnectStatement &stmt) {
 	result.plan = make_uniq<LogicalDisconnect>(std::move(stmt.info));
 
 	auto &properties = GetStatementProperties();
-	properties.result_eagerness = ResultEagerness::FORCED;
 	properties.return_type = StatementReturnType::NOTHING;
+	// DISCONNECT returns to LOCAL also in an aborted transaction, so that it can be rolled back
+	properties.requires_valid_transaction = false;
 	return result;
 }
 

@@ -141,6 +141,10 @@ bool VariantColumnData::PushdownShreddedFieldExtract(const StorageIndex &variant
 		return false;
 	}
 	if (root_type.id() != LogicalTypeId::INVALID) {
+		if (!VariantUtils::ShreddedCastMatchesVariantCast(shredded_stats.get().GetType(), root_type)) {
+			//! The cast has to be applied to the VARIANT
+			return false;
+		}
 		column_index.SetPushdownExtractType(shredded.type, root_type);
 	}
 

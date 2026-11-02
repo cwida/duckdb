@@ -14,9 +14,9 @@ struct SetSelectionVectorSelect {
 	using CHILD_TYPE = int64_t;
 
 	static void SetSelectionVector(SelectionVector &selection_vector, ValidityMask &validity_mask,
-	                               const ValidityMask &input_validity, const VectorIterator<int64_t> &child_data,
-	                               idx_t child_idx, idx_t &target_offset, idx_t selection_offset, idx_t input_offset,
-	                               idx_t target_length) {
+	                               const VectorValidityIterator &input_validity,
+	                               const VectorIterator<int64_t> &child_data, idx_t child_idx, idx_t &target_offset,
+	                               idx_t selection_offset, idx_t input_offset, idx_t target_length) {
 		auto child_entry = child_data[selection_offset + child_idx];
 		int64_t sel_idx = -1;
 		if (child_entry.IsValid()) {
@@ -29,7 +29,7 @@ struct SetSelectionVectorSelect {
 		if (sel_idx >= 0 && sel_idx < UnsafeNumericCast<int64_t>(target_length)) {
 			auto sel_idx_unsigned = UnsafeNumericCast<idx_t>(sel_idx);
 			selection_vector.set_index(target_offset, input_offset + sel_idx_unsigned);
-			if (!input_validity.RowIsValid(input_offset + sel_idx_unsigned)) {
+			if (!input_validity.IsValid(input_offset + sel_idx_unsigned)) {
 				validity_mask.SetInvalid(target_offset);
 			}
 		} else {
@@ -49,7 +49,7 @@ struct SetSelectionVectorWhere {
 	using CHILD_TYPE = bool;
 
 	static void SetSelectionVector(SelectionVector &selection_vector, ValidityMask &validity_mask,
-	                               const ValidityMask &input_validity, const VectorIterator<bool> &child_data,
+	                               const VectorValidityIterator &input_validity, const VectorIterator<bool> &child_data,
 	                               idx_t child_idx, idx_t &target_offset, idx_t selection_offset, idx_t input_offset,
 	                               idx_t target_length) {
 		auto child_val = child_data[selection_offset + child_idx];
@@ -65,7 +65,7 @@ struct SetSelectionVectorWhere {
 		}
 
 		selection_vector.set_index(target_offset, input_offset + child_idx);
-		if (!input_validity.RowIsValid(input_offset + child_idx)) {
+		if (!input_validity.IsValid(input_offset + child_idx)) {
 			validity_mask.SetInvalid(target_offset);
 		}
 
@@ -97,7 +97,7 @@ void ListSelectFunction(const DataChunk &args, ExpressionState &state, Vector &r
 	auto &selection_entry = ListVector::GetChild(selection_list);
 	auto input_lists_data = list.Values<list_entry_t>();
 	auto &input_entry = ListVector::GetChild(list);
-	auto &input_validity = FlatVector::Validity(input_entry);
+	auto input_validity = input_entry.Validity();
 	auto selection_entry_data = selection_entry.Values<typename OP::CHILD_TYPE>();
 
 	idx_t result_length = 0;

@@ -1,0 +1,19 @@
+# name: test/sql/settings/max_execution_time_nested_expansion.test
+# description: max_execution_time interrupts the expansion of nested macro calls
+# group: [settings]
+
+statement ok
+CREATE MACRO d(x) AS x + x;
+
+query I
+SELECT d(d(d(1)));
+----
+8
+
+statement ok
+SET max_execution_time=200
+
+statement error
+SELECT d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(d(1))))))))))))))))))))))));
+----
+Query exceeded maximum execution time

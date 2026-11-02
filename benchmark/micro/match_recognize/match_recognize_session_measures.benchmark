@@ -1,0 +1,297 @@
+# name: benchmark/micro/match_recognize/match_recognize_session_measures.benchmark
+# description: A wide MEASURES list over view sessions: ~80 measures, most of them over a JSON payload
+# group: [match_recognize]
+
+# The shape a reporting model asks for: one row per session in which a client opens a catalog item,
+# with everything about how the session ended pulled out of the match at once. The pattern is cheap -
+# an open, a run of inspections, then a run of stage, suppress and escalate events - and the MEASURES
+# clause is not, which is the point. It mixes the three kinds of measure such a model leans on:
+#
+#   - navigation over an expression - last(stage_event.attributes ->> 'key')::DOUBLE and the like,
+#     which reads the payload off the row it navigated to rather than the row reporting the match
+#   - aggregates restricted to one pattern variable - count(CASE WHEN engage_event...), and
+#     array_agg with an ORDER BY of its own
+#   - a CASE over those aggregates that classifies how the session ended
+#
+# One session in seven never gets its opening event. The pattern needs one to start and everything
+# after it is optional, so those runs are scanned and match nothing.
+
+name MatchRecognize Session Measures
+group micro
+subgroup match_recognize
+
+require json
+
+load
+SET VARIABLE event_count = 5000000;
+DROP TABLE IF EXISTS delivery_event_stream;
+DROP TABLE IF EXISTS upstream_stage_events;
+DROP TABLE IF EXISTS entity_profiles_daily;
+CREATE TABLE delivery_event_stream AS
+WITH raw AS (
+    SELECT
+        i,
+        i // 20 AS run_no,
+        i % 20 AS pos,
+        (i // 20) % 7 AS orphan_key,
+        (i * 7919) % 101 AS r1,
+        (i * 104729) % 97 AS r2,
+        (i * 1299709) % 89 AS r3
+    FROM range(0, getvariable('event_count')) t(i)
+), typed AS (
+    SELECT *,
+        CASE
+            WHEN pos = 0 AND orphan_key <> 0
+                THEN (['opened_from_search', 'opened_from_browse', 'opened_from_recommendation',
+                       'opened_from_collection', 'opened_from_email', 'opened_from_deeplink'])[(run_no % 6) + 1]
+            WHEN pos <= 14
+                THEN (['played_demo', 'played_bundle', 'viewed_specs', 'viewed_overview',
+                       'viewed_facets', 'viewed_bundle', 'clicked_link', 'viewed_availability',
+                       'opened_availability', 'viewed_demo', 'viewed_publisher', 'viewed_media',
+                       'scrolled_detail'])[(i % 13) + 1]
+            WHEN run_no % 10 IN (0, 1)
+                THEN (['viewed_specs', 'viewed_facets', 'clicked_link'])[(i % 3) + 1]
+            WHEN run_no % 10 = 2 THEN 'suppressed_item'
+            WHEN run_no % 10 = 3 THEN 'escalated_item'
+            WHEN run_no % 10 = 4
+                THEN CASE WHEN pos % 2 = 0 THEN 'suppressed_item' ELSE 'escalated_item' END
+            WHEN run_no % 10 = 8 THEN CASE WHEN pos = 19 THEN 'suppressed_item' ELSE 'staged_item' END
+            WHEN run_no % 10 = 9 THEN CASE WHEN pos = 19 THEN 'escalated_item' ELSE 'staged_item' END
+            ELSE 'staged_item'
+        END AS action_type
+    FROM raw
+)
+SELECT
+    'ev_' || i AS id,
+    'sess_' || run_no AS session_id,
+    'c' || ((run_no // 2) // 500) AS client_id,
+    'i' || ((run_no // 2) % 500) AS item_id,
+    TIMESTAMP '2026-09-15 00:00:00' + INTERVAL (i * 7) SECOND AS occurred_at,
+    action_type,
+    'batch_' || run_no AS batch_id,
+    (r1 * 900)::BIGINT AS ms_since_open,
+    CASE
+        WHEN r3 % 89 = 0 THEN NULL
+        WHEN action_type LIKE 'opened_from_%'
+            THEN to_json({'is_prefetched': r1 % 2, 'surface': action_type})
+        WHEN action_type = 'played_demo'
+            THEN to_json({'demo_id': 'demo ' || r2, 'demo_variant': 'variant ' || (r2 % 17)})
+        WHEN action_type = 'played_bundle'
+            THEN to_json({'bundle_id': 'bundle_' || r2})
+        WHEN action_type = 'escalated_item'
+            THEN to_json({
+                'source': (['detail', 'api'])[(r1 % 2) + 1],
+                'reason': (['schema', 'checksum', 'timeout', 'quota', 'other'])[(r2 % 5) + 1],
+                'has_note': r1 % 2,
+                'artifact_kind': (['media', 'overview', 'bundle'])[(r3 % 3) + 1]})
+        WHEN action_type = 'suppressed_item'
+            THEN to_json({'source': 'detail'})
+        WHEN action_type = 'staged_item' AND r2 % 23 = 0
+            THEN to_json({
+                'stage_action': (['commit', 'defer', 'expedite'])[((run_no + pos) % 3) + 1],
+                'stage_channel': (['search', 'browse', 'email', 'api'])[(r1 % 4) + 1]})
+        WHEN action_type = 'staged_item'
+            THEN to_json({
+                'stage_action': (['commit', 'defer', 'expedite'])[((run_no + pos) % 3) + 1],
+                'stage_channel': (['search', 'browse', 'email', 'api'])[(r1 % 4) + 1],
+                'is_prefetched': r1 % 2,
+                'is_cache_hit': r2 % 2,
+                'matched_terms': r1 % 9,
+                'matched_facets': r2 % 13,
+                'assets_rendered': (r3 % 9) + 1,
+                'assets_available': 9,
+                'assets_expanded': r1 % 5,
+                'pct_assets_rendered': (r2 % 100) / 100.0,
+                'related_items': r3 % 21,
+                'same_edge_region': r1 % 2,
+                'origin_distance_meters': r2 * 9137,
+                'origin_is_failover': r3 % 2,
+                'origin_has_fallback': r1 % 2,
+                'origin_on_fallback': r2 % 2,
+                'origin_fallback_zone': 'region ' || (r1 % 8),
+                'origin_fallback_zone_geo': 'POINT(' || (r1 - 50) || ' ' || (r2 - 48) || ')',
+                'distance_to_fallback_meters': r3 * 5171,
+                'edge_is_failover': r2 % 2,
+                'edge_has_fallback': r3 % 2,
+                'edge_fallback_zone': 'region ' || (r2 % 8),
+                'edge_fallback_zone_geo': 'POINT(' || (r2 - 48) || ' ' || (r3 - 44) || ')',
+                'source_attributes': {'slot_position': r1 % 41, 'experiment': (['exp_a', 'exp_b'])[(r2 % 2) + 1]},
+                'times_placeholder_shown': r3 % 4,
+                'time_on_placeholder_seconds': (r1 % 600) / 100.0})
+        ELSE NULL
+    END AS attributes
+FROM typed
+ORDER BY hash(i);
+CREATE TABLE upstream_stage_events AS
+SELECT
+    client_id,
+    item_id,
+    occurred_at + INTERVAL ((hash(id) % 5)::BIGINT) SECOND AS occurred_at,
+    'staged_item' AS action_type,
+    CASE WHEN hash(id) % 10 < 7 THEN batch_id ELSE 'batch_other_' || id END AS batch_id,
+    (['ruleset_a_v3', 'ruleset_b_v1', 'ruleset_c_v2', 'ruleset_d_v4'])[(hash(id) % 4)::BIGINT + 1] AS ruleset_name,
+    (hash(id) % 51)::INTEGER AS slot_index,
+    (['primary', 'backfill', 'promoted'])[(hash(id) % 3)::BIGINT + 1] AS slot_kind,
+    (['search', 'browse', 'api'])[(hash(id) % 3)::BIGINT + 1] AS stage_channel,
+    (hash(id) % 2 = 0) AS is_prefetched
+FROM delivery_event_stream
+WHERE action_type = 'staged_item' AND hash(id) % 100 < 45;
+CREATE TABLE entity_profiles_daily AS
+SELECT
+    d::DATE AS snapshot_date,
+    entity_id,
+    'region ' || (hash(entity_id) % 8) AS origin_region,
+    'region ' || (hash(entity_id) % 5) AS current_region
+FROM (
+    SELECT DISTINCT client_id AS entity_id FROM delivery_event_stream
+    UNION
+    SELECT DISTINCT item_id AS entity_id FROM delivery_event_stream
+) a
+CROSS JOIN (
+    SELECT unnest(generate_series(
+        (SELECT min(occurred_at)::DATE FROM delivery_event_stream),
+        (SELECT max(occurred_at)::DATE FROM delivery_event_stream),
+        INTERVAL 1 DAY)) AS d
+) days
+WHERE hash(entity_id) % 50 <> 0;
+
+# every measure is read: a window expression nothing reads is pruned away, and a benchmark that let
+# that happen would be timing an empty plan
+run
+SELECT bit_xor(hash(COLUMNS(*))) FROM (
+FROM delivery_event_stream match_recognize (
+    partition by client_id, item_id
+    order by occurred_at
+    measures
+    view_event.id as view_event_id,
+    last(stage_event.id) as last_stage_event_id,
+    first(view_event.session_id) as session_id,
+    first(view_event.batch_id) as batch_id,
+    first(occurred_at) as item_viewed_at,
+    first(stage_event.occurred_at) as first_staged_at,
+    last(stage_event.occurred_at) as last_staged_at,
+    first((view_event.attributes ->> 'is_prefetched')::bigint)::boolean
+        as view_is_prefetched,
+    replace(first(view_event.action_type), 'opened_from_', '') as view_surface,
+    count(case when engage_event.action_type = 'played_bundle' then 1 end) as bundle_demo_plays,
+    count(case when engage_event.action_type = 'played_demo' then 1 end) as demo_plays,
+    count(case when engage_event.action_type = 'viewed_specs' then 1 end) as spec_views,
+    count(case when engage_event.action_type = 'viewed_overview' then 1 end) as overview_views,
+    count(case when engage_event.action_type = 'viewed_publisher' then 1 end) as publisher_views,
+    count(case when engage_event.action_type = 'viewed_facets' then 1 end) as facet_views,
+    count(case when engage_event.action_type = 'viewed_bundle' then 1 end) as bundle_views,
+    count(case when engage_event.action_type = 'clicked_link' then 1 end) as link_clicks,
+    count(case when engage_event.action_type = 'viewed_availability' then 1 end) as availability_views,
+    count(case when engage_event.action_type = 'opened_availability' then 1 end) as availability_opens,
+    count(case when engage_event.action_type = 'viewed_demo' then 1 end) as demo_section_views,
+    count(engage_event.id) as total_engagement_count,
+    list_filter(
+        array_agg(
+            case
+                when
+                    engage_event.action_type = 'played_demo'
+                    then {
+                        'id': engage_event.attributes ->> 'demo_id',
+                        'variant': engage_event.attributes ->> 'demo_variant'
+                    }
+            end
+            order by engage_event.occurred_at
+        ),
+        lambda x: x is not null
+    ) as demos_played,
+    count(stage_event.id) as stage_count,
+    first(stage_event.attributes ->> 'stage_action') as first_stage_action,
+    last(stage_event.attributes ->> 'stage_action') as last_stage_action,
+    array_agg(stage_event.attributes ->> 'stage_action'
+        order by stage_event.occurred_at) as all_stage_actions,
+    array_agg(stage_event.id
+        order by stage_event.occurred_at) as all_stage_event_ids,
+    last(stage_event.attributes ->> 'stage_channel') as stage_channel,
+    last((stage_event.attributes ->> 'is_prefetched')::bigint)::boolean as stage_is_prefetched,
+    last((stage_event.attributes ->> 'is_cache_hit')::bigint)::boolean as is_cache_hit,
+    last((stage_event.attributes ->> 'matched_terms')::double) as matched_terms,
+    last((stage_event.attributes ->> 'matched_facets')::double) as matched_facets,
+    last((stage_event.attributes ->> 'assets_rendered')::double) as assets_rendered,
+    last((stage_event.attributes ->> 'assets_available')::double) as assets_available,
+    last((stage_event.attributes ->> 'assets_expanded')::double)
+        as assets_expanded,
+    last((stage_event.attributes ->> 'pct_assets_rendered')::double) as pct_assets_rendered,
+    last((stage_event.attributes ->> 'related_items')::double) as related_items,
+    last((stage_event.attributes ->> 'same_edge_region')::bigint)::boolean
+        as same_edge_region,
+    last((stage_event.attributes ->> 'origin_distance_meters')::double)
+        as origin_distance_meters,
+    last((stage_event.attributes ->> 'origin_is_failover')::bigint)::boolean as origin_is_failover,
+    last((stage_event.attributes ->> 'origin_has_fallback')::bigint)::boolean as origin_has_fallback,
+    last((stage_event.attributes ->> 'origin_on_fallback')::bigint)::boolean
+        as origin_on_fallback,
+    last(stage_event.attributes ->> 'origin_fallback_zone') as origin_fallback_zone,
+    last(stage_event.attributes ->> 'origin_fallback_zone_geo') as origin_fallback_zone_geo,
+    last((stage_event.attributes ->> 'distance_to_fallback_meters')::double)
+        as distance_to_fallback_meters,
+    last((stage_event.attributes ->> 'edge_is_failover')::bigint)::boolean as edge_is_failover,
+    last((stage_event.attributes ->> 'edge_has_fallback')::bigint)::boolean
+        as edge_has_fallback,
+    last(stage_event.attributes ->> 'edge_fallback_zone') as edge_fallback_zone,
+    last(stage_event.attributes ->> 'edge_fallback_zone_geo')
+        as edge_fallback_zone_geo,
+    last(stage_event.attributes -> 'source_attributes') as source_attributes,
+    last((stage_event.attributes ->> 'times_placeholder_shown')::double)
+        as times_placeholder_shown,
+    last((stage_event.attributes ->> 'time_on_placeholder_seconds')::double)
+        as time_on_placeholder_seconds,
+    first(stage_event.ms_since_open) as first_stage_ms_since_open,
+    last(stage_event.ms_since_open) as last_stage_ms_since_open,
+    last(suppress_event.id) as last_suppress_event_id,
+    first(suppress_event.occurred_at) as first_suppressed_at,
+    last(suppress_event.occurred_at) as last_suppressed_at,
+    count(suppress_event.id) as suppress_count,
+    first(suppress_event.ms_since_open) as first_suppress_ms_since_open,
+    last(suppress_event.ms_since_open) as last_suppress_ms_since_open,
+    last(escalate_event.id) as last_escalate_event_id,
+    first(escalate_event.occurred_at) as first_escalated_at,
+    last(escalate_event.occurred_at) as last_escalated_at,
+    count(escalate_event.id) as escalate_count,
+    last(escalate_event.attributes ->> 'source') as escalate_source,
+    last(escalate_event.attributes ->> 'reason') as escalate_reason,
+    last((escalate_event.attributes ->> 'has_note')::bigint)::boolean as escalate_has_note,
+    last(escalate_event.attributes ->> 'artifact_kind') as escalate_artifact_kind,
+    first(escalate_event.ms_since_open) as first_escalate_ms_since_open,
+    last(escalate_event.ms_since_open) as last_escalate_ms_since_open,
+    case
+        when count(stage_event.id) > 0 and count(suppress_event.id) = 0 and count(escalate_event.id) = 0 then 'STAGE'
+        when count(suppress_event.id) > 0 and count(escalate_event.id) = 0 and count(stage_event.id) = 0 then 'SUPPRESS'
+        when count(escalate_event.id) > 0 and count(suppress_event.id) = 0 and count(stage_event.id) = 0 then 'ESCALATE'
+        when count(suppress_event.id) > 0 and count(escalate_event.id) > 0 then 'ESCALATE_AND_SUPPRESS'
+        when count(stage_event.id) > 0 and count(suppress_event.id) > 0 then 'STAGE_AND_SUPPRESS'
+        when count(stage_event.id) > 0 and count(escalate_event.id) > 0 then 'STAGE_AND_ESCALATE'
+        else 'NO_ACTION'
+    end as session_end_action
+    one row per match
+    after match skip past last row
+    pattern (view_event engage_event* (stage_event | suppress_event | escalate_event)*)
+    define
+    view_event as action_type in (
+        'opened_from_search',
+        'opened_from_browse',
+        'opened_from_recommendation',
+        'opened_from_collection',
+        'opened_from_email',
+        'opened_from_deeplink'
+    ),
+    stage_event as action_type = 'staged_item',
+    suppress_event as action_type = 'suppressed_item',
+    escalate_event as action_type = 'escalated_item',
+    engage_event as action_type not in (
+        'opened_from_search',
+        'opened_from_browse',
+        'opened_from_recommendation',
+        'opened_from_collection',
+        'opened_from_email',
+        'opened_from_deeplink',
+        'staged_item',
+        'suppressed_item',
+        'escalated_item'
+    )
+)
+);

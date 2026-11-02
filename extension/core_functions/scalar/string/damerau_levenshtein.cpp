@@ -1,4 +1,6 @@
 #include "core_functions/scalar/string_functions.hpp"
+#include "core_functions/scalar/string_characters.hpp"
+#include "duckdb/main/client_context.hpp"
 #include "duckdb/common/map.hpp"
 #include "duckdb/common/vector.hpp"
 
@@ -7,14 +9,14 @@ namespace duckdb {
 // Using Lowrance-Wagner (LW) algorithm: https://doi.org/10.1145%2F321879.321880
 // Can't calculate as trivial modification to levenshtein algorithm
 // as we need to potentially know about earlier in the string
-static idx_t DamerauLevenshteinDistance(const string_t &source, const string_t &target) {
+template <class T>
+static idx_t DamerauLevenshteinDistance(ClientContext &context, const T *source_str, idx_t source_len,
+                                        const T *target_str, idx_t target_len) {
 	// costs associated with each type of edit, to aid readability
 	constexpr uint8_t COST_SUBSTITUTION = 1;
 	constexpr uint8_t COST_INSERTION = 1;
 	constexpr uint8_t COST_DELETION = 1;
 	constexpr uint8_t COST_TRANSPOSITION = 1;
-	const auto source_len = source.GetSize();
-	const auto target_len = target.GetSize();
 
 	// If one string is empty, the distance equals the length of the other string
 	// either through target_len insertions
@@ -25,9 +27,6 @@ static idx_t DamerauLevenshteinDistance(const string_t &source, const string_t &
 		return source_len * COST_DELETION;
 	}
 
-	const auto source_str = source.GetData();
-	const auto target_str = target.GetData();
-
 	// larger than the largest possible value:
 	const auto inf = source_len * COST_DELETION + target_len * COST_INSERTION + 1;
 	// minimum edit distance from prefix of source string to prefix of target string
@@ -35,7 +34,7 @@ static idx_t DamerauLevenshteinDistance(const string_t &source, const string_t &
 	vector<vector<idx_t>> distance(source_len + 2, vector<idx_t>(target_len + 2, inf));
 	// keeps track of the largest string indices of source string matching each character
 	// same as DA in LW paper
-	map<char, idx_t> largest_source_chr_matching;
+	map<T, idx_t> largest_source_chr_matching;
 
 	// initialise row/column corresponding to zero-length strings
 	// partial string -> empty requires a deletion for each character
@@ -48,6 +47,7 @@ static idx_t DamerauLevenshteinDistance(const string_t &source, const string_t &
 	}
 	// loop through string indices - these are offset by 2 from distance indices
 	for (idx_t source_idx = 0; source_idx < source_len; source_idx++) {
+		context.InterruptCheck();
 		// keeps track of the largest string indices of target string matching current source character
 		// same as DB in LW paper
 		idx_t largest_target_chr_matching;
@@ -83,17 +83,30 @@ static idx_t DamerauLevenshteinDistance(const string_t &source, const string_t &
 	return distance[source_len + 1][target_len + 1];
 }
 
-static int64_t DamerauLevenshteinScalarFunction(Vector &result, const string_t source, const string_t target) {
-	return (int64_t)DamerauLevenshteinDistance(source, target);
+//! The distance between the characters of the strings - not their bytes
+static idx_t DamerauLevenshteinDistance(ClientContext &context, const string_t &source, const string_t &target) {
+	if (StringIsAscii(source) && StringIsAscii(target)) {
+		return DamerauLevenshteinDistance(context, source.GetData(), source.GetSize(), target.GetData(),
+		                                  target.GetSize());
+	}
+	auto source_chars = GetStringCharacters(source);
+	auto target_chars = GetStringCharacters(target);
+	return DamerauLevenshteinDistance(context, source_chars.data(), source_chars.size(), target_chars.data(),
+	                                  target_chars.size());
+}
+
+static int64_t DamerauLevenshteinScalarFunction(ClientContext &context, const string_t source, const string_t target) {
+	return (int64_t)DamerauLevenshteinDistance(context, source, target);
 }
 
 static void DamerauLevenshteinFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	const auto &source_vec = args.data[0];
 	const auto &target_vec = args.data[1];
 
+	auto &context = state.GetContext();
 	BinaryExecutor::Execute<string_t, string_t, int64_t>(
 	    source_vec, target_vec, result,
-	    [&](string_t source, string_t target) { return DamerauLevenshteinScalarFunction(result, source, target); });
+	    [&](string_t source, string_t target) { return DamerauLevenshteinScalarFunction(context, source, target); });
 }
 
 ScalarFunction DamerauLevenshteinFun::GetFunction() {

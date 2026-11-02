@@ -1,0 +1,36 @@
+# name: test/parquet/legacy_lz4.test
+# description: Legacy Parquet LZ4 framing, raw fallback, and malformed lengths
+# group: [parquet]
+
+require parquet
+
+# The legacy codec identifier covers both Hadoop framing and old parquet-cpp raw blocks.
+# Exercise both page versions, multiple blocks, and multiple chunks within a block.
+foreach version 1 2
+
+foreach layout single_block multi_block multi_chunk terminator raw optional_levels
+
+query I
+SELECT i FROM '{DATA_DIR}/parquet-testing/legacy_lz4/{layout}_v{version}.parquet' ORDER BY i;
+----
+0
+1
+2
+3
+4
+5
+6
+7
+
+endloop
+
+foreach corruption short_header short_chunk_header oversize_block oversize_chunk zero_chunk corrupt_chunk short_output trailing_bytes missing_block zero_block truncated_second_block
+
+statement error
+SELECT i FROM '{DATA_DIR}/parquet-testing/legacy_lz4/{corruption}_v{version}.parquet';
+----
+LZ4 decompression failure
+
+endloop
+
+endloop

@@ -1,6 +1,7 @@
 #include "duckdb/common/operator/multiply.hpp"
 
 #include "duckdb/common/limits.hpp"
+#include "duckdb/common/operator/add.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
 #include "duckdb/common/types/hugeint.hpp"
 #include "duckdb/common/types/uhugeint.hpp"
@@ -91,12 +92,17 @@ bool TryMultiplyOperator::Operation(interval_t left, double right, interval_t &r
 	 * of cascade and the seconds factor operation itself.
 	 */
 	if (std::fabs(sec_remainder) >= Interval::SECS_PER_DAY) {
-		result.days += LossyNumericCast<int32_t>(sec_remainder / Interval::SECS_PER_DAY);
-		sec_remainder -= LossyNumericCast<int32_t>(sec_remainder / Interval::SECS_PER_DAY) * Interval::SECS_PER_DAY;
+		const auto extra_days = LossyNumericCast<int32_t>(sec_remainder / Interval::SECS_PER_DAY);
+		if (!TryAddOperator::Operation<int32_t, int32_t, int32_t>(result.days, extra_days, result.days)) {
+			return false;
+		}
+		sec_remainder -= extra_days * Interval::SECS_PER_DAY;
 	}
 
 	/* cascade units down */
-	result.days += day_remainder;
+	if (!TryAddOperator::Operation<int32_t, int32_t, int32_t>(result.days, day_remainder, result.days)) {
+		return false;
+	}
 	if (!TryCast::Operation<int64_t, double>(left.micros, d)) {
 		return false;
 	}

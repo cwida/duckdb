@@ -8,6 +8,7 @@
 #include "duckdb/common/smaller_binary.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/common/types/sql_value_map.hpp"
+#include "duckdb/common/vector/vector_iterator.hpp"
 #include "duckdb/common/uhugeint.hpp"
 #include "duckdb/function/aggregate/sort_key_helpers.hpp"
 #include "duckdb/function/create_sort_key.hpp"
@@ -46,12 +47,7 @@ static unique_ptr<BoundAggregateExpression> BindAggregate(ClientContext &context
 static unique_ptr<Expression> BindScalar(ClientContext &context, const char *name,
                                          vector<unique_ptr<Expression>> children) {
 	FunctionBinder function_binder(context);
-	ErrorData error;
-	auto result = function_binder.BindScalarFunction(Identifier::DefaultSchema(), name, std::move(children), error);
-	if (!result) {
-		error.Throw();
-	}
-	return result;
+	return function_binder.BindScalarFunction(Identifier::DefaultSchema(), name, std::move(children));
 }
 
 static unique_ptr<Expression> BindScalar(ClientContext &context, const char *name, unique_ptr<Expression> child) {
@@ -127,7 +123,7 @@ struct ModeStandard {
 		return Equals::Operation(left, right);
 	}
 
-	static T *Update(T *mode, uint32_t &, const T &key, AggregateInputData &) {
+	static T *Update(T *mode, idx_t &, const T &key, AggregateInputData &) {
 		if (!mode) {
 			mode = new T(key);
 		}
@@ -156,7 +152,7 @@ struct ModeString {
 		return Equals::Operation(left, right);
 	}
 
-	static string_t *Update(string_t *mode, uint32_t &alloc_size, const string_t &key,
+	static string_t *Update(string_t *mode, idx_t &alloc_size, const string_t &key,
 	                        AggregateInputData &aggr_input_data) {
 		if (key.IsInlined()) {
 			if (!mode) {
@@ -168,14 +164,14 @@ struct ModeString {
 		}
 
 		// non-inlined string, need to allocate space for it somehow
-		const auto len = UnsafeNumericCast<uint32_t>(key.GetSize());
+		const auto len = key.GetSize();
 		char *ptr;
 		if (mode && alloc_size >= len) {
 			// this fits into the current arena allocation - reuse it
 			ptr = mode->GetDataWriteable();
 		} else {
 			// round up so repeatedly growing keys don't churn through a new arena allocation every time
-			alloc_size = UnsafeNumericCast<uint32_t>(NextPowerOfTwo(len));
+			alloc_size = NextPowerOfTwo(len);
 			ptr = char_ptr_cast(aggr_input_data.allocator.Allocate(alloc_size));
 			if (!mode) {
 				mode = new string_t(nullptr, 0);
@@ -197,7 +193,8 @@ struct ModeState {
 	SubFrames prevs;
 	Counts *frequency_map = nullptr;
 	KEY_TYPE *mode = nullptr;
-	uint32_t mode_alloc_size = 0;
+	//! Must be wide enough for NextPowerOfTwo(MAX_STRING_SIZE), which does not fit in a uint32_t
+	idx_t mode_alloc_size = 0;
 	size_t nonzero = 0;
 	bool valid = false;
 	size_t count = 0;
@@ -208,10 +205,8 @@ struct ModeState {
 	ColumnDataScanState *scan = nullptr;
 	//! The data chunk paged into into
 	DataChunk page;
-	//! The data pointer
-	const KEY_TYPE *data = nullptr;
-	//! The validity mask
-	const ValidityMask *validity = nullptr;
+	//! Cell access into the page, rebuilt per page load - scans can return constant and dictionary vectors
+	unique_ptr<VectorIterator<KEY_TYPE>> values;
 
 	~ModeState() {
 		if (frequency_map) {
@@ -249,20 +244,19 @@ struct ModeState {
 		if (!RowIsVisible(row_idx)) {
 			D_ASSERT(inputs);
 			inputs->Seek(row_idx, *scan, page);
-			data = FlatVector::GetData<KEY_TYPE>(page.data[0]);
-			validity = &FlatVector::ValidityMutable(page.data[0]);
+			values = make_uniq<VectorIterator<KEY_TYPE>>(page.data[0]);
 		}
 		return RowOffset(row_idx);
 	}
 
 	inline const KEY_TYPE &GetCell(idx_t row_idx) {
 		const auto offset = Seek(row_idx);
-		return data[offset];
+		return (*values)[offset].GetValueUnsafe();
 	}
 
 	inline bool RowIsValid(idx_t row_idx) {
 		const auto offset = Seek(row_idx);
-		return validity->RowIsValid(offset);
+		return (*values)[offset].IsValid();
 	}
 
 	void Reset() {
@@ -568,6 +562,7 @@ AggregateFunction GetFallbackModeFunction(const LogicalType &type) {
 	                       AggregateFunction::StateVoidFinalize<STATE, OP>, FunctionNullHandling::DEFAULT_NULL_HANDLING,
 	                       AggregateFunction::NoClusterUpdate());
 	aggr.SetStateDestructorCallback(AggregateFunction::StateDestroy<STATE, OP>);
+	aggr.SetIsHolistic(true);
 	return aggr;
 }
 
@@ -578,6 +573,7 @@ AggregateFunction GetTypedModeFunction(const LogicalType &type) {
 	auto func = AggregateFunction::UnaryAggregate<STATE, INPUT_TYPE, INPUT_TYPE, OP, AggregateDestructorType::LEGACY>(
 	    type, type);
 	func.SetWindowBatchCallback(OP::template Window<STATE, INPUT_TYPE, INPUT_TYPE>);
+	func.SetIsHolistic(true);
 	return func;
 }
 

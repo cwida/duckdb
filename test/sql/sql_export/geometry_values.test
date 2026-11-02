@@ -1,0 +1,91 @@
+# name: test/sql/sql_export/geometry_values.test
+# description: SQL export preserves geometry CRS annotations in scalar and nested values
+# group: [sql_export]
+
+foreach optimizer enable disable
+
+statement ok
+PRAGMA {optimizer}_optimizer;
+
+query TTTTTTTTTTTTTTTTTTTT
+SELECT
+	ST_SetCRS('POINT(0 1)'::GEOMETRY, 'GEäDCRS'),
+	typeof(ST_SetCRS('POINT(0 1)'::GEOMETRY, 'GEäDCRS')),
+	ST_SetCRS(NULL::GEOMETRY, 'GEäDCRS'),
+	typeof(ST_SetCRS(NULL::GEOMETRY, 'GEäDCRS')),
+	ST_SetCRS('POINT(0 1)'::GEOMETRY, 'unknown''crs'),
+	typeof(ST_SetCRS('POINT(0 1)'::GEOMETRY, 'unknown''crs')),
+	ST_SetCRS(NULL::GEOMETRY, 'unknown''crs'),
+	typeof(ST_SetCRS(NULL::GEOMETRY, 'unknown''crs')),
+	ST_SetCRS('POINT(0 1)'::GEOMETRY, 'EPSG:4326'),
+	typeof(ST_SetCRS('POINT(0 1)'::GEOMETRY, 'EPSG:4326')),
+	ST_SetCRS(NULL::GEOMETRY, 'EPSG:4326'),
+	typeof(ST_SetCRS(NULL::GEOMETRY, 'EPSG:4326')),
+	ST_SetCRS('POINT(0 1)'::GEOMETRY, 'GEäDCRS'),
+	typeof(ST_SetCRS('POINT(0 1)'::GEOMETRY, 'GEäDCRS')),
+	[ST_SetCRS('POINT(0 1)'::GEOMETRY, 'GEäDCRS'),NULL],
+	typeof([ST_SetCRS('POINT(0 1)'::GEOMETRY, 'GEäDCRS'),NULL]),
+	{'g': ST_SetCRS('POINT(0 1)'::GEOMETRY, 'GEäDCRS')},
+	typeof({'g': ST_SetCRS('POINT(0 1)'::GEOMETRY, 'GEäDCRS')}),
+	map([1], [ST_SetCRS('POINT(0 1)'::GEOMETRY, 'GEäDCRS')]),
+	typeof(map([1], [ST_SetCRS('POINT(0 1)'::GEOMETRY, 'GEäDCRS')]));
+----
+POINT (0 1)	GEOMETRY('GEäDCRS')	NULL	GEOMETRY	POINT (0 1)	GEOMETRY('unknown''crs')	NULL	GEOMETRY	POINT (0 1)	GEOMETRY('EPSG:4326')	NULL	GEOMETRY	POINT (0 1)	GEOMETRY('GEäDCRS')	['POINT (0 1)', NULL]	GEOMETRY('GEäDCRS')[]	{'g': 'POINT (0 1)'}	STRUCT(g GEOMETRY('GEäDCRS'))	{1='POINT (0 1)'}	MAP(INTEGER, GEOMETRY('GEäDCRS'))
+
+query TTTTTTTTTTTT
+SELECT
+	array_value(ST_SetCRS('POINT(0 1)'::GEOMETRY, 'GEäDCRS'),NULL),
+	typeof(array_value(ST_SetCRS('POINT(0 1)'::GEOMETRY, 'GEäDCRS'),NULL)),
+	list_slice([ST_SetCRS('POINT(0 1)'::GEOMETRY, 'GEäDCRS')],1,0),
+	typeof(list_slice([ST_SetCRS('POINT(0 1)'::GEOMETRY, 'GEäDCRS')],1,0)),
+	CASE WHEN false THEN [ST_SetCRS('POINT(0 1)'::GEOMETRY, 'GEäDCRS')] ELSE NULL END,
+	typeof(CASE WHEN false THEN [ST_SetCRS('POINT(0 1)'::GEOMETRY, 'GEäDCRS')] ELSE NULL END),
+	CASE WHEN false THEN ST_SetCRS('POINT(0 1)'::GEOMETRY, 'GEäDCRS') ELSE NULL END,
+	typeof(CASE WHEN false THEN ST_SetCRS('POINT(0 1)'::GEOMETRY, 'GEäDCRS') ELSE NULL END),
+	get_type([ST_SetCRS('POINT(0 1)'::GEOMETRY, 'GEäDCRS')]),
+	typeof(get_type([ST_SetCRS('POINT(0 1)'::GEOMETRY, 'GEäDCRS')])),
+	{'m': map([1], [ST_SetCRS('POINT(0 1)'::GEOMETRY, 'GEäDCRS')])},
+	typeof({'m': map([1], [ST_SetCRS('POINT(0 1)'::GEOMETRY, 'GEäDCRS')])});
+----
+['POINT (0 1)', NULL]	GEOMETRY('GEäDCRS')[2]	[]	GEOMETRY('GEäDCRS')[]	NULL	GEOMETRY('GEäDCRS')[]	NULL	GEOMETRY('GEäDCRS')	GEOMETRY('GEäDCRS')[]	TYPE	{'m': {1='POINT (0 1)'}}	STRUCT(m MAP(INTEGER, GEOMETRY('GEäDCRS')))
+
+query TT
+SELECT first(g ORDER BY i), list(g ORDER BY i) FROM (SELECT i, ST_SetCRS('POINT(0 1)'::GEOMETRY, 'GEäDCRS') g FROM range(2) t(i)) q;
+----
+POINT (0 1)	['POINT (0 1)', 'POINT (0 1)']
+
+query TT
+SELECT TRY_CAST(NULL::VARCHAR AS GEOMETRY('OGC:CRS84')), TRY_CAST('POINT(0 1)' AS GEOMETRY('OGC:CRS84'));
+----
+NULL	POINT (0 1)
+
+foreach window_function first_value last_value first
+
+query T
+SELECT {window_function}(g) OVER () FROM (SELECT ST_SetCRS('POINT(0 1)'::GEOMETRY, 'GEäDCRS') g FROM range(2)) t;
+----
+POINT (0 1)
+POINT (0 1)
+
+endloop
+
+query ITTTTT
+SELECT i, first_value(g) OVER w, last_value(g) OVER w, lag(g) OVER w, lead(g) OVER w, nth_value(g,2) OVER w
+FROM (SELECT i, CASE WHEN i<2 THEN ST_SetCRS('POINT(0 1)'::GEOMETRY, 'GEäDCRS') END g FROM range(3) t(i)) q
+WINDOW w AS (ORDER BY i)
+ORDER BY i;
+----
+0	POINT (0 1)	POINT (0 1)	NULL	POINT (0 1)	NULL
+1	POINT (0 1)	POINT (0 1)	POINT (0 1)	NULL	POINT (0 1)
+2	POINT (0 1)	NULL	POINT (0 1)	NULL	POINT (0 1)
+
+query T
+SELECT first_value([g]) OVER () FROM (SELECT ST_SetCRS('POINT(0 1)'::GEOMETRY, 'GEäDCRS') g FROM range(2)) t;
+----
+['POINT (0 1)']
+['POINT (0 1)']
+
+endloop
+
+statement ok
+PRAGMA enable_optimizer;

@@ -1,0 +1,73 @@
+# name: test/sql/match_recognize/test_match_recognize_stock.test
+# description: MATCH_RECOGNIZE over a price series - the shapes chart analysis looks for
+# group: [match_recognize]
+
+# 52057 quotes of one instrument, newest first, price in cents. The patterns below are the ones a
+# share price is normally searched for: a fall and a recovery, the same with a flat stretch allowed
+# at the bottom, and a run of those repeating.
+
+require parquet
+
+statement ok
+pragma threads=1;
+
+statement ok
+create table quotes as select * from 'data/match_recognize/dax.parquet';
+
+query I
+SELECT count(*) FROM quotes
+----
+52057
+
+# A V shape: a fall then a recovery
+query I
+SELECT count(*) FROM quotes MATCH_RECOGNIZE(
+    PARTITION BY isin ORDER BY time DESC, price DESC
+    MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP TO LAST UP
+    PATTERN (STRT DOWN+ UP+)
+    DEFINE DOWN AS DOWN.price < PREV(DOWN.price), UP AS UP.price > PREV(UP.price)
+)
+----
+4110
+
+# A U shape allows a flat stretch at the bottom, so every V is also a U and the count can only rise
+query I
+SELECT count(*) FROM quotes MATCH_RECOGNIZE(
+    PARTITION BY isin ORDER BY time DESC, price DESC
+    MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP TO LAST UP
+    PATTERN (STRT DOWN+ FLAT* UP+)
+    DEFINE DOWN AS DOWN.price < PREV(DOWN.price), FLAT AS FLAT.price = PREV(FLAT.price),
+           UP AS UP.price > PREV(UP.price)
+)
+----
+6606
+
+# A wave repeats the fall and recovery, so it is rarer than either
+query I
+SELECT count(*) FROM quotes MATCH_RECOGNIZE(
+    PARTITION BY isin ORDER BY time DESC, price DESC
+    MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP TO LAST UP
+    PATTERN (STRT DOWN+ UP+ (DOWN+ UP+)+)
+    DEFINE DOWN AS DOWN.price < PREV(DOWN.price), UP AS UP.price > PREV(UP.price)
+)
+----
+635
+
+# The closing condition of an extended V compares the end of the match back to its start, which is a
+# condition reading another variable rather than only the row being tested
+query I
+SELECT count(*) FROM quotes MATCH_RECOGNIZE(
+    PARTITION BY isin ORDER BY time DESC, price DESC
+    MEASURES count(*) AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP TO LAST FIN
+    PATTERN (STRT D1 D2 DOWN+ UP+ U1 U2 FIN)
+    DEFINE D1 AS D1.price < PREV(D1.price), D2 AS D2.price < PREV(D2.price),
+           DOWN AS DOWN.price < PREV(DOWN.price), UP AS UP.price > PREV(UP.price),
+           U1 AS U1.price > PREV(U1.price), U2 AS U2.price > PREV(U2.price),
+           FIN AS D1.price < FIN.price
+)
+----
+17

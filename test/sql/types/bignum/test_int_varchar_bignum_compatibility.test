@@ -1,0 +1,48 @@
+# name: test/sql/types/bignum/test_int_varchar_bignum_compatibility.test
+# description: Test integer and VARCHAR casts produce the same BIGNUM values
+# group: [bignum]
+
+# Exhaust the small integer range and sample binary and decimal representation boundaries.
+statement ok
+CREATE TABLE integer_values AS
+SELECT i::HUGEINT AS i FROM range(-65536, 65536) t(i)
+UNION ALL
+SELECT sign * ((1::HUGEINT << power) + delta)
+FROM range(127) p(power), range(-8, 9) d(delta), (VALUES (-1), (1)) s(sign)
+UNION ALL
+SELECT sign * (('1' || repeat('0', power))::HUGEINT + delta)
+FROM range(39) p(power), range(-8, 9) d(delta), (VALUES (-1), (1)) s(sign)
+UNION ALL
+SELECT i FROM (VALUES
+    ('-170141183460469231731687303715884105728'::HUGEINT),
+    ('170141183460469231731687303715884105727'::HUGEINT)
+) t(i);
+
+foreach type TINYINT SMALLINT INTEGER BIGINT HUGEINT UTINYINT USMALLINT UINTEGER UBIGINT
+
+query II
+SELECT bool_and(i::VARCHAR::BIGNUM = i::BIGNUM),
+       bool_and(i::BIGNUM::VARCHAR = i::VARCHAR)
+FROM (SELECT TRY_CAST(i AS {type}) i FROM integer_values) t
+WHERE i IS NOT NULL;
+----
+true	true
+
+endloop
+
+statement ok
+CREATE TABLE unsigned_values AS
+SELECT i::UHUGEINT i FROM integer_values WHERE i >= 0
+UNION ALL
+SELECT (1::UHUGEINT << 127) + delta::UHUGEINT FROM range(9) t(delta)
+UNION ALL
+SELECT (1::UHUGEINT << 127) - delta::UHUGEINT FROM range(9) t(delta)
+UNION ALL
+SELECT '340282366920938463463374607431768211455'::UHUGEINT - delta::UHUGEINT FROM range(9) t(delta);
+
+query II
+SELECT bool_and(i::VARCHAR::BIGNUM = i::BIGNUM),
+       bool_and(i::BIGNUM::VARCHAR = i::VARCHAR)
+FROM unsigned_values;
+----
+true	true

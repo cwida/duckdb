@@ -91,6 +91,30 @@
     ]
   },
   {
+    "class": "BoundAtClause",
+    "includes": [
+      "duckdb/planner/tableref/bound_at_clause.hpp"
+    ],
+    "members": [
+      {
+        "id": 100,
+        "name": "unit",
+        "type": "Identifier"
+      },
+      {
+        "id": 101,
+        "name": "value",
+        "type": "Value",
+        "property": "val"
+      }
+    ],
+    "pointer_type": "unique_ptr",
+    "constructor": [
+      "unit",
+      "value"
+    ]
+  },
+  {
     "class": "BoundOrderByNode",
     "includes": [
       "duckdb/planner/bound_result_modifier.hpp"
@@ -287,7 +311,10 @@
     ],
     "constructor": [
       "seed"
-    ]
+    ],
+    "methods": {
+      "Verify": []
+    }
   },
   {
     "class": "BaseReservoirSampling",
@@ -390,6 +417,83 @@
     ],
     "constructor": [
       "sample_percentage"
+    ]
+  },
+  {
+    "class": "MatchRecognizeSubset",
+    "includes": [
+      "duckdb/parser/tableref/match_recognize_ref.hpp"
+    ],
+    "members": [
+      {
+        "id": 100,
+        "name": "name",
+        "type": "string"
+      },
+      {
+        "id": 101,
+        "name": "members",
+        "type": "vector<string>"
+      }
+    ],
+    "pointer_type": "none"
+  },
+  {
+    "class": "MatchRecognizeConfig",
+    "includes": [
+      "duckdb/parser/tableref/match_recognize_ref.hpp"
+    ],
+    "members": [
+      {
+        "id": 100,
+        "name": "partition_expressions",
+        "type": "vector<ParsedExpression*>"
+      },
+      {
+        "id": 101,
+        "name": "order_by_expressions",
+        "type": "vector<OrderByNode>"
+      },
+      {
+        "id": 102,
+        "name": "measures_expression_list",
+        "type": "vector<ParsedExpression*>"
+      },
+      {
+        "id": 103,
+        "name": "defines_expression_list",
+        "type": "vector<ParsedExpression*>"
+      },
+      {
+        "id": 104,
+        "name": "rows_per_match",
+        "type": "MatchRecognizeRows"
+      },
+      {
+        "id": 105,
+        "name": "after_match",
+        "type": "MatchRecognizeAfterMatch"
+      },
+      {
+        "id": 106,
+        "name": "after_match_variable",
+        "type": "string"
+      },
+      {
+        "id": 107,
+        "name": "pattern",
+        "type": "ParsedExpression*"
+      },
+      {
+        "id": 108,
+        "name": "subsets",
+        "type": "vector<MatchRecognizeSubset>"
+      },
+      {
+        "id": 109,
+        "name": "define_auto",
+        "type": "bool"
+      }
     ]
   },
   {
@@ -712,6 +816,26 @@
         "name": "sampled_schema_is_union",
         "type": "bool",
         "default": "true"
+      },
+      {
+        "id": 110,
+        "name": "schema",
+        "type": "vector<MultiFileColumnDefinition>"
+      },
+      {
+        "id": 111,
+        "name": "file_row_number",
+        "type": "bool"
+      },
+      {
+        "id": 112,
+        "name": "column_statistics",
+        "type": "Value"
+      },
+      {
+        "id": 113,
+        "name": "bound_schema",
+        "type": "vector<MultiFileColumnDefinition>"
       }
     ],
     "pointer_type": "none"
@@ -731,6 +855,11 @@
         "id": 101,
         "name": "hive_partitioning_indexes",
         "type": "vector<HivePartitioningIndex>"
+      },
+      {
+        "id": 102,
+        "name": "file_row_number_idx",
+        "type": "optional_idx"
       }
     ],
     "pointer_type": "none"
@@ -753,6 +882,44 @@
     "constructor": [
       "value",
       "index"
+    ]
+  },
+  {
+    "class": "MultiFileColumnDefinition",
+    "includes": [
+      "duckdb/common/multi_file/multi_file_data.hpp"
+    ],
+    "members": [
+      {
+        "id": 100,
+        "name": "name",
+        "type": "Identifier"
+      },
+      {
+        "id": 101,
+        "name": "type",
+        "type": "LogicalType"
+      },
+      {
+        "id": 102,
+        "name": "children",
+        "type": "vector<MultiFileColumnDefinition>"
+      },
+      {
+        "id": 103,
+        "name": "default_expression",
+        "type": "unique_ptr<ParsedExpression>"
+      },
+      {
+        "id": 104,
+        "name": "identifier",
+        "type": "Value"
+      }
+    ],
+    "pointer_type": "none",
+    "constructor": [
+      "name",
+      "type"
     ]
   },
   {
@@ -1169,6 +1336,9 @@
         "type": "string"
       }
     ],
+    "methods": {
+      "Verify": []
+    },
     "pointer_type": "none"
   },
   {

@@ -8,7 +8,7 @@ using namespace duckdb;
 static idx_t ConnectionSecretCount(Connection &con) {
 	auto result = con.Query("SELECT count(*) FROM duckdb_secrets() WHERE storage = 'connection'");
 	REQUIRE_NO_FAIL(*result);
-	return static_cast<idx_t>(result->GetValue(0, 0).GetValue<int64_t>());
+	return static_cast<idx_t>(result->Collection().GetValue(0, 0).GetValue<int64_t>());
 }
 
 TEST_CASE("Test closing a connection that created connection secrets", "[api]") {

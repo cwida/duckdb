@@ -6,17 +6,13 @@ namespace duckdb {
 
 TaskNotifier::TaskNotifier(optional_ptr<ClientContext> context_p) : context(context_p) {
 	if (context) {
-		for (auto &state : context->registered_state->States()) {
-			state->OnTaskStart(*context);
-		}
+		context->registered_state->ForEachState([&](ClientContextState &state) { state.OnTaskStart(*context); });
 	}
 }
 
 TaskNotifier::~TaskNotifier() {
 	if (context) {
-		for (auto &state : context->registered_state->States()) {
-			state->OnTaskStop(*context);
-		}
+		context->registered_state->ForEachState([&](ClientContextState &state) { state.OnTaskStop(*context); });
 	}
 }
 

@@ -11,21 +11,17 @@
 namespace duckdb {
 
 unique_ptr<BoundPragmaInfo> Binder::BindPragma(PragmaInfo &info, QueryErrorContext error_context) {
-	vector<Value> params;
-	named_parameter_map_t named_parameters;
+	// the arguments are bound here and folded to constants only after the overload has been chosen, so that a
+	// literal keeps its literal type for overload selection - as for every other function kind
+	vector<unique_ptr<Expression>> positional_arguments;
+	vector<pair<Identifier, unique_ptr<Expression>>> named_arguments;
 
-	// resolve the parameters
 	ConstantBinder pragma_binder(*this, context, "PRAGMA value");
 	for (auto &param : info.parameters) {
-		auto bound_value = pragma_binder.Bind(param);
-		auto value = ExpressionExecutor::EvaluateScalar(context, *bound_value, true);
-		params.push_back(std::move(value));
+		positional_arguments.push_back(pragma_binder.Bind(param));
 	}
-
 	for (auto &entry : info.named_parameters) {
-		auto bound_value = pragma_binder.Bind(entry.second);
-		auto value = ExpressionExecutor::EvaluateScalar(context, *bound_value, true);
-		named_parameters.insert(make_pair(entry.first, std::move(value)));
+		named_arguments.emplace_back(Identifier(entry.first), pragma_binder.Bind(entry.second));
 	}
 
 	// bind the pragma function
@@ -49,18 +45,15 @@ unique_ptr<BoundPragmaInfo> Binder::BindPragma(PragmaInfo &info, QueryErrorConte
 		    OnEntryNotFound::THROW_EXCEPTION);
 	}
 
+	// selection, folding, casting and named-argument checking all happen in the function binder
 	FunctionBinder function_binder(*this);
 	ErrorData error;
-	auto bound_idx = function_binder.BindFunction(entry->name, entry->functions, params, error);
-	if (!bound_idx.IsValid()) {
-		D_ASSERT(error.HasError());
+	auto result = function_binder.BindPragmaFunction(entry->functions, positional_arguments, named_arguments, error);
+	if (!result) {
 		error.AddQueryLocation(error_context);
 		error.Throw();
 	}
-	auto bound_function = *entry->functions.GetFunctionByOffset(bound_idx.GetIndex());
-	// bind and check named params
-	BindNamedParameters(bound_function.named_parameters, named_parameters, error_context, bound_function.name);
-	return make_uniq<BoundPragmaInfo>(std::move(bound_function), std::move(params), std::move(named_parameters));
+	return result;
 }
 
 BoundStatement Binder::Bind(PragmaStatement &stmt) {

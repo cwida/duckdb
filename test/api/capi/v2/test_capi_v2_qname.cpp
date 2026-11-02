@@ -15,7 +15,8 @@ namespace {
 
 duckdb_v2_qname_handle QNameParse(const char *text) {
 	duckdb_v2_qname_handle name = nullptr;
-	REQUIRE(duckdb_v2_qname_parse(Convert(text), &name, nullptr) == DUCKDB_V2_ERROR_NONE);
+	auto text_str = Convert(text);
+	REQUIRE(duckdb_v2_qname_parse(&text_str, &name, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(name != nullptr);
 	return name;
 }
@@ -150,15 +151,23 @@ TEST_CASE("V2 qname: construction refusals", "[capi_v2][qname]") {
 
 	duckdb_v2_identifier_t with_empty[2] = {Convert("a"), Convert("")};
 	REQUIRE(duckdb_v2_qname_create(with_empty, 2, &name, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	duckdb_v2_identifier_t with_invalid_utf8[2] = {Convert("a"), Convert("\x80")};
+	REQUIRE(duckdb_v2_qname_create(with_invalid_utf8, 2, &name, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 
 	duckdb_v2_identifier_t one[1] = {Convert("a")};
 	REQUIRE(duckdb_v2_qname_create(nullptr, 1, &name, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_qname_create(one, 1, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 
-	// Text without a usable part, and more parts than the engine qualifies.
-	REQUIRE(duckdb_v2_qname_parse(Convert(""), &name, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(duckdb_v2_qname_parse(Convert("a.b.c.d"), &name, nullptr) != DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_qname_parse(Convert("\"unterminated"), &name, nullptr) != DUCKDB_V2_ERROR_NONE);
+	// Reject unusable text, invalid UTF-8 and excess parts.
+	auto text_str = Convert("");
+	REQUIRE(duckdb_v2_qname_parse(&text_str, &name, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	auto text_str2 = Convert("a.\x80");
+	REQUIRE(duckdb_v2_qname_parse(&text_str2, &name, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(name == nullptr);
+	auto text_str3 = Convert("a.b.c.d");
+	REQUIRE(duckdb_v2_qname_parse(&text_str3, &name, nullptr) != DUCKDB_V2_ERROR_NONE);
+	auto text_str4 = Convert("\"unterminated");
+	REQUIRE(duckdb_v2_qname_parse(&text_str4, &name, nullptr) != DUCKDB_V2_ERROR_NONE);
 }
 
 TEST_CASE("V2 qname: null arguments and destroy null-safety", "[capi_v2][qname]") {

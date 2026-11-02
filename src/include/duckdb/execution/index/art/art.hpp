@@ -8,19 +8,24 @@
 
 #pragma once
 
+#include "duckdb/common/array.hpp"
 #include "duckdb/execution/index/bound_index.hpp"
 #include "duckdb/execution/index/index_type.hpp"
 #include "duckdb/execution/index/art/node.hpp"
-#include "duckdb/common/array.hpp"
 
 namespace duckdb {
 
 enum class VerifyExistenceType : uint8_t { APPEND = 0, APPEND_FK = 1, DELETE_FK = 2 };
 enum class ARTConflictType : uint8_t { NO_CONFLICT = 0, CONSTRAINT = 1 };
+enum class ARTSerializationFormat : uint8_t { V1_0_0 = 0, CURRENT = 1 };
+
+//! Result of collecting row IDs; capacity exhaustion cannot be resumed.
+enum class ARTSearchResult : uint8_t { COMPLETED, CAPACITY_EXCEEDED };
 
 class ConflictManager;
 class ARTKey;
 class ARTKeySection;
+class RowIdVectorOutput;
 class FixedSizeAllocator;
 
 struct ARTIndexScanState;
@@ -47,10 +52,12 @@ public:
 	static constexpr uint8_t DEPRECATED_ALLOCATOR_COUNT = ALLOCATOR_COUNT - 3;
 
 public:
+	using AllocatorArray = array<unsafe_unique_ptr<FixedSizeAllocator>, ALLOCATOR_COUNT>;
+
+public:
 	ART(const Identifier &name, const IndexConstraintType index_constraint_type, const vector<column_t> &column_ids,
 	    TableIOManager &table_io_manager, const vector<unique_ptr<Expression>> &unbound_expressions,
-	    AttachedDatabase &db,
-	    const shared_ptr<array<unsafe_unique_ptr<FixedSizeAllocator>, ALLOCATOR_COUNT>> &allocators_ptr = nullptr,
+	    AttachedDatabase &db, const shared_ptr<AllocatorArray> &allocators_ptr = nullptr,
 	    const IndexStorageInfo &info = IndexStorageInfo());
 
 	//! Create a index instance of this type.
@@ -63,9 +70,9 @@ public:
 	static IndexType GetARTIndexType();
 
 	//! Root of the tree.
-	NodePtr tree = NodePtr();
+	NodePtr root_ptr = NodePtr();
 	//! Fixed-size allocators holding the ART nodes.
-	shared_ptr<array<unsafe_unique_ptr<FixedSizeAllocator>, ALLOCATOR_COUNT>> allocators;
+	shared_ptr<AllocatorArray> allocators;
 	//! True, if the ART owns its data.
 	bool owns_data;
 	//! Storage version that the ART was created in, used for backwards compatible key generation
@@ -74,10 +81,11 @@ public:
 public:
 	//! Try to initialize a scan on the ART with the given expression and filter.
 	unique_ptr<IndexScanState> TryInitializeScan(const Expression &expr, const Expression &filter_expr) const;
-	unique_ptr<IndexScanState> InitializeFullScan();
-	//! Perform a lookup on the ART, fetching up to max_count row IDs.
-	//! If all row IDs were fetched, it return true, else false.
-	bool Scan(IndexScanState &state, idx_t max_count, set<row_t> &row_ids) const DUCKDB_EXCLUDES(lock);
+	//! Initializes a scan for multiple equality lookup values.
+	unique_ptr<IndexScanState> InitializeBatchScan(unique_ptr<DataChunk> key_columns) const;
+	//! Scans the ART and appends matching row IDs to the output collection.
+	//! Returns true on completion, or false and clears the entire collection if its capacity is exceeded.
+	bool Scan(IndexScanState &state, RowIdVectorOutput &row_ids) const DUCKDB_EXCLUDES(lock);
 
 	//! Simple merge: scan source ART and delete each (key, rowid) from this ART.
 	// FIXME: replace with structural tree delete merge.
@@ -136,11 +144,13 @@ public:
 	//! Vacuums the ART storage.
 	void Vacuum(IndexLock &state) override DUCKDB_REQUIRES(state);
 
-	//! Serializes ART memory to disk and returns the ART storage information.
-	IndexStorageInfo SerializeToDisk(QueryContext context, const case_insensitive_map_t<Value> &options) override
-	    DUCKDB_EXCLUDES(lock);
 	//! Serializes ART memory to the WAL and returns the ART storage information.
-	IndexStorageInfo SerializeToWAL(const case_insensitive_map_t<Value> &options) override;
+	IndexStorageInfo SerializeToWAL(StorageVersion target_version) override;
+	//! ART checkpoints are deferred so mutations can be routed through checkpoint deltas.
+	IndexCheckpointMode GetCheckpointMode() const override {
+		return IndexCheckpointMode::DEFERRED;
+	}
+	IndexCheckpointResult Checkpoint(PartialBlockManager &partial_block_manager, const StorageVersion version) override;
 
 	//! Returns the in-memory usage of the ART.
 	idx_t GetInMemorySize(IndexLock &index_lock) const override DUCKDB_REQUIRES(index_lock);
@@ -177,36 +187,46 @@ public:
 	}
 
 private:
+	//! Constructor for creating a shadow index based on the source index.
+	ART(const ART &src, shared_ptr<AllocatorArray> allocators_ptr);
 	//! The number of bytes fitting in the prefix.
 	uint8_t prefix_count;
 
-	bool FullScan(idx_t max_count, set<row_t> &row_ids) const;
-	bool SearchEqual(const ARTKey &key, idx_t max_count, set<row_t> &row_ids) const;
-	bool SearchGreater(const ARTKey &key, bool equal, idx_t max_count, set<row_t> &row_ids) const;
-	bool SearchLess(const ARTKey &upper_bound, bool equal, idx_t max_count, set<row_t> &row_ids) const;
-	bool SearchCloseRange(const ARTKey &lower_bound, const ARTKey &upper_bound, bool left_equal, bool right_equal,
-	                      idx_t max_count, set<row_t> &row_ids) const;
+	//! Returns how many allocators are used based on the target serialization format.
+	static uint8_t GetAllocatorCount(ARTSerializationFormat format);
+
+	ARTSearchResult ScanInternal(IndexScanState &state, RowIdVectorOutput &row_ids) const;
+	ARTSearchResult ScanRange(ARTIndexScanState &scan_state, RowIdVectorOutput &row_ids) const;
+	ARTSearchResult ScanBatch(DataChunk &input, RowIdVectorOutput &row_ids) const;
+	ARTSearchResult SearchEqual(const ARTKey &key, RowIdVectorOutput &row_ids) const;
+	ARTSearchResult SearchGreater(const ARTKey &key, bool equal, RowIdVectorOutput &row_ids) const;
+	ARTSearchResult SearchLess(const ARTKey &upper_bound, bool equal, RowIdVectorOutput &row_ids) const;
+	ARTSearchResult SearchCloseRange(const ARTKey &lower_bound, const ARTKey &upper_bound, bool left_equal,
+	                                 bool right_equal, RowIdVectorOutput &row_ids) const;
 
 	string GenerateErrorKeyName(DataChunk &input, idx_t row) const;
 	string GenerateConstraintErrorMessage(VerifyExistenceType verify_type, const string &key_name) const;
-	void VerifyLeaf(const NodePtr &leaf, const ARTKey &key, DeleteIndexInfo delete_index_info, ConflictManager &manager,
-	                optional_idx &conflict_idx, idx_t i) const;
+	void VerifyLeaf(const NodePtr &leaf_ptr, const ARTKey &key, DeleteIndexInfo delete_index_info,
+	                ConflictManager &manager, optional_idx &conflict_idx, idx_t i) const;
 	void VerifyConstraint(DataChunk &chunk, IndexAppendInfo &info, ConflictManager &manager) override
 	    DUCKDB_EXCLUDES(lock);
 	string GetConstraintViolationMessage(VerifyExistenceType verify_type, idx_t failed_index,
 	                                     DataChunk &input) const override DUCKDB_EXCLUDES(lock);
 
 	void InitializeMergeUpperBounds(unsafe_vector<idx_t> &upper_bounds);
-	void InitializeMerge(NodePtr &other_tree, unsafe_vector<idx_t> &upper_bounds);
+	void InitializeMerge(NodePtr &other_root_ptr, unsafe_vector<idx_t> &upper_bounds);
 
 	void InitializeVacuum(unordered_set<uint8_t> &indexes);
 	void FinalizeVacuum(const unordered_set<uint8_t> &indexes);
 
 	void InitAllocators(const IndexStorageInfo &info);
 	void TransformToDeprecated();
-	IndexStorageInfo PrepareSerialize(const case_insensitive_map_t<Value> &options, const bool v1_0_0_storage);
+	//! Gathers metadata used at serialization, optionally transforms the in-memory ART to a deprecated representation
+	//! based on the target serialization format.
+	IndexStorageInfo PrepareSerialize(ARTSerializationFormat target_format);
+	//! Get the serialization format of the ART based on the active storage version.
+	static ARTSerializationFormat GetSerializationFormat(StorageVersion storage_version);
 	void Deserialize(const BlockPointer &pointer);
-	void WritePartialBlocks(QueryContext context, const bool v1_0_0_storage);
 	void SetPrefixCount(const IndexStorageInfo &info);
 
 	string ToStringInternal(bool display_ascii);

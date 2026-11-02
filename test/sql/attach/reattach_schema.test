@@ -24,7 +24,7 @@ statement ok
 CREATE MACRO new_db.my_schema.one() AS (SELECT 1);
 
 statement ok
-CREATE MACRO new_db.my_schema.range(a) as TABLE SELECT * FROM range(a)
+CREATE MACRO new_db.my_schema.range(a) as TABLE SELECT * FROM system.main.range(a)
 
 query I
 SELECT new_db.my_schema.one()
@@ -99,9 +99,7 @@ SELECT one()
 ----
 1
 
-# FIXME - this leads to infinite recursion
-mode skip instable
-
+# The builtin reference in the macro stays qualified after changing the default schema.
 query I
 SELECT * FROM range(3)
 ----
@@ -109,4 +107,14 @@ SELECT * FROM range(3)
 1
 2
 
-mode unskip
+# A self-reference in the current schema must still be rejected.
+statement ok
+CREATE MACRO recursive_range(a) AS TABLE SELECT * FROM system.main.range(a)
+
+statement ok
+CREATE OR REPLACE MACRO recursive_range(a) AS TABLE SELECT * FROM recursive_range(a)
+
+statement error
+SELECT * FROM recursive_range(3)
+----
+infinite recursion detected

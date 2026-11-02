@@ -18,7 +18,7 @@ CSVWriterState::CSVWriterState()
 }
 
 CSVWriterState::CSVWriterState(ClientContext &context, idx_t flush_size_p)
-    : flush_size(flush_size_p), stream(make_uniq<MemoryStream>(Allocator::Get(context), flush_size)) {
+    : flush_size(flush_size_p), stream(make_uniq<MemoryStream>(BufferAllocator::Get(context), flush_size)) {
 }
 
 CSVWriterState::CSVWriterState(DatabaseInstance &db, idx_t flush_size_p)
@@ -39,10 +39,11 @@ CSVWriterOptions::CSVWriterOptions(const string &delim, const char &quote, const
 	requires_quotes['\r'] = true;
 	// quote values containing the comment char so they are not read back as comments (see #17744)
 	if (comment_char != '\0') {
-		requires_quotes[NumericCast<idx_t>(comment_char)] = true;
+		requires_quotes[static_cast<uint8_t>(comment_char)] = true;
 	}
-	requires_quotes[NumericCast<idx_t>(delim[0])] = true;
-	requires_quotes[NumericCast<idx_t>(quote)] = true;
+	// values containing the (first byte of the) delimiter are quoted
+	requires_quotes[static_cast<uint8_t>(delim[0])] = true;
+	requires_quotes[static_cast<uint8_t>(quote)] = true;
 
 	if (!write_newline.empty()) {
 		newline = TransformNewLine(write_newline);
@@ -371,8 +372,9 @@ void CSVWriter::WriteChunk(DataChunk &input, MemoryStream &writer, CSVReaderOpti
 		D_ASSERT(options.null_str.size() == 1);
 		for (idx_t col_idx = 0; col_idx < input.ColumnCount(); col_idx++) {
 			if (col_idx != 0) {
-				CSVWriter::WriteQuoteOrEscape(writer,
-				                              options.dialect_options.state_machine_options.delimiter.GetValue()[0]);
+				// the delimiter can consist of multiple bytes
+				auto &delimiter = options.dialect_options.state_machine_options.delimiter.GetValue();
+				writer.WriteData(const_data_ptr_cast(delimiter.c_str()), delimiter.size());
 			}
 			auto input_val = input_iterators[col_idx][row_idx];
 			if (!input_val.IsValid()) {
@@ -398,7 +400,8 @@ void CSVWriter::WriteChunk(DataChunk &input, MemoryStream &writer, CSVReaderOpti
 void CSVWriter::WriteHeader(MemoryStream &stream, CSVReaderOptions &options, CSVWriterOptions &writer_options) {
 	for (idx_t i = 0; i < options.name_list.size(); i++) {
 		if (i != 0) {
-			WriteQuoteOrEscape(stream, options.dialect_options.state_machine_options.delimiter.GetValue()[0]);
+			auto &delimiter = options.dialect_options.state_machine_options.delimiter.GetValue();
+			stream.WriteData(const_data_ptr_cast(delimiter.c_str()), delimiter.size());
 		}
 
 		WriteQuotedString(stream, options.name_list[i].c_str(), options.name_list[i].size(), i, options,

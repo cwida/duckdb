@@ -63,4 +63,15 @@ SELECT * FROM t1 where rowid = 6 OR rowid = 9 ORDER BY ALL;
 query II
 EXPLAIN SELECT * FROM t1 where rowid = 6 OR rowid = 9 ORDER BY ALL;
 ----
-physical_plan	<REGEX>:(?s).*Filters.*rowid.*6.*rowid.*9.*
+physical_plan	<REGEX>:(?s).*Filters.*rowid IN \(6, 9\).*
+
+statement ok
+CREATE TABLE nested_columns(s STRUCT(a INTEGER, b INTEGER));
+
+statement ok
+INSERT INTO nested_columns VALUES ({'a': 1, 'b': 0}), ({'a': 3, 'b': 2});
+
+query II
+EXPLAIN SELECT s.a FROM nested_columns WHERE s.a = 3 AND s.b = 2 AND rowid >= 1;
+----
+physical_plan	<REGEX>:(?s).*Filters:.*s\.a = 3.*s\.b = 2.*rowid >= 1.*

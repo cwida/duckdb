@@ -1,6 +1,7 @@
 add_library_unity(
   duckdb_operator_persistent
   OBJECT
+  copy_batch_slicer.cpp
   copy_output_lifecycle.cpp
   csv_rejects_table.cpp
   physical_batch_copy_to_file.cpp

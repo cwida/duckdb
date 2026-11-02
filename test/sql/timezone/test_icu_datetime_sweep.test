@@ -18,7 +18,7 @@ WITH instants(ts) AS (VALUES
 SELECT count(*), sum(hash(strftime(timezone(name, ts), '%Y-%m-%d %H:%M:%S')))
 FROM pg_timezone_names(), instants
 ----
-8932	81024087823237057670989
+8932	80978875260002364596741
 
 # every zone, naive to instant, which resolves ambiguous local times
 query II
@@ -28,13 +28,13 @@ WITH locals(ts) AS (VALUES
 SELECT count(*), sum(hash(timezone(name, ts)::VARCHAR))
 FROM pg_timezone_names(), locals
 ----
-3828	34949690000555504075861
+3828	34958270685583013762816
 
 # the zone list
 query III
 SELECT count(*), sum(hash(name)), sum(hash(abbrev)) FROM pg_timezone_names()
 ----
-638	5737240465157071780492	5817868775566532731132
+638	5737240465157071780492	5790669179389435450792
 
 # every calendar over two centuries
 query I

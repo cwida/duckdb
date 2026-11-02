@@ -1,0 +1,61 @@
+# name: test/sql/multi_file/multi_file_schema_filter_casts.test
+# description: Test filter pushdown across casts introduced by a multi-file schema
+# group: [multi_file]
+
+require parquet
+
+require no_alternative_verify
+
+statement ok
+SET threads = 1
+
+# Reading INTEGER as BIGINT makes narrowing filter constants unsafe to push into the file.
+statement ok
+COPY (SELECT i::INTEGER AS c FROM range(4096) r(i))
+TO '{TEST_DIR}/schema_filter_narrow.parquet' (FORMAT PARQUET, ROW_GROUP_SIZE 2048)
+
+statement ok
+CREATE VIEW narrow_file AS
+SELECT *
+FROM read_parquet('{TEST_DIR}/schema_filter_narrow.parquet', schema=map {
+	'c': {name: 'c', type: 'BIGINT', default_value: NULL}
+})
+
+query I
+SELECT count(*) FROM narrow_file WHERE c IN (1, 3, 5)
+----
+3
+
+query II
+EXPLAIN ANALYZE SELECT c FROM narrow_file ORDER BY c DESC LIMIT 3
+----
+analyzed_plan	<REGEX>:(?s).*Dynamic Filter.*
+
+query I
+SELECT c FROM narrow_file ORDER BY c DESC LIMIT 3
+----
+4095
+4094
+4093
+
+# Reading BIGINT as INTEGER allows INTEGER filter constants to be widened for the file scan.
+statement ok
+COPY (SELECT i::BIGINT AS c FROM range(4096) r(i))
+TO '{TEST_DIR}/schema_filter_wide.parquet' (FORMAT PARQUET, ROW_GROUP_SIZE 2048)
+
+statement ok
+CREATE VIEW wide_file AS
+SELECT *
+FROM read_parquet('{TEST_DIR}/schema_filter_wide.parquet', schema=map {
+	'c': {name: 'c', type: 'INTEGER', default_value: NULL}
+})
+
+query I
+SELECT count(*) FROM wide_file WHERE c IN (1, 3, 5)
+----
+3
+
+query I
+SELECT count(*) FROM wide_file WHERE c > 100 AND c < 105
+----
+4

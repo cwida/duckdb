@@ -1,11 +1,16 @@
-SetStatement <- 'SET' SetAssignmentOrTimeZone
+SetStatement <- SetKeywordStatement / VariableAssignment
+SetKeywordStatement <- 'SET' SetAssignmentOrTimeZone
+VariableAssignment <- '$' Identifier ':=' Expression
 SetAssignmentOrTimeZone <- SetSchema / StandardAssignment / SetTimeZone
 
-ResetStatement <- 'RESET' SetVariableOrSetting
-SetSchema <- 'SCHEMA' StringLiteral
+ResetStatement <- 'RESET' ResetTarget
+ResetTarget <- ResetTimeZone / ResetVariableOrSetting
+ResetTimeZone <- SettingScope? 'TIME' 'ZONE'
+ResetVariableOrSetting <- SetVariableOrSetting
+SetSchema <- SettingScope? 'SCHEMA' StringLiteral
 StandardAssignment <- SetVariableOrSetting SetAssignment
 SetVariableOrSetting <- SetVariable / SetSetting
-SetTimeZone <- 'TIME' 'ZONE' ZoneValue
+SetTimeZone <- SettingScope? 'TIME' 'ZONE' ZoneValue
 
 ZoneValue <- ZoneIntervalWithPrecision / ZoneIntervalWithInterval / ZoneLocal / ZoneDefault / ZoneStringLiteral / ZoneIdentifier / NumberLiteral
 ZoneLocal <- 'LOCAL'

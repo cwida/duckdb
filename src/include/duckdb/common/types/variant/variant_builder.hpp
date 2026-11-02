@@ -575,7 +575,15 @@ void EmitIterator(const NODE &root, VariantBuilder &builder) {
 	while (!stack.empty()) {
 		auto &frame = stack.back();
 
-		const idx_t count = frame.is_object ? frame.object_children.size() : frame.array_children->size();
+		idx_t count;
+		if (frame.is_object) {
+			count = frame.object_children.size();
+		} else {
+			if (!frame.array_children) {
+				throw InternalException("Variant array frame has no children");
+			}
+			count = frame.array_children->size();
+		}
 
 		if (frame.index >= count) {
 			stack.pop_back();
@@ -591,6 +599,9 @@ void EmitIterator(const NODE &root, VariantBuilder &builder) {
 			builder.AssignObjectChild(block, i, entry.key);
 			ProcessNode(entry.value);
 		} else {
+			if (!frame.array_children) {
+				throw InternalException("Variant array frame has no children");
+			}
 			builder.AssignArrayChild(block, i);
 			ProcessNode((*frame.array_children)[i]);
 		}

@@ -6,7 +6,9 @@
 
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/main/http/http_util.hpp"
+#include "duckdb/main/os_util.hpp"
 #include "duckdb/main/http/http_transport_manager.hpp"
+#include "duckdb/main/extension/external_extension_provider.hpp"
 #include "duckdb/common/virtual_file_system.hpp"
 #include "duckdb/common/local_file_system.hpp"
 #include "duckdb/execution/index/index_type_set.hpp"
@@ -63,6 +65,7 @@ DBConfig::DBConfig() {
 	error_manager = make_uniq<ErrorManager>();
 	secret_manager = make_uniq<SecretManager>();
 	http_transport_manager = HTTPTransportManager::Create(make_shared_ptr<HTTPUtil>());
+	external_extension_provider = make_shared_ptr<ExternalExtensionProvider>();
 	callback_manager = make_uniq<ExtensionCallbackManager>();
 }
 
@@ -110,8 +113,8 @@ DatabaseInstance::~DatabaseInstance() {
 
 	buffer_manager.reset();
 
-	// flush allocations and disable the background thread
-	config.block_allocator->FlushAll();
+	// Flush allocations and disable the background thread.
+	config.block_allocator->FlushOnShutdown();
 	Allocator::SetBackgroundThreads(false);
 	// after all destruction is complete clear the cache entry
 	config.db_cache_entry.reset();
@@ -280,12 +283,12 @@ void DatabaseInstance::LoadExtensionSettings() {
 			}
 			ExtensionOption extension_option;
 			if (!config.TryGetExtensionOption(name, extension_option)) {
-				throw InternalException("Extension %s did not provide the '%s' config setting", extension_name, name);
+				throw InternalException("Extension %s did not provide the %s config setting", extension_name, name);
 			}
 			// if the extension provided the option, it should no longer be unrecognized.
 			D_ASSERT(config.options.unrecognized_options.find(name) == config.options.unrecognized_options.end());
 			auto &context = *con.context;
-			PhysicalSet::SetExtensionVariable(context, extension_option, SetScope::GLOBAL, value);
+			PhysicalSet::SetExtensionVariable(context, name, extension_option, SetScope::GLOBAL, value);
 		}
 
 		con.Commit();
@@ -339,6 +342,11 @@ void DatabaseInstance::InitializeInstance(const char *database_path, DBConfig *u
 	Configure(*config_ptr, database_path);
 	// publish what this binary links, unless the config already carries a set handed to us
 	ExtensionHelper::RegisterLinkedExtensions(config);
+	for (auto &linked : config.linked_extensions) {
+		if (linked.database_callback) {
+			linked.database_callback(*this);
+		}
+	}
 
 	create_api_v1 = CreateAPIv1Wrapper;
 	invoke_capi_v2 = InvokeCAPIV2Entrypoint;
@@ -515,7 +523,9 @@ Allocator &Allocator::Get(AttachedDatabase &db) {
 
 void DatabaseInstance::Configure(DBConfig &new_config, const char *database_path) {
 	config.options = new_config.options;
+	config.SetDisabledOptimizers(config.options.disabled_optimizers);
 	config.user_settings = new_config.user_settings;
+	os_util = make_uniq<OSUtil>(*this, config.options.configuration_env);
 	// carry over a capability set handed to us, so a database created by code with its own copy of
 	// DuckDB can be given the extensions the binary that created it links
 	config.linked_extensions = new_config.linked_extensions;
@@ -572,10 +582,10 @@ void DatabaseInstance::Configure(DBConfig &new_config, const char *database_path
 	config.block_allocator = std::move(new_config.block_allocator);
 	if (!config.block_allocator) {
 		auto default_block_size = Settings::Get<DefaultBlockSizeSetting>(config);
-		config.block_allocator = make_uniq<BlockAllocator>(
-		    *config.allocator, default_block_size, DBConfig::GetSystemAvailableMemory(*config.file_system) * 8 / 10,
-		    config.options.block_allocator_size);
+		config.block_allocator = make_uniq<BlockAllocator>(*config.allocator, default_block_size,
+		                                                   DBConfig::GetSystemAvailableMemory(*config.file_system));
 	}
+	config.block_allocator->SetEnabled(config.options.enable_block_allocator);
 	config.replacement_scans = std::move(new_config.replacement_scans);
 	if (new_config.callback_manager) {
 		config.callback_manager = std::move(new_config.callback_manager);
@@ -698,6 +708,11 @@ void DatabaseInstance::InvokeExtensionEntrypointV2(const ExtensionInitResult &in
 
 LogManager &DatabaseInstance::GetLogManager() const {
 	return *log_manager;
+}
+
+OSUtil &DatabaseInstance::GetOSUtil() {
+	D_ASSERT(os_util);
+	return *os_util;
 }
 
 MetricsManager &DatabaseInstance::GetMetricsManager() {

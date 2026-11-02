@@ -1,6 +1,7 @@
 #include "duckdb/main/capi/capi_internal.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/common/allocator.hpp"
+#include "duckdb/common/vector/vector_iterator.hpp"
 
 namespace duckdb {
 
@@ -134,14 +135,13 @@ void WriteData(duckdb_column *column, ColumnDataCollection &source, const vector
 	idx_t row = 0;
 	auto target = (DST *)column->deprecated_data;
 	for (auto &input : source.Chunks(column_ids)) {
-		auto source = FlatVector::GetData<SRC>(input.data[0]);
-		auto &mask = FlatVector::ValidityMutable(input.data[0]);
-
-		for (idx_t k = 0; k < input.size(); k++, row++) {
-			if (!mask.RowIsValid(k)) {
-				OP::template NullConvert<DST>(target[row]);
+		// scans can return constant and dictionary vectors - read the cells in place
+		auto source_values = input.data[0].Values<SRC>();
+		for (auto entry : source_values) {
+			if (!entry.IsValid()) {
+				OP::template NullConvert<DST>(target[row++]);
 			} else {
-				target[row] = OP::template Convert<SRC, DST>(source[k]);
+				target[row++] = OP::template Convert<SRC, DST>(entry.GetValueUnsafe());
 			}
 		}
 	}
@@ -177,8 +177,10 @@ duckdb_state deprecated_duckdb_translate_column(QueryResult &result, duckdb_colu
 	{
 		idx_t row = 0;
 		for (auto &input : collection.Chunks(column_ids)) {
+			// scans can return constant and dictionary vectors - read the validity in place
+			auto validity = input.data[0].Validity();
 			for (idx_t k = 0; k < input.size(); k++) {
-				column->deprecated_nullmask[row++] = FlatVector::IsNull(input.data[0], k);
+				column->deprecated_nullmask[row++] = !validity.IsValid(k);
 			}
 		}
 	}
@@ -296,7 +298,7 @@ duckdb_state deprecated_duckdb_translate_column(QueryResult &result, duckdb_colu
 	return DuckDBSuccess;
 }
 
-duckdb_state DuckDBTranslateStreamResult(unique_ptr<QueryResultStream> stream_p, duckdb_result *out) {
+duckdb_state DuckDBTranslateStreamResult(unique_ptr<QueryResultStream<>> stream_p, duckdb_result *out) {
 	D_ASSERT(stream_p);
 	auto &stream = *stream_p;
 	if (!out) {
@@ -348,7 +350,7 @@ duckdb_state DuckDBTranslateResult(unique_ptr<QueryResult> result_p, duckdb_resu
 }
 
 //! Drain a stream into a retained result, for the random-access deprecated result set
-static unique_ptr<QueryResult> DrainStreamIntoResult(QueryResultStream &stream) {
+static unique_ptr<QueryResult> DrainStreamIntoResult(QueryResultStream<> &stream) {
 	auto collection = make_uniq<ColumnDataCollection>(Allocator::DefaultAllocator(), stream.GetTypes());
 	ColumnDataAppendState append_state;
 	collection->InitializeAppend(append_state);
@@ -416,7 +418,7 @@ bool DeprecatedMaterializeResult(duckdb_result *result) {
 	if (result->deprecated_row_count > 0 &&
 	    materialized.GetStatementProperties().return_type == StatementReturnType::CHANGED_ROWS) {
 		// update total changes
-		auto row_changes = materialized.GetValue(0, 0);
+		auto row_changes = materialized.Collection().GetValue(0, 0);
 		if (!row_changes.IsNull()) {
 			auto cast_row_changes = row_changes.DefaultTryCastAs(LogicalType::BIGINT);
 			if (cast_row_changes) {
@@ -557,7 +559,7 @@ idx_t duckdb_rows_changed(duckdb_result *result) {
 		// CHANGED_ROWS should return exactly one row
 		return 0;
 	}
-	return materialized.GetValue(0, 0).GetValue<uint64_t>();
+	return materialized.Collection().GetValue(0, 0).GetValue<uint64_t>();
 }
 
 void *duckdb_column_data(duckdb_result *result, idx_t col) {
@@ -631,10 +633,18 @@ duckdb_data_chunk duckdb_result_get_chunk(duckdb_result result, idx_t chunk_idx)
 	if (chunk_idx >= collection.ChunkCount()) {
 		return nullptr;
 	}
-	auto chunk = duckdb::make_uniq<duckdb::DataChunk>();
-	chunk->Initialize(duckdb::Allocator::DefaultAllocator(), collection.Types());
-	collection.FetchChunk(chunk_idx, *chunk);
-	return reinterpret_cast<duckdb_data_chunk>(chunk.release());
+	try {
+		auto chunk = duckdb::make_uniq<duckdb::DataChunk>();
+		chunk->Initialize(duckdb::Allocator::DefaultAllocator(), collection.Types());
+		collection.FetchChunk(chunk_idx, *chunk);
+		for (auto &vector : chunk->data) {
+			duckdb::PrepareCAPIVector(vector);
+		}
+		return reinterpret_cast<duckdb_data_chunk>(chunk.release());
+	} catch (std::exception &e) {
+		result_data.result->SetError(duckdb::ErrorData(e));
+		return nullptr;
+	}
 }
 
 bool duckdb_result_is_streaming(duckdb_result result) {

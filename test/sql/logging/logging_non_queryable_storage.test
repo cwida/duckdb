@@ -1,0 +1,61 @@
+# name: test/sql/logging/logging_non_queryable_storage.test
+# description: Report an error when the current log storage cannot be queried
+# group: [logging]
+
+require noforcestorage
+
+statement ok
+SET logging_storage = 'stdout';
+
+statement error
+SELECT * FROM duckdb_logs();
+----
+Invalid Configuration Error: Log storage 'stdout' does not support this query.
+
+statement error
+SELECT * FROM duckdb_log_contexts();
+----
+Invalid Configuration Error: Log storage 'stdout' does not support this query.
+
+statement error
+SELECT * FROM duckdb_logs(denormalized_table = true);
+----
+Invalid Configuration Error: Log storage 'stdout' does not support this query.
+
+statement error
+SELECT * FROM duckdb_logs;
+----
+Invalid Configuration Error: Log storage 'stdout' does not support this query.
+
+statement ok
+SET logging_storage = 'memory';
+
+# Queryable storage can be empty without producing an error.
+query I
+SELECT count(*) FROM duckdb_logs();
+----
+0
+
+query I
+SELECT count(*) FROM duckdb_log_contexts();
+----
+0
+
+statement ok
+CALL enable_logging('QueryLog');
+
+statement ok
+SELECT 42;
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT count(*) FROM duckdb_logs() WHERE message = 'SELECT 42;';
+----
+1
+
+query I
+SELECT count(*) FROM duckdb_logs(denormalized_table = true) WHERE message = 'SELECT 42;';
+----
+1

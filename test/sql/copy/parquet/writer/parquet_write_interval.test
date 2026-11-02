@@ -49,3 +49,13 @@ SELECT i = INTERVAL '580063 hours 44 minutes 54 seconds',
 FROM '{TEST_DIR}/large_interval.parquet'
 ----
 true	0	24169	7	44	54
+
+# Intervals whose microseconds fit in the milliseconds field keep their days/micros split.
+statement ok
+COPY (SELECT INTERVAL 720 HOUR AS i, INTERVAL 36 HOUR AS j) TO '{TEST_DIR}/split_interval.parquet'
+
+query TIITII
+SELECT i::VARCHAR, datepart('day', i), datepart('hour', i), j::VARCHAR, datepart('day', j), datepart('hour', j)
+FROM '{TEST_DIR}/split_interval.parquet'
+----
+720:00:00	0	720	36:00:00	0	36

@@ -78,9 +78,6 @@ public:
 	}
 	~StandardColumnWriterState() override = default;
 
-	// analysis state for integer values for DELTA_BINARY_PACKED/DELTA_LENGTH_BYTE_ARRAY
-	idx_t total_value_count = 0;
-	idx_t total_string_size = 0;
 	uint32_t key_bit_width = 0;
 
 	PrimitiveDictionary<SRC, TGT, OP> dictionary;
@@ -90,11 +87,11 @@ public:
 template <class SRC, class TGT, class OP>
 class StandardWriterPageState : public ColumnWriterPageState {
 public:
-	explicit StandardWriterPageState(const idx_t total_value_count, const idx_t total_string_size,
+	explicit StandardWriterPageState(const idx_t total_value_count, const idx_t estimated_page_size,
 	                                 duckdb_parquet::Encoding::type encoding_p,
 	                                 const PrimitiveDictionary<SRC, TGT, OP> &dictionary_p)
 	    : encoding(encoding_p), dbp_initialized(false), dbp_encoder(total_value_count), dlba_initialized(false),
-	      dlba_encoder(total_value_count, total_string_size), bss_initialized(false),
+	      dlba_encoder(total_value_count, estimated_page_size), bss_initialized(false),
 	      bss_encoder(total_value_count, sizeof(TGT)), dictionary(dictionary_p), dict_written_value(false),
 	      dict_bit_width(RleBpDecoder::ComputeBitWidthFromValueCount(dictionary.GetSize())),
 	      dict_encoder(dict_bit_width) {
@@ -141,8 +138,9 @@ public:
 	                                                      idx_t page_idx) override {
 		auto &state = state_p.Cast<StandardColumnWriterState<SRC, TGT, OP>>();
 		const auto &page_info = state_p.page_info[page_idx];
+		// The prepared page size bounds the string payload for DELTA_LENGTH_BYTE_ARRAY.
 		auto result = make_uniq<StandardWriterPageState<SRC, TGT, OP>>(
-		    page_info.row_count - (page_info.empty_count + page_info.null_count), state.total_string_size,
+		    page_info.row_count - (page_info.empty_count + page_info.null_count), page_info.estimated_page_size,
 		    state.encoding, state.dictionary);
 		return std::move(result);
 	}
@@ -217,8 +215,6 @@ public:
 			for (; vector_index < vcount; vector_index++) {
 				const auto &src_value = data_ptr[vector_index];
 				state.dictionary.template Insert<true>(src_value);
-				state.total_value_count++;
-				state.total_string_size += DlbaEncoder::GetStringSize(src_value);
 			}
 		} else {
 			for (idx_t i = 0; i < vcount; i++) {
@@ -228,8 +224,6 @@ public:
 				if (validity.RowIsValid(vector_index)) {
 					const auto &src_value = data_ptr[vector_index];
 					state.dictionary.template Insert<true>(src_value);
-					state.total_value_count++;
-					state.total_string_size += DlbaEncoder::GetStringSize(src_value);
 				}
 				vector_index++;
 			}
@@ -305,8 +299,10 @@ public:
 			    make_uniq<ParquetBloomFilter>(bloom_filter_entries, writer.BloomFilterFalsePositiveRatio());
 		}
 
+		// the chunk statistics are the merged page statistics when the page index is written
+		const bool stats_from_dictionary = !STATS_PER_OCCURRENCE && !writer.WritePageIndex();
 		state.dictionary.IterateValues([&](const SRC &src_value, const TGT &tgt_value) {
-			if (!STATS_PER_OCCURRENCE) {
+			if (stats_from_dictionary) {
 				// update the statistics
 				OP::template HandleStats<SRC, TGT>(stats, tgt_value);
 			}
@@ -367,12 +363,14 @@ private:
 				}
 			}
 
+			// the page index needs the bounds of every page, which the dictionary cannot provide
+			const bool stats_per_occurrence = STATS_PER_OCCURRENCE || writer.WritePageIndex();
 			for (; r < chunk_end; r++) {
 				if (!ALL_VALID && !mask.RowIsValid(r)) {
 					continue;
 				}
 				const auto &src_value = data_ptr[r];
-				if (STATS_PER_OCCURRENCE) {
+				if (stats_per_occurrence) {
 					OP::template HandleStats<SRC, TGT>(stats, OP::template Operation<SRC, TGT>(src_value));
 				}
 				const auto value_index = page_state.dictionary.GetIndex(src_value);

@@ -1,0 +1,40 @@
+# name: test/sql/join/mark/tuple_value_semantics.test
+# description: MARK compares nested NULLs as values and top-level NULLs as unknown
+# group: [mark]
+
+foreach external false true
+
+statement ok
+SET debug_force_external={external};
+
+query I
+SELECT row(NULL::INT,2) = ANY (SELECT row(1,2));
+----
+false
+
+query I
+SELECT row(NULL::INT,2) = ANY (SELECT row(NULL::INT,2));
+----
+true
+
+query I
+SELECT NULL::TUPLE(INT,INT) = ANY (SELECT row(1,2));
+----
+NULL
+
+query I
+SELECT row(1,2) = ANY (SELECT row(NULL::INT,2));
+----
+false
+
+query I
+SELECT row(NULL::INT,2) < ANY (SELECT row(1,2));
+----
+false
+
+query I
+SELECT row(NULL::INT,2) > ANY (SELECT row(1,2));
+----
+true
+
+endloop

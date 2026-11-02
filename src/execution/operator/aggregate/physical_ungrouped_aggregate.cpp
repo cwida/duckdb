@@ -688,7 +688,7 @@ void VerifyNullHandling(DataChunk &chunk, UngroupedAggregateState &state,
 			chunk.data[aggr_idx].ToUnifiedFormat(vdata);
 			if (vdata.validity.RowIsValid(vdata.sel->get_index(0))) {
 				throw InternalException(
-				    "VerifyNullHandling failed for aggregate function \"%s\": no rows were aggregated but the result "
+				    "VerifyNullHandling failed for aggregate function %s: no rows were aggregated but the result "
 				    "is not NULL - aggregates with default NULL handling should return NULL when no rows are "
 				    "aggregated",
 				    aggr.Function().GetName());

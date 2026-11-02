@@ -153,7 +153,7 @@ unique_ptr<DataChunk> ReservoirSample::GetChunk() {
 
 unique_ptr<ReservoirChunk> ReservoirSample::CreateNewSampleChunk(vector<LogicalType> &types, idx_t size) const {
 	auto new_sample_chunk = make_uniq<ReservoirChunk>();
-	new_sample_chunk->chunk.Initialize(Allocator::DefaultAllocator(), types, size);
+	new_sample_chunk->chunk.Initialize(allocator, types, size);
 
 	// set the NULL columns correctly
 	for (idx_t col_idx = 0; col_idx < types.size(); col_idx++) {
@@ -190,7 +190,7 @@ void ReservoirSample::Vacuum() {
 }
 
 unique_ptr<BlockingSample> ReservoirSample::Copy() const {
-	auto ret = make_uniq<ReservoirSample>(sample_count);
+	auto ret = make_uniq<ReservoirSample>(allocator, sample_count);
 	ret->stats_sample = stats_sample;
 
 	ret->base_reservoir_sample = base_reservoir_sample->Copy();
@@ -739,7 +739,7 @@ void ReservoirSample::AddToReservoir(DataChunk &chunk) {
 		for (idx_t i = 0; i < samples_remaining; i++) {
 			input_sel.set_index(i, tuples_consumed + i);
 		}
-		slice->Initialize(Allocator::DefaultAllocator(), types, samples_remaining);
+		slice->Initialize(allocator, types, samples_remaining);
 		slice->Slice(chunk, input_sel, samples_remaining);
 		AddToReservoir(*slice);
 		return;
@@ -897,6 +897,15 @@ unique_ptr<DataChunk> ReservoirSamplePercentage::GetChunk() {
 		finished_samples.erase(finished_samples.begin());
 	}
 	return nullptr;
+}
+
+idx_t ReservoirSamplePercentage::GetActiveSampleCount() const {
+	D_ASSERT(is_finalized);
+	idx_t count = 0;
+	for (auto &sample : finished_samples) {
+		count += sample->GetActiveSampleCount();
+	}
+	return count;
 }
 
 unique_ptr<BlockingSample> ReservoirSamplePercentage::Copy() const {

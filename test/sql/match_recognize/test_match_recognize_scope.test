@@ -1,0 +1,217 @@
+# name: test/sql/match_recognize/test_match_recognize_scope.test
+# description: MATCH_RECOGNIZE - where a value is computed, and what may read it
+# group: [match_recognize]
+
+statement ok
+PRAGMA enable_verification
+
+# A window walks the ordered partition rather than the match, so it is computed below the matcher.
+# What binding it hands back is the window operator's own output, which the projection the conditions
+# are evaluated over can read - so navigating one is projecting the navigated expression, once.
+
+query I
+FROM (VALUES (1), (2)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n PATTERN (A+)
+    DEFINE A AS FIRST(lag(x) OVER (ORDER BY x)) IS NULL
+)
+----
+2
+
+query I
+FROM (VALUES (1), (2)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n PATTERN (A+)
+    DEFINE A AS FIRST(PREV(x)) IS NULL
+)
+----
+2
+
+# the dependency survives a scalar wrapper, because what is projected is the whole navigated
+# expression rather than a reference to a piece of it
+query I
+FROM (VALUES (1), (2)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n PATTERN (A+)
+    DEFINE A AS FIRST(coalesce(lag(x) OVER (ORDER BY x), 0)) = 0
+)
+----
+2
+
+query I
+FROM (VALUES (1), (2), (3)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n PATTERN (A+)
+    DEFINE A AS LAST(lag(x) OVER (ORDER BY x)) IS NULL OR LAST(lag(x) OVER (ORDER BY x)) < 2
+)
+----
+2
+
+# a window a condition reads without navigating it still reads the row being tested
+query I
+FROM (VALUES (1), (2)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n PATTERN (A+)
+    DEFINE A AS lag(x) OVER (ORDER BY x) IS NULL
+)
+----
+1
+
+query I
+FROM (VALUES (1), (2)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n PATTERN (A+)
+    DEFINE A AS PREV(x) IS NULL
+)
+----
+1
+
+# MATCH_NUMBER() and CLASSIFIER() are what the matcher knows while it assembles a match. A window
+# and the expression a navigation reads are computed for every row of the input, before there is a
+# match for either of them to be about.
+
+statement error
+FROM (VALUES (1), (2)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n PATTERN (A+) DEFINE A AS FIRST(MATCH_NUMBER()) > 0
+)
+----
+MATCH_NUMBER() only means something while the matcher is assembling a match
+
+statement error
+FROM (VALUES (1), (2)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n PATTERN (A+) DEFINE A AS PREV(MATCH_NUMBER()) IS NULL
+)
+----
+MATCH_NUMBER() only means something while the matcher is assembling a match
+
+statement error
+FROM (VALUES (1), (2)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n PATTERN (A+)
+    DEFINE A AS lag(MATCH_NUMBER()) OVER (ORDER BY x) IS NULL
+)
+----
+MATCH_NUMBER() only means something while the matcher is assembling a match
+
+statement error
+FROM (VALUES (1), (2)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n PATTERN (A+)
+    DEFINE A AS lag(CLASSIFIER()) OVER (ORDER BY x) IS NULL
+)
+----
+CLASSIFIER() only means something while the matcher is assembling a match
+
+statement error
+FROM (VALUES (1), (2)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n PATTERN (A+)
+    DEFINE A AS lag(FIRST(x)) OVER (ORDER BY x) IS NULL
+)
+----
+Reading a row of the match only means something while the matcher is assembling a match
+
+# The partitioning and the ordering are what the matcher walks. They are settled before there is a
+# match at all, so nothing about one can be part of them.
+
+statement error
+FROM (VALUES (1), (2)) t(x) MATCH_RECOGNIZE (
+    ORDER BY MATCH_NUMBER() MEASURES count(*) AS n PATTERN (A+)
+ DEFINE A AS true)
+----
+cannot be part of ORDER BY
+
+statement error
+FROM (VALUES (1), (2)) t(x) MATCH_RECOGNIZE (
+    PARTITION BY MATCH_NUMBER() ORDER BY x MEASURES count(*) AS n PATTERN (A+)
+ DEFINE A AS true)
+----
+cannot be part of PARTITION BY
+
+statement error
+FROM (VALUES (1), (2)) t(x) MATCH_RECOGNIZE (
+    ORDER BY CLASSIFIER() MEASURES count(*) AS n PATTERN (A+)
+ DEFINE A AS true)
+----
+CLASSIFIER() only means something while the matcher is assembling a match
+
+statement error
+FROM (VALUES (1), (2)) t(x) MATCH_RECOGNIZE (
+    ORDER BY FIRST(x) MEASURES count(*) AS n PATTERN (A+)
+ DEFINE A AS true)
+----
+Reading a row of the match only means something while the matcher is assembling a match
+
+statement error
+FROM (VALUES (1), (2)) t(x) MATCH_RECOGNIZE (
+    ORDER BY PREV(x) MEASURES count(*) AS n PATTERN (A+)
+ DEFINE A AS true)
+----
+PREV() reads a neighbour in the order the matcher walks
+
+statement error
+FROM (VALUES (1), (2)) t(x) MATCH_RECOGNIZE (
+    PARTITION BY NEXT(x) ORDER BY x MEASURES count(*) AS n PATTERN (A+)
+ DEFINE A AS true)
+----
+NEXT() reads a neighbour in the order the matcher walks
+
+# an ordinary expression over the input is still what the partitioning and the ordering are for
+query II
+SELECT * FROM (VALUES (1, 'a'), (2, 'a'), (3, 'b')) t(x, g) MATCH_RECOGNIZE (
+    PARTITION BY upper(g) ORDER BY -x MEASURES count(*) AS n PATTERN (A+)
+ DEFINE A AS true) ORDER BY 1
+----
+A	2
+B	1
+
+# A condition is assembled out of the collected rows for every candidate row, and a value copied into
+# the row it is assembled in is appended to that row's storage rather than replacing what was there.
+# The row is given back between evaluations, so what a string or a list holds does not accumulate.
+
+statement ok
+CREATE TABLE wide AS
+    SELECT i, CASE WHEN i % 100 = 0 THEN repeat('x', 512) ELSE '' END AS v, range(i % 8) AS l
+    FROM range(2000) t(i)
+
+query I
+FROM wide MATCH_RECOGNIZE (
+    ORDER BY i MEASURES count(*) AS n PATTERN (A+)
+    DEFINE A AS length(FIRST(v)) = 0 OR length(FIRST(v)) = 512
+)
+----
+2000
+
+query I
+FROM wide MATCH_RECOGNIZE (
+    ORDER BY i MEASURES count(*) AS n PATTERN (A+)
+    DEFINE A AS len(LAST(l)) < 8
+)
+----
+2000
+
+query II
+FROM wide MATCH_RECOGNIZE (
+    ORDER BY i MEASURES count(*) AS n, FIRST(v) AS first_v PATTERN (A B*)
+    DEFINE B AS length(v) = length(FIRST(v))
+)
+ORDER BY n DESC, first_v LIMIT 2
+----
+99	(empty)
+99	(empty)
+
+# MATCH_NUMBER() is the matcher's own to supply, so the plan hands the window no column for it
+query I
+SELECT parameters FROM duckdb_functions() WHERE function_name = 'match_recognize'
+----
+[columns]
+
+query I
+SELECT n FROM (
+    FROM (VALUES (1), (2), (3)) t(x) MATCH_RECOGNIZE (
+        ORDER BY x MEASURES count(*) AS n AFTER MATCH SKIP TO NEXT ROW PATTERN (A+)
+        DEFINE A AS MATCH_NUMBER() < 3
+    )
+) ORDER BY n
+----
+2
+3
+
+query I
+FROM (VALUES (1), (2), (3)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n PATTERN (A+)
+    DEFINE A AS MATCH_NUMBER() = 1 AND (FIRST(x) IS NULL OR FIRST(x) = 1)
+)
+----
+3

@@ -43,14 +43,6 @@ bool IsStructPack(const BoundFunctionExpression &expr) {
 	return expr.Function().GetName() == "struct_pack";
 }
 
-optional_ptr<Expression> UnwrapCasts(optional_ptr<Expression> expr) {
-	while (BoundCastExpression::IsCast(*expr)) {
-		auto &cast_expr = expr->Cast<BoundFunctionExpression>();
-		expr = BoundCastExpression::ChildMutable(cast_expr).get();
-	}
-	return expr;
-}
-
 optional_ptr<Expression> FindStructPackChildByName(BoundFunctionExpression &struct_pack, const string &name) {
 	D_ASSERT(struct_pack.GetReturnType().id() == LogicalTypeId::STRUCT);
 	for (auto &child : struct_pack.GetChildren()) {
@@ -95,8 +87,16 @@ void RemoveIndexInputSlot(unique_ptr<Expression> &expr) {
 	                                                });
 }
 
-bool MatchesStructFieldProjection(Expression &expr, const string &field_name) {
-	auto base = UnwrapCasts(expr);
+bool MatchesStructFieldProjection(Expression &expr, const string &field_name, bool allow_boolean_cast = false) {
+	optional_ptr<Expression> base = expr;
+	if (allow_boolean_cast && BoundCastExpression::IsCast(*base) && base->GetReturnType() == LogicalType::BOOLEAN) {
+		auto &cast_expr = base->Cast<BoundFunctionExpression>();
+		if (BoundCastExpression::IsTryCast(cast_expr)) {
+			return false;
+		}
+		// The rewritten filter recreates this single BOOLEAN cast.
+		base = BoundCastExpression::ChildMutable(cast_expr).get();
+	}
 	if (base->GetExpressionClass() != ExpressionClass::BOUND_FUNCTION) {
 		return false;
 	}
@@ -105,7 +105,7 @@ bool MatchesStructFieldProjection(Expression &expr, const string &field_name) {
 		return false;
 	}
 
-	auto struct_arg = UnwrapCasts(*extract_expr.GetChildren()[0]);
+	auto &struct_arg = extract_expr.GetChildren()[0];
 	if (struct_arg->GetExpressionClass() != ExpressionClass::BOUND_REF) {
 		return false;
 	}
@@ -114,7 +114,7 @@ bool MatchesStructFieldProjection(Expression &expr, const string &field_name) {
 		return false;
 	}
 
-	auto field_arg = UnwrapCasts(*extract_expr.GetChildren()[1]);
+	auto &field_arg = extract_expr.GetChildren()[1];
 	if (field_arg->GetExpressionClass() != ExpressionClass::BOUND_CONSTANT) {
 		return false;
 	}
@@ -198,7 +198,7 @@ unique_ptr<ListComprehensionMatch> MatchListComprehensionRewrite(ClientContext &
 	if (!list_filter_bind.lambda_expr || !root_bind.lambda_expr) {
 		return nullptr;
 	}
-	if (!MatchesStructFieldProjection(*list_filter_bind.lambda_expr, "filter") ||
+	if (!MatchesStructFieldProjection(*list_filter_bind.lambda_expr, "filter", true) ||
 	    !MatchesStructFieldProjection(*root_bind.lambda_expr, "result")) {
 		return nullptr;
 	}
@@ -216,7 +216,7 @@ unique_ptr<ListComprehensionMatch> MatchListComprehensionRewrite(ClientContext &
 	if (!inner_bind.lambda_expr) {
 		return nullptr;
 	}
-	auto inner_base = UnwrapCasts(*inner_bind.lambda_expr);
+	auto &inner_base = inner_bind.lambda_expr;
 	if (inner_base->GetExpressionClass() != ExpressionClass::BOUND_FUNCTION) {
 		return nullptr;
 	}

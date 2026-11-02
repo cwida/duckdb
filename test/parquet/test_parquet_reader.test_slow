@@ -879,8 +879,6 @@ SELECT * FROM parquet_scan('{DATA_DIR}/parquet-testing/bug1589.parquet') limit 5
 200	NULL	
 300	NULL	
 
-mode skip instable
-
 query I
 SELECT * FROM parquet_scan('{DATA_DIR}/parquet-testing/arrow/hadoop_lz4_compressed_larger.parquet') limit 50;
 ----
@@ -935,8 +933,6 @@ f2807544-a424-444a-add3-3d5d486b70e2
 d0018041-41e3-4013-ba90-535ba03d46c3	
 c50e8ade-6051-436f-a26e-acc9c0594be5	
 
-mode skip instable
-
 query III
 SELECT * FROM parquet_scan('{DATA_DIR}/parquet-testing/arrow/non_hadoop_lz4_compressed.parquet') limit 50;
 ----
@@ -944,8 +940,6 @@ SELECT * FROM parquet_scan('{DATA_DIR}/parquet-testing/arrow/non_hadoop_lz4_comp
 1593604800	def	7.7	
 1593604801	abc	42.125	
 1593604801	def	7.7	
-
-mode unskip
 
 query IIIIIIIIIII
 SELECT * FROM parquet_scan('{DATA_DIR}/parquet-testing/arrow/alltypes_plain.parquet') limit 50;
@@ -1037,15 +1031,13 @@ NULL
 query IIIIII
 SELECT * FROM parquet_scan('{DATA_DIR}/parquet-testing/arrow/nullable.impala.parquet') limit 50;
 ----
-1	[1, 2, 3]	[[1, 2], [3, 4]]	{k1=1, k2=100}	[{k1=1}]	{'A': 1, 'b': [1], 'C': {'d': [[{'E': 10, 'F': aaa}, {'E': -10, 'F': bbb}], [{'E': 11, 'F': c}]]}, 'g': {foo={'H': {'i': [1.100000]}}}}
-2	[NULL, 1, 2, NULL, 3, NULL]	[[NULL, 1, 2, NULL], [3, NULL, 4], [], NULL]	{k1=2, k2=NULL}	[{k3=NULL, k1=1}, NULL, {}]	{'A': NULL, 'b': [NULL], 'C': {'d': [[{'E': NULL, 'F': NULL}, {'E': 10, 'F': aaa}, {'E': NULL, 'F': NULL}, {'E': -10, 'F': bbb}, {'E': NULL, 'F': NULL}], [{'E': 11, 'F': c}, NULL], [], NULL]}, 'g': {g1={'H': {'i': [2.200000, NULL]}}, g2={'H': {'i': []}}, g3=NULL, g4={'H': {'i': NULL}}, g5={'H': NULL}}}
+1	[1, 2, 3]	[[1, 2], [3, 4]]	{k1=1, k2=100}	[{k1=1}]	{'A': 1, 'b': [1], 'C': {'d': [[{'E': 10, 'F': aaa}, {'E': -10, 'F': bbb}], [{'E': 11, 'F': c}]]}, 'g': {foo={'H': {'i': [1.1]}}}}
+2	[NULL, 1, 2, NULL, 3, NULL]	[[NULL, 1, 2, NULL], [3, NULL, 4], [], NULL]	{k1=2, k2=NULL}	[{k3=NULL, k1=1}, NULL, {}]	{'A': NULL, 'b': [NULL], 'C': {'d': [[{'E': NULL, 'F': NULL}, {'E': 10, 'F': aaa}, {'E': NULL, 'F': NULL}, {'E': -10, 'F': bbb}, {'E': NULL, 'F': NULL}], [{'E': 11, 'F': c}, NULL], [], NULL]}, 'g': {g1={'H': {'i': [2.2, NULL]}}, g2={'H': {'i': []}}, g3=NULL, g4={'H': {'i': NULL}}, g5={'H': NULL}}}
 3	[]	[NULL]	{}	[NULL, NULL]	{'A': NULL, 'b': NULL, 'C': {'d': []}, 'g': {}}
 4	NULL	[]	{}	[]	{'A': NULL, 'b': NULL, 'C': {'d': NULL}, 'g': NULL}
-5	NULL	NULL	{}	NULL	{'A': NULL, 'b': NULL, 'C': NULL, 'g': {foo={'H': {'i': [2.200000, 3.300000]}}}}
+5	NULL	NULL	{}	NULL	{'A': NULL, 'b': NULL, 'C': NULL, 'g': {foo={'H': {'i': [2.2, 3.3]}}}}
 6	NULL	NULL	NULL	NULL	NULL
 7	NULL	[NULL, [5, 6]]	{k1=NULL, k3=NULL}	NULL	{'A': 7, 'b': [2, 3, NULL], 'C': {'d': [[], [NULL], NULL]}, 'g': NULL}
-
-mode skip instable
 
 query III
 SELECT * FROM parquet_scan('{DATA_DIR}/parquet-testing/arrow/hadoop_lz4_compressed.parquet') limit 50;
@@ -1054,8 +1046,6 @@ SELECT * FROM parquet_scan('{DATA_DIR}/parquet-testing/arrow/hadoop_lz4_compress
 1593604800	def	7.7	
 1593604801	abc	42.125	
 1593604801	def	7.7	
-
-mode unskip
 
 query I
 SELECT * FROM parquet_scan('{DATA_DIR}/parquet-testing/fixed.parquet') limit 50;
@@ -1107,7 +1097,7 @@ SELECT * FROM parquet_scan('{DATA_DIR}/parquet-testing/decimal/pandas_decimal.pa
 NULL	NULL	NULL	NULL	0E-17	
 
 query I
-SELECT * FROM parquet_scan('{DATA_DIR}/parquet-testing/decimal/arrow/byte_array_decimal.parquet') limit 50;
+SELECT * FROM parquet_scan('{DATA_DIR}/parquet-testing/decimal/byte_array_decimal.parquet') limit 50;
 ----
 1.00	
 2.00	
@@ -1275,7 +1265,7 @@ SELECT * FROM parquet_scan('{DATA_DIR}/parquet-testing/decimal/fixed_length_deci
 query II
 SELECT * FROM parquet_scan('{DATA_DIR}/parquet-testing/glob2/t1.parquet') limit 50;
 ----
-1	hello	
+3	c
 
 query II
 SELECT * FROM parquet_scan('{DATA_DIR}/parquet-testing/cache/cache1.parquet') limit 50;
@@ -1292,26 +1282,26 @@ SELECT * FROM parquet_scan('{DATA_DIR}/parquet-testing/cache/cache2.parquet') li
 query II
 SELECT * FROM parquet_scan('{DATA_DIR}/parquet-testing/glob/t2.parquet') limit 50;
 ----
-1	hello	
+2	b
 
 query II
 SELECT * FROM parquet_scan('{DATA_DIR}/parquet-testing/glob/t1.parquet') limit 50;
 ----
-1	hello	
+1	a
 
 query III
 SELECT * FROM parquet_scan('{DATA_DIR}/parquet-testing/bug2557.parquet') limit 10
 ----
 [adipiscing, elit]	[267]	[]
-[adipiscing, elit]	[58, 146]	[3105.735731, 7332.144961, 2693.459659, 2058.830347]
-[dolor, sit, amet, consectetur, adipiscing, elit]	[26, 701]	[2252.315041]
-[Lorem, ipsum, dolor, sit, amet, consectetur, adipiscing, elit]	[763]	[4318.131164, 703.332322]
-[consectetur, adipiscing, elit]	[]	[4921.065813]
-[ipsum, dolor, sit, amet, consectetur, adipiscing, elit]	[503]	[3143.311724]
-[amet, consectetur, adipiscing, elit]	[981]	[1556.844782, 5388.780546]
+[adipiscing, elit]	[58, 146]	[3105.7357307755087, 7332.144961207942, 2693.4596589664648, 2058.8303474455493]
+[dolor, sit, amet, consectetur, adipiscing, elit]	[26, 701]	[2252.3150410275202]
+[Lorem, ipsum, dolor, sit, amet, consectetur, adipiscing, elit]	[763]	[4318.131164063701, 703.3323215551796]
+[consectetur, adipiscing, elit]	[]	[4921.065813194329]
+[ipsum, dolor, sit, amet, consectetur, adipiscing, elit]	[503]	[3143.3117237229058]
+[amet, consectetur, adipiscing, elit]	[981]	[1556.8447821660177, 5388.780545775566]
 [consectetur, adipiscing, elit]	[822, 843, 702, 469]	[]
-[dolor, sit, amet, consectetur, adipiscing, elit]	[698, 385]	[3591.160509]
-[Lorem, ipsum, dolor, sit, amet, consectetur, adipiscing, elit]	[597, 719]	[1218.803740]
+[dolor, sit, amet, consectetur, adipiscing, elit]	[698, 385]	[3591.160509216094]
+[Lorem, ipsum, dolor, sit, amet, consectetur, adipiscing, elit]	[597, 719]	[1218.8037401553586]
 
 
 statement ok

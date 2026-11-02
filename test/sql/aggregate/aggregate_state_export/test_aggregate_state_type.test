@@ -69,9 +69,15 @@ SELECT typeof(skewness(1) EXPORT_STATE);
 ----
 AGGREGATE_STATE
 
+# approx_count_distinct exports its sketch (the precision and the registers)
+query T
+SELECT typeof(approx_count_distinct(1) EXPORT_STATE);
+----
+AGGREGATE_STATE
+
 # aggregate functions that are not opted-in cannot export their state
 statement error
-SELECT typeof(approx_count_distinct(1) EXPORT_STATE);
+SELECT typeof(histogram(1) EXPORT_STATE);
 ----
 does not have a state type callback
 

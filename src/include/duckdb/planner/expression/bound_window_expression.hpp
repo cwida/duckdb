@@ -11,6 +11,7 @@
 #include "duckdb/parser/expression/window_expression.hpp"
 #include "duckdb/function/function.hpp"
 #include "duckdb/planner/expression.hpp"
+#include "duckdb/planner/expression/window_range_info.hpp"
 #include "duckdb/parser/parsed_expression.hpp"
 #include "duckdb/planner/bound_result_modifier.hpp"
 
@@ -123,6 +124,24 @@ public:
 	const LogicalType &SQLRangeOrderType() const {
 		return sql_range_order_type;
 	}
+	const unique_ptr<WindowRangeBoundary> &SQLRangeStartBoundary() const {
+		return sql_range_start_boundary;
+	}
+	unique_ptr<WindowRangeBoundary> &SQLRangeStartBoundaryMutable() {
+		return sql_range_start_boundary;
+	}
+	const unique_ptr<WindowRangeBoundary> &SQLRangeEndBoundary() const {
+		return sql_range_end_boundary;
+	}
+	unique_ptr<WindowRangeBoundary> &SQLRangeEndBoundaryMutable() {
+		return sql_range_end_boundary;
+	}
+	const vector<WindowRangeCast> &SQLRangeOrderCasts() const {
+		return sql_range_order_casts;
+	}
+	vector<WindowRangeCast> &SQLRangeOrderCastsMutable() {
+		return sql_range_order_casts;
+	}
 	const vector<BoundOrderByNode> &ArgOrders() const {
 		return arg_orders;
 	}
@@ -149,6 +168,7 @@ public:
 		return false;
 	}
 	bool IsVolatile() const override;
+	bool CanThrow() const override;
 
 	string ToString() const override;
 
@@ -205,6 +225,10 @@ private:
 	unique_ptr<ParsedExpression> sql_range_start;
 	unique_ptr<ParsedExpression> sql_range_end;
 	LogicalType sql_range_order_type = LogicalType::INVALID;
+
+	unique_ptr<WindowRangeBoundary> sql_range_start_boundary;
+	unique_ptr<WindowRangeBoundary> sql_range_end_boundary;
+	vector<WindowRangeCast> sql_range_order_casts;
 
 	//! The set of argument ordering clauses
 	//! These are distinct from the frame ordering clauses e.g., the "x" in

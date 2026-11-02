@@ -33,6 +33,7 @@ struct CreateSchemaInfo;
 struct DropInfo;
 struct BoundCreateTableInfo;
 struct AlterTableInfo;
+struct AlterSchemaInfo;
 struct CreateTableFunctionInfo;
 struct CreateCopyFunctionInfo;
 struct CreatePragmaFunctionInfo;
@@ -46,6 +47,7 @@ struct CreateTypeInfo;
 struct CreateTableInfo;
 struct DatabaseSize;
 struct MetadataBlockInfo;
+struct SchemaScanFilters;
 
 class AttachedDatabase;
 class ClientContext;
@@ -244,6 +246,17 @@ public:
 	                                                                 const EntryLookupInfo &schema_lookup,
 	                                                                 OnEntryNotFound if_not_found) = 0;
 
+	//! Whether schema strings can denote nested paths as well as literal schema names.
+	virtual bool SupportsNestedSchemas() const {
+		return false;
+	}
+	//! Resolve a string schema argument, preferring an existing nested entry over a literal dotted schema.
+	DUCKDB_API QualifiedName ResolveEntryName(ClientContext &context, const string &schema_arg,
+	                                          const string &entry_name, CatalogType type = CatalogType::TABLE_ENTRY,
+	                                          optional_ptr<BoundAtClause> at_clause = nullptr);
+	//! Resolve a string schema argument, with the same literal-name fallback as ResolveEntryName.
+	DUCKDB_API SchemaCatalogEntry &ResolveSchema(ClientContext &context, const string &schema_arg);
+
 	//! Returns the schema object with the specified name, or throws an exception if it does not exist
 	DUCKDB_API SchemaCatalogEntry &GetSchema(ClientContext &context, const EntryLookupInfo &schema_lookup);
 	DUCKDB_API optional_ptr<SchemaCatalogEntry> GetSchema(ClientContext &context, const EntryLookupInfo &schema_lookup,
@@ -289,6 +302,11 @@ public:
 	          OnEntryNotFound if_not_found);
 	//! Scans all the schemas in the system one-by-one, invoking the callback for each entry
 	DUCKDB_API virtual void ScanSchemas(ClientContext &context, std::function<void(SchemaCatalogEntry &)> callback) = 0;
+	//! The schemas a system catalog scan (duckdb_tables, duckdb_views) visits in this catalog, given the filters
+	//! pushed down on the schema identity columns. Lists every schema and keeps those the filters accept. A catalog
+	//! may override this to avoid the listing; it must return every schema the filters accept and may return more.
+	DUCKDB_API virtual vector<reference<SchemaCatalogEntry>> GetSchemasForScan(ClientContext &context,
+	                                                                           const SchemaScanFilters &filters);
 
 	//! Gets the entry described by the (optionally catalog/schema-qualified) EntryLookupInfo. If the entry does not
 	//! exist behavior depends on OnEntryNotFound
@@ -395,6 +413,9 @@ public:
 		return string();
 	}
 	virtual ErrorData SupportsCreateTable(BoundCreateTableInfo &info);
+	virtual ErrorData SupportsCreateSchema(CreateSchemaInfo &info);
+	//! Alter a schema of this catalog (e.g. ALTER SCHEMA ... SET/RESET (<options>))
+	virtual void AlterSchema(CatalogTransaction transaction, SchemaCatalogEntry &schema, AlterSchemaInfo &info);
 
 	virtual bool Supports(RemoteCapability capability) const {
 		return false;
@@ -493,6 +514,11 @@ public:
 	DUCKDB_API virtual void OnDetach(ClientContext &context);
 
 protected:
+	//! Resolve a bound schema path, preserving time travel and error context at every level.
+	DUCKDB_API optional_ptr<SchemaCatalogEntry>
+	LookupSchemaPath(CatalogTransaction transaction, const EntryLookupInfo &schema_lookup, OnEntryNotFound if_not_found,
+	                 const std::function<optional_ptr<CatalogEntry>(const EntryLookupInfo &)> &lookup_root);
+
 	//! Reference to the database
 	AttachedDatabase &db;
 

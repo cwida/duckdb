@@ -1,0 +1,121 @@
+# name: test/sql/window/window_scalarized_canthrow.test
+# description: The scalarized window wrapper must be fallible when the window expression can throw
+# group: [window]
+
+# the wrapper executes the window expression's children - a throwing child cast must surface as a
+# regular error instead of an internal "not marked as fallible" error
+
+statement error
+SELECT sum(s::INT) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW) FROM (VALUES ('1'), ('abc')) t(s);
+----
+Could not convert string 'abc' to INT32
+
+# a throwing child blocks whole-dictionary execution of the wrapper
+
+statement ok
+SET debug_verify_vector='dictionary_expression';
+
+query I rowsort
+SELECT sum(s::INT) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW) FROM (VALUES ('1'), ('2')) t(s);
+----
+1
+2
+
+# histogram's bound bin cast throws at runtime and must stay a regular error in the wrapper
+
+statement error
+SELECT histogram(l, b) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW)
+FROM (VALUES ([1], [1]), ([2], [1])) t(l, b);
+----
+Unimplemented type for cast
+
+# infallible aggregates without throwing children stay eligible for dictionary execution
+
+query I rowsort
+SELECT count(v) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW) FROM (VALUES (1), (NULL)) t(v);
+----
+0
+1
+
+statement ok
+RESET debug_verify_vector;
+
+# window function runtime validation keeps raising as a regular error
+
+statement error
+SELECT ntile(0) OVER () FROM (VALUES (1), (2)) t(v);
+----
+Argument for ntile must be greater than zero
+
+# a unique partition key scalarizes arbitrary frames, whose boundary expressions are validated at
+# runtime - the validation must stay a regular error in the wrapper
+
+statement ok
+CREATE TABLE frame_input(id INTEGER PRIMARY KEY, v INTEGER);
+
+statement ok
+INSERT INTO frame_input VALUES (1, 10), (2, 20);
+
+statement error
+SELECT sum(v) OVER (PARTITION BY id ROWS BETWEEN -1 PRECEDING AND CURRENT ROW) FROM frame_input;
+----
+Window ROWS PRECEDING expression cannot be negative
+
+statement error
+SELECT sum(v) OVER (PARTITION BY id ROWS BETWEEN NULL::BIGINT PRECEDING AND CURRENT ROW) FROM frame_input;
+----
+Window ROWS PRECEDING expression cannot be NULL
+
+query I rowsort
+SELECT sum(v) OVER (PARTITION BY id ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) FROM frame_input;
+----
+10
+20
+
+statement error
+SELECT sum(v) OVER (PARTITION BY id ROWS BETWEEN CURRENT ROW AND -1 FOLLOWING) FROM frame_input;
+----
+Window ROWS FOLLOWING expression cannot be negative
+
+# ordered aggregate arguments in the scalarized position: the scalar wrapper captured its fallibility
+# from the window expression while the inner aggregate still carried its own properties - these pin
+# that capture so a change in what the wrapper sees surfaces here
+
+statement ok
+SET debug_verify_vector='dictionary_expression';
+
+# a fallible ordered aggregate's runtime error must stay a regular error in the scalarized wrapper
+
+statement error
+SELECT approx_top_k(i, NULL ORDER BY i DESC) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW) FROM range(3) t(i);
+----
+k value cannot be NULL
+
+# a fallible ordered aggregate executes correctly under dictionary verification
+
+query I rowsort
+SELECT approx_top_k(i, 1 ORDER BY i DESC) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW) FROM range(3) t(i);
+----
+[0]
+[1]
+[2]
+
+# an infallible ordered aggregate executes correctly under dictionary verification
+
+query I rowsort
+SELECT list(i ORDER BY i DESC) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW) FROM range(3) t(i);
+----
+[0]
+[1]
+[2]
+
+# the bound bin cast of an ordered histogram throws at runtime and must stay a regular error
+
+statement error
+SELECT histogram(d, ['not a date'] ORDER BY d) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW)
+FROM (SELECT ('2020-01-0' || (range+1))::DATE AS d FROM range(5)) t;
+----
+invalid date field format
+
+statement ok
+RESET debug_verify_vector;

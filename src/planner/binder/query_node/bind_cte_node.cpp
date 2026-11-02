@@ -50,6 +50,10 @@ BoundStatement Binder::BindNode(QueryNode &node) {
 			++dml_cte_count;
 		}
 		bound_ctes.push_back(current_binder.get().PrepareCTE(cte.first, *cte.second));
+		if (current_binder.get().IsBindingTrySubquery()) {
+			// the child binder binds the same query node, so TRY lowering follows it
+			bound_ctes.back().child_binder->SetBindingTrySubquery();
+		}
 		current_binder = *bound_ctes.back().child_binder;
 	}
 	BoundStatement result;
@@ -85,6 +89,10 @@ BoundStatement Binder::BindNode(QueryNode &node) {
 	default:
 		throw InternalException("Unsupported query node type");
 	}
+	if (!bound_ctes.empty() && IsBindingTrySubquery()) {
+		// carry the plan indexes of the TRY select node back across the CTE binder handoff
+		GetTrySubqueryPlanIndexesMutable() = current_binder.get().GetTrySubqueryPlanIndexes();
+	}
 	for (idx_t i = bound_ctes.size(); i > 0; i--) {
 		auto &finish_binder = i == 1 ? *this : *bound_ctes[i - 2].child_binder;
 		result = finish_binder.FinishCTE(bound_ctes[i - 1], std::move(result));
@@ -96,7 +104,7 @@ BoundStatement Binder::BindNode(QueryNode &node) {
 			auto db = manager.GetDatabase(context, entry.first);
 			if (db && !db->GetCatalog().SupportsMultipleDMLCTEs()) {
 				throw BinderException("Multiple DML statements in a single WITH clause are not supported for "
-				                      "database \"%s\"",
+				                      "database %s",
 				                      entry.first);
 			}
 		}
@@ -142,6 +150,9 @@ void CTEBindState::Bind(CTEBinding &binding) {
 	// names are picked from the LHS, unless aliases are explicitly specified
 	names = query.names;
 	for (idx_t i = 0; i < aliases.size() && i < names.size(); i++) {
+		if (aliases[i].empty()) {
+			throw BinderException("column alias cannot be empty");
+		}
 		names[i] = aliases[i];
 	}
 

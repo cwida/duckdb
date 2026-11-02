@@ -1,0 +1,22 @@
+# name: test/sql/function/list/generate_series_timestamp_range_end.test
+# description: Timestamp series that end at the edge of the timestamp range
+# group: [list]
+
+query I
+SELECT * FROM generate_series(TIMESTAMP '294247-01-01', TIMESTAMP '294247-01-10', INTERVAL 3 DAY);
+----
+294247-01-01 00:00:00
+294247-01-04 00:00:00
+294247-01-07 00:00:00
+294247-01-10 00:00:00
+
+query I
+SELECT * FROM generate_series(TIMESTAMP '290309-12-23 (BC)', TIMESTAMP '290309-12-22 (BC)', INTERVAL '-1 day');
+----
+290309-12-23 (BC) 00:00:00
+290309-12-22 (BC) 00:00:00
+
+query I
+SELECT count(*) FROM range(TIMESTAMP '294247-01-01', TIMESTAMP '294247-01-10', INTERVAL 3 DAY);
+----
+3

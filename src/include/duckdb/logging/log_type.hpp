@@ -10,12 +10,14 @@
 
 #include "duckdb/logging/logging.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/common/case_insensitive_map.hpp"
 
 namespace duckdb {
 
 struct FileHandle;
 struct BaseRequest;
 struct HTTPResponse;
+struct MetricTiming;
 class PhysicalOperator;
 enum class PhysicalOperatorType : uint8_t;
 class AttachedDatabase;
@@ -81,13 +83,15 @@ class HTTPLogType : public LogType {
 public:
 	static constexpr const char *NAME = "HTTP";
 	static constexpr LogLevel LEVEL = LogLevel::LOG_DEBUG;
+	static constexpr auto REDACTED_VALUE = "redacted";
 
 	//! Construct the log types
 	HTTPLogType();
 
 	static LogicalType GetLogType();
 
-	static string ConstructLogMessage(BaseRequest &request, optional_ptr<HTTPResponse> response);
+	static string ConstructLogMessage(BaseRequest &request, optional_ptr<HTTPResponse> response,
+	                                  bool redact_http_logs = true);
 
 	// FIXME: HTTPLogType should be structured probably
 	static string ConstructLogMessage(const string &str) {
@@ -122,7 +126,8 @@ public:
 
 	static LogicalType GetLogType();
 
-	static string ConstructLogMessage(const string &metric, const Value &value);
+	static string ConstructLogMessage(const string &metric, const Value &value,
+	                                  optional_ptr<const MetricTiming> timing = nullptr);
 };
 
 class CheckpointLogType : public LogType {
@@ -198,6 +203,32 @@ public:
 	static LogicalType GetLogType();
 
 	static string ConstructLogMessage(const string &pool, idx_t task_count);
+};
+
+class ReadAheadBudgetLogType : public LogType {
+public:
+	static constexpr const char *NAME = "ReadAheadBudget";
+	static constexpr LogLevel LEVEL = LogLevel::LOG_DEBUG;
+
+	ReadAheadBudgetLogType();
+
+	static LogicalType GetLogType();
+
+	//! One entry per pushed read-ahead job with the backlog charge, its budget and the jobs in flight
+	static string ConstructLogMessage(idx_t pending_bytes, idx_t budget_bytes, idx_t active_jobs);
+};
+
+class ProgressVerificationLogType : public LogType {
+public:
+	static constexpr const char *NAME = "ProgressVerification";
+	static constexpr LogLevel LEVEL = LogLevel::LOG_INFO;
+
+	ProgressVerificationLogType();
+
+	static LogicalType GetLogType();
+
+	static string ConstructLogMessage(const string &invariant, const string &operator_name, const string &pipeline,
+	                                  const string &detail);
 };
 
 class ExternalResourceLogType : public LogType {

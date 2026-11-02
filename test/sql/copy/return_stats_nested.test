@@ -1,0 +1,185 @@
+# name: test/sql/copy/return_stats_nested.test
+# description: RETURN_STATS distinguishes null containers from null children
+# group: [copy]
+
+require parquet
+
+statement ok
+CREATE TABLE containers (
+    kind INTEGER,
+    l INTEGER[],
+    s STRUCT(x INTEGER),
+    m MAP(VARCHAR, INTEGER),
+    a INTEGER[2]
+);
+
+statement ok
+INSERT INTO containers VALUES
+    (0, NULL, NULL, NULL, NULL),
+    (1, [NULL], {'x': NULL}, MAP {'key': NULL}, [NULL, NULL]),
+    (2, [], {'x': 42}, MAP {}, [42, 42]);
+
+# Null leaves occur for both null containers and present containers with null children.
+query IIIIIIIII rowsort
+WITH stats AS (
+    COPY containers TO '{TEST_DIR}/container_stats'
+    (FORMAT PARQUET, PARTITION_BY(kind), RETURN_STATS)
+)
+SELECT partition_keys['kind'],
+       column_statistics['"l"'],
+       column_statistics['"l"."element"']['null_count'],
+       column_statistics['"s"'],
+       column_statistics['"s"."x"']['null_count'],
+       column_statistics['"m"'],
+       column_statistics['"m"."value"']['null_count'],
+       column_statistics['"a"'],
+       column_statistics['"a"."element"']['null_count']
+FROM stats;
+----
+0	{null_count=1, num_values=1}	1	{null_count=1, num_values=1}	1	{null_count=1, num_values=1}	1	{null_count=1, num_values=1}	2
+1	{null_count=0, num_values=1}	1	{null_count=0, num_values=1}	1	{null_count=0, num_values=1}	1	{null_count=0, num_values=1}	2
+2	{null_count=0, num_values=1}	1	{null_count=0, num_values=1}	0	{null_count=0, num_values=1}	1	{null_count=0, num_values=1}	0
+
+# No entry is created for the synthetic, repeated key_value struct of a map.
+query I rowsort
+WITH stats AS (
+    COPY containers TO '{TEST_DIR}/container_stats_flat.parquet' (RETURN_STATS)
+)
+SELECT UNNEST(map_keys(column_statistics)) FROM stats;
+----
+"a"
+"a"."element"
+"kind"
+"l"
+"l"."element"
+"m"
+"m"."key"
+"m"."value"
+"s"
+"s"."x"
+
+statement ok
+CREATE TABLE nested_containers (
+    s STRUCT(inner_struct STRUCT(x INTEGER), l STRUCT(y INTEGER)[],
+             a INTEGER[2], m MAP(VARCHAR, STRUCT(z INTEGER))),
+    ll INTEGER[][]
+);
+
+statement ok
+INSERT INTO nested_containers VALUES
+    (NULL, NULL),
+    ({'inner_struct': NULL, 'l': NULL, 'a': NULL, 'm': NULL}, []),
+    ({'inner_struct': {'x': NULL}, 'l': [], 'a': [NULL, NULL], 'm': MAP {}},
+     [NULL, [], [NULL], [1, NULL]]),
+    ({'inner_struct': {'x': 1}, 'l': [NULL, {'y': NULL}, {'y': 1}],
+      'a': [1, NULL], 'm': MAP {'absent': NULL, 'null_field': {'z': NULL}, 'value': {'z': 1}}},
+     [[1]]);
+
+# Each container is null once; null ancestors and empty lists do not count as child nulls.
+query II rowsort
+WITH stats AS (
+    COPY nested_containers TO '{TEST_DIR}/nested_container_stats.parquet' (RETURN_STATS)
+)
+SELECT entry.key, entry.value
+FROM stats, UNNEST(map_entries(column_statistics)) t(entry)
+WHERE NOT map_contains(entry.value, 'column_size_bytes');
+----
+"ll"	{null_count=1, num_values=4}
+"ll"."element"	{null_count=1, num_values=5}
+"s"	{null_count=1, num_values=4}
+"s"."a"	{null_count=1, num_values=3}
+"s"."inner_struct"	{null_count=1, num_values=3}
+"s"."l"	{null_count=1, num_values=3}
+"s"."l"."element"	{null_count=1, num_values=3}
+"s"."m"	{null_count=1, num_values=3}
+"s"."m"."value"	{null_count=1, num_values=3}
+
+# Absent parents produce no child values, including no null child values.
+query II rowsort
+WITH stats AS (
+    COPY (SELECT * FROM nested_containers WHERE s IS NULL)
+    TO '{TEST_DIR}/absent_nested_container_stats.parquet' (RETURN_STATS)
+)
+SELECT entry.key, entry.value
+FROM stats, UNNEST(map_entries(column_statistics)) t(entry)
+WHERE NOT map_contains(entry.value, 'column_size_bytes');
+----
+"ll"	{null_count=1, num_values=1}
+"ll"."element"	{null_count=0, num_values=0}
+"s"	{null_count=1, num_values=1}
+"s"."a"	{null_count=0, num_values=0}
+"s"."inner_struct"	{null_count=0, num_values=0}
+"s"."l"	{null_count=0, num_values=0}
+"s"."l"."element"	{null_count=0, num_values=0}
+"s"."m"	{null_count=0, num_values=0}
+"s"."m"."value"	{null_count=0, num_values=0}
+
+# Statistics collection does not change the values written to Parquet.
+query I
+SELECT count(*) FROM (
+    (SELECT * FROM nested_containers EXCEPT ALL
+     SELECT s, ll FROM read_parquet('{TEST_DIR}/nested_container_stats.parquet'))
+    UNION ALL
+    (SELECT s, ll FROM read_parquet('{TEST_DIR}/nested_container_stats.parquet') EXCEPT ALL
+     SELECT * FROM nested_containers)
+);
+----
+0
+
+# Empty files still expose every container with a zero null count.
+query II rowsort
+WITH stats AS (
+    COPY (SELECT * FROM nested_containers WHERE false)
+    TO '{TEST_DIR}/empty_nested_container_stats.parquet' (RETURN_STATS)
+)
+SELECT entry.key, entry.value
+FROM stats, UNNEST(map_entries(column_statistics)) t(entry)
+WHERE NOT map_contains(entry.value, 'column_size_bytes');
+----
+"ll"	{null_count=0, num_values=0}
+"ll"."element"	{null_count=0, num_values=0}
+"s"	{null_count=0, num_values=0}
+"s"."a"	{null_count=0, num_values=0}
+"s"."inner_struct"	{null_count=0, num_values=0}
+"s"."l"	{null_count=0, num_values=0}
+"s"."l"."element"	{null_count=0, num_values=0}
+"s"."m"	{null_count=0, num_values=0}
+"s"."m"."value"	{null_count=0, num_values=0}
+
+statement ok
+CREATE TABLE repeated_containers AS
+SELECT s, ll FROM range(2048), nested_containers;
+
+# Accumulate over chunks and row groups in both COPY execution modes.
+foreach THREADS 1 4
+
+statement ok
+SET threads={THREADS};
+
+foreach PRESERVE_INSERTION_ORDER true false
+
+statement ok
+SET preserve_insertion_order={PRESERVE_INSERTION_ORDER};
+
+query IIII rowsort
+WITH stats AS (
+    COPY repeated_containers TO '{TEST_DIR}/repeated_container_stats.parquet'
+    (RETURN_STATS, ROW_GROUP_SIZE 2048)
+)
+SELECT count, entry.key, entry.value, extra_info['row_group_count']::INTEGER > 1
+FROM stats, UNNEST(map_entries(column_statistics)) t(entry)
+WHERE NOT map_contains(entry.value, 'column_size_bytes');
+----
+8192	"ll"	{null_count=2048, num_values=8192}	true
+8192	"ll"."element"	{null_count=2048, num_values=10240}	true
+8192	"s"	{null_count=2048, num_values=8192}	true
+8192	"s"."a"	{null_count=2048, num_values=6144}	true
+8192	"s"."inner_struct"	{null_count=2048, num_values=6144}	true
+8192	"s"."l"	{null_count=2048, num_values=6144}	true
+8192	"s"."l"."element"	{null_count=2048, num_values=6144}	true
+8192	"s"."m"	{null_count=2048, num_values=6144}	true
+8192	"s"."m"."value"	{null_count=2048, num_values=6144}	true
+
+endloop
+
+endloop

@@ -1,5 +1,7 @@
 #include "duckdb/storage/metadata/metadata_writer.hpp"
 
+#include "duckdb/common/numeric_utils.hpp"
+
 namespace duckdb {
 
 MetadataWriter::MetadataWriter(MetadataManager &manager, optional_ptr<vector<MetaBlockPointer>> written_pointers_p)

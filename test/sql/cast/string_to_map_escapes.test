@@ -155,3 +155,11 @@ query III
 select $${'a'='NULL'}$$::MAP(VARCHAR, VARCHAR) a, a::VARCHAR::MAP(VARCHAR, VARCHAR) b, a == b
 ----
 {a='NULL'}	{a='NULL'}	true
+
+# Failed child casts invalidate a map when a key fails, but preserve NULL values
+query II
+SELECT
+	TRY_CAST('{x=1}' AS MAP(INTEGER, INTEGER)),
+	TRY_CAST('{1=x}' AS MAP(INTEGER, INTEGER));
+----
+NULL	{1=NULL}

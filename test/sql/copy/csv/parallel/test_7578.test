@@ -6,8 +6,8 @@
 statement ok
 PRAGMA verify_parallelism
 
-query IIIIIIIIII
-select *
+statement ok
+CREATE TABLE explicit_quote AS select *
 from  read_csv('{DATA_DIR}/csv/bug_7578.csv', delim='\t', quote = '`', columns={
   'transaction_id': 'VARCHAR',
   'team_id': 'INT',
@@ -19,20 +19,21 @@ from  read_csv('{DATA_DIR}/csv/bug_7578.csv', delim='\t', quote = '`', columns={
   'tags.transaction_id':'VARCHAR',
   'tags.team_id':'INT',
   'tags':'varchar'
-}) order by all
+})
+
+query IIIIIIIIII
+SELECT * FROM explicit_quote ORDER BY ALL
 ----
 01GXBE9CMV5R0Q4TEXZ4XFXPQR	58	-1	3.91	41	2022-11-22	2023-04-06	01GXBE9CMV5R0Q4TEXZ4XFXPQR	58	{"_journalize_rule": "four score and seven years ago our fathers brought forth upon this continent a new nation conceived in liberty and dedicated to the proposition that all men are created equal. now we are engaged in a great civil war", "transaction_match_id": "1234567", "transaction id": "1234456", "job id": "", "transacting party": "customer", "user id": "1278729", "state": "NY", "event type": "Sale", "product name": "acme", "event description": "", "related transaction id": "11234813", "transaction created at": "2022-11-11T01:12:31", "created on": "2022-11-11T01:12:31", "last modified on": "2022-11-14T09:03:57", "base amount": "48.0000", "tax": "4.120000", "stripe payment id": "ch_1234567889", "stripe payment amount": "54.1100", "stripe payment date": "2022-11-14T09:03:55", "payment fail date": "", "write-off id": "", "write-off date": "", "write-off amount": "", "amount due": "0.0000"}
 01GXBE9CMV5R0Q4TEXZ4XFXPQR	58	1	3.91	39	2022-11-22	2023-04-06	01GXBE9CMV5R0Q4TEXZ4XFXPQR	58	{"_journalize_rule": "four score and seven years ago our fathers brought forth upon this continent a new nation conceived in liberty and dedicated to the proposition that all men are created equal. now we are engaged in a great civil war", "transaction_match_id": "1234567", "transaction id": "1234456", "job id": "", "transacting party": "customer", "user id": "1278729", "state": "NY", "event type": "Sale", "product name": "acme", "event description": "", "related transaction id": "11234813", "transaction created at": "2022-11-11T01:12:31", "created on": "2022-11-11T01:12:31", "last modified on": "2022-11-14T09:03:57", "base amount": "48.0000", "tax": "4.120000", "stripe payment id": "ch_1234567889", "stripe payment amount": "54.1100", "stripe payment date": "2022-11-14T09:03:55", "payment fail date": "", "write-off id": "", "write-off date": "", "write-off amount": "", "amount due": "0.0000"}
 
 
-# FIXME: this fails randomly
-mode skip flaky
-
 statement ok
 pragma threads=2
 
-statement error
-select *
+# The double quotes inside unquoted JSON fields do not require a CSV quote character.
+statement ok
+CREATE TABLE automatic_quote AS select *
 from  read_csv('{DATA_DIR}/csv/bug_7578.csv', delim='\t',  columns={
   'transaction_id': 'VARCHAR',
   'team_id': 'INT',
@@ -45,4 +46,12 @@ from  read_csv('{DATA_DIR}/csv/bug_7578.csv', delim='\t',  columns={
   'tags.team_id':'INT',
   'tags':'varchar'
 })
+
+query I
+SELECT count(*) FROM (
+    (FROM explicit_quote EXCEPT ALL FROM automatic_quote)
+    UNION ALL
+    (FROM automatic_quote EXCEPT ALL FROM explicit_quote)
+);
 ----
+0

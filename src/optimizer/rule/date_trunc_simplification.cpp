@@ -13,6 +13,7 @@
 #include "duckdb/optimizer/matcher/expression_matcher.hpp"
 #include "duckdb/optimizer/expression_rewriter.hpp"
 #include "duckdb/common/enums/date_part_specifier.hpp"
+#include "duckdb/common/types/date.hpp"
 #include "duckdb/function/function.hpp"
 #include "duckdb/function/function_binder.hpp"
 
@@ -35,6 +36,27 @@ DateTruncSimplificationRule::DateTruncSimplificationRule(ExpressionRewriter &rew
 	op->policy = SetMatcher::Policy::UNORDERED;
 
 	root = std::move(op);
+}
+
+static bool TruncatesYearsTowardsZero(const BoundConstantExpression &date_part) {
+	DatePartSpecifier part;
+	if (!TryGetDatePartSpecifier(StringValue::Get(date_part.GetValue()), part)) {
+		return true;
+	}
+	return part == DatePartSpecifier::DECADE || part == DatePartSpecifier::CENTURY ||
+	       part == DatePartSpecifier::MILLENNIUM;
+}
+
+static bool IsAfterFirstYear(const Value &value) {
+	if (value.IsNull()) {
+		return true;
+	}
+	auto date_value = value.DefaultTryCastAs(LogicalType::DATE);
+	if (!date_value || date_value->IsNull()) {
+		return false;
+	}
+	// leave a margin for time zones
+	return Date::ExtractYear(date_value->GetValue<date_t>()) > 1;
 }
 
 unique_ptr<Expression> DateTruncSimplificationRule::Apply(LogicalOperator &op, vector<reference<Expression>> &bindings,
@@ -70,6 +92,12 @@ unique_ptr<Expression> DateTruncSimplificationRule::Apply(LogicalOperator &op, v
 	if (IsInfinity(rhs.GetValue())) {
 		ReplaceDateTruncWithColumn(column_side, constant_side, column_part);
 		changes_made = true;
+		return nullptr;
+	}
+
+	// Truncating to decades, centuries or millennia does not round years before the common era towards the past
+	// (e.g. 150 BC truncates to 100 BC), so the rewrite below is only valid for constants after that
+	if (TruncatesYearsTowardsZero(date_part) && !IsAfterFirstYear(rhs.GetValue())) {
 		return nullptr;
 	}
 

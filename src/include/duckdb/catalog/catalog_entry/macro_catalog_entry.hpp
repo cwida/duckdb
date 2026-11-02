@@ -21,6 +21,8 @@ class MacroCatalogEntry : public FunctionEntry {
 public:
 	MacroCatalogEntry(Catalog &catalog, SchemaCatalogEntry &schema, CreateMacroInfo &info);
 
+	static unique_ptr<MacroCatalogEntry> Create(Catalog &catalog, SchemaCatalogEntry &schema, CreateMacroInfo &info);
+
 	//! The macro function
 	vector<unique_ptr<MacroFunction>> macros;
 

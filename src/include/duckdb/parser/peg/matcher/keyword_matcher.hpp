@@ -35,7 +35,7 @@ public:
 		}
 		auto result = state.AllocateParseResult<KeywordParseResult>(token_text, start_offset, token_length);
 		if (result.HasParseResult()) {
-			result.GetParseResult()->name = name;
+			result.GetParseResult()->SetNameFrom(*this);
 		}
 		return result;
 	}
@@ -55,6 +55,15 @@ public:
 	//! Custom matchers must not be filtered using ordinary literal semantics by default.
 	virtual optional_idx GetDispatchLiteral(const GrammarLiteralTable &) const {
 		return optional_idx();
+	}
+
+	void InitializeFirstSet(MatcherFirstSet &first_set, const GrammarLiteralTable &table) const override {
+		auto literal = GetDispatchLiteral(table);
+		if (literal.IsValid()) {
+			first_set.AddLiteral(literal.GetIndex());
+		} else {
+			first_set.any = true;
+		}
 	}
 
 private:

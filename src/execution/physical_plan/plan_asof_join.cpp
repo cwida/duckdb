@@ -14,6 +14,7 @@
 #include "duckdb/execution/physical_plan_generator.hpp"
 #include "duckdb/function/function_binder.hpp"
 #include "duckdb/planner/binder.hpp"
+#include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/planner/expression/bound_window_expression.hpp"
@@ -40,8 +41,20 @@ static unique_ptr<Expression> CreatePredicateFromConditions(const vector<JoinCon
 	return predicate;
 }
 
-optional_ptr<PhysicalOperator>
-PhysicalPlanGenerator::PlanAsOfLoopJoin(LogicalComparisonJoin &op, PhysicalOperator &probe, PhysicalOperator &build) {
+//! PhysicalHashAggregate requires that the arguments to aggregate functions are bound references.
+//! Binding an aggregate can add casts or collations to the arguments, which then no longer are.
+static bool HasOnlyReferenceChildren(const Expression &aggregate) {
+	for (auto &child : aggregate.Cast<BoundAggregateExpression>().GetChildren()) {
+		if (child->GetExpressionClass() != ExpressionClass::BOUND_REF) {
+			return false;
+		}
+	}
+	return true;
+}
+
+optional_ptr<PhysicalOperator> PhysicalPlanGenerator::PlanAsOfLoopJoin(LogicalComparisonJoin &op,
+                                                                       PhysicalOperator &probe, PhysicalOperator &build,
+                                                                       const idx_t join_cardinality) {
 	// Plan a inverse nested loop join, then aggregate the values to choose the optimal match for each probe row.
 	// Use a row number primary key to handle duplicate probe values.
 	// aggregate the fields to produce at most one match per probe row,
@@ -143,6 +156,7 @@ PhysicalPlanGenerator::PlanAsOfLoopJoin(LogicalComparisonJoin &op, PhysicalOpera
 		case ExpressionType::COMPARE_EQUAL:
 		case ExpressionType::COMPARE_NOTEQUAL:
 		case ExpressionType::COMPARE_DISTINCT_FROM:
+		case ExpressionType::COMPARE_NOT_DISTINCT_FROM:
 			break;
 		default:
 			//	Unsupported NLJ comparison
@@ -209,6 +223,9 @@ PhysicalPlanGenerator::PlanAsOfLoopJoin(LogicalComparisonJoin &op, PhysicalOpera
 		    GetBuiltinAggregateFunction(context, FirstFun::Name, {col_type})->Bind(context, std::move(aggr_children));
 
 		D_ASSERT(col_type == aggr_expr->GetReturnType());
+		if (!HasOnlyReferenceChildren(*aggr_expr)) {
+			return nullptr;
+		}
 		aggregates.emplace_back(std::move(aggr_expr));
 	}
 
@@ -224,21 +241,16 @@ PhysicalPlanGenerator::PlanAsOfLoopJoin(LogicalComparisonJoin &op, PhysicalOpera
 		aggr_children.push_back(std::move(col_ref));
 		auto comp_expr = make_uniq<BoundReferenceExpression>(comp_types.back(), comp_types.size() - 1);
 		aggr_children.push_back(std::move(comp_expr));
-		vector<LogicalType> child_types;
-		for (const auto &child : aggr_children) {
-			child_types.emplace_back(child->GetReturnType());
-		}
 
-		auto &func = arg_min_max_entry;
 		ErrorData error;
-		auto best_function = function_binder.BindFunction(func.name, func.functions, child_types, error);
-		if (!best_function.IsValid()) {
+		auto aggr_expr = function_binder.BindAggregateFunction(arg_min_max_entry, std::move(aggr_children), error);
+		if (!aggr_expr) {
 			return nullptr;
 		}
-		const auto &bound_function = func.functions.GetFunctionByOffset(best_function.GetIndex());
-		auto aggr_expr = function_binder.BindAggregateFunction(bound_function, std::move(aggr_children), nullptr,
-		                                                       AggregateType::NON_DISTINCT);
 		D_ASSERT(col_type == aggr_expr->GetReturnType());
+		if (!HasOnlyReferenceChildren(*aggr_expr)) {
+			return nullptr;
+		}
 		aggregates.emplace_back(std::move(aggr_expr));
 	}
 
@@ -256,15 +268,14 @@ PhysicalPlanGenerator::PlanAsOfLoopJoin(LogicalComparisonJoin &op, PhysicalOpera
 	auto window_types = probe.GetTypes();
 	window_types.emplace_back(pk_type);
 
-	const auto probe_cardinality = op.EstimateCardinality(context);
-	auto &window = Make<PhysicalStreamingWindow>(window_types, std::move(window_select), probe_cardinality);
+	auto &window = Make<PhysicalStreamingWindow>(window_types, std::move(window_select), join_cardinality);
 	window.children.emplace_back(probe);
 
 	auto &join = Make<PhysicalNestedLoopJoin>(join_op, build, window, std::move(join_op.conditions), join_op.join_type,
-	                                          probe_cardinality);
+	                                          join_cardinality);
 
 	// Plan a projection of the compare column
-	auto &comp_proj = Make<PhysicalProjection>(std::move(comp_types), std::move(comp_list), probe_cardinality);
+	auto &comp_proj = Make<PhysicalProjection>(std::move(comp_types), std::move(comp_list), join_cardinality);
 	comp_proj.children.emplace_back(join);
 
 	// Plan an aggregation on the output of the join, grouping by key;
@@ -275,7 +286,7 @@ PhysicalPlanGenerator::PlanAsOfLoopJoin(LogicalComparisonJoin &op, PhysicalOpera
 	groups.emplace_back(std::move(pk_ref));
 
 	auto &aggr =
-	    Make<PhysicalHashAggregate>(context, aggr_types, std::move(aggregates), std::move(groups), probe_cardinality);
+	    Make<PhysicalHashAggregate>(context, aggr_types, std::move(aggregates), std::move(groups), join_cardinality);
 	aggr.children.emplace_back(comp_proj);
 
 	// Project away primary/grouping key
@@ -287,7 +298,7 @@ PhysicalPlanGenerator::PlanAsOfLoopJoin(LogicalComparisonJoin &op, PhysicalOpera
 		project_list.emplace_back(std::move(col_ref));
 	}
 
-	auto &proj = Make<PhysicalProjection>(op.types, std::move(project_list), probe_cardinality);
+	auto &proj = Make<PhysicalProjection>(op.types, std::move(project_list), join_cardinality);
 	proj.children.emplace_back(aggr);
 	return proj;
 }
@@ -341,6 +352,8 @@ PhysicalOperator &PhysicalPlanGenerator::PlanAsOfJoin(LogicalComparisonJoin &op)
 	D_ASSERT(op.children.size() == 2);
 	idx_t lhs_cardinality = op.children[0]->EstimateCardinality(context);
 	idx_t rhs_cardinality = op.children[1]->EstimateCardinality(context);
+	// Estimate the join cardinality before planning the children - planning consumes the bind data of their scans
+	const idx_t join_cardinality = op.EstimateCardinality(context);
 	auto &left = CreatePlan(*op.children[0]);
 	auto &right = CreatePlan(*op.children[1]);
 
@@ -354,9 +367,14 @@ PhysicalOperator &PhysicalPlanGenerator::PlanAsOfJoin(LogicalComparisonJoin &op)
 	if (!force_asof_join || has_predicate) {
 		const idx_t asof_join_threshold = Settings::Get<AsofLoopJoinThresholdSetting>(context);
 		if (has_predicate || (op.children[0]->has_estimated_cardinality && lhs_cardinality < asof_join_threshold)) {
-			auto result = PlanAsOfLoopJoin(op, left, right);
+			auto result = PlanAsOfLoopJoin(op, left, right, join_cardinality);
 			if (result) {
 				return *result;
+			}
+			if (has_predicate) {
+				//	PhysicalAsOfJoin only evaluates the comparisons
+				throw NotImplementedException("Unsupported ASOF JOIN: the join predicate cannot be evaluated together "
+				                              "with these join conditions");
 			}
 		}
 

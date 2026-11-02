@@ -4,12 +4,19 @@
 
 require parquet
 
+# the corrupt file is still reported as such
+statement error
+from read_parquet('data/parquet-testing/broken/fuzzer4360.parquet', filename=true);
+----
+Failed to read
+
+# ...and passing the same option twice is caught before the file is opened
 statement error
 from read_parquet('data/parquet-testing/broken/fuzzer4360.parquet', filename=true, filename=map {
                     1: {name: 'cool_column', type: 'VARCHAR', default_value: NULL}
                   });
 ----
-Failed to read
+<REGEX>:.*Duplicate named argument.*filename.*
 
 statement error
 from read_parquet('data/parquet-testing/broken/fuzzer4362.parquet', union_by_name=true);

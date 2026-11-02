@@ -50,7 +50,12 @@ static unique_ptr<BaseStatistics> VariantExtractPropagateStats(ClientContext &co
 		return nullptr;
 	}
 
-	return VariantStats::WrapExtractedFieldAsVariant(variant_stats, *found_stats);
+	auto result = VariantStats::WrapExtractedFieldAsVariant(variant_stats, *found_stats);
+	if (info.component.lookup_mode == VariantChildLookupMode::BY_INDEX) {
+		// Element statistics do not account for NULLs from out-of-bounds array indexes.
+		result->SetHasNull();
+	}
+	return result;
 }
 
 static unique_ptr<FunctionData> VariantExtractBind(BindScalarFunctionInput &input) {
@@ -113,7 +118,15 @@ static bool TryShreddedExtractRecursive(const Vector &input, const vector<Varian
 	}
 	// first entry is "typed_value"
 	auto &typed_entries = StructVector::GetEntries(input);
+	if (typed_entries.empty()) {
+		// An empty shredded STRUCT has no typed_value child.
+		return false;
+	}
 	auto &typed_value = typed_entries[0];
+	if (typed_value.GetType().id() != LogicalTypeId::STRUCT) {
+		// A shredded wrapper can also contain a primitive or an array.
+		return false;
+	}
 
 	// find the type in the struct type
 	auto &child_types = StructType::GetChildTypes(typed_value.GetType());

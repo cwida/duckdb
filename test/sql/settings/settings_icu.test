@@ -34,3 +34,13 @@ statement error
 SET Calendar='muslim';
 ----
 islamic
+
+statement error
+SET TimeZone = NULL;
+----
+TimeZone setting cannot be NULL
+
+statement error
+SET Calendar = NULL;
+----
+Calendar setting cannot be NULL

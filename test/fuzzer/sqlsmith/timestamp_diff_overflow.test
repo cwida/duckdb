@@ -14,12 +14,13 @@ INSERT INTO ts VALUES('294247-01-10 04:00:54.775806');
 statement ok
 INSERT INTO ts VALUES(NULL);
 
-statement error
+# the difference fits an INTERVAL even where the microseconds overflow
+query I
 select
-  subtract(
+  count(subtract(
     cast(now() as timestamp),
-    cast(ref_0.timestamp as timestamp)) as c10
+    cast(ref_0.timestamp as timestamp))) as c10
 from
   ts as ref_0
 ----
-Conversion Error: Timestamp difference is out of bounds
+2

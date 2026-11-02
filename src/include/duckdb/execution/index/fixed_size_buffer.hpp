@@ -8,7 +8,7 @@
 
 #pragma once
 
-#include "duckdb/storage/partial_block_manager.hpp"
+#include "duckdb/storage/block_packable.hpp"
 #include "duckdb/storage/buffer/block_handle.hpp"
 #include "duckdb/storage/buffer/buffer_handle.hpp"
 #include "duckdb/storage/block_manager.hpp"
@@ -16,23 +16,11 @@
 namespace duckdb {
 
 class FixedSizeAllocator;
-class MetadataWriter;
-
-struct PartialBlockForIndex : public PartialBlock {
-public:
-	PartialBlockForIndex(PartialBlockState state, BlockManager &block_manager,
-	                     const shared_ptr<BlockHandle> &block_handle);
-	~PartialBlockForIndex() override {};
-
-public:
-	void Flush(QueryContext context, const idx_t free_space_left) override;
-	void Clear() override;
-	void Merge(PartialBlock &other, idx_t offset, idx_t other_size) override;
-};
+class PartialBlockManager;
 
 //! A fixed-size buffer holds fixed-size segments of data. It lazily deserializes a buffer, if on-disk and not
 //! in memory, and it only serializes dirty and non-written buffers to disk during serialization.
-class FixedSizeBuffer {
+class FixedSizeBuffer : public BlockPackable {
 	friend class FixedSizeAllocator;
 	friend class SegmentHandle;
 
@@ -42,6 +30,8 @@ public:
 	static constexpr uint8_t SHIFT[] = {32, 16, 8, 4, 2, 1};
 
 public:
+	//! Constructor for checkpoint metadata awaiting its packed backing buffer
+	FixedSizeBuffer(BlockManager &block_manager, idx_t segment_count, idx_t allocation_size);
 	//! Constructor for a new in-memory buffer
 	explicit FixedSizeBuffer(BlockManager &block_manager, MemoryTag memory_tag);
 	FixedSizeBuffer(BlockManager &block_manager, const idx_t segment_count, const idx_t allocation_size,
@@ -50,7 +40,15 @@ public:
 	FixedSizeBuffer(BlockManager &block_manager, const idx_t segment_count, const idx_t allocation_size,
 	                const BlockPointer &block_pointer);
 
-	~FixedSizeBuffer();
+	~FixedSizeBuffer() override;
+
+public:
+	void Finalize(shared_ptr<BlockHandle> block_handle_p, uint32_t offset) override;
+
+public:
+	bool IsEmpty() const {
+		return segment_count == 0;
+	}
 
 private:
 	//! Returns a pointer to the buffer in memory, and calls Deserialize, if the buffer is not in memory.
@@ -76,16 +74,25 @@ private:
 		return block_pointer.IsValid();
 	}
 
-	//! Serializes a buffer, if dirty or not on disk.
-	void Serialize(PartialBlockManager &partial_block_manager, const idx_t available_segments, const idx_t segment_size,
-	               const idx_t bitmask_offset);
+	//! Returns true, if the block is modified or does not exist on-disk
+	bool RequiresPersist() const {
+		return dirty || !OnDisk();
+	}
+
+	//! Constructs a new FixedSizeBuffer based on the live FixedSizeBuffer, which is prepared for
+	//! serialization without affecting the in-memory buffer.
+	shared_ptr<FixedSizeBuffer> Persist(PartialBlockManager &partial_block_manager, const idx_t available_segments,
+	                                    const idx_t segment_size, const idx_t bitmask_offset);
 
 	//! Load a buffer from disk, if not in memory.
 	void LoadFromDisk();
-	//! Returns the first free offset in a bitmask
-	uint32_t GetOffset(const idx_t bitmask_count, const idx_t available_segments);
+	//! Reserves a free slot in the buffer and returns the corresponding offset, marks the buffer as modified.
+	uint32_t AllocateSegment(const idx_t bitmask_count, const idx_t available_segments);
+	//! Frees the slot at the given offset in the current buffer.
+	void FreeSegment(const idx_t offset, const idx_t available_segments);
 	//! Sets the allocation size, if dirty
 	void SetAllocationSize(const idx_t available_segments, const idx_t segment_size, const idx_t bitmask_offset);
+	idx_t GetNewAllocationSize(const idx_t available_segments, const idx_t segment_size, const idx_t bitmask_offset);
 
 private:
 	//! Block manager of the database instance

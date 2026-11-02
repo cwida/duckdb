@@ -1,0 +1,28 @@
+# name: test/sql/function/string/test_similar_to_escape.test
+# description: ESCAPE is not passed as the regex options to SIMILAR TO
+# group: [string]
+
+statement error
+SELECT 'abc' SIMILAR TO 'ABC' ESCAPE 'i';
+----
+<REGEX>:.*ESCAPE clause is not supported.*
+
+statement error
+SELECT 'abc' NOT SIMILAR TO 'ABC' ESCAPE 'i';
+----
+<REGEX>:.*ESCAPE clause is not supported.*
+
+statement error
+SELECT 'a.c' SIMILAR TO 'a#.c' ESCAPE '#';
+----
+<REGEX>:.*ESCAPE clause is not supported.*
+
+query I
+SELECT 'abc' SIMILAR TO 'abc';
+----
+true
+
+query I
+SELECT 'a%c' LIKE 'a#%c' ESCAPE '#';
+----
+true

@@ -1102,6 +1102,12 @@
         "id": 203,
         "name": "logical_plan_opt",
         "type": "string"
+      },
+      {
+        "id": 204,
+        "name": "sql_output_names",
+        "type": "vector<Identifier>",
+        "default": "vector<Identifier>()"
       }
     ],
     "constructor": [

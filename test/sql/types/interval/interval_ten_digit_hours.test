@@ -1,0 +1,43 @@
+# name: test/sql/types/interval/interval_ten_digit_hours.test
+# description: The text of an interval with ten digit hours casts back to the interval
+# group: [interval]
+
+query II
+SELECT i::VARCHAR, i::VARCHAR::INTERVAL = i FROM (SELECT to_microseconds(3600000000 * 1000000000) AS i)
+----
+1000000000:00:00	true
+
+query II
+SELECT i::VARCHAR, i::VARCHAR::INTERVAL = i FROM (SELECT to_microseconds(9223372036854775807) AS i)
+----
+2562047788:00:54.775807	true
+
+query I
+SELECT '-1000000000:00:00'::INTERVAL = -to_microseconds(3600000000 * 1000000000)
+----
+true
+
+statement error
+SELECT '2562047788:00:54.775808'::INTERVAL
+----
+Could not convert string
+
+statement error
+SELECT '25620477880:00:00'::INTERVAL
+----
+Could not convert string
+
+statement error
+SELECT '1000000000:00:00'::TIME
+----
+Conversion Error
+
+query II
+SELECT i::VARCHAR, i::VARCHAR::INTERVAL = i FROM (SELECT to_microseconds(-9223372036854775807 - 1) AS i)
+----
+-2562047788:00:54.775808	true
+
+statement error
+SELECT '-2562047788:00:54.775809'::INTERVAL
+----
+Could not convert string

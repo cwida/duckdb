@@ -135,6 +135,15 @@ void LogicalOperatorDeepCopy::VisitOperator(LogicalOperator &op) {
 		ReplaceTableIndex<LogicalDummyScan>(op);
 		break;
 	}
+	case LogicalOperatorType::LOGICAL_EMPTY_RESULT: {
+		auto &empty_result = op.Cast<LogicalEmptyResult>();
+		for (auto &binding : empty_result.bindings) {
+			if (table_idx_replacements.find(binding.table_index) == table_idx_replacements.end()) {
+				table_idx_replacements[binding.table_index] = binder.GenerateTableIndex();
+			}
+		}
+		break;
+	}
 	case LogicalOperatorType::LOGICAL_CTE_REF: {
 		ReplaceTableIndex<LogicalCTERef>(op);
 		break;
@@ -237,6 +246,16 @@ void TableBindingReplacer::VisitOperator(LogicalOperator &op) {
 	case LogicalOperatorType::LOGICAL_SECURE_VIEW: {
 		auto &view = op.Cast<LogicalSecureView>();
 		for (auto &binding : view.output_bindings) {
+			auto entry = table_idx_replacements.find(binding.table_index);
+			if (entry != table_idx_replacements.end()) {
+				binding.table_index = entry->second;
+			}
+		}
+		break;
+	}
+	case LogicalOperatorType::LOGICAL_EMPTY_RESULT: {
+		auto &empty_result = op.Cast<LogicalEmptyResult>();
+		for (auto &binding : empty_result.bindings) {
 			auto entry = table_idx_replacements.find(binding.table_index);
 			if (entry != table_idx_replacements.end()) {
 				binding.table_index = entry->second;

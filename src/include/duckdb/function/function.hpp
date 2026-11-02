@@ -37,6 +37,7 @@ class ScalarFunction;
 class TableFunctionSet;
 class TableFunction;
 class SimpleFunction;
+class FunctionProperties;
 class WindowFunction;
 class WindowFunctionSet;
 class BoundSimpleFunction;
@@ -47,8 +48,10 @@ struct PragmaInfo;
 enum class FunctionNullHandling : uint8_t { DEFAULT_NULL_HANDLING = 0, SPECIAL_HANDLING = 1 };
 //! The stability of the function, used by the optimizer
 //! CONSISTENT              -> this function always returns the same result when given the same input, no variance
-//! CONSISTENT_WITHIN_QUERY -> this function returns the same result WITHIN the same query/transaction
-//!                            but the result might change across queries (e.g. NOW(), CURRENT_TIME)
+//! CONSISTENT_WITHIN_QUERY -> this function returns the same result for the same input WITHIN the same query, but the
+//!                            result might change across queries (e.g. NOW(), or functions whose bind reads settings
+//!                            such as TimeZone). The optimizer treats it as consistent, statements that call it are
+//!                            bound again at every execution, and index keys cannot contain it
 //! VOLATILE                -> the result of this function might change per row (e.g. RANDOM())
 enum class FunctionStability : uint8_t { CONSISTENT = 0, VOLATILE = 1, CONSISTENT_WITHIN_QUERY = 2 };
 
@@ -56,10 +59,14 @@ enum class FunctionStability : uint8_t { CONSISTENT = 0, VOLATILE = 1, CONSISTEN
 //! PROPAGATE_COLLATIONS        -> this function combines collation from its inputs and emits them again (default)
 //! PUSH_COMBINABLE_COLLATIONS  -> combinable collations are executed for the input arguments
 //! IGNORE_COLLATIONS           -> collations are completely ignored by the function
+//! PUSH_DISTINCT_COLLATIONS    -> aggregate DISTINCT arguments are replaced by their comparison keys
+//!                               Only valid for aggregates that can consume keys instead of original values.
+//!                               Ordinary (non-DISTINCT) calls keep their original arguments.
 enum class FunctionCollationHandling : uint8_t {
 	PROPAGATE_COLLATIONS = 0,
 	PUSH_COMBINABLE_COLLATIONS = 1,
-	IGNORE_COLLATIONS = 2
+	IGNORE_COLLATIONS = 2,
+	PUSH_DISTINCT_COLLATIONS = 3
 };
 
 struct FunctionData {
@@ -115,17 +122,36 @@ struct FunctionLocalState {
 
 struct FunctionParameters {
 	vector<Value> values;
-	named_parameter_map_t named_parameters;
+	named_argument_map_t named_parameters;
+	//! The pragma function the parameters were bound for
+	optional_ptr<const PragmaFunction> function;
+};
+
+//! How a parameter receives its arguments, mirroring Python's parameter kinds, in the order a signature declares them
+//! POSITIONAL_ONLY -> declared before "/", can only be passed by position. Its name is invisible to a caller, so an
+//!                    argument of that name is unmatched and reaches "**kwargs" instead
+//! STANDARD        -> can be passed by position or by name
+//! VAR_POSITIONAL  -> "*args", receives all remaining positional arguments
+//! KEYWORD_ONLY    -> declared after "*args", can only be passed by name
+//! VAR_KEYWORD     -> "**kwargs", receives all named arguments that do not match another parameter
+enum class FunctionParameterKind : uint8_t {
+	POSITIONAL_ONLY = 0,
+	STANDARD = 1,
+	VAR_POSITIONAL = 2,
+	KEYWORD_ONLY = 3,
+	VAR_KEYWORD = 4
 };
 
 class FunctionParameter {
 public:
-	FunctionParameter(Identifier name, LogicalType type)
-	    : name(std::move(name)), type(std::move(type)), default_value(nullptr) {
-	}
-
-	FunctionParameter(Identifier name, LogicalType type, Value value)
-	    : name(std::move(name)), type(std::move(type)), default_value(make_shared_ptr<Value>(std::move(value))) {
+	FunctionParameter(Identifier name, LogicalType type, optional<Value> value = {},
+	                  FunctionParameterKind kind = FunctionParameterKind::STANDARD)
+	    : name(std::move(name)), type(std::move(type)), kind(kind) {
+		if (value) {
+			default_value = make_shared_ptr<Value>(std::move(*value));
+		} else {
+			default_value = nullptr;
+		}
 	}
 
 	string ToString() const;
@@ -157,30 +183,91 @@ public:
 		return default_value != nullptr;
 	}
 
+	auto GetKind() const -> FunctionParameterKind {
+		return kind;
+	}
+	//! Whether this is a "*args" or "**kwargs" parameter
+	auto IsVariadic() const -> bool {
+		return kind == FunctionParameterKind::VAR_POSITIONAL || kind == FunctionParameterKind::VAR_KEYWORD;
+	}
+	//! Whether a caller can pass this parameter by position
+	auto AcceptsPosition() const -> bool {
+		return kind == FunctionParameterKind::STANDARD || kind == FunctionParameterKind::POSITIONAL_ONLY;
+	}
+	//! Whether a caller can pass this parameter by name
+	auto AcceptsName() const -> bool {
+		return kind == FunctionParameterKind::STANDARD || kind == FunctionParameterKind::KEYWORD_ONLY;
+	}
+
 private:
 	Identifier name;
 	LogicalType type;
 	shared_ptr<Value> default_value;
+	FunctionParameterKind kind;
+};
+
+//! An option a function receives through its "**kwargs" parameter
+class TypedKwarg {
+public:
+	TypedKwarg(Identifier name, LogicalType type);
+
+	//! The name the function receives the option under
+	Identifier name;
+	//! Other names a caller can pass the option by
+	vector<Identifier> aliases;
+	//! The type a passed value is cast to - ANY passes it through as-is, for the function to check
+	LogicalType type;
+
+public:
+	DUCKDB_API bool operator==(const TypedKwarg &other) const;
+	DUCKDB_API bool operator!=(const TypedKwarg &other) const;
+	DUCKDB_API string ToString() const;
+};
+
+//! The "options" a function receives through its "**kwargs" parameter
+//! This is basically just a way to have the binder enforce a set of accepted types and names
+//! as trailing keyword-only parameters, without having to declare them as actual parameters.
+//! "options" are not really part of the function signature, so they do not affect overload resolution
+class TypedKwargs {
+public:
+	//! Adds an option - a call that leaves it out does not pass it, the function decides what that means
+	DUCKDB_API TypedKwargs &Add(Identifier name, LogicalType type);
+	//! Adds another name for the option added last
+	DUCKDB_API TypedKwargs &Alias(Identifier alias);
+
+	//! A schema holding the options of this one followed by those of the other
+	DUCKDB_API TypedKwargs Merge(const TypedKwargs &other) const;
+
+	//! The option a name or an alias refers to, or nullptr if the schema declares no such name
+	DUCKDB_API optional_ptr<const TypedKwarg> Find(const Identifier &name) const;
+	//! The options in the order they were added
+	DUCKDB_API const vector<TypedKwarg> &GetOptions() const;
+	//! Every name and alias the schema declares
+	DUCKDB_API vector<Identifier> GetNames() const;
+
+	DUCKDB_API bool operator==(const TypedKwargs &other) const;
+	DUCKDB_API bool operator!=(const TypedKwargs &other) const;
+	DUCKDB_API hash_t Hash() const;
+
+	//! Adding does not check the names - this does, once the schema is complete
+	//! @throws InvalidInputException if a name or an alias is declared twice
+	DUCKDB_API void Verify() const;
+
+private:
+	vector<TypedKwarg> options;
 };
 
 class FunctionSignature {
 public:
 	FunctionSignature() = default;
 
-	FunctionSignature(vector<LogicalType> arguments, LogicalType varargs, LogicalType return_type)
-	    : varargs(std::move(varargs)), return_type(std::move(return_type)) {
+	FunctionSignature(vector<FunctionParameter> parameters, LogicalType return_type)
+	    : parameters(std::move(parameters)), return_type(std::move(return_type)) {
+	}
+	FunctionSignature(vector<LogicalType> arguments, LogicalType return_type) : return_type(std::move(return_type)) {
 		for (auto &arg : arguments) {
 			AddParameter(std::move(arg));
 		}
-	}
-	FunctionSignature(vector<FunctionParameter> parameters, LogicalType return_type)
-	    : parameters(std::move(parameters)), varargs(LogicalTypeId::INVALID), return_type(std::move(return_type)) {
-	}
-	FunctionSignature(vector<FunctionParameter> parameters, LogicalType varargs, LogicalType return_type)
-	    : parameters(std::move(parameters)), varargs(std::move(varargs)), return_type(std::move(return_type)) {
-	}
-	FunctionSignature(vector<LogicalType> arguments, LogicalType return_type)
-	    : FunctionSignature(std::move(arguments), LogicalType(LogicalTypeId::INVALID), std::move(return_type)) {
 	}
 
 	string ToString() const;
@@ -189,6 +276,15 @@ public:
 	bool operator!=(const FunctionSignature &other) const;
 
 	bool Equal(const FunctionSignature &other) const;
+	//! Whether both declare the same overload. As in C++ and Postgres, the types identify an overload, and a call that
+	//! matches two distinct ones is reported as ambiguous when it is made. They are the same when:
+	//! - the parameters a caller can pass by position match in order, by type - whatever their names, and whether
+	//!   they are positional-only or not
+	//! - "*args" and "**kwargs" match, by type
+	//! - the keyword-only parameters match by name and type, in any order - a caller can only pass them by name
+	//! Defaults and the options of "**kwargs" are ignored: every call the overload without a default accepts, both
+	//! accept at the same cost, and options take no part in overload selection
+	DUCKDB_API bool IsSameOverload(const FunctionSignature &other) const;
 
 public:
 	auto GetParameter(idx_t index) const -> const FunctionParameter & {
@@ -203,7 +299,6 @@ public:
 	auto GetParameterCount() const -> idx_t {
 		return parameters.size();
 	}
-
 	auto GetReturnType() const -> const LogicalType & {
 		return return_type;
 	}
@@ -211,81 +306,124 @@ public:
 		return_type = std::move(return_type_p);
 	}
 
-	auto HasVarArgs() const -> bool {
-		return varargs.id() != LogicalTypeId::INVALID;
-	}
-	auto GetVarArgs() const -> const LogicalType & {
-		return varargs;
-	}
-	auto SetVarArgs(LogicalType varargs_p) -> void {
-		varargs = std::move(varargs_p);
+	auto IsVariadic() const -> bool {
+		for (auto &param : parameters) {
+			if (param.IsVariadic()) {
+				return true;
+			}
+		}
+		return false;
 	}
 
-	auto AddParameter(Identifier name, LogicalType type, Value default_value) -> FunctionSignature & {
-		parameters.emplace_back(std::move(name), std::move(type), std::move(default_value));
+	auto GetArgs() const -> optional_ptr<const FunctionParameter> {
+		for (auto &param : parameters) {
+			if (param.GetKind() == FunctionParameterKind::VAR_POSITIONAL) {
+				return &param;
+			}
+		}
+		return nullptr;
+	}
+
+	auto GetKwargs() const -> optional_ptr<const FunctionParameter> {
+		for (auto &param : parameters) {
+			if (param.GetKind() == FunctionParameterKind::VAR_KEYWORD) {
+				return &param;
+			}
+		}
+		return nullptr;
+	}
+
+	//! The schema the "**kwargs" parameter receives, or nullptr if it accepts any kwargs
+	auto GetTypedKwargs() const -> optional_ptr<const TypedKwargs> {
+		return typed_kwargs.get();
+	}
+
+	auto AddParameter(Identifier name, LogicalType type, optional<Value> default_value = {},
+	                  FunctionParameterKind kind = FunctionParameterKind::STANDARD) -> FunctionSignature & {
+		parameters.emplace_back(std::move(name), std::move(type), std::move(default_value), kind);
 		return *this;
 	}
-
-	auto AddParameter(Identifier name, LogicalType type) -> FunctionSignature & {
-		parameters.emplace_back(std::move(name), std::move(type));
-		return *this;
-	}
-
+	//! Adds a positional-only parameter named "col<N>", after its position - a caller cannot pass it by a name that
+	//! was never declared
 	auto AddParameter(LogicalType type) -> FunctionSignature & {
-		auto name = StringUtil::Format("col%d", parameters.size());
-		parameters.emplace_back(Identifier(name), std::move(type));
-		return *this;
+		auto name = Identifier(StringUtil::Format("col%d", parameters.size()));
+		return AddPositionalOnly(std::move(name), std::move(type));
+	}
+	auto AddKeywordOnly(Identifier name, LogicalType type, optional<Value> default_value = {}) -> FunctionSignature & {
+		return AddParameter(std::move(name), std::move(type), std::move(default_value),
+		                    FunctionParameterKind::KEYWORD_ONLY);
+	}
+	auto AddPositionalOnly(Identifier name, LogicalType type) -> FunctionSignature & {
+		return AddParameter(std::move(name), std::move(type), {}, FunctionParameterKind::POSITIONAL_ONLY);
+	}
+	auto AddArgs(Identifier name, LogicalType type) -> FunctionSignature & {
+		return AddParameter(std::move(name), std::move(type), {}, FunctionParameterKind::VAR_POSITIONAL);
+	}
+	auto AddKwargs(Identifier name, LogicalType type) -> FunctionSignature & {
+		return AddParameter(std::move(name), std::move(type), {}, FunctionParameterKind::VAR_KEYWORD);
 	}
 
+	//! Adds a "**name" parameter that receives only the options of the given schema
+	DUCKDB_API auto AddTypedKwargs(Identifier name, TypedKwargs schema) -> FunctionSignature &;
+	//! The same, with the schema declared by the given callback
+	DUCKDB_API auto WithTypedKwargs(Identifier name, const std::function<void(TypedKwargs &)> &configure)
+	    -> FunctionSignature &;
+	//! Adds options to the schema of the "**kwargs" parameter
+	//! @throws InternalException if the signature has no typed "**kwargs" parameter
+	DUCKDB_API auto ExtendTypedKwargs(const std::function<void(TypedKwargs &)> &configure) -> FunctionSignature &;
+
+	//! Returns the index of the parameter a caller can pass by the given name. Skips the variadic parameters and the
+	//! positional-only ones, whose names a caller cannot use
 	auto GetParameterIndexByName(const Identifier &name) const -> optional_idx {
 		// Parameter names are matched case-insensitively, consistent with SQL identifier semantics.
 		for (idx_t i = 0; i < parameters.size(); i++) {
-			if (parameters[i].GetName() == name) {
+			if (parameters[i].AcceptsName() && parameters[i].GetName() == name) {
 				return i;
 			}
 		}
 		return optional_idx();
 	}
 
+	//! The number of leading parameters that can be passed by position
+	auto GetPositionalParameterCount() const -> idx_t {
+		idx_t result = 0;
+		while (result < parameters.size() && parameters[result].AcceptsPosition()) {
+			result++;
+		}
+		return result;
+	}
+
+	//! The number of leading parameters that can ONLY be passed by position
+	auto GetPositionalOnlyParameterCount() const -> idx_t {
+		idx_t result = 0;
+		while (result < parameters.size() && parameters[result].GetKind() == FunctionParameterKind::POSITIONAL_ONLY) {
+			result++;
+		}
+		return result;
+	}
+
 	auto GetRequiredParameterCount() const -> idx_t {
 		idx_t result = 0;
 		for (const auto &param : parameters) {
-			if (!param.HasDefaultValue()) {
+			if (!param.IsVariadic() && !param.HasDefaultValue()) {
 				result++;
 			}
 		}
 		return result;
 	}
 
-	void Verify() const {
-		// Check for duplicate parameter names
-		identifier_set_t seen_names;
-		for (const auto &param : parameters) {
-			if (seen_names.find(param.GetName()) != seen_names.end()) {
-				throw InvalidInputException("Duplicate parameter name: %s", param.GetName());
-			}
-			seen_names.insert(param.GetName());
-		}
+	//! Puts the named arguments in binding order: every keyword-only parameter in declaration order, with its default
+	//! if the call left it out, then the arguments "**kwargs" receives in the order they were passed
+	//! A default is cast to its parameter's type, as FunctionBinder::CastToParameterType casts an argument
+	DUCKDB_API void FillNamedDefaults(ClientContext &context, named_argument_map_t &named_parameters) const;
 
-		// Also check for default values that are not at the end of the parameter list
-		bool found_default_value = false;
-		for (const auto &param : parameters) {
-			if (param.HasDefaultValue()) {
-				found_default_value = true;
-			} else if (found_default_value) {
-				throw InvalidInputException(
-				    "Parameters with default values must be at the end of the parameter list. Parameter '%s' does not "
-				    "have a default value but follows a parameter with a default value.",
-				    param.GetName());
-			}
-		}
-	}
+	DUCKDB_API void Verify() const;
 
 	hash_t Hash() const;
 
 private:
 	vector<FunctionParameter> parameters;
-	LogicalType varargs;
+	shared_ptr<TypedKwargs> typed_kwargs; // optional "schema" for the accepted **kwargs
 	LogicalType return_type;
 };
 
@@ -344,14 +482,13 @@ public:
 	DUCKDB_API static string CallToString(const Identifier &catalog_name, const Identifier &schema_name,
 	                                      const Identifier &name, const vector<LogicalType> &arguments,
 	                                      const LogicalType &varargs, const LogicalType &return_type);
-	//! Returns the formatted string name(arg1, arg2.., np1=a, np2=b, ...)
-	DUCKDB_API static string CallToString(const Identifier &catalog_name, const Identifier &schema_name,
-	                                      const Identifier &name, const vector<LogicalType> &arguments,
-	                                      const named_parameter_type_map_t &named_parameters);
 
 private:
 	QualifiedName qualified_name;
 };
+
+//! The kinds of functions that are selected by their arguments - every subclass of SimpleFunction is one kind
+enum class FunctionKind : uint8_t { SCALAR, AGGREGATE, WINDOW, TABLE, PRAGMA, TYPE };
 
 class SimpleFunction : public Function {
 public:
@@ -364,8 +501,15 @@ protected:
 	FunctionSignature signature;
 
 public:
-	DUCKDB_API string ToString() const;
+	//! How the function reads in errors, e.g. as a candidate of a call
+	DUCKDB_API virtual string ToString() const;
+	//! What kind of function this is
+	virtual FunctionKind GetKind() const = 0;
 	DUCKDB_API hash_t Hash() const;
+	//! The properties of scalar, aggregate and window functions - other functions have none
+	virtual auto GetFunctionProperties() const -> optional_ptr<const FunctionProperties> {
+		return nullptr;
+	}
 
 	FunctionSignature &GetSignature() {
 		return signature;
@@ -374,64 +518,11 @@ public:
 		return signature;
 	}
 
-	const LogicalType &GetVarArgs() const {
-		return signature.GetVarArgs();
-	}
-
-	void SetVarArgs(LogicalType varargs_p) {
-		signature.SetVarArgs(std::move(varargs_p));
-	}
-
-	DUCKDB_API bool HasVarArgs() const {
-		return signature.HasVarArgs();
-	}
-
 	void SetReturnType(LogicalType return_type_p) {
 		signature.SetReturnType(std::move(return_type_p));
 	}
 	const LogicalType &GetReturnType() const {
 		return signature.GetReturnType();
-	}
-};
-
-class SimpleNamedParameterFunction : public Function {
-public:
-	DUCKDB_API SimpleNamedParameterFunction(Identifier name, vector<LogicalType> arguments,
-	                                        LogicalType varargs = LogicalType(LogicalTypeId::INVALID));
-	DUCKDB_API ~SimpleNamedParameterFunction() override;
-
-	//! The set of arguments of the function
-	vector<LogicalType> arguments;
-	//! The type of varargs to support, or LogicalTypeId::INVALID if the function does not accept variable length
-	//! arguments
-	LogicalType varargs;
-
-	//! The named parameters of the function
-	named_parameter_type_map_t named_parameters;
-
-public:
-	DUCKDB_API virtual string ToString() const;
-	DUCKDB_API bool HasNamedParameters() const;
-
-	vector<LogicalType> &GetArguments() {
-		return arguments;
-	}
-	const vector<LogicalType> &GetArguments() const {
-		return arguments;
-	}
-
-	const LogicalType &GetVarArgs() const {
-		return varargs;
-	}
-	LogicalType &GetVarArgs() {
-		return varargs;
-	}
-	// TODO: Dont expose mutable accessor
-	void SetVarArgs(LogicalType varargs_p) {
-		varargs = std::move(varargs_p);
-	}
-	bool HasVarArgs() const {
-		return varargs.id() != LogicalTypeId::INVALID;
 	}
 };
 
@@ -521,6 +612,10 @@ protected:
 
 	//! The set of arguments of the function
 	vector<LogicalType> arguments;
+	//! The number of leading arguments that are matched to the parameters by position
+	idx_t positional_arguments = 0;
+	//! The names of the remaining arguments, which are matched to the parameters by name
+	vector<Identifier> named_arguments;
 	//! Return type of the function
 	LogicalType return_type;
 
@@ -560,6 +655,33 @@ public:
 		return arguments;
 	}
 
+	auto GetPositionalArgumentCount() const -> idx_t {
+		return positional_arguments;
+	}
+	auto GetNamedArguments() const -> const vector<Identifier> & {
+		return named_arguments;
+	}
+	auto SetNamedArguments(idx_t positional_arguments_p, vector<Identifier> named_arguments_p) -> void {
+		positional_arguments = positional_arguments_p;
+		named_arguments = std::move(named_arguments_p);
+	}
+
+	//! The arguments are laid out as [standard | *args | keyword-only | **kwargs], these need the signature of the
+	//! function to tell them apart
+	DUCKDB_API auto GetStandardArgumentCount(const FunctionSignature &signature) const -> idx_t;
+	DUCKDB_API auto GetVarArgsCount(const FunctionSignature &signature) const -> idx_t;
+	DUCKDB_API auto GetKeywordOnlyArgumentCount(const FunctionSignature &signature) const -> idx_t;
+	DUCKDB_API auto GetKwargsCount(const FunctionSignature &signature) const -> idx_t;
+
+	//! Records the arguments of a call with constant arguments, as the function binder placed them for `signature`
+	DUCKDB_API void SetCallArguments(const FunctionSignature &signature, const vector<Value> &parameters,
+	                                 const named_argument_map_t &named_parameters);
+
+protected:
+	DUCKDB_API auto GetArgumentParameterKind(const FunctionSignature &signature, idx_t argument_index) const
+	    -> FunctionParameterKind;
+
+public:
 	auto GetReturnType() const -> const LogicalType & {
 		return return_type;
 	}
@@ -576,9 +698,8 @@ public:
 class BindFunctionInput {
 public:
 	BindFunctionInput(ClientContext &context_p, const BoundSimpleFunction &function_p,
-	                  vector<unique_ptr<Expression>> &arguments_p,
-	                  optional_ptr<const vector<Identifier>> argument_names_p)
-	    : context(context_p), function(function_p), arguments(arguments_p), argument_names(argument_names_p) {
+	                  const FunctionSignature &signature_p, vector<unique_ptr<Expression>> &arguments_p)
+	    : context(context_p), function(function_p), signature(signature_p), arguments(arguments_p) {
 	}
 
 	ClientContext &GetClientContext() const {
@@ -587,10 +708,9 @@ public:
 	vector<unique_ptr<Expression>> &GetArguments() const {
 		return arguments;
 	}
-	//! The resolved name of every argument, parallel to GetArguments(). Not set if the names are unavailable.
-	optional_ptr<const vector<Identifier>> GetArgumentNames() const {
-		return argument_names;
-	}
+	//! The resolved name of an argument: the parameter name for standard and keyword-only parameters, the name the
+	//! caller wrote for "**kwargs", and an empty name for "*args"
+	DUCKDB_API const Identifier &GetArgumentName(idx_t arg_idx) const;
 
 	//! Get the constant value of an argument.
 	//! Throws ParameterNotResolvedException if unresolved, and BinderException for non-constant arguments.
@@ -607,10 +727,11 @@ public:
 	}
 
 	//! Try to get the constant value of an argument.
-	//! Never throws: returns none if the argument...
+	//! Returns none if the argument...
 	//! - is not constant (unresolved parameter or a non-foldable expression)
 	//! - index is out of range
 	//! - was not found when looking up by name
+	//! - raises an evaluation error (internal errors still propagate)
 	//! Use this when a non-constant argument should fall back to the runtime value instead of being an error.
 	DUCKDB_API optional<Value> TryGetConstant(idx_t arg_idx) const;
 	DUCKDB_API optional<Value> TryGetConstant(const Identifier &name) const;
@@ -621,10 +742,9 @@ private:
 
 private:
 	ClientContext &context;
-	//! Only used to name the function in error messages
 	const BoundSimpleFunction &function;
+	const FunctionSignature &signature;
 	vector<unique_ptr<Expression>> &arguments;
-	optional_ptr<const vector<Identifier>> argument_names;
 };
 
 } // namespace duckdb

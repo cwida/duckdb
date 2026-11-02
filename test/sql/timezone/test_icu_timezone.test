@@ -519,7 +519,7 @@ America/Montevideo	America/Montevideo
 America/Montreal	America/Montreal
 America/Montserrat	PRT
 America/Nassau	America/Nassau
-America/New_York	EST5EDT
+America/New_York	America/New_York
 America/Nipigon	America/Nipigon
 America/Nome	America/Nome
 America/Noronha	America/Noronha
@@ -729,7 +729,7 @@ CAT	CAT
 CET	CET
 CNT	CNT
 CST	CST
-CST6CDT	CST
+CST6CDT	CST6CDT
 CTT	CTT
 Canada/Atlantic	Canada/Atlantic
 Canada/Central	Canada/Central
@@ -883,7 +883,7 @@ Libya	Libya
 MET	CET
 MIT	MIT
 MST	MST
-MST7MDT	Navajo
+MST7MDT	MST7MDT
 Mexico/BajaNorte	Mexico/BajaNorte
 Mexico/BajaSur	Mexico/BajaSur
 Mexico/General	Mexico/General
@@ -897,7 +897,7 @@ PNT	MST
 PRC	CTT
 PRT	PRT
 PST	PST
-PST8PDT	PST
+PST8PDT	PST8PDT
 Pacific/Apia	MIT
 Pacific/Auckland	NZ
 Pacific/Bougainville	Pacific/Bougainville
@@ -968,7 +968,7 @@ US/Aleutian	US/Aleutian
 US/Arizona	MST
 US/Central	CST
 US/East-Indiana	IET
-US/Eastern	EST5EDT
+US/Eastern	US/Eastern
 US/Hawaii	HST
 US/Indiana-Starke	US/Indiana-Starke
 US/Michigan	US/Michigan
@@ -1126,7 +1126,7 @@ select utc_offset, is_dst
 from pg_timezone_names() 
 where name = 'America/Coyhaique'
 ----
--03:00:00	false
+-03:00:00	true
 
 # 2025c
 # Baja California agreed with California’s DST rules in 1953 and in
@@ -1174,3 +1174,34 @@ query I
 select '2026-12-01'::TIMESTAMPTZ;
 ----
 2026-12-01 00:00:00-06
+
+# 2026d
+# Canada’s Northwest Territories moved to permanent -06 on 2026-08-21.
+statement ok
+set timezone='America/Yellowknife';
+
+query I
+select '2026-11-02'::TIMESTAMPTZ;
+----
+2026-11-02 00:00:00-06
+
+# 2026e
+# Manitoba’s 2026-03-08 spring forward was its last foreseeable clockchange, 
+# as it moved to permanent -05 thereafter.  
+statement ok
+set timezone='America/Winnipeg';
+
+query I
+select '2026-11-02'::timestamptz
+----
+2026-11-02 00:00:00-05
+
+# 2026f
+# Cuba will not fall back 2026-11-01; stays on -04 through 2027-11-07.
+statement ok
+set timezone='America/Havana';
+
+query I
+select '2026-11-02'::timestamptz
+----
+2026-11-02 00:00:00-04

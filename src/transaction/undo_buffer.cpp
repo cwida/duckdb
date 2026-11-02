@@ -22,7 +22,7 @@ namespace duckdb {
 constexpr uint32_t UNDO_ENTRY_HEADER_SIZE = sizeof(UndoFlags) + sizeof(uint32_t);
 
 UndoBuffer::UndoBuffer(DuckTransaction &transaction_p, ClientContext &context_p)
-    : transaction(transaction_p), allocator(DatabaseInstance::GetDatabase(context_p).GetBufferManager()) {
+    : transaction(transaction_p), allocator(DatabaseInstance::GetDatabase(context_p).GetBufferManager(), true) {
 }
 
 UndoBufferReference UndoBuffer::CreateEntry(UndoFlags type, idx_t len) {
@@ -61,41 +61,25 @@ void UndoBuffer::IterateEntries(UndoBuffer::IteratorState &state, T &&callback) 
 }
 
 template <class T>
-void UndoBuffer::IterateEntries(UndoBuffer::IteratorState &state, UndoBuffer::IteratorState &end_state, T &&callback) {
+void UndoBuffer::ReverseIterateEntries(UndoBuffer::IteratorState &end_state, T &&callback) {
 	if (!end_state.started) {
 		return;
 	}
-	// iterate in insertion order: start with the tail
-	state.current = allocator.tail.get();
-	while (state.current) {
-		state.handle = allocator.buffer_manager.Pin(state.current->block);
-		state.start = state.handle.GetDataMutable();
-		state.end = state.current == end_state.current ? end_state.start : state.start + state.current->position;
-		while (state.start < state.end) {
-			auto type = Load<UndoFlags>(state.start);
-			state.start += sizeof(UndoFlags);
-			auto len = Load<uint32_t>(state.start);
-			state.start += sizeof(uint32_t);
-			callback(type, state.start);
-			state.start += len;
-		}
-		if (state.current == end_state.current) {
-			// finished executing until the current end state
-			return;
-		}
-		state.current = state.current->prev;
-	}
-}
 
-template <class T>
-void UndoBuffer::ReverseIterateEntries(T &&callback) {
-	// iterate in reverse insertion order: start with the head
-	auto current = allocator.head.get();
+	idx_t end_position = 0;
+	if (end_state.current) {
+		auto block_start = end_state.handle.GetDataMutable();
+		D_ASSERT(end_state.start >= block_start);
+		end_position = NumericCast<idx_t>(end_state.start - block_start);
+		D_ASSERT(end_position <= end_state.current->position);
+	}
+
+	// Start at the newest committed entry and iterate back to the oldest one.
+	auto current = end_state.current ? end_state.current : allocator.head.get();
 	while (current) {
 		auto handle = allocator.buffer_manager.Pin(current->block);
 		data_ptr_t start = handle.GetDataMutable();
-		data_ptr_t end = start + current->position;
-		// create a vector with all nodes in this chunk
+		data_ptr_t end = start + (current == end_state.current ? end_position : current->position);
 		vector<pair<UndoFlags, data_ptr_t>> nodes;
 		while (start < end) {
 			auto type = Load<UndoFlags>(start);
@@ -105,12 +89,18 @@ void UndoBuffer::ReverseIterateEntries(T &&callback) {
 			nodes.emplace_back(type, start);
 			start += len;
 		}
-		// iterate over it in reverse order
 		for (idx_t i = nodes.size(); i > 0; i--) {
 			callback(nodes[i - 1].first, nodes[i - 1].second);
 		}
 		current = current->next.get();
 	}
+}
+
+template <class T>
+void UndoBuffer::ReverseIterateEntries(T &&callback) {
+	UndoBuffer::IteratorState state;
+	state.started = true;
+	ReverseIterateEntries(state, std::forward<T>(callback));
 }
 
 bool UndoBuffer::ChangesMade() {
@@ -184,7 +174,14 @@ void UndoBuffer::Cleanup(VisibilityBound lowest_visibility_bound) {
 	//  transaction
 	CleanupState state(transaction, lowest_visibility_bound, active_transaction_state);
 	UndoBuffer::IteratorState iterator_state;
-	IterateEntries(iterator_state, [&](UndoFlags type, data_ptr_t data) { state.CleanupEntry(type, data); });
+	idx_t entry_idx = 0;
+	IterateEntries(iterator_state, [&](UndoFlags type, data_ptr_t data) {
+		if (entry_idx++ < cleaned_up_entries) {
+			return;
+		}
+		state.CleanupEntry(type, data);
+		cleaned_up_entries++;
+	});
 }
 
 void UndoBuffer::WriteToWAL(WriteAheadLog &wal, optional_ptr<StorageCommitState> commit_state) {
@@ -194,6 +191,8 @@ void UndoBuffer::WriteToWAL(WriteAheadLog &wal, optional_ptr<StorageCommitState>
 }
 
 void UndoBuffer::Commit(UndoBuffer::IteratorState &iterator_state, CommitInfo &info) {
+	// No undo entries are allocated after this
+	allocator.ReleaseHeadPin();
 	active_transaction_state = info.active_transactions;
 
 	CommitState state(transaction, info.commit_id, active_transaction_state, CommitMode::COMMIT);
@@ -203,13 +202,13 @@ void UndoBuffer::Commit(UndoBuffer::IteratorState &iterator_state, CommitInfo &i
 
 void UndoBuffer::RevertCommit(UndoBuffer::IteratorState &end_state, transaction_t transaction_id) {
 	CommitState state(transaction, transaction_id, active_transaction_state, CommitMode::REVERT_COMMIT);
-	UndoBuffer::IteratorState start_state;
-	IterateEntries(start_state, end_state, [&](UndoFlags type, data_ptr_t data) { state.RevertCommit(type, data); });
+	ReverseIterateEntries(end_state, [&](UndoFlags type, data_ptr_t data) { state.RevertCommit(type, data); });
 
 	state.Verify();
 }
 
 void UndoBuffer::Rollback() {
+	allocator.ReleaseHeadPin();
 	// rollback needs to be performed in reverse
 	RollbackState state(transaction);
 	ReverseIterateEntries([&](UndoFlags type, data_ptr_t data) { state.RollbackEntry(type, data); });

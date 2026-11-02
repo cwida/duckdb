@@ -32,6 +32,7 @@ private:
 
 public:
 	shared_ptr<BlockHandle> GetHandle() const;
+	BufferHandle Pin(BufferManager &buffer_manager);
 	void SetHandle(ManagedResultSet &managed_result_set, shared_ptr<BlockHandle> handle);
 	uint32_t Capacity();
 };
@@ -60,6 +61,10 @@ public:
 	}
 	bool IsShared() const {
 		return shared;
+	}
+	//! Whether this allocator belongs to a managed result set
+	bool IsManagedResultSet() const {
+		return managed_result_set.IsValid();
 	}
 	idx_t BlockCount() const {
 		return blocks.size();

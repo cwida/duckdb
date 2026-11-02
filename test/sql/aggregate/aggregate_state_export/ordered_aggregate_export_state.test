@@ -5,6 +5,10 @@
 # Unlike a plain list(x), an ordered list(x ORDER BY y) is deterministic regardless of the thread count: the sorted
 # aggregate buffers every row of a group and sorts them at finalize, so the combine order of the thread-local states
 # does not affect the result. Every case below orders on a total order (distinct sort keys) so there are no ties.
+# The exported state itself is the unsorted buffer in arrival order, so the raw-state checks are only deterministic
+# single-threaded (relevant for small vector sizes, where even small inputs span many chunks)
+statement ok
+SET threads=1;
 
 # the reported case: list ordered by a different column, grouped (this used to assert offset == 0)
 statement ok
@@ -314,3 +318,9 @@ statement error
 SELECT to_aggregate_state([{'v0': 1, 'v1': 10}], 'list', ['INTEGER'], [NULL], [{'column': 5, 'order': 'ASC NULLS LAST'}]);
 ----
 <REGEX>:.*out of range.*
+
+# the 'order' of an ORDER BY entry must be a string
+statement error
+SELECT to_aggregate_state([{'v0': 'a'}], 'string_agg', ['VARCHAR'], NULL, [{'column': 0, 'order': 42}]);
+----
+<REGEX>:.*'order'.*must be a string.*

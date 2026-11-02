@@ -7,15 +7,14 @@
 
 using namespace duckdb;
 
-static unique_ptr<TransformResultValue> TransformDialectDemoExpression(PEGTransformer &transformer,
-                                                                       ParseResult &parse_result) {
+static arena_ptr<TransformResultValue> TransformDialectDemoExpression(PEGTransformer &transformer,
+                                                                      ParseResult &parse_result) {
 	auto result = ConstantExpression::String("Hello from the dialect extension demo");
-	return make_uniq<TypedTransformResult<unique_ptr<ParsedExpression>>>(std::move(result));
+	return transformer.MakeResult<unique_ptr<ParsedExpression>>(std::move(result));
 }
 
-static unique_ptr<TransformProcess> TransformDialectDemoProcess(PEGTransformer &transformer,
-                                                                ParseResult &parse_result) {
-	return make_uniq<FinalizeTransformProcess>(transformer, parse_result, TransformDialectDemoExpression);
+static arena_ptr<TransformProcess> TransformDialectDemoProcess(PEGTransformer &transformer, ParseResult &parse_result) {
+	return transformer.MakeProcess<FinalizeTransformProcess>(transformer, parse_result, TransformDialectDemoExpression);
 }
 
 class LoadableDialectExtensionDemo final : public DialectExtension {

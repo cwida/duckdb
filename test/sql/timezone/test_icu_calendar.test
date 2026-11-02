@@ -83,10 +83,10 @@ SELECT era, ts, DATE_PART(['era', 'year', 'month', 'day'], ts)
 FROM timestamps
 ORDER BY 2
 ----
-Taika	0645-06-27 09:18:59+09:18	{'era': 0, 'year': 1, 'month': 6, 'day': 27}
-Keiou	1867-01-01 09:18:59+09:18	{'era': 231, 'year': 3, 'month': 1, 'day': 1}
-Keiou	1868-09-07 09:18:59+09:18	{'era': 231, 'year': 4, 'month': 9, 'day': 7}
-Meiji	1868-09-08 09:18:59+09:18	{'era': 231, 'year': 4, 'month': 9, 'day': 8}
+Taika	0645-06-27 09:18:59+09:18:59	{'era': 0, 'year': 1, 'month': 6, 'day': 27}
+Keiou	1867-01-01 09:18:59+09:18:59	{'era': 231, 'year': 3, 'month': 1, 'day': 1}
+Keiou	1868-09-07 09:18:59+09:18:59	{'era': 231, 'year': 4, 'month': 9, 'day': 7}
+Meiji	1868-09-08 09:18:59+09:18:59	{'era': 231, 'year': 4, 'month': 9, 'day': 8}
 Meiji	1912-07-29 09:00:00+09	{'era': 232, 'year': 45, 'month': 7, 'day': 29}
 Taisho	1912-07-30 09:00:00+09	{'era': 233, 'year': 1, 'month': 7, 'day': 30}
 Taisho	1926-12-24 09:00:00+09	{'era': 233, 'year': 15, 'month': 12, 'day': 24}
@@ -110,7 +110,7 @@ SET CALENDAR='indian';
 query I
 SELECT TIMESTAMPTZ '-276069-9-30 0:0:00 America/Whitehorse';
 ----
-276070-10-01 (BC) 18:19:11+09:18
+276070-10-01 (BC) 18:19:11+09:18:59
 
 # Issue #5237
 statement ok

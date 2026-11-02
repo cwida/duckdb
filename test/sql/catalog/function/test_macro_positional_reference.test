@@ -1,0 +1,73 @@
+# name: test/sql/catalog/function/test_macro_positional_reference.test
+# description: Test positional references in macros
+# group: [function]
+
+statement ok
+CREATE MACRO subtract_args(x, y) AS x - y;
+
+# column names match the parameters in reverse order
+query II
+SELECT subtract_args(#1, #2), #1 - #2
+FROM (VALUES (10, 3)) AS t(y, x);
+----
+7	7
+
+query I
+SELECT subtract_args(#1, #2) FROM (VALUES (10, 3)) AS t(a, b);
+----
+7
+
+# named and positional arguments
+query III
+SELECT subtract_args(x := #1, y := #2),
+       subtract_args(y := #1, x := #2),
+       subtract_args(#1, y := #2)
+FROM (VALUES (10, 3)) AS t(y, x);
+----
+7	-7	7
+
+query I
+SELECT subtract_args(#1, #2) FROM (VALUES (NULL::INTEGER, 3)) AS t(y, x);
+----
+NULL
+
+# default parameter
+statement ok
+CREATE MACRO join_args(x, y := 'default') AS coalesce(x, 'null') || ':' || y;
+
+query T
+SELECT join_args(#1, #2) FROM (VALUES ('left', 'right')) AS t(y, x);
+----
+left:right
+
+query T
+SELECT join_args(#1, #2) FROM (VALUES (NULL::VARCHAR, 'right')) AS t(y, x);
+----
+null:right
+
+query T
+SELECT join_args(#1) FROM (VALUES ('left')) AS t(y);
+----
+left:default
+
+# issue #19516
+query T
+SELECT pg_typeof(#1) FROM (SELECT 1);
+----
+integer
+
+# column aliases outside a function
+query I
+SELECT a FROM (SELECT #1 FROM (VALUES (42)) AS t(a));
+----
+42
+
+query I
+SELECT renamed FROM (SELECT #1 AS renamed FROM (VALUES (42)) AS t(a));
+----
+42
+
+statement error
+SELECT subtract_args(#3, #1) FROM (VALUES (10, 3)) AS t(y, x);
+----
+Positional reference 3 out of range

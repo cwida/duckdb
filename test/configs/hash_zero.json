@@ -35,11 +35,34 @@
         "test/optimizer/joins/left_join_reordering/left_join_cardinality_estimation.test",
         "test/optimizer/deliminator.test",
         "test/sql/cte/materialized/test_materialized_cte.test",
+        "test/sql/cte/materialized/materialized_cte_parallel_buffered.test",
+        "test/sql/cte/materialized/test_cte_hash_join_exchange.test",
+        "test/sql/cte/recursive_cte_invariant_build_logging.test",
+        "test/sql/cte/recursive_cte_key_probe.test",
+        "test/sql/cte/recursive_cte_logging.test",
+        "test/sql/cte/recursive_cte_parallel_union_distinct_sink.test",
         "test/sql/optimizer/monotone_preimage.test",
         "test/sql/storage/test_eviction_queue_dead_nodes_underflow.test",
         "test/sql/copy/parquet/parquet_prefetch_tracked_memory.test",
         "test/sql/join/hash_join/hash_join_dict_surviving.test",
-        "test/sql/filter/filter_cache_dictionary.test"
+        "test/sql/join/hash_join/hash_join_bucket_boundaries.test",
+        "test/sql/filter/filter_cache_dictionary.test",
+        "test/optimizer/row_number_virtual_column.test",
+        "test/issues/general/test_24936.test",
+        "test/issues/general/test_1881.test",
+        "test/sql/join/inner/test_dense_prefix_range_filter.test",
+        "test/sql/aggregate/aggregates/mode_rewrite_memory.test",
+        "test/sql/aggregate/group/test_group_by_skip_lookups.test",
+        "test/sql/subquery/any_all/test_multi_column_mark_join_nulls.test",
+        "test/sql/storage/optimistic_write/optimistic_write_unique_index_wal_replay.test",
+        "test/sql/parallelism/intraquery/test_transaction_local_parallelism.test",
+        "test/sql/delete/test_parallel_delete_transaction_local.test",
+        "test/sql/index/art/nodes/test_art_prefix_transform_deprecated_create.test",
+        "test/sql/topn/topn_dynamic_filter_cast.test",
+        "test/sql/progress/test_verify_progress.test",
+        "test/sql/copy/partitioned/partitioned_write_backpressure.test",
+        "test/sql/copy/parquet/read_ahead/readahead_memory_limit.test",
+        "test/sql/copy/parquet/parquet_write_repeated_lists.test"
       ]
     },
     {
@@ -62,7 +85,24 @@
         "test/sql/types/geo/geometry_shred_empty.test",
         "test/sql/types/geo/geometry_shred_limit.test",
         "test/sql/types/geo/geometry_shred_checkpoint.test",
-        "test/optimizer/joins/denominator_cardinality_estimation.test"
+        "test/optimizer/joins/denominator_cardinality_estimation.test",
+        "test/sql/optimizer/secure_view_statistics.test",
+        "test/sql/alter/add_col/test_add_col_distinct_stats.test",
+        "test/sql/alter/alter_type/alter_type_distinct_stats.test",
+        "test/issues/general/test_24049.test",
+        "test/optimizer/joins/fkpk_composite_key_ce.test",
+        "test/optimizer/partitioned_execution_coverage.test",
+        "test/optimizer/projection_placement.test",
+        "test/optimizer/statistics/statistics_count_not_null_pruning.test",
+        "test/sql/sql_export/aggregate_topn_rewrites.test",
+        "test/sql/aggregate/aggregate_state_export/approx_count_distinct_export_state.test",
+        "test/optimizer/pushdown/cte_domain_join_filter.test",
+        "test/sql/sql_export/aggregate_literals.test",
+        "test/sql/sql_export/empty_aggregate_state.test",
+        "test/sql/storage/distinct_statistics_sample.test",
+        "test/optimizer/statistics/statistics_early_join_range.test",
+        "test/optimizer/joins/left_join_reordering/left_join_composite_domain.test",
+        "test/optimizer/joins/not_equal_join_cardinality_estimation.test"
       ]
     },
     {
@@ -71,8 +111,20 @@
         "test/sql/function/generic/hash_func.test",
         "test/sql/copy/file_size_bytes.test",
         "test/sql/copy/parquet/parquet_prefetch_projection.test",
+        "test/sql/copy/parquet/parquet_prefetch_shared_column_chunks.test",
         "test/sql/copy/parquet/parquet_prefetch_row_group_outcome.test",
-        "test/sql/copy/return_stats_extra_info.test"
+        "test/sql/copy/return_stats_extra_info.test",
+        "test/sql/timezone/test_icu_calendar_chinese.test",
+        "test/sql/timezone/test_icu_calendar_hebrew.test",
+        "test/sql/timezone/test_icu_calendar_islamic.test",
+        "test/sql/timezone/test_icu_calendar_islamic_observed.test",
+        "test/sql/timezone/test_icu_calendar_japanese.test",
+        "test/sql/timezone/test_icu_datetime_sweep.test",
+        "test/sql/optimizer/constant_function_zonemap_pruning.test",
+        "test/sql/sql_export/call_values.test",
+        "test/sql/match_recognize/test_match_recognize_cursors.test",
+        "test/sql/match_recognize/test_match_recognize_composition.test",
+        "test/sql/index/art/storage/test_art_checkpoint_retains_clean_buffers.test"
       ]
     }
   ]

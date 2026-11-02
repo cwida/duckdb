@@ -1,0 +1,212 @@
+# name: test/sql/window/test_window_value_edges.test
+# description: Small edge cases for value windows, exclusions, and typed RANGE bounds
+# group: [window]
+
+statement ok
+CREATE TABLE value_edges(i INTEGER, peer INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO value_edges VALUES
+    (0, 0, NULL), (1, 0, 10), (2, 0, NULL),
+    (3, 1, 20), (4, 1, NULL), (5, 1, 30),
+    (6, 2, NULL), (7, 2, 40), (8, 3, 50), (9, 3, NULL);
+
+query II
+SELECT first_value(peer) OVER (
+           ORDER BY peer ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW EXCLUDE GROUP
+       ), peer
+FROM value_edges ORDER BY peer, i;
+----
+NULL	0
+NULL	0
+NULL	0
+0	1
+0	1
+0	1
+0	2
+0	2
+0	3
+0	3
+
+query II
+SELECT last_value(peer) OVER (
+           ORDER BY peer ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING EXCLUDE CURRENT ROW
+       ), peer
+FROM value_edges ORDER BY peer, i;
+----
+3	0
+3	0
+3	0
+3	1
+3	1
+3	1
+3	2
+3	2
+3	3
+NULL	3
+
+query II
+SELECT nth_value(peer, 5) OVER (
+           ORDER BY peer ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING EXCLUDE TIES
+       ), peer
+FROM value_edges ORDER BY peer, i;
+----
+2	0
+2	0
+2	0
+2	1
+2	1
+2	1
+1	2
+1	2
+1	3
+1	3
+
+query III
+SELECT nth_value(v, 3 IGNORE NULLS) OVER (
+           ORDER BY peer ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING EXCLUDE CURRENT ROW
+       ), peer, v
+FROM value_edges ORDER BY peer, v;
+----
+40	0	10
+30	0	NULL
+30	0	NULL
+40	1	20
+40	1	30
+30	1	NULL
+30	2	40
+30	2	NULL
+30	3	50
+30	3	NULL
+
+statement ok
+CREATE TABLE range_edges(i INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO range_edges VALUES (1, 10), (2, 20), (4, 40);
+
+foreach type tinyint smallint integer bigint utinyint usmallint uinteger ubigint hugeint uhugeint
+
+query I
+SELECT list(s ORDER BY i) FROM (
+    SELECT i, sum(v) OVER (
+        ORDER BY i::{type}
+        RANGE BETWEEN 1::{type} PRECEDING AND 1::{type} FOLLOWING
+    ) AS s
+    FROM range_edges
+);
+----
+[30, 30, 40]
+
+endloop
+
+# Exercise secondary ordering with a changing offset and default expression.
+query III rowsort
+SELECT i,
+       lead(v, i % 3, -i ORDER BY peer DESC, i) OVER (
+           ORDER BY i ROWS BETWEEN 2 PRECEDING AND 3 FOLLOWING
+       ),
+       lag(v, i % 2, i + 100 ORDER BY peer, i DESC) OVER (
+           ORDER BY i ROWS BETWEEN 3 PRECEDING AND 2 FOLLOWING
+       )
+FROM value_edges;
+----
+0	NULL	NULL
+1	NULL	NULL
+2	-2	NULL
+3	20	NULL
+4	30	NULL
+5	-5	NULL
+6	NULL	NULL
+7	30	NULL
+8	NULL	50
+9	NULL	NULL
+
+query I
+SELECT count(x) FROM (SELECT lead(i, i) OVER () AS x FROM range(3) r(i));
+----
+2
+
+query I
+SELECT count(x) FROM (
+    SELECT lead(i, try_cast('bad' AS BIGINT)) OVER () AS x FROM range(3) r(i)
+);
+----
+0
+
+query I
+SELECT count(x) FROM (SELECT lead(i) OVER () AS x FROM range(3) r(i));
+----
+2
+
+query I
+SELECT count(x) FROM (SELECT lead(i, 1, i * 10) OVER () AS x FROM range(3) r(i));
+----
+3
+
+query I
+SELECT count(x) FROM (SELECT lead(i IGNORE NULLS) OVER () AS x FROM range(3) r(i));
+----
+2
+
+query I
+SELECT count(x) FROM (
+    SELECT nth_value(i, i + 1) OVER (ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS x
+    FROM range(3) r(i)
+);
+----
+3
+
+query I
+SELECT count(x) FROM (
+    SELECT nth_value(i, NULL) OVER (ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS x
+    FROM range(3) r(i)
+);
+----
+0
+
+query I
+SELECT count(x) FROM (
+    SELECT last_value(i) OVER (ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS x
+    FROM range(3) r(i)
+);
+----
+3
+
+query I
+SELECT count(x) FROM (
+    SELECT first_value(v ORDER BY i) OVER (
+        ORDER BY peer ROWS BETWEEN CURRENT ROW AND CURRENT ROW EXCLUDE GROUP
+    ) AS x
+    FROM value_edges
+);
+----
+0
+
+query I
+SELECT count(x) FROM (
+    SELECT last_value(v ORDER BY i) OVER (
+        ORDER BY peer ROWS BETWEEN CURRENT ROW AND CURRENT ROW EXCLUDE GROUP
+    ) AS x
+    FROM value_edges
+);
+----
+0
+
+query I
+SELECT count(x) FROM (
+    SELECT nth_value(v, 99 ORDER BY i) OVER (
+        ORDER BY peer ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+    ) AS x
+    FROM value_edges
+);
+----
+0
+
+query I
+SELECT count(x) FROM (
+    SELECT lead(i ORDER BY i) OVER (ORDER BY i ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS x
+    FROM range(3) r(i)
+);
+----
+2

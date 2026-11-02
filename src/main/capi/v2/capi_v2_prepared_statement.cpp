@@ -48,15 +48,8 @@ DUCKDB_V2_ERROR duckdb_v2_prepared_statement_create(duckdb_v2_connection_handle 
 	DUCKDB_CHECK_ARG(statement);
 	return WithErrorHandler(err, [&]() {
 		auto *connection = Convert(conn);
-		// Preparing runs the engine's query cleanup, which would cancel a live stream, so
-		// refuse first. Unlike execute this only checks the slot is free: preparing
-		// produces no result, so it never claims it.
-		if (GetBusySlot(*connection->context)->owner.load() != nullptr) {
-			throw duckdb::ResourceInUseException(
-			    "connection has a live result; drain, destroy, or interrupt it before preparing a statement "
-			    "(or open another connection)");
-		}
-		// Borrowed, not consumed: prepare a copy so the caller keeps the original.
+		// Borrowed, not consumed: prepare a copy so the caller keeps the original. The engine refuses a prepare while
+		// another statement on the connection is running.
 		auto prepared = connection->context->Prepare(Convert(statement)->Copy());
 		if (prepared->HasError()) {
 			// Prepare reports failure on the returned object rather than throwing; re-throw
@@ -67,8 +60,8 @@ DUCKDB_V2_ERROR duckdb_v2_prepared_statement_create(duckdb_v2_connection_handle 
 		if (require_cacheable && !PreparedReusesPlanV2(prepared->GetStatementProperties())) {
 			throw duckdb::InvalidInputException(
 			    "prepared_statement_create(require_cacheable): this plan is re-bound on every execution (an unresolved "
-			    "parameter type, or a table scan), so executing it is no faster than statement_execute; prepare "
-			    "without require_cacheable to accept that");
+			    "parameter type, a table scan, or a statement that expands into several), so executing it is no faster "
+			    "than statement_execute; prepare without require_cacheable to accept that");
 		}
 		auto wrapper = duckdb::make_uniq<PreparedStatementWrapperV2>();
 		wrapper->context = connection->context;
@@ -95,7 +88,30 @@ DUCKDB_V2_ERROR duckdb_v2_prepared_statement_execute(duckdb_v2_prepared_statemen
 		// retained on the handle between calls.
 		duckdb::identifier_map_t<duckdb::BoundParameterData> values;
 		BuildParameterMap(parameter_names, parameter_values, parameter_count, __func__, values);
-		*out_result = ExecutePreparedStatementV2(wrapper->context, *wrapper->prepared, values);
+		*out_result =
+		    Convert(ExecutePreparedStatementV2(wrapper->context, *wrapper->prepared, values, nullptr).release());
+	});
+}
+
+DUCKDB_V2_ERROR duckdb_v2_prepared_statement_execute_arrow(duckdb_v2_prepared_statement_handle prepared,
+                                                           const duckdb_v2_identifier_t *parameter_names,
+                                                           const duckdb_v2_value_handle *parameter_values,
+                                                           idx_t parameter_count, idx_t batch_size,
+                                                           duckdb_v2_arrow_result_handle *out_result,
+                                                           duckdb_v2_error_info_handle *err) {
+	DUCKDB_CHECK_ARG(out_result);
+	*out_result = nullptr;
+	DUCKDB_CHECK_ARG(prepared);
+	if (parameter_count > 0 && !parameter_values) {
+		return NullArgumentError(err, __func__, "parameter_values");
+	}
+	return WithErrorHandler(err, [&]() {
+		auto *wrapper = Convert(prepared);
+		duckdb::identifier_map_t<duckdb::BoundParameterData> values;
+		BuildParameterMap(parameter_names, parameter_values, parameter_count, __func__, values);
+		*out_result = ConvertArrowResult(
+		    ExecutePreparedStatementV2(wrapper->context, *wrapper->prepared, values, ArrowResultFormat(batch_size))
+		        .release());
 	});
 }
 

@@ -1,0 +1,105 @@
+# name: test/sql/constraints/deferred/test_deferred_checkpoint.test_slow
+# description: Deferred constraints validate commits that run concurrently with a checkpoint
+# group: [deferred]
+
+load {TEST_DIR}/deferred_checkpoint.db readwrite v2.0.0
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown;
+
+statement ok
+SET wal_autocheckpoint = '1TB';
+
+# the checkpoint sleeps while it is active, so that the commits below append to the checkpoint deltas
+statement ok
+SET debug_checkpoint_sleep_ms = 1000;
+
+statement ok
+CREATE TABLE t(i BIGINT PRIMARY KEY DEFERRED);
+
+statement ok
+INSERT INTO t SELECT range FROM range(20);
+
+loop run 0 5
+
+# roles 0 and 2 write before the checkpoint starts, so it runs concurrently with their transactions,
+# and they commit while it is active
+concurrentloop role 0 3
+
+# role 0: delete a key and insert it twice
+onlyif role=0
+statement ok
+BEGIN TRANSACTION;
+
+onlyif role=0
+statement ok
+DELETE FROM t WHERE i = {run};
+
+onlyif role=0
+statement ok
+INSERT INTO t VALUES ({run}), ({run});
+
+onlyif role=0
+statement ok
+SELECT sum(hash(i)) FROM range(15000000) t(i);
+
+onlyif role=0
+statement error
+COMMIT;
+----
+duplicate key
+
+# role 2: delete a key and insert it once
+onlyif role=2
+statement ok
+BEGIN TRANSACTION;
+
+onlyif role=2
+statement ok
+DELETE FROM t WHERE i = {run} + 10;
+
+onlyif role=2
+statement ok
+INSERT INTO t VALUES ({run} + 10);
+
+onlyif role=2
+statement ok
+SELECT sum(hash(i)) FROM range(15000000) t(i);
+
+onlyif role=2
+statement ok
+COMMIT;
+
+# role 1: checkpoint after the other roles wrote
+onlyif role=1
+statement ok
+SELECT sum(hash(i)) FROM range(5000000) t(i);
+
+onlyif role=1
+statement ok
+CHECKPOINT;
+
+endloop
+
+query II
+SELECT count(*) FILTER (WHERE i = {run}), count(*) FILTER (WHERE i = {run} + 10) FROM t;
+----
+1	1
+
+# the merged index still enforces both keys
+statement error
+INSERT INTO t VALUES ({run});
+----
+duplicate key
+
+statement error
+INSERT INTO t VALUES ({run} + 10);
+----
+duplicate key
+
+endloop
+
+query I
+SELECT count(*) FROM t;
+----
+20

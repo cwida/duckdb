@@ -1,3 +1,4 @@
+#include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/common/vector/struct_vector.hpp"
 #include "core_functions/scalar/date_functions.hpp"
 #include "duckdb/common/case_insensitive_map.hpp"
@@ -12,6 +13,7 @@
 #include "duckdb/function/scalar/nested_functions.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/execution/expression_executor.hpp"
+#include "duckdb/optimizer/statistics_propagator.hpp"
 
 namespace duckdb {
 
@@ -437,8 +439,32 @@ struct DatePart {
 			return YearWeekFromParts(yyyy, ww);
 		}
 
+		// ISO years >= 1 use yyyy * 100 + week. Year 0 and negative years subtract the week,
+		// so the function decreases as the week number increases.
+		static int32_t MinISOYear(date_t input) {
+			return Date::ExtractISOYearNumber(input);
+		}
+		static int32_t MinISOYear(timestamp_t input) {
+			return Date::ExtractISOYearNumber(Timestamp::GetDate(input));
+		}
+		template <class U>
+		static int32_t MinISOYear(U) {
+			return 0;
+		}
+
 		template <class T>
 		static unique_ptr<BaseStatistics> PropagateStatistics(ClientContext &context, FunctionStatisticsInput &input) {
+			// Endpoint bounds do not contain the values in between once the range reaches the
+			// subtracted-week encoding. Positive ISO years are non-decreasing in the date.
+			auto &nstats = input.child_stats[0];
+			if (!NumericStats::HasMinMax(nstats)) {
+				return nullptr;
+			}
+			auto min = NumericStats::GetMin<T>(nstats);
+			auto max = NumericStats::GetMax<T>(nstats);
+			if (min > max || !min.IsFinite() || !max.IsFinite() || MinISOYear(min) < 1) {
+				return nullptr;
+			}
 			return PropagateDatePartStatistics<T, YearWeekOperator>(input.child_stats);
 		}
 	};
@@ -626,11 +652,14 @@ struct DatePart {
 
 		template <typename TA, typename TB, typename TR>
 		static TR Operation(TA interval, TB timetz) {
+			auto offset = interval.micros / Interval::MICROS_PER_SEC;
+			if (offset < dtime_tz_t::MIN_OFFSET || offset > dtime_tz_t::MAX_OFFSET) {
+				throw OutOfRangeException("Timezone offset out of range: %s", Interval::ToString(interval));
+			}
 			auto time = Time::NormalizeTimeTZ(timetz);
 			date_t date(0);
 			time = Interval::Add(time, interval, date);
-			auto offset = UnsafeNumericCast<int32_t>(interval.micros / Interval::MICROS_PER_SEC);
-			return TR(time, offset);
+			return TR(time, UnsafeNumericCast<int32_t>(offset));
 		}
 
 		template <typename TA, typename TB, typename TR>
@@ -2431,11 +2460,20 @@ ScalarFunctionSet GetCachedDatepartFunction() {
 	    OP::template PropagateStatistics<timestamp_t>);
 }
 
+void SetNonDecreasingExceptInterval(ScalarFunctionSet &functions) {
+	functions.ApplyToFunctions([](ScalarFunction &function) {
+		// Interval components need not preserve the normalized interval ordering.
+		if (function.GetSignature().GetParameter(0).GetType() != LogicalType::INTERVAL) {
+			function.SetUnaryArgProperties(ArgProperties().NonDecreasing());
+		}
+	});
+}
+
 } // namespace
 
 ScalarFunctionSet YearFun::GetFunctions() {
 	auto set = GetCachedDatepartFunction<DatePart::YearOperator>();
-	set.SetUnaryArgProperties(ArgProperties().NonDecreasing());
+	SetNonDecreasingExceptInterval(set);
 	return set;
 }
 
@@ -2449,19 +2487,19 @@ ScalarFunctionSet DayFun::GetFunctions() {
 
 ScalarFunctionSet DecadeFun::GetFunctions() {
 	auto set = GetDatePartFunction<DatePart::DecadeOperator>();
-	set.SetUnaryArgProperties(ArgProperties().NonDecreasing());
+	SetNonDecreasingExceptInterval(set);
 	return set;
 }
 
 ScalarFunctionSet CenturyFun::GetFunctions() {
 	auto set = GetDatePartFunction<DatePart::CenturyOperator>();
-	set.SetUnaryArgProperties(ArgProperties().NonDecreasing());
+	SetNonDecreasingExceptInterval(set);
 	return set;
 }
 
 ScalarFunctionSet MillenniumFun::GetFunctions() {
 	auto set = GetDatePartFunction<DatePart::MillenniumOperator>();
-	set.SetUnaryArgProperties(ArgProperties().NonDecreasing());
+	SetNonDecreasingExceptInterval(set);
 	return set;
 }
 
@@ -2514,17 +2552,28 @@ ScalarFunctionSet TimezoneFun::GetFunctions() {
 	return operator_set;
 }
 
+//! timezone_hour and timezone_minute throw on every DATE and INTERVAL, but not on the other types
+static ScalarFunctionSet SetDateAndIntervalFallible(ScalarFunctionSet set) {
+	set.ApplyToFunctions([](ScalarFunction &function) {
+		auto type = function.GetSignature().GetParameter(0).GetType().id();
+		if (type == LogicalTypeId::DATE || type == LogicalTypeId::INTERVAL) {
+			function.SetFallible();
+		}
+	});
+	return set;
+}
+
 ScalarFunctionSet TimezoneHourFun::GetFunctions() {
-	return GetTimePartFunction<DatePart::TimezoneHourOperator>();
+	return SetDateAndIntervalFallible(GetTimePartFunction<DatePart::TimezoneHourOperator>());
 }
 
 ScalarFunctionSet TimezoneMinuteFun::GetFunctions() {
-	return GetTimePartFunction<DatePart::TimezoneMinuteOperator>();
+	return SetDateAndIntervalFallible(GetTimePartFunction<DatePart::TimezoneMinuteOperator>());
 }
 
 ScalarFunctionSet EpochFun::GetFunctions() {
 	auto set = GetTimePartFunction<DatePart::EpochOperator, double>(LogicalType::DOUBLE, "temporal");
-	set.SetUnaryArgProperties(ArgProperties().NonDecreasing());
+	SetNonDecreasingExceptInterval(set);
 	return set;
 }
 
@@ -2539,10 +2588,11 @@ ScalarFunctionSet EpochNsFun::GetFunctions() {
 	tstz_fun.GetSignature().AddParameter("temporal", LogicalType::TIMESTAMP_TZ);
 	operator_set.AddFunction(tstz_fun);
 	auto tsns_func = DatePart::UnaryFunction<timestamp_ns_t, int64_t, OP>;
-	ScalarFunction tsns_fun({}, LogicalType::BIGINT, tsns_func);
+	auto tsns_stats = StatisticsPropagator::PropagateFiniteMonotoneBounds;
+	ScalarFunction tsns_fun({}, LogicalType::BIGINT, tsns_func, nullptr, tsns_stats);
 	tsns_fun.GetSignature().AddParameter("temporal", LogicalType::TIMESTAMP_NS);
 	operator_set.AddFunction(tsns_fun);
-	ScalarFunction tstz_ns_fun({}, LogicalType::BIGINT, tsns_func);
+	ScalarFunction tstz_ns_fun({}, LogicalType::BIGINT, tsns_func, nullptr, tsns_stats);
 	tstz_ns_fun.GetSignature().AddParameter("temporal", LogicalType::TIMESTAMP_TZ_NS);
 	operator_set.AddFunction(tstz_ns_fun);
 	operator_set.SetUnaryArgProperties(ArgProperties().NonDecreasing());
@@ -2583,7 +2633,7 @@ ScalarFunctionSet EpochMsFun::GetFunctions() {
 	inverse_fun.GetSignature().AddParameter("temporal", LogicalType::BIGINT);
 	operator_set.AddFunction(inverse_fun);
 
-	operator_set.SetUnaryArgProperties(ArgProperties().NonDecreasing());
+	SetNonDecreasingExceptInterval(operator_set);
 	// these overflow at the representable extremes, so the failure must be reportable
 	operator_set.SetFallible();
 	return operator_set;
@@ -2646,9 +2696,8 @@ ScalarFunctionSet HoursFun::GetFunctions() {
 }
 
 ScalarFunctionSet YearWeekFun::GetFunctions() {
-	auto set = GetDatePartFunction<DatePart::YearWeekOperator>();
-	set.SetUnaryArgProperties(ArgProperties().NonDecreasing());
-	return set;
+	// Not monotone on the full date domain: see YearWeekOperator::YearWeekFromParts.
+	return GetDatePartFunction<DatePart::YearWeekOperator>();
 }
 
 ScalarFunctionSet DayOfMonthFun::GetFunctions() {
@@ -2673,6 +2722,7 @@ ScalarFunctionSet LastDayFun::GetFunctions() {
 	last_day.AddFunction(ts_fun);
 	last_day.SetFallible();
 	last_day.SetUnaryArgProperties(ArgProperties().NonDecreasing());
+	last_day.SetStatisticsCallback(StatisticsPropagator::PropagateFiniteMonotoneBounds);
 	return last_day;
 }
 
@@ -2716,9 +2766,23 @@ ScalarFunctionSet JulianDayFun::GetFunctions() {
 	return operator_set;
 }
 
+//! Binding date_part with a constant part replaces it with the unary part function (year, month, ...), so the bound
+//! call has one argument and must be rendered under the replacement's own name
+static unique_ptr<ParsedExpression> DatePartUnbind(FunctionUnbindInput &input) {
+	auto &function = input.expression.Function();
+	if (input.children.size() == 1) {
+		return make_uniq<FunctionExpression>(function.GetQualifiedName(), std::move(input.children));
+	}
+	if (input.children.size() != 2) {
+		return nullptr;
+	}
+	return make_uniq<FunctionExpression>(function.GetDefinition()->GetQualifiedName(), std::move(input.children));
+}
+
 // Names the "part,ts" pair shared by date_part's per-type overloads.
 static ScalarFunction NamePartTsArguments(ScalarFunction fun, const LogicalType &type) {
 	fun.GetSignature().AddParameter("part", LogicalType::VARCHAR).AddParameter("ts", type);
+	fun.SetUnbindCallback(DatePartUnbind);
 	return fun;
 }
 

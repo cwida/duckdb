@@ -5,6 +5,7 @@
 #include "duckdb/main/client_context.hpp"
 
 #include "duckdb/main/settings.hpp"
+#include "duckdb/parallel/progress_verifier.hpp"
 
 #ifdef DUCKDB_DEBUG_ASYNC_SINK_SOURCE
 #include <chrono>
@@ -61,7 +62,7 @@ PipelineExecutor::PipelineExecutor(ClientContext &context_p, Pipeline &pipeline_
 		auto &current_operator = pipeline.operators[i].get();
 
 		auto chunk = make_uniq<DataChunk>();
-		chunk->Initialize(BufferAllocator::Get(context.client), prev_operator.GetTypes());
+		prev_operator.InitializeOutputChunk(BufferAllocator::Get(context.client), *chunk);
 		intermediate_chunks.push_back(std::move(chunk));
 
 		auto op_state = current_operator.GetOperatorState(context);
@@ -92,6 +93,7 @@ void PipelineExecutor::Reset() {
 	source_profiling_finalized = false;
 	source_finish_notification_state = SourceFinishNotificationState::PENDING;
 	should_flush_current_idx = true;
+	unsampled_progress_rows = 0;
 	while (!in_process_operators.empty()) {
 		in_process_operators.pop();
 	}
@@ -706,6 +708,12 @@ PipelineExecuteResult PipelineExecutor::PushFinalize() {
 	finalized = true;
 	NotifySourceFinished();
 
+	SampleProgress();
+	auto progress_verifier = pipeline.executor.GetProgressVerifier();
+	if (progress_verifier && !exhausted_source && !pipeline.IsExternalInput()) {
+		progress_verifier->OnEarlyExit(pipeline);
+	}
+
 	// If source was not exhausted (e.g. LIMIT stopped the pipeline), collect exact metrics now
 	if (!source_profiling_finalized && local_source_state && global_source_state) {
 		context.thread.profiler.FinishSource(*pipeline.source, *global_source_state, *local_source_state);
@@ -851,6 +859,8 @@ PipelineExecutor::SourceFetchResult PipelineExecutor::FetchFromSource(DataChunk 
 	D_ASSERT(!pipeline.IsExternalInput());
 	D_ASSERT(global_source_state);
 	D_ASSERT(local_source_state);
+	// the previous chunk has been pushed through the pipeline
+	SampleProgress();
 	StartOperator(*pipeline.source);
 
 	OperatorSourceInput source_input = {*global_source_state, *local_source_state, interrupt_state};
@@ -869,12 +879,24 @@ PipelineExecutor::SourceFetchResult PipelineExecutor::FetchFromSource(DataChunk 
 	}
 	EndOperator(*pipeline.source, &result);
 
+	if (pipeline.executor.GetProgressVerifier()) {
+		unsampled_progress_rows = result.size();
+	}
 	return fetch_result;
+}
+
+void PipelineExecutor::SampleProgress() {
+	auto progress_verifier = pipeline.executor.GetProgressVerifier();
+	if (!progress_verifier || unsampled_progress_rows == 0) {
+		return;
+	}
+	progress_verifier->OnSourceChunk(pipeline, unsampled_progress_rows);
+	unsampled_progress_rows = 0;
 }
 
 void PipelineExecutor::InitializeChunk(DataChunk &chunk) {
 	auto &last_op = pipeline.operators.empty() ? *pipeline.source : pipeline.operators.back().get();
-	chunk.Initialize(BufferAllocator::Get(context.client), last_op.GetTypes());
+	last_op.InitializeOutputChunk(BufferAllocator::Get(context.client), chunk);
 }
 
 void PipelineExecutor::StartOperator(PhysicalOperator &op) {

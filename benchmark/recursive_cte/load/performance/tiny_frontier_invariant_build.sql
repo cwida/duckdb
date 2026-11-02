@@ -1,5 +1,5 @@
 CREATE TABLE edges AS
 SELECT
     (i // 10)::BIGINT AS src,
-    (((i // 10) * 13 + i % 10 + 7) % 2000000)::BIGINT AS dst
-FROM range(20000000) AS t(i);
+    (((i // 10) * 13 + i % 10 + 7) % 1000000)::BIGINT AS dst
+FROM range(10000000) AS t(i);

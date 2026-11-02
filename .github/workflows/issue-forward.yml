@@ -1,5 +1,9 @@
 name: Forward issue events to community-issue-tracker
 
+# Thin caller. All forwarding logic lives in the shared composite action
+# (duckdb/duckdb-ci/community-issue-tracker/forward), so changes there reach every
+# tracked repo with no per-repo edit.
+
 on:
   issues:
     types: [opened, reopened, closed]
@@ -11,30 +15,10 @@ permissions:
 
 jobs:
   forward:
-    # issue_comment fires for PRs too so we skip those.
+    # issue_comment fires for PRs too — skip those
     if: ${{ github.event_name == 'issues' || github.event.issue.pull_request == null }}
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-latest
     steps:
-      - name: Dispatch to community-issue-tracker
-        env:
-          GH_TOKEN: ${{ secrets.COMMUNITY_ISSUE_DISPATCH_TOKEN }}
-          EVENT_KIND: ${{ github.event_name }}
-          EVENT_ACTION: ${{ github.event.action }}
-          REPO: ${{ github.repository }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-          # Present only on issue_comment; empty otherwise.
-          COMMENTER: ${{ github.event.comment.user.login }}
-          COMMENT_URL: ${{ github.event.comment.html_url }}
-        run: |
-          jq -n \
-            --arg event "$EVENT_KIND" \
-            --arg action "$EVENT_ACTION" \
-            --arg repo "$REPO" \
-            --argjson number "$ISSUE_NUMBER" \
-            --arg commenter "$COMMENTER" \
-            --arg comment_url "$COMMENT_URL" \
-            '{event_type: "issue-event", client_payload: {
-               event: $event, action: $action, repo: $repo, number: $number,
-               commenter: $commenter, comment_url: $comment_url
-             }}' \
-          | gh api -X POST /repos/duckdblabs/community-issue-tracker/dispatches --input -
+      - uses: duckdb/duckdb-ci/community-issue-tracker/forward@main
+        with:
+          token: ${{ secrets.COMMUNITY_ISSUE_DISPATCH_TOKEN }}

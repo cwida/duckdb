@@ -90,6 +90,12 @@ select * from (values (1)) tbl(a) natural join (values (1), (2)) tbl2(b) order b
 ----
 <REGEX>:.*Binder Error.*No columns found to join.*
 
+# Include multiple candidates on both sides in the error message
+statement error
+SELECT * FROM (VALUES (1, 2)) l(a, b) NATURAL JOIN (VALUES (3, 4)) r(c, d)
+----
+<REGEX>:.*Binder Error.*Left candidates: l.a, l.b.*Right candidates: r.c, r.d.*
+
 # long join chain
 query I
 select * from (values (1)) tbl(a) natural join (values (1)) tbl2(a) natural join (values (1)) tbl3(a)

@@ -140,13 +140,8 @@ static vector<unique_ptr<Expression>> CreateCastExpressions(WriteCSVData &bind_d
 			vector<unique_ptr<Expression>> children;
 			children.push_back(std::move(column));
 			children.push_back(make_uniq<BoundConstantExpression>(format));
-			ErrorData error;
 			FunctionBinder function_binder(context);
-			expr = function_binder.BindScalarFunction(Identifier::DefaultSchema(), Identifier("strftime"),
-			                                          std::move(children), error, false);
-			if (!expr) {
-				error.Throw();
-			}
+			expr = function_binder.BindScalarFunction(Identifier::DefaultSchema(), "strftime", std::move(children));
 		} else {
 			// CAST <name> AS VARCHAR
 			expr = std::move(column);
@@ -199,14 +194,14 @@ static void CSVListCopyOptions(ClientContext &context, CopyOptionsInput &input) 
 	copy_options["parallel"] = CopyOption(LogicalType::BOOLEAN, CopyOptionMode::READ_ONLY);
 	copy_options["allow_quoted_nulls"] = CopyOption(LogicalType::BOOLEAN, CopyOptionMode::READ_ONLY);
 	copy_options["store_rejects"] = CopyOption(LogicalType::BOOLEAN, CopyOptionMode::READ_ONLY);
-	copy_options["force_not_null"] = CopyOption(LogicalType::ANY, CopyOptionMode::READ_ONLY);
+	copy_options["force_not_null"] = CopyOption(LogicalType::LIST(LogicalType::VARCHAR), CopyOptionMode::READ_ONLY);
 	copy_options["rejects_table"] = CopyOption(LogicalType::VARCHAR, CopyOptionMode::READ_ONLY);
 	copy_options["rejects_scan"] = CopyOption(LogicalType::VARCHAR, CopyOptionMode::READ_ONLY);
 	copy_options["rejects_limit"] = CopyOption(LogicalType::BIGINT, CopyOptionMode::READ_ONLY);
 	copy_options["encoding"] = CopyOption(LogicalType::VARCHAR, CopyOptionMode::READ_ONLY);
 	copy_options["thousands"] = CopyOption(LogicalType::VARCHAR, CopyOptionMode::READ_ONLY);
 
-	copy_options["force_quote"] = CopyOption(LogicalType::ANY, CopyOptionMode::WRITE_ONLY);
+	copy_options["force_quote"] = CopyOption(LogicalType::LIST(LogicalType::VARCHAR), CopyOptionMode::WRITE_ONLY);
 	copy_options["prefix"] = CopyOption(LogicalType::VARCHAR, CopyOptionMode::WRITE_ONLY);
 	copy_options["suffix"] = CopyOption(LogicalType::VARCHAR, CopyOptionMode::WRITE_ONLY);
 
@@ -251,7 +246,8 @@ static unique_ptr<AsyncFileWriter> OpenCSVFileWriter(ClientContext &context, con
                                                      FileCompressionType compression) {
 	auto &fs = FileSystem::GetFileSystem(context);
 	auto flags = FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW | std::move(compression);
-	if (!fs.FileExists(file_path) && !fs.IsPipe(file_path)) {
+	// checking a remote path costs a request, so a remote output is opened like one that may exist
+	if (!fs.IsRemoteFile(file_path) && !fs.FileExists(file_path) && !fs.IsPipe(file_path)) {
 		flags |= FileFlags::FILE_FLAGS_EXCLUSIVE_CREATE;
 	}
 	return make_uniq<AsyncFileWriter>(QueryContext(context), fs, file_path, flags);

@@ -10,6 +10,8 @@
 #include "duckdb/catalog/catalog_entry/table_function_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
 #include "duckdb/common/enums/database_modification_type.hpp"
+#include "duckdb/parser/expression/constant_expression.hpp"
+#include "duckdb/parser/parsed_data/create_schema_info.hpp"
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/parser/statement/logical_plan_statement.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
@@ -40,7 +42,7 @@ static optional_ptr<LogicalGet> FindQualifiedTableFunction(LogicalOperator &op) 
 
 static void CheckTableFunctionQualification(Connection &connection, const string &sql, const QualifiedName &name,
                                             int64_t first_value) {
-	Parser parser(connection.context->GetParserOptions());
+	Parser parser(*connection.context);
 	parser.ParseQuery(sql);
 	Planner planner(*connection.context);
 	planner.CreatePlan(std::move(parser.statements[0]));
@@ -55,7 +57,7 @@ static void CheckTableFunctionQualification(Connection &connection, const string
 	REQUIRE(get->function.GetSchemaName() == name.Schema());
 	auto definition = get->function;
 	REQUIRE(definition.GetQualifiedName() == name);
-	definition.name = Identifier("renamed_function");
+	definition.SetName(Identifier("renamed_function"));
 	REQUIRE(definition.GetQualifiedName() == name.WithName("renamed_function"));
 	auto copy = planner.plan->Copy(*connection.context);
 	copy->ResolveOperatorTypes();
@@ -69,8 +71,8 @@ static void CheckTableFunctionQualification(Connection &connection, const string
 		REQUIRE_NO_FAIL(result);
 		REQUIRE(result.GetTypes() == vector<LogicalType> {LogicalType::BIGINT});
 		REQUIRE(result.RowCount() == 2);
-		REQUIRE(result.GetValue(0, 0) == Value::BIGINT(first_value));
-		REQUIRE(result.GetValue(0, 1) == Value::BIGINT(first_value + 1));
+		REQUIRE(result.Collection().GetValue(0, 0) == Value::BIGINT(first_value));
+		REQUIRE(result.Collection().GetValue(0, 1) == Value::BIGINT(first_value + 1));
 	}
 }
 
@@ -91,7 +93,7 @@ TEST_CASE("Table function registration retains canonical qualification", "[api][
 	REQUIRE_NO_FAIL(connection.Query("SET search_path='shadow,main'"));
 	auto shadow = connection.Query("SELECT * FROM qualified_range(2)");
 	REQUIRE_NO_FAIL(*shadow);
-	REQUIRE(shadow->GetValue(0, 0) == Value::INTEGER(99));
+	REQUIRE(shadow->Collection().GetValue(0, 0) == Value::INTEGER(99));
 	connection.BeginTransaction();
 	auto &range =
 	    Catalog::GetEntry<TableFunctionCatalogEntry>(*connection.context, QualifiedName("system", "main", "range"));
@@ -285,4 +287,29 @@ TEST_CASE("Test ExtensionLoader schema API", "[api]") {
 		REQUIRE_NO_FAIL(conn.Query("SELECT combined_schema.fn_combined()"));
 		REQUIRE_NO_FAIL(conn.Query("SELECT fn_combined()"));
 	}
+}
+
+TEST_CASE("Test that Catalog::CreateSchema rejects unsupported options", "[api]") {
+	DuckDB db(nullptr);
+	Connection conn(db);
+	conn.BeginTransaction();
+
+	auto &catalog = Catalog::GetCatalog(*conn.context, "memory");
+	MetaTransaction::Get(*conn.context)
+	    .ModifyDatabase(catalog.GetAttached(), DatabaseModificationType::CREATE_CATALOG_ENTRY);
+
+	CreateSchemaInfo info;
+	info.SetQualifiedName(QualifiedName(vector<Identifier> {"memory", "s1"}, Identifier()));
+	info.options.emplace("location", ConstantExpression::String("s3://bucket/folder"));
+
+	// the options are not supported by the DuckDB catalog - they must be rejected instead of discarded
+	REQUIRE_THROWS(catalog.CreateSchema(*conn.context, info));
+
+	info.options.clear();
+	REQUIRE_NOTHROW(catalog.CreateSchema(*conn.context, info));
+	conn.Commit();
+
+	auto result = conn.Query("SELECT schema_name FROM information_schema.schemata WHERE schema_name = 's1'");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->RowCount() == 1);
 }

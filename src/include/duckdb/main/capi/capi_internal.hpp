@@ -29,6 +29,9 @@
 
 namespace duckdb {
 
+//! Allocate payloads before exposing a flat vector through the v1 C API.
+void PrepareCAPIVector(Vector &result);
+
 struct DBInstanceCacheWrapper {
 	unique_ptr<DBInstanceCache> instance_cache;
 };
@@ -68,7 +71,6 @@ struct PendingStatementWrapper {
 
 struct ArrowResultWrapper {
 	unique_ptr<QueryResult> result;
-	unique_ptr<DataChunk> current_chunk;
 };
 
 struct AppenderWrapper {
@@ -103,7 +105,7 @@ struct DuckDBResultData {
 	//! The query handle, or null once a stream was opened from it
 	unique_ptr<QueryResult> result;
 	//! The stream opened from the handle (may be null)
-	unique_ptr<QueryResultStream> stream;
+	unique_ptr<QueryResultStream<>> stream;
 	// Results can only use either the new API or the old API, not a mix of the two
 	// They start off as "none" and switch to one or the other when an API method is used
 	CAPIResultSetType result_set_type;
@@ -156,7 +158,7 @@ duckdb_error_type ErrorTypeToC(const ExceptionType type);
 ExceptionType ErrorTypeFromC(const duckdb_error_type type);
 
 duckdb_state DuckDBTranslateResult(unique_ptr<QueryResult> result, duckdb_result *out);
-duckdb_state DuckDBTranslateStreamResult(unique_ptr<QueryResultStream> stream, duckdb_result *out);
+duckdb_state DuckDBTranslateStreamResult(unique_ptr<QueryResultStream<>> stream, duckdb_result *out);
 bool DeprecatedMaterializeResult(duckdb_result *result);
 
 } // namespace duckdb

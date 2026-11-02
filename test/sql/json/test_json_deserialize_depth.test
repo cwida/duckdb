@@ -1,0 +1,26 @@
+# name: test/sql/json/test_json_deserialize_depth.test
+# description: Deserializing deeply nested statements is limited in depth
+# group: [json]
+
+require json
+
+statement error
+SELECT json_deserialize_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","cte_map":{"map":[]},"select_list":[' || repeat('{"class":"OPERATOR","type":"OPERATOR_NOT","children":[', 100000) || '{"class":"CONSTANT","type":"VALUE_CONSTANT","literal":{"kind":"INTEGER","text":"1"}}' || repeat(']}', 100000) || '],"from_table":{"type":"EMPTY"},"aggregate_handling":"STANDARD_HANDLING"}}]}');
+----
+Serialized JSON exceeds the maximum nesting depth
+
+statement error
+SELECT * FROM json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","cte_map":{"map":[]},"select_list":[' || repeat('{"class":"OPERATOR","type":"OPERATOR_NOT","children":[', 100000) || '{"class":"CONSTANT","type":"VALUE_CONSTANT","literal":{"kind":"INTEGER","text":"1"}}' || repeat(']}', 100000) || '],"from_table":{"type":"EMPTY"},"aggregate_handling":"STANDARD_HANDLING"}}]}');
+----
+Serialized JSON exceeds the maximum nesting depth
+
+# moderately nested expressions still round trip
+query I
+SELECT json_deserialize_sql(json_serialize_sql('SELECT ' || repeat('abs(', 50) || '1' || repeat(')', 50))) = 'SELECT ' || repeat('abs(', 50) || '1' || repeat(')', 50);
+----
+true
+
+statement error
+SELECT json_deserialize_sql(json_serialize_sql('SELECT ' || repeat('abs(', 200) || '1' || repeat(')', 200)));
+----
+Serialized JSON exceeds the maximum nesting depth

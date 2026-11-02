@@ -226,7 +226,6 @@ COMMIT
 statement ok
 INSERT INTO t VALUES(NULL)
 
-mode skip instable
 # Scenario #5, Insert null, delete null locally, then alter
 statement ok
 DROP TABLE IF EXISTS t
@@ -263,5 +262,3 @@ query I
 SELECT COUNT(*) FROM t WHERE j IS NULL
 ----
 0
-
-mode unskip

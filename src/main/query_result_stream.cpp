@@ -1,13 +1,27 @@
 #include "duckdb/main/query_result_stream.hpp"
 
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/execution/executor.hpp"
 #include "duckdb/main/buffered_data/buffered_data.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/result_unit.hpp"
 
 namespace duckdb {
 
-QueryResultStream::QueryResultStream(unique_ptr<QueryResult> result) : handle(std::move(result)) {
+bool StreamsByDefault(StatementType written_type, const QueryResult &result, bool reads_to_the_end) {
+	// Checked first: a statement that expands into several is no SELECT, and its properties may not be known yet
+	if (written_type != StatementType::SELECT_STATEMENT) {
+		return false;
+	}
+	auto &properties = result.GetStatementProperties();
+	if (properties.return_type != StatementReturnType::QUERY_RESULT) {
+		return false;
+	}
+	return reads_to_the_end || properties.IsReadOnly();
+}
+
+ResultStreamBase::ResultStreamBase(unique_ptr<QueryResult> result, const char *expected_format)
+    : handle(std::move(result)) {
 	if (!handle) {
 		throw InvalidInputException("Attempting to open a stream on a query result that does not exist");
 	}
@@ -15,39 +29,54 @@ QueryResultStream::QueryResultStream(unique_ptr<QueryResult> result) : handle(st
 		throw InvalidInputException("Attempting to open a stream on an unsuccessful query result\nError: %s",
 		                            handle->GetError());
 	}
-	if (handle->GetStatementProperties().result_eagerness == ResultEagerness::FORCED) {
-		throw InvalidInputException(
-		    "Attempting to open a stream on a %s statement, which completes before its result is returned",
-		    StatementTypeToString(handle->GetStatementType()));
-	}
-	if (!handle->HasBufferedData()) {
+	if (handle->HasBufferedData()) {
+		if (handle->GetBufferedData().Decide(ResultLifetime::DRAINING) != ResultLifetime::DRAINING) {
+			throw InvalidInputException("Attempting to open a stream on a query result that is being retained");
+		}
+	} else if (handle->context && !handle->MetadataAvailable()) {
+		// A statement that expands into several: the statement producing the result takes the decision when it
+		// starts
+		auto keep_alive = handle->context;
+		auto lock = keep_alive->LockContext();
+		handle->CheckExecutableInternal(*lock);
+		if (keep_alive->DecideResultLifetimeInternal(*lock, ResultLifetime::DRAINING) != ResultLifetime::DRAINING) {
+			throw InvalidInputException("Attempting to open a stream on a query result that is being retained");
+		}
+	} else {
 		throw InvalidInputException("Attempting to open a stream on a query result that has no streaming buffer");
 	}
-	if (handle->GetBufferedData().Decide(ResultLifetime::DRAINING) != ResultLifetime::DRAINING) {
-		throw InvalidInputException("Attempting to open a stream on a query result that is being retained");
+	if (!StringUtil::Equals(handle->Format().Name(), expected_format)) {
+		throw InvalidInputException("Attempting to open a \"%s\" stream on a query result in the \"%s\" format",
+		                            expected_format, handle->Format().Name());
 	}
 }
 
-QueryResultStream::~QueryResultStream() {
+ResultStreamBase::~ResultStreamBase() {
 	Close();
 }
 
-void QueryResultStream::Close() {
+void ResultStreamBase::Close() {
 	handle->Close();
 }
 
-bool QueryResultStream::IsOpen() {
+bool ResultStreamBase::IsOpen() {
 	return handle->IsOpen();
 }
 
+bool ResultStreamBase::MetadataAvailable() const {
+	return handle->MetadataAvailable();
+}
+
 QueryResultState
-QueryResultStream::GuardedInternal(const char *name,
-                                   const std::function<QueryResultState(ClientContextLock &lock)> &call) {
+ResultStreamBase::GuardedInternal(const char *name,
+                                  const std::function<QueryResultState(ClientContextLock &lock)> &call) {
 	if (!handle->context) {
 		// The stream already ended. Keep reporting the terminal state
 		return handle->HasError() ? QueryResultState::EXECUTION_ERROR : QueryResultState::FINISHED;
 	}
-	auto lock = handle->LockContext();
+	// Ending the query drops the handle's reference to the context, which the lock below outlives
+	auto keep_alive = handle->context;
+	auto lock = keep_alive->LockContext();
 	try {
 		return call(*lock);
 	} catch (std::exception &ex) {
@@ -60,59 +89,92 @@ QueryResultStream::GuardedInternal(const char *name,
 	return QueryResultState::EXECUTION_ERROR;
 }
 
-QueryResultState QueryResultStream::Poll() {
-	auto state = GuardedInternal("Poll", [&](ClientContextLock &lock) { return handle->buffer->Poll(lock, *handle); });
+QueryResultState ResultStreamBase::DriveWithoutBufferInternal(ClientContextLock &lock, bool execute_task) {
+	D_ASSERT(!handle->buffer);
+	if (!handle->IsOpenInternal(lock)) {
+		return handle->Cancelled();
+	}
+	auto &context = *handle->context;
+	// Checked as the buffer's own Poll checks it, so a cancel is seen before a finished execution can be ended. A
+	// worker error also raises the flag; both loads are seq_cst
+	if (context.interrupt_state.load() == ClientInterruptState::INTERRUPTED && !Executor::Get(context).HasError()) {
+		throw InterruptException();
+	}
+	return execute_task ? context.ExecuteTaskInternal(lock, *handle) : context.PollInternal(lock, *handle);
+}
+
+QueryResultState ResultStreamBase::Poll() {
+	auto state = GuardedInternal("Poll", [&](ClientContextLock &lock) {
+		if (!handle->buffer) {
+			auto state = DriveWithoutBufferInternal(lock, false);
+			if (!handle->buffer) {
+				return state;
+			}
+		}
+		return handle->buffer->Poll(lock, *handle);
+	});
 	if (state == QueryResultState::EXECUTION_ERROR) {
 		Close();
 	}
 	return state;
 }
 
-QueryResultState QueryResultStream::ExecuteTask() {
-	auto state = GuardedInternal("ExecuteTask",
-	                             [&](ClientContextLock &lock) { return handle->buffer->Participate(lock, *handle); });
+QueryResultState ResultStreamBase::ExecuteTask() {
+	auto state = GuardedInternal("ExecuteTask", [&](ClientContextLock &lock) {
+		if (!handle->buffer) {
+			auto state = DriveWithoutBufferInternal(lock, true);
+			// When the statement producing the result started, the buffer reports what is poppable
+			return handle->buffer ? handle->buffer->Poll(lock, *handle) : state;
+		}
+		return handle->buffer->Participate(lock, *handle);
+	});
 	if (state == QueryResultState::EXECUTION_ERROR) {
-		// A finished execution can still hold trailing chunks, so only an error ends the stream here
+		// A finished execution can still hold trailing units, so only an error ends the stream here
 		Close();
 	}
 	return state;
 }
 
-void QueryResultStream::WaitForTask() {
+void ResultStreamBase::WaitForTask() {
 	if (!handle->context) {
 		return;
 	}
-	handle->buffer->UnblockSinks();
+	if (handle->buffer) {
+		handle->buffer->UnblockSinks();
+	}
 	handle->WaitForTask();
 }
 
-QueryResultState QueryResultStream::TryFetch(unique_ptr<DataChunk> &out_chunk) {
-	out_chunk.reset();
+QueryResultState ResultStreamBase::TryFetchUnit(unique_ptr<ResultUnit> &out_unit) {
+	out_unit.reset();
 	auto state = GuardedInternal("TryFetch", [&](ClientContextLock &lock) {
+		if (!handle->buffer) {
+			auto state = DriveWithoutBufferInternal(lock, false);
+			if (!handle->buffer) {
+				if (state == QueryResultState::FINISHED) {
+					// A statement that expands into several and returns no rows ends without a unit
+					return handle->EndFinishedInternal(lock);
+				}
+				return state;
+			}
+		}
 		auto &buffer = *handle->buffer;
 		auto state = buffer.Poll(lock, *handle);
 		if (state == QueryResultState::EXECUTION_ERROR) {
 			return state;
 		}
 		if (state == QueryResultState::READY) {
-			if (auto unit = buffer.Scan()) {
-				out_chunk = std::move(unit->Cast<ChunkUnit>().chunk);
-			}
-		}
-		if (out_chunk && out_chunk->size() != 0) {
+			out_unit = buffer.Scan();
+			// READY is only reported with a unit queued
+			D_ASSERT(out_unit);
 			return QueryResultState::READY;
 		}
-		out_chunk.reset();
 		if (state == QueryResultState::FINISHED) {
 			// The buffer is drained and execution is done: this is the end of the stream
 			buffer.AssertNoBlockedSinks();
 			handle->EndQuery(lock);
 			// Cleanup can fail on an autocommit commit. It records the error without throwing
 			return handle->HasError() ? QueryResultState::EXECUTION_ERROR : QueryResultState::FINISHED;
-		}
-		if (state == QueryResultState::READY) {
-			// A unit was announced but the scan came up empty: the stream has not ended yet
-			return QueryResultState::NOT_READY;
 		}
 		return state;
 	});
@@ -122,22 +184,35 @@ QueryResultState QueryResultStream::TryFetch(unique_ptr<DataChunk> &out_chunk) {
 	return state;
 }
 
-unique_ptr<DataChunk> QueryResultStream::FetchInternal(ClientContextLock &lock) {
-	auto &buffer = *handle->buffer;
-	unique_ptr<DataChunk> chunk;
+unique_ptr<ResultUnit> ResultStreamBase::FetchUnitInternal(ClientContextLock &lock) {
 	try {
+		// The statements before the one producing the result of a statement that expands run on this thread
+		while (!handle->buffer) {
+			auto state = handle->context->ExecuteTaskInternal(lock, *handle);
+			if (state == QueryResultState::EXECUTION_ERROR) {
+				return nullptr;
+			}
+			if (state == QueryResultState::FINISHED && !handle->buffer) {
+				handle->EndFinishedInternal(lock);
+				return nullptr;
+			}
+			if (state == QueryResultState::BLOCKED || state == QueryResultState::NO_TASKS_AVAILABLE) {
+				handle->context->WaitForTask(lock, *handle);
+			}
+		}
+		auto &buffer = *handle->buffer;
 		auto state = buffer.ReplenishBuffer(lock, *handle);
 		if (state == QueryResultState::EXECUTION_ERROR) {
 			return nullptr;
 		}
-		if (auto unit = buffer.Scan()) {
-			chunk = std::move(unit->Cast<ChunkUnit>().chunk);
-		}
-		if (!chunk || chunk->ColumnCount() == 0 || chunk->size() == 0) {
+		auto unit = buffer.Scan();
+		if (!unit) {
+			// READY is only reported with a unit queued, so an empty scan means execution finished
+			D_ASSERT(state == QueryResultState::FINISHED);
 			handle->EndQuery(lock);
 			return nullptr;
 		}
-		return chunk;
+		return unit;
 	} catch (std::exception &ex) {
 		handle->HandleFetchFailure(lock, ErrorData(ex));
 	} catch (...) { // LCOV_EXCL_START
@@ -147,77 +222,85 @@ unique_ptr<DataChunk> QueryResultStream::FetchInternal(ClientContextLock &lock) 
 	return nullptr;
 }
 
-unique_ptr<DataChunk> QueryResultStream::Fetch() {
+unique_ptr<ResultUnit> ResultStreamBase::FetchUnit() {
 	if (!handle->context && !handle->HasError()) {
 		// The stream ended cleanly. Keep reporting the end, the way TryFetch and Poll do
 		return nullptr;
 	}
-	unique_ptr<DataChunk> chunk;
+	unique_ptr<ResultUnit> unit;
 	{
+		// Ending the query drops the handle's reference to the context, which the lock below outlives
+		auto keep_alive = handle->context;
 		auto lock = handle->LockContext();
 		handle->CheckExecutableInternal(*lock);
-		chunk = FetchInternal(*lock);
+		unit = FetchUnitInternal(*lock);
 	}
-	if (!chunk || chunk->ColumnCount() == 0 || chunk->size() == 0) {
-		if (!HasError()) {
+	if (!unit) {
+		if (!HasError() && handle->buffer) {
 			handle->buffer->AssertNoBlockedSinks();
 		}
 		Close();
 		return nullptr;
 	}
-	chunk->Flatten();
-	return chunk;
+	return unit;
 }
 
-void QueryResultStream::SetError(ErrorData error) {
+const ResultFormatGlobalState &ResultStreamBase::FormatStateInternal() const {
+	if (!handle->buffer) {
+		return handle->CheckedFormatState(handle->Format().Name());
+	}
+	return handle->GetBufferedData().FormatState();
+}
+
+void ResultStreamBase::SetError(ErrorData error) {
 	handle->SetError(std::move(error));
 }
 
-bool QueryResultStream::HasError() const {
+bool ResultStreamBase::HasError() const {
 	return handle->HasError();
 }
 
-const string &QueryResultStream::GetError() const {
+const string &ResultStreamBase::GetError() const {
 	return handle->GetError();
 }
 
-const ErrorData &QueryResultStream::GetErrorObject() const {
+const ErrorData &ResultStreamBase::GetErrorObject() const {
 	return handle->GetErrorObject();
 }
 
-const ExceptionType &QueryResultStream::GetErrorType() const {
+const ExceptionType &ResultStreamBase::GetErrorType() const {
 	return handle->GetErrorType();
 }
 
-const vector<LogicalType> &QueryResultStream::GetTypes() const {
+const vector<LogicalType> &ResultStreamBase::GetTypes() const {
 	return handle->GetTypes();
 }
 
-const vector<Identifier> &QueryResultStream::GetNames() const {
+const vector<Identifier> &ResultStreamBase::GetNames() const {
 	return handle->GetNames();
 }
 
-const Identifier &QueryResultStream::ColumnName(idx_t index) const {
+const Identifier &ResultStreamBase::ColumnName(idx_t index) const {
 	return handle->ColumnName(index);
 }
 
-idx_t QueryResultStream::ColumnCount() const {
+idx_t ResultStreamBase::ColumnCount() const {
 	return handle->ColumnCount();
 }
 
-StatementType QueryResultStream::GetStatementType() const {
+StatementType ResultStreamBase::GetStatementType() const {
 	return handle->GetStatementType();
 }
 
-const StatementProperties &QueryResultStream::GetStatementProperties() const {
+const StatementProperties &ResultStreamBase::GetStatementProperties() const {
 	return handle->GetStatementProperties();
 }
 
-const ClientProperties &QueryResultStream::GetClientProperties() const {
+const ClientProperties &ResultStreamBase::GetClientProperties() const {
 	return handle->client_properties;
 }
 
-ClientProperties &QueryResultStream::GetClientProperties() {
+ClientProperties &ResultStreamBase::GetClientProperties() {
 	return handle->client_properties;
 }
 

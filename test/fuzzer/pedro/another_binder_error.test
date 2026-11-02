@@ -2,8 +2,6 @@
 # description: Issue #4978 (issue 48): Another Binder Issue
 # group: [pedro]
 
-mode skip flaky
-
 statement error
 SELECT avg(0) c0, (SELECT 0 OFFSET c0);
 ----
@@ -23,7 +21,7 @@ SELECT 1 c0, (SELECT 0 OFFSET c0 - 1);
 statement error
 SELECT (SELECT avg(0)) c0, (SELECT 0 OFFSET c0 + 1);
 ----
-Serialization Error: Cannot copy BoundSubqueryExpression
+Alias "c0" referenced in a SELECT clause - but the expression has a subquery
 
 query II
 select avg(0) AS c0, (SELECT c0);

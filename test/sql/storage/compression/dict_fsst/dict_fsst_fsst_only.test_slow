@@ -22,9 +22,9 @@ CREATE TABLE lineitem_unique AS SELECT row_number() OVER () % 27 AS k, * FROM (S
 query I
 SELECT COUNT(DISTINCT l_comment) FROM lineitem_unique WHERE k = 13
 ----
-133731
+169654
 
 query I
 SELECT COUNT(*) FROM lineitem_unique WHERE contains(l_comment, 'fox')
 ----
-197137
+254644

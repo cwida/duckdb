@@ -58,3 +58,29 @@ False
 False
 False
 True
+
+statement ok
+ATTACH '{TEST_DIR}/cast_null_pruning.duckdb' AS rg (ROW_GROUP_SIZE 2048);
+
+statement ok
+USE rg;
+
+# RG 1: all NULL; RG 2: 1024 NULL and 1024 dates; RG 3: 2048 dates, no NULL.
+statement ok
+CREATE TABLE raw_events AS
+SELECT CASE WHEN i < 2048 OR (i < 4096 AND i % 2 = 0) THEN NULL ELSE '2025-01-15' END AS raw_date
+FROM range(6144) t(i);
+
+foreach cast CAST TRY_CAST
+
+query I
+SELECT count(*) FROM raw_events WHERE {cast}(raw_date AS DATE) >= DATE '2025-01-01';
+----
+3072
+
+query II
+EXPLAIN ANALYZE SELECT raw_date FROM raw_events WHERE {cast}(raw_date AS DATE) >= DATE '2025-01-01';
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 2 / 3.*
+
+endloop

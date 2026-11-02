@@ -200,3 +200,23 @@ SELECT current_setting('max_execution_time')
 ----
 0
 
+
+# very large values do not overflow the deadline
+statement ok
+SET max_execution_time=9223372036854775807;
+
+query I
+SELECT 42;
+----
+42
+
+statement ok
+SET max_execution_time=10000000000000;
+
+query I
+SELECT 42;
+----
+42
+
+statement ok
+SET max_execution_time=0;

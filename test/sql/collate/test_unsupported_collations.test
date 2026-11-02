@@ -14,9 +14,21 @@ CREATE TABLE collate_test(s INTEGER COLLATE blabla)
 ----
 Parser Error: Only VARCHAR columns can have collations!
 
+# a collation requires an explicit VARCHAR type
+statement error
+CREATE TABLE collate_test(s COLLATE nocase)
+----
+Parser Error: Column s must have a type or be defined as a GENERATED column.
+
 # we can combine multiple of the same collation
 statement ok
 CREATE TABLE collate_test(s VARCHAR COLLATE NOACCENT.NOACCENT)
+
+# multiple COLLATE clauses are not allowed
+statement error
+CREATE TABLE collate_test_duplicate(s VARCHAR COLLATE NOCASE COLLATE NOACCENT)
+----
+Parser Error: multiple COLLATE clauses not allowed
 
 statement error
 CREATE TABLE collate_test(s VARCHAR COLLATE 1)

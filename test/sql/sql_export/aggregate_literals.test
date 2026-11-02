@@ -1,0 +1,55 @@
+# name: test/sql/sql_export/aggregate_literals.test
+# description: SQL export preserves aggregate literals, duplicates and NULL extension
+# group: [sql_export]
+
+query T
+SELECT string_agg(DISTINCT v, '|' ORDER BY length(v), v)
+FROM (VALUES ('aa'),('b'),('b'),(NULL)) t(v)
+----
+b|aa
+
+query II
+SELECT count(r.k), sum(r.k) FROM (VALUES (1),(2)) l(i)
+LEFT JOIN (SELECT 7 k, 1 i) r USING(i)
+----
+1	7
+
+query II
+SELECT count(k), sum(k) FROM (
+    SELECT 7 k FROM (VALUES (1),(2)) t(i) GROUP BY GROUPING SETS ((k),())
+) s
+----
+1	7
+
+query TTT
+SELECT typeof(string_agg(v, '|')), typeof(count(v)), typeof(sum(7))
+FROM (VALUES ('aa'),('b'),('b'),(NULL)) t(v)
+----
+VARCHAR	BIGINT	HUGEINT
+
+# Ordinary AVG and SUM arithmetic may introduce nullable COUNT during optimization.
+query R
+SELECT avg(v) FROM (VALUES (1::BIGINT),(NULL),(1),(4)) input(v);
+----
+2.0
+
+query IR
+SELECT sum(v), avg(v) FROM (VALUES (1::BIGINT),(NULL),(1),(4)) input(v);
+----
+6	2.0
+
+query I
+SELECT sum(v + 1) FROM (VALUES (1::BIGINT),(NULL),(1),(4)) input(v);
+----
+9
+
+query II
+SELECT count(v), approx_count_distinct(v) FROM (VALUES (1::BIGINT),(NULL),(1),(4)) input(v);
+----
+3	2
+
+query IIIII
+SELECT count(v), approx_count_distinct(v), avg(v), sum(v), sum(v + 1)
+FROM (VALUES (1::BIGINT),(NULL),(1),(4)) input(v) WHERE false;
+----
+0	0	NULL	NULL	NULL

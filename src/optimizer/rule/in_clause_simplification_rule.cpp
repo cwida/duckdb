@@ -24,6 +24,10 @@ unique_ptr<Expression> InClauseSimplificationRule::Apply(LogicalOperator &op, ve
 		return nullptr;
 	}
 	auto &cast_expression = expr.GetChildrenMutable()[0]->Cast<BoundFunctionExpression>();
+	if (BoundCastExpression::IsTryCast(cast_expression)) {
+		// a TRY_CAST turns failing values into NULL, which is lost when the cast is removed
+		return nullptr;
+	}
 	if (BoundCastExpression::Child(cast_expression).GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
 		return nullptr;
 	}

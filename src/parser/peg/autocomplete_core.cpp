@@ -119,7 +119,7 @@ static vector<AutoCompleteSuggestion> ComputeSuggestions(vector<AutoCompleteCand
 		}
 		if (results.size() > fuzzy_suggestion_count) {
 			// after we exceed the "fuzzy_suggestion_count" we only accept exact suggestion matches
-			if (!StringUtil::StartsWith(StringUtil::Lower(result), lower_prefix)) {
+			if (!StringUtil::CIStartsWith(result, lower_prefix)) {
 				break;
 			}
 		}
@@ -229,6 +229,7 @@ vector<AutoCompleteSuggestion> GenerateAutoCompleteSuggestions(AutoCompleteCatal
 		vector<AutoCompleteCandidate> new_suggestions;
 		switch (suggestion.type) {
 		case SuggestionState::SUGGEST_VARIABLE:
+		case SuggestionState::SUGGEST_BARE_LABEL:
 			// variables have no suggestions available
 			break;
 		case SuggestionState::SUGGEST_KEYWORD:

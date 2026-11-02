@@ -1,0 +1,50 @@
+# name: test/sql/copy/csv/csv_multibyte_delimiter_escapes.test
+# description: Escaped values followed by a multi-byte delimiter
+# group: [csv]
+
+# quoted values with escapes that cross a buffer boundary
+statement ok
+COPY (SELECT '"a""b"||x' FROM range(60)) TO '{TEST_DIR}/mb_esc.csv' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '', DELIMITER E'\t')
+
+query II
+SELECT column0, count(*) FROM read_csv('{TEST_DIR}/mb_esc.csv', delim='||', quote='"', escape='"', header=false) GROUP BY ALL
+----
+a"b	60
+
+loop buf 30 80
+
+query II
+SELECT column0, count(*) FROM read_csv('{TEST_DIR}/mb_esc.csv', delim='||', quote='"', escape='"', header=false, buffer_size={buf}, max_line_size={buf}) GROUP BY ALL
+----
+a"b	60
+
+endloop
+
+statement ok
+COPY (SELECT '""""::::x' FROM range(60)) TO '{TEST_DIR}/mb_esc2.csv' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '', DELIMITER E'\t')
+
+query III
+SELECT column0, column1, count(*) FROM read_csv('{TEST_DIR}/mb_esc2.csv', delim='::::', quote='"', escape='"', header=false, buffer_size=64, max_line_size=64) GROUP BY ALL
+----
+"	x	60
+
+# unquoted values with escapes
+statement ok
+COPY (SELECT 'a\b||x' FROM range(3)) TO '{TEST_DIR}/mb_uesc.csv' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '', DELIMITER E'\t')
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/mb_uesc.csv', delim='||', quote='"', escape='\', header=false, strict_mode=false)
+----
+ab	x
+ab	x
+ab	x
+
+statement ok
+COPY (SELECT 'a\b::::x' FROM range(3)) TO '{TEST_DIR}/mb_uesc2.csv' (FORMAT CSV, HEADER false, QUOTE '', ESCAPE '', DELIMITER E'\t')
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/mb_uesc2.csv', delim='::::', quote='"', escape='\', header=false, strict_mode=false)
+----
+ab	x
+ab	x
+ab	x

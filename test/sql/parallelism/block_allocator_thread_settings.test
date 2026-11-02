@@ -1,0 +1,41 @@
+# name: test/sql/parallelism/block_allocator_thread_settings.test
+# description: Reuse block allocations across scheduler relaunches with and without async workers
+# group: [parallelism]
+
+require 64bit
+
+require notmingw
+
+statement ok
+CREATE TABLE blocks AS SELECT i, repeat('a', 100) AS s FROM range(10000) t(i)
+
+loop async_count 0 2
+
+statement ok
+SET async_threads={async_count}
+
+loop thread_count 1 4
+
+statement ok
+SET threads={thread_count}
+
+query II
+SELECT sum(i), sum(length(s)) FROM blocks
+----
+49995000	1000000
+
+endloop
+
+endloop
+
+statement ok
+SET async_threads=0
+
+statement ok
+SET threads=1
+
+statement ok
+DROP TABLE blocks
+
+statement ok
+SET memory_limit='64MiB'

@@ -25,6 +25,11 @@ bool BoundWindowExpression::IsVolatile() const {
 	return stability == FunctionStability::VOLATILE || Expression::IsVolatile();
 }
 
+bool BoundWindowExpression::CanThrow() const {
+	auto errors = aggregate ? aggregate->GetErrorMode() : window->GetErrorMode();
+	return errors == FunctionErrors::CAN_THROW_RUNTIME_ERROR || Expression::CanThrow();
+}
+
 string BoundWindowExpression::ToString() const {
 	string function_name =
 	    aggregate.get() ? aggregate->GetName().GetIdentifierName() : window->GetName().GetIdentifierName();
@@ -211,6 +216,11 @@ unique_ptr<Expression> BoundWindowExpression::Copy() const {
 	new_window->sql_range_start = sql_range_start ? sql_range_start->Copy() : nullptr;
 	new_window->sql_range_end = sql_range_end ? sql_range_end->Copy() : nullptr;
 	new_window->sql_range_order_type = sql_range_order_type;
+	new_window->sql_range_start_boundary =
+	    sql_range_start_boundary ? make_uniq<WindowRangeBoundary>(*sql_range_start_boundary) : nullptr;
+	new_window->sql_range_end_boundary =
+	    sql_range_end_boundary ? make_uniq<WindowRangeBoundary>(*sql_range_end_boundary) : nullptr;
+	new_window->sql_range_order_casts = sql_range_order_casts;
 	new_window->ignore_nulls = ignore_nulls;
 	new_window->distinct = distinct;
 
@@ -293,6 +303,11 @@ void BoundWindowExpression::Serialize(Serializer &serializer) const {
 	serializer.WritePropertyWithDefault(216, "sql_range_end", sql_range_end, unique_ptr<ParsedExpression>());
 	serializer.WritePropertyWithDefault<LogicalType>(217, "sql_range_order_type", sql_range_order_type,
 	                                                 LogicalType::INVALID);
+	serializer.WritePropertyWithDefault(218, "sql_range_start_boundary", sql_range_start_boundary,
+	                                    unique_ptr<WindowRangeBoundary>());
+	serializer.WritePropertyWithDefault(219, "sql_range_end_boundary", sql_range_end_boundary,
+	                                    unique_ptr<WindowRangeBoundary>());
+	serializer.WritePropertyWithDefault<vector<WindowRangeCast>>(220, "sql_range_order_casts", sql_range_order_casts);
 }
 
 unique_ptr<Expression> BoundWindowExpression::Deserialize(Deserializer &deserializer) {
@@ -344,6 +359,12 @@ unique_ptr<Expression> BoundWindowExpression::Deserialize(Deserializer &deserial
 	                                             unique_ptr<ParsedExpression>());
 	deserializer.ReadPropertyWithExplicitDefault<LogicalType>(217, "sql_range_order_type", result->sql_range_order_type,
 	                                                          LogicalType::INVALID);
+	deserializer.ReadPropertyWithExplicitDefault(218, "sql_range_start_boundary", result->sql_range_start_boundary,
+	                                             unique_ptr<WindowRangeBoundary>());
+	deserializer.ReadPropertyWithExplicitDefault(219, "sql_range_end_boundary", result->sql_range_end_boundary,
+	                                             unique_ptr<WindowRangeBoundary>());
+	deserializer.ReadPropertyWithExplicitDefault<vector<WindowRangeCast>>(220, "sql_range_order_casts",
+	                                                                      result->sql_range_order_casts, {});
 
 	//	Builtin window functions didn't used to be serialized, so we need to look them up in the system catalog
 	if (!result->aggregate && !result->window) {
@@ -361,16 +382,15 @@ unique_ptr<Expression> BoundWindowExpression::Deserialize(Deserializer &deserial
 		                                     OnEntryNotFound::THROW_EXCEPTION);
 		auto &func = entry->Cast<WindowFunctionCatalogEntry>();
 
-		FunctionBinder function_binder(*binder);
-		ErrorData error_win;
-		auto best = function_binder.BindFunction(func.name, func.functions, arguments, error_win);
-		if (!best.IsValid()) {
-			error_win.Throw();
+		auto best = FunctionBinder::SelectFunction(binder->context, func.functions, arguments);
+		if (!best.IsSuccess()) {
+			best.GetError().Throw();
 		}
+		FunctionBinder function_binder(*binder);
 
-		const auto &win_func = func.functions.GetFunctionByOffset(best.GetIndex());
-
-		auto [bound_func, bind_info] = function_binder.ResolveFunction(win_func, result->children);
+		vector<pair<Identifier, unique_ptr<Expression>>> keyword_args;
+		auto [bound_func, bind_info] =
+		    function_binder.ResolveWindowFunction(best.GetBinding(), result->children, keyword_args);
 
 		result->bind_info = std::move(bind_info);
 		result->type = expression_type;

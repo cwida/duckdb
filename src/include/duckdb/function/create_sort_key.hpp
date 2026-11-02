@@ -12,6 +12,8 @@
 
 namespace duckdb {
 
+class Expression;
+
 struct OrderModifiers {
 	OrderModifiers(OrderType order_type, OrderByNullType null_type) : order_type(order_type), null_type(null_type) {
 	}
@@ -69,6 +71,9 @@ struct DecodeSortKeyFun {
 	static constexpr const char *Categories = "";
 
 	static ScalarFunction GetFunction();
+	//! Binds decode_sort_key from bound column types, bypassing the VARCHAR column definitions the SQL form parses
+	static unique_ptr<Expression> Bind(unique_ptr<Expression> sort_key, child_list_t<LogicalType> columns,
+	                                   vector<OrderModifiers> modifiers);
 };
 
 } // namespace duckdb

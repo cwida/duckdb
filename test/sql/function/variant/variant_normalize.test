@@ -1,0 +1,66 @@
+# name: test/sql/function/variant/variant_normalize.test
+# description: Normalize variants: less common primitive types and excessive nesting
+# group: [variant]
+
+query III
+SELECT
+	variant_normalize('12:34:56.123456789'::TIME_NS::VARIANT) = '12:34:56.123456789'::TIME_NS::VARIANT,
+	variant_normalize('2020-01-01 12:00:00.123456789+00'::TIMESTAMPTZ_NS::VARIANT) =
+		'2020-01-01 12:00:00.123456789+00'::TIMESTAMPTZ_NS::VARIANT,
+	variant_normalize('123456789012345678901234567890'::BIGNUM::VARIANT) =
+		'123456789012345678901234567890'::BIGNUM::VARIANT;
+----
+true	true	true
+
+
+statement error
+WITH RECURSIVE t(d, v) AS (
+    SELECT 0, [1]::VARIANT
+    UNION ALL
+    SELECT d + 1, [v]::VARIANT FROM t WHERE d < 128
+)
+SELECT variant_normalize(v) FROM t WHERE d = 128;
+----
+<REGEX>:.*VARIANT exceeds maximum recursion depth.*
+
+# Root depth is zero: 127 containers plus a scalar fit, one more does not.
+foreach wrapper [v] {'x':v}
+
+query I
+WITH RECURSIVE t(d, v) AS (
+    SELECT 0, 1::VARIANT
+    UNION ALL
+    SELECT d + 1, {wrapper}::VARIANT FROM t WHERE d < 127
+)
+SELECT variant_normalize(v) IS NOT NULL FROM t WHERE d = 127;
+----
+true
+
+statement error
+WITH RECURSIVE t(d, v) AS (
+    SELECT 0, 1::VARIANT
+    UNION ALL
+    SELECT d + 1, {wrapper}::VARIANT FROM t WHERE d < 128
+)
+SELECT variant_normalize(v) FROM t WHERE d = 128;
+----
+<REGEX>:.*VARIANT exceeds maximum recursion depth of 128.*
+
+# A failure must not affect the next traversal.
+query I
+SELECT variant_normalize({'x': [1, 2]}::VARIANT) IS NOT NULL;
+----
+true
+
+endloop
+
+# Siblings and rows must not consume each other's depth budget.
+query I
+SELECT variant_array_length(variant_normalize(range(1024)::VARIANT));
+----
+1024
+
+query I
+SELECT count(variant_normalize([i]::VARIANT)) FROM range(1024) t(i);
+----
+1024

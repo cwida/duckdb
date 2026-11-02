@@ -16,6 +16,7 @@
 
 namespace duckdb {
 
+class ClientContext;
 class DataChunk;
 class InterruptState;
 class TaskExecutor;
@@ -52,10 +53,13 @@ public:
 	//! needs to be called with non-empty async_tasks and from BLOCKED state, will empty the async_tasks and transform
 	//! into INVALID
 	void ScheduleTasks(InterruptState &interrupt_state, Executor &executor);
-	//! Execute tasks synchronously at callsite
+	//! Execute tasks synchronously at callsite, one after the other
 	//! needs to be called with non-empty async_tasks and from BLOCKED state, will empty the async_tasks and transform
 	//! into HAVE_MORE_OUTPUT
 	void ExecuteTasksSynchronously();
+	//! Execute tasks synchronously at callsite, side by side on the result's pool: the calling thread works on them
+	//! too and returns when all of them are done. Same preconditions and result as the overload above.
+	void ExecuteTasksSynchronously(ClientContext &context);
 
 	static AsyncResultType GetAsyncResultType(SourceResultType s);
 	//! Wraps tasks into a BLOCKED result, or HAVE_MORE_OUTPUT when there are none

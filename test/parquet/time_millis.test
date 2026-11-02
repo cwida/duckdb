@@ -1,0 +1,15 @@
+# name: test/parquet/time_millis.test
+# description: Read Parquet TIME(MILLIS) values
+# group: [parquet]
+
+require parquet
+
+query TT
+SELECT typeof(t), t::VARCHAR
+FROM '{DATA_DIR}/parquet-testing/time-millis.parquet'
+ORDER BY t NULLS LAST
+----
+TIME	00:00:00
+TIME	12:34:56.789
+TIME	23:59:59.999
+TIME	NULL

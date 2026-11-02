@@ -110,7 +110,7 @@ public:
 	                                                        vector<unique_ptr<Expression>> &filters) const;
 	virtual unique_ptr<MultiFileList> DynamicFilterPushdown(MultiFileDynamicPushdownInfo &dynamic_pushdown_info) const;
 
-	virtual vector<OpenFileInfo> GetAllFiles() const = 0;
+	virtual vector<OpenFileInfo> GetAllFiles() const;
 	virtual FileExpandResult GetExpandResult() const = 0;
 	//! Get the total file count - forces all files to be expanded / known so the exact count can be computed
 	virtual idx_t GetTotalFileCount() const = 0;

@@ -16,11 +16,7 @@ unique_ptr<SQLStatement> MultiStatement::Copy() const {
 }
 
 string MultiStatement::ToString() const {
-	vector<string> stringified;
-	for (auto &stmt : statements) {
-		stringified.push_back(stmt->ToString());
-	}
-	return StringUtil::Join(stringified, ";") + ";";
+	return StringUtil::Join(statements, ";", [](const auto &stmt) { return stmt->ToString(); }) + ";";
 }
 
 } // namespace duckdb

@@ -11,6 +11,7 @@
 #include "duckdb/common/types.hpp"
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/common/types/datetime.hpp"
+#include "duckdb/common/types/interval_no_normalize.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/common/types/interval.hpp"
 #include "duckdb/common/uhugeint.hpp"
@@ -87,7 +88,7 @@ PhysicalType GetTypeId() {
 	} else if (std::is_same<TYPE, const char *>() || std::is_same<TYPE, char *>() || std::is_same<TYPE, string_t>() ||
 	           std::is_same<TYPE, bignum_t>()) {
 		return PhysicalType::VARCHAR;
-	} else if (std::is_same<TYPE, interval_t>()) {
+	} else if (std::is_same<TYPE, interval_t>() || std::is_same<TYPE, interval_no_normalize>()) {
 		return PhysicalType::INTERVAL;
 	} else if (std::is_same<TYPE, list_entry_t>()) {
 		return PhysicalType::LIST;

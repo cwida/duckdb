@@ -14,13 +14,8 @@ CREATE TABLE test(a INTEGER, b INTEGER, c VARCHAR(10));
 statement ok
 INSERT INTO test VALUES (42, 88, 'hello');
 
-# FIXME - (unique) indexes aren't copied currently
-mode skip instable
-
 statement ok
 CREATE UNIQUE INDEX i_unique ON test(a);
-
-mode unskip
 
 statement ok
 CREATE VIEW v1 AS FROM test;
@@ -74,15 +69,10 @@ SELECT * FROM v1;
 ----
 42	88	hello
 
-# FIXME - unique indexes aren't copied currently
-mode skip instable
-
 statement error
 INSERT INTO test VALUES (42, 88, 'hello');
 ----
-xx
-
-mode unskip
+Constraint Error: Duplicate key "a: 42" violates unique constraint.
 
 statement ok
 INSERT INTO test VALUES (43, 88, 'hello');

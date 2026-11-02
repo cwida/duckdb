@@ -16,6 +16,9 @@ namespace duckdb {
 //! LogicalLimit represents a LIMIT clause
 class LogicalLimit : public LogicalOperator {
 public:
+	LogicalPlanSQLExportResult ToSQL(LogicalPlanSQLExportContext &context,
+	                                 const LogicalPlanVerificationPath &path) override;
+
 	static constexpr const LogicalOperatorType TYPE = LogicalOperatorType::LOGICAL_LIMIT;
 
 public:

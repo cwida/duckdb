@@ -167,7 +167,7 @@ TEST_CASE("Test TPC-DS dsdgen parallel output matches sequential output", "[tpcd
 		    con.Query("SELECT count(*) FROM ((SELECT * FROM " + table + "_seq EXCEPT ALL SELECT * FROM " + table +
 		              "_par) UNION ALL (SELECT * FROM " + table + "_par EXCEPT ALL SELECT * FROM " + table + "_seq))");
 		REQUIRE_NO_FAIL(*diff);
-		REQUIRE(diff->GetValue<int64_t>(0, 0) == 0);
+		REQUIRE(diff->Collection().GetValue(0, 0).GetValue<int64_t>() == 0);
 	}
 #endif
 }

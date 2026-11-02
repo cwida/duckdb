@@ -1,0 +1,66 @@
+# name: test/sql/types/geo/geometry_crs_persist.test
+# description: Reloaded geometry segments keep the CRS of their column
+# group: [geo]
+
+load {TEST_DIR}/test_geo_crs_persist.db readwrite v1.5.0
+
+# Mixed geometry types are not shredded, and are stored as WKB
+statement ok
+CREATE TABLE wkb (g GEOMETRY('OGC:CRS84'));
+
+statement ok
+INSERT INTO wkb SELECT (CASE WHEN x % 2 = 0 THEN 'POINT (' || x || ' ' || x || ')' ELSE 'LINESTRING (0 0, ' || x || ' ' || x || ')' END)::GEOMETRY('OGC:CRS84') FROM range(100) r(x);
+
+# Points only are shredded
+statement ok
+CREATE TABLE shredded (g GEOMETRY('OGC:CRS84'));
+
+statement ok
+INSERT INTO shredded SELECT ('POINT (' || x || ' ' || x || ')')::GEOMETRY('OGC:CRS84') FROM range(100) r(x);
+
+statement ok
+CHECKPOINT;
+
+restart
+
+query II
+SELECT g, typeof(g) FROM wkb ORDER BY rowid LIMIT 2;
+----
+POINT (0 0)	GEOMETRY('OGC:CRS84')
+LINESTRING (0 0, 1 1)	GEOMETRY('OGC:CRS84')
+
+query II
+SELECT g, typeof(g) FROM shredded ORDER BY rowid LIMIT 2;
+----
+POINT (0 0)	GEOMETRY('OGC:CRS84')
+POINT (1 1)	GEOMETRY('OGC:CRS84')
+
+statement ok
+DELETE FROM wkb WHERE rowid % 3 = 0;
+
+statement ok
+DELETE FROM shredded WHERE rowid % 3 = 0;
+
+statement ok
+CHECKPOINT;
+
+restart
+
+query I
+SELECT g FROM wkb ORDER BY rowid LIMIT 3;
+----
+LINESTRING (0 0, 1 1)
+POINT (2 2)
+POINT (4 4)
+
+query I
+SELECT g FROM shredded ORDER BY rowid LIMIT 3;
+----
+POINT (1 1)
+POINT (2 2)
+POINT (4 4)
+
+query I
+SELECT count(*) FROM wkb;
+----
+66

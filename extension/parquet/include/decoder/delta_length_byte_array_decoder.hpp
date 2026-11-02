@@ -33,7 +33,7 @@ public:
 	void Skip(uint8_t *defines, idx_t skip_count);
 
 private:
-	template <bool HAS_DEFINES, bool VALIDATE_INDIVIDUAL_STRINGS>
+	template <bool HAS_DEFINES>
 	void ReadInternal(shared_ptr<ResizeableBuffer> &block, uint8_t *defines, idx_t read_count, Vector &result,
 	                  idx_t result_offset);
 	template <bool HAS_DEFINES>

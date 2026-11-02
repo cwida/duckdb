@@ -1,0 +1,179 @@
+# name: test/sql/types/bignum/test_bignum_multiply.test
+# description: Test bignum multiplication
+# group: [bignum]
+
+query I
+SELECT 6::BIGNUM * 7::BIGNUM
+----
+42
+
+query I
+SELECT (-6)::BIGNUM * 7::BIGNUM
+----
+-42
+
+query I
+SELECT 6::BIGNUM * (-7)::BIGNUM
+----
+-42
+
+query I
+SELECT (-6)::BIGNUM * (-7)::BIGNUM
+----
+42
+
+# zero never carries a sign
+query II
+SELECT 0::BIGNUM * (-7)::BIGNUM, (-7)::BIGNUM * 0::BIGNUM
+----
+0	0
+
+query I
+SELECT NULL::BIGNUM * 7::BIGNUM
+----
+NULL
+
+query I
+SELECT 7::BIGNUM * NULL::BIGNUM
+----
+NULL
+
+# integers are implicitly cast to BIGNUM, the result stays a BIGNUM
+query II
+SELECT 5::BIGNUM * 3, typeof(5::BIGNUM * 3)
+----
+15	BIGNUM
+
+query II
+SELECT 3 * 5::BIGNUM, typeof(3 * 5::BIGNUM)
+----
+15	BIGNUM
+
+# floating point operands are not rounded to a BIGNUM, both sides are cast to DOUBLE instead
+query II
+SELECT 10::BIGNUM * 1.5::FLOAT, typeof(10::BIGNUM * 1.5::FLOAT)
+----
+15.0	DOUBLE
+
+query II
+SELECT 1.5::FLOAT * 10::BIGNUM, typeof(1.5::FLOAT * 10::BIGNUM)
+----
+15.0	DOUBLE
+
+query II
+SELECT 10::BIGNUM * 1.5::DOUBLE, typeof(10::BIGNUM * 1.5::DOUBLE)
+----
+15.0	DOUBLE
+
+# results beyond the HUGEINT range
+query I
+SELECT '123456789012345678901234567890'::BIGNUM * '987654321098765432109876543210'::BIGNUM
+----
+121932631137021795226185032733622923332237463801111263526900
+
+query I
+SELECT '-123456789012345678901234567890'::BIGNUM * '987654321098765432109876543210'::BIGNUM
+----
+-121932631137021795226185032733622923332237463801111263526900
+
+query I
+SELECT ('1' || repeat('0', 50))::BIGNUM * ('1' || repeat('0', 50))::BIGNUM
+----
+10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+
+query I
+SELECT '340282366920938463463374607431768211456'::BIGNUM * '340282366920938463463374607431768211456'::BIGNUM
+----
+115792089237316195423570985008687907853269984665640564039457584007913129639936
+
+query I
+SELECT repeat('9', 40)::BIGNUM * repeat('9', 40)::BIGNUM
+----
+99999999999999999999999999999999999999980000000000000000000000000000000000000001
+
+# 50! through repeated multiplication
+query I
+WITH RECURSIVE fact(i, f) AS (
+	SELECT 1, 1::BIGNUM
+	UNION ALL
+	SELECT i + 1, f * (i + 1)::BIGNUM FROM fact WHERE i < 50
+)
+SELECT f FROM fact WHERE i = 50
+----
+30414093201713378043612608166064768844377641568960512000000000000
+
+# compare against HUGEINT arithmetic on a range of values that fit in a HUGEINT
+query I
+SELECT count(*)
+FROM (
+	SELECT (hash(i) % 2000000000000000000)::HUGEINT - 1000000000000000000 AS x,
+	       (hash(i + 7) % 2000000000000000000)::HUGEINT - 1000000000000000000 AS y
+	FROM range(2000) t(i)
+)
+WHERE x::BIGNUM * y::BIGNUM <> (x * y)::BIGNUM
+----
+0
+
+query I
+SELECT count(*)
+FROM range(-50, 50) t(x), range(-50, 50) t2(y)
+WHERE x::BIGNUM * y::BIGNUM <> (x * y)::BIGNUM
+----
+0
+
+# table-based multiplication with NULLs and mixed signs
+statement ok
+CREATE TABLE T (a BIGNUM, b BIGNUM);
+
+statement ok
+INSERT INTO T VALUES (0, 0), (NULL, 10), (10, NULL), (100, -10), (-10, 100), (888, 271), ('99999999999999999999', '99999999999999999999');
+
+query III
+SELECT a * b, a, b FROM T
+----
+0	0	0
+NULL	NULL	10
+NULL	10	NULL
+-1000	100	-10
+-1000	-10	100
+240648	888	271
+9999999999999999999800000000000000000001	99999999999999999999	99999999999999999999
+
+# multiplication is commutative and distributes over addition
+query I
+SELECT count(*) FROM T t1, T t2 WHERE t1.a * t2.b <> t2.b * t1.a
+----
+0
+
+query I
+SELECT count(*) FROM T t1, T t2 WHERE t1.a * (t1.b + t2.b) <> t1.a * t1.b + t1.a * t2.b
+----
+0
+
+# overflow: the largest BIGNUM times two trips the bit-length bound before any multiplication
+# (temporary: an 8 MiB BIGNUM must not land in the storage compatibility database, where the
+# old CLIs stringify every persisted table and BIGNUM -> VARCHAR is quadratic)
+statement ok
+CREATE TEMPORARY TABLE big AS SELECT bignum AS m FROM test_all_types(use_large_bignum = true) LIMIT 2;
+
+statement error
+SELECT m * 2::BIGNUM FROM big WHERE m > 0
+----
+Overflow in Bignum Operation
+
+statement error
+SELECT m * 2::BIGNUM FROM big WHERE m < 0
+----
+Underflow in Bignum Operation
+
+# a product that lands one bit above the limit passes the bound and overflows when it is written
+statement error
+SELECT (m // 2::BIGNUM) * 3::BIGNUM FROM big WHERE m > 0
+----
+Overflow in Bignum Operation
+
+# a product that exactly fills the limit still works
+query I
+SELECT (m // 2::BIGNUM) * 2::BIGNUM + 1 = m FROM big WHERE m > 0
+----
+true

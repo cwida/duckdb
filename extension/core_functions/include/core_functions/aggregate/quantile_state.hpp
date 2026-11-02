@@ -42,7 +42,8 @@ struct FlattenedQuantileValues : FunctionLocalState {
 			// (re-)allocate the cached chunk
 			values.capacity = NextPowerOfTwo(required_capacity);
 			values.chunk.Destroy();
-			values.chunk.Initialize(Allocator::DefaultAllocator(), {type}, values.capacity);
+			// the flattened group can be the whole input, so it is allocated through the (tracked) base allocator
+			values.chunk.Initialize(finalize_data.input.allocator.GetUnderlyingAllocator(), {type}, values.capacity);
 		} else {
 			// re-use the allocated chunk - resetting clears the string heap of the previously flattened state
 			values.chunk.Reset();
@@ -149,13 +150,40 @@ struct SkipLess {
 	}
 };
 
+//! Storage for a value retained in the window skip list across cursor page loads
+template <typename INPUT_TYPE>
+struct QuantileSkipValue {
+	using type = INPUT_TYPE;
+
+	static inline const INPUT_TYPE &Store(const INPUT_TYPE &value) {
+		return value;
+	}
+	static inline const INPUT_TYPE &Load(const type &stored) {
+		return stored;
+	}
+};
+
+//! string_t values point into the cursor page, so the skip list has to own the bytes
+template <>
+struct QuantileSkipValue<string_t> {
+	using type = string;
+
+	static inline type Store(const string_t &value) {
+		return value.GetString();
+	}
+	static inline string_t Load(const type &stored) {
+		return string_t(stored);
+	}
+};
+
 template <typename INPUT_TYPE>
 struct WindowQuantileState {
 	// Windowed Quantile merge sort trees
 	unique_ptr<QuantileSortTree> qst;
 
 	// Windowed Quantile skip lists
-	using SkipType = pair<idx_t, INPUT_TYPE>;
+	using SkipValue = QuantileSkipValue<INPUT_TYPE>;
+	using SkipType = pair<idx_t, typename SkipValue::type>;
 	using SkipListType = duckdb_skiplistlib::skip_list::HeadNode<SkipType, SkipLess<SkipType>>;
 	SubFrames prevs;
 	unique_ptr<SkipListType> s;
@@ -187,7 +215,7 @@ struct WindowQuantileState {
 		inline void Left(idx_t begin, idx_t end) {
 			for (; begin < end; ++begin) {
 				if (included(begin)) {
-					skip.remove(SkipType(begin, data[begin]));
+					skip.remove(SkipType(begin, SkipValue::Store(data[begin])));
 				}
 			}
 		}
@@ -195,7 +223,7 @@ struct WindowQuantileState {
 		inline void Right(idx_t begin, idx_t end) {
 			for (; begin < end; ++begin) {
 				if (included(begin)) {
-					skip.insert(SkipType(begin, data[begin]));
+					skip.insert(SkipType(begin, SkipValue::Store(data[begin])));
 				}
 			}
 		}
@@ -211,7 +239,7 @@ struct WindowQuantileState {
 			for (const auto &frame : frames) {
 				for (auto i = frame.start; i < frame.end; ++i) {
 					if (included(i)) {
-						skip.insert(SkipType(i, data[i]));
+						skip.insert(SkipType(i, SkipValue::Store(data[i])));
 					}
 				}
 			}
@@ -229,43 +257,44 @@ struct WindowQuantileState {
 	INPUT_TYPE SkipNth(idx_t n) const {
 		D_ASSERT(s);
 		try {
-			return s->at(n).second;
+			return SkipValue::Load(s->at(n).second);
 		} catch (const duckdb_skiplistlib::skip_list::IndexError &idx_err) {
 			throw InternalException(idx_err.message());
 		}
 	}
 
 	template <typename RESULT_TYPE, bool DISCRETE>
-	RESULT_TYPE WindowScalar(CursorType &data, const SubFrames &frames, const idx_t n, Vector &result,
-	                         const QuantileValue &q) const {
+	RESULT_TYPE WindowScalar(ClientContext &context, CursorType &data, const SubFrames &frames, const idx_t n,
+	                         Vector &result, const QuantileValue &q) const {
 		D_ASSERT(n > 0);
 		if (qst) {
-			return qst->WindowScalar<INPUT_TYPE, RESULT_TYPE, DISCRETE>(data, frames, n, result, q);
+			return qst->WindowScalar<INPUT_TYPE, RESULT_TYPE, DISCRETE>(context, data, frames, n, result, q);
 		} else if (s) {
 			// Find the position(s) needed
 			try {
 				QuantileInterpolator<DISCRETE> interp(q, s->size(), false);
 				s->at(interp.FRN, interp.CRN - interp.FRN + 1, skips);
+				// string values are views into the skips member, which outlives the extraction
 				array<INPUT_TYPE, 2> dest;
-				dest[0] = skips[0].second;
+				dest[0] = SkipValue::Load(skips[0].second);
 				if (skips.size() > 1) {
-					dest[1] = skips[1].second;
+					dest[1] = SkipValue::Load(skips[1].second);
 				} else {
 					// Avoid UMA
-					dest[1] = skips[0].second;
+					dest[1] = SkipValue::Load(skips[0].second);
 				}
 				return interp.template Extract<INPUT_TYPE, RESULT_TYPE>(dest.data(), result);
 			} catch (const duckdb_skiplistlib::skip_list::IndexError &idx_err) {
 				throw InternalException(idx_err.message());
 			}
 		} else {
-			throw InternalException("No accelerator for scalar QUANTILE");
+			InternalException::Throw("No accelerator for scalar QUANTILE");
 		}
 	}
 
 	template <typename CHILD_TYPE, bool DISCRETE>
-	void WindowList(CursorType &data, const SubFrames &frames, const idx_t n, Vector &list, const idx_t lidx,
-	                const QuantileBindData &bind_data) const {
+	void WindowList(ClientContext &context, CursorType &data, const SubFrames &frames, const idx_t n, Vector &list,
+	                const idx_t lidx, const QuantileBindData &bind_data) const {
 		D_ASSERT(n > 0);
 		// Result is a constant LIST<CHILD_TYPE> with a fixed length
 		auto ldata = FlatVector::GetDataMutable<list_entry_t>(list);
@@ -280,7 +309,7 @@ struct WindowQuantileState {
 
 		for (const auto &q : bind_data.order) {
 			const auto &quantile = bind_data.quantiles[q];
-			rdata[lentry.offset + q] = WindowScalar<CHILD_TYPE, DISCRETE>(data, frames, n, result, quantile);
+			rdata[lentry.offset + q] = WindowScalar<CHILD_TYPE, DISCRETE>(context, data, frames, n, result, quantile);
 		}
 	}
 };
@@ -353,7 +382,7 @@ inline Value QuantileNeg(const Value &v) {
 		case PhysicalType::INT128:
 			return Value::DECIMAL(QuantileNeg<hugeint_t>(integral), width, scale);
 		default:
-			throw InternalException("Unknown DECIMAL type");
+			InternalException::Throw("Unknown DECIMAL type");
 		}
 	}
 	default:
@@ -393,6 +422,8 @@ AggregateStateLayout QuantileStateLayout(AggregateLayoutInput &input) {
 	}
 	layout.total_state_size = AlignValue<idx_t>(sizeof(STATE));
 	layout.field = BuildStateField<STATE_FIELD>();
+	// NULL inputs are never buffered, so the finalize assumes all values are valid
+	layout.field.reject_null_elements = true;
 	AggregateStateField::PopulateListFunctions(layout.type, layout.field);
 	if (function.GetArguments().size() == 2) {
 		// the quantile parameter must be a constant at bind time (BindQuantile folds it into the bind data) -

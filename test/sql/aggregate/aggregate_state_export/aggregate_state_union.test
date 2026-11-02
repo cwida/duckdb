@@ -1,0 +1,23 @@
+# name: test/sql/aggregate/aggregate_state_export/aggregate_state_union.test
+# description: A plain value does not implicitly become an aggregate state in a UNION
+# group: [aggregate_state_export]
+
+statement error
+SELECT finalize(s) FROM (
+	SELECT list(v) AS s FROM (VALUES ([1, 2])) t(v)
+	UNION ALL
+	SELECT list(v) EXPORT_STATE AS s FROM (VALUES ([3])) t(v)
+) t;
+----
+<REGEX>:Binder Error.*
+
+query I
+SELECT typeof(s) FROM (SELECT sum(1) AS s UNION ALL SELECT sum(1) EXPORT_STATE) t LIMIT 1;
+----
+HUGEINT
+
+# two aggregate states can still be combined
+query I
+SELECT typeof(s) FROM (SELECT sum(1) EXPORT_STATE AS s UNION ALL SELECT sum(2) EXPORT_STATE) t LIMIT 1;
+----
+AGGREGATE_STATE

@@ -1,3 +1,4 @@
+#include "duckdb/execution/ie_join_union.hpp"
 #include "duckdb/execution/operator/join/physical_iejoin.hpp"
 
 #include "duckdb/common/atomic.hpp"
@@ -304,7 +305,9 @@ public:
 	}
 
 	bool TryPrepareNextStage();
-	bool TryNextTask(TaskPtr &task, Task &task_local);
+	//! Finish the current task (if any), advance the stage if that was its last task, and try to get the next task.
+	//! Runs under the lock so that a caller can decide to block on failure without missing an unblock.
+	bool TryNextTaskLocked(TaskPtr &task, Task &task_local) DUCKDB_REQUIRES(lock);
 
 	void ExecuteLiTask(ClientContext &client);
 	void ExecutePermutationTask(ClientContext &client);
@@ -335,6 +338,8 @@ public:
 	atomic<bool> stopped;
 	//! The number of completed tasks for each stage
 	array<atomic<idx_t>, static_cast<size_t>(IEJoinSourceStage::DONE) + 1> completed;
+	//! The progress of the tasks
+	TaskProgress task_progress;
 
 	//! L1
 	unique_ptr<SortedTable> l1;
@@ -361,479 +366,6 @@ protected:
 	bool TryNextTask(Task &task);
 };
 
-template <typename T, typename VECTOR_TYPE = T>
-class IEJoinCursor {
-public:
-	explicit IEJoinCursor(ColumnDataCollection &collection) : collection(collection) {
-		collection.InitializeScan(state);
-		collection.InitializeScanChunk(state, chunk);
-	}
-
-	//! The row count of the paged collection
-	idx_t size() const { //	NOLINT
-		return collection.Count();
-	}
-
-	//! Read a typed cell
-	const T &operator[](idx_t row_idx) {
-		auto index = Seek(row_idx);
-		const auto &source = chunk.data[0];
-		const auto data_ptr = reinterpret_cast<const T *>(FlatVector::GetData<VECTOR_TYPE>(source));
-		return data_ptr[index];
-	}
-
-private:
-	//! Is the scan in range?
-	inline bool RowIsVisible(idx_t row_idx) const {
-		return (row_idx < state.next_row_index && state.current_row_index <= row_idx);
-	}
-	//! The offset of the row in the given state
-	inline sel_t RowOffset(idx_t row_idx) const {
-		D_ASSERT(RowIsVisible(row_idx));
-		return UnsafeNumericCast<sel_t>(row_idx - state.current_row_index);
-	}
-	//! Scan the next chunk
-	inline bool Scan() {
-		return collection.Scan(state, chunk);
-	}
-	//! Seek to the given row
-	inline idx_t Seek(idx_t row_idx) {
-		if (!RowIsVisible(row_idx)) {
-			collection.Seek(row_idx, state, chunk);
-		}
-		return RowOffset(row_idx);
-	}
-
-	//! The pageable data
-	const ColumnDataCollection &collection;
-	//! The state used for reading the collection
-	ColumnDataScanState state;
-	//! The data chunk read into
-	DataChunk chunk;
-};
-
-struct IEJoinUnion {
-	using SortedTable = PhysicalRangeJoin::GlobalSortedTable;
-	using ChunkRange = std::pair<idx_t, idx_t>;
-
-	//	Comparison utilities
-	static bool IsStrictComparison(ExpressionType comparison) {
-		switch (comparison) {
-		case ExpressionType::COMPARE_LESSTHAN:
-		case ExpressionType::COMPARE_GREATERTHAN:
-			return true;
-		case ExpressionType::COMPARE_LESSTHANOREQUALTO:
-		case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
-			return false;
-		default:
-			throw InternalException("Unimplemented comparison type for IEJoin!");
-		}
-	}
-
-	template <typename T>
-	static inline bool Compare(const T &lhs, const T &rhs, const bool strict) {
-		const bool less_than = lhs < rhs;
-		if (!less_than && !strict) {
-			return !(rhs < lhs);
-		}
-		return less_than;
-	}
-
-	static idx_t AppendKey(ExecutionContext &context, InterruptState &interrupt, SortedTable &table,
-	                       ExpressionExecutor &executor, SortedTable &marked, int64_t increment, int64_t rid,
-	                       const ChunkRange &range);
-
-	static unique_ptr<ColumnDataCollection> ExtractColumn(SortedTable &table, idx_t col_idx,
-	                                                      BufferManager &buffer_manager) {
-		auto &collection = *table.sorted->payload_data;
-		vector<column_t> scan_ids(1, col_idx);
-		TupleDataScanState scan_state;
-		collection.InitializeScan(scan_state, scan_ids);
-
-		DataChunk payload;
-		collection.InitializeScanChunk(scan_state, payload);
-
-		auto result = make_uniq<ColumnDataCollection>(buffer_manager, payload.GetTypes());
-		ColumnDataAppendState append_state;
-		result->InitializeAppend(append_state);
-		while (collection.Scan(scan_state, payload)) {
-			result->Append(append_state, payload);
-		}
-
-		return result;
-	}
-
-	class UnionIterator {
-	public:
-		UnionIterator(SortedTable &table, bool strict) : state(table.CreateIteratorState()), strict(strict) {
-		}
-
-		inline idx_t GetIndex() const {
-			return index;
-		}
-
-		inline void SetIndex(idx_t i) {
-			index = i;
-		}
-
-		inline idx_t GetChunkIndex() const {
-			idx_t chunk_idx;
-			idx_t tuple_idx;
-			state->RandomAccess(chunk_idx, tuple_idx, index);
-			return chunk_idx;
-		}
-
-		inline void SetChunkIndex(idx_t chunk_idx) {
-			index = state->GetDivisor() * chunk_idx;
-		}
-
-		UnionIterator &operator++() {
-			++index;
-			return *this;
-		}
-
-		void Repin() {
-			state->SetKeepPinned(true);
-			state->SetPinPayload(true);
-		}
-
-		unique_ptr<ExternalBlockIteratorState> state;
-		idx_t index = 0;
-		const bool strict;
-	};
-
-	IEJoinUnion(IEJoinGlobalSourceState &gsource, const ChunkRange &chunks);
-
-	idx_t SearchL1(idx_t pos);
-
-	//! Start the current row.
-	//! Returns false if there are no more rows to process
-	template <SortKeyType SORT_KEY_TYPE>
-	bool NextRow();
-
-	//! NextRow pointer to member for the sort key type.
-	using next_row_t = bool (duckdb::IEJoinUnion::*)();
-	next_row_t next_row_func;
-
-	//! Finish this row and move to the next one.
-	//! Returns false if there are no more rows to process
-	bool FinishRow() {
-		++i;
-		return (this->*next_row_func)();
-	}
-
-	//! Constructor arguments
-	IEJoinGlobalSourceState &gsource;
-
-	//! Inverted loop
-	idx_t JoinBlocks(unsafe_vector<idx_t> &lsel, unsafe_vector<idx_t> &rsel);
-
-	//! B
-	vector<validity_t> bit_array;
-	ValidityMask bit_mask;
-	//! Bloom Filter
-	static constexpr idx_t BLOOM_CHUNK_BITS = 1024;
-	idx_t bloom_count;
-	vector<validity_t> bloom_array;
-	ValidityMask bloom_filter;
-
-	//! Iteration state
-	idx_t n;
-	idx_t i;
-	idx_t n_j;
-	idx_t j;
-	unique_ptr<UnionIterator> op2;
-	unique_ptr<UnionIterator> off2;
-	int64_t lrid = std::numeric_limits<int64_t>::max();
-
-	//! ANTI JOIN bookmark
-	idx_t anti_i;
-
-	//! Li
-	IEJoinCursor<int64_t> li;
-	//! P
-	IEJoinCursor<idx_t, int64_t> p;
-};
-
-idx_t IEJoinUnion::AppendKey(ExecutionContext &context, InterruptState &interrupt, SortedTable &table,
-                             ExpressionExecutor &executor, SortedTable &marked, int64_t increment, int64_t rid,
-                             const ChunkRange &chunk_range) {
-	const auto chunk_begin = chunk_range.first;
-	const auto chunk_end = chunk_range.second;
-
-	if (chunk_begin == chunk_end) {
-		return 0;
-	}
-
-	// Reading
-	const auto valid = table.count - table.has_null;
-	auto &source = *table.sorted->payload_data;
-	TupleDataScanState scanner;
-	source.InitializeScan(scanner);
-
-	DataChunk scanned;
-	source.InitializeScanChunk(scanner, scanned);
-	idx_t table_idx = source.Seek(scanner, chunk_begin);
-
-	// Writing
-	auto &sort = *marked.sort;
-	auto local_sort_state = sort.GetLocalSinkState(context);
-	vector<LogicalType> types;
-	for (const auto &expr : executor.expressions) {
-		types.emplace_back(expr->GetReturnType());
-	}
-	const idx_t rid_idx = types.size();
-	types.emplace_back(LogicalType::BIGINT);
-
-	DataChunk keys;
-	DataChunk payload;
-	keys.Initialize(Allocator::DefaultAllocator(), types);
-
-	OperatorSinkInput sink {*marked.global_sink, *local_sort_state, interrupt};
-	idx_t inserted = 0;
-	for (auto chunk_idx = chunk_begin; chunk_idx < chunk_end; ++chunk_idx) {
-		source.Scan(scanner, scanned);
-
-		// NULLs are at the end, so stop when we reach them
-		auto scan_count = scanned.size();
-		if (table_idx + scan_count > valid) {
-			if (table_idx >= valid) {
-				scan_count = 0;
-				;
-			} else {
-				scan_count = valid - table_idx;
-				scanned.SetChildCardinality(scan_count);
-			}
-		}
-		if (scan_count == 0) {
-			break;
-		}
-		table_idx += scan_count;
-
-		// Compute the input columns from the payload
-		keys.Reset();
-		keys.Split(payload, rid_idx);
-		executor.Execute(scanned, keys);
-
-		// Mark the rid column
-		payload.data[0].Sequence(rid, increment, scan_count);
-		keys.Fuse(payload);
-		rid += increment * UnsafeNumericCast<int64_t>(scan_count);
-
-		// Sort on the sort columns (which will no longer be needed)
-		sort.Sink(context, keys, sink);
-		inserted += scan_count;
-	}
-	OperatorSinkCombineInput combine {*marked.global_sink, *local_sort_state, interrupt};
-	sort.Combine(context, combine);
-	marked.count += inserted;
-
-	return inserted;
-}
-
-IEJoinUnion::IEJoinUnion(IEJoinGlobalSourceState &gsource, const ChunkRange &chunks)
-    : gsource(gsource), n(0), i(0), li(*gsource.li), p(*gsource.p) {
-	auto &op = gsource.op;
-
-	// 7. initialize bit-array B (|B| = n), and set all bits to 0
-	auto &l2 = *gsource.l2;
-	n_j = l2.count.load();
-	bit_array.resize(ValidityMask::EntryCount(n_j), 0);
-	bit_mask.Initialize(bit_array.data(), n_j);
-
-	// Bloom filter
-	bloom_count = (n_j + (BLOOM_CHUNK_BITS - 1)) / BLOOM_CHUNK_BITS;
-	bloom_array.resize(ValidityMask::EntryCount(bloom_count), 0);
-	bloom_filter.Initialize(bloom_array.data(), bloom_count);
-
-	// 11. for(i←1 to n) do
-	const auto strict2 = IsStrictComparison(op.conditions[1].GetComparisonType());
-	op2 = make_uniq<UnionIterator>(l2, strict2);
-	off2 = make_uniq<UnionIterator>(l2, strict2);
-	n = l2.BlockStart(chunks.second);
-	i = l2.BlockStart(chunks.first);
-	j = i;
-	anti_i = i;
-
-	const auto sort_key_type = l2.GetSortKeyType();
-	switch (sort_key_type) {
-#define DUCKDB_SORT_KEY_CASE(SORT_KEY_TYPE)                                                                            \
-	case SortKeyType::SORT_KEY_TYPE:                                                                                   \
-		next_row_func = &IEJoinUnion::NextRow<SortKeyType::SORT_KEY_TYPE>;                                             \
-		break;
-		DUCKDB_FOR_EACH_SORT_KEY_TYPE(DUCKDB_SORT_KEY_CASE)
-#undef DUCKDB_SORT_KEY_CASE
-	default:
-		throw NotImplementedException("IEJoinUnion for %s", EnumUtil::ToString(sort_key_type));
-	}
-
-	(this->*next_row_func)();
-}
-
-template <SortKeyType SORT_KEY_TYPE>
-bool IEJoinUnion::NextRow() {
-	using SORT_KEY = SortKey<SORT_KEY_TYPE>;
-	using BLOCKS_ITERATOR = block_iterator_t<ExternalBlockIteratorState, SORT_KEY>;
-
-	BLOCKS_ITERATOR off2_itr(*off2->state);
-	BLOCKS_ITERATOR op2_itr(*op2->state);
-	const auto strict = off2->strict;
-
-	auto pinned_idx = off2->GetChunkIndex();
-	for (; i < n; ++i) {
-		// 12. pos ← P[i]
-		auto pos = p[i];
-		lrid = li[pos];
-		if (lrid < 0) {
-			continue;
-		}
-
-		// 16. B[pos] ← 1
-		op2->SetIndex(i);
-		for (; off2->GetIndex() < n_j; ++(*off2)) {
-			//	Prevent buildup of pinned blocks
-			if (off2->GetChunkIndex() != pinned_idx) {
-				off2->Repin();
-				pinned_idx = off2->GetChunkIndex();
-			}
-			if (!Compare(off2_itr[off2->GetIndex()], op2_itr[op2->GetIndex()], strict)) {
-				break;
-			}
-			const auto p2 = p[off2->GetIndex()];
-			if (li[p2] < 0) {
-				// Only mark rhs matches.
-				bit_mask.SetValidUnsafe(p2);
-				bloom_filter.SetValidUnsafe(p2 / BLOOM_CHUNK_BITS);
-			}
-		}
-
-		// 9.  if (op1 ∈ {≤,≥} and op2 ∈ {≤,≥}) eqOff = 0
-		// 10. else eqOff = 1
-		// No, because there could be more than one equal value.
-		// Find the leftmost off1 where L1[pos] op1 L1[off1..n]
-		// These are the rows that satisfy the op1 condition
-		// and that is where we should start scanning B from
-		j = pos;
-
-		return true;
-	}
-	return false;
-}
-
-static idx_t NextValid(const ValidityMask &bits, idx_t j, const idx_t n) {
-	if (j >= n) {
-		return n;
-	}
-
-	// We can do a first approximation by checking entries one at a time
-	// which gives 64:1.
-	idx_t entry_idx, idx_in_entry;
-	bits.GetEntryIndex(j, entry_idx, idx_in_entry);
-
-	// Copy first entry to local and trim the bits before the start position
-	auto first_entry = bits.GetValidityEntryUnsafe(entry_idx++);
-	first_entry &= (ValidityMask::ValidityBuffer::MAX_ENTRY << idx_in_entry);
-
-	// If the first entry has a valid bit, we can return immediately
-	if (first_entry) {
-		return j + CountZeros<validity_t>::Trailing(first_entry) - idx_in_entry;
-	}
-
-	// The first entry did not have a valid bit
-	j += ValidityMask::BITS_PER_VALUE - idx_in_entry;
-
-	// Loop over non-ragged entries
-	const auto entry_count_minus_one = bits.EntryCount(n) - 1;
-	const auto entry_idx_before = entry_idx;
-
-	// The compiler has a hard time optimizing this loop for some reason
-	// Creating a static inner loop like this improves performance by almost 2x
-	static constexpr idx_t NEXT_VALID_UNROLL = 8;
-	for (; entry_idx + NEXT_VALID_UNROLL < entry_count_minus_one; entry_idx += NEXT_VALID_UNROLL) {
-		for (idx_t unroll_idx = 0; unroll_idx < NEXT_VALID_UNROLL; unroll_idx++) {
-			const auto unroll_entry_idx = entry_idx + unroll_idx;
-			const auto &entry = bits.GetValidityEntryUnsafe(unroll_entry_idx);
-			if (entry) {
-				return j + (unroll_entry_idx - entry_idx_before) * ValidityMask::BITS_PER_VALUE +
-				       CountZeros<validity_t>::Trailing(entry);
-			}
-		}
-	}
-
-	for (; entry_idx < entry_count_minus_one; ++entry_idx) {
-		const auto &entry = bits.GetValidityEntryUnsafe(entry_idx);
-		if (entry) {
-			return j + (entry_idx - entry_idx_before) * ValidityMask::BITS_PER_VALUE +
-			       CountZeros<validity_t>::Trailing(entry);
-		}
-	}
-
-	// Update j once after the loop so we don't have to update it in each iteration
-	j += (entry_idx - entry_idx_before) * ValidityMask::BITS_PER_VALUE;
-
-	// Check the final entry
-	return j >= n ? n : j + CountZeros<validity_t>::Trailing(bits.GetValidityEntryUnsafe(entry_idx));
-}
-
-idx_t IEJoinUnion::JoinBlocks(unsafe_vector<idx_t> &lsel, unsafe_vector<idx_t> &rsel) {
-	// Release pinned blocks
-	op2->Repin();
-	off2->Repin();
-
-	// 8. initialize join result as an empty list for tuple pairs
-	idx_t result_count = 0;
-
-	lsel.resize(STANDARD_VECTOR_SIZE);
-	rsel.resize(STANDARD_VECTOR_SIZE);
-
-	// 11. for(i←1 to n) do
-	while (i < n) {
-		// 13. for (j ← pos+eqOff to n) do
-		for (;;) {
-			// 14. if B[j] = 1 then
-
-			//	Use the Bloom filter to find candidate blocks
-			while (j < n_j) {
-				auto bloom_begin = NextValid(bloom_filter, j / BLOOM_CHUNK_BITS, bloom_count) * BLOOM_CHUNK_BITS;
-				auto bloom_end = MinValue<idx_t>(n_j, bloom_begin + BLOOM_CHUNK_BITS);
-
-				j = MaxValue<idx_t>(j, bloom_begin);
-				j = NextValid(bit_mask, j, bloom_end);
-				if (j < bloom_end) {
-					break;
-				}
-			}
-
-			if (j >= n_j) {
-				break;
-			}
-
-			// Filter out tuples with the same sign (they come from the same table)
-			const auto rrid = li[j];
-			++j;
-
-			D_ASSERT(lrid > 0 && rrid < 0);
-			// 15. add tuples w.r.t. (L1[j], L1[i]) to join result
-			lsel[result_count] = static_cast<idx_t>(+lrid - 1);
-			rsel[result_count] = static_cast<idx_t>(-rrid - 1);
-			++result_count;
-			if (result_count == STANDARD_VECTOR_SIZE) {
-				// out of space!
-				return result_count;
-			}
-		}
-
-		if (!FinishRow()) {
-			break;
-		}
-	}
-
-	lsel.resize(result_count);
-	rsel.resize(result_count);
-
-	return result_count;
-}
-
 IEJoinGlobalSourceState::IEJoinGlobalSourceState(const PhysicalIEJoin &op, ClientContext &client,
                                                  IEJoinGlobalState &gsink)
     : op(op), gsink(gsink), stage(IEJoinSourceStage::INIT), started(0), finished(0), stopped(false) {
@@ -850,65 +382,7 @@ IEJoinGlobalSourceState::IEJoinGlobalSourceState(const PhysicalIEJoin &op, Clien
 		right_outers = right_blocks;
 	}
 
-	// input : query Q with 2 join predicates t1.X op1 t2.X' and t1.Y op2 t2.Y', tables T, T' of sizes m and n resp.
-	// output: a list of tuple pairs (ti , tj)
-	// Note that T/T' are already sorted on X/X' and contain the payload data
-	// We only join the two block numbers and use the sizes of the blocks as the counts
-
-	// 1. let L1 (resp. L2) be the array of column X (resp. Y )
-	const auto &order1 = op.lhs_orders[0];
-	const auto &order2 = op.lhs_orders[1];
-
-	// 2. if (op1 ∈ {>, ≥}) sort L1 in descending order
-	// 3. else if (op1 ∈ {<, ≤}) sort L1 in ascending order
-
-	// For the union algorithm, we make a unified table with the keys and the rids as the payload:
-	//		X/X', Y/Y', R/R'/Li
-	// The first position is the sort key.
-	vector<LogicalType> types;
-	types.emplace_back(order2.expression->GetReturnType());
-	types.emplace_back(LogicalType::BIGINT);
-
-	// Sort on the first expression
-	auto ref = make_uniq<BoundReferenceExpression>(order1.expression->GetReturnType(), 0U);
-	vector<BoundOrderByNode> orders;
-	orders.emplace_back(order1.type, order1.null_order, std::move(ref));
-	// The goal is to make i (from the left table) < j (from the right table),
-	// if value[i] and value[j] match the condition 1.
-	// Add a column from_left to solve the problem when there exist multiple equal values in l1.
-	// If the operator is loose inequality, make t1.from_left (== true) sort BEFORE t2.from_left (== false).
-	// Otherwise, make t1.from_left sort (== true) sort AFTER t2.from_left (== false).
-	// For example, if t1.time <= t2.time
-	// | value     | 1     | 1     | 1     | 1     |
-	// | --------- | ----- | ----- | ----- | ----- |
-	// | from_left | T(l2) | T(l2) | F(r1) | F(r2) |
-	// if t1.time < t2.time
-	// | value     | 1     | 1     | 1     | 1     |
-	// | --------- | ----- | ----- | ----- | ----- |
-	// | from_left | F(r2) | F(r1) | T(l2) | T(l1) |
-	// Using this OrderType, if i < j then value[i] (from left table) and value[j] (from right table) match
-	// the condition (t1.time <= t2.time or t1.time < t2.time), then from_left will force them into the correct order.
-	auto from_left = make_uniq<BoundConstantExpression>(Value::BOOLEAN(true));
-	const auto strict1 = IEJoinUnion::IsStrictComparison(op.conditions[0].GetComparisonType());
-	orders.emplace_back(!strict1 ? OrderType::DESCENDING : OrderType::ASCENDING, OrderByNullType::ORDER_DEFAULT,
-	                    std::move(from_left));
-
-	l1 = make_uniq<SortedTable>(client, orders, types, op);
-
-	// 4. if (op2 ∈ {>, ≥}) sort L2 in ascending order
-	// 5. else if (op2 ∈ {<, ≤}) sort L2 in descending order
-
-	// We sort on Y/Y' to obtain the sort keys and the permutation array.
-	// For this we just need a two-column table of Y, P
-	types.clear();
-	types.emplace_back(LogicalType::BIGINT);
-
-	// Sort on the first expression
-	orders.clear();
-	ref = make_uniq<BoundReferenceExpression>(order2.expression->GetReturnType(), 0U);
-	orders.emplace_back(order2.type, order2.null_order, std::move(ref));
-
-	l2 = make_uniq<SortedTable>(client, orders, types, op);
+	IEJoinUnion::InitializeTables(client, op, op.conditions, l1, l2);
 
 	//	The number of blocks in L2 is not quite the sum of the blocks in the two tables...
 	const auto join_count = left_table.count.load() + right_table.count.load();
@@ -1011,7 +485,24 @@ public:
 		return !joiner && !left_matches && !right_matches;
 	}
 
-	bool TryAssignTask();
+	//! Release the local state of the current task (if any)
+	void FinishTask();
+	//! Set up the local state for executing a task acquired through IEJoinGlobalSourceState::TryNextTaskLocked
+	void InitializeTask();
+	//! Reports the progress of the current task
+	void UpdateProgress() {
+		if (!task) {
+			return;
+		}
+		if (TaskFinished()) {
+			task_progress.Finish(gsource.task_progress);
+		} else if (task->stage == IEJoinSourceStage::INNER && joiner) {
+			// the inner join advances over the rows of its range
+			auto done = joiner->i > inner_begin ? joiner->i - inner_begin : 0;
+			auto total = joiner->n > inner_begin ? joiner->n - inner_begin : 0;
+			task_progress.Update(gsource.task_progress, done, total);
+		}
+	}
 	//	Sort L1
 	void ExecuteSinkL1Task(ExecutionContext &context, InterruptState &interrupt);
 	//	Finalize L1 sort
@@ -1065,6 +556,10 @@ public:
 	TaskPtr task;
 	//! The task storage
 	Task task_local;
+	//! The progress reported for the current task
+	TaskProgressTracker task_progress;
+	//! The first row of the current inner join task
+	idx_t inner_begin = 0;
 
 	// Joining
 	unique_ptr<IEJoinUnion> joiner;
@@ -1112,20 +607,25 @@ public:
 
 	//! Simple Joins
 	idx_t anti_lsel = 0;
+
+	//! Whether this task has produced any rows yet.
+	//! A task that has produced rows must not block waiting for other tasks: the sink may be waiting for it.
+	bool produced = false;
 };
 
-bool IEJoinLocalSourceState::TryAssignTask() {
+void IEJoinLocalSourceState::FinishTask() {
 	// Because downstream operators may be using our internal buffers,
 	// we can't "finish" a task until we are about to get the next one.
-	if (task) {
-		++gsource.GetStageNext(task->stage);
-		left_matches = nullptr;
-		right_matches = nullptr;
+	if (!task) {
+		return;
 	}
+	task_progress.Finish(gsource.task_progress);
+	left_matches = nullptr;
+	right_matches = nullptr;
+}
 
-	if (!gsource.TryNextTask(task, task_local)) {
-		return false;
-	}
+void IEJoinLocalSourceState::InitializeTask() {
+	task_progress.Start();
 
 	auto &gsink = gsource.gsink;
 	auto &left_table = *gsink.tables[0];
@@ -1149,7 +649,8 @@ bool IEJoinLocalSourceState::TryAssignTask() {
 		right_block_index = 0;
 		right_base = 0;
 
-		joiner = make_uniq<IEJoinUnion>(gsource, task->range);
+		joiner = make_uniq<IEJoinUnion>(*gsource.l2, *gsource.li, *gsource.p, gsource.op.conditions, task->range);
+		inner_begin = joiner->i;
 		break;
 	case IEJoinSourceStage::OUTER:
 		if (task->thread_idx < gsource.left_outers) {
@@ -1183,8 +684,6 @@ bool IEJoinLocalSourceState::TryAssignTask() {
 	case IEJoinSourceStage::DONE:
 		break;
 	}
-
-	return true;
 }
 
 void IEJoinLocalSourceState::ExecuteSinkL1Task(ExecutionContext &context, InterruptState &interrupt) {
@@ -1410,7 +909,7 @@ void IEJoinLocalSourceState::SplitPayloads(DataChunk &chunk) {
 		if (col_idx < left_cols) {
 			lpayload.data[col_idx].Reference(chunk.data[col_idx]);
 		} else {
-			rpayload.data[col_idx - left_cols].Reference(chunk.data[col_idx - left_cols]);
+			rpayload.data[col_idx - left_cols].Reference(chunk.data[col_idx]);
 		}
 	}
 }
@@ -1705,12 +1204,21 @@ void IEJoinLocalSourceState::ResolveComplexJoin(ExecutionContext &context, DataC
 
 		//	Apply any arbitrary predicate
 		MergePayloads(chunk);
+		SelectionVector match_sel;
 		if (op.predicate) {
-			sel = ApplyArbitraryPredicate(chunk);
+			//	The predicate selection is relative to the rows that passed the tail conditions,
+			//	so combine the two to index the original join pairs
+			auto tail_sel = sel;
+			auto predicate_sel = ApplyArbitraryPredicate(chunk);
 			result_count = chunk.size();
 			if (!result_count) {
 				continue;
 			}
+			match_sel.Initialize(result_count);
+			for (idx_t i = 0; i < result_count; i++) {
+				match_sel.set_index(i, tail_sel->get_index(predicate_sel->get_index(i)));
+			}
+			sel = &match_sel;
 		}
 
 		//	We need all of the data to compute other predicates,
@@ -1839,19 +1347,20 @@ void IEJoinGlobalSourceState::FinishTask(TaskPtr task) {
 	}
 
 	++finished;
+	++GetStageNext(task->stage);
 }
 
-bool IEJoinGlobalSourceState::TryNextTask(TaskPtr &task, Task &task_local) {
-	annotated_lock_guard<annotated_mutex> guard(lock);
+bool IEJoinGlobalSourceState::TryNextTaskLocked(TaskPtr &task, Task &task_local) {
 	FinishTask(task);
+	task = nullptr;
 
-	if (!HasMoreTasks()) {
-		task = nullptr;
-		return false;
+	//	If that was the last task of the stage, move on and wake up the tasks waiting for the next stage
+	if (TryPrepareNextStage() || stage == IEJoinSourceStage::DONE) {
+		UnblockTasks();
 	}
 
-	if (TryPrepareNextStage()) {
-		UnblockTasks();
+	if (!HasMoreTasks()) {
+		return false;
 	}
 
 	if (TryNextTask(task_local)) {
@@ -1859,8 +1368,6 @@ bool IEJoinGlobalSourceState::TryNextTask(TaskPtr &task, Task &task_local) {
 		++started;
 		return true;
 	}
-
-	task = nullptr;
 
 	return false;
 }
@@ -1938,17 +1445,12 @@ bool IEJoinGlobalSourceState::TryNextTask(Task &task) {
 
 ProgressData IEJoinGlobalSourceState::GetProgress() const {
 	const auto count = GetTaskCount();
-
-	const auto returned = finished.load();
-
-	ProgressData res;
-	if (count) {
-		res.done = double(returned);
-		res.total = double(count);
-	} else {
+	if (!count) {
+		ProgressData res;
 		res.SetInvalid();
+		return res;
 	}
-	return res;
+	return task_progress.GetProgress(count);
 }
 unique_ptr<GlobalSourceState> PhysicalIEJoin::GetGlobalSourceState(ClientContext &client) const {
 	auto &gsink = sink_state->Cast<IEJoinGlobalState>();
@@ -1974,15 +1476,37 @@ SourceResultType PhysicalIEJoin::GetDataInternal(ExecutionContext &context, Data
 	// Any call to GetData must produce tuples, otherwise the pipeline executor thinks that we're done
 	// Therefore, we loop until we've produced tuples, or until the operator is actually done
 	while (gsource.stage != IEJoinSourceStage::DONE && result.size() == 0) {
-		if (!lsource.TaskFinished() || lsource.TryAssignTask()) {
-			lsource.ExecuteTask(context, result, input.interrupt_state);
-		} else {
-			annotated_lock_guard<annotated_mutex> guard(gsource.lock);
-			if (gsource.TryPrepareNextStage() || gsource.stage == IEJoinSourceStage::DONE) {
-				gsource.UnblockTasks();
-			} else {
-				return gsource.BlockSource(input.interrupt_state);
+		if (lsource.TaskFinished()) {
+			{
+				// Finish the current task, advance the stage if it was the last one, look for the next task and
+				// decide what to do without one, all under a single acquisition of the lock: the decision to block
+				// has to be made under the same lock as the failed search, or the unblock could slip in between
+				// and no one would ever wake this task up again.
+				annotated_lock_guard<annotated_mutex> guard(gsource.lock);
+				lsource.FinishTask();
+				if (!gsource.TryNextTaskLocked(lsource.task, lsource.task_local)) {
+					if (gsource.stage == IEJoinSourceStage::DONE) {
+						break;
+					}
+					if (lsource.produced) {
+						// The remaining tasks can only start once the other tasks of this stage have finished.
+						// This task has already handed rows to the sink, which may in turn be waiting for this task
+						// (e.g., a partitioned COPY cannot flush until every producer has combined), so blocking
+						// here could deadlock: let the tasks that are still running finish the join instead.
+						return SourceResultType::FINISHED;
+					}
+					// there are more tasks available, but we can't execute them yet
+					// block the source
+					return gsource.BlockSource(input.interrupt_state);
+				}
 			}
+			// Set up the task outside the lock: it allocates per-task state
+			lsource.InitializeTask();
+		}
+		lsource.ExecuteTask(context, result, input.interrupt_state);
+		lsource.UpdateProgress();
+		if (result.size() != 0) {
+			lsource.produced = true;
 		}
 	}
 	return result.size() == 0 ? SourceResultType::FINISHED : SourceResultType::HAVE_MORE_OUTPUT;

@@ -31,7 +31,6 @@ BoundStatement Binder::Bind(LoadStatement &stmt) {
 	result.plan = make_uniq<LogicalLoad>(std::move(stmt.info));
 
 	auto &properties = GetStatementProperties();
-	properties.result_eagerness = ResultEagerness::FORCED;
 	properties.return_type =
 	    load_type == LoadType::CREATE_REPOSITORY ? StatementReturnType::QUERY_RESULT : StatementReturnType::NOTHING;
 	return result;

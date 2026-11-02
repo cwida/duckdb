@@ -1,0 +1,149 @@
+# name: test/sql/attach/attach_use_string_literal.test
+# description: USE accepts a quoted identifier or a string literal as its target
+# group: [attach]
+
+statement ok
+ATTACH ':memory:' AS db2;
+
+statement ok
+CREATE SCHEMA db2.s2;
+
+statement ok
+ATTACH ':memory:' AS "my db";
+
+statement ok
+ATTACH ':memory:' AS "it's";
+
+statement ok
+ATTACH ':memory:' AS "my""db";
+
+statement ok
+ATTACH ':memory:' AS db3;
+
+# string literal naming a catalog
+statement ok
+USE 'db2'
+
+query II
+SELECT current_catalog(), current_schema()
+----
+db2	main
+
+# string literal naming a schema in the current catalog
+statement ok
+USE 's2'
+
+query II
+SELECT current_catalog(), current_schema()
+----
+db2	s2
+
+# switching from a schema back to a different catalog
+statement ok
+USE 'db3'
+
+query II
+SELECT current_catalog(), current_schema()
+----
+db3	main
+
+# quoted identifiers
+statement ok
+USE "db2"
+
+query II
+SELECT current_catalog(), current_schema()
+----
+db2	main
+
+statement ok
+USE "db2"."s2"
+
+query II
+SELECT current_catalog(), current_schema()
+----
+db2	s2
+
+# names that require quoting
+statement ok
+USE 'my db'
+
+query II
+SELECT current_catalog(), current_schema()
+----
+my db	main
+
+statement ok
+USE "it's"
+
+query II
+SELECT current_catalog(), current_schema()
+----
+it's	main
+
+statement ok
+USE 'it''s'
+
+query II
+SELECT current_catalog(), current_schema()
+----
+it's	main
+
+# a double quote inside a string literal is a plain character
+statement ok
+USE 'my"db'
+
+query II
+SELECT current_catalog(), current_schema()
+----
+my"db	main
+
+statement ok
+USE "my""db"
+
+query I
+SELECT current_database()
+----
+my"db
+
+# a string literal is a single name, a dot inside it is not a separator
+statement error
+USE 'db2.s2'
+----
+Catalog Error: SET schema: No catalog + schema named ""db2.s2"" found.
+
+# string literals are not accepted in the catalog.schema form
+statement error
+USE 'db2'.s2
+----
+Parser Error: syntax error at or near "."
+
+statement error
+USE 'db2'.'s2'
+----
+Parser Error: syntax error at or near "."
+
+statement error
+USE db2.'s2'
+----
+Parser Error: syntax error at or near "'s2'"
+
+statement error
+USE db2.s2.'x'
+----
+Parser Error: syntax error at or near "'x'"
+
+statement error
+USE ''
+----
+Parser Error: Unexpected dot - empty CatalogSearchEntry
+
+statement error
+USE 'temp'
+----
+Catalog Error: SET schema cannot be set to internal schema "temp"
+
+statement error
+USE 'nonexistent'
+----
+Catalog Error: SET schema: No catalog + schema named "nonexistent" found.

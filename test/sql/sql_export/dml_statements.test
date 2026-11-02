@@ -1,0 +1,373 @@
+# name: test/sql/sql_export/dml_statements.test
+# description: Export INSERT, UPDATE and DELETE statements and execute the generated SQL
+# group: [sql_export]
+
+statement ok
+CREATE TABLE dml_target(a INTEGER, b TEXT DEFAULT 'x');
+
+statement ok
+INSERT INTO dml_target VALUES (1,'p'),(2,'q'),(3,'r');
+
+# the exported statement reconstructs the bound source, including filled-in defaults
+query TT
+EXPLAIN (SQL) INSERT INTO dml_target(a) VALUES (10);
+----
+sql	<REGEX>:(?s)INSERT\s+INTO\s+\w+\.main\.dml_target\(\s*a,\s*\s+b\s*\)\s+SELECT\s+r\d+\.c0\s+AS\s+c0,\s*\s+CAST\(\s*'x'\s+AS\s+VARCHAR\s*\)\s+AS\s+c1\s+FROM\s+\(\s*\s+VALUES\s+\(\s*CAST\(\s*10\s+AS\s+INTEGER\s*\)\s*\)\s+\s*\)\s+AS\s+r\d+\(\s*c0\s*\)
+
+query TT
+EXPLAIN (SQL) UPDATE dml_target SET b = 'z' WHERE a = 2;
+----
+sql	<REGEX>:(?s)UPDATE\s+\w+\.main\.dml_target\s+SET\s+b\s+=\s+r\d+\.c0\s+FROM\s+\(\s*\s+SELECT\s+CAST\(\s*'z'\s+AS\s+VARCHAR\s*\)\s+AS\s+c0,\s*\s+r\d+\.rowid\s+AS\s+c1\s+FROM\s+\w+\.main\.dml_target\s+AS\s+r\d+\(\s*column0,\s*\s+column1\s*\)\s+WHERE\s+\(\s*r\d+\.column0\s+=\s+CAST\(\s*2\s+AS\s+INTEGER\s*\)\s*\)\s+\s*\)\s+AS\s+r\d+\(\s*c0,\s*\s+c1\s*\)\s+WHERE\s+\(\s*dml_target\.rowid\s+=\s+r\d+\.c1\s*\)
+
+query TT
+EXPLAIN (SQL) DELETE FROM dml_target WHERE a = 3;
+----
+sql	<REGEX>:(?s)DELETE\s+FROM\s+\w+\.main\.dml_target\s+WHERE\s+\(\s*rowid\s+=\s+ANY\s+\(\s*\s+SELECT\s+r\d+\.rowid\s+AS\s+c1\s+FROM\s+\w+\.main\.dml_target\s+AS\s+r\d+\(\s*column0,\s*\s+column1\s*\)\s+WHERE\s+\(\s*r\d+\.column0\s+=\s+CAST\(\s*3\s+AS\s+INTEGER\s*\)\s*\)\s+\s*\)\s*\)
+
+# explaining does not execute the statement
+query II
+SELECT count(*), sum(a) FROM dml_target;
+----
+3	6
+
+# the generated statements execute with the original statements' effects
+statement ok
+INSERT INTO main.dml_target(a, b)
+SELECT r0.c0 AS c0, CAST('x' AS VARCHAR) AS c1
+FROM (
+        VALUES (CAST(10 AS INTEGER))
+    ) AS r0(c0)
+
+statement ok
+UPDATE main.dml_target
+SET b = r2.c0
+FROM (
+        SELECT CAST('z' AS VARCHAR) AS c0, r0.rowid AS c1
+        FROM main.dml_target AS r0(column0, column1)
+        WHERE (r0.column0 = CAST(2 AS INTEGER))
+    ) AS r2(c0, c1)
+WHERE (dml_target.rowid = r2.c1)
+
+statement ok
+DELETE FROM main.dml_target
+WHERE (rowid = ANY (
+                SELECT r0.rowid AS c1
+                FROM main.dml_target AS r0(column0, column1)
+                WHERE (r0.column0 = CAST(3 AS INTEGER))
+            ))
+
+query IT rowsort
+SELECT a, b FROM dml_target;
+----
+1	p
+10	x
+2	z
+
+# RETURNING is reconstructed with the projection's output names as aliases
+query TT
+EXPLAIN (SQL) INSERT INTO dml_target(a) VALUES (20) RETURNING a + 1 AS next_a, b;
+----
+sql	<REGEX>:(?s)INSERT\s+INTO\s+\w+\.main\.dml_target\(\s*a,\s*\s+b\s*\)\s+SELECT\s+r\d+\.c0\s+AS\s+c0,\s*\s+CAST\(\s*'x'\s+AS\s+VARCHAR\s*\)\s+AS\s+c1\s+FROM\s+\(\s*\s+VALUES\s+\(\s*CAST\(\s*20\s+AS\s+INTEGER\s*\)\s*\)\s+\s*\)\s+AS\s+r\d+\(\s*c0\s*\)\s+RETURNING\s+"system"\.main\."\+"\(\s*a,\s*\s+CAST\(\s*1\s+AS\s+INTEGER\s*\)\s*\)\s+AS\s+next_a,\s*\s+b\s+AS\s+b
+
+query IT
+INSERT INTO main.dml_target(a, b)
+SELECT r0.c0 AS c0, CAST('x' AS VARCHAR) AS c1
+FROM (
+        VALUES (CAST(20 AS INTEGER))
+    ) AS r0(c0)
+RETURNING "system".main."+"(a, CAST(1 AS INTEGER)) AS next_a, b AS b
+----
+21	x
+
+# RETURNING may reference the table's row-id column
+query TT
+EXPLAIN (SQL) DELETE FROM dml_target WHERE a = 20 RETURNING *, rowid >= 0 AS has_row;
+----
+sql	<REGEX>:(?s)DELETE\s+FROM\s+\w+\.main\.dml_target\s+WHERE\s+\(\s*rowid\s+=\s+ANY\s+\(\s*\s+SELECT\s+r\d+\.rowid\s+AS\s+c1\s+FROM\s+\w+\.main\.dml_target\s+AS\s+r\d+\(\s*column0,\s*\s+column1\s*\)\s+WHERE\s+\(\s*r\d+\.column0\s+=\s+CAST\(\s*20\s+AS\s+INTEGER\s*\)\s*\)\s+\s*\)\s*\)\s+RETURNING\s+a\s+AS\s+a,\s*\s+b\s+AS\s+b,\s*\s+\(\s*rowid\s+>=\s+CAST\(\s*0\s+AS\s+BIGINT\s*\)\s*\)\s+AS\s+has_row
+
+query ITT
+DELETE FROM main.dml_target
+WHERE (rowid = ANY (
+                SELECT r0.rowid AS c1
+                FROM main.dml_target AS r0(column0, column1)
+                WHERE (r0.column0 = CAST(20 AS INTEGER))
+            ))
+RETURNING a AS a, b AS b, (rowid >= CAST(0 AS BIGINT)) AS has_row
+----
+20	x	true
+
+query II
+SELECT count(*), sum(a) FROM dml_target;
+----
+3	13
+
+# more complex sources stay exportable: joins, subqueries and set expressions
+statement ok
+CREATE TABLE dml_source(a INTEGER, b TEXT);
+
+statement ok
+INSERT INTO dml_source VALUES (10,'aa'),(11,'bb');
+
+query TT
+EXPLAIN (SQL) UPDATE dml_target SET b = s.b FROM dml_source s WHERE dml_target.a = s.a;
+----
+sql	<REGEX>:(?s)UPDATE\s*\w+\.main\.dml_target\s*SET\s*b\s*=\s*.*\s*FROM\s*.*JOIN.*\s*WHERE\s*\(\s*dml_target\.rowid\s*=\s*.*\s*\)
+
+query TT
+EXPLAIN (SQL) DELETE FROM dml_target USING dml_source u WHERE dml_target.a = u.a;
+----
+sql	<REGEX>:(?s)DELETE\s*FROM\s*\w+\.main\.dml_target\s*WHERE\s*\(\s*rowid\s*=\s*ANY\s*\(\s*.*JOIN.*\s*\)\s*\)
+
+query TT
+EXPLAIN (SQL) DELETE FROM dml_target WHERE a = (SELECT min(a) FROM dml_target);
+----
+sql	<REGEX>:(?s)DELETE\s*FROM\s*\w+\.main\.dml_target\s*WHERE\s*\(\s*rowid\s*=\s*ANY\s*\(\s*.*\s*\)\s*\)
+
+query TT
+EXPLAIN (SQL) UPDATE dml_target SET a = (SELECT count(*) FROM dml_source) WHERE b = 'z';
+----
+sql	<REGEX>:(?s)UPDATE\s*\w+\.main\.dml_target\s*SET\s*a\s*=\s*.*
+
+# a table with generated columns inserts through its physical columns only
+statement ok
+CREATE TABLE dml_generated(a INTEGER, d AS (a * 2), b TEXT DEFAULT 'z');
+
+query TT
+EXPLAIN (SQL) INSERT INTO dml_generated(a) VALUES (5);
+----
+sql	<REGEX>:(?s)INSERT\s*INTO\s*\w+\.main\.dml_generated\s*\(\s*a,\s*\s*b\s*\)\s*SELECT\s*.*
+
+query TT
+EXPLAIN (SQL) INSERT INTO dml_generated(a) VALUES (5) RETURNING d;
+----
+sql	<REGEX>:(?s)INSERT\s*INTO\s*\w+\.main\.dml_generated\s*\(\s*a,\s*\s*b\s*\)\s*SELECT\s*.*\s*RETURNING\s*.*\s*AS\s*d
+
+# MERGE INTO exports with the matched rows keyed by the target's row id
+statement ok
+CREATE TABLE dml_merge_target(k INTEGER, v TEXT);
+
+statement ok
+INSERT INTO dml_merge_target VALUES (1,'a'),(2,'b');
+
+statement ok
+CREATE TABLE dml_merge_source(k INTEGER, v TEXT);
+
+statement ok
+INSERT INTO dml_merge_source VALUES (2,'B'),(3,'C');
+
+query TT
+EXPLAIN (SQL) MERGE INTO dml_merge_target USING dml_merge_source ON dml_merge_target.k = dml_merge_source.k WHEN MATCHED THEN UPDATE SET v = dml_merge_source.v WHEN NOT MATCHED THEN INSERT VALUES (dml_merge_source.k, dml_merge_source.v);
+----
+sql	<REGEX>:(?s)MERGE\s+INTO\s+\w+\.main\.dml_merge_target\s+USING\s+\(\s*\s+SELECT\s+r\d+\.column0\s+AS\s+c0,\s*\s+r\d+\.column1\s+AS\s+c1,\s*\s+r\d+\.column1\s+AS\s+c2,\s*\s+r\d+\.rowid\s+AS\s+c3\s+FROM\s+\(\s*\w+\.main\.dml_merge_target\s+AS\s+r\d+\(\s*column0,\s*\s+column1\s*\)\s+RIGHT\s+JOIN\s+\w+\.main\.dml_merge_source\s+AS\s+r\d+\(\s*\s+column0,\s*\s+column1\s*\)\s+ON\s+\(\s*\(\s*r\d+\.column0\s+=\s+r\d+\.column0\s*\)\s*\)\s+\s*\)\s+\s*\)\s+AS\s+r\d+\(\s*c0,\s*\s+c1,\s*\s+c2,\s*\s+c3\s*\)\s+ON\s+\(\s*dml_merge_target\.rowid\s+=\s+r\d+\.c3\s*\)\s+WHEN\s+MATCHED\s+THEN\s+UPDATE\s+SET\s+v\s+=\s+r\d+\.c2\s+WHEN\s+NOT\s+MATCHED\s+THEN\s+INSERT\s+\(\s*k,\s*\s+v\s*\)\s+VALUES\s+\(\s*r\d+\.c0,\s*\s+r\d+\.c1\s*\)
+
+statement ok
+MERGE INTO main.dml_merge_target USING (
+        SELECT r2.column0 AS c0, r2.column1 AS c1, r2.column1 AS c2, r0.rowid AS c3
+        FROM (main.dml_merge_target AS r0(column0, column1)
+                RIGHT JOIN main.dml_merge_source AS r2(
+                    column0,
+                    column1) ON ((r0.column0 = r2.column0))
+            )
+    ) AS r5(c0, c1, c2, c3) ON (dml_merge_target.rowid = r5.c3) WHEN MATCHED THEN
+UPDATE
+SET v = r5.c2 WHEN NOT MATCHED THEN
+INSERT (k, v)
+VALUES (r5.c0, r5.c1)
+
+query IT rowsort
+SELECT * FROM dml_merge_target;
+----
+1	a
+2	B
+3	C
+
+# MERGE RETURNING binds the statement-provided merge_action column
+query TT
+EXPLAIN (SQL) MERGE INTO dml_merge_target USING dml_merge_source ON dml_merge_target.k = dml_merge_source.k WHEN MATCHED THEN DELETE RETURNING merge_action, k;
+----
+sql	<REGEX>:(?s)MERGE\s+INTO\s+\w+\.main\.dml_merge_target\s+USING\s+\(\s*\s+SELECT\s+r\d+\.column0\s+AS\s+c0,\s*\s+r\d+\.c1\s+AS\s+c1,\s*\s+r\d+\.c2\s+AS\s+c2\s+FROM\s+\(\s*\(\s*\s+SELECT\s+r\d+\.column0\s+AS\s+c0,\s*\s+r\d+\.column1\s+AS\s+c1,\s*\s+r\d+\.rowid\s+AS\s+c2\s+FROM\s+\w+\.main\.dml_merge_target\s+AS\s+r\d+\(\s*column0,\s*\s+column1\s*\)\s+WHERE\s+\(\s*r\d+\.column0\s+>=\s+CAST\(\s*2\s+AS\s+INTEGER\s*\)\s*\)\s+\s*\)\s+AS\s+r\d+\(\s*c0,\s*\s+c1,\s*\s+c2\s*\)\s+INNER\s+JOIN\s+\w+\.main\.dml_merge_source\s+AS\s+r\d+\(\s*\s+column0,\s*\s+column1\s*\)\s+ON\s+\(\s*\(\s*r\d+\.c0\s+=\s+r\d+\.column0\s*\)\s*\)\s+\s*\)\s+\s*\)\s+AS\s+r\d+\(\s*c0,\s*\s+c1,\s*\s+c2\s*\)\s+ON\s+\(\s*dml_merge_target\.rowid\s+=\s+r\d+\.c2\s*\)\s+WHEN\s+MATCHED\s+THEN\s+DELETE\s+RETURNING\s+merge_action\s+AS\s+merge_action,\s*\s+k\s+AS\s+k
+
+query TI rowsort
+MERGE INTO main.dml_merge_target USING (
+        SELECT r2.column0 AS c0, r1.c1 AS c1, r1.c2 AS c2
+        FROM ((
+                        SELECT r0.column0 AS c0, r0.column1 AS c1, r0.rowid AS c2
+                        FROM main.dml_merge_target AS r0(column0, column1)
+                        WHERE (r0.column0 >= CAST(2 AS INTEGER))
+                    ) AS r1(c0, c1, c2)
+                INNER JOIN main.dml_merge_source AS r2(
+                    column0,
+                    column1) ON ((r1.c0 = r2.column0))
+            )
+    ) AS r5(c0, c1, c2) ON (dml_merge_target.rowid = r5.c2) WHEN MATCHED THEN
+DELETE
+RETURNING merge_action AS merge_action, k AS k
+----
+DELETE	2
+DELETE	3
+
+# WHEN NOT MATCHED BY SOURCE rows cannot be keyed by the exported row id
+statement error
+EXPLAIN (SQL) MERGE INTO dml_merge_target USING dml_merge_source ON dml_merge_target.k = dml_merge_source.k WHEN NOT MATCHED BY SOURCE THEN DELETE;
+----
+WHEN NOT MATCHED BY SOURCE actions cannot be keyed by the exported row id
+
+# ON CONFLICT binds to MERGE INTO and exports as such
+statement ok
+CREATE TABLE dml_keyed(a INTEGER PRIMARY KEY, b TEXT);
+
+statement ok
+INSERT INTO dml_keyed VALUES (1,'p'),(2,'q');
+
+query TT
+EXPLAIN (SQL) INSERT INTO dml_keyed VALUES (2,'x'),(9,'y') ON CONFLICT DO UPDATE SET b = excluded.b;
+----
+sql	<REGEX>:(?s)MERGE\s*INTO\s*\w+\.main\.dml_keyed\s*USING\s*.*\s*WHEN\s*MATCHED\s*THEN\s*UPDATE\s*SET\s*b\s*=\s*.*\s*WHEN\s*NOT\s*MATCHED\s*THEN\s*INSERT\s*\(\s*a,\s*\s*b\s*\)\s*VALUES\s*.*
+
+query TT
+EXPLAIN (SQL) INSERT OR REPLACE INTO dml_keyed VALUES (1,'z');
+----
+sql	<REGEX>:(?s)MERGE\s*INTO\s*\w+\.main\.dml_keyed\s*USING\s*.*\s*WHEN\s*MATCHED\s*THEN\s*UPDATE\s*.*\s*WHEN\s*NOT\s*MATCHED\s*THEN\s*INSERT\s*.*
+
+# the EXPLAINed statements did not execute
+query IT rowsort
+SELECT * FROM dml_keyed;
+----
+1	p
+2	q
+
+# a physical column shadowing the row-id name would capture the generated references
+statement ok
+CREATE TABLE dml_shadowed(rowid INTEGER, v TEXT);
+
+statement error
+EXPLAIN (SQL) DELETE FROM dml_shadowed WHERE v = 'a';
+----
+The modified table does not expose an exportable row-id column
+
+statement error
+EXPLAIN (SQL) UPDATE dml_shadowed SET v = 'b';
+----
+The modified table does not expose an exportable row-id column
+
+# inserting into a shadowed table needs no row-id key
+query TT
+EXPLAIN (SQL) INSERT INTO dml_shadowed VALUES (1, 'a');
+----
+sql	<REGEX>:(?s)INSERT\s*INTO\s*\w+\.main\.dml_shadowed\s*\(\s*rowid,\s*\s*v\s*\)\s*SELECT\s*.*
+
+# a data-modifying CTE exports as a materialized CTE whose body is the statement
+statement ok
+CREATE TABLE dml_cte_target(a INTEGER);
+
+statement ok
+INSERT INTO dml_cte_target VALUES (1),(2),(3);
+
+query TT
+EXPLAIN (SQL) WITH d AS (DELETE FROM dml_cte_target WHERE a < 3 RETURNING a) SELECT sum(a) AS deleted_sum FROM d;
+----
+sql	<REGEX>:(?s)WITH\s+d\(\s*c0\s*\)\s+AS\s+MATERIALIZED\s+\(\s*\s+DELETE\s+FROM\s+\w+\.main\.dml_cte_target\s+WHERE\s+\(\s*rowid\s+=\s+ANY\s+\(\s*\s+SELECT\s+r\d+\.rowid\s+AS\s+c1\s+FROM\s+\w+\.main\.dml_cte_target\s+AS\s+r\d+\(\s*column0\s*\)\s+WHERE\s+\(\s*r\d+\.column0\s+<\s+CAST\(\s*3\s+AS\s+INTEGER\s*\)\s*\)\s+\s*\)\s*\)\s+RETURNING\s+a\s+AS\s+a\s+\s*\)\s+SELECT\s+.*deleted_sum.*
+
+query I
+WITH d(c0) AS MATERIALIZED (
+        DELETE FROM main.dml_cte_target
+        WHERE (rowid = ANY (
+                        SELECT r0.rowid AS c1
+                        FROM main.dml_cte_target AS r0(column0)
+                        WHERE (r0.column0 < CAST(3 AS INTEGER))
+                    ))
+        RETURNING a AS a
+    )
+SELECT r6.c0 AS deleted_sum
+FROM (
+        SELECT "system".main.sum(r3.c0) AS c0
+        FROM d AS r3(c0)
+    ) AS r6(c0)
+----
+3
+
+# a data-modifying statement consuming a materialized CTE keeps the definition in front
+query TT
+EXPLAIN (SQL) WITH x AS MATERIALIZED (SELECT 3 AS v) DELETE FROM dml_cte_target WHERE a IN (SELECT v FROM x);
+----
+sql	<REGEX>:(?s)WITH\s+x\(\s*c0\s*\)\s+AS\s+MATERIALIZED\s+\(\s*\s+SELECT\s+CAST\(\s*3\s+AS\s+INTEGER\s*\)\s+AS\s+c0\s+\s*\)\s+DELETE\s+FROM\s+\w+\.main\.dml_cte_target\s+WHERE\s+\(\s*rowid\s+=\s+ANY\s+\(\s*\s+SELECT\s+r\d+\.c1\s+AS\s+c1\s+FROM\s+\(\s*\(\s*\s+SELECT\s+r\d+\.column0\s+AS\s+c0,\s*\s+r\d+\.rowid\s+AS\s+c1\s+FROM\s+\w+\.main\.dml_cte_target\s+AS\s+r\d+\(\s*column0\s*\)\s+WHERE\s+\(\s*r\d+\.column0\s+>=\s+CAST\(\s*3\s+AS\s+INTEGER\s*\)\s*\)\s+\s*\)\s+AS\s+r\d+\(\s*c0,\s*\s+c1\s*\)\s+SEMI\s+JOIN\s+x\s+AS\s+r\d+\(\s*c0\s*\)\s+ON\s+\(\s*\(\s*r\d+\.c0\s+=\s+r\d+\.c0\s*\)\s*\)\s+\s*\)\s+\s*\)\s*\)
+
+statement ok
+WITH x(c0) AS MATERIALIZED (
+        SELECT CAST(3 AS INTEGER) AS c0
+    )
+DELETE FROM main.dml_cte_target
+WHERE (rowid = ANY (
+                SELECT r3.c1 AS c1
+                FROM ((
+                                SELECT r2.column0 AS c0, r2.rowid AS c1
+                                FROM main.dml_cte_target AS r2(column0)
+                                WHERE (r2.column0 >= CAST(3 AS INTEGER))
+                            ) AS r3(c0, c1) SEMI
+                        JOIN x AS r4(c0) ON ((r3.c0 = r4.c0))
+                    )
+            ))
+
+query I
+SELECT count(*) FROM dml_cte_target;
+----
+0
+
+# an unreferenced data-modifying CTE would be discarded by SQL and stays unsupported
+statement error
+EXPLAIN (SQL) WITH d AS (DELETE FROM dml_target WHERE a = 1 RETURNING a) SELECT 42;
+----
+SQL would discard the unreferenced CTE producer
+
+# other statement types stay outside EXPLAIN (SQL)
+statement error
+EXPLAIN (SQL) CREATE TABLE dml_unexpected(i INTEGER);
+----
+EXPLAIN (SQL) supports SELECT, VALUES, WITH, INSERT, UPDATE, DELETE, MERGE INTO, CREATE TABLE ... AS and COPY ... TO statements only
+
+# data-modifying CTE definitions stay in the top-level WITH clause of the generated SQL,
+# including chains with plain definitions between them (strict verification executes the export)
+statement ok
+CREATE TABLE dml_cte_multi(a INTEGER);
+
+statement ok
+CREATE TABLE dml_cte_aux(a INTEGER);
+
+statement ok
+SET debug_verify_statement='explain_sql_strict';
+
+query I rowsort
+WITH i1 AS (INSERT INTO dml_cte_multi VALUES (1) RETURNING a),
+     i2 AS (INSERT INTO dml_cte_aux VALUES (2) RETURNING a)
+SELECT * FROM i1 UNION ALL SELECT * FROM i2;
+----
+1
+2
+
+query I
+WITH d1 AS (DELETE FROM dml_cte_multi RETURNING a),
+     s AS (SELECT a + 10 AS b FROM d1),
+     d2 AS (DELETE FROM dml_cte_aux WHERE a IN (SELECT b - 9 FROM s) RETURNING a)
+SELECT * FROM d2;
+----
+2
+
+query II
+SELECT (SELECT count(*) FROM dml_cte_multi), (SELECT count(*) FROM dml_cte_aux);
+----
+0	0
+
+query I
+WITH d AS (INSERT INTO dml_cte_multi VALUES (5), (6), (7) RETURNING a)
+SELECT a FROM d ORDER BY a LIMIT 1;
+----
+5
+
+statement ok
+RESET debug_verify_statement;
+
+# an ON CONFLICT insert binds to MERGE INTO, which SQL does not accept as a CTE body
+statement error
+EXPLAIN (SQL) WITH ups AS (INSERT INTO dml_keyed VALUES (1,'x') ON CONFLICT DO NOTHING RETURNING a) SELECT * FROM ups;
+----
+MERGE INTO cannot be exported as a CTE body

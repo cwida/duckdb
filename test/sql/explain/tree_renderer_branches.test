@@ -1,0 +1,247 @@
+# name: test/sql/explain/tree_renderer_branches.test
+# description: Exercise formatting, folding, escaping, and profiling branches in the tree renderers
+# group: [explain]
+
+statement ok
+CREATE SCHEMA this_is_a_very_long_schema_name
+
+statement ok
+CREATE TABLE this_is_a_very_long_schema_name."renderer`""table" (
+	abcdefghijklmnopqrstu BIGINT,
+	vwxyzabcdefghijklmnop BIGINT,
+	cccccccccccccccccccc VARCHAR
+)
+
+statement ok
+INSERT INTO this_is_a_very_long_schema_name."renderer`""table" VALUES (1, 2, 'duck')
+
+statement ok
+CREATE TABLE renderer_columns (
+	column_one_with_long_name BIGINT,
+	column_two_with_long_name BIGINT,
+	column_three_with_long_name BIGINT,
+	column_four_with_long_name BIGINT,
+	column_five_with_long_name BIGINT,
+	column_six_with_long_name BIGINT,
+	column_seven_with_long_name BIGINT,
+	column_eight_with_long_name BIGINT,
+	column_nine_with_long_name BIGINT,
+	column_ten_with_long_name BIGINT
+)
+
+statement ok
+INSERT INTO renderer_columns VALUES (1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+
+# Small render widths exercise qualified-name truncation and wrapping of multi-line projection lists.
+statement ok
+SET profiling_renderer_settings = MAP {
+	'maximum_render_width': '30',
+	'max_extra_lines': '0',
+	'thousand_separator': '',
+	'decimal_separator': '.',
+	'expand_all': 'false',
+	'operator_casing': 'title',
+	'ignored_by_text': 'yes'
+}
+
+query II
+EXPLAIN SELECT *
+FROM this_is_a_very_long_schema_name."renderer`""table"
+WHERE abcdefghijklmnopqrstu > 0
+----
+physical_plan	<REGEX>:(?s).*Seq Scan.*renderer.*
+
+query II
+EXPLAIN SELECT * FROM renderer_columns
+----
+physical_plan	<REGEX>:(?s).*Seq Scan.*column_one_with_long_name.*
+
+# The same unusual identifier reaches the YAML and Mermaid escaping code.
+query II
+EXPLAIN (FORMAT yaml)
+SELECT * FROM this_is_a_very_long_schema_name."renderer`""table"
+----
+physical_plan	<REGEX>:(?s).*- name:.*renderer.*
+
+query II
+EXPLAIN (FORMAT mermaid)
+SELECT * FROM this_is_a_very_long_schema_name."renderer`""table"
+----
+physical_plan	<REGEX>:(?s).*flowchart TD.*renderer.*
+
+# RANGE is a leaf whose scan kind is inferred from its Function property.
+query II
+EXPLAIN (FORMAT html) SELECT * FROM range(2)
+----
+physical_plan	<REGEX>:(?s).*<!DOCTYPE html>.*RANGE.*
+
+# Cover both raw upper-case and title-case operator configuration.
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'}
+
+query II
+EXPLAIN SELECT * FROM range(2)
+----
+physical_plan	<REGEX>:.*RANGE.*
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'title'}
+
+query II
+EXPLAIN SELECT * FROM range(2)
+----
+physical_plan	<REGEX>:.*Range.*
+
+# Invalid renderer values are diagnosed when a renderer is created.
+statement error
+SET profiling_renderer_settings = MAP {'thousand_separator': 'xx'}
+----
+Invalid Input Error: Renderer setting "thousand_separator" must be a single character, got "xx"
+
+statement error
+SET profiling_renderer_settings = MAP {'decimal_separator': ''}
+----
+Invalid Input Error: Renderer setting "decimal_separator" must be a single character, got ""
+
+statement error
+SET profiling_renderer_settings = MAP {'operator_casing': 'mixed'}
+----
+Invalid Input Error: Renderer setting "operator_casing" must be either 'title' or 'upper', got "mixed"
+
+# A small deliberate delay makes the surrounding operators insignificant on every machine.
+statement ok
+SET profiling_renderer_settings = MAP {
+	'maximum_render_width': '44',
+	'thousand_separator': ',',
+	'expand_all': 'false',
+	'operator_casing': 'title'
+}
+
+query II
+EXPLAIN ANALYZE
+SELECT count(*)
+FROM (
+	SELECT x, row_number() OVER (ORDER BY x) AS rn
+	FROM (SELECT sleep_ms(10) AS x FROM range(1))
+	QUALIFY rn <= 10
+	ORDER BY x
+	LIMIT 5
+)
+----
+analyzed_plan	<REGEX>:(?s).*Ungrouped Aggregate.*Top N.*Projection.*
+
+# More than 30 operators enables whole-subtree merging. Every branch is tiny, and only the first
+# one has measurable work.
+query II
+EXPLAIN ANALYZE
+SELECT sum(x)
+FROM (
+	SELECT sleep_ms(10)::BIGINT AS x FROM range(1)
+	UNION ALL SELECT i + 1 FROM range(1) t(i)
+	UNION ALL SELECT i + 2 FROM range(1) t(i)
+	UNION ALL SELECT i + 3 FROM range(1) t(i)
+	UNION ALL SELECT i + 4 FROM range(1) t(i)
+	UNION ALL SELECT i + 5 FROM range(1) t(i)
+	UNION ALL SELECT i + 6 FROM range(1) t(i)
+	UNION ALL SELECT i + 7 FROM range(1) t(i)
+	UNION ALL SELECT i + 8 FROM range(1) t(i)
+	UNION ALL SELECT i + 9 FROM range(1) t(i)
+	UNION ALL SELECT i + 10 FROM range(1) t(i)
+	UNION ALL SELECT i + 11 FROM range(1) t(i)
+	UNION ALL SELECT i + 12 FROM range(1) t(i)
+	UNION ALL SELECT i + 13 FROM range(1) t(i)
+	UNION ALL SELECT i + 14 FROM range(1) t(i)
+	UNION ALL SELECT i + 15 FROM range(1) t(i)
+)
+----
+analyzed_plan	<REGEX>:(?s).*Ungrouped Aggregate.*Union.*Table Scan.*
+
+# Differently sized children exercise light, heavy, and wide connectors on one horizontal bus.
+query II
+EXPLAIN ANALYZE
+SELECT count(*)
+FROM (
+	SELECT * FROM range(2)
+	UNION ALL SELECT * FROM range(1500)
+	UNION ALL SELECT * FROM range(200)
+	UNION ALL SELECT * FROM range(2000)
+)
+----
+analyzed_plan	<REGEX>:(?s).*Union.*2,000 rows.*
+
+# HTML profiling highlights constants and comments while escaping text embedded into the page.
+statement ok
+RESET profiling_renderer_settings
+
+statement ok
+PRAGMA enable_profiling = 'html'
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/tree_renderer_profile.html'
+
+query I
+SELECT 42 WHERE 'left<&' <> 'right>' /* renderer comment */
+----
+42
+
+statement ok
+PRAGMA disable_profiling
+
+query IIIII
+SELECT contains(content, 'sql-num'),
+       contains(content, 'sql-str'),
+       contains(content, 'sql-comment'),
+       contains(content, '&lt;'),
+       contains(content, '&amp;')
+FROM read_text('{TEST_DIR}/tree_renderer_profile.html')
+----
+true	true	true	true	true
+
+# Compact profiling reports bytes read and written when the query performs file I/O.
+statement ok
+RESET profiling_output
+
+statement ok
+COPY (SELECT i FROM range(10) t(i)) TO '{TEST_DIR}/tree_renderer_input.csv' (HEADER)
+
+statement ok
+PRAGMA enable_profiling = 'compact'
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/tree_renderer_compact.txt'
+
+query I
+SELECT count(*) FROM read_csv_auto('{TEST_DIR}/tree_renderer_input.csv')
+----
+10
+
+statement ok
+PRAGMA disable_profiling
+
+query I
+SELECT contains(content, 'read=') FROM read_text('{TEST_DIR}/tree_renderer_compact.txt')
+----
+true
+
+statement ok
+PRAGMA enable_profiling = 'compact'
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/tree_renderer_compact_write.txt'
+
+statement ok
+COPY (SELECT i FROM range(10) t(i)) TO '{TEST_DIR}/tree_renderer_output.csv'
+
+statement ok
+PRAGMA disable_profiling
+
+query I
+SELECT contains(content, 'written=') FROM read_text('{TEST_DIR}/tree_renderer_compact_write.txt')
+----
+true
+
+statement ok
+RESET profiling_output
+
+statement ok
+RESET enable_profiling

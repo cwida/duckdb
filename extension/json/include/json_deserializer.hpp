@@ -20,6 +20,9 @@ private:
 		}
 	};
 
+	//! Deserializing recurses once per nesting level of the JSON - keep it within small thread stacks
+	static constexpr idx_t MAX_NESTING_DEPTH = 256;
+
 	yyjson_doc *doc;
 	const char *current_tag = nullptr;
 	vector<StackFrame> stack;
@@ -35,6 +38,9 @@ private:
 	};
 
 	inline void Push(yyjson_val *val) {
+		if (stack.size() >= MAX_NESTING_DEPTH) {
+			throw SerializationException("Serialized JSON exceeds the maximum nesting depth of %d", MAX_NESTING_DEPTH);
+		}
 		stack.emplace_back(val);
 	}
 	inline void Pop() {

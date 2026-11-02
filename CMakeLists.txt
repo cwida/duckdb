@@ -4,25 +4,17 @@ if(NOT CLANG_TIDY)
   find_package(Python3)
 endif()
 
-if(POLICY CMP0026)
-  cmake_policy(SET CMP0026 NEW)
-endif()
-
-if(POLICY CMP0051)
-  cmake_policy(SET CMP0051 NEW)
-endif()
-
-if(POLICY CMP0054)
-  cmake_policy(SET CMP0054 NEW)
-endif()
-
-if(POLICY CMP0063)
-  cmake_policy(SET CMP0063 NEW)
-endif()
-
 project(DuckDB)
 
 find_package(Threads REQUIRED)
+
+set(DUCKDB_SYSTEM_LIBS ${CMAKE_DL_LIBS})
+if(MSVC OR MINGW)
+  list(APPEND DUCKDB_SYSTEM_LIBS ws2_32 rstrtmgr)
+endif()
+if(MSVC)
+  list(APPEND DUCKDB_SYSTEM_LIBS bcrypt)
+endif()
 
 # Consume optional vcpkg-related cache variables passed by CI/Makefile to avoid
 # "manually-specified variables were not used by the project" warnings in
@@ -329,10 +321,6 @@ endfunction()
 
 option(FORCE_WARN_UNUSED "Unused code objects lead to compiler warnings." FALSE)
 
-option(ENABLE_EXTENSION_AUTOLOADING "Enable extension auto-loading by default."
-       FALSE)
-option(ENABLE_EXTENSION_AUTOINSTALL
-       "Enable extension auto-installing by default." FALSE)
 option(
   EXTENSION_TESTS_ONLY
   "Only load the tests for extensions, don't actually build them; useful for testing loadable extensions"
@@ -440,12 +428,16 @@ set(VERSIONING_TAG_MATCH "v*.*.*")
 if(UNSAFE_NUMERIC_CAST)
   add_definitions(-DUNSAFE_NUMERIC_CAST=1)
 endif()
-if(ENABLE_EXTENSION_AUTOLOADING)
-  add_definitions(-DDUCKDB_EXTENSION_AUTOLOAD_DEFAULT=1)
-endif()
-if(ENABLE_EXTENSION_AUTOINSTALL)
-  add_definitions(-DDUCKDB_EXTENSION_AUTOINSTALL_DEFAULT=1)
-endif()
+foreach(REMOVED_OPTION ENABLE_EXTENSION_AUTOLOADING
+                       ENABLE_EXTENSION_AUTOINSTALL)
+  if(DEFINED ${REMOVED_OPTION})
+    message(
+      WARNING
+        "${REMOVED_OPTION} has no effect: autoload_known_extensions and autoinstall_known_extensions default to true, change them at runtime instead"
+    )
+    unset(${REMOVED_OPTION} CACHE)
+  endif()
+endforeach()
 
 option(
   OSX_BUILD_UNIVERSAL
@@ -602,22 +594,41 @@ message(
 
 option(BUILD_MAIN_DUCKDB_LIBRARY
        "Build the main duckdb library and executable." TRUE)
-option(
-  BUILD_EXTENSIONS_ONLY
-  "Build all extension as linkable, overriding DONT_LINK, and don't build core."
-  FALSE)
+option(BUILD_EXTENSIONS_ONLY
+       "Build all extension as linkable, and don't build core." FALSE)
 option(BUILD_BENCHMARKS "Enable building of the benchmark suite." FALSE)
-option(DISABLE_BUILTIN_EXTENSIONS "Disable linking extensions." FALSE)
 option(GENERATE_EXTENSION_ENTRIES "Build for generating extension_entries.hpp"
        FALSE)
 option(FORCE_QUERY_LOG
        "If enabled, all queries will be logged to the specified path" OFF)
 option(BUILD_SHELL "Build the DuckDB Shell and SQLite API Wrappers" TRUE)
 option(DISABLE_THREADS "Disable support for multi-threading" FALSE)
+option(
+  ENABLE_EXTENSION_LOAD
+  "Build libduckdb_loadable_extensions.a and link it into the DuckDB targets, so they can install and load external extensions"
+  TRUE)
 option(DISABLE_EXTENSION_LOAD
-       "Disable support for loading and installing extensions" FALSE)
-option(DISABLE_BUILTIN_HTTPLIB "Disable support for built-in http-only httplib"
-       FALSE)
+       "Deprecated, use ENABLE_EXTENSION_LOAD=OFF instead" FALSE)
+option(
+  ENABLE_BUILTIN_HTTPLIB
+  "Build libduckdb_httplib.a and link it into the DuckDB targets as their default HTTP client"
+  TRUE)
+option(DISABLE_BUILTIN_HTTPLIB
+       "Deprecated, use ENABLE_BUILTIN_HTTPLIB=OFF instead" FALSE)
+option(LINK_CORE_EXTENSIONS
+       "Also statically link the extensions named in BUILD_EXTENSIONS" FALSE)
+set(STATICALLY_LINK_EXTENSIONS
+    ""
+    CACHE
+      STRING
+      "Extensions the DuckDB targets link, e.g. 'json parquet' or 'none' (empty: the built ones the extension configs list with duckdb_extension_statically_link)"
+)
+set(DUCKDB_CAPABILITIES
+    ""
+    CACHE
+      STRING
+      "Capabilities the DuckDB targets link: 'httplib', 'loadable_extensions', 'local_extension_repository' or 'none' (empty: all of them)"
+)
 option(DISABLE_STR_INLINE "Debug setting: disable inlining of strings" FALSE)
 option(DISABLE_MEMORY_SAFETY
        "Debug setting: disable memory access checks at runtime" FALSE)
@@ -655,6 +666,26 @@ option(
   FALSE)
 option(BUILD_UNITTESTS "Build the unittest runner." TRUE)
 option(ENABLE_UNITTEST_CPP_TESTS "Build the C++ Unit Tests." TRUE)
+option(NATIVE_LTO_STATIC_LIBRARIES
+       "Run LTO before writing static libraries so non-LTO linkers can use them"
+       OFF)
+if(NATIVE_LTO_STATIC_LIBRARIES)
+  if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux"
+     OR NOT "${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang$"
+     OR NOT CMAKE_LTO)
+    message(
+      FATAL_ERROR
+        "NATIVE_LTO_STATIC_LIBRARIES requires a Linux Clang build with CMAKE_LTO set"
+    )
+  endif()
+  find_program(DUCKDB_LLD_LINKER NAMES ld.lld)
+  if(NOT DUCKDB_LLD_LINKER)
+    message(
+      FATAL_ERROR
+        "NATIVE_LTO_STATIC_LIBRARIES requires ld.lld to produce native relocatable objects"
+    )
+  endif()
+endif()
 option(
   EXTENSION_CONFIG_BUILD
   "Produce extension configuration artifacts instead of building. (such as shared vcpkg.json, extensions.txt)"
@@ -694,17 +725,31 @@ option(
   SET_DUCKDB_LIBRARY_VERSION
   "Whether or not to set the DuckDB Library version and emit versioned shared libraries"
   FALSE)
-option(
-  PREBUILT_BINARY
-  "Whether to use a prebuilt version of the DuckDB library, typically called libduckdb_static.a"
-  "")
+set(PREBUILT_BINARY
+    ""
+    CACHE FILEPATH "Prebuilt DuckDB static library")
+set(PREBUILT_EXTENSIONS
+    ""
+    CACHE STRING "Extensions supplied as prebuilt static libraries")
+if(PREBUILT_EXTENSIONS AND NOT PREBUILT_BINARY)
+  message(FATAL_ERROR "PREBUILT_EXTENSIONS requires PREBUILT_BINARY")
+endif()
 
 if(DISABLE_EXTENSION_LOAD)
-  add_definitions(-DDUCKDB_DISABLE_EXTENSION_LOAD)
+  message(
+    WARNING
+      "DISABLE_EXTENSION_LOAD is deprecated, use ENABLE_EXTENSION_LOAD=OFF")
+  set(ENABLE_EXTENSION_LOAD FALSE)
 endif()
 
 if(DISABLE_BUILTIN_HTTPLIB)
-  add_definitions(-DDUCKDB_DISABLE_BUILTIN_HTTPLIB)
+  message(
+    WARNING
+      "DISABLE_BUILTIN_HTTPLIB is deprecated, use ENABLE_BUILTIN_HTTPLIB=OFF")
+  set(ENABLE_BUILTIN_HTTPLIB FALSE)
+endif()
+if(NOT ENABLE_EXTENSION_LOAD)
+  set(ENABLE_BUILTIN_HTTPLIB FALSE)
 endif()
 
 if(${BUILD_RDTSC})
@@ -726,11 +771,22 @@ endif()
 if(NOT BUILD_MAIN_DUCKDB_LIBRARY)
   set(BUILD_UNITTESTS FALSE)
   set(BUILD_SHELL FALSE)
-  set(DISABLE_BUILTIN_EXTENSIONS TRUE)
+  set(STATICALLY_LINK_EXTENSIONS core_functions)
+endif()
+
+if(DISABLE_BUILTIN_EXTENSIONS)
+  message(
+    WARNING
+      "DISABLE_BUILTIN_EXTENSIONS is deprecated, use STATICALLY_LINK_EXTENSIONS=core_functions"
+  )
+  unset(DISABLE_BUILTIN_EXTENSIONS CACHE)
+  if("${STATICALLY_LINK_EXTENSIONS}" STREQUAL "")
+    set(STATICALLY_LINK_EXTENSIONS core_functions)
+  endif()
 endif()
 
 if(GENERATE_EXTENSION_ENTRIES)
-  set(DISABLE_BUILTIN_EXTENSIONS TRUE)
+  set(STATICALLY_LINK_EXTENSIONS none)
 endif()
 
 if(TREAT_WARNINGS_AS_ERRORS)
@@ -1201,17 +1257,15 @@ include(${PROJECT_SOURCE_DIR}/extension/extension_build_tools.cmake)
 
 include(${PROJECT_SOURCE_DIR}/scripts/architecture_flags.cmake)
 
-# These compile definitions/paths are consumed by sources in src/ (e.g.
-# extension_helper.cpp, allocator.cpp), so they must be configured before
-# add_subdirectory(src).
-include_directories("${PROJECT_BINARY_DIR}/codegen/include/")
-add_extension_definitions()
-add_definitions(-DGENERATED_EXTENSION_HEADERS=1)
+# These compile definitions are consumed by sources in src/, so they must be
+# configured before add_subdirectory(src).
 add_definitions(-DDUCKDB_MAJOR_VERSION=${DUCKDB_MAJOR_VERSION})
 add_definitions(-DDUCKDB_MINOR_VERSION=${DUCKDB_MINOR_VERSION})
 add_definitions(-DDUCKDB_PATCH_VERSION=${DUCKDB_PATCH_VERSION})
 
-if(ENABLE_JEMALLOC
+if(BUILD_MAIN_DUCKDB_LIBRARY
+   AND NOT PREBUILT_BINARY
+   AND ENABLE_JEMALLOC
    AND CMAKE_SIZEOF_VOID_P EQUAL 8
    AND NOT FORCE_32_BIT
    AND OS_NAME STREQUAL "linux"
@@ -1229,15 +1283,94 @@ if(ENABLE_JEMALLOC
 endif()
 
 if(PREBUILT_BINARY)
-  message("Using pre-built static library from file ${PREBUILT_BINARY}")
+  get_filename_component(PREBUILT_BINARY_PATH "${PREBUILT_BINARY}" ABSOLUTE)
+  if(NOT EXISTS "${PREBUILT_BINARY_PATH}")
+    message(
+      FATAL_ERROR
+        "Prebuilt DuckDB static library does not exist: ${PREBUILT_BINARY_PATH}"
+    )
+  endif()
+
+  message(
+    STATUS "Using pre-built static library from file ${PREBUILT_BINARY_PATH}")
   add_library(duckdb_static STATIC IMPORTED GLOBAL)
-  get_filename_component(PREBUILT_BASENAME "${PREBUILT_BINARY}" NAME)
-  file(COPY ${PREBUILT_BINARY} DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
-  file(RENAME ${CMAKE_CURRENT_BINARY_DIR}/${PREBUILT_BASENAME}
-       ${CMAKE_CURRENT_BINARY_DIR}/libduckdb_static.a)
-  set_property(
-    TARGET duckdb_static
-    PROPERTY IMPORTED_LOCATION ${CMAKE_CURRENT_BINARY_DIR}/libduckdb_static.a)
+  set_property(TARGET duckdb_static PROPERTY IMPORTED_LOCATION
+                                             "${PREBUILT_BINARY_PATH}")
+  target_link_libraries(duckdb_static INTERFACE ${DUCKDB_SYSTEM_LIBS})
+  link_threads(duckdb_static INTERFACE)
+
+  if(BUILD_SHELL AND NOT SUN)
+    get_filename_component(_DUCKDB_PREBUILT_LIBRARY_DIRECTORY
+                           "${PREBUILT_BINARY_PATH}" DIRECTORY)
+    if(MSVC)
+      set(_DUCKDB_PREBUILT_SHELL_PATH
+          "${_DUCKDB_PREBUILT_LIBRARY_DIRECTORY}/duckdb_shell.lib")
+    else()
+      set(_DUCKDB_PREBUILT_SHELL_PATH
+          "${_DUCKDB_PREBUILT_LIBRARY_DIRECTORY}/libduckdb_shell.a")
+    endif()
+    if(NOT EXISTS "${_DUCKDB_PREBUILT_SHELL_PATH}")
+      message(
+        FATAL_ERROR
+          "Prebuilt DuckDB shell library does not exist: ${_DUCKDB_PREBUILT_SHELL_PATH}"
+      )
+    endif()
+    message(
+      STATUS
+        "Using pre-built shell library from file ${_DUCKDB_PREBUILT_SHELL_PATH}"
+    )
+  endif()
+
+  # capabilities shipped next to the prebuilt library become their archive
+  # targets
+  get_filename_component(_DUCKDB_PREBUILT_DIRECTORY "${PREBUILT_BINARY_PATH}"
+                         DIRECTORY)
+  foreach(DUCKDB_PREBUILT_CAPABILITY duckdb_httplib duckdb_loadable_extensions)
+    if(MSVC)
+      set(_DUCKDB_PREBUILT_CAPABILITY_PATH
+          "${_DUCKDB_PREBUILT_DIRECTORY}/${DUCKDB_PREBUILT_CAPABILITY}.lib")
+    else()
+      set(_DUCKDB_PREBUILT_CAPABILITY_PATH
+          "${_DUCKDB_PREBUILT_DIRECTORY}/lib${DUCKDB_PREBUILT_CAPABILITY}.a")
+    endif()
+    if(EXISTS "${_DUCKDB_PREBUILT_CAPABILITY_PATH}"
+       AND NOT TARGET ${DUCKDB_PREBUILT_CAPABILITY})
+      add_library(${DUCKDB_PREBUILT_CAPABILITY} STATIC IMPORTED GLOBAL)
+      set_property(
+        TARGET ${DUCKDB_PREBUILT_CAPABILITY}
+        PROPERTY IMPORTED_LOCATION "${_DUCKDB_PREBUILT_CAPABILITY_PATH}")
+      target_link_libraries(${DUCKDB_PREBUILT_CAPABILITY}
+                            INTERFACE duckdb_static)
+      message(
+        STATUS
+          "Using pre-built capability from file ${_DUCKDB_PREBUILT_CAPABILITY_PATH}"
+      )
+    endif()
+  endforeach()
+  # local_extension_repository names this build's repository, so it is built
+  # here rather than shipped
+  add_subdirectory(src/main/extension/local_extension_repository
+                   src/main/extension/local_extension_repository)
+
+  foreach(
+    DUCKDB_PREBUILT_LINK_LIBRARY
+    duckdb_fastpforlib
+    duckdb_fmt
+    duckdb_fsst
+    duckdb_hyperloglog
+    duckdb_mbedtls
+    duckdb_miniz
+    duckdb_re2
+    duckdb_skiplistlib
+    duckdb_utf8proc
+    duckdb_yyjson
+    duckdb_zstd)
+    if(NOT TARGET ${DUCKDB_PREBUILT_LINK_LIBRARY})
+      add_library(${DUCKDB_PREBUILT_LINK_LIBRARY} INTERFACE IMPORTED GLOBAL)
+      target_link_libraries(${DUCKDB_PREBUILT_LINK_LIBRARY}
+                            INTERFACE duckdb_static)
+    endif()
+  endforeach()
 
   add_subdirectory(tools)
   add_subdirectory(extension)
@@ -1247,19 +1380,24 @@ elseif(BUILD_MAIN_DUCKDB_LIBRARY)
   add_subdirectory(tools)
   add_subdirectory(extension)
 endif()
+duckdb_link_deferred_extension_libraries()
 
 if(NOT EXTENSION_CONFIG_BUILD)
-  add_third_party(fastpforlib)
-  add_third_party(fmt)
-  add_third_party(fsst)
-  add_third_party(hyperloglog)
-  add_third_party(mbedtls)
-  add_third_party(miniz)
-  add_third_party(re2)
-  add_third_party(skiplist)
-  add_third_party(utf8proc)
-  add_third_party(yyjson)
-  add_third_party(zstd)
+  if(PREBUILT_BINARY)
+    message(STATUS "Skipping third_party/ because PREBUILT_BINARY is set")
+  else()
+    add_third_party(fastpforlib)
+    add_third_party(fmt)
+    add_third_party(fsst)
+    add_third_party(hyperloglog)
+    add_third_party(mbedtls)
+    add_third_party(miniz)
+    add_third_party(re2)
+    add_third_party(skiplist)
+    add_third_party(utf8proc)
+    add_third_party(yyjson)
+    add_third_party(zstd)
+  endif()
   if(NOT DUCKDB_EXPLICIT_PLATFORM)
     set(VERSION_SOURCES tools/utils/test_platform.cpp)
 

@@ -1,0 +1,30 @@
+# name: test/parquet/variant/variant_short_string_boundary.test
+# description: Test writing VARIANT strings around the 64-byte short string limit to parquet
+# group: [variant]
+
+require parquet
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES
+	(1, 1::VARIANT),
+	(2, 2::VARIANT),
+	(3, 3::VARIANT),
+	(4, repeat('a', 63)::VARIANT),
+	(5, repeat('x', 64)::VARIANT),
+	(6, repeat('z', 65)::VARIANT)
+) t(id, v);
+
+statement ok
+COPY t TO '{TEST_DIR}/variant_short_string_boundary.parquet' (FORMAT PARQUET);
+
+query IIII
+SELECT id, variant_typeof(p.v), len(p.v::VARCHAR), p.v = t.v
+FROM read_parquet('{TEST_DIR}/variant_short_string_boundary.parquet') p JOIN t USING (id)
+ORDER BY id;
+----
+1	INT32	1	true
+2	INT32	1	true
+3	INT32	1	true
+4	VARCHAR	63	true
+5	VARCHAR	64	true
+6	VARCHAR	65	true

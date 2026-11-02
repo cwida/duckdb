@@ -14,6 +14,7 @@
 #include "duckdb/parser/column_list.hpp"
 
 #include "duckdb/common/identifier.hpp"
+#include "duckdb/common/optional_idx.hpp"
 namespace duckdb {
 class SchemaCatalogEntry;
 
@@ -44,6 +45,7 @@ struct CreateTableInfo : public CreateInfo {
 
 public:
 	DUCKDB_API unique_ptr<CreateInfo> Copy() const override;
+	DUCKDB_API optional_idx FindNotNullConstraint(LogicalIndex column) const;
 
 	DUCKDB_API void Serialize(Serializer &serializer) const override;
 	DUCKDB_API static unique_ptr<CreateInfo> Deserialize(Deserializer &deserializer);

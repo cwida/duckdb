@@ -71,3 +71,42 @@ FROM (
 WHERE i != expected;
 ----
 0
+
+# A scalar consumer on the same CTE forces COPY to use the materialized scan with batch indices.
+foreach threads 32 192
+
+statement ok
+SET threads={threads};
+
+query II
+EXPLAIN ANALYZE
+COPY (
+	WITH c AS MATERIALIZED (SELECT i FROM cte_parquet_source)
+	SELECT i FROM c WHERE i < (SELECT count(*) FROM c)
+) TO '{TEST_DIR}/cte_materialized_batch_scan.parquet' (FORMAT parquet, ROW_GROUP_SIZE 32768);
+----
+analyzed_plan	<REGEX>:.*Materialized Consumers: 1.*
+
+query III
+SELECT count(*), min(i), max(i)
+FROM read_parquet('{TEST_DIR}/cte_materialized_batch_scan.parquet');
+----
+1000000	0	999999
+
+query I
+SELECT count(*)
+FROM (
+	SELECT i, row_number() OVER () - 1 AS expected
+	FROM read_parquet('{TEST_DIR}/cte_materialized_batch_scan.parquet')
+)
+WHERE i != expected;
+----
+0
+
+query II
+SELECT count(*), count(*) FILTER (WHERE row_group_num_rows NOT IN (32768, 16960))
+FROM parquet_metadata('{TEST_DIR}/cte_materialized_batch_scan.parquet');
+----
+31	0
+
+endloop

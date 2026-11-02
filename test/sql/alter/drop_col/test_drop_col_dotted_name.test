@@ -1,0 +1,36 @@
+# name: test/sql/alter/drop_col/test_drop_col_dotted_name.test
+# description: Dropping a column whose name contains a dot frees the blocks of that column only
+# group: [drop_col]
+
+load {TEST_DIR}/drop_col_dotted_name.db
+
+statement ok
+SET debug_verify_blocks=true
+
+statement ok
+CREATE TABLE t AS SELECT i::VARCHAR AS "a.b", i::VARCHAR AS a FROM range(100000) t(i);
+
+statement ok
+CHECKPOINT
+
+# qualified column names are parsed as struct field paths and rejected
+statement error
+ALTER TABLE t DROP COLUMN t.a
+----
+Cannot drop field from column "t"
+
+statement error
+ALTER TABLE t DROP COLUMN main.t.a
+----
+Cannot drop field from column "main"
+
+statement error
+ALTER TABLE t DROP COLUMN drop_col_dotted_name.main.t.a
+----
+Cannot drop field from column "drop_col_dotted_name"
+
+statement ok
+ALTER TABLE t DROP COLUMN "a.b"
+
+statement ok
+CHECKPOINT

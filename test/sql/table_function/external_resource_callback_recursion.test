@@ -1,0 +1,52 @@
+# name: test/sql/table_function/external_resource_callback_recursion.test
+# description: External resource callbacks that call themselves recursively
+# group: [table_function]
+
+statement ok
+CREATE MACRO d(h) AS TABLE FROM destroy_external_resource('d', 1);
+
+statement error
+FROM destroy_external_resource('d', 1);
+----
+External resource callbacks are nested too deeply
+
+statement ok
+CREATE MACRO rk(p) AS TABLE SELECT handle FROM create_external_resource('t2');
+
+statement ok
+CREATE MACRO st(h) AS TABLE SELECT 'ready' AS state, MAP {'uri': ':memory:'} AS result;
+
+statement ok
+FROM register_external_resource_type('t2', kind := 'x', create_function := 'rk', status_function := 'st');
+
+statement error
+FROM create_external_resource('t2');
+----
+External resource callbacks are nested too deeply
+
+# callbacks that do not recurse still work
+statement ok
+CREATE MACRO ok_deleter(h) AS TABLE SELECT true AS success;
+
+statement ok
+FROM destroy_external_resource('ok_deleter', 1);
+
+query I
+SELECT 42;
+----
+42
+
+# the deadline of the calling query bounds the callbacks
+statement ok
+CREATE MACRO slow_deleter(h) AS TABLE SELECT sum(i) AS s FROM range(100000000000) t(i);
+
+statement ok
+SET max_execution_time=500;
+
+statement error
+FROM destroy_external_resource('slow_deleter', 1);
+----
+maximum execution time
+
+statement ok
+RESET max_execution_time;

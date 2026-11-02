@@ -72,4 +72,4 @@ CREATE SCHEMA does_not_exist.child;
 statement error
 CREATE SCHEMA s1.missing.grandchild;
 ----
-<REGEX>:.*parent schema "missing" does not exist.*
+<REGEX>:.*Schema with name missing does not exist.*

@@ -7,6 +7,21 @@
 
 using namespace duckdb;
 
+TEST_CASE("Query appender parses with connection settings", "[appender]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("CREATE TABLE result(value DOUBLE)"));
+	REQUIRE_NO_FAIL(con.Query("SET integer_division = true"));
+
+	duckdb::vector<LogicalType> types {LogicalType::INTEGER};
+	duckdb::vector<Identifier> names {"value"};
+	QueryAppender appender(con, "INSERT INTO result SELECT value / 2 FROM appended_data", types, names);
+	appender.AppendRow(3);
+	appender.Flush();
+	auto result = con.Query("SELECT value FROM result");
+	REQUIRE(CHECK_COLUMN(result, 0, {1.0}));
+}
+
 TEST_CASE("Test UPSERT through the query appender", "[appender]") {
 	duckdb::unique_ptr<QueryResult> result;
 	DuckDB db(nullptr);

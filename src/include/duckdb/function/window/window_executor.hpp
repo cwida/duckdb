@@ -53,6 +53,9 @@ class WindowExecutor {
 public:
 	using CollectionPtr = optional_ptr<WindowCollection>;
 
+	static unique_ptr<WindowExecutor> Factory(BoundWindowExpression &wexpr, ClientContext &client,
+	                                          WindowSharedExpressions &shared);
+
 	WindowExecutor(BoundWindowExpression &wexpr, WindowSharedExpressions &shared);
 	virtual ~WindowExecutor() {
 	}

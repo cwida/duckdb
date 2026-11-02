@@ -87,11 +87,19 @@ void FindGetsAndProjections(LogicalOperator &op, Analyses &analyses, Projections
 	}
 }
 
+// A column binding into a GET is an index into its column ids, not a column id
+// itself. Virtual columns (e.g. "filename") have no entry in returned_types, so
+// nothing can be pushed into them.
+static bool IsRealGetColumn(const LogicalGet &get, ProjectionIndex column_index) {
+	const auto &column_ids = get.GetColumnIds();
+	return column_index < column_ids.size() && !column_ids[column_index].IsVirtualColumn();
+}
+
 optional<GetBinding> Resolve(ColumnBinding binding, Analyses &analyses, const Projections &projections) {
-	if (IsVirtualColumn(binding.column_index)) {
-		return nullopt;
-	}
 	if (const auto it = analyses.find(binding.table_index); it != analyses.end()) {
+		if (!IsRealGetColumn(it->second.get, binding.column_index)) {
+			return nullopt;
+		}
 		return {{it->second, binding.column_index, nullptr, binding.column_index}};
 	}
 
@@ -106,10 +114,10 @@ optional<GetBinding> Resolve(ColumnBinding binding, Analyses &analyses, const Pr
 		return nullopt;
 	}
 	const ColumnBinding get_binding = inner->Cast<BoundColumnRefExpression>().Binding();
-	if (IsVirtualColumn(get_binding.column_index)) {
-		return nullopt;
-	}
 	if (const auto it = analyses.find(get_binding.table_index); it != analyses.end()) {
+		if (!IsRealGetColumn(it->second.get, get_binding.column_index)) {
+			return nullopt;
+		}
 		return {{it->second, get_binding.column_index, &projection, binding.column_index}};
 	}
 	return nullopt;

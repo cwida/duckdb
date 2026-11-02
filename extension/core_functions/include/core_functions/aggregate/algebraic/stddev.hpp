@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "duckdb/common/operator/add.hpp"
 #include "duckdb/function/aggregate_function.hpp"
 #include <complex>
 #include <cmath>
@@ -57,8 +58,10 @@ struct STDDevBaseOperation {
 		if (target.count == 0) {
 			target = source;
 		} else if (source.count > 0) {
-			const auto count = target.count + source.count;
-			D_ASSERT(count >= target.count); // This is a check that we are not overflowing
+			uint64_t count;
+			if (!TryAddOperator::Operation(target.count, source.count, count)) {
+				OutOfRangeException::Throw("Overflow in aggregate state combine");
+			}
 			const double target_count = static_cast<double>(target.count);
 			const double source_count = static_cast<double>(source.count);
 			const double total_count = static_cast<double>(count);

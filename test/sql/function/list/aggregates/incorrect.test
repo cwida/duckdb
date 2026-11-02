@@ -98,9 +98,11 @@ statement error
 SELECT list_aggr([1, 2, NULL], 'regr_avgx');
 ----
 
-statement error
+# the quantile of reservoir_quantile defaults to the median
+query I
 SELECT list_aggr([1, 2, NULL], 'reservoir_quantile');
 ----
+1
 
 statement error
 SELECT list_aggr([1, 2, NULL], 'approx_quantile');

@@ -734,6 +734,39 @@ def generate_member_const_children_appends(member, expr_var):
     return []
 
 
+# The pattern expressions (MATCH_RECOGNIZE) all share ExpressionClass::PATTERN, so they cannot be
+# expressed as one case per class like every other expression - emit their nested switch directly.
+def _pattern_children_case(deref):
+    star = '*' if deref else ''
+    return [
+        '\tcase ExpressionClass::PATTERN: {',
+        '\t\tswitch (GetExpressionType()) {',
+        '\t\tcase ExpressionType::ALTERNATION: {',
+        '\t\t\tauto &cast_expr = Cast<AlternationExpression>();',
+        f'\t\t\tresult.Append({star}cast_expr.child_left);',
+        f'\t\t\tresult.Append({star}cast_expr.child_right);',
+        '\t\t\tbreak;',
+        '\t\t}',
+        '\t\tcase ExpressionType::CONCATENATION:',
+        '\t\t\tfor (auto &child : Cast<ConcatenationExpression>().children) {',
+        f'\t\t\t\tresult.Append({star}child);',
+        '\t\t\t}',
+        '\t\t\tbreak;',
+        '\t\tcase ExpressionType::QUANTIFIER:',
+        f'\t\t\tresult.Append({star}Cast<QuantifiedExpression>().child);',
+        '\t\t\tbreak;',
+        '\t\tcase ExpressionType::ANCHOR:',
+        '\t\t\t// an anchor takes no row and has nothing under it',
+        '\t\t\tbreak;',
+        '\t\tdefault:',
+        '\t\t\tthrow NotImplementedException("Unimplemented pattern expression type %s",',
+        '\t\t\t                              ExpressionTypeToString(GetExpressionType()));',
+        '\t\t}',
+        '\t\tbreak;',
+        '\t}',
+    ]
+
+
 def _generate_base_children_switch(entries, base_functions, sig, result_type, member_appends_fn):
     lines = [sig, f'\t{result_type} result;', '\tswitch (GetExpressionClass()) {']
     no_child_enums = []
@@ -756,6 +789,7 @@ def _generate_base_children_switch(entries, base_functions, sig, result_type, me
             lines.extend(member_appends_fn(member, 'cast_expr'))
         lines.append('\t\tbreak;')
         lines.append('\t}')
+    lines.extend(_pattern_children_case(result_type == 'ConstChildrenView'))
     for enum_val in no_child_enums:
         lines.append(f'\tcase ExpressionClass::{enum_val}:')
     lines.append('\t\t// these node types have no children')
@@ -803,6 +837,12 @@ def emit(output_lines, block, first_ref):
 def main():
     with open(JSON_PATH, 'r') as f:
         entries = json.load(f)
+
+    # An entry that both hands off its switch case and writes its own class code is a dispatcher rather than a
+    # concrete expression - it has no members to generate these methods from
+    entries = [
+        entry for entry in entries if not (entry.get('custom_implementation') and entry.get('custom_switch_code'))
+    ]
 
     # Collect base (parent) functions for inheritance
     base_functions = []

@@ -18,14 +18,14 @@ endloop
 statement ok
 CREATE TABLE all_types AS FROM test_all_types();
 
-foreach small_type utinyint usmallint
+foreach small_type utinyint usmallint tinyint smallint
 
 statement ok
 SELECT bitstring_agg("{small_type}") FROM all_types;
 
 endloop
 
-foreach type tinyint smallint int uint ubigint bigint hugeint
+foreach type int uint ubigint bigint hugeint
 
 statement error
 SELECT bitstring_agg("{type}") FROM all_types;

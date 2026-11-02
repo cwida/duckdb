@@ -160,7 +160,14 @@
       {
         "id": 402,
         "name": "add_not_null",
-        "type": "bool"
+        "type": "bool",
+        "property": "add_column_constraints.add_not_null"
+      },
+      {
+        "id": 403,
+        "name": "add_unique",
+        "type": "bool",
+        "property": "add_column_constraints.add_unique"
       }
     ],
     "constructor": [
@@ -240,11 +247,18 @@
     "class": "ChangeColumnTypeInfo",
     "base": "AlterTableInfo",
     "enum": "ALTER_COLUMN_TYPE",
+    "finalize_deserialization": [
+      "if (result->column_path.empty()) {",
+      "\tresult->column_path.push_back(std::move(column_name));",
+      "}"
+    ],
     "members": [
       {
         "id": 400,
         "name": "column_name",
-        "type": "Identifier"
+        "type": "Identifier",
+        "serialize_property": "column_path[0]",
+        "deserialize_skip_assign": true
       },
       {
         "id": 401,
@@ -255,6 +269,13 @@
         "id": 402,
         "name": "expression",
         "type": "ParsedExpression*"
+      },
+      {
+        "id": 403,
+        "name": "column_path",
+        "type": "vector<Identifier>",
+        "serialize_property": "column_path.size() > 1 ? column_path : vector<Identifier>()",
+        "default": "vector<Identifier>()"
       }
     ]
   },
@@ -262,16 +283,30 @@
     "class": "SetDefaultInfo",
     "base": "AlterTableInfo",
     "enum": "SET_DEFAULT",
+    "finalize_deserialization": [
+      "if (result->column_path.empty()) {",
+      "\tresult->column_path.push_back(std::move(column_name));",
+      "}"
+    ],
     "members": [
       {
         "id": 400,
         "name": "column_name",
-        "type": "Identifier"
+        "type": "Identifier",
+        "serialize_property": "column_path[0]",
+        "deserialize_skip_assign": true
       },
       {
         "id": 401,
         "name": "expression",
         "type": "ParsedExpression*"
+      },
+      {
+        "id": 402,
+        "name": "column_path",
+        "type": "vector<Identifier>",
+        "serialize_property": "column_path.size() > 1 ? column_path : vector<Identifier>()",
+        "default": "vector<Identifier>()"
       }
     ]
   },
@@ -317,11 +352,25 @@
     "class": "SetNotNullInfo",
     "base": "AlterTableInfo",
     "enum": "SET_NOT_NULL",
+    "finalize_deserialization": [
+      "if (result->column_path.empty()) {",
+      "\tresult->column_path.push_back(std::move(column_name));",
+      "}"
+    ],
     "members": [
       {
         "id": 400,
         "name": "column_name",
-        "type": "Identifier"
+        "type": "Identifier",
+        "serialize_property": "column_path[0]",
+        "deserialize_skip_assign": true
+      },
+      {
+        "id": 401,
+        "name": "column_path",
+        "type": "vector<Identifier>",
+        "serialize_property": "column_path.size() > 1 ? column_path : vector<Identifier>()",
+        "default": "vector<Identifier>()"
       }
     ]
   },
@@ -329,11 +378,25 @@
     "class": "DropNotNullInfo",
     "base": "AlterTableInfo",
     "enum": "DROP_NOT_NULL",
+    "finalize_deserialization": [
+      "if (result->column_path.empty()) {",
+      "\tresult->column_path.push_back(std::move(column_name));",
+      "}"
+    ],
     "members": [
       {
         "id": 400,
         "name": "column_name",
-        "type": "Identifier"
+        "type": "Identifier",
+        "serialize_property": "column_path[0]",
+        "deserialize_skip_assign": true
+      },
+      {
+        "id": 401,
+        "name": "column_path",
+        "type": "vector<Identifier>",
+        "serialize_property": "column_path.size() > 1 ? column_path : vector<Identifier>()",
+        "default": "vector<Identifier>()"
       }
     ]
   },
@@ -451,6 +514,46 @@
         "id": 400,
         "name": "new_name",
         "type": "Identifier"
+      }
+    ]
+  },
+  {
+    "class": "AlterSchemaInfo",
+    "base": "AlterInfo",
+    "enum": "ALTER_SCHEMA",
+    "class_type": "alter_schema_type",
+    "includes": [
+      "duckdb/parser/parsed_data/alter_schema_info.hpp"
+    ],
+    "members": [
+      {
+        "id": 300,
+        "name": "alter_schema_type",
+        "type": "AlterSchemaType"
+      }
+    ]
+  },
+  {
+    "class": "SetSchemaOptionsInfo",
+    "base": "AlterSchemaInfo",
+    "enum": "SET_SCHEMA_OPTIONS",
+    "members": [
+      {
+        "id": 400,
+        "name": "options",
+        "type": "case_insensitive_map_t<ParsedExpression*>"
+      }
+    ]
+  },
+  {
+    "class": "ResetSchemaOptionsInfo",
+    "base": "AlterSchemaInfo",
+    "enum": "RESET_SCHEMA_OPTIONS",
+    "members": [
+      {
+        "id": 400,
+        "name": "options",
+        "type": "identifier_set_t"
       }
     ]
   },

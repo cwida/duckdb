@@ -1,0 +1,33 @@
+# name: test/sql/window/test_window_segment_tree_error.test
+# description: An aggregate that throws while the segment tree is built in parallel fails the query
+# group: [window]
+
+statement ok
+SET threads=8;
+
+loop i 0 5
+
+statement error
+SELECT max(x) FROM (
+  SELECT sum(CASE WHEN i IN (5, 6) THEN 170141183460469231731687303715884105727::HUGEINT ELSE 0 END)
+         OVER (ORDER BY i ROWS BETWEEN 100 PRECEDING AND CURRENT ROW) x
+  FROM range(100000) r(i));
+----
+Overflow in HUGEINT addition
+
+statement error
+SELECT max(x) FROM (
+  SELECT avg(CASE WHEN i IN (5, 6) THEN INTERVAL '178000000 years' ELSE INTERVAL 0 days END)
+         OVER (ORDER BY i ROWS BETWEEN 100 PRECEDING AND CURRENT ROW) x
+  FROM range(100000) r(i));
+----
+Overflow
+
+endloop
+
+query I
+SELECT max(x) FROM (
+  SELECT sum(i) OVER (ORDER BY i ROWS BETWEEN 100 PRECEDING AND CURRENT ROW) x
+  FROM range(100000) r(i));
+----
+10094849

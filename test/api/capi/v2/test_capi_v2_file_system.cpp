@@ -1,5 +1,6 @@
 #include "test_capi_v2.hpp"
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -14,7 +15,7 @@ namespace {
 
 duckdb_v2_file_system_handle FsOf(duckdb_v2_connection_handle conn) {
 	duckdb_v2_file_system_handle fs = nullptr;
-	REQUIRE(duckdb_v2_file_system_get_from_connection(conn, &fs, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_connection_get_file_system(conn, &fs, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(fs != nullptr);
 	return fs;
 }
@@ -35,7 +36,8 @@ duckdb_v2_file_handle FsOpen(duckdb_v2_file_system_handle fs, const std::string 
                              const std::vector<DUCKDB_V2_FILE_FLAG> &flags) {
 	auto options = FsOptions(fs, flags);
 	duckdb_v2_file_handle handle = nullptr;
-	auto rc = duckdb_v2_file_system_open(fs, Convert(path), options, &handle, nullptr);
+	auto file_path_str = Convert(path);
+	auto rc = duckdb_v2_file_system_open(fs, &file_path_str, options, &handle, nullptr);
 	duckdb_v2_file_open_options_destroy(&options);
 	REQUIRE(rc == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(handle != nullptr);
@@ -46,7 +48,8 @@ duckdb_v2_file_handle FsOpen(duckdb_v2_file_system_handle fs, const std::string 
 DUCKDB_V2_ERROR FsTryOpen(duckdb_v2_file_system_handle fs, const std::string &path,
                           const std::vector<DUCKDB_V2_FILE_FLAG> &flags, duckdb_v2_file_handle *out) {
 	auto options = FsOptions(fs, flags);
-	auto rc = duckdb_v2_file_system_open(fs, Convert(path), options, out, nullptr);
+	auto file_path_str = Convert(path);
+	auto rc = duckdb_v2_file_system_open(fs, &file_path_str, options, out, nullptr);
 	duckdb_v2_file_open_options_destroy(&options);
 	return rc;
 }
@@ -111,15 +114,28 @@ TEST_CASE("V2 file system: write, read back, and seek", "[capi_v2][file_system]"
 	duckdb_v2_file_destroy(&handle);
 }
 
-TEST_CASE("V2 file system: borrowed from a context or a connection", "[capi_v2][file_system]") {
+TEST_CASE("V2 file system: borrowed from an instance or a connection", "[capi_v2][file_system]") {
 	EnvFixture fx;
 	duckdb_v2_file_system_handle from_conn = nullptr;
-	REQUIRE(duckdb_v2_file_system_get_from_connection(fx.conn, &from_conn, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_connection_get_file_system(fx.conn, &from_conn, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(from_conn != nullptr);
 	// Borrowed: there is no destroy, and asking twice gives the same file system.
 	duckdb_v2_file_system_handle again = nullptr;
-	REQUIRE(duckdb_v2_file_system_get_from_connection(fx.conn, &again, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_connection_get_file_system(fx.conn, &again, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(again == from_conn);
+
+	// The instance has a file system of its own, which opens files just the same.
+	duckdb_v2_file_system_handle from_instance = nullptr;
+	REQUIRE(duckdb_v2_instance_get_file_system(fx.instance, &from_instance, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(from_instance != nullptr);
+	REQUIRE(from_instance != from_conn);
+	auto path = duckdb::TestCreatePath("v2_fs_instance.txt");
+	auto options = FsOptions(from_instance, {DUCKDB_V2_FILE_FLAG_WRITE, DUCKDB_V2_FILE_FLAG_CREATE_NEW});
+	auto path_str = Convert(path);
+	duckdb_v2_file_handle handle = nullptr;
+	REQUIRE(duckdb_v2_file_system_open(from_instance, &path_str, options, &handle, nullptr) == DUCKDB_V2_ERROR_NONE);
+	duckdb_v2_file_destroy(&handle);
+	duckdb_v2_file_open_options_destroy(&options);
 }
 
 TEST_CASE("V2 file system: CREATE opens an existing file as it is", "[capi_v2][file_system]") {
@@ -226,7 +242,8 @@ TEST_CASE("V2 file system: open refusals", "[capi_v2][file_system]") {
 	auto path = duckdb::TestCreatePath("v2_fs_flags.bin");
 	duckdb_v2_file_open_options_handle empty = nullptr;
 	REQUIRE(duckdb_v2_file_open_options_create(fs, &empty, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_file_system_open(fs, Convert(path), empty, &handle, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	auto file_path_str = Convert(path);
+	REQUIRE(duckdb_v2_file_system_open(fs, &file_path_str, empty, &handle, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(handle == nullptr);
 	duckdb_v2_file_open_options_destroy(&empty);
 }
@@ -255,17 +272,19 @@ TEST_CASE("V2 file system: null arguments and destroy null-safety", "[capi_v2][f
 	idx_t count = 0;
 	char buffer[4] = {0};
 
-	REQUIRE(duckdb_v2_file_system_get_from_connection(nullptr, &out_fs, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(duckdb_v2_file_system_get_from_connection(fx.conn, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(duckdb_v2_file_system_get_from_context(nullptr, &out_fs, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_context_get_file_system(nullptr, &out_fs, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_connection_get_file_system(nullptr, &out_fs, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_instance_get_file_system(nullptr, &out_fs, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_connection_get_file_system(fx.conn, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	duckdb_v2_file_open_options_handle options = nullptr;
 	REQUIRE(duckdb_v2_file_open_options_create(fs, &options, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_file_open_options_set_flag(options, DUCKDB_V2_FILE_FLAG_READ, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_file_system_open(nullptr, Convert(path), options, &out_handle, nullptr) ==
+	auto file_path_str = Convert(path);
+	REQUIRE(duckdb_v2_file_system_open(nullptr, &file_path_str, options, &out_handle, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(duckdb_v2_file_system_open(fs, Convert(path), nullptr, &out_handle, nullptr) ==
+	REQUIRE(duckdb_v2_file_system_open(fs, &file_path_str, nullptr, &out_handle, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(duckdb_v2_file_system_open(fs, Convert(path), options, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_file_system_open(fs, &file_path_str, options, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	duckdb_v2_file_open_options_destroy(&options);
 
 	REQUIRE(duckdb_v2_file_read(nullptr, buffer, 4, &count, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
@@ -356,28 +375,29 @@ TEST_CASE("V2 file system: open options carry flags and values", "[capi_v2][file
 	REQUIRE(duckdb_v2_file_open_options_set_flag(options, DUCKDB_V2_FILE_FLAG_WRITE, nullptr) == DUCKDB_V2_ERROR_NONE);
 
 	// Values a file system does not recognise are carried and ignored rather than rejected.
-	auto size = MakeInt64Value(fx.conn, 4);
-	REQUIRE(duckdb_v2_file_open_options_set_value(options, Convert("file_size"), size, nullptr) ==
-	        DUCKDB_V2_ERROR_NONE);
+	auto size = MakeInt64Value(fx.factory, 4);
+	auto name_str = Convert("file_size");
+	REQUIRE(duckdb_v2_file_open_options_set_value(options, &name_str, size, nullptr) == DUCKDB_V2_ERROR_NONE);
 	// Copied at the call, so the value can go immediately.
 	duckdb_v2_value_destroy(&size);
-	auto unknown = MakeVarcharValue(fx.conn, "nobody-reads-this");
-	REQUIRE(duckdb_v2_file_open_options_set_value(options, Convert("made_up_option"), unknown, nullptr) ==
-	        DUCKDB_V2_ERROR_NONE);
+	auto unknown = MakeVarcharValue(fx.factory, "nobody-reads-this");
+	auto name_str2 = Convert("made_up_option");
+	REQUIRE(duckdb_v2_file_open_options_set_value(options, &name_str2, unknown, nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_value_destroy(&unknown);
 
 	duckdb_v2_file_handle handle = nullptr;
-	REQUIRE(duckdb_v2_file_system_open(fs, Convert(path), options, &handle, nullptr) == DUCKDB_V2_ERROR_NONE);
+	auto file_path_str = Convert(path);
+	REQUIRE(duckdb_v2_file_system_open(fs, &file_path_str, options, &handle, nullptr) == DUCKDB_V2_ERROR_NONE);
 	FsWrite(handle, "data");
 	duckdb_v2_file_destroy(&handle);
 
 	// One options object opens as many files as you like, and setting a name again replaces it.
-	auto again = MakeInt64Value(fx.conn, 8);
-	REQUIRE(duckdb_v2_file_open_options_set_value(options, Convert("file_size"), again, nullptr) ==
-	        DUCKDB_V2_ERROR_NONE);
+	auto again = MakeInt64Value(fx.factory, 8);
+	REQUIRE(duckdb_v2_file_open_options_set_value(options, &name_str, again, nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_value_destroy(&again);
 	auto second = duckdb::TestCreatePath("v2_fs_options_second.bin");
-	REQUIRE(duckdb_v2_file_system_open(fs, Convert(second), options, &handle, nullptr) == DUCKDB_V2_ERROR_NONE);
+	auto file_path_str2 = Convert(second);
+	REQUIRE(duckdb_v2_file_system_open(fs, &file_path_str2, options, &handle, nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_file_destroy(&handle);
 
 	// Destroying the options does not affect files already opened with them.
@@ -396,7 +416,7 @@ TEST_CASE("V2 file system: open options null arguments", "[capi_v2][file_system]
 	auto fs = FsOf(fx.conn);
 	duckdb_v2_file_open_options_handle options = nullptr;
 	REQUIRE(duckdb_v2_file_open_options_create(fs, &options, nullptr) == DUCKDB_V2_ERROR_NONE);
-	auto value = MakeInt64Value(fx.conn, 1);
+	auto value = MakeInt64Value(fx.factory, 1);
 
 	REQUIRE(duckdb_v2_file_open_options_create(nullptr, &options, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_file_open_options_create(fs, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
@@ -407,16 +427,145 @@ TEST_CASE("V2 file system: open options null arguments", "[capi_v2][file_system]
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_file_open_options_set_flag(options, static_cast<DUCKDB_V2_FILE_FLAG>(99), nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(duckdb_v2_file_open_options_set_value(nullptr, Convert("k"), value, nullptr) ==
-	        DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(duckdb_v2_file_open_options_set_value(options, Convert("k"), nullptr, nullptr) ==
+	auto name_str = Convert("k");
+	REQUIRE(duckdb_v2_file_open_options_set_value(nullptr, &name_str, value, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_file_open_options_set_value(options, &name_str, nullptr, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
 	// An empty name is not a usable key.
-	REQUIRE(duckdb_v2_file_open_options_set_value(options, Convert(""), value, nullptr) ==
+	auto name_str2 = Convert("");
+	REQUIRE(duckdb_v2_file_open_options_set_value(options, &name_str2, value, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
 
 	duckdb_v2_value_destroy(&value);
 	duckdb_v2_file_open_options_destroy(&options);
+}
+
+TEST_CASE("V2 file system: path queries", "[capi_v2][file_system]") {
+	EnvFixture fx;
+	auto fs = FsOf(fx.conn);
+
+	auto exists = [&](const std::string &path) {
+		auto path_str = Convert(path);
+		bool result = false;
+		REQUIRE(duckdb_v2_file_system_path_exists(fs, &path_str, &result, nullptr) == DUCKDB_V2_ERROR_NONE);
+		return result;
+	};
+	auto is_remote = [&](const std::string &path) {
+		auto path_str = Convert(path);
+		bool result = false;
+		REQUIRE(duckdb_v2_file_system_path_is_remote(fs, &path_str, &result, nullptr) == DUCKDB_V2_ERROR_NONE);
+		return result;
+	};
+	auto expand = [&](const std::string &path) {
+		auto path_str = Convert(path);
+		TextSinkTarget result;
+		REQUIRE(duckdb_v2_file_system_path_expand(fs, &path_str, AppendToString, &result, nullptr) ==
+		        DUCKDB_V2_ERROR_NONE);
+		REQUIRE(result.calls == 1);
+		return result.text;
+	};
+
+	auto path = duckdb::TestCreatePath("v2_fs_path_exists.bin");
+	REQUIRE_FALSE(exists(path));
+	auto handle = FsOpen(fs, path, {DUCKDB_V2_FILE_FLAG_WRITE, DUCKDB_V2_FILE_FLAG_CREATE_NEW});
+	duckdb_v2_file_destroy(&handle);
+	REQUIRE(exists(path));
+	// A directory is not a file.
+	REQUIRE_FALSE(exists(duckdb::TestDirectoryPath()));
+
+	REQUIRE(is_remote("s3://bucket/key.xlsx"));
+	REQUIRE(is_remote("https://example.com/file.xlsx"));
+	REQUIRE_FALSE(is_remote(path));
+	REQUIRE_FALSE(is_remote("relative/file.xlsx"));
+
+	// A leading ~ becomes the configured home directory; anything else is handed back as it is.
+	duckdb_v2_result_handle result = nullptr;
+	REQUIRE(Query(fx.conn, "SET home_directory = '/v2_home'", &result) == DUCKDB_V2_ERROR_NONE);
+	DrainRowCount(result);
+	duckdb_v2_result_destroy(&result);
+	REQUIRE(expand("~/book.xlsx") == "/v2_home/book.xlsx");
+	REQUIRE(expand("/abs/book.xlsx") == "/abs/book.xlsx");
+
+	auto path_str = Convert(path);
+	bool out = false;
+	REQUIRE(duckdb_v2_file_system_path_exists(nullptr, &path_str, &out, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_file_system_path_is_remote(fs, &path_str, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_file_system_path_expand(fs, &path_str, nullptr, nullptr, nullptr) ==
+	        DUCKDB_V2_ERROR_INPUT_INVALID);
+}
+
+namespace {
+
+void FsCollectGlob(const duckdb_v2_str *path, void *user_data, duckdb_v2_error_info_handle *) {
+	static_cast<std::vector<std::string> *>(user_data)->emplace_back(path->ptr, path->len);
+}
+
+void FsFailGlob(const duckdb_v2_str *, void *, duckdb_v2_error_info_handle *err) {
+	auto code = DUCKDB_V2_ERROR_IO_GENERAL;
+	duckdb_v2_error_info_set_code(*err, code);
+}
+
+std::vector<std::string> FsGlob(duckdb_v2_file_system_handle fs, const std::string &pattern) {
+	std::vector<std::string> matches;
+	auto pattern_str = Convert(pattern);
+	REQUIRE(duckdb_v2_file_system_path_glob(fs, &pattern_str, FsCollectGlob, &matches, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
+	std::sort(matches.begin(), matches.end());
+	return matches;
+}
+
+} // namespace
+
+TEST_CASE("V2 file system: glob, move and remove", "[capi_v2][file_system]") {
+	EnvFixture fx;
+	auto fs = FsOf(fx.conn);
+	auto first = duckdb::TestCreatePath("v2_fs_glob_a.globtest");
+	auto second = duckdb::TestCreatePath("v2_fs_glob_b.globtest");
+	for (auto &path : {first, second}) {
+		auto handle = FsOpen(fs, path, {DUCKDB_V2_FILE_FLAG_WRITE, DUCKDB_V2_FILE_FLAG_CREATE_NEW});
+		FsWrite(handle, "x");
+		duckdb_v2_file_destroy(&handle);
+	}
+
+	auto pattern = duckdb::TestCreatePath("v2_fs_glob_*.globtest");
+	auto matches = FsGlob(fs, pattern);
+	REQUIRE(matches.size() == 2);
+	REQUIRE(duckdb::StringUtil::EndsWith(matches[0], "v2_fs_glob_a.globtest"));
+	REQUIRE(duckdb::StringUtil::EndsWith(matches[1], "v2_fs_glob_b.globtest"));
+	REQUIRE(FsGlob(fs, duckdb::TestCreatePath("v2_fs_glob_none_*.globtest")).empty());
+	// A callback error stops the glob.
+	auto pattern_str = Convert(pattern);
+	REQUIRE(duckdb_v2_file_system_path_glob(fs, &pattern_str, FsFailGlob, nullptr, nullptr) ==
+	        DUCKDB_V2_ERROR_IO_GENERAL);
+
+	auto moved = duckdb::TestCreatePath("v2_fs_glob_moved.globtest");
+	auto first_str = Convert(first);
+	auto moved_str = Convert(moved);
+	REQUIRE(duckdb_v2_file_system_path_move(fs, &first_str, &moved_str, nullptr) == DUCKDB_V2_ERROR_NONE);
+	bool exists = true;
+	REQUIRE(duckdb_v2_file_system_path_exists(fs, &first_str, &exists, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE_FALSE(exists);
+	REQUIRE(duckdb_v2_file_system_path_exists(fs, &moved_str, &exists, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(exists);
+	REQUIRE(duckdb_v2_file_system_path_move(fs, &first_str, &moved_str, nullptr) != DUCKDB_V2_ERROR_NONE);
+
+	bool removed = false;
+	REQUIRE(duckdb_v2_file_system_path_remove(fs, &moved_str, &removed, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(removed);
+	// Nothing to remove is not an error.
+	REQUIRE(duckdb_v2_file_system_path_remove(fs, &moved_str, &removed, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE_FALSE(removed);
+	auto second_str = Convert(second);
+	REQUIRE(duckdb_v2_file_system_path_remove(fs, &second_str, nullptr, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(FsGlob(fs, pattern).empty());
+
+	// Null arguments.
+	REQUIRE(duckdb_v2_file_system_path_glob(fs, nullptr, FsCollectGlob, nullptr, nullptr) ==
+	        DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_file_system_path_glob(fs, &pattern_str, nullptr, nullptr, nullptr) ==
+	        DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_file_system_path_move(fs, nullptr, &moved_str, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_file_system_path_remove(nullptr, &moved_str, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 }
 
 } // namespace test_capi_v2

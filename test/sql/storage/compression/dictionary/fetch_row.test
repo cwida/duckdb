@@ -17,14 +17,16 @@ statement ok
 INSERT INTO test (a, b)
 SELECT
 	x AS a,
-	CASE x % 5
+	CASE x % 7
 		WHEN 0 THEN 'aaaa'
 		WHEN 1 THEN 'bbbb'
 		WHEN 2 THEN 'cccc'
 		WHEN 3 THEN 'dddd'
 		WHEN 4 THEN NULL
+		WHEN 5 THEN ''
+		WHEN 6 THEN 'a string longer than twelve bytes'
 	END AS b
-FROM range(10_000) t(x);
+FROM range(10_003) t(x);
 
 statement ok
 CHECKPOINT
@@ -36,11 +38,48 @@ SELECT compression FROM pragma_storage_info('test') WHERE segment_type ILIKE 'VA
 ----
 Dictionary
 
+foreach force_fetch false true
+
+statement ok
+SET debug_force_fetch_row={force_fetch};
+
 query I
-select distinct b from test order by a % 5;
+select distinct b from test order by a % 7;
 ----
 aaaa
 bbbb
 cccc
 dddd
 NULL
+(empty)
+a string longer than twelve bytes
+
+# Read every row, including the final partial vector and bitpacking group.
+query TI
+SELECT b, count(*) FROM test GROUP BY b ORDER BY b NULLS LAST;
+----
+(empty)	1429
+a string longer than twelve bytes	1429
+aaaa	1429
+bbbb	1429
+cccc	1429
+dddd	1429
+NULL	1429
+
+# Check values around bitpacking-group and vector boundaries, and at the final row.
+query IT
+SELECT a, b FROM test WHERE a IN (0, 4, 5, 6, 31, 32, 33, 2047, 2048, 2049, 10002) ORDER BY a;
+----
+0	aaaa
+4	NULL
+5	(empty)
+6	a string longer than twelve bytes
+31	dddd
+32	NULL
+33	(empty)
+2047	dddd
+2048	NULL
+2049	(empty)
+10002	a string longer than twelve bytes
+
+endloop

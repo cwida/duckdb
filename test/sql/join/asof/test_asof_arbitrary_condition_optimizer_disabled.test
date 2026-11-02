@@ -1,0 +1,34 @@
+# name: test/sql/join/asof/test_asof_arbitrary_condition_optimizer_disabled.test
+# description: ASOF join with a non-comparison condition, planned with the optimizer disabled
+# group: [asof]
+
+# The optimizer caches cardinality estimates that hide the bug, so run with it disabled.
+statement ok
+SET debug_disable_optimizer=true;
+
+statement ok
+CREATE TABLE a_t AS SELECT (range % 3)::INTEGER AS k, ['sad', 'ok', 'happy'][1 + range % 3] AS m, range::INTEGER AS t FROM range(12);
+
+statement ok
+CREATE TABLE b_t AS SELECT (range % 3)::INTEGER AS k, range::INTEGER AS t FROM range(12);
+
+# The count queries only reach the bug while the join is planned as the loop join - pin that shape
+query II
+EXPLAIN SELECT count(*) FROM a_t ASOF JOIN b_t ON a_t.k = b_t.k AND a_t.t >= b_t.t AND a_t.m IN ('sad', 'ok', 'happy');
+----
+physical_plan	<REGEX>:.*Nested Loop Join.*Streaming Window.*
+
+query I
+SELECT count(*) FROM a_t ASOF JOIN b_t ON a_t.k = b_t.k AND a_t.t >= b_t.t AND a_t.m IN ('sad', 'ok', 'happy');
+----
+12
+
+query I
+SELECT count(*) FROM a_t ASOF LEFT JOIN b_t ON a_t.k = b_t.k AND a_t.t >= b_t.t AND a_t.m IN ('sad', 'ok', 'happy');
+----
+12
+
+query I
+SELECT count(*) FROM a_t ASOF JOIN b_t ON a_t.k = b_t.k AND a_t.t >= b_t.t AND a_t.m NOT IN ('sad', 'ok', 'happy');
+----
+0

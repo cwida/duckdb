@@ -11,6 +11,7 @@
 #include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
 #include "duckdb/common/vector/list_vector.hpp"
+#include "duckdb/common/vector/vector_iterator.hpp"
 #include "core_functions/aggregate/quantile_helpers.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
 #include "duckdb/common/operator/interpolate.hpp"
@@ -18,6 +19,8 @@
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/function/window/window_index_tree.hpp"
 #include <algorithm>
+#include <cmath>
+#include <limits>
 #include <stdlib.h>
 #include <utility>
 
@@ -50,20 +53,19 @@ struct QuantileCursor {
 	inline idx_t Seek(idx_t row_idx) {
 		if (!RowIsVisible(row_idx)) {
 			inputs.Seek(row_idx, scan, page);
-			data = FlatVector::GetData<INPUT_TYPE>(page.data[0]);
-			validity = &FlatVector::ValidityMutable(page.data[0]);
+			values = make_uniq<VectorIterator<INPUT_TYPE>>(page.data[0]);
 		}
 		return RowOffset(row_idx);
 	}
 
 	inline const INPUT_TYPE &operator[](idx_t row_idx) {
 		const auto offset = Seek(row_idx);
-		return data[offset];
+		return (*values)[offset].GetValueUnsafe();
 	}
 
 	inline bool RowIsValid(idx_t row_idx) {
 		const auto offset = Seek(row_idx);
-		return validity->RowIsValid(offset);
+		return (*values)[offset].IsValid();
 	}
 
 	inline bool CannotHaveNull() {
@@ -76,10 +78,8 @@ struct QuantileCursor {
 	ColumnDataScanState scan;
 	//! The data chunk paged into into
 	DataChunk page;
-	//! The data pointer
-	const INPUT_TYPE *data = nullptr;
-	//! The validity mask
-	const ValidityMask *validity = nullptr;
+	//! Cell access into the page, rebuilt per page load - scans can return constant and dictionary vectors
+	unique_ptr<VectorIterator<INPUT_TYPE>> values;
 	//! Paged chunks do not track this but it is really necessary for performance
 	bool cannot_have_null;
 };
@@ -239,10 +239,22 @@ struct QuantileInterpolator<true> {
 			floored = Cast::Operation<hugeint_t, idx_t>((scaled_n - scaled_q) / scaling);
 			break;
 		}
-		default:
+		default: {
+			//	The target is ceil(n * q) evaluated as if exactly, matching the DECIMAL path.
+			//	A binary double for a decimal fraction is slightly off, so when n * q is mathematically an
+			//	integer (n = 10, q = 0.9) the product lands a few ulps away from it and ceil() would
+			//	pick the next element. Worse, the outcome of floor(n - n * q) depended on whether the
+			//	compiler fused the multiply and subtract into an FMA, so different call sites of this
+			//	function disagreed. Snap to the nearest integer when the product is within a few ulps
+			//	of it; the result is then independent of contraction and of the rounding of q.
 			const auto scaled_q = double(n) * q.dbl;
-			floored = LossyNumericCast<idx_t>(floor(double(n) - scaled_q));
+			const auto nearest = std::round(scaled_q);
+			const auto tolerance = double(n) * 4 * std::numeric_limits<double>::epsilon();
+			const auto ceiled = (std::fabs(scaled_q - nearest) <= tolerance) ? nearest : std::ceil(scaled_q);
+			//	0 <= q <= 1, so 0 <= ceiled <= n
+			floored = n - LossyNumericCast<idx_t>(ceiled);
 			break;
+		}
 		}
 
 		return MaxValue<idx_t>(1, n - floored) - 1;
@@ -341,11 +353,11 @@ struct QuantileSortTree {
 		while (inputs.Scan(scan, sort)) {
 			const auto row_idx = scan.current_row_index;
 			if (filter_mask.CanHaveNull() || !partition.all_valid[0]) {
-				auto &key = sort.data[0];
-				auto &validity = FlatVector::ValidityMutable(key);
+				// scans can return constant and dictionary vectors - read their validity in place
+				auto validity = sort.data[0].Validity();
 				idx_t filtered = 0;
 				for (sel_t i = 0; i < sort.size(); ++i) {
-					if (filter_mask.RowIsValid(i + row_idx) && validity.RowIsValid(i)) {
+					if (filter_mask.RowIsValid(i + row_idx) && validity.IsValid(i)) {
 						filter_sel[filtered++] = i;
 					}
 				}
@@ -362,12 +374,12 @@ struct QuantileSortTree {
 	}
 
 	template <typename INPUT_TYPE, typename RESULT_TYPE, bool DISCRETE>
-	RESULT_TYPE WindowScalar(QuantileCursor<INPUT_TYPE> &data, const SubFrames &frames, const idx_t n, Vector &result,
-	                         const QuantileValue &q) {
+	RESULT_TYPE WindowScalar(ClientContext &context, QuantileCursor<INPUT_TYPE> &data, const SubFrames &frames,
+	                         const idx_t n, Vector &result, const QuantileValue &q) {
 		D_ASSERT(n > 0);
 
 		//	Thread safe and idempotent.
-		index_tree->Build();
+		index_tree->Build(context);
 
 		//	Find the interpolated indices within the frame
 		QuantileInterpolator<DISCRETE> interp(q, n, false);
@@ -384,12 +396,12 @@ struct QuantileSortTree {
 	}
 
 	template <typename INPUT_TYPE, typename CHILD_TYPE, bool DISCRETE>
-	void WindowList(QuantileCursor<INPUT_TYPE> &data, const SubFrames &frames, const idx_t n, Vector &list,
-	                const idx_t lidx, const QuantileBindData &bind_data) {
+	void WindowList(ClientContext &context, QuantileCursor<INPUT_TYPE> &data, const SubFrames &frames, const idx_t n,
+	                Vector &list, const idx_t lidx, const QuantileBindData &bind_data) {
 		D_ASSERT(n > 0);
 
 		//	Thread safe and idempotent.
-		index_tree->Build();
+		index_tree->Build(context);
 
 		// Result is a constant LIST<CHILD_TYPE> with a fixed length
 		auto ldata = FlatVector::GetDataMutable<list_entry_t>(list);

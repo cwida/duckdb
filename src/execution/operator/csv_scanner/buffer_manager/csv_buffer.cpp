@@ -80,17 +80,24 @@ void CSVBuffer::LoadRandomAccess(CSVFileHandle &file_handle) {
 
 shared_ptr<CSVBufferHandle> CSVBuffer::Pin(CSVFileHandle &file_handle, bool &has_seeked) {
 	lock_guard<mutex> guard(load_lock);
-	if (!IsInMemory()) {
-		// We have to reload it from disk
-		block = nullptr;
-		if (random_access) {
-			LoadRandomAccess(file_handle);
-		} else {
-			Reload(file_handle);
-			has_seeked = true;
+	while (true) {
+		if (!IsInMemory()) {
+			// We have to reload it from disk
+			block = nullptr;
+			if (random_access) {
+				LoadRandomAccess(file_handle);
+			} else {
+				Reload(file_handle);
+				has_seeked = true;
+			}
 		}
+		auto pinned = CreatePin();
+		if (pinned->handle.IsValid()) {
+			return pinned;
+		}
+		// the block is destroyable and was evicted between the in-memory check and the pin - reload it
+		block = nullptr;
 	}
-	return CreatePin();
 }
 
 bool CSVBuffer::TryPin(shared_ptr<CSVBufferHandle> &pinned) {

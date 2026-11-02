@@ -1,0 +1,297 @@
+# name: test/optimizer/remove_redundant_order_keys.test
+# description: ORDER BY keys that follow a unique prefix are removed (issue #24000)
+# group: [optimizer]
+
+statement ok
+CREATE TABLE t(id INTEGER PRIMARY KEY, payload VARCHAR, grp INTEGER);
+
+statement ok
+INSERT INTO t VALUES (3, 'c', 1), (1, 'a', 2), (2, NULL, 1), (5, 'a', NULL), (4, 'b', 2);
+
+# a primary key prefix erases the keys behind it, through the filter and the limit around it
+query II
+EXPLAIN SELECT id FROM t WHERE id + grp > 0 ORDER BY id, payload LIMIT 2;
+----
+physical_plan	<REGEX>:.*Order By: id ASC +│.*
+
+# the freed column is pruned by the later passes, so the pass has to run before them
+query II
+EXPLAIN SELECT id FROM t ORDER BY id, payload;
+----
+physical_plan	<!REGEX>:.*payload.*
+
+query I
+SELECT id FROM t ORDER BY id DESC, payload LIMIT 2 OFFSET 1;
+----
+4
+3
+
+query II
+SELECT id, payload FROM t ORDER BY id DESC NULLS FIRST, payload ASC NULLS LAST, grp DESC;
+----
+5	a
+4	b
+3	c
+2	NULL
+1	a
+
+# keys before the unique prefix stay
+query II
+EXPLAIN SELECT id FROM t ORDER BY payload, id, grp;
+----
+physical_plan	<REGEX>:.*Order By: [^\n]*id ASC +│.*
+
+query II
+SELECT payload, id FROM t ORDER BY payload NULLS FIRST, id DESC, grp;
+----
+NULL	2
+a	5
+a	1
+b	4
+c	3
+
+query II
+EXPLAIN 
+SELECT id, MAX(grp) OVER(ORDER BY payload, id, grp)
+FROM t
+----
+physical_plan	<REGEX>:.*ORDER BY payload ASC NULLS LAST, id ASC NULLS LAST[^,].*
+
+# an expression over the unique column is not the unique column
+query II
+EXPLAIN SELECT CAST(id AS BOOLEAN) AS b, payload FROM t ORDER BY b, payload;
+----
+physical_plan	<REGEX>:.*Order By: [^\n]*, [^\n]*│.*
+
+# a join duplicates the unique column
+query II
+EXPLAIN SELECT t.id FROM t JOIN t AS t2 ON t.grp = t2.grp ORDER BY t.id, t2.payload;
+----
+physical_plan	<REGEX>:.*Order By: [^\n]*, [^\n]*│.*
+
+# unique window partitions should eliminate the others
+query II
+EXPLAIN 
+SELECT t.id, MAX(payload) OVER(PARTITION BY id, grp ORDER BY payload)
+FROM t;
+----
+physical_plan	<REGEX>:.*PARTITION BY id ORDER BY.*
+
+# FD window partitions should eliminate the others
+query II
+EXPLAIN 
+SELECT t.id, MAX(payload) OVER(PARTITION BY grp, sqrt(grp) ORDER BY payload)
+FROM t;
+----
+physical_plan	<REGEX>:.*PARTITION BY grp ORDER BY.*
+
+# FD single ORDER BYs should be removed.
+query II
+EXPLAIN
+SELECT id, MIN(id) OVER(PARTITION BY payload, grp ORDER BY grp)
+FROM t;
+----
+physical_plan	<!REGEX>:.*ORDER BY.*
+
+query II
+EXPLAIN
+SELECT id, MIN(id) OVER(PARTITION BY payload, grp ORDER BY grp, id)
+FROM t;
+----
+physical_plan	<REGEX>:.*ORDER BY.*
+
+query II
+EXPLAIN
+SELECT id, MIN(id) OVER(ORDER BY grp)
+FROM t;
+----
+physical_plan	<REGEX>:.*ORDER BY.*
+
+query II
+EXPLAIN
+SELECT id, MIN(id) OVER(ORDER BY grp, sqrt(grp))
+FROM t;
+----
+physical_plan	<REGEX>:.*ORDER BY [^\n,]+[^,].*
+
+query II
+EXPLAIN
+SELECT id, MIN(id) OVER(ORDER BY grp, sqrt(grp), payload)
+FROM t;
+----
+physical_plan	<REGEX>:.*ORDER BY [^\n,]+, [^\n,]+[^,].*
+
+# UNIQUE only counts when it cannot hold NULLs, and only uncollated
+statement ok
+CREATE TABLE u(ukey INTEGER UNIQUE, skey VARCHAR UNIQUE NOT NULL, tiebreak INTEGER);
+
+statement ok
+INSERT INTO u VALUES (NULL, 'A', 2), (NULL, 'a', 1), (1, 'b', 3);
+
+query II
+EXPLAIN SELECT ukey FROM u ORDER BY ukey, tiebreak;
+----
+physical_plan	<REGEX>:.*Order By: [^\n]*, [^\n]*│.*
+
+query II
+EXPLAIN 
+SELECT ukey, MAX(skey) OVER(ORDER BY ukey, tiebreak)
+FROM u ;
+----
+physical_plan	<REGEX>:.*ORDER BY ukey ASC NULLS LAST, tiebreak ASC NULLS LAST.*
+
+query II
+EXPLAIN SELECT skey FROM u ORDER BY skey, tiebreak;
+----
+physical_plan	<REGEX>:.*Order By: skey ASC +│.*
+
+query II
+EXPLAIN 
+SELECT skey, MAX(ukey) OVER(ORDER BY skey, tiebreak)
+FROM u ;
+----
+physical_plan	<REGEX>:.*ORDER BY skey ASC NULLS LAST[^,].*
+
+query II
+EXPLAIN SELECT skey FROM u ORDER BY skey COLLATE NOCASE, tiebreak;
+----
+physical_plan	<REGEX>:.*Order By: [^\n]*, [^\n]*│.*
+
+query II
+EXPLAIN 
+SELECT ukey, MAX(skey) OVER(PARTITION BY ukey, tiebreak ORDER BY skey)
+FROM u;
+----
+physical_plan	<REGEX>:.*PARTITION BY [^\n]*, [^\n]*.*
+
+# every column of a composite key has to be in the prefix
+statement ok
+CREATE TABLE c(k1 INTEGER, k2 INTEGER, tiebreak INTEGER, payload VARCHAR, PRIMARY KEY (k1, k2));
+
+statement ok
+INSERT INTO c VALUES (1, 2, 1, 'A'), (1, 1, 2, 'a'), (2, 1, 3, 'b');
+
+query II
+EXPLAIN SELECT k1 FROM c ORDER BY k1, tiebreak;
+----
+physical_plan	<REGEX>:.*Order By: [^\n]*, [^\n]*│.*
+
+query II
+EXPLAIN SELECT k1 FROM c ORDER BY k2, k1, tiebreak;
+----
+physical_plan	<REGEX>:.*Order By: [^\n]*, k1 ASC +│.*
+
+query II
+EXPLAIN 
+SELECT k1, MAX(payload) OVER(ORDER BY k1, tiebreak)
+FROM c;
+----
+physical_plan	<REGEX>:.*ORDER BY [^\n]*, [^\n,]*[^,].*
+
+query II
+EXPLAIN 
+SELECT k1, MAX(payload) OVER(ORDER BY k2, k1, tiebreak)
+FROM c;
+----
+physical_plan	<REGEX>:.*ORDER BY [^\n]*, [^\n,]*[^,].*
+
+# every column of a composite key has to be in the partitioning
+query II
+EXPLAIN 
+SELECT payload, MAX(payload) OVER(PARTITION BY k1, tiebreak ORDER BY k2)
+FROM c;
+----
+physical_plan	<REGEX>:.*PARTITION BY [^\n]*, [^\n]*.*
+
+query II
+EXPLAIN 
+SELECT payload, MAX(payload) OVER(PARTITION BY k1, k2, tiebreak ORDER BY payload)
+FROM c;
+----
+physical_plan	<REGEX>:.*PARTITION BY [^\n]*, [^\n]* ORDER BY.*
+
+# a GROUP BY makes its groups unique
+query II
+EXPLAIN SELECT grp FROM t GROUP BY grp ORDER BY grp, count(*);
+----
+physical_plan	<REGEX>:.*Order By: grp ASC +│.*
+
+# and the freed aggregate is eliminated too
+query II
+EXPLAIN SELECT grp FROM t GROUP BY grp ORDER BY grp, count(*);
+----
+physical_plan	<!REGEX>:.*count_star.*
+
+# one grouping set is a GROUP BY, more than one is not
+statement ok
+SET disabled_optimizers = 'grouping_sets';
+
+query II
+EXPLAIN SELECT grp FROM t GROUP BY GROUPING SETS ((grp)) ORDER BY grp, count(*);
+----
+physical_plan	<REGEX>:.*Order By: grp ASC +│.*
+
+query II
+EXPLAIN SELECT grp FROM t GROUP BY GROUPING SETS ((grp), ()) ORDER BY grp, count(*);
+----
+physical_plan	<REGEX>:.*Order By: [^\n]*, [^\n]*│.*
+
+statement ok
+RESET disabled_optimizers;
+
+# DISTINCT ON makes its targets unique, unless a target is not a plain column
+query II
+EXPLAIN SELECT DISTINCT ON (grp) grp, id FROM t ORDER BY grp, id;
+----
+physical_plan	<REGEX>:.*Order By: grp ASC +│.*
+
+query II
+SELECT DISTINCT ON (grp) grp, id FROM t ORDER BY grp NULLS FIRST, id DESC;
+----
+NULL	5
+1	3
+2	4
+
+query II
+EXPLAIN SELECT DISTINCT ON (grp, payload COLLATE NOCASE) grp, payload, id FROM t ORDER BY grp, id;
+----
+physical_plan	<REGEX>:.*Order By: [^\n]*, [^\n]*│.*
+
+# Skip deferred constraints
+statement ok
+CREATE TABLE d(id INTEGER PRIMARY KEY DEFERRED, v VARCHAR);
+
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO d VALUES (1, 'B'),(1, 'A');
+
+query II
+EXPLAIN
+FROM d
+ORDER BY id, v;
+----
+physical_plan	<REGEX>:.*Order By:[^\n]*v.*
+
+query II
+FROM d
+ORDER BY id, v;
+----
+1	A
+1	B
+
+statement ok
+ROLLBACK;
+
+# disabled optimizer
+statement ok
+SET disabled_optimizers = 'redundant_order_keys';
+
+query II
+EXPLAIN SELECT id FROM t ORDER BY id, payload;
+----
+physical_plan	<REGEX>:.*Order By: [^\n]*, [^\n]*│.*
+
+statement ok
+RESET disabled_optimizers;

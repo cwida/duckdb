@@ -1,0 +1,265 @@
+# name: test/sql/parser/parsed_data_statement_roundtrip.test
+# description: Exercise Copy and ToString for parsed statement data
+# group: [parser]
+
+require no_force_storage
+
+foreach mode COPY_STATEMENT REPARSE_STATEMENT
+
+statement ok
+SET debug_verify_statement='{mode}'
+
+# Schema create and alter options
+statement error
+CREATE SCHEMA IF NOT EXISTS parsed_data_options WITH (location='somewhere', format='parquet')
+----
+WITH clause is not supported for schemas
+
+statement error
+CREATE OR REPLACE SCHEMA parsed_data_options WITH (location='somewhere')
+----
+WITH clause is not supported for schemas
+
+statement error
+CREATE TEMPORARY SCHEMA parsed_data_temporary
+----
+Temporary schemas are not supported
+
+statement error
+CREATE TABLE parsed_data_options_table(i INTEGER, j VARCHAR)
+PARTITIONED BY (i)
+SORTED BY (j)
+WITH (format='parquet', location='somewhere')
+----
+PARTITIONED BY is not supported for tables in a duckdb catalog
+
+statement ok
+CREATE SCHEMA IF NOT EXISTS parsed_data_schema
+
+statement error
+ALTER SCHEMA IF EXISTS parsed_data_schema SET (foo='bar', answer=42)
+----
+SET (<options>) is not supported for DuckDB schemas
+
+statement error
+ALTER SCHEMA IF EXISTS parsed_data_schema RESET (foo, answer)
+----
+RESET (<options>) is not supported for DuckDB schemas
+
+# Catalog and secret statements
+statement ok
+ATTACH OR REPLACE ':memory:' AS parsed_data_db (READ_ONLY false)
+
+statement ok
+ALTER DATABASE IF EXISTS missing_database SET ALIAS TO other_name
+
+statement error
+CONNECT LOCAL
+----
+CONNECT LOCAL is not yet implemented
+
+statement error
+CONNECT
+----
+CONNECT with no target is not yet implemented
+
+statement error
+CONNECT missing_connection
+----
+Database "missing_connection" is not attached
+
+statement error
+CONNECT 'missing connection' (foo 'bar')
+----
+Unrecognized option for attach "foo"
+
+statement ok
+CREATE OR REPLACE SECRET parsed_data_secret IN connection (
+    TYPE HTTP,
+    PROVIDER CONFIG,
+    SCOPE 'https://example.com/data/',
+    BEARER_TOKEN 'token'
+)
+
+statement error
+CREATE PERSISTENT SECRET parsed_data_persistent IN connection (TYPE HTTP)
+----
+Cannot create persistent secrets in a temporary secret storage
+
+statement ok
+DROP SECRET IF EXISTS parsed_data_secret FROM connection
+
+statement error
+CREATE EXTENSION REPOSITORY IF NOT EXISTS parsed_data_repo WITH PREFIX '{TEST_DIR}'
+----
+Failed to read the metadata file of the extension repository
+
+statement ok
+DROP EXTENSION REPOSITORY IF EXISTS parsed_data_repo
+
+# Trigger variants
+statement ok
+DROP TABLE IF EXISTS parsed_data_trigger_target
+
+statement ok
+DROP TABLE IF EXISTS parsed_data_trigger_audit
+
+statement ok
+CREATE TEMP TABLE parsed_data_trigger_target(i INTEGER, j INTEGER)
+
+statement ok
+CREATE TEMP TABLE parsed_data_trigger_audit(i INTEGER)
+
+statement ok
+CREATE OR REPLACE TRIGGER parsed_data_tr
+AFTER UPDATE ON parsed_data_trigger_target
+REFERENCING NEW TABLE AS new_rows OLD TABLE AS old_rows
+FOR EACH STATEMENT
+INSERT INTO parsed_data_trigger_audit SELECT i FROM new_rows
+
+statement ok
+DROP TRIGGER parsed_data_tr ON parsed_data_trigger_target
+
+statement error
+CREATE TRIGGER IF NOT EXISTS parsed_data_missing_tr
+AFTER UPDATE OF i, j ON missing_trigger_table
+FOR EACH ROW
+INSERT INTO parsed_data_trigger_audit VALUES (1)
+----
+Table with name missing_trigger_table does not exist
+
+# ALTER TABLE variants
+statement ok
+DROP TABLE IF EXISTS parsed_data_alter
+
+statement ok
+CREATE TABLE parsed_data_alter(
+    i INTEGER,
+    nested STRUCT(a INTEGER, b INTEGER),
+    removable INTEGER
+)
+
+statement ok
+CREATE TABLE IF NOT EXISTS parsed_data_if_not_exists(i INTEGER)
+
+statement ok
+CREATE OR REPLACE VIEW parsed_data_deferred WITH (DEFER_BINDING) AS SELECT * FROM missing_deferred_table
+
+statement ok
+ALTER SEQUENCE IF EXISTS missing_sequence OWNED BY parsed_data_alter
+
+statement ok
+ALTER TABLE IF EXISTS parsed_data_alter RENAME COLUMN nested.a TO renamed
+
+statement ok
+ALTER TABLE IF EXISTS parsed_data_alter ADD COLUMN nested.c INTEGER
+
+statement ok
+ALTER TABLE IF EXISTS parsed_data_alter DROP COLUMN IF EXISTS nested.b CASCADE
+
+statement ok
+ALTER TABLE IF EXISTS parsed_data_alter ADD COLUMN constrained INTEGER NOT NULL UNIQUE USING COMPRESSION uncompressed
+
+statement error
+ALTER TABLE IF EXISTS parsed_data_alter ALTER COLUMN nested.renamed SET DEFAULT 7
+----
+Setting a default value on a nested field is not yet supported
+
+statement error
+ALTER TABLE IF EXISTS parsed_data_alter ALTER COLUMN nested.renamed DROP DEFAULT
+----
+Setting a default value on a nested field is not yet supported
+
+statement error
+ALTER TABLE IF EXISTS parsed_data_alter ALTER COLUMN nested.renamed TYPE VARCHAR COLLATE nocase
+USING nested.renamed::VARCHAR
+----
+Changing the type of a nested field is not yet supported
+
+statement ok
+ALTER TABLE IF EXISTS parsed_data_alter ALTER COLUMN removable SET NOT NULL
+
+statement ok
+ALTER TABLE IF EXISTS parsed_data_alter ALTER COLUMN removable DROP NOT NULL
+
+statement error
+ALTER TABLE parsed_data_alter SET PARTITIONED BY (i, nested.renamed)
+----
+not supported
+
+statement error
+ALTER TABLE parsed_data_alter RESET PARTITIONED BY
+----
+not supported
+
+statement error
+ALTER TABLE parsed_data_alter SET SORTED BY (i DESC NULLS FIRST, removable)
+----
+not supported
+
+statement error
+ALTER TABLE parsed_data_alter RESET SORTED BY
+----
+not supported
+
+statement error
+ALTER TABLE parsed_data_alter SET (format='parquet', location='somewhere')
+----
+SET (<options>) is not supported for DuckDB tables
+
+statement error
+ALTER TABLE parsed_data_alter RESET (format, location)
+----
+RESET (<options>) is not supported for DuckDB tables
+
+statement ok
+CREATE INDEX IF NOT EXISTS parsed_data_index ON parsed_data_alter(i)
+
+# COPY formatting variants
+statement ok
+COPY parsed_data_alter (i, removable) TO '{TEST_DIR}/parsed_data_copy.csv'
+(FORMAT CSV, FORCE_QUOTE (i, removable), HEADER)
+
+statement ok
+SET VARIABLE parsed_data_copy_path='{TEST_DIR}/parsed_data_copy_expression.csv'
+
+statement ok
+COPY parsed_data_alter TO (getvariable('parsed_data_copy_path'))
+
+statement ok
+COPY parsed_data_alter TO '{TEST_DIR}/parsed_data_copy_plain.csv'
+
+# Remaining small parsed-data variants
+statement ok
+CREATE OR REPLACE SEQUENCE parsed_data_sequence
+
+statement ok
+CREATE TEMPORARY SEQUENCE IF NOT EXISTS parsed_data_temp_sequence
+
+statement error
+PRAGMA missing_parsed_data_pragma(1, 'two')
+----
+Pragma Function with name missing_parsed_data_pragma does not exist
+
+statement ok
+VACUUM ANALYZE parsed_data_alter(i, removable)
+
+statement ok
+BEGIN TRANSACTION READ ONLY
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN TRANSACTION READ WRITE
+
+statement ok
+COMMIT
+
+statement ok
+DETACH IF EXISTS parsed_data_db
+
+statement ok
+RESET debug_verify_statement
+
+endloop

@@ -15,16 +15,15 @@ namespace duckdb {
 //! The table function binder can bind standard table function parameters (i.e., non-table-in-out functions)
 class TableFunctionBinder : public ExpressionBinder {
 public:
-	TableFunctionBinder(Binder &binder, ClientContext &context, string table_function_name = string(),
-	                    string clause = "Table function");
+	//! How an identifier that is not a lambda parameter or lateral column is bound. FOLLOW_SETTING: resolve SQL value
+	//! functions (e.g. user), then convert to a string as table_function_identifier_conversion allows. ALLOW: the
+	//! identifier is a name (e.g. a COPY column list): bind it as the string it spells, without warning and without
+	//! resolving SQL value functions.
+	enum class IdentifierConversionPolicy : uint8_t { FOLLOW_SETTING, ALLOW };
 
-public:
-	void DisableSQLValueFunctions() {
-		accept_sql_value_functions = false;
-	}
-	void EnableSQLValueFunctions() {
-		accept_sql_value_functions = true;
-	}
+	TableFunctionBinder(
+	    Binder &binder, ClientContext &context, string table_function_name = string(), string clause = "Table function",
+	    IdentifierConversionPolicy identifier_conversion_policy = IdentifierConversionPolicy::FOLLOW_SETTING);
 
 protected:
 	BindResult BindLambdaReference(LambdaRefExpression &expr, idx_t depth);
@@ -36,8 +35,7 @@ protected:
 private:
 	string table_function_name;
 	string clause;
-	//! Whether sql_value_functions (GetSQLValueFunctionName) are considered when binding column refs
-	bool accept_sql_value_functions = true;
+	IdentifierConversionPolicy identifier_conversion_policy;
 };
 
 } // namespace duckdb

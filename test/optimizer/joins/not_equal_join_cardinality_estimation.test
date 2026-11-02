@@ -1,0 +1,31 @@
+# name: test/optimizer/joins/not_equal_join_cardinality_estimation.test
+# group: [joins]
+
+statement ok
+CREATE TABLE t1 AS SELECT (range % 100)::INTEGER AS a FROM range(1000);
+
+statement ok
+CREATE TABLE t2 AS SELECT (range % 100)::INTEGER AS b FROM range(1000);
+
+statement ok
+SET explain_output='optimized_only';
+
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM t1 JOIN t2 ON t1.a <> t2.b;
+----
+logical_opt	<REGEX>:.*"name":\s*"COMPARISON_JOIN".*"Estimated Cardinality":\s*"9[0-9]{5}".*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM t1 JOIN t2 ON t1.a IS DISTINCT FROM t2.b;
+----
+logical_opt	<REGEX>:.*"name":\s*"COMPARISON_JOIN".*"Estimated Cardinality":\s*"9[0-9]{5}".*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM t1 JOIN t2 ON t1.a < t2.b;
+----
+logical_opt	<REGEX>:.*"name":\s*"COMPARISON_JOIN".*"Estimated Cardinality":\s*"[0-9]{5}".*
+
+query I
+SELECT count(*) FROM t1 JOIN t2 ON t1.a <> t2.b;
+----
+990000

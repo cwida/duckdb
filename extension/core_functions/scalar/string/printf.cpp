@@ -23,11 +23,10 @@ struct FMTFormat {
 	}
 };
 
-static unique_ptr<FunctionData> BindPrintfFunction(BindScalarFunctionInput &input) {
+static void PrintfResolveTypes(ResolveScalarFunctionTypesInput &input) {
 	auto &bound_function = input.GetBoundFunction();
-	auto &arguments = input.GetArguments();
-	for (idx_t i = 1; i < arguments.size(); i++) {
-		switch (arguments[i]->GetReturnType().id()) {
+	for (idx_t i = 1; i < input.GetArgumentCount(); i++) {
+		switch (input.GetArgumentType(i).id()) {
 		case LogicalTypeId::BOOLEAN:
 			bound_function.GetArguments()[i] = LogicalType::BOOLEAN;
 			break;
@@ -70,7 +69,6 @@ static unique_ptr<FunctionData> BindPrintfFunction(BindScalarFunctionInput &inpu
 			break;
 		}
 	}
-	return nullptr;
 }
 
 struct StandardConstructArgument {
@@ -173,6 +171,10 @@ static void PrintfFunction(DataChunk &args, ExpressionState &state, Vector &resu
 
 		// finally actually perform the format
 		string dynamic_result = FORMAT_FUN::template OP<CTX>(format_string.c_str(), current_args);
+		if (dynamic_result.size() > string_t::MAX_STRING_SIZE) {
+			throw OutOfRangeException("Format result of size %llu exceeds the maximum string size of %llu",
+			                          dynamic_result.size(), string_t::MAX_STRING_SIZE);
+		}
 		if (!Utf8Proc::IsValid(dynamic_result.c_str(), dynamic_result.size())) {
 			throw InvalidInputException("Invalid UTF8 produced by format string \"%s\" - note that %%c writes a "
 			                            "single byte, use chr(...) to write a Unicode code point",
@@ -184,20 +186,20 @@ static void PrintfFunction(DataChunk &args, ExpressionState &state, Vector &resu
 
 ScalarFunction PrintfFun::GetFunction() {
 	// duckdb_fmt::printf_context, duckdb_fmt::vsprintf
-	ScalarFunction printf_fun({}, LogicalType::VARCHAR, PrintfFunction<FMTPrintf, duckdb_fmt::printf_context>,
-	                          BindPrintfFunction);
+	ScalarFunction printf_fun({}, LogicalType::VARCHAR, PrintfFunction<FMTPrintf, duckdb_fmt::printf_context>);
+	printf_fun.SetResolveTypesCallback(PrintfResolveTypes);
 	printf_fun.GetSignature().AddParameter("format", LogicalType::VARCHAR);
-	printf_fun.SetVarArgs(LogicalType::ANY);
+	printf_fun.GetSignature().AddArgs("args", LogicalType::ANY);
 	printf_fun.SetFallible();
 	return printf_fun;
 }
 
 ScalarFunction FormatFun::GetFunction() {
 	// duckdb_fmt::format_context, duckdb_fmt::vformat
-	ScalarFunction format_fun({}, LogicalType::VARCHAR, PrintfFunction<FMTFormat, duckdb_fmt::format_context>,
-	                          BindPrintfFunction);
+	ScalarFunction format_fun({}, LogicalType::VARCHAR, PrintfFunction<FMTFormat, duckdb_fmt::format_context>);
+	format_fun.SetResolveTypesCallback(PrintfResolveTypes);
 	format_fun.GetSignature().AddParameter("format", LogicalType::VARCHAR);
-	format_fun.SetVarArgs(LogicalType::ANY);
+	format_fun.GetSignature().AddArgs("args", LogicalType::ANY);
 	format_fun.SetFallible();
 	return format_fun;
 }

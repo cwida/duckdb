@@ -49,7 +49,7 @@
 #include "duckdb/parser/expression/type_expression.hpp"
 #include "duckdb/parser/expression/window_expression.hpp"
 #include "duckdb/parser/tableref/table_function_ref.hpp"
-#include "duckdb/common/extra_type_info.hpp"
+#include "duckdb/common/logical_type_info.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/parser/query_node/recursive_cte_node.hpp"
 #include "duckdb/planner/expression_binder/constant_binder.hpp"
@@ -1162,11 +1162,14 @@ RemotePushdownOptimizer::ConstantFoldResult
 RemotePushdownOptimizer::TryConstantFold(unique_ptr<ParsedExpression> &expr) {
 	// bind a copy of the expression (binding modifies the expression in-place)
 	unique_ptr<Expression> bound_expr;
+	bool requires_rebind = false;
 	try {
 		auto expr_copy = expr->Copy();
 		auto fold_binder = Binder::CreateBinder(binder.context);
 		ConstantBinder constant_binder(*fold_binder, binder.context, "remote pushdown");
 		bound_expr = constant_binder.Bind(expr_copy);
+		// binding can fold arguments that depend on the query or on settings into constants
+		requires_rebind = fold_binder->GetStatementProperties().always_require_rebind;
 	} catch (std::exception &) {
 		// the expression cannot be bound as a constant (e.g. no matching function overload)
 		return ConstantFoldResult::NOT_FOLDABLE;
@@ -1178,8 +1181,8 @@ RemotePushdownOptimizer::TryConstantFold(unique_ptr<ParsedExpression> &expr) {
 		// volatile functions (random(), ...) must be re-evaluated on every row
 		return ConstantFoldResult::NOT_FOLDABLE;
 	}
-	if (!bound_expr->IsConsistent()) {
-		// functions like now() must be re-evaluated (re-folded) when a prepared statement is re-executed
+	if (requires_rebind || bound_expr->RequiresRebind()) {
+		// functions like now() or strftime() must be re-folded when a prepared statement is re-executed
 		binder.SetAlwaysRequireRebind();
 	}
 	Value fold_result;
@@ -1360,15 +1363,16 @@ void RemotePushdownOptimizer::StripCatalogName(TableRef &ref, const Identifier &
 void RemotePushdownOptimizer::StripCatalogName(ParsedExpression &expr, const Identifier &catalog_name) {
 	if (expr.GetExpressionClass() == ExpressionClass::COLUMN_REF) {
 		auto &col_ref = expr.Cast<ColumnRefExpression>();
-		// Strip catalog prefix from qualified column references, normalising to exactly table.col (2 parts).
+		// Strip the catalog prefix from qualified column references, keeping everything after it.
 		// Require at least 3 names: a 2-part ref like "rpc.field" is either table.col or struct-column.field —
 		// not catalog-qualified — so stripping would be wrong.
-		// For 3-part  catalog.table.col        → table.col   (one level stripped)
-		// For 4-part  catalog.schema.table.col → table.col   (catalog + schema stripped)
+		// For 3-part  catalog.table.col        → table.col
+		// For 4-part  catalog.schema.table.col → schema.table.col
+		// Only the catalog is dropped: the parser keeps arbitrarily deep refs in a single ColumnRef, so trailing
+		// names may be struct fields (catalog.table.s.a.b → table.s.a.b) and must be preserved.
 		if (col_ref.ColumnNames().size() >= 3 && col_ref.ColumnNames()[0] == catalog_name) {
-			Identifier table_name = col_ref.ColumnNames()[col_ref.ColumnNames().size() - 2];
-			Identifier col_name = col_ref.ColumnNames()[col_ref.ColumnNames().size() - 1];
-			col_ref.ColumnNamesMutable() = {std::move(table_name), std::move(col_name)};
+			auto &names = col_ref.ColumnNamesMutable();
+			names.erase(names.begin());
 		}
 		return;
 	}
@@ -1386,8 +1390,8 @@ void RemotePushdownOptimizer::StripCatalogName(ParsedExpression &expr, const Ide
 	if (expr.GetExpressionClass() == ExpressionClass::FUNCTION) {
 		auto &func = expr.Cast<FunctionExpression>();
 		if (func.GetQualifiedName().Catalog() == catalog_name) {
-			func.SetQualifiedName(
-			    QualifiedName(Identifier(), func.GetQualifiedName().Schema(), func.GetQualifiedName().Name()));
+			// keep the whole schema path, which a nested schema makes longer than one schema
+			func.SetQualifiedName(func.GetQualifiedName().WithCatalog(Identifier()));
 		} else if (func.GetQualifiedName().Catalog().empty() && func.GetQualifiedName().Schema() == catalog_name) {
 			func.SetQualifiedName(
 			    QualifiedName(func.GetQualifiedName().Catalog(), Identifier(), func.GetQualifiedName().Name()));
@@ -1396,8 +1400,7 @@ void RemotePushdownOptimizer::StripCatalogName(ParsedExpression &expr, const Ide
 	} else if (expr.GetExpressionClass() == ExpressionClass::WINDOW) {
 		auto &win = expr.Cast<WindowExpression>();
 		if (win.GetQualifiedName().Catalog() == catalog_name) {
-			win.SetQualifiedName(
-			    QualifiedName(Identifier(), win.GetQualifiedName().Schema(), win.GetQualifiedName().Name()));
+			win.SetQualifiedName(win.GetQualifiedName().WithCatalog(Identifier()));
 		} else if (win.GetQualifiedName().Catalog().empty() && win.GetQualifiedName().Schema() == catalog_name) {
 			win.SetQualifiedName(
 			    QualifiedName(win.GetQualifiedName().Catalog(), Identifier(), win.GetQualifiedName().Name()));

@@ -25,7 +25,8 @@ public:
 	static constexpr const BufferedData::Type TYPE = BufferedData::Type::SIMPLE;
 
 public:
-	SimpleBufferedData(ClientContext &context, ResultLifetime lifetime);
+	SimpleBufferedData(ClientContext &context, ResultLifetime lifetime, ResultFormatContext format_context,
+	                   shared_ptr<ResultFormat> format);
 	~SimpleBufferedData() override;
 
 public:
@@ -33,8 +34,9 @@ public:
 	bool AppendOrBlock(unique_ptr<ResultUnit> unit, const InterruptState &blocked_sink);
 	//! Whether the buffer is saturated, t.e. can't accept a new unit right now.
 	bool BufferSaturated();
-	//! The highest number of bytes the buffer ever held.
+	//! The highest number of bytes the buffer ever queued.
 	idx_t PeakBufferedBytes() override;
+	idx_t PeakStreamingBytes() override;
 	bool HasBlockedSink() override;
 	bool HasObservableUnit() override;
 	void UnblockSinks() override;
@@ -65,6 +67,9 @@ private:
 	queue<unique_ptr<ResultUnit>> unread_units DUCKDB_GUARDED_BY(glock);
 	//! The bytes currently buffered
 	atomic<idx_t> buffered_count;
+	//! Counted by the streaming peak, never against the cap
+	idx_t parked_bytes DUCKDB_GUARDED_BY(glock) = 0;
+	idx_t peak_streaming_bytes DUCKDB_GUARDED_BY(glock) = 0;
 	//! The byte cap of the buffer
 	const idx_t buffer_size;
 	//! The highest number of bytes ever buffered

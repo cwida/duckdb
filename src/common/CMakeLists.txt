@@ -45,7 +45,7 @@ add_library_unity(
   encryption_types.cpp
   exception.cpp
   exception_format_value.cpp
-  extra_type_info.cpp
+  logical_type_info.cpp
   file_buffer.cpp
   file_system.cpp
   filename_pattern.cpp

@@ -1,0 +1,38 @@
+# name: test/sql/storage/compression/zstd/zstd_corrupt_count.test
+# description: An inflated Zstd row count must fail safely during scan and fetch
+# group: [zstd]
+
+require vector_size 2048
+
+unzip data/storage/corrupt/zstd_corrupt_count.db.gz {TEST_DIR}/zstd_corrupt_count.db
+
+load {TEST_DIR}/zstd_corrupt_count.db readonly
+
+statement ok
+USE zstd_corrupt_count;
+
+query I
+SELECT compression FROM pragma_storage_info('t') WHERE column_name='s' AND compression='ZSTD' LIMIT 1;
+----
+ZSTD
+
+statement ok
+SET memory_limit='256MB';
+
+statement error
+SELECT sum(length(s)) FROM t;
+----
+Out of Memory Error: failed to allocate data of size 256.0 GiB
+
+restart
+
+statement ok
+SET memory_limit='256MB';
+
+statement ok
+SET debug_force_fetch_row=true;
+
+statement error
+SELECT sum(length(s)) FROM t;
+----
+Out of Memory Error: failed to allocate data of size 256.0 GiB

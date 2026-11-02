@@ -1,0 +1,52 @@
+# name: test/sql/storage/compression/fsst/fsst_select_across_segments.test
+# description: Select from legacy FSST segments with skipped segments and NULLs
+# group: [fsst]
+
+require no_latest_storage
+
+require vector_size 2048
+
+statement ok
+ATTACH '{TEST_DIR}/fsst_select_across_segments.db' AS db (BLOCK_SIZE 16384, STORAGE_VERSION 'v1.0.0');
+
+statement ok
+SET threads=1;
+
+statement ok
+CREATE MACRO expected_string(i) AS CASE WHEN i%13=0 THEN NULL ELSE repeat(md5((i//127)::VARCHAR),8) END;
+
+statement ok
+CREATE TABLE db.strings(id INTEGER, value VARCHAR USING COMPRESSION fsst);
+
+statement ok
+INSERT INTO db.strings SELECT i, expected_string(i) FROM range(20000) t(i);
+
+statement ok
+CHECKPOINT db;
+
+query I
+SELECT count(*)>1 AND bool_and(compression='FSST') AND bool_or(start%2048 != 0) FROM pragma_storage_info('db.strings') WHERE segment_type='VARCHAR';
+----
+true
+
+statement ok
+DETACH db;
+
+statement ok
+ATTACH '{TEST_DIR}/fsst_select_across_segments.db' AS db;
+
+statement ok
+CREATE TEMP TABLE retained AS SELECT * FROM db.strings WHERE id%2048<70 OR id%2048>=2046;
+
+query II
+SELECT count(*), bool_and(value IS NOT DISTINCT FROM expected_string(id)) FROM db.strings WHERE id%2048=0;
+----
+10	true
+
+statement ok
+DETACH db;
+
+query II
+SELECT count(*), bool_and(value IS NOT DISTINCT FROM expected_string(id)) FROM retained;
+----
+718	true

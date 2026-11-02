@@ -2,6 +2,7 @@
 #include "dbgen/dbgen_gunk.hpp"
 #include "tpch_constants.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/parser/column_definition.hpp"
 #include "duckdb/parser/parsed_data/create_table_info.hpp"
@@ -51,6 +52,20 @@ struct tpch_append_information {
 	idx_t active_row = DConstants::INVALID_INDEX;
 	idx_t active_col = 0;
 	bool finalized = false;
+	//! raw column pointers of the current chunk, so the per-value append path does no bounds or type checks
+	static constexpr idx_t MAX_COLUMNS = 16;
+	Vector *columns[MAX_COLUMNS];
+	data_ptr_t column_data[MAX_COLUMNS];
+
+	void RefreshColumnPointers() {
+		D_ASSERT(chunk.ColumnCount() <= MAX_COLUMNS);
+		for (idx_t col = 0; col < chunk.ColumnCount(); col++) {
+			auto &vector = chunk.data[col];
+			D_ASSERT(vector.GetVectorType() == VectorType::FLAT_VECTOR);
+			columns[col] = &vector;
+			column_data[col] = FlatVector::GetDataMutable(vector);
+		}
+	}
 
 	~tpch_append_information() {
 		if (optimistic_writer) {
@@ -61,6 +76,7 @@ struct tpch_append_information {
 	void Initialize(ClientContext &context, TableCatalogEntry &table, idx_t flush_count) {
 		appender = make_uniq<InternalAppender>(context, table, flush_count);
 		chunk.Initialize(context, table.GetTypes());
+		RefreshColumnPointers();
 	}
 
 	void InitializeOptimistic(ClientContext &context, DuckTableEntry &table,
@@ -71,10 +87,12 @@ struct tpch_append_information {
 		    optimistic_writer->CreateCollection(table.GetStorage(), table.GetTypes(), partial_manager_type);
 		auto &row_collection = *collection->collection;
 		row_collection.InitializeEmpty();
-		row_collection.InitializeAppend(append_state);
+		// the transaction id keeps the rows invisible to other transactions until the commit
+		row_collection.InitializeAppend(DuckTransaction::Get(context, table.catalog), append_state);
 		optimistic_collection_index = table.GetStorage().CreateOptimisticCollection(context, std::move(collection));
 		optimistic_collection = table.GetStorage().GetOptimisticCollection(context, optimistic_collection_index);
 		chunk.Initialize(context, table.GetTypes());
+		RefreshColumnPointers();
 	}
 
 	void ResetOptimisticCollection(ClientContext &context) {
@@ -102,6 +120,7 @@ struct tpch_append_information {
 			}
 		}
 		chunk.Reset();
+		RefreshColumnPointers();
 		row = 0;
 		active_col = 0;
 	}
@@ -161,9 +180,8 @@ struct tpch_append_information {
 			return;
 		}
 		FlushChunk();
-		auto transaction_data = TransactionData::Unversioned();
 		auto &row_collection = *optimistic_collection->collection;
-		row_collection.FinalizeAppend(transaction_data, append_state);
+		row_collection.FinalizeAppend(append_state.transaction, append_state);
 		finalized = true;
 	}
 
@@ -201,29 +219,32 @@ static void append_end_row(tpch_append_information &info) {
 static Vector &append_next_column(tpch_append_information &info) {
 	D_ASSERT(info.active_row != DConstants::INVALID_INDEX);
 	D_ASSERT(info.active_col < info.chunk.ColumnCount());
-	return info.chunk.data[info.active_col++];
+	return *info.columns[info.active_col++];
+}
+
+template <class T>
+static T *append_next_column_data(tpch_append_information &info) {
+	D_ASSERT(info.active_row != DConstants::INVALID_INDEX);
+	D_ASSERT(info.active_col < info.chunk.ColumnCount());
+	D_ASSERT(info.chunk.data[info.active_col].GetType().InternalType() == GetTypeId<T>());
+	return reinterpret_cast<T *>(info.column_data[info.active_col++]);
 }
 
 void append_int32(tpch_append_information &info, int32_t value) {
-	auto &vector = append_next_column(info);
-	FlatVector::GetDataMutable<int32_t>(vector)[info.active_row] = value;
+	append_next_column_data<int32_t>(info)[info.active_row] = value;
 }
 
 void append_int64(tpch_append_information &info, int64_t value) {
-	auto &vector = append_next_column(info);
-	FlatVector::GetDataMutable<int64_t>(vector)[info.active_row] = value;
+	append_next_column_data<int64_t>(info)[info.active_row] = value;
 }
 
 void append_string_reference(tpch_append_information &info, const char *value, idx_t length) {
 	// Only use for stable DBGEN strings; non-inlined string_t values keep a pointer until the chunk is appended.
-	auto &vector = append_next_column(info);
-	FlatVector::GetDataMutable<string_t>(vector)[info.active_row] =
-	    string_t(value, UnsafeNumericCast<uint32_t>(length));
+	append_next_column_data<string_t>(info)[info.active_row] = string_t(value, UnsafeNumericCast<uint32_t>(length));
 }
 
 void append_decimal(tpch_append_information &info, int64_t value) {
-	auto &vector = append_next_column(info);
-	FlatVector::GetDataMutable<int64_t>(vector)[info.active_row] = value;
+	append_next_column_data<int64_t>(info)[info.active_row] = value;
 }
 
 void append_char(tpch_append_information &info, char value) {
@@ -238,13 +259,12 @@ static date_t raw_tpch_date(DSS_HUGE value) {
 }
 
 void append_date(tpch_append_information &info, DSS_HUGE value) {
-	auto &vector = append_next_column(info);
-	FlatVector::GetDataMutable<date_t>(vector)[info.active_row] = raw_tpch_date(value);
+	append_next_column_data<date_t>(info)[info.active_row] = raw_tpch_date(value);
 }
 
 static string_t &append_empty_string(tpch_append_information &info, idx_t length) {
-	auto &vector = append_next_column(info);
-	auto data = FlatVector::GetDataMutable<string_t>(vector);
+	auto &vector = *info.columns[info.active_col];
+	auto data = append_next_column_data<string_t>(info);
 	data[info.active_row] = StringVector::EmptyString(vector, length);
 	return data[info.active_row];
 }
@@ -353,7 +373,7 @@ static DSS_HUGE PartSuppBridge(DBGenContext *ctx, DSS_HUGE part_key, DSS_HUGE su
 }
 
 static void AppendPartName(tpch_append_information &info, DBGenContext *ctx) {
-	permute_dist(&colors, &ctx->Seed[P_NAME_SD], ctx);
+	permute_dist(&colors, P_NAME_SCL, &ctx->Seed[P_NAME_SD], ctx);
 	idx_t length = 0;
 	for (idx_t i = 0; i < P_NAME_SCL; i++) {
 		length += NumericCast<idx_t>(colors.list[ctx->permute[i]].length);
@@ -983,7 +1003,8 @@ public:
 			}
 			if (parameters.tables[i]) {
 				auto &tbl_catalog = *parameters.tables[i];
-				if (!tbl_catalog.IsDuckTable()) {
+				auto duck_table = tbl_catalog.TryGetDuckTableEntry();
+				if (!duck_table) {
 					throw InvalidInputException("dbgen is only supported for DuckDB database files");
 				}
 				switch (append_mode) {
@@ -993,8 +1014,7 @@ public:
 				case TPCHAppendMode::OPTIMISTIC: {
 					auto partial_manager_type = i == LINE ? OptimisticWritePartialManagers::GLOBAL
 					                                      : OptimisticWritePartialManagers::PER_COLUMN;
-					append_info[i].InitializeOptimistic(context, tbl_catalog.Cast<DuckTableEntry>(),
-					                                    partial_manager_type);
+					append_info[i].InitializeOptimistic(context, *duck_table, partial_manager_type);
 					break;
 				}
 				default:
@@ -1142,7 +1162,7 @@ public:
 		auto &catalog = Catalog::GetCatalog(context, catalog_name);
 		parameters = make_uniq<TPCHDBgenParameters>(context, catalog, schema, suffix);
 
-		load_dists(10 * 1024 * 1024, &base_context); // 10MiB
+		load_dists(TEXT_POOL_SIZE, &base_context);
 		distributions_loaded = true;
 		/* have to do this after init */
 		base_context.tdefs[NATION].base = nations.count;
@@ -1492,6 +1512,25 @@ string DBGenWrapper::GetQuery(int query) {
 		throw SyntaxException("Out of range TPC-H query number %d", query);
 	}
 	return TPCH_QUERIES[query - 1];
+}
+
+//! The stored Q11 carries the FRACTION substitution parameter for SF 1
+static constexpr const char *TPCH_Q11_SF1_FRACTION = "0.0001000000";
+
+string DBGenWrapper::GetQuery(int query, double sf) {
+	if (Value::IsNan(sf) || sf <= 0 || sf > MAX_SCALE) {
+		throw InvalidInputException("TPC-H queries require a scale factor between 0 and %d",
+		                            static_cast<int>(MAX_SCALE));
+	}
+	auto result = GetQuery(query);
+	if (query != 11) {
+		return result;
+	}
+	// Q11 selects the parts whose stock value exceeds FRACTION of the total, where qgen sets FRACTION = 0.0001 / SF
+	auto fraction = StringUtil::Format("%.10f", 0.0001 / sf);
+	auto pos = result.find(TPCH_Q11_SF1_FRACTION);
+	D_ASSERT(pos != string::npos);
+	return result.replace(pos, strlen(TPCH_Q11_SF1_FRACTION), fraction);
 }
 
 string DBGenWrapper::GetAnswer(double sf, int query) {

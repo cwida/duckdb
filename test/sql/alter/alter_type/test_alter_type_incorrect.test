@@ -34,4 +34,4 @@ Binder Error: window functions are not allowed in alter statement
 statement error
 ALTER TABLE test ALTER i SET TYPE VARCHAR USING othertable.j
 ----
-Binder Error: Cannot extract field 'othertable' from expression "#0"
+Binder Error: Table does not contain column "othertable" referenced

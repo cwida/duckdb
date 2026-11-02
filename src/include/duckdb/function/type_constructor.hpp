@@ -83,6 +83,10 @@ typedef LogicalType (*bind_logical_type_function_t)(BindLogicalTypeInput &input)
 //! turns them into a LogicalType. The arguments handed to the callback are already matched against the signature.
 class TypeConstructor : public SimpleFunction {
 public:
+	static constexpr const FunctionKind KIND = FunctionKind::TYPE;
+	FunctionKind GetKind() const override {
+		return KIND;
+	}
 	DUCKDB_API TypeConstructor(Identifier name, FunctionSignature signature, bind_logical_type_function_t bind);
 	DUCKDB_API explicit TypeConstructor(FunctionSignature signature, bind_logical_type_function_t bind);
 
@@ -103,6 +107,9 @@ public:
 	bind_logical_type_function_t GetBindFunction() const {
 		return bind_function;
 	}
+
+	//! As MAP(key TYPE, value TYPE)
+	DUCKDB_API string ToString() const override;
 
 private:
 	bind_logical_type_function_t bind_function;

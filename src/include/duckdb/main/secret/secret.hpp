@@ -217,13 +217,7 @@ public:
 	Deserialize(Deserializer &deserializer,
 	            BaseSecret base_secret) { // NOLINT(performance-unnecessary-value-param): callback signature.
 		auto result = make_uniq<TYPE>(base_secret);
-		Value secret_map_value;
-		deserializer.ReadProperty(201, "secret_map", secret_map_value);
-
-		for (const auto &entry : ListValue::GetChildren(secret_map_value)) {
-			auto kv_struct = StructValue::GetChildren(entry);
-			result->secret_map[Identifier(kv_struct[0].ToString())] = kv_struct[1];
-		}
+		ReadSecretMap(deserializer, result->secret_map);
 
 		Value redact_set_value;
 		deserializer.ReadProperty(202, "redact_keys", redact_set_value);
@@ -261,6 +255,9 @@ public:
 	identifier_tree_t<Value> secret_map;
 	//! keys that are sensitive and should be redacted
 	identifier_set_t redact_keys;
+
+private:
+	static void ReadSecretMap(Deserializer &deserializer, identifier_tree_t<Value> &result);
 };
 
 // Helper class to fetch secret parameters in a cascading way. The idea being that in many cases there is a direct

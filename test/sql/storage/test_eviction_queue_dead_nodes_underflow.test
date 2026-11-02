@@ -40,6 +40,10 @@ SELECT i, SUM(i) OVER (PARTITION BY i % 100000 ORDER BY i) FROM range(5000000) t
 ----
 Out of Memory
 
+# Use one worker for the low-memory success cases.
+statement ok
+SET threads=1
+
 statement ok
 CREATE TABLE t1 AS SELECT * FROM range(1000000)
 

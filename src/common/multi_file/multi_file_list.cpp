@@ -30,10 +30,11 @@ bool PushdownInternal(ClientContext &context, const MultiFileOptions &options, M
 		if (IsVirtualColumn(info.column_ids[i])) {
 			continue;
 		}
-		filter_info.column_map.insert({info.column_names[info.column_ids[i]].GetIdentifierName(), i});
+		filter_info.column_map.insert({info.column_names[info.column_ids[i]], i});
 	}
 	filter_info.hive_enabled = options.hive_partitioning;
 	filter_info.filename_enabled = options.filename;
+	filter_info.filename_column = Identifier(options.filename_column);
 
 	auto start_files = expanded_files.size();
 	HivePartitioning::ApplyFiltersToFileList(context, expanded_files, filters, filter_info, info);
@@ -158,6 +159,10 @@ vector<OpenFileInfo> MultiFileList::GetDisplayFileList(optional_idx max_files) c
 		files.push_back(std::move(file));
 	}
 	return files;
+}
+
+vector<OpenFileInfo> MultiFileList::GetAllFiles() const {
+	return MultiFileList::GetDisplayFileList();
 }
 
 MultiFileCount MultiFileList::GetFileCount(idx_t min_exact_count) const {

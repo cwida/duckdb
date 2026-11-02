@@ -1,0 +1,30 @@
+# name: test/sql/sample/helper_operator_coverage.test
+# description: Test sampling and limit helper operator boundaries
+# group: [sample]
+
+query I
+SELECT count(*) FROM range(100) USING SAMPLE 0 PERCENT (reservoir, 42);
+----
+0
+
+query I
+SELECT count(*)
+FROM (SELECT i, random() AS r FROM range(10) t(i)) s
+USING SAMPLE 0 ROWS (system, 42);
+----
+0
+
+query I
+SELECT count(*)
+FROM (SELECT i, random() AS r FROM range(10) t(i)) s
+USING SAMPLE 20 ROWS (system, 42);
+----
+10
+
+statement ok
+EXPLAIN SELECT * FROM range(10) LIMIT 40 PERCENT OFFSET 2;
+
+statement error
+RESET GLOBAL current_dialect;
+----
+option "current_dialect" cannot be reset globally

@@ -1,0 +1,69 @@
+# name: test/sql/copy/parquet/writer/parquet_write_shredding.test
+# description: Parquet writer SHREDDING option tests
+# group: [writer]
+
+require parquet
+
+statement error
+COPY (SELECT 42::VARIANT AS v) TO '{TEST_DIR}/invalid.parquet'
+    (FORMAT parquet, SHREDDING 'auto')
+----
+Not implemented Error: The 'auto' option is not yet implemented for 'shredding'
+
+statement error
+COPY (SELECT 42::VARIANT AS v) TO '{TEST_DIR}/invalid.parquet'
+    (FORMAT parquet, SHREDDING 'INTEGER')
+----
+Binder Error: SHREDDING value should be a STRUCT of column names to types
+
+statement error
+COPY (SELECT 42 AS i) TO '{TEST_DIR}/invalid.parquet'
+    (FORMAT parquet, SHREDDING {v:'INTEGER'})
+----
+Binder Error: VARIANT by name "v" specified in SHREDDING not found. There are no VARIANT columns present.
+
+statement error
+COPY (SELECT 42::VARIANT AS v1, 7::VARIANT AS v2) TO '{TEST_DIR}/invalid.parquet'
+    (FORMAT parquet, SHREDDING {missing:'INTEGER'})
+----
+Binder Error: VARIANT by name "missing" specified in SHREDDING not found.
+
+statement error
+COPY (SELECT 42::VARIANT AS v) TO '{TEST_DIR}/invalid.parquet'
+    (FORMAT parquet, SHREDDING {v:42})
+----
+Binder Error: SHREDDING value should be of type VARCHAR
+
+statement error
+COPY (SELECT 42::VARIANT AS v) TO '{TEST_DIR}/invalid.parquet'
+    (FORMAT parquet, SHREDDING {v:'MAP(INTEGER, INTEGER)'})
+----
+Binder Error: VARIANT can only be shredded on LIST/STRUCT/ANY/non-nested type
+
+statement ok
+SET debug_verify_serializer=true
+
+statement ok
+COPY (SELECT 42::VARIANT AS v) TO '{TEST_DIR}/shredded_primitive.parquet'
+    (FORMAT parquet, SHREDDING {v:'INTEGER'})
+
+query I
+SELECT v::INTEGER FROM read_parquet('{TEST_DIR}/shredded_primitive.parquet')
+----
+42
+
+statement ok
+COPY (SELECT {'a':42, 'b':['x', 'y']}::VARIANT AS v) TO '{TEST_DIR}/shredded_nested.parquet'
+    (FORMAT parquet, SHREDDING {v:'STRUCT(a INTEGER, b VARCHAR[])'})
+
+query II
+SELECT value.a, value.b
+FROM (
+    SELECT v::STRUCT(a INTEGER, b VARCHAR[]) AS value
+    FROM read_parquet('{TEST_DIR}/shredded_nested.parquet')
+)
+----
+42	[x, y]
+
+statement ok
+SET debug_verify_serializer=false

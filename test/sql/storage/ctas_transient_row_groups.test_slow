@@ -1,0 +1,36 @@
+# name: test/sql/storage/ctas_transient_row_groups.test_slow
+# description: Streaming inserts share unused transient block space across row groups
+# group: [storage]
+
+require vector_size 2048
+
+# Measure uncompressed transient blocks without checkpoint workspace.
+statement ok
+ATTACH ':memory:' AS transient_ctas
+
+statement ok
+SET threads = 2
+
+statement ok
+SET preserve_insertion_order = false
+
+statement ok
+SET memory_limit = '16MB'
+
+statement ok
+SET temp_directory = ''
+
+statement ok
+SET initial_column_segment_size = 2048
+
+statement ok
+CREATE TABLE transient_ctas.tinyints AS
+SELECT (i % 127)::TINYINT AS value FROM range(10_000_000) r(i)
+
+query II
+SELECT COUNT(*), SUM(value) FROM transient_ctas.tinyints
+----
+10000000	629998930
+
+statement ok
+DETACH transient_ctas

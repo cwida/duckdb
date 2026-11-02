@@ -1,0 +1,43 @@
+# name: test/sql/cast/array_to_varchar_quoting.test
+# description: Nested to VARCHAR casts quote strings so the result can be cast back
+# group: [cast]
+
+query II
+SELECT ['a,b', 'x"y']::VARCHAR[2]::VARCHAR v, v::VARCHAR[2] = ['a,b', 'x"y'];
+----
+['a,b', 'x"y']	true
+
+query II
+SELECT ['NULL', NULL]::VARCHAR[2]::VARCHAR v, v::VARCHAR[2];
+----
+['NULL', NULL]	['NULL', NULL]
+
+query II
+SELECT [['a b', ''], ['[x]', NULL]]::VARCHAR[2][2]::VARCHAR v, v::VARCHAR[2][2] = [['a b', ''], ['[x]', NULL]];
+----
+[[a b, ''], ['[x]', NULL]]	true
+
+query II
+SELECT [1, 2, 3]::INT[3]::VARCHAR v, v::INT[3];
+----
+[1, 2, 3]	[1, 2, 3]
+
+query II
+SELECT MAP{'\':''}::VARCHAR v, v::MAP(VARCHAR, VARCHAR) = MAP{'\':''};
+----
+{'\\'=''}	true
+
+query II
+SELECT ['a\b', '\']::VARCHAR v, v::VARCHAR[] = ['a\b', '\'];
+----
+['a\\b', '\\']	true
+
+query II
+SELECT {'k': 'x\'}::VARCHAR v, v::STRUCT(k VARCHAR) = {'k': 'x\'};
+----
+{'k': 'x\\'}	true
+
+query II
+SELECT ['\x00a'::BLOB]::VARCHAR v, v::BLOB[] = ['\x00a'::BLOB];
+----
+['\\x00a']	true

@@ -1,10 +1,10 @@
 
 #include "sqllogic_test_runner.hpp"
 
+#include "duckdb/common/file_system.hpp"
 #include "duckdb/common/file_open_flags.hpp"
 #include "duckdb/common/json_document.hpp"
 #include "duckdb/common/virtual_file_system.hpp"
-#include "duckdb/main/extension/generated_extension_loader.hpp"
 #include "duckdb/common/types/uuid.hpp"
 #include "duckdb/main/extension_entries.hpp"
 #include "duckdb/main/extension_helper.hpp"
@@ -59,7 +59,7 @@ SQLLogicTestRunner::SQLLogicTestRunner(string dbpath) : dbpath(std::move(dbpath)
 	}
 	}
 
-	auto repo = string(DUCKDB_BUILD_DIRECTORY) + "/repository";
+	auto repo = TestBuildDirectory() + "/repository";
 	auto env_var = std::getenv("LOCAL_EXTENSION_REPO");
 	if (env_var) {
 		local_extension_repo = env_var;
@@ -147,6 +147,8 @@ void SQLLogicTestRunner::EmitBegin(const string &test_name) {
 	JSONWriter writer;
 	auto obj = writer.CreateObject();
 	obj.AddString("event", "begin");
+	// Version 2 distinguishes the test body from initialization and cleanup.
+	obj.Add("version", writer.CreateUnsignedInteger(2));
 	obj.AddString("name", test_name);
 	// Lets a consumer verify which invocation emitted this rather than inferring it from which
 	// subprocess it launched: under --temp-dir-root the prefix is what the driver passed in.
@@ -155,20 +157,52 @@ void SQLLogicTestRunner::EmitBegin(const string &test_name) {
 	SQLLogicTestLogger::EmitTestEvent(writer.ToString());
 }
 
-void SQLLogicTestRunner::EmitEnd(const string &test_name, const string &status, const string &data) {
+void SQLLogicTestRunner::EmitExecutionComplete(const string &test_name, const string &status, const string &data) {
+	if (execution_complete_emitted) {
+		return;
+	}
+	execution_complete_emitted = true;
+	EmitStatusEvent("execution-complete", test_name, status, data);
+}
+
+void SQLLogicTestRunner::EmitError(const string &test_name, const string &data) {
 	if (!EmitTestEventsEnabled()) {
 		return;
 	}
-	// One terminal per test: status in {ok, error, skip-requirement}, the statement tallies, and
-	// optional free-form data (skip reason / error text — multi-line safe via JSON escaping).
+	// Worker threads must report errors before joining, without reading the runner's mutable statistics.
 	JSONWriter writer;
 	auto obj = writer.CreateObject();
-	obj.AddString("event", "end");
+	obj.AddString("event", "error");
+	obj.AddString("name", test_name);
+	obj.AddString("data", data);
+	writer.SetRoot(obj);
+	SQLLogicTestLogger::EmitTestEvent(writer.ToString());
+}
+
+void SQLLogicTestRunner::EmitEnd(const string &test_name, const string &status, const string &data) {
+	EmitStatusEvent("end", test_name, status, data);
+}
+
+void SQLLogicTestRunner::EmitStatusEvent(const string &event, const string &test_name, const string &status,
+                                         const string &data) {
+	if (!EmitTestEventsEnabled()) {
+		return;
+	}
+	JSONWriter writer;
+	auto obj = writer.CreateObject();
+	obj.AddString("event", event);
 	obj.AddString("name", test_name);
 	obj.AddString("status", status);
 	obj.Add("passes", writer.CreateUnsignedInteger(test_stat_passes.load()));
 	obj.Add("fails", writer.CreateUnsignedInteger(test_stat_fails.load()));
 	obj.Add("skip-mode", writer.CreateUnsignedInteger(test_stat_skip_mode.load()));
+	if (!partial_skip_reasons.empty()) {
+		auto reasons = writer.CreateArray();
+		for (auto &reason : partial_skip_reasons) {
+			reasons.AppendString(reason);
+		}
+		obj.Add("partial-skip-reasons", reasons);
+	}
 	if (!data.empty()) {
 		obj.AddString("data", data);
 	}
@@ -229,9 +263,21 @@ ExtensionLoadResult SQLLogicTestRunner::LoadExtension(DuckDB &db, const std::str
 	auto &test_config = TestConfiguration::Get();
 	Connection con(db);
 	if (test_config.GetExtensionAutoLoadingMode() == TestConfiguration::ExtensionAutoLoadingMode::NONE) {
-		// try INSTALL extension
-		auto repo = test_config.GetLocalExtensionRepository();
-		con.Query("INSTALL " + extension + " FROM '" + repo + "'");
+		auto extension_path = extension;
+		if (!ExtensionHelper::IsFullPath(extension)) {
+			auto &fs = FileSystem::GetFileSystem(*con.context);
+			auto extension_name = ExtensionHelper::ApplyExtensionAlias(extension);
+			extension_path =
+			    fs.JoinPath(test_config.GetLocalExtensionRepository(), ExtensionHelper::GetVersionDirectoryName());
+			extension_path = fs.JoinPath(extension_path, DuckDB::Platform());
+			extension_path = fs.JoinPath(extension_path, extension_name + ".duckdb_extension");
+		}
+		try {
+			ExtensionHelper::LoadExternalExtension(*con.context, ExtensionLoadOptions(extension_path));
+			return ExtensionLoadResult::LOADED_EXTENSION;
+		} catch (std::exception &) {
+			return linked_result;
+		}
 	}
 
 	// try LOAD extension
@@ -245,9 +291,18 @@ ExtensionLoadResult SQLLogicTestRunner::LoadExtension(DuckDB &db, const std::str
 
 NewDatabaseConnection SQLLogicTestRunner::CreateDatabase(const string &db_path, bool load_extensions) {
 	NewDatabaseConnection result;
+	// a prefixed path (ducklake:...) loads its extension inside the DuckDB constructor, before LoadExtension can run
+	auto saved_extension_directories = config->options.extension_directories;
+	if (autoloading_mode == TestConfiguration::ExtensionAutoLoadingMode::NONE &&
+	    !ExtensionHelper::ExtractExtensionPrefixFromPath(db_path).empty()) {
+		config->options.extension_directories = {TestConfiguration::Get().GetLocalExtensionRepository()};
+	}
 	try {
 		result.db = make_uniq<DuckDB>(db_path, config.get());
+		config->options.extension_directories = saved_extension_directories;
+		result.db->instance->config.options.extension_directories = saved_extension_directories;
 		LoadStaticExtensions(*result.db);
+		ConfigureDefaultInMemoryTemporaryDirectory(*result.db, db_path);
 
 		// always load core functions
 		auto &test_config = TestConfiguration::Get();
@@ -255,6 +310,7 @@ NewDatabaseConnection SQLLogicTestRunner::CreateDatabase(const string &db_path, 
 			SQLLogicTestRunner::LoadExtension(*result.db, ext);
 		}
 	} catch (std::exception &ex) {
+		config->options.extension_directories = saved_extension_directories;
 		ErrorData err(ex);
 		SQLLogicTestLogger::LoadDatabaseFail(file_name, db_path, err.Message());
 		TEST_FAIL("");
@@ -287,6 +343,7 @@ unique_ptr<Connection> SQLLogicTestRunner::ConnectToDatabase(DuckDB &db_ref) {
 	auto result = make_uniq<Connection>(db_ref);
 	if (original_sqlite_test) {
 		result->Query("SET integer_division=true");
+		result->Query("SET error_on_division_by_zero=false");
 	}
 	result->Query("SET secret_directory='" + TestCreatePath("test_secret_dir") + "'");
 #ifdef DUCKDB_ALTERNATIVE_VERIFY
@@ -378,11 +435,11 @@ string SQLLogicTestRunner::ReplaceKeywords(string input) {
 	}
 	auto &test_config = TestConfiguration::Get();
 	test_config.ProcessPath(input, file_name);
-	input = StringUtil::Replace(input, "{BUILD_DIRECTORY}", DUCKDB_BUILD_DIRECTORY);
+	input = StringUtil::Replace(input, "{BUILD_DIRECTORY}", TestBuildDirectory());
 	if (StringUtil::Contains(input, "__BUILD_DIRECTORY__")) {
 		Printer::PrintF("Replacing deprecated __BUILD_DIRECTORY__ in test %s - please replace with {BUILD_DIRECTORY}",
 		                file_name);
-		input = StringUtil::Replace(input, "__BUILD_DIRECTORY__", DUCKDB_BUILD_DIRECTORY);
+		input = StringUtil::Replace(input, "__BUILD_DIRECTORY__", TestBuildDirectory());
 	}
 
 	return input;
@@ -457,6 +514,14 @@ RequireResult SQLLogicTestRunner::CheckRequire(SQLLogicParser &parser, const vec
 #endif
 	}
 
+	if (param == "linux") {
+#ifndef __linux__
+		return RequireResult::MISSING;
+#else
+		return RequireResult::PRESENT;
+#endif
+	}
+
 	if (param == "longdouble") {
 #if LDBL_MANT_DIG < 54
 		return RequireResult::MISSING;
@@ -500,7 +565,7 @@ RequireResult SQLLogicTestRunner::CheckRequire(SQLLogicParser &parser, const vec
 			parser.Fail("require ram requires a parameter");
 		}
 		// require a minimum amount of ram
-		auto required_limit = DBConfig::ParseMemoryLimit(params[1]);
+		auto required_limit = DBConfig::ParseMemoryLimitOrMaximum(params[1]);
 		auto limit = FileSystem::GetAvailableMemory();
 		if (!limit.IsValid()) {
 			return RequireResult::MISSING;
@@ -516,7 +581,7 @@ RequireResult SQLLogicTestRunner::CheckRequire(SQLLogicParser &parser, const vec
 			parser.Fail("require disk_space requires a parameter");
 		}
 		// require a minimum amount of disk space
-		auto required_limit = DBConfig::ParseMemoryLimit(params[1]);
+		auto required_limit = DBConfig::ParseMemoryLimitOrMaximum(params[1]);
 		auto available_space = FileSystem::GetAvailableDiskSpace(".");
 		if (!available_space.IsValid()) {
 			return RequireResult::MISSING;
@@ -746,14 +811,18 @@ void add_env_tag(vector<string> &tags, const string &name, const string *value =
 	}
 }
 
-void SQLLogicTestRunner::ConfigureDefaultInMemoryTemporaryDirectory(const string &script) {
-	if (!dbpath.empty() || !config->options.use_temporary_directory || config->options.temporary_directory != ".tmp") {
+void SQLLogicTestRunner::ConfigureDefaultInMemoryTemporaryDirectory(DuckDB &database, const string &db_path) {
+	auto &db_config = DBConfig::GetConfig(*database.instance);
+	if (!db_path.empty() || !db_config.options.use_temporary_directory ||
+	    db_config.options.temporary_directory != ".tmp" || !Settings::Get<EnableExternalAccessSetting>(db_config)) {
 		return;
 	}
-	auto normalized_script = StringUtil::Replace(script, "\\", "/");
+	auto normalized_script = StringUtil::Replace(file_name, "\\", "/");
 	auto temp_directory_name = StringUtil::Replace(normalized_script, "/", "_");
-	auto temp_directory = TestJoinPath(TestJoinPath(TestDirectoryPath(), "sqllogic_temp"), temp_directory_name);
-	config->SetOptionByName("temp_directory", temp_directory);
+	// an absolute Windows path has a drive colon, which a directory name cannot contain
+	temp_directory_name = StringUtil::Replace(temp_directory_name, ":", "_");
+	auto temp_directory = TestJoinPath(TestDirectoryPath(), "sqllogic_temp_" + temp_directory_name);
+	db_config.SetOption(database.instance.get(), *DBConfig::GetOptionByName("temp_directory"), temp_directory);
 }
 
 void SQLLogicTestRunner::ExecuteFile(string script) {
@@ -801,10 +870,6 @@ void SQLLogicTestRunner::ExecuteInternal(SQLLogicParser &parser, const string &s
 		ignore_error_messages.insert(ignore);
 	}
 
-	// In-memory sqllogictests otherwise share ".tmp" across unittest processes.
-	// Give each script its own spill directory under the per-process TEST_DIR.
-	ConfigureDefaultInMemoryTemporaryDirectory(script);
-
 	// initialize the database with the default dbpath
 	LoadDatabase(dbpath, true);
 
@@ -817,8 +882,10 @@ void SQLLogicTestRunner::ExecuteInternal(SQLLogicParser &parser, const string &s
 		ExecuteScript(init_parser, script);
 	}
 
+	EmitStatusEvent("execution-begin", script, "", "");
 	ExecuteScript(parser, script);
 
+	EmitExecutionComplete(script, test_skipped_requirement ? "skip-requirement" : "ok", test_skip_reason);
 	auto cleanup_sqllogic = test_config.GetCleanupSqllogic();
 	if (!cleanup_sqllogic.empty()) {
 		SQLLogicParser cleanup_parser;
@@ -1039,7 +1106,9 @@ void SQLLogicTestRunner::ExecuteScript(SQLLogicParser &parser, const string &scr
 						reason += " " + token.parameters[i];
 					}
 				}
-				AddSkipReason("mode skip " + reason);
+				auto skip_reason = "mode skip " + reason;
+				AddSkipReason(skip_reason);
+				partial_skip_reasons.insert(std::move(skip_reason));
 				skip_level++;
 			} else if (parameter == "unskip") {
 				skip_level--;
@@ -1186,14 +1255,19 @@ void SQLLogicTestRunner::ExecuteScript(SQLLogicParser &parser, const string &scr
 			environment_variables[env_var] = env_actual;
 			add_env_tag(file_tags, env_var, &env_actual);
 
-		} else if (token.type == SQLLogicTokenType::SQLLOGIC_REQUIRE_ENV) {
+		} else if (token.type == SQLLogicTokenType::SQLLOGIC_REQUIRE_ENV ||
+		           token.type == SQLLogicTokenType::SQLLOGIC_REQUIRE_ENV_NOT) {
+			auto exclude_values = token.type == SQLLogicTokenType::SQLLOGIC_REQUIRE_ENV_NOT;
+			string directive = exclude_values ? "require-env-not" : "require-env";
 			if (InLoop()) {
-				parser.Fail("require-env cannot be called in a loop");
+				parser.Fail("%s cannot be called in a loop", directive);
 			}
 
-			if (token.parameters.size() != 1 && token.parameters.size() != 2) {
-				parser.Fail("require-env requires 1 argument: <env name> [optional: <expected env val>]");
+			if (token.parameters.empty()) {
+				parser.Fail(exclude_values ? "require-env-not requires <env name> [excluded value ...]"
+				                           : "require-env requires <env name> [expected value ...]");
 			}
+			auto skip_reason = directive + " " + StringUtil::Join(token.parameters, " ");
 
 			auto &test_config = TestConfiguration::Get();
 			auto env_var = token.parameters[0];
@@ -1207,7 +1281,7 @@ void SQLLogicTestRunner::ExecuteScript(SQLLogicParser &parser, const string &scr
 			} else {
 				env_actual = std::getenv(env_var.c_str());
 			}
-			string default_local_repo = string(DUCKDB_BUILD_DIRECTORY) + "/repository";
+			string default_local_repo = TestBuildDirectory() + "/repository";
 			if (env_actual == nullptr && env_var == "LOCAL_EXTENSION_REPO" &&
 			    Settings::Get<AutoloadKnownExtensionsSetting>(*config)) {
 				// Overriding LOCAL_EXTENSION_REPO here is a hacky
@@ -1215,29 +1289,41 @@ void SQLLogicTestRunner::ExecuteScript(SQLLogicParser &parser, const string &scr
 				// variables
 				env_actual = default_local_repo.c_str();
 			}
+			if (exclude_values && token.parameters.size() == 1) {
+				if (env_actual != nullptr) {
+					SkipTest(skip_reason);
+					return;
+				}
+				// An absent variable has no value to register for substitution or tagging.
+				continue;
+			}
 			if (env_actual == nullptr) {
 				// Environment variable was not found, this test should not be run
-				SkipTest("require-env " + token.parameters[0]);
+				SkipTest(skip_reason);
 				return;
 			}
 
-			if (token.parameters.size() == 2) {
-				// Check that the value is the same as the expected value
-				auto env_value = token.parameters[1];
-				if (std::strcmp(env_actual, env_value.c_str()) != 0) {
-					// It's not, check the test
-					SkipTest("require-env " + token.parameters[0] + " " + token.parameters[1]);
+			if (token.parameters.size() > 1) {
+				bool matches = false;
+				for (idx_t i = 1; i < token.parameters.size(); i++) {
+					if (token.parameters[i] == env_actual) {
+						matches = true;
+						break;
+					}
+				}
+				if (matches == exclude_values) {
+					SkipTest(skip_reason);
 					return;
 				}
 
-				file_tags.emplace_back(StringUtil::Format("env[%s]=%s", token.parameters[0], token.parameters[1]));
+				file_tags.emplace_back(StringUtil::Format("env[%s]=%s", env_var, env_actual));
 			}
 
 			if (!test_env_defined && !env_passed_through && environment_variables.count(env_var)) {
 				parser.Fail(StringUtil::Format("Environment variable '%s' has already been defined", env_var));
 			}
 			environment_variables[env_var] = env_actual;
-			add_env_tag(file_tags, token.parameters[0], token.parameters.size() == 2 ? &token.parameters[1] : nullptr);
+			add_env_tag(file_tags, env_var, token.parameters.size() > 1 ? &environment_variables[env_var] : nullptr);
 
 		} else if (token.type == SQLLogicTokenType::SQLLOGIC_LOAD) {
 			auto &test_config = TestConfiguration::Get();
@@ -1294,6 +1380,7 @@ void SQLLogicTestRunner::ExecuteScript(SQLLogicParser &parser, const string &scr
 			auto sleep_duration = std::stoull(token.parameters[0]);
 			auto sleep_unit = SleepCommand::ParseUnit(token.parameters[1]);
 			auto command = make_uniq<SleepCommand>(*this, sleep_duration, sleep_unit);
+			command->conditions = std::move(conditions);
 			ExecuteCommand(std::move(command));
 		} else if (token.type == SQLLogicTokenType::SQLLOGIC_UNZIP) {
 			if (token.parameters.size() != 1 && token.parameters.size() != 2) {

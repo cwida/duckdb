@@ -1,0 +1,48 @@
+# name: test/sql/storage/types/variant/variant_object_key_order_shredded_json.test
+# description: the JSON cast renders equal VARIANT values identically in shredded and unshredded row groups
+# group: [variant]
+
+require json
+
+load {TEST_DIR}/variant_object_key_order_shredded_json.db readwrite v1.5.0
+
+statement ok
+SET variant_minimum_shredding_size = 1000;
+
+statement ok
+CREATE TABLE t(id BIGINT, v VARIANT);
+
+statement ok
+INSERT INTO t SELECT i, {'o': {'x': 42}, 'l': [42]}::VARIANT FROM range(0, 3000) tt(i);
+
+statement ok
+CHECKPOINT;
+
+statement ok
+INSERT INTO t SELECT i, {'o': {'x': 42}, 'l': [42]}::VARIANT FROM range(100000, 100005) tt(i);
+
+statement ok
+CHECKPOINT;
+
+restart
+
+query I
+SELECT vector_type(v) FROM t WHERE id = 1;
+----
+SHREDDED_VECTOR
+
+query I
+SELECT vector_type(v) FROM t WHERE id = 100000;
+----
+FLAT_VECTOR
+
+query II
+SELECT count(DISTINCT CAST(v AS JSON)), count(*) FROM t;
+----
+1	3005
+
+query III
+SELECT id, CAST(v AS JSON), CAST(v AS VARCHAR) FROM t WHERE id IN (1, 100000) ORDER BY id;
+----
+1	{"l":[42],"o":{"x":42}}	{'l': [42], 'o': {'x': 42}}
+100000	{"l":[42],"o":{"x":42}}	{'l': [42], 'o': {'x': 42}}

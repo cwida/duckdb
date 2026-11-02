@@ -202,8 +202,7 @@ int strtodt(date_t *dest, char *s) {
 	}
 
 	if (sscanf(s, "%4d-%d-%d", &dest->year, &dest->month, &dest->day) != 3) {
-		fprintf(stderr, "ERROR: Invalid string to date conversion in strtodt\n");
-		nRetCode = -1;
+		INTERNAL("Invalid string to date conversion in strtodt");
 	}
 
 	dest->julian = dttoj(dest);
@@ -241,26 +240,6 @@ char *dttostr(date_t *d) {
 	sprintf(res, "%4d-%02d-%02d", d->year, d->month, d->day);
 
 	return (res);
-}
-
-/*
- * Routine: date_init
- * Purpose: set the date handling parameters
- * Algorithm:
- * Data Structures:
- *
- * Params: None
- * Returns: int; 0 on success
- * Called By:
- * Calls:
- * Assumptions:
- * Side Effects:
- * TODO: None
- */
-int date_init(void) {
-	printf("date_init is not yet complete\n");
-	exit(1);
-	return (0);
 }
 
 /*

@@ -45,9 +45,6 @@ public:
 	}
 	//! Find and move out an IndexStorageInfo by name from the stored collection.
 	IndexStorageInfo ExtractIndexStorageInfo(const Identifier &name);
-	unique_ptr<StorageLockKey> GetSharedLock() {
-		return checkpoint_lock.GetSharedLock();
-	}
 	bool AppendRequiresNewRowGroup(RowGroupCollection &collection, optional_idx checkpoint_id);
 	optional_idx CheckpointRowGroupCount(const CheckpointOptions &options) const;
 	void VerifyIndexBuffers() const;
@@ -73,8 +70,6 @@ private:
 	TableIndexList indexes;
 	//! Index storage information of the indexes created by this table
 	vector<IndexStorageInfo> index_storage_infos;
-	//! Lock held while checkpointing
-	StorageLock checkpoint_lock;
 	//! The last seen checkpoint while doing a concurrent operation, if any
 	optional_idx last_seen_checkpoint;
 	//! The amount of row groups the checkpoint is processing

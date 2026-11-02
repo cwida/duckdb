@@ -14,6 +14,8 @@
 #include "duckdb/common/enums/subquery_type.hpp"
 #include "duckdb/common/exception/conversion_exception.hpp"
 #include "duckdb/parser/expression/cast_expression.hpp"
+#include "duckdb/catalog/default/default_types.hpp"
+#include "duckdb/parser/expression/type_expression.hpp"
 #include "duckdb/parser/query_node/set_operation_node.hpp"
 #include "duckdb/parser/statement/merge_into_statement.hpp"
 #include "duckdb/parser/constraints/foreign_key_constraint.hpp"
@@ -36,8 +38,9 @@ static unique_ptr<SQLStatement> ExtractAndTransformStatement(PEGTransformer &tra
 	transformer.Clear();
 
 	// Calculate location and length cleanly
-	if (stmt_pr.offset.IsValid()) {
-		auto start = stmt_pr.offset.GetIndex();
+	auto offset = stmt_pr.GetOffset();
+	if (offset.IsValid()) {
+		auto start = offset.GetIndex();
 		idx_t end_index = terminator_offset.IsValid() ? terminator_offset.GetIndex() : token_iterator.EndOffset();
 		stmt->stmt_location = QueryLocation(start, end_index - start);
 	}
@@ -47,37 +50,26 @@ static unique_ptr<SQLStatement> ExtractAndTransformStatement(PEGTransformer &tra
 
 unique_ptr<SQLStatement> PEGTransformerFactory::TransformTopLevelStatement(TokenIterator &token_iterator,
                                                                            ParserOptions &options,
-                                                                           const CompiledGrammar &grammar) {
+                                                                           const CompiledGrammar &grammar,
+                                                                           optional_idx &failure_index) {
 	if (!token_iterator.Current()) {
 		return nullptr;
 	}
 	vector<MatcherSuggestion> suggestions;
 	ParseResultAllocator parse_result_allocator;
-	ParserPackratCache packrat_cache;
 	idx_t max_token_index = token_iterator.Position();
+	// the packrat cache outlives the match processes, so they need separate arenas
 	ArenaAllocator process_allocator(Allocator::DefaultAllocator());
+	ArenaAllocator packrat_allocator(Allocator::DefaultAllocator());
+	ParserPackratCache packrat_cache(packrat_allocator, token_iterator.Position(), token_iterator.Size());
 	MatchContext match_context(suggestions, parse_result_allocator, process_allocator, max_token_index,
 	                           MatchMode::BUILD_PARSE_RESULT, options.identifier_case_mode, &packrat_cache);
 	MatchState state(token_iterator, match_context);
 	auto match_result = grammar.TopLevelStatementMatcher().MatchParseResult(state);
 	process_allocator.FreeAll();
 	if (!match_result.IsSuccess()) {
-		// syntax error — surface as a parser exception in the same shape as Transform()
-		auto token_stream = token_iterator.ToString();
-		idx_t error_token_idx = state.GetMaxTokenIndex();
-		if (error_token_idx >= token_iterator.Size()) {
-			error_token_idx = token_iterator.Size() - 1;
-		}
-		// Walk back past the EOI sentinel so the error message names a real token.
-		if (error_token_idx > 0 &&
-		    (token_iterator.GetToken(error_token_idx).type == TokenType::END_OF_INPUT ||
-		     token_iterator.GetToken(error_token_idx).type == TokenType::END_OF_INPUT_AUTOCOMPLETE)) {
-			error_token_idx--;
-		}
-		auto &error_token = token_iterator.GetToken(error_token_idx);
-		auto error_message = "syntax error at or near \"" + error_token.text + "\"";
-		throw ParserException::SyntaxError(token_stream, error_message,
-		                                   QueryLocation(error_token.offset, error_token.length));
+		failure_index = state.GetMaxTokenIndex();
+		return nullptr;
 	}
 	D_ASSERT(match_result.HasParseResult());
 
@@ -99,7 +91,7 @@ unique_ptr<SQLStatement> PEGTransformerFactory::TransformTopLevelStatement(Token
 	if (term_inner.type != ParseResultType::END_OF_INPUT) {
 		auto semi_children = term_inner.Cast<RepeatParseResult>().GetChildren();
 		if (!semi_children.empty()) {
-			terminator_offset = semi_children[0].get().offset;
+			terminator_offset = semi_children[0].get().GetOffset();
 		}
 	}
 
@@ -110,34 +102,109 @@ unique_ptr<SQLStatement> PEGTransformerFactory::TransformTopLevelStatement(Token
 }
 
 PEGTransformerFactory::PEGTransformerFactory(ParsedGrammar &grammar_p) : grammar(grammar_p) {
+	case_insensitive_set_t collapsible_rules;
+	//===--------------------------------------------------------------------===//
+	// START GENERATED COLLAPSIBLE RULES
+	//===--------------------------------------------------------------------===//
+	collapsible_rules.insert("Expression");
+	collapsible_rules.insert("ColumnDefaultExpr");
+	collapsible_rules.insert("LambdaArrowExpression");
+	collapsible_rules.insert("LogicalOrExpression");
+	collapsible_rules.insert("ColDefOrExpr");
+	collapsible_rules.insert("LogicalAndExpression");
+	collapsible_rules.insert("ColDefAndExpr");
+	collapsible_rules.insert("LogicalNotExpression");
+	collapsible_rules.insert("IsExpression");
+	collapsible_rules.insert("IsDistinctFromExpression");
+	collapsible_rules.insert("ComparisonExpression");
+	collapsible_rules.insert("BetweenInLikeExpression");
+	collapsible_rules.insert("OtherOperatorExpression");
+	collapsible_rules.insert("InfixOtherOperatorExpression");
+	collapsible_rules.insert("BitwiseExpression");
+	collapsible_rules.insert("TildeExpression");
+	collapsible_rules.insert("AdditiveExpression");
+	collapsible_rules.insert("MultiplicativeExpression");
+	collapsible_rules.insert("ExponentiationExpression");
+	collapsible_rules.insert("CollateExpression");
+	collapsible_rules.insert("AtTimeZoneExpression");
+	collapsible_rules.insert("PrefixExpression");
+	collapsible_rules.insert("BaseExpression");
+	collapsible_rules.insert("SelectSetOpChain");
+	collapsible_rules.insert("IntersectChain");
+	collapsible_rules.insert("TableRef");
+	//===--------------------------------------------------------------------===//
+	// END GENERATED COLLAPSIBLE RULES
+	//===--------------------------------------------------------------------===//
+
 	for (auto &entry : GeneratedTransformFrameOps()) {
 		auto process_info = entry.second;
 		grammar.SetTransformProcess(
 		    entry.first,
-		    [process_info](PEGTransformer &transformer, ParseResult &parse_result) -> unique_ptr<TransformProcess> {
-			    return make_uniq<GeneratedTransformProcess>(transformer, TransformInput {parse_result}, *process_info);
-		    });
+		    [process_info](PEGTransformer &transformer, ParseResult &parse_result) -> arena_ptr<TransformProcess> {
+			    return transformer.MakeProcess<GeneratedTransformProcess>(transformer, TransformInput {parse_result},
+			                                                              *process_info);
+		    },
+		    collapsible_rules.count(entry.first) > 0);
 	}
+	//===--------------------------------------------------------------------===//
+	// START GENERATED EXPRESSION DEPTH RULES
+	//===--------------------------------------------------------------------===//
+	grammar.SetExpressionDepth("SingleExpression", ExpressionDepthKind::NESTING);
+	grammar.SetExpressionDepth("Type", ExpressionDepthKind::NESTING);
+	grammar.SetExpressionDepth("NestedType", ExpressionDepthKind::NESTING);
+	grammar.SetExpressionDepth("SubqueryReference", ExpressionDepthKind::NESTING);
+	grammar.SetExpressionDepth("CustomPrefixExpression", ExpressionDepthKind::NESTING);
+	grammar.SetExpressionDepth("LambdaArrowExpression", ExpressionDepthKind::CHAIN);
+	grammar.SetExpressionDepth("NotExpression", ExpressionDepthKind::CHAIN);
+	grammar.SetExpressionDepth("IsExpressionContinuation", ExpressionDepthKind::CHAIN);
+	grammar.SetExpressionDepth("IsDistinctFromExpression", ExpressionDepthKind::CHAIN);
+	grammar.SetExpressionDepth("ComparisonExpression", ExpressionDepthKind::CHAIN);
+	grammar.SetExpressionDepth("BetweenInLikeExpression", ExpressionDepthKind::CHAIN);
+	grammar.SetExpressionDepth("InfixOtherOperatorExpression", ExpressionDepthKind::CHAIN);
+	grammar.SetExpressionDepth("BitwiseExpression", ExpressionDepthKind::CHAIN);
+	grammar.SetExpressionDepth("TildeExpression", ExpressionDepthKind::CHAIN);
+	grammar.SetExpressionDepth("AdditiveExpression", ExpressionDepthKind::CHAIN);
+	grammar.SetExpressionDepth("MultiplicativeExpression", ExpressionDepthKind::CHAIN);
+	grammar.SetExpressionDepth("ExponentiationExpression", ExpressionDepthKind::CHAIN);
+	grammar.SetExpressionDepth("CollateExpression", ExpressionDepthKind::CHAIN);
+	grammar.SetExpressionDepth("AtTimeZoneExpression", ExpressionDepthKind::CHAIN);
+	grammar.SetExpressionDepth("PrefixExpression", ExpressionDepthKind::CHAIN);
+	grammar.SetExpressionDepth("IndirectionList", ExpressionDepthKind::CHAIN);
+	//===--------------------------------------------------------------------===//
+	// END GENERATED EXPRESSION DEPTH RULES
+	//===--------------------------------------------------------------------===//
 }
 
 void PEGTransformerFactory::RegisterDefaultTransforms(ParsedGrammar &grammar) {
 	PEGTransformerFactory factory(grammar);
 }
 
-vector<reference<ParseResult>> PEGTransformerFactory::ExtractParseResultsFromList(ParseResult &parse_result) {
-	// List(D) <- D (',' D)* ','?
-	vector<reference<ParseResult>> result;
+template <class FUNC>
+static idx_t VisitParseResultsFromList(ParseResult &parse_result, FUNC &&func) {
+	// List(D) <- D (',' D)* ','?; validate every child before returning, including when only counting.
 	auto &list_pr = parse_result.Cast<ListParseResult>();
-	result.push_back(list_pr.GetChild(0));
+	func(list_pr.GetChild(0));
+	idx_t count = 1;
 	auto &opt_child = list_pr.Child<OptionalParseResult>(1);
 	if (opt_child.HasResult()) {
 		auto &repeat_result = opt_child.GetResult().Cast<RepeatParseResult>();
 		for (auto &child : repeat_result.GetChildren()) {
 			auto &list_child = child.get().Cast<ListParseResult>();
-			result.push_back(list_child.GetChild(1));
+			func(list_child.GetChild(1));
+			count++;
 		}
 	}
+	return count;
+}
+
+vector<reference<ParseResult>> PEGTransformerFactory::ExtractParseResultsFromList(ParseResult &parse_result) {
+	vector<reference<ParseResult>> result;
+	VisitParseResultsFromList(parse_result, [&result](ParseResult &child) { result.push_back(child); });
 	return result;
+}
+
+idx_t PEGTransformerFactory::CountParseResultsFromList(ParseResult &parse_result) {
+	return VisitParseResultsFromList(parse_result, [](ParseResult &) {});
 }
 
 ParseResult &PEGTransformerFactory::ExtractResultFromParens(ParseResult &parse_result) {
@@ -151,25 +218,33 @@ bool PEGTransformerFactory::ExpressionIsEmptyStar(const ParsedExpression &expr) 
 		return false;
 	}
 	auto &star = expr.Cast<StarExpression>();
-	if (!star.IsColumns() && star.ExcludeList().empty() && star.ReplaceList().empty()) {
-		return true;
+	if (star.IsColumns()) {
+		return false;
 	}
-	return false;
+	if (!star.ExcludeList().empty()) {
+		return false;
+	}
+	if (!star.ReplaceList().empty()) {
+		return false;
+	}
+	if (!star.RenameList().empty()) {
+		return false;
+	}
+	return true;
 }
 
 QualifiedName PEGTransformerFactory::StringToQualifiedName(vector<string> input) {
 	if (input.empty()) {
 		throw InternalException("QualifiedName cannot be made with an empty input.");
 	}
-	if (input.size() == 1) {
-		return QualifiedName(Identifier(input[0]));
-	} else if (input.size() == 2) {
-		return QualifiedName({Identifier(input[0])}, Identifier(input[1]));
-	} else if (input.size() == 3) {
-		return QualifiedName(Identifier(input[0]), Identifier(input[1]), Identifier(input[2]));
-	} else {
-		throw ParserException("Too many qualifications found - expected [catalog.schema.name] or [schema.name]");
+	// Store the qualification as the full path - it may be deeper than [catalog, schema, name] for nested
+	// schemas. The leading component is resolved to a catalog at bind time (Binder::BindTableName).
+	vector<Identifier> path;
+	path.reserve(input.size());
+	for (auto &part : input) {
+		path.emplace_back(std::move(part));
 	}
+	return QualifiedName::FromPath(std::move(path));
 }
 
 QualifiedColumnName PEGTransformerFactory::StringToQualifiedColumnName(const vector<string> &input) {
@@ -220,6 +295,27 @@ LogicalType PEGTransformerFactory::GetIntervalTargetType(DatePartSpecifier date_
 	default:
 		throw InternalException("Unsupported interval post-fix");
 	}
+}
+
+LogicalType PEGTransformerFactory::ApplyColumnCollation(const optional<LogicalType> &type,
+                                                        unique_ptr<ParsedExpression> collation) {
+	if (!type) {
+		throw ParserException("Specify the VARCHAR type to set a collation");
+	}
+	if (!type->IsUnbound()) {
+		throw InternalException("Expected only unbound types here");
+	}
+	auto &expr = UnboundType::GetTypeExpression(*type);
+	if (expr->GetExpressionClass() != ExpressionClass::TYPE) {
+		throw InternalException("Expected a type expression");
+	}
+	auto &type_expr = expr->Cast<TypeExpression>();
+	if (DefaultTypeGenerator::GetDefaultType(type_expr.GetTypeName()) != LogicalTypeId::VARCHAR) {
+		throw ParserException("Only VARCHAR columns can have collations!");
+	}
+	vector<unique_ptr<ParsedExpression>> type_children;
+	type_children.push_back(std::move(collation));
+	return LogicalType::UNBOUND(make_uniq<TypeExpression>(Identifier("VARCHAR"), std::move(type_children)));
 }
 
 } // namespace duckdb

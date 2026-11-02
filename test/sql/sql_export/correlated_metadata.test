@@ -1,0 +1,191 @@
+# name: test/sql/sql_export/correlated_metadata.test
+# description: SQL export accepts decorrelated CTE references and guards grouped MARK semantics
+# group: [sql_export]
+
+statement ok
+SET debug_verify_statement='explain_sql_strict';
+
+statement ok
+SET threads=1;
+
+query TT rowsort
+SELECT i, (WITH c AS MATERIALIZED (SELECT i x) SELECT count(*) FROM c) FROM range(3) t(i);
+----
+0	1
+1	1
+2	1
+
+query TT rowsort
+SELECT i, (WITH c AS MATERIALIZED (SELECT i x) SELECT x FROM c) FROM range(3) t(i);
+----
+0	0
+1	1
+2	2
+
+query TT rowsort
+SELECT i, (WITH c AS MATERIALIZED (SELECT i x) SELECT a.x FROM c a, c b WHERE a.x=b.x) FROM range(3) t(i);
+----
+0	0
+1	1
+2	2
+
+query TT rowsort
+SELECT i, (WITH RECURSIVE c(x) AS (SELECT i UNION ALL SELECT x+1 FROM c WHERE x<i+2) SELECT count(*) FROM c) FROM range(3) t(i);
+----
+0	3
+1	3
+2	3
+
+query TT rowsort
+SELECT i, (WITH c AS MATERIALIZED (SELECT i x WHERE i IS NOT NULL) SELECT count(*) FROM c) FROM (VALUES (1),(NULL),(1))t(i);
+----
+1	1
+1	1
+NULL	0
+
+query TT rowsort
+SELECT i, (WITH c AS MATERIALIZED (SELECT i+1 x) SELECT a.x+b.x FROM c a,c b) FROM (VALUES (1),(1),(NULL))t(i);
+----
+1	4
+1	4
+NULL	NULL
+
+query TT rowsort
+SELECT i, (WITH c AS MATERIALIZED (SELECT i x), d AS MATERIALIZED (SELECT x+1 y FROM c) SELECT y FROM d) FROM range(3)t(i);
+----
+0	1
+1	2
+2	3
+
+query TT rowsort
+SELECT i, (WITH RECURSIVE c(x) AS (SELECT i UNION SELECT x+1 FROM c WHERE x<i+2) SELECT count(*) FROM c) FROM (VALUES (1),(1),(NULL))t(i);
+----
+1	3
+1	3
+NULL	1
+
+query TTT rowsort
+SELECT i,j, (WITH RECURSIVE c(x) AS (SELECT i UNION ALL SELECT x+1 FROM c WHERE x<j) SELECT count(*) FROM c) FROM (VALUES (1,3),(1,3),(NULL,2),(2,NULL))t(i,j);
+----
+1	3	3
+1	3	3
+2	NULL	1
+NULL	2	1
+
+query TT rowsort
+SELECT i, (WITH RECURSIVE c(x) AS MATERIALIZED (SELECT i UNION ALL SELECT x+1 FROM c WHERE x<i+2) SELECT count(*) FROM c) FROM range(3)t(i);
+----
+0	3
+1	3
+2	3
+
+statement ok
+CREATE TABLE lhs(k DOUBLE,x INTEGER);
+
+statement ok
+INSERT INTO lhs VALUES (1,10),(1,10),(2,20),(3,NULL),(4,40),(NULL,50);
+
+statement ok
+CREATE TABLE rhs(k DOUBLE,y INTEGER);
+
+statement ok
+INSERT INTO rhs VALUES (1,10),(1,NULL),(2,99),(NULL,NULL);
+
+query TTT rowsort
+SELECT o.k,o.x,EXISTS(SELECT 1 FROM rhs r WHERE r.k=o.k) FROM lhs o;
+----
+1.0	10	true
+1.0	10	true
+2.0	20	true
+3.0	NULL	false
+4.0	40	false
+NULL	50	false
+
+query TTT rowsort
+SELECT o.k,o.x,EXISTS(SELECT 1 FROM rhs r WHERE r.k=o.k AND r.y=o.x) FROM lhs o;
+----
+1.0	10	true
+1.0	10	true
+2.0	20	false
+3.0	NULL	false
+4.0	40	false
+NULL	50	false
+
+query TTT rowsort
+SELECT o.k,o.x,EXISTS(SELECT 1 FROM rhs r WHERE r.k IS NOT DISTINCT FROM o.k) FROM lhs o;
+----
+1.0	10	true
+1.0	10	true
+2.0	20	true
+3.0	NULL	false
+4.0	40	false
+NULL	50	true
+
+query TT
+EXPLAIN SELECT o.k,o.x,o.x=ANY(SELECT r.y FROM rhs r WHERE r.k=o.k) FROM lhs o;
+----
+physical_plan	<REGEX>:.*Hash Join.*
+
+query TTT rowsort
+SELECT o.k,o.x,o.x=ANY(SELECT r.y FROM rhs r WHERE r.k=o.k) FROM lhs o;
+----
+1.0	10	true
+1.0	10	true
+2.0	20	false
+3.0	NULL	false
+4.0	40	false
+NULL	50	false
+
+query TT
+EXPLAIN SELECT o.k,o.x,o.x<>ALL(SELECT r.y FROM rhs r WHERE r.k=o.k) FROM lhs o;
+----
+physical_plan	<REGEX>:.*Hash Join.*
+
+query TTT rowsort
+SELECT o.k,o.x,o.x<>ALL(SELECT r.y FROM rhs r WHERE r.k=o.k) FROM lhs o;
+----
+1.0	10	false
+1.0	10	false
+2.0	20	true
+3.0	NULL	true
+4.0	40	true
+NULL	50	true
+
+statement ok
+CREATE TABLE union_l(g INTEGER,x UNION(i INTEGER,s VARCHAR));
+
+statement ok
+CREATE TABLE union_r(g INTEGER,y UNION(i INTEGER,s VARCHAR));
+
+statement ok
+INSERT INTO union_l VALUES (1,union_value(i:=NULL));
+
+statement ok
+INSERT INTO union_r VALUES (1,union_value(i:=NULL));
+
+statement error
+EXPLAIN (SQL) SELECT x=ANY(SELECT y FROM union_r r WHERE r.g=l.g) FROM union_l l;
+----
+<REGEX>:.*EXPLAIN \(SQL\) cannot render this query: The MARK condition requires conjunction execution semantics.*
+
+statement ok
+CREATE TABLE list_l(g INTEGER,x INTEGER[]);
+
+statement ok
+CREATE TABLE list_r(g INTEGER,y INTEGER[]);
+
+statement ok
+INSERT INTO list_l VALUES (1,[10,NULL]);
+
+statement ok
+INSERT INTO list_r VALUES (1,NULL);
+
+query T rowsort
+SELECT x=ANY(SELECT y FROM list_r r WHERE r.g=l.g) FROM list_l l;
+----
+NULL
+
+query T rowsort
+SELECT x<ANY(SELECT y FROM list_r r WHERE r.g=l.g) FROM list_l l;
+----
+NULL

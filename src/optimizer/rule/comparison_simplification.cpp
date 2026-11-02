@@ -16,7 +16,11 @@ static bool DateTimestampComparisonIsInvertible(ClientContext &context, BoundFun
                                                 BoundFunctionExpression &cast_expression, const Value &constant_value,
                                                 Value &cast_constant, bool column_ref_left,
                                                 unique_ptr<Expression> &replacement) {
-	if (Timestamp::GetTime(constant_value.GetValue<timestamp_t>()) == dtime_t(0)) {
+	auto timestamp = constant_value.GetValue<timestamp_t>();
+	if (!timestamp.IsFinite()) {
+		return false;
+	}
+	if (Timestamp::GetTime(timestamp) == dtime_t(0)) {
 		return true; // it's midnight: no replacement needed
 	}
 	auto op = expr.GetExpressionType();
@@ -73,6 +77,34 @@ static bool DateTimestampComparisonIsInvertible(ClientContext &context, BoundFun
 	return true;
 }
 
+static bool IsLosslessIntegralToFloatingCast(const LogicalType &source_type, const LogicalType &target_type) {
+	if (target_type.id() == LogicalTypeId::DOUBLE) {
+		switch (source_type.id()) {
+		case LogicalTypeId::TINYINT:
+		case LogicalTypeId::SMALLINT:
+		case LogicalTypeId::INTEGER:
+		case LogicalTypeId::UTINYINT:
+		case LogicalTypeId::USMALLINT:
+		case LogicalTypeId::UINTEGER:
+			return true;
+		default:
+			return false;
+		}
+	}
+	if (target_type.id() == LogicalTypeId::FLOAT) {
+		switch (source_type.id()) {
+		case LogicalTypeId::TINYINT:
+		case LogicalTypeId::SMALLINT:
+		case LogicalTypeId::UTINYINT:
+		case LogicalTypeId::USMALLINT:
+			return true;
+		default:
+			return false;
+		}
+	}
+	return false;
+}
+
 static bool ConstantCastIsInvertible(ClientContext &context, BoundFunctionExpression &expr,
                                      BoundFunctionExpression &cast_expression, const Value &constant_value,
                                      Value &cast_constant, const LogicalType &target_type, bool column_ref_left,
@@ -80,11 +112,20 @@ static bool ConstantCastIsInvertible(ClientContext &context, BoundFunctionExpres
 	if (cast_constant.IsNull() || BoundCastExpression::CastIsInvertible(cast_expression.GetReturnType(), target_type)) {
 		return true;
 	}
-	// This asks about the constant, not the column, and the constant was cast strictly just above - for
-	// integers that already proves it is exactly representable, so no type-level guarantee is needed. The
-	// column side is checked separately by the caller.
 	if (cast_expression.GetReturnType().IsIntegral() && target_type.IsIntegral()) {
 		return true;
+	}
+	// The constant must survive the integral round-trip exactly; the column side is checked by the caller.
+	if (IsLosslessIntegralToFloatingCast(target_type, cast_expression.GetReturnType())) {
+		string error_message;
+		auto roundtrip = cast_constant.TryCastAs(context, cast_expression.GetReturnType(), &error_message, true);
+		return roundtrip && *roundtrip == constant_value;
+	}
+	if (target_type.id() == LogicalTypeId::DECIMAL && cast_expression.GetReturnType().id() == LogicalTypeId::DECIMAL) {
+		// a narrowing decimal cast of the constant is fine if the constant round-trips exactly
+		string error_message;
+		auto roundtrip = cast_constant.TryCastAs(context, cast_expression.GetReturnType(), &error_message, true);
+		return roundtrip && *roundtrip == constant_value;
 	}
 	if (target_type.id() != LogicalTypeId::DATE || cast_expression.GetReturnType().id() != LogicalTypeId::TIMESTAMP) {
 		return false;
@@ -201,7 +242,8 @@ unique_ptr<Expression> ComparisonSimplificationRule::Apply(LogicalOperator &op, 
 		//! invertible in practice.
 		auto &cast_expression = column_ref_expr.Cast<BoundFunctionExpression>();
 		auto target_type = BoundCastExpression::SourceType(cast_expression);
-		if (!BoundCastExpression::CastIsInvertible(target_type, cast_expression.GetReturnType())) {
+		if (!BoundCastExpression::CastIsInvertible(target_type, cast_expression.GetReturnType()) &&
+		    !IsLosslessIntegralToFloatingCast(target_type, cast_expression.GetReturnType())) {
 			return nullptr;
 		}
 

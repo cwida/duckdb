@@ -1,0 +1,68 @@
+# name: test/sql/merge/merge_not_matched_by_source_join_order.test
+# description: MERGE WHEN NOT MATCHED BY SOURCE with RIGHT joins that are not flipped
+# group: [merge]
+
+foreach disabled_opt unnest_rewriter build_side_probe_side
+
+statement ok
+SET disabled_optimizers='{disabled_opt}';
+
+statement ok
+CREATE OR REPLACE TABLE Stock(item_id int, balance int);
+
+statement ok
+INSERT INTO Stock VALUES (5, 10), (10, 20), (15, 30);
+
+query II
+MERGE INTO Stock USING (VALUES (5)) new_accounts(item_id) USING (item_id)
+WHEN NOT MATCHED BY SOURCE AND balance = 30 THEN UPDATE SET balance = 0
+RETURNING merge_action, item_id;
+----
+UPDATE	15
+
+query II
+FROM Stock ORDER BY ALL;
+----
+5	10
+10	20
+15	0
+
+query II
+MERGE INTO Stock USING (VALUES (5, 1)) new_accounts(item_id, delta) USING (item_id)
+WHEN MATCHED THEN UPDATE SET balance = balance + delta
+WHEN NOT MATCHED BY SOURCE AND item_id = 10 THEN DELETE
+RETURNING merge_action, item_id;
+----
+UPDATE	5
+DELETE	10
+
+query II
+FROM Stock ORDER BY ALL;
+----
+5	11
+15	0
+
+# subquery in the join condition
+statement ok
+MERGE INTO Stock USING (VALUES (5)) new_accounts(item_id)
+ON (Stock.item_id = new_accounts.item_id AND Stock.balance IN (SELECT 11))
+WHEN NOT MATCHED BY SOURCE THEN UPDATE SET balance = balance + 100;
+
+query II
+FROM Stock ORDER BY ALL;
+----
+5	11
+15	100
+
+query I
+MERGE INTO Stock USING (VALUES (5)) new_accounts(item_id) USING (item_id)
+WHEN NOT MATCHED BY SOURCE THEN DELETE;
+----
+1
+
+query II
+FROM Stock ORDER BY ALL;
+----
+5	11
+
+endloop

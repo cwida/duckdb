@@ -6,12 +6,14 @@ require quack
 
 require httpfs
 
-# Spin up an in-process quack server we can connect to.
+# Let the OS choose a port so concurrent test processes cannot share the listener.
 statement ok
-CALL quack_serve(token='test_token');
+SET VARIABLE server_uri = (SELECT concat('''', listen_uri, '''') FROM quack_serve('quack:localhost:0', token='test_token'));
+
+set variable server_uri <variable:server_uri>
 
 statement ok
-ATTACH 'quack:localhost' AS qk (TOKEN 'test_token');
+ATTACH {server_uri} AS qk (TOKEN 'test_token');
 
 # CONNECT to the quack-attached database.
 statement ok
@@ -33,11 +35,19 @@ SELECT range AS x, range * 2 AS y FROM range(3);
 1	2
 2	4
 
-# CONNECT while already bound — single-binding rule errors with DISCONNECT hint.
+# CONNECT while already bound is forwarded like any other statement, which is what lets connections chain
+# over several hops. Here the remote has no such database, so the remote is the one that errors.
 statement error
-CONNECT qk;
+CONNECT no_such_db;
 ----
-<REGEX>:Invalid Input Error:.*Already connected.*DISCONNECT first.*
+<REGEX>:.*Error:.*
+
+# the binding survives a failure on the remote.
+query I
+SELECT 7;
+----
+7
+
 
 # DISCONNECT drops the routing.
 statement ok
@@ -165,7 +175,7 @@ mode unskip
 # ============================================================================
 
 statement ok
-CONNECT 'quack:localhost' (TOKEN 'test_token');
+CONNECT {server_uri} (TOKEN 'test_token');
 
 # Query routes through the ephemeral binding to the quack backend.
 query I
@@ -184,7 +194,7 @@ SELECT count(*) FROM pragma_database_list WHERE name LIKE '__connect%';
 
 # Wrong option value is surfaced from the backend at attach time (and rolled back).
 statement error
-CONNECT 'quack:localhost' (TOKEN 'wrong_token');
+CONNECT {server_uri} (TOKEN 'wrong_token');
 ----
 <REGEX>:.*(token|auth|Authentication|Unauthorized).*
 

@@ -6,7 +6,6 @@ lets say our extension config looks like this:
 
 ```shell
 duckdb_extension_load(spatial
-    DONT_LINK
     GIT_URL https://github.com/duckdb/duckdb_spatial
     GIT_TAG f577b9441793f9170403e489f5d3587e023a945f
     APPLY_PATCHES

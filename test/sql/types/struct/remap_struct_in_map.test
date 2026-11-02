@@ -150,3 +150,37 @@ SELECT remap_struct(
 );
 ----
 {[1, 2, 3]=[test], [6, 4, 5]=[world]}
+
+# NULL-typed map values can become nested types without changing keys or cardinality.
+query II
+SELECT typeof(mapped) = typeof(NULL::MAP(VARCHAR, STRUCT(a INTEGER))), mapped
+FROM (SELECT remap_struct(
+    MAP {'one': NULL::"NULL", 'two': NULL::"NULL"},
+    NULL::MAP(VARCHAR, STRUCT(a INTEGER)),
+    {'key': 'key', 'value': 'value'},
+    NULL
+) AS mapped);
+----
+true	{one=NULL, two=NULL}
+
+query II
+SELECT typeof(mapped) = typeof(NULL::MAP(VARCHAR, INTEGER[])), mapped
+FROM (SELECT remap_struct(
+    MAP {'one': NULL::"NULL", 'two': NULL::"NULL"},
+    NULL::MAP(VARCHAR, INTEGER[]),
+    {'key': 'key', 'value': 'value'},
+    NULL
+) AS mapped);
+----
+true	{one=NULL, two=NULL}
+
+query II
+SELECT typeof(mapped) = typeof(NULL::MAP(VARCHAR, MAP(VARCHAR, INTEGER))), mapped
+FROM (SELECT remap_struct(
+    MAP {'one': NULL::"NULL", 'two': NULL::"NULL"},
+    NULL::MAP(VARCHAR, MAP(VARCHAR, INTEGER)),
+    {'key': 'key', 'value': 'value'},
+    NULL
+) AS mapped);
+----
+true	{one=NULL, two=NULL}

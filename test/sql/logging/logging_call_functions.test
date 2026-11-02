@@ -183,16 +183,16 @@ CALL enable_logging(storage='file', level='DEBUG', storage_config={'hocus_pocus'
 ----
 Invalid Input Error: Unrecognized log storage config option for storage: 'FileLogStorage': 'hocus_pocus'
 
-# enable_logging is currently not atomic TODO: fix this
+# a failing enable_logging leaves the previous settings in place
 query II
 FROM log_settings;
 ----
 disabled_log_types	(empty)
 enable_logging	1
 enabled_log_types	(empty)
-logging_level	DEBUG
+logging_level	INFO
 logging_mode	LEVEL_ONLY
-logging_storage	file
+logging_storage	memory
 
 statement ok
 CALL disable_logging();
@@ -209,12 +209,12 @@ CALL enable_logging(storage_config='hi')
 ----
 Invalid Input Error: EnableLogging: storage_config must be a struct
 
-# Logging config remains untouched TODO: fix
+# Logging config remains untouched
 query II
 FROM log_settings;
 ----
 disabled_log_types	(empty)
-enable_logging	1
+enable_logging	0
 enabled_log_types	(empty)
 logging_level	INFO
 logging_mode	LEVEL_ONLY

@@ -11,6 +11,11 @@ CREATE TABLE Buys(item_id int, volume int);
 statement ok
 INSERT INTO Buys VALUES (42, 100);
 
+statement error
+MERGE INTO Stock AS USING Buys ON true WHEN MATCHED THEN DELETE;
+----
+Parser Error: syntax error at or near "USING"
+
 query I
 MERGE INTO Stock USING Buys USING (item_id)
 WHEN NOT MATCHED AND true THEN INSERT

@@ -1,0 +1,27 @@
+# name: benchmark/micro/compression/zstd/zstd_fetch_row.benchmark
+# description: Fetch ZSTD strings one row at a time
+# group: [zstd]
+
+name ZSTD Fetch Row
+group zstd
+storage persistent v1.2.0
+cache zstd_fetch_row.db
+
+init
+SET debug_force_fetch_row=true;
+
+load
+CREATE TABLE zstd_strings(s VARCHAR USING COMPRESSION ZSTD);
+INSERT INTO zstd_strings SELECT 'string-' || lpad(i::VARCHAR, 9, '0') FROM range(100_000) t(i);
+CHECKPOINT;
+
+assert I
+SELECT DISTINCT compression FROM pragma_storage_info('zstd_strings') WHERE column_name='s' AND segment_type='VARCHAR';
+----
+ZSTD
+
+run
+SELECT SUM(strlen(s)) FROM zstd_strings;
+
+result I
+1600000

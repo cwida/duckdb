@@ -187,13 +187,9 @@ struct ReadTextOperation {
 
 template <class OP>
 static TableFunction GetFunction() {
-	MultiFileFunction<DirectMultiFileInfo<OP>> table_function(OP::NAME);
-	// Erase extra multi file reader options
-	table_function.named_parameters.erase("filename");
-	table_function.named_parameters.erase("hive_partitioning");
-	table_function.named_parameters.erase("union_by_name");
-	table_function.named_parameters.erase("hive_types");
-	table_function.named_parameters.erase("hive_types_autocast");
+	// this function reads one file per call, so it takes none of the options that describe combining several
+	MultiFileFunction<DirectMultiFileInfo<OP>> table_function(OP::NAME,
+	                                                          MultiFileReader::MultiFileParameters::ALLOW_EMPTY_ONLY);
 	return table_function;
 }
 

@@ -53,3 +53,14 @@ query I
 SELECT b FROM test ORDER BY b OFFSET 10;
 ----
 
+# A large LIMIT uses a full sort instead of Top-N.
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+PRAGMA explain_output = 'OPTIMIZED_ONLY';
+
+query II
+EXPLAIN SELECT b FROM test ORDER BY b LIMIT 6000;
+----
+logical_opt	<REGEX>:(?s).*ORDER_BY.*

@@ -7,9 +7,10 @@
 
 namespace duckdb {
 
-BatchedBufferedData::BatchedBufferedData(ClientContext &context, ResultLifetime lifetime)
-    : BufferedData(BufferedData::Type::BATCHED, context, lifetime), buffer_byte_count(0), read_queue_byte_count(0),
-      min_batch(0) {
+BatchedBufferedData::BatchedBufferedData(ClientContext &context, ResultLifetime lifetime,
+                                         ResultFormatContext format_context, shared_ptr<ResultFormat> format)
+    : BufferedData(BufferedData::Type::BATCHED, context, lifetime, std::move(format_context), std::move(format)),
+      buffer_byte_count(0), read_queue_byte_count(0), min_batch(0) {
 }
 
 bool BatchedBufferedData::AppendOrBlock(unique_ptr<ResultUnit> unit, idx_t batch, const InterruptState &blocked_sink) {
@@ -20,6 +21,9 @@ bool BatchedBufferedData::AppendOrBlock(unique_ptr<ResultUnit> unit, idx_t batch
 	max_seen_unit_bytes = MaxValue<idx_t>(max_seen_unit_bytes, unit_data_size);
 	if (ShouldBlockBatch(lock, batch, unit_data_size)) {
 		// Park holding the finished unit. Restart selection deposits it at wake time
+		parked_bytes += unit_data_size;
+		peak_streaming_bytes =
+		    MaxValue<idx_t>(peak_streaming_bytes, read_queue_byte_count + buffer_byte_count + parked_bytes);
 		auto entry = blocked_sinks.emplace(batch, BlockedSink {blocked_sink, std::move(unit)});
 		(void)entry;
 		D_ASSERT(entry.second);
@@ -44,6 +48,8 @@ bool BatchedBufferedData::AppendOrBlock(unique_ptr<ResultUnit> unit, idx_t batch
 		buffer_byte_count += unit_data_size;
 	}
 	peak_buffered_bytes = MaxValue<idx_t>(peak_buffered_bytes, read_queue_byte_count + buffer_byte_count);
+	peak_streaming_bytes =
+	    MaxValue<idx_t>(peak_streaming_bytes, read_queue_byte_count + buffer_byte_count + parked_bytes);
 	return false;
 }
 
@@ -99,6 +105,7 @@ void BatchedBufferedData::DepositParked(annotated_lock_guard<annotated_mutex> &l
 		return;
 	}
 	const idx_t pending_bytes = sink.pending_unit->byte_size;
+	parked_bytes -= pending_bytes;
 	if (IsMinimumBatchIndex(lock, batch)) {
 		read_queue.push(std::move(sink.pending_unit));
 		read_queue_byte_count += pending_bytes;
@@ -109,6 +116,8 @@ void BatchedBufferedData::DepositParked(annotated_lock_guard<annotated_mutex> &l
 		buffer_byte_count += pending_bytes;
 	}
 	peak_buffered_bytes = MaxValue<idx_t>(peak_buffered_bytes, read_queue_byte_count + buffer_byte_count);
+	peak_streaming_bytes =
+	    MaxValue<idx_t>(peak_streaming_bytes, read_queue_byte_count + buffer_byte_count + parked_bytes);
 }
 
 void BatchedBufferedData::InvokeUnblocks(const vector<pair<idx_t, BlockedSink>> &to_unblock) {

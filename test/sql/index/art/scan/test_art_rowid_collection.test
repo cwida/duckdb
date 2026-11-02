@@ -1,0 +1,205 @@
+# name: test/sql/index/art/scan/test_art_rowid_collection.test
+# description: Test ART row ID collection order, capacity, and ownership.
+# group: [scan]
+
+load {TEST_DIR}/test_art_rowid_collection.db
+
+statement ok
+SET index_scan_percentage = 0
+
+# Preserve the existing exact-capacity boundary.
+
+statement ok
+CREATE TABLE scan_limits AS SELECT i::BIGINT AS id, i::BIGINT AS key FROM range(3) t(i)
+
+statement ok
+CREATE INDEX idx_scan_limits ON scan_limits(key)
+
+statement ok
+SET index_scan_max_count = 2
+
+query II
+EXPLAIN ANALYZE SELECT id FROM scan_limits WHERE key < 2
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+query II
+SELECT count(*), sum(id) FROM scan_limits WHERE key < 2
+----
+2	1
+
+statement ok
+SET index_scan_max_count = 1
+
+query II
+EXPLAIN ANALYZE SELECT id FROM scan_limits WHERE key < 2
+----
+analyzed_plan	<REGEX>:.*Type: Sequential Scan.*
+
+# Skip an incompatible candidate and use a later matching ART.
+
+statement ok
+CREATE TABLE candidate_reset AS SELECT i::BIGINT AS key FROM range(16) t(i)
+
+statement ok
+CREATE INDEX idx_candidate_expression ON candidate_reset((key + 1))
+
+statement ok
+CREATE INDEX idx_candidate_key ON candidate_reset(key)
+
+statement ok
+SET index_scan_max_count = 8
+
+query II
+EXPLAIN ANALYZE SELECT sum(key) FROM candidate_reset WHERE key < 8
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+query II
+SELECT count(*), sum(key) FROM candidate_reset WHERE key < 8
+----
+8	28
+
+# ART key order produces unordered physical Row IDs that must be sorted.
+
+statement ok
+CREATE TABLE indexed AS
+SELECT
+	i::BIGINT AS id,
+	((i::BIGINT * 15485863) % 131072)::BIGINT AS sparse_key
+FROM range(131072) t(i)
+
+statement ok
+CREATE INDEX idx_sparse ON indexed(sparse_key)
+
+statement ok
+SET threads = 32
+
+statement ok
+SET index_scan_max_count = 8192
+
+query II
+EXPLAIN ANALYZE SELECT count(*), count(DISTINCT id) FROM indexed WHERE sparse_key < 8192
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+query II
+SELECT count(*), count(DISTINCT id) FROM indexed WHERE sparse_key < 8192
+----
+8192	8192
+
+statement ok
+SET index_scan_max_count = 4096
+
+query II
+EXPLAIN ANALYZE SELECT count(*), count(DISTINCT id) FROM indexed WHERE sparse_key < 4096
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+query II
+SELECT count(*), count(DISTINCT id) FROM indexed WHERE sparse_key < 4096
+----
+4096	4096
+
+statement ok
+SET index_scan_max_count = 4095
+
+query II
+EXPLAIN ANALYZE SELECT id FROM indexed WHERE sparse_key < 4096
+----
+analyzed_plan	<REGEX>:.*Type: Sequential Scan.*
+
+# Reverse ART key order produces descending physical Row IDs.
+
+statement ok
+CREATE TABLE reverse_indexed AS
+SELECT i::BIGINT AS id, (65535 - i)::BIGINT AS reverse_key
+FROM range(65536) t(i)
+
+statement ok
+CREATE INDEX idx_reverse ON reverse_indexed(reverse_key)
+
+statement ok
+SET index_scan_max_count = 4096
+
+query II
+EXPLAIN ANALYZE SELECT count(*), count(DISTINCT id) FROM reverse_indexed WHERE reverse_key < 4096
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+query II
+SELECT count(*), count(DISTINCT id) FROM reverse_indexed WHERE reverse_key < 4096
+----
+4096	4096
+
+# Multiple unique IN probes reach the exact combined capacity.
+
+statement ok
+CREATE TABLE duplicate_keys AS
+SELECT i::BIGINT AS id, (i % 4)::INTEGER AS key
+FROM range(10000) t(i)
+ORDER BY hash(i)
+
+statement ok
+CREATE INDEX idx_duplicate ON duplicate_keys(key)
+
+statement ok
+SET index_scan_max_count = 5000
+
+query II
+EXPLAIN ANALYZE SELECT count(*), count(DISTINCT id) FROM duplicate_keys WHERE key IN (1, 3)
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+query II
+SELECT count(*), count(DISTINCT id) FROM duplicate_keys WHERE key IN (1, 3)
+----
+5000	5000
+
+# Persist and reload the ART before scanning the same unordered Row IDs.
+
+statement ok
+CHECKPOINT
+
+restart
+
+statement ok
+SET index_scan_percentage = 0
+
+statement ok
+SET index_scan_max_count = 5000
+
+query II
+EXPLAIN ANALYZE SELECT count(*), count(DISTINCT id) FROM duplicate_keys WHERE key IN (1, 3)
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+query II
+SELECT count(*), count(DISTINCT id) FROM duplicate_keys WHERE key IN (1, 3)
+----
+5000	5000
+
+# Preserve transaction-local rows when the persistent part uses an index scan.
+
+statement ok
+BEGIN TRANSACTION
+
+statement ok
+INSERT INTO duplicate_keys
+SELECT i, 1 FROM range(10000, 10100) t(i)
+
+statement ok
+SET index_scan_max_count = 5100
+
+query II
+EXPLAIN ANALYZE SELECT count(*), count(DISTINCT id) FROM duplicate_keys WHERE key IN (1, 3)
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+query II
+SELECT count(*), count(DISTINCT id) FROM duplicate_keys WHERE key IN (1, 3)
+----
+5100	5100
+
+statement ok
+ROLLBACK

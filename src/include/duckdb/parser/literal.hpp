@@ -67,6 +67,8 @@ public:
 	//! Negates a numeric literal by toggling the leading '-'
 	Literal Negate() const;
 
+	//! Throws if text does not conform to kind (used to validate deserialized literals)
+	void Verify() const;
 	//! Converts the literal into a Value
 	Value ToValue() const;
 	//! Renders the literal as SQL text that parses back to the same literal

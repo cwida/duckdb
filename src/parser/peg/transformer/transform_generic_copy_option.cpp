@@ -11,6 +11,13 @@ namespace duckdb {
 vector<GenericCopyOption>
 PEGTransformerFactory::TransformGenericCopyOptionList(PEGTransformer &transformer,
                                                       const vector<GenericCopyOption> &generic_copy_option) {
+	identifier_set_t option_names;
+	for (const auto &option : generic_copy_option) {
+		if (option_names.find(option.name) != option_names.end()) {
+			throw ParserException("Unexpected duplicate option %s", option.name);
+		}
+		option_names.insert(option.name);
+	}
 	return generic_copy_option;
 }
 
@@ -37,7 +44,8 @@ static void SetGenericCopyOptionExpression(GenericCopyOption &copy_option, uniqu
 				                        ExpressionClassToString(child->GetExpressionClass()));
 			}
 		}
-	} else if (expression->GetExpressionType() == ExpressionType::FUNCTION) {
+	} else if (expression->GetExpressionType() == ExpressionType::FUNCTION ||
+	           expression->GetExpressionType() == ExpressionType::VALUE_PARAMETER) {
 		copy_option.expression = std::move(expression);
 	} else if (expression->GetExpressionType() == ExpressionType::STAR) {
 		copy_option.children.push_back(Value("*"));
@@ -189,7 +197,7 @@ void PEGTransformerFactory::SplitGenericOptions(const vector<GenericCopyOption> 
 			options[option.name.GetIdentifierName()] = Value(true);
 		} else if (option.children.size() == 1) {
 			if (option.children[0].IsNull()) {
-				throw BinderException("NULL is not supported as a valid option for %s option \"%s\"", statement_name,
+				throw BinderException("NULL is not supported as a valid option for %s option %s", statement_name,
 				                      option.name);
 			}
 			options[option.name.GetIdentifierName()] = option.children[0];

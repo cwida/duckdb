@@ -1,0 +1,35 @@
+# name: test/sql/sql_export/basic_plan_shapes.test
+# description: Export scan aliases and pruned recursive columns through serialization
+# group: [sql_export]
+
+statement ok
+SET debug_verify_serializer=true;
+
+statement ok
+CREATE TABLE readable_scan("unusual name" INTEGER, column0 INTEGER);
+
+statement ok
+INSERT INTO readable_scan VALUES (1,2);
+
+statement ok
+CREATE TABLE reserved_scan(rowid INTEGER, rownum INTEGER);
+
+statement ok
+INSERT INTO reserved_scan VALUES (3,4);
+
+query II rowsort
+SELECT * FROM readable_scan;
+----
+1	2
+
+query II rowsort
+SELECT * FROM reserved_scan;
+----
+3	4
+
+query II
+WITH RECURSIVE t(i,unused) AS (SELECT 0,int FROM test_all_types() UNION ALL SELECT i+1,unused FROM t WHERE i<2) SELECT i,count(*) FROM t GROUP BY i ORDER BY i;
+----
+0	3
+1	3
+2	3

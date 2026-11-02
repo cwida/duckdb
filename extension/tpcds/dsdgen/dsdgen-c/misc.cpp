@@ -60,7 +60,6 @@
 
 static char alpha_num[65] = "0123456789abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ,";
 
-char *getenv(const char *name);
 int print_separator(int sep);
 
 extern long Seed[];
@@ -77,22 +76,8 @@ int file_num = -1;
  *
  * Various routines that handle distributions, value selections and
  * seed value management for the DSS benchmark. Current functions:
- * env_config -- set config vars with optional environment override
  * a_rnd(min, max) -- random alphanumeric within length range
  */
-
-/*
- * env_config: look for a environmental variable setting and return its
- * value; otherwise return the default supplied
- */
-char *env_config(char *var, char *dflt) {
-	static thread_local char *evar;
-
-	if ((evar = getenv(var)) != NULL)
-		return (evar);
-	else
-		return (dflt);
-}
 
 /*
  * generate a random string with length randomly selected in [min, max]

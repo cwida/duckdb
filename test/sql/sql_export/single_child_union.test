@@ -1,0 +1,90 @@
+# name: test/sql/sql_export/single_child_union.test
+# description: SQL export preserves UNION values and evaluation when an arm is empty
+# group: [sql_export]
+
+statement ok
+SET threads=1;
+
+query T rowsort
+SELECT 1 x UNION ALL SELECT 2 x WHERE false;
+----
+1
+
+query T rowsort
+SELECT 2 x WHERE false UNION ALL SELECT 1 x;
+----
+1
+
+query T rowsort
+SELECT * FROM (VALUES (1),(1),(NULL),(NULL)) t(x) UNION ALL SELECT 2 WHERE false;
+----
+1
+1
+NULL
+NULL
+
+query T rowsort
+SELECT * FROM (VALUES (1),(1),(NULL),(NULL)) t(x) UNION SELECT 2 WHERE false;
+----
+1
+NULL
+
+query T rowsort
+SELECT 'abc' x UNION ALL SELECT 'def' x WHERE false;
+----
+abc
+
+query T rowsort
+SELECT [1,NULL] x UNION ALL SELECT [2,3] x WHERE false;
+----
+[1, NULL]
+
+query TT rowsort
+SELECT * FROM (VALUES (1,2),(1,2),(NULL,3)) t(x,y) UNION SELECT 2,3 WHERE false;
+----
+1	2
+NULL	3
+
+query T rowsort
+WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT count(*) FROM c WHERE false) SELECT x FROM c LIMIT 3;
+----
+0
+0
+1
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+query II
+SELECT x,nextval('seq') y FROM (SELECT nextval('seq') x FROM range(2) UNION ALL SELECT 0 WHERE false LIMIT 1)t;
+----
+1	3
+
+query I
+SELECT currval('seq');
+----
+3
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+query II
+WITH c AS MATERIALIZED (SELECT nextval('seq') x FROM range(2) UNION ALL SELECT 0 WHERE false LIMIT 1) SELECT x,nextval('seq') y FROM c;
+----
+1	3
+
+query I
+SELECT currval('seq');
+----
+3
+
+statement error
+SELECT CAST(CASE WHEN i=1 THEN 'bad' ELSE '0' END AS BIGINT) x FROM range(2)t(i) UNION ALL SELECT 0 WHERE false LIMIT 1;
+----
+<REGEX>:Conversion Error:.*Could not convert string 'bad' to INT64.*

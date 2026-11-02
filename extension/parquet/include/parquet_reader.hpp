@@ -18,6 +18,7 @@
 #include "duckdb.hpp"
 #include "duckdb/common/enum_util.hpp"
 #include "duckdb/common/helper.hpp"
+#include "duckdb/common/once_flag.hpp"
 #include "duckdb/storage/external_file_cache/caching_file_system.hpp"
 #include "duckdb/common/common.hpp"
 #include "duckdb/common/encryption_functions.hpp"
@@ -30,6 +31,9 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
 #include "column_reader.hpp"
+#include "parquet_page_index.hpp"
+#include "duckdb/common/allocator.hpp"
+#include "duckdb/common/mutex.hpp"
 #include "parquet_prefetch_cost_model.hpp"
 #include "parquet_file_metadata_cache.hpp"
 #include "parquet_rle_bp_decoder.hpp"
@@ -99,13 +103,17 @@ struct ParquetReaderPrefetchConfig {
 	static constexpr double WHOLE_GROUP_PREFETCH_MINIMUM_SCAN = 0.95;
 	//! How many row groups need to produce at least one surviving row (from filtering)
 	static constexpr double PREFETCH_FILTER_MINIMUM_MATCH_RATIO = 0.9;
+	//! Before observing matches, only speculate on filter columns that are cheap to read
+	static constexpr double FIRST_GROUP_PREFETCH_MAXIMUM_FILTER_SCAN = 0.05;
 };
 
 enum class ParquetPrefetchStrategy : uint8_t {
 	NONE,
-	WHOLE_GROUP,      //! Prefetches the whole group
-	PREFETCH_FILTERS, //! Used when we have fully selective filters, so they are prefetched earlier
-	COLUMN_WISE_EAGER //! Used when we have projections and optional only filters
+	WHOLE_GROUP,             //! Prefetches the whole group
+	PREFETCH_FILTERS,        //! Used when we have fully selective filters, so they are prefetched earlier
+	COLUMN_WISE_EAGER,       //! Used when we have projections and optional only filters
+	PREFETCH_FILTERS_PAGES,  //! PREFETCH_FILTERS, reading only the pages the page index keeps
+	COLUMN_WISE_EAGER_PAGES, //! COLUMN_WISE_EAGER, reading only the pages the page index keeps
 };
 
 const char *ParquetPrefetchStrategyToString(ParquetPrefetchStrategy strategy);
@@ -122,6 +130,21 @@ const char *EnumUtil::ToChars<ParquetPrefetchStrategyOption>(ParquetPrefetchStra
 
 template <>
 ParquetPrefetchStrategyOption EnumUtil::FromString<ParquetPrefetchStrategyOption>(const char *value);
+
+//! How INT96 (deprecated Impala timestamp) columns are exposed by the Parquet reader
+enum class ParquetInt96AsOption : uint8_t {
+	TIMESTAMP,    //! Read as TIMESTAMP (microsecond precision) - the default
+	TIMESTAMP_NS, //! Read as TIMESTAMP_NS, preserving the nanosecond part (out-of-range values saturate)
+	STRUCT        //! Read as STRUCT(date DATE, time TIME_NS), preserving the full range and precision
+};
+
+ParquetInt96AsOption ParquetInt96AsOptionFromString(const string &value);
+
+template <>
+const char *EnumUtil::ToChars<ParquetInt96AsOption>(ParquetInt96AsOption value);
+
+template <>
+ParquetInt96AsOption EnumUtil::FromString<ParquetInt96AsOption>(const char *value);
 
 template <>
 const char *EnumUtil::ToChars<StringColumnReader::Utf8ValidationOption>(StringColumnReader::Utf8ValidationOption value);
@@ -171,7 +194,7 @@ struct ParquetLoggerPrefetchMetrics {
 
 	//! Build a prefetch group
 	void GeneratePrefetchGroup(ThriftFileTransport &trans, vector<ParquetPrefetchColumn> &requested_columns,
-	                           const vector<duckdb_parquet::ColumnChunk> &all_chunks);
+	                           const duckdb_parquet::ColumnChunkList &all_chunks);
 };
 
 struct ParquetPrefetchMetrics {
@@ -234,6 +257,15 @@ public:
 	//! true once the filter at this index has driven the surviving row count to zero
 	vector<bool> filter_eliminated_all_rows;
 
+	//! Whether the page index (ColumnIndex / OffsetIndex) is used to skip pages, see parquet_use_page_index
+	bool use_page_index = true;
+	//! The page index of the current row group, filled when it rules out pages
+	ParquetRowGroupPageIndex page_index;
+	//! Whether page_index.row_ranges restricts the rows the scan reads from the current row group
+	bool page_index_active = false;
+	//! The entry of page_index.row_ranges the scan is at
+	idx_t page_index_range_idx = 0;
+
 	//! (optional) pointer to the PhysicalOperator for logging
 	optional_ptr<const PhysicalOperator> op;
 
@@ -242,14 +274,19 @@ public:
 	//! profiling metrics (the profiler sums them across threads).
 	idx_t row_groups_read = 0;
 	idx_t row_groups_skipped = 0;
+	//! Compressed size of the column chunks of the row groups read, surfaced as bytes_scanned the same way
+	idx_t bytes_scanned = 0;
+	//! Compressed size of the column chunks of the registered row group, counted once its scan starts
+	idx_t pending_bytes_scanned = 0;
 
 	//! Prefetch cost model
 	PrefetchCostModelState cost_model_state;
 };
 
+//! A column of the "schema" option, as plans serialized before that became an option of every multi-file reader
+//! store it - see ParquetOptionsSerialization::legacy_schema
 struct ParquetColumnDefinition {
 public:
-	static vector<ParquetColumnDefinition> FromSchemaMap(ClientContext &context, const Value &schema_value);
 	MultiFileColumnDefinition ToMultiFileColumnDefinition() const;
 	bool operator==(const ParquetColumnDefinition &other) const {
 		return field_id == other.field_id && name == other.name && type == other.type &&
@@ -277,15 +314,14 @@ struct ParquetOptions {
 
 	bool binary_as_string = false;
 	bool variant_legacy_encoding = false;
-	bool file_row_number = false;
 	shared_ptr<ParquetEncryptionConfig> encryption_config;
 
-	vector<ParquetColumnDefinition> schema;
 	idx_t explicit_cardinality = 0;
 	bool can_have_nan = false; // if floats or doubles can contain NaN values (ignored if nan_count is present)
 	ParquetPrefetchStrategyOption prefetch_strategy = ParquetPrefetchStrategyOption::AUTO;
 	StringColumnReader::Utf8ValidationOption utf8_validation_option =
 	    StringColumnReader::Utf8ValidationOption::STRICT_UTF8;
+	ParquetInt96AsOption int96_as = ParquetInt96AsOption::TIMESTAMP;
 };
 
 struct ParquetOptionsSerialization {
@@ -296,6 +332,10 @@ struct ParquetOptionsSerialization {
 
 	ParquetOptions parquet_options;
 	MultiFileOptions file_options;
+	//! Only read from plans serialized before "file_row_number" and "schema" became options of every multi-file
+	//! reader - they are then moved into the file options
+	bool legacy_file_row_number = false;
+	vector<ParquetColumnDefinition> legacy_schema;
 
 public:
 	void Serialize(Serializer &serializer) const;
@@ -411,6 +451,12 @@ public:
 	                                                 const Identifier &name);
 	static unique_ptr<BaseStatistics> ReadStatistics(ClientContext &context, const ParquetUnionData &union_data,
 	                                                 const Identifier &name);
+	//! The statistics of a virtual column of a file, read from its metadata
+	static unique_ptr<BaseStatistics> ReadVirtualColumnStatistics(ClientContext &context,
+	                                                              const ParquetOptions &parquet_options,
+	                                                              const shared_ptr<ParquetFileMetadataCache> &metadata,
+	                                                              column_t virtual_column_id);
+	unique_ptr<BaseStatistics> GetVirtualColumnStatistics(ClientContext &context, column_t virtual_column_id) override;
 
 	LogicalType DeriveLogicalType(const SchemaElement &s_ele, ParquetColumnSchema &schema) const;
 	static LogicalType DeriveLogicalType(const SchemaElement &s_ele, const ParquetOptions &options,
@@ -419,6 +465,10 @@ public:
 	void AddVirtualColumn(column_t virtual_column_id) override;
 
 	void GetPartitionStats(vector<PartitionStatistics> &result);
+	//! Construct a reader over the metadata of a file without opening the file - it can describe the schema and the
+	//! statistics of the file, but not read it
+	static shared_ptr<ParquetReader> CreateMetadataReader(ClientContext &context, ParquetOptions parquet_options,
+	                                                      shared_ptr<ParquetFileMetadataCache> metadata);
 	static void GetPartitionStats(const duckdb_parquet::FileMetaData &metadata, vector<PartitionStatistics> &result,
 	                              optional_ptr<ParquetColumnSchema> root_schema = nullptr,
 	                              optional_ptr<ParquetOptions> parquet_options = nullptr);
@@ -443,7 +493,20 @@ private:
 	idx_t GetGroupOffset(ParquetReaderScanState &state);
 	//! Group span is the distance between the min page offset and the max page offset plus the max page compressed size
 	uint64_t GetGroupSpan(ParquetReaderScanState &state);
+	FilterPropagateResult CheckRowGroupFilterStatistics(ClientContext &context, ParquetReaderScanState &state,
+	                                                    ColumnReader &column_reader, const TableFilter &filter);
+	bool DynamicFiltersExcludeRowGroup(ClientContext &context, ParquetReaderScanState &state);
 	void PrepareRowGroupBuffer(ClientContext &context, ParquetReaderScanState &state, idx_t out_col_idx);
+	//! Reads the page index of the row group and works out which rows may match the filters; a page index that
+	//! cannot be read or evaluated is ignored
+	void PreparePageIndex(ClientContext &context, ParquetReaderScanState &state);
+	void PreparePageIndexInternal(ClientContext &context, ParquetReaderScanState &state);
+	//! Serves the page index of the whole file from one buffer that is read once per reader and shared by every row
+	//! group and thread, when the index fits the transport's accepted column gap; returns false when it does not
+	bool TryAttachPageIndexBuffer(ThriftFileTransport &transport) const;
+	//! Moves the scan to the next rows of the row group that may match according to the page index, skipping the
+	//! rows in between in every column reader; returns the number of rows to scan next (0 if none are left)
+	idx_t SkipToPageIndexRows(ParquetReaderScanState &state);
 	//! Whole-group prefetch strategy.
 	ParquetPrefetchStrategy WholeGroupPrefetch(ParquetReaderScanState &state, ThriftFileTransport &trans,
 	                                           const duckdb_parquet::RowGroup &group, uint64_t total_row_group_span,
@@ -483,12 +546,20 @@ private:
 	optional_ptr<const BaseStatistics> GetVariantStats(const ParquetColumnSchema &schema) const;
 	//! Open a file handle for scanning, resolving the open flags from the prefetch mode
 	unique_ptr<CachingFileHandle> OpenScanHandle(ClientContext &context) const;
+	//! Initialize the shared scan handle, including when pre-opening it for read-ahead
+	void InitializeScanHandle(ClientContext &context) const;
 
 private:
 	unique_ptr<CachingFileHandle> file_handle;
-	//! Scan handle pre-opened by PrepareReadAhead while the file was opened, adopted by the first InitializeScan
-	mutable mutex prewarm_lock;
-	mutable unique_ptr<CachingFileHandle> prewarmed_scan_handle;
+	mutable OnceFlag scan_handle_initialized;
+	//! The byte range of the file that holds the page indexes of every row group (0 if there is none), computed once
+	mutable OnceFlag page_index_span_computed;
+	mutable idx_t page_index_span_begin = 0;
+	mutable idx_t page_index_span_end = 0;
+	//! The bytes of that range, read once and shared by every scan state of this reader
+	mutable mutex page_index_buffer_lock;
+	mutable AllocatedData page_index_buffer;
+	mutable bool page_index_buffer_loaded = false;
 	//! Scan handle shared by all scan states of this reader
 	mutable shared_ptr<CachingFileHandle> shared_scan_handle;
 	mutable annotated_mutex variant_stats_lock;

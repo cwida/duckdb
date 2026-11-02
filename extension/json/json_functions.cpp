@@ -63,9 +63,19 @@ bool JSONReadFunctionData::Equals(const FunctionData &other_p) const {
 	return constant == other.constant && path == other.path && len == other.len && path_type == other.path_type;
 }
 
+//! An integral path is an array index, other paths are cast to VARCHAR
+void JSONReadFunctionData::ResolveTypes(ResolveScalarFunctionTypesInput &input) {
+	auto &bound_function = input.GetBoundFunction();
+	D_ASSERT(bound_function.GetArguments().size() == 2);
+	if (input.GetArgumentType(1).IsIntegral()) {
+		bound_function.GetArguments()[1] = LogicalType::BIGINT;
+	} else {
+		bound_function.GetArguments()[1] = LogicalType::VARCHAR;
+	}
+}
+
 unique_ptr<FunctionData> JSONReadFunctionData::Bind(BindScalarFunctionInput &input) {
 	auto &bound_function = input.GetBoundFunction();
-	auto &arguments = input.GetArguments();
 	D_ASSERT(bound_function.GetArguments().size() == 2);
 	bool constant = false;
 	string path;
@@ -75,11 +85,6 @@ unique_ptr<FunctionData> JSONReadFunctionData::Bind(BindScalarFunctionInput &inp
 	if (path_val && !path_val->IsNull()) {
 		constant = true;
 		path_type = CheckPath(*path_val, path, len);
-	}
-	if (arguments[1]->GetReturnType().IsIntegral()) {
-		bound_function.GetArguments()[1] = LogicalType::BIGINT;
-	} else {
-		bound_function.GetArguments()[1] = LogicalType::VARCHAR;
 	}
 	if (path_type == JSONCommon::JSONPathType::WILDCARD) {
 		bound_function.SetReturnType(LogicalType::LIST(bound_function.GetReturnType()));

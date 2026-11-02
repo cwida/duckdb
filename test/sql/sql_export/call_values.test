@@ -1,0 +1,210 @@
+# name: test/sql/sql_export/call_values.test
+# description: SQL export preserves represented function calls, widened decimal types and alias effects
+# group: [sql_export]
+
+statement ok
+PRAGMA disable_optimizer;
+
+foreach serializer false true
+
+statement ok
+SET debug_verify_serializer={serializer};
+
+query I
+SELECT abs(-7::INTEGER);
+----
+7
+
+query I
+SELECT abs(-7);
+----
+7
+
+query R
+SELECT log2(8);
+----
+3.0
+
+query T
+SELECT equi_width_bins(0, 10, 2, true);
+----
+[5, 10]
+
+query R
+SELECT quantile_cont(i, 0.5) FROM (VALUES (1), (2)) v(i);
+----
+1.5
+
+query R
+SELECT quantile_cont(i, 0.5) OVER () FROM (VALUES (1), (2)) v(i);
+----
+1.5
+1.5
+
+endloop
+
+statement ok
+PRAGMA enable_optimizer;
+
+query RTR
+SELECT log2(8), equi_width_bins(0, 10, 2, true), quantile_cont(i, 0.5) OVER () FROM (VALUES (1), (2)) v(i);
+----
+3.0	[5, 10]	1.5
+3.0	[5, 10]	1.5
+
+statement ok
+CREATE TABLE integers(i INTEGER);
+
+statement ok
+INSERT INTO integers VALUES (42), (84);
+
+query II
+SELECT * FROM histogram_values(integers, i, bin_count := 2);
+----
+60	1
+80	0
+100	1
+
+statement ok
+PRAGMA disable_optimizer;
+
+query I
+SELECT constant_or_null(42, 1, i) FROM (VALUES (1), (NULL), (1)) t(i);
+----
+42
+NULL
+42
+
+statement error
+SELECT constant_or_null(42, 1, CAST(i AS INTEGER)) FROM (VALUES ('bad')) t(i);
+----
+<REGEX>:Conversion Error:.*Could not convert string 'bad' to INT32.*
+
+statement ok
+PRAGMA enable_optimizer;
+
+statement ok
+CREATE OR REPLACE TABLE rounding_values(i DECIMAL(4,0));
+
+statement ok
+INSERT INTO rounding_values VALUES (9999);
+
+foreach serializer false true
+
+statement ok
+SET debug_verify_serializer={serializer};
+
+query T
+SELECT round(i, -1) FROM rounding_values;
+----
+10000
+
+query T
+SELECT typeof(round(i, -1)) FROM rounding_values;
+----
+DECIMAL(5,0)
+
+endloop
+
+statement ok
+CREATE OR REPLACE TABLE rounding_values(i DECIMAL(9,0));
+
+statement ok
+INSERT INTO rounding_values VALUES (999999999);
+
+foreach serializer false true
+
+statement ok
+SET debug_verify_serializer={serializer};
+
+query T
+SELECT round(i, -1) FROM rounding_values;
+----
+1000000000
+
+query T
+SELECT typeof(round(i, -1)) FROM rounding_values;
+----
+DECIMAL(10,0)
+
+endloop
+
+statement ok
+CREATE OR REPLACE TABLE rounding_values(i DECIMAL(18,0));
+
+statement ok
+INSERT INTO rounding_values VALUES (999999999999999999);
+
+foreach serializer false true
+
+statement ok
+SET debug_verify_serializer={serializer};
+
+query T
+SELECT round(i, -1) FROM rounding_values;
+----
+1000000000000000000
+
+query T
+SELECT typeof(round(i, -1)) FROM rounding_values;
+----
+DECIMAL(19,0)
+
+endloop
+
+statement ok
+CREATE OR REPLACE TABLE rounding_values(i DECIMAL(37,0));
+
+statement ok
+INSERT INTO rounding_values VALUES (9999999999999999999999999999999999999);
+
+foreach serializer false true
+
+statement ok
+SET debug_verify_serializer={serializer};
+
+query T
+SELECT round(i, -1) FROM rounding_values;
+----
+10000000000000000000000000000000000000
+
+query T
+SELECT typeof(round(i, -1)) FROM rounding_values;
+----
+DECIMAL(38,0)
+
+endloop
+
+statement ok
+SET debug_verify_serializer=false;
+
+query I
+SELECT hash(i) FROM rounding_values;
+----
+2470727412567134468
+
+statement ok
+SET debug_verify_serializer=true;
+
+statement ok
+CREATE SEQUENCE alias_effect;
+
+query TT
+EXPLAIN (SQL) SELECT alias(nextval('alias_effect'));
+----
+sql	<REGEX>:.*alias.*nextval.*
+
+query I
+SELECT nextval('alias_effect');
+----
+1
+
+query T
+SELECT alias(nextval('alias_effect'));
+----
+nextval('alias_effect')
+
+query I
+SELECT nextval('alias_effect');
+----
+3

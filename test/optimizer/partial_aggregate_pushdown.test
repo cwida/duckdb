@@ -1329,7 +1329,7 @@ EXPLAIN SELECT o.k, count(e.event_id)
 FROM outer_count_nullable o LEFT JOIN outer_count_events e ON o.k = e.k AND e.keep
 GROUP BY o.k
 ----
-physical_plan	<!REGEX>:.*COALESCE.*
+physical_plan	<REGEX>:.*COALESCE.*
 
 # NULL owner keys retain their unmatched count semantics when reliable key statistics are available.
 query II

@@ -11,6 +11,7 @@
 #pragma once
 
 #include "duckdb.hpp"
+#include "duckdb/main/client_context.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -26,6 +27,18 @@ struct Deadline {
 		return std::chrono::steady_clock::now() >= expiry;
 	}
 };
+
+//! Waits until the connection's query has no execution left. False when the deadline passed first
+inline bool WaitForExecution(Connection &con) {
+	Deadline deadline;
+	while (!con.context->ExecutionIsFinished()) {
+		if (deadline.Passed()) {
+			return false;
+		}
+		std::this_thread::sleep_for(std::chrono::microseconds(100));
+	}
+	return true;
+}
 
 //! Interrupts the connection when the guarded scope outlives the deadline, so a hung blocking call
 //! ends with an error instead of hanging the suite

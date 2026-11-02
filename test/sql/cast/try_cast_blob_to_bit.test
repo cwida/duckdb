@@ -1,0 +1,37 @@
+# name: test/sql/cast/try_cast_blob_to_bit.test
+# description: TRY_CAST from BLOB to BIT returns NULL for an empty BLOB instead of throwing internally
+# group: [cast]
+
+query I
+SELECT TRY_CAST(''::BLOB AS BIT);
+----
+NULL
+
+query I
+SELECT TRY_CAST([''::BLOB] AS BIT[]);
+----
+[NULL]
+
+statement ok
+CREATE TABLE t(b BLOB);
+
+statement ok
+INSERT INTO t VALUES (''), ('\x01');
+
+query I
+SELECT TRY_CAST(b AS BIT) IS NULL FROM t ORDER BY 1;
+----
+false
+true
+
+# a regular cast of a non-empty BLOB still works
+query I
+SELECT '\x41'::BLOB::BIT;
+----
+01000001
+
+# a regular cast of an empty BLOB throws a conversion error
+statement error
+SELECT ''::BLOB::BIT;
+----
+Conversion Error: Cannot cast empty BLOB to BIT

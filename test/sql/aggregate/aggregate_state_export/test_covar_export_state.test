@@ -44,3 +44,16 @@ SELECT g, covar_samp(x, y) FROM grouped GROUP BY g ORDER BY g;
 query II nosort res_covar_samp
 SELECT g, finalize(covar_samp(x, y) EXPORT_STATE) FROM grouped GROUP BY g ORDER BY g;
 ----
+
+# combine non-empty covariance states
+query II
+WITH states AS (
+	SELECT
+		covar_pop(x, y) EXPORT_STATE AS pop_state,
+		covar_samp(x, y) EXPORT_STATE AS samp_state
+	FROM (VALUES (0, 1, 2), (0, 2, 4), (1, 3, 6), (1, 4, 8)) t(g, x, y)
+	GROUP BY g
+)
+SELECT finalize(combine_aggr(pop_state)), finalize(combine_aggr(samp_state)) FROM states;
+----
+2.5	3.3333333333333335

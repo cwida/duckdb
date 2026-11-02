@@ -1,0 +1,62 @@
+# name: test/sql/sql_export/nested_collations.test
+# description: SQL export preserves nested collation semantics and evaluation counts
+# group: [sql_export]
+
+statement ok
+CREATE TABLE nested_input(id INTEGER, l VARCHAR[], needle VARCHAR COLLATE nocase);
+
+statement ok
+INSERT INTO nested_input VALUES (1, ['Apple','Banana'], 'banana'),
+    (2, ['Cherry','date'], 'DATE'), (3, [NULL,'Egg'], NULL);
+
+statement ok
+CREATE SEQUENCE collation_seq;
+
+query III
+SELECT id, list_contains(l, needle), list_position(l, needle) FROM nested_input ORDER BY id
+----
+1	true	2
+2	true	2
+3	NULL	1
+
+query II
+SELECT list_contains([needle], 'BANANA'), list_position([needle], 'BANANA') FROM nested_input WHERE id=1
+----
+true	1
+
+query TTT
+SELECT ['A' COLLATE nocase, NULL], array_value('A' COLLATE nocase), {'v': 'A' COLLATE nocase}
+----
+[A, NULL]	[A]	{'v': A}
+
+query TT
+SELECT CASE WHEN false THEN ['A' COLLATE nocase] ELSE NULL END,
+       CASE WHEN false THEN ['A' COLLATE nocase] ELSE [] END
+----
+NULL	[]
+
+query IIT
+WITH RECURSIVE t(k,v) USING KEY(k,min(v)) AS (
+    SELECT array_value('a' COLLATE nocase), 2
+    UNION
+    SELECT array_value('A' COLLATE nocase), v-1 FROM t WHERE v>0
+)
+SELECT count(*),min(v),min(k[1]) FROM t
+----
+1	0	a
+
+query II
+SELECT cast_to_type(['A'], array_value('x' COLLATE nocase))[1]='a',
+       (array_value('A' COLLATE nocase)::VARCHAR[])[1]='a'
+----
+true	false
+
+query T
+SELECT list_transform([1,2], lambda x: CAST(nextval('collation_seq') AS VARCHAR) COLLATE nocase)
+----
+[1, 2]
+
+query I
+SELECT currval('collation_seq')
+----
+2

@@ -1,0 +1,27 @@
+# name: test/sql/copy/parquet/read_ahead/readahead_parked_job_progress.test
+# description: Concurrent read-ahead scans keep producing jobs while parked tasks hold the backlog budget
+# group: [read_ahead]
+
+require parquet
+
+statement ok
+COPY (SELECT i AS x FROM range(200000) t(i)) TO '{TEST_DIR}/parked_progress_a.parquet' (ROW_GROUP_SIZE 50000)
+
+statement ok
+COPY (SELECT i AS x FROM range(200000) t(i)) TO '{TEST_DIR}/parked_progress_b.parquet' (ROW_GROUP_SIZE 50000)
+
+# with two threads the budget starts at one job, a scan that stops producing fails on the time limit
+statement ok
+SET threads=2
+
+statement ok
+SET max_execution_time=60000
+
+query II
+SELECT count(*), sum(x) FROM (
+	SELECT x FROM '{TEST_DIR}/parked_progress_a.parquet'
+	UNION ALL
+	SELECT x FROM '{TEST_DIR}/parked_progress_b.parquet'
+)
+----
+400000	39999800000

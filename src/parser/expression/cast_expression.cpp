@@ -56,9 +56,15 @@ unique_ptr<ParsedExpression> CastExpression::Deserialize(Deserializer &deseriali
 	    deserializer.ReadPropertyWithExplicitDefault<unique_ptr<ParsedExpression>>(203, "type_expr", nullptr);
 
 	if (type_expression) {
+		if (type_expression->GetExpressionClass() != ExpressionClass::TYPE) {
+			throw SerializationException("Failed to deserialize CAST expression: the target is not a type expression");
+		}
 		result->cast_type = unique_ptr_cast<ParsedExpression, TypeExpression>(std::move(type_expression));
 	} else {
 		// written by a version that stored the target as a LogicalType
+		if (cast_type.id() == LogicalTypeId::INVALID) {
+			throw SerializationException("Failed to deserialize CAST expression: missing target type");
+		}
 		result->cast_type = TypeExpression::FromLogicalType(cast_type);
 	}
 	return std::move(result);

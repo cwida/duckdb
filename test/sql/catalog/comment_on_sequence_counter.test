@@ -1,0 +1,62 @@
+# name: test/sql/catalog/comment_on_sequence_counter.test
+# description: COMMENT ON SEQUENCE does not fork the counter of a sequence that is used concurrently
+# group: [catalog]
+
+statement ok con1
+CREATE SEQUENCE s;
+
+query I con1
+SELECT nextval('s');
+----
+1
+
+statement ok con1
+BEGIN;
+
+statement ok con1
+COMMENT ON SEQUENCE s IS 'a comment';
+
+# another connection uses the sequence while the comment is not yet committed
+query I con2
+SELECT nextval('s');
+----
+2
+
+statement ok con1
+COMMIT;
+
+# the values handed out concurrently are not handed out again
+query I con1
+SELECT nextval('s');
+----
+3
+
+query I con2
+SELECT nextval('s');
+----
+4
+
+query I con1
+SELECT comment FROM duckdb_sequences() WHERE sequence_name = 's';
+----
+a comment
+
+# rolling back the comment keeps the counter
+statement ok con1
+BEGIN;
+
+statement ok con1
+COMMENT ON SEQUENCE s IS 'rolled back';
+
+query I con2
+SELECT nextval('s');
+----
+5
+
+statement ok con1
+ROLLBACK;
+
+query I con1
+SELECT nextval('s');
+----
+6

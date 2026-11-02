@@ -319,7 +319,7 @@ static string TryExtractIDFromWKTNode(const WKTKeyword &keyword) {
 		const auto code_auth = first->As<WKTString>().GetValue();
 		if (second->IsNumber()) {
 			const auto number = second->As<WKTNumber>().GetValue();
-			if (number < 0 || number > static_cast<double>(std::numeric_limits<idx_t>::max())) {
+			if (number < 0 || number >= static_cast<double>(std::numeric_limits<idx_t>::max())) {
 				continue;
 			}
 			return code_auth + ":" + StringUtil::Format("%llu", static_cast<idx_t>(number));

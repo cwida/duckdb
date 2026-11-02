@@ -15,6 +15,7 @@
 #include "duckdb/main/valid_checker.hpp"
 
 namespace duckdb {
+struct CompiledGrammar;
 class Catalog;
 class DatabaseInstance;
 class StorageManager;
@@ -184,6 +185,13 @@ public:
 	const unordered_map<string, Value> &GetAttachOptions() const {
 		return attach_options;
 	}
+	//! The grammar used for statements issued while a client is CONNECT-ed to this database. Defaults to the
+	//! passthrough grammar, which interprets only DISCONNECT and forwards everything else verbatim; a backend that
+	//! speaks DuckDB SQL can override it with the grammar it wants those statements parsed by.
+	DUCKDB_API shared_ptr<CompiledGrammar> GetConnectedGrammar(const ClientContext &context);
+	void SetConnectedGrammar(shared_ptr<CompiledGrammar> grammar) {
+		connected_grammar = std::move(grammar);
+	}
 	string StoredPath() const;
 	//! The verbatim ATTACH path before extension-prefix stripping. Unset if not from an ATTACH statement.
 	const optional<string> &GetOriginalPath() const {
@@ -224,6 +232,8 @@ private:
 	string deleter_resource_name;
 	//! Registered resource this attachment borrows without owning; see AttachOptions.
 	string borrowed_resource_name;
+	//! Overrides the default passthrough grammar used while CONNECT-ed; see GetConnectedGrammar.
+	shared_ptr<CompiledGrammar> connected_grammar;
 
 private:
 	//! Clean any (shared) resources held by the database.

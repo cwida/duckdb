@@ -51,6 +51,7 @@ class TableFilterSet;
 struct ColumnFetchState;
 struct PrefetchState;
 struct RowGroupAppendState;
+struct SuballocationBlock;
 class MetadataManager;
 class RowVersionManager;
 class CommitDropState;
@@ -95,6 +96,44 @@ struct RowGroupWriteData {
 	optional_idx write_count;
 };
 
+//! The version info of a row group, shared with the row groups a checkpoint or an ALTER copies it into
+class RowGroupVersionInfo {
+public:
+	explicit RowGroupVersionInfo(vector<MetaBlockPointer> deletes_pointers = {});
+
+	//! Loads the persisted deletes if necessary
+	optional_ptr<RowVersionManager> Get(BlockManager &block_manager);
+	//! Does not load persisted deletes
+	optional_ptr<RowVersionManager> GetIfLoaded() const {
+		return version_info.load();
+	}
+	shared_ptr<RowVersionManager> GetOrCreate(BlockManager &block_manager);
+	bool HasUnloadedDeletes() const;
+	const vector<MetaBlockPointer> &GetDeletesPointers() const {
+		return deletes_pointers;
+	}
+
+private:
+	mutex lock;
+	vector<MetaBlockPointer> deletes_pointers;
+	atomic<bool> deletes_is_loaded;
+	shared_ptr<RowVersionManager> owned_version_info;
+	atomic<optional_ptr<RowVersionManager>> version_info;
+};
+
+//! Collects the ids of the rows that a delete actually deleted, but only once rows were skipped (e.g. because they
+//! were matched more than once) - in the common case all input rows are deleted and nothing is collected
+struct DeletedRowIds {
+	explicit DeletedRowIds(const row_t *input_ids) : input_ids(input_ids) {
+	}
+
+	//! The row ids passed to the delete
+	const row_t *input_ids;
+	//! Whether any of the input rows were skipped - only then are the deleted row ids collected
+	bool has_skipped_rows = false;
+	vector<row_t> row_ids;
+};
+
 class RowGroup : public SegmentBase<RowGroup> {
 public:
 	friend class ColumnData;
@@ -109,9 +148,7 @@ private:
 	//! The RowGroupCollection this row-group is a part of
 	reference<RowGroupCollection> collection;
 	//! The version info of the row_group (inserted and deleted tuple info)
-	atomic<optional_ptr<RowVersionManager>> version_info;
-	//! The owned version info of the row_group (inserted and deleted tuple info)
-	shared_ptr<RowVersionManager> owned_version_info;
+	shared_ptr<RowGroupVersionInfo> version_info;
 	//! The column data of the row_group (mutable because `const` can lazily load)
 	mutable vector<shared_ptr<ColumnData>> columns;
 
@@ -146,7 +183,7 @@ public:
 	void CommitDrop();
 
 	void InitializeEmpty(const vector<LogicalType> &types, ColumnDataType data_type);
-	bool HasChanges() const;
+	bool HasChanges(VisibilityBound bound) const;
 
 	//! Initialize a scan over this row_group
 	bool InitializeScan(CollectionScanState &state, SegmentNode<RowGroup> &node);
@@ -193,9 +230,10 @@ public:
 	//! Clean up append states that can either be compressed or deleted
 	void CleanupAppend(VisibilityBound lowest_visibility_bound, idx_t start, idx_t count);
 
-	//! Delete the given set of rows in the version manager
+	//! Delete the given set of rows in the version manager - optionally collects the ids of the rows that were deleted
+	//! (input_offset is the position of row_ids in the row ids passed to the collection delete)
 	idx_t Delete(TransactionData transaction, DuckTableEntry &table_entry, row_t *row_ids, idx_t count,
-	             idx_t row_group_start);
+	             idx_t row_group_start, optional_ptr<DeletedRowIds> deleted_ids = nullptr, idx_t input_offset = 0);
 
 	static vector<RowGroupWriteData> WriteToDisk(RowGroupWriteInfo &info,
 	                                             const vector<const_reference<RowGroup>> &row_groups);
@@ -216,6 +254,8 @@ public:
 	PersistentRowGroupData SerializeRowGroupInfo(idx_t row_group_start) const;
 
 	static void InitializeAppend(SegmentNode<RowGroup> &row_group, RowGroupAppendState &append_state);
+	//! Continue a finalized append in a new row group, retaining unused transient block space
+	static void InitializeNextAppend(SegmentNode<RowGroup> &row_group, RowGroupAppendState &append_state);
 	void Append(RowGroupAppendState &append_state, DataChunk &chunk, idx_t append_count);
 	void FinalizeAppend(RowGroupAppendState &append_state);
 
@@ -244,7 +284,9 @@ public:
 
 	void NextVector(CollectionScanState &state);
 
-	idx_t DeleteRows(idx_t vector_idx, transaction_t transaction_id, row_t rows[], idx_t count);
+	//! Writes a delete or an update into the version info of the rows (ids[i] - offset) and pushes its undo entry
+	void WriteRows(TransactionData transaction, DuckTableEntry &table_entry, idx_t vector_idx, idx_t base_row,
+	               const row_t ids[], idx_t count, row_t offset, bool is_update, WrittenRows &written);
 	RowVersionManager &GetOrCreateVersionInfo();
 
 	// Serialization
@@ -277,8 +319,6 @@ private:
 	optional_ptr<RowVersionManager> GetVersionInfo();
 	optional_ptr<RowVersionManager> GetVersionInfoIfLoaded() const;
 	shared_ptr<RowVersionManager> GetOrCreateVersionInfoPtr();
-	shared_ptr<RowVersionManager> GetOrCreateVersionInfoInternal();
-	void SetVersionInfo(shared_ptr<RowVersionManager> version);
 
 	ColumnData &GetColumn(storage_t c) const;
 	void LoadColumn(storage_t c) const;
@@ -301,13 +341,13 @@ private:
 	vector<MetaBlockPointer> column_pointers;
 	//! Whether or not each column is loaded (mutable because `const` can lazy load)
 	mutable unique_ptr<atomic<bool>[]> is_loaded;
-	vector<MetaBlockPointer> deletes_pointers;
 	bool has_metadata_blocks = false;
 	vector<idx_t> extra_metadata_blocks;
 	bool has_per_column_metadata_blocks = false;
 	PerColumnMetadataBlocks per_column_metadata_blocks;
-	atomic<bool> deletes_is_loaded;
 	atomic<idx_t> allocation_size;
+	//! Append cursor, retained between appends and moved when appending to the next row group
+	unique_ptr<SuballocationBlock> transient;
 	//! The row id column data (mutable because `const` can lazy load)
 	mutable unique_ptr<ColumnData> row_id_column_data;
 	//! Whether or not `row_id_column_data` is loaded (mutable because `const` can lazy load)

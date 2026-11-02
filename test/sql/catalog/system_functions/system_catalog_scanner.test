@@ -1,0 +1,323 @@
+# name: test/sql/catalog/system_functions/system_catalog_scanner.test
+# description: Filter pushdown into the system catalog table functions duckdb_tables()/duckdb_views()
+# group: [system_functions]
+
+# The fixture and expected output name the default catalog 'memory'.
+require noforcestorage
+
+# Fixture: two attached in-memory catalogs, each with schemas s1 and s2, a table and a view in each schema,
+# plus a table in memory.main.
+
+statement ok
+CREATE TABLE memory.main.mem_t(i INTEGER);
+
+statement ok
+ATTACH ':memory:' AS db1;
+
+statement ok
+ATTACH ':memory:' AS db2;
+
+foreach db db1 db2
+
+statement ok
+CREATE SCHEMA {db}.s1;
+
+statement ok
+CREATE SCHEMA {db}.s2;
+
+statement ok
+CREATE TABLE {db}.s1.t1(i INTEGER);
+
+statement ok
+CREATE VIEW {db}.s1.v1 AS SELECT 1;
+
+statement ok
+CREATE TABLE {db}.s2.t2(i INTEGER);
+
+statement ok
+CREATE VIEW {db}.s2.v2 AS SELECT 2;
+
+endloop
+
+# ------------------------------------------------------------------------------------------------
+# 1. Direct duckdb_tables() queries: every predicate shape, row-level
+# ------------------------------------------------------------------------------------------------
+
+# equality on schema_name
+query I
+SELECT table_name FROM duckdb_tables WHERE schema_name = 's1' ORDER BY database_name, table_name;
+----
+t1
+t1
+
+# lower() wrapper, the shape SHOW TABLES emits
+query I
+SELECT table_name FROM duckdb_tables WHERE lower(schema_name) = lower('S1') ORDER BY database_name, table_name;
+----
+t1
+t1
+
+# IN
+query I
+SELECT DISTINCT table_name FROM duckdb_tables WHERE schema_name IN ('s1','s2') AND database_name = 'db1' ORDER BY table_name;
+----
+t1
+t2
+
+# LIKE
+query I
+SELECT table_name FROM duckdb_tables WHERE schema_name LIKE 's1' AND database_name = 'db1';
+----
+t1
+
+# <>
+query I
+SELECT table_name FROM duckdb_tables WHERE schema_name <> 's1' AND database_name = 'db1' ORDER BY table_name;
+----
+t2
+
+# oid columns
+query I
+SELECT table_name FROM duckdb_tables
+WHERE database_oid = (SELECT database_oid FROM duckdb_databases WHERE database_name = 'db1')
+  AND schema_oid = (SELECT oid FROM duckdb_schemas WHERE database_name = 'db1' AND schema_name = 's2');
+----
+t2
+
+# conflicting equalities: no schema can match
+query I
+SELECT table_name FROM duckdb_tables WHERE schema_name = 's1' AND schema_name = 's2';
+----
+
+# database_name = current_database()
+statement ok
+USE memory;
+
+query I
+SELECT DISTINCT database_name FROM duckdb_tables WHERE database_name = current_database();
+----
+memory
+
+# predicate only on table_name: not an identity column, applied above the scan, still correct
+query I
+SELECT schema_name FROM duckdb_tables WHERE table_name = 't1' ORDER BY database_name;
+----
+s1
+s1
+
+# identity and non-identity predicates together: the schema is pruned, the table_name filter still applies
+query II
+SELECT database_name, table_name FROM duckdb_tables WHERE schema_name = 's1' AND table_name = 't1' AND database_name = 'db1';
+----
+db1	t1
+
+# volatile predicate: not pushed, correct result (no rows match a random uuid)
+query I
+SELECT table_name FROM duckdb_tables WHERE schema_name = gen_random_uuid()::VARCHAR;
+----
+
+# join filter pushdown on a non-identity column (table_oid) is ignored by the scan and checked by the join
+query I
+SELECT t.table_name FROM duckdb_tables t JOIN duckdb_columns c ON t.table_oid = c.table_oid
+WHERE t.database_name = 'db1' AND c.column_name = 'i' ORDER BY t.table_name;
+----
+t1
+t2
+
+# WITH ORDINALITY (pushdown skipped by the optimizer, still correct)
+query I
+SELECT table_name FROM duckdb_tables() WITH ORDINALITY WHERE schema_name = 's1' ORDER BY database_name, table_name;
+----
+t1
+t1
+
+# ------------------------------------------------------------------------------------------------
+# 2. duckdb_views() prunes the same way
+# ------------------------------------------------------------------------------------------------
+
+query I
+SELECT view_name FROM duckdb_views WHERE schema_name = 's1' AND NOT internal ORDER BY database_name;
+----
+v1
+v1
+
+# non-identity constant filter on a projection-pushdown function: re-applied above the scan
+query I
+SELECT comment FROM duckdb_views WHERE view_name = 'v1' ORDER BY database_name;
+----
+NULL
+NULL
+
+query II
+SELECT database_name, view_name FROM duckdb_views WHERE view_name = 'v2' AND schema_name = 's2' AND database_name = 'db2';
+----
+db2	v2
+
+# ------------------------------------------------------------------------------------------------
+# 3. EXPLAIN: the identity predicate is a table filter on the scan
+# ------------------------------------------------------------------------------------------------
+
+query II
+EXPLAIN SELECT table_name FROM duckdb_tables WHERE schema_name = 's1';
+----
+physical_plan	<REGEX>:.*Filters:.*schema_name.*s1.*
+
+query II
+EXPLAIN SELECT table_name FROM duckdb_tables WHERE lower(schema_name) = 's1';
+----
+physical_plan	<REGEX>:.*Filters:.*lower\(schema_name\).*s1.*
+
+# a non-identity predicate is not a table filter on the scan
+query II
+EXPLAIN SELECT schema_name FROM duckdb_tables WHERE table_name = 't1';
+----
+physical_plan	<!REGEX>:.*Filters:.*
+
+# WITH ORDINALITY: optimizer does not push the filter
+query II
+EXPLAIN SELECT * FROM duckdb_tables() WITH ORDINALITY WHERE schema_name = 's1';
+----
+physical_plan	<!REGEX>:.*Filters:.*
+
+# ------------------------------------------------------------------------------------------------
+# 4. EXPLAIN ANALYZE: pruning counters
+# ------------------------------------------------------------------------------------------------
+
+# s1 exists in db1 and db2 only
+query II
+EXPLAIN ANALYZE SELECT table_name FROM duckdb_tables WHERE schema_name = 's1';
+----
+analyzed_plan	<REGEX>:.*Schemas Scanned: 2/.*
+
+query II
+EXPLAIN ANALYZE SELECT table_name FROM duckdb_tables WHERE lower(schema_name) = 's1';
+----
+analyzed_plan	<REGEX>:.*Schemas Scanned: 2/.*
+
+# catalog-level pruning: only db1 is listed
+query II
+EXPLAIN ANALYZE SELECT table_name FROM duckdb_tables WHERE database_name = 'db1' AND schema_name = 's1';
+----
+analyzed_plan	<REGEX>:.*Catalogs Scanned: 1/.*Schemas Scanned: 1/.*
+
+# ------------------------------------------------------------------------------------------------
+# 5. Prepared statement: the filter is re-bound per execution
+# ------------------------------------------------------------------------------------------------
+
+statement ok
+PREPARE p AS SELECT table_name FROM duckdb_tables WHERE schema_name = $1 ORDER BY database_name;
+
+query I
+EXECUTE p('s1');
+----
+t1
+t1
+
+query I
+EXECUTE p('s2');
+----
+t2
+t2
+
+# ------------------------------------------------------------------------------------------------
+# 6. Pruning runs in Init, never cached: a schema created after the first query is visible next time
+# ------------------------------------------------------------------------------------------------
+
+query I
+SELECT table_name FROM duckdb_tables WHERE schema_name = 's3' AND database_name = 'db1';
+----
+
+statement ok
+CREATE SCHEMA db1.s3;
+
+statement ok
+CREATE TABLE db1.s3.t3(i INTEGER);
+
+query I
+SELECT table_name FROM duckdb_tables WHERE schema_name = 's3' AND database_name = 'db1';
+----
+t3
+
+# ------------------------------------------------------------------------------------------------
+# 7. Non-existent schema: zero rows
+# ------------------------------------------------------------------------------------------------
+
+query I
+SELECT table_name FROM duckdb_tables WHERE schema_name = 'nope';
+----
+
+# ------------------------------------------------------------------------------------------------
+# 8. SQL = on schema_name is case-sensitive: a case variant matches nothing
+# ------------------------------------------------------------------------------------------------
+
+query I
+SELECT table_name FROM duckdb_tables WHERE schema_name = 'S1';
+----
+
+# ------------------------------------------------------------------------------------------------
+# 9. Row order with mixed-case schema names: case-insensitive Identifier order (A, b, C), not ASCII (A, C, b)
+# ------------------------------------------------------------------------------------------------
+
+statement ok
+ATTACH ':memory:' AS db3;
+
+statement ok
+CREATE SCHEMA db3."A";
+
+statement ok
+CREATE SCHEMA db3."b";
+
+statement ok
+CREATE SCHEMA db3."C";
+
+statement ok
+CREATE TABLE db3."A".ta(i INTEGER);
+
+statement ok
+CREATE TABLE db3."b".tb(i INTEGER);
+
+statement ok
+CREATE TABLE db3."C".tc(i INTEGER);
+
+query II
+SELECT schema_name, table_name FROM duckdb_tables WHERE database_name = 'db3';
+----
+A	ta
+b	tb
+C	tc
+
+# ------------------------------------------------------------------------------------------------
+# 10. Embedded single quote in the schema name
+# ------------------------------------------------------------------------------------------------
+
+statement ok
+CREATE SCHEMA db1."O'Brien";
+
+statement ok
+CREATE TABLE db1."O'Brien".t(i INTEGER);
+
+query I
+SELECT table_name FROM duckdb_tables WHERE schema_name = 'O''Brien' AND database_name = 'db1';
+----
+t
+
+# ------------------------------------------------------------------------------------------------
+# 11. SHOW TABLES FROM goes through the same pushdown (lower() on both identity columns)
+# ------------------------------------------------------------------------------------------------
+
+query I
+SHOW TABLES FROM db1.s1;
+----
+t1
+v1
+
+query I
+SHOW TABLES FROM DB1.S1;
+----
+t1
+v1
+
+query I
+SHOW TABLES FROM db1."O'Brien";
+----
+t

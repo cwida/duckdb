@@ -3,6 +3,10 @@
 
 require skip_reload
 
+# the storage_compatibility_version default resolves to latest under alternative verify,
+# while this test pins the ordinary default's storage version rendering
+require no_alternative_verify
+
 require tpch
 
 # We need httpfs to do encrypted writes
@@ -21,13 +25,17 @@ SELECT tags['storage_version'] FROM duckdb_databases() WHERE database_name='encr
 ----
 v1.4.0+
 
+# new encrypted databases get the default storage version
+statement ok
+RESET storage_compatibility_version
+
 statement ok
 ATTACH '{TEST_DIR}/encrypted_v0_0.duckdb' AS encrypted_v0 (ENCRYPTION_KEY 'asdf', debug_encryption_version 'v0');
 
 query I
 SELECT tags['storage_version'] FROM duckdb_databases() WHERE database_name='encrypted_v0'
 ----
-v1.5.0+
+v2.0.0+
 
 statement ok
 ATTACH '{TEST_DIR}/encrypted_v0_1.duckdb' AS encrypted_v1 (ENCRYPTION_KEY 'asdf', debug_encryption_version 'v1');
@@ -35,7 +43,7 @@ ATTACH '{TEST_DIR}/encrypted_v0_1.duckdb' AS encrypted_v1 (ENCRYPTION_KEY 'asdf'
 query I
 SELECT tags['storage_version'] FROM duckdb_databases() WHERE database_name='encrypted_v1'
 ----
-v1.5.0+
+v2.0.0+
 
 statement error
 ATTACH '{TEST_DIR}/encrypted_error.duckdb' AS encrypted_error (ENCRYPTION_KEY 'asdf', debug_encryption_version 'v2');

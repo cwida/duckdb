@@ -8,14 +8,14 @@ namespace duckdb {
 unique_ptr<SQLStatement>
 PEGTransformerFactory::TransformExportStatement(PEGTransformer &transformer, const optional<string> &export_source,
                                                 const string &string_literal,
-                                                const optional<vector<GenericCopyOption>> &generic_copy_option_list) {
+                                                const optional<vector<GenericCopyOption>> &export_options) {
 	auto info = make_uniq<CopyInfo>();
 	info->file_path = string_literal;
 	info->format = "csv";
 	info->is_from = false;
 
-	if (generic_copy_option_list) {
-		for (const auto &option : *generic_copy_option_list) {
+	if (export_options) {
+		for (const auto &option : *export_options) {
 			if (option.name == "format") {
 				if (option.expression) {
 					throw ParserException(

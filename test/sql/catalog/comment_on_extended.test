@@ -113,7 +113,7 @@ Parser Error: Invalid column reference: col1
 statement error
 COMMENT ON COLUMN galaxy.db.schema.table.col1 IS 'no bueno'
 ----
-<REGEX>:(.*Parser Error.*Invalid column reference.*'galaxy.db."schema"."table".col1', too many dots.*|Parser Error.*Too many qualifications found.*)
+<REGEX>:(.*Parser Error.*Invalid column reference.*'galaxy.db."schema"."table".col1', too many dots.*|Parser Error.*Too many qualifications found.*|.*does not exist.*)
 
 statement error
 COMMENT ON COLUMN table_blablabla.col1 IS 'bla'

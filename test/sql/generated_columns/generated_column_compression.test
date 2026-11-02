@@ -1,0 +1,24 @@
+# name: test/sql/generated_columns/generated_column_compression.test
+# description: A compression type can not be set on generated columns
+# group: [generated_columns]
+
+statement error
+CREATE TABLE t(a INTEGER, h INTEGER AS (a + 1) USING COMPRESSION rle);
+----
+Can't set a compression type on generated column "h"
+
+statement error
+CREATE TABLE t(a INTEGER, h AS (a + 1) USING COMPRESSION uncompressed);
+----
+Can't set a compression type on generated column "h"
+
+statement ok
+CREATE TABLE t(a INTEGER USING COMPRESSION rle, h AS (a + 1));
+
+statement ok
+INSERT INTO t VALUES (1);
+
+query II
+SELECT * FROM t
+----
+1	2

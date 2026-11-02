@@ -1,0 +1,58 @@
+# name: test/sql/types/map/map_keys_outer_join_null.test
+# description: map functions over the constant NULL side of an outer join keep the row count
+# group: [map]
+
+statement ok
+CREATE TABLE a AS SELECT i FROM range(5000) r(i);
+
+statement ok
+CREATE TABLE b AS SELECT i FROM range(20000) r(i);
+
+statement ok
+CREATE TABLE c AS SELECT i, (i % 256 - 128)::TINYINT AS i8, MAP {'k' || (i % 3): i} AS m FROM range(3000) r(i);
+
+statement ok
+CREATE TABLE d AS SELECT i, (i % 256 - 128)::TINYINT AS i8 FROM range(6000) r(i);
+
+query II
+SELECT count(*), count(keys) FROM (
+	SELECT a.i, map_keys(c.m) AS keys
+	FROM a LEFT JOIN b ON a.i = b.i
+	       LEFT JOIN c ON b.i = c.i
+	       FULL JOIN d ON c.i8 = d.i8
+	ORDER BY ALL
+);
+----
+72344	70344
+
+query I
+SELECT count(*) FROM (
+	SELECT a.i, map_values(c.m) AS vals, map_entries(c.m) AS entries
+	FROM a LEFT JOIN b ON a.i = b.i
+	       LEFT JOIN c ON b.i = c.i
+	       FULL JOIN d ON c.i8 = d.i8
+	ORDER BY ALL
+);
+----
+72344
+
+statement ok
+CREATE TABLE p AS SELECT i, (i % 500)::DECIMAL(18,3) AS dec, i % 10 AS k FROM range(2000) r(i);
+
+statement ok
+CREATE TABLE mid AS SELECT i, i % 10 AS k FROM range(3000) r(i);
+
+statement ok
+CREATE TABLE sm AS SELECT i, (i % 50)::DECIMAL(18,3) AS dec,
+	CASE WHEN i % 3 = 0 THEN NULL ELSE MAP {'k' || (i % 3): i} END AS m
+FROM range(200) r(i);
+
+query I
+SELECT count(*) FROM (
+	SELECT map_keys(t3.m) AS c0
+	FROM p t1 FULL JOIN sm t3 ON t1.dec = t3.dec
+	WHERE t1.k IN (SELECT k FROM mid)
+	ORDER BY c0
+);
+----
+2600
