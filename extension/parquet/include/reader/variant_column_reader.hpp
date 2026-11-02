@@ -56,6 +56,8 @@ protected:
 	idx_t value_reader_idx;
 	//! Optional: the single shredded field the pushed-down extract can reach (invalid if there is none)
 	optional_idx typed_value_field;
+	//! Intermediate group holding 'value' and just that field - what 'Convert' is handed for the extract
+	LogicalType typed_value_field_group;
 
 	DataChunk intermediate_chunk;
 	idx_t intermediate_capacity = 0;
