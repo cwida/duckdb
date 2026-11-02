@@ -5,6 +5,7 @@ add_library_unity(
   bound_function_identity.cpp
   build_probe_side_optimizer.cpp
   column_binding_rewrite.cpp
+  common_subplan.cpp
   common_subplan_nonserializable.cpp
   expression_type_serialization.cpp
   filter_pushdown_alias.cpp

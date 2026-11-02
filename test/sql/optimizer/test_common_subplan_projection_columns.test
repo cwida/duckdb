@@ -1,0 +1,229 @@
+# name: test/sql/optimizer/test_common_subplan_projection_columns.test
+# description: Expand computed projection outputs when sharing larger common subplans
+# group: [optimizer]
+
+statement ok
+CREATE TABLE projected (k INTEGER, s VARCHAR, u VARCHAR);
+
+statement ok
+INSERT INTO projected VALUES (0, 'a', 'bbb'), (1, NULL, 'c'), (2, 'dd', NULL), (3, '', 'eeee');
+
+# Repeated aggregate arguments leave computed projections below the aggregates.
+query RR rowsort
+SELECT sum(length(s)), avg(length(s)) FROM projected
+UNION ALL
+SELECT sum(length(u)), avg(length(u)) FROM projected;
+----
+3	1
+8	2.6666666666666665
+
+# Overlapping, reordered and repeated expressions preserve each reader's schema.
+query RRRR rowsort
+SELECT sum(length(s)), avg(length(s)), sum(length(u)), avg(length(u)) FROM projected
+UNION ALL
+SELECT sum(length(u)), avg(length(u)), sum(length(s)), avg(length(s)) FROM projected
+UNION ALL
+SELECT sum(length(s)), avg(length(s)), sum(length(s)), avg(length(s)) FROM projected;
+----
+3	1	3	1
+3	1	8	2.6666666666666665
+8	2.6666666666666665	3	1
+
+# Constants and aliases are part of the whole projected expression.
+query RR rowsort
+SELECT sum(x), avg(x) FROM (SELECT coalesce(length(s), 7) x FROM projected) t
+UNION ALL
+SELECT sum(y), avg(y) FROM (SELECT coalesce(length(u), 9) y FROM projected) t;
+----
+10	2.5
+17	4.25
+
+statement ok
+PREPARE projected_p AS
+SELECT sum(length(s)), avg(length(s)) FROM projected WHERE k < $1
+UNION ALL
+SELECT sum(length(u)), avg(length(u)) FROM projected WHERE k < $2;
+
+query RR rowsort
+EXECUTE projected_p(2, 2);
+----
+1	1
+4	2
+
+query RR rowsort
+EXECUTE projected_p(2, 4);
+----
+1	1
+8	2.6666666666666665
+
+query RR
+EXECUTE projected_p(0, 0);
+----
+NULL	NULL
+NULL	NULL
+
+query RR rowsort
+EXECUTE projected_p(2, 2);
+----
+1	1
+4	2
+
+# An outer join must null-extend the projected expression, including its constant.
+statement ok
+SET disabled_optimizers='projection_pullup';
+
+query III rowsort
+SELECT l.k, r.x, r.y FROM projected l
+LEFT JOIN (SELECT k, coalesce(length(s), 7) x, 42 y FROM projected WHERE k < 2) r USING (k)
+UNION ALL
+SELECT l.k, r.x, r.y FROM projected l
+LEFT JOIN (SELECT k, coalesce(length(u), 9) x, 42 y FROM projected WHERE k < 2) r USING (k);
+----
+0	1	42
+0	3	42
+1	1	42
+1	7	42
+2	NULL	NULL
+2	NULL	NULL
+3	NULL	NULL
+3	NULL	NULL
+
+statement ok
+SET disabled_optimizers='';
+
+# Guarded casts retain their evaluation boundaries.
+statement ok
+CREATE TABLE projected_casts AS SELECT i k, CASE WHEN i < 2 THEN i::VARCHAR ELSE 'bad' END v FROM range(4) t(i);
+
+query RR rowsort
+SELECT sum(CASE WHEN k < 2 THEN v::INTEGER ELSE 0 END), avg(CASE WHEN k < 2 THEN v::INTEGER ELSE 0 END)
+FROM projected_casts
+UNION ALL
+SELECT sum(CASE WHEN k < 2 THEN v::INTEGER ELSE 1 END), avg(CASE WHEN k < 2 THEN v::INTEGER ELSE 1 END)
+FROM projected_casts;
+----
+1	0.25
+3	0.75
+
+statement error
+SELECT sum(v::INTEGER), avg(v::INTEGER) FROM projected_casts
+UNION ALL SELECT sum(k), avg(k) FROM projected_casts;
+----
+Could not convert string 'bad'
+
+statement ok
+CREATE SEQUENCE projected_calls;
+
+query II
+SELECT count(x), count(x) FROM (SELECT nextval('projected_calls') x FROM projected) p
+UNION ALL
+SELECT count(y), count(y) FROM (SELECT nextval('projected_calls') y FROM projected) p;
+----
+4	4
+4	4
+
+query I
+SELECT nextval('projected_calls');
+----
+9
+
+# Set operations consume child columns by position, including their projected value identities.
+statement ok
+CREATE TABLE positional_input (s VARCHAR, u VARCHAR);
+
+statement ok
+INSERT INTO positional_input VALUES ('a', 'bb'), ('bb', 'cccc'), ('ccc', 'ddd');
+
+query II rowsort
+SELECT sum(x), count(x) FROM (
+	SELECT length(s) x FROM positional_input UNION ALL SELECT length(u) FROM positional_input
+) q
+UNION ALL
+SELECT sum(x), count(x) FROM (
+	SELECT length(s) x FROM positional_input UNION ALL SELECT length(s) FROM positional_input
+) q;
+----
+12	6
+15	6
+
+query II rowsort
+SELECT sum(x), count(x) FROM (
+	SELECT length(s) x FROM positional_input UNION SELECT length(u) FROM positional_input
+) q
+UNION ALL
+SELECT sum(x), count(x) FROM (
+	SELECT length(s) x FROM positional_input UNION SELECT length(s) FROM positional_input
+) q;
+----
+10	4
+6	3
+
+query II rowsort
+SELECT sum(x), count(x) FROM (
+	SELECT length(s) x FROM positional_input INTERSECT SELECT length(u) FROM positional_input
+) q
+UNION ALL
+SELECT sum(x), count(x) FROM (
+	SELECT length(s) x FROM positional_input INTERSECT SELECT length(s) FROM positional_input
+) q;
+----
+5	2
+6	3
+
+query II rowsort
+SELECT sum(x), count(x) FROM (
+	SELECT length(s) x FROM positional_input INTERSECT ALL SELECT length(u) FROM positional_input
+) q
+UNION ALL
+SELECT sum(x), count(x) FROM (
+	SELECT length(s) x FROM positional_input INTERSECT ALL SELECT length(s) FROM positional_input
+) q;
+----
+5	2
+6	3
+
+query II rowsort
+SELECT sum(x), count(x) FROM (
+	SELECT length(s) x FROM positional_input EXCEPT SELECT length(u) FROM positional_input
+) q
+UNION ALL
+SELECT sum(x), count(x) FROM (
+	SELECT length(s) x FROM positional_input EXCEPT SELECT length(s) FROM positional_input
+) q;
+----
+1	1
+NULL	0
+
+query II rowsort
+SELECT sum(x), count(x) FROM (
+	SELECT length(s) x FROM positional_input EXCEPT ALL SELECT length(u) FROM positional_input
+) q
+UNION ALL
+SELECT sum(x), count(x) FROM (
+	SELECT length(s) x FROM positional_input EXCEPT ALL SELECT length(s) FROM positional_input
+) q;
+----
+1	1
+NULL	0
+
+# Reordered child outputs have the same types, but different positional meanings.
+query II rowsort
+SELECT sum(x), sum(y) FROM (
+	SELECT length(s) x, length(u) y FROM positional_input UNION ALL SELECT length(s), length(u) FROM positional_input
+) q
+UNION ALL
+SELECT sum(x), sum(y) FROM (
+	SELECT length(u) x, length(s) y FROM positional_input UNION ALL SELECT length(u), length(s) FROM positional_input
+) q;
+----
+12	18
+18	12
+
+# Table-in/out functions also consume positional inputs.
+query I rowsort
+SELECT sum(x) FROM summary((SELECT length(s) x FROM projected))
+UNION ALL
+SELECT sum(x) FROM summary((SELECT length(u) x FROM projected));
+----
+3
+8
