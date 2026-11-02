@@ -40,18 +40,21 @@ WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
 
 # nested schema qualification also names the real table
 statement ok
-CREATE SCHEMA otherdb.p;
+ATTACH ':memory:' AS nesteddb;
 
 statement ok
-CREATE SCHEMA otherdb.p.frontier;
+CREATE SCHEMA nesteddb.p;
 
 statement ok
-CREATE TABLE otherdb.p.frontier.t AS SELECT 42 AS n;
+CREATE SCHEMA nesteddb.p.frontier;
+
+statement ok
+CREATE TABLE nesteddb.p.frontier.t AS SELECT 42 AS n;
 
 query I
 WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
 	(VALUES (1, 7))
-	BRANCH 1: (SELECT 0, n FROM otherdb.p.frontier.t)
+	BRANCH 1: (SELECT 0, n FROM nesteddb.p.frontier.t)
 ) SELECT n FROM t;
 ----
 42
@@ -76,10 +79,10 @@ CREATE TABLE frontier.t AS SELECT 55 AS n;
 query I
 WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
 	(VALUES (1, 7))
-	BRANCH 1: (SELECT 0, (SELECT max(f.n) FROM frontier.t f) + (SELECT max(n) FROM memory.frontier.t) FROM t)
+	BRANCH 1: (SELECT 0, (SELECT max(f.n) FROM frontier.t f) + (SELECT max(n) FROM otherdb.frontier.t) FROM t)
 ) SELECT n FROM t;
 ----
-62
+106
 
 # outside any trampoline the real table is unaffected
 query I

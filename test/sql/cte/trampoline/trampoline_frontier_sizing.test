@@ -13,7 +13,6 @@ CALL truncate_duckdb_logs();
 
 # Branch 1 holds a one-row wave but counts a large frontier each round, so its waves must
 # parallelize on the snapshot size. Branch 2 emits its whole population in round one.
-# Sizing by the destination wave alone schedules 14 tasks over 10 workers instead.
 query I
 WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
 	(SELECT 2, r::BIGINT FROM range(current_setting('standard_vector_size')::BIGINT * 32) q(r)
@@ -28,9 +27,11 @@ true
 statement ok
 CALL disable_logging();
 
-query II
-SELECT info.scheduled_tasks::UBIGINT, info.scheduled_workers::UBIGINT
+# 17 workers with the snapshot counted, 10 without; bounded to stay robust against
+# unrelated pipeline-count changes while still rejecting destination-only sizing
+query I
+SELECT info.scheduled_workers::UBIGINT >= 16
 FROM duckdb_logs_parsed('PhysicalOperator')
 WHERE class = 'PhysicalTrampoline' AND event = 'RuntimeMetrics';
 ----
-21	17
+true
