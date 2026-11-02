@@ -15,6 +15,9 @@
 #include "duckdb/parallel/task_scheduler.hpp"
 #include "duckdb/common/reference_map.hpp"
 #include "duckdb/parallel/executor_task.hpp"
+// Complete type required: the unique_ptr<PipelineSchedule> in ResolveExternalInputs' signature instantiates the
+// deleter in sanitizer builds of every includer, which rejects a forward declaration.
+#include "duckdb/parallel/pipeline_schedule.hpp"
 
 namespace duckdb {
 
@@ -25,7 +28,6 @@ class PipelineExecutor;
 class Pipeline;
 class PipelineBuildStateData;
 class PhysicalCTE;
-struct PipelineSchedule;
 
 enum class PipelineInputMode : uint8_t { SCHEDULED_SOURCE, EXTERNAL_INPUT };
 enum class PipelineDependencyType : uint8_t { REQUIRED, OPTIONAL_DEPENDENCY };
