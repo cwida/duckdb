@@ -33,8 +33,7 @@
 namespace duckdb {
 
 Executor::Executor(ClientContext &context, bool caller_completes_query)
-    : context(context), executor_tasks(0), caller_completes_query(caller_completes_query),
-      caller_thread(ThreadUtil::GetThreadId()), blocked_thread_time(0) {
+    : context(context), executor_tasks(0), caller_completes_query(caller_completes_query), blocked_thread_time(0) {
 }
 
 Executor::~Executor() {
@@ -383,9 +382,9 @@ void Executor::UnregisterTask() {
 void Executor::ScheduleTasks(vector<shared_ptr<Task>> &tasks) {
 	auto &scheduler = TaskScheduler::GetScheduler(context);
 	auto threads_to_wake = tasks.size();
-	// the caller takes the next queued task once it returns to its loop, so wake no thread for that one
-	if (caller_completes_query && ThreadUtil::GetThreadId() == caller_thread &&
-	    scheduler.GetTaskCountForProducer(GetToken()) == 0) {
+	// the caller runs tasks until the query completes, and is woken when the scheduling task finishes,
+	// so wake no thread for one of the tasks
+	if (caller_completes_query && scheduler.GetTaskCountForProducer(GetToken()) == 0) {
 		threads_to_wake--;
 	}
 	scheduler.ScheduleTasks(GetToken(), tasks, threads_to_wake);

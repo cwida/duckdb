@@ -205,7 +205,7 @@ TEST_CASE("Pipeline sink thread limits cannot raise source or operator caps", "[
 	config.options.maximum_threads = 8;
 	DuckDB db(nullptr, &config);
 	Connection con(db);
-	Executor executor(*con.context);
+	Executor executor(*con.context, false);
 	PipelineBuildState build_state;
 	struct Limits {
 		idx_t source, op, sink, expected, sink_input;

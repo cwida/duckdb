@@ -13,7 +13,6 @@
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/pair.hpp"
 #include "duckdb/common/reference_map.hpp"
-#include "duckdb/common/thread.hpp"
 #include "duckdb/main/query_result.hpp"
 #include "duckdb/execution/task_error_manager.hpp"
 #include "duckdb/execution/progress_data.hpp"
@@ -94,7 +93,7 @@ public:
 	//! Flush a thread context into the client context
 	void Flush(ThreadContext &context);
 
-	//! Schedule tasks of this query, leaving one to a caller that completes the query and schedules them itself
+	//! Schedule tasks of this query, waking one thread fewer when the caller runs tasks until the query completes
 	void ScheduleTasks(vector<shared_ptr<Task>> &tasks);
 	//! Reschedules a task that was blocked
 	void RescheduleTask(shared_ptr<Task> &task);
@@ -228,8 +227,6 @@ private:
 	atomic<idx_t> executor_tasks;
 	//! Whether the submitting call executes tasks until the query completes before it returns
 	const bool caller_completes_query;
-	//! The submitting thread
-	const thread_id caller_thread;
 	//! Leaf lock for the result buffer slot. It must not share executor_lock, which is held while
 	//! readiness is checked
 	mutex result_buffer_lock;
