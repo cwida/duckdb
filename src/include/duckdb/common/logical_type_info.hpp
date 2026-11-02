@@ -30,6 +30,9 @@ public:
 
 protected:
 	bool EqualsInternal(const LogicalTypeInfo *other_p) const override;
+
+private:
+	DecimalTypeInfo();
 };
 
 struct StringTypeInfo : public LogicalTypeInfo {
