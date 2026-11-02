@@ -218,6 +218,13 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalTrampoline &op) {
 	auto frontier_table = make_shared_ptr<ColumnDataCollection>(context, op.types);
 	trampoline_frontier_tables[op.table_index] = frontier_table;
 
+	// volatility is a logical property and must be read before physical planning consumes
+	// parts of the logical tree (CreatePlan(LogicalGet) moves subquery children out)
+	vector<bool> branch_volatile(op.children.size() - 1, false);
+	for (idx_t branch_idx = 1; branch_idx < op.children.size(); branch_idx++) {
+		branch_volatile[branch_idx - 1] = LogicalSubtreeIsVolatile(*op.children[branch_idx]);
+	}
+
 	auto &seed = CreatePlan(*op.children[0]);
 
 	vector<reference<PhysicalOperator>> branches;
@@ -253,7 +260,7 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalTrampoline &op) {
 	vector<bool> targets_known(branches.size(), false);
 	for (idx_t branch_idx = 0; branch_idx < branches.size(); branch_idx++) {
 		fusable[branch_idx] = BranchIsLinear(branches[branch_idx].get(), op.table_index) &&
-		                      !LogicalSubtreeIsVolatile(*op.children[branch_idx + 1]) &&
+		                      !branch_volatile[branch_idx] &&
 		                      PhysicalSubtreeIsRepeatable(branches[branch_idx].get(), non_repeatable_operators);
 		targets_known[branch_idx] = AnalyzeSelectorTargets(context, branches[branch_idx].get(), op.selector_idx,
 		                                                   branches.size(), targets[branch_idx]);
