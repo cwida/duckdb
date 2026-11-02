@@ -851,6 +851,11 @@ void ColumnReader::DecompressInternal(CompressionCodec::type codec, const_data_p
 			throw InvalidInputException("Failed to read file \"%s\": Brotli Decompression failure",
 			                            Reader().GetFileName());
 		}
+		if (total_out != dst_size) {
+			throw DataCorruptionException(
+			    "Failed to read file \"%s\": Brotli uncompressed data size mismatch (expected %d, actual: %d)",
+			    Reader().GetFileName(), dst_size, total_out);
+		}
 		break;
 	}
 
