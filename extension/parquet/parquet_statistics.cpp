@@ -856,7 +856,7 @@ static optional<uint64_t> TryHashTime(const Value &constant, const ParquetColumn
 		}
 	}
 	case LogicalTypeId::TIME_TZ: {
-		auto value = ParquetTimeTZToUTCMicros(constant.GetValue<dtime_tz_t>());
+		auto value = Time::NormalizeTimeTZ(constant.GetValue<dtime_tz_t>()).value;
 		switch (schema.type_info) {
 		case ParquetExtraTypeInfo::UNIT_MS:
 			return ValueXH64FixedWidth(NumericCast<int32_t>(value / Interval::MICROS_PER_MSEC));
