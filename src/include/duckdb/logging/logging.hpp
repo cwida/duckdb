@@ -73,10 +73,4 @@ struct RegisteredLoggingContext {
 	LoggingContext context;
 };
 
-//! An immutable LogConfig, together with the config version it was published at
-struct LogConfigSnapshot {
-	shared_ptr<const LogConfig> config;
-	idx_t version = 0;
-};
-
 } // namespace duckdb

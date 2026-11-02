@@ -22,7 +22,6 @@
 #include "duckdb/common/pair.hpp"
 #include "duckdb/common/unordered_set.hpp"
 #include "duckdb/common/winapi.hpp"
-#include "duckdb/logging/logging.hpp"
 #include "duckdb/main/client_config.hpp"
 #include "duckdb/main/client_context_state.hpp"
 #include "duckdb/main/client_properties.hpp"
@@ -133,8 +132,6 @@ public:
 	unique_ptr<RegisteredStateManager> registered_state;
 	//! The logger to be used by this ClientContext
 	shared_ptr<Logger> logger;
-	//! The log config used to create loggers for this ClientContext, refreshed whenever the logger is
-	LogConfigSnapshot log_config;
 	//! The client configuration
 	ClientConfig config;
 	//! The set of client-specific data
@@ -421,8 +418,6 @@ private:
 	void BeginStatementInternal(ClientContextLock &lock, const string &query);
 	//! Refreshes the logger for the statement that begins
 	void RefreshLoggerInternal();
-	//! Replaces the logger with one created from the up-to-date log config
-	void ResetLoggerInternal(LoggingContext logging_context);
 	//! Ends the statement of a query that expands into several once it finished, and starts the next one
 	QueryResultState StartNextStatementInternal(ClientContextLock &lock);
 	//! Ends the statement that finished and starts the next one. Returns the result object a collector built for it,

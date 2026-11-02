@@ -22,7 +22,7 @@ ThreadContext::ThreadContext(ClientContext &context) : profiler(context) {
 	}
 
 	log_context.thread_id = TaskScheduler::GetEstimatedCPUId();
-	logger = LogManager::Get(context).CreateLogger(log_context, context.log_config);
+	logger = LogManager::Get(context).CreateLogger(log_context, true);
 }
 
 ThreadContext::~ThreadContext() {
