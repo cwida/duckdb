@@ -1,4 +1,5 @@
 #include "duckdb/storage/table/row_version_manager.hpp"
+#include "duckdb/transaction/delete_info.hpp"
 #include "duckdb/transaction/transaction_data.hpp"
 #include "duckdb/storage/metadata/metadata_manager.hpp"
 #include "duckdb/storage/metadata/metadata_reader.hpp"
@@ -195,27 +196,34 @@ ChunkVectorInfo &RowVersionManager::GetVectorInfo(idx_t vector_idx) {
 	return *vector_info[vector_idx];
 }
 
-idx_t RowVersionManager::DeleteRows(idx_t vector_idx, transaction_t transaction_id, row_t rows[], idx_t count) {
+void RowVersionManager::WriteRows(idx_t vector_idx, TransactionData transaction, const row_t ids[], idx_t count,
+                                  row_t offset, bool is_update, WrittenRows &written) {
 	lock_guard<mutex> lock(version_lock);
 	needs_compression_check = true;
-	return GetVectorInfo(vector_idx).Delete(transaction_id, rows, count);
+	GetVectorInfo(vector_idx).WriteRows(transaction, ids, count, offset, is_update, written);
 }
 
-void RowVersionManager::CommitDelete(idx_t vector_idx, transaction_t commit_id, const DeleteInfo &info) {
+void RowVersionManager::CommitWrite(transaction_t old_id, transaction_t new_id, const DeleteInfo &info,
+                                    bool is_delete) {
 	lock_guard<mutex> lock(version_lock);
 	needs_compression_check = true;
-	if (IsCommitted(commit_id)) {
-		// a rolled back or reverted delete changes nothing a checkpoint writes
-		if (!newest_uncheckpointed_delete_commit.IsValid() ||
-		    commit_id > newest_uncheckpointed_delete_commit.GetIndex()) {
-			newest_uncheckpointed_delete_commit = commit_id;
+	if (is_delete && IsCommitted(new_id)) {
+		// a reverted commit (new_id is the transaction id again) changes nothing a checkpoint writes
+		if (!newest_uncheckpointed_delete_commit.IsValid() || new_id > newest_uncheckpointed_delete_commit.GetIndex()) {
+			newest_uncheckpointed_delete_commit = new_id;
 		}
-		if (!oldest_uncheckpointed_delete_commit.IsValid() ||
-		    commit_id < oldest_uncheckpointed_delete_commit.GetIndex()) {
-			oldest_uncheckpointed_delete_commit = commit_id;
+		if (!oldest_uncheckpointed_delete_commit.IsValid() || new_id < oldest_uncheckpointed_delete_commit.GetIndex()) {
+			oldest_uncheckpointed_delete_commit = new_id;
 		}
 	}
-	GetVectorInfo(vector_idx).CommitDelete(commit_id, info);
+	GetVectorInfo(info.vector_idx).CommitWrite(old_id, new_id, info.GetStoredRows(), info.count);
+}
+
+void RowVersionManager::RollbackWrite(idx_t vector_idx, const uint16_t rows[], idx_t count,
+                                      const transaction_t previous_ids[], idx_t previous_id_count) {
+	lock_guard<mutex> lock(version_lock);
+	needs_compression_check = true;
+	GetVectorInfo(vector_idx).RollbackWrite(rows, count, previous_ids, previous_id_count);
 }
 
 void RowVersionManager::CompressVersionIds(VisibilityBound lowest_visibility_bound) {

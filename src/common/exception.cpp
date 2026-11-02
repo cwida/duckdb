@@ -4,6 +4,7 @@
 #include "duckdb/common/to_string.hpp"
 #include "duckdb/common/types.hpp"
 #include "duckdb/common/exception/list.hpp"
+#include "duckdb/common/enum_util.hpp"
 #include "duckdb/parser/tableref.hpp"
 #include "duckdb/parser/parsed_expression.hpp"
 #include "duckdb/planner/expression.hpp"
@@ -358,6 +359,30 @@ FatalException::FatalException(ExceptionType type, const string &msg) : Exceptio
 
 void InternalException::Throw(const char *message) {
 	throw InternalException(message);
+}
+
+void NotImplementedException::Throw(const char *message) {
+	throw NotImplementedException(message);
+}
+
+void NotImplementedException::Throw(const char *message, PhysicalType type) {
+	throw NotImplementedException(message, EnumUtil::ToString(type));
+}
+
+void InvalidInputException::Throw(const char *message) {
+	throw InvalidInputException(message);
+}
+
+void OutOfRangeException::Throw(const char *message) {
+	throw OutOfRangeException(message);
+}
+
+void OutOfRangeException::ThrowConversion(double value, PhysicalType orig_type, PhysicalType new_type) {
+	throw OutOfRangeException(value, orig_type, new_type);
+}
+
+void DataCorruptionException::Throw(const char *message) {
+	throw DataCorruptionException(message);
 }
 
 InternalException::InternalException(const string &msg) : Exception(ExceptionType::INTERNAL, msg) {

@@ -11,6 +11,12 @@
   ],
   "skip_tests": [
     {
+      "reason": "A declared RETURNS type requires storage version v2.1.0 but encrypted databases use an older default storage version",
+      "paths": [
+        "test/sql/catalog/function/macro_returns_type.test"
+      ]
+    },
+    {
       "reason": "Requires in-memory storage: persistent blocks can be evicted without a temporary directory.",
       "paths": [
         "test/sql/storage/evict_unpinned_without_temp_directory.test",

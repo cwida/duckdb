@@ -42,6 +42,12 @@
       ]
     },
     {
+      "reason": "Test explicitly checks the checkpoint on shutdown.",
+      "paths": [
+        "test/sql/index/art/storage/test_art_list_sort_checkpoint_on_close.test"
+      ]
+    },
+    {
       "reason": "Test relies on checkpoint/vacuum ordering.",
       "paths": [
         "test/sql/storage/rowid_gaps/alter_preserves_rowid_gaps.test"

@@ -81,6 +81,7 @@ jobs:
       enabled_jobs: ${{ steps.config.outputs.enabled_jobs }}
       save_cache: ${{ steps.config.outputs.save_cache }}
       reduced_ci_mode: ${{ steps.config.outputs.reduced_ci_mode }}
+      windows_full_matrix: ${{ steps.config.outputs.windows_full_matrix }}
       runner_provider: ${{ steps.runners.outputs.runner_provider }}
       skip_tests: ${{ steps.config.outputs.skip_tests }}
       duckdb_version: ${{ steps.version.outputs.duckdb_version }}
@@ -200,6 +201,7 @@ jobs:
             --skip-tests "$skip_tests" \
             --changed-keys "$CHANGED_KEYS" \
             --reduced-ci-mode "${{ (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && !inputs.run_all)) && 'enabled' || 'disabled' }}" \
+            --run-all "${{ github.event_name != 'workflow_dispatch' || inputs.run_all }}" \
             --runners '${{ steps.runners.outputs.runners }}' \
             --runner-provider '${{ steps.runners.outputs.runner_provider }}'
 
@@ -1124,7 +1126,7 @@ jobs:
       runners: ${{ needs.prepare.outputs.runners }}
       runner_provider: ${{ needs.prepare.outputs.runner_provider }}
       skip_tests: ${{ fromJson(needs.prepare.outputs.skip_tests) }}
-      run_all: ${{ github.event_name != 'workflow_dispatch' || inputs.run_all }}
+      run_all: ${{ fromJson(needs.prepare.outputs.windows_full_matrix) }}
 
  osx:
     if: ${{ contains(fromJson(needs.prepare.outputs.enabled_jobs), 'osx') }}

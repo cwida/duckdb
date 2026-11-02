@@ -463,6 +463,10 @@ void Deliminator::TrySwitchSingleToLeft(LogicalComparisonJoin &delim_join) {
 	if (!aggr.grouping_functions.empty()) {
 		return;
 	}
+	if (aggr.grouping_sets.size() > 1) {
+		// multiple grouping sets emit one row per set, so the groups do not determine a unique row
+		return;
+	}
 
 	for (idx_t group_idx = 0; group_idx < aggr.groups.size(); group_idx++) {
 		if (std::find(join_bindings.begin(), join_bindings.end(),

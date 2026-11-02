@@ -106,8 +106,10 @@ unique_ptr<LogicalOperator> IndexBinder::BindCreateIndex(ClientContext &context,
 	for (auto &expr : create_index_info->expressions) {
 		properties.always_require_rebind = false;
 		expressions.push_back(Bind(expr));
-		if (properties.always_require_rebind) {
-			throw BinderException("Index keys cannot contain expressions with side effects.");
+		// casts are bound without the binder, so a cast that reads settings such as TimeZone is found in the key
+		if (properties.always_require_rebind || expressions.back()->RequiresRebind()) {
+			throw BinderException("Index keys cannot contain expressions with side effects. They also cannot depend on "
+			                      "settings such as TimeZone.");
 		}
 	}
 	properties.always_require_rebind = statement_requires_rebind;
@@ -130,8 +132,20 @@ BindResult IndexBinder::BindExpression(unique_ptr<ParsedExpression> &expr_ptr, i
 		return BindResult(BinderException::Unsupported(expr, "window functions are not allowed in index expressions"));
 	case ExpressionClass::SUBQUERY:
 		return BindResult(BinderException::Unsupported(expr, "cannot use subquery in index expressions"));
-	default:
+	default: {
+		// restores the previous state on exit, binding is recursive
+		struct IndexKeyScope {
+			explicit IndexKeyScope(Binder &binder_p) : binder(binder_p), previous(binder_p.IsBindingIndexKey()) {
+				binder.SetBindingIndexKey(true);
+			}
+			~IndexKeyScope() {
+				binder.SetBindingIndexKey(previous);
+			}
+			Binder &binder;
+			bool previous;
+		} scope(binder);
 		return ExpressionBinder::BindExpression(expr_ptr, depth);
+	}
 	}
 }
 

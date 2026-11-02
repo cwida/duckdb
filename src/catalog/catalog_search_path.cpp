@@ -19,12 +19,31 @@ CatalogSearchEntry::CatalogSearchEntry(Identifier catalog_p, Identifier schema_p
       default_schema_precedence(default_schema_precedence_p) {
 }
 
+CatalogSearchEntry CatalogSearchEntry::FromSchemaPath(Identifier catalog, vector<Identifier> schema_path,
+                                                      bool default_schema_precedence) {
+	D_ASSERT(!schema_path.empty());
+	auto schema = std::move(schema_path.back());
+	schema_path.pop_back();
+	CatalogSearchEntry result(std::move(catalog), std::move(schema), default_schema_precedence);
+	result.parent_schemas = std::move(schema_path);
+	return result;
+}
+
+vector<Identifier> CatalogSearchEntry::GetSchemaPath() const {
+	auto result = parent_schemas;
+	result.push_back(schema);
+	return result;
+}
+
 string CatalogSearchEntry::ToString() const {
-	if (catalog.empty()) {
-		return WriteOptionallyQuoted(schema);
-	} else {
-		return WriteOptionallyQuoted(catalog) + "." + WriteOptionallyQuoted(schema);
+	string result;
+	if (!catalog.empty()) {
+		result = WriteOptionallyQuoted(catalog) + ".";
 	}
+	for (auto &parent : parent_schemas) {
+		result += WriteOptionallyQuoted(parent) + ".";
+	}
+	return result + WriteOptionallyQuoted(schema);
 }
 
 string CatalogSearchEntry::WriteOptionallyQuoted(const Identifier &input) {
@@ -219,7 +238,7 @@ vector<CatalogSearchEntry> CatalogSearchPath::Get() const {
 
 Identifier CatalogSearchPath::GetDefaultSchema(const Identifier &catalog) const {
 	for (auto &path : paths) {
-		if (path.GetCatalog() == TEMP_CATALOG) {
+		if (path.GetCatalog() == TEMP_CATALOG || path.IsNested()) {
 			continue;
 		}
 		if (path.GetCatalog() == catalog) {
@@ -231,7 +250,7 @@ Identifier CatalogSearchPath::GetDefaultSchema(const Identifier &catalog) const 
 
 optional<Identifier> CatalogSearchPath::GetDefaultSchema(ClientContext &context, const Identifier &catalog) const {
 	for (auto &path : paths) {
-		if (path.GetCatalog() == TEMP_CATALOG) {
+		if (path.GetCatalog() == TEMP_CATALOG || path.IsNested()) {
 			continue;
 		}
 		if (path.GetCatalog() == catalog) {
@@ -250,7 +269,7 @@ Identifier CatalogSearchPath::GetDefaultCatalog(const Identifier &schema) const 
 		return Identifier::SystemCatalog();
 	}
 	for (auto &path : paths) {
-		if (path.GetCatalog() == TEMP_CATALOG) {
+		if (path.GetCatalog() == TEMP_CATALOG || path.IsNested()) {
 			continue;
 		}
 		if (path.GetSchema() == schema) {
@@ -277,6 +296,9 @@ vector<Identifier> CatalogSearchPath::GetCatalogsForSchema(const Identifier &sch
 		catalogs.push_back(Identifier::SystemCatalog());
 	} else {
 		for (auto &path : paths) {
+			if (path.IsNested()) {
+				continue;
+			}
 			if (path.GetSchema() == schema || path.GetSchema().empty()) {
 				catalogs.emplace_back(path.GetCatalog());
 			}
@@ -288,11 +310,21 @@ vector<Identifier> CatalogSearchPath::GetCatalogsForSchema(const Identifier &sch
 vector<Identifier> CatalogSearchPath::GetSchemasForCatalog(const Identifier &catalog) const {
 	vector<Identifier> schemas;
 	for (auto &path : paths) {
-		if (!path.GetSchema().empty() && path.GetCatalog() == catalog) {
+		if (!path.GetSchema().empty() && !path.IsNested() && path.GetCatalog() == catalog) {
 			schemas.emplace_back(path.GetSchema());
 		}
 	}
 	return schemas;
+}
+
+vector<CatalogSearchEntry> CatalogSearchPath::GetEntriesForCatalog(const Identifier &catalog) const {
+	vector<CatalogSearchEntry> entries;
+	for (auto &path : paths) {
+		if (!path.GetSchema().empty() && path.GetCatalog() == catalog) {
+			entries.push_back(path);
+		}
+	}
+	return entries;
 }
 
 vector<CatalogSearchEntry> CatalogSearchPath::GetImplicitSearchCatalogs() const {
@@ -357,7 +389,7 @@ void CatalogSearchPath::SetPathsInternal(vector<CatalogSearchEntry> new_paths) {
 bool CatalogSearchPath::SchemaInSearchPath(ClientContext &context, const Identifier &catalog_name,
                                            const Identifier &schema_name) const {
 	for (auto &path : paths) {
-		if (path.GetSchema() != schema_name) {
+		if (path.GetSchema() != schema_name || path.IsNested()) {
 			continue;
 		}
 		if (path.GetCatalog() == catalog_name) {

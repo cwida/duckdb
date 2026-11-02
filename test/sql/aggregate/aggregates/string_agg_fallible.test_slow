@@ -1,0 +1,10 @@
+# name: test/sql/aggregate/aggregates/string_agg_fallible.test_slow
+# description: string_agg raises a regular error when the result exceeds the maximum string size
+# group: [aggregates]
+
+require 64bit
+
+statement error
+SELECT length(string_agg(v, '')) FROM (SELECT repeat('a', 2147483648) FROM range(3)) t(v);
+----
+string_agg string size exceeds maximum string size

@@ -106,7 +106,7 @@ EXPLAIN
 select * from(select a.a, b.b from (select * from t1) a join (select * from t2) b on a.a = b.b) as join12
 semi join(select c.c, d.d as newD from (select * from t3) c join (select * from t4) d on c.c = d.d) as join34 on join12.a = join34.c;
 ----
-logical_opt	<!REGEX>:.*INNER.*PROJECTION.*
+logical_opt	<REGEX>:(?s).*Join Type: SEMI.*PROJECTION.*Join Type: INNER.*
 
 statement ok
 CREATE OR REPLACE TABLE t1 AS SELECT range i FROM range(10);

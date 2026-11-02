@@ -3,6 +3,7 @@
 #include "duckdb/parser/peg/compiled_grammar.hpp"
 #include "duckdb/parser/peg/matcher_factory.hpp"
 #include "duckdb/parser/peg/matcher/list_matcher.hpp"
+#include "duckdb/parser/peg/matcher/optional_matcher.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/parser/peg/transformer/peg_transformer.hpp"
 
@@ -84,6 +85,11 @@ void MatchState::AddSuggestion(MatcherSuggestion suggestion) {
 	context.suggestions.push_back(std::move(suggestion));
 }
 
+MatcherAllocator::MatcherAllocator() = default;
+MatcherAllocator::MatcherAllocator(MatcherAllocator &&) noexcept = default;
+MatcherAllocator &MatcherAllocator::operator=(MatcherAllocator &&) noexcept = default;
+MatcherAllocator::~MatcherAllocator() = default;
+
 Matcher &MatcherAllocator::Allocate(unique_ptr<Matcher> matcher) {
 	auto &result = *matcher;
 	result.packrat_id = optional_idx(matchers.size());
@@ -91,10 +97,115 @@ Matcher &MatcherAllocator::Allocate(unique_ptr<Matcher> matcher) {
 	return result;
 }
 
+static bool CanGroupList(const ListMatcher &list) {
+	if (!list.IsCollapsible() || list.suppress_suggestions || list.matchers.empty() || !list.first_set.computed ||
+	    list.first_set.nullable || !list.first_set.table) {
+		return false;
+	}
+
+	const auto chain_child = list.GetChainChild();
+	const idx_t child_index = chain_child ? list.GetChainChildIndex() : 0;
+	for (idx_t i = 0; i < list.matchers.size(); i++) {
+		if (i == child_index) {
+			continue;
+		}
+		auto &child = list.matchers[i].get();
+		if (!child.IsStructural() || child.Type() != MatcherType::OPTIONAL) {
+			return false;
+		}
+		auto &first = child.Cast<OptionalMatcher>().GetChildMatcher().first_set;
+		// Class predicates can make a group too broad. Keep this first version literal-only.
+		if (!first.computed || first.any || first.nullable || first.class_mask || first.table != list.first_set.table) {
+			return false;
+		}
+	}
+	return true;
+}
+
+static bool SameFirstPredicate(const MatcherFirstSet &left, const MatcherFirstSet &right) {
+	return left.computed && right.computed && left.any == right.any && left.nullable == right.nullable &&
+	       left.class_mask == right.class_mask && left.table == right.table && left.literals == right.literals;
+}
+
 void MatcherAllocator::InitializeListChains() {
+	// Clear borrowed links before releasing their owners or making any allocation that can throw.
 	for (auto &matcher : matchers) {
 		if (matcher->IsStructural() && matcher->Type() == MatcherType::LIST) {
 			matcher->Cast<ListMatcher>().InitializeListChain();
+		}
+	}
+	list_chains.clear();
+	vector<bool> eligible(matchers.size(), false);
+	for (idx_t i = 0; i < matchers.size(); i++) {
+		auto &matcher = *matchers[i];
+		if (matcher.IsStructural() && matcher.Type() == MatcherType::LIST) {
+			auto &list = matcher.Cast<ListMatcher>();
+			eligible[i] = CanGroupList(list);
+		}
+	}
+	vector<optional_idx> next(matchers.size());
+	vector<idx_t> parents(matchers.size(), 0);
+	for (idx_t i = 0; i < matchers.size(); i++) {
+		if (!eligible[i]) {
+			continue;
+		}
+		auto &list = matchers[i]->Cast<ListMatcher>();
+		auto child = list.GetChainChild();
+		if (!child || !child->GetPackratId().IsValid()) {
+			continue;
+		}
+		auto child_id = child->GetPackratId().GetIndex();
+		if (child_id >= matchers.size() || matchers[child_id].get() != child.get() || !eligible[child_id] ||
+		    (list.GetChainChildIndex() == 0 && !SameFirstPredicate(list.first_set, child->first_set))) {
+			continue;
+		}
+		next[i] = optional_idx(child_id);
+		parents[child_id]++;
+	}
+	for (idx_t i = 0; i < matchers.size(); i++) {
+		if (!eligible[i] || parents[i] == 1) {
+			continue;
+		}
+		vector<idx_t> members {i};
+		auto current = i;
+		while (next[current].IsValid() && parents[next[current].GetIndex()] == 1) {
+			current = next[current].GetIndex();
+			members.push_back(current);
+		}
+		if (members.size() < 2) {
+			continue;
+		}
+		auto chain = make_uniq<ListMatchChain>();
+		chain->tail_first_set.computed = true;
+		chain->tail_first_set.table = matchers[i]->first_set.table;
+		chain->prefix_first_set.computed = true;
+		chain->prefix_first_set.table = matchers[i]->first_set.table;
+		for (auto member : members) {
+			auto &list = matchers[member]->Cast<ListMatcher>();
+			chain->lists.push_back(list);
+
+			const auto chain_child = list.GetChainChild();
+			const idx_t child_index = chain_child ? list.GetChainChildIndex() : 0;
+			for (idx_t child = 0; child < list.matchers.size(); child++) {
+				if (child == child_index) {
+					continue;
+				}
+				auto &first = list.matchers[child].get().Cast<OptionalMatcher>().GetChildMatcher().first_set;
+				if (child < child_index) {
+					chain->has_optional_prefix = true;
+					chain->prefix_first_set.Merge(first);
+				} else {
+					chain->tail_first_set.Merge(first);
+				}
+			}
+		}
+		// Publish the owner before installing borrowed pointers: vector growth can throw.
+		auto chain_ptr = chain.get();
+		list_chains.push_back(std::move(chain));
+		for (idx_t index = 0; index < members.size(); index++) {
+			auto &list = matchers[members[index]]->Cast<ListMatcher>();
+			list.prepared_chain = chain_ptr;
+			list.prepared_chain_index = index;
 		}
 	}
 }

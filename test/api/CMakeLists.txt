@@ -9,6 +9,7 @@ set(TEST_API_OBJECTS
     test_api.cpp
     test_multi_file_column_mapper.cpp
     test_process_util.cpp
+    test_random_after_clone.cpp
     test_remove_directory_extended.cpp
     test_temporary_file_owner.cpp
     test_task_error_out_of_memory.cpp
@@ -31,6 +32,7 @@ set(TEST_API_OBJECTS
     test_extension_setting_autoload.cpp
     test_instance_cache.cpp
     test_metadata_pin_race.cpp
+    test_metadata_chain_old_readers.cpp
     test_storage_extension_alias.cpp
     test_storage_extension_remote_path.cpp
     test_static_database_callback.cpp
@@ -56,6 +58,7 @@ set(TEST_API_OBJECTS
     test_stream_result_buffer.cpp
     test_operator_memory_limit.cpp
     test_query_profiler.cpp
+    test_extension_metrics.cpp
     test_read_ahead_abandon.cpp
     test_read_ahead_progress.cpp
     test_read_ahead_failure.cpp

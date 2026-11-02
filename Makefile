@@ -703,6 +703,11 @@ release-artifact:
 cli-release-artifact:
 	bash scripts/package_release_artifact.sh cli "$(ARTIFACT_SUFFIX)" "$(CLI_BINARY)"
 
+.PHONY: cli-zip-release-artifact
+
+cli-zip-release-artifact:
+	PYTHON="$(PYTHON)" bash scripts/package_release_artifact.sh cli-zip "$(ARTIFACT_SUFFIX)" "$(CLI_BINARY)"
+
 .PHONY: shared-libs-release-artifact
 
 shared-libs-release-artifact:

@@ -149,7 +149,7 @@ JOIN build b
   ON p.k IS NOT DISTINCT FROM b.k
  AND p.g >= b.g;
 ----
-analyzed_plan	<!REGEX>:(?s).*IN.*PRF.*\(k\).*
+analyzed_plan	<REGEX>:(?s).*IN.*PRF.*\(k\).*
 
 statement ok
 SET disabled_optimizers = '';

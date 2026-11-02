@@ -1,0 +1,166 @@
+# name: test/sql/aggregate/aggregates/fallible_pivot_default_export.test
+# description: The EXPLAIN (SQL) pivot default export rejects fallible aggregate defaults
+# group: [aggregates]
+
+# The fallible registration is read by the EXPLAIN (SQL) pivot default export, which must reject
+# moving a fallible default into the generated query. Provably safe overloads stay exportable.
+# This file is excluded from the aggregate state export verification config: the state export
+# rewrite adds aggregates that break PIVOT detection (a known FIXME of that config).
+
+statement ok
+SET pivot_filter_threshold=0;
+
+statement error
+EXPLAIN (SQL) FROM (VALUES ('g','p','1'::DECIMAL(38,0)),('h','q','2'::DECIMAL(38,0))) t(g,k,v)
+PIVOT (sum(v) FOR k IN ('p','q'));
+----
+A volatile or fallible PIVOT default must be evaluated before query execution
+
+statement error
+EXPLAIN (SQL) FROM (VALUES ('g','p','1'::DECIMAL(38,0)),('h','q','2'::DECIMAL(38,0))) t(g,k,v)
+PIVOT (avg(v) FOR k IN ('p','q'));
+----
+A volatile or fallible PIVOT default must be evaluated before query execution
+
+statement error
+EXPLAIN (SQL) FROM (VALUES ('g','p',1::HUGEINT),('h','q',2::HUGEINT)) t(g,k,v)
+PIVOT (sum(v) FOR k IN ('p','q'));
+----
+A volatile or fallible PIVOT default must be evaluated before query execution
+
+statement error
+EXPLAIN (SQL) FROM (VALUES ('g','p',INTERVAL 1 DAY),('h','q',INTERVAL 2 DAY)) t(g,k,v)
+PIVOT (avg(v) FOR k IN ('p','q'));
+----
+A volatile or fallible PIVOT default must be evaluated before query execution
+
+statement error
+EXPLAIN (SQL) FROM (VALUES ('g','p','1'::DECIMAL(38,0)),('h','q','2'::DECIMAL(38,0))) t(g,k,v)
+PIVOT (decimal_average(v) FOR k IN ('p','q'));
+----
+A volatile or fallible PIVOT default must be evaluated before query execution
+
+statement error
+EXPLAIN (SQL) FROM (VALUES ('g','p',1::BIGINT),('h','q',2::BIGINT)) t(g,k,v)
+PIVOT (sum_no_overflow(v) FOR k IN ('p','q'));
+----
+A volatile or fallible PIVOT default must be evaluated before query execution
+
+# integer and narrow decimal sums accumulate losslessly below the HUGEINT range and stay exportable
+
+query TT
+EXPLAIN (SQL) FROM (VALUES ('g','p',1),('h','q',2)) t(g,k,v)
+PIVOT (sum(v) FOR k IN ('p','q'));
+----
+sql	<REGEX>:.*sum.*
+
+query TT
+EXPLAIN (SQL) FROM (VALUES ('g','p','1'::DECIMAL(9,0)),('h','q','2'::DECIMAL(9,0))) t(g,k,v)
+PIVOT (sum(v) FOR k IN ('p','q'));
+----
+sql	<REGEX>:.*sum.*
+
+query TT
+EXPLAIN (SQL) FROM (VALUES ('g','p','1'::DECIMAL(9,0)),('h','q','2'::DECIMAL(9,0))) t(g,k,v)
+PIVOT (avg(v) FOR k IN ('p','q'));
+----
+sql	<REGEX>:.*avg.*
+
+query TT
+EXPLAIN (SQL) FROM (VALUES ('g','p','1'::DECIMAL(18,0)),('h','q','2'::DECIMAL(18,0))) t(g,k,v)
+PIVOT (sum(v) FOR k IN ('p','q'));
+----
+sql	<REGEX>:.*sum.*
+
+statement error
+EXPLAIN (SQL) FROM (VALUES ('g','p',DATE '2000-01-01'),('h','q',DATE '2000-01-02')) t(g,k,v)
+PIVOT (quantile_cont(v, 0.5) FOR k IN ('p','q'));
+----
+A volatile or fallible PIVOT default must be evaluated before query execution
+
+statement error
+EXPLAIN (SQL) FROM (VALUES ('g','p',INTERVAL 1 DAY),('h','q',INTERVAL 2 DAY)) t(g,k,v)
+PIVOT (median(v) FOR k IN ('p','q'));
+----
+A volatile or fallible PIVOT default must be evaluated before query execution
+
+statement error
+EXPLAIN (SQL) FROM (VALUES ('g','p',1),('h','q',2)) t(g,k,v)
+PIVOT (quantile_disc(v, 0.5::DECIMAL(38,38)) FOR k IN ('p','q'));
+----
+A volatile or fallible PIVOT default must be evaluated before query execution
+
+# numeric continuous quantiles and low-scale discrete quantiles cannot throw and stay exportable
+
+query TT
+EXPLAIN (SQL) FROM (VALUES ('g','p',1.0),('h','q',2.0)) t(g,k,v)
+PIVOT (quantile_cont(v, 0.5) FOR k IN ('p','q'));
+----
+sql	<REGEX>:.*quantile_cont.*
+
+# continuous quantiles compute their rank in DOUBLE, so a high-scale quantile stays exportable
+
+query TT
+EXPLAIN (SQL) FROM (VALUES ('g','p',1.0),('h','q',2.0)) t(g,k,v)
+PIVOT (quantile_cont(v, 0.5::DECIMAL(38,38)) FOR k IN ('p','q'));
+----
+sql	<REGEX>:.*quantile_cont.*
+
+query TT
+EXPLAIN (SQL) FROM (VALUES ('g','p',1),('h','q',2)) t(g,k,v)
+PIVOT (quantile_disc(v, 0.5) FOR k IN ('p','q'));
+----
+sql	<REGEX>:.*quantile_disc.*
+
+statement error
+EXPLAIN (SQL) FROM (VALUES ('g','p','1'::BIT),('h','q','0'::BIT)) t(g,k,v)
+PIVOT (bit_and(v) FOR k IN ('p','q'));
+----
+A volatile or fallible PIVOT default must be evaluated before query execution
+
+statement error
+EXPLAIN (SQL) FROM (VALUES ('g','p','1'::BIT),('h','q','0'::BIT)) t(g,k,v)
+PIVOT (bit_or(v) FOR k IN ('p','q'));
+----
+A volatile or fallible PIVOT default must be evaluated before query execution
+
+statement error
+EXPLAIN (SQL) FROM (VALUES ('g','p','1'::BIT),('h','q','0'::BIT)) t(g,k,v)
+PIVOT (bit_xor(v) FOR k IN ('p','q'));
+----
+A volatile or fallible PIVOT default must be evaluated before query execution
+
+# the integral overloads cannot throw and stay exportable
+
+query TT
+EXPLAIN (SQL) FROM (VALUES ('g','p',1),('h','q',2)) t(g,k,v)
+PIVOT (bit_and(v) FOR k IN ('p','q'));
+----
+sql	<REGEX>:.*bit_and.*
+
+query TT
+EXPLAIN (SQL) FROM (VALUES ('g','p',1),('h','q',2)) t(g,k,v)
+PIVOT (bit_or(v) FOR k IN ('p','q'));
+----
+sql	<REGEX>:.*bit_or.*
+
+query TT
+EXPLAIN (SQL) FROM (VALUES ('g','p',1),('h','q',2)) t(g,k,v)
+PIVOT (bit_xor(v) FOR k IN ('p','q'));
+----
+sql	<REGEX>:.*bit_xor.*
+
+statement error
+EXPLAIN (SQL) FROM (VALUES ('g','p',1.0),('h','q',2.0)) t(g,k,v)
+PIVOT (skewness(v) FOR k IN ('p','q'));
+----
+A volatile or fallible PIVOT default must be evaluated before query execution
+
+statement error
+EXPLAIN (SQL) FROM (VALUES ('g','p','x'),('h','q','y')) t(g,k,v)
+PIVOT (string_agg(v, '|') FOR k IN ('p','q'));
+----
+A volatile or fallible PIVOT default must be evaluated before query execution
+
+statement ok
+RESET pivot_filter_threshold;

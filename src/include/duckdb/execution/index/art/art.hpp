@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "duckdb/common/array.hpp"
 #include "duckdb/execution/index/bound_index.hpp"
 #include "duckdb/execution/index/index_type.hpp"
 #include "duckdb/execution/index/art/node.hpp"

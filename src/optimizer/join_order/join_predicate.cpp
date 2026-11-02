@@ -115,6 +115,14 @@ optional_ptr<JoinRelationSet> JoinPredicate::GetRightSetOptional() const {
 	return filter.get().right_set;
 }
 
+optional_ptr<JoinRelationSet> JoinPredicate::GetSemanticLeftSetOptional() const {
+	return filter.get().semantic_left_set;
+}
+
+optional_ptr<JoinRelationSet> JoinPredicate::GetSemanticRightSetOptional() const {
+	return filter.get().semantic_right_set;
+}
+
 const ColumnBinding &JoinPredicate::GetStatsBinding(bool left) const {
 	return left ? filter.get().left_binding : filter.get().right_binding;
 }
@@ -266,6 +274,18 @@ void JoinPredicateModel::AddEqualityClass(JoinEqualityClass equality_class) {
 void JoinPredicateModel::AddDirectEqualityPairClass(JoinRelationSet &pair, idx_t equality_class_index,
                                                     ColumnBinding first_binding, ColumnBinding second_binding) {
 	equality_pairs[pair].AddEquality(equality_class_index, first_binding, second_binding);
+}
+
+optional_ptr<const JoinPredicate> JoinPredicateModel::GetPredicateByFilterIndex(idx_t filter_index) const {
+	if (filter_index >= all_predicates.size()) {
+		return nullptr;
+	}
+	auto &predicate = all_predicates[filter_index].get();
+	D_ASSERT(predicate.GetIndex() == filter_index);
+	if (predicate.GetFilter().filter_index != filter_index) {
+		return nullptr;
+	}
+	return predicate;
 }
 
 const vector<reference<JoinPredicate>> &JoinPredicateModel::GetPredicates() const {
