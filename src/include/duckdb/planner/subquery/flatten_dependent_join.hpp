@@ -152,8 +152,12 @@ private:
 	void RestrictBranchDomainScans(unique_ptr<LogicalOperator> &plan, TableIndex cte_index,
 	                               const vector<LogicalType> &wave_types, const vector<Identifier> &wave_names,
 	                               const set<idx_t> &own_delim_gets);
+	//! Creates a domain scan and records it in delim_gets_created
+	unique_ptr<LogicalDelimGet> CreateDelimGet(TableIndex delim_index);
 	//! Table indexes of every domain scan this flattener instance created, in creation order
 	vector<idx_t> delim_gets_created;
+	//! Nonzero while pushing down the branches of a trampoline (nested trampolines)
+	idx_t trampoline_branch_depth = 0;
 };
 
 } // namespace duckdb

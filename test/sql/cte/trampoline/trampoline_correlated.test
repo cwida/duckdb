@@ -430,6 +430,54 @@ SELECT o.k, q.n FROM (VALUES (1), (2)) o(k), LATERAL (
 ----
 <REGEX>:Not implemented Error.*derive from its current wave.*
 
+# A nested TRAMPOLINE with an independent inner branch is sound: branches run only on
+# nonempty waves and their decorrelated feeds are restricted to the wave's domains, so a
+# wave-anchored inner seed anchors the whole construct.
+query II
+SELECT o.k, q.n FROM (VALUES (1), (2)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.k WHERE o.k = 1)
+		BRANCH 1: (
+			SELECT 0, (WITH RECURSIVE u(c, m) USING TRAMPOLINE (c) AS (
+				(SELECT 1, n FROM t)
+				BRANCH 1: (SELECT 0, 99)
+			) SELECT max(m) FROM u)
+			FROM t)
+	) SELECT n FROM t
+) q ORDER BY ALL;
+----
+1	99
+
+# gating probe: the inner constant branch runs once for the active domain and never for
+# the inactive one
+statement ok
+CREATE SEQUENCE nested_seq;
+
+query I
+SELECT nextval('nested_seq');
+----
+1
+
+query II
+SELECT o.k, q.n FROM (VALUES (1), (2)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.k WHERE o.k = 1)
+		BRANCH 1: (
+			SELECT 0, (WITH RECURSIVE u(c, m) USING TRAMPOLINE (c) AS (
+				(SELECT 1, n FROM t)
+				BRANCH 1: (SELECT 0, nextval('nested_seq')::INTEGER)
+			) SELECT max(m) FROM u)
+			FROM t)
+	) SELECT n FROM t
+) q ORDER BY ALL;
+----
+1	2
+
+query I
+SELECT currval('nested_seq');
+----
+2
+
 # The non-key recurring collection starts empty for every nested invocation: a
 # second wave or domain must not replay the previous invocation's rows.
 statement ok
