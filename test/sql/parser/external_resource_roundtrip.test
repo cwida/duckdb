@@ -104,6 +104,13 @@ REGISTER EXTERNAL RESOURCE 'aws:ec2:quack' AS x FROM 'plain-handle'
 statement ok
 SHOW EXTERNAL RESOURCES
 
+# The WHERE filter is an expression: it must print back as one that reparses to the same statement.
+statement ok
+SHOW ALL EXTERNAL RESOURCES WHERE type = 'a@b' AND managed
+
+statement ok
+SHOW EXTERNAL RESOURCES WHERE reference LIKE 'a%' OR handle['id'] IS NULL
+
 statement ok
 SELECT count(*) FROM duckdb_external_resources()
 

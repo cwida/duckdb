@@ -15,6 +15,9 @@ ExternalResourceStatement::ExternalResourceStatement(const ExternalResourceState
 	if (other.handle) {
 		handle = other.handle->Copy();
 	}
+	if (other.where_clause) {
+		where_clause = other.where_clause->Copy();
+	}
 	for (auto &entry : other.options) {
 		options[entry.first] = entry.second->Copy();
 	}
@@ -53,6 +56,9 @@ string ExternalResourceStatement::ToString() const {
 		break;
 	case ExternalResourceOperation::SHOW:
 		result = all ? "SHOW ALL EXTERNAL RESOURCES" : "SHOW EXTERNAL RESOURCES";
+		if (where_clause) {
+			result += " WHERE " + where_clause->ToString();
+		}
 		break;
 	}
 	return result;

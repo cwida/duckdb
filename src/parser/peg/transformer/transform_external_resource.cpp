@@ -47,9 +47,13 @@ unique_ptr<SQLStatement> PEGTransformerFactory::TransformDestroyExternalResource
 
 unique_ptr<SQLStatement>
 PEGTransformerFactory::TransformShowExternalResourcesStmt(PEGTransformer &transformer,
-                                                          const optional<bool> &show_all_modifier) {
+                                                          const optional<bool> &show_all_modifier,
+                                                          optional<unique_ptr<ParsedExpression>> where_clause) {
 	auto result = make_uniq<ExternalResourceStatement>(ExternalResourceOperation::SHOW);
 	result->all = show_all_modifier.has_value();
+	if (where_clause) {
+		result->where_clause = std::move(*where_clause);
+	}
 	return std::move(result);
 }
 

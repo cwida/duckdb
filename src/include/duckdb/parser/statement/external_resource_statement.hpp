@@ -38,6 +38,8 @@ public:
 	unique_ptr<ParsedExpression> handle;
 	//! Whether `SHOW ALL` was used (include discovered resources, not just locally registered).
 	bool all = false;
+	//! The `WHERE <expr>` filter on the listed resources. Set for SHOW (optional).
+	unique_ptr<ParsedExpression> where_clause;
 
 protected:
 	ExternalResourceStatement(const ExternalResourceStatement &other);

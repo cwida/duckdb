@@ -27,7 +27,8 @@ void Binder::BindExternalResourceParams(case_insensitive_map_t<unique_ptr<Parsed
 
 BoundStatement Binder::Bind(ExternalResourceStatement &stmt) {
 	if (stmt.operation == ExternalResourceOperation::SHOW) {
-		// SHOW [ALL] EXTERNAL RESOURCES desugars to `SELECT * FROM duckdb_external_resources(all := <all>)`.
+		// SHOW [ALL] EXTERNAL RESOURCES [WHERE <expr>] desugars to
+		// `SELECT * FROM duckdb_external_resources(discover := <all>) WHERE <expr>`.
 		vector<unique_ptr<ParsedExpression>> children;
 		if (stmt.all) {
 			auto all_expr = ConstantExpression::Boolean(true);
@@ -40,6 +41,9 @@ BoundStatement Binder::Bind(ExternalResourceStatement &stmt) {
 		auto select_node = make_uniq<SelectNode>();
 		select_node->select_list.push_back(make_uniq<StarExpression>());
 		select_node->from_table = std::move(table_function);
+		if (stmt.where_clause) {
+			select_node->where_clause = stmt.where_clause->Copy();
+		}
 		SelectStatement select_statement;
 		select_statement.node = std::move(select_node);
 

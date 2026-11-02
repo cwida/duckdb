@@ -1992,7 +1992,7 @@ ExternalResourceStatement <- CreateExternalResourceStmt / RegisterExternalResour
 CreateExternalResourceStmt <- 'CREATE' ExternalResourceKeyword StringLiteral AttachAlias? ExternalResourceCreationOptions?
 RegisterExternalResourceStmt <- 'REGISTER' ExternalResourceKeyword StringLiteral AttachAlias? 'FROM' Expression
 DestroyExternalResourceStmt <- 'DESTROY' ExternalResourceKeyword ColId
-ShowExternalResourcesStmt <- 'SHOW' ShowAllModifier? 'EXTERNAL' 'RESOURCES'
+ShowExternalResourcesStmt <- 'SHOW' ShowAllModifier? 'EXTERNAL' 'RESOURCES' WhereClause?
 ShowAllModifier <- 'ALL'
 
 # Syntax only: the keyword pair every singular form repeats. The plural in SHOW cannot share it.

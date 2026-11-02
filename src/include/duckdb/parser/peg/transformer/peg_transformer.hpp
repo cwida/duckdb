@@ -3917,8 +3917,9 @@ public:
 	                                                                      unique_ptr<ParsedExpression> expression);
 	static unique_ptr<SQLStatement> TransformDestroyExternalResourceStmt(PEGTransformer &transformer,
 	                                                                     const Identifier &col_id);
-	static unique_ptr<SQLStatement> TransformShowExternalResourcesStmt(PEGTransformer &transformer,
-	                                                                   const optional<bool> &show_all_modifier);
+	static unique_ptr<SQLStatement>
+	TransformShowExternalResourcesStmt(PEGTransformer &transformer, const optional<bool> &show_all_modifier,
+	                                   optional<unique_ptr<ParsedExpression>> where_clause);
 	static bool TransformShowAllModifier(PEGTransformer &transformer);
 	static unique_ptr<SQLStatement> TransformAttachToExternalResource(
 	    PEGTransformer &transformer, unique_ptr<ExternalResourceOptions> external_resource_source,

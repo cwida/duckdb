@@ -170,7 +170,8 @@
         "test/sql/attach/external_resource_logging.test",
         "test/sql/attach/external_resource_option_collision.test",
         "test/sql/attach/external_resource_attach_failure.test",
-        "test/sql/attach/external_resource_null_handle.test"
+        "test/sql/attach/external_resource_null_handle.test",
+        "test/sql/attach/external_resource_show_where.test"
       ]
     }
   ]

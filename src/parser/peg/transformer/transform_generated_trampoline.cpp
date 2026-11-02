@@ -4557,14 +4557,21 @@ static const TransformChildPlan FRAME_CHILDREN_334[] = {{PEGRuleId::ColId,
                                                          {0, TRANSFORM_PATH_END, 0},
                                                          {0, TRANSFORM_PATH_END, 0}}};
 static const TransformFramePlan FRAME_PLAN_349 = {FRAME_CHILDREN_334, 1, 1, false, 0, {}};
-static const TransformChildPlan FRAME_CHILDREN_335[] = {{PEGRuleId::ShowAllModifier,
+static const TransformChildPlan FRAME_CHILDREN_335[] = {{PEGRuleId::WhereClause,
+                                                         TransformChildKind::OPTIONAL,
+                                                         4,
+                                                         1,
+                                                         false,
+                                                         {0, TRANSFORM_PATH_END, 0},
+                                                         {0, TRANSFORM_PATH_END, 0}},
+                                                        {PEGRuleId::ShowAllModifier,
                                                          TransformChildKind::OPTIONAL,
                                                          1,
                                                          0,
                                                          false,
                                                          {0, TRANSFORM_PATH_END, 0},
                                                          {0, TRANSFORM_PATH_END, 0}}};
-static const TransformFramePlan FRAME_PLAN_350 = {FRAME_CHILDREN_335, 1, 1, false, 0, {}};
+static const TransformFramePlan FRAME_PLAN_350 = {FRAME_CHILDREN_335, 2, 2, false, 0, {}};
 static const TransformChildPlan FRAME_CHILDREN_336[] = {{PEGRuleId::AttachOptions,
                                                          TransformChildKind::OPTIONAL,
                                                          4,
@@ -16188,7 +16195,11 @@ PEGTransformerFactory::FinalizeShowExternalResourcesStmtTrampoline(PEGTransforme
 	if (process.child_results[0]) {
 		show_all_modifier = process.TakeResult<bool>(0);
 	}
-	auto result = TransformShowExternalResourcesStmt(transformer, show_all_modifier);
+	optional<unique_ptr<ParsedExpression>> where_clause {};
+	if (process.child_results[1]) {
+		where_clause = process.TakeResult<unique_ptr<ParsedExpression>>(1);
+	}
+	auto result = TransformShowExternalResourcesStmt(transformer, show_all_modifier, std::move(where_clause));
 	return transformer.MakeResult<unique_ptr<SQLStatement>>(std::move(result));
 }
 
