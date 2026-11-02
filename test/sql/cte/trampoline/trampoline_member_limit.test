@@ -11,7 +11,7 @@
 foreach threads 1 8
 
 statement ok
-SET threads=${threads};
+SET threads={threads};
 
 # branch-level LIMIT over a UNION ALL of two wave scans: one routed row per wave
 query I

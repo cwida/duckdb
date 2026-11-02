@@ -733,8 +733,16 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 	if (gstate.current_input) {
 		const auto scan_count = MaxValue<idx_t>(branch_recursive_scans[branch_idx - 1].size(), 1);
 		input_rows = gstate.current_input->Count() * scan_count;
+		auto chunk_units = gstate.current_input->ChunkCount() * scan_count;
+		// a frontier-reading branch scans the whole round snapshot regardless of its own wave
+		// size, so that work participates in worker sizing as well
+		const auto frontier_scan_count = reads_frontier ? branch_frontier_scans[branch_idx - 1].size() : 0;
+		if (frontier_scan_count > 0 && gstate.frontier_current) {
+			input_rows += gstate.frontier_current->Count() * frontier_scan_count;
+			chunk_units += gstate.frontier_current->ChunkCount() * frontier_scan_count;
+		}
 		const auto row_limit = (input_rows + TRAMPOLINE_ROWS_PER_THREAD - 1) / TRAMPOLINE_ROWS_PER_THREAD;
-		const auto work_units = MaxValue<idx_t>(gstate.current_input->ChunkCount() * scan_count, 1);
+		const auto work_units = MaxValue<idx_t>(chunk_units, 1);
 		frontier_workers = MaxValue<idx_t>(MinValue(MinValue(row_limit, work_units), configured_threads), 1);
 	}
 	const auto has_independent_source = plan.has_source_tasks || plan.has_parallel_source;
