@@ -169,6 +169,16 @@ class TestDefaultGrammarCompleteness(object):
         result.check_stdout("42")
         result.check_stdout("CANARY")
 
+    def test_malformed_numeric_literal_is_submitted(self, shell):
+        # a numeric literal the matcher rejects outright does not break framing
+        result = run_lines(
+            shell,
+            'SELECT 1e2e3;\n'
+            '.print CANARY\n',
+        )
+        assert "Error" in result.stderr
+        assert "CANARY" in result.stdout
+
     def test_syntax_error_is_submitted(self, shell):
         # input the grammar rejects mid-way is submitted, so the error surfaces
         result = run_lines(
@@ -238,6 +248,39 @@ class TestExtendedGrammarCompleteness(object):
         )
         assert "Parser Error" not in result.stderr
         assert "demo block" in result.stdout
+        assert "CANARY" in result.stdout
+
+    def test_parser_extension_claim_before_block(self, shell):
+        # a leading statement only a parse_function extension accepts does not end the
+        # completeness check early - the open block after it still asks for more input
+        extension = grammar_demo_path(shell)
+        quack = os.path.join(os.path.dirname(extension), 'loadable_extension_demo.duckdb_extension')
+        if not os.path.exists(extension) or not os.path.exists(quack):
+            pytest.skip("demo extensions are not built")
+        result = ShellTest(shell, ["-unsigned"]).run_raw(
+            f"LOAD '{extension}';\n"
+            f"LOAD '{quack}';\n"
+            "SET active_grammar_extensions = ['block_statement_syntax'];\n"
+            'quack quack quack; BEGIN_DEMO_BLOCK\n'
+            '  SELECT 1;\n'
+            'END_DEMO_BLOCK;\n'
+            '.print CANARY\n',
+        )
+        assert "Parser Error" not in result.stderr
+        assert "QUACK" in result.stdout
+        assert "demo block" in result.stdout
+        assert "CANARY" in result.stdout
+
+    def test_fatal_token_inside_block(self, shell):
+        # a zero-length delimited identifier cannot be repaired by more input - the buffer is
+        # submitted and the error surfaces instead of an endless continuation prompt
+        prelude = self.block_shell(shell)
+        result = ShellTest(shell, ["-unsigned"]).run_raw(
+            prelude +
+            'BEGIN_DEMO_BLOCK SELECT "";\n'
+            '.print CANARY\n',
+        )
+        assert "zero-length delimited identifier" in result.stderr
         assert "CANARY" in result.stdout
 
     def test_block_without_activation_splits(self, shell):

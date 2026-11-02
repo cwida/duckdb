@@ -42,6 +42,11 @@ TEST_CASE("Parser::IsQueryComplete follows the default grammar", "[api]") {
 	REQUIRE(QueryIsComplete(con, "CREATE FUNCTION f(n INTEGER) RETURNS INTEGER AS BEGIN SELECT 1;"));
 	// invalid UTF-8 is submitted as well
 	REQUIRE(QueryIsComplete(con, "SELECT '\xff\xff';"));
+	// a zero-length delimited identifier is a fatal lexical error - no continuation can repair it
+	REQUIRE(QueryIsComplete(con, "SELECT \"\";"));
+	REQUIRE(QueryIsComplete(con, "SELECT \"\""));
+	// a malformed numeric literal makes the matcher throw - contained and classified as complete
+	REQUIRE(QueryIsComplete(con, "SELECT 1e2e3;"));
 
 	// incomplete inputs that more input can extend
 	REQUIRE_FALSE(QueryIsComplete(con, ""));
@@ -56,8 +61,11 @@ TEST_CASE("Parser::IsQueryComplete follows the default grammar", "[api]") {
 	REQUIRE_FALSE(QueryIsComplete(con, "SELECT 1 -- comment"));
 }
 
+static idx_t completeness_block_transform_count = 0;
+
 static arena_ptr<TransformResultValue> FinalizeCompletenessBlock(PEGTransformer &transformer,
                                                                  ParseResult &parse_result) {
+	completeness_block_transform_count++;
 	auto select_node = make_uniq<SelectNode>();
 	select_node->select_list.push_back(ConstantExpression::String("block"));
 	select_node->from_table = make_uniq<EmptyTableRef>();
@@ -104,8 +112,15 @@ TEST_CASE("Parser::IsQueryComplete follows grammar extensions", "[api]") {
 	REQUIRE(QueryIsComplete(con, "BEGIN_TEST_BLOCK SELECT 1; END_TEST_BLOCK;"));
 	REQUIRE(QueryIsComplete(con, "BEGIN_TEST_BLOCK END_TEST_BLOCK;"));
 
-	// the block parses and executes as one statement
+	// a fatal lexical error inside an open block still submits - closing the block cannot repair it
+	REQUIRE(QueryIsComplete(con, "BEGIN_TEST_BLOCK SELECT \"\";"));
+
+	// the completeness check matches without transforming
+	REQUIRE(completeness_block_transform_count == 0);
+
+	// the block parses and executes as one statement, now invoking the transformer
 	auto result = con.Query("BEGIN_TEST_BLOCK SELECT 1; SELECT 2; END_TEST_BLOCK;");
 	REQUIRE_NO_FAIL(*result);
 	REQUIRE(result->Collection().GetValue(0, 0) == Value("block"));
+	REQUIRE(completeness_block_transform_count > 0);
 }

@@ -14,6 +14,8 @@
 #include "duckdb/parser/statement/update_statement.hpp"
 #include "duckdb/parser/query_node/update_query_node.hpp"
 #include "duckdb/parser/tableref/expressionlistref.hpp"
+#include "duckdb/parser/peg/matcher.hpp"
+#include "duckdb/parser/peg/parser_packrat.hpp"
 #include "duckdb/parser/peg/transformer/peg_transformer.hpp"
 #include "duckdb/parser/peg/syntax_error.hpp"
 #include "duckdb/parser/peg/tokenizer/parser_tokenizer.hpp"
@@ -400,10 +402,15 @@ public:
 	//! The input ended inside a block comment or dollar-quoted string - the token itself may be
 	//! dropped from the stream (comments), so the flag has to be recorded here
 	bool unterminated_input = false;
+	//! The input holds a token the parser tokenizer rejects outright - no continuation can repair it
+	bool fatal_token = false;
 
 	void PushToken(idx_t start, idx_t end, TokenType type, bool unterminated = false) override {
 		if (unterminated) {
 			unterminated_input = true;
+		}
+		if (ParserTokenizerBehavior::IsEmptyQuotedIdentifier(sql, start, end, type)) {
+			fatal_token = true;
 		}
 		TokenizerBehavior::PushToken(start, end, type, unterminated);
 	}
@@ -427,6 +434,10 @@ bool Parser::IsQueryComplete(const string &query_p) {
 	auto owned_tokens = make_uniq<vector<MatcherToken>>();
 	CompletenessTokenizerBehavior behavior(query, *owned_tokens);
 	grammar.GetTokenizer().TokenizeInput(behavior);
+	if (behavior.fatal_token) {
+		// no continuation can repair the input - submit it so the error surfaces
+		return true;
+	}
 	if (behavior.unterminated_input) {
 		return false;
 	}
@@ -451,19 +462,45 @@ bool Parser::IsQueryComplete(const string &query_p) {
 	}
 	TokenIterator token_iterator(std::move(owned_tokens));
 	while (!token_iterator.AtEnd()) {
-		optional_idx failure_index;
+		// match one TopLevelStatement without transforming it - statements that match but cannot be
+		// transformed classify as complete either way, and the transformer can expand matched input
+		vector<MatcherSuggestion> suggestions;
+		ParseResultAllocator parse_result_allocator;
+		ArenaAllocator process_allocator(Allocator::DefaultAllocator());
+		ArenaAllocator packrat_allocator(Allocator::DefaultAllocator());
+		ParserPackratCache packrat_cache(packrat_allocator, token_iterator.Position(), token_iterator.Size());
+		idx_t max_token_index = token_iterator.Position();
+		MatchContext match_context(suggestions, parse_result_allocator, process_allocator, max_token_index,
+		                           MatchMode::BUILD_PARSE_RESULT, options.identifier_case_mode, &packrat_cache);
+		MatchState state(token_iterator, match_context);
+		bool success = false;
 		try {
-			PEGTransformerFactory::TransformTopLevelStatement(token_iterator, options, grammar, failure_index);
-		} catch (std::exception &) {
-			// the grammar matched but the statement could not be transformed - execution reports the error
-			return true;
+			auto match_result = grammar.TopLevelStatementMatcher().MatchParseResult(state);
+			success = match_result.IsSuccess();
+			if (!success) {
+				auto index = MinValue<idx_t>(state.GetMaxTokenIndex(), token_iterator.Size() - 1);
+				if (token_iterator.GetToken(index).type == TokenType::END_OF_INPUT) {
+					// the parse failed at the end of the input - more input can complete the statement
+					return false;
+				}
+			}
+		} catch (std::exception &) { // NOLINT: fall through to the rejection handling
+			                         // the matcher rejected the input outright, e.g. a malformed numeric literal
 		}
-		if (!failure_index.IsValid()) {
+		if (success) {
+			token_iterator.SetPosition(state.token_iterator);
 			continue;
 		}
-		auto index = MinValue<idx_t>(failure_index.GetIndex(), token_iterator.Size() - 1);
-		// a parse that fails at the end of the input can be completed by more input
-		return token_iterator.GetToken(index).type != TokenType::END_OF_INPUT;
+		// a parse_function extension may claim the rejected segment, as in ParseQuery
+		try {
+			auto ext_stmt = TryParseExtensionStatement(token_iterator, query);
+			if (ext_stmt) {
+				continue;
+			}
+		} catch (std::exception &) { // NOLINT: fall through to submit the input
+		}
+		// rejected mid-input - submit it so the error surfaces on execution
+		return true;
 	}
 	return true;
 }
