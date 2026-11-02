@@ -426,7 +426,7 @@ bool Parser::IsQueryComplete(const string &query_p) {
 	string query;
 	try {
 		query = NormalizeSQLString(query_p);
-	} catch (std::exception &) {
+	} catch (ParserException &) {
 		// invalid UTF-8 - submit the input so the error surfaces
 		return true;
 	}
@@ -484,8 +484,8 @@ bool Parser::IsQueryComplete(const string &query_p) {
 					return false;
 				}
 			}
-		} catch (std::exception &) { // NOLINT: fall through to the rejection handling
-			                         // the matcher rejected the input outright, e.g. a malformed numeric literal
+		} catch (ParserException &) {
+			// the matcher rejected the input outright, e.g. a malformed numeric literal
 		}
 		if (success) {
 			token_iterator.SetPosition(state.token_iterator);
@@ -497,7 +497,8 @@ bool Parser::IsQueryComplete(const string &query_p) {
 			if (ext_stmt) {
 				continue;
 			}
-		} catch (std::exception &) { // NOLINT: fall through to submit the input
+		} catch (ParserException &) {
+			// the extension rejected the segment with an error of its own
 		}
 		// rejected mid-input - submit it so the error surfaces on execution
 		return true;
