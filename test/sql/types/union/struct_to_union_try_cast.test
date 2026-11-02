@@ -40,3 +40,44 @@ statement error
 SELECT cast(s AS UNION(a INT, b VARCHAR)) FROM (VALUES ({'tag': 0::UTINYINT, 'a': '3', 'b': 'y'})) t(s)
 ----
 have validity set for more than 1 member
+
+# the cast must not modify its input
+statement ok
+CREATE TABLE structs AS SELECT * FROM (VALUES
+    ({'tag': 7::UTINYINT, 'a': '2', 'b': NULL::VARCHAR}),
+    ({'tag': 0::UTINYINT, 'a': '3', 'b': 'y'}),
+    ({'tag': NULL::UTINYINT, 'a': '4', 'b': 'z'})) t(s)
+
+query II
+SELECT s, try_cast(s AS UNION(a INT, b VARCHAR)) FROM structs
+----
+{'tag': 7, 'a': 2, 'b': NULL}	NULL
+{'tag': 0, 'a': 3, 'b': y}	NULL
+{'tag': NULL, 'a': 4, 'b': z}	NULL
+
+query II
+SELECT try_cast(s AS UNION(a INT, b VARCHAR)), s FROM structs
+----
+NULL	{'tag': 7, 'a': 2, 'b': NULL}
+NULL	{'tag': 0, 'a': 3, 'b': y}
+NULL	{'tag': NULL, 'a': 4, 'b': z}
+
+# re-evaluating the cast on the same input gives the same result
+query II
+WITH RECURSIVE r(iter, n) AS (
+    SELECT 0, 0
+    UNION ALL
+    SELECT iter + 1, (
+        SELECT count(*) FROM (
+            SELECT DISTINCT try_cast(s AS UNION(a INTEGER, b VARCHAR))
+            FROM (VALUES
+                ({'tag': 7::UTINYINT, 'a': '2', 'b': NULL::VARCHAR}),
+                ({'tag': 0::UTINYINT, 'a': '3', 'b': 'y'})) v(s)))::INTEGER
+    FROM r
+    WHERE iter < 2
+)
+SELECT * FROM r ORDER BY iter
+----
+0	0
+1	1
+2	1
