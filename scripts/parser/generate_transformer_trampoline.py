@@ -723,11 +723,10 @@ class UseGramPreviewEmitter:
                 f"{len(plan.choice.fallback_names)}, {names}}}"
             )
         result_slot = self.passthrough_slot_of(rule_name) or 0
-        body = (
+        return (
             f"{{{children}, {len(plan.children)}, {plan.fixed_slots}, {cpp_bool(plan.has_dynamic)}, {result_slot}, "
             f"{choice}}}"
         )
-        return data.intern("FRAME_PLAN", "TransformFramePlan", body)
 
     def emit_header_declarations(self):
         lines = []
@@ -909,17 +908,26 @@ class UseGramPreviewEmitter:
         lines.append("namespace duckdb {\n\n")
         lines.append("")
         data = StaticDataEmitter()
-        plan_names = {}
+        plan_refs = {}
+        plans = []
         for rule_name in self.emitted_ops_rules():
             if self.frame_plan_of(rule_name) is not None:
-                plan_names[rule_name] = "&" + self.emit_frame_plan(data, rule_name)
+                body = self.emit_frame_plan(data, rule_name)
+                if body not in plans:
+                    plans.append(body)
+                plan_refs[rule_name] = f"&GENERATED_FRAME_PLANS[{plans.index(body)}]"
         lines.extend(data.lines)
+        lines.append("")
+        lines.append("static const TransformFramePlan GENERATED_FRAME_PLANS[] = {")
+        for body in plans:
+            lines.append(f"    {body},")
+        lines.append("};")
         lines.append("")
         lines.append("static const TransformFrameOps GENERATED_FRAME_OPS[] = {")
         for rule_name in self.emitted_ops_rules():
             lines.append(
                 f'    {{"{rule_name}", &PEGTransformerFactory::{self.initialize_hook(rule_name)}, '
-                f"&PEGTransformerFactory::{self.finalize_hook(rule_name)}, {plan_names.get(rule_name, 'nullptr')}}},"
+                f"&PEGTransformerFactory::{self.finalize_hook(rule_name)}, {plan_refs.get(rule_name, 'nullptr')}}},"
             )
         lines.append("};")
         lines.append("")

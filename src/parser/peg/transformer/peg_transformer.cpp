@@ -37,6 +37,21 @@ GeneratedTransformProcess::GeneratedTransformProcess(PEGTransformer &transformer
 	info.initialize(transformer, *this);
 }
 
+void *GeneratedTransformProcess::TryGetChildValue(idx_t slot, uint64_t type_hash, const char *type_name) {
+	if (slot >= child_results.size() || !child_results[slot]) {
+		ThrowMissingResult(slot);
+	}
+	auto &result = *child_results[slot];
+	if (result.type_hash != type_hash) {
+		return nullptr;
+	}
+	return result.GetValuePointer(type_name);
+}
+
+void GeneratedTransformProcess::ReleaseChildResult(idx_t slot) {
+	child_results[slot].reset();
+}
+
 void GeneratedTransformProcess::ThrowMissingResult(idx_t slot) const {
 	throw InternalException("Missing transformer result for slot %llu in rule '%s'", slot, info.name);
 }

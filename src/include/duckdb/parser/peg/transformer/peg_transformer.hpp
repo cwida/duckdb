@@ -414,36 +414,36 @@ public:
 
 	template <class T>
 	T TakeResult(idx_t slot) {
-		if (slot >= child_results.size() || !child_results[slot]) {
-			ThrowMissingResult(slot);
-		}
-		auto *result_value = TryGetTransformResult<T>(*child_results[slot]);
+		auto *result_value =
+		    reinterpret_cast<T *>(TryGetChildValue(slot, TransformResultTypeHash<T>(), TransformResultTypeName<T>()));
 		if (!result_value) {
 			auto bridged = TryBridgeTransformResultValue<T>(*child_results[slot]);
 			if (bridged) {
 				auto bridged_result = std::move(bridged->value);
-				child_results[slot].reset();
+				ReleaseChildResult(slot);
 				return bridged_result;
 			}
 			ThrowUnexpectedResultType(slot);
 		}
 		auto result = std::move(*result_value);
-		child_results[slot].reset();
+		ReleaseChildResult(slot);
 		return result;
 	}
 
 	template <class T>
 	T &GetResult(idx_t slot) {
-		if (slot >= child_results.size() || !child_results[slot]) {
-			ThrowMissingResult(slot);
-		}
-		auto *result_value = TryGetTransformResult<T>(*child_results[slot]);
+		auto *result_value =
+		    reinterpret_cast<T *>(TryGetChildValue(slot, TransformResultTypeHash<T>(), TransformResultTypeName<T>()));
 		if (!result_value) {
 			ThrowUnexpectedResultType(slot);
 		}
 		return *result_value;
 	}
 
+	//! The value in a slot when it has the given type, else nullptr; throws for an empty slot
+	void *TryGetChildValue(idx_t slot, uint64_t type_hash, const char *type_name);
+	//! Releases a slot after its value was taken
+	void ReleaseChildResult(idx_t slot);
 	[[noreturn]] void ThrowMissingResult(idx_t slot) const;
 	[[noreturn]] void ThrowUnexpectedResultType(idx_t slot) const;
 
