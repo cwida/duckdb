@@ -22,7 +22,7 @@ double CardinalityEstimator::EstimateCardinalityWithSet<double>(JoinRelationSet 
 //! Retain scaled numerator and denominator products until the final division.
 class CardinalityValue {
 public:
-	CardinalityValue(double value = 1) : CardinalityValue(Product(value), Product(1)) {
+	explicit CardinalityValue(double value = 1) : CardinalityValue(Product(value), Product(1)) {
 	}
 
 	bool IsZero() const {
@@ -264,7 +264,7 @@ public:
 
 struct CardinalityHelper {
 public:
-	CardinalityHelper() : CardinalityHelper(0, true) {
+	CardinalityHelper() : CardinalityHelper(CardinalityValue(0), true) {
 	}
 	CardinalityHelper(CardinalityValue cardinality_before_filters, bool is_empty)
 	    : cardinality_before_filters(cardinality_before_filters), is_empty(is_empty) {
@@ -458,7 +458,7 @@ CardinalityValue CardinalityEstimator::GetSubgraphCardinality(const SelectivityS
 			continue;
 		}
 		if (entry->second.cardinality_before_filters.IsZero()) {
-			return 0;
+			return CardinalityValue(0);
 		}
 		numerator *= entry->second.cardinality_before_filters;
 	}
@@ -596,16 +596,17 @@ static CardinalityValue ApplyComparisonRatio(CardinalityValue base_selectivity, 
 	switch (comparison_type) {
 	case ExpressionType::COMPARE_EQUAL:
 	case ExpressionType::COMPARE_NOT_DISTINCT_FROM:
-		return base_selectivity / effective_d;
+		return base_selectivity / CardinalityValue(effective_d);
 	case ExpressionType::COMPARE_NOTEQUAL:
 	case ExpressionType::COMPARE_DISTINCT_FROM:
-		return effective_d > 1 ? base_selectivity * (effective_d - 1) / effective_d : base_selectivity;
+		return effective_d > 1 ? base_selectivity * CardinalityValue(effective_d - 1) / CardinalityValue(effective_d)
+		                       : base_selectivity;
 	case ExpressionType::COMPARE_LESSTHANOREQUALTO:
 	case ExpressionType::COMPARE_LESSTHAN:
 	case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
 	case ExpressionType::COMPARE_GREATERTHAN:
 		// Assume this blows up, but use the tdom to bound it a bit.
-		return base_selectivity / std::pow(effective_d, 2.0 / 3.0);
+		return base_selectivity / CardinalityValue(std::pow(effective_d, 2.0 / 3.0));
 	default:
 		return base_selectivity;
 	}
@@ -620,7 +621,7 @@ CardinalityValue CardinalityEstimator::CalculateInnerJoinSelectivity(Cardinality
 	auto effective_d = GetEffectiveDistinctCount(filter.GetDistinctCount());
 	auto comparison_type = filter.GetComparisonType();
 	if (comparison_type == ExpressionType::INVALID) {
-		return base_selectivity / effective_d;
+		return base_selectivity / CardinalityValue(effective_d);
 	}
 	return ApplyComparisonRatio(base_selectivity, comparison_type, effective_d);
 }
@@ -644,7 +645,7 @@ LeftJoinSelectivity CardinalityEstimator::CalculateLeftJoinSelectivityInfo(Selec
 		CompositeJoinPairStats stats;
 		stats.RegisterDistinctCount(filter.GetDistinctCount());
 		if (stats.CanApplyCap(cap) && filter.GetDistinctCount() > 0 && cap > filter.GetDistinctCount()) {
-			inner_selectivity = inner_selectivity * filter.GetDistinctCount() / cap;
+			inner_selectivity = inner_selectivity * CardinalityValue(filter.GetDistinctCount()) / CardinalityValue(cap);
 		}
 	}
 	auto inner_cardinality = GetNumerator(inner_numerator) * inner_selectivity;
@@ -760,7 +761,7 @@ bool CardinalityEstimator::ApplyJoinPairCap(CardinalityValue &target_selectivity
 	}
 	if (cap > 0 && first_d < cap && first_d > 0) {
 		// Raise weak same-pair composite evidence to the FK/PK selectivity floor.
-		target_selectivity = target_selectivity * first_d / cap;
+		target_selectivity = target_selectivity * CardinalityValue(first_d) / CardinalityValue(cap);
 		first_d = cap;
 	}
 	capped_join_pairs.insert(join_pair);
@@ -1048,10 +1049,10 @@ SelectivityInfo CardinalityEstimator::CreateSelectivityResult(JoinRelationSet &s
 	AddCrossProductRelations(set, state);
 
 	if (state.subgraphs.empty()) {
-		return SelectivityInfo(set, 1);
+		return SelectivityInfo(set, CardinalityValue(1));
 	}
 	return SelectivityInfo(*state.subgraphs.at(0).numerator_relations,
-	                       state.subgraphs.at(0).selectivity / selectivity_divisor);
+	                       state.subgraphs.at(0).selectivity / CardinalityValue(selectivity_divisor));
 }
 
 SelectivityInfo CardinalityEstimator::GetSelectivity(JoinRelationSet &set) {
@@ -1103,7 +1104,7 @@ CardinalityValue CardinalityEstimator::ApplyOrFilterSelectivities(JoinRelationSe
                                                                   CardinalityValue cardinality) const {
 	for (auto &filter : state->or_filters) {
 		if (JoinRelationSet::IsSubset(new_set, filter->set.get())) {
-			cardinality *= RelationStatisticsHelper::DEFAULT_SELECTIVITY;
+			cardinality *= CardinalityValue(RelationStatisticsHelper::DEFAULT_SELECTIVITY);
 		}
 	}
 	return cardinality;
@@ -1128,7 +1129,8 @@ void CardinalityEstimator::InitCardinalityEstimatorProps(optional_ptr<JoinRelati
 	D_ASSERT(stats.stats_initialized);
 	auto relation_cardinality = stats.cardinality;
 
-	auto card_helper = CardinalityHelper((double)relation_cardinality, relation_cardinality == 0);
+	auto card_helper =
+	    CardinalityHelper(CardinalityValue(static_cast<double>(relation_cardinality)), relation_cardinality == 0);
 	state->relation_set_2_cardinality[*set] = card_helper;
 
 	UpdateTotalDomains(set, stats);
