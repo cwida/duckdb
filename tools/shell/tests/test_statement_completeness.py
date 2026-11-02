@@ -1,5 +1,9 @@
 # fmt: off
 
+import os
+
+import pytest
+
 from conftest import ShellTest
 
 # tests for statement completeness (ShellState::SQLIsComplete)
@@ -9,6 +13,12 @@ from conftest import ShellTest
 
 def run_lines(shell, text):
     return ShellTest(shell).run_raw(text)
+
+
+def grammar_demo_path(shell):
+    # the loadable grammar demo is built next to the shell binary in the build tree
+    build_dir = os.path.dirname(os.path.abspath(shell))
+    return os.path.join(build_dir, 'test', 'extension', 'loadable_grammar_extension_demo.duckdb_extension')
 
 
 class TestDefaultGrammarCompleteness(object):
@@ -183,4 +193,66 @@ class TestDefaultGrammarCompleteness(object):
             '.print CANARY\n',
         )
         assert result.stderr.count("Parser Error") >= 2
+        assert "CANARY" in result.stdout
+
+
+class TestExtendedGrammarCompleteness(object):
+    # with a grammar extension that adds a block statement containing semicolon-separated
+    # statements, the shell frames the whole block as one statement
+
+    def block_shell(self, shell):
+        extension = grammar_demo_path(shell)
+        if not os.path.exists(extension):
+            pytest.skip("loadable_grammar_extension_demo is not built")
+        return (
+            f"LOAD '{extension}';\n"
+            "SET active_grammar_extensions = ['block_statement_syntax'];\n"
+        )
+
+    def test_block_single_submission(self, shell):
+        prelude = self.block_shell(shell)
+        result = ShellTest(shell, ["-unsigned"]).run_raw(
+            prelude +
+            'BEGIN_DEMO_BLOCK\n'
+            '  SELECT 1;\n'
+            '  SELECT 2;\n'
+            'END_DEMO_BLOCK;\n'
+            '.print CANARY\n',
+        )
+        assert "Parser Error" not in result.stderr
+        assert "cannot commit" not in result.stderr
+        assert "demo block" in result.stdout
+        assert "CANARY" in result.stdout
+
+    def test_block_nested_statements(self, shell):
+        # strings, comments and CASE expressions inside the block do not end it early
+        prelude = self.block_shell(shell)
+        result = ShellTest(shell, ["-unsigned"]).run_raw(
+            prelude +
+            'BEGIN_DEMO_BLOCK\n'
+            "  SELECT 'END_DEMO_BLOCK; not a real end';\n"
+            '  -- comment with END_DEMO_BLOCK; inside\n'
+            '  SELECT CASE WHEN 1 > 0 THEN 1 ELSE 0 END;\n'
+            'END_DEMO_BLOCK;\n'
+            '.print CANARY\n',
+        )
+        assert "Parser Error" not in result.stderr
+        assert "demo block" in result.stdout
+        assert "CANARY" in result.stdout
+
+    def test_block_without_activation_splits(self, shell):
+        # the same input splits at top-level semicolons when the extension grammar is not active
+        extension = grammar_demo_path(shell)
+        if not os.path.exists(extension):
+            pytest.skip("loadable_grammar_extension_demo is not built")
+        result = ShellTest(shell, ["-unsigned"]).run_raw(
+            f"LOAD '{extension}';\n"
+            'BEGIN_DEMO_BLOCK\n'
+            '  SELECT 1;\n'
+            '  SELECT 2;\n'
+            'END_DEMO_BLOCK;\n'
+            '.print CANARY\n',
+        )
+        assert result.stderr.count("Error") >= 2
+        assert "demo block" not in result.stdout
         assert "CANARY" in result.stdout
