@@ -71,6 +71,10 @@
       "paths": [
         "test/sql/catalog/view/secure_view.test",
         "test/sql/optimizer/secure_view_explain.test",
+        "test/sql/optimizer/secure_view_join_filter_pushdown.test",
+        "test/sql/pragma/profiling/test_profiling_secure_view_join_filter_rows.test",
+        "test/sql/optimizer/secure_view_build_side.test_slow",
+        "test/sql/optimizer/secure_view_join_order.test",
         "test/sql/optimizer/secure_view_pushdown.test",
         "test/sql/pragma/profiling/test_profiling_bytes_scanned_secure_view.test",
         "test/sql/optimizer/secure_view_statistics.test",

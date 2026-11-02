@@ -45,6 +45,9 @@ struct JoinFilterPushdownColumn {
 	JoinFilterPushdownMode mode = JoinFilterPushdownMode::RECONSTRUCT_EXPRESSION;
 	//! Casts from the raw scan value to the pushed probe expression, in evaluation order.
 	vector<RuntimeFilterCastStep> runtime_filter_casts;
+	//! Whether the filter crossed a secure view that may hide rows. Below one, every filter is checked on every row:
+	//! zone maps and selectivity are measured over the rows the view hides too
+	bool crossed_secure_view = false;
 };
 
 enum class DeferredRuntimeFilterType : uint8_t { BLOOM_FILTER, PREFIX_RANGE };
@@ -106,6 +109,8 @@ struct JoinFilterPushdownInfo {
 	bool build_side_has_filter;
 
 public:
+	//! Whether a filter crossed a secure view that may hide rows
+	bool CrossesSecureView() const;
 	unique_ptr<JoinFilterGlobalState> GetGlobalState(ClientContext &context, const PhysicalOperator &op) const;
 	unique_ptr<JoinFilterLocalState> GetLocalState(JoinFilterGlobalState &gstate) const;
 

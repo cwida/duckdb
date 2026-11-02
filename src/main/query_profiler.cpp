@@ -8,6 +8,7 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/tree_renderer.hpp"
 #include "duckdb/common/tree_renderer/text_tree_renderer.hpp"
+#include "duckdb/execution/operator/join/physical_comparison_join.hpp"
 #include "duckdb/execution/operator/scan/physical_column_data_scan.hpp"
 #include "duckdb/execution/operator/scan/physical_table_scan.hpp"
 #include "duckdb/execution/physical_operator.hpp"
@@ -805,10 +806,10 @@ profiler_metrics_t OperatorMetrics::GetMetrics(const GatheredMetrics &info) cons
 	if (info.MetricIsTracked<MetricOperatorTiming>()) {
 		result["timing"] = Value::DOUBLE(time);
 	}
-	if (info.MetricIsTracked<MetricOperatorIntermediateRows>()) {
+	if (info.MetricIsTracked<MetricOperatorIntermediateRows>() && !rows_hidden) {
 		result["intermediate_rows"] = Value::UBIGINT(elements_returned);
 	}
-	if (info.MetricIsTracked<MetricOperatorIntermediateSizeBytes>()) {
+	if (info.MetricIsTracked<MetricOperatorIntermediateSizeBytes>() && !rows_hidden) {
 		result["intermediate_size_bytes"] = Value::UBIGINT(intermediate_size_bytes);
 	}
 	if (info.MetricIsTracked<MetricOperatorRowsScanned>() && operator_type == PhysicalOperatorType::TABLE_SCAN) {
@@ -1122,6 +1123,18 @@ unique_ptr<ProfilingNode> QueryProfiler::CreateTree(const PhysicalOperator &root
 
 	info.name = root_p.GetName();
 	info.operator_type = root_p.type;
+	switch (root_p.type) {
+	case PhysicalOperatorType::HASH_JOIN:
+	case PhysicalOperatorType::NESTED_LOOP_JOIN:
+	case PhysicalOperatorType::PIECEWISE_MERGE_JOIN:
+	case PhysicalOperatorType::IE_JOIN: {
+		auto &join = root_p.Cast<PhysicalComparisonJoin>();
+		node->filters_secure_view = join.filter_pushdown && join.filter_pushdown->CrossesSecureView();
+		break;
+	}
+	default:
+		break;
+	}
 	auto params = root_p.ParamsToString();
 	info.SetExtraInfo(std::move(params));
 
@@ -1203,9 +1216,10 @@ static double SumSubtreeTime(ProfilingNode &node) {
 }
 
 //! Drop the operators of a secure view, keeping only the metrics that describe the view as a whole: the time spent
-//! in it (accumulated over its operators) and the rows it returned, which are observable regardless. The remaining
-//! metrics of the operators inside the view are discarded rather than accumulated, because their sum describes the
-//! contents of the view - how many rows it processed internally, how much of the table it scanned.
+//! in it (accumulated over its operators) and the rows it returned, unless a join filter crossed it
+//! (HideSecureViewRows). The remaining metrics of the operators inside the view are discarded rather than accumulated,
+//! because their sum describes the contents of the view - how many rows it processed internally, how much of the table
+//! it scanned.
 //! This runs before any profiling output is produced, so every consumer (EXPLAIN ANALYZE in any format, the
 //! profiling output, the query profile result) sees the collapsed tree.
 static void CollapseSecureViews(ProfilingNode &node) {
@@ -1217,6 +1231,36 @@ static void CollapseSecureViews(ProfilingNode &node) {
 	for (idx_t i = 0; i < node.GetChildCount(); i++) {
 		CollapseSecureViews(*node.GetChild(i));
 	}
+}
+
+//! Leave out the rows returned by the operators between a secure view and the join that pushes filters into it, and by
+//! the view itself. Below a view that may hide rows those filters are checked on every row, so the same rows leave it
+//! whatever it hides; the rows are left out so that this does not rely on how each filter is checked. Returns whether
+//! the node returns rows of a secure view
+static bool HideSecureViewRows(ProfilingNode &node, bool below_join) {
+	auto &metrics = node.GetOperatorMetrics();
+	bool reads_secure_view = metrics.operator_type == PhysicalOperatorType::SECURE_VIEW;
+	for (idx_t i = 0; i < node.GetChildCount(); i++) {
+		// the filters are pushed into the probe side of the join
+		auto child_below_join = below_join || (node.filters_secure_view && i == 0);
+		reads_secure_view = HideSecureViewRows(*node.GetChild(i), child_below_join) || reads_secure_view;
+	}
+	if (below_join && reads_secure_view) {
+		metrics.rows_hidden = true;
+	}
+	return reads_secure_view;
+}
+
+static bool HasHiddenRows(ProfilingNode &node) {
+	if (node.GetOperatorMetrics().rows_hidden) {
+		return true;
+	}
+	for (idx_t i = 0; i < node.GetChildCount(); i++) {
+		if (HasHiddenRows(*node.GetChild(i))) {
+			return true;
+		}
+	}
+	return false;
 }
 
 void QueryProfiler::FinalizeMetricsInternal() {
@@ -1232,12 +1276,16 @@ void QueryProfiler::FinalizeMetricsInternal() {
 		// operators of the view in would expose how much of the table behind it was scanned. The time of the view
 		// is accumulated onto its boundary node, so the total CPU time still covers the whole query.
 		CollapseSecureViews(*root);
+		HideSecureViewRows(*root, false);
 		OperatorMetrics cumulative_metrics;
 		MergeOperatorMeasurements(*root, cumulative_metrics);
 		metrics->SetMetric<MetricQueryCPUTime>(cumulative_metrics.time);
-		metrics->SetMetric<MetricQueryTotalIntermediateRows>(cumulative_metrics.elements_returned);
+		// left out if rows are hidden, as the totals would include them
+		if (!HasHiddenRows(*root)) {
+			metrics->SetMetric<MetricQueryTotalIntermediateRows>(cumulative_metrics.elements_returned);
+			metrics->SetMetric<MetricQueryTotalIntermediateSizeBytes>(cumulative_metrics.intermediate_size_bytes);
+		}
 		metrics->SetMetric<MetricQueryTotalRowsScanned>(cumulative_metrics.rows_scanned);
-		metrics->SetMetric<MetricQueryTotalIntermediateSizeBytes>(cumulative_metrics.intermediate_size_bytes);
 		metrics->SetMetric<MetricQueryTotalRowGroupsScanned>(cumulative_metrics.row_groups_scanned);
 		metrics->SetMetric<MetricQueryTotalRowGroupsToScan>(cumulative_metrics.total_row_groups_to_scan);
 		// left out if a scan doesn't count the bytes it scans, as the total would leave that scan out

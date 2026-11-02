@@ -32,6 +32,8 @@ struct OperatorMetrics {
 	idx_t bytes_scanned;
 	//! Whether the scan reports bytes_scanned at all - otherwise the metric is left out rather than reported as 0
 	bool bytes_scanned_reported;
+	//! Whether the rows the operator returned are left out, as they depend on rows a secure view hides
+	bool rows_hidden;
 
 	profiler_metrics_t GetMetrics(const GatheredMetrics &info) const;
 	void ResetMetrics() {
@@ -45,6 +47,7 @@ struct OperatorMetrics {
 		total_row_groups_to_scan = 0;
 		bytes_scanned = 0;
 		bytes_scanned_reported = false;
+		rows_hidden = false;
 		operator_type = PhysicalOperatorType::INVALID;
 		extra_info.clear();
 	}
@@ -113,6 +116,8 @@ private:
 
 public:
 	idx_t depth = 0;
+	//! Whether the operator is a join that pushes filters into a secure view that may hide rows
+	bool filters_secure_view = false;
 	vector<unique_ptr<ProfilingNode>> children;
 
 public:

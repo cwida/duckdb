@@ -21,6 +21,12 @@
       ]
     },
     {
+      "reason": "Asserts the EXPLAIN ANALYZE row counts of secure views, whose layout the synthetic verification projections change.",
+      "paths": [
+        "test/sql/optimizer/secure_view_join_filter_pushdown.test"
+      ]
+    },
+    {
       "reason": "Cost-aware projection placement tests assert topology changed by synthetic verification projections.",
       "paths": [
         "test/optimizer/projection_placement.test"

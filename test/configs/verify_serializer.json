@@ -17,6 +17,12 @@
       ]
     },
     {
+      "reason": "Checks the rows the profiler reports for secure views that join filters enter, which the round-tripped plan's join filters do not",
+      "paths": [
+        "test/sql/pragma/profiling/test_profiling_secure_view_join_filter_rows.test"
+      ]
+    },
+    {
       "reason": "Extension optimizer pass breaks logical plan serialization",
       "paths": [
         "test/extension/test_extensible_filter.test"

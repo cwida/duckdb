@@ -1,0 +1,340 @@
+# name: test/sql/optimizer/secure_view_join_filter_pushdown.test
+# description: Test join filter pushdown through secure views
+# group: [optimizer]
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+CREATE TABLE big AS SELECT i AS id, i % 100 AS g FROM range(1000000) t(i);
+
+statement ok
+CREATE TABLE small AS SELECT i AS id FROM range(500045, 500055) t(i);
+
+statement ok
+CREATE SECURE VIEW big_secure AS SELECT * FROM big;
+
+statement ok
+CREATE SECURE VIEW big_secure_filtered AS SELECT * FROM big WHERE g < 50;
+
+statement ok
+CREATE TABLE dim AS SELECT i AS k, i // 10000 AS yr FROM range(1000000) t(i);
+
+# the key range of d.yr = 42 is only known at runtime: the join filter prunes the scan inside the view
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM big_secure b JOIN dim d ON b.id = d.k WHERE d.yr = 42
+----
+analyzed_plan	<!REGEX>:[\s\S]*SECURE_VIEW[^╰]*1,000,000 rows[\s\S]*
+
+# a view that hides rows gets a filter checked on every row; the profiler does not report the rows that leave it
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM big_secure_filtered b JOIN dim d ON b.id = d.k WHERE d.yr = 42
+----
+analyzed_plan	<!REGEX>:[\s\S]*SECURE_VIEW[^╰]*│ [0-9][0-9,]* rows[\s\S]*
+
+query I
+SELECT count(*) FROM big_secure b JOIN dim d ON b.id = d.k WHERE d.yr = 42
+----
+10000
+
+query I
+SELECT count(*) FROM big_secure_filtered b JOIN dim d ON b.id = d.k WHERE d.yr = 42
+----
+5000
+
+query I
+SELECT count(*) FROM big_secure b JOIN small s ON b.id = s.id
+----
+10
+
+query I
+SELECT count(*) FROM big_secure_filtered b JOIN small s ON b.id = s.id
+----
+5
+
+# same results without join filter pushdown
+statement ok
+SET disabled_optimizers = 'join_filter_pushdown'
+
+query I
+SELECT count(*) FROM big_secure_filtered b JOIN small s ON b.id = s.id
+----
+5
+
+statement ok
+RESET disabled_optimizers
+
+# a view that only projects columns hides no rows: like the plain table, it gets the IN and prefix-range filters, which
+# remove every row but the two matching ones
+statement ok
+CREATE TABLE sparse_keys AS SELECT * FROM (VALUES (10), (900000)) t(k);
+
+statement ok
+CREATE SECURE VIEW big_projected AS SELECT id FROM big;
+
+query I
+SELECT count(*) FROM big_projected b JOIN sparse_keys s ON b.id = s.k
+----
+2
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM big_projected b JOIN sparse_keys s ON b.id = s.k
+----
+analyzed_plan	<REGEX>:[\s\S]*SECURE_VIEW[^╰]*2 rows[\s\S]*
+
+# a view that hides rows gets the prefix-range filter too, checked on every row; the rows that leave it are not reported
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM big_secure_filtered b JOIN sparse_keys s ON b.id = s.k
+----
+analyzed_plan	<!REGEX>:[\s\S]*SECURE_VIEW[^╰]*│ [0-9][0-9,]* rows[\s\S]*
+
+# the view's cast can fail: the join filter crosses it as a TRY_CAST, so the hidden 9999999999 row never fails
+statement ok
+CREATE TABLE wide AS SELECT i::BIGINT AS id FROM range(100) t(i) UNION ALL SELECT 9999999999::BIGINT;
+
+statement ok
+CREATE SECURE VIEW narrow_secure AS SELECT id::INTEGER AS id FROM wide WHERE id < 1000;
+
+statement ok
+CREATE TABLE probe AS SELECT i::INTEGER AS id FROM range(40, 60) t(i);
+
+query I
+SELECT count(*) FROM narrow_secure n JOIN probe p ON n.id = p.id
+----
+20
+
+query I
+SELECT count(*) FROM probe p JOIN narrow_secure n ON n.id = p.id
+----
+20
+
+# the same with a small build side
+statement ok
+CREATE TABLE probe_in AS SELECT i::INTEGER AS id FROM range(41, 44) t(i);
+
+query I
+SELECT count(*) FROM narrow_secure n JOIN probe_in p ON n.id = p.id
+----
+3
+
+# a secure view on the build side
+query I
+SELECT count(*) FROM big b JOIN (SELECT * FROM big_secure_filtered WHERE id BETWEEN 500045 AND 500054) s ON b.id = s.id
+----
+5
+
+# a TRY_CAST in the view cannot fail: the join filter crosses the view
+statement ok
+CREATE SECURE VIEW try_secure AS SELECT TRY_CAST(id AS INTEGER) AS id FROM big WHERE g < 50;
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM try_secure b JOIN dim d ON b.id = d.k WHERE d.yr = 42
+----
+analyzed_plan	<!REGEX>:[\s\S]*SECURE_VIEW[^╰]*│ [0-9][0-9,]* rows[\s\S]*
+
+query I
+SELECT count(*) FROM try_secure b JOIN dim d ON b.id = d.k WHERE d.yr = 42
+----
+5000
+
+statement ok
+CREATE SECURE VIEW wide_try_secure AS SELECT TRY_CAST(id AS INTEGER) AS id FROM wide WHERE id < 1000;
+
+query I
+SELECT count(*) FROM wide_try_secure n JOIN probe p ON n.id = p.id
+----
+20
+
+# the same visible rows in the same positions, only the hidden rows' keys differ: the rows leaving the view must not
+# depend on them (zone maps include hidden rows)
+statement ok
+CREATE TABLE hidden_near AS SELECT i AS id, i % 2 = 0 AS visible FROM range(1000000) t(i);
+
+statement ok
+CREATE TABLE hidden_far AS
+SELECT CASE WHEN i % 2 = 0 THEN i ELSE i + 10000000 END AS id, i % 2 = 0 AS visible FROM range(1000000) t(i);
+
+statement ok
+CREATE SECURE VIEW hidden_near_secure AS SELECT id FROM hidden_near WHERE visible;
+
+statement ok
+CREATE SECURE VIEW hidden_far_secure AS SELECT id FROM hidden_far WHERE visible;
+
+statement ok
+CREATE TABLE range_keys AS SELECT i AS k FROM range(500000, 505000) t(i);
+
+statement ok
+CREATE TABLE in_keys AS SELECT i * 1000 AS k FROM range(100, 110) t(i);
+
+foreach view hidden_near_secure hidden_far_secure
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM {view} v JOIN range_keys k ON v.id = k.k
+----
+analyzed_plan	<!REGEX>:[\s\S]*SECURE_VIEW[^╰]*│ [0-9][0-9,]* rows[\s\S]*
+
+# a small build side gets a prefix-range filter, checked on every row, instead of an IN filter
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM {view} v JOIN in_keys k ON v.id = k.k
+----
+analyzed_plan	<!REGEX>:[\s\S]*SECURE_VIEW[^╰]*│ [0-9][0-9,]* rows[\s\S]*
+
+endloop
+
+# a range join takes the selectivity-optional branch: crossing the view it is still checked on every row, so the same
+# rows leave the view whatever the hidden rows hold
+statement ok
+CREATE TABLE rng AS SELECT 500000 AS lo, 500025 AS hi;
+
+foreach view hidden_near_secure hidden_far_secure
+
+query I
+SELECT count(*) FROM {view} v JOIN rng ON v.id >= rng.lo AND v.id <= rng.hi
+----
+13
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM {view} v JOIN rng ON v.id >= rng.lo AND v.id <= rng.hi
+----
+analyzed_plan	<!REGEX>:[\s\S]*SECURE_VIEW[^╰]*│ [0-9][0-9,]* rows[\s\S]*
+
+endloop
+
+# casts recorded on the join key keep their meaning: VARIANT keys are not compared in the VARIANT domain
+statement ok
+CREATE TABLE vt AS SELECT CASE WHEN i % 10 = 9 THEN (i::DOUBLE)::VARIANT ELSE i::INTEGER::VARIANT END AS v FROM range(100) t(i);
+
+statement ok
+CREATE SECURE VIEW variant_secure AS SELECT v FROM vt;
+
+statement ok
+CREATE TABLE ik AS SELECT i::INTEGER AS k FROM range(40, 60) t(i);
+
+query I
+SELECT count(*) FROM variant_secure sv JOIN ik ON TRY_CAST(sv.v AS INTEGER) = ik.k
+----
+20
+
+statement ok
+CREATE SECURE VIEW variant_cast_secure AS SELECT TRY_CAST(v AS INTEGER) AS vi FROM vt;
+
+query I
+SELECT count(*) FROM variant_cast_secure sv JOIN ik ON sv.vi = ik.k
+----
+20
+
+# a cast on the join key that can fail keeps its error for a row the view emits (the join raises it)...
+statement ok
+CREATE TABLE wide_visible AS SELECT i::BIGINT AS id, true AS visible FROM range(100) t(i) UNION ALL SELECT 9999999999::BIGINT, true;
+
+statement ok
+CREATE SECURE VIEW wide_visible_secure AS SELECT id FROM wide_visible WHERE visible;
+
+statement error
+SELECT count(*) FROM wide_visible_secure w JOIN ik ON w.id::INTEGER = ik.k
+----
+Conversion Error
+
+# ... and never fails on a row the view hides, whether the view filters in its scan or with a join
+statement ok
+CREATE TABLE wide_hidden AS SELECT i::BIGINT AS id, i % 2 AS g, true AS visible FROM range(100) t(i) UNION ALL SELECT 9999999999::BIGINT, 1, false;
+
+statement ok
+CREATE SECURE VIEW wide_hidden_secure AS SELECT id FROM wide_hidden WHERE visible;
+
+query I
+SELECT count(*) FROM wide_hidden_secure w JOIN ik ON w.id::INTEGER = ik.k
+----
+20
+
+statement ok
+CREATE TABLE even_groups AS SELECT 0 AS g;
+
+statement ok
+CREATE SECURE VIEW wide_joined_secure AS SELECT wide_hidden.id FROM wide_hidden JOIN even_groups USING (g);
+
+query I
+SELECT count(*) FROM wide_joined_secure w JOIN ik ON w.id::INTEGER = ik.k
+----
+10
+
+# the same through a view whose join is not a comparison join (an ANY_JOIN), which removes rows as well
+statement ok
+CREATE SECURE VIEW wide_any_joined_secure AS
+SELECT wide_hidden.id FROM wide_hidden JOIN even_groups ON (wide_hidden.g + even_groups.g) % 2 = 0;
+
+query I
+SELECT count(*) FROM wide_any_joined_secure w JOIN ik ON w.id::INTEGER = ik.k
+----
+10
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM wide_any_joined_secure w JOIN ik ON w.id::INTEGER = ik.k
+----
+analyzed_plan	<!REGEX>:[\s\S]*SECURE_VIEW[^╰]*│ [0-9][0-9,]* rows[\s\S]*
+
+# ... nor through a view that unnests a list or takes a cross product, which remove rows when empty
+statement ok
+CREATE TABLE id_lists AS SELECT i::BIGINT AS id, [i] AS l FROM range(100) t(i) UNION ALL SELECT 9999999999::BIGINT, []::BIGINT[];
+
+statement ok
+CREATE SECURE VIEW unnest_secure AS SELECT id, unnest(l) AS u FROM id_lists;
+
+query I
+SELECT count(*) FROM unnest_secure w JOIN ik ON w.id::INTEGER = ik.k
+----
+20
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM unnest_secure w JOIN ik ON w.id::INTEGER = ik.k
+----
+analyzed_plan	<!REGEX>:[\s\S]*SECURE_VIEW[^╰]*│ [0-9][0-9,]* rows[\s\S]*
+
+statement ok
+CREATE TABLE no_rows AS SELECT 1 AS o;
+
+statement ok
+DELETE FROM no_rows;
+
+statement ok
+CREATE SECURE VIEW cross_secure AS SELECT id_lists.id FROM id_lists, no_rows;
+
+query I
+SELECT count(*) FROM cross_secure w JOIN ik ON w.id::INTEGER = ik.k
+----
+0
+
+# only the join filters cross a secure view: a TopN filter on a UNION still reaches its plain inputs
+statement ok
+CREATE TABLE topn_plain AS SELECT i AS x FROM range(100000) t(i);
+
+statement ok
+CREATE TABLE topn_hidden AS SELECT i AS x FROM range(100000) t(i);
+
+statement ok
+CREATE SECURE VIEW topn_secure AS SELECT x FROM topn_hidden;
+
+query II
+EXPLAIN ANALYZE SELECT x FROM (SELECT x FROM topn_plain UNION ALL SELECT x FROM topn_secure) ORDER BY x LIMIT 5
+----
+analyzed_plan	<REGEX>:[\s\S]*Dynamic Filter \(x\)[\s\S]*
+
+# a secure view over a secure view: the join filter crosses both
+statement ok
+CREATE SECURE VIEW inner_secure AS SELECT * FROM big WHERE g < 50;
+
+statement ok
+CREATE SECURE VIEW outer_secure AS SELECT * FROM inner_secure WHERE id >= 100000;
+
+statement ok
+CREATE TABLE nested_keys AS SELECT i AS k FROM range(100000, 100010) t(i);
+
+query I
+SELECT count(*) FROM outer_secure o JOIN nested_keys n ON o.id = n.k
+----
+10
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM outer_secure o JOIN nested_keys n ON o.id = n.k
+----
+analyzed_plan	<!REGEX>:[\s\S]*SECURE_VIEW[^╰]*│ [0-9][0-9,]* rows[\s\S]*

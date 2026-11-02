@@ -1,0 +1,130 @@
+# name: test/sql/pragma/profiling/test_profiling_secure_view_join_filter_rows.test
+# description: Test that the profiler does not report the rows that pass through a secure view a join filter crossed
+# group: [profiling]
+
+require json
+
+statement ok
+CREATE TABLE big AS SELECT i AS id, i % 100 AS g FROM range(1000000) t(i);
+
+statement ok
+CREATE SECURE VIEW big_secure_filtered AS SELECT * FROM big WHERE g < 50;
+
+statement ok
+CREATE SECURE VIEW big_secure AS SELECT * FROM big;
+
+statement ok
+CREATE TABLE dim AS SELECT i AS k, i // 10000 AS yr FROM range(1000000) t(i);
+
+statement ok
+CREATE TABLE groups_30 AS SELECT i AS g FROM range(30) t(i);
+
+# the operators of the last profiled query, whether their rows are reported, and their position in the plan (each
+# before its children, the probe side first)
+statement ok
+CREATE MACRO profiled_operators() AS TABLE
+SELECT j.id AS plan_order, j.value ->> '$.name' AS name, json_exists(j.value, '$.intermediate_rows') AS rows_reported
+FROM read_text('__TEST_DIR__/secure_view_profile.json') r, json_tree(r.content, '$.operator') j
+WHERE j.type = 'OBJECT' AND json_exists(j.value, '$.name');
+
+statement ok
+CREATE MACRO total_rows_reported() AS
+(SELECT json_exists(content, '$.query.total_intermediate_rows') FROM read_text('__TEST_DIR__/secure_view_profile.json'));
+
+# a view that hides rows: the rows leaving it are not reported, nor are the query-wide totals that include them. The
+# join whose filter crossed the view still reports its rows
+statement ok
+SET enable_profiling = 'json';
+
+statement ok
+SET profiling_output = '__TEST_DIR__/secure_view_profile.json';
+
+query I
+SELECT count(*) FROM big_secure_filtered b JOIN dim d ON b.id = d.k WHERE d.yr = 42
+----
+5000
+
+statement ok
+SET enable_profiling = 'no_output';
+
+query II
+SELECT name, rows_reported FROM profiled_operators() WHERE name IN ('SECURE_VIEW', 'HASH_JOIN') ORDER BY plan_order
+----
+HASH_JOIN	true
+SECURE_VIEW	false
+
+query I
+SELECT total_rows_reported()
+----
+false
+
+# ... nor are those of a join between the view and the join whose filter crosses it
+statement ok
+SET enable_profiling = 'json';
+
+query I
+SELECT count(*) FROM big_secure_filtered b JOIN groups_30 ON b.g = groups_30.g JOIN dim d ON b.id = d.k
+WHERE d.yr = 42
+----
+3000
+
+statement ok
+SET enable_profiling = 'no_output';
+
+query II
+SELECT name, rows_reported FROM profiled_operators() WHERE name IN ('SECURE_VIEW', 'HASH_JOIN') ORDER BY plan_order
+----
+HASH_JOIN	true
+HASH_JOIN	false
+SECURE_VIEW	false
+
+# a view that hides no rows reports its rows, as does a plain table
+statement ok
+SET enable_profiling = 'json';
+
+query I
+SELECT count(*) FROM big_secure b JOIN dim d ON b.id = d.k WHERE d.yr = 42
+----
+10000
+
+statement ok
+SET enable_profiling = 'no_output';
+
+query II
+SELECT name, rows_reported FROM profiled_operators() WHERE name IN ('SECURE_VIEW', 'HASH_JOIN') ORDER BY plan_order
+----
+HASH_JOIN	true
+SECURE_VIEW	true
+
+query I
+SELECT total_rows_reported()
+----
+true
+
+statement ok
+SET enable_profiling = 'json';
+
+query I
+SELECT count(*) FROM big b JOIN dim d ON b.id = d.k WHERE d.yr = 42
+----
+10000
+
+statement ok
+SET enable_profiling = 'no_output';
+
+query I
+SELECT total_rows_reported()
+----
+true
+
+# the text output leaves the row count of the view out as well
+statement ok
+RESET enable_profiling
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM big_secure_filtered b JOIN dim d ON b.id = d.k WHERE d.yr = 42
+----
+analyzed_plan	<!REGEX>:[\s\S]*SECURE_VIEW[^╰]*│ [0-9][0-9,]* rows[\s\S]*

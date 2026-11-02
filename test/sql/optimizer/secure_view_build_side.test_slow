@@ -1,0 +1,37 @@
+# name: test/sql/optimizer/secure_view_build_side.test_slow
+# description: The build side choice does not depend on the rows a secure view hides
+# group: [optimizer]
+
+# the plan outside a view does not depend on the rows it hides: two datasets with the same visible rows and the same
+# row count, whose hidden rows differ, get the same plan. Choosing d as the build side for its join filter needs a scan
+# estimate of at least 1,000,000 rows and 64 times d's inside the view, which only the first dataset's hidden rows give
+statement ok
+CREATE TABLE d AS SELECT i AS k, i % 5 AS f FROM range(100000) t(i);
+
+foreach x x1 x2 x3 x4
+
+statement ok
+CREATE TABLE ${x} AS SELECT i * 2 AS id FROM range(1000) t(i);
+
+endloop
+
+statement ok
+CREATE TABLE g AS SELECT i AS id, i % 250000 AS k, CASE WHEN i % 2 = 0 THEN 0 ELSE 1 END AS c, i % 2 = 0 AS visible
+FROM range(7000000) t(i);
+
+statement ok
+CREATE SECURE VIEW gv AS SELECT id, k, c FROM g WHERE visible;
+
+query II nosort hidden_rows_plan
+EXPLAIN SELECT count(*) FROM gv JOIN d ON gv.k = d.k WHERE gv.c = 1 AND d.f = 1 AND gv.id IN (SELECT id FROM x1)
+AND gv.id IN (SELECT id FROM x2) AND gv.id IN (SELECT id FROM x3) AND gv.id IN (SELECT id FROM x4)
+----
+
+statement ok
+CREATE OR REPLACE TABLE g AS SELECT i AS id, i % 250000 AS k, CASE WHEN i % 2 = 0 THEN 0 ELSE 100 + i END AS c,
+i % 2 = 0 AS visible FROM range(7000000) t(i);
+
+query II nosort hidden_rows_plan
+EXPLAIN SELECT count(*) FROM gv JOIN d ON gv.k = d.k WHERE gv.c = 1 AND d.f = 1 AND gv.id IN (SELECT id FROM x1)
+AND gv.id IN (SELECT id FROM x2) AND gv.id IN (SELECT id FROM x3) AND gv.id IN (SELECT id FROM x4)
+----

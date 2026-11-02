@@ -20,6 +20,7 @@
 #include "duckdb/planner/operator/logical_distinct.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
+#include "duckdb/planner/operator/logical_secure_view.hpp"
 #include "duckdb/planner/operator/logical_set_operation.hpp"
 #include "duckdb/planner/operator/logical_unnest.hpp"
 #include "duckdb/planner/operator/logical_window.hpp"
@@ -290,11 +291,12 @@ static bool OperatorHasVolatileExpressions(const LogicalOperator &op) {
 
 class FilterTargetContext {
 public:
-	explicit FilterTargetContext(EqualityPropagation equality_propagation)
-	    : equality_propagation(equality_propagation) {
+	FilterTargetContext(EqualityPropagation equality_propagation, bool cross_secure_views)
+	    : equality_propagation(equality_propagation), cross_secure_views(cross_secure_views) {
 	}
 
 	EqualityPropagation equality_propagation;
+	bool cross_secure_views;
 
 public:
 	const filter_equality_graph_t &GetEqualities(const LogicalOperator &op) {
@@ -575,6 +577,21 @@ static void FindFilterTargets(LogicalOperator &op, vector<JoinFilterPushdownColu
 	case LogicalOperatorType::LOGICAL_FILTER:
 		FindFilterTargets(*op.children[0], std::move(columns), targets, context);
 		break;
+	case LogicalOperatorType::LOGICAL_SECURE_VIEW:
+		if (!context.cross_secure_views) {
+			break;
+		}
+		// a join filter enters the view as a pushed WHERE filter would, and needs no barrier: it cannot fail, as a cast
+		// that can fail is a TRY_CAST that keeps the rows it cannot convert for the join
+		// (PreserveRuntimeFilterCastErrors). A view that emits every row it reads hides none, so any filter may be used
+		// below it; a nested view that hides rows marks the columns when they reach it
+		if (!op.Cast<LogicalSecureView>().propagate_statistics) {
+			for (auto &filter : columns) {
+				filter.crossed_secure_view = true;
+			}
+		}
+		FindFilterTargets(*op.children[0], std::move(columns), targets, context);
+		break;
 	default:
 		break;
 	}
@@ -583,8 +600,9 @@ static void FindFilterTargets(LogicalOperator &op, vector<JoinFilterPushdownColu
 void JoinFilterPushdownOptimizer::GetPushdownFilterTargets(LogicalOperator &op,
                                                            vector<JoinFilterPushdownColumn> columns,
                                                            vector<PushdownFilterTarget> &targets,
-                                                           EqualityPropagation equality_propagation) {
-	FilterTargetContext context(equality_propagation);
+                                                           EqualityPropagation equality_propagation,
+                                                           bool cross_secure_views) {
+	FilterTargetContext context(equality_propagation, cross_secure_views);
 	FindFilterTargets(op, std::move(columns), targets, context);
 }
 
@@ -683,8 +701,8 @@ void JoinFilterPushdownOptimizer::GenerateJoinFilters(LogicalComparisonJoin &joi
 	}
 	// recurse the query tree to find the LogicalGets in which we can push the filter info
 	vector<PushdownFilterTarget> pushdown_filter_targets;
-	GetPushdownFilterTargets(*join.children[0], pushdown_columns, pushdown_filter_targets,
-	                         EqualityPropagation::ENABLED);
+	GetPushdownFilterTargets(*join.children[0], pushdown_columns, pushdown_filter_targets, EqualityPropagation::ENABLED,
+	                         true);
 	for (auto &target : pushdown_filter_targets) {
 		vector<JoinFilterPushdownColumn> get_columns;
 		for (auto &column : target.columns) {
