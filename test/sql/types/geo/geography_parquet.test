@@ -149,7 +149,7 @@ SELECT count(*) FROM '{TEST_DIR}/geography_bulge.parquet' WHERE g && 'POINT(-165
 # A file with an out-of-range longitude (written by DuckDB, then patched to POINT(517.25 2), bbox included).
 # Its metadata and other columns are readable, but reading the GEOGRAPHY values is rejected.
 query I
-SELECT typeof(g) FROM 'data/parquet-testing/broken/geography_out_of_range.parquet' LIMIT 1;
+SELECT column_type FROM (DESCRIBE FROM 'data/parquet-testing/broken/geography_out_of_range.parquet') WHERE column_name = 'g';
 ----
 GEOGRAPHY
 
