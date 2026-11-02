@@ -101,6 +101,9 @@ public:
 
 	//! Resets the allocator, e.g., during 'DELETE FROM table'
 	void Reset();
+	//! Resets the allocator without freeing the on-disk blocks of its buffers.
+	//! The blocks stay owned by the storage information the allocator was initialized from.
+	void DisownBuffers();
 
 	//! Returns the in-memory size in bytes
 	idx_t GetInMemorySize() const;

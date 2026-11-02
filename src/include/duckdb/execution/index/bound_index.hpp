@@ -132,6 +132,11 @@ public:
 	virtual void ResetStorage(IndexLock &index_lock) DUCKDB_REQUIRES(index_lock) = 0;
 	//! Obtains a lock and calls ResetStorage while holding that lock.
 	void ResetStorage() override DUCKDB_EXCLUDES(lock);
+	//! Clears the index without freeing the on-disk blocks it was created from, which stay owned by the unbound
+	//! index. Called when binding the index fails after the index was created from its storage information.
+	virtual void DisownStorage(IndexLock &index_lock) DUCKDB_REQUIRES(index_lock);
+	//! Obtains a lock and calls DisownStorage while holding that lock.
+	void DisownStorage() DUCKDB_EXCLUDES(lock);
 
 	//! Delete a chunk of entries from the index. The index lock must be held.
 	//! Returns the amount of rows successfully deleted from the index.

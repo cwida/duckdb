@@ -85,6 +85,11 @@ FixedSizeBuffer::~FixedSizeBuffer() {
 	}
 }
 
+void FixedSizeBuffer::DisownBlock() {
+	lock_guard<mutex> l(lock);
+	block_pointer = BlockPointer();
+}
+
 void FixedSizeBuffer::Serialize(PartialBlockManager &partial_block_manager, const idx_t available_segments,
                                 const idx_t segment_size, const idx_t bitmask_offset) {
 	D_ASSERT(readers == 0);

@@ -53,6 +53,11 @@ public:
 
 	~FixedSizeBuffer();
 
+public:
+	//! Drops the reference to the on-disk block without marking it as modified, i.e., without freeing it.
+	//! The block stays owned by the storage information this buffer was created from.
+	void DisownBlock();
+
 private:
 	//! Returns a pointer to the buffer in memory, and calls Deserialize, if the buffer is not in memory.
 	//! DEPRECATED. Use segment handles.
