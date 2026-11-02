@@ -22,7 +22,7 @@ bool CSVSequentialBufferManager::ReadNextAndCacheIt() {
 	D_ASSERT(last_buffer);
 	for (idx_t i = 0; i < 2; i++) {
 		if (!last_buffer->IsCSVFileLastBuffer()) {
-			auto maybe_last_buffer = last_buffer->Next(*file_handle, buffer_size, has_seeked);
+			auto maybe_last_buffer = last_buffer->Next(*file_handle, buffer_size);
 			if (!maybe_last_buffer) {
 				last_buffer->last_buffer = true;
 				return false;
@@ -55,7 +55,7 @@ shared_ptr<CSVBufferHandle> CSVSequentialBufferManager::GetBuffer(const idx_t po
 		}
 	}
 	UnpinPrevious(pos);
-	return cached_buffers[pos]->Pin(*file_handle, has_seeked);
+	return cached_buffers[pos]->Pin(*file_handle);
 }
 
 void CSVSequentialBufferManager::UnpinPrevious(const idx_t pos) {
@@ -77,7 +77,7 @@ CSVBufferResidency CSVSequentialBufferManager::GetBufferResidency(const idx_t po
 			return CSVBufferResidency::NEEDS_LOAD;
 		}
 		UnpinPrevious(pos);
-		handle = cached_buffers[pos]->Pin(*file_handle, has_seeked);
+		handle = cached_buffers[pos]->Pin(*file_handle);
 		return CSVBufferResidency::IN_MEMORY;
 	}
 	if (!cached_buffers.empty() && cached_buffers.back() && cached_buffers.back()->last_buffer) {
