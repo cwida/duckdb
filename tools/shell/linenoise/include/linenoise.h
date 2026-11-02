@@ -79,7 +79,7 @@ size_t linenoiseComputeRenderWidth(const char *buf, size_t len);
 int linenoiseGetRenderPosition(const char *buf, size_t len, int max_width, int *n);
 void linenoiseSetPrompt(const char *continuation, const char *continuationSelected, const char *scrollUp,
                         const char *scrollDown);
-int linenoiseGetTerminalColorMode();
+int linenoiseGetTerminalColorMode(int buffer_input);
 
 #ifdef __cplusplus
 }

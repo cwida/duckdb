@@ -183,4 +183,91 @@ def test_manual_uses_detected_color_mode(shell):
     assert status == 0, output
     assert output.count(b'\x1b]11;?') == 1
 
+def run_interactive_in_pty(shell, arguments, inputs, extra_env=None, no_color=None):
+    # runs the shell on a pseudo-terminal that answers the background color query, feeding each input after a pause
+    import pty, select, time, termios
+    master, slave = pty.openpty()
+    env = ShellTest(shell).get_environment()
+    for key in ('NO_COLOR', 'CI', 'COLORFGBG'):
+        env.pop(key, None)
+    env.update({'TERM': 'xterm-256color', 'COLUMNS': '80', 'ROWS': '24'})
+    env.update(extra_env or {})
+    if no_color is not None:
+        env['NO_COLOR'] = no_color
+    response = b'\x1b]11;rgb:ffff/ffff/ffff\x07\x1b[?62c'
+    process = subprocess.Popen([shell, '-no-init', *arguments], stdin=slave, stdout=slave, stderr=slave, env=env)
+    os.close(slave)
+    output = b''
+    probes = 0
+    start = time.monotonic()
+    pending = list(inputs)
+    last_activity = time.monotonic()
+    try:
+        while process.poll() is None and time.monotonic() - start < 30:
+            if select.select([master], [], [], 0.05)[0]:
+                try:
+                    chunk = os.read(master, 4096)
+                except OSError:
+                    break
+                output += chunk
+                last_activity = time.monotonic()
+                if output.count(b'\x1b]11;?') > probes:
+                    probes = output.count(b'\x1b]11;?')
+                    os.write(master, response)
+            elif pending and time.monotonic() - last_activity > 0.7:
+                os.write(master, pending.pop(0))
+                last_activity = time.monotonic()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        flags = termios.tcgetattr(master)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        os.close(master)
+    return process.returncode, output, flags
+
+def check_terminal_restored(flags):
+    import termios
+    assert flags[3] & termios.ECHO
+    assert flags[3] & termios.ICANON
+    assert flags[1] & termios.OPOST
+
+@pytest.mark.skipif(os.name == 'nt', reason="requires a POSIX pseudo-terminal")
+@pytest.mark.parametrize("setup", [
+    b".highlight on\n",
+    b".highlight_mode auto\n",
+])
+def test_repl_restores_terminal_after_lazy_probe(shell, setup):
+    # NO_COLOR disables highlighting at startup, so the first probe only happens after the setting changes
+    status, output, flags = run_interactive_in_pty(shell, [], [b".prompt 'D '\n", setup, b"SELECT 42;\n", b".quit\n"], no_color='1')
+    assert status == 0, output
+    assert b'42' in output
+    check_terminal_restored(flags)
+
+@pytest.mark.skipif(os.name == 'nt', reason="requires a POSIX pseudo-terminal")
+def test_repl_detects_colors_up_front(shell):
+    status, output, flags = run_interactive_in_pty(shell, [], [b"SELECT 42;\n", b".quit\n"])
+    assert status == 0, output
+    assert output.count(b'\x1b]11;?') == 1
+    assert b'42' in output
+    check_terminal_restored(flags)
+
+@pytest.mark.skipif(os.name == 'nt', reason="requires a POSIX pseudo-terminal")
+def test_batch_on_terminal_keeps_pasted_input(shell):
+    status, output, _ = run_interactive_in_pty(shell, ['-batch'], [b"SELECT 111 AS a;\nSELECT 222 AS b;\n", b"\x04"])
+    assert status == 0, output
+    assert b'111' in output
+    assert b'222' in output
+
+@pytest.mark.skipif(os.name == 'nt', reason="requires a POSIX pseudo-terminal")
+def test_no_color_can_be_overridden_by_highlight_on(shell):
+    status, output, _ = run_interactive_in_pty(shell, ['-batch'], [b".highlight on\n.highlight_results on\nSELECT 42;\n", b"\x04"], no_color='1')
+    assert status == 0, output
+    assert b'42' in output
+    assert b'\x1b[' in output
+
 # fmt: on

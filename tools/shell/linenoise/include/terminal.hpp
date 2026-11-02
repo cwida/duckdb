@@ -137,7 +137,7 @@ public:
 	static bool IsAtty();
 	static int HasMoreData(int fd, idx_t timeout_micros = 0);
 	static TerminalSize GetTerminalSize();
-	static bool TryGetBackgroundColor(TerminalColor &color);
+	static bool TryGetBackgroundColor(TerminalColor &color, bool buffer_input);
 
 	static char *EditNoTTY();
 	static int EditRaw(char *buf, size_t buflen, const char *prompt);

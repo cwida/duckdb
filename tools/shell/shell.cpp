@@ -602,6 +602,8 @@ char *ShellState::OneInputLine(FILE *in, char *&zPrior, int isContinuation) {
 		}
 		free(zPrior);
 		zPrior = nullptr;
+		// probing the terminal inside the line editor is not possible - detect before editing
+		DetectDarkLightMode();
 		return linenoise(prompt_text);
 	}
 #endif
@@ -3775,7 +3777,8 @@ void ShellState::DetectDarkLightMode() {
 		return;
 	}
 	// detect terminal colors
-	auto terminal_color = linenoiseGetTerminalColorMode();
+	// pending input is only kept if linenoise is the one reading it
+	auto terminal_color = linenoiseGetTerminalColorMode(rl_version == ReadLineVersion::LINENOISE && !in);
 	if (terminal_color == LINENOISE_DARK_MODE) {
 		highlight_mode = HighlightMode::DARK_MODE;
 		highlight.ToggleMode(HighlightMode::DARK_MODE);
@@ -3848,7 +3851,7 @@ int RunShell(int argc, const char **argv) {
 
 	auto no_color = getenv("NO_COLOR");
 	if (no_color && no_color[0]) {
-		// https://no-color.org - can still be turned on explicitly with .highlighting on
+		// https://no-color.org - can still be turned on explicitly with .highlight on
 		ShellHighlight::SetHighlighting(false);
 	}
 
@@ -4050,6 +4053,10 @@ int RunShell(int argc, const char **argv) {
 			rc = data.ProcessInput(InputMode::STANDARD);
 		} else {
 			data.in = stdin;
+			if (isatty(0)) {
+				// -batch on a terminal: the probe shares stdin, so detect before reading any input
+				data.DetectDarkLightMode();
+			}
 			rc = data.ProcessInput(InputMode::STANDARD);
 		}
 	}
