@@ -343,6 +343,53 @@ static bool SupportedFilterComparison(ExpressionType expression_type) {
 	}
 }
 
+optional_ptr<const Expression> FilterCombiner::GetComparedExpression(const Expression &filter) {
+	const auto filter_type = filter.GetExpressionType();
+	// BETWEEN and IN compare their first child with the others
+	const bool compares_first_child =
+	    filter_type == ExpressionType::COMPARE_BETWEEN || filter_type == ExpressionType::COMPARE_IN;
+	if ((!SupportedFilterComparison(filter_type) && !compares_first_child) || filter.IsVolatile()) {
+		return nullptr;
+	}
+	optional_ptr<const Expression> compared;
+	bool valid = true;
+	idx_t child_idx = 0;
+	ExpressionIterator::EnumerateChildren(filter, [&](const Expression &child) {
+		if (!child.IsFoldable()) {
+			valid = valid && !compared && (!compares_first_child || child_idx == 0);
+			compared = &child;
+		}
+		child_idx++;
+	});
+	return valid ? compared : nullptr;
+}
+
+void FilterCombiner::GenerateJoinFilters(const vector<JoinCondition> &conditions,
+                                         const vector<reference<const Expression>> &filters, JoinSide target_side,
+                                         const std::function<void(unique_ptr<Expression> filter)> &callback) {
+	D_ASSERT(target_side == JoinSide::LEFT || target_side == JoinSide::RIGHT);
+	for (auto &cond : conditions) {
+		// a comparison with constants is false for NULL, so NOT DISTINCT FROM acts as equality for it
+		if (!cond.IsComparison() || (cond.GetComparisonType() != ExpressionType::COMPARE_EQUAL &&
+		                             cond.GetComparisonType() != ExpressionType::COMPARE_NOT_DISTINCT_FROM)) {
+			continue;
+		}
+		auto &source = target_side == JoinSide::LEFT ? cond.GetRHS() : cond.GetLHS();
+		auto &target = target_side == JoinSide::LEFT ? cond.GetLHS() : cond.GetRHS();
+		// the join evaluates both sides once per row, a generated filter must not evaluate them differently
+		if (source.IsVolatile() || target.IsVolatile() || target.CanThrow() || source.IsFoldable() ||
+		    target.IsFoldable()) {
+			continue;
+		}
+		for (auto &filter : filters) {
+			auto compared = GetComparedExpression(filter.get());
+			if (compared && compared->Equals(source)) {
+				callback(ExpressionIterator::ReplaceExpression(filter.get(), source, target));
+			}
+		}
+	}
+}
+
 static bool TypeSupportsConstantFilter(const LogicalType &type) {
 	if (TypeIsNumeric(type.InternalType())) {
 		return true;
