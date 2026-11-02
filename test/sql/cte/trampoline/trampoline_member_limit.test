@@ -25,16 +25,17 @@ WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
 ----
 4
 
-# a large wave takes the event schedule: the shared limit still applies once per wave
+# every wave stays large enough for the event schedule, and the limit equals the wave size,
+# so a limit applied per arm instead of per wave doubles the surviving rows and fails the count
 query II
 WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
-	(SELECT 1, 0 FROM range(50000))
+	(SELECT 1, 0 FROM range(current_setting('standard_vector_size')::BIGINT * 32))
 	BRANCH 1: (SELECT CASE WHEN n < 2 THEN 1 ELSE 0 END, n + 1 FROM t
 	           UNION ALL
 	           SELECT CASE WHEN n < 2 THEN 1 ELSE 0 END, n + 1 FROM t
-	           LIMIT 1)
-) SELECT count(*), max(n) FROM t;
+	           LIMIT (current_setting('standard_vector_size')::BIGINT * 32))
+) SELECT count(*) = current_setting('standard_vector_size')::BIGINT * 32, max(n) FROM t;
 ----
-1	3
+true	3
 
 endloop
