@@ -114,7 +114,8 @@ BoundStatement Binder::BindNode(TrampolineCTENode &statement) {
 			// type requirements do not apply
 			break;
 		}
-		throw BinderException("TRAMPOLINE selector column \"%s\" must have an integer type, not %s",
+		throw BinderException("TRAMPOLINE selector column \"%s\" must have an integer type of up to 64 bits "
+		                      "(TINYINT through BIGINT or their unsigned variants), not %s",
 		                      statement.selector.GetIdentifierName(), result.types[selector_idx].ToString());
 	}
 
