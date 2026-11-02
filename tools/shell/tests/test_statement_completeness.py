@@ -2,284 +2,16 @@
 
 from conftest import ShellTest
 
-# tests for the statement-completeness scanner (ShellState::SQLIsComplete)
-# routine bodies framed by BEGIN ... END may contain semicolons - the shell must submit them as one statement
+# tests for statement completeness (ShellState::SQLIsComplete)
+# the shell submits the input buffer once the parser accepts it as a complete,
+# semicolon-terminated statement sequence - framing follows the active grammar
 
 
 def run_lines(shell, text):
     return ShellTest(shell).run_raw(text)
 
 
-class TestBeginEndBodies(object):
-    def test_function_body_single_submission(self, shell):
-        result = run_lines(
-            shell,
-            'CREATE OR REPLACE FUNCTION f(n INTEGER) RETURNS INTEGER AS BEGIN\n'
-            '  SELECT 1;\n'
-            '  RETURN n;\n'
-            'END;\n'
-            '.print CANARY\n'
-            "SELECT 'done' AS marker;\n",
-        )
-        # the body is submitted as a single statement - one parser error, not one per fragment
-        assert result.stderr.count("Parser Error") == 1
-        # the closing END is not executed as a transaction COMMIT
-        assert "cannot commit" not in result.stderr
-        # the buffer is released after the statement, so the dot command runs
-        assert "CANARY" in result.stdout
-        assert "done" in result.stdout
-
-    def test_function_body_nested_blocks(self, shell):
-        result = run_lines(
-            shell,
-            'CREATE FUNCTION h(n INTEGER) RETURNS INTEGER AS BEGIN\n'
-            '  IF n > 0 THEN\n'
-            '    RETURN 1;\n'
-            '  END;\n'
-            '  BEGIN\n'
-            '    SELECT 2;\n'
-            '  END;\n'
-            '  RETURN 0;\n'
-            'END;\n'
-            '.print CANARY\n',
-        )
-        assert result.stderr.count("Parser Error") == 1
-        assert "cannot commit" not in result.stderr
-        assert "CANARY" in result.stdout
-
-    def test_procedure_body_end_loop(self, shell):
-        # PL/pgSQL-style blocks closed with END LOOP / END IF stay balanced
-        result = run_lines(
-            shell,
-            'CREATE PROCEDURE p() AS BEGIN\n'
-            '  WHILE x < 10 LOOP\n'
-            '    SET x = x + 1;\n'
-            '  END LOOP;\n'
-            '  IF x > 5 THEN\n'
-            '    SELECT x;\n'
-            '  END IF;\n'
-            'END;\n'
-            '.print CANARY\n',
-        )
-        assert result.stderr.count("Parser Error") == 1
-        assert "cannot commit" not in result.stderr
-        assert "CANARY" in result.stdout
-
-    def test_nested_block_after_loop(self, shell):
-        # a nested block directly after LOOP is still part of the body
-        result = run_lines(
-            shell,
-            'CREATE PROCEDURE p() AS BEGIN\n'
-            '  LOOP\n'
-            '    BEGIN\n'
-            '      SELECT 1;\n'
-            '    END;\n'
-            '  END LOOP;\n'
-            "  SELECT 'escaped' AS marker;\n"
-            'END;\n'
-            '.print CANARY\n',
-        )
-        assert result.stderr.count("Parser Error") == 1
-        assert "cannot commit" not in result.stderr
-        assert "escaped" not in result.stdout
-        assert "CANARY" in result.stdout
-
-    def test_nested_if_after_then(self, shell):
-        # a nested IF directly after THEN is still part of the body
-        result = run_lines(
-            shell,
-            'CREATE FUNCTION f4(n INTEGER) RETURNS INTEGER AS BEGIN\n'
-            '  IF n > 0 THEN IF n > 1 THEN\n'
-            '    RETURN 2;\n'
-            '  END;\n'
-            '  END;\n'
-            '  LOOP END LOOP;\n'
-            '  RETURN 0;\n'
-            'END;\n'
-            '.print CANARY\n',
-        )
-        assert result.stderr.count("Parser Error") == 1
-        assert "cannot commit" not in result.stderr
-        assert "CANARY" in result.stdout
-
-    def test_case_expressions_inside_body(self, shell):
-        # CASE expression keywords inside a body are not procedural - nested CASE expressions,
-        # if() calls and qualified columns named loop do not change the block depth
-        result = run_lines(
-            shell,
-            'CREATE PROCEDURE p() AS BEGIN\n'
-            '  SELECT CASE WHEN true THEN t.loop END FROM (VALUES (1)) t(loop);\n'
-            '  SELECT CASE WHEN true THEN CASE WHEN true THEN 1 ELSE 2 END ELSE 3 END;\n'
-            '  SELECT CASE WHEN true THEN if(true, 1, 2) ELSE 3 END;\n'
-            '  SELECT CASE WHEN true THEN (SELECT 1 AS end) ELSE if(true, 1, 0) END;\n'
-            '  SELECT 1 AS end, 2 AS loop, 3 AS case;\n'
-            '  CREATE FUNCTION m(x) AS CASE WHEN x > 0 THEN if(x > 1, 1, 0) ELSE 0 END;\n'
-            '  IF (SELECT true AS case) THEN\n'
-            '    BEGIN\n'
-            '      SELECT 7;\n'
-            '    END;\n'
-            '  END IF;\n'
-            "  SELECT 'escaped' AS marker;\n"
-            'END;\n'
-            '.print CANARY\n',
-        )
-        assert result.stderr.count("Parser Error") == 1
-        assert "cannot commit" not in result.stderr
-        assert "escaped" not in result.stdout
-        assert "CANARY" in result.stdout
-
-    def test_qualified_keyword_columns_inside_body(self, shell):
-        # qualified columns named end or case are identifiers, not CASE expression delimiters
-        result = run_lines(
-            shell,
-            'CREATE PROCEDURE p() AS BEGIN\n'
-            '  SELECT CASE WHEN t.end THEN t.loop END FROM (VALUES (true, 1)) t("end", loop);\n'
-            '  IF t.case THEN\n'
-            '    BEGIN\n'
-            '      SELECT 1;\n'
-            '    END;\n'
-            '  END IF;\n'
-            "  SELECT 'escaped' AS marker;\n"
-            'END;\n'
-            '.print CANARY\n',
-        )
-        assert result.stderr.count("Parser Error") == 1
-        assert "cannot commit" not in result.stderr
-        assert "escaped" not in result.stdout
-        assert "CANARY" in result.stdout
-
-    def test_numeric_dot_and_parameters_inside_body(self, shell):
-        # numeric literals (trailing dot, digit separators, exponents) are one token and
-        # parameter names are not keywords, whether adjacent, numbered or whitespace-separated
-        result = run_lines(
-            shell,
-            'CREATE PROCEDURE p(x INTEGER) AS BEGIN\n'
-            '  IF x > 1. THEN\n'
-            '    BEGIN\n'
-            '      SELECT 1;\n'
-            '    END;\n'
-            '  END IF;\n'
-            '  IF x > 1_2. THEN\n'
-            '    BEGIN\n'
-            '      SELECT 2;\n'
-            '    END;\n'
-            '  END IF;\n'
-            '  IF CASE WHEN true THEN 1e2END > 0 THEN\n'
-            '    BEGIN\n'
-            '      SELECT 3;\n'
-            '    END;\n'
-            '  END IF;\n'
-            '  IF CASE WHEN true THEN $1END > 0 THEN\n'
-            '    BEGIN\n'
-            '      SELECT 4;\n'
-            '    END;\n'
-            '  END IF;\n'
-            '  IF (SELECT 1_case) > 0 THEN\n'
-            '    BEGIN\n'
-            '      SELECT 5;\n'
-            '    END;\n'
-            '  END IF;\n'
-            '  IF CASE WHEN true THEN $1_2END > 0 THEN\n'
-            '    BEGIN\n'
-            '      SELECT 6;\n'
-            '    END;\n'
-            '  END IF;\n'
-            '  SELECT 1._5;\n'
-            '  PREPARE q AS SELECT CASE WHEN $end THEN $loop END;\n'
-            '  PREPARE r AS SELECT CASE WHEN $ /* parameter */ end THEN $ /* parameter */ loop END;\n'
-            '  WHILE $loop LOOP\n'
-            '    SELECT 0.5 + $1;\n'
-            '  END LOOP;\n'
-            '  WHILE $ loop LOOP\n'
-            '    SELECT 1;\n'
-            '  END LOOP;\n'
-            "  SELECT 'escaped' AS marker;\n"
-            'END;\n'
-            '.print CANARY\n',
-        )
-        assert result.stderr.count("Parser Error") == 1
-        assert "cannot commit" not in result.stderr
-        assert "escaped" not in result.stdout
-        assert "CANARY" in result.stdout
-
-    def test_qualification_across_comments_inside_body(self, shell):
-        # a qualification dot keeps its effect across comments and whitespace
-        result = run_lines(
-            shell,
-            'CREATE PROCEDURE p(t STRUCT("case" BOOLEAN)) AS BEGIN\n'
-            '  SELECT t. /* comment */ end FROM (VALUES (1)) t("end");\n'
-            '  IF t. /* comment */ case THEN\n'
-            '    BEGIN\n'
-            '      SELECT 1;\n'
-            '    END;\n'
-            '  END IF;\n'
-            "  SELECT 'escaped' AS marker;\n"
-            'END;\n'
-            '.print CANARY\n',
-        )
-        assert result.stderr.count("Parser Error") == 1
-        assert "cannot commit" not in result.stderr
-        assert "escaped" not in result.stdout
-        assert "CANARY" in result.stdout
-
-    def test_multibyte_identifier_inside_body(self, shell):
-        # a multi-byte identifier ending in a keyword is one word, not that keyword
-        result = run_lines(
-            shell,
-            'CREATE PROCEDURE p(éloop BOOLEAN) AS BEGIN\n'
-            '  WHILE éloop LOOP\n'
-            '    SELECT 1;\n'
-            '  END LOOP;\n'
-            'END;\n'
-            '.print CANARY\n',
-        )
-        assert result.stderr.count("Parser Error") == 1
-        assert "CANARY" in result.stdout
-
-    def test_function_body_case_strings_comments(self, shell):
-        # CASE ... END expressions, strings and comments containing END; do not unbalance the body
-        result = run_lines(
-            shell,
-            'CREATE FUNCTION f2(n INTEGER) RETURNS INTEGER AS BEGIN\n'
-            "  LET s := 'END; not a real end';\n"
-            '  -- comment with END; inside\n'
-            '  RETURN CASE WHEN n > 0 THEN 1 ELSE 0 END;\n'
-            'END;\n'
-            '.print CANARY\n',
-        )
-        assert result.stderr.count("Parser Error") == 1
-        assert "cannot commit" not in result.stderr
-        assert "CANARY" in result.stdout
-
-    def test_transaction_statements_inside_body(self, shell):
-        # transaction statements inside a body do not open or close blocks
-        result = run_lines(
-            shell,
-            'CREATE FUNCTION f3() RETURNS INTEGER AS BEGIN\n'
-            '  BEGIN TRANSACTION;\n'
-            '  END TRANSACTION;\n'
-            '  BEGIN WORK;\n'
-            '  END WORK;\n'
-            '  BEGIN READ ONLY;\n'
-            '  COMMIT;\n'
-            '  BEGIN READ WRITE;\n'
-            '  COMMIT;\n'
-            '  BEGIN;\n'
-            '  ROLLBACK;\n'
-            "  SELECT 'still inside' AS marker;\n"
-            '  RETURN 1;\n'
-            'END;\n'
-            '.print CANARY\n',
-        )
-        assert result.stderr.count("Parser Error") == 1
-        assert "cannot commit" not in result.stderr
-        assert "still inside" not in result.stdout
-        assert "CANARY" in result.stdout
-
-
-class TestBeginEndProtection(object):
-    # existing statement splitting behavior that must not change
-
+class TestDefaultGrammarCompleteness(object):
     def test_toplevel_transactions(self, shell):
         result = run_lines(
             shell,
@@ -318,7 +50,7 @@ class TestBeginEndProtection(object):
         result.check_stdout("CANARY")
 
     def test_macro_with_begin_alias(self, shell):
-        # a begin alias or parameter after a later AS inside a valid macro does not open body mode
+        # begin aliases and parameters inside valid macros do not change framing
         result = run_lines(
             shell,
             'CREATE FUNCTION m1() AS TABLE SELECT 1 AS begin;\n'
@@ -338,7 +70,7 @@ class TestBeginEndProtection(object):
         result.check_stdout("CANARY")
 
     def test_native_trigger_with_begin_identifiers(self, shell):
-        # native triggers have no BEGIN ... END body - identifiers named begin stay identifiers
+        # native triggers have a single DML body - identifiers named begin stay identifiers
         result = run_lines(
             shell,
             'CREATE TABLE target(i INTEGER);\n'
@@ -354,7 +86,6 @@ class TestBeginEndProtection(object):
         result.check_stdout("true")
 
     def test_multibyte_identifier_with_keyword_suffix(self, shell):
-        # a multi-byte identifier ending in a keyword is not classified as that keyword
         result = run_lines(
             shell,
             'SELECT 1 AS ébegin;\n'
@@ -381,3 +112,75 @@ class TestBeginEndProtection(object):
         result.check_stdout("a; b")
         result.check_stdout("c; d")
         result.check_stdout("CANARY")
+
+    def test_multiline_dollar_quoted_string(self, shell):
+        # an unterminated dollar-quoted string keeps accumulating input
+        result = run_lines(
+            shell,
+            'SELECT $$a;\n'
+            'b$$ AS s;\n'
+            '.print CANARY\n',
+        )
+        result.check_stdout("a;")
+        result.check_stdout("CANARY")
+        assert "Parser Error" not in result.stderr
+
+    def test_multiline_string_with_semicolon(self, shell):
+        # an unterminated string literal keeps accumulating input
+        result = run_lines(
+            shell,
+            "SELECT 'a;\n"
+            "b' AS s;\n"
+            '.print CANARY\n',
+        )
+        result.check_stdout("a;")
+        result.check_stdout("CANARY")
+        assert "Parser Error" not in result.stderr
+
+    def test_multiline_block_comment(self, shell):
+        # an unterminated block comment keeps accumulating input
+        result = run_lines(
+            shell,
+            'SELECT 42 AS v; /* note\n'
+            'more */;\n'
+            '.print CANARY\n',
+        )
+        result.check_stdout("42")
+        result.check_stdout("CANARY")
+        assert "Parser Error" not in result.stderr
+
+    def test_trailing_line_comment(self, shell):
+        # a line comment after the final semicolon does not block completion
+        result = run_lines(
+            shell,
+            'SELECT 42 AS v; -- done\n'
+            '.print CANARY\n',
+        )
+        result.check_stdout("42")
+        result.check_stdout("CANARY")
+
+    def test_syntax_error_is_submitted(self, shell):
+        # input the grammar rejects mid-way is submitted, so the error surfaces
+        result = run_lines(
+            shell,
+            'SELECT FROM WHERE;\n'
+            '.print CANARY\n'
+            'SELECT 42 AS v;\n',
+        )
+        assert result.stderr.count("Parser Error") == 1
+        assert "CANARY" in result.stdout
+        assert "42" in result.stdout
+
+    def test_unsupported_body_splits_per_grammar(self, shell):
+        # without a grammar extension that adds procedural statement forms, BEGIN ... END routine
+        # bodies are not part of the grammar - the buffer splits at top-level semicolons as before
+        result = run_lines(
+            shell,
+            'CREATE OR REPLACE FUNCTION f(n INTEGER) RETURNS INTEGER AS BEGIN\n'
+            '  SELECT 1;\n'
+            '  RETURN n;\n'
+            'END;\n'
+            '.print CANARY\n',
+        )
+        assert result.stderr.count("Parser Error") >= 2
+        assert "CANARY" in result.stdout
