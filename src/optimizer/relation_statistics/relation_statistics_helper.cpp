@@ -330,8 +330,7 @@ SemiAntiJoinCardinalityEstimate RelationStatisticsHelper::EstimateSemiAntiJoinCa
 }
 
 static optional_idx EstimateUnionGroups(LogicalOperator &input, vector<idx_t> groups, idx_t maximum,
-                                        ClientContext &context) {
-	RelationStatsExtractor extractor(context);
+                                        RelationStatsExtractor &extractor, bool use_cached_cardinality) {
 	vector<pair<reference<LogicalOperator>, vector<idx_t>>> pending;
 	pending.emplace_back(input, std::move(groups));
 	idx_t result = 0;
@@ -376,7 +375,8 @@ static optional_idx EstimateUnionGroups(LogicalOperator &input, vector<idx_t> gr
 		if (!stats) {
 			return {};
 		}
-		auto cardinality = op.has_estimated_cardinality ? op.estimated_cardinality : stats->cardinality;
+		auto cardinality =
+		    use_cached_cardinality && op.has_estimated_cardinality ? op.estimated_cardinality : stats->cardinality;
 		auto estimate = MinValue<idx_t>(cardinality, 1);
 		for (auto index : entry.second) {
 			auto domain = MaxValue<idx_t>(stats->columns[index].current_domain.distinct_count, 1);
@@ -391,9 +391,10 @@ static optional_idx EstimateUnionGroups(LogicalOperator &input, vector<idx_t> gr
 	return optional_idx(result);
 }
 
-optional<RelationStats> RelationStatisticsHelper::ExtractAggregationStats(LogicalAggregate &aggregate,
-                                                                          const RelationStats &child_stats,
-                                                                          ClientContext &context) {
+static optional<RelationStats> ExtractAggregationStatsInternal(LogicalAggregate &aggregate,
+                                                               const RelationStats &child_stats,
+                                                               RelationStatsExtractor &extractor,
+                                                               bool use_cached_cardinality) {
 	RelationColumnStatsLookup child_columns(child_stats);
 	vector<DistinctCount> cardinality_counts;
 	for (auto &grouping_set : aggregate.grouping_sets) {
@@ -418,7 +419,9 @@ optional<RelationStats> RelationStatisticsHelper::ExtractAggregationStats(Logica
 
 	RelationStats result;
 	result.cardinality =
-	    aggregate.groups.empty() ? 1 : EstimateDistinctCardinality(cardinality_counts, child_stats.cardinality);
+	    aggregate.groups.empty()
+	        ? 1
+	        : RelationStatisticsHelper::EstimateDistinctCardinality(cardinality_counts, child_stats.cardinality);
 	result.table_name = Identifier(aggregate.GetName());
 	result.stats_initialized = true;
 	auto bindings = aggregate.GetColumnBindings();
@@ -430,8 +433,8 @@ optional<RelationStats> RelationStatisticsHelper::ExtractAggregationStats(Logica
 		for (auto &group : aggregate.groups) {
 			groups.push_back(child_stats.FindColumn(group->Cast<BoundColumnRefExpression>().Binding()).GetIndex());
 		}
-		auto union_groups =
-		    EstimateUnionGroups(*aggregate.children[0], std::move(groups), child_stats.cardinality, context);
+		auto union_groups = EstimateUnionGroups(*aggregate.children[0], std::move(groups), child_stats.cardinality,
+		                                        extractor, use_cached_cardinality);
 		if (union_groups.IsValid()) {
 			// Per-arm domain products avoid inventing cross-arm combinations of grouping keys.
 			result.cardinality = MinValue(result.cardinality, union_groups.GetIndex());
@@ -477,6 +480,20 @@ optional<RelationStats> RelationStatisticsHelper::ExtractAggregationStats(Logica
 	result.CapCurrentDomainsToCardinality();
 	result.Verify(bindings);
 	return result;
+}
+
+optional<RelationStats> RelationStatisticsHelper::ExtractAggregationStats(LogicalAggregate &aggregate,
+                                                                          const RelationStats &child_stats,
+                                                                          ClientContext &context) {
+	// Join reconstruction has already published the selected input cardinalities.
+	RelationStatsExtractor extractor(context);
+	return ExtractAggregationStatsInternal(aggregate, child_stats, extractor, true);
+}
+
+optional<RelationStats> RelationStatisticsHelper::ExtractAggregationStats(LogicalAggregate &aggregate,
+                                                                          const RelationStats &child_stats,
+                                                                          RelationStatsExtractor &extractor) {
+	return ExtractAggregationStatsInternal(aggregate, child_stats, extractor, false);
 }
 
 optional<RelationStats> RelationStatisticsHelper::ExtractWindowStats(LogicalWindow &window,

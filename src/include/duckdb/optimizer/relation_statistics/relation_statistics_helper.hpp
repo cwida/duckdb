@@ -32,6 +32,7 @@ class LogicalGet;
 class LogicalLimit;
 class LogicalProjection;
 class LogicalWindow;
+class RelationStatsExtractor;
 
 struct SemiAntiJoinDomain {
 	idx_t total_domain;
@@ -62,6 +63,10 @@ public:
 	                                                      const RelationStats &child_stats);
 	static optional<RelationStats> ExtractAggregationStats(LogicalAggregate &aggregate,
 	                                                       const RelationStats &child_stats, ClientContext &context);
+	//! Reuse the caller snapshot for aggregate input refinements.
+	static optional<RelationStats> ExtractAggregationStats(LogicalAggregate &aggregate,
+	                                                       const RelationStats &child_stats,
+	                                                       RelationStatsExtractor &extractor);
 	static optional<RelationStats> ExtractWindowStats(LogicalWindow &window, const RelationStats &child_stats);
 	static optional<RelationStats> ExtractDistinctStats(LogicalDistinct &distinct, const RelationStats &child_stats);
 	static optional<RelationStats> ExtractFilterStats(LogicalFilter &filter, const RelationStats &child_stats);

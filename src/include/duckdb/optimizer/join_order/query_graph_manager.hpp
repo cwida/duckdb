@@ -43,6 +43,8 @@ public:
 public:
 	//! Extract the join relations, optimizing non-reoderable relations when encountered
 	bool Build(JoinOrderOptimizer &optimizer, LogicalOperator &op);
+	//! Prepare an inner-join region without mutating or enumerating its plan.
+	bool BuildForEstimation(RelationStatsExtractor &extractor, LogicalOperator &op);
 	optional<RelationStats> CombineRelationStats(const vector<ColumnBinding> &bindings,
 	                                             const vector<RelationStats> &relation_stats,
 	                                             idx_t root_cardinality) const;
@@ -69,6 +71,7 @@ private:
 	optional<RelationStats> CombineRelationStats(const vector<ColumnBinding> &bindings,
 	                                             const vector<reference<const RelationStats>> &inputs,
 	                                             idx_t root_cardinality) const;
+	void PreparePredicateModel(LogicalOperator &op);
 	void GetColumnBinding(const Expression &expression, ColumnBinding &binding);
 	void GetEquivalenceBinding(const Expression &expression, ColumnBinding &binding);
 

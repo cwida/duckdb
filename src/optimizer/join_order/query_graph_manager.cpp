@@ -256,6 +256,49 @@ bool QueryGraphManager::Build(JoinOrderOptimizer &optimizer, LogicalOperator &op
 		// nothing to optimize/reorder
 		return false;
 	}
+	PreparePredicateModel(op);
+	BuildInnerCompanionSets();
+	CreateHyperGraphEdges();
+	return true;
+}
+
+bool QueryGraphManager::BuildForEstimation(RelationStatsExtractor &extractor, LogicalOperator &op) {
+	if (!relation_manager.ExtractJoinRelationsForEstimation(extractor, op, filter_operators) ||
+	    relation_manager.NumRelations() <= 1) {
+		return false;
+	}
+	for (auto &filter : filter_operators) {
+		bool valid_bindings = true;
+		LogicalOperatorVisitor::EnumerateExpressions(
+		    static_cast<const LogicalOperator &>(filter.get()), [&](optional_ptr<const unique_ptr<Expression>> expr) {
+			    ExpressionIterator::VisitExpression<BoundColumnRefExpression>(
+			        **expr, [&](const BoundColumnRefExpression &column) {
+				        ColumnBinding normalized;
+				        if (column.Depth() != 0 ||
+				            !relation_manager.TryNormalizeBinding(column.Binding(), normalized)) {
+					        valid_bindings = false;
+				        }
+			        });
+			    for (auto expr_class : {ExpressionClass::BOUND_REF, ExpressionClass::BOUND_SUBQUERY}) {
+				    ExpressionIterator::VisitExpressionClass(**expr, expr_class,
+				                                             [&](const Expression &) { valid_bindings = false; });
+			    }
+		    });
+		if (!valid_bindings) {
+			return false;
+		}
+	}
+	PreparePredicateModel(op);
+	for (auto &filter : filters_and_bindings) {
+		// Single-relation root filters need to be estimated outside the join region.
+		if (filter->from_logical_filter && filter->set.get().count < 2) {
+			return false;
+		}
+	}
+	return true;
+}
+
+void QueryGraphManager::PreparePredicateModel(LogicalOperator &op) {
 	// extract the edges of the hypergraph, creating a list of filters and their associated bindings.
 	auto extraction = relation_manager.ExtractEdges(op, filter_operators, set_manager);
 	filters_and_bindings = std::move(extraction.filters);
@@ -283,10 +326,6 @@ bool QueryGraphManager::Build(JoinOrderOptimizer &optimizer, LogicalOperator &op
 	BindFilterEndpoints();
 	// Build the predicate model after BindFilterEndpoints so that left_binding/right_binding are populated.
 	BuildPredicateModel();
-	BuildInnerCompanionSets();
-	// Create query_graph hyper edges from the normalized predicate model.
-	CreateHyperGraphEdges();
-	return true;
 }
 
 optional<RelationStats> QueryGraphManager::CombineRelationStats(const vector<ColumnBinding> &bindings,

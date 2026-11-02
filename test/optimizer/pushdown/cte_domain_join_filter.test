@@ -153,6 +153,46 @@ SELECT recursive_rows(),semi_joins();
 ----
 3000	0
 
+# Source eligibility uses standalone estimates of the complete join region.
+statement ok
+PRAGMA enable_profiling='json';
+
+query II
+WITH chosen AS MATERIALIZED (
+    SELECT p.id FROM person p JOIN (VALUES(3),(17),(51)) keys(id) USING(id)
+)
+SELECT count(*),sum(q.x) FROM chosen o JOIN plain_walk q ON o.id=q.id;
+----
+3	77
+
+statement ok
+PRAGMA disable_profiling;
+
+query II
+SELECT recursive_rows(),semi_joins();
+----
+9	1
+
+# A nonselective join source must retain all recursive partitions.
+statement ok
+PRAGMA enable_profiling='json';
+
+query II
+WITH chosen AS MATERIALIZED (
+    SELECT p.id FROM person p JOIN person keys USING(id)
+)
+SELECT count(*),sum(q.x) FROM chosen o JOIN plain_walk q ON o.id=q.id;
+----
+1000	501500
+
+statement ok
+PRAGMA disable_profiling;
+
+query II
+SELECT recursive_rows(),semi_joins();
+----
+3000	0
+
 # An independently observed materialized result cannot be restricted for just one reader.
 statement ok
 PRAGMA enable_profiling='json';
