@@ -176,6 +176,12 @@ struct CardinalityEstimatorState {
 	vector<RelationsSetToStats> relation_set_stats;
 	reference_map_t<JoinRelationSet, CardinalityHelper> relation_set_2_cardinality;
 	vector<optional_ptr<FilterInfo>> or_filters;
+	//! Whether a preserved-input estimate is being computed. Nested preserved bounds are skipped:
+	//! every bound spawns an estimate of a new relation subset, and subsets reached through nested
+	//! bounds multiply into exponentially many sets.
+	bool estimating_preserved_input = false;
+	//! Result slot for uncached preserved-input estimates.
+	CardinalityHelper preserved_input_estimate;
 };
 
 CardinalityEstimator::CardinalityEstimator(JoinRelationSetManager &set_manager,
@@ -503,6 +509,9 @@ double CardinalityEstimator::CalculateInnerJoinDenom(double base_denom, FilterIn
 optional<double> CardinalityEstimator::CalculateLeftPreservedDenom(JoinRelationSet &merged_relations,
                                                                    JoinRelationSet &inner_numerator,
                                                                    FilterInfoWithTotalDomains &filter) {
+	if (state->estimating_preserved_input) {
+		return optional<double>();
+	}
 	auto &predicate = filter.GetPredicate();
 	// The RHS of a LEFT predicate is its nullable side. The preserved input is the merged component
 	// without the nullable side and without nullable relations that attach through it: it can span
@@ -560,7 +569,9 @@ optional<double> CardinalityEstimator::CalculateLeftPreservedDenom(JoinRelationS
 	}
 	// lower-bound the output by the memoized estimate of the preserved input, expressed over the
 	// inner numerator so relations eliminated by SEMI/ANTI joins stay out of the numerator
+	state->estimating_preserved_input = true;
 	auto preserved_input_cardinality = GetCardinalityBeforeFilters(*preserved_set).cardinality_before_filters;
+	state->estimating_preserved_input = false;
 	// negated positive-form comparisons so a NaN cardinality or bound is rejected
 	if (!(preserved_input_cardinality > 0)) {
 		return optional<double>();
@@ -1103,6 +1114,12 @@ const CardinalityHelper &CardinalityEstimator::GetCardinalityBeforeFilters(JoinR
 		subgraph.numerator_relations = &denom.numerator_relations;
 		subgraph.denom = denom.denominator;
 		is_empty = GetSubgraphCardinality(subgraph) <= 0;
+	}
+	if (state->estimating_preserved_input) {
+		// computed without nested preserved bounds: keep it out of the cache so cached values stay
+		// bound-complete
+		state->preserved_input_estimate = CardinalityHelper(result, is_empty);
+		return state->preserved_input_estimate;
 	}
 	return state->relation_set_2_cardinality.emplace(new_set, CardinalityHelper(result, is_empty)).first->second;
 }

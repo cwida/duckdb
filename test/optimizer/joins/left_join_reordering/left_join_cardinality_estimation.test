@@ -222,3 +222,13 @@ select count(*) from red_a left join red_b on red_a.k = red_b.k join red_c on re
 statement ok
 SET disabled_optimizers='';
 
+
+# planning-time canary: every LEFT pair's preserved-input bound spawns an estimate of a new
+# relation subset, and nested bounds previously multiplied these into exponentially many sets
+# (seconds of planning at 16 pairs, growing ~6x per two pairs)
+
+statement ok
+create table t_planning as select i::INT k, (i%17)::INT v, (i%2)::INT g from range(100) r(i);
+
+statement ok
+explain select * from (t_planning a1 LEFT JOIN t_planning b1 ON a1.k=b1.k AND a1.v<b1.v) JOIN (t_planning a2 LEFT JOIN t_planning b2 ON a2.k=b2.k AND a2.v<b2.v) ON a1.g=a2.g JOIN (t_planning a3 LEFT JOIN t_planning b3 ON a3.k=b3.k AND a3.v<b3.v) ON a2.g=a3.g JOIN (t_planning a4 LEFT JOIN t_planning b4 ON a4.k=b4.k AND a4.v<b4.v) ON a3.g=a4.g JOIN (t_planning a5 LEFT JOIN t_planning b5 ON a5.k=b5.k AND a5.v<b5.v) ON a4.g=a5.g JOIN (t_planning a6 LEFT JOIN t_planning b6 ON a6.k=b6.k AND a6.v<b6.v) ON a5.g=a6.g JOIN (t_planning a7 LEFT JOIN t_planning b7 ON a7.k=b7.k AND a7.v<b7.v) ON a6.g=a7.g JOIN (t_planning a8 LEFT JOIN t_planning b8 ON a8.k=b8.k AND a8.v<b8.v) ON a7.g=a8.g JOIN (t_planning a9 LEFT JOIN t_planning b9 ON a9.k=b9.k AND a9.v<b9.v) ON a8.g=a9.g JOIN (t_planning a10 LEFT JOIN t_planning b10 ON a10.k=b10.k AND a10.v<b10.v) ON a9.g=a10.g JOIN (t_planning a11 LEFT JOIN t_planning b11 ON a11.k=b11.k AND a11.v<b11.v) ON a10.g=a11.g JOIN (t_planning a12 LEFT JOIN t_planning b12 ON a12.k=b12.k AND a12.v<b12.v) ON a11.g=a12.g JOIN (t_planning a13 LEFT JOIN t_planning b13 ON a13.k=b13.k AND a13.v<b13.v) ON a12.g=a13.g JOIN (t_planning a14 LEFT JOIN t_planning b14 ON a14.k=b14.k AND a14.v<b14.v) ON a13.g=a14.g JOIN (t_planning a15 LEFT JOIN t_planning b15 ON a15.k=b15.k AND a15.v<b15.v) ON a14.g=a15.g JOIN (t_planning a16 LEFT JOIN t_planning b16 ON a16.k=b16.k AND a16.v<b16.v) ON a15.g=a16.g;
