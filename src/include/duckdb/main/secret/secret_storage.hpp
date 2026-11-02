@@ -24,6 +24,7 @@ class Catalog;
 class CatalogSet;
 struct CatalogTransaction;
 class DatabaseInstance;
+class FileSystem;
 struct SecretMatch;
 struct SecretEntry;
 class SecretManager;
@@ -191,6 +192,8 @@ protected:
 
 	//! Set of persistent secrets that are lazily loaded
 	identifier_set_t persistent_secrets;
+	//! Unescaped file names that map to a different secret name, maps to the key in persistent_secrets
+	identifier_map_t<Identifier> legacy_secret_names;
 	//! Path that is searched for secrets;
 	string secret_path;
 };

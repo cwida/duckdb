@@ -233,8 +233,13 @@ LocalFileSecretStorage::LocalFileSecretStorage(SecretManager &manager, DatabaseI
 				string full_path = fs.JoinPath(secret_path, fname);
 
 				if (StringUtil::EndsWith(full_path, ".duckdb_secret")) {
-					string secret_name = SecretNameFromFileName(fname.substr(0, fname.size() - 14)); // size of file ext
+					string file_stem = fname.substr(0, fname.size() - 14); // size of file ext
+					string secret_name = SecretNameFromFileName(file_stem);
 					persistent_secrets.insert(Identifier(secret_name));
+					if (secret_name != file_stem) {
+						// the file may also be a legacy file, whose secret is named after the unescaped file name
+						legacy_secret_names.emplace(Identifier(file_stem), Identifier(secret_name));
+					}
 				}
 			});
 		}
@@ -246,8 +251,9 @@ LocalFileSecretStorage::LocalFileSecretStorage(SecretManager &manager, DatabaseI
 	}
 
 	auto &catalog = Catalog::GetSystemCatalog(db);
-	secrets = make_uniq<CatalogSet>(Catalog::GetSystemCatalog(db),
-	                                make_uniq<DefaultSecretGenerator>(catalog, manager, persistent_secrets));
+	secrets = make_uniq<CatalogSet>(
+	    Catalog::GetSystemCatalog(db),
+	    make_uniq<DefaultSecretGenerator>(catalog, manager, persistent_secrets, legacy_secret_names));
 }
 
 void CatalogSetSecretStorage::WriteSecret(const BaseSecret &secret, OnCreateConflict on_conflict) {
@@ -330,7 +336,8 @@ string LocalFileSecretStorage::SecretNameFromFileName(const string &file_name) {
 
 string LocalFileSecretStorage::SecretFilePath(FileSystem &fs, const string &secret_path, const string &secret_name) {
 	auto path = fs.JoinPath(secret_path, SecretFileName(secret_name));
-	// files written before names were escaped use the plain secret name, which is only safe for names without separators
+	// files written before names were escaped use the plain secret name, which is only safe for names without
+	// separators
 	if (secret_name.find_first_of(string("/\\:\0", 4)) != string::npos) {
 		return path;
 	}

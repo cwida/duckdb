@@ -758,22 +758,31 @@ vector<reference<SecretStorage>> SecretManager::GetSecretStorages() {
 }
 
 DefaultSecretGenerator::DefaultSecretGenerator(Catalog &catalog, SecretManager &secret_manager,
-                                               identifier_set_t &persistent_secrets)
-    : DefaultGenerator(catalog), secret_manager(secret_manager), persistent_secrets(persistent_secrets) {
+                                               identifier_set_t &persistent_secrets,
+                                               const identifier_map_t<Identifier> &legacy_secret_names)
+    : DefaultGenerator(catalog), secret_manager(secret_manager), persistent_secrets(persistent_secrets),
+      legacy_secret_names(legacy_secret_names) {
 }
 
 unique_ptr<CatalogEntry> DefaultSecretGenerator::CreateDefaultEntryInternal(const Identifier &entry_name) {
 	lock_guard<mutex> guard(lock);
 	auto secret_lu = persistent_secrets.find(Identifier(entry_name));
 	if (secret_lu == persistent_secrets.end()) {
-		return nullptr;
+		// a legacy file is named after its secret, which can look like an escaped name
+		auto legacy_lu = legacy_secret_names.find(entry_name);
+		if (legacy_lu == legacy_secret_names.end()) {
+			return nullptr;
+		}
+		secret_lu = persistent_secrets.find(legacy_lu->second);
+		if (secret_lu == persistent_secrets.end()) {
+			return nullptr;
+		}
 	}
 
 	auto &fs = FileSystem::GetLocal(catalog.GetDatabase());
 
 	string base_secret_path = secret_manager.PersistentSecretPath();
-	string secret_path =
-	    LocalFileSecretStorage::SecretFilePath(fs, base_secret_path, entry_name.GetIdentifierName());
+	string secret_path = LocalFileSecretStorage::SecretFilePath(fs, base_secret_path, entry_name.GetIdentifierName());
 
 	// Note each file should contain 1 secret
 	try {
