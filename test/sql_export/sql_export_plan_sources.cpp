@@ -1114,4 +1114,45 @@ TEST_CASE("VALUES preserves replacement dummy cardinality", "[sql_export][logica
 	connection.Rollback();
 }
 
+TEST_CASE("Trampoline export detects frontier loss through source replacement",
+          "[sql_export][logical_plan_sql_export][table_source_sql]") {
+	DuckDB db(nullptr);
+	Connection connection(db);
+	connection.BeginTransaction();
+	auto plan = OptimizeLogicalPlanExportQuery(
+	    connection, "WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS ((VALUES (1, 0)) "
+	                "BRANCH 1: (SELECT CASE WHEN n >= 1 THEN 0 ELSE 1 END, "
+	                "n + (SELECT count(*) FROM frontier.t)::INTEGER FROM t)) SELECT n FROM t");
+	// the only aggregate is the frontier count inside the branch
+	auto aggregate = FindLogicalPlanExportOperator(*plan, LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY);
+	REQUIRE(aggregate);
+
+	SECTION("unreplaced export keeps the frontier reference") {
+		auto exported = LogicalPlanSQLExporter::Export(*connection.context, *plan);
+		REQUIRE(exported.IsSuccess());
+		REQUIRE(exported.GetValue().query->ToString().find("frontier.") != string::npos);
+	}
+	SECTION("replacing the only frontier subtree fails the round contract") {
+		// an equivalent constant relation removes the last frontier reference from the
+		// exported text; re-binding it would silently drop lockstep rounds
+		Parser parser(*connection.context);
+		parser.ParseQuery("SELECT 1::BIGINT AS c");
+		vector<LogicalPlanSQLExportField> fields;
+		auto aggregate_bindings = aggregate->GetColumnBindings();
+		for (idx_t i = 0; i < aggregate->types.size(); i++) {
+			fields.push_back({aggregate_bindings[i], aggregate->types[i]});
+		}
+		LogicalPlanSQLExportRelation relation {std::move(parser.statements[0]->Cast<SelectStatement>().node),
+		                                       std::move(fields)};
+		vector<LogicalPlanSQLExportReplacement> replacements;
+		replacements.push_back({*aggregate, std::move(relation)});
+		auto result = LogicalPlanSQLExporter::ExportWithSources(*connection.context, *plan, replacements);
+		REQUIRE_FALSE(result.IsSuccess());
+		REQUIRE(result.GetIssues().size() == 1);
+		REQUIRE(result.GetIssues()[0].code == LogicalPlanVerificationIssueCode::UNSUPPORTED_EXPORT_FEATURE);
+		REQUIRE(result.GetIssues()[0].message.find("no frontier reference survived") != string::npos);
+	}
+	connection.Rollback();
+}
+
 } // namespace logical_plan_sql_export_test

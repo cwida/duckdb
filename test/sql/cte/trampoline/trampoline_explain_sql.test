@@ -36,4 +36,4 @@ EXPLAIN (SQL) WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
 )
 SELECT n FROM t;
 ----
-<REGEX>:.*no frontier reference survived optimization.*
+<REGEX>:.*no frontier reference survived in the exported SQL.*

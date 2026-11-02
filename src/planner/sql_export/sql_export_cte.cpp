@@ -10,6 +10,9 @@
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/common_table_expression_info.hpp"
 #include "duckdb/parser/tableref/basetableref.hpp"
+#include "duckdb/parser/tableref/subqueryref.hpp"
+#include "duckdb/parser/expression/subquery_expression.hpp"
+#include "duckdb/parser/parsed_expression_iterator.hpp"
 #include "duckdb/parser/query_node/select_node.hpp"
 #include "duckdb/parser/query_node/set_operation_node.hpp"
 #include "duckdb/planner/bound_expression_sql_exporter.hpp"
@@ -310,6 +313,36 @@ LogicalPlanSQLExportContext::ExportNamedProducer(LogicalOperator &op, const Logi
 	    {std::move(exported.GetValue()), NextRelationAlias()});
 }
 
+//! Detects a frontier.<name> reference in exported SQL, the tree as it will be re-bound:
+//! source replacements and optimized-away references leave no trace here.
+static void DetectExportedFrontierReference(QueryNode &node, const Identifier &name, bool &found) {
+	std::function<void(ParsedExpression &)> walk_expr = [&](ParsedExpression &expr) {
+		if (expr.GetExpressionClass() == ExpressionClass::SUBQUERY) {
+			auto &subquery = expr.Cast<SubqueryExpression>();
+			if (subquery.Subquery() && subquery.Subquery()->node) {
+				DetectExportedFrontierReference(*subquery.Subquery()->node, name, found);
+			}
+		}
+		ParsedExpressionIterator::EnumerateChildren(expr, walk_expr);
+	};
+	auto expr_cb = [&](unique_ptr<ParsedExpression> &child) {
+		if (child) {
+			walk_expr(*child);
+		}
+	};
+	// the iterator unfolds refs, subqueries, and CTE definitions itself and invokes the
+	// callback once per ref, so the callback only inspects
+	auto ref_cb = [&](TableRef &ref) {
+		if (ref.type == TableReferenceType::BASE_TABLE) {
+			auto &base = ref.Cast<BaseTableRef>();
+			if (base.GetQualifiedName().Schema() == Identifier("frontier") && base.Table() == name) {
+				found = true;
+			}
+		}
+	};
+	ParsedExpressionIterator::EnumerateQueryNodeChildren(node, expr_cb, ref_cb);
+}
+
 static void DetectFrontierWitness(const LogicalOperator &op, TableIndex cte_index, bool &found) {
 	if (op.type == LogicalOperatorType::LOGICAL_CTE_REF) {
 		auto &ref = op.Cast<LogicalCTERef>();
@@ -335,20 +368,6 @@ LogicalPlanSQLExportResult LogicalTrampoline::ExportSQLDefinition(LogicalPlanSQL
 	if (seed.HasError()) {
 		return LogicalPlanSQLExportResult::Failure(seed);
 	}
-	if (trampoline.reads_frontier) {
-		// the lockstep-round contract was fixed at binding; exporting SQL re-derives it
-		// from frontier references, so a plan whose last reference was optimized away
-		// cannot be represented faithfully
-		bool frontier_witness = false;
-		for (idx_t branch_idx = 1; branch_idx < trampoline.children.size(); branch_idx++) {
-			DetectFrontierWitness(*trampoline.children[branch_idx], trampoline.table_index, frontier_witness);
-		}
-		if (!frontier_witness) {
-			return LogicalPlanSQLExportResult::Failure({LogicalPlanSQLExportHelpers::PlanUnsupportedFeature(
-			    path, "trampoline_round_contract",
-			    "The trampoline requires lockstep rounds but no frontier reference survived optimization")});
-		}
-	}
 	auto query = make_uniq<TrampolineCTENode>();
 	query->ctename = name;
 	query->selector = LogicalPlanSQLExportHelpers::FieldIdentifier(trampoline.selector_idx);
@@ -372,6 +391,21 @@ LogicalPlanSQLExportResult LogicalTrampoline::ExportSQLDefinition(LogicalPlanSQL
 			return LogicalPlanSQLExportResult::Failure(branch);
 		}
 		query->branches.push_back(std::move(branch.GetValue().query));
+	}
+	if (trampoline.reads_frontier) {
+		// the lockstep-round contract was fixed at binding; re-binding the exported SQL
+		// re-derives it from frontier references, so the check runs on the exported text:
+		// optimization or a source replacement can remove the last reference, and silently
+		// re-binding without rounds would change scheduling observably
+		bool frontier_witness = false;
+		for (auto &branch_node : query->branches) {
+			DetectExportedFrontierReference(*branch_node, name, frontier_witness);
+		}
+		if (!frontier_witness) {
+			return LogicalPlanSQLExportResult::Failure({LogicalPlanSQLExportHelpers::PlanUnsupportedFeature(
+			    path, "trampoline_round_contract",
+			    "The trampoline requires lockstep rounds but no frontier reference survived in the exported SQL")});
+		}
 	}
 	return LogicalPlanSQLExportResult::Success({std::move(query), std::move(fields.GetValue())});
 }
