@@ -21,7 +21,7 @@ struct CompositeJoinPairStats;
 struct DenomInfo;
 struct DenominatorState;
 struct FilterInfoWithTotalDomains;
-struct LeftJoinDenomInfo;
+struct JoinDenomInfo;
 struct Subgraph2Denominator;
 
 class CardinalityEstimator {
@@ -70,13 +70,11 @@ private:
 	bool SingleColumnFilter(const FilterInfo &filter_info);
 
 	//! Denom calculation
-	double CalculateUpdatedDenom(Subgraph2Denominator left, Subgraph2Denominator right,
-	                             FilterInfoWithTotalDomains &filter);
+	JoinDenomInfo CalculateJoinDenomInfo(Subgraph2Denominator &left, Subgraph2Denominator &right,
+	                                     FilterInfoWithTotalDomains &filter);
 	double CalculateInnerJoinDenom(double base_denom, FilterInfoWithTotalDomains &filter);
-	LeftJoinDenomInfo CalculateLeftJoinDenomInfo(Subgraph2Denominator &left, Subgraph2Denominator &right,
-	                                             FilterInfoWithTotalDomains &filter);
-	double CalculateLeftJoinDenom(Subgraph2Denominator &left, Subgraph2Denominator &right,
-	                              FilterInfoWithTotalDomains &filter);
+	JoinDenomInfo CalculateLeftJoinDenomInfo(Subgraph2Denominator &left, Subgraph2Denominator &right,
+	                                         FilterInfoWithTotalDomains &filter);
 	double CalculateSemiAntiJoinDenom(Subgraph2Denominator &left, Subgraph2Denominator &right,
 	                                  FilterInfoWithTotalDomains &filter);
 	bool ApplyJoinIncrement(double &target_denom, FilterInfoWithTotalDomains &edge,
@@ -90,9 +88,6 @@ private:
 	                                reference_map_t<JoinRelationSet, CompositeJoinPairStats> &inner_join_pair_stats,
 	                                reference_set_t<JoinRelationSet> &capped_join_pairs);
 	double GetJoinPairCap(JoinRelationSet &join_pair);
-
-	JoinRelationSet &UpdateNumeratorRelations(Subgraph2Denominator left, Subgraph2Denominator right,
-	                                          FilterInfoWithTotalDomains &filter);
 
 	void AddRelationStats(const FilterInfo &filter_info);
 	bool EmptyFilter(const FilterInfo &filter_info);
