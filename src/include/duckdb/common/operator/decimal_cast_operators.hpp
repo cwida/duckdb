@@ -485,14 +485,14 @@ struct DecimalCastData {
 	StoreType result;
 	uint32_t width;
 	uint32_t scale;
-	uint8_t digit_count;
-	uint8_t decimal_count;
+	uint32_t digit_count;
+	uint32_t decimal_count;
 	//! Whether we have determined if the result should be rounded
 	bool round_set;
 	//! If the result should be rounded
 	bool should_round;
 	//! Only set when ALLOW_EXPONENT is enabled
-	uint8_t excessive_decimals;
+	uint32_t excessive_decimals;
 	ExponentType exponent_type;
 	StoreType limit;
 };
@@ -562,7 +562,7 @@ struct DecimalCastOperation {
 			// Everything beyond that amount needs to be truncated
 			if (decimal_excess > exponent) {
 				// We've allowed too many decimals
-				state.excessive_decimals = UnsafeNumericCast<uint8_t>(decimal_excess - exponent);
+				state.excessive_decimals = UnsafeNumericCast<uint32_t>(decimal_excess - exponent);
 				exponent = 0;
 			} else {
 				exponent -= decimal_excess;
@@ -660,7 +660,7 @@ struct DecimalCastOperation {
 		//  if we have not gotten exactly "scale" decimals, we need to multiply the result
 		//  e.g. if we have a string "1.0" that is cast to a DECIMAL(9,3), the value needs to be 1000
 		//  but we have only gotten the value "10" so far, so we multiply by 1000
-		for (uint8_t i = state.decimal_count; i < state.scale; i++) {
+		for (uint32_t i = state.decimal_count; i < state.scale; i++) {
 			state.result *= 10;
 		}
 		return WithinLimit<T, NEGATIVE>(state);

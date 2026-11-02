@@ -85,10 +85,6 @@
         "name": "scale",
         "type": "uint32_t"
       }
-    ],
-    "constructor": [
-      "width",
-      "scale"
     ]
   },
   {

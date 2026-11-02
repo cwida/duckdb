@@ -106,9 +106,9 @@ void DecimalTypeInfo::Serialize(Serializer &serializer) const {
 }
 
 unique_ptr<LogicalTypeInfo> DecimalTypeInfo::Deserialize(Deserializer &deserializer) {
-	auto width = deserializer.ReadPropertyWithDefault<uint32_t>(200, "width");
-	auto scale = deserializer.ReadPropertyWithDefault<uint32_t>(201, "scale");
-	auto result = duckdb::unique_ptr<DecimalTypeInfo>(new DecimalTypeInfo(width, scale));
+	auto result = duckdb::unique_ptr<DecimalTypeInfo>(new DecimalTypeInfo());
+	deserializer.ReadPropertyWithDefault<uint32_t>(200, "width", result->width);
+	deserializer.ReadPropertyWithDefault<uint32_t>(201, "scale", result->scale);
 	return std::move(result);
 }
 
