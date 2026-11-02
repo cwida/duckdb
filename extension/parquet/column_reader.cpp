@@ -785,7 +785,12 @@ void ColumnReader::DecompressInternal(CompressionCodec::type codec, const_data_p
 		throw InternalException("Parquet data unexpectedly uncompressed");
 	case CompressionCodec::GZIP: {
 		MiniZStream s;
-		s.Decompress(const_char_ptr_cast(src), src_size, char_ptr_cast(dst), dst_size);
+		auto remaining_size = s.Decompress(const_char_ptr_cast(src), src_size, char_ptr_cast(dst), dst_size);
+		if (remaining_size != 0) {
+			throw DataCorruptionException(
+			    "Failed to read file \"%s\": GZIP uncompressed data size mismatch (expected %d, actual: %d)",
+			    Reader().GetFileName(), dst_size, dst_size - remaining_size);
+		}
 		break;
 	}
 	case CompressionCodec::LZ4:
