@@ -397,9 +397,17 @@ bool BoundCastExpression::CastCanThrow(const LogicalType &source_type, const Log
 	if (source_type.IsNested() || target_type.IsNested()) {
 		return NestedCastCanThrow(source_type, target_type);
 	}
-	// Casting to DECIMAL overflows whenever the value does not fit in the width and scale, e.g. 100 -> DECIMAL(38,37)
+	// Casting to DECIMAL overflows whenever the value does not fit in the width and scale, e.g. 100 -> DECIMAL(38,37).
+	// It cannot overflow when the target keeps every integer and every fractional digit of the source, e.g.
+	// DECIMAL(7,2) -> DECIMAL(12,2) or INTEGER -> DECIMAL(12,2). A HUGEINT does not fit in any DECIMAL.
 	if (target_type.id() == LogicalTypeId::DECIMAL) {
-		return true;
+		uint8_t source_width, source_scale, target_width, target_scale;
+		if (source_type.id() == LogicalTypeId::HUGEINT || source_type.id() == LogicalTypeId::UHUGEINT ||
+		    !source_type.GetDecimalProperties(source_width, source_scale) ||
+		    !target_type.GetDecimalProperties(target_width, target_scale)) {
+			return true;
+		}
+		return target_scale < source_scale || target_width - target_scale < source_width - source_scale;
 	}
 	// Casting to a TIMESTAMP overflows for values outside of the timestamp range, even when widening the type,
 	// e.g. a DATE far in the future does not fit in a TIMESTAMP

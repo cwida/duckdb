@@ -32,6 +32,7 @@
 #include "duckdb/optimizer/remove_unused_columns.hpp"
 #include "duckdb/optimizer/row_group_pruner.hpp"
 #include "duckdb/optimizer/sampling_pushdown.hpp"
+#include "duckdb/optimizer/scalar_aggregate_merger.hpp"
 #include "duckdb/optimizer/scalar_fn_pushdown.hpp"
 #include "duckdb/optimizer/statistics_propagator.hpp"
 #include "duckdb/optimizer/aggregate_function_rewriter.hpp"
@@ -216,6 +217,12 @@ void Optimizer::RunBuiltInOptimizers() {
 	RunOptimizer(OptimizerType::CTE_INLINING, [&]() {
 		CTEInlining cte_inlining(*this);
 		plan = cte_inlining.Optimize(std::move(plan));
+	});
+
+	// computes sibling scalar aggregates over the same table(s) in one pass, while their predicates are still filters
+	RunOptimizer(OptimizerType::SCALAR_AGGREGATE_MERGE, [&]() {
+		ScalarAggregateMerger scalar_aggregate_merger(*this);
+		scalar_aggregate_merger.Optimize(plan);
 	});
 
 	// Rewrites AVG(x) -> SUM(x)/COUNT(x) and SUM(x+C) -> SUM(x) + C*COUNT(x)

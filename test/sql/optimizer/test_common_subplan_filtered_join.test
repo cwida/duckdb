@@ -2,6 +2,10 @@
 # description: Share common join inputs below differently filtered consumers
 # group: [optimizer]
 
+# the scalar aggregate merge would compute these sibling aggregates in one pass; keep them apart to test the sharing
+statement ok
+SET disabled_optimizers='scalar_aggregate_merge';
+
 statement ok
 CREATE TABLE shared_fact(k INTEGER, j INTEGER, v INTEGER);
 

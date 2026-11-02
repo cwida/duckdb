@@ -1084,10 +1084,17 @@ EXPLAIN SELECT (SELECT max(i) FROM integers)
 physical_plan	<!REGEX>:(?s).*(HAS_ERROR|has_error|TRY).*
 
 # protection: common subplans of plain subqueries are still extracted into a shared CTE
+# (the scalar aggregate merge would compute the two in one aggregate first; keep them apart here)
+statement ok
+SET disabled_optimizers='scalar_aggregate_merge'
+
 query II
 EXPLAIN SELECT (SELECT 10 // (max(i) - 1) FROM integers) AS a, (SELECT max(i) FROM integers) AS b
 ----
 physical_plan	<REGEX>:(?s).*common_subplan.*
+
+statement ok
+RESET disabled_optimizers
 
 # protection: TRY over plain expressions is unchanged
 query I

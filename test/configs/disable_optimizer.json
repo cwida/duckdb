@@ -5,6 +5,13 @@
   "inherit_skip_tests": "test/configs/stats_dependent_tests.json",
   "skip_tests": [
     {
+      "reason": "Checks the plans the scalar aggregate merge produces, and runs TPC-DS joins without a join order.",
+      "paths": [
+        "test/sql/optimizer/scalar_aggregate_merge.test",
+        "test/sql/optimizer/scalar_aggregate_merge_tpcds.test"
+      ]
+    },
+    {
       "reason": "Rejecting corrupt Parquet geometry statistics requires optimizer statistics propagation.",
       "paths": [
         "test/parquet/corrupt/geometry_add_wkb_type_oob.test"

@@ -11,6 +11,10 @@ statement ok
 CREATE TABLE plan_dim AS
 SELECT i::INTEGER AS k, (i % 2)::INTEGER AS bucket FROM range(10) t(i);
 
+# the scalar aggregate merge would compute these sibling aggregates in one pass; keep them apart to test the sharing
+statement ok
+SET disabled_optimizers='scalar_aggregate_merge';
+
 statement ok
 SET explain_output='optimized_only';
 
@@ -71,7 +75,7 @@ logical_opt	<REGEX>:.*"CTE".*CTE_SCAN.*CTE_SCAN.*CTE_SCAN.*__common_subplan_.*
 
 # The common filter may remain above the scan.
 statement ok
-SET disabled_optimizers='filter_pushdown';
+SET disabled_optimizers='filter_pushdown,scalar_aggregate_merge';
 
 query II
 EXPLAIN (FORMAT JSON) SELECT (SELECT sum(a) FROM plan_fact WHERE k < 5),
@@ -80,7 +84,7 @@ EXPLAIN (FORMAT JSON) SELECT (SELECT sum(a) FROM plan_fact WHERE k < 5),
 logical_opt	<REGEX>:.*"CTE".*CTE_SCAN.*CTE_SCAN.*__common_subplan_.*
 
 statement ok
-SET disabled_optimizers='';
+SET disabled_optimizers='scalar_aggregate_merge';
 
 # Different predicates must retain their own aggregate inputs.
 query II
