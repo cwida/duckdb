@@ -43,6 +43,7 @@
 #include "duckdb/function/built_in_functions.hpp"
 #include "duckdb/catalog/similar_catalog_entry.hpp"
 #include "duckdb/catalog/schema_scan_filters.hpp"
+#include "duckdb/catalog/entry_scan_filters.hpp"
 #include "duckdb/common/numeric_utils.hpp"
 #include "duckdb/planner/filter/expression_filter.hpp"
 #include "duckdb/storage/database_size.hpp"
@@ -1507,6 +1508,11 @@ bool SchemaScanFilters::Satisfies(ClientContext &context, optional_ptr<const Tab
 bool SchemaScanFilters::Accepts(ClientContext &context, const SchemaCatalogEntry &schema) const {
 	return Satisfies(context, schema_name, Value(schema.name.GetIdentifierName())) &&
 	       Satisfies(context, schema_oid, Value::BIGINT(NumericCast<int64_t>(schema.oid)));
+}
+
+bool EntryScanFilters::Accepts(ClientContext &context, const CatalogEntry &entry) const {
+	return SchemaScanFilters::Satisfies(context, name, Value(entry.name.GetIdentifierName())) &&
+	       SchemaScanFilters::Satisfies(context, oid, Value::BIGINT(NumericCast<int64_t>(entry.oid)));
 }
 
 vector<reference<SchemaCatalogEntry>> Catalog::GetSchemasForScan(ClientContext &context,

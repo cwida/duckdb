@@ -1,0 +1,190 @@
+# name: test/sql/function/generic/case_when_comparison.test
+# description: Test simple CASE with a comparison operator in WHEN
+# group: [generic]
+
+statement ok
+CREATE TABLE tbl AS SELECT * FROM (VALUES (-5), (0), (3), (NULL)) tbl(i)
+
+query II
+SELECT i, CASE i WHEN < 0 THEN 'negative'
+                 WHEN = 0 THEN 'zero'
+                          ELSE 'positive'
+          END
+FROM tbl
+ORDER BY i NULLS LAST
+----
+-5	negative
+0	zero
+3	positive
+NULL	positive
+
+query II
+SELECT i, CASE i WHEN = 0 THEN true ELSE false END
+FROM tbl
+ORDER BY i NULLS LAST
+----
+-5	false
+0	true
+3	false
+NULL	false
+
+query II
+SELECT i, CASE i WHEN == 0 THEN true ELSE false END
+FROM tbl
+ORDER BY i NULLS LAST
+----
+-5	false
+0	true
+3	false
+NULL	false
+
+query II
+SELECT i, CASE i WHEN != 0 THEN true ELSE false END
+FROM tbl
+ORDER BY i NULLS LAST
+----
+-5	true
+0	false
+3	true
+NULL	false
+
+query II
+SELECT i, CASE i WHEN <> 0 THEN true ELSE false END
+FROM tbl
+ORDER BY i NULLS LAST
+----
+-5	true
+0	false
+3	true
+NULL	false
+
+query II
+SELECT i, CASE i WHEN < 0 THEN true ELSE false END
+FROM tbl
+ORDER BY i NULLS LAST
+----
+-5	true
+0	false
+3	false
+NULL	false
+
+query II
+SELECT i, CASE i WHEN > 0 THEN true ELSE false END
+FROM tbl
+ORDER BY i NULLS LAST
+----
+-5	false
+0	false
+3	true
+NULL	false
+
+query II
+SELECT i, CASE i WHEN <= 0 THEN true ELSE false END
+FROM tbl
+ORDER BY i NULLS LAST
+----
+-5	true
+0	true
+3	false
+NULL	false
+
+query II
+SELECT i, CASE i WHEN >= 0 THEN true ELSE false END
+FROM tbl
+ORDER BY i NULLS LAST
+----
+-5	false
+0	true
+3	true
+NULL	false
+
+# operator and plain WHEN operands can be mixed, a plain operand means equality
+query II
+SELECT i, CASE i WHEN < 0 THEN 'negative' WHEN 0 THEN 'zero' WHEN >= 3 THEN 'large' END
+FROM tbl
+ORDER BY i NULLS LAST
+----
+-5	negative
+0	zero
+3	large
+NULL	NULL
+
+# the operand and the WHEN values can be arbitrary expressions
+query II
+SELECT i, CASE i * 2 WHEN > i + 1 THEN 'above' WHEN = (SELECT min(i) FROM tbl) * 2 THEN 'min' ELSE 'other' END
+FROM tbl
+ORDER BY i NULLS LAST
+----
+-5	min
+0	other
+3	above
+NULL	other
+
+query I
+SELECT CASE 'banana' WHEN < 'apple' THEN 'before' WHEN > 'apple' THEN 'after' END
+----
+after
+
+query I
+SELECT CASE DATE '2024-06-01' WHEN < DATE '2024-01-01' THEN 'old' WHEN >= DATE '2024-01-01' THEN 'new' END
+----
+new
+
+query I
+SELECT CASE 5 WHEN < -1 THEN 'negative' ELSE 'other' END
+----
+other
+
+query I
+SELECT CASE i WHEN < 0 THEN CASE i WHEN > -10 THEN 'small negative' END END
+FROM tbl
+WHERE i < 0
+----
+small negative
+
+statement ok
+PREPARE q AS SELECT CASE ? WHEN < 0 THEN 'negative' WHEN > 0 THEN 'positive' ELSE 'zero' END
+
+query I
+EXECUTE q(-1)
+----
+negative
+
+statement ok
+CREATE VIEW v AS SELECT i, CASE i WHEN < 0 THEN 'negative' ELSE 'other' END AS s FROM tbl
+
+query II
+SELECT * FROM v ORDER BY i NULLS LAST
+----
+-5	negative
+0	other
+3	other
+NULL	other
+
+# a comparison operator needs an operand to compare against
+statement error
+SELECT CASE WHEN < 0 THEN 'negative' END
+----
+Parser Error
+
+statement error
+SELECT CASE 1 WHEN < THEN 'negative' END
+----
+Parser Error
+
+# the value after the operator is a comparison operand, not a boolean expression
+statement error
+SELECT CASE 1 WHEN < 0 OR true THEN 'negative' END
+----
+Parser Error
+
+statement error
+SELECT CASE 1 WHEN < 0 < 1 THEN 'negative' END
+----
+Parser Error
+
+# a plain WHEN operand is still a full expression
+query I
+SELECT CASE true WHEN 0 < 1 THEN 'yes' END
+----
+yes

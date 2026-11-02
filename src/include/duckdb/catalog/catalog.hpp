@@ -47,7 +47,7 @@ struct CreateTypeInfo;
 struct CreateTableInfo;
 struct DatabaseSize;
 struct MetadataBlockInfo;
-struct SchemaScanFilters;
+class SchemaScanFilters;
 
 class AttachedDatabase;
 class ClientContext;

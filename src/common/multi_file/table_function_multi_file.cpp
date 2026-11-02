@@ -171,6 +171,14 @@ unique_ptr<BaseStatistics> TableFunctionUnionData::GetStatistics(ClientContext &
 	return nullptr;
 }
 
+unique_ptr<BaseStatistics> TableFunctionUnionData::GetVirtualColumnStatistics(ClientContext &context,
+                                                                              column_t virtual_column_id) {
+	if (!statistics || !bind_data) {
+		return nullptr;
+	}
+	return statistics(context, bind_data.get(), virtual_column_id);
+}
+
 shared_ptr<BaseUnionData> TableFunctionFileReader::GetUnionData(idx_t file_idx) {
 	auto result = make_shared_ptr<TableFunctionUnionData>(file);
 	result->names = IdentifiersToStrings(names);
@@ -597,6 +605,11 @@ void TableFunctionMultiFileWrapper::FinalizeBindData(MultiFileBindData &multi_fi
 		// the cardinality estimate comes from the first file - keep it, as a filter pushdown can prune that file's
 		// reader before the optimizer asks for the estimate
 		data.cardinality = multi_file_data.initial_reader->Cast<TableFunctionFileReader>().GetCardinality();
+		if (multi_file_data.union_readers.empty()) {
+			auto file = multi_file_data.initial_reader->GetUnionData(0);
+			file->reader.reset();
+			multi_file_data.union_readers.push_back(std::move(file));
+		}
 	}
 	if (!multi_file_data.file_options.schema.empty()) {
 		// the schema was given up front, so BindReader never ran to find out whether the scan reads several files
@@ -813,16 +826,19 @@ vector<PartitionStatistics> TableFunctionMultiFileWrapper::GetPartitionStats(Cli
                                                                              GetPartitionStatsInput &input) {
 	vector<PartitionStatistics> result;
 	auto &bind_data = input.bind_data->Cast<MultiFileBindData>();
-	if (bind_data.file_list->GetExpandResult() != FileExpandResult::SINGLE_FILE || !bind_data.initial_reader) {
+	if (bind_data.file_list->GetExpandResult() != FileExpandResult::SINGLE_FILE ||
+	    bind_data.union_readers.size() != 1) {
 		return result;
 	}
-	auto &reader = bind_data.initial_reader->Cast<TableFunctionFileReader>();
-	auto &function = reader.GetFunction();
-	if (!function.get_partition_stats || !reader.bind_data) {
+	auto &file = bind_data.union_readers[0]->Cast<TableFunctionUnionData>();
+	DynamicCastCheck<TableFunctionMultiFileWrapper>(bind_data.interface.get());
+	auto &wrapper = static_cast<const TableFunctionMultiFileWrapper &>(*bind_data.interface);
+	auto &function = wrapper.function;
+	if (!function.get_partition_stats || !file.bind_data) {
 		return result;
 	}
 	BoundTableFunction bound_function(function);
-	GetPartitionStatsInput file_input(bound_function, reader.bind_data.get());
+	GetPartitionStatsInput file_input(bound_function, file.bind_data.get());
 	return function.get_partition_stats(context, file_input);
 }
 

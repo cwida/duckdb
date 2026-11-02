@@ -27,7 +27,7 @@
 
 namespace duckdb {
 
-TaskScheduler::TaskScheduler(DatabaseInstance &db) : db(db) {
+TaskScheduler::TaskScheduler(DatabaseInstance &db) : db(db), relaunch_requested(true) {
 	for (uint8_t i = 0; i < TASK_SCHEDULER_TYPE_COUNT; i++) {
 		pools[i] = make_uniq<TaskSchedulerPool>(db, static_cast<TaskSchedulerType>(i));
 		queues[i] = make_uniq<TaskSchedulerQueue>(static_cast<TaskSchedulerType>(i));
@@ -93,6 +93,7 @@ TaskSchedulerQueue &TaskScheduler::GetQueue(TaskSchedulerType pool_type) const {
 
 void TaskScheduler::SetThreadsInternal(TaskSchedulerType pool_type, idx_t n) {
 	GetPool(pool_type).SetThreads(n);
+	relaunch_requested = true;
 }
 
 void TaskScheduler::ScheduleTask(ProducerToken &token, shared_ptr<Task> task, TaskSchedulerType pool_type) {
@@ -510,7 +511,11 @@ idx_t TaskScheduler::GetEstimatedCPUId() {
 }
 
 void TaskScheduler::RelaunchThreads() {
+	if (!relaunch_requested) {
+		return;
+	}
 	lock_guard<mutex> t(thread_lock);
+	relaunch_requested = false;
 	for (auto &pool : pools) {
 		pool->RelaunchThreads(*this, false);
 	}
