@@ -223,7 +223,7 @@ private:
 class DefaultSecretGenerator : public DefaultGenerator {
 public:
 	DefaultSecretGenerator(Catalog &catalog, SecretManager &secret_manager, identifier_set_t &persistent_secrets,
-	                       const identifier_map_t<Identifier> &legacy_secret_names);
+	                       shared_ptr<PersistentSecretFiles> files);
 
 public:
 	unique_ptr<CatalogEntry> CreateDefaultEntry(CatalogTransaction transaction, const Identifier &entry_name) override;
@@ -239,7 +239,7 @@ protected:
 	SecretManager &secret_manager;
 	mutex lock;
 	identifier_set_t persistent_secrets;
-	identifier_map_t<Identifier> legacy_secret_names;
+	shared_ptr<PersistentSecretFiles> files;
 };
 
 } // namespace duckdb

@@ -759,30 +759,25 @@ vector<reference<SecretStorage>> SecretManager::GetSecretStorages() {
 
 DefaultSecretGenerator::DefaultSecretGenerator(Catalog &catalog, SecretManager &secret_manager,
                                                identifier_set_t &persistent_secrets,
-                                               const identifier_map_t<Identifier> &legacy_secret_names)
+                                               shared_ptr<PersistentSecretFiles> files_p)
     : DefaultGenerator(catalog), secret_manager(secret_manager), persistent_secrets(persistent_secrets),
-      legacy_secret_names(legacy_secret_names) {
+      files(std::move(files_p)) {
 }
 
 unique_ptr<CatalogEntry> DefaultSecretGenerator::CreateDefaultEntryInternal(const Identifier &entry_name) {
 	lock_guard<mutex> guard(lock);
 	auto secret_lu = persistent_secrets.find(Identifier(entry_name));
 	if (secret_lu == persistent_secrets.end()) {
-		// a legacy file is named after its secret, which can look like an escaped name
-		auto legacy_lu = legacy_secret_names.find(entry_name);
-		if (legacy_lu == legacy_secret_names.end()) {
-			return nullptr;
-		}
-		secret_lu = persistent_secrets.find(legacy_lu->second);
-		if (secret_lu == persistent_secrets.end()) {
-			return nullptr;
-		}
+		return nullptr;
 	}
 
 	auto &fs = FileSystem::GetLocal(catalog.GetDatabase());
 
-	string base_secret_path = secret_manager.PersistentSecretPath();
-	string secret_path = LocalFileSecretStorage::SecretFilePath(fs, base_secret_path, entry_name.GetIdentifierName());
+	// the file that was found for this secret, as the file name does not always identify the secret
+	string secret_path = files->Get(entry_name);
+	if (secret_path.empty()) {
+		return nullptr;
+	}
 
 	// Note each file should contain 1 secret
 	try {
@@ -808,6 +803,7 @@ unique_ptr<CatalogEntry> DefaultSecretGenerator::CreateDefaultEntryInternal(cons
 			// Finally: we remove the default entry from the persistent_secrets, otherwise we aren't able to drop it
 			// later
 			persistent_secrets.erase(secret_lu);
+			files->Set(entry->secret->secret->GetName(), secret_path);
 
 			return std::move(entry);
 		}
