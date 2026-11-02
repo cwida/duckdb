@@ -1,0 +1,40 @@
+# name: test/sql/cte/trampoline/trampoline_member_limit.test
+# description: Operators above a UNION in a branch apply once per wave, not once per union arm
+# group: [trampoline]
+
+# A branch body consisting of a UNION ALL decomposes into one pipeline per arm. Operators above
+# the union (e.g. STREAMING_LIMIT) are shared between those pipelines, and their global state must
+# follow the shared lifecycle: invalidated once per wave, initialized after dependencies. The wave
+# executor picks the inline schedule for small single-worker waves and the event schedule for large
+# ones, so both paths are exercised through the thread settings and wave sizes below.
+
+foreach threads 1 8
+
+statement ok
+SET threads=${threads};
+
+# branch-level LIMIT over a UNION ALL of two wave scans: one routed row per wave
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 1))
+	BRANCH 1: (SELECT CASE WHEN n < 3 THEN 1 ELSE 0 END, n + 1 FROM t
+	           UNION ALL
+	           SELECT CASE WHEN n < 3 THEN 1 ELSE 0 END, n + 1 FROM t
+	           LIMIT 1)
+) SELECT n FROM t ORDER BY n;
+----
+4
+
+# a large wave takes the event schedule: the shared limit still applies once per wave
+query II
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(SELECT 1, 0 FROM range(50000))
+	BRANCH 1: (SELECT CASE WHEN n < 2 THEN 1 ELSE 0 END, n + 1 FROM t
+	           UNION ALL
+	           SELECT CASE WHEN n < 2 THEN 1 ELSE 0 END, n + 1 FROM t
+	           LIMIT 1)
+) SELECT count(*), max(n) FROM t;
+----
+1	3
+
+endloop
