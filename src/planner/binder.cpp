@@ -286,6 +286,14 @@ bool Binder::IsInsideSubquery() const {
 	return inside_subquery;
 }
 
+void Binder::SetBindingIndexKey(bool binding_index_key_p) {
+	binding_index_key = binding_index_key_p;
+}
+
+bool Binder::IsBindingIndexKey() const {
+	return binding_index_key;
+}
+
 void Binder::SetBindingTrySubquery() {
 	binding_try_subquery = true;
 }

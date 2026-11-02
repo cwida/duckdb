@@ -351,6 +351,9 @@ struct RangeDateTimeLocalState : public LocalTableFunctionState {
 	bool greater_than_check;
 
 	bool empty_range = false;
+	//! Whether the next step went past the timestamp range, which ends the series also when the end lies below
+	//! -infinity, as INT64_MIN does
+	bool past_range = false;
 
 	bool Finished(timestamp_t current_value) const {
 		if (greater_than_check) {
@@ -444,6 +447,7 @@ static OperatorResultType RangeDateTimeFunction(ExecutionContext &context, Table
 			GenerateRangeDateTimeParameters<GENERATE_SERIES>(input, state.current_input_row, state);
 			state.initialized_row = true;
 			state.current_state = state.start;
+			state.past_range = false;
 			if (state.global_state) {
 				state.global_state->Initialize(state.start, state.end);
 			}
@@ -457,7 +461,7 @@ static OperatorResultType RangeDateTimeFunction(ExecutionContext &context, Table
 		idx_t size = 0;
 		auto result_data = FlatVector::ScatterWriter<timestamp_t>(output.data[0]);
 		while (true) {
-			if (state.Finished(state.current_state)) {
+			if (state.past_range || state.Finished(state.current_state)) {
 				break;
 			}
 			if (size >= STANDARD_VECTOR_SIZE) {
@@ -469,6 +473,7 @@ static OperatorResultType RangeDateTimeFunction(ExecutionContext &context, Table
 			                                                                     state.current_state)) {
 				// the next value is outside of the timestamp range: the series ends here
 				state.current_state = state.greater_than_check ? timestamp_t::infinity() : timestamp_t::ninfinity();
+				state.past_range = true;
 			}
 		}
 		if (size == 0) {

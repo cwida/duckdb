@@ -184,9 +184,21 @@ bool Linenoise::CompleteLine(KeyPress &next_key) {
 				common_len = j;
 			}
 			if (common_len > (idx_t)len) {
-				// there is a common prefix longer than the current input - apply it
-				int nwritten = snprintf(buf, buflen, "%.*s", (int)common_len, first.c_str());
-				pos = nwritten;
+				// There is a common prefix longer than the current input - apply it.
+				// The completions only cover the text before the cursor, so keep the text
+				// after the cursor instead of truncating the line at the common prefix.
+				string suffix(buf + pos, len - pos);
+				idx_t suffix_start = first.size() - suffix.size();
+				idx_t suffix_copied = 0;
+				if (common_len > suffix_start) {
+					suffix_copied = MinValue<idx_t>(common_len - suffix_start, suffix.size());
+				}
+				int nwritten =
+				    snprintf(buf, buflen, "%.*s%s", (int)common_len, first.c_str(), suffix.c_str() + suffix_copied);
+				if (nwritten > (int)buflen - 1) {
+					nwritten = buflen - 1;
+				}
+				pos = MinValue<idx_t>(common_len, nwritten);
 				len = nwritten;
 			}
 			completion_idx = optional_idx();

@@ -298,24 +298,18 @@ struct FirstVectorFunction : FirstFunctionStringBase<LAST, SKIP_NULLS> {
 
 	static void Update(Vector inputs[], AggregateInputData &input_data, idx_t, Vector &state_vector, idx_t count) {
 		auto &input = inputs[0];
-		UnifiedVectorFormat idata;
-		input.ToUnifiedFormat(idata);
 
 		UnifiedVectorFormat sdata;
 		state_vector.ToUnifiedFormat(sdata);
+		auto states = UnifiedVectorFormat::GetData<STATE *>(sdata);
 
+		// Gather the rows that can still be assigned before touching the input: reading the values can be expensive
+		// (a shredded VARIANT has to be materialized), while in a grouped aggregate the states are typically set
+		// after the first few chunks, leaving nothing to do.
 		sel_t assign_sel[STANDARD_VECTOR_SIZE];
 		idx_t assign_count = 0;
-
-		auto states = UnifiedVectorFormat::GetData<STATE *>(sdata);
 		for (idx_t i = 0; i < count; i++) {
-			const auto idx = idata.sel->get_index(i);
-			bool is_null = !idata.validity.RowIsValid(idx);
-			if (SKIP_NULLS && is_null) {
-				continue;
-			}
-			auto &state = *states[sdata.sel->get_index(i)];
-			if (!LAST && state.is_set) {
+			if (!LAST && states[sdata.sel->get_index(i)]->is_set) {
 				continue;
 			}
 			assign_sel[assign_count++] = NumericCast<sel_t>(i);
@@ -324,6 +318,9 @@ struct FirstVectorFunction : FirstFunctionStringBase<LAST, SKIP_NULLS> {
 			// fast path - nothing to set
 			return;
 		}
+
+		UnifiedVectorFormat idata;
+		input.ToUnifiedFormat(idata);
 
 		Vector sort_key(LogicalType::BLOB);
 		OrderModifiers modifiers(OrderType::ASCENDING, OrderByNullType::NULLS_LAST);
@@ -339,14 +336,18 @@ struct FirstVectorFunction : FirstFunctionStringBase<LAST, SKIP_NULLS> {
 
 		// now assign sort keys
 		for (idx_t i = 0; i < assign_count; i++) {
+			const auto idx = idata.sel->get_index(assign_sel[i]);
+			bool is_null = !idata.validity.RowIsValid(idx);
+			if (SKIP_NULLS && is_null) {
+				continue;
+			}
+
 			const auto state_idx = sdata.sel->get_index(assign_sel[i]);
 			auto &state = *states[state_idx];
 			if (!LAST && state.is_set) {
 				continue;
 			}
 
-			const auto idx = idata.sel->get_index(assign_sel[i]);
-			bool is_null = !idata.validity.RowIsValid(idx);
 			FirstFunctionStringBase<LAST, SKIP_NULLS>::template SetValue<STATE>(state, input_data, sort_key_data[i],
 			                                                                    is_null);
 		}

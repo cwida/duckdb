@@ -1,5 +1,6 @@
 #include "json_reader.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/query_profiler.hpp"
 
 #include <utility>
 
@@ -44,6 +45,9 @@ void JSONFileHandle::Reset() {
 	last_read_requested = false;
 	if (IsOpen() && !IsPipe()) {
 		file_handle->Reset();
+		compressed_bytes_counted = 0;
+		// the file is read again from the start
+		stored_bytes_untaken = 0;
 	}
 }
 
@@ -118,6 +122,7 @@ void JSONFileHandle::ReadAtPosition(char *pointer, idx_t size, idx_t position,
 	if (size != 0) {
 		auto &handle = override_handle ? *override_handle.get() : *file_handle.get();
 		handle.Read(context, pointer, size, position);
+		stored_bytes_untaken += size;
 	}
 
 	const auto incremented_actual_reads = ++actual_reads;
@@ -157,6 +162,10 @@ bool JSONFileHandle::Read(char *pointer, idx_t &read_size, idx_t requested_size)
 	return true;
 }
 
+idx_t JSONFileHandle::TakeStoredBytesRead() {
+	return stored_bytes_untaken.exchange(0);
+}
+
 idx_t JSONFileHandle::ReadInternal(char *pointer, const idx_t requested_size) {
 	// Deal with reading from pipes
 	idx_t total_read_size = 0;
@@ -166,6 +175,15 @@ idx_t JSONFileHandle::ReadInternal(char *pointer, const idx_t requested_size) {
 			break;
 		}
 		total_read_size += read_size;
+	}
+	if (compressed) {
+		// measured from what was counted before rather than from before this read, so the bytes consumed when the
+		// file was opened (e.g. a gzip header) count towards the first read
+		const auto stored_position = file_handle->GetProgress();
+		stored_bytes_untaken += stored_position - compressed_bytes_counted;
+		compressed_bytes_counted = stored_position;
+	} else {
+		stored_bytes_untaken += total_read_size;
 	}
 	return total_read_size;
 }
@@ -1127,6 +1145,18 @@ void JSONReader::FinalizeBuffer(JSONReaderScanState &scan_state) {
 	}
 	// then finalize the buffer
 	FinalizeBufferInternal(scan_state, scan_state.read_buffer, scan_state.buffer_index.GetIndex());
+}
+
+void JSONReader::CountBytesScanned() {
+	if (!scanning || !HasFileHandle()) {
+		return;
+	}
+	auto bytes = GetFileHandle().TakeStoredBytesRead();
+	if (bytes == 0) {
+		return;
+	}
+	bytes_scanned_unreported += bytes;
+	QueryProfiler::Get(context).TrackBytesScanned(bytes);
 }
 
 bool JSONReader::ReadNextBuffer(JSONReaderScanState &scan_state) {

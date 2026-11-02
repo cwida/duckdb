@@ -35,10 +35,12 @@ void RollbackState::RollbackEntry(UndoFlags type, data_ptr_t data) {
 		info->table->GetStorage().RevertAppend(transaction, info->start_row, info->count);
 		break;
 	}
-	case UndoFlags::DELETE_TUPLE: {
+	case UndoFlags::DELETE_TUPLE:
+	case UndoFlags::UPDATE_ROWS: {
 		auto info = reinterpret_cast<DeleteInfo *>(data);
-		// reset the deleted flag on rollback
-		info->version_info->CommitDelete(info->vector_idx, NOT_DELETED_ID, *info);
+		// the rows fall back to the ids they held before the delete or update
+		info->version_info->RollbackWrite(info->vector_idx, info->GetStoredRows(), info->count, info->GetPreviousIds(),
+		                                  info->previous_id_count);
 		break;
 	}
 	case UndoFlags::UPDATE_TUPLE: {

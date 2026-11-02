@@ -1,0 +1,78 @@
+# name: test/sql/parallelism/interquery/rollback_update_race.test_slow
+# description: An update racing the rollback of a vector's writer leaves no ids of the rolled back writer
+# group: [interquery]
+
+load {TEST_DIR}/rollback_update_race.db
+
+statement ok
+SET debug_skip_checkpoint_on_commit = true
+
+loop attempt 0 3
+
+statement ok
+CREATE OR REPLACE TABLE t AS SELECT i AS id, 0 AS a FROM range(2048) t(i)
+
+statement ok
+CREATE OR REPLACE TABLE w AS SELECT i AS id FROM range(1000000) t(i)
+
+statement ok
+CHECKPOINT
+
+concurrentloop threadid 0 2
+
+# thread 0 writes all rows of the vector in two updates, with many undo entries in between to widen the rollback
+onlyif threadid=0
+statement ok
+BEGIN
+
+onlyif threadid=0
+statement ok
+UPDATE t SET a = 1 WHERE id < 1000
+
+onlyif threadid=0
+statement ok
+DELETE FROM w WHERE id % 2 = 0
+
+onlyif threadid=0
+statement ok
+UPDATE t SET a = 1 WHERE id >= 1000
+
+# both threads sleep, so thread 1 wakes first, once the updates of thread 0 are in place
+sleep 1 second
+
+onlyif threadid=0
+statement ok
+ROLLBACK
+
+# thread 1 updates a row as soon as the rollback of the second update releases it
+loop i 0 2000
+
+onlyif threadid=1
+statement maybe
+UPDATE t SET a = 2 WHERE id = 1500
+----
+Conflict on update
+
+endloop
+
+endloop
+
+statement ok
+UPDATE t SET a = 2 WHERE id = 1500
+
+# once the update is compressed away, the rows hold no id of the rolled back transaction
+statement ok
+CHECKPOINT
+
+statement ok
+UPDATE t SET a = 3 WHERE id = 5
+
+statement ok
+DELETE FROM t WHERE id = 6
+
+query II
+SELECT count(*), sum(a) FROM t
+----
+2047	5
+
+endloop

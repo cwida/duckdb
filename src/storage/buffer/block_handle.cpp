@@ -206,7 +206,7 @@ BufferHandle BlockHandle::LoadFromBuffer(BlockLock &l, data_ptr_t data, unique_p
 	memcpy(block->InternalBuffer(), data, block->AllocSize());
 	memory.GetBuffer() = std::move(block);
 	memory.SetState(BlockState::BLOCK_LOADED);
-	memory.SetReaders(l, 1);
+	memory.IncrementReaders(l);
 	memory.GetMemoryCharge() = std::move(reservation);
 	return BufferHandle(shared_from_this(), memory.GetBuffer());
 }
@@ -236,7 +236,7 @@ BufferHandle BlockHandle::Load(BlockLock &l, QueryContext context, unique_ptr<Fi
 		buffer = buffer_manager.ReadTemporaryBuffer(context, memory.GetMemoryTag(), *this, std::move(reusable_buffer));
 	}
 	memory.SetState(BlockState::BLOCK_LOADED);
-	memory.SetReaders(l, 1);
+	memory.IncrementReaders(l);
 	return BufferHandle(shared_from_this(), memory.GetBuffer());
 }
 
