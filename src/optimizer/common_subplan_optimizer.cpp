@@ -825,7 +825,6 @@ private:
 		unique_ptr<LogicalOperator> &parent;
 		const idx_t depth;
 		arena_ptr<PlanSignature> signature;
-		bool expressions_are_movable = false;
 	};
 
 	struct StackNode {
@@ -1231,17 +1230,17 @@ public:
 	}
 
 private:
-	bool CanCombineAggregateOutputs(unique_ptr<LogicalOperator> &op) {
-		if (op->type != LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY ||
-		    !operator_infos.at(op).expressions_are_movable) {
+	static bool CanCombineAggregateOutputs(const LogicalOperator &op) {
+		if (op.type != LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY) {
 			return false;
 		}
-		auto &aggregate = op->Cast<LogicalAggregate>();
+		auto &aggregate = op.Cast<LogicalAggregate>();
 		if (!aggregate.groups.empty() || !aggregate.grouping_sets.empty() || !aggregate.grouping_functions.empty()) {
 			return false;
 		}
 		for (const auto &expression : aggregate.expressions) {
-			if (!CanCombineAggregateState(expression->Cast<BoundAggregateExpression>())) {
+			if (!CanShareSubplanExpression(*expression) ||
+			    !CanCombineAggregateState(expression->Cast<BoundAggregateExpression>())) {
 				return false;
 			}
 		}
@@ -1249,7 +1248,7 @@ private:
 	}
 
 	void RegisterAggregateBindings(unique_ptr<LogicalOperator> &op) {
-		if (!CanCombineAggregateOutputs(op)) {
+		if (!CanCombineAggregateOutputs(*op)) {
 			return;
 		}
 		auto &aggregate = op->Cast<LogicalAggregate>();
@@ -1280,10 +1279,6 @@ private:
 
 	arena_ptr<PlanSignature> CreatePlanSignature(unique_ptr<LogicalOperator> &op) {
 		vector<reference<PlanSignature>> child_signatures;
-		auto &movable = operator_infos.at(op).expressions_are_movable;
-		movable = true;
-		LogicalOperatorVisitor::EnumerateExpressions(
-		    *op, [&](unique_ptr<Expression> *expr) { movable &= CanShareSubplanExpression(**expr); });
 		for (auto &child : op->children) {
 			auto it = operator_infos.find(child);
 			D_ASSERT(it != operator_infos.end());
@@ -1291,22 +1286,8 @@ private:
 				return nullptr; // Failed to create signature from one of the children
 			}
 			child_signatures.emplace_back(*it->second.signature);
-			movable &= it->second.expressions_are_movable;
 		}
-		if (op->type == LogicalOperatorType::LOGICAL_GET) {
-			auto &get = op->Cast<LogicalGet>();
-			auto check_filter = [&](const TableFilter &filter) {
-				auto &expression_filter = ExpressionFilter::GetExpressionFilter(filter, "CommonSubplanOptimizer");
-				movable &= CanShareSubplanExpression(*expression_filter.expr);
-			};
-			for (auto &entry : get.table_filters) {
-				check_filter(entry.Filter());
-			}
-			for (auto &filter : get.table_filters.GetMultiColumnFilters()) {
-				check_filter(*filter);
-			}
-		}
-		if (CanCombineAggregateOutputs(op)) {
+		if (CanCombineAggregateOutputs(*op)) {
 			// Ungrouped aggregates share one row domain; their expressions identify expandable output columns.
 			auto expressions = std::move(op->expressions);
 			auto signature = PlanSignature::Create(state, *op, std::move(child_signatures));

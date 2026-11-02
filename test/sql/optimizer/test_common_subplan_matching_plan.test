@@ -112,13 +112,27 @@ UNION ALL SELECT len(list(a)) FROM plan_fact;
 ----
 logical_opt	<REGEX>:.*"CTE".*CTE_SCAN.*CTE_SCAN.*__common_subplan_.*
 
-# Generic expression safety rejects even a guarded throwing argument.
+# Throwing aggregate arguments remain ineligible.
 statement ok
 CREATE TABLE throwing_input AS SELECT i AS k, CASE WHEN i < 5 THEN i::VARCHAR ELSE 'invalid' END AS v FROM range(10) t(i);
 
 query II
 EXPLAIN (FORMAT JSON) SELECT (SELECT sum(v::INTEGER) FROM throwing_input WHERE k < 5),
                             (SELECT max(v::INTEGER) FROM throwing_input WHERE k < 5);
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+# Matching input filters are not broadened when combining aggregate outputs.
+query II
+EXPLAIN (FORMAT JSON) SELECT (SELECT sum(k) FROM throwing_input WHERE CASE WHEN k < 5 THEN v::INTEGER ELSE -1 END >= 0),
+                            (SELECT max(k) FROM throwing_input WHERE CASE WHEN k < 5 THEN v::INTEGER ELSE -1 END >= 0);
+----
+logical_opt	<REGEX>:.*"CTE".*"AGGREGATE".*CTE_SCAN.*CTE_SCAN.*__common_subplan_.*
+
+# Fallibility of the aggregate itself also prevents combining outputs.
+query II
+EXPLAIN (FORMAT JSON) SELECT (SELECT sum_no_overflow(b) FROM plan_fact WHERE k < 5),
+                            (SELECT max(b) FROM plan_fact WHERE k < 5);
 ----
 logical_opt	<!REGEX>:.*__common_subplan_.*
 

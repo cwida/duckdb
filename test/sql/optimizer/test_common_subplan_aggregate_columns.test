@@ -97,6 +97,23 @@ EXECUTE scan_columns_p(5, 5, 5);
 ----
 5	7	100
 
+# Sharing aggregates preserves the common input's guarded cast.
+statement ok
+CREATE TABLE guarded_input AS
+SELECT i AS k, CASE WHEN i < 5 THEN i::VARCHAR ELSE 'invalid' END AS v FROM range(10) t(i);
+
+query II
+SELECT (SELECT sum(k) FROM guarded_input WHERE CASE WHEN k < 5 THEN v::INTEGER ELSE -1 END >= 0),
+       (SELECT max(k) FROM guarded_input WHERE CASE WHEN k < 5 THEN v::INTEGER ELSE -1 END >= 0);
+----
+10	4
+
+statement error
+SELECT (SELECT sum(k) FROM guarded_input WHERE v::INTEGER >= 0),
+       (SELECT max(k) FROM guarded_input WHERE v::INTEGER >= 0);
+----
+Could not convert string 'invalid'
+
 # Repeated projections retain their results without sharing bare scans.
 query RR
 SELECT sum(x), avg(x)
