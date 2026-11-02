@@ -323,6 +323,59 @@ EXPLAIN SELECT DISTINCT a.k FROM n a, n b WHERE a.k = b.k AND a.x <> b.x
 ----
 physical_plan	<!REGEX>:[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*
 
+# ---- DISTINCT ON passes the columns it does not deduplicate on through by position: they all count as read -------
+
+statement ok
+CREATE TABLE t (k INTEGER, x INTEGER);
+
+statement ok
+INSERT INTO t VALUES (1, 10), (1, 20);
+
+# first with the optimizer off, then on
+loop i 0 2
+
+statement ok
+SET disabled_optimizers = CASE WHEN {i} = 0 THEN 'self_join_aggregate' ELSE '' END;
+
+# a non-key column is passed through: the join stays and the row keeps its values
+query III
+SELECT DISTINCT ON (a.k) a.k, b.k, a.x IS NULL FROM t a, t b WHERE a.k = b.k AND a.x <> b.x ORDER BY a.k
+----
+1	1	false
+
+# only keys are passed through: the second key copy comes from the group-by
+query II
+SELECT DISTINCT ON (a.k) a.k, b.k FROM t a, t b WHERE a.k = b.k AND a.x <> b.x ORDER BY a.k
+----
+1	1
+
+query II
+SELECT DISTINCT ON (a.k) a.k, b.k FROM n a, n b WHERE a.k = b.k AND a.x <> b.x ORDER BY a.k
+----
+2	2
+
+endloop
+
+statement ok
+SET disabled_optimizers = '';
+
+query II
+EXPLAIN SELECT DISTINCT ON (a.k) a.k, b.k, a.x IS NULL FROM t a, t b WHERE a.k = b.k AND a.x <> b.x ORDER BY a.k
+----
+physical_plan	<REGEX>:[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*
+
+query II
+EXPLAIN SELECT DISTINCT ON (a.k) a.k, b.k FROM t a, t b WHERE a.k = b.k AND a.x <> b.x ORDER BY a.k
+----
+physical_plan	<!REGEX>:[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*
+
+# ---- Two scans of a table function not marked repeatable need not return the same rows: the join stays ----------
+
+query II
+EXPLAIN SELECT DISTINCT a.type_size FROM duckdb_types() a, duckdb_types() b WHERE a.type_size = b.type_size AND a.type_oid <> b.type_oid
+----
+physical_plan	<REGEX>:[\s\S]*DUCKDB_TYPES[\s\S]*DUCKDB_TYPES[\s\S]*
+
 # ---- TPC-DS q95's shape on small data ----------------------------------------------------------------------------
 
 statement ok

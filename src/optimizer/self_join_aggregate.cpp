@@ -18,29 +18,31 @@
 //
 // Which parents ignore duplicates, checked from the root down (Walk): the right side of a SEMI, ANTI or MARK join (and
 // the left side of a RIGHT_SEMI or RIGHT_ANTI one), whose rows only decide whether a match exists -- a MARK join's NULL
-// included, which depends on whether a NULL occurs, not how often; a DISTINCT; and a GROUP BY whose aggregates are
-// min, max or DISTINCT ones (`min(x, n)`, the n smallest values, counts duplicates and is not one of them). Below such
-// a parent the property passes through projections and filters without volatile expressions, cross products and INNER
-// joins: their output, as a set, depends only on their inputs as sets. Anything else stops it, a UNION among them: it
-// reads its inputs' columns by position rather than through expressions, so what it reads would not be seen. A
-// materialized CTE's definition ignores duplicates when every one of its references does.
+// included, which depends on whether a NULL occurs, not how often; a DISTINCT, whose targets it reads through
+// expressions, a DISTINCT ON passing its other columns through by position, which therefore all count as read; and a
+// GROUP BY whose aggregates are min, max or DISTINCT ones (`min(x, n)`, the n smallest values, counts duplicates and
+// is not one of them). Below such a parent the property passes through projections and filters without volatile
+// expressions, cross products and INNER joins: their output, as a set, depends only on their inputs as sets. Anything
+// else stops it, a UNION among them: it reads its inputs' columns by position rather than through expressions, so what
+// it reads would not be seen. A materialized CTE's definition ignores duplicates when every one of its references does.
 //
 // What must hold of the join, in the plan as bound (the rewrite runs before filter pushdown, which would move the
 // conditions into the scans; the later optimizers then push the new filter into the scan and order the joins around
 // the group-by as for any other): a projection over filters over a cross product or an INNER comparison join of two
-// scans of the same relation -- the same table (or the same function with equal bind data) read the same way, without
-// table filters, time travel, sampling or ordinality -- and every condition of the filters and the join a `=` or `<>`
-// between the same column of the two scans. The `=` columns are K, at least one; the `<>` column is x, exactly one and
-// not in K (with two the pairs must differ in both, which no per-column test says). K and x are integral or DATE
-// columns, whose ordering agrees with their equality; a collated VARCHAR's need not. The projection's columns read
-// above it (through the references of the CTE it defines, when it does) must each be one of K: those then come from
-// the group-by and the others, which nothing reads, become typed NULLs, so a CTE keeps the columns its references
-// expect.
+// scans of the same relation -- the same table, or the same function with equal bind data and marked repeatable, so
+// that the two scans return the same rows, read the same way, without table filters, time travel, sampling or
+// ordinality -- and every condition of the filters and the join a `=` or `<>` between the same column of the two
+// scans. The `=` columns are K, at least one; the `<>` column is x, exactly one and not in K (with two the pairs must
+// differ in both, which no per-column test says). K and x are integral or DATE columns, whose ordering agrees with
+// their equality; a collated VARCHAR's need not. The projection's columns read above it (through the references of
+// the CTE it defines, when it does) must each be one of K: those then come from the group-by and the others, which
+// nothing reads, become typed NULLs, so a CTE keeps the columns its references expect.
 #include "duckdb/optimizer/self_join_aggregate.hpp"
 
 #include "duckdb/function/builtin_function_lookup.hpp"
 #include "duckdb/function/function_binder.hpp"
 #include "duckdb/planner/binder.hpp"
+#include "duckdb/planner/logical_operator_repeatability.hpp"
 #include "duckdb/common/reference_map.hpp"
 #include "duckdb/planner/column_binding_map.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
@@ -56,6 +58,7 @@
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
 #include "duckdb/planner/operator/logical_cross_product.hpp"
 #include "duckdb/planner/operator/logical_cteref.hpp"
+#include "duckdb/planner/operator/logical_distinct.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/operator/logical_materialized_cte.hpp"
@@ -145,6 +148,13 @@ public:
 		} else {
 			VisitOperatorExpressions(op);
 		}
+		if (op.type == LogicalOperatorType::LOGICAL_DISTINCT &&
+		    op.Cast<LogicalDistinct>().distinct_type == DistinctType::DISTINCT_ON) {
+			// the columns it does not deduplicate on pass through by position
+			for (auto &binding : op.children[0]->GetColumnBindings()) {
+				read.insert(binding);
+			}
+		}
 		VisitOperatorChildren(op);
 	}
 
@@ -182,9 +192,9 @@ bool SameParameters(const LogicalGet &a, const LogicalGet &b) {
 	return true;
 }
 
-//! Two scans that read the same rows: the same catalog table, or the same function with equal bind data
-bool SameRelation(const LogicalGet &a, const LogicalGet &b) {
-	if (!PlainScan(a) || !PlainScan(b) || a.function.GetName() != b.function.GetName() || !SameParameters(a, b)) {
+//! Two scans that read the same rows: the same catalog table, or the same repeatable function with equal bind data
+bool SameRelation(LogicalGet &a, LogicalGet &b) {
+	if (!PlainScan(a) || !PlainScan(b) || a.function != b.function || !SameParameters(a, b)) {
 		return false;
 	}
 	auto table = a.GetTable();
@@ -192,6 +202,11 @@ bool SameRelation(const LogicalGet &a, const LogicalGet &b) {
 		return table.get() == b.GetTable().get();
 	}
 	if (b.GetTable()) {
+		return false;
+	}
+	// a function not marked repeatable may return different rows each time it runs
+	if (ClassifyLogicalOperatorRepeatability(a) != LogicalOperatorRepeatability::REPEATABLE ||
+	    ClassifyLogicalOperatorRepeatability(b) != LogicalOperatorRepeatability::REPEATABLE) {
 		return false;
 	}
 	return a.bind_data && b.bind_data && a.bind_data->Equals(*b.bind_data);
@@ -330,7 +345,8 @@ private:
 			Walk(op.children[0], AggregateIgnoresDuplicates(op.Cast<LogicalAggregate>()));
 			return;
 		case LogicalOperatorType::LOGICAL_DISTINCT:
-			// its targets are expressions, so what it deduplicates on counts as read
+			// its targets are expressions, so what it deduplicates on counts as read, and so does every column a
+			// DISTINCT ON passes through
 			Walk(op.children[0], true);
 			return;
 		case LogicalOperatorType::LOGICAL_MATERIALIZED_CTE: {
