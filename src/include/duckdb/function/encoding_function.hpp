@@ -13,6 +13,7 @@
 #include "duckdb/common/map.hpp"
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/function/function.hpp"
+#include "duckdb/function/map_entry_encoding.hpp"
 #include "duckdb/storage/data_pointer.hpp"
 #include "duckdb/storage/storage_info.hpp"
 
@@ -27,14 +28,6 @@ struct CSVEncoderBuffer;
 typedef void (*encode_t)(CSVEncoderBuffer &encoded_buffer, char *decoded_buffer, idx_t &decoded_buffer_current_position,
                          const idx_t decoded_buffer_size, char *remaining_bytes_buffer, idx_t &remaining_bytes_size,
                          EncodingFunction *encoding_function);
-
-//! Encoding Map Entry Struct used for byte replacement
-typedef struct {
-	size_t key_len;
-	const char *key;
-	size_t value_len;
-	const char *value;
-} map_entry_encoding;
 
 class EncodingFunction {
 public:

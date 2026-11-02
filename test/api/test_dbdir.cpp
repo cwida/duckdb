@@ -5,7 +5,26 @@
 
 using namespace duckdb;
 
+namespace {
+class InMemoryTestDirectory {
+public:
+	InMemoryTestDirectory() : original_directory(TestGetCurrentDirectory()) {
+		TestChangeDirectory(LocalTestDirectoryPath());
+	}
+
+	~InMemoryTestDirectory() {
+		TestChangeDirectory(original_directory);
+	}
+
+private:
+	string original_directory;
+};
+} // namespace
+
 static void test_in_memory_initialization(string dbdir) {
+	// Exercise the default ".tmp" path without sharing it with concurrent unittest processes.
+	// Restore the working directory after the database closes, including on assertion failure.
+	InMemoryTestDirectory test_directory;
 	duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
 	duckdb::unique_ptr<DuckDB> db;
 	duckdb::unique_ptr<Connection> con;

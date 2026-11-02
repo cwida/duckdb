@@ -236,7 +236,7 @@ struct ICUFromNaiveTimestamp : public ICUDateFunc {
 
 	template <typename SRC>
 	static BoundCastInfo BindCastFromNaiveType(BindCastInput &input, const LogicalType &target) {
-		auto cast_data = make_uniq<CastData>(make_uniq<BindData>(*input.context));
+		auto cast_data = BindCastData(input);
 		switch (target.id()) {
 		case LogicalTypeId::TIMESTAMP_TZ:
 			return BoundCastInfo(CastFromNaive<SRC, timestamp_tz_t>, std::move(cast_data));
@@ -404,7 +404,7 @@ struct ICUToNaiveTimestamp : public ICUDateFunc {
 			                      LogicalTypeIdToString(target.id()));
 		}
 
-		auto cast_data = make_uniq<CastData>(make_uniq<BindData>(*input.context));
+		auto cast_data = BindCastData(input);
 
 		switch (source.id()) {
 		case LogicalTypeId::TIMESTAMP_TZ:
@@ -499,6 +499,8 @@ struct ICULocalTimestampFunc : public ICUDateFunc {
 	static void AddFunction(const Identifier &name, ExtensionLoader &loader) {
 		ScalarFunctionSet set {name};
 		set.AddFunction(ScalarFunction({}, LogicalType::TIMESTAMP, Execute, BindNow));
+		// the bind reads the start of the transaction
+		set.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 		loader.RegisterFunction(set);
 	}
 };
@@ -515,6 +517,8 @@ struct ICULocalTimeFunc : public ICUDateFunc {
 	static void AddFunction(const Identifier &name, ExtensionLoader &loader) {
 		ScalarFunctionSet set {name};
 		set.AddFunction(ScalarFunction({}, LogicalType::TIME, Execute, ICULocalTimestampFunc::BindNow));
+		// the bind reads the start of the transaction
+		set.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 		loader.RegisterFunction(set);
 	}
 };
@@ -590,7 +594,7 @@ BoundCastInfo ICUToTimeTZ::BindCastToTimeTZ(BindCastInput &input, const LogicalT
 		throw InternalException("Missing context for TIMESTAMPTZ to TIMETZ cast.");
 	}
 
-	auto cast_data = make_uniq<CastData>(make_uniq<BindData>(*input.context));
+	auto cast_data = BindCastData(input);
 
 	return BoundCastInfo(CastToTimeTZ, std::move(cast_data));
 }
@@ -625,7 +629,7 @@ BoundCastInfo ICUToTimeTZ::BindCastFromTime(BindCastInput &input, const LogicalT
 		throw InternalException("Missing context for TIME to TIMETZ cast.");
 	}
 
-	auto cast_data = make_uniq<CastData>(make_uniq<BindData>(*input.context));
+	auto cast_data = BindCastData(input);
 
 	return BoundCastInfo(CastFromTime, std::move(cast_data));
 }
@@ -701,6 +705,7 @@ struct ICUTimeZoneFunc : public ICUDateFunc {
 
 		set.ApplyToFunctions([](ScalarFunction &func) {
 			func.SetFallible();
+			func.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 			func.SetInitStateCallback(InitCalendarCache);
 		});
 		loader.RegisterFunction(set);

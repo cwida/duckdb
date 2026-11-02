@@ -296,6 +296,9 @@ void DatabaseHeader::SetStorageVersionInDatabaseHeader(DatabaseHeader &header, S
 		case StorageVersion::V2_0_0:
 			header.storage_compatibility = StorageVersion::V2_0_0;
 			break;
+		case StorageVersion::V2_1_0:
+			header.storage_compatibility = StorageVersion::V2_1_0;
+			break;
 			// new versions should be added here
 		default:
 			if (static_cast<idx_t>(read_version) > VERSION_NUMBER_UPPER) {

@@ -26,6 +26,10 @@
 #include <algorithm>
 #include <chrono>
 
+#ifdef __EMSCRIPTEN_PTHREADS__
+#include <emscripten/threading.h>
+#endif
+
 namespace duckdb {
 
 Executor::Executor(ClientContext &context) : context(context), executor_tasks(0), blocked_thread_time(0) {
@@ -87,6 +91,9 @@ void Executor::ScheduleEventsInternal(ScheduleEventData &event_data) {
 	auto schedule = BuildPipelineSchedule(event_data.meta_pipelines);
 	if (schedule->HasCycle()) {
 		throw InternalException("Cyclic dependency in pipeline schedule");
+	}
+	if (event_data.initial_schedule && recursive_ctes.empty()) {
+		ScheduleRuntimeFilters(*schedule);
 	}
 	events.reserve(schedule->stages.size());
 	for (auto &stage : schedule->stages) {
@@ -452,6 +459,10 @@ QueryResultState Executor::ExecuteTask() {
 			TaskScheduler::GetScheduler(context).GetTaskFromProducer(*producer, task);
 		}
 		if (!task && !HasError()) {
+#ifdef __EMSCRIPTEN_PTHREADS__
+			// A positive sleep services the dlopen queue while another worker owns the task.
+			emscripten_thread_sleep(1);
+#endif
 			return IdleState();
 		}
 		if (task) {

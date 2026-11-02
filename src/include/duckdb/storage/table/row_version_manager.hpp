@@ -38,8 +38,14 @@ public:
 	void RevertAppend(idx_t new_count);
 	void CleanupAppend(VisibilityBound lowest_visibility_bound, idx_t row_group_start, idx_t count);
 
-	idx_t DeleteRows(idx_t vector_idx, transaction_t transaction_id, row_t rows[], idx_t count);
-	void CommitDelete(idx_t vector_idx, transaction_t commit_id, const DeleteInfo &info);
+	//! Writes a delete or an update into the rows of the vector (see ChunkVectorInfo::WriteRows)
+	void WriteRows(idx_t vector_idx, TransactionData transaction, const row_t ids[], idx_t count, row_t offset,
+	               bool is_update, WrittenRows &written);
+	//! Replaces the ids of old_id on the rows of a write by those of new_id (see ChunkVectorInfo::CommitWrite)
+	void CommitWrite(transaction_t old_id, transaction_t new_id, const DeleteInfo &info, bool is_delete);
+	//! Rolls back a write (see ChunkVectorInfo::RollbackWrite)
+	void RollbackWrite(idx_t vector_idx, const uint16_t rows[], idx_t count, const transaction_t previous_ids[],
+	                   idx_t previous_id_count);
 
 	//! Attempts to compress the per-row insert/delete ids of each vector into constants. Ids that precede
 	//! lowest_visibility_bound look the same to every active and future transaction, so they can collapse.

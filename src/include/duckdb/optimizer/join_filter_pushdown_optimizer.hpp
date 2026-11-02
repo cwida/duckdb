@@ -16,6 +16,8 @@ class Optimizer;
 struct JoinFilterPushdownColumn;
 struct PushdownFilterTarget;
 
+enum class EqualityPropagation { DISABLED, ENABLED };
+
 //! The JoinFilterPushdownOptimizer links comparison joins to data sources to enable dynamic execution-time filter
 //! pushdown
 class JoinFilterPushdownOptimizer : public LogicalOperatorVisitor {
@@ -25,8 +27,10 @@ public:
 public:
 	void VisitOperator(LogicalOperator &op) override;
 	//! Find scan targets independently for each column, allowing both NULL-retaining and NULL-rejecting filters.
+	//! Equality propagation can return multiple equivalent columns per scan; single-column callers leave it disabled.
 	static void GetPushdownFilterTargets(LogicalOperator &op, vector<JoinFilterPushdownColumn> columns,
-	                                     vector<PushdownFilterTarget> &targets);
+	                                     vector<PushdownFilterTarget> &targets,
+	                                     EqualityPropagation equality_propagation = EqualityPropagation::DISABLED);
 
 	static bool IsFiltering(const unique_ptr<LogicalOperator> &op);
 

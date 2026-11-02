@@ -600,6 +600,7 @@ AggregateFunction GetMinMaxNFunction() {
 	                      FunctionNullHandling::DEFAULT_NULL_HANDLING, nullptr, MinMaxNBind<COMPARATOR>, nullptr);
 	fun.GetSignature().AddParameter("arg", LogicalTypeId::ANY).AddParameter("n", LogicalType::BIGINT);
 	fun.SetUnbindCallback(MinMaxUnbind);
+	fun.SetFallible(); // the update callback rejects NULL and out-of-range n values at runtime
 	return fun;
 }
 

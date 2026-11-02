@@ -394,6 +394,8 @@ public:
 
 	optional_ptr<Binder> binder;
 	ClientContext &context;
+	//! Set when the arguments were bound before, so their collations are not pushed again
+	bool arguments_collated = false;
 
 public:
 	//! Overload selection: the cheapest overload of a function set that a call with the given arguments binds to.

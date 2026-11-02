@@ -1,0 +1,50 @@
+# name: test/sql/table_function/icu_range_timestamptz_lateral_empty.test
+# description: TIMESTAMPTZ range() and generate_series() in a LATERAL, where some rows produce an empty range
+# group: [table_function]
+
+require icu
+
+statement ok
+SET TimeZone='UTC';
+
+statement ok
+SET threads = 1;
+
+statement ok
+CREATE TABLE t AS
+SELECT i, TIMESTAMPTZ '2024-01-01 00:00:00+00' + INTERVAL (i * 60) SECOND AS ts
+FROM generate_series(0, 9) s(i);
+
+# one row (i = 5) has its start past its stop, every other row yields one step
+query I
+SELECT list(i ORDER BY i) FROM t, LATERAL range(
+    ts + (CASE WHEN i = 5 THEN INTERVAL '7 minutes' ELSE INTERVAL '0 minutes' END),
+    ts + INTERVAL '5 minutes',
+    INTERVAL '10 minutes');
+----
+[0, 1, 2, 3, 4, 6, 7, 8, 9]
+
+query I
+SELECT count(*) FROM t, LATERAL generate_series(
+    ts + (CASE WHEN i = 0 THEN INTERVAL '7 minutes' ELSE INTERVAL '0 minutes' END),
+    ts + INTERVAL '5 minutes',
+    INTERVAL '10 minutes');
+----
+9
+
+# interleaved empty ranges, also with a negative step
+query II
+SELECT count(*) FILTER (WHERE i % 2 = 0), count(*) FROM generate_series(0, 64) s(i), LATERAL range(
+    TIMESTAMPTZ '2024-01-01 00:00:00+00' + (CASE WHEN i % 2 = 0 THEN INTERVAL '1 minute' ELSE INTERVAL '7 minutes' END),
+    TIMESTAMPTZ '2024-01-01 00:00:00+00' + INTERVAL '5 minutes',
+    INTERVAL '10 minutes');
+----
+33	33
+
+query I
+SELECT count(*) FROM generate_series(0, 64) s(i), LATERAL range(
+    TIMESTAMPTZ '2024-01-01 00:00:00+00' + (CASE WHEN i % 2 = 0 THEN INTERVAL '9 minutes' ELSE INTERVAL '3 minutes' END),
+    TIMESTAMPTZ '2024-01-01 00:00:00+00' + INTERVAL '5 minutes',
+    INTERVAL '-10 minutes');
+----
+33

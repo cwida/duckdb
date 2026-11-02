@@ -165,6 +165,7 @@ public:
 			SetBlock(std::move(block_handle_p), offset);
 		}
 	}
+	void UsePackedCopy(const shared_ptr<BlockHandle> &block_handle_p, uint32_t offset) override;
 
 private:
 	void Scan(ColumnScanState &state, idx_t scan_count, Vector &result);

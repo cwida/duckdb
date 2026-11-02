@@ -259,9 +259,11 @@ AggregateFunctionSet BitAndFun::GetFunctions() {
 	for (auto &type : LogicalType::Integral()) {
 		bit_and.AddFunction(GetBitfieldUnaryAggregate<BitAndOperation>(type));
 	}
-	bit_and.AddFunction(
+	auto bit_and_bit =
 	    NameArgParameter(AggregateFunction::UnaryAggregate<BitStringState, string_t, string_t, BitStringAndOperation>(
-	        LogicalType::BIT, LogicalType::BIT)));
+	        LogicalType::BIT, LogicalType::BIT));
+	bit_and_bit.SetFallible(); // combining bit strings of different lengths throws at runtime
+	bit_and.AddFunction(std::move(bit_and_bit));
 	return bit_and;
 }
 
@@ -270,9 +272,11 @@ AggregateFunctionSet BitOrFun::GetFunctions() {
 	for (auto &type : LogicalType::Integral()) {
 		bit_or.AddFunction(GetBitfieldUnaryAggregate<BitOrOperation>(type));
 	}
-	bit_or.AddFunction(
+	auto bit_or_bit =
 	    NameArgParameter(AggregateFunction::UnaryAggregate<BitStringState, string_t, string_t, BitStringOrOperation>(
-	        LogicalType::BIT, LogicalType::BIT)));
+	        LogicalType::BIT, LogicalType::BIT));
+	bit_or_bit.SetFallible(); // combining bit strings of different lengths throws at runtime
+	bit_or.AddFunction(std::move(bit_or_bit));
 	return bit_or;
 }
 
@@ -281,9 +285,11 @@ AggregateFunctionSet BitXorFun::GetFunctions() {
 	for (auto &type : LogicalType::Integral()) {
 		bit_xor.AddFunction(GetBitfieldUnaryAggregate<BitXorOperation>(type));
 	}
-	bit_xor.AddFunction(
+	auto bit_xor_bit =
 	    NameArgParameter(AggregateFunction::UnaryAggregate<BitStringState, string_t, string_t, BitStringXorOperation>(
-	        LogicalType::BIT, LogicalType::BIT)));
+	        LogicalType::BIT, LogicalType::BIT));
+	bit_xor_bit.SetFallible(); // combining bit strings of different lengths throws at runtime
+	bit_xor.AddFunction(std::move(bit_xor_bit));
 	return bit_xor;
 }
 

@@ -354,6 +354,11 @@ static bool BuildColumnIsComputed(const PhysicalOperator &op, idx_t column_idx) 
 	case PhysicalOperatorType::HASH_JOIN:
 		// a probe column is forwarded as it arrives, but read back from the row store when the probe side spills
 		return column_idx < op.Cast<PhysicalHashJoin>().lhs_output_columns.col_idxs.size();
+	case PhysicalOperatorType::UNNEST:
+	case PhysicalOperatorType::CROSS_PRODUCT:
+	case PhysicalOperatorType::INOUT_FUNCTION:
+		// input columns are forwarded either sliced (keeping the dictionary) or as a constant of a single row
+		return true;
 	default:
 		return false;
 	}

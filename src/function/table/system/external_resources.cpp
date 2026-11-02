@@ -48,7 +48,7 @@ static unique_ptr<FunctionData> ExternalResourcesBind(ClientContext &context, Ta
                                                       vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto result = make_uniq<ExternalResourcesBindData>();
 	for (auto &np : input.named_parameters) {
-		if (StringUtil::Lower(np.first.GetIdentifierName()) == "discover" && !np.second.IsNull()) {
+		if (np.first == "discover" && !np.second.IsNull()) {
 			result->discover = BooleanValue::Get(np.second);
 		}
 	}
