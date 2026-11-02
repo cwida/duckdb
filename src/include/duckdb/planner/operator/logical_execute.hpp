@@ -31,6 +31,10 @@ public:
 	bool SupportSerialization() const override {
 		return false;
 	}
+	//! Without a rebound child plan, the prepared plan is executed as-is and was already optimized
+	bool RequireOptimizer() const override {
+		return !children.empty();
+	}
 
 protected:
 	void ResolveTypes() override {

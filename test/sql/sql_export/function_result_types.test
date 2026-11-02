@@ -1,0 +1,96 @@
+# name: test/sql/sql_export/function_result_types.test
+# description: SQL export preserves function signatures, result types and scalar errors
+# group: [sql_export]
+
+statement ok
+SET debug_verify_serializer=false;
+
+query I rowsort
+SELECT abs(i) FROM (VALUES (-7), (NULL), (2), (-7)) t(i);
+----
+2
+7
+7
+NULL
+
+query I rowsort
+SELECT sum(i) FROM (VALUES (1), (NULL), (2), (2)) t(i);
+----
+5
+
+query RT rowsort
+SELECT
+	sum(i),
+	typeof(sum(i))
+FROM (VALUES (1.25::DECIMAL(9,2)), (2.50::DECIMAL(9,2)), (NULL::DECIMAL(9,2))) t(i);
+----
+3.75	DECIMAL(38,2)
+
+query TT
+EXPLAIN (SQL) SELECT sum(i) FROM (VALUES (1.25::DECIMAL(9,2)), (2.50::DECIMAL(9,2)), (NULL::DECIMAL(9,2))) t(i);
+----
+sql	<REGEX>:.*main[.]sum[(].* AS DECIMAL[(]38, *2[)].*
+
+statement ok
+RESET debug_verify_serializer;
+
+query IIRITTTT rowsort
+VALUES (
+	1::UTINYINT, 2::UBIGINT, 3::DECIMAL(7,2), NULL::INTEGER,
+	[1,NULL,2]::INTEGER[], {'a': 1, 'b': 'x'},
+	'a''b', '2020-01-02'::DATE
+);
+----
+1	2	3.00	NULL	[1, NULL, 2]	{'a': 1, 'b': x}	a'b	2020-01-02
+
+statement ok
+CREATE TABLE strings(s VARCHAR);
+
+statement ok
+DELETE FROM strings;
+
+query TI rowsort
+SELECT
+	(SELECT s FROM strings) COLLATE nocase,
+	(SELECT s FROM strings) COLLATE nocase = 'xxx';
+----
+NULL	NULL
+
+statement ok
+DELETE FROM strings;
+
+statement ok
+INSERT INTO strings VALUES ('XXX');
+
+query TI rowsort
+SELECT
+	(SELECT s FROM strings) COLLATE nocase,
+	(SELECT s FROM strings) COLLATE nocase = 'xxx';
+----
+XXX	true
+
+statement ok
+DELETE FROM strings;
+
+statement ok
+INSERT INTO strings VALUES (NULL);
+
+query TI rowsort
+SELECT
+	(SELECT s FROM strings) COLLATE nocase,
+	(SELECT s FROM strings) COLLATE nocase = 'xxx';
+----
+NULL	NULL
+
+statement ok
+INSERT INTO strings VALUES ('a');
+
+statement error
+SELECT (SELECT s FROM strings) COLLATE nocase;
+----
+More than one row returned
+
+query TT
+SELECT quantile_cont(x, [0.0] ORDER BY x DESC), quantile_disc(x, [0.0] ORDER BY x DESC) FROM (VALUES (1), (2), (2), (NULL)) t(x);
+----
+[2.0]	[2]

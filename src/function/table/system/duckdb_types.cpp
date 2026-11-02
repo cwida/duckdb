@@ -222,7 +222,7 @@ void DuckDBTypesFunction(ClientContext &context, TableFunctionInput &data_p, Dat
 		tags.Append(Value::MAP(type_entry.tags));
 		internal.Append(Value::BOOLEAN(type_entry.internal));
 		extension_name.Append(type_entry.extension_name.empty() ? Value() : Value(type_entry.extension_name));
-		if (type.id() == LogicalTypeId::ENUM && type.AuxInfo()) {
+		if (type.id() == LogicalTypeId::ENUM && type.HasParameters()) {
 			auto enum_data = FlatVector::GetData<string_t>(EnumType::GetValuesInsertOrder(type));
 			idx_t size = EnumType::GetSize(type);
 
@@ -240,12 +240,20 @@ void DuckDBTypesFunction(ClientContext &context, TableFunctionInput &data_p, Dat
 		vector<Value> parameter_names;
 		vector<Value> parameter_type_names;
 		for (auto &param : signature.GetParameters()) {
+			if (param.IsVariadic()) {
+				continue;
+			}
 			parameter_names.emplace_back(param.GetName());
 			parameter_type_names.emplace_back(param.GetType().ToString());
 		}
 		parameters.Append(Value::LIST(LogicalType::VARCHAR, std::move(parameter_names)));
 		parameter_types.Append(Value::LIST(LogicalType::VARCHAR, std::move(parameter_type_names)));
-		varargs.Append(signature.HasVarArgs() ? Value(signature.GetVarArgs().ToString()) : Value());
+		auto variadic = signature.GetArgs();
+		if (!variadic) {
+			variadic = signature.GetKwargs();
+		}
+		// the legacy "varargs" column cannot tell "*args" and "**kwargs" apart
+		varargs.Append(variadic ? Value(variadic->GetType().ToString()) : Value());
 
 		count++;
 	}

@@ -1,0 +1,37 @@
+# name: test/sql/index/art/create_drop/test_art_recreate_unique_index_local_identity.test
+# description: Match transaction-local indexes after recreating a same-name unique index on another column
+# group: [create_drop]
+
+statement ok
+CREATE TABLE t(a INTEGER, b INTEGER);
+
+statement ok
+INSERT INTO t VALUES (1, 10), (2, 20);
+
+statement ok
+BEGIN;
+
+statement ok
+CREATE UNIQUE INDEX idx ON t(a);
+
+statement ok
+DROP INDEX idx;
+
+statement ok
+CREATE UNIQUE INDEX IF NOT EXISTS idx ON t(b);
+
+statement ok
+DELETE FROM t WHERE a = 1;
+
+# The new index must use its own delete index when checking the reused key.
+statement ok
+INSERT INTO t VALUES (3, 10);
+
+statement ok
+COMMIT;
+
+query II
+SELECT * FROM t ORDER BY a;
+----
+2	20
+3	10

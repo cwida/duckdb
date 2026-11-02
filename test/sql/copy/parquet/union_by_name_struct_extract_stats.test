@@ -1,0 +1,40 @@
+# name: test/sql/copy/parquet/union_by_name_struct_extract_stats.test
+# description: Issue #26156 - statistics of a struct field pushed into a union_by_name scan
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT {'key': 'key-0', 'default': 'value'} AS status) TO '{TEST_DIR}/issue_26156_0.parquet'
+
+statement ok
+COPY (SELECT {'key': 'key-1', 'default': 'value'} AS status) TO '{TEST_DIR}/issue_26156_1.parquet'
+
+query I
+SELECT count(*)
+FROM read_parquet(['{TEST_DIR}/issue_26156_0.parquet', '{TEST_DIR}/issue_26156_1.parquet'], union_by_name = true)
+WHERE status.default = 'value'
+----
+2
+
+query I
+SELECT count(*)
+FROM read_parquet(['{TEST_DIR}/issue_26156_0.parquet', '{TEST_DIR}/issue_26156_1.parquet'], union_by_name = true)
+WHERE status.key = 'key-1'
+----
+1
+
+query II
+SELECT min(status.key), max(status.default)
+FROM read_parquet(['{TEST_DIR}/issue_26156_0.parquet', '{TEST_DIR}/issue_26156_1.parquet'], union_by_name = true)
+----
+key-0	value
+
+query I
+SELECT status.key
+FROM read_parquet(['{TEST_DIR}/issue_26156_0.parquet', '{TEST_DIR}/issue_26156_1.parquet'], union_by_name = true)
+WHERE status.default = 'value'
+ORDER BY ALL
+----
+key-0
+key-1

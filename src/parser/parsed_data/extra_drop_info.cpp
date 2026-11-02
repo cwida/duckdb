@@ -13,7 +13,8 @@ unique_ptr<ExtraDropInfo> ExtraDropTriggerInfo::Copy() const {
 	return make_uniq<ExtraDropTriggerInfo>(*this);
 }
 
-ExtraDropSecretInfo::ExtraDropSecretInfo() : ExtraDropInfo(ExtraDropInfoType::SECRET_INFO) {
+ExtraDropSecretInfo::ExtraDropSecretInfo()
+    : ExtraDropInfo(ExtraDropInfoType::SECRET_INFO), persist_mode(SecretPersistType::DEFAULT) {
 }
 
 ExtraDropSecretInfo::ExtraDropSecretInfo(const ExtraDropSecretInfo &info)

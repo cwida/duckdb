@@ -73,16 +73,17 @@ static unique_ptr<BaseStatistics> LeftPropagateStats(ClientContext &context, Fun
 }
 
 ScalarFunction LeftFun::GetFunction() {
-	ScalarFunction function({LogicalType::VARCHAR, LogicalType::BIGINT}, LogicalType::VARCHAR,
-	                        LeftFunction<LeftRightUnicode>, /*bind=*/nullptr, LeftPropagateStats);
+	ScalarFunction function({}, LogicalType::VARCHAR, LeftFunction<LeftRightUnicode>, /*bind=*/nullptr,
+	                        LeftPropagateStats);
+	function.GetSignature().AddParameter("string", LogicalType::VARCHAR).AddParameter("count", LogicalType::BIGINT);
 	// throws if the resulting substring is out of the supported range
 	function.SetFallible();
 	return function;
 }
 
 ScalarFunction LeftGraphemeFun::GetFunction() {
-	ScalarFunction function({LogicalType::VARCHAR, LogicalType::BIGINT}, LogicalType::VARCHAR,
-	                        LeftFunction<LeftRightGrapheme>);
+	ScalarFunction function({}, LogicalType::VARCHAR, LeftFunction<LeftRightGrapheme>);
+	function.GetSignature().AddParameter("string", LogicalType::VARCHAR).AddParameter("count", LogicalType::BIGINT);
 	// throws if the resulting substring is out of the supported range
 	function.SetFallible();
 	return function;
@@ -114,16 +115,16 @@ static void RightFunction(DataChunk &args, ExpressionState &state, Vector &resul
 }
 
 ScalarFunction RightFun::GetFunction() {
-	ScalarFunction function({LogicalType::VARCHAR, LogicalType::BIGINT}, LogicalType::VARCHAR,
-	                        RightFunction<LeftRightUnicode>);
+	ScalarFunction function({}, LogicalType::VARCHAR, RightFunction<LeftRightUnicode>);
+	function.GetSignature().AddParameter("string", LogicalType::VARCHAR).AddParameter("count", LogicalType::BIGINT);
 	// throws if the resulting substring is out of the supported range
 	function.SetFallible();
 	return function;
 }
 
 ScalarFunction RightGraphemeFun::GetFunction() {
-	ScalarFunction function({LogicalType::VARCHAR, LogicalType::BIGINT}, LogicalType::VARCHAR,
-	                        RightFunction<LeftRightGrapheme>);
+	ScalarFunction function({}, LogicalType::VARCHAR, RightFunction<LeftRightGrapheme>);
+	function.GetSignature().AddParameter("string", LogicalType::VARCHAR).AddParameter("count", LogicalType::BIGINT);
 	// throws if the resulting substring is out of the supported range
 	function.SetFallible();
 	return function;

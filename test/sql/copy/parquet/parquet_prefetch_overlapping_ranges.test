@@ -1,0 +1,73 @@
+# name: test/sql/copy/parquet/parquet_prefetch_overlapping_ranges.test
+# description: Reuse prefetched filter bytes when a merged payload range overlaps them
+# group: [parquet]
+
+require parquet
+
+require json
+
+require vector_size 2048
+
+require no_alternative_verify
+
+require skip_reload
+
+statement ok
+SET threads=1;
+
+statement ok
+SET parquet_prefetch_column_gap=16384;
+
+statement ok
+SET enable_external_file_cache=false;
+
+statement ok
+COPY (
+    SELECT hash(i)::VARCHAR AS a,
+        CASE WHEN i%100=50 THEN 51 ELSE i%100 END AS c,
+        hash(i+1)::VARCHAR AS b
+    FROM range(12288) t(i)
+) TO '{TEST_DIR}/prefetch_overlap.parquet'
+    (FORMAT PARQUET, ROW_GROUP_SIZE 2048, COMPRESSION 'uncompressed', WRITE_BLOOM_FILTER FALSE);
+
+statement ok
+SET enable_profiling='json';
+
+statement ok
+SET profiling_output='{TEST_DIR}/prefetch_overlap.json';
+
+statement ok
+SET tracked_metrics=['io.total_bytes_read'];
+
+# Statistics cannot exclude c=50. The reader should fetch only c.
+query I
+SELECT sum(length(a)+length(b)) FROM read_parquet('{TEST_DIR}/prefetch_overlap.parquet') WHERE c=50;
+----
+NULL
+
+statement ok
+PRAGMA disable_profiling;
+
+# The payload must stay unread, including on the first row group.
+query I
+SELECT io.total_bytes_read < 40000 FROM read_json_auto('{TEST_DIR}/prefetch_overlap.json');
+----
+true
+
+# Matching rows still fetch and decode the overlapping payload.
+query I
+SELECT
+    (SELECT sum(length(a)+length(b)) FROM read_parquet('{TEST_DIR}/prefetch_overlap.parquet') WHERE c=51)
+    =
+    (SELECT sum(length(hash(i)::VARCHAR)+length(hash(i+1)::VARCHAR))
+     FROM range(12288) t(i) WHERE i%100 IN (50,51));
+----
+true
+
+query I
+SELECT
+    (SELECT sum(length(a)+length(b)) FROM read_parquet('{TEST_DIR}/prefetch_overlap.parquet'))
+    =
+    (SELECT sum(length(hash(i)::VARCHAR)+length(hash(i+1)::VARCHAR)) FROM range(12288) t(i));
+----
+true

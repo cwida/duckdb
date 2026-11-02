@@ -7,6 +7,7 @@
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/execution/operator/persistent/batch_memory_manager.hpp"
 #include "duckdb/execution/operator/persistent/batch_task_manager.hpp"
+#include "duckdb/execution/operator/persistent/copy_batch_slicer.hpp"
 #include "duckdb/execution/operator/persistent/copy_output_lifecycle.hpp"
 #include "duckdb/execution/operator/persistent/physical_copy_to_file.hpp"
 #include "duckdb/parallel/base_pipeline_event.hpp"
@@ -86,23 +87,22 @@ public:
 
 public:
 	explicit FixedBatchCopyGlobalState(ClientContext &context_p, idx_t minimum_memory_per_thread)
-	    : output_lifecycle(context_p), memory_manager(context_p, minimum_memory_per_thread), initialized(false),
-	      rows_copied(0), scheduled_batch_index(0), flushed_batch_index(0), any_flushing(false), any_finished(false),
+	    : output_lifecycle(context_p), memory_manager(context_p, minimum_memory_per_thread), rows_copied(0),
+	      scheduled_batch_index(0), flushed_batch_index(0), any_flushing(false), any_finished(false),
 	      minimum_memory_per_thread(minimum_memory_per_thread) {
 	}
 
+	//! Destroy after global_state so its handle closes before cleanup.
 	CopyOutputLifecycle output_lifecycle;
 	BatchMemoryManager memory_manager;
 	BatchTaskManager<BatchCopyTask> task_manager;
 	mutex lock;
 	mutex flush_lock;
-	//! Whether or not the copy has been initialized
-	atomic<bool> initialized;
+	atomic<bool> initialized {false};
 	//! The total number of rows copied to the file
 	atomic<idx_t> rows_copied;
 	//! Global copy state
 	unique_ptr<GlobalFunctionData> global_state;
-	optional_idx lifecycle_file_index;
 	//! Unpartitioned batches
 	map<idx_t, unique_ptr<FixedRawBatchData>> raw_batches;
 	//! The prepared batch data by batch index - ready to flush
@@ -121,26 +121,28 @@ public:
 	unique_ptr<CopyToFileInfo> written_file_info;
 
 	void Initialize(ClientContext &context, const PhysicalBatchCopyToFile &op) {
-		if (initialized) {
+		if (initialized.load(std::memory_order_acquire)) {
 			return;
 		}
 		lock_guard<mutex> guard(lock);
-		if (initialized) {
+		if (initialized.load(std::memory_order_relaxed)) {
 			return;
 		}
-		// initialize writing to the file
-		lifecycle_file_index = output_lifecycle.RegisterFile(op.file_path);
-		global_state = op.function.copy_to_initialize_global(context, *op.bind_data, op.file_path);
+		output_lifecycle.RegisterFile(op.file_path);
+		auto new_global_state = op.function.copy_to_initialize_global(context, *op.bind_data, op.file_path);
 		if (op.function.initialize_operator) {
-			op.function.initialize_operator(*global_state, op);
+			op.function.initialize_operator(*new_global_state, op);
 		}
-		if (op.return_type == CopyFunctionReturnType::WRITTEN_FILE_STATISTICS) {
-			written_file_info = make_uniq<CopyToFileInfo>(op.file_path);
-			written_file_info->file_stats = make_uniq<CopyFunctionFileStatistics>();
-			op.function.copy_to_get_written_statistics(context, *op.bind_data, *global_state,
-			                                           *written_file_info->file_stats);
+		unique_ptr<CopyToFileInfo> new_written_file_info;
+		if (GetCopyFunctionBaseReturnType(op.return_type) == CopyFunctionReturnType::WRITTEN_FILE_STATISTICS) {
+			new_written_file_info = make_uniq<CopyToFileInfo>(op.file_path);
+			new_written_file_info->file_stats = make_uniq<CopyFunctionFileStatistics>();
+			op.function.copy_to_get_written_statistics(context, *op.bind_data, *new_global_state,
+			                                           *new_written_file_info->file_stats);
 		}
-		initialized = true;
+		global_state = std::move(new_global_state);
+		written_file_info = std::move(new_written_file_info);
+		initialized.store(true, std::memory_order_release);
 	}
 
 	void AddBatchData(idx_t batch_index, unique_ptr<PreparedBatchData> new_batch, idx_t memory_usage,
@@ -341,9 +343,6 @@ SinkFinalizeType PhysicalBatchCopyToFile::FinalFlush(ClientContext &context, Glo
 	gstate.memory_manager.FinalCheck();
 	if (function.copy_to_finalize && gstate.global_state) {
 		function.copy_to_finalize(context, *bind_data, *gstate.global_state);
-		D_ASSERT(gstate.lifecycle_file_index.IsValid());
-		gstate.output_lifecycle.MarkFileFinalized(gstate.lifecycle_file_index.GetIndex());
-
 		if (use_tmp_file) {
 			PhysicalCopyToFile::MoveTmpFile(context, file_path);
 		}
@@ -500,6 +499,7 @@ void PhysicalBatchCopyToFile::RepartitionBatches(ClientContext &context, GlobalS
 	}
 	unique_ptr<FixedRawBatchData> append_batch;
 	ColumnDataAppendState append_state;
+	CopyBatchSlicer batch_slicer(children[0].get().GetTypes(), batch_size_bytes);
 	// now perform the actual repartitioning
 	for (auto &current_batch : raw_batches) {
 		if (!append_batch) {
@@ -533,20 +533,23 @@ void PhysicalBatchCopyToFile::RepartitionBatches(ClientContext &context, GlobalS
 		append_batch->memory_usage += current_batch->memory_usage;
 		// iterate the collection while appending
 		for (auto &chunk : current_collection.Chunks()) {
-			// append the chunk to the collection
-			append_batch->collection->Append(append_state, chunk);
-			const CopyFunctionBatchAnalyzer batch_analyzer(*append_batch->collection, batch_size, batch_size_bytes);
-			if (!batch_analyzer.MeetsFlushCriteria()) {
-				// the collection is still under the desired batch size - continue
-				continue;
-			}
-			// the collection is full - move it to the result and create a new one
-			task_manager.AddTask(make_uniq<PrepareBatchTask>(gstate.scheduled_batch_index++, std::move(append_batch)));
+			idx_t offset = 0;
+			while (offset < chunk.size()) {
+				auto &slice = batch_slicer.Slice(chunk, offset, *append_batch->collection);
+				append_batch->collection->Append(append_state, slice);
+				const CopyFunctionBatchAnalyzer batch_analyzer(*append_batch->collection, batch_size, batch_size_bytes);
+				if (!batch_analyzer.MeetsFlushCriteria()) {
+					continue; // the collection is still under the desired batch size
+				}
+				// the collection is full - move it to the result and create a new one
+				task_manager.AddTask(
+				    make_uniq<PrepareBatchTask>(gstate.scheduled_batch_index++, std::move(append_batch)));
 
-			auto new_collection = make_uniq<ColumnDataCollection>(context, children[0].get().GetTypes());
-			new_collection->SetPartitionIndex(0); // Makes the buffer manager less likely to spill this data
-			append_batch = make_uniq<FixedRawBatchData>(0U, std::move(new_collection));
-			append_batch->collection->InitializeAppend(append_state);
+				auto new_collection = make_uniq<ColumnDataCollection>(context, children[0].get().GetTypes());
+				new_collection->SetPartitionIndex(0); // Makes the buffer manager less likely to spill this data
+				append_batch = make_uniq<FixedRawBatchData>(0U, std::move(new_collection));
+				append_batch->collection->InitializeAppend(append_state);
+			}
 		}
 	}
 	if (append_batch && append_batch->collection->Count() > 0) {
@@ -708,7 +711,8 @@ SourceResultType PhysicalBatchCopyToFile::GetDataInternal(ExecutionContext &cont
                                                           OperatorSourceInput &input) const {
 	auto &g = sink_state->Cast<FixedBatchCopyGlobalState>();
 	auto fp = use_tmp_file ? PhysicalCopyToFile::GetNonTmpFile(context.client, file_path) : file_path;
-	switch (return_type) {
+	auto return_column_types = CopyFunctionReturnsColumnTypes(return_type);
+	switch (GetCopyFunctionBaseReturnType(return_type)) {
 	case CopyFunctionReturnType::CHANGED_ROWS:
 		chunk.data[0].Append(Value::BIGINT(NumericCast<int64_t>(g.rows_copied.load())));
 		break;
@@ -725,6 +729,9 @@ SourceResultType PhysicalBatchCopyToFile::GetDataInternal(ExecutionContext &cont
 		if (g.written_file_info) {
 			g.written_file_info->file_path = std::move(fp);
 			PhysicalCopyToFile::ReturnStatistics(chunk, *g.written_file_info);
+		} else if (return_column_types) {
+			// WRITE_EMPTY_FILE false writes no file without rows
+			PhysicalCopyToFile::ReturnNoFileStatistics(chunk);
 		}
 		break;
 	}
@@ -732,6 +739,9 @@ SourceResultType PhysicalBatchCopyToFile::GetDataInternal(ExecutionContext &cont
 		throw NotImplementedException("Unknown CopyFunctionReturnType");
 	}
 
+	if (return_column_types) {
+		PhysicalCopyToFile::ReturnColumnTypes(chunk, query_names, query_types);
+	}
 	return SourceResultType::FINISHED;
 }
 

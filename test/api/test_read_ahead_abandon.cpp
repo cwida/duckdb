@@ -21,8 +21,7 @@ TEST_CASE("Test abandoning a streaming result mid-scan with read-ahead", "[api]"
 	REQUIRE_NO_FAIL(con.Query("SET read_ahead_depth=1"));
 
 	for (idx_t i = 0; i < 10; i++) {
-		auto stream = con.SendQuery("SELECT i FROM '" + file + "'");
-		REQUIRE_NO_FAIL(*stream);
+		auto stream = OpenStream(con, "SELECT i FROM '" + file + "'");
 		// fetch a single chunk, then abandon the stream mid-scan
 		auto chunk = stream->Fetch();
 		REQUIRE(chunk);

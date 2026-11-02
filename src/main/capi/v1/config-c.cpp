@@ -45,7 +45,7 @@ duckdb_state duckdb_get_config_flag(size_t index, const char **out_name, const c
 		if (out_name) {
 			*out_name = alias->alias;
 		}
-		option = DBConfig::GetOptionByIndex(alias->option_index);
+		option = DBConfig::GetOptionByName(alias->setting_name);
 		if (out_description) {
 			*out_description = option->description;
 		}

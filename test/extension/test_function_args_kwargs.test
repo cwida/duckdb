@@ -1,0 +1,276 @@
+# name: test/extension/test_function_args_kwargs.test
+# description: Function signatures with *args, **kwargs and keyword-only parameters
+# group: [extension]
+
+require skip_reload
+
+require notmingw
+
+require allow_unsigned_extensions
+
+statement ok
+LOAD '{BUILD_DIRECTORY}/test/extension/loadable_extension_demo.duckdb_extension';
+
+# test_args_kwargs(a INTEGER, *args INTEGER, kw INTEGER, kw2 INTEGER := 7, **kwargs ANY)
+# The arguments are laid out in the order of the signature: a | args | kw | kw2 | kwargs
+
+query I
+SELECT test_args_kwargs(1, 2, 3, kw := 4, x := 5, y := 'six');
+----
+<20>|1|2|3|4|7|5|'six'|
+
+# No variadic arguments at all
+query I
+SELECT test_args_kwargs(1, kw := 4);
+----
+<20>|1|4|7|
+
+# The order of the named arguments does not matter, kwargs keep the order of the call
+query I
+SELECT test_args_kwargs(1, 2, y := 10, kw2 := 8, x := 20, kw := 4);
+----
+<20>|1|2|4|8|10|20|
+
+# A standard parameter can still be passed by name
+query I
+SELECT test_args_kwargs(kw := 4, a := 1);
+----
+<20>|1|4|7|
+
+# Positional arguments are cast to the type of *args
+query I
+SELECT test_args_kwargs(1, '2', 3::TINYINT, kw := '4');
+----
+<20>|1|2|3|4|7|
+
+# NULLs keep their position
+query I
+SELECT test_args_kwargs(1, NULL, 3, kw := NULL, x := NULL);
+----
+<20>|1|NULL|3|NULL|7|NULL|
+
+# Columns as arguments
+query I
+SELECT test_args_kwargs(i, i + 1, kw := i * 2, x := i::VARCHAR) FROM (SELECT i::INTEGER AS i FROM range(3) t(i)) ORDER BY i;
+----
+<20>|0|1|0|7|'0'|
+<20>|1|2|2|7|'1'|
+<20>|2|3|4|7|'2'|
+
+# A keyword-only parameter cannot be passed by position, and an overload that cannot fill its required 'kw' is
+# not a candidate - the trailing positional arguments go to "*args" instead
+statement error
+SELECT test_args_kwargs(1, 2, 3, 4);
+----
+<REGEX>:Binder Error:.*No function matches.*
+
+statement error
+SELECT test_args_kwargs(1);
+----
+No function matches
+
+# ... also when enough positional arguments are passed to reach its index in the signature
+query I
+SELECT test_args_kwargs(1, 2, 3, 4, kw := 5);
+----
+<20>|1|2|3|4|5|7|
+
+statement error
+SELECT test_args_kwargs(1, a := 2, kw := 3);
+----
+already been provided as a positional argument
+
+statement error
+SELECT test_args_kwargs(1, kw := 3, kw := 4);
+----
+Duplicate named argument
+
+statement error
+SELECT test_args_kwargs(1, kw := 3, 4);
+----
+cannot follow named arguments
+
+# *args cannot be cast
+statement error
+SELECT test_args_kwargs(1, DATE '2020-01-01', kw := 3);
+----
+No function matches
+
+# The variadic parameters cannot be passed by their own name, "args" is just another kwarg
+query I
+SELECT test_args_kwargs(1, kw := 3, args := 4);
+----
+<20>|1|3|7|4|
+
+# The bind callback sees the names and the ranges of the variadic arguments
+query I
+SELECT test_args_kwargs_bind(1, 2, 3, kw := 4, x := 5, y := 'six');
+----
+<22>|args=2|kwargs=2@5|a=1|*=2|*=3|kw=4|kw2=7|**x=5|**y='six'|
+
+query I
+SELECT test_args_kwargs_bind(1, kw := 4);
+----
+<22>|args=0|kwargs=0@3|a=1|kw=4|kw2=7|
+
+# test_args_only(a INTEGER, *args INTEGER): no **kwargs, so unknown names are rejected
+query I
+SELECT test_args_only(1, 2, 3);
+----
+<21>|1|2|3|
+
+query I
+SELECT test_args_only(a := 1);
+----
+<21>|1|
+
+statement error
+SELECT test_args_only(1, 2, x := 3);
+----
+No function matches
+
+# The signature is printed in the error
+statement error
+SELECT test_args_only(1, 2, x := 3);
+----
+test_args_only(a INTEGER, *args INTEGER) -> VARCHAR
+
+statement error
+SELECT test_args_kwargs('hello'::BLOB);
+----
+test_args_kwargs(a INTEGER, *args INTEGER, kw INTEGER, kw2 INTEGER := 7, **kwargs ANY) -> VARCHAR
+
+# test_args_template(*args T, **kwargs T): all variadic arguments unify to one type
+query I
+SELECT test_args_template(1, 2.5, x := 3::TINYINT);
+----
+<23>|1.0|2.5|3.0|
+
+query I
+SELECT test_args_template();
+----
+<23>|
+
+statement error
+SELECT test_args_template(1, x := DATE '2020-01-01');
+----
+<REGEX>:.*Binder Error.*
+
+# Aggregates: test_args_agg(a INTEGER, *args INTEGER, kw INTEGER := 9)
+query I
+SELECT test_args_agg(1, 2, kw := 3);
+----
+<7>|1|2|3|
+
+query I
+SELECT test_args_agg(1);
+----
+<7>|1|9|
+
+statement error
+SELECT test_args_agg(1, x := 2);
+----
+No function matches
+
+# Variadic parameters are not listed as parameters, keyword-only parameters are
+query III
+SELECT parameters, parameter_types, varargs FROM duckdb_functions() WHERE function_name = 'test_args_kwargs';
+----
+[a, kw, kw2]	[INTEGER, INTEGER, INTEGER]	INTEGER
+
+query III
+SELECT parameters, parameter_types, varargs FROM duckdb_functions() WHERE function_name = 'test_named_varargs';
+----
+[a, b]	[INTEGER, INTEGER]	INTEGER
+
+# Functions declared with an *args and a **kwargs of the same type still accept any trailing argument, named or not
+query I
+SELECT test_named_varargs(1, 2, 3, x := 4);
+----
+<2>|1|2|3|4|
+
+# A function declared with an *args and a **kwargs of the same type receives its named trailing arguments as kwargs
+query I
+SELECT test_varargs_bind(1, 2, x := 3, y := 4);
+----
+<22>|args=1|kwargs=2@2|a=1|*=2|**x=3|**y=4|
+
+# A function declared with an *args and a **kwargs of the same type receives its named trailing arguments as kwargs
+query I
+SELECT test_varargs_bind(1, 2, x := 3, y := 4);
+----
+<22>|args=1|kwargs=2@2|a=1|*=2|**x=3|**y=4|
+
+# The plan is replaced by its serialization round trip, so the results show the deserialized argument layout
+statement ok
+SET debug_verify_serializer=true
+
+query I
+SELECT test_args_kwargs(1, 2, 3, kw := 4, x := 5, y := 'six');
+----
+<20>|1|2|3|4|7|5|'six'|
+
+query I
+SELECT test_args_kwargs(i, i + 1, kw := i * 2, x := i::VARCHAR) FROM (SELECT i::INTEGER AS i FROM range(3) t(i)) ORDER BY i;
+----
+<20>|0|1|0|7|'0'|
+<20>|1|2|2|7|'1'|
+<20>|2|3|4|7|'2'|
+
+query I
+SELECT test_args_kwargs_bind(i, 2, 3, kw := 4, x := 5) FROM (SELECT i::INTEGER AS i FROM range(1) t(i));
+----
+<22>|args=2|kwargs=1@5|a=0|*=2|*=3|kw=4|kw2=7|**x=5|
+
+query I
+SELECT test_args_kwargs(kw := i, a := 1) FROM (SELECT i::INTEGER AS i FROM range(1) t(i));
+----
+<20>|1|0|7|
+
+query I
+SELECT test_args_agg(i, 2, kw := 3) FROM (SELECT i::INTEGER AS i FROM range(1) t(i));
+----
+<7>|0|2|3|
+
+# ... also for a function declared with an *args and a **kwargs of the same type
+query I
+SELECT test_varargs_bind(i, 2, x := 3, y := 4) FROM (SELECT i::INTEGER AS i FROM range(1) t(i));
+----
+<22>|args=1|kwargs=2@2|a=0|*=2|**x=3|**y=4|
+
+# ... also for a function declared with an *args and a **kwargs of the same type
+query I
+SELECT test_varargs_bind(i, 2, x := 3, y := 4) FROM (SELECT i::INTEGER AS i FROM range(1) t(i));
+----
+<22>|args=1|kwargs=2@2|a=0|*=2|**x=3|**y=4|
+
+# test_positional_only(a INTEGER, /, b INTEGER := 9, **kwargs ANY): "a" can only be passed by position
+query I
+SELECT test_positional_only(1, 2);
+----
+<22>|args=0|kwargs=0@2|/a=1|b=2|
+
+# "a := 2" does not match the positional-only parameter, so it is received by "**kwargs"
+query I
+SELECT test_positional_only(1, a := 2);
+----
+<22>|args=0|kwargs=1@2|/a=1|b=9|**a=2|
+
+# ... and "b" is still matched by name
+query I
+SELECT test_positional_only(1, b := 2, a := 3);
+----
+<22>|args=0|kwargs=1@2|/a=1|b=2|**a=3|
+
+# the positional-only parameter cannot be filled by name alone: "a := 1" goes to "**kwargs" and the position is
+# left empty, so the overload is not a candidate. The candidate list spells out why, with the closing "/".
+statement error
+SELECT test_positional_only(a := 1);
+----
+<REGEX>:.*No function matches.*a INTEGER, /.*
+
+# a candidate list spells the closing "/" out
+statement error
+SELECT test_positional_only({'x': 1});
+----
+<REGEX>:.*test_positional_only\(a INTEGER, /, b INTEGER := 9, \*\*kwargs ANY\).*

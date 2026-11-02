@@ -17,7 +17,8 @@ load benchmark/ingestion/load_tpcds.sql
 # reads table from view created in load script
 
 run
-create table ${table_name}_ingested as select * from read_${format}('${BENCHMARK_DIR}/tpcds_${format}/${table_name}.${format}');
+create table ${table_name}_ingested as
+select * from read_${format}('${BENCHMARK_DIR}/tpcds_${format}/${table_name}.${format}') limit 500000;
 
 cleanup
 drop table ${table_name}_ingested;

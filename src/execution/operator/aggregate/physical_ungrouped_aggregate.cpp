@@ -21,6 +21,8 @@
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/execution/operator/aggregate/ungrouped_aggregate_state.hpp"
 
+#include "duckdb/common/atomic.hpp"
+
 #include <functional>
 
 namespace duckdb {
@@ -658,6 +660,20 @@ SinkFinalizeType PhysicalUngroupedAggregate::Finalize(Pipeline &pipeline, Event 
 //===--------------------------------------------------------------------===//
 // Source
 //===--------------------------------------------------------------------===//
+class UngroupedAggregateGlobalSourceState : public GlobalSourceState {
+public:
+	atomic<bool> finished {false};
+};
+
+unique_ptr<GlobalSourceState> PhysicalUngroupedAggregate::GetGlobalSourceState(ClientContext &context) const {
+	return make_uniq<UngroupedAggregateGlobalSourceState>();
+}
+
+ProgressData PhysicalUngroupedAggregate::GetProgress(ClientContext &context, GlobalSourceState &gstate) const {
+	auto &state = gstate.Cast<UngroupedAggregateGlobalSourceState>();
+	return ProgressData {state.finished ? 1.0 : 0.0, 1.0, false};
+}
+
 void VerifyNullHandling(DataChunk &chunk, UngroupedAggregateState &state,
                         const vector<unique_ptr<Expression>> &aggregates) {
 	if (DBConfigOptions::global_verification_mode != DebugVerificationMode::VERIFY_FUNCTIONS) {
@@ -672,7 +688,7 @@ void VerifyNullHandling(DataChunk &chunk, UngroupedAggregateState &state,
 			chunk.data[aggr_idx].ToUnifiedFormat(vdata);
 			if (vdata.validity.RowIsValid(vdata.sel->get_index(0))) {
 				throw InternalException(
-				    "VerifyNullHandling failed for aggregate function \"%s\": no rows were aggregated but the result "
+				    "VerifyNullHandling failed for aggregate function %s: no rows were aggregated but the result "
 				    "is not NULL - aggregates with default NULL handling should return NULL when no rows are "
 				    "aggregated",
 				    aggr.Function().GetName());
@@ -700,6 +716,7 @@ SourceResultType PhysicalUngroupedAggregate::GetDataInternal(ExecutionContext &c
 	// initialize the result chunk with the aggregate values
 	gstate.state.Finalize(chunk);
 	VerifyNullHandling(chunk, gstate.state.state, aggregates);
+	input.global_state.Cast<UngroupedAggregateGlobalSourceState>().finished = true;
 
 	return SourceResultType::FINISHED;
 }

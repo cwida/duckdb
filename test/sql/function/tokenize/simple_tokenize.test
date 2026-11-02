@@ -101,7 +101,7 @@ select start, token_type, word from sql_tokenize($$select * fro$$);
 query III
 select start, token_type, word from sql_tokenize($$crea tab$$);
 ----
-0	COLUMN_NAME	crea
+0	IDENTIFIER	crea
 5	IDENTIFIER	tab
 
 query III

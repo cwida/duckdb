@@ -92,16 +92,20 @@ static unique_ptr<BaseStatistics> ListPositionPropagateStats(ClientContext &, Fu
 }
 
 ScalarFunction ListContainsFun::GetFunction() {
-	auto fun = ScalarFunction({LogicalType::LIST(LogicalType::TEMPLATE("T")), LogicalType::TEMPLATE("T")},
-	                          LogicalType::BOOLEAN, ListSearchFunction<bool>);
+	auto fun = ScalarFunction({}, LogicalType::BOOLEAN, ListSearchFunction<bool>);
+	fun.GetSignature()
+	    .AddParameter("list", LogicalType::LIST(LogicalType::TEMPLATE("T")))
+	    .AddParameter("element", LogicalType::TEMPLATE("T"));
 	fun.SetCollationHandling(FunctionCollationHandling::PUSH_COMBINABLE_COLLATIONS);
 	fun.SetFilterPruneCallback(ListContainsFilterPrune);
 	return fun;
 }
 
 ScalarFunction ListPositionFun::GetFunction() {
-	auto fun = ScalarFunction({LogicalType::LIST(LogicalType::TEMPLATE("T")), LogicalType::TEMPLATE("T")},
-	                          LogicalType::INTEGER, ListSearchFunction<int32_t, true>);
+	auto fun = ScalarFunction({}, LogicalType::INTEGER, ListSearchFunction<int32_t, true>);
+	fun.GetSignature()
+	    .AddParameter("list", LogicalType::LIST(LogicalType::TEMPLATE("T")))
+	    .AddParameter("element", LogicalType::TEMPLATE("T"));
 	fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	fun.SetCollationHandling(FunctionCollationHandling::PUSH_COMBINABLE_COLLATIONS);
 	fun.SetStatisticsCallback(ListPositionPropagateStats);

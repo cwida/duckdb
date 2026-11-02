@@ -306,8 +306,10 @@ void DeleteProbeGlobal(void *ptr) {
 	delete static_cast<ProbeGlobal *>(ptr);
 }
 
-void ProbeBindCb(duckdb_v2_table_function_bind_info_handle info, duckdb_v2_context_handle context,
-                 duckdb_v2_error_info_handle *err) {
+void ProbeBindCb(duckdb_v2_function_bind_info_handle, duckdb_v2_table_function_bind_info_handle result,
+                 duckdb_v2_context_handle context, duckdb_v2_error_info_handle *err) {
+	duckdb_v2_factory_handle factory = nullptr;
+	duckdb_v2_context_get_factory(context, &factory, nullptr);
 	struct {
 		const char *name;
 		DUCKDB_V2_LOGICAL_TYPE_ID id;
@@ -316,12 +318,12 @@ void ProbeBindCb(duckdb_v2_table_function_bind_info_handle info, duckdb_v2_conte
 	               {"c", DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT}};
 	for (auto &column : columns) {
 		duckdb_v2_logical_type_handle type = nullptr;
-		if (duckdb_v2_context_create_type_from_id(context, column.id, nullptr, nullptr, 0, &type, err) !=
+		if (duckdb_v2_factory_create_type_from_id(factory, column.id, nullptr, nullptr, 0, &type, err) !=
 		    DUCKDB_V2_ERROR_NONE) {
 			return;
 		}
-		auto rc = duckdb_v2_table_function_bind_add_result_column(
-		    info, duckdb_v2_identifier_t {column.name, std::strlen(column.name)}, type, err);
+		duckdb_v2_identifier_t name_str = {column.name, std::strlen(column.name)};
+		auto rc = duckdb_v2_table_function_bind_add_result_column(result, &name_str, type, err);
 		duckdb_v2_logical_type_destroy(&type);
 		if (rc != DUCKDB_V2_ERROR_NONE) {
 			return;
@@ -383,7 +385,7 @@ void ProbeExecCb(duckdb_v2_table_function_exec_info_handle info, duckdb_v2_conte
 
 void RegisterProbe(duckdb_v2_connection_handle conn) {
 	duckdb_v2_table_function_handle function = nullptr;
-	REQUIRE(duckdb_v2_table_function_create_with_connection(conn, &function, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_table_function_create(FactoryOf(conn), &function, nullptr) == DUCKDB_V2_ERROR_NONE);
 	auto name = Convert("expr_probe");
 	REQUIRE(duckdb_v2_table_function_set_name(function, &name, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_table_function_set_bind_callback(function, ProbeBindCb, nullptr) == DUCKDB_V2_ERROR_NONE);
@@ -392,7 +394,7 @@ void RegisterProbe(duckdb_v2_connection_handle conn) {
 	REQUIRE(duckdb_v2_table_function_set_exec_callback(function, ProbeExecCb, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_table_function_set_filter_pushdown_callback(function, ProbePushdownCb, nullptr) ==
 	        DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_table_function_register(function, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_connection_register_table_function(conn, function, nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_table_function_destroy(&function);
 }
 

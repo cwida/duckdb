@@ -18,6 +18,15 @@ SELECT (SELECT v FROM all_memory) <> current_setting('max_memory')
 ----
 true
 
+# a percentage below 1% does not resolve to a 0 byte limit
+statement ok
+SET max_memory='0.5%'
+
+query I
+SELECT current_setting('max_memory') <> '0 bytes'
+----
+true
+
 # absolute values still work
 statement ok
 SET max_memory='1GiB'

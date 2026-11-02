@@ -1,0 +1,32 @@
+# name: test/sql/alter/add_col/test_add_col_not_null.test
+# description: ADD COLUMN preserves and enforces NOT NULL constraints
+# group: [add_col]
+
+statement ok
+CREATE TABLE t(a INTEGER);
+
+statement ok
+INSERT INTO t VALUES (1);
+
+statement error
+ALTER TABLE t ADD COLUMN b INTEGER NOT NULL;
+----
+
+statement ok
+DELETE FROM t;
+
+statement ok
+ALTER TABLE t ADD COLUMN b INTEGER NOT NULL;
+
+statement error
+INSERT INTO t VALUES (2, NULL);
+----
+<REGEX>:Constraint Error.*NOT NULL constraint failed: t.b.*
+
+statement ok
+INSERT INTO t VALUES (2, 42);
+
+query II
+SELECT * FROM t;
+----
+2	42

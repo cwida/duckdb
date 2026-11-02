@@ -102,8 +102,7 @@ void hierarchy_item(int h_level, ds_key_t *id, char **name, ds_key_t kIndex) {
 		*id += (nBrandBase * 1000 + nLastClass) * 1000;
 		break;
 	default:
-		printf("ERROR: Invalid call to hierarchy_item with argument '%d'\n", h_level);
-		exit(1);
+		INTERNAL("Invalid call to hierarchy_item");
 	}
 
 	return;

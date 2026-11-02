@@ -1,0 +1,58 @@
+# name: test/sql/subquery/any_all/test_some_subquery.test
+# description: SOME is a synonym for ANY in comparisons
+# group: [any_all]
+
+query I
+SELECT 5 = SOME(SELECT 5)
+----
+1
+
+query I
+SELECT 1 < SOME(SELECT 2 UNION SELECT 3)
+----
+1
+
+query I
+SELECT 2 = SOME(SELECT 1 UNION ALL SELECT 2)
+----
+1
+
+query I
+SELECT 2 <> SOME(SELECT 1)
+----
+1
+
+query I
+SELECT 2 < SOME(SELECT 3)
+----
+1
+
+query I
+SELECT 2 <= SOME(SELECT 2)
+----
+1
+
+query I
+SELECT 2 > SOME(SELECT 1)
+----
+1
+
+query I
+SELECT 2 >= SOME(SELECT 2)
+----
+1
+
+query I
+SELECT 5 = SOME(SELECT 1 WHERE FALSE)
+----
+0
+
+query I
+SELECT 5 = SOME(SELECT NULL::INTEGER)
+----
+NULL
+
+query I
+SELECT 2 = SOME([1, 2, 3])
+----
+1

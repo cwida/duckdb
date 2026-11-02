@@ -183,3 +183,18 @@ SELECT min(file_count) > 1
 FROM files;
 ----
 true
+
+# FILE_SIZE_BYTES next to ROW_GROUPS_PER_FILE: either limit rotates the file (the file size check used to
+# shadow the row group count)
+statement ok
+COPY bigdata TO '{TEST_DIR}/row_groups_per_file_and_size' (FORMAT PARQUET, ROW_GROUP_SIZE 2000, ROW_GROUPS_PER_FILE 1, FILE_SIZE_BYTES '1GB')
+
+query I
+SELECT count(*) FROM glob('{TEST_DIR}/row_groups_per_file_and_size/*.parquet')
+----
+5
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/row_groups_per_file_and_size/*.parquet'
+----
+10000

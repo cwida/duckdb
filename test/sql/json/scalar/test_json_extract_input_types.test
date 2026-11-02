@@ -39,12 +39,12 @@ INSERT INTO tricky VALUES
 foreach path $.a $.b $.a.b $.b.c $[0] $[2] $[7] $.a[0] $.a[1] $.b.c[0].d $."a\"b" $.日本 $.missing $.a.a.a $.tail $[0][1] $
 
 query I
-SELECT count(*) FROM tricky WHERE json_extract(v, '${path}') IS DISTINCT FROM json_extract(v::JSON, '${path}')
+SELECT count(*) FROM tricky WHERE json_extract(v, '{path}') IS DISTINCT FROM json_extract(v::JSON, '{path}')
 ----
 0
 
 query I
-SELECT count(*) FROM tricky WHERE json_extract_string(v, '${path}') IS DISTINCT FROM json_extract_string(v::JSON, '${path}')
+SELECT count(*) FROM tricky WHERE json_extract_string(v, '{path}') IS DISTINCT FROM json_extract_string(v::JSON, '{path}')
 ----
 0
 

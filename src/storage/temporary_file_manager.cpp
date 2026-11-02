@@ -3,6 +3,8 @@
 #include "duckdb/common/exception.hpp"
 
 #include "duckdb/common/enum_util.hpp"
+#include "duckdb/common/unordered_set.hpp"
+#include "duckdb/common/process_util.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
 #include "duckdb/storage/buffer/temporary_file_information.hpp"
 #include "duckdb/main/database.hpp"
@@ -88,8 +90,9 @@ TemporaryFileIndex::TemporaryFileIndex() {
 }
 
 TemporaryFileIndex::TemporaryFileIndex(TemporaryFileIdentifier identifier_p, idx_t block_index_p,
-                                       idx_t block_header_size_p)
-    : identifier(identifier_p), block_index(block_index_p), block_header_size(block_header_size_p) {
+                                       idx_t block_header_size_p, FileBufferType buffer_type_p)
+    : identifier(identifier_p), block_index(block_index_p), block_header_size(block_header_size_p),
+      buffer_type(buffer_type_p) {
 }
 
 bool TemporaryFileIndex::IsValid() const {
@@ -99,10 +102,18 @@ bool TemporaryFileIndex::IsValid() const {
 //===--------------------------------------------------------------------===//
 // BlockIndexManager
 //===--------------------------------------------------------------------===//
-BlockIndexManager::BlockIndexManager() : max_index(0), manager(nullptr) {
+BlockIndexManager::BlockIndexManager() : max_index(0), manager(nullptr), encrypted(false) {
 }
 
-BlockIndexManager::BlockIndexManager(TemporaryFileManager &manager) : max_index(0), manager(&manager) {
+BlockIndexManager::BlockIndexManager(TemporaryFileManager &manager, bool encrypted)
+    : max_index(0), manager(&manager), encrypted(encrypted) {
+}
+
+//! Physical stride of one block on disk: payload + (per-block encryption header, if encrypted).
+static idx_t PhysicalBlockSize(const TemporaryBufferSize size, const bool encrypted) {
+	const auto base = size == TemporaryBufferSize::DEFAULT ? DEFAULT_BLOCK_ALLOC_SIZE : TemporaryBufferSizeToSize(size);
+	const auto header_size = encrypted ? DEFAULT_ENCRYPTED_BUFFER_HEADER_SIZE : 0;
+	return base + header_size;
 }
 
 idx_t BlockIndexManager::GetNewBlockIndex(const TemporaryBufferSize size) {
@@ -165,8 +176,7 @@ idx_t BlockIndexManager::GetNewBlockIndexInternal(const TemporaryBufferSize size
 }
 
 void BlockIndexManager::SetMaxIndex(const idx_t new_index, const TemporaryBufferSize size) {
-	const auto temp_file_block_size =
-	    size == TemporaryBufferSize::DEFAULT ? DEFAULT_BLOCK_ALLOC_SIZE : TemporaryBufferSizeToSize(size);
+	const auto temp_file_block_size = PhysicalBlockSize(size, encrypted);
 	if (!manager) {
 		max_index = new_index;
 	} else {
@@ -192,7 +202,7 @@ void BlockIndexManager::SetMaxIndex(const idx_t new_index, const TemporaryBuffer
 TemporaryFileHandle::TemporaryFileHandle(TemporaryFileManager &manager, TemporaryFileIdentifier identifier_p,
                                          idx_t temp_file_count)
     : db(manager.db), identifier(identifier_p), max_allowed_index((1 << temp_file_count) * MAX_ALLOWED_INDEX_BASE),
-      path(manager.CreateTemporaryFileName(identifier)), index_manager(manager) {
+      path(manager.CreateTemporaryFileName(identifier)), index_manager(manager, identifier.encrypted) {
 }
 
 TemporaryFileHandle::~TemporaryFileHandle() {
@@ -201,7 +211,7 @@ TemporaryFileHandle::~TemporaryFileHandle() {
 TemporaryFileHandle::TemporaryFileLock::TemporaryFileLock(mutex &mutex) : lock(mutex) {
 }
 
-TemporaryFileIndex TemporaryFileHandle::TryGetBlockIndex(idx_t block_header_size) {
+TemporaryFileIndex TemporaryFileHandle::TryGetBlockIndex(idx_t block_header_size, FileBufferType buffer_type) {
 	TemporaryFileLock lock(file_lock);
 	if (index_manager.GetMaxIndex() >= max_allowed_index && !index_manager.HasFreeBlocks()) {
 		// file is at capacity
@@ -211,18 +221,28 @@ TemporaryFileIndex TemporaryFileHandle::TryGetBlockIndex(idx_t block_header_size
 	CreateFileIfNotExists(lock);
 	// fetch a new block index to write to
 	auto block_index = index_manager.GetNewBlockIndex(identifier.size);
-	return TemporaryFileIndex(identifier, block_index, block_header_size);
+	return TemporaryFileIndex(identifier, block_index, block_header_size, buffer_type);
+}
+
+FileHandle &TemporaryFileHandle::GetIOHandle(data_ptr_t buffer, const idx_t size, const idx_t offset) {
+	if (!handle->GetFlags().DirectIO() || (AlignPointer<Storage::SECTOR_SIZE>(buffer) == buffer &&
+	                                       size % Storage::SECTOR_SIZE == 0 && offset % Storage::SECTOR_SIZE == 0)) {
+		return *handle;
+	}
+
+	TemporaryFileLock lock(file_lock);
+	if (!buffered_handle) {
+		auto &fs = FileSystem::GetFileSystem(db);
+		buffered_handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ | FileFlags::FILE_FLAGS_WRITE);
+	}
+	return *buffered_handle;
 }
 
 unique_ptr<FileBuffer> TemporaryFileHandle::ReadTemporaryBuffer(QueryContext context,
                                                                 const TemporaryFileIndex &index_in_file,
-                                                                unique_ptr<FileBuffer> reusable_buffer) const {
-	auto &buffer_manager = BufferManager::GetBufferManager(db);
+                                                                unique_ptr<FileBuffer> buffer) {
 	auto block_index = index_in_file.block_index.GetIndex();
-	auto block_header_size = index_in_file.block_header_size.GetIndex();
-
-	auto buffer = buffer_manager.ConstructManagedBuffer(buffer_manager.GetBlockAllocSize() - block_header_size,
-	                                                    block_header_size, std::move(reusable_buffer));
+	D_ASSERT(buffer->GetHeaderSize() == index_in_file.block_header_size.GetIndex());
 	AllocatedData compressed_buffer;
 	data_ptr_t read_buffer;
 	idx_t read_size;
@@ -233,9 +253,9 @@ unique_ptr<FileBuffer> TemporaryFileHandle::ReadTemporaryBuffer(QueryContext con
 		read_size = buffer->AllocSize();
 	} else {
 		// compressed - read into separate compression buffer first
-		compressed_buffer = Allocator::Get(db).Allocate(TemporaryBufferSizeToSize(identifier.size));
-		read_buffer = compressed_buffer.get();
-		read_size = compressed_buffer.GetSize();
+		read_size = TemporaryBufferSizeToSize(identifier.size);
+		compressed_buffer = Allocator::Get(db).Allocate(read_size + Storage::SECTOR_SIZE - 1);
+		read_buffer = AlignPointer<Storage::SECTOR_SIZE>(compressed_buffer.get());
 	}
 
 	idx_t read_position = GetPositionInFile(block_index);
@@ -248,7 +268,7 @@ unique_ptr<FileBuffer> TemporaryFileHandle::ReadTemporaryBuffer(QueryContext con
 		//! Decrypt the compressed buffer.
 		EncryptionEngine::DecryptTemporaryBuffer(db, read_buffer, read_size, encryption_metadata);
 	} else {
-		handle->Read(context, read_buffer, read_size, read_position);
+		GetIOHandle(read_buffer, read_size, read_position).Read(context, read_buffer, read_size, read_position);
 	}
 
 	if (is_uncompressed) {
@@ -258,13 +278,13 @@ unique_ptr<FileBuffer> TemporaryFileHandle::ReadTemporaryBuffer(QueryContext con
 	// Decompress into buffer.
 	// The leading length word and the compressed payload both come off disk, so validate them before
 	// handing them to zstd: an oversized length would make ZSTD_decompress read past compressed_buffer.
-	const auto compressed_size = Load<idx_t>(compressed_buffer.get());
-	if (compressed_size > compressed_buffer.GetSize() - sizeof(idx_t)) {
+	const auto compressed_size = Load<idx_t>(read_buffer);
+	if (compressed_size > read_size - sizeof(idx_t)) {
 		throw IOException("Corrupt temporary file: compressed block claims %llu bytes but only %llu are available",
-		                  compressed_size, compressed_buffer.GetSize() - sizeof(idx_t));
+		                  compressed_size, read_size - sizeof(idx_t));
 	}
-	const auto decompressed_size = duckdb_zstd::ZSTD_decompress(
-	    buffer->InternalBuffer(), buffer->AllocSize(), compressed_buffer.get() + sizeof(idx_t), compressed_size);
+	const auto decompressed_size = duckdb_zstd::ZSTD_decompress(buffer->InternalBuffer(), buffer->AllocSize(),
+	                                                            read_buffer + sizeof(idx_t), compressed_size);
 	if (duckdb_zstd::ZSTD_isError(decompressed_size)) {
 		throw IOException("Corrupt temporary file: failed to decompress block (%s)",
 		                  duckdb_zstd::ZSTD_getErrorName(decompressed_size));
@@ -277,7 +297,7 @@ unique_ptr<FileBuffer> TemporaryFileHandle::ReadTemporaryBuffer(QueryContext con
 }
 
 void TemporaryFileHandle::WriteTemporaryBuffer(QueryContext context, FileBuffer &buffer, const idx_t block_index,
-                                               AllocatedData &compressed_buffer) const {
+                                               AllocatedData &compressed_buffer) {
 	// We group DEFAULT_BLOCK_ALLOC_SIZE blocks into the same file.
 	D_ASSERT(buffer.AllocSize() == BufferManager::GetBufferManager(db).GetBlockAllocSize());
 	bool is_uncompressed = identifier.size == TemporaryBufferSize::DEFAULT;
@@ -289,7 +309,7 @@ void TemporaryFileHandle::WriteTemporaryBuffer(QueryContext context, FileBuffer 
 		write_size = buffer.AllocSize();
 	} else {
 		// write the compressed buffer to the file
-		write_buffer = compressed_buffer.get();
+		write_buffer = AlignPointer<Storage::SECTOR_SIZE>(compressed_buffer.get());
 		write_size = TemporaryBufferSizeToSize(identifier.size);
 	}
 	idx_t write_position = GetPositionInFile(block_index);
@@ -300,8 +320,7 @@ void TemporaryFileHandle::WriteTemporaryBuffer(QueryContext context, FileBuffer 
 		handle->Write(context, encryption_metadata, DEFAULT_ENCRYPTED_BUFFER_HEADER_SIZE, write_position);
 		handle->Write(context, write_buffer, write_size, write_position + DEFAULT_ENCRYPTED_BUFFER_HEADER_SIZE);
 	} else {
-		// write file directly
-		handle->Write(context, write_buffer, write_size, write_position);
+		GetIOHandle(write_buffer, write_size, write_position).Write(context, write_buffer, write_size, write_position);
 	}
 }
 
@@ -319,6 +338,7 @@ bool TemporaryFileHandle::DeleteIfEmpty() {
 		return false;
 	}
 	// the file is empty: delete it
+	buffered_handle.reset();
 	handle.reset();
 	auto &fs = FileSystem::GetFileSystem(db);
 	fs.RemoveFile(path);
@@ -333,7 +353,7 @@ TemporaryFileInformation TemporaryFileHandle::GetTemporaryFile() {
 	TemporaryFileLock lock(file_lock);
 	TemporaryFileInformation info;
 	info.path = path;
-	info.size = GetPositionInFile(index_manager.GetUsedBlockCount());
+	info.size = GetPositionInFile(index_manager.GetMaxIndex());
 	return info;
 }
 
@@ -343,6 +363,17 @@ void TemporaryFileHandle::CreateFileIfNotExists(TemporaryFileLock &) {
 	}
 	auto &fs = FileSystem::GetFileSystem(db);
 	auto open_flags = FileFlags::FILE_FLAGS_READ | FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE;
+// Experimental direct I/O requires an explicit compiler definition.
+#if defined(DUCKDB_TEMPORARY_FILE_DIRECT_IO) && (!defined(__sun) || !defined(__SVR4))
+	if (!IsEncrypted()) {
+		try {
+			handle = fs.OpenFile(path, open_flags | FileFlags::FILE_FLAGS_DIRECT_IO);
+			return;
+		} catch (const IOException &) {
+			// Some filesystems cannot open files with direct I/O.
+		}
+	}
+#endif
 	handle = fs.OpenFile(path, open_flags);
 }
 
@@ -354,7 +385,7 @@ void TemporaryFileHandle::RemoveTempBlockIndex(TemporaryFileLock &, idx_t index)
 #ifndef WIN32 // this ended up causing issues when sorting
 		auto max_index = index_manager.GetMaxIndex();
 		auto &fs = FileSystem::GetFileSystem(db);
-		fs.Truncate(*handle, NumericCast<int64_t>(GetPositionInFile(max_index + 1)));
+		fs.Truncate(*handle, NumericCast<int64_t>(GetPositionInFile(max_index)));
 #endif
 	}
 }
@@ -492,8 +523,9 @@ void TemporaryFileCompressionAdaptivity::Update(const TemporaryCompressionLevel 
 // TemporaryFileManager
 //===--------------------------------------------------------------------===//
 TemporaryFileManager::TemporaryFileManager(DatabaseInstance &db, const string &temp_directory_p,
-                                           atomic<idx_t> &size_on_disk_p)
-    : db(db), temp_directory(temp_directory_p), files(*this), size_on_disk(size_on_disk_p), max_swap_space(0) {
+                                           atomic<idx_t> &size_on_disk_p, string file_prefix_p)
+    : file_prefix(std::move(file_prefix_p)), db(db), temp_directory(temp_directory_p), files(*this),
+      size_on_disk(size_on_disk_p), max_swap_space(0) {
 }
 
 TemporaryFileManager::~TemporaryFileManager() {
@@ -508,6 +540,7 @@ idx_t TemporaryFileManager::WriteTemporaryBuffer(QueryContext context, block_id_
 	D_ASSERT(buffer.AllocSize() == BufferManager::GetBufferManager(db).GetBlockAllocSize());
 
 	auto header_size = buffer.GetHeaderSize();
+	auto buffer_type = buffer.GetBufferType();
 	const auto adaptivity_idx = TaskScheduler::GetEstimatedCPUId() % COMPRESSION_ADAPTIVITIES;
 	auto &compression_adaptivity = compression_adaptivities[adaptivity_idx];
 
@@ -522,7 +555,7 @@ idx_t TemporaryFileManager::WriteTemporaryBuffer(QueryContext context, block_id_
 		// first check if we can write to an open existing file
 		for (auto &entry : files.GetMapForSize(compression_result.size)) {
 			auto &temp_file = entry.second;
-			index = temp_file->TryGetBlockIndex(header_size);
+			index = temp_file->TryGetBlockIndex(header_size, buffer_type);
 			if (index.IsValid()) {
 				handle = entry.second.get();
 				break;
@@ -534,7 +567,7 @@ idx_t TemporaryFileManager::WriteTemporaryBuffer(QueryContext context, block_id_
 			const TemporaryFileIdentifier identifier(db, size, index_managers[size].GetNewBlockIndex(size),
 			                                         IsEncrypted());
 			auto &new_file = files.CreateFile(identifier);
-			index = new_file.TryGetBlockIndex(header_size);
+			index = new_file.TryGetBlockIndex(header_size, buffer_type);
 			handle = &new_file;
 		}
 		D_ASSERT(used_blocks.find(block_id) == used_blocks.end());
@@ -543,10 +576,17 @@ idx_t TemporaryFileManager::WriteTemporaryBuffer(QueryContext context, block_id_
 	D_ASSERT(handle);
 	D_ASSERT(index.IsValid());
 
-	handle->WriteTemporaryBuffer(context, buffer, index.block_index.GetIndex(), compressed_buffer);
+	try {
+		handle->WriteTemporaryBuffer(context, buffer, index.block_index.GetIndex(), compressed_buffer);
+	} catch (...) {
+		// the block was registered under the lock above - unregister it again on write failure
+		TemporaryFileManagerLock lock(manager_lock);
+		EraseUsedBlock(lock, block_id, *handle, index);
+		throw;
+	}
 
 	compression_adaptivity.Update(compression_result.level, time_before);
-	return static_cast<idx_t>(compression_result.size);
+	return PhysicalBlockSize(compression_result.size, handle->IsEncrypted());
 }
 
 TemporaryFileManager::CompressionResult
@@ -565,11 +605,12 @@ TemporaryFileManager::CompressBuffer(TemporaryFileCompressionAdaptivity &compres
 	const auto compression_level = static_cast<int>(level);
 	D_ASSERT(compression_level >= duckdb_zstd::ZSTD_minCLevel() && compression_level <= duckdb_zstd::ZSTD_maxCLevel());
 	const auto zstd_bound = duckdb_zstd::ZSTD_compressBound(buffer.AllocSize());
-	compressed_buffer = Allocator::Get(db).Allocate(sizeof(idx_t) + zstd_bound);
-	const auto zstd_size = duckdb_zstd::ZSTD_compress(compressed_buffer.get() + sizeof(idx_t), zstd_bound,
+	compressed_buffer = Allocator::Get(db).Allocate(sizeof(idx_t) + zstd_bound + Storage::SECTOR_SIZE - 1);
+	const auto compressed_ptr = AlignPointer<Storage::SECTOR_SIZE>(compressed_buffer.get());
+	const auto zstd_size = duckdb_zstd::ZSTD_compress(compressed_ptr + sizeof(idx_t), zstd_bound,
 	                                                  buffer.InternalBuffer(), buffer.AllocSize(), compression_level);
 	D_ASSERT(!duckdb_zstd::ZSTD_isError(zstd_size));
-	Store<idx_t>(zstd_size, compressed_buffer.get());
+	Store<idx_t>(zstd_size, compressed_ptr);
 	const auto compressed_size = sizeof(idx_t) + zstd_size;
 
 	if (compressed_size > TemporaryBufferSizeToSize(MaximumCompressedTemporaryBufferSize())) {
@@ -629,18 +670,19 @@ To get usage information of the temp_directory, use 'CALL duckdb_temporary_files
 }
 
 void TemporaryFileManager::IncreaseSizeOnDisk(idx_t bytes) {
-	auto current_size_on_disk = GetTotalUsedSpaceInBytes();
-	if (current_size_on_disk + bytes > max_swap_space) {
-		auto used = StringUtil::BytesToHumanReadableString(current_size_on_disk);
-		auto max = StringUtil::BytesToHumanReadableString(max_swap_space);
-		auto data_size = StringUtil::BytesToHumanReadableString(bytes);
-		throw OutOfMemoryException(R"(failed to offload data block of size %s (%s/%s used).
+	auto current_size_on_disk = size_on_disk.load();
+	do {
+		if (current_size_on_disk + bytes > max_swap_space) {
+			auto used = StringUtil::BytesToHumanReadableString(current_size_on_disk);
+			auto max = StringUtil::BytesToHumanReadableString(max_swap_space);
+			auto data_size = StringUtil::BytesToHumanReadableString(bytes);
+			throw OutOfMemoryException(R"(failed to offload data block of size %s (%s/%s used).
 This limit was set by the 'max_temp_directory_size' setting.
 By default, this setting utilizes the available disk space on the drive where the 'temp_directory' is located.
 You can adjust this setting, by using (for example) PRAGMA max_temp_directory_size='10GiB')",
-		                           data_size, used, max);
-	}
-	size_on_disk += bytes;
+			                           data_size, used, max);
+		}
+	} while (!size_on_disk.compare_exchange_weak(current_size_on_disk, current_size_on_disk + bytes));
 }
 
 void TemporaryFileManager::DecreaseSizeOnDisk(idx_t bytes) {
@@ -664,11 +706,15 @@ unique_ptr<FileBuffer> TemporaryFileManager::ReadTemporaryBuffer(QueryContext co
 
 	// If eviction size requested, set it to the size of the block (compressed size if applicable).
 	if (eviction_size) {
-		*eviction_size = NumericCast<idx_t>(index.identifier.size);
+		*eviction_size = PhysicalBlockSize(index.identifier.size, index.identifier.encrypted);
 	}
 
-	// before the reusable buffer is given,
-	auto buffer = handle->ReadTemporaryBuffer(context, index, std::move(reusable_buffer));
+	auto &buffer_manager = BufferManager::GetBufferManager(db);
+	auto block_header_size = index.block_header_size.GetIndex();
+	auto buffer =
+	    buffer_manager.ConstructManagedBuffer(buffer_manager.GetBlockAllocSize() - block_header_size, block_header_size,
+	                                          std::move(reusable_buffer), index.buffer_type);
+	buffer = handle->ReadTemporaryBuffer(context, index, std::move(buffer));
 	{
 		// remove the block (and potentially erase the temp file)
 		TemporaryFileManagerLock lock(manager_lock);
@@ -682,7 +728,7 @@ idx_t TemporaryFileManager::DeleteTemporaryBuffer(block_id_t id) {
 	auto index = GetTempBlockIndex(lock, id);
 	auto handle = GetFileHandle(lock, index.identifier);
 	EraseUsedBlock(lock, id, *handle, index);
-	return static_cast<idx_t>(index.identifier.size);
+	return PhysicalBlockSize(index.identifier.size, index.identifier.encrypted);
 }
 
 vector<TemporaryFileInformation> TemporaryFileManager::GetTemporaryFiles() {
@@ -709,9 +755,79 @@ void TemporaryFileManager::EraseUsedBlock(TemporaryFileManagerLock &lock, block_
 	}
 }
 
+//! an array rather than a pointer, so the length below is derived from it and cannot drift
+static constexpr const char TEMPORARY_FILE_PREFIX[] = "duckdb_temp_";
+static constexpr idx_t TEMPORARY_FILE_PREFIX_LENGTH = sizeof(TEMPORARY_FILE_PREFIX) - 1;
+
+string TemporaryFilePrefix(const TemporaryFileOwner &owner) {
+	return TEMPORARY_FILE_PREFIX + to_string(owner.pid) + "_" + to_string(owner.instance) + "_";
+}
+
+string TemporaryOwnerMarkerName(const TemporaryFileOwner &owner) {
+	return TemporaryFilePrefix(owner) + "owner";
+}
+
+//! Only unsigned decimal, so nothing a version naming its files differently wrote can parse
+static bool TryParseDecimal(const string &text, uint64_t &result) {
+	if (text.empty() || text.size() > 19) {
+		return false;
+	}
+	uint64_t value = 0;
+	for (const auto c : text) {
+		if (c < '0' || c > '9') {
+			return false;
+		}
+		value = value * 10 + static_cast<uint64_t>(c - '0');
+	}
+	result = value;
+	return true;
+}
+
+bool TryParseTemporaryFileOwner(const string &file_name, TemporaryFileOwner &owner) {
+	if (!StringUtil::StartsWith(file_name, TEMPORARY_FILE_PREFIX)) {
+		return false;
+	}
+	auto pid_end = file_name.find('_', TEMPORARY_FILE_PREFIX_LENGTH);
+	if (pid_end == string::npos) {
+		return false;
+	}
+	auto instance_end = file_name.find('_', pid_end + 1);
+	if (instance_end == string::npos) {
+		return false;
+	}
+	uint64_t pid, instance;
+	if (!TryParseDecimal(file_name.substr(TEMPORARY_FILE_PREFIX_LENGTH, pid_end - TEMPORARY_FILE_PREFIX_LENGTH), pid) ||
+	    !TryParseDecimal(file_name.substr(pid_end + 1, instance_end - pid_end - 1), instance)) {
+		// written by a version that did not name its files after their owner - a UUID carries '-',
+		// which is not a decimal digit, so those land here too
+		return false;
+	}
+	owner.pid = NumericCast<int64_t>(pid);
+	owner.instance = NumericCast<idx_t>(instance);
+	return true;
+}
+
+//! Handed out in order, so instances in this process never take the same id twice
+static idx_t NextInstanceId() {
+	static atomic<idx_t> next_id(0);
+	return next_id++;
+}
+
+//! Whether this process still owes a directory its sweep. Leaked, mutex included: a DatabaseInstance
+//! can be created during static destruction, and locking a destroyed mutex throws.
+static bool ClaimDirectorySweep(const string &temp_directory) {
+	struct SweptDirectories {
+		mutex lock;
+		unordered_set<string> directories;
+	};
+	static auto &swept = *new SweptDirectories();
+	lock_guard<mutex> guard(swept.lock);
+	return swept.directories.insert(temp_directory).second;
+}
+
 string TemporaryFileManager::CreateTemporaryFileName(const TemporaryFileIdentifier &identifier) const {
 	return FileSystem::GetFileSystem(db).JoinPath(
-	    temp_directory, StringUtil::Format("duckdb_temp_storage_%s-%llu.tmp", EnumUtil::ToString(identifier.size),
+	    temp_directory, StringUtil::Format("%sstorage_%s-%llu.tmp", file_prefix, EnumUtil::ToString(identifier.size),
 	                                       identifier.file_index.GetIndex()));
 }
 
@@ -737,50 +853,117 @@ void TemporaryFileManager::EraseFileHandle(TemporaryFileManagerLock &, const Tem
 //===--------------------------------------------------------------------===//
 TemporaryDirectoryHandle::TemporaryDirectoryHandle(DatabaseInstance &db, string path_p, atomic<idx_t> &size_on_disk,
                                                    optional_idx max_swap_space)
-    : db(db), temp_directory(std::move(path_p)),
-      temp_file(make_uniq<TemporaryFileManager>(db, temp_directory, size_on_disk)) {
+    : db(db), temp_directory(std::move(path_p)) {
 	auto &fs = FileSystem::GetFileSystem(db);
 	D_ASSERT(!temp_directory.empty());
 	if (!fs.DirectoryExists(temp_directory)) {
 		fs.CreateDirectory(temp_directory);
 		created_directory = true;
 	}
+	ClaimOwner();
+	// reap whatever earlier instances left behind - a crash never reaches teardown. Once per
+	// directory: repeating it per instance only multiplies the chances of misjudging a live process.
+	if (ClaimDirectorySweep(temp_directory)) {
+		SweepAbandonedInstances();
+	}
+	temp_file = make_uniq<TemporaryFileManager>(db, temp_directory, size_on_disk, file_prefix);
 	temp_file->SetMaxSwapSpace(max_swap_space);
+}
+
+void TemporaryDirectoryHandle::ClaimOwner() {
+	auto &fs = FileSystem::GetFileSystem(db);
+	owner.pid = ProcessUtil::CurrentProcessId();
+	// Creating the marker is what claims the id, because it is the only step that is atomic against
+	// an instance that shares our pid but not our counter - two copies of duckdb in one process each
+	// count from zero. It is not locked, and nothing ever opens anybody else's: existing is its job.
+	for (;;) {
+		owner.instance = NextInstanceId();
+		auto marker_path = fs.JoinPath(temp_directory, TemporaryOwnerMarkerName(owner));
+		try {
+			auto marker = fs.OpenFile(marker_path, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW);
+			marker->Close();
+			break;
+		} catch (std::exception &) {
+			// taken, by a live instance or by one that died holding it - either way not ours
+			if (!fs.FileExists(marker_path)) {
+				throw;
+			}
+		}
+	}
+	file_prefix = TemporaryFilePrefix(owner);
+}
+
+vector<string> TemporaryDirectoryHandle::ListOwnFiles() {
+	auto &fs = FileSystem::GetFileSystem(db);
+	auto marker_name = TemporaryOwnerMarkerName(owner);
+	vector<string> result;
+	fs.ListFiles(temp_directory, [&](const string &name, bool is_dir) {
+		TemporaryFileOwner found;
+		if (is_dir || !TryParseTemporaryFileOwner(name, found) || !(found == owner)) {
+			return;
+		}
+		if (name == marker_name) {
+			// the claim itself, removed on its own once everything it reserves is gone
+			return;
+		}
+		result.push_back(fs.JoinPath(temp_directory, name));
+	});
+	return result;
+}
+
+void TemporaryDirectoryHandle::SweepAbandonedInstances() {
+	auto &fs = FileSystem::GetFileSystem(db);
+	try {
+		// the instance an id belongs to never affects the verdict, only the process it ran in does
+		unordered_map<int64_t, vector<string>> by_pid;
+		fs.ListFiles(temp_directory, [&](const string &name, bool is_dir) {
+			TemporaryFileOwner found;
+			if (!is_dir && TryParseTemporaryFileOwner(name, found)) {
+				by_pid[found.pid].push_back(fs.JoinPath(temp_directory, name));
+			}
+		});
+		for (auto &entry : by_pid) {
+			// our own pid included: a live process is the one thing that can still be using these
+			if (ProcessUtil::ProcessIsRunning(entry.first)) {
+				continue;
+			}
+			fs.RemoveFiles(entry.second);
+		}
+	} catch (...) { // NOLINT
+		            // reclaiming disk is not worth failing an open over - a later process tries again
+	}
 }
 
 TemporaryDirectoryHandle::~TemporaryDirectoryHandle() {
 	// first release any temporary files
 	temp_file.reset();
-	// then delete the temporary file directory
+	// Nothing here may throw - this is a destructor - but it reaches RemoveFile, which does: another
+	// instance removing a file between TryRemoveFile's existence check and its removal raises ENOENT,
+	// and Windows refuses to remove a file another instance holds open. A later instance reaps
+	// whatever is left, so there is nothing to do but log.
+	try {
+		CleanupTemporaryDirectory();
+	} catch (...) { // NOLINT
+		            // ~DatabaseInstance resets the log manager before the buffer manager that owns us, so there is
+		            // nowhere to report this; a later instance reaps whatever was left behind
+	}
+}
+
+void TemporaryDirectoryHandle::CleanupTemporaryDirectory() {
+	if (temp_directory.empty()) {
+		return;
+	}
 	auto &fs = FileSystem::GetFileSystem(db);
-	if (!temp_directory.empty()) {
-		bool delete_directory = created_directory;
-		vector<string> files_to_delete;
-		if (!created_directory) {
-			bool deleted_everything = true;
-			fs.ListFiles(temp_directory, [&](const string &path, bool isdir) {
-				if (isdir) {
-					deleted_everything = false;
-					return;
-				}
-				if (!StringUtil::StartsWith(path, "duckdb_temp_")) {
-					deleted_everything = false;
-					return;
-				}
-				files_to_delete.push_back(path);
-			});
-		}
-		if (delete_directory) {
-			// we want to remove all files in the directory
-			fs.RemoveDirectory(temp_directory);
-		} else {
-			vector<string> full_path_files_to_delete;
-			full_path_files_to_delete.reserve(files_to_delete.size());
-			for (auto &file : files_to_delete) {
-				full_path_files_to_delete.push_back(fs.JoinPath(temp_directory, file));
-			}
-			fs.RemoveFiles(full_path_files_to_delete);
-		}
+	// only our own: we are their owner, so no process has to be judged to know they are free. What
+	// others left behind is the first-spill sweep's business
+	fs.RemoveFiles(ListOwnFiles());
+	// the claim goes last - while it stands nobody can take our id and create a file under our name
+	// that we would then delete out from under them
+	fs.TryRemoveFile(fs.JoinPath(temp_directory, TemporaryOwnerMarkerName(owner)));
+	if (created_directory) {
+		// only if nothing else is in it: another instance may have joined us here, and removing the
+		// directory is recursive - it would take their files with it
+		fs.RemoveDirectoryExtended(temp_directory, {RemoveDirectoryMode::SINGLE});
 	}
 }
 

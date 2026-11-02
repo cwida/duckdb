@@ -55,6 +55,10 @@ SinkNextBatchType SortStrategy::NextBatch(ExecutionContext &context, OperatorSin
 	return SinkNextBatchType::READY;
 }
 
+unique_ptr<TupleDataCollection> SortStrategy::TryTakeSinglePartition(idx_t, GlobalSourceState &) const {
+	return nullptr;
+}
+
 void SortStrategy::RegisterHyperLogLog(LocalSinkState &, ParallelHyperLogLogLocalState &) const {
 	// NOP for all but HashedSort
 }

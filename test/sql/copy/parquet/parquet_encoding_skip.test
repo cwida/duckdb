@@ -31,3 +31,67 @@ SELECT * FROM '{TEST_DIR}/skip_nested.parquet' WHERE id>2995
 2999	[2999, 3000, 3001]	{'a': 2999, 'l': [2999, 3000, 3001]}	[{'a': 2999}, {'a': 3000}, {'a': 3001}]
 
 endloop
+
+# Skip a complete vector within pages that use the V2 encodings
+statement ok
+COPY (
+	SELECT CASE WHEN i < 2048 THEN ((i % 2) * 2)::INTEGER ELSE 1 END AS filter_col,
+		i::FLOAT AS f, i::DOUBLE AS d,
+		CASE WHEN i % 7 = 0 THEN NULL ELSE 'value_' || lpad(i::VARCHAR, 6, '0') END AS s
+	FROM range(5000) t(i)
+) TO '{TEST_DIR}/skip_v2_encodings.parquet' (
+	FORMAT parquet, PARQUET_VERSION 'V2', ROW_GROUP_SIZE 10000, DICTIONARY_SIZE_LIMIT 1
+);
+
+query TT
+SELECT path_in_schema, encodings
+FROM parquet_metadata('{TEST_DIR}/skip_v2_encodings.parquet')
+WHERE path_in_schema IN ('f', 'd', 's')
+ORDER BY path_in_schema
+----
+d	BYTE_STREAM_SPLIT
+f	BYTE_STREAM_SPLIT
+s	DELTA_LENGTH_BYTE_ARRAY
+
+query RRI
+SELECT sum(f), sum(d), sum(length(s))
+FROM read_parquet('{TEST_DIR}/skip_v2_encodings.parquet')
+WHERE filter_col = 1
+----
+10401372.0	10401372.0	30360
+
+# Exercise PLAIN string-length and VARIANT skipping within a page
+statement ok
+COPY (
+	SELECT CASE WHEN i < 2048 THEN ((i % 2) * 2)::INTEGER ELSE 1 END AS filter_col,
+		CASE WHEN i % 7 = 0 THEN NULL ELSE 'value_' || lpad(i::VARCHAR, 6, '0') END AS s,
+		i::VARIANT AS v,
+		printf('00000000-0000-0000-0000-%012d', i)::UUID AS u,
+		INTERVAL (i) MICROSECOND AS iv,
+		(i / 100.0)::DECIMAL(20, 2) AS dec,
+		i::BIGINT AS n
+	FROM range(5000) t(i)
+) TO '{TEST_DIR}/skip_v1_encodings.parquet' (
+	FORMAT parquet, PARQUET_VERSION 'V1', ROW_GROUP_SIZE 10000, DICTIONARY_SIZE_LIMIT 1
+);
+
+query T
+SELECT encodings
+FROM parquet_metadata('{TEST_DIR}/skip_v1_encodings.parquet')
+WHERE path_in_schema = 's'
+----
+PLAIN
+
+query II
+SELECT sum(strlen(s)), sum(v::BIGINT)
+FROM read_parquet('{TEST_DIR}/skip_v1_encodings.parquet')
+WHERE filter_col = 1
+----
+30360	10401372
+
+query TTIIR
+SELECT min(u)::VARCHAR, max(u)::VARCHAR, sum(epoch_us(iv)), sum(n), sum(dec)
+FROM read_parquet('{TEST_DIR}/skip_v1_encodings.parquet')
+WHERE filter_col = 1
+----
+00000000-0000-0000-0000-000000002048	00000000-0000-0000-0000-000000004999	8904000	10401372	104013.72

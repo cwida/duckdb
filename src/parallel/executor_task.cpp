@@ -55,9 +55,9 @@ TaskExecutionResult ExecutorTask::Execute(TaskExecutionMode mode) {
 			return result;
 		}
 	} catch (std::exception &ex) {
-		executor.PushError(ErrorData(ex));
+		executor.PushTaskError(ex);
 	} catch (...) { // LCOV_EXCL_START
-		executor.PushError(ErrorData("Unknown exception in ExecutorTask::Execute"));
+		executor.PushTaskError("Unknown exception in ExecutorTask::Execute");
 	} // LCOV_EXCL_STOP
 	return TaskExecutionResult::TASK_ERROR;
 }

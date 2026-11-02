@@ -1,0 +1,39 @@
+# name: test/sql/parser/wide_type_definitions.test
+# description: Independent type parameters do not accumulate expression depth
+# group: [parser]
+
+statement ok
+SET VARIABLE wide_struct_sql = (
+    SELECT 'SELECT (NULL::STRUCT(' || string_agg('c' || i || ' INTEGER', ',') || ')) IS NULL'
+    FROM range(1500) t(i)
+);
+
+query I
+FROM query(getvariable('wide_struct_sql'));
+----
+true
+
+statement ok
+SET VARIABLE many_structs_sql = (
+    SELECT 'SELECT ' || string_agg('NULL::STRUCT(a INTEGER) AS c' || i, ',')
+    FROM range(600) t(i)
+);
+
+query I
+SELECT count(*) FROM query(getvariable('many_structs_sql'));
+----
+1
+
+statement ok
+SET VARIABLE many_maps_sql = (
+    SELECT 'SELECT ' || string_agg('NULL::MAP(INTEGER, INTEGER) AS c' || i, ',')
+    FROM range(1100) t(i)
+);
+
+statement ok
+CREATE TABLE wide_maps AS FROM query(getvariable('many_maps_sql'));
+
+query I
+SELECT count(*) FROM wide_maps
+----
+1

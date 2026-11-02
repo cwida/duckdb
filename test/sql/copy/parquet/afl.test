@@ -2,8 +2,6 @@
 # description: Read afl-generated parquet files
 # group: [parquet]
 
-mode skip instable
-
 require parquet
 
 foreach i 1 2 6
@@ -20,8 +18,8 @@ foreach i 3 4 5 7
 
 
 statement error
-select * from parquet_scan('{DATA_DIR}/parquet-testing/afl/3.parquet')
+select * from parquet_scan('{DATA_DIR}/parquet-testing/afl/{i}.parquet')
 ----
-Invalid Error: Parquet file is likely corrupted, missing dictionary
+Parquet file is likely corrupted
 
 endloop

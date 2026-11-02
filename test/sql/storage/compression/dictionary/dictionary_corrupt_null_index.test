@@ -1,0 +1,36 @@
+# name: test/sql/storage/compression/dictionary/dictionary_corrupt_null_index.test
+# description: A valid row selects the dictionary's NULL entry in a short flat scan.
+# group: [dictionary]
+
+require vector_size 2048
+
+unzip data/storage/corrupt/dictionary_corrupt_null_index.db.gz {TEST_DIR}/dictionary_corrupt_null_index.db
+
+load {TEST_DIR}/dictionary_corrupt_null_index.db readonly
+
+statement ok
+USE dictionary_corrupt_null_index;
+
+query I
+SELECT compression FROM pragma_storage_info('t') WHERE column_name='s' AND segment_type='VARCHAR' LIMIT 1;
+----
+Dictionary
+
+query I
+SELECT compression FROM pragma_storage_info('t') WHERE column_name='s' AND segment_type='VALIDITY' LIMIT 1;
+----
+Uncompressed
+
+# The validity scan marks row 1 valid after the dictionary scan selects its NULL entry.
+query II
+SELECT count(s), sum(length(s)) FROM t;
+----
+80	553
+
+statement ok
+SET debug_force_fetch_row=true;
+
+query II
+SELECT count(s), sum(length(s)) FROM t;
+----
+80	553

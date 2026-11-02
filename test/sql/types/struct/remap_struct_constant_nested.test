@@ -1,0 +1,62 @@
+# name: test/sql/types/struct/remap_struct_constant_nested.test
+# description: remap_struct with a constant MAP/LIST source must broadcast the value to all rows
+# group: [struct]
+
+query I
+SELECT remap_struct(struct_pack(id := id, m := MAP {1: 'a', 2: 'b'}),
+                    NULL::STRUCT(id INTEGER, m2 MAP(INTEGER, VARCHAR)),
+                    {'id': 'id', 'm2': ROW('m', {'key': 'key', 'value': 'value'})},
+                    NULL)
+FROM range(3) t(id)
+----
+{'id': 0, 'm2': {1=a, 2=b}}
+{'id': 1, 'm2': {1=a, 2=b}}
+{'id': 2, 'm2': {1=a, 2=b}}
+
+query I
+SELECT remap_struct(struct_pack(id := id, l := [1, 2, 3]),
+                    NULL::STRUCT(id INTEGER, l2 INTEGER[]),
+                    {'id': 'id', 'l2': ROW('l', {'list': 'list'})},
+                    NULL)
+FROM range(3) t(id)
+----
+{'id': 0, 'l2': [1, 2, 3]}
+{'id': 1, 'l2': [1, 2, 3]}
+{'id': 2, 'l2': [1, 2, 3]}
+
+# nested constant list within a list
+query I
+SELECT remap_struct(struct_pack(id := id, l := [[1, 2], [3]]),
+                    NULL::STRUCT(id INTEGER, l2 INTEGER[][]),
+                    {'id': 'id', 'l2': ROW('l', {'list': ROW('list', {'list': 'list'})})},
+                    NULL)
+FROM range(3) t(id)
+----
+{'id': 0, 'l2': [[1, 2], [3]]}
+{'id': 1, 'l2': [[1, 2], [3]]}
+{'id': 2, 'l2': [[1, 2], [3]]}
+
+# constant NULL source
+query I
+SELECT remap_struct(struct_pack(id := id, m := NULL::MAP(INTEGER, VARCHAR)),
+                    NULL::STRUCT(id INTEGER, m2 MAP(INTEGER, VARCHAR)),
+                    {'id': 'id', 'm2': ROW('m', {'key': 'key', 'value': 'value'})},
+                    NULL)
+FROM range(3) t(id)
+----
+{'id': 0, 'm2': NULL}
+{'id': 1, 'm2': NULL}
+{'id': 2, 'm2': NULL}
+
+# more rows than a single vector
+query III
+SELECT count(*), count(DISTINCT r.m2), min(cardinality(r.m2))
+FROM (
+    SELECT remap_struct(struct_pack(id := id, m := MAP {1: 'a', 2: 'b'}),
+                        NULL::STRUCT(id INTEGER, m2 MAP(INTEGER, VARCHAR)),
+                        {'id': 'id', 'm2': ROW('m', {'key': 'key', 'value': 'value'})},
+                        NULL) AS r
+    FROM range(5000) t(id)
+)
+----
+5000	1	2

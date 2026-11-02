@@ -1,0 +1,75 @@
+# name: test/sql/storage/types/variant/variant_validity_stats.test
+# description: Appending VARIANT values updates top-level validity statistics
+# group: [variant]
+
+load {TEST_DIR}/variant_validity_stats.db readwrite v1.5.0
+
+statement ok
+CREATE TABLE v AS
+SELECT i::VARIANT AS non_null, NULL::VARIANT AS all_null,
+       (CASE WHEN i = 0 THEN i END)::VARIANT AS mixed
+FROM range(2) t(i);
+
+query III
+SELECT non_null, all_null, mixed FROM v ORDER BY rowid;
+----
+0	NULL	0
+1	NULL	NULL
+
+query II
+SELECT s.has_no_null, s.has_null FROM (SELECT stats(non_null) s FROM v LIMIT 1);
+----
+true	false
+
+query II
+SELECT s.has_no_null, s.has_null FROM (SELECT stats(all_null) s FROM v LIMIT 1);
+----
+false	true
+
+query II
+SELECT s.has_no_null, s.has_null FROM (SELECT stats(mixed) s FROM v LIMIT 1);
+----
+true	true
+
+# Verify validity statistics after checkpointing both non-shredded and shredded VARIANTs
+foreach threshold -1 1
+
+statement ok
+SET variant_minimum_shredding_size = {threshold};
+
+statement ok
+CREATE OR REPLACE TABLE v AS
+SELECT i::VARIANT AS non_null, NULL::VARIANT AS all_null,
+       (CASE WHEN i = 0 THEN i END)::VARIANT AS mixed
+FROM range(2) t(i);
+
+statement ok
+CHECKPOINT;
+
+restart
+
+onlyif threshold=1
+query III
+SELECT stats(non_null).shredding_state::VARCHAR = 'SHREDDED',
+       stats(all_null).shredding_state::VARCHAR = 'SHREDDED',
+       stats(mixed).shredding_state::VARCHAR = 'SHREDDED'
+FROM v LIMIT 1;
+----
+true	true	true
+
+query II
+SELECT s.has_no_null, s.has_null FROM (SELECT stats(non_null) s FROM v LIMIT 1);
+----
+true	false
+
+query II
+SELECT s.has_no_null, s.has_null FROM (SELECT stats(all_null) s FROM v LIMIT 1);
+----
+false	true
+
+query II
+SELECT s.has_no_null, s.has_null FROM (SELECT stats(mixed) s FROM v LIMIT 1);
+----
+true	true
+
+endloop

@@ -56,11 +56,21 @@ public:
 	PreserveOrderType preserve_order = PreserveOrderType::AUTOMATIC;
 	vector<idx_t> partition_columns;
 	vector<BoundOrderByNode> order_columns;
+	//! Directory of a partition's files relative to file_path (see PhysicalCopyToFile)
+	unique_ptr<Expression> partition_path_expression;
+	//! Statistics of the partition columns as derived by the optimizer (not serialized)
+	vector<unique_ptr<BaseStatistics>> partition_stats;
 
 	vector<Identifier> names;
 	vector<LogicalType> expected_types;
+	//! The names and types of the copied query before the copy function changes them, for RETURN_COLUMN_TYPES
+	vector<Identifier> query_names;
+	vector<LogicalType> query_types;
 
 public:
+	LogicalPlanSQLExportResult ToSQL(LogicalPlanSQLExportContext &context,
+	                                 const LogicalPlanVerificationPath &path) override;
+
 	vector<ColumnBinding> GetColumnBindings() override;
 	idx_t EstimateCardinality(ClientContext &context) override;
 	void Serialize(Serializer &serializer) const override;

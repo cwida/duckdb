@@ -112,10 +112,13 @@ void BitwiseANDOperation(DataChunk &args, ExpressionState &state, Vector &result
 ScalarFunctionSet BitwiseAndFun::GetFunctions() {
 	ScalarFunctionSet functions;
 	for (auto &type : LogicalType::Integral()) {
-		functions.AddFunction(
-		    ScalarFunction({type, type}, type, GetScalarIntegerBinaryFunction<BitwiseANDOperator>(type)));
+		ScalarFunction fun({}, type, GetScalarIntegerBinaryFunction<BitwiseANDOperator>(type));
+		fun.GetSignature().AddParameter("left", type).AddParameter("right", type);
+		functions.AddFunction(fun);
 	}
-	functions.AddFunction(ScalarFunction({LogicalType::BIT, LogicalType::BIT}, LogicalType::BIT, BitwiseANDOperation));
+	ScalarFunction bit_fun({}, LogicalType::BIT, BitwiseANDOperation);
+	bit_fun.GetSignature().AddParameter("left", LogicalType::BIT).AddParameter("right", LogicalType::BIT);
+	functions.AddFunction(bit_fun);
 	functions.SetFallible();
 	return functions;
 }
@@ -148,10 +151,13 @@ void BitwiseOROperation(DataChunk &args, ExpressionState &state, Vector &result)
 ScalarFunctionSet BitwiseOrFun::GetFunctions() {
 	ScalarFunctionSet functions;
 	for (auto &type : LogicalType::Integral()) {
-		functions.AddFunction(
-		    ScalarFunction({type, type}, type, GetScalarIntegerBinaryFunction<BitwiseOROperator>(type)));
+		ScalarFunction fun({}, type, GetScalarIntegerBinaryFunction<BitwiseOROperator>(type));
+		fun.GetSignature().AddParameter("left", type).AddParameter("right", type);
+		functions.AddFunction(fun);
 	}
-	functions.AddFunction(ScalarFunction({LogicalType::BIT, LogicalType::BIT}, LogicalType::BIT, BitwiseOROperation));
+	ScalarFunction bit_fun({}, LogicalType::BIT, BitwiseOROperation);
+	bit_fun.GetSignature().AddParameter("left", LogicalType::BIT).AddParameter("right", LogicalType::BIT);
+	functions.AddFunction(bit_fun);
 	functions.SetFallible();
 	return functions;
 }
@@ -184,10 +190,13 @@ void BitwiseXOROperation(DataChunk &args, ExpressionState &state, Vector &result
 ScalarFunctionSet BitwiseXorFun::GetFunctions() {
 	ScalarFunctionSet functions;
 	for (auto &type : LogicalType::Integral()) {
-		functions.AddFunction(
-		    ScalarFunction({type, type}, type, GetScalarIntegerBinaryFunction<BitwiseXOROperator>(type)));
+		ScalarFunction fun({}, type, GetScalarIntegerBinaryFunction<BitwiseXOROperator>(type));
+		fun.GetSignature().AddParameter("left", type).AddParameter("right", type);
+		functions.AddFunction(fun);
 	}
-	functions.AddFunction(ScalarFunction({LogicalType::BIT, LogicalType::BIT}, LogicalType::BIT, BitwiseXOROperation));
+	ScalarFunction bit_fun({}, LogicalType::BIT, BitwiseXOROperation);
+	bit_fun.GetSignature().AddParameter("left", LogicalType::BIT).AddParameter("right", LogicalType::BIT);
+	functions.AddFunction(bit_fun);
 	functions.SetFallible();
 	return functions;
 }
@@ -219,9 +228,13 @@ void BitwiseNOTOperation(DataChunk &args, ExpressionState &state, Vector &result
 ScalarFunctionSet BitwiseNotFun::GetFunctions() {
 	ScalarFunctionSet functions;
 	for (auto &type : LogicalType::Integral()) {
-		functions.AddFunction(ScalarFunction({type}, type, GetScalarIntegerUnaryFunction<BitwiseNotOperator>(type)));
+		ScalarFunction fun({}, type, GetScalarIntegerUnaryFunction<BitwiseNotOperator>(type));
+		fun.GetSignature().AddParameter("input", type);
+		functions.AddFunction(fun);
 	}
-	functions.AddFunction(ScalarFunction({LogicalType::BIT}, LogicalType::BIT, BitwiseNOTOperation));
+	ScalarFunction bit_fun({}, LogicalType::BIT, BitwiseNOTOperation);
+	bit_fun.GetSignature().AddParameter("input", LogicalType::BIT);
+	functions.AddFunction(bit_fun);
 	functions.SetFallible();
 	return functions;
 }
@@ -287,11 +300,13 @@ void BitwiseShiftLeftOperation(DataChunk &args, ExpressionState &state, Vector &
 ScalarFunctionSet LeftShiftFun::GetFunctions() {
 	ScalarFunctionSet functions;
 	for (auto &type : LogicalType::Integral()) {
-		functions.AddFunction(
-		    ScalarFunction({type, type}, type, GetScalarIntegerBinaryFunction<BitwiseShiftLeftOperator>(type)));
+		ScalarFunction fun({}, type, GetScalarIntegerBinaryFunction<BitwiseShiftLeftOperator>(type));
+		fun.GetSignature().AddParameter("input", type).AddParameter("shift", type);
+		functions.AddFunction(fun);
 	}
-	functions.AddFunction(
-	    ScalarFunction({LogicalType::BIT, LogicalType::INTEGER}, LogicalType::BIT, BitwiseShiftLeftOperation));
+	ScalarFunction bit_fun({}, LogicalType::BIT, BitwiseShiftLeftOperation);
+	bit_fun.GetSignature().AddParameter("input", LogicalType::BIT).AddParameter("shift", LogicalType::INTEGER);
+	functions.AddFunction(bit_fun);
 	functions.SetFallible();
 	return functions;
 }
@@ -335,11 +350,13 @@ void BitwiseShiftRightOperation(DataChunk &args, ExpressionState &state, Vector 
 ScalarFunctionSet RightShiftFun::GetFunctions() {
 	ScalarFunctionSet functions;
 	for (auto &type : LogicalType::Integral()) {
-		functions.AddFunction(
-		    ScalarFunction({type, type}, type, GetScalarIntegerBinaryFunction<BitwiseShiftRightOperator>(type)));
+		ScalarFunction fun({}, type, GetScalarIntegerBinaryFunction<BitwiseShiftRightOperator>(type));
+		fun.GetSignature().AddParameter("input", type).AddParameter("shift", type);
+		functions.AddFunction(fun);
 	}
-	functions.AddFunction(
-	    ScalarFunction({LogicalType::BIT, LogicalType::INTEGER}, LogicalType::BIT, BitwiseShiftRightOperation));
+	ScalarFunction bit_fun({}, LogicalType::BIT, BitwiseShiftRightOperation);
+	bit_fun.GetSignature().AddParameter("input", LogicalType::BIT).AddParameter("shift", LogicalType::INTEGER);
+	functions.AddFunction(bit_fun);
 	functions.SetFallible();
 	return functions;
 }

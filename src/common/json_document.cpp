@@ -1,6 +1,7 @@
 #include "duckdb/common/json_document.hpp"
 
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/helper.hpp"
 #include "yyjson.hpp"
 
 using namespace duckdb_yyjson; // NOLINT
@@ -106,6 +107,10 @@ bool JSONValue::IsInteger() const {
 	return val && yyjson_is_int(val);
 }
 
+bool JSONValue::IsNumber() const {
+	return val && yyjson_is_num(val);
+}
+
 string JSONValue::GetString() const {
 	const auto str = yyjson_get_str(val);
 	const auto len = yyjson_get_len(val);
@@ -126,6 +131,10 @@ int64_t JSONValue::GetSignedInteger() const {
 
 double JSONValue::GetDouble() const {
 	return unsafe_yyjson_get_real(val);
+}
+
+double JSONValue::GetNumber() const {
+	return unsafe_yyjson_get_num(val);
 }
 
 void JSONValue::IterateArray(const std::function<void(JSONValue)> &callback) const {
@@ -153,8 +162,12 @@ JSONValue JSONValue::GetMember(const string &key) const {
 
 string JSONValue::ToString(JSONWriteFlags flags) const {
 	size_t len;
-	auto json = yyjson_val_write(val, TranslateWriteFlags(flags), &len);
+	yyjson_write_err write_error;
+	auto json = yyjson_val_write_opts(val, TranslateWriteFlags(flags), nullptr, &len, &write_error);
 	if (!json) {
+		if (write_error.code == YYJSON_WRITE_ERROR_MEMORY_ALLOCATION) {
+			throw std::bad_alloc();
+		}
 		throw SerializationException("Failed to write JSON string");
 	}
 	string result(json, len);
@@ -188,12 +201,15 @@ unique_ptr<JSONDocument> JSONDocument::TryParse(const char *data, idx_t len, JSO
 	yyjson_read_err read_error;
 	auto parsed = yyjson_read_opts((char *)data, len, TranslateReadFlags(flags), nullptr, &read_error); // NOLINT
 	if (!parsed || read_error.code != YYJSON_READ_SUCCESS) {
-		error.has_error = true;
-		error.position = read_error.pos;
-		error.message = read_error.msg ? read_error.msg : "Unknown error";
 		if (parsed) {
 			yyjson_doc_free(parsed);
 		}
+		if (read_error.code == YYJSON_READ_ERROR_MEMORY_ALLOCATION) {
+			throw std::bad_alloc();
+		}
+		error.has_error = true;
+		error.position = read_error.pos;
+		error.message = read_error.msg ? read_error.msg : "Unknown error";
 		return nullptr;
 	}
 	auto result = make_uniq<JSONDocument>();

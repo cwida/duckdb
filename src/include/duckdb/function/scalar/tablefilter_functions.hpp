@@ -17,7 +17,7 @@ namespace duckdb {
 
 struct TableFilterBloomFilterFun {
 	static constexpr const char *Name = "__internal_tablefilter_bloom_filter";
-	static constexpr const char *Parameters = "";
+	static constexpr const char *Parameters = "col";
 	static constexpr const char *Description = "";
 	static constexpr const char *Example = "";
 	static constexpr const char *Categories = "";
@@ -27,7 +27,7 @@ struct TableFilterBloomFilterFun {
 
 struct TableFilterDynamicFun {
 	static constexpr const char *Name = "__internal_tablefilter_dynamic";
-	static constexpr const char *Parameters = "";
+	static constexpr const char *Parameters = "col";
 	static constexpr const char *Description = "";
 	static constexpr const char *Example = "";
 	static constexpr const char *Categories = "";
@@ -37,7 +37,7 @@ struct TableFilterDynamicFun {
 
 struct TableFilterOptionalFun {
 	static constexpr const char *Name = "__internal_tablefilter_optional";
-	static constexpr const char *Parameters = "";
+	static constexpr const char *Parameters = "col";
 	static constexpr const char *Description = "";
 	static constexpr const char *Example = "";
 	static constexpr const char *Categories = "";
@@ -47,7 +47,7 @@ struct TableFilterOptionalFun {
 
 struct TableFilterPrefixRangeFun {
 	static constexpr const char *Name = "__internal_tablefilter_prefix_range";
-	static constexpr const char *Parameters = "";
+	static constexpr const char *Parameters = "col";
 	static constexpr const char *Description = "";
 	static constexpr const char *Example = "";
 	static constexpr const char *Categories = "";
@@ -57,7 +57,7 @@ struct TableFilterPrefixRangeFun {
 
 struct TableFilterSelectivityOptionalFun {
 	static constexpr const char *Name = "__internal_tablefilter_selectivity_optional";
-	static constexpr const char *Parameters = "";
+	static constexpr const char *Parameters = "col";
 	static constexpr const char *Description = "";
 	static constexpr const char *Example = "";
 	static constexpr const char *Categories = "";

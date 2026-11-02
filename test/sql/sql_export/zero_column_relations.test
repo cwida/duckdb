@@ -1,0 +1,160 @@
+# name: test/sql/sql_export/zero_column_relations.test
+# description: SQL export preserves zero-column relations across retained query scopes
+# group: [sql_export]
+
+statement ok
+CREATE TABLE wide_description AS FROM query(
+	'SELECT ' || array_to_string(['NULL::BIGINT AS c' || i FOR i IN range(2050)], ', '));
+
+statement ok
+CREATE TABLE empty_t(c0 INTEGER);
+
+foreach optimizer '' 'unused_columns'
+
+statement ok
+SET disabled_optimizers={optimizer};
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+# Column pruning must preserve each materialized row, including across chunks.
+query I
+SELECT count(*) FROM (DESCRIBE SELECT 1 AS a, 2 AS b, 3 AS c);
+----
+3
+
+query I
+SELECT count(*) FROM (DESCRIBE SELECT * FROM wide_description);
+----
+2050
+
+query I
+SELECT 42 AS x FROM range(2) r, (DESCRIBE SELECT 1 AS n) d;
+----
+42
+42
+
+# LIMIT and OFFSET retain SELECT scopes that cannot have an empty selection list.
+query I
+SELECT count(*) FROM (SELECT 1 FROM (DESCRIBE SELECT 1 AS n) LIMIT 1);
+----
+1
+
+query I
+SELECT count(*) FROM (SELECT 1 FROM (DESCRIBE SELECT 1 AS a, 2 AS b, 3 AS c) LIMIT 1 OFFSET 1);
+----
+1
+
+query I
+SELECT count(*) FROM (SELECT 1 FROM (DESCRIBE SELECT 1 AS a, 2 AS b) LIMIT 1 OFFSET 2);
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT 1 FROM (DESCRIBE SELECT * FROM wide_description) LIMIT 2 OFFSET 2047);
+----
+2
+
+query I
+SELECT count(*) FROM (SELECT 1 FROM (SELECT 1 FROM (DESCRIBE SELECT 1 AS a, 2 AS b, 3 AS c) LIMIT 2) LIMIT 1);
+----
+1
+
+query I
+SELECT EXISTS(SELECT 1 FROM (DESCRIBE SELECT 1 AS a, 2 AS b));
+----
+true
+
+query I
+SELECT (SELECT 42 FROM (DESCRIBE SELECT 1 AS a, 2 AS b) LIMIT 1);
+----
+42
+
+# Joins, filters and named relations also need valid zero-column SELECT scopes.
+query I
+SELECT count(*) FROM (SELECT 1 FROM range(2) r, (DESCRIBE SELECT 1 AS a, 2 AS b) d LIMIT 3);
+----
+3
+
+query I
+SELECT count(*) FROM (SELECT 1 FROM (DESCRIBE SELECT 1 AS a, 2 AS b) WHERE column_name='b' LIMIT 1);
+----
+1
+
+query I
+WITH c AS MATERIALIZED (SELECT * FROM (DESCRIBE SELECT 1 AS a, 2 AS b))
+SELECT count(*) FROM (SELECT 1 FROM c l,c r LIMIT 3);
+----
+3
+
+query I
+SELECT count(*) FROM (SELECT 1 FROM (DESCRIBE SELECT 1 AS a, 2 AS b) UNION ALL SELECT 1 FROM (DESCRIBE SELECT 1 AS c));
+----
+3
+
+# Retain a valid UNION boundary when optimization removes the other arm.
+query I
+SELECT count(*) FROM (SELECT 1 FROM (DESCRIBE SELECT 1 AS a, 2 AS b) UNION ALL SELECT 1 WHERE false);
+----
+2
+
+query I
+SELECT count(*) FROM (SELECT DISTINCT 1 FROM (DESCRIBE SELECT 1 AS a, 2 AS b));
+----
+1
+
+# An aggregate without groups or aggregates produces a single row, even over empty input.
+query I
+SELECT count(*) FROM (SELECT 1 FROM (DESCRIBE SELECT 1 AS a, 2 AS b) HAVING true);
+----
+1
+
+query I
+SELECT count(*) FROM (SELECT 1 FROM range(3) HAVING true);
+----
+1
+
+query I
+SELECT count(*) FROM (SELECT 1 FROM range(0) HAVING true);
+----
+1
+
+query I
+SELECT count(*) FROM (SELECT 1 FROM empty_t HAVING true);
+----
+1
+
+# Empty relations and retained typed columns keep their existing semantics.
+query I
+SELECT count(*) FROM (SELECT 1 FROM (DESCRIBE SELECT 1 AS n) LIMIT 0);
+----
+0
+
+query I
+SELECT count(*) FROM (SELECT 1 FROM (DESCRIBE SELECT 1 AS n) WHERE false LIMIT 1);
+----
+0
+
+query T
+SELECT column_name FROM (DESCRIBE SELECT 1 AS a, NULL::INTEGER AS b) ORDER BY column_name;
+----
+a
+b
+
+endloop
+
+endloop
+
+statement ok
+SET disabled_optimizers='';
+
+statement ok
+SET debug_verify_statement='none';
+
+# These NULL tuples confirm that unused materialized columns are still pruned.
+query TT
+EXPLAIN (SQL) SELECT count(*) FROM (DESCRIBE SELECT 1 AS a, 2 AS b);
+----
+sql	<REGEX>:.*VALUES[[:space:]]+[(]NULL[)],[[:space:]]+[(]NULL[)].*

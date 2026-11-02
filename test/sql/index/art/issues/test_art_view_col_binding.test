@@ -52,7 +52,7 @@ statement ok
 CREATE TABLE t(a INTEGER, b VARCHAR);
 
 statement ok
-INSERT INTO t VALUES (1, 'x');
+INSERT INTO t VALUES (1, 'x'), (2, 'y');
 
 statement ok
 CREATE VIEW v AS SELECT a, b FROM t;

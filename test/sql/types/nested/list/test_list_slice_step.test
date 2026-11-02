@@ -269,10 +269,11 @@ SELECT ([1,2,3,4,5])['a':3:2];
 ----
 Conversion Error: Could not convert string 'a' to INT64
 
-statement error
+# an empty list is the placeholder for an omitted bound
+query I
 SELECT ([1,2,3,4,5])[1:[]:2];
 ----
-Binder Error: The upper and lower bounds of the slice must be a BIGINT
+[1, 3, 5]
 
 statement error
 SELECT ([1,2,3,4,5])[1:list_slice([1,2,3,4,5], 2, 3):2];

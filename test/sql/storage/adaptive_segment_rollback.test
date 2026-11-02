@@ -1,0 +1,193 @@
+# name: test/sql/storage/adaptive_segment_rollback.test
+# description: Reuse adaptive segments after reverting an append to the base table
+# group: [storage]
+
+require vector_size 2048
+
+require skip_reload
+
+# Forced commit recovery is incompatible with alternative block verification.
+require no_alternative_verify
+
+statement ok
+SET threads = 1
+
+statement ok
+SET initial_column_segment_size = 2048
+
+statement ok
+SET wal_autocheckpoint = '1TB'
+
+statement ok
+CREATE TABLE rollback_segments AS SELECT range::FLOAT AS value FROM range(100)
+
+# Fail after local storage is appended to the base table, exercising RevertAppend.
+loop retry 0 3
+
+statement ok
+SET debug_force_commit_failure = true
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO rollback_segments SELECT range::FLOAT FROM range(100, 60_000)
+
+statement error
+COMMIT
+----
+Forced commit failure
+
+statement ok
+SET debug_force_commit_failure = false
+
+query II
+SELECT COUNT(*), SUM(value)::BIGINT FROM rollback_segments
+----
+100	4950
+
+# The surviving initial segments do not use a shared block. Rollback must release it.
+query I
+SELECT memory_usage_bytes < 8192
+FROM duckdb_memory()
+WHERE tag = 'IN_MEMORY_TABLE'
+----
+true
+
+endloop
+
+statement ok
+INSERT INTO rollback_segments SELECT range::FLOAT FROM range(100, 60_000)
+
+query II
+SELECT COUNT(*), SUM(value)::BIGINT FROM rollback_segments
+----
+60000	1799970000
+
+query I
+SELECT COUNT(DISTINCT row_group_id) FROM pragma_storage_info('rollback_segments')
+----
+1
+
+query I
+SELECT COUNT(*) FROM (
+    (SELECT value FROM rollback_segments)
+    EXCEPT ALL
+    (SELECT range::FLOAT FROM range(60_000))
+)
+----
+0
+
+# Revert an append that handed its allocation cursor to a new row group.
+loop retry 0 3
+
+statement ok
+SET debug_force_commit_failure = true
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO rollback_segments SELECT range::FLOAT FROM range(60_000, 150_000)
+
+statement error
+COMMIT
+----
+Forced commit failure
+
+statement ok
+SET debug_force_commit_failure = false
+
+query II
+SELECT COUNT(*), SUM(value)::BIGINT FROM rollback_segments
+----
+60000	1799970000
+
+endloop
+
+statement ok
+INSERT INTO rollback_segments SELECT range::FLOAT FROM range(60_000, 150_000)
+
+statement ok
+CHECKPOINT
+
+query II
+SELECT COUNT(*), SUM(value)::BIGINT FROM rollback_segments
+----
+150000	11249925000
+
+statement ok
+DROP TABLE rollback_segments
+
+# Mixed columns share block regions while nested child columns keep their own segments.
+statement ok
+ATTACH ':memory:' AS mixed_db (ROW_GROUP_SIZE 2048)
+
+statement ok
+CREATE MACRO mixed_rows(first_row, last_row) AS TABLE
+SELECT i,
+       CASE WHEN i % 7 = 0 THEN NULL ELSE i::FLOAT END AS f,
+       CASE WHEN i % 11 = 0 THEN NULL ELSE repeat('x', 40) || i END AS s,
+       [i, NULL, i + 1] AS items,
+       {'a': [i, NULL]::BIGINT[2]} AS nested
+FROM range(first_row, last_row) r(i)
+
+statement ok
+CREATE TABLE mixed_db.mixed_rollback AS FROM mixed_rows(0, 1000)
+
+loop retry 0 2
+
+statement ok
+SET debug_force_commit_failure = true
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO mixed_db.mixed_rollback FROM mixed_rows(1000, 2500)
+
+statement error
+COMMIT
+----
+Forced commit failure
+
+statement ok
+SET debug_force_commit_failure = false
+
+query I
+SELECT COUNT(*) FROM (
+    (FROM mixed_db.mixed_rollback EXCEPT ALL FROM mixed_rows(0, 1000))
+    UNION ALL
+    (FROM mixed_rows(0, 1000) EXCEPT ALL FROM mixed_db.mixed_rollback)
+)
+----
+0
+
+endloop
+
+statement ok
+INSERT INTO mixed_db.mixed_rollback FROM mixed_rows(1000, 2500)
+
+query I
+SELECT COUNT(*) FROM (
+    (FROM mixed_db.mixed_rollback EXCEPT ALL FROM mixed_rows(0, 2500))
+    UNION ALL
+    (FROM mixed_rows(0, 2500) EXCEPT ALL FROM mixed_db.mixed_rollback)
+)
+----
+0
+
+statement ok
+CHECKPOINT mixed_db
+
+query I
+SELECT COUNT(*) FROM (
+    (FROM mixed_db.mixed_rollback EXCEPT ALL FROM mixed_rows(0, 2500))
+    UNION ALL
+    (FROM mixed_rows(0, 2500) EXCEPT ALL FROM mixed_db.mixed_rollback)
+)
+----
+0
+
+statement ok
+DETACH mixed_db

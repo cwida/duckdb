@@ -1,4 +1,5 @@
 #include "duckdb/catalog/catalog_entry/aggregate_function_catalog_entry.hpp"
+#include "duckdb/common/array.hpp"
 #include "duckdb/common/row_operations/row_operations.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
 #include "duckdb/common/types/row/tuple_data_layout.hpp"
@@ -13,22 +14,26 @@ void RowOperations::InitializeStates(TupleDataLayout &layout, Vector &addresses,
 	}
 	auto pointers = FlatVector::GetData<data_ptr_t>(addresses);
 	auto &offsets = layout.GetOffsets();
-	auto aggr_idx = layout.ColumnCount();
+	static constexpr idx_t INITIALIZE_BATCH_SIZE = 128;
+	array<data_ptr_t, INITIALIZE_BATCH_SIZE> state_pointers;
 
-	for (const auto &aggr : layout.GetAggregates()) {
-		AggregateStateInput state_input(aggr.function, aggr.GetFunctionData());
-		if (sel.IsSet()) {
-			for (idx_t i = 0; i < count; ++i) {
-				data_ptr_t state_ptr = pointers[sel.get_index_unsafe(i)] + offsets[aggr_idx];
-				aggr.function.GetStateInitCallback()(state_input, &state_ptr, 1);
+	for (idx_t start = 0; start < count; start += INITIALIZE_BATCH_SIZE) {
+		const auto batch_count = MinValue<idx_t>(INITIALIZE_BATCH_SIZE, count - start);
+		auto aggr_idx = layout.ColumnCount();
+		for (const auto &aggr : layout.GetAggregates()) {
+			AggregateStateInput state_input(aggr.function, aggr.GetFunctionData());
+			const auto offset = offsets[aggr_idx++];
+			if (sel.IsSet()) {
+				for (idx_t i = 0; i < batch_count; ++i) {
+					state_pointers[i] = pointers[sel.get_index_unsafe(start + i)] + offset;
+				}
+			} else {
+				for (idx_t i = 0; i < batch_count; ++i) {
+					state_pointers[i] = pointers[start + i] + offset;
+				}
 			}
-		} else {
-			for (idx_t i = 0; i < count; ++i) {
-				data_ptr_t state_ptr = pointers[i] + offsets[aggr_idx];
-				aggr.function.GetStateInitCallback()(state_input, &state_ptr, 1);
-			}
+			aggr.function.GetStateInitCallback()(state_input, state_pointers.data(), batch_count);
 		}
-		++aggr_idx;
 	}
 }
 

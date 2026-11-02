@@ -1,5 +1,5 @@
 # name: test/sql/parser/fetch_first.test
-# description: SQL-standard FETCH FIRST n ROWS ONLY clause is not recognised by the PEG parser
+# description: SQL-standard FETCH FIRST/NEXT ROW/ROWS ONLY clauses
 # group: [parser]
 
 statement ok
@@ -45,4 +45,40 @@ query I
 SELECT * FROM t ORDER BY a FETCH FIRST (1 + 1) ROWS ONLY
 ----
 1
+2
+
+query I
+SELECT * FROM t ORDER BY a FETCH FIRST ROW ONLY
+----
+1
+
+query I
+SELECT * FROM t ORDER BY a FETCH FIRST ROWS ONLY
+----
+1
+
+query I
+SELECT * FROM t ORDER BY a FETCH NEXT ROW ONLY
+----
+1
+
+query I
+SELECT * FROM t ORDER BY a FETCH NEXT ROWS ONLY
+----
+1
+
+query I
+SELECT * FROM t ORDER BY a OFFSET 1 ROW FETCH NEXT ROW ONLY
+----
+2
+
+query I
+SELECT * FROM t ORDER BY a FETCH FIRST 2 ROWS ONLY OFFSET 1 ROW
+----
+2
+3
+
+query I
+SELECT * FROM t ORDER BY a FETCH NEXT ROW ONLY OFFSET 1 ROWS
+----
 2

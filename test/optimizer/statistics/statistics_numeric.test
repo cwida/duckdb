@@ -170,15 +170,21 @@ logical_opt	<REGEX>:.*EMPTY_RESULT.*
 
 # NaN in column: corner eval returns NaN, is_unusable fires, no bounds derived
 query II
-SELECT s.min, s.max FROM (SELECT STATS(exp(x_nan)) s FROM mixed LIMIT 1)
+SELECT s.min, s.max FROM (SELECT STATS(sinh(x_nan)) s FROM mixed LIMIT 1)
 ----
 NULL	NULL
 
-# finite column: exp bounds propagate correctly
+# finite column: sinh bounds propagate correctly
+query II
+SELECT s.min, s.max FROM (SELECT STATS(sinh(x)) s FROM mixed LIMIT 1)
+----
+0.0	1.1752011936438014
+
+# exp is deliberately not annotated monotone: libm exp is not monotone on every platform
 query II
 SELECT s.min, s.max FROM (SELECT STATS(exp(x)) s FROM mixed LIMIT 1)
 ----
-1.0	2.718281828459045
+NULL	NULL
 
 # sqrt is strictly increasing: perfect squares round exactly, so bounds are exact
 statement ok

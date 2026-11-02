@@ -19,7 +19,8 @@ add_library_unity(
   bound_window_expression.cpp
   legacy_bound_between_expression.cpp
   legacy_bound_cast_expression.cpp
-  legacy_bound_comparison_expression.cpp)
+  legacy_bound_comparison_expression.cpp
+  window_range_info.cpp)
 set(ALL_OBJECT_FILES
     ${ALL_OBJECT_FILES} $<TARGET_OBJECTS:duckdb_planner_expression>
     PARENT_SCOPE)

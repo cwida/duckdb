@@ -20,6 +20,7 @@ namespace duckdb {
 class ColumnBindingResolver : public LogicalOperatorVisitor {
 public:
 	explicit ColumnBindingResolver(bool verify_only = false);
+	DUCKDB_API ColumnBindingResolver(vector<ColumnBinding> bindings, vector<LogicalType> types);
 
 	void VisitOperator(LogicalOperator &op) override;
 

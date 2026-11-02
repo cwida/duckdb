@@ -171,6 +171,12 @@
         "id": 201,
         "name": "offset_val",
         "type": "BoundLimitNode"
+      },
+      {
+        "id": 202,
+        "name": "unpruned_offset",
+        "type": "optional_idx",
+        "default": "optional_idx()"
       }
     ],
     "constructor": [
@@ -218,6 +224,12 @@
         "id": 202,
         "name": "offset",
         "type": "idx_t"
+      },
+      {
+        "id": 203,
+        "name": "unpruned_offset",
+        "type": "optional_idx",
+        "default": "optional_idx()"
       }
     ],
     "constructor": [
@@ -273,6 +285,58 @@
         "id": 200,
         "name": "view_name",
         "type": "string"
+      },
+      {
+        "id": 201,
+        "name": "pushed_filters",
+        "type": "vector<string>"
+      },
+      {
+        "id": 202,
+        "name": "has_source",
+        "type": "bool"
+      },
+      {
+        "id": 203,
+        "name": "source_name",
+        "type": "QualifiedName",
+        "default": "QualifiedName()"
+      },
+      {
+        "id": 204,
+        "name": "source_types",
+        "type": "vector<LogicalType>"
+      },
+      {
+        "id": 205,
+        "name": "has_at_clause",
+        "type": "bool"
+      },
+      {
+        "id": 206,
+        "name": "at_unit",
+        "type": "Identifier"
+      },
+      {
+        "id": 207,
+        "name": "at_value",
+        "type": "Value",
+        "default": "Value()"
+      },
+      {
+        "id": 208,
+        "name": "output_bindings",
+        "type": "vector<ColumnBinding>"
+      },
+      {
+        "id": 209,
+        "name": "output_expressions",
+        "type": "vector<Expression*>"
+      },
+      {
+        "id": 210,
+        "name": "source_filters",
+        "type": "vector<Expression*>"
       }
     ]
   },
@@ -534,15 +598,13 @@
     "class": "LogicalCrossProduct",
     "base": "LogicalOperator",
     "enum": "LOGICAL_CROSS_PRODUCT",
-    "members": [
-    ]
+    "members": []
   },
   {
     "class": "LogicalPositionalJoin",
     "base": "LogicalOperator",
     "enum": "LOGICAL_POSITIONAL_JOIN",
-    "members": [
-    ]
+    "members": []
   },
   {
     "class": "LogicalSetOperation",
@@ -933,7 +995,10 @@
         "type": "vector<idx_t>"
       }
     ],
-    "constructor": ["$ClientContext", "table_info&"]
+    "constructor": [
+      "$ClientContext",
+      "table_info&"
+    ]
   },
   {
     "class": "BoundMergeIntoAction",
@@ -1037,6 +1102,12 @@
         "id": 203,
         "name": "logical_plan_opt",
         "type": "string"
+      },
+      {
+        "id": 204,
+        "name": "sql_output_names",
+        "type": "vector<Identifier>",
+        "default": "vector<Identifier>()"
       }
     ],
     "constructor": [

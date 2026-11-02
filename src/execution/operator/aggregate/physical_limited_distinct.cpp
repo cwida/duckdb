@@ -44,7 +44,7 @@ struct LimitedDistinctGlobalSinkState : public GlobalSinkState {
 	LimitedDistinctGlobalSinkState(const PhysicalLimitedDistinct &op, ClientContext &context) : limit_reached(false) {
 		auto aggregate_objects = GetAggregateObjects(op.aggregates);
 		auto payload_types = GetPayloadTypes(op.aggregates);
-		ht = make_uniq<GroupedAggregateHashTable>(context, Allocator::Get(context), op.group_types, payload_types,
+		ht = make_uniq<GroupedAggregateHashTable>(context, BufferAllocator::Get(context), op.group_types, payload_types,
 		                                          aggregate_objects);
 	}
 
@@ -56,7 +56,7 @@ struct LimitedDistinctGlobalSinkState : public GlobalSinkState {
 struct LimitedDistinctLocalSinkState : public LocalSinkState {
 	LimitedDistinctLocalSinkState(const PhysicalLimitedDistinct &op, ExecutionContext &context)
 	    : group_executor(context.client, op.groups), payload_executor(context.client) {
-		auto &allocator = Allocator::Get(context.client);
+		auto &allocator = BufferAllocator::Get(context.client);
 
 		auto aggregate_objects = GetAggregateObjects(op.aggregates);
 		auto payload_types = GetPayloadTypes(op.aggregates);
@@ -154,7 +154,9 @@ SinkFinalizeType PhysicalLimitedDistinct::Finalize(Pipeline &pipeline, Event &ev
 // Source
 //===--------------------------------------------------------------------===//
 struct LimitedDistinctGlobalSourceState : public GlobalSourceState {
-	LimitedDistinctGlobalSourceState(const PhysicalLimitedDistinct &op, ClientContext &context) : initialized(false) {
+	LimitedDistinctGlobalSourceState(const PhysicalLimitedDistinct &op, ClientContext &context)
+	    : initialized(false), total_rows(op.sink_state->Cast<LimitedDistinctGlobalSinkState>().ht->Count()),
+	      rows_scanned(0) {
 		group_chunk.Initialize(Allocator::Get(context), op.group_types);
 
 		vector<LogicalType> payload_types;
@@ -169,12 +171,27 @@ struct LimitedDistinctGlobalSourceState : public GlobalSourceState {
 
 	AggregateHTScanState scan_state;
 	bool initialized;
+	const idx_t total_rows;
+	atomic<idx_t> rows_scanned;
 	DataChunk group_chunk;
 	DataChunk payload_chunk;
 };
 
 unique_ptr<GlobalSourceState> PhysicalLimitedDistinct::GetGlobalSourceState(ClientContext &context) const {
 	return make_uniq<LimitedDistinctGlobalSourceState>(*this, context);
+}
+
+ProgressData PhysicalLimitedDistinct::GetProgress(ClientContext &context, GlobalSourceState &gstate) const {
+	auto &state = gstate.Cast<LimitedDistinctGlobalSourceState>();
+	ProgressData progress;
+	progress.total = double(MaxValue<idx_t>(state.total_rows, 1));
+	progress.done = state.total_rows == 0 ? 1.0 : double(state.rows_scanned.load(std::memory_order_relaxed));
+	return progress;
+}
+
+void PhysicalLimitedDistinct::SourceFinished(ClientContext &context, GlobalSourceState &gstate) const {
+	auto &state = gstate.Cast<LimitedDistinctGlobalSourceState>();
+	state.rows_scanned.store(state.total_rows, std::memory_order_relaxed);
 }
 
 unique_ptr<LocalSourceState> PhysicalLimitedDistinct::GetLocalSourceState(ExecutionContext &context,
@@ -217,6 +234,7 @@ SourceResultType PhysicalLimitedDistinct::GetDataInternal(ExecutionContext &cont
 		col++;
 	}
 
+	gstate_source.rows_scanned.fetch_add(chunk.size(), std::memory_order_relaxed);
 	return chunk.size() == 0 ? SourceResultType::FINISHED : SourceResultType::HAVE_MORE_OUTPUT;
 }
 

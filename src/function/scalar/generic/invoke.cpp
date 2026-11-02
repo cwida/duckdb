@@ -9,6 +9,15 @@ namespace duckdb {
 
 namespace {
 
+static void PropagateLambdaProperties(BoundScalarFunction &function, const Expression &lambda_expr) {
+	if (lambda_expr.IsVolatile()) {
+		function.SetVolatile();
+	}
+	if (lambda_expr.CanThrow()) {
+		function.SetFallible();
+	}
+}
+
 struct LambdaInvokeData final : public LambdaFunctionData {
 	unique_ptr<Expression> lambda_expr;
 
@@ -33,9 +42,13 @@ struct LambdaInvokeData final : public LambdaFunctionData {
 	}
 
 	//! Deserializes a lambda function's bind data
-	static unique_ptr<FunctionData> Deserialize(Deserializer &deserializer, BoundScalarFunction &) {
+	static unique_ptr<FunctionData> Deserialize(Deserializer &deserializer, BoundScalarFunction &function) {
 		auto lambda_expr = deserializer.ReadPropertyWithExplicitDefault<unique_ptr<Expression>>(
 		    101, "lambda_expr", unique_ptr<Expression>());
+		if (lambda_expr) {
+			auto &bound_lambda_expr = lambda_expr->Cast<BoundLambdaExpression>();
+			PropagateLambdaProperties(function, *bound_lambda_expr.LambdaExpr());
+		}
 		return make_uniq<LambdaInvokeData>(std::move(lambda_expr));
 	}
 
@@ -117,6 +130,7 @@ unique_ptr<FunctionData> LambdaInvokeBind(BindScalarFunctionInput &input) {
 	}
 
 	bound_function.SetReturnType(bound_lambda_expr.LambdaExpr()->GetReturnType());
+	PropagateLambdaProperties(bound_function, *bound_lambda_expr.LambdaExpr());
 
 	return make_uniq<LambdaInvokeData>(bound_lambda_expr.Copy());
 }
@@ -136,9 +150,10 @@ LogicalType LambdaInvokeBindParameters(ClientContext &context, const vector<Logi
 } // namespace
 
 ScalarFunction InvokeFun::GetFunction() {
-	ScalarFunction fun("invoke", {LogicalType::LAMBDA, LogicalType::ANY}, LogicalType::ANY, LambdaInvokeFunction);
+	ScalarFunction fun("invoke", {}, LogicalType::ANY, LambdaInvokeFunction);
+	fun.GetSignature().AddParameter("lambda", LogicalType::LAMBDA).AddParameter("arg1", LogicalType::ANY);
 	fun.SetBindCallback(LambdaInvokeBind);
-	fun.SetVarArgs(LogicalType::ANY);
+	fun.GetSignature().AddArgs("args", LogicalType::ANY);
 	fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	fun.SetBindLambdaCallback(LambdaInvokeBindParameters);
 	fun.SetInitStateCallback(LambdaInvokeState::Init);

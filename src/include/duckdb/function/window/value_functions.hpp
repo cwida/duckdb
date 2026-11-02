@@ -47,7 +47,7 @@ struct NthValueFun {
 
 struct LeadFun {
 	static constexpr const char *Name = "lead";
-	static constexpr const char *Parameters = "expr[,n[,default]]";
+	static constexpr const char *Parameters = "col,offset,default";
 	static constexpr const char *Description = "The value of expr n rows after the current row, or the default. Can IGNORE or RESPECT NULLS.";
 	static constexpr const char *Example = "LEAD(athlete, 1, NULL) OVER (PARTITION BY event ORDER BY points) AS victorious_over";
 	static constexpr const char *Categories = "";
@@ -58,7 +58,7 @@ struct LeadFun {
 
 struct LagFun {
 	static constexpr const char *Name = "lag";
-	static constexpr const char *Parameters = "expr[,n[,default]]";
+	static constexpr const char *Parameters = "col,offset,default";
 	static constexpr const char *Description = "The value of expr n rows after the current row, or the default. Can IGNORE or RESPECT NULLS.";
 	static constexpr const char *Example = "LAG(athlete, 1, NULL) OVER (PARTITION BY event ORDER BY points) AS defeated_by";
 	static constexpr const char *Categories = "";

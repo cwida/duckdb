@@ -1,0 +1,20 @@
+# name: test/sql/alter/add_pk/test_add_pk_local_null.test
+# description: ADD PRIMARY KEY must reject transaction-local NULLs
+# group: [add_pk]
+
+statement ok
+CREATE TABLE t(a INTEGER);
+
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO t VALUES (NULL);
+
+statement error
+ALTER TABLE t ADD PRIMARY KEY (a);
+----
+<REGEX>:Constraint Error.*NOT NULL constraint failed.*
+
+statement ok
+ROLLBACK;

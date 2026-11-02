@@ -1,0 +1,67 @@
+# name: test/sql/order/order_merge_prefix.test
+# description: Merge sorted fragments with shared string prefixes
+# group: [order]
+
+statement ok
+SET threads=4;
+
+statement ok
+CREATE TABLE prefix_keys AS
+SELECT i, repeat('p', 600) || lpad(((i * 977) % 8193)::VARCHAR, 4, '0') AS k
+FROM range(8193) t(i);
+
+statement ok
+PRAGMA verify_parallelism;
+
+# Keep payloads associated with their keys while merging.
+query III
+SELECT count(*), sum(i),
+       bool_and((prev_k IS NULL OR prev_k <= k) AND
+                k = repeat('p', 600) || lpad(((i * 977) % 8193)::VARCHAR, 4, '0'))
+FROM (
+    SELECT *, lag(k) OVER () AS prev_k
+    FROM (SELECT * FROM prefix_keys ORDER BY k)
+);
+----
+8193	33558528	true
+
+statement ok
+SET debug_force_external=true;
+
+query III
+SELECT count(*), sum(i),
+       bool_and((prev_k IS NULL OR prev_k >= k) AND
+                k = repeat('p', 600) || lpad(((i * 977) % 8193)::VARCHAR, 4, '0'))
+FROM (
+    SELECT *, lag(k) OVER () AS prev_k
+    FROM (SELECT * FROM prefix_keys ORDER BY k DESC)
+);
+----
+8193	33558528	true
+
+# Equal keys and keys ending inside a shared prefix retain their ordinary order.
+statement ok
+CREATE TABLE prefix_lengths AS
+SELECT i, CASE WHEN i % 11 = 0 THEN NULL
+              ELSE repeat('p', (i % 4) * 200) END AS k
+FROM prefix_keys;
+
+query III
+SELECT count(*), sum(i),
+       bool_and(prev_k IS NULL OR k IS NULL OR prev_k < k OR (prev_k = k AND prev_i < i))
+FROM (
+    SELECT *, lag(k) OVER () AS prev_k, lag(i) OVER () AS prev_i
+    FROM (SELECT * FROM prefix_lengths ORDER BY k NULLS FIRST, i)
+);
+----
+8193	33558528	true
+
+# The same ordering is required when there is no payload.
+query II
+SELECT count(*), bool_and(prev_k IS NULL OR prev_k <= k)
+FROM (
+    SELECT k, lag(k) OVER () AS prev_k
+    FROM (SELECT k FROM prefix_keys ORDER BY k)
+);
+----
+8193	true

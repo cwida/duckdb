@@ -17,6 +17,9 @@ struct DynamicFilterData;
 //! LogicalTopN represents a comibination of ORDER BY and LIMIT clause, using Min/Max Heap
 class LogicalTopN : public LogicalOperator {
 public:
+	LogicalPlanSQLExportResult ToSQL(LogicalPlanSQLExportContext &context,
+	                                 const LogicalPlanVerificationPath &path) override;
+
 	static constexpr const LogicalOperatorType TYPE = LogicalOperatorType::LOGICAL_TOP_N;
 
 public:
@@ -28,6 +31,8 @@ public:
 	idx_t limit;
 	//! The offset from the start to begin emitting elements
 	idx_t offset;
+	//! SQL offset before row group pruning removed rows from the scan.
+	optional_idx unpruned_offset;
 	//! Dynamic table filter (if any)
 	shared_ptr<DynamicFilterData> dynamic_filter;
 

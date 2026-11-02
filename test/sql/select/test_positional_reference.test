@@ -48,3 +48,33 @@ statement error
 SELECT #-1 FROM range(1)
 ----
 <REGEX>:.*Parser Error.*syntax error.*
+
+# a positional reference reused as an alias inside a subquery binds as a correlated reference to the outer position
+statement ok
+CREATE TABLE t(a INT, b INT);
+
+statement ok
+INSERT INTO t VALUES (1, 2), (3, NULL);
+
+query I
+SELECT #2 AS x FROM t WHERE (SELECT x) IS NULL
+----
+NULL
+
+query II
+SELECT #1 AS x, (SELECT x + 100) AS y FROM t ORDER BY 1
+----
+1	101
+3	103
+
+query I
+SELECT #2 AS x FROM t ORDER BY (SELECT x) NULLS LAST
+----
+2
+NULL
+
+# an out-of-range position reused this way still produces a regular binder error
+statement error
+SELECT 42 AS a, #1 AS x WHERE (SELECT x) IS NULL
+----
+<REGEX>:.*Binder Error.*out of range.*

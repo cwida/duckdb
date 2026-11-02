@@ -13,48 +13,29 @@
 
 namespace duckdb {
 
-struct PackratMatchState {
-	static bool IsEnabled(const Matcher &matcher, const MatchState &state) {
-		return state.context.packrat_cache && matcher.IsPackratMemoized() && matcher.GetPackratId().IsValid();
-	}
-
-	optional<MatcherResult> TryLoadCachedResult(const Matcher &matcher, MatchState &state);
-	void StoreResult(const Matcher &matcher, MatchState &state, const MatcherResult &result) const;
-
-private:
-	optional_idx token_index_before;
-	idx_t max_token_index_before = 0;
-};
-
-struct MatchStackFrame {
-public:
-	explicit MatchStackFrame(MatchInput input);
-
-public:
-	bool IsInitialized() const;
-
-public:
-	const Matcher &matcher;
-	MatchState &match_state;
-	unique_ptr<MatchProcess> process;
-	optional<MatcherResult> child_result;
-	optional<MatcherResult> result;
-	PackratMatchState packrat_state;
-};
+struct MatchStackFrame;
 
 class MatchStack {
 public:
+	MatchStack();
+	~MatchStack();
+
 	MatcherResult Execute(MatchInput input);
 
 private:
+	friend struct MatchStackFrame;
+	static constexpr idx_t INITIAL_FRAME_CAPACITY = 64;
+
+	template <bool SINGLE_STEP>
+	static MatchStep ExecuteInternal(optional_ptr<MatchStack> stack, MatchStackFrame &initial_frame,
+	                                 optional<MatcherResult> child_result);
 	MatcherResult ExecuteAtomicMatcher(MatchInput input);
-	void PushFrame(MatchInput input);
-	void InitializeFrame(MatchStackFrame &frame);
-	void ExecuteFrame(MatchStackFrame &frame);
-	MatcherResult FinalizeFrame(MatchStackFrame &frame);
+	optional<MatcherResult> PushFrame(MatchInput input);
+	void DestroyTopFrame();
+	void Clear();
 
 private:
-	vector<unique_ptr<MatchStackFrame>> frames;
+	vector<arena_ptr<MatchStackFrame>> frames;
 };
 
 } // namespace duckdb

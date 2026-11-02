@@ -10,8 +10,9 @@ CSVFileScan::CSVFileScan(ClientContext &context, const OpenFileInfo &file_p, CSV
                          const MultiFileOptions &file_options, const vector<Identifier> &names,
                          const vector<LogicalType> &types, CSVSchema &file_schema, bool per_file_single_threaded,
                          shared_ptr<CSVBufferManager> buffer_manager_p, bool fixed_schema)
-    : BaseFileReader(file_p), buffer_manager(std::move(buffer_manager_p)),
-      error_handler(make_shared_ptr<CSVErrorHandler>(options_p.ignore_errors.GetValue())),
+    : file(file_p), buffer_manager(std::move(buffer_manager_p)),
+      error_handler(
+          make_shared_ptr<CSVErrorHandler>(options_p.ignore_errors.GetValue(), options_p.store_rejects.GetValue())),
       options(std::move(options_p)) {
 	// Initialize Buffer Manager
 	if (!buffer_manager) {
@@ -51,7 +52,8 @@ CSVFileScan::CSVFileScan(ClientContext &context, const OpenFileInfo &file_p, CSV
 
 CSVFileScan::CSVFileScan(ClientContext &context, const OpenFileInfo &file_p, const CSVReaderOptions &options_p,
                          const MultiFileOptions &file_options)
-    : BaseFileReader(file_p), error_handler(make_shared_ptr<CSVErrorHandler>(options_p.ignore_errors.GetValue())),
+    : file(file_p), error_handler(make_shared_ptr<CSVErrorHandler>(options_p.ignore_errors.GetValue(),
+                                                                   options_p.store_rejects.GetValue())),
       options(options_p) {
 	buffer_manager = CSVBufferManager::Open(context, options, file);
 	// Initialize On Disk and Size of file
@@ -76,9 +78,6 @@ CSVFileScan::CSVFileScan(ClientContext &context, const OpenFileInfo &file_p, con
 	state_machine = make_shared_ptr<CSVStateMachine>(
 	    state_machine_cache.Get(options.dialect_options.state_machine_options), options);
 	SetStart();
-}
-
-CSVUnionData::~CSVUnionData() {
 }
 
 void CSVFileScan::SetStart() {
@@ -157,6 +156,36 @@ void CSVFileScan::InitializeProjection() {
 
 void CSVFileScan::Finish() {
 	buffer_manager.reset();
+}
+
+double CSVFileScan::GetProgressInFile(ClientContext &context) {
+	auto manager = buffer_manager;
+	if (!manager) {
+		// We are done with this file, so it's 100%
+		return 100.0;
+	}
+	if (file_size == 0) {
+		// empty file
+		return 100.0;
+	}
+	auto &file_handle = *manager->file_handle;
+	if (file_handle.compression_type == FileCompressionType::GZIP ||
+	    file_handle.compression_type == FileCompressionType::ZSTD) {
+		// compressed file: the file is decompressed ahead of parsing - the progress is the fraction of the file that
+		// was decompressed, times the fraction of the decompressed bytes that was parsed
+		auto decompressed_fraction = file_handle.GetProgress() / static_cast<double>(file_size);
+		auto decompressed_bytes = file_handle.UncompressedBytesRead();
+		double parsed_fraction = 0;
+		if (decompressed_bytes > 0) {
+			parsed_fraction = MinValue<double>(static_cast<double>(bytes_read.load(std::memory_order_relaxed)) /
+			                                       static_cast<double>(decompressed_bytes),
+			                                   1.0);
+		}
+		auto progress = compressed_progress.Update(
+		    ProgressData {MinValue<double>(decompressed_fraction, 1.0) * parsed_fraction, 1.0, false});
+		return progress.done * 100.0;
+	}
+	return static_cast<double>(bytes_read.load(std::memory_order_relaxed)) / static_cast<double>(file_size) * 100.0;
 }
 
 } // namespace duckdb

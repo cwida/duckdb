@@ -1,0 +1,55 @@
+# name: test/sql/join/asof/test_asof_join_not_distinct_predicate.test
+# description: ASOF JOIN on an IS NOT DISTINCT FROM key evaluates the other join predicates
+# group: [asof]
+
+statement ok
+CREATE TABLE t(id INTEGER, k INTEGER);
+
+statement ok
+INSERT INTO t VALUES (1, 1), (2, 1), (3, NULL), (4, NULL);
+
+query IIII
+SELECT * FROM t l ASOF JOIN t r ON l.k IS NOT DISTINCT FROM r.k AND l.id >= r.id AND l.id <> r.id ORDER BY ALL;
+----
+2	1	1	1
+4	NULL	3	NULL
+
+query IIII
+SELECT * FROM t l ASOF JOIN t r ON l.k IS NOT DISTINCT FROM r.k AND l.id >= r.id AND FALSE;
+----
+
+query IIII
+SELECT * FROM t l ASOF LEFT JOIN t r ON l.k IS NOT DISTINCT FROM r.k AND l.id >= r.id AND l.id <> r.id ORDER BY ALL;
+----
+1	1	NULL	NULL
+2	1	1	1
+3	NULL	NULL	NULL
+4	NULL	3	NULL
+
+# the same results as the LATERAL formulation
+query IIII
+SELECT * FROM t l JOIN LATERAL (
+	SELECT * FROM t r WHERE l.k IS NOT DISTINCT FROM r.k AND l.id >= r.id AND l.id <> r.id
+	ORDER BY r.id DESC LIMIT 1) q ON TRUE ORDER BY ALL;
+----
+2	1	1	1
+4	NULL	3	NULL
+
+# keys the nested loop join cannot compare: the predicate cannot be dropped silently
+statement ok
+CREATE TABLE s(id INTEGER, k STRUCT(a INTEGER));
+
+statement ok
+INSERT INTO s VALUES (1, {'a': 1}), (2, {'a': 1});
+
+statement error
+SELECT * FROM s l ASOF JOIN s r ON l.k = r.k AND l.id >= r.id AND l.id <> r.id;
+----
+Not implemented Error: Unsupported ASOF JOIN
+
+# without the extra predicate the ASOF JOIN on a struct key works
+query IIII
+SELECT l.id, l.k.a, r.id, r.k.a FROM s l ASOF JOIN s r ON l.k = r.k AND l.id >= r.id ORDER BY ALL;
+----
+1	1	1	1
+2	1	2	1

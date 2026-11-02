@@ -1,0 +1,25 @@
+name: Forward review activity to pr-tracker
+
+# Thin caller. Runs on the default branch WITH secrets (a workflow_run always does,
+# even when the run it reacts to had none). All resolution/dispatch logic lives in
+# the shared composite action (duckdb/duckdb-ci/pr-tracker/review-forward), so it's
+# maintained in one place. Pairs with review-relay.yml (the no-op stub that produces
+# the workflow_run on a fork PR review).
+
+on:
+  workflow_run:
+    workflows: ["Review relay"]
+    types: [completed]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  forward:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: duckdb/duckdb-ci/pr-tracker/review-forward@main
+        with:
+          token: ${{ secrets.PR_DISPATCH_TOKEN }}   # dispatch to pr-tracker
+          lookup_token: ${{ github.token }}          # read this repo's open PRs

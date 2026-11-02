@@ -1,0 +1,81 @@
+# name: test/sql/storage/nan_min_statistics.test
+# description: Test min statistics when column contains NaN values
+# group: [storage]
+
+require exact_vector_size 2048
+
+load {TEST_DIR}/test_nan_min_stats.db
+
+foreach type FLOAT DOUBLE
+
+statement ok
+CREATE OR REPLACE TABLE t(x {type});
+
+statement ok
+INSERT INTO t VALUES ('nan'::{type});
+
+query II
+SELECT (stats(x)).min, (stats(x)).max FROM t LIMIT 1;
+----
+nan	nan
+
+statement ok
+CHECKPOINT;
+
+query II
+SELECT MIN(x), MAX(x) FROM t;
+----
+nan	nan
+
+statement ok
+CREATE OR REPLACE TABLE t(x {type});
+
+statement ok
+INSERT INTO t VALUES ('nan'::{type}), (42), (-42);
+
+query II
+SELECT ((stats(x)).min)::{type} = -42, isnan(((stats(x)).max)::{type}) FROM t LIMIT 1;
+----
+1	1
+
+statement ok
+CHECKPOINT;
+
+query II
+SELECT MIN(x) = -42, isnan(MAX(x)) FROM t;
+----
+1	1
+
+endloop
+
+# This database was written by DuckDB v1.5.5 and contains only NULL floating-point values
+unzip data/storage/nan_min_statistics_v1_5_5.db.gz {TEST_DIR}/nan_min_statistics_v1_5_5.db
+
+statement ok
+ATTACH '{TEST_DIR}/nan_min_statistics_v1_5_5.db' AS legacy_nan_stats;
+
+statement ok
+INSERT INTO legacy_nan_stats.legacy_nan_stats VALUES ('nan'::FLOAT, 'nan'::DOUBLE);
+
+query IIII
+SELECT isnan(((stats(f)).min)::FLOAT), isnan(((stats(f)).max)::FLOAT),
+       isnan(((stats(d)).min)::DOUBLE), isnan(((stats(d)).max)::DOUBLE)
+FROM legacy_nan_stats.legacy_nan_stats LIMIT 1;
+----
+1	1	1	1
+
+statement ok
+CHECKPOINT legacy_nan_stats;
+
+statement ok
+DETACH legacy_nan_stats;
+
+statement ok
+ATTACH '{TEST_DIR}/nan_min_statistics_v1_5_5.db' AS legacy_nan_stats (READ_ONLY);
+
+query IIII
+SELECT isnan(((stats(f)).min)::FLOAT), isnan(((stats(f)).max)::FLOAT),
+       isnan(((stats(d)).min)::DOUBLE), isnan(((stats(d)).max)::DOUBLE)
+FROM legacy_nan_stats.legacy_nan_stats LIMIT 1;
+----
+1	1	1	1

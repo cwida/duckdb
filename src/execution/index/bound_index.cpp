@@ -6,7 +6,7 @@
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
-#include "duckdb/storage/table/append_state.hpp"
+#include "duckdb/execution/index/index_lock.hpp"
 #include "duckdb/common/types/selection_vector.hpp"
 #include "duckdb/common/types/column/column_data_scan_states.hpp"
 #include "duckdb/storage/table/scan_state.hpp"
@@ -32,24 +32,19 @@ BoundIndex::BoundIndex(const Identifier &name, const string &index_type, IndexCo
 	}
 }
 
-void BoundIndex::InitializeLock(IndexLock &state) const {
-	state.index_lock = unique_lock<mutex>(lock);
-}
-
 ErrorData BoundIndex::Append(DataChunk &chunk, Vector &row_ids) {
-	IndexLock l;
-	InitializeLock(l);
+	IndexLock l(*this);
 	return Append(l, chunk, row_ids);
 }
 
 ErrorData BoundIndex::Append(IndexLock &l, DataChunk &chunk, Vector &row_ids, IndexAppendInfo &info) {
+	l.AssertHeld(*this);
 	// Fallback to the old Append.
 	return Append(l, chunk, row_ids);
 }
 
 ErrorData BoundIndex::Append(DataChunk &chunk, Vector &row_ids, IndexAppendInfo &info) {
-	IndexLock l;
-	InitializeLock(l);
+	IndexLock l(*this);
 	return Append(l, chunk, row_ids, info);
 }
 
@@ -62,30 +57,29 @@ void BoundIndex::VerifyConstraint(DataChunk &chunk, IndexAppendInfo &info, Confl
 }
 
 void BoundIndex::ResetStorage() {
-	IndexLock index_lock;
-	InitializeLock(index_lock);
+	IndexLock index_lock(*this);
 	ResetStorage(index_lock);
 }
 
 idx_t BoundIndex::TryDelete(DataChunk &entries, Vector &row_identifiers, optional_ptr<SelectionVector> deleted_sel,
                             optional_ptr<SelectionVector> non_deleted_sel) {
-	IndexLock state;
-	InitializeLock(state);
+	IndexLock state(*this);
 	return TryDelete(state, entries, row_identifiers, deleted_sel, non_deleted_sel);
 }
 
 idx_t BoundIndex::TryDelete(IndexLock &state, DataChunk &entries, Vector &row_identifiers,
                             optional_ptr<SelectionVector> deleted_sel, optional_ptr<SelectionVector> non_deleted_sel) {
+	state.AssertHeld(*this);
 	throw InternalException("TryDelete not implemented");
 }
 
 void BoundIndex::Delete(DataChunk &entries, Vector &row_identifiers) {
-	IndexLock state;
-	InitializeLock(state);
+	IndexLock state(*this);
 	Delete(state, entries, row_identifiers);
 }
 
 void BoundIndex::Delete(IndexLock &state, DataChunk &entries, Vector &row_identifiers) {
+	state.AssertHeld(*this);
 	auto deleted_rows = TryDelete(state, entries, row_identifiers);
 	if (deleted_rows != entries.size()) {
 		throw InvalidInputException("Failed to delete all rows from index. Only deleted %d out of %d rows.\nChunk: %s",
@@ -94,52 +88,47 @@ void BoundIndex::Delete(IndexLock &state, DataChunk &entries, Vector &row_identi
 }
 
 ErrorData BoundIndex::Insert(IndexLock &l, DataChunk &chunk, Vector &row_ids, IndexAppendInfo &info) {
+	l.AssertHeld(*this);
 	throw NotImplementedException("this implementation of Insert does not exist.");
 }
 
 bool BoundIndex::MergeIndexes(BoundIndex &other_index) {
-	IndexLock state;
-	InitializeLock(state);
+	IndexLock state(*this);
 	return MergeIndexes(state, other_index);
 }
 
 void BoundIndex::Verify() {
-	IndexLock l;
-	InitializeLock(l);
+	IndexLock l(*this);
 	Verify(l);
 }
 
 string BoundIndex::ToString(bool display_ascii) {
-	IndexLock l;
-	InitializeLock(l);
+	IndexLock l(*this);
 	return ToString(l, display_ascii);
 }
 
 void BoundIndex::VerifyAllocations() {
-	IndexLock l;
-	InitializeLock(l);
+	IndexLock l(*this);
 	return VerifyAllocations(l);
 }
 
 void BoundIndex::VerifyBuffers(IndexLock &l) {
+	l.AssertHeld(*this);
 	throw NotImplementedException("this implementation of VerifyBuffers does not exist");
 }
 
 void BoundIndex::VerifyBuffers() {
-	IndexLock l;
-	InitializeLock(l);
+	IndexLock l(*this);
 	return VerifyBuffers(l);
 }
 
 void BoundIndex::Vacuum() {
-	IndexLock state;
-	InitializeLock(state);
+	IndexLock state(*this);
 	Vacuum(state);
 }
 
 idx_t BoundIndex::GetInMemorySize() const {
-	IndexLock state;
-	InitializeLock(state);
+	IndexLock state(*this);
 	return GetInMemorySize(state);
 }
 
@@ -188,11 +177,7 @@ ErrorData BoundIndex::MergeCheckpointDelta(IndexDeltaType, BoundIndex &) {
 	throw InternalException("BoundIndex::MergeCheckpointDelta is not supported for this index type");
 }
 
-IndexStorageInfo BoundIndex::SerializeToDisk(QueryContext context, const case_insensitive_map_t<Value> &options) {
-	throw NotImplementedException("The implementation of this index disk serialization does not exist.");
-}
-
-IndexStorageInfo BoundIndex::SerializeToWAL(const case_insensitive_map_t<Value> &options) {
+IndexStorageInfo BoundIndex::SerializeToWAL(const StorageVersion) {
 	throw NotImplementedException("The implementation of this index WAL serialization does not exist.");
 }
 

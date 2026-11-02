@@ -1,11 +1,12 @@
 #include "duckdb/parser/parsed_data/create_secret_info.hpp"
+#include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/peg/transformer/peg_transformer.hpp"
 
 namespace duckdb {
 
 Value PEGTransformerFactory::GetConstantExpressionValue(unique_ptr<ParsedExpression> &expr) {
 	if (expr->GetExpressionType() == ExpressionType::VALUE_CONSTANT) {
-		return expr->Cast<ConstantExpression>().GetValue();
+		return expr->Cast<ConstantExpression>().GetLiteral().ToValue();
 	}
 	if (expr->GetExpressionType() == ExpressionType::COLUMN_REF) {
 		return expr->Cast<ColumnRefExpression>().GetName();

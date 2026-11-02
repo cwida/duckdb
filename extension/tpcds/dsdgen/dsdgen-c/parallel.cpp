@@ -133,7 +133,6 @@ int checkSeeds(tdef *pTdef) {
 			genrand_integer(&res, DIST_UNIFORM, 1, 100, 0, i);
 		if (bSetSeeds) {
 			if (Streams[i].nUsed > Streams[i].nUsedPerRow) {
-				fprintf(stderr, "Seed overrun on column %d. Used: %d\n", i, Streams[i].nUsed);
 				Streams[i].nUsedPerRow = Streams[i].nUsed;
 				nReturnCode = 1;
 			}

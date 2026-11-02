@@ -51,7 +51,7 @@ unique_ptr<Expression> ContainsToInClauseRule::Apply(LogicalOperator &op, vector
 	// No non-NULL elements: never contains any value.
 	if (non_null_elements.empty()) {
 		changes_made = true;
-		return ExpressionRewriter::ConstantOrNull(probe_arg->Copy(), Value::BOOLEAN(false));
+		return ExpressionRewriter::ConstantOrNull(GetContext(), probe_arg->Copy(), Value::BOOLEAN(false));
 	}
 
 	// Fully constant probe: let constant folding handle it.

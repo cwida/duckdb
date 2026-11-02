@@ -1,0 +1,67 @@
+# name: test/sql/storage/prefetch/async_native_scan_read_ahead_pruning.test
+# description: Scan I/O registration leaves out the vectors the segment zonemaps reject, on both scan paths
+# group: [prefetch]
+
+require block_size 262144
+
+load {TEST_DIR}/async_native_scan_read_ahead_pruning.db
+
+# sorted values with per-row noise keep the bitpacking segments wide, so a row group spans two blocks
+statement ok
+SET force_compression='bitpacking'
+
+statement ok
+CREATE TABLE integers AS SELECT (range * 1000000 + (hash(range) % 1000000))::BIGINT AS i FROM range(1000000);
+
+statement ok
+CHECKPOINT
+
+# restart so the payload blocks begin cold
+restart
+
+statement ok
+SET threads=4
+
+statement ok
+SET async_threads=4
+
+statement ok
+SET storage_block_prefetch='debug_force_always'
+
+statement ok
+CREATE TEMPORARY TABLE before AS SELECT memory_usage_bytes AS bytes FROM duckdb_memory() WHERE tag = 'BASE_TABLE'
+
+# read-ahead jobs skip the leading segment the zonemap rejects, only the matching segment's block is loaded
+query I
+SELECT count(*) FROM integers WHERE i BETWEEN 230000000000 AND 230010999999
+----
+11
+
+query I
+SELECT memory_usage_bytes - (SELECT bytes FROM before) <= 262144 FROM duckdb_memory() WHERE tag = 'BASE_TABLE'
+----
+true
+
+# the per-thread path registers no I/O for the trailing segment the zonemap rejects, one run instead of two
+statement ok
+SET read_ahead_depth=0
+
+# the per-thread path only logs I/O it schedules, so override a forced-synchronous scan strategy
+statement ok
+SET debug_physical_table_scan_execution_strategy=DEFAULT
+
+statement ok
+CALL enable_logging('AsyncTaskSchedule')
+
+query I
+SELECT count(*) FROM integers WHERE i BETWEEN 10000000 AND 20999999
+----
+11
+
+query I
+SELECT sum(task_count) FROM duckdb_logs_parsed('AsyncTaskSchedule')
+----
+1
+
+statement ok
+CALL truncate_duckdb_logs()

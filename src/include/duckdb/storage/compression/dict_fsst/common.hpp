@@ -1,8 +1,6 @@
 #pragma once
 
 #include "duckdb/common/typedefs.hpp"
-#include "duckdb/common/bitpacking.hpp"
-#include "duckdb/storage/string_uncompressed.hpp"
 #include "fsst.h"
 
 namespace duckdb {

@@ -23,6 +23,11 @@ public:
 	explicit HTTPException(const string &message) : Exception(ExceptionType::HTTP, message) {
 	}
 
+	//! Rebuild an HTTP exception from extra info captured earlier (e.g. to extend its message).
+	explicit HTTPException(const unordered_map<string, string> &extra_info, const string &message)
+	    : Exception(extra_info, ExceptionType::HTTP, message) {
+	}
+
 	template <class RESPONSE, typename ResponseShape<decltype(RESPONSE::status)>::status = 0, typename... ARGS>
 	explicit HTTPException(RESPONSE &response, const string &msg, ARGS &&...params)
 	    : HTTPException(static_cast<int>(response.status), response.body, response.headers, response.reason, msg,

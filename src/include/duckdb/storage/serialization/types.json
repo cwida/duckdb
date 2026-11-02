@@ -41,16 +41,16 @@
     ]
   },
   {
-    "class": "ExtraTypeInfo",
+    "class": "LogicalTypeInfo",
     "class_type": "type",
     "includes": [
-      "duckdb/common/extra_type_info.hpp"
+      "duckdb/common/logical_type_info.hpp"
     ],
     "members": [
       {
         "id": 100,
         "name": "type",
-        "type": "ExtraTypeInfoType"
+        "type": "LogicalTypeInfoType"
       },
       {
         "id": 101,
@@ -68,12 +68,11 @@
         "name": "extension_info",
         "type": "unique_ptr<ExtensionTypeInfo>"
       }
-    ],
-    "pointer_type": "shared_ptr"
+    ]
   },
   {
     "class": "DecimalTypeInfo",
-    "base": "ExtraTypeInfo",
+    "base": "LogicalTypeInfo",
     "enum": "DECIMAL_TYPE_INFO",
     "members": [
       {
@@ -90,7 +89,7 @@
   },
   {
     "class": "StringTypeInfo",
-    "base": "ExtraTypeInfo",
+    "base": "LogicalTypeInfo",
     "enum": "STRING_TYPE_INFO",
     "members": [
       {
@@ -102,7 +101,7 @@
   },
   {
     "class": "ListTypeInfo",
-    "base": "ExtraTypeInfo",
+    "base": "LogicalTypeInfo",
     "enum": "LIST_TYPE_INFO",
     "members": [
       {
@@ -114,7 +113,7 @@
   },
   {
     "class": "StructTypeInfo",
-    "base": "ExtraTypeInfo",
+    "base": "LogicalTypeInfo",
     "enum": "STRUCT_TYPE_INFO",
     "members": [
       {
@@ -126,7 +125,7 @@
   },
   {
     "class": "LegacyAggregateStateTypeInfo",
-    "base": "ExtraTypeInfo",
+    "base": "LogicalTypeInfo",
     "enum": "LEGACY_AGGREGATE_STATE_TYPE_INFO",
     "members": [
       {
@@ -152,7 +151,7 @@
   },
   {
     "class": "ArrayTypeInfo",
-    "base": "ExtraTypeInfo",
+    "base": "LogicalTypeInfo",
     "enum": "ARRAY_TYPE_INFO",
     "members": [
       {
@@ -173,25 +172,25 @@
   },
   {
     "class": "EnumTypeInfo",
-    "base": "ExtraTypeInfo",
+    "base": "LogicalTypeInfo",
     "enum": "ENUM_TYPE_INFO",
     "custom_implementation": true
   },
   {
     "class": "InvalidTypeInfo",
-    "base": "ExtraTypeInfo",
+    "base": "LogicalTypeInfo",
     "enum": "INVALID_TYPE_INFO",
     "custom_switch_code": "return nullptr;"
   },
   {
     "class": "GenericTypeInfo",
-    "base": "ExtraTypeInfo",
+    "base": "LogicalTypeInfo",
     "enum": "GENERIC_TYPE_INFO",
-    "custom_switch_code": "result = make_shared_ptr<ExtraTypeInfo>(type);\nbreak;"
+    "custom_switch_code": "result = make_uniq<LogicalTypeInfo>(type);\nbreak;"
   },
   {
     "class": "AnyTypeInfo",
-    "base": "ExtraTypeInfo",
+    "base": "LogicalTypeInfo",
     "enum": "ANY_TYPE_INFO",
     "members": [
       {
@@ -208,7 +207,7 @@
   },
   {
     "class": "IntegerLiteralTypeInfo",
-    "base": "ExtraTypeInfo",
+    "base": "LogicalTypeInfo",
     "enum": "INTEGER_LITERAL_TYPE_INFO",
     "members": [
       {
@@ -220,7 +219,7 @@
   },
   {
     "class": "TemplateTypeInfo",
-    "base": "ExtraTypeInfo",
+    "base": "LogicalTypeInfo",
     "enum": "TEMPLATE_TYPE_INFO",
     "members": [
       {
@@ -232,7 +231,7 @@
   },
   {
     "class": "GeoTypeInfo",
-    "base": "ExtraTypeInfo",
+    "base": "LogicalTypeInfo",
     "enum": "GEO_TYPE_INFO",
     "members": [
       {
@@ -244,7 +243,7 @@
   },
   {
     "class": "UnboundTypeInfo",
-    "base": "ExtraTypeInfo",
+    "base": "LogicalTypeInfo",
     "enum": "UNBOUND_TYPE_INFO",
     "custom_implementation": true
   }

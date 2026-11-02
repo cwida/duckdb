@@ -7,7 +7,7 @@ namespace duckdb {
 PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalSecureView &op) {
 	D_ASSERT(op.children.size() == 1);
 	auto &plan = CreatePlan(*op.children[0]);
-	return Make<PhysicalSecureView>(plan, op.view_name);
+	return Make<PhysicalSecureView>(plan, op.view_name, op.pushed_filters, op.estimated_cardinality);
 }
 
 } // namespace duckdb

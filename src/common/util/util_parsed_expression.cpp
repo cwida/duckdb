@@ -158,6 +158,31 @@ ConstChildrenView ParsedExpression::Children() const {
 		}
 		break;
 	}
+	case ExpressionClass::PATTERN: {
+		switch (GetExpressionType()) {
+		case ExpressionType::ALTERNATION: {
+			auto &cast_expr = Cast<AlternationExpression>();
+			result.Append(*cast_expr.child_left);
+			result.Append(*cast_expr.child_right);
+			break;
+		}
+		case ExpressionType::CONCATENATION:
+			for (auto &child : Cast<ConcatenationExpression>().children) {
+				result.Append(*child);
+			}
+			break;
+		case ExpressionType::QUANTIFIER:
+			result.Append(*Cast<QuantifiedExpression>().child);
+			break;
+		case ExpressionType::ANCHOR:
+			// an anchor takes no row and has nothing under it
+			break;
+		default:
+			throw NotImplementedException("Unimplemented pattern expression type %s",
+			                              ExpressionTypeToString(GetExpressionType()));
+		}
+		break;
+	}
 	case ExpressionClass::COLUMN_REF:
 	case ExpressionClass::LAMBDA_REF:
 	case ExpressionClass::CONSTANT:
@@ -291,6 +316,31 @@ ChildrenView ParsedExpression::ChildrenMutable() {
 		}
 		break;
 	}
+	case ExpressionClass::PATTERN: {
+		switch (GetExpressionType()) {
+		case ExpressionType::ALTERNATION: {
+			auto &cast_expr = Cast<AlternationExpression>();
+			result.Append(cast_expr.child_left);
+			result.Append(cast_expr.child_right);
+			break;
+		}
+		case ExpressionType::CONCATENATION:
+			for (auto &child : Cast<ConcatenationExpression>().children) {
+				result.Append(child);
+			}
+			break;
+		case ExpressionType::QUANTIFIER:
+			result.Append(Cast<QuantifiedExpression>().child);
+			break;
+		case ExpressionType::ANCHOR:
+			// an anchor takes no row and has nothing under it
+			break;
+		default:
+			throw NotImplementedException("Unimplemented pattern expression type %s",
+			                              ExpressionTypeToString(GetExpressionType()));
+		}
+		break;
+	}
 	case ExpressionClass::COLUMN_REF:
 	case ExpressionClass::LAMBDA_REF:
 	case ExpressionClass::CONSTANT:
@@ -384,7 +434,10 @@ bool CastExpression::Equals(const ParsedExpression &other) const {
 	if (!ParsedExpression::Equals(child, other_p.child)) {
 		return false;
 	}
-	if (cast_type != other_p.cast_type) {
+	if (static_cast<bool>(cast_type) != static_cast<bool>(other_p.cast_type)) {
+		return false;
+	}
+	if (cast_type && !cast_type->Equals(*other_p.cast_type)) {
 		return false;
 	}
 	if (try_cast != other_p.try_cast) {
@@ -395,7 +448,7 @@ bool CastExpression::Equals(const ParsedExpression &other) const {
 
 hash_t CastExpression::Hash() const {
 	hash_t hash = ParsedExpression::Hash();
-	hash = CombineHash(hash, cast_type.Hash());
+	hash = CombineHash(hash, cast_type ? cast_type->Hash() : 0);
 	hash = CombineHash(hash, duckdb::Hash<bool>(try_cast));
 	return hash;
 }
@@ -403,7 +456,7 @@ hash_t CastExpression::Hash() const {
 unique_ptr<ParsedExpression> CastExpression::Copy() const {
 	auto copy = duckdb::unique_ptr<CastExpression>(new CastExpression());
 	copy->child = child ? child->Copy() : nullptr;
-	copy->cast_type = cast_type;
+	copy->cast_type = cast_type ? unique_ptr_cast<ParsedExpression, TypeExpression>(cast_type->Copy()) : nullptr;
 	copy->try_cast = try_cast;
 	copy->CopyBase(*this);
 	return std::move(copy);
@@ -542,7 +595,7 @@ bool ConstantExpression::Equals(const ParsedExpression &other) const {
 		return false;
 	}
 	auto &other_p = other.Cast<ConstantExpression>();
-	if (value.type() != other_p.value.type() || ValueOperations::DistinctFrom(value, other_p.value)) {
+	if (literal != other_p.literal) {
 		return false;
 	}
 	return true;
@@ -550,13 +603,13 @@ bool ConstantExpression::Equals(const ParsedExpression &other) const {
 
 hash_t ConstantExpression::Hash() const {
 	hash_t hash = ParsedExpression::Hash();
-	hash = CombineHash(hash, value.Hash());
+	hash = CombineHash(hash, literal.Hash());
 	return hash;
 }
 
 unique_ptr<ParsedExpression> ConstantExpression::Copy() const {
 	auto copy = duckdb::unique_ptr<ConstantExpression>(new ConstantExpression());
-	copy->value = value;
+	copy->literal = literal;
 	copy->CopyBase(*this);
 	return std::move(copy);
 }

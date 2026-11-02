@@ -1,0 +1,67 @@
+# name: test/sql/cte/cte_inlining_empty_result.test
+# description: Test inlining a CTE whose definition was reduced to an empty result
+# group: [cte]
+
+statement ok
+CREATE TABLE typed_scalars(id INT);
+
+statement ok
+CREATE TABLE typed_data_2(flag BOOLEAN);
+
+statement ok
+INSERT INTO typed_scalars VALUES (1);
+
+statement ok
+INSERT INTO typed_data_2 VALUES (TRUE);
+
+query III
+WITH q4 AS (
+  SELECT TRY_CAST(DATE '0001-01-01' AS TIMESTAMP) AS c0
+  FROM typed_scalars t2 JOIN typed_data_2 t3 ON (t3.flag <= TRUE)
+  WHERE (t3.flag AND NULL)
+  ORDER BY c0 ASC NULLS FIRST
+  LIMIT 61
+)
+SELECT t5.c0, MAX(2147483647), MAX(COALESCE(CAST('nan' AS DOUBLE), -2147483648))
+FROM q4 t5 JOIN q4 t6 ON t5.c0 = t6.c0
+WHERE (9223372036854775807 <> -9223372036854775808)
+GROUP BY ROLLUP (t5.c0, t5.c0);
+----
+NULL	NULL	NULL
+
+query I
+WITH q AS (SELECT id AS c0 FROM typed_scalars WHERE NULL LIMIT 61)
+SELECT t5.c0 FROM q t5 JOIN q t6 ON t5.c0 = t6.c0;
+----
+
+query I
+WITH q AS (SELECT id AS c0 FROM typed_scalars WHERE NULL ORDER BY 1 LIMIT 61)
+SELECT t5.c0 FROM q t5 JOIN q t6 ON t5.c0 = t6.c0 JOIN q t7 ON t5.c0 = t7.c0;
+----
+
+query I
+WITH q AS (SELECT id AS c0 FROM typed_scalars LIMIT 61)
+SELECT t5.c0 FROM q t5 JOIN q t6 ON t5.c0 = t6.c0;
+----
+1
+
+statement ok
+SET threads=1;
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+PRAGMA explain_output='physical_only';
+
+query II
+EXPLAIN WITH q AS (SELECT id AS c0 FROM typed_scalars WHERE NULL LIMIT 61)
+SELECT t5.c0 FROM q t5 JOIN q t6 ON t5.c0 = t6.c0;
+----
+physical_plan	<REGEX>:.*EMPTY_RESULT.*EMPTY_RESULT.*
+
+query II
+EXPLAIN WITH q AS (SELECT id AS c0 FROM typed_scalars WHERE NULL LIMIT 61)
+SELECT t5.c0 FROM q t5 JOIN q t6 ON t5.c0 = t6.c0;
+----
+physical_plan	<!REGEX>:.*CTE.*

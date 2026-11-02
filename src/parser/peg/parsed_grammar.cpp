@@ -104,9 +104,11 @@ void ParsedGrammar::AddParsedRule(ParsedGrammarRule rule) {
 	rules.emplace(std::move(name), make_uniq<ParsedGrammarRule>(std::move(rule)));
 }
 
-void ParsedGrammar::AddRule(const string &rule_definition, grammar_transform_function_t transform) {
+void ParsedGrammar::AddRule(const string &rule_definition, grammar_transform_process_function_t transform_process,
+                            bool suppress_suggestions) {
 	auto rule = ParseSingleRule(rule_definition);
-	rule.transform = std::move(transform);
+	rule.transform_process = std::move(transform_process);
+	rule.suppress_suggestions = suppress_suggestions;
 	AddParsedRule(std::move(rule));
 }
 
@@ -206,20 +208,27 @@ void ParsedGrammar::RemoveChoice(const string &rule_name, const grammar_cursor_f
 	}
 }
 
-void ParsedGrammar::ReplaceRule(const string &rule_definition, grammar_transform_function_t transform) {
+void ParsedGrammar::ReplaceRule(const string &rule_definition, grammar_transform_process_function_t transform_process) {
 	auto rule = ParseSingleRule(rule_definition);
 	auto entry = rules.find(rule.name);
 	if (entry == rules.end()) {
 		throw InvalidInputException("Grammar rule '%s' does not exist", rule.name);
 	}
 	RegisterStrings(rule.recipe);
-	rule.transform = std::move(transform);
+	rule.transform_process = std::move(transform_process);
 	entry->second = make_uniq<ParsedGrammarRule>(std::move(rule));
 }
 
-void ParsedGrammar::SetTransform(const string &rule_name, grammar_transform_function_t transform) {
+void ParsedGrammar::SetTransformProcess(const string &rule_name, grammar_transform_process_function_t transform_process,
+                                        bool collapsible, bool suppress_suggestions) {
 	auto &rule = GetMutableRule(rule_name);
-	rule.transform = std::move(transform);
+	rule.transform_process = std::move(transform_process);
+	rule.collapsible = collapsible;
+	rule.suppress_suggestions = suppress_suggestions;
+}
+
+void ParsedGrammar::SetExpressionDepth(const string &rule_name, ExpressionDepthKind kind) {
+	GetMutableRule(rule_name).expression_depth = kind;
 }
 
 void ParsedGrammar::AddTerminalRuleOverride(const string &rule_name, terminal_rule_matcher_factory_t matcher_factory) {

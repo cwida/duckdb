@@ -1,0 +1,44 @@
+# name: test/sql/types/variant/variant_struct_field_subquery_cast_parent.test
+# description: Cast parents and VARIANT child paths through projections in a transaction
+# group: [variant]
+
+statement ok
+CREATE TABLE cast_parent AS SELECT {'x': {'a': 1}::VARIANT} AS n;
+
+# Both the cast parent and uncast child must survive projection pruning.
+query II
+SELECT n.x::STRUCT(a BIGINT), n.x.a FROM (SELECT * FROM cast_parent);
+----
+{'a': 1}	1
+
+query II
+SELECT n.x::STRUCT(a BIGINT), n.x.a FROM cast_parent;
+----
+{'a': 1}	1
+
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO cast_parent VALUES ({'x': {'a': 2}::VARIANT});
+
+query II rowsort
+SELECT n.x::STRUCT(a BIGINT), n.x.a FROM (SELECT * FROM cast_parent);
+----
+{'a': 1}	1
+{'a': 2}	2
+
+# Read the uncommitted insert with the opposite select-list order as well.
+query II rowsort
+SELECT n.x.a, n.x::STRUCT(a BIGINT) FROM (SELECT * FROM cast_parent);
+----
+1	{'a': 1}
+2	{'a': 2}
+
+statement ok
+COMMIT;
+
+query I
+SELECT count(*) FROM cast_parent;
+----
+2

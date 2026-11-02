@@ -1,0 +1,94 @@
+# name: test/sql/tpch/tpch_queries_sf.test
+# description: Test TPC-H queries with scale factor dependent substitution parameters
+# group: [tpch]
+
+require tpch
+
+# the stored queries carry the substitution parameters for SF 1
+query I
+SELECT count(*) FROM tpch_queries() q JOIN tpch_queries(sf=1) s USING (query_nr) WHERE q.query <> s.query
+----
+0
+
+# only Q11 has a scale factor dependent parameter: FRACTION = 0.0001 / SF
+query I
+SELECT list(query_nr) FROM tpch_queries() q JOIN tpch_queries(sf=1000) s USING (query_nr) WHERE q.query <> s.query
+----
+[11]
+
+query II
+SELECT query_nr, regexp_extract(query, '\* ([0-9.]+)', 1) FROM tpch_queries(sf=100) WHERE query_nr = 11
+----
+11	0.0000010000
+
+# the scale factor can also be given positionally
+query I
+SELECT regexp_extract(query, '\* ([0-9.]+)', 1) FROM tpch_queries(0.01) WHERE query_nr = 11
+----
+0.0100000000
+
+query I
+SELECT regexp_extract(query, '\* ([0-9.]+)', 1) FROM tpch_queries(100000) WHERE query_nr = 11
+----
+0.0000000010
+
+query I
+SELECT count(*) FROM tpch_queries(sf=10)
+----
+22
+
+# invalid scale factors
+statement error
+SELECT * FROM tpch_queries(sf=0)
+----
+<REGEX>:.*scale factor between 0 and 100000.*
+
+statement error
+SELECT * FROM tpch_queries(-1)
+----
+<REGEX>:.*scale factor between 0 and 100000.*
+
+statement error
+SELECT * FROM tpch_queries(100001)
+----
+<REGEX>:.*scale factor between 0 and 100000.*
+
+statement error
+SELECT * FROM tpch_queries('nan'::DOUBLE)
+----
+<REGEX>:.*scale factor between 0 and 100000.*
+
+statement error
+SELECT * FROM tpch_queries(sf=NULL)
+----
+<REGEX>:.*cannot use NULL as scale factor.*
+
+statement error
+SELECT * FROM tpch_queries(10, sf=10)
+----
+<REGEX>:.*positional argument or as "sf", not both.*
+
+# the pragma accepts the scale factor as well
+statement ok
+CALL dbgen(sf=0.01)
+
+statement error
+PRAGMA tpch(11, sf=NULL)
+----
+<REGEX>:.*Cannot use NULL as scale factor.*
+
+statement error
+PRAGMA tpch(11, sf=0)
+----
+<REGEX>:.*scale factor between 0 and 100000.*
+
+# at SF 0.01 the SF 0.01 fraction only lets the most valuable part through, and the stored answer agrees
+query II
+PRAGMA tpch(11, sf=0.01)
+----
+1376	13271249.89
+
+query I
+SELECT answer = 'ps_partkey|value' || chr(10) || '1376|13271249.89' || chr(10) FROM tpch_answers() WHERE query_nr = 11 AND scale_factor = 0.01
+----
+true

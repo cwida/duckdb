@@ -13,7 +13,7 @@
 namespace duckdb {
 
 //! Routes the sqllogictest runner's verdicts into the Catch session that the unittest binary runs.
-//! Only the unittest binary links this; the unittester extension uses the default reporter.
+//! Only the unittest binary links this; the sqllogictest extension uses the default reporter.
 class CatchTestReporter : public TestReporter {
 public:
 	void Fail(const string &message, const string &file, idx_t line) override;

@@ -14,6 +14,7 @@
 #include "duckdb/common/enums/row_id_handling.hpp"
 
 namespace duckdb {
+struct CreateInfo;
 class TableCatalogEntry;
 class LogicalGet;
 class LogicalProjection;
@@ -47,11 +48,17 @@ public:
 	void Serialize(Serializer &serializer) const override;
 	static unique_ptr<LogicalOperator> Deserialize(Deserializer &deserializer);
 
+	LogicalPlanSQLExportResult ToSQL(LogicalPlanSQLExportContext &context,
+	                                 const LogicalPlanVerificationPath &path) override;
+
 	idx_t EstimateCardinality(ClientContext &context) override;
 	string GetName() const override;
 
 	DUCKDB_API static void BindExtraColumns(TableCatalogEntry &table, LogicalGet &get, LogicalProjection &proj,
-	                                        LogicalUpdate &update, physical_index_set_t &bound_columns);
+	                                        LogicalUpdate &update, physical_index_set_t &bound_columns,
+	                                        bool reuse_projected_columns = false);
+	DUCKDB_API static void BindAllColumns(TableCatalogEntry &table, LogicalGet &get, LogicalProjection &proj,
+	                                      LogicalUpdate &update, bool reuse_projected_columns = false);
 
 	static void RewriteInPlaceUpdates(LogicalOperator &update_op);
 

@@ -1,0 +1,108 @@
+# name: test/sql/types/list/nested_comparison_validity.test
+# description: Nested comparisons retain child validity after selecting unequal rows
+# group: [list]
+
+query III
+SELECT id,x=y,x<>y FROM (VALUES (1,[1,NULL],[0,NULL]),(2,[2,NULL],[2,NULL])) t(id,x,y) ORDER BY id;
+----
+1	false	true
+2	true	false
+
+query III
+SELECT id,x=y,x<>y FROM (VALUES (1,[1,NULL]::INTEGER[2],[0,NULL]::INTEGER[2]),(2,[2,NULL]::INTEGER[2],[2,NULL]::INTEGER[2])) t(id,x,y) ORDER BY id;
+----
+1	false	true
+2	true	false
+
+query III
+SELECT id,x=y,x<>y FROM (VALUES (1,{'a':1,'b':NULL},{'a':0,'b':NULL}),(2,{'a':2,'b':NULL},{'a':2,'b':NULL})) t(id,x,y) ORDER BY id;
+----
+1	false	true
+2	true	false
+
+query III
+SELECT id,x=y,x<>y FROM (VALUES (1,row(1,NULL),row(0,NULL)),(2,row(2,NULL),row(2,NULL))) t(id,x,y) ORDER BY id;
+----
+1	false	true
+2	true	false
+
+query IIIIII
+SELECT id,x=y,x<>y,x<y,x>=y,x IS NOT DISTINCT FROM y FROM (VALUES (1,[1],[1]),(2,[0],[1]),(3,[2,3],[2,3])) t(id,x,y) ORDER BY id;
+----
+1	true	false	false	true	true
+2	false	true	true	false	false
+3	true	false	false	true	true
+
+query III
+SELECT id,x=y,x<>y FROM (VALUES (1,[1,NULL],[1,2]),(2,[3,4,5],[3,4,5])) t(id,x,y) ORDER BY id;
+----
+1	false	true
+2	true	false
+
+statement ok
+CREATE TABLE nested_pairs(id INTEGER,x INTEGER[],y INTEGER[]);
+
+statement ok
+INSERT INTO nested_pairs VALUES (1,[1,NULL],[0,NULL]),(2,[2,NULL],[2,NULL]),(3,NULL,[2,NULL]),(4,[2,NULL],NULL),(5,[NULL,2],[NULL,2]),(6,[NULL,2],[3,2]),(7,[NULL,3],[NULL,2]),(8,[2,NULL],[2,3]);
+
+query IIIII
+SELECT id,x=y,x<>y,x IS NOT DISTINCT FROM y,x IS DISTINCT FROM y FROM nested_pairs ORDER BY id;
+----
+1	false	true	false	true
+2	true	false	true	false
+3	NULL	NULL	false	true
+4	NULL	NULL	false	true
+5	true	false	true	false
+6	false	true	false	true
+7	false	true	false	true
+8	false	true	false	true
+
+query I
+SELECT id FROM nested_pairs WHERE x=y ORDER BY id;
+----
+2
+5
+
+query I
+SELECT id FROM nested_pairs WHERE x<>y ORDER BY id;
+----
+1
+6
+7
+8
+
+query III
+SELECT p.id,q.id,p.x=q.y FROM nested_pairs p JOIN nested_pairs q ON p.id=q.id AND p.x=q.y ORDER BY p.id;
+----
+2	2	true
+5	5	true
+
+query III
+SELECT p.id,q.id,p.x<>q.y FROM nested_pairs p JOIN nested_pairs q ON p.id=q.id AND p.x<>q.y ORDER BY p.id;
+----
+1	1	true
+6	6	true
+7	7	true
+8	8	true
+
+query IIII
+SELECT [2,NULL]=[2,NULL],[2,NULL]<>[2,NULL],NULL::INTEGER[]=[2,NULL],NULL::INTEGER[]<>[2,NULL];
+----
+true	false	NULL	NULL
+
+statement ok
+SET debug_disable_optimizer=true;
+
+query III
+SELECT id,x=y,x<>y FROM (VALUES (1,[1,NULL],[0,NULL]),(2,[2,NULL],[2,NULL])) t(id,x,y) ORDER BY id;
+----
+1	false	true
+2	true	false
+
+statement ok
+RESET debug_disable_optimizer;
+
+query III
+SELECT count(DISTINCT x),bool_and(x=x),bool_and(x IS NOT DISTINCT FROM x) FROM (VALUES ([[1],[2,3]]),([[1],[2,3]]),([[1],[2,4]])) t(x);
+----
+2	true	true

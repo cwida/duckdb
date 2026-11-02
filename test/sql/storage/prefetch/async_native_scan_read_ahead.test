@@ -1,0 +1,100 @@
+# name: test/sql/storage/prefetch/async_native_scan_read_ahead.test
+# description: Native storage scans decode read-ahead jobs whose I/O is scheduled ahead of decoding
+# group: [prefetch]
+
+load {TEST_DIR}/async_native_scan_read_ahead.db
+
+statement ok
+CREATE TABLE integers AS SELECT range AS i FROM range(1000000);
+
+statement ok
+DELETE FROM integers WHERE i % 10 = 0;
+
+statement ok
+CHECKPOINT
+
+# restart so the payload blocks begin cold
+restart
+
+statement ok
+SET threads=4
+
+statement ok
+SET async_threads=4
+
+statement ok
+SET storage_block_prefetch='debug_force_always'
+
+statement ok
+CALL enable_logging('AsyncTaskSchedule')
+
+query II
+SELECT count(*), sum(i) FROM integers
+----
+900000	450000000000
+
+# read-ahead schedules the I/O of its jobs detached, the scan itself schedules none
+query II
+SELECT count(*) FILTER (WHERE pool = 'READ_AHEAD') > 0, count(*) FILTER (WHERE pool <> 'READ_AHEAD') FROM duckdb_logs_parsed('AsyncTaskSchedule')
+----
+true	0
+
+# assignments whose vectors are filtered out entirely are skipped without producing output
+query I
+SELECT count(*) FROM integers WHERE i < 100
+----
+90
+
+# insertion order is preserved across read-ahead jobs
+query I
+SELECT i FROM integers WHERE i % 250000 = 1
+----
+1
+250001
+500001
+750001
+
+# transaction-local rows are drained by read-ahead jobs as well
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO integers SELECT range FROM range(5)
+
+query II
+SELECT count(*), sum(i) FROM integers
+----
+900005	450000000010
+
+statement ok
+ROLLBACK
+
+# forcing a depth of one job still returns all rows
+statement ok
+SET read_ahead_depth=1
+
+query II
+SELECT count(*), sum(i) FROM integers
+----
+900000	450000000000
+
+# repeatable percentage samples use the regular scan path instead of splitting their RNG stream across jobs
+statement ok
+SET threads=1
+
+statement ok
+SET read_ahead_depth=0
+
+statement ok
+CREATE TEMPORARY TABLE expected AS SELECT count(*) AS c, sum(i) AS s FROM integers USING SAMPLE 1 PERCENT (system, 42)
+
+statement ok
+SET read_ahead_depth=-1
+
+query I
+SELECT count(*) = (SELECT c FROM expected) AND sum(i) = (SELECT s FROM expected) FROM integers USING SAMPLE 1 PERCENT (system, 42)
+----
+true
+
+statement ok
+CALL truncate_duckdb_logs()

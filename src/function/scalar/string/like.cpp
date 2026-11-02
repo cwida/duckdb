@@ -6,10 +6,29 @@
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 
 #include "duckdb/execution/expression_executor.hpp"
+#include "utf8proc_wrapper.hpp"
 
 namespace duckdb {
 
-static bool GlobMatchesBracket(char s, const char *pattern, idx_t plen, idx_t &pidx, bool &valid_pattern) {
+//! Returns the code point of the (UTF-8 encoded) character at pos, and sets its length in bytes
+static int32_t GlobCharacter(const char *data, idx_t len, idx_t pos, idx_t &char_len) {
+	auto byte = static_cast<unsigned char>(data[pos]);
+	if (byte < 0x80) {
+		char_len = 1;
+		return byte;
+	}
+	int sz = 1;
+	auto codepoint = Utf8Proc::UTF8ToCodepoint(data + pos, sz, len - pos);
+	if (codepoint < 0 || sz <= 0) {
+		// not valid UTF-8: treat the byte as a character
+		char_len = 1;
+		return byte;
+	}
+	char_len = UnsafeNumericCast<idx_t>(sz);
+	return codepoint;
+}
+
+static bool GlobMatchesBracket(int32_t s, const char *pattern, idx_t plen, idx_t &pidx, bool &valid_pattern) {
 	if (pidx == plen) {
 		valid_pattern = false;
 		return false;
@@ -26,7 +45,8 @@ static bool GlobMatchesBracket(char s, const char *pattern, idx_t plen, idx_t &p
 	bool found_closing_bracket = false;
 	// now check the remainder of the pattern
 	while (pidx < plen) {
-		auto p = pattern[pidx];
+		idx_t p_len;
+		auto p = GlobCharacter(pattern, plen, pidx, p_len);
 		// if the first character is a closing bracket, we match it literally
 		// otherwise it indicates an end of bracket
 		if (p == ']' && pidx > start_pos) {
@@ -35,26 +55,24 @@ static bool GlobMatchesBracket(char s, const char *pattern, idx_t plen, idx_t &p
 			pidx++;
 			break;
 		}
-		if (pidx + 1 == plen) {
+		if (pidx + p_len >= plen) {
 			// no next character!
 			break;
 		}
 		bool matches;
-		if (pattern[pidx + 1] == '-') {
+		if (pattern[pidx + p_len] == '-' && pidx + p_len + 1 < plen && pattern[pidx + p_len + 1] != ']') {
 			// range! find the next character in the range
-			if (pidx + 2 == plen) {
-				break;
-			}
-			auto next_char = pattern[pidx + 2];
+			idx_t next_len;
+			auto next_char = GlobCharacter(pattern, plen, pidx + p_len + 1, next_len);
 			// check if the current character is within the range
 			matches = s >= p && s <= next_char;
 			// shift the pattern forward past the range
-			pidx += 3;
+			pidx += p_len + 1 + next_len;
 		} else {
 			// no range! perform a direct match
 			matches = p == s;
 			// shift the pattern forward past the character
-			pidx++;
+			pidx += p_len;
 		}
 		if (found_match == invert && matches) {
 			// found a match! set the found_matches flag
@@ -82,6 +100,8 @@ bool Glob(const char *string, idx_t slen, const char *pattern, idx_t plen, bool 
 	while (sidx < slen) {
 		bool matched = false;
 		idx_t next_pidx = pidx;
+		// the number of bytes of the string that a match consumes
+		idx_t match_len = 1;
 		if (pidx < plen) {
 			auto p = pattern[pidx];
 			switch (p) {
@@ -105,6 +125,8 @@ bool Glob(const char *string, idx_t slen, const char *pattern, idx_t plen, bool 
 			case '?':
 				// when enabled: matches anything but null
 				if (allow_question_mark) {
+					// a single character, which can consist of multiple bytes
+					GlobCharacter(string, slen, sidx, match_len);
 					matched = true;
 				} else {
 					matched = string[sidx] == p;
@@ -114,7 +136,8 @@ bool Glob(const char *string, idx_t slen, const char *pattern, idx_t plen, bool 
 			case '[': {
 				next_pidx = pidx + 1;
 				bool valid_pattern;
-				matched = GlobMatchesBracket(string[sidx], pattern, plen, next_pidx, valid_pattern);
+				auto character = GlobCharacter(string, slen, sidx, match_len);
+				matched = GlobMatchesBracket(character, pattern, plen, next_pidx, valid_pattern);
 				if (!valid_pattern) {
 					return false;
 				}
@@ -138,7 +161,7 @@ bool Glob(const char *string, idx_t slen, const char *pattern, idx_t plen, bool 
 			}
 		}
 		if (matched) {
-			sidx++;
+			sidx += match_len;
 			pidx = next_pidx;
 			continue;
 		}
@@ -146,7 +169,9 @@ bool Glob(const char *string, idx_t slen, const char *pattern, idx_t plen, bool 
 			return false;
 		}
 		// backtrack: the last '*' consumes one more character and we retry from there
-		star_sidx++;
+		idx_t star_char_len;
+		GlobCharacter(string, slen, star_sidx, star_char_len);
+		star_sidx += star_char_len;
 		sidx = star_sidx;
 		pidx = star_pidx;
 	}
@@ -185,42 +210,63 @@ template <char PERCENTAGE, char UNDERSCORE, bool HAS_ESCAPE, class READER = Stan
 bool TemplatedLikeOperator(const char *sdata, idx_t slen, const char *pdata, idx_t plen, char escape) {
 	idx_t pidx = 0;
 	idx_t sidx = 0;
-	for (; pidx < plen && sidx < slen; pidx++) {
-		char pchar = READER::Operation(pdata, pidx);
-		char schar = READER::Operation(sdata, sidx);
-		if (HAS_ESCAPE && pchar == escape) {
-			pidx++;
-			if (pidx == plen) {
-				throw SyntaxException("Like pattern must not end with escape character!");
-			}
-			if (pdata[pidx] != schar) {
-				return false;
-			}
-			sidx++;
-		} else if (pchar == UNDERSCORE) {
-			READER::NextCharacter(sdata, slen, sidx);
-		} else if (pchar == PERCENTAGE) {
-			pidx++;
-			while (pidx < plen && pdata[pidx] == PERCENTAGE) {
-				pidx++;
-			}
-			if (pidx == plen) {
-				return true; /* tail is acceptable */
-			}
-			for (; sidx < slen; sidx++) {
-				if (TemplatedLikeOperator<PERCENTAGE, UNDERSCORE, HAS_ESCAPE, READER>(
-				        sdata + sidx, slen - sidx, pdata + pidx, plen - pidx, escape)) {
-					return true;
+	// position right after the last '%' seen, used to retry the match one character further on mismatch
+	bool has_percentage = false;
+	idx_t retry_pidx = 0;
+	idx_t retry_sidx = 0;
+	while (sidx < slen) {
+		if (pidx < plen) {
+			char pchar = READER::Operation(pdata, pidx);
+			char schar = READER::Operation(sdata, sidx);
+			if (HAS_ESCAPE && pchar == escape) {
+				if (pidx + 1 == plen) {
+					throw SyntaxException("Like pattern must not end with escape character!");
 				}
+				if (pdata[pidx + 1] == schar) {
+					pidx += 2;
+					sidx++;
+					continue;
+				}
+			} else if (pchar == UNDERSCORE) {
+				pidx++;
+				READER::NextCharacter(sdata, slen, sidx);
+				continue;
+			} else if (pchar == PERCENTAGE) {
+				pidx++;
+				while (pidx < plen && pdata[pidx] == PERCENTAGE) {
+					pidx++;
+				}
+				if (pidx == plen) {
+					return true; /* tail is acceptable */
+				}
+				has_percentage = true;
+				retry_pidx = pidx;
+				retry_sidx = sidx;
+				continue;
+			} else if (pchar == schar) {
+				pidx++;
+				sidx++;
+				continue;
 			}
-			return false;
-		} else if (pchar == schar) {
-			sidx++;
-		} else {
+		}
+		if (!has_percentage) {
 			return false;
 		}
+		pidx = retry_pidx;
+		sidx = ++retry_sidx;
 	}
-	while (pidx < plen && pdata[pidx] == PERCENTAGE) {
+	// a trailing '%' only matches an empty suffix when it is not escaped
+	while (pidx < plen) {
+		if (HAS_ESCAPE && pdata[pidx] == escape) {
+			if (pidx + 1 == plen) {
+				throw SyntaxException("Like pattern must not end with escape character!");
+			}
+			// the escape sequence needs a character to match against, and there is none left
+			break;
+		}
+		if (pdata[pidx] != PERCENTAGE) {
+			break;
+		}
 		pidx++;
 	}
 	return pidx == plen && sidx == slen;
@@ -436,7 +482,8 @@ bool ILikeOperatorFunctionInternal(string_t &str, string_t &pattern, char escape
 	if (!HAS_ESCAPE) {
 		return LikeOperatorFunction(str_lcase, pat_lcase);
 	}
-	return LikeOperatorFunction(str_lcase, pat_lcase, escape);
+	// the pattern is lowercased, so the escape character must be as well
+	return LikeOperatorFunction(str_lcase, pat_lcase, StringUtil::CharacterToLower(escape));
 }
 
 bool ILikeOperatorFunction(string_t &str, string_t &pattern) {
@@ -532,7 +579,8 @@ void ILikeEscapeFunction(DataChunk &args, ExpressionState &state, Vector &result
 	    escape_vec.GetVectorType() == VectorType::CONSTANT_VECTOR && !ConstantVector::IsNull(escape_vec)) {
 		auto pattern = *ConstantVector::GetData<string_t>(pattern_vec);
 		auto escape = *ConstantVector::GetData<string_t>(escape_vec);
-		char escape_char = GetEscapeChar(escape);
+		// the pattern is lowercased, so the escape character must be as well
+		char escape_char = StringUtil::CharacterToLower(GetEscapeChar(escape));
 		bool has_escape = escape.GetSize() != 0;
 
 		// lowercase the pattern exactly once, up front
@@ -652,6 +700,8 @@ ScalarFunction NotLikeFun::GetFunction() {
 	ScalarFunction not_like("!~~", {LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::BOOLEAN,
 	                        RegularLikeFunction<NotLikeOperator, true>, LikeBindFunction);
 	not_like.SetCollationHandling(FunctionCollationHandling::PUSH_COMBINABLE_COLLATIONS);
+	not_like.GetSignature().GetParameter(0).SetName("string");
+	not_like.GetSignature().GetParameter(1).SetName("pattern");
 	return not_like;
 }
 
@@ -659,6 +709,8 @@ ScalarFunction GlobPatternFun::GetFunction() {
 	ScalarFunction glob("~~~", {LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::BOOLEAN,
 	                    ScalarFunction::BinaryFunction<string_t, string_t, bool, GlobOperator>);
 	glob.SetCollationHandling(FunctionCollationHandling::PUSH_COMBINABLE_COLLATIONS);
+	glob.GetSignature().GetParameter(0).SetName("string");
+	glob.GetSignature().GetParameter(1).SetName("pattern");
 	return glob;
 }
 
@@ -666,6 +718,8 @@ ScalarFunction ILikeFun::GetFunction() {
 	ScalarFunction ilike("~~*", {LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::BOOLEAN,
 	                     ILikeFunction<ILikeOperator, false>, nullptr, ILikePropagateStats<ILikeOperatorASCII>);
 	ilike.SetCollationHandling(FunctionCollationHandling::PUSH_COMBINABLE_COLLATIONS);
+	ilike.GetSignature().GetParameter(0).SetName("string");
+	ilike.GetSignature().GetParameter(1).SetName("pattern");
 	return ilike;
 }
 
@@ -674,6 +728,8 @@ ScalarFunction NotILikeFun::GetFunction() {
 	                         ILikeFunction<NotILikeOperator, true>, nullptr,
 	                         ILikePropagateStats<NotILikeOperatorASCII>);
 	not_ilike.SetCollationHandling(FunctionCollationHandling::PUSH_COMBINABLE_COLLATIONS);
+	not_ilike.GetSignature().GetParameter(0).SetName("string");
+	not_ilike.GetSignature().GetParameter(1).SetName("pattern");
 	return not_ilike;
 }
 
@@ -681,35 +737,52 @@ ScalarFunction LikeFun::GetFunction() {
 	ScalarFunction like("~~", {LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::BOOLEAN,
 	                    RegularLikeFunction<LikeOperator, false>, LikeBindFunction);
 	like.SetCollationHandling(FunctionCollationHandling::PUSH_COMBINABLE_COLLATIONS);
+	like.GetSignature().GetParameter(0).SetName("string");
+	like.GetSignature().GetParameter(1).SetName("pattern");
 	return like;
 }
 
 ScalarFunction NotLikeEscapeFun::GetFunction() {
-	ScalarFunction not_like_escape("not_like_escape",
-	                               {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
-	                               LogicalType::BOOLEAN, LikeEscapeFunction<NotLikeEscapeOperator>);
+	ScalarFunction not_like_escape("not_like_escape", {}, LogicalType::BOOLEAN,
+	                               LikeEscapeFunction<NotLikeEscapeOperator>);
+	not_like_escape.GetSignature()
+	    .AddParameter("string", LogicalType::VARCHAR)
+	    .AddParameter("like_specifier", LogicalType::VARCHAR)
+	    .AddParameter("escape_character", LogicalType::VARCHAR);
 	not_like_escape.SetCollationHandling(FunctionCollationHandling::PUSH_COMBINABLE_COLLATIONS);
+	not_like_escape.SetFallible();
 	return not_like_escape;
 }
 
 ScalarFunction IlikeEscapeFun::GetFunction() {
-	ScalarFunction ilike_escape("ilike_escape", {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
-	                            LogicalType::BOOLEAN, ILikeEscapeFunction<false>);
+	ScalarFunction ilike_escape("ilike_escape", {}, LogicalType::BOOLEAN, ILikeEscapeFunction<false>);
+	ilike_escape.GetSignature()
+	    .AddParameter("string", LogicalType::VARCHAR)
+	    .AddParameter("like_specifier", LogicalType::VARCHAR)
+	    .AddParameter("escape_character", LogicalType::VARCHAR);
 	ilike_escape.SetCollationHandling(FunctionCollationHandling::PUSH_COMBINABLE_COLLATIONS);
+	ilike_escape.SetFallible();
 	return ilike_escape;
 }
 
 ScalarFunction NotIlikeEscapeFun::GetFunction() {
-	ScalarFunction not_ilike_escape("not_ilike_escape",
-	                                {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
-	                                LogicalType::BOOLEAN, ILikeEscapeFunction<true>);
+	ScalarFunction not_ilike_escape("not_ilike_escape", {}, LogicalType::BOOLEAN, ILikeEscapeFunction<true>);
+	not_ilike_escape.GetSignature()
+	    .AddParameter("string", LogicalType::VARCHAR)
+	    .AddParameter("like_specifier", LogicalType::VARCHAR)
+	    .AddParameter("escape_character", LogicalType::VARCHAR);
 	not_ilike_escape.SetCollationHandling(FunctionCollationHandling::PUSH_COMBINABLE_COLLATIONS);
+	not_ilike_escape.SetFallible();
 	return not_ilike_escape;
 }
 ScalarFunction LikeEscapeFun::GetFunction() {
-	ScalarFunction like_escape("like_escape", {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
-	                           LogicalType::BOOLEAN, LikeEscapeFunction<LikeEscapeOperator>);
+	ScalarFunction like_escape("like_escape", {}, LogicalType::BOOLEAN, LikeEscapeFunction<LikeEscapeOperator>);
+	like_escape.GetSignature()
+	    .AddParameter("string", LogicalType::VARCHAR)
+	    .AddParameter("like_specifier", LogicalType::VARCHAR)
+	    .AddParameter("escape_character", LogicalType::VARCHAR);
 	like_escape.SetCollationHandling(FunctionCollationHandling::PUSH_COMBINABLE_COLLATIONS);
+	like_escape.SetFallible();
 	return like_escape;
 }
 

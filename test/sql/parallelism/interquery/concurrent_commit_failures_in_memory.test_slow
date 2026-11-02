@@ -1,0 +1,59 @@
+# name: test/sql/parallelism/interquery/concurrent_commit_failures_in_memory.test_slow
+# description: A commit that fails after appending its rows must revert only its own rows
+# group: [interquery]
+
+# an in-memory database has no WAL: its commits append their rows outside the transaction lock
+
+statement ok
+CREATE TABLE keys(k INTEGER PRIMARY KEY);
+
+statement ok
+CREATE TABLE rows(i INTEGER);
+
+# thread 16 keeps flipping the forced commit failure while the other threads commit
+concurrentloop threadid 0 17
+
+loop i 0 3000
+
+onlyif threadid=16
+statement ok
+SET GLOBAL debug_force_commit_failure = true
+
+onlyif threadid=16
+statement ok
+SET GLOBAL debug_force_commit_failure = false
+
+endloop
+
+loop i 0 60
+
+onlyif threadid<16
+statement ok
+BEGIN
+
+onlyif threadid<16
+statement ok
+INSERT INTO rows SELECT range FROM range(10000)
+
+onlyif threadid<16
+statement ok
+INSERT INTO keys VALUES ({threadid} * 1000 + {i})
+
+onlyif threadid<16
+statement maybe
+COMMIT
+----
+Forced commit failure
+
+endloop
+
+endloop
+
+statement ok
+SET GLOBAL debug_force_commit_failure = false
+
+# every successful commit added one key and 10000 rows
+query I
+SELECT COUNT(*) = 10000 * (SELECT COUNT(*) FROM keys) FROM rows
+----
+true

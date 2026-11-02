@@ -60,12 +60,27 @@ public:
 	}
 
 	void Reset(ClientContext &context) override {
+		// forward the worker bound so the internal distinct aggregate sizes its restart from it
+		if (op.join.sink_state) {
+			op.join.sink_state->reschedule_worker_limit = reschedule_worker_limit;
+			op.join.sink_state->reschedule_single_producer = reschedule_single_producer;
+		}
+		if (op.distinct.sink_state) {
+			op.distinct.sink_state->reschedule_worker_limit = reschedule_worker_limit;
+			op.distinct.sink_state->reschedule_single_producer = reschedule_single_producer;
+		}
 		RightDelimResetSinkState(op.join, context, op.join.sink_state);
 		RightDelimResetSinkState(op.distinct, context, op.distinct.sink_state);
 		if (op.delim_scans.size() > 1) {
 			PhysicalHashAggregate::SetMultiScan(*op.distinct.sink_state);
 		}
 		GlobalSinkState::Reset(context);
+	}
+
+	void AdjustRescheduledWorkers(ClientContext &context, idx_t scheduled_workers) override {
+		if (op.distinct.sink_state) {
+			op.distinct.sink_state->AdjustRescheduledWorkers(context, scheduled_workers);
+		}
 	}
 };
 

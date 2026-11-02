@@ -1,0 +1,38 @@
+# name: test/sql/sample/reservoir_sample.test
+# description: Test fixed-size and percentage reservoir sampling paths
+# group: [sample]
+
+# Convert from fast sampling to weighted reservoir sampling and return multiple chunks.
+query II
+SELECT count(*), count(DISTINCT i)
+FROM range(200000) t(i) USING SAMPLE 5000 ROWS (reservoir, 42);
+----
+5000	5000
+
+# Skip input chunks that do not replace the single sampled row.
+query II
+SELECT count(*), count(DISTINCT i)
+FROM range(10000) t(i) USING SAMPLE 1 ROWS (reservoir, 42);
+----
+1	1
+
+# Finalize a percentage sample before reaching the 100000-row reservoir threshold.
+query II
+SELECT count(*), count(DISTINCT i)
+FROM range(1000) t(i) USING SAMPLE 10 PERCENT (reservoir, 42);
+----
+100	100
+
+# Roll a percentage sample over into multiple fixed-size reservoirs.
+query II
+SELECT count(*), count(DISTINCT i)
+FROM range(200000) t(i) USING SAMPLE 1 PERCENT (reservoir, 42);
+----
+2000	2000
+
+# Preserve a partial reservoir after rolling over at the percentage threshold.
+query I
+SELECT count(*)
+FROM range(150000) t(i) USING SAMPLE 100 PERCENT (reservoir, 42);
+----
+150000

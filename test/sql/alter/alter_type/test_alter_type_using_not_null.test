@@ -1,0 +1,20 @@
+# name: test/sql/alter/alter_type/test_alter_type_using_not_null.test
+# description: ALTER COLUMN TYPE ... USING must respect the column's NOT NULL constraint
+# group: [alter_type]
+
+statement ok
+CREATE TABLE t(a INTEGER NOT NULL, b INTEGER);
+
+statement ok
+INSERT INTO t VALUES (1, 10), (2, 20);
+
+statement error
+ALTER TABLE t ALTER a SET DATA TYPE INTEGER USING NULL
+----
+NOT NULL constraint failed: t.a
+
+query II
+SELECT a, b FROM t ORDER BY a
+----
+1	10
+2	20

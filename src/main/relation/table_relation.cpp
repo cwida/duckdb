@@ -47,7 +47,7 @@ string TableRelation::ToString(idx_t depth) {
 
 static unique_ptr<ParsedExpression> ParseCondition(ClientContext &context, const string &condition) {
 	if (!condition.empty()) {
-		auto expression_list = Parser::ParseExpressionList(condition, context.GetParserOptions());
+		auto expression_list = Parser(context).ParseExpressionList(condition);
 		if (expression_list.size() != 1) {
 			throw ParserException("Expected a single expression as filter condition");
 		}
@@ -72,7 +72,7 @@ void TableRelation::Update(const string &update_list, const string &condition) {
 	vector<Identifier> update_columns;
 	vector<unique_ptr<ParsedExpression>> expressions;
 	auto cond = ParseCondition(*context->GetContext(), condition);
-	Parser::ParseUpdateList(update_list, update_columns, expressions, context->GetContext()->GetParserOptions());
+	Parser(*context->GetContext()).ParseUpdateList(update_list, update_columns, expressions);
 	auto update = make_shared_ptr<UpdateRelation>(
 	    context, std::move(cond), description->qualified_name.Catalog(), description->qualified_name.Schema(),
 	    description->qualified_name.Name(), std::move(update_columns), std::move(expressions));

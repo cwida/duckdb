@@ -8,8 +8,10 @@
 namespace duckdb {
 struct CompiledGrammar;
 struct PEGExpression;
-
 class MatcherFactory;
+struct CompiledGrammarRule;
+
+using compiled_rules_map_t = case_insensitive_map_t<unique_ptr<CompiledGrammarRule>>;
 
 //! Class for building matchers
 class MatcherFactory {
@@ -28,8 +30,8 @@ private:
 	};
 
 public:
-	MatcherFactory(MatcherAllocator &allocator, const ParsedGrammar &grammar_p, CompiledGrammar &compiled_p,
-	               terminal_rule_overrides_t terminal_rule_overrides_p);
+	MatcherFactory(MatcherAllocator &allocator, const ParsedGrammar &grammar_p, const compiled_rules_map_t &rules,
+	               const PEGKeywordHelper &keyword_helper, terminal_rule_overrides_t terminal_rule_overrides_p);
 	virtual ~MatcherFactory() = default;
 
 public:
@@ -37,7 +39,7 @@ public:
 	//! Look up a matcher for a rule that was built by CreateRootMatcher. Throws if the rule has not been built.
 	Matcher &GetMatcher(const string &rule_name);
 
-private:
+protected:
 	// Base primitives
 	KeywordMatcher &Keyword(const string &keyword) const;
 	ListMatcher &List() const;
@@ -52,21 +54,24 @@ private:
 	virtual unique_ptr<OptionalMatcher> CreateOptional(Matcher &matcher) const;
 	virtual unique_ptr<RepeatMatcher> CreateRepeat(Matcher &matcher) const;
 
-	void SetRuleOverrides();
-
 	void AddKeywordOverride(const char *name, KeywordInfo keyword_info);
 	void AddRuleOverride(const char *name, unique_ptr<Matcher> &&matcher_p);
 	void AddPackratMemoizedRule(const char *name);
 	void SuppressSuggestions(const char *name);
+	void LabelRule(const char *name, const char *label);
 	Matcher &CreateMatcher(string_t rule_name);
 	Matcher &CreateMatcher(string_t rule_name, vector<reference<Matcher>> &parameters);
 	Matcher &CreateMatcher(const PEGExpression &expression, const string_map_t<idx_t> &parameter_map,
 	                       vector<reference<Matcher>> &parameters);
 
 private:
+	optional_ptr<const CompiledGrammarRule> GetRule(const string &name) const;
+
+private:
 	MatcherAllocator &allocator;
 	const ParsedGrammar &grammar;
-	CompiledGrammar &compiled;
+	const compiled_rules_map_t &rules;
+	const PEGKeywordHelper &keyword_helper;
 	//! Keeps terminal rule names alive while the matcher graph is constructed.
 	terminal_rule_overrides_t terminal_rule_overrides;
 	string_map_t<reference<Matcher>> matchers;
@@ -75,6 +80,7 @@ private:
 	case_insensitive_map_t<KeywordInfo> keyword_overrides;
 	string_set_t no_suggestion_rules;
 	string_set_t packrat_memoized_rules;
+	string_map_t<string> rule_labels;
 };
 
 } // namespace duckdb

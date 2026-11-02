@@ -1,0 +1,71 @@
+# name: test/sql/types/numeric/float_precision.test
+# description: Test FLOAT precision type mapping
+# group: [numeric]
+
+# FLOAT precision 1-24 maps to FLOAT and precision 25-53 maps to DOUBLE
+query I
+SELECT typeof(CAST(NULL AS FLOAT));
+----
+FLOAT
+
+query I
+SELECT typeof(CAST(NULL AS FLOAT(1)));
+----
+FLOAT
+
+query I
+SELECT typeof(CAST(NULL AS FLOAT(24)));
+----
+FLOAT
+
+query I
+SELECT typeof(CAST(NULL AS FLOAT(25)));
+----
+DOUBLE
+
+query I
+SELECT typeof(CAST(NULL AS FLOAT(53)));
+----
+DOUBLE
+
+# The same mapping applies to column definitions
+statement ok
+CREATE TABLE float_precision(f1 FLOAT(1), f24 FLOAT(24), f25 FLOAT(25), f53 FLOAT(53));
+
+query I
+SELECT data_type
+FROM duckdb_columns()
+WHERE table_name = 'float_precision'
+ORDER BY column_index;
+----
+FLOAT
+FLOAT
+DOUBLE
+DOUBLE
+
+# Precision must be in the inclusive range 1-53
+statement error
+SELECT CAST(NULL AS FLOAT(0));
+----
+<REGEX>:Binder Error.*precision for type float must be at least 1 bit.*
+
+statement error
+SELECT CAST(NULL AS FLOAT(54));
+----
+<REGEX>:Binder Error.*precision for type float must be less than 54 bits.*
+
+statement error
+CREATE TABLE float_precision_too_low(i FLOAT(0));
+----
+<REGEX>:Binder Error.*precision for type float must be at least 1 bit.*
+
+statement error
+CREATE TABLE float_precision_too_high(i FLOAT(54));
+----
+<REGEX>:Binder Error.*precision for type float must be less than 54 bits.*
+
+# Non-integral precision is rejected instead of being truncated
+statement error
+SELECT CAST(NULL AS FLOAT(1.5));
+----
+<REGEX>:Binder Error.*does not accept type parameters.*

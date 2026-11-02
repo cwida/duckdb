@@ -1,0 +1,18 @@
+# name: test/sql/parser/create_macro_tostring.test
+# description: Copy and reparse overloaded macro definitions
+# group: [parser]
+
+foreach mode COPY_STATEMENT REPARSE_STATEMENT
+
+statement ok
+SET debug_verify_statement='{mode}'
+
+statement ok
+CREATE OR REPLACE MACRO "overloaded macro"("a b") AS "a b", ("a b", "c d") AS "a b" + "c d"
+
+query II
+SELECT "overloaded macro"(2), "overloaded macro"(2, 3);
+----
+2	5
+
+endloop

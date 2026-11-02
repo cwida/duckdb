@@ -1,0 +1,57 @@
+# name: test/sql/storage/types/variant/variant_shredded_top_level_array_cast.test
+# description: Cast a shredded VARIANT holding a top-level ARRAY to VARCHAR
+# group: [variant]
+
+load {TEST_DIR}/variant_shredded_top_level_array_cast.db readwrite v1.5.0
+
+# Always shred
+statement ok
+SET variant_minimum_shredding_size = 0;
+
+statement ok
+CREATE TABLE top_level AS SELECT i AS id, CAST([i] AS VARIANT) AS v FROM range(0, 5) tt(i);
+
+# an array nested inside an object shreds into a different type - verify it as well
+statement ok
+CREATE TABLE nested AS SELECT i AS id, CAST({'a': [i]} AS VARIANT) AS v FROM range(0, 5) tt(i);
+
+statement ok
+CHECKPOINT
+
+query IT
+SELECT id, v::VARCHAR FROM top_level ORDER BY id
+----
+0	[0]
+1	[1]
+2	[2]
+3	[3]
+4	[4]
+
+query I
+SELECT count(v::VARCHAR) FROM top_level
+----
+5
+
+query IT
+SELECT id, v::VARCHAR FROM nested ORDER BY id
+----
+0	{'a': [0]}
+1	{'a': [1]}
+2	{'a': [2]}
+3	{'a': [3]}
+4	{'a': [4]}
+
+# an array is not castable to a primitive type
+query II
+SELECT id, TRY_CAST(v AS INTEGER) FROM top_level ORDER BY id
+----
+0	NULL
+1	NULL
+2	NULL
+3	NULL
+4	NULL
+
+statement error
+SELECT v::INTEGER FROM top_level
+----
+<REGEX>:Conversion Error.*Can't convert VARIANT\(ARRAY\).*

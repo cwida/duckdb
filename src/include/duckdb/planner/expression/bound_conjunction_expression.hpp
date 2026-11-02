@@ -20,6 +20,9 @@ public:
 	explicit BoundConjunctionExpression(ExpressionType type);
 	BoundConjunctionExpression(ExpressionType type, unique_ptr<Expression> left, unique_ptr<Expression> right);
 
+	//! Returns a lone child as is
+	static unique_ptr<Expression> Create(ExpressionType type, vector<unique_ptr<Expression>> children);
+
 public:
 	const vector<unique_ptr<Expression>> &GetChildren() const {
 		return children;

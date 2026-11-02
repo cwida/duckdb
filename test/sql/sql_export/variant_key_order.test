@@ -1,0 +1,9 @@
+# name: test/sql/sql_export/variant_key_order.test
+# description: SQL export preserves observable VARIANT object-key order
+# group: [sql_export]
+
+# Reconstruct nested VARIANT payloads without changing observable object-key order.
+query T
+SELECT variant_extract_string(v, '') FROM (VALUES ({'a': [{'b': 1::SMALLINT, 'c': 2::TINYINT, 'a': 3}], 'b': 4, 'c': 5}::VARIANT)) t(v);
+----
+{"a":[{"a":3,"b":1,"c":2}],"b":4,"c":5}

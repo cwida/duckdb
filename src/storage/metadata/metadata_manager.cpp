@@ -101,30 +101,38 @@ MetadataHandle MetadataManager::Pin(const MetadataPointer &pointer) {
 
 MetadataHandle MetadataManager::Pin(const QueryContext &context, const MetadataPointer &pointer) {
 	D_ASSERT(pointer.index < METADATA_BLOCK_COUNT);
-	shared_ptr<BlockHandle> block_handle;
-	{
-		lock_guard<mutex> guard(block_lock);
-		auto entry = blocks.find(UnsafeNumericCast<int64_t>(pointer.block_index));
-		if (entry == blocks.end()) {
-			throw InternalException("Trying to pin block %llu - but the block did not exist", pointer.block_index);
-		}
-		auto &block = entry->second;
-#ifdef DEBUG
-		for (auto &free_block : block.free_blocks) {
-			if (free_block == pointer.index) {
-				throw InternalException("Pinning block %d.%d but it is marked as a free block", block.block_id,
-				                        free_block);
+	while (true) {
+		shared_ptr<BlockHandle> block_handle;
+		{
+			lock_guard<mutex> guard(block_lock);
+			auto entry = blocks.find(UnsafeNumericCast<int64_t>(pointer.block_index));
+			if (entry == blocks.end()) {
+				throw InternalException("Trying to pin block %llu - but the block did not exist", pointer.block_index);
 			}
-		}
+			auto &block = entry->second;
+#ifdef DEBUG
+			for (auto &free_block : block.free_blocks) {
+				if (free_block == pointer.index) {
+					throw InternalException("Pinning block %d.%d but it is marked as a free block", block.block_id,
+					                        free_block);
+				}
+			}
 #endif
-		block_handle = block.block;
-	}
+			block_handle = block.block;
+		}
 
-	MetadataHandle handle;
-	handle.pointer.block_index = pointer.block_index;
-	handle.pointer.index = pointer.index;
-	handle.handle = buffer_manager.Pin(block_handle);
-	return handle;
+		auto buffer_handle = buffer_manager.Pin(block_handle);
+		if (!buffer_handle.IsValid()) {
+			// the handle was replaced by ConvertToTransient while we were pinning it and can no
+			// longer be loaded from disk - retry with the current handle
+			continue;
+		}
+		MetadataHandle handle;
+		handle.pointer.block_index = pointer.block_index;
+		handle.pointer.index = pointer.index;
+		handle.handle = std::move(buffer_handle);
+		return handle;
+	}
 }
 
 void MetadataManager::ConvertToTransient(unique_lock<mutex> &block_lock, MetadataBlock &metadata_block) {
@@ -140,6 +148,13 @@ void MetadataManager::ConvertToTransient(unique_lock<mutex> &block_lock, Metadat
 
 	// copy the data to the transient block
 	memcpy(new_buffer.GetDataMutable(), old_buffer.Ptr(), block_manager.GetBlockSize());
+
+	// the disk block now belongs to the transient block and is rewritten in place by a later
+	// checkpoint - the old handle must not reload it from disk after its buffer is evicted
+	{
+		auto old_block_lock = old_block->GetMemory().GetLock();
+		old_block->GetMemory().SetDestroyBufferUpon(DestroyBufferUpon::EVICTION);
+	}
 
 	// unregister the old block
 	block_manager.UnregisterBlock(metadata_block.block_id);
@@ -188,7 +203,7 @@ void MetadataManager::AddAndRegisterBlock(unique_lock<mutex> &block_lock, Metada
 		throw InternalException("AddAndRegisterBlock called with a transient block id");
 	}
 	block_lock.unlock();
-	block.block = block_manager.RegisterBlock(block.block_id);
+	block.block = block_manager.RegisterBlock(block.block_id, MemoryTag::METADATA);
 	block_lock.lock();
 	AddBlock(block_lock, std::move(block), true);
 }
@@ -422,6 +437,20 @@ void MetadataManager::ClearModifiedBlocks(const vector<MetaBlockPointer> &pointe
 	if (pointers.empty()) {
 		return;
 	}
+	vector<MetaBlockPointer> next_pointers;
+	if (keep_next_blocks) {
+		// several pointers can be in one block, whose header is read once
+		unordered_set<idx_t> kept_blocks;
+		for (auto &pointer : pointers) {
+			if (!kept_blocks.insert(pointer.block_pointer).second) {
+				continue;
+			}
+			auto next_block = GetNextBlock(pointer);
+			if (next_block.IsValid()) {
+				next_pointers.push_back(next_block);
+			}
+		}
+	}
 	unique_lock<mutex> guard(block_lock);
 	for (auto &pointer : pointers) {
 		auto block_id = pointer.GetBlockId();
@@ -434,6 +463,24 @@ void MetadataManager::ClearModifiedBlocks(const vector<MetaBlockPointer> &pointe
 		// unset the bit
 		modified_list &= ~(1ULL << block_index);
 	}
+	for (auto &pointer : next_pointers) {
+		// the next block was in use before this checkpoint, otherwise it is left as it is
+		auto entry = modified_blocks.find(pointer.GetBlockId());
+		if (entry != modified_blocks.end()) {
+			entry->second &= ~(1ULL << pointer.GetBlockIndex());
+		}
+	}
+}
+
+void MetadataManager::SetStorageVersion(StorageVersion storage_version) {
+	keep_next_blocks = storage_version < StorageVersion::V1_5_0;
+}
+
+MetaBlockPointer MetadataManager::GetNextBlock(MetaBlockPointer pointer) {
+	auto metadata_pointer = FromDiskPointer(pointer);
+	auto handle = Pin(metadata_pointer);
+	auto next_block = Load<idx_t>(handle.handle.Ptr() + metadata_pointer.index * GetMetadataBlockSize());
+	return MetaBlockPointer(next_block, 0);
 }
 
 bool MetadataManager::BlockIsModified(const MetaBlockPointer &pointer) {

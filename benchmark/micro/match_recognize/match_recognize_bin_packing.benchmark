@@ -1,0 +1,27 @@
+# name: benchmark/micro/match_recognize/match_recognize_bin_packing.benchmark
+# description: Rows packed up to a total, the ones that do not fit excluded and skipped over
+# group: [match_recognize]
+
+# Every row is tried as X and, when the total would be exceeded, as the excluded REST instead, so
+# the aggregate over X folds a run with gaps in it and every row costs two conditions.
+
+name MatchRecognize Bin Packing
+group micro
+subgroup match_recognize
+
+load
+CREATE TABLE items AS
+    SELECT i, i // 1000 AS bin, 1 + ((i::BIGINT * 2654435761 % 1000003) % 9)::INTEGER AS w
+    FROM range(0, 1000000) t(i);
+
+run
+SELECT count(*), sum(total), sum(packed) FROM items MATCH_RECOGNIZE(
+    PARTITION BY bin ORDER BY i
+    MEASURES sum(X.w) AS total, count(X.i) AS packed
+    ONE ROW PER MATCH
+    PATTERN ((X | {- REST -})+)
+    DEFINE X AS sum(X.w) <= 20
+);
+
+result III
+1000	20000	5371

@@ -1,0 +1,46 @@
+# name: test/sql/timezone/timestamptz_ns_to_date.test
+# description: TIMESTAMPTZ_NS to DATE uses the session time zone like TIMESTAMPTZ to DATE
+# group: [timezone]
+
+require icu
+
+statement ok
+SET TimeZone='America/Los_Angeles'
+
+query TT
+SELECT CAST(CAST('2020-01-02 03:04:05.123456789+00' AS TIMESTAMPTZ_NS) AS DATE), CAST(CAST('2020-01-02 03:04:05.123456+00' AS TIMESTAMPTZ) AS DATE)
+----
+2020-01-01	2020-01-01
+
+# the last nanosecond of a local day stays on that day
+query T
+SELECT CAST(CAST('2020-01-01 23:59:59.999999999-08' AS TIMESTAMPTZ_NS) AS DATE)
+----
+2020-01-01
+
+# instants before the epoch floor to the microsecond, they never move past midnight
+query T
+SELECT CAST(CAST('1969-12-31 23:59:59.999999999+00' AS TIMESTAMPTZ_NS) AS DATE)
+----
+1969-12-31
+
+query TTT
+SELECT CAST('infinity'::TIMESTAMPTZ_NS AS DATE), CAST('-infinity'::TIMESTAMPTZ_NS AS DATE), CAST(NULL::TIMESTAMPTZ_NS AS DATE)
+----
+infinity	-infinity	NULL
+
+statement ok
+SET TimeZone='UTC'
+
+query T
+SELECT CAST(CAST('2020-01-02 03:04:05.123456789+00' AS TIMESTAMPTZ_NS) AS DATE)
+----
+2020-01-02
+
+statement ok
+SET disable_timestamptz_casts=true
+
+statement error
+SELECT CAST(CAST('2020-01-02 03:04:05.123456789+00' AS TIMESTAMPTZ_NS) AS DATE)
+----
+<REGEX>:Binder Error.*AT TIME ZONE.*

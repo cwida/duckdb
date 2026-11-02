@@ -10,8 +10,9 @@
 
 namespace duckdb {
 
-SchemaCatalogEntry::SchemaCatalogEntry(Catalog &catalog, CreateSchemaInfo &info)
-    : InCatalogEntry(CatalogType::SCHEMA_ENTRY, catalog, info.SchemaName()) {
+SchemaCatalogEntry::SchemaCatalogEntry(Catalog &catalog, CreateSchemaInfo &info,
+                                       optional_ptr<SchemaCatalogEntry> parent_schema_p)
+    : InCatalogEntry(CatalogType::SCHEMA_ENTRY, catalog, info.SchemaName()), parent_schema(parent_schema_p) {
 	this->internal = info.internal;
 	this->comment = info.comment;
 	this->tags = info.tags;
@@ -29,7 +30,7 @@ optional_ptr<CatalogEntry> SchemaCatalogEntry::CreateIndex(ClientContext &contex
 SimilarCatalogEntry SchemaCatalogEntry::GetSimilarEntry(CatalogTransaction transaction,
                                                         const EntryLookupInfo &lookup_info) {
 	SimilarCatalogEntry result;
-	Scan(transaction.GetContext(), lookup_info.GetCatalogType(), [&](CatalogEntry &entry) {
+	Scan(transaction, lookup_info.GetCatalogType(), [&](CatalogEntry &entry) {
 		auto entry_score = StringUtil::SimilarityRating(entry.name.GetIdentifierName(), lookup_info.GetEntryName());
 		if (entry_score > result.score) {
 			result.score = entry_score;
@@ -71,14 +72,55 @@ vector<Identifier> SchemaCatalogEntry::GetSchemaPath() const {
 }
 
 QualifiedName SchemaCatalogEntry::GetQualifiedName(const Identifier &entry_name) const {
-	auto path = GetSchemaPath();
-	path.insert(path.begin(), catalog.GetName());
-	return QualifiedName(std::move(path), entry_name);
+	return QualifiedName::FromCatalogSchema(catalog.GetName(), GetSchemaPath(), entry_name);
+}
+
+string SchemaCatalogEntry::GetSchemaName() const {
+	return QualifiedName::FromPath(GetSchemaPath()).ToString();
+}
+
+void SchemaCatalogEntry::Scan(CatalogTransaction transaction, CatalogType type,
+                              const std::function<void(CatalogEntry &)> &callback) {
+	Scan(transaction.GetContext(), type, callback);
+}
+
+template <class SCAN>
+static void ScanSchemaTreeInternal(SchemaCatalogEntry &root, SCAN scan,
+                                   const std::function<void(SchemaCatalogEntry &)> &callback) {
+	vector<reference<SchemaCatalogEntry>> pending;
+	pending.emplace_back(root);
+	while (!pending.empty()) {
+		auto &schema = pending.back().get();
+		pending.pop_back();
+		callback(schema);
+		auto child_start = pending.size();
+		scan(schema, [&](CatalogEntry &entry) { pending.emplace_back(entry.Cast<SchemaCatalogEntry>()); });
+		std::reverse(pending.begin() + NumericCast<int64_t>(child_start), pending.end());
+	}
+}
+
+void SchemaCatalogEntry::ScanSchemaTree(CatalogTransaction transaction,
+                                        const std::function<void(SchemaCatalogEntry &)> &callback) {
+	ScanSchemaTreeInternal(
+	    *this,
+	    [&](SchemaCatalogEntry &schema, const std::function<void(CatalogEntry &)> &visit) {
+		    schema.Scan(transaction, CatalogType::SCHEMA_ENTRY, visit);
+	    },
+	    callback);
+}
+
+void SchemaCatalogEntry::ScanSchemaTree(const std::function<void(SchemaCatalogEntry &)> &callback) {
+	ScanSchemaTreeInternal(
+	    *this,
+	    [](SchemaCatalogEntry &schema, const std::function<void(CatalogEntry &)> &visit) {
+		    schema.Scan(CatalogType::SCHEMA_ENTRY, visit);
+	    },
+	    callback);
 }
 
 unique_ptr<CreateInfo> SchemaCatalogEntry::GetInfo() const {
 	auto result = make_uniq<CreateSchemaInfo>();
-	result->SetQualifiedName(QualifiedName({name}, Identifier()));
+	result->SetQualifiedName(GetParentSchema() ? GetQualifiedName(Identifier()) : QualifiedName({name}, Identifier()));
 	result->comment = comment;
 	result->tags = tags;
 	return std::move(result);

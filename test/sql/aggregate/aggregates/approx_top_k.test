@@ -85,7 +85,7 @@ FROM (VALUES
   (5,  49, 2)
 ) AS t(id, x, k)
 ----
-Binder Error: The "col1" argument in function "approx_top_k" must be a constant expression
+Binder Error: The "k" argument in function "approx_top_k" must be a constant expression
 
 statement error
 SELECT id,
@@ -103,4 +103,4 @@ FROM (VALUES
 ) AS t(id, x, k)
 ORDER BY id;
 ----
-Binder Error: The "col1" argument in function "approx_top_k" must be a constant expression
+Binder Error: The "k" argument in function "approx_top_k" must be a constant expression

@@ -28,10 +28,14 @@ public:
 	string physical_plan;
 	string logical_plan_unopt;
 	string logical_plan_opt;
+	vector<Identifier> sql_output_names;
+	bool allow_unsupported_sql = false;
 
 public:
 	void Serialize(Serializer &serializer) const override;
 	static unique_ptr<LogicalOperator> Deserialize(Deserializer &deserializer);
+
+	unique_ptr<LogicalOperator> CreateSQLResult(ClientContext &context, TableIndex table_index);
 
 	idx_t EstimateCardinality(ClientContext &context) override;
 	bool SupportSerialization() const override;

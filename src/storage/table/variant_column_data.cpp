@@ -141,6 +141,10 @@ bool VariantColumnData::PushdownShreddedFieldExtract(const StorageIndex &variant
 		return false;
 	}
 	if (root_type.id() != LogicalTypeId::INVALID) {
+		if (!VariantUtils::ShreddedCastMatchesVariantCast(shredded_stats.get().GetType(), root_type)) {
+			//! The cast has to be applied to the VARIANT
+			return false;
+		}
 		column_index.SetPushdownExtractType(shredded.type, root_type);
 	}
 
@@ -392,6 +396,8 @@ void VariantColumnData::Append(ColumnAppendState &state, const Vector &vector, i
 }
 
 void VariantColumnData::FinalizeAppend(ColumnDataFinalizeAppendState &finalize_state, ColumnAppendState &state) {
+	validity->FinalizeAppendLocked(finalize_state, state.child_appends[0]);
+
 	for (idx_t i = 0; i < sub_columns.size(); i++) {
 		ColumnDataFinalizeAppendState child_finalize_state(finalize_state, LogicalTypeId::VARIANT);
 		sub_columns[i]->FinalizeAppend(child_finalize_state, state.child_appends[i + 1]);

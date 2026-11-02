@@ -1,0 +1,209 @@
+# name: test/sql/sql_export/secure_view_sql_export.test
+# description: Export secure view boundaries with pruned and reconstructed outputs
+# group: [sql_export]
+
+statement ok
+CREATE SCHEMA secret;
+
+statement ok
+CREATE TABLE secret.path_data(s STRUCT(a INTEGER, b STRUCT(c VARCHAR, d VARCHAR)), t INTEGER);
+
+statement ok
+INSERT INTO secret.path_data VALUES ({'a':1,'b':{'c':'bad','d':'2'}},10), ({'a':NULL,'b':{'c':'3','d':NULL}},20), (NULL,30);
+
+statement ok
+CREATE SECURE VIEW secret.paths(first, second) AS SELECT s,t FROM secret.path_data;
+
+statement ok
+CREATE SECURE VIEW secret.paths_twice AS SELECT * FROM secret.paths;
+
+statement ok
+CREATE SECURE VIEW unused_values AS SELECT error('unused secure value') AS bad FROM range(3);
+
+statement ok
+CREATE SECURE VIEW union_values AS SELECT 11 AS value UNION ALL SELECT 22;
+
+statement ok
+CREATE SECURE VIEW union_struct AS SELECT {'a':1} AS unused, {'a':2} AS s UNION ALL SELECT {'a':3}, {'a':4};
+
+statement ok
+CREATE SECURE VIEW distinct_union_struct AS SELECT {'a':1} AS unused, {'a':2} AS s UNION SELECT {'a':3}, {'a':4};
+
+statement ok
+CREATE SECURE VIEW computed_struct AS SELECT 99 AS unused, {'a':i,'b':i+1} AS s FROM range(3)t(i);
+
+statement ok
+CREATE TABLE filtered_data(i INTEGER, txt VARCHAR);
+
+statement ok
+INSERT INTO filtered_data VALUES (0,'1'), (1,'bad');
+
+statement ok
+CREATE SECURE VIEW filtered_values AS SELECT i, CAST(txt AS INTEGER) AS value FROM filtered_data;
+
+query IIII
+SELECT second,first.a,first.b.d::BIGINT,second FROM secret.paths ORDER BY second;
+----
+10	1	2	10
+20	NULL	NULL	20
+30	NULL	NULL	30
+
+query I
+SELECT count(*) FROM unused_values;
+----
+3
+
+query I
+SELECT count(*) FROM union_values;
+----
+2
+
+query I
+SELECT s.a FROM union_struct ORDER BY s.a;
+----
+2
+4
+
+query I
+SELECT s.a FROM distinct_union_struct ORDER BY s.a;
+----
+2
+4
+
+query I
+SELECT s.a FROM computed_struct ORDER BY s.a;
+----
+0
+1
+2
+
+# Safe caller pushdown excludes the invalid row before evaluating the view cast.
+query I
+SELECT value FROM filtered_values WHERE i=0;
+----
+1
+
+query III
+SELECT first.a,first.b.d::BIGINT,second FROM secret.paths_twice ORDER BY second;
+----
+1	2	10
+NULL	NULL	20
+NULL	NULL	30
+
+query IIIII
+SELECT first,first.a,first.b,first.b.d::BIGINT,first.b.d::VARCHAR FROM secret.paths_twice ORDER BY second;
+----
+{'a': 1, 'b': {'c': bad, 'd': 2}}	1	{'c': bad, 'd': 2}	2	2
+{'a': NULL, 'b': {'c': 3, 'd': NULL}}	NULL	{'c': 3, 'd': NULL}	NULL	NULL
+NULL	NULL	NULL	NULL	NULL
+
+query II rowsort
+WITH c AS MATERIALIZED (SELECT * FROM secret.paths_twice)
+SELECT a.second,b.second FROM c a CROSS JOIN c b;
+----
+10	10
+10	20
+10	30
+20	10
+20	20
+20	30
+30	10
+30	20
+30	30
+
+query II rowsort
+WITH c AS NOT MATERIALIZED (SELECT * FROM secret.paths_twice)
+SELECT a.second,b.second FROM c a CROSS JOIN c b;
+----
+10	10
+10	20
+10	30
+20	10
+20	20
+20	30
+30	10
+30	20
+30	30
+
+
+
+query I
+SELECT first.b.d::BIGINT FROM secret.paths_twice ORDER BY second;
+----
+2
+NULL
+NULL
+
+statement error
+SELECT (first.b::STRUCT(c BIGINT,d BIGINT)).d FROM secret.paths_twice ORDER BY second;
+----
+Could not convert string 'bad'
+
+statement ok
+CREATE SEQUENCE unused_secure_sequence;
+
+statement ok
+CREATE SECURE VIEW unused_secure_values AS SELECT nextval('unused_secure_sequence') AS x,
+CAST(CASE WHEN i=2047 THEN 'bad' ELSE '1' END AS INTEGER) AS y FROM range(4096) t(i);
+
+query I
+SELECT count(*) FROM unused_secure_values;
+----
+4096
+
+query I
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name='unused_secure_sequence';
+----
+NULL
+
+statement ok
+CREATE SEQUENCE retained_secure_sequence;
+
+statement ok
+CREATE SECURE VIEW retained_secure_values AS SELECT nextval('retained_secure_sequence') AS x
+UNION ALL SELECT nextval('retained_secure_sequence');
+
+query I
+SELECT count(*) FROM retained_secure_values;
+----
+2
+
+# EXPLAIN must not execute the source; the generated query executes it once.
+query I
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name='retained_secure_sequence';
+----
+2
+
+statement ok
+CREATE SECURE VIEW collated_inner(s) AS SELECT {'k': v COLLATE nocase, 'j': {'z': v COLLATE noaccent}}
+FROM (VALUES ('A'),('a'),(NULL)) t(v);
+
+statement ok
+CREATE SECURE VIEW collated_outer AS SELECT * FROM collated_inner;
+
+query TT
+SELECT s.k,s.j.z FROM collated_outer ORDER BY s.k,s.j.z;
+----
+A	A
+a	a
+NULL	NULL
+
+statement ok
+CREATE TABLE source_data(a INTEGER, b INTEGER);
+
+statement ok
+INSERT INTO source_data VALUES (1,10), (2,20), (3,30);
+
+statement ok
+CREATE SECURE VIEW secure_data(left_value, right_value) AS SELECT a,b FROM source_data;
+
+query II
+SELECT right_value,left_value FROM secure_data WHERE right_value >= 20 ORDER BY right_value;
+----
+20	2
+30	3
+
+query TT
+EXPLAIN (SQL) SELECT right_value,left_value FROM secure_data WHERE right_value >= 20 ORDER BY right_value;
+----
+sql	<REGEX>:.*FROM.*secure_data.*

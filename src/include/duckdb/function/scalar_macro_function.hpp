@@ -11,9 +11,6 @@
 #include "duckdb/function/macro_function.hpp"
 #include "duckdb/parser/query_node.hpp"
 #include "duckdb/function/function.hpp"
-#include "duckdb/planner/binder.hpp"
-#include "duckdb/planner/expression_binder.hpp"
-#include "duckdb/parser/expression/constant_expression.hpp"
 
 namespace duckdb {
 

@@ -9,6 +9,8 @@
  * THE TPC SOFTWARE IS AVAILABLE WITHOUT CHARGE FROM TPC.
  */
 #include "dbgen/config.h"
+
+#include <array>
 #include "dbgen/dss.h"
 #include "dbgen/rng64.h"
 
@@ -74,8 +76,21 @@ void NthElement(DSS_HUGE N, DSS_HUGE *StartSeed) {
 		i = ln % LN_CNT;
 		fprintf(stderr, "%c\b", lnoise[i]);
 	}
-	Mult = Multiplier;
 	Z = (DSS_HUGE)*StartSeed;
+	// small advances happen on every row (row_stop_h); use a table of Multiplier^N
+	static const auto small_powers = []() {
+		std::array<DSS_HUGE, 256> powers;
+		powers[0] = 1;
+		for (size_t i = 1; i < powers.size(); i++) {
+			powers[i] = (powers[i - 1] * Multiplier) % Modulus;
+		}
+		return powers;
+	}();
+	if (N >= 0 && N < (DSS_HUGE)small_powers.size()) {
+		*StartSeed = (small_powers[(size_t)N] * Z) % Modulus;
+		return;
+	}
+	Mult = Multiplier;
 	while (N > 0) {
 		if (N % 2 != 0) /* testing for oddness, this seems portable */
 			Z = (Mult * Z) % Modulus;

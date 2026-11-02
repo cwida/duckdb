@@ -1,11 +1,11 @@
 #include "duckdb/optimizer/aggregate_function_rewriter.hpp"
 
-#include "duckdb/catalog/catalog_entry/aggregate_function_catalog_entry.hpp"
 #include "duckdb/function/aggregate/distributive_function_utils.hpp"
 #include "duckdb/function/function_binder.hpp"
 #include "duckdb/function/aggregate/distributive_functions.hpp"
 #include "duckdb/optimizer/matcher/expression_matcher.hpp"
 #include "duckdb/optimizer/aggregate_rewrite.hpp"
+#include "duckdb/function/builtin_function_lookup.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/column_binding_map.hpp"
@@ -14,6 +14,7 @@
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/planner/expression_nullability.hpp"
 #include "duckdb/planner/operator/logical_aggregate.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
 
@@ -45,6 +46,9 @@ public:
 
 public:
 	virtual bool ShouldSkip(const LogicalAggregate &aggr) const = 0;
+	virtual bool ShouldRewrite(const LogicalAggregate &aggr, Expression &expr) {
+		return true;
+	}
 	virtual unique_ptr<Expression> Rewrite(unique_ptr<Expression> &expr, vector<reference<Expression>> &bindings,
 	                                       vector<unique_ptr<Expression>> &additional_expressions) = 0;
 	virtual unique_ptr<Expression>
@@ -66,7 +70,8 @@ static unique_ptr<SetTypesMatcher> GetSmallIntegerTypesMatcher() {
 //! AVG(x) -> SUM(x) / COUNT(x)
 class AvgRewriteRule : public AggregateRewriteRule {
 public:
-	explicit AvgRewriteRule(Optimizer &optimizer) : AggregateRewriteRule(optimizer) {
+	AvgRewriteRule(Optimizer &optimizer, LogicalOperator &root)
+	    : AggregateRewriteRule(optimizer), nullability(optimizer.context, root) {
 		auto op = make_uniq<AggregateExpressionMatcher>();
 		op->function = make_uniq<SpecificFunctionMatcher>("avg");
 		op->type = make_uniq<NumericTypeMatcher>();
@@ -75,33 +80,77 @@ public:
 		child_matcher->type = make_uniq<NumericTypeMatcher>();
 		op->matchers.push_back(std::move(child_matcher));
 		matcher = std::move(op);
+
+		auto count = make_uniq<AggregateExpressionMatcher>();
+		count->function = make_uniq<ManyFunctionMatcher>(identifier_set_t {"count", "count_star"});
+		count->policy = SetMatcher::Policy::SOME;
+		count_matcher = std::move(count);
 	}
 
 public:
 	bool ShouldSkip(const LogicalAggregate &aggr) const override {
-		// AVG -> SUM/COUNT is correct under any grouping (both ignore NULLs
-		// identically), so ROLLUP/CUBE/GROUPING SETS are safe to rewrite.
-		// Decomposing here is also the prerequisite for partial-aggregate
-		// pushdown to fire on AVG queries. The remaining guard is for
-		// grouping_functions: their per-row grouping-set bitmasks reference
-		// the original AVG column directly, and the rewrite has no way to
-		// translate those references.
 		return !aggr.grouping_functions.empty();
+	}
+
+	bool ShouldRewrite(const LogicalAggregate &aggr, Expression &expr) override {
+		if (aggr.groups.empty()) {
+			return true;
+		}
+		if (optimizer.OptimizerDisabled(OptimizerType::COMMON_AGGREGATE)) {
+			return false;
+		}
+		auto &child = *expr.Cast<BoundAggregateExpression>().GetChildren()[0];
+		FunctionBinder binder(optimizer.context);
+		vector<unique_ptr<Expression>> sum_args;
+		sum_args.push_back(child.Copy());
+		auto sum = binder.BindAggregateFunction(
+		    GetBuiltinAggregateFunction(optimizer.context, "sum", {child.GetReturnType()}), std::move(sum_args));
+		vector<unique_ptr<Expression>> count_args;
+		count_args.push_back(child.Copy());
+		auto count = binder.BindAggregateFunction(
+		    GetBuiltinAggregateFunction(optimizer.context, "count", {child.GetReturnType()}), std::move(count_args));
+
+		D_ASSERT(aggr.children.size() == 1);
+		auto is_not_null = [&](const Expression &input) {
+			if (input.GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
+				return !input.Cast<BoundConstantExpression>().GetValue().IsNull();
+			}
+			return nullability.IsNotNull(*aggr.children[0], input);
+		};
+		const auto can_share_count =
+		    !optimizer.OptimizerDisabled(OptimizerType::STATISTICS_PROPAGATION) && is_not_null(child);
+		for (auto &other : aggr.expressions) {
+			// Identical AVGs already share their native state.
+			if (expr.Equals(*other)) {
+				continue;
+			}
+			if (sum->Equals(*other) || count->Equals(*other)) {
+				return true;
+			}
+			if (!can_share_count || other->IsVolatile()) {
+				continue;
+			}
+			vector<reference<Expression>> bindings;
+			if (!count_matcher->Match(*other, bindings) && !matcher->Match(*other, bindings)) {
+				continue;
+			}
+			auto &children = other->Cast<BoundAggregateExpression>().GetChildren();
+			if (children.empty() || (children.size() == 1 && is_not_null(*children[0]))) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	unique_ptr<Expression> Rewrite(unique_ptr<Expression> &expr, vector<reference<Expression>> &bindings,
 	                               vector<unique_ptr<Expression>> &additional_expressions) override {
-		auto &catalog = Catalog::GetSystemCatalog(optimizer.context);
 		FunctionBinder function_binder(optimizer.context);
 
 		// Move the child out of AVG(x)
 		auto avg_child = std::move(bindings[0].get().Cast<BoundAggregateExpression>().GetChildrenMutable()[0]);
 
 		// Replace AVG(x) with SUM(x)
-		auto &sum_entry = catalog.GetEntry<AggregateFunctionCatalogEntry>(
-		    optimizer.context, QualifiedName(catalog.GetName(), Identifier::DefaultSchema(), "sum"));
-		const auto &sum_fun =
-		    sum_entry.functions.GetFunctionByArguments(optimizer.context, {avg_child->GetReturnType()});
+		auto sum_fun = GetBuiltinAggregateFunction(optimizer.context, "sum", {avg_child->GetReturnType()});
 		vector<unique_ptr<Expression>> args;
 		args.push_back(std::move(avg_child));
 		auto count_arg = args.back()->Copy();
@@ -115,6 +164,10 @@ public:
 		// SUM(x) / COUNT(x): additional_expressions[0] is the COUNT(x) ref
 		return optimizer.BindScalarFunction("/", std::move(aggr_ref), std::move(additional_expressions[0]));
 	}
+
+private:
+	NotNullExpressionAnalyzer nullability;
+	unique_ptr<ExpressionMatcher> count_matcher;
 };
 
 //! SUM(x + C) -> SUM(x) + C * COUNT(x)
@@ -350,17 +403,22 @@ private:
 			if (!rule.matcher->Match(*expr, bindings)) {
 				continue;
 			}
+			if (!rule.ShouldRewrite(aggr, *expr)) {
+				continue;
+			}
 
 			RewriteInfo rewrite_info;
 			auto count_arg = rule.Rewrite(expr, bindings, rewrite_info.additional_expressions);
 
-			// Add COUNT([x]) to the aggregate list
+			// Add COUNT([x]) to the aggregate list - the count set holds both the unary count and count_star
 			FunctionBinder function_binder(optimizer.context);
-			const auto count_fun = count_arg ? CountFunctionBase::GetFunction() : CountStarFun::GetFunction();
 			vector<unique_ptr<Expression>> count_args;
+			vector<LogicalType> count_arg_types;
 			if (count_arg) {
+				count_arg_types.push_back(count_arg->GetReturnType());
 				count_args.push_back(std::move(count_arg));
 			}
+			auto count_fun = GetBuiltinAggregateFunction(optimizer.context, CountFun::Name, count_arg_types);
 			auto count_aggr = function_binder.BindAggregateFunction(count_fun, std::move(count_args), nullptr,
 			                                                        AggregateType::NON_DISTINCT);
 
@@ -436,9 +494,6 @@ private:
 };
 
 AggregateFunctionRewriter::AggregateFunctionRewriter(Optimizer &optimizer) : optimizer(optimizer) {
-	rules.push_back(make_uniq<AvgRewriteRule>(optimizer));
-	rules.push_back(make_uniq<SumRewriteRule>(optimizer));
-	rules.push_back(make_uniq<ListRewriteRule>(optimizer));
 }
 
 AggregateFunctionRewriter::~AggregateFunctionRewriter() {
@@ -446,6 +501,10 @@ AggregateFunctionRewriter::~AggregateFunctionRewriter() {
 
 void AggregateFunctionRewriter::Optimize(unique_ptr<LogicalOperator> &op) {
 	RewriteAggregateCallbacks(optimizer, op);
+	vector<unique_ptr<AggregateRewriteRule>> rules;
+	rules.push_back(make_uniq<AvgRewriteRule>(optimizer, *op));
+	rules.push_back(make_uniq<SumRewriteRule>(optimizer));
+	rules.push_back(make_uniq<ListRewriteRule>(optimizer));
 	// Run each rule as an independent pass so that transformations by an earlier rule affect later rules
 	for (auto &rule : rules) {
 		AggregateFunctionRewriterInternal rewriter(optimizer, *rule);

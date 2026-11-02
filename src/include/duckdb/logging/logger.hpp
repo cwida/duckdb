@@ -70,7 +70,7 @@ public:
 
 	// Syntactic sugar for formatted strings
 	template <typename... ARGS>
-	void WriteLog(const char *log_type, LogLevel log_level, const char *format_string, ARGS... params) {
+	void WriteLog(const char *log_type, LogLevel log_level, const char *format_string, const ARGS &...params) {
 		auto formatted_string = StringUtil::Format(format_string, params...);
 		WriteLog(log_type, log_level, formatted_string.c_str());
 	}

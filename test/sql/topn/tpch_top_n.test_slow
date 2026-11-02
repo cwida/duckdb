@@ -10,8 +10,8 @@ CALL dbgen(sf=1);
 query IIIIIIIIIIIIIIII
 select * from lineitem order by l_extendedprice desc, l_shipdate limit 2;
 ----
-2513090	199999	5038	4	50.00	104949.50	0.02	0.04	A	F	1993-10-05	1993-10-17	1993-10-28	TAKE BACK RETURN	FOB	- ironic, pending pinto be
-82823	199998	5037	2	50.00	104899.50	0.04	0.05	A	F	1992-04-30	1992-07-05	1992-05-29	COLLECT COD	SHIP	orbits. bold fox
+2513090	199999	5038	4	50.00	104949.50	0.02	0.04	A	F	1993-10-05	1993-10-17	1993-10-28	TAKE BACK RETURN	FOB	eas are blithely fluffily 
+82823	199998	5037	2	50.00	104899.50	0.04	0.05	A	F	1992-04-30	1992-07-05	1992-05-29	COLLECT COD	SHIP	ts sleep careful
 
 query I
 select l_quantity

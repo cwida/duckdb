@@ -1,0 +1,31 @@
+# name: test/sql/alter/alter_col/test_set_not_null_after_delete.test
+# description: SET NOT NULL ignores rows deleted by the current transaction
+# group: [alter_col]
+
+statement ok
+CREATE TABLE t(i INTEGER);
+
+statement ok
+INSERT INTO t VALUES (NULL), (42);
+
+statement ok
+BEGIN TRANSACTION;
+
+statement ok
+DELETE FROM t WHERE i IS NULL;
+
+statement ok
+ALTER TABLE t ALTER COLUMN i SET NOT NULL;
+
+statement ok
+COMMIT;
+
+query I
+SELECT * FROM t;
+----
+42
+
+statement error
+INSERT INTO t VALUES (NULL);
+----
+NOT NULL constraint failed: t.i

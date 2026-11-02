@@ -5,6 +5,7 @@
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
+#include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/filter/expression_filter.hpp"
 #include "duckdb/planner/operator/list.hpp"
 #include "duckdb/storage/statistics/base_statistics.hpp"
@@ -12,6 +13,22 @@
 #include <algorithm>
 
 namespace duckdb {
+
+bool ExpressionBecomesNull(const Expression &expr,
+                           const std::function<bool(const BoundColumnRefExpression &)> &column_becomes_null) {
+	if (expr.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
+		auto &column = expr.Cast<BoundColumnRefExpression>();
+		return column_becomes_null(column);
+	}
+	if (!expr.PropagatesNullValues()) {
+		return false;
+	}
+	bool child_becomes_null = false;
+	ExpressionIterator::EnumerateChildren(expr, [&](const Expression &child) {
+		child_becomes_null |= ExpressionBecomesNull(child, column_becomes_null);
+	});
+	return child_becomes_null;
+}
 
 NotNullExpressionAnalyzer::NotNullExpressionAnalyzer(ClientContext &context_p,
                                                      optional_ptr<LogicalOperator> plan_root_p)
@@ -30,7 +47,7 @@ static bool GetColumnRefBinding(const Expression &expr, ColumnBinding &binding) 
 	return true;
 }
 
-static bool FilterRejectsNull(const Expression &filter, const Expression &expr) {
+bool FilterRejectsNull(const Expression &filter, const Expression &expr) {
 	if (filter.GetExpressionType() == ExpressionType::CONJUNCTION_AND) {
 		auto &conjunction = filter.Cast<BoundConjunctionExpression>();
 		for (auto &child : conjunction.GetChildren()) {
@@ -212,11 +229,11 @@ bool NotNullExpressionAnalyzer::IsNotNull(LogicalOperator &op, const Expression 
 		auto column_index = binding.column_index.GetIndex();
 		auto &cte_source = *cte->children[0];
 		auto source_bindings = cte_source.GetColumnBindings();
-		if (column_index >= source_bindings.size() || column_index >= cte_source.types.size()) {
+		if (column_index >= source_bindings.size()) {
 			return false;
 		}
 		seen_ctes.push_back(cte_ref.cte_index);
-		auto source_expr = BoundColumnRefExpression(cte_source.types[column_index], source_bindings[column_index]);
+		auto source_expr = BoundColumnRefExpression(expr.GetReturnType(), source_bindings[column_index]);
 		auto result = IsNotNull(cte_source, source_expr, seen_ctes);
 		seen_ctes.pop_back();
 		return result;

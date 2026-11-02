@@ -1,14 +1,14 @@
 channel|id|sales|returns_|profit
-NULL|NULL|1143646603.07|30626975.48|-317526984.52
-catalog channel|NULL|393609478.06|9461247.56|-44787514.37
-catalog channel|catalog_pageAAAAAAAAAAABAAAA|0.00|38578.36|-25239.02
+NULL|NULL|1143646603.07|30617460.71|-317540732.87
+catalog channel|NULL|393609478.06|9451732.79|-44801262.72
+catalog channel|catalog_pageAAAAAAAAAAABAAAA|0.00|39037.48|-25330.29
 catalog channel|catalog_pageAAAAAAAAAABBAAAA|0.00|1843.58|-1180.49
 catalog channel|catalog_pageAAAAAAAAAADBAAAA|979451.88|1795.65|-29460.90
-catalog channel|catalog_pageAAAAAAAAABABAAAA|1695425.02|18391.45|-262558.45
+catalog channel|catalog_pageAAAAAAAAABABAAAA|1695425.02|18485.35|-262837.18
 catalog channel|catalog_pageAAAAAAAAABBBAAAA|0.00|2278.21|-729.17
 catalog channel|catalog_pageAAAAAAAAABCBAAAA|0.00|51.84|-160.98
 catalog channel|catalog_pageAAAAAAAAABDBAAAA|737915.96|0.00|-188331.17
-catalog channel|catalog_pageAAAAAAAAACABAAAA|1938210.77|31674.40|-211931.18
+catalog channel|catalog_pageAAAAAAAAACABAAAA|1938210.77|31734.23|-212183.03
 catalog channel|catalog_pageAAAAAAAAACBBAAAA|0.00|3446.97|-1095.74
 catalog channel|catalog_pageAAAAAAAAACCBAAAA|0.00|1901.55|-1157.93
 catalog channel|catalog_pageAAAAAAAAACDBAAAA|47635.31|0.00|-17682.16
@@ -23,7 +23,7 @@ catalog channel|catalog_pageAAAAAAAAAEBBAAAA|0.00|874.04|-432.28
 catalog channel|catalog_pageAAAAAAAAAEDBAAAA|41558.23|0.00|-13246.23
 catalog channel|catalog_pageAAAAAAAAAEIAAAAA|0.00|387.08|-240.92
 catalog channel|catalog_pageAAAAAAAAAEJAAAAA|0.00|14002.84|-9902.65
-catalog channel|catalog_pageAAAAAAAAAFABAAAA|1721090.34|13247.86|-149861.51
+catalog channel|catalog_pageAAAAAAAAAFABAAAA|1721090.34|13263.50|-149965.03
 catalog channel|catalog_pageAAAAAAAAAFBBAAAA|0.00|1580.31|-846.31
 catalog channel|catalog_pageAAAAAAAAAFDBAAAA|56097.77|0.00|11893.91
 catalog channel|catalog_pageAAAAAAAAAFIAAAAA|0.00|8093.91|-2983.03
@@ -34,7 +34,7 @@ catalog channel|catalog_pageAAAAAAAAAGCBAAAA|0.00|165.95|-505.63
 catalog channel|catalog_pageAAAAAAAAAGDBAAAA|24564.43|0.00|-11176.59
 catalog channel|catalog_pageAAAAAAAAAGJAAAAA|0.00|2304.96|-1889.93
 catalog channel|catalog_pageAAAAAAAAAHABAAAA|1688371.03|13278.55|-272785.39
-catalog channel|catalog_pageAAAAAAAAAHBBAAAA|0.00|2956.32|-1316.61
+catalog channel|catalog_pageAAAAAAAAAHBBAAAA|0.00|2985.70|-1388.51
 catalog channel|catalog_pageAAAAAAAAAHCBAAAA|0.00|7238.76|-2572.63
 catalog channel|catalog_pageAAAAAAAAAHDBAAAA|67542.97|0.00|-10859.63
 catalog channel|catalog_pageAAAAAAAAAHIAAAAA|0.00|5950.48|-2546.00
@@ -53,16 +53,16 @@ catalog channel|catalog_pageAAAAAAAAAKBBAAAA|0.00|128.52|-236.84
 catalog channel|catalog_pageAAAAAAAAAKIAAAAA|0.00|139.80|-126.58
 catalog channel|catalog_pageAAAAAAAAAKJAAAAA|0.00|2302.65|-344.66
 catalog channel|catalog_pageAAAAAAAAAKMAAAAA|0.00|310.59|-157.84
-catalog channel|catalog_pageAAAAAAAAAKPAAAAA|0.00|17291.76|-13718.05
+catalog channel|catalog_pageAAAAAAAAAKPAAAAA|0.00|17367.72|-13785.41
 catalog channel|catalog_pageAAAAAAAAALABAAAA|686340.05|1399.50|-169476.20
 catalog channel|catalog_pageAAAAAAAAALBBAAAA|0.00|21.15|-47.30
 catalog channel|catalog_pageAAAAAAAAALCBAAAA|803979.41|2202.13|-59876.86
-catalog channel|catalog_pageAAAAAAAAALPAAAAA|0.00|59357.37|-29734.86
+catalog channel|catalog_pageAAAAAAAAALPAAAAA|0.00|59343.63|-29644.11
 catalog channel|catalog_pageAAAAAAAAAMABAAAA|879934.00|7573.29|-128003.95
-catalog channel|catalog_pageAAAAAAAAAMBBAAAA|0.00|616.77|-727.36
+catalog channel|catalog_pageAAAAAAAAAMBBAAAA|0.00|572.61|-570.71
 catalog channel|catalog_pageAAAAAAAAAMCBAAAA|858694.95|0.00|-33829.08
 catalog channel|catalog_pageAAAAAAAAAMMAAAAA|0.00|1145.17|-637.94
-catalog channel|catalog_pageAAAAAAAAAMPAAAAA|0.00|30081.99|-18168.83
+catalog channel|catalog_pageAAAAAAAAAMPAAAAA|0.00|27834.79|-17808.21
 catalog channel|catalog_pageAAAAAAAAANABAAAA|862917.84|5672.73|-97012.35
 catalog channel|catalog_pageAAAAAAAAANBBAAAA|0.00|298.22|-116.80
 catalog channel|catalog_pageAAAAAAAAANCBAAAA|794608.18|0.00|-142294.57
@@ -75,24 +75,24 @@ catalog channel|catalog_pageAAAAAAAAAOPAAAAA|0.00|17623.93|-9742.85
 catalog channel|catalog_pageAAAAAAAAAPABAAAA|0.00|1858.98|-6287.99
 catalog channel|catalog_pageAAAAAAAAAPBBAAAA|0.00|3205.84|-1788.02
 catalog channel|catalog_pageAAAAAAAAAPCBAAAA|690922.05|1413.44|-64905.82
-catalog channel|catalog_pageAAAAAAAAAPPAAAAA|0.00|33946.88|-23704.78
+catalog channel|catalog_pageAAAAAAAAAPPAAAAA|0.00|33641.11|-23486.12
 catalog channel|catalog_pageAAAAAAAABAABAAAA|0.00|59329.40|-26940.74
 catalog channel|catalog_pageAAAAAAAABABBAAAA|0.00|140.09|-909.57
 catalog channel|catalog_pageAAAAAAAABACBAAAA|0.00|1276.66|-1629.05
 catalog channel|catalog_pageAAAAAAAABADBAAAA|762988.71|0.00|-157110.19
 catalog channel|catalog_pageAAAAAAAABANAAAAA|0.00|349.11|-65.98
-catalog channel|catalog_pageAAAAAAAABBABAAAA|1788629.87|8536.15|-200877.95
+catalog channel|catalog_pageAAAAAAAABBABAAAA|1788629.87|11760.84|-202705.31
 catalog channel|catalog_pageAAAAAAAABBBBAAAA|0.00|4703.62|-1187.85
 catalog channel|catalog_pageAAAAAAAABBCBAAAA|0.00|117.85|-119.30
 catalog channel|catalog_pageAAAAAAAABBDBAAAA|888509.76|0.00|-148008.93
-catalog channel|catalog_pageAAAAAAAABCABAAAA|1868472.93|24768.07|-66335.88
+catalog channel|catalog_pageAAAAAAAABCABAAAA|1868472.93|24911.02|-66455.88
 catalog channel|catalog_pageAAAAAAAABCBBAAAA|0.00|619.43|-372.67
 catalog channel|catalog_pageAAAAAAAABCCBAAAA|0.00|261.45|-848.36
 catalog channel|catalog_pageAAAAAAAABCDBAAAA|69217.59|0.00|-12183.54
 catalog channel|catalog_pageAAAAAAAABCJAAAAA|0.00|7848.40|-3233.81
 catalog channel|catalog_pageAAAAAAAABDABAAAA|1685779.83|19314.49|-222580.30
 catalog channel|catalog_pageAAAAAAAABDBBAAAA|0.00|16066.66|-2800.42
-catalog channel|catalog_pageAAAAAAAABDCBAAAA|0.00|3330.85|-741.87
+catalog channel|catalog_pageAAAAAAAABDCBAAAA|0.00|374.08|-296.07
 catalog channel|catalog_pageAAAAAAAABDDBAAAA|78108.12|0.00|-15227.27
 catalog channel|catalog_pageAAAAAAAABDJAAAAA|0.00|3559.35|-3029.54
 catalog channel|catalog_pageAAAAAAAABDMAAAAA|0.00|171.12|-285.87

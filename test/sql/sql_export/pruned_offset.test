@@ -1,0 +1,25 @@
+# name: test/sql/sql_export/pruned_offset.test
+# description: SQL export restores offsets reduced by physical row group pruning
+# group: [sql_export]
+
+statement ok
+CREATE TABLE offset_rows AS SELECT i::INTEGER AS i FROM range(245760) t(i)
+
+statement ok
+CHECKPOINT
+
+statement ok
+INSERT INTO offset_rows VALUES (-1)
+
+statement ok
+SET disabled_optimizers='statistics_propagation'
+
+query I
+SELECT i FROM offset_rows ORDER BY i LIMIT 1 OFFSET 122880
+----
+122879
+
+query I
+SELECT count(*) FROM (SELECT i FROM offset_rows ORDER BY i OFFSET 200000)
+----
+45761

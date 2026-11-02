@@ -1,0 +1,20 @@
+# name: test/sql/function/list/list_resize_vector_types.test
+# description: list_resize with a default value over every vector type
+# group: [list]
+
+query I
+SELECT count(list_resize([1, 2], 3, b)) FROM test_vector_types(NULL::INT) t(b)
+----
+11
+
+query I
+SELECT count(list_resize(a, 3, b)) FROM test_vector_types(NULL::INT[], NULL::INT) t(a, b)
+----
+11
+
+query I
+SELECT list_resize([1], 4, i) FROM range(3) t(i)
+----
+[1, 0, 0, 0]
+[1, 1, 1, 1]
+[1, 2, 2, 2]

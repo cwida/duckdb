@@ -1,8 +1,9 @@
 #include "duckdb/storage/compression/dict_fsst/compression.hpp"
-#include "duckdb/common/typedefs.hpp"
-#include "fsst.h"
+
 #include "duckdb/common/fsst.hpp"
 #include "duckdb/main/config.hpp"
+#include "duckdb/storage/compression/dict_fsst/analyze.hpp"
+#include "fsst.h"
 
 #if defined(__MVS__) && !defined(alloca)
 #define alloca __builtin_alloca

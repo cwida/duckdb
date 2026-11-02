@@ -92,9 +92,9 @@ SELECT count(*) FROM divide_pruning WHERE i // 0 = 5;
 ----
 <REGEX>:.*Division by zero.*
 
-# With null_on_division_by_zero the middle row group is scanned and yields NULLs.
+# Without error_on_division_by_zero the middle row group is scanned and yields NULLs.
 statement ok
-SET null_on_division_by_zero=true;
+SET error_on_division_by_zero=false;
 
 query II
 EXPLAIN ANALYZE SELECT count(*) FROM divide_pruning WHERE 6144 // (i - 3000) = 123456;
@@ -113,7 +113,7 @@ SELECT count(*) FROM divide_pruning WHERE i // 0 = 5;
 0
 
 statement ok
-SET null_on_division_by_zero=false;
+SET error_on_division_by_zero=true;
 
 # The first row group contains the minimum integer: statistics derivation must
 # not evaluate INT32_MIN // -1, and pruning must not swallow the overflow error

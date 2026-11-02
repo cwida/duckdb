@@ -95,3 +95,60 @@ SELECT finalize(to_aggregate_state(
 ));
 ----
 Invalid Input Error: Invalid approx_quantile state - non-zero count requires at least one centroid
+
+# centroid weights must be positive and finite
+foreach weight 'nan'::DOUBLE 'inf'::DOUBLE -1.0::DOUBLE 0.0::DOUBLE
+
+statement error
+SELECT finalize(to_aggregate_state(
+    {'count': 2::UBIGINT, 'min': 0.0::DOUBLE, 'max': 1.0::DOUBLE,
+     'centroids': [{'mean': 0.0::DOUBLE, 'weight': {weight}}, {'mean': 1.0::DOUBLE, 'weight': 1.0::DOUBLE}]},
+    'approx_quantile', ['DOUBLE', 'FLOAT'], [NULL, 0.5::FLOAT]
+));
+----
+Invalid approx_quantile state - centroids must have a mean and a positive finite weight
+
+endloop
+
+statement error
+SELECT finalize(to_aggregate_state(
+    {'count': 2::UBIGINT, 'min': 0.0::DOUBLE, 'max': 1.0::DOUBLE,
+     'centroids': [{'mean': 'nan'::DOUBLE, 'weight': 1.0::DOUBLE}, {'mean': 1.0::DOUBLE, 'weight': 1.0::DOUBLE}]},
+    'approx_quantile', ['DOUBLE', 'FLOAT'], [NULL, 0.5::FLOAT]
+));
+----
+Invalid approx_quantile state - centroids must have a mean and a positive finite weight
+
+statement error
+SELECT finalize(to_aggregate_state(
+    {'count': 2::UBIGINT, 'min': 0.0::DOUBLE, 'max': 1.0::DOUBLE,
+     'centroids': [{'mean': 1.0::DOUBLE, 'weight': 1.0::DOUBLE}, {'mean': 0.0::DOUBLE, 'weight': 1.0::DOUBLE}]},
+    'approx_quantile', ['DOUBLE', 'FLOAT'], [NULL, 0.5::FLOAT]
+));
+----
+Invalid approx_quantile state - centroids must be sorted by their mean
+
+statement error
+SELECT finalize(to_aggregate_state(
+    {'count': 2::UBIGINT, 'min': 0.0::DOUBLE, 'max': 1.0::DOUBLE,
+     'centroids': [{'mean': 0.0::DOUBLE, 'weight': 1e308::DOUBLE}, {'mean': 1.0::DOUBLE, 'weight': 1e308::DOUBLE}]},
+    'approx_quantile', ['DOUBLE', 'FLOAT'], [NULL, 0.5::FLOAT]
+));
+----
+Invalid approx_quantile state - the total centroid weight must be finite
+
+statement error
+SELECT finalize(to_aggregate_state(
+    {'count': 2::UBIGINT, 'min': 'nan'::DOUBLE, 'max': 1.0::DOUBLE,
+     'centroids': [{'mean': 0.0::DOUBLE, 'weight': 1.0::DOUBLE}, {'mean': 1.0::DOUBLE, 'weight': 1.0::DOUBLE}]},
+    'approx_quantile', ['DOUBLE', 'FLOAT'], [NULL, 0.5::FLOAT]
+));
+----
+Invalid approx_quantile state - min and max cannot be NaN
+
+# states over infinite values can be imported again
+query II
+SELECT approx_quantile(x, 0.5), finalize(to_aggregate_state((approx_quantile(x, 0.5) EXPORT_STATE)::VARCHAR::STRUCT(count UBIGINT, min DOUBLE, max DOUBLE, centroids STRUCT(mean DOUBLE, weight DOUBLE)[]), 'approx_quantile', ['DOUBLE', 'FLOAT'], [NULL, 0.5::FLOAT]))
+FROM (VALUES (1.0::DOUBLE), ('inf'), ('-inf'), (2.0)) t(x);
+----
+1.5	1.5

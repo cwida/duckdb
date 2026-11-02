@@ -61,7 +61,7 @@ query I
 SELECT B'1010'
 '0101';
 ----
-b10100101
+10100101
 
 statement error
 SELECT 'same-line' 'whitespace';

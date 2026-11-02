@@ -1,0 +1,79 @@
+# name: test/sql/sql_export/compression_fallbacks_plan.test
+# description: SQL export omits compression casts while preserving user casts
+# group: [sql_export]
+
+statement ok
+CREATE TABLE materialized_source AS SELECT (i+100000)::INTEGER id, printf('v%02d', i) s, printf('POINT(%d %d)', i, i)::GEOMETRY g FROM range(100)t(i);
+
+statement ok
+ANALYZE materialized_source;
+
+statement ok
+CREATE TABLE cast_source AS SELECT i::INTEGER id FROM range(100)t(i);
+
+statement ok
+ANALYZE cast_source;
+
+query TT
+EXPLAIN SELECT id FROM materialized_source ORDER BY id;
+----
+physical_plan	<REGEX>:.*__internal_compress_.*
+
+query TT
+EXPLAIN (SQL) SELECT id FROM materialized_source ORDER BY id;
+----
+sql	<!REGEX>:.*__internal_(compress|decompress)_.*
+
+query TT
+EXPLAIN SELECT s,id FROM materialized_source WHERE id<100010 ORDER BY id;
+----
+physical_plan	<REGEX>:.*__internal_compress_.*
+
+query TT
+EXPLAIN (SQL) SELECT s,id FROM materialized_source WHERE id<100010 ORDER BY id;
+----
+sql	<!REGEX>:.*__internal_(compress|decompress)_.*
+
+query TT
+EXPLAIN SELECT g,id FROM materialized_source WHERE id<100010 ORDER BY id;
+----
+physical_plan	<REGEX>:.*__internal_compress_.*
+
+query TT
+EXPLAIN (SQL) SELECT g,id FROM materialized_source WHERE id<100010 ORDER BY id;
+----
+sql	<!REGEX>:.*__internal_(compress|decompress)_.*
+
+query TT
+EXPLAIN (SQL) SELECT id FROM cast_source ORDER BY id;
+----
+sql	<!REGEX>:.*TINYINT.*
+
+query TT
+EXPLAIN SELECT id FROM cast_source ORDER BY id;
+----
+physical_plan	<REGEX>:.*Projections: CAST[(]#0 AS TINYINT[)].*
+
+statement ok
+INSERT INTO cast_source VALUES (1000000);
+
+statement ok
+CREATE TABLE computed_groups(i INTEGER);
+
+statement ok
+INSERT INTO computed_groups VALUES (3),(4),(4),(NULL);
+
+query TT
+EXPLAIN (SQL) SELECT i*2 FROM computed_groups GROUP BY i*2 ORDER BY 1;
+----
+sql	<!REGEX>:.*TINYINT.*
+
+query TT
+EXPLAIN (SQL) SELECT CAST(i AS SMALLINT),count(*) FROM computed_groups GROUP BY CAST(i AS SMALLINT) ORDER BY 1;
+----
+sql	<!REGEX>:.*TINYINT.*
+
+query TT
+EXPLAIN (SQL) SELECT CAST(i AS SMALLINT),count(*) FROM computed_groups GROUP BY CAST(i AS SMALLINT) ORDER BY 1;
+----
+sql	<REGEX>:.*CAST[(].* AS SMALLINT[)].*

@@ -174,6 +174,12 @@ INSERT INTO VARCHAR_TBL (f1) VALUES
   ('abcd'),
   ('abcd    ');
 
+statement ok
+CREATE TABLE TEXT_TBL(f1 text);
+
+statement ok
+INSERT INTO TEXT_TBL VALUES ('doh!'), ('hi de ho neighbor');
+
 query I
 SELECT f1 AS five FROM FLOAT8_TBL
 UNION
@@ -248,39 +254,58 @@ ORDER BY 1;
 0.0
 123456.0
 
-# disabled due to the lack of CHAR() in DuckDB
-mode skip instable
+# CHAR(n) is a VARCHAR alias in DuckDB, preserving trailing spaces.
 
-query I
-SELECT CAST(f1 AS char(4)) AS three FROM VARCHAR_TBL
+query T
+SELECT '[' || CAST(f1 AS char(4)) || ']' AS value FROM VARCHAR_TBL
 UNION
-SELECT f1 FROM CHAR_TBL
+SELECT '[' || f1 || ']' FROM CHAR_TBL
 ORDER BY 1;
 ----
+[a]
+[ab]
+[abcd    ]
+[abcd]
 
-query I
-SELECT f1 AS three FROM VARCHAR_TBL
+query T
+SELECT '[' || f1 || ']' AS value FROM VARCHAR_TBL
 UNION
-SELECT CAST(f1 AS varchar) FROM CHAR_TBL
+SELECT '[' || CAST(f1 AS varchar) || ']' FROM CHAR_TBL
 ORDER BY 1;
 ----
+[a]
+[ab]
+[abcd    ]
+[abcd]
 
-query I
-SELECT f1 AS eight FROM VARCHAR_TBL
+query T rowsort
+SELECT '[' || f1 || ']' AS value FROM VARCHAR_TBL
 UNION ALL
-SELECT f1 FROM CHAR_TBL;
+SELECT '[' || f1 || ']' FROM CHAR_TBL;
 ----
+[a]
+[a]
+[ab]
+[ab]
+[abcd    ]
+[abcd    ]
+[abcd]
+[abcd]
 
-query I
-SELECT f1 AS five FROM TEXT_TBL
+query T
+SELECT '[' || f1 || ']' AS value FROM TEXT_TBL
 UNION
-SELECT f1 FROM VARCHAR_TBL
+SELECT '[' || f1 || ']' FROM VARCHAR_TBL
 UNION
-SELECT TRIM(TRAILING FROM f1) FROM CHAR_TBL
+SELECT '[' || TRIM(TRAILING FROM f1) || ']' FROM CHAR_TBL
 ORDER BY 1;
 ----
-
-mode unskip
+[a]
+[ab]
+[abcd    ]
+[abcd]
+[doh!]
+[hi de ho neighbor]
 
 #--
 #-- INTERSECT and EXCEPT
@@ -439,9 +464,6 @@ query I
 
 #-- In this syntax, ORDER BY/LIMIT apply to the result of the EXCEPT
 
-# Bug in DuckDB
-mode skip instable
-
 query II
 SELECT q1,q2 FROM int8_tbl EXCEPT SELECT q2,q1 FROM int8_tbl
 ORDER BY q2,q1;
@@ -449,14 +471,24 @@ ORDER BY q2,q1;
 4567890123456789	-4567890123456789
 123	456
 
-# this should fail but currently does not
-statement error
+# DuckDB accepts ORDER BY names from either input of a set operation.
+query I
 SELECT q1 FROM int8_tbl EXCEPT SELECT q2 FROM int8_tbl ORDER BY q2 LIMIT 1;
 ----
-<REGEX>:(.*SELECT locking clause is not supported.*|.*syntax error at or near "FOR".*)
 
-mode unskip
+query I
+SELECT q1 FROM (VALUES (3), (1), (2)) lhs(q1)
+EXCEPT SELECT q2 FROM (VALUES (2)) rhs(q2)
+ORDER BY q2 LIMIT 1;
+----
+1
 
+query I
+SELECT q1 FROM (VALUES (3), (1), (2)) lhs(q1)
+EXCEPT SELECT q2 FROM (VALUES (2)) rhs(q2)
+ORDER BY q1 DESC LIMIT 1;
+----
+3
 
 query I
 SELECT q1 FROM int8_tbl EXCEPT (((SELECT q2 FROM int8_tbl ORDER BY q2 LIMIT 1))) ORDER BY 1;

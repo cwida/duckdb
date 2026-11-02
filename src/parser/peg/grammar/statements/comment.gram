@@ -1,4 +1,7 @@
-CommentStatement <- 'COMMENT' 'ON' CommentOnType DottedIdentifier 'IS' CommentValue
+CommentStatement <- 'COMMENT' 'ON' CommentOnType CommentTarget 'IS' CommentValue
+
+CommentTarget <- DottedIdentifier / CommentStringLiteralIdentifier
+CommentStringLiteralIdentifier <- StringLiteralIdentifier
 
 CommentOnType <-    CommentTable / CommentSequence / CommentFunction / CommentMacroTable / CommentMacro /
                     CommentView / CommentDatabase / CommentIndex / CommentSchema / CommentType / CommentColumn

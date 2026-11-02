@@ -1,0 +1,266 @@
+# name: test/optimizer/catalog_function_binding.test
+# description: Optimizer rewrites resolve the built-ins they introduce in the system catalog
+# group: [optimizer]
+
+statement ok
+CREATE TABLE strings(s VARCHAR)
+
+statement ok
+INSERT INTO strings VALUES ('abc'), ('cab'), (NULL)
+
+statement ok
+CREATE TABLE integers(g INTEGER, i INTEGER)
+
+statement ok
+INSERT INTO integers VALUES (1, 1), (1, NULL), (2, 3), (2, 3)
+
+# baseline results, before anything shadows the built-ins
+query I
+SELECT s LIKE 'abc%' FROM strings ORDER BY ALL
+----
+0
+1
+NULL
+
+query I
+SELECT s LIKE '%abc' FROM strings ORDER BY ALL
+----
+0
+1
+NULL
+
+query I
+SELECT s LIKE '%b%' FROM strings ORDER BY ALL
+----
+1
+1
+NULL
+
+# a macro shadowing the built-in in the default schema is not picked up either
+
+statement ok
+CREATE MACRO prefix(a, b) AS false
+
+query I
+SELECT s LIKE 'abc%' FROM strings ORDER BY ALL
+----
+0
+1
+NULL
+
+query II
+EXPLAIN SELECT s LIKE 'abc%' FROM strings
+----
+physical_plan	<REGEX>:.*prefix\(s, 'abc'\).*
+
+statement ok
+DROP MACRO prefix
+
+# the rewrites only ever look in the system catalog, so they never trigger extension loading
+
+statement ok
+SET autoinstall_known_extensions = false
+
+statement ok
+SET autoload_known_extensions = false
+
+query I
+SELECT count(*) FROM duckdb_extensions() WHERE loaded AND extension_name = 'icu'
+----
+0
+
+query I
+SELECT s LIKE 'abc%' FROM strings ORDER BY ALL
+----
+0
+1
+NULL
+
+query I
+SELECT s LIKE '%b%' FROM strings ORDER BY ALL
+----
+1
+1
+NULL
+
+query I
+SELECT i * 0 FROM integers ORDER BY ALL
+----
+0
+0
+0
+NULL
+
+query II
+SELECT g, avg(i) FROM integers GROUP BY g ORDER BY ALL
+----
+1	1.0
+2	3.0
+
+query III
+SELECT g, i, sum(i) FROM integers GROUP BY ROLLUP(g, i) ORDER BY ALL
+----
+1	1	1
+1	NULL	1
+1	NULL	NULL
+2	3	6
+2	NULL	6
+NULL	NULL	7
+
+query I
+SELECT count(*) FROM duckdb_extensions() WHERE loaded AND extension_name = 'icu'
+----
+0
+
+statement ok
+RESET autoload_known_extensions
+
+statement ok
+RESET autoinstall_known_extensions
+
+# a shadowing macro in another schema on the search path must not be picked up.
+# This section stays last and never resets the search path: a test config may point the default
+# catalog somewhere else with USE, and RESET would drop that along with the schema.
+
+statement ok
+CREATE SCHEMA shadow
+
+statement ok
+CREATE MACRO shadow.prefix(a, b) AS false
+
+statement ok
+CREATE MACRO shadow.suffix(a, b) AS false
+
+statement ok
+CREATE MACRO shadow.contains(a, b) AS false
+
+statement ok
+CREATE MACRO shadow.constant_or_null(a, b) AS false
+
+statement ok
+CREATE MACRO shadow.count_star() AS 0
+
+statement ok
+CREATE MACRO shadow.combine_aggr(a) AS false
+
+statement ok
+SET search_path = 'shadow,main'
+
+query I
+SELECT s LIKE 'abc%' FROM strings ORDER BY ALL
+----
+0
+1
+NULL
+
+query I
+SELECT s LIKE '%abc' FROM strings ORDER BY ALL
+----
+0
+1
+NULL
+
+query I
+SELECT s LIKE '%b%' FROM strings ORDER BY ALL
+----
+1
+1
+NULL
+
+# the rewrite still fires, and still introduces the built-in
+query II
+EXPLAIN SELECT s LIKE 'abc%' FROM strings
+----
+physical_plan	<REGEX>:.*prefix\(s, 'abc'\).*
+
+query II
+EXPLAIN SELECT s LIKE '%abc' FROM strings
+----
+physical_plan	<REGEX>:.*suffix\(s, 'abc'\).*
+
+query II
+EXPLAIN SELECT s LIKE '%b%' FROM strings
+----
+physical_plan	<REGEX>:.*contains\(s, 'b'\).*
+
+# left(s, n) = constant rewrites to prefix() as well
+query II
+EXPLAIN SELECT left(s, 3) = 'abc' FROM strings
+----
+physical_plan	<REGEX>:.*prefix\(.*
+
+# x * 0 rewrites to constant_or_null(0, x)
+query I
+SELECT i * 0 FROM integers ORDER BY ALL
+----
+0
+0
+0
+NULL
+
+query II
+EXPLAIN SELECT i * 0 FROM integers
+----
+physical_plan	<REGEX>:.*constant_or_null\(0, i\).*
+
+# avg is decomposed into a sum and a count
+query II
+SELECT g, avg(i) FROM integers GROUP BY g ORDER BY ALL
+----
+1	1.0
+2	3.0
+
+# ROLLUP cascades through exported aggregate states combined by combine_aggr.
+# The oracle is the same query with the rewrite disabled.
+statement ok
+SET disabled_optimizers = 'grouping_sets'
+
+query III nosort rollup_result
+SELECT g, i, sum(i) FROM integers GROUP BY ROLLUP(g, i) ORDER BY ALL
+----
+
+statement ok
+RESET disabled_optimizers
+
+query III nosort rollup_result
+SELECT g, i, sum(i) FROM integers GROUP BY ROLLUP(g, i) ORDER BY ALL
+----
+
+query III
+SELECT g, i, sum(i) FROM integers GROUP BY ROLLUP(g, i) ORDER BY ALL
+----
+1	1	1
+1	NULL	1
+1	NULL	NULL
+2	3	6
+2	NULL	6
+NULL	NULL	7
+
+query II
+EXPLAIN SELECT g, i, sum(i) FROM integers GROUP BY ROLLUP(g, i)
+----
+physical_plan	<REGEX>:.*combine_aggr.*
+
+# aggregate modifiers keep working over the rewritten aggregates
+query III
+SELECT g, avg(DISTINCT i), avg(i) FILTER (WHERE i > 1) FROM integers GROUP BY g ORDER BY ALL
+----
+1	1.0	NULL
+2	3.0	3.0
+
+query I
+SELECT avg(i) FROM integers WHERE i IS NULL
+----
+NULL
+
+# pruning the unreferenced sum leaves an aggregate with no expressions, and the optimizer replaces it
+# with a count_star of its own - the filter keeps it from being folded away first
+query I
+SELECT 1 FROM (SELECT sum(i) FROM integers WHERE random() > 0.5) t
+----
+1
+
+query II
+EXPLAIN SELECT 1 FROM (SELECT sum(i) FROM integers WHERE random() > 0.5) t
+----
+physical_plan	<REGEX>:.*count_star\(\).*

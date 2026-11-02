@@ -5,19 +5,12 @@
 
 namespace duckdb {
 
-//! Fold `(k v, ...)` create params onto the statement. A bare flag binds to boolean true, mirroring
-//! ATTACH/CONNECT TO EXTERNAL RESOURCE option handling.
+//! Fold `(k v, ...)` create params onto the statement; they are resolved at bind time.
 static void ApplyOptions(const optional<vector<GenericCopyOption>> &options, ExternalResourceStatement &stmt) {
 	if (!options) {
 		return;
 	}
-	for (const auto &opt : *options) {
-		if (!opt.expression && opt.children.empty()) {
-			stmt.options[opt.name.GetIdentifierName()] = make_uniq<ConstantExpression>(Value(true));
-		} else {
-			stmt.options[opt.name.GetIdentifierName()] = opt.GetFirstChildOrExpression();
-		}
-	}
+	PEGTransformerFactory::CollectGenericOptions(*options, stmt.options, "EXTERNAL RESOURCE");
 }
 
 unique_ptr<SQLStatement> PEGTransformerFactory::TransformCreateExternalResourceStmt(

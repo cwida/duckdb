@@ -80,6 +80,22 @@ Value CustomUserAgentSetting::GetSetting(const ClientContext &context) {
 }
 
 //===----------------------------------------------------------------------===//
+// Debug Abort On Wal Failure
+//===----------------------------------------------------------------------===//
+void DebugAbortOnWalFailureSetting::SetGlobal(DatabaseInstance *db, DBConfig &config, const Value &input) {
+	config.options.abort_on_wal_failure = input.GetValue<bool>();
+}
+
+void DebugAbortOnWalFailureSetting::ResetGlobal(DatabaseInstance *db, DBConfig &config) {
+	config.options.abort_on_wal_failure = DBConfigOptions().abort_on_wal_failure;
+}
+
+Value DebugAbortOnWalFailureSetting::GetSetting(const ClientContext &context) {
+	auto &config = DBConfig::GetConfig(context);
+	return Value::BOOLEAN(config.options.abort_on_wal_failure);
+}
+
+//===----------------------------------------------------------------------===//
 // Debug Checkpoint Abort
 //===----------------------------------------------------------------------===//
 void DebugCheckpointAbortSetting::OnSet(SettingCallbackInfo &info, Value &parameter) {
@@ -124,6 +140,16 @@ void DebugPhysicalTableScanExecutionStrategySetting::OnSet(SettingCallbackInfo &
 		throw InvalidInputException("debug_physical_table_scan_execution_strategy setting cannot be NULL");
 	}
 	EnumUtil::FromString<PhysicalTableScanExecutionStrategy>(StringValue::Get(parameter));
+}
+
+//===----------------------------------------------------------------------===//
+// Debug Verify Progress
+//===----------------------------------------------------------------------===//
+void DebugVerifyProgressSetting::OnSet(SettingCallbackInfo &info, Value &parameter) {
+	if (parameter.IsNull()) {
+		throw InvalidInputException("debug_verify_progress setting cannot be NULL");
+	}
+	EnumUtil::FromString<DebugProgressVerification>(StringValue::Get(parameter));
 }
 
 //===----------------------------------------------------------------------===//
@@ -207,6 +233,26 @@ void ExplainOutputSetting::OnSet(SettingCallbackInfo &info, Value &parameter) {
 		throw InvalidInputException("explain_output setting cannot be NULL");
 	}
 	EnumUtil::FromString<ExplainOutputType>(StringValue::Get(parameter));
+}
+
+//===----------------------------------------------------------------------===//
+// External File Cache Request Sizing
+//===----------------------------------------------------------------------===//
+void ExternalFileCacheRequestSizingSetting::OnSet(SettingCallbackInfo &info, Value &parameter) {
+	if (parameter.IsNull()) {
+		throw InvalidInputException("external_file_cache_request_sizing setting cannot be NULL");
+	}
+	EnumUtil::FromString<ExternalFileCacheRequestSizing>(StringValue::Get(parameter));
+}
+
+//===----------------------------------------------------------------------===//
+// Fsync Mode
+//===----------------------------------------------------------------------===//
+void FsyncModeSetting::OnSet(SettingCallbackInfo &info, Value &parameter) {
+	if (parameter.IsNull()) {
+		throw InvalidInputException("fsync_mode setting cannot be NULL");
+	}
+	EnumUtil::FromString<FileSyncMode>(StringValue::Get(parameter));
 }
 
 //===----------------------------------------------------------------------===//

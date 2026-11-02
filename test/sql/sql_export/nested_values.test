@@ -1,0 +1,36 @@
+# name: test/sql/sql_export/nested_values.test
+# description: SQL export preserves tuple values and named struct fields
+# group: [sql_export]
+
+statement ok
+CREATE TABLE struct_insert_input AS SELECT * FROM (VALUES
+    (0, {'a': 1, 'MiXeD': [2]}, 2, [2, NULL]::INTEGER[], {'items': [2, NULL]::INTEGER[]}),
+    (1, {'a': 1, 'MiXeD': [2]}, 2, [2, NULL]::INTEGER[], {'items': [2, NULL]::INTEGER[]}),
+    (2, {'a': NULL, 'MiXeD': NULL::INTEGER[]}, NULL, NULL::INTEGER[], {'items': NULL::INTEGER[]})
+) src(id, s, j, l, n);
+
+query TTI
+SELECT row(i, s), list_zip([i, NULL], [s, NULL]), row(i, s) = row(j, t) AS equal
+FROM (VALUES (1, 'a', 1, 'a'), (2, NULL, 2, NULL), (NULL, 'b', NULL, 'b'), (1, 'a', 2, 'a')) v(i, s, j, t)
+ORDER BY i NULLS LAST, s NULLS LAST, j NULLS LAST
+----
+(1, a)	[(1, a), (NULL, NULL)]	true
+(1, a)	[(1, a), (NULL, NULL)]	false
+(2, NULL)	[(2, NULL), (NULL, NULL)]	true
+(NULL, b)	[(NULL, b), (NULL, NULL)]	true
+
+query IT
+SELECT id, struct_insert(s, "constant field" := 7) FROM struct_insert_input ORDER BY id
+----
+0	{'a': 1, 'MiXeD': [2], 'constant field': 7}
+1	{'a': 1, 'MiXeD': [2], 'constant field': 7}
+2	{'a': NULL, 'MiXeD': NULL, 'constant field': 7}
+
+query IT
+SELECT id, struct_insert(s, "named column" := j, "constant field" := 7,
+                         "list field" := l, "nested field" := n)
+FROM struct_insert_input ORDER BY id
+----
+0	{'a': 1, 'MiXeD': [2], 'named column': 2, 'constant field': 7, 'list field': [2, NULL], 'nested field': {'items': [2, NULL]}}
+1	{'a': 1, 'MiXeD': [2], 'named column': 2, 'constant field': 7, 'list field': [2, NULL], 'nested field': {'items': [2, NULL]}}
+2	{'a': NULL, 'MiXeD': NULL, 'named column': NULL, 'constant field': 7, 'list field': NULL, 'nested field': {'items': NULL}}

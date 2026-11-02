@@ -141,7 +141,10 @@ struct YearCache {
 };
 
 //! Two calendar systems, each with a cache of solstices and one of new years
-static thread_local YearCache YEAR_CACHES[2][2] = {};
+static YearCache &GetYearCache(idx_t setting, idx_t event) {
+	static thread_local YearCache year_caches[2][2] = {};
+	return year_caches[setting][event];
+}
 
 static bool TryGetCached(YearCache &cache, int32_t year, int32_t &day) {
 	const auto &entry = cache.entries[idx_t(uint32_t(year)) % YearCache::SIZE];
@@ -168,7 +171,7 @@ static int32_t SynodicMonthsBetween(int32_t day1, int32_t day2) {
 }
 
 int32_t ChineseCalendar::WinterSolstice(int32_t gyear) const {
-	auto &cache = YEAR_CACHES[GetSettingIndex()][0];
+	auto &cache = GetYearCache(GetSettingIndex(), 0);
 	int32_t cached;
 	if (TryGetCached(cache, gyear, cached)) {
 		return cached;
@@ -211,7 +214,7 @@ bool ChineseCalendar::IsLeapMonthBetween(int32_t new_moon1, int32_t new_moon2) c
 }
 
 int32_t ChineseCalendar::NewYear(int32_t gyear) const {
-	auto &cache = YEAR_CACHES[GetSettingIndex()][1];
+	auto &cache = GetYearCache(GetSettingIndex(), 1);
 	int32_t cached;
 	if (TryGetCached(cache, gyear, cached)) {
 		return cached;

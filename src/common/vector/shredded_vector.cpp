@@ -1,6 +1,11 @@
 #include "duckdb/common/vector/shredded_vector.hpp"
 #include "duckdb/common/vector/struct_vector.hpp"
+#include "duckdb/common/vector/flat_vector.hpp"
+#include "duckdb/common/serializer/deserializer.hpp"
+#include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/function/scalar/variant_utils.hpp"
+#include "duckdb/common/type_visitor.hpp"
+#include "duckdb/function/variant/variant_shredding.hpp"
 
 namespace duckdb {
 
@@ -37,6 +42,44 @@ string ShreddedVectorBuffer::ToString(const LogicalType &type, idx_t count) cons
 
 void ShreddedVectorBuffer::SetVectorType(VectorType new_vector_type) {
 	throw InternalException("ShreddedVectorBuffer::SetVectorType is not implemented and shouldn't be reached");
+}
+
+bool ShreddedVectorBuffer::TrySerialize(Serializer &serializer, const LogicalType &type,
+                                        bool compressed_serialization) const {
+	// older versions cannot read shredded vectors - these are unshredded prior to serialization instead
+	if (!serializer.ShouldSerialize(StorageVersion::V2_0_0)) {
+		return false;
+	}
+	serializer.WriteProperty(90, "vector_type", VectorType::SHREDDED_VECTOR);
+	serializer.WriteProperty(91, "shredded_type", shredded_data->GetType());
+	serializer.WriteObject(92, "shredded_data", [&](Serializer &object) {
+		auto serialized_vector = Vector::Ref(*shredded_data);
+		serialized_vector.Serialize(object, compressed_serialization);
+	});
+	return true;
+}
+
+buffer_ptr<VectorBuffer> ShreddedVectorBuffer::Deserialize(Deserializer &deserializer, const LogicalType &type,
+                                                           idx_t count) {
+	if (type.id() != LogicalTypeId::VARIANT) {
+		throw SerializationException("Shredded vectors can only be deserialized as VARIANT vectors");
+	}
+	auto shredded_type = deserializer.ReadProperty<LogicalType>(91, "shredded_type");
+	if (shredded_type.id() != LogicalTypeId::STRUCT || StructType::GetChildCount(shredded_type) != 2) {
+		throw SerializationException("Shredded vector data must be a struct with two children");
+	}
+	auto &unshredded_type = StructType::GetChildType(shredded_type, 0);
+	if (unshredded_type != VariantShredding::GetUnshreddedType()) {
+		throw SerializationException("Shredded vector data's first child must be the canonical VARIANT struct");
+	}
+	auto &inner_shredded_type = StructType::GetChildType(shredded_type, 1);
+	if (TypeVisitor::Contains(inner_shredded_type, LogicalTypeId::VARIANT)) {
+		throw SerializationException("Shredded vector data's second child cannot itself contain a VARIANT type");
+	}
+	Vector shredded_data(shredded_type, MaxValue<idx_t>(count, STANDARD_VECTOR_SIZE));
+	deserializer.ReadObject(92, "shredded_data", [&](Deserializer &obj) { shredded_data.Deserialize(obj, count); });
+	FlatVector::SetSize(shredded_data, count);
+	return make_buffer<ShreddedVectorBuffer>(shredded_data, count_t(count));
 }
 
 Value ShreddedVectorBuffer::GetValue(const LogicalType &type, idx_t index) const {

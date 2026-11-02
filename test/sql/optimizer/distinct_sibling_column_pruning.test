@@ -1,0 +1,94 @@
+# name: test/sql/optimizer/distinct_sibling_column_pruning.test
+# description: DISTINCT must not disable unused column pruning in sibling inputs
+# group: [optimizer]
+
+statement ok
+CREATE TABLE person(id INTEGER PRIMARY KEY, name VARCHAR, age INTEGER);
+
+statement ok
+INSERT INTO person VALUES (1, 'alice', 10), (2, 'bob', 20), (3, 'carol', 30);
+
+statement ok
+CREATE TABLE knows(src_id INTEGER, dst_id INTEGER);
+
+statement ok
+INSERT INTO knows VALUES (1, 2), (1, 3), (2, 3);
+
+statement ok
+SET explain_output='optimized_only';
+
+# The unused struct must disappear, independently of the returned rows.
+query TT
+EXPLAIN SELECT f.name FROM person p LEFT JOIN (
+    SELECT k.src_id, n.name FROM knows k
+    JOIN (SELECT *, struct_pack(age := age) AS unused_payload FROM person) n ON n.id = k.dst_id
+    JOIN (SELECT DISTINCT id FROM person) s ON s.id = k.src_id
+) f ON p.id = f.src_id;
+----
+logical_opt	<!REGEX>:[\s\S]*unused_payload[\s\S]*
+
+query T rowsort
+SELECT f.name FROM person p LEFT JOIN (
+    SELECT k.src_id, n.name FROM knows k
+    JOIN (SELECT *, struct_pack(age := age) AS unused_payload FROM person) n ON n.id = k.dst_id
+    JOIN (SELECT DISTINCT id FROM person) s ON s.id = k.src_id
+) f ON p.id = f.src_id;
+----
+NULL
+bob
+carol
+carol
+
+# An unselected DISTINCT key still affects result multiplicity.
+statement ok
+CREATE TABLE keys(id INTEGER, tag VARCHAR);
+
+statement ok
+INSERT INTO keys VALUES (1, 'a'), (1, 'b'), (1, 'a'), (2, NULL), (2, NULL);
+
+query I rowsort
+SELECT id FROM (SELECT DISTINCT id, tag FROM keys);
+----
+1
+1
+2
+
+# Nested DISTINCT must restore an already-set preservation flag.
+query I rowsort
+SELECT id FROM (SELECT DISTINCT * FROM (SELECT DISTINCT id, tag FROM keys));
+----
+1
+1
+2
+
+query IT rowsort
+SELECT s.id, p.name FROM (SELECT DISTINCT id, tag FROM keys) s
+JOIN person p ON s.id = p.id;
+----
+1	alice
+1	alice
+2	bob
+
+query IT rowsort
+SELECT s.id, p.name FROM person p
+JOIN (SELECT DISTINCT id, tag FROM keys) s ON s.id = p.id;
+----
+1	alice
+1	alice
+2	bob
+
+# DISTINCT ON retains its existing ordering and payload semantics.
+query IT
+SELECT DISTINCT ON (id) id, tag FROM keys ORDER BY id, tag DESC NULLS LAST;
+----
+1	b
+2	NULL
+
+# CTE readers and parent references must remain valid through pruning.
+query IT rowsort
+WITH s AS MATERIALIZED (SELECT DISTINCT id, tag FROM keys)
+SELECT s.id, p.name FROM s JOIN person p ON s.id = p.id;
+----
+1	alice
+1	alice
+2	bob

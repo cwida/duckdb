@@ -1,0 +1,178 @@
+# name: test/sql/join/mark/test_null_safe_semi_uncommitted_stats.test
+# description: Issue #25266 - IS NOT DISTINCT FROM semi-join must not be degraded to '=' while the transaction holds uncommitted appends
+# group: [mark]
+
+# only the physical plan is asserted below
+statement ok
+SET explain_output='physical_only';
+
+statement ok
+CREATE TABLE a(x INTEGER);
+
+statement ok
+INSERT INTO a VALUES (1), (NULL);
+
+# b.y currently has no NULLs: its committed statistics claim NOT NULL
+statement ok
+CREATE TABLE b(y INTEGER);
+
+statement ok
+INSERT INTO b VALUES (1);
+
+statement ok
+BEGIN;
+
+# same transaction, earlier statement: b becomes {1, NULL}, but the statistics snapshot
+# taken now does not see this row
+statement ok
+INSERT INTO b VALUES (NULL);
+
+# a.x = NULL should match b.y = NULL under IS NOT DISTINCT FROM, so both rows of a pass
+query I
+SELECT count(*) FROM a WHERE EXISTS (SELECT 1 FROM b WHERE a.x IS NOT DISTINCT FROM b.y);
+----
+2
+
+# ... and the plan must keep the null-safe comparison rather than rewriting it to '='
+query II
+EXPLAIN SELECT count(*) FROM a WHERE EXISTS (SELECT 1 FROM b WHERE a.x IS NOT DISTINCT FROM b.y);
+----
+physical_plan	<REGEX>:.*Join Type: SEMI.*IS NOT DISTINCT FROM.*
+
+statement ok
+COMMIT;
+
+# the same query is correct after the append is committed (statistics are up to date)
+query I
+SELECT count(*) FROM a WHERE EXISTS (SELECT 1 FROM b WHERE a.x IS NOT DISTINCT FROM b.y);
+----
+2
+
+# empty committed table + uncommitted NULL-only append: the committed statistics hold no
+# rows, so 'no NULLs' there is a default, not an observation - the NOT-NULL proof rests
+# entirely on the merged transaction-local statistics in this case
+statement ok
+CREATE TABLE c(k INTEGER);
+
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO c VALUES (NULL);
+
+# a.x = NULL must still match the uncommitted NULL
+query I
+SELECT count(*) FROM a WHERE EXISTS (SELECT 1 FROM c WHERE a.x IS NOT DISTINCT FROM c.k);
+----
+1
+
+query II
+EXPLAIN SELECT count(*) FROM a WHERE EXISTS (SELECT 1 FROM c WHERE a.x IS NOT DISTINCT FROM c.k);
+----
+physical_plan	<REGEX>:.*Join Type: SEMI.*IS NOT DISTINCT FROM.*
+
+statement ok
+ROLLBACK;
+
+# empty committed table + uncommitted non-NULL append: the proof is kept, so the
+# null-safe condition is rewritten to '=' while the transaction is still open
+statement ok
+CREATE TABLE n(k INTEGER);
+
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO n VALUES (5);
+
+query II
+EXPLAIN SELECT count(*) FROM n n1 WHERE EXISTS (SELECT 1 FROM n n2 WHERE n1.k IS NOT DISTINCT FROM n2.k);
+----
+physical_plan	<REGEX>:.*Join Type: SEMI.*Conditions: k = k.*
+
+statement ok
+ROLLBACK;
+
+# uncommitted append updated to NULL: the update statistics must invalidate the NOT-NULL proof
+statement ok
+CREATE TABLE u(x INTEGER);
+
+statement ok
+INSERT INTO u VALUES (1), (NULL);
+
+statement ok
+CREATE TABLE v(y INTEGER);
+
+statement ok
+INSERT INTO v VALUES (1);
+
+statement ok
+BEGIN;
+
+# append a non-NULL row, then update it to NULL in the same transaction
+statement ok
+INSERT INTO v VALUES (2);
+
+statement ok
+UPDATE v SET y = NULL WHERE y = 2;
+
+query I
+SELECT count(*) FROM u WHERE EXISTS (SELECT 1 FROM v WHERE u.x IS NOT DISTINCT FROM v.y);
+----
+2
+
+query II
+EXPLAIN SELECT count(*) FROM u WHERE EXISTS (SELECT 1 FROM v WHERE u.x IS NOT DISTINCT FROM v.y);
+----
+physical_plan	<REGEX>:.*Join Type: SEMI.*IS NOT DISTINCT FROM.*
+
+statement ok
+ROLLBACK;
+
+# uncommitted append without NULLs: the merged statistics still prove NOT NULL, so the
+# null-safe condition is rewritten to '=' while the transaction is still open
+statement ok
+CREATE TABLE w(z INTEGER);
+
+statement ok
+INSERT INTO w VALUES (1);
+
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO w VALUES (2), (3);
+
+query II
+EXPLAIN SELECT count(*) FROM w w1 WHERE EXISTS (SELECT 1 FROM w w2 WHERE w1.z IS NOT DISTINCT FROM w2.z);
+----
+physical_plan	<REGEX>:.*Join Type: SEMI.*Conditions: z = z.*
+
+statement ok
+ROLLBACK;
+
+# uncommitted appends that are large enough to engage the optimistic writer (parallel
+# insert): the transaction-local rows must still be covered by the merged statistics
+statement ok
+PRAGMA threads=8;
+
+statement ok
+CREATE TABLE p(k INTEGER);
+
+statement ok
+INSERT INTO p VALUES (1);
+
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO p SELECT CASE WHEN i % 2 = 0 THEN NULL ELSE i END FROM range(300000) t(i);
+
+# the 150000 uncommitted NULLs must match the NULL probe row
+query I
+SELECT count(*) FROM a WHERE EXISTS (SELECT 1 FROM p WHERE a.x IS NOT DISTINCT FROM p.k);
+----
+2
+
+statement ok
+ROLLBACK;

@@ -19,6 +19,28 @@ namespace duckdb {
 namespace {
 
 //----------------------------------------------------------------------------------------------------------------------
+// FLOAT Type
+//----------------------------------------------------------------------------------------------------------------------
+void RegisterFloatConstructors(TypeConstructorSet &set) {
+	set.AddFunction(TypeConstructor::Identity(Identifier("float")));
+
+	auto signature = TypeConstructor::Signature();
+	signature.AddParameter("precision", LogicalType::BIGINT);
+	set.AddFunction(TypeConstructor(std::move(signature), [](BindLogicalTypeInput &input) -> LogicalType {
+		auto precision = input.modifiers[0].GetValue().GetValue<int64_t>();
+		if (precision < 1) {
+			throw BinderException(input.GetLocation(0), "precision for type float must be at least 1 bit");
+		} else if (precision <= 24) {
+			return LogicalType::FLOAT;
+		} else if (precision <= 53) {
+			return LogicalType::DOUBLE;
+		} else {
+			throw BinderException(input.GetLocation(0), "precision for type float must be less than 54 bits");
+		}
+	}));
+}
+
+//----------------------------------------------------------------------------------------------------------------------
 // DECIMAL Type
 //----------------------------------------------------------------------------------------------------------------------
 LogicalType BindDefaultDecimalType(BindLogicalTypeInput &input) {
@@ -91,12 +113,12 @@ LogicalType BindVarcharType(BindLogicalTypeInput &input) {
 LogicalType BindCollatedVarcharType(BindLogicalTypeInput &input) {
 	auto &collation = StringValue::Get(input.modifiers[0].GetValue());
 
-	if (!input.context) {
-		throw BinderException(input.query_location, "Cannot bind varchar with collation without a connection");
+	// The collation can only be checked against the catalog when there is a connection. Without one this is a
+	// type that was bound before - re-binding it, for instance to serialize it, must not lose the collation.
+	if (input.context) {
+		// Ensure this is a valid collation
+		ExpressionBinder::TestCollation(*input.context, collation);
 	}
-
-	// Ensure this is a valid collation
-	ExpressionBinder::TestCollation(*input.context, collation);
 
 	return LogicalType::VARCHAR_COLLATION(collation);
 }
@@ -159,13 +181,7 @@ LogicalType BindEnumType(BindLogicalTypeInput &input) {
 	Vector enum_vector(LogicalType::VARCHAR, NumericCast<idx_t>(arguments.size()));
 	auto string_data = FlatVector::Writer<string_t>(enum_vector, arguments.size());
 
-	for (idx_t arg_idx = 0; arg_idx < arguments.size(); arg_idx++) {
-		auto &arg = arguments[arg_idx];
-		if (arg.HasName()) {
-			throw BinderException(input.GetLocation(arg_idx),
-			                      "ENUM type arguments cannot have names (argument %d has name \"%s\")", arg_idx + 1,
-			                      arg.GetName());
-		}
+	for (auto &arg : arguments) {
 		string_data.WriteValue(string_t(StringValue::Get(arg.GetValue())));
 	}
 
@@ -174,7 +190,7 @@ LogicalType BindEnumType(BindLogicalTypeInput &input) {
 
 void RegisterEnumConstructors(TypeConstructorSet &set) {
 	auto signature = TypeConstructor::Signature();
-	signature.SetVarArgs(LogicalType::VARCHAR);
+	signature.AddArgs("args", LogicalType::VARCHAR);
 	set.AddFunction(TypeConstructor(std::move(signature), BindEnumType));
 }
 
@@ -221,24 +237,11 @@ void RegisterArrayConstructors(TypeConstructorSet &set) {
 LogicalType BindStructType(BindLogicalTypeInput &input) {
 	auto &arguments = input.modifiers;
 
-	identifier_set_t name_collision_set;
 	child_list_t<LogicalType> children;
 	children.reserve(arguments.size());
 
-	for (idx_t arg_idx = 0; arg_idx < arguments.size(); arg_idx++) {
-		auto &arg = arguments[arg_idx];
-		if (!arg.HasName()) {
-			throw BinderException(input.GetLocation(arg_idx), "STRUCT type arguments must have names");
-		}
-
-		auto name = Identifier(arg.GetName());
-		if (name_collision_set.find(name) != name_collision_set.end()) {
-			throw BinderException(input.GetLocation(arg_idx), "Duplicate STRUCT type argument name \"%s\"",
-			                      arg.GetName());
-		}
-		name_collision_set.insert(name);
-
-		children.emplace_back(std::move(name), TypeValue::GetType(arg.GetValue()));
+	for (auto &arg : arguments) {
+		children.emplace_back(Identifier(arg.GetName()), TypeValue::GetType(arg.GetValue()));
 	}
 
 	return LogicalType::STRUCT(std::move(children));
@@ -246,7 +249,7 @@ LogicalType BindStructType(BindLogicalTypeInput &input) {
 
 void RegisterStructConstructors(TypeConstructorSet &set) {
 	auto signature = TypeConstructor::Signature();
-	signature.SetVarArgs(LogicalType::TYPE());
+	signature.AddKwargs("kwargs", LogicalType::TYPE());
 	set.AddFunction(TypeConstructor(std::move(signature), BindStructType));
 }
 
@@ -256,12 +259,7 @@ void RegisterStructConstructors(TypeConstructorSet &set) {
 LogicalType BindTupleType(BindLogicalTypeInput &input) {
 	vector<LogicalType> children;
 	children.reserve(input.modifiers.size());
-	for (idx_t arg_idx = 0; arg_idx < input.modifiers.size(); arg_idx++) {
-		auto &arg = input.modifiers[arg_idx];
-		if (arg.HasName()) {
-			throw BinderException(input.GetLocation(arg_idx),
-			                      "TUPLE type arguments cannot have names - use STRUCT for named fields");
-		}
+	for (auto &arg : input.modifiers) {
 		children.push_back(TypeValue::GetType(arg.GetValue()));
 	}
 	return LogicalType::TUPLE(std::move(children));
@@ -269,7 +267,7 @@ LogicalType BindTupleType(BindLogicalTypeInput &input) {
 
 void RegisterTupleConstructors(TypeConstructorSet &set) {
 	auto signature = TypeConstructor::Signature();
-	signature.SetVarArgs(LogicalType::TYPE());
+	signature.AddArgs("args", LogicalType::TYPE());
 	set.AddFunction(TypeConstructor(std::move(signature), BindTupleType));
 }
 
@@ -304,21 +302,8 @@ LogicalType BindUnionType(BindLogicalTypeInput &input) {
 	}
 
 	child_list_t<LogicalType> children;
-	identifier_set_t name_collision_set;
-
-	for (idx_t arg_idx = 0; arg_idx < arguments.size(); arg_idx++) {
-		auto &arg = arguments[arg_idx];
-		if (!arg.HasName()) {
-			throw BinderException(input.GetLocation(arg_idx), "UNION type modifiers must have names");
-		}
-
-		auto &entry_name = arg.GetName();
-		if (name_collision_set.find(Identifier(entry_name)) != name_collision_set.end()) {
-			throw BinderException(input.GetLocation(arg_idx), "Duplicate UNION type member name \"%s\"", entry_name);
-		}
-		name_collision_set.insert(Identifier(entry_name));
-
-		children.emplace_back(entry_name, TypeValue::GetType(arg.GetValue()));
+	for (auto &arg : arguments) {
+		children.emplace_back(arg.GetName(), TypeValue::GetType(arg.GetValue()));
 	}
 
 	return LogicalType::UNION(std::move(children));
@@ -326,7 +311,7 @@ LogicalType BindUnionType(BindLogicalTypeInput &input) {
 
 void RegisterUnionConstructors(TypeConstructorSet &set) {
 	auto signature = TypeConstructor::Signature();
-	signature.SetVarArgs(LogicalType::TYPE());
+	signature.AddKwargs("kwargs", LogicalType::TYPE());
 	set.AddFunction(TypeConstructor(std::move(signature), BindUnionType));
 }
 
@@ -334,7 +319,7 @@ void RegisterUnionConstructors(TypeConstructorSet &set) {
 // VARIANT Type
 //----------------------------------------------------------------------------------------------------------------------
 LogicalType BindVariantType(BindLogicalTypeInput &input) {
-	// We need this function to make sure we always create a VARIANT type with ExtraTypeInfo
+	// We need this function to make sure we always create a VARIANT type with LogicalTypeInfo
 	return LogicalType::VARIANT();
 }
 
@@ -478,7 +463,7 @@ const builtin_type_array BUILTIN_TYPES = {{{"decimal", LogicalTypeId::DECIMAL, R
                                            {"guid", LogicalTypeId::UUID, nullptr},
                                            {"enum", LogicalTypeId::ENUM, RegisterEnumConstructors},
                                            {"null", LogicalTypeId::SQLNULL, nullptr},
-                                           {"float", LogicalTypeId::FLOAT, nullptr},
+                                           {"float", LogicalTypeId::FLOAT, RegisterFloatConstructors},
                                            {"real", LogicalTypeId::FLOAT, nullptr},
                                            {"float4", LogicalTypeId::FLOAT, nullptr},
                                            {"double", LogicalTypeId::DOUBLE, nullptr},

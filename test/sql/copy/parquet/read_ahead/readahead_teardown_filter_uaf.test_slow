@@ -1,0 +1,25 @@
+# name: test/sql/copy/parquet/read_ahead/readahead_teardown_filter_uaf.test_slow
+# description: Read-ahead use-after-free of join-pushed dynamic filters at scan teardown
+# group: [read_ahead]
+
+require parquet
+
+statement ok
+SET read_ahead_depth=400
+
+# many files so read-ahead still has opens in flight when the scan is torn down
+statement ok
+COPY (SELECT i%7 AS k1, i%11 AS k2, i%13 AS k3, i AS payload, (i%1500)::INT AS part FROM range(150000) t(i)) TO '{TEST_DIR}/ra_filter' (FORMAT parquet, PARTITION_BY ('part'))
+
+statement ok
+CREATE TABLE dims AS SELECT i%7 AS k1, i%11 AS k2, i%13 AS k3 FROM range(0, 40) t(i)
+
+loop x 0 40
+
+# the join pushes dynamic filters into the scan, the LIMIT tears it down mid-open
+query I
+SELECT count(*) FROM (SELECT p.payload FROM read_parquet('{TEST_DIR}/ra_filter/*/*.parquet') p JOIN dims d USING (k1, k2, k3) LIMIT 1) t
+----
+1
+
+endloop

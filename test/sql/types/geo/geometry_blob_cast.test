@@ -1,0 +1,127 @@
+# name: test/sql/types/geo/geometry_blob_cast.test
+# description: Test casting GEOMETRY to and from BLOB (WKB)
+# group: [geo]
+
+statement ok
+create table t1(id INT, g GEOMETRY);
+
+statement ok
+insert into t1 values
+	(1, 'POINT(0 1)'),
+	(2, 'LINESTRING Z (0 0 1, 1 1 2)'),
+	(3, 'POLYGON M ((0 0 1, 4 0 2, 4 4 3, 0 4 4, 0 0 1))'),
+	(4, 'MULTIPOINT ZM ((1 1 1 1), (2 2 2 2))'),
+	(5, 'GEOMETRYCOLLECTION(POINT(1 1), LINESTRING(0 0, 1 1))'),
+	(6, 'POINT EMPTY'),
+	(7, NULL);
+
+# GEOMETRY -> BLOB produces the same WKB as ST_AsWKB
+query I
+select count(*) from t1 where g::BLOB IS NOT DISTINCT FROM ST_AsWKB(g);
+----
+7
+
+query II
+select typeof(g::BLOB), hex(g::BLOB) from t1 where id = 1;
+----
+BLOB	01010000000000000000000000000000000000F03F
+
+# BLOB -> GEOMETRY roundtrip
+query II
+select id, g::BLOB::GEOMETRY from t1 order by id;
+----
+1	POINT (0 1)
+2	LINESTRING Z (0 0 1, 1 1 2)
+3	POLYGON M ((0 0 1, 4 0 2, 4 4 3, 0 4 4, 0 0 1))
+4	MULTIPOINT ZM (1 1 1 1, 2 2 2 2)
+5	GEOMETRYCOLLECTION (POINT (1 1), LINESTRING (0 0, 1 1))
+6	POINT EMPTY
+7	NULL
+
+# Casting matches ST_GeomFromWKB
+query I
+select count(*) from t1 where g::BLOB::GEOMETRY IS NOT DISTINCT FROM ST_GeomFromWKB(g::BLOB);
+----
+7
+
+# Big endian WKB is normalized to little endian
+query II
+select '\x00\x00\x00\x00\x01\x3F\xF0\x00\x00\x00\x00\x00\x00\x40\x00\x00\x00\x00\x00\x00\x00'::BLOB::GEOMETRY,
+	hex('\x00\x00\x00\x00\x01\x3F\xF0\x00\x00\x00\x00\x00\x00\x40\x00\x00\x00\x00\x00\x00\x00'::BLOB::GEOMETRY::BLOB);
+----
+POINT (1 2)	0101000000000000000000F03F0000000000000040
+
+# Casting to a GEOMETRY with a CRS
+query II
+select g, typeof(g) from (select ST_AsWKB('POINT(1 2)'::GEOMETRY)::GEOMETRY('OGC:CRS84') as g);
+----
+POINT (1 2)	GEOMETRY('OGC:CRS84')
+
+query I
+select hex('POINT(1 2)'::GEOMETRY('OGC:CRS84')::BLOB);
+----
+0101000000000000000000F03F0000000000000040
+
+# Invalid WKB
+statement error
+select '\x01\x02'::BLOB::GEOMETRY;
+----
+Conversion Error: Could not convert BLOB to GEOMETRY
+
+statement error
+select (ST_AsWKB('POINT(1 2)'::GEOMETRY) || ST_AsWKB('POINT(9 9)'::GEOMETRY))::GEOMETRY;
+----
+Could not convert BLOB to GEOMETRY: Unexpected trailing data at position 21
+
+# Unsupported geometry type
+statement error
+select '\x01\x08\x00\x00\x00'::BLOB::GEOMETRY;
+----
+Conversion Error: Could not convert BLOB to GEOMETRY
+
+query I
+select TRY_CAST('\x01\x02'::BLOB AS GEOMETRY);
+----
+NULL
+
+query II
+select id, TRY_CAST(b AS GEOMETRY) from (values
+	(1, ST_AsWKB('POINT(1 2)'::GEOMETRY)),
+	(2, '\x01\x02'::BLOB),
+	(3, NULL::BLOB),
+	(4, ST_AsWKB('LINESTRING(0 0, 1 1)'::GEOMETRY))) t(id, b)
+order by id;
+----
+1	POINT (1 2)
+2	NULL
+3	NULL
+4	LINESTRING (0 0, 1 1)
+
+# BLOB is not implicitly cast to GEOMETRY
+statement error
+select ST_AsText(ST_AsWKB('POINT(1 2)'::GEOMETRY));
+----
+No function matches
+
+# Storage roundtrip through a BLOB column
+statement ok
+create table t2 as select id, g::BLOB as b from t1;
+
+query II
+select id, b::GEOMETRY from t2 order by id;
+----
+1	POINT (0 1)
+2	LINESTRING Z (0 0 1, 1 1 2)
+3	POLYGON M ((0 0 1, 4 0 2, 4 4 3, 0 4 4, 0 0 1))
+4	MULTIPOINT ZM (1 1 1 1, 2 2 2 2)
+5	GEOMETRYCOLLECTION (POINT (1 1), LINESTRING (0 0, 1 1))
+6	POINT EMPTY
+7	NULL
+
+statement ok
+insert into t1 select id + 100, b from t2;
+
+query I
+select count(*) from t1 where g IS NOT NULL;
+----
+12

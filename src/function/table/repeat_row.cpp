@@ -1,5 +1,6 @@
 #include "duckdb/function/table/range.hpp"
 #include "duckdb/common/algorithm.hpp"
+#include "duckdb/common/atomic.hpp"
 
 namespace duckdb {
 
@@ -15,7 +16,7 @@ struct RepeatRowFunctionData : public TableFunctionData {
 struct RepeatRowOperatorData : public GlobalTableFunctionState {
 	RepeatRowOperatorData() : current_count(0) {
 	}
-	idx_t current_count;
+	atomic<idx_t> current_count;
 };
 
 static unique_ptr<FunctionData> RepeatRowBind(ClientContext &context, TableFunctionBindInput &input,
@@ -25,14 +26,18 @@ static unique_ptr<FunctionData> RepeatRowBind(ClientContext &context, TableFunct
 		return_types.push_back(inputs[input_idx].type());
 		names.emplace_back("column" + std::to_string(input_idx));
 	}
-	auto entry = input.named_parameters.find("num_rows");
-	if (entry == input.named_parameters.end()) {
-		throw BinderException("repeat_rows requires num_rows to be specified");
-	}
+	auto &num_rows = input.named_parameters.at("num_rows");
 	if (inputs.empty()) {
 		throw BinderException("repeat_rows requires at least one column to be specified");
 	}
-	return make_uniq<RepeatRowFunctionData>(inputs, NumericCast<idx_t>(entry->second.GetValue<int64_t>()));
+	if (num_rows.IsNull()) {
+		throw BinderException("num_rows should be an integer value >= 0");
+	}
+	auto repeat_rows = num_rows.GetValue<int64_t>();
+	if (repeat_rows < 0) {
+		throw BinderException("num_rows cannot be less than zero");
+	}
+	return make_uniq<RepeatRowFunctionData>(inputs, NumericCast<idx_t>(repeat_rows));
 }
 
 static unique_ptr<GlobalTableFunctionState> RepeatRowInit(ClientContext &context, TableFunctionInitInput &input) {
@@ -51,6 +56,17 @@ static void RepeatRowFunction(ClientContext &context, TableFunctionInput &data_p
 	state.current_count += remaining;
 }
 
+static double RepeatRowProgress(ClientContext &, const FunctionData *bind_data_p,
+                                const GlobalTableFunctionState *state_p) {
+	if (!state_p) {
+		return -1;
+	}
+	auto &bind_data = bind_data_p->Cast<RepeatRowFunctionData>();
+	auto &state = state_p->Cast<RepeatRowOperatorData>();
+	return bind_data.target_count == 0 ? 100
+	                                   : 100.0 * double(state.current_count.load()) / double(bind_data.target_count);
+}
+
 static unique_ptr<NodeStatistics> RepeatRowCardinality(ClientContext &context, const FunctionData *bind_data_p) {
 	auto &bind_data = bind_data_p->Cast<RepeatRowFunctionData>();
 	return make_uniq<NodeStatistics>(bind_data.target_count, bind_data.target_count);
@@ -58,9 +74,11 @@ static unique_ptr<NodeStatistics> RepeatRowCardinality(ClientContext &context, c
 
 void RepeatRowTableFunction::RegisterFunction(BuiltinFunctions &set) {
 	TableFunction repeat_row("repeat_row", {}, RepeatRowFunction, RepeatRowBind, RepeatRowInit);
-	repeat_row.SetVarArgs(LogicalType::ANY);
-	repeat_row.named_parameters["num_rows"] = LogicalType::BIGINT;
+	// a positional list, so it declares "*args" and no "**kwargs" - an argument named after no parameter is an error
+	repeat_row.GetSignature().AddArgs("args", LogicalType::ANY);
+	repeat_row.GetSignature().AddKeywordOnly("num_rows", LogicalType::BIGINT);
 	repeat_row.cardinality = RepeatRowCardinality;
+	repeat_row.table_scan_progress = RepeatRowProgress;
 	set.AddFunction(repeat_row);
 }
 

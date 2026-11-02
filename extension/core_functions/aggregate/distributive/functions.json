@@ -8,7 +8,7 @@
     },
     {
         "name": "arg_min",
-        "parameters": "arg,val",
+        "parameters": "arg,val,N",
         "description": "Finds the row with the minimum val. Calculates the non-NULL arg expression at that row.",
         "example": "arg_min(A, B)",
         "type": "aggregate_function_set",
@@ -30,7 +30,7 @@
     },
     {
         "name": "arg_max",
-        "parameters": "arg,val",
+        "parameters": "arg,val,N",
         "description": "Finds the row with the maximum val. Calculates the non-NULL arg expression at that row.",
         "example": "arg_max(A, B)",
         "type": "aggregate_function_set",
@@ -73,7 +73,7 @@
     },
     {
         "name": "bitstring_agg",
-        "parameters": "arg",
+        "parameters": "arg,min,max",
         "description": "Returns a bitstring with bits set for each distinct value.",
         "example": "bitstring_agg(A)",
         "type": "aggregate_function_set"

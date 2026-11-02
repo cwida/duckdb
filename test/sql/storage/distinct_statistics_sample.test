@@ -1,0 +1,136 @@
+# name: test/sql/storage/distinct_statistics_sample.test
+# description: Distinct samples cover clustered input and partial vectors
+# group: [storage]
+
+load {TEST_DIR}/distinct_statistics_sample.db
+
+statement ok
+SET threads=1;
+
+# Leave room for approximation error, but require coverage beyond vector prefixes.
+statement ok
+CREATE TABLE clustered AS
+SELECT (i // 64)::INTEGER AS i, (i // 64)::VARCHAR AS s, (i // 64)::DOUBLE AS d
+FROM range(4099) r(i);
+
+query III
+SELECT (stats(i)).approx_unique BETWEEN 32 AND 130,
+       (stats(s)).approx_unique BETWEEN 32 AND 130,
+       (stats(d)).approx_unique BETWEEN 32 AND 130
+FROM clustered LIMIT 1;
+----
+1	1	1
+
+query III nosort clustered_distinct_stats
+SELECT (stats(i)).approx_unique, (stats(s)).approx_unique, (stats(d)).approx_unique
+FROM clustered LIMIT 1;
+----
+
+restart
+
+query III nosort clustered_distinct_stats
+SELECT (stats(i)).approx_unique, (stats(s)).approx_unique, (stats(d)).approx_unique
+FROM clustered LIMIT 1;
+----
+
+# A NULL prefix must not hide the non-NULL values in the rest of a vector.
+statement ok
+CREATE TABLE nullable AS
+SELECT CASE WHEN i < 1024 THEN NULL ELSE 42 END AS i,
+       CASE WHEN i < 1024 THEN NULL ELSE 'hello' END AS s,
+       42 AS constant, NULL::INTEGER AS nulls
+FROM range(2048) r(i);
+
+query IIII
+SELECT (stats(i)).approx_unique, (stats(s)).approx_unique,
+       (stats(constant)).approx_unique, (stats(nulls)).approx_unique
+FROM nullable LIMIT 1;
+----
+1	1	1	NULL
+
+# Exercise filtered input and partial vectors.
+foreach count 1 203 205 613 615 1000 2047 2049 4099
+
+statement ok
+CREATE OR REPLACE TABLE partial AS
+SELECT i, i::VARCHAR AS s, CASE WHEN i % 3 = 0 THEN NULL ELSE i::DOUBLE END AS d
+FROM range({count}) r(i) WHERE i % 7 <> 0;
+
+query I
+SELECT count(*) FROM (
+    (SELECT * FROM partial EXCEPT ALL
+     SELECT i, i::VARCHAR, CASE WHEN i % 3 = 0 THEN NULL ELSE i::DOUBLE END
+     FROM range({count}) r(i) WHERE i % 7 <> 0)
+    UNION ALL
+    (SELECT i, i::VARCHAR, CASE WHEN i % 3 = 0 THEN NULL ELSE i::DOUBLE END
+     FROM range({count}) r(i) WHERE i % 7 <> 0 EXCEPT ALL SELECT * FROM partial)
+);
+----
+0
+
+endloop
+
+# Small inputs still collect statistics, including tiny-vector configurations.
+foreach count 2 4 5 9 203 204 205 613 614 615
+
+statement ok
+CREATE OR REPLACE TABLE small AS
+SELECT i, i::DOUBLE AS d, i::VARCHAR AS s FROM range({count}) r(i);
+
+query III
+SELECT coalesce((stats(i)).approx_unique, 0) > 0,
+       coalesce((stats(d)).approx_unique, 0) > 0,
+       coalesce((stats(s)).approx_unique, 0) > 0
+FROM small LIMIT 1;
+----
+1	1	1
+
+endloop
+
+statement ok
+ALTER TABLE clustered ALTER COLUMN i TYPE BIGINT;
+
+query I
+SELECT (stats(i)).approx_unique BETWEEN 32 AND 130 FROM clustered LIMIT 1;
+----
+1
+
+# ALTER TYPE preserves dictionary expression vectors through the statistics update.
+foreach type INTEGER DOUBLE VARCHAR
+
+statement ok
+CREATE OR REPLACE TABLE flat_input AS SELECT i, 'placeholder' AS v FROM range(4099) r(i);
+
+statement ok
+CREATE OR REPLACE TABLE dictionary_input AS SELECT * FROM flat_input;
+
+statement ok
+ALTER TABLE flat_input ALTER v TYPE {type}
+USING (CASE WHEN i % 17 = 0 THEN NULL ELSE (i // 64)::{type} END);
+
+statement ok
+SET debug_verify_vector='dictionary_expression';
+
+statement ok
+ALTER TABLE dictionary_input ALTER v TYPE {type}
+USING (CASE WHEN i % 17 = 0 THEN NULL ELSE (i // 64)::{type} END);
+
+statement ok
+SET debug_verify_vector='none';
+
+query I
+SELECT (SELECT (stats(v)).approx_unique FROM flat_input LIMIT 1) =
+       (SELECT (stats(v)).approx_unique FROM dictionary_input LIMIT 1);
+----
+1
+
+query I
+SELECT count(*) FROM (
+    (SELECT * FROM flat_input EXCEPT ALL SELECT * FROM dictionary_input)
+    UNION ALL
+    (SELECT * FROM dictionary_input EXCEPT ALL SELECT * FROM flat_input)
+);
+----
+0
+
+endloop

@@ -43,12 +43,18 @@ public:
 	bool from_logical_filter = false;
 	//! Logical filters above a LEFT join can depend on NULL-extended rows and must remain filters.
 	bool must_remain_filter = false;
+	//! Filters carrying a barrier must not be pushed below any join in the reordered plan - they are only
+	//! placed once the entire join tree has been built.
+	bool must_remain_at_root = false;
 	//! Index of the equivalence group for INNER equality/IS NOT DISTINCT FROM join filters.
 	//! All filters transitively connected by equality (a=b, b=c -> a=c all share the same index).
 	//! Used by cardinality estimation to skip redundant transitive conditions.
 	optional_idx edge_equivalence_index;
 	//! Original binary operator that supplied this costing predicate, if any.
 	optional_idx source_operator_index;
+	//! Semantic operator sides, including relations not referenced by this predicate.
+	optional_ptr<JoinRelationSet> semantic_left_set;
+	optional_ptr<JoinRelationSet> semantic_right_set;
 };
 
 } // namespace duckdb

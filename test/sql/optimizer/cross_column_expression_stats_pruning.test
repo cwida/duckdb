@@ -1,0 +1,236 @@
+# name: test/sql/optimizer/cross_column_expression_stats_pruning.test
+# description: Use row-group statistics for pruning expressions across columns
+# group: [optimizer]
+
+statement ok
+ATTACH '{TEST_DIR}/cross_column_or_stats_pruning.duckdb' AS rg (ROW_GROUP_SIZE 2048);
+
+statement ok
+USE rg;
+
+statement ok
+CREATE TABLE t AS
+SELECT range::BIGINT AS x, lpad(range::VARCHAR, 8, '0') AS s, range::INTEGER AS y
+FROM range(8192);
+
+statement ok
+CHECKPOINT;
+
+query II
+EXPLAIN ANALYZE SELECT sum(x) FROM t WHERE x < 100 OR s > '00008000';
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 2 / 4.*
+
+query II
+SELECT count(*), sum(x) FROM t WHERE x < 100 OR s > '00008000';
+----
+291	1551286
+
+# Constants can appear on either side of the comparison
+query II
+EXPLAIN ANALYZE SELECT sum(x) FROM t WHERE 100 > x OR '00008000' < s;
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 2 / 4.*
+
+# Support more than two distinct columns
+query II
+EXPLAIN ANALYZE SELECT sum(x) FROM t WHERE x < 100 OR s > '00008000' OR y = 3000;
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 3 / 4.*
+
+query II
+SELECT count(*), sum(x) FROM t WHERE x < 100 OR s > '00008000' OR y = 3000;
+----
+292	1554286
+
+# Repeated column bindings use the same input statistics
+query II
+EXPLAIN ANALYZE SELECT sum(x) FROM t WHERE x < 100 OR x = 3000 OR s > '00008000';
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 3 / 4.*
+
+# Preserve the existing single-column OR path
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM t WHERE x < 100 OR x > 8000;
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 2 / 4.*
+
+statement ok
+CREATE TABLE nullable_t AS
+SELECT CASE WHEN range % 2 = 0 THEN NULL ELSE range END::BIGINT AS a,
+       CASE WHEN range % 3 = 0 THEN NULL ELSE range + 10000 END::BIGINT AS b
+FROM range(8192);
+
+statement ok
+CHECKPOINT;
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM nullable_t WHERE a < 0 OR b < 0;
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 0 / 4.*
+
+query I
+SELECT count(*) FROM nullable_t WHERE a < 0 OR b < 0;
+----
+0
+
+# Dynamic filters retain the cross-column filter when filter sets are merged
+query II
+EXPLAIN ANALYZE
+SELECT sum(t.x)
+FROM t
+JOIN (VALUES (50::BIGINT), (3000::BIGINT), (5000::BIGINT), (8050::BIGINT)) keys(x) USING (x)
+WHERE t.x < 100 OR t.s > '00008000';
+----
+analyzed_plan	<REGEX>:.*Dynamic Filters:.*x IN.*Row Groups Scanned: 2 / 4.*
+
+query II
+SELECT count(*), sum(t.x)
+FROM t
+JOIN (VALUES (50::BIGINT), (3000::BIGINT), (5000::BIGINT), (8050::BIGINT)) keys(x) USING (x)
+WHERE t.x < 100 OR t.s > '00008000';
+----
+2	8100
+
+# General expressions across columns
+statement ok
+CREATE TABLE expression_t AS
+SELECT range::INTEGER AS a,
+       (range + 10000)::INTEGER AS b,
+       5000::BIGINT AS c,
+       range::VARCHAR AS s,
+       (range + 10000)::VARCHAR AS s2,
+       CASE WHEN range < 4096 THEN range ELSE NULL END::INTEGER AS nullable_a,
+       CASE WHEN range % 2 = 0 THEN NULL ELSE range END::INTEGER AS mixed_nullable
+FROM range(6144);
+
+statement ok
+CHECKPOINT;
+
+# Functions with statistics callbacks
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM expression_t WHERE greatest(a, b) > 15000;
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*
+
+query I
+SELECT count(*) FROM expression_t WHERE greatest(a, b) > 15000;
+----
+1143
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM expression_t WHERE least(a, b) > 5000;
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*
+
+query I
+SELECT count(*) FROM expression_t WHERE least(a, b) > 5000;
+----
+1143
+
+# Single-column expressions retain scan pushdown
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM expression_t WHERE greatest(a, 0) > 5000;
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*
+
+query I
+SELECT count(*) FROM expression_t WHERE greatest(a, 0) > 5000;
+----
+1143
+
+# Casts with propagated statistics
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM expression_t WHERE CAST(a AS BIGINT) > c;
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*
+
+# Column-to-column comparisons can be composed with OR
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM expression_t WHERE a > b OR a > c;
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*
+
+query I
+SELECT count(*) FROM expression_t WHERE a > b OR a > c;
+----
+1143
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM expression_t WHERE a > TRY_CAST(c AS INTEGER);
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*
+
+# Nested conjunctions composed from supported predicates
+query II
+EXPLAIN ANALYZE
+SELECT count(*) FROM expression_t
+WHERE (greatest(a, b) > 15000 AND a < 6000) OR CAST(a AS BIGINT) > c;
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*
+
+query I
+SELECT count(*) FROM expression_t
+WHERE (greatest(a, b) > 15000 AND a < 6000) OR CAST(a AS BIGINT) > c;
+----
+1143
+
+# Nullable inputs preserve greatest/least semantics
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM expression_t WHERE greatest(nullable_a, b) > 15000;
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*
+
+query I
+SELECT count(*) FROM expression_t WHERE greatest(nullable_a, b) > 15000;
+----
+1143
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM expression_t WHERE least(nullable_a, b) > 5000;
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*
+
+query I
+SELECT count(*) FROM expression_t WHERE least(nullable_a, b) > 5000;
+----
+2048
+
+# A statistics callback can decline to produce statistics at runtime
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM expression_t WHERE greatest(s, s) > s2;
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 3 / 3.*
+
+# TRUE_OR_NULL in an OR child must not prune matching non-NULL rows
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM expression_t WHERE mixed_nullable < b OR a < 0;
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 3 / 3.*
+
+query I
+SELECT count(*) FROM expression_t WHERE mixed_nullable < b OR a < 0;
+----
+3072
+
+# Throwing and volatile expressions are not admitted for row-group pruning
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM expression_t WHERE CAST(c AS INTEGER) < a;
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 3 / 3.*
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM expression_t WHERE random() + a > c;
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 3 / 3.*
+
+# Multi-column OR filters are canonical across equivalent subplans
+statement ok
+PRAGMA explain_output='optimized_only';
+
+query II
+EXPLAIN SELECT count(*) FROM t WHERE x < 100 OR s > '00008000'
+UNION ALL
+SELECT count(*) FROM t WHERE x < 100 OR s > '00008000';
+----
+logical_opt	<REGEX>:.*CTE.*

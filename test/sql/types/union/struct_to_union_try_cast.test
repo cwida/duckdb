@@ -1,0 +1,42 @@
+# name: test/sql/types/union/struct_to_union_try_cast.test
+# description: TRY_CAST from STRUCT to UNION with invalid tags or failing member casts
+# group: [union]
+
+query I
+SELECT try_cast({'tag': 5::UTINYINT, 'a': 1, 'b': NULL::VARCHAR} AS UNION(a INT, b VARCHAR))
+----
+NULL
+
+statement error
+SELECT cast({'tag': 5::UTINYINT, 'a': 1, 'b': NULL::VARCHAR} AS UNION(a INT, b VARCHAR))
+----
+One or more of the tags do not point to a valid union member
+
+# a failing member cast results in a NULL member
+query I
+SELECT try_cast({'tag': 0::UTINYINT, 'a': 'zz', 'b': NULL::VARCHAR} AS UNION(a INT, b VARCHAR))
+----
+NULL
+
+statement error
+SELECT cast({'tag': 0::UTINYINT, 'a': 'zz', 'b': NULL::VARCHAR} AS UNION(a INT, b VARCHAR))
+----
+Could not convert string 'zz' to INT32
+
+# only the invalid rows become NULL
+query I
+SELECT try_cast(s AS UNION(a INT, b VARCHAR)) FROM (VALUES
+    ({'tag': 0::UTINYINT, 'a': '1', 'b': NULL::VARCHAR}),
+    ({'tag': 7::UTINYINT, 'a': '2', 'b': NULL}),
+    ({'tag': 1::UTINYINT, 'a': NULL, 'b': 'x'}),
+    ({'tag': 0::UTINYINT, 'a': '3', 'b': 'y'})) t(s)
+----
+1
+NULL
+x
+NULL
+
+statement error
+SELECT cast(s AS UNION(a INT, b VARCHAR)) FROM (VALUES ({'tag': 0::UTINYINT, 'a': '3', 'b': 'y'})) t(s)
+----
+have validity set for more than 1 member

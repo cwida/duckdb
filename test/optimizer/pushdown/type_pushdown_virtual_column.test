@@ -1,0 +1,47 @@
+# name: test/optimizer/pushdown/type_pushdown_virtual_column.test
+# description: Type pushdown must not push casts into virtual columns
+# group: [pushdown]
+
+statement ok
+COPY (SELECT 42 AS col1) TO '{TEST_DIR}/virtual_column_pushdown.csv' (HEADER false);
+
+# a cast on a virtual column is not a pushdown candidate, even when a sibling
+# cast on a real column is pushed down
+statement error
+SELECT CAST(col1 AS BIGINT), CAST(filename AS BIGINT)
+FROM read_csv('{TEST_DIR}/virtual_column_pushdown.csv', columns={'col1': 'INTEGER'});
+----
+<REGEX>:Conversion Error.*virtual_column_pushdown.csv.*
+
+query II
+SELECT CAST(col1 AS BIGINT), CAST(filename AS VARCHAR) LIKE '%virtual_column_pushdown.csv'
+FROM read_csv('{TEST_DIR}/virtual_column_pushdown.csv', columns={'col1': 'INTEGER'});
+----
+42	true
+
+query II
+SELECT CAST(col1 AS BIGINT), filename LIKE '%virtual_column_pushdown.csv'
+FROM read_csv('{TEST_DIR}/virtual_column_pushdown.csv', columns={'col1': 'INTEGER'});
+----
+42	true
+
+# the same through a passthrough projection (a view over the reader)
+statement ok
+CREATE VIEW v AS
+SELECT col1, filename FROM read_csv('{TEST_DIR}/virtual_column_pushdown.csv', columns={'col1': 'INTEGER'});
+
+statement error
+SELECT CAST(col1 AS BIGINT), CAST(filename AS BIGINT) FROM v;
+----
+<REGEX>:Conversion Error.*virtual_column_pushdown.csv.*
+
+query II
+SELECT CAST(col1 AS BIGINT), CAST(filename AS VARCHAR) LIKE '%virtual_column_pushdown.csv' FROM v;
+----
+42	true
+
+# the cast on the real column is still pushed into the reader
+query II
+EXPLAIN SELECT CAST(col1 AS BIGINT) FROM read_csv('{TEST_DIR}/virtual_column_pushdown.csv', columns={'col1': 'INTEGER'});
+----
+physical_plan	<!REGEX>:.*PROJECTION.*

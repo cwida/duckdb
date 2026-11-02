@@ -1,0 +1,15 @@
+# name: benchmark/micro/aggregate/avg_with_stddev.benchmark
+# group: [aggregate]
+
+name AVG and STDDEV without shared aggregate states
+group micro
+subgroup aggregate
+
+load
+CREATE TABLE avg_stddev AS SELECT i%1000000 AS g, (i%100)::INTEGER AS x FROM range(3000000) t(i);
+
+run
+SELECT sum(a+s) FROM (SELECT avg(x) AS a,stddev_samp(x) AS s FROM avg_stddev GROUP BY g);
+
+result I
+49500000

@@ -94,10 +94,9 @@ string CreateIndexInfo::ToString() const {
 			if (i > 0) {
 				result += ", ";
 			}
-			if (opt.second.IsNull()) {
-				result += opt.first;
-			} else {
-				result += StringUtil::Format("%s = %s", opt.first, opt.second.ToString());
+			result += SQLIdentifier(opt.first);
+			if (!opt.second.IsNull()) {
+				result += " = " + opt.second.ToSQLString();
 			}
 			i++;
 		}

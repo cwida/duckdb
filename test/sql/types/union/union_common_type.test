@@ -1,0 +1,41 @@
+# name: test/sql/types/union/union_common_type.test
+# description: The common type of two UNIONs merges the member types
+# group: [union]
+
+query I
+SELECT [union_value(a:=1), union_value(a:=2.5)];
+----
+[1.0, 2.5]
+
+query I
+SELECT typeof([union_value(a:=1), union_value(a:=2.5)]);
+----
+UNION(a DECIMAL(11,1))[]
+
+query II
+SELECT union_value(a:=1) = union_value(a:=1.4), union_value(a:=1.4) = union_value(a:=1);
+----
+false	false
+
+# members only present on one side are kept
+query I
+SELECT [union_value(a:=1), union_value(b:='x')];
+----
+[1, x]
+
+query I
+SELECT typeof([union_value(a:=1), union_value(b:='x')]);
+----
+UNION(a INTEGER, b VARCHAR)[]
+
+# a larger union is not narrowed
+query I
+SELECT [union_value(a:=3000000000), union_value(a:=1)];
+----
+[3000000000, 1]
+
+# equal types stay equal
+query I
+SELECT [union_value(a:=1), union_value(a:=2)];
+----
+[1, 2]

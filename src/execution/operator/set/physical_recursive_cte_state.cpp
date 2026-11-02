@@ -196,6 +196,12 @@ void RecursiveCTEEpochMetrics::RecordDistinctGrouping(idx_t candidate_rows, idx_
 	distinct_grouping_work_ns.fetch_add(elapsed_ns);
 }
 
+void RecursiveCTEEpochMetrics::RecordPipelineWorkers(idx_t workers) {
+	auto current = max_pipeline_workers.load();
+	while (current < workers && !max_pipeline_workers.compare_exchange_weak(current, workers)) {
+	}
+}
+
 void RecursiveCTEEpochMetrics::RecordPipelineExecution(RecursiveCTEPipelineMetricType metric_type, idx_t elapsed_ns) {
 	switch (metric_type) {
 	case RecursiveCTEPipelineMetricType::RECURSIVE:
@@ -355,6 +361,7 @@ void RecursiveCTEMetrics::LogEpochSummary(const RecursiveCTEEpochMetrics &epoch_
 	     {"frontier_rows_max", to_string(epoch_metrics.frontier_rows.maximum)},
 	     {"workers_p50_upper_bound", to_string(epoch_metrics.workers.MedianUpperBound())},
 	     {"workers_max", to_string(epoch_metrics.workers.maximum)},
+	     {"max_pipeline_workers", to_string(epoch_metrics.max_pipeline_workers.load())},
 	     {"tasks_p50_upper_bound", to_string(epoch_metrics.tasks.MedianUpperBound())},
 	     {"tasks_max", to_string(epoch_metrics.tasks.maximum)},
 	     {"elapsed_us_p50_upper_bound", to_string(epoch_metrics.elapsed_us.MedianUpperBound())},

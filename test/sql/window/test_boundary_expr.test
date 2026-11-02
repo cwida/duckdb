@@ -179,3 +179,56 @@ SELECT COUNT(*) OVER (
 FROM (VALUES (1, NULL::INTEGER)) AS src(id, off);
 ----
 Invalid Input Error: Window ROWS FOLLOWING expression cannot be NULL
+
+# Issue #24560: Clamp overflows to the partition end
+query III
+SELECT 
+	i,
+	count(*) OVER (
+		ORDER BY i
+		ROWS BETWEEN 9223372036854775807 FOLLOWING
+			  	 AND 9223372036854775807 FOLLOWING
+	) AS cnt,
+	list(i) OVER (
+		ORDER BY i
+		ROWS BETWEEN 9223372036854775807 FOLLOWING
+			  	 AND 9223372036854775807 FOLLOWING
+	) AS members
+FROM range(3) t(i);
+----
+0	0	NULL
+1	0	NULL
+2	0	NULL
+
+# Issue #24560: Reject negative ROWS PRECEDING/FOLLOWING offsets
+statement error
+SELECT COUNT(*) OVER (
+  ORDER BY id ROWS BETWEEN off PRECEDING AND CURRENT ROW
+)
+FROM (VALUES (1, -1)) AS src(id, off);
+----
+Invalid Input Error: Window ROWS PRECEDING expression cannot be negative
+
+statement error
+SELECT COUNT(*) OVER (
+  ORDER BY id ROWS BETWEEN off FOLLOWING AND UNBOUNDED FOLLOWING
+)
+FROM (VALUES (1, -1)) AS src(id, off);
+----
+Invalid Input Error: Window ROWS FOLLOWING expression cannot be negative
+
+statement error
+SELECT COUNT(*) OVER (
+  ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND off PRECEDING
+)
+FROM (VALUES (1, -1)) AS src(id, off);
+----
+Invalid Input Error: Window ROWS PRECEDING expression cannot be negative
+
+statement error
+SELECT COUNT(*) OVER (
+  ORDER BY id ROWS BETWEEN CURRENT ROW AND off FOLLOWING
+)
+FROM (VALUES (1, -1)) AS src(id, off);
+----
+Invalid Input Error: Window ROWS FOLLOWING expression cannot be negative

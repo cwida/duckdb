@@ -14,18 +14,51 @@
 
 namespace duckdb {
 
+namespace {
+
+bool IsDroppedBlock(CacheBlock &block) {
+	const annotated_lock_guard<annotated_mutex> block_guard(block.mtx);
+	if (block.state != CacheBlockState::LOADED || !block.block_handle) {
+		return false;
+	}
+	auto &memory = block.block_handle->GetMemory();
+	return memory.IsUnloaded() && !memory.MustWriteToTemporaryFile();
+}
+
+bool IsLoadedBlock(CacheBlock &block) {
+	const annotated_lock_guard<annotated_mutex> block_guard(block.mtx);
+	return block.state == CacheBlockState::LOADED;
+}
+
+//! A loaded block whose data can still be served: resident in memory or written to a temporary file
+bool IsAvailableBlock(CacheBlock &block) {
+	return IsLoadedBlock(block) && !IsDroppedBlock(block);
+}
+
+idx_t GapBlockCount(idx_t nr_bytes, idx_t max_block_size) {
+	return (nr_bytes + max_block_size - 1) / max_block_size;
+}
+
+//! Whether the last modified timestamp is usable as a cache validator
+bool HasUsableLastModified(timestamp_t last_modified) {
+	return last_modified.IsFinite() && last_modified != timestamp_t(0);
+}
+
+} // namespace
+
 bool CacheValidationInfo::IsCacheReuseProhibited() const {
 	return cache_valid_until && *cache_valid_until == timestamp_t::ninfinity();
 }
 
 bool CacheValidationInfo::IsExpired() const {
-	return cache_valid_until && Timestamp::GetCurrentTimestamp() > *cache_valid_until;
+	return cache_valid_until && Timestamp::GetCurrentTimestamp() >= *cache_valid_until;
 }
 
 class ExternalFileCache::ExternalFileCacheObjectCacheEntry : public ObjectCacheEntry {
 public:
 	ExternalFileCacheObjectCacheEntry(ExternalFileCache &cache_p, string path_p, idx_t generation_p)
-	    : cache(cache_p), cached_file(make_shared_ptr<CachedFile>(std::move(path_p), generation_p)) {
+	    : cache(cache_p), cached_file(make_shared_ptr<CachedFile>(std::move(path_p), generation_p,
+	                                                              cache_p.GetBufferManager().GetBufferPool())) {
 		cache.InsertCachedFileKey(cached_file->path);
 	}
 
@@ -42,18 +75,9 @@ public:
 	}
 
 	optional_idx GetEstimatedCacheMemory() const override {
-		idx_t file_size = 0;
-		{
-			const annotated_lock_guard<annotated_mutex> meta_guard(cached_file->meta_lock);
-			file_size = cached_file->validation_info.file_size;
-		}
-		const idx_t block_size = cache.GetCacheBlockSize(cached_file->path);
-		const idx_t num_blocks = (file_size + block_size - 1) / block_size;
-		// Estimated memory consumption for each block metadata.
-		static constexpr idx_t BLOCK_METADATA_SIZE = sizeof(CacheBlock);
 		// Filepath is stored at two places: in the object cache key and in the cached file object.
-		// We do over-estimation on memory consumption, which assumes the whole file is cached.
-		return cached_file->path.size() * 2 + num_blocks * BLOCK_METADATA_SIZE;
+		// Block metadata is reserved separately by the cached file as blocks are added and dropped.
+		return cached_file->path.size() * 2 + sizeof(CachedFile);
 	}
 
 	shared_ptr<CachedFile> GetCachedFile() const {
@@ -65,12 +89,20 @@ private:
 	shared_ptr<CachedFile> cached_file;
 };
 
-idx_t ExternalFileCache::GetCacheBlockSize(const string &path) const {
+idx_t ExternalFileCache::GetCacheMaxBlockSize(const string &path) const {
 	auto &db = buffer_manager.GetDatabase();
 	if (FileSystem::IsRemoteFile(path)) {
-		return Settings::Get<ExternalFileCacheRemoteBlockSizeSetting>(db);
+		return Settings::Get<ExternalFileCacheRemoteMaxBlockSizeSetting>(db);
 	}
-	return Settings::Get<ExternalFileCacheLocalBlockSizeSetting>(db);
+	return Settings::Get<ExternalFileCacheLocalMaxBlockSizeSetting>(db);
+}
+
+idx_t ExternalFileCache::GetCacheMinBlockSize(const string &path) const {
+	if (!FileSystem::IsRemoteFile(path)) {
+		return 1;
+	}
+	auto &db = buffer_manager.GetDatabase();
+	return Settings::Get<ExternalFileCacheRemoteMinBlockSizeSetting>(db);
 }
 
 bool ExternalFileCache::ShouldCacheFile(const string &path) const {
@@ -82,156 +114,159 @@ bool ExternalFileCache::ShouldCacheFile(const string &path) const {
 	return Settings::Get<CacheLocalFilesSetting>(db);
 }
 
-void ExternalFileCache::ReindexCachedFileCore(CachedFile &cached_file, idx_t file_size, idx_t old_block_size,
-                                              idx_t new_block_size) {
-	D_ASSERT(old_block_size > 0);
-	D_ASSERT(new_block_size > 0);
+static idx_t CountSmallAvailableBlocksLocked(const map<idx_t, shared_ptr<CacheBlock>> &blocks, idx_t location,
+                                             idx_t end, idx_t max_block_size) {
+	idx_t count = 0;
+	auto it = blocks.upper_bound(location);
+	if (it != blocks.begin()) {
+		--it;
+	}
+	for (; it != blocks.end() && it->first < end; ++it) {
+		auto &block = *it->second;
+		if (it->first + block.size > location && block.size < max_block_size && IsAvailableBlock(block)) {
+			count++;
+		}
+	}
+	return count;
+}
 
-	// Phase 1: Pin all LOADED old blocks, sorted by block index.
-	map<idx_t, pair<BufferHandle, idx_t>> pinned;
-	for (auto &block_entry : cached_file.blocks) {
-		const idx_t old_idx = block_entry.first;
-		auto &block = *block_entry.second;
-		const annotated_lock_guard<annotated_mutex> block_guard(block.mtx);
-		if (block.state != CacheBlockState::LOADED || !block.block_handle) {
+idx_t ExternalFileCache::CountSmallAvailableBlocks(CachedFile &cached_file, idx_t location, idx_t nr_bytes,
+                                                   idx_t max_block_size) {
+	const annotated_lock_guard<annotated_mutex> map_guard(cached_file.map_lock);
+	return CountSmallAvailableBlocksLocked(cached_file.blocks, location, location + nr_bytes, max_block_size);
+}
+
+static bool IsRangeAvailableLocked(const map<idx_t, shared_ptr<CacheBlock>> &blocks, idx_t location, idx_t end) {
+	idx_t pos = location;
+	auto it = blocks.upper_bound(location);
+	if (it != blocks.begin()) {
+		--it;
+	}
+	for (; it != blocks.end() && pos < end; ++it) {
+		auto &block = *it->second;
+		const idx_t block_end = it->first + block.size;
+		if (block_end <= pos) {
+			// the block before `location` ends in front of it
 			continue;
 		}
-		if (block.block_handle->GetMemory().IsUnloaded()) {
-			// Evicted blocks do not survive a re-index, whether they spilled or were dropped:
-			// pinning all of them to copy them over could exceed the memory limit
-			continue;
+		if (it->first > pos || !IsAvailableBlock(block)) {
+			return false;
 		}
-		auto pin = buffer_manager.Pin(block.block_handle);
-		if (pin.IsValid()) {
-			pinned.emplace(old_idx, make_pair(std::move(pin), block.nr_bytes));
+		pos = block_end;
+	}
+	return pos >= end;
+}
+
+bool ExternalFileCache::IsRangeAvailable(CachedFile &cached_file, idx_t location, idx_t nr_bytes) {
+	const annotated_lock_guard<annotated_mutex> map_guard(cached_file.map_lock);
+	return IsRangeAvailableLocked(cached_file.blocks, location, location + nr_bytes);
+}
+
+//! Whether [begin, end) lies within one of the ranges
+static bool WithinRanges(optional_ptr<const vector<pair<idx_t, idx_t>>> ranges, idx_t begin, idx_t end) {
+	if (!ranges) {
+		return false;
+	}
+	for (auto &range : *ranges) {
+		if (range.first <= begin && end <= range.second) {
+			return true;
+		}
+	}
+	return false;
+}
+
+vector<shared_ptr<CacheBlock>>
+ExternalFileCache::AcquireBlocks(CachedFile &cached_file, idx_t location, idx_t nr_bytes, idx_t max_block_size,
+                                 optional_ptr<const vector<pair<idx_t, idx_t>>> absorb_ranges) {
+	D_ASSERT(nr_bytes > 0);
+	D_ASSERT(max_block_size > 0);
+	const idx_t end = location + nr_bytes;
+
+	const annotated_lock_guard<annotated_mutex> map_guard(cached_file.map_lock);
+	auto &blocks = cached_file.blocks;
+	// smaller cached blocks between two gaps are re-fetched with them when that saves a request; within the ranges a
+	// read asks for (a column chunk read whole after point lookups left pages of it in the cache) that holds for
+	// cached blocks of any size below a full block, so the read sends about as many requests as on a cold cache
+	auto absorbable = [&](idx_t block_start, const CacheBlock &block) {
+		if (block.size < max_block_size / 8) {
+			return true;
+		}
+		return block.size < max_block_size && WithinRanges(absorb_ranges, block_start, block_start + block.size);
+	};
+	// start at the block that covers `location`, if any
+	auto it = blocks.upper_bound(location);
+	if (it != blocks.begin()) {
+		auto prev = std::prev(it);
+		if (prev->first + prev->second->size > location) {
+			it = prev;
 		}
 	}
 
-	if (pinned.empty()) {
-		cached_file.blocks.clear();
-		return;
-	}
-
-	// Phase 2: Find contiguous runs of old blocks and create new blocks from each run.
-	// A new block is only created if its entire byte range is covered by the run.
-	unordered_map<idx_t, shared_ptr<CacheBlock>> new_blocks;
-
-	auto it = pinned.begin();
-	while (it != pinned.end()) {
-		// Find a contiguous run of old blocks starting at current block.
-		const idx_t run_byte_start = it->first * old_block_size;
-		idx_t run_byte_end = run_byte_start;
-		idx_t expected_idx = it->first;
-		auto run_end = it;
-		while (run_end != pinned.end() && run_end->first == expected_idx) {
-			run_byte_end = run_end->first * old_block_size + run_end->second.second;
-			expected_idx++;
-			++run_end;
-		}
-
-		// This contiguous run covers file bytes [run_byte_start, run_byte_end).
-		// Create all new blocks whose byte range fits entirely within this run.
-		const idx_t first_new = run_byte_start / new_block_size;
-		const idx_t last_new = (run_byte_end - 1) / new_block_size;
-
-		for (idx_t new_idx = first_new; new_idx <= last_new; new_idx++) {
-			const idx_t new_start = new_idx * new_block_size;
-			const idx_t new_end = MinValue(new_start + new_block_size, file_size);
-			if (!(new_start < new_end && new_start >= run_byte_start && new_end <= run_byte_end)) {
+	vector<shared_ptr<CacheBlock>> result;
+	idx_t pos = location;
+	while (pos < end) {
+		if (it != blocks.end() && it->first <= pos) {
+			if (!IsDroppedBlock(*it->second) || it->second.use_count() > 1) {
+				result.push_back(it->second);
+				pos = it->first + it->second->size;
+				++it;
 				continue;
 			}
-			const idx_t new_size = new_end - new_start;
-
-			auto buf = AllocateCacheBuffer(buffer_manager, cached_file.path, new_size);
-
-			// Copy from each contributing old block in the run.
-			const idx_t contrib_first = new_start / old_block_size;
-			const idx_t contrib_last = (new_end - 1) / old_block_size;
-			for (idx_t oi = contrib_first; oi <= contrib_last; oi++) {
-				auto &old_entry = pinned.at(oi);
-				const idx_t oi_file_start = oi * old_block_size;
-				const idx_t copy_start = MaxValue(new_start, oi_file_start);
-				const idx_t copy_end = MinValue(new_end, oi_file_start + old_entry.second);
-				if (copy_start >= copy_end) {
-					continue;
-				}
-				memcpy(buf.GetDataMutable() + (copy_start - new_start),
-				       old_entry.first.Ptr() + (copy_start - oi_file_start), copy_end - copy_start);
+			// re-fetch a dropped block only as far as this read needs it
+			it = blocks.erase(it);
+		}
+		// create blocks for the missing bytes up to the next cached block
+		idx_t gap_end = it == blocks.end() ? end : MinValue(end, it->first);
+		while (it != blocks.end() && it->first < end && absorbable(it->first, *it->second) &&
+		       IsLoadedBlock(*it->second)) {
+			const idx_t block_end = it->first + it->second->size;
+			const auto next = std::next(it);
+			const idx_t next_gap_end = next == blocks.end() ? end : MinValue(end, next->first);
+			if (block_end >= next_gap_end) {
+				break;
 			}
-
-			auto new_block = make_shared_ptr<CacheBlock>();
-			{
-				const annotated_lock_guard<annotated_mutex> block_guard(new_block->mtx);
-				new_block->block_handle = buf.GetBlockHandle();
-				new_block->nr_bytes = new_size;
-				new_block->state = CacheBlockState::LOADED;
-#ifdef DEBUG
-				new_block->checksum = Checksum(buf.Ptr(), new_size);
-#endif
+			const idx_t gap_before = gap_end - pos;
+			const idx_t gap_after = next_gap_end - block_end;
+			if (GapBlockCount(gap_before + it->second->size + gap_after, max_block_size) >=
+			    GapBlockCount(gap_before, max_block_size) + GapBlockCount(gap_after, max_block_size)) {
+				break;
 			}
-			new_blocks[new_idx] = std::move(new_block);
+			it = blocks.erase(it);
+			gap_end = next_gap_end;
 		}
-
-		it = run_end;
+		while (pos < gap_end) {
+			const idx_t size = MinValue(gap_end - pos, max_block_size);
+			auto block = make_shared_ptr<CacheBlock>(pos, size);
+			blocks.emplace_hint(it, pos, block);
+			result.push_back(std::move(block));
+			pos += size;
+		}
 	}
-
-	// Phase 3: Replace old blocks with new blocks.
-	cached_file.blocks = std::move(new_blocks);
+	cached_file.UpdateBlockReservation();
+	return result;
 }
 
-vector<shared_ptr<CacheBlock>> ExternalFileCache::ReindexAndAcquireBlocks(CachedFile &cached_file,
-                                                                          idx_t current_block_size, idx_t first_block,
-                                                                          idx_t num_blocks) {
-	D_ASSERT(current_block_size > 0);
-
-	idx_t file_size = 0;
-	{
-		const annotated_lock_guard<annotated_mutex> meta_guard(cached_file.meta_lock);
-		file_size = cached_file.validation_info.file_size;
-	}
-
+void ExternalFileCache::DropBlocks(CachedFile &cached_file) {
 	const annotated_lock_guard<annotated_mutex> map_guard(cached_file.map_lock);
-
-	if (cached_file.cached_block_size.IsValid() && cached_file.cached_block_size.GetIndex() != current_block_size) {
-		const idx_t old_block_size = cached_file.cached_block_size.GetIndex();
-		if (file_size > 0) {
-			ReindexCachedFileCore(cached_file, file_size, old_block_size, current_block_size);
-		}
-	}
-	cached_file.cached_block_size = current_block_size;
-
-	vector<shared_ptr<CacheBlock>> blocks(num_blocks);
-	for (idx_t idx = 0; idx < num_blocks; idx++) {
-		const idx_t block_idx = first_block + idx;
-		auto &entry = cached_file.blocks[block_idx];
-		if (!entry) {
-			entry = make_shared_ptr<CacheBlock>();
-		}
-		blocks[idx] = entry;
-	}
-	return blocks;
+	cached_file.blocks.clear();
+	cached_file.content_generation++;
+	cached_file.UpdateBlockReservation();
 }
 
-void ExternalFileCache::RetireBlocks(CachedFile &cached_file, idx_t first_block,
-                                     const vector<shared_ptr<CacheBlock>> &blocks) {
+idx_t ExternalFileCache::GetContentGeneration(CachedFile &cached_file) {
 	const annotated_lock_guard<annotated_mutex> map_guard(cached_file.map_lock);
-	for (idx_t idx = 0; idx < blocks.size(); idx++) {
-		const auto block_idx = first_block + idx;
-		auto entry = cached_file.blocks.find(block_idx);
-		if (entry == cached_file.blocks.end() || entry->second != blocks[idx]) {
-			continue;
-		}
-		cached_file.blocks.erase(entry);
-	}
+	return cached_file.content_generation;
 }
 
-ExternalFileCache::CachedFile::CachedFile(string path_p, idx_t generation_p)
-    : path(std::move(path_p)), generation(generation_p) {
+ExternalFileCache::CachedFile::CachedFile(string path_p, idx_t generation_p, BufferPool &buffer_pool)
+    : path(std::move(path_p)), generation(generation_p), block_reservation(MemoryTag::OBJECT_CACHE, buffer_pool, 0) {
 }
 
-//! Whether the last modified timestamp is usable as a cache validator
-static bool HasUsableLastModified(timestamp_t last_modified) {
-	return last_modified.IsFinite() && last_modified != timestamp_t(0);
+void ExternalFileCache::CachedFile::UpdateBlockReservation() {
+	// The block handle is only present once a block is loaded, so this over-estimates in-flight blocks.
+	static constexpr idx_t BLOCK_METADATA_SIZE = sizeof(CacheBlock) + sizeof(BlockHandle) + sizeof(BlockMemory) +
+	                                             sizeof(std::pair<const idx_t, shared_ptr<CacheBlock>>);
+	block_reservation.Resize(blocks.size() * BLOCK_METADATA_SIZE);
 }
 
 bool ExternalFileCache::IsValid(bool validate, const string &cached_version_tag, timestamp_t cached_last_modified,
@@ -289,7 +324,7 @@ bool ExternalFileCache::IsValid(bool validate, const CacheValidationInfo &cached
 	if (!cached.cache_valid_until) {
 		return false; // The backend does not provide expiry information, so we cannot validate at all
 	}
-	return Timestamp::GetCurrentTimestamp() <= *cached.cache_valid_until;
+	return Timestamp::GetCurrentTimestamp() < *cached.cache_valid_until;
 }
 
 ExternalFileCache::ExternalFileCache(DatabaseInstance &db, bool enable_p)
@@ -342,17 +377,14 @@ vector<CachedFileInformation> ExternalFileCache::GetCachedFileInformation() cons
 		}
 		auto file = entry->GetCachedFile();
 		const annotated_lock_guard<annotated_mutex> map_guard(file->map_lock);
-		const idx_t block_size =
-		    file->cached_block_size.IsValid() ? file->cached_block_size.GetIndex() : GetCacheBlockSize(file->path);
 		for (const auto &block_entry : file->blocks) {
-			const idx_t block_idx = block_entry.first;
 			const auto &block = *block_entry.second;
 
 			annotated_lock_guard<annotated_mutex> block_guard(block.mtx);
 			if (block.state != CacheBlockState::LOADED || !block.block_handle) {
 				continue;
 			}
-			const idx_t location = block_idx * block_size;
+			const idx_t location = block.location;
 			const auto &memory = block.block_handle->GetMemory();
 			const bool loaded = !memory.IsUnloaded();
 			// An unloaded cache block is spilled if it still has a temporary file backing
@@ -399,7 +431,7 @@ shared_ptr<ExternalFileCache::CachedFile> ExternalFileCache::GetOrCreateCachedFi
 	while (true) {
 		const auto current_generation = generation.load();
 		if (!enable) {
-			return make_shared_ptr<CachedFile>(path, current_generation);
+			return make_shared_ptr<CachedFile>(path, current_generation, buffer_manager.GetBufferPool());
 		}
 
 		auto entry = object_cache.GetOrCreateWithTypePrefix<ExternalFileCacheObjectCacheEntry>(path, *this, path,
@@ -408,7 +440,7 @@ shared_ptr<ExternalFileCache::CachedFile> ExternalFileCache::GetOrCreateCachedFi
 
 		if (!enable) {
 			object_cache.DeleteWithTypePrefix<ExternalFileCacheObjectCacheEntry>(path);
-			return make_shared_ptr<CachedFile>(path, current_generation);
+			return make_shared_ptr<CachedFile>(path, current_generation, buffer_manager.GetBufferPool());
 		}
 		if (cached_file->generation != current_generation) {
 			object_cache.DeleteWithTypePrefix<ExternalFileCacheObjectCacheEntry>(path);

@@ -7,11 +7,12 @@ require tpch
 statement ok
 CALL dbgen(sf=1);
 
+# Break ties by comment value.
 query II
-select l_returnflag, mode(l_comment) from lineitem where l_returnflag <> 'N' group by l_returnflag;
+select l_returnflag, mode(l_comment ORDER BY l_comment) from lineitem where l_returnflag <> 'N' group by l_returnflag order by l_returnflag;
 ----
 A	 furiously
-R	 furiously
+R	 carefully
 
 # run a windowed mode
 query I

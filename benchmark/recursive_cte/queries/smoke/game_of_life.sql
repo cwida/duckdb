@@ -1,6 +1,6 @@
 WITH RECURSIVE
 params(width, height, iterations) AS (
-	VALUES (21, 21, 200)
+	VALUES (21, 21, 70)
 ),
 initial(x, y, val) AS (
 	SELECT x, y, (((x * 17 + y * 31 + x * y * 7) % 11) < 5)::INTEGER

@@ -27,7 +27,7 @@ struct ConstantOrNullFun {
 
 struct GetVariableFun {
 	static constexpr const char *Name = "getvariable";
-	static constexpr const char *Parameters = "";
+	static constexpr const char *Parameters = "variable_name";
 	static constexpr const char *Description = "";
 	static constexpr const char *Example = "";
 	static constexpr const char *Categories = "";
@@ -45,9 +45,39 @@ struct ErrorFun {
 	static ScalarFunction GetFunction();
 };
 
+struct HasErrorFun {
+	static constexpr const char *Name = "has_error";
+	static constexpr const char *Parameters = "expr";
+	static constexpr const char *Description = "Returns true when evaluating the expression raises an error and false otherwise. Errors are captured per row, exactly where try(expr) returns NULL.";
+	static constexpr const char *Example = "has_error(1 // 0)";
+	static constexpr const char *Categories = "";
+
+	static ScalarFunction GetFunction();
+};
+
+struct TryRethrowFun {
+	static constexpr const char *Name = "__internal_try_rethrow";
+	static constexpr const char *Parameters = "error,value";
+	static constexpr const char *Description = "Raises an error when the flag is set and returns the value otherwise. Created by the TRY subquery lowering to re-raise a captured error at the use site.";
+	static constexpr const char *Example = "";
+	static constexpr const char *Categories = "";
+
+	static ScalarFunction GetFunction();
+};
+
+struct BarrierFun {
+	static constexpr const char *Name = "__internal_barrier";
+	static constexpr const char *Parameters = "arg";
+	static constexpr const char *Description = "Returns arg unchanged, and marks it as an optimizer barrier: the expression is never evaluated on rows removed by the operators around it";
+	static constexpr const char *Example = "__internal_barrier(s::INTEGER = 42)";
+	static constexpr const char *Categories = "";
+
+	static ScalarFunction GetFunction();
+};
+
 struct CreateSortKeyFun {
 	static constexpr const char *Name = "create_sort_key";
-	static constexpr const char *Parameters = "parameters...";
+	static constexpr const char *Parameters = "key1,...";
 	static constexpr const char *Description = "Constructs a binary-comparable sort key based on a set of input parameters and sort qualifiers";
 	static constexpr const char *Example = "create_sort_key('A', 'DESC')";
 	static constexpr const char *Categories = "";
@@ -57,7 +87,7 @@ struct CreateSortKeyFun {
 
 struct InvokeFun {
 	static constexpr const char *Name = "invoke";
-	static constexpr const char *Parameters = "lambda,arg1,arg2,...";
+	static constexpr const char *Parameters = "lambda,arg1,...";
 	static constexpr const char *Description = "Invokes a lambda function with the given arguments";
 	static constexpr const char *Example = "invoke(x -> x + 1, 5)";
 	static constexpr const char *Categories = "";

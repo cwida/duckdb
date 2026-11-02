@@ -143,6 +143,8 @@ public:
 
 	//! List all secret types
 	DUCKDB_API vector<SecretType> AllSecretTypes();
+	//! List all secret functions
+	DUCKDB_API vector<CreateSecretFunction> AllSecretFunctions();
 
 	//! Secret Manager settings
 	DUCKDB_API virtual void SetEnablePersistentSecrets(bool enabled);

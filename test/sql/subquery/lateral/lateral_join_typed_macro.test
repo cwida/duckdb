@@ -1,0 +1,239 @@
+# name: test/sql/subquery/lateral/lateral_join_typed_macro.test
+# description: Test lateral joins with typed macro parameters (correlated macro arguments)
+# group: [lateral]
+
+statement ok
+CREATE MACRO m1(a INTEGER) AS a + 1;
+
+# correlated argument to a typed macro inside a LATERAL subquery
+query I
+SELECT f FROM (SELECT 1 AS v) t, LATERAL (SELECT m1(t.v) AS f) _;
+----
+2
+
+# unqualified correlated argument
+query I
+SELECT f FROM (SELECT 1 AS v) t, LATERAL (SELECT m1(v) AS f) _;
+----
+2
+
+# untyped macro with the same shape still works
+statement ok
+CREATE MACRO m1_untyped(a) AS a + 1;
+
+query I
+SELECT f FROM (SELECT 1 AS v) t, LATERAL (SELECT m1_untyped(t.v) AS f) _;
+----
+2
+
+# NULLs and duplicates on the left side
+statement ok
+CREATE TABLE tbl (v INTEGER);
+
+statement ok
+INSERT INTO tbl VALUES (1), (2), (2), (NULL);
+
+query II
+SELECT v, f FROM tbl t, LATERAL (SELECT m1(t.v) AS f) _ ORDER BY v NULLS LAST;
+----
+1	2
+2	3
+2	3
+NULL	NULL
+
+# LEFT JOIN LATERAL, including a filter that removes rows
+query II
+SELECT v, f FROM tbl t LEFT JOIN LATERAL (SELECT m1(t.v) AS f) _ ON true ORDER BY v NULLS LAST;
+----
+1	2
+2	3
+2	3
+NULL	NULL
+
+query II
+SELECT v, f FROM tbl t LEFT JOIN LATERAL (SELECT m1(t.v) AS f WHERE t.v = 2) _ ON true ORDER BY v NULLS LAST, f;
+----
+1	NULL
+2	3
+2	3
+NULL	NULL
+
+# nested LATERAL, correlated argument referencing the outermost scope
+query I
+SELECT f FROM (SELECT 1 AS v) t,
+    LATERAL (SELECT * FROM (SELECT 2 AS w) u, LATERAL (SELECT m1(t.v) AS f) __) _;
+----
+2
+
+# nested LATERAL, correlated arguments from two different scopes
+statement ok
+CREATE MACRO m2(a INTEGER, b INTEGER) AS a + b;
+
+query I
+SELECT f FROM (SELECT 1 AS v) t,
+    LATERAL (SELECT * FROM (SELECT 2 AS w) u, LATERAL (SELECT m2(t.v, u.w) AS f) __) _;
+----
+3
+
+# multiple correlated typed arguments
+query I
+SELECT f FROM (SELECT 1 AS v, 2 AS w) t, LATERAL (SELECT m2(t.v, t.w) AS f) _;
+----
+3
+
+# typed parameter whose argument is correlated but unused in the macro body
+statement ok
+CREATE MACRO m_unused(a INTEGER, b INTEGER) AS a + 1;
+
+query I
+SELECT f FROM (SELECT 1 AS v, 2 AS w) t, LATERAL (SELECT m_unused(t.v, t.w) AS f) _;
+----
+2
+
+# overload resolution must still see the correlated argument type
+statement ok
+CREATE MACRO m_overload(a INTEGER) AS a + 1, (a VARCHAR) AS a || 'x';
+
+query II
+SELECT f, g FROM (SELECT 1 AS v, 'a' AS s) t, LATERAL (SELECT m_overload(t.v) AS f, m_overload(t.s) AS g) _;
+----
+2	ax
+
+# typed table macro called with a correlated argument
+statement ok
+CREATE MACRO tm(a INTEGER) AS TABLE SELECT a + 1 AS f;
+
+query II
+SELECT v, f FROM tbl t, LATERAL tm(t.v) _ ORDER BY v NULLS LAST;
+----
+1	2
+2	3
+2	3
+NULL	NULL
+
+# non-LATERAL correlated subqueries with typed macro calls keep working
+query I
+SELECT (SELECT m1(t.v)) FROM (SELECT 1 AS v) t;
+----
+2
+
+query I
+SELECT v FROM tbl t WHERE EXISTS (SELECT 1 WHERE m1(t.v) = 3) ORDER BY v;
+----
+2
+2
+
+query I
+SELECT v FROM tbl t WHERE v IN (SELECT m1(t.v) - 1) ORDER BY v;
+----
+1
+2
+2
+
+# non-correlated typed macro calls in a LATERAL subquery
+query I
+SELECT f FROM (SELECT 1 AS v) t, LATERAL (SELECT m1(41) AS f) _;
+----
+42
+
+# a typed macro that discards its correlated argument expands to an independent subquery:
+# the discarded argument must not mark the join as LATERAL
+statement ok
+CREATE MACRO discard_int(a INTEGER) AS 42;
+
+query II
+SELECT t.v, q.f FROM (VALUES (1), (2)) t(v) RIGHT JOIN LATERAL (SELECT discard_int(t.v) AS f) q ON true ORDER BY t.v;
+----
+1	42
+2	42
+
+query II
+SELECT t.v, q.f FROM (VALUES (1), (2)) t(v) FULL JOIN LATERAL (SELECT discard_int(t.v) AS f) q ON true ORDER BY t.v;
+----
+1	42
+2	42
+
+# subqueries in the join condition are allowed when the expansion is independent
+query II
+SELECT t.v, q.f FROM (VALUES (1), (2)) t(v) LEFT JOIN LATERAL (SELECT discard_int(t.v) AS f) q ON (SELECT true) ORDER BY t.v;
+----
+1	42
+2	42
+
+# correlated typed macro argument inside a scalar subquery inside a LATERAL subquery
+query I
+SELECT q.f FROM (VALUES (1)) t(v), LATERAL (SELECT (SELECT m1(t.v)) AS f) q;
+----
+2
+
+# nested typed macro calls on a correlated argument
+query I
+SELECT f FROM (SELECT 1 AS v) t, LATERAL (SELECT m1(m1(t.v)) AS f) _;
+----
+3
+
+# a correlated projection next to a discarded correlated argument must be preserved
+query II
+SELECT v2, f FROM (VALUES (1), (2)) t(v), LATERAL (SELECT t.v AS v2, discard_int(t.v) AS f) q ORDER BY v2;
+----
+1	42
+2	42
+
+# correlated scalar subquery as the typed macro argument
+query I
+SELECT q.f FROM (VALUES (1)) t(v), LATERAL (SELECT m1((SELECT t.v)) AS f) q;
+----
+2
+
+# discarded correlated scalar subquery argument keeps the expansion independent
+query I
+SELECT q.f FROM (VALUES (1)) t(v) RIGHT JOIN LATERAL (SELECT discard_int((SELECT t.v)) AS f) q ON true;
+----
+42
+
+# typed window macro with a correlated argument
+statement ok
+CREATE MACRO wm(a INTEGER) AS sum(a);
+
+query I
+SELECT q.f FROM (VALUES (1)) t(v), LATERAL (SELECT wm(t.v) OVER () AS f) q;
+----
+1
+
+# typed default parameter combined with correlated named arguments
+statement ok
+CREATE MACRO md(a INTEGER, b INTEGER := 10) AS a + b;
+
+query I
+SELECT q.f FROM (VALUES (1)) t(v), LATERAL (SELECT md(a := t.v) AS f) q;
+----
+11
+
+query I
+SELECT q.f FROM (VALUES (1)) t(v), LATERAL (SELECT md(b := t.v, a := 10) AS f) q;
+----
+11
+
+# typed table macro that discards its correlated argument
+statement ok
+CREATE MACRO tmd(a INTEGER) AS TABLE SELECT 42 AS f;
+
+query II
+SELECT t.v, q.f FROM (VALUES (1), (2)) t(v) RIGHT JOIN LATERAL tmd(t.v) q ON true ORDER BY t.v;
+----
+1	42
+2	42
+
+# correlated typed macro argument inside a recursive CTE inside a LATERAL subquery
+query I
+SELECT q.x FROM (VALUES (1)) t(v), LATERAL (
+    WITH RECURSIVE r(x) AS (
+        SELECT m1(t.v)
+        UNION ALL
+        SELECT x + 1 FROM r WHERE x < 3
+    )
+    SELECT x FROM r
+) q ORDER BY q.x;
+----
+2
+3

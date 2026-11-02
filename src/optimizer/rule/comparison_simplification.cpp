@@ -12,10 +12,15 @@
 
 namespace duckdb {
 
-static bool DateTimestampComparisonIsInvertible(BoundFunctionExpression &expr, BoundFunctionExpression &cast_expression,
-                                                const Value &constant_value, Value &cast_constant, bool column_ref_left,
+static bool DateTimestampComparisonIsInvertible(ClientContext &context, BoundFunctionExpression &expr,
+                                                BoundFunctionExpression &cast_expression, const Value &constant_value,
+                                                Value &cast_constant, bool column_ref_left,
                                                 unique_ptr<Expression> &replacement) {
-	if (Timestamp::GetTime(constant_value.GetValue<timestamp_t>()) == dtime_t(0)) {
+	auto timestamp = constant_value.GetValue<timestamp_t>();
+	if (!timestamp.IsFinite()) {
+		return false;
+	}
+	if (Timestamp::GetTime(timestamp) == dtime_t(0)) {
 		return true; // it's midnight: no replacement needed
 	}
 	auto op = expr.GetExpressionType();
@@ -24,13 +29,13 @@ static bool DateTimestampComparisonIsInvertible(BoundFunctionExpression &expr, B
 	switch (op) {
 	case ExpressionType::COMPARE_EQUAL:
 		// d =  T   -> false, preserving NULL
-		replacement = ExpressionRewriter::ConstantOrNull(std::move(BoundCastExpression::ChildMutable(cast_expression)),
-		                                                 Value::BOOLEAN(false));
+		replacement = ExpressionRewriter::ConstantOrNull(
+		    context, std::move(BoundCastExpression::ChildMutable(cast_expression)), Value::BOOLEAN(false));
 		return true;
 	case ExpressionType::COMPARE_NOTEQUAL:
 		// d != T   -> true, preserving NULL
-		replacement = ExpressionRewriter::ConstantOrNull(std::move(BoundCastExpression::ChildMutable(cast_expression)),
-		                                                 Value::BOOLEAN(true));
+		replacement = ExpressionRewriter::ConstantOrNull(
+		    context, std::move(BoundCastExpression::ChildMutable(cast_expression)), Value::BOOLEAN(true));
 		return true;
 	case ExpressionType::COMPARE_DISTINCT_FROM:
 		// d IS DISTINCT FROM T     -> true
@@ -72,17 +77,61 @@ static bool DateTimestampComparisonIsInvertible(BoundFunctionExpression &expr, B
 	return true;
 }
 
-static bool ConstantCastIsInvertible(BoundFunctionExpression &expr, BoundFunctionExpression &cast_expression,
-                                     const Value &constant_value, Value &cast_constant, const LogicalType &target_type,
-                                     bool column_ref_left, unique_ptr<Expression> &replacement) {
+static bool IsLosslessIntegralToFloatingCast(const LogicalType &source_type, const LogicalType &target_type) {
+	if (target_type.id() == LogicalTypeId::DOUBLE) {
+		switch (source_type.id()) {
+		case LogicalTypeId::TINYINT:
+		case LogicalTypeId::SMALLINT:
+		case LogicalTypeId::INTEGER:
+		case LogicalTypeId::UTINYINT:
+		case LogicalTypeId::USMALLINT:
+		case LogicalTypeId::UINTEGER:
+			return true;
+		default:
+			return false;
+		}
+	}
+	if (target_type.id() == LogicalTypeId::FLOAT) {
+		switch (source_type.id()) {
+		case LogicalTypeId::TINYINT:
+		case LogicalTypeId::SMALLINT:
+		case LogicalTypeId::UTINYINT:
+		case LogicalTypeId::USMALLINT:
+			return true;
+		default:
+			return false;
+		}
+	}
+	return false;
+}
+
+static bool ConstantCastIsInvertible(ClientContext &context, BoundFunctionExpression &expr,
+                                     BoundFunctionExpression &cast_expression, const Value &constant_value,
+                                     Value &cast_constant, const LogicalType &target_type, bool column_ref_left,
+                                     unique_ptr<Expression> &replacement) {
 	if (cast_constant.IsNull() || BoundCastExpression::CastIsInvertible(cast_expression.GetReturnType(), target_type)) {
 		return true;
+	}
+	if (cast_expression.GetReturnType().IsIntegral() && target_type.IsIntegral()) {
+		return true;
+	}
+	// The constant must survive the integral round-trip exactly; the column side is checked by the caller.
+	if (IsLosslessIntegralToFloatingCast(target_type, cast_expression.GetReturnType())) {
+		string error_message;
+		auto roundtrip = cast_constant.TryCastAs(context, cast_expression.GetReturnType(), &error_message, true);
+		return roundtrip && *roundtrip == constant_value;
+	}
+	if (target_type.id() == LogicalTypeId::DECIMAL && cast_expression.GetReturnType().id() == LogicalTypeId::DECIMAL) {
+		// a narrowing decimal cast of the constant is fine if the constant round-trips exactly
+		string error_message;
+		auto roundtrip = cast_constant.TryCastAs(context, cast_expression.GetReturnType(), &error_message, true);
+		return roundtrip && *roundtrip == constant_value;
 	}
 	if (target_type.id() != LogicalTypeId::DATE || cast_expression.GetReturnType().id() != LogicalTypeId::TIMESTAMP) {
 		return false;
 	}
-	return DateTimestampComparisonIsInvertible(expr, cast_expression, constant_value, cast_constant, column_ref_left,
-	                                           replacement);
+	return DateTimestampComparisonIsInvertible(context, expr, cast_expression, constant_value, cast_constant,
+	                                           column_ref_left, replacement);
 }
 
 static unique_ptr<Expression> CreateNullCheckExpression(ExpressionType expression_type, unique_ptr<Expression> child) {
@@ -175,10 +224,15 @@ unique_ptr<Expression> ComparisonSimplificationRule::Apply(LogicalOperator &op, 
 		return make_uniq<BoundConstantExpression>(Value(LogicalType::BOOLEAN));
 	}
 	if (BoundComparisonExpression::IsComparison(column_ref_expr) && !constant_value.IsNull() &&
-	    constant_value.type().id() == LogicalTypeId::BOOLEAN && BooleanValue::Get(constant_value)) {
+	    constant_value.type().id() == LogicalTypeId::BOOLEAN) {
 		if (expr.GetExpressionType() == ExpressionType::COMPARE_EQUAL ||
 		    (expr.GetExpressionType() == ExpressionType::COMPARE_NOT_DISTINCT_FROM && is_root &&
 		     op.type == LogicalOperatorType::LOGICAL_FILTER)) {
+			if (!BooleanValue::Get(constant_value)) {
+				auto &comparison = column_ref_expr.Cast<BoundFunctionExpression>();
+				auto negated_type = NegateComparisonExpression(comparison.GetExpressionType());
+				BoundComparisonExpression::SetType(comparison, negated_type);
+			}
 			return column_ref_left ? std::move(left) : std::move(right);
 		}
 	}
@@ -188,7 +242,8 @@ unique_ptr<Expression> ComparisonSimplificationRule::Apply(LogicalOperator &op, 
 		//! invertible in practice.
 		auto &cast_expression = column_ref_expr.Cast<BoundFunctionExpression>();
 		auto target_type = BoundCastExpression::SourceType(cast_expression);
-		if (!BoundCastExpression::CastIsInvertible(target_type, cast_expression.GetReturnType())) {
+		if (!BoundCastExpression::CastIsInvertible(target_type, cast_expression.GetReturnType()) &&
+		    !IsLosslessIntegralToFloatingCast(target_type, cast_expression.GetReturnType())) {
 			return nullptr;
 		}
 
@@ -202,7 +257,7 @@ unique_ptr<Expression> ComparisonSimplificationRule::Apply(LogicalOperator &op, 
 
 		// Is the constant cast invertible?
 		unique_ptr<Expression> replacement;
-		if (!ConstantCastIsInvertible(expr, cast_expression, constant_value, cast_constant, target_type,
+		if (!ConstantCastIsInvertible(GetContext(), expr, cast_expression, constant_value, cast_constant, target_type,
 		                              column_ref_left, replacement)) {
 			return nullptr;
 		}

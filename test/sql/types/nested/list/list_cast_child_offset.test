@@ -1,0 +1,94 @@
+# name: test/sql/types/nested/list/list_cast_child_offset.test
+# description: LIST casts must only look at the child entries the lists point at
+# group: [list]
+
+# Issue #23715: list_slice leaves the removed elements in the child vector, casting the whole child
+# then raises a conversion error for elements that are no longer part of any list
+query I
+WITH t(l) AS (VALUES ([['bad'], ['1', '2'], ['3', '4']]), ([['bad'], ['5', '6'], ['7', '8']]))
+SELECT CAST(list_slice(l, 2, 3) AS INTEGER[][2]) FROM t
+----
+[[1, 2], [3, 4]]
+[[5, 6], [7, 8]]
+
+query I
+WITH t(l) AS (VALUES (['bad', '1', '2']), (['bad', '5', '6']))
+SELECT CAST(list_slice(l, 2, 3) AS INTEGER[]) FROM t
+----
+[1, 2]
+[5, 6]
+
+query I
+WITH t(l) AS (VALUES ([['bad'], ['1', '2'], ['3', '4']]), ([['bad'], ['5', '6'], ['7', '8']]))
+SELECT CAST(list_slice(l, 2, 3) AS INTEGER[][]) FROM t
+----
+[[1, 2], [3, 4]]
+[[5, 6], [7, 8]]
+
+# nested one level deeper
+query I
+WITH t(l) AS (VALUES ([[['bad']], [['1']], [['2']]]), ([[['z']], [['7']], [['8']]]))
+SELECT CAST(list_slice(l, 2, 3) AS INTEGER[][][]) FROM t
+----
+[[[1]], [[2]]]
+[[[7]], [[8]]]
+
+# struct children
+query I
+WITH t(l) AS (VALUES ([{'a': 'bad'}, {'a': '1'}, {'a': '2'}]), ([{'a': 'z'}, {'a': '7'}, {'a': '8'}]))
+SELECT CAST(list_slice(l, 2, 3) AS STRUCT(a INTEGER)[]) FROM t
+----
+[{'a': 1}, {'a': 2}]
+[{'a': 7}, {'a': 8}]
+
+# NULL and empty lists mixed in
+query I
+WITH t(l) AS (VALUES (['bad', '1', '2']), (NULL), ([]), (['bad', '5', '6']))
+SELECT CAST(list_slice(l, 2, 3) AS INTEGER[]) FROM t
+----
+[1, 2]
+NULL
+[]
+[5, 6]
+
+# a constant list is repeated for every row, the elements only need to be cast once
+query II
+SELECT count(*), any_value(x) FROM (SELECT CAST(list_slice(['bad', '3', '4'], 2, 3) AS INTEGER[]) x FROM range(5000))
+----
+5000	[3, 4]
+
+# a filter leaves the child intact, so a surviving row can point past the entries the row count covers
+statement ok
+CREATE TABLE list_child_offset AS
+    SELECT i, [(i * 3 + 1)::VARCHAR, (i * 3 + 2)::VARCHAR, (i * 3 + 3)::VARCHAR] AS l
+    FROM range(100) t(i);
+
+query II
+SELECT i, l::INT[] FROM list_child_offset WHERE i = 99
+----
+99	[298, 299, 300]
+
+# ... and elements that no surviving row points at must not raise a cast error
+statement ok
+CREATE TABLE unreferenced_bad_child AS
+    SELECT i, CASE WHEN i = 0 THEN ['1', '2', '3'] ELSE ['x', 'y', 'z'] END AS l
+    FROM range(100) t(i);
+
+query I
+SELECT l::INT[] FROM unreferenced_bad_child WHERE i = 0
+----
+[1, 2, 3]
+
+# the error is still raised for elements a row does point at
+statement error
+WITH t(l) AS (VALUES (['bad', '1', '2']), (['bad', '5', '6']))
+SELECT CAST(list_slice(l, 1, 3) AS INTEGER[]) FROM t
+----
+<REGEX>:Conversion Error.*Could not convert string 'bad' to INT32.*
+
+query I
+WITH t(l) AS (VALUES (['bad', '1', '2']), (['bad', '5', '6']))
+SELECT TRY_CAST(list_slice(l, 1, 3) AS INTEGER[]) FROM t
+----
+[NULL, 1, 2]
+[NULL, 5, 6]

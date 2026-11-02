@@ -184,7 +184,7 @@ void my_named_bind(duckdb_bind_info info) {
 
 	auto nparam = duckdb_bind_get_named_parameter(info, "my_parameter");
 	if (nparam) {
-		my_bind_data->multiplier = duckdb_get_int64(nparam);
+		my_bind_data->multiplier = duckdb_is_null_value(nparam) ? 0 : duckdb_get_int64(nparam);
 	} else {
 		my_bind_data->multiplier = 1;
 	}
@@ -240,6 +240,46 @@ TEST_CASE("Test Table Function named parameters in C API", "[capi]") {
 	REQUIRE_NO_FAIL(*result);
 	REQUIRE(result->Fetch<int64_t>(0, 0) == 126);
 	REQUIRE(result->Fetch<int64_t>(0, 1) == 252);
+
+	// a NULL option is passed to the bind as a value - only an option that is left out reads as absent
+	result = tester.Query("SELECT * FROM my_multiplier_function(2, my_parameter := NULL)");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->Fetch<int64_t>(0, 0) == 0);
+
+	// an option is cast to the type it was declared with
+	result = tester.Query("SELECT * FROM my_multiplier_function(2, my_parameter := 3::TINYINT)");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->Fetch<int64_t>(0, 0) == 126);
+	// a string casts the way a string literal does
+	result = tester.Query("SELECT * FROM my_multiplier_function(2, my_parameter := '3')");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->Fetch<int64_t>(0, 0) == 126);
+	result = tester.Query("SELECT * FROM my_multiplier_function(2, my_parameter := 'three')");
+	REQUIRE(result->HasError());
+	REQUIRE(duckdb::StringUtil::Contains(result->ErrorMessage(),
+	                                     "Could not cast value 'three' to named parameter \"my_parameter\""));
+	// the cast is an explicit one, so values no implicit cast reaches are cast as well
+	result = tester.Query("SELECT * FROM my_multiplier_function(2, my_parameter := '3' || '')");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->Fetch<int64_t>(0, 0) == 126);
+	result = tester.Query("SELECT * FROM my_multiplier_function(2, my_parameter := 3.2::DOUBLE)");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->Fetch<int64_t>(0, 0) == 126);
+
+	// the parameter added by duckdb_table_function_add_parameter is positional-only, so the synthetic name it is
+	// given cannot be used by a caller, while the one added by name still can
+	result = tester.Query("SELECT * FROM my_multiplier_function(col0 := 2)");
+	REQUIRE(result->HasError());
+	result = tester.Query("SELECT * FROM my_multiplier_function(2, col0 := 2)");
+	REQUIRE(result->HasError());
+	REQUIRE(duckdb::StringUtil::Contains(result->ErrorMessage(), "Invalid named parameter \"col0\""));
+	result = tester.Query("SELECT * FROM my_multiplier_function(2, col0 := 2, my_parameter := 3)");
+	REQUIRE(result->HasError());
+	REQUIRE(duckdb::StringUtil::Contains(result->ErrorMessage(), "Invalid named parameter \"col0\""));
+	// an option that resembles the name is suggested
+	result = tester.Query("SELECT * FROM my_multiplier_function(2, my_paramter := 3)");
+	REQUIRE(result->HasError());
+	REQUIRE(duckdb::StringUtil::Contains(result->ErrorMessage(), "Did you mean: \"my_parameter\""));
 }
 
 struct my_bind_connection_id_data {

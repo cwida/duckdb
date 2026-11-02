@@ -1,0 +1,496 @@
+# name: test/sql/aggregate/aggregates/test_count_qualified_star.test
+# description: Test COUNT over a qualified star (COUNT(tbl.*))
+# group: [aggregates]
+
+require no_force_storage
+
+statement ok
+CREATE TABLE a(id int4);
+
+statement ok
+CREATE TABLE b(id int4);
+
+statement ok
+INSERT INTO a (id) VALUES (1), (2), (3);
+
+statement ok
+INSERT INTO b (id) VALUES (2), (3), (3);
+
+query IIIII
+SELECT a.id, COUNT(*), COUNT(a.*) AS a_start, COUNT(b.*) AS b_star, COUNT(b.id) AS b_id FROM a LEFT JOIN b ON a.id = b.id GROUP BY a.id ORDER BY a.id;
+----
+1	1	1	0	0
+2	1	1	1	1
+3	2	2	2	2
+
+# multi-column relations - count over the row versus over individual columns
+statement ok
+DROP TABLE a;
+
+statement ok
+DROP TABLE b;
+
+statement ok
+CREATE TABLE a (id INT, uniq INT);
+
+statement ok
+CREATE TABLE b (id INT, uniq INT);
+
+statement ok
+INSERT INTO a VALUES (1, 100), (1, 101), (2, 102), (2, 103), (3, 104), (3, 105);
+
+statement ok
+INSERT INTO b VALUES (2, 500), (3, 502), (3, 503), (3, 504), (3, 505);
+
+query IIIIII
+SELECT
+a.id,
+COUNT(*),
+COUNT(a.*) AS a_star,
+COUNT(b.*) AS b_star,
+COUNT(b.id) AS b_id,
+COUNT(b.uniq) AS b_uniq
+FROM a
+LEFT JOIN b
+ON a.id = b.id
+GROUP BY a.id
+ORDER BY a.id;
+----
+1	2	2	0	0	0
+2	2	2	2	2	2
+3	8	8	8	8	8
+
+# a partially NULL row still counts as a row, but does not count towards the NULL column
+statement ok
+INSERT INTO b VALUES (3, NULL);
+
+query IIIIII
+SELECT
+a.id,
+COUNT(*),
+COUNT(a.*) AS a_star,
+COUNT(b.*) AS b_star,
+COUNT(b.id) AS b_id,
+COUNT(b.uniq) AS b_uniq
+FROM a
+LEFT JOIN b
+ON a.id = b.id
+GROUP BY a.id
+ORDER BY a.id;
+----
+1	2	2	0	0	0
+2	2	2	2	2	2
+3	10	10	10	10	8
+
+# a row in which all columns are NULL is still a row
+statement ok
+INSERT INTO b VALUES (NULL, NULL);
+
+query III
+SELECT COUNT(*), COUNT(b.*), COUNT(b.id) FROM b;
+----
+7	7	6
+
+# ... unless it is NULL-extended by an outer join (the unmatched all-NULL row of b is still counted)
+query IIII
+SELECT COUNT(*), COUNT(a.*), COUNT(b.*), COUNT(b.id) FROM b FULL OUTER JOIN a ON a.id = b.id;
+----
+15	14	13	12
+
+# all-NULL rows that match each other are real rows on both sides
+statement ok
+CREATE TABLE nx(v INT);
+
+statement ok
+CREATE TABLE ny(v INT);
+
+statement ok
+INSERT INTO nx VALUES (NULL), (1);
+
+statement ok
+INSERT INTO ny VALUES (NULL), (2);
+
+query III
+SELECT count(*), count(nx.*), count(ny.*) FROM nx FULL OUTER JOIN ny ON nx.v IS NOT DISTINCT FROM ny.v;
+----
+3	2	2
+
+# a regular column that hides the row id
+statement ok
+CREATE TABLE shadow(rowid INT, v INT);
+
+statement ok
+INSERT INTO shadow VALUES (NULL, 1), (NULL, NULL);
+
+query II
+SELECT count(shadow.*), count(shadow.v) FROM a LEFT JOIN shadow ON a.id = shadow.v;
+----
+2	2
+
+# a relation that wraps an outer join is not NULL-extended itself
+query II
+SELECT COUNT(t.*), COUNT(t.id) FROM (SELECT b.* FROM a LEFT JOIN b ON a.id = b.id) t;
+----
+14	12
+
+# an inner join does not NULL-extend
+query I
+SELECT COUNT(b.*) FROM a JOIN b ON true WHERE a.id = 1;
+----
+14
+
+# ---- COUNT(tbl.*) in every clause that allows aggregates ----
+
+statement ok
+CREATE TABLE l(id INT);
+
+statement ok
+CREATE TABLE r(id INT, y VARCHAR);
+
+statement ok
+CREATE TABLE s(id INT, z INT);
+
+statement ok
+INSERT INTO l VALUES (1), (2), (3);
+
+statement ok
+INSERT INTO r VALUES (2, NULL), (3, 'x');
+
+statement ok
+INSERT INTO s VALUES (1, 10), (2, NULL);
+
+# the rewrite is not visible in the column name
+query I
+SELECT column_name FROM (DESCRIBE SELECT count(r.*) FROM r);
+----
+count(r.*)
+
+query I
+SELECT column_name FROM (DESCRIBE SELECT count(r.*) AS my_count FROM r);
+----
+my_count
+
+# HAVING
+query I
+SELECT l.id FROM l LEFT JOIN r ON l.id = r.id GROUP BY l.id HAVING count(r.*) > 0 ORDER BY 1;
+----
+2
+3
+
+# ORDER BY
+query I
+SELECT l.id FROM l LEFT JOIN r ON l.id = r.id GROUP BY l.id ORDER BY count(r.*), l.id;
+----
+1
+2
+3
+
+# window
+query II
+SELECT l.id, count(r.*) OVER () FROM l LEFT JOIN r ON l.id = r.id ORDER BY 1;
+----
+1	2
+2	2
+3	2
+
+# window with PARTITION BY and FILTER
+query II
+SELECT l.id, count(r.*) FILTER (WHERE l.id > 1) OVER (PARTITION BY l.id) FROM l LEFT JOIN r ON l.id = r.id ORDER BY 1;
+----
+1	0
+2	1
+3	1
+
+# QUALIFY
+query I
+SELECT l.id FROM l LEFT JOIN r ON l.id = r.id QUALIFY count(r.*) OVER (PARTITION BY l.id) > 0 ORDER BY 1;
+----
+2
+3
+
+# FILTER
+query I
+SELECT count(r.*) FILTER (WHERE l.id > 2) FROM l LEFT JOIN r ON l.id = r.id;
+----
+1
+
+# DISTINCT ON target
+query II
+SELECT DISTINCT ON (count(r.*)) l.id, count(r.*) FROM l LEFT JOIN r ON l.id = r.id GROUP BY l.id ORDER BY 1;
+----
+1	0
+2	1
+
+# GROUP BY ALL
+query II
+SELECT l.id, count(r.*) FROM l LEFT JOIN r ON l.id = r.id GROUP BY ALL ORDER BY 1;
+----
+1	0
+2	1
+3	1
+
+# ROLLUP
+query II
+SELECT l.id, count(r.*) FROM l LEFT JOIN r ON l.id = r.id GROUP BY ROLLUP (l.id) ORDER BY 1 NULLS LAST;
+----
+1	0
+2	1
+3	1
+NULL	2
+
+# two different qualified stars in one expression
+query I
+SELECT count(l.*) + count(r.*) FROM l LEFT JOIN r ON l.id = r.id;
+----
+5
+
+# a root star combined with a qualified count star
+query II
+SELECT l.*, count(r.*) FROM l LEFT JOIN r ON l.id = r.id GROUP BY l.id ORDER BY 1;
+----
+1	0
+2	1
+3	1
+
+# correlated scalar subquery
+# note: the empty group (which must return 0, not NULL) is covered in
+# test/sql/subquery/scalar/test_count_star_subquery.test
+query II
+SELECT l.id, (SELECT count(r.*) FROM r WHERE r.id = l.id) FROM l WHERE l.id > 1 ORDER BY 1;
+----
+2	1
+3	1
+
+# uncorrelated subquery in WHERE
+query I
+SELECT count(*) FROM l WHERE (SELECT count(r.*) FROM r) > 1;
+----
+3
+
+# set operations
+query I
+SELECT count(l.*) FROM l UNION ALL SELECT count(r.*) FROM r ORDER BY 1;
+----
+2
+3
+
+# ---- the relation of a qualified star ----
+
+# FULL OUTER join
+query II
+SELECT count(l.*), count(r.*) FROM l FULL OUTER JOIN r ON l.id = r.id;
+----
+3	2
+
+# RIGHT join
+query II
+SELECT count(l.*), count(r.*) FROM r RIGHT JOIN l ON l.id = r.id;
+----
+3	2
+
+# USING join
+query I
+SELECT count(r.*) FROM l LEFT JOIN r USING (id);
+----
+2
+
+# nested joins - both null-producing sides are counted separately
+query III
+SELECT l.id, count(r.*), count(s.*) FROM l LEFT JOIN r ON l.id = r.id LEFT JOIN s ON l.id = s.id GROUP BY l.id ORDER BY 1;
+----
+1	0	1
+2	1	1
+3	1	0
+
+# self join
+query II
+SELECT count(r1.*), count(r2.*) FROM r r1 LEFT JOIN r r2 ON r1.y = r2.y;
+----
+2	1
+
+# table alias
+query I
+SELECT count(rr.*) FROM l LEFT JOIN r rr ON l.id = rr.id;
+----
+2
+
+# an alias hides the table name
+statement error
+SELECT count(r.*) FROM l LEFT JOIN r rr ON l.id = rr.id;
+----
+<REGEX>:.*Referenced table.*not found.*
+
+# quoted relation name
+query I
+SELECT count("R".*) FROM r AS "R";
+----
+2
+
+# subquery alias
+query I
+SELECT count(t.*) FROM l LEFT JOIN (SELECT * FROM r) t ON l.id = t.id;
+----
+2
+
+# CTE
+query I
+WITH cte AS (SELECT * FROM r) SELECT count(cte.*) FROM l LEFT JOIN cte ON l.id = cte.id;
+----
+2
+
+# lateral join
+query I
+SELECT count(lat.*) FROM l, LATERAL (SELECT r.id FROM r WHERE r.id = l.id) lat;
+----
+2
+
+# table function alias
+query I
+SELECT count(t.*) FROM range(3) t;
+----
+3
+
+# VALUES alias
+query I
+SELECT count(t.*) FROM (VALUES (1, 2), (NULL, NULL)) t(x, y);
+----
+2
+
+# window over rows in which all columns are NULL
+query II
+SELECT count(*) OVER (), count(t.*) OVER () FROM (VALUES (NULL::INT, NULL::INT)) AS t(x, y);
+----
+1	1
+
+# positional join - the shorter side is NULL-extended
+query II
+SELECT count(p.*), count(q.*) FROM range(3) p POSITIONAL JOIN range(1) q;
+----
+3	1
+
+# struct columns are expanded as well
+query I
+SELECT count(st.*) FROM (SELECT {'x': 1, 'y': 2} AS st) t;
+----
+1
+
+query I
+SELECT count(st.*) FROM (SELECT {'x': NULL, 'y': NULL} AS st) t;
+----
+1
+
+# a struct of a NULL-extended relation
+query I
+SELECT count(st.*) FROM l LEFT JOIN (SELECT 2 AS id, {'x': NULL} AS st) t ON l.id = t.id;
+----
+1
+
+# ---- statements that re-bind the expression ----
+
+statement ok
+CREATE VIEW v AS SELECT l.id AS id, count(r.*) AS r_star FROM l LEFT JOIN r ON l.id = r.id GROUP BY l.id;
+
+query II
+SELECT * FROM v ORDER BY 1;
+----
+1	0
+2	1
+3	1
+
+statement ok
+CREATE TABLE ctas AS SELECT l.id AS id, count(r.*) AS r_star FROM l LEFT JOIN r ON l.id = r.id GROUP BY l.id;
+
+query II
+SELECT * FROM ctas ORDER BY 1;
+----
+1	0
+2	1
+3	1
+
+statement ok
+PREPARE p AS SELECT count(r.*) FROM l LEFT JOIN r ON l.id = r.id WHERE l.id > ?;
+
+query I
+EXECUTE p(1);
+----
+2
+
+# macro
+statement ok
+CREATE MACRO count_rows() AS count(t.*);
+
+query I
+SELECT count_rows() FROM (VALUES (NULL::INT, NULL::INT)) AS t(x, y);
+----
+1
+
+query I
+SELECT count_rows() FROM l LEFT JOIN r AS t ON l.id = t.id;
+----
+2
+
+statement ok
+CREATE MACRO count_rows_over() AS count(t.*) OVER ();
+
+query I
+SELECT count_rows_over() FROM (VALUES (NULL::INT, NULL::INT)) AS t(x, y);
+----
+1
+
+# PIVOT - the aggregate is rewritten, the pivot group keys are unaffected
+statement ok
+CREATE TABLE piv(g INT, y VARCHAR);
+
+statement ok
+INSERT INTO piv VALUES (1, 'x'), (1, 'z'), (2, 'x'), (NULL, NULL);
+
+query III
+PIVOT piv ON y USING count(piv.*) ORDER BY 1 NULLS LAST;
+----
+1	1	1
+2	1	0
+NULL	0	0
+
+# ---- unsupported qualified stars ----
+
+statement error
+SELECT min(r.*) FROM r;
+----
+<REGEX>:.*STAR expression is only allowed as the root element.*
+
+statement error
+SELECT count(DISTINCT r.*) FROM r;
+----
+<REGEX>:.*STAR expression is only allowed as the root element.*
+
+statement error
+SELECT count(r.* EXCLUDE (y)) FROM r;
+----
+<REGEX>:.*STAR expression is only allowed as the root element.*
+
+statement error
+SELECT count(r.* RENAME (y AS z)) FROM r;
+----
+<REGEX>:.*STAR expression is only allowed as the root element.*
+
+statement error
+SELECT count(* RENAME (y AS z)) FROM r;
+----
+<REGEX>:.*STAR expression.*
+
+# GROUP BY tbl.* keeps its existing meaning (GROUP BY ALL)
+query II
+SELECT l.id, count(*) FROM l GROUP BY l.* ORDER BY 1;
+----
+1	1
+2	1
+3	1
+
+# an unqualified star is still bound to count_star
+statement ok
+PRAGMA explain_output = OPTIMIZED_ONLY;
+
+query II
+EXPLAIN SELECT count(*) FROM l LEFT JOIN r ON l.id = r.id;
+----
+logical_opt	<REGEX>:.*count_star.*

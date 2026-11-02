@@ -59,6 +59,9 @@ public:
 	const vector<Identifier> &GetColumnNames();
 	idx_t GetColumnCount();
 	void SetColumnType(idx_t col_idx, LogicalType type);
+	//! Marks this binding as the NULL-producing side of an outer join
+	void SetNullExtended();
+	bool IsNullExtended() const;
 
 	static BindingAlias GetAlias(const Identifier &explicit_alias, const StandardEntry &entry);
 	static BindingAlias GetAlias(const Identifier &explicit_alias, optional_ptr<StandardEntry> entry);
@@ -67,7 +70,7 @@ public:
 	template <class TARGET>
 	TARGET &Cast() {
 		if (binding_type != TARGET::TYPE) {
-			throw InternalException("Failed to cast binding to type - binding type mismatch");
+			InternalException::Throw("Failed to cast binding to type - binding type mismatch");
 		}
 		return reinterpret_cast<TARGET &>(*this);
 	}
@@ -75,7 +78,7 @@ public:
 	template <class TARGET>
 	const TARGET &Cast() const {
 		if (binding_type != TARGET::TYPE) {
-			throw InternalException("Failed to cast binding to type - binding type mismatch");
+			InternalException::Throw("Failed to cast binding to type - binding type mismatch");
 		}
 		return reinterpret_cast<const TARGET &>(*this);
 	}
@@ -98,6 +101,8 @@ protected:
 	vector<Identifier> names;
 	//! Name -> index for the names
 	identifier_map_t<column_t> name_map;
+	//! Whether rows of this binding can be NULL-extended by an outer join
+	bool null_extended = false;
 };
 
 struct EntryBinding : public Binding {

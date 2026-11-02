@@ -1,0 +1,14 @@
+{
+  "description": "Verify that operators report well-formed, monotonic and complete progress (debug_verify_progress). Known violations are listed in debug_verify_progress_ignore - regenerate them with scripts/progress_verification_census.py.",
+  "skip_compiled": "true",
+  "settings": [
+    {
+      "name": "debug_verify_progress",
+      "value": "error"
+    },
+    {
+      "name": "debug_verify_progress_ignore",
+      "value": ""
+    }
+  ]
+}

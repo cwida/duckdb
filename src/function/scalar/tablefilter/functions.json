@@ -2,7 +2,7 @@
     {
         "name": "__internal_tablefilter_bloom_filter",
         "struct": "TableFilterBloomFilterFun",
-        "parameters": "",
+        "parameters": "col",
         "description": "",
         "example": "",
         "type": "scalar_function"
@@ -10,7 +10,7 @@
     {
         "name": "__internal_tablefilter_dynamic",
         "struct": "TableFilterDynamicFun",
-        "parameters": "",
+        "parameters": "col",
         "description": "",
         "example": "",
         "type": "scalar_function"
@@ -18,7 +18,7 @@
     {
         "name": "__internal_tablefilter_optional",
         "struct": "TableFilterOptionalFun",
-        "parameters": "",
+        "parameters": "col",
         "description": "",
         "example": "",
         "type": "scalar_function"
@@ -26,7 +26,7 @@
     {
         "name": "__internal_tablefilter_prefix_range",
         "struct": "TableFilterPrefixRangeFun",
-        "parameters": "",
+        "parameters": "col",
         "description": "",
         "example": "",
         "type": "scalar_function"
@@ -34,7 +34,7 @@
     {
         "name": "__internal_tablefilter_selectivity_optional",
         "struct": "TableFilterSelectivityOptionalFun",
-        "parameters": "",
+        "parameters": "col",
         "description": "",
         "example": "",
         "type": "scalar_function"

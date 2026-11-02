@@ -1,0 +1,152 @@
+# name: test/sql/sql_export/collation_results.test
+# description: SQL export preserves explicit and inherited result collations and comparisons
+# group: [sql_export]
+
+statement ok
+CREATE TABLE collated_values(v VARCHAR); INSERT INTO collated_values VALUES ('A'),('a'),(NULL);
+
+foreach collation '' 'nocase'
+
+statement ok
+SET default_collation={collation};
+
+query T
+SELECT v FROM collated_values;
+----
+A
+a
+NULL
+
+query T
+SELECT v COLLATE nocase FROM collated_values;
+----
+A
+a
+NULL
+
+query I
+SELECT (v COLLATE nocase)='a' FROM collated_values;
+----
+1
+1
+NULL
+
+query T
+SELECT 'A' COLLATE nocase FROM collated_values;
+----
+A
+A
+A
+
+query I
+SELECT ('A' COLLATE nocase)='a' FROM collated_values;
+----
+1
+1
+1
+
+query T
+SELECT NULL::VARCHAR COLLATE nocase FROM collated_values;
+----
+NULL
+NULL
+NULL
+
+query I
+SELECT (NULL::VARCHAR COLLATE nocase)='a' FROM collated_values;
+----
+NULL
+NULL
+NULL
+
+query T
+SELECT concat(v,'') COLLATE nocase FROM collated_values;
+----
+A
+a
+(empty)
+
+query I
+SELECT (concat(v,'') COLLATE nocase)='a' FROM collated_values;
+----
+1
+1
+0
+
+query T
+SELECT upper(v COLLATE nocase) FROM collated_values;
+----
+A
+A
+NULL
+
+query I
+SELECT (upper(v COLLATE nocase))='a' FROM collated_values;
+----
+1
+1
+NULL
+
+query T
+SELECT CASE WHEN v IS NULL THEN NULL ELSE v END COLLATE nocase FROM collated_values;
+----
+A
+a
+NULL
+
+query I
+SELECT (CASE WHEN v IS NULL THEN NULL ELSE v END COLLATE nocase)='a' FROM collated_values;
+----
+1
+1
+NULL
+
+query T
+SELECT CASE WHEN v IS NULL THEN v ELSE v COLLATE nocase END FROM collated_values;
+----
+A
+a
+NULL
+
+query I
+SELECT (CASE WHEN v IS NULL THEN v ELSE v COLLATE nocase END)='a' FROM collated_values;
+----
+1
+1
+NULL
+
+query T
+SELECT v COLLATE "binary" FROM collated_values;
+----
+A
+a
+NULL
+
+query I
+SELECT (v COLLATE "binary")='a' FROM collated_values;
+----
+0
+1
+NULL
+
+endloop
+
+statement ok
+SET default_collation='';
+
+query I
+SELECT (v)='a' FROM collated_values;
+----
+0
+1
+NULL
+
+statement ok
+SET default_collation='nocase';
+
+query I
+SELECT (v)='a' FROM collated_values;
+----
+1
+1
+NULL

@@ -85,12 +85,12 @@ CALL register_external_resource_type('q@x', kind := 'catalog', create_function :
 statement error
 CALL register_external_resource_type('q@x', kind := 'catalog', create_function := 'a..b');
 ----
-<REGEX>:.*'create_function' has an empty catalog or schema component.*
+<REGEX>:.*'create_function' is not a valid function name.*Zero-length identifier.*
 
 statement error
 CALL register_external_resource_type('q@x', kind := 'catalog', create_function := '.foo');
 ----
-<REGEX>:.*'create_function' has an empty catalog or schema component.*
+<REGEX>:.*'create_function' is not a valid function name.*Zero-length identifier.*
 
 # The optional callbacks are validated the same way when set.
 statement error
@@ -101,12 +101,12 @@ CALL register_external_resource_type('q@x', kind := 'catalog', create_function :
 statement error
 CALL register_external_resource_type('q@x', kind := 'catalog', create_function := 'c', destroy_function := 'a..b');
 ----
-<REGEX>:.*'destroy_function' has an empty catalog or schema component.*
+<REGEX>:.*'destroy_function' is not a valid function name.*Zero-length identifier.*
 
 statement error
 CALL register_external_resource_type('q@x', kind := 'catalog', create_function := 'c', resolve_function := '.foo');
 ----
-<REGEX>:.*'resolve_function' has an empty catalog or schema component.*
+<REGEX>:.*'resolve_function' is not a valid function name.*Zero-length identifier.*
 
 # None of the rejected registrations claimed the name.
 query I

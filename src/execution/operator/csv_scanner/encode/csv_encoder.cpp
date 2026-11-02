@@ -68,11 +68,15 @@ CSVEncoder::CSVEncoder(ClientContext &context_p, const string &encoding_name_to_
 		throw InvalidInputException(error.str());
 	}
 
+	encoding_function = function;
+	if (encoding_name == "utf-8") {
+		// UTF-8 is read straight into the CSV buffers (see CSVFileHandle::Read), the encoder buffers are never used
+		return;
+	}
 	// The encoded buffer is even for the two byte lookup of utf-16, and fits a full lookup plus the probe byte
 	const idx_t lookup_bytes = function->GetLookupBytes();
 	encoded_buffer.Initialize(MaxValue<idx_t>(buffer_size - buffer_size % 2, lookup_bytes + lookup_bytes % 2));
 	remaining_bytes_buffer.Initialize(function->GetBytesPerIteration());
-	encoding_function = function;
 }
 
 void CSVEncoder::Reset() {

@@ -10,6 +10,7 @@
 
 #include "duckdb/common/multi_file/multi_file_data.hpp"
 #include "duckdb/common/atomic.hpp"
+#include "duckdb/common/condition_variable.hpp"
 #include "duckdb/common/multi_file/multi_file_options.hpp"
 #include "duckdb/common/multi_file/base_file_reader.hpp"
 #include "duckdb/common/multi_file/multi_file_list.hpp"
@@ -27,6 +28,8 @@ struct MultiFileReaderInterface;
 struct MultiFileReaderBindData {
 	//! The (global) column id of the filename column (if any)
 	optional_idx filename_idx;
+	//! The (global) column id of the file_row_number column (if any) - it is read from the row number virtual column
+	optional_idx file_row_number_idx;
 	//! The set of hive partitioning indexes (if any)
 	vector<HivePartitioningIndex> hive_partitioning_indexes;
 	//! (optional) The schema set by the multi file reader
@@ -100,6 +103,14 @@ struct MultiFileBindData : public TableFunctionData {
 	}
 
 	unique_ptr<FunctionData> Copy() const override;
+
+	//! Whether an output column is supplied by a filename, row-number or Hive partition role.
+	DUCKDB_API bool IsGeneratedColumn(idx_t column_idx) const;
+	//! Match a physical column to an output column without a generated override or conversion (including collations).
+	DUCKDB_API bool MatchesPhysicalColumn(idx_t column_idx, const Identifier &physical_name,
+	                                      const LogicalType &physical_type) const;
+	//! Whether all physical roots have the output names and types at the same positions, without generated roles.
+	DUCKDB_API bool HasIdentityMapping(const vector<MultiFileColumnDefinition> &physical_columns) const;
 };
 
 //! Per-file data for the multi file reader
@@ -168,7 +179,10 @@ struct MultiFileGlobalState : public GlobalTableFunctionState {
 	//! Lock
 	mutable mutex lock;
 	//! Signal to other threads that a file failed to open, letting every thread abort.
-	bool error_opening_file = false;
+	//! Atomic because a cancelled file open settles it while the scheduling thread may hold the lock.
+	atomic<bool> error_opening_file {false};
+	//! Signalled when an async file open settles, waking the threads waiting for the front file
+	condition_variable async_open_settled;
 
 	//! Index of file currently up for scanning
 	atomic<idx_t> file_index;
@@ -190,29 +204,12 @@ struct MultiFileGlobalState : public GlobalTableFunctionState {
 	unique_ptr<GlobalTableFunctionState> global_state;
 
 	unique_ptr<ScanReadAhead> read_ahead;
-	//! Scan states of finished read-ahead jobs, recycled so learned scan state carries over
-	vector<unique_ptr<LocalTableFunctionState>> state_pool;
+	ScanStatePool<LocalTableFunctionState> state_pool;
 
 	optional_ptr<const PhysicalOperator> op;
 
 	idx_t MaxThreads() const override {
 		return max_threads;
-	}
-
-	//! Push a finished job's scan state, so learned scan state carries over to jobs created later
-	void PushState(unique_ptr<LocalTableFunctionState> state) {
-		lock_guard<mutex> guard(lock);
-		state_pool.push_back(std::move(state));
-	}
-	//! Pop a recycled scan state, returns null when none is available
-	unique_ptr<LocalTableFunctionState> TryPopState() {
-		lock_guard<mutex> guard(lock);
-		if (state_pool.empty()) {
-			return nullptr;
-		}
-		auto state = std::move(state_pool.back());
-		state_pool.pop_back();
-		return state;
 	}
 
 	bool CanRemoveColumns() const {
@@ -233,6 +230,13 @@ enum class MultiFileDecodeResult : uint8_t {
 	CONTINUE,         //! keep looping
 	RETURN_TO_CALLER, //! return from the scan (a chunk was emitted, or the operator parked on async I/O)
 	JOB_FINISHED      //! job is done
+};
+
+//! Outcome of claiming the next scan job from the current file
+enum class MultiFileClaimResult : uint8_t {
+	CLAIMED,   //! the current file's next unit of work (e.g. a parquet row group)
+	EXHAUSTED, //! the scan is exhausted
+	WAIT_OPEN  //! the current file is still being opened
 };
 
 //! A single, independently schedulable unit of scan work (e.g. one Parquet row group of one file)
@@ -267,6 +271,8 @@ public:
 	ExpressionExecutor executor;
 	//! Number of rows scanned by this thread (for profiling)
 	idx_t rows_scanned = 0;
+	//! FinalizeScan may have no job, here's a special batch index for it
+	optional_idx finalize_batch_index;
 };
 
 } // namespace duckdb

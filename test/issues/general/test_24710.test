@@ -1,0 +1,28 @@
+# name: test/issues/general/test_24710.test
+# description: Issue 24710 - propagate bindings through nested Top-N window rewrites
+# group: [general]
+
+statement ok
+CREATE TABLE t2__base (c_pk BIGINT NOT NULL, c_int BIGINT)
+
+statement ok
+INSERT INTO t2__base VALUES (1, 5), (2, -7), (3, 0)
+
+statement ok
+CREATE TABLE t2_keyed AS
+SELECT c_pk, c_int, ROW_NUMBER() OVER (ORDER BY c_pk) AS eq_key_1
+FROM t2__base
+
+statement ok
+CREATE VIEW t2 AS
+SELECT c_pk, c_int
+FROM t2_keyed
+QUALIFY ROW_NUMBER() OVER (PARTITION BY eq_key_1 ORDER BY eq_key_1) = 1
+
+query II
+SELECT *
+FROM t2
+WHERE c_int::BOOLEAN
+QUALIFY ROW_NUMBER() OVER (ORDER BY c_pk) <= 1
+----
+1	5

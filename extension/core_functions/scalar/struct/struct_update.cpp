@@ -1,3 +1,4 @@
+#include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/common/vector/map_vector.hpp"
 #include "duckdb/common/vector/struct_vector.hpp"
 #include "core_functions/scalar/struct_functions.hpp"
@@ -10,44 +11,62 @@
 
 namespace duckdb {
 
+//! The result field that every argument after the struct writes to
+struct StructUpdateBindData : public FunctionData {
+	StructUpdateBindData(LogicalType stype_p, vector<idx_t> field_indexes_p)
+	    : stype(std::move(stype_p)), field_indexes(std::move(field_indexes_p)) {
+	}
+
+	LogicalType stype;
+	//! Indexed by argument index minus one
+	vector<idx_t> field_indexes;
+
+	unique_ptr<FunctionData> Copy() const override {
+		return make_uniq<StructUpdateBindData>(stype, field_indexes);
+	}
+	bool Equals(const FunctionData &other_p) const override {
+		auto &other = other_p.Cast<StructUpdateBindData>();
+		return stype == other.stype && field_indexes == other.field_indexes;
+	}
+
+	static void Serialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data,
+	                      const BoundScalarFunction &function) {
+		auto &info = bind_data->Cast<StructUpdateBindData>();
+		serializer.WriteProperty(100, "variable_return_type", info.stype);
+		serializer.WritePropertyWithDefault(101, "field_indexes", info.field_indexes);
+	}
+
+	static unique_ptr<FunctionData> Deserialize(Deserializer &deserializer, BoundScalarFunction &bound_function) {
+		auto stype = deserializer.ReadProperty<LogicalType>(100, "variable_return_type");
+		auto field_indexes = deserializer.ReadPropertyWithDefault<vector<idx_t>>(101, "field_indexes");
+		return make_uniq<StructUpdateBindData>(std::move(stype), std::move(field_indexes));
+	}
+};
+
+//! For every result field, the argument that provides it - fields without one keep the value of the source struct
+static vector<optional_idx> FieldArguments(const StructUpdateBindData &info, idx_t field_count) {
+	vector<optional_idx> field_arguments(field_count);
+	for (idx_t arg_idx = 1; arg_idx <= info.field_indexes.size(); arg_idx++) {
+		field_arguments[info.field_indexes[arg_idx - 1]] = arg_idx;
+	}
+	return field_arguments;
+}
+
 static void StructUpdateFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	const auto &starting_vec = args.data[0];
 	starting_vec.Verify();
 
 	auto &starting_child_entries = StructVector::GetEntries(starting_vec);
 	auto &result_child_entries = StructVector::GetEntries(result);
+	auto &info = state.expr.Cast<BoundFunctionExpression>().BindInfo()->Cast<StructUpdateBindData>();
+	auto field_arguments = FieldArguments(info, result_child_entries.size());
 
-	auto &starting_types = StructType::GetChildTypes(starting_vec.GetType());
-
-	auto &func_args = state.expr.Cast<BoundFunctionExpression>().GetChildren();
-	auto new_entries = identifier_tree_t<idx_t>();
-	auto is_new_field = vector<bool>(args.ColumnCount(), true);
-
-	for (idx_t arg_idx = 1; arg_idx < func_args.size(); arg_idx++) {
-		auto &new_child = func_args[arg_idx];
-		new_entries.emplace(new_child->GetAlias(), arg_idx);
-	}
-
-	// Assign the original child entries to the STRUCT.
-	for (idx_t field_idx = 0; field_idx < starting_child_entries.size(); field_idx++) {
-		auto &starting_child = starting_child_entries[field_idx];
-		auto update = new_entries.find(starting_types[field_idx].first.c_str());
-
-		if (update == new_entries.end()) {
-			// No update present, copy from source
-			result_child_entries[field_idx].Reference(starting_child);
+	for (idx_t field_idx = 0; field_idx < result_child_entries.size(); field_idx++) {
+		auto &argument = field_arguments[field_idx];
+		if (argument.IsValid()) {
+			result_child_entries[field_idx].Reference(args.data[argument.GetIndex()]);
 		} else {
-			// We found a replacement of the same name to update
-			auto arg_idx = update->second;
-			result_child_entries[field_idx].Reference(args.data[arg_idx]);
-			is_new_field[arg_idx] = false;
-		}
-	}
-
-	// Assign the new (not updated) children to the end of the result vector.
-	for (idx_t arg_idx = 1, field_idx = starting_child_entries.size(); arg_idx < args.ColumnCount(); arg_idx++) {
-		if (is_new_field[arg_idx]) {
-			result_child_entries[field_idx++].Reference(args.data[arg_idx]);
+			result_child_entries[field_idx].Reference(starting_child_entries[field_idx]);
 		}
 	}
 }
@@ -70,16 +89,11 @@ static unique_ptr<FunctionData> StructUpdateBind(BindScalarFunctionInput &input)
 
 	auto incoming_children = identifier_tree_t<idx_t>();
 	auto is_new_field = vector<bool>(arguments.size(), true);
+	vector<idx_t> field_indexes(arguments.size() - 1);
 
-	// Validate incoming arguments and record names
+	// Record the names of the fields that are updated
 	for (idx_t arg_idx = 1; arg_idx < arguments.size(); arg_idx++) {
-		auto &child = arguments[arg_idx];
-		if (child->GetAlias().empty()) {
-			throw BinderException("Need named argument for struct update, e.g., a := b");
-		} else if (incoming_children.find(child->GetAlias()) != incoming_children.end()) {
-			throw InvalidInputException("Duplicate named argument provided for %s", child->GetAlias().c_str());
-		}
-		incoming_children.emplace(child->GetAlias(), arg_idx);
+		incoming_children.emplace(input.GetArgumentName(arg_idx), arg_idx);
 	}
 
 	for (idx_t field_idx = 0; field_idx < existing_children.size(); field_idx++) {
@@ -91,68 +105,65 @@ static unique_ptr<FunctionData> StructUpdateBind(BindScalarFunctionInput &input)
 		} else {
 			// Update the struct with the new data of the same name
 			auto arg_idx = update->second;
-			auto &new_child = arguments[arg_idx];
-			new_children.emplace_back(make_pair(new_child->GetAlias(), new_child->GetReturnType()));
+			new_children.emplace_back(make_pair(input.GetArgumentName(arg_idx), arguments[arg_idx]->GetReturnType()));
 			is_new_field[arg_idx] = false;
+			field_indexes[arg_idx - 1] = field_idx;
 		}
 	}
 
 	// Loop through the additional arguments (name/value pairs)
 	for (idx_t arg_idx = 1; arg_idx < arguments.size(); arg_idx++) {
 		if (is_new_field[arg_idx]) {
-			auto &child = arguments[arg_idx];
-			new_children.emplace_back(make_pair(child->GetAlias(), child->GetReturnType()));
+			field_indexes[arg_idx - 1] = new_children.size();
+			new_children.emplace_back(make_pair(input.GetArgumentName(arg_idx), arguments[arg_idx]->GetReturnType()));
 		}
 	}
 
 	bound_function.SetReturnType(LogicalType::STRUCT(new_children));
-	return make_uniq<VariableReturnBindData>(bound_function.GetReturnType());
+	return make_uniq<StructUpdateBindData>(bound_function.GetReturnType(), std::move(field_indexes));
 }
 
 static unique_ptr<BaseStatistics> StructUpdateStats(ClientContext &context, FunctionStatisticsInput &input) {
 	auto &child_stats = input.child_stats;
 	auto &expr = input.expr;
+	auto &info = input.bind_data->Cast<StructUpdateBindData>();
 
-	auto incoming_children = identifier_tree_t<idx_t>();
-	auto is_new_field = vector<bool>(expr.GetChildren().size(), true);
 	auto new_stats = StructStats::CreateUnknown(expr.GetReturnType());
 	new_stats.Set(StatsInfo::CANNOT_HAVE_NULL_VALUES);
 
-	for (idx_t arg_idx = 1; arg_idx < expr.GetChildren().size(); arg_idx++) {
-		auto &new_child = expr.GetChildren()[arg_idx];
-		incoming_children.emplace(new_child->GetAlias(), arg_idx);
-	}
-
-	auto existing_type = child_stats[0].GetType();
-	auto existing_count = StructType::GetChildCount(existing_type);
 	auto existing_stats = StructStats::GetChildStats(child_stats[0]);
-	for (idx_t field_idx = 0; field_idx < existing_count; field_idx++) {
-		auto &existing_child = existing_stats[field_idx];
-		auto update = incoming_children.find(StructType::GetChildName(existing_type, field_idx));
-		if (update == incoming_children.end()) {
-			StructStats::SetChildStats(new_stats, field_idx, existing_child);
+	auto field_count = StructType::GetChildCount(expr.GetReturnType());
+	auto field_arguments = FieldArguments(info, field_count);
+	for (idx_t field_idx = 0; field_idx < field_count; field_idx++) {
+		auto &argument = field_arguments[field_idx];
+		if (argument.IsValid()) {
+			StructStats::SetChildStats(new_stats, field_idx, child_stats[argument.GetIndex()]);
 		} else {
-			auto arg_idx = update->second;
-			StructStats::SetChildStats(new_stats, field_idx, child_stats[arg_idx]);
-			is_new_field[arg_idx] = false;
+			StructStats::SetChildStats(new_stats, field_idx, existing_stats[field_idx]);
 		}
 	}
-
-	for (idx_t arg_idx = 1, field_idx = existing_count; arg_idx < expr.GetChildren().size(); arg_idx++) {
-		if (is_new_field[arg_idx]) {
-			StructStats::SetChildStats(new_stats, field_idx++, child_stats[arg_idx]);
-		}
-	}
-
 	return new_stats.ToUnique();
+}
+
+static unique_ptr<ParsedExpression> StructUpdateUnbind(FunctionUnbindInput &input) {
+	auto &info = input.expression.BindInfo()->Cast<StructUpdateBindData>();
+	vector<FunctionArgument> arguments;
+	for (idx_t i = 0; i < input.children.size(); i++) {
+		auto name = i == 0 ? Identifier() : StructType::GetChildName(info.stype, info.field_indexes[i - 1]);
+		arguments.emplace_back(std::move(name), std::move(input.children[i]));
+	}
+	return make_uniq<FunctionExpression>(input.expression.Function().GetDefinition()->GetQualifiedName(),
+	                                     std::move(arguments));
 }
 
 ScalarFunction StructUpdateFun::GetFunction() {
 	ScalarFunction fun({}, LogicalTypeId::STRUCT, StructUpdateFunction, StructUpdateBind, StructUpdateStats);
 	fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
-	fun.SetVarArgs(LogicalType::ANY);
-	fun.SetSerializeCallback(VariableReturnBindData::Serialize);
-	fun.SetDeserializeCallback(VariableReturnBindData::Deserialize);
+	fun.GetSignature().AddParameter("struct", LogicalType::ANY).AddKwargs("kwargs", LogicalType::ANY);
+	fun.GetProperties().SetRequiresExpressionNames(true);
+	fun.SetUnbindCallback(StructUpdateUnbind);
+	fun.SetSerializeCallback(StructUpdateBindData::Serialize);
+	fun.SetDeserializeCallback(StructUpdateBindData::Deserialize);
 	return fun;
 }
 

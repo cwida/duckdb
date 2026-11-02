@@ -2,6 +2,9 @@
 # description: test async COPY file open/finalize lifecycle paths
 # group: [copy]
 
+# simulates filesystem latency, which only a driver that links debug_fs can provide
+require debug_fs
+
 require parquet
 
 statement ok

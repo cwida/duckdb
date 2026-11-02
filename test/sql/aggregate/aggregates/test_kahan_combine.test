@@ -1,0 +1,50 @@
+# name: test/sql/aggregate/aggregates/test_kahan_combine.test
+# description: Kahan sum and average apply the compensation term with the correct sign when combining states
+# group: [aggregates]
+
+statement ok
+CREATE TABLE doubles AS SELECT * FROM (VALUES (9007199254740992.0::DOUBLE), (1.0::DOUBLE)) t(x);
+
+query IIIIII
+SELECT printf('%.17g', fsum(x)),
+	printf('%.17g', kahan_sum(x)),
+	printf('%.17g', sumkahan(x)),
+	printf('%.17g', sum(x)),
+	printf('%.17g', favg(x)),
+	printf('%.17g', avg(x))
+FROM doubles;
+----
+9007199254740992	9007199254740992	9007199254740992	9007199254740992	4503599627370496	4503599627370496
+
+query II
+SELECT printf('%.17g', fsum(-x)), printf('%.17g', favg(-x))
+FROM doubles;
+----
+-9007199254740992	-4503599627370496
+
+query II
+SELECT printf('%.17g', fsum(x)), printf('%.17g', favg(x))
+FROM (SELECT x FROM doubles UNION ALL SELECT 1.0::DOUBLE);
+----
+9007199254740994	3002399751580331.5
+
+# grouped aggregation
+query III
+SELECT g, printf('%.17g', fsum(x)), printf('%.17g', favg(x))
+FROM (SELECT g, x * (CASE WHEN g = 1 THEN 1 ELSE -1 END) AS x FROM doubles, range(1, 3) r(g))
+GROUP BY g
+ORDER BY g;
+----
+1	9007199254740992	4503599627370496
+2	-9007199254740992	-4503599627370496
+
+# combining exported states
+query II
+SELECT printf('%.17g', finalize(combine(
+		(SELECT fsum(x) EXPORT_STATE FROM doubles),
+		(SELECT fsum(x) EXPORT_STATE FROM doubles WHERE false)))),
+	printf('%.17g', finalize(combine(
+		(SELECT favg(x) EXPORT_STATE FROM doubles),
+		(SELECT favg(x) EXPORT_STATE FROM doubles WHERE false))));
+----
+9007199254740992	4503599627370496

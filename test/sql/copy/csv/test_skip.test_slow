@@ -184,9 +184,6 @@ from read_csv('{TEST_DIR}/skip_2.csv',skip=10000, buffer_size = {buffer_size})
 
 endloop
 
-# Skipping to make it not fail OSX Release
-mode skip instable
-
 # Multifile Testing
 
 query III
@@ -256,8 +253,6 @@ from read_csv(['{TEST_DIR}/skip_2.csv','{TEST_DIR}/skip_2.csv','{TEST_DIR}/skip_
 1	2	3
 1	2	3
 1	2	3
-
-mode unskip
 
 require tpch
 

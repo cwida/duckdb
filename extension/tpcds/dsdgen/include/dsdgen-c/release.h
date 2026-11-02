@@ -46,6 +46,5 @@
 #define COPYRIGHT    "Transaction Processing Performance Council (TPC)"
 #define C_DATES      "2001 - 2018"
 
-int printReleaseInfo(const char *param, const char *val);
 
 #endif

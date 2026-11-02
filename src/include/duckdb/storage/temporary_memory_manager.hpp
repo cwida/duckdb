@@ -102,10 +102,6 @@ public:
 private:
 	//! Get the default minimum reservation
 	idx_t DefaultMinimumReservation() const DUCKDB_REQUIRES(lock);
-	//! Cap a reservation by the current memory limit managed by TMM
-	idx_t CapReservation(idx_t reservation) const DUCKDB_REQUIRES(lock);
-	//! Get the effective minimum reservation for a state after applying TMM limits
-	idx_t MinimumReservation(const TemporaryMemoryState &temporary_memory_state) const DUCKDB_REQUIRES(lock);
 	//! Unregister a TemporaryMemoryState (called by the destructor of TemporaryMemoryState)
 	void Unregister(TemporaryMemoryState &temporary_memory_state);
 	//! Update memory_limit, has_temporary_directory, and num_threads (must hold the lock)
@@ -118,8 +114,6 @@ private:
 	void SetReservation(TemporaryMemoryState &temporary_memory_state, idx_t new_reservation) DUCKDB_REQUIRES(lock);
 	//! Computes optimal reservation of a TemporaryMemoryState based on a cost function
 	idx_t ComputeReservation(const TemporaryMemoryState &temporary_memory_state) const DUCKDB_REQUIRES(lock);
-	//! Compute initial reservation for use in ComputeReservation
-	idx_t ComputeInitialReservation(const TemporaryMemoryState &temporary_memory_state) const DUCKDB_REQUIRES(lock);
 	//! Verify internal counts (must hold the lock)
 	void Verify() const DUCKDB_REQUIRES(lock);
 

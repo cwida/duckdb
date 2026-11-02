@@ -1,0 +1,16 @@
+# name: test/sql/copy/parquet/parquet_int96_out_of_range.test
+# description: Int96 timestamps that do not fit in a timestamp are rejected
+# group: [parquet]
+
+require parquet
+
+# the Julian day of the first dt3 value is set to 2^31-1
+statement error
+SELECT dt3 FROM read_parquet('{DATA_DIR}/parquet-testing/int96_out_of_range.parquet');
+----
+Int96 timestamp is out of range
+
+query I
+SELECT dt3 FROM read_parquet('{DATA_DIR}/parquet-testing/bug4903.parquet') LIMIT 1;
+----
+1969-12-31 21:00:00

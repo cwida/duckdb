@@ -1,0 +1,76 @@
+# name: test/sql/sql_export/pushed_column_paths.test
+# description: SQL export preserves nested scan paths, casts and virtual columns
+# group: [sql_export]
+
+require parquet
+
+statement ok
+CREATE TABLE column_paths(s STRUCT("a'b" INTEGER, y STRUCT(z BIGINT)), v VARIANT);INSERT INTO column_paths VALUES ({'a''b':1,'y':{'z':2}},{'x':{'y':'3'}}::VARIANT),(NULL,NULL),({'a''b':NULL,'y':NULL},{'x':{'y':4}}::VARIANT);
+
+query II rowsort
+SELECT s."a'b",s.y.z FROM column_paths;
+----
+1	2
+NULL	NULL
+NULL	NULL
+
+query TT
+EXPLAIN SELECT s."a'b",s.y.z FROM column_paths;
+----
+physical_plan	<REGEX>:.*Seq Scan[^╰]*Projections:[^╰]*s[.]y[.]z.*
+
+query I rowsort
+SELECT v.x.y::INTEGER FROM column_paths;
+----
+3
+4
+NULL
+
+query TT
+EXPLAIN SELECT v.x.y::INTEGER FROM column_paths;
+----
+physical_plan	<REGEX>:.*Seq Scan[^╰]*Projections:[^╰]*v[.]x[.]y.*
+
+query IT rowsort
+SELECT s.y.z,s.y.z::VARCHAR FROM column_paths WHERE s."a'b" IS NULL;
+----
+NULL	NULL
+NULL	NULL
+
+query TT
+EXPLAIN SELECT s.y.z,s.y.z::VARCHAR FROM column_paths WHERE s."a'b" IS NULL;
+----
+physical_plan	<REGEX>:.*Seq Scan[^╰]*Projections:[^╰]*s[.]y[.]z.*
+
+statement ok
+COPY column_paths TO '{TEST_DIR}/sql_export_migration_paths.parquet' (FORMAT parquet);
+
+query III rowsort
+SELECT s."a'b",s.y.z,file_index FROM read_parquet('{TEST_DIR}/sql_export_migration_paths.parquet');
+----
+1	2	0
+NULL	NULL	0
+NULL	NULL	0
+
+query TT
+EXPLAIN SELECT s."a'b",s.y.z,file_index FROM read_parquet('{TEST_DIR}/sql_export_migration_paths.parquet');
+----
+physical_plan	<REGEX>:.*Read Parquet[^╰]*Projections:[^╰]*s[.]y[.]z.*
+
+query T rowsort
+SELECT s.y::STRUCT(z VARCHAR) FROM read_parquet('{TEST_DIR}/sql_export_migration_paths.parquet');
+----
+NULL
+NULL
+{'z': 2}
+
+query TT
+EXPLAIN SELECT s.y::STRUCT(z VARCHAR) FROM read_parquet('{TEST_DIR}/sql_export_migration_paths.parquet');
+----
+physical_plan	<REGEX>:.*Read Parquet[^╰]*Projections:[^╰]*s[.]y.*
+
+
+query TT
+EXPLAIN (SQL) SELECT s."a'b",s.y.z,file_index FROM read_parquet('{TEST_DIR}/sql_export_migration_paths.parquet');
+----
+sql	<REGEX>:.*file_index.*

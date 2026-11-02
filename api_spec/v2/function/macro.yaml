@@ -1,0 +1,226 @@
+module: macro
+#
+# Macro functions are functions defined in SQL: a scalar macro's body is an expression, e.g. `a + b`, which a call
+# is replaced with, and a table macro's body is a query, e.g. `SELECT * FROM range(n)`, which a call in a FROM clause
+# is replaced with. The parameters are declared with a `[[function_signature]]` and referred to in the body by name.
+#
+# Macro functions are registered by extensions. A connection defines them with SQL `CREATE MACRO` instead.
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Enums
+#-----------------------------------------------------------------------------------------------------------------------
+enums:
+  MACRO_FUNCTION_TYPE:
+    description: The kind of a macro function, deciding how its body is read. Pass one to `[[macro_function_create]]`.
+    values:
+      MACRO_FUNCTION_TYPE_SCALAR:
+        value: 0
+        description: A scalar macro. The body is a single expression, and the macro is called like a scalar function.
+      MACRO_FUNCTION_TYPE_TABLE:
+        value: 1
+        description: A table macro. The body is a single SELECT query, and the macro is called like a table function.
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Handles
+#-----------------------------------------------------------------------------------------------------------------------
+handles:
+  macro_function:
+    description: |
+      An owned opaque handle to a macro function being built. Created with `[[macro_function_create]]`, configured
+      with `[[macro_function_set_name]]`, `[[macro_function_set_body]]` and the signature obtained via
+      `[[macro_function_get_signature]]`, made available with `[[extension_register_macro_function]]`, and destroyed
+      with `[[macro_function_destroy]]`.
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Functions
+#-----------------------------------------------------------------------------------------------------------------------
+functions:
+  #---------------------------------------------------------------------------------------------------------------------
+  # Constructors
+  #---------------------------------------------------------------------------------------------------------------------
+  macro_function_create:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: |
+      Creates a new macro function through a factory.
+
+      The macro function starts out empty: configure it with the setter functions and the signature obtained via
+      `[[macro_function_get_signature]]`, then make it available with `[[extension_register_macro_function]]`. The
+      caller owns the returned handle and must destroy it with `[[macro_function_destroy]]`, also after registration.
+
+      The macro function can only be registered on the database the factory belongs to.
+    role: constructor
+    belongs_to: macro_function
+    parameters:
+      factory:
+        type: factory
+        description: The factory to create the macro function through.
+      type:
+        type: MACRO_FUNCTION_TYPE
+        description: Whether the macro is a scalar or a table macro.
+      function:
+        type: macro_function
+        indirection: 1
+        kind: OUT
+        description: On success, receives the newly created macro function. Owned by the caller.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # Properties
+  #---------------------------------------------------------------------------------------------------------------------
+  macro_function_set_name:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: |
+      Sets the name of the macro function, as SQL calls it.
+
+      The name is borrowed and copied. Calling this again replaces the previous name. A name must be set before
+      registration.
+    parameters:
+      function:
+        type: macro_function
+        description: The macro function to set the name of.
+      name:
+        type: identifier
+        indirection: 1
+        const: true
+        kind: IN
+        description: The name to set. Borrowed and copied.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  macro_function_set_body:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: |
+      Sets the body of the macro function, as SQL text.
+
+      For a scalar macro the body is a single expression, for a table macro a single SELECT query. It refers to the
+      parameters by name. The body is parsed at registration, which fails on a syntax error; names in it are resolved
+      only when the macro is called, as with SQL `CREATE MACRO`. The body is borrowed and copied. Calling this again
+      replaces the previous body. A body must be set before registration.
+    parameters:
+      function:
+        type: macro_function
+        description: The macro function to set the body of.
+      body:
+        type: str
+        indirection: 1
+        const: true
+        kind: IN
+        description: The SQL text of the body. Borrowed and copied.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  macro_function_get_signature:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: |
+      Returns the macro function's signature so its parameters can be declared.
+
+      Add parameters with `[[function_signature_add_parameter]]`. A macro's parameters can always be passed by
+      position or by name, so only `FUNCTION_PARAMETER_KIND_STANDARD` parameters are accepted; a macro has no variadic
+      parameters. A parameter of type ANY is untyped, and a parameter with a default value can be omitted by a caller.
+      A macro's result is decided by its body, so the signature cannot set a return type. Registration fails on a
+      signature that does not follow these rules. The signature is modified in place.
+    parameters:
+      function:
+        type: macro_function
+        kind: IN
+        description: The macro function to get the signature of.
+      sig:
+        type: function_signature
+        indirection: 1
+        kind: OUT
+        description: The returned signature. Borrowed and valid for the lifetime of the macro function handle.
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  macro_function_get_docs:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: |
+      Returns the documentation of the macro function so it can be filled in.
+
+      Set a description with `[[function_docs_set_description]]`, and add examples and categories with
+      `[[function_docs_add_example]]` and `[[function_docs_add_category]]`. The documentation is modified in place and
+      registered with the macro function. Optional.
+    parameters:
+      function:
+        type: macro_function
+        kind: IN
+        description: The macro function to get the documentation of.
+      docs:
+        type: function_docs
+        indirection: 1
+        kind: OUT
+        description: The returned documentation. Borrowed and valid for the lifetime of the macro function handle.
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # Register
+  #---------------------------------------------------------------------------------------------------------------------
+  extension_register_macro_function:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: |
+      Registers the macro function, making it available for use in SQL queries.
+
+      The macro function is registered on the loading extension's database and attributed to the extension. Use this
+      from the extension's load callback. Registration requires a name and a body that parses, and a signature that
+      follows the rules of `[[macro_function_get_signature]]`. It fails when a function of the same name already
+      exists: a macro function has a single overload. The macro function must have been created through a factory of
+      the same database. The caller still owns the handle after registration and must destroy it with
+      `[[macro_function_destroy]]`, which does not affect the registered macro function.
+    role: method
+    belongs_to: extension
+    parameters:
+      extension:
+        type: extension
+        description: The loading extension.
+      function:
+        type: macro_function
+        description: The macro function to register.
+      err:
+        type: error_info
+        indirection: 1
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # Destroy
+  #---------------------------------------------------------------------------------------------------------------------
+  macro_function_destroy:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: |
+      Destroys the macro function, releasing its resources.
+
+      Null-safe: passing a null pointer or null handle is a no-op. The handle is set to null on return to
+      prevent double-destruction. Destroying the handle after registration does not affect the registered
+      macro function.
+    parameters:
+      function:
+        type: macro_function
+        description: The macro function to destroy.
+        indirection: 1
+    return_type: ERROR

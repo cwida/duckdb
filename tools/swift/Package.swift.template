@@ -21,7 +21,9 @@ let package = Package(
       cxxSettings: [
         $search_path_list
         $define_list
-        .define("DUCKDB_BUILD_LIBRARY")
+        .define("DUCKDB_BUILD_LIBRARY"),
+        // the generated loader hides duckdb_register_static_extensions by default; Database.swift calls it
+        .define("DUCKDB_STATIC_EXTENSION_LOADER_API", to: "")
       ]
     ),
     .testTarget(

@@ -1,0 +1,92 @@
+# name: test/sql/match_recognize/test_match_recognize_parallel.test
+# description: MATCH_RECOGNIZE - partitions are matched by whichever thread takes them
+# group: [match_recognize]
+
+# Partitions are independent, so the threads that reach the window's Finalize take them from a shared
+# cursor. Each keeps its own cursors and its own arena for the memberships it writes, and the result
+# has to be the same however they were shared out.
+
+statement ok
+PRAGMA enable_verification
+
+statement ok
+CREATE TABLE runs AS
+    SELECT i // 250 AS g, i % 250 AS i, CASE WHEN (i % 250) % 7 < 3 THEN 1 ELSE 0 END AS up
+    FROM range(4000) t(i)
+
+# every partition matches the same shape, so the answer does not depend on which thread took which
+statement ok
+CREATE TABLE expected AS
+    SELECT * FROM runs MATCH_RECOGNIZE (
+        PARTITION BY g ORDER BY i
+        MEASURES count(*) AS n, FIRST(i) AS from_i, LAST(i) AS to_i, CLASSIFIER() AS sym
+        ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+        PATTERN (A+)
+        DEFINE A AS up = 1
+    )
+
+foreach threads 1 2 4 8
+
+statement ok
+PRAGMA threads={threads}
+
+query IIIII
+SELECT * FROM (
+    SELECT * FROM runs MATCH_RECOGNIZE (
+        PARTITION BY g ORDER BY i
+        MEASURES count(*) AS n, FIRST(i) AS from_i, LAST(i) AS to_i, CLASSIFIER() AS sym
+        ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+        PATTERN (A+)
+        DEFINE A AS up = 1
+    )
+    EXCEPT ALL
+    SELECT * FROM expected
+)
+----
+
+query I
+SELECT count(*) FROM runs MATCH_RECOGNIZE (
+    PARTITION BY g ORDER BY i
+    MEASURES count(*) AS n ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (A+) DEFINE A AS up = 1
+)
+----
+576
+
+endloop
+
+statement ok
+PRAGMA threads=4
+
+# ALL ROWS PER MATCH writes one membership per (row, match), from every thread at once
+query II
+SELECT count(*), sum(n) FROM runs MATCH_RECOGNIZE (
+    PARTITION BY g ORDER BY i
+    MEASURES count(*) AS n ALL ROWS PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (A+) DEFINE A AS up = 1
+)
+----
+1728	3456
+
+# overlapping matches, so a row belongs to several at once and the memberships outnumber the rows
+query I
+SELECT count(*) FROM runs MATCH_RECOGNIZE (
+    PARTITION BY g ORDER BY i
+    MEASURES count(*) AS n ALL ROWS PER MATCH AFTER MATCH SKIP TO NEXT ROW
+    PATTERN (A+) DEFINE A AS up = 1
+)
+----
+3456
+
+# a condition the matcher settles per candidate row, decided on every thread at once
+query I
+SELECT count(*) FROM runs MATCH_RECOGNIZE (
+    PARTITION BY g ORDER BY i
+    MEASURES count(*) AS n ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (A+) DEFINE A AS up = 1 AND i >= FIRST(i)
+)
+----
+576
+
+statement ok
+PRAGMA threads=1

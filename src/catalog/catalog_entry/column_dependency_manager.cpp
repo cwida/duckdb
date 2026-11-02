@@ -65,6 +65,15 @@ void ColumnDependencyManager::AddGeneratedColumn(LogicalIndex index, const vecto
 	}
 }
 
+ColumnDependencyManager ColumnDependencyManager::Copy() const {
+	ColumnDependencyManager result;
+	result.dependencies_map = dependencies_map;
+	result.dependents_map = dependents_map;
+	result.direct_dependencies = direct_dependencies;
+	result.deleted_columns = deleted_columns;
+	return result;
+}
+
 vector<LogicalIndex> ColumnDependencyManager::RemoveColumn(LogicalIndex index, idx_t column_amount) {
 	// Always add the initial column
 	deleted_columns.insert(index);

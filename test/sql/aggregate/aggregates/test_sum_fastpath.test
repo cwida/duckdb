@@ -1,0 +1,26 @@
+# name: test/sql/aggregate/aggregates/test_sum_fastpath.test
+# description: SUM(BIGINT) fast path
+# group: [aggregates]
+
+# sum(BIGINT) doesn't issue overflow checks if it proves Vector's sum of
+# values won't overflow.
+
+query I
+SELECT sum(i) FROM range(9007199254738944, 9007199254740992) t(i);
+----
+18446744073707453440
+
+query I
+SELECT sum(i) FROM generate_series(9007199254738944, 9007199254740991) t(i);
+----
+18446744073707453440
+
+query I
+SELECT sum(i) FROM range(-9007199254740992, -9007199254738944) t(i);
+----
+-18446744073707455488
+
+query I
+SELECT sum(i) FROM range(9007199254736896, 9007199254740992) t(i);
+----
+36893488147410712576

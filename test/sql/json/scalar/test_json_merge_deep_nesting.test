@@ -1,0 +1,35 @@
+# name: test/sql/json/scalar/test_json_merge_deep_nesting.test
+# description: json_merge_patch and json_deep_merge copy deeply nested values without overflowing the stack
+# group: [scalar]
+
+require json
+
+query I
+SELECT length(json_merge_patch('{"a":1}', '{"a":' || repeat('[', 200000) || repeat(']', 200000) || '}'));
+----
+400006
+
+query I
+SELECT length(json_merge_patch('{"a":' || repeat('[', 200000) || repeat(']', 200000) || '}', '{"b":1}'));
+----
+400012
+
+query I
+SELECT length(json_merge_patch(repeat('{"a":', 200000) || '1' || repeat('}', 200000), '{}'));
+----
+1200001
+
+query I
+SELECT length(json_deep_merge('{"a":1}', '{"a":' || repeat('[', 200000) || repeat(']', 200000) || '}'));
+----
+400006
+
+query I
+SELECT length(json_deep_merge('{"a":' || repeat('[', 200000) || repeat(']', 200000) || '}', '{"b":1}'));
+----
+400012
+
+query II
+SELECT json_merge_patch('{"a":{"b":[1,{"c":2}],"d":"x"},"e":3}', '{"a":{"d":null,"f":[4]},"e":{"g":true}}'), json_deep_merge('{"a":[1,2],"b":{"c":1}}', '{"b":{"d":[3,{"e":4}]}}')
+----
+{"a":{"b":[1,{"c":2}],"f":[4]},"e":{"g":true}}	{"a":[1,2],"b":{"c":1,"d":[3,{"e":4}]}}

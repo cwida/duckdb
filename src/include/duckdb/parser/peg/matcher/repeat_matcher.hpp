@@ -12,7 +12,7 @@ public:
 	explicit RepeatMatcher(Matcher &element_p) : Matcher(TYPE), element(element_p) {
 	}
 
-	unique_ptr<MatchProcess> StartMatch(MatchState &state) const override;
+	DUCKDB_API arena_ptr<MatchProcess> StartMatch(MatchState &state) const override;
 
 	SuggestionType AddSuggestionInternal(MatchState &state) const override {
 		element.AddSuggestion(state);
@@ -20,7 +20,10 @@ public:
 	}
 
 	string ToString() const override {
-		return element.GetName() + "*";
+		return element.GetPrintName() + "*";
+	}
+	Matcher &GetChildMatcher() {
+		return element;
 	}
 	const Matcher &GetChildMatcher() const {
 		return element;

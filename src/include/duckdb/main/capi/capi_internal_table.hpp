@@ -56,7 +56,7 @@ struct CTableBindData : public TableFunctionData {
 
 struct CTableInternalBindInfo {
 	CTableInternalBindInfo(ClientContext &context, const vector<Value> &parameters,
-	                       const named_parameter_map_t &named_parameters, vector<LogicalType> &return_types,
+	                       const named_argument_map_t &named_parameters, vector<LogicalType> &return_types,
 	                       vector<Identifier> &names, CTableBindData &bind_data, CTableFunctionInfo &function_info)
 	    : context(context), parameters(parameters), named_parameters(named_parameters), return_types(return_types),
 	      names(names), bind_data(bind_data), function_info(function_info), success(true) {
@@ -65,7 +65,7 @@ struct CTableInternalBindInfo {
 	ClientContext &context;
 
 	vector<Value> parameters;
-	named_parameter_map_t named_parameters;
+	named_argument_map_t named_parameters;
 
 	vector<LogicalType> &return_types;
 	vector<Identifier> &names;

@@ -30,3 +30,13 @@ FROM subq
 GROUP BY id;
 ----
 0	1	2024-01-30
+
+statement ok
+CREATE TABLE t0(c1 BOOLEAN, c2 STRUCT(k0 BOOLEAN, k1 VARCHAR));
+
+statement ok
+CREATE TABLE t1(c0 INT, c1 VARCHAR(500));
+
+query IT
+SELECT t1.* FROM t1, t0 INNER JOIN (SELECT t0.c2 AS col0 FROM t0) AS sub0 ON t0.c2['k0'] WHERE ((true)IS NOT DISTINCT FROM(t0.c1));
+----

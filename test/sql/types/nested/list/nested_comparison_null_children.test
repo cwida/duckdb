@@ -1,0 +1,121 @@
+# name: test/sql/types/nested/list/nested_comparison_null_children.test
+# description: A NULL child of a nested value makes the values distinct, it does not make the result NULL
+# group: [list]
+
+# Nested comparisons compare their children with distinct semantics, the same way the Value
+# comparison path does - only a NULL list / struct / array itself makes the result NULL.
+# The vectorized path used to read an uninitialized comparison result for a NULL child, so it
+# disagreed with the constant-folded path and its answer depended on the surrounding rows.
+
+statement ok
+CREATE TABLE l(a INTEGER[], b INTEGER[]);
+
+statement ok
+INSERT INTO l VALUES ([NULL], [3]), ([NULL, 1], [1, 1]), ([3, 2, NULL], [3, 2, 3]),
+                     ([NULL, NULL, NULL], [1, 2, 1]), ([2, 1], [2, NULL]),
+                     ([NULL], [NULL]), ([1, NULL, 3], [1, NULL, 3]), (NULL, [1]), ([1], NULL);
+
+query III
+SELECT a, b, a = b FROM l
+----
+[NULL]	[3]	false
+[NULL, 1]	[1, 1]	false
+[3, 2, NULL]	[3, 2, 3]	false
+[NULL, NULL, NULL]	[1, 2, 1]	false
+[2, 1]	[2, NULL]	false
+[NULL]	[NULL]	true
+[1, NULL, 3]	[1, NULL, 3]	true
+NULL	[1]	NULL
+[1]	NULL	NULL
+
+query III
+SELECT a, b, a <> b FROM l
+----
+[NULL]	[3]	true
+[NULL, 1]	[1, 1]	true
+[3, 2, NULL]	[3, 2, 3]	true
+[NULL, NULL, NULL]	[1, 2, 1]	true
+[2, 1]	[2, NULL]	true
+[NULL]	[NULL]	false
+[1, NULL, 3]	[1, NULL, 3]	false
+NULL	[1]	NULL
+[1]	NULL	NULL
+
+# the table path must agree with the constant-folded path
+query IIIIIII
+SELECT [NULL] = [3], [NULL, 1] = [1, 1], [3, 2, NULL] = [3, 2, 3], [NULL, NULL, NULL] = [1, 2, 1],
+       [2, 1] = [2, NULL], [NULL] = [NULL], [1, NULL, 3] = [1, NULL, 3]
+----
+false	false	false	false	false	true	true
+
+# the answer must not depend on which rows share the chunk
+statement ok
+CREATE TABLE one(a INTEGER[], b INTEGER[]);
+
+statement ok
+INSERT INTO one VALUES ([2, 1], [2, NULL]);
+
+query I
+SELECT a = b FROM one
+----
+false
+
+# structs
+statement ok
+CREATE TABLE s(a STRUCT(x INTEGER, y INTEGER), b STRUCT(x INTEGER, y INTEGER));
+
+statement ok
+INSERT INTO s VALUES ({'x': NULL, 'y': 1}, {'x': 3, 'y': 1}), ({'x': 1, 'y': NULL}, {'x': 1, 'y': 2}),
+                     ({'x': NULL, 'y': 1}, {'x': NULL, 'y': 1}), ({'x': 1, 'y': 1}, {'x': 1, 'y': 1}),
+                     (NULL, {'x': 1, 'y': 1});
+
+query III
+SELECT a, b, a = b FROM s
+----
+{'x': NULL, 'y': 1}	{'x': 3, 'y': 1}	false
+{'x': 1, 'y': NULL}	{'x': 1, 'y': 2}	false
+{'x': NULL, 'y': 1}	{'x': NULL, 'y': 1}	true
+{'x': 1, 'y': 1}	{'x': 1, 'y': 1}	true
+NULL	{'x': 1, 'y': 1}	NULL
+
+# fixed-size arrays share the comparator with lists
+statement ok
+CREATE TABLE a(x INTEGER[2], y INTEGER[2]);
+
+statement ok
+INSERT INTO a VALUES ([NULL, 1], [3, 1]), ([NULL, 1], [NULL, 1]), (NULL, [1, 1]);
+
+query III
+SELECT x, y, x = y FROM a
+----
+[NULL, 1]	[3, 1]	false
+[NULL, 1]	[NULL, 1]	true
+NULL	[1, 1]	NULL
+
+# equality must stay consistent with IS NOT DISTINCT FROM on random data with many NULL children
+statement ok
+CREATE TABLE r AS
+SELECT CASE WHEN random() < 0.1 THEN NULL
+            ELSE [CASE WHEN random() < 0.35 THEN NULL ELSE (random() * 3)::INT END
+                  FOR i IN range((random() * 4)::INT + 1)] END AS a,
+       CASE WHEN random() < 0.1 THEN NULL
+            ELSE [CASE WHEN random() < 0.35 THEN NULL ELSE (random() * 3)::INT END
+                  FOR i IN range((random() * 4)::INT + 1)] END AS b
+FROM range(20000);
+
+query I
+SELECT count(*) FROM r
+WHERE (a = b) IS DISTINCT FROM (CASE WHEN a IS NULL OR b IS NULL THEN NULL ELSE (a IS NOT DISTINCT FROM b) END)
+----
+0
+
+query I
+SELECT count(*) FROM r WHERE (a <> b) IS DISTINCT FROM (NOT (a = b))
+----
+0
+
+query I
+SELECT count(*) FROM r WHERE (a IS NULL OR b IS NULL)
+  AND NOT ((a = b) IS NULL AND (a < b) IS NULL AND (a >= b) IS NULL)
+----
+0

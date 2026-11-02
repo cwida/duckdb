@@ -1,0 +1,42 @@
+# name: test/sql/transactions/test_parser_error_transaction_invalidation.test
+# group: [transactions]
+
+# Explicitly set the policy, in case defaults change
+statement ok
+SET current_transaction_invalidation_policy='ALL_ERRORS_INVALIDATE_TRANSACTION';
+
+statement ok
+create table audit(i int);
+
+statement ok
+begin;
+
+statement ok
+insert into audit values (21);
+
+statement error
+inser into audit_backup from audit;
+----
+Parser Error: syntax error at or near "inser"
+
+statement error
+insert into audit values (22);
+----
+TransactionContext Error: Current transaction is aborted (please ROLLBACK)
+
+statement ok
+abort;
+
+statement ok
+begin;
+
+statement ok
+insert into audit values (22);
+
+statement ok
+commit;
+
+query I
+select count(*) from audit;
+----
+1

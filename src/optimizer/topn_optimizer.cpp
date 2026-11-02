@@ -184,6 +184,7 @@ unique_ptr<LogicalOperator> TopN::Optimize(unique_ptr<LogicalOperator> op) {
 			offset_val = limit.offset_val.GetConstantValue();
 		}
 		auto topn = make_uniq<LogicalTopN>(std::move(order_by.orders), limit_val, offset_val);
+		topn->unpruned_offset = limit.unpruned_offset;
 		topn->AddChild(std::move(order_by.children[0]));
 		auto cardinality = limit_val;
 		if (topn->children[0]->has_estimated_cardinality && topn->children[0]->estimated_cardinality < limit_val) {

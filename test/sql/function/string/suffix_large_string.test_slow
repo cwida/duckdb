@@ -1,0 +1,17 @@
+# name: test/sql/function/string/suffix_large_string.test_slow
+# group: [string]
+
+mode skip Test allocates 9GB and takes ~40 seconds on a release build
+
+# suffixes of 2^31 bytes or more used to overflow the comparison index
+query I
+SELECT suffix(repeat('a', 2147483648), repeat('b', 2147483648))
+----
+false
+
+query I
+SELECT suffix(repeat('a', 2147483648), repeat('a', 2147483648))
+----
+true
+
+mode unskip

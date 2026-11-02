@@ -1,0 +1,131 @@
+# name: test/sql/parallelism/intraquery/test_transaction_local_parallelism.test
+# description: Parallel scans of tables whose rows are (mostly) transaction-local
+# group: [intraquery]
+
+load {TEST_DIR}/transaction_local_parallelism.db
+
+statement ok
+PRAGMA threads=8
+
+foreach parallelism_pragma disable_verify_parallelism verify_parallelism
+
+statement ok
+PRAGMA {parallelism_pragma}
+
+statement ok
+CREATE TABLE committed AS SELECT range AS i FROM range(1000)
+
+statement ok
+BEGIN
+
+statement ok
+CREATE TABLE t AS SELECT range AS i FROM range(1000000)
+
+query III
+SELECT count(*), sum(i), max(i) FROM t
+----
+1000000	499999500000	999999
+
+# insertion order is preserved when copying a transaction-local table
+statement ok
+CREATE TABLE t2 AS SELECT * FROM t
+
+query I
+SELECT i FROM t2 LIMIT 3 OFFSET 777777
+----
+777777
+777778
+777779
+
+query I
+SELECT count(*) FROM (SELECT i, rowid - min(rowid) OVER () AS pos FROM t2) WHERE i <> pos
+----
+0
+
+# the scan of t runs while the insert appends to t
+statement ok
+INSERT INTO t SELECT * FROM t
+
+query II
+SELECT count(*), sum(i) FROM t
+----
+2000000	999999000000
+
+statement ok
+UPDATE t SET i = i + 1 WHERE i % 3 = 0
+
+query II
+SELECT count(*), sum(i) FROM t
+----
+2000000	999999666668
+
+# mostly transaction-local rows on top of a small committed table
+statement ok
+INSERT INTO committed SELECT range FROM range(1000, 1000000)
+
+query II
+SELECT count(*), sum(i) FROM committed
+----
+1000000	499999500000
+
+query I
+SELECT count(*) FROM range(1000000) r(i) WHERE i IN (SELECT i FROM t2)
+----
+1000000
+
+statement ok
+COMMIT
+
+query II
+SELECT count(*), sum(i) FROM t
+----
+2000000	999999666668
+
+query II
+SELECT count(*), sum(i) FROM committed
+----
+1000000	499999500000
+
+statement ok
+DROP TABLE t
+
+statement ok
+DROP TABLE t2
+
+statement ok
+DROP TABLE committed
+
+endloop
+
+# with prefetching, finished read-ahead scan states are recycled for the rest of the scan
+# they must not keep the blocks of transaction-local rows pinned while the insert writes them
+statement ok
+PRAGMA disable_verify_parallelism
+
+statement ok
+SET storage_block_prefetch='always_prefetch'
+
+statement ok
+BEGIN
+
+statement ok
+CREATE TABLE t AS SELECT range AS i FROM range(1000000)
+
+statement ok
+INSERT INTO t SELECT * FROM t
+
+statement ok
+INSERT INTO t SELECT * FROM t LIMIT 300000
+
+query I
+SELECT count(*) FROM t
+----
+2300000
+
+statement ok
+COMMIT
+
+query I
+SELECT count(*) FROM t
+----
+2300000

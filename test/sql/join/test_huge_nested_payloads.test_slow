@@ -16,7 +16,7 @@ SELECT count(DISTINCT [[p.v2ProductName for p in h.product] for h in hits]) FROM
 query I
 SELECT count(DISTINCT [[p.customDimensions for p in h.product] for h in hits]) FROM tbl2;
 ----
-910
+794
 
 query III
 SELECT

@@ -5,6 +5,9 @@
 #include <io.h>
 #define STDIN_FILENO  0
 #define STDOUT_FILENO 1
+#define isatty        _isatty
+#define read          _read
+#define write         _write
 #else
 #include <sys/ioctl.h>
 #include <sys/select.h>
@@ -235,6 +238,7 @@ int Terminal::EditRaw(char *buf, size_t buflen, const char *prompt) {
 	}
 	Linenoise l(STDIN_FILENO, STDOUT_FILENO, buf, buflen, prompt);
 	count = l.Edit();
+	Terminal::BufferAvailableInput();
 	Terminal::DisableRawMode();
 	printf("\n");
 	return count;

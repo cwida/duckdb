@@ -6,10 +6,9 @@ handles:
   copy_function:
     description: |
       An owned opaque handle to a custom copy function being built: an output format for `COPY ... TO`, an input
-      format for `COPY ... FROM`, or both. Created with `[[copy_function_create_with_connection]]` or
-      `[[copy_function_create_with_extension]]`, configured with the setter functions (e.g.
+      format for `COPY ... FROM`, or both. Created with `[[copy_function_create]]`, configured with the setter functions (e.g.
       `[[copy_function_set_name]]`, `[[copy_to_set_batch_callback]]`, `[[copy_from_set_exec_callback]]`, etc.), made
-      available with `[[copy_function_register]]`, and destroyed with `[[copy_function_destroy]]`.
+      available with `[[connection_register_copy_function]]` or `[[extension_register_copy_function]]`, and destroyed with `[[copy_function_destroy]]`.
 
   copy_to_bind_info:
     description: |
@@ -46,6 +45,12 @@ handles:
       A borrowed opaque handle to the arguments supplied to a copy function during the per-file "finalize" phase of a
       `COPY ... TO` statement. The "finalize" callback receives this handle and can use it to e.g. close the file
       after every batch has been flushed to it.
+
+  copy_to_statistics_info:
+    description: |
+      A borrowed opaque handle to the arguments supplied to a copy function when a `COPY ... TO` statement reports
+      statistics about the files it wrote (e.g. with `RETURN_STATS`). The "statistics" callback receives this
+      handle and uses it to report the statistics of one written file.
 
   copy_from_bind_info:
     description: |
@@ -167,6 +172,20 @@ callbacks:
         description: Borrowed error info handle to use to report errors that occur during the callback.
     return_type: void
 
+  copy_to_statistics_callback:
+    parameters:
+      info:
+        type: copy_to_statistics_info
+        description: Borrowed opaque handle providing access to the information available to the callback.
+      context:
+        type: context
+        description: Borrowed handle to the context of the query currently executing the callback.
+      err:
+        type: error_info
+        indirection: 1
+        description: Borrowed error info handle to use to report errors that occur during the callback.
+    return_type: void
+
   copy_from_bind_callback:
     parameters:
       info:
@@ -244,49 +263,26 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   # Constructors
   #---------------------------------------------------------------------------------------------------------------------
-  copy_function_create_with_connection:
+  copy_function_create:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
-      Creates a new copy function that will be registered on the connection's database.
+      Creates a new copy function through a factory.
 
-      A copy function implements a file format for `COPY`: once registered, SQL reaches it with
-      `COPY ... TO 'path' (FORMAT name)` and `COPY table FROM 'path' (FORMAT name)`. The function starts out
-      empty: configure it with the setter functions (e.g. `[[copy_function_set_name]]`, the `copy_to_set_*` callbacks
-      for writing, the `copy_from_set_*` callbacks for reading, or both), then make it available with
-      `[[copy_function_register]]`. The caller owns the returned handle and must destroy it with
-      `[[copy_function_destroy]]`, also after registration.
+      A copy function implements a file format for `COPY`: once registered, SQL reaches it with `COPY ... TO 'path'
+      (FORMAT name)` and `COPY table FROM 'path' (FORMAT name)`. The function starts out empty: configure it with the
+      setter functions (e.g. `[[copy_function_set_name]]`, the `copy_to_set_*` callbacks for writing, the
+      `copy_from_set_*` callbacks for reading, or both), then make it available with
+      `[[connection_register_copy_function]]` or `[[extension_register_copy_function]]`. The caller owns the returned
+      handle and must destroy it with `[[copy_function_destroy]]`, also after registration.
+
+      The copy function can only be registered on the database the factory belongs to.
+    role: constructor
+    belongs_to: copy_function
     parameters:
-      connection:
-        type: connection
-        description: The connection to create the function in.
-      function:
-        type: copy_function
-        indirection: 1
-        kind: OUT
-        description: On success, receives the newly created copy function. Owned by the caller.
-      err:
-        type: error_info
-        indirection: 1
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
-    return_type: ERROR
-
-  copy_function_create_with_extension:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
-    description: |
-      Creates a new copy function that will be registered on the loading extension's database.
-
-      A copy function implements a file format for `COPY`: once registered, SQL reaches it with
-      `COPY ... TO 'path' (FORMAT name)` and `COPY table FROM 'path' (FORMAT name)`. Use this from an extension load callback, where an extension handle is available. The function starts out
-      empty: configure it with the setter functions (e.g. `[[copy_function_set_name]]`, the `copy_to_set_*` callbacks
-      for writing, the `copy_from_set_*` callbacks for reading, or both), then make it available with
-      `[[copy_function_register]]`. The caller owns the returned handle and must destroy it with
-      `[[copy_function_destroy]]`, also after registration.
-    parameters:
-      extension:
-        type: extension
-        description: The extension to create the function in.
+      factory:
+        type: factory
+        description: The factory to create the copy function through.
       function:
         type: copy_function
         indirection: 1
@@ -303,7 +299,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   copy_function_set_name:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the name of the copy function.
 
@@ -315,9 +311,37 @@ functions:
         type: copy_function
         description: The function to set the name of.
       name:
+        type: identifier
+        indirection: 1
+        const: true
+        kind: IN
+        description: The name to set. Borrowed and copied.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  copy_function_set_file_extension:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-12" ]
+    description: |
+      Sets the file extension of the files the copy function writes, without the leading dot, e.g. `parquet`.
+
+      DuckDB uses it when it names files itself, e.g. the files of `COPY ... TO 'dir' (PARTITION_BY ...)` or
+      `(PER_THREAD_OUTPUT)`. A statement can override it with the `FILE_EXTENSION` option. An extension starting with
+      a dot is rejected. The extension is borrowed and copied. Calling this again replaces the previous extension.
+      Optional, but without it the names DuckDB gives files end in a bare dot, e.g. `data_0.`.
+    parameters:
+      function:
+        type: copy_function
+        description: The function to set the file extension of.
+      extension:
         type: str
         indirection: 1
-        description: The name to set. Borrowed and copied.
+        const: true
+        kind: IN
+        description: The extension to set, without the leading dot. Borrowed and copied.
       err:
         type: error_info
         indirection: 1
@@ -326,7 +350,7 @@ functions:
 
   copy_function_set_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets arbitrary user data on the copy function.
 
@@ -352,7 +376,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   copy_to_set_bind_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the optional bind callback of the `COPY ... TO` side.
 
@@ -374,12 +398,12 @@ functions:
 
   copy_to_set_batch_size_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the optional batch size callback of the `COPY ... TO` side.
 
       The batch size callback is invoked during query planning, after the bind callback, for each `COPY ... TO`
-      statement that does not set `BATCH_SIZE` itself. It must report how many rows a batch should carry via
+      statement that does not set `BATCH_SIZE` itself. It should report how many rows a batch should carry via
       `[[copy_to_batch_size_set_target]]`; the engine then cuts the rows being written into batches of that size and
       hands each to the batch callback. Without a batch size from either the statement or the callback, a batch is
       cut for every chunk of rows sunk, i.e. a vector at a time. A batch may still be smaller than the reported size
@@ -399,7 +423,7 @@ functions:
 
   copy_to_set_init_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the optional init callback of the `COPY ... TO` side.
 
@@ -422,7 +446,7 @@ functions:
 
   copy_to_set_batch_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the batch callback of the `COPY ... TO` side.
 
@@ -446,7 +470,7 @@ functions:
 
   copy_to_set_flush_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the flush callback of the `COPY ... TO` side.
 
@@ -468,7 +492,7 @@ functions:
 
   copy_to_set_finalize_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the optional finalize callback of the `COPY ... TO` side.
 
@@ -492,7 +516,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   copy_to_bind_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the user data set via `[[copy_function_set_user_data]]`.
     parameters:
       info:
@@ -511,7 +535,7 @@ functions:
 
   copy_to_bind_set_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the function's "bind data" from the bind callback.
 
@@ -535,7 +559,7 @@ functions:
 
   copy_to_bind_get_file_path:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Retrieves the path the `COPY ... TO` statement writes to, as written in the statement.
 
@@ -559,7 +583,7 @@ functions:
 
   copy_to_bind_get_column_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns the number of columns being written, i.e. the columns of the rows every batch carries.
 
@@ -581,7 +605,7 @@ functions:
 
   copy_to_bind_get_column_type:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Retrieves the type of the column at the given index.
 
@@ -607,7 +631,7 @@ functions:
 
   copy_to_bind_get_column_name:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Retrieves the name of the column at the given index.
 
@@ -632,7 +656,7 @@ functions:
 
   copy_to_bind_get_option_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns the number of options the `COPY` statement passed to the function.
 
@@ -656,7 +680,7 @@ functions:
 
   copy_to_bind_get_option_name:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Retrieves the name of the option at the given index.
 
@@ -682,7 +706,7 @@ functions:
 
   copy_to_bind_get_option_value:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Retrieves the value of the option at the given index.
 
@@ -713,7 +737,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   copy_to_batch_size_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the user data set via `[[copy_function_set_user_data]]`.
     parameters:
       info:
@@ -732,7 +756,7 @@ functions:
 
   copy_to_batch_size_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the bind data set by the function's `COPY ... TO` bind callback.
     parameters:
       info:
@@ -751,10 +775,10 @@ functions:
 
   copy_to_batch_size_set_target:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the number of rows a batch should carry, as the target the engine cuts batches at. The batch size
-      callback must set this to a value greater than 0; the statement fails otherwise.
+      callback must set this to a value greater than 0; the statement fails otherwise. DuckDB defines the `BATCH_SIZE` on omission of calling the function.
     parameters:
       info:
         type: copy_to_batch_size_info
@@ -773,7 +797,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   copy_to_init_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the user data set via `[[copy_function_set_user_data]]`.
     parameters:
       info:
@@ -792,7 +816,7 @@ functions:
 
   copy_to_init_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the bind data set by the function's `COPY ... TO` bind callback.
     parameters:
       info:
@@ -811,7 +835,7 @@ functions:
 
   copy_to_init_get_file_path:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Retrieves the path of the file the init callback is preparing.
 
@@ -835,7 +859,7 @@ functions:
 
   copy_to_init_set_init_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the function's "init data" from the init callback.
 
@@ -862,7 +886,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   copy_to_batch_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the user data set via `[[copy_function_set_user_data]]`.
     parameters:
       info:
@@ -881,7 +905,7 @@ functions:
 
   copy_to_batch_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the bind data set by the function's `COPY ... TO` bind callback.
     parameters:
       info:
@@ -900,7 +924,7 @@ functions:
 
   copy_to_batch_get_init_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the init data set by the function's `COPY ... TO` init callback for the file this batch belongs to.
     parameters:
       info:
@@ -919,7 +943,7 @@ functions:
 
   copy_to_batch_take_input:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Takes ownership of the rows of the batch to prepare.
 
@@ -945,7 +969,7 @@ functions:
 
   copy_to_batch_set_batch_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the prepared "batch data" from the batch callback.
 
@@ -971,7 +995,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   copy_to_flush_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the user data set via `[[copy_function_set_user_data]]`.
     parameters:
       info:
@@ -990,7 +1014,7 @@ functions:
 
   copy_to_flush_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the bind data set by the function's `COPY ... TO` bind callback.
     parameters:
       info:
@@ -1009,7 +1033,7 @@ functions:
 
   copy_to_flush_get_init_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the init data set by the function's `COPY ... TO` init callback for the file this batch belongs to.
     parameters:
       info:
@@ -1028,7 +1052,7 @@ functions:
 
   copy_to_flush_get_batch_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the batch data set by the function's batch callback for the batch being flushed.
     parameters:
       info:
@@ -1050,7 +1074,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   copy_to_finalize_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the user data set via `[[copy_function_set_user_data]]`.
     parameters:
       info:
@@ -1069,7 +1093,7 @@ functions:
 
   copy_to_finalize_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the bind data set by the function's `COPY ... TO` bind callback.
     parameters:
       info:
@@ -1088,7 +1112,7 @@ functions:
 
   copy_to_finalize_get_init_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the init data set by the function's `COPY ... TO` init callback for the file being finalized.
     parameters:
       info:
@@ -1110,7 +1134,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   copy_from_set_bind_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the bind callback of the `COPY ... FROM` side.
 
@@ -1134,7 +1158,7 @@ functions:
 
   copy_from_set_init_global_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the optional global init callback of the `COPY ... FROM` side.
 
@@ -1156,7 +1180,7 @@ functions:
 
   copy_from_set_init_local_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the optional local init callback of the `COPY ... FROM` side.
 
@@ -1177,7 +1201,7 @@ functions:
 
   copy_from_set_exec_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the exec callback of the `COPY ... FROM` side.
 
@@ -1199,7 +1223,7 @@ functions:
 
   copy_from_set_progress_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the optional progress callback of the `COPY ... FROM` side.
 
@@ -1224,7 +1248,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   copy_from_bind_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the user data set via `[[copy_function_set_user_data]]`.
     parameters:
       info:
@@ -1243,7 +1267,7 @@ functions:
 
   copy_from_bind_set_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the function's "bind data" from the bind callback.
 
@@ -1267,7 +1291,7 @@ functions:
 
   copy_from_bind_get_file_path:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Retrieves the path the `COPY ... FROM` statement reads from, as written in the statement.
 
@@ -1290,7 +1314,7 @@ functions:
 
   copy_from_bind_get_column_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns the number of columns the target table expects, i.e. the columns every batch the exec callback
       produces must carry, in this order.
@@ -1313,7 +1337,7 @@ functions:
 
   copy_from_bind_get_column_type:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Retrieves the type of the column at the given index.
 
@@ -1339,7 +1363,7 @@ functions:
 
   copy_from_bind_get_column_name:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Retrieves the name of the column at the given index.
 
@@ -1364,7 +1388,7 @@ functions:
 
   copy_from_bind_get_option_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns the number of options the `COPY` statement passed to the function.
 
@@ -1387,7 +1411,7 @@ functions:
 
   copy_from_bind_get_option_name:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Retrieves the name of the option at the given index.
 
@@ -1413,7 +1437,7 @@ functions:
 
   copy_from_bind_get_option_value:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Retrieves the value of the option at the given index.
 
@@ -1441,7 +1465,7 @@ functions:
 
   copy_from_bind_set_cardinality:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Reports the estimated number of rows the read will produce.
 
@@ -1468,7 +1492,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   copy_from_init_global_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the user data set via `[[copy_function_set_user_data]]`.
     parameters:
       info:
@@ -1487,7 +1511,7 @@ functions:
 
   copy_from_init_global_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the bind data set by the function's `COPY ... FROM` bind callback.
     parameters:
       info:
@@ -1506,7 +1530,7 @@ functions:
 
   copy_from_init_global_set_global_state:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the function's "global state" from the global init callback.
 
@@ -1529,7 +1553,7 @@ functions:
 
   copy_from_init_global_set_max_threads:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets how many threads may read the file in parallel.
 
@@ -1554,7 +1578,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   copy_from_init_local_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the user data set via `[[copy_function_set_user_data]]`.
     parameters:
       info:
@@ -1573,7 +1597,7 @@ functions:
 
   copy_from_init_local_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the bind data set by the function's `COPY ... FROM` bind callback.
     parameters:
       info:
@@ -1592,7 +1616,7 @@ functions:
 
   copy_from_init_local_get_global_state:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Retrieves the global state set by the function's global init callback.
 
@@ -1614,7 +1638,7 @@ functions:
 
   copy_from_init_local_set_local_state:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Sets the function's worker-local "local state" from the local init callback.
 
@@ -1641,7 +1665,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   copy_from_exec_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the user data set via `[[copy_function_set_user_data]]`.
     parameters:
       info:
@@ -1660,7 +1684,7 @@ functions:
 
   copy_from_exec_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the bind data set by the function's `COPY ... FROM` bind callback.
     parameters:
       info:
@@ -1679,7 +1703,7 @@ functions:
 
   copy_from_exec_get_global_state:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Retrieves the global state set by the function's global init callback.
 
@@ -1701,7 +1725,7 @@ functions:
 
   copy_from_exec_get_local_state:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the worker-local local state set by the function's local init callback.
     parameters:
       info:
@@ -1720,7 +1744,7 @@ functions:
 
   copy_from_exec_get_output_chunk:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Retrieves the output chunk the exec callback must write the next batch of rows into.
 
@@ -1750,7 +1774,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   copy_from_progress_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the user data set via `[[copy_function_set_user_data]]`.
     parameters:
       info:
@@ -1769,7 +1793,7 @@ functions:
 
   copy_from_progress_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: Retrieves the bind data set by the function's `COPY ... FROM` bind callback.
     parameters:
       info:
@@ -1788,7 +1812,7 @@ functions:
 
   copy_from_progress_get_global_state:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Retrieves the global state set by the function's global init callback.
 
@@ -1811,7 +1835,7 @@ functions:
 
   copy_from_progress_set_progress:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Reports how far the read has advanced.
 
@@ -1833,25 +1857,59 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   # Register
   #---------------------------------------------------------------------------------------------------------------------
-  copy_function_register:
+  connection_register_copy_function:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Registers the copy function, making it available as a `COPY` format.
 
-      The function is registered on the target given at creation: the connection's database or the loading
-      extension. Registration requires a name and at least one configured side: a `COPY ... TO` side needs its batch
-      and flush callbacks, a `COPY ... FROM` side needs its bind and exec callbacks. A statement in a direction the
-      function does not implement fails with an error. The caller still owns the handle after registration and must
-      destroy it with `[[copy_function_destroy]]`, which does not affect the registered function.
+      The function is registered on the connection's database, visible to every connection, in the connection's
+      transaction: inside an explicit transaction, it is invisible to other connections until the transaction commits,
+      and a rollback undoes it. Registration requires a name and at least one configured side: a `COPY ... TO` side
+      needs its batch and flush callbacks, a `COPY ... FROM` side needs its bind and exec callbacks. A statement in a
+      direction the function does not implement fails with an error. The copy function must have been created through a
+      factory of the same database. The caller still owns the handle after registration and must destroy it with
+      `[[copy_function_destroy]]`, which does not affect the registered function.
+    role: method
+    belongs_to: connection
     parameters:
+      conn:
+        type: connection
+        description: The connection to register on.
       function:
         type: copy_function
-        description: The function to register.
+        description: The copy function to register.
       err:
         type: error_info
         indirection: 1
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
+
+  extension_register_copy_function:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
+    description: |
+      Registers the copy function, making it available as a `COPY` format.
+
+      The function is registered on the loading extension's database and attributed to the extension. Use this from the
+      extension's load callback. Registration requires a name and at least one configured side: a `COPY ... TO` side
+      needs its batch and flush callbacks, a `COPY ... FROM` side needs its bind and exec callbacks. A statement in a
+      direction the function does not implement fails with an error. The copy function must have been created through a
+      factory of the same database. The caller still owns the handle after registration and must destroy it with
+      `[[copy_function_destroy]]`, which does not affect the registered function.
+    role: method
+    belongs_to: extension
+    parameters:
+      extension:
+        type: extension
+        description: The loading extension.
+      function:
+        type: copy_function
+        description: The copy function to register.
+      err:
+        type: error_info
+        indirection: 1
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
     return_type: ERROR
 
   #---------------------------------------------------------------------------------------------------------------------
@@ -1859,7 +1917,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   copy_function_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Destroys the copy function, releasing its resources.
 
@@ -1871,4 +1929,121 @@ functions:
         type: copy_function
         description: The function to destroy.
         indirection: 1
+    return_type: ERROR
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # COPY TO Statistics
+  #---------------------------------------------------------------------------------------------------------------------
+  copy_to_set_statistics_callback:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-09-18" ]
+    description: |
+      Sets the optional statistics callback of the `COPY ... TO` side.
+
+      The statistics callback reports statistics about a written file, such as the number of rows and bytes it
+      holds, which `COPY ... TO` returns when the statement asks for them with `RETURN_STATS`. It is invoked once
+      per output file, after the finalize callback of that file, and only when the statement asks for the
+      statistics. Without a statistics callback, `RETURN_STATS` is rejected for the function.
+    parameters:
+      function:
+        type: copy_function
+        description: The function to set the callback of.
+      callback:
+        type: copy_to_statistics_callback
+        description: The callback to set.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  copy_to_statistics_get_user_data:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-09-18" ]
+    description: Retrieves the user data set on the copy function via `[[copy_function_set_user_data]]`.
+    parameters:
+      info:
+        type: copy_to_statistics_info
+        description: The statistics info handle.
+      data:
+        type: void
+        indirection: 2
+        kind: OUT
+        description: Receives the user data pointer, or null if none was set.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  copy_to_statistics_get_bind_data:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-09-18" ]
+    description: Retrieves the bind data set by the function's `COPY ... TO` bind callback.
+    parameters:
+      info:
+        type: copy_to_statistics_info
+        description: The statistics info handle.
+      data:
+        type: void
+        indirection: 2
+        kind: OUT
+        description: Receives the bind data pointer, or null if none was set.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  copy_to_statistics_get_init_data:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-09-18" ]
+    description: Retrieves the init data set by the function's `COPY ... TO` init callback for the file being reported.
+    parameters:
+      info:
+        type: copy_to_statistics_info
+        description: The statistics info handle.
+      data:
+        type: void
+        indirection: 2
+        kind: OUT
+        description: Receives the init data pointer, or null if none was set.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  copy_to_statistics_set_row_count:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-09-18" ]
+    description: Reports how many rows were written to the file. Reported as 0 when the callback does not set it.
+    parameters:
+      info:
+        type: copy_to_statistics_info
+        description: The statistics info handle.
+      row_count:
+        type: idx
+        description: The number of rows written to the file.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  copy_to_statistics_set_file_size:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-09-18" ]
+    description: Reports the size of the written file in bytes. Reported as 0 when the callback does not set it.
+    parameters:
+      info:
+        type: copy_to_statistics_info
+        description: The statistics info handle.
+      file_size_bytes:
+        type: idx
+        description: The size of the file in bytes.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
     return_type: ERROR

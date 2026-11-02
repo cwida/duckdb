@@ -119,7 +119,7 @@ static vector<AutoCompleteSuggestion> ComputeSuggestions(vector<AutoCompleteCand
 		}
 		if (results.size() > fuzzy_suggestion_count) {
 			// after we exceed the "fuzzy_suggestion_count" we only accept exact suggestion matches
-			if (!StringUtil::StartsWith(StringUtil::Lower(result), lower_prefix)) {
+			if (!StringUtil::CIStartsWith(result, lower_prefix)) {
 				break;
 			}
 		}
@@ -213,8 +213,9 @@ vector<AutoCompleteSuggestion> GenerateAutoCompleteSuggestions(AutoCompleteCatal
 		// no suggestions found during tokenizing
 		// run the root matcher
 		TokenIterator token_iterator(tokens);
-		MatchContext match_context(suggestions, parse_allocator, max_token_index, MatchMode::RECOGNIZE_ONLY,
-		                           IdentifierCaseMode::PRESERVE_CASE, parameters.use_heap_based_parser);
+		ArenaAllocator process_allocator(Allocator::DefaultAllocator());
+		MatchContext match_context(suggestions, parse_allocator, process_allocator, max_token_index,
+		                           MatchMode::RECOGNIZE_ONLY, IdentifierCaseMode::PRESERVE_CASE);
 		MatchState state(token_iterator, match_context);
 		compiled_grammar->ProgramMatcher().MatchParseResult(state);
 	}
@@ -228,6 +229,7 @@ vector<AutoCompleteSuggestion> GenerateAutoCompleteSuggestions(AutoCompleteCatal
 		vector<AutoCompleteCandidate> new_suggestions;
 		switch (suggestion.type) {
 		case SuggestionState::SUGGEST_VARIABLE:
+		case SuggestionState::SUGGEST_BARE_LABEL:
 			// variables have no suggestions available
 			break;
 		case SuggestionState::SUGGEST_KEYWORD:

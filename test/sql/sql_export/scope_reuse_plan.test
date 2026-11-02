@@ -1,0 +1,273 @@
+# name: test/sql/sql_export/scope_reuse_plan.test
+# description: SQL export reuses scopes without unnecessary subqueries
+# group: [sql_export]
+
+statement ok
+CREATE TABLE t(i INTEGER, s VARCHAR);
+
+statement ok
+CREATE TABLE u(i INTEGER, v INTEGER);
+
+statement ok
+INSERT INTO t VALUES (0,'first'),(1,'a'),(1,'a'),(2,'b'),(4,'last'),(NULL,'n');
+
+statement ok
+INSERT INTO u VALUES (0,0),(1,10),(1,NULL),(3,30),(4,40),(NULL,50);
+
+query TT
+EXPLAIN (SQL) SELECT t.i,t.s,u.v FROM t JOIN u USING (i);
+----
+sql	<!REGEX>:.*[(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT t.i,t.s,u.v FROM t LEFT JOIN u USING (i);
+----
+sql	<!REGEX>:.*[(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT t.i,t.s,u.v FROM t FULL JOIN u USING (i);
+----
+sql	<!REGEX>:.*[(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT l.range,r.range FROM range(2) l CROSS JOIN range(2) r;
+----
+sql	<!REGEX>:.*[(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT t.i,t.s,u.v FROM t JOIN u USING (i);
+----
+sql	<REGEX>:^SELECT.*FROM [(].* JOIN .*
+
+query TT
+EXPLAIN (SQL) SELECT t.i,t.s,u.v FROM t LEFT JOIN u USING (i);
+----
+sql	<REGEX>:^SELECT.*FROM [(].* JOIN .*
+
+query TT
+EXPLAIN (SQL) SELECT t.i,t.s,u.v FROM t FULL JOIN u USING (i);
+----
+sql	<REGEX>:^SELECT.*FROM [(].* JOIN .*
+
+query TT
+EXPLAIN (SQL) SELECT l.range,r.range FROM range(2) l CROSS JOIN range(2) r;
+----
+sql	<REGEX>:^SELECT.*FROM [(].* JOIN .*
+
+query TT
+EXPLAIN (SQL) SELECT sum(x) FROM (SELECT i+1 AS x FROM (VALUES (1),(2),(4),(NULL)) t(i)) q WHERE x>2;
+----
+sql	<REGEX>:.*FROM [(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT sum(x) FROM (SELECT i+1 AS x FROM (VALUES (1),(2),(4),(NULL)) t(i)) q WHERE x>2;
+----
+sql	<!REGEX>:.*FROM [(][[:space:]]*SELECT.*FROM [(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT sum(i) FROM (VALUES (1),(2),(4),(NULL)) t(i) WHERE i+1>2;
+----
+sql	<!REGEX>:.*FROM [(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT i+2 FROM (VALUES (1),(2),(4),(NULL)) t(i) WHERE i+1>2;
+----
+sql	<!REGEX>:.*FROM [(][[:space:]]*SELECT.*
+
+statement ok
+PRAGMA disable_optimizer;
+
+query TT
+EXPLAIN (SQL) SELECT i FROM (SELECT i FROM (VALUES (1),(2),(3),(4),(NULL)) t(i) WHERE i>1) q WHERE i<4;
+----
+sql	<!REGEX>:.*FROM [(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT i FROM (SELECT i FROM (VALUES (1),(2),(3),(4),(NULL)) t(i) WHERE i+1>1) q WHERE i<4;
+----
+sql	<REGEX>:.*FROM [(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT i FROM (SELECT i FROM (VALUES (1),(2),(3),(4),(NULL)) t(i) WHERE i+1>1) q WHERE i<4;
+----
+sql	<!REGEX>:.*FROM [(][[:space:]]*SELECT.*FROM [(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT i FROM (SELECT i FROM (VALUES (1),(2),(3),(4),(NULL)) t(i) WHERE random()>=0) q WHERE i>1;
+----
+sql	<REGEX>:.*FROM [(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT i FROM (SELECT i FROM (VALUES (1),(2),(3),(4),(NULL)) t(i) WHERE random()>=0) q WHERE i>1;
+----
+sql	<!REGEX>:.*FROM [(][[:space:]]*SELECT.*FROM [(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT s FROM (SELECT s FROM (VALUES ('1'),('bad')) t(s) WHERE s!='bad') q WHERE CAST(s AS INTEGER)>0;
+----
+sql	<REGEX>:.*FROM [(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT s FROM (SELECT s FROM (VALUES ('1'),('bad')) t(s) WHERE s!='bad') q WHERE CAST(s AS INTEGER)>0;
+----
+sql	<!REGEX>:.*FROM [(][[:space:]]*SELECT.*FROM [(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT CAST(s AS INTEGER) FROM (VALUES ('1'),('bad')) t(s) WHERE s!='bad';
+----
+sql	<!REGEX>:.*FROM [(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT i+1 FROM (VALUES (1),(2),(NULL)) t(i) WHERE random()>=0;
+----
+sql	<!REGEX>:.*FROM [(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT sum(i) FROM (VALUES (1),(2),(NULL)) t(i) WHERE random()>=0;
+----
+sql	<!REGEX>:.*FROM [(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT x,x FROM (SELECT i+1 AS x FROM (VALUES (1),(2),(2),(NULL)) t(i)) q;
+----
+sql	<REGEX>:.*FROM [(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT x,x FROM (SELECT i+1 AS x FROM (VALUES (1),(2),(2),(NULL)) t(i)) q;
+----
+sql	<!REGEX>:.*FROM [(][[:space:]]*SELECT.*FROM [(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT x,x FROM (SELECT random() AS x FROM (VALUES (1),(2),(2)) t(i)) q;
+----
+sql	<REGEX>:.*FROM [(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT x,x FROM (SELECT random() AS x FROM (VALUES (1),(2),(2)) t(i)) q;
+----
+sql	<!REGEX>:.*FROM [(][[:space:]]*SELECT.*FROM [(][[:space:]]*SELECT.*
+
+statement ok
+CREATE SEQUENCE export_sequence;
+
+query TT
+EXPLAIN (SQL) SELECT x,x FROM (SELECT nextval('export_sequence') AS x FROM (VALUES (1),(2),(2)) t(i)) q;
+----
+sql	<REGEX>:.*FROM [(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT x,x FROM (SELECT nextval('export_sequence') AS x FROM (VALUES (1),(2),(2)) t(i)) q;
+----
+sql	<!REGEX>:.*FROM [(][[:space:]]*SELECT.*FROM [(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT x,x FROM (SELECT CAST(s AS INTEGER) AS x FROM (VALUES ('1'),('bad')) t(s)) q;
+----
+sql	<REGEX>:.*FROM [(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT x,x FROM (SELECT CAST(s AS INTEGER) AS x FROM (VALUES ('1'),('bad')) t(s)) q;
+----
+sql	<!REGEX>:.*FROM [(][[:space:]]*SELECT.*FROM [(][[:space:]]*SELECT.*
+
+statement ok
+PRAGMA enable_optimizer;
+
+# Ordering, windows, and UNNEST reuse the same plain input scope.
+statement ok
+SET disabled_optimizers='compressed_materialization';
+
+statement ok
+CREATE TABLE scope_input(i INTEGER,xs INTEGER[]);
+
+statement ok
+INSERT INTO scope_input VALUES (1,[1,2]),(2,[3]),(NULL,NULL);
+
+query TT
+EXPLAIN (SQL) SELECT i FROM scope_input ORDER BY i;
+----
+sql	<!REGEX>:.*[(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT i FROM scope_input WHERE i>0 ORDER BY i LIMIT 1 OFFSET 1;
+----
+sql	<!REGEX>:.*[(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT i,row_number() OVER(ORDER BY i) FROM scope_input WHERE i>0;
+----
+sql	<!REGEX>:.*[(][[:space:]]*SELECT.*
+
+# UNNEST retains its output projection but no longer wraps its plain input.
+query TT
+EXPLAIN (SQL) SELECT i,unnest(xs) FROM scope_input WHERE i>0;
+----
+sql	<REGEX>:.*[(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT i,unnest(xs) FROM scope_input WHERE i>0;
+----
+sql	<!REGEX>:.*[(][[:space:]]*SELECT.*[(][[:space:]]*SELECT.*
+
+# Computed expressions and existing evaluation stages still require boundaries.
+
+query TT
+EXPLAIN (SQL) SELECT i+1 FROM scope_input ORDER BY 1;
+----
+sql	<REGEX>:.*[(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT i FROM (SELECT i FROM scope_input LIMIT 1) q ORDER BY i;
+----
+sql	<REGEX>:.*[(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT v,row_number() OVER(ORDER BY v) FROM (SELECT i+1 v FROM scope_input) q;
+----
+sql	<REGEX>:.*[(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT x,unnest(x) FROM (SELECT list_value(i,i+1) x FROM scope_input) q;
+----
+sql	<REGEX>:.*[(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT DISTINCT i FROM scope_input ORDER BY i;
+----
+sql	<REGEX>:.*[(][[:space:]]*SELECT.*[(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT i FROM scope_input USING SAMPLE 100% ORDER BY i;
+----
+sql	<REGEX>:.*[(][[:space:]]*SELECT.*[(][[:space:]]*SELECT.*
+
+# Ordinary column grouping needs no key-staging scope; the window still has its own scope.
+# Keep the OVER () windows as windows rather than rewriting them into a cross join.
+statement ok
+SET disabled_optimizers='window_self_join';
+
+query TT
+EXPLAIN (SQL) SELECT sum(n) OVER() FROM (SELECT i,count(*) n FROM scope_input GROUP BY i) q;
+----
+sql	<REGEX>:.*[(][[:space:]]*SELECT.*[(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT sum(n) OVER() FROM (SELECT i,count(*) n FROM scope_input GROUP BY i) q;
+----
+sql	<!REGEX>:.*[(][[:space:]]*SELECT.*[(][[:space:]]*SELECT.*[(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT sum(n) OVER() FROM (SELECT row_number() OVER(ORDER BY i) n FROM scope_input) q;
+----
+sql	<REGEX>:.*[(][[:space:]]*SELECT.*[(][[:space:]]*SELECT.*
+
+statement ok
+RESET disabled_optimizers;
+
+query TT
+EXPLAIN (SQL) SELECT unnest(v) FROM (SELECT unnest([[i],[i+1]]) v FROM scope_input) q;
+----
+sql	<REGEX>:.*[(][[:space:]]*SELECT.*[(][[:space:]]*SELECT.*
+
+statement ok
+RESET disabled_optimizers;

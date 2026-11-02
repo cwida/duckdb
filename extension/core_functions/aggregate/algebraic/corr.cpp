@@ -7,7 +7,10 @@
 namespace duckdb {
 
 AggregateFunction CorrFun::GetFunction() {
-	return AggregateFunction::BinaryAggregate<CorrState, double, double, double, CorrOperation>(
+	auto fun = AggregateFunction::BinaryAggregate<CorrState, double, double, double, CorrOperation>(
 	    LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE);
+	fun.GetSignature().GetParameter(0).SetName("y");
+	fun.GetSignature().GetParameter(1).SetName("x");
+	return fun;
 }
 } // namespace duckdb

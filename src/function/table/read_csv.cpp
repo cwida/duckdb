@@ -1,4 +1,6 @@
+#include "duckdb/common/multi_file/table_function_multi_file.hpp"
 #include "duckdb/function/table/read_csv.hpp"
+#include "duckdb/catalog/catalog.hpp"
 #include "duckdb/function/table/read_duckdb.hpp"
 
 #include "duckdb/common/enum_util.hpp"
@@ -30,7 +32,7 @@
 #include <limits>
 #include "duckdb/execution/operator/csv_scanner/csv_schema.hpp"
 #include "duckdb/common/multi_file/multi_file_function.hpp"
-#include "duckdb/execution/operator/csv_scanner/csv_multi_file_info.hpp"
+#include "duckdb/execution/operator/csv_scanner/csv_schema_discovery.hpp"
 
 namespace duckdb {
 
@@ -56,53 +58,59 @@ void ReadCSVData::FinalizeRead(ClientContext &context) {
 }
 
 void ReadCSVTableFunction::ReadCSVAddNamedParameters(TableFunction &table_function) {
-	table_function.named_parameters["sep"] = LogicalType::VARCHAR;
-	table_function.named_parameters["delim"] = LogicalType::VARCHAR;
-	table_function.named_parameters["quote"] = LogicalType::VARCHAR;
-	table_function.named_parameters["new_line"] = LogicalType::VARCHAR;
-	table_function.named_parameters["escape"] = LogicalType::VARCHAR;
-	table_function.named_parameters["nullstr"] = LogicalType::ANY;
-	table_function.named_parameters["columns"] = LogicalType::ANY;
-	table_function.named_parameters["auto_type_candidates"] = LogicalType::ANY;
-	table_function.named_parameters["header"] = LogicalType::BOOLEAN;
-	table_function.named_parameters["auto_detect"] = LogicalType::BOOLEAN;
-	table_function.named_parameters["sample_size"] = LogicalType::BIGINT;
-	table_function.named_parameters["all_varchar"] = LogicalType::BOOLEAN;
-	table_function.named_parameters["dateformat"] = LogicalType::VARCHAR;
-	table_function.named_parameters["timestampformat"] = LogicalType::VARCHAR;
-	table_function.named_parameters["normalize_names"] = LogicalType::BOOLEAN;
-	table_function.named_parameters["compression"] = LogicalType::VARCHAR;
-	table_function.named_parameters["skip"] = LogicalType::BIGINT;
-	table_function.named_parameters["max_line_size"] = LogicalType::VARCHAR;
-	table_function.named_parameters["maximum_line_size"] = LogicalType::VARCHAR;
-	table_function.named_parameters["ignore_errors"] = LogicalType::BOOLEAN;
-	table_function.named_parameters["store_rejects"] = LogicalType::BOOLEAN;
-	table_function.named_parameters["rejects_table"] = LogicalType::VARCHAR;
-	table_function.named_parameters["rejects_scan"] = LogicalType::VARCHAR;
-	table_function.named_parameters["rejects_limit"] = LogicalType::BIGINT;
-	table_function.named_parameters["rejects_line_size_limit"] = LogicalType::BIGINT;
-	table_function.named_parameters["force_not_null"] = LogicalType::LIST(LogicalType::VARCHAR);
-	table_function.named_parameters["buffer_size"] = LogicalType::UBIGINT;
-	table_function.named_parameters["decimal_separator"] = LogicalType::VARCHAR;
-	table_function.named_parameters["parallel"] = LogicalType::BOOLEAN;
-	table_function.named_parameters["null_padding"] = LogicalType::BOOLEAN;
-	table_function.named_parameters["allow_quoted_nulls"] = LogicalType::BOOLEAN;
-	table_function.named_parameters["column_types"] = LogicalType::ANY;
-	table_function.named_parameters["dtypes"] = LogicalType::ANY;
-	table_function.named_parameters["types"] = LogicalType::ANY;
-	table_function.named_parameters["names"] = LogicalType::LIST(LogicalType::VARCHAR);
-	table_function.named_parameters["column_names"] = LogicalType::LIST(LogicalType::VARCHAR);
-	table_function.named_parameters["comment"] = LogicalType::VARCHAR;
-	table_function.named_parameters["encoding"] = LogicalType::VARCHAR;
-	table_function.named_parameters["strict_mode"] = LogicalType::BOOLEAN;
-	table_function.named_parameters["thousands"] = LogicalType::VARCHAR;
-	table_function.named_parameters["files_to_sniff"] = LogicalType::BIGINT;
-
-	MultiFileReader::AddParameters(table_function);
+	// the reader keeps the default of every option in CSVReaderOptions - an option the call leaves out is not passed
+	table_function.GetSignature().WithTypedKwargs("options", [](TypedKwargs &options) {
+		options.Add("sep", LogicalType::VARCHAR)
+		    .Add("delim", LogicalType::VARCHAR)
+		    .Add("separator", LogicalType::VARCHAR)
+		    .Add("delimiter", LogicalType::VARCHAR)
+		    .Add("null", LogicalType::ANY)
+		    .Add("date_format", LogicalType::VARCHAR)
+		    .Add("timestamp_format", LogicalType::VARCHAR)
+		    .Add("quote", LogicalType::VARCHAR)
+		    .Add("new_line", LogicalType::VARCHAR)
+		    .Add("escape", LogicalType::VARCHAR)
+		    .Add("nullstr", LogicalType::ANY)
+		    .Add("columns", LogicalType::ANY)
+		    .Add("auto_type_candidates", LogicalType::ANY)
+		    .Add("header", LogicalType::BOOLEAN)
+		    .Add("auto_detect", LogicalType::BOOLEAN)
+		    .Add("sample_size", LogicalType::BIGINT)
+		    .Add("all_varchar", LogicalType::BOOLEAN)
+		    .Add("dateformat", LogicalType::VARCHAR)
+		    .Add("timestampformat", LogicalType::VARCHAR)
+		    .Add("normalize_names", LogicalType::BOOLEAN)
+		    .Add("compression", LogicalType::VARCHAR)
+		    .Add("skip", LogicalType::BIGINT)
+		    .Add("max_line_size", LogicalType::BIGINT)
+		    .Add("maximum_line_size", LogicalType::BIGINT)
+		    .Add("ignore_errors", LogicalType::BOOLEAN)
+		    .Add("store_rejects", LogicalType::BOOLEAN)
+		    .Add("rejects_table", LogicalType::VARCHAR)
+		    .Add("rejects_scan", LogicalType::VARCHAR)
+		    .Add("rejects_limit", LogicalType::BIGINT)
+		    .Add("rejects_line_size_limit", LogicalType::BIGINT)
+		    .Add("force_not_null", LogicalType::LIST(LogicalType::VARCHAR))
+		    .Add("buffer_size", LogicalType::BIGINT)
+		    .Add("decimal_separator", LogicalType::VARCHAR)
+		    .Add("parallel", LogicalType::BOOLEAN)
+		    .Add("null_padding", LogicalType::BOOLEAN)
+		    .Add("allow_quoted_nulls", LogicalType::BOOLEAN)
+		    .Add("column_types", LogicalType::ANY)
+		    .Add("dtypes", LogicalType::ANY)
+		    .Add("types", LogicalType::ANY)
+		    .Add("names", LogicalType::LIST(LogicalType::VARCHAR))
+		    .Add("column_names", LogicalType::LIST(LogicalType::VARCHAR))
+		    .Add("comment", LogicalType::VARCHAR)
+		    .Add("encoding", LogicalType::VARCHAR)
+		    .Add("strict_mode", LogicalType::BOOLEAN)
+		    .Add("thousands", LogicalType::VARCHAR)
+		    .Add("files_to_sniff", LogicalType::BIGINT);
+	});
 }
 
 static void CSVReaderSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data_p,
-                               const TableFunction &function) {
+                               const BoundTableFunction &function) {
 	throw NotImplementedException("CSVReaderSerialize not implemented");
 	// auto &bind_data = bind_data_p->Cast<MultiFileBindData>();
 	// auto &csv_data = bind_data.bind_data->Cast<ReadCSVData>();
@@ -119,7 +127,7 @@ static void CSVReaderSerialize(Serializer &serializer, const optional_ptr<Functi
 	// serializer.WriteProperty(101, "csv_data", serialized_data);
 }
 
-static unique_ptr<FunctionData> CSVReaderDeserialize(Deserializer &deserializer, TableFunction &function) {
+static unique_ptr<FunctionData> CSVReaderDeserialize(Deserializer &deserializer, BoundTableFunction &function) {
 	throw NotImplementedException("CSVReaderDeserialize not implemented");
 	// auto &context = deserializer.Get<ClientContext &>();
 	// SerializedReadCSVData serialized_data;
@@ -149,6 +157,12 @@ static bool PushdownProjectionExpression(ClientContext &context, const TableFunc
 	const auto &cast = input.expr.Cast<BoundFunctionExpression>();
 	const auto &target_type = cast.GetReturnType();
 	auto &bind_data = input.get.bind_data->Cast<MultiFileBindData>();
+	// With a custom schema (the 'schema' option, or a MultiFileReader that binds its own schema) the files are mapped
+	// onto that schema, not onto bind_data.columns, so retyping the columns would not reach the column mapping.
+	// See test/optimizer/pushdown/csv_type_pushdown_schema.test
+	if (!bind_data.reader_bind.schema.empty()) {
+		return false;
+	}
 	const idx_t idx = input.get.GetColumnIds()[input.column_index].GetPrimaryIndex();
 	// Hive-partition and filename columns are produced from the file path by
 	// separate finalize expressions, not parsed from the file. Retyping them
@@ -167,13 +181,30 @@ static bool PushdownProjectionExpression(ClientContext &context, const TableFunc
 	return true;
 }
 
+//! The same, for the multi-file wrapper around read_single_csv_file - every file is bound against the schema of the
+//! scan, so the pushed-down type has to be applied there too. That way the CSV reader converts to it itself, and
+//! "ignore_errors" applies to the conversions that fail
+static bool PushdownProjectionExpressionMultiFile(ClientContext &context,
+                                                  const TableFunctionProjectionExpressionInput &input) {
+	if (!PushdownProjectionExpression(context, input)) {
+		return false;
+	}
+	auto &bind_data = input.get.bind_data->Cast<MultiFileBindData>();
+	auto &data = bind_data.bind_data->Cast<TableFunctionMultiFileData>();
+	const idx_t idx = input.get.GetColumnIds()[input.column_index].GetPrimaryIndex();
+	if (idx < data.options.expected_types.size()) {
+		data.options.expected_types[idx] = input.expr.Cast<BoundFunctionExpression>().GetReturnType();
+	}
+	return true;
+}
+
 TableFunction ReadCSVTableFunction::GetFunction() {
-	MultiFileFunction<CSVMultiFileInfo> read_csv("read_csv");
+	// the multi-file CSV reader is the single-file CSV reader wrapped into a multi-file function
+	auto read_csv = ReadCSVTableFunction::GetMultiFileFunction("read_csv");
 	read_csv.serialize = CSVReaderSerialize;
 	read_csv.deserialize = CSVReaderDeserialize;
-	read_csv.projection_expression_pushdown = PushdownProjectionExpression;
-	ReadCSVAddNamedParameters(read_csv);
-	return static_cast<TableFunction>(read_csv);
+	read_csv.projection_expression_pushdown = PushdownProjectionExpressionMultiFile;
+	return read_csv;
 }
 
 TableFunction ReadCSVTableFunction::GetAutoFunction() {
@@ -185,6 +216,10 @@ TableFunction ReadCSVTableFunction::GetAutoFunction() {
 void ReadCSVTableFunction::RegisterFunction(BuiltinFunctions &set) {
 	set.AddFunction(MultiFileReader::CreateFunctionSet(ReadCSVTableFunction::GetFunction()));
 	set.AddFunction(MultiFileReader::CreateFunctionSet(ReadCSVTableFunction::GetAutoFunction()));
+	// the single-file CSV reader that read_csv is built on
+	TableFunctionSet single_file_set("read_single_csv_file");
+	single_file_set.AddFunction(ReadCSVTableFunction::GetSingleFileFunction());
+	set.AddFunction(std::move(single_file_set));
 }
 
 unique_ptr<TableRef> ReadCSVReplacement(ClientContext &context, ReplacementScanInput &input,
@@ -206,7 +241,7 @@ unique_ptr<TableRef> ReadCSVReplacement(ClientContext &context, ReplacementScanI
 	}
 	auto table_function = make_uniq<TableFunctionRef>();
 	vector<unique_ptr<ParsedExpression>> children;
-	children.push_back(make_uniq<ConstantExpression>(Value(table_name)));
+	children.push_back(ConstantExpression::String(table_name));
 	table_function->function = make_uniq<FunctionExpression>("read_csv_auto", std::move(children));
 
 	if (!FileSystem::HasGlob(table_name)) {

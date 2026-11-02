@@ -87,8 +87,11 @@ void StandardColumnData::Filter(TransactionData transaction, idx_t vector_index,
 	auto scan_type = GetVectorScanType(state, target_count, result);
 	bool scan_entire_vector = scan_type == ScanVectorType::SCAN_ENTIRE_VECTOR;
 	bool verify_fetch_row = state.scan_options && state.scan_options->force_fetch_row;
-	if (!has_filter || !validity_has_filter || !scan_entire_vector || verify_fetch_row) {
+	if (!has_filter || !validity_has_filter || !scan_entire_vector || verify_fetch_row || filter_state.can_throw) {
 		// we are not scanning an entire vector - this can have several causes (updates, etc)
+		// a filter that can throw is excluded as well: the compression-level filters evaluate it over the distinct
+		// values of the segment (e.g. the dictionary, or the RLE runs), which includes values of rows that another
+		// filter already removed - pushing the filter down there must not raise errors that would not occur otherwise
 		ColumnData::Filter(transaction, vector_index, state, result, sel, count, filter, filter_state);
 		return;
 	}
@@ -110,14 +113,13 @@ void StandardColumnData::Select(TransactionData transaction, idx_t vector_index,
 	bool validity_has_select = validity_compression && validity_compression->select;
 	auto target_count = GetVectorCount(vector_index);
 	auto scan_type = GetVectorScanType(state, target_count, result);
-	bool scan_entire_vector = scan_type == ScanVectorType::SCAN_ENTIRE_VECTOR;
-	if (!has_select || !validity_has_select || !scan_entire_vector) {
-		// we are not scanning an entire vector - this can have several causes (updates, etc)
+	if (!has_select || !validity_has_select || HasUpdates() || validity->HasUpdates()) {
+		// the updates need to be merged into the entire vector, so we cannot select
 		ColumnData::Select(transaction, vector_index, state, result, sel, sel_count);
 		return;
 	}
-	SelectVector(state, result, target_count, sel, sel_count);
-	validity->SelectVector(state.child_states[0], result, target_count, sel, sel_count);
+	SelectVector(state, result, target_count, sel, sel_count, scan_type);
+	validity->SelectVector(state.child_states[0], result, target_count, sel, sel_count, scan_type);
 }
 
 void StandardColumnData::InitializeAppend(ColumnAppendState &state) {

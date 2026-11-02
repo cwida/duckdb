@@ -1,0 +1,69 @@
+# name: test/sql/sql_export/table_row_number_sql_export.test
+# description: Export visible table row numbers with deleted rows and shadowing column names
+# group: [sql_export]
+
+statement ok
+CREATE SCHEMA "number space";
+
+statement ok
+CREATE TABLE "number space".numbers AS SELECT * FROM (VALUES (10,'a',{'x':1}),(20,NULL,{'x':2}),(30,'c',{'x':NULL}),(40,'d',{'x':4})) t(rowid,column0,s);
+
+statement ok
+DELETE FROM "number space".numbers WHERE rowid=20;
+
+statement ok
+CHECKPOINT;
+
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO "number space".numbers VALUES (50,'e',{'x':5});
+
+query IITI
+SELECT rowid,n,column0,s.x FROM (SELECT *,row_number() OVER () n FROM "number space".numbers) t ORDER BY rowid;
+----
+10	1	a	1
+30	2	c	NULL
+40	3	d	4
+50	4	e	5
+
+query II
+SELECT n,n FROM (SELECT row_number() OVER () n FROM "number space".numbers) t LIMIT 3;
+----
+1	1
+2	2
+3	3
+
+query II
+SELECT rowid,n FROM (SELECT rowid,row_number() OVER () n FROM "number space".numbers) t WHERE rowid>=40 ORDER BY rowid;
+----
+40	3
+50	4
+
+query I
+SELECT row_number() OVER () FROM "number space".numbers LIMIT 1;
+----
+1
+
+statement ok
+SET disabled_optimizers='window_rewriter';
+
+query II
+SELECT rowid,n FROM (SELECT rowid,row_number() OVER () n FROM "number space".numbers) t WHERE rowid>=40 ORDER BY rowid;
+----
+40	3
+50	4
+
+statement ok
+RESET disabled_optimizers;
+
+statement ok
+DELETE FROM "number space".numbers;
+
+query I
+SELECT row_number() OVER () FROM "number space".numbers;
+----
+
+statement ok
+ROLLBACK;

@@ -1,0 +1,389 @@
+# name: test/optimizer/unused_window_columns.test
+# description: Prune unused window outputs and preserve live bindings and input dependencies
+# group: [optimizer]
+
+statement ok
+SET explain_output = 'optimized_only';
+
+# Correlated UNNEST no longer needs the row number introduced for its domain.
+query I
+WITH a AS MATERIALIZED (SELECT [1, 2] AS xs)
+SELECT sum(x) FROM a, LATERAL (SELECT unnest(a.xs) AS x) u;
+----
+3
+
+query II
+EXPLAIN WITH a AS MATERIALIZED (SELECT [1, 2] AS xs)
+SELECT sum(x) FROM a, LATERAL (SELECT unnest(a.xs) AS x) u;
+----
+logical_opt	<!REGEX>:(?i).*\bwindow\b.*
+
+query II
+EXPLAIN WITH a AS MATERIALIZED (SELECT [1, 2] AS xs)
+SELECT sum(x) FROM a, unnest(a.xs) u(x);
+----
+logical_opt	<!REGEX>:(?i).*\bwindow\b.*
+
+query I
+WITH a AS MATERIALIZED (
+    SELECT * FROM (VALUES ([1, 1]::INTEGER[]), ([1, 1]::INTEGER[]),
+        ([]::INTEGER[]), (NULL::INTEGER[]), ([NULL, 2]::INTEGER[])) t(xs)
+)
+SELECT x FROM a, LATERAL (SELECT unnest(a.xs) AS x) u ORDER BY x NULLS LAST;
+----
+1
+1
+1
+1
+2
+NULL
+
+# Removing every window must preserve cardinality, including empty input.
+query I
+WITH a AS MATERIALIZED (SELECT i FROM range(3) t(i))
+SELECT count(*) FROM (SELECT row_number() OVER () AS rn, sum(i) OVER () AS s FROM a) t;
+----
+3
+
+query II
+EXPLAIN WITH a AS MATERIALIZED (SELECT i FROM range(3) t(i))
+SELECT count(*) FROM (SELECT row_number() OVER () AS rn, sum(i) OVER () AS s FROM a) t;
+----
+logical_opt	<!REGEX>:(?i).*\bwindow\b.*
+
+query I
+SELECT count(*) FROM (SELECT row_number() OVER () FROM range(0)) t;
+----
+0
+
+# Drop both leading and middle outputs, retaining reordered scalar and nested outputs.
+statement ok
+CREATE TABLE window_input AS SELECT i, i % 2 AS k FROM range(4) t(i);
+
+query III rowsort
+SELECT s, i, n FROM (
+    SELECT i, row_number() OVER () AS unused_rn, sum(i) OVER () AS s,
+           rank() OVER (ORDER BY i) AS unused_rank,
+           lead(i) OVER (ORDER BY i) AS n
+    FROM window_input
+) t;
+----
+6	0	1
+6	1	2
+6	2	3
+6	3	NULL
+
+query II
+EXPLAIN SELECT s, i, n FROM (
+    SELECT i, row_number() OVER () AS unused_rn, sum(i) OVER () AS s,
+           rank() OVER (ORDER BY i) AS unused_rank,
+           lead(i) OVER (ORDER BY i) AS n
+    FROM window_input
+) t;
+----
+logical_opt	<!REGEX>:.*(row_number|rank).*
+
+query III rowsort
+SELECT v.a, v.b[1], i FROM (
+    SELECT i, row_number() OVER () AS unused_rn,
+           first_value({'a': i, 'b': [i, i + 10]}) OVER (ORDER BY i) AS v
+    FROM window_input
+) t;
+----
+0	0	0
+0	0	1
+0	0	2
+0	0	3
+
+# Partitioning, ordering and framing do not make an unused output live.
+query II
+EXPLAIN SELECT i FROM (
+    SELECT i, sum(i) OVER (PARTITION BY k ORDER BY i ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS s,
+           row_number(ORDER BY i DESC) OVER () AS rn
+    FROM window_input
+) t;
+----
+logical_opt	<!REGEX>:(?i).*\bwindow\b.*
+
+# Retained window expressions must keep their own inputs, even if those inputs are not projected.
+query I rowsort
+SELECT s FROM (
+    SELECT row_number() OVER () AS unused_rn,
+           sum(i) OVER (PARTITION BY k ORDER BY i ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS s
+    FROM window_input
+) t;
+----
+0
+1
+2
+4
+
+# References in filters, QUALIFY and ordering keep the window output alive.
+query I
+WITH a AS MATERIALIZED (SELECT i FROM range(3) t(i))
+SELECT i FROM (SELECT i, row_number() OVER (ORDER BY i) AS rn FROM a) t WHERE rn = 2;
+----
+1
+
+query I rowsort
+SELECT i FROM window_input QUALIFY row_number() OVER (PARTITION BY k ORDER BY i DESC) = 1;
+----
+2
+3
+
+query I
+SELECT i FROM window_input ORDER BY row_number() OVER (ORDER BY i DESC);
+----
+3
+2
+1
+0
+
+# All consumers of a shared CTE participate in the liveness decision.
+query I
+WITH a AS MATERIALIZED (SELECT i, row_number() OVER (ORDER BY i) AS rn FROM range(3) t(i))
+SELECT sum(i) FROM a UNION ALL SELECT sum(rn) FROM a;
+----
+3
+6
+
+query II
+WITH a AS MATERIALIZED (
+    SELECT i, row_number() OVER () AS unused_rn, sum(i) OVER () AS s FROM window_input
+)
+SELECT a.i, b.s FROM a JOIN a b ON a.i = b.i ORDER BY a.i;
+----
+0	6
+1	6
+2	6
+3	6
+
+# Recursive dependency analysis must agree with the subsequent pruning pass.
+query I
+WITH RECURSIVE r(i, unused) AS (
+    SELECT 1, 10
+    UNION ALL
+    SELECT i + 1, unused FROM (
+        SELECT i, unused, sum(unused) OVER () AS unused_s FROM r
+    ) t WHERE i < 3
+)
+SELECT i FROM r ORDER BY i;
+----
+1
+2
+3
+
+query I
+WITH RECURSIVE r(i, step, unused) AS (
+    SELECT 1, 1, 10
+    UNION ALL
+    SELECT i + CAST(s AS INTEGER), step, unused FROM (
+        SELECT i, step, unused, sum(step) OVER () AS s FROM r
+    ) t WHERE i < 3
+)
+SELECT i FROM r ORDER BY i;
+----
+1
+2
+3
+
+query II
+WITH a AS MATERIALIZED (SELECT [4, 4, 7] AS xs)
+SELECT x, n FROM a, unnest(a.xs) WITH ORDINALITY u(x, n) ORDER BY n;
+----
+4	1
+4	2
+7	3
+
+# Unused volatile windows must still evaluate their side effects.
+statement ok
+CREATE SEQUENCE unused_window_sequence;
+
+query I
+SELECT count(*) FROM (
+    SELECT sum(nextval('unused_window_sequence')) OVER () AS unused_s FROM range(3)
+) t;
+----
+3
+
+query I
+SELECT currval('unused_window_sequence');
+----
+3
+
+query I
+SELECT count(*) FROM (SELECT ntile(0) OVER () AS unused_n FROM range(2)) t;
+----
+2
+
+# An expression that is still used retains its effects and errors.
+query I
+SELECT s FROM (SELECT sum(nextval('unused_window_sequence')) OVER () AS s FROM range(2)) t;
+----
+9
+9
+
+statement error
+SELECT ntile(0) OVER () FROM range(2);
+----
+Argument for ntile must be greater than zero
+
+statement error
+SELECT 1 FROM (SELECT sum(missing_column) OVER () FROM window_input) t;
+----
+Referenced column "missing_column" not found
+
+# Volatile ordering is rejected before the unused window could be pruned.
+statement ok
+CREATE SEQUENCE window_order_sequence;
+
+statement error
+SELECT count(*) FROM (SELECT row_number() OVER (ORDER BY nextval('window_order_sequence')) AS unused_w FROM range(3) t(i)) t;
+----
+ORDER BY window expressions cannot be volatile
+
+# Volatile partitioning is rejected as well.
+statement ok
+CREATE SEQUENCE window_partition_sequence;
+
+statement error
+SELECT count(*) FROM (SELECT row_number() OVER (PARTITION BY nextval('window_partition_sequence')) AS unused_w FROM range(3) t(i)) t;
+----
+PARTITION BY window expressions cannot be volatile
+
+# Volatility in filter must keep the unused window and its inputs alive.
+statement ok
+CREATE SEQUENCE window_filter_sequence;
+
+query I
+SELECT count(*) FROM (SELECT sum(i) FILTER (WHERE nextval('window_filter_sequence') > 0) OVER () AS unused_w FROM range(3) t(i)) t;
+----
+3
+
+query I
+SELECT currval('window_filter_sequence');
+----
+3
+
+# Volatility in frame must keep the unused window and its inputs alive.
+statement ok
+CREATE SEQUENCE window_frame_sequence;
+
+query I
+SELECT count(*) FROM (SELECT sum(i) OVER (ORDER BY i ROWS BETWEEN nextval('window_frame_sequence') PRECEDING AND CURRENT ROW) AS unused_w FROM range(3) t(i)) t;
+----
+3
+
+query I
+SELECT currval('window_frame_sequence');
+----
+3
+
+# Volatility in arg_order must keep the unused window and its inputs alive.
+statement ok
+CREATE SEQUENCE window_arg_order_sequence;
+
+query I
+SELECT count(*) FROM (SELECT first_value(i ORDER BY nextval('window_arg_order_sequence')) OVER () AS unused_w FROM range(3) t(i)) t;
+----
+3
+
+query I
+SELECT currval('window_arg_order_sequence');
+----
+3
+
+# Volatility in lambda must keep the unused window and its inputs alive.
+statement ok
+CREATE SEQUENCE window_lambda_sequence;
+
+query I
+SELECT count(*) FROM (SELECT sum(list_sum(list_transform([i], lambda x: nextval('window_lambda_sequence')))) OVER () AS unused_w FROM range(3) t(i)) t;
+----
+3
+
+query I
+SELECT currval('window_lambda_sequence');
+----
+3
+
+# Volatility in nested_lambda must keep the unused window and its inputs alive.
+statement ok
+CREATE SEQUENCE window_nested_lambda_sequence;
+
+query I
+SELECT count(*) FROM (SELECT sum(list_sum(list_transform([i], lambda x: list_sum(list_transform([x], lambda y: nextval('window_nested_lambda_sequence')))))) OVER () AS unused_w FROM range(3) t(i)) t;
+----
+3
+
+query I
+SELECT currval('window_nested_lambda_sequence');
+----
+3
+
+# A volatile output without readers still participates in index compaction.
+statement ok
+CREATE SEQUENCE mixed_window_sequence;
+
+query II
+SELECT i, s FROM (
+    SELECT i, row_number() OVER () AS unused_rn,
+           sum(nextval('mixed_window_sequence')) OVER () AS unused_volatile,
+           rank() OVER (ORDER BY i) AS unused_rank, sum(i) OVER () AS s
+    FROM range(3) t(i)
+) t ORDER BY i;
+----
+0	3
+1	3
+2	3
+
+query I
+SELECT currval('mixed_window_sequence');
+----
+3
+
+# Separate volatile lambda occurrences must not be merged.
+statement ok
+CREATE SEQUENCE separate_lambda_sequence;
+
+statement ok
+SELECT sum(list_sum(list_transform([i], lambda x: nextval('separate_lambda_sequence')))) OVER (),
+       sum(list_sum(list_transform([i], lambda x: nextval('separate_lambda_sequence')))) OVER ()
+FROM range(3) t(i);
+
+query I
+SELECT currval('separate_lambda_sequence');
+----
+6
+
+# Volatility is local to the window expression, not propagated through column bindings.
+# Removing the window lets normal projection pruning remove its unused input expression.
+statement ok
+CREATE SEQUENCE indirect_window_sequence;
+
+query I
+SELECT count(*) FROM (
+    SELECT row_number() OVER (ORDER BY k) AS rn
+    FROM (SELECT nextval('indirect_window_sequence') AS k FROM range(3)) t
+) q;
+----
+3
+
+query I
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name = 'indirect_window_sequence';
+----
+NULL
+
+# A live window must keep the same input expression and its evaluation.
+query I
+SELECT sum(rn) FROM (
+    SELECT row_number() OVER (ORDER BY k) AS rn
+    FROM (SELECT nextval('indirect_window_sequence') AS k FROM range(3)) t
+) q;
+----
+6
+
+query I
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name = 'indirect_window_sequence';
+----
+3

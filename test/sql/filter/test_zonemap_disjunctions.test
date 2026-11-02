@@ -1,0 +1,69 @@
+# name: test/sql/filter/test_zonemap_disjunctions.test
+# description: Scan filters inferred from disjunctions retain all qualifying rows
+# group: [filter]
+
+statement ok
+PRAGMA explain_output = PHYSICAL_ONLY;
+
+# Cross multiple row groups without requiring several GB of table data.
+statement ok
+CREATE TEMPORARY TABLE t AS SELECT range a, length(range::VARCHAR) b, mod(range,10000) c, 5 d, 10000 e FROM range(1000000);
+
+query I
+select count(*) from t where a > 500 or a <= 700
+----
+1000000
+
+query II
+explain select count(*) from t where (a > 500 and b = 3) or (a > 7000 and b = 2)
+----
+physical_plan	<REGEX>:.*Filters:.*b >= 2.*b <= 3.*
+
+query I
+select count(*) from t where (a > 500 and b = 3) or (a > 7000 and b = 2)
+----
+499
+
+query II
+explain select count(*) from t where (a > 500 AND b = 3) OR (a > 400) OR (a > 300 AND b=4) OR (a > 600 AND a > 300)
+----
+physical_plan	<REGEX>:.*Filters:.*a > 500.*a > 400.*a > 300.*a > 600.*
+
+
+query I
+select count(*) from t where (a > 500 AND b = 3) OR (a > 400) OR (a > 300 AND b=4) OR (a > 600 AND a > 300)
+----
+999599
+
+# A disjunct without an a bound must retain the row at a = 100.
+query II
+EXPLAIN SELECT count(*) FROM t WHERE (a > 500 AND b = 3) OR (c = 100) OR (a > 300 AND b = 4) OR (a > 600 AND a > 300);
+----
+physical_plan	<!REGEX>:.*Filters:.*
+
+query I
+SELECT count(*) FROM t WHERE (a > 500 AND b = 3) OR (c = 100) OR (a > 300 AND b = 4) OR (a > 600 AND a > 300);
+----
+999500
+
+# The constant disjunct makes the predicate true for every row.
+query II
+EXPLAIN SELECT count(*) FROM t WHERE (a > 500 AND b = 3) OR (c = 400) OR (a > 300 AND b = 4) OR (a > 600 AND a > 300) OR (d < 10);
+----
+physical_plan	<!REGEX>:.*Filters:.*
+
+query I
+SELECT count(*) FROM t WHERE (a > 500 AND b = 3) OR (c = 400) OR (a > 300 AND b = 4) OR (a > 600 AND a > 300) OR (d < 10);
+----
+1000000
+
+query II
+explain select count(*) from t where (a > 500 AND b = 1) OR b < 2
+----
+physical_plan	<REGEX>:.*Filters:.*optional:.*b = 1.*OR.*b < 2.*
+
+query I
+select count(*) from t where (a > 500 AND b = 1) OR b < 2
+----
+10
+

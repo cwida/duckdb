@@ -35,25 +35,18 @@ BindResult ExpressionBinder::BindQualifiedColumnName(ColumnRefExpression &colref
 	if (colref.ColumnNames()[0] == table_name) {
 		struct_start++;
 	}
-	auto result = make_uniq_base<ParsedExpression, ColumnRefExpression>(colref.ColumnNames().back());
-	for (idx_t i = struct_start; i + 1 < colref.ColumnNames().size(); i++) {
+	// the first name (after the table name) is the column, the remaining names are struct fields
+	auto result = make_uniq_base<ParsedExpression, ColumnRefExpression>(colref.ColumnNames()[struct_start]);
+	for (idx_t i = struct_start + 1; i < colref.ColumnNames().size(); i++) {
 		result = CreateStructExtract(std::move(result), colref.ColumnNames()[i]);
 	}
 	return BindExpression(result, 0);
 }
 
 BindResult CheckBinder::BindCheckColumn(ColumnRefExpression &colref) {
-	if (!colref.IsQualified()) {
-		if (lambda_bindings) {
-			for (idx_t i = lambda_bindings->size(); i > 0; i--) {
-				if ((*lambda_bindings)[i - 1].HasMatchingBinding(Identifier(colref.GetName()))) {
-					// FIXME: support lambdas in CHECK constraints
-					// FIXME: like so: return (*lambda_bindings)[i - 1].Bind(colref, i, depth);
-					// FIXME: and move this to LambdaRefExpression::FindMatchingBinding
-					throw NotImplementedException("Lambda functions are currently not supported in CHECK constraints.");
-				}
-			}
-		}
+	if (lambda_bindings && !lambda_bindings->empty()) {
+		// FIXME: support lambda parameters and captured columns in CHECK constraints
+		throw NotImplementedException("Lambda functions are currently not supported in CHECK constraints.");
 	}
 
 	if (colref.ColumnNames().size() > 1) {

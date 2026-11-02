@@ -51,8 +51,8 @@ struct BindReplaceDemoFun {
 
 			// Construct LHS TableFunctionRef
 			duckdb::vector<duckdb::unique_ptr<ParsedExpression>> left_children;
-			left_children.push_back(make_uniq<ConstantExpression>(Value(depth - 1)));
-			left_children.push_back(make_uniq<ConstantExpression>(Value(name + "L")));
+			left_children.push_back(ConstantExpression::Integer(depth - 1));
+			left_children.push_back(ConstantExpression::String(name + "L"));
 			auto tf_ref_left = make_uniq<TableFunctionRef>();
 			tf_ref_left->alias = Identifier("inner_table_" + name + "L");
 			tf_ref_left->function = make_uniq<FunctionExpression>("bind_replace_demo", std::move(left_children));
@@ -60,8 +60,8 @@ struct BindReplaceDemoFun {
 
 			// Construct RHS TableFunctionRef
 			duckdb::vector<duckdb::unique_ptr<ParsedExpression>> right_children;
-			right_children.push_back(make_uniq<ConstantExpression>(Value(depth - 1)));
-			right_children.push_back(make_uniq<ConstantExpression>(Value(name + "R")));
+			right_children.push_back(ConstantExpression::Integer(depth - 1));
+			right_children.push_back(ConstantExpression::String(name + "R"));
 			auto tf_ref_right = make_uniq<TableFunctionRef>();
 			tf_ref_right->alias = Identifier("inner_table_" + name + "R");
 			tf_ref_right->function = make_uniq<FunctionExpression>("bind_replace_demo", std::move(right_children));
@@ -119,7 +119,7 @@ struct BindReplaceDemoFun2 {
 		}
 
 		duckdb::vector<duckdb::unique_ptr<ParsedExpression>> children;
-		children.push_back(make_uniq<ConstantExpression>(Value(value)));
+		children.push_back(ConstantExpression::FromValue(Value(value)));
 		auto tf_ref = make_uniq<TableFunctionRef>();
 		tf_ref->function = make_uniq<FunctionExpression>("range", std::move(children));
 

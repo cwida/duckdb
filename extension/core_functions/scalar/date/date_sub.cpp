@@ -6,6 +6,7 @@
 #include "duckdb/common/types/interval.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/common/vector_operations/ternary_executor.hpp"
+#include "duckdb/optimizer/statistics_propagator.hpp"
 
 namespace duckdb {
 
@@ -16,6 +17,17 @@ struct DateSub {
 		const auto start = Timestamp::GetEpochMicroSeconds(startdate);
 		const auto end = Timestamp::GetEpochMicroSeconds(enddate);
 		return SubtractOperatorOverflowCheck::Operation<int64_t, int64_t, int64_t>(end, start);
+	}
+
+	template <int64_t MICROS_PER_UNIT>
+	static int64_t SubtractUnits(timestamp_t startdate, timestamp_t enddate) {
+		const auto start = Timestamp::GetEpochMicroSeconds(startdate);
+		const auto end = Timestamp::GetEpochMicroSeconds(enddate);
+		int64_t delta_us;
+		if (TrySubtractOperator::Operation(end, start, delta_us)) {
+			return delta_us / MICROS_PER_UNIT;
+		}
+		return Interval::GetDifferenceInUnits(start, end, MICROS_PER_UNIT);
 	}
 
 	template <class TA, class TB, class TR, class OP>
@@ -101,14 +113,14 @@ struct DateSub {
 	struct DayOperator {
 		template <class TA, class TB, class TR>
 		static inline TR Operation(TA startdate, TB enddate) {
-			return SubtractMicros(startdate, enddate) / Interval::MICROS_PER_DAY;
+			return SubtractUnits<Interval::MICROS_PER_DAY>(startdate, enddate);
 		}
 	};
 
 	struct WeekOperator {
 		template <class TA, class TB, class TR>
 		static inline TR Operation(TA startdate, TB enddate) {
-			return SubtractMicros(startdate, enddate) / Interval::MICROS_PER_WEEK;
+			return SubtractUnits<Interval::MICROS_PER_WEEK>(startdate, enddate);
 		}
 	};
 
@@ -122,28 +134,28 @@ struct DateSub {
 	struct MillisecondsOperator {
 		template <class TA, class TB, class TR>
 		static inline TR Operation(TA startdate, TB enddate) {
-			return SubtractMicros(startdate, enddate) / Interval::MICROS_PER_MSEC;
+			return SubtractUnits<Interval::MICROS_PER_MSEC>(startdate, enddate);
 		}
 	};
 
 	struct SecondsOperator {
 		template <class TA, class TB, class TR>
 		static inline TR Operation(TA startdate, TB enddate) {
-			return SubtractMicros(startdate, enddate) / Interval::MICROS_PER_SEC;
+			return SubtractUnits<Interval::MICROS_PER_SEC>(startdate, enddate);
 		}
 	};
 
 	struct MinutesOperator {
 		template <class TA, class TB, class TR>
 		static inline TR Operation(TA startdate, TB enddate) {
-			return SubtractMicros(startdate, enddate) / Interval::MICROS_PER_MINUTE;
+			return SubtractUnits<Interval::MICROS_PER_MINUTE>(startdate, enddate);
 		}
 	};
 
 	struct HoursOperator {
 		template <class TA, class TB, class TR>
 		static inline TR Operation(TA startdate, TB enddate) {
-			return SubtractMicros(startdate, enddate) / Interval::MICROS_PER_HOUR;
+			return SubtractUnits<Interval::MICROS_PER_HOUR>(startdate, enddate);
 		}
 	};
 };
@@ -434,18 +446,28 @@ void DateSubFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 
 } // namespace
 
+// Names the "part,startdate,enddate" triple shared by date_sub's per-type overloads.
+static ScalarFunction NameDateSubPartStartEndArguments(ScalarFunction fun, const LogicalType &type) {
+	fun.GetSignature()
+	    .AddParameter("part", LogicalType::VARCHAR)
+	    .AddParameter("startdate", type)
+	    .AddParameter("enddate", type);
+	return fun;
+}
+
 ScalarFunctionSet DateSubFun::GetFunctions() {
 	ScalarFunctionSet date_sub("date_sub");
-	date_sub.AddFunction(ScalarFunction({LogicalType::VARCHAR, LogicalType::DATE, LogicalType::DATE},
-	                                    LogicalType::BIGINT, DateSubFunction<date_t>));
-	date_sub.AddFunction(ScalarFunction({LogicalType::VARCHAR, LogicalType::TIMESTAMP, LogicalType::TIMESTAMP},
-	                                    LogicalType::BIGINT, DateSubFunction<timestamp_t>));
-	date_sub.AddFunction(ScalarFunction({LogicalType::VARCHAR, LogicalType::TIME, LogicalType::TIME},
-	                                    LogicalType::BIGINT, DateSubFunction<dtime_t>));
+	date_sub.AddFunction(NameDateSubPartStartEndArguments(
+	    ScalarFunction({}, LogicalType::BIGINT, DateSubFunction<date_t>), LogicalType::DATE));
+	date_sub.AddFunction(NameDateSubPartStartEndArguments(
+	    ScalarFunction({}, LogicalType::BIGINT, DateSubFunction<timestamp_t>), LogicalType::TIMESTAMP));
+	date_sub.AddFunction(NameDateSubPartStartEndArguments(
+	    ScalarFunction({}, LogicalType::BIGINT, DateSubFunction<dtime_t>), LogicalType::TIME));
 	// throws for unsupported date parts, and when the difference overflows
 	date_sub.SetFallible();
 	date_sub.SetArgProperties(1, ArgProperties().NonIncreasing());
 	date_sub.SetArgProperties(2, ArgProperties().NonDecreasing());
+	date_sub.SetStatisticsCallback(StatisticsPropagator::PropagateFiniteMonotoneBounds);
 	return date_sub;
 }
 

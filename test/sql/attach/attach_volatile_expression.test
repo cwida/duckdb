@@ -1,0 +1,23 @@
+# name: test/sql/attach/attach_volatile_expression.test
+# description: ATTACH with a volatile path or option expression is evaluated once while binding
+# group: [attach]
+
+statement ok
+ATTACH (CASE WHEN random() < 2 THEN ':memory:' END) AS volatile_db;
+
+statement ok
+CREATE TABLE volatile_db.t AS SELECT 42 AS i;
+
+query I
+SELECT i FROM volatile_db.t;
+----
+42
+
+statement ok
+DETACH volatile_db;
+
+statement ok
+ATTACH ':memory:' AS volatile_opt (BLOCK_SIZE (262144 + (random() * 0)::INTEGER));
+
+statement ok
+DETACH volatile_opt;

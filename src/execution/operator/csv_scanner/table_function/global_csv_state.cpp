@@ -1,4 +1,5 @@
 #include "duckdb/execution/operator/csv_scanner/global_csv_state.hpp"
+#include "duckdb/common/sql_identifier.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/execution/operator/csv_scanner/sniffer/csv_sniffer.hpp"
@@ -7,19 +8,59 @@
 #include "duckdb/execution/operator/persistent/csv_rejects_table.hpp"
 #include "duckdb/main/appender.hpp"
 #include "duckdb/main/client_data.hpp"
-#include "duckdb/execution/operator/csv_scanner/csv_multi_file_info.hpp"
+#include "duckdb/execution/operator/csv_scanner/csv_schema_discovery.hpp"
+#include "duckdb/parallel/callback_async_task.hpp"
 
 namespace duckdb {
 
-CSVGlobalState::CSVGlobalState(ClientContext &context_p, const CSVReaderOptions &options, idx_t total_file_count,
-                               const MultiFileBindData &bind_data)
-    : context(context_p), bind_data(bind_data), sniffer_mismatch_error(options.sniffer_user_mismatch_error) {
+CSVGlobalState::CSVGlobalState(ClientContext &context_p, ReadCSVData &csv_data_p,
+                               const vector<Identifier> &column_names_p, idx_t total_file_count_p,
+                               optional_ptr<const PhysicalOperator> scan_op_p)
+    : context(context_p), csv_data(csv_data_p), scan_op(scan_op_p), total_file_count(total_file_count_p),
+      column_names(column_names_p), sniffer_mismatch_error(csv_data_p.options.sniffer_user_mismatch_error) {
+	auto &options = csv_data.options;
 	// There are situations where we only support single threaded scanning
 	auto system_threads = context.db->NumberOfThreads();
 	bool many_csv_files = total_file_count > 1 && total_file_count > system_threads * 2;
 	single_threaded = many_csv_files || !options.parallel;
 	scanner_idx = 0;
 	initialized = false;
+}
+
+// A task that loads the buffer on the async pool, sized for the read-ahead I/O budget
+static unique_ptr<AsyncTask> BufferLoadTask(const shared_ptr<CSVBufferManager> &manager, const idx_t buffer_idx) {
+	const idx_t io_size =
+	    manager->HasKnownBufferRanges() ? manager->KnownBufferSize(buffer_idx) : manager->GetBufferSize();
+	return make_uniq<CallbackAsyncTask>([manager, buffer_idx] { manager->GetBuffer(buffer_idx); }, io_size);
+}
+
+// Adds a load task when the buffer is not in memory
+static void TryPushBufferLoadTask(const shared_ptr<CSVBufferManager> &manager, const idx_t buffer_idx,
+                                  vector<unique_ptr<AsyncTask>> &io_tasks) {
+	shared_ptr<CSVBufferHandle> buffer_handle;
+	if (manager->GetBufferResidency(buffer_idx, buffer_handle) == CSVBufferResidency::NEEDS_LOAD) {
+		io_tasks.push_back(BufferLoadTask(manager, buffer_idx));
+	}
+}
+
+//! I/O tasks for the buffers of the claim's decode start that are not in memory
+vector<unique_ptr<AsyncTask>> CSVCollectClaimIOTasks(CSVLocalState &lstate) {
+	auto &manager = lstate.file_scan->buffer_manager;
+	const idx_t start_buffer_idx = lstate.iterator.GetBufferIdx();
+	vector<unique_ptr<AsyncTask>> io_tasks;
+	if (manager->HasKnownBufferRanges() && start_buffer_idx >= manager->KnownBufferCount()) {
+		// the claim starts past the last buffer (e.g. skipping the header consumed the whole file)
+		return io_tasks;
+	}
+	TryPushBufferLoadTask(manager, start_buffer_idx, io_tasks);
+	if (lstate.iterator.IsBoundarySet() &&
+	    (!manager->HasKnownBufferRanges() ||
+	     lstate.iterator.GetEndPos() >= manager->KnownBufferSize(start_buffer_idx))) {
+		// a boundary reaching the end of its buffer also touches the next one, for straddling values
+		// and first-line detection
+		TryPushBufferLoadTask(manager, start_buffer_idx + 1, io_tasks);
+	}
+	return io_tasks;
 }
 
 void CSVGlobalState::FinishTask(CSVFileScan &scan) {
@@ -106,7 +147,6 @@ void CSVGlobalState::FinishFile(CSVFileScan &scan) {
 		current_buffer_in_use.reset();
 	}
 	scan.Finish();
-	auto &csv_data = bind_data.bind_data->Cast<ReadCSVData>();
 	const bool ignore_or_store_errors =
 	    csv_data.options.ignore_errors.GetValue() || csv_data.options.store_rejects.GetValue();
 	if (!single_threaded && !ignore_or_store_errors) {
@@ -147,7 +187,7 @@ void FillScanErrorTable(InternalAppender &scan_appender, idx_t scan_idx, idx_t f
 	std::ostringstream columns;
 	columns << "{";
 	for (idx_t i = 0; i < types.size(); i++) {
-		columns << "'" << names[i] << "': '" << types[i].ToString() << "'";
+		columns << SQLString::ToString(names[i]) << ": " << SQLString::ToString(types[i].ToString());
 		if (i != types.size() - 1) {
 			columns << ",";
 		}
@@ -182,7 +222,6 @@ void FillScanErrorTable(InternalAppender &scan_appender, idx_t scan_idx, idx_t f
 }
 
 void CSVGlobalState::FillRejectsTable(CSVFileScan &scan) {
-	auto &csv_data = bind_data.bind_data->Cast<ReadCSVData>();
 	auto &options = csv_data.options;
 
 	if (!options.store_rejects.GetValue()) {
@@ -198,15 +237,13 @@ void CSVGlobalState::FillRejectsTable(CSVFileScan &scan) {
 	InternalAppender scans_appender(context, scans_table);
 	idx_t scan_idx = context.transaction.GetActiveQuery();
 
-	// get the file indexes for the rejects table
-	// we store these so that they are deterministic (i.e. file index 0 always gets the lowest rejects index)
-	// otherwise parallelism can result in out-of-order file indexes
-	auto file_idx = scan.GetFileIndex();
-	for (idx_t i = rejects_file_indexes.size(); i <= file_idx; i++) {
-		rejects_file_indexes.push_back(rejects->GetCurrentFileIndex(scan_idx));
-	}
-	const idx_t rejects_file_idx = rejects_file_indexes[file_idx];
-	scan.error_handler->FillRejectsTable(errors_appender, rejects_file_idx, scan_idx, scan, *rejects, bind_data, limit);
+	// the files of a scan report under a block of indexes, so that the index of a file within its scan identifies
+	// it - that keeps the indexes deterministic when files are read in parallel, and keeps the files of one scan
+	// apart from those of another scan in the same query
+	const idx_t rejects_file_idx =
+	    rejects->GetFileIndexBase(scan_idx, scan_op.get(), total_file_count) + scan.GetFileIndex();
+	scan.error_handler->FillRejectsTable(errors_appender, rejects_file_idx, scan_idx, scan, *rejects, column_names,
+	                                     limit);
 	if (rejects->count != 0) {
 		rejects->count = 0;
 		FillScanErrorTable(scans_appender, scan_idx, rejects_file_idx, scan);

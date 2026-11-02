@@ -14,6 +14,7 @@
 
 namespace duckdb {
 
+class LogicalGet;
 class Optimizer;
 
 class FilterPushdown {
@@ -30,9 +31,16 @@ public:
 
 	void CheckMarkToSemi(LogicalOperator &op, const unordered_set<TableIndex> &table_bindings);
 
+	//! Whether a filter carrying a barrier may be pushed through this operator - i.e. whether the operator is
+	//! guaranteed not to remove any rows. A barred expression must never be evaluated on rows that an operator below
+	//! it filters out.
+	static bool BarrierCanPassThrough(LogicalOperatorType type);
+
 	struct Filter {
 		unordered_set<TableIndex> bindings;
 		unique_ptr<Expression> filter;
+		//! Whether the filter contains a barrier - see ExpressionBarrier
+		bool has_barrier = false;
 
 		Filter() {
 		}
@@ -40,6 +48,8 @@ public:
 		}
 
 		void ExtractBindings();
+		//! Recompute has_barrier after the filter expression has been created or rewritten
+		void ExtractBarrier();
 	};
 
 private:
@@ -70,10 +80,16 @@ private:
 	unique_ptr<LogicalOperator> PushdownSetOperation(unique_ptr<LogicalOperator> op);
 	//! Push down a LogicalGet op
 	unique_ptr<LogicalOperator> PushdownGet(unique_ptr<LogicalOperator> op);
+	//! Push the barrier filters into a LogicalGet, if all the other filters were pushed into the scan as well
+	void PushdownBarrierFilters(LogicalGet &get, vector<unique_ptr<Filter>> &barrier_filters);
 	//! Push down a LogicalLimit op
 	unique_ptr<LogicalOperator> PushdownLimit(unique_ptr<LogicalOperator> op);
 	//! Push down a LogicalWindow op
 	unique_ptr<LogicalOperator> PushdownWindow(unique_ptr<LogicalOperator> op);
+	//! Push down a LogicalSecureView op
+	unique_ptr<LogicalOperator> PushdownSecureView(unique_ptr<LogicalOperator> op);
+	//! Remove the filters carrying a barrier from the current filter set and return them
+	vector<unique_ptr<Expression>> ExtractBarrierFilters();
 	// Pushdown an inner join
 	unique_ptr<LogicalOperator> PushdownInnerJoin(unique_ptr<LogicalOperator> op,
 	                                              unordered_set<TableIndex> &left_bindings,

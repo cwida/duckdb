@@ -43,12 +43,9 @@ set(ICU_EXTENSION_FILES
     icu-timebucket.cpp
     icu-timezone.cpp)
 
-build_static_extension(icu ${ICU_EXTENSION_FILES})
+build_extension_library(icu NO_WARNINGS ${ICU_EXTENSION_FILES})
 link_threads(icu_extension "")
 target_link_libraries(icu_extension duckdb_zstd)
-disable_target_warnings(icu_extension)
-set(PARAMETERS "-no-warnings")
-build_loadable_extension(icu ${PARAMETERS} ${ICU_EXTENSION_FILES})
 target_link_libraries(icu_loadable_extension duckdb_zstd)
 install(
   TARGETS icu_extension

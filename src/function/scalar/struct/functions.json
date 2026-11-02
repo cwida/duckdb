@@ -1,14 +1,14 @@
 [
     {
         "name": "struct_extract",
-        "parameters": "struct,'entry'",
+        "parameters": "struct,entry",
         "description": "Extract the named entry from the STRUCT.",
         "example": "struct_extract({'i': 3, 'v2': 3, 'v3': 0}, 'i')",
         "type": "scalar_function_set"
     },
     {
         "name": "struct_extract_at",
-        "parameters": "struct,'entry'",
+        "parameters": "struct,index",
         "description": "Extract the entry from the STRUCT by position (starts at 1!).",
         "example": "struct_extract_at({'i': 3, 'v2': 3, 'v3': 0}, 2)",
         "type": "scalar_function",
@@ -44,7 +44,7 @@
     },
     {
         "name": "struct_contains",
-        "parameters": "struct,'entry'",
+        "parameters": "struct,entry",
         "description": "Check if an unnamed STRUCT contains the value.",
         "example": "struct_contains(ROW(3, 3, 0), 3)",
         "type": "scalar_function",
@@ -52,7 +52,7 @@
     },
     {
         "name": "struct_position",
-        "parameters": "struct,'entry'",
+        "parameters": "struct,entry",
         "description": "Get the position of the entry in an unnamed STRUCT, starting at 1.",
         "example": "struct_position(ROW(3, 3, 0), 3)",
         "type": "scalar_function",

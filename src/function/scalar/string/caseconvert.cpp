@@ -85,8 +85,13 @@ void LowerCase(const char *input_data, idx_t input_length, char *result_data) {
 
 template <bool IS_UPPER>
 static string_t UnicodeCaseConvert(StringHeap &heap, const char *input_data, idx_t input_length) {
-	// first figure out the output length
-	idx_t output_length = GetResultLength<IS_UPPER>(input_data, input_length);
+	const auto ascii_end = FirstNonAscii(input_data, input_length);
+	if (ascii_end == input_length) {
+		// ASCII: code points and bytes coincide
+		return ASCIICaseConvert<IS_UPPER>(heap, input_data, input_length);
+	}
+	// first figure out the output length: the ASCII prefix is one byte per code point
+	idx_t output_length = ascii_end + GetResultLength<IS_UPPER>(input_data + ascii_end, input_length - ascii_end);
 	auto result_str = heap.EmptyString(output_length);
 	auto result_data = result_str.GetDataWriteable();
 
@@ -144,16 +149,13 @@ static unique_ptr<BaseStatistics> CaseConvertPropagateStats(ClientContext &conte
 	if (!StringStats::HasMinMax(child_stats[0])) {
 		return result.ToUnique();
 	}
-	// When min == max, all values share the stored string (exact) or the stored prefix (truncated).
-	// Case conversion is codepoint-local, so the converted string/prefix bounds the result.
+	// All values share the common prefix of min and max; case conversion preserves this property.
 	auto min = StringStats::Min(child_stats[0]);
 	auto max = StringStats::Max(child_stats[0]);
-	if (min != max) {
-		return result.ToUnique();
-	}
-	const bool is_exact = StringStats::GetMinType(child_stats[0]) == StringStatsType::EXACT_STATS &&
+	const bool is_exact = min == max && StringStats::GetMinType(child_stats[0]) == StringStatsType::EXACT_STATS &&
 	                      StringStats::GetMaxType(child_stats[0]) == StringStatsType::EXACT_STATS;
 	if (!is_exact) {
+		min.resize(StringUtil::GetCommonPrefixSize(min, max));
 		// truncated stats can end in the middle of a character - only complete ones can be converted
 		size_t invalid_pos = 0;
 		if (Utf8Proc::Analyze(min.c_str(), min.size(), nullptr, &invalid_pos) == UnicodeType::INVALID) {
@@ -178,13 +180,17 @@ static unique_ptr<BaseStatistics> CaseConvertPropagateStats(ClientContext &conte
 }
 
 ScalarFunction LowerFun::GetFunction() {
-	return ScalarFunction("lower", {LogicalType::VARCHAR}, LogicalType::VARCHAR, CaseConvertFunction<false>, nullptr,
-	                      CaseConvertPropagateStats<false>);
+	ScalarFunction fun("lower", {}, LogicalType::VARCHAR, CaseConvertFunction<false>, nullptr,
+	                   CaseConvertPropagateStats<false>);
+	fun.GetSignature().AddParameter("string", LogicalType::VARCHAR);
+	return fun;
 }
 
 ScalarFunction UpperFun::GetFunction() {
-	return ScalarFunction("upper", {LogicalType::VARCHAR}, LogicalType::VARCHAR, CaseConvertFunction<true>, nullptr,
-	                      CaseConvertPropagateStats<true>);
+	ScalarFunction fun("upper", {}, LogicalType::VARCHAR, CaseConvertFunction<true>, nullptr,
+	                   CaseConvertPropagateStats<true>);
+	fun.GetSignature().AddParameter("string", LogicalType::VARCHAR);
+	return fun;
 }
 
 } // namespace duckdb

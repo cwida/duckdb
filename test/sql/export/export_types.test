@@ -1,9 +1,6 @@
 # name: test/sql/export/export_types.test
-# description: Test export of macro's
+# description: Test export and import of type aliases and their data
 # group: [export]
-
-# Because of ordering issues in EXPORT DATABASE we can't IMPORT this database
-mode skip instable
 
 statement ok
 BEGIN TRANSACTION
@@ -50,6 +47,24 @@ statement ok
 CREATE TABLE tbl3 (my_struct doom_mood);
 
 statement ok
+CREATE TABLE tbl4 (a mood_list, b mood_map, d my_special_type);
+
+statement ok
+CREATE TABLE tbl5 (c my_union);
+
+statement ok
+INSERT INTO tbl1 VALUES ('happy', 'sad');
+
+statement ok
+INSERT INTO tbl2 VALUES ({'a': 'curious', 'b': 'happy'});
+
+statement ok
+INSERT INTO tbl3 VALUES ({'a': 'sad', 'b': 'curious'});
+
+statement ok
+INSERT INTO tbl4 VALUES (['happy', 'sad'], map(['curious'], ['happy']), 'type alias');
+
+statement ok
 EXPORT DATABASE '{TEST_DIR}/export_types' (FORMAT CSV);
 
 statement ok
@@ -59,3 +74,36 @@ statement ok
 IMPORT DATABASE '{TEST_DIR}/export_types'
 
 # Verify that the database was imported properly
+query I
+SELECT count(*) FROM tbl5
+----
+0
+
+# Verify that the imported UNION alias can store typed values.
+statement ok
+INSERT INTO tbl5 VALUES (union_value(b := 'sad'::mood))
+
+query TT
+SELECT a, b FROM tbl1
+----
+happy	sad
+
+query TT
+SELECT my_struct.a, my_struct.b FROM tbl2
+----
+curious	happy
+
+query TT
+SELECT my_struct.a, my_struct.b FROM tbl3
+----
+sad	curious
+
+query TTTTT
+SELECT a, b, union_tag(c), c.b, d FROM tbl4, tbl5
+----
+[happy, sad]	{curious=happy}	b	sad	type alias
+
+query TTTT
+SELECT enum_range(NULL::mood), enum_range(NULL::doom), enum_range(a[1]), enum_range(c.b) FROM tbl4, tbl5
+----
+[happy, sad, curious]	[happy, sad, curious]	[happy, sad, curious]	[happy, sad, curious]

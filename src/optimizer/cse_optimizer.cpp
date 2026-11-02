@@ -32,6 +32,8 @@ struct CSEReplacementState {
 	vector<unique_ptr<Expression>> cached_expressions;
 	//! Short circuit argument tracking
 	bool short_circuited = false;
+	//! True while visiting the child of a TRY or HAS_ERROR, whose errors must stay inside the capture
+	bool inside_try = false;
 };
 
 void CommonSubExpressionOptimizer::VisitOperator(LogicalOperator &op) {
@@ -58,7 +60,7 @@ void CommonSubExpressionOptimizer::CountExpressions(Expression &expr, CSEReplace
 	default:
 		break;
 	}
-	if (expr.GetExpressionClass() != ExpressionClass::BOUND_AGGREGATE && !expr.IsVolatile()) {
+	if (expr.GetExpressionClass() != ExpressionClass::BOUND_AGGREGATE && !expr.IsVolatile() && !state.inside_try) {
 		// we can't move aggregates to a projection, so we only consider the children of the aggregate
 		auto node = state.expression_count.find(expr);
 		if (node == state.expression_count.end()) {
@@ -85,6 +87,16 @@ void CommonSubExpressionOptimizer::CountExpressions(Expression &expr, CSEReplace
 			state.short_circuited = true;
 		});
 		state.short_circuited = save_short_circuit;
+		break;
+	}
+	case ExpressionClass::BOUND_OPERATOR: {
+		const auto save_inside_try = state.inside_try;
+		const auto expression_type = expr.GetExpressionType();
+		if (expression_type == ExpressionType::OPERATOR_TRY || expression_type == ExpressionType::OPERATOR_HAS_ERROR) {
+			state.inside_try = true;
+		}
+		ExpressionIterator::EnumerateChildren(expr, [&](Expression &child) { CountExpressions(child, state); });
+		state.inside_try = save_inside_try;
 		break;
 	}
 	default:
@@ -114,7 +126,7 @@ void CommonSubExpressionOptimizer::PerformCSEReplacement(unique_ptr<Expression> 
 		return;
 	}
 	// check if this child is eligible for CSE elimination
-	if (state.expression_count.find(expr) != state.expression_count.end()) {
+	if (!state.inside_try && state.expression_count.find(expr) != state.expression_count.end()) {
 		auto &node = state.expression_count[expr];
 		if (node.count > 1) {
 			// this expression occurs more than once! push it into the projection
@@ -135,8 +147,14 @@ void CommonSubExpressionOptimizer::PerformCSEReplacement(unique_ptr<Expression> 
 	}
 	// this expression only occurs once, we can't perform CSE elimination
 	// look into the children to see if we can replace them
+	const auto save_inside_try = state.inside_try;
+	const auto expression_type = expr.GetExpressionType();
+	if (expression_type == ExpressionType::OPERATOR_TRY || expression_type == ExpressionType::OPERATOR_HAS_ERROR) {
+		state.inside_try = true;
+	}
 	ExpressionIterator::EnumerateChildren(expr,
 	                                      [&](unique_ptr<Expression> &child) { PerformCSEReplacement(child, state); });
+	state.inside_try = save_inside_try;
 }
 
 void CommonSubExpressionOptimizer::ExtractCommonSubExpressions(LogicalOperator &op) {

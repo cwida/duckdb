@@ -129,6 +129,14 @@ TEST_CASE("Test Scalar Functions C API", "[capi]") {
 	for (idx_t row = 0; row < 10000; row++) {
 		REQUIRE(result->Fetch<int64_t>(0, row) == static_cast<int64_t>(1000000 + row));
 	}
+
+	// v1 declares no parameter names, so the synthetic ones it is given cannot be used by a caller
+	result = tester.Query("SELECT my_addition(col0 := 40, col1 := 2)");
+	REQUIRE(result->HasError());
+	REQUIRE(duckdb::StringUtil::Contains(result->ErrorMessage(), "No function matches"));
+	result = tester.Query("SELECT my_addition(40, col1 := 2)");
+	REQUIRE(result->HasError());
+	REQUIRE(duckdb::StringUtil::Contains(result->ErrorMessage(), "No function matches"));
 }
 
 void ReturnStringInfo(duckdb_function_info info, duckdb_data_chunk input, duckdb_vector output) {
@@ -660,6 +668,11 @@ static void CounterFunctionBind(duckdb_bind_info info) {
 	bind_data = extra_info + 10;
 
 	duckdb_scalar_function_set_bind_data(info, bind_data_ptr, free);
+	duckdb_scalar_function_set_bind_data_copy(info, [](void *ptr) -> void * {
+		auto copy = static_cast<int64_t *>(malloc(sizeof(int64_t)));
+		*copy = *static_cast<int64_t *>(ptr);
+		return copy;
+	});
 }
 
 static void CounterFunctionInit(duckdb_init_info info) {
@@ -709,6 +722,8 @@ static void CAPIRegisterCounterFunction(duckdb_connection connection, const char
 
 	auto function = duckdb_create_scalar_function();
 	duckdb_scalar_function_set_name(function, name);
+	// The counter advances on every row, even when its argument is constant.
+	duckdb_scalar_function_set_volatile(function);
 
 	auto bigint_type = duckdb_create_logical_type(DUCKDB_TYPE_BIGINT);
 	duckdb_scalar_function_add_parameter(function, bigint_type);
@@ -739,6 +754,12 @@ TEST_CASE("Test Scalar Functions - Local State", "[capi]") {
 	REQUIRE(result->Fetch<idx_t>(0, 1) == 6);
 	REQUIRE(result->Fetch<idx_t>(0, 2) == 7);
 
+	result = tester.Query("SELECT my_counter(0) FROM range(3)");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->Fetch<idx_t>(0, 0) == 5);
+	REQUIRE(result->Fetch<idx_t>(0, 1) == 6);
+	REQUIRE(result->Fetch<idx_t>(0, 2) == 7);
+
 	// Now test error conditions.
 	CAPIRegisterCounterFunction(tester.connection, "my_counter_error_low", -5);
 	result = tester.Query("SELECT my_counter_error_low(0)");
@@ -749,4 +770,34 @@ TEST_CASE("Test Scalar Functions - Local State", "[capi]") {
 	result = tester.Query("SELECT my_counter_error_high(0) FROM range(10)");
 	REQUIRE_FAIL(result);
 	REQUIRE(StringUtil::Contains(result->ErrorMessage(), "upper limit cannot be greater than 100"));
+}
+
+void ReportErrorFunction(duckdb_function_info info, duckdb_data_chunk, duckdb_vector) {
+	duckdb_scalar_function_set_error(info, "Error report test");
+}
+
+static void CAPIRegisterReportError(duckdb_connection connection, const char *name) {
+	duckdb_state status;
+	auto function = duckdb_create_scalar_function();
+	duckdb_scalar_function_set_name(function, name);
+	auto varchar_type = duckdb_create_logical_type(DUCKDB_TYPE_VARCHAR);
+	duckdb_scalar_function_set_return_type(function, varchar_type);
+	duckdb_destroy_logical_type(&varchar_type);
+	duckdb_scalar_function_set_function(function, ReportErrorFunction);
+	status = duckdb_register_scalar_function(connection, function);
+	REQUIRE(status == DuckDBSuccess);
+	duckdb_destroy_scalar_function(&function);
+}
+
+TEST_CASE("Test Scalar Functions - Error Reporting", "[capi]") {
+	CAPITester tester;
+	duckdb::unique_ptr<CAPIResult> result;
+
+	REQUIRE(tester.OpenDatabase(nullptr));
+	CAPIRegisterReportError(tester.connection, "my_report_error");
+
+	result = tester.Query("SELECT my_report_error()");
+	REQUIRE_FAIL(result);
+	REQUIRE(StringUtil::Contains(result->ErrorMessage(), "Error report test"));
+	REQUIRE(!StringUtil::Contains(result->ErrorMessage(), "INTERNAL Error:"));
 }

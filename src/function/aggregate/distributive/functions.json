@@ -37,14 +37,14 @@
     },
     {
         "name": "min",
-        "parameters": "arg",
+        "parameters": "arg,n",
         "description": "Returns the minimum value present in arg.",
         "example": "min(A)",
         "type": "aggregate_function_set"
     },
     {
         "name": "max",
-        "parameters": "arg",
+        "parameters": "arg,n",
         "description": "Returns the maximum value present in arg.",
         "example": "max(A)",
         "type": "aggregate_function_set"
@@ -59,7 +59,7 @@
     },
     {
         "name": "combine_aggr",
-        "parameters": "arg",
+        "parameters": "arg,multiplicities",
         "description": "Combines exported aggregate states",
         "example": "combine_aggr(state_column)",
         "type": "aggregate_function_set",

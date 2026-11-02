@@ -1,0 +1,113 @@
+# name: test/sql/types/cast_expression_storage_version.test
+# description: A CastExpression stores its target as a TypeExpression from v2.0.0 on, and as a LogicalType below that. Both are readable.
+# group: [types]
+
+# Generated columns and macro bodies put a CastExpression into the catalog, so both storage versions
+# have to round-trip through the persisted format.
+
+statement ok
+ATTACH '{TEST_DIR}/cast_expr_old.db' AS oldb (STORAGE_VERSION 'v1.5.0');
+
+statement ok
+ATTACH '{TEST_DIR}/cast_expr_new.db' AS newb (STORAGE_VERSION 'v2.0.0');
+
+statement ok
+CREATE TYPE oldb.mood AS ENUM('sad', 'ok', 'happy');
+
+statement ok
+CREATE TYPE newb.mood AS ENUM('sad', 'ok', 'happy');
+
+foreach db oldb newb
+
+statement ok
+CREATE TABLE {db}.t (
+    v VARCHAR,
+    g DECIMAL(9,2)               GENERATED ALWAYS AS (1.5),
+    s STRUCT(k INTEGER, v VARCHAR) GENERATED ALWAYS AS ({'k':1,'v':'x'}),
+    e {db}.mood                 GENERATED ALWAYS AS ('ok')
+);
+
+statement ok
+CREATE MACRO {db}.mm(a) AS a::DECIMAL(9,2);
+
+statement ok
+INSERT INTO {db}.t (v) VALUES ('a');
+
+endloop
+
+statement ok
+CHECKPOINT oldb;
+
+statement ok
+CHECKPOINT newb;
+
+statement ok
+DETACH oldb;
+
+statement ok
+DETACH newb;
+
+# reopen both and check the cast targets survived
+statement ok
+ATTACH '{TEST_DIR}/cast_expr_old.db' AS oldb (READ_ONLY);
+
+statement ok
+ATTACH '{TEST_DIR}/cast_expr_new.db' AS newb (READ_ONLY);
+
+query I
+SELECT tags.storage_version FROM duckdb_databases() WHERE database_name = 'oldb';
+----
+v1.5.0+
+
+query IIII
+SELECT typeof(g), typeof(s), typeof(e), g FROM oldb.t
+----
+DECIMAL(9,2)	STRUCT(k INTEGER, v VARCHAR)	ENUM('sad', 'ok', 'happy')	1.50
+
+query IIII
+SELECT typeof(g), typeof(s), typeof(e), g FROM newb.t
+----
+DECIMAL(9,2)	STRUCT(k INTEGER, v VARCHAR)	ENUM('sad', 'ok', 'happy')	1.50
+
+query I
+SELECT typeof(oldb.mm(1))
+----
+DECIMAL(9,2)
+
+query I
+SELECT typeof(newb.mm(1))
+----
+DECIMAL(9,2)
+
+# A cast target carrying a named type modifier - a VARCHAR collation - must survive the pre-v1.5.0
+# format, which stores an unbound type as a legacy USER type whose modifiers carry no names. The
+# generated column wraps its expression in a cast to the bound (collated) type.
+
+statement ok
+ATTACH '{TEST_DIR}/cast_expr_collate.db' AS colldb (STORAGE_VERSION 'v1.4.0');
+
+statement ok
+CREATE TABLE colldb.coll (g AS (x), x VARCHAR COLLATE NOCASE);
+
+statement ok
+INSERT INTO colldb.coll VALUES ('string'), ('STRING');
+
+statement ok
+CHECKPOINT colldb;
+
+statement ok
+DETACH colldb;
+
+statement ok
+ATTACH '{TEST_DIR}/cast_expr_collate.db' AS colldb (READ_ONLY);
+
+query I
+SELECT generation_expression FROM duckdb_columns() WHERE table_name = 'coll' AND column_name = 'g';
+----
+CAST(x AS VARCHAR('NOCASE'))
+
+# the collation is not just rendered, it is still applied to the generated column
+query I
+SELECT count(*) FROM colldb.coll WHERE g = 'string';
+----
+2

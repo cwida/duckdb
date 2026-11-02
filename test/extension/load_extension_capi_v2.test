@@ -25,9 +25,49 @@ default-version
 # The entrypoint bound a type through the context it was handed, then logged through it. The entry lands in the
 # CONNECTION scope because LOAD lends the calling connection's context.
 query III
-SELECT scope, log_level, message FROM duckdb_logs WHERE type = 'CppApiDemo';
+SELECT scope, log_level, message FROM duckdb_logs WHERE type = 'CppApiDemo' AND message LIKE 'cpp_api_demo%';
 ----
 CONNECTION	INFO	cpp_api_demo loaded, parsed STRUCT(a INTEGER, b VARCHAR)
+
+# The macro functions the entrypoint registered, and the ones it was refused
+query I
+SELECT replace(message, chr(10), ' ') FROM duckdb_logs WHERE type = 'CppApiDemo' AND message LIKE 'cpp_demo_%' ORDER BY message;
+----
+cpp_demo_bad_body refused: Parser Error: syntax error at end of input Expected one of: "ALL", "ANY", "SOME", an expression
+cpp_demo_named_only refused: Invalid Input Error: The parameters of a macro function can always be passed by position or by name, so "x" must be a standard parameter.
+cpp_demo_no_body refused: Invalid Input Error: A body must be set for the macro function.
+cpp_demo_not_a_query refused: Invalid Input Error: The body of a table macro function must be a single SELECT query.
+cpp_demo_scale refused: Catalog Error: Macro Function with name "cpp_demo_scale" already exists!
+cpp_demo_two_expressions refused: Invalid Input Error: The body of a scalar macro function must be a single expression.
+cpp_demo_typed_result refused: Invalid Input Error: A macro function signature cannot set a return type: the result follows from the body.
+cpp_demo_variadic refused: Invalid Input Error: A macro function cannot have variadic parameters, but "rest" is one.
+
+query III
+SELECT cpp_demo_scale(1, 2), cpp_demo_scale(1, 2, 10), cpp_demo_scale(x := 1, shift := 0.5);
+----
+6	30	3.0
+
+query I
+SELECT * FROM cpp_demo_numbers(3);
+----
+0
+1
+2
+
+query I
+SELECT * FROM cpp_demo_numbers(3, step := 5);
+----
+0
+5
+10
+
+# The untyped parameter reports no type, as it does for a macro created in SQL
+query IIII
+SELECT function_type, description, parameters, parameter_types FROM duckdb_functions()
+WHERE function_name LIKE 'cpp_demo%' ORDER BY function_name;
+----
+table_macro	NULL	[count, step]	[BIGINT, BIGINT]
+macro	Shifts x by shift, then scales it by factor	[x, shift, factor]	[INTEGER, NULL, INTEGER]
 
 # An entrypoint that throws fails the load, and the exception type survives the round trip through the error slot
 statement error

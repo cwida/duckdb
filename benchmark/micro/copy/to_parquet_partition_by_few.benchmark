@@ -6,7 +6,7 @@ name Copy to Parquet, 2 partitions
 group copy
 
 load
-CREATE TABLE tbl AS SELECT i%2::INT32 as part_col, i::INT32 FROM range(0,25000000) tbl(i)
+CREATE TABLE tbl AS SELECT i%2::INT32 as part_col, i::INT32 FROM range(0,13000000) tbl(i)
 
 run
 COPY tbl TO '${BENCHMARK_DIR}/partitioned_write' (FORMAT parquet, PARTITION_BY part_col, OVERWRITE_OR_IGNORE TRUE);

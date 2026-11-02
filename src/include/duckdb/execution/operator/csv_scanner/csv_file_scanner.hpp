@@ -14,22 +14,15 @@
 #include "duckdb/execution/operator/csv_scanner/csv_error.hpp"
 #include "duckdb/execution/operator/csv_scanner/csv_schema.hpp"
 #include "duckdb/execution/operator/csv_scanner/csv_validator.hpp"
-#include "duckdb/common/multi_file/base_file_reader.hpp"
+#include "duckdb/common/multi_file/multi_file_data.hpp"
+#include "duckdb/execution/progress_data.hpp"
 
 namespace duckdb {
 struct ReadCSVData;
 class CSVFileScan;
 
-struct CSVUnionData : public BaseUnionData {
-	explicit CSVUnionData(OpenFileInfo file_p) : BaseUnionData(std::move(file_p)) {
-	}
-	~CSVUnionData() override;
-
-	CSVReaderOptions options;
-};
-
 //! Struct holding information over a CSV File we will scan
-class CSVFileScan : public BaseFileReader {
+class CSVFileScan {
 public:
 	//! Constructor for new CSV Files, we must initialize the buffer manager and the state machine
 	//! Path to this file
@@ -46,27 +39,12 @@ public:
 	void SetNamesAndTypes(const vector<Identifier> &names, const vector<LogicalType> &types);
 
 public:
-	string GetReaderType() const override {
-		return "CSV";
+	//! How far along we are in reading this file
+	double GetProgressInFile(ClientContext &context);
+
+	const string &GetFileName() const {
+		return file.path;
 	}
-
-	bool UseCastMap() const override {
-		//! Whether or not to push casts into the cast map
-		return true;
-	}
-
-	shared_ptr<BaseUnionData> GetUnionData(idx_t file_idx) override;
-	void PrepareReader(ClientContext &context, GlobalTableFunctionState &) override;
-	bool TryInitializeScan(ClientContext &context, GlobalTableFunctionState &gstate,
-	                       LocalTableFunctionState &lstate) override;
-	AsyncResult ScheduleIO(ClientContext &context, GlobalTableFunctionState &gstate,
-	                       LocalTableFunctionState &lstate) override;
-	AsyncResult Scan(ClientContext &context, GlobalTableFunctionState &global_state,
-	                 LocalTableFunctionState &local_state, DataChunk &chunk) override;
-	void FinishFile(ClientContext &context, GlobalTableFunctionState &gstate_p) override;
-	double GetProgressInFile(ClientContext &context) override;
-
-public:
 	idx_t GetFileIndex() const {
 		return file_list_idx.GetIndex();
 	}
@@ -79,12 +57,24 @@ public:
 	void InitializeFileNamesTypes();
 
 public:
+	//! The file that is read
+	OpenFileInfo file;
+	//! The index of this file within the scan it is part of - it identifies the file in the rejects tables
+	optional_idx file_list_idx;
+	//! The columns of this file
+	vector<MultiFileColumnDefinition> columns;
+	//! The columns that are read from this file, in the order they are emitted
+	MultiFileLocalColumnIds<MultiFileLocalColumnId> column_ids;
+	//! The types the columns must be read as, when they differ from the types this file has
+	unordered_map<column_t, LogicalType> cast_map;
 	//! Buffer Manager for the CSV File
 	shared_ptr<CSVBufferManager> buffer_manager;
 	//! State Machine for this file
 	shared_ptr<CSVStateMachine> state_machine;
 	//! How many bytes were read up to this point
 	atomic<idx_t> bytes_read {0};
+	//! The progress of a compressed file is estimated - keeps it monotonic
+	MonotonicProgress compressed_progress;
 	//! Size of this file
 	idx_t file_size;
 	//! Line Info used in error messages

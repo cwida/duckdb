@@ -54,7 +54,7 @@ int64_t CopticEthiopicCalendar::HandleComputeMonthStart(int32_t eyear, int32_t m
 	return int64_t(GetEpochOffset())            // the day the first year starts on
 	       + 365 * year                         // the whole years
 	       + FloorDiv::Divide(year, int64_t(4)) // their leap days
-	       + 30 * month                         // the whole months, which are all thirty days long
+	       + 30 * int64_t(month)                // the whole months, which are all thirty days long
 	       - 1;                                 // the day before the first of the month
 }
 

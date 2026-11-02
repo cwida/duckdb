@@ -1,0 +1,19 @@
+# name: test/sql/optimizer/expression/date_trunc_non_interval_parts.test
+# description: Test date_trunc comparisons for date parts that cannot be represented as intervals
+# group: [expression]
+
+statement ok
+CREATE TABLE dates(d DATE)
+
+statement ok
+INSERT INTO dates VALUES (DATE '2020-06-14'), (DATE '2020-06-15'), (DATE '2020-06-16'), (NULL)
+
+query I
+SELECT count(*) FROM dates WHERE date_trunc('dow', d) = DATE '2020-06-15'
+----
+1
+
+query I
+SELECT count(*) FROM dates WHERE date_trunc('dow', d) <= DATE '2020-06-15'
+----
+2

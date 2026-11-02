@@ -11,6 +11,7 @@
 #include "duckdb/storage/storage_manager.hpp"
 
 namespace duckdb {
+struct AttachOptions;
 class AttachedDatabase;
 struct AttachInfo;
 class Catalog;

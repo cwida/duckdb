@@ -110,7 +110,11 @@ def _create_parser():
 
 
 def _parse_args(parser, command, result):
-    tokens = shlex.split(command)
+    try:
+        tokens = shlex.split(command)
+    except ValueError as error:
+        result.SetError(str(error))
+        return None
     if "--help" in tokens or "-h" in tokens:
         return SimpleNamespace(help=True)
 
@@ -145,12 +149,11 @@ def _evaluate_positive_size(frame, size_expression, result):
         result.SetError("size must be a positive integer")
         return None
 
-    signed_size = frame.EvaluateExpression("(long long)({})".format(size_expression))
-    if not signed_size.IsValid() or not signed_size.GetError().Success():
+    if not size_value.GetType().GetTypeFlags() & lldb.eTypeIsInteger:
         result.SetError("size must be a positive integer")
         return None
 
-    size = signed_size.GetValueAsSigned(-1)
+    size = size_value.GetValueAsSigned(-1)
     if size <= 0:
         result.SetError("size must be a positive integer")
         return None

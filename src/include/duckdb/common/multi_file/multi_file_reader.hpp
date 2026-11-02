@@ -100,12 +100,14 @@ public:
 	static constexpr int32_t ROW_ID_FIELD_ID = 2147483540;
 	// Reserved field id used for the "_last_updated_sequence_number" field according to the iceberg spec
 	static constexpr int32_t LAST_UPDATED_SEQUENCE_NUMBER_ID = 2147483539;
+	//! The field of a file STRUCT that holds the path of the file - all other fields are open options
+	static constexpr const char *FILE_PATH_FIELD = OpenFileInfo::PATH_FIELD;
 
 public:
 	virtual ~MultiFileReader();
 
 	//! Create a MultiFileReader for a specific TableFunction, using its function name for errors
-	DUCKDB_API static unique_ptr<MultiFileReader> Create(const TableFunction &table_function);
+	DUCKDB_API static unique_ptr<MultiFileReader> Create(const BoundTableFunction &table_function);
 	//! Create a default MultiFileReader, function_name is used for errors
 	DUCKDB_API static unique_ptr<MultiFileReader> CreateDefault(const string &function_name = "");
 
@@ -113,22 +115,41 @@ public:
 	static Value CreateValueFromFileList(const vector<string> &files);
 
 	//! Add the parameters for multi-file readers (e.g. union_by_name, filename) to a table function
-	DUCKDB_API static void AddParameters(TableFunction &table_function);
+	//! Which of the multi-file options to declare on a function. A function that reads exactly one file per call
+	//! takes only "allow_empty"; the others describe how several files are combined
+	enum class MultiFileParameters { ALL, ALLOW_EMPTY_ONLY };
+	DUCKDB_API static void AddParameters(TableFunction &table_function,
+	                                     MultiFileParameters which = MultiFileParameters::ALL);
+	//! Parse the value of the "schema" option - a MAP from field id (INTEGER) or name (VARCHAR) to a STRUCT(name,
+	//! type, default_value[, children]) describing a column
+	DUCKDB_API static vector<MultiFileColumnDefinition> ParseSchemaOption(ClientContext &context,
+	                                                                      const Value &schema_value);
 	//! Creates a table function set from a single reader function (including e.g. list parameters, etc)
 	DUCKDB_API static TableFunctionSet CreateFunctionSet(TableFunction table_function);
 
-	//! Parse a Value containing 1 or more paths into a vector of paths. Note: no expansion is performed here
-	DUCKDB_API virtual vector<string> ParsePaths(const Value &input);
+	//! Parse a Value containing 1 or more files into a vector of files. A file is specified either as a path
+	//! (VARCHAR) or as a STRUCT/VARIANT holding the path together with the options to open the file with
+	DUCKDB_API virtual vector<OpenFileInfo> ParseFileList(const Value &input);
+	//! Parse a single entry of a file list - see ParseFileList
+	DUCKDB_API OpenFileInfo ParseFileEntry(const Value &input);
 	//! Create a MultiFileList from a vector of paths. Any globs will be expanded using the default filesystem
 	DUCKDB_API virtual shared_ptr<MultiFileList>
 	CreateFileList(ClientContext &context, const vector<string> &paths,
 	               const FileGlobInput &glob_input = FileGlobOptions::DISALLOW_EMPTY);
-	//! Shorthand for ParsePaths + CreateFileList
+	//! Create a MultiFileList from a vector of files. Files that carry explicit open options are used as-is,
+	//! any other paths are expanded using the default filesystem
+	DUCKDB_API virtual shared_ptr<MultiFileList>
+	CreateFileList(ClientContext &context, vector<OpenFileInfo> files,
+	               const FileGlobInput &glob_input = FileGlobOptions::DISALLOW_EMPTY);
+	//! Shorthand for ParseFileList + CreateFileList
 	DUCKDB_API shared_ptr<MultiFileList>
 	CreateFileList(ClientContext &context, const Value &input,
 	               const FileGlobInput &glob_input = FileGlobOptions::DISALLOW_EMPTY);
 
 	//! Parse the named parameters of a multi-file reader
+	//! Parse an option of a COPY ... FROM that the multi-file reader handles itself
+	DUCKDB_API virtual bool ParseCopyOption(const Identifier &key, const vector<Value> &values,
+	                                        MultiFileOptions &options);
 	DUCKDB_API virtual bool ParseOption(const Identifier &key, const Value &val, MultiFileOptions &options,
 	                                    ClientContext &context);
 	//! Perform filter pushdown into the MultiFileList. Returns a new MultiFileList if filters were pushed down
@@ -140,7 +161,7 @@ public:
 	                                                                   MultiFileDynamicPushdownInfo &pushdown_info);
 	//! Try to use the MultiFileReader for binding. Returns true if a bind could be made, returns false if the
 	//! MultiFileReader can not perform the bind and binding should be performed on 1 or more files in the MultiFileList
-	//! directly.
+	//! directly. The default MultiFileReader binds when the "schema" option was given.
 	DUCKDB_API virtual bool Bind(MultiFileOptions &options, MultiFileList &files, vector<LogicalType> &return_types,
 	                             vector<Identifier> &names, MultiFileReaderBindData &bind_data);
 	//! Bind the options of the multi-file reader, potentially emitting any extra columns that are required
@@ -196,6 +217,16 @@ public:
 	MultiFileReaderBindData BindUnionReader(ClientContext &context, vector<LogicalType> &return_types,
 	                                        vector<Identifier> &names, MultiFileList &files, MultiFileBindData &result,
 	                                        BaseFileReaderOptions &options, MultiFileOptions &file_options);
+
+	//! Bind the schema on the first file only
+	MultiFileReaderBindData BindFirstReader(ClientContext &context, vector<LogicalType> &return_types,
+	                                        vector<Identifier> &names, MultiFileList &files, MultiFileBindData &result,
+	                                        BaseFileReaderOptions &options, MultiFileOptions &file_options);
+	//! Bind the schema on the first "maximum_sample_files" files, combining the schemas of the sampled files
+	MultiFileReaderBindData BindSampledReader(ClientContext &context, vector<LogicalType> &return_types,
+	                                          vector<Identifier> &names, MultiFileList &files,
+	                                          MultiFileBindData &result, BaseFileReaderOptions &options,
+	                                          MultiFileOptions &file_options);
 
 	MultiFileReaderBindData BindReader(ClientContext &context, vector<LogicalType> &return_types,
 	                                   vector<Identifier> &names, MultiFileList &files, MultiFileBindData &result,

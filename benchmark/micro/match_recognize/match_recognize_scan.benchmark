@@ -1,0 +1,20 @@
+# name: benchmark/micro/match_recognize/match_recognize_scan.benchmark
+# description: MATCH_RECOGNIZE over one large partition with a simple two symbol pattern
+# group: [match_recognize]
+
+name MatchRecognize Scan
+group micro
+subgroup match_recognize
+
+load
+CREATE TABLE readings AS
+    SELECT i::INTEGER AS i, (i % 5)::INTEGER AS v FROM range(0, 2000000) t(i);
+
+run
+SELECT count(*) FROM readings MATCH_RECOGNIZE(
+    ORDER BY i
+    MEASURES i AS start_i
+    ONE ROW PER MATCH
+    PATTERN (A B)
+    DEFINE A AS v = 0, B AS v = 1
+);

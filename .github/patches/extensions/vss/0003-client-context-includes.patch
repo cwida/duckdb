@@ -1,0 +1,24 @@
+diff --git a/src/hnsw/hnsw_index_physical_create.cpp b/src/hnsw/hnsw_index_physical_create.cpp
+index 71d7a7b..4932066 100644
+--- a/src/hnsw/hnsw_index_physical_create.cpp
++++ b/src/hnsw/hnsw_index_physical_create.cpp
+@@ -7,6 +7,7 @@
+ #include "duckdb/common/exception/transaction_exception.hpp"
+ #include "duckdb/common/types/column/column_data_collection.hpp"
+ #include "duckdb/main/attached_database.hpp"
++#include "duckdb/main/client_context.hpp"
+ #include "duckdb/storage/buffer_manager.hpp"
+ #include "duckdb/storage/data_table.hpp"
+ #include "duckdb/storage/index.hpp"
+diff --git a/src/hnsw/hnsw_index_plan.cpp b/src/hnsw/hnsw_index_plan.cpp
+index 0d4f403..74bd6bf 100644
+--- a/src/hnsw/hnsw_index_plan.cpp
++++ b/src/hnsw/hnsw_index_plan.cpp
+@@ -4,6 +4,7 @@
+ #include "duckdb/execution/operator/filter/physical_filter.hpp"
+ #include "duckdb/parser/parsed_data/create_index_info.hpp"
+ #include "duckdb/main/attached_database.hpp"
++#include "duckdb/main/client_context.hpp"
+ #include "duckdb/planner/expression/bound_reference_expression.hpp"
+ #include "duckdb/planner/expression/bound_operator_expression.hpp"
+ #include "duckdb/planner/operator/logical_create_index.hpp"

@@ -1,0 +1,84 @@
+# name: test/sql/types/type_expression_roundtrip.test
+# description: A bound type written back out as a TypeExpression (CastExpression's LogicalType constructor) binds to the same type
+# group: [types]
+
+statement ok
+CREATE TYPE mood AS ENUM('sad', 'ok', 'happy');
+
+statement ok
+CREATE TYPE pt AS STRUCT(x DOUBLE, y DOUBLE);
+
+# Generated columns wrap their expression in a cast to the declared type, so the declared type is
+# bound, written back out as a type expression, and bound again.
+
+statement ok
+CREATE TABLE gen (
+    v VARCHAR,
+    c_dec      DECIMAL(9,2)                        GENERATED ALWAYS AS (1.5),
+    c_arr      INTEGER[3]                          GENERATED ALWAYS AS ([1,2,3]),
+    c_list     INTEGER[]                           GENERATED ALWAYS AS ([1,2]),
+    c_nested   INTEGER[][]                         GENERATED ALWAYS AS ([[1],[2]]),
+    c_struct   STRUCT(k INTEGER, v VARCHAR)        GENERATED ALWAYS AS ({'k':1,'v':'x'}),
+    c_tuple    TUPLE(INTEGER, VARCHAR)             GENERATED ALWAYS AS ((1,'a')),
+    c_map      MAP(VARCHAR, INTEGER)               GENERATED ALWAYS AS (MAP{'a':1}),
+    c_union    UNION(n INTEGER, s VARCHAR)         GENERATED ALWAYS AS (union_value(n := 1)),
+    c_enum     mood                                GENERATED ALWAYS AS ('ok'),
+    c_udt      pt                                  GENERATED ALWAYS AS ({'x':1.0,'y':2.0}),
+    c_tsns     TIMESTAMP_NS                        GENERATED ALWAYS AS (TIMESTAMP '2020-01-01'),
+    c_tstz     TIMESTAMPTZ                         GENERATED ALWAYS AS (TIMESTAMP '2020-01-01'),
+    c_ts_s     TIMESTAMP_S                         GENERATED ALWAYS AS (TIMESTAMP '2020-01-01'),
+    c_timetz   TIMETZ                              GENERATED ALWAYS AS (TIME '12:00:00'),
+    c_uuid     UUID                                GENERATED ALWAYS AS ('00000000-0000-0000-0000-000000000001'),
+    c_blob     BLOB                                GENERATED ALWAYS AS ('abc'),
+    c_bit      BIT                                 GENERATED ALWAYS AS ('101'),
+    c_bignum   BIGNUM                              GENERATED ALWAYS AS (1),
+    c_hugeint  HUGEINT                             GENERATED ALWAYS AS (1),
+    c_uhugeint UHUGEINT                            GENERATED ALWAYS AS (1),
+    c_interval INTERVAL                            GENERATED ALWAYS AS (INTERVAL 1 DAY),
+    c_null     "NULL"                              GENERATED ALWAYS AS (NULL)
+);
+
+statement ok
+INSERT INTO gen (v) VALUES ('a');
+
+query IIIIII
+SELECT typeof(c_dec), typeof(c_arr), typeof(c_list), typeof(c_nested), typeof(c_struct), typeof(c_tuple) FROM gen
+----
+DECIMAL(9,2)	INTEGER[3]	INTEGER[]	INTEGER[][]	STRUCT(k INTEGER, v VARCHAR)	TUPLE(INTEGER, VARCHAR)
+
+query IIIIII
+SELECT typeof(c_map), typeof(c_union), typeof(c_tsns), typeof(c_tstz), typeof(c_ts_s), typeof(c_timetz) FROM gen
+----
+MAP(VARCHAR, INTEGER)	UNION(n INTEGER, s VARCHAR)	TIMESTAMP_NS	TIMESTAMP WITH TIME ZONE	TIMESTAMP_S	TIME WITH TIME ZONE
+
+query IIIIIII
+SELECT typeof(c_uuid), typeof(c_blob), typeof(c_bit), typeof(c_bignum), typeof(c_hugeint), typeof(c_uhugeint), typeof(c_interval) FROM gen
+----
+UUID	BLOB	BIT	BIGNUM	HUGEINT	UHUGEINT	INTERVAL
+
+query II
+SELECT c_enum, c_udt FROM gen
+----
+ok	{'x': 1.0, 'y': 2.0}
+
+# the values survive the round trip, not just the types
+query IIIII
+SELECT c_dec, c_arr, c_map, c_union, c_interval FROM gen
+----
+1.50	[1, 2, 3]	{a=1}	1	1 day
+
+# typed macro parameters take the same path: the bound parameter type becomes a cast target.
+# TEMP so the test does not depend on the database's storage version - typed parameters require v1.4.0+.
+statement ok
+CREATE TEMP MACRO take_dec(a DECIMAL(9,2)) AS a;
+
+statement ok
+CREATE TEMP MACRO take_struct(a STRUCT(k INTEGER, v VARCHAR)) AS a;
+
+statement ok
+CREATE TEMP MACRO take_arr(a INTEGER[3]) AS a;
+
+query III
+SELECT typeof(take_dec(1.5::DECIMAL(9,2))), typeof(take_struct({'k':1,'v':'x'})), typeof(take_arr([1,2,3]::INTEGER[3]))
+----
+DECIMAL(9,2)	STRUCT(k INTEGER, v VARCHAR)	INTEGER[3]

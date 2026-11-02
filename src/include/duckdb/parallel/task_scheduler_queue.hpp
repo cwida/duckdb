@@ -37,7 +37,7 @@ public:
 	void Enqueue(ProducerToken &token, shared_ptr<Task> task);
 	void EnqueueBulk(ProducerToken &token, vector<shared_ptr<Task>> &tasks);
 	bool DequeueFromProducer(ProducerToken &token, shared_ptr<Task> &task);
-	bool Dequeue(shared_ptr<Task> &task);
+	bool Dequeue(ConsumerToken &token, shared_ptr<Task> &task);
 	idx_t GetTasksInQueue() const;
 	idx_t GetApproxSize() const;
 	idx_t GetProducerCount() const;

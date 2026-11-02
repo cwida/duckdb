@@ -11,6 +11,7 @@ add_library_unity(
   create_statement.cpp
   detach_statement.cpp
   disconnect_statement.cpp
+  passthrough_statement.cpp
   delete_statement.cpp
   drop_statement.cpp
   execute_statement.cpp

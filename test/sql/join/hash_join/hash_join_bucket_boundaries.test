@@ -1,0 +1,59 @@
+# name: test/sql/join/hash_join/hash_join_bucket_boundaries.test
+# description: Same-salt collisions at a resident hash table's midpoint and wraparound
+# group: [hash_join]
+
+# Force the parallel general hash join so bucket remapping is exercised on every platform.
+statement ok
+SET threads=4
+
+statement ok
+SET perfect_ht_threshold=0
+
+statement ok
+PRAGMA verify_parallelism
+
+statement ok
+PRAGMA disable_optimizer
+
+# These BIGINTs invert MurmurHash64 to put three keys at each of buckets 2^19-1 and 2^20-1,
+# with salt 0xabcd. 500,000 build rows allocate 2^20 buckets (8 MiB).
+statement ok
+CREATE TABLE boundary_keys(k BIGINT)
+
+statement ok
+INSERT INTO boundary_keys VALUES
+(6885310024661668613), (2935053147940365472), (4427563264838490210),
+(8682129448174287271), (6568086975123622471), (4461762103045784787)
+
+statement ok
+CREATE TABLE build AS SELECT i::BIGINT k FROM range(499994) t(i) UNION ALL SELECT k FROM boundary_keys
+
+query II
+SELECT count(*), sum(b.k) FROM boundary_keys p JOIN build b USING(k)
+----
+6	33959904963784218824
+
+# Repeat with the same prepared query.
+statement ok
+PREPARE probe_boundaries AS SELECT count(*), sum(b.k) FROM boundary_keys p JOIN build b USING(k)
+
+loop i 0 3
+
+query II
+EXECUTE probe_boundaries
+----
+6	33959904963784218824
+
+endloop
+
+statement ok
+PRAGMA enable_optimizer
+
+statement ok
+PRAGMA disable_verify_parallelism
+
+statement ok
+RESET perfect_ht_threshold
+
+statement ok
+RESET threads

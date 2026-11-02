@@ -42,9 +42,14 @@ static void AgeFunction(DataChunk &input, ExpressionState &state, Vector &result
 
 ScalarFunctionSet AgeFun::GetFunctions() {
 	ScalarFunctionSet age("age");
-	age.AddFunction(ScalarFunction({LogicalType::TIMESTAMP}, LogicalType::INTERVAL, AgeFunctionStandard));
-	age.AddFunction(
-	    ScalarFunction({LogicalType::TIMESTAMP, LogicalType::TIMESTAMP}, LogicalType::INTERVAL, AgeFunction));
+	ScalarFunction standard_fun({}, LogicalType::INTERVAL, AgeFunctionStandard);
+	standard_fun.GetSignature().AddParameter("timestamp", LogicalType::TIMESTAMP);
+	age.AddFunction(standard_fun);
+	ScalarFunction binary_fun({}, LogicalType::INTERVAL, AgeFunction);
+	binary_fun.GetSignature()
+	    .AddParameter("timestamp1", LogicalType::TIMESTAMP)
+	    .AddParameter("timestamp2", LogicalType::TIMESTAMP);
+	age.AddFunction(binary_fun);
 	return age;
 }
 

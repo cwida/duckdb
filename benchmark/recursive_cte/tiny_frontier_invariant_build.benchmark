@@ -1,0 +1,12 @@
+# name: benchmark/recursive_cte/tiny_frontier_invariant_build.benchmark
+# description: Parallel invariant hash build with a single-row recursive frontier
+# group: [recursive_cte]
+
+name Recursive CTE tiny frontier invariant build
+group Recursive CTE
+
+load benchmark/recursive_cte/load/performance/tiny_frontier_invariant_build.sql
+
+run benchmark/recursive_cte/queries/performance/tiny_frontier_invariant_build.sql
+
+result benchmark/recursive_cte/answers/performance/tiny_frontier_invariant_build.csv

@@ -1,0 +1,664 @@
+# name: test/sql/match_recognize/test_match_recognize_navigation.test
+# description: MATCH_RECOGNIZE row pattern navigation - PREV/NEXT, FIRST/LAST, RUNNING vs FINAL
+# group: [match_recognize]
+
+statement ok
+pragma threads=1;
+
+statement ok
+create table ev(i integer, v integer);
+
+# PATTERN (A B+) matches rows 1-3 and 4-5; row 6 starts no match
+statement ok
+insert into ev values (1,1),(2,0),(3,0),(4,1),(5,0),(6,1);
+
+# Row pattern navigation in DEFINE
+# PREV/NEXT are physical: they navigate the ordered partition and may leave the match.
+# FIRST/LAST are logical: they navigate the rows of the match being assembled.
+
+statement ok
+create table nav(i integer, v integer);
+
+statement ok
+insert into nav values (1,5),(2,7),(3,6),(4,9),(5,2);
+
+# PREV is relative to the partition, so it sees the row before the match starts
+query I
+SELECT x FROM nav MATCH_RECOGNIZE(
+    ORDER BY i MEASURES i AS x PATTERN (A) DEFINE A as v > PREV(v)
+) ORDER BY x
+----
+2
+4
+
+query I
+SELECT x FROM nav MATCH_RECOGNIZE(
+    ORDER BY i MEASURES i AS x PATTERN (A) DEFINE A as v < NEXT(v)
+) ORDER BY x
+----
+1
+3
+
+# LAST navigates the rows of this match, so it reads the A of the same match
+query I
+SELECT x FROM nav MATCH_RECOGNIZE(
+    ORDER BY i MEASURES i AS x ALL ROWS PER MATCH PATTERN (A B)
+    DEFINE A as true, B as v > LAST(A.v)
+) ORDER BY x
+----
+1
+2
+3
+4
+
+statement ok
+create table run(i integer, v integer);
+
+statement ok
+insert into run values (1,1),(2,3),(3,5),(4,2),(5,8);
+
+# FIRST is anchored at the row the match started on
+query I
+SELECT x FROM run MATCH_RECOGNIZE(
+    ORDER BY i MEASURES i AS x ALL ROWS PER MATCH PATTERN (A B B)
+    DEFINE A as true, B as v > FIRST(A.v)
+) ORDER BY x
+----
+1
+2
+3
+
+# unqualified navigation refers to the match rather than to one variable
+query I
+SELECT x FROM run MATCH_RECOGNIZE(
+    ORDER BY i MEASURES i AS x ALL ROWS PER MATCH PATTERN (A B)
+    DEFINE A as true, B as v > FIRST(v)
+) ORDER BY x
+----
+1
+2
+4
+5
+
+# the row under test counts as the variable it is being tested for, so LAST(B.v) is its own value
+query I
+SELECT count(*) FROM run MATCH_RECOGNIZE(
+    ORDER BY i MEASURES i AS x PATTERN (A B+) DEFINE A as true, B as v > LAST(B.v)
+)
+----
+0
+
+# navigation composes with the other DEFINE features
+query I
+SELECT x FROM nav MATCH_RECOGNIZE(
+    ORDER BY i MEASURES i AS x ALL ROWS PER MATCH PATTERN (A B)
+    DEFINE A as true, B as v > LAST(A.v) AND CLASSIFIER()='B' AND MATCH_NUMBER()=1
+) ORDER BY x
+----
+1
+2
+
+statement error
+SELECT 1 FROM nav MATCH_RECOGNIZE(
+    ORDER BY i MEASURES i AS x PATTERN (A B) DEFINE A as true, B as v > LAST(FIRST(v))
+)
+----
+<REGEX>:Binder Error.*Nested row pattern navigation is not supported.*
+
+statement error
+SELECT 1 FROM nav MATCH_RECOGNIZE(
+    ORDER BY i MEASURES i AS x PATTERN (A B) DEFINE A as true, B as v > LAST(v, i)
+)
+----
+<REGEX>:Binder Error.*offset of LAST\(\) must be a constant.*
+
+# RUNNING and FINAL
+# A measure is RUNNING under ALL ROWS PER MATCH and FINAL under ONE ROW PER MATCH by default. The
+# keywords make that explicit, and can pick the other one.
+
+query IIII
+SELECT i, dflt, run, fin FROM ev MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS dflt, RUNNING count(*) AS run, FINAL count(*) AS fin
+    ALL ROWS PER MATCH PATTERN (A B+) DEFINE A as v=1, B as v=0
+) ORDER BY i
+----
+1	1	1	3
+2	2	2	3
+3	3	3	3
+4	1	1	2
+5	2	2	2
+
+# FINAL navigation reads the whole match, RUNNING only what precedes the current row
+query III
+SELECT i, fin_b, run_b FROM ev MATCH_RECOGNIZE(
+    ORDER BY i MEASURES FINAL LAST(B.i) AS fin_b, RUNNING LAST(B.i) AS run_b
+    ALL ROWS PER MATCH PATTERN (A B+) DEFINE A as v=1, B as v=0
+) ORDER BY i
+----
+1	3	NULL
+2	3	2
+3	3	3
+4	5	NULL
+5	5	5
+
+# ONE ROW PER MATCH reports a finished match, so its current row is the last one and the two
+# keywords mean the same thing
+query II
+SELECT run, fin FROM ev MATCH_RECOGNIZE(
+    ORDER BY i MEASURES RUNNING count(*) AS run, FINAL count(*) AS fin
+    ONE ROW PER MATCH PATTERN (A B+) DEFINE A as v=1, B as v=0
+) ORDER BY fin
+----
+2	2
+3	3
+
+# neither keyword is reserved
+statement ok
+CREATE TABLE running(final INTEGER)
+
+statement ok
+SELECT final FROM running
+
+# PREV and NEXT navigate the ordered partition rather than the rows of the match, so a measure may
+# use them to reach a row the match does not cover - including one before it starts.
+
+statement ok
+create table pnav(p integer, i integer, v integer);
+
+statement ok
+insert into pnav values (1,1,10),(1,2,20),(1,3,30),(2,4,40),(2,5,50);
+
+query II
+SELECT i, prev_v FROM pnav MATCH_RECOGNIZE(
+    ORDER BY i MEASURES PREV(v) AS prev_v ALL ROWS PER MATCH PATTERN (A+) DEFINE A as true
+) ORDER BY i
+----
+1	NULL
+2	10
+3	20
+4	30
+5	40
+
+query II
+SELECT i, next_v FROM pnav MATCH_RECOGNIZE(
+    ORDER BY i MEASURES NEXT(v) AS next_v ALL ROWS PER MATCH PATTERN (A+) DEFINE A as true
+) ORDER BY i
+----
+1	20
+2	30
+3	40
+4	50
+5	NULL
+
+# an offset counts that many rows back
+query II
+SELECT i, prev_v FROM pnav MATCH_RECOGNIZE(
+    ORDER BY i MEASURES PREV(v, 2) AS prev_v ALL ROWS PER MATCH PATTERN (A+) DEFINE A as true
+) ORDER BY i
+----
+1	NULL
+2	NULL
+3	10
+4	20
+5	30
+
+# ONE ROW PER MATCH reports the match, so the navigation is relative to the row it ends on
+query I
+SELECT prev_v FROM pnav MATCH_RECOGNIZE(
+    ORDER BY i MEASURES PREV(v) AS prev_v PATTERN (A A) DEFINE A as true
+) ORDER BY prev_v
+----
+10
+30
+
+# the partition bounds it: row 4 starts one, so there is nothing before it
+query II
+SELECT i, prev_v FROM pnav MATCH_RECOGNIZE(
+    PARTITION BY p ORDER BY i MEASURES PREV(v) AS prev_v ALL ROWS PER MATCH PATTERN (A+) DEFINE A as true
+) ORDER BY i
+----
+1	NULL
+2	10
+3	20
+4	NULL
+5	40
+
+# it composes like any other expression
+query II
+SELECT i, d FROM pnav MATCH_RECOGNIZE(
+    ORDER BY i MEASURES v - PREV(v) AS d ALL ROWS PER MATCH PATTERN (A+) DEFINE A as true
+) ORDER BY i
+----
+1	NULL
+2	10
+3	10
+4	10
+5	10
+
+# A pattern variable in front of a step says which row to step from rather than which row is reached:
+# "PREV (A.Price, 2) is the value of Price in the row two rows prior to the row denoted by A with
+# running semantics" (ISO/IEC 19075-5 5.6.2). ONE ROW PER MATCH reads the match from its last row, so
+# the row A denotes is the last one mapped to A.
+query II
+SELECT prev_v, prev2_v FROM pnav MATCH_RECOGNIZE(
+    ORDER BY i MEASURES PREV(A.v) AS prev_v, PREV(A.v, 2) AS prev2_v PATTERN (A+) DEFINE A as true
+)
+----
+40	30
+
+# under ALL ROWS PER MATCH the row A denotes moves with the current row
+query III
+SELECT i, prev_v, next_v FROM pnav MATCH_RECOGNIZE(
+    ORDER BY i MEASURES PREV(A.v) AS prev_v, NEXT(A.v) AS next_v
+    ALL ROWS PER MATCH PATTERN (A+) DEFINE A as true
+) ORDER BY i
+----
+1	NULL	20
+2	10	30
+3	20	40
+4	30	50
+5	40	NULL
+
+# the row it steps from is the last row of another variable just as well
+query I
+SELECT s FROM pnav MATCH_RECOGNIZE(
+    ORDER BY i MEASURES PREV(B.v) AS s PATTERN (B+ C+) DEFINE B as v < 30, C as true
+)
+----
+10
+
+# "To obtain final semantics, use, e.g., PREV (FINAL LAST (A.Price))" (5.6.2), which is the same row
+# on every row of the match
+query II
+SELECT i, s FROM pnav MATCH_RECOGNIZE(
+    ORDER BY i MEASURES PREV(FINAL LAST(A.v)) AS s ALL ROWS PER MATCH PATTERN (A+) DEFINE A as true
+) ORDER BY i
+----
+1	40
+2	40
+3	40
+4	40
+5	40
+
+# FIRST or LAST inside a step names which of the variable's rows to step from, and the expression is
+# evaluated on the row the step reaches rather than on that one (5.6.4, tested against the standard's
+# own worked example in test_match_recognize_spec.test)
+
+# the offset of the navigation inside a step is the navigation's own, counted over the variable's rows
+query II
+SELECT s, t FROM pnav MATCH_RECOGNIZE(
+    ORDER BY i MEASURES PREV(FIRST(A.v), 0) AS s, PREV(FIRST(A.v, 1), 0) AS t
+    PATTERN (A+) DEFINE A as true
+)
+----
+10	20
+
+# FIRST and LAST count the match's own rows instead, so an offset on them steps in from the end it
+# names rather than over the partition
+query IIII
+SELECT f0, f1, l0, l1 FROM pnav MATCH_RECOGNIZE(
+    ORDER BY i MEASURES FIRST(v, 0) AS f0, FIRST(v, 1) AS f1, LAST(v, 0) AS l0, LAST(v, 1) AS l1
+    PATTERN (A+) DEFINE A as true
+)
+----
+10	20	50	40
+
+# reported as the match grows, LAST(v, 1) is the row before the current one and FIRST(v, 1) is the
+# match's second row once it has one
+query III
+SELECT i, f1, l1 FROM pnav MATCH_RECOGNIZE(
+    ORDER BY i MEASURES FIRST(v, 1) AS f1, LAST(v, 1) AS l1
+    ALL ROWS PER MATCH PATTERN (A+) DEFINE A as true
+) ORDER BY i
+----
+1	NULL	NULL
+2	20	10
+3	20	20
+4	20	30
+5	20	40
+
+statement ok
+create table tie(ts integer, k integer);
+
+statement ok
+insert into tie values (1,10),(2,12),(3,12),(4,15);
+
+# Counting in from the end walks the match the other way round, and a stable descending sort is not
+# the exact reverse of a stable ascending one. Two rows tied on the ordering key would land in a
+# different order in the two directions, and FIRST and LAST would disagree about which is which:
+# here the tied pair is ts 2 and 3, so the second row in is 2 and the second row back is 3.
+query IIII
+SELECT f0, f1, l0, l1 FROM tie MATCH_RECOGNIZE(
+    ORDER BY k MEASURES FIRST(ts, 0) AS f0, FIRST(ts, 1) AS f1, LAST(ts, 0) AS l0, LAST(ts, 1) AS l1
+    PATTERN (A{4}) DEFINE A AS 1 = 1
+)
+----
+1	2	4	3
+
+# A navigation offset is a constant, and NULL is not one of the constants it can be. Both clauses
+# turn it away the same way rather than reading it as a number.
+statement error
+FROM (VALUES (10), (20)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES FIRST(x, NULL) AS s PATTERN (A+)
+ DEFINE A AS true)
+----
+must be a non-negative integer, not NULL
+
+statement error
+FROM (VALUES (10), (20)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n PATTERN (A+) DEFINE A AS FIRST(x, NULL) > 0
+)
+----
+must be a non-negative integer, not NULL
+
+statement error
+FROM (VALUES (10), (20)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES LAST(x, -1) AS s PATTERN (A+)
+ DEFINE A AS true)
+----
+must be a non-negative integer
+
+query I
+FROM (VALUES (10), (20)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES FIRST(x, 1) AS s PATTERN (A+)
+ DEFINE A AS true)
+----
+20
+
+# navigation nested behind another function is still nested navigation
+statement error
+FROM (VALUES (10), (20)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n
+    PATTERN (A+) DEFINE A AS FIRST(abs(LAST(x))) > 0
+)
+----
+Nested row pattern navigation is not supported
+
+# An offset counts rows within the match, so it is compared against how many there are rather than
+# added to one end first: added first it wraps and lands back inside the match.
+statement error
+FROM (VALUES (1), (2), (3)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES x AS s PATTERN (A)
+    DEFINE A AS FIRST(x, 18446744073709551615) IS NOT NULL
+)
+----
+larger than any match can have rows
+
+statement error
+FROM (VALUES (1), (2), (3)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES x AS s PATTERN (A)
+    DEFINE A AS LAST(x, 18446744073709551615) IS NOT NULL
+)
+----
+larger than any match can have rows
+
+# the two clauses turn away the same offsets
+statement error
+FROM (VALUES (1), (2), (3)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES FIRST(x, 18446744073709551615) AS s PATTERN (A+)
+ DEFINE A AS true)
+----
+larger than any match can have rows
+
+# the largest offset either clause accepts is still an offset no match reaches
+query I
+FROM (VALUES (1), (2), (3)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES x AS s PATTERN (A)
+    DEFINE A AS FIRST(x, 9223372036854775806) IS NOT NULL
+)
+----
+
+query II
+FROM (VALUES (1), (2), (3)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES FIRST(x, 9223372036854775806) AS f, LAST(x, 9223372036854775806) AS l
+    PATTERN (A+)
+ DEFINE A AS true)
+----
+NULL	NULL
+
+# offset zero is the end it counts from
+query II
+FROM (VALUES (1), (2), (3)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES FIRST(x, 0) AS f, LAST(x, 0) AS l PATTERN (A+)
+ DEFINE A AS true)
+----
+1	3
+
+query II
+FROM (VALUES (1), (2), (3)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES FIRST(x, 1) AS f, LAST(x, 1) AS l PATTERN (A+)
+ DEFINE A AS true)
+----
+2	2
+
+# an offset past the end of the match reports nothing rather than a row outside it
+query II
+FROM (VALUES (1), (2), (3)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES FIRST(x, 5) AS f, LAST(x, 5) AS l PATTERN (A+)
+ DEFINE A AS true)
+----
+NULL	NULL
+
+query I
+FROM (VALUES (1), (2), (3)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n PATTERN (A+)
+    DEFINE A AS FIRST(x, 1) IS NULL OR FIRST(x, 1) = 2
+)
+----
+3
+
+query I
+FROM (VALUES (1), (2), (3)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n PATTERN (A+)
+    DEFINE A AS LAST(x, 1) IS NULL OR LAST(x, 1) < x
+)
+----
+3
+
+# an offset within a variable's own rows is bounded by how many of them there are
+query I
+FROM (VALUES (1), (2), (3), (4)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n PATTERN (A+)
+    DEFINE A AS FIRST(A.x, 2) IS NULL OR FIRST(A.x, 2) = 3
+)
+----
+4
+
+# What a navigation reports is an expression of the clause's own, so a pattern variable may sit
+# anywhere inside it rather than only in front of it. The row navigated to is the variable's; the
+# expression is then evaluated on that row.
+
+statement ok
+create table nav_expr(i integer, v integer);
+
+statement ok
+insert into nav_expr values (1,3),(2,-7),(3,5),(4,-1);
+
+query IIIII
+SELECT f, l, o, d, u FROM nav_expr MATCH_RECOGNIZE(
+    ORDER BY i MEASURES FIRST(abs(A.v)) AS f, LAST(abs(A.v)) AS l, LAST(abs(A.v), 1) AS o,
+                        FIRST(A.v * 2) AS d, FIRST(abs(v)) AS u
+    ONE ROW PER MATCH PATTERN (A+) DEFINE A AS true
+)
+----
+3	1	5	6	3
+
+# the expression reads the rows of the variable it names, not the rows of the match
+statement ok
+create table nav_mixed(i integer, v integer);
+
+statement ok
+insert into nav_mixed values (1,1),(2,100),(3,3),(4,200),(5,5);
+
+query III
+SELECT fa, lb, sa FROM nav_mixed MATCH_RECOGNIZE(
+    ORDER BY i MEASURES FIRST(A.v * 1000) AS fa, LAST(B.v * 1000) AS lb, LAST(A.v || 'x') AS sa
+    ONE ROW PER MATCH PATTERN ((A B)+ A) DEFINE A AS v < 50, B AS v >= 50
+)
+----
+1000	200000	5x
+
+# a NULL the expression computes is the value of the row navigated to, and not a reason to walk on
+statement ok
+create table nav_nulls(i integer, v integer);
+
+statement ok
+insert into nav_nulls values (1,NULL),(2,10),(3,NULL),(4,20);
+
+query IIII
+SELECT fb, fe, fn, le FROM nav_nulls MATCH_RECOGNIZE(
+    ORDER BY i MEASURES FIRST(A.v) AS fb, FIRST(A.v + 0) AS fe,
+                        FIRST(CASE WHEN A.v IS NULL THEN 99 END) AS fn, LAST(A.v * 2) AS le
+    ONE ROW PER MATCH PATTERN (A+) DEFINE A AS true
+)
+----
+NULL	NULL	99	40
+
+# the same holds in DEFINE, where the expression decides which rows match at all
+statement ok
+create table nav_define(i integer, v integer);
+
+statement ok
+insert into nav_define values (1,-5),(2,3),(3,10);
+
+query II
+SELECT n, s FROM nav_define MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS n, FIRST(i) AS s
+    ONE ROW PER MATCH PATTERN (A B+) DEFINE A AS true, B AS v > FIRST(-A.v)
+)
+----
+2	2
+
+# negating inside the navigation is what moved the bound: reading the column itself matches more
+query II
+SELECT n, s FROM nav_define MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS n, FIRST(i) AS s
+    ONE ROW PER MATCH PATTERN (A B+) DEFINE A AS true, B AS v > FIRST(A.v)
+)
+----
+3	1
+
+# a navigation reads one row, so its expression cannot name two variables to read it from
+statement error
+SELECT m FROM nav_mixed MATCH_RECOGNIZE(
+    ORDER BY i MEASURES FIRST(A.v + B.v) AS m
+    ONE ROW PER MATCH PATTERN ((A B)+ A) DEFINE A AS v < 50, B AS v >= 50
+)
+----
+<REGEX>:.*FIRST\(\) reads one row of the match.*
+
+statement error
+SELECT n FROM nav_mixed MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS n
+    ONE ROW PER MATCH PATTERN ((A B)+ A) DEFINE A AS v < 50, B AS v >= 50 AND v > LAST(A.v + B.v)
+)
+----
+<REGEX>:.*LAST\(\) reads one row of the match.*
+
+# a lambda parameter spelled like a pattern variable is still the lambda's
+statement ok
+create table nav_lambda(i integer, xs struct(v integer)[]);
+
+statement ok
+insert into nav_lambda values (1, [{'v': 1}, {'v': 2}]), (2, [{'v': 10}]);
+
+query I
+SELECT m FROM nav_lambda MATCH_RECOGNIZE(
+    ORDER BY i MEASURES FIRST(list_transform(A.xs, lambda A: A.v + 100)) AS m
+    ONE ROW PER MATCH PATTERN (A+) DEFINE A AS true
+)
+----
+[101, 102]
+
+# and a table qualifier inside a navigation is not a pattern variable either
+query I
+FROM (VALUES (1, 7), (2, 8)) AS t(i, v) MATCH_RECOGNIZE(
+    ORDER BY i MEASURES FIRST(abs(t.v)) AS m
+    ONE ROW PER MATCH PATTERN (A+) DEFINE A AS true
+)
+----
+7
+
+# A step always reads the row it steps to, so how much of the match is visible is not its to say:
+# RUNNING and FINAL belong on the navigation a step starts from, not on the step itself
+# (ISO/IEC 19075-5 5.6.2). Trino and Oracle refuse these too.
+
+statement error
+SELECT v FROM (VALUES (1, 10), (2, 20)) t(i, p) MATCH_RECOGNIZE (
+    ORDER BY i MEASURES FINAL PREV(p) AS v ALL ROWS PER MATCH PATTERN (A+) DEFINE A AS p > 0
+)
+----
+<REGEX>:Binder Error:.*PREV\(\) always reads the row it steps to.*
+
+statement error
+SELECT v FROM (VALUES (1, 10), (2, 20)) t(i, p) MATCH_RECOGNIZE (
+    ORDER BY i MEASURES RUNNING PREV(p) AS v ALL ROWS PER MATCH PATTERN (A+) DEFINE A AS p > 0
+)
+----
+<REGEX>:Binder Error:.*PREV\(\) always reads the row it steps to.*
+
+statement error
+SELECT v FROM (VALUES (1, 10), (2, 20)) t(i, p) MATCH_RECOGNIZE (
+    ORDER BY i MEASURES FINAL NEXT(p) AS v ALL ROWS PER MATCH PATTERN (A+) DEFINE A AS p > 0
+)
+----
+<REGEX>:Binder Error:.*NEXT\(\) always reads the row it steps to.*
+
+# DEFINE steps from a variable's row the same way, with the one difference that a condition is settled
+# while the match is still being assembled: the rows mapped to a variable are the ones up to and
+# including the row being tested, and FINAL is not available (5.4).
+statement ok
+CREATE TABLE pstep(rn INTEGER, price INTEGER)
+
+statement ok
+INSERT INTO pstep VALUES (1,10),(2,20),(3,30),(4,40),(5,50)
+
+query II
+SELECT rn, c FROM pstep MATCH_RECOGNIZE(
+    ORDER BY rn MEASURES CLASSIFIER() AS c ALL ROWS PER MATCH
+    PATTERN (B C+) DEFINE B as price = 10, C as PREV(B.price) IS NULL
+) ORDER BY rn
+----
+1	B
+2	C
+3	C
+4	C
+5	C
+
+query II
+SELECT rn, c FROM pstep MATCH_RECOGNIZE(
+    ORDER BY rn MEASURES CLASSIFIER() AS c ALL ROWS PER MATCH
+    PATTERN (B{3} C) DEFINE B as true, C as PREV(LAST(B.price, 1), 1) = 10
+) ORDER BY rn
+----
+1	B
+2	B
+3	B
+4	C
+
+# the row a variable denotes while its own condition is being settled is the row being tested, so a
+# step naming it reads the same rows a step naming nothing does
+query II
+SELECT rn, c FROM pstep MATCH_RECOGNIZE(
+    ORDER BY rn MEASURES CLASSIFIER() AS c ALL ROWS PER MATCH
+    PATTERN (A+) DEFINE A as PREV(A.price) > 20
+) ORDER BY rn
+----
+4	A
+5	A
+
+query II
+SELECT rn, c FROM pstep MATCH_RECOGNIZE(
+    ORDER BY rn MEASURES CLASSIFIER() AS c ALL ROWS PER MATCH
+    PATTERN (A+) DEFINE A as PREV(price) > 20
+) ORDER BY rn
+----
+4	A
+5	A
+
+statement error
+SELECT rn FROM pstep MATCH_RECOGNIZE(
+    ORDER BY rn MEASURES count(*) AS n PATTERN (A+) DEFINE A as PREV(FINAL LAST(A.price)) > 0
+)
+----
+<REGEX>:Binder Error:.*only RUNNING is available there.*

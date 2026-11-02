@@ -73,6 +73,25 @@ struct ICUTimeBucket : public ICUDateFunc {
 		return Add(calendar, origin, interval_t {0, 0, result_micros});
 	}
 
+	//! Add resolves a local time that occurs twice (e.g. when the clocks are turned back) to its latter occurrence.
+	//! If that is after ts, ts lies between the two occurrences, and its bucket starts at the former occurrence.
+	static timestamp_tz_t FormerOccurrence(Calendar *calendar, const timestamp_tz_t bucket, const timestamp_tz_t ts) {
+		auto get_offset = [&](const timestamp_tz_t instant) {
+			SetTime(calendar, instant);
+			return int64_t(ExtractField(calendar, CAL_ZONE_OFFSET)) + ExtractField(calendar, CAL_DST_OFFSET);
+		};
+		const auto ts_offset = get_offset(ts);
+		const auto bucket_offset = get_offset(bucket);
+		if (ts_offset <= bucket_offset) {
+			return bucket;
+		}
+		const timestamp_tz_t former(bucket.value - (ts_offset - bucket_offset) * Interval::MICROS_PER_MSEC);
+		if (ts < former || get_offset(former) != ts_offset) {
+			return bucket;
+		}
+		return former;
+	}
+
 	static inline timestamp_tz_t WidthConvertibleToDaysCommon(int32_t bucket_width_days, const timestamp_tz_t ts,
 	                                                          const timestamp_tz_t origin, TZCalendar &calendar) {
 		if (!bucket_width_days) {
@@ -87,9 +106,10 @@ struct ICUTimeBucket : public ICUDateFunc {
 		}
 		auto bucket = Add(calendar, origin, interval_t {0, static_cast<int32_t>(result_days), 0});
 		if (ts < bucket) {
-			D_ASSERT(ts < origin);
+			bucket = FormerOccurrence(calendar.GetCalendar(), bucket, ts);
+		}
+		while (ts < bucket) {
 			bucket = Add(calendar, bucket, interval_t {0, -bucket_width_days, 0});
-			D_ASSERT(ts > bucket);
 		}
 
 		return bucket;
@@ -123,7 +143,14 @@ struct ICUTimeBucket : public ICUDateFunc {
 			    SubtractOperatorOverflowCheck::Operation<int32_t, int32_t, int32_t>(result_months, bucket_width_months);
 		}
 
-		return Add(calendar_p, truncated_origin, interval_t {static_cast<int32_t>(result_months), 0, 0});
+		auto bucket = Add(calendar_p, truncated_origin, interval_t {static_cast<int32_t>(result_months), 0, 0});
+		if (ts < bucket) {
+			bucket = FormerOccurrence(calendar, bucket, ts);
+		}
+		while (ts < bucket) {
+			bucket = Add(calendar_p, bucket, interval_t {-bucket_width_months, 0, 0});
+		}
+		return bucket;
 	}
 
 	template <typename TA, typename TB, typename TR, typename OP>
@@ -613,16 +640,32 @@ struct ICUTimeBucket : public ICUDateFunc {
 
 	static void AddTimeBucketFunction(ExtensionLoader &loader) {
 		ScalarFunctionSet set("time_bucket");
-		set.AddFunction(ScalarFunction({LogicalType::INTERVAL, LogicalType::TIMESTAMP_TZ}, LogicalType::TIMESTAMP_TZ,
-		                               ICUTimeBucketFunction, Bind));
-		set.AddFunction(ScalarFunction({LogicalType::INTERVAL, LogicalType::TIMESTAMP_TZ, LogicalType::INTERVAL},
-		                               LogicalType::TIMESTAMP_TZ, ICUTimeBucketOffsetFunction, Bind));
-		set.AddFunction(ScalarFunction({LogicalType::INTERVAL, LogicalType::TIMESTAMP_TZ, LogicalType::TIMESTAMP_TZ},
-		                               LogicalType::TIMESTAMP_TZ, ICUTimeBucketOriginFunction, Bind));
-		set.AddFunction(ScalarFunction({LogicalType::INTERVAL, LogicalType::TIMESTAMP_TZ, LogicalType::VARCHAR},
-		                               LogicalType::TIMESTAMP_TZ, ICUTimeBucketTimeZoneFunction, Bind));
+		ScalarFunction base_fun({}, LogicalType::TIMESTAMP_TZ, ICUTimeBucketFunction, Bind);
+		base_fun.GetSignature()
+		    .AddParameter("bucket_width", LogicalType::INTERVAL)
+		    .AddParameter("timestamp", LogicalType::TIMESTAMP_TZ);
+		set.AddFunction(base_fun);
+		ScalarFunction offset_fun({}, LogicalType::TIMESTAMP_TZ, ICUTimeBucketOffsetFunction, Bind);
+		offset_fun.GetSignature()
+		    .AddParameter("bucket_width", LogicalType::INTERVAL)
+		    .AddParameter("timestamp", LogicalType::TIMESTAMP_TZ)
+		    .AddParameter("offset", LogicalType::INTERVAL);
+		set.AddFunction(offset_fun);
+		ScalarFunction origin_fun({}, LogicalType::TIMESTAMP_TZ, ICUTimeBucketOriginFunction, Bind);
+		origin_fun.GetSignature()
+		    .AddParameter("bucket_width", LogicalType::INTERVAL)
+		    .AddParameter("timestamp", LogicalType::TIMESTAMP_TZ)
+		    .AddParameter("origin", LogicalType::TIMESTAMP_TZ);
+		set.AddFunction(origin_fun);
+		ScalarFunction timezone_fun({}, LogicalType::TIMESTAMP_TZ, ICUTimeBucketTimeZoneFunction, Bind);
+		timezone_fun.GetSignature()
+		    .AddParameter("bucket_width", LogicalType::INTERVAL)
+		    .AddParameter("timestamp", LogicalType::TIMESTAMP_TZ)
+		    .AddParameter("timezone", LogicalType::VARCHAR);
+		set.AddFunction(timezone_fun);
 		set.ApplyToFunctions([](ScalarFunction &func) {
 			func.SetFallible();
+			func.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 			func.SetInitStateCallback(InitCalendarCache);
 			func.SetArgProperties(1, ArgProperties().NonDecreasing());
 		});

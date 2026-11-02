@@ -71,12 +71,12 @@ element1	TUPLE(INTEGER)
 statement error
 SELECT column_name, column_type FROM (DESCRIBE SELECT unnest([{'a': 12, 'b': {'': {'': 12}}}], max_depth := 3));
 ----
-<REGEX>:.*Binder Error.*Need named argument for struct pack.*
+<REGEX>:.*Binder Error.*No function matches.*struct_pack\(INTEGER_LITERAL\).*
 
 statement error
 SELECT column_name, column_type FROM (DESCRIBE SELECT unnest([{'': {'': 12}}], recursive := true, keep_parent_names := true));
 ----
-<REGEX>:.*Binder Error.*Need named argument for struct pack.*
+<REGEX>:.*Binder Error.*No function matches.*struct_pack\(INTEGER_LITERAL\).*
 
 # Test empty structs or lists
 

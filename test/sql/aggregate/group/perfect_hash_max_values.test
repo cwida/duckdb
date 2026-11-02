@@ -1,0 +1,21 @@
+# name: test/sql/aggregate/group/perfect_hash_max_values.test
+# description: Perfect hash aggregates on groups close to the maximum value
+# group: [group]
+
+statement ok
+CREATE TABLE t AS SELECT 'infinity'::TIMESTAMP x UNION ALL SELECT 'infinity'::TIMESTAMP;
+
+query II
+SELECT x, count(*) FROM t GROUP BY x
+----
+infinity	2
+
+statement ok
+CREATE TABLE t2 AS SELECT 9223372036854775807::BIGINT x UNION ALL SELECT 9223372036854775806 UNION ALL SELECT NULL;
+
+query II
+SELECT x, count(*) FROM t2 GROUP BY x ORDER BY x
+----
+9223372036854775806	1
+9223372036854775807	1
+NULL	1

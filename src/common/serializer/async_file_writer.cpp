@@ -404,6 +404,14 @@ void AsyncFileWriter::Close() {
 			SealCopiedBuffer(ScheduleMode::DEFER);
 		}
 		write_queue->Close();
+		if (handle->file_system.IsLocalFileSystem() && handle->GetFileCompressionType().IsUncompressed()) {
+			auto metadata = handle->Stats();
+			if (metadata.file_type == FileType::FILE_TYPE_REGULAR &&
+			    metadata.file_size != NumericCast<int64_t>(total_written)) {
+				throw IOException("File size mismatch for file \"%s\": expected %llu bytes, found %lld bytes", path,
+				                  total_written, metadata.file_size);
+			}
+		}
 	} catch (...) {
 		auto error = std::current_exception();
 		if (!first_error) {

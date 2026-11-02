@@ -37,7 +37,7 @@
     },
     {
         "name": "list_value",
-        "parameters": "any,...",
+        "parameters": "value,...",
         "description": "Creates a LIST containing the argument values.",
         "example": "list_value(4, 5, 6)",
         "categories": ["list"],
@@ -74,7 +74,7 @@
     },
     {
         "name": "list_sort",
-        "parameters": "list",
+        "parameters": "list,sort_order,null_order",
         "description": "Sorts the elements of the list.",
         "example": "list_sort([3, 6, 1, 2])",
         "categories": ["list"],
@@ -83,7 +83,7 @@
     },
     {
         "name": "list_grade_up",
-        "parameters": "list",
+        "parameters": "list,sort_order,null_order",
         "description": "Works like list_sort, but the results are the indexes that correspond to the position in the original list instead of the actual values.",
         "example": "list_grade_up([3, 6, 1, 2])",
         "categories": ["list"],
@@ -92,7 +92,7 @@
     },
     {
         "name": "list_reverse_sort",
-        "parameters": "list",
+        "parameters": "list,null_order",
         "description": "Sorts the elements of the list in reverse order.",
         "example": "list_reverse_sort([3, 6, 1, 2])",
         "categories": ["list"],
@@ -101,7 +101,7 @@
     },
     {
         "name": "list_transform",
-        "parameters": "list,lambda(x)",
+        "parameters": "list,lambda",
         "description": "Returns a list that is the result of applying the `lambda` function to each element of the input `list`. The return type is defined by the return type of the `lambda` function.",
         "example": "list_transform([1, 2, 3], lambda x : x + 1)",
         "categories": ["list", "lambda"],
@@ -110,7 +110,7 @@
     },
     {
         "name": "list_filter",
-        "parameters": "list,lambda(x)",
+        "parameters": "list,lambda",
         "description": "Constructs a list from those elements of the input `list` for which the `lambda` function returns `true`. DuckDB must be able to cast the `lambda` function's return type to `BOOL`. The return type of `list_filter` is the same as the input list's.",
         "example": "list_filter([3, 4, 5], lambda x : x > 4)",
         "categories": ["list", "lambda"],
@@ -119,7 +119,7 @@
     },
     {
         "name": "list_reduce",
-        "parameters": "list,lambda(x, y),initial_value",
+        "parameters": "list,lambda,initial_value",
         "description": "Reduces all elements of the input `list` into a single scalar value by executing the `lambda` function on a running result and the next list element. The `lambda` function has an optional `initial_value` argument.",
         "example": "list_reduce([1, 2, 3], lambda x, y : x + y)",
         "categories": ["list", "lambda"],

@@ -5,6 +5,7 @@ add_library_unity(
   caseconvert.cpp
   concat.cpp
   concat_ws.cpp
+  hive_partition_component.cpp
   length.cpp
   like.cpp
   md5.cpp

@@ -47,17 +47,17 @@ bool BignumNegative(const duckdb_v2_bytes *s) {
 
 struct V2InlineFixture {
 	duckdb_v2_environment_handle env = nullptr;
-	duckdb_v2_database_handle db = nullptr;
+	duckdb_v2_instance_handle instance = nullptr;
 	duckdb_v2_connection_handle conn = nullptr;
 	V2InlineFixture() {
-		duckdb_v2_create_environment(&env, nullptr);
-		duckdb_v2_open(env, duckdb_v2_str {nullptr, 0}, nullptr, 0, &db, nullptr);
-		duckdb_v2_connect(db, &conn, nullptr);
+		duckdb_v2_environment_create(&env, nullptr);
+		OpenInstance(env, duckdb_v2_str {nullptr, 0}, &instance, nullptr);
+		duckdb_v2_connection_create(instance, &conn, nullptr);
 	}
 	~V2InlineFixture() {
-		duckdb_v2_disconnect(&conn);
-		duckdb_v2_close(&db);
-		duckdb_v2_destroy_environment(&env);
+		duckdb_v2_connection_destroy(&conn);
+		duckdb_v2_instance_destroy(&instance);
+		duckdb_v2_environment_destroy(&env);
 	}
 };
 

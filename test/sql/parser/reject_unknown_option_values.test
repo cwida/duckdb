@@ -1,0 +1,55 @@
+# name: test/sql/parser/reject_unknown_option_values.test
+# description: Unknown VACUUM options and non-integer sequence options are rejected
+# group: [parser]
+
+statement ok
+CREATE TABLE t (a INTEGER);
+
+statement error
+VACUUM (foo);
+----
+unrecognized VACUUM option "foo"
+
+statement error
+VACUUM (ANALYZE, foo, bar) t;
+----
+unrecognized VACUUM option "foo"
+
+statement ok
+VACUUM (ANALYZE) t;
+
+statement ok
+VACUUM (ANALYSE) t;
+
+statement error
+CREATE SEQUENCE s INCREMENT BY 1.5;
+----
+Expected an integer argument for INCREMENT
+
+statement error
+CREATE SEQUENCE s START 2.7;
+----
+Expected an integer argument for START
+
+statement error
+CREATE SEQUENCE s MAXVALUE 2.5;
+----
+Expected an integer argument for MAXVALUE
+
+statement error
+CREATE SEQUENCE s MINVALUE -2.5;
+----
+Expected an integer argument for MINVALUE
+
+statement error
+CREATE SEQUENCE s START WITH 'abc';
+----
+Expected an integer argument for START
+
+statement ok
+CREATE SEQUENCE s INCREMENT BY -2 START WITH -1 MINVALUE -100 MAXVALUE -1;
+
+query II
+SELECT nextval('s'), nextval('s');
+----
+-1	-3

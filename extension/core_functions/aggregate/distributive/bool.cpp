@@ -60,6 +60,7 @@ using BoolOrFunFunction = BoolAggregate<LogicalOr, false>;
 AggregateFunction BoolOrFun::GetFunction() {
 	auto fun = AggregateFunction::UnaryAggregate<BoolState, bool, bool, BoolOrFunFunction>(
 	    LogicalType(LogicalTypeId::BOOLEAN), LogicalType::BOOLEAN);
+	fun.GetSignature().GetParameter(0).SetName("arg");
 	fun.SetOrderDependent(AggregateOrderDependent::NOT_ORDER_DEPENDENT);
 	fun.SetDistinctDependent(AggregateDistinctDependent::NOT_DISTINCT_DEPENDENT);
 	return fun;
@@ -68,6 +69,7 @@ AggregateFunction BoolOrFun::GetFunction() {
 AggregateFunction BoolAndFun::GetFunction() {
 	auto fun = AggregateFunction::UnaryAggregate<BoolState, bool, bool, BoolAndFunFunction>(
 	    LogicalType(LogicalTypeId::BOOLEAN), LogicalType::BOOLEAN);
+	fun.GetSignature().GetParameter(0).SetName("arg");
 	fun.SetOrderDependent(AggregateOrderDependent::NOT_ORDER_DEPENDENT);
 	fun.SetDistinctDependent(AggregateDistinctDependent::NOT_DISTINCT_DEPENDENT);
 	return fun;

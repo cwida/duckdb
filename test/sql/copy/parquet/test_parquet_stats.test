@@ -82,27 +82,82 @@ explain select time from parquet_scan('{DATA_DIR}/parquet-testing/timestamp*.par
 statement ok
 SET parquet_metadata_cache=true;
 
-# we no longer gather stats with parquet_metadata_cache=true (for now?)
-mode skip instable
-
-# no stats since there are two files and the cache is on but we have not read all files yet
+# Ordinary multi-file scans do not gather global statistics, even with cached metadata.
+# Reading every footer solely for statistics would add work to binding.
 query I nosort nostats
 explain select time from parquet_scan('{DATA_DIR}/parquet-testing/timestamp*.parquet') where time > '2020-10-06'
 ----
 
-statement ok
-select time from parquet_scan('{DATA_DIR}/parquet-testing/timestamp*.parquet') where time > '2020-10-06'
+query I
+select count(*) from parquet_scan('{DATA_DIR}/parquet-testing/timestamp*.parquet') where time > '2020-10-06'
+----
+0
 
+# Warming the cache does not change that policy.
+query I nosort nostats
+explain select time from parquet_scan('{DATA_DIR}/parquet-testing/timestamp*.parquet') where time > '2020-10-06'
+----
 
-# but now we should have them
+# union_by_name reads every file's schema, so its statistics can describe the whole scan.
 query I nosort empty
-explain select time from parquet_scan('{DATA_DIR}/parquet-testing/timestamp*.parquet') where time > '2020-10-06'
+explain select time from parquet_scan('{DATA_DIR}/parquet-testing/timestamp*.parquet', union_by_name=true) where time > '2020-10-06'
 ----
 
 statement ok
-pragma disable_object_cache
+SET parquet_metadata_cache=false;
 
-# no stats again
 query I nosort nostats
 explain select time from parquet_scan('{DATA_DIR}/parquet-testing/timestamp*.parquet') where time > '2020-10-06'
 ----
+
+query I nosort empty
+explain select time from parquet_scan('{DATA_DIR}/parquet-testing/timestamp*.parquet', union_by_name=true) where time > '2020-10-06'
+----
+
+query I
+select count(*) from parquet_scan('{DATA_DIR}/parquet-testing/timestamp*.parquet', union_by_name=true) where time > '2020-10-06'
+----
+0
+
+# The first file's bounds must never prune rows from a later file.
+statement ok
+COPY (SELECT i FROM range(10) t(i)) TO '{TEST_DIR}/stats_first.parquet' (FORMAT PARQUET);
+
+statement ok
+COPY (SELECT i FROM range(100, 110) t(i)) TO '{TEST_DIR}/stats_second.parquet' (FORMAT PARQUET);
+
+foreach cache false true
+
+statement ok
+SET parquet_metadata_cache={cache};
+
+query I
+SELECT count(*) FROM parquet_scan('{TEST_DIR}/stats_*.parquet') WHERE i >= 100;
+----
+10
+
+query I
+SELECT count(*) FROM parquet_scan('{TEST_DIR}/stats_*.parquet');
+----
+20
+
+query I
+SELECT count(*) FROM parquet_scan('{TEST_DIR}/stats_*.parquet') WHERE i >= 100;
+----
+10
+
+query I
+SELECT count(*) FROM parquet_scan('{TEST_DIR}/stats_*.parquet', union_by_name=true) WHERE i >= 100;
+----
+10
+
+query I nosort empty
+EXPLAIN SELECT i FROM parquet_scan('{TEST_DIR}/stats_*.parquet', union_by_name=true) WHERE i > 109;
+----
+
+query I
+SELECT count(*) FROM parquet_scan('{TEST_DIR}/stats_*.parquet', union_by_name=true) WHERE i > 109;
+----
+0
+
+endloop

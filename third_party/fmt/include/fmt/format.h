@@ -1697,6 +1697,8 @@ template <typename Range> class basic_writer {
       return;
     }
     int precision = specs.precision >= 0 || !specs.type ? specs.precision : 6;
+    // DuckDB: limit the precision, formatting is not interruptible and the result size is linear in the precision
+    if (precision > 1000000) FMT_THROW(duckdb::InvalidInputException("Precision of %d is too large, the maximum is 1000000", precision));
     if (fspecs.format == float_format::exp) ++precision;
     if (const_check(std::is_same<T, float>())) fspecs.binary32 = true;
     fspecs.use_grisu = use_grisu<T>();

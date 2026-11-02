@@ -5,6 +5,7 @@
 #include "duckdb/planner/expression_binder.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/limits.hpp"
+#include "duckdb/main/client_context.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/expression/comparison_expression.hpp"
@@ -18,6 +19,8 @@ namespace duckdb {
 
 unique_ptr<QueryNode> Binder::BindTableMacro(FunctionExpression &function, TableMacroCatalogEntry &macro_func,
                                              idx_t depth) {
+	// expanding nested macros can take a long time, allow the query to be interrupted
+	context.InterruptCheck();
 	// validate the arguments and separate positional and default arguments
 	vector<unique_ptr<ParsedExpression>> positional_arguments;
 	InsertionOrderPreservingMap<unique_ptr<ParsedExpression>, Identifier, identifier_map_t<idx_t>> named_arguments;

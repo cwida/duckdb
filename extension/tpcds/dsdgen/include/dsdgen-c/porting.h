@@ -121,28 +121,12 @@ char *strdup(const char *);
 #define MAXINT INT_MAX
 #endif /* MACOS */
 
-#define INTERNAL(m)                                                                                                    \
-	{ fprintf(stderr, "ERROR: %s\n\tFile: %s\n\tLine: %d\n", m, __FILE__, __LINE__); }
+#include "duckdb/common/exception.hpp"
 
-#define OPEN_CHECK(var, path)                                                                                          \
-	if ((var) == NULL) {                                                                                               \
-		fprintf(stderr, "Open failed for %s at %s:%d\n", path, __FILE__, __LINE__);                                    \
-		exit(1);                                                                                                       \
-	}
+#define INTERNAL(m) throw duckdb::InternalException("dsdgen: %s (%s:%d)", m, __FILE__, __LINE__)
 
-#ifdef MEM_TEST
 #define MALLOC_CHECK(v)                                                                                                \
 	if (v == NULL) {                                                                                                   \
-		fprintf(stderr, "Malloc Failed at %d in %s\n", __LINE__, __FILE__);                                            \
-		exit(1);                                                                                                       \
-	} else {                                                                                                           \
-		fprintf(stderr, "Add (%x) %d at %d in %s\n", sizeof(*v), v, __LINE__, __FILE__);                               \
+		throw duckdb::OutOfMemoryException("dsdgen: malloc failed at %s:%d", __FILE__, __LINE__);                      \
 	}
-#else
-#define MALLOC_CHECK(v)                                                                                                \
-	if (v == NULL) {                                                                                                   \
-		fprintf(stderr, "Malloc Failed at %d in %s\n", __LINE__, __FILE__);                                            \
-		exit(1);                                                                                                       \
-	}
-#endif /* MEM_TEST */
 #endif

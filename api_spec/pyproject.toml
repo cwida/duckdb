@@ -6,6 +6,14 @@ requires-python = ">=3.12"
 dependencies = []
 
 [dependency-groups]
-generate = ["capigen==0.7.0", "black==24.*", "clang_format==11.0.1", "cmake-format"]
+generate = [
+    "capigen==0.7.0",
+    "black==24.*",
+    "clang_format==11.0.1",
+    "cmake-format",
+    "cxxheaderparser",
+    "pcpp",
+    "PyYAML",
+]
 dev = ["clang_format==11.0.1", "cmake-format"]
 

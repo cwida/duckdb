@@ -8,7 +8,7 @@
 
 #pragma once
 
-#include "duckdb/common/fast_mem.hpp"
+#include "duckdb/common/helper.hpp"
 #include "duckdb/common/exception.hpp"
 
 namespace duckdb {

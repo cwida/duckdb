@@ -1,0 +1,18 @@
+# name: test/sql/constraints/foreignkey/fk_self_reference_tostring.test
+# description: Self-referencing FOREIGN KEY must render in duckdb_constraints() / duckdb_tables().sql
+# group: [foreignkey]
+
+statement ok
+CREATE TABLE t(id INT PRIMARY KEY, parent INT REFERENCES t(id));
+
+query II
+SELECT constraint_type, constraint_text
+FROM duckdb_constraints()
+WHERE table_name = 't' AND constraint_type = 'FOREIGN KEY';
+----
+FOREIGN KEY	FOREIGN KEY (parent) REFERENCES t(id)
+
+query I
+SELECT sql FROM duckdb_tables() WHERE table_name = 't';
+----
+CREATE TABLE t(id INTEGER PRIMARY KEY, parent INTEGER, FOREIGN KEY (parent) REFERENCES t(id));

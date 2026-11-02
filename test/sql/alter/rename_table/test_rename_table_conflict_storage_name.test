@@ -1,0 +1,59 @@
+# name: test/sql/alter/rename_table/test_rename_table_conflict_storage_name.test
+# description: a failed concurrent RENAME TO must not mutate the shared DataTable's stored name
+# group: [rename_table]
+
+load {TEST_DIR}/rename_conflict_storage_name.db
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+statement ok
+PRAGMA wal_autocheckpoint='1TB'
+
+statement ok
+CREATE TABLE t(i INTEGER)
+
+statement ok con1
+BEGIN
+
+statement ok con1
+ALTER TABLE t RENAME TO ta
+
+statement error con2
+ALTER TABLE t RENAME TO tb
+----
+<REGEX>:.*write-write conflict.*
+
+statement ok con1
+COMMIT
+
+statement ok
+INSERT INTO ta VALUES (42)
+
+statement ok
+CREATE TABLE rollback_table(i INTEGER)
+
+statement ok
+BEGIN
+
+statement ok
+ALTER TABLE rollback_table RENAME TO rollback_table_new
+
+statement ok
+ROLLBACK
+
+# The restored DataTable name is used for the WAL SET_TABLE entry.
+statement ok
+INSERT INTO rollback_table VALUES (84)
+
+restart
+
+query I
+SELECT * FROM ta ORDER BY i
+----
+42
+
+query I
+SELECT * FROM rollback_table ORDER BY i
+----
+84

@@ -1,0 +1,88 @@
+# name: test/sql/peg_parser/fuzzer/new_parser_failure_0076.test
+# description: Chained IN predicates bind from left to right
+# group: [fuzzer]
+
+query I
+SELECT 1 IN (1, 2) IN (TRUE, FALSE);
+----
+true
+
+query I
+SELECT 3 IN (1, 2) IN (FALSE);
+----
+true
+
+query I
+SELECT 1 IN (1, 2) NOT IN (FALSE);
+----
+true
+
+query I
+SELECT 1 IN (1, 2) BETWEEN FALSE AND TRUE;
+----
+true
+
+query I
+SELECT 1 IN (1, 2) NOT BETWEEN FALSE AND TRUE;
+----
+false
+
+query I
+SELECT 1 IN (1) IN (TRUE) BETWEEN FALSE AND TRUE;
+----
+true
+
+query I
+SELECT 1 IN [1, 2] IN (TRUE);
+----
+true
+
+query I
+SELECT 1 IN (SELECT 1) IN (TRUE);
+----
+true
+
+query I
+SELECT NOT 1 IN (1) IN (TRUE);
+----
+false
+
+query I
+SELECT 1 IN (1) IN (FALSE) = FALSE;
+----
+true
+
+query I
+SELECT FALSE OR 0 IN (1) IN (FALSE) AND TRUE;
+----
+true
+
+statement error
+SELECT 1 IN (1) LIKE 'true';
+----
+Binder Error
+
+statement error
+SELECT 1 BETWEEN 0 AND 2 IN (TRUE);
+----
+Parser Error
+
+query I
+SELECT (1 BETWEEN 0 AND 2) IN (TRUE);
+----
+true
+
+statement error
+SELECT '1' LIKE '1' IN (TRUE);
+----
+Parser Error
+
+query I
+SELECT 'a' LIKE 'a' ESCAPE '' = TRUE;
+----
+true
+
+statement error
+SELECT 1 IN (1) LIKE 'true' ESCAPE '' IN (TRUE);
+----
+Parser Error

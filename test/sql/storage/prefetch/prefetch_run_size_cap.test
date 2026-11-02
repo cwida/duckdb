@@ -1,0 +1,81 @@
+# name: test/sql/storage/prefetch/prefetch_run_size_cap.test
+# description: A large contiguous assignment splits into size-capped prefetch runs instead of one giant read
+# group: [prefetch]
+
+require vector_size 2048
+
+require block_size 262144
+
+statement ok
+ATTACH '{TEST_DIR}/prefetch_run_cap.db' AS cap_db (ROW_GROUP_SIZE 8388608, STORAGE_VERSION 'v1.2.0')
+
+# a single uncompressed 8M row double column makes one row group hold 257 contiguous blocks, ~64MB
+statement ok
+SET force_compression='uncompressed'
+
+statement ok
+CREATE TABLE cap_db.t AS SELECT random() AS d FROM range(8388608)
+
+statement ok
+CHECKPOINT cap_db
+
+# re-attach so the payload blocks begin cold
+statement ok
+DETACH cap_db
+
+statement ok
+ATTACH '{TEST_DIR}/prefetch_run_cap.db' AS cap_db (READ_ONLY)
+
+# a single thread keeps the whole row group in one assignment, more threads would split it below the cap
+statement ok
+SET threads=1
+
+statement ok
+SET async_threads=4
+
+statement ok
+SET storage_block_prefetch='debug_force_always'
+
+statement ok
+CALL enable_logging('AsyncTaskSchedule')
+
+query I
+SELECT sum(d) > 0 FROM cap_db.t
+----
+true
+
+# the 257 blocks split into two 32MB runs, the last block joins the second run rather than becoming a run of its own
+query I
+SELECT max(task_count) FROM duckdb_logs_parsed('AsyncTaskSchedule') WHERE pool = 'READ_AHEAD'
+----
+2
+
+statement ok
+CALL truncate_duckdb_logs()
+
+# a run that does not fit next to what the pool holds is abandoned, the scan still completes by pinning on demand
+foreach limit 48MB 16MB
+
+statement ok
+SET memory_limit='{limit}'
+
+statement ok
+DETACH cap_db
+
+statement ok
+ATTACH '{TEST_DIR}/prefetch_run_cap.db' AS cap_db (READ_ONLY)
+
+query I
+SELECT sum(d) > 0 FROM cap_db.t
+----
+true
+
+query I
+SELECT max(task_count) FROM duckdb_logs_parsed('AsyncTaskSchedule') WHERE pool = 'READ_AHEAD'
+----
+2
+
+statement ok
+CALL truncate_duckdb_logs()
+
+endloop

@@ -1,0 +1,61 @@
+# name: test/sql/cast/string_to_struct_variant_child.test
+# description: A string-to-struct cast whose child is a shredded VARIANT must not flip the child's vector type
+# group: [cast]
+
+# the constant path used to set the result type directly, which propagated into the VARIANT child's
+# shredded buffer and raised an INTERNAL error
+
+query I
+SELECT '{"v":"hello"}'::STRUCT(v VARIANT);
+----
+{'v': hello}
+
+query I
+SELECT '{"v":42}'::STRUCT(v VARIANT);
+----
+{'v': 42}
+
+query I
+SELECT '{"a":"x","b":"y"}'::STRUCT(a VARIANT, b VARIANT);
+----
+{'a': x, 'b': y}
+
+query I
+SELECT '{"v":null}'::STRUCT(v VARIANT);
+----
+{'v': NULL}
+
+query I
+SELECT NULL::VARCHAR::STRUCT(v VARIANT);
+----
+NULL
+
+# a nested struct with a VARIANT leaf
+
+query I
+SELECT '{"s":{"v":"deep"}}'::STRUCT(s STRUCT(v VARIANT));
+----
+{'s': {'v': deep}}
+
+# the non-constant path, several rows through a table
+
+statement ok
+CREATE TABLE s(x VARCHAR);
+
+statement ok
+INSERT INTO s VALUES ('{"v":"one"}'), ('{"v":"two"}'), (NULL), ('{"v":"three"}');
+
+query I
+SELECT x::STRUCT(v VARIANT) FROM s;
+----
+{'v': one}
+{'v': two}
+NULL
+{'v': three}
+
+# a struct with a VARIANT child alongside an ordinary child
+
+query I
+SELECT '{"v":"a","n":"1"}'::STRUCT(v VARIANT, n INTEGER);
+----
+{'v': a, 'n': 1}

@@ -1,0 +1,21 @@
+# name: benchmark/micro/cte/recursive_orderby_member.benchmark
+# description: Repeated ORDER BY sink construction inside a recursive CTE member
+# group: [cte]
+
+name Recursive ORDER BY Member
+group cte
+
+init
+PREPARE recursive_orderby_member AS
+WITH RECURSIVE r(iter, v) AS (
+	SELECT 0, i FROM range(64) t(i)
+	UNION ALL
+	SELECT iter + 1, v FROM (SELECT iter, v FROM r WHERE iter < 1000 ORDER BY v DESC) s
+)
+SELECT count(*), sum(v) FROM r;
+
+run
+EXECUTE recursive_orderby_member;
+
+result II
+64064	2018016

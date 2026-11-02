@@ -19,6 +19,12 @@
       ]
     },
     {
+      "reason": "Binding the explained statement evaluates its table function arguments a second time",
+      "paths": [
+        "test/issues/general/test_26175_bind_once.test"
+      ]
+    },
+    {
       "reason": "Explain exceeds 300KB memory limit",
       "paths": [
         "test/issues/internal/test_5457.test"
@@ -27,7 +33,8 @@
     {
       "reason": "Statement verification temporarily disables profiling for its internal EXPLAIN",
       "paths": [
-        "test/sql/pragma/profiling/test_custom_profiling_using_groups.test"
+        "test/sql/pragma/profiling/test_custom_profiling_using_groups.test",
+        "test/sql/profiling/test_failed_query_profile.test"
       ]
     },
     {
@@ -42,6 +49,14 @@
         "test/sql/copy_database/copy_table_with_sequence.test",
         "test/sql/copy_database/copy_database_simple.test",
         "test/sql/copy_database/copy_database_errors.test"
+      ]
+    },
+    {
+      "reason": "Recipe callbacks run on an internal connection; under statement verification the statement is already inside a transaction, so that connection cannot start one.",
+      "paths": [
+        "test/sql/attach/external_resource_lifecycle.test",
+        "test/sql/attach/attach_to_external_resource.test",
+        "test/sql/attach/external_resource_logging.test"
       ]
     }
   ]

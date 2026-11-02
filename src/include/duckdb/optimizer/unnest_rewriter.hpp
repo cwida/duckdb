@@ -54,12 +54,13 @@ public:
 //! the SELECT
 class UnnestRewriter {
 public:
-	UnnestRewriter() {
+	explicit UnnestRewriter(ClientContext &context) : context(context) {
 	}
 	//! Rewrite duplicate eliminated joins with UNNESTs
 	unique_ptr<LogicalOperator> Optimize(unique_ptr<LogicalOperator> op);
 
 private:
+	ClientContext &context;
 	//! Find delim joins that contain an UNNEST
 	void FindCandidates(unique_ptr<LogicalOperator> &root, unique_ptr<LogicalOperator> &op,
 	                    vector<reference<unique_ptr<LogicalOperator>>> &candidates);

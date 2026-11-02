@@ -1,0 +1,108 @@
+# name: test/sql/subquery/any_all_variant_extremum.test
+# description: ANY/ALL with an ordering comparison over types whose min/max keeps its own collation
+# group: [subquery]
+
+# an ordering comparison rewrites the subquery into MIN/MAX, and min/max over VARIANT or BIT binds
+# its own collation handling to keep the result in the input type
+
+statement ok
+CREATE TABLE v AS SELECT x::INTEGER::VARIANT AS v FROM (VALUES (7),(15)) s(x);
+
+query I
+SELECT 127::INTEGER::VARIANT >= ALL (SELECT v FROM v);
+----
+true
+
+query I
+SELECT 127::INTEGER::VARIANT > ALL (SELECT v FROM v);
+----
+true
+
+query I
+SELECT 127::INTEGER::VARIANT <= ALL (SELECT v FROM v);
+----
+false
+
+query I
+SELECT 127::INTEGER::VARIANT < ALL (SELECT v FROM v);
+----
+false
+
+query I
+SELECT 127::INTEGER::VARIANT >= ANY (SELECT v FROM v);
+----
+true
+
+query I
+SELECT 127::INTEGER::VARIANT <= ANY (SELECT v FROM v);
+----
+false
+
+# equality-based quantifiers went through the mark join and always worked - keep them covered
+
+query I
+SELECT 127::INTEGER::VARIANT = ANY (SELECT v FROM v);
+----
+false
+
+query I
+SELECT 7::INTEGER::VARIANT = ANY (SELECT v FROM v);
+----
+true
+
+# BIT takes the same branch inside min/max
+
+query I
+SELECT '1010'::BIT >= ALL (SELECT x::BIT FROM (VALUES ('0101'),('1001')) s(x));
+----
+true
+
+# the collation can sit on the OUTER side only, and the extremum must still be taken under it:
+# 'b' > ANY('Z','a') is true iff 'b' > min(x), and under NOCASE that min is 'a', not 'Z'
+
+query I
+SELECT 'b' COLLATE NOCASE > ANY(SELECT x FROM (VALUES ('Z'), ('a')) t(x));
+----
+true
+
+# collated VARCHAR must be unchanged
+
+statement ok
+CREATE TABLE c(x VARCHAR);
+
+statement ok
+INSERT INTO c VALUES ('a'), ('b');
+
+query I
+SELECT 'B' COLLATE NOCASE >= ALL (SELECT x COLLATE NOCASE FROM c);
+----
+true
+
+query I
+SELECT 'B' COLLATE NOCASE >= ALL (SELECT x COLLATE NOCASE FROM (VALUES ('a'),('c')) s(x));
+----
+false
+
+query I
+SELECT 'z' >= ALL (SELECT x FROM c);
+----
+true
+
+# NULL in the subquery still makes the answer unknown
+
+query I
+SELECT 5 > ALL (SELECT x FROM (VALUES (1),(2),(NULL)) s(x));
+----
+NULL
+
+query I
+SELECT 5 > ALL (SELECT x FROM (VALUES (1),(2)) s(x));
+----
+true
+
+# an empty subquery is vacuously true for ALL
+
+query I
+SELECT 5 > ALL (SELECT x FROM (VALUES (1)) s(x) WHERE x > 100);
+----
+true

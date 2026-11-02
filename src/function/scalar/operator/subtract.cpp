@@ -34,13 +34,14 @@ date_t SubtractOperator::Operation(date_t left, int32_t right) {
 	if (!left.IsFinite()) {
 		return left;
 	}
+	// dates below -infinity are out of range, as input and as result
 	int32_t days;
-	if (!TrySubtractOperator::Operation(left.days, right, days)) {
+	if (left < date_t::ninfinity() || !TrySubtractOperator::Operation(left.days, right, days)) {
 		throw OutOfRangeException("Date out of range");
 	}
 
 	date_t result(days);
-	if (!result.IsFinite()) {
+	if (result <= date_t::ninfinity() || result >= date_t::infinity()) {
 		throw OutOfRangeException("Date out of range");
 	}
 	return result;

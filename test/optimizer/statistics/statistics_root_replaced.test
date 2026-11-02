@@ -1,0 +1,24 @@
+# name: test/optimizer/statistics/statistics_root_replaced.test
+# description: Statistics propagation that replaces the root operator of the plan
+# group: [statistics]
+
+statement ok
+CREATE TABLE root_replaced (ts TIMESTAMP, k BIGINT, ns VARCHAR, b VARCHAR)
+
+# the filter is pruned to an empty result, which eliminates the LIMIT at the root of the plan
+# the LIMIT must be larger than the Top-N threshold, so that the ORDER BY is not turned into a Top-N
+query IIII
+SELECT * FROM root_replaced WHERE ns = 'n0' AND b LIKE '%|d0|%' ORDER BY ts, k LIMIT 10001
+----
+
+statement ok
+INSERT INTO root_replaced VALUES (TIMESTAMP '2026-01-01', 1, 'n0', 'x|d0|y')
+
+query IIII
+SELECT * FROM root_replaced WHERE ns = 'n1' AND b LIKE '%|d0|%' ORDER BY ts, k LIMIT 10001
+----
+
+query IIII
+SELECT * FROM root_replaced WHERE ns = 'n0' AND b LIKE '%|d0|%' ORDER BY ts, k LIMIT 10001
+----
+2026-01-01 00:00:00	1	n0	x|d0|y

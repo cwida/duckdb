@@ -30,6 +30,7 @@ struct ReadFileGlobalState : public GlobalTableFunctionState {
 	shared_ptr<MultiFileList> file_list;
 	vector<idx_t> column_ids;
 	bool requires_file_open = false;
+	bool requires_file_metadata = false;
 
 	unique_ptr<MemoryStream> stream;
 };

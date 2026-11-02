@@ -7,9 +7,9 @@ require json
 statement error
 FROM read_ndjson([42])
 ----
-No function matches
+can only take a list of strings, structs or variants
 
 statement error
 FROM read_csv_auto([42])
 ----
-No function matches
+can only take a list of strings, structs or variants

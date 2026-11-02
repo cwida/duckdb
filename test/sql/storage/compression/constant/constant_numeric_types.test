@@ -1,0 +1,43 @@
+# name: test/sql/storage/compression/constant/constant_numeric_types.test
+# description: Test indexed fetches from constant-compressed numeric columns
+# group: [constant]
+
+load {TEST_DIR}/constant_numeric_types.db
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+statement ok
+CREATE TABLE constant_numbers AS
+SELECT i::INTEGER AS id,
+       1::TINYINT AS i8,
+       2::SMALLINT AS i16,
+       3::UTINYINT AS u8,
+       4::USMALLINT AS u16,
+       5::UINTEGER AS u32,
+       6::UBIGINT AS u64,
+       7::HUGEINT AS i128,
+       8::UHUGEINT AS u128,
+       1.5::FLOAT AS f32,
+       2.5::DOUBLE AS f64
+FROM range(4096) r(i)
+
+statement ok
+CHECKPOINT
+
+query T
+SELECT DISTINCT compression
+FROM pragma_storage_info('constant_numbers')
+WHERE column_name <> 'id' AND segment_type <> 'VALIDITY'
+----
+Constant
+
+statement ok
+CREATE UNIQUE INDEX constant_numbers_id ON constant_numbers(id)
+
+query IIIIIIIIII
+SELECT i8, i16, u8, u16, u32, u64, i128, u128, f32, f64
+FROM constant_numbers
+WHERE id = 42
+----
+1	2	3	4	5	6	7	8	1.5	2.5

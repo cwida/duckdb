@@ -1,0 +1,137 @@
+# name: test/optimizer/materialized_cte_sibling_column_pruning.test
+# description: CTE input preservation must not prevent pruning unrelated join inputs
+# group: [optimizer]
+
+statement ok
+SET debug_verify_column_bindings = true;
+
+statement ok
+CREATE TABLE v(id INTEGER PRIMARY KEY);
+
+statement ok
+INSERT INTO v VALUES (1), (2), (3), (4);
+
+# Exercise the original join order as well as the default optimizer order.
+foreach disabled '' 'join_order,build_side_probe_side'
+
+statement ok
+SET disabled_optimizers = {disabled};
+
+# Check both planning stages without depending on the complete plan shape.
+
+statement ok
+PRAGMA explain_output='optimized_only';
+
+query II
+EXPLAIN SELECT b.value
+FROM (SELECT id AS k, 0 AS domain FROM v) a
+JOIN LATERAL (
+    WITH t AS MATERIALIZED (SELECT a.k AS n)
+    SELECT n FROM t
+) q ON true
+JOIN (
+    SELECT b.k, b.domain, b.value
+    FROM (
+        SELECT id AS k, 0 AS domain,
+               struct_pack(id := id) AS unused_payload,
+               id AS value
+        FROM v
+    ) b
+) b ON b.k = q.n AND b.domain IS NOT DISTINCT FROM a.domain
+WHERE a.k = 1;
+----
+logical_opt	<!REGEX>:.*unused_payload.*
+
+statement ok
+PRAGMA explain_output='physical_only';
+
+query II
+EXPLAIN SELECT b.value
+FROM (SELECT id AS k, 0 AS domain FROM v) a
+JOIN LATERAL (
+    WITH t AS MATERIALIZED (SELECT a.k AS n)
+    SELECT n FROM t
+) q ON true
+JOIN (
+    SELECT b.k, b.domain, b.value
+    FROM (
+        SELECT id AS k, 0 AS domain,
+               struct_pack(id := id) AS unused_payload,
+               id AS value
+        FROM v
+    ) b
+) b ON b.k = q.n AND b.domain IS NOT DISTINCT FROM a.domain
+WHERE a.k = 1;
+----
+physical_plan	<!REGEX>:.*unused_payload.*
+
+# An unused expression is removed without changing the query result.
+query I
+SELECT b.value
+FROM (SELECT id AS k, 0 AS domain FROM v) a
+JOIN LATERAL (
+    WITH t AS MATERIALIZED (SELECT a.k AS n)
+    SELECT n FROM t
+) q ON true
+JOIN (
+    SELECT b.k, b.domain, b.value
+    FROM (
+        SELECT id AS k, 0 AS domain,
+               struct_pack(id := id) AS unused_payload,
+               id AS value
+        FROM v
+    ) b
+) b ON b.k = q.n AND b.domain IS NOT DISTINCT FROM a.domain
+WHERE a.k = 1;
+----
+1
+
+# Live whole-struct and field references must remain valid.
+query T
+SELECT b.unused_payload
+FROM (SELECT id AS k, 0 AS domain FROM v) a
+JOIN LATERAL (
+    WITH t AS MATERIALIZED (SELECT a.k AS n)
+    SELECT n FROM t
+) q ON true
+JOIN (
+    SELECT b.k, b.domain, b.value, b.unused_payload
+    FROM (
+        SELECT id AS k, 0 AS domain,
+               struct_pack(id := id) AS unused_payload,
+               id AS value
+        FROM v
+    ) b
+) b ON b.k = q.n AND b.domain IS NOT DISTINCT FROM a.domain
+WHERE a.k = 1;
+----
+{'id': 1}
+
+# Live whole-struct and field references must remain valid.
+query I
+SELECT b.unused_payload.id
+FROM (SELECT id AS k, 0 AS domain FROM v) a
+JOIN LATERAL (
+    WITH t AS MATERIALIZED (SELECT a.k AS n)
+    SELECT n FROM t
+) q ON true
+JOIN (
+    SELECT b.k, b.domain, b.value, b.unused_payload
+    FROM (
+        SELECT id AS k, 0 AS domain,
+               struct_pack(id := id) AS unused_payload,
+               id AS value
+        FROM v
+    ) b
+) b ON b.k = q.n AND b.domain IS NOT DISTINCT FROM a.domain
+WHERE a.k = 1;
+----
+1
+
+endloop
+
+statement ok
+RESET disabled_optimizers;
+
+statement ok
+RESET debug_verify_column_bindings;

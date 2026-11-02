@@ -1,0 +1,33 @@
+# name: test/sql/copy/parquet/parquet_field_ids_invalid.test
+# description: Invalid FIELD_IDS values for Parquet COPY are rejected with a regular error
+# group: [parquet]
+
+require parquet
+
+statement error
+COPY (SELECT 1 i) TO '{TEST_DIR}/field_ids_invalid.parquet' (FORMAT parquet, FIELD_IDS {i: -1});
+----
+<REGEX>:Binder Error.*Invalid field_id.*
+
+statement error
+COPY (SELECT 1 i) TO '{TEST_DIR}/field_ids_invalid.parquet' (FORMAT parquet, FIELD_IDS {i: -2});
+----
+<REGEX>:Binder Error.*Invalid field_id.*
+
+statement error
+COPY (SELECT 1 i) TO '{TEST_DIR}/field_ids_invalid.parquet' (FORMAT parquet, FIELD_IDS {i: NULL});
+----
+<REGEX>:Binder Error.*Invalid field_id.*
+
+statement error
+COPY (SELECT 1 i) TO '{TEST_DIR}/field_ids_invalid.parquet' (FORMAT parquet, FIELD_IDS {i: -2147483648});
+----
+<REGEX>:Binder Error.*Invalid field_id.*
+
+statement error
+COPY (SELECT [1] l) TO '{TEST_DIR}/field_ids_invalid.parquet' (FORMAT parquet, FIELD_IDS {l: {__duckdb_field_id: 5, element: -7}});
+----
+<REGEX>:Binder Error.*Invalid field_id.*
+
+statement ok
+COPY (SELECT 1 i) TO '{TEST_DIR}/field_ids_valid.parquet' (FORMAT parquet, FIELD_IDS {i: 0});

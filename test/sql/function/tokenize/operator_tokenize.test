@@ -1,0 +1,60 @@
+# name: test/sql/function/tokenize/operator_tokenize.test
+# description: Test operator tokenization
+# group: [tokenize]
+
+require no_extension_autoloading "FIXME: autocomplete is not included in auto loading tests"
+
+require autocomplete
+
+# Operators use longest-match tokenization
+query III
+SELECT start, token_type, word FROM sql_tokenize('<-> ->> @ @@@ >>= ^@ && <=>');
+----
+0	OPERATOR	<->
+4	OPERATOR	->>
+8	OPERATOR	@
+10	OPERATOR	@@@
+14	OPERATOR	>>=
+18	OPERATOR	^@
+21	OPERATOR	&&
+24	OPERATOR	<=>
+
+# A trailing sign is split from an operator without a special operator character
+query III
+SELECT start, token_type, word FROM sql_tokenize('1+-2 2**-3');
+----
+0	NUMBER_LITERAL	1
+1	OPERATOR	+
+2	OPERATOR	-
+3	NUMBER_LITERAL	2
+5	NUMBER_LITERAL	2
+6	OPERATOR	**
+8	OPERATOR	-
+9	NUMBER_LITERAL	3
+
+# A line comment following an operator is recognized as a comment
+query III
+SELECT start, token_type, replace(word, chr(10), '<LF>') FROM sql_tokenize('1+-- comment' || chr(10) || '2');
+----
+0	NUMBER_LITERAL	1
+1	OPERATOR	+
+2	COMMENT	-- comment<LF>
+13	NUMBER_LITERAL	2
+
+# Compound colon tokens remain distinct from standalone slice colons and prefix signs
+query III
+SELECT start, token_type, word FROM sql_tokenize('x::INTEGER y:=1 [:-:-1]');
+----
+0	IDENTIFIER	x
+1	OPERATOR	::
+3	KEYWORD	INTEGER
+11	IDENTIFIER	y
+12	OPERATOR	:=
+14	NUMBER_LITERAL	1
+16	OPERATOR	[
+17	OPERATOR	:
+18	OPERATOR	-
+19	OPERATOR	:
+20	OPERATOR	-
+21	NUMBER_LITERAL	1
+22	OPERATOR	]

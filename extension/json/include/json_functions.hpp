@@ -32,6 +32,7 @@ public:
 	unique_ptr<FunctionData> Copy() const override;
 	bool Equals(const FunctionData &other_p) const override;
 	static JSONCommon::JSONPathType CheckPath(const Value &path_val, string &path, idx_t &len);
+	static void ResolveTypes(ResolveScalarFunctionTypesInput &input);
 	static unique_ptr<FunctionData> Bind(BindScalarFunctionInput &input);
 
 public:
@@ -81,7 +82,7 @@ public:
 	static vector<TableFunctionSet> GetTableFunctions();
 	static unique_ptr<TableRef> ReadJSONReplacement(ClientContext &context, ReplacementScanInput &input,
 	                                                optional_ptr<ReplacementScanData> data);
-	static TableFunction GetReadJSONTableFunction(shared_ptr<JSONScanInfo> function_info);
+	static TableFunction GetJSONTableFunction(Identifier name, shared_ptr<JSONScanInfo> function_info);
 	static CopyFunction GetJSONCopyFunction();
 	static ScalarFunction GetJSONCopyToJSONFunction();
 	static ScalarFunction GetJSONCopyToGeoJSONFunction();
@@ -156,6 +157,8 @@ private:
 	static TableFunctionSet GetReadNDJSONFunction();
 	static TableFunctionSet GetReadJSONAutoFunction();
 	static TableFunctionSet GetReadNDJSONAutoFunction();
+	static TableFunction GetReadSingleJSONFileTableFunction(shared_ptr<JSONScanInfo> function_info);
+	static TableFunctionSet GetReadSingleJSONFileFunction();
 
 	static TableFunctionSet GetJSONEachFunction();
 	static TableFunctionSet GetJSONTreeFunction();

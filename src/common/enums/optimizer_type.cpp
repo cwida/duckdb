@@ -46,6 +46,7 @@ static const DefaultOptimizerType internal_optimizer_types[] = {
     {"common_subplan", OptimizerType::COMMON_SUBPLAN},
     {"join_elimination", OptimizerType::JOIN_ELIMINATION},
     {"window_self_join", OptimizerType::WINDOW_SELF_JOIN},
+    {"window_join_pushdown", OptimizerType::WINDOW_JOIN_PUSHDOWN},
     {"projection_pullup", OptimizerType::PROJECTION_PULLUP},
     {"outer_join_simplification", OptimizerType::OUTER_JOIN_SIMPLIFICATION},
     {"window_rewriter", OptimizerType::ROW_NUMBER_REWRITER},
@@ -57,6 +58,10 @@ static const DefaultOptimizerType internal_optimizer_types[] = {
     {"scalar_fn_pushdown", OptimizerType::SCALAR_FN_PUSHDOWN},
     {"distinct_aggregate_rewrite", OptimizerType::DISTINCT_AGGREGATE_REWRITE},
     {"aggregate_reuse", OptimizerType::AGGREGATE_REUSE},
+    {"projection_placement", OptimizerType::PROJECTION_PLACEMENT},
+    {"redundant_order_keys", OptimizerType::REDUNDANT_ORDER_KEYS},
+    {"disjunctive_join_rewriter", OptimizerType::DISJUNCTIVE_JOIN_REWRITER},
+    {"redundant_order", OptimizerType::REDUNDANT_ORDER},
     {nullptr, OptimizerType::INVALID}};
 
 string OptimizerTypeToString(OptimizerType type) {

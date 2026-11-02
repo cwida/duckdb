@@ -28,11 +28,12 @@ CREATE VIEW rv AS SELECT * FROM integers;
 statement ok
 SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
-# the view is still a barrier after being read back from disk
+# the view is still a barrier after being read back from disk - the filter is pushed into the view, but the
+# boundary node survives (see test/sql/optimizer/secure_view_pushdown.test)
 query II
 EXPLAIN SELECT * FROM sv WHERE i = 42
 ----
-physical_plan	<REGEX>:[\s\S]*FILTER[\s\S]*
+physical_plan	<REGEX>:[\s\S]*SECURE_VIEW[\s\S]*
 
 query II
 EXPLAIN SELECT * FROM rv WHERE i = 42

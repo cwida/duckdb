@@ -12,6 +12,7 @@
 #include "duckdb/parser/parsed_data/create_info.hpp"
 
 namespace duckdb {
+class SchemaCatalogEntry;
 
 //! LogicalCreate represents a CREATE operator
 class LogicalCreate : public LogicalOperator {

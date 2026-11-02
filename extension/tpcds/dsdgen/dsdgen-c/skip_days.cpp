@@ -29,7 +29,7 @@ ds_key_t skipDays(int nTable, ds_key_t *pRemainder) {
 		jDate += 1;
 		*pRemainder = index;
 	}
-	if (index > kFirstRow) {
+	if (jDate > BaseDate.julian && index >= kFirstRow) {
 		jDate -= 1;
 	}
 	return (jDate);

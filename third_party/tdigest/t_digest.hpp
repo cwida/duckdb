@@ -105,6 +105,42 @@ struct CentroidComparator {
 };
 
 class TDigest {
+	static constexpr Index INITIAL_CAPACITY = 8;
+	static Index MinimumInt(Index a, Index b) {
+		return a < b ? a : b;
+	}
+	// Make room for `needed` elements, doubling the capacity rather than fitting exactly, up to the `full`
+	// size the buffer would have been given up front: a long run of small merges then reallocates a
+	// logarithmic number of times instead of once per merge, and never grows past the old fixed reservation.
+	template <class VECTOR>
+	static void Grow(VECTOR &vec, size_t needed, size_t full) {
+		if (needed <= vec.capacity()) {
+			return;
+		}
+		size_t target = vec.capacity() * 2;
+		if (target > full) {
+			target = full;
+		}
+		if (target < needed) {
+			target = needed;
+		}
+		vec.reserve(target);
+	}
+
+	// Keep every buffer large enough for the next process() -- which appends processed_ to unprocessed_,
+	// rebuilds processed_ from the merged run and rebuilds cumulative_ -- so that process() itself never
+	// allocates.  process() also runs at finalize time (compress(), quantile()), on a thread that may be
+	// finalizing several partitions holding states from the same arena concurrently: the arena a digest's
+	// buffers live in is the local hash table's, which the sink hands to the global state and which is not
+	// thread-safe.  Growing here, in add()/merge(), keeps all allocation on the thread that owns the arena.
+	// A merged digest holds at most as many centroids as it was given, and at most maxProcessed_.
+	void reserveForProcess() {
+		const size_t total = processed_.size() + unprocessed_.size();
+		Grow(unprocessed_, total, size_t(maxUnprocessed_ + maxProcessed_ + 1));
+		const size_t merged = total < size_t(maxProcessed_) ? total : size_t(maxProcessed_);
+		Grow(processed_, merged, size_t(maxProcessed_));
+		Grow(cumulative_, merged + 1, size_t(maxProcessed_ + 1));
+	}
 	class TDigestComparator {
 	public:
 		TDigestComparator() {
@@ -129,8 +165,23 @@ public:
 	    : compression_(compression), maxProcessed_(processedSize(mergedSize, compression)),
 	      maxUnprocessed_(unprocessedSize(unmergedSize, compression)), processed_(allocator), unprocessed_(allocator),
 	      cumulative_(allocator) {
-		processed_.reserve(maxProcessed_);
-		unprocessed_.reserve(maxUnprocessed_ + 1);
+		// The buffers grow on demand: an aggregate state per group that only ever sees a handful of values must not
+		// pay for the full merge buffer (~1000 centroids with the default compression) up front.
+		processed_.reserve(MinimumInt(maxProcessed_, INITIAL_CAPACITY));
+		unprocessed_.reserve(MinimumInt(maxUnprocessed_ + maxProcessed_ + 1, INITIAL_CAPACITY));
+		cumulative_.reserve(MinimumInt(maxProcessed_ + 1, INITIAL_CAPACITY));
+	}
+
+	TDigest(duckdb::ArenaAllocator &allocator, const TDigest &other)
+	    : compression_(other.compression_), min_(other.min_), max_(other.max_), maxProcessed_(other.maxProcessed_),
+	      maxUnprocessed_(other.maxUnprocessed_), processedWeight_(other.processedWeight_),
+	      unprocessedWeight_(other.unprocessedWeight_), processed_(other.processed_, allocator),
+	      unprocessed_(other.unprocessed_, allocator), cumulative_(other.cumulative_, allocator) {
+		reserveForProcess();
+	}
+
+	duckdb::ArenaAllocator &getAllocator() const {
+		return processed_.get_allocator().GetAllocator();
 	}
 
 	TDigest(duckdb::arena_vector<Centroid> &&processed, duckdb::arena_vector<Centroid> &&unprocessed, Value compression,
@@ -146,6 +197,7 @@ public:
 			max_ = std::max(max_, (processed_.cend() - 1)->mean());
 		}
 		updateCumulative();
+		reserveForProcess();
 	}
 
 	static Weight weight(duckdb::arena_vector<Centroid> &centroids) noexcept {
@@ -246,6 +298,7 @@ public:
 					mergeProcessed(batch);
 					mergeUnprocessed(batch);
 					processIfNecessary();
+					reserveForProcess();
 					batch.clear();
 					totalSize = 0;
 				}
@@ -416,6 +469,7 @@ public:
 		unprocessed_.push_back(Centroid(x, w));
 		unprocessedWeight_ += w;
 		processIfNecessary();
+		reserveForProcess();
 		return true;
 	}
 
@@ -431,6 +485,7 @@ public:
 				process();
 			}
 		}
+		reserveForProcess();
 	}
 
 private:
@@ -475,7 +530,7 @@ private:
 			total += td->unprocessed_.size();
 		}
 
-		unprocessed_.reserve(total);
+		Grow(unprocessed_, total, size_t(maxUnprocessed_ + maxProcessed_ + 1));
 		for (auto &td : tdigests) {
 			unprocessed_.insert(unprocessed_.end(), td->unprocessed_.cbegin(), td->unprocessed_.cend());
 			unprocessedWeight_ += td->unprocessedWeight_;
@@ -535,7 +590,7 @@ private:
 	void updateCumulative() {
 		const auto n = processed_.size();
 		cumulative_.clear();
-		cumulative_.reserve(n + 1);
+		Grow(cumulative_, n + 1, size_t(maxProcessed_ + 1));
 		auto previous = 0.0;
 		for (Index i = 0; i < n; i++) {
 			auto current = weight(i);

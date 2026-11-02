@@ -8,6 +8,11 @@ unique_ptr<BaseStatistics> BaseFileReader::GetStatistics(ClientContext &context,
 	return nullptr;
 }
 
+unique_ptr<BaseStatistics> BaseFileReader::GetVirtualColumnStatistics(ClientContext &context,
+                                                                      column_t virtual_column_id) {
+	return nullptr;
+}
+
 shared_ptr<BaseUnionData> BaseFileReader::GetUnionData(idx_t file_idx) {
 	throw NotImplementedException("Union by name not supported for reader of type %s", GetReaderType());
 }

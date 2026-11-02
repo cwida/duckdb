@@ -297,3 +297,34 @@ query I
 SELECT d FROM date_test WHERE timestamp '2024-06-15 00:00:00' = d ORDER BY d;
 ----
 2024-06-15
+
+# Infinite timestamps cannot be split into a finite date and time while
+# simplifying DATE/TIMESTAMP comparisons.
+statement ok
+CREATE TABLE date_infinity_test (id INTEGER, d DATE);
+
+statement ok
+INSERT INTO date_infinity_test VALUES
+    (1, DATE '-infinity'), (2, DATE '2000-01-01'), (3, DATE 'infinity'), (4, NULL);
+
+query I
+SELECT id FROM date_infinity_test WHERE d < TIMESTAMP 'infinity' ORDER BY id;
+----
+1
+2
+
+query I
+SELECT id FROM date_infinity_test WHERE d >= TIMESTAMP 'infinity' ORDER BY id;
+----
+3
+
+query I
+SELECT id FROM date_infinity_test WHERE TIMESTAMP '-infinity' < d ORDER BY id;
+----
+2
+3
+
+query I
+SELECT id FROM date_infinity_test WHERE d = TIMESTAMP '-infinity' ORDER BY id;
+----
+1

@@ -1,0 +1,565 @@
+# name: test/sql/match_recognize/test_match_recognize_clauses.test
+# description: MATCH_RECOGNIZE clauses - PARTITION BY, ORDER BY, ROWS PER MATCH, AFTER MATCH SKIP
+# group: [match_recognize]
+
+statement ok
+pragma threads=1;
+
+statement ok
+create table q(i integer);
+
+statement ok
+insert into q values (1),(2),(3),(4);
+
+# PATTERN (A A) over four always-matching rows produces the overlapping matches
+# 0-1, 1-2 and 2-3; the AFTER MATCH SKIP option decides which survive.
+
+# the default skips past the last row of the match, so 1-2 is dropped
+query I
+SELECT x FROM q MATCH_RECOGNIZE(
+    ORDER BY i MEASURES i AS x PATTERN (A A) DEFINE A as true
+) ORDER BY x
+----
+2
+4
+
+query I
+SELECT x FROM q MATCH_RECOGNIZE(
+    ORDER BY i MEASURES i AS x AFTER MATCH SKIP PAST LAST ROW PATTERN (A A) DEFINE A as true
+) ORDER BY x
+----
+2
+4
+
+# skipping to the next row keeps every match, including the overlapping ones
+query I
+SELECT x FROM q MATCH_RECOGNIZE(
+    ORDER BY i MEASURES i AS x AFTER MATCH SKIP TO NEXT ROW PATTERN (A A) DEFINE A as true
+) ORDER BY x
+----
+2
+3
+4
+
+# skipping to the row the match started on cannot advance, so it is an error
+statement error
+SELECT x FROM q MATCH_RECOGNIZE(
+    ORDER BY i MEASURES i AS x AFTER MATCH SKIP TO FIRST A PATTERN (A A) DEFINE A as true
+) ORDER BY x
+----
+<REGEX>:Invalid Input Error:.*cannot advance.*
+
+query I
+SELECT x FROM q MATCH_RECOGNIZE(
+    ORDER BY i MEASURES i AS x AFTER MATCH SKIP TO LAST A PATTERN (A A) DEFINE A as true
+) ORDER BY x
+----
+2
+3
+4
+
+# a quantified pattern started inside an earlier match is still its own match
+query I
+SELECT count(*) FROM q MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS n ONE ROW PER MATCH
+    AFTER MATCH SKIP TO NEXT ROW PATTERN (A+) DEFINE A as true
+)
+----
+4
+
+# ROWS PER MATCH parses in both forms and combines with AFTER MATCH SKIP
+query I
+SELECT x FROM q MATCH_RECOGNIZE(
+    ORDER BY i MEASURES i AS x ONE ROW PER MATCH PATTERN (A A) DEFINE A as true
+) ORDER BY x
+----
+2
+4
+
+# ALL ROWS PER MATCH reports every row of each match, not just the row it started on
+query I
+SELECT x FROM q MATCH_RECOGNIZE(
+    ORDER BY i MEASURES i AS x ALL ROWS PER MATCH PATTERN (A A) DEFINE A as true
+) ORDER BY x
+----
+1
+2
+3
+4
+
+query I
+SELECT x FROM q MATCH_RECOGNIZE(
+    ORDER BY i MEASURES i AS x ALL ROWS PER MATCH AFTER MATCH SKIP TO NEXT ROW PATTERN (A A) DEFINE A as true
+) ORDER BY x
+----
+1
+2
+2
+3
+3
+4
+
+# ORDER BY is optional
+query I
+SELECT x FROM q MATCH_RECOGNIZE(
+    MEASURES i AS x PATTERN (A A) DEFINE A as true
+) ORDER BY x
+----
+2
+4
+
+# ordering direction changes which rows start a match
+query I
+SELECT x FROM q MATCH_RECOGNIZE(
+    ORDER BY i DESC MEASURES i AS x PATTERN (A A) DEFINE A as true
+) ORDER BY x
+----
+1
+3
+
+# PARTITION BY accepts arbitrary expressions
+query I
+SELECT x FROM q MATCH_RECOGNIZE(
+    PARTITION BY i%2 ORDER BY i MEASURES i AS x PATTERN (A A) DEFINE A as true
+) ORDER BY x
+----
+3
+4
+
+statement ok
+create table pt(p integer, i integer);
+
+statement ok
+insert into pt values (1,1),(1,2),(1,3),(2,1),(2,2),(2,3);
+
+# matches never span a partition, so both partitions match their own first two rows
+query IIII
+SELECT p, i, ms, me FROM pt MATCH_RECOGNIZE(
+    PARTITION BY p ORDER BY i MEASURES i AS x, FINAL FIRST(i) AS ms, FINAL LAST(i) AS me
+    ALL ROWS PER MATCH PATTERN (A A) DEFINE A as true
+) ORDER BY p, i
+----
+1	1	1	2
+1	2	1	2
+2	1	1	2
+2	2	1	2
+
+# every row of every partition is considered, including the last one
+query II
+SELECT p, x FROM pt MATCH_RECOGNIZE(
+    PARTITION BY p ORDER BY i MEASURES i AS x PATTERN (A) DEFINE A as true
+) ORDER BY p, x
+----
+1	1
+1	2
+1	3
+2	1
+2	2
+2	3
+
+statement ok
+create table m(a integer, b integer, i integer);
+
+statement ok
+insert into m values (1,1,1),(1,1,2),(1,2,1),(1,2,2);
+
+# partitioning on several columns
+query III
+SELECT a, b, x FROM m MATCH_RECOGNIZE(
+    PARTITION BY a, b ORDER BY i MEASURES i AS x PATTERN (A A) DEFINE A as true
+) ORDER BY a, b, x
+----
+1	1	2
+1	2	2
+
+statement ok
+create table coll(a integer, i integer);
+
+statement ok
+insert into coll values (5,1),(5,2),(9,3),(5,4);
+
+# a DEFINE symbol may share its name with an input column, and its body may reference that column
+query I
+SELECT x FROM coll MATCH_RECOGNIZE(
+    ORDER BY i MEASURES i AS x PATTERN (A A) DEFINE A as a=5
+) ORDER BY x
+----
+2
+
+statement ok
+create table one(i integer);
+
+statement ok
+insert into one values (7);
+
+# a single row partition still matches
+query I
+SELECT x FROM one MATCH_RECOGNIZE(
+    ORDER BY i MEASURES i AS x PATTERN (A) DEFINE A as true
+)
+----
+7
+
+statement ok
+create table empty_tbl(i integer);
+
+query I
+SELECT count(*) FROM empty_tbl MATCH_RECOGNIZE(
+    MEASURES i AS x PATTERN (A) DEFINE A as true
+)
+----
+0
+
+# a pattern that never matches produces no rows
+query I
+SELECT count(*) FROM q MATCH_RECOGNIZE(
+    ORDER BY i MEASURES i AS x PATTERN (A) DEFINE A as false
+)
+----
+0
+
+# table alias and result alias
+query I
+SELECT z.x FROM q AS t MATCH_RECOGNIZE(
+    ORDER BY i MEASURES i AS x PATTERN (A A) DEFINE A as true
+) AS z ORDER BY z.x
+----
+2
+4
+
+# several MEASURES entries, and PREV/NEXT/FIRST/LAST inside DEFINE
+statement ok
+SELECT count(*) FROM q MATCH_RECOGNIZE(
+    ORDER BY i MEASURES i AS x, i+1 AS y PATTERN (A) DEFINE A as true
+)
+
+statement ok
+SELECT count(*) FROM q MATCH_RECOGNIZE(
+    ORDER BY i MEASURES i AS x PATTERN (A)
+    DEFINE A as PREV(i) IS NOT NULL AND NEXT(i) IS NOT NULL AND FIRST(i) IS NOT NULL AND LAST(i) IS NOT NULL
+)
+
+# Pattern variables are SQL identifiers, so PATTERN, DEFINE, MEASURES, the navigation inside a
+# condition and the AFTER MATCH SKIP target all resolve to the same variable whatever case they are
+# written in.
+
+statement ok
+create table wave(day integer, level integer);
+
+statement ok
+insert into wave values (1,40),(2,55),(3,61),(4,67),(5,79),(6,40),(7,49),(8,64),(9,76),(10,79),
+                        (11,61),(12,49),(13,79),(14,79),(15,46),(16,40),(17,46),(18,76),(19,73),(20,70);
+
+query I
+SELECT start_day FROM wave MATCH_RECOGNIZE(
+    ORDER BY day MEASURES ONSET.day AS start_day
+    ONE ROW PER MATCH AFTER MATCH SKIP TO LAST CLIMB
+    PATTERN (ONSET DIP+ CLIMB+)
+    DEFINE DIP AS DIP.level < PREV(DIP.level), CLIMB AS CLIMB.level > PREV(CLIMB.level)
+) ORDER BY start_day
+----
+5
+10
+14
+
+# the same query with every mention of a variable written in a different case
+query I
+SELECT start_day FROM wave MATCH_RECOGNIZE(
+    ORDER BY day MEASURES onset.day AS start_day
+    ONE ROW PER MATCH AFTER MATCH SKIP TO LAST Climb
+    PATTERN (ONSET DIP+ CLIMB+)
+    DEFINE dip AS DIP.level < PREV(Dip.level), Climb AS climb.level > PREV(CLIMB.level)
+) ORDER BY start_day
+----
+5
+10
+14
+
+# a pattern variable whose only mention in DEFINE differs in case still gets its condition, rather
+# than defaulting to a variable that matches every row
+query I
+SELECT count(*) FROM wave MATCH_RECOGNIZE(
+    ORDER BY day MEASURES day AS x ALL ROWS PER MATCH
+    PATTERN (RISE+) DEFINE rise AS rise.level > PREV(rise.level)
+)
+----
+11
+
+# A DEFINE may name another pattern variable. That means the variable's value on the last row matched
+# to it so far, which is what LAST() means, so the two spellings have to agree.
+
+statement ok
+create table ticks(i integer, v integer);
+
+statement ok
+insert into ticks values (1,5),(2,7),(3,2),(4,9),(5,4);
+
+query II
+SELECT match_no, n FROM ticks MATCH_RECOGNIZE(
+    ORDER BY i MEASURES MATCH_NUMBER() AS match_no, count(*) AS n
+    ONE ROW PER MATCH AFTER MATCH SKIP TO NEXT ROW
+    PATTERN (R Z* B)
+    DEFINE R AS R.v = 5, B AS B.v > R.v
+) ORDER BY match_no
+----
+1	4
+
+query II
+SELECT match_no, n FROM ticks MATCH_RECOGNIZE(
+    ORDER BY i MEASURES MATCH_NUMBER() AS match_no, count(*) AS n
+    ONE ROW PER MATCH AFTER MATCH SKIP TO NEXT ROW
+    PATTERN (R Z* B)
+    DEFINE R AS R.v = 5, B AS B.v > LAST(R.v)
+) ORDER BY match_no
+----
+1	4
+
+# a qualifier that names neither the variable being defined nor another pattern variable is an error
+statement error
+SELECT 1 FROM ticks MATCH_RECOGNIZE(
+    ORDER BY i MEASURES count(*) AS n ONE ROW PER MATCH
+    PATTERN (R B) DEFINE R AS R.v = 5, B AS B.v > nosuch.v
+)
+----
+<REGEX>:Binder Error:.*nosuch.*
+
+# DEFINE AUTO takes each variable's condition from the column of the same name, cast to boolean, so
+# a variable stands for that column being true, or non zero, or whatever else its type calls true.
+
+statement ok
+create table flags(t integer, rising boolean, falling boolean, vol integer, tag varchar);
+
+statement ok
+insert into flags values (1,true,false,3,'true'),(2,true,false,0,'false'),
+                         (3,false,true,7,'true'),(4,false,true,1,'t');
+
+query II
+SELECT match_no, n FROM flags MATCH_RECOGNIZE(
+    ORDER BY t MEASURES MATCH_NUMBER() AS match_no, count(*) AS n
+    ONE ROW PER MATCH PATTERN (rising+ falling+) DEFINE AUTO
+) ORDER BY match_no
+----
+1	4
+
+# a non zero integer is true
+query I
+SELECT t FROM flags MATCH_RECOGNIZE(
+    ORDER BY t ALL ROWS PER MATCH PATTERN (vol+) DEFINE AUTO
+) ORDER BY t
+----
+1
+3
+4
+
+# and a string is whatever casting it to boolean says
+query I
+SELECT t FROM flags MATCH_RECOGNIZE(
+    ORDER BY t ALL ROWS PER MATCH PATTERN (tag+) DEFINE AUTO
+) ORDER BY t
+----
+1
+3
+4
+
+# the clause is order free like the others
+query I
+SELECT count(*) FROM flags MATCH_RECOGNIZE(
+    DEFINE AUTO PATTERN (rising+) ORDER BY t ALL ROWS PER MATCH
+)
+----
+2
+
+# a variable with no column of that name has nothing to stand for
+statement error
+SELECT 1 FROM flags MATCH_RECOGNIZE(
+    ORDER BY t ALL ROWS PER MATCH PATTERN (nosuchcol+) DEFINE AUTO
+)
+----
+<REGEX>:Binder Error:.*nosuchcol.*
+
+# DEFINES is accepted wherever DEFINE is, since the clause reads as a list of definitions
+
+query I
+SELECT count(*) FROM flags MATCH_RECOGNIZE(
+    ORDER BY t MEASURES count(*) AS n ONE ROW PER MATCH
+    PATTERN (RISE+) DEFINES RISE AS RISE.vol > 0)
+----
+2
+
+query I
+SELECT count(*) FROM flags MATCH_RECOGNIZE(
+    ORDER BY t ALL ROWS PER MATCH PATTERN (rising+) DEFINES AUTO)
+----
+2
+
+# a variable the PATTERN only mentions is still a variable, so a condition may name it
+query I
+FROM (VALUES (1), (2)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n PATTERN (A B) DEFINE B AS B.x > A.x
+)
+----
+2
+
+query I
+FROM (VALUES (1), (2)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n PATTERN (A B) DEFINE A AS true, B AS B.x > A.x
+)
+----
+2
+
+# The matcher's configuration is built where the clause is bound and handed over as bind data, so the
+# window is called with the columns the conditions read and nothing else. Calling it directly is
+# still not a thing anyone can do.
+
+statement error
+SELECT "match_recognize"(x) OVER () FROM range(3) t(x)
+----
+cannot be used directly
+
+statement error
+SELECT main."match_recognize"(x) OVER (ORDER BY x) FROM range(3) t(x)
+----
+cannot be used directly
+
+query I
+SELECT parameters FROM duckdb_functions() WHERE function_name = 'match_recognize'
+----
+[columns]
+
+statement ok
+PREPARE mr_prepared AS
+    FROM (VALUES (10), (20)) t(x) MATCH_RECOGNIZE (
+        ORDER BY x MEASURES sum(x) AS s PATTERN (A+) DEFINE A AS MATCH_NUMBER() > 0
+    );
+
+query I
+EXECUTE mr_prepared
+----
+30
+
+query I
+EXECUTE mr_prepared
+----
+30
+
+statement ok
+CREATE MACRO m_first(v) AS FIRST(v);
+
+# DEFINE conditions are bound by a binder of their own too. What a condition reads that is not the
+# row being tested becomes a column of the projection below the matcher, decided while binding rather
+# than before it - so a navigation reached through a macro is seen the same way a written one is.
+
+statement ok
+CREATE MACRO m_nav(v) AS m_first(v);
+
+query I
+FROM (VALUES (10), (20)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n PATTERN (A+) DEFINE A AS m_first(x) = 10
+)
+----
+2
+
+query I
+FROM (VALUES (10), (20)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n PATTERN (A+) DEFINE A AS m_nav(x) = 10
+)
+----
+2
+
+# naming another variable is its value on the last row matched to it
+query I
+FROM (VALUES (1), (2), (3)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n PATTERN (A B+) DEFINE B AS x > A.x
+)
+----
+3
+
+# the variable being defined is the row being tested
+query I
+FROM (VALUES (10), (20)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n PATTERN (A+) DEFINE A AS A.x > 0
+)
+----
+2
+
+# a window walks the ordered partition, so it is computed below the matcher like PREV() is
+query I
+FROM (VALUES (1), (2)) t(x) MATCH_RECOGNIZE (
+    ORDER BY x MEASURES count(*) AS n PATTERN (A+) DEFINE A AS row_number() OVER () > 0
+)
+----
+2
+
+# Two scalar subqueries that spell the same thing are computed once, which is settled by comparing
+# the clauses - so every part of a MATCH_RECOGNIZE that changes what it means has to make the
+# comparison say so. Each pair below differs in exactly one clause and answers differently.
+
+# ROWS PER MATCH
+query II
+SELECT (SELECT sum(n) FROM (FROM range(6) t(x) MATCH_RECOGNIZE (
+            ORDER BY x MEASURES count(*) AS n ONE ROW PER MATCH
+            AFTER MATCH SKIP PAST LAST ROW PATTERN (A{2}) DEFINE A AS true))) AS a,
+       (SELECT sum(n) FROM (FROM range(6) t(x) MATCH_RECOGNIZE (
+            ORDER BY x MEASURES count(*) AS n ALL ROWS PER MATCH
+            AFTER MATCH SKIP PAST LAST ROW PATTERN (A{2}) DEFINE A AS true))) AS b
+----
+6	9
+
+# AFTER MATCH SKIP
+query II
+SELECT (SELECT sum(n) FROM (FROM range(6) t(x) MATCH_RECOGNIZE (
+            ORDER BY x MEASURES count(*) AS n AFTER MATCH SKIP PAST LAST ROW PATTERN (A{2}) DEFINE A AS true))) AS a,
+       (SELECT sum(n) FROM (FROM range(6) t(x) MATCH_RECOGNIZE (
+            ORDER BY x MEASURES count(*) AS n AFTER MATCH SKIP TO NEXT ROW PATTERN (A{2}) DEFINE A AS true))) AS b
+----
+6	10
+
+# MEASURES
+query II
+SELECT (SELECT sum(n) FROM (FROM range(6) t(x) MATCH_RECOGNIZE (
+            ORDER BY x MEASURES count(*) AS n AFTER MATCH SKIP PAST LAST ROW PATTERN (A{2}) DEFINE A AS true))) AS a,
+       (SELECT sum(n) FROM (FROM range(6) t(x) MATCH_RECOGNIZE (
+            ORDER BY x MEASURES count(*) + 1 AS n AFTER MATCH SKIP PAST LAST ROW PATTERN (A{2}) DEFINE A AS true))) AS b
+----
+6	9
+
+# ORDER BY, in direction and in how many keys it has
+query II
+SELECT (SELECT sum(n) FROM (FROM range(6) t(x) MATCH_RECOGNIZE (
+            ORDER BY x MEASURES count(*) AS n AFTER MATCH SKIP PAST LAST ROW
+            PATTERN (A+) DEFINE A AS coalesce(x > PREV(x), true)))) AS a,
+       (SELECT sum(n) FROM (FROM range(6) t(x) MATCH_RECOGNIZE (
+            ORDER BY x DESC MEASURES count(*) AS n AFTER MATCH SKIP PAST LAST ROW
+            PATTERN (A+) DEFINE A AS coalesce(x > PREV(x), true)))) AS b
+----
+6	1
+
+query II
+SELECT (SELECT sum(n) FROM (FROM range(6) t(x) MATCH_RECOGNIZE (
+            ORDER BY x MEASURES count(*) AS n AFTER MATCH SKIP PAST LAST ROW
+            PATTERN (A+) DEFINE A AS coalesce(x > PREV(x), true)))) AS a,
+       (SELECT sum(n) FROM (FROM range(6) t(x) MATCH_RECOGNIZE (
+            ORDER BY x % 2, x MEASURES count(*) AS n AFTER MATCH SKIP PAST LAST ROW
+            PATTERN (A+) DEFINE A AS coalesce(x > PREV(x), true)))) AS b
+----
+6	5
+
+# SUBSET membership
+query II
+SELECT (SELECT sum(u) FROM (FROM range(6) t(x) MATCH_RECOGNIZE (
+            ORDER BY x MEASURES sum(U.x) AS u AFTER MATCH SKIP PAST LAST ROW
+            PATTERN (A B) SUBSET U = (A) DEFINE A AS x % 2 = 0, B AS x % 2 = 1))) AS a,
+       (SELECT sum(u) FROM (FROM range(6) t(x) MATCH_RECOGNIZE (
+            ORDER BY x MEASURES sum(U.x) AS u AFTER MATCH SKIP PAST LAST ROW
+            PATTERN (A B) SUBSET U = (A, B) DEFINE A AS x % 2 = 0, B AS x % 2 = 1))) AS b
+----
+6	15
+
+# and the input the clause is applied to
+query II
+SELECT (SELECT sum(n) FROM (FROM range(6) t(x) MATCH_RECOGNIZE (
+            ORDER BY x MEASURES count(*) AS n AFTER MATCH SKIP PAST LAST ROW PATTERN (A{2}) DEFINE A AS true))) AS a,
+       (SELECT sum(n) FROM (FROM range(5) t(x) MATCH_RECOGNIZE (
+            ORDER BY x MEASURES count(*) AS n AFTER MATCH SKIP PAST LAST ROW PATTERN (A{2}) DEFINE A AS true))) AS b
+----
+6	4

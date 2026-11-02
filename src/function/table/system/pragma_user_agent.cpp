@@ -41,8 +41,9 @@ void PragmaUserAgentFunction(ClientContext &context, TableFunctionInput &data_p,
 }
 
 void PragmaUserAgent::RegisterFunction(BuiltinFunctions &set) {
-	set.AddFunction(
-	    TableFunction("pragma_user_agent", {}, PragmaUserAgentFunction, PragmaUserAgentBind, PragmaUserAgentInit));
+	TableFunction pragma_user_agent("pragma_user_agent", {}, PragmaUserAgentFunction, PragmaUserAgentBind,
+	                                PragmaUserAgentInit);
+	set.AddFunction(pragma_user_agent);
 }
 
 } // namespace duckdb

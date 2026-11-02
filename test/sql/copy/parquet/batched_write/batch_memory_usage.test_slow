@@ -2,8 +2,6 @@
 # description: Batched Parquet write memory usage
 # group: [batched_write]
 
-mode skip "Test is failing at random depending on threads / available memory in the specific machine that run this job"
-
 require parquet
 
 set seed 0.72

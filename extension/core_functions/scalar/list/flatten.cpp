@@ -141,9 +141,10 @@ unique_ptr<BaseStatistics> ListFlattenStats(ClientContext &context, FunctionStat
 } // namespace
 
 ScalarFunction ListFlattenFun::GetFunction() {
-	return ScalarFunction({LogicalType::LIST(LogicalType::LIST(LogicalType::TEMPLATE("T")))},
-	                      LogicalType::LIST(LogicalType::TEMPLATE("T")), ListFlattenFunction, nullptr,
-	                      ListFlattenStats);
+	ScalarFunction fun({}, LogicalType::LIST(LogicalType::TEMPLATE("T")), ListFlattenFunction, nullptr,
+	                   ListFlattenStats);
+	fun.GetSignature().AddParameter("nested_list", LogicalType::LIST(LogicalType::LIST(LogicalType::TEMPLATE("T"))));
+	return fun;
 }
 
 } // namespace duckdb

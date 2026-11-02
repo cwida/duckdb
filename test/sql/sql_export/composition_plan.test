@@ -1,0 +1,137 @@
+# name: test/sql/sql_export/composition_plan.test
+# description: SQL composition shares expressions and preserves required evaluation boundaries
+# group: [sql_export]
+
+statement ok
+CREATE TABLE composition_input(i INTEGER, s VARCHAR);
+
+statement ok
+INSERT INTO composition_input VALUES (1,'a'),(2,'A'),(2,'b'),(NULL,NULL);
+
+statement ok
+CREATE SEQUENCE composition_sequence;
+
+statement ok
+CREATE TABLE composition_overflow(i HUGEINT);
+
+statement ok
+INSERT INTO composition_overflow VALUES (170141183460469231731687303715884105727),(1);
+
+statement ok
+PRAGMA disable_optimizer;
+
+# A single safe use can be composed.
+query TT
+EXPLAIN (SQL) SELECT upper(x) FROM (SELECT lower(s) x FROM composition_input) q;
+----
+sql	<!REGEX>:.*[(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT min(x) FROM (SELECT lower(s) x FROM composition_input) q;
+----
+sql	<!REGEX>:.*[(][[:space:]]*SELECT.*
+
+# CASE and TRY must not suppress an error raised by the child projection.
+query TT
+EXPLAIN (SQL) SELECT CASE WHEN i=0 THEN x ELSE 1 END FROM (SELECT CAST(s AS INTEGER) x,i FROM composition_input) q;
+----
+sql	<REGEX>:.*[(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT TRY(x+1) FROM (SELECT CAST(s AS INTEGER) x FROM composition_input) q;
+----
+sql	<REGEX>:.*[(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT x,x FROM (SELECT nextval('composition_sequence') x FROM composition_input) q;
+----
+sql	<REGEX>:.*[(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT nextval('composition_sequence'),x FROM (SELECT CAST(s AS INTEGER) x FROM composition_input) q;
+----
+sql	<REGEX>:.*[(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT n FROM (SELECT sum(i) s,count(*) n FROM composition_overflow) q;
+----
+sql	<REGEX>:.*sum.*
+
+# Computed keys are not duplicated between SELECT and GROUP BY.
+query TT
+EXPLAIN (SQL) SELECT x,count(*) FROM (SELECT lower(lower(lower(s))) x FROM composition_input) q GROUP BY x;
+----
+sql	<REGEX>:.*[(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT TRY(s) FROM (SELECT sum(i) s FROM composition_overflow) q;
+----
+sql	<REGEX>:.*[(][[:space:]]*SELECT.*
+
+# Repeated scalar computations must remain shared.
+query TT
+EXPLAIN (SQL) SELECT x,x FROM (SELECT lower(s) x FROM composition_input) q;
+----
+sql	<REGEX>:.*[(][[:space:]]*SELECT.*
+
+# LIMIT must not move ahead of the throwing projection.
+query TT
+EXPLAIN (SQL) SELECT x FROM (SELECT CAST(s AS INTEGER) x FROM composition_input) q ORDER BY x LIMIT 1;
+----
+sql	<REGEX>:.*[(][[:space:]]*SELECT.*
+
+# Integer keys retain references instead of becoming positional GROUP BY/ORDER BY terms.
+query TT
+EXPLAIN (SQL) SELECT k,count(*) FROM (SELECT 1 k FROM composition_input) q GROUP BY k;
+----
+sql	<REGEX>:.*GROUP BY r[0-9]+[.]c0$
+
+query TT
+EXPLAIN (SQL) SELECT i,k FROM (SELECT i,1 k FROM composition_input) q ORDER BY k,i;
+----
+sql	<REGEX>:.*ORDER BY r[0-9]+[.]c1 ASC NULLS LAST, r[0-9]+[.]c0 ASC NULLS LAST$
+
+# NULL grouping keys remain eligible for composition.
+query TT
+EXPLAIN (SQL) SELECT k,count(*) FROM (SELECT NULL k FROM composition_input) q GROUP BY k;
+----
+sql	<REGEX>:^SELECT NULL AS k, .*GROUP BY NULL$
+
+# Ordering must retain the reference: ORDER BY NULL can be rejected by the binder.
+query TT
+EXPLAIN (SQL) SELECT i,k FROM (SELECT i,NULL k FROM composition_input) q ORDER BY k,i;
+----
+sql	<REGEX>:.*ORDER BY r[0-9]+[.]c1 ASC NULLS LAST, r[0-9]+[.]c0 ASC NULLS LAST$
+
+# HAVING and QUALIFY retain the aggregate/window evaluation boundary.
+query TT
+EXPLAIN (SQL) SELECT n+1 FROM (SELECT i,count(*) n FROM composition_input GROUP BY i HAVING count(*)>1) q;
+----
+sql	<REGEX>:.*[(][[:space:]]*SELECT.*GROUP BY.*[)] AS .*WHERE.*
+
+query TT
+EXPLAIN (SQL) SELECT i FROM (SELECT i,row_number() OVER (ORDER BY i) r FROM composition_input QUALIFY r % 2 = 1) q;
+----
+sql	<REGEX>:.*[(][[:space:]]*SELECT.*OVER.*[)] AS .*WHERE.*
+
+# An identity projection can disappear while DISTINCT remains.
+query TT
+EXPLAIN (SQL) SELECT * FROM (SELECT DISTINCT i FROM composition_input) q;
+----
+sql	<REGEX>:^SELECT DISTINCT ON .*[(][[:space:]]*SELECT[^;]*$
+
+query TT
+EXPLAIN (SQL) SELECT * FROM (SELECT DISTINCT i FROM composition_input) q;
+----
+sql	<!REGEX>:.*[(][[:space:]]*SELECT.*[(][[:space:]]*SELECT.*
+
+# Small repeated aggregates compose, but large aggregate arguments must not grow the SQL tree.
+query TT
+EXPLAIN (SQL) SELECT n+n+n FROM (SELECT count(*) n FROM composition_input) q;
+----
+sql	<!REGEX>:.*[(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT n+n+n FROM (SELECT sum(length(lower(lower(lower(lower(lower(s))))))) n FROM composition_input) q;
+----
+sql	<REGEX>:.*[(][[:space:]]*SELECT.*

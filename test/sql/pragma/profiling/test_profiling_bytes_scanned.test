@@ -1,0 +1,196 @@
+# name: test/sql/pragma/profiling/test_profiling_bytes_scanned.test
+# description: Test query.total_bytes_scanned and operator.bytes_scanned
+# group: [profiling]
+
+require parquet
+
+require json
+
+# three row groups per file; i ascends, so a filter on it skips row groups by their statistics
+statement ok
+COPY (SELECT range AS i, repeat('x', 100) || range AS s FROM range(3 * 2048)) TO '{TEST_DIR}/bytes_scanned_1.parquet' (ROW_GROUP_SIZE 2048);
+
+statement ok
+COPY (SELECT range AS i, repeat('x', 100) || range AS s FROM range(3 * 2048)) TO '{TEST_DIR}/bytes_scanned_2.parquet' (ROW_GROUP_SIZE 2048);
+
+statement ok
+CREATE TABLE chunks AS
+SELECT file_name, row_group_id, path_in_schema AS col, TRY_CAST(stats_max AS BIGINT) AS max_i, total_compressed_size AS bytes
+FROM parquet_metadata('{TEST_DIR}/bytes_scanned_*.parquet');
+
+query II
+SELECT count(DISTINCT file_name), count(DISTINCT row_group_id) FROM chunks;
+----
+2	3
+
+# one column: its chunk in every row group
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/bytes_scanned_one_column.json';
+
+statement ok
+SET tracked_metrics = ['query.total_bytes_scanned'];
+
+statement ok
+SELECT sum(i) FROM '{TEST_DIR}/bytes_scanned_1.parquet';
+
+statement ok
+PRAGMA disable_profiling;
+
+query I
+SELECT query.total_bytes_scanned = (SELECT sum(bytes) FROM chunks WHERE file_name LIKE '%_1.parquet' AND col = 'i')
+FROM '{TEST_DIR}/bytes_scanned_one_column.json';
+----
+true
+
+# two columns: both chunks in every row group
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/bytes_scanned_two_columns.json';
+
+statement ok
+SET tracked_metrics = ['query.total_bytes_scanned', 'operator.bytes_scanned', 'operator.type'];
+
+statement ok
+SELECT sum(i), max(s) FROM '{TEST_DIR}/bytes_scanned_1.parquet';
+
+statement ok
+PRAGMA disable_profiling;
+
+query I
+SELECT query.total_bytes_scanned = (SELECT sum(bytes) FROM chunks WHERE file_name LIKE '%_1.parquet')
+FROM '{TEST_DIR}/bytes_scanned_two_columns.json';
+----
+true
+
+# the query total is the sum over the scan operators
+statement ok
+CREATE MACRO scan_bytes(profile) AS TABLE
+WITH RECURSIVE ops(op) AS (
+    SELECT unnest(operator)::JSON AS op FROM read_json(profile)
+    UNION ALL
+    SELECT unnest((op->'children')::JSON[]) FROM ops WHERE json_array_length(op->'children') > 0
+)
+SELECT (op->>'bytes_scanned')::BIGINT AS bytes FROM ops WHERE op->>'type' = 'TABLE_SCAN';
+
+query II
+SELECT count(*), sum(bytes) = (SELECT sum(bytes) FROM chunks WHERE file_name LIKE '%_1.parquet')
+FROM scan_bytes('{TEST_DIR}/bytes_scanned_two_columns.json');
+----
+1	true
+
+# row groups skipped by their statistics are not counted: only the last row group can hold i >= 4096
+query I
+SELECT count(*) FROM chunks WHERE file_name LIKE '%_1.parquet' AND col = 'i' AND max_i >= 4096;
+----
+1
+
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/bytes_scanned_skipped.json';
+
+statement ok
+SET tracked_metrics = ['query.total_bytes_scanned'];
+
+statement ok
+SELECT sum(i) FROM '{TEST_DIR}/bytes_scanned_1.parquet' WHERE i >= 4096;
+
+statement ok
+PRAGMA disable_profiling;
+
+query I
+SELECT query.total_bytes_scanned = (SELECT sum(bytes) FROM chunks WHERE file_name LIKE '%_1.parquet' AND col = 'i' AND max_i >= 4096)
+FROM '{TEST_DIR}/bytes_scanned_skipped.json';
+----
+true
+
+# several files
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/bytes_scanned_glob.json';
+
+statement ok
+SET tracked_metrics = ['query.total_bytes_scanned'];
+
+statement ok
+SELECT sum(i) FROM '{TEST_DIR}/bytes_scanned_*.parquet';
+
+statement ok
+PRAGMA disable_profiling;
+
+query I
+SELECT query.total_bytes_scanned = (SELECT sum(bytes) FROM chunks WHERE col = 'i')
+FROM '{TEST_DIR}/bytes_scanned_glob.json';
+----
+true
+
+# a file scanned twice counts twice
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/bytes_scanned_twice.json';
+
+statement ok
+SET tracked_metrics = ['query.total_bytes_scanned', 'operator.bytes_scanned', 'operator.type'];
+
+statement ok
+SELECT (SELECT sum(i) FROM '{TEST_DIR}/bytes_scanned_1.parquet') + (SELECT sum(i) FROM '{TEST_DIR}/bytes_scanned_1.parquet');
+
+statement ok
+PRAGMA disable_profiling;
+
+query I
+SELECT query.total_bytes_scanned = 2 * (SELECT sum(bytes) FROM chunks WHERE file_name LIKE '%_1.parquet' AND col = 'i')
+FROM '{TEST_DIR}/bytes_scanned_twice.json';
+----
+true
+
+query II
+SELECT count(*), bool_and(bytes = (SELECT sum(bytes) FROM chunks WHERE file_name LIKE '%_1.parquet' AND col = 'i'))
+FROM scan_bytes('{TEST_DIR}/bytes_scanned_twice.json');
+----
+2	true
+
+# a scan that does not count its bytes leaves the metric out rather than reporting 0
+statement ok
+CREATE TABLE native AS SELECT range AS i FROM range(2048);
+
+query II
+EXPLAIN ANALYZE (FORMAT json) SELECT sum(i) FROM native
+----
+analyzed_plan	<!REGEX>:[\s\S]*"bytes_scanned"[\s\S]*
+
+query II
+EXPLAIN ANALYZE (FORMAT json) SELECT sum(i) FROM '{TEST_DIR}/bytes_scanned_1.parquet'
+----
+analyzed_plan	<REGEX>:[\s\S]*"bytes_scanned": [1-9][\s\S]*
+
+# a query with a scan that doesn't count the bytes it scans leaves the total out, rather than undercounting
+statement ok
+COPY (SELECT range AS i FROM range(100000)) TO '{TEST_DIR}/bytes_scanned_uncounted.csv';
+
+query II
+EXPLAIN ANALYZE (FORMAT json) SELECT sum(i) FROM '{TEST_DIR}/bytes_scanned_uncounted.csv'
+----
+analyzed_plan	<!REGEX>:[\s\S]*bytes_scanned[\s\S]*
+
+query II
+EXPLAIN ANALYZE (FORMAT json)
+SELECT sum(p.i) FROM '{TEST_DIR}/bytes_scanned_1.parquet' p JOIN '{TEST_DIR}/bytes_scanned_uncounted.csv' c USING (i)
+----
+analyzed_plan	<!REGEX>:[\s\S]*"total_bytes_scanned"[\s\S]*
+
+query II
+EXPLAIN ANALYZE (FORMAT json)
+SELECT sum(p.i) FROM '{TEST_DIR}/bytes_scanned_1.parquet' p JOIN '{TEST_DIR}/bytes_scanned_uncounted.csv' c USING (i)
+----
+analyzed_plan	<REGEX>:[\s\S]*"bytes_scanned": [1-9][\s\S]*

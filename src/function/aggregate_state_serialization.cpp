@@ -146,6 +146,16 @@ static void SerializeField(const LogicalType &type, const AggregateStateField &f
 			// elements are stored directly - build the result LIST vector from each state's linked list
 			// (BuildLists appends to the result's child, writing the list entries at [offset, offset + count))
 			field.list_functions.BuildLists(linked_lists, result, offset);
+			if (field.list_empty_as_empty) {
+				// an empty linked list is an empty group: export it as a non-NULL empty list rather than NULL
+				auto result_entries = FlatVector::GetDataMutable<list_entry_t>(result);
+				for (idx_t i = 0; i < count; i++) {
+					if (FlatVector::IsNull(result, offset + i)) {
+						FlatVector::SetNull(result, offset + i, false);
+						result_entries[offset + i] = {0, 0};
+					}
+				}
+			}
 			break;
 		}
 		// the elements are sort keys: build the physically stored (BLOB) elements into a temporary LIST vector, then
@@ -163,8 +173,11 @@ static void SerializeField(const LogicalType &type, const AggregateStateField &f
 		for (const auto list_entry : physical_list.Values<VectorListType<string_t>>()) {
 			const auto row = offset + list_entry.GetIndex();
 			if (!list_entry.IsValid()) {
-				// an empty linked list is exported as NULL, matching the finalize semantics of list aggregates
-				FlatVector::SetNull(result, row, true);
+				// an empty linked list is exported as NULL, matching the finalize semantics of list aggregates;
+				// the sorted aggregate buffer instead exports an empty group as a non-NULL empty list
+				if (!field.list_empty_as_empty) {
+					FlatVector::SetNull(result, row, true);
+				}
 				result_entries[row] = {child_offset, 0};
 				continue;
 			}
@@ -270,10 +283,20 @@ static void DeserializeField(const LogicalType &type, const AggregateStateField 
 
 		RecursiveUnifiedVectorFormat child_data;
 		Vector::RecursiveToUnifiedFormat(*physical_child, child_data);
+		const auto child_validity = logical_child.Validity();
 		for (idx_t i = 0; i < count; i++) {
 			LinkedList linked_list;
 			const auto entry = values[i];
 			if (entry.IsValid()) {
+				if (field.reject_null_elements) {
+					const auto &list_entry = entry.GetValue();
+					for (idx_t child_idx = 0; child_idx < list_entry.length; child_idx++) {
+						if (!child_validity.IsValid(list_entry.offset + child_idx)) {
+							throw InvalidInputException(
+							    "Invalid aggregate state - the list cannot contain NULL values");
+						}
+					}
+				}
 				// NULL inputs keep an empty linked list
 				field.list_functions.AppendListEntry(allocator, linked_list, child_data, entry.GetValue());
 			}
@@ -298,6 +321,9 @@ void AggregateStateSerialization::DeserializeStates(const BoundAggregateFunction
 	}
 	DeserializeField(layout.type, layout.field, input_vec, count, dest_buffer, layout.total_state_size, 0, allocator,
 	                 ownership);
+	if (layout.validate_state) {
+		layout.validate_state(dest_buffer, count, layout.total_state_size);
+	}
 }
 
 void AggregateStateSerialization::SerializeStates(const AggregateStateLayout &layout, Vector &result, idx_t count,

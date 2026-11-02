@@ -1,0 +1,13 @@
+diff --git a/test/sql/read_avro_millis.test b/test/sql/read_avro_millis.test
+index 835d669..79f65f6 100644
+--- a/test/sql/read_avro_millis.test
++++ b/test/sql/read_avro_millis.test
+@@ -29,7 +29,7 @@ query I
+ SELECT ts from read_avro('test/timestamptz_millis.avro') order by ts NULLS FIRST;
+ ----
+ NULL
+-0001-01-01 00:17:30+00:17
++0001-01-01 00:17:30+00:17:30
+ 2019-12-31 20:00:00+01
+ 2021-06-15 04:30:45.123+02
+ 2022-01-01 06:00:00+01

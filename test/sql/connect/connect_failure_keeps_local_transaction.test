@@ -1,0 +1,141 @@
+# name: test/sql/connect/connect_failure_keeps_local_transaction.test
+# description: A statement that fails while CONNECT-ed leaves the local transaction valid
+# group: [connect]
+
+require quack
+
+require httpfs
+
+statement ok
+SET VARIABLE server_uri = (SELECT concat('''', listen_uri, '''') FROM quack_serve('quack:127.0.0.1:0', token='test_token'));
+
+set variable server_uri <variable:server_uri>
+
+statement ok
+ATTACH {server_uri} AS qk (TOKEN 'test_token');
+
+# the server answers PREPARE without rows, so a failure at run time arrives while the rows are fetched
+statement ok
+SET GLOBAL quack_prepare_inline_rows = 0;
+
+statement ok
+CREATE TABLE local_t AS SELECT 1 AS i;
+
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO local_t VALUES (2);
+
+statement ok
+CONNECT qk;
+
+# rejected by the connected database
+statement error
+CREATE GRANT;
+----
+syntax error at or near "GRANT"
+
+# fails while the rows are fetched
+statement error
+SELECT CASE WHEN i < 3 THEN i ELSE error('late failure') END FROM range(10) t(i);
+----
+late failure
+
+# rejected locally, before it is forwarded
+statement error
+SELECT 'unterminated
+----
+unterminated string literal
+
+query I
+SELECT 42;
+----
+42
+
+statement ok
+DISCONNECT;
+
+query I
+SELECT sum(i) FROM local_t;
+----
+3
+
+statement ok
+COMMIT;
+
+query I
+SELECT sum(i) FROM local_t;
+----
+3
+
+# a failure aborts the transaction of the connected database, not the local one
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO local_t VALUES (3);
+
+statement ok
+CONNECT qk;
+
+statement ok
+BEGIN;
+
+statement error
+CREATE GRANT;
+----
+syntax error at or near "GRANT"
+
+statement error
+SELECT 42;
+----
+Current transaction is aborted
+
+statement ok
+ROLLBACK;
+
+query I
+SELECT 42;
+----
+42
+
+statement ok
+DISCONNECT;
+
+statement ok
+COMMIT;
+
+query I
+SELECT sum(i) FROM local_t;
+----
+6
+
+# the same with a CONNECT by connection string
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO local_t VALUES (4);
+
+statement ok
+CONNECT {server_uri} (TOKEN 'test_token');
+
+statement error
+SELECT * FROM no_such_table;
+----
+no_such_table
+
+statement ok
+DISCONNECT;
+
+statement ok
+COMMIT;
+
+query I
+SELECT sum(i) FROM local_t;
+----
+10
+
+statement ok
+CALL quack_stop({server_uri});

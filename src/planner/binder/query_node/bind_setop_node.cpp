@@ -1,8 +1,12 @@
 #include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/expression_map.hpp"
+#include "duckdb/parser/expression/star_expression.hpp"
+#include "duckdb/parser/expression/collate_expression.hpp"
 #include "duckdb/parser/query_node/select_node.hpp"
 #include "duckdb/parser/query_node/set_operation_node.hpp"
+#include "duckdb/parser/statement/select_statement.hpp"
+#include "duckdb/parser/tableref/subqueryref.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
@@ -128,7 +132,7 @@ void Binder::BuildUnionByNameInfo(BoundSetOperationNode &result) {
 			if (node_name_map.find(col_name) != node_name_map.end()) {
 				throw BinderException(
 				    "UNION (ALL) BY NAME operation doesn't support duplicate names in the SELECT list - "
-				    "the name \"%s\" occurs multiple times",
+				    "the name %s occurs multiple times",
 				    col_name);
 			}
 			if (global_name_set.find(col_name) == global_name_set.end()) {
@@ -235,7 +239,84 @@ static void GatherSetOpBinders(vector<BoundStatement> &children, vector<shared_p
 	}
 }
 
+// whether an ORDER BY expression of a set operation can be resolved against the select lists of its leaves
+static bool SetOpProvidesOrderExpression(const ParsedExpression &expr, const QueryNode &node) {
+	if (node.type == QueryNodeType::SET_OPERATION_NODE) {
+		for (auto &child : node.Cast<SetOperationNode>().children) {
+			if (SetOpProvidesOrderExpression(expr, *child)) {
+				return true;
+			}
+		}
+		return false;
+	}
+	if (node.type != QueryNodeType::SELECT_NODE) {
+		return true;
+	}
+	for (auto &select_expr : node.Cast<SelectNode>().select_list) {
+		if (select_expr->Equals(expr)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool OrderExpressionIsSimple(const ParsedExpression &expr) {
+	switch (expr.GetExpressionClass()) {
+	case ExpressionClass::COLUMN_REF:
+	case ExpressionClass::POSITIONAL_REFERENCE:
+	case ExpressionClass::CONSTANT:
+	case ExpressionClass::PARAMETER:
+	case ExpressionClass::STAR:
+		return true;
+	case ExpressionClass::COLLATE:
+		return OrderExpressionIsSimple(expr.Cast<CollateExpression>().Child());
+	default:
+		return false;
+	}
+}
+
+// ORDER BY expressions over the columns of a set operation (e.g. "ORDER BY col IS NULL, col") cannot be pushed into
+// every child; they are evaluated over the result instead by binding SELECT * FROM (set operation) ORDER BY ...
+static bool SetOpNeedsOrderWrap(const SetOperationNode &statement) {
+	for (auto &modifier : statement.modifiers) {
+		if (modifier->type != ResultModifierType::ORDER_MODIFIER) {
+			continue;
+		}
+		for (auto &order : modifier->Cast<OrderModifier>().orders) {
+			if (!OrderExpressionIsSimple(*order.expression) &&
+			    !SetOpProvidesOrderExpression(*order.expression, statement)) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+static unique_ptr<SelectNode> WrapSetOpForOrdering(const SetOperationNode &statement) {
+	auto inner = statement.Copy();
+	auto &inner_setop = inner->Cast<SetOperationNode>();
+	auto outer = make_uniq<SelectNode>();
+	vector<unique_ptr<ResultModifier>> inner_modifiers;
+	for (auto &modifier : inner_setop.modifiers) {
+		if (modifier->type == ResultModifierType::DISTINCT_MODIFIER) {
+			inner_modifiers.push_back(std::move(modifier));
+		} else {
+			outer->modifiers.push_back(std::move(modifier));
+		}
+	}
+	inner_setop.modifiers = std::move(inner_modifiers);
+	auto subquery = make_uniq<SelectStatement>();
+	subquery->node = std::move(inner);
+	outer->select_list.push_back(make_uniq<StarExpression>());
+	outer->from_table = make_uniq<SubqueryRef>(std::move(subquery));
+	return outer;
+}
+
 BoundStatement Binder::BindNode(SetOperationNode &statement) {
+	if (SetOpNeedsOrderWrap(statement)) {
+		auto wrapped = WrapSetOpForOrdering(statement);
+		return BindNode(*wrapped);
+	}
 	BoundSetOperationNode result;
 	result.setop_type = statement.setop_type;
 	result.setop_all = statement.setop_all;
@@ -291,7 +372,10 @@ BoundStatement Binder::BindNode(SetOperationNode &statement) {
 
 	if (!statement.setop_all) {
 		statement.modifiers.insert(statement.modifiers.begin(), make_uniq<DistinctModifier>());
-		statement.setop_all = false; // Already handled
+		if (statement.setop_type == SetOperationType::UNION ||
+		    statement.setop_type == SetOperationType::UNION_BY_NAME) {
+			result.setop_all = true;
+		}
 	}
 
 	SelectBindState bind_state;

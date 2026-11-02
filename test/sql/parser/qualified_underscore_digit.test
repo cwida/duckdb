@@ -1,0 +1,52 @@
+# name: test/sql/parser/qualified_underscore_digit.test
+# description: Printed qualified identifiers retain underscore-digit quoting
+# group: [parser]
+
+statement ok
+CREATE SCHEMA "_3_schema";
+
+statement ok
+CREATE TABLE "_3_schema"."_4_table"("_0_a" INTEGER, "__2_c" INTEGER, _a3 INTEGER);
+
+statement ok
+INSERT INTO "_3_schema"."_4_table" VALUES (1,2,3),(1,2,3),(NULL,NULL,4);
+
+statement ok
+CREATE VIEW quoted_columns AS SELECT t."_0_a", t."__2_c", t._a3 FROM "_3_schema"."_4_table" t;
+
+query I
+SELECT contains(sql, 't."_0_a"') FROM duckdb_views() WHERE view_name = 'quoted_columns';
+----
+true
+
+query III rowsort
+SELECT * FROM quoted_columns;
+----
+1	2	3
+1	2	3
+NULL	NULL	4
+
+statement ok
+CREATE VIEW printable_join AS SELECT count(*) n FROM "_3_schema"."_4_table" l JOIN "_3_schema"."_4_table" r ON l."_0_a"=r."_0_a";
+
+query I
+SELECT n FROM printable_join;
+----
+4
+
+statement ok
+COPY (SELECT 'bad' AS a) TO '{TEST_DIR}/underscore_digit.csv' (HEADER false);
+
+query I
+SELECT a FROM read_csv('{TEST_DIR}/underscore_digit.csv', columns={'a':'INTEGER'}, header=false, store_rejects=true, rejects_table='_0_errors', rejects_scan='_9e3');
+----
+
+query I
+SELECT count(*) FROM temp.main."_0_errors";
+----
+1
+
+query I
+SELECT count(*) FROM temp.main."_9e3";
+----
+1

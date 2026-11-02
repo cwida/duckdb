@@ -1,0 +1,178 @@
+# name: test/sql/copy/parquet/parquet_nan_count.test
+# description: Test writing and reading the nan_count statistic
+# group: [parquet]
+
+require parquet
+
+# 4096 rows: half NaN, a quarter 1, a quarter NULL - two row groups
+statement ok
+CREATE VIEW nan_data AS
+SELECT x::FLOAT f, x::DOUBLE d FROM (SELECT CASE WHEN i%4<2 THEN 'nan'::DOUBLE WHEN i%4=2 THEN 1 ELSE NULL END x FROM range(4096) t(i))
+
+# dictionary (default), PLAIN and BYTE_STREAM_SPLIT encoding
+statement ok
+COPY nan_data TO '{TEST_DIR}/nan_count_dict.parquet' (FORMAT PARQUET, ROW_GROUP_SIZE 2048)
+
+statement ok
+COPY nan_data TO '{TEST_DIR}/nan_count_plain.parquet' (FORMAT PARQUET, ROW_GROUP_SIZE 2048, PARQUET_VERSION V1, DICTIONARY_SIZE_LIMIT 0)
+
+statement ok
+COPY nan_data TO '{TEST_DIR}/nan_count_bss.parquet' (FORMAT PARQUET, ROW_GROUP_SIZE 2048, PARQUET_VERSION V2, DICTIONARY_SIZE_LIMIT 0)
+
+# every encoding writes the exact number of NaN values per row group and no min/max
+query IIIIIII
+SELECT row_group_id, path_in_schema, encodings, stats_nan_count, stats_null_count, stats_min_value, stats_max_value
+FROM parquet_metadata('{TEST_DIR}/nan_count_dict.parquet')
+ORDER BY ALL
+----
+0	d	PLAIN_DICTIONARY	1024	512	NULL	NULL
+0	f	PLAIN_DICTIONARY	1024	512	NULL	NULL
+1	d	PLAIN_DICTIONARY	1024	512	NULL	NULL
+1	f	PLAIN_DICTIONARY	1024	512	NULL	NULL
+
+query IIIIIII
+SELECT row_group_id, path_in_schema, encodings, stats_nan_count, stats_null_count, stats_min_value, stats_max_value
+FROM parquet_metadata('{TEST_DIR}/nan_count_plain.parquet')
+ORDER BY ALL
+----
+0	d	PLAIN	1024	512	NULL	NULL
+0	f	PLAIN	1024	512	NULL	NULL
+1	d	PLAIN	1024	512	NULL	NULL
+1	f	PLAIN	1024	512	NULL	NULL
+
+query IIIIIII
+SELECT row_group_id, path_in_schema, encodings, stats_nan_count, stats_null_count, stats_min_value, stats_max_value
+FROM parquet_metadata('{TEST_DIR}/nan_count_bss.parquet')
+ORDER BY ALL
+----
+0	d	BYTE_STREAM_SPLIT	1024	512	NULL	NULL
+0	f	BYTE_STREAM_SPLIT	1024	512	NULL	NULL
+1	d	BYTE_STREAM_SPLIT	1024	512	NULL	NULL
+1	f	BYTE_STREAM_SPLIT	1024	512	NULL	NULL
+
+# the dictionary holds NaN once, but nan_count is the number of NaN values written
+query IIII
+SELECT path_in_schema, encodings, encoding_stats[1].page_type, stats_nan_count
+FROM parquet_metadata('{TEST_DIR}/nan_count_dict.parquet')
+WHERE row_group_id = 0
+ORDER BY ALL
+----
+d	PLAIN_DICTIONARY	DICTIONARY_PAGE	1024
+f	PLAIN_DICTIONARY	DICTIONARY_PAGE	1024
+
+# nan_count is zero for NaN-free FLOAT/DOUBLE columns (including HUGEINT written as DOUBLE) and absent otherwise
+statement ok
+COPY (SELECT i::FLOAT f, i::DOUBLE d, i::HUGEINT h, i FROM range(10) t(i)) TO '{TEST_DIR}/nan_count_zero.parquet'
+
+query IIIII
+SELECT path_in_schema, type, stats_nan_count, stats_min_value, stats_max_value
+FROM parquet_metadata('{TEST_DIR}/nan_count_zero.parquet')
+ORDER BY ALL
+----
+d	DOUBLE	0	0.0	9.0
+f	FLOAT	0	0.0	9.0
+h	DOUBLE	0	NULL	NULL
+i	INT64	NULL	0	9
+
+# NaN values inside lists are counted, NULL and empty lists are not
+statement ok
+COPY (SELECT CASE WHEN i%4=0 THEN NULL WHEN i%4=1 THEN [] ELSE ['nan'::DOUBLE, NULL, 'nan', 1] END l FROM range(8) t(i)) TO '{TEST_DIR}/nan_count_list.parquet'
+
+query III
+SELECT stats_nan_count, stats_null_count, num_values FROM parquet_metadata('{TEST_DIR}/nan_count_list.parquet')
+----
+8	8	20
+
+# file with NaN values: no bounds are written, so NaN values survive filters even with can_have_nan=false
+foreach encoding dict plain bss
+
+foreach column f d
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/nan_count_{encoding}.parquet', can_have_nan=false) WHERE {column} > 1
+----
+2048
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/nan_count_{encoding}.parquet', can_have_nan=false) WHERE {column} = 1
+----
+1024
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/nan_count_{encoding}.parquet', can_have_nan=false) WHERE {column} != 1
+----
+2048
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/nan_count_{encoding}.parquet', can_have_nan=false) WHERE {column} = 'nan'
+----
+2048
+
+endloop
+
+endloop
+
+# legacy files without nan_count keep using the can_have_nan option
+query III
+SELECT stats_min_value, stats_max_value, stats_nan_count FROM parquet_metadata('{DATA_DIR}/parquet-testing/arrow_nan.parquet') LIMIT 1
+----
+-1.0	1.0	NULL
+
+query II
+SELECT f, d FROM read_parquet('{DATA_DIR}/parquet-testing/arrow_nan.parquet', can_have_nan=true) WHERE d > 1
+----
+nan	nan
+
+# mixed files: the NaN-free row group has exact bounds, the NaN row group has none - both options return the same rows
+statement ok
+COPY (SELECT i::DOUBLE d FROM range(2048) t(i) UNION ALL SELECT 'nan'::DOUBLE FROM range(2048)) TO '{TEST_DIR}/nan_count_mixed.parquet' (FORMAT PARQUET, ROW_GROUP_SIZE 2048)
+
+query III
+SELECT row_group_id, stats_nan_count, stats_max_value FROM parquet_metadata('{TEST_DIR}/nan_count_mixed.parquet') ORDER BY ALL
+----
+0	0	2047.0
+1	2048	NULL
+
+foreach option false true
+
+query II
+SELECT count(*), min(d) FROM read_parquet('{TEST_DIR}/nan_count_mixed.parquet', can_have_nan={option}) WHERE d > 5000
+----
+2048	nan
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/nan_count_mixed.parquet', can_have_nan={option}) WHERE d < 10
+----
+10
+
+endloop
+
+# a positive nan_count overrides can_have_nan=false even when the chunk also has finite min/max.
+# nan_count_bounds.parquet: FLOAT f and DOUBLE d with [1, NaN, NULL], min=max=1, null_count=1, nan_count=1.
+# DuckDB does not write bounds for NaN-containing chunks, so this file was written with the bound suppression disabled.
+query IIIIII
+SELECT path_in_schema, stats_min_value, stats_max_value, stats_null_count, stats_nan_count, num_values
+FROM parquet_metadata('{DATA_DIR}/parquet-testing/nan_count_bounds.parquet')
+ORDER BY ALL
+----
+d	1.0	1.0	1	1	3
+f	1.0	1.0	1	1	3
+
+foreach column f d
+
+query I
+SELECT {column} FROM read_parquet('{DATA_DIR}/parquet-testing/nan_count_bounds.parquet', can_have_nan=false) WHERE {column} > 1
+----
+nan
+
+query I
+SELECT {column} FROM read_parquet('{DATA_DIR}/parquet-testing/nan_count_bounds.parquet', can_have_nan=false) WHERE {column} != 1
+----
+nan
+
+query I
+SELECT {column} FROM read_parquet('{DATA_DIR}/parquet-testing/nan_count_bounds.parquet', can_have_nan=false) WHERE {column} <= 1
+----
+1.0
+
+endloop

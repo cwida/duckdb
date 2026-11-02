@@ -1,0 +1,85 @@
+# name: test/sql/function/timetz/icu_timezone_offset_range.test
+# description: Test that ICU TIMETZ conversions reject time zone offsets that a TIMETZ cannot represent
+# group: [timetz]
+
+require icu
+
+statement error
+SELECT timezone('GMT+18:00', TIMETZ '12:00:00+00');
+----
+Out of Range Error: Time zone offset 18:00:00 is out of range
+
+statement error
+SELECT timezone('GMT-23:59', TIMETZ '12:00:00+00');
+----
+Out of Range Error: Time zone offset -23:59:00 is out of range
+
+query I
+SELECT timezone('GMT+15:59', TIMETZ '12:00:00+00');
+----
+03:59:00+15:59
+
+statement ok
+SET TimeZone = 'GMT+18:00';
+
+statement error
+SELECT '12:00:00'::TIMETZ;
+----
+Conversion Error: Time zone offset 18:00:00 is out of range
+
+statement error
+SELECT TIME '12:00:00'::TIMETZ;
+----
+Conversion Error: Time zone offset 18:00:00 is out of range
+
+statement error
+SELECT TIMESTAMPTZ '2000-01-01 00:00:00+00'::TIMETZ;
+----
+Conversion Error: Time zone offset 18:00:00 is out of range
+
+statement error
+SELECT current_time;
+----
+Out of Range Error: Time zone offset 18:00:00 is out of range
+
+statement error
+CREATE TABLE t AS SELECT '12:00:00'::TIMETZ x;
+----
+Conversion Error
+
+query III
+SELECT TRY_CAST('12:00:00' AS TIMETZ), TRY_CAST(TIME '12:00:00' AS TIMETZ),
+       TRY_CAST(TIMESTAMPTZ '2000-01-01 00:00:00+00' AS TIMETZ);
+----
+NULL	NULL	NULL
+
+# an explicit offset does not depend on the session time zone
+query I
+SELECT '12:00:00+01'::TIMETZ;
+----
+12:00:00+01
+
+# TIMESTAMPTZ itself can still use the time zone
+query I
+SELECT TIMESTAMPTZ '2000-01-01 00:00:00+00';
+----
+2000-01-01 18:00:00+18
+
+statement ok
+SET TimeZone = 'GMT-23:59';
+
+statement error
+SELECT '12:00:00'::TIMETZ;
+----
+Conversion Error: Time zone offset -23:59:00 is out of range
+
+statement ok
+SET TimeZone = 'GMT+15:59';
+
+query III
+SELECT '12:00:00'::TIMETZ, TIME '12:00:00'::TIMETZ, TIMESTAMPTZ '2000-01-01 00:00:00+00'::TIMETZ;
+----
+12:00:00+15:59	12:00:00+15:59	15:59:00+15:59
+
+statement ok
+SELECT current_time;

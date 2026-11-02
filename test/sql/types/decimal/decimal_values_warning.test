@@ -1,0 +1,52 @@
+# name: test/sql/types/decimal/decimal_values_warning.test
+# description: Warn when VALUES type resolution reduces a decimal scale
+# group: [decimal]
+
+statement ok
+SET enable_logging=true;
+
+statement ok
+SET warnings_as_errors=true;
+
+# Mixing DECIMAL types that need 39 digits reduces the scale to fit the maximum width
+statement error
+VALUES (32942348563242.111222333444555666777888::DECIMAL(38,24)), (NULL::NUMERIC);
+----
+<REGEX>:Invalid Input Error: Potential loss of decimal precision while resolving a VALUES column: type DECIMAL\(38,24\) is being cast to DECIMAL\(38,23\), reducing the scale from 24 to 23\..*
+
+# The warning is independent of row order
+statement error
+VALUES (NULL::NUMERIC), (32942348563242.111222333444555666777888::DECIMAL(38,24));
+----
+<REGEX>:Invalid Input Error: Potential loss of decimal precision while resolving a VALUES column: type DECIMAL\(38,24\) is being cast to DECIMAL\(38,23\), reducing the scale from 24 to 23\..*
+
+# Untyped NULL does not affect the common DECIMAL type
+statement ok
+VALUES (32942348563242.111222333444555666777888::DECIMAL(38,24)), (NULL);
+
+# Compatible DECIMAL scales do not lose precision
+statement ok
+VALUES (32942348563242.111222333444555666777888::DECIMAL(38,24)), (NULL::DECIMAL(38,24));
+
+statement ok
+VALUES (32942348563242.111222333444555666777888::DECIMAL(38,24)), (NULL::DECIMAL(10,2));
+
+# Only one warning is emitted per affected column and query execution
+statement ok
+SET warnings_as_errors=false;
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+VALUES (32942348563242.111222333444555666777888::DECIMAL(38,24)),
+       (32942348563242.999888777666555444333222::DECIMAL(38,24)),
+       (NULL::NUMERIC);
+
+query I
+SELECT count(*) > 0 AND count(*) = count(DISTINCT query_id)
+FROM duckdb_logs
+WHERE log_level = 'WARNING'
+  AND starts_with(message, 'Potential loss of decimal precision while resolving a VALUES column');
+----
+true

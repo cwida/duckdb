@@ -1,0 +1,178 @@
+# name: test/sql/optimizer/expression/enum_full_domain_behavior.test
+# description: Baseline plan behavior of full-domain ENUM (NOT) IN predicates across nullable, side-effect, DML and stats-free contexts
+# group: [expression]
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+CREATE TYPE mood AS ENUM('sad', 'ok', 'happy');
+
+# column with provably no NULLs
+statement ok
+CREATE TABLE covered AS SELECT ['sad', 'ok', 'happy'][1 + (range % 3)]::mood AS m FROM range(6144);
+
+# column that can contain NULLs
+statement ok
+CREATE TABLE nullables(m mood);
+
+statement ok
+INSERT INTO nullables SELECT ['sad', 'ok', 'happy'][1 + (range % 3)]::mood FROM range(6144);
+
+statement ok
+INSERT INTO nullables VALUES (NULL);
+
+# 1. clean query + non-NULL column: NOT IN over the full domain collapses to a constant false
+#    and the whole filter becomes an empty result
+query II
+explain
+SELECT count(*) FROM covered WHERE m NOT IN ('sad', 'ok', 'happy');
+----
+physical_plan	<REGEX>:.*EMPTY.*
+
+query I
+SELECT count(*) FROM covered WHERE m NOT IN ('sad', 'ok', 'happy');
+----
+0
+
+# 2. nullable column: the input nullability check fails, so the new expression-rewrite
+#    pass leaves the filter alone - but constant_or_null(false, ...) evaluates to false
+#    for every non-NULL row and to NULL for NULL rows, so the statistics pass prunes it
+#    to an empty result unconditionally (false-or-null semantics: no row can pass)
+query II
+explain
+SELECT count(*) FROM nullables WHERE m NOT IN ('sad', 'ok', 'happy');
+----
+physical_plan	<REGEX>:.*EMPTY.*
+
+query I
+SELECT count(*) FROM nullables WHERE m NOT IN ('sad', 'ok', 'happy');
+----
+0
+
+# 3. volatile expressions in a projection do NOT gate the simplification pass
+#    (HasSideEffects only covers DML operators): the non-NULL column still collapses
+query II
+explain
+SELECT random() FROM covered WHERE m NOT IN ('sad', 'ok', 'happy');
+----
+physical_plan	<REGEX>:.*EMPTY.*
+
+# 3b. the same query on a nullable column: again no expression-rewrite collapse, but
+#     the constant_or_null(false, ...) filter still prunes to an empty result via the
+#     statistics pass - no row can pass it regardless of nullability
+query II
+explain
+SELECT random() FROM nullables WHERE m NOT IN ('sad', 'ok', 'happy');
+----
+physical_plan	<REGEX>:.*EMPTY.*
+
+# 4. DML plans no longer gate the pass as a whole: the NOT(constant_or_null(true, m))
+#    shape rewrite is a pure transformation that keeps evaluating m, so the filter
+#    collapses to an empty result here as well (false-or-null semantics)
+query II
+explain
+DELETE FROM covered WHERE m NOT IN ('sad', 'ok', 'happy');
+----
+physical_plan	<REGEX>:.*EMPTY.*
+
+statement ok
+DELETE FROM covered WHERE m NOT IN ('sad', 'ok', 'happy');
+
+query I
+SELECT count(*) FROM covered;
+----
+6144
+
+# 5. positive IN over the full domain on a non-NULL column: the filter is removed
+#    entirely (no constant_or_null left in the plan)
+query II
+explain
+SELECT count(*) FROM covered WHERE m IN ('sad', 'ok', 'happy');
+----
+physical_plan	<!REGEX>:.*constant_or_null.*
+
+query I
+SELECT count(*) FROM covered WHERE m IN ('sad', 'ok', 'happy');
+----
+6144
+
+# 5b. typed ENUM constants cover the same full domain and should simplify too
+query II
+explain
+SELECT count(*) FROM covered WHERE m NOT IN ('sad'::mood, 'ok'::mood, 'happy'::mood);
+----
+physical_plan	<REGEX>:.*EMPTY.*
+
+query I
+SELECT count(*) FROM covered WHERE m NOT IN ('sad'::mood, 'ok'::mood, 'happy'::mood);
+----
+0
+
+query II
+explain
+SELECT count(*) FROM covered WHERE m IN ('sad'::mood, 'ok'::mood, 'happy'::mood);
+----
+physical_plan	<!REGEX>:.*constant_or_null.*
+
+query I
+SELECT count(*) FROM covered WHERE m IN ('sad'::mood, 'ok'::mood, 'happy'::mood);
+----
+6144
+
+query III
+SELECT
+	m IS NULL,
+	m NOT IN ('sad'::mood, 'ok'::mood, 'happy'::mood),
+	NOT (m IN ('sad'::mood, 'ok'::mood, 'happy'::mood))
+FROM (VALUES ('sad'::mood), (NULL::mood)) v(m)
+ORDER BY m IS NULL
+----
+false	false	false
+true	NULL	NULL
+
+# 6. stats-free input (VALUES): the rewrite still happens and nullability cannot be
+#    proven, but the constant false-or-null semantics prune the filter to an empty
+#    result anyway (no stats needed - the condition itself is constant per row)
+query II
+explain
+SELECT count(*) FROM (VALUES ('sad'::mood), ('ok'::mood), ('happy'::mood)) v(m) WHERE m NOT IN ('sad', 'ok', 'happy');
+----
+physical_plan	<REGEX>:.*EMPTY.*
+
+query I
+SELECT count(*) FROM (VALUES ('sad'::mood), ('ok'::mood), ('happy'::mood)) v(m) WHERE m NOT IN ('sad', 'ok', 'happy');
+----
+0
+
+# 7. DML CTE stale statistics: the CTE inserts a NULL that the statement's statistics
+#    snapshot (taken before execution) does not see. Folding constant_or_null into a
+#    plain constant relies on that snapshot to prove m non-NULL, so it must stay
+#    disabled on side-effecting plans - otherwise the freshly inserted NULL row would
+#    slip through the IN filter
+statement ok
+CREATE TABLE guard_check(m mood);
+
+statement ok
+INSERT INTO guard_check VALUES ('sad'), ('ok'), ('happy');
+
+# the filter is NOT folded away: the scan keeps evaluating constant_or_null per row
+query II
+explain
+WITH ins AS (INSERT INTO guard_check VALUES (NULL) RETURNING *) SELECT count(*) FROM guard_check WHERE m IN ('sad', 'ok', 'happy');
+----
+physical_plan	<REGEX>:.*constant_or_null.*
+
+# the CTE-inserted NULL row is visible to the main query but must be filtered out
+query I
+WITH ins AS (INSERT INTO guard_check VALUES (NULL) RETURNING *) SELECT count(*) FROM guard_check WHERE m IN ('sad', 'ok', 'happy');
+----
+3
+
+# pin the premise: the count above is only meaningful if the CTE really ran and its NULL row
+# is visible here - without this check a planner bug that dropped the side-effecting CTE
+# would also yield 3
+query I
+SELECT count(*) FROM guard_check WHERE m IS NULL;
+----
+1

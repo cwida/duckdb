@@ -1,0 +1,45 @@
+# name: test/sql/sql_export/range_folded_offset.test
+# description: RANGE reconstruction recognizes an offset that the function binder folded to a constant
+# group: [sql_export]
+
+require skip_reload
+
+foreach serializer false true
+
+statement ok
+SET debug_verify_serializer={serializer};
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+# a constant offset expression is folded to its value while the RANGE arithmetic is bound
+query II
+SELECT x, sum(x) OVER (ORDER BY x RANGE BETWEEN 1 + 1 PRECEDING AND CURRENT ROW)
+FROM (VALUES (1),(2),(4)) t(x) ORDER BY x;
+----
+1	1
+2	3
+4	6
+
+query II
+SELECT x, count(*) OVER (ORDER BY x RANGE BETWEEN INTERVAL 1 DAY PRECEDING AND CURRENT ROW)
+FROM (VALUES (DATE '2024-02-27'),(DATE '2024-02-28'),(DATE '2024-03-01')) t(x) ORDER BY x;
+----
+2024-02-27	1
+2024-02-28	2
+2024-03-01	1
+
+# the offset is cast to the type of the ORDER BY operand
+query II
+SELECT x, sum(x) OVER (ORDER BY x RANGE BETWEEN 1 + 1 PRECEDING AND CURRENT ROW)
+FROM (VALUES (1::BIGINT),(2),(4)) t(x) ORDER BY x;
+----
+1	1
+2	3
+4	6
+
+endloop
+
+endloop

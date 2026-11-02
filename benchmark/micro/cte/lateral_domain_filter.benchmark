@@ -1,0 +1,35 @@
+# name: benchmark/micro/cte/lateral_domain_filter.benchmark
+# description: Filter a lateral recursive input through an intervening inner join
+# group: [cte]
+
+name Lateral Recursive Domain Filter
+group micro
+subgroup cte
+
+load
+CREATE TABLE vertices AS
+SELECT i::INTEGER AS id FROM range(20000000) t(i);
+
+init
+SET threads=1;
+SET preserve_insertion_order=false;
+SET max_execution_time=30000;
+
+run
+SELECT count(*) FROM (
+    SELECT input.id, expanded.depth
+    FROM vertices input
+    CROSS JOIN LATERAL (
+        WITH RECURSIVE walk(depth) AS (
+            SELECT 0 + input.id * 0
+            UNION ALL
+            SELECT depth + 1 FROM walk WHERE depth < 7
+        )
+        SELECT depth FROM walk
+    ) expanded
+    JOIN vertices target ON target.id = expanded.depth + 1
+) result
+WHERE id = 3;
+
+result I
+8

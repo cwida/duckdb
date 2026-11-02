@@ -1,0 +1,50 @@
+# name: test/sql/storage/prefetch/async_native_scan_read_ahead_concurrent.test
+# description: Read-ahead scans stay correct while another connection appends and checkpoints
+# group: [prefetch]
+
+load {TEST_DIR}/async_native_scan_read_ahead_concurrent.db
+
+statement ok
+CREATE TABLE integers AS SELECT range AS i FROM range(500000);
+
+statement ok
+CHECKPOINT
+
+# restart so the payload blocks begin cold
+restart
+
+statement ok
+SET async_threads=4
+
+statement ok
+SET storage_block_prefetch='debug_force_always'
+
+# one writer appends committed batches and checkpoints, the other connections scan
+concurrentloop i 0 5
+
+loop k 0 10
+
+onlyif i<1
+statement ok
+INSERT INTO integers SELECT range FROM range(10000)
+
+onlyif i<1
+statement maybe
+CHECKPOINT
+----
+Cannot CHECKPOINT
+
+skipif i<1
+query I
+SELECT count(*) % 10000 FROM integers
+----
+0
+
+endloop
+
+endloop
+
+query I
+SELECT count(*) FROM integers
+----
+600000

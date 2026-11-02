@@ -52,7 +52,7 @@ static void ApplyColumnPruning(Connection &connection, unique_ptr<LogicalOperato
 }
 
 static unique_ptr<LogicalOperator> PlanUnusedColumnsQuery(Connection &connection, const string &query) {
-	Parser parser(connection.context->GetParserOptions());
+	Parser parser(*connection.context);
 	parser.ParseQuery(query);
 	REQUIRE(parser.statements.size() == 1);
 	Planner planner(*connection.context);

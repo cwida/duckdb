@@ -13,7 +13,7 @@
 
 namespace duckdb {
 
-enum class ExplainType : uint8_t { EXPLAIN_STANDARD, EXPLAIN_ANALYZE };
+enum class ExplainType : uint8_t { EXPLAIN_STANDARD, EXPLAIN_ANALYZE, EXPLAIN_SQL };
 
 class ExplainStatement : public SQLStatement {
 public:
@@ -25,6 +25,8 @@ public:
 
 	unique_ptr<SQLStatement> stmt;
 	ExplainType explain_type;
+	//! Internal verification may request an empty result for unsupported SQL export.
+	bool allow_unsupported_sql = false;
 	ProfilerPrintFormat format = ProfilerPrintFormat::Default();
 
 protected:

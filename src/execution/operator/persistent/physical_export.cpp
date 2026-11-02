@@ -71,6 +71,10 @@ static void WriteCopyStatement(FileSystem &fs, stringstream &ss, CopyInfo &info,
 		for (auto &not_null_column : exported_table.not_null_columns) {
 			info.options["force_not_null"].push_back(not_null_column);
 		}
+		// empty strings are written as quoted empty values, which must not be read back as NULL
+		if (info.options.find("allow_quoted_nulls") == info.options.end()) {
+			ss << ", allow_quoted_nulls false";
+		}
 	}
 	for (auto &copy_option : info.options) {
 		if (copy_option.second.empty()) {

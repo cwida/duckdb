@@ -1,0 +1,10 @@
+# The attach alias is mandatory: it separates the recipe's create params, which precede it, from the
+# attachment's own options, which follow. Without it a single option list would be ambiguous.
+# CONNECT has no such separator. Borrowing a registered resource has no create params to be confused
+# with, so a list there is the connection's; provisioning does, and the transformer rejects the second
+# list rather than let position decide.
+AttachToExternalResource <- 'ATTACH' 'TO' ExternalResourceSource AttachAlias AttachOptions?
+ConnectToExternalResource <- 'CONNECT' 'TO' ExternalResourceSource AttachOptions?
+ExternalResourceSource <- ExternalResourceCreateClause / ExternalResourceReferenceClause
+ExternalResourceCreateClause <- 'NEW' 'TEMPORARY' ExternalResourceKeyword StringLiteral ExternalResourceCreationOptions?
+ExternalResourceReferenceClause <- ExternalResourceKeyword ColId

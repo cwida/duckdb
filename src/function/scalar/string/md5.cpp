@@ -44,19 +44,27 @@ void MD5NumberFunction(DataChunk &args, ExpressionState &state, Vector &result) 
 
 ScalarFunctionSet MD5Fun::GetFunctions() {
 	ScalarFunctionSet set("md5");
-	set.AddFunction(ScalarFunction({LogicalType::VARCHAR}, LogicalType::VARCHAR, MD5Function, nullptr, nullptr,
-	                               crypto_hash_scalar::InitLocalState<CryptoHashFunction::MD5>));
-	set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::VARCHAR, MD5Function, nullptr, nullptr,
-	                               crypto_hash_scalar::InitLocalState<CryptoHashFunction::MD5>));
+	ScalarFunction string_fun({}, LogicalType::VARCHAR, MD5Function, nullptr, nullptr,
+	                          crypto_hash_scalar::InitLocalState<CryptoHashFunction::MD5>);
+	string_fun.GetSignature().AddParameter("string", LogicalType::VARCHAR);
+	set.AddFunction(string_fun);
+	ScalarFunction blob_fun({}, LogicalType::VARCHAR, MD5Function, nullptr, nullptr,
+	                        crypto_hash_scalar::InitLocalState<CryptoHashFunction::MD5>);
+	blob_fun.GetSignature().AddParameter("blob", LogicalType::BLOB);
+	set.AddFunction(blob_fun);
 	return set;
 }
 
 ScalarFunctionSet MD5NumberFun::GetFunctions() {
 	ScalarFunctionSet set("md5_number");
-	set.AddFunction(ScalarFunction({LogicalType::VARCHAR}, LogicalType::UHUGEINT, MD5NumberFunction, nullptr, nullptr,
-	                               crypto_hash_scalar::InitLocalState<CryptoHashFunction::MD5>));
-	set.AddFunction(ScalarFunction({LogicalType::BLOB}, LogicalType::UHUGEINT, MD5NumberFunction, nullptr, nullptr,
-	                               crypto_hash_scalar::InitLocalState<CryptoHashFunction::MD5>));
+	ScalarFunction string_fun({}, LogicalType::UHUGEINT, MD5NumberFunction, nullptr, nullptr,
+	                          crypto_hash_scalar::InitLocalState<CryptoHashFunction::MD5>);
+	string_fun.GetSignature().AddParameter("string", LogicalType::VARCHAR);
+	set.AddFunction(string_fun);
+	ScalarFunction blob_fun({}, LogicalType::UHUGEINT, MD5NumberFunction, nullptr, nullptr,
+	                        crypto_hash_scalar::InitLocalState<CryptoHashFunction::MD5>);
+	blob_fun.GetSignature().AddParameter("blob", LogicalType::BLOB);
+	set.AddFunction(blob_fun);
 	return set;
 }
 

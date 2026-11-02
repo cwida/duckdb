@@ -215,7 +215,7 @@ void IslamicCalendar::HandleComputeFields(int32_t julian_day) {
 	// guess how many whole months have passed, then correct the guess
 	auto month = int32_t(std::floor(double(days) / Astronomer::SYNODIC_MONTH));
 	const auto start_date = int32_t(std::floor(month * Astronomer::SYNODIC_MONTH));
-	if (days - start_date >= 25 && MoonAge(GetTimeInternal()) > 0) {
+	if (days - start_date >= 25 && MoonAge(double(GetTimeInternal())) > 0) {
 		// the day is near the end of the month, so assume the next one and search backwards
 		month++;
 	}
@@ -291,7 +291,7 @@ int64_t IslamicUmalquraCalendar::YearStart(int32_t year) const {
 	year -= TABLE_START;
 	// a rounded least squares fit of the dates that follow from the observed month lengths,
 	// with a correction for the years it does not land on
-	const auto estimate = int64_t((354.36720 * double(year)) + 460322.05 + 0.5);
+	const auto estimate = int64_t(std::llround((354.36720 * double(year)) + 460322.05));
 	return estimate + UMALQURA_YEAR_START_FIX[year];
 }
 

@@ -1,0 +1,62 @@
+# name: test/sql/copy/parquet/union_by_name_varchar_blob.test
+# description: A VARCHAR column read as BLOB through union_by_name keeps its UTF-8 bytes
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT 'café' AS p, 1 AS i) TO '{TEST_DIR}/union_text.parquet';
+
+statement ok
+COPY (SELECT encode('café') AS p, 2 AS i) TO '{TEST_DIR}/union_bytes.parquet';
+
+statement ok
+COPY (SELECT 'a\x41' AS p, 3 AS i) TO '{TEST_DIR}/union_backslash.parquet';
+
+query III
+SELECT i, p, typeof(p) FROM read_parquet(['{TEST_DIR}/union_text.parquet', '{TEST_DIR}/union_bytes.parquet', '{TEST_DIR}/union_backslash.parquet'], union_by_name = true) ORDER BY i;
+----
+1	caf\xC3\xA9	BLOB
+2	caf\xC3\xA9	BLOB
+3	a\x5Cx41	BLOB
+
+query II
+SELECT i, p = encode('café') FROM read_parquet(['{TEST_DIR}/union_text.parquet', '{TEST_DIR}/union_bytes.parquet'], union_by_name = true) ORDER BY i;
+----
+1	true
+2	true
+
+query I
+SELECT octet_length(p) FROM read_parquet(['{TEST_DIR}/union_backslash.parquet', '{TEST_DIR}/union_bytes.parquet'], union_by_name = true) ORDER BY i;
+----
+5
+5
+
+query I
+SELECT count(*) FROM read_parquet(['{TEST_DIR}/union_text.parquet', '{TEST_DIR}/union_bytes.parquet'], union_by_name = true) WHERE p = encode('café');
+----
+2
+
+# the order of the files, NULL and empty values
+statement ok
+COPY (SELECT * FROM (VALUES (NULL, 4), ('', 5), ('ü', 6)) t(p, i)) TO '{TEST_DIR}/union_nulls.parquet';
+
+query III
+SELECT i, p, octet_length(p) FROM read_parquet(['{TEST_DIR}/union_bytes.parquet', '{TEST_DIR}/union_nulls.parquet'], union_by_name = true) ORDER BY i;
+----
+2	caf\xC3\xA9	5
+4	NULL	NULL
+5	(empty)	0
+6	\xC3\xBC	2
+
+# COPY into a BLOB column reads the text of the file as its bytes as well
+statement ok
+CREATE TABLE blobs (p BLOB, i INTEGER);
+
+statement ok
+COPY blobs FROM '{TEST_DIR}/union_text.parquet';
+
+query II
+SELECT p, p = encode('café') FROM blobs;
+----
+caf\xC3\xA9	true

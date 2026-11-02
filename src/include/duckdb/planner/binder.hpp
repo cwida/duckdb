@@ -18,7 +18,9 @@
 #include "duckdb/common/unordered_map.hpp"
 #include "duckdb/common/unordered_set.hpp"
 #include "duckdb/parser/column_definition.hpp"
+#include "duckdb/parser/tableref/match_recognize_ref.hpp"
 #include "duckdb/parser/query_node.hpp"
+#include "duckdb/parser/tableref/table_function_ref.hpp"
 #include "duckdb/parser/result_modifier.hpp"
 #include "duckdb/parser/tableref/delimgetref.hpp"
 #include "duckdb/parser/tokens.hpp"
@@ -44,6 +46,7 @@ class BoundResultModifier;
 class BoundSelectNode;
 class ClientContext;
 class ExpressionBinder;
+struct ExternalResourceOptions;
 class LimitModifier;
 class OrderBinder;
 class TableCatalogEntry;
@@ -58,7 +61,9 @@ class LogicalVacuum;
 
 class ColumnList;
 class ExternalDependency;
+class FunctionSignature;
 class TableFunction;
+class BoundTableFunction;
 class TableStorageInfo;
 class BoundConstraint;
 class AtClause;
@@ -69,6 +74,7 @@ struct CreateSchemaInfo;
 struct CreateTriggerInfo;
 struct QualifiedName;
 struct BoundCreateTableInfo;
+struct CreateMacroInfo;
 struct BoundOnConflictInfo;
 struct CommonTableExpressionInfo;
 struct BoundParameterMap;
@@ -84,6 +90,25 @@ struct BoundCTEData;
 enum class CopyToType : uint8_t;
 template <class T, class INDEX_TYPE>
 class IndexVector;
+
+//! Table indexes of the top select node of a TRY subquery, recorded while planning that node, so that
+//! TRY can be lowered onto exactly that node's projection without crossing into other query levels
+struct TrySubqueryPlanIndexes {
+	bool recorded = false;
+	//! The select list projection
+	TableIndex projection_index;
+	//! The prune projection above the result modifiers, only set when pruning is needed
+	TableIndex prune_index;
+	//! The aggregate node of the select node
+	TableIndex aggregate_index;
+	//! The window node of the select node
+	TableIndex window_index;
+	//! The unnest nodes of the select node
+	vector<TableIndex> unnest_indexes;
+	//! Whether the select item contains a nested scalar subquery lowered with an exposed error flag;
+	//! its re-raise at the use site relies on this node's lowering to consume it
+	bool nested_transport = false;
+};
 
 enum class BindingMode : uint8_t {
 	STANDARD_BINDING,
@@ -239,6 +264,12 @@ public:
 	unordered_map<TableIndex, LogicalOperator *> recursive_ctes;
 
 public:
+	//! Whether the expression is COUNT(tbl.*)
+	static bool IsQualifiedCountStar(const ParsedExpression &expr);
+	//! Rewrites COUNT(tbl.*) into a COUNT that skips the rows NULL-extended by an outer join, or returns nullptr
+	unique_ptr<ParsedExpression> TryRewriteQualifiedCountStar(const ParsedExpression &expr);
+
+public:
 	DUCKDB_API BoundStatement Bind(SQLStatement &statement);
 	DUCKDB_API BoundStatement Bind(QueryNode &node);
 
@@ -267,13 +298,14 @@ public:
 	                                           const ColumnList &columns);
 	unique_ptr<BoundConstraint> BindUniqueConstraint(const Constraint &constraint, const Identifier &table,
 	                                                 const ColumnList &columns);
+	static void VerifyConstraintCheckModeStorageVersion(const Constraint &constraint, Catalog &catalog, bool temporary);
 
 	BoundStatement BindAlterAddIndex(BoundStatement &result, CatalogEntry &entry, unique_ptr<AlterInfo> alter_info);
 
 	void SetCatalogLookupCallback(catalog_entry_callback_t callback);
 	void BindCreateViewInfo(CreateViewInfo &base);
 	static void BindView(ClientContext &context, const SelectStatement &stmt, const Identifier &catalog_name,
-	                     const Identifier &schema_name, optional_ptr<LogicalDependencyList> dependencies,
+	                     const vector<Identifier> &schema_path, optional_ptr<LogicalDependencyList> dependencies,
 	                     const vector<Identifier> &aliases, vector<LogicalType> &result_types,
 	                     vector<Identifier> &result_names);
 
@@ -298,11 +330,10 @@ public:
 	void BindCreateSchema(CreateSchemaInfo &info);
 	SchemaCatalogEntry &BindSchema(CreateInfo &info);
 	SchemaCatalogEntry &BindCreateFunctionInfo(CreateInfo &info);
+	//! Reject macro entries with declared RETURNS types in storage below v2.1.0
+	static void CheckMacroStorageVersion(Catalog &catalog, const CreateMacroInfo &info);
 	SchemaCatalogEntry &BindCreateTriggerInfo(CreateTriggerInfo &info);
 
-	//! Check usage, and cast named parameters to their types
-	static void BindNamedParameters(named_parameter_type_map_t &types, named_parameter_map_t &values,
-	                                QueryErrorContext &error_context, const Identifier &func_name);
 	unique_ptr<BoundPragmaInfo> BindPragma(PragmaInfo &info, QueryErrorContext error_context);
 
 	BoundStatement Bind(TableRef &ref);
@@ -320,6 +351,7 @@ public:
 
 	//! Add the view to the set of currently bound views - used for detecting recursive view definitions
 	void AddBoundView(ViewCatalogEntry &view);
+	void AddBoundTableMacro(CatalogEntry &table_macro);
 
 	void BeginSubqueryBind(Binder &parent, ExpressionBinder &binder);
 	//! The innermost enclosing scope
@@ -360,6 +392,8 @@ public:
 	static void BindSchemaOrCatalog(ClientContext &context, QualifiedName &qualified_name);
 
 	void BindLogicalType(LogicalType &type);
+	//! Resolve a type expression into a concrete type
+	LogicalType BindLogicalType(const ParsedExpression &type_expr);
 
 	optional_ptr<Binding> GetMatchingBinding(const Identifier &table_name, const Identifier &column_name,
 	                                         ErrorData &error);
@@ -391,18 +425,24 @@ public:
 	void SetAlwaysRequireRebind();
 	void SetInsideSubquery();
 	bool IsInsideSubquery() const;
+	void SetBindingTrySubquery();
+	bool IsBindingTrySubquery() const;
+	const TrySubqueryPlanIndexes &GetTrySubqueryPlanIndexes() const;
+	TrySubqueryPlanIndexes &GetTrySubqueryPlanIndexesMutable();
 
 	StatementProperties &GetStatementProperties();
 	static void ReplaceStarExpression(unique_ptr<ParsedExpression> &expr, unique_ptr<ParsedExpression> &replacement);
 	static string ReplaceColumnsAlias(const string &alias, const string &column_name,
 	                                  optional_ptr<duckdb_re2::RE2> regex);
 
-	unique_ptr<LogicalOperator> UnionOperators(vector<unique_ptr<LogicalOperator>> nodes);
+	unique_ptr<LogicalOperator> UnionOperators(vector<unique_ptr<LogicalOperator>> nodes, idx_t column_count = 1,
+	                                           TableIndex table_index = TableIndex());
 
+	void SetSearchPath(Catalog &catalog, const vector<Identifier> &schema_path);
 	void SetSearchPath(Catalog &catalog, const Identifier &schema);
 
 	void BindDefaultValue(const ColumnDefinition &column, vector<unique_ptr<Expression>> &bound_defaults,
-	                      const string &catalog = "", const string &schema = "");
+	                      const string &catalog = "", const vector<Identifier> &schema_path = {});
 	unique_ptr<ParsedExpression> GetSQLValueFunction(const Identifier &column_name);
 	Identifier GetExpressionName(const ParsedExpression &expr);
 
@@ -421,8 +461,14 @@ private:
 	bool legacy_can_contain_nulls = false;
 	//! Whether this binder is inside a subquery boundary
 	bool inside_subquery = false;
+	//! Whether this binder binds a TRY subquery, which lowers TRY onto the bound plan after binding
+	bool binding_try_subquery = false;
+	//! The plan indexes of the TRY subquery's top select node, recorded while planning it
+	TrySubqueryPlanIndexes try_subquery_plan_indexes;
 	//! The set of bound views
 	reference_set_t<ViewCatalogEntry> bound_views;
+	//! The table macros that are being expanded by this binder
+	reference_set_t<CatalogEntry> bound_table_macros;
 	//! Used to retrieve CatalogEntry's
 	CatalogEntryRetriever entry_retriever;
 	//! Unnamed subquery index
@@ -439,7 +485,7 @@ private:
 	void BindGeneratedColumns(BoundCreateTableInfo &info);
 	//! Bind the default values of the columns of a table
 	void BindDefaultValues(const ColumnList &columns, vector<unique_ptr<Expression>> &bound_defaults,
-	                       const string &catalog = "", const string &schema = "");
+	                       const string &catalog = "", const vector<Identifier> &schema_path = {});
 	//! Bind a limit value (LIMIT or OFFSET)
 	BoundLimitNode BindLimitValue(OrderBinder &order_binder, unique_ptr<ParsedExpression> limit_val,
 	                              LimitValueType value_type, bool is_offset);
@@ -481,6 +527,13 @@ private:
 	BoundStatement Bind(ConnectStatement &stmt);
 	BoundStatement Bind(DisconnectStatement &stmt);
 	BoundStatement Bind(ExternalResourceStatement &stmt);
+	//! Bind + constant-fold a single EXTERNAL RESOURCE expression (a create param, or the REGISTER handle).
+	Value BindExternalResourceValue(unique_ptr<ParsedExpression> &expr);
+	//! Bind + constant-fold the create params of an EXTERNAL RESOURCE statement or clause.
+	void BindExternalResourceParams(case_insensitive_map_t<unique_ptr<ParsedExpression>> &parsed_params,
+	                                unordered_map<string, Value> &params);
+	//! Bind the `ATTACH/CONNECT TO EXTERNAL RESOURCE ...` clause. Shared by ATTACH and CONNECT.
+	void BindExternalResource(ExternalResourceOptions &external_resource);
 
 	//! Resolves the base table for DROP TRIGGER, stamps catalog/schema onto stmt.info,
 	//! and registers the catalog modification. IF EXISTS only guards the trigger, not the table.
@@ -555,6 +608,7 @@ private:
 	BoundStatement Bind(BaseTableRef &ref);
 	BoundStatement Bind(BoundRefWrapper &ref);
 	BoundStatement Bind(JoinRef &ref);
+	BoundStatement Bind(MatchRecognizeRef &ref);
 	//! Rewrites a NEAREST BY join into a lateral join over a top-k subquery and binds the result
 	BoundStatement BindNearestJoin(JoinRef &ref);
 	BoundStatement Bind(SubqueryRef &ref);
@@ -577,13 +631,14 @@ private:
 	unique_ptr<BoundAtClause> BindAtClause(optional_ptr<AtClause> at_clause);
 
 	bool BindTableFunctionParameters(TableFunctionCatalogEntry &table_function,
-	                                 vector<unique_ptr<ParsedExpression>> &expressions, vector<LogicalType> &arguments,
-	                                 vector<Value> &parameters, named_parameter_map_t &named_parameters,
-	                                 BoundStatement &subquery, ErrorData &error);
+	                                 vector<unique_ptr<ParsedExpression>> &expressions,
+	                                 vector<unique_ptr<Expression>> &positional_arguments,
+	                                 vector<pair<Identifier, unique_ptr<Expression>>> &named_arguments,
+	                                 BoundStatement &subquery, bool &table_in_out, ErrorData &error);
 	void BindTableInTableOutFunction(vector<unique_ptr<ParsedExpression>> &expressions, BoundStatement &subquery);
 	BoundStatement BindTableFunction(TableFunction &function, vector<Value> parameters);
-	BoundStatement BindTableFunctionInternal(TableFunction &table_function, const TableFunctionRef &ref,
-	                                         vector<Value> parameters, named_parameter_map_t named_parameters,
+	BoundStatement BindTableFunctionInternal(BoundTableFunction &table_function, const TableFunctionRef &ref,
+	                                         vector<Value> parameters, named_argument_map_t named_parameters,
 	                                         vector<LogicalType> input_table_types,
 	                                         vector<Identifier> input_table_names,
 	                                         optional_ptr<unique_ptr<LogicalOperator>> input_plan);
@@ -592,7 +647,8 @@ private:
 
 	BoundStatement BindCopyTo(CopyStatement &stmt, const CopyFunction &function, CopyToType copy_to_type);
 	BoundStatement BindCopyFrom(CopyStatement &stmt, const CopyFunction &function);
-	void BindCopyOptions(CopyInfo &info);
+	void BindCopyFormat(CopyInfo &info);
+	void BindCopyOptions(CopyInfo &info, const CopyFunction &function);
 	identifier_map_t<CopyOption> GetFullCopyOptionsList(const CopyFunction &function, CopyOptionMode mode);
 
 	void PrepareModifiers(OrderBinder &order_binder, QueryNode &statement, BoundQueryNode &result);
@@ -643,10 +699,8 @@ private:
 	Identifier BindCatalog(const Identifier &catalog_name);
 	SchemaCatalogEntry &BindCreateSchema(CreateInfo &info);
 
-	vector<CatalogSearchEntry> GetSearchPath(Catalog &catalog, const Identifier &schema_name,
+	vector<CatalogSearchEntry> GetSearchPath(Catalog &catalog, const vector<Identifier> &schema_path,
 	                                         bool default_schema_precedence = false);
-
-	LogicalType BindLogicalTypeInternal(const unique_ptr<ParsedExpression> &type_expr);
 
 	BoundStatement BindSelectNode(SelectNode &statement, BoundStatement from_table);
 
@@ -689,7 +743,8 @@ private:
 	BoundCTEData PrepareCTE(const Identifier &ctename, CommonTableExpressionInfo &statement);
 	BoundStatement FinishCTE(BoundCTEData &bound_cte, BoundStatement child_data);
 
-	shared_ptr<Binder> CreateBinderWithSearchPath(const Identifier &catalog_name, const Identifier &schema_name);
+	shared_ptr<Binder> CreateBinderWithSearchPath(const Identifier &catalog_name,
+	                                              const vector<Identifier> &schema_path);
 
 	bool DebugAggregateStateExportVerify(BoundSelectNode &statement, unique_ptr<LogicalOperator> &root);
 

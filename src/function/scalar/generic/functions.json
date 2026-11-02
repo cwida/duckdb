@@ -8,7 +8,7 @@
     },
     {
         "name": "getvariable",
-        "parameters": "",
+        "parameters": "variable_name",
         "description": "",
         "example": "",
         "type": "scalar_function",
@@ -22,15 +22,38 @@
         "type": "scalar_function"
     },
     {
+        "name": "has_error",
+        "parameters": "expr",
+        "description": "Returns true when evaluating the expression raises an error and false otherwise. Errors are captured per row, exactly where try(expr) returns NULL.",
+        "example": "has_error(1 // 0)",
+        "type": "scalar_function"
+    },
+    {
+        "name": "__internal_try_rethrow",
+        "struct": "TryRethrowFun",
+        "parameters": "error,value",
+        "description": "Raises an error when the flag is set and returns the value otherwise. Created by the TRY subquery lowering to re-raise a captured error at the use site.",
+        "example": "",
+        "type": "scalar_function"
+    },
+    {
+        "name": "__internal_barrier",
+        "struct": "BarrierFun",
+        "parameters": "arg",
+        "description": "Returns arg unchanged, and marks it as an optimizer barrier: the expression is never evaluated on rows removed by the operators around it",
+        "example": "__internal_barrier(s::INTEGER = 42)",
+        "type": "scalar_function"
+    },
+    {
         "name": "create_sort_key",
-        "parameters": "parameters...",
+        "parameters": "key1,...",
         "description": "Constructs a binary-comparable sort key based on a set of input parameters and sort qualifiers",
         "example": "create_sort_key('A', 'DESC')",
         "type": "scalar_function"
     },
     {
         "name": "invoke",
-        "parameters": "lambda, arg1, arg2, ...",
+        "parameters": "lambda,arg1,...",
         "description": "Invokes a lambda function with the given arguments",
         "example": "invoke(x -> x + 1, 5)",
         "type": "scalar_function"

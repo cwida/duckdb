@@ -1,0 +1,106 @@
+# name: test/optimizer/statistics/constant_or_null_conjunction_effects.test
+# description: Redundant NULL check elimination preserves evaluation effects
+# group: [statistics]
+
+statement ok
+CREATE TABLE effects(x INTEGER, y VARCHAR);
+
+statement ok
+INSERT INTO effects VALUES (NULL, 'bad'), (1, '1'), (2, '2');
+
+statement ok
+CHECKPOINT;
+
+statement ok
+PRAGMA explain_output = OPTIMIZED_ONLY;
+
+# Keep the conjunction together so the NULL check protects the cast.
+statement ok
+SET disabled_optimizers='filter_pushdown';
+
+query II
+EXPLAIN SELECT count(*) FROM effects WHERE constant_or_null(true, x) AND x = CAST(y AS INTEGER);
+----
+logical_opt	<REGEX>:.*constant_or_null.*
+
+query I
+SELECT count(*) FROM effects WHERE constant_or_null(true, x) AND x = CAST(y AS INTEGER);
+----
+2
+
+# Deleting the first predicate would evaluate nextval on the NULL row too.
+statement ok
+CREATE SEQUENCE kept_sequence;
+
+query II
+EXPLAIN SELECT count(*) FROM effects WHERE constant_or_null(true, x) AND x = nextval('kept_sequence');
+----
+logical_opt	<REGEX>:.*constant_or_null.*
+
+query I
+SELECT count(*) FROM effects WHERE constant_or_null(true, x) AND x = nextval('kept_sequence');
+----
+2
+
+query I
+SELECT currval('kept_sequence');
+----
+2
+
+# The discarded expression's own evaluation must also be safe to remove.
+statement ok
+SET disabled_optimizers='filter_pushdown,common_subexpressions';
+
+query II
+EXPLAIN SELECT constant_or_null(true, CAST(y AS INTEGER)) AND CAST(y AS INTEGER) <= 20 FROM effects;
+----
+logical_opt	<REGEX>:.*constant_or_null.*
+
+statement error
+SELECT constant_or_null(true, CAST(y AS INTEGER)) AND CAST(y AS INTEGER) <= 20 FROM effects;
+----
+Conversion Error
+
+# A proof elsewhere in the conjunction must not allow a barrier to be crossed.
+query II
+EXPLAIN SELECT constant_or_null(true, x) AND x <= 1 AND __internal_barrier(x >= 1) FROM effects;
+----
+logical_opt	<REGEX>:.*constant_or_null.*
+
+statement ok
+RESET disabled_optimizers;
+
+# Failure to cast does not follow the input column's NULL pattern.
+query II
+EXPLAIN SELECT constant_or_null(true, TRY_CAST(y AS INTEGER)) AND y < 'z' FROM effects;
+----
+logical_opt	<REGEX>:.*constant_or_null.*
+
+query I
+SELECT count(*) FROM effects WHERE constant_or_null(true, TRY_CAST(y AS INTEGER)) AND y < 'z';
+----
+2
+
+statement ok
+PRAGMA disable_optimizer;
+
+query I
+SELECT count(*) FROM effects WHERE constant_or_null(true, x) AND x = CAST(y AS INTEGER);
+----
+2
+
+statement ok
+CREATE SEQUENCE reference_sequence;
+
+query I
+SELECT count(*) FROM effects WHERE constant_or_null(true, x) AND x = nextval('reference_sequence');
+----
+2
+
+query I
+SELECT currval('reference_sequence');
+----
+2
+
+statement ok
+PRAGMA enable_optimizer;

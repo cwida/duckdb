@@ -3,6 +3,13 @@
 
 require json
 
+# Error positions are byte offsets into the original SQL, including Unicode whitespace.
+query II
+SELECT (json_serialize_sql('SELECT' || chr(160) || ')')->>'position')::INTEGER,
+       (json_serialize_sql('SELECT' || chr(8195) || ')')->>'position')::INTEGER
+----
+8	9
+
 statement ok
 SET storage_compatibility_version='v1.0.0'
 
@@ -48,6 +55,40 @@ query I
 SELECT json_deserialize_sql(json_serialize_sql('SELECT * FROM t1 JOIN t2 USING("$id")'));
 ----
 SELECT * FROM t1 INNER JOIN t2 USING ("$id")
+
+# Legacy serialized constants exercise all primitive numeric deserializers.
+query I
+WITH base AS (
+	SELECT json_serialize_sql('SELECT 1')::VARCHAR AS serialized
+), typed(ord, type_name, value_json) AS (VALUES
+	(1, 'TINYINT', '1}'),
+	(2, 'UTINYINT', '1}'),
+	(3, 'SMALLINT', '1}'),
+	(4, 'USMALLINT', '1}'),
+	(5, 'BIGINT', '1}'),
+	(6, 'HUGEINT', '{"upper":0,"lower":1}}'),
+	(7, 'UHUGEINT', '{"upper":0,"lower":1}}'),
+	(8, 'FLOAT', '1.25}'),
+	(9, 'DOUBLE', '1.25}')
+)
+SELECT json_deserialize_sql(
+	replace(
+		replace(serialized, '"INTEGER"', format('"{}"', type_name)),
+		'"value":1}', '"value":' || value_json
+	)
+)
+FROM base, typed
+ORDER BY ord;
+----
+SELECT CAST(1 AS TINYINT)
+SELECT CAST(1 AS UTINYINT)
+SELECT CAST(1 AS SMALLINT)
+SELECT CAST(1 AS USMALLINT)
+SELECT CAST(1 AS BIGINT)
+SELECT CAST(1 AS HUGEINT)
+SELECT CAST(1 AS UHUGEINT)
+SELECT CAST(1.25 AS FLOAT)
+SELECT CAST(1.25 AS DOUBLE)
 
 statement error
 SELECT json_deserialize_sql(json_serialize_sql('SELECT AND LAUNCH ROCKETS WHERE 1 = 1'));
@@ -126,6 +167,32 @@ statement error
 SELECT * FROM json_execute_serialized_sql('{ "statements": [ {"expression_class": "BOUND_COMPARISON"}]}');
 ----
 Parser Error: Error parsing json: no select node found in json
+
+# Deserialization reports missing properties and container/type mismatches
+statement error
+SELECT json_deserialize_sql('{"statements":[{"node":{}}]}');
+----
+Parser Error: Expected but did not find property 'type' in json object: '{}'
+
+statement error
+SELECT json_deserialize_sql('{"statements":[{"node":{"type":42}}]}');
+----
+Parser Error: property 'type' expected type 'string', but got type: 'uint'
+
+statement error
+SELECT json_deserialize_sql('{"statements":[{"node":42}]}');
+----
+Parser Error: property 'node' expected type 'object', but got type: 'uint'
+
+statement error
+SELECT json_deserialize_sql('{"statements":[{"node":{"type":"SELECT_NODE","modifiers":{}}}]}');
+----
+Parser Error: property 'modifiers' expected type 'array', but got type: 'object'
+
+statement error
+SELECT json_deserialize_sql('{"statements":[{"node":{"type":"SELECT_NODE","modifiers":[42]}}]}');
+----
+Parser Error: Sequence expect child of type 'object', but got type: uint
 
 # json_deserialize_sql can throw and should not be pushed down before the JSON shape guard
 statement ok

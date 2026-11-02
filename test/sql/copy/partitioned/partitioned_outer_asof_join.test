@@ -1,0 +1,79 @@
+# name: test/sql/copy/partitioned/partitioned_outer_asof_join.test
+# description: Partitioned COPY of an outer AsOf join result hangs forever (same deadlock as issue #27559)
+# group: [partitioned]
+
+require parquet
+
+# The deadlock does not depend on the vector size, but with tiny vectors the 1M-row tables below
+# do not fit the 500MB memory limit (STANDARD_VECTOR_SIZE=2 runs out of memory in the first join)
+require vector_size 2048
+
+statement ok
+SET threads=4;
+
+statement ok
+SET memory_limit='500MB';
+
+# Flush early so that the partitioned sink waits for every producer while the join is still running
+statement ok
+SET partitioned_write_flush_threshold=4096;
+
+statement ok
+CREATE TABLE l AS SELECT i, i % 8 AS p, (i * 7919) % 1000003 AS t FROM range(1000000) t(i);
+
+statement ok
+CREATE TABLE r AS SELECT i, i % 8 AS p, (i * 104729) % 1000003 AS t FROM range(1000000) t(i);
+
+# inner join: the LEFT stage is the last stage that produces rows, so no task has to wait for a producer
+query II
+SELECT count(*), count(r.i) FROM l ASOF JOIN r ON l.t >= r.t;
+----
+1000000	1000000
+
+statement ok
+COPY (
+	SELECT l.i, r.i AS ri, l.i % 2 AS part
+	FROM l ASOF JOIN r ON l.t >= r.t
+) TO '{TEST_DIR}/partitioned_asof_inner' (FORMAT PARQUET, PARTITION_BY (part));
+
+query II
+SELECT count(*), count(ri) FROM read_parquet('{TEST_DIR}/partitioned_asof_inner/**/*.parquet');
+----
+1000000	1000000
+
+# right outer join, one hash group: the RIGHT stage can only start once every LEFT task has finished.
+# The rows with the smallest l.t all belong to the first LEFT task; making them expensive keeps that task
+# running long after the other three have finished and would otherwise wait for it.
+query III
+SELECT count(*), count(l.i), count(r.i) FROM l ASOF RIGHT JOIN r ON l.t >= r.t;
+----
+1000003	1000000	1000003
+
+statement ok
+COPY (
+	SELECT l.i, r.i AS ri, r.i % 2 AS part,
+		CASE WHEN l.t < 200000 THEN md5(repeat((l.t + r.t)::VARCHAR, 200)) END AS slow
+	FROM l ASOF RIGHT JOIN r ON l.t >= r.t
+) TO '{TEST_DIR}/partitioned_asof_right' (FORMAT PARQUET, PARTITION_BY (part));
+
+query III
+SELECT count(*), count(i), count(ri) FROM read_parquet('{TEST_DIR}/partitioned_asof_right/**/*.parquet');
+----
+1000003	1000000	1000003
+
+# full outer join, eight hash groups
+query III
+SELECT count(*), count(l.i), count(r.i) FROM l ASOF FULL JOIN r ON l.p = r.p AND l.t >= r.t;
+----
+1353963	1000000	1353959
+
+statement ok
+COPY (
+	SELECT l.i, r.i AS ri, hash(l.i, r.i) % 2 AS part
+	FROM l ASOF FULL JOIN r ON l.p = r.p AND l.t >= r.t
+) TO '{TEST_DIR}/partitioned_asof_full' (FORMAT PARQUET, PARTITION_BY (part));
+
+query III
+SELECT count(*), count(i), count(ri) FROM read_parquet('{TEST_DIR}/partitioned_asof_full/**/*.parquet');
+----
+1353963	1000000	1353959

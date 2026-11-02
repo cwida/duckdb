@@ -1,5 +1,5 @@
 # name: test/sql/optimizer/bool_ref_row_group_pruning.test
-# description: Bare boolean column filters (WHERE b, WHERE NOT b) should prune row groups
+# description: Bare boolean column and function filters should prune row groups
 # group: [optimizer]
 
 statement ok
@@ -128,3 +128,33 @@ query I
 SELECT count(*) FROM nullable_tb WHERE NOT b;
 ----
 2048
+
+# Boolean function statistics should prune finite row groups for isnan.
+# Row groups 0 and 1 contain finite values or NULL; row group 2 contains only NaN.
+statement ok
+CREATE TABLE isnan_tb AS SELECT
+  CASE WHEN range // 2048 = 2 THEN 'NaN'::DOUBLE
+       WHEN range % 2 = 0 THEN range::DOUBLE
+       ELSE NULL END AS d,
+  CASE WHEN range // 2048 = 2 THEN 'NaN'::FLOAT
+       WHEN range % 2 = 0 THEN range::FLOAT
+       ELSE NULL END AS f
+FROM range(6144);
+
+statement ok
+CHECKPOINT;
+
+query II
+SELECT count(*) FILTER (WHERE isnan(d)), count(*) FILTER (WHERE isnan(f)) FROM isnan_tb;
+----
+2048	2048
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM isnan_tb WHERE isnan(d);
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM isnan_tb WHERE isnan(f);
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*

@@ -1,0 +1,11 @@
+--- a/test/sql/sorted_table/data_inlining_flush_sorted_parallel.test_slow	2026-10-13 12:12:01.560118402 +0000
++++ b/test/sql/sorted_table/data_inlining_flush_sorted_parallel.test_slow	2026-10-13 12:12:01.560947477 +0000
+@@ -6,6 +6,8 @@
+ 
+ require parquet
+ 
++require notmusl
++
+ test-env DUCKLAKE_CONNECTION {TEST_DIR}/flush_sorted_parallel.db
+ 
+ test-env DATA_PATH {TEST_DIR}

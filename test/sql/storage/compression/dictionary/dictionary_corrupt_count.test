@@ -1,0 +1,32 @@
+# name: test/sql/storage/compression/dictionary/dictionary_corrupt_count.test
+# description: An inflated dictionary row count must not exceed the stored selection stream
+# group: [dictionary]
+
+require vector_size 2048
+
+unzip data/storage/corrupt/dictionary_corrupt_count.db.gz {TEST_DIR}/dictionary_corrupt_count.db
+
+load {TEST_DIR}/dictionary_corrupt_count.db readonly
+
+statement ok
+USE dictionary_corrupt_count;
+
+query I
+SELECT compression FROM pragma_storage_info('t') WHERE column_name='s' AND compression='Dictionary' LIMIT 1;
+----
+Dictionary
+
+statement error
+SELECT max(s) FROM t;
+----
+Data Corruption Error: Failed to scan dictionary string - selection buffer was out of range
+
+restart
+
+statement ok
+SET debug_force_fetch_row=true;
+
+statement error
+SELECT max(s) FROM t;
+----
+Data Corruption Error: Failed to scan dictionary string - selection buffer was out of range

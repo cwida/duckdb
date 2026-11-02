@@ -1,0 +1,35 @@
+# name: test/sql/storage/compression/chimp/chimp_corrupt_group_count.test
+# description: An inflated Chimp segment count must not walk the group metadata before the segment
+# group: [chimp]
+
+require vector_size 2048
+
+unzip data/storage/corrupt/chimp_corrupt_group_count.db.gz {TEST_DIR}/chimp_corrupt_group_count.db
+
+load {TEST_DIR}/chimp_corrupt_group_count.db readonly
+
+statement ok
+USE chimp_corrupt_group_count;
+
+query I
+SELECT compression FROM pragma_storage_info('t') WHERE segment_type='DOUBLE' LIMIT 1;
+----
+Chimp
+
+statement error
+SELECT sum(a) FROM t;
+----
+Data Corruption Error
+
+restart
+
+statement ok
+USE chimp_corrupt_group_count;
+
+statement ok
+SET debug_force_fetch_row=true;
+
+statement error
+SELECT sum(a) FROM t;
+----
+Data Corruption Error

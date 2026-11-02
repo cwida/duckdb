@@ -158,7 +158,7 @@ SELECT * FROM integers WHERE a>2 AND (a=3 OR a=5) ORDER BY a
 query II
 EXPLAIN SELECT * FROM integers WHERE (a<2 OR a>3) AND (a=1 OR a=4)
 ----
-physical_plan	<REGEX>:.*SEQ_SCAN.*Filters.*a.*<.*2.*OR.*a.*>.*3.*AND.*a.*=.*1.*OR.*a.*=.*4.*
+physical_plan	<REGEX>:.*SEQ_SCAN.*Filters.*a.*<.*2.*OR.*a.*>.*3.*AND.*a IN \(1, 4\).*
 
 query II
 SELECT * FROM integers WHERE (a<2 OR a>3) AND (a=1 OR a=4)
@@ -169,7 +169,7 @@ SELECT * FROM integers WHERE (a<2 OR a>3) AND (a=1 OR a=4)
 query II
 EXPLAIN SELECT * FROM integers WHERE (a<2 OR a>3) AND (a=1 OR a=4) AND (b=1 OR b<5)
 ----
-physical_plan	<REGEX>:.*SEQ_SCAN.*Filters.*a.*<.*2.*OR.*a.*>.*3.*AND.*a.*=.*1.*OR.*a.*=.*4.*b.*=.*1.*OR.*b.*<.*5.*
+physical_plan	<REGEX>:.*SEQ_SCAN.*Filters.*a.*<.*2.*OR.*a.*>.*3.*AND.*a IN \(1, 4\).*b.*=.*1.*OR.*b.*<.*5.*
 
 query II
 SELECT * FROM integers WHERE (a<2 OR a>3) AND (a=1 OR a=4) AND (b=1 OR b<5)
@@ -219,7 +219,7 @@ SELECT * FROM integers WHERE a=1 OR (CASE WHEN a=2 THEN true WHEN a=4 THEN true 
 query II
 EXPLAIN SELECT * FROM integers WHERE (a=1 OR a=4) AND (a=1 OR (CASE WHEN a%2=0 THEN true ELSE false END)) AND (concat(a=1, b=1)='truetrue' OR a=2) AND (a::CHAR LIKE '1' OR a=5)
 ----
-physical_plan	<REGEX>:.*SEQ_SCAN.*Filters.*a = 1.*OR.*a.*=.*4.*|$
+physical_plan	<REGEX>:.*SEQ_SCAN.*Filters.*a IN \(1, 4\).*|$
 
 query II
 SELECT * FROM integers WHERE (a=1 OR a=4) AND (a=1 OR (CASE WHEN a%2=0 THEN true ELSE false END)) AND (concat(a=1, b=1)='truetrue' OR a=2) AND (a::CHAR LIKE '1' OR a=5)
@@ -338,21 +338,15 @@ select * from t0 where (NULL OR cast(t0.c1 as bool)) order by all;
 2
 
 
-mode skip instable
-
 #### numeric statistics
-# notequal and constant > max
+# The comparison is true for all non-NULL values, but the NULL row still needs filtering.
 query II
 EXPLAIN SELECT * FROM integers WHERE a!=10 OR a>3
 ----
-physical_plan	<!REGEX>:.*SEQ_SCAN.*Filters.*
-
-## The predicate a!=10 is greater than the numeric_statistics::max implying that it is always true within an OR conjunction
-
-mode unskip
+physical_plan	<REGEX>:.*FILTER.*constant_or_null.*SEQ_SCAN.*Filters.*a != 10.*OR.*a > 3.*
 
 query II
-SELECT * FROM integers WHERE a!=10 OR a>3
+SELECT * FROM integers WHERE a!=10 OR a>3 ORDER BY a
 ----
 1	1
 2	2
@@ -361,27 +355,28 @@ SELECT * FROM integers WHERE a!=10 OR a>3
 5	5
 
 # Testing the number of rows filtered (column "a" has five values: 1 .. 5)
-statement ok
-PRAGMA enable_profiling
-
-mode skip instable
-
-# should return 2 rows: 1 and 5
+# The optional scan filter can prune row groups; the FILTER operator returns rows 1 and 5.
 query II
 EXPLAIN ANALYZE SELECT a FROM integers WHERE a<2 OR a>4
 ----
-analyzed_plan	<REGEX>:.*SEQ_SCAN.*Filters.*a < 2.*OR.*a >.*4.*2 Rows.*
+analyzed_plan	<REGEX>:.*FILTER.*a < 2.*OR.*a > 4.*2 rows.*TABLE_SCAN.*Filters.*optional:.*a < 2.*OR.*a > 4.*
 
-# should return 1 row: 1
+query I
+SELECT a FROM integers WHERE a<2 OR a>4 ORDER BY a
+----
+1
+5
+
+# Statistics replace a > 5 with false for non-NULL values; the NULL row still needs filtering.
 query II
 EXPLAIN ANALYZE SELECT a FROM integers WHERE a<2 OR a>5
 ----
-analyzed_plan	<REGEX>:.*SEQ_SCAN.*Filters: a < 2.*OR.*a >.*5.*1 Rows.*
+analyzed_plan	<REGEX>:.*FILTER.*a < 2.*constant_or_null.*1 row.*TABLE_SCAN.*Filters.*optional:.*a < 2.*OR.*a > 5.*
 
-mode unskip
-
-statement ok
-PRAGMA disable_profiling
+query I
+SELECT a FROM integers WHERE a<2 OR a>5 ORDER BY a
+----
+1
 
 # notequal and min == max && min == constant
 statement ok

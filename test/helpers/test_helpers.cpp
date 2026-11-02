@@ -5,7 +5,9 @@
 #include "duckdb/common/path.hpp"
 #include "duckdb/common/value_operations/value_operations.hpp"
 #include "compare_result.hpp"
+#include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/main/query_result.hpp"
+#include "duckdb/main/query_result_stream.hpp"
 #include "test_helpers.hpp"
 #include "duckdb/parser/parsed_data/copy_info.hpp"
 #include "duckdb/main/client_context.hpp"
@@ -19,7 +21,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
-#include <ctime>
 #include <fstream>
 
 #define TESTING_DIRECTORY_NAME "duckdb_unittest_tempdir"
@@ -48,15 +49,49 @@ static string local_temp_dir_root_override; // --local-temp-dir-root ("" -> the 
 // set, not one per root: a remote root is env-var passthrough only -- unittest holds no credentials, so
 // it can never mkdir or reap one, and the local tree is the only thing with a lifecycle.
 static vector<string> run_created_levels;  // $ROOT..$RUN_ID
-static vector<string> test_created_levels; // $TEST_ID
 static vector<string> home_created_levels; // the HOME sandbox sibling
-static string active_test_leaf;            // currently-materialized $TEST_ID dir ("" when none)
+
+//! The $TEST_ID dir a test materialized, and the levels its path created. Keyed by TEST_ID rather
+//! than held in one global: test files can run concurrently, and every thread working on one test
+//! (a concurrentloop spawns several) has to find that test's entry.
+struct ActiveTestTempDir {
+	string leaf;
+	vector<string> created_levels;
+};
+static mutex active_test_lock;
+static unordered_map<string, ActiveTestTempDir> active_tests;
 
 bool NO_FAIL(QueryResult &result) {
 	if (result.HasError()) {
 		fprintf(stderr, "Query failed with message: %s\n", result.GetError().c_str());
 	}
 	return !result.HasError();
+}
+
+duckdb::unique_ptr<duckdb::QueryResultStream<>> OpenStream(duckdb::Connection &con, const string &query) {
+	return duckdb::make_uniq<duckdb::QueryResultStream<>>(con.Submit(query));
+}
+
+duckdb::unique_ptr<duckdb::QueryResult> DrainStream(duckdb::QueryResultStream<> &stream) {
+	auto statement_type = stream.GetStatementType();
+	auto properties = stream.GetStatementProperties();
+	auto names = stream.GetNames();
+	auto client_properties = stream.GetClientProperties();
+	auto collection =
+	    duckdb::make_uniq<duckdb::ColumnDataCollection>(duckdb::Allocator::DefaultAllocator(), stream.GetTypes());
+	duckdb::ColumnDataAppendState append_state;
+	collection->InitializeAppend(append_state);
+	while (auto chunk = stream.Fetch()) {
+		if (chunk->size() == 0) {
+			break;
+		}
+		collection->Append(append_state, *chunk);
+	}
+	if (stream.HasError()) {
+		return duckdb::make_uniq<duckdb::QueryResult>(stream.GetErrorObject());
+	}
+	return duckdb::make_uniq<duckdb::QueryResult>(statement_type, properties, names, std::move(collection),
+	                                              client_properties);
 }
 
 bool NO_FAIL(duckdb::unique_ptr<QueryResult> result) {
@@ -292,31 +327,9 @@ bool DatabaseDestroyFires(bool success) {
 	}
 }
 
-// RUN_ID auto value: sortable UTC timestamp + mnemonic, e.g. 2026-07-01T14-30-22Z--crimson-torus-07.
-// Same shape as the pytest driver's, but colors+shapes here vs its adjectives+animals -- so an id's
-// vocabulary reveals which side minted it.
-static const char *const TEMP_DIR_COLORS[] = {"crimson", "scarlet", "azure",   "cobalt", "teal",    "olive",
-                                              "maroon",  "indigo",  "violet",  "coral",  "ochre",   "umber",
-                                              "jade",    "ivory",   "slate",   "sienna", "magenta", "cyan",
-                                              "khaki",   "russet",  "saffron", "mauve",  "bronze",  "copper"};
-static const char *const TEMP_DIR_SHAPES[] = {"cube",    "prism",   "sphere",  "cone",  "torus",   "helix",
-                                              "wedge",   "disc",    "ring",    "arch",  "spiral",  "prong",
-                                              "vane",    "cusp",    "node",    "facet", "obelisk", "pylon",
-                                              "lattice", "rhombus", "spindle", "dome",  "ingot",   "girder"};
-
 static string GenerateAutoRunId() {
-	std::time_t now = std::time(nullptr);
-	char ts[24] = {0};
-	std::strftime(ts, sizeof(ts), "%Y-%m-%dT%H-%M-%SZ", std::gmtime(&now));
-	// hugeint_t carries independent entropy in lower/upper; index each bank + the 2 digits.
-	auto uuid = UUID::GenerateRandomUUID();
-	auto n_colors = sizeof(TEMP_DIR_COLORS) / sizeof(TEMP_DIR_COLORS[0]);
-	auto n_shapes = sizeof(TEMP_DIR_SHAPES) / sizeof(TEMP_DIR_SHAPES[0]);
-	const char *color = TEMP_DIR_COLORS[uuid.lower % n_colors];
-	const char *shape = TEMP_DIR_SHAPES[static_cast<uint64_t>(uuid.upper) % n_shapes];
-	auto nn = static_cast<int>((uuid.lower >> 32) % 100);
-	string digits = (nn < 10 ? "0" : "") + std::to_string(nn);
-	return string(ts) + "--" + color + "-" + shape + "-" + digits;
+	// Keep the full UUID without timestamp or mnemonic overhead in Windows paths.
+	return UUID::ToString(UUID::GenerateRandomUUID());
 }
 
 // The caller's --run-id, or a generated one, cached for the invocation. Always resolved, even when
@@ -425,7 +438,7 @@ static void RecordAndCreateLevels(FileSystem &fs, const string &path, vector<str
 
 // Remove `leaf` recursively iff this step created it, then walk `created` bottom-up removing each
 // ancestor iff it is empty and this step created it. Stops at the first level that is neither.
-static void ReclaimLevels(FileSystem &fs, const string &leaf, const vector<string> &created) {
+void ReclaimTestDirectoryLevels(FileSystem &fs, const string &leaf, const vector<string> &created) {
 	// The leaf obeys the same rule as its ancestors: reclaim only what THIS step created. RemoveDirectory
 	// is always recursive, so a run that adopted a pre-existing dir -- a reused --run-id, or $ROOT itself
 	// when --temp-dir-run-id is off -- would otherwise delete contents it does not own.
@@ -447,7 +460,10 @@ static void ReclaimLevels(FileSystem &fs, const string &leaf, const vector<strin
 			break; // shared with someone else's content -> stop
 		}
 		try {
-			fs.RemoveDirectory(level);
+			// Another run may populate this ancestor after the emptiness check.
+			if (!fs.RemoveDirectoryExtended(level, {RemoveDirectoryMode::SINGLE})) {
+				break;
+			}
 		} catch (...) {
 			break;
 		}
@@ -514,20 +530,28 @@ void DestroyTempDir(bool success) {
 	// HOME first: it sits under $ROOT, so leaving it would fail the emptiness check in the ancestor
 	// walk below and strand a root this run owns. Reclaimed on the same created/adopted rule --
 	// co-located batches share one HOME path, and an adopted one may be another batch's live sandbox.
-	ReclaimLevels(*fs, GetTempDirHome(), home_created_levels);
+	ReclaimTestDirectoryLevels(*fs, GetTempDirHome(), home_created_levels);
 	// The root subsumes any leftover per-test dirs; ancestors go only up to a pre-existing $ROOT.
-	ReclaimLevels(*fs, TreeRunIdRoot(LocalRoot()).ToString(), run_created_levels);
+	ReclaimTestDirectoryLevels(*fs, TreeRunIdRoot(LocalRoot()).ToString(), run_created_levels);
 }
 
 // Fired at test end with THIS test's pass/fail. Only the $TEST_ID level is in scope -- $RUN_ID/$ROOT
-// were made by PrepareTempDir, so ReclaimLevels stops there.
+// were made by PrepareTempDir, so ReclaimTestDirectoryLevels stops there.
 void DestroyTestTempDir(bool success) {
-	if (!active_test_leaf.empty() && DestroyFires(temp_dir_destroy, success)) {
-		duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
-		ReclaimLevels(*fs, active_test_leaf, test_created_levels);
+	ActiveTestTempDir entry;
+	{
+		lock_guard<mutex> guard(active_test_lock);
+		auto it = active_tests.find(ResolveTestId());
+		if (it == active_tests.end()) {
+			return;
+		}
+		entry = std::move(it->second);
+		active_tests.erase(it);
 	}
-	active_test_leaf.clear();
-	test_created_levels.clear();
+	if (!entry.leaf.empty() && DestroyFires(temp_dir_destroy, success)) {
+		duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
+		ReclaimTestDirectoryLevels(*fs, entry.leaf, entry.created_levels);
+	}
 }
 
 // $ROOT/[RUN_ID]/[TEST_ID], materializing the $TEST_ID level on first request -- lazily, because the
@@ -535,14 +559,22 @@ void DestroyTestTempDir(bool success) {
 static string MaterializeLocalTestPath() {
 	string path = TreeTestPath(LocalRoot()).ToString();
 	string root = TreeRunIdRoot(LocalRoot()).ToString();
-	if (path != root && path != active_test_leaf) {
-		active_test_leaf = path;
-		test_created_levels.clear();
-		duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
-		if (!fs->DirectoryExists(path)) {
-			RecordAndCreateLevels(*fs, path, test_created_levels);
-		}
+	if (path == root) {
+		return path;
 	}
+	lock_guard<mutex> guard(active_test_lock);
+	auto test_id = ResolveTestId();
+	auto entry = active_tests.find(test_id);
+	if (entry != active_tests.end() && entry->second.leaf == path) {
+		return path;
+	}
+	ActiveTestTempDir active;
+	active.leaf = path;
+	duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
+	if (!fs->DirectoryExists(path)) {
+		RecordAndCreateLevels(*fs, path, active.created_levels);
+	}
+	active_tests[test_id] = std::move(active);
 	return path;
 }
 // -----------------------------------------------------------------------------
@@ -568,6 +600,18 @@ bool DeleteTestPath() {
 }
 
 static bool emit_test_events = false;
+
+static std::function<void(DuckDB &)> static_extension_loader;
+
+void SetStaticExtensionLoader(std::function<void(DuckDB &)> loader) {
+	static_extension_loader = std::move(loader);
+}
+
+void LoadStaticExtensions(DuckDB &db) {
+	if (static_extension_loader) {
+		static_extension_loader(db);
+	}
+}
 
 void SetEmitTestEvents(bool emit) {
 	emit_test_events = emit;
@@ -650,12 +694,7 @@ unique_ptr<DBConfig> GetTestConfig() {
 	return result;
 }
 
-bool CHECK_COLUMN(QueryResult &result_, size_t column_number, vector<duckdb::Value> values) {
-	if (result_.GetResultType() == QueryResultType::STREAM_RESULT) {
-		fprintf(stderr, "Unexpected stream query result in CHECK_COLUMN\n");
-		return false;
-	}
-	auto &result = (MaterializedQueryResult &)result_;
+bool CHECK_COLUMN(QueryResult &result, size_t column_number, vector<duckdb::Value> values) {
 	if (result.HasError()) {
 		fprintf(stderr, "Query failed with message: %s\n", result.GetError().c_str());
 		return false;
@@ -681,8 +720,9 @@ bool CHECK_COLUMN(QueryResult &result_, size_t column_number, vector<duckdb::Val
 		result.Print();
 		return false;
 	}
+	auto rows = result.Collection().GetRows();
 	for (idx_t row_idx = 0; row_idx < values.size(); row_idx++) {
-		auto value = result.GetValue(column_number, row_idx);
+		auto value = rows.GetValue(column_number, row_idx);
 		// NULL <> NULL, hence special handling
 		if (value.IsNull() && values[row_idx].IsNull()) {
 			continue;
@@ -700,27 +740,16 @@ bool CHECK_COLUMN(QueryResult &result_, size_t column_number, vector<duckdb::Val
 }
 
 bool CHECK_COLUMN(duckdb::unique_ptr<duckdb::QueryResult> &result, size_t column_number, vector<duckdb::Value> values) {
-	if (result->GetResultType() == QueryResultType::STREAM_RESULT) {
-		auto &stream = (StreamQueryResult &)*result;
-		result = stream.Materialize();
-	}
 	return CHECK_COLUMN(*result, column_number, values);
 }
 
-bool CHECK_COLUMN(duckdb::unique_ptr<duckdb::MaterializedQueryResult> &result, size_t column_number,
-                  vector<duckdb::Value> values) {
-	return CHECK_COLUMN((QueryResult &)*result, column_number, values);
-}
-
 string compare_csv(duckdb::QueryResult &result, string csv, bool header) {
-	D_ASSERT(result.GetResultType() == QueryResultType::MATERIALIZED_RESULT);
-	auto &materialized = (MaterializedQueryResult &)result;
-	if (materialized.HasError()) {
-		fprintf(stderr, "Query failed with message: %s\n", materialized.GetError().c_str());
-		return materialized.GetError();
+	if (result.HasError()) {
+		fprintf(stderr, "Query failed with message: %s\n", result.GetError().c_str());
+		return result.GetError();
 	}
 	string error;
-	if (!compare_result(csv, materialized.Collection(), materialized.GetTypes(), header, error)) {
+	if (!compare_result(csv, result.Collection(), result.GetTypes(), header, error)) {
 		return error;
 	}
 	return "";

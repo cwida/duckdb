@@ -1,0 +1,23 @@
+# name: test/sql/types/variant/json_cast_depth_thread.test
+# description: Run the deep JSON -> VARIANT cast on threads that use the reduced --thread-stack-size
+# group: [variant]
+
+require json
+
+# the table source keeps the cast in the vector cast path at execution time: as a constant
+# expression it would be folded into a VARIANT Value on the client thread, and Value conversion
+# as well as debug plan verification recurse per nesting level outside the cast under test
+statement ok
+CREATE TABLE deep_thread_json AS SELECT repeat('[', 500) || '1' || repeat(']', 500) AS s;
+
+concurrentloop i 0 2
+
+# depth 500 does not fit the reduced thread stack with one recursive cast frame per level
+query I
+SELECT s::JSON::VARIANT IS NOT NULL FROM deep_thread_json, range(3)
+----
+true
+true
+true
+
+endloop

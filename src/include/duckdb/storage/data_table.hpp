@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/common/enums/column_segment_info_scan_type.hpp"
+#include "duckdb/common/enums/constraint_check_mode.hpp"
 #include "duckdb/common/unique_ptr.hpp"
 #include "duckdb/storage/table/data_table_info.hpp"
 #include "duckdb/storage/table/persistent_table_data.hpp"
@@ -35,6 +36,7 @@ class Serializer;
 class StorageManager;
 class TableCatalogEntry;
 class TableIOManager;
+class TableStorageInfo;
 class Vector;
 class Transaction;
 class WriteAheadLog;
@@ -73,7 +75,8 @@ public:
 	DataTable(ClientContext &context, DataTable &parent, idx_t removed_column);
 	//! Constructs a DataTable as a delta on an existing data table but with one column changed type
 	DataTable(ClientContext &context, DataTable &parent, idx_t changed_idx, const LogicalType &target_type,
-	          const vector<StorageIndex> &bound_columns, Expression &cast_expr);
+	          const vector<StorageIndex> &bound_columns, Expression &cast_expr,
+	          optional_ptr<BoundConstraint> constraint_to_verify = nullptr);
 	//! Constructs a DataTable as a delta on an existing data table but with one column added new constraint
 	DataTable(ClientContext &context, DataTable &parent, BoundConstraint &constraint);
 
@@ -97,7 +100,8 @@ public:
 	idx_t MaxThreads(ClientContext &context) const;
 	void InitializeParallelScan(ClientContext &context, ParallelTableScanState &state,
 	                            const vector<ColumnIndex> &column_indexes);
-	idx_t NextParallelScan(ClientContext &context, ParallelTableScanState &state, TableScanState &scan_state);
+	optional_idx NextParallelScan(ClientContext &context, ParallelTableScanState &state, TableScanState &scan_state,
+	                              bool initialize_columns = true);
 
 	//! Scans up to STANDARD_VECTOR_SIZE elements from the table starting
 	//! from offset and store them in result. Offset is incremented with how many
@@ -190,6 +194,8 @@ public:
 	//! commit (e.g. because of an I/O exception)
 	void RevertAppend(DuckTransaction &transaction, idx_t start_row, idx_t count);
 	void RevertAppendInternal(idx_t start_row);
+	//! Revert an append that failed before it was finalized
+	void RevertFailedAppend(TableAppendState &state);
 
 	void ScanTableSegment(DuckTransaction &transaction, idx_t start_row, idx_t count,
 	                      const std::function<void(DataChunk &chunk)> &function);
@@ -225,8 +231,6 @@ public:
 	//! Sets statistics of a physical column within the table
 	void SetDistinct(column_t column_id, unique_ptr<DistinctStatistics> distinct_stats);
 
-	//! Obtains a lock during a checkpoint operation that prevents other threads from reading this table
-	unique_ptr<StorageLockKey> GetCheckpointLock();
 	//! Checkpoint the table to the specified table data writer
 	void Checkpoint(TableDataWriter &writer, Serializer &serializer);
 	//! Accumulates the table's on-disk blocks for reclamation into the drop state.
@@ -249,10 +253,6 @@ public:
 
 	//! Scans the next chunk for the CREATE INDEX operator
 	bool CreateIndexScan(TableScanState &state, DataChunk &result);
-	//! Returns true, if the index name is unique (i.e., no PK, UNIQUE, FK constraint has the same name)
-	//! FIXME: This is only necessary until we treat all indexes as catalog entries, allowing to alter constraints
-	bool IndexNameIsUnique(const string &name);
-
 	//! Initialize constraint verification state
 	unique_ptr<ConstraintState> InitializeConstraintState(TableCatalogEntry &table,
 	                                                      const vector<unique_ptr<BoundConstraint>> &bound_constraints);
@@ -288,9 +288,9 @@ public:
 	//! AddIndex initializes an index and adds it to the table's index list.
 	//! It is either empty, or initialized via its index storage information.
 	void AddIndex(const ColumnList &columns, const vector<LogicalIndex> &column_indexes, const IndexConstraintType type,
-	              IndexStorageInfo index_info);
+	              IndexStorageInfo index_info, idx_t index_oid, ConstraintCheckMode check_mode);
 	//! AddIndex moves an index to this table's index list.
-	void AddIndex(unique_ptr<Index> index);
+	void AddIndex(unique_ptr<Index> index, idx_t index_oid);
 
 	//! Returns a list of the partition stats
 	vector<PartitionStatistics> GetPartitionStats(ClientContext &context);

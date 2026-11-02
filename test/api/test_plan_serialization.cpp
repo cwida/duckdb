@@ -16,10 +16,10 @@ static void test_helper(string sql, duckdb::vector<string> fixtures = duckdb::ve
 	Connection con(db);
 
 	for (const auto &fixture : fixtures) {
-		con.SendQuery(fixture);
+		con.Query(fixture);
 	}
 
-	Parser p;
+	Parser p(*con.context);
 	p.ParseQuery(sql);
 
 	for (auto &statement : p.statements) {
@@ -49,10 +49,10 @@ static void test_helper_multi_db(string sql, duckdb::vector<string> fixtures = d
 	REQUIRE_NO_FAIL(con.Query("ATTACH DATABASE ':memory:' AS new_db;"));
 
 	for (const auto &fixture : fixtures) {
-		con.SendQuery(fixture);
+		con.Query(fixture);
 	}
 
-	Parser p;
+	Parser p(*con.context);
 	p.ParseQuery(sql);
 
 	for (auto &statement : p.statements) {

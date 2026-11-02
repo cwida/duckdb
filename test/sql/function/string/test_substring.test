@@ -350,3 +350,43 @@ query I
 SELECT SUBSTRING('hello' FOR 3)
 ----
 hel
+
+# Strict substring validity includes nullable offset and length arguments
+statement ok
+CREATE TABLE nullable_substring_bounds(v VARCHAR NOT NULL, off BIGINT, len BIGINT);
+
+statement ok
+INSERT INTO nullable_substring_bounds VALUES ('abc', NULL, 1), ('abc', 1, NULL), ('abc', 1, 1);
+
+statement ok
+CHECKPOINT;
+
+foreach FUN substring substring_grapheme
+
+query III
+SELECT count(*) FILTER (WHERE {FUN}(v, off, 1) IS NULL),
+       count(*) FILTER (WHERE {FUN}(v, 1, len) IS NULL),
+       count(*) FILTER (WHERE {FUN}(v, off, len) IS NULL)
+FROM nullable_substring_bounds;
+----
+1	1	2
+
+endloop
+
+statement ok
+SET disabled_optimizers = 'statistics_propagation';
+
+foreach FUN substring substring_grapheme
+
+query III
+SELECT count(*) FILTER (WHERE {FUN}(v, off, 1) IS NULL),
+       count(*) FILTER (WHERE {FUN}(v, 1, len) IS NULL),
+       count(*) FILTER (WHERE {FUN}(v, off, len) IS NULL)
+FROM nullable_substring_bounds;
+----
+1	1	2
+
+endloop
+
+statement ok
+SET disabled_optimizers = '';

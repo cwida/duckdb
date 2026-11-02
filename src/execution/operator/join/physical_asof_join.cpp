@@ -123,8 +123,7 @@ AsOfGlobalSinkState::AsOfGlobalSinkState(ClientContext &client, const PhysicalAs
 	const vector<unique_ptr<BaseStatistics>> partitions_stats;
 	auto &lhs = op.children[0].get();
 	OperatorPartitionInfo empty_info;
-	const OperatorPartitionInfo &lhs_partition_info =
-	    (op.partition_infos.size() > 0) ? op.partition_infos[0] : empty_info;
+	const OperatorPartitionInfo &lhs_partition_info = !op.partition_infos.empty() ? op.partition_infos[0] : empty_info;
 	sort_strategies[0] = SortStrategy::Factory(client, op.lhs_partitions, op.lhs_orders, lhs.GetTypes(),
 	                                           partitions_stats, lhs_partition_info, lhs.estimated_cardinality, true);
 
@@ -689,8 +688,9 @@ public:
 		return !stopped && finished < total_tasks;
 	}
 
-	//! Assign a new task to the local state
-	bool TryNextTask(TaskPtr &task, Task &task_local);
+	//! Finish the current task (if any), advance the stages of the active groups and try to get the next task.
+	//! Runs under the lock so that a caller can decide to block on failure without missing an unblock.
+	bool TryNextTaskLocked(TaskPtr &task, Task &task_local) DUCKDB_REQUIRES(lock);
 
 	//! The parent operator
 	const PhysicalAsOfJoin &op;
@@ -712,6 +712,8 @@ public:
 	atomic<idx_t> finished;
 	//! Stop producing tasks
 	atomic<bool> stopped;
+	//! The progress of the tasks
+	TaskProgress task_progress;
 
 public:
 	idx_t MaxThreads() override {
@@ -864,8 +866,13 @@ struct SortKeyPrefixComparison {
 				break;
 			case SortKeyPrefixComparisonType::NESTED:
 				decoded.Reset();
-				lhs_width = CreateSortKeyHelpers::DecodeSortKey(lhs_key, vec, 0, modifiers);
-				rhs_width = CreateSortKeyHelpers::DecodeSortKey(rhs_key, vec, 1, modifiers);
+				//	Decode from the current column, not from the start of the whole key.
+				lhs_width = CreateSortKeyHelpers::DecodeSortKey(
+				    string_t(lhs_ptr, UnsafeNumericCast<uint32_t>(lhs_key.GetData() + lhs_key.GetSize() - lhs_ptr)),
+				    vec, 0, modifiers);
+				rhs_width = CreateSortKeyHelpers::DecodeSortKey(
+				    string_t(rhs_ptr, UnsafeNumericCast<uint32_t>(rhs_key.GetData() + rhs_key.GetSize() - rhs_ptr)),
+				    vec, 1, modifiers);
 				cmp = memcmp(lhs_ptr, rhs_ptr, MinValue<idx_t>(lhs_width, rhs_width));
 				if (!cmp) {
 					cmp = (rhs_width < lhs_width) - (lhs_width < rhs_width);
@@ -1020,14 +1027,16 @@ AsOfProbeBuffer::AsOfProbeBuffer(ClientContext &client, const PhysicalAsOfJoin &
 		prefix_types.emplace_back(type);
 		SortKeyPrefixComparisonColumn col;
 		col.size = DConstants::INVALID_INDEX;
-		switch (type.id()) {
-		case LogicalTypeId::VARCHAR:
-		case LogicalTypeId::BLOB:
-			col.type = SortKeyPrefixComparisonType::VARCHAR;
+		switch (type.InternalType()) {
+		case PhysicalType::VARCHAR:
+			// only the sort keys of VARCHAR are terminated by the first null byte - the sort keys of other string
+			// types (e.g., BLOB or GEOMETRY) can contain null bytes, so we have to decode them to measure their width
+			col.type = type.id() == LogicalTypeId::VARCHAR ? SortKeyPrefixComparisonType::VARCHAR
+			                                               : SortKeyPrefixComparisonType::NESTED;
 			break;
-		case LogicalTypeId::STRUCT:
-		case LogicalTypeId::LIST:
-		case LogicalTypeId::ARRAY:
+		case PhysicalType::STRUCT:
+		case PhysicalType::LIST:
+		case PhysicalType::ARRAY:
 			col.type = SortKeyPrefixComparisonType::NESTED;
 			break;
 		default:
@@ -1346,8 +1355,10 @@ public:
 
 	//! Task management
 	bool TaskFinished() const;
-	//! Assign the next task
-	bool TryAssignTask();
+	//! Release the local state of the current task (if any) and record its completion in its hash group
+	void FinishTask();
+	//! Set up the local state for executing a task acquired through AsOfGlobalSourceState::TryNextTaskLocked
+	void InitializeTask();
 
 	void ExecuteSortTask(ExecutionContext &context, DataChunk &chunk, OperatorSourceInput &source);
 	void ExecuteMaterializeTask(ExecutionContext &context, DataChunk &chunk, OperatorSourceInput &source);
@@ -1391,6 +1402,9 @@ public:
 	TaskPtr task;
 	//! The task storage
 	Task task_local;
+	//! The start of the range of the current task, and the progress reported for it
+	idx_t task_begin = 0;
+	TaskProgressTracker task_progress;
 	//! The rhs group
 	HashGroupPtr hash_group;
 	//! The read cursor
@@ -1401,6 +1415,10 @@ public:
 	SelectionVector rsel;
 	//! Pointer to the right marker
 	const bool *rhs_matches = {};
+
+	//! Whether this task has produced any rows yet.
+	//! A task that has produced rows must not block waiting for other tasks: the sink may be waiting for it.
+	bool produced = false;
 };
 
 AsOfLocalSourceState::AsOfLocalSourceState(ExecutionContext &context, AsOfGlobalSourceState &gsource,
@@ -1474,36 +1492,39 @@ void AsOfGlobalSourceState::FinishTask(TaskPtr task) {
 	}
 }
 
-bool AsOfLocalSourceState::TryAssignTask() {
+void AsOfLocalSourceState::FinishTask() {
 	D_ASSERT(TaskFinished());
 	// Because downstream operators may be using our internal buffers,
 	// we can't "finish" a task until we are about to get the next one.
-	if (task) {
-		switch (task->stage) {
-		case AsOfJoinSourceStage::SORT:
-			gsource.asof_groups[task_local.group_idx]->sorted++;
-			break;
-		case AsOfJoinSourceStage::MATERIALIZE:
-			gsource.asof_groups[task_local.group_idx]->materialized++;
-			break;
-		case AsOfJoinSourceStage::GET:
-			gsource.asof_groups[task_local.group_idx]->gotten++;
-			break;
-		case AsOfJoinSourceStage::LEFT:
-			probe_buffer.EndLeftScan();
-			break;
-		case AsOfJoinSourceStage::RIGHT:
-			EndRightScan();
-			break;
-		case AsOfJoinSourceStage::INIT:
-		case AsOfJoinSourceStage::DONE:
-			break;
-		}
+	if (!task) {
+		return;
 	}
+	task_progress.Finish(gsource.task_progress);
+	switch (task->stage) {
+	case AsOfJoinSourceStage::SORT:
+		gsource.asof_groups[task_local.group_idx]->sorted++;
+		break;
+	case AsOfJoinSourceStage::MATERIALIZE:
+		gsource.asof_groups[task_local.group_idx]->materialized++;
+		break;
+	case AsOfJoinSourceStage::GET:
+		gsource.asof_groups[task_local.group_idx]->gotten++;
+		break;
+	case AsOfJoinSourceStage::LEFT:
+		probe_buffer.EndLeftScan();
+		break;
+	case AsOfJoinSourceStage::RIGHT:
+		EndRightScan();
+		break;
+	case AsOfJoinSourceStage::INIT:
+	case AsOfJoinSourceStage::DONE:
+		break;
+	}
+}
 
-	if (!gsource.TryNextTask(task, task_local)) {
-		return false;
-	}
+void AsOfLocalSourceState::InitializeTask() {
+	task_begin = task->begin_idx;
+	task_progress.Start();
 
 	switch (task->stage) {
 	case AsOfJoinSourceStage::SORT:
@@ -1520,16 +1541,13 @@ bool AsOfLocalSourceState::TryAssignTask() {
 	case AsOfJoinSourceStage::DONE:
 		break;
 	}
-
-	return true;
 }
 
-bool AsOfGlobalSourceState::TryNextTask(TaskPtr &task, Task &task_local) {
-	annotated_lock_guard<annotated_mutex> guard(lock);
+bool AsOfGlobalSourceState::TryNextTaskLocked(TaskPtr &task, Task &task_local) {
 	FinishTask(task);
+	task = nullptr;
 
 	if (!HasMoreTasks()) {
-		task = nullptr;
 		return false;
 	}
 
@@ -1564,8 +1582,6 @@ bool AsOfGlobalSourceState::TryNextTask(TaskPtr &task, Task &task_local) {
 		++started;
 		return true;
 	}
-
-	task = nullptr;
 
 	return false;
 }
@@ -1652,17 +1668,12 @@ void AsOfLocalSourceState::ExecuteLeftTask(ExecutionContext &context, DataChunk 
 ProgressData PhysicalAsOfJoin::GetProgress(ClientContext &context, GlobalSourceState &gsource_p) const {
 	auto &gsource = gsource_p.Cast<AsOfGlobalSourceState>();
 	const auto count = gsource.total_tasks;
-
-	const auto returned = gsource.finished.load();
-
-	ProgressData res;
-	if (count) {
-		res.done = double(returned);
-		res.total = double(count);
-	} else {
+	if (!count) {
+		ProgressData res;
 		res.SetInvalid();
+		return res;
 	}
-	return res;
+	return gsource.task_progress.GetProgress(count);
 }
 
 SourceResultType PhysicalAsOfJoin::GetDataInternal(ExecutionContext &context, DataChunk &chunk,
@@ -1673,23 +1684,50 @@ SourceResultType PhysicalAsOfJoin::GetDataInternal(ExecutionContext &context, Da
 	// Any call to GetData must produce tuples, otherwise the pipeline executor thinks that we're done
 	// Therefore, we loop until we've produced tuples, or until the operator is actually done
 	while (gsource.HasUnfinishedTasks() && chunk.size() == 0) {
-		if (!lsource.TaskFinished() || lsource.TryAssignTask()) {
-			try {
-				lsource.ExecuteTask(context, chunk, input);
-			} catch (...) {
-				gsource.stopped = true;
-				throw;
+		if (lsource.TaskFinished()) {
+			{
+				// Finish the current task, advance the stages, look for the next task and decide what to do without
+				// one, all under a single acquisition of the lock: the decision to block has to be made under the
+				// same lock as the failed search, or the unblock could slip in between and no one would ever wake
+				// this task up again.
+				annotated_lock_guard<annotated_mutex> guard(gsource.lock);
+				lsource.FinishTask();
+				if (!gsource.TryNextTaskLocked(lsource.task, lsource.task_local)) {
+					if (!gsource.HasMoreTasks()) {
+						// no more tasks - exit
+						gsource.UnblockTasks();
+						break;
+					}
+					if (lsource.produced) {
+						// The remaining tasks can only start once the other tasks of this stage have finished
+						// (e.g., the RIGHT stage of an outer join waits for every LEFT task). This task has already
+						// handed rows to the sink, which may in turn be waiting for this task (e.g., a partitioned
+						// COPY cannot flush until every producer has combined), so blocking here could deadlock:
+						// let the tasks that are still running finish the join instead.
+						return SourceResultType::FINISHED;
+					}
+					// there are more tasks available, but we can't execute them yet
+					// block the source
+					return gsource.BlockSource(input.interrupt_state);
+				}
 			}
-		} else {
-			annotated_lock_guard<annotated_mutex> guard(gsource.lock);
-			if (!gsource.HasMoreTasks()) {
-				gsource.UnblockTasks();
-				break;
-			} else {
-				// there are more tasks available, but we can't execute them yet
-				// block the source
-				return gsource.BlockSource(input.interrupt_state);
-			}
+			// Set up the task outside the lock
+			lsource.InitializeTask();
+		}
+		try {
+			lsource.ExecuteTask(context, chunk, input);
+		} catch (...) {
+			gsource.stopped = true;
+			throw;
+		}
+		if (lsource.task) {
+			auto &task = *lsource.task;
+			auto done = task.begin_idx > lsource.task_begin ? task.begin_idx - lsource.task_begin : 0;
+			auto total = task.end_idx > lsource.task_begin ? task.end_idx - lsource.task_begin : 0;
+			lsource.task_progress.Update(gsource.task_progress, done, total);
+		}
+		if (chunk.size() != 0) {
+			lsource.produced = true;
 		}
 	}
 

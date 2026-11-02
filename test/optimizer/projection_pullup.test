@@ -106,7 +106,7 @@ EXPLAIN
 select * from(select a.a, b.b from (select * from t1) a join (select * from t2) b on a.a = b.b) as join12
 semi join(select c.c, d.d as newD from (select * from t3) c join (select * from t4) d on c.c = d.d) as join34 on join12.a = join34.c;
 ----
-logical_opt	<!REGEX>:.*INNER.*PROJECTION.*
+logical_opt	<REGEX>:(?s).*Join Type: SEMI.*PROJECTION.*Join Type: INNER.*
 
 statement ok
 CREATE OR REPLACE TABLE t1 AS SELECT range i FROM range(10);
@@ -115,11 +115,38 @@ statement ok
 CREATE OR REPLACE TABLE t2 AS SELECT range i FROM range(100);
 
 statement ok
-CREATE VIEW v1 AS SELECT i, i * 42 j FROM t1 JOIN t2 using (i);
+CREATE VIEW v1 AS SELECT i, length(i::VARCHAR) j FROM t1 JOIN t2 using (i);
 
 # Pullup projections with non colref expressions
 query II
 EXPLAIN SELECT i, j1.j FROM v1 j1 JOIN v1 j2 using (i);
+----
+logical_opt	<!REGEX>:.*JOIN.*PROJECTION.*
+
+# Computed expressions remain eligible for general projection pullup
+statement ok
+CREATE TABLE pullup_variable(i INTEGER, v VARCHAR);
+
+query II
+EXPLAIN SELECT s
+FROM (SELECT i, substring(v, 1, 20) AS s FROM pullup_variable) p
+JOIN t2 USING (i);
+----
+logical_opt	<!REGEX>:.*JOIN.*PROJECTION.*
+
+# Expression placement is handled separately after statistics propagation
+query II
+EXPLAIN SELECT n
+FROM (SELECT i, length(v) AS n FROM pullup_variable) p
+JOIN t2 USING (i);
+----
+logical_opt	<!REGEX>:.*JOIN.*PROJECTION.*
+
+# Variable-size column references can still be removed
+query II
+EXPLAIN SELECT p.v
+FROM (SELECT i, v FROM pullup_variable) p
+JOIN t2 USING (i);
 ----
 logical_opt	<!REGEX>:.*JOIN.*PROJECTION.*
 

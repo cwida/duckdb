@@ -1,0 +1,38 @@
+# name: test/sql/join/delim_join_reuse.test
+# description: Cover delim join state reuse in recursive pipelines
+# group: [join]
+
+statement ok
+SET delim_join_as_cte = false
+
+query IIT
+SELECT *
+FROM generate_series(1, 3) AS input(n),
+LATERAL (
+	WITH RECURSIVE subquery(x) AS (
+		(SELECT n, true AS exists)
+		UNION ALL
+		SELECT x - 1, y
+		FROM subquery AS current(x),
+		LATERAL (
+			SELECT NOT EXISTS (
+				SELECT 1
+				FROM subquery AS previous(a)
+				WHERE a > current.x
+			)
+		) AS next(y)
+		WHERE x > 0
+	)
+	TABLE subquery
+)
+ORDER BY n, x
+----
+1	0	1
+1	1	1
+2	0	1
+2	1	1
+2	2	1
+3	0	1
+3	1	1
+3	2	1
+3	3	1

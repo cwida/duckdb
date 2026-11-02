@@ -55,7 +55,8 @@ void TimeTZSortKeyFunction(DataChunk &input, ExpressionState &state, Vector &res
 
 ScalarFunction ToTimestampFun::GetFunction() {
 	// to_timestamp is an alias from Postgres that converts the time in seconds to a timestamp
-	ScalarFunction func({LogicalType::DOUBLE}, LogicalType::TIMESTAMP_TZ, EpochSecFunction);
+	ScalarFunction func({}, LogicalType::TIMESTAMP_TZ, EpochSecFunction);
+	func.GetSignature().AddParameter("sec", LogicalType::DOUBLE);
 	// throws if the epoch seconds are out of range for a timestamp
 	func.SetFallible();
 	func.SetUnaryArgProperties(ArgProperties().NonDecreasing());
@@ -63,12 +64,15 @@ ScalarFunction ToTimestampFun::GetFunction() {
 }
 
 ScalarFunction NormalizedIntervalFun::GetFunction() {
-	ScalarFunction function({LogicalType::INTERVAL}, LogicalType::INTERVAL, NormalizedIntervalFunction);
+	ScalarFunction function({}, LogicalType::INTERVAL, NormalizedIntervalFunction);
+	function.GetSignature().AddParameter("interval", LogicalType::INTERVAL);
 	function.SetUnaryArgProperties(ArgProperties().NonDecreasing());
 	return function;
 }
 
 ScalarFunction TimeTZSortKeyFun::GetFunction() {
-	return ScalarFunction({LogicalType::TIME_TZ}, LogicalType::UBIGINT, TimeTZSortKeyFunction);
+	ScalarFunction func({}, LogicalType::UBIGINT, TimeTZSortKeyFunction);
+	func.GetSignature().AddParameter("time_tz", LogicalType::TIME_TZ);
+	return func;
 }
 } // namespace duckdb

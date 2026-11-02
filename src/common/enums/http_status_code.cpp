@@ -1,138 +1,12 @@
-#include "duckdb/common/http_util.hpp"
+#include "duckdb/main/http/http_util.hpp"
 
 namespace duckdb {
 
 HTTPStatusCode HTTPUtil::ToStatusCode(int32_t status_code) {
-	switch (status_code) {
-	case 100:
-		return HTTPStatusCode::Continue_100;
-	case 101:
-		return HTTPStatusCode::SwitchingProtocol_101;
-	case 102:
-		return HTTPStatusCode::Processing_102;
-	case 103:
-		return HTTPStatusCode::EarlyHints_103;
-	case 200:
-		return HTTPStatusCode::OK_200;
-	case 201:
-		return HTTPStatusCode::Created_201;
-	case 202:
-		return HTTPStatusCode::Accepted_202;
-	case 203:
-		return HTTPStatusCode::NonAuthoritativeInformation_203;
-	case 204:
-		return HTTPStatusCode::NoContent_204;
-	case 205:
-		return HTTPStatusCode::ResetContent_205;
-	case 206:
-		return HTTPStatusCode::PartialContent_206;
-	case 207:
-		return HTTPStatusCode::MultiStatus_207;
-	case 208:
-		return HTTPStatusCode::AlreadyReported_208;
-	case 226:
-		return HTTPStatusCode::IMUsed_226;
-	case 300:
-		return HTTPStatusCode::MultipleChoices_300;
-	case 301:
-		return HTTPStatusCode::MovedPermanently_301;
-	case 302:
-		return HTTPStatusCode::Found_302;
-	case 303:
-		return HTTPStatusCode::SeeOther_303;
-	case 304:
-		return HTTPStatusCode::NotModified_304;
-	case 305:
-		return HTTPStatusCode::UseProxy_305;
-	case 306:
-		return HTTPStatusCode::unused_306;
-	case 307:
-		return HTTPStatusCode::TemporaryRedirect_307;
-	case 308:
-		return HTTPStatusCode::PermanentRedirect_308;
-	case 400:
-		return HTTPStatusCode::BadRequest_400;
-	case 401:
-		return HTTPStatusCode::Unauthorized_401;
-	case 402:
-		return HTTPStatusCode::PaymentRequired_402;
-	case 403:
-		return HTTPStatusCode::Forbidden_403;
-	case 404:
-		return HTTPStatusCode::NotFound_404;
-	case 405:
-		return HTTPStatusCode::MethodNotAllowed_405;
-	case 406:
-		return HTTPStatusCode::NotAcceptable_406;
-	case 407:
-		return HTTPStatusCode::ProxyAuthenticationRequired_407;
-	case 408:
-		return HTTPStatusCode::RequestTimeout_408;
-	case 409:
-		return HTTPStatusCode::Conflict_409;
-	case 410:
-		return HTTPStatusCode::Gone_410;
-	case 411:
-		return HTTPStatusCode::LengthRequired_411;
-	case 412:
-		return HTTPStatusCode::PreconditionFailed_412;
-	case 413:
-		return HTTPStatusCode::PayloadTooLarge_413;
-	case 414:
-		return HTTPStatusCode::UriTooLong_414;
-	case 415:
-		return HTTPStatusCode::UnsupportedMediaType_415;
-	case 416:
-		return HTTPStatusCode::RangeNotSatisfiable_416;
-	case 417:
-		return HTTPStatusCode::ExpectationFailed_417;
-	case 418:
-		return HTTPStatusCode::ImATeapot_418;
-	case 421:
-		return HTTPStatusCode::MisdirectedRequest_421;
-	case 422:
-		return HTTPStatusCode::UnprocessableContent_422;
-	case 423:
-		return HTTPStatusCode::Locked_423;
-	case 424:
-		return HTTPStatusCode::FailedDependency_424;
-	case 425:
-		return HTTPStatusCode::TooEarly_425;
-	case 426:
-		return HTTPStatusCode::UpgradeRequired_426;
-	case 428:
-		return HTTPStatusCode::PreconditionRequired_428;
-	case 429:
-		return HTTPStatusCode::TooManyRequests_429;
-	case 431:
-		return HTTPStatusCode::RequestHeaderFieldsTooLarge_431;
-	case 451:
-		return HTTPStatusCode::UnavailableForLegalReasons_451;
-	case 500:
-		return HTTPStatusCode::InternalServerError_500;
-	case 501:
-		return HTTPStatusCode::NotImplemented_501;
-	case 502:
-		return HTTPStatusCode::BadGateway_502;
-	case 503:
-		return HTTPStatusCode::ServiceUnavailable_503;
-	case 504:
-		return HTTPStatusCode::GatewayTimeout_504;
-	case 505:
-		return HTTPStatusCode::HttpVersionNotSupported_505;
-	case 506:
-		return HTTPStatusCode::VariantAlsoNegotiates_506;
-	case 507:
-		return HTTPStatusCode::InsufficientStorage_507;
-	case 508:
-		return HTTPStatusCode::LoopDetected_508;
-	case 510:
-		return HTTPStatusCode::NotExtended_510;
-	case 511:
-		return HTTPStatusCode::NetworkAuthenticationRequired_511;
-	default:
+	if (status_code < 100 || status_code > 599) {
 		return HTTPStatusCode::INVALID;
 	}
+	return static_cast<HTTPStatusCode>(status_code);
 }
 
 string HTTPUtil::GetStatusMessage(HTTPStatusCode status) {
@@ -262,9 +136,10 @@ string HTTPUtil::GetStatusMessage(HTTPStatusCode status) {
 	case HTTPStatusCode::NetworkAuthenticationRequired_511:
 		return "Network Authentication Required";
 
-	default:
 	case HTTPStatusCode::InternalServerError_500:
 		return "Internal Server Error";
+	default:
+		return "Unknown";
 	}
 }
 

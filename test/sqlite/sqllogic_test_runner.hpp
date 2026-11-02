@@ -23,6 +23,14 @@ class SQLLogicParser;
 
 enum class RequireResult { PRESENT, MISSING };
 
+//! Why a whole test was skipped.
+enum class TestSkipKind : uint8_t {
+	//! the environment cannot run it: require / require-env
+	REQUIREMENT,
+	//! it was deliberately excluded: a skip list or a tag selection
+	EXCLUDED
+};
+
 struct CachedLabelData {
 public:
 	CachedLabelData(const string &hash, string result_str_p) : hash(hash), result_str(std::move(result_str_p)) {
@@ -86,7 +94,6 @@ public:
 
 	//! The map converting the labels to the hash values
 	HashLabelMap hash_label_map;
-	mutex log_lock;
 
 	//! Per-test statement tallies for --emit-test-events. Atomic: concurrent loops run the countable
 	//! commands on multiple threads; the begin/end events are emitted single-threaded at boundaries.
@@ -101,6 +108,10 @@ public:
 	//! the terminal to emit end{status:"skip-requirement"}.
 	bool test_skipped_requirement = false;
 	string test_skip_reason;
+	TestSkipKind test_skip_kind = TestSkipKind::REQUIREMENT;
+	//! Error text of the statement that failed, when it failed with one. The driver otherwise only
+	//! sees a file:line locator, and the text is what says why.
+	string last_error_message;
 	//! Locator for the failing command (file:line), stashed at the throw site for --emit-test-events.
 	//! A Catch FAIL carries no message; consumers get this anchor to correlate with captured output.
 	//! Written single-threaded: serial fails throw directly; concurrent fails are re-raised post-join.
@@ -124,12 +135,14 @@ public:
 	string ReplaceLoopIterator(string text, string loop_iterator_name, string replacement);
 	string LoopReplacement(string text, const vector<LoopDefinition> &loops);
 	static ExtensionLoadResult LoadExtension(DuckDB &db, const std::string &extension);
-	void SkipTest(const string &reason);
+	void SkipTest(const string &reason, TestSkipKind kind = TestSkipKind::REQUIREMENT);
 	static string GetSkipReasonSummary();
-	//! --emit-test-events: statement tallies (counted, not emitted) + the begin/end JSON events.
+	//! Statement tallies and lifecycle JSON events emitted under --emit-test-events.
 	void CountStatement(bool passed);
 	void CountSkipMode();
 	void EmitBegin(const string &test_name);
+	void EmitExecutionComplete(const string &test_name, const string &status, const string &data);
+	static void EmitError(const string &test_name, const string &data);
 	void EmitEnd(const string &test_name, const string &status, const string &data);
 	NewDatabaseConnection CreateDatabase(const string &db_path, bool load_database);
 	unique_ptr<Connection> ConnectToDatabase(DuckDB &db_ref);
@@ -137,15 +150,19 @@ public:
 	Value GetVariableReplacement(const string &token_name, string &variable_name);
 
 private:
+	void EmitStatusEvent(const string &event, const string &test_name, const string &status, const string &data);
 	void ExecuteInternal(SQLLogicParser &parser, const string &script);
 	RequireResult CheckRequire(SQLLogicParser &parser, const vector<string> &params);
-	void ConfigureDefaultInMemoryTemporaryDirectory(const string &script);
+	void ConfigureDefaultInMemoryTemporaryDirectory(DuckDB &database, const string &db_path);
 	static void AddSkipReason(const string &reason);
 
 private:
-	//! The TEMP_DIR the harness assigned this test, snapshotted by EmitBegin. Both events report it, so
+	//! The TEMP_DIR the harness assigned this test, snapshotted by EmitBegin. All events report it, so
 	//! a body that rewrites TEMP_DIR via test-env cannot make them name different invocations.
 	string emit_temp_dir;
+	bool execution_complete_emitted = false;
+	//! Explicit mode-skip reasons encountered while processing this test.
+	unordered_set<string> partial_skip_reasons;
 
 	//! This test's temp dir, snapshotted at construction for the destructor's loaded-database
 	//! ownership check. Resolving it there instead would call a MATERIALIZING accessor after

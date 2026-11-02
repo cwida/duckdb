@@ -1,0 +1,137 @@
+# name: test/sql/copy/parquet/read_ahead/readahead_dynamic_pruning.test
+# description: Recheck dynamic filters before decoding queued Parquet row groups
+# group: [read_ahead]
+
+require parquet
+
+require vector_size 2048
+
+statement ok
+SET threads=1
+
+statement ok
+SET async_threads=1
+
+statement ok
+SET read_ahead_depth=64
+
+statement ok
+COPY (SELECT i FROM range(16384) t(i)) TO '{TEST_DIR}/recheck_ordered.parquet' (ROW_GROUP_SIZE 2048)
+
+statement ok
+CALL enable_logging(['PhysicalOperator', 'ParquetPrefetch'])
+
+query I
+SELECT i FROM read_parquet('{TEST_DIR}/recheck_ordered.parquet') ORDER BY i LIMIT 3
+----
+0
+1
+2
+
+query I
+SELECT count(*) FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class='ParquetReader' AND event='ReadRowGroup'
+----
+8
+
+query I
+SELECT count(*) FROM duckdb_logs_parsed('ParquetPrefetch')
+WHERE file_path LIKE '%recheck_ordered.parquet'
+----
+1
+
+statement ok
+CALL disable_logging()
+
+statement ok
+CREATE TABLE recheck_values AS
+SELECT i AS id,
+       CASE WHEN i BETWEEN 8192 AND 10239 THEN NULL ELSE i // 4096 END AS k,
+       CASE WHEN i >= 22528 THEN 'nan'::DOUBLE ELSE k::DOUBLE END AS f,
+       lpad(k::VARCHAR, 4, '0') || 'é' AS s,
+       TIMESTAMP '2020-01-01' + k * INTERVAL '1 day' AS ts,
+       repeat('payload-' || i::VARCHAR, 32) AS payload
+FROM range(24576) t(i)
+
+statement ok
+COPY recheck_values TO '{TEST_DIR}/recheck_values.parquet' (ROW_GROUP_SIZE 2048)
+
+statement ok
+CREATE VIEW recheck_input AS SELECT * FROM read_parquet('{TEST_DIR}/recheck_values.parquet', can_have_nan=true)
+
+# This pairwise matrix keeps every worker count, depth, type, direction and NULL order fast.
+foreach workers,depth,column,direction,nulls 1,0,k,ASC,FIRST 4,1,f,DESC,LAST 1,64,s,ASC,LAST 4,-1,ts,DESC,FIRST 1,1,k,DESC,FIRST 4,64,f,ASC,LAST 1,-1,s,DESC,LAST 4,0,ts,ASC,FIRST
+
+statement ok
+SET threads={workers}
+
+statement ok
+SET read_ahead_depth={depth}
+
+query I
+WITH actual AS (
+    SELECT * FROM recheck_input WHERE id % 31 = 0
+    ORDER BY {column} {direction} NULLS {nulls}, id DESC LIMIT 10 OFFSET 3
+), expected AS (
+    SELECT * FROM recheck_values WHERE id % 31 = 0
+    ORDER BY {column} {direction} NULLS {nulls}, id DESC LIMIT 10 OFFSET 3
+)
+SELECT count(*) FROM (
+    (SELECT * FROM actual EXCEPT ALL SELECT * FROM expected)
+    UNION ALL
+    (SELECT * FROM expected EXCEPT ALL SELECT * FROM actual)
+)
+----
+0
+
+endloop
+
+statement ok
+SET threads=4
+
+statement ok
+SET read_ahead_depth=64
+
+foreach direction ASC DESC
+
+query I
+WITH actual AS (
+    SELECT id, k, payload FROM recheck_input WHERE id % 31 = 0
+    ORDER BY k {direction} NULLS LAST, id DESC LIMIT 128 OFFSET 3
+), expected AS (
+    SELECT id, k, payload FROM recheck_values WHERE id % 31 = 0
+    ORDER BY k {direction} NULLS LAST, id DESC LIMIT 128 OFFSET 3
+)
+SELECT count(*) FROM (
+    (TABLE actual EXCEPT ALL TABLE expected)
+    UNION ALL
+    (TABLE expected EXCEPT ALL TABLE actual)
+)
+----
+0
+
+endloop
+
+statement ok
+PREPARE recheck_plan AS SELECT id FROM recheck_input WHERE id >= $1 ORDER BY id LIMIT 3
+
+query I
+EXECUTE recheck_plan(0)
+----
+0
+1
+2
+
+query I
+EXECUTE recheck_plan(20000)
+----
+20000
+20001
+20002
+
+query I
+EXECUTE recheck_plan(0)
+----
+0
+1
+2

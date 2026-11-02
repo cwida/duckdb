@@ -72,3 +72,67 @@ ORDER BY ALL
 \/\/	1
 value with strings	1
 🦆	1
+
+
+# values of other types are escaped through their string representation
+statement ok
+CREATE TABLE blob_tbl AS SELECT * FROM (VALUES (1, 'blob'::BLOB), (2, '\x00\xFF'::BLOB)) v(id, key);
+
+statement ok
+COPY blob_tbl TO '{TEST_DIR}/escaped_partitions_blob' (FORMAT PARQUET, PARTITION_BY(key))
+
+query I
+select COUNT(*) from glob('{TEST_DIR}/escaped_partitions_blob/key=%5Cx00%5CxFF/*.parquet')
+----
+1
+
+query II
+select key, id
+from parquet_scan('{TEST_DIR}/escaped_partitions_blob/**/*.parquet')
+ORDER BY id
+----
+blob	1
+\x00\xFF	2
+
+
+statement ok
+CREATE TABLE timestamp_tbl AS SELECT * FROM
+	(VALUES (1, TIMESTAMP '2024-01-15 10:30:00'), (2, TIMESTAMP '2024-02-20 00:00:00')) v(id, key);
+
+statement ok
+COPY timestamp_tbl TO '{TEST_DIR}/escaped_partitions_timestamp' (FORMAT PARQUET, PARTITION_BY(key))
+
+# the space and the colon are escaped - a colon is not allowed in a file name on Windows
+query I
+select COUNT(*) from glob('{TEST_DIR}/escaped_partitions_timestamp/key=2024-01-15%2010%3A30%3A00/*.parquet')
+----
+1
+
+query II
+select key, id
+from parquet_scan('{TEST_DIR}/escaped_partitions_timestamp/**/*.parquet')
+ORDER BY id
+----
+2024-01-15 10:30:00	1
+2024-02-20 00:00:00	2
+
+
+statement ok
+CREATE TABLE percent_tbl AS SELECT * FROM (VALUES (1, ''), (2, 'a b%2Fc')) v(id, key);
+
+statement ok
+COPY percent_tbl TO '{TEST_DIR}/escaped_partitions_percent' (FORMAT PARQUET, PARTITION_BY(key))
+
+# the percent sign is escaped as well, so an already-escaped value does not decode back to something else
+query I
+select COUNT(*) from glob('{TEST_DIR}/escaped_partitions_percent/key=a%20b%252Fc/*.parquet')
+----
+1
+
+query II
+select key, id
+from parquet_scan('{TEST_DIR}/escaped_partitions_percent/**/*.parquet')
+ORDER BY id
+----
+(empty)	1
+a b%2Fc	2

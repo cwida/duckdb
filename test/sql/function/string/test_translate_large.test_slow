@@ -1,0 +1,8 @@
+# name: test/sql/function/string/test_translate_large.test_slow
+# description: Test TRANSLATE with a result larger than the maximum string size
+# group: [string]
+
+statement error
+select length(TRANSLATE(repeat('a', 1100000000), 'a', '😀'))
+----
+<REGEX>:.*Out of Range Error.*maximum supported string size.*

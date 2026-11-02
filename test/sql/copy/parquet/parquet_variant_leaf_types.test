@@ -1,0 +1,26 @@
+# name: test/sql/copy/parquet/parquet_variant_leaf_types.test
+# description: VARIANT groups in Parquet whose metadata/value columns are not plain BYTE_ARRAY are rejected
+# group: [parquet]
+
+require parquet
+
+statement error
+SELECT * FROM read_parquet('data/parquet-testing/broken/variant_value_int96.parquet');
+----
+the 'value' column of VARIANT column "var" must be a binary BYTE_ARRAY column
+
+# GEOMETRY logical type on the metadata column
+statement error
+SELECT * FROM read_parquet('data/parquet-testing/broken/variant_metadata_geometry.parquet');
+----
+the 'metadata' column of VARIANT column "var" must be a binary BYTE_ARRAY column
+
+query I
+SELECT 42;
+----
+42
+
+query II
+SELECT * FROM read_parquet('data/parquet-testing/variant_bool_true.parquet');
+----
+1	true

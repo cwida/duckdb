@@ -1,0 +1,50 @@
+# name: test/sql/copy/parquet/read_ahead/readahead_waiting_consumers.test
+# description: Consumers waiting for a slow producer get every job once and still stop at the execution time limit
+# group: [read_ahead]
+
+require parquet
+
+# the file system delay is not available on Windows
+require notwindows
+
+statement ok
+SET threads=16
+
+statement ok
+COPY (SELECT range AS i, range % 40 AS p FROM range(400000)) TO '{TEST_DIR}/waiting_consumers' (FORMAT parquet, PARTITION_BY (p))
+
+statement ok
+SET GLOBAL debug_local_file_system_delay_ms=2
+
+foreach depth 1 4 -1
+
+statement ok
+SET read_ahead_depth={depth}
+
+query II
+SELECT count(*), sum(i) FROM read_parquet('{TEST_DIR}/waiting_consumers/**/*.parquet')
+----
+400000	79999800000
+
+endloop
+
+# the consumers wait while a producer opens a file, they still notice the deadline
+statement ok
+SET GLOBAL debug_local_file_system_delay_ms=50
+
+statement ok
+SET read_ahead_depth=1
+
+statement ok
+SET max_execution_time=100
+
+statement error
+SELECT sum(i) FROM read_parquet('{TEST_DIR}/waiting_consumers/**/*.parquet')
+----
+Query exceeded maximum execution time
+
+statement ok
+RESET max_execution_time
+
+statement ok
+SET GLOBAL debug_local_file_system_delay_ms=0

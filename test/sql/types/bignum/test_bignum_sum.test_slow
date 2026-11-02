@@ -2,23 +2,35 @@
 # description: Test TPC-H Bignum Sum
 # group: [bignum]
 
-mode skip unsupported
-
 require parquet
 
+statement ok
+CREATE TABLE hits AS
+SELECT CASE WHEN i % 97 = 0 THEN NULL
+            ELSE 1000000000000000000::BIGINT * (1 + i % 2) + i END AS UserId
+FROM range(300000) t(i);
+
+statement ok
+COPY hits TO '{TEST_DIR}/hits.parquet' (ROW_GROUP_SIZE 8192);
+
+foreach threads 1 4
+
+statement ok
+SET threads={threads};
+
 query I
-select sum((case when hits.UserId%2=0 then -hits.UserId else hits.UserId end)::BIGNUM) AS res from '/Users/holanda/Desktop/hits.parquet';
+select sum((case when hits.UserId%2=0 then -hits.UserId else hits.UserId end)::BIGNUM) AS res from read_parquet('{TEST_DIR}/hits.parquet') hits;
 ----
-401709002105338393903791
+148455000000000000299962
 
 query I
 select sum(res + res2 + res2 + res2) from (
-  select sum((case when hits.UserId%7=0 then -hits.UserId else hits.UserId end)::BIGNUM) AS res, sum((case when hits.UserId%7=0 then hits.UserId else -hits.UserId end)::BIGNUM) AS res2 from '/Users/holanda/Desktop/hits.parquet'
+  select sum((case when hits.UserId%7=0 then -hits.UserId else hits.UserId end)::BIGNUM) AS res, sum((case when hits.UserId%7=0 then hits.UserId else -hits.UserId end)::BIGNUM) AS res2 from read_parquet('{TEST_DIR}/hits.parquet') hits
   ), range(10000);
 ----
--3606109359585005662547309500000
+-6362260000000636225394760000
 
-mode unskip
+endloop
 
 require tpch
 

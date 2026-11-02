@@ -1,0 +1,30 @@
+# name: test/sql/parser/switch_null_arguments.test
+# description: switch with NULL constant arguments behaves like the equivalent CASE expression
+# group: [parser]
+
+statement ok
+CREATE TABLE null_test AS FROM VALUES (1), (NULL), (2) i(val);
+
+query II
+SELECT val, switch(val, MAP {1: 'one'}, NULL) FROM null_test ORDER BY val;
+----
+1	one
+2	NULL
+NULL	NULL
+
+query I
+SELECT switch(NULL::INT, MAP {1: 'one'}, 'other');
+----
+other
+
+query I
+SELECT switch(MAP {true: 'one'}, NULL);
+----
+one
+
+query I
+SELECT switch(val, MAP {1: 'one', 2: 'two'}, 'other') FROM null_test ORDER BY val;
+----
+one
+two
+other

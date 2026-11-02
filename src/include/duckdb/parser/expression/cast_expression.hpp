@@ -10,6 +10,7 @@
 
 #include "duckdb/parser/parsed_expression.hpp"
 #include "duckdb/common/types.hpp"
+#include "duckdb/parser/expression/type_expression.hpp"
 
 namespace duckdb {
 
@@ -19,15 +20,26 @@ public:
 	static constexpr const ExpressionClass TYPE = ExpressionClass::CAST;
 
 public:
-	DUCKDB_API CastExpression(LogicalType target, unique_ptr<ParsedExpression> child, bool try_cast = false);
+	DUCKDB_API CastExpression(unique_ptr<TypeExpression> target, unique_ptr<ParsedExpression> child,
+	                          bool try_cast = false);
+
+	//! Cast to an already-resolved type.
+	//! The type is written back out as a TypeExpression, so the target is always an unbound type expression.
+	//! See TypeExpression::FromLogicalType.
+	DUCKDB_API CastExpression(const LogicalType &target, unique_ptr<ParsedExpression> child, bool try_cast = false);
 
 public:
-	const LogicalType &TargetType() const {
+	const TypeExpression &TargetType() const {
+		return *cast_type;
+	}
+	const unique_ptr<TypeExpression> &GetTargetType() const {
 		return cast_type;
 	}
-	LogicalType &TargetTypeMutable() {
-		return cast_type;
+	TypeExpression &TargetTypeMutable() {
+		return *cast_type;
 	}
+	void SetTargetType(unique_ptr<TypeExpression> target);
+
 	const ParsedExpression &Child() const {
 		return *child;
 	}
@@ -58,8 +70,8 @@ public:
 private:
 	//! The child of the cast expression
 	unique_ptr<ParsedExpression> child;
-	//! The type to cast to
-	LogicalType cast_type;
+	//! The type to cast to, as an unbound type expression
+	unique_ptr<TypeExpression> cast_type;
 	//! Whether or not this is a try_cast expression
 	bool try_cast;
 

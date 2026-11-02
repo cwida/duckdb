@@ -1,0 +1,71 @@
+# name: test/sql/window/test_quantile_skip_list.test
+# description: Test quantile window functions using the skip-list accelerator
+# group: [window]
+
+statement ok
+SET debug_window_mode='window';
+
+# Widely separated constant frame bounds select the skip-list implementation.
+# Moving the frame exercises incremental removal and insertion, including NULL values.
+query IIRIR
+WITH t(i, v) AS (
+	SELECT i, CASE WHEN i = 3 THEN NULL ELSE i * 10 END
+	FROM range(12) r(i)
+)
+SELECT i,
+	quantile_disc(v, 0.5) OVER w,
+	quantile_cont(v, 0.5) OVER w,
+	quantile_disc(v, [0.25, 0.75]) OVER w,
+	mad(v) OVER w
+FROM t
+WINDOW w AS (ORDER BY i ROWS BETWEEN 10 PRECEDING AND 1 PRECEDING)
+ORDER BY i;
+----
+0	NULL	NULL	NULL	NULL
+1	0	0.0	[0, 0]	0.0
+2	0	5.0	[0, 10]	5.0
+3	10	10.0	[0, 20]	10.0
+4	10	10.0	[0, 20]	10.0
+5	10	15.0	[0, 20]	10.0
+6	20	20.0	[10, 40]	20.0
+7	20	30.0	[10, 50]	20.0
+8	40	40.0	[10, 60]	20.0
+9	40	45.0	[10, 60]	25.0
+10	50	50.0	[20, 70]	30.0
+11	60	60.0	[40, 80]	20.0
+
+# The skip list retains values across cursor page loads, so string values must be owned
+# rather than views into the current page. The strings are unique (flat pages), non-inlinable,
+# and large enough that a trailing frame crosses collection block boundaries.
+statement ok
+CREATE TABLE skip_strings AS
+SELECT i, 'payload_' || lpad(CAST(i AS VARCHAR), 8, '0') AS v
+FROM range(50000) t(i);
+
+statement ok
+SET threads=1;
+
+# the median of the trailing frame is its exact middle element
+query II
+SELECT count(*), count(*) FILTER (WHERE m = 'payload_' || lpad(CAST(greatest(i - 50, i // 2) AS VARCHAR), 8, '0'))
+FROM (
+	SELECT i, quantile_disc(v, 0.5) OVER (ORDER BY i ROWS BETWEEN 100 PRECEDING AND CURRENT ROW) AS m
+	FROM skip_strings
+)
+----
+50000	50000
+
+# the list form extracts several quantiles from the same state-owned buffer
+query II
+SELECT count(*), count(*) FILTER (WHERE i < 100 OR m = [
+	'payload_' || lpad(CAST(i - 75 AS VARCHAR), 8, '0'),
+	'payload_' || lpad(CAST(i - 25 AS VARCHAR), 8, '0')])
+FROM (
+	SELECT i, quantile_disc(v, [0.25, 0.75]) OVER (ORDER BY i ROWS BETWEEN 100 PRECEDING AND CURRENT ROW) AS m
+	FROM skip_strings
+)
+----
+50000	50000
+
+statement ok
+RESET threads;

@@ -8,7 +8,7 @@
 
 #pragma once
 
-#include "duckdb/common/fast_mem.hpp"
+#include "duckdb/common/helper.hpp"
 #include "duckdb/common/bitpacking.hpp"
 #include "resizable_buffer.hpp"
 
@@ -113,7 +113,7 @@ public:
 			T aligned_data[BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE];
 
 			// Copy over to aligned buffer
-			FastMemcpy(aligned_data, src.ptr, next_read);
+			memcpy(aligned_data, src.ptr, next_read);
 
 			// Unpack
 			BitpackingPrimitives::UnPackBlock<T>(data_ptr_cast(dst), data_ptr_cast(aligned_data), width, true);

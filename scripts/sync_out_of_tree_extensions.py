@@ -8,13 +8,16 @@ to determine which extensions to sync:
   BUILD_EXTENSIONS   Semicolon-separated list of extension names
                      (e.g. "spatial;delta;postgres_scanner")
   DUCKDB_EXTENSIONS  Alias for BUILD_EXTENSIONS
+  CORE_EXTENSIONS   Legacy extension list, added to BUILD_EXTENSIONS
   EXTENSION_CONFIGS  Semicolon-separated list of cmake config file paths
                      whose duckdb_extension_load(... GIT_URL ...) calls are parsed
+  EXTENSION_CONFIG_BASE_DIR
+                     Directory of named extension configs (defaults to
+                     .github/config/extensions under the DuckDB source tree)
 
-For each out-of-tree extension found, the corresponding cmake config in
-.github/config/extensions/<name>.cmake is parsed to obtain GIT_URL, GIT_TAG,
-SUBMODULES, and APPLY_PATCHES. The extension is then cloned (or updated) at
-extension/external/<name>.
+Explicit EXTENSION_CONFIGS take precedence over named extension configs.
+Each config supplies GIT_URL, GIT_TAG, SUBMODULES, and APPLY_PATCHES. The extension
+is then cloned (or updated) at extension/external/<name>.
 """
 
 import argparse
@@ -38,77 +41,115 @@ def run_cmd(cmd, cwd=None, check=True):
     return result
 
 
-def parse_cmake_file(cmake_path):
+def cmake_tokens(content):
+    """Tokenize literal arguments, parentheses and comments without evaluating CMake."""
+    pattern = re.compile(
+        r'(?P<bracket>#?\[(?P<equals>=*)\[.*?\](?P=equals)\])'
+        r'|(?P<comment>#[^\n]*)'
+        r'|(?P<quoted>"(?:\\.|[^"\\])*")'
+        r'|(?P<paren>[()])'
+        r'|(?P<argument>(?:\\.|[^\s()"#])+)',
+        re.DOTALL,
+    )
+    for match in pattern.finditer(content):
+        value = match.group()
+        kind = match.lastgroup
+        if kind == 'comment' or (kind == 'bracket' and value.startswith('#')):
+            continue
+        if kind == 'bracket':
+            width = len(match.group('equals')) + 2
+            value = value[width:-width]
+            if value.startswith('\n'):
+                value = value[1:]
+        elif kind in ('quoted', 'argument'):
+            if kind == 'quoted':
+                value = value[1:-1]
+            value = re.sub(r'\\\n|\\([^A-Za-z0-9;])', lambda m: m.group(1) or '', value)
+        yield ('paren' if kind == 'paren' else 'argument'), value
+
+
+def cmake_commands(content):
+    tokens = iter(cmake_tokens(content))
+    for kind, name in tokens:
+        if kind != 'argument' or next(tokens, None) != ('paren', '('):
+            continue
+        depth = 1
+        arguments = []
+        for kind, value in tokens:
+            if kind == 'paren':
+                depth += 1 if value == '(' else -1
+            if depth == 0:
+                break
+            arguments.append(value)
+        yield name.lower(), arguments
+
+
+def parse_cmake_file(cmake_path, extension_config_base_dir=None, include_non_remote=False, _include_stack=()):
     """
     Parse a cmake file and return a list of out-of-tree extension descriptors,
     i.e. duckdb_extension_load() calls that contain GIT_URL.
 
-    Follows include("${EXTENSION_CONFIG_BASE_DIR}/foo.cmake") directives,
-    resolving them relative to the directory of cmake_path.
+    Follows absolute includes and includes using EXTENSION_CONFIG_BASE_DIR or
+    CMAKE_CURRENT_LIST_DIR. Non-remote declarations can be retained for precedence.
 
     Each descriptor is a dict with keys:
       name, git_url, git_tag, submodules (list, may be empty), apply_patches (bool)
+
+    This reads literal declarations; it does not evaluate conditionals or variables.
     """
-    cmake_path = Path(cmake_path)
+    cmake_path = Path(cmake_path).resolve()
+    if cmake_path in _include_stack:
+        raise ValueError(f"Recursive extension config include: {cmake_path}")
+    include_stack = (*_include_stack, cmake_path)
     content = cmake_path.read_text(encoding='utf-8')
 
     extensions = []
 
-    # Follow include("${EXTENSION_CONFIG_BASE_DIR}/foo.cmake") directives.
-    # EXTENSION_CONFIG_BASE_DIR resolves to the 'extensions/' subdirectory next to this file.
-    ext_config_base_dir = cmake_path.parent / 'extensions'
-    for inc_match in re.finditer(
-        r"include\s*\(\s*[\"']?\$\{EXTENSION_CONFIG_BASE_DIR\}/(\S+?\.cmake)[\"']?\s*\)", content
-    ):
-        included = ext_config_base_dir / inc_match.group(1)
-        if included.exists():
-            extensions.extend(parse_cmake_file(included))
-
-    # Match duckdb_extension_load( NAME ... ) blocks (possibly multi-line).
-    # The closing ) is found by scanning for the first unbalanced ')'.
-    for m in re.finditer(r'duckdb_extension_load\s*\(', content):
-        start = m.end()
-        depth = 1
-        i = start
-        while i < len(content) and depth > 0:
-            if content[i] == '(':
-                depth += 1
-            elif content[i] == ')':
-                depth -= 1
-            i += 1
-        body = content[start : i - 1]
-
-        # First token is the extension name
-        name_match = re.match(r'\s*(\w[\w-]*)', body)
-        if not name_match:
+    ext_config_base_dir = Path(extension_config_base_dir or cmake_path.parent / 'extensions').resolve()
+    options = {'DONT_LINK', 'DONT_BUILD', 'LOAD_TESTS', 'APPLY_PATCHES'}
+    keywords = options | {
+        'SOURCE_DIR',
+        'INCLUDE_DIR',
+        'TEST_DIR',
+        'GIT_URL',
+        'GIT_TAG',
+        'SUBMODULES',
+        'EXTENSION_VERSION',
+        'LINKED_LIBS',
+    }
+    for command, arguments in cmake_commands(content):
+        if command == 'include' and arguments:
+            include_path = arguments[0].replace('${EXTENSION_CONFIG_BASE_DIR}', str(ext_config_base_dir))
+            include_path = include_path.replace('${CMAKE_CURRENT_LIST_DIR}', str(cmake_path.parent))
+            included = Path(include_path)
+            if included.is_absolute():
+                if not included.exists() and 'OPTIONAL' in arguments[1:]:
+                    continue
+                extensions.extend(parse_cmake_file(included, ext_config_base_dir, include_non_remote, include_stack))
             continue
-        name = name_match.group(1)
-
-        git_url_match = re.search(r'\bGIT_URL\s+(\S+)', body)
-        git_tag_match = re.search(r'\bGIT_TAG\s+(\S+)', body)
-
-        if not git_url_match or not git_tag_match:
-            continue  # in-tree extension or DONT_BUILD — skip
-
-        # SUBMODULES can be a space-separated list of paths; everything up to
-        # the next keyword or end-of-body
-        submodules = []
-        submodules_match = re.search(
-            r'\bSUBMODULES\s+((?:(?!(?:GIT_URL|GIT_TAG|DONT_LINK|DONT_BUILD|LOAD_TESTS|APPLY_PATCHES|INCLUDE_DIR|TEST_DIR|EXTENSION_VERSION|LINKED_LIBS|\))).)+)',
-            body,
-        )
-        if submodules_match:
-            submodules = submodules_match.group(1).split()
-
-        apply_patches = bool(re.search(r'\bAPPLY_PATCHES\b', body))
+        if command != 'duckdb_extension_load' or not arguments:
+            continue
+        name = arguments[0]
+        values = {}
+        keyword = None
+        for argument in arguments[1:]:
+            if argument in keywords:
+                keyword = argument
+                values[keyword] = []
+            elif keyword is not None:
+                values[keyword].append(argument)
+        remote = values.get('GIT_URL') and values.get('GIT_TAG') and 'DONT_BUILD' not in values
+        if not remote and not include_non_remote:
+            continue
+        submodules = [path for argument in values.get('SUBMODULES', []) for path in argument.split(';') if path]
 
         extensions.append(
             {
                 'name': name,
-                'git_url': git_url_match.group(1),
-                'git_tag': git_tag_match.group(1),
+                'git_url': values['GIT_URL'][0] if remote else None,
+                'git_tag': values['GIT_TAG'][0] if remote else None,
                 'submodules': submodules,
-                'apply_patches': apply_patches,
+                'apply_patches': 'APPLY_PATCHES' in values,
             }
         )
 
@@ -151,34 +192,47 @@ def get_patch_files(patch_dir):
     return sorted(f for f in os.listdir(patch_dir) if f.endswith('.patch'))
 
 
-def apply_patches_as_commits(ext_dir, patch_dir, patches):
+def commit_patch(repo_dir, patch_name):
+    run_cmd(['git', 'add', '-A'], cwd=repo_dir)
+    run_cmd(
+        [
+            'git',
+            '-c',
+            'user.name=DuckDB Sync',
+            '-c',
+            'user.email=sync@duckdb.org',
+            'commit',
+            '-m',
+            patch_name,
+            '--no-verify',
+        ],
+        cwd=repo_dir,
+    )
+
+
+def apply_patches_as_commits(ext_dir, patch_dir, patches, submodules):
     """
-    Apply each patch file with git-apply and create a commit whose message is
-    the patch filename (e.g. "fix.patch").
+    Apply each patch file and create commits whose message is the patch filename
+    (e.g. "fix.patch"), including commits for changes inside submodules.
     """
     for patch_name in patches:
         patch_file = patch_dir / patch_name
-        # Apply to the working tree (not --index): a patch may touch files inside a checked-out
-        # submodule (e.g. database-connector/...), and "git apply --index" cannot stage paths that
-        # live in a submodule ("does not exist in index"). We stage everything explicitly afterwards.
-        # --whitespace=nowarn: never rewrite patch content; --whitespace=fix corrupts
-        # patches that themselves add patch files containing trailing whitespace.
-        run_cmd(['git', 'apply', '--whitespace=nowarn', str(patch_file)], cwd=ext_dir)
-        run_cmd(['git', 'add', '-A'], cwd=ext_dir)
-        run_cmd(
-            [
-                'git',
-                '-c',
-                'user.name=DuckDB Sync',
-                '-c',
-                'user.email=sync@duckdb.org',
-                'commit',
-                '-m',
-                patch_name,
-                '--no-verify',
-            ],
-            cwd=ext_dir,
-        )
+        # Apply exactly as scripts/apply_extension_patches.py does for the FetchContent build, so a
+        # patch that builds there builds here too: `patch -p1 --forward` tolerates the context drift
+        # (fuzz) an extension bump can introduce, where `git apply` rejects a single changed context
+        # line.  It writes to the working tree, not the index, so a patch may touch files inside a
+        # checked-out submodule (e.g. database-connector/...); everything is staged explicitly below.
+        # --no-backup-if-mismatch: a fuzzy apply otherwise leaves <file>.orig behind, which the
+        # `git add -A` below would commit into the extension.
+        run_cmd(['patch', '-p1', '--forward', '--no-backup-if-mismatch', '-i', str(patch_file)], cwd=ext_dir)
+        # A superproject cannot stage file changes made inside a submodule. Commit those first so
+        # the parent patch commit can record the resulting gitlink and remain clean on later syncs.
+        for submodule in submodules:
+            submodule_dir = ext_dir / submodule
+            status = run_cmd(['git', 'status', '--porcelain'], cwd=submodule_dir)
+            if status.stdout.strip():
+                commit_patch(submodule_dir, patch_name)
+        commit_patch(ext_dir, patch_name)
 
 
 def _exportable_reason(commits_oldest_first):
@@ -241,10 +295,18 @@ def export_commits_as_patches(name, ext_dir, resolved_git_tag, patch_dir):
     for commit_hash, msg in commits:
         # Capture raw bytes: text-mode capture would translate CRLF line endings
         # in the diff to LF, corrupting patches that touch CRLF files.
+        # Expand gitlink changes back into ordinary file diffs so exported patches can be applied
+        # to a fresh checkout with either `patch -p1` or `git apply`.
         diff_proc = subprocess.run(
-            ['git', 'diff', f'{commit_hash}^', commit_hash], cwd=ext_dir, capture_output=True, check=True
+            ['git', 'diff', '--submodule=diff', f'{commit_hash}^', commit_hash],
+            cwd=ext_dir,
+            capture_output=True,
+            check=True,
         )
-        (patch_dir / msg).write_bytes(diff_proc.stdout)
+        diff = b''.join(
+            line for line in diff_proc.stdout.splitlines(keepends=True) if not line.startswith(b'Submodule ')
+        )
+        (patch_dir / msg).write_bytes(diff)
         print(f"    Exported: {msg}")
 
     print(f"  {name}: wrote {len(commits)} patch(es) to .github/patches/extensions/{name}/")
@@ -329,7 +391,7 @@ def sync_extension(ext, external_dir, repo_root):
             run_cmd(['git', 'submodule', 'update', '--init', '--force', '--'] + submodules, cwd=ext_dir)
 
         if patches and not skip_patches:
-            apply_patches_as_commits(ext_dir, patch_dir, patches)
+            apply_patches_as_commits(ext_dir, patch_dir, patches, submodules)
 
         print(f"  Cloned {name} @ {git_tag}")
     elif skip_patches:
@@ -377,51 +439,54 @@ def sync_extension(ext, external_dir, repo_root):
             run_cmd(['git', 'submodule', 'update', '--init', '--force', '--'] + submodules, cwd=ext_dir)
 
         if patches:
-            apply_patches_as_commits(ext_dir, patch_dir, patches)
+            apply_patches_as_commits(ext_dir, patch_dir, patches, submodules)
 
         print(f"  {'Force-reset' if force else 'Updated'} {name} @ {git_tag}")
 
 
-def collect_extensions(repo_root, build_extensions_arg=None, extension_configs_arg=None):
+def collect_extensions(
+    repo_root, build_extensions_arg=None, extension_configs_arg=None, extension_config_base_dir=None
+):
     """Return a dict of name -> extension descriptor for all out-of-tree extensions to sync."""
-    extensions_config_dir = repo_root / '.github' / 'config' / 'extensions'
+    config_dir = extension_config_base_dir or os.environ.get('EXTENSION_CONFIG_BASE_DIR')
+    extensions_config_dir = repo_root / (config_dir or '.github/config/extensions')
+    if config_dir and not extensions_config_dir.is_dir():
+        raise FileNotFoundError(f"Extension config directory does not exist: {extensions_config_dir}")
 
     raw_build_extensions = (
         build_extensions_arg or os.environ.get('BUILD_EXTENSIONS') or os.environ.get('DUCKDB_EXTENSIONS') or ''
     )
+    raw_core_extensions = os.environ.get('CORE_EXTENSIONS', '')
     raw_extension_configs = extension_configs_arg or os.environ.get('EXTENSION_CONFIGS') or ''
 
     extensions = {}  # name -> descriptor (first seen wins)
 
-    # From named extensions in BUILD_EXTENSIONS / DUCKDB_EXTENSIONS
-    for name in re.split(r'[;,\s]+', raw_build_extensions):
-        name = name.strip()
-        if not name:
-            continue
-        cmake_path = extensions_config_dir / f'{name}.cmake'
-        if not cmake_path.exists():
-            continue  # in-tree extension — no cmake file needed
-        for ext in parse_cmake_file(cmake_path):
-            if ext['name'] == name and ext['name'] not in extensions:
-                extensions[ext['name']] = ext
-
-    # From cmake config files in EXTENSION_CONFIGS
+    # Explicit project declarations take precedence, including local and disabled extensions.
     for config_path_str in re.split(r'[;]+', raw_extension_configs):
         config_path_str = config_path_str.strip()
         if not config_path_str:
             continue
-        full_path = Path(config_path_str) if os.path.isabs(config_path_str) else repo_root / config_path_str
-        if not full_path.exists():
-            print(f"  Warning: EXTENSION_CONFIGS path not found: {full_path}", file=sys.stderr)
+        full_path = repo_root / config_path_str
+        for ext in parse_cmake_file(full_path, extensions_config_dir, include_non_remote=True):
+            extensions.setdefault(ext['name'], ext)
+
+    # Legacy Makefiles may wrap the whole list in shell quotes.
+    raw_extensions = ';'.join(value.strip("'\"") for value in (raw_build_extensions, raw_core_extensions))
+    for name in re.split(r'[;,\s]+', raw_extensions):
+        name = name.strip("'\"")
+        if not name or name in extensions:
             continue
-        for ext in parse_cmake_file(full_path):
-            if ext['name'] not in extensions:
+        cmake_path = extensions_config_dir / f'{name}.cmake'
+        if not cmake_path.exists():
+            continue  # in-tree extension — no cmake file needed
+        for ext in parse_cmake_file(cmake_path, extensions_config_dir, include_non_remote=True):
+            if ext['name'] == name and ext['name'] not in extensions:
                 extensions[ext['name']] = ext
 
-    return extensions
+    return {name: ext for name, ext in extensions.items() if ext['git_url']}
 
 
-VCPKG_BUILTIN_BASELINE = '84bab45d415d22042bd0b9081aea57f362da3f35'
+VCPKG_BUILTIN_BASELINE = 'cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3'  # Release 2026.06.24
 VCPKG_REGISTRY_BASELINE = 'd485389ad737bb05a5e8afd1fbde5672b559f19e'
 VCPKG_REGISTRY_PACKAGES = ['avro-c', 'vcpkg-cmake']
 
@@ -443,19 +508,16 @@ def merge_vcpkg_manifests(synced_extension_names, external_dir, repo_root, outpu
     dependencies_dict = []
     overlay_ports = []
     overlay_triplets = []
-    found_any = False
 
     openssl_version = os.environ.get('OPENSSL_VERSION_OVERRIDE', '3.6.0')
 
     def fold_in_manifest(manifest_dir):
         # Read <manifest_dir>/vcpkg.json (if present) into the accumulators, resolving
         # its overlay paths relative to that directory. Returns True if it was read.
-        nonlocal found_any
         vcpkg_json_path = manifest_dir / 'vcpkg.json'
         if not vcpkg_json_path.exists():
             return False
 
-        found_any = True
         base_dir = manifest_dir.resolve()
 
         with open(vcpkg_json_path, encoding='utf-8') as f:
@@ -483,10 +545,8 @@ def merge_vcpkg_manifests(synced_extension_names, external_dir, repo_root, outpu
     out_path = output_dir / 'vcpkg.json'
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if not found_any:
-        # No extensions need vcpkg.  Write an empty manifest so that CMake can
-        # always find build/vcpkg.json when VCPKG_MANIFEST_DIR is set, but vcpkg
-        # will install nothing.
+    if not dependencies_str and not dependencies_dict:
+        # an empty vcpkg.json counts as no dependency; the empty manifest keeps VCPKG_MANIFEST_DIR valid for cmake
         with open(out_path, 'w', encoding='utf-8') as f:
             json.dump({'dependencies': []}, f, ensure_ascii=False, indent=4)
             f.write('\n')
@@ -557,6 +617,11 @@ def main():
     parser.add_argument('--build-extensions', default=None, help='Semicolon-separated list of extension names')
     parser.add_argument('--extension-configs', default=None, help='Semicolon-separated list of cmake config file paths')
     parser.add_argument(
+        '--extension-config-base-dir',
+        default=None,
+        help='Directory of named extension configs (relative paths are resolved from the DuckDB source tree)',
+    )
+    parser.add_argument(
         '--output-dir',
         default=str(repo_root / 'build'),
         help='Directory to write the merged vcpkg.json into (default: build/)',
@@ -566,7 +631,9 @@ def main():
     external_dir = repo_root / 'extension' / 'external'
     output_dir = Path(args.output_dir)
 
-    extensions = collect_extensions(repo_root, args.build_extensions, args.extension_configs)
+    extensions = collect_extensions(
+        repo_root, args.build_extensions, args.extension_configs, args.extension_config_base_dir
+    )
 
     # The directory of each --extension-configs file is the driving extension's repo
     # root; fold its own vcpkg.json (if any) into the merged manifest so the driving

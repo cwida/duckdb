@@ -538,8 +538,12 @@
 
 /*
  * If defined, all the features necessary for background threads are present.
+ * Not on macOS: background threads use pthread_cond_wait, which cannot wait
+ * on an os_unfair_lock.
  */
+#ifndef __APPLE__
 #define JEMALLOC_BACKGROUND_THREAD
+#endif
 
 /*
  * If defined, jemalloc symbols are not exported (doesn't work when

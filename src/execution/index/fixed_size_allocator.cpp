@@ -5,6 +5,11 @@
 
 namespace duckdb {
 
+void FixedSizeAllocator::ThrowInvalidPointer(const IndexPointer ptr) const {
+	throw DataCorruptionException("Index pointer to buffer %llu, segment %llu does not point to an allocated segment",
+	                              ptr.GetBufferId(), ptr.GetOffset());
+}
+
 FixedSizeAllocator::FixedSizeAllocator(const idx_t segment_size, BlockManager &block_manager, MemoryTag memory_tag)
     : block_manager(block_manager), buffer_manager(block_manager.buffer_manager), memory_tag(memory_tag),
       segment_size(segment_size), total_segment_count(0) {
@@ -15,13 +20,18 @@ FixedSizeAllocator::FixedSizeAllocator(const idx_t segment_size, BlockManager &b
 
 	// calculate how many segments fit into one buffer (available_segments_per_buffer)
 
-	idx_t bits_per_value = sizeof(validity_t) * 8;
-	idx_t byte_count = 0;
+	const idx_t block_size = block_manager.GetBlockSize();
+	const idx_t bits_per_value = sizeof(validity_t) * 8;
 
-	bitmask_count = 0;
-	available_segments_per_buffer = 0;
+	// each full validity_t value is followed by bits_per_value segments: skip all of them at once
+	const idx_t full_value_bytes = sizeof(validity_t) + bits_per_value * segment_size;
+	const idx_t full_value_count = block_size / full_value_bytes;
+	idx_t byte_count = full_value_count * full_value_bytes;
 
-	while (byte_count < block_manager.GetBlockSize()) {
+	bitmask_count = full_value_count;
+	available_segments_per_buffer = full_value_count * bits_per_value;
+
+	while (byte_count < block_size) {
 		if (!bitmask_count || (bitmask_count * bits_per_value) % available_segments_per_buffer == 0) {
 			// we need to add another validity_t value to the bitmask, to allow storing another
 			// bits_per_value segments on a buffer
@@ -29,7 +39,7 @@ FixedSizeAllocator::FixedSizeAllocator(const idx_t segment_size, BlockManager &b
 			byte_count += sizeof(validity_t);
 		}
 
-		auto remaining_bytes = block_manager.GetBlockSize() - byte_count;
+		auto remaining_bytes = block_size - byte_count;
 		auto remaining_segments = MinValue(remaining_bytes / segment_size, bits_per_value);
 
 		if (remaining_segments == 0) {
@@ -48,7 +58,7 @@ IndexPointer FixedSizeAllocator::New() {
 	if (!buffer_with_free_space.IsValid()) {
 		// Add a new buffer.
 		auto buffer_id = GetAvailableBufferId();
-		buffers[buffer_id] = make_uniq<FixedSizeBuffer>(block_manager, memory_tag);
+		buffers[buffer_id] = make_shared_ptr<FixedSizeBuffer>(block_manager, memory_tag);
 		buffers_with_free_space.insert(buffer_id);
 		buffer_with_free_space = buffer_id;
 
@@ -70,10 +80,9 @@ IndexPointer FixedSizeAllocator::New() {
 
 	D_ASSERT(buffers.find(buffer_id) != buffers.end());
 	auto &buffer = buffers.find(buffer_id)->second;
-	auto offset = buffer->GetOffset(bitmask_count, available_segments_per_buffer);
+	auto offset = buffer->AllocateSegment(bitmask_count, available_segments_per_buffer);
 
 	total_segment_count++;
-	buffer->segment_count++;
 
 	// If the buffer is full, we cache the next buffer that we're going to fill.
 	if (buffer->segment_count == available_segments_per_buffer) {
@@ -89,25 +98,16 @@ void FixedSizeAllocator::Free(const IndexPointer ptr) {
 	auto offset = ptr.GetOffset();
 
 	auto buffer_it = buffers.find(buffer_id);
-	D_ASSERT(buffer_it != buffers.end());
+	if (offset >= available_segments_per_buffer || buffer_it == buffers.end()) {
+		ThrowInvalidPointer(ptr);
+	}
 	auto &buffer = buffer_it->second;
 
-	{
-		// Get a handle to the buffer's validity mask (offset 0).
-		SegmentHandle handle(*buffer, 0);
-		const auto bitmask_ptr = handle.GetPtr<validity_t>();
-
-		ValidityMask mask(bitmask_ptr, offset + 1); // FIXME
-		D_ASSERT(!mask.RowIsValid(offset));
-		mask.SetValid(offset);
-	}
-
-	D_ASSERT(total_segment_count > 0);
-	D_ASSERT(buffer->segment_count > 0);
+	buffer->FreeSegment(offset, available_segments_per_buffer);
 
 	// Adjust the allocator fields.
+	D_ASSERT(total_segment_count > 0);
 	total_segment_count--;
-	buffer->segment_count--;
 
 	// Early-out, if the buffer is not empty.
 	if (buffer->segment_count != 0) {
@@ -269,6 +269,7 @@ IndexPointer FixedSizeAllocator::VacuumPointer(const IndexPointer old_ptr) {
 
 	auto old_handle = GetHandle(old_ptr);
 	auto new_handle = GetHandle(new_ptr);
+	new_handle.MarkModified();
 
 	memcpy(new_handle.GetPtr(), old_handle.GetPtr(), segment_size);
 	return new_ptr;
@@ -278,40 +279,74 @@ FixedSizeAllocatorInfo FixedSizeAllocator::GetInfo() const {
 	FixedSizeAllocatorInfo info;
 	info.segment_size = segment_size;
 
-	for (const auto &buffer : buffers) {
-		info.buffer_ids.push_back(buffer.first);
+	for (const auto &[buffer_id, buffer] : buffers) {
+		if (buffer->IsEmpty()) {
+			continue;
+		}
+
+		info.buffer_ids.push_back(buffer_id);
 
 		// Memory safety check.
-		if (buffer.first > idx_t(MAX_ROW_ID)) {
+		if (buffer_id > idx_t(MAX_ROW_ID)) {
 			throw InternalException("Initializing invalid buffer ID in FixedSizeAllocator::GetInfo");
 		}
 
-		info.block_pointers.push_back(buffer.second->block_pointer);
-		info.segment_counts.push_back(buffer.second->segment_count);
-		info.allocation_sizes.push_back(buffer.second->allocation_size);
-	}
+		info.block_pointers.push_back(buffer->block_pointer);
+		info.segment_counts.push_back(buffer->segment_count);
+		info.allocation_sizes.push_back(buffer->allocation_size);
 
-	for (auto &buffer_id : buffers_with_free_space) {
-		info.buffers_with_free_space.push_back(buffer_id);
+		if (buffers_with_free_space.find(buffer_id) != buffers_with_free_space.end()) {
+			info.buffers_with_free_space.push_back(buffer_id);
+		}
 	}
 
 	return info;
 }
 
-void FixedSizeAllocator::SerializeBuffers(PartialBlockManager &partial_block_manager) {
-	for (auto &buffer : buffers) {
-		buffer.second->Serialize(partial_block_manager, available_segments_per_buffer, segment_size, bitmask_offset);
+unsafe_unique_ptr<FixedSizeAllocator> FixedSizeAllocator::Persist(PartialBlockManager &partial_block_manager) {
+	auto result = make_unsafe_uniq<FixedSizeAllocator>(segment_size, block_manager, memory_tag);
+
+	D_ASSERT(result->available_segments_per_buffer == available_segments_per_buffer);
+	D_ASSERT(result->bitmask_count == bitmask_count);
+	D_ASSERT(result->bitmask_offset == bitmask_offset);
+
+	result->total_segment_count = total_segment_count;
+
+	for (auto &[buffer_id, buffer] : buffers) {
+		if (buffer->IsEmpty()) {
+			continue;
+		}
+
+		D_ASSERT(buffer->readers == 0);
+		if (buffer->RequiresPersist()) {
+			result->buffers[buffer_id] =
+			    buffer->Persist(partial_block_manager, available_segments_per_buffer, segment_size, bitmask_offset);
+		} else {
+			result->buffers[buffer_id] = buffer;
+		}
+
+		if (buffers_with_free_space.find(buffer_id) != buffers_with_free_space.end()) {
+			result->buffers_with_free_space.insert(buffer_id);
+		}
 	}
+
+	result->NextBufferWithFreeSpace();
+
+	return result;
 }
 
 vector<IndexBufferInfo> FixedSizeAllocator::InitSerializationToWAL() {
 	vector<IndexBufferInfo> buffer_infos;
-	for (auto &buffer : buffers) {
-		buffer.second->SetAllocationSize(available_segments_per_buffer, segment_size, bitmask_offset);
+	for (auto &[buffer_id, buffer] : buffers) {
+		if (buffer->IsEmpty()) {
+			continue;
+		}
+
+		buffer->SetAllocationSize(available_segments_per_buffer, segment_size, bitmask_offset);
 
 		// Get a handle to the buffer's memory (offset 0).
-		SegmentHandle handle(*buffer.second, 0);
-		buffer_infos.emplace_back(handle.GetPtr(), buffer.second->allocation_size);
+		SegmentHandle handle(*buffer, 0);
+		buffer_infos.emplace_back(handle.GetPtr(), buffer->allocation_size);
 	}
 	return buffer_infos;
 }
@@ -340,11 +375,11 @@ void FixedSizeAllocator::Init(const FixedSizeAllocatorInfo &info) {
 		// create the FixedSizeBuffer
 		if (info.transient_block_handles) {
 			D_ASSERT(info.transient_block_handles->size() == info.buffer_ids.size());
-			buffers[buffer_id] = make_uniq<FixedSizeBuffer>(block_manager, segment_count, allocation_size,
-			                                                std::move((*info.transient_block_handles)[i]));
+			buffers[buffer_id] = make_shared_ptr<FixedSizeBuffer>(block_manager, segment_count, allocation_size,
+			                                                      std::move((*info.transient_block_handles)[i]));
 		} else {
 			buffers[buffer_id] =
-			    make_uniq<FixedSizeBuffer>(block_manager, segment_count, allocation_size, buffer_block_pointer);
+			    make_shared_ptr<FixedSizeBuffer>(block_manager, segment_count, allocation_size, buffer_block_pointer);
 		}
 		total_segment_count += segment_count;
 	}
@@ -369,7 +404,7 @@ void FixedSizeAllocator::Deserialize(MetadataManager &metadata_manager, const Bl
 		auto segment_count = reader.Read<idx_t>();
 		auto allocation_size = reader.Read<idx_t>();
 		buffers[buffer_id] =
-		    make_uniq<FixedSizeBuffer>(block_manager, segment_count, allocation_size, buffer_block_pointer);
+		    make_shared_ptr<FixedSizeBuffer>(block_manager, segment_count, allocation_size, buffer_block_pointer);
 		total_segment_count += segment_count;
 	}
 	for (idx_t i = 0; i < buffers_with_free_space_count; i++) {

@@ -1,0 +1,73 @@
+# name: test/sql/connect/connect_passthrough_quack.test
+# description: While CONNECT-ed, statements are forwarded unparsed and invalid SQL fails on the server
+# group: [connect]
+
+require quack
+
+require httpfs
+
+# the Quack log type is registered by the extension, so it has to be loaded before enabling it
+statement ok
+LOAD quack;
+
+# the Quack log records every request before it is parsed; server-side entries have no 'server' URL
+statement ok
+CALL enable_logging('Quack');
+
+statement ok
+SET VARIABLE server_uri = (SELECT concat('''', listen_uri, '''') FROM quack_serve('quack:localhost:0', token='test_token'));
+
+set variable server_uri <variable:server_uri>
+
+statement ok
+ATTACH {server_uri} AS qk (TOKEN 'test_token');
+
+statement ok
+CONNECT qk;
+
+statement error
+CREATE GRANT;
+----
+syntax error at or near "GRANT"
+
+# the connection stays usable after a server-side failure
+query I
+SELECT 42;
+----
+42
+
+# CONNECT is forwarded as well - only DISCONNECT stays local, so the client can always get back.
+# Forwarding CONNECT is what lets a connection chain over several hops.
+statement error
+CONNECT no_such_db;
+----
+<REGEX>:.*Error:.*
+
+statement ok
+DISCONNECT;
+
+# the forwarded CONNECT reached the server
+query I
+SELECT count(*) > 0 FROM duckdb_logs WHERE type = 'Quack' AND message LIKE '%''server'': NULL%'
+	AND message LIKE '%''query'': CONNECT no_such_db;%';
+----
+true
+
+# the server received CREATE GRANT and its own parser rejected it
+query I
+SELECT count(*) FROM duckdb_logs WHERE type = 'Quack' AND message LIKE '%''server'': NULL%'
+	AND message LIKE '%''query'': CREATE GRANT;%' AND message LIKE '%''error'': ''Parser Error: syntax error at or near "GRANT"%';
+----
+1
+
+# locally, the same statement is rejected by the client parser
+statement error
+CREATE GRANT;
+----
+<REGEX>:Parser Error:.*syntax error at or near "GRANT".*
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE type = 'Quack' AND message LIKE '%''server'': NULL%'
+	AND message LIKE '%''query'': CREATE GRANT;%';
+----
+1

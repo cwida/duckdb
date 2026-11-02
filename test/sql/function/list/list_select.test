@@ -1,0 +1,25 @@
+# name: test/sql/function/list/list_select.test
+# description: Test list_select with vectorized inputs
+# group: [list]
+
+query I
+SELECT list_select(values, positions)
+FROM (VALUES
+	(1, [1, 2, NULL, 4], [4, 2, 5, -1]),
+	(2, [1, 2, NULL, 4], [3]),
+	(3, NULL::INTEGER[], [1]),
+	(4, [1, 2], NULL::INTEGER[]),
+	(5, []::INTEGER[], []::INTEGER[])
+) t(id, values, positions)
+ORDER BY id
+----
+[4, 2, NULL, NULL]
+[NULL]
+NULL
+NULL
+[]
+
+statement error
+SELECT list_select([1, 2, 3], [NULL])
+----
+NULLs are not allowed as list elements in the second input parameter.

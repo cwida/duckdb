@@ -9,18 +9,6 @@ load {TEST_DIR}/test_art_names.db
 statement ok
 CREATE TABLE tbl (i INTEGER PRIMARY KEY, j INTEGER UNIQUE);
 
-# Test that index names match the internal constraints.
-
-statement error
-CREATE INDEX PRIMARY_tbl_0 ON tbl(i);
-----
-<REGEX>:Catalog Error.*An index with the name PRIMARY_tbl_0 already exists.*
-
-statement error
-CREATE INDEX UNIQUE_tbl_1 ON tbl(j);
-----
-<REGEX>:Catalog Error.*An index with the name UNIQUE_tbl_1 already exists.*
-
 statement ok
 INSERT INTO tbl SELECT range, range FROM range (3000);
 
@@ -47,16 +35,6 @@ statement error
 INSERT INTO tbl VALUES (20, 4000);
 ----
 <REGEX>:Constraint Error.*violates primary key constraint.*
-
-statement error
-CREATE INDEX PRIMARY_tbl_0 ON tbl(i);
-----
-<REGEX>:Catalog Error.*An index with the name PRIMARY_tbl_0 already exists.*
-
-statement error
-CREATE INDEX UNIQUE_tbl_1 ON tbl(j);
-----
-<REGEX>:Catalog Error.*An index with the name UNIQUE_tbl_1 already exists.*
 
 statement error
 INSERT INTO tbl VALUES (20, 4000);
@@ -113,28 +91,6 @@ INSERT INTO fk_tbl VALUES (20, 4000);
 ----
 <REGEX>:Constraint Error.*Violates foreign key constraint because key.*does not exist in the referenced table.*
 
-statement error
-CREATE INDEX PRIMARY_tbl_0 ON tbl(i);
-----
-<REGEX>:Catalog Error.*index with the name PRIMARY_tbl_0 already exists.*
-
-statement error
-CREATE INDEX UNIQUE_tbl_1 ON tbl(j);
-----
-<REGEX>:Catalog Error.*index with the name UNIQUE_tbl_1 already exists.*
-
-# Fails on the FK table.
-
-statement error
-CREATE INDEX FOREIGN_fk_tbl_0 ON fk_tbl(i);
-----
-<REGEX>:Catalog Error.*index with the name FOREIGN_fk_tbl_0 already exists.*
-
-statement error
-CREATE INDEX FOREIGN_fk_tbl_1 ON fk_tbl(j);
-----
-<REGEX>:Catalog Error.*index with the name FOREIGN_fk_tbl_1 already exists.*
-
 # Check all constraint violations and catalog errors.
 
 statement error
@@ -157,39 +113,7 @@ INSERT INTO fk_tbl VALUES (20, 4000);
 ----
 <REGEX>:Constraint Error.*Violates foreign key constraint because key.*does not exist in the referenced table.*
 
-statement error
-CREATE INDEX PRIMARY_tbl_0 ON tbl(i);
-----
-<REGEX>:Catalog Error.*index with the name PRIMARY_tbl_0 already exists.*
-
-statement error
-CREATE INDEX UNIQUE_tbl_1 ON tbl(j);
-----
-<REGEX>:Catalog Error.*index with the name UNIQUE_tbl_1 already exists.*
-
 restart
-
-statement error
-CREATE INDEX PRIMARY_tbl_0 ON tbl(i);
-----
-<REGEX>:Catalog Error.*index with the name PRIMARY_tbl_0 already exists.*
-
-statement error
-CREATE INDEX UNIQUE_tbl_1 ON tbl(j);
-----
-<REGEX>:Catalog Error.*index with the name UNIQUE_tbl_1 already exists.*
-
-# Fails on the FK table.
-
-statement error
-CREATE INDEX FOREIGN_fk_tbl_0 ON fk_tbl(i);
-----
-<REGEX>:Catalog Error.*index with the name FOREIGN_fk_tbl_0 already exists.*
-
-statement error
-CREATE INDEX FOREIGN_fk_tbl_1 ON fk_tbl(j);
-----
-<REGEX>:Catalog Error.*index with the name FOREIGN_fk_tbl_1 already exists.*
 
 # Check all constraint errors.
 

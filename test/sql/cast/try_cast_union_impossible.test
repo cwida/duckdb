@@ -1,0 +1,33 @@
+# name: test/sql/cast/try_cast_union_impossible.test
+# description: TRY_CAST into a UNION without a possible member mapping returns NULL
+# group: [cast]
+
+query I
+SELECT TRY_CAST(u AS UNION(b INT)) FROM (SELECT union_value(a:=1) u);
+----
+NULL
+
+query I
+SELECT TRY_CAST(1 AS UNION(b VARCHAR));
+----
+NULL
+
+query I
+SELECT TRY(CAST(union_value(a:=1) AS UNION(b INT)));
+----
+NULL
+
+query I
+SELECT TRY_CAST(NULL::INT AS UNION(b VARCHAR));
+----
+NULL
+
+statement error
+SELECT CAST(union_value(a:=1) AS UNION(b INT));
+----
+<REGEX>:Conversion Error.*not present in target union.*
+
+statement error
+SELECT CAST(1 AS UNION(b VARCHAR));
+----
+<REGEX>:Conversion Error.*can't be implicitly cast to any of the union member types.*

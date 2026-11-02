@@ -33,5 +33,13 @@ SELECT length(
 # Vuln154: json_merge_patch()
 
 # Vuln155: json_strip_nulls()
+query I
+SELECT length(
+    json_strip_nulls(
+        (repeat('{"a":', 200000) || '1' || repeat('}', 200000))::JSON
+    )
+)
+----
+1200001
 
 # Vuln157: json_deserialize_sql()

@@ -15,7 +15,7 @@ CREATE TABLE tbl2 (
 	b AS (a) REFERENCES tbl1(a),
 );
 ----
-<REGEX>:.*Binder Error.*Failed to create foreign key.*
+Binder Error: Failed to create foreign key: referenced column "b" is a generated column
 
 #Creating a foreign key constraint on a generated column
 statement error
@@ -25,7 +25,7 @@ CREATE TABLE tbl2 (
 	FOREIGN KEY (b) REFERENCES tbl1 (a)
 );
 ----
-<REGEX>:.*Binder Error.*Failed to create foreign key.*
+Binder Error: Failed to create foreign key: referenced column "b" is a generated column
 
 # Referencing a generated column is not supported because in order to do that
 # you have to create a UNIQUE/PRIMARY KEY constraint on a generated column first - which isn't supported (yet)

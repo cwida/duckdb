@@ -152,3 +152,92 @@ ORDER BY y, x;
 ----
 
 endloop
+
+# A filtered COUNT(*) is answered from a count kept per entry of the filter mask rather than by
+# walking the frame, so the rows an entry boundary falls on are what these check. Every answer is
+# compared against the same count spelled as a sum, which walks the frame the plain way.
+
+statement ok
+CREATE TABLE counted AS
+    SELECT i, i % 7 AS part, i % 3 = 0 AS keep, (i * 37) % 101 < 50 AS scattered
+    FROM range(0, 500) t(i);
+
+# a frame that grows a row at a time crosses every boundary there is
+query I
+SELECT count(*) FROM (
+    SELECT count(*) FILTER (WHERE keep) OVER w AS counted,
+           sum(CASE WHEN keep THEN 1 ELSE 0 END) OVER w AS summed
+    FROM counted WINDOW w AS (ORDER BY i ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+) WHERE counted IS DISTINCT FROM summed
+----
+0
+
+# and one that shrinks a row at a time crosses them from the other side
+query I
+SELECT count(*) FROM (
+    SELECT count(*) FILTER (WHERE scattered) OVER w AS counted,
+           sum(CASE WHEN scattered THEN 1 ELSE 0 END) OVER w AS summed
+    FROM counted WINDOW w AS (ORDER BY i ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING)
+) WHERE counted IS DISTINCT FROM summed
+----
+0
+
+# frames of a fixed width start and end part way through an entry
+foreach width 1 2 63 64 65 127 200
+
+query I
+SELECT count(*) FROM (
+    SELECT count(*) FILTER (WHERE scattered) OVER w AS counted,
+           sum(CASE WHEN scattered THEN 1 ELSE 0 END) OVER w AS summed
+    FROM counted WINDOW w AS (ORDER BY i ROWS BETWEEN {width} PRECEDING AND CURRENT ROW)
+) WHERE counted IS DISTINCT FROM summed
+----
+0
+
+endloop
+
+# EXCLUDE splits the frame into several, so a row counts the pieces either side of what it leaves out
+query I
+SELECT count(*) FROM (
+    SELECT count(*) FILTER (WHERE keep) OVER wc AS c_cur, sum(CASE WHEN keep THEN 1 ELSE 0 END) OVER wc AS s_cur,
+           count(*) FILTER (WHERE keep) OVER wg AS c_grp, sum(CASE WHEN keep THEN 1 ELSE 0 END) OVER wg AS s_grp,
+           count(*) FILTER (WHERE keep) OVER wt AS c_tie, sum(CASE WHEN keep THEN 1 ELSE 0 END) OVER wt AS s_tie
+    FROM counted
+    WINDOW wc AS (PARTITION BY part ORDER BY i ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+                  EXCLUDE CURRENT ROW),
+           wg AS (PARTITION BY part ORDER BY i ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+                  EXCLUDE GROUP),
+           wt AS (PARTITION BY part ORDER BY i ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+                  EXCLUDE TIES)
+) WHERE c_cur IS DISTINCT FROM s_cur OR c_grp IS DISTINCT FROM s_grp OR c_tie IS DISTINCT FROM s_tie
+----
+0
+
+# a filter nothing passes, and one everything passes
+query II
+SELECT DISTINCT
+    count(*) FILTER (WHERE false) OVER (ORDER BY i ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW),
+    count(*) FILTER (WHERE true) OVER (ORDER BY i ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)
+FROM counted
+----
+0	500
+
+# an empty frame counts nothing whether or not a filter is there to leave rows out
+query II
+SELECT DISTINCT
+    count(*) OVER (ORDER BY i ROWS BETWEEN 2 PRECEDING AND 3 PRECEDING),
+    count(*) FILTER (WHERE keep) OVER (ORDER BY i ROWS BETWEEN 2 PRECEDING AND 3 PRECEDING)
+FROM counted
+----
+0	0
+
+# partitions that end part way through an entry of the mask
+query I
+SELECT count(*) FROM (
+    SELECT count(*) FILTER (WHERE keep) OVER w AS counted,
+           sum(CASE WHEN keep THEN 1 ELSE 0 END) OVER w AS summed
+    FROM counted
+    WINDOW w AS (PARTITION BY part ORDER BY i ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+) WHERE counted IS DISTINCT FROM summed
+----
+0

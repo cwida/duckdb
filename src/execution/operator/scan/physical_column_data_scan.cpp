@@ -3,6 +3,7 @@
 #include "duckdb/logging/log_type.hpp"
 #include "duckdb/logging/logger.hpp"
 
+#include "duckdb/common/atomic.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/common/types/column/column_data_collection_segment.hpp"
 #include "duckdb/execution/operator/aggregate/physical_hash_aggregate.hpp"
@@ -70,27 +71,6 @@ PhysicalColumnDataScan::PhysicalColumnDataScan(PhysicalPlan &physical_plan, vect
       column_ids(GenerateColumnDataColumnIds(this->types)), cte_index(cte_index) {
 }
 
-class PhysicalColumnDataGlobalScanState : public GlobalSourceState {
-public:
-	PhysicalColumnDataGlobalScanState(ClientContext &context, const ColumnDataCollection &collection,
-	                                  const vector<column_t> &column_ids, const OperatorPartitionInfo &partition_info)
-	    : batch_size(GetColumnDataScanBatchSize(context, collection.Count(), partition_info)),
-	      max_threads(ColumnDataScanBatchCount(collection.Count(), batch_size)) {
-		collection.InitializeScan(global_scan_state, column_ids);
-	}
-
-	idx_t MaxThreads() override {
-		return max_threads;
-	}
-
-public:
-	ColumnDataParallelScanState global_scan_state;
-
-	const idx_t batch_size;
-	const idx_t max_threads;
-	idx_t next_batch_index = 0;
-};
-
 struct ColumnDataScanEntry {
 	ColumnDataScanEntry(idx_t chunk_index_p, idx_t segment_index_p, idx_t row_index_p)
 	    : chunk_index(chunk_index_p), segment_index(segment_index_p), row_index(row_index_p) {
@@ -101,36 +81,63 @@ struct ColumnDataScanEntry {
 	idx_t row_index;
 };
 
+class PhysicalColumnDataGlobalScanState : public GlobalSourceState {
+public:
+	PhysicalColumnDataGlobalScanState(ClientContext &context, const ColumnDataCollection &collection,
+	                                  const vector<column_t> &column_ids, const OperatorPartitionInfo &partition_info) {
+		collection.InitializeScan(global_scan_state, column_ids);
+		auto batch_size = GetColumnDataScanBatchSize(context, collection.Count(), partition_info);
+		auto chunk_count = collection.ChunkCount();
+		scan_entries.reserve(chunk_count);
+		batch_offsets.reserve(MinValue(chunk_count, ColumnDataScanBatchCount(collection.Count(), batch_size)) + 1);
+		batch_offsets.push_back(0);
+
+		idx_t batch_rows = 0;
+		idx_t chunk_index;
+		idx_t segment_index;
+		idx_t row_index;
+		while (collection.NextScanIndex(global_scan_state.scan_state, chunk_index, segment_index, row_index)) {
+			scan_entries.emplace_back(chunk_index, segment_index, row_index);
+			batch_rows += collection.GetSegments()[segment_index]->chunk_data[chunk_index].count;
+			if (batch_rows >= batch_size) {
+				batch_offsets.push_back(scan_entries.size());
+				batch_rows = 0;
+			}
+		}
+		if (batch_offsets.back() != scan_entries.size()) {
+			batch_offsets.push_back(scan_entries.size());
+		}
+	}
+
+	idx_t MaxThreads() override {
+		return MaxValue<idx_t>(batch_offsets.size() - 1, 1);
+	}
+
+public:
+	ColumnDataParallelScanState global_scan_state;
+	vector<ColumnDataScanEntry> scan_entries;
+	//! Batch boundaries in scan_entries, including the end sentinel.
+	vector<idx_t> batch_offsets;
+	atomic<idx_t> next_batch_index {0};
+};
+
 class PhysicalColumnDataLocalScanState : public LocalSourceState {
 public:
-	bool AssignTask(const ColumnDataCollection &collection, PhysicalColumnDataGlobalScanState &gstate) {
-		entries.clear();
-		entry_index = 0;
-		batch_index = DConstants::INVALID_INDEX;
-
-		idx_t task_count = 0;
-		lock_guard<mutex> l(gstate.global_scan_state.lock);
-		while (task_count < gstate.batch_size) {
-			idx_t chunk_index;
-			idx_t segment_index;
-			idx_t row_index;
-			if (!collection.NextScanIndex(gstate.global_scan_state.scan_state, chunk_index, segment_index, row_index)) {
-				break;
-			}
-			entries.emplace_back(chunk_index, segment_index, row_index);
-			task_count += collection.GetSegments()[segment_index]->chunk_data[chunk_index].count;
-		}
-
-		if (entries.empty()) {
+	bool AssignTask(PhysicalColumnDataGlobalScanState &gstate) {
+		// Metadata is immutable; the atomic ticket assigns exclusive ownership of an ordered batch.
+		batch_index = gstate.next_batch_index.fetch_add(1, std::memory_order_relaxed);
+		if (batch_index >= gstate.batch_offsets.size() - 1) {
+			batch_index = DConstants::INVALID_INDEX;
 			return false;
 		}
-		batch_index = gstate.next_batch_index++;
+		entry_index = gstate.batch_offsets[batch_index];
+		entry_end = gstate.batch_offsets[batch_index + 1];
 		return true;
 	}
 
 	ColumnDataLocalScanState local_scan_state;
-	vector<ColumnDataScanEntry> entries;
 	idx_t entry_index = 0;
+	idx_t entry_end = 0;
 	idx_t batch_index = DConstants::INVALID_INDEX;
 };
 
@@ -159,12 +166,12 @@ SourceResultType PhysicalColumnDataScan::GetDataInternal(ExecutionContext &conte
                                                          OperatorSourceInput &input) const {
 	auto &gstate = input.global_state.Cast<PhysicalColumnDataGlobalScanState>();
 	auto &lstate = input.local_state.Cast<PhysicalColumnDataLocalScanState>();
-	if (lstate.entry_index >= lstate.entries.size() && !lstate.AssignTask(*collection, gstate)) {
+	if (lstate.entry_index >= lstate.entry_end && !lstate.AssignTask(gstate)) {
 		chunk.Reset();
 		return SourceResultType::FINISHED;
 	}
 
-	auto &entry = lstate.entries[lstate.entry_index++];
+	auto &entry = gstate.scan_entries[lstate.entry_index++];
 	if (column_ids.empty()) {
 		chunk.Reset();
 		auto &chunk_data = collection->GetSegments()[entry.segment_index]->chunk_data[entry.chunk_index];
@@ -204,11 +211,13 @@ ProgressData PhysicalColumnDataScan::GetProgress(ClientContext &context, GlobalS
 		return progress;
 	}
 	auto &state = gstate.Cast<PhysicalColumnDataGlobalScanState>();
-	lock_guard<mutex> guard(state.global_scan_state.lock);
-	auto total = MaxValue<idx_t>(collection->Count(), 1);
+	auto next_batch = state.next_batch_index.load(std::memory_order_relaxed);
+	auto next_entry =
+	    next_batch < state.batch_offsets.size() - 1 ? state.batch_offsets[next_batch] : state.scan_entries.size();
 	ProgressData progress;
-	progress.done = double(MinValue<idx_t>(state.global_scan_state.scan_state.next_row_index, total));
-	progress.total = double(total);
+	progress.done =
+	    double(next_entry < state.scan_entries.size() ? state.scan_entries[next_entry].row_index : collection->Count());
+	progress.total = double(MaxValue<idx_t>(collection->Count(), 1));
 	return progress;
 }
 

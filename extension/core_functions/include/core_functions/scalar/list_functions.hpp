@@ -93,7 +93,7 @@ struct ArrayUniqueFun {
 
 struct ListValueFun {
 	static constexpr const char *Name = "list_value";
-	static constexpr const char *Parameters = "any,...";
+	static constexpr const char *Parameters = "value,...";
 	static constexpr const char *Description = "Creates a LIST containing the argument values.";
 	static constexpr const char *Example = "list_value(4, 5, 6)";
 	static constexpr const char *Categories = "list";
@@ -125,7 +125,7 @@ struct ArraySliceFun {
 
 struct ListSortFun {
 	static constexpr const char *Name = "list_sort";
-	static constexpr const char *Parameters = "list";
+	static constexpr const char *Parameters = "list,sort_order,null_order";
 	static constexpr const char *Description = "Sorts the elements of the list.";
 	static constexpr const char *Example = "list_sort([3, 6, 1, 2])";
 	static constexpr const char *Categories = "list";
@@ -141,7 +141,7 @@ struct ArraySortFun {
 
 struct ListGradeUpFun {
 	static constexpr const char *Name = "list_grade_up";
-	static constexpr const char *Parameters = "list";
+	static constexpr const char *Parameters = "list,sort_order,null_order";
 	static constexpr const char *Description = "Works like list_sort, but the results are the indexes that correspond to the position in the original list instead of the actual values.";
 	static constexpr const char *Example = "list_grade_up([3, 6, 1, 2])";
 	static constexpr const char *Categories = "list";
@@ -163,7 +163,7 @@ struct GradeUpFun {
 
 struct ListReverseSortFun {
 	static constexpr const char *Name = "list_reverse_sort";
-	static constexpr const char *Parameters = "list";
+	static constexpr const char *Parameters = "list,null_order";
 	static constexpr const char *Description = "Sorts the elements of the list in reverse order.";
 	static constexpr const char *Example = "list_reverse_sort([3, 6, 1, 2])";
 	static constexpr const char *Categories = "list";
@@ -179,7 +179,7 @@ struct ArrayReverseSortFun {
 
 struct ListTransformFun {
 	static constexpr const char *Name = "list_transform";
-	static constexpr const char *Parameters = "list,lambda(x)";
+	static constexpr const char *Parameters = "list,lambda";
 	static constexpr const char *Description = "Returns a list that is the result of applying the `lambda` function to each element of the input `list`. The return type is defined by the return type of the `lambda` function.";
 	static constexpr const char *Example = "list_transform([1, 2, 3], lambda x : x + 1)";
 	static constexpr const char *Categories = "list,lambda";
@@ -213,7 +213,7 @@ struct ApplyFun {
 
 struct ListFilterFun {
 	static constexpr const char *Name = "list_filter";
-	static constexpr const char *Parameters = "list,lambda(x)";
+	static constexpr const char *Parameters = "list,lambda";
 	static constexpr const char *Description = "Constructs a list from those elements of the input `list` for which the `lambda` function returns `true`. DuckDB must be able to cast the `lambda` function's return type to `BOOL`. The return type of `list_filter` is the same as the input list's.";
 	static constexpr const char *Example = "list_filter([3, 4, 5], lambda x : x > 4)";
 	static constexpr const char *Categories = "list,lambda";
@@ -235,7 +235,7 @@ struct FilterFun {
 
 struct ListReduceFun {
 	static constexpr const char *Name = "list_reduce";
-	static constexpr const char *Parameters = "list,lambda(x,y),initial_value";
+	static constexpr const char *Parameters = "list,lambda,initial_value";
 	static constexpr const char *Description = "Reduces all elements of the input `list` into a single scalar value by executing the `lambda` function on a running result and the next list element. The `lambda` function has an optional `initial_value` argument.";
 	static constexpr const char *Example = "list_reduce([1, 2, 3], lambda x, y : x + y)";
 	static constexpr const char *Categories = "list,lambda";

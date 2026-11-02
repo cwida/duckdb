@@ -1,0 +1,129 @@
+# name: test/sql/sql_export/mark_strategies.test
+# description: MARK strategy results and SQL export restrictions retain three-valued semantics
+# group: [sql_export]
+
+statement ok
+SET debug_verify_statement='explain_sql_strict';
+
+statement ok
+SET nested_loop_join_threshold=0;
+
+statement ok
+SET merge_join_threshold=0;
+
+statement ok
+SET prefer_range_joins=true;
+
+query TT
+EXPLAIN SELECT __mark_join_marker FROM (VALUES (1,3),(NULL::INTEGER,2)) l(a,c) JOIN BY (TYPE MARK) (VALUES (2,1),(NULL::INTEGER,2)) r(b,d) ON a=b ORDER BY a NULLS LAST;
+----
+physical_plan	<REGEX>:.*Hash Join.*
+
+query I
+SELECT __mark_join_marker FROM (VALUES (1,3),(NULL::INTEGER,2)) l(a,c) JOIN BY (TYPE MARK) (VALUES (2,1),(NULL::INTEGER,2)) r(b,d) ON a=b ORDER BY a NULLS LAST;
+----
+NULL
+NULL
+
+query TT
+EXPLAIN SELECT __mark_join_marker FROM (VALUES (1,3),(NULL::INTEGER,2)) l(a,c) JOIN BY (TYPE MARK) (VALUES (2,1),(NULL::INTEGER,2)) r(b,d) ON a IS NOT DISTINCT FROM b ORDER BY a NULLS LAST;
+----
+physical_plan	<REGEX>:.*Hash Join.*
+
+query I
+SELECT __mark_join_marker FROM (VALUES (1,3),(NULL::INTEGER,2)) l(a,c) JOIN BY (TYPE MARK) (VALUES (2,1),(NULL::INTEGER,2)) r(b,d) ON a IS NOT DISTINCT FROM b ORDER BY a NULLS LAST;
+----
+false
+true
+
+query TT
+EXPLAIN SELECT __mark_join_marker FROM (VALUES (1,3),(NULL::INTEGER,2)) l(a,c) JOIN BY (TYPE MARK) (VALUES (2,1),(NULL::INTEGER,2)) r(b,d) ON a=b AND c=d ORDER BY a NULLS LAST;
+----
+physical_plan	<REGEX>:.*Hash Join.*
+
+query I
+SELECT __mark_join_marker FROM (VALUES (1,3),(NULL::INTEGER,2)) l(a,c) JOIN BY (TYPE MARK) (VALUES (2,1),(NULL::INTEGER,2)) r(b,d) ON a=b AND c=d ORDER BY a NULLS LAST;
+----
+false
+NULL
+
+query TT
+EXPLAIN SELECT __mark_join_marker FROM (VALUES (1,3),(NULL::INTEGER,2)) l(a,c) JOIN BY (TYPE MARK) (VALUES (2,1),(NULL::INTEGER,2)) r(b,d) ON a IS NOT DISTINCT FROM b AND c IS NOT DISTINCT FROM d ORDER BY a NULLS LAST;
+----
+physical_plan	<REGEX>:.*Hash Join.*
+
+query I
+SELECT __mark_join_marker FROM (VALUES (1,3),(NULL::INTEGER,2)) l(a,c) JOIN BY (TYPE MARK) (VALUES (2,1),(NULL::INTEGER,2)) r(b,d) ON a IS NOT DISTINCT FROM b AND c IS NOT DISTINCT FROM d ORDER BY a NULLS LAST;
+----
+false
+true
+
+query T
+SELECT __mark_join_marker FROM (VALUES (1,3),(NULL::INTEGER,2)) l(a,c) JOIN BY (TYPE MARK) (VALUES (2,1),(NULL::INTEGER,2)) r(b,d) ON a IS NOT DISTINCT FROM b AND c=d ORDER BY a NULLS LAST;
+----
+false
+true
+
+query T
+SELECT __mark_join_marker FROM (VALUES (1,3),(NULL::INTEGER,2)) l(a,c) JOIN BY (TYPE MARK) (VALUES (2,1),(NULL::INTEGER,2)) r(b,d) ON a IS NOT DISTINCT FROM b AND c<d ORDER BY a NULLS LAST;
+----
+false
+false
+
+query TT
+EXPLAIN SELECT __mark_join_marker FROM (VALUES (1,3),(NULL::INTEGER,2)) l(a,c) JOIN BY (TYPE MARK) (VALUES (2,1),(NULL::INTEGER,2)) r(b,d) ON a<b ORDER BY a NULLS LAST;
+----
+physical_plan	<REGEX>:.*Piecewise Merge Join.*
+
+query I
+SELECT __mark_join_marker FROM (VALUES (1,3),(NULL::INTEGER,2)) l(a,c) JOIN BY (TYPE MARK) (VALUES (2,1),(NULL::INTEGER,2)) r(b,d) ON a<b ORDER BY a NULLS LAST;
+----
+true
+NULL
+
+statement ok
+CREATE OR REPLACE TABLE nested_l(g INTEGER,x INTEGER[]);
+
+statement ok
+CREATE OR REPLACE TABLE nested_r(g INTEGER,y INTEGER[]);
+
+statement ok
+INSERT INTO nested_l VALUES (1,NULL),(2,NULL);
+
+statement ok
+INSERT INTO nested_r VALUES (1,NULL);
+
+query T
+SELECT __mark_join_marker FROM nested_l l JOIN BY (TYPE MARK) nested_r r ON l.g IS NOT DISTINCT FROM r.g AND l.x=r.y ORDER BY l.g;
+----
+NULL
+false
+
+query T
+SELECT __mark_join_marker FROM nested_l l JOIN BY (TYPE MARK) nested_r r ON l.g IS NOT DISTINCT FROM r.g AND l.x<>r.y ORDER BY l.g;
+----
+NULL
+false
+
+statement ok
+CREATE OR REPLACE TABLE nested_l(g INTEGER,x STRUCT(v INTEGER));
+
+statement ok
+CREATE OR REPLACE TABLE nested_r(g INTEGER,y STRUCT(v INTEGER));
+
+statement ok
+INSERT INTO nested_l VALUES (1,NULL),(2,NULL);
+
+statement ok
+INSERT INTO nested_r VALUES (1,NULL);
+
+query T
+SELECT __mark_join_marker FROM nested_l l JOIN BY (TYPE MARK) nested_r r ON l.g IS NOT DISTINCT FROM r.g AND l.x=r.y ORDER BY l.g;
+----
+NULL
+false
+
+query IIII
+SELECT a,c,b,d FROM (VALUES (1,3),(NULL::INTEGER,2)) l(a,c) JOIN (VALUES (2,1),(NULL::INTEGER,2)) r(b,d) ON a<b AND c>d;
+----
+1	3	2	1

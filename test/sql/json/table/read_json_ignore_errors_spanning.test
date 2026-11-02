@@ -1,0 +1,24 @@
+# name: test/sql/json/table/read_json_ignore_errors_spanning.test
+# description: A malformed record does not affect the records that follow it when ignoring errors
+# group: [table]
+
+require json
+
+query I
+SELECT * FROM read_json('data/json/ignore_errors_spanning_record.ndjson', format = 'newline_delimited', ignore_errors = true, columns = {'a': 'VARCHAR'});
+----
+NULL
+x"y\z
+ok
+
+query I
+SELECT * FROM read_json('data/json/ignore_errors_spanning_record.ndjson', format = 'newline_delimited', ignore_errors = true, columns = {'a': 'VARCHAR'}, maximum_object_size = 64);
+----
+NULL
+x"y\z
+ok
+
+statement error
+SELECT * FROM read_json('data/json/ignore_errors_spanning_record.ndjson', format = 'newline_delimited', columns = {'a': 'VARCHAR'});
+----
+Malformed JSON

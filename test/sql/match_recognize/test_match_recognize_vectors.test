@@ -1,0 +1,86 @@
+# name: test/sql/match_recognize/test_match_recognize_vectors.test
+# description: MATCH_RECOGNIZE across vector boundaries - partitions and matches larger than a vector
+# group: [match_recognize]
+
+# The matcher works over a materialised hash group and evaluates DEFINE conditions in vector sized
+# slices, so anything that crosses a 2048 row boundary exercises different code than a small input:
+# the slice offsets, the partition bookkeeping and the navigation row lookups all have to agree on
+# one row numbering.
+
+statement ok
+pragma threads=1;
+
+statement ok
+create table wide as select i::int as i, (i%7)::int as v from range(0,5000) t(i);
+
+# every seventh row matches, well past the first vector
+query III
+SELECT count(*), min(x), max(x) FROM wide MATCH_RECOGNIZE(
+    ORDER BY i MEASURES i AS x PATTERN (A) DEFINE A as v=0
+)
+----
+715	0	4998
+
+statement ok
+create table spanning as select i::int as i,
+    case when i between 2040 and 2060 then 1 else 0 end::int as v from range(0,4096) t(i);
+
+# a single match that starts before the first vector boundary and ends after it
+query II
+SELECT x, len FROM spanning MATCH_RECOGNIZE(
+    ORDER BY i MEASURES i AS x, count(*) AS len PATTERN (A+) DEFINE A as v=1
+)
+----
+2060	21
+
+# the same match reported row by row
+query III
+SELECT count(*), min(i), max(i) FROM spanning MATCH_RECOGNIZE(
+    ORDER BY i MEASURES MATCH_NUMBER() AS mn ALL ROWS PER MATCH PATTERN (A+) DEFINE A as v=1
+)
+----
+21	2040	2060
+
+# navigation has to resolve to rows on the far side of the boundary too
+query II
+SELECT x, len FROM spanning MATCH_RECOGNIZE(
+    ORDER BY i MEASURES i AS x, count(*) AS len
+    PATTERN (A B+)
+    DEFINE A as v=1 AND PREV(v)=0, B as v=1 AND LAST(A.v)=1
+)
+----
+2060	21
+
+statement ok
+create table many_parts as select (i//3000)::int as p, i::int as i, (i%3)::int as v from range(0,9000) t(i);
+
+# several partitions, each larger than a vector
+query II
+SELECT p, count(*) FROM many_parts MATCH_RECOGNIZE(
+    PARTITION BY p ORDER BY i MEASURES i AS x PATTERN (A) DEFINE A as v=0
+) GROUP BY p ORDER BY p
+----
+0	1000
+1	1000
+2	1000
+
+statement ok
+create table uneven as select case when i<2500 then 0 else 1 end::int as p, i::int as i from range(0,4000) t(i);
+
+# a partition boundary that falls in the middle of a vector
+query II
+SELECT p, count(*) FROM uneven MATCH_RECOGNIZE(
+    PARTITION BY p ORDER BY i MEASURES i AS x PATTERN (A) DEFINE A as true
+) GROUP BY p ORDER BY p
+----
+0	2500
+1	1500
+
+# MATCH_NUMBER() in DEFINE re-evaluates the conditions across the whole partition, so it has to keep
+# working when that partition spans several vectors
+query I
+SELECT count(*) FROM many_parts MATCH_RECOGNIZE(
+    PARTITION BY p ORDER BY i MEASURES i AS x PATTERN (A) DEFINE A as MATCH_NUMBER()<=2
+)
+----
+6

@@ -52,14 +52,14 @@ else
   #################################################
   # Set extension config
   cat > $TEST_DIR/extension_config_before.cmake <<EOL
-  duckdb_extension_load(json DONT_LINK EXTENSION_VERSION v0.0.1)
-  duckdb_extension_load(tpch DONT_LINK EXTENSION_VERSION v0.0.1)
-  duckdb_extension_load(tpcds DONT_LINK EXTENSION_VERSION v0.0.1)
-  duckdb_extension_load(icu DONT_LINK EXTENSION_VERSION v0.0.1)
+  duckdb_extension_load(json EXTENSION_VERSION v0.0.1)
+  duckdb_extension_load(tpch EXTENSION_VERSION v0.0.1)
+  duckdb_extension_load(tpcds EXTENSION_VERSION v0.0.1)
+  duckdb_extension_load(icu EXTENSION_VERSION v0.0.1)
 EOL
 
   # Build the extensions using the first config
-  LOCAL_EXTENSION_REPO=$LOCAL_EXTENSION_REPO_UPDATED EXTENSION_CONFIGS=$TEST_DIR/extension_config_before.cmake DUCKDB_PREBUILT_LIBRARY=$DUCKDB_PREBUILT_LIBRARY make debug
+  STATICALLY_LINK_EXTENSIONS='core_functions;parquet' LOCAL_EXTENSION_REPO=$LOCAL_EXTENSION_REPO_UPDATED EXTENSION_CONFIGS=$TEST_DIR/extension_config_before.cmake DUCKDB_PREBUILT_LIBRARY=$DUCKDB_PREBUILT_LIBRARY make debug
 
   # Set the version and platform now that we have a build
   DUCKDB_VERSION=`$DUCKDB_BUILD_DIR/duckdb -csv -noheader  -c 'select source_id from pragma_version()'`
@@ -77,9 +77,9 @@ EOL
 
   # Set updated extension config where we update the tpch extension but not the json extension
   cat > $TEST_DIR/extension_config_after.cmake <<EOL
-  duckdb_extension_load(json DONT_LINK EXTENSION_VERSION v0.0.1)
-  duckdb_extension_load(tpch DONT_LINK EXTENSION_VERSION v0.0.2)
-  duckdb_extension_load(icu DONT_LINK EXTENSION_VERSION v0.0.2)
+  duckdb_extension_load(json EXTENSION_VERSION v0.0.1)
+  duckdb_extension_load(tpch EXTENSION_VERSION v0.0.2)
+  duckdb_extension_load(icu EXTENSION_VERSION v0.0.2)
 EOL
 
   # Build the extensions using the second config
@@ -94,7 +94,7 @@ EOL
   rm -rf $DUCKDB_BUILD_DIR
   # Set extension config
   cat > $TEST_DIR/extension_config_incorrect_platform.cmake <<EOL
-  duckdb_extension_load(json DONT_LINK EXTENSION_VERSION v0.0.3)
+  duckdb_extension_load(json EXTENSION_VERSION v0.0.3)
 EOL
 
   # Build the extensions using the incorrect platform
@@ -108,7 +108,7 @@ EOL
   rm -rf $DUCKDB_BUILD_DIR
   # Set extension config
   cat > $TEST_DIR/extension_config_incorrect_version.cmake <<EOL
-  duckdb_extension_load(json DONT_LINK EXTENSION_VERSION v0.0.4)
+  duckdb_extension_load(json EXTENSION_VERSION v0.0.4)
 EOL
 
   # Build the extensions using the incorrect platform
@@ -122,7 +122,7 @@ EOL
   rm -rf $DUCKDB_BUILD_DIR
   # Set extension config
   cat > $TEST_DIR/extension_config_incorrect_version.cmake <<EOL
-  duckdb_extension_load(json DONT_LINK EXTENSION_VERSION v0.0.4)
+  duckdb_extension_load(json EXTENSION_VERSION v0.0.4)
 EOL
 
   # Build the extensions using the incorrect platform
@@ -139,7 +139,7 @@ EOL
   ###########################
   # Build clean duckdb
   rm -rf $DUCKDB_BUILD_DIR
-  DUCKDB_PREBUILT_LIBRARY=$DUCKDB_PREBUILT_LIBRARY make debug
+  STATICALLY_LINK_EXTENSIONS='core_functions;parquet' DUCKDB_PREBUILT_LIBRARY=$DUCKDB_PREBUILT_LIBRARY make debug
 
   # Use duckdb to install the extensions into the repositories (note that we are doing a trick here by setting the extension_directory to the local repo dir)
   $DUCKDB_BUILD_DIR/duckdb -unsigned -c "set allow_extensions_metadata_mismatch=true; set extension_directory='$LOCAL_EXTENSION_REPO_INCORRECT_PLATFORM'; install '$DIRECT_INSTALL_DIR/json_incorrect_platform.duckdb_extension'"

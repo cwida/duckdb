@@ -1,0 +1,445 @@
+module: custom_option
+#
+# Defining options of your own. A custom option is built with the setters below and registered on an instance, after
+# which it is an option like any other: read and written through a `[[config]]` with `[[config_get_option_value]]`
+# and `[[config_set_option_value]]`, set from SQL with `SET` and `RESET`, and described by the `[[option]]` descriptors
+# `[[config_get_option_by_name]]` and `[[config_get_option_by_index]]` return.
+#
+# An optional update callback is invoked whenever the option is set or reset, and may inspect, replace or refuse the
+# new value, e.g. to validate it or to apply it to state of the caller's own.
+#
+# Registration is not transactional: a registered option is visible to every connection at once, is not undone by a
+# rollback, and lives for as long as the instance does.
+
+#-----------------------------------------------------------------------------------------------------------------------
+# HandlesWou
+#-----------------------------------------------------------------------------------------------------------------------
+handles:
+  custom_option:
+    description: |
+      An owned opaque handle to a custom option being built. Created with `[[custom_option_create]]`, configured with
+      the setter functions (e.g. `[[custom_option_set_name]]`, `[[custom_option_set_type]]`, etc.), made available
+      with `[[connection_register_custom_option]]` or `[[extension_register_custom_option]]`, and destroyed with
+      `[[custom_option_destroy]]`.
+
+  custom_option_update_info:
+    description: |
+      A borrowed opaque handle to an update of a custom option, received by its update callback. It gives access to
+      the new value, the scope it is written at and the user data, and can replace the value.
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Callbacks
+#-----------------------------------------------------------------------------------------------------------------------
+callbacks:
+  custom_option_update_callback:
+    parameters:
+      info:
+        type: custom_option_update_info
+        description: Borrowed opaque handle providing access to the update and the user data.
+      context:
+        type: context
+        description: |
+          Borrowed handle to the context setting the option. When the option is written through the config of an
+          instance, or given at startup, this is an internal context rather than a user's connection: its session
+          state is discarded after the update.
+      err:
+        type: error_info
+        indirection: 1
+        description: |
+          Borrowed error info handle to use to report errors that occur during the callback. Reporting an error
+          refuses the update: the option keeps its previous value.
+    return_type: void
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Functions
+#-----------------------------------------------------------------------------------------------------------------------
+functions:
+  #---------------------------------------------------------------------------------------------------------------------
+  # Constructors
+  #---------------------------------------------------------------------------------------------------------------------
+  custom_option_create:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: |
+      Creates a new custom option through a factory.
+
+      The option starts out empty: configure it with the setter functions, then make it available with
+      `[[connection_register_custom_option]]` or `[[extension_register_custom_option]]`. The caller owns the returned
+      handle and must destroy it with `[[custom_option_destroy]]`, also after registration.
+
+      The custom option can only be registered on the instance the factory belongs to.
+    role: constructor
+    belongs_to: custom_option
+    parameters:
+      factory:
+        type: factory
+        description: The factory to create the custom option through.
+      option:
+        type: custom_option
+        indirection: 1
+        kind: OUT
+        description: On success, receives the newly created custom option. Owned by the caller.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # Properties
+  #---------------------------------------------------------------------------------------------------------------------
+  custom_option_set_name:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: |
+      Sets the name of the custom option, as `SET` and the config functions refer to it.
+
+      The name is borrowed and copied. Calling this again replaces the previous name. A name must be set before
+      registration.
+    parameters:
+      option:
+        type: custom_option
+        description: The option to set the name of.
+      name:
+        type: identifier
+        indirection: 1
+        const: true
+        kind: IN
+        description: The name to set. Borrowed and copied.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  custom_option_set_type:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: |
+      Sets the type of the custom option. Every value written to the option is cast to it, as SQL `SET` does.
+
+      The type is borrowed and copied. Optional when a default value is set, whose type the option then takes.
+    parameters:
+      option:
+        type: custom_option
+        description: The option to set the type of.
+      type:
+        type: logical_type
+        description: The type to set. Borrowed and copied.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  custom_option_set_default_value:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: |
+      Sets the default value of the custom option: its value until it is set, and the value `RESET` restores.
+
+      The value is borrowed and copied, and cast to the option's type at registration, which fails when the cast
+      does. Without a default value the option reads as NULL until it is set.
+    parameters:
+      option:
+        type: custom_option
+        description: The option to set the default value of.
+      value:
+        type: value
+        description: The default value. Borrowed and copied.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  custom_option_set_description:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: |
+      Sets the description of the custom option, as `[[option_get_description]]` and `duckdb_settings()` report it.
+
+      The description is borrowed and copied. Calling this again replaces the previous description.
+    parameters:
+      option:
+        type: custom_option
+        description: The option to set the description of.
+      description:
+        type: str
+        indirection: 1
+        const: true
+        kind: IN
+        description: The description to set. Borrowed and copied.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  custom_option_set_default_scope:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: |
+      Sets the scope a write at `SETTING_SCOPE_DEFAULT` goes to, like SQL `SET name = value`.
+
+      Must be GLOBAL or SESSION, and a scope the option supports. Defaults to SESSION, or to GLOBAL when the option
+      does not support SESSION.
+    parameters:
+      option:
+        type: custom_option
+        description: The option to set the default scope of.
+      scope:
+        type: SETTING_SCOPE
+        description: The default scope, GLOBAL or SESSION.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  custom_option_set_supports_scope:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: |
+      Sets whether the custom option can be written at a scope, as `[[option_supports_scope]]` reports it.
+
+      A custom option supports both GLOBAL and SESSION unless told otherwise. A write at a scope it does not support
+      fails, from SQL as from `[[config_set_option_value]]`. Registration fails when the option supports neither scope.
+    parameters:
+      option:
+        type: custom_option
+        description: The option to configure.
+      scope:
+        type: SETTING_SCOPE
+        description: The scope, GLOBAL or SESSION.
+      supported:
+        type: bool
+        description: Whether the option can be written at the scope.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  custom_option_set_user_data:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: |
+      Sets arbitrary user data on the custom option.
+
+      Associates an opaque pointer with the option, retrievable from the update callback via
+      `[[custom_option_update_get_user_data]]`. The opaque handle bundles the pointer with an optional destructor,
+      invoked when the data is no longer needed: once the custom option handle is destroyed and, if it was
+      registered, the instance is too.
+    parameters:
+      option:
+        type: custom_option
+        description: The option to set the user data of.
+      data:
+        type: opaque
+        indirection: 1
+        description: Opaque handle bundling the user data pointer plus an optional destructor.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  custom_option_set_update_callback:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: |
+      Sets the optional update callback of the custom option.
+
+      The callback is invoked whenever the option is set or reset, from SQL as from `[[config_set_option_value]]`, after the
+      new value is cast to the option's type and before it is stored. It may replace the value with
+      `[[custom_option_update_set_value]]`, or refuse it by reporting an error. It is not invoked for the default value
+      at registration, nor for a value given to the instance at startup. The callback must not write options itself.
+    parameters:
+      option:
+        type: custom_option
+        description: The option to set the update callback of.
+      callback:
+        type: custom_option_update_callback
+        description: The update callback to set.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # Update Callback Functions
+  #---------------------------------------------------------------------------------------------------------------------
+  custom_option_update_get_user_data:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: Retrieves the user data set via `[[custom_option_set_user_data]]`.
+    parameters:
+      info:
+        type: custom_option_update_info
+        description: The update info handle.
+      data:
+        type: void
+        indirection: 2
+        kind: OUT
+        description: Receives the user data pointer, or null if none was set.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  custom_option_update_get_value:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: |
+      Retrieves the value the option is updated to, already cast to the option's type. On a reset this is the
+      default value, which may be NULL. The returned value is owned by the caller and must be destroyed via
+      `[[value_destroy]]`.
+    parameters:
+      info:
+        type: custom_option_update_info
+        description: The update info handle.
+      value:
+        type: value
+        indirection: 1
+        kind: OUT
+        description: Receives the new value. Owned by the caller; destroy via `[[value_destroy]]`.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  custom_option_update_set_value:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: |
+      Replaces the value the option is updated to, e.g. to normalize it. The value is borrowed and copied, and cast to
+      the option's type, which fails when the cast does.
+    parameters:
+      info:
+        type: custom_option_update_info
+        description: The update info handle.
+      value:
+        type: value
+        description: The value to store instead. Borrowed and copied.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  custom_option_update_get_scope:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: |
+      Retrieves the scope the value is written at: GLOBAL or SESSION, a DEFAULT write already resolved to the option's
+      default scope.
+    parameters:
+      info:
+        type: custom_option_update_info
+        description: The update info handle.
+      scope:
+        type: SETTING_SCOPE
+        indirection: 1
+        kind: OUT
+        description: Receives the scope.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  custom_option_update_is_reset:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: Retrieves whether the update is a reset to the default value, like SQL `RESET`.
+    parameters:
+      info:
+        type: custom_option_update_info
+        description: The update info handle.
+      is_reset:
+        type: bool
+        indirection: 1
+        kind: OUT
+        description: Receives whether the update is a reset.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # Register
+  #---------------------------------------------------------------------------------------------------------------------
+  connection_register_custom_option:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: |
+      Registers the custom option on the connection's instance, visible to every connection.
+
+      Registration is not transactional: it takes effect at once, also inside an explicit transaction, and a rollback
+      does not undo it. Registration requires a name and a type, or a default value to take the type from, and fails
+      when an option of the same name already exists. A value given for the option at startup is picked up. The custom
+      option must have been created through a factory of the same instance. The caller still owns the handle after
+      registration and must destroy it with `[[custom_option_destroy]]`, which does not affect the registered option.
+    role: method
+    belongs_to: connection
+    parameters:
+      conn:
+        type: connection
+        description: The connection to register on.
+      option:
+        type: custom_option
+        description: The custom option to register.
+      err:
+        type: error_info
+        indirection: 1
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
+
+  extension_register_custom_option:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: |
+      Registers the custom option on the loading extension's instance, visible to every connection.
+
+      Use this from the extension's load callback. Registration is not transactional, requires a name and a type, or a
+      default value to take the type from, and fails when an option of the same name already exists. A value given
+      for the option at startup is picked up. The custom option must have been created through a factory of the same
+      instance. The caller still owns the handle after registration and must destroy it with
+      `[[custom_option_destroy]]`, which does not affect the registered option.
+    role: method
+    belongs_to: extension
+    parameters:
+      extension:
+        type: extension
+        description: The loading extension.
+      option:
+        type: custom_option
+        description: The custom option to register.
+      err:
+        type: error_info
+        indirection: 1
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # Destroy
+  #---------------------------------------------------------------------------------------------------------------------
+  custom_option_destroy:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: |
+      Destroys the custom option, releasing its resources.
+
+      Null-safe: passing a null pointer or null handle is a no-op. The handle is set to null on return to
+      prevent double-destruction. Destroying the handle after registration does not affect the registered option.
+    parameters:
+      option:
+        type: custom_option
+        description: The option to destroy.
+        indirection: 1
+    return_type: ERROR

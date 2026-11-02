@@ -1,0 +1,17 @@
+# name: test/sql/aggregate/group/test_group_by_skip_lookups.test
+# description: Test skipping hash table lookups when nearly all groups are unique
+# group: [group]
+
+statement ok
+SET threads = 3;
+
+# Lookup adaptation starts after 1048576 rows and requires more than two threads.
+query II
+SELECT count(*), sum(group_count)
+FROM (
+	SELECT CASE WHEN i < 1100000 THEN i ELSE i - 100000 END::HUGEINT AS group_key, count(*) AS group_count
+	FROM range(1200000) t(i)
+	GROUP BY group_key
+);
+----
+1100000	1200000

@@ -21,8 +21,9 @@ struct UnicodeOperator {
 };
 
 ScalarFunction UnicodeFun::GetFunction() {
-	return ScalarFunction({LogicalType::VARCHAR}, LogicalType::INTEGER,
-	                      ScalarFunction::UnaryFunction<string_t, int32_t, UnicodeOperator>);
+	ScalarFunction fun({}, LogicalType::INTEGER, ScalarFunction::UnaryFunction<string_t, int32_t, UnicodeOperator>);
+	fun.GetSignature().AddParameter("string", LogicalType::VARCHAR);
+	return fun;
 }
 
 } // namespace duckdb

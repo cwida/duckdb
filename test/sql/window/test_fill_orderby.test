@@ -349,3 +349,32 @@ ORDER BY x;
 1	NULL	0
 2	-9223372036854775807	-9223372036854775807
 
+# Regression (#26042): BIGINT fill extrapolates from a decreasing-run incorrectly
+# and is not sign-symmetric. Values: (1,19), (2,5), (3,NULL) -> filled -9.
+# fill(-y) must equal -fill(y).
+query III
+SELECT x, y, fill(y ORDER BY x) OVER () AS filled
+FROM (VALUES
+    (1::BIGINT,  19::BIGINT),
+    (2::BIGINT,  5::BIGINT),
+    (3::BIGINT,  NULL)) t(x, y)
+ORDER BY x;
+----
+1	19	19
+2	5	5
+3	NULL	-9
+
+query III
+SELECT x,
+       -fill(y ORDER BY x) OVER () AS neg_fill,
+       fill(-y ORDER BY x) OVER () AS fill_neg
+FROM (VALUES
+    (1::BIGINT, 19::BIGINT),
+    (2::BIGINT, 5::BIGINT),
+    (3::BIGINT, NULL)) t(x, y)
+ORDER BY x;
+----
+1	-19	-19
+2	-5	-5
+3	9	9
+

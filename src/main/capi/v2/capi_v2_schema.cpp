@@ -26,7 +26,7 @@ DUCKDB_V2_ERROR duckdb_v2_schema_get_field(duckdb_v2_schema_handle schema, idx_t
 		// Both borrowed, valid until the schema is destroyed; out_type aliases the
 		// wrapper-owned LogicalType and must not be destroyed by the caller.
 		*out_name = Convert(field.name);
-		*out_type = Convert(&field.type);
+		*out_type = ConvertBorrowed(field.type);
 	});
 }
 

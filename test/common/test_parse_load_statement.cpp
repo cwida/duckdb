@@ -6,7 +6,7 @@
 using namespace duckdb;
 
 static duckdb::unique_ptr<LoadInfo> ParseLoad(const string &query) {
-	Parser parser;
+	auto parser = Parser::GetBuiltinParser();
 	parser.ParseQuery(query);
 	REQUIRE(parser.statements.size() == 1);
 	REQUIRE(parser.statements[0]->type == StatementType::LOAD_STATEMENT);

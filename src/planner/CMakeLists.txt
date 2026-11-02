@@ -4,6 +4,7 @@ add_subdirectory(expression_binder)
 add_subdirectory(filter)
 add_subdirectory(operator)
 add_subdirectory(subquery)
+add_subdirectory(sql_export)
 
 add_library_unity(
   duckdb_planner

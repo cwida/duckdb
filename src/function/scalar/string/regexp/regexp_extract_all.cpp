@@ -44,12 +44,11 @@ bool ExtractAll(duckdb_re2::StringPiece &input, duckdb_re2::RE2 &pattern, idx_t 
 	if (!pattern.Match(input, *startpos, input.size(), pattern.UNANCHORED, groups, ngroups + 1)) {
 		return false;
 	}
-	idx_t consumed = static_cast<size_t>(groups[0].end() - (input.begin() + *startpos));
-	if (!consumed) {
-		// Empty match: advance exactly one UTF-8 codepoint
-		consumed = regexp_util::AdvanceOneUTF8Basic(input, *startpos);
+	*startpos = static_cast<idx_t>(groups[0].end() - input.begin());
+	if (groups[0].empty()) {
+		// Empty match: advance exactly one UTF-8 codepoint past it
+		*startpos += regexp_util::AdvanceOneUTF8Basic(input, *startpos);
 	}
-	*startpos += consumed;
 	return true;
 }
 
@@ -172,6 +171,7 @@ void RegexpExtractAll::Execute(DataChunk &args, ExpressionState &state, Vector &
 					child_writer.WriteStringRef(string_t(string_val.GetData(), 0));
 				}
 			} else {
+				regexp_util::VerifyUTF8Result(match_group.data(), match_group.size());
 				// Every group is a substring of the original, we can find the offset via pointer
 				D_ASSERT(const_char_ptr_cast(match_group.begin()) >= string_val.GetData());
 				auto offset = UnsafeNumericCast<idx_t>(match_group.begin() - string_val.GetData());
@@ -188,11 +188,10 @@ static inline bool ExtractAllStruct(duckdb_re2::StringPiece &input, duckdb_re2::
 	if (!re.Match(input, startpos, input.size(), re.UNANCHORED, groups, provided_groups + 1)) {
 		return false;
 	}
-	idx_t consumed = static_cast<idx_t>(groups[0].end() - (input.begin() + startpos));
-	if (!consumed) {
-		consumed = regexp_util::AdvanceOneUTF8Basic(input, startpos);
+	startpos = static_cast<idx_t>(groups[0].end() - input.begin());
+	if (groups[0].empty()) {
+		startpos += regexp_util::AdvanceOneUTF8Basic(input, startpos);
 	}
-	startpos += consumed;
 	return true;
 }
 
@@ -224,6 +223,7 @@ static list_entry_t ExtractStructAllSingleTuple(const string_t &string_val, duck
 				}
 				cdata[current_list_size] = string_t(string_val.GetData(), 0);
 			} else {
+				regexp_util::VerifyUTF8Result(span.data(), span.size());
 				auto offset = span.begin() - string_val.GetData();
 				cdata[current_list_size] =
 				    string_t(string_val.GetData() + offset, UnsafeNumericCast<uint32_t>(span.size()));

@@ -1,5 +1,6 @@
 #include "json_reader.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/query_profiler.hpp"
 
 #include <utility>
 
@@ -12,7 +13,7 @@
 
 namespace duckdb {
 
-JSONBufferHandle::JSONBufferHandle(JSONReader &reader, idx_t buffer_index_p, idx_t readers_p, AllocatedData &&buffer_p,
+JSONBufferHandle::JSONBufferHandle(JSONReader &reader, idx_t buffer_index_p, idx_t readers_p, AllocatedData buffer_p,
                                    idx_t buffer_size_p, idx_t buffer_start_p)
     : reader(reader), buffer_index(buffer_index_p), readers(readers_p), buffer(std::move(buffer_p)),
       buffer_size(buffer_size_p), buffer_start(buffer_start_p) {
@@ -20,8 +21,9 @@ JSONBufferHandle::JSONBufferHandle(JSONReader &reader, idx_t buffer_index_p, idx
 
 JSONFileHandle::JSONFileHandle(QueryContext context_p, unique_ptr<FileHandle> file_handle_p, Allocator &allocator_p)
     : context(context_p), file_handle(std::move(file_handle_p)), allocator(allocator_p),
-      can_seek(file_handle->CanSeek()), file_size(file_handle->GetFileSize()), read_position(0), requested_reads(0),
-      actual_reads(0), last_read_requested(false), cached_size(0) {
+      can_seek(file_handle->CanSeek()), file_size(file_handle->GetFileSize()),
+      compressed(file_handle->GetFileCompressionType() != FileCompressionType::UNCOMPRESSED), read_position(0),
+      requested_reads(0), actual_reads(0), last_read_requested(false), cached_size(0) {
 }
 
 bool JSONFileHandle::IsOpen() const {
@@ -43,6 +45,9 @@ void JSONFileHandle::Reset() {
 	last_read_requested = false;
 	if (IsOpen() && !IsPipe()) {
 		file_handle->Reset();
+		compressed_bytes_counted = 0;
+		// the file is read again from the start
+		stored_bytes_untaken = 0;
 	}
 }
 
@@ -60,6 +65,23 @@ idx_t JSONFileHandle::FileSize() const {
 
 idx_t JSONFileHandle::Remaining() const {
 	return file_size - read_position;
+}
+
+double JSONFileHandle::GetProgress() const {
+	if (file_size == 0) {
+		return 0;
+	}
+	idx_t position;
+	if (compressed) {
+		if (!IsOpen()) {
+			return last_read_requested ? 1 : 0;
+		}
+		// the progress of a compressed file is the position in the compressed stream
+		position = file_handle->GetProgress();
+	} else {
+		position = read_position;
+	}
+	return MinValue<double>(static_cast<double>(position) / static_cast<double>(file_size), 1.0);
 }
 
 bool JSONFileHandle::CanSeek() const {
@@ -100,6 +122,7 @@ void JSONFileHandle::ReadAtPosition(char *pointer, idx_t size, idx_t position,
 	if (size != 0) {
 		auto &handle = override_handle ? *override_handle.get() : *file_handle.get();
 		handle.Read(context, pointer, size, position);
+		stored_bytes_untaken += size;
 	}
 
 	const auto incremented_actual_reads = ++actual_reads;
@@ -139,6 +162,10 @@ bool JSONFileHandle::Read(char *pointer, idx_t &read_size, idx_t requested_size)
 	return true;
 }
 
+idx_t JSONFileHandle::TakeStoredBytesRead() {
+	return stored_bytes_untaken.exchange(0);
+}
+
 idx_t JSONFileHandle::ReadInternal(char *pointer, const idx_t requested_size) {
 	// Deal with reading from pipes
 	idx_t total_read_size = 0;
@@ -148,6 +175,15 @@ idx_t JSONFileHandle::ReadInternal(char *pointer, const idx_t requested_size) {
 			break;
 		}
 		total_read_size += read_size;
+	}
+	if (compressed) {
+		// measured from what was counted before rather than from before this read, so the bytes consumed when the
+		// file was opened (e.g. a gzip header) count towards the first read
+		const auto stored_position = file_handle->GetProgress();
+		stored_bytes_untaken += stored_position - compressed_bytes_counted;
+		compressed_bytes_counted = stored_position;
+	} else {
+		stored_bytes_untaken += total_read_size;
 	}
 	return total_read_size;
 }
@@ -179,8 +215,9 @@ idx_t JSONFileHandle::ReadFromCache(char *&pointer, idx_t &size, atomic<idx_t> &
 }
 
 JSONReader::JSONReader(ClientContext &context, JSONReaderOptions options_p, OpenFileInfo file_p)
-    : BaseFileReader(std::move(file_p)), context(context), options(std::move(options_p)), initialized(0),
-      next_buffer_index(0), thrown(false) {
+    : file(std::move(file_p)), context(context), options(std::move(options_p)),
+      read_flag(JSONCommon::GetReadFlag(JSONCommon::READ_STOP_FLAG, JSONCommon::NumbersAsRaw(options.sql_type_list))),
+      initialized(false), next_buffer_index(0), thrown(false) {
 }
 
 void JSONReader::OpenJSONFile() {
@@ -256,7 +293,7 @@ JSONFileHandle &JSONReader::GetFileHandle() const {
 	return *file_handle;
 }
 
-void JSONReader::InsertBuffer(idx_t buffer_idx, unique_ptr<JSONBufferHandle> &&buffer) {
+void JSONReader::InsertBuffer(idx_t buffer_idx, unique_ptr<JSONBufferHandle> buffer) {
 	lock_guard<mutex> guard(lock);
 	D_ASSERT(buffer_map.find(buffer_idx) == buffer_map.end());
 	buffer_map.insert(make_pair(buffer_idx, std::move(buffer)));
@@ -288,7 +325,7 @@ void JSONReader::SetBufferLineOrObjectCount(JSONBufferHandle &handle, idx_t coun
 	D_ASSERT(buffer_map.find(handle.buffer_index) != buffer_map.end());
 	D_ASSERT(RefersToSameObject(handle, *buffer_map.find(handle.buffer_index)->second));
 	D_ASSERT(buffer_line_or_object_counts[handle.buffer_index] == -1);
-	buffer_line_or_object_counts[handle.buffer_index] = count;
+	buffer_line_or_object_counts[handle.buffer_index] = NumericCast<int64_t>(count);
 	// if we have any errors - try to report them after finishing a buffer
 	ThrowErrorsIfPossible();
 }
@@ -377,11 +414,7 @@ double JSONReader::GetProgress() const {
 	if (!HasFileHandle()) {
 		return 0;
 	}
-	const auto file_size = file_handle->FileSize();
-	if (file_size == 0) {
-		return 0;
-	}
-	return 100.0 - 100.0 * double(file_handle->Remaining()) / double(file_size);
+	return 100.0 * file_handle->GetProgress();
 }
 
 static inline void TrimWhitespace(JSONString &line) {
@@ -738,7 +771,7 @@ static pair<JSONFormat, JSONRecordType> DetectFormatAndRecordType(char *const bu
 	}
 
 	// We weren't able to parse an array, could be broken or an array larger than our buffer size, let's skip over '['
-	SkipWhitespace(buffer_ptr, ++buffer_offset, --remaining);
+	SkipWhitespace(buffer_ptr, ++buffer_offset, buffer_size);
 	remaining = buffer_size - buffer_offset;
 
 	// If it's '{' we know there's RECORDS in the ARRAY, else it's VALUES
@@ -754,11 +787,21 @@ bool JSONReader::ParseJSON(JSONReaderScanState &scan_state, char *const json_sta
                            const idx_t remaining) {
 	yyjson_doc *doc;
 	yyjson_read_err err;
-	if (options.type == JSONScanType::READ_JSON_OBJECTS) { // If we return strings, we cannot parse INSITU
-		doc = JSONCommon::ReadDocumentUnsafe(json_start, json_size, JSONCommon::READ_STOP_FLAG,
-		                                     scan_state.allocator.GetYYAlc(), &err);
+	// If we return strings, we cannot parse INSITU. If we ignore errors, we cannot parse INSITU either: a malformed
+	// document could extend into (and modify) the next one
+	const bool ignorable_errors = options.ignore_errors && GetFormat() == JSONFormat::NEWLINE_DELIMITED;
+	// A number that does not fit is read as a raw string, which INSITU parsing null-terminates in place - at the root
+	// that overwrites the delimiter that follows the document
+	idx_t first_char = 0;
+	while (first_char < json_size && StringUtil::CharacterIsSpace(json_start[first_char])) {
+		first_char++;
+	}
+	const bool number_root = first_char < json_size &&
+	                         (StringUtil::CharacterIsDigit(json_start[first_char]) || json_start[first_char] == '-');
+	if (options.type == JSONScanType::READ_JSON_OBJECTS || ignorable_errors || number_root) {
+		doc = JSONCommon::ReadDocumentUnsafe(json_start, json_size, read_flag, scan_state.allocator.GetYYAlc(), &err);
 	} else {
-		doc = JSONCommon::ReadDocumentUnsafe(json_start, remaining, JSONCommon::READ_INSITU_FLAG,
+		doc = JSONCommon::ReadDocumentUnsafe(json_start, remaining, read_flag | YYJSON_READ_INSITU,
 		                                     scan_state.allocator.GetYYAlc(), &err);
 	}
 	if (err.code != YYJSON_READ_SUCCESS) {
@@ -851,13 +894,23 @@ void JSONReader::AutoDetect(Allocator &allocator, idx_t buffer_capacity) {
 	}
 	if (!options.ignore_errors && options.record_type == JSONRecordType::RECORDS &&
 	    GetRecordType() != JSONRecordType::RECORDS) {
+		// LCOV_EXCL_START
 		string unit = options.format == JSONFormat::NEWLINE_DELIMITED ? "line" : "record/value";
 		throw InvalidInputException(
 		    "JSON auto-detection error in file \"%s\": Expected records, detected non-record JSON instead",
 		    GetFileName());
+		// LCOV_EXCL_STOP
 	}
 	// store the buffer in the file so it can be re-used by the first reader of the file
 	if (!file_handle->IsPipe()) {
+		// a file that is much smaller than the buffer only keeps what was read - with many files (e.g. union_by_name)
+		// one full-sized buffer per file adds up to far more than the data
+		const idx_t required = read_size + YYJSON_PADDING_SIZE;
+		if (required * 2 <= buffer_capacity) {
+			auto shrunk = allocator.Allocate(required);
+			memcpy(shrunk.get(), read_buffer.get(), required);
+			read_buffer = std::move(shrunk);
+		}
 		auto_detect_data = std::move(read_buffer);
 		auto_detect_data_size = read_size;
 	} else {
@@ -866,10 +919,12 @@ void JSONReader::AutoDetect(Allocator &allocator, idx_t buffer_capacity) {
 }
 
 void JSONReader::ThrowObjectSizeError(const idx_t object_size) {
+	// LCOV_EXCL_START
 	throw InvalidInputException(
 	    "\"maximum_object_size\" of %llu bytes exceeded while reading file \"%s\" (>%llu bytes)."
 	    "\n Try increasing \"maximum_object_size\".",
 	    options.maximum_object_size, GetFileName(), object_size);
+	// LCOV_EXCL_STOP
 }
 
 bool JSONReader::CopyRemainderFromPreviousBuffer(JSONReaderScanState &scan_state) {
@@ -888,7 +943,9 @@ bool JSONReader::CopyRemainderFromPreviousBuffer(JSONReaderScanState &scan_state
 	// First we find the newline in the previous block
 	idx_t prev_buffer_size = previous_buffer_handle->buffer_size - previous_buffer_handle->buffer_start;
 	auto prev_buffer_ptr = char_ptr_cast(previous_buffer_handle->buffer.get()) + previous_buffer_handle->buffer_size;
-	auto prev_object_start = PreviousNewline(prev_buffer_ptr, prev_buffer_size);
+	// the first buffer of a file that is only a byte order mark holds nothing past it
+	auto prev_object_start =
+	    prev_buffer_size == 0 ? prev_buffer_ptr : PreviousNewline(prev_buffer_ptr, prev_buffer_size);
 	auto prev_object_size = NumericCast<idx_t>(prev_buffer_ptr - prev_object_start);
 
 	D_ASSERT(scan_state.buffer_offset == options.maximum_object_size);
@@ -898,13 +955,16 @@ bool JSONReader::CopyRemainderFromPreviousBuffer(JSONReaderScanState &scan_state
 	// Now copy the data to our reconstruct buffer
 	memcpy(scan_state.buffer_ptr + scan_state.buffer_offset - prev_object_size, prev_object_start, prev_object_size);
 
+	// Just a newline, or nothing. A single byte without a newline before it is a value, such as a 1 at the end of a
+	// file. This is checked before the previous buffer is released
+	const bool no_remainder = prev_object_size == 0 || (prev_object_size == 1 && *prev_object_start == '\n');
+
 	// We copied the object, so we are no longer reading the previous buffer
 	if (--previous_buffer_handle->readers == 0) {
 		RemoveBuffer(*previous_buffer_handle);
 	}
 
-	if (prev_object_size == 1) {
-		// Just a newline
+	if (no_remainder) {
 		return false;
 	}
 	scan_state.buffer_offset -= prev_object_size;
@@ -1072,7 +1132,12 @@ void JSONReader::FinalizeBuffer(JSONReaderScanState &scan_state) {
 	// skip over the array start if required
 	if (!scan_state.is_last) {
 		if (scan_state.buffer_index.GetIndex() == 0) {
-			StringUtil::SkipBOM(scan_state.buffer_ptr, scan_state.buffer_size, scan_state.buffer_offset);
+			// the file starts at the buffer offset, which leaves room for the end of a previous buffer when the file
+			// is read in parallel
+			idx_t bom_size = 0;
+			StringUtil::SkipBOM(scan_state.buffer_ptr + scan_state.buffer_offset,
+			                    scan_state.buffer_size - scan_state.buffer_offset, bom_size);
+			scan_state.buffer_offset += bom_size;
 			if (GetFormat() == JSONFormat::ARRAY) {
 				SkipOverArrayStart(scan_state);
 			}
@@ -1080,6 +1145,18 @@ void JSONReader::FinalizeBuffer(JSONReaderScanState &scan_state) {
 	}
 	// then finalize the buffer
 	FinalizeBufferInternal(scan_state, scan_state.read_buffer, scan_state.buffer_index.GetIndex());
+}
+
+void JSONReader::CountBytesScanned() {
+	if (!scanning || !HasFileHandle()) {
+		return;
+	}
+	auto bytes = GetFileHandle().TakeStoredBytesRead();
+	if (bytes == 0) {
+		return;
+	}
+	bytes_scanned_unreported += bytes;
+	QueryProfiler::Get(context).TrackBytesScanned(bytes);
 }
 
 bool JSONReader::ReadNextBuffer(JSONReaderScanState &scan_state) {
@@ -1134,6 +1211,16 @@ void JSONReader::PrepareForReadInternal(JSONReaderScanState &scan_state) {
 	if (!scan_state.read_buffer.IsSet()) {
 		scan_state.read_buffer = scan_state.global_allocator.Allocate(scan_state.buffer_capacity);
 		scan_state.buffer_ptr = char_ptr_cast(scan_state.read_buffer.get());
+	} else if (scan_state.read_buffer.GetSize() < scan_state.buffer_capacity) {
+		// the retained auto-detect buffer only holds what was read from the file - it cannot take a full read
+		auto buffer = scan_state.global_allocator.Allocate(scan_state.buffer_capacity);
+		if (scan_state.file_read_type == JSONFileReadType::SCAN_ENTIRE_FILE) {
+			memcpy(buffer.get(), scan_state.buffer_ptr + scan_state.prev_buffer_offset,
+			       scan_state.prev_buffer_remainder);
+		}
+		scan_state.read_buffer = std::move(buffer);
+		scan_state.buffer_ptr = char_ptr_cast(scan_state.read_buffer.get());
+		return;
 	}
 	if (scan_state.file_read_type == JSONFileReadType::SCAN_ENTIRE_FILE) {
 		// Copy last bit of previous buffer to the beginning if we are doing a single-threaded read
@@ -1219,6 +1306,7 @@ void JSONReader::ReadNextBufferSeek(JSONReaderScanState &scan_state) {
 		}
 
 		// Now read the file lock-free!
+		D_ASSERT(read_offset + scan_state.read_size + YYJSON_PADDING_SIZE <= scan_state.read_buffer.GetSize());
 		file_handle.ReadAtPosition(scan_state.buffer_ptr + read_offset, scan_state.read_size, scan_state.read_position,
 		                           scan_state.thread_local_filehandle);
 	}
@@ -1247,6 +1335,7 @@ bool JSONReader::ReadNextBufferNoSeek(JSONReaderScanState &scan_state) {
 	}
 	scan_state.buffer_index = GetBufferIndex();
 	PrepareForReadInternal(scan_state);
+	D_ASSERT(read_offset + request_size + YYJSON_PADDING_SIZE <= scan_state.read_buffer.GetSize());
 	if (!file_handle.Read(scan_state.buffer_ptr + read_offset, read_size, request_size)) {
 		return false; // Couldn't read anything
 	}

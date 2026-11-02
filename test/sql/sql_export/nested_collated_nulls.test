@@ -1,0 +1,53 @@
+# name: test/sql/sql_export/nested_collated_nulls.test
+# description: SQL export preserves nested collations on typed NULL constants
+# group: [sql_export]
+
+query T
+SELECT CASE WHEN false THEN ['x' COLLATE nocase] ELSE NULL END AS v;
+----
+NULL
+
+query TT
+EXPLAIN (SQL) SELECT CASE WHEN false THEN ['x' COLLATE nocase] ELSE NULL END AS v;
+----
+sql	<REGEX>:.*nocase.*
+
+query T
+SELECT CASE WHEN false THEN array_value('x' COLLATE nocase,'y' COLLATE nocase) ELSE NULL END AS v;
+----
+NULL
+
+query TT
+EXPLAIN (SQL) SELECT CASE WHEN false THEN array_value('x' COLLATE nocase,'y' COLLATE nocase) ELSE NULL END AS v;
+----
+sql	<REGEX>:.*nocase.*
+
+query T
+SELECT CASE WHEN false THEN [['x' COLLATE nocase]] ELSE NULL END AS v;
+----
+NULL
+
+query TT
+EXPLAIN (SQL) SELECT CASE WHEN false THEN [['x' COLLATE nocase]] ELSE NULL END AS v;
+----
+sql	<REGEX>:.*nocase.*
+
+query T
+SELECT CASE WHEN false THEN {'s': 'x' COLLATE nocase} ELSE NULL END AS v;
+----
+NULL
+
+query TT
+EXPLAIN (SQL) SELECT CASE WHEN false THEN {'s': 'x' COLLATE nocase} ELSE NULL END AS v;
+----
+sql	<REGEX>:.*nocase.*
+
+query T
+SELECT CASE WHEN false THEN map([1],['x' COLLATE nocase]) ELSE NULL END AS v;
+----
+NULL
+
+query TT
+EXPLAIN (SQL) SELECT CASE WHEN false THEN map([1],['x' COLLATE nocase]) ELSE NULL END AS v;
+----
+sql	<REGEX>:.*nocase.*

@@ -1,0 +1,32 @@
+# name: test/sql/aggregate/aggregates/avg_interval_large_count.test
+# description: avg over INTERVAL with a count large enough to overflow the shifted day remainder
+# group: [aggregates]
+
+query I
+WITH s AS (SELECT avg(x) EXPORT_STATE st FROM (VALUES (INTERVAL 1 DAY), (INTERVAL 0 DAY)) v(x))
+SELECT finalize(combine_aggr(st, 200000000)) FROM s;
+----
+12:00:00
+
+query I
+WITH s AS (SELECT avg(x) EXPORT_STATE st FROM (VALUES (INTERVAL 1 DAY), (INTERVAL 0 DAY), (INTERVAL 0 DAY)) v(x))
+SELECT finalize(combine_aggr(st, 100000000)) FROM s;
+----
+08:00:00
+
+query I
+WITH s AS (SELECT avg(x) EXPORT_STATE st FROM (VALUES (INTERVAL '-1' DAY), (INTERVAL 0 DAY), (INTERVAL 0 DAY)) v(x))
+SELECT finalize(combine_aggr(st, 100000000)) FROM s;
+----
+-08:00:00
+
+query I
+WITH s AS (SELECT avg(x) EXPORT_STATE st FROM (VALUES (INTERVAL 1 MONTH), (INTERVAL 0 DAY), (INTERVAL 0 DAY)) v(x))
+SELECT finalize(combine_aggr(st, 100000000)) FROM s;
+----
+10 days
+
+query I
+SELECT avg(x) FROM (VALUES (INTERVAL 1 DAY), (INTERVAL 0 DAY), (INTERVAL 1 MONTH)) v(x);
+----
+10 days 08:00:00

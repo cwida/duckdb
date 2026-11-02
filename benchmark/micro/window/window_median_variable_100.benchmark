@@ -14,7 +14,7 @@ select sum(m)
 from (
     select median(a) over (
         order by b asc
-        rows between mod(b * 47, 521) preceding and 100 - mod(b * 47, 521) following) as m
+        rows between mod(b * 47, 521) preceding and GREATEST(100 - mod(b * 47, 521), 0) following) as m
     from rank100
     ) q;
 

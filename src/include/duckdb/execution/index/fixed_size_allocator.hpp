@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/common/constants.hpp"
+#include "duckdb/common/shared_ptr.hpp"
 #include "duckdb/common/types/validity_mask.hpp"
 #include "duckdb/common/unordered_map.hpp"
 #include "duckdb/common/unordered_set.hpp"
@@ -16,9 +17,10 @@
 #include "duckdb/execution/index/index_pointer.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
 #include "duckdb/storage/index_storage_info.hpp"
-#include "duckdb/storage/partial_block_manager.hpp"
 
 namespace duckdb {
+
+class PartialBlockManager;
 
 //! The FixedSizeAllocator provides pointers to fixed-size memory segments of pre-allocated memory buffers.
 //! The pointers are IndexPointers, and the leftmost byte (metadata) must always be zero.
@@ -46,13 +48,8 @@ public:
 
 	//! Get a segment handle.
 	inline SegmentHandle GetHandle(const IndexPointer ptr) {
-		D_ASSERT(ptr.GetOffset() < available_segments_per_buffer);
-
-		auto buffer_it = buffers.find(ptr.GetBufferId());
-		D_ASSERT(buffer_it != buffers.end());
-
+		auto &buffer = GetBuffer(ptr);
 		auto offset = ptr.GetOffset() * segment_size + bitmask_offset;
-		auto &buffer = *buffer_it->second;
 		return SegmentHandle(buffer, offset);
 	}
 
@@ -66,13 +63,9 @@ public:
 	//! Returns the data_ptr_t to a segment, and sets the dirty flag of the buffer containing that segment.
 	//! DEPRECATED. Use segment handles.
 	inline data_ptr_t Get(const IndexPointer ptr, const bool dirty = true) {
-		D_ASSERT(ptr.GetOffset() < available_segments_per_buffer);
-
-		auto buffer_it = buffers.find(ptr.GetBufferId());
-		D_ASSERT(buffer_it != buffers.end());
-
+		auto &buffer = GetBuffer(ptr);
 		auto offset = ptr.GetOffset() * segment_size + bitmask_offset;
-		auto buffer_ptr = buffer_it->second->GetDeprecated(dirty);
+		auto buffer_ptr = buffer.GetDeprecated(dirty);
 		return buffer_ptr + offset;
 	}
 
@@ -98,15 +91,12 @@ public:
 	//! Returns the data_ptr_t to a segment, or nullptr, if the buffer is not in memory.
 	//! DEPRECATED. Use segment handles.
 	inline data_ptr_t GetIfLoaded(const IndexPointer ptr) {
-		D_ASSERT(ptr.GetOffset() < available_segments_per_buffer);
-		D_ASSERT(buffers.find(ptr.GetBufferId()) != buffers.end());
-
-		auto &buffer = buffers.find(ptr.GetBufferId())->second;
-		if (!buffer->InMemory()) {
+		auto &buffer = GetBuffer(ptr);
+		if (!buffer.InMemory()) {
 			return nullptr;
 		}
 
-		auto buffer_ptr = buffer->GetDeprecated();
+		auto buffer_ptr = buffer.GetDeprecated();
 		auto raw_ptr = buffer_ptr + ptr.GetOffset() * segment_size + bitmask_offset;
 		return raw_ptr;
 	}
@@ -146,8 +136,9 @@ public:
 
 	//! Returns all FixedSizeAllocator information for serialization
 	FixedSizeAllocatorInfo GetInfo() const;
-	//! Serializes all in-memory buffers
-	void SerializeBuffers(PartialBlockManager &partial_block_manager);
+	//! Creates a checkpoint allocator, sharing clean buffers and independently persisting dirty ones.
+	//! The source must remain read-only until the checkpoint allocator is installed or discarded.
+	unsafe_unique_ptr<FixedSizeAllocator> Persist(PartialBlockManager &partial_block_manager);
 	//! Sets the allocation sizes and returns data to serialize each buffer
 	vector<IndexBufferInfo> InitSerializationToWAL();
 	//! Initialize a fixed-size allocator from allocator storage information
@@ -165,6 +156,17 @@ public:
 	void VerifyBuffers();
 
 private:
+	//! Returns the buffer containing the segment of the IndexPointer. Pointers are read from storage, so we verify
+	//! that they point to a segment of an existing buffer
+	inline FixedSizeBuffer &GetBuffer(const IndexPointer ptr) const {
+		auto buffer_it = buffers.find(ptr.GetBufferId());
+		if (ptr.GetOffset() >= available_segments_per_buffer || buffer_it == buffers.end()) {
+			ThrowInvalidPointer(ptr);
+		}
+		return *buffer_it->second;
+	}
+	[[noreturn]] void ThrowInvalidPointer(const IndexPointer ptr) const;
+
 	//! Memory tag of memory that is allocated through the allocator
 	MemoryTag memory_tag;
 	//! Allocation size of one segment in a buffer
@@ -184,7 +186,7 @@ private:
 	idx_t total_segment_count;
 
 	//! Buffers containing the segments.
-	unordered_map<idx_t, unique_ptr<FixedSizeBuffer>> buffers;
+	unordered_map<idx_t, shared_ptr<FixedSizeBuffer>> buffers;
 	//! Buffers with free space.
 	unordered_set<idx_t> buffers_with_free_space;
 	//! Caches the next buffer to be filled up.

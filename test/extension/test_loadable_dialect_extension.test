@@ -1,0 +1,49 @@
+# name: test/extension/test_loadable_dialect_extension.test
+# description: Test a loadable extension that provides a selectable SQL dialect.
+# group: [extension]
+
+require skip_reload
+
+statement ok
+LOAD '{BUILD_DIRECTORY}/test/extension/loadable_dialect_extension_demo.duckdb_extension';
+
+query I
+SELECT count(*) FROM duckdb_dialects() WHERE dialect_name = 'loadable_dialect_extension_demo';
+----
+1
+
+query I
+SELECT current_setting('current_dialect') IS NULL;
+----
+true
+
+statement error
+SELECT DIALECT_DEMO;
+----
+<REGEX>:Binder Error:.*DIALECT_DEMO.*
+
+statement ok
+SET current_dialect = 'loadable_dialect_extension_demo';
+
+query T
+SELECT current_setting('current_dialect');
+----
+loadable_dialect_extension_demo
+
+query T
+SELECT DIALECT_DEMO;
+----
+Hello from the dialect extension demo
+
+statement ok
+RESET current_dialect;
+
+query I
+SELECT current_setting('current_dialect') IS NULL;
+----
+true
+
+statement error
+SELECT DIALECT_DEMO;
+----
+<REGEX>:Binder Error:.*DIALECT_DEMO.*

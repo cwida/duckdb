@@ -1,0 +1,28 @@
+# name: benchmark/micro/match_recognize/match_recognize_shoulders.benchmark
+# description: A figure whose later legs are measured against the extremes of earlier legs
+# group: [match_recognize]
+
+# UP2 has to clear the highest point UP reached and DOWN2 to break below the lowest point DOWN
+# reached, with UP and DOWN both recurring later in the pattern: aggregates over variables whose
+# rows are not one run of the match, under a seven-variable pattern that backtracks at most rows.
+
+name MatchRecognize Shoulders
+group micro
+subgroup match_recognize
+
+load
+CREATE TABLE ticks AS
+    SELECT i, 100 + ((i // 25) % 7) * 2 - abs((i % 25) - 12) * (1 + ((i // 25) % 3)) + (h % 3)::INTEGER AS v
+    FROM (SELECT i, (i::BIGINT * 2654435761 % 1000003) AS h FROM range(0, 1000000) t(i));
+
+run
+SELECT count(*), sum(len) FROM ticks MATCH_RECOGNIZE(
+    ORDER BY i
+    MEASURES last(i) - first(i) + 1 AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (S UP+ DOWN+ UP2+ DOWN+ UP+ DOWN2+)
+    DEFINE UP AS v > PREV(v), DOWN AS v < PREV(v), UP2 AS v > max(UP.v), DOWN2 AS v < min(DOWN.v)
+);
+
+result II
+4919	168258

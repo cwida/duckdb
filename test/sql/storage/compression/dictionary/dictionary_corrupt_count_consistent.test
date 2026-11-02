@@ -1,0 +1,33 @@
+# name: test/sql/storage/compression/dictionary/dictionary_corrupt_count_consistent.test
+# description: Reject invalid dictionary indices after inflating the row count and selection region
+# group: [dictionary]
+
+require vector_size 2048
+
+unzip data/storage/corrupt/dictionary_corrupt_count_consistent.db.gz {TEST_DIR}/dictionary_corrupt_count_consistent.db
+
+load {TEST_DIR}/dictionary_corrupt_count_consistent.db readonly
+
+statement ok
+USE dictionary_corrupt_count_consistent;
+
+query I
+SELECT compression FROM pragma_storage_info('t') WHERE column_name='s' AND compression='Dictionary' LIMIT 1;
+----
+Dictionary
+
+# The inflated selection region includes bytes that decode to out-of-range dictionary indices.
+statement error
+SELECT max(s) FROM t;
+----
+Data Corruption Error: Failed to scan dictionary string - dictionary index was out of range
+
+restart
+
+statement ok
+SET debug_force_fetch_row=true;
+
+statement error
+SELECT max(s) FROM t;
+----
+Data Corruption Error: Failed to scan dictionary string - dictionary index was out of range

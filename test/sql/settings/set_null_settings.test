@@ -1,0 +1,128 @@
+# name: test/sql/settings/set_null_settings.test
+# description: Setting options that cannot be NULL to NULL raises a regular error
+# group: [settings]
+
+statement error
+SET allocator_background_threads=NULL;
+----
+allocator_background_threads setting cannot be NULL
+
+statement error
+SET allow_community_extensions=NULL;
+----
+allow_community_extensions setting cannot be NULL
+
+statement error
+SET allowed_configs=NULL;
+----
+allowed_configs setting cannot be NULL
+
+statement error
+SET allowed_directories=NULL;
+----
+allowed_directories setting cannot be NULL
+
+statement error
+SET allowed_paths=NULL;
+----
+allowed_paths setting cannot be NULL
+
+statement error
+SET allow_extension_repositories=NULL;
+----
+allow_extension_repositories setting cannot be NULL
+
+statement error
+SET allow_persistent_secrets=NULL;
+----
+allow_persistent_secrets setting cannot be NULL
+
+statement error
+SET allow_unredacted_secrets=NULL;
+----
+allow_unredacted_secrets setting cannot be NULL
+
+statement error
+SET allow_unsigned_extensions=NULL;
+----
+allow_unsigned_extensions setting cannot be NULL
+
+statement error
+SET default_block_size=NULL;
+----
+default_block_size setting cannot be NULL
+
+statement error
+SET enable_block_allocator=NULL;
+----
+enable_block_allocator setting cannot be NULL
+
+statement error
+SET enable_external_access=NULL;
+----
+enable_external_access setting cannot be NULL
+
+statement error
+SET enable_external_file_cache=NULL;
+----
+enable_external_file_cache setting cannot be NULL
+
+statement error
+SET enable_logging=NULL;
+----
+enable_logging setting cannot be NULL
+
+statement error
+SET extension_directories=NULL;
+----
+extension_directories setting cannot be NULL
+
+statement error
+SET external_file_cache_local_max_block_size=NULL;
+----
+external_file_cache_local_max_block_size setting cannot be NULL
+
+statement error
+SET external_file_cache_remote_max_block_size=NULL;
+----
+external_file_cache_remote_max_block_size setting cannot be NULL
+
+statement error
+SET external_file_cache_remote_min_block_size=NULL;
+----
+external_file_cache_remote_min_block_size setting cannot be NULL
+
+statement error
+SET index_scan_percentage=NULL;
+----
+index_scan_percentage setting cannot be NULL
+
+statement error
+SET initial_column_segment_size=NULL;
+----
+initial_column_segment_size setting cannot be NULL
+
+statement error
+SET max_temp_directory_size=NULL;
+----
+max_temp_directory_size setting cannot be NULL
+
+statement error
+SET progress_bar_time=NULL;
+----
+progress_bar_time setting cannot be NULL
+
+statement error
+SET tracked_metrics=NULL;
+----
+tracked_metrics setting cannot be NULL
+
+statement error
+SET warnings_as_errors=NULL;
+----
+warnings_as_errors setting cannot be NULL
+
+query I
+SELECT 42;
+----
+42

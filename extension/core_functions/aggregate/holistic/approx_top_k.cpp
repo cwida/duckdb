@@ -49,7 +49,7 @@ struct ApproxTopKValue {
 	//! Allocated data
 	char *dataptr = nullptr;
 	uint32_t size = 0;
-	uint32_t capacity = 0;
+	idx_t capacity = 0;
 };
 
 struct InternalApproxTopKState {
@@ -94,7 +94,7 @@ struct InternalApproxTopKState {
 		value.size = UnsafeNumericCast<uint32_t>(input.str.GetSize());
 		if (value.size > value.capacity) {
 			// need to re-allocate for this value
-			value.capacity = UnsafeNumericCast<uint32_t>(NextPowerOfTwo(value.size));
+			value.capacity = NextPowerOfTwo(value.size);
 			value.dataptr = char_ptr_cast(allocator.Allocate(value.capacity));
 		}
 		// copy over the data
@@ -510,6 +510,10 @@ void ApproxTopKImportState(AggregateImportInputData &input) {
 			// NULL input - leave the state empty
 			continue;
 		}
+		if (FlatVector::IsNull(fields[0], i) || FlatVector::IsNull(value_lists, i) ||
+		    FlatVector::IsNull(filter_lists, i)) {
+			throw InvalidInputException("Invalid approx_top_k state - the k, values and filter cannot be NULL");
+		}
 		auto internal_state = make_uniq<InternalApproxTopKState>();
 		auto &target = *internal_state;
 		target.Initialize(k_data[i]);
@@ -537,10 +541,24 @@ void ApproxTopKImportState(AggregateImportInputData &input) {
 			if (!inserted) {
 				throw InvalidInputException("Invalid approx_top_k state - the state values must be unique");
 			}
+			if (FlatVector::IsNull(value_fields[1], idx)) {
+				throw InvalidInputException("Invalid approx_top_k state - the state counts cannot be NULL");
+			}
 			val.count = count_data[idx];
+			if (val.count == 0) {
+				throw InvalidInputException("Invalid approx_top_k state - the state values must have a count > 0");
+			}
+			if (value_idx > 0 && val.count > target.values[value_idx - 1].get().count) {
+				throw InvalidInputException(
+				    "Invalid approx_top_k state - the state values must be ordered by descending count");
+			}
 		}
 		for (idx_t filter_idx = 0; filter_idx < filter_entries[i].length; filter_idx++) {
-			target.filter[filter_idx] = filter_data[filter_entries[i].offset + filter_idx];
+			const auto filter_entry_idx = filter_entries[i].offset + filter_idx;
+			if (FlatVector::IsNull(ListVector::GetChild(filter_lists), filter_entry_idx)) {
+				throw InvalidInputException("Invalid approx_top_k state - the filter values cannot be NULL");
+			}
+			target.filter[filter_idx] = filter_data[filter_entry_idx];
 		}
 		target.Verify();
 		state.state = internal_state.release();
@@ -574,13 +592,14 @@ unique_ptr<FunctionData> ApproxTopKBind(BindAggregateFunctionInput &input) {
 AggregateFunction ApproxTopKFun::GetFunction() {
 	using STATE = ApproxTopKState;
 	using OP = ApproxTopKOperation;
-	auto fun = AggregateFunction("approx_top_k", {LogicalTypeId::ANY, LogicalType::BIGINT},
-	                             LogicalType::LIST(LogicalType::ANY), AggregateFunction::StateSize<STATE>,
-	                             AggregateFunction::StateInitialize<STATE, OP>, ApproxTopKUpdate,
-	                             AggregateFunction::StateCombine<STATE, OP>, ApproxTopKFinalize, nullptr,
-	                             ApproxTopKBind, AggregateFunction::StateDestroy<STATE, OP>);
+	auto fun = AggregateFunction("approx_top_k", {}, LogicalType::LIST(LogicalType::ANY),
+	                             AggregateFunction::StateSize<STATE>, AggregateFunction::StateInitialize<STATE, OP>,
+	                             ApproxTopKUpdate, AggregateFunction::StateCombine<STATE, OP>, ApproxTopKFinalize,
+	                             nullptr, ApproxTopKBind, AggregateFunction::StateDestroy<STATE, OP>);
+	fun.GetSignature().AddParameter("val", LogicalTypeId::ANY).AddParameter("k", LogicalType::BIGINT);
 	fun.SetStateExportCallbacks(ApproxTopKGetStateType, ApproxTopKExportState<HistogramGenericFunctor>,
 	                            ApproxTopKImportState<HistogramGenericFunctor>);
+	fun.SetFallible(); // the update callback rejects NULL and out-of-range k values at runtime
 	return fun;
 }
 

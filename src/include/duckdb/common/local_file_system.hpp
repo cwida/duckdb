@@ -49,6 +49,8 @@ public:
 	FileType GetFileType(FileHandle &handle) override;
 	//! Returns the file stats of the attached handle.
 	FileMetadata Stats(FileHandle &handle) override;
+	optional<FileMetadata> GetStatsIfExists(const OpenFileInfo &file,
+	                                        optional_ptr<FileOpener> opener = nullptr) override;
 	//! Truncate a file to a maximum size of new_size, new_size should be smaller than or equal to the current size of
 	//! the file
 	void Truncate(FileHandle &handle, int64_t new_size) override;

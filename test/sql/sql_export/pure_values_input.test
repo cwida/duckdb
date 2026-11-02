@@ -1,0 +1,44 @@
+# name: test/sql/sql_export/pure_values_input.test
+# description: Pure input-backed VALUES retain relational semantics without consumer analysis
+# group: [sql_export]
+
+statement ok
+CREATE TABLE pure_values_input(i INTEGER);
+
+statement ok
+INSERT INTO pure_values_input VALUES (1),(1),(2),(NULL);
+
+query II
+SELECT x,count(*) FROM pure_values_input, LATERAL (VALUES (i),(i),(NULL)) v(x)
+GROUP BY x ORDER BY x NULLS LAST;
+----
+1	4
+2	2
+NULL	6
+
+query I
+SELECT x FROM pure_values_input, LATERAL (VALUES (i),(-1)) v(x)
+ORDER BY x NULLS LAST LIMIT 3;
+----
+-1
+-1
+-1
+
+query I
+SELECT count(*) FROM (SELECT * FROM pure_values_input WHERE false) t,
+LATERAL (VALUES (i),(i)) v(x);
+----
+0
+
+query T
+SELECT list(x ORDER BY x NULLS LAST) FROM pure_values_input, LATERAL (VALUES (i),(-1)) v(x);
+----
+[-1, -1, -1, -1, 1, 1, 2, NULL]
+
+query II rowsort
+WITH v AS MATERIALIZED (SELECT x FROM pure_values_input, LATERAL (VALUES (i),(i)) v(x))
+SELECT x,count(*) FROM v GROUP BY x;
+----
+1	4
+2	2
+NULL	2

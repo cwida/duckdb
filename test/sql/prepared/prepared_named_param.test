@@ -14,6 +14,11 @@ execute q123(param := 5, 3)
 ----
 Not implemented Error: Mixing named parameters and positional parameters is not supported yet
 
+statement error
+execute q123(5, other_name := 3)
+----
+Not implemented Error: Mixing named parameters and positional parameters is not supported yet
+
 statement ok
 prepare q01 as select $1, ?, $2;
 

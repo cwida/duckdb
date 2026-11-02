@@ -1,0 +1,47 @@
+# name: test/sql/copy/file_size_bytes_tiny_limit.test
+# description: COPY with a file size limit smaller than an empty file terminates
+# group: [copy]
+
+require parquet
+
+statement ok
+SET max_execution_time = 60000
+
+statement ok
+COPY (SELECT i FROM range(5) r(i)) TO '{TEST_DIR}/tiny_fsb' (FORMAT csv, FILE_SIZE_BYTES 1)
+
+query I
+SELECT count(*) <= 5 FROM glob('{TEST_DIR}/tiny_fsb/*.csv')
+----
+true
+
+query I
+SELECT sum(i) FROM read_csv('{TEST_DIR}/tiny_fsb/*.csv')
+----
+10
+
+statement ok
+COPY (SELECT i FROM range(5) r(i)) TO '{TEST_DIR}/tiny_fsb_parquet' (FORMAT parquet, FILE_SIZE_BYTES 1)
+
+query I
+SELECT sum(i) FROM read_parquet('{TEST_DIR}/tiny_fsb_parquet/*.parquet')
+----
+10
+
+statement error
+COPY (SELECT 1 i) TO '{TEST_DIR}/rgpf0' (FORMAT parquet, ROW_GROUPS_PER_FILE 0)
+----
+ROW_GROUPS_PER_FILE must be a positive number
+
+statement ok
+COPY (SELECT i, i % 3 p FROM range(30000) r(i)) TO '{TEST_DIR}/tiny_fsb_partitioned' (FORMAT csv, PARTITION_BY (p), FILE_SIZE_BYTES '10KB')
+
+query II
+SELECT count(*), sum(i) FROM read_csv('{TEST_DIR}/tiny_fsb_partitioned/*/*.csv')
+----
+30000	449985000
+
+query I
+SELECT count(*) > 3 FROM glob('{TEST_DIR}/tiny_fsb_partitioned/*/*.csv')
+----
+true

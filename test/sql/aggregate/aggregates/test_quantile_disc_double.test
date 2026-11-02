@@ -1,0 +1,86 @@
+# name: test/sql/aggregate/aggregates/test_quantile_disc_double.test
+# description: QUANTILE_DISC must select the same element for a DOUBLE quantile as for the DECIMAL literal
+# group: [aggregates]
+
+# Issue #27209: with a DOUBLE quantile the element index was computed as floor(n - n * q) in floating point.
+# When n * q is mathematically an integer (n = 10, q = 0.9) the binary double sits a few ulps off, and the
+# result depended on whether the compiler contracted the multiply-subtract into an FMA, so different plan
+# shapes of the same aggregate disagreed with each other and with the exact DECIMAL path.
+
+query II
+SELECT quantile_disc(x, 0.9) AS dec_q, quantile_disc(x, 0.9::DOUBLE) AS dbl_q FROM range(1, 11) t(x);
+----
+9	9
+
+# the correlated form is decorrelated into a grouped aggregate, which hit the other code path
+query III
+SELECT n,
+       (SELECT quantile_disc(x, 0.9) FROM range(1, n + 1) t(x)) AS dec_q,
+       (SELECT quantile_disc(x, 0.9::DOUBLE) FROM range(1, n + 1) t(x)) AS dbl_q
+FROM range(8, 12) r(n) ORDER BY n;
+----
+8	8	8
+9	9	9
+10	9	9
+11	10	10
+
+# descending quantiles take the same path
+query II
+SELECT quantile_disc(x, -0.9) AS dec_q, quantile_disc(x, -0.9::DOUBLE) AS dbl_q FROM range(1, 11) t(x);
+----
+2	2
+
+# every n in 1..200 for a set of quantiles: DOUBLE == DECIMAL == exact reference max(1, ceil(n * q))
+foreach q 0.1 0.25 0.5 0.75 0.9 0.95 0.99
+
+# grouped aggregate over a lateral join
+query I
+SELECT count(*)
+FROM (
+    SELECT n, quantile_disc(x, {q}) AS dec_q, quantile_disc(x, {q}::DOUBLE) AS dbl_q
+    FROM range(1, 201) r(n), LATERAL (SELECT x FROM range(1, n + 1) t(x)) s
+    GROUP BY n)
+WHERE dec_q IS DISTINCT FROM dbl_q
+   OR dec_q IS DISTINCT FROM greatest(1, ceil(n * {q}))::BIGINT;
+----
+0
+
+# correlated subqueries
+query I
+SELECT count(*)
+FROM (
+    SELECT n,
+           (SELECT quantile_disc(x, {q}) FROM range(1, n + 1) t(x)) AS dec_q,
+           (SELECT quantile_disc(x, {q}::DOUBLE) FROM range(1, n + 1) t(x)) AS dbl_q
+    FROM range(1, 201) r(n))
+WHERE dec_q IS DISTINCT FROM dbl_q
+   OR dec_q IS DISTINCT FROM greatest(1, ceil(n * {q}))::BIGINT;
+----
+0
+
+endloop
+
+# list form
+query I
+SELECT count(*)
+FROM (
+    SELECT n,
+           quantile_disc(x, [0.1, 0.5, 0.9]) AS dec_q,
+           quantile_disc(x, [0.1, 0.5, 0.9]::DOUBLE[]) AS dbl_q
+    FROM range(1, 201) r(n), LATERAL (SELECT x FROM range(1, n + 1) t(x)) s
+    GROUP BY n)
+WHERE dec_q IS DISTINCT FROM dbl_q
+   OR dec_q IS DISTINCT FROM [greatest(1, ceil(n * 0.1)), greatest(1, ceil(n * 0.5)), greatest(1, ceil(n * 0.9))]::BIGINT[];
+----
+0
+
+query I
+SELECT count(*)
+FROM (
+    SELECT n,
+           (SELECT quantile_disc(x, [0.1, 0.5, 0.9]) FROM range(1, n + 1) t(x)) AS dec_q,
+           (SELECT quantile_disc(x, [0.1, 0.5, 0.9]::DOUBLE[]) FROM range(1, n + 1) t(x)) AS dbl_q
+    FROM range(1, 201) r(n))
+WHERE dec_q IS DISTINCT FROM dbl_q;
+----
+0

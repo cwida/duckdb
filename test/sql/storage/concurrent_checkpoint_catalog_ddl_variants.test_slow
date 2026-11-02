@@ -1,0 +1,580 @@
+# name: test/sql/storage/concurrent_checkpoint_catalog_ddl_variants.test_slow
+# description: Drops, renames, replaces, nested schemas, setval: during checkpoints, after WAL replay, read-only
+# group: [storage]
+
+load {TEST_DIR}/concurrent_checkpoint_catalog_ddl_variants.db
+
+statement ok
+SET checkpoint_threshold='1TB'
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+statement ok
+CREATE TABLE t (i INTEGER DEFAULT 7 NOT NULL, j INTEGER);
+
+statement ok
+INSERT INTO t SELECT i, i FROM range(1000) t(i);
+
+statement ok
+CREATE SEQUENCE s_drop
+
+statement ok
+CREATE SEQUENCE s_set
+
+statement ok
+CREATE SEQUENCE s_set2
+
+statement ok
+CREATE MACRO m_drop(x) AS x
+
+statement ok
+CREATE MACRO m_replace(x) AS x
+
+statement ok
+CREATE TYPE t_drop AS ENUM ('x')
+
+statement ok
+CREATE SCHEMA empty_schema
+
+statement ok
+CREATE SCHEMA outer_schema
+
+statement ok
+CREATE VIEW v_rename AS SELECT 1 AS one
+
+statement ok
+CREATE VIEW v_replace AS SELECT 1 AS one
+
+# both sequences continue at 11
+statement ok
+SELECT nextval('s_set'), nextval('s_set2') FROM range(10)
+
+statement ok
+CHECKPOINT
+
+# the checkpoint sleeps for three seconds before it scans the catalog, and for three seconds after it wrote table t
+statement ok
+SET debug_checkpoint_sleep_ms=3000
+
+statement ok
+SET debug_checkpoint_scan_sleep_ms=3000
+
+concurrentloop threadid 0 3
+
+# thread 2 is a reader that needs the state from before the insert below, so that this is a concurrent checkpoint
+onlyif threadid=2
+statement ok
+BEGIN TRANSACTION
+
+onlyif threadid=2
+query I
+SELECT COUNT(*) FROM t
+----
+1000
+
+sleep 300 millisecond
+
+onlyif threadid=0
+statement ok
+INSERT INTO t VALUES (-1, -1)
+
+onlyif threadid=0
+statement ok
+CHECKPOINT
+
+sleep 700 millisecond
+
+# during the sleep before the catalog scan
+onlyif threadid=1
+statement ok
+DROP SEQUENCE s_drop
+
+onlyif threadid=1
+statement ok
+DROP MACRO m_drop
+
+onlyif threadid=1
+statement ok
+DROP TYPE t_drop
+
+onlyif threadid=1
+statement ok
+DROP SCHEMA empty_schema
+
+onlyif threadid=1
+statement ok
+ALTER TABLE t RENAME COLUMN j TO k
+
+onlyif threadid=1
+statement ok
+ALTER TABLE t ALTER COLUMN i DROP DEFAULT
+
+onlyif threadid=1
+statement ok
+ALTER TABLE t ALTER COLUMN i DROP NOT NULL
+
+onlyif threadid=1
+statement ok
+COMMENT ON COLUMN t.k IS 'renamed column'
+
+onlyif threadid=1
+statement ok
+ALTER VIEW v_rename RENAME TO v_renamed
+
+onlyif threadid=1
+statement ok
+CREATE OR REPLACE VIEW v_replace AS SELECT 2 AS one
+
+onlyif threadid=1
+statement ok
+CREATE OR REPLACE MACRO m_replace(x) AS x + 1
+
+onlyif threadid=1
+statement ok
+CREATE SCHEMA outer_schema.inner_schema
+
+onlyif threadid=1
+statement ok
+CREATE VIEW outer_schema.inner_schema.v_inner AS SELECT 3 AS three
+
+# created and dropped while the checkpoint runs
+onlyif threadid=1
+statement ok
+CREATE VIEW v_short AS SELECT 4 AS four
+
+onlyif threadid=1
+statement ok
+DROP VIEW v_short
+
+# moves the sequence back before the checkpoint writes it
+onlyif threadid=1
+query I
+SELECT setval('s_set', 5, false)
+----
+5
+
+sleep 3500 millisecond
+
+# during the sleep after table t was written: moves the sequence back after the checkpoint wrote it
+onlyif threadid=1
+query I
+SELECT setval('s_set2', 50, false)
+----
+50
+
+sleep 3000 millisecond
+
+onlyif threadid=2
+statement ok
+COMMIT
+
+endloop
+
+statement ok
+SET debug_checkpoint_sleep_ms=0
+
+statement ok
+SET debug_checkpoint_scan_sleep_ms=0
+
+loop k 0 2
+
+query I
+SELECT COUNT(*) FROM duckdb_sequences() WHERE sequence_name = 's_drop'
+----
+0
+
+query I
+SELECT COUNT(*) FROM duckdb_functions() WHERE function_name = 'm_drop'
+----
+0
+
+query I
+SELECT COUNT(*) FROM duckdb_types() WHERE type_name = 't_drop'
+----
+0
+
+query I
+SELECT COUNT(*) FROM duckdb_schemas() WHERE schema_name = 'empty_schema'
+----
+0
+
+query TTTT
+SELECT column_name, column_default, is_nullable, comment FROM duckdb_columns() WHERE table_name = 't' ORDER BY column_index
+----
+i	NULL	true	NULL
+k	NULL	true	renamed column
+
+query III
+SELECT COUNT(*), SUM(i), SUM(k) FROM t
+----
+1001	499499	499499
+
+query I
+SELECT one FROM v_renamed
+----
+1
+
+query I
+SELECT COUNT(*) FROM duckdb_views() WHERE view_name IN ('v_rename', 'v_short')
+----
+0
+
+query I
+SELECT one FROM v_replace
+----
+2
+
+query I
+SELECT m_replace(1)
+----
+2
+
+query I
+SELECT three FROM outer_schema.inner_schema.v_inner
+----
+3
+
+# each iteration takes one value, which the next one replays
+query II
+SELECT nextval('s_set') - {k}, nextval('s_set2') - {k}
+----
+5	50
+
+# replay the WAL as after a crash
+restart
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+endloop
+
+statement ok
+CHECKPOINT
+
+restart
+
+query II
+SELECT nextval('s_set'), nextval('s_set2')
+----
+7	52
+
+query T
+SELECT comment FROM duckdb_columns() WHERE table_name = 't' AND column_name = 'k'
+----
+renamed column
+
+# an open transaction with such DDL does not keep checkpoints from running
+statement ok
+CREATE SEQUENCE c_seq
+
+statement ok
+CREATE SEQUENCE c_seq_set
+
+statement ok
+CREATE MACRO c_macro(x) AS x
+
+statement ok
+CREATE TYPE c_type AS ENUM ('a')
+
+statement ok
+CREATE SCHEMA c_schema
+
+statement ok
+CREATE TABLE c_t (i INTEGER DEFAULT 1 NOT NULL, j INTEGER)
+
+statement ok
+CREATE VIEW c_view AS SELECT 1 AS one
+
+statement ok con1
+BEGIN TRANSACTION
+
+statement ok con1
+DROP SEQUENCE c_seq
+
+statement ok
+INSERT INTO t VALUES (1, 1)
+
+statement ok
+CHECKPOINT
+
+statement ok con1
+ROLLBACK
+
+statement ok con1
+BEGIN TRANSACTION
+
+statement ok con1
+DROP MACRO c_macro
+
+statement ok
+INSERT INTO t VALUES (1, 1)
+
+statement ok
+CHECKPOINT
+
+statement ok con1
+ROLLBACK
+
+statement ok con1
+BEGIN TRANSACTION
+
+statement ok con1
+DROP TYPE c_type
+
+statement ok
+INSERT INTO t VALUES (1, 1)
+
+statement ok
+CHECKPOINT
+
+statement ok con1
+ROLLBACK
+
+statement ok con1
+BEGIN TRANSACTION
+
+statement ok con1
+DROP SCHEMA c_schema
+
+statement ok
+INSERT INTO t VALUES (1, 1)
+
+statement ok
+CHECKPOINT
+
+statement ok con1
+ROLLBACK
+
+statement ok con1
+BEGIN TRANSACTION
+
+statement ok con1
+ALTER TABLE c_t RENAME COLUMN j TO k
+
+statement ok
+INSERT INTO t VALUES (1, 1)
+
+statement ok
+CHECKPOINT
+
+statement ok con1
+ROLLBACK
+
+statement ok con1
+BEGIN TRANSACTION
+
+statement ok con1
+ALTER TABLE c_t ALTER COLUMN i DROP DEFAULT
+
+statement ok
+INSERT INTO t VALUES (1, 1)
+
+statement ok
+CHECKPOINT
+
+statement ok con1
+ROLLBACK
+
+statement ok con1
+BEGIN TRANSACTION
+
+statement ok con1
+ALTER TABLE c_t ALTER COLUMN i DROP NOT NULL
+
+statement ok
+INSERT INTO t VALUES (1, 1)
+
+statement ok
+CHECKPOINT
+
+statement ok con1
+ROLLBACK
+
+statement ok con1
+BEGIN TRANSACTION
+
+statement ok con1
+COMMENT ON COLUMN c_t.j IS 'c'
+
+statement ok
+INSERT INTO t VALUES (1, 1)
+
+statement ok
+CHECKPOINT
+
+statement ok con1
+ROLLBACK
+
+statement ok con1
+BEGIN TRANSACTION
+
+statement ok con1
+ALTER VIEW c_view RENAME TO c_view2
+
+statement ok
+INSERT INTO t VALUES (1, 1)
+
+statement ok
+CHECKPOINT
+
+statement ok con1
+ROLLBACK
+
+statement ok con1
+BEGIN TRANSACTION
+
+statement ok con1
+CREATE OR REPLACE VIEW c_view AS SELECT 2 AS one
+
+statement ok
+INSERT INTO t VALUES (1, 1)
+
+statement ok
+CHECKPOINT
+
+statement ok con1
+ROLLBACK
+
+statement ok con1
+BEGIN TRANSACTION
+
+statement ok con1
+CREATE OR REPLACE MACRO c_macro(x) AS x + 1
+
+statement ok
+INSERT INTO t VALUES (1, 1)
+
+statement ok
+CHECKPOINT
+
+statement ok con1
+ROLLBACK
+
+statement ok con1
+BEGIN TRANSACTION
+
+statement ok con1
+CREATE SCHEMA outer_schema.c_inner
+
+statement ok
+INSERT INTO t VALUES (1, 1)
+
+statement ok
+CHECKPOINT
+
+statement ok con1
+ROLLBACK
+
+statement ok con1
+BEGIN TRANSACTION
+
+statement ok con1
+SELECT setval('c_seq_set', 100)
+
+statement ok
+INSERT INTO t VALUES (1, 1)
+
+statement ok
+CHECKPOINT
+
+statement ok con1
+ROLLBACK
+
+# a read-only database still rejects DDL that keeps table storage, and sequence use
+statement ok
+ATTACH '{TEST_DIR}/concurrent_checkpoint_catalog_ddl_ro.db' AS ro
+
+statement ok
+CREATE TABLE ro.t (i INTEGER)
+
+statement ok
+CREATE SEQUENCE ro.s
+
+statement ok
+CREATE VIEW ro.v AS SELECT 1 AS one
+
+statement ok
+CREATE MACRO ro.m(x) AS x
+
+statement ok
+CREATE TYPE ro.e AS ENUM ('a')
+
+statement ok
+CREATE SCHEMA ro.sch
+
+statement ok
+DETACH ro
+
+statement ok
+ATTACH '{TEST_DIR}/concurrent_checkpoint_catalog_ddl_ro.db' AS ro (READ_ONLY)
+
+statement error
+CREATE VIEW ro.v2 AS SELECT 1
+----
+read-only mode
+
+statement error
+CREATE MACRO ro.m2(x) AS x
+----
+read-only mode
+
+statement error
+CREATE SEQUENCE ro.s2
+----
+read-only mode
+
+statement error
+CREATE SCHEMA ro.sch2
+----
+read-only mode
+
+statement error
+SELECT nextval('ro.s')
+----
+read-only mode
+
+statement error
+SELECT setval('ro.s', 10)
+----
+read-only mode
+
+statement error
+COMMENT ON TABLE ro.t IS 'c'
+----
+read-only mode
+
+statement error
+ALTER TABLE ro.t RENAME TO t2
+----
+read-only mode
+
+statement error
+ALTER TABLE ro.t RENAME COLUMN i TO j
+----
+read-only mode
+
+statement error
+ALTER TABLE ro.t ALTER COLUMN i SET DEFAULT 1
+----
+read-only mode
+
+statement error
+DROP VIEW ro.v
+----
+read-only mode
+
+statement error
+DROP MACRO ro.m
+----
+read-only mode
+
+statement error
+DROP TYPE ro.e
+----
+read-only mode
+
+statement error
+DROP SCHEMA ro.sch
+----
+read-only mode

@@ -1,5 +1,6 @@
 #include "duckdb/parser/peg/transformer/peg_transformer.hpp"
 #include "duckdb/parser/peg/compiled_grammar.hpp"
+#include "duckdb/parser/expression/star_expression.hpp"
 #include "duckdb/common/enums/trigger_type.hpp"
 #include "duckdb/common/query_location.hpp"
 #include "duckdb/common/string_util.hpp"
@@ -13,51 +14,13 @@
 #include "duckdb/common/enums/subquery_type.hpp"
 #include "duckdb/common/exception/conversion_exception.hpp"
 #include "duckdb/parser/expression/cast_expression.hpp"
+#include "duckdb/catalog/default/default_types.hpp"
+#include "duckdb/parser/expression/type_expression.hpp"
 #include "duckdb/parser/query_node/set_operation_node.hpp"
 #include "duckdb/parser/statement/merge_into_statement.hpp"
 #include "duckdb/parser/constraints/foreign_key_constraint.hpp"
 
 namespace duckdb {
-
-unique_ptr<SQLStatement> PEGTransformerFactory::TransformStatement(PEGTransformer &transformer,
-                                                                   ParseResult &parse_result) {
-	if (transformer.options.heap_based_parser && !transformer.grammar.HasGrammarChanges()) {
-		return TransformStatementTrampoline(transformer, parse_result);
-	}
-	auto &list_pr = parse_result.Cast<ListParseResult>();
-	auto &choice_pr = list_pr.Child<ChoiceParseResult>(0);
-	auto result = transformer.Transform<unique_ptr<SQLStatement>>(choice_pr.GetResult());
-	if (!transformer.named_parameter_map.empty()) {
-		// Avoid overriding a previous move with nothing
-		result->named_param_map = transformer.named_parameter_map;
-	}
-	result->has_anonymous_parameters = transformer.has_anonymous_parameters;
-	return result;
-}
-
-unique_ptr<SQLStatement> PEGTransformerFactory::TransformStatementTrampoline(PEGTransformer &transformer,
-                                                                             ParseResult &parse_result) {
-	auto &list_pr = parse_result.Cast<ListParseResult>();
-	auto &choice_pr = list_pr.Child<ChoiceParseResult>(0);
-	auto &choice_result = choice_pr.GetResult();
-
-	TransformStack stack(transformer);
-	auto result = stack.Execute<unique_ptr<SQLStatement>>(choice_result, GetTrampolineOps(choice_result));
-	if (!transformer.named_parameter_map.empty()) {
-		result->named_param_map = transformer.named_parameter_map;
-	}
-	result->has_anonymous_parameters = transformer.has_anonymous_parameters;
-	return result;
-}
-
-const TransformFrameOps &PEGTransformerFactory::GetTrampolineOps(const ParseResult &parse_result) {
-	auto &ops_map = GeneratedTrampolineOps();
-	auto ops_entry = ops_map.find(parse_result.name);
-	if (ops_entry == ops_map.end()) {
-		throw NotImplementedException("No trampoline transformer for rule '%s'", parse_result.name);
-	}
-	return *ops_entry->second;
-}
 
 static unique_ptr<SQLStatement> ExtractAndTransformStatement(PEGTransformer &transformer,
                                                              const TokenIterator &token_iterator, ParseResult &stmt_pr,
@@ -69,12 +32,15 @@ static unique_ptr<SQLStatement> ExtractAndTransformStatement(PEGTransformer &tra
 	}
 	if (!transformer.pivot_entries.empty()) {
 		stmt = transformer.CreatePivotStatement(std::move(stmt));
+		// Unpacking discards the wrapper, so the parts keep their map; the wrapper carries it for introspection.
+		stmt->named_param_map = transformer.named_parameter_map;
 	}
 	transformer.Clear();
 
 	// Calculate location and length cleanly
-	if (stmt_pr.offset.IsValid()) {
-		auto start = stmt_pr.offset.GetIndex();
+	auto offset = stmt_pr.GetOffset();
+	if (offset.IsValid()) {
+		auto start = offset.GetIndex();
 		idx_t end_index = terminator_offset.IsValid() ? terminator_offset.GetIndex() : token_iterator.EndOffset();
 		stmt->stmt_location = QueryLocation(start, end_index - start);
 	}
@@ -84,35 +50,26 @@ static unique_ptr<SQLStatement> ExtractAndTransformStatement(PEGTransformer &tra
 
 unique_ptr<SQLStatement> PEGTransformerFactory::TransformTopLevelStatement(TokenIterator &token_iterator,
                                                                            ParserOptions &options,
-                                                                           const CompiledGrammar &grammar) {
+                                                                           const CompiledGrammar &grammar,
+                                                                           optional_idx &failure_index) {
 	if (!token_iterator.Current()) {
 		return nullptr;
 	}
 	vector<MatcherSuggestion> suggestions;
 	ParseResultAllocator parse_result_allocator;
-	ParserPackratCache packrat_cache;
 	idx_t max_token_index = token_iterator.Position();
-	MatchContext match_context(suggestions, parse_result_allocator, max_token_index, MatchMode::BUILD_PARSE_RESULT,
-	                           options.identifier_case_mode, options.heap_based_parser, &packrat_cache);
+	// the packrat cache outlives the match processes, so they need separate arenas
+	ArenaAllocator process_allocator(Allocator::DefaultAllocator());
+	ArenaAllocator packrat_allocator(Allocator::DefaultAllocator());
+	ParserPackratCache packrat_cache(packrat_allocator, token_iterator.Position(), token_iterator.Size());
+	MatchContext match_context(suggestions, parse_result_allocator, process_allocator, max_token_index,
+	                           MatchMode::BUILD_PARSE_RESULT, options.identifier_case_mode, &packrat_cache);
 	MatchState state(token_iterator, match_context);
 	auto match_result = grammar.TopLevelStatementMatcher().MatchParseResult(state);
+	process_allocator.FreeAll();
 	if (!match_result.IsSuccess()) {
-		// syntax error — surface as a parser exception in the same shape as Transform()
-		auto token_stream = token_iterator.ToString();
-		idx_t error_token_idx = state.GetMaxTokenIndex();
-		if (error_token_idx >= token_iterator.Size()) {
-			error_token_idx = token_iterator.Size() - 1;
-		}
-		// Walk back past the EOI sentinel so the error message names a real token.
-		if (error_token_idx > 0 &&
-		    (token_iterator.GetToken(error_token_idx).type == TokenType::END_OF_INPUT ||
-		     token_iterator.GetToken(error_token_idx).type == TokenType::END_OF_INPUT_AUTOCOMPLETE)) {
-			error_token_idx--;
-		}
-		auto &error_token = token_iterator.GetToken(error_token_idx);
-		auto error_message = "syntax error at or near \"" + error_token.text + "\"";
-		throw ParserException::SyntaxError(token_stream, error_message,
-		                                   QueryLocation(error_token.offset, error_token.length));
+		failure_index = state.GetMaxTokenIndex();
+		return nullptr;
 	}
 	D_ASSERT(match_result.HasParseResult());
 
@@ -134,7 +91,7 @@ unique_ptr<SQLStatement> PEGTransformerFactory::TransformTopLevelStatement(Token
 	if (term_inner.type != ParseResultType::END_OF_INPUT) {
 		auto semi_children = term_inner.Cast<RepeatParseResult>().GetChildren();
 		if (!semi_children.empty()) {
-			terminator_offset = semi_children[0].get().offset;
+			terminator_offset = semi_children[0].get().GetOffset();
 		}
 	}
 
@@ -144,84 +101,110 @@ unique_ptr<SQLStatement> PEGTransformerFactory::TransformTopLevelStatement(Token
 	return ExtractAndTransformStatement(transformer, token_iterator, stmt_opt.GetResult(), terminator_offset);
 }
 
-#define REGISTER_TRANSFORM(FUNCTION) Register(string(#FUNCTION).substr(9), &FUNCTION)
-
-void PEGTransformerFactory::RegisterCommon() {
-	// common.gram
-	REGISTER_TRANSFORM(TransformNumberLiteral);
-	REGISTER_TRANSFORM(TransformStringLiteral);
-	REGISTER_TRANSFORM(TransformIntervalToIntervalAsType);
-}
-
-void PEGTransformerFactory::RegisterCreateTable() {
-	// create_table.gram
-	REGISTER_TRANSFORM(TransformIdentifier);
-}
-
-void PEGTransformerFactory::RegisterExpression() {
-	// expression.gram
-	REGISTER_TRANSFORM(TransformPrefixExpression);
-	REGISTER_TRANSFORM(TransformOverClause);
-}
-
-void PEGTransformerFactory::RegisterPivot() {
-	// PivotStatement and UnpivotStatement measure parameter usage while transforming
-	// the source table, so their top-level wrappers remain manual.
-	REGISTER_TRANSFORM(TransformPivotStatement);
-	REGISTER_TRANSFORM(TransformUnpivotStatement);
-}
-
-void PEGTransformerFactory::RegisterSelect() {
-	// select.gram rules that remain manual after generated wrappers are registered.
-	Register("SelectStatementInternal", &TransformSelectStatementInternalRule);
-	REGISTER_TRANSFORM(TransformSimpleSelect);
-	REGISTER_TRANSFORM(TransformTableRef);
-	REGISTER_TRANSFORM(TransformWithClause);
-	REGISTER_TRANSFORM(TransformWindowDefinition);
-}
-
-void PEGTransformerFactory::RegisterKeywordsAndIdentifiers() {
-	Register("PragmaName", &TransformIdentifierOrKeyword);
-	Register("TypeName", &TransformIdentifierOrKeyword);
-	Register("PlainIdentifier", &TransformIdentifierOrKeyword);
-	Register("QuotedIdentifier", &TransformIdentifierOrKeyword);
-	Register("ReservedKeyword", &TransformIdentifierOrKeyword);
-	Register("UnreservedKeyword", &TransformIdentifierOrKeyword);
-	Register("ColumnNameKeyword", &TransformIdentifierOrKeyword);
-	Register("FuncNameKeyword", &TransformIdentifierOrKeyword);
-	Register("TypeNameKeyword", &TransformIdentifierOrKeyword);
-	Register("SettingName", &TransformIdentifierOrKeyword);
-}
-
 PEGTransformerFactory::PEGTransformerFactory(ParsedGrammar &grammar_p) : grammar(grammar_p) {
-	RegisterGenerated();
-	REGISTER_TRANSFORM(TransformStatement);
-	RegisterCommon();
-	RegisterCreateTable();
-	RegisterExpression();
-	RegisterPivot();
-	RegisterSelect();
-	RegisterKeywordsAndIdentifiers();
+	case_insensitive_set_t collapsible_rules;
+	//===--------------------------------------------------------------------===//
+	// START GENERATED COLLAPSIBLE RULES
+	//===--------------------------------------------------------------------===//
+	collapsible_rules.insert("Expression");
+	collapsible_rules.insert("ColumnDefaultExpr");
+	collapsible_rules.insert("LambdaArrowExpression");
+	collapsible_rules.insert("LogicalOrExpression");
+	collapsible_rules.insert("ColDefOrExpr");
+	collapsible_rules.insert("LogicalAndExpression");
+	collapsible_rules.insert("ColDefAndExpr");
+	collapsible_rules.insert("LogicalNotExpression");
+	collapsible_rules.insert("IsExpression");
+	collapsible_rules.insert("IsDistinctFromExpression");
+	collapsible_rules.insert("ComparisonExpression");
+	collapsible_rules.insert("BetweenInLikeExpression");
+	collapsible_rules.insert("OtherOperatorExpression");
+	collapsible_rules.insert("InfixOtherOperatorExpression");
+	collapsible_rules.insert("BitwiseExpression");
+	collapsible_rules.insert("TildeExpression");
+	collapsible_rules.insert("AdditiveExpression");
+	collapsible_rules.insert("MultiplicativeExpression");
+	collapsible_rules.insert("ExponentiationExpression");
+	collapsible_rules.insert("CollateExpression");
+	collapsible_rules.insert("AtTimeZoneExpression");
+	collapsible_rules.insert("PrefixExpression");
+	collapsible_rules.insert("BaseExpression");
+	collapsible_rules.insert("SelectSetOpChain");
+	collapsible_rules.insert("IntersectChain");
+	collapsible_rules.insert("TableRef");
+	//===--------------------------------------------------------------------===//
+	// END GENERATED COLLAPSIBLE RULES
+	//===--------------------------------------------------------------------===//
+
+	for (auto &entry : GeneratedTransformFrameOps()) {
+		auto process_info = entry.second;
+		grammar.SetTransformProcess(
+		    entry.first,
+		    [process_info](PEGTransformer &transformer, ParseResult &parse_result) -> arena_ptr<TransformProcess> {
+			    return transformer.MakeProcess<GeneratedTransformProcess>(transformer, TransformInput {parse_result},
+			                                                              *process_info);
+		    },
+		    collapsible_rules.count(entry.first) > 0);
+	}
+	//===--------------------------------------------------------------------===//
+	// START GENERATED EXPRESSION DEPTH RULES
+	//===--------------------------------------------------------------------===//
+	grammar.SetExpressionDepth("SingleExpression", ExpressionDepthKind::NESTING);
+	grammar.SetExpressionDepth("Type", ExpressionDepthKind::NESTING);
+	grammar.SetExpressionDepth("NestedType", ExpressionDepthKind::NESTING);
+	grammar.SetExpressionDepth("SubqueryReference", ExpressionDepthKind::NESTING);
+	grammar.SetExpressionDepth("CustomPrefixExpression", ExpressionDepthKind::NESTING);
+	grammar.SetExpressionDepth("LambdaArrowExpression", ExpressionDepthKind::CHAIN);
+	grammar.SetExpressionDepth("NotExpression", ExpressionDepthKind::CHAIN);
+	grammar.SetExpressionDepth("IsExpressionContinuation", ExpressionDepthKind::CHAIN);
+	grammar.SetExpressionDepth("IsDistinctFromExpression", ExpressionDepthKind::CHAIN);
+	grammar.SetExpressionDepth("ComparisonExpression", ExpressionDepthKind::CHAIN);
+	grammar.SetExpressionDepth("BetweenInLikeExpression", ExpressionDepthKind::CHAIN);
+	grammar.SetExpressionDepth("InfixOtherOperatorExpression", ExpressionDepthKind::CHAIN);
+	grammar.SetExpressionDepth("BitwiseExpression", ExpressionDepthKind::CHAIN);
+	grammar.SetExpressionDepth("TildeExpression", ExpressionDepthKind::CHAIN);
+	grammar.SetExpressionDepth("AdditiveExpression", ExpressionDepthKind::CHAIN);
+	grammar.SetExpressionDepth("MultiplicativeExpression", ExpressionDepthKind::CHAIN);
+	grammar.SetExpressionDepth("ExponentiationExpression", ExpressionDepthKind::CHAIN);
+	grammar.SetExpressionDepth("CollateExpression", ExpressionDepthKind::CHAIN);
+	grammar.SetExpressionDepth("AtTimeZoneExpression", ExpressionDepthKind::CHAIN);
+	grammar.SetExpressionDepth("PrefixExpression", ExpressionDepthKind::CHAIN);
+	grammar.SetExpressionDepth("IndirectionList", ExpressionDepthKind::CHAIN);
+	//===--------------------------------------------------------------------===//
+	// END GENERATED EXPRESSION DEPTH RULES
+	//===--------------------------------------------------------------------===//
 }
 
 void PEGTransformerFactory::RegisterDefaultTransforms(ParsedGrammar &grammar) {
 	PEGTransformerFactory factory(grammar);
 }
 
-vector<reference<ParseResult>> PEGTransformerFactory::ExtractParseResultsFromList(ParseResult &parse_result) {
-	// List(D) <- D (',' D)* ','?
-	vector<reference<ParseResult>> result;
+template <class FUNC>
+static idx_t VisitParseResultsFromList(ParseResult &parse_result, FUNC &&func) {
+	// List(D) <- D (',' D)* ','?; validate every child before returning, including when only counting.
 	auto &list_pr = parse_result.Cast<ListParseResult>();
-	result.push_back(list_pr.GetChild(0));
+	func(list_pr.GetChild(0));
+	idx_t count = 1;
 	auto &opt_child = list_pr.Child<OptionalParseResult>(1);
 	if (opt_child.HasResult()) {
 		auto &repeat_result = opt_child.GetResult().Cast<RepeatParseResult>();
 		for (auto &child : repeat_result.GetChildren()) {
 			auto &list_child = child.get().Cast<ListParseResult>();
-			result.push_back(list_child.GetChild(1));
+			func(list_child.GetChild(1));
+			count++;
 		}
 	}
+	return count;
+}
+
+vector<reference<ParseResult>> PEGTransformerFactory::ExtractParseResultsFromList(ParseResult &parse_result) {
+	vector<reference<ParseResult>> result;
+	VisitParseResultsFromList(parse_result, [&result](ParseResult &child) { result.push_back(child); });
 	return result;
+}
+
+idx_t PEGTransformerFactory::CountParseResultsFromList(ParseResult &parse_result) {
+	return VisitParseResultsFromList(parse_result, [](ParseResult &) {});
 }
 
 ParseResult &PEGTransformerFactory::ExtractResultFromParens(ParseResult &parse_result) {
@@ -235,25 +218,33 @@ bool PEGTransformerFactory::ExpressionIsEmptyStar(const ParsedExpression &expr) 
 		return false;
 	}
 	auto &star = expr.Cast<StarExpression>();
-	if (!star.IsColumns() && star.ExcludeList().empty() && star.ReplaceList().empty()) {
-		return true;
+	if (star.IsColumns()) {
+		return false;
 	}
-	return false;
+	if (!star.ExcludeList().empty()) {
+		return false;
+	}
+	if (!star.ReplaceList().empty()) {
+		return false;
+	}
+	if (!star.RenameList().empty()) {
+		return false;
+	}
+	return true;
 }
 
 QualifiedName PEGTransformerFactory::StringToQualifiedName(vector<string> input) {
 	if (input.empty()) {
 		throw InternalException("QualifiedName cannot be made with an empty input.");
 	}
-	if (input.size() == 1) {
-		return QualifiedName(Identifier(input[0]));
-	} else if (input.size() == 2) {
-		return QualifiedName({Identifier(input[0])}, Identifier(input[1]));
-	} else if (input.size() == 3) {
-		return QualifiedName(Identifier(input[0]), Identifier(input[1]), Identifier(input[2]));
-	} else {
-		throw ParserException("Too many qualifications found - expected [catalog.schema.name] or [schema.name]");
+	// Store the qualification as the full path - it may be deeper than [catalog, schema, name] for nested
+	// schemas. The leading component is resolved to a catalog at bind time (Binder::BindTableName).
+	vector<Identifier> path;
+	path.reserve(input.size());
+	for (auto &part : input) {
+		path.emplace_back(std::move(part));
 	}
+	return QualifiedName::FromPath(std::move(path));
 }
 
 QualifiedColumnName PEGTransformerFactory::StringToQualifiedColumnName(const vector<string> &input) {
@@ -306,97 +297,25 @@ LogicalType PEGTransformerFactory::GetIntervalTargetType(DatePartSpecifier date_
 	}
 }
 
-bool PEGTransformerFactory::ConstructConstantFromExpression(const ParsedExpression &expr, Value &value) {
-	// We have to construct it like this because we don't have the ClientContext for binding/executing the expr here
-	switch (expr.GetExpressionType()) {
-	case ExpressionType::FUNCTION: {
-		auto &function = expr.Cast<FunctionExpression>();
-		if (function.FunctionName() == "struct_pack") {
-			identifier_set_t unique_names;
-			child_list_t<Value> values;
-			values.reserve(function.GetArguments().size());
-			for (const auto &child : function.GetArguments()) {
-				if (!unique_names.insert(child.GetExpression().GetAlias()).second) {
-					throw BinderException("Duplicate struct entry name %s", child.GetExpression().GetAlias());
-				}
-				Value child_value;
-				if (!ConstructConstantFromExpression(child.GetExpression(), child_value)) {
-					return false;
-				}
-				values.emplace_back(child.GetExpression().GetAlias(), std::move(child_value));
-			}
-			value = Value::STRUCT(std::move(values));
-			return true;
-		} else if (function.FunctionName() == "list_value") {
-			vector<Value> values;
-			values.reserve(function.GetArguments().size());
-			for (const auto &child : function.GetArguments()) {
-				Value child_value;
-				if (!ConstructConstantFromExpression(child.GetExpression(), child_value)) {
-					return false;
-				}
-				values.emplace_back(std::move(child_value));
-			}
-
-			// figure out child type
-			LogicalType child_type(LogicalTypeId::SQLNULL);
-			for (auto &child_value : values) {
-				child_type = LogicalType::DefaultForceMaxLogicalType(child_type, child_value.type());
-			}
-
-			// finally create the list
-			value = Value::LIST(child_type, values);
-			return true;
-		} else if (function.FunctionName() == "map") {
-			Value keys;
-			if (!ConstructConstantFromExpression(function.GetArguments()[0].GetExpression(), keys)) {
-				return false;
-			}
-
-			Value values;
-			if (!ConstructConstantFromExpression(function.GetArguments()[1].GetExpression(), values)) {
-				return false;
-			}
-
-			vector<Value> keys_unpacked = ListValue::GetChildren(keys);
-			vector<Value> values_unpacked = ListValue::GetChildren(values);
-
-			value = Value::MAP(ListType::GetChildType(keys.type()), ListType::GetChildType(values.type()),
-			                   keys_unpacked, values_unpacked);
-			return true;
-		} else {
-			return false;
-		}
+LogicalType PEGTransformerFactory::ApplyColumnCollation(const optional<LogicalType> &type,
+                                                        unique_ptr<ParsedExpression> collation) {
+	if (!type) {
+		throw ParserException("Specify the VARCHAR type to set a collation");
 	}
-	case ExpressionType::VALUE_CONSTANT: {
-		auto &constant = expr.Cast<ConstantExpression>();
-		value = constant.GetValue();
-		return true;
+	if (!type->IsUnbound()) {
+		throw InternalException("Expected only unbound types here");
 	}
-	case ExpressionType::OPERATOR_CAST: {
-		auto &cast = expr.Cast<CastExpression>();
-		Value dummy_value;
-		if (!ConstructConstantFromExpression(cast.Child(), dummy_value)) {
-			return false;
-		}
-
-		auto cast_type = UnboundType::TryDefaultBind(cast.TargetType());
-		if (cast_type.id() == LogicalTypeId::INVALID || cast_type.id() == LogicalTypeId::UNBOUND) {
-			return false;
-		}
-
-		string error_message;
-		auto cast_value = dummy_value.DefaultTryCastAs(cast_type, &error_message);
-		if (!cast_value) {
-			throw ConversionException("Unable to cast %s to %s", dummy_value.ToString(),
-			                          EnumUtil::ToString(cast_type.id()));
-		}
-		value = std::move(*cast_value);
-		return true;
+	auto &expr = UnboundType::GetTypeExpression(*type);
+	if (expr->GetExpressionClass() != ExpressionClass::TYPE) {
+		throw InternalException("Expected a type expression");
 	}
-	default:
-		return false;
+	auto &type_expr = expr->Cast<TypeExpression>();
+	if (DefaultTypeGenerator::GetDefaultType(type_expr.GetTypeName()) != LogicalTypeId::VARCHAR) {
+		throw ParserException("Only VARCHAR columns can have collations!");
 	}
+	vector<unique_ptr<ParsedExpression>> type_children;
+	type_children.push_back(std::move(collation));
+	return LogicalType::UNBOUND(make_uniq<TypeExpression>(Identifier("VARCHAR"), std::move(type_children)));
 }
 
 } // namespace duckdb

@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "duckdb/common/atomic.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/helper.hpp"
@@ -58,6 +59,10 @@ public:
 	FileCompressionType compression_type;
 
 	double GetProgress() const;
+	//! The number of (decompressed) bytes that have been read from the file
+	idx_t UncompressedBytesRead() const {
+		return uncompressed_bytes_read.load(std::memory_order_relaxed);
+	}
 
 private:
 	QueryContext context;
@@ -67,7 +72,7 @@ private:
 	bool can_seek = false;
 	bool on_disk_file = false;
 	bool is_pipe = false;
-	idx_t uncompressed_bytes_read = 0;
+	atomic<idx_t> uncompressed_bytes_read {0};
 
 	idx_t file_size = 0;
 

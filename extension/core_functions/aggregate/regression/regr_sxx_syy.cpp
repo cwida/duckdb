@@ -60,13 +60,19 @@ struct RegrSYYOperation : RegrBaseOperation {
 } // namespace
 
 AggregateFunction RegrSXXFun::GetFunction() {
-	return AggregateFunction::BinaryAggregate<RegrSState, double, double, double, RegrSXXOperation>(
+	auto fun = AggregateFunction::BinaryAggregate<RegrSState, double, double, double, RegrSXXOperation>(
 	    LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE);
+	fun.GetSignature().GetParameter(0).SetName("y");
+	fun.GetSignature().GetParameter(1).SetName("x");
+	return fun;
 }
 
 AggregateFunction RegrSYYFun::GetFunction() {
-	return AggregateFunction::BinaryAggregate<RegrSState, double, double, double, RegrSYYOperation>(
+	auto fun = AggregateFunction::BinaryAggregate<RegrSState, double, double, double, RegrSYYOperation>(
 	    LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE);
+	fun.GetSignature().GetParameter(0).SetName("y");
+	fun.GetSignature().GetParameter(1).SetName("x");
+	return fun;
 }
 
 } // namespace duckdb

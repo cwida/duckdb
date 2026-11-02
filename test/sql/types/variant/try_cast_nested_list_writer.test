@@ -1,0 +1,46 @@
+# name: test/sql/types/variant/try_cast_nested_list_writer.test
+# description: A failing element under TRY_CAST must leave the row writer at full count
+# group: [variant]
+
+# the writer's destructor asserts that exactly count rows were written, and TRY reports failure by
+# returning false rather than throwing, so bailing out mid-loop trips the assert on a debug build
+
+query I
+select try_cast([['bad'], ['2']]::variant as INTEGER[][]);
+----
+NULL
+
+query I
+select try_cast([['1'], ['bad'], ['3']]::variant as INTEGER[][]);
+----
+NULL
+
+# several rows, so the writer is short by more than one
+
+statement ok
+CREATE TABLE v AS SELECT * FROM (VALUES
+	([['1'],['2']]::variant),
+	([['bad'],['2']]::variant),
+	([['3'],['4']]::variant),
+	([['5'],['nope']]::variant)
+) t(x);
+
+query I
+SELECT count(*) FROM v WHERE try_cast(x AS INTEGER[][]) IS NULL
+----
+2
+
+query I
+SELECT try_cast(x AS INTEGER[][]) FROM v
+----
+[[1], [2]]
+NULL
+[[3], [4]]
+NULL
+
+# a plain CAST still reports the failure rather than returning NULL
+
+statement error
+SELECT CAST([['bad'], ['2']]::variant AS INTEGER[][]);
+----
+<REGEX>:.*Conversion Error.*

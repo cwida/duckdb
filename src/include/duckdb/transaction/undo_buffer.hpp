@@ -15,6 +15,7 @@
 
 namespace duckdb {
 class BufferManager;
+class ClientContext;
 class CommitDropState;
 class DuckTransaction;
 class StorageCommitState;
@@ -70,12 +71,14 @@ private:
 	DuckTransaction &transaction;
 	UndoBufferAllocator allocator;
 	ActiveTransactionState active_transaction_state = ActiveTransactionState::UNSET;
+	//! Number of entries already cleaned up, so that a cleanup that threw part-way can be resumed
+	idx_t cleaned_up_entries = 0;
 
 private:
 	template <class T>
 	void IterateEntries(UndoBuffer::IteratorState &state, T &&callback);
 	template <class T>
-	void IterateEntries(UndoBuffer::IteratorState &state, UndoBuffer::IteratorState &end_state, T &&callback);
+	void ReverseIterateEntries(UndoBuffer::IteratorState &end_state, T &&callback);
 	template <class T>
 	void ReverseIterateEntries(T &&callback);
 };

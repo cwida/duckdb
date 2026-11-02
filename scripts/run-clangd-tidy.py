@@ -13,11 +13,17 @@ import sys
 import time
 
 
-# Amount of evenly sized filename chunks.
+# Minimum amount of evenly sized filename chunks.
 TARGET_CHUNK_COUNT = 8
+# Upper bound on the files in a chunk. clangd-tidy never closes the files it opens, so clangd keeps a preamble on
+# disk for every file of a chunk - bounding the files per chunk bounds the peak size of the preamble cache
+MAX_FILES_PER_CHUNK = 100
 
 MAX_FAILED_CHUNKS = 3
 MAX_RETRIES = 2
+# How often a chunk that reported diagnostics is run again, with a fresh preamble cache, before it is reported.
+# Real diagnostics reproduce - the phantom diagnostics clangd emits when it cannot write its preambles do not
+MAX_DIAGNOSTIC_RETRIES = 1
 
 ERROR_TAIL_LINES = 2000
 
@@ -38,6 +44,11 @@ RETRY_PATTERNS = (
     'failed to read message',
     'jsonrpc',
 )
+
+# clangd-tidy reports every diagnostic with its code in trailing brackets. clang-tidy checks are named
+# "group-check-name", while clangd reports the diagnostics of the compiler itself under clang's internal
+# names, which never contain a dash - e.g. "[undeclared_var_use]".
+DIAGNOSTIC_CODE_REGEX = re.compile(r'^\S+:\d+:\d+: \w+: .*\[([A-Za-z0-9_.-]+)\]\s*$')
 
 
 def color_text(text, color):
@@ -79,10 +90,11 @@ def is_ignored_file(path, repo_root):
     return relative == 'third_party' or relative.startswith('third_party' + os.sep)
 
 
-def chunk_files(files, target_chunk_count=TARGET_CHUNK_COUNT):
+def chunk_files(files, target_chunk_count=TARGET_CHUNK_COUNT, max_files_per_chunk=MAX_FILES_PER_CHUNK):
     if not files:
         return
-    chunk_count = min(target_chunk_count, len(files))
+    chunk_count = max(target_chunk_count, (len(files) + max_files_per_chunk - 1) // max_files_per_chunk)
+    chunk_count = min(chunk_count, len(files))
     chunk_size, remainder = divmod(len(files), chunk_count)
     start = 0
     for chunk_index in range(chunk_count):
@@ -153,12 +165,24 @@ def reset_pch_dir(pch_dir):
     os.makedirs(pch_dir, exist_ok=True)
 
 
+def has_compiler_diagnostics(text):
+    for line in (text or '').splitlines():
+        match = DIAGNOSTIC_CODE_REGEX.match(line)
+        if match and '-' not in match.group(1):
+            return True
+    return False
+
+
 def is_retryable_failure(result):
     if result.returncode == 0:
         return False
     text = (result.stdout or '') + '\n' + (result.stderr or '')
     lower = text.lower()
-    return any(pattern in lower for pattern in RETRY_PATTERNS)
+    if any(pattern in lower for pattern in RETRY_PATTERNS):
+        return True
+    # a file that does not compile here does compile in every build job - the translation unit was parsed
+    # against a broken preamble, which happens when the runner runs out of room for the preamble caches
+    return has_compiler_diagnostics(text)
 
 
 def print_output_tail(label, text):
@@ -189,6 +213,7 @@ def write_attempt_logs(log_dir, attempt_id, chunk, result):
 
 def run_chunk_with_retries(base_command, chunk, repo_root, env, log_dir, pch_root, clangd_binary, attempt_counter):
     retries = 0
+    diagnostic_retries = 0
     pch_dir = os.path.join(pch_root, 'current')
     os.makedirs(pch_dir, exist_ok=True)
     while True:
@@ -202,24 +227,41 @@ def run_chunk_with_retries(base_command, chunk, repo_root, env, log_dir, pch_roo
         elapsed = time.monotonic() - start
         stdout_path, stderr_path = write_attempt_logs(log_dir, attempt_id, chunk, result)
         pch_size = format_bytes(directory_size(pch_dir))
-        print_status(f'attempt {attempt_id} finished exit={result.returncode} in {elapsed:.1f}s; pch size: {pch_size}')
+        disk_free = format_bytes(shutil.disk_usage(pch_dir).free)
+        print_status(
+            f'attempt {attempt_id} finished exit={result.returncode} in {elapsed:.1f}s; '
+            f'pch size: {pch_size}; disk free: {disk_free}'
+        )
         if result.returncode == 0:
+            if diagnostic_retries > 0:
+                print_status(
+                    f'attempt {attempt_id} passed with a fresh preamble cache - '
+                    'the diagnostics of the previous attempt were phantom diagnostics'
+                )
             # Clear the preambles before the next chunk. They are not reused across chunks, and letting them
             # accumulate fills the runner's disk, after which clangd reports phantom diagnostics.
             reset_pch_dir(pch_dir)
             return None
         retryable = is_retryable_failure(result)
+        if not retryable and diagnostic_retries < MAX_DIAGNOSTIC_RETRIES:
+            # clangd reports phantom diagnostics when it cannot write or read back its preambles - re-run the chunk
+            # with a fresh preamble cache to tell those apart from diagnostics that are actually in the code
+            diagnostic_retries += 1
+            print_status(
+                f'chunk reported diagnostics in attempt {attempt_id}; re-running it with a fresh preamble cache. '
+                f'stdout: {stdout_path}; stderr: {stderr_path}'
+            )
+            reset_pch_dir(pch_dir)
+            continue
         if retries >= MAX_RETRIES or not retryable:
             if retryable:
                 print_status(
                     f'retry limit reached after attempt {attempt_id}; '
                     f'not retrying. stdout: {stdout_path}; stderr: {stderr_path}'
                 )
-                reset_pch_dir(pch_dir)
-            else:
-                print_output_tail('stdout', result.stdout)
-                print_output_tail('stderr', result.stderr)
-                reset_pch_dir(pch_dir)
+            print_output_tail('stdout', result.stdout)
+            print_output_tail('stderr', result.stderr)
+            reset_pch_dir(pch_dir)
             return {
                 'attempt_id': attempt_id,
                 'stdout_path': stdout_path,

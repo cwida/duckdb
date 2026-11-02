@@ -75,7 +75,18 @@ UnicodeType Utf8Proc::Analyze(const char *s, size_t len, UnicodeInvalidReason *i
 	UnicodeType type = UnicodeType::ASCII;
 
 	static constexpr uint64_t MASK = 0x8080808080808080U;
-	for (size_t i = 0; i < len;) {
+	size_t i = 0;
+	if (len >= 64) {
+		// long input: check 32 bytes at a time with a single branch while everything is ASCII
+		for (; i + 4 * sizeof(uint64_t) <= len; i += 4 * sizeof(uint64_t)) {
+			auto acc = Load<uint64_t>(const_data_ptr_cast(s + i)) | Load<uint64_t>(const_data_ptr_cast(s + i + 8)) |
+			           Load<uint64_t>(const_data_ptr_cast(s + i + 16)) | Load<uint64_t>(const_data_ptr_cast(s + i + 24));
+			if (acc & MASK) {
+				break;
+			}
+		}
+	}
+	for (; i < len;) {
 		// Check 8 bytes at a time until we hit non-ASCII
 		for (; i + sizeof(uint64_t) <= len; i += sizeof(uint64_t)) {
 			if (Load<uint64_t>(const_data_ptr_cast(s + i)) & MASK) {

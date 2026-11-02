@@ -1,0 +1,178 @@
+# name: test/sql/catalog/did_you_mean_default_entries.test
+# description: Suggestions include default entries (views, macros, table functions) whether or not they have been created
+# group: [catalog]
+
+statement ok
+CREATE TABLE duckdb_tablea (a INTEGER);
+CREATE TABLE duckdb_tablez (a INTEGER);
+CREATE VIEW duckdb_viewsz AS SELECT 1 AS a;
+CREATE VIEW duckdb_typea AS SELECT 1 AS a;
+CREATE VIEW duckdb_typez AS SELECT 1 AS a;
+CREATE TABLE pg_am (a INTEGER);
+CREATE MACRO nullig(a, b) AS a;
+CREATE MACRO current_usez() AS 'x';
+
+# before anything has scanned the default entries
+statement error
+SELECT * FROM duckdb_tableq;
+----
+Did you mean "duckdb_tablea or duckdb_tables"?
+
+statement error
+SELECT * FROM duckdb_table;
+----
+Did you mean "duckdb_tablea or duckdb_tables"?
+
+statement error
+SELECT * FROM duckdb_viewsq;
+----
+Did you mean "duckdb_views"?
+
+statement error
+SELECT * FROM duckdb_typeq;
+----
+Did you mean "duckdb_typea or duckdb_types"?
+
+statement error
+SELECT * FROM duckdb_column;
+----
+Did you mean "duckdb_columns"?
+
+statement error
+SELECT * FROM sqlite_mastr;
+----
+Did you mean "sqlite_master"?
+
+statement error
+SELECT * FROM pg_clas;
+----
+Did you mean "pg_class"?
+
+statement error
+SELECT * FROM pg_class2;
+----
+Did you mean "pg_class"?
+
+statement error
+SELECT * FROM pg_amx;
+----
+Did you mean "pg_am"?
+
+statement error
+SELECT * FROM tables;
+----
+Did you mean "information_schema.tables"?
+
+statement error
+SELECT * FROM schemata_x;
+----
+Did you mean "information_schema.schemata"?
+
+statement error
+SELECT * FROM nothing_like_it;
+----
+Did you mean "pg_constraint"?
+
+statement error
+SELECT nulif(1, 2);
+----
+Did you mean "nullif"?
+
+statement error
+SELECT nullih(1, 2);
+----
+Did you mean "nullif or nullig"?
+
+statement error
+SELECT current_usr();
+----
+Did you mean "current_user"?
+
+statement error
+SELECT * FROM read_csv_autox('x');
+----
+Did you mean "read_csv_auto"?
+
+# create every default view, then ask again
+statement ok
+SELECT count(*) FROM duckdb_views();
+
+statement error
+SELECT * FROM duckdb_tableq;
+----
+Did you mean "duckdb_tablea or duckdb_tables"?
+
+statement error
+SELECT * FROM duckdb_table;
+----
+Did you mean "duckdb_tablea or duckdb_tables"?
+
+statement error
+SELECT * FROM duckdb_viewsq;
+----
+Did you mean "duckdb_views"?
+
+statement error
+SELECT * FROM duckdb_typeq;
+----
+Did you mean "duckdb_typea or duckdb_types"?
+
+statement error
+SELECT * FROM duckdb_column;
+----
+Did you mean "duckdb_columns"?
+
+statement error
+SELECT * FROM sqlite_mastr;
+----
+Did you mean "sqlite_master"?
+
+statement error
+SELECT * FROM pg_clas;
+----
+Did you mean "pg_class"?
+
+statement error
+SELECT * FROM pg_class2;
+----
+Did you mean "pg_class"?
+
+statement error
+SELECT * FROM pg_amx;
+----
+Did you mean "pg_am"?
+
+statement error
+SELECT * FROM tables;
+----
+Did you mean "information_schema.tables"?
+
+statement error
+SELECT * FROM schemata_x;
+----
+Did you mean "information_schema.schemata"?
+
+statement error
+SELECT * FROM nothing_like_it;
+----
+Did you mean "pg_constraint"?
+
+statement error
+SELECT nulif(1, 2);
+----
+Did you mean "nullif"?
+
+statement error
+SELECT nullih(1, 2);
+----
+Did you mean "nullif or nullig"?
+
+statement error
+SELECT current_usr();
+----
+Did you mean "current_user"?
+
+statement error
+SELECT * FROM read_csv_autox('x');
+----
+Did you mean "read_csv_auto"?

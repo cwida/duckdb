@@ -1,0 +1,58 @@
+# name: test/sql/settings/memory_limit_settings_unlimited.test
+# description: Unlimited memory sizes for settings and COPY options stored as an optional size
+# group: [settings]
+
+require parquet
+
+statement ok
+SET operator_memory_limit = '-1';
+
+query I
+SELECT current_setting('operator_memory_limit') IS NULL;
+----
+true
+
+statement ok
+SET operator_memory_limit = 'none';
+
+statement ok
+SET operator_memory_limit = '-1 GB';
+
+statement ok
+SET write_buffer_row_group_memory_limit = 'null';
+
+statement ok
+SET write_buffer_row_group_memory_limit = '-1';
+
+query I
+SELECT 42;
+----
+42
+
+statement error
+COPY (SELECT 1) TO '{TEST_DIR}/unlimited.parquet' (ROW_GROUP_SIZE_BYTES '-1');
+----
+Copy option "ROW_GROUP_SIZE_BYTES" must be a valid size
+
+statement error
+COPY (SELECT 1) TO '{TEST_DIR}/unlimited.parquet' (ROW_GROUP_SIZE_BYTES 18446744073709551615);
+----
+Copy option "ROW_GROUP_SIZE_BYTES" must be a valid size
+
+statement ok
+COPY (SELECT 1) TO '{TEST_DIR}/unlimited.parquet' (ROW_GROUP_SIZE_BYTES '1MB');
+
+statement error
+COPY (SELECT 1) TO '{TEST_DIR}/unlimited.parquet' (FILE_SIZE_BYTES 18446744073709551615);
+----
+Copy option "FILE_SIZE_BYTES" must be a valid size
+
+statement error
+COPY (SELECT 1) TO '{TEST_DIR}/unlimited.csv' (FILE_SIZE_BYTES NULL);
+----
+NULL is not supported as a valid option for COPY option "FILE_SIZE_BYTES"
+
+statement error
+COPY (SELECT 1) TO '{TEST_DIR}/unlimited.parquet' (ROW_GROUP_SIZE_BYTES NULL);
+----
+NULL is not supported as a valid option for COPY option "ROW_GROUP_SIZE_BYTES"

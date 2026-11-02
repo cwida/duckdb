@@ -80,6 +80,8 @@ public:
 	bool IsObject() const;
 	//! Whether or not this is an integer (signed or unsigned)
 	bool IsInteger() const;
+	//! Whether or not this is a number
+	bool IsNumber() const;
 
 	//! Get the value as a string (only valid if IsString())
 	string GetString() const;
@@ -91,6 +93,8 @@ public:
 	int64_t GetSignedInteger() const;
 	//! Get the value as a double
 	double GetDouble() const;
+	//! Get any number as a double
+	double GetNumber() const;
 
 	//! Look up a member of an object by key - returns an invalid value if this is not an object or the key is absent
 	JSONValue GetMember(const string &key) const;
@@ -100,7 +104,7 @@ public:
 	//! Iterate over the key/value pairs of an object
 	void IterateObject(const std::function<void(const string &, JSONValue)> &callback) const;
 
-	//! Serialize this value to a string
+	//! Serialize this value to a string. Throws bad_alloc when memory runs out.
 	string ToString(JSONWriteFlags flags = JSONWriteFlags::NONE) const;
 
 private:
@@ -139,6 +143,7 @@ public:
 	//! Parse the given input. Throws an InvalidInputException on failure.
 	static unique_ptr<JSONDocument> Parse(const char *data, idx_t len, JSONReadFlags flags = JSONReadFlags::NONE);
 	//! Parse the given input. Returns nullptr on failure, in which case "error" is populated.
+	//! Throws bad_alloc when memory runs out.
 	static unique_ptr<JSONDocument> TryParse(const char *data, idx_t len, JSONParseError &error,
 	                                         JSONReadFlags flags = JSONReadFlags::NONE);
 

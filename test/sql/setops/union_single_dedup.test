@@ -1,0 +1,59 @@
+# name: test/sql/setops/union_single_dedup.test
+# description: A plain UNION must de-duplicate once, not once in the set operation and again in a DISTINCT modifier
+# group: [setops]
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+CREATE TABLE t1 AS SELECT range AS i FROM range(10);
+
+statement ok
+CREATE TABLE t2 AS SELECT range AS i FROM range(5, 15);
+
+query I
+SELECT count(*) FROM (SELECT i FROM t1 UNION SELECT i FROM t2);
+----
+15
+
+query I
+SELECT count(*) FROM (SELECT i FROM t1 UNION BY NAME SELECT i FROM t2);
+----
+15
+
+# collation-aware de-duplication (#17251) must be kept
+statement ok
+CREATE TABLE c1(col1 VARCHAR COLLATE NOCASE);
+
+statement ok
+CREATE TABLE c2(col1 VARCHAR COLLATE NOCASE);
+
+statement ok
+INSERT INTO c1 VALUES ('a');
+
+statement ok
+INSERT INTO c2 VALUES ('A');
+
+query I
+SELECT count(*) FROM (SELECT * FROM c1 UNION SELECT * FROM c2);
+----
+1
+
+statement ok
+PRAGMA explain_output='physical_only';
+
+# exactly one de-duplication operator for a plain UNION
+query II
+EXPLAIN SELECT i FROM t1 UNION SELECT i FROM t2;
+----
+physical_plan	<REGEX>:.*HASH_GROUP_BY.*
+
+query II
+EXPLAIN SELECT i FROM t1 UNION SELECT i FROM t2;
+----
+physical_plan	<!REGEX>:.*HASH_GROUP_BY.*HASH_GROUP_BY.*
+
+query II
+EXPLAIN SELECT i FROM t1 UNION BY NAME SELECT i FROM t2;
+----
+physical_plan	<!REGEX>:.*HASH_GROUP_BY.*HASH_GROUP_BY.*

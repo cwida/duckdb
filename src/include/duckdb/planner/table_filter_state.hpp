@@ -31,6 +31,11 @@ public:
 public:
 	static unique_ptr<TableFilterState> Initialize(ClientContext &context, const TableFilter &filter);
 
+	//! Whether evaluating the filter can throw. Such a filter must only ever be evaluated on the rows that are still
+	//! selected - evaluating it on the distinct values of a segment (a dictionary, the RLE runs) would raise errors
+	//! for rows that another filter already removed
+	bool can_throw = false;
+
 public:
 	template <class TARGET>
 	TARGET &Cast() {

@@ -33,112 +33,109 @@ SELECT * FROM read_csv('{DATA_DIR}/csv/wrongtype.csv', sep=',', columns={'h1': i
 ----
 Column at position: 0 Set type: INTEGER Sniffed type: VARCHAR
 
-# FIXME sporadically a few of these succeed
-mode skip flaky
-
 # the first error is on line 10002
 statement error
 SELECT * FROM read_csv('{DATA_DIR}/csv/error/mixedtypes.csv', parallel=false, sep=',', columns={'h1': int, 'h2': varchar}, header=True)
 ----
-line 10002
+Line: 10002
 
 # the first error is on line 10002
 statement error
 SELECT * FROM read_csv('{DATA_DIR}/csv/error/mixedtypes.csv', parallel=true, sep=',', buffer_size=100, columns={'h1': int, 'h2': varchar}, header=True)
 ----
-line 10002
+Line: 10002
 
 statement error
 SELECT * FROM read_csv('{DATA_DIR}/csv/error/mixedtypes.csv', parallel=false, sep=',', buffer_size=100, columns={'h1': int, 'h2': varchar}, header=True)
 ----
-line 10002
+Line: 10002
 
 # the first error is on line 10002
 statement error
 SELECT * FROM read_csv('{DATA_DIR}/csv/error/mixedtypes_rn.csv', parallel=false, sep=',', columns={'h1': int, 'h2': varchar}, header=True)
 ----
-line 10002
+Line: 10002
 
-# the first error is on line 10001
+# the first error is on line 10002
 statement error
 SELECT * FROM read_csv('{DATA_DIR}/csv/error/mixedtypes_rn.csv', parallel=true, sep=',', buffer_size=100, columns={'h1': int, 'h2': varchar}, header=True)
 ----
-line 10002
+Line: 10002
 
 statement error
 SELECT * FROM read_csv('{DATA_DIR}/csv/error/mixedtypes_rn.csv', parallel=false, sep=',', buffer_size=100, columns={'h1': int, 'h2': varchar}, header=True)
 ----
-line 10002
+Line: 10002
+
+# Specify the quote character to exercise the unsupported parallel quoted-newline read.
+statement error
+SELECT * FROM read_csv('{DATA_DIR}/csv/error/quotednewlines.csv', parallel=true, sep=',', quote='"', buffer_size=100, columns={'h1': varchar, 'h2': varchar}, header=True)
+----
+The Parallel CSV Reader currently does not support a full read on this file
 
 statement error
-SELECT * FROM read_csv('{DATA_DIR}/csv/error/quotednewlines.csv', parallel=true, sep=',', buffer_size=100, columns={'h1': varchar, 'h2': varchar}, header=True)
+SELECT * FROM read_csv('{DATA_DIR}/csv/error/quotednewlines.csv', parallel=true, sep=',', quote='"', buffer_size=200, columns={'h1': int, 'h2': varchar}, header=True)
 ----
-not supported for multithreading
-
-statement error
-SELECT * FROM read_csv('{DATA_DIR}/csv/error/quotednewlines.csv', parallel=true, sep=',', buffer_size=200, columns={'h1': int, 'h2': varchar}, header=True)
-----
-not supported for multithreading
+The Parallel CSV Reader currently does not support a full read on this file
 
 # Let's do an All-Type error testing
 foreach type bool int bigint hugeint float double 'decimal(4,1)' 'decimal(8,1)' 'decimal(12,1)' 'decimal(18,1)'
 
-# the first error is on line 3001
+# the first error is on line 3002
 statement error
 SELECT * FROM read_csv('{DATA_DIR}/csv/error/csv_error.csv', parallel=true, sep=',', buffer_size=100, columns={'h1': {type}, 'h2': varchar}, header=True)
 ----
-line 3002
+Line: 3002
 
-# the first error is on line 3001
+# the first error is on line 3002
 statement error
 SELECT * FROM read_csv('{DATA_DIR}/csv/error/csv_error.csv', parallel=false, sep=',', buffer_size=100, columns={'h1': {type}, 'h2': varchar}, header=True)
 ----
-line 3002
+Line: 3002
 
-# the first error is on line 3001
+# the first error is on line 3002
 statement error
 SELECT * FROM read_csv('{DATA_DIR}/csv/error/date.csv', parallel=true, sep=',', buffer_size=100, columns={'h1': date, 'h2': varchar}, header=True)
 ----
-line 3002
+Line: 3002
 
-# the first error is on line 3001
+# the first error is on line 3002
 statement error
 SELECT * FROM read_csv('{DATA_DIR}/csv/error/date.csv', parallel=false, sep=',', buffer_size=100, columns={'h1': date, 'h2': varchar}, header=True)
 ----
-line 3002
+Line: 3002
 
 # the first error is on line 3002
 statement error
 SELECT * FROM read_csv('{DATA_DIR}/csv/error/time.csv', parallel=true, sep=',', buffer_size=100, columns={'h1': time, 'h2': varchar}, header=True)
 ----
-line 3002
+Line: 3002
 
 # the first error is on line 3002
 statement error
 SELECT * FROM read_csv('{DATA_DIR}/csv/error/time.csv', parallel=false, sep=',', buffer_size=100, columns={'h1': time, 'h2': varchar}, header=True)
 ----
-line 3002
+Line: 3002
 
 # the first error is on line 3002
 statement error
 SELECT * FROM read_csv('{DATA_DIR}/csv/error/timestamp.csv', parallel=true, sep=',', buffer_size=200, columns={'h1': timestamp, 'h2': varchar}, header=True)
 ----
-line 3002
+Line: 3002
 
-# the first error is on line 3000
+# the first error is on line 3002
 statement error
 SELECT * FROM read_csv('{DATA_DIR}/csv/error/timestamp.csv', parallel=false, sep=',', columns={'h1': timestamp, 'h2': varchar}, header=True)
 ----
-line 3002
+Line: 3002
 
-# the first error is on line 3000
+# the first error is on line 3002
 statement error
 SELECT * FROM read_csv('{DATA_DIR}/csv/error/timestamp.csv', parallel=true, sep=',', buffer_size=100, columns={'h1': timestamp, 'h2': varchar}, header=True)
 ----
-line 3002
+Line: 3002
 
 endloop
 
-mode unskip
 
 endloop

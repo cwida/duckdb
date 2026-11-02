@@ -186,7 +186,7 @@ void ConcatFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &func_expr = state.expr.Cast<BoundFunctionExpression>();
 	auto &info = func_expr.BindInfo()->Cast<ConcatFunctionData>();
 	if (info.return_type.id() == LogicalTypeId::SQLNULL) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
+		ConstantVector::SetNull(result, count_t(args.size()));
 		return;
 	}
 	if (info.return_type.id() == LogicalTypeId::LIST) {
@@ -212,12 +212,14 @@ void SetArgumentType(BoundScalarFunction &bound_function, const LogicalType &typ
 	bound_function.SetReturnType(type);
 }
 
-unique_ptr<FunctionData> BindListConcat(ClientContext &context, BoundScalarFunction &bound_function,
-                                        vector<unique_ptr<Expression>> &arguments, bool is_operator) {
+void ResolveListConcatTypes(ResolveScalarFunctionTypesInput &input, bool is_operator) {
+	auto &context = input.GetClientContext();
+	auto &bound_function = input.GetBoundFunction();
 	LogicalType child_type = LogicalType::SQLNULL;
 	bool all_null = true;
-	for (auto &arg : arguments) {
-		auto &return_type = arg->GetReturnType();
+	for (idx_t i = 0; i < input.GetArgumentCount(); i++) {
+		auto &arg = input.GetArgument(i);
+		auto &return_type = arg.GetReturnType();
 		if (return_type == LogicalTypeId::SQLNULL) {
 			// we mimic postgres behaviour: list_concat(NULL, my_list) = my_list
 			continue;
@@ -235,95 +237,93 @@ unique_ptr<FunctionData> BindListConcat(ClientContext &context, BoundScalarFunct
 			break;
 		default: {
 			string type_list;
-			for (idx_t arg_idx = 0; arg_idx < arguments.size(); arg_idx++) {
+			for (idx_t arg_idx = 0; arg_idx < input.GetArgumentCount(); arg_idx++) {
 				if (!type_list.empty()) {
-					if (arg_idx + 1 == arguments.size()) {
+					if (arg_idx + 1 == input.GetArgumentCount()) {
 						// last argument
 						type_list += " and ";
 					} else {
 						type_list += ", ";
 					}
 				}
-				type_list += arguments[arg_idx]->GetReturnType().ToString();
+				type_list += input.GetArgumentType(arg_idx).ToString();
 			}
-			throw BinderException(*arg, "Cannot concatenate types %s - an explicit cast is required", type_list);
+			throw BinderException(arg, "Cannot concatenate types %s - an explicit cast is required", type_list);
 		}
 		}
 		if (!LogicalType::TryGetMaxLogicalType(context, child_type, next_type, child_type)) {
-			throw BinderException(*arg,
-			                      "Cannot concatenate lists of types %s[] and %s[] - an explicit cast is required",
+			throw BinderException(arg, "Cannot concatenate lists of types %s[] and %s[] - an explicit cast is required",
 			                      child_type.ToString(), next_type.ToString());
 		}
 	}
 	if (all_null) {
 		// all arguments are NULL
 		SetArgumentType(bound_function, LogicalTypeId::SQLNULL, is_operator);
-		return make_uniq<ConcatFunctionData>(bound_function.GetReturnType(), is_operator);
+		return;
 	}
-	auto list_type = LogicalType::LIST(child_type);
-
-	SetArgumentType(bound_function, list_type, is_operator);
-	return make_uniq<ConcatFunctionData>(bound_function.GetReturnType(), is_operator);
+	SetArgumentType(bound_function, LogicalType::LIST(child_type), is_operator);
 }
 
-unique_ptr<FunctionData> BindConcatFunctionInternal(ClientContext &context, BoundScalarFunction &bound_function,
-                                                    vector<unique_ptr<Expression>> &arguments, bool is_operator) {
+void ResolveConcatTypesInternal(ResolveScalarFunctionTypesInput &input, bool is_operator) {
+	auto &bound_function = input.GetBoundFunction();
 	bool list_concat = false;
 	bool all_null = true;
 	// blob concat is only supported for the concat operator - regular concat converts to varchar
 	bool all_blob = is_operator ? true : false;
-	for (auto &arg : arguments) {
-		if (arg->GetReturnType().id() == LogicalTypeId::UNKNOWN) {
+	for (auto &arg_type : input.GetArgumentTypes()) {
+		if (arg_type.id() == LogicalTypeId::UNKNOWN) {
 			throw ParameterNotResolvedException();
 		}
-		if (arg->GetReturnType().id() == LogicalTypeId::LIST || arg->GetReturnType().id() == LogicalTypeId::ARRAY) {
+		if (arg_type.id() == LogicalTypeId::LIST || arg_type.id() == LogicalTypeId::ARRAY) {
 			list_concat = true;
 		}
-		if (arg->GetReturnType().id() != LogicalTypeId::BLOB) {
+		if (arg_type.id() != LogicalTypeId::BLOB) {
 			all_blob = false;
 		}
-		if (arg->GetReturnType().id() != LogicalTypeId::SQLNULL) {
+		if (arg_type.id() != LogicalTypeId::SQLNULL) {
 			all_null = false;
 		}
 	}
 	if (list_concat) {
-		return BindListConcat(context, bound_function, arguments, is_operator);
+		ResolveListConcatTypes(input, is_operator);
+		return;
 	}
 	if (all_null) {
 		if (is_operator) {
 			SetArgumentType(bound_function, LogicalTypeId::SQLNULL, is_operator);
-			return make_uniq<ConcatFunctionData>(bound_function.GetReturnType(), is_operator);
+			return;
 		}
 
 		const auto &func_args = bound_function.GetArguments();
 		if (!func_args.empty() &&
 		    (func_args[0].id() == LogicalTypeId::LIST || func_args[0].id() == LogicalTypeId::ARRAY)) {
 			SetArgumentType(bound_function, LogicalTypeId::SQLNULL, is_operator);
-			return make_uniq<ConcatFunctionData>(bound_function.GetReturnType(), is_operator);
+			return;
 		}
 
 		SetArgumentType(bound_function, LogicalTypeId::VARCHAR, is_operator);
-		return make_uniq<ConcatFunctionData>(bound_function.GetReturnType(), is_operator);
+		return;
 	}
 	auto return_type = all_blob ? LogicalType::BLOB : LogicalType::VARCHAR;
 
 	// we can now assume that the input is a string or castable to a string
 	SetArgumentType(bound_function, return_type, is_operator);
-	return make_uniq<ConcatFunctionData>(bound_function.GetReturnType(), is_operator);
+}
+
+void ConcatFunctionResolveTypes(ResolveScalarFunctionTypesInput &input) {
+	ResolveConcatTypesInternal(input, false);
+}
+
+void ConcatOperatorResolveTypes(ResolveScalarFunctionTypesInput &input) {
+	ResolveConcatTypesInternal(input, true);
 }
 
 unique_ptr<FunctionData> BindConcatFunction(BindScalarFunctionInput &input) {
-	auto &context = input.GetClientContext();
-	auto &bound_function = input.GetBoundFunction();
-	auto &arguments = input.GetArguments();
-	return BindConcatFunctionInternal(context, bound_function, arguments, false);
+	return make_uniq<ConcatFunctionData>(input.GetBoundFunction().GetReturnType(), false);
 }
 
 unique_ptr<FunctionData> BindConcatOperator(BindScalarFunctionInput &input) {
-	auto &context = input.GetClientContext();
-	auto &bound_function = input.GetBoundFunction();
-	auto &arguments = input.GetArguments();
-	return BindConcatFunctionInternal(context, bound_function, arguments, true);
+	return make_uniq<ConcatFunctionData>(input.GetBoundFunction().GetReturnType(), true);
 }
 
 unique_ptr<BaseStatistics> ListConcatStats(ClientContext &context, FunctionStatisticsInput &input) {
@@ -341,7 +341,8 @@ ScalarFunction ListConcatFun::GetFunction() {
 	// The arguments and return types are set in the binder function.
 	auto fun =
 	    ScalarFunction({}, LogicalType::LIST(LogicalType::ANY), ConcatFunction, BindConcatFunction, ListConcatStats);
-	fun.SetVarArgs(LogicalType::LIST(LogicalType::ANY));
+	fun.GetSignature().AddArgs("args", LogicalType::LIST(LogicalType::ANY));
+	fun.SetResolveTypesCallback(ConcatFunctionResolveTypes);
 	fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	return fun;
 }
@@ -355,16 +356,18 @@ ScalarFunction ListConcatFun::GetFunction() {
 // the concat function, however, treats NULL values as an empty string
 // i.e. concat(NULL, 'hello') = 'hello'
 ScalarFunction ConcatFun::GetFunction() {
-	ScalarFunction concat =
-	    ScalarFunction("concat", {LogicalType::ANY}, LogicalType::ANY, ConcatFunction, BindConcatFunction);
-	concat.SetVarArgs(LogicalType::ANY);
+	ScalarFunction concat = ScalarFunction("concat", {}, LogicalType::ANY, ConcatFunction, BindConcatFunction);
+	concat.GetSignature().AddParameter("value", LogicalType::ANY);
+	concat.GetSignature().AddArgs("args", LogicalType::ANY);
+	concat.SetResolveTypesCallback(ConcatFunctionResolveTypes);
 	concat.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	return concat;
 }
 
 ScalarFunction ConcatOperatorFun::GetFunction() {
-	ScalarFunction concat_op = ScalarFunction("||", {LogicalType::ANY, LogicalType::ANY}, LogicalType::ANY,
-	                                          ConcatFunction, BindConcatOperator);
+	ScalarFunction concat_op = ScalarFunction("||", {}, LogicalType::ANY, ConcatFunction, BindConcatOperator);
+	concat_op.GetSignature().AddParameter("arg1", LogicalType::ANY).AddParameter("arg2", LogicalType::ANY);
+	concat_op.SetResolveTypesCallback(ConcatOperatorResolveTypes);
 	return concat_op;
 }
 

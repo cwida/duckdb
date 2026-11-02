@@ -1,0 +1,79 @@
+# name: test/sql/storage/revert_append_after_checkpoint_new_row_group.test
+# description: After a failed commit removed the row group that its append created, appends to a checkpointed VARIANT or GEOMETRY table start a new row group again
+# group: [storage]
+
+require skip_reload
+
+require no_alternative_verify
+
+load {TEST_DIR}/revert_append_after_checkpoint_new_row_group.db
+
+# keep the row groups in memory until the explicit checkpoints
+statement ok
+SET wal_autocheckpoint = '1TB'
+
+statement ok
+CREATE TABLE v (i INTEGER, x VARIANT)
+
+statement ok
+INSERT INTO v SELECT i, i::VARIANT FROM range(100000) r(i)
+
+statement ok
+CREATE TABLE g (i INTEGER, p GEOMETRY)
+
+statement ok
+INSERT INTO g SELECT i, ('POINT(' || i || ' ' || i || ')')::GEOMETRY FROM range(100000) r(i)
+
+statement ok
+CHECKPOINT
+
+loop k 0 2
+
+statement ok
+SET debug_force_commit_failure = true
+
+statement error
+INSERT INTO v VALUES (-1, 'a'::VARIANT)
+----
+Forced commit failure
+
+statement error
+INSERT INTO g VALUES (-1, 'POINT(-1 -1)'::GEOMETRY)
+----
+Forced commit failure
+
+statement ok
+SET debug_force_commit_failure = false
+
+endloop
+
+statement ok
+INSERT INTO v VALUES (-2, 'b'::VARIANT)
+
+statement ok
+INSERT INTO g VALUES (-2, 'POINT(-2 -2)'::GEOMETRY)
+
+query III
+SELECT count(*), sum(i), count(*) FILTER (WHERE x::VARCHAR = 'b') FROM v
+----
+100001	4999949998	1
+
+query III
+SELECT count(*), sum(i), count(*) FILTER (WHERE p::VARCHAR = 'POINT (-2 -2)') FROM g
+----
+100001	4999949998	1
+
+statement ok
+CHECKPOINT
+
+restart
+
+query II
+SELECT count(*), sum(i) FROM v
+----
+100001	4999949998
+
+query II
+SELECT count(*), sum(i) FROM g
+----
+100001	4999949998

@@ -1,0 +1,266 @@
+# name: test/optimizer/statistics/constant_or_null_conjunction.test
+# description: Remove redundant constant_or_null conjuncts during statistics propagation
+# group: [statistics]
+
+statement ok
+CREATE TABLE quantities AS SELECT i::INTEGER AS q FROM range(1, 101) t(i);
+
+statement ok
+INSERT INTO quantities VALUES (NULL);
+
+statement ok
+CHECKPOINT;
+
+statement ok
+PRAGMA explain_output = OPTIMIZED_ONLY;
+
+# Statistics creates a NULL-preserving expression for the redundant bound.
+query II
+EXPLAIN SELECT count(*) FROM quantities WHERE q BETWEEN 1 AND 20;
+----
+logical_opt	<!REGEX>:.*constant_or_null\(.*
+
+query II
+EXPLAIN SELECT count(*) FROM quantities WHERE q BETWEEN 81 AND 100;
+----
+logical_opt	<!REGEX>:.*constant_or_null\(.*
+
+query II
+SELECT (SELECT count(*) FROM quantities WHERE q BETWEEN 1 AND 20),
+       (SELECT count(*) FROM quantities WHERE q BETWEEN 81 AND 100);
+----
+20	20
+
+# Existing candidates and reversed predicate order use the same proof.
+query II
+EXPLAIN SELECT count(*) FROM quantities WHERE q <= 20 AND constant_or_null(true, q);
+----
+logical_opt	<!REGEX>:.*constant_or_null\(.*
+
+query I
+SELECT count(*) FROM quantities WHERE constant_or_null(true, q) AND q <= 20;
+----
+20
+
+# The rule also handles LogicalFilter's implicit AND list.
+statement ok
+SET disabled_optimizers='filter_pushdown';
+
+query II
+EXPLAIN SELECT count(*) FROM quantities WHERE q >= 1 AND q <= 20;
+----
+logical_opt	<!REGEX>:.*constant_or_null\(.*
+
+query II
+EXPLAIN SELECT count(*) FROM quantities WHERE q <= 20 AND q >= 1;
+----
+logical_opt	<!REGEX>:.*constant_or_null\(.*
+
+query I
+SELECT count(*) FROM quantities WHERE q >= 1 AND q <= 20;
+----
+20
+
+statement ok
+RESET disabled_optimizers;
+
+# Every nullable argument needs a proof from a retained predicate.
+statement ok
+CREATE TABLE pairs AS
+SELECT x, y FROM (VALUES (1), (50), (NULL::INTEGER)) a(x),
+                (VALUES (1), (2), (NULL::INTEGER)) b(y);
+
+statement ok
+CHECKPOINT;
+
+query II
+EXPLAIN SELECT constant_or_null(true, x, y) AND x <= 20 AND y = 1 FROM pairs;
+----
+logical_opt	<!REGEX>:.*constant_or_null\(.*
+
+query III
+SELECT count(*) FILTER (WHERE p), count(*) FILTER (WHERE NOT p), count(*) FILTER (WHERE p IS NULL)
+FROM (SELECT constant_or_null(true, x, y) AND x <= 20 AND y = 1 AS p FROM pairs);
+----
+1	5	3
+
+query III
+SELECT count(*) FILTER (WHERE p), count(*) FILTER (WHERE NOT p), count(*) FILTER (WHERE p IS NULL)
+FROM (SELECT NOT (constant_or_null(true, x, y) AND x <= 20 AND y = 1) AS p FROM pairs);
+----
+5	1	3
+
+query II
+EXPLAIN SELECT constant_or_null(true, x, y) AND x <= 20 FROM pairs;
+----
+logical_opt	<REGEX>:.*constant_or_null\(.*
+
+query I
+SELECT count(*) FROM pairs WHERE constant_or_null(true, x, y) AND x <= 20;
+----
+2
+
+# Both branches of an OR must reject the same NULL input.
+query II
+EXPLAIN SELECT constant_or_null(true, q) AND (q <= 20 OR q >= 81) FROM quantities;
+----
+logical_opt	<!REGEX>:.*constant_or_null\(.*
+
+query II
+EXPLAIN SELECT constant_or_null(true, q) AND (q <= 20 OR q IS NULL) FROM quantities;
+----
+logical_opt	<REGEX>:.*constant_or_null\(.*
+
+query I
+SELECT count(*) FROM quantities WHERE constant_or_null(true, q) AND (q <= 20 OR q IS NULL);
+----
+20
+
+# A NULL-accepting comparison cannot provide the proof.
+query II
+EXPLAIN SELECT constant_or_null(true, q) AND q IS DISTINCT FROM 20 FROM quantities;
+----
+logical_opt	<REGEX>:.*constant_or_null\(.*
+
+query I
+SELECT count(*) FROM quantities WHERE constant_or_null(true, q) AND q IS DISTINCT FROM 20;
+----
+99
+
+# A raw-column comparison does not prove an arbitrary expression non-NULL.
+query II
+EXPLAIN SELECT constant_or_null(true, CASE WHEN q < 10 THEN NULL ELSE q END) AND q <= 20 FROM quantities;
+----
+logical_opt	<REGEX>:.*constant_or_null\(.*
+
+query I
+SELECT count(*) FROM quantities
+WHERE constant_or_null(true, CASE WHEN q < 10 THEN NULL ELSE q END) AND q <= 20;
+----
+11
+
+query I
+SELECT count(*) FROM quantities WHERE constant_or_null(true, coalesce(q, 0));
+----
+101
+
+query I
+SELECT count(*) FROM quantities WHERE constant_or_null(true, q, NULL) AND q <= 20;
+----
+0
+
+# Standalone checks and non-Boolean results keep their NULL semantics.
+query I
+SELECT count(*) FROM quantities WHERE constant_or_null(true, q);
+----
+100
+
+query I
+SELECT count(*) FROM quantities WHERE q >= 1;
+----
+100
+
+query III
+SELECT constant_or_null(true, q), constant_or_null(false, q), constant_or_null(42, q)
+FROM quantities WHERE q IS NULL;
+----
+NULL	NULL	NULL
+
+# The proof also applies to strings and the top-level validity of nested values.
+statement ok
+CREATE TABLE nested_inputs AS
+SELECT * FROM (VALUES ('a', [1], {'k': 1}),
+                      ('', [NULL::INTEGER], {'k': NULL::INTEGER}),
+                      (NULL::VARCHAR, NULL::INTEGER[], NULL::STRUCT(k INTEGER))) t(s, l, r);
+
+query II
+EXPLAIN SELECT constant_or_null(true, s) AND s IS NOT NULL,
+               constant_or_null(true, l) AND l IS NOT NULL,
+               constant_or_null(true, r) AND r IS NOT NULL FROM nested_inputs;
+----
+logical_opt	<!REGEX>:.*constant_or_null\(.*
+
+query III
+SELECT count_if(constant_or_null(true, s) AND s IS NOT NULL),
+       count_if(constant_or_null(true, l) AND l IS NOT NULL),
+       count_if(constant_or_null(true, r) AND r IS NOT NULL) FROM nested_inputs;
+----
+2	2	2
+
+# Prepared execution and transaction-local appends must retain NULL filtering.
+statement ok
+PREPARE p AS SELECT count(*) FROM quantities WHERE q BETWEEN 1 AND 20;
+
+query I
+EXECUTE p;
+----
+20
+
+statement ok
+BEGIN;
+
+statement ok
+INSERT INTO quantities VALUES (NULL), (10), (200);
+
+query I
+EXECUTE p;
+----
+21
+
+statement ok
+ROLLBACK;
+
+query I
+EXECUTE p;
+----
+20
+
+# Statistics propagation's existing DML safeguard remains in effect.
+query I
+WITH ins AS (INSERT INTO quantities VALUES (NULL) RETURNING *)
+SELECT count(*) FROM quantities WHERE q BETWEEN 1 AND 20;
+----
+20
+
+# NULL extension through an outer join must still produce a NULL expression value.
+query II
+SELECT l.i, constant_or_null(true, r.q) AND r.q <= 20
+FROM (VALUES (0), (1)) l(i)
+LEFT JOIN quantities r ON l.i = r.q ORDER BY l.i;
+----
+0	NULL
+1	true
+
+# Explicit candidates survive when statistics propagation is disabled.
+statement ok
+SET disabled_optimizers='statistics_propagation';
+
+query II
+EXPLAIN SELECT constant_or_null(true, q) AND q <= 20 FROM quantities;
+----
+logical_opt	<REGEX>:.*constant_or_null\(.*
+
+query I
+SELECT count(*) FROM quantities WHERE q BETWEEN 1 AND 20;
+----
+20
+
+statement ok
+RESET disabled_optimizers;
+
+statement ok
+PRAGMA disable_optimizer;
+
+query III
+SELECT count(*) FILTER (WHERE p), count(*) FILTER (WHERE NOT p), count(*) FILTER (WHERE p IS NULL)
+FROM (SELECT constant_or_null(true, x, y) AND x <= 20 AND y = 1 AS p FROM pairs);
+----
+1	5	3
+
+query I
+SELECT count(*) FROM quantities WHERE q BETWEEN 1 AND 20;
+----
+20
+
+statement ok
+PRAGMA enable_optimizer;

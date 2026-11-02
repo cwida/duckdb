@@ -1,0 +1,180 @@
+# name: test/sql/json/test_json_deserialize_invalid_statements.test
+# description: Deserialized statements must have a valid shape
+# group: [json]
+
+require json
+
+# comparison with a type that is not a comparison
+statement error
+SELECT json_deserialize_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"COMPARISON","type":"OPERATOR_NOT","alias":"","query_location":7,"query_location_length":5,"left":{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":7,"query_location_length":1,"literal":{"kind":"INTEGER","text":"1"}},"right":{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":11,"query_location_length":1,"literal":{"kind":"INTEGER","text":"2"}}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}');
+----
+invalid comparison type OPERATOR_NOT
+
+# comparison with a type that is not a comparison
+statement error
+SELECT * FROM json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"COMPARISON","type":"OPERATOR_NOT","alias":"","query_location":7,"query_location_length":5,"left":{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":7,"query_location_length":1,"literal":{"kind":"INTEGER","text":"1"}},"right":{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":11,"query_location_length":1,"literal":{"kind":"INTEGER","text":"2"}}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}');
+----
+invalid comparison type OPERATOR_NOT
+
+# IS NULL with two children
+statement error
+SELECT json_deserialize_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"OPERATOR","type":"OPERATOR_IS_NULL","alias":"","query_location":9,"query_location_length":7,"children":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":7,"query_location_length":1,"literal":{"kind":"INTEGER","text":"1"}},{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":7,"query_location_length":1,"literal":{"kind":"INTEGER","text":"1"}}]}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}');
+----
+invalid operator type OPERATOR_IS_NULL for 2 children
+
+# IS NULL with two children
+statement error
+SELECT * FROM json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"OPERATOR","type":"OPERATOR_IS_NULL","alias":"","query_location":9,"query_location_length":7,"children":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":7,"query_location_length":1,"literal":{"kind":"INTEGER","text":"1"}},{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":7,"query_location_length":1,"literal":{"kind":"INTEGER","text":"1"}}]}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}');
+----
+invalid operator type OPERATOR_IS_NULL for 2 children
+
+# column reference without names
+statement error
+SELECT json_deserialize_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"COLUMN_REF","type":"COLUMN_REF","alias":"","query_location":7,"query_location_length":1,"column_names":[]}],"from_table":{"type":"SUBQUERY","alias":"","sample":null,"query_location":14,"query_location_length":12,"subquery":{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"a","query_location":22,"query_location_length":1,"literal":{"kind":"INTEGER","text":"1"}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]},"column_name_alias":[]},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}');
+----
+no column names
+
+# column reference without names
+statement error
+SELECT * FROM json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"COLUMN_REF","type":"COLUMN_REF","alias":"","query_location":7,"query_location_length":1,"column_names":[]}],"from_table":{"type":"SUBQUERY","alias":"","sample":null,"query_location":14,"query_location_length":12,"subquery":{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"a","query_location":22,"query_location_length":1,"literal":{"kind":"INTEGER","text":"1"}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]},"column_name_alias":[]},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}');
+----
+no column names
+
+# lambda reference
+statement error
+SELECT json_deserialize_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"LAMBDA_REF","type":"LAMBDA_REF","alias":"","query_location":7,"query_location_length":1,"column_names":["a"],"lambda_idx":0,"column_name":"x"}],"from_table":{"type":"SUBQUERY","alias":"","sample":null,"query_location":14,"query_location_length":12,"subquery":{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"a","query_location":22,"query_location_length":1,"literal":{"kind":"INTEGER","text":"1"}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]},"column_name_alias":[]},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}');
+----
+lambda references cannot be deserialized
+
+# lambda reference
+statement error
+SELECT * FROM json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"LAMBDA_REF","type":"LAMBDA_REF","alias":"","query_location":7,"query_location_length":1,"column_names":["a"],"lambda_idx":0,"column_name":"x"}],"from_table":{"type":"SUBQUERY","alias":"","sample":null,"query_location":14,"query_location_length":12,"subquery":{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"a","query_location":22,"query_location_length":1,"literal":{"kind":"INTEGER","text":"1"}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]},"column_name_alias":[]},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}');
+----
+lambda references cannot be deserialized
+
+# function without its ORDER BY modifier
+statement error
+SELECT json_deserialize_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"FUNCTION","type":"FUNCTION","alias":"","query_location":7,"query_location_length":6,"function_name":"sum","schema":"","filter":null,"distinct":false,"is_operator":false,"export_state":false,"catalog":"","arguments":[{"name":"","expression":{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":11,"query_location_length":1,"literal":{"kind":"INTEGER","text":"1"}}}],"qualified_name":{"path":["sum"]}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}');
+----
+missing ORDER BY modifier
+
+# function without its ORDER BY modifier
+statement error
+SELECT * FROM json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"FUNCTION","type":"FUNCTION","alias":"","query_location":7,"query_location_length":6,"function_name":"sum","schema":"","filter":null,"distinct":false,"is_operator":false,"export_state":false,"catalog":"","arguments":[{"name":"","expression":{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":11,"query_location_length":1,"literal":{"kind":"INTEGER","text":"1"}}}],"qualified_name":{"path":["sum"]}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}');
+----
+missing ORDER BY modifier
+
+# function with a NULL argument
+statement error
+SELECT json_deserialize_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"FUNCTION","type":"FUNCTION","alias":"","query_location":9,"query_location_length":0,"function_name":"+","schema":"","filter":null,"order_bys":{"type":"ORDER_MODIFIER","orders":[]},"distinct":false,"is_operator":true,"export_state":false,"catalog":"","arguments":[{"name":"","expression":{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":7,"query_location_length":1,"literal":{"kind":"INTEGER","text":"1"}}},{"name":"","expression":null}],"qualified_name":{"path":["+"]}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}');
+----
+missing child expression
+
+# function with a NULL argument
+statement error
+SELECT * FROM json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"FUNCTION","type":"FUNCTION","alias":"","query_location":9,"query_location_length":0,"function_name":"+","schema":"","filter":null,"order_bys":{"type":"ORDER_MODIFIER","orders":[]},"distinct":false,"is_operator":true,"export_state":false,"catalog":"","arguments":[{"name":"","expression":{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":7,"query_location_length":1,"literal":{"kind":"INTEGER","text":"1"}}},{"name":"","expression":null}],"qualified_name":{"path":["+"]}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}');
+----
+missing child expression
+
+# EXCEPT with three children
+statement error
+SELECT json_deserialize_sql('{"error":false,"statements":[{"node":{"type":"SET_OPERATION_NODE","modifiers":[],"cte_map":{"map":[]},"setop_type":"EXCEPT","left":null,"right":null,"setop_all":false,"children":[{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":7,"query_location_length":1,"literal":{"kind":"INTEGER","text":"1"}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":23,"query_location_length":1,"literal":{"kind":"INTEGER","text":"2"}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":7,"query_location_length":1,"literal":{"kind":"INTEGER","text":"1"}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null}]},"named_param_map":[]}]}');
+----
+SetOperationNode must have exactly two children, except for UNION
+
+# EXCEPT with three children
+statement error
+SELECT * FROM json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SET_OPERATION_NODE","modifiers":[],"cte_map":{"map":[]},"setop_type":"EXCEPT","left":null,"right":null,"setop_all":false,"children":[{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":7,"query_location_length":1,"literal":{"kind":"INTEGER","text":"1"}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":23,"query_location_length":1,"literal":{"kind":"INTEGER","text":"2"}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":7,"query_location_length":1,"literal":{"kind":"INTEGER","text":"1"}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null}]},"named_param_map":[]}]}');
+----
+SetOperationNode must have exactly two children, except for UNION
+
+# regular join without a condition
+statement error
+SELECT json_deserialize_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"STAR","type":"STAR","alias":"","query_location":7,"query_location_length":1,"relation_name":"","exclude_list":[],"replace_list":[],"columns":false,"expr":null,"qualified_exclude_list":[],"rename_list":[]}],"from_table":{"type":"JOIN","alias":"","sample":null,"query_location":30,"query_location_length":35,"left":{"type":"SUBQUERY","alias":"t1","sample":null,"query_location":14,"query_location_length":12,"subquery":{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"a","query_location":22,"query_location_length":1,"literal":{"kind":"INTEGER","text":"1"}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]},"column_name_alias":[]},"right":{"type":"SUBQUERY","alias":"t2","sample":null,"query_location":35,"query_location_length":12,"subquery":{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"a","query_location":43,"query_location_length":1,"literal":{"kind":"INTEGER","text":"1"}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]},"column_name_alias":[]},"condition":null,"join_type":"INNER","ref_type":"REGULAR","using_columns":[],"delim_flipped":false,"duplicate_eliminated_columns":[],"is_implicit":false,"ranking_expression":null,"nearest_count":1,"nearest_order_type":"ASCENDING","nearest_approx":false},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}');
+----
+a regular join requires a condition or USING columns
+
+# regular join without a condition
+statement error
+SELECT * FROM json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"STAR","type":"STAR","alias":"","query_location":7,"query_location_length":1,"relation_name":"","exclude_list":[],"replace_list":[],"columns":false,"expr":null,"qualified_exclude_list":[],"rename_list":[]}],"from_table":{"type":"JOIN","alias":"","sample":null,"query_location":30,"query_location_length":35,"left":{"type":"SUBQUERY","alias":"t1","sample":null,"query_location":14,"query_location_length":12,"subquery":{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"a","query_location":22,"query_location_length":1,"literal":{"kind":"INTEGER","text":"1"}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]},"column_name_alias":[]},"right":{"type":"SUBQUERY","alias":"t2","sample":null,"query_location":35,"query_location_length":12,"subquery":{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"a","query_location":43,"query_location_length":1,"literal":{"kind":"INTEGER","text":"1"}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]},"column_name_alias":[]},"condition":null,"join_type":"INNER","ref_type":"REGULAR","using_columns":[],"delim_flipped":false,"duplicate_eliminated_columns":[],"is_implicit":false,"ranking_expression":null,"nearest_count":1,"nearest_order_type":"ASCENDING","nearest_approx":false},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}');
+----
+a regular join requires a condition or USING columns
+
+# cast without a target type
+statement error
+SELECT json_deserialize_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CAST","type":"OPERATOR_CAST","alias":"","query_location":8,"query_location_length":9,"child":{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":7,"query_location_length":1,"literal":{"kind":"INTEGER","text":"1"}},"try_cast":false}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}');
+----
+missing target type
+
+# cast without a target type
+statement error
+SELECT * FROM json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CAST","type":"OPERATOR_CAST","alias":"","query_location":8,"query_location_length":9,"child":{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":7,"query_location_length":1,"literal":{"kind":"INTEGER","text":"1"}},"try_cast":false}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}');
+----
+missing target type
+
+# cast whose target is not a type
+statement error
+SELECT json_deserialize_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CAST","type":"OPERATOR_CAST","alias":"","query_location":8,"query_location_length":9,"child":{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":7,"query_location_length":1,"literal":{"kind":"INTEGER","text":"1"}},"try_cast":false,"type_expr":{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":7,"query_location_length":1,"literal":{"kind":"INTEGER","text":"1"}}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}');
+----
+the target is not a type expression
+
+# cast whose target is not a type
+statement error
+SELECT * FROM json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"CAST","type":"OPERATOR_CAST","alias":"","query_location":8,"query_location_length":9,"child":{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":7,"query_location_length":1,"literal":{"kind":"INTEGER","text":"1"}},"try_cast":false,"type_expr":{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":7,"query_location_length":1,"literal":{"kind":"INTEGER","text":"1"}}}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}');
+----
+the target is not a type expression
+
+# empty select list
+statement error
+SELECT json_deserialize_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}');
+----
+empty select list
+
+# empty select list
+statement error
+SELECT * FROM json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}');
+----
+empty select list
+
+# subquery expression without a subquery
+statement error
+SELECT json_deserialize_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"SUBQUERY","type":"SUBQUERY","alias":"","query_location":7,"query_location_length":17,"subquery_type":"EXISTS","subquery":null,"child":null,"comparison_type":"INVALID"}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}');
+----
+missing subquery
+
+# subquery expression without a subquery
+statement error
+SELECT * FROM json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"SUBQUERY","type":"SUBQUERY","alias":"","query_location":7,"query_location_length":17,"subquery_type":"EXISTS","subquery":null,"child":null,"comparison_type":"INVALID"}],"from_table":{"type":"EMPTY","alias":"","sample":null,"query_location":18446744073709551615,"query_location_length":0},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}');
+----
+missing subquery
+
+# subquery reference without a subquery
+statement error
+SELECT json_deserialize_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"STAR","type":"STAR","alias":"","query_location":7,"query_location_length":1,"relation_name":"","exclude_list":[],"replace_list":[],"columns":false,"expr":null,"qualified_exclude_list":[],"rename_list":[]}],"from_table":{"type":"SUBQUERY","alias":"t","sample":null,"query_location":14,"query_location_length":12,"subquery":null,"column_name_alias":[]},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}');
+----
+missing subquery
+
+# subquery reference without a subquery
+statement error
+SELECT * FROM json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"STAR","type":"STAR","alias":"","query_location":7,"query_location_length":1,"relation_name":"","exclude_list":[],"replace_list":[],"columns":false,"expr":null,"qualified_exclude_list":[],"rename_list":[]}],"from_table":{"type":"SUBQUERY","alias":"t","sample":null,"query_location":14,"query_location_length":12,"subquery":null,"column_name_alias":[]},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}');
+----
+missing subquery
+
+# table function that is not a function
+statement error
+SELECT json_deserialize_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"STAR","type":"STAR","alias":"","query_location":7,"query_location_length":1,"relation_name":"","exclude_list":[],"replace_list":[],"columns":false,"expr":null,"qualified_exclude_list":[],"rename_list":[]}],"from_table":{"type":"TABLE_FUNCTION","alias":"","sample":null,"query_location":14,"query_location_length":8,"function":{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":0,"query_location_length":0,"literal":{"kind":"INTEGER","text":"1"}},"column_name_alias":[],"with_ordinality":"WITHOUT_ORDINALITY"},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}');
+----
+the table function must be a function expression
+
+# table function that is not a function
+statement error
+SELECT * FROM json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"STAR","type":"STAR","alias":"","query_location":7,"query_location_length":1,"relation_name":"","exclude_list":[],"replace_list":[],"columns":false,"expr":null,"qualified_exclude_list":[],"rename_list":[]}],"from_table":{"type":"TABLE_FUNCTION","alias":"","sample":null,"query_location":14,"query_location_length":8,"function":{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":0,"query_location_length":0,"literal":{"kind":"INTEGER","text":"1"}},"column_name_alias":[],"with_ordinality":"WITHOUT_ORDINALITY"},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]}]}');
+----
+the table function must be a function expression
+
+# valid statements are unaffected
+query II
+SELECT * FROM json_execute_serialized_sql('{"error":false,"statements":[{"node":{"type":"SELECT_NODE","modifiers":[{"type":"ORDER_MODIFIER","orders":[{"type":"ORDER_DEFAULT","null_order":"NULLS FIRST","expression":{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":115,"query_location_length":1,"literal":{"kind":"INTEGER","text":"1"}}}]}],"cte_map":{"map":[]},"select_list":[{"class":"COLUMN_REF","type":"COLUMN_REF","alias":"","query_location":7,"query_location_length":1,"column_names":["a"]},{"class":"FUNCTION","type":"FUNCTION","alias":"","query_location":10,"query_location_length":27,"function_name":"sum","schema":"","filter":{"class":"COMPARISON","type":"COMPARE_GREATERTHAN","alias":"","query_location":31,"query_location_length":5,"left":{"class":"COLUMN_REF","type":"COLUMN_REF","alias":"","query_location":31,"query_location_length":1,"column_names":["b"]},"right":{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":35,"query_location_length":1,"literal":{"kind":"INTEGER","text":"1"}}},"order_bys":{"type":"ORDER_MODIFIER","orders":[]},"distinct":false,"is_operator":false,"export_state":false,"catalog":"","arguments":[{"name":"","expression":{"class":"COLUMN_REF","type":"COLUMN_REF","alias":"","query_location":14,"query_location_length":1,"column_names":["b"]}}],"qualified_name":{"path":["sum"]}}],"from_table":{"type":"SUBQUERY","alias":"t","sample":null,"query_location":43,"query_location_length":15,"subquery":{"node":{"type":"SELECT_NODE","modifiers":[],"cte_map":{"map":[]},"select_list":[{"class":"STAR","type":"STAR","alias":"","query_location":18446744073709551615,"query_location_length":0,"relation_name":"","exclude_list":[],"replace_list":[],"columns":false,"expr":null,"qualified_exclude_list":[],"rename_list":[]}],"from_table":{"type":"EXPRESSION_LIST","alias":"valueslist","sample":null,"query_location":18446744073709551615,"query_location_length":0,"expected_names":[],"expected_types":[],"values":[[{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":52,"query_location_length":1,"literal":{"kind":"INTEGER","text":"1"}},{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":55,"query_location_length":1,"literal":{"kind":"INTEGER","text":"2"}}]]},"where_clause":null,"group_expressions":[],"group_sets":[],"aggregate_handling":"STANDARD_HANDLING","having":null,"sample":null,"qualify":null},"named_param_map":[]},"column_name_alias":["a","b"]},"where_clause":null,"group_expressions":[{"class":"COLUMN_REF","type":"COLUMN_REF","alias":"","query_location":83,"query_location_length":1,"column_names":["a"]}],"group_sets":[[],[0]],"aggregate_handling":"STANDARD_HANDLING","having":{"class":"COMPARISON","type":"COMPARE_GREATERTHAN","alias":"","query_location":93,"query_location_length":12,"left":{"class":"FUNCTION","type":"FUNCTION","alias":"","query_location":93,"query_location_length":8,"function_name":"count_star","schema":"","filter":null,"order_bys":{"type":"ORDER_MODIFIER","orders":[]},"distinct":false,"is_operator":false,"export_state":false,"catalog":"","arguments":[],"qualified_name":{"path":["count_star"]}},"right":{"class":"CONSTANT","type":"VALUE_CONSTANT","alias":"","query_location":104,"query_location_length":1,"literal":{"kind":"INTEGER","text":"0"}}},"sample":null,"qualify":null},"named_param_map":[]}]}');
+----
+NULL	2
+1	2

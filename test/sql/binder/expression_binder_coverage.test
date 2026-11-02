@@ -1,0 +1,89 @@
+# name: test/sql/binder/expression_binder_coverage.test
+# description: Test expression binder restrictions
+# group: [binder]
+
+statement ok
+CREATE TABLE binder_values(i INTEGER, j INTEGER);
+
+statement error
+ALTER TABLE binder_values ALTER i TYPE BIGINT USING (SELECT 1);
+----
+cannot use subquery in alter statement
+
+statement error
+CREATE TABLE check_window(i INTEGER CHECK (row_number() OVER () > 0));
+----
+window functions are not allowed in check constraints
+
+statement error
+CREATE INDEX index_window ON binder_values ((row_number() OVER ()));
+----
+window functions are not allowed in index expressions
+
+statement error
+CREATE INDEX index_subquery ON binder_values (((SELECT 1)));
+----
+cannot use subquery in index expressions
+
+statement error
+CREATE INDEX index_aggregate ON binder_values ((sum(i)));
+----
+aggregate functions are not allowed in index expressions
+
+statement error
+INSERT INTO binder_values VALUES (row_number() OVER (), 1);
+----
+INSERT statement cannot contain window functions
+
+statement error
+INSERT INTO binder_values VALUES (sum(1), 1);
+----
+INSERT statement cannot contain aggregates
+
+statement error
+UPDATE binder_values SET i = row_number() OVER ();
+----
+window functions are not allowed in UPDATE
+
+statement error
+UPDATE binder_values SET i = sum(j);
+----
+aggregate functions are not allowed in UPDATE
+
+statement error
+PREPARE group_parameter AS SELECT 1 AS i GROUP BY $1;
+----
+Parameter not supported in GROUP BY clause
+
+statement error
+SELECT count(*) FROM binder_values GROUP BY ALL HAVING missing > 1;
+----
+Referenced column "missing" not found
+
+statement error
+SELECT (SELECT first((j + 0) -> struct_pack(x := 1))) FROM (VALUES (1)) t(j);
+----
+json_extract
+
+statement ok
+CREATE TABLE merge_target(i INTEGER);
+
+statement ok
+CREATE TABLE merge_source(i INTEGER);
+
+statement error
+MERGE INTO merge_target t USING merge_source s ON t.i = s.i
+WHEN MATCHED AND row_number() OVER () = 1 THEN UPDATE SET i = s.i;
+----
+WHERE clause cannot contain window functions
+
+statement error
+MERGE INTO merge_target t USING merge_source s ON t.i = s.i
+WHEN MATCHED AND sum(s.i) > 0 THEN UPDATE SET i = s.i;
+----
+WHERE clause cannot contain aggregate functions
+
+statement error
+SELECT * FROM read_csv(DEFAULT);
+----
+Table function cannot contain DEFAULT clause

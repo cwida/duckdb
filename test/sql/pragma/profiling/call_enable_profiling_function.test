@@ -124,11 +124,11 @@ Parser Error
 #            test setting metrics
 #########################################################################################################################
 
-# Invalid type for metrics
+# Invalid type for metrics: neither overload takes it, and the candidate list says what they do take
 statement error
 CALL enable_profiling(metrics = 42);
 ----
-Invalid Input Error: EnableProfiling: metrics must be a list of strings or a VARCHAR pattern
+<REGEX>:Binder Error:.*No function matches.*metrics VARCHAR.*
 
 # Set metrics from LIST
 statement ok
@@ -180,11 +180,11 @@ SELECT UNNEST(CURRENT_SETTING('tracked_metrics')) ORDER BY ALL;
 ----
 *
 
-# Can't mix types though
+# Can't mix types though - the list comes out BOOLEAN[], which neither overload accepts
 statement error
 CALL enable_profiling(metrics = ['LATENCY', 'RESULT_SET_SIZE' = true]);
 ----
-Conversion Error:
+<REGEX>:Binder Error:.*No function matches.*
 
 statement error
 CALL enable_profiling(metrics = 'QUERY_NAME': true, 'EXTRA_INFO': true, 'OPERATOR_ROWS_SCANNED': false, "CUMULATIVE_CARDINALITY": "true");
@@ -297,12 +297,13 @@ CALL enable_profiling(this_does_not_exist = 'hello');
 ----
 Invalid named parameter "this_does_not_exist" for function enable_profiling
 
-statement error
+# a bare identifier is converted to the string 'format' and accepted as a metric name,
+# the same as any other unvalidated metric name
+statement ok
 CALL enable_profiling(format);
-----
-No function matches the given name and argument types 'enable_profiling(VARCHAR)'.
 
+# there is one metrics parameter, so a second positional argument matches no overload
 statement error
 CALL enable_profiling('hello', 'goodbye');
 ----
-No function matches the given name and argument types 'enable_profiling(VARCHAR, VARCHAR)'
+<REGEX>:Binder Error:.*No function matches.*

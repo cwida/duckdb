@@ -3,6 +3,8 @@
 #include "duckdb/common/types/uuid.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/common/types/sel_cache.hpp"
+#include "duckdb/common/serializer/deserializer.hpp"
+#include "duckdb/common/serializer/serializer.hpp"
 
 namespace duckdb {
 
@@ -72,7 +74,7 @@ void DictionaryBuffer::ToUnifiedFormat(UnifiedVectorFormat &format) const {
 		entry->data.Flatten();
 	}
 	format.data = FlatVector::GetData(entry->data);
-	format.validity = FlatVector::ValidityMutable(entry->data);
+	format.validity = FlatVector::Validity(entry->data);
 }
 
 buffer_ptr<VectorBuffer> DictionaryBuffer::SliceWithCache(SelCache &cache, const LogicalType &type,
@@ -160,7 +162,7 @@ buffer_ptr<VectorBuffer> DictionaryBuffer::FlattenSliceInternal(const LogicalTyp
 	auto &sel = sel_ref.get();
 
 	// flatten the child using the selection vector
-	return entry->data.BufferMutable().FlattenSlice(type, sel, count);
+	return entry->data.Buffer().FlattenSlice(type, sel, count);
 }
 
 buffer_ptr<DictionaryEntry> DictionaryVector::CreateReusableDictionary(const LogicalType &type, const idx_t &size) {
@@ -181,15 +183,74 @@ const Vector &DictionaryVector::GetCachedHashes(const Vector &input) {
 	D_ASSERT(CanCacheHashes(input));
 
 	const auto &entry = input.Buffer().Cast<DictionaryBuffer>().GetEntry();
-	lock_guard<mutex> guard(entry.cached_hashes_lock);
-
-	if (!entry.cached_hashes) {
-		// Uninitialized: hash the dictionary
+	CallOnce(entry.cached_hashes_once, [&] {
 		const auto dictionary_size = DictionarySize(input).GetIndex();
-		entry.cached_hashes = make_uniq<Vector>(LogicalType::HASH, dictionary_size);
-		VectorOperations::Hash(entry.data, *entry.cached_hashes);
-	}
+		auto hashes = make_uniq<Vector>(LogicalType::HASH, dictionary_size);
+		VectorOperations::Hash(entry.data, *hashes);
+		entry.cached_hashes = std::move(hashes);
+	});
 	return *entry.cached_hashes;
+}
+
+bool DictionaryBuffer::TrySerialize(Serializer &serializer, const LogicalType &type,
+                                    bool compressed_serialization) const {
+	auto dictionary_size = GetDictionarySize();
+	if (!compressed_serialization || !dictionary_size.IsValid()) {
+		return false;
+	}
+	auto dict = Vector::Ref(entry->data);
+	if (dict.GetVectorType() != VectorType::FLAT_VECTOR) {
+		return false;
+	}
+	auto count = Size();
+	auto dict_count = dictionary_size.GetIndex();
+	SelectionVector new_sel(count), used_sel(count), map_sel(dict_count);
+
+	// dictionaries may be large (row-group level). A vector may use only a small part.
+	// So, restrict dict to the used_sel subset & remap old_sel into new_sel to the new dict positions
+	sel_t CODE_UNSEEN = static_cast<sel_t>(dict_count);
+	for (sel_t i = 0; i < dict_count; ++i) {
+		map_sel[i] = CODE_UNSEEN; // initialize with unused marker
+	}
+	idx_t used_count = 0;
+	for (idx_t i = 0; i < count; ++i) {
+		auto pos = sel_vector[i];
+		if (map_sel[pos] == CODE_UNSEEN) {
+			map_sel[pos] = static_cast<sel_t>(used_count);
+			used_sel[used_count++] = pos;
+		}
+		new_sel[i] = map_sel[pos];
+	}
+	if (used_count * 2 >= count) {
+		// only serialize as a dict vector if that makes things smaller
+		return false;
+	}
+	auto sel_data = reinterpret_cast<data_ptr_t>(new_sel.data());
+	dict.Slice(used_sel, used_count);
+	serializer.WriteProperty(90, "vector_type", VectorType::DICTIONARY_VECTOR);
+	serializer.WriteProperty(91, "sel_vector", sel_data, sizeof(sel_t) * count);
+	serializer.WriteProperty(92, "dict_count", used_count);
+	dict.Serialize(serializer, false);
+	return true;
+}
+
+buffer_ptr<VectorBuffer> DictionaryBuffer::Deserialize(Deserializer &deserializer, const LogicalType &type,
+                                                       idx_t count) {
+	SelectionVector sel(count);
+	deserializer.ReadProperty(91, "sel_vector", reinterpret_cast<data_ptr_t>(sel.data()), sizeof(sel_t) * count);
+	const auto dict_count = deserializer.ReadProperty<idx_t>(92, "dict_count");
+	for (idx_t i = 0; i < count; i++) {
+		if (sel.get_index(i) >= dict_count) {
+			throw SerializationException("Failed to deserialize dictionary vector: selection index %llu is out of "
+			                             "range of the dictionary of size %llu",
+			                             sel.get_index(i), dict_count);
+		}
+	}
+	Vector dict(type, MaxValue<idx_t>(dict_count, STANDARD_VECTOR_SIZE));
+	dict.Deserialize(deserializer, dict_count);
+	FlatVector::SetSize(dict, dict_count);
+	dict.Slice(sel, count);
+	return dict.GetBufferRef();
 }
 
 } // namespace duckdb

@@ -4,6 +4,7 @@
 #include "duckdb/function/function_set.hpp"
 #include "duckdb/common/operator/add.hpp"
 #include "duckdb/common/operator/subtract.hpp"
+#include "duckdb/common/atomic.hpp"
 
 namespace duckdb {
 
@@ -42,7 +43,7 @@ struct RangeFunctionBindData : public TableFunctionData {
 		GetParameters(values, inputs.size(), start, end, increment);
 		if (generate_series) {
 			// generate_series has inclusive bounds on the RHS
-			end += 1;
+			end += increment < 0 ? -1 : 1;
 		}
 
 		cardinality = Hugeint::Cast<idx_t>((end - start) / increment);
@@ -69,9 +70,40 @@ static unique_ptr<FunctionData> RangeFunctionBind(ClientContext &context, TableF
 	return make_uniq<RangeFunctionBindData>(input.inputs, GENERATE_SERIES);
 }
 
-struct RangeFunctionLocalState : public LocalTableFunctionState {
-	RangeFunctionLocalState() {
+//! Progress of a range used as a source (i.e. with a single input row)
+struct RangeFunctionGlobalState : public GlobalTableFunctionState {
+	//! The number of values of the input rows, and the number of values that were generated
+	atomic<idx_t> total_values {0};
+	atomic<idx_t> generated_values {0};
+
+	//! Input rows are independent, so an in-out call can use all threads
+	idx_t MaxThreads() const override {
+		return GlobalTableFunctionState::MAX_THREADS;
 	}
+};
+
+static unique_ptr<GlobalTableFunctionState> RangeFunctionGlobalInit(ClientContext &context,
+                                                                    TableFunctionInitInput &input) {
+	return make_uniq<RangeFunctionGlobalState>();
+}
+
+static double RangeFunctionProgress(ClientContext &context, const FunctionData *bind_data,
+                                    const GlobalTableFunctionState *global_state) {
+	auto &state = global_state->Cast<RangeFunctionGlobalState>();
+	auto total = state.total_values.load(std::memory_order_relaxed);
+	if (total == 0) {
+		return 0;
+	}
+	auto generated = MinValue<idx_t>(state.generated_values.load(std::memory_order_relaxed), total);
+	return 100.0 * static_cast<double>(generated) / static_cast<double>(total);
+}
+
+struct RangeFunctionLocalState : public LocalTableFunctionState {
+	explicit RangeFunctionLocalState(optional_ptr<GlobalTableFunctionState> global_state)
+	    : global_state(global_state ? &global_state->Cast<RangeFunctionGlobalState>() : nullptr) {
+	}
+
+	optional_ptr<RangeFunctionGlobalState> global_state;
 
 	bool initialized_row = false;
 	idx_t current_input_row = 0;
@@ -80,6 +112,8 @@ struct RangeFunctionLocalState : public LocalTableFunctionState {
 	hugeint_t start;
 	hugeint_t end;
 	hugeint_t increment;
+	//! The number of values generated for the current input row
+	idx_t row_count = 0;
 
 	bool empty_range = false;
 };
@@ -87,7 +121,7 @@ struct RangeFunctionLocalState : public LocalTableFunctionState {
 static unique_ptr<LocalTableFunctionState> RangeFunctionLocalInit(ExecutionContext &context,
                                                                   TableFunctionInitInput &input,
                                                                   GlobalTableFunctionState *global_state) {
-	return make_uniq<RangeFunctionLocalState>();
+	return make_uniq<RangeFunctionLocalState>(global_state);
 }
 
 template <bool GENERATE_SERIES>
@@ -98,6 +132,7 @@ static void GenerateRangeParameters(DataChunk &input, idx_t row_id, RangeFunctio
 			result.start = GENERATE_SERIES ? 1 : 0;
 			result.end = 0;
 			result.increment = 1;
+			result.row_count = 0;
 			return;
 		}
 	}
@@ -127,6 +162,18 @@ static void GenerateRangeParameters(DataChunk &input, idx_t row_id, RangeFunctio
 			result.end = result.end + 1;
 		}
 	}
+	if (result.empty_range) {
+		result.row_count = 0;
+	} else {
+		auto difference = result.end - result.start;
+		auto row_count = difference / result.increment;
+		if (difference % result.increment != 0) {
+			row_count += 1;
+		}
+		if (!Hugeint::TryCast<idx_t>(row_count, result.row_count)) {
+			result.row_count = NumericLimits<idx_t>::Maximum();
+		}
+	}
 }
 
 template <bool GENERATE_SERIES>
@@ -145,6 +192,9 @@ static OperatorResultType RangeFunction(ExecutionContext &context, TableFunction
 			GenerateRangeParameters<GENERATE_SERIES>(input, state.current_input_row, state);
 			state.initialized_row = true;
 			state.current_idx = 0;
+			if (state.global_state) {
+				state.global_state->total_values.fetch_add(state.row_count, std::memory_order_relaxed);
+			}
 		}
 		if (state.empty_range) {
 			// empty range
@@ -174,6 +224,9 @@ static OperatorResultType RangeFunction(ExecutionContext &context, TableFunction
 			state.current_input_row++;
 			state.initialized_row = false;
 			continue;
+		}
+		if (state.global_state) {
+			state.global_state->generated_values.fetch_add(remaining, std::memory_order_relaxed);
 		}
 		return OperatorResultType::HAVE_MORE_OUTPUT;
 	}
@@ -214,7 +267,8 @@ struct RangeDateTimeBindData : public TableFunctionData {
 			return;
 		}
 
-		cardinality = idx_t(delta / increment);
+		// a step pointing away from the end produces an empty range
+		cardinality = delta / increment < 0 ? 0 : idx_t(delta / increment);
 	}
 
 	idx_t cardinality;
@@ -243,9 +297,48 @@ unique_ptr<NodeStatistics> RangeDateTimeCardinality(ClientContext &context, cons
 	return make_uniq<NodeStatistics>(bind_data.cardinality, bind_data.cardinality);
 }
 
-struct RangeDateTimeLocalState : public LocalTableFunctionState {
-	RangeDateTimeLocalState() {
+//! Progress of a timestamp range used as a source (i.e. with a single input row)
+struct RangeDateTimeGlobalState : public GlobalTableFunctionState {
+	//! The bounds of the range, and the timestamp that is generated next
+	atomic<int64_t> start {0};
+	atomic<int64_t> end {0};
+	atomic<int64_t> current {0};
+
+	void Initialize(timestamp_t start_p, timestamp_t end_p) {
+		start.store(start_p.value, std::memory_order_relaxed);
+		end.store(end_p.value, std::memory_order_relaxed);
+		current.store(start_p.value, std::memory_order_relaxed);
 	}
+
+	//! Input rows are independent, so an in-out call can use all threads
+	idx_t MaxThreads() const override {
+		return GlobalTableFunctionState::MAX_THREADS;
+	}
+};
+
+static unique_ptr<GlobalTableFunctionState> RangeDateTimeGlobalInit(ClientContext &context,
+                                                                    TableFunctionInitInput &input) {
+	return make_uniq<RangeDateTimeGlobalState>();
+}
+
+static double RangeDateTimeProgress(ClientContext &context, const FunctionData *bind_data,
+                                    const GlobalTableFunctionState *global_state) {
+	auto &state = global_state->Cast<RangeDateTimeGlobalState>();
+	auto start = static_cast<double>(state.start.load(std::memory_order_relaxed));
+	auto range = static_cast<double>(state.end.load(std::memory_order_relaxed)) - start;
+	if (range == 0) {
+		return 0;
+	}
+	auto fraction = (static_cast<double>(state.current.load(std::memory_order_relaxed)) - start) / range;
+	return 100.0 * MaxValue<double>(MinValue<double>(fraction, 1.0), 0.0);
+}
+
+struct RangeDateTimeLocalState : public LocalTableFunctionState {
+	explicit RangeDateTimeLocalState(optional_ptr<GlobalTableFunctionState> global_state)
+	    : global_state(global_state ? &global_state->Cast<RangeDateTimeGlobalState>() : nullptr) {
+	}
+
+	optional_ptr<RangeDateTimeGlobalState> global_state;
 
 	bool initialized_row = false;
 	idx_t current_input_row = 0;
@@ -332,7 +425,7 @@ static void GenerateRangeDateTimeParameters(DataChunk &input, idx_t row_id, Rang
 static unique_ptr<LocalTableFunctionState> RangeDateTimeLocalInit(ExecutionContext &context,
                                                                   TableFunctionInitInput &input,
                                                                   GlobalTableFunctionState *global_state) {
-	return make_uniq<RangeDateTimeLocalState>();
+	return make_uniq<RangeDateTimeLocalState>(global_state);
 }
 
 template <bool GENERATE_SERIES>
@@ -351,6 +444,9 @@ static OperatorResultType RangeDateTimeFunction(ExecutionContext &context, Table
 			GenerateRangeDateTimeParameters<GENERATE_SERIES>(input, state.current_input_row, state);
 			state.initialized_row = true;
 			state.current_state = state.start;
+			if (state.global_state) {
+				state.global_state->Initialize(state.start, state.end);
+			}
 		}
 		if (state.empty_range) {
 			// empty range
@@ -369,8 +465,11 @@ static OperatorResultType RangeDateTimeFunction(ExecutionContext &context, Table
 			}
 			result_data[size] = state.current_state;
 			size++;
-			state.current_state =
-			    AddOperator::Operation<timestamp_t, interval_t, timestamp_t>(state.current_state, state.increment);
+			if (!TryAddOperator::Operation<timestamp_t, interval_t, timestamp_t>(state.current_state, state.increment,
+			                                                                     state.current_state)) {
+				// the next value is outside of the timestamp range: the series ends here
+				state.current_state = state.greater_than_check ? timestamp_t::infinity() : timestamp_t::ninfinity();
+			}
 		}
 		if (size == 0) {
 			// move to next row
@@ -379,6 +478,9 @@ static OperatorResultType RangeDateTimeFunction(ExecutionContext &context, Table
 			continue;
 		}
 		output.SetChildCardinality(size);
+		if (state.global_state) {
+			state.global_state->current.store(state.current_state.value, std::memory_order_relaxed);
+		}
 		return OperatorResultType::HAVE_MORE_OUTPUT;
 	}
 }
@@ -390,8 +492,20 @@ static bool RangeIsRepeatable(optional_ptr<const FunctionData>) {
 void RangeTableFunction::RegisterFunction(BuiltinFunctions &set) {
 	TableFunctionSet range("range");
 
-	TableFunction range_function({LogicalType::BIGINT}, nullptr, RangeFunctionBind<false>, nullptr,
+	const auto stop_only = FunctionSignature().AddPositionalOnly("stop", LogicalType::BIGINT);
+	const auto start_stop = FunctionSignature()
+	                            .AddPositionalOnly("start", LogicalType::BIGINT)
+	                            .AddPositionalOnly("stop", LogicalType::BIGINT);
+	auto start_stop_step = start_stop;
+	start_stop_step.AddPositionalOnly("step", LogicalType::BIGINT);
+	const auto timestamps = FunctionSignature()
+	                            .AddPositionalOnly("start", LogicalType::TIMESTAMP)
+	                            .AddPositionalOnly("stop", LogicalType::TIMESTAMP)
+	                            .AddPositionalOnly("step", LogicalType::INTERVAL);
+
+	TableFunction range_function(stop_only, nullptr, RangeFunctionBind<false>, RangeFunctionGlobalInit,
 	                             RangeFunctionLocalInit);
+	range_function.table_scan_progress = RangeFunctionProgress;
 	range_function.in_out_function = RangeFunction<false>;
 	range_function.cardinality = RangeCardinality;
 	range_function.is_repeatable = RangeIsRepeatable;
@@ -401,13 +515,14 @@ void RangeTableFunction::RegisterFunction(BuiltinFunctions &set) {
 	// single argument range: (end) - implicit start = 0 and increment = 1
 	range.AddFunction(range_function);
 	// two arguments range: (start, end) - implicit increment = 1
-	range_function.GetArguments() = {LogicalType::BIGINT, LogicalType::BIGINT};
+	range_function.GetSignature() = start_stop;
 	range.AddFunction(range_function);
 	// three arguments range: (start, end, increment)
-	range_function.GetArguments() = {LogicalType::BIGINT, LogicalType::BIGINT, LogicalType::BIGINT};
+	range_function.GetSignature() = start_stop_step;
 	range.AddFunction(range_function);
-	TableFunction range_in_out({LogicalType::TIMESTAMP, LogicalType::TIMESTAMP, LogicalType::INTERVAL}, nullptr,
-	                           RangeDateTimeBind<false>, nullptr, RangeDateTimeLocalInit);
+	TableFunction range_in_out(timestamps, nullptr, RangeDateTimeBind<false>, RangeDateTimeGlobalInit,
+	                           RangeDateTimeLocalInit);
+	range_in_out.table_scan_progress = RangeDateTimeProgress;
 	range_in_out.in_out_function = RangeDateTimeFunction<false>;
 	range_in_out.cardinality = RangeDateTimeCardinality;
 	range_in_out.is_repeatable = RangeIsRepeatable;
@@ -420,14 +535,15 @@ void RangeTableFunction::RegisterFunction(BuiltinFunctions &set) {
 	range_function.bind = RangeFunctionBind<true>;
 	range_function.in_out_function = RangeFunction<true>;
 	range_function.return_type = TableFunctionReturnType::SET_RETURNING_FUNCTION;
-	range_function.GetArguments() = {LogicalType::BIGINT};
+	range_function.GetSignature() = stop_only;
 	generate_series.AddFunction(range_function);
-	range_function.GetArguments() = {LogicalType::BIGINT, LogicalType::BIGINT};
+	range_function.GetSignature() = start_stop;
 	generate_series.AddFunction(range_function);
-	range_function.GetArguments() = {LogicalType::BIGINT, LogicalType::BIGINT, LogicalType::BIGINT};
+	range_function.GetSignature() = start_stop_step;
 	generate_series.AddFunction(range_function);
-	TableFunction generate_series_in_out({LogicalType::TIMESTAMP, LogicalType::TIMESTAMP, LogicalType::INTERVAL},
-	                                     nullptr, RangeDateTimeBind<true>, nullptr, RangeDateTimeLocalInit);
+	TableFunction generate_series_in_out(timestamps, nullptr, RangeDateTimeBind<true>, RangeDateTimeGlobalInit,
+	                                     RangeDateTimeLocalInit);
+	generate_series_in_out.table_scan_progress = RangeDateTimeProgress;
 	generate_series_in_out.in_out_function = RangeDateTimeFunction<true>;
 	generate_series_in_out.is_repeatable = RangeIsRepeatable;
 	generate_series_in_out.parallelism = TableFunctionParallelism::FORCE_SINGLE_THREADED;

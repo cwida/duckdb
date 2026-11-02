@@ -13,6 +13,7 @@
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/common/unordered_map.hpp"
 #include "duckdb/parser/parsed_data/parse_info.hpp"
+#include "duckdb/parser/parsed_data/external_resource_options.hpp"
 #include "duckdb/parser/parsed_expression.hpp"
 
 namespace duckdb {
@@ -41,6 +42,8 @@ public:
 	case_insensitive_map_t<unique_ptr<ParsedExpression>> parsed_options;
 	//! Set of bound (key, value) options forwarded to the implicit ATTACH.
 	unordered_map<string, Value> options;
+	//! Set iff parsed as `CONNECT TO [NEW TEMPORARY] EXTERNAL RESOURCE ...`: the resource to connect to.
+	unique_ptr<ExternalResourceOptions> external_resource;
 
 public:
 	unique_ptr<ConnectInfo> Copy() const;

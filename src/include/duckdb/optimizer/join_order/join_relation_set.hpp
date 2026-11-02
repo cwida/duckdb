@@ -29,6 +29,8 @@ public:
 public:
 	unsafe_unique_array<RelationIndex> relations;
 	idx_t count;
+	//! Bitmask over the relation indexes for fast subset/intersection checks
+	vector<idx_t> bitmask;
 };
 
 //! The JoinRelationTree is a structure holding all the created JoinRelationSet objects and allowing fast lookup on to

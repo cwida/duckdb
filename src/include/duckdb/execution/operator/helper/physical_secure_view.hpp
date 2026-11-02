@@ -19,10 +19,13 @@ public:
 	static constexpr const PhysicalOperatorType TYPE = PhysicalOperatorType::SECURE_VIEW;
 
 public:
-	PhysicalSecureView(PhysicalPlan &physical_plan, PhysicalOperator &child, string view_name);
+	PhysicalSecureView(PhysicalPlan &physical_plan, PhysicalOperator &child, string view_name,
+	                   vector<string> pushed_filters, idx_t estimated_cardinality);
 
 	//! The name of the view - used for printing the plan
 	string view_name;
+	//! The filters that were pushed into the view - reported here because the operators inside are never shown
+	vector<string> pushed_filters;
 
 public:
 	OperatorResultType Execute(ExecutionContext &context, DataChunk &input, DataChunk &chunk,

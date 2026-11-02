@@ -1,0 +1,116 @@
+# name: test/sql/setops/projection_expression_collation.test
+# description: Preserve set-operation collation when SQL export changes DISTINCT shape
+# group: [setops]
+
+statement ok
+CREATE TABLE l(s VARCHAR);
+
+statement ok
+INSERT INTO l VALUES ('A');
+
+statement ok
+CREATE TABLE r(s VARCHAR);
+
+statement ok
+INSERT INTO r VALUES ('a');
+
+statement ok
+SET threads=1;
+
+query TT
+EXPLAIN(SQL) SELECT count(*) FROM ((SELECT DISTINCT s COLLATE NOCASE FROM l) EXCEPT (SELECT s FROM r));
+----
+sql	<REGEX>:.*SELECT.*
+
+query I
+SELECT count(*) FROM ((SELECT DISTINCT s COLLATE NOCASE FROM l) EXCEPT (SELECT s FROM r));
+----
+0
+
+query I
+SELECT count(*) FROM ((SELECT DISTINCT s COLLATE NOCASE FROM l) INTERSECT (SELECT s FROM r));
+----
+1
+
+query I
+SELECT count(*) FROM ((SELECT DISTINCT s COLLATE NOCASE FROM l) EXCEPT ALL (SELECT s FROM r));
+----
+0
+
+query I
+SELECT count(*) FROM ((SELECT DISTINCT s COLLATE NOCASE FROM l) INTERSECT ALL (SELECT s FROM r));
+----
+1
+
+statement ok
+INSERT INTO l VALUES ('A'),(NULL),(NULL);
+
+statement ok
+INSERT INTO r VALUES (NULL);
+
+statement ok
+SET debug_verify_statement='explain_sql';
+
+query I
+SELECT count(*) FROM ((SELECT s COLLATE NOCASE FROM l) EXCEPT ALL (SELECT s FROM r));
+----
+2
+
+query I
+SELECT count(*) FROM ((SELECT s COLLATE NOCASE FROM l) INTERSECT ALL (SELECT s FROM r));
+----
+2
+
+# Right-only collation must use the same logical equality classes.
+query I
+SELECT count(*) FROM ((SELECT s FROM l) EXCEPT ALL (SELECT s COLLATE NOCASE FROM r));
+----
+2
+
+query I
+SELECT count(*) FROM ((SELECT s FROM l) INTERSECT ALL (SELECT s COLLATE NOCASE FROM r));
+----
+2
+
+# Uncollated inputs continue to compare raw strings.
+query I
+SELECT count(*) FROM ((SELECT DISTINCT s FROM l) EXCEPT (SELECT s FROM r));
+----
+1
+
+query I
+SELECT count(*) FROM ((SELECT s FROM l) EXCEPT ALL (SELECT s FROM r));
+----
+3
+
+query I
+SELECT count(*) FROM ((SELECT s FROM l) INTERSECT ALL (SELECT s FROM r));
+----
+1
+
+# DISTINCT must not discard the collation of the right input either.
+query I
+SELECT count(*) FROM ((SELECT s FROM l) EXCEPT ALL (SELECT DISTINCT s COLLATE NOCASE FROM r));
+----
+2
+
+query I
+SELECT count(*) FROM ((SELECT s FROM l) INTERSECT ALL (SELECT DISTINCT s COLLATE NOCASE FROM r));
+----
+2
+
+query I
+SELECT count(*) FROM ((SELECT s FROM l) EXCEPT (SELECT DISTINCT s COLLATE NOCASE FROM r));
+----
+0
+
+query I
+SELECT count(*) FROM ((SELECT s FROM l) INTERSECT (SELECT DISTINCT s COLLATE NOCASE FROM r));
+----
+2
+
+# A projection with the same semantic type can still be omitted.
+query TT
+EXPLAIN (FORMAT JSON) SELECT s FROM l;
+----
+physical_plan	<!REGEX>:.*PROJECTION.*

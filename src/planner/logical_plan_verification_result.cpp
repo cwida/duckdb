@@ -434,7 +434,8 @@ bool LogicalPlanVerificationIssue::IsValid() const {
 	case LogicalPlanVerificationIssueCode::UNSUPPORTED_OPERATOR:
 		return path.has_value() && construct.has_value() &&
 		       construct->type == LogicalPlanVerificationConstructType::LOGICAL_OPERATOR &&
-		       *construct->logical_operator != LogicalOperatorType::LOGICAL_EXTENSION_OPERATOR;
+		       construct->logical_operator.has_value() &&
+		       construct->logical_operator.value() != LogicalOperatorType::LOGICAL_EXTENSION_OPERATOR;
 	case LogicalPlanVerificationIssueCode::UNSUPPORTED_EXPRESSION:
 		return path.has_value() && construct.has_value() &&
 		       construct->type == LogicalPlanVerificationConstructType::EXPRESSION;

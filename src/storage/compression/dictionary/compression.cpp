@@ -146,8 +146,9 @@ idx_t DictionaryCompressionCompressState::Finalize() {
 	D_ASSERT(current_width == BitpackingPrimitives::MinimumBitWidth(index_buffer.size() - 1));
 	D_ASSERT(DictionaryCompression::HasEnoughSpace(current_segment->count, index_buffer.size(), current_dictionary.size,
 	                                               current_width, info.GetBlockSize()));
-	D_ASSERT((uint64_t)*max_element(std::begin(selection_buffer), std::end(selection_buffer)) ==
-	         index_buffer.size() - 1);
+	// an empty segment (e.g. the child of a column of empty lists) has no selection entries
+	D_ASSERT(selection_buffer.empty() || (uint64_t)*max_element(std::begin(selection_buffer),
+	                                                            std::end(selection_buffer)) == index_buffer.size() - 1);
 
 	// Early-out, if the block is sufficiently full.
 	if (total_size >= info.GetCompactionFlushLimit()) {

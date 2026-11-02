@@ -1,0 +1,178 @@
+# name: test/sql/storage/wal/wal_torn_uncommitted_row_group.test
+# description: Test uncommitted optimistic rows must not survive crash recovery on torn WAL
+# group: [wal]
+
+load {TEST_DIR}/wal_torn_uncommitted_row_group.db
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown;
+
+statement ok
+PRAGMA wal_autocheckpoint='1TB';
+
+statement ok
+SET debug_abort_on_wal_failure=false;
+
+statement ok
+CREATE TABLE t (id INT);
+
+statement ok
+INSERT INTO t VALUES (1);
+
+statement ok
+CHECKPOINT;
+
+statement ok
+PRAGMA debug_checkpoint_abort='before_wal_flush';
+
+# Scenario 1: Table exists in checkpointed base, WAL has only an uncommitted transaction (last_wal_flush_end == 0).
+# Bulk insert exceeding row group size (122,880 rows) writes optimistic blocks to .db
+# and logs ROW_GROUP_DATA to WAL, then crashes before writing WAL_FLUSH.
+statement error
+INSERT INTO t SELECT * FROM range(2, 130002);
+----
+Simulated crash before WAL_FLUSH write
+
+# Crash restart: triggers WAL recovery with last_wal_flush_end == 0
+restart
+
+statement ok
+PRAGMA debug_checkpoint_abort='none';
+
+# ACID atomicity: the uncommitted transaction's rows must not survive
+query I
+SELECT count(*) FROM t;
+----
+1
+
+# Verify we can continue writing after recovery (which truncates the torn WAL tail)
+statement ok
+INSERT INTO t VALUES (2);
+
+query I
+SELECT count(*) FROM t;
+----
+2
+
+# Scenario 2: WAL contains BOTH committed ROW_GROUP_DATA and uncommitted ROW_GROUP_DATA.
+# First transaction: bulk insert 130,000 rows, creating committed ROW_GROUP_DATA in WAL (no checkpoint).
+statement ok
+INSERT INTO t SELECT * FROM range(3, 130003);
+
+query I
+SELECT count(*) FROM t;
+----
+130002
+
+# Second transaction in the same WAL: another bulk insert (creates uncommitted ROW_GROUP_DATA), then crashes before WAL_FLUSH.
+statement ok
+PRAGMA debug_checkpoint_abort='before_wal_flush';
+
+statement error
+INSERT INTO t SELECT * FROM range(130003, 260003);
+----
+Simulated crash before WAL_FLUSH write
+
+# Crash restart: recovery processes WAL containing both committed and uncommitted row_group_data
+restart
+
+statement ok
+PRAGMA debug_checkpoint_abort='none';
+
+# The committed 130,000 rows must be recovered; the uncommitted 130,000 rows must be discarded
+query I
+SELECT count(*) FROM t;
+----
+130002
+
+# Scenario 3: Fresh database where the first transaction crashes before WAL_FLUSH (last_wal_flush_end == 0 with DDL + row groups).
+load {TEST_DIR}/wal_torn_no_commits.db
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown;
+
+statement ok
+PRAGMA wal_autocheckpoint='1TB';
+
+statement ok
+SET debug_abort_on_wal_failure=false;
+
+statement ok
+PRAGMA debug_checkpoint_abort='before_wal_flush';
+
+statement error
+CREATE TABLE t_never_committed AS SELECT * FROM range(130000);
+----
+Simulated crash before WAL_FLUSH write
+
+# Crash restart: triggers WAL recovery with last_wal_flush_end == 0 on a brand-new database
+restart
+
+statement ok
+PRAGMA debug_checkpoint_abort='none';
+
+# Table must not exist because the transaction never committed
+statement error
+SELECT * FROM t_never_committed;
+----
+<REGEX>:.*Catalog Error.*Table with name t_never_committed does not exist!.*
+
+# Scenario 4: Test that abort_on_wal_failure=true aborts on torn WAL replay (via ATTACH)
+load {TEST_DIR}/wal_abort_on_failure_gen.db
+
+statement ok
+PRAGMA debug_checkpoint_abort='none';
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown;
+
+statement ok
+PRAGMA wal_autocheckpoint='1TB';
+
+statement ok
+CREATE TABLE t (id INT);
+
+statement ok
+INSERT INTO t VALUES (1);
+
+statement ok
+CHECKPOINT;
+
+statement ok
+PRAGMA debug_checkpoint_abort='before_wal_flush';
+
+statement error
+INSERT INTO t SELECT * FROM range(2, 130002);
+----
+Simulated crash before WAL_FLUSH write
+
+# Switch to a clean database to test ATTACH on the torn database
+load {TEST_DIR}/wal_abort_on_failure_verifier.db
+
+statement ok
+PRAGMA debug_checkpoint_abort='none';
+
+statement ok
+SET debug_abort_on_wal_failure=true;
+
+# Attaching a torn WAL with abort_on_wal_failure=true fails with Serialization error
+statement error
+ATTACH '{TEST_DIR}/wal_abort_on_failure_gen.db' AS db_torn;
+----
+<REGEX>:.*Failure while replaying WAL file.*
+
+# With debug_abort_on_wal_failure=false, attaching succeeds and recovers correctly
+statement ok
+SET debug_abort_on_wal_failure=false;
+
+statement ok
+ATTACH '{TEST_DIR}/wal_abort_on_failure_gen.db' AS db_torn;
+
+query I
+SELECT count(*) FROM db_torn.t;
+----
+1
+
+statement ok
+DETACH db_torn;
+

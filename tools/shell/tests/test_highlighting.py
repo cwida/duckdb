@@ -46,4 +46,32 @@ def test_custom_highlight_error(shell):
     result.check_stderr("Unknown intensity 'boldXX'")
     result.check_stderr("Usage")
 
+@pytest.mark.skipif(os.name == 'nt', reason="Deprecated highlighting commands")
+def test_deprecated_highlight_commands(shell):
+    test = (
+        ShellTest(shell)
+        .statement(".keyword brightred")
+        .statement(".comment brightred")
+        .statement(".error brightred")
+        .statement(".cont brightred")
+        .statement(".cont_sel brightred")
+        .statement("select 42;")
+    )
+    result = test.run()
+    result.check_stdout("42")
+    result.check_stderr("use .highlight_colors keyword brightred instead")
+    result.check_stderr("use .highlight_colors comment brightred instead")
+    result.check_stderr("use .highlight_colors error brightred instead")
+    result.check_stderr("use .highlight_colors continuation brightred instead")
+    result.check_stderr("use .highlight_colors continuation_selected brightred instead")
+    assert "Unknown" not in result.stderr
+    assert "render_color" not in result.stderr
+
+@pytest.mark.skipif(os.name == 'nt', reason="Deprecated highlighting commands")
+def test_deprecated_highlight_constant(shell):
+    test = ShellTest(shell).statement(".constant brightred")
+    result = test.run()
+    result.check_stderr(".constant has been split into numeric_constant and string_constant")
+    result.check_stderr(".highlight_colors numeric_constant brightred and .highlight_colors string_constant brightred")
+
 # fmt: on

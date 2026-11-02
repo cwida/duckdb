@@ -1,0 +1,28 @@
+# name: test/sql/copy/csv/25268.test
+# description: Test empty lines with duplicate empty null strings
+# group: [csv]
+
+statement ok
+COPY (SELECT CASE WHEN i = 2 THEN NULL ELSE '0123456789' END AS a FROM range(1, 4) t(i)) TO '{TEST_DIR}/empty_line.csv' (HEADER false);
+
+# an empty line yields a single row, even if multiple null strings match it
+query I
+FROM read_csv('{TEST_DIR}/empty_line.csv', columns={'a': 'VARCHAR'}, header=false, nullstr=['', '', '']);
+----
+0123456789
+NULL
+0123456789
+
+# the empty line falls on a vector boundary, so the duplicates used to write out of bounds
+statement ok
+COPY (SELECT CASE WHEN i = 2030 THEN NULL ELSE '0123456789' END AS a FROM range(1, 2050) t(i)) TO '{TEST_DIR}/empty_line_boundary.csv' (HEADER false);
+
+query I
+SELECT count(*) FROM read_csv('{TEST_DIR}/empty_line_boundary.csv', columns={'a': 'VARCHAR'}, header=false, parallel=false, nullstr=['', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '']);
+----
+2049
+
+query I
+SELECT count(*) FROM read_csv('{TEST_DIR}/empty_line_boundary.csv', columns={'a': 'VARCHAR'}, header=false, nullstr=['', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '']);
+----
+2049

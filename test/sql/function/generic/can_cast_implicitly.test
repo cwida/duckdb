@@ -26,3 +26,17 @@ query I
 SELECT can_cast_implicitly(i, NULL::VARCHAR) FROM tbl LIMIT 1
 ----
 false
+
+# Unknown parameter types defer binding until execution
+statement ok
+PREPARE implicit_cast_parameter AS SELECT can_cast_implicitly(?, NULL::BIGINT)
+
+query I
+EXECUTE implicit_cast_parameter(1)
+----
+true
+
+query I
+EXECUTE implicit_cast_parameter('one')
+----
+false

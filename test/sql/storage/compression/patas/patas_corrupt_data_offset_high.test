@@ -1,0 +1,35 @@
+# name: test/sql/storage/compression/patas/patas_corrupt_data_offset_high.test
+# description: A Patas group data range outside the segment must be rejected
+# group: [patas]
+
+require vector_size 2048
+
+unzip data/storage/corrupt/patas_corrupt_data_offset_high.db.gz {TEST_DIR}/patas_corrupt_data_offset_high.db
+
+load {TEST_DIR}/patas_corrupt_data_offset_high.db readonly
+
+statement ok
+USE patas_corrupt_data_offset_high;
+
+query I
+SELECT compression FROM pragma_storage_info('t') WHERE segment_type='DOUBLE' LIMIT 1;
+----
+Patas
+
+statement error
+SELECT sum(a) FROM t;
+----
+Data Corruption Error: Corrupted Patas segment: group data is outside the data region
+
+restart
+
+statement ok
+USE patas_corrupt_data_offset_high;
+
+statement ok
+SET debug_force_fetch_row=true;
+
+statement error
+SELECT sum(a) FROM t;
+----
+Data Corruption Error: Corrupted Patas segment: group data is outside the data region

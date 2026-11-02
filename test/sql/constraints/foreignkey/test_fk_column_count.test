@@ -1,0 +1,28 @@
+# name: test/sql/constraints/foreignkey/test_fk_column_count.test
+# description: Column-level foreign keys must reference exactly one column
+# group: [foreignkey]
+
+statement ok
+CREATE TABLE composite_pk(a INTEGER, b INTEGER, PRIMARY KEY(a, b));
+
+statement error
+CREATE TABLE child(x INTEGER REFERENCES composite_pk(a, b));
+----
+The number of referencing and referenced columns for foreign keys must be the same
+
+statement ok
+CREATE TABLE single_pk(a INTEGER PRIMARY KEY, b INTEGER);
+
+statement error
+CREATE TABLE child(x INTEGER REFERENCES single_pk(a, b));
+----
+The number of referencing and referenced columns for foreign keys must be the same
+
+# self-references are rejected the same way
+statement error
+CREATE TABLE self_ref(a INTEGER, b INTEGER, x INTEGER REFERENCES self_ref(a, b), PRIMARY KEY(a, b));
+----
+The number of referencing and referenced columns for foreign keys must be the same
+
+statement ok
+CREATE TABLE child(x INTEGER REFERENCES single_pk(a));

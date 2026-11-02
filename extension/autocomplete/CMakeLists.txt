@@ -6,10 +6,7 @@ include_directories(include)
 
 set(AUTOCOMPLETE_EXTENSION_FILES autocomplete_extension.cpp)
 
-build_static_extension(autocomplete ${AUTOCOMPLETE_EXTENSION_FILES})
-set(PARAMETERS "-warnings")
-build_loadable_extension(autocomplete ${PARAMETERS}
-                         ${AUTOCOMPLETE_EXTENSION_FILES})
+build_extension_library(autocomplete ${AUTOCOMPLETE_EXTENSION_FILES})
 
 install(
   TARGETS autocomplete_extension

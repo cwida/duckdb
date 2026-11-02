@@ -247,6 +247,12 @@ SELECT c0, c0 IN x FROM (SELECT [c0, c1] AS x FROM t0) AS y, t0 ORDER BY c0, x;
 5	false
 5	true
 
+# mixed numeric member types
+query II
+SELECT struct_contains(ROW(1.0::FLOAT, 2.0::DOUBLE), 1.0::FLOAT), struct_contains(ROW(1::INT, 2::BIGINT), 1::INT);
+----
+true	true
+
 # ==========================================================
 # Errors
 # ==========================================================

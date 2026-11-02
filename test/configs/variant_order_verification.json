@@ -46,7 +46,14 @@
       "paths": [
         "test/sql/topn/test_top_n_nulls_row_group_pruner_extensive.test",
         "test/sql/topn/top_n_pruning.test",
-        "test/sql/topn/topn_nulls_first.test"
+        "test/sql/topn/topn_nulls_first.test",
+        "test/optimizer/remove_redundant_order_keys.test"
+      ]
+    },
+    {
+      "reason": "Casting the ORDER BY expressions to VARIANT keeps them out of the redundant ORDER BY key optimizer's reach, so the trailing key this test expects to be erased is evaluated and raises.",
+      "paths": [
+        "test/optimizer/remove_redundant_order_keys_side_effects.test"
       ]
     }
   ]

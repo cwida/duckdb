@@ -1,0 +1,25 @@
+# name: test/sql/types/variant/variant_icu_casts.test
+# group: [variant]
+
+require icu
+
+statement ok
+SET Calendar = 'gregorian';
+
+statement ok
+SET TimeZone = 'Europe/Berlin';
+
+query I
+select '1992-09-20 12:30:00.123456789+05:00'::TIMESTAMPTZ as t;
+----
+1992-09-20 09:30:00.123456+02
+
+query I
+select '1992-09-20 12:30:00.123456789+05:00'::TIMESTAMPTZ::VARIANT as tv;
+----
+1992-09-20 09:30:00.123456+02
+
+query I
+select '1992-09-20 12:30:00.123456789+05:00'::TIMESTAMPTZ::VARIANT::VARCHAR as tvv;
+----
+1992-09-20 09:30:00.123456+02

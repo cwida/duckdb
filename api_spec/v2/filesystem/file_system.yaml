@@ -5,8 +5,8 @@ module: file system
 # whatever is configured, including virtual and remote file systems registered
 # by other extensions.
 #
-# A file system is borrowed from a context or a connection and lives as long as
-# that does. Files opened through it are owned by the caller.
+# A file system is borrowed from an instance, a connection or a context and lives as long as that does. Files opened
+# through it are owned by the caller.
 
 #-----------------------------------------------------------------------------------------------------------------------
 # Enums
@@ -46,6 +46,12 @@ enums:
           The file will be read and written at explicit offsets from several threads at once. Pass it whenever
           `[[file_read_at]]` or `[[file_write_at]]` are used concurrently -- a file system that would otherwise
           assume sequential access, by caching, buffering, or keeping a single cursor, needs to know not to.
+      FILE_FLAG_EXTERNAL_FILE_CACHE:
+        value: 8
+        description: |
+          Read the file through DuckDB's external file cache, which keeps the bytes that were read in memory, so
+          that later reads of the same file - also by later queries - do not have to read them again. Whether a
+          local file is cached is decided by the `cache_local_files` setting. Only meaningful for reading.
 
 #-----------------------------------------------------------------------------------------------------------------------
 # Handles
@@ -53,10 +59,10 @@ enums:
 handles:
   file_system:
     description: |
-      A borrowed opaque handle to a file system. Obtained from
-      `[[file_system_get_from_context]]` or `[[file_system_get_from_connection]]`, and used to open files with
-      `[[file_system_open]]`. Borrowed: the handle belongs to the context or connection it came from, is valid only
-      for as long as that is, and must not be destroyed.
+      A borrowed opaque handle to a file system. Obtained from `[[instance_get_file_system]]`,
+      `[[connection_get_file_system]]` or `[[context_get_file_system]]`, and used to open files with
+      `[[file_system_open]]`. Borrowed: the handle belongs to the instance, connection or context it came from, is
+      valid only for as long as that is, and must not be destroyed.
 
   file_open_options:
     description: |
@@ -72,20 +78,47 @@ handles:
       system it was opened through is still valid.
 
 #-----------------------------------------------------------------------------------------------------------------------
+# Callbacks
+#-----------------------------------------------------------------------------------------------------------------------
+callbacks:
+  file_system_path_glob_callback:
+    description: |
+      Receives one path matched by `[[file_system_path_glob]]`.
+
+      The view is borrowed for the duration of the call only, and is not guaranteed to be null-terminated. Report an
+      error through `err`, a live slot that must not be destroyed, to stop the glob: `[[file_system_path_glob]]` then fails
+      with that error. The callback must not throw or unwind across the boundary.
+    parameters:
+      path:
+        type: str
+        indirection: 1
+        const: true
+        kind: IN
+        description: Borrowed view of the matched path. Valid only until the callback returns.
+      user_data:
+        type: void
+        indirection: 1
+        description: The pointer passed to `[[file_system_path_glob]]`, untouched.
+      err:
+        type: error_info
+        indirection: 1
+        description: A live error slot to report a failure through, which stops the glob.
+    return_type: void
+
+#-----------------------------------------------------------------------------------------------------------------------
 # Functions
 #-----------------------------------------------------------------------------------------------------------------------
 functions:
   #---------------------------------------------------------------------------------------------------------------------
   # File System
   #---------------------------------------------------------------------------------------------------------------------
-  file_system_get_from_context:
+  context_get_file_system:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Borrows the file system of a context.
 
-      Use this from inside a callback, where a context is in hand. The returned handle is borrowed: it is valid only
-      for as long as the context is, and must not be destroyed.
+      The returned handle is borrowed: it is valid only for as long as the context is, and must not be destroyed.
     parameters:
       context:
         type: context
@@ -101,16 +134,45 @@ functions:
         description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
     return_type: ERROR
 
-  file_system_get_from_connection:
+  instance_get_file_system:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-10-08" ]
+    description: |
+      Borrows the file system of an instance.
+
+      Paths are resolved with the instance's GLOBAL settings and secrets, and file I/O is not attributed to any query.
+
+      The returned handle is borrowed: it is valid only for as long as the instance is, and must not be destroyed.
+    role: getter
+    belongs_to: instance
+    parameters:
+      instance:
+        type: instance
+        description: The instance to take the file system from.
+      file_system:
+        type: file_system
+        indirection: 1
+        kind: OUT
+        description: Receives the borrowed file system.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  connection_get_file_system:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-08" ]
     description: |
       Borrows the file system of a connection.
 
-      The connection form of `[[file_system_get_from_context]]`, for callers outside a callback. The returned handle
-      is borrowed: it is valid only for as long as the connection is, and must not be destroyed.
+      Paths are resolved with the connection's settings and secrets, and file I/O is attributed to its running query, as through `[[context_get_file_system]]` in a callback.
+
+      The returned handle is borrowed: it is valid only for as long as the connection is, and must not be destroyed.
+    role: getter
+    belongs_to: connection
     parameters:
-      connection:
+      conn:
         type: connection
         description: The connection to take the file system from.
       file_system:
@@ -126,7 +188,7 @@ functions:
 
   file_open_options_create:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Creates a set of open options for a file system.
 
@@ -154,7 +216,7 @@ functions:
 
   file_open_options_set_flag:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Applies one flag to the options.
 
@@ -178,7 +240,7 @@ functions:
 
   file_open_options_set_value:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Attaches a named value to the options.
 
@@ -196,6 +258,9 @@ functions:
         description: The options to set the value on.
       name:
         type: str
+        indirection: 1
+        const: true
+        kind: IN
         description: The name of the value. Borrowed and copied.
       value:
         type: value
@@ -208,7 +273,7 @@ functions:
 
   file_open_options_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Destroys the options, releasing their resources.
 
@@ -223,7 +288,7 @@ functions:
 
   file_system_open:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Opens a file.
 
@@ -246,6 +311,9 @@ functions:
         description: The file system to open the file through.
       file_path:
         type: str
+        indirection: 1
+        const: true
+        kind: IN
         description: The path of the file to open. Borrowed for the call only.
       options:
         type: file_open_options
@@ -262,11 +330,198 @@ functions:
     return_type: ERROR
 
   #---------------------------------------------------------------------------------------------------------------------
+  # Paths
+  #---------------------------------------------------------------------------------------------------------------------
+  file_system_path_exists:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: |
+      Reports whether a file exists at the given path.
+
+      The path is routed the way `[[file_system_open]]` routes it, so asking about a path handled by a remote file
+      system may reach out to it. A directory is not a file, and reports false.
+    parameters:
+      file_system:
+        type: file_system
+        description: The file system to ask.
+      path:
+        type: str
+        indirection: 1
+        const: true
+        kind: IN
+        description: The path to check. Borrowed for the call only.
+      out_exists:
+        type: bool
+        indirection: 1
+        kind: OUT
+        description: Receives whether a file exists at the path.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  file_system_path_is_remote:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: |
+      Reports whether a path names a remote file, e.g. one under `s3://`, `https://`, `gcs://` or `azure://`.
+
+      Decided from the path alone: no file system is consulted, so it answers even when the extension providing the
+      remote file system is not loaded.
+    parameters:
+      file_system:
+        type: file_system
+        description: The file system the path is meant for.
+      path:
+        type: str
+        indirection: 1
+        const: true
+        kind: IN
+        description: The path to check. Borrowed for the call only.
+      out_is_remote:
+        type: bool
+        indirection: 1
+        kind: OUT
+        description: Receives whether the path names a remote file.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  file_system_path_expand:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
+    description: |
+      Expands a path as the file system does when opening it: a leading `~` becomes the home directory, as the
+      `home_directory` setting configures it.
+
+      A path without anything to expand is handed back as it is. The expanded path is handed to `sink` in a single
+      call.
+    parameters:
+      file_system:
+        type: file_system
+        description: The file system whose settings expand the path.
+      path:
+        type: str
+        indirection: 1
+        const: true
+        kind: IN
+        description: The path to expand. Borrowed for the call only.
+      sink:
+        type: text_sink
+        description: Receives the expanded path in a single call. Borrowed for the duration of that call; see text_sink for the full contract.
+      user_data:
+        type: void
+        indirection: 1
+        description: Opaque pointer passed through to sink untouched. May be NULL.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  file_system_path_glob:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-12" ]
+    description: |
+      Finds the files matching a glob pattern, e.g. `*.csv` or `data_?.json` in a directory, handing each matched path to
+      `callback`.
+
+      The pattern is routed the way `[[file_system_open]]` routes a path, so globbing a remote path may reach out to
+      the file system handling it, and is only supported where that file system supports it. A pattern without glob
+      characters matches the file it names, if there is one. Matching nothing is not an error. In which order the
+      paths are handed over is up to the file system.
+    parameters:
+      file_system:
+        type: file_system
+        description: The file system to glob in.
+      pattern:
+        type: str
+        indirection: 1
+        const: true
+        kind: IN
+        description: The glob pattern. Borrowed for the call only.
+      callback:
+        type: file_system_path_glob_callback
+        description: Invoked once per matched path.
+      user_data:
+        type: void
+        indirection: 1
+        description: Opaque pointer passed through to `callback` untouched. May be NULL.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  file_system_path_move:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-12" ]
+    description: |
+      Moves, or renames, a file from one path to another.
+
+      The move is handled by the file system `source` routes to, the way `[[file_system_open]]` routes a path; moving
+      a file between two file systems is not supported. Whether an existing file at `target` is replaced, and whether
+      the move is atomic, is up to that file system.
+    parameters:
+      file_system:
+        type: file_system
+        description: The file system to move the file in.
+      source:
+        type: str
+        indirection: 1
+        const: true
+        kind: IN
+        description: The path of the file to move. Borrowed for the call only.
+      target:
+        type: str
+        indirection: 1
+        const: true
+        kind: IN
+        description: The path to move the file to. Borrowed for the call only.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  file_system_path_remove:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-12" ]
+    description: |
+      Removes the file at a path, if there is one.
+
+      The path is routed the way `[[file_system_open]]` routes it. A path with no file is not an error: `out_removed`
+      then receives false. A file that exists but cannot be removed is.
+    parameters:
+      file_system:
+        type: file_system
+        description: The file system to remove the file from.
+      path:
+        type: str
+        indirection: 1
+        const: true
+        kind: IN
+        description: The path of the file to remove. Borrowed for the call only.
+      out_removed:
+        type: bool
+        indirection: 1
+        kind: OUT
+        description: Optional. Receives whether a file was removed.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  #---------------------------------------------------------------------------------------------------------------------
   # File
   #---------------------------------------------------------------------------------------------------------------------
   file_read:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Reads from the file into a caller-supplied buffer.
 
@@ -300,7 +555,7 @@ functions:
 
   file_write:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Writes a caller-supplied buffer to the file.
 
@@ -335,7 +590,7 @@ functions:
 
   file_read_at:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Reads from a fixed offset, without moving the file's position.
 
@@ -367,7 +622,7 @@ functions:
 
   file_write_at:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Writes at a fixed offset, without moving the file's position.
 
@@ -401,7 +656,7 @@ functions:
 
   file_tell:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: Returns the file's current read/write position, as a byte offset from the start of the file.
     parameters:
       file:
@@ -420,7 +675,7 @@ functions:
 
   file_size:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: Returns the total size of the file in bytes.
     parameters:
       file:
@@ -439,7 +694,7 @@ functions:
 
   file_seek:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Moves the file's read/write position.
 
@@ -460,7 +715,7 @@ functions:
 
   file_sync:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Flushes buffered writes to persistent storage.
 
@@ -478,7 +733,7 @@ functions:
 
   file_close:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Closes the file without destroying the handle.
 
@@ -499,7 +754,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   file_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Destroys the file, closing it if it is still open.
 

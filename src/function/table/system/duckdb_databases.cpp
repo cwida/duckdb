@@ -1,4 +1,5 @@
 #include "duckdb/function/table/system_functions.hpp"
+#include "duckdb/catalog/catalog.hpp"
 #include "duckdb/main/database_manager.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/storage/storage_manager.hpp"

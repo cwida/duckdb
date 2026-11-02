@@ -2,6 +2,11 @@
 # description: Test variant_group_array
 # group: [variant]
 
+# list order is only deterministic single-threaded - with multiple threads the combine order of the
+# thread-local states is arbitrary (relevant for small vector sizes, where even small inputs span many chunks)
+statement ok
+SET threads=1;
+
 # Primitive values
 
 query TT

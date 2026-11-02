@@ -1,7 +1,30 @@
 #include "duckdb/main/capi/capi_internal.hpp"
+#include "duckdb/common/vector/array_vector.hpp"
+#include "duckdb/common/vector/flat_vector.hpp"
+#include "duckdb/common/vector/list_vector.hpp"
+#include "duckdb/common/vector/struct_vector.hpp"
 #include "utf8proc_wrapper.hpp"
 
 namespace duckdb {
+
+void PrepareCAPIVector(Vector &result) {
+	switch (result.GetType().InternalType()) {
+	case PhysicalType::STRUCT:
+		for (auto &child : StructVector::GetEntries(result)) {
+			PrepareCAPIVector(child);
+		}
+		return;
+	case PhysicalType::ARRAY:
+		PrepareCAPIVector(ArrayVector::GetChildMutable(result));
+		return;
+	case PhysicalType::LIST:
+		PrepareCAPIVector(ListVector::GetChildMutable(result));
+		break;
+	default:
+		break;
+	}
+	FlatVector::GetDataMutable(result);
+}
 
 LogicalTypeId LogicalTypeIdFromC(const duckdb_type type) {
 	switch (type) {
@@ -411,6 +434,8 @@ duckdb_error_type ErrorTypeToC(const ExceptionType type) {
 		return DUCKDB_ERROR_DATA_CORRUPTION;
 	case ExceptionType::INVALID_CONFIGURATION:
 		return DUCKDB_INVALID_CONFIGURATION;
+	case ExceptionType::RESOURCE_IN_USE:
+		return DUCKDB_ERROR_RESOURCE_IN_USE;
 	default:
 		return DUCKDB_ERROR_INVALID;
 	}
@@ -506,6 +531,8 @@ ExceptionType ErrorTypeFromC(const duckdb_error_type type) {
 		return ExceptionType::DATA_CORRUPTION;
 	case DUCKDB_INVALID_CONFIGURATION:
 		return ExceptionType::INVALID_CONFIGURATION;
+	case DUCKDB_ERROR_RESOURCE_IN_USE:
+		return ExceptionType::RESOURCE_IN_USE;
 	default:
 		return ExceptionType::INVALID;
 	}

@@ -15,6 +15,9 @@ SELECT column_name, min FROM (SUMMARIZE tbl);
 a	42
 
 # correlated summarize subquery
+statement ok
+SET threads=4
+
 query IIII
 SELECT i, column_name, min, max
 FROM range(2) t(i),
@@ -25,3 +28,6 @@ ORDER BY i;
 ----
 0	x	0	1
 1	x	1	2
+
+statement ok
+RESET threads

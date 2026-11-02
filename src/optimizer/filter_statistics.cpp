@@ -57,7 +57,7 @@ void FilterStatisticsOptimizer::Optimize(unique_ptr<LogicalOperator> &plan) {
 
 	bool filter_bindings_changed = false;
 	optimizer.RunOptimizer(OptimizerType::STATISTICS_PROPAGATION, [&]() {
-		StatisticsPropagator propagator(optimizer, *plan, StatisticsPropagationMode::FILTER_SIMPLIFICATION);
+		StatisticsPropagator propagator(optimizer, plan, StatisticsPropagationMode::FILTER_SIMPLIFICATION);
 		propagator.PropagateStatistics(plan);
 		filter_bindings_changed = propagator.FilterBindingsChanged();
 	});

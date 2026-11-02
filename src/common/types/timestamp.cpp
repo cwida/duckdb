@@ -2,6 +2,7 @@
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/types/date.hpp"
+#include "duckdb/common/types/hugeint.hpp"
 #include "duckdb/common/types/interval.hpp"
 #include "duckdb/common/types/time.hpp"
 #include "duckdb/common/string_util.hpp"
@@ -16,15 +17,6 @@
 namespace duckdb {
 
 static_assert(sizeof(timestamp_t) == sizeof(int64_t), "timestamp_t was padded");
-
-// Temporal values need to round down when changing precision,
-// but C/C++ rounds towards 0 when you simply divide.
-// This piece of bit banging solves that problem.
-template <typename T>
-static inline T TemporalRound(T value, T scale) {
-	const auto negative = int(value < 0);
-	return UnsafeNumericCast<T>((value + negative) / scale - negative);
-}
 
 static bool CanStartTimestampSuffix(char c) {
 	return c == 'Z' || c == '+' || c == '-' || StringUtil::CharacterIsSpace(c);
@@ -101,7 +93,8 @@ TimestampCastResult Timestamp::TryConvertTimestampTZ(const char *str, idx_t len,
 		} else if (Timestamp::TryParseUTCOffset(str, pos, len, hh, mm, ss)) {
 			const int64_t delta =
 			    hh * Interval::MICROS_PER_HOUR + mm * Interval::MICROS_PER_MINUTE + ss * Interval::MICROS_PER_SEC;
-			if (use_offset && !TrySubtractOperator::Operation(result.value, delta, result.value)) {
+			if (use_offset &&
+			    (!TrySubtractOperator::Operation(result.value, delta, result.value) || !result.IsFinite())) {
 				return TimestampCastResult::ERROR_RANGE;
 			}
 			has_offset = true;
@@ -173,16 +166,8 @@ bool Timestamp::TryFromTimestampNanos(timestamp_t input, int32_t nanos, timestam
 		result.value = input.value;
 		return true;
 	}
-	// Scale to ns
-	if (!TryMultiplyOperator::Operation(input.value, Interval::NANOS_PER_MICRO, result.value)) {
-		return false;
-	}
-
-	if (!TryAddOperator::Operation(result.value, int64_t(nanos), result.value)) {
-		return false;
-	}
-
-	return result.IsFinite();
+	const auto value = hugeint_t(input.value) * hugeint_t(Interval::NANOS_PER_MICRO) + hugeint_t(nanos);
+	return Hugeint::TryCast(value, result.value) && result.IsFinite();
 }
 
 TimestampCastResult Timestamp::TryConvertTimestamp(const char *str, idx_t len, timestamp_ns_t &result, bool use_offset,
@@ -372,27 +357,41 @@ dtime_t Timestamp::GetTime(timestamp_t timestamp) {
 	if (!timestamp.IsFinite()) {
 		throw ConversionException("Can't get TIME of infinite TIMESTAMP");
 	}
-	date_t date = Timestamp::GetDate(timestamp);
-	return dtime_t(timestamp.value - (int64_t(date.days) * int64_t(Interval::MICROS_PER_DAY)));
+	int64_t micros = timestamp.value % Interval::MICROS_PER_DAY;
+	if (micros < 0) {
+		micros += Interval::MICROS_PER_DAY;
+	}
+	return dtime_t(micros);
 }
 
 dtime_ns_t Timestamp::GetTimeNs(timestamp_ns_t input) {
 	if (!input.IsFinite()) {
 		throw ConversionException("Can't get TIME_NS of infinite TIMESTAMP");
 	}
-	date_t date = Timestamp::GetDateNS(input);
-	int64_t nanos;
-	if (!TryMultiplyOperator::Operation<int64_t, int64_t, int64_t>(date.days, Interval::NANOS_PER_DAY, nanos)) {
-		throw ConversionException("Overflow extracting TIME_NS of TIMESTAMP");
+	auto nanos = input.value % Interval::NANOS_PER_DAY;
+	if (nanos < 0) {
+		nanos += Interval::NANOS_PER_DAY;
 	}
-	return dtime_ns_t(input.value - nanos);
+	return dtime_ns_t(nanos);
+}
+
+bool Timestamp::TryCombineUnits(int64_t whole, int64_t part, int64_t unit, int64_t &result) {
+	int64_t whole_units;
+	if (TryMultiplyOperator::Operation<int64_t, int64_t, int64_t>(whole, unit, whole_units)) {
+		return TryAddOperator::Operation<int64_t, int64_t, int64_t>(whole_units, part, result);
+	}
+	if (whole >= 0) {
+		return false;
+	}
+	// start from the next whole unit, which still fits when the sum does
+	if (!TryMultiplyOperator::Operation<int64_t, int64_t, int64_t>(whole + 1, unit, whole_units)) {
+		return false;
+	}
+	return TryAddOperator::Operation<int64_t, int64_t, int64_t>(whole_units, part - unit, result);
 }
 
 bool Timestamp::TryFromDatetime(date_t date, dtime_t time, timestamp_t &result) {
-	if (!TryMultiplyOperator::Operation<int64_t, int64_t, int64_t>(date.days, Interval::MICROS_PER_DAY, result.value)) {
-		return false;
-	}
-	if (!TryAddOperator::Operation<int64_t, int64_t, int64_t>(result.value, time.value, result.value)) {
+	if (!TryCombineUnits(date.days, time.value, Interval::MICROS_PER_DAY, result.value)) {
 		return false;
 	}
 	return result.IsFinite();
@@ -420,26 +419,15 @@ timestamp_t Timestamp::FromDatetime(date_t date, dtime_t time) {
 
 void Timestamp::Convert(timestamp_t timestamp, date_t &out_date, dtime_t &out_time) {
 	out_date = GetDate(timestamp);
-	int64_t days_micros;
-	if (!TryMultiplyOperator::Operation<int64_t, int64_t, int64_t>(out_date.days, Interval::MICROS_PER_DAY,
-	                                                               days_micros)) {
-		throw ConversionException("Date out of range in timestamp conversion");
-	}
-	out_time = dtime_t(timestamp.value - days_micros);
+	out_time = GetTime(timestamp);
 	D_ASSERT(timestamp == Timestamp::FromDatetime(out_date, out_time));
 }
 
 void Timestamp::Convert(timestamp_ns_t input, date_t &out_date, dtime_t &out_time, int32_t &out_nanos) {
-	timestamp_t ms(TemporalRound(input.value, Interval::NANOS_PER_MICRO));
-	out_date = Timestamp::GetDate(ms);
-	int64_t days_nanos;
-	if (!TryMultiplyOperator::Operation<int64_t, int64_t, int64_t>(out_date.days, Interval::NANOS_PER_DAY,
-	                                                               days_nanos)) {
-		throw ConversionException("Date out of range in timestamp_ns conversion");
-	}
-
-	out_time = dtime_t((input.value - days_nanos) / Interval::NANOS_PER_MICRO);
-	out_nanos = UnsafeNumericCast<int32_t>((input.value - days_nanos) % Interval::NANOS_PER_MICRO);
+	out_date = Timestamp::GetDateNS(input);
+	auto time_nanos = Timestamp::GetTimeNs(input).value;
+	out_time = dtime_t(time_nanos / Interval::NANOS_PER_MICRO);
+	out_nanos = UnsafeNumericCast<int32_t>(time_nanos % Interval::NANOS_PER_MICRO);
 }
 
 timestamp_t Timestamp::GetCurrentTimestamp() {

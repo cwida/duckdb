@@ -54,12 +54,7 @@ vector<shared_ptr<BaseUnionData>> UnionByName::UnionCols(ClientContext &context,
 	executor.WorkOnTasks();
 
 	// now combine the result schemas
-	identifier_map_t<idx_t> union_names_map;
-	for (auto &reader : union_readers) {
-		auto &col_names = reader->names;
-		auto &sql_types = reader->types;
-		CombineUnionTypes(col_names, sql_types, union_col_types, union_col_names, union_names_map);
-	}
+	interface.CombineSchemas(context, union_readers, file_options.union_by_name, union_col_types, union_col_names);
 	return union_readers;
 }
 

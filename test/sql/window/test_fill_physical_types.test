@@ -1,0 +1,56 @@
+# name: test/sql/window/test_fill_physical_types.test
+# description: Exercise FILL interpolation and extrapolation for each numeric physical type
+# group: [window]
+
+foreach type tinyint smallint integer bigint hugeint utinyint usmallint uinteger ubigint uhugeint float double
+
+query II
+SELECT i, fill(CASE WHEN i = 1 THEN NULL ELSE i END::{type}) OVER (ORDER BY i::{type}) AS filled
+FROM range(3) r(i)
+QUALIFY i IS DISTINCT FROM filled;
+----
+
+query II
+SELECT i, fill(CASE WHEN i = 0 THEN NULL ELSE i END::{type}) OVER (ORDER BY i::{type}) AS filled
+FROM range(3) r(i)
+QUALIFY i IS DISTINCT FROM filled;
+----
+
+endloop
+
+query II
+SELECT i, fill(CASE WHEN i = 2 THEN NULL ELSE i END) OVER (ORDER BY CASE WHEN i < 4 THEN NULL ELSE i END) AS filled
+FROM range(8) r(i)
+QUALIFY i IS DISTINCT FROM filled
+ORDER BY i;
+----
+2	NULL
+
+query II
+SELECT i, fill(CASE WHEN i < 4 THEN NULL ELSE i END) OVER (PARTITION BY i // 2 ORDER BY i) AS filled
+FROM range(8) r(i)
+QUALIFY i IS DISTINCT FROM filled
+ORDER BY i;
+----
+0	NULL
+1	NULL
+2	NULL
+3	NULL
+
+query II
+SELECT i, fill(value) OVER (ORDER BY i) AS filled
+FROM (VALUES (0, NULL::INTEGER), (1, 1), (2, NULL::INTEGER)) t(i, value)
+ORDER BY i;
+----
+0	1
+1	1
+2	1
+
+query I
+SELECT count(*) FILTER (WHERE filled IS NULL)
+FROM (
+    SELECT fill(CASE WHEN i = 2 THEN NULL ELSE i END) OVER (ORDER BY i) AS filled
+    FROM (SELECT i::DOUBLE AS i FROM range(5) r(i) UNION ALL SELECT 'infinity'::DOUBLE) t
+);
+----
+0

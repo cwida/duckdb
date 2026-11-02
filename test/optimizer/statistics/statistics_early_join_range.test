@@ -1,0 +1,75 @@
+# name: test/optimizer/statistics/statistics_early_join_range.test
+# description: Early statistics simplification does not double-count inferred join ranges
+# group: [statistics]
+
+statement ok
+CREATE TABLE range_dimension AS
+SELECT i::INTEGER k, (i % 10)::INTEGER grp, (i % 3)::INTEGER v FROM range(10000) r(i);
+
+statement ok
+CREATE TABLE range_fact AS
+SELECT (i % 1000)::INTEGER k, (i % 7)::INTEGER v FROM range(100000) r(i);
+
+statement ok
+CHECKPOINT;
+
+# Full-column statistics keep the estimate independent of vector-size sampling.
+statement ok
+ANALYZE range_dimension;
+
+statement ok
+ANALYZE range_fact;
+
+# The multi-binding OR enables early statistics simplification. The join's domain estimate already
+# accounts for the unmatched dimension keys; an inferred k <= 999 must not add another selectivity.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT count(*) FROM range_fact f JOIN range_dimension d USING (k)
+WHERE d.grp = 1 AND (d.v = 1 OR f.v IN (SELECT v FROM range_dimension WHERE grp = 2));
+----
+physical_plan	<REGEX>:.*"Join Type":\s*"INNER",\s*"Conditions":\s*"k = k",\s*"Estimated Cardinality":\s*"(?:[89][0-9]{3}|1[01][0-9]{3})".*
+
+# The full statistics pass still adds the range filter after join ordering.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT count(*) FROM range_fact f JOIN range_dimension d USING (k)
+WHERE d.grp = 1 AND (d.v = 1 OR f.v IN (SELECT v FROM range_dimension WHERE grp = 2));
+----
+physical_plan	<REGEX>:.*\(k <= 999\).*
+
+query I
+SELECT count(*) FROM range_fact f JOIN range_dimension d USING (k)
+WHERE d.grp = 1 AND (d.v = 1 OR f.v IN (SELECT v FROM range_dimension WHERE grp = 2));
+----
+6228
+
+statement ok
+INSERT INTO range_fact VALUES (NULL, 1), (1, NULL);
+
+foreach disabled_opt '' 'statistics_propagation'
+
+statement ok
+SET disabled_optimizers = {disabled_opt};
+
+statement ok
+PREPARE range_query AS
+SELECT count(*) FROM range_fact f JOIN range_dimension d USING (k)
+WHERE d.grp = 1 AND (d.v = 1 OR f.v IN (SELECT v FROM range_dimension WHERE grp = 2));
+
+query I
+EXECUTE range_query;
+----
+6229
+
+query I
+EXECUTE range_query;
+----
+6229
+
+statement ok
+DEALLOCATE range_query;
+
+endloop
+
+statement ok
+RESET disabled_optimizers;

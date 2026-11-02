@@ -33,10 +33,10 @@ FROM duckdb_logs
 WHERE type = 'FileSystem' AND contains(msg, '"path":"filehandle_logging.db"')
 ORDER BY timestamp
 ----
-DATABASE	FileSystem	TRACE	{"fs":"LocalFileSystem","path":"filehandle_logging.db","op":"OPEN"}
-DATABASE	FileSystem	TRACE	{"fs":"LocalFileSystem","path":"filehandle_logging.db","op":"WRITE","bytes":"4096","pos":"0"}
-DATABASE	FileSystem	TRACE	{"fs":"LocalFileSystem","path":"filehandle_logging.db","op":"WRITE","bytes":"4096","pos":"4096"}
-DATABASE	FileSystem	TRACE	{"fs":"LocalFileSystem","path":"filehandle_logging.db","op":"WRITE","bytes":"4096","pos":"8192"}
-DATABASE	FileSystem	TRACE	{"fs":"LocalFileSystem","path":"filehandle_logging.db","op":"WRITE","bytes":"262144","pos":"12288"}
-DATABASE	FileSystem	TRACE	{"fs":"LocalFileSystem","path":"filehandle_logging.db","op":"WRITE","bytes":"4096","pos":"4096"}
-DATABASE	FileSystem	TRACE	{"fs":"LocalFileSystem","path":"filehandle_logging.db","op":"CLOSE"}
+CONNECTION	FileSystem	TRACE	{"fs":"LocalFileSystem","path":"filehandle_logging.db","op":"OPEN"}
+CONNECTION	FileSystem	TRACE	{"fs":"LocalFileSystem","path":"filehandle_logging.db","op":"WRITE","bytes":"4096","pos":"0"}
+CONNECTION	FileSystem	TRACE	{"fs":"LocalFileSystem","path":"filehandle_logging.db","op":"WRITE","bytes":"4096","pos":"4096"}
+CONNECTION	FileSystem	TRACE	{"fs":"LocalFileSystem","path":"filehandle_logging.db","op":"WRITE","bytes":"4096","pos":"8192"}
+CONNECTION	FileSystem	TRACE	{"fs":"LocalFileSystem","path":"filehandle_logging.db","op":"WRITE","bytes":"262144","pos":"12288"}
+CONNECTION	FileSystem	TRACE	{"fs":"LocalFileSystem","path":"filehandle_logging.db","op":"WRITE","bytes":"4096","pos":"4096"}
+CONNECTION	FileSystem	TRACE	{"fs":"LocalFileSystem","path":"filehandle_logging.db","op":"CLOSE"}

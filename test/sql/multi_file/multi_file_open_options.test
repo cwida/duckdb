@@ -1,0 +1,287 @@
+# name: test/sql/multi_file/multi_file_open_options.test
+# description: Test specifying the options to open a file with as part of the file list
+# group: [multi_file]
+
+require parquet
+
+statement ok
+COPY (SELECT 42 a, 'hello' b) TO '{TEST_DIR}/open_options_1.parquet'
+
+statement ok
+COPY (SELECT 43 a, 'world' b) TO '{TEST_DIR}/open_options_2.parquet'
+
+# a file can be specified as a struct that holds the path
+query II
+SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/open_options_1.parquet'}])
+----
+42	hello
+
+query II
+SELECT * FROM read_parquet([
+	{'filename': '{TEST_DIR}/open_options_1.parquet'},
+	{'filename': '{TEST_DIR}/open_options_2.parquet'}]) ORDER BY a
+----
+42	hello
+43	world
+
+# the other fields of the struct are the options to open the file with
+query II
+SELECT * FROM read_parquet([{
+	'filename': '{TEST_DIR}/open_options_1.parquet',
+	'validate_external_file_cache': false,
+	'etag': 'my_etag'}])
+----
+42	hello
+
+# an option that is explicitly set to NULL is an option that was not specified
+query II
+SELECT * FROM read_parquet([{
+	'filename': '{TEST_DIR}/open_options_1.parquet',
+	'validate_external_file_cache': NULL::BOOLEAN}])
+----
+42	hello
+
+# this works for any multi-file reader
+statement ok
+COPY (SELECT 42 a, 'hello' b) TO '{TEST_DIR}/open_options.csv'
+
+query II
+SELECT * FROM read_csv([{'filename': '{TEST_DIR}/open_options.csv'}])
+----
+42	hello
+
+query I
+SELECT * FROM glob([{'filename': '{TEST_DIR}/open_options.csv'}])
+----
+{TEST_DIR}/open_options.csv
+
+# files specified as a struct are taken literally - they are not glob expanded
+statement error
+SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/open_options_*.parquet'}])
+----
+<REGEX>:IO Error.*open_options_\*\.parquet.*
+
+# the filename column option is unaffected by the file being given as a struct
+query III
+SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/open_options_1.parquet', 'etag': 'my_etag'}], filename=true)
+----
+42	hello	{TEST_DIR}/open_options_1.parquet
+
+# the path is mandatory and must be a non-NULL VARCHAR
+statement error
+SELECT * FROM read_parquet([{'etag': 'my_etag'}])
+----
+<REGEX>:Parser Error.*requires a file struct to have a "filename" field.*
+
+statement error
+SELECT * FROM read_parquet([{'filename': NULL}])
+----
+<REGEX>:Parser Error.*requires the "filename" field of a file struct to be a non-NULL VARCHAR.*
+
+statement error
+SELECT * FROM read_parquet([{'filename': 42}])
+----
+<REGEX>:Parser Error.*requires the "filename" field of a file struct to be a non-NULL VARCHAR.*
+
+# other types in the file list are still rejected
+statement error
+SELECT * FROM read_parquet([42])
+----
+<REGEX>:Parser Error.*only take a list of strings.*
+
+statement error
+SELECT * FROM read_parquet([NULL])
+----
+<REGEX>:Parser Error.*NULL.*
+
+# a list of structs is typed by unifying the structs of its entries, which fills in the options an entry did
+# not specify with NULL - a NULL option is an option that was not specified
+query II
+SELECT * FROM read_parquet([
+	{'filename': '{TEST_DIR}/open_options_1.parquet'},
+	{'filename': '{TEST_DIR}/open_options_2.parquet', 'etag': 'my_etag'}]) ORDER BY a
+----
+42	hello
+43	world
+
+# a VARIANT lets every file carry exactly the options it specifies, with the types it specifies
+query II
+SELECT * FROM read_parquet([
+	{'filename': '{TEST_DIR}/open_options_1.parquet'}::VARIANT,
+	{'filename': '{TEST_DIR}/open_options_2.parquet', 'etag': 'my_etag'}::VARIANT]) ORDER BY a
+----
+42	hello
+43	world
+
+# a single file can be passed as a VARIANT as well
+query II
+SELECT * FROM read_parquet({'filename': '{TEST_DIR}/open_options_1.parquet', 'etag': 'my_etag'}::VARIANT)
+----
+42	hello
+
+statement error
+SELECT * FROM read_parquet({'etag': 'my_etag'}::VARIANT)
+----
+<REGEX>:Parser Error.*requires a file struct to have a "filename" field.*
+
+# an option that is set to a value it cannot be read back as is an error, not a crash
+statement error
+SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/open_options_1.parquet', 'footer_size': 'notanumber'}])
+----
+<REGEX>:Invalid Input Error.*file option "footer_size".*UBIGINT.*
+
+statement error
+SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/open_options_1.parquet', 'footer_size': -1}])
+----
+<REGEX>:Invalid Input Error.*file option "footer_size".*UBIGINT.*
+
+statement error
+SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/open_options_1.parquet', 'validate_external_file_cache': 'notabool'}])
+----
+<REGEX>:Invalid Input Error.*file option "validate_external_file_cache".*BOOLEAN.*
+
+# options are stored as-is - it is the type an option is read back as that matters, not the type it was written as
+query II
+SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/open_options_1.parquet', 'etag': 42}])
+----
+42	hello
+
+# the same holds for options passed through a VARIANT
+statement error
+SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/open_options_1.parquet', 'footer_size': 'notanumber'}::VARIANT])
+----
+<REGEX>:Invalid Input Error.*file option "footer_size".*UBIGINT.*
+
+# a value that can be read back as the expected type is accepted and converted
+query II
+SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/open_options_1.parquet', 'file_size': 631}])
+----
+42	hello
+
+query II
+SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/open_options_1.parquet', 'validate_external_file_cache': 'true'}])
+----
+42	hello
+
+# known options are matched case-insensitively, so they are always found by the code reading them back
+query II
+SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/open_options_1.parquet', 'File_Size': 631::UBIGINT}])
+----
+42	hello
+
+# force_full_download is honoured as a boolean rather than by its mere presence
+query II
+SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/open_options_1.parquet', 'force_full_download': false}])
+----
+42	hello
+
+query II
+SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/open_options_1.parquet', 'force_full_download': true}])
+----
+42	hello
+
+# options the core does not know about are passed through untouched for extensions to interpret
+query II
+SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/open_options_1.parquet', 'some_extension_option': 42}])
+----
+42	hello
+
+# a file_size that does not match the file is a promise the caller makes to avoid a stat - it is not verified,
+# but it must not corrupt the read of a file system that does not use it
+query II
+SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/open_options_1.parquet', 'file_size': 99999999::UBIGINT}])
+----
+42	hello
+
+query II
+SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/open_options_1.parquet', 'file_size': 1::UBIGINT}])
+----
+42	hello
+
+# the external file cache is told not to validate, and the file is still read correctly
+statement ok
+SET enable_external_file_cache=true
+
+query II
+SELECT * FROM read_parquet([{
+	'filename': '{TEST_DIR}/open_options_1.parquet',
+	'validate_external_file_cache': false,
+	'file_size': 631::UBIGINT,
+	'etag': 'my_etag',
+	'last_modified': '2024-01-01 00:00:00'::TIMESTAMP}])
+----
+42	hello
+
+query II
+SELECT * FROM read_parquet([{
+	'filename': '{TEST_DIR}/open_options_1.parquet',
+	'validate_external_file_cache': true}])
+----
+42	hello
+
+# the parquet reader reads its own open options through the same safe accessors
+statement error
+SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/open_options_1.parquet', 'footer_size': 'notanumber'}])
+----
+<REGEX>:Invalid Input Error.*file option "footer_size".*UBIGINT.*
+
+# has_deletes is only read when partition statistics are gathered, so it is inert for a plain scan - what
+# matters is that carrying an unusable value does not crash the scan that ignores it
+query II
+SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/open_options_1.parquet', 'has_deletes': 'notabool'}])
+----
+42	hello
+
+# a footer_size that does not match the file is rejected by the parquet reader rather than crashing it
+statement error
+SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/open_options_1.parquet', 'footer_size': 999999::UBIGINT}])
+----
+<REGEX>:Invalid Input Error.*Invalid footer length.*
+
+statement error
+SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/open_options_1.parquet', 'footer_size': 1::UBIGINT}])
+----
+<REGEX>:Invalid Input Error.*footer length stored in file is not equal to footer length provided.*
+
+# an encryption key on an unencrypted file is an error, not a crash
+statement error
+SELECT * FROM read_parquet([{'filename': '{TEST_DIR}/open_options_1.parquet', 'encryption_key': '0123456789112345'}])
+----
+<REGEX>:Invalid Input Error.*is not encrypted.*
+
+# the single-file function a multi-file function wraps takes its file the same way: as a path, or as a struct that
+# also holds the options to open it with
+query II
+SELECT * FROM read_single_parquet_file('{TEST_DIR}/open_options_1.parquet')
+----
+42	hello
+
+query II
+SELECT * FROM read_single_parquet_file({'filename': '{TEST_DIR}/open_options_1.parquet', 'etag': 'my_etag'})
+----
+42	hello
+
+statement error
+SELECT * FROM read_single_parquet_file({'filename': '{TEST_DIR}/open_options_1.parquet', 'footer_size': 999999::UBIGINT})
+----
+<REGEX>:Invalid Input Error.*Invalid footer length.*
+
+statement error
+SELECT * FROM read_single_parquet_file({'filename': '{TEST_DIR}/open_options_1.parquet', 'footer_size': 'notanumber'})
+----
+<REGEX>:Invalid Input Error.*file option "footer_size".*UBIGINT.*
+
+statement error
+SELECT * FROM read_single_parquet_file({'footer_size': 1::UBIGINT})
+----
+<REGEX>:.*requires a file struct to have a "filename" field.*
+
+statement error
+SELECT * FROM read_single_parquet_file(42)
+----
+<REGEX>:Binder Error.*reads a single file - given as a VARCHAR path or as a file struct, not as INTEGER.*
+
+query II
+SELECT * FROM read_single_csv_file({'filename': '{TEST_DIR}/open_options.csv', 'etag': 'my_etag'})
+----
+42	hello

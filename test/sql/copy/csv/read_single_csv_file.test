@@ -1,0 +1,257 @@
+# name: test/sql/copy/csv/read_single_csv_file.test
+# description: Test read_single_csv_file and the multi-file CSV reader that wraps it
+# group: [csv]
+
+# read_single_csv_file reads exactly one file
+query I
+SELECT count(*) FROM read_single_csv_file('data/csv/tpcds_14.csv')
+----
+19806
+
+# it does not accept a glob or a list of files
+statement error
+SELECT * FROM read_single_csv_file('data/csv/glob/a1/*.csv')
+----
+<REGEX>:.*IO Error.*
+
+statement error
+SELECT * FROM read_single_csv_file(['data/csv/glob/a1/a1.csv'])
+----
+<REGEX>:Binder Error.*reads a single file - given as a VARCHAR path or as a file struct, not as VARCHAR\[\].*
+
+# projection pushdown - the columns come out in the order they are requested
+query II
+SELECT i_class_id, channel FROM read_single_csv_file('data/csv/tpcds_14.csv') LIMIT 2
+----
+13	store
+4	store
+
+# the options of read_csv are supported
+query I
+SELECT count(*) FROM read_single_csv_file('data/csv/tpcds_14.csv', header=false)
+----
+19807
+
+query I
+SELECT count(*) FROM read_single_csv_file('data/csv/tpcds_14.csv', skip=2)
+----
+19805
+
+query I
+SELECT typeof(channel) FROM read_single_csv_file('data/csv/tpcds_14.csv', all_varchar=true) LIMIT 1
+----
+VARCHAR
+
+# a file is scanned in parallel, and the rows come out in the order they appear in the file
+statement ok
+COPY (SELECT i AS id, 'value_' || i AS s FROM range(200000) t(i)) TO '{TEST_DIR}/ordered.csv' (FORMAT csv, HEADER)
+
+query I
+SELECT bool_and(id = rn) FROM (SELECT id, row_number() OVER () - 1 AS rn FROM read_single_csv_file('{TEST_DIR}/ordered.csv'))
+----
+true
+
+# a small buffer forces the scanner to load buffers while scanning
+query I
+SELECT count(*) FROM read_single_csv_file('data/csv/tpcds_14.csv', buffer_size=1024)
+----
+19806
+
+# ------------------------------------------------------------------------------------------------
+# read_csv - the multi file function wrapping read_single_csv_file
+# ------------------------------------------------------------------------------------------------
+
+query I
+SELECT count(*) FROM read_csv('data/csv/tpcds_14.csv')
+----
+19806
+
+# globs, lists of files and the filename column come from the multi file reader
+query I
+SELECT count(*) FROM read_csv('data/csv/glob/a1/*.csv')
+----
+3
+
+query I
+SELECT count(*) FROM read_csv(['data/csv/glob/a1/a1.csv', 'data/csv/glob/a2/a2.csv'])
+----
+6
+
+query I
+SELECT count(DISTINCT filename) FROM read_csv('data/csv/glob/a?/*.csv', filename=true)
+----
+3
+
+# union_by_name unifies the columns of files with different schemas
+query I
+SELECT count(*) FROM read_csv('data/csv/glob/*/*.csv', union_by_name=true)
+----
+12
+
+query III
+SELECT d, column0, i FROM read_csv('data/csv/glob/*/*.csv', union_by_name=true) ORDER BY ALL LIMIT 3
+----
+2019-06-05	NULL	NULL
+2019-06-15	NULL	NULL
+2019-06-25	NULL	NULL
+
+# the dialect of every file is sniffed, and reconciled with the schema of the scan
+query I
+SELECT count(*) FROM read_csv('data/csv/error/mismatch/*.csv', ignore_errors=true)
+----
+34968
+
+# which rows are skipped by ignore_errors does not depend on the columns that are projected - reading no column
+# of the file at all (only the filename) skips the same rows as counting them
+query I
+SELECT count(*) FROM read_csv('data/csv/error/mismatch/*.csv', ignore_errors=true, filename=true)
+----
+34968
+
+query I
+SELECT count(filename) FROM read_csv('data/csv/error/mismatch/*.csv', ignore_errors=true, filename=true)
+----
+34968
+
+# these files have different columns, so a scan that reads them all is a schema mismatch - "ignore_errors" only
+# skips the rows that cannot be read, it does not unify the schemas
+statement error
+SELECT * FROM read_csv('data/csv/error/mismatch/*.csv', ignore_errors=true, filename=true)
+----
+<REGEX>:.*schema mismatch in glob.*
+
+# "force_not_null" names the columns of the scan, so a column that only some of the files have is allowed - it is
+# forced in the files that have it, and NULL in the files that do not
+statement ok
+COPY (SELECT 1 AS a, '' AS b) TO '{TEST_DIR}/fnn_1.csv' (FORMAT csv, HEADER, QUOTE '')
+
+statement ok
+COPY (SELECT 2 AS a, '' AS c) TO '{TEST_DIR}/fnn_2.csv' (FORMAT csv, HEADER, QUOTE '')
+
+query III
+SELECT a, b IS NULL, c IS NULL FROM read_csv('{TEST_DIR}/fnn_*.csv', union_by_name=true, force_not_null=['c'])
+ORDER BY a
+----
+1	true	true
+2	true	false
+
+# a column that none of the files have is still reported
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/fnn_*.csv', union_by_name=true, force_not_null=['d'])
+----
+<REGEX>:.*force_not_null.*expected to find d.*
+
+# the columns are matched the way column names are matched elsewhere - case-insensitively
+query III
+SELECT a, b IS NULL, c IS NULL FROM read_csv('{TEST_DIR}/fnn_*.csv', union_by_name=true, force_not_null=['C'])
+ORDER BY a
+----
+1	true	true
+2	true	false
+
+# rows that cannot be read are stored in the rejects table rather than failing the scan
+query I
+SELECT count(*) FROM read_csv('data/csv/error/mismatch/small1.csv', store_rejects=true)
+----
+5
+
+# ordering is preserved when a single file is scanned by several threads
+query I
+SELECT bool_and(id = rn) FROM (SELECT id, row_number() OVER () - 1 AS rn FROM read_csv('{TEST_DIR}/ordered.csv'))
+----
+true
+
+query I
+SELECT count(*) FROM read_csv('data/csv/tpcds_14.csv', buffer_size=1024)
+----
+19806
+
+statement error
+SELECT * FROM read_csv('data/csv/this_file_does_not_exist.csv')
+----
+<REGEX>:.*No files found.*
+
+# ------------------------------------------------------------------------------------------------
+# the schema is determined by sniffing several files, capped by files_to_sniff
+# ------------------------------------------------------------------------------------------------
+
+statement ok
+COPY (SELECT 1 AS a, 'x' AS b) TO '{TEST_DIR}/sniff_f1.csv' (FORMAT csv, HEADER)
+
+statement ok
+COPY (SELECT 2 AS a, 'y' AS b) TO '{TEST_DIR}/sniff_f2.csv' (FORMAT csv, HEADER)
+
+statement ok
+COPY (SELECT 'notanumber' AS a, 'z' AS b) TO '{TEST_DIR}/sniff_f3.csv' (FORMAT csv, HEADER)
+
+# the third file widens the type of "a", which is only seen when several files are sniffed
+query I
+SELECT column_type FROM (DESCRIBE SELECT * FROM read_csv('{TEST_DIR}/sniff_*.csv')) WHERE column_name='a'
+----
+VARCHAR
+
+query II
+SELECT * FROM read_csv('{TEST_DIR}/sniff_*.csv') ORDER BY ALL
+----
+1	x
+2	y
+notanumber	z
+
+# sniffing can be limited to the first file, which then types "a" as a number
+query I
+SELECT column_type FROM (DESCRIBE SELECT * FROM read_csv('{TEST_DIR}/sniff_*.csv', files_to_sniff=1)) WHERE column_name='a'
+----
+BIGINT
+
+# -1 sniffs every file
+query I
+SELECT column_type FROM (DESCRIBE SELECT * FROM read_csv('{TEST_DIR}/sniff_*.csv', files_to_sniff=-1)) WHERE column_name='a'
+----
+VARCHAR
+
+statement error
+SELECT * FROM read_csv('{TEST_DIR}/sniff_*.csv', files_to_sniff=0)
+----
+<REGEX>:.*files_to_sniff.*
+
+# ------------------------------------------------------------------------------------------------
+# COPY ... FROM through the wrapper
+# ------------------------------------------------------------------------------------------------
+
+statement ok
+CREATE TABLE copy_target(channel VARCHAR, i_brand_id BIGINT, i_class_id BIGINT, i_category_id BIGINT, sum_sales DOUBLE, number_sales BIGINT)
+
+statement ok
+COPY copy_target FROM 'data/csv/tpcds_14.csv' (FORMAT csv)
+
+query II
+SELECT count(*), sum(i_brand_id) FROM copy_target
+----
+19806	139973596298
+
+# the columns come from the target table - a subset of the file's columns works too
+statement ok
+CREATE TABLE copy_subset(channel VARCHAR)
+
+statement ok
+COPY copy_subset FROM 'data/csv/tpcds_14.csv' (FORMAT csv)
+
+query I
+SELECT count(*) FROM copy_subset
+----
+19806
+
+# COPY TO is shared with the regular CSV copy function, so a round trip works
+statement ok
+COPY (SELECT 1 AS id, 'x' AS s) TO '{TEST_DIR}/roundtrip.csv' (FORMAT csv, HEADER)
+
+statement ok
+CREATE TABLE copy_rt(id BIGINT, s VARCHAR)
+
+statement ok
+COPY copy_rt FROM '{TEST_DIR}/roundtrip.csv' (FORMAT csv, HEADER)
+
+query II
+SELECT * FROM copy_rt
+----
+1	x

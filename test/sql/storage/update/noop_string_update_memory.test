@@ -1,0 +1,19 @@
+# name: test/sql/storage/update/noop_string_update_memory.test
+# description: No-op string updates must not allocate update heap memory
+# group: [update]
+
+load {TEST_DIR}/noop_string_update_memory.db
+
+statement ok
+CREATE TABLE t AS SELECT repeat('x', 65536) AS payload;
+
+statement ok
+CHECKPOINT;
+
+statement ok
+UPDATE t SET payload = payload;
+
+query I
+SELECT memory_usage_bytes < 32768 FROM duckdb_memory() WHERE tag = 'ALLOCATOR';
+----
+true

@@ -1,0 +1,54 @@
+# name: test/sql/copy/partitioned/partitioned_write_backpressure.test
+# description: Partitioned COPY bounds the next input run while a flush is active
+# group: [partitioned]
+
+require parquet
+
+require vector_size 2048
+
+statement ok
+SET threads=4;
+
+statement ok
+SET memory_limit='1GB';
+
+statement ok
+COPY (
+	SELECT i, 'one' AS p, repeat(md5(i::VARCHAR), 32) AS payload
+	FROM range(524288) t(i)
+) TO '{TEST_DIR}/wide_source.parquet' (FORMAT PARQUET, ROW_GROUP_SIZE 2048);
+
+# With backpressure the COPY peaks around 55-80MB, without it around 450-680MB.
+statement ok
+SET memory_limit='128MB';
+
+statement ok
+SET max_temp_directory_size='0B';
+
+statement ok
+SET partitioned_write_flush_threshold=2048;
+
+# The next input run must stop growing at its flush threshold while the previous run is flushing.
+# Without backpressure this spills even though the bounded runs fit in memory.
+query I
+COPY (SELECT * FROM read_parquet('{TEST_DIR}/wide_source.parquet'))
+TO '{TEST_DIR}/wide_partitioned' (FORMAT CSV, PARTITION_BY(p));
+----
+524288
+
+# Reading back the large CSV output needs more than the limit above
+statement ok
+SET memory_limit='1GB';
+
+# Also check the COPY result count: a parked producer's input chunk is delivered again on resume.
+query III
+SELECT count(*), count(DISTINCT i), sum(i)
+FROM read_csv('{TEST_DIR}/wide_partitioned/**/*.csv');
+----
+524288	524288	137438691328
+
+query I
+SELECT count(*) FROM read_csv('{TEST_DIR}/wide_partitioned/**/*.csv')
+WHERE payload IS DISTINCT FROM repeat(md5(i::VARCHAR), 32);
+----
+0

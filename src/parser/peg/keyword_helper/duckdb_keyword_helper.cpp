@@ -1,9 +1,11 @@
 #include "duckdb/parser/peg/keyword_helper/duckdb_keyword_helper.hpp"
+#include "duckdb/parser/peg/parsed_grammar.hpp"
 
 namespace duckdb {
 
-DuckDBKeywordHelper::DuckDBKeywordHelper() : initialized(false) {
-	InitializeKeywordMaps();
+DuckDBKeywordHelper::DuckDBKeywordHelper()
+    : keyword_maps(InitializeKeywordMaps()),
+      literal_table(ParsedGrammar::CreateDefault(), keyword_maps.ToLiteralMap()) {
 }
 
 const DuckDBKeywordHelper &DuckDBKeywordHelper::Instance() {
@@ -11,13 +13,13 @@ const DuckDBKeywordHelper &DuckDBKeywordHelper::Instance() {
 	return instance;
 }
 
-bool DuckDBKeywordHelper::KeywordCategoryType(const std::string &text, const PEGKeywordCategory category) const {
-	return keyword_maps.IsKeywordOfCategory(text, category);
+keyword_categories_t DuckDBKeywordHelper::GetIdentifierMask(SuggestionState type) const {
+	return DefaultKeywordMaps::GetIdentifierMask(type);
 }
 
-bool DuckDBKeywordHelper::IsKeyword(const string &text) const {
-	return keyword_maps.IsKeyword(text);
-};
+KeywordCategory DuckDBKeywordHelper::GetKeywordCategory(const string &text) const {
+	return DefaultKeywordMaps::GetKeywordCategory(LookupKeyword(text));
+}
 
 vector<ParserKeyword> DuckDBKeywordHelper::KeywordList() const {
 	return keyword_maps.ToList();

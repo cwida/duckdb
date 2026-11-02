@@ -1,0 +1,31 @@
+# name: test/sql/function/comparison/between_physical_types.test
+# description: Exercise BETWEEN selection for scalar physical types
+# group: [comparison]
+
+foreach type tinyint smallint integer bigint hugeint utinyint usmallint uinteger ubigint uhugeint float double
+
+query I
+SELECT count(*)
+FROM (VALUES (0::{type}), (1::{type}), (2::{type}), (3::{type}), (NULL::{type})) t(v)
+WHERE v BETWEEN 1::{type} AND 2::{type};
+----
+2
+
+endloop
+
+query I
+SELECT count(*)
+FROM (VALUES (INTERVAL '1 day'), (INTERVAL '2 days'), (INTERVAL '3 days')) t(v)
+WHERE v BETWEEN INTERVAL '1 day' AND INTERVAL '2 days';
+----
+2
+
+query I
+SELECT count(*) FROM (VALUES ('a'), ('b'), ('c')) t(v) WHERE v BETWEEN 'a' AND 'b';
+----
+2
+
+query I
+SELECT count(*) FROM (VALUES (false), (true), (NULL)) t(v) WHERE v BETWEEN false AND true;
+----
+2

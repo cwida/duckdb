@@ -20,3 +20,20 @@ statement error
 DISCONNECT;
 ----
 <REGEX>:.*no active CONNECT.*
+
+# DISCONNECT does not need a valid transaction, it reports the missing CONNECT also in an aborted one
+statement ok
+BEGIN;
+
+statement error
+SELECT error('boom');
+----
+boom
+
+statement error
+DISCONNECT;
+----
+<REGEX>:.*no active CONNECT.*
+
+statement ok
+ROLLBACK;

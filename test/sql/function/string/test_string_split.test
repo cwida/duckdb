@@ -355,3 +355,20 @@ statement error
 SELECT string_split_regex(a, '[') FROM test ORDER BY a;
 ----
 <REGEX>:.*Catalog Error.*does not exist.*
+
+# error in non-constant regex
+statement ok
+CREATE TABLE split_patterns (s VARCHAR, p VARCHAR)
+
+statement ok
+INSERT INTO split_patterns VALUES ('asdf', '(')
+
+statement error
+SELECT string_split_regex(s, p) FROM split_patterns
+----
+<REGEX>:.*Invalid Input Error.*missing.*
+
+statement error
+SELECT string_split_regex(s, p, 'c') FROM split_patterns
+----
+<REGEX>:.*Invalid Input Error.*missing.*

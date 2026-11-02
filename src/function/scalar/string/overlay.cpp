@@ -96,11 +96,22 @@ void OverlayFunction(DataChunk &args, ExpressionState &state, Vector &result) {
 
 ScalarFunctionSet OverlayFun::GetFunctions() {
 	ScalarFunctionSet overlay_set("overlay");
-	overlay_set.AddFunction(ScalarFunction({LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::BIGINT},
-	                                       LogicalType::VARCHAR, OverlayFunction));
-	overlay_set.AddFunction(
-	    ScalarFunction({LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::BIGINT, LogicalType::BIGINT},
-	                   LogicalType::VARCHAR, OverlayFunction));
+
+	ScalarFunction three_arg({}, LogicalType::VARCHAR, OverlayFunction);
+	three_arg.GetSignature()
+	    .AddParameter("string", LogicalType::VARCHAR)
+	    .AddParameter("replacement", LogicalType::VARCHAR)
+	    .AddParameter("start", LogicalType::BIGINT);
+	overlay_set.AddFunction(three_arg);
+
+	ScalarFunction four_arg({}, LogicalType::VARCHAR, OverlayFunction);
+	four_arg.GetSignature()
+	    .AddParameter("string", LogicalType::VARCHAR)
+	    .AddParameter("replacement", LogicalType::VARCHAR)
+	    .AddParameter("start", LogicalType::BIGINT)
+	    .AddParameter("count", LogicalType::BIGINT);
+	overlay_set.AddFunction(four_arg);
+
 	return overlay_set;
 }
 

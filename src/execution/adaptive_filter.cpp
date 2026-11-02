@@ -9,6 +9,8 @@
 #include "duckdb/common/unordered_map.hpp"
 #include "duckdb/common/vector.hpp"
 #include "duckdb/planner/table_filter_set.hpp"
+#include "duckdb/planner/filter/expression_filter.hpp"
+#include "duckdb/planner/expression/expression_barrier.hpp"
 
 namespace duckdb {
 
@@ -17,7 +19,7 @@ AdaptiveFilter::AdaptiveFilter(const Expression &expr) : observe_interval(10), e
 	D_ASSERT(conj_expr.GetChildren().size() > 1);
 	for (idx_t idx = 0; idx < conj_expr.GetChildren().size(); idx++) {
 		permutation.push_back(idx);
-		if (conj_expr.GetChildren()[idx]->CanThrow()) {
+		if (conj_expr.GetChildren()[idx]->CanThrow() || ExpressionBarrier::Contains(*conj_expr.GetChildren()[idx])) {
 			disable_permutations = true;
 		}
 		if (idx != conj_expr.GetChildren().size() - 1) {
@@ -30,6 +32,13 @@ AdaptiveFilter::AdaptiveFilter(const Expression &expr) : observe_interval(10), e
 AdaptiveFilter::AdaptiveFilter(const TableFilterSet &table_filters, vector<idx_t> filter_global_pos_p)
     : observe_interval(10), execute_interval(20), warmup(true) {
 	permutation = ExpressionHeuristics::GetInitialOrder(table_filters);
+	for (auto &entry : table_filters) {
+		auto &expr_filter = ExpressionFilter::GetExpressionFilter(entry.Filter(), "AdaptiveFilter");
+		if (expr_filter.expr->CanThrow() || ExpressionBarrier::Contains(*expr_filter.expr)) {
+			// a filter that can throw must keep the order the optimizer put it in
+			disable_permutations = true;
+		}
+	}
 	for (idx_t idx = 1; idx < table_filters.FilterCount(); idx++) {
 		swap_likeliness.push_back(100);
 	}
@@ -148,7 +157,10 @@ void AdaptiveFilter::AdaptRuntimeStatistics(double duration) {
 
 			// get swap index and swap likeliness
 			// a <= i <= b
-			auto random_number = generator.NextRandomInteger(1, NumericCast<uint32_t>(right_random_border));
+			if (!generator) {
+				generator = make_uniq<RandomEngine>();
+			}
+			auto random_number = generator->NextRandomInteger(1, NumericCast<uint32_t>(right_random_border));
 
 			swap_idx = random_number / 100;                    // index to be swapped
 			idx_t likeliness = random_number - 100 * swap_idx; // random number between [0, 100)

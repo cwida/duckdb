@@ -1,0 +1,29 @@
+# name: test/sql/variant/variant_nested_arrays.test
+# description: Test deeply nested VARIANT arrays around the initial traversal stack capacity
+# group: [variant]
+
+require parquet
+
+# nested VARIANT with 7 levels
+query I
+SELECT variant_to_parquet_variant(
+variant_bytes_to_variant(X'1100000301001903010015030100110301000d03010009030100050301000100')
+) IS NOT NULL
+----
+true
+
+# nested VARIANT with 8 levels (initial stack capacity)
+query I
+SELECT variant_to_parquet_variant(
+variant_bytes_to_variant(X'1100000301001d0301001903010015030100110301000d03010009030100050301000100')
+) IS NOT NULL
+----
+true
+
+# nested VARIANT with 9 levels (requires stack growth beyond the initial capacity)
+query I
+SELECT variant_to_parquet_variant(
+variant_bytes_to_variant(X'110000030100210301001d0301001903010015030100110301000d03010009030100050301000100')
+) IS NOT NULL
+----
+true

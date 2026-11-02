@@ -1,0 +1,48 @@
+# name: test/sql/optimizer/projection_placement/lift_through_nested_joins.test
+# description: Lifting a projection expression through nested joins used to index a stale join projection map (INTERNAL error)
+# group: [projection_placement]
+
+require icu
+
+statement ok
+SET TimeZone='UTC'
+
+statement ok
+CREATE TABLE store_sales(ss_item_sk INT, ss_customer_sk INT, ss_quantity INT, ss_sales_price DECIMAL(7,2), ss_net_profit DECIMAL(7,2), ss_sold_date_sk INT, ss_coupon_amt DECIMAL(7,2), ss_ticket_number BIGINT);
+
+statement ok
+CREATE TABLE item(i_item_sk INT, i_item_id VARCHAR);
+
+statement ok
+CREATE TABLE date_dim(d_date_sk INT, d_date DATE);
+
+statement ok
+INSERT INTO store_sales VALUES (1, 1, 2, 25.0, 1.0, 1, 0.0, 1), (2, 2, 1, 5.0, -1.0, 2, 1.0, 2), (1, 2, 2, 30.0, 2.0, 2, 0.0, 3);
+
+statement ok
+INSERT INTO item VALUES (1, 'a'), (2, 'b');
+
+statement ok
+INSERT INTO date_dim VALUES (1, '2000-01-01'), (2, '2000-01-02');
+
+query IIIII
+SELECT i.i_item_id,
+       ss.resource_id,
+       MAX(CAST(d.d_date AS TIMESTAMP WITH TIME ZONE)) AS last_seen,
+       MIN(CAST(d.d_date AS TIMESTAMP WITH TIME ZONE)) AS first_seen,
+       CAST(SUM(ss.ss_quantity) AS VARCHAR) || '/' || CAST(AVG(ss.ss_sales_price) AS VARCHAR) || '/' || CAST(SUM(ss.ss_net_profit) AS VARCHAR) || '/' || COALESCE(ss.resource_id, '-') AS summary
+FROM (
+    SELECT ss_item_sk, ss_customer_sk, ss_quantity, ss_sales_price, ss_net_profit, ss_sold_date_sk,
+           CASE WHEN ss_quantity = 2 THEN 'r' END AS resource_id,
+           CASE WHEN ss_net_profit > 0 THEN 'active' END AS status,
+           CASE WHEN ss_coupon_amt > 0 THEN 'discounted' END AS pricing_type,
+           CASE WHEN regexp_matches(CAST(ss_ticket_number AS VARCHAR), '[0-9]+') THEN 'numeric' END AS ticket_type
+    FROM store_sales
+) ss
+JOIN item i ON ss.ss_item_sk = i.i_item_sk
+JOIN date_dim d ON ss.ss_sold_date_sk = d.d_date_sk
+GROUP BY i.i_item_id, ss.resource_id
+ORDER BY i.i_item_id, ss.resource_id
+----
+a	r	2000-01-02 00:00:00+00	2000-01-01 00:00:00+00	4/27.5/3.00/r
+b	NULL	2000-01-02 00:00:00+00	2000-01-02 00:00:00+00	1/5.0/-1.00/-

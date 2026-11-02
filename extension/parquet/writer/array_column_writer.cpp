@@ -61,10 +61,13 @@ void ArrayColumnWriter::Prepare(ColumnWriterState &state_p, ColumnWriterState *p
 		if (parent && parent->definition_levels[parent_index] != PARQUET_DEFINE_VALID) {
 			WriteArrayState(state, array_size, first_repeat_level, parent->definition_levels[parent_index]);
 		} else if (validity.RowIsValid(vector_index)) {
+			state.num_values++;
 			// push the repetition levels
 			WriteArrayState(state, array_size, first_repeat_level, PARQUET_DEFINE_VALID);
 		} else {
 			//! Produce a null
+			state.own_null_count++;
+			state.num_values++;
 			WriteArrayState(state, array_size, first_repeat_level, MaxDefine() - 1);
 		}
 		vector_index++;

@@ -1,0 +1,98 @@
+# name: test/sql/types/struct/unnamed_struct_to_tuple.test
+# description: Structs created without member names are TUPLEs, structs with some empty member names stay STRUCTs
+# group: [struct]
+
+require parquet
+
+require json
+
+load {TEST_DIR}/unnamed_struct_to_tuple.db
+
+# a parquet group whose only field has an empty name is read as a TUPLE
+query IIII
+SELECT s, m, typeof(s), typeof(m) FROM 'data/parquet-testing/empty_field_names.parquet' ORDER BY ALL
+----
+(1,)	{'': 1, 'x': a}	TUPLE(INTEGER)	STRUCT("" INTEGER, x VARCHAR)
+(2,)	{'': 2, 'x': b}	TUPLE(INTEGER)	STRUCT("" INTEGER, x VARCHAR)
+(3,)	{'': 3, 'x': c}	TUPLE(INTEGER)	STRUCT("" INTEGER, x VARCHAR)
+
+# filters, extracts and casts on both
+query II
+SELECT s[1], m."x" FROM 'data/parquet-testing/empty_field_names.parquet' WHERE s[1] >= 2 ORDER BY ALL
+----
+2	b
+3	c
+
+query II
+SELECT s::JSON, m::JSON FROM 'data/parquet-testing/empty_field_names.parquet' ORDER BY ALL
+----
+[1]	{"":1,"x":"a"}
+[2]	{"":2,"x":"b"}
+[3]	{"":3,"x":"c"}
+
+# a STRUCT with a leading empty member name is still a named STRUCT (cast by name, not positionally)
+query I
+SELECT m::STRUCT(x VARCHAR, y INTEGER) FROM (SELECT m FROM 'data/parquet-testing/empty_field_names.parquet' LIMIT 1)
+----
+{'x': a, 'y': NULL}
+
+statement error
+SELECT m::STRUCT(a INTEGER, b VARCHAR) FROM 'data/parquet-testing/empty_field_names.parquet'
+----
+<REGEX>:.*Binder Error.*
+
+# a top-level column with an empty name
+query I
+SELECT * FROM 'data/parquet-testing/empty_root_column_name.parquet'
+----
+1
+2
+
+# the types survive storage
+statement ok
+CREATE TABLE tbl AS FROM 'data/parquet-testing/empty_field_names.parquet'
+
+restart
+
+query II
+SELECT typeof(s), typeof(m) FROM tbl LIMIT 1
+----
+TUPLE(INTEGER)	STRUCT("" INTEGER, x VARCHAR)
+
+query II
+SELECT s::JSON, m::JSON FROM tbl ORDER BY ALL LIMIT 1
+----
+[1]	{"":1,"x":"a"}
+
+# json_transform rejects empty keys in the structure
+statement error
+SELECT json_transform('{"": "a"}', '{"": "VARCHAR"}')
+----
+Empty key in object in JSON structure
+
+statement error
+SELECT json_transform('{"": 1, "a": 2}', '{"a": "INTEGER", "": "INTEGER"}')
+----
+Empty key in object in JSON structure
+
+# JSON auto-detection falls back to a MAP for objects with an empty key
+query I
+SELECT typeof(a) FROM read_json('data/json/internal_3813.json', map_inference_threshold=10)
+----
+STRUCT(l1k2 MAP(VARCHAR, BIGINT))
+
+query I
+SELECT typeof(a) FROM read_json('data/json/internal_3813.json', map_inference_threshold=-1)
+----
+STRUCT(l1k2 JSON)
+
+# a VARIANT object with a single empty key is not converted to a TUPLE
+query II
+SELECT v::VARCHAR, v::JSON FROM (SELECT '{"": 1}'::JSON::VARIANT v)
+----
+{''=1}	{"":1}
+
+query II
+SELECT v::VARCHAR, v::JSON FROM (SELECT '{"": 1, "x": {"": [2]}}'::JSON::VARIANT v)
+----
+{'': 1, 'x': {''=[2]}}	{"":1,"x":{"":[2]}}

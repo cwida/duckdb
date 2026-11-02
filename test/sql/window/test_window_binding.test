@@ -31,3 +31,26 @@ query I
 SELECT MIN(i) OVER (PARTITION BY i ORDER BY i) FROM integers
 ----
 
+# Reject volatile expressions for partitioning and ordering
+statement ok
+CREATE SEQUENCE w2nw_val024_seq START 1;
+
+statement error
+SELECT SUM(x) OVER (
+  PARTITION BY (nextval('w2nw_val024_seq') % 2 = 0), x
+  ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+) AS actual
+FROM (VALUES (1), (2), (3), (4), (5)) AS t(x)
+LIMIT 1;
+----
+Binder Error: PARTITION BY window expressions cannot be volatile
+
+statement error
+SELECT LIST(x) OVER (
+  ORDER BY (nextval('w2nw_val024_seq') % 2 = 0), x
+  ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+) AS actual
+FROM (VALUES (1), (2), (3), (4), (5)) AS t(x)
+LIMIT 1;
+----
+Binder Error: ORDER BY window expressions cannot be volatile

@@ -18,6 +18,7 @@
 #include "duckdb/execution/operator/csv_scanner/csv_validator.hpp"
 
 namespace duckdb {
+class PhysicalOperator;
 struct MultiFileBindData;
 
 //! Local state of the CSV scan
@@ -46,8 +47,8 @@ struct CSVLocalState : public LocalTableFunctionState {
 //! CSV Global State is used in the CSV Reader Table Function, it controls what each thread
 struct CSVGlobalState : public GlobalTableFunctionState {
 public:
-	CSVGlobalState(ClientContext &context_p, const CSVReaderOptions &options, idx_t total_file_count,
-	               const MultiFileBindData &bind_data);
+	CSVGlobalState(ClientContext &context_p, ReadCSVData &csv_data, const vector<Identifier> &column_names,
+	               idx_t total_file_count, optional_ptr<const PhysicalOperator> scan_op = nullptr);
 
 	~CSVGlobalState() override {
 	}
@@ -70,7 +71,13 @@ public:
 private:
 	//! Reference to the client context that created this scan
 	ClientContext &context;
-	const MultiFileBindData &bind_data;
+	ReadCSVData &csv_data;
+	//! The operator the files are scanned for, and how many files it scans - together they tell the rejects tables
+	//! which file of which scan an error belongs to
+	optional_ptr<const PhysicalOperator> scan_op;
+	idx_t total_file_count;
+	//! The names of the columns that are read - used when filling the rejects table
+	const vector<Identifier> &column_names;
 
 	string sniffer_mismatch_error;
 
@@ -84,8 +91,9 @@ private:
 
 	//! We hold information on the current scanner boundary
 	CSVIterator current_boundary;
-
-	vector<idx_t> rejects_file_indexes;
 };
+
+//! The I/O tasks needed by the part of the file a local state has claimed, for the buffers that are not in memory
+vector<unique_ptr<AsyncTask>> CSVCollectClaimIOTasks(CSVLocalState &lstate);
 
 } // namespace duckdb

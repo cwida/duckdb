@@ -279,6 +279,21 @@ select timezone(interval '4 minute', '12:15:37.123456-08'::TIMETZ);
 ----
 20:19:37.123456+00:04
 
+query I
+select timezone(interval '-15 hours -59 minutes -59 seconds', '12:00:00+00'::TIMETZ);
+----
+20:00:01-15:59:59
+
+statement error
+select timezone(interval '16 hours', '12:00:00+00'::TIMETZ);
+----
+Timezone offset out of range
+
+statement error
+select timezone(interval '9223372036854775807 microseconds', '12:00:00+00'::TIMETZ);
+----
+Timezone offset out of range
+
 #  last_day
 query TTT
 SELECT LAST_DAY(DATE '1900-02-12'), LAST_DAY(DATE '1992-02-12'), LAST_DAY(DATE '2000-02-12');

@@ -1,0 +1,29 @@
+# name: test/sql/types/variant/variant_object_key_order.test
+# description: variant_typeof, the VARCHAR cast, variant_keys and equality agree on object key order
+# group: [variant]
+
+# TODO: "Force storage" will use default storage version, but variant requires v1.5.0, so skip for now
+require no_force_storage
+
+query IIII
+SELECT variant_typeof(v), CAST(v AS VARCHAR), CAST(variant_keys(v) AS VARCHAR), v = {'l': [42], 'o': {'x': 42}}::VARIANT
+FROM (SELECT {'o': {'x': 42}, 'l': [42]}::VARIANT AS v);
+----
+OBJECT(l, o)	{'l': [42], 'o': {'x': 42}}	[l, o]	true
+
+query II
+SELECT variant_typeof(variant_extract(v, 'o')), CAST(v AS VARCHAR)
+FROM (SELECT {'o': {'y': 1, 'x': 2}, 'l': [42]}::VARIANT AS v);
+----
+OBJECT(x, y)	{'l': [42], 'o': {'x': 2, 'y': 1}}
+
+query III
+SELECT variant_typeof(v), CAST(v AS VARCHAR), CAST(variant_keys(v) AS VARCHAR)
+FROM (SELECT {'a': [2], 'B': 1}::VARIANT AS v);
+----
+OBJECT(B, a)	{'B': 1, 'a': [2]}	[B, a]
+
+statement error
+SELECT CAST({'o': {'x': 42}, 'l': [42]}::VARIANT AS STRUCT(zz INTEGER));
+----
+VARIANT(OBJECT(l,o)) is missing key 'zz'

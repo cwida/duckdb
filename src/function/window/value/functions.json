@@ -19,7 +19,7 @@
     },
     {
         "name": "nth_value",
-        "parameters": "expr, n",
+        "parameters": "expr,n",
         "description": "The nth value of expr in the frame. Can IGNORE or RESPECT NULLS.",
         "example": "NTH_VALUE(athlete, 2) OVER (PARTITION BY event ORDER BY points) AS silver",
         "categories": "",
@@ -28,7 +28,7 @@
     },
     {
         "name": "lead",
-        "parameters": "expr[, n[, default]]",
+        "parameters": "col,offset,default",
         "description": "The value of expr n rows after the current row, or the default. Can IGNORE or RESPECT NULLS.",
         "example": "LEAD(athlete, 1, NULL) OVER (PARTITION BY event ORDER BY points) AS victorious_over",
         "categories": "",
@@ -37,7 +37,7 @@
     },
     {
         "name": "lag",
-        "parameters": "expr[, n[, default]]",
+        "parameters": "col,offset,default",
         "description": "The value of expr n rows after the current row, or the default. Can IGNORE or RESPECT NULLS.",
         "example": "LAG(athlete, 1, NULL) OVER (PARTITION BY event ORDER BY points) AS defeated_by",
         "categories": "",

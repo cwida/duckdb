@@ -1,0 +1,39 @@
+# name: test/sql/storage/concurrent_analyze_checkpoint.test_slow
+# description: Concurrent ANALYZE/INSERT and CHECKPOINT must not race on the table statistics
+# group: [storage]
+
+load {TEST_DIR}/concurrent_analyze_checkpoint.db
+
+statement ok
+SET threads=4
+
+statement ok
+CREATE TABLE t1(id BIGINT, v VARCHAR)
+
+statement ok
+INSERT INTO t1 SELECT i, i::VARCHAR FROM range(100000) r(i)
+
+concurrentloop threadid 0 4
+
+loop k 0 20
+
+statement maybe
+ANALYZE t1
+----
+
+statement maybe
+INSERT INTO t1 SELECT i, i::VARCHAR FROM range(100) r(i)
+----
+
+statement maybe
+CHECKPOINT
+----
+
+endloop
+
+endloop
+
+query I
+SELECT count(*) >= 100000 FROM t1
+----
+true

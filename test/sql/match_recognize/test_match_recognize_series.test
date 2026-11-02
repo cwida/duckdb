@@ -1,0 +1,109 @@
+# name: test/sql/match_recognize/test_match_recognize_series.test
+# description: MATCH_RECOGNIZE over timestamped series - rising runs, V and W shapes, sessionisation
+# group: [match_recognize]
+
+# The shapes below are the ones row pattern matching is normally reached for: a run in one direction,
+# a reversal, two reversals, and a gap that splits a series into sessions. Each one is driven by a
+# condition comparing a row to the one before it, so it is the shape of the series that decides the
+# matches rather than the particular readings.
+
+statement ok
+pragma threads=1;
+
+statement ok
+create table instrument_tape(ticker varchar, observed_at timestamp, quote decimal(8,2));
+
+statement ok
+insert into instrument_tape values
+    ('ZPHR', TIMESTAMP '2031-03-04 14:05:00', 20.00),
+    ('ZPHR', TIMESTAMP '2031-03-04 14:06:00', 23.00),
+    ('ZPHR', TIMESTAMP '2031-03-04 14:07:00', 27.00),
+    ('ZPHR', TIMESTAMP '2031-03-04 14:08:00', 25.00),
+    ('ZPHR', TIMESTAMP '2031-03-04 14:09:00', 31.00),
+    ('ZPHR', TIMESTAMP '2031-03-04 14:10:00', 34.00);
+
+# A run of consecutive rises. The anchor row is whatever the rise starts from, so a run of n rises
+# reports n+1 rows.
+query IIII
+SELECT ticker, run_start, run_end, run_length FROM instrument_tape MATCH_RECOGNIZE(
+    PARTITION BY ticker ORDER BY observed_at
+    MEASURES FIRST(observed_at) AS run_start, LAST(observed_at) AS run_end, count(*) AS run_length
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (ANCHOR RISING+)
+    DEFINE RISING AS RISING.quote > PREV(RISING.quote)
+) ORDER BY run_start
+----
+ZPHR	2031-03-04 14:05:00	2031-03-04 14:07:00	3
+ZPHR	2031-03-04 14:08:00	2031-03-04 14:10:00	3
+
+# A V shape. The first two rows cannot start one because nothing falls after them, so the match
+# begins at the peak.
+query IIII
+SELECT ticker, run_start, trough, run_end FROM instrument_tape MATCH_RECOGNIZE(
+    PARTITION BY ticker ORDER BY observed_at
+    MEASURES FIRST(observed_at) AS run_start, LAST(FALLING.observed_at) AS trough,
+             LAST(observed_at) AS run_end
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (ANCHOR FALLING+ RISING+)
+    DEFINE FALLING AS FALLING.quote < PREV(FALLING.quote),
+           RISING AS RISING.quote > PREV(RISING.quote)
+) ORDER BY run_start
+----
+ZPHR	2031-03-04 14:07:00	2031-03-04 14:08:00	2031-03-04 14:10:00
+
+statement ok
+create table wide_tape(ticker varchar, observed_at timestamp, quote decimal(8,2));
+
+statement ok
+insert into wide_tape values
+    ('ZPHR', TIMESTAMP '2031-03-04 14:05:00', 60.00),
+    ('ZPHR', TIMESTAMP '2031-03-04 14:06:00', 54.00),
+    ('ZPHR', TIMESTAMP '2031-03-04 14:07:00', 48.00),
+    ('ZPHR', TIMESTAMP '2031-03-04 14:08:00', 57.00),
+    ('ZPHR', TIMESTAMP '2031-03-04 14:09:00', 63.00),
+    ('ZPHR', TIMESTAMP '2031-03-04 14:10:00', 51.00),
+    ('ZPHR', TIMESTAMP '2031-03-04 14:11:00', 44.00),
+    ('ZPHR', TIMESTAMP '2031-03-04 14:12:00', 58.00),
+    ('ZPHR', TIMESTAMP '2031-03-04 14:13:00', 66.00);
+
+# A W shape - two falls and two recoveries, spanning the whole series as a single match
+query IIII
+SELECT ticker, run_start, run_end, shape_no FROM wide_tape MATCH_RECOGNIZE(
+    PARTITION BY ticker ORDER BY observed_at
+    MEASURES FIRST(observed_at) AS run_start, LAST(observed_at) AS run_end,
+             MATCH_NUMBER() AS shape_no
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (ANCHOR DROP_ONE+ RISE_ONE+ DROP_TWO+ RISE_TWO+)
+    DEFINE DROP_ONE AS DROP_ONE.quote < PREV(DROP_ONE.quote),
+           RISE_ONE AS RISE_ONE.quote > PREV(RISE_ONE.quote),
+           DROP_TWO AS DROP_TWO.quote < PREV(DROP_TWO.quote),
+           RISE_TWO AS RISE_TWO.quote > PREV(RISE_TWO.quote)
+) ORDER BY run_start
+----
+ZPHR	2031-03-04 14:05:00	2031-03-04 14:13:00	1
+
+statement ok
+create table visit_log(visitor integer, hit_at timestamp);
+
+statement ok
+insert into visit_log values
+    (7, TIMESTAMP '2031-03-04 08:05:00'),
+    (7, TIMESTAMP '2031-03-04 08:22:00'),
+    (7, TIMESTAMP '2031-03-04 09:40:00'),
+    (7, TIMESTAMP '2031-03-04 09:47:00');
+
+# Sessionisation: a run continues while the gap to the previous hit stays inside half an hour, so
+# the 78 minute gap in the middle splits the series in two. The quantifier is * rather than + here,
+# which lets a lone hit be a session of its own.
+query IIIII
+SELECT visitor, session_no, session_start, session_end, hits FROM visit_log MATCH_RECOGNIZE(
+    PARTITION BY visitor ORDER BY hit_at
+    MEASURES MATCH_NUMBER() AS session_no, FIRST(hit_at) AS session_start,
+             LAST(hit_at) AS session_end, count(*) AS hits
+    ONE ROW PER MATCH AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (ANCHOR WITHIN_GAP*)
+    DEFINE WITHIN_GAP AS WITHIN_GAP.hit_at <= PREV(WITHIN_GAP.hit_at) + INTERVAL 30 MINUTE
+) ORDER BY session_no
+----
+7	1	2031-03-04 08:05:00	2031-03-04 08:22:00	2
+7	2	2031-03-04 09:40:00	2031-03-04 09:47:00	2

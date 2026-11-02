@@ -1,0 +1,60 @@
+# name: test/sql/types/float/nan_minmax_order.test
+# description: MIN/MAX on floating point rank NaN as the largest value in any arrival order
+# group: [float]
+
+foreach type FLOAT DOUBLE
+
+query II
+SELECT MIN(f), MAX(f) FROM (VALUES ('nan'::{type}), (1::{type}), (2::{type})) t(f)
+----
+1.0	nan
+
+query II
+SELECT MIN(f), MAX(f) FROM (VALUES (1::{type}), (2::{type}), ('nan'::{type})) t(f)
+----
+1.0	nan
+
+query II
+SELECT MIN(f), MAX(f) FROM (VALUES ('nan'::{type}), ('nan'::{type})) t(f)
+----
+nan	nan
+
+statement ok
+CREATE TABLE fl AS SELECT i, CASE WHEN i = 1 OR i = 9999 THEN 'nan'::{type} ELSE i::{type} END AS f FROM range(1, 10001) t(i)
+
+query II
+SELECT MIN(f), MAX(f) FROM fl
+----
+2.0	nan
+
+query III
+SELECT (i = 1 OR i = 9999) AS nan_group, MIN(f), MAX(f) FROM fl GROUP BY 1 ORDER BY 1
+----
+false	2.0	10000.0
+true	nan	nan
+
+statement ok
+DROP TABLE fl
+
+endloop
+
+# a signaling NaN is ignored by MIN, also in the statistics used when checkpointing to disk
+statement ok
+ATTACH '{TEST_DIR}/signaling_nan.db' AS db
+
+statement ok
+CREATE TABLE db.t AS SELECT * FROM (VALUES (1.0::DOUBLE), ('0111111111110000000000000000000000000000000000000000000000000001'::BIT::DOUBLE)) t(d)
+
+query I
+SELECT MIN(d) FROM db.t
+----
+1.0
+
+statement ok
+CHECKPOINT db
+
+query I
+SELECT d FROM db.t
+----
+1.0
+nan

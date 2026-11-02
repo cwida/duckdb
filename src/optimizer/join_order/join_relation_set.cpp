@@ -9,8 +9,18 @@ namespace duckdb {
 
 using JoinRelationTreeNode = JoinRelationSetManager::JoinRelationTreeNode;
 
+static constexpr idx_t BITMASK_WORD_SIZE = sizeof(idx_t) * 8;
+
 JoinRelationSet::JoinRelationSet(unsafe_unique_array<RelationIndex> relations, idx_t count)
     : relations(std::move(relations)), count(count) {
+	if (count != 0) {
+		// the relations are sorted, so the last one determines the number of words
+		bitmask.resize(this->relations[count - 1].index / BITMASK_WORD_SIZE + 1, 0);
+		for (idx_t i = 0; i < count; i++) {
+			auto index = this->relations[i].index;
+			bitmask[index / BITMASK_WORD_SIZE] |= idx_t(1) << (index % BITMASK_WORD_SIZE);
+		}
+	}
 }
 
 // LCOV_EXCL_START
@@ -30,32 +40,22 @@ bool JoinRelationSet::Empty() const {
 //! Returns true if sub is a subset of super
 bool JoinRelationSet::IsSubset(const JoinRelationSet &super, const JoinRelationSet &sub) {
 	D_ASSERT(sub.count > 0);
-	if (sub.count > super.count) {
+	if (sub.count > super.count || sub.bitmask.size() > super.bitmask.size()) {
 		return false;
 	}
-	idx_t j = 0;
-	for (idx_t i = 0; i < super.count; i++) {
-		if (sub.relations[j] == super.relations[i]) {
-			j++;
-			if (j == sub.count) {
-				return true;
-			}
+	for (idx_t i = 0; i < sub.bitmask.size(); i++) {
+		if (sub.bitmask[i] & ~super.bitmask[i]) {
+			return false;
 		}
 	}
-	return false;
+	return true;
 }
 
 bool JoinRelationSet::Intersects(const JoinRelationSet &left, const JoinRelationSet &right) {
-	idx_t left_idx = 0;
-	idx_t right_idx = 0;
-	while (left_idx < left.count && right_idx < right.count) {
-		if (left.relations[left_idx] == right.relations[right_idx]) {
+	const auto words = MinValue<idx_t>(left.bitmask.size(), right.bitmask.size());
+	for (idx_t i = 0; i < words; i++) {
+		if (left.bitmask[i] & right.bitmask[i]) {
 			return true;
-		}
-		if (left.relations[left_idx] < right.relations[right_idx]) {
-			left_idx++;
-		} else {
-			right_idx++;
 		}
 	}
 	return false;

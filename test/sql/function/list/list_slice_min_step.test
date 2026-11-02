@@ -1,0 +1,8 @@
+# name: test/sql/function/list/list_slice_min_step.test
+# description: list_slice with the minimum BIGINT as the step
+# group: [list]
+
+query IIII
+SELECT list_slice([1,2,3,4,5], 5, 1, -9223372036854775808), [1,2,3,4,5][5:1:-9223372036854775808], list_slice([1,2,3,4,5], 1, 5, 9223372036854775807), list_slice([1,2,3,4,5], 5, 1, -2)
+----
+[5]	[5]	[1]	[5, 3, 1]

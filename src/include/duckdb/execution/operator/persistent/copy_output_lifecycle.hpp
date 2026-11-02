@@ -19,15 +19,8 @@ class ClientContext;
 enum class CopyOutputOwnership : uint8_t {
 	//! Preserve the path because this query cannot prove that it created it.
 	PRESERVE,
-	//! Remove the path if it was finalized before the query failed.
+	//! Remove the path if the query fails.
 	REMOVE_ON_FAILURE
-};
-
-enum class CopyOutputPublicationState : uint8_t {
-	//! The COPY function has not completed finalization for this path.
-	UNFINALIZED,
-	//! The COPY function completed finalization for this path.
-	FINALIZED
 };
 
 class CopyOutputLifecycle {
@@ -36,8 +29,7 @@ public:
 	~CopyOutputLifecycle();
 
 public:
-	idx_t RegisterFile(string path) DUCKDB_EXCLUDES(lock);
-	void MarkFileFinalized(idx_t file_index) DUCKDB_EXCLUDES(lock);
+	void RegisterFile(string path) DUCKDB_EXCLUDES(lock);
 	void RegisterCreatedDirectory(string path) DUCKDB_EXCLUDES(lock);
 	void MarkSuccessful() noexcept DUCKDB_EXCLUDES(lock);
 
@@ -45,7 +37,6 @@ private:
 	struct FileEntry {
 		string path;
 		CopyOutputOwnership ownership = CopyOutputOwnership::PRESERVE;
-		CopyOutputPublicationState publication = CopyOutputPublicationState::UNFINALIZED;
 	};
 
 private:

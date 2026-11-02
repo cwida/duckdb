@@ -1,5 +1,6 @@
 #include "duckdb/main/capi_v2/capi_v2_internal.hpp"
 
+#include "duckdb/common/exception/conversion_exception.hpp"
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/common/vector/array_vector.hpp"
 #include "duckdb/common/vector/constant_vector.hpp"
@@ -9,6 +10,7 @@
 #include "duckdb/common/vector/map_vector.hpp"
 #include "duckdb/common/vector/struct_vector.hpp"
 #include "duckdb/common/vector/union_vector.hpp"
+#include "duckdb/common/vector_operations/vector_operations.hpp"
 
 // Out-param zeroing on failure:
 //   - Pointer-bearing out-params (out_view, out_child, out_data) are
@@ -66,8 +68,7 @@ DUCKDB_V2_ERROR duckdb_v2_vector_get_logical_type(duckdb_v2_vector_handle vector
 		}
 		*out_type = nullptr;
 		auto *vec = Convert(vector);
-		auto *lt = new duckdb::LogicalType(vec->GetType());
-		*out_type = reinterpret_cast<_duckdb_v2_logical_type *>(lt);
+		*out_type = Convert(vec->GetType());
 	});
 }
 
@@ -76,11 +77,64 @@ DUCKDB_V2_ERROR duckdb_v2_vector_flatten(duckdb_v2_vector_handle vector, duckdb_
 	return WithErrorHandler(err, [&]() { Convert(vector)->Flatten(); });
 }
 
+DUCKDB_V2_ERROR duckdb_v2_vector_cast(duckdb_v2_factory_handle factory, duckdb_v2_vector_handle source,
+                                      duckdb_v2_vector_handle target, DUCKDB_V2_CAST_MODE mode, bool *out_converted,
+                                      duckdb_v2_error_info_handle *cast_err, duckdb_v2_error_info_handle *err) {
+	if (cast_err) {
+		*cast_err = nullptr;
+	}
+	DUCKDB_CHECK_ARG(factory);
+	DUCKDB_CHECK_ARG(source);
+	DUCKDB_CHECK_ARG(target);
+	return WithErrorHandler(err, [&]() {
+		auto *src = Convert(source);
+		auto *dst = Convert(target);
+		if (src == dst) {
+			throw duckdb::InvalidInputException("duckdb_v2_vector_cast: source and target must be different vectors");
+		}
+		if (mode != DUCKDB_V2_CAST_MODE_NORMAL && mode != DUCKDB_V2_CAST_MODE_TRY) {
+			throw duckdb::InvalidInputException("duckdb_v2_vector_cast: invalid cast mode %d", static_cast<int>(mode));
+		}
+		const auto count = src->size();
+		// a try cast collects the error instead of throwing, and NULLs the rows that failed
+		duckdb::string error;
+		auto error_ptr = mode == DUCKDB_V2_CAST_MODE_TRY ? &error : nullptr;
+		auto context = Convert(factory)->TryGetClientContext();
+		// the casts expect a fresh result, so stale validity or data in the target cannot leak into it
+		duckdb::Vector result(dst->GetType(), count);
+		auto converted = context ? duckdb::VectorOperations::TryCast(*context, *src, result, count, error_ptr)
+		                         : duckdb::VectorOperations::DefaultTryCast(*src, result, count, error_ptr);
+		dst->Reference(result);
+		if (out_converted) {
+			*out_converted = converted;
+		}
+		if (cast_err && !converted) {
+			// rendered like any error the API reports, as a conversion error
+			auto info = duckdb::make_uniq<CV2ErrorInfo>();
+			try {
+				throw duckdb::ConversionException(error);
+			} catch (...) {
+				RenderCaughtError(info->code, info->message, info->raw_message);
+			}
+			*cast_err = Convert(info.release());
+		}
+	});
+}
+
 DUCKDB_V2_ERROR duckdb_v2_vector_reference(duckdb_v2_vector_handle vector, duckdb_v2_vector_handle source,
                                            duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(vector);
 	DUCKDB_CHECK_ARG(source);
-	return WithErrorHandler(err, [&]() { Convert(vector)->Reference(*Convert(source)); });
+	return WithErrorHandler(err, [&]() {
+		auto *vec = Convert(vector);
+		auto *src = Convert(source);
+		// The engine reports a mismatch as an INTERNAL error, and only by type id.
+		if (vec->GetType() != src->GetType()) {
+			throw duckdb::InvalidInputException(
+			    "duckdb_v2_vector_reference: source type does not match the vector's logical type");
+		}
+		vec->Reference(*src);
+	});
 }
 
 // ---------------------------------------------------------------------------
@@ -238,8 +292,7 @@ DUCKDB_V2_ERROR duckdb_v2_vector_constant_set_valid(duckdb_v2_vector_handle vect
 //
 // Per-kind child counts:
 //   LIST    → 1 child  ([0] = elements)
-//   MAP     → 2 children ([0] = keys, [1] = values; V2 hides MAP's
-//                         internal LIST<STRUCT(K,V)>)
+//   MAP     → 1 child  ([0] = entries, a STRUCT(key, value))
 //   ARRAY   → 1 child  ([0] = elements)
 //   STRUCT  → N children ([i] = field i)
 //   UNION   → N+1 children ([0] = tag, [1..N] = members)
@@ -254,11 +307,9 @@ DUCKDB_V2_ERROR duckdb_v2_vector_get_child_count(duckdb_v2_vector_handle vector,
 		auto *vec = Convert(vector);
 		switch (vec->GetType().id()) {
 		case duckdb::LogicalTypeId::LIST:
+		case duckdb::LogicalTypeId::MAP:
 		case duckdb::LogicalTypeId::ARRAY:
 			*out_count = 1;
-			return;
-		case duckdb::LogicalTypeId::MAP:
-			*out_count = 2;
 			return;
 		case duckdb::LogicalTypeId::STRUCT:
 		case duckdb::LogicalTypeId::TUPLE:
@@ -290,6 +341,15 @@ DUCKDB_V2_ERROR duckdb_v2_vector_get_child(duckdb_v2_vector_handle vector, idx_t
 			*out_child = Convert(&child);
 			return;
 		}
+		case duckdb::LogicalTypeId::MAP: {
+			if (index != 0) {
+				throw duckdb::InvalidInputException(
+				    "duckdb_v2_vector_get_child: MAP has only child [0] (entries, a STRUCT(key, value))");
+			}
+			auto &entries = duckdb::ListVector::GetChildMutable(*vec);
+			*out_child = Convert(&entries);
+			return;
+		}
 		case duckdb::LogicalTypeId::ARRAY: {
 			if (index != 0) {
 				throw duckdb::InvalidInputException("duckdb_v2_vector_get_child: ARRAY has only child [0] (elements)");
@@ -297,21 +357,6 @@ DUCKDB_V2_ERROR duckdb_v2_vector_get_child(duckdb_v2_vector_handle vector, idx_t
 			auto &child = duckdb::ArrayVector::GetChildMutable(*vec);
 			*out_child = Convert(&child);
 			return;
-		}
-		case duckdb::LogicalTypeId::MAP: {
-			// V2 hides MAP's internal LIST<STRUCT(K,V)>: child [0] is the
-			// key vector, child [1] is the value vector.
-			if (index == 0) {
-				auto &keys = duckdb::MapVector::GetKeys(*vec);
-				*out_child = Convert(&keys);
-				return;
-			}
-			if (index == 1) {
-				auto &values = duckdb::MapVector::GetValues(*vec);
-				*out_child = Convert(&values);
-				return;
-			}
-			throw duckdb::InvalidInputException("duckdb_v2_vector_get_child: MAP children are [0]=keys, [1]=values");
 		}
 		case duckdb::LogicalTypeId::STRUCT:
 		case duckdb::LogicalTypeId::TUPLE: {

@@ -1,0 +1,391 @@
+# name: test/sql/sql_export/cte_result_matrices.test
+# description: SQL export preserves materialized and recursive CTE results and shared effects
+# group: [sql_export]
+
+statement ok
+SET threads=1;
+
+statement ok
+SET disabled_optimizers='compressed_materialization';
+
+statement ok
+CREATE TABLE cte_input(x INTEGER, y DECIMAL(9,2), z INTEGER[]);
+
+statement ok
+INSERT INTO cte_input VALUES (1,1.25,[1,NULL]),(2,NULL,[]),(2,2.50,[2]),(NULL,3.75,NULL);
+
+query IRT rowsort
+WITH c AS MATERIALIZED (SELECT * FROM cte_input) SELECT x,y,z FROM c;
+----
+1	1.25	[1, NULL]
+2	2.50	[2]
+2	NULL	[]
+NULL	3.75	NULL
+
+query TIT rowsort
+WITH c AS MATERIALIZED (SELECT * FROM cte_input) SELECT z,x,z FROM c;
+----
+NULL	NULL	NULL
+[1, NULL]	1	[1, NULL]
+[2]	2	[2]
+[]	2	[]
+
+query IRT rowsort
+WITH c AS MATERIALIZED (SELECT * FROM cte_input WHERE x>10) SELECT * FROM c;
+----
+
+query II rowsort
+WITH c AS MATERIALIZED (SELECT x FROM cte_input) SELECT a.x,b.x FROM c a JOIN c b USING(x);
+----
+1	1
+2	2
+2	2
+2	2
+2	2
+
+query IRR rowsort
+WITH c AS MATERIALIZED (SELECT x,y FROM cte_input) SELECT a.x,a.y,b.y FROM c a LEFT JOIN c b ON a.x=b.x;
+----
+1	1.25	1.25
+2	2.50	2.50
+2	2.50	NULL
+2	NULL	2.50
+2	NULL	NULL
+NULL	3.75	NULL
+
+query I rowsort
+WITH c AS MATERIALIZED (SELECT x FROM cte_input) SELECT x FROM c UNION ALL SELECT x FROM c;
+----
+1
+1
+2
+2
+2
+2
+NULL
+NULL
+
+query IIR rowsort
+WITH c AS MATERIALIZED (SELECT x,y FROM cte_input) SELECT x,count(*),sum(y) FROM c GROUP BY x;
+----
+1	1	1.25
+2	2	2.50
+NULL	1	3.75
+
+query II rowsort
+WITH c AS MATERIALIZED (SELECT x FROM cte_input) SELECT x,row_number() OVER (ORDER BY x) FROM c;
+----
+1	1
+2	2
+2	3
+NULL	4
+
+query II rowsort
+WITH c AS MATERIALIZED (SELECT x,z FROM cte_input) SELECT x,unnest(z) FROM c;
+----
+1	1
+1	NULL
+2	2
+
+query IR rowsort
+WITH a AS MATERIALIZED (SELECT x,y FROM cte_input), b AS MATERIALIZED (SELECT x,y FROM a WHERE x>1) SELECT a.x,b.y FROM a JOIN b USING(x);
+----
+2	2.50
+2	2.50
+2	NULL
+2	NULL
+
+query II rowsort
+WITH c AS MATERIALIZED (SELECT x FROM cte_input) SELECT a.x,b.x FROM c a CROSS JOIN (WITH c AS MATERIALIZED (SELECT 9 x) SELECT x FROM c) b;
+----
+1	9
+2	9
+2	9
+NULL	9
+
+query RIR rowsort
+WITH r0(c0,c1) AS MATERIALIZED (SELECT x,y FROM cte_input) SELECT c1,c0,c1 FROM r0;
+----
+1.25	1	1.25
+2.50	2	2.50
+3.75	NULL	3.75
+NULL	2	NULL
+
+query RI
+WITH c AS MATERIALIZED (SELECT x,y FROM cte_input) SELECT y,x FROM c ORDER BY y NULLS LAST,x LIMIT 3 OFFSET 1;
+----
+2.50	2
+3.75	NULL
+NULL	2
+
+query I
+WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c WHERE x<5) SELECT x FROM c ORDER BY ALL;
+----
+1
+2
+3
+4
+5
+
+query I
+WITH RECURSIVE c(x) AS (SELECT 1 UNION SELECT x FROM c) SELECT x FROM c ORDER BY ALL;
+----
+1
+
+query I
+WITH RECURSIVE c(x) AS (VALUES (1),(1) UNION ALL SELECT x+1 FROM c WHERE x<3) SELECT x FROM c ORDER BY ALL;
+----
+1
+1
+2
+2
+3
+3
+
+query I
+WITH RECURSIVE c(x) AS (VALUES (1),(NULL) UNION SELECT x+1 FROM c WHERE x<3) SELECT x FROM c ORDER BY ALL;
+----
+1
+2
+3
+NULL
+
+query RIR
+WITH RECURSIVE c(x,y) AS (SELECT 1,1.25::DECIMAL(9,2) UNION ALL SELECT x+1,y FROM c WHERE x<3) SELECT y,x,y FROM c ORDER BY ALL;
+----
+1.25	1	1.25
+1.25	2	1.25
+1.25	3	1.25
+
+query IT
+WITH RECURSIVE c(x,y) AS (SELECT 1,[1,NULL]::INTEGER[] UNION ALL SELECT x+1,y FROM c WHERE x<3) SELECT x,y FROM c ORDER BY ALL;
+----
+1	[1, NULL]
+2	[1, NULL]
+3	[1, NULL]
+
+query I
+WITH RECURSIVE r0(c0) AS (SELECT 1 UNION ALL SELECT c0+1 FROM r0 WHERE c0<3) SELECT c0 FROM r0 ORDER BY ALL;
+----
+1
+2
+3
+
+query I
+WITH RECURSIVE a AS MATERIALIZED (SELECT 3 n),c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c,a WHERE x<n) SELECT x FROM c ORDER BY ALL;
+----
+1
+2
+3
+
+query II
+WITH RECURSIVE c(x) AS MATERIALIZED (SELECT 1 UNION ALL SELECT x+1 FROM c WHERE x<3) SELECT a.x,b.x FROM c a JOIN c b USING(x) ORDER BY ALL;
+----
+1	1
+2	2
+3	3
+
+query II
+WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c WHERE x<3) SELECT x,row_number() OVER (ORDER BY x) FROM c ORDER BY ALL;
+----
+1	1
+2	2
+3	3
+
+statement ok
+SET disabled_optimizers='cte_inlining';
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+statement ok
+CREATE OR REPLACE SEQUENCE cte_sequence;
+
+query I
+WITH c AS MATERIALIZED (SELECT nextval('cte_sequence') v FROM range(10000)) SELECT v FROM c LIMIT 1;
+----
+1
+
+query TT
+EXPLAIN (SQL) WITH c AS MATERIALIZED (SELECT nextval('cte_sequence') v FROM range(10000)) SELECT v FROM c LIMIT 1;
+----
+sql	<REGEX>:.*WITH .* AS MATERIALIZED .*
+
+# Early termination can leave the producer partially consumed, depending on chunk size.
+query I nosort cte_limit_effects
+SELECT currval('cte_sequence');
+
+statement ok
+CREATE OR REPLACE SEQUENCE cte_sequence;
+
+query II rowsort
+WITH c AS MATERIALIZED (SELECT nextval('cte_sequence') v FROM range(5)) SELECT a.v,b.v FROM c a JOIN c b ON a.v=b.v;
+----
+1	1
+2	2
+3	3
+4	4
+5	5
+
+query TT
+EXPLAIN (SQL) WITH c AS MATERIALIZED (SELECT nextval('cte_sequence') v FROM range(5)) SELECT a.v,b.v FROM c a JOIN c b ON a.v=b.v;
+----
+sql	<REGEX>:.*WITH .* AS MATERIALIZED .*
+
+query I
+SELECT currval('cte_sequence');
+----
+5
+
+endloop
+
+reset label cte_limit_effects
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+statement ok
+CREATE OR REPLACE SEQUENCE cte_sequence;
+
+query I
+WITH c AS NOT MATERIALIZED (SELECT nextval('cte_sequence') v FROM range(10000)) SELECT v FROM c LIMIT 1;
+----
+1
+
+query TT
+EXPLAIN (SQL) WITH c AS NOT MATERIALIZED (SELECT nextval('cte_sequence') v FROM range(10000)) SELECT v FROM c LIMIT 1;
+----
+sql	<REGEX>:.*WITH .* AS MATERIALIZED .*
+
+# Early termination can leave the producer partially consumed, depending on chunk size.
+query I nosort cte_limit_effects
+SELECT currval('cte_sequence');
+
+statement ok
+CREATE OR REPLACE SEQUENCE cte_sequence;
+
+query II rowsort
+WITH c AS NOT MATERIALIZED (SELECT nextval('cte_sequence') v FROM range(5)) SELECT a.v,b.v FROM c a JOIN c b ON a.v=b.v;
+----
+1	1
+2	2
+3	3
+4	4
+5	5
+
+query TT
+EXPLAIN (SQL) WITH c AS NOT MATERIALIZED (SELECT nextval('cte_sequence') v FROM range(5)) SELECT a.v,b.v FROM c a JOIN c b ON a.v=b.v;
+----
+sql	<REGEX>:.*WITH .* AS MATERIALIZED .*
+
+query I
+SELECT currval('cte_sequence');
+----
+5
+
+endloop
+
+reset label cte_limit_effects
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+statement ok
+CREATE OR REPLACE SEQUENCE cte_sequence;
+
+query I
+WITH c AS  (SELECT nextval('cte_sequence') v FROM range(10000)) SELECT v FROM c LIMIT 1;
+----
+1
+
+query TT
+EXPLAIN (SQL) WITH c AS  (SELECT nextval('cte_sequence') v FROM range(10000)) SELECT v FROM c LIMIT 1;
+----
+sql	<REGEX>:.*WITH .* AS MATERIALIZED .*
+
+# Early termination can leave the producer partially consumed, depending on chunk size.
+query I nosort cte_limit_effects
+SELECT currval('cte_sequence');
+
+statement ok
+CREATE OR REPLACE SEQUENCE cte_sequence;
+
+query II rowsort
+WITH c AS  (SELECT nextval('cte_sequence') v FROM range(5)) SELECT a.v,b.v FROM c a JOIN c b ON a.v=b.v;
+----
+1	1
+2	2
+3	3
+4	4
+5	5
+
+query TT
+EXPLAIN (SQL) WITH c AS  (SELECT nextval('cte_sequence') v FROM range(5)) SELECT a.v,b.v FROM c a JOIN c b ON a.v=b.v;
+----
+sql	<REGEX>:.*WITH .* AS MATERIALIZED .*
+
+query I
+SELECT currval('cte_sequence');
+----
+5
+
+endloop
+
+reset label cte_limit_effects
+
+statement ok
+SET disabled_optimizers='';
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+statement ok
+CREATE OR REPLACE SEQUENCE cte_sequence;
+
+query I
+WITH c AS MATERIALIZED (SELECT nextval('cte_sequence') v FROM range(10000)) SELECT v FROM c LIMIT 1;
+----
+1
+
+query TT
+EXPLAIN (SQL) WITH c AS MATERIALIZED (SELECT nextval('cte_sequence') v FROM range(10000)) SELECT v FROM c LIMIT 1;
+----
+sql	<REGEX>:.*WITH .* AS MATERIALIZED .*
+
+# Early termination can leave the producer partially consumed, depending on chunk size.
+query I nosort cte_limit_effects
+SELECT currval('cte_sequence');
+
+statement ok
+CREATE OR REPLACE SEQUENCE cte_sequence;
+
+query II rowsort
+WITH c AS MATERIALIZED (SELECT nextval('cte_sequence') v FROM range(5)) SELECT a.v,b.v FROM c a JOIN c b ON a.v=b.v;
+----
+1	1
+2	2
+3	3
+4	4
+5	5
+
+query TT
+EXPLAIN (SQL) WITH c AS MATERIALIZED (SELECT nextval('cte_sequence') v FROM range(5)) SELECT a.v,b.v FROM c a JOIN c b ON a.v=b.v;
+----
+sql	<REGEX>:.*WITH .* AS MATERIALIZED .*
+
+query I
+SELECT currval('cte_sequence');
+----
+5
+
+endloop
+
+reset label cte_limit_effects

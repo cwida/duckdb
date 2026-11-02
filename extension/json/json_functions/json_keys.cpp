@@ -39,14 +39,21 @@ static void ManyJSONKeysFunction(DataChunk &args, ExpressionState &state, Vector
 }
 
 static void GetJSONKeysFunctionsInternal(ScalarFunctionSet &set, const LogicalType &input_type) {
-	set.AddFunction(ScalarFunction({input_type}, LogicalType::LIST(LogicalType::VARCHAR), UnaryJSONKeysFunction,
-	                               nullptr, nullptr, JSONFunctionLocalState::Init));
-	set.AddFunction(ScalarFunction({{"json", input_type}, {"path", LogicalType::VARCHAR}},
-	                               LogicalType::LIST(LogicalType::VARCHAR), BinaryJSONKeysFunction,
-	                               JSONReadFunctionData::Bind, nullptr, JSONFunctionLocalState::Init));
-	set.AddFunction(ScalarFunction({{"json", input_type}, {"path", LogicalType::LIST(LogicalType::VARCHAR)}},
-	                               LogicalType::LIST(LogicalType::LIST(LogicalType::VARCHAR)), ManyJSONKeysFunction,
-	                               JSONReadManyFunctionData::Bind, nullptr, JSONFunctionLocalState::Init));
+	ScalarFunction unary_fun({}, LogicalType::LIST(LogicalType::VARCHAR), UnaryJSONKeysFunction, nullptr, nullptr,
+	                         JSONFunctionLocalState::Init);
+	unary_fun.GetSignature().AddParameter("json", input_type);
+	set.AddFunction(unary_fun);
+	ScalarFunction path_fun({}, LogicalType::LIST(LogicalType::VARCHAR), BinaryJSONKeysFunction,
+	                        JSONReadFunctionData::Bind, nullptr, JSONFunctionLocalState::Init);
+	path_fun.GetSignature().AddParameter("json", input_type).AddParameter("path", LogicalType::VARCHAR);
+	path_fun.SetResolveTypesCallback(JSONReadFunctionData::ResolveTypes);
+	set.AddFunction(path_fun);
+	ScalarFunction many_fun({}, LogicalType::LIST(LogicalType::LIST(LogicalType::VARCHAR)), ManyJSONKeysFunction,
+	                        JSONReadManyFunctionData::Bind, nullptr, JSONFunctionLocalState::Init);
+	many_fun.GetSignature()
+	    .AddParameter("json", input_type)
+	    .AddParameter("path", LogicalType::LIST(LogicalType::VARCHAR));
+	set.AddFunction(many_fun);
 }
 
 ScalarFunctionSet JSONFunctions::GetKeysFunction() {

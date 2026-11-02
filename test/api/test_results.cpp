@@ -6,7 +6,10 @@
 #include "duckdb/execution/operator/helper/physical_result_sink.hpp"
 #include "duckdb/execution/operator/scan/physical_dummy_scan.hpp"
 #include "duckdb/execution/physical_plan_generator.hpp"
+#include "duckdb/main/buffered_data/batched_buffered_data.hpp"
+#include "duckdb/main/buffered_data/simple_buffered_data.hpp"
 #include "duckdb/main/prepared_statement_data.hpp"
+#include "duckdb/main/result_format.hpp"
 
 using namespace duckdb;
 
@@ -24,9 +27,9 @@ TEST_CASE("Test results API", "[api]") {
 	result2 = con.Query("SELECT 43");
 	REQUIRE(!result->Equals(*result2));
 
-	// stream query to string
-	auto stream_result = con.SendQuery("SELECT 42");
-	auto str = stream_result->ToString();
+	// submitted query to string
+	auto submitted = con.Submit("SELECT 42");
+	auto str = submitted->ToString();
 	REQUIRE(!str.empty());
 
 	// materialized query to string
@@ -160,30 +163,40 @@ TEST_CASE("Error in streaming result after initial query", "[api][.]") {
 	REQUIRE_NO_FAIL(con.Query("INSERT INTO strings VALUES ('hello')"));
 
 	// now create a streaming result: the bad row sits in a later chunk, so the error surfaces on the drain
-	auto result = con.SendQuery("SELECT CAST(v AS INTEGER) FROM strings");
-	while (result->Fetch()) {
+	auto stream = OpenStream(con, "SELECT CAST(v AS INTEGER) FROM strings");
+	while (stream->Fetch()) {
 	}
-	REQUIRE_FAIL(result);
+	REQUIRE(stream->HasError());
 }
 
-TEST_CASE("Streaming result sinks reject results after the connection closes", "[api]") {
+TEST_CASE("A retained result sink rejects results after the connection closes", "[api]") {
 	DuckDB db(nullptr);
 
-	auto test_collector = [&](bool batched) {
+	auto test_collector = [&](ResultOrdering ordering) {
 		auto connection = make_uniq<Connection>(db);
 		weak_ptr<ClientContext> weak_context = connection->context;
 
 		PreparedStatementData data(StatementType::SELECT_STATEMENT);
 		data.names.emplace_back("value");
 		data.types.emplace_back(LogicalType::INTEGER);
-		data.memory_type = QueryResultMemoryType::IN_MEMORY;
 		data.physical_plan = make_uniq<PhysicalPlan>(Allocator::Get(*connection->context));
 		auto &root = data.physical_plan->Make<PhysicalDummyScan>(data.types, 0);
 		data.physical_plan->SetRoot(root);
 
-		const auto ordering = batched ? ResultOrdering::BATCH_INDEX_ORDERED : ResultOrdering::SOURCE_ORDERED;
-		unique_ptr<PhysicalResultCollector> collector =
-		    make_uniq<PhysicalResultSink>(*data.physical_plan, data, ResultLifetime::DRAINING, ordering);
+		// The sink carries no lifetime of its own; the buffer built below is what fixes it to RETAINED
+		auto sink = make_uniq<PhysicalResultSink>(*data.physical_plan, data, ordering);
+		ResultFormatContext format_context {data.types, data.names, connection->context->GetClientProperties(),
+		                                    ordering};
+		shared_ptr<BufferedData> buffer;
+		if (ordering == ResultOrdering::BATCH_INDEX_ORDERED) {
+			buffer = make_shared_ptr<BatchedBufferedData>(*connection->context, ResultLifetime::RETAINED,
+			                                              std::move(format_context), nullptr);
+		} else {
+			buffer = make_shared_ptr<SimpleBufferedData>(*connection->context, ResultLifetime::RETAINED,
+			                                             std::move(format_context), nullptr);
+		}
+		sink->SetResultBuffer(buffer);
+		unique_ptr<PhysicalResultCollector> collector = std::move(sink);
 		auto sink_state = collector->GetGlobalSinkState(*connection->context);
 
 		connection.reset();
@@ -191,11 +204,11 @@ TEST_CASE("Streaming result sinks reject results after the connection closes", "
 		REQUIRE_THROWS_AS(collector->GetResult(*sink_state), ConnectionException);
 	};
 
-	SECTION("simple collector") {
-		test_collector(false);
+	SECTION("source ordered") {
+		test_collector(ResultOrdering::SOURCE_ORDERED);
 	}
-	SECTION("batched collector") {
-		test_collector(true);
+	SECTION("batch index ordered") {
+		test_collector(ResultOrdering::BATCH_INDEX_ORDERED);
 	}
 }
 
@@ -238,16 +251,16 @@ TEST_CASE("Issue #9417", "[api][.]") {
 
 	DuckDB db(TestCreatePath("issue_replication.db"), &config);
 	Connection con(db);
-	auto result = con.SendQuery("with max_period as ("
-	                            "            select max(reporting_date) as max_record\n"
-	                            "            from \"data/parquet-testing/issue9417.parquet\"\n"
-	                            "        )\n"
-	                            "        select\n"
-	                            "            *\n"
-	                            "        from \"data/parquet-testing/issue9417.parquet\" e\n"
-	                            "            inner join max_period\n"
-	                            "            on e.reporting_date = max_period.max_record\n"
-	                            "         where e.record_date between '2012-01-31' and '2023-06-30'");
+	auto result = con.Query("with max_period as ("
+	                        "            select max(reporting_date) as max_record\n"
+	                        "            from \"data/parquet-testing/issue9417.parquet\"\n"
+	                        "        )\n"
+	                        "        select\n"
+	                        "            *\n"
+	                        "        from \"data/parquet-testing/issue9417.parquet\" e\n"
+	                        "            inner join max_period\n"
+	                        "            on e.reporting_date = max_period.max_record\n"
+	                        "         where e.record_date between '2012-01-31' and '2023-06-30'");
 	idx_t count = 0;
 	while (true) {
 		auto chunk = result->Fetch();

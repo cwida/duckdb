@@ -48,6 +48,14 @@ idx_t ArrowAppender::RowCount() const {
 	return row_count;
 }
 
+idx_t ArrowAppender::ByteSize() const {
+	idx_t bytes = 0;
+	for (auto &data : root_data) {
+		bytes += data->ByteSize();
+	}
+	return bytes;
+}
+
 void ArrowAppender::ReleaseArray(ArrowArray *array) {
 	if (!array || !array->release) {
 		return;
@@ -88,7 +96,16 @@ ArrowArray *ArrowAppender::FinalizeChild(const LogicalType &type, unique_ptr<Arr
 	result->buffers[0] = append_data.GetValidityBuffer().data();
 
 	if (append_data.finalize) {
-		append_data.finalize(append_data, type, result.get());
+		// An extension type's appender tree was initialized (and appended) with the extension's INTERNAL
+		// (storage) type — see InitializeChild — so it must also be finalized with that type: a nested
+		// finalizer (struct/list/map) sizes its child walk from the type it is given, and the LOGICAL
+		// type's shape need not match the storage-built child_data (e.g. a canonical Arrow extension over
+		// struct storage whose logical type has a different child count).
+		if (append_data.extension_data) {
+			append_data.finalize(append_data, append_data.extension_data->GetInternalType(), result.get());
+		} else {
+			append_data.finalize(append_data, type, result.get());
+		}
 	}
 
 	append_data.array = std::move(result);

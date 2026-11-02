@@ -238,4 +238,35 @@ void ShellProgressBarDisplay::PrintProgressInternal(int32_t percentage, double e
 	Printer::RawPrint(OutputStream::STREAM_STDOUT, result);
 }
 
+AgentProgressBarDisplay::AgentProgressBarDisplay() {
+}
+
+void AgentProgressBarDisplay::Finish() {
+	PrintProgressInternal(100, GetElapsedDuration(), true);
+}
+
+void AgentProgressBarDisplay::PrintProgressInternal(int32_t percentage, double seconds, bool is_finished) {
+	auto elapsed = GetElapsedDuration();
+	if (is_finished) {
+		if (last_print_time < 0) {
+			// the query finished before we printed anything - stay silent
+			return;
+		}
+		Printer::RawPrint(OutputStream::STREAM_STDERR, StringUtil::Format("progress: done (elapsed %.1fs)\n", seconds));
+		Printer::Flush(OutputStream::STREAM_STDERR);
+		return;
+	}
+	if (last_print_time >= 0 && elapsed - last_print_time < PRINT_INTERVAL_SECONDS) {
+		return;
+	}
+	last_print_time = elapsed;
+	string line = StringUtil::Format("progress: %d%% (elapsed %.1fs", percentage, elapsed);
+	if (seconds >= 0 && seconds < 2147483647.0) {
+		line += StringUtil::Format(", remaining ~%.1fs", seconds);
+	}
+	line += ")\n";
+	Printer::RawPrint(OutputStream::STREAM_STDERR, line);
+	Printer::Flush(OutputStream::STREAM_STDERR);
+}
+
 } // namespace duckdb_shell

@@ -1,0 +1,57 @@
+# name: test/issues/general/test_24711.test
+# description: Issue 24711 - preserve join projections during Top-N window late materialization
+# group: [general]
+
+statement ok
+CREATE TABLE t__base (c_pk INTEGER NOT NULL, c_int INTEGER, c_dbl DOUBLE, c_txt VARCHAR)
+
+statement ok
+INSERT INTO t__base VALUES (1, NULL, NULL, NULL), (2, 1, 0.0, NULL), (3, 2, 1.5, 'a')
+
+statement ok
+CREATE TABLE t_uid AS
+SELECT c_pk, c_int, c_dbl, c_txt, ROW_NUMBER() OVER (ORDER BY c_pk) AS eq_uid_1
+FROM t__base
+
+statement ok
+CREATE TABLE t_flag AS SELECT eq_uid_1, 1 AS eq_flag_1 FROM t_uid
+
+statement ok
+CREATE VIEW issue_24711 AS
+SELECT l.c_pk, l.c_int, l.c_dbl, l.c_txt
+FROM t_uid l
+INNER JOIN t_flag r ON l.eq_uid_1 = r.eq_uid_1
+WHERE r.eq_flag_1 = 1
+
+query RI
+SELECT c_dbl, c_int
+FROM issue_24711
+WHERE c_txt IS NULL
+QUALIFY ROW_NUMBER() OVER (ORDER BY c_pk) <= 10
+ORDER BY c_pk
+----
+NULL	NULL
+0.0	1
+
+# Arbitrary join conditions cannot establish equivalence for late materialization.
+statement ok
+CREATE TABLE issue_24711_join (id INTEGER, v INTEGER, ts INTEGER, tag VARCHAR)
+
+statement ok
+INSERT INTO issue_24711_join VALUES (1, 100, 1, 'a'), (1, 200, 2, 'a')
+
+query TII
+WITH cur AS (
+	SELECT id, v
+	FROM issue_24711_join
+	QUALIFY ROW_NUMBER() OVER (PARTITION BY id ORDER BY ts DESC) = 1
+),
+prev AS (
+	SELECT t.tag, t.v, ROW_NUMBER() OVER (PARTITION BY t.id ORDER BY t.ts DESC) AS rn
+	FROM issue_24711_join t
+	JOIN cur ON cur.id = t.id
+	WHERE abs(t.v - cur.v) >= 1
+)
+SELECT * FROM prev WHERE rn = 1
+----
+a	100	1

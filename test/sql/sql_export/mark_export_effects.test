@@ -1,0 +1,132 @@
+# name: test/sql/sql_export/mark_export_effects.test
+# description: Grouped MARK export never evaluates volatile or throwing projections
+# group: [sql_export]
+
+statement ok
+SET debug_verify_statement='explain_sql_strict';
+
+statement ok
+SET threads=1;
+
+statement ok
+SET max_streaming_buffer_size='1b';
+
+statement ok
+CREATE TABLE l AS SELECT i,(i%5)::DOUBLE g,CASE WHEN i%11=0 THEN NULL ELSE i%13 END x FROM range(8192)t(i);
+
+statement ok
+CREATE TABLE r AS SELECT (i%4)::DOUBLE g,CASE WHEN i%7=0 THEN NULL ELSE i%13 END y FROM range(64)t(i);
+
+foreach serializer false true
+
+statement ok
+SET debug_verify_serializer={serializer};
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+statement ok
+EXPLAIN (SQL) SELECT i,nextval('seq'),x=ANY(SELECT y FROM r WHERE r.g=l.g) m FROM l;
+
+query I
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name='seq';
+----
+NULL
+
+endloop
+
+foreach serializer false true
+
+statement ok
+SET debug_verify_serializer={serializer};
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+statement ok
+EXPLAIN (SQL) SELECT i,nextval('seq'),x=ANY(SELECT y FROM r WHERE r.g=l.g) m FROM l LIMIT 1;
+
+query I
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name='seq';
+----
+NULL
+
+endloop
+
+foreach serializer false true
+
+statement ok
+SET debug_verify_serializer={serializer};
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+statement ok
+EXPLAIN (SQL) SELECT i,CASE WHEN i>=4096 THEN CAST(error('grouped mark stream') AS BIGINT) ELSE nextval('seq') END,x=ANY(SELECT y FROM r WHERE r.g=l.g) m FROM l;
+
+query I
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name='seq';
+----
+NULL
+
+endloop
+
+foreach serializer false true
+
+statement ok
+SET debug_verify_serializer={serializer};
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+statement ok
+EXPLAIN (SQL) SELECT i,CASE WHEN i>=4096 THEN CAST(error('grouped mark stream') AS BIGINT) ELSE nextval('seq') END,x=ANY(SELECT y FROM r WHERE r.g=l.g) m FROM l LIMIT 1;
+
+query I
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name='seq';
+----
+NULL
+
+endloop
+
+statement ok
+CREATE TABLE list_l(g INTEGER,x INTEGER[]);
+
+statement ok
+CREATE TABLE list_r(g INTEGER,y INTEGER[]);
+
+statement ok
+INSERT INTO list_l VALUES (1,[10,NULL]);
+
+statement ok
+INSERT INTO list_r VALUES (1,NULL);
+
+foreach serializer false true
+
+statement ok
+SET debug_verify_serializer={serializer};
+
+statement ok
+CREATE OR REPLACE SEQUENCE mark_copy_guard;
+
+statement ok
+EXPLAIN (SQL) SELECT nextval('mark_copy_guard'),x=ANY(SELECT y FROM list_r r WHERE r.g=l.g) FROM list_l l;
+
+query I
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name='mark_copy_guard';
+----
+NULL
+
+endloop

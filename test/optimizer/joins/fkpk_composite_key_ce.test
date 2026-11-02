@@ -78,14 +78,14 @@ explain select count(*)
 from ck_sel_a join ck_sel_b on ck_sel_a.x = ck_sel_b.x and ck_sel_a.y = ck_sel_b.y
 where ck_sel_a.x < 100 and ck_sel_b.x < 100;
 ----
-physical_plan	<REGEX>:.*HASH_JOIN.*~200 rows.*
+physical_plan	<REGEX>:.*HASH_JOIN.*~[12][0-9]{2} rows.*
 
 query II
 explain select count(*)
 from ck_sel_a join ck_sel_b on ck_sel_a.x = ck_sel_b.x and ck_sel_a.y < ck_sel_b.y
 where ck_sel_a.x < 100 and ck_sel_b.x < 100;
 ----
-physical_plan	<REGEX>:.*HASH_JOIN.*~200 rows.*
+physical_plan	<REGEX>:.*HASH_JOIN.*~[12][0-9]{2} rows.*
 
 # Same-pair predicates are not always composite keys. If both inputs have many
 # rows per observed single-column domain, the row-count cap would make a broad

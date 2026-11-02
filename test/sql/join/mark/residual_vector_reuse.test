@@ -1,0 +1,56 @@
+# name: test/sql/join/mark/residual_vector_reuse.test
+# description: Reuse SEMI and ANTI residual result buffers between probe rows
+# group: [mark]
+
+statement ok
+CREATE TABLE residual_vectors_probe(a INTEGER);
+
+statement ok
+INSERT INTO residual_vectors_probe VALUES (NULL),(0),(1),(3);
+
+statement ok
+CREATE TABLE residual_vectors_build AS SELECT 2::INTEGER b FROM range(2050);
+
+foreach mode none dictionary_expression dictionary_operator constant_operator
+
+statement ok
+SET debug_verify_vector='{mode}';
+
+foreach disable false true
+
+statement ok
+SET debug_disable_optimizer={disable};
+
+query I rowsort
+SELECT a FROM residual_vectors_probe JOIN BY(TYPE SEMI) residual_vectors_build ON a<2 AND a+b=2;
+----
+0
+
+query I rowsort
+SELECT a FROM residual_vectors_probe JOIN BY(TYPE ANTI) residual_vectors_build ON a<2 AND a+b=2;
+----
+1
+3
+NULL
+
+query I rowsort
+SELECT a FROM residual_vectors_probe JOIN BY(TYPE SEMI) residual_vectors_build ON a<2 AND CASE WHEN a+b=2 THEN NULL ELSE a+b=3 END;
+----
+1
+
+query I rowsort
+SELECT a FROM residual_vectors_probe JOIN BY(TYPE ANTI) residual_vectors_build ON a<2 AND CASE WHEN a+b=2 THEN NULL ELSE a+b=3 END;
+----
+0
+3
+NULL
+
+endloop
+
+endloop
+
+statement ok
+RESET debug_verify_vector;
+
+statement ok
+RESET debug_disable_optimizer;

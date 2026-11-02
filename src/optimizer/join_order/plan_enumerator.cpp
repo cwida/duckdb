@@ -413,45 +413,51 @@ bool PlanEnumerator::SolveJoinOrderApproximately() {
 	for (idx_t i = 0; i < query_graph_manager.relation_manager.NumRelations(); i++) {
 		join_relations.push_back(query_graph_manager.set_manager.GetJoinRelation(RelationIndex(i)));
 	}
-	while (join_relations.size() > 1) {
-		// now in every step of the algorithm, we greedily pick the join between the to-be-joined relations that has the
-		// smallest cost. This is O(r^2) per step, and every step will reduce the total amount of relations to-be-joined
-		// by 1, so the total cost is O(r^3) in the amount of relations
-		// long is needed to prevent clang-tidy complaints. (idx_t) cannot be added to an iterator position because it
-		// is unsigned.
-		idx_t best_left = 0, best_right = 0;
-		bool found_connection = false;
-		double best_cost = NumericLimits<double>::Maximum();
+
+	// in every step of the algorithm, we greedily pick the join between the to-be-joined relations that has the
+	// smallest cost. Pair costs are deterministic while the query graph is unchanged, so we evaluate each pair once
+	// and keep the viable candidates in a list, instead of re-emitting every pair in every step
+	struct GreedyCandidate {
+		optional_ptr<JoinRelationSet> left;
+		optional_ptr<JoinRelationSet> right;
+		double cost;
+	};
+	vector<GreedyCandidate> candidates;
+	auto EmitCandidate = [&](JoinRelationSet &left, JoinRelationSet &right) {
+		auto &connection = GetConnections(left, right);
+		if (connection.empty()) {
+			return;
+		}
+		auto node = EmitPair(left, right, connection);
+		if (node) {
+			candidates.push_back({&left, &right, node->cost});
+		}
+	};
+	auto InitializeCandidates = [&]() {
+		candidates.clear();
 		for (idx_t i = 0; i < join_relations.size(); i++) {
-			auto left = join_relations[i];
 			for (idx_t j = i + 1; j < join_relations.size(); j++) {
-				auto right = join_relations[j];
-				// check if we can connect these two relations
-				auto &connection = GetConnections(left, right);
-				if (!connection.empty()) {
-					// we can check the cost of this connection
-					auto node = EmitPair(left, right, connection);
-					if (!node) {
-						continue;
-					}
-
-					// update the DP tree in case a plan created by the DP algorithm uses the node
-					// that was potentially just updated by EmitPair. You will get a use-after-free
-					// error if future plans rely on the old node that was just replaced.
-					// if node in FullPath, then updateDP tree.
-
-					if (!found_connection || node->cost < best_cost) {
-						// best pair found so far
-						found_connection = true;
-						best_cost = node->cost;
-						best_left = i;
-						best_right = j;
-					}
-				}
+				EmitCandidate(join_relations[i], join_relations[j]);
 			}
 		}
-		if (!found_connection) {
+	};
+	InitializeCandidates();
+
+	while (join_relations.size() > 1) {
+		optional_ptr<JoinRelationSet> best_left;
+		optional_ptr<JoinRelationSet> best_right;
+		double best_cost = NumericLimits<double>::Maximum();
+		for (auto &candidate : candidates) {
+			if (!best_left || candidate.cost < best_cost) {
+				best_cost = candidate.cost;
+				best_left = candidate.left;
+				best_right = candidate.right;
+			}
+		}
+		if (!best_left) {
 			if (ActivateRequiredCrossProducts()) {
+				// the query graph gained edges, which invalidates the evaluated candidates
+				InitializeCandidates();
 				continue;
 			}
 			// Optimizer-introduced cross products are valid only inside an inner-join companion set (Section 6.2).
@@ -466,41 +472,50 @@ bool PlanEnumerator::SolveJoinOrderApproximately() {
 					auto right_plan = plans.find(right);
 					D_ASSERT(left_plan != plans.end() && right_plan != plans.end());
 					auto cost = left_plan->second->cost + right_plan->second->cost;
-					if (!found_connection || cost < best_cost) {
-						found_connection = true;
+					if (!best_left || cost < best_cost) {
 						best_cost = cost;
-						best_left = i;
-						best_right = j;
+						best_left = left;
+						best_right = right;
 					}
 				}
 			}
-			if (!found_connection) {
+			if (!best_left) {
 				return false;
 			}
-			auto &left = join_relations[best_left].get();
-			auto &right = join_relations[best_right].get();
 			// create a cross product edge (i.e. edge with empty filter) between these two sets in the query graph
-			query_graph_manager.CreateQueryGraphCrossProduct(left, right);
+			query_graph_manager.CreateQueryGraphCrossProduct(*best_left, *best_right);
+			// the new edge only connects this pair, which is merged below, so the other candidates remain valid
 			connection_cache.clear();
 			// now emit the pair and continue with the algorithm
-			auto &connections = GetConnections(left, right);
+			auto &connections = GetConnections(*best_left, *best_right);
 			D_ASSERT(!connections.empty());
 
-			auto cross_product = EmitPair(left, right, connections);
+			auto cross_product = EmitPair(*best_left, *best_right, connections);
 			if (!cross_product) {
 				return false;
 			}
 		}
-		// now update the to-be-checked pairs
-		// remove left and right, and add the combination
-
-		// important to erase the biggest element first
-		// if we erase the smallest element first the index of the biggest element changes
-		auto &new_set = query_graph_manager.set_manager.Union(join_relations.at(best_left).get(),
-		                                                      join_relations.at(best_right).get());
-		D_ASSERT(best_right > best_left);
-		join_relations.erase(join_relations.begin() + (int64_t)best_right);
-		join_relations.erase(join_relations.begin() + (int64_t)best_left);
+		// now update the to-be-checked pairs: remove left and right, and add the combination
+		auto &new_set = query_graph_manager.set_manager.Union(*best_left, *best_right);
+		for (idx_t i = join_relations.size(); i > 0; i--) {
+			auto &relation = join_relations[i - 1].get();
+			if (&relation == best_left.get() || &relation == best_right.get()) {
+				join_relations.erase(join_relations.begin() + NumericCast<int64_t>(i - 1));
+			}
+		}
+		idx_t kept_candidates = 0;
+		for (idx_t candidate_idx = 0; candidate_idx < candidates.size(); candidate_idx++) {
+			auto &candidate = candidates[candidate_idx];
+			if (candidate.left == best_left || candidate.left == best_right || candidate.right == best_left ||
+			    candidate.right == best_right) {
+				continue;
+			}
+			candidates[kept_candidates++] = candidate;
+		}
+		candidates.resize(kept_candidates);
+		for (auto &relation : join_relations) {
+			EmitCandidate(relation, new_set);
+		}
 		join_relations.push_back(new_set);
 	}
 	return true;
@@ -560,6 +575,7 @@ void PlanEnumerator::InitLeafPlans() {
 		plans[relation_set] = std::move(join_node);
 		cost_model.GetCardinalityEstimator().InitCardinalityEstimatorProps(&relation_set, stats);
 	}
+	cost_model.GetCardinalityEstimator().RestrictFilterDomains(relation_stats);
 }
 
 // the plan enumeration is a straight implementation of the paper "Dynamic Programming Strikes Back" by Guido

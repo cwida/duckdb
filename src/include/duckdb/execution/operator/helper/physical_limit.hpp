@@ -36,6 +36,7 @@ public:
 public:
 	// Source interface
 	unique_ptr<GlobalSourceState> GetGlobalSourceState(ClientContext &context) const override;
+	ProgressData GetProgress(ClientContext &context, GlobalSourceState &gstate) const override;
 	SourceResultType GetDataInternal(ExecutionContext &context, DataChunk &chunk,
 	                                 OperatorSourceInput &input) const override;
 
@@ -73,6 +74,9 @@ public:
 	                          const BoundLimitNode &offset_val);
 	static bool HandleOffset(DataChunk &input, idx_t &current_offset, idx_t offset, idx_t limit);
 	static Value GetDelimiter(ExecutionContext &context, DataChunk &input, const Expression &expr);
+	//! Reads the value of a non-constant LIMIT or OFFSET (null_value if it is NULL), which must be at most
+	//! MAX_LIMIT_VALUE
+	static idx_t GetLimitValue(const Value &val, idx_t null_value);
 
 	InsertionOrderPreservingMap<string> ParamsToString() const override;
 };

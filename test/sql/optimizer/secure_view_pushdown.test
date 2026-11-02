@@ -1,12 +1,12 @@
 # name: test/sql/optimizer/secure_view_pushdown.test
-# description: Test that secure views act as an optimization barrier
+# description: Test safe predicate pushdown into secure views
 # group: [optimizer]
 
 statement ok
 SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
 statement ok
-CREATE TABLE integers AS SELECT i, i % 10 AS j FROM range(10000) t(i);
+CREATE TABLE integers AS SELECT i, i % 10 AS j, i::VARCHAR AS s FROM range(10000) t(i);
 
 statement ok
 CREATE VIEW regular_view AS SELECT * FROM integers;
@@ -25,18 +25,50 @@ EXPLAIN SELECT * FROM regular_view WHERE i = 42
 ----
 physical_plan	<REGEX>:[\s\S]*Filters: i = 42[\s\S]*
 
-# in a secure view the filter remains on top of the view
+# a filter that cannot be observed from the outside is pushed into a secure view as well - no FILTER remains on top
 query II
 EXPLAIN SELECT * FROM secure_view WHERE i = 42
 ----
-physical_plan	<REGEX>:[\s\S]*FILTER[\s\S]*
+physical_plan	<!REGEX>:[\s\S]*FILTER[\s\S]*
 
+# the plan inside the view is never reported, but the number of rows that leave the view is - it shows that the
+# filter really is evaluated inside the view rather than on top of it
+query II
+EXPLAIN ANALYZE SELECT * FROM secure_view WHERE i = 42
+----
+analyzed_plan	<REGEX>:[\s\S]*SECURE_VIEW[\s\S]*1 row[\s\S]*
+
+# the filters that were pushed into the view are reported on the boundary node - they are the caller's own
+# expressions, so reporting them exposes nothing about the contents of the view
 query II
 EXPLAIN SELECT * FROM secure_view WHERE i = 42
 ----
-physical_plan	<!REGEX>:[\s\S]*Filters:[\s\S]*
+physical_plan	<REGEX>:[\s\S]*SECURE_VIEW[\s\S]*Filters:[\s\S]*i = 42[\s\S]*
 
-# the LOGICAL_SECURE_VIEW node is visible in the optimized logical plan
+query II
+EXPLAIN ANALYZE SELECT * FROM secure_view WHERE i = 42
+----
+analyzed_plan	<REGEX>:[\s\S]*SECURE_VIEW[\s\S]*Filters:[\s\S]*i = 42[\s\S]*
+
+# a filter that is wrapped in a barrier is reported as the caller wrote it
+query II
+EXPLAIN SELECT * FROM secure_view WHERE s::INT = 42
+----
+physical_plan	<REGEX>:[\s\S]*SECURE_VIEW[\s\S]*Filters:[\s\S]*CAST\(s AS INTEGER\) = 42[\s\S]*
+
+# a transitive filter derived from a join is reported as well
+query II
+EXPLAIN SELECT secure_view.i FROM secure_view JOIN integers USING (i) WHERE integers.i = 42
+----
+physical_plan	<REGEX>:[\s\S]*SECURE_VIEW[\s\S]*Filters:[\s\S]*i = 42[\s\S]*
+
+# no filters are reported when nothing was pushed in
+query II
+EXPLAIN SELECT * FROM secure_view
+----
+physical_plan	<!REGEX>:[\s\S]*SECURE_VIEW[\s\S]*Filters:[\s\S]*
+
+# the LOGICAL_SECURE_VIEW node is still visible in the optimized logical plan
 statement ok
 SET explain_output='optimized_only'
 
@@ -53,11 +85,11 @@ logical_opt	<!REGEX>:[\s\S]*SECURE_VIEW[\s\S]*
 statement ok
 SET explain_output='physical_only'
 
-# blocking pushdown does not change the results
-query II
+# pushdown does not change the results
+query III
 SELECT * FROM secure_view WHERE i = 42
 ----
-42	2
+42	2	42
 
 query I
 SELECT count(*) FROM secure_view WHERE j = 3
@@ -68,13 +100,141 @@ SELECT count(*) FROM secure_view WHERE j = 3
 statement ok
 PRAGMA disable_optimizer
 
-query II
+query III
 SELECT * FROM secure_view WHERE i = 42
 ----
-42	2
+42	2	42
 
 statement ok
 PRAGMA enable_optimizer
+
+# a filter whose evaluation is observable - it can throw - is wrapped in an __internal_barrier() barrier before it is pushed in
+query II
+EXPLAIN SELECT * FROM secure_view WHERE s::INT = 42
+----
+physical_plan	<!REGEX>:[\s\S]*FILTER[\s\S]*
+
+query III
+SELECT * FROM secure_view WHERE s::INT = 42
+----
+42	2	42
+
+# a volatile filter is wrapped in a barrier and pushed in as well - the barrier keeps it from being evaluated more
+# often than it would have been on top of the view (see the nextval() test below)
+query II
+EXPLAIN SELECT * FROM secure_view WHERE random() < 0.0
+----
+physical_plan	<!REGEX>:[\s\S]*FILTER[\s\S]*
+
+# --------------------------------------------------------------------------------------------------------------
+# the barrier must not be evaluated on rows that the view does not emit
+# --------------------------------------------------------------------------------------------------------------
+
+statement ok
+CREATE TABLE secrets(id INTEGER, s VARCHAR)
+
+statement ok
+INSERT INTO secrets VALUES (1, 'top_secret'), (2, '42')
+
+statement ok
+CREATE TABLE allowed(id INTEGER)
+
+statement ok
+INSERT INTO allowed VALUES (2)
+
+statement ok
+CREATE SECURE VIEW joined_secure_view AS SELECT sec.id, sec.s FROM secrets sec JOIN allowed a ON (sec.id = a.id)
+
+# the join filter pushdown would prune the hidden row at runtime before the cast ever sees it - disable it so that
+# the barrier is what keeps the value of the hidden row out of the error message
+statement ok
+SET disabled_optimizers='join_filter_pushdown'
+
+# without a barrier, the cast is pushed past the join and errors out on the row that the view hides
+statement error
+SELECT sec.s FROM secrets sec JOIN allowed a ON (sec.id = a.id) WHERE sec.s::INT = 42
+----
+<REGEX>:.*Conversion Error.*top_secret.*
+
+# the same query written with an explicit barrier does not
+query I
+SELECT sec.s FROM secrets sec JOIN allowed a ON (sec.id = a.id) WHERE __internal_barrier(sec.s::INT = 42)
+----
+42
+
+# ... and the secure view inserts that barrier itself
+query II
+SELECT * FROM joined_secure_view WHERE s::INT = 42
+----
+2	42
+
+statement ok
+RESET disabled_optimizers
+
+# side effects are not observable on hidden rows either: nextval() is only evaluated on the rows the view emits
+statement ok
+CREATE SEQUENCE seq
+
+statement ok
+CREATE SECURE VIEW small_secure_view AS SELECT * FROM integers WHERE i < 3
+
+query I
+SELECT count(*) FROM small_secure_view WHERE nextval('seq') >= 0
+----
+3
+
+query I
+SELECT currval('seq')
+----
+3
+
+# a filter is never pushed below a LIMIT inside the view
+statement ok
+CREATE SECURE VIEW limited_secure_view AS SELECT * FROM integers LIMIT 3
+
+query I
+SELECT count(*) FROM limited_secure_view WHERE i = 5
+----
+0
+
+# --------------------------------------------------------------------------------------------------------------
+# the same guarantee holds for nested secure views, and for filters that only reach the view through another
+# operator: the hidden rows hold values that a cast on the visible rows never sees
+# --------------------------------------------------------------------------------------------------------------
+
+statement ok
+CREATE TABLE mixed AS SELECT i, CASE WHEN i < 50 THEN 'hidden_' || i ELSE i::VARCHAR END AS s FROM range(100) t(i)
+
+statement ok
+CREATE SECURE VIEW visible AS SELECT * FROM mixed WHERE i >= 50
+
+statement ok
+CREATE SECURE VIEW visible_head AS SELECT * FROM visible WHERE i < 60
+
+query I
+SELECT count(*) FROM visible WHERE s::INT = 55
+----
+1
+
+query I
+SELECT count(*) FROM visible_head WHERE s::INT = 55
+----
+1
+
+query I
+SELECT count(*) FROM visible GROUP BY s::INT HAVING s::INT = 55
+----
+1
+
+query I
+SELECT count(*) FROM visible v JOIN mixed m ON (v.i = m.i) WHERE v.s::INT = 55
+----
+1
+
+query I
+SELECT count(*) FROM (SELECT * FROM visible ORDER BY i) WHERE s::INT = 55
+----
+1
 
 # Filters are still pushed down *within* the view definition itself. This is deliberately not observable from the
 # outside - neither the plan nor the metrics of the operators inside a secure view are ever reported (see
@@ -96,12 +256,77 @@ EXPLAIN SELECT * FROM filtered_secure_view
 ----
 physical_plan	<!REGEX>:[\s\S]*Filters[\s\S]*
 
-query II
+query III
 SELECT * FROM filtered_secure_view
 ----
-42	2
+42	2	42
 
-query II
+query III
 SELECT * FROM filtered_regular_view
 ----
-42	2
+42	2	42
+
+# --------------------------------------------------------------------------------------------------------------
+# a filter of the view that can throw is not pushed through a projection inside the view - the barrier stays on top
+# of the projection with it, rather than being pushed below the projection and evaluated before it
+# --------------------------------------------------------------------------------------------------------------
+
+statement ok
+CREATE SECURE VIEW visible_modulo AS SELECT * FROM (SELECT i, s FROM mixed) WHERE i % 100 >= 50
+
+statement ok
+CREATE SECURE VIEW visible_abs AS SELECT * FROM (SELECT i, s FROM mixed) WHERE abs(i) >= 50
+
+statement ok
+CREATE SECURE VIEW visible_cast AS SELECT * FROM (SELECT i, s FROM mixed) WHERE i::VARCHAR::INT >= 50
+
+query I
+SELECT count(*) FROM visible_modulo WHERE s::INT > 0
+----
+50
+
+query I
+SELECT count(*) FROM visible_abs WHERE s::INT > 0
+----
+50
+
+query I
+SELECT count(*) FROM visible_cast WHERE s::INT > 0
+----
+50
+
+query I
+SELECT count(*) FROM visible_modulo WHERE s::INT = 55
+----
+1
+
+# the same holds for a barrier written out over a subquery
+query I
+SELECT count(*) FROM (SELECT * FROM (SELECT i, s FROM mixed) WHERE i % 100 >= 50) WHERE __internal_barrier(s::INT > 0)
+----
+50
+
+# a filter that cannot throw is pushed through the projection, and the barrier with it
+statement ok
+CREATE SECURE VIEW visible_projected AS SELECT * FROM (SELECT i, s FROM mixed) WHERE i >= 50
+
+query I
+SELECT count(*) FROM visible_projected WHERE s::INT > 0
+----
+50
+
+# A throwing view filter retained above a projection must run before the caller's barrier.
+statement ok
+CREATE TABLE guard_rows(b VARCHAR, c VARCHAR, d INTEGER)
+
+statement ok
+INSERT INTO guard_rows VALUES ('hidden', '-1', 0), ('shown', '1', 0), ('shown', '1', 0), ('hidden', NULL, 0)
+
+statement ok
+CREATE SECURE VIEW guarded_view AS
+WITH src AS (SELECT b,c,d FROM guard_rows) SELECT * FROM src WHERE c::INTEGER>d
+
+query I
+SELECT count(*) FROM guarded_view WHERE CASE WHEN b='hidden' THEN error('hidden row') ELSE true END
+----
+2

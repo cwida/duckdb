@@ -1,0 +1,45 @@
+# name: test/sql/aggregate/group/group_by_all_window.test
+# description: Window functions in a GROUP BY ALL query
+# group: [group]
+
+statement ok
+CREATE TABLE t AS SELECT range % 3 AS g, range AS v FROM range(10);
+
+# windows over aggregates or without columns are not grouped on
+query II
+SELECT g, sum(sum(v)) OVER () FROM t GROUP BY ALL ORDER BY g;
+----
+0	45
+1	45
+2	45
+
+query III
+SELECT g, sum(v), rank() OVER (ORDER BY sum(v)) FROM t GROUP BY ALL ORDER BY g;
+----
+0	18	3
+1	12	1
+2	15	2
+
+query II
+SELECT g, count(*) OVER () FROM t GROUP BY ALL ORDER BY g;
+----
+0	3
+1	3
+2	3
+
+# a window over a non-aggregated column cannot be a group
+statement error
+SELECT g, sum(v) AS s, lag(sum(v)) OVER (ORDER BY g) FROM t GROUP BY ALL;
+----
+Cannot mix aggregates with non-aggregated columns
+
+
+statement error
+SELECT g, rank() OVER (ORDER BY g) FROM t GROUP BY ALL;
+----
+Cannot group on a window clause
+
+statement error
+SELECT g, sum(v) OVER () FROM t GROUP BY ALL;
+----
+Cannot group on a window clause

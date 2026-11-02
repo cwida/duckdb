@@ -16,6 +16,7 @@
 #include "duckdb/main/valid_checker.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/main/extension_manager.hpp"
+#include "duckdb_static_extension.h"
 
 namespace duckdb {
 class LocalDatabaseFileSystem;
@@ -37,6 +38,7 @@ struct AttachOptions;
 class DatabaseFileSystem;
 struct DatabaseCacheEntry;
 class LogManager;
+class OSUtil;
 class MetricsManager;
 class ExternalFileCache;
 class ResultSetManager;
@@ -69,6 +71,7 @@ public:
 	DUCKDB_API ExtensionManager &GetExtensionManager();
 	DUCKDB_API ValidChecker &GetValidChecker();
 	DUCKDB_API LogManager &GetLogManager() const;
+	DUCKDB_API OSUtil &GetOSUtil();
 	DUCKDB_API MetricsManager &GetMetricsManager();
 	DUCKDB_API ParserCache &GetParserCache();
 
@@ -94,7 +97,15 @@ public:
 	                                                    AttachOptions &options);
 
 private:
+	//! Initializes the instance and attaches the main database at `path` (in-memory when null).
 	void Initialize(const char *path, DBConfig *config);
+	//! Initializes the instance without attaching a database: the system catalog is the only catalog until one is
+	//! attached (ATTACH, or DatabaseManager::AttachDatabase).
+	void InitializeEmpty(DBConfig *config);
+	//! The part of initialization shared by both, up to the main database.
+	void InitializeInstance(const char *path, DBConfig *config);
+	//! Launches the scheduler threads; last, since storage init races on the catalog otherwise.
+	void StartScheduler();
 	void LoadExtensionSettings();
 	void CreateMainDatabase();
 
@@ -117,6 +128,7 @@ private:
 	unique_ptr<ExternalFileCache> external_file_cache;
 	unique_ptr<ResultSetManager> result_set_manager;
 	unique_ptr<ParserCache> parser_cache;
+	unique_ptr<OSUtil> os_util;
 
 	duckdb_ext_api_v1 (*create_api_v1)();
 	//! Set in Initialize. Loading a V2 C API extension builds the C API function table and opens a connection, both of
@@ -124,6 +136,25 @@ private:
 	//! links, and which reaches it through autoloading - would therefore keep all of DuckDB alive in extensions that
 	//! link it statically. Only Initialize names it, and nothing that fails to open a database can reach that.
 	invoke_ext_capi_v2_fun_t invoke_capi_v2;
+};
+
+//! A describe function for an extension class, so that loading it by class goes through the same path as linked
+//! extensions.
+template <class T>
+struct StaticExtensionDescriber {
+	static void Entry(ExtensionLoader &loader) {
+		T extension;
+		extension.Load(loader);
+	}
+	static int32_t Describe(duckdb_extension_descriptor *descriptor) {
+		static const std::string name = T().Name();
+		static const std::string version = T().Version();
+		descriptor->version = 1;
+		descriptor->name = name.c_str();
+		descriptor->extension_version = version.c_str();
+		descriptor->entry_cpp = reinterpret_cast<void (*)(void)>(&Entry);
+		return 0;
+	}
 };
 
 //! The database object. This object holds the catalog and all the
@@ -136,36 +167,25 @@ public:
 
 	DUCKDB_API ~DuckDB();
 
+	//! Creates an instance with no database attached. Databases are attached to it later (ATTACH, or
+	//! DatabaseManager::AttachDatabase); until then only the system catalog and each connection's temporary catalog
+	//! exist, and statements that need a default database fail.
+	DUCKDB_API static shared_ptr<DuckDB> CreateEmpty(DBConfig *config = nullptr);
+
 	//! Reference to the actual database instance
 	shared_ptr<DatabaseInstance> instance;
 
 public:
-	// Load a statically loaded extension by its class
+	// Load a statically linked extension by its class, through a describe function generated for it
 	template <class T>
 	void LoadStaticExtension() {
-		T extension;
-		auto &manager = ExtensionManager::Get(*instance);
-		auto load_info = manager.BeginLoad({extension.Name()});
-		if (!load_info) {
-			// already loaded - return
-			return;
-		}
-
-		// Instantiate a new loader
-		ExtensionLoader loader(*load_info);
-
-		// Call the Load method of the extension
-		extension.Load(loader);
-
-		// Finalize the loading process
-		loader.FinalizeLoad();
-
-		ExtensionInstallInfo install_info;
-		install_info.mode = ExtensionInstallMode::STATICALLY_LINKED;
-		install_info.version = extension.Version();
-		load_info->FinishLoad(install_info);
+		LoadStaticExtension(&StaticExtensionDescriber<T>::Describe);
 	}
+	// Load the statically linked extension a describe function describes into this database
+	DUCKDB_API void LoadStaticExtension(duckdb_extension_describe_t describe);
 
+	// Function pointer type for the C++ extension entrypoint, <name>_duckdb_cpp_init
+	typedef void (*ext_init_cpp_fun_t)(ExtensionLoader &loader);
 	// Function pointer type for the C API extension init function
 	typedef bool (*ext_init_c_api_fun_t)(duckdb_extension_info info, duckdb_extension_access *access);
 	// Load a statically compiled C API extension by calling its init function directly (no vtable needed)

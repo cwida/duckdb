@@ -10,17 +10,19 @@
 #include "duckdb/main/database.hpp"
 #include "duckdb/execution/physical_table_scan_enum.hpp"
 #include "duckdb/main/settings.hpp"
+#include "duckdb/parallel/pipeline.hpp"
 
 #include <utility>
 
 namespace duckdb {
 
-PhysicalTableScan::PhysicalTableScan(PhysicalPlan &physical_plan, vector<LogicalType> types, TableFunction function_p,
-                                     unique_ptr<FunctionData> bind_data_p, vector<LogicalType> returned_types_p,
-                                     vector<ColumnIndex> column_ids_p, vector<idx_t> projection_ids_p,
-                                     vector<string> names_p, unique_ptr<TableFilterSet> table_filters_p,
-                                     idx_t estimated_cardinality, ExtraOperatorInfo extra_info,
-                                     vector<Value> parameters_p, virtual_column_map_t virtual_columns_p)
+PhysicalTableScan::PhysicalTableScan(PhysicalPlan &physical_plan, vector<LogicalType> types,
+                                     BoundTableFunction function_p, unique_ptr<FunctionData> bind_data_p,
+                                     vector<LogicalType> returned_types_p, vector<ColumnIndex> column_ids_p,
+                                     vector<idx_t> projection_ids_p, vector<string> names_p,
+                                     unique_ptr<TableFilterSet> table_filters_p, idx_t estimated_cardinality,
+                                     ExtraOperatorInfo extra_info, vector<Value> parameters_p,
+                                     virtual_column_map_t virtual_columns_p)
     : PhysicalOperator(physical_plan, PhysicalOperatorType::TABLE_SCAN, std::move(types), estimated_cardinality),
 
       function(std::move(function_p)), bind_data(std::move(bind_data_p)), returned_types(std::move(returned_types_p)),
@@ -65,11 +67,11 @@ public:
 
 	idx_t max_threads = 0;
 	PhysicalTableScanExecutionStrategy physical_table_scan_execution_strategy;
+	//! Combined dynamic table filters - before global_state, which references them during teardown
+	unique_ptr<TableFilterSet> table_filters;
 	unique_ptr<GlobalTableFunctionState> global_state;
 	bool in_out_final = false;
 	DataChunk input_chunk;
-	//! Combined table filters, if we have dynamic filters
-	unique_ptr<TableFilterSet> table_filters;
 
 	optional_ptr<TableFilterSet> GetTableFilters(const PhysicalTableScan &op) const {
 		return table_filters ? table_filters.get() : op.table_filters.get();
@@ -199,7 +201,7 @@ SourceResultType PhysicalTableScan::GetDataInternal(ExecutionContext &context, D
 					return SourceResultType::BLOCKED;
 				}
 			}
-			data.async_result.ExecuteTasksSynchronously();
+			data.async_result.ExecuteTasksSynchronously(context.client);
 			return SourceResultType::HAVE_MORE_OUTPUT;
 		}
 		return AsyncResult::GetSourceResultType(output_async_result, chunk.size());
@@ -267,7 +269,8 @@ OperatorPartitionData PhysicalTableScan::GetPartitionData(ExecutionContext &cont
 }
 
 string PhysicalTableScan::GetName() const {
-	return StringUtil::Upper(function.name + (function.extra_info.empty() ? "" : " " + function.extra_info));
+	auto &extra_info = function.GetExtraInfo();
+	return StringUtil::Upper(function.GetName().GetIdentifierName() + (extra_info.empty() ? "" : " " + extra_info));
 }
 
 void AddProjectionNames(const ColumnIndex &index, const string &name, const LogicalType &type, string &result) {
@@ -308,7 +311,7 @@ string PhysicalTableScan::GetFilterInfo(const TableFilterSet &filter_set) const 
 	for (auto &f : filter_set) {
 		auto filter_idx = f.GetIndex();
 		auto &filter = f.Filter().Cast<ExpressionFilter>();
-		if (filter_idx < names.size()) {
+		if (filter_idx < column_ids.size()) {
 			if (!first_item) {
 				filters_info += "\n";
 			}
@@ -340,7 +343,7 @@ InsertionOrderPreservingMap<string> PhysicalTableScan::ParamsToString() const {
 			result[it.first] = it.second;
 		}
 	} else {
-		result["Function"] = StringUtil::Upper(function.name.GetIdentifierName());
+		result["Function"] = StringUtil::Upper(function.GetName().GetIdentifierName());
 	}
 	if (function.projection_pushdown) {
 		string projections;

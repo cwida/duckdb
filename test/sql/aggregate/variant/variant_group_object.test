@@ -1,0 +1,239 @@
+# name: test/sql/aggregate/variant/variant_group_object.test
+# group: [variant]
+
+# Constant arguments
+
+query I
+select variant_group_object('duck', 'goose'::VARIANT);
+----
+{'duck': goose}
+
+query I
+select variant_group_object('duck', NULL::VARIANT);
+----
+{'duck': NULL}
+
+query I
+select variant_group_object('duck', NULL);
+----
+{'duck': NULL}
+
+query I
+select typeof(variant_group_object('duck', 42::VARIANT));
+----
+VARIANT
+
+# NULL key is not accepted
+
+statement error
+select variant_group_object(NULL, 'goose'::VARIANT);
+----
+<REGEX>:Invalid Input Error.*variant_group_object key cannot be NULL.*
+
+# Empty input produces SQL NULL
+
+query I
+select variant_group_object(k, v)
+from (values ('a', 1::VARIANT)) t(k, v)
+where false;
+----
+NULL
+
+# NULL key is not accepted when processing multiple rows
+
+statement error
+select variant_group_object(k, v)
+from (values ('valid', 1::VARIANT), (NULL, 2::VARIANT)) t(k, v);
+----
+<REGEX>:Invalid Input Error.*variant_group_object key cannot be NULL.*
+
+# Filtered NULL key has no effect
+
+query I
+select variant_group_object(k, v) filter (where include_row)
+from (values
+    (NULL, 0::VARIANT, false),
+    ('kept', 1::VARIANT, true)
+) t(k, v, include_row);
+----
+{'kept': 1}
+
+query I
+select variant_group_object(k, v) filter (where false)
+from (values ('filtered', 1::VARIANT)) t(k, v);
+----
+NULL
+
+# Non-constant arguments
+
+statement ok
+create table base (k VARCHAR, v VARIANT);
+
+statement ok
+insert into base values ('duck', {'nested': 12}::VARIANT), ('goose', [1,2,3,4]::VARIANT), ('pond', 26::VARIANT);
+
+# Values can have different VARIANT structures
+
+query I
+select variant_comparator(variant_group_object(k, v)) = variant_comparator({
+    'duck': {'nested': 12},
+    'goose': [1, 2, 3, 4],
+    'pond': 26
+}::VARIANT)
+from base;
+----
+true
+
+# Every group gets an independent object. Reusing a key in another group is valid.
+
+query I
+select count(*)
+from (
+    select g, variant_group_object(k, v) as obj
+    from (values
+        (1, 'z', 10::VARIANT),
+        (1, 'a', 20::VARIANT),
+        (2, 'a', 30::VARIANT)
+    ) t(g, k, v)
+    group by g
+) grouped
+where (g = 1 and variant_comparator(obj) = variant_comparator({'a': 20, 'z': 10}::VARIANT))
+   or (g = 2 and variant_comparator(obj) = variant_comparator({'a': 30}::VARIANT));
+----
+2
+
+# Keys are case-sensitive and may be empty, non-ASCII, or longer than an inline string.
+
+query I
+with grouped as (
+    select variant_group_object(k, v) as obj
+    from (values
+        ('', 'empty'::VARIANT),
+        ('A', 'upper'::VARIANT),
+        ('a', 'lower'::VARIANT),
+        ('ключ', 'unicode'::VARIANT),
+        (repeat('k', 32), 'long'::VARIANT),
+        (repeat('k', 31) || 'x', 'long_prefix'::VARIANT)
+    ) t(k, v)
+)
+select contains(variant_extract_string(obj, ''), '"":"empty"')
+   and variant_extract_string(obj, 'A') = 'upper'
+   and variant_extract_string(obj, 'a') = 'lower'
+   and variant_extract_string(obj, 'ключ') = 'unicode'
+   and variant_extract_string(obj, repeat('k', 32)) = 'long'
+   and variant_extract_string(obj, repeat('k', 31) || 'x') = 'long_prefix'
+from grouped;
+----
+true
+
+# Values with different primitive types and nested NULLs are preserved.
+
+query I
+select variant_comparator(variant_group_object(k, v)) = variant_comparator({
+    'bool': true,
+    'decimal': 1.25::DECIMAL(4, 2),
+    'float': 1.5::DOUBLE,
+    'nested': {'object_null': NULL, 'array_nulls': [1, NULL, 3]}
+}::VARIANT)
+from (values
+    ('bool', true::VARIANT),
+    ('decimal', 1.25::DECIMAL(4, 2)::VARIANT),
+    ('float', 1.5::DOUBLE::VARIANT),
+    ('nested', {'object_null': NULL, 'array_nulls': [1, NULL, 3]}::VARIANT)
+) t(k, v);
+----
+true
+
+# Dates, timestamps, blobs, and maps retain their VARIANT types.
+
+query I
+select variant_comparator(variant_group_object(k, v)) = variant_comparator({
+    'date': DATE '2020-01-02',
+    'timestamp': TIMESTAMP '2020-01-02 03:04:05',
+    'blob': 'abc'::BLOB,
+    'map': MAP {'x': 1, 'y': 2}::VARIANT
+}::VARIANT)
+from (values
+    ('date', DATE '2020-01-02'::VARIANT),
+    ('timestamp', TIMESTAMP '2020-01-02 03:04:05'::VARIANT),
+    ('blob', 'abc'::BLOB::VARIANT),
+    ('map', MAP {'x': 1, 'y': 2}::VARIANT)
+) t(k, v);
+----
+true
+
+# SQL NULL values are emitted as NULL fields alongside non-NULL values.
+
+query I
+select variant_comparator(variant_group_object(k, v)) = variant_comparator({
+    'null_value': NULL,
+    'number': 2
+}::VARIANT)
+from (values
+    ('null_value', NULL::VARIANT),
+    ('number', 2::VARIANT)
+) t(k, v);
+----
+true
+
+# DISTINCT removes duplicate key/value pairs before duplicate-key validation.
+
+query I
+select variant_comparator(variant_group_object(DISTINCT k, v)) = variant_comparator({
+    'a': 1,
+    'b': 2
+}::VARIANT)
+from (values
+    ('a', 1::VARIANT),
+    ('a', 1::VARIANT),
+    ('b', 2::VARIANT)
+) t(k, v);
+----
+true
+
+statement error
+select variant_group_object(DISTINCT k, v)
+from (values ('a', 1::VARIANT), ('a', 2::VARIANT)) t(k, v);
+----
+<REGEX>:Invalid Input Error.*variant_group_object contains duplicate key.*
+
+# Duplicates are invalid
+
+statement ok
+insert into base values ('duck', 1::VARIANT);
+
+statement error
+select variant_group_object(k, v) from base;
+----
+<REGEX>:Invalid Input Error.*variant_group_object contains duplicate key.*
+
+statement error
+select variant_group_object(
+    case when i in (0, 2048) then 'duplicate_key' else printf('key_%d', i) end,
+    i::VARIANT)
+from range(4096) t(i);
+----
+<REGEX>:Invalid Input Error.*variant_group_object contains duplicate key "duplicate_key".*
+
+# Invalid arity and argument types are rejected by binding.
+
+statement error
+select variant_group_object();
+----
+<REGEX>:.*No function matches the given name and argument types 'variant_group_object\(\)'.*
+
+statement error
+select variant_group_object(1, 2);
+----
+<REGEX>:.*No function matches the given name and argument types 'variant_group_object\(INTEGER_LITERAL, INTEGER_LITERAL\)'.*
+
+# NULL keys are rejected in imported states as well
+statement error
+SELECT finalize(to_aggregate_state([{'key': NULL, 'value': 1::VARIANT}], 'variant_group_object', ['VARCHAR', 'VARIANT']));
+----
+variant_group_object key cannot be NULL
+
+query I
+SELECT finalize(to_aggregate_state([{'key': 'k', 'value': 1::VARIANT}], 'variant_group_object', ['VARCHAR', 'VARIANT']));
+----
+{'k': 1}

@@ -317,6 +317,13 @@ struct Statistics {
    7: optional bool is_max_value_exact;
    /** If true, min_value is the actual minimum value for a column */
    8: optional bool is_min_value_exact;
+   /**
+    * Count of NaN values in the column; only present if physical type is FLOAT
+    * or DOUBLE, or logical type is FLOAT16.
+    * If this field is not present, readers MUST assume NaNs may be present
+    * (i.e. MUST assume nan_count > 0 and MAY NOT assume nan_count == 0).
+    */
+   9: optional i64 nan_count;
 }
 
 /** Empty structs to use as logical type annotations */

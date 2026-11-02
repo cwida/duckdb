@@ -1,7 +1,7 @@
 module: arrow
 #
-# Arrow C Data Interface interop: convert between DuckDB and Arrow in both directions, and
-# export a streaming result as an ArrowArrayStream.
+# Arrow C Data Interface interop: convert between DuckDB and Arrow in both directions, and run
+# queries whose results come back as Arrow arrays.
 #
 # The three standard Arrow structs -- ArrowSchema, ArrowArray and ArrowArrayStream -- are
 # emitted into the generated header under the same ARROW_C_DATA_INTERFACE /
@@ -20,9 +20,8 @@ module: arrow
 # `batch_size` given at creation caps the rows per output. A long input is split across several
 # outputs. Rows left over that do not fill a batch are held back and joined with the next input,
 # so an output may span two inputs. The converter cannot tell when the input ends, so the append
-# call takes a `flush` flag that releases the held rows as a final short output.
-# `[[result_to_arrow_stream]]` owns its source and needs no flush. A `batch_size` of 0 means no
-# maximum: each input becomes one output and nothing is held back.
+# call takes a `flush` flag that releases the held rows as a final short output. A `batch_size`
+# of 0 means no maximum: each input becomes one output and nothing is held back.
 #
 # Resolving the type mapping happens once, at creation, so a table function can create a
 # converter at bind time and pay nothing per batch. Creation reads the catalog for extension
@@ -37,14 +36,13 @@ module: arrow
 # copies into freshly allocated Arrow buffers, so nothing needs to be retained. Both appends take
 # a `consume` flag; each documents what it means there.
 #
+# A third handle, arrow_result, is a query result that produces ArrowArrays instead of data chunks.
+#
 # Out of scope, left to language bindings or to later work:
 #   - Registering an Arrow stream as a SQL table. A binding can keep its own name-to-stream
 #     registry and expose it through a table function or a replacement scan, built from the
 #     general function API and these converters.
 #   - Arrow IPC, the serialized wire format. Provided by the arrow extension as SQL functions.
-#   - A parallel, buffered Arrow collector. `[[result_to_arrow_stream]]` converts on the
-#     consumer's thread as it pulls. A pipelined collector has to be installed before execution
-#     starts, which needs a query entry point that does not exist yet.
 #   - Database-level registration of custom Arrow type extensions (the engine's
 #     ArrowTypeExtension).
 
@@ -70,68 +68,27 @@ handles:
       `[[arrow_exporter_next_array]]` produces arrays from it, and `[[arrow_exporter_destroy]]` frees the exporter.
 
       An exporter must not be used from two threads at once.
+  arrow_result:
+    description: |
+      A query result that produces Arrow arrays. Works like a result, which produces data chunks. Create it with
+      `[[statement_execute_arrow]]` or `[[prepared_statement_execute_arrow]]`.
+
+      - Use it from one thread at a time.
+      - `[[connection_interrupt]]` cancels it: `[[arrow_result_step]]` reports `CANCELLED`, and
+        `[[arrow_result_fetch_array]]` and a stream's `get_next` fail.
+      - Arrays and schemas it hands out belong to the caller and stay valid after the result is destroyed.
+    cleanup_with: arrow_result_destroy
 
 #-----------------------------------------------------------------------------------------------------------------------
 # Functions
 #-----------------------------------------------------------------------------------------------------------------------
 functions:
   #---------------------------------------------------------------------------------------------------------------------
-  # Streaming a result
-  #---------------------------------------------------------------------------------------------------------------------
-  result_to_arrow_stream:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
-    description: |
-      Exports a result as a lazy ArrowArrayStream. Consuming.
-
-      Takes ownership of the result, sets the slot to NULL, and fills the caller-allocated `out_stream`. The stream
-      owns the result from then on. Releasing the stream, with `out_stream->release(out_stream)`, does not drain the
-      result, but closes the query and frees the connection's live-result slot as `[[result_destroy]]` would, so the
-      connection can run its next query.
-
-      The stream's `get_next` drives the result, waiting internally until a batch is ready, and gathers DuckDB chunks
-      into one Arrow array of up to `batch_size` rows. The Arrow schema and the extension type map are built and
-      cached here, while the query's transaction is still active, because building them can run extension
-      populate-schema callbacks and read ENUM dictionaries. `get_schema` returns a copy of the cached schema and never
-      touches the catalog.
-
-      A result that has already yielded some chunks is allowed and produces a stream over the remaining rows.
-
-      If the statement expanded into a group whose row-producing fragment has not started yet, this call steps the
-      result far enough to cache the schema, which may block briefly. No rows are lost, since none are produced
-      before that fragment is prepared. For an ordinary statement nothing executes here.
-
-      The result is consumed on every path that reaches the engine, including failures. Only a null-argument
-      rejection leaves it intact. `out_stream` is untouched unless the call succeeds.
-    role: method
-    belongs_to: result
-    parameters:
-      result:
-        type: result
-        indirection: 1
-        kind: IN_TRANSFER
-        description: The result to export. Consumed and set to NULL, except when the call rejects a null argument.
-      batch_size:
-        type: idx
-        description: |
-          Maximum rows per Arrow array. Pass 0 for the default of 131072, which is 64 vectors in a default build.
-      out_stream:
-        type: ArrowArrayStream
-        indirection: 1
-        kind: OUT
-        description: Caller-allocated stream the library fills. Release it with `out_stream->release(out_stream)`.
-      err:
-        type: error_info
-        indirection: 1
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
-    return_type: ERROR
-
-  #---------------------------------------------------------------------------------------------------------------------
   # Importing: Arrow arrays -> data chunks
   #---------------------------------------------------------------------------------------------------------------------
   arrow_importer_create:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Resolves an Arrow schema into a reusable importer.
 
@@ -173,7 +130,7 @@ functions:
 
   arrow_importer_get_schema:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns the resolved DuckDB schema.
 
@@ -202,7 +159,7 @@ functions:
 
   arrow_importer_append:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Gives the importer one array to convert.
 
@@ -257,7 +214,7 @@ functions:
 
   arrow_importer_next_chunk:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Produces the next chunk of the appended array, or NULL once the array is drained.
 
@@ -287,7 +244,7 @@ functions:
 
   arrow_importer_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Destroys an importer.
 
@@ -309,7 +266,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   arrow_exporter_create:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Creates an exporter for one fixed list of columns.
 
@@ -338,7 +295,10 @@ functions:
         type: str
         indirection: 1
         const: true
-        description: An array of `count` column names, parallel to `types`. May be NULL only when `count` is 0.
+        kind: IN
+        description: |
+          An array of `count` column names, parallel to `types`. Each name must be valid UTF-8.
+          May be NULL only when `count` is 0.
       count:
         type: idx
         description: The number of columns, being the length of both `types` and `names`.
@@ -358,7 +318,7 @@ functions:
 
   arrow_exporter_get_schema:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns the Arrow schema of the arrays this exporter produces.
 
@@ -384,7 +344,7 @@ functions:
 
   arrow_exporter_append:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Gives the exporter one chunk to convert.
 
@@ -429,7 +389,7 @@ functions:
 
   arrow_exporter_next_array:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Takes the next completed array, or reports that none is ready.
 
@@ -460,7 +420,7 @@ functions:
 
   arrow_exporter_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Destroys an exporter.
 
@@ -474,4 +434,298 @@ functions:
         type: arrow_exporter
         indirection: 1
         description: The exporter to destroy.
+    return_type: ERROR
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # Query results as Arrow arrays
+  #---------------------------------------------------------------------------------------------------------------------
+  statement_execute_arrow:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-09-30" ]
+    description: |
+      Executes a parsed statement. The result produces Arrow arrays.
+
+      Works like `[[statement_execute]]`. `*out_result` is set to NULL on failure.
+    role: constructor
+    belongs_to: arrow_result
+    parameters:
+      conn:
+        type: connection
+        description: The connection to run the statement on.
+      statement:
+        type: sql_statement
+        description: The statement to execute. Not consumed.
+      parameter_names:
+        type: identifier
+        indirection: 1
+        const: true
+        kind: IN
+        description: Optional. As in `[[statement_execute]]`.
+      parameter_values:
+        type: value
+        indirection: 1
+        const: true
+        description: Optional. As in `[[statement_execute]]`.
+      parameter_count:
+        type: idx
+        description: The number of parameters. 0 for none.
+      batch_size:
+        type: idx
+        description: Maximum rows per array. Arrays can be shorter. 0 means 131072.
+      out_result:
+        type: arrow_result
+        indirection: 1
+        kind: OUT
+        description: Receives the new result. Destroy via `[[arrow_result_destroy]]`.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  prepared_statement_execute_arrow:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-09-30" ]
+    description: |
+      Executes a prepared statement. The result produces Arrow arrays.
+
+      Works like `[[prepared_statement_execute]]`. `*out_result` is set to NULL on failure.
+    role: method
+    belongs_to: prepared_statement
+    parameters:
+      prepared:
+        type: prepared_statement
+        description: The prepared statement to execute. Not consumed.
+      parameter_names:
+        type: identifier
+        indirection: 1
+        const: true
+        kind: IN
+        description: Optional. As in `[[prepared_statement_execute]]`.
+      parameter_values:
+        type: value
+        indirection: 1
+        const: true
+        description: Optional. As in `[[prepared_statement_execute]]`.
+      parameter_count:
+        type: idx
+        description: The number of parameters. 0 for none.
+      batch_size:
+        type: idx
+        description: Maximum rows per array. Arrays can be shorter. 0 means 131072.
+      out_result:
+        type: arrow_result
+        indirection: 1
+        kind: OUT
+        description: Receives the new result. Destroy via `[[arrow_result_destroy]]`.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  arrow_result_destroy:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-09-30" ]
+    description: |
+      Destroys the result. Works like `[[result_destroy]]`.
+    role: destructor
+    belongs_to: arrow_result
+    parameters:
+      result:
+        type: arrow_result
+        indirection: 1
+        description: The result to destroy.
+    return_type: ERROR
+
+  arrow_result_step:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-09-30" ]
+    description: |
+      Runs a bounded amount of the query and returns without blocking.
+
+      Works like `[[result_step]]`. On status `CHUNK`, `out_array` holds the next array. Otherwise its `release` is
+      NULL.
+    role: method
+    belongs_to: arrow_result
+    parameters:
+      result:
+        type: arrow_result
+        description: The result to step.
+      out_array:
+        type: ArrowArray
+        indirection: 1
+        kind: OUT
+        description: Caller-allocated array the library fills. Release it with `out_array->release(out_array)`.
+      out_status:
+        type: RESULT_STEP_STATUS
+        indirection: 1
+        kind: OUT
+        description: Receives the step status.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  arrow_result_fetch_array:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-09-30" ]
+    description: |
+      Blocks until the next array is ready.
+
+      Works like `[[result_fetch_chunk]]`. At the end of the result, `out_array->release` is NULL.
+    role: method
+    belongs_to: arrow_result
+    parameters:
+      result:
+        type: arrow_result
+        description: The result to fetch from.
+      out_array:
+        type: ArrowArray
+        indirection: 1
+        kind: OUT
+        description: Caller-allocated array the library fills. Release it with `out_array->release(out_array)`.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  arrow_result_wait:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-09-30" ]
+    description: |
+      Blocks until `[[arrow_result_step]]` can make progress. Works like `[[result_wait]]`.
+    role: method
+    belongs_to: arrow_result
+    parameters:
+      result:
+        type: arrow_result
+        description: The result to wait on.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  arrow_result_drain:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-09-30" ]
+    description: |
+      Runs the query to the end and reports the changed-row count. Works like `[[result_drain]]`.
+    role: method
+    belongs_to: arrow_result
+    parameters:
+      result:
+        type: arrow_result
+        description: The result to drain.
+      out_rows_changed:
+        type: idx
+        indirection: 1
+        kind: OUT
+        description: Receives the changed-row count for an INSERT, UPDATE or DELETE, 0 otherwise.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  arrow_result_get_result_type:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-09-30" ]
+    description: |
+      Returns the shape of the result. Works like `[[result_get_result_type]]`.
+    role: getter
+    belongs_to: arrow_result
+    parameters:
+      result:
+        type: arrow_result
+        description: The result.
+      out_type:
+        type: RESULT_TYPE
+        indirection: 1
+        kind: OUT
+        description: Receives the result shape.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  arrow_result_get_statement_type:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-09-30" ]
+    description: |
+      Returns the type of statement that produced the result. Works like `[[result_get_statement_type]]`.
+    role: getter
+    belongs_to: arrow_result
+    parameters:
+      result:
+        type: arrow_result
+        description: The result.
+      out_type:
+        type: STATEMENT_TYPE
+        indirection: 1
+        kind: OUT
+        description: Receives the statement type.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  arrow_result_get_schema:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-09-30" ]
+    description: |
+      Returns the Arrow schema of the result's arrays.
+
+      Available whenever `[[result_get_schema]]` would be.
+    role: getter
+    belongs_to: arrow_result
+    parameters:
+      result:
+        type: arrow_result
+        description: The result.
+      out_schema:
+        type: ArrowSchema
+        indirection: 1
+        kind: OUT
+        description: Caller-allocated schema the library fills. Release it with `out_schema->release(out_schema)`.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  arrow_result_to_arrow_c_stream:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-09-30" ]
+    description: |
+      Turns the result into an ArrowArrayStream.
+
+      On success the stream takes over the result and `*result` is set to NULL. Each `get_next` returns the next
+      array. Arrays already fetched are not repeated. Releasing the stream destroys the result.
+
+      Converting runs no part of the query. The stream's `get_schema` can: for a statement that expands into several
+      statements, such as PIVOT, it runs the ones before the statement that returns rows. A failing `get_next` or
+      `get_schema` returns `EIO`; `get_last_error` has the message.
+    role: method
+    belongs_to: arrow_result
+    parameters:
+      result:
+        type: arrow_result
+        indirection: 1
+        kind: IN_TRANSFER
+        description: The result to take over. Set to NULL on success.
+      out_stream:
+        type: ArrowArrayStream
+        indirection: 1
+        kind: OUT
+        description: Caller-allocated stream the library fills. Release it with `out_stream->release(out_stream)`.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
     return_type: ERROR

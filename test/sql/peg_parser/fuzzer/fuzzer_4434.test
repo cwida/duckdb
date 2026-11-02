@@ -6,9 +6,9 @@ statement error
 n''''+ST�&6>ttacrotablesampimportleT�&6>tta�rordeT�Niqeger[], e�tfilter%
                   t_not_currorderent;
 ----
-Parser Error: Empty subscript '[]' is not allowed
+Parser Error
 
 statement error
-[1,2,3][];
+SELECT [1,2,3][];
 ----
 Parser Error: Empty subscript '[]' is not allowed

@@ -248,6 +248,12 @@ struct AggregateStateField {
 	//! The segment functions used to read/write the linked list - only set when kind is LIST
 	//! (populated by PopulateListFunctions, which requires the resolved logical type)
 	ListSegmentFunctions list_functions;
+	//! For LIST: whether the linked list cannot contain NULL elements - importing a NULL element is an error
+	bool reject_null_elements = false;
+	//! For LIST: whether an empty linked list is exported as a non-NULL empty list instead of NULL. Set for the
+	//! sorted aggregate buffer so that an empty group exports a valid (non-NULL) state and finalize runs the wrapped
+	//! aggregate's empty-group finalize (e.g. count -> 0) instead of short-circuiting to NULL on a NULL state.
+	bool list_empty_as_empty = false;
 
 	//! The alignment of this field when placed as a struct member, mirroring the C++ struct layout rules.
 	//! For OPTIONAL_VALUE the alignment is that of the wrapped value - the trailing is_set bool does not affect it.
@@ -488,6 +494,9 @@ AggregateStateField BuildStateField() {
 //!   field.children=[{kind=STRUCT, field_offset=0, children=[struct fields]}].
 //! - Non-optional struct: field.kind=STRUCT, field.field_offset=0, field.children=[struct fields].
 //! total_state_size is the aligned stride between consecutive states in a packed buffer.
+//! Checks `count` imported states, `stride` bytes apart - throws if a state is invalid
+typedef void (*aggregate_validate_state_t)(const_data_ptr_t states, idx_t count, idx_t stride);
+
 struct AggregateStateLayout {
 	AggregateStateLayout() = default;
 	AggregateStateLayout(LogicalType type_p, idx_t total_state_size_p, bool is_optional = false)
@@ -518,6 +527,8 @@ struct AggregateStateLayout {
 	idx_t total_state_size = 0;
 	//! Constant values for arguments that must be re-bound with a specific constant rather than only the type
 	unordered_map<idx_t, Value> constant_parameters;
+	//! Checks the imported states for invariants the fields cannot express (e.g. between fields)
+	aggregate_validate_state_t validate_state = nullptr;
 };
 
 } // namespace duckdb

@@ -1,0 +1,251 @@
+# name: test/sql/sql_export/nested_result_collation.test
+# description: Preserve nested collations in exported CASE, aggregate, window and UNNEST results
+# group: [sql_export]
+
+statement ok
+SET debug_verify_statement='explain_sql';
+
+# EXPLAIN must succeed explicitly. Verification can skip unsupported exports.
+
+# struct case
+query TT
+EXPLAIN (SQL) SELECT i,CASE WHEN i=4 THEN NULL ELSE struct_pack(v := s COLLATE NOCASE) END v FROM (VALUES (0,'A'),(1,'a'),(2,'B'),(3,NULL),(4,'A')) t(i,s) ORDER BY i;
+----
+sql	<REGEX>:.*SELECT.*
+
+query TT
+SELECT i,CASE WHEN i=4 THEN NULL ELSE struct_pack(v := s COLLATE NOCASE) END v FROM (VALUES (0,'A'),(1,'a'),(2,'B'),(3,NULL),(4,'A')) t(i,s) ORDER BY i;
+----
+0	{'v': A}
+1	{'v': a}
+2	{'v': B}
+3	{'v': NULL}
+4	NULL
+
+# struct case group
+query TT
+EXPLAIN (SQL) SELECT v,count(*) FROM (SELECT CASE WHEN i=4 THEN NULL ELSE struct_pack(v := s COLLATE NOCASE) END v FROM (VALUES (0,'A'),(1,'a'),(2,'B'),(3,NULL),(4,'A')) t(i,s)) GROUP BY v ORDER BY v;
+----
+sql	<REGEX>:.*SELECT.*
+
+query TT
+SELECT v,count(*) FROM (SELECT CASE WHEN i=4 THEN NULL ELSE struct_pack(v := s COLLATE NOCASE) END v FROM (VALUES (0,'A'),(1,'a'),(2,'B'),(3,NULL),(4,'A')) t(i,s)) GROUP BY v ORDER BY v;
+----
+{'v': A}	2
+{'v': B}	1
+{'v': NULL}	1
+NULL	1
+
+# struct case min
+query TT
+EXPLAIN (SQL) SELECT min(v),max(v) FROM (SELECT CASE WHEN i=4 THEN NULL ELSE struct_pack(v := s COLLATE NOCASE) END v FROM (VALUES (0,'A'),(1,'a'),(2,'B'),(3,NULL),(4,'A')) t(i,s));
+----
+sql	<REGEX>:.*SELECT.*
+
+query TT
+SELECT min(v),max(v) FROM (SELECT CASE WHEN i=4 THEN NULL ELSE struct_pack(v := s COLLATE NOCASE) END v FROM (VALUES (0,'A'),(1,'a'),(2,'B'),(3,NULL),(4,'A')) t(i,s));
+----
+{'v': A}	{'v': NULL}
+
+# tuple case
+query TT
+EXPLAIN (SQL) SELECT i,CASE WHEN i=4 THEN NULL ELSE row(s COLLATE NOCASE,i % 2) END v FROM (VALUES (0,'A'),(1,'a'),(2,'B'),(3,NULL),(4,'A')) t(i,s) ORDER BY i;
+----
+sql	<REGEX>:.*SELECT.*
+
+query TT
+SELECT i,CASE WHEN i=4 THEN NULL ELSE row(s COLLATE NOCASE,i % 2) END v FROM (VALUES (0,'A'),(1,'a'),(2,'B'),(3,NULL),(4,'A')) t(i,s) ORDER BY i;
+----
+0	(A, 0)
+1	(a, 1)
+2	(B, 0)
+3	(NULL, 1)
+4	NULL
+
+# tuple case group
+query TT
+EXPLAIN (SQL) SELECT v,count(*) FROM (SELECT CASE WHEN i=4 THEN NULL ELSE row(s COLLATE NOCASE,i % 2) END v FROM (VALUES (0,'A'),(1,'a'),(2,'B'),(3,NULL),(4,'A')) t(i,s)) GROUP BY v ORDER BY v;
+----
+sql	<REGEX>:.*SELECT.*
+
+query TT
+SELECT v,count(*) FROM (SELECT CASE WHEN i=4 THEN NULL ELSE row(s COLLATE NOCASE,i % 2) END v FROM (VALUES (0,'A'),(1,'a'),(2,'B'),(3,NULL),(4,'A')) t(i,s)) GROUP BY v ORDER BY v;
+----
+(A, 0)	1
+(a, 1)	1
+(B, 0)	1
+(NULL, 1)	1
+NULL	1
+
+# list case
+query TT
+EXPLAIN (SQL) SELECT i,CASE WHEN i=4 THEN NULL ELSE [s COLLATE NOCASE] END v FROM (VALUES (0,'A'),(1,'a'),(2,'B'),(3,NULL),(4,'A')) t(i,s) ORDER BY i;
+----
+sql	<REGEX>:.*SELECT.*
+
+query TT
+SELECT i,CASE WHEN i=4 THEN NULL ELSE [s COLLATE NOCASE] END v FROM (VALUES (0,'A'),(1,'a'),(2,'B'),(3,NULL),(4,'A')) t(i,s) ORDER BY i;
+----
+0	[A]
+1	[a]
+2	[B]
+3	[NULL]
+4	NULL
+
+# list case group
+query TT
+EXPLAIN (SQL) SELECT v,count(*) FROM (SELECT CASE WHEN i=4 THEN NULL ELSE [s COLLATE NOCASE] END v FROM (VALUES (0,'A'),(1,'a'),(2,'B'),(3,NULL),(4,'A')) t(i,s)) GROUP BY v ORDER BY v;
+----
+sql	<REGEX>:.*SELECT.*
+
+query TT
+SELECT v,count(*) FROM (SELECT CASE WHEN i=4 THEN NULL ELSE [s COLLATE NOCASE] END v FROM (VALUES (0,'A'),(1,'a'),(2,'B'),(3,NULL),(4,'A')) t(i,s)) GROUP BY v ORDER BY v;
+----
+[A]	2
+[B]	1
+[NULL]	1
+NULL	1
+
+# list case min
+query TT
+EXPLAIN (SQL) SELECT min(v),max(v) FROM (SELECT CASE WHEN i=4 THEN NULL ELSE [s COLLATE NOCASE] END v FROM (VALUES (0,'A'),(1,'a'),(2,'B'),(3,NULL),(4,'A')) t(i,s));
+----
+sql	<REGEX>:.*SELECT.*
+
+query TT
+SELECT min(v),max(v) FROM (SELECT CASE WHEN i=4 THEN NULL ELSE [s COLLATE NOCASE] END v FROM (VALUES (0,'A'),(1,'a'),(2,'B'),(3,NULL),(4,'A')) t(i,s));
+----
+[A]	[NULL]
+
+# array case
+query TT
+EXPLAIN (SQL) SELECT i,CASE WHEN i=4 THEN NULL ELSE array_value(s COLLATE NOCASE) END v FROM (VALUES (0,'A'),(1,'a'),(2,'B'),(3,NULL),(4,'A')) t(i,s) ORDER BY i;
+----
+sql	<REGEX>:.*SELECT.*
+
+query TT
+SELECT i,CASE WHEN i=4 THEN NULL ELSE array_value(s COLLATE NOCASE) END v FROM (VALUES (0,'A'),(1,'a'),(2,'B'),(3,NULL),(4,'A')) t(i,s) ORDER BY i;
+----
+0	[A]
+1	[a]
+2	[B]
+3	[NULL]
+4	NULL
+
+# array case group
+query TT
+EXPLAIN (SQL) SELECT v,count(*) FROM (SELECT CASE WHEN i=4 THEN NULL ELSE array_value(s COLLATE NOCASE) END v FROM (VALUES (0,'A'),(1,'a'),(2,'B'),(3,NULL),(4,'A')) t(i,s)) GROUP BY v ORDER BY v;
+----
+sql	<REGEX>:.*SELECT.*
+
+query TT
+SELECT v,count(*) FROM (SELECT CASE WHEN i=4 THEN NULL ELSE array_value(s COLLATE NOCASE) END v FROM (VALUES (0,'A'),(1,'a'),(2,'B'),(3,NULL),(4,'A')) t(i,s)) GROUP BY v ORDER BY v;
+----
+[A]	2
+[B]	1
+[NULL]	1
+NULL	1
+
+# array case min
+query TT
+EXPLAIN (SQL) SELECT min(v),max(v) FROM (SELECT CASE WHEN i=4 THEN NULL ELSE array_value(s COLLATE NOCASE) END v FROM (VALUES (0,'A'),(1,'a'),(2,'B'),(3,NULL),(4,'A')) t(i,s));
+----
+sql	<REGEX>:.*SELECT.*
+
+query TT
+SELECT min(v),max(v) FROM (SELECT CASE WHEN i=4 THEN NULL ELSE array_value(s COLLATE NOCASE) END v FROM (VALUES (0,'A'),(1,'a'),(2,'B'),(3,NULL),(4,'A')) t(i,s));
+----
+[A]	[NULL]
+
+# map case
+query TT
+EXPLAIN (SQL) SELECT i,CASE WHEN i=4 THEN NULL ELSE map(['v'],[s COLLATE NOCASE]) END v FROM (VALUES (0,'A'),(1,'a'),(2,'B'),(3,NULL),(4,'A')) t(i,s) ORDER BY i;
+----
+sql	<REGEX>:.*SELECT.*
+
+query TT
+SELECT i,CASE WHEN i=4 THEN NULL ELSE map(['v'],[s COLLATE NOCASE]) END v FROM (VALUES (0,'A'),(1,'a'),(2,'B'),(3,NULL),(4,'A')) t(i,s) ORDER BY i;
+----
+0	{v=A}
+1	{v=a}
+2	{v=B}
+3	{v=NULL}
+4	NULL
+
+# map case group
+query TT
+EXPLAIN (SQL) SELECT v,count(*) FROM (SELECT CASE WHEN i=4 THEN NULL ELSE map(['v'],[s COLLATE NOCASE]) END v FROM (VALUES (0,'A'),(1,'a'),(2,'B'),(3,NULL),(4,'A')) t(i,s)) GROUP BY v ORDER BY v;
+----
+sql	<REGEX>:.*SELECT.*
+
+query TT
+SELECT v,count(*) FROM (SELECT CASE WHEN i=4 THEN NULL ELSE map(['v'],[s COLLATE NOCASE]) END v FROM (VALUES (0,'A'),(1,'a'),(2,'B'),(3,NULL),(4,'A')) t(i,s)) GROUP BY v ORDER BY v;
+----
+{v=A}	1
+{v=B}	1
+{v=a}	1
+{v=NULL}	1
+NULL	1
+
+# struct extracted collation
+query TT
+EXPLAIN (SQL) SELECT count(v.v), count(*) FILTER (WHERE v.v='a') FROM (SELECT CASE WHEN i=4 THEN NULL ELSE struct_pack(v := s COLLATE NOCASE) END v FROM (VALUES (0,'A'),(1,'a'),(2,'B'),(3,NULL),(4,'A')) t(i,s));
+----
+sql	<REGEX>:.*SELECT.*
+
+query TT
+SELECT count(v.v), count(*) FILTER (WHERE v.v='a') FROM (SELECT CASE WHEN i=4 THEN NULL ELSE struct_pack(v := s COLLATE NOCASE) END v FROM (VALUES (0,'A'),(1,'a'),(2,'B'),(3,NULL),(4,'A')) t(i,s));
+----
+3	2
+
+# list extracted collation
+query TT
+EXPLAIN (SQL) SELECT count(v[1]), count(*) FILTER (WHERE v[1]='a') FROM (SELECT CASE WHEN i=4 THEN NULL ELSE [s COLLATE NOCASE] END v FROM (VALUES (0,'A'),(1,'a'),(2,'B'),(3,NULL),(4,'A')) t(i,s));
+----
+sql	<REGEX>:.*SELECT.*
+
+query TT
+SELECT count(v[1]), count(*) FILTER (WHERE v[1]='a') FROM (SELECT CASE WHEN i=4 THEN NULL ELSE [s COLLATE NOCASE] END v FROM (VALUES (0,'A'),(1,'a'),(2,'B'),(3,NULL),(4,'A')) t(i,s));
+----
+3	2
+
+# unnest nested
+query TT
+EXPLAIN (SQL) SELECT unnest([CASE WHEN i=4 THEN NULL ELSE struct_pack(v := s COLLATE NOCASE) END]) FROM (VALUES (0,'A'),(1,'a'),(2,'B'),(3,NULL),(4,'A')) t(i,s) ORDER BY ALL;
+----
+sql	<REGEX>:.*SELECT.*
+
+query T
+SELECT unnest([CASE WHEN i=4 THEN NULL ELSE struct_pack(v := s COLLATE NOCASE) END]) FROM (VALUES (0,'A'),(1,'a'),(2,'B'),(3,NULL),(4,'A')) t(i,s) ORDER BY ALL;
+----
+{'v': A}
+{'v': a}
+{'v': B}
+{'v': NULL}
+NULL
+
+# struct window
+query TT
+EXPLAIN (SQL) SELECT first_value(v) OVER (ORDER BY i), last_value(v) OVER (ORDER BY i ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) FROM (SELECT i, CASE WHEN i=4 THEN NULL ELSE struct_pack(v := s COLLATE NOCASE) END v FROM (VALUES (0,'A'),(1,'a'),(2,'B'),(3,NULL),(4,'A')) t(i,s)) ORDER BY i;
+----
+sql	<REGEX>:.*SELECT.*
+
+query TT
+SELECT first_value(v) OVER (ORDER BY i), last_value(v) OVER (ORDER BY i ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) FROM (SELECT i, CASE WHEN i=4 THEN NULL ELSE struct_pack(v := s COLLATE NOCASE) END v FROM (VALUES (0,'A'),(1,'a'),(2,'B'),(3,NULL),(4,'A')) t(i,s)) ORDER BY i;
+----
+{'v': A}	NULL
+{'v': A}	NULL
+{'v': A}	NULL
+{'v': A}	NULL
+{'v': A}	NULL
+
+# An explicit cast to an uncollated list still clears its element collation.
+query TT
+EXPLAIN (SQL) SELECT cast_to_type(['A'], array_value('x' COLLATE nocase))[1]='a', (array_value('A' COLLATE nocase)::VARCHAR[])[1]='a';
+----
+sql	<REGEX>:.*SELECT.*
+
+query II
+SELECT cast_to_type(['A'], array_value('x' COLLATE nocase))[1]='a', (array_value('A' COLLATE nocase)::VARCHAR[])[1]='a';
+----
+true	false

@@ -239,7 +239,9 @@ FilterPropagateResult StatisticsPropagator::ClassifyFilter(Expression &condition
 
 	if (ExpressionIsConstant(condition, Value::BOOLEAN(false))) {
 		return FilterPropagateResult::FILTER_ALWAYS_FALSE;
-	} else if (ExpressionIsConstantOrNull(condition, Value::BOOLEAN(false))) {
+	} else if (ExpressionIsConstantOrNull(condition, Value::BOOLEAN(false)) ||
+	           ExpressionIsConstant(condition, Value(LogicalType::BOOLEAN))) {
+		// a condition that is always NULL rejects every row too
 		return FilterPropagateResult::FILTER_FALSE_OR_NULL;
 	}
 
@@ -338,7 +340,7 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalFilt
 				if (filter.projection_map.empty()) {
 					node_ptr = std::move(filter.children[0]);
 				}
-				break;
+				return std::move(node_stats);
 			}
 		} else if (prune_result == FilterPropagateResult::FILTER_ALWAYS_FALSE ||
 		           prune_result == FilterPropagateResult::FILTER_FALSE_OR_NULL) {
@@ -347,6 +349,7 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalFilt
 			return make_uniq<NodeStatistics>(0U, 0U);
 		}
 	}
+	SimplifyConstantOrNull(filter.expressions);
 	// the max cardinality of a filter is the cardinality of the input (i.e. no tuples get filtered)
 	return std::move(node_stats);
 }

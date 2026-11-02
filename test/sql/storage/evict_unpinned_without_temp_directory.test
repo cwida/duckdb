@@ -1,0 +1,38 @@
+# name: test/sql/storage/evict_unpinned_without_temp_directory.test
+# description: Test that unpinned blocks are not lost from eviction queue when evicting without temp_directory
+# group: [storage]
+
+require vector_size 2048
+
+require noforcestorage
+
+statement ok
+SET temp_directory = '';
+
+statement ok
+SET max_memory = '80MB';
+
+statement ok
+SET threads = 1;
+
+statement ok
+CREATE TABLE t AS SELECT range::INT AS a, repeat('y', 80000) AS s FROM range(400);
+
+# Eviction fails because temp_directory is not set; unpinned overflow strings must not be dropped from the queue
+statement error
+SET max_memory = '10MB';
+----
+<REGEX>:.*Out of Memory Error.*could not free up enough memory.*
+
+# User configures temp_directory as advised
+statement ok
+SET temp_directory = '{TEST_DIR}/evict_unpinned_tmp.tmp';
+
+# With temp_directory now configured, the unpinned blocks can be offloaded to disk and max_memory succeeds
+statement ok
+SET max_memory = '10MB';
+
+query I
+SELECT sum(memory_usage_bytes) <= 10000000 FROM duckdb_memory();
+----
+true

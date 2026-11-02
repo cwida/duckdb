@@ -1,0 +1,60 @@
+# name: test/sql/sql_export/composition_q1_plan.test
+# description: Default optimized TPC-H Q1 needs only row-expression and aggregation scopes
+# group: [sql_export]
+
+statement ok
+CREATE TABLE lineitem(l_orderkey BIGINT,l_partkey BIGINT,l_suppkey BIGINT,l_linenumber BIGINT,l_quantity DECIMAL(15,2),l_extendedprice DECIMAL(15,2),l_discount DECIMAL(15,2),l_tax DECIMAL(15,2),l_returnflag VARCHAR,l_linestatus VARCHAR,l_shipdate DATE,l_commitdate DATE,l_receiptdate DATE,l_shipinstruct VARCHAR,l_shipmode VARCHAR,l_comment VARCHAR);
+
+statement ok
+INSERT INTO lineitem SELECT i,i%17,i%7,1,i%50+1,100+i,i%10/100.0,i%8/100.0,CASE WHEN i%3=0 THEN 'R' ELSE 'N' END,CASE WHEN i%2=0 THEN 'O' ELSE 'F' END,DATE '1998-08-01'+(i%60)::INTEGER,DATE '1998-08-02',DATE '1998-08-03','DELIVER IN PERSON','AIR','synthetic' FROM range(200) t(i);
+
+# Keep one row-expression scope and one aggregate scope.
+query TT
+EXPLAIN (SQL) SELECT
+    l_returnflag,
+    l_linestatus,
+    sum(l_quantity) AS sum_qty,
+    sum(l_extendedprice) AS sum_base_price,
+    sum(l_extendedprice * (1 - l_discount)) AS sum_disc_price,
+    sum(l_extendedprice * (1 - l_discount) * (1 + l_tax)) AS sum_charge,
+    avg(l_quantity) AS avg_qty,
+    avg(l_extendedprice) AS avg_price,
+    avg(l_discount) AS avg_disc,
+    count(*) AS count_order
+FROM
+    lineitem
+WHERE
+    l_shipdate <= CAST('1998-09-02' AS date)
+GROUP BY
+    l_returnflag,
+    l_linestatus
+ORDER BY
+    l_returnflag,
+    l_linestatus;
+----
+sql	<REGEX>:^SELECT.*FROM [(][[:space:]]*SELECT.*
+
+query TT
+EXPLAIN (SQL) SELECT
+    l_returnflag,
+    l_linestatus,
+    sum(l_quantity) AS sum_qty,
+    sum(l_extendedprice) AS sum_base_price,
+    sum(l_extendedprice * (1 - l_discount)) AS sum_disc_price,
+    sum(l_extendedprice * (1 - l_discount) * (1 + l_tax)) AS sum_charge,
+    avg(l_quantity) AS avg_qty,
+    avg(l_extendedprice) AS avg_price,
+    avg(l_discount) AS avg_disc,
+    count(*) AS count_order
+FROM
+    lineitem
+WHERE
+    l_shipdate <= CAST('1998-09-02' AS date)
+GROUP BY
+    l_returnflag,
+    l_linestatus
+ORDER BY
+    l_returnflag,
+    l_linestatus;
+----
+sql	<!REGEX>:.*[(][[:space:]]*SELECT.*[(][[:space:]]*SELECT.*

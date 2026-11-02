@@ -124,9 +124,8 @@ static void ListExtractFunction(DataChunk &args, ExpressionState &state, Vector 
 
 static unique_ptr<FunctionData> ListExtractBind(BindScalarFunctionInput &input) {
 	auto &context = input.GetClientContext();
-	auto &bound_function = input.GetBoundFunction();
 	auto &arguments = input.GetArguments();
-	D_ASSERT(bound_function.GetArguments().size() == 2);
+	D_ASSERT(input.GetBoundFunction().GetArguments().size() == 2);
 	arguments[0] = BoundCastExpression::AddArrayCastToList(context, std::move(arguments[0]));
 	return nullptr;
 }
@@ -177,6 +176,9 @@ ScalarFunctionSet ListExtractFun::GetFunctions() {
 
 	ScalarFunction sfun({LogicalType::VARCHAR, LogicalType::BIGINT}, LogicalType::VARCHAR, ListExtractFunction,
 	                    StringExtractBind);
+	sfun.GetSignature().GetParameter(0).SetName("string");
+	sfun.GetSignature().GetParameter(1).SetName("index");
+
 	lfun.SetFallible();
 	list_extract_set.AddFunction(lfun);
 	list_extract_set.AddFunction(sfun);
@@ -190,11 +192,11 @@ ScalarFunctionSet ArrayExtractFun::GetFunctions() {
 	ScalarFunction lfun({LogicalType::LIST(LogicalType::TEMPLATE("T")), LogicalType::BIGINT},
 	                    LogicalType::TEMPLATE("T"), ListExtractFunction, ListExtractBind, ListExtractStats);
 
-	lfun.GetSignature().GetParameter(0).SetName("array");
+	lfun.GetSignature().GetParameter(0).SetName("list");
 	lfun.GetSignature().GetParameter(1).SetName("index");
 
-	ScalarFunction sfun({LogicalType::VARCHAR, LogicalType::BIGINT}, LogicalType::VARCHAR, ListExtractFunction,
-	                    StringExtractBind);
+	ScalarFunction sfun({}, LogicalType::VARCHAR, ListExtractFunction, StringExtractBind);
+	sfun.GetSignature().AddParameter("string", LogicalType::VARCHAR).AddParameter("index", LogicalType::BIGINT);
 
 	array_extract_set.AddFunction(lfun);
 	array_extract_set.AddFunction(sfun);

@@ -43,68 +43,13 @@ FieldID FieldID::Copy() const {
 
 static case_insensitive_map_t<LogicalType> GetChildNameToTypeMap(const LogicalType &type) {
 	case_insensitive_map_t<LogicalType> name_to_type_map;
-	switch (type.id()) {
-	case LogicalTypeId::LIST:
-		name_to_type_map.emplace("element", ListType::GetChildType(type));
-		break;
-	case LogicalTypeId::MAP:
-		name_to_type_map.emplace("key", MapType::KeyType(type));
-		name_to_type_map.emplace("value", MapType::ValueType(type));
-		break;
-	case LogicalTypeId::STRUCT: {
-		for (auto &[name, type] : StructType::GetChildTypes(type)) {
-			if (name == FieldID::DUCKDB_FIELD_ID) {
-				throw BinderException("Cannot have column named \"%s\" with FIELD_IDS", FieldID::DUCKDB_FIELD_ID);
-			}
-			name_to_type_map.emplace(name.GetIdentifierName(), type);
+	for (auto &[name, child_type] : LogicalType::GetNamedChildTypes(type)) {
+		if (name == FieldID::DUCKDB_FIELD_ID) {
+			throw BinderException("Cannot have column named \"%s\" with FIELD_IDS", FieldID::DUCKDB_FIELD_ID);
 		}
-		break;
+		name_to_type_map.emplace(name.GetIdentifierName(), child_type);
 	}
-	case LogicalTypeId::TUPLE: {
-		for (auto &[name, type] : TupleType::NamedChildren(type)) {
-			if (name == FieldID::DUCKDB_FIELD_ID) {
-				throw BinderException("Cannot have column named \"%s\" with FIELD_IDS", FieldID::DUCKDB_FIELD_ID);
-			}
-			name_to_type_map.emplace(name.GetIdentifierName(), type);
-		}
-		break;
-	}
-	default: // LCOV_EXCL_START
-		throw InternalException("Unexpected type in GetChildNameToTypeMap");
-	} // LCOV_EXCL_STOP
 	return name_to_type_map;
-}
-
-static void GetChildNamesAndTypes(const LogicalType &type, vector<Identifier> &child_names,
-                                  vector<LogicalType> &child_types) {
-	switch (type.id()) {
-	case LogicalTypeId::LIST:
-		child_names.emplace_back("element");
-		child_types.emplace_back(ListType::GetChildType(type));
-		break;
-	case LogicalTypeId::MAP:
-		child_names.emplace_back("key");
-		child_names.emplace_back("value");
-		child_types.emplace_back(MapType::KeyType(type));
-		child_types.emplace_back(MapType::ValueType(type));
-		break;
-	case LogicalTypeId::STRUCT: {
-		for (const auto &[name, type] : StructType::GetChildTypes(type)) {
-			child_names.emplace_back(name);
-			child_types.emplace_back(type);
-		}
-		break;
-	}
-	case LogicalTypeId::TUPLE: {
-		for (auto &[name, type] : TupleType::NamedChildren(type)) {
-			child_names.emplace_back(name);
-			child_types.emplace_back(type);
-		}
-		break;
-	}
-	default: // LCOV_EXCL_START
-		throw InternalException("Unexpected type in GetChildNamesAndTypes");
-	} // LCOV_EXCL_STOP
 }
 
 void FieldID::GenerateFieldIDs(ChildFieldIDs &field_ids, idx_t &field_id, const vector<Identifier> &names,
@@ -121,10 +66,12 @@ void FieldID::GenerateFieldIDs(ChildFieldIDs &field_ids, idx_t &field_id, const 
 			continue;
 		}
 
-		// Cannot use GetChildNameToTypeMap here because we lose order, and we want to generate depth-first
 		vector<Identifier> child_names;
 		vector<LogicalType> child_types;
-		GetChildNamesAndTypes(col_type, child_names, child_types);
+		for (auto &[name, child_type] : LogicalType::GetNamedChildTypes(col_type)) {
+			child_names.push_back(name);
+			child_types.push_back(child_type);
+		}
 		GenerateFieldIDs(inserted.first->second.child_field_ids, field_id, child_names, child_types);
 	}
 }
@@ -186,7 +133,11 @@ void FieldID::GetFieldIDs(const Value &field_ids_value, ChildFieldIDs &field_ids
 		FieldID field_id;
 		if (field_id_value) {
 			Value field_id_integer_value = field_id_value->DefaultCastAs(LogicalType::INTEGER);
-			const uint32_t field_id_int = IntegerValue::Get(field_id_integer_value);
+			if (field_id_integer_value.IsNull() || IntegerValue::Get(field_id_integer_value) < 0) {
+				throw BinderException("Invalid field_id %s found in FIELD_IDS: field ids must be non-negative integers",
+				                      field_id_value->ToString());
+			}
+			const uint32_t field_id_int = UnsafeNumericCast<uint32_t>(IntegerValue::Get(field_id_integer_value));
 			if (!unique_field_ids.insert(field_id_int).second) {
 				throw BinderException("Duplicate field_id %s found in FIELD_IDS", field_id_integer_value.ToString());
 			}

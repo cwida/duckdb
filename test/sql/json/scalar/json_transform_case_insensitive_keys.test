@@ -1,0 +1,25 @@
+# name: test/sql/json/scalar/json_transform_case_insensitive_keys.test
+# description: json_transform structures with keys that differ only by case
+# group: [scalar]
+
+require json
+
+statement error
+SELECT json_transform('{"a":1,"A":"x"}', '{"a":"UBIGINT","A":"VARCHAR"}');
+----
+Duplicate keys in object in JSON structure
+
+statement error
+CREATE TABLE dt AS SELECT json_transform('{"a":1,"A":"x"}', '{"a":"UBIGINT","A":"VARCHAR"}') s;
+----
+Duplicate keys in object in JSON structure
+
+statement error
+SELECT from_json('{"x":{"b":1}}', '{"x":{"b":"INT","B":"INT"}}');
+----
+Duplicate keys in object in JSON structure
+
+query I
+SELECT json_transform('{"a":1,"b":"x"}', '{"a":"UBIGINT","b":"VARCHAR"}');
+----
+{'a': 1, 'b': x}

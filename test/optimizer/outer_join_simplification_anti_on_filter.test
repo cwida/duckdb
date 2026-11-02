@@ -1,0 +1,42 @@
+# name: test/optimizer/outer_join_simplification_anti_on_filter.test
+# description: A right side ON predicate of a LEFT JOIN converted to an ANTI join is kept
+# group: [optimizer]
+
+statement ok
+CREATE TABLE t(i INT, n INT);
+
+statement ok
+INSERT INTO t VALUES (1,1),(2,NULL),(3,3);
+
+query I
+SELECT a.i FROM t a LEFT JOIN (SELECT * FROM t LIMIT 100) b ON a.i=b.i AND b.n IS NULL WHERE b.i IS NULL ORDER BY 1;
+----
+1
+3
+
+query I
+SELECT a.i FROM t a LEFT JOIN t b ON a.i=b.i AND b.n IS NULL WHERE b.i IS NULL ORDER BY 1;
+----
+1
+3
+
+query I
+SELECT a.i FROM t a LEFT JOIN t b ON a.i=b.i AND b.n IS NOT DISTINCT FROM NULL WHERE b.i IS NULL ORDER BY 1;
+----
+1
+3
+
+query I
+SELECT a.i FROM t a WHERE NOT EXISTS (SELECT 1 FROM t b WHERE a.i=b.i AND b.n IS NULL) ORDER BY 1;
+----
+1
+3
+
+statement ok
+SET disabled_optimizers='filter_pushdown';
+
+query I
+SELECT a.i FROM t a LEFT JOIN t b ON a.i=b.i AND b.n IS NULL WHERE b.i IS NULL ORDER BY 1;
+----
+1
+3

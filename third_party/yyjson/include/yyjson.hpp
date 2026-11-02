@@ -38,11 +38,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <limits.h>
 #include <string.h>
 #include <float.h>
-
-#include "duckdb/common/fast_mem.hpp"
 
 namespace duckdb_yyjson {
 

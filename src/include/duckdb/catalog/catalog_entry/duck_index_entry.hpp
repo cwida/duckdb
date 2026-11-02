@@ -16,12 +16,10 @@ class TableCatalogEntry;
 
 //! Wrapper class to allow copying a DuckIndexEntry (for altering the DuckIndexEntry metadata such as comments)
 struct IndexDataTableInfo {
-	IndexDataTableInfo(shared_ptr<DataTableInfo> info_p, const Identifier &index_name_p);
+	explicit IndexDataTableInfo(shared_ptr<DataTableInfo> info_p);
 
 	//! Pointer to the DataTableInfo
 	shared_ptr<DataTableInfo> info;
-	//! The index to be removed on destruction
-	Identifier index_name;
 };
 
 //! A duck index entry

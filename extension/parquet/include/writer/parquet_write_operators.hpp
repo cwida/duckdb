@@ -96,14 +96,14 @@ struct FloatingPointOperator : public BaseParquetOperator {
 	static void HandleStats(ColumnWriterStatistics *stats, TGT target_value) {
 		auto &numeric_stats = stats->Cast<FloatingPointStatisticsState<SRC, TGT, BaseParquetOperator>>();
 		if (Value::IsNan(target_value)) {
-			numeric_stats.has_nan = true;
-		} else {
-			if (LessThan::Operation(target_value, numeric_stats.min)) {
-				numeric_stats.min = target_value;
-			}
-			if (GreaterThan::Operation(target_value, numeric_stats.max)) {
-				numeric_stats.max = target_value;
-			}
+			numeric_stats.nan_count++;
+			return;
+		}
+		if (LessThan::Operation(target_value, numeric_stats.min)) {
+			numeric_stats.min = target_value;
+		}
+		if (GreaterThan::Operation(target_value, numeric_stats.max)) {
+			numeric_stats.max = target_value;
 		}
 	}
 };
@@ -287,7 +287,7 @@ struct ParquetIntervalOperator : public BaseParquetOperator {
 	template <class SRC, class TGT>
 	static optional<uint64_t> GetExtraBloomFilterHash(const SRC &source_value, const TGT &) {
 		// Preserve the Parquet plain-encoding hash and add the hash used by DuckDB comparisons.
-		return ParquetIntervalUtils::HashNormalized(source_value);
+		return ParquetIntervalUtils::TryHashNormalized(source_value);
 	}
 };
 

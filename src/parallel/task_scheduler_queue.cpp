@@ -13,7 +13,11 @@ TaskSchedulerType TaskSchedulerQueue::GetPoolType() {
 }
 
 #ifndef DUCKDB_NO_THREADS
-typedef duckdb_moodycamel::ConcurrentQueue<shared_ptr<Task>> concurrent_queue_t;
+struct TaskQueueTraits : public duckdb_moodycamel::ConcurrentQueueDefaultTraits {
+	//! Consumers move on to the next producer after this many tasks (default: 256)
+	static constexpr uint32_t EXPLICIT_CONSUMER_CONSUMPTION_QUOTA_BEFORE_ROTATE = 16;
+};
+typedef duckdb_moodycamel::ConcurrentQueue<shared_ptr<Task>, TaskQueueTraits> concurrent_queue_t;
 
 struct ConcurrentQueueWrapper {
 	concurrent_queue_t q;
@@ -26,6 +30,15 @@ public:
 
 public:
 	duckdb_moodycamel::ProducerToken token;
+};
+
+struct QueueConsumerToken {
+public:
+	explicit QueueConsumerToken(TaskSchedulerQueue &queue) : token(queue.GetQueue().q) {
+	}
+
+public:
+	duckdb_moodycamel::ConsumerToken token;
 };
 
 TaskSchedulerQueue::TaskSchedulerQueue(TaskSchedulerType pool_type_p)
@@ -70,8 +83,8 @@ bool TaskSchedulerQueue::DequeueFromProducerLocked(ProducerToken &token, shared_
 	return true;
 }
 
-bool TaskSchedulerQueue::Dequeue(shared_ptr<Task> &task) {
-	if (!queue->q.try_dequeue(task)) {
+bool TaskSchedulerQueue::Dequeue(ConsumerToken &token, shared_ptr<Task> &task) {
+	if (!queue->q.try_dequeue(token.GetQueueConsumerToken(pool_type).token, task)) {
 		return false;
 	}
 	--tasks_in_queue;
@@ -110,6 +123,12 @@ public:
 
 private:
 	TaskSchedulerQueue *queue;
+};
+
+struct QueueConsumerToken {
+public:
+	explicit QueueConsumerToken(TaskSchedulerQueue &) {
+	}
 };
 
 TaskSchedulerQueue::TaskSchedulerQueue(TaskSchedulerType pool_type_p) : pool_type(pool_type_p) {
@@ -152,7 +171,7 @@ bool TaskSchedulerQueue::DequeueFromProducerLocked(ProducerToken &token, shared_
 	return true;
 }
 
-bool TaskSchedulerQueue::Dequeue(shared_ptr<Task> &task) {
+bool TaskSchedulerQueue::Dequeue(ConsumerToken &token, shared_ptr<Task> &task) {
 	throw InternalException("Global dequeue not supported for no threads queue");
 }
 
@@ -203,6 +222,19 @@ ProducerToken::~ProducerToken() {
 }
 
 QueueProducerToken &ProducerToken::GetQueueProducerToken(TaskSchedulerType pool_type) {
+	return *tokens[static_cast<uint8_t>(pool_type)];
+}
+
+ConsumerToken::ConsumerToken(array<unique_ptr<TaskSchedulerQueue>, TASK_SCHEDULER_TYPE_COUNT> &queues) {
+	for (uint8_t i = 0; i < TASK_SCHEDULER_TYPE_COUNT; i++) {
+		tokens[i] = make_uniq<QueueConsumerToken>(*queues[i]);
+	}
+}
+
+ConsumerToken::~ConsumerToken() {
+}
+
+QueueConsumerToken &ConsumerToken::GetQueueConsumerToken(TaskSchedulerType pool_type) {
 	return *tokens[static_cast<uint8_t>(pool_type)];
 }
 

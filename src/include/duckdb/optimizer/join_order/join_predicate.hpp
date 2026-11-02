@@ -48,6 +48,8 @@ public:
 	JoinRelationSet &GetRightSet() const;
 	optional_ptr<JoinRelationSet> GetLeftSetOptional() const;
 	optional_ptr<JoinRelationSet> GetRightSetOptional() const;
+	optional_ptr<JoinRelationSet> GetSemanticLeftSetOptional() const;
+	optional_ptr<JoinRelationSet> GetSemanticRightSetOptional() const;
 	const ColumnBinding &GetStatsBinding(bool left) const;
 	const ColumnBinding &GetEqualityBinding(bool left) const;
 	bool HasValidJoinEndpoints() const;
@@ -59,6 +61,8 @@ public:
 	bool IsEquivalencePredicate() const;
 	void SetEqualityClassIndex(optional_idx equality_class_index);
 	optional_idx GetEqualityClassIndex() const;
+	void SetCompositeJoinPair(JoinRelationSet &pair);
+	optional_ptr<JoinRelationSet> GetCompositeJoinPair() const;
 
 private:
 	idx_t index;
@@ -68,6 +72,7 @@ private:
 	ColumnBinding left_equality_binding;
 	ColumnBinding right_equality_binding;
 	optional_idx equality_class_index;
+	optional_ptr<JoinRelationSet> composite_join_pair;
 };
 
 struct JoinEqualityPredicateEdge {
@@ -90,7 +95,22 @@ struct JoinEqualityClass {
 	vector<JoinEqualityPredicateEdge> edges;
 };
 
+class JoinEqualityGroups {
+public:
+	void AddEquality(const ColumnBinding &left, const ColumnBinding &right);
+	idx_t GetGroup(const ColumnBinding &binding);
+
+private:
+	idx_t GetOrCreateGroup(const ColumnBinding &binding);
+	idx_t FindRoot(idx_t group);
+
+private:
+	column_binding_map_t<idx_t> binding_to_group;
+	vector<idx_t> parents;
+};
+
 struct RelationPairEqualitySummary {
+	void AddEquality(idx_t equality_class_index, ColumnBinding first_binding, ColumnBinding second_binding);
 	bool HasDirectCompositeEquality() const;
 
 	vector<idx_t> direct_equality_class_indices;
@@ -107,6 +127,7 @@ public:
 	void AddDirectEqualityPairClass(JoinRelationSet &pair, idx_t equality_class_index, ColumnBinding first_binding,
 	                                ColumnBinding second_binding);
 
+	optional_ptr<const JoinPredicate> GetPredicateByFilterIndex(idx_t filter_index) const;
 	const vector<reference<JoinPredicate>> &GetPredicates() const;
 	const vector<reference<JoinPredicate>> &GetEqualityJoinPredicates() const;
 	const vector<reference<JoinPredicate>> &GetSelectivityPredicates() const;
@@ -115,9 +136,6 @@ public:
 	bool HasLeftJoinPredicates() const;
 
 	bool HasDirectCompositeEquality(JoinRelationSet &pair) const;
-
-private:
-	static bool ContainsClassIndex(const vector<idx_t> &class_indices, idx_t equality_class_index);
 
 private:
 	vector<unique_ptr<JoinPredicate>> predicates;

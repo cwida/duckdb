@@ -1,0 +1,63 @@
+# name: test/sql/parser/is_not_null_cast.test
+# description: A cast after an IS test or IN predicate applies to the whole predicate
+# group: [parser]
+
+query I
+SELECT 10 IS NOT NULL::VARCHAR;
+----
+true
+
+query TT
+SELECT 10 IS NULL::VARCHAR, typeof(10 IS NULL::VARCHAR);
+----
+false	VARCHAR
+
+query TT
+SELECT 10 NOTNULL::VARCHAR, 10 ISNULL::VARCHAR;
+----
+true	false
+
+query TTT
+SELECT true IS TRUE::VARCHAR, true IS NOT FALSE::VARCHAR, NULL IS UNKNOWN::VARCHAR;
+----
+true	true	true
+
+query I
+SELECT NULL IS NULL::INT::VARCHAR;
+----
+1
+
+query I
+SELECT 10 IS NOT NULL::INT + 1;
+----
+2
+
+query I
+SELECT NOT 10 IS NOT NULL::VARCHAR;
+----
+false
+
+query TT
+SELECT 1 IN (1, 2)::VARCHAR, typeof(1 IN (1, 2)::VARCHAR);
+----
+true	VARCHAR
+
+query II
+SELECT 1 NOT IN (1, 2)::INT, 1 IN (1)::INT::VARCHAR::INT;
+----
+0	1
+
+query II
+SELECT 1 IN (1)::INT IN (1), 1 IN (1) BETWEEN 0 AND 1;
+----
+true	true
+
+query I
+SELECT 1 IN (SELECT 1)::INT;
+----
+1
+
+query I
+SELECT 1 IN (1) IS NULL::INT;
+----
+0

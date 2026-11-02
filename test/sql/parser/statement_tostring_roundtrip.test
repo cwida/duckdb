@@ -143,6 +143,26 @@ MERGE INTO "t chk" USING "t chk" AS "src x" ON "t chk"."a b" = "src x"."a b" WHE
 
 # --- queries ------------------------------------------------------------------------------------------
 
+query I
+SELECT ~1 + 2
+----
+-4
+
+query I
+SELECT (~1) + 2
+----
+0
+
+query I
+SELECT (-x) + 2 FROM (VALUES (1)) t(x)
+----
+1
+
+query I
+SELECT (+x) + 2 FROM (VALUES (1)) t(x)
+----
+3
+
 statement ok
 SELECT "odder col" AS "a b" FROM "weird name" AS "al ias" ORDER BY "a b"
 

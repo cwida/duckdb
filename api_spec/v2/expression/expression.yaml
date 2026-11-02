@@ -118,7 +118,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   expression_get_type:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns the type of an expression node.
 
@@ -141,7 +141,7 @@ functions:
 
   expression_get_return_type:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns the logical type the expression node evaluates to.
 
@@ -164,7 +164,7 @@ functions:
 
   expression_get_child_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns the number of child nodes of an expression node.
 
@@ -187,7 +187,7 @@ functions:
 
   expression_get_child:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Retrieves a child node of an expression node by index.
 
@@ -216,7 +216,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   expression_constant_get_value:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns the value of a constant node.
 
@@ -239,7 +239,7 @@ functions:
 
   expression_column_ref_get_index:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns the column a column reference node points at.
 
@@ -264,7 +264,7 @@ functions:
 
   expression_function_get_name:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns the name of the scalar function a function node calls.
 
@@ -289,7 +289,7 @@ functions:
 
   expression_function_get_qname:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns the qualified name of the scalar function a function node calls.
 
@@ -313,7 +313,7 @@ functions:
 
   expression_cast_get_mode:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-03" ]
+      - [ "unstable", "v2.0.0", "2026-09-03" ]
     description: |
       Returns whether a cast node is a regular `CAST` or a `TRY_CAST`.
 

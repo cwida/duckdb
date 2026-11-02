@@ -86,6 +86,9 @@ public:
 			mz_inflateEnd(&stream);
 
 			// Update indices
+			if (stream.total_in > compressed_size || compressed_size - stream.total_in < GZIP_FOOTER_SIZE) {
+				FormatException("Failed to decompress GZIP block: incomplete GZIP member footer");
+			}
 			compressed_data += GZIP_FOOTER_SIZE + stream.total_in;
 			compressed_size -= GZIP_FOOTER_SIZE + stream.total_in;
 			out_data += stream.total_out;

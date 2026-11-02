@@ -37,25 +37,25 @@ public:
 	void PrintResultError(const vector<string> &result_values, const vector<string> &values,
 	                      idx_t expected_column_count, bool row_wise);
 	static void PrintSummaryHeader(const std::string &file_name, idx_t query_line);
-	void PrintResultError(MaterializedQueryResult &result, const vector<string> &values, idx_t expected_column_count,
+	void PrintResultError(QueryResult &result, const vector<string> &values, idx_t expected_column_count,
 	                      bool row_wise);
-	void PrintResultString(MaterializedQueryResult &result);
-	void UnexpectedFailure(MaterializedQueryResult &result);
-	void OutputResult(MaterializedQueryResult &result, const vector<string> &result_values_string);
+	void PrintResultString(QueryResult &result);
+	void UnexpectedFailure(QueryResult &result);
+	void OutputResult(QueryResult &result, const vector<string> &result_values_string);
 	void OutputHash(const string &hash_value);
-	void ColumnCountMismatch(MaterializedQueryResult &result, const vector<string> &result_values_string,
+	void ColumnCountMismatch(QueryResult &result, const vector<string> &result_values_string,
 	                         idx_t expected_column_count, bool row_wise);
 	void NotCleanlyDivisible(idx_t expected_column_count, idx_t actual_column_count);
-	void WrongRowCount(idx_t expected_rows, MaterializedQueryResult &result, const vector<string> &comparison_values,
+	void WrongRowCount(idx_t expected_rows, QueryResult &result, const vector<string> &comparison_values,
 	                   idx_t expected_column_count, bool row_wise);
 	void ColumnCountMismatchCorrectResult(idx_t original_expected_columns, idx_t expected_column_count,
-	                                      MaterializedQueryResult &result);
+	                                      QueryResult &result);
 	void SplitMismatch(idx_t row_number, idx_t expected_column_count, idx_t split_count);
-	void WrongResultHash(const string &expected_result, MaterializedQueryResult &result, const string &expected_hash,
+	void WrongResultHash(const string &expected_result, QueryResult &result, const string &expected_hash,
 	                     const string &actual_hash);
-	void UnexpectedStatement(bool expect_ok, MaterializedQueryResult &result);
-	void ExpectedErrorMismatch(const string &expected_error, MaterializedQueryResult &result);
-	void InternalException(MaterializedQueryResult &result);
+	void UnexpectedStatement(bool expect_ok, QueryResult &result);
+	void ExpectedErrorMismatch(const string &expected_error, QueryResult &result);
+	void InternalException(QueryResult &result);
 	static void LoadDatabaseFail(const string &file_name, const string &dbpath, const string &message);
 	//! Write a machine-readable event line: "[TEST_EVENT] <json>" (--emit-test-events). Caller gates.
 	static void EmitTestEvent(const string &json_payload);
@@ -63,7 +63,10 @@ public:
 	static void AppendFailure(const string &log_message);
 	static void LogFailure(const string &log_message);
 	static void LogFailureAnnotation(const string &log_message);
-	string ResultToString(MaterializedQueryResult &result);
+	string ResultToString(QueryResult &result);
+
+private:
+	static mutex log_mutex;
 
 private:
 	Connection &connection;

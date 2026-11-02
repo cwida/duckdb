@@ -150,10 +150,12 @@ unique_ptr<CreateInfo> CreateMacroInfo::Deserialize(Deserializer &deserializer) 
 
 void CreateSchemaInfo::Serialize(Serializer &serializer) const {
 	CreateInfo::Serialize(serializer);
+	serializer.WritePropertyWithDefault<case_insensitive_map_t<unique_ptr<ParsedExpression>>>(200, "options", options);
 }
 
 unique_ptr<CreateInfo> CreateSchemaInfo::Deserialize(Deserializer &deserializer) {
 	auto result = duckdb::unique_ptr<CreateSchemaInfo>(new CreateSchemaInfo());
+	deserializer.ReadPropertyWithDefault<case_insensitive_map_t<unique_ptr<ParsedExpression>>>(200, "options", result->options);
 	return std::move(result);
 }
 

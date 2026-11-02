@@ -86,7 +86,7 @@ string LoadInfo::ToString() const {
 	}
 	string result = "";
 	result += LoadInfoToString(load_type, load_after_install);
-	result += StringUtil::Format(" '%s'", filename);
+	result += " " + SQLString(filename);
 	if (!repository.empty()) {
 		if (repo_is_alias) {
 			result += " FROM " + SQLIdentifier(repository);

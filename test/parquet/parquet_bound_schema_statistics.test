@@ -1,0 +1,68 @@
+# name: test/parquet/parquet_bound_schema_statistics.test
+# description: Physical Parquet statistics and expressions stay in their schema domain
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT '9' v UNION ALL SELECT '10') TO '{TEST_DIR}/bound_stats.parquet' (FORMAT parquet)
+
+# Lexical physical bounds cannot prune a numeric target or answer its min/max.
+query III
+SELECT min(v), max(v), count(*) FILTER (WHERE v > 8) FROM read_parquet('{TEST_DIR}/bound_stats.parquet', bound_schema={'v':'BIGINT'}, hive_partitioning=false)
+----
+9	10	2
+
+query I
+SELECT v FROM read_parquet('{TEST_DIR}/bound_stats.parquet', bound_schema={'v':'BIGINT'}, hive_partitioning=false) WHERE v=10
+----
+10
+
+statement ok
+COPY (SELECT {'b':100,'a':1} s UNION ALL SELECT {'b':200,'a':2}) TO '{TEST_DIR}/bound_child_stats.parquet' (FORMAT parquet)
+
+# Extracted child ordinal zero refers to a different physical child.
+query I
+SELECT s.a FROM read_parquet('{TEST_DIR}/bound_child_stats.parquet', bound_schema={'s':'STRUCT(a INTEGER,b INTEGER)'}, hive_partitioning=false) WHERE s.a=1
+----
+1
+
+query II
+SELECT min(s.a), max(s.b) FROM read_parquet('{TEST_DIR}/bound_child_stats.parquet', bound_schema={'s':'STRUCT(a INTEGER,b INTEGER)'}, hive_partitioning=false)
+----
+1	200
+
+statement ok
+COPY (SELECT 'stored' filename) TO '{TEST_DIR}/bound_filename_stats.parquet' (FORMAT parquet)
+
+# The physical shadow has the same name/type/ordinal but different values.
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/bound_filename_stats.parquet', bound_schema={'filename':'VARCHAR'}, hive_partitioning=false, filename=true) WHERE filename <> 'stored'
+----
+1
+
+query I
+SELECT min(filename) <> 'stored' FROM read_parquet('{TEST_DIR}/bound_filename_stats.parquet', bound_schema={'filename':'VARCHAR'}, hive_partitioning=false, filename=true)
+----
+true
+
+statement ok
+COPY (SELECT 'longer' b, 'x' a) TO '{TEST_DIR}/bound_strlen.parquet' (FORMAT parquet)
+
+# A delegated physical ordinal must not evaluate strlen on b instead of a.
+query II
+SELECT strlen(a), strlen(b) FROM read_parquet('{TEST_DIR}/bound_strlen.parquet', bound_schema={'a':'VARCHAR','b':'VARCHAR'}, hive_partitioning=false)
+----
+1	6
+
+# A homogeneous schema retains the safe native scalar projection optimization.
+query II
+SELECT strlen(b), strlen(a) FROM read_parquet('{TEST_DIR}/bound_strlen.parquet', bound_schema={'b':'VARCHAR','a':'VARCHAR'}, hive_partitioning=false)
+----
+6	1
+
+# Caller-supplied statistics already describe the target domain.
+query I
+SELECT v FROM read_parquet('{TEST_DIR}/bound_stats.parquet', bound_schema={'v':'BIGINT'}, hive_partitioning=false, column_statistics=MAP {'v':MAP {'min':'9','max':'10','count':'2','null_count':'0'}}) WHERE v=10
+----
+10

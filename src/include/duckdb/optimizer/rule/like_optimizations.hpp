@@ -23,7 +23,7 @@ public:
 	unique_ptr<Expression> Apply(LogicalOperator &op, vector<reference<Expression>> &bindings, bool &changes_made,
 	                             bool is_root) override;
 
-	unique_ptr<Expression> ApplyRule(BoundFunctionExpression &expr, const ScalarFunction &function, string pattern,
+	unique_ptr<Expression> ApplyRule(BoundFunctionExpression &expr, const Identifier &function_name, string pattern,
 	                                 bool is_not_like, PatternMatchType match_type) const;
 };
 

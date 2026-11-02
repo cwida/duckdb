@@ -1,0 +1,20 @@
+# name: test/sql/join/mark/hash_nested_operator_semantics.test
+# description: Equality-only MARK joins preserve native nested-key comparisons
+# group: [mark]
+
+foreach external false true
+
+statement ok
+SET debug_force_external={external};
+
+query I
+SELECT __mark_join_marker FROM (VALUES (1,row(1,2))) p(a,c) JOIN BY(TYPE MARK) (VALUES (1,row(1,NULL::INT))) b(b,d) ON a=b AND c = d;
+----
+false
+
+query I
+SELECT __mark_join_marker FROM (VALUES (2,row(1,2))) p(a,c) JOIN BY(TYPE MARK) (VALUES (1,row(1,NULL::INT))) b(b,d) ON a=b AND c = d;
+----
+false
+
+endloop

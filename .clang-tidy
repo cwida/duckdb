@@ -37,7 +37,6 @@ Checks: >-
   cppcoreguidelines-rvalue-reference-param-not-moved,
   cppcoreguidelines-virtual-class-destructor,
   -readability-identifier-naming,
-  -bugprone-exception-escape,
   -bugprone-unused-local-non-trivial-variable,
   -bugprone-empty-catch,
   -misc-use-internal-linkage,

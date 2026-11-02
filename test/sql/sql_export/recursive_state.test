@@ -1,0 +1,633 @@
+# name: test/sql/sql_export/recursive_state.test
+# description: SQL export preserves recurring state, key collations, iteration effects and early limits
+# group: [sql_export]
+
+# These checks depend on session state across statements.
+require skip_reload
+
+statement ok
+SET threads=1;
+
+statement ok
+SET max_execution_time=60000;
+
+query I
+WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT count(*)::INTEGER FROM c WHERE false) SELECT x FROM c LIMIT 4;
+----
+1
+0
+0
+0
+
+query I
+WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT count(*) FROM c WHERE false) SELECT x FROM c LIMIT 3;
+----
+1
+0
+0
+
+query I
+WITH RECURSIVE c(x) AS (SELECT 1 WHERE false UNION ALL SELECT count(*) FROM c WHERE false) SELECT x FROM c LIMIT 3;
+----
+0
+0
+0
+
+query I
+WITH RECURSIVE c(x) AS (VALUES (1),(1) UNION ALL SELECT count(*) FROM c WHERE false) SELECT x FROM c LIMIT 4;
+----
+1
+1
+0
+0
+
+query I
+WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT count(*) FROM c WHERE false GROUP BY x) SELECT x FROM c LIMIT 3;
+----
+1
+
+query I
+WITH RECURSIVE c(x) AS MATERIALIZED (SELECT 1 UNION SELECT count(*) FROM c WHERE false) SELECT x FROM c ORDER BY x;
+----
+0
+1
+
+statement ok
+SET disabled_optimizers='compressed_materialization';
+
+query T
+WITH RECURSIVE c(x) AS (SELECT 1 UNION SELECT x+1 FROM recurring.c WHERE x<3) SELECT x FROM c ORDER BY x;
+----
+1
+2
+3
+
+query T
+WITH RECURSIVE c(x) AS (SELECT 1 UNION SELECT r.x+1 FROM c d,recurring.c r WHERE d.x=r.x AND r.x<3) SELECT x FROM c ORDER BY x;
+----
+1
+2
+3
+
+query T
+WITH RECURSIVE c(x) AS (SELECT 1 UNION SELECT x+1 FROM recurring.c WHERE false) SELECT x FROM c;
+----
+1
+
+query T
+WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM recurring.c WHERE x<3) SELECT x FROM c LIMIT 5;
+----
+1
+2
+2
+3
+2
+
+query T
+WITH RECURSIVE c(x) AS (SELECT 1 WHERE false UNION ALL SELECT count(*) FROM recurring.c WHERE false) SELECT x FROM c LIMIT 3;
+----
+0
+0
+0
+
+query T
+WITH RECURSIVE c(x) USING KEY(x) AS (VALUES (1),(1),(NULL) UNION SELECT x+1 FROM c WHERE x<3) SELECT x FROM c ORDER BY x;
+----
+1
+2
+3
+NULL
+
+query T
+WITH RECURSIVE c(x) USING KEY(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c WHERE x<3) SELECT x FROM c ORDER BY x;
+----
+1
+2
+3
+
+query T
+WITH RECURSIVE c(x) USING KEY(x) AS (SELECT [1,NULL] UNION SELECT x FROM c WHERE false) SELECT x FROM c;
+----
+[1, NULL]
+
+query TTT
+WITH RECURSIVE c(k,v) USING KEY(k,sum(v)) AS (SELECT 1,2 UNION SELECT k+1,v FROM c WHERE k<3) SELECT v,k,v FROM c ORDER BY k;
+----
+2	1	2
+2	2	2
+2	3	2
+
+query TT
+WITH RECURSIVE c(k,v) USING KEY(k,sum(v)) AS (SELECT 1,2 UNION ALL SELECT d.k+1,d.v FROM c d,recurring.c r WHERE d.k=r.k AND d.k<3) SELECT k,v FROM c ORDER BY k;
+----
+1	2
+2	2
+3	2
+
+query TT
+WITH RECURSIVE c(k,v) USING KEY(k,list(v)) AS (SELECT 1,1 UNION SELECT k+1,len(v)::INTEGER FROM c WHERE k<3) SELECT k,v FROM c ORDER BY k;
+----
+1	[1]
+2	[1]
+3	[1]
+
+query TT
+WITH RECURSIVE c(k,v) USING KEY(k,count(v) AS v) AS (SELECT 1,2 UNION SELECT k+1,v FROM c WHERE k<3) SELECT k,v FROM c ORDER BY k;
+----
+1	1
+2	1
+3	1
+
+query TTT
+WITH RECURSIVE c(a,b,c) USING KEY(c,a,sum(b+0) AS b) AS (SELECT 1,2,3 UNION SELECT a+1,b+1,c FROM c WHERE a<3) SELECT c,b,a FROM c ORDER BY a;
+----
+3	2	1
+3	3	2
+3	4	3
+
+query TT
+WITH RECURSIVE c(x) AS MATERIALIZED (SELECT 1 UNION SELECT x+1 FROM recurring.c WHERE x<3) SELECT a.x,b.x FROM c a JOIN c b ON a.x=b.x ORDER BY a.x;
+----
+1	1
+2	2
+3	3
+
+query TT
+WITH RECURSIVE r0(c0) AS (SELECT 1 UNION SELECT c0+1 FROM recurring.r0 WHERE c0<2) SELECT a.c0,b.c0 FROM r0 a CROSS JOIN (WITH RECURSIVE r0(c0) AS (SELECT 10 UNION SELECT c0+1 FROM recurring.r0 WHERE c0<11) SELECT c0 FROM r0) b ORDER BY ALL;
+----
+1	10
+1	11
+2	10
+2	11
+
+statement ok
+SET disabled_optimizers='';
+
+query T rowsort
+WITH RECURSIVE c(x) USING KEY(x) AS (SELECT x FROM (VALUES (['A' COLLATE nocase]),(['a']),([NULL]))v(x) UNION SELECT x FROM c WHERE false) SELECT x FROM c;
+----
+[A]
+[NULL]
+
+query T rowsort
+WITH RECURSIVE c(x) USING KEY(x) AS (SELECT [x COLLATE nocase] FROM (VALUES ('A'),('a'),(NULL))v(x) UNION SELECT x FROM c WHERE false) SELECT x FROM c;
+----
+[A]
+[NULL]
+
+query T
+SELECT 'A' COLLATE nocase WHERE false;
+----
+
+query T
+SELECT NULL::VARCHAR COLLATE nocase WHERE false;
+----
+
+query T
+SELECT 'A' COLLATE "binary" WHERE false;
+----
+
+query T
+SELECT 'A' COLLATE nocase.noaccent WHERE false;
+----
+
+statement ok
+SET disabled_optimizers='';
+
+query I
+WITH RECURSIVE c(x) AS  (SELECT 1 UNION ALL SELECT CASE WHEN x=2 THEN error('recursive step')::INTEGER ELSE x+1 END FROM c WHERE x<3) SELECT x FROM c LIMIT 1;
+----
+1
+
+statement error
+WITH RECURSIVE c(x) AS MATERIALIZED (SELECT 1 UNION ALL SELECT CASE WHEN x=2 THEN error('recursive step')::INTEGER ELSE x+1 END FROM c WHERE x<3) SELECT x FROM c LIMIT 1;
+----
+<REGEX>:Invalid Input Error:.*recursive step.*
+
+query I
+WITH RECURSIVE c(x) AS NOT MATERIALIZED (SELECT 1 UNION ALL SELECT CASE WHEN x=2 THEN error('recursive step')::INTEGER ELSE x+1 END FROM c WHERE x<3) SELECT x FROM c LIMIT 1;
+----
+1
+
+statement ok
+SET disabled_optimizers='cte_inlining';
+
+statement error
+WITH RECURSIVE c(x) AS  (SELECT 1 UNION ALL SELECT CASE WHEN x=2 THEN error('recursive step')::INTEGER ELSE x+1 END FROM c WHERE x<3) SELECT x FROM c LIMIT 1;
+----
+<REGEX>:Invalid Input Error:.*recursive step.*
+
+statement error
+WITH RECURSIVE c(x) AS MATERIALIZED (SELECT 1 UNION ALL SELECT CASE WHEN x=2 THEN error('recursive step')::INTEGER ELSE x+1 END FROM c WHERE x<3) SELECT x FROM c LIMIT 1;
+----
+<REGEX>:Invalid Input Error:.*recursive step.*
+
+statement error
+WITH RECURSIVE c(x) AS NOT MATERIALIZED (SELECT 1 UNION ALL SELECT CASE WHEN x=2 THEN error('recursive step')::INTEGER ELSE x+1 END FROM c WHERE x<3) SELECT x FROM c LIMIT 1;
+----
+<REGEX>:Invalid Input Error:.*recursive step.*
+
+statement ok
+SET disabled_optimizers='';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+query I
+WITH RECURSIVE c(k) USING KEY(k) AS (SELECT 1 UNION SELECT k FROM c WHERE nextval('seq')<3) SELECT * FROM c ORDER BY k;
+----
+1
+
+query I
+SELECT currval('seq');
+----
+1
+
+statement ok
+SET disabled_optimizers='cte_inlining';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+query I
+WITH RECURSIVE c(k) USING KEY(k) AS MATERIALIZED (SELECT 1 UNION SELECT k FROM c WHERE nextval('seq')<3) SELECT * FROM c ORDER BY k;
+----
+1
+
+query I
+SELECT currval('seq');
+----
+1
+
+statement ok
+SET disabled_optimizers='';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+query IT
+WITH RECURSIVE c(k,v) USING KEY(k,list(v)) AS (SELECT 1,1 UNION SELECT 2,count(*)::INTEGER FROM recurring.c WHERE false HAVING nextval('seq')<3) SELECT * FROM c ORDER BY k;
+----
+1	[1]
+2	[0, 0]
+
+query I
+SELECT currval('seq');
+----
+3
+
+statement ok
+SET disabled_optimizers='cte_inlining';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+query IT
+WITH RECURSIVE c(k,v) USING KEY(k,list(v)) AS MATERIALIZED (SELECT 1,1 UNION SELECT 2,count(*)::INTEGER FROM recurring.c WHERE false HAVING nextval('seq')<3) SELECT * FROM c ORDER BY k;
+----
+1	[1]
+2	[0, 0]
+
+query I
+SELECT currval('seq');
+----
+3
+
+statement ok
+SET disabled_optimizers='';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+query I
+WITH RECURSIVE c(k) USING KEY(k) AS (SELECT 1 UNION ALL SELECT k FROM c WHERE nextval('seq')<3) SELECT * FROM c ORDER BY k;
+----
+1
+
+query I
+SELECT currval('seq');
+----
+3
+
+statement ok
+SET disabled_optimizers='cte_inlining';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+query I
+WITH RECURSIVE c(k) USING KEY(k) AS MATERIALIZED (SELECT 1 UNION ALL SELECT k FROM c WHERE nextval('seq')<3) SELECT * FROM c ORDER BY k;
+----
+1
+
+query I
+SELECT currval('seq');
+----
+3
+
+statement ok
+SET disabled_optimizers='';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+query IT
+WITH RECURSIVE c(k,v) USING KEY(k,list(v)) AS (SELECT 1,1 UNION ALL SELECT 2,count(*)::INTEGER FROM recurring.c WHERE false HAVING nextval('seq')<3) SELECT * FROM c ORDER BY k;
+----
+1	[1]
+2	[0, 0]
+
+query I
+SELECT currval('seq');
+----
+3
+
+statement ok
+SET disabled_optimizers='cte_inlining';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+query IT
+WITH RECURSIVE c(k,v) USING KEY(k,list(v)) AS MATERIALIZED (SELECT 1,1 UNION ALL SELECT 2,count(*)::INTEGER FROM recurring.c WHERE false HAVING nextval('seq')<3) SELECT * FROM c ORDER BY k;
+----
+1	[1]
+2	[0, 0]
+
+query I
+SELECT currval('seq');
+----
+3
+
+statement ok
+SET disabled_optimizers='';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+query T
+WITH RECURSIVE c(x) USING KEY(x) AS (SELECT 'A' COLLATE nocase WHERE false UNION ALL (SELECT x FROM (VALUES ('A'),('a'))v(x) WHERE nextval('seq')<3 UNION ALL SELECT x FROM recurring.c WHERE false)) SELECT x FROM c;
+----
+A
+
+query I
+SELECT currval('seq');
+----
+4
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+query T
+WITH RECURSIVE c(x) USING KEY(x) AS (SELECT ['A' COLLATE nocase] WHERE false UNION ALL (SELECT x FROM (VALUES (['A']),(['a']))v(x) WHERE nextval('seq')<3 UNION ALL SELECT x FROM recurring.c WHERE false)) SELECT x FROM c;
+----
+[A]
+
+query I
+SELECT currval('seq');
+----
+4
+
+statement ok
+SET disabled_optimizers='';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+query I
+WITH RECURSIVE c(x) AS  (SELECT 0::BIGINT UNION SELECT count(*)+CASE WHEN nextval('seq')<3 THEN currval('seq') ELSE error('recursive iteration') END FROM c WHERE false) SELECT x FROM c LIMIT 3;
+----
+0
+1
+2
+
+query I
+SELECT currval('seq');
+----
+2
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+statement error
+WITH RECURSIVE c(x) AS  (SELECT 0::BIGINT UNION SELECT count(*)+CASE WHEN nextval('seq')<3 THEN currval('seq') ELSE error('recursive iteration') END FROM c WHERE false) SELECT x FROM c LIMIT 4;
+----
+<REGEX>:Invalid Input Error:.*recursive iteration.*
+
+query I
+SELECT currval('seq');
+----
+3
+
+statement ok
+SET disabled_optimizers='';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+statement error
+WITH RECURSIVE c(x) AS MATERIALIZED (SELECT 0::BIGINT UNION SELECT count(*)+CASE WHEN nextval('seq')<3 THEN currval('seq') ELSE error('recursive iteration') END FROM c WHERE false) SELECT x FROM c LIMIT 3;
+----
+<REGEX>:Invalid Input Error:.*recursive iteration.*
+
+query I
+SELECT currval('seq');
+----
+3
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+statement error
+WITH RECURSIVE c(x) AS MATERIALIZED (SELECT 0::BIGINT UNION SELECT count(*)+CASE WHEN nextval('seq')<3 THEN currval('seq') ELSE error('recursive iteration') END FROM c WHERE false) SELECT x FROM c LIMIT 4;
+----
+<REGEX>:Invalid Input Error:.*recursive iteration.*
+
+query I
+SELECT currval('seq');
+----
+3
+
+statement ok
+SET disabled_optimizers='cte_inlining';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+statement error
+WITH RECURSIVE c(x) AS MATERIALIZED (SELECT 0::BIGINT UNION SELECT count(*)+CASE WHEN nextval('seq')<3 THEN currval('seq') ELSE error('recursive iteration') END FROM c WHERE false) SELECT x FROM c LIMIT 3;
+----
+<REGEX>:Invalid Input Error:.*recursive iteration.*
+
+query I
+SELECT currval('seq');
+----
+3
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+statement error
+WITH RECURSIVE c(x) AS MATERIALIZED (SELECT 0::BIGINT UNION SELECT count(*)+CASE WHEN nextval('seq')<3 THEN currval('seq') ELSE error('recursive iteration') END FROM c WHERE false) SELECT x FROM c LIMIT 4;
+----
+<REGEX>:Invalid Input Error:.*recursive iteration.*
+
+query I
+SELECT currval('seq');
+----
+3
+
+statement ok
+SET disabled_optimizers='';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+query I
+WITH RECURSIVE c(x) AS  (SELECT 0::BIGINT UNION ALL SELECT count(*)+CASE WHEN nextval('seq')<3 THEN currval('seq') ELSE error('recursive iteration') END FROM c WHERE false) SELECT x FROM c LIMIT 3;
+----
+0
+1
+2
+
+query I
+SELECT currval('seq');
+----
+2
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+statement error
+WITH RECURSIVE c(x) AS  (SELECT 0::BIGINT UNION ALL SELECT count(*)+CASE WHEN nextval('seq')<3 THEN currval('seq') ELSE error('recursive iteration') END FROM c WHERE false) SELECT x FROM c LIMIT 4;
+----
+<REGEX>:Invalid Input Error:.*recursive iteration.*
+
+query I
+SELECT currval('seq');
+----
+3
+
+statement ok
+SET disabled_optimizers='';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+statement error
+WITH RECURSIVE c(x) AS MATERIALIZED (SELECT 0::BIGINT UNION ALL SELECT count(*)+CASE WHEN nextval('seq')<3 THEN currval('seq') ELSE error('recursive iteration') END FROM c WHERE false) SELECT x FROM c LIMIT 3;
+----
+<REGEX>:Invalid Input Error:.*recursive iteration.*
+
+query I
+SELECT currval('seq');
+----
+3
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+statement error
+WITH RECURSIVE c(x) AS MATERIALIZED (SELECT 0::BIGINT UNION ALL SELECT count(*)+CASE WHEN nextval('seq')<3 THEN currval('seq') ELSE error('recursive iteration') END FROM c WHERE false) SELECT x FROM c LIMIT 4;
+----
+<REGEX>:Invalid Input Error:.*recursive iteration.*
+
+query I
+SELECT currval('seq');
+----
+3
+
+statement ok
+SET disabled_optimizers='cte_inlining';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+statement error
+WITH RECURSIVE c(x) AS MATERIALIZED (SELECT 0::BIGINT UNION ALL SELECT count(*)+CASE WHEN nextval('seq')<3 THEN currval('seq') ELSE error('recursive iteration') END FROM c WHERE false) SELECT x FROM c LIMIT 3;
+----
+<REGEX>:Invalid Input Error:.*recursive iteration.*
+
+query I
+SELECT currval('seq');
+----
+3
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+statement error
+WITH RECURSIVE c(x) AS MATERIALIZED (SELECT 0::BIGINT UNION ALL SELECT count(*)+CASE WHEN nextval('seq')<3 THEN currval('seq') ELSE error('recursive iteration') END FROM c WHERE false) SELECT x FROM c LIMIT 4;
+----
+<REGEX>:Invalid Input Error:.*recursive iteration.*
+
+query I
+SELECT currval('seq');
+----
+3

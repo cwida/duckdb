@@ -1,0 +1,38 @@
+# name: test/sql/copy/parquet/parquet_prefetch_footer_once.test
+# description: Do not fetch an already materialized read head when extending footer prefetch
+# group: [parquet]
+
+require parquet
+
+require noforcestorage
+
+statement ok
+SET enable_external_file_cache=false
+
+statement ok
+SET threads=1
+
+statement ok
+COPY (SELECT i a, i b, i c, i d FROM range(131072) t(i))
+TO '{TEST_DIR}/prefetch_footer_once.parquet' (ROW_GROUP_SIZE 2048)
+
+statement ok
+CALL enable_logging('FileSystem')
+
+query I
+SELECT count(*) FROM parquet_metadata('{TEST_DIR}/prefetch_footer_once.parquet')
+----
+256
+
+query I
+SELECT count(*) FROM duckdb_logs_parsed('FileSystem')
+WHERE path LIKE '%prefetch_footer_once.parquet' AND op = 'READ'
+----
+2
+
+query I
+SELECT count(*) = count(DISTINCT (pos, bytes))
+FROM duckdb_logs_parsed('FileSystem')
+WHERE path LIKE '%prefetch_footer_once.parquet' AND op = 'READ'
+----
+true

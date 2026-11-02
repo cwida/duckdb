@@ -24,28 +24,15 @@
 
 namespace duckdb {
 
-struct LegacyStructPathEntry {
-	idx_t child_idx;
-	Identifier child_name;
-};
-
 static bool ContainsInternalTableFilterFunction(const Expression &expr) {
 	if (expr.GetExpressionClass() == ExpressionClass::BOUND_FUNCTION) {
 		auto &func = expr.Cast<BoundFunctionExpression>();
 		if (TableFilterFunctions::IsTableFilterFunction(func.Function())) {
 			return true;
 		}
-		if (func.Function().GetName() == OptionalFilterScalarFun::NAME && func.BindInfo()) {
-			auto &data = func.BindInfo()->Cast<OptionalFilterFunctionData>();
-			if (data.child_filter_expr && ContainsInternalTableFilterFunction(*data.child_filter_expr)) {
-				return true;
-			}
-		}
-		if (func.Function().GetName() == SelectivityOptionalFilterScalarFun::NAME && func.BindInfo()) {
-			auto &data = func.BindInfo()->Cast<SelectivityOptionalFilterFunctionData>();
-			if (data.child_filter_expr && ContainsInternalTableFilterFunction(*data.child_filter_expr)) {
-				return true;
-			}
+		auto optional_child = ExpressionFilter::GetOptionalFilterChild(func);
+		if (optional_child && ContainsInternalTableFilterFunction(*optional_child)) {
+			return true;
 		}
 	}
 	bool found = false;
@@ -89,35 +76,12 @@ static bool IsSupportedConstantComparison(ExpressionType type) {
 	}
 }
 
-static bool TryExtractLegacySubject(const Expression &expr, vector<LegacyStructPathEntry> &struct_path) {
-	switch (expr.GetExpressionClass()) {
-	case ExpressionClass::BOUND_REF:
-	case ExpressionClass::BOUND_COLUMN_REF:
-		return true;
-	case ExpressionClass::BOUND_FUNCTION: {
-		auto &func = expr.Cast<BoundFunctionExpression>();
-		idx_t child_idx;
-		if (!TryGetStructExtractChildIndex(func, child_idx) || func.GetChildren().empty()) {
-			return false;
-		}
-		if (!TryExtractLegacySubject(*func.GetChildren()[0], struct_path)) {
-			return false;
-		}
-		Identifier child_name;
-		if (func.GetChildren()[0]->GetReturnType().id() == LogicalTypeId::STRUCT &&
-		    !StructType::IsUnnamed(func.GetChildren()[0]->GetReturnType())) {
-			child_name = StructType::GetChildName(func.GetChildren()[0]->GetReturnType(), child_idx);
-		}
-		struct_path.push_back({child_idx, std::move(child_name)});
-		return true;
-	}
-	default:
-		return false;
-	}
+static bool TryExtractLegacySubject(const Expression &expr, vector<StructExtractPathEntry> &struct_path) {
+	return ExpressionFilter::IsSimpleFilterColumnRef(PeelStructExtractPath(expr, struct_path));
 }
 
 static unique_ptr<TableFilter> WrapStructFilterPath(unique_ptr<TableFilter> filter,
-                                                    const vector<LegacyStructPathEntry> &struct_path) {
+                                                    const vector<StructExtractPathEntry> &struct_path) {
 	for (auto it = struct_path.rbegin(); it != struct_path.rend(); ++it) {
 		filter = make_uniq<LegacyStructFilter>(it->child_idx, it->child_name, std::move(filter));
 	}
@@ -149,7 +113,7 @@ static unique_ptr<TableFilter> TrySerializeComparisonToLegacyFilter(const BoundF
 		comparison_type = FlipComparisonType(comparison_type);
 	}
 
-	vector<LegacyStructPathEntry> struct_path;
+	vector<StructExtractPathEntry> struct_path;
 	if (!TryExtractLegacySubject(subject, struct_path)) {
 		return nullptr;
 	}
@@ -176,7 +140,7 @@ static unique_ptr<TableFilter> TrySerializeOperatorToLegacyFilter(const BoundOpe
 		if (op.GetChildren().size() != 1) {
 			return nullptr;
 		}
-		vector<LegacyStructPathEntry> struct_path;
+		vector<StructExtractPathEntry> struct_path;
 		if (!TryExtractLegacySubject(*op.GetChildren()[0], struct_path)) {
 			return nullptr;
 		}
@@ -189,7 +153,7 @@ static unique_ptr<TableFilter> TrySerializeOperatorToLegacyFilter(const BoundOpe
 		if (op.GetChildren().empty()) {
 			return nullptr;
 		}
-		vector<LegacyStructPathEntry> struct_path;
+		vector<StructExtractPathEntry> struct_path;
 		if (!TryExtractLegacySubject(*op.GetChildren()[0], struct_path)) {
 			return nullptr;
 		}
@@ -223,20 +187,8 @@ static unique_ptr<TableFilter> SerializeOptionalChild(const optional_ptr<const E
 
 static unique_ptr<TableFilter> SerializeInternalFunctionToLegacyFilter(const BoundFunctionExpression &func_expr) {
 	auto &func_name = func_expr.Function().GetName();
-	if (func_name == OptionalFilterScalarFun::NAME) {
-		unique_ptr<TableFilter> child_filter;
-		if (func_expr.BindInfo()) {
-			auto &data = func_expr.BindInfo()->Cast<OptionalFilterFunctionData>();
-			child_filter = SerializeOptionalChild(data.child_filter_expr.get());
-		}
-		return make_uniq<LegacyOptionalFilter>(std::move(child_filter));
-	}
-	if (func_name == SelectivityOptionalFilterScalarFun::NAME) {
-		unique_ptr<TableFilter> child_filter;
-		if (func_expr.BindInfo()) {
-			auto &data = func_expr.BindInfo()->Cast<SelectivityOptionalFilterFunctionData>();
-			child_filter = SerializeOptionalChild(data.child_filter_expr.get());
-		}
+	if (ExpressionFilter::IsRootOptionalExpression(func_expr)) {
+		auto child_filter = SerializeOptionalChild(ExpressionFilter::GetOptionalFilterChild(func_expr));
 		return make_uniq<LegacyOptionalFilter>(std::move(child_filter));
 	}
 	if (func_name == DynamicFilterScalarFun::NAME) {
@@ -256,7 +208,7 @@ static unique_ptr<TableFilter> SerializeInternalFunctionToLegacyFilter(const Bou
 	if (func_name == BloomFilterScalarFun::NAME || func_name == PrefixRangeScalarFun::NAME) {
 		return make_uniq<LegacyOptionalFilter>();
 	}
-	throw SerializationException("Unsupported internal tablefilter function \"%s\" during serialization", func_name);
+	throw SerializationException("Unsupported internal tablefilter function %s during serialization", func_name);
 }
 
 static unique_ptr<TableFilter> SerializeConjunctionToLegacyFilter(const BoundConjunctionExpression &conjunction) {

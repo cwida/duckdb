@@ -14,7 +14,7 @@
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/logging/log_manager.hpp"
-#include "duckdb/common/http_util.hpp"
+#include "duckdb/main/http/http_util.hpp"
 
 namespace duckdb {
 class DatabaseInstance;

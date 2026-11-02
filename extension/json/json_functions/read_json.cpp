@@ -3,9 +3,8 @@
 #include "duckdb/common/multi_file/multi_file_reader.hpp"
 #include "json_functions.hpp"
 #include "json_scan.hpp"
-#include "json_structure.hpp"
+#include "json_schema_inference.hpp"
 #include "json_transform.hpp"
-#include "json_multi_file_info.hpp"
 #include "duckdb/parallel/task_executor.hpp"
 
 namespace duckdb {
@@ -22,7 +21,7 @@ static inline LogicalType RemoveDuplicateStructKeys(const LogicalType &type, con
 					continue;
 				}
 				throw NotImplementedException(
-				    "Duplicate name \"%s\" in struct auto-detected in JSON, try ignore_errors=true", child_type.first);
+				    "Duplicate name %s in struct auto-detected in JSON, try ignore_errors=true", child_type.first);
 			} else {
 				child_types.emplace_back(child_type.first, RemoveDuplicateStructKeys(child_type.second, ignore_errors));
 			}
@@ -40,15 +39,16 @@ static inline LogicalType RemoveDuplicateStructKeys(const LogicalType &type, con
 }
 
 struct AutoDetectState {
-	AutoDetectState(ClientContext &context_p, MultiFileBindData &bind_data_p, const vector<OpenFileInfo> &files,
-	                MutableDateFormatMap &date_format_map)
-	    : context(context_p), bind_data(bind_data_p), files(files), date_format_map(date_format_map), files_scanned(0),
-	      tuples_scanned(0), bytes_scanned(0), total_file_size(0) {
+	AutoDetectState(ClientContext &context_p, JSONScanData &json_data_p, const vector<OpenFileInfo> &files,
+	                vector<shared_ptr<JSONReader>> &sampled_readers_p, MutableDateFormatMap &date_format_map)
+	    : context(context_p), json_data(json_data_p), files(files), sampled_readers(sampled_readers_p),
+	      date_format_map(date_format_map), files_scanned(0), tuples_scanned(0), bytes_scanned(0), total_file_size(0) {
 	}
 
 	ClientContext &context;
-	MultiFileBindData &bind_data;
+	JSONScanData &json_data;
 	const vector<OpenFileInfo> &files;
+	vector<shared_ptr<JSONReader>> &sampled_readers;
 	MutableDateFormatMap &date_format_map;
 	atomic<idx_t> files_scanned;
 	atomic<idx_t> tuples_scanned;
@@ -68,19 +68,17 @@ public:
 	static idx_t ExecuteInternal(AutoDetectState &auto_detect_state, JSONStructureNode &node, const idx_t file_idx,
 	                             ArenaAllocator &allocator, Vector &string_vector, idx_t remaining) {
 		auto &context = auto_detect_state.context;
-		auto &bind_data = auto_detect_state.bind_data;
 		auto &files = auto_detect_state.files;
-		auto &json_data = bind_data.bind_data->Cast<JSONScanData>();
+		auto &json_data = auto_detect_state.json_data;
 		auto json_reader = make_shared_ptr<JSONReader>(context, json_data.options, files[file_idx].path);
-		if (bind_data.union_readers[file_idx]) {
-			throw InternalException("Union data already set");
+		if (auto_detect_state.sampled_readers[file_idx]) {
+			throw InternalException("Reader for file %llu was already created", file_idx);
 		}
 		auto &reader = *json_reader;
-		auto union_data = make_uniq<BaseUnionData>(files[file_idx].path);
-		union_data->reader = std::move(json_reader);
-		bind_data.union_readers[file_idx] = std::move(union_data);
+		auto_detect_state.sampled_readers[file_idx] = std::move(json_reader);
 
-		auto &global_allocator = Allocator::Get(context);
+		// the sampled readers keep their first buffer for the scan, so it has to count against the memory limit
+		auto &global_allocator = BufferAllocator::Get(context);
 		idx_t buffer_capacity = json_data.options.maximum_object_size * 2;
 		JSONReaderScanState scan_state(context, global_allocator, buffer_capacity);
 		auto &options = json_data.options;
@@ -121,6 +119,8 @@ public:
 			node.RefineCandidateTypes(scan_state.values, next, string_vector, allocator,
 			                          auto_detect_state.date_format_map, user_specified_timestamp_format);
 		}
+		// release the current buffer, otherwise the sampled reader keeps it alive after the bind
+		scan_state.ClearBufferHandle();
 		auto_detect_state.total_file_size += file_size;
 		auto_detect_state.bytes_scanned += total_read_size;
 		auto_detect_state.tuples_scanned += total_tuple_count;
@@ -130,8 +130,7 @@ public:
 	}
 
 	void ExecuteTask() override {
-		auto &json_data = auto_detect_state.bind_data.bind_data->Cast<JSONScanData>();
-		auto &options = json_data.options;
+		auto &options = auto_detect_state.json_data.options;
 		for (idx_t file_idx = file_idx_start; file_idx < file_idx_end; file_idx++) {
 			ExecuteInternal(auto_detect_state, node, file_idx, allocator, string_vector, options.sample_size);
 		}
@@ -240,24 +239,24 @@ static void BindGeoJSONFeatureColumns(const LogicalType &type, const vector<Iden
 	}
 }
 
-void JSONScan::AutoDetect(ClientContext &context, MultiFileBindData &bind_data, vector<LogicalType> &return_types,
-                          vector<Identifier> &names) {
-	auto &json_data = bind_data.bind_data->Cast<JSONScanData>();
-
+unique_ptr<JSONStructureNode> JSONScan::DetectStructure(ClientContext &context, JSONScanData &json_data,
+                                                        const vector<OpenFileInfo> &files,
+                                                        vector<shared_ptr<JSONReader>> &sampled_readers) {
 	MutableDateFormatMap date_format_map(*json_data.date_format_map);
-	JSONStructureNode node;
 	auto &options = json_data.options;
-	auto files = bind_data.file_list->GetAllFiles();
-	auto file_count = bind_data.file_options.union_by_name
-	                      ? files.size()
-	                      : MinValue<idx_t>(options.maximum_sample_files, files.size());
-	bind_data.union_readers.resize(files.empty() ? 0 : files.size());
+	auto node = make_uniq<JSONStructureNode>(options.case_insensitive_keys);
+	auto file_count = MinValue<idx_t>(options.maximum_sample_files, files.size());
+	sampled_readers.resize(files.empty() ? 0 : files.size());
 
-	AutoDetectState auto_detect_state(context, bind_data, files, date_format_map);
+	AutoDetectState auto_detect_state(context, json_data, files, sampled_readers, date_format_map);
 	const auto num_threads = TaskScheduler::GetScheduler(context).NumberOfThreads();
 	const auto files_per_task = (file_count + num_threads - 1) / num_threads;
 	const auto num_tasks = (file_count + files_per_task - 1) / files_per_task;
-	vector<JSONStructureNode> task_nodes(num_tasks);
+	vector<JSONStructureNode> task_nodes;
+	task_nodes.reserve(num_tasks);
+	for (idx_t task_idx = 0; task_idx < num_tasks; task_idx++) {
+		task_nodes.emplace_back(options.case_insensitive_keys);
+	}
 
 	// Same idea as in union_by_name.hpp
 	TaskExecutor executor(context);
@@ -272,7 +271,7 @@ void JSONScan::AutoDetect(ClientContext &context, MultiFileBindData &bind_data, 
 
 	// Merge task nodes into one
 	for (auto &task_node : task_nodes) {
-		JSONStructure::MergeNodes(node, task_node);
+		JSONStructure::MergeNodes(*node, task_node);
 	}
 
 	// set the max threads/estimated per-file cardinality
@@ -285,28 +284,33 @@ void JSONScan::AutoDetect(ClientContext &context, MultiFileBindData &bind_data, 
 			    MaxValue<idx_t>(auto_detect_state.total_file_size / json_data.options.maximum_object_size, 1);
 		}
 	}
+	return node;
+}
 
+void JSONScan::StructureToColumns(ClientContext &context, JSONReaderOptions &options, const JSONStructureNode &node,
+                                  vector<JSONFeatureColumn> &feature_columns, vector<LogicalType> &return_types,
+                                  vector<Identifier> &names) {
 	// Convert structure to logical type
 	auto type = JSONStructure::StructureToType(context, node, options.max_depth, options.field_appearance_threshold,
 	                                           options.map_inference_threshold);
 
 	// Auto-detect record type
-	if (json_data.options.record_type == JSONRecordType::AUTO_DETECT) {
+	if (options.record_type == JSONRecordType::AUTO_DETECT) {
 		if (options.geojson.value_or(false) && IsGeoJSONFeatureType(type)) {
-			json_data.options.record_type = JSONRecordType::FEATURES;
+			options.record_type = JSONRecordType::FEATURES;
 		} else if (type.id() == LogicalTypeId::STRUCT) {
-			json_data.options.record_type = JSONRecordType::RECORDS;
+			options.record_type = JSONRecordType::RECORDS;
 		} else {
-			json_data.options.record_type = JSONRecordType::VALUES;
+			options.record_type = JSONRecordType::VALUES;
 		}
 	}
 
-	if (json_data.options.record_type == JSONRecordType::FEATURES) {
+	if (options.record_type == JSONRecordType::FEATURES) {
 		if (names.empty()) {
-			UnnestGeoJSONFeature(type, options.ignore_errors, return_types, names, json_data.feature_columns);
+			UnnestGeoJSONFeature(type, options.ignore_errors, return_types, names, feature_columns);
 		} else {
 			// COPY - we already have names/types, but we still need to know where each of them is read from
-			BindGeoJSONFeatureColumns(type, names, json_data.feature_columns);
+			BindGeoJSONFeatureColumns(type, names, feature_columns);
 		}
 		return;
 	}
@@ -317,7 +321,7 @@ void JSONScan::AutoDetect(ClientContext &context, MultiFileBindData &bind_data, 
 	}
 
 	// Auto-detect columns
-	if (json_data.options.record_type == JSONRecordType::RECORDS) {
+	if (options.record_type == JSONRecordType::RECORDS) {
 		if (type.id() == LogicalTypeId::STRUCT) {
 			const auto &child_types = StructType::GetChildTypes(type);
 			return_types.reserve(child_types.size());
@@ -331,66 +335,23 @@ void JSONScan::AutoDetect(ClientContext &context, MultiFileBindData &bind_data, 
 			                      "\n Try setting records='auto' or records='false'.");
 		}
 	} else {
-		D_ASSERT(json_data.options.record_type == JSONRecordType::VALUES);
+		D_ASSERT(options.record_type == JSONRecordType::VALUES);
 		return_types.emplace_back(RemoveDuplicateStructKeys(type, options.ignore_errors));
 		// Newline-delimited bare geometries produce a single GEOMETRY column, which "json" would be a poor name for
 		names.emplace_back(type.id() == LogicalTypeId::GEOMETRY ? "geometry" : "json");
 	}
 }
 
-TableFunction JSONFunctions::GetReadJSONTableFunction(shared_ptr<JSONScanInfo> function_info) {
-	MultiFileFunction<JSONMultiFileInfo> table_function("read_json");
-
-	JSONScan::TableFunctionDefaults(table_function);
-	table_function.named_parameters["columns"] = LogicalType::ANY;
-	table_function.named_parameters["auto_detect"] = LogicalType::BOOLEAN;
-	table_function.named_parameters["geojson"] = LogicalType::BOOLEAN;
-	table_function.named_parameters["sample_size"] = LogicalType::BIGINT;
-	table_function.named_parameters["dateformat"] = LogicalType::VARCHAR;
-	table_function.named_parameters["date_format"] = LogicalType::VARCHAR;
-	table_function.named_parameters["timestampformat"] = LogicalType::VARCHAR;
-	table_function.named_parameters["timestamp_format"] = LogicalType::VARCHAR;
-	table_function.named_parameters["records"] = LogicalType::VARCHAR;
-	table_function.named_parameters["maximum_sample_files"] = LogicalType::BIGINT;
-
-	// TODO: might be able to do filter pushdown/prune ?
-	table_function.function_info = std::move(function_info);
-
-	return static_cast<TableFunction>(table_function);
-}
-
-TableFunctionSet CreateJSONFunctionInfo(string name, shared_ptr<JSONScanInfo> info) {
-	auto table_function = JSONFunctions::GetReadJSONTableFunction(std::move(info));
-	table_function.SetName(Identifier(std::move(name)));
-	table_function.named_parameters["maximum_depth"] = LogicalType::BIGINT;
-	table_function.named_parameters["field_appearance_threshold"] = LogicalType::DOUBLE;
-	table_function.named_parameters["convert_strings_to_integers"] = LogicalType::BOOLEAN;
-	table_function.named_parameters["map_inference_threshold"] = LogicalType::BIGINT;
-	return MultiFileReader::CreateFunctionSet(table_function);
-}
-
-TableFunctionSet JSONFunctions::GetReadJSONFunction() {
-	auto info = make_shared_ptr<JSONScanInfo>(JSONScanType::READ_JSON, JSONFormat::AUTO_DETECT,
-	                                          JSONRecordType::AUTO_DETECT, true);
-	return CreateJSONFunctionInfo("read_json", std::move(info));
-}
-
-TableFunctionSet JSONFunctions::GetReadNDJSONFunction() {
-	auto info = make_shared_ptr<JSONScanInfo>(JSONScanType::READ_JSON, JSONFormat::NEWLINE_DELIMITED,
-	                                          JSONRecordType::AUTO_DETECT, true);
-	return CreateJSONFunctionInfo("read_ndjson", std::move(info));
-}
-
-TableFunctionSet JSONFunctions::GetReadJSONAutoFunction() {
-	auto info = make_shared_ptr<JSONScanInfo>(JSONScanType::READ_JSON, JSONFormat::AUTO_DETECT,
-	                                          JSONRecordType::AUTO_DETECT, true);
-	return CreateJSONFunctionInfo("read_json_auto", std::move(info));
-}
-
-TableFunctionSet JSONFunctions::GetReadNDJSONAutoFunction() {
-	auto info = make_shared_ptr<JSONScanInfo>(JSONScanType::READ_JSON, JSONFormat::NEWLINE_DELIMITED,
-	                                          JSONRecordType::AUTO_DETECT, true);
-	return CreateJSONFunctionInfo("read_ndjson_auto", std::move(info));
+void JSONScan::AutoDetect(ClientContext &context, JSONScanData &json_data, const vector<OpenFileInfo> &files,
+                          vector<shared_ptr<JSONReader>> &sampled_readers, vector<LogicalType> &return_types,
+                          vector<Identifier> &names) {
+	json_data.record_type_auto_detected = json_data.options.record_type == JSONRecordType::AUTO_DETECT;
+	auto node = DetectStructure(context, json_data, files, sampled_readers);
+	StructureToColumns(context, json_data.options, *node, json_data.feature_columns, return_types, names);
+	if (json_data.keep_structure) {
+		// keep the structure around so it can be combined with the structures of other files later on
+		json_data.structure = std::move(node);
+	}
 }
 
 } // namespace duckdb

@@ -1,0 +1,55 @@
+# name: test/sql/sql_export/explain_sql_scopes.test
+# description: SQL explain omits dummy and output-name scopes while preserving query semantics
+# group: [sql_export]
+
+query TT
+EXPLAIN (SQL) SELECT 1;
+----
+sql	SELECT CAST(1 AS INTEGER) AS "1"
+
+query TT
+EXPLAIN (SQL) SELECT NULL::INTEGER AS "null value", 2::BIGINT AS "two";
+----
+sql	SELECT CAST(NULL AS INTEGER) AS "null value", CAST(2 AS BIGINT) AS two
+
+query II
+SELECT 1 AS same, 2::BIGINT AS same;
+----
+1	2
+
+query II
+SELECT i AS c1, j AS c0 FROM (VALUES (1, 30), (2, 10), (2, 10), (NULL, 20)) t(i,j) ORDER BY c0, c1 NULLS LAST LIMIT 3;
+----
+2	10
+2	10
+NULL	20
+
+query I
+WITH RECURSIVE r(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM r WHERE i<3) SELECT i FROM r ORDER BY i;
+----
+1
+2
+3
+
+query I
+SELECT i FROM (VALUES (1)) t(i) WHERE false;
+----
+
+statement ok
+CREATE SEQUENCE fromless_sequence;
+
+query II
+SELECT nextval('fromless_sequence'), nextval('fromless_sequence');
+----
+1	2
+
+query I
+SELECT currval('fromless_sequence');
+----
+2
+
+query I
+SELECT 1 AS result UNION ALL SELECT 1;
+----
+1
+1

@@ -1,0 +1,69 @@
+# name: test/sql/optimizer/null_check_statistics_propagation.test
+# description: Statistics must not fold IS (NOT) NULL over a child that is volatile or a throwing VARIANT cast
+# group: [optimizer]
+
+statement ok
+CREATE TABLE t AS SELECT 300::INTEGER i, 'hello'::VARCHAR s, {'a': 'x', 'b': 42} st;
+
+# Casting a variable-size value to VARIANT throws if the encoded row is too large, so the cast must stay in the plan
+# The query from the issue needs more than 4 GB of memory, so only the plans are checked here
+foreach expr s::VARIANT st::VARIANT st::VARIANT::VARCHAR
+
+query II
+EXPLAIN SELECT {expr} IS NOT NULL FROM t;
+----
+physical_plan	<REGEX>:.*IS NOT NULL.*
+
+query II
+EXPLAIN SELECT {expr} IS NULL FROM t;
+----
+physical_plan	<REGEX>:.*IS NULL.*
+
+endloop
+
+# TRY_CAST does not suppress the row size error either
+query II
+EXPLAIN SELECT TRY_CAST(st AS VARIANT) IS NOT NULL FROM t;
+----
+physical_plan	<REGEX>:.*IS NOT NULL.*
+
+query II
+SELECT st::VARIANT IS NOT NULL, st::VARIANT IS NULL FROM t;
+----
+true	false
+
+# Fixed-size values cannot exceed the VARIANT row size limit
+query II
+EXPLAIN SELECT i::VARIANT IS NOT NULL FROM t;
+----
+physical_plan	<REGEX>:.*Projections: true.*
+
+query I
+SELECT i::VARIANT IS NOT NULL FROM t;
+----
+true
+
+# Other children are still folded
+query II
+EXPLAIN SELECT s IS NOT NULL FROM t;
+----
+physical_plan	<REGEX>:.*Projections: true.*
+
+query II
+EXPLAIN SELECT s IS NULL FROM t;
+----
+physical_plan	<REGEX>:.*Projections: false.*
+
+# Do not change the number of volatile function evaluations
+statement ok
+CREATE SEQUENCE seq;
+
+query I
+SELECT nextval('seq') IS NOT NULL FROM t;
+----
+true
+
+query I
+SELECT currval('seq');
+----
+1

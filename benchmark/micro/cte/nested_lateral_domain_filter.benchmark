@@ -1,0 +1,48 @@
+# name: benchmark/micro/cte/nested_lateral_domain_filter.benchmark
+# description: Restrict nested recursive domains using a sparse outer key set
+# group: [cte]
+
+name Nested Lateral Recursive Domain Filter
+group micro
+subgroup cte
+
+load
+CREATE TABLE person AS
+SELECT i::BIGINT id, i % 10000 = 3 AS selected FROM range(100000) t(i);
+
+init
+SET threads=1;
+SET max_execution_time=30000;
+
+run
+SELECT sum(x)
+FROM (
+    SELECT o.id, o.selected, q.x
+    FROM person o,
+    LATERAL (
+        SELECT r.x
+        FROM person i,
+        LATERAL (
+            WITH RECURSIVE walk(x) USING KEY(x) AS (
+                SELECT i.id
+                UNION
+                SELECT w.x + 1
+                FROM walk w
+                WHERE w.x < i.id + 2
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM recurring.walk visited
+                      WHERE visited.x = w.x + 1
+                  )
+            )
+            SELECT max(x) AS x FROM walk
+        ) r
+        WHERE i.id = o.id
+        UNION ALL
+        SELECT -1
+    ) q
+) result
+WHERE selected;
+
+result I
+450040

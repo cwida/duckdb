@@ -5,9 +5,11 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 
+BENCHMARK_DATA_DIRECTORY = "duckdb_benchmark_data"
 DEFAULT_PROCESS_TIMEOUT = 600
 DISABLED_RUNNER_TIMEOUT = 3600
 EXTENSION_DIRECTORY_ENV = "DUCKDB_BENCHMARK_EXTENSION_DIRECTORY"
+BENCHMARK_NOT_FOUND_MESSAGE = "Benchmark to run could not be found."
 
 STDERR_HEADER = '''====================================================
 ==============         STDERR          =============
@@ -18,6 +20,10 @@ STDOUT_HEADER = '''====================================================
 ==============         STDOUT          =============
 ====================================================
 '''
+
+
+def benchmark_not_found(error: Optional[str]) -> bool:
+    return error is not None and BENCHMARK_NOT_FOUND_MESSAGE in (line.strip() for line in error.splitlines())
 
 
 def benchmark_failure_message(
@@ -53,7 +59,38 @@ def find_extension_directory(runner_path: str) -> Optional[str]:
 
 
 def find_benchmark_cache_directory(runner_path: str) -> str:
-    return os.path.abspath(os.path.join(os.path.dirname(runner_path), "..", "..", "..", "duckdb_benchmark_data"))
+    return os.path.abspath(os.path.join(os.path.dirname(runner_path), "..", "..", "..", BENCHMARK_DATA_DIRECTORY))
+
+
+def symlink_directory_entries(source_directory: Path, target_directory: Path, skipped_name: Optional[str] = None):
+    for source_path in source_directory.iterdir():
+        if source_path.name == skipped_name:
+            continue
+        target_path = target_directory / source_path.name
+        target_path.symlink_to(source_path, target_is_directory=source_path.is_dir())
+
+
+def create_isolated_benchmark_root(source_root: Path, target_root: Path, tpcds_answers: Optional[Path] = None):
+    """Give a runner a root directory of its own, with existing benchmark data symlinked into it."""
+    target_root.mkdir()
+    symlink_directory_entries(source_root, target_root, BENCHMARK_DATA_DIRECTORY)
+    target_data_directory = target_root / BENCHMARK_DATA_DIRECTORY
+    target_data_directory.mkdir()
+    source_data_directory = source_root / BENCHMARK_DATA_DIRECTORY
+    if source_data_directory.is_dir():
+        symlink_directory_entries(source_data_directory, target_data_directory)
+    if tpcds_answers is not None:
+        source_directory = source_root
+        target_directory = target_root
+        for name in ("extension", "tpcds", "dsdgen"):
+            source_directory = source_directory / name
+            target_directory = target_directory / name
+            target_directory.unlink()
+            target_directory.mkdir()
+            symlink_directory_entries(source_directory, target_directory)
+        answers_directory = target_directory / "answers"
+        answers_directory.unlink()
+        answers_directory.symlink_to(tpcds_answers, target_is_directory=True)
 
 
 class BenchmarkRunner:
@@ -78,7 +115,7 @@ class BenchmarkRunner:
         self.root_directory = root_directory
         self.extension_directory = find_extension_directory(path)
         self.cache_directory = (
-            os.path.join(root_directory, "duckdb_benchmark_data")
+            os.path.join(root_directory, BENCHMARK_DATA_DIRECTORY)
             if root_directory
             else find_benchmark_cache_directory(path)
         )

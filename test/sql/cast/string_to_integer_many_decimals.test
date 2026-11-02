@@ -1,0 +1,29 @@
+# name: test/sql/cast/string_to_integer_many_decimals.test
+# description: Casting strings with very many fractional digits to integers
+# group: [cast]
+
+query III
+SELECT CAST('0.' || repeat('0', 65536) || '5' AS INT), CAST('0.' || repeat('0', 65536) || '5' AS HUGEINT), CAST('-0.' || repeat('0', 65536) || '5' AS BIGINT);
+----
+0	0	0
+
+query IIII
+SELECT CAST('7.' || repeat('0', 70000) || '9' AS UBIGINT), CAST('7.' || repeat('0', 70000) || '9' AS UHUGEINT), CAST('-7.' || repeat('0', 131072) || '9' AS SMALLINT), CAST('7.' || repeat('9', 70000) AS INT);
+----
+7	7	-7	8
+
+# the exponent shifts the fractional digits
+query II
+SELECT CAST('0.' || repeat('0', 70000) || '5e30000' AS INT), CAST('0.' || repeat('0', 100) || '5e101' AS INT);
+----
+0	5
+
+query I
+SELECT CAST('0.5' || repeat('0', 70000) AS BIGINT);
+----
+1
+
+query II
+SELECT CAST('0.5' AS INT), CAST('2.5e0' AS HUGEINT);
+----
+1	3

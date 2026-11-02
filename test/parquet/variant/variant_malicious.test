@@ -18,3 +18,67 @@ statement error
 SELECT variant_bytes_to_variant('\x01\x00\x00\x05\xFF'::BLOB);
 ----
 IO Error: Can't decode Variant short-string, string isn't valid UTF8
+
+# Decimal scale exceeding the maximum DECIMAL width
+statement error
+SELECT variant_bytes_to_variant('\x01\x00\x00\x20\xFF\x05\x00\x00\x00'::BLOB);
+----
+IO Error: Corrupted VARIANT 'value' buffer, decimal scale 255 exceeds the maximum of 38
+
+statement error
+SELECT variant_bytes_to_variant('\x01\x00\x00\x24\x27\x05\x00\x00\x00\x00\x00\x00\x00'::BLOB);
+----
+IO Error: Corrupted VARIANT 'value' buffer, decimal scale 39 exceeds the maximum of 38
+
+# DECIMAL16 value outside of the DECIMAL(38) range
+statement error
+SELECT variant_bytes_to_variant('\x01\x00\x00\x28\x00\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\x7F'::BLOB);
+----
+IO Error: Corrupted VARIANT 'value' buffer, DECIMAL16 value exceeds the maximum width of 38
+
+statement error
+SELECT variant_bytes_to_variant('\x01\x00\x00\x28\x26\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x80'::BLOB);
+----
+IO Error: Corrupted VARIANT 'value' buffer, DECIMAL16 value exceeds the maximum width of 38
+
+# TIME values outside of [00:00:00, 24:00:00] are corrupted input
+statement error
+SELECT variant_bytes_to_variant('\x01\x00\x00\x44\x00\x10\xAC\xD1\x53\x00\x00\x00'::BLOB);
+----
+IO Error: Corrupted VARIANT 'value' buffer, TIME value (360000000000) is out of range
+
+statement error
+SELECT variant_bytes_to_variant('\x01\x00\x00\x44\x00\x00\x92\xDB\x0B\x7D\x7F\x02'::BLOB);
+----
+IO Error: Corrupted VARIANT 'value' buffer, TIME value (180000000000000000) is out of range
+
+statement error
+SELECT variant_bytes_to_variant('\x01\x00\x00\x44\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF'::BLOB);
+----
+IO Error: Corrupted VARIANT 'value' buffer, TIME value (-1) is out of range
+
+statement error
+SELECT variant_bytes_to_variant('\x01\x00\x00\x44\x01\x60\xD7\x1D\x14\x00\x00\x00'::BLOB);
+----
+IO Error: Corrupted VARIANT 'value' buffer, TIME value (86400000001) is out of range
+
+query II
+SELECT variant_bytes_to_variant('\x01\x00\x00\x44\x00\x60\xD7\x1D\x14\x00\x00\x00'::BLOB) v, variant_typeof(v);
+----
+24:00:00	TIME_MICROS
+
+query I
+SELECT variant_bytes_to_variant('\x01\x00\x00\x44\x00\x00\x00\x00\x00\x00\x00\x00'::BLOB);
+----
+00:00:00
+
+# metadata dictionary key that is not valid UTF8
+statement error
+SELECT variant_bytes_to_variant('\x01\x01\x00\x02\xFF\xFE\x02\x01\x00\x00\x02\x0C\x05'::BLOB);
+----
+Corrupted VARIANT 'metadata' buffer, a dictionary key isn't valid UTF8
+
+query I
+SELECT variant_bytes_to_variant('\x01\x01\x00\x02ab\x02\x01\x00\x00\x02\x0C\x05'::BLOB)::VARCHAR;
+----
+{'ab': 5}

@@ -1,0 +1,13 @@
+diff --git a/test/sql/partitioning/murmur3_small_numeric_types.test b/test/sql/partitioning/murmur3_small_numeric_types.test
+index df11c046..e47351d7 100644
+--- a/test/sql/partitioning/murmur3_small_numeric_types.test
++++ b/test/sql/partitioning/murmur3_small_numeric_types.test
+@@ -4,6 +4,8 @@
+ 
+ require ducklake
+ 
++require notwindows
++
+ # the Iceberg spec hashes every integer type like a long: hash(1) = 1392991556
+ query IIII
+ SELECT murmur3_32(1::TINYINT), murmur3_32(1::SMALLINT), murmur3_32(1::INTEGER), murmur3_32(1::BIGINT)

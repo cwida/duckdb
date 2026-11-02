@@ -119,3 +119,37 @@ SELECT '%' LIKE (chr(0) || '%') ESCAPE chr(0),
        (chr(0) || 'abc') LIKE (chr(0) || '%') ESCAPE ''
 ----
 true	false	true
+
+# A trailing '%' only acts as a wildcard when it is not escaped: with ESCAPE '%', 'abc%%' is the constant "abc%".
+query TT
+SELECT 'abc' LIKE 'abc%%' ESCAPE '%', 'abc%' LIKE 'abc%%' ESCAPE '%'
+----
+false	true
+
+# A pattern ending in an escape character is invalid whether or not the string still has characters left to match.
+statement error
+SELECT 'abcd' LIKE 'abc#' ESCAPE '#';
+----
+Like pattern must not end with escape character
+
+statement error
+SELECT 'abc' LIKE 'abc#' ESCAPE '#';
+----
+Like pattern must not end with escape character
+
+# ... but a string that mismatches earlier never reaches the escape, so it is simply not a match.
+query T
+SELECT 'xyz' LIKE 'abc#' ESCAPE '#'
+----
+false
+
+# The same holds when the escape character is a wildcard, where the pattern is consumed by the trailing '%' loop.
+statement error
+SELECT 'ab' LIKE 'ab%' ESCAPE '%';
+----
+Like pattern must not end with escape character
+
+statement error
+SELECT '' LIKE '%' ESCAPE '%';
+----
+Like pattern must not end with escape character

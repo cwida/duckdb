@@ -1,7 +1,8 @@
 #include "duckdb/execution/operator/aggregate/physical_hash_aggregate.hpp"
 #include "duckdb/execution/operator/projection/physical_projection.hpp"
 #include "duckdb/execution/physical_plan_generator.hpp"
-#include "duckdb/function/aggregate/distributive_function_utils.hpp"
+#include "duckdb/function/aggregate/distributive_functions.hpp"
+#include "duckdb/function/builtin_function_lookup.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/planner/operator/logical_distinct.hpp"
@@ -59,9 +60,9 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalDistinct &op) {
 			first_children.push_back(std::move(bound));
 
 			FunctionBinder function_binder(context);
-			auto first_aggregate =
-			    function_binder.BindAggregateFunction(FirstFunctionGetter::GetFunction(logical_type),
-			                                          std::move(first_children), nullptr, AggregateType::NON_DISTINCT);
+			auto first_aggregate = function_binder.BindAggregateFunction(
+			    GetBuiltinAggregateFunction(context, FirstFun::Name, {logical_type}), std::move(first_children),
+			    nullptr, AggregateType::NON_DISTINCT);
 			first_aggregate->GetOrderBysMutable() = op.order_by ? op.order_by->Copy() : nullptr;
 
 			if (Settings::Get<EnableOptimizerSetting>(context)) {

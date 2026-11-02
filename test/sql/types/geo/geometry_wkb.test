@@ -29,6 +29,28 @@ select id, ST_AsText(ST_GeomFromWKB(ST_AsWKB(g))) from t1 order by id;
 7	GEOMETRYCOLLECTION (POINT (1 1), LINESTRING (0 0, 1 1))
 8	NULL
 
+# A WKB blob encodes exactly one root geometry
+statement error
+SELECT ST_GeomFromWKB(ST_AsWKB('POINT(1 2)'::GEOMETRY) || ST_AsWKB('POINT(9 9)'::GEOMETRY));
+----
+Unexpected trailing data at position 21
+
+# An empty blob is not a valid geometry (previously accepted, producing a value
+# that threw when converted back to text). The octet_length wrapper forces
+# evaluation without stringifying the geometry.
+statement error
+SELECT octet_length(ST_AsWKB(g)) FROM (SELECT ST_GeomFromWKB(x) AS g FROM (VALUES (''::BLOB)) t(x));
+----
+Unexpected end of binary data at position 0
+
+# A collection must contain as many children as its header declares
+# (GEOMETRYCOLLECTION claiming two children but containing one; previously
+# accepted silently)
+statement error
+SELECT octet_length(ST_AsWKB(g)) FROM (SELECT ST_GeomFromWKB(x) AS g FROM (VALUES (unhex('0107000000020000000101000000000000000000F03F0000000000000040'))) t(x));
+----
+Unexpected end of binary data at position 30
+
 # Create a table with all types and all z/m combinations
 statement ok
 create table t_all_types(id INT, g GEOMETRY);

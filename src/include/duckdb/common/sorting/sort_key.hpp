@@ -10,7 +10,6 @@
 
 #include "duckdb/common/bswap.hpp"
 #include "duckdb/common/enum_util.hpp"
-#include "duckdb/common/fast_mem.hpp"
 #include "duckdb/common/smaller_binary.hpp"
 #include "duckdb/common/typedefs.hpp"
 #include "duckdb/common/types/string_type.hpp"
@@ -184,7 +183,7 @@ public:
 		} else if (str.IsInlined()) {
 			memcpy(&sort_key.part0, str.GetPrefix(), string_t::INLINE_LENGTH);
 		} else {
-			FastMemcpy(&sort_key.part0, str.GetPointer(), str.GetSize());
+			memcpy(&sort_key.part0, str.GetPointer(), str.GetSize());
 		}
 
 		// IMPORTANT NOTE: We don't actually store the data in byte-comparable order!
@@ -255,11 +254,18 @@ public:
 		ByteSwap();
 
 		// Deal with non-inlined part (if necessary)
-		if (val.GetSize() > SORT_KEY::INLINE_LENGTH) {
+		if (val.GetSize() > SORT_KEY::INLINE_CAPACITY) {
 			sort_key.size = val.GetSize();
 			sort_key.data.u.ptr = heap_ptr;
 			memcpy(sort_key.data.u.ptr, val.GetData(), sort_key.size);
 			heap_ptr += sort_key.size;
+		} else {
+			// The unused heap pointer holds a zero-padded tail. Keep the heap size at zero.
+			sort_key.data.u.pad = 0;
+			if (val.GetSize() > SORT_KEY::INLINE_LENGTH) {
+				memcpy(&sort_key.data.u.pad, val.GetData() + SORT_KEY::INLINE_LENGTH,
+				       val.GetSize() - SORT_KEY::INLINE_LENGTH);
+			}
 		}
 	}
 
@@ -269,11 +275,14 @@ public:
 
 	void Deconstruct(string_t &val) {
 		auto &sort_key = static_cast<SORT_KEY &>(*this);
-		if (sort_key.size > SORT_KEY::INLINE_LENGTH) {
+		if (!IsInlined()) {
 			val = string_t(const_char_ptr_cast(sort_key.data.u.ptr), UnsafeNumericCast<uint32_t>(sort_key.size));
 		} else {
 			ByteSwap();
-			val = string_t(const_char_ptr_cast(&sort_key.part0), UnsafeNumericCast<uint32_t>(SORT_KEY::INLINE_LENGTH));
+			// Deconstruction already consumes a temporary key copy. Pack its tail over the now-unused size field.
+			memcpy(data_ptr_cast(&sort_key.part0) + SORT_KEY::INLINE_LENGTH, &sort_key.data.u.pad, sizeof(uint64_t));
+			val =
+			    string_t(const_char_ptr_cast(&sort_key.part0), UnsafeNumericCast<uint32_t>(SORT_KEY::INLINE_CAPACITY));
 		}
 	}
 
@@ -281,24 +290,53 @@ public:
 		throw InternalException("VariableSortKey::Deconstruct() called with an int64_t");
 	}
 
-	data_ptr_t GetData() const {
+	bool IsInlined() const {
 		auto &sort_key = static_cast<const SORT_KEY &>(*this);
-		return sort_key.data.u.ptr;
+		return sort_key.size == 0;
 	}
 
-	void SetData(const data_ptr_t &data) {
+	data_ptr_t GetData() const {
+		auto &sort_key = static_cast<const SORT_KEY &>(*this);
+		return IsInlined() ? nullptr : sort_key.data.u.ptr;
+	}
+
+	const_data_ptr_t GetSuffixData() const {
+		auto &sort_key = static_cast<const SORT_KEY &>(*this);
+		return IsInlined() ? const_data_ptr_cast(&sort_key.data.u.pad) : sort_key.data.u.ptr + SORT_KEY::INLINE_LENGTH;
+	}
+
+	void RelocateHeapPointer(const data_ptr_t &old_heap_ptr, const data_ptr_t &new_heap_ptr) {
+		// Inline rows need not have initialized heap locations.
+		if (IsInlined()) {
+			return;
+		}
 		auto &sort_key = static_cast<SORT_KEY &>(*this);
-		sort_key.data.u.ptr = data;
+		sort_key.data.u.ptr = new_heap_ptr + (sort_key.data.u.ptr - old_heap_ptr);
 	}
 
 	idx_t GetSize() const {
 		auto &sort_key = static_cast<const SORT_KEY &>(*this);
-		return MaxValue(sort_key.size, SORT_KEY::INLINE_LENGTH);
+		return MaxValue(sort_key.size, SORT_KEY::INLINE_CAPACITY);
 	}
 
 	idx_t GetHeapSize() const {
 		auto &sort_key = static_cast<const SORT_KEY &>(*this);
 		return sort_key.size;
+	}
+
+	//! Shared prefix safe for heap-only comparisons between sorted endpoints, or zero if unavailable.
+	idx_t GetHeapPrefixLength(const SORT_KEY &other, const idx_t max_prefix) const {
+		auto &sort_key = static_cast<const SORT_KEY &>(*this);
+		if (IsInlined() || other.IsInlined() || memcmp(&sort_key.part0, &other.part0, SORT_KEY::INLINE_LENGTH) != 0) {
+			return 0;
+		}
+		const auto limit = MinValue(max_prefix, MinValue(sort_key.size, other.size));
+		idx_t prefix = SORT_KEY::INLINE_LENGTH;
+		while (prefix < limit && sort_key.data.u.ptr[prefix] == other.data.u.ptr[prefix]) {
+			prefix++;
+		}
+		// Matching all inline bytes keeps inline keys before these heap-backed endpoints.
+		return prefix < SORT_KEY::INLINE_CAPACITY ? 0 : prefix;
 	}
 
 	static int32_t TernaryCompare(const uint64_t &lhs, const uint64_t &rhs) {
@@ -323,14 +361,34 @@ public:
 			return comp_res < 0;
 		}
 
-		// Inlined is equal. If either string is inlined, it is considered "less than"
-		if (lhs.size <= SORT_KEY::INLINE_LENGTH || rhs.size <= SORT_KEY::INLINE_LENGTH) {
-			return lhs.size < rhs.size;
+		// Inline tails are zero-padded; heap-backed keys have at least a full suffix word.
+		if (lhs.IsInlined() || rhs.IsInlined()) {
+			const auto lhs_tail = BSwapIfLE(Load<uint64_t>(lhs.GetSuffixData()));
+			const auto rhs_tail = BSwapIfLE(Load<uint64_t>(rhs.GetSuffixData()));
+			return lhs_tail < rhs_tail || (lhs_tail == rhs_tail && lhs.size < rhs.size);
 		}
 
-		// Both strings are non-inlined
-		comp_res = memcmp(lhs.data.u.ptr, rhs.data.u.ptr, MinValue(lhs.size, rhs.size));
-		return comp_res < 0 || (comp_res == 0 && lhs.size < rhs.size);
+		const auto size = MinValue(lhs.size, rhs.size);
+		const auto suffix_size = size - SORT_KEY::INLINE_LENGTH;
+		constexpr idx_t WORD_COMPARE_LIMIT = 80;
+		if (suffix_size > WORD_COMPARE_LIMIT) {
+			comp_res =
+			    memcmp(lhs.data.u.ptr + SORT_KEY::INLINE_LENGTH, rhs.data.u.ptr + SORT_KEY::INLINE_LENGTH, suffix_size);
+			return comp_res < 0 || (comp_res == 0 && lhs.size < rhs.size);
+		}
+
+		for (idx_t offset = SORT_KEY::INLINE_LENGTH; offset + sizeof(uint64_t) < size; offset += sizeof(uint64_t)) {
+			const auto lhs_word = Load<uint64_t>(lhs.data.u.ptr + offset);
+			const auto rhs_word = Load<uint64_t>(rhs.data.u.ptr + offset);
+			if (lhs_word != rhs_word) {
+				return BSwapIfLE(lhs_word) < BSwapIfLE(rhs_word);
+			}
+		}
+
+		// Overlap already-compared bytes to keep the final word inside the logical key.
+		const auto lhs_word = BSwapIfLE(Load<uint64_t>(lhs.data.u.ptr + size - sizeof(uint64_t)));
+		const auto rhs_word = BSwapIfLE(Load<uint64_t>(rhs.data.u.ptr + size - sizeof(uint64_t)));
+		return lhs_word < rhs_word || (lhs_word == rhs_word && lhs.size < rhs.size);
 	}
 };
 
@@ -373,6 +431,7 @@ struct SortKey<SortKeyType::NO_PAYLOAD_VARIABLE_32>
     : VariableSortKey<SortKey<SortKeyType::NO_PAYLOAD_VARIABLE_32>, false> {
 	static constexpr idx_t PARTS = 2;
 	static constexpr idx_t INLINE_LENGTH = 16;
+	static constexpr idx_t INLINE_CAPACITY = INLINE_LENGTH + sizeof(uint64_t);
 	static constexpr idx_t HEAP_SIZE_OFFSET = 16;
 	uint64_t part0;
 	uint64_t part1;
@@ -411,6 +470,7 @@ template <>
 struct SortKey<SortKeyType::PAYLOAD_VARIABLE_32> : VariableSortKey<SortKey<SortKeyType::PAYLOAD_VARIABLE_32>, true> {
 	static constexpr idx_t PARTS = 1;
 	static constexpr idx_t INLINE_LENGTH = 8;
+	static constexpr idx_t INLINE_CAPACITY = INLINE_LENGTH + sizeof(uint64_t);
 	static constexpr idx_t HEAP_SIZE_OFFSET = 8;
 	uint64_t part0;
 	uint64_t size;
@@ -451,6 +511,17 @@ struct SortKeyUtils {
 			return SortKey<SortKeyType::PAYLOAD_VARIABLE_32>::INLINE_LENGTH;
 		default:
 			throw NotImplementedException("SortKeyUtils::GetInlineLength for %s", EnumUtil::ToString(sort_key_type));
+		}
+	}
+
+	static idx_t GetInlineCapacity(const SortKeyType sort_key_type) {
+		switch (sort_key_type) {
+		case SortKeyType::NO_PAYLOAD_VARIABLE_32:
+			return SortKey<SortKeyType::NO_PAYLOAD_VARIABLE_32>::INLINE_CAPACITY;
+		case SortKeyType::PAYLOAD_VARIABLE_32:
+			return SortKey<SortKeyType::PAYLOAD_VARIABLE_32>::INLINE_CAPACITY;
+		default:
+			return GetInlineLength(sort_key_type);
 		}
 	}
 

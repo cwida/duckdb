@@ -1,0 +1,17 @@
+# name: test/sql/aggregate/aggregates/quantile_memory_limit.test
+# description: The flattened values of a quantile finalize are tracked by the buffer manager
+# group: [aggregates]
+
+statement ok
+PRAGMA memory_limit='300MB'
+
+# 20M buffered values (160MB) plus the flattened copy (next power of two, 268MB) do not fit in the limit
+statement error
+SELECT median(i) FROM range(20000000) t(i)
+----
+Out of Memory
+
+query I
+SELECT median(i) FROM range(200000) t(i)
+----
+99999.5

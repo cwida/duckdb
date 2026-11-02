@@ -1,11 +1,15 @@
 #include "duckdb/planner/expression_binder/index_binder.hpp"
+#include "duckdb/catalog/catalog.hpp"
 
+#include "duckdb/planner/binder.hpp"
 #include "duckdb/parser/parsed_data/create_index_info.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
+#include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/column_binding.hpp"
 #include "duckdb/execution/index/bound_index.hpp"
 #include "duckdb/execution/index/unbound_index.hpp"
+#include "duckdb/main/client_context.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
@@ -79,19 +83,36 @@ unique_ptr<LogicalOperator> IndexBinder::BindCreateIndex(ClientContext &context,
 	// Add the dependencies.
 	auto &dependencies = create_index_info->dependencies;
 	auto &catalog = table_entry.ParentCatalog();
-	SetCatalogLookupCallback([&dependencies, &catalog](CatalogEntry &entry) {
+	SetCatalogLookupCallback([&dependencies, &catalog, &table_entry](CatalogEntry &entry) {
 		if (&catalog != &entry.ParentCatalog()) {
 			return;
 		}
-		// indexes do not require CASCADE to be dropped, they are simply always dropped along with the table
-		dependencies.AddDependency(entry, DependencyDependentFlags());
+		if (&entry == &table_entry) {
+			// indexes do not require CASCADE to be dropped, they are simply always dropped along with the table
+			dependencies.AddDependency(entry, DependencyDependentFlags());
+			return;
+		}
+		// other entries the index expressions use (e.g. macros) cannot be dropped, replaced or altered while the index
+		// exists (note that blocking alone is the legacy value that is read as non-blocking for indexes)
+		dependencies.AddDependency(entry, DependencyDependentFlags().SetBlocking().SetAlterBlocking());
 	});
 
 	// Bind the index expressions.
+	// The expressions are bound again when the index is loaded, so they cannot depend on the session or the query
+	// they are bound in (e.g. now(), getvariable()) - such functions are folded to constants while binding.
+	auto &properties = binder.GetStatementProperties();
+	const auto statement_requires_rebind = properties.always_require_rebind;
 	vector<unique_ptr<Expression>> expressions;
 	for (auto &expr : create_index_info->expressions) {
+		properties.always_require_rebind = false;
 		expressions.push_back(Bind(expr));
+		// casts are bound without the binder, so a cast that reads settings such as TimeZone is found in the key
+		if (properties.always_require_rebind || expressions.back()->RequiresRebind()) {
+			throw BinderException("Index keys cannot contain expressions with side effects. They also cannot depend on "
+			                      "settings such as TimeZone.");
+		}
 	}
+	properties.always_require_rebind = statement_requires_rebind;
 
 	auto &get = plan->Cast<LogicalGet>();
 	InitCreateIndexInfo(get, *create_index_info);

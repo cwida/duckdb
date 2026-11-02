@@ -253,6 +253,20 @@ void ToGeoJSONRecursive(WKBReader &reader, yyjson_mut_doc *doc, yyjson_mut_val *
 //===--------------------------------------------------------------------===//
 // GeoJSON -> WKB
 //===--------------------------------------------------------------------===//
+//! A number, or a number kept as its text (YYJSON_READ_NUMBER_AS_RAW, when a column of the scan is a DECIMAL)
+static bool TryGetOrdinate(yyjson_val *val, double &result) {
+	if (yyjson_is_num(val)) {
+		result = yyjson_get_num(val);
+		return true;
+	}
+	yyjson_val number;
+	if (yyjson_is_raw(val) && JSONCommon::ReadRawNumber(val, number)) {
+		result = yyjson_get_num(&number);
+		return true;
+	}
+	return false;
+}
+
 //! Whether any position in this coordinate tree carries a third ordinate
 bool CoordinatesHaveZ(yyjson_val *coords, const idx_t depth) {
 	if (depth == Geometry::MAX_RECURSION_DEPTH || !yyjson_is_arr(coords)) {
@@ -261,7 +275,7 @@ bool CoordinatesHaveZ(yyjson_val *coords, const idx_t depth) {
 	size_t idx, max;
 	yyjson_val *child;
 	yyjson_arr_foreach(coords, idx, max, child) {
-		if (yyjson_is_num(child)) {
+		if (yyjson_is_num(child) || yyjson_is_raw(child)) {
 			// This array is a position rather than a nesting level
 			return yyjson_arr_size(coords) >= 3;
 		}
@@ -304,10 +318,9 @@ void WritePosition(WKBWriter &writer, yyjson_val *pos, const bool has_z, const c
 		if (idx >= dims) {
 			break;
 		}
-		if (!yyjson_is_num(child)) {
+		if (!TryGetOrdinate(child, ordinates[idx])) {
 			throw InvalidInputException("Invalid GeoJSON: %s position must contain only numbers", context);
 		}
-		ordinates[idx] = yyjson_get_num(child);
 	}
 	writer.Write(ordinates[0]);
 	writer.Write(ordinates[1]);
@@ -500,8 +513,8 @@ static void GeomFromGeoJSONFunction(DataChunk &args, ExpressionState &state, Vec
 
 ScalarFunctionSet JSONFunctions::GetAsGeoJSONFunction() {
 	ScalarFunctionSet set("st_asgeojson");
-	ScalarFunction fun({LogicalType::GEOMETRY()}, LogicalType::JSON(), AsGeoJSONFunction, nullptr, nullptr,
-	                   JSONFunctionLocalState::Init);
+	ScalarFunction fun({}, LogicalType::JSON(), AsGeoJSONFunction, nullptr, nullptr, JSONFunctionLocalState::Init);
+	fun.GetSignature().AddParameter("geom", LogicalType::GEOMETRY());
 	fun.SetFallible();
 	set.AddFunction(fun);
 	return set;
@@ -510,8 +523,9 @@ ScalarFunctionSet JSONFunctions::GetAsGeoJSONFunction() {
 ScalarFunctionSet JSONFunctions::GetGeomFromGeoJSONFunction() {
 	ScalarFunctionSet set("st_geomfromgeojson");
 	for (const auto &input_type : vector<LogicalType> {LogicalType::VARCHAR, LogicalType::JSON()}) {
-		ScalarFunction fun({input_type}, LogicalType::GEOMETRY(), GeomFromGeoJSONFunction, nullptr, nullptr,
+		ScalarFunction fun({}, LogicalType::GEOMETRY(), GeomFromGeoJSONFunction, nullptr, nullptr,
 		                   JSONFunctionLocalState::Init);
+		fun.GetSignature().AddParameter("geojson", input_type);
 		fun.SetFallible();
 		set.AddFunction(fun);
 	}

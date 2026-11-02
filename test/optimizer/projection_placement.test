@@ -1,0 +1,445 @@
+# name: test/optimizer/projection_placement.test
+# description: Cost-aware placement of computed projections around joins
+# group: [optimizer]
+
+statement ok
+PRAGMA explain_output = OPTIMIZED_ONLY;
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+SET disabled_optimizers = '';
+
+statement ok
+CREATE TABLE placement_dimension AS
+SELECT i::INTEGER AS i, (i % 10)::INTEGER AS k, lpad(i::VARCHAR, 100, 'x') AS v
+FROM range(100) t(i);
+
+statement ok
+CREATE TABLE placement_fact AS
+SELECT (i % 100)::INTEGER AS i
+FROM range(100000) t(i);
+
+statement ok
+CREATE TABLE placement_selective AS
+SELECT i::INTEGER AS i
+FROM range(10) t(i);
+
+statement ok
+CREATE TABLE placement_wide AS
+SELECT i::INTEGER AS i, lpad(i::VARCHAR, 2000, 'x') AS v
+FROM range(100) t(i);
+
+# A bounded string projection is cheaper to evaluate on the dimension side of a fanout join
+query II
+EXPLAIN SELECT s
+FROM (SELECT i, substring(v, 1, 20) AS s FROM placement_dimension) d
+JOIN placement_fact USING (i);
+----
+logical_opt	<REGEX>:.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
+
+# The input byte width also bounds substrings with negative offsets and grapheme slicing
+query II
+EXPLAIN SELECT s
+FROM (SELECT i, substring(v, -20, 20) AS s FROM placement_dimension) d
+JOIN placement_fact USING (i);
+----
+logical_opt	<REGEX>:.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
+
+query II
+EXPLAIN SELECT s
+FROM (SELECT i, substring_grapheme(v, 1, 20) AS s FROM placement_dimension) d
+JOIN placement_fact USING (i);
+----
+logical_opt	<REGEX>:.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
+
+# The placement decision is independently configurable
+statement ok
+SET disabled_optimizers = 'projection_placement';
+
+query II
+EXPLAIN SELECT s
+FROM (SELECT i, substring(v, 1, 20) AS s FROM placement_dimension) d
+JOIN placement_fact USING (i);
+----
+logical_opt	<!REGEX>:.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
+
+statement ok
+SET disabled_optimizers = '';
+
+# Placement does not depend on column-lifetime projection maps
+statement ok
+SET disabled_optimizers = 'column_lifetime';
+
+query II
+EXPLAIN SELECT s
+FROM (SELECT i, substring(v, 1, 20) AS s FROM placement_dimension) d
+JOIN placement_fact USING (i);
+----
+logical_opt	<REGEX>:.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
+
+query I
+SELECT COUNT(*)
+FROM (SELECT i, substring(v, 1, 20) AS s FROM placement_dimension) d
+JOIN placement_fact USING (i)
+WHERE length(s) = 20;
+----
+100000
+
+query II
+EXPLAIN SELECT s
+FROM (SELECT i, repeat(v, 10) AS s FROM placement_dimension) d
+JOIN placement_selective USING (i);
+----
+logical_opt	<!REGEX>:.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
+
+query I
+SELECT SUM(length(s))
+FROM (SELECT i, repeat(v, 10) AS s FROM placement_dimension) d
+JOIN placement_selective USING (i);
+----
+10000
+
+# Placement follows direct aliases through ordinary projections as well
+statement ok
+SET disabled_optimizers = 'compressed_materialization';
+
+query II
+EXPLAIN SELECT s
+FROM (
+	SELECT CAST(i AS BIGINT) AS k, s
+	FROM (SELECT i, repeat(v, 10) AS s FROM placement_dimension)
+) d
+JOIN (SELECT i::BIGINT AS k FROM placement_selective) f USING (k);
+----
+logical_opt	<!REGEX>:.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
+
+query I
+SELECT SUM(length(s))
+FROM (
+	SELECT CAST(i AS BIGINT) AS k, s
+	FROM (SELECT i, repeat(v, 10) AS s FROM placement_dimension)
+) d
+JOIN (SELECT i::BIGINT AS k FROM placement_selective) f USING (k);
+----
+10000
+
+# Multiple aliases of the candidate still compute the expression only above the join
+query II
+EXPLAIN SELECT s1, s2
+FROM (
+	SELECT CAST(i AS BIGINT) AS k, s AS s1, s AS s2
+	FROM (SELECT i, repeat(v, 10) AS s FROM placement_dimension)
+) d
+JOIN (SELECT i::BIGINT AS k FROM placement_selective) f USING (k);
+----
+logical_opt	<!REGEX>:.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
+
+query II
+SELECT SUM(length(s1)), SUM(length(s2))
+FROM (
+	SELECT CAST(i AS BIGINT) AS k, s AS s1, s AS s2
+	FROM (SELECT i, repeat(v, 10) AS s FROM placement_dimension)
+) d
+JOIN (SELECT i::BIGINT AS k FROM placement_selective) f USING (k);
+----
+10000	10000
+
+statement ok
+SET disabled_optimizers = '';
+
+# Fixed-size results over bounded strings use the input width in the cost model
+query II
+EXPLAIN SELECT n
+FROM (SELECT i, length(v) AS n FROM placement_dimension) d
+JOIN placement_fact USING (i);
+----
+logical_opt	<REGEX>:.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]n[ ,│].*
+
+# Payload shrinkage can justify placement even without a large cardinality change
+query II
+EXPLAIN SELECT n
+FROM (SELECT i, length(v) AS n FROM placement_wide) d
+JOIN placement_dimension USING (i);
+----
+logical_opt	<REGEX>:.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]n[ ,│].*
+
+# The input payload is not credited as a saving when it is selected independently
+query II
+EXPLAIN SELECT d.v, n
+FROM (SELECT i, v, length(v) AS n FROM placement_wide) d
+JOIN placement_dimension USING (i);
+----
+logical_opt	<!REGEX>:.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]n[ ,│].*
+
+# Fixed-size expressions are eligible as well
+query II
+EXPLAIN SELECT n
+FROM (SELECT i, i + 1 AS n FROM placement_dimension) d
+JOIN placement_fact USING (i);
+----
+logical_opt	<REGEX>:.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]n[ ,│].*
+
+# A selective join must not cause expensive work to move to its larger input
+query II
+EXPLAIN SELECT s
+FROM (SELECT i, substring(v, 1, 20) AS s FROM placement_dimension) d
+JOIN placement_selective USING (i);
+----
+logical_opt	<!REGEX>:.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
+
+# A bounded payload-expanding expression moves above a selective join
+query II
+EXPLAIN SELECT s
+FROM (SELECT i, repeat(v, 10) AS s FROM placement_dimension) d
+JOIN placement_selective USING (i);
+----
+logical_opt	<!REGEX>:.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
+
+# The same expression stays below a fanout join
+query II
+EXPLAIN SELECT s
+FROM (SELECT i, repeat(v, 10) AS s FROM placement_dimension) d
+JOIN placement_fact USING (i);
+----
+logical_opt	<REGEX>:.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
+
+# A repeat whose bounded result can exceed the string size limit remains fallible
+query II
+EXPLAIN SELECT s
+FROM (SELECT i, repeat(v, 50000000) AS s FROM placement_dimension) d
+JOIN placement_selective USING (i);
+----
+logical_opt	<REGEX>:.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
+
+# Unknown variable-width results stay above the join
+query II
+EXPLAIN SELECT s
+FROM (SELECT i, lower(v) AS s FROM placement_dimension) d
+JOIN placement_fact USING (i);
+----
+logical_opt	<!REGEX>:.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
+
+# The cost is evaluated across the complete single-child path through multiple joins
+query II
+EXPLAIN SELECT s
+FROM (SELECT i, substring(v, 1, 20) AS s FROM placement_dimension) d
+JOIN placement_fact f1 USING (i)
+JOIN placement_fact f2 USING (i);
+----
+logical_opt	<REGEX>:.*JOIN.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
+
+# Placements on different join branches are recomputed after each binding rewrite
+query II
+EXPLAIN SELECT substring(l.v, 1, 20) AS ls, substring(r.v, 1, 30) AS rs
+FROM placement_dimension l
+JOIN placement_dimension r USING (k);
+----
+logical_opt	<REGEX>:.*JOIN.*PROJECTION.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]ls[ ,│].*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]rs[ ,│].*
+
+query II
+SELECT SUM(length(ls)), SUM(length(rs))
+FROM (
+	SELECT substring(l.v, 1, 20) AS ls, substring(r.v, 1, 30) AS rs
+	FROM placement_dimension l
+	JOIN placement_dimension r USING (k)
+);
+----
+20000	30000
+
+# Sequential placements preserve indexed outputs above the rewritten join
+query II
+EXPLAIN SELECT substring(r.v, 1, 20) AS rs, substring(l.v, 1, 30) AS ls
+FROM placement_dimension l
+JOIN placement_dimension r USING (k)
+JOIN placement_fact f ON f.i = l.i;
+----
+logical_opt	<REGEX>:.*JOIN.*PROJECTION.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]ls[ ,│].*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]rs[ ,│].*
+
+# Expressions that depend on both sides of a join cannot move into either child
+query II
+EXPLAIN SELECT s
+FROM (
+	SELECT d.i, d.v || f.i::VARCHAR AS s
+	FROM placement_dimension d
+	JOIN placement_fact f USING (i)
+) q;
+----
+logical_opt	<REGEX>:.*PROJECTION.*JOIN.*
+
+# Arbitrary inner joins use the same single-child placement rule
+query II
+EXPLAIN SELECT s
+FROM (SELECT i, substring(v, 1, 20) AS s FROM placement_dimension) d
+JOIN placement_fact f ON d.i = f.i OR d.i = f.i + 1000000;
+----
+logical_opt	<REGEX>:.*ANY_JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
+
+# Expressions referenced by the join condition cannot move through it
+query II
+EXPLAIN SELECT s
+FROM (SELECT i, substring(v, 1, 20) AS s FROM placement_dimension) d
+JOIN placement_fact f ON d.s = f.i::VARCHAR;
+----
+logical_opt	<REGEX>:.*Conditions:.*s.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
+
+# Volatile expressions are placement barriers
+query II
+EXPLAIN SELECT r
+FROM (SELECT i, random() AS r FROM placement_dimension) d
+JOIN placement_fact USING (i);
+----
+logical_opt	<REGEX>:.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]r[ ,│].*
+
+# A projection that cannot cross UNNEST must not be retried indefinitely
+query I
+SELECT sum(length(s))
+FROM (
+	SELECT i, repeat(v, 100) AS s, unnest([1]) AS u
+	FROM placement_dimension
+) d
+JOIN placement_dimension f USING (i);
+----
+1000000
+
+# Non-constant substring bounds remain fallible and stay below joins
+query II
+EXPLAIN SELECT s
+FROM (SELECT i, substring(v, 1, i::BIGINT) AS s FROM placement_dimension) d
+JOIN placement_fact USING (i);
+----
+logical_opt	<REGEX>:.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
+
+# Outer joins remain semantic barriers
+query II
+EXPLAIN SELECT s
+FROM placement_fact f
+LEFT JOIN (SELECT i, substring(v, 1, 20) AS s FROM placement_dimension) d USING (i);
+----
+logical_opt	<REGEX>:.*LEFT.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
+
+query II
+EXPLAIN SELECT s
+FROM (SELECT i, substring(v, 1, 20) AS s FROM placement_dimension) d
+RIGHT JOIN placement_fact f USING (i);
+----
+logical_opt	<REGEX>:.*LEFT.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
+
+query II
+EXPLAIN SELECT s
+FROM (SELECT i, substring(v, 1, 20) AS s FROM placement_dimension) d
+FULL JOIN placement_fact f USING (i);
+----
+logical_opt	<REGEX>:.*FULL.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
+
+# SEMI and ANTI joins are not cost-placement candidates
+query II
+EXPLAIN SELECT s
+FROM (SELECT i, substring(v, 1, 20) AS s FROM placement_dimension) d
+SEMI JOIN placement_fact USING (i);
+----
+logical_opt	<!REGEX>:.*SEMI.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
+
+query II
+EXPLAIN SELECT s
+FROM (SELECT i, substring(v, 1, 20) AS s FROM placement_dimension) d
+ANTI JOIN placement_fact USING (i);
+----
+logical_opt	<!REGEX>:.*ANTI.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
+
+# MARK joins remain placement barriers
+query II
+EXPLAIN SELECT s, i IN (SELECT i FROM placement_fact) AS matched
+FROM (SELECT i, substring(v, 1, 20) AS s FROM placement_dimension) d;
+----
+logical_opt	<REGEX>:.*MARK.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
+
+# SINGLE joins remain placement barriers
+query II
+EXPLAIN SELECT s, (SELECT f.i FROM placement_selective f WHERE f.i = d.i) AS scalar_value
+FROM (SELECT i, substring(v, 1, 20) AS s FROM placement_dimension) d;
+----
+logical_opt	<REGEX>:.*SINGLE.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]s[ ,│].*
+
+# NULLs and duplicates produce identical results with placement enabled and disabled
+statement ok
+CREATE TABLE placement_values(i INTEGER, v VARCHAR);
+
+statement ok
+INSERT INTO placement_values VALUES (1, 'abcd'), (1, 'abcd'), (2, NULL), (NULL, 'null');
+
+statement ok
+CREATE TABLE placement_matches(i INTEGER);
+
+statement ok
+INSERT INTO placement_matches VALUES (1), (1), (2), (NULL);
+
+foreach do '' 'projection_placement'
+
+statement ok
+SET disabled_optimizers = {do};
+
+query IT
+SELECT p.i, p.s
+FROM (SELECT i, substring(v, 1, 2) AS s FROM placement_values) p
+JOIN placement_matches USING (i)
+ORDER BY ALL;
+----
+1	ab
+1	ab
+1	ab
+1	ab
+2	NULL
+
+endloop
+
+# A throwing expression cannot be pulled across a filtering join
+statement ok
+CREATE TABLE placement_cast_input(i INTEGER, v VARCHAR);
+
+statement ok
+INSERT INTO placement_cast_input VALUES (1, '1'), (2, 'bad');
+
+statement ok
+CREATE TABLE placement_cast_match(i INTEGER);
+
+statement ok
+INSERT INTO placement_cast_match VALUES (1), (2);
+
+statement ok
+SET disabled_optimizers = '';
+
+query II
+EXPLAIN SELECT SUM(n)
+FROM (SELECT i, CAST(v AS INTEGER) AS n FROM placement_cast_input) p
+JOIN placement_cast_match USING (i);
+----
+logical_opt	<REGEX>:.*JOIN.*PROJECTION.*Expressions:([^\n]*\n){0,8}[^\n]*[ ,]n[ ,│].*
+
+# Throwing behavior agrees with an optimizer-disabled baseline
+statement error
+SELECT SUM(n)
+FROM (SELECT i, CAST(v AS INTEGER) AS n FROM placement_cast_input) p
+JOIN placement_cast_match USING (i);
+----
+<REGEX>:Conversion Error:.*bad.*
+
+statement ok
+PRAGMA disable_optimizer;
+
+statement error
+SELECT SUM(n)
+FROM (SELECT i, CAST(v AS INTEGER) AS n FROM placement_cast_input) p
+JOIN placement_cast_match USING (i);
+----
+<REGEX>:Conversion Error:.*bad.*
+
+statement ok
+PRAGMA enable_optimizer;
+
+# Out-of-range constant substring arguments remain fallible
+statement error
+SELECT substring('x', 9223372036854775807, 1);
+----
+<REGEX>:Out of Range Error:.*offset outside of supported range.*

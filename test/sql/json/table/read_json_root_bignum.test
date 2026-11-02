@@ -1,0 +1,41 @@
+# name: test/sql/json/table/read_json_root_bignum.test
+# description: Reading JSON documents that are numbers too large for UINT64
+# group: [table]
+
+require json
+
+statement ok
+COPY (SELECT '18446744073709551621' AS j) TO '{TEMP_DIR}/bn.json' (FORMAT CSV, HEADER false);
+
+query I
+SELECT * FROM read_json('{TEMP_DIR}/bn.json');
+----
+1.8446744073709552e+19
+
+statement ok
+COPY (SELECT * FROM (VALUES ('18446744073709551621'), ('5'), ('-18446744073709551621')) t(j)) TO '{TEMP_DIR}/bn_lines.json' (FORMAT CSV, HEADER false);
+
+query I
+SELECT * FROM read_json('{TEMP_DIR}/bn_lines.json');
+----
+1.8446744073709552e+19
+5.0
+-1.8446744073709552e+19
+
+statement ok
+COPY (SELECT '[18446744073709551621, 7]' AS j) TO '{TEMP_DIR}/bn_array.json' (FORMAT CSV, HEADER false, QUOTE '');
+
+query I
+SELECT * FROM read_json('{TEMP_DIR}/bn_array.json');
+----
+1.8446744073709552e+19
+7.0
+
+statement ok
+COPY (SELECT * FROM (VALUES ('{"x": 18446744073709551621}'), ('{"x": 5}')) t(j)) TO '{TEMP_DIR}/bn_objects.json' (FORMAT CSV, HEADER false, QUOTE '');
+
+query I
+SELECT x FROM read_json('{TEMP_DIR}/bn_objects.json');
+----
+1.8446744073709552e+19
+5.0

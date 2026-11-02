@@ -1,0 +1,134 @@
+# name: test/sql/sql_export/union_type_witness.test
+# description: Single-member UNION constants preserve nested type metadata and tag validity
+# group: [sql_export]
+
+statement ok
+SET debug_verify_statement='explain_sql';
+
+# constant value
+query TT
+EXPLAIN (SQL) SELECT union_tag(u),union_extract(u,'v'),union_extract(u,'v')='a',u IS NULL FROM (SELECT union_value(v := 'A' COLLATE NOCASE) u);
+----
+sql	<REGEX>:.*SELECT.*
+
+query TTTT
+SELECT union_tag(u),union_extract(u,'v'),union_extract(u,'v')='a',u IS NULL FROM (SELECT union_value(v := 'A' COLLATE NOCASE) u);
+----
+v	A	true	false
+
+# constant tagged null
+query TT
+EXPLAIN (SQL) SELECT union_tag(u),union_extract(u,'v'),u IS NULL FROM (SELECT union_value(v := NULL::VARCHAR COLLATE NOCASE) u);
+----
+sql	<REGEX>:.*SELECT.*
+
+query TTT
+SELECT union_tag(u),union_extract(u,'v'),u IS NULL FROM (SELECT union_value(v := NULL::VARCHAR COLLATE NOCASE) u);
+----
+v	NULL	false
+
+# constant whole null
+query TT
+EXPLAIN (SQL) SELECT union_tag(u),union_extract(u,'v'),u IS NULL FROM (SELECT CASE WHEN false THEN union_value(v := 'A' COLLATE NOCASE) ELSE NULL END u);
+----
+sql	<REGEX>:.*SELECT.*
+
+query TTT
+SELECT union_tag(u),union_extract(u,'v'),u IS NULL FROM (SELECT CASE WHEN false THEN union_value(v := 'A' COLLATE NOCASE) ELSE NULL END u);
+----
+NULL	NULL	true
+
+# dynamic nulls
+query TT
+EXPLAIN (SQL) SELECT i,union_tag(u),union_extract(u,'v'),u IS NULL FROM (SELECT i, CASE WHEN i=2 THEN NULL ELSE union_value(v := CASE WHEN i=1 THEN NULL ELSE 'A' COLLATE NOCASE END) END u FROM range(3)t(i)) ORDER BY i;
+----
+sql	<REGEX>:.*SELECT.*
+
+query TTTT
+SELECT i,union_tag(u),union_extract(u,'v'),u IS NULL FROM (SELECT i, CASE WHEN i=2 THEN NULL ELSE union_value(v := CASE WHEN i=1 THEN NULL ELSE 'A' COLLATE NOCASE END) END u FROM range(3)t(i)) ORDER BY i;
+----
+0	v	A	false
+1	v	NULL	false
+2	NULL	NULL	true
+
+# list member
+query TT
+EXPLAIN (SQL) SELECT union_tag(u),union_extract(u,'v'),union_extract(u,'v')[1]='a' FROM (SELECT union_value(v := ['A' COLLATE NOCASE,NULL]) u);
+----
+sql	<REGEX>:.*SELECT.*
+
+query TTT
+SELECT union_tag(u),union_extract(u,'v'),union_extract(u,'v')[1]='a' FROM (SELECT union_value(v := ['A' COLLATE NOCASE,NULL]) u);
+----
+v	[A, NULL]	true
+
+# struct member
+query TT
+EXPLAIN (SQL) SELECT union_tag(u),union_extract(u,'v').s,union_extract(u,'v').s='a' FROM (SELECT union_value(v := struct_pack(s := 'A' COLLATE NOCASE)) u);
+----
+sql	<REGEX>:.*SELECT.*
+
+query TTT
+SELECT union_tag(u),union_extract(u,'v').s,union_extract(u,'v').s='a' FROM (SELECT union_value(v := struct_pack(s := 'A' COLLATE NOCASE)) u);
+----
+v	A	true
+
+# list of union
+query TT
+EXPLAIN (SQL) SELECT [union_value(v := 'A' COLLATE NOCASE),union_value(v := NULL::VARCHAR COLLATE NOCASE),NULL];
+----
+sql	<REGEX>:.*SELECT.*
+
+query T
+SELECT [union_value(v := 'A' COLLATE NOCASE),union_value(v := NULL::VARCHAR COLLATE NOCASE),NULL];
+----
+[A, NULL, NULL]
+
+# rollup nonempty
+query TT
+EXPLAIN (SQL) SELECT i%2,union_extract(min(union_value(v := s COLLATE NOCASE)), 'v') FROM (VALUES (0,'A'),(1,'b'),(2,NULL))t(i,s) GROUP BY ROLLUP(i%2) ORDER BY ALL;
+----
+sql	<REGEX>:.*SELECT.*
+
+query TT
+SELECT i%2,union_extract(min(union_value(v := s COLLATE NOCASE)), 'v') FROM (VALUES (0,'A'),(1,'b'),(2,NULL))t(i,s) GROUP BY ROLLUP(i%2) ORDER BY ALL;
+----
+0	A
+1	b
+NULL	A
+
+# rollup empty
+query TT
+EXPLAIN (SQL) SELECT i%2,union_extract(min(union_value(v := s COLLATE NOCASE)), 'v') FROM (VALUES (0,'A'),(1,'b'),(2,NULL))t(i,s) WHERE s='missing' GROUP BY ROLLUP(i%2) ORDER BY ALL;
+----
+sql	<REGEX>:.*SELECT.*
+
+query TT
+SELECT i%2,union_extract(min(union_value(v := s COLLATE NOCASE)), 'v') FROM (VALUES (0,'A'),(1,'b'),(2,NULL))t(i,s) WHERE s='missing' GROUP BY ROLLUP(i%2) ORDER BY ALL;
+----
+NULL	NULL
+
+# ordinary multimember
+query TT
+EXPLAIN (SQL) SELECT union_tag(u),union_extract(u,'v') FROM (SELECT union_value(v := 'A')::UNION(v VARCHAR,n INTEGER) u);
+----
+sql	<REGEX>:.*SELECT.*
+
+query TT
+SELECT union_tag(u),union_extract(u,'v') FROM (SELECT union_value(v := 'A')::UNION(v VARCHAR,n INTEGER) u);
+----
+v	A
+
+# A named UNION type with a member requiring its own constructor still binds.
+statement ok
+CREATE TYPE alias_union AS UNION(v GEOMETRY('OGC:CRS84'));
+
+query TT
+EXPLAIN (SQL) SELECT union_tag(u),ST_AsText(union_extract(u,'v')) FROM (SELECT union_value(v := 'POINT(1 2)'::GEOMETRY('OGC:CRS84'))::alias_union u);
+----
+sql	<REGEX>:.*SELECT.*
+
+query TT
+SELECT union_tag(u),ST_AsText(union_extract(u,'v')) FROM (SELECT union_value(v := 'POINT(1 2)'::GEOMETRY('OGC:CRS84'))::alias_union u);
+----
+v	POINT (1 2)

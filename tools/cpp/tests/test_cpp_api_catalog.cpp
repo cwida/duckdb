@@ -18,8 +18,7 @@ using namespace duckdb::cxx;
 } // namespace
 
 TEST_CASE("Stable C++API: table description resolves and reports columns", "[cpp_api]") {
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
 	conn.Execute("CREATE SCHEMA s").Drain();
 	conn.Execute("CREATE TABLE s.\"Facts\"(i INTEGER, j VARCHAR DEFAULT 'x', k INTEGER GENERATED ALWAYS AS (i + 1))")
@@ -59,8 +58,7 @@ TEST_CASE("Stable C++API: table description resolves and reports columns", "[cpp
 }
 
 TEST_CASE("Stable C++API: table description rejects missing tables and views", "[cpp_api]") {
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
 	conn.Execute("CREATE VIEW v AS SELECT 42 AS i").Drain();
 

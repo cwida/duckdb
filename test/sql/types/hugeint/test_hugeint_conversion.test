@@ -194,6 +194,12 @@ SELECT typeof(10), typeof(10000000000), typeof(170141183460469231731687303715884
 ----
 INTEGER	BIGINT	HUGEINT	UHUGEINT	BIGNUM
 
+# constants with 275 to 295 digits do not fit in (u)hugeint and must not be truncated
+query TTTT
+FROM query('SELECT typeof(1' || repeat('0', 274) || '), typeof(1' || repeat('0', 294) || '), typeof(2' || repeat('0', 294) || '), (1' || repeat('0', 274) || ') = 1e274')
+----
+BIGNUM	BIGNUM	BIGNUM	true
+
 # exponents are always double
 query III
 select 1e30, 1e100, 1e-1

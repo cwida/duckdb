@@ -1,0 +1,92 @@
+# name: test/sql/join/full_outer/test_zero_column_materialized_join.test
+# description: Outer joins preserve unmatched rows when every materialized column is pruned
+# group: [full_outer]
+
+statement ok
+CREATE TABLE wide_join_description AS FROM query(
+	'SELECT ' || array_to_string(['NULL::BIGINT AS c' || i FOR i IN range(2050)], ', '));
+
+foreach optimizer '' 'unused_columns'
+
+statement ok
+SET disabled_optimizers={optimizer};
+
+# Both unmatched sides contribute rows even when neither carries output columns.
+query I
+SELECT count(*) FROM (DESCRIBE SELECT 1 AS a, 2 AS b) l FULL JOIN (DESCRIBE SELECT 1 AS c, 2 AS d, 3 AS e) r ON false;
+----
+5
+
+query I
+SELECT count(*) FROM (DESCRIBE SELECT 1 AS a, 2 AS b) l FULL JOIN (DESCRIBE SELECT 1 AS c, 2 AS d, 3 AS e) r ON NULL;
+----
+5
+
+# The unmatched build scan must retain cardinality across multiple chunks.
+query I
+SELECT count(*) FROM (DESCRIBE SELECT * FROM wide_join_description) l FULL JOIN (DESCRIBE SELECT * FROM wide_join_description) r ON false;
+----
+4100
+
+# Retained columns provide an independent cardinality and NULL-padding control.
+query III
+SELECT count(l.column_name),count(r.column_name),count(*) FROM (DESCRIBE SELECT 1 AS a, 2 AS b) l FULL JOIN (DESCRIBE SELECT 1 AS c, 2 AS d, 3 AS e) r ON false;
+----
+2	3	5
+
+query I
+SELECT count(*) FROM (DESCRIBE SELECT 1 AS a, 2 AS b) l FULL JOIN (DESCRIBE SELECT 1 AS c, 2 AS d, 3 AS e) r ON true;
+----
+6
+
+query I
+SELECT count(*) FROM (DESCRIBE SELECT 1 AS a, 2 AS b) l LEFT JOIN (DESCRIBE SELECT 1 AS c, 2 AS d, 3 AS e) r ON false;
+----
+2
+
+query I
+SELECT count(*) FROM (DESCRIBE SELECT 1 AS a, 2 AS b) l RIGHT JOIN (DESCRIBE SELECT 1 AS c, 2 AS d, 3 AS e) r ON false;
+----
+3
+
+endloop
+
+# Semi joins where one side has no columns
+statement ok
+CREATE TABLE empty_t(c0 INTEGER);
+
+statement ok
+CREATE TABLE t1(c0 INTEGER);
+
+statement ok
+INSERT INTO t1 VALUES (1), (2), (NULL);
+
+foreach optimizer '' 'unused_columns'
+
+statement ok
+SET disabled_optimizers={optimizer};
+
+query I
+SELECT 0 FROM empty_t HAVING 0 IN (SELECT 0 FROM empty_t);
+----
+
+query I
+SELECT 0 FROM t1 HAVING 0 IN (SELECT 0 FROM t1);
+----
+0
+
+query I
+SELECT 0 FROM t1 HAVING 1 IN (SELECT 0 FROM t1);
+----
+
+query I
+SELECT count(*) FROM range(10000) r(i) WHERE 0 IN (SELECT 0 FROM range(10000));
+----
+10000
+
+query I
+SELECT count(*) FROM range(10000) r(i) WHERE 0 NOT IN (SELECT 1 FROM range(10000));
+----
+10000
+
+endloop

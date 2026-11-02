@@ -1,0 +1,129 @@
+diff --git a/src/spatial/index/rtree/rtree.cpp b/src/spatial/index/rtree/rtree.cpp
+index 324d22e..8c52eb5 100644
+--- a/src/spatial/index/rtree/rtree.cpp
++++ b/src/spatial/index/rtree/rtree.cpp
+@@ -1,8 +1,16 @@
+ #include "spatial/index/rtree/rtree.hpp"
+ #include "duckdb/common/printer.hpp"
++#include "duckdb/storage/partial_block_manager.hpp"
+ 
+ namespace duckdb {
+ 
++void RTree::Persist(PartialBlockManager &partial_block_manager) {
++	auto new_leaf_allocator = leaf_allocator->Persist(partial_block_manager);
++	auto new_node_allocator = node_allocator->Persist(partial_block_manager);
++	leaf_allocator = std::move(new_leaf_allocator);
++	node_allocator = std::move(new_node_allocator);
++}
++
+ struct InsertResult {
+ 	// Whether or not the node was split
+ 	bool split;
+diff --git a/src/spatial/index/rtree/rtree.hpp b/src/spatial/index/rtree/rtree.hpp
+index e35f303..ed3b259 100644
+--- a/src/spatial/index/rtree/rtree.hpp
++++ b/src/spatial/index/rtree/rtree.hpp
+@@ -31,8 +31,8 @@ public:
+ 	RTree(BlockManager &block_manager, const RTreeConfig &config_p) : config(config_p) {
+ 
+ 		// Create the allocators
+-		node_allocator = make_uniq<FixedSizeAllocator>(config.GetNodeByteSize(), block_manager);
+-		leaf_allocator = make_uniq<FixedSizeAllocator>(config.GetLeafByteSize(), block_manager);
++		node_allocator = make_unsafe_uniq<FixedSizeAllocator>(config.GetNodeByteSize(), block_manager);
++		leaf_allocator = make_unsafe_uniq<FixedSizeAllocator>(config.GetLeafByteSize(), block_manager);
+ 	}
+ 
+ 	void Insert(const RTreeEntry &entry) {
+@@ -51,6 +51,8 @@ public:
+ 		return *leaf_allocator;
+ 	}
+ 
++	void Persist(PartialBlockManager &partial_block_manager);
++
+ 	const RTreeEntry &GetRoot() const {
+ 		return root;
+ 	}
+@@ -107,12 +109,12 @@ private:
+ 	void ReInsertNode(RTreeEntry &root, RTreeEntry &target);
+ 
+ private:
+-	unique_ptr<FixedSizeAllocator> node_allocator;
+-	unique_ptr<FixedSizeAllocator> leaf_allocator;
++	unsafe_unique_ptr<FixedSizeAllocator> node_allocator;
++	unsafe_unique_ptr<FixedSizeAllocator> leaf_allocator;
+ 
+ 	RTreeEntry root;
+ 
+ 	const RTreeConfig config;
+ };
+ 
+-} // namespace duckdb
+\ No newline at end of file
++} // namespace duckdb
+diff --git a/src/spatial/index/rtree/rtree_index.cpp b/src/spatial/index/rtree/rtree_index.cpp
+index 4c7b6d1..402abf4 100644
+--- a/src/spatial/index/rtree/rtree_index.cpp
++++ b/src/spatial/index/rtree/rtree_index.cpp
+@@ -9,6 +9,7 @@
+ #include "duckdb/common/serializer/binary_deserializer.hpp"
+ #include "duckdb/common/serializer/binary_serializer.hpp"
+ #include "duckdb/execution/index/fixed_size_allocator.hpp"
++#include "duckdb/storage/checkpoint/table_index_writer.hpp"
+ #include "duckdb/storage/table/scan_state.hpp"
+ #include "duckdb/main/database.hpp"
+ #include "duckdb/transaction/duck_transaction.hpp"
+@@ -318,32 +319,18 @@ void RTreeIndex::Delete(IndexLock &lock, DataChunk &input, Vector &row_vec) {
+ 	last_commit_before_delete = DuckTransactionManager::Get(db).GetLastCommit();
+ }
+ 
+-IndexStorageInfo RTreeIndex::SerializeToDisk(QueryContext context, const case_insensitive_map_t<Value> &options) {
++IndexCheckpointResult RTreeIndex::Checkpoint(PartialBlockManager &partial_block_manager, StorageVersion) {
++	tree->Persist(partial_block_manager);
+ 
+ 	IndexStorageInfo info;
+ 	info.name = name;
+ 	info.root = tree->GetRoot().pointer.Get();
+-
+-	auto &leaf_allocator = tree->GetLeafAllocator();
+-	auto &node_allocator = tree->GetNodeAllocator();
+-
+-	leaf_allocator.RemoveEmptyBuffers();
+-	node_allocator.RemoveEmptyBuffers();
+-
+-	// Use the partial block manager to serialize allocator data.
+-	auto &block_manager = table_io_manager.GetIndexBlockManager();
+-	PartialBlockManager partial_block_manager(context, block_manager, PartialBlockType::FULL_CHECKPOINT);
+-	leaf_allocator.SerializeBuffers(partial_block_manager);
+-	node_allocator.SerializeBuffers(partial_block_manager);
+-	partial_block_manager.FlushPartialBlocks();
+-
+-	info.allocator_infos.push_back(leaf_allocator.GetInfo());
+-	info.allocator_infos.push_back(node_allocator.GetInfo());
+-
+-	return info;
++	info.allocator_infos.push_back(tree->GetLeafAllocator().GetInfo());
++	info.allocator_infos.push_back(tree->GetNodeAllocator().GetInfo());
++	return {make_shared_ptr<IndexStorageInfo>(std::move(info)), nullptr};
+ }
+ 
+-IndexStorageInfo RTreeIndex::SerializeToWAL(const case_insensitive_map_t<Value> &options) {
++IndexStorageInfo RTreeIndex::SerializeToWAL(StorageVersion target_version) {
+ 
+ 	IndexStorageInfo info;
+ 	info.name = name;
+diff --git a/src/spatial/index/rtree/rtree_index.hpp b/src/spatial/index/rtree/rtree_index.hpp
+index 133c3e0..ad14d95 100644
+--- a/src/spatial/index/rtree/rtree_index.hpp
++++ b/src/spatial/index/rtree/rtree_index.hpp
+@@ -70,9 +70,9 @@ public:
+ 	ErrorData Insert(IndexLock &lock, DataChunk &data, Vector &row_ids) override;
+ 
+ 	//! Serializes RTree memory to disk and returns the index storage information.
+-	IndexStorageInfo SerializeToDisk(QueryContext context, const case_insensitive_map_t<Value> &options) override;
++	IndexCheckpointResult Checkpoint(PartialBlockManager &partial_block_manager, StorageVersion) override;
+ 	//! Serializes RTree memory to the WAL and returns the index storage information.
+-	IndexStorageInfo SerializeToWAL(const case_insensitive_map_t<Value> &options) override;
++	IndexStorageInfo SerializeToWAL(StorageVersion target_version) override;
+ 
+ 	idx_t GetInMemorySize(IndexLock &state) const override;
+ 

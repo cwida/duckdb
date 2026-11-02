@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import ast
+import json
 import lldb
 import shlex
 
@@ -67,8 +69,9 @@ def __lldb_init_module(debugger, _internal_dict):
 
 
 def sql_current_statement(debugger, command, result, _internal_dict):
-    if command.strip():
-        result.SetError("usage: {}".format(SQL_CURRENT_STATEMENT_COMMAND))
+    option = command.strip()
+    if option not in ("", "--json"):
+        result.SetError("usage: {} [--json]".format(SQL_CURRENT_STATEMENT_COMMAND))
         return
 
     context, error = _get_current_statement_context(debugger.GetSelectedTarget())
@@ -76,7 +79,12 @@ def sql_current_statement(debugger, command, result, _internal_dict):
         result.SetError(error)
         return
 
-    result.AppendMessage(_format_statement_context(context))
+    if option == "--json":
+        result.AppendMessage(
+            json.dumps({key: value for key, value in context.items() if key not in ("frame", "priority")})
+        )
+    else:
+        result.AppendMessage(_format_statement_context(context))
 
 
 def sql_next_statement(debugger, command, result, _internal_dict):
@@ -168,6 +176,9 @@ def sql_delete_watch(debugger, command, result, _internal_dict):
 
     try:
         args = parser.parse_args(shlex.split(command))
+    except ValueError as error:
+        result.SetError(str(error))
+        return
     except SystemExit:
         result.SetError("usage: {} [id|all]".format(SQL_DELETE_WATCH_COMMAND))
         return
@@ -210,6 +221,9 @@ def sql_next_watch(debugger, command, result, _internal_dict):
 
     try:
         args = parser.parse_args(shlex.split(command))
+    except ValueError as error:
+        result.SetError(str(error))
+        return
     except SystemExit:
         result.SetError("usage: {} [id]".format(SQL_NEXT_WATCH_COMMAND))
         return
@@ -239,9 +253,6 @@ def sql_next_watch(debugger, command, result, _internal_dict):
             result.SetError("watch {} not found".format(args.watch_id))
             return
         selected_watch_ids = [args.watch_id]
-
-    for breakpoint_id in selected_watch_ids:
-        _WATCHES[breakpoint_id]["suppress_duplicate_signature"] = None
 
     _restore_next_watch_state(target)
 
@@ -293,6 +304,7 @@ def _default_matcher():
         "line_max": None,
         "kind": None,
         "connection": None,
+        "sql": None,
         "loops": [],
     }
 
@@ -305,10 +317,13 @@ def _parse_matcher_command(prog, command):
     parser.add_argument("--line-max", type=int)
     parser.add_argument("--kind", choices=("query", "statement", "statement_ok", "statement_error"))
     parser.add_argument("--connection")
+    parser.add_argument("--sql")
     parser.add_argument("--loop", action="append", default=[])
 
     try:
         args = parser.parse_args(shlex.split(command))
+    except ValueError as error:
+        return None, str(error)
     except SystemExit:
         return None, _matcher_usage(prog)
 
@@ -319,6 +334,7 @@ def _parse_matcher_command(prog, command):
     matcher["line_max"] = args.line_max
     matcher["kind"] = args.kind
     matcher["connection"] = args.connection
+    matcher["sql"] = args.sql
 
     if matcher["line"] is not None:
         if matcher["line_min"] is not None or matcher["line_max"] is not None:
@@ -341,7 +357,7 @@ def _matcher_usage(prog):
     return (
         "usage: {} [--file <substring>] [--line <n>] [--line-min <n>] "
         "[--line-max <n>] [--kind query|statement|statement_ok|statement_error] [--connection <name>] "
-        "[--loop <name>[=<value>]]".format(prog)
+        "[--sql <substring>] [--loop <name>[=<value>]]".format(prog)
     )
 
 
@@ -540,7 +556,10 @@ def _read_int(frame, expression):
 
 def _strip_quotes(text):
     if len(text) >= 2 and text[0] == '"' and text[-1] == '"':
-        return text[1:-1]
+        try:
+            return ast.literal_eval(text)
+        except (SyntaxError, ValueError):
+            return text[1:-1]
     return text
 
 
@@ -599,6 +618,9 @@ def _matches_context(context, matcher):
                 return False
     if matcher["connection"] is not None and context["connection_name"] != matcher["connection"]:
         return False
+    if matcher["sql"] is not None:
+        if context["sql_text"] is None or matcher["sql"] not in context["sql_text"]:
+            return False
 
     for loop_filter in matcher["loops"]:
         loop_name = loop_filter["name"]
@@ -626,6 +648,8 @@ def _describe_matcher(matcher):
         parts.append("kind={}".format(matcher["kind"]))
     if matcher["connection"] is not None:
         parts.append("connection={}".format(matcher["connection"]))
+    if matcher["sql"] is not None:
+        parts.append("SQL contains {!r}".format(matcher["sql"]))
     for loop_filter in matcher["loops"]:
         if loop_filter["value"] is None:
             parts.append("loop {}".format(loop_filter["name"]))
@@ -713,6 +737,8 @@ def _next_matching_statement_callback(frame, breakpoint_location, _internal_dict
         print("sql_next_matching_statement: failed to extract sqllogictest context")
         return True
 
+    if _is_duplicate_statement_hook(frame, context):
+        return False
     if not _matches_context(context, _NEXT_STATE["matcher"]):
         return False
 
@@ -740,15 +766,10 @@ def _watch_statement_callback(frame, breakpoint_location, _internal_dict):
         print("sql_watch_statement: failed to extract sqllogictest context")
         return True
 
+    if _is_duplicate_statement_hook(frame, context):
+        return False
     if not _matches_context(context, watch["matcher"]):
         return False
-
-    signature = _statement_signature(context)
-    if watch.get("suppress_duplicate_signature") == signature:
-        watch["suppress_duplicate_signature"] = None
-        return False
-
-    watch["suppress_duplicate_signature"] = signature
 
     target = frame.GetThread().GetProcess().GetTarget()
     if _NEXT_WATCH_STATE:
@@ -758,12 +779,7 @@ def _watch_statement_callback(frame, breakpoint_location, _internal_dict):
     return True
 
 
-def _statement_signature(context):
-    loop_signature = tuple((loop["name"], loop["value"]) for loop in context["running_loops"])
-    return (
-        context["kind"],
-        context["file_name"],
-        context["query_line"],
-        context["sql_text"],
-        loop_signature,
-    )
+def _is_duplicate_statement_hook(frame, context):
+    # Statements hit query_break both before and inside Command::ExecuteQuery.
+    caller = frame.GetThread().GetFrameAtIndex(frame.GetFrameID() + 1)
+    return context["kind"] == "statement" and "duckdb::Command::ExecuteQuery" in (caller.GetFunctionName() or "")

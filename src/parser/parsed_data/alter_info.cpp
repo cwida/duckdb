@@ -1,4 +1,5 @@
 #include "duckdb/parser/parsed_data/alter_info.hpp"
+#include "duckdb/catalog/dependency_list.hpp"
 
 #include "duckdb/parser/parsed_data/alter_table_info.hpp"
 #include "duckdb/parser/constraints/unique_constraint.hpp"
@@ -18,6 +19,23 @@ AlterInfo::~AlterInfo() {
 
 AlterEntryData AlterInfo::GetAlterEntryData() const {
 	return AlterEntryData(GetQualifiedName(), if_not_found);
+}
+
+DatabaseModificationType AlterInfo::GetModifications() const {
+	if (type != AlterType::ALTER_TABLE) {
+		return DatabaseModificationType();
+	}
+	switch (Cast<AlterTableInfo>().alter_table_type) {
+	case AlterTableType::RENAME_COLUMN:
+	case AlterTableType::RENAME_TABLE:
+	case AlterTableType::SET_DEFAULT:
+	case AlterTableType::DROP_NOT_NULL:
+	case AlterTableType::SET_COLUMN_COMMENT:
+		// the new version of the table keeps the storage of the old one
+		return DatabaseModificationType();
+	default:
+		return DatabaseModificationType::ALTER_TABLE;
+	}
 }
 
 bool AlterInfo::IsAddUniqueConstraint() const {

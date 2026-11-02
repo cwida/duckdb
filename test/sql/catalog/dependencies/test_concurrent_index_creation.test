@@ -2,8 +2,6 @@
 # description: Test concurrent alter and rename of tables
 # group: [dependencies]
 
-mode skip flaky
-
 require skip_reload
 
 statement ok

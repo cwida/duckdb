@@ -5,7 +5,13 @@
 
 namespace duckdb {
 
+//! Compressed data of remote files is read in chunks of this size, so they take few requests
+static constexpr idx_t REMOTE_READ_IN_BUF_SIZE = 16777216;
+
 StreamWrapper::~StreamWrapper() {
+}
+
+void StreamWrapper::FinalizeRead(StreamData &) {
 }
 
 void StreamWrapper::AbortWrite() {
@@ -63,23 +69,35 @@ void CompressedFile::Initialize(QueryContext context, bool write) {
 	this->context = context;
 	this->write = write;
 	stream_data.in_buf_size = compressed_fs.InBufferSize();
+	if (!write && FileSystem::IsRemoteFile(child_handle->path)) {
+		stream_data.in_buf_size = MaxValue<idx_t>(
+		    stream_data.in_buf_size, MinValue<idx_t>(REMOTE_READ_IN_BUF_SIZE, child_handle->GetFileSize()));
+	}
 	stream_data.out_buf_size = compressed_fs.OutBufferSize();
-	stream_data.in_buff = make_unsafe_uniq_array<data_t>(stream_data.in_buf_size);
+	auto &allocator =
+	    context.Valid() ? BufferAllocator::Get(*context.GetClientContext()) : Allocator::DefaultAllocator();
+	stream_data.in_buff = allocator.Allocate(stream_data.in_buf_size);
 	stream_data.in_buff_start = stream_data.in_buff.get();
 	stream_data.in_buff_end = stream_data.in_buff.get();
-	stream_data.out_buff = make_unsafe_uniq_array<data_t>(stream_data.out_buf_size);
+	stream_data.out_buff = allocator.Allocate(stream_data.out_buf_size);
 	stream_data.out_buff_start = stream_data.out_buff.get();
 	stream_data.out_buff_end = stream_data.out_buff.get();
 
-	current_position = 0;
+	compressed_bytes_read = 0;
+	compressed_bytes_consumed.store(0, std::memory_order_relaxed);
 
 	stream_wrapper = compressed_fs.CreateStream();
 	stream_wrapper->Initialize(context, *this, write);
 	initialized = true;
 }
 
+void CompressedFile::AddConsumedBytes(idx_t bytes) {
+	compressed_bytes_read += bytes;
+	compressed_bytes_consumed.fetch_add(bytes, std::memory_order_relaxed);
+}
+
 idx_t CompressedFile::GetProgress() {
-	return current_position;
+	return compressed_bytes_consumed.load(std::memory_order_relaxed);
 }
 
 int64_t CompressedFile::ReadData(void *buffer, int64_t remaining) {
@@ -105,28 +123,11 @@ int64_t CompressedFile::ReadData(void *buffer, int64_t remaining) {
 		if (!stream_wrapper) {
 			return UnsafeNumericCast<int64_t>(total_read);
 		}
-		current_position += static_cast<idx_t>(stream_data.in_buff_end - stream_data.in_buff_start);
 		// ran out of buffer: read more data from the child stream
 		stream_data.out_buff_start = stream_data.out_buff.get();
 		stream_data.out_buff_end = stream_data.out_buff.get();
 		D_ASSERT(stream_data.in_buff_start <= stream_data.in_buff_end);
 		D_ASSERT(stream_data.in_buff_end <= stream_data.in_buff_start + stream_data.in_buf_size);
-
-		// read more input when requested and still data in the input stream
-		if (stream_data.refresh && (stream_data.in_buff_end == stream_data.in_buff.get() + stream_data.in_buf_size)) {
-			auto bufrem = stream_data.in_buff_end - stream_data.in_buff_start;
-			// buffer not empty, move remaining bytes to the beginning
-			memmove(stream_data.in_buff.get(), stream_data.in_buff_start, UnsafeNumericCast<size_t>(bufrem));
-			stream_data.in_buff_start = stream_data.in_buff.get();
-			// refill the rest of input buffer
-			auto sz = child_handle->Read(context, stream_data.in_buff_start + bufrem,
-			                             stream_data.in_buf_size - UnsafeNumericCast<idx_t>(bufrem));
-			stream_data.in_buff_end = stream_data.in_buff_start + bufrem + sz;
-			if (sz <= 0) {
-				stream_wrapper.reset();
-				break;
-			}
-		}
 
 		// read more input if none available
 		if (stream_data.in_buff_start == stream_data.in_buff_end) {
@@ -135,13 +136,21 @@ int64_t CompressedFile::ReadData(void *buffer, int64_t remaining) {
 			stream_data.in_buff_end = stream_data.in_buff_start;
 			auto sz = child_handle->Read(context, stream_data.in_buff.get(), stream_data.in_buf_size);
 			if (sz <= 0) {
+				stream_wrapper->FinalizeRead(stream_data);
 				stream_wrapper.reset();
+				compressed_bytes_consumed.store(compressed_bytes_read, std::memory_order_relaxed);
 				break;
+			} else {
+				stream_data.in_buff_end = stream_data.in_buff_start + sz;
+				compressed_bytes_read += UnsafeNumericCast<idx_t>(sz);
 			}
-			stream_data.in_buff_end = stream_data.in_buff_start + sz;
 		}
 
 		auto finished = stream_wrapper->Read(stream_data);
+		// the input that remains in the buffer has not been consumed by the decompressor yet
+		auto unconsumed = static_cast<idx_t>(stream_data.in_buff_end - stream_data.in_buff_start);
+		compressed_bytes_consumed.store(compressed_bytes_read - MinValue(unconsumed, compressed_bytes_read),
+		                                std::memory_order_relaxed);
 		if (finished) {
 			stream_wrapper.reset();
 		}
@@ -166,8 +175,8 @@ void CompressedFile::Clear() {
 }
 
 void CompressedFile::ResetStreamData() {
-	stream_data.in_buff.reset();
-	stream_data.out_buff.reset();
+	stream_data.in_buff.Reset();
+	stream_data.out_buff.Reset();
 	stream_data.out_buff_start = nullptr;
 	stream_data.out_buff_end = nullptr;
 	stream_data.in_buff_start = nullptr;

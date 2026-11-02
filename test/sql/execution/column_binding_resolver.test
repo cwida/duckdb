@@ -1,0 +1,69 @@
+# name: test/sql/execution/column_binding_resolver.test
+# description: Exercise column binding resolution for specialized logical operators
+# group: [execution]
+
+statement ok
+CREATE TABLE binding_left(i INTEGER, s VARCHAR);
+
+statement ok
+INSERT INTO binding_left VALUES (1, 'alpha'), (2, 'beta'), (3, 'gamma');
+
+statement ok
+CREATE TABLE binding_right(i INTEGER, s VARCHAR);
+
+statement ok
+INSERT INTO binding_right VALUES (1, 'a'), (2, 'z'), (4, 'gamma');
+
+# Resolve comparison keys against their individual join sides and arbitrary predicates against both sides.
+query III
+SELECT l.i, r.i, l.s
+FROM binding_left l
+JOIN binding_right r ON l.i = r.i AND starts_with(l.s, r.s)
+ORDER BY ALL;
+----
+1	1	alpha
+
+# ANY SEMI joins only emit the left side, but their predicate can still reference the right side.
+query I
+SELECT l.i
+FROM binding_left l
+SEMI JOIN binding_right r ON l.i + r.i = 5 OR l.s = r.s
+ORDER BY ALL;
+----
+1
+3
+
+# Resolve correlated bindings that flow through both sides of a decorrelated join.
+query II
+SELECT l.i, (SELECT count(*)
+             FROM binding_right r
+             WHERE r.i <= l.i AND starts_with(l.s, r.s))
+FROM binding_left l
+ORDER BY ALL;
+----
+1	1
+2	0
+3	0
+
+# CREATE INDEX resolves its expressions against logical table-column bindings.
+statement ok
+CREATE INDEX binding_expression_index ON binding_left ((i + length(s)));
+
+query I rowsort
+SELECT i FROM binding_left WHERE i + length(s) = 6;
+----
+1
+2
+
+# Recursive CTEs reset expression bindings to their recursive output layout.
+query I
+WITH RECURSIVE binding_cte(i) AS (
+    SELECT 1
+    UNION ALL
+    SELECT i + 1 FROM binding_cte WHERE i < 3
+)
+SELECT i FROM binding_cte ORDER BY ALL;
+----
+1
+2
+3

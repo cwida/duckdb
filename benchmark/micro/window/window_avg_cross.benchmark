@@ -1,0 +1,23 @@
+# name: benchmark/micro/window/window_avg_cross.benchmark
+# description: Measure performance of constant AVG via cross join
+# group: [window]
+
+name Windowed AVG, Single value
+group micro
+subgroup window
+
+argument sf 10
+
+require tpch
+
+load
+CALL dbgen(sf=${sf});
+
+run
+SELECT 
+	l_orderkey,
+	l_shipmode, 
+	l_linenumber, 
+	avg(l_extendedprice) over w as avg_extended
+FROM lineitem
+WINDOW w AS (rows between unbounded preceding and unbounded following);

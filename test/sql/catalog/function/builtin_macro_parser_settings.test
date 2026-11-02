@@ -1,0 +1,26 @@
+# name: test/sql/catalog/function/builtin_macro_parser_settings.test
+# description: Built-in macros use built-in parser semantics, independent of session settings
+# group: [function]
+
+statement ok
+SET integer_division = true;
+
+# The user expression uses integer division, but weighted_avg retains floating-point division.
+query IR
+SELECT 3 / 2, weighted_avg(x, w) FROM (VALUES (1, 1), (2, 1)) t(x, w);
+----
+1	1.5
+
+statement ok
+SET preserve_identifier_case = 'uppercase';
+
+query R
+SELECT weighted_avg(x, w) FROM (VALUES (1, 1), (2, 1)) t(x, w);
+----
+1.5
+
+# Internal view definitions also keep their built-in identifier spelling.
+query T
+SELECT name FROM pragma_table_info('information_schema.tables') WHERE cid = 0;
+----
+table_catalog

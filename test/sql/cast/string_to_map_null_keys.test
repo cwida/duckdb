@@ -1,0 +1,37 @@
+# name: test/sql/cast/string_to_map_null_keys.test
+# description: Casting strings to MAPs whose keys end up NULL
+# group: [cast]
+
+statement ok
+COPY (SELECT 1 a, 2 b) TO '{TEST_DIR}/string_to_map_null_keys.csv';
+
+statement error
+FROM '{TEST_DIR}/string_to_map_null_keys.csv' EXCEPT SELECT 'bla' AS a, MAP {} AS b;
+----
+Could not convert string "2" to 'MAP("NULL", "NULL")'
+
+query I
+SELECT TRY_CAST('{1=2}' AS MAP("NULL", "NULL"))
+----
+NULL
+
+statement error
+SELECT CAST('{1=2}' AS MAP("NULL", "NULL"))
+----
+Map keys can not be NULL
+
+query I
+SELECT TRY_CAST(x AS MAP("NULL", "NULL")) FROM (VALUES ('{1=1}'), ('{}'), (NULL)) t(x)
+----
+NULL
+{}
+NULL
+
+query I
+SELECT TRY_CAST(x AS MAP(INT, INT)) FROM (VALUES ('{1=1}'), ('{x=1}'), ('{NULL=1}'), (NULL), ('{2=NULL}')) t(x)
+----
+{1=1}
+NULL
+NULL
+NULL
+{2=NULL}

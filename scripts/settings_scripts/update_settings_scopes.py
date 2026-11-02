@@ -37,20 +37,14 @@ def generate_scope_code(file):
         else:
             raise ValueError(f"Setting {setting.name} has invalid input scope value")
         for alias in setting.aliases:
-            new_aliases.append([alias, setting.name])
+            new_aliases.append([alias, f"DUCKDB_SETTING_ALIAS(\"{alias}\", {setting.struct_name})"])
     new_entries.sort(key=lambda x: x[0])
     new_aliases.sort(key=lambda x: x[0])
-    entry_indexes = {}
-    for i in range(len(new_entries)):
-        entry_indexes[new_entries[i][0]] = i
-    for alias in new_aliases:
-        alias_index = entry_indexes[alias[1]]
-        alias.append(f"DUCKDB_SETTING_ALIAS(\"{alias[0]}\", {alias_index})")
 
     new_array_section = ',\n    '.join([x[1] for x in new_entries])
     new_array_section += ',    FINAL_SETTING};\n\n'
     new_array_section += 'static const ConfigurationAlias setting_aliases[] = {'
-    new_array_section += ',\n    '.join([x[2] for x in new_aliases])
+    new_array_section += ',\n    '.join([x[1] for x in new_aliases])
 
     return before_array + new_array_section + after_array
 

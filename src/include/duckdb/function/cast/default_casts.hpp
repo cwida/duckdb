@@ -147,6 +147,13 @@ public:
 	optional_ptr<BoundCastData> GetCastData() const {
 		return cast_data;
 	}
+	//! The stability of the cast and of the casts it applies to child values
+	FunctionStability GetStability() const {
+		return stability;
+	}
+	void SetStability(FunctionStability stability_p) {
+		stability = stability_p;
+	}
 	bool HasInitLocalState() const {
 		return init_local_state;
 	}
@@ -184,6 +191,7 @@ private:
 	init_cast_local_state_t init_local_state;
 	unique_ptr<BoundCastData> cast_data;
 	cast_statistics_t statistics = nullptr;
+	FunctionStability stability = FunctionStability::CONSISTENT;
 };
 
 struct BindCastInput {
@@ -194,6 +202,8 @@ struct BindCastInput {
 	optional_ptr<BindCastInfo> info;
 	optional_ptr<ClientContext> context;
 	QueryLocation query_location;
+	//! The stability of the bound cast, lowered by a bind that reads settings such as TimeZone and by child casts
+	FunctionStability stability = FunctionStability::CONSISTENT;
 
 public:
 	DUCKDB_API BoundCastInfo GetCastFunction(const LogicalType &source, const LogicalType &target);
@@ -241,6 +251,7 @@ private:
 	static BoundCastInfo VariantCastSwitch(BindCastInput &input, const LogicalType &source, const LogicalType &target);
 	static BoundCastInfo UUIDCastSwitch(BindCastInput &input, const LogicalType &source, const LogicalType &target);
 	static BoundCastInfo GeoCastSwitch(BindCastInput &input, const LogicalType &source, const LogicalType &target);
+	static BoundCastInfo BlobToGeoCast(BindCastInput &input, const LogicalType &source, const LogicalType &target);
 	static BoundCastInfo TypeCastSwitch(BindCastInput &input, const LogicalType &source, const LogicalType &target);
 	static BoundCastInfo BignumCastSwitch(BindCastInput &input, const LogicalType &source, const LogicalType &target);
 	static BoundCastInfo ImplicitToUnionCast(BindCastInput &input, const LogicalType &source,

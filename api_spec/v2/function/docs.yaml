@@ -1,0 +1,98 @@
+module: function docs
+#
+# The documentation of one function overload, as `duckdb_functions()` reports it: a description, examples and
+# categories. Taken
+# from a scalar, aggregate, table, pragma or macro function with its `*_get_docs` getter, and registered with it. Overloads registered
+# under the same name each keep their own documentation, matched to them by their parameter types.
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Handles
+#-----------------------------------------------------------------------------------------------------------------------
+handles:
+  function_docs:
+    description: |
+      A borrowed opaque handle to the documentation of a function overload. Taken from the function it documents with
+      `[[scalar_function_get_docs]]`, `[[aggregate_function_get_docs]]`, `[[table_function_get_docs]]`,
+      `[[pragma_function_get_docs]]` or `[[macro_function_get_docs]]`, and valid for as long as that function handle is; the caller never destroys it.
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Functions
+#-----------------------------------------------------------------------------------------------------------------------
+functions:
+  function_docs_set_description:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-09" ]
+    description: |
+      Sets the description of the function overload.
+
+      The description is borrowed and copied. Calling this again replaces the previous description.
+    parameters:
+      docs:
+        type: function_docs
+        description: The documentation to set the description of.
+      description:
+        type: str
+        indirection: 1
+        const: true
+        kind: IN
+        description: The description to set. Borrowed and copied.
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  function_docs_add_example:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-09" ]
+    description: |
+      Adds an example of calling the function overload.
+
+      The title and the example are borrowed and copied, and examples are reported in the order they were added.
+    parameters:
+      docs:
+        type: function_docs
+        description: The documentation to add the example to.
+      title:
+        type: str
+        indirection: 1
+        const: true
+        kind: IN
+        description: Optional. The title of the example; NULL or an empty view for none. Borrowed and copied.
+      example:
+        type: str
+        indirection: 1
+        const: true
+        kind: IN
+        description: The example, e.g. a SQL expression calling the function. Borrowed and copied.
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  function_docs_add_category:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-09" ]
+    description: |
+      Adds a category the function overload belongs to, e.g. "string" or "aggregate".
+
+      The category is borrowed and copied, and categories are reported in the order they were added.
+    parameters:
+      docs:
+        type: function_docs
+        description: The documentation to add the category to.
+      category:
+        type: str
+        indirection: 1
+        const: true
+        kind: IN
+        description: The category. Borrowed and copied.
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR

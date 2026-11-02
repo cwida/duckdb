@@ -1,0 +1,61 @@
+# name: test/sql/constraints/foreignkey/test_fk_key_multiple_key_actions.test
+# description: Test CREATE TABLE with ON DELETE and ON UPDATE options.
+# group: [foreignkey]
+
+statement ok
+CREATE TABLE parent (id INT PRIMARY KEY);
+
+statement ok
+CREATE TABLE child (
+    parent_id INT REFERENCES parent(id)
+        ON DELETE NO ACTION
+        ON UPDATE NO ACTION
+);
+
+statement ok
+CREATE TABLE sibling (
+    parent_id INT REFERENCES parent(id)
+        ON UPDATE NO ACTION
+        ON DELETE NO ACTION
+);
+
+# Duplicate actions are not allowed.
+statement error
+CREATE TABLE elders (
+    parent_id INT REFERENCES parent(id)
+        ON UPDATE NO ACTION
+        ON DELETE NO ACTION
+        ON DELETE NO ACTION
+);
+----
+syntax error at or near
+
+statement error
+CREATE TABLE relatives (
+    parent_id INT REFERENCES parent(id)
+        ON UPDATE NO ACTION
+        ON DELETE NO ACTION
+        ON UPDATE NO ACTION
+);
+----
+syntax error at or near
+
+statement ok
+CREATE TABLE cousin (
+    parent_id INT,
+    FOREIGN KEY (parent_id) REFERENCES parent(id) ON DELETE RESTRICT ON UPDATE NO ACTION
+);
+
+statement ok
+CREATE TABLE nephew (
+    parent_id INT,
+    FOREIGN KEY (parent_id) REFERENCES parent(id) ON UPDATE RESTRICT ON DELETE NO ACTION
+);
+
+statement error
+CREATE TABLE niece (
+    parent_id INT,
+    FOREIGN KEY (parent_id) REFERENCES parent(id) ON DELETE RESTRICT ON DELETE RESTRICT
+);
+----
+syntax error at or near

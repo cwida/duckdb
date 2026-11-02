@@ -14,7 +14,7 @@ BaseScanner::BaseScanner(shared_ptr<CSVBufferManager> buffer_manager_p, shared_p
                          shared_ptr<CSVFileScan> csv_file_scan_p, const CSVIterator &iterator_p)
     : csv_file_scan(std::move(csv_file_scan_p)), sniffing(sniffing_p), error_handler(std::move(error_handler_p)),
       state_machine(std::move(state_machine_p)), states(), buffer_manager(std::move(buffer_manager_p)),
-      iterator(iterator_p) {
+      iterator(iterator_p), skipper(state_machine->transition_array.stop_patterns) {
 	D_ASSERT(buffer_manager);
 	D_ASSERT(state_machine);
 	// Initialize current buffer handle

@@ -1,5 +1,7 @@
 #include "duckdb/common/vector/sequence_vector.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
+#include "duckdb/common/serializer/deserializer.hpp"
+#include "duckdb/common/serializer/serializer.hpp"
 
 namespace duckdb {
 
@@ -47,6 +49,23 @@ void SequenceVector::GetSequence(const Vector &vector, int64_t &start, int64_t &
 	auto &data = vector.Buffer().Cast<SequenceBuffer>();
 	start = data.start;
 	increment = data.increment;
+}
+
+bool SequenceBuffer::TrySerialize(Serializer &serializer, const LogicalType &type,
+                                  bool compressed_serialization) const {
+	if (!compressed_serialization) {
+		return false;
+	}
+	serializer.WriteProperty(90, "vector_type", VectorType::SEQUENCE_VECTOR);
+	serializer.WriteProperty(91, "seq_start", start);
+	serializer.WriteProperty(92, "seq_increment", increment);
+	return true;
+}
+
+buffer_ptr<VectorBuffer> SequenceBuffer::Deserialize(Deserializer &deserializer, const LogicalType &type, idx_t count) {
+	const auto seq_start = deserializer.ReadProperty<int64_t>(91, "seq_start");
+	const auto seq_increment = deserializer.ReadProperty<int64_t>(92, "seq_increment");
+	return make_buffer<SequenceBuffer>(seq_start, seq_increment, count_t(count));
 }
 
 } // namespace duckdb

@@ -1,0 +1,110 @@
+# name: test/sql/aggregate/aggregates/test_approx_quantile_decimal.test
+# description: Test approx_quantile with DECIMAL types
+# group: [aggregates]
+
+statement ok
+SET debug_verify_serializer = true;
+
+statement ok
+CREATE TABLE decimals(d DECIMAL(10,2));
+
+statement ok
+INSERT INTO decimals VALUES (1.55);
+
+# the result keeps the DECIMAL type, width and scale of the input
+query TT
+SELECT approx_quantile(d, 0.5), typeof(approx_quantile(d, 0.5)) FROM decimals;
+----
+1.55	DECIMAL(10,2)
+
+query TT
+SELECT approx_quantile(d, [0.1, 0.9]), typeof(approx_quantile(d, [0.1, 0.9])) FROM decimals;
+----
+[1.55, 1.55]	DECIMAL(10,2)[]
+
+# every physical type a DECIMAL can be stored as
+query TT
+SELECT approx_quantile(1.55::DECIMAL(4,2), 0.5), typeof(approx_quantile(1.55::DECIMAL(4,2), 0.5));
+----
+1.55	DECIMAL(4,2)
+
+query TT
+SELECT approx_quantile(1.55::DECIMAL(9,2), 0.5), typeof(approx_quantile(1.55::DECIMAL(9,2), 0.5));
+----
+1.55	DECIMAL(9,2)
+
+query TT
+SELECT approx_quantile(1.55::DECIMAL(18,2), 0.5), typeof(approx_quantile(1.55::DECIMAL(18,2), 0.5));
+----
+1.55	DECIMAL(18,2)
+
+query TT
+SELECT approx_quantile(1.55::DECIMAL(38,2), 0.5), typeof(approx_quantile(1.55::DECIMAL(38,2), 0.5));
+----
+1.55	DECIMAL(38,2)
+
+# the exported state round-trips with the DECIMAL type intact
+query I
+SELECT finalize(approx_quantile(d, 0.5) EXPORT_STATE) = approx_quantile(d, 0.5) FROM decimals;
+----
+true
+
+# Rounding through DOUBLE must not exceed the declared decimal width.
+# Cover each physical width, both signs and a nonzero scale, including materialized results and states.
+foreach width 4 9 18 19 38
+
+foreach scale 0 2
+
+foreach sign + -
+
+statement ok
+CREATE OR REPLACE TEMP TABLE extremes AS
+SELECT d, approx_quantile(d, 0.5) q, approx_quantile(d, [0, 0.5, 1]) qs,
+       approx_quantile(d, 0.5) EXPORT_STATE s, approx_quantile(d, [0, 0.5, 1]) EXPORT_STATE ss
+FROM (
+    SELECT ('{sign}' || repeat('9', {width} - {scale}) ||
+            CASE WHEN {scale} = 0 THEN '' ELSE '.' || repeat('9', {scale}) END)::DECIMAL({width},{scale}) d
+) t
+GROUP BY d;
+
+query IIII
+SELECT q = TRY_CAST(q::VARCHAR AS DECIMAL({width},{scale})), abs(q) <= abs(d) AND sign(q) = sign(d),
+       qs = [q, q, q], typeof(q) = 'DECIMAL({width},{scale})'
+FROM extremes;
+----
+true	true	true	true
+
+query II
+SELECT finalize(s) = q, finalize(ss) = qs FROM extremes;
+----
+true	true
+
+query II
+SELECT finalize(combine_aggr(s)) = max(q), finalize(combine_aggr(ss))[2] = max(q)
+FROM (FROM extremes UNION ALL FROM extremes) t;
+----
+true	true
+
+endloop
+
+endloop
+
+endloop
+
+# This input rounds up to 10^18 in DOUBLE; clamp to the exact unscaled bound.
+query TT
+SELECT approx_quantile('9999999999999999.99'::DECIMAL(18,2), 0.5),
+       approx_quantile('-9999999999999999.99'::DECIMAL(18,2), 0.5);
+----
+9999999999999999.99	-9999999999999999.99
+
+# Empty and all-NULL groups retain their null result.
+foreach condition true false
+
+query II
+SELECT approx_quantile(d, 0.5) IS NULL, approx_quantile(d, [0, 1]) IS NULL
+FROM (SELECT NULL::DECIMAL(18,2) d WHERE {condition}) t;
+----
+true	true
+
+endloop

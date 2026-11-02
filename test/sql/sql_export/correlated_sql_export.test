@@ -1,0 +1,67 @@
+# name: test/sql/sql_export/correlated_sql_export.test
+# description: SQL export preserves group-local NULL and empty-input MARK results
+# group: [sql_export]
+
+statement ok
+CREATE TABLE l(id INTEGER,k DOUBLE,x INTEGER);
+
+statement ok
+INSERT INTO l VALUES (1,1,10),(2,1,20),(3,1,NULL),(4,2,20),(5,2,NULL),(6,3,NULL),(7,NULL,50),(8,1,10);
+
+statement ok
+CREATE TABLE r(k DOUBLE,y INTEGER);
+
+statement ok
+INSERT INTO r VALUES (1,10),(1,10),(1,NULL),(2,99),(NULL,NULL);
+
+statement ok
+SET debug_verify_statement='explain_sql';
+
+query IIII rowsort
+SELECT id,x=ANY(SELECT y FROM r WHERE r.k=l.k),x<>ALL(SELECT y FROM r WHERE r.k=l.k),x=ALL(SELECT y FROM r WHERE r.k=l.k) FROM l;
+----
+1	true	false	NULL
+2	NULL	NULL	false
+3	NULL	NULL	NULL
+4	false	true	false
+5	NULL	NULL	NULL
+6	false	true	true
+7	false	true	true
+8	true	false	NULL
+
+query II rowsort
+SELECT id,x=ANY(SELECT y FROM r WHERE r.k IS NOT DISTINCT FROM l.k) FROM l;
+----
+1	true
+2	NULL
+3	NULL
+4	false
+5	NULL
+6	false
+7	NULL
+8	true
+
+query I rowsort
+SELECT id FROM l WHERE x<>ALL(SELECT y FROM r WHERE r.k=l.k);
+----
+4
+6
+7
+
+statement ok
+DELETE FROM r;
+
+query III rowsort
+SELECT id,x=ANY(SELECT y FROM r WHERE r.k=l.k),x=ALL(SELECT y FROM r WHERE r.k=l.k) FROM l;
+----
+1	false	true
+2	false	true
+3	false	true
+4	false	true
+5	false	true
+6	false	true
+7	false	true
+8	false	true
+
+statement ok
+RESET debug_verify_statement;

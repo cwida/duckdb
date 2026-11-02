@@ -1,0 +1,46 @@
+# name: test/sql/optimizer/plan/test_anti_join_projection_map.test
+# description: Issue #26000: never-matching ANTI join promotion must preserve output bindings
+# group: [plan]
+
+statement ok
+CREATE TABLE p AS SELECT i + 1000 AS r, i AS s, i AS q FROM range(5) t(i);
+
+# the ANTI join never matches: every row of p passes
+statement ok
+CREATE TABLE x AS SELECT i AS w FROM range(5) t(i);
+
+# the second join never matches either -> result is empty
+statement ok
+CREATE TABLE y AS SELECT i + 100 AS w2 FROM range(5) t(i);
+
+# the second join matches every passing row instead
+statement ok
+CREATE TABLE y2 AS SELECT i AS w2 FROM range(5) t(i);
+
+query I
+SELECT count(DISTINCT p.q) FROM p ANTI JOIN x ON p.r = x.w JOIN y ON p.s = y.w2
+----
+0
+
+query I
+SELECT sum(p.q) FROM p ANTI JOIN x ON p.r = x.w JOIN y ON p.s = y.w2
+----
+NULL
+
+query I
+SELECT count(DISTINCT p.q) FROM p ANTI JOIN x ON p.r = x.w JOIN y2 ON p.s = y2.w2
+----
+5
+
+statement ok
+SET disabled_optimizers='join_order,build_side_probe_side';
+
+query I
+SELECT count(DISTINCT p.q)
+FROM x JOIN BY (TYPE RIGHT_ANTI) p ON p.r = x.w
+JOIN y2 ON p.s = y2.w2
+----
+5
+
+statement ok
+RESET disabled_optimizers

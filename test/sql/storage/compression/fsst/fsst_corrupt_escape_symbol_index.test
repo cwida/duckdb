@@ -1,0 +1,51 @@
+# name: test/sql/storage/compression/fsst/fsst_corrupt_escape_symbol_index.test
+# description: Reject an FSST escape code without a following byte
+# group: [fsst]
+
+# The database is written with a vector size of 2048.
+require vector_size 2048
+
+unzip data/storage/corrupt/fsst_corrupt_escape_symbol_index.db.gz {TEST_DIR}/fsst_corrupt_escape_symbol_index.db
+
+load {TEST_DIR}/fsst_corrupt_escape_symbol_index.db readonly
+
+statement ok
+USE fsst_corrupt_escape_symbol_index
+
+statement ok
+SET enable_fsst_vectors = false
+
+statement error
+SELECT a FROM t
+----
+Data Corruption Error: Failed to decompress FSST string - escape code has no following byte
+
+restart
+
+statement ok
+USE fsst_corrupt_escape_symbol_index
+
+statement ok
+SET enable_fsst_vectors = true
+
+# Read individual compressed values instead of flattening the FSST vector.
+statement error
+SELECT array_value(a) FROM t
+----
+Data Corruption Error: Failed to decompress FSST string - escape code has no following byte
+
+restart
+
+statement ok
+USE fsst_corrupt_escape_symbol_index
+
+statement ok
+SET enable_fsst_vectors = false
+
+statement ok
+SET debug_force_fetch_row = true
+
+statement error
+SELECT a FROM t
+----
+Data Corruption Error: Failed to decompress FSST string - escape code has no following byte

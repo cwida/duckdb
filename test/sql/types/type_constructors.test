@@ -24,7 +24,7 @@ SELECT NULL::DECIMAL('ten');
 statement error
 SELECT NULL::DECIMAL('ten');
 ----
-<REGEX>:.*Candidate definitions.*DECIMAL\(width UTINYINT, scale UTINYINT := 0\).*
+<REGEX>:.*Candidates.*DECIMAL\(width UTINYINT, scale UTINYINT := 0\).*
 
 # a NULL modifier is rejected before the constructor runs
 

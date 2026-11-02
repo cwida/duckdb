@@ -1,0 +1,36 @@
+# name: test/sql/alter/add_col/test_add_col_compression.test
+# description: Test ALTER TABLE ADD COLUMN with a compression option
+# group: [add_col]
+
+require skip_reload
+
+statement ok
+CREATE TABLE compression_test(i INTEGER)
+
+statement error
+ALTER TABLE compression_test ADD COLUMN invalid INTEGER USING COMPRESSION invalid
+----
+unrecognized value
+
+statement ok
+ALTER TABLE compression_test ADD COLUMN added INTEGER USING COMPRESSION UNCOMPRESSED DEFAULT 42
+
+statement ok
+INSERT INTO compression_test SELECT i, i FROM range(10000) t(i)
+
+query I
+SELECT contains(sql, 'USING COMPRESSION Uncompressed')
+FROM duckdb_tables()
+WHERE table_name = 'compression_test'
+----
+true
+
+statement ok
+CHECKPOINT
+
+query I
+SELECT DISTINCT compression
+FROM pragma_storage_info('compression_test')
+WHERE column_name = 'added' AND segment_type = 'INTEGER'
+----
+Uncompressed

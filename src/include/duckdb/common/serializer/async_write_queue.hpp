@@ -331,6 +331,8 @@ private:
 //! V1 is a contiguous logical write queue: each RegisterWrite offset must match the next expected offset.
 //! Callers are responsible for assigning offsets and externally serializing RegisterWrite calls.
 class ManagedAsyncWriteStreamQueue : private AsyncWriteTarget {
+	friend class ManagedAsyncWriteQueueTest;
+
 public:
 	//! Whether registering a payload may schedule an async drain request immediately.
 	enum class ScheduleMode : uint8_t { ALLOW, DEFER };

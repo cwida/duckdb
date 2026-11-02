@@ -214,6 +214,28 @@ void MainHeader::CheckMagicBytes(MemoryMappedFile &handle) {
 	}
 }
 
+static void ShowUnsupportedStorageVersionError(const idx_t version_number) {
+	// Check the version number to determine if we can read this file.
+	auto version = GetDuckDBVersions(static_cast<StorageVersion>(version_number));
+	string version_text;
+	if (!version.empty()) {
+		// Known version.
+		version_text = "DuckDB version " + string(version);
+	} else if (version_number > VERSION_NUMBER_UPPER) {
+		version_text = "a newer version of DuckDB";
+	} else {
+		version_text = "an older development version of DuckDB";
+	}
+	throw IOException(
+	    "Trying to read a database file with storage version number %lld, but we can only read storage versions "
+	    "between %lld and %lld.\n"
+	    "The database file was created with %s.\n\n"
+	    "Newer DuckDB version might introduce backward incompatible changes (possibly guarded by compatibility "
+	    "settings).\n"
+	    "See the storage page for migration strategy and more information: https://duckdb.org/internals/storage",
+	    version_number, VERSION_NUMBER_LOWER, VERSION_NUMBER_UPPER, version_text);
+}
+
 MainHeader MainHeader::Read(ReadStream &source) {
 	data_t magic_bytes[MAGIC_BYTE_SIZE];
 
@@ -229,25 +251,7 @@ MainHeader MainHeader::Read(ReadStream &source) {
 		// if the version number in the main header is deprecated, then we just ignore the main header version number
 		// TODO: if we are confident, we can remove the check below
 	} else if (header.version_number < VERSION_NUMBER_LOWER || header.version_number > VERSION_NUMBER_UPPER) {
-		// Check the version number to determine if we can read this file.
-		auto version = GetDuckDBVersions(static_cast<StorageVersion>(header.version_number));
-		string version_text;
-		if (!version.empty()) {
-			// Known version.
-			version_text = "DuckDB version " + string(version);
-		} else {
-			version_text = string("an ") +
-			               (VERSION_NUMBER_UPPER > header.version_number ? "older development" : "newer") +
-			               string(" version of DuckDB");
-		}
-		throw IOException(
-		    "Trying to read a database file with version number %lld, but we can only read versions between %lld and "
-		    "%lld.\n"
-		    "The database file was created with %s.\n\n"
-		    "Newer DuckDB version might introduce backward incompatible changes (possibly guarded by compatibility "
-		    "settings).\n"
-		    "See the storage page for migration strategy and more information: https://duckdb.org/internals/storage",
-		    header.version_number, VERSION_NUMBER_LOWER, VERSION_NUMBER_UPPER, version_text);
+		ShowUnsupportedStorageVersionError(header.version_number);
 	}
 
 	// Read the flags.
@@ -292,9 +296,16 @@ void DatabaseHeader::SetStorageVersionInDatabaseHeader(DatabaseHeader &header, S
 		case StorageVersion::V2_0_0:
 			header.storage_compatibility = StorageVersion::V2_0_0;
 			break;
+		case StorageVersion::V2_1_0:
+			header.storage_compatibility = StorageVersion::V2_1_0;
+			break;
 			// new versions should be added here
 		default:
-			throw InvalidInputException("Storage Version '%d' is not found!", static_cast<idx_t>(read_version));
+			if (static_cast<idx_t>(read_version) > VERSION_NUMBER_UPPER) {
+				ShowUnsupportedStorageVersionError(static_cast<idx_t>(read_version));
+			}
+			throw InvalidInputException("Unsupported Storage Version '%d' in the database header!",
+			                            static_cast<idx_t>(read_version));
 		}
 	} else {
 		// Before V2.0.0 the Storage Version in the main header could be written in two different ways
@@ -521,7 +532,7 @@ void SingleFileBlockManager::CreateNewDatabase(QueryContext context) {
 	}
 
 	// MAP mode opens only the mmap; other modes open the FileHandle.
-	handle = DatabaseHandle::Open(db, path, options, DatabaseOpenMode::CREATE_NEW_FILE);
+	handle = DatabaseHandle::Open(context, db, path, options, DatabaseOpenMode::CREATE_NEW_FILE);
 	header_buffer.Clear();
 
 	if (options.storage_version == StorageVersion::INVALID) {
@@ -530,6 +541,7 @@ void SingleFileBlockManager::CreateNewDatabase(QueryContext context) {
 
 	options.version_number = GetVersionNumber();
 	db.GetStorageManager().SetStorageVersion(options.storage_version);
+	GetMetadataManager().SetStorageVersion(options.storage_version);
 	AddStorageVersionTag();
 
 	MainHeader main_header = ConstructMainHeader(options.version_number);
@@ -623,7 +635,7 @@ void SingleFileBlockManager::CreateNewDatabase(QueryContext context) {
 }
 
 void SingleFileBlockManager::LoadExistingDatabase(QueryContext context) {
-	handle = DatabaseHandle::Open(db, path, options, DatabaseOpenMode::OPEN_EXISTING_FILE);
+	handle = DatabaseHandle::Open(context, db, path, options, DatabaseOpenMode::OPEN_EXISTING_FILE);
 	handle->CheckMagicBytes(context);
 
 	// otherwise, we check the metadata of the file
@@ -846,6 +858,7 @@ void SingleFileBlockManager::Initialize(const DatabaseHeader &header, const opti
 	}
 
 	db.GetStorageManager().SetStorageVersion(options.storage_version);
+	GetMetadataManager().SetStorageVersion(options.storage_version);
 
 	if (block_alloc_size.IsValid() && block_alloc_size.GetIndex() != header.block_alloc_size) {
 		throw InvalidInputException(
@@ -1189,8 +1202,13 @@ void SingleFileBlockManager::ReadBlock(Block &block, bool skip_block_header) con
 
 void SingleFileBlockManager::Read(QueryContext context, Block &block) {
 	D_ASSERT(block.id >= 0);
-	D_ASSERT(std::find(free_list.begin(), free_list.end(), block.id) == free_list.end());
+	D_ASSERT(!BlockIsFreeListed(block.id));
 	ReadAndChecksum(context, block, GetBlockLocation(block.id));
+}
+
+bool SingleFileBlockManager::BlockIsFreeListed(block_id_t block_id) {
+	lock_guard<mutex> lock(single_file_block_lock);
+	return free_list.find(block_id) != free_list.end();
 }
 
 void SingleFileBlockManager::ReadBlocks(QueryContext context, FileBuffer &buffer, block_id_t start_block,
@@ -1233,14 +1251,14 @@ void SingleFileBlockManager::Truncate() {
 		blocks_to_truncate++;
 		max_block--;
 	}
-	if (blocks_to_truncate == 0) {
-		// nothing to truncate
-		return;
+	if (blocks_to_truncate > 0) {
+		// truncate the file
+		free_list.erase(free_list.lower_bound(max_block), free_list.end());
 	}
-	// truncate the file
-	free_list.erase(free_list.lower_bound(max_block), free_list.end());
 	auto new_size = NumericCast<idx_t>(BLOCK_START + NumericCast<idx_t>(max_block) * GetBlockAllocSize());
-	handle->Truncate(new_size);
+	if (blocks_to_truncate > 0 || handle->GetFileSize() > new_size) {
+		handle->Truncate(new_size);
+	}
 }
 
 vector<MetadataHandle> SingleFileBlockManager::GetFreeListBlocks() {
@@ -1330,6 +1348,7 @@ void SingleFileBlockManager::WriteHeader(QueryContext context, DatabaseHeader he
 	header.iteration = ++iteration_count;
 
 	set<block_id_t> all_free_blocks = free_list;
+	all_free_blocks.insert(free_blocks_in_use.begin(), free_blocks_in_use.end());
 	auto checkpoint_freed_blocks = modified_blocks;
 	for (auto &block : checkpoint_freed_blocks) {
 		all_free_blocks.insert(block);
@@ -1366,12 +1385,9 @@ void SingleFileBlockManager::WriteHeader(QueryContext context, DatabaseHeader he
 		// no blocks in the free list
 		header.free_list = DConstants::INVALID_INDEX;
 	}
-	lock.unlock();
-	metadata_manager.Flush(context);
-
-	lock.lock();
 	header.block_count = NumericCast<idx_t>(max_block);
 	lock.unlock();
+	metadata_manager.Flush(context);
 
 	header.storage_compatibility = options.storage_version;
 
@@ -1426,17 +1442,38 @@ void SingleFileBlockManager::FileSync() {
 	handle->Sync();
 }
 
-void SingleFileBlockManager::UnregisterBlock(block_id_t id) {
-	// perform the actual unregistration
-	BlockManager::UnregisterBlock(id);
-	// check if it is part of the newly free list
-	lock_guard<mutex> lock(single_file_block_lock);
+void SingleFileBlockManager::ReleaseFreeBlockInUse(unique_lock<mutex> &lock, block_id_t id) {
+	if (!lock.owns_lock()) {
+		throw InternalException("ReleaseFreeBlockInUse must be called while holding the lock");
+	}
+	// check if the block is part of the newly free list
 	auto entry = free_blocks_in_use.find(id);
 	if (entry != free_blocks_in_use.end()) {
 		// it is! move it to the regular free list so the block can be re-used
 		free_list.insert(id);
 		free_blocks_in_use.erase(entry);
 	}
+}
+
+void SingleFileBlockManager::UnregisterBlock(block_id_t id) {
+	unique_lock<mutex> lock(single_file_block_lock);
+	// perform the actual unregistration
+	BlockManager::UnregisterBlock(id);
+	ReleaseFreeBlockInUse(lock, id);
+}
+
+bool SingleFileBlockManager::UnregisterExpiredBlock(block_id_t id) {
+	// hold the lock across the live-handle check and the free-list transition: otherwise a
+	// re-registration and retirement of the block id can interleave between them, and the
+	// free-list transition would run although a live handle exists
+	// lock order: single_file_block_lock before blocks_lock, as in AddFreeBlock
+	unique_lock<mutex> lock(single_file_block_lock);
+	if (!BlockManager::UnregisterExpiredBlock(id)) {
+		// a newer handle is registered for this block id - the block id is still in use
+		return false;
+	}
+	ReleaseFreeBlockInUse(lock, id);
+	return true;
 }
 
 void SingleFileBlockManager::TrimFreeBlockRange(block_id_t start, block_id_t end) {

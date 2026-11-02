@@ -38,12 +38,7 @@ static unique_ptr<BoundAggregateExpression> BindAggregate(ClientContext &context
 static unique_ptr<Expression> BindScalar(ClientContext &context, const char *name,
                                          vector<unique_ptr<Expression>> children) {
 	FunctionBinder function_binder(context);
-	ErrorData error;
-	auto result = function_binder.BindScalarFunction(Identifier::DefaultSchema(), name, std::move(children), error);
-	if (!result) {
-		error.Throw();
-	}
-	return result;
+	return function_binder.BindScalarFunction(Identifier::DefaultSchema(), name, std::move(children));
 }
 
 template <class MAP_TYPE>
@@ -173,10 +168,11 @@ AggregateFunction GetHistogramFunction(const LogicalType &type) {
 
 	auto struct_type = LogicalType::MAP(type, LogicalType::UBIGINT);
 	auto function = AggregateFunction(
-	    "histogram", {type}, struct_type, AggregateFunction::StateSize<STATE_TYPE>,
+	    "histogram", {}, struct_type, AggregateFunction::StateSize<STATE_TYPE>,
 	    AggregateFunction::StateInitialize<STATE_TYPE, HIST_FUNC>, HistogramUpdateFunction<OP, T, MAP_TYPE>,
 	    AggregateFunction::StateCombine<STATE_TYPE, HIST_FUNC>, HistogramFinalizeFunction<OP, T, MAP_TYPE>, nullptr,
 	    nullptr, AggregateFunction::StateDestroy<STATE_TYPE, HIST_FUNC>);
+	function.GetSignature().AddParameter("arg", type);
 	function.SetOrderDependent(AggregateOrderDependent::NOT_ORDER_DEPENDENT);
 	return function;
 }
@@ -286,16 +282,19 @@ unique_ptr<FunctionData> HistogramBindFunction(BindAggregateFunctionInput &input
 
 AggregateFunctionSet HistogramFun::GetFunctions() {
 	AggregateFunctionSet fun;
-	AggregateFunction histogram_function("histogram", {LogicalType::ANY}, LogicalTypeId::MAP, nullptr, nullptr, nullptr,
-	                                     nullptr, nullptr, nullptr, HistogramBindFunction, nullptr);
+	AggregateFunction histogram_function("histogram", {}, LogicalTypeId::MAP, nullptr, nullptr, nullptr, nullptr,
+	                                     nullptr, nullptr, HistogramBindFunction, nullptr);
+	histogram_function.GetSignature().AddParameter("arg", LogicalType::ANY);
 	fun.AddFunction(HistogramFun::BinnedHistogramFunction());
 	fun.AddFunction(histogram_function);
 	return fun;
 }
 
 AggregateFunction HistogramFun::GetHistogramUnorderedMap(LogicalType &type) {
-	return AggregateFunction("histogram", {LogicalType::ANY}, LogicalTypeId::MAP, nullptr, nullptr, nullptr, nullptr,
-	                         nullptr, nullptr, HistogramBindFunction<false>, nullptr);
+	AggregateFunction function("histogram", {}, LogicalTypeId::MAP, nullptr, nullptr, nullptr, nullptr, nullptr,
+	                           nullptr, HistogramBindFunction<false>, nullptr);
+	function.GetSignature().AddParameter("arg", LogicalType::ANY);
+	return function;
 }
 
 } // namespace duckdb

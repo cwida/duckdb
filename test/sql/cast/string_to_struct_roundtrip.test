@@ -59,7 +59,7 @@ select $${"\\  test  \\": 42}$$::STRUCT("\  test  \" INTEGER) a, a::VARCHAR::STR
 query III
 select $${"test": \\  test  \\}$$::STRUCT("test" VARCHAR) a, a::VARCHAR::STRUCT("test" VARCHAR) b, a == b
 ----
-{'test': \\  test  \\}	{'test': \\  test  \\}	true
+{'test': '\\\\  test  \\\\'}	{'test': '\\\\  test  \\\\'}	true
 
 
 

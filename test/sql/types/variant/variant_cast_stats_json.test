@@ -1,0 +1,35 @@
+# name: test/sql/types/variant/variant_cast_stats_json.test
+# description: statistics propagation for casts between JSON and VARIANT
+# group: [variant]
+
+require json
+
+statement ok
+SET debug_verify_stats=true;
+
+statement ok
+CREATE TABLE js(j JSON);
+
+statement ok
+INSERT INTO js VALUES ('{"bbbb":12345678,"aaaa":1}'), ('{"bbbb":87654321,"aaaa":2}');
+
+# the cast parses the text into a variant, so rendering it back orders the keys and the
+# bounds of the source column do not describe the result
+query I
+SELECT j::VARIANT::JSON FROM js;
+----
+{"aaaa":1,"bbbb":12345678}
+{"aaaa":2,"bbbb":87654321}
+
+statement ok
+CREATE TABLE jw(j JSON);
+
+statement ok
+INSERT INTO jw VALUES ('{ "aaaa" : 12345678 }'), ('{ "aaaa" : 87654321 }');
+
+# spacing is dropped as well, so the result is shorter than the shortest source string
+query I
+SELECT j::VARIANT::JSON FROM jw;
+----
+{"aaaa":12345678}
+{"aaaa":87654321}

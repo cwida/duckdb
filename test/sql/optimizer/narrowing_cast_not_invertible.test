@@ -1,0 +1,69 @@
+# name: test/sql/optimizer/narrowing_cast_not_invertible.test
+# description: A narrowing cast must not be peeled off a comparison during pushdown
+# group: [optimizer]
+
+statement ok
+CREATE TABLE t(a INTEGER);
+
+statement ok
+INSERT INTO t VALUES (51),(127),(128),(200),(300),(-200);
+
+# 128, 200 and 300 are outside TINYINT, so TRY_CAST makes them NULL and the predicate is not true
+
+query I
+SELECT list(a ORDER BY a) FROM t WHERE TRY_CAST(a AS TINYINT) > 50;
+----
+[51, 127]
+
+query II
+EXPLAIN SELECT count(*) FROM t WHERE TRY_CAST(a AS TINYINT) > 50;
+----
+physical_plan	<REGEX>:.*TRY_CAST.*
+
+# UTINYINT reaches 255, so 128 and 200 survive but 300 and -200 do not
+
+query I
+SELECT list(a ORDER BY a) FROM t WHERE TRY_CAST(a AS UTINYINT) > 50;
+----
+[51, 127, 128, 200]
+
+# SMALLINT holds every value here, so nothing is filtered by the cast
+
+query I
+SELECT list(a ORDER BY a) FROM t WHERE TRY_CAST(a AS SMALLINT) > 50;
+----
+[51, 127, 128, 200, 300]
+
+# the IN rewrite goes through the same invertibility check
+
+query I
+SELECT list(a ORDER BY a) FROM t WHERE TRY_CAST(a AS TINYINT) IN (51, 127, 128);
+----
+[51, 127]
+
+# a widening cast is still invertible and must still be peeled off, so the optimization is not lost
+
+query I
+SELECT list(a ORDER BY a) FROM t WHERE CAST(a AS BIGINT) > 50;
+----
+[51, 127, 128, 200, 300]
+
+query II
+EXPLAIN SELECT count(*) FROM t WHERE CAST(a AS BIGINT) > 50;
+----
+physical_plan	<!REGEX>:.*CAST.*
+
+# the optimized and unoptimized answers must agree
+
+statement ok
+PRAGMA disable_optimizer;
+
+query I
+SELECT list(a ORDER BY a) FROM t WHERE TRY_CAST(a AS TINYINT) > 50;
+----
+[51, 127]
+
+query I
+SELECT list(a ORDER BY a) FROM t WHERE TRY_CAST(a AS UTINYINT) > 50;
+----
+[51, 127, 128, 200]

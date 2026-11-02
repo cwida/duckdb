@@ -310,8 +310,9 @@ void FailingFromExec(CopyFunction::CopyFromExecInput &) {
 	throw InvalidInputException("copy from exec failed on purpose");
 }
 
-// A batch size callback that sets no target fails the statement.
-void EmptyBatchSize(CopyFunction::CopyToBatchSizeInput &) {
+// A batch size callback that sets a target of 0 fails the statement.
+void ZeroBatchSize(CopyFunction::CopyToBatchSizeInput &input) {
+	input.SetTarget(0);
 }
 
 // The batch can only be taken once.
@@ -327,13 +328,12 @@ void TakeTwiceBatch(CopyFunction::CopyToBatchInput &input) {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("Stable C++API: copy function writes through COPY TO", "[cpp_api]") {
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
 
 	// One sink thread and a batch size beyond the input: the whole copy arrives as a single batch.
 	conn.Execute("SET threads = 1").Drain();
-	auto function = CopyFunction::Create(conn);
+	auto function = CopyFunction::Create(conn.GetFactory());
 	function.SetName("cpp_copy")
 	    .SetCopyToBindCallback(SummaryBind)
 	    .SetCopyToBatchSizeCallback(SummaryBatchSize)
@@ -341,7 +341,7 @@ TEST_CASE("Stable C++API: copy function writes through COPY TO", "[cpp_api]") {
 	    .SetCopyToBatchCallback(SummaryBatch)
 	    .SetCopyToFlushCallback(SummaryFlush)
 	    .SetCopyToFinalizeCallback(SummaryFinalize);
-	function.Register();
+	conn.Register(function);
 
 	summary_seen.Reset();
 	const auto path = duckdb::TestCreatePath("cpp_copy_summary.txt");
@@ -360,24 +360,50 @@ TEST_CASE("Stable C++API: copy function writes through COPY TO", "[cpp_api]") {
 	REQUIRE(ReadFile(path) == "1 5000");
 }
 
+TEST_CASE("Stable C++API: copy function names its files with its extension", "[cpp_api]") {
+	auto db = Instance(":memory:");
+	auto conn = db.Connect();
+	conn.Execute("SET threads = 1").Drain();
+	auto function = CopyFunction::Create(conn.GetFactory());
+	REQUIRE_THROWS_MATCHES(function.SetFileExtension(".summary"), Exception,
+	                       HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
+	function.SetName("cpp_copy_ext")
+	    .SetFileExtension("summary")
+	    .SetCopyToBindCallback(SummaryBind)
+	    .SetCopyToInitCallback(SummaryInit)
+	    .SetCopyToBatchCallback(SummaryBatch)
+	    .SetCopyToFlushCallback(SummaryFlush)
+	    .SetCopyToFinalizeCallback(SummaryFinalize);
+	conn.Register(function);
+
+	// With PER_THREAD_OUTPUT DuckDB names the files in the directory itself.
+	const auto dir = duckdb::TestCreatePath("cpp_copy_ext_dir");
+	REQUIRE(conn.Execute("COPY (SELECT r AS i FROM range(10) t(r)) TO '" + dir +
+	                     "' (FORMAT cpp_copy_ext, PER_THREAD_OUTPUT)")
+	            .Drain() == 10);
+	auto files = conn.GetFileSystem().Glob(dir + "/*");
+	REQUIRE(files.size() == 1);
+	REQUIRE(duckdb::StringUtil::EndsWith(files[0], ".summary"));
+	REQUIRE(ReadFile(files[0]) == "1 10");
+}
+
 // ---------------------------------------------------------------------------
 // COPY FROM: register on a connection and drive through COPY ... FROM.
 // ---------------------------------------------------------------------------
 
 TEST_CASE("Stable C++API: copy function reads through COPY FROM", "[cpp_api]") {
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
 	conn.Execute("CREATE TABLE target(i BIGINT)").Drain();
 
-	auto function = CopyFunction::Create(conn);
+	auto function = CopyFunction::Create(conn.GetFactory());
 	function.SetName("cpp_reader")
 	    .SetCopyFromBindCallback(ReaderBind_)
 	    .SetCopyFromInitGlobalCallback(ReaderInitGlobal)
 	    .SetCopyFromInitLocalCallback(ReaderInitLocal)
 	    .SetCopyFromExecCallback(ReaderExec)
 	    .SetCopyFromProgressCallback(ReaderProgress);
-	function.Register();
+	conn.Register(function);
 
 	reader_seen.Reset();
 	REQUIRE(conn.Execute(CopyFromStatement("target", "some/where.cpp", "cpp_reader", ", ROWS 25, PAIR (1, 'two')"))
@@ -407,13 +433,12 @@ TEST_CASE("Stable C++API: copy function reads through COPY FROM", "[cpp_api]") {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("Stable C++API: copy function data flows through the phases", "[cpp_api]") {
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
 	conn.Execute("CREATE TABLE target(i BIGINT)").Drain();
 	const auto path = duckdb::TestCreatePath("cpp_copy_user_data.txt");
 
-	auto function = CopyFunction::Create(conn);
+	auto function = CopyFunction::Create(conn.GetFactory());
 	function.SetName("cpp_copy_user_data")
 	    .SetUserData<std::string>("copy user data")
 	    .SetCopyToBindCallback(UserDataBind)
@@ -423,7 +448,7 @@ TEST_CASE("Stable C++API: copy function data flows through the phases", "[cpp_ap
 	    .SetCopyToFinalizeCallback(UserDataFinalize)
 	    .SetCopyFromBindCallback(UserDataFromBind)
 	    .SetCopyFromExecCallback(UserDataFromExec);
-	function.Register();
+	conn.Register(function);
 
 	user_data_seen.Reset();
 	conn.Execute(CopyToStatement("SELECT r FROM range(3) t(r)", path, "cpp_copy_user_data")).Drain();
@@ -441,67 +466,66 @@ TEST_CASE("Stable C++API: copy function data flows through the phases", "[cpp_ap
 	REQUIRE(user_data_seen.in_from_exec.load() == seen);
 
 	// A slot that was never set is a clear error, not a null deref, from whichever phase reads it.
-	auto no_user_data = CopyFunction::Create(conn);
+	auto no_user_data = CopyFunction::Create(conn.GetFactory());
 	no_user_data.SetName("cpp_copy_no_user_data")
 	    .SetCopyToBindCallback(NoUserDataBind)
 	    .SetCopyToBatchCallback(NoopBatch)
 	    .SetCopyToFlushCallback(NoopFlush);
-	no_user_data.Register();
+	conn.Register(no_user_data);
 	REQUIRE_THROWS_MATCHES(conn.Execute(CopyToStatement("SELECT r FROM range(3) t(r)", path, "cpp_copy_no_user_data")),
 	                       Exception, HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
 
-	auto no_bind_data = CopyFunction::Create(conn);
+	auto no_bind_data = CopyFunction::Create(conn.GetFactory());
 	no_bind_data.SetName("cpp_copy_no_bind_data")
 	    .SetCopyToBindCallback(NoopBind)
 	    .SetCopyToInitCallback(NoBindDataInit)
 	    .SetCopyToBatchCallback(NoopBatch)
 	    .SetCopyToFlushCallback(NoopFlush);
-	no_bind_data.Register();
+	conn.Register(no_bind_data);
 	REQUIRE_THROWS_MATCHES(
 	    conn.Execute(CopyToStatement("SELECT r FROM range(3) t(r)", path, "cpp_copy_no_bind_data")).Drain(), Exception,
 	    HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
 
-	auto no_init_data = CopyFunction::Create(conn);
+	auto no_init_data = CopyFunction::Create(conn.GetFactory());
 	no_init_data.SetName("cpp_copy_no_init_data")
 	    .SetCopyToInitCallback(NoopInit)
 	    .SetCopyToBatchCallback(NoInitDataBatch)
 	    .SetCopyToFlushCallback(NoopFlush);
-	no_init_data.Register();
+	conn.Register(no_init_data);
 	REQUIRE_THROWS_MATCHES(
 	    conn.Execute(CopyToStatement("SELECT r FROM range(3) t(r)", path, "cpp_copy_no_init_data")).Drain(), Exception,
 	    HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
 
-	auto no_batch_data = CopyFunction::Create(conn);
+	auto no_batch_data = CopyFunction::Create(conn.GetFactory());
 	no_batch_data.SetName("cpp_copy_no_batch_data")
 	    .SetCopyToBatchCallback(NoopBatch)
 	    .SetCopyToFlushCallback(NoBatchDataFlush);
-	no_batch_data.Register();
+	conn.Register(no_batch_data);
 	REQUIRE_THROWS_MATCHES(
 	    conn.Execute(CopyToStatement("SELECT r FROM range(3) t(r)", path, "cpp_copy_no_batch_data")).Drain(), Exception,
 	    HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
 
-	auto no_global_state = CopyFunction::Create(conn);
+	auto no_global_state = CopyFunction::Create(conn.GetFactory());
 	no_global_state.SetName("cpp_copy_no_global_state")
 	    .SetCopyFromBindCallback(NoopFromBind)
 	    .SetCopyFromExecCallback(NoGlobalStateExec);
-	no_global_state.Register();
+	conn.Register(no_global_state);
 	REQUIRE_THROWS_MATCHES(conn.Execute(CopyFromStatement("target", path, "cpp_copy_no_global_state")).Drain(),
 	                       Exception, HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
 }
 
 TEST_CASE("Stable C++API: copy SetUserData is consumed by Register", "[cpp_api]") {
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
 	const auto path = duckdb::TestCreatePath("cpp_copy_consumed.txt");
 
-	auto function = CopyFunction::Create(conn);
+	auto function = CopyFunction::Create(conn.GetFactory());
 	function.SetName("cpp_copy_consumed")
 	    .SetUserData<std::string>("first")
 	    .SetCopyToBindCallback(UserDataBind)
 	    .SetCopyToBatchCallback(NoopBatch)
 	    .SetCopyToFlushCallback(NoopFlush);
-	function.Register();
+	conn.Register(function);
 
 	user_data_seen.Reset();
 	conn.Execute(CopyToStatement("SELECT r FROM range(3) t(r)", path, "cpp_copy_consumed")).Drain();
@@ -510,7 +534,7 @@ TEST_CASE("Stable C++API: copy SetUserData is consumed by Register", "[cpp_api]"
 
 	// Register consumed the user data: the second registration has none.
 	function.SetName("cpp_copy_consumed2").SetCopyToBindCallback(NoUserDataBind);
-	function.Register();
+	conn.Register(function);
 	REQUIRE_THROWS_MATCHES(conn.Execute(CopyToStatement("SELECT r FROM range(3) t(r)", path, "cpp_copy_consumed2")),
 	                       Exception, HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
 }
@@ -520,84 +544,88 @@ TEST_CASE("Stable C++API: copy SetUserData is consumed by Register", "[cpp_api]"
 // ---------------------------------------------------------------------------
 
 TEST_CASE("Stable C++API: copy function callback errors fail the query", "[cpp_api]") {
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
 	conn.Execute("CREATE TABLE target(i BIGINT)").Drain();
 	const auto path = duckdb::TestCreatePath("cpp_copy_fails.txt");
 
-	auto function = CopyFunction::Create(conn);
+	auto function = CopyFunction::Create(conn.GetFactory());
 	function.SetName("cpp_copy_fails").SetCopyToBatchCallback(FailingBatch).SetCopyToFlushCallback(NoopFlush);
-	function.Register();
+	conn.Register(function);
 	REQUIRE_THROWS_MATCHES(conn.Execute(CopyToStatement("SELECT r FROM range(3) t(r)", path, "cpp_copy_fails")).Drain(),
 	                       InvalidInputException, HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
 
-	auto reader_fails = CopyFunction::Create(conn);
+	auto reader_fails = CopyFunction::Create(conn.GetFactory());
 	reader_fails.SetName("cpp_reader_fails")
 	    .SetCopyFromBindCallback(NoopFromBind)
 	    .SetCopyFromExecCallback(FailingFromExec);
-	reader_fails.Register();
+	conn.Register(reader_fails);
 	REQUIRE_THROWS_MATCHES(conn.Execute(CopyFromStatement("target", path, "cpp_reader_fails")).Drain(),
 	                       InvalidInputException, HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
 
-	auto empty_batch_size = CopyFunction::Create(conn);
-	empty_batch_size.SetName("cpp_copy_empty_batch_size")
-	    .SetCopyToBatchSizeCallback(EmptyBatchSize)
+	auto empty_batch_size = CopyFunction::Create(conn.GetFactory());
+	empty_batch_size.SetName("cpp_copy_zero_batch_size")
+	    .SetCopyToBatchSizeCallback(ZeroBatchSize)
 	    .SetCopyToBatchCallback(NoopBatch)
 	    .SetCopyToFlushCallback(NoopFlush);
-	empty_batch_size.Register();
+	conn.Register(empty_batch_size);
 	REQUIRE_THROWS_MATCHES(
-	    conn.Execute(CopyToStatement("SELECT r FROM range(3) t(r)", path, "cpp_copy_empty_batch_size")),
+	    conn.Execute(CopyToStatement("SELECT r FROM range(3) t(r)", path, "cpp_copy_zero_batch_size")),
 	    InvalidInputException, HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
 
-	auto take_twice = CopyFunction::Create(conn);
+	auto take_twice = CopyFunction::Create(conn.GetFactory());
 	take_twice.SetName("cpp_copy_take_twice").SetCopyToBatchCallback(TakeTwiceBatch).SetCopyToFlushCallback(NoopFlush);
-	take_twice.Register();
+	conn.Register(take_twice);
 	REQUIRE_THROWS_MATCHES(
 	    conn.Execute(CopyToStatement("SELECT r FROM range(3) t(r)", path, "cpp_copy_take_twice")).Drain(),
 	    InvalidInputException, HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
 }
 
 TEST_CASE("Stable C++API: copy function registration validation", "[cpp_api]") {
-	Environment env;
-	auto db = env.Open(":memory:");
+	auto db = Instance(":memory:");
 	auto conn = db.Connect();
 
 	// No name.
 	{
-		auto function = CopyFunction::Create(conn);
+		auto function = CopyFunction::Create(conn.GetFactory());
 		function.SetCopyToBatchCallback(NoopBatch).SetCopyToFlushCallback(NoopFlush);
-		REQUIRE_THROWS_MATCHES(function.Register(), InvalidInputException, HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
+		REQUIRE_THROWS_MATCHES(conn.Register(function), InvalidInputException,
+		                       HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
 	}
 
 	// Neither side configured.
 	{
-		auto function = CopyFunction::Create(conn);
+		auto function = CopyFunction::Create(conn.GetFactory());
 		function.SetName("cpp_copy_no_side");
-		REQUIRE_THROWS_MATCHES(function.Register(), InvalidInputException, HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
+		REQUIRE_THROWS_MATCHES(conn.Register(function), InvalidInputException,
+		                       HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
 	}
 
 	// The COPY TO batch callback missing, then the flush callback.
 	{
-		auto function = CopyFunction::Create(conn);
+		auto function = CopyFunction::Create(conn.GetFactory());
 		function.SetName("cpp_copy_no_batch").SetCopyToFlushCallback(NoopFlush);
-		REQUIRE_THROWS_MATCHES(function.Register(), InvalidInputException, HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
+		REQUIRE_THROWS_MATCHES(conn.Register(function), InvalidInputException,
+		                       HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
 	}
 	{
-		auto function = CopyFunction::Create(conn);
+		auto function = CopyFunction::Create(conn.GetFactory());
 		function.SetName("cpp_copy_no_flush").SetCopyToBatchCallback(NoopBatch);
-		REQUIRE_THROWS_MATCHES(function.Register(), InvalidInputException, HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
+		REQUIRE_THROWS_MATCHES(conn.Register(function), InvalidInputException,
+		                       HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
 	}
 
 	// The COPY FROM bind callback missing, then the exec callback.
 	{
-		auto function = CopyFunction::Create(conn);
+		auto function = CopyFunction::Create(conn.GetFactory());
 		function.SetName("cpp_reader_no_bind").SetCopyFromExecCallback(NoopFromExec);
-		REQUIRE_THROWS_MATCHES(function.Register(), InvalidInputException, HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
+		REQUIRE_THROWS_MATCHES(conn.Register(function), InvalidInputException,
+		                       HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
 	}
 	{
-		auto function = CopyFunction::Create(conn);
+		auto function = CopyFunction::Create(conn.GetFactory());
 		function.SetName("cpp_reader_no_exec").SetCopyFromBindCallback(NoopFromBind);
-		REQUIRE_THROWS_MATCHES(function.Register(), InvalidInputException, HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
+		REQUIRE_THROWS_MATCHES(conn.Register(function), InvalidInputException,
+		                       HasErrorCode(DUCKDB_V2_ERROR_INPUT_INVALID));
 	}
 }

@@ -47,8 +47,11 @@ struct RegrSXYOperation {
 } // namespace
 
 AggregateFunction RegrSXYFun::GetFunction() {
-	return AggregateFunction::BinaryAggregate<RegrSXyState, double, double, double, RegrSXYOperation>(
+	auto fun = AggregateFunction::BinaryAggregate<RegrSXyState, double, double, double, RegrSXYOperation>(
 	    LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE);
+	fun.GetSignature().GetParameter(0).SetName("y");
+	fun.GetSignature().GetParameter(1).SetName("x");
+	return fun;
 }
 
 } // namespace duckdb

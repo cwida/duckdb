@@ -247,7 +247,7 @@ SELECT COUNT(*) FROM glob('{DATA_DIR}/csv/glob/*/*.csv');
 statement error
 SELECT * FROM read_csv_auto([]::INT[]) ORDER BY 1
 ----
-No function matches
+at least one file
 
 statement error
 SELECT * FROM read_csv_auto([]::VARCHAR[]) ORDER BY 1

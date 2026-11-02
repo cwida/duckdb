@@ -5,8 +5,8 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/secret/secret_manager.hpp"
 #include "duckdb/catalog/catalog_search_path.hpp"
+#include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/main/settings.hpp"
-#include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
 #include "duckdb/parser/parsed_data/extra_drop_info.hpp"
 #include "duckdb/parser/tableref/basetableref.hpp"
 
@@ -69,9 +69,8 @@ SourceResultType PhysicalDrop::GetDataInternal(ExecutionContext &context, DataCh
 		}
 		auto &base_table_ref = trigger_extra.base_table->Cast<BaseTableRef>();
 		auto &table_entry = Catalog::GetEntry<TableCatalogEntry>(context.client, base_table_ref.GetQualifiedName());
-		auto &duck_table = table_entry.Cast<DuckTableEntry>();
-		auto transaction = duck_table.catalog.GetCatalogTransaction(context.client);
-		if (!duck_table.DropTrigger(transaction, info->GetQualifiedName().Name(), info->cascade)) {
+		auto transaction = table_entry.ParentCatalog().GetCatalogTransaction(context.client);
+		if (!table_entry.DropTrigger(transaction, info->GetQualifiedName().Name(), info->cascade)) {
 			if (info->if_not_found == OnEntryNotFound::THROW_EXCEPTION) {
 				throw CatalogException("Trigger with name %s does not exist on table %s",
 				                       info->GetQualifiedName().Name(), base_table_ref.Table());

@@ -217,7 +217,7 @@ def classify_choice_alternatives(alternatives, rule_types, excluded_rules, ident
 
 
 # ---------------------------------------------------------------------------
-# Trampoline sequence planning
+# TransformProcess sequence planning
 # ---------------------------------------------------------------------------
 
 
@@ -230,7 +230,13 @@ class MatcherOverride:
         return self.matcher in ("identifier", "reserved_identifier")
 
     def is_terminal(self):
-        return self.matcher in ("number_literal", "string_literal", "operator", "identifier_string")
+        return self.matcher in (
+            "number_literal",
+            "string_literal",
+            "operator",
+            "all_operators",
+            "identifier_string",
+        )
 
 
 @dataclass
@@ -458,7 +464,11 @@ def plan_trampoline_sequence_rule(ast, matcher_overrides, syntax_only_rules=None
 
 
 def plan_trampoline_sequence_rule_with_terminals(
-    ast, matcher_overrides, syntax_only_rules=None, allow_dynamic_stack_followers=False, allow_top_level_repeat=False
+    ast,
+    matcher_overrides,
+    syntax_only_rules=None,
+    allow_dynamic_stack_followers=False,
+    allow_top_level_repeat=False,
 ):
     syntax_only_rules = syntax_only_rules or set()
     direct_args = []
@@ -522,15 +532,29 @@ def plan_trampoline_sequence_rule_with_terminals(
                     if not allow_dynamic_stack_followers:
                         if trailing_optional_stack_child is not None:
                             raise NotImplementedError("only one trailing optional stack child is currently supported")
-                        arg = TrailingOptionalStackChild(parse_expr, child.child.name, to_snake_case(child.child.name))
+                        arg = TrailingOptionalStackChild(
+                            parse_expr,
+                            child.child.name,
+                            to_snake_case(child.child.name),
+                        )
                         trailing_optional_stack_child = arg
                         finalize_args.append(arg)
                         continue
-                    arg = OptionalStackChild(parse_expr, child.child.name, next_slot, to_snake_case(child.child.name))
+                    arg = OptionalStackChild(
+                        parse_expr,
+                        child.child.name,
+                        next_slot,
+                        to_snake_case(child.child.name),
+                    )
                     optional_stack_children.append(arg)
                     next_slot += 1
                 else:
-                    arg = OptionalStackChild(parse_expr, child.child.name, next_slot, to_snake_case(child.child.name))
+                    arg = OptionalStackChild(
+                        parse_expr,
+                        child.child.name,
+                        next_slot,
+                        to_snake_case(child.child.name),
+                    )
                     optional_stack_children.append(arg)
                     next_slot += 1
             finalize_args.append(arg)
@@ -543,7 +567,12 @@ def plan_trampoline_sequence_rule_with_terminals(
             if _is_identifier_override(rule_name, matcher_overrides):
                 raise NotImplementedError("wrapped optional identifier child is currently unsupported")
             if _is_terminal_override(rule_name, matcher_overrides):
-                arg = DirectOptionalMatcherArg(parse_expr, rule_name, to_snake_case(rule_name), result_expr_template)
+                arg = DirectOptionalMatcherArg(
+                    parse_expr,
+                    rule_name,
+                    to_snake_case(rule_name),
+                    result_expr_template,
+                )
                 finalize_args.append(arg)
                 continue
             if has_dynamic_child:
@@ -551,19 +580,30 @@ def plan_trampoline_sequence_rule_with_terminals(
                     if trailing_optional_stack_child is not None:
                         raise NotImplementedError("only one trailing optional stack child is currently supported")
                     arg = TrailingOptionalStackChild(
-                        parse_expr, rule_name, to_snake_case(rule_name), result_expr_template
+                        parse_expr,
+                        rule_name,
+                        to_snake_case(rule_name),
+                        result_expr_template,
                     )
                     trailing_optional_stack_child = arg
                     finalize_args.append(arg)
                     continue
                 arg = OptionalStackChild(
-                    parse_expr, rule_name, next_slot, to_snake_case(rule_name), result_expr_template
+                    parse_expr,
+                    rule_name,
+                    next_slot,
+                    to_snake_case(rule_name),
+                    result_expr_template,
                 )
                 optional_stack_children.append(arg)
                 next_slot += 1
             else:
                 arg = OptionalStackChild(
-                    parse_expr, rule_name, next_slot, to_snake_case(rule_name), result_expr_template
+                    parse_expr,
+                    rule_name,
+                    next_slot,
+                    to_snake_case(rule_name),
+                    result_expr_template,
                 )
                 optional_stack_children.append(arg)
                 next_slot += 1
@@ -602,7 +642,10 @@ def plan_trampoline_sequence_rule_with_terminals(
                 if repeat_child is not None:
                     raise NotImplementedError("only one repeat child is currently supported")
                 repeat_child = RepeatStackChild(
-                    parse_expr, repeat_node.name, next_slot, to_snake_case(repeat_node.name)
+                    parse_expr,
+                    repeat_node.name,
+                    next_slot,
+                    to_snake_case(repeat_node.name),
                 )
                 next_slot += 1
                 finalize_args.append(repeat_child)
@@ -616,14 +659,20 @@ def plan_trampoline_sequence_rule_with_terminals(
             if isinstance(list_node, ReferenceNode):
                 if _is_identifier_override(list_node.name, matcher_overrides):
                     arg = DirectOptionalListArg(
-                        parse_expr, list_node.name, to_snake_case(list_node.name), result_expr_template
+                        parse_expr,
+                        list_node.name,
+                        to_snake_case(list_node.name),
+                        result_expr_template,
                     )
                     direct_optional_list_args.append(arg)
                     finalize_args.append(arg)
                     continue
                 if _is_terminal_override(list_node.name, matcher_overrides):
                     arg = DirectOptionalListArg(
-                        parse_expr, list_node.name, to_snake_case(list_node.name), result_expr_template
+                        parse_expr,
+                        list_node.name,
+                        to_snake_case(list_node.name),
+                        result_expr_template,
                     )
                     direct_optional_list_args.append(arg)
                     finalize_args.append(arg)
@@ -636,7 +685,11 @@ def plan_trampoline_sequence_rule_with_terminals(
                 ):
                     raise NotImplementedError("only one dynamic stack child is currently supported")
                 optional_list_child = OptionalListStackChild(
-                    parse_expr, list_node.name, next_slot, to_snake_case(list_node.name), result_expr_template
+                    parse_expr,
+                    list_node.name,
+                    next_slot,
+                    to_snake_case(list_node.name),
+                    result_expr_template,
                 )
                 next_slot += 1
                 finalize_args.append(optional_list_child)
@@ -647,14 +700,20 @@ def plan_trampoline_sequence_rule_with_terminals(
                 list_node = list_container.inner
                 if _is_identifier_override(list_node.name, matcher_overrides):
                     arg = DirectOptionalListArg(
-                        parse_expr, list_node.name, to_snake_case(list_node.name), result_expr_template
+                        parse_expr,
+                        list_node.name,
+                        to_snake_case(list_node.name),
+                        result_expr_template,
                     )
                     direct_optional_list_args.append(arg)
                     finalize_args.append(arg)
                     continue
                 if _is_terminal_override(list_node.name, matcher_overrides):
                     arg = DirectOptionalListArg(
-                        parse_expr, list_node.name, to_snake_case(list_node.name), result_expr_template
+                        parse_expr,
+                        list_node.name,
+                        to_snake_case(list_node.name),
+                        result_expr_template,
                     )
                     direct_optional_list_args.append(arg)
                     finalize_args.append(arg)
@@ -667,7 +726,11 @@ def plan_trampoline_sequence_rule_with_terminals(
                 ):
                     raise NotImplementedError("only one dynamic stack child is currently supported")
                 optional_list_child = OptionalListStackChild(
-                    parse_expr, list_node.name, next_slot, to_snake_case(list_node.name), result_expr_template
+                    parse_expr,
+                    list_node.name,
+                    next_slot,
+                    to_snake_case(list_node.name),
+                    result_expr_template,
                 )
                 next_slot += 1
                 finalize_args.append(optional_list_child)

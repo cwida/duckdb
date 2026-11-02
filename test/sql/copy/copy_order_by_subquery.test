@@ -1,0 +1,37 @@
+# name: test/sql/copy/copy_order_by_subquery.test
+# description: An ORDER_BY term of COPY that holds a subquery raises a binder error
+# group: [copy]
+
+require parquet
+
+statement error
+COPY (SELECT * FROM (VALUES (2), (1)) t(p)) TO '{TEST_DIR}/copy_order_by_subquery.parquet' (FORMAT parquet, ORDER_BY (p + (SELECT 0)))
+----
+subqueries are not allowed in ORDER_BY
+
+statement error
+COPY (SELECT * FROM (VALUES (2), (1)) t(p)) TO '{TEST_DIR}/copy_order_by_subquery.parquet' (FORMAT parquet, ORDER_BY (p IN (SELECT 1) DESC))
+----
+subqueries are not allowed in ORDER_BY
+
+statement ok
+CREATE MACRO zero_subquery() AS (SELECT 0)
+
+statement error
+COPY (SELECT * FROM (VALUES (2), (1)) t(p)) TO '{TEST_DIR}/copy_order_by_subquery.parquet' (FORMAT parquet, ORDER_BY (p + zero_subquery()))
+----
+subqueries are not allowed in ORDER_BY
+
+statement error
+COPY (SELECT * FROM (VALUES (2), (1)) t(p)) TO '{TEST_DIR}/copy_order_by_subquery.parquet' (FORMAT parquet, ORDER_BY (switch((SELECT 0), map([0], [1]))))
+----
+subqueries are not allowed in ORDER_BY
+
+statement ok
+COPY (SELECT * FROM (VALUES (2), (1)) t(p)) TO '{TEST_DIR}/copy_order_by_subquery.parquet' (FORMAT parquet, ORDER_BY (p + 0))
+
+query I
+SELECT p FROM read_parquet('{TEST_DIR}/copy_order_by_subquery.parquet', file_row_number = true) ORDER BY file_row_number
+----
+1
+2

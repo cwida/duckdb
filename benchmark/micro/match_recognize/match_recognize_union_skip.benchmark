@@ -1,0 +1,28 @@
+# name: benchmark/micro/match_recognize/match_recognize_union_skip.benchmark
+# description: A fall then a rise, with flat rows allowed in either, resuming at the last row of the rise
+# group: [match_recognize]
+
+# Two alternations over a union, and AFTER MATCH SKIP TO the last row the union matched, so every
+# match's rise is where the next match starts looking.
+
+name MatchRecognize Union Skip
+group micro
+subgroup match_recognize
+
+load
+CREATE TABLE ticks AS
+    SELECT i, ((i::BIGINT * 2654435761 % 1000003) % 5)::INTEGER AS v
+    FROM range(0, 1000000) t(i);
+
+run
+SELECT count(*), sum(len) FROM ticks MATCH_RECOGNIZE(
+    ORDER BY i
+    MEASURES last(i) - first(i) + 1 AS len
+    ONE ROW PER MATCH AFTER MATCH SKIP TO LAST UPS
+    PATTERN (S (DN | SAME)+ (UP | SAME)+)
+    SUBSET UPS = (UP, SAME)
+    DEFINE DN AS v < PREV(v), UP AS v > PREV(v), SAME AS v = PREV(v)
+);
+
+result II
+456677	1456674

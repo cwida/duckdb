@@ -17,7 +17,7 @@
 #include <memory>
 
 DSS_HUGE NextRand(DSS_HUGE seed);
-void permute(long *set, int cnt, seed_t *seed);
+void permute(long *set, int cnt, int needed, seed_t *seed);
 void permute_dist(distribution *d, seed_t *seed, DBGenContext *ctx);
 long seed;
 char *eol[2] = {" ", "},"};
@@ -26,13 +26,15 @@ char *eol[2] = {" ", "},"};
 #define ITERATIONS 1000
 #define UNSET 0
 
-void permute(long *a, int c, seed_t *seed) {
+// Fisher-Yates from the front: position i is final after iteration i, so only the first `needed` positions
+// are permuted; the seed is advanced to its per-row boundary by row_stop_h() as if all draws were made.
+void permute(long *a, int c, int needed, seed_t *seed) {
 	int i;
 	DSS_HUGE source;
 	long temp;
 
 	if (a != (long *)NULL) {
-		for (i = 0; i < c; i++) {
+		for (i = 0; i < needed; i++) {
 			RANDOM(source, (long)i, (long)(c - 1), seed);
 			temp = *(a + source);
 			*(a + source) = *(a + i);
@@ -43,7 +45,7 @@ void permute(long *a, int c, seed_t *seed) {
 	return;
 }
 
-void permute_dist(distribution *d, seed_t *seed, DBGenContext *ctx) {
+void permute_dist(distribution *d, int needed, seed_t *seed, DBGenContext *ctx) {
 	int i;
 
 	if (d != NULL) {
@@ -53,7 +55,7 @@ void permute_dist(distribution *d, seed_t *seed, DBGenContext *ctx) {
 		}
 		for (i = 0; i < DIST_SIZE(d); i++)
 			*(ctx->permute + i) = i;
-		permute(ctx->permute, DIST_SIZE(d), seed);
+		permute(ctx->permute, DIST_SIZE(d), needed, seed);
 	} else
 		INTERNAL_ERROR("Bad call to permute_dist");
 

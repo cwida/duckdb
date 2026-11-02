@@ -1,0 +1,70 @@
+# name: test/sql/table_function/test_repeat_row_function.test
+# description: Test repeat_row function
+# group: [table_function]
+
+query I
+SELECT * FROM repeat_row(0, num_rows=3)
+----
+0
+0
+0
+
+query IIII
+SELECT * FROM repeat_row(NULL, 1, "52", true, num_rows=2)
+----
+NULL	1	52	true
+NULL	1	52	true
+
+# varchar
+query I
+SELECT * FROM repeat_row('hello', num_rows=2)
+----
+hello
+hello
+
+# num_rows = 0 returns no rows
+query I
+SELECT * FROM repeat_row(1, num_rows=0)
+----
+
+# many rows
+query I
+SELECT * FROM repeat_row(1, num_rows=10000)
+----
+10000 values hashing to 532e2dcdbf025eccc86cb25898ca8e7a
+
+# num_rows missing entirely
+statement error
+SELECT * FROM repeat_row(1)
+----
+<REGEX>:Binder Error.*No function matches.*repeat_row.*
+
+# no columns specified
+statement error
+SELECT * FROM repeat_row(num_rows=3)
+----
+<REGEX>:Binder Error.*repeat_rows requires at least one column to be specified.*
+
+# neither columns nor num_rows specified - missing num_rows is checked first
+statement error
+SELECT * FROM repeat_row()
+----
+<REGEX>:Binder Error.*No function matches.*repeat_row.*
+
+# num_rows is NULL
+statement error
+SELECT * FROM repeat_row(1, num_rows=NULL)
+----
+<REGEX>:Binder Error.*num_rows should be an integer value >= 0.*
+
+# num_rows is negative
+statement error
+SELECT * FROM repeat_row(1, num_rows=-1)
+----
+<REGEX>:Binder Error.*num_rows cannot be less than zero.*
+
+# num_rows is a large negative value
+statement error
+SELECT * FROM repeat_row(1, num_rows=-9223372036854775808)
+----
+<REGEX>:Binder Error.*num_rows cannot be less than zero.*

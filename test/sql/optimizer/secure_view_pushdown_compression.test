@@ -1,0 +1,68 @@
+# name: test/sql/optimizer/secure_view_pushdown_compression.test
+# description: The __internal_barrier() barrier is not evaluated on the compressed values of rows the view hides
+# group: [optimizer]
+
+load {TEST_DIR}/secure_view_pushdown_compression.db
+
+# the poison value only occurs in the rows that the secure view filters out, but it is part of the dictionary of
+# the segment - a filter that is evaluated on the dictionary rather than on the selected rows would expose it
+statement ok
+CREATE TABLE dict_secrets AS
+    SELECT (i % 5)::INTEGER AS id, CASE WHEN i % 5 = 0 THEN 'top_secret' ELSE ((i % 5) * 10)::VARCHAR END AS s
+    FROM range(100000) t(i)
+
+statement ok
+CHECKPOINT
+
+restart
+
+# the segment count depends on the block size, and the dictionary scheme on the storage version - all that matters
+# is that the column is dictionary compressed
+query I
+SELECT count(*) > 0 FROM pragma_storage_info('dict_secrets')
+WHERE column_name = 's' AND compression IN ('DICT_FSST', 'Dictionary')
+----
+true
+
+statement ok
+CREATE SECURE VIEW dict_secure_view AS SELECT * FROM dict_secrets WHERE id <> 0
+
+query I
+SELECT count(*) FROM dict_secure_view WHERE s::INT = 10
+----
+20000
+
+# the same holds for an explicit barrier on the base table
+query I
+SELECT count(*) FROM dict_secrets WHERE id <> 0 AND __internal_barrier(s::INT = 10)
+----
+20000
+
+# ... and for run-length encoded columns, where the filter would otherwise be evaluated on every run
+statement ok
+CREATE TABLE rle_secrets AS
+    SELECT (i // 20000)::INTEGER AS grp, CASE WHEN i < 20000 THEN 100000 ELSE 5 END::INTEGER AS val
+    FROM range(100000) t(i)
+
+statement ok
+CHECKPOINT
+
+restart
+
+query I
+SELECT count(*) > 0 FROM pragma_storage_info('rle_secrets') WHERE column_name = 'val' AND compression = 'RLE'
+----
+true
+
+statement ok
+CREATE SECURE VIEW rle_secure_view AS SELECT * FROM rle_secrets WHERE grp <> 0
+
+query I
+SELECT count(*) FROM rle_secure_view WHERE val::TINYINT = 5
+----
+80000
+
+query I
+SELECT count(*) FROM rle_secrets WHERE grp <> 0 AND __internal_barrier(val::TINYINT = 5)
+----
+80000

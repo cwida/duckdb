@@ -4,15 +4,18 @@ namespace duckdb {
 
 WindowAggregateStates::WindowAggregateStates(ClientContext &client, const AggregateObject &aggr)
     : client(client), aggr(aggr), state_size(aggr.function.GetStateSize(aggr.GetFunctionData())),
-      allocator(Allocator::Get(client)) {
+      allocator(BufferAllocator::Get(client)) {
 }
 
-void WindowAggregateStates::Initialize(idx_t count) {
+void WindowAggregateStates::Initialize(idx_t count_p) {
 	// Don't leak - every Initialize must be matched with a Destroy
-	D_ASSERT(states.empty());
+	D_ASSERT(count == 0);
 
-	states.resize(count * state_size);
-	auto state_ptr = states.data();
+	count = count_p;
+	if (count > 0) {
+		states = BufferAllocator::Get(client).Allocate(count * state_size);
+	}
+	auto state_ptr = states.get();
 
 	statef = make_uniq<Vector>(LogicalType::POINTER, count);
 	auto state_f_data = FlatVector::Writer<data_ptr_t>(*statef, count);
@@ -37,7 +40,7 @@ void WindowAggregateStates::Finalize(Vector &result) {
 }
 
 void WindowAggregateStates::Destroy() {
-	if (states.empty()) {
+	if (count == 0) {
 		return;
 	}
 
@@ -46,7 +49,8 @@ void WindowAggregateStates::Destroy() {
 		aggr.function.GetStateDestructorCallback()(*statef, aggr_input_data, GetCount());
 	}
 
-	states.clear();
+	states.Reset();
+	count = 0;
 }
 
 } // namespace duckdb

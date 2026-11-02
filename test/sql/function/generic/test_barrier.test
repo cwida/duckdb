@@ -1,0 +1,110 @@
+# name: test/sql/function/generic/test_barrier.test
+# description: Test the __internal_barrier() optimizer barrier
+# group: [generic]
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+# __internal_barrier() returns its argument unchanged, for any type
+query IIIII
+SELECT __internal_barrier(42), __internal_barrier('hello'), __internal_barrier(NULL), __internal_barrier([1, 2, 3]), __internal_barrier({'a': 1})
+----
+42	hello	NULL	[1, 2, 3]	{'a': 1}
+
+query I
+SELECT typeof(__internal_barrier(42::TINYINT))
+----
+TINYINT
+
+query I
+SELECT __internal_barrier(i) FROM range(3) t(i) ORDER BY 1
+----
+0
+1
+2
+
+# errors inside the barrier still propagate
+statement error
+SELECT __internal_barrier(error('boom'))
+----
+<REGEX>:.*boom.*
+
+statement ok
+CREATE TABLE secrets(id INTEGER, s VARCHAR)
+
+statement ok
+INSERT INTO secrets VALUES (1, 'top_secret'), (2, '42')
+
+statement ok
+CREATE TABLE allowed(id INTEGER)
+
+statement ok
+INSERT INTO allowed VALUES (2)
+
+statement ok
+SET disabled_optimizers='join_filter_pushdown'
+
+# without the barrier the cast is pushed past the join and is evaluated on the row the join removes
+statement error
+SELECT sec.s FROM secrets sec JOIN allowed a ON (sec.id = a.id) WHERE sec.s::INT = 42
+----
+<REGEX>:.*Conversion Error.*top_secret.*
+
+# with the barrier it is not
+query I
+SELECT sec.s FROM secrets sec JOIN allowed a ON (sec.id = a.id) WHERE __internal_barrier(sec.s::INT = 42)
+----
+42
+
+query II
+EXPLAIN SELECT sec.s FROM secrets sec JOIN allowed a ON (sec.id = a.id) WHERE __internal_barrier(sec.s::INT = 42)
+----
+physical_plan	<REGEX>:[\s\S]*FILTER[\s\S]*__internal_barrier[\s\S]*HASH_JOIN[\s\S]*
+
+statement ok
+RESET disabled_optimizers
+
+# a barrier is pushed into a table scan, but is always evaluated after the other filters of that scan
+query II
+EXPLAIN SELECT * FROM secrets WHERE __internal_barrier(s::INT = 42) AND id = 2
+----
+physical_plan	<REGEX>:[\s\S]*SEQ_SCAN[\s\S]*__internal_barrier[\s\S]*
+
+query II
+SELECT * FROM secrets WHERE __internal_barrier(s::INT = 42) AND id = 2
+----
+2	42
+
+query II
+SELECT * FROM secrets WHERE id = 2 AND __internal_barrier(s::INT = 42)
+----
+2	42
+
+# a barrier is never pushed below an operator that removes rows
+statement ok
+CREATE TABLE t AS SELECT i FROM range(10) t(i)
+
+statement ok
+CREATE SEQUENCE seq
+
+# the LIMIT removes rows, so the barrier stays above it and is evaluated 3 times, not 10
+query I
+SELECT count(*) FROM (SELECT * FROM t LIMIT 3) WHERE __internal_barrier(nextval('seq') >= 0)
+----
+3
+
+query I
+SELECT currval('seq')
+----
+3
+
+# a barrier passes through a projection - it does not change which rows the expression sees
+query II
+EXPLAIN SELECT * FROM (SELECT i * 2 AS k FROM t) WHERE __internal_barrier(k = 4)
+----
+physical_plan	<REGEX>:[\s\S]*SEQ_SCAN[\s\S]*__internal_barrier[\s\S]*
+
+query I
+SELECT * FROM (SELECT i * 2 AS k FROM t) WHERE __internal_barrier(k = 4)
+----
+4

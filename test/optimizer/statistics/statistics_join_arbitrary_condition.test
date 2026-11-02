@@ -1,0 +1,171 @@
+# name: test/optimizer/statistics/statistics_join_arbitrary_condition.test
+# description: Statistics propagation on joins mixing comparison and arbitrary conditions
+# group: [statistics]
+
+# the comparison folds to true while the arbitrary condition remains
+query I
+SELECT 1 FROM (SELECT 1 a) JOIN (SELECT 0 b) ON a > b AND a + b > 0;
+----
+1
+
+query II
+SELECT a, b FROM (SELECT 1 a) LEFT JOIN (SELECT 0 b) ON a > b AND a + b > 0;
+----
+1	0
+
+query I
+SELECT 1 FROM (SELECT 1 a) JOIN (SELECT 0 b) ON a > b AND a + b > 0 AND a <> b;
+----
+1
+
+# the comparison folds to true and the arbitrary condition is not constant
+query II
+SELECT a, b FROM (SELECT 1 a) JOIN (VALUES (0), (2)) t(b) ON a > b - 5 AND a + b > 2;
+----
+1	2
+
+query II
+SELECT a, b FROM (SELECT 1 a) LEFT JOIN (VALUES (0), (2)) t(b) ON a > b - 5 AND a + b > 2;
+----
+1	2
+
+# the arbitrary condition folds to false
+query I
+SELECT 1 FROM (SELECT 1 a) JOIN (SELECT 0 b) ON a > b AND a + b > 5;
+----
+
+query II
+SELECT a, b FROM (SELECT 1 a) LEFT JOIN (SELECT 0 b) ON a > b AND a + b > 5;
+----
+1	NULL
+
+query II
+SELECT a, b FROM (SELECT 1 a) RIGHT JOIN (SELECT 0 b) ON a > b AND a + b > 5;
+----
+NULL	0
+
+query II
+SELECT a, b FROM (SELECT 1 a) FULL JOIN (SELECT 0 b) ON a > b AND a + b > 5;
+----
+1	NULL
+NULL	0
+
+# the arbitrary condition folds to NULL
+query II
+SELECT a, b FROM (SELECT 1 a) LEFT JOIN (SELECT 0 b) ON a > b AND a + b > NULL;
+----
+1	NULL
+
+# both conditions fold to true
+query II
+SELECT a, b FROM (SELECT 1 a) JOIN (SELECT 0 b) ON a > b AND a + b > -1;
+----
+1	0
+
+query II
+SELECT a, b FROM (SELECT 1 a) LEFT JOIN (SELECT 0 b) ON a > b AND a + b > -1;
+----
+1	0
+
+# the comparison folds to false
+query I
+SELECT 1 FROM (SELECT 1 a) JOIN (SELECT 0 b) ON a < b AND a + b > 0;
+----
+
+query II
+SELECT a, b FROM (SELECT 1 a) LEFT JOIN (SELECT 0 b) ON a < b AND a + b > 0;
+----
+1	NULL
+
+# semi and anti joins
+query I
+SELECT a FROM (SELECT 1 a) SEMI JOIN (SELECT 0 b) ON a > b AND a + b > 0;
+----
+1
+
+query I
+SELECT a FROM (SELECT 1 a) ANTI JOIN (SELECT 0 b) ON a > b AND a + b > 0;
+----
+
+query I
+SELECT a FROM (SELECT 1 a) ANTI JOIN (SELECT 0 b) ON a > b AND a + b > 5;
+----
+1
+
+# the arbitrary condition comes first
+query II
+SELECT a, b FROM (SELECT 1 a) JOIN (SELECT 0 b) ON a + b > 5 AND a > b;
+----
+
+query II
+SELECT a, b FROM (SELECT 1 a) LEFT JOIN (SELECT 0 b) ON a + b > 5 AND a > b;
+----
+1	NULL
+
+query II
+SELECT a, b FROM (SELECT 1 a) JOIN (SELECT 0 b) ON a + b > -1 AND a > b;
+----
+1	0
+
+# mark joins
+query II
+SELECT a, EXISTS (SELECT 1 FROM (SELECT 0 b) WHERE a > b AND a + b > 5) FROM (SELECT 1 a);
+----
+1	false
+
+query II
+SELECT a, EXISTS (SELECT 1 FROM (SELECT 0 b) WHERE a > b AND a + b > 0) FROM (SELECT 1 a);
+----
+1	true
+
+# multiple rows on both sides
+statement ok
+CREATE TABLE l AS SELECT i AS a FROM range(1, 6) t(i);
+
+statement ok
+CREATE TABLE r AS SELECT i AS b FROM range(0, 4) t(i);
+
+query II
+SELECT a, b FROM l JOIN r ON a > b - 10 AND a + b > 6 ORDER BY ALL;
+----
+4	3
+5	2
+5	3
+
+query II
+SELECT a, b FROM l FULL JOIN r ON a > b - 10 AND a + b > 7 ORDER BY ALL;
+----
+1	NULL
+2	NULL
+3	NULL
+4	NULL
+5	3
+NULL	0
+NULL	1
+NULL	2
+
+query I
+SELECT a FROM l ANTI JOIN r ON a > b - 10 AND a + b > 6 ORDER BY ALL;
+----
+1
+2
+3
+
+# without statistics propagation the results must be identical
+statement ok
+SET disabled_optimizers='statistics_propagation';
+
+query I
+SELECT 1 FROM (SELECT 1 a) JOIN (SELECT 0 b) ON a > b AND a + b > 0;
+----
+1
+
+query II
+SELECT a, b FROM (SELECT 1 a) LEFT JOIN (SELECT 0 b) ON a > b AND a + b > 5;
+----
+1	NULL
+
+query I
+SELECT a FROM (SELECT 1 a) ANTI JOIN (SELECT 0 b) ON a > b AND a + b > 5;
+----
+1

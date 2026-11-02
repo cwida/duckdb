@@ -170,7 +170,7 @@ BoundStatement Binder::BindNearestJoin(JoinRef &ref) {
 	select_node->modifiers.push_back(std::move(order_modifier));
 
 	auto limit_modifier = make_uniq<LimitModifier>();
-	limit_modifier->limit = make_uniq<ConstantExpression>(Value::BIGINT(NumericCast<int64_t>(ref.nearest_count)));
+	limit_modifier->limit = ConstantExpression::Integer(NumericCast<int64_t>(ref.nearest_count));
 	select_node->modifiers.push_back(std::move(limit_modifier));
 
 	auto select_statement = make_uniq<SelectStatement>();
@@ -180,7 +180,7 @@ BoundStatement Binder::BindNearestJoin(JoinRef &ref) {
 	lateral_join->type = ref.type;
 	lateral_join->left = std::move(ref.left);
 	lateral_join->right = make_uniq<SubqueryRef>(std::move(select_statement), std::move(target_alias));
-	lateral_join->condition = make_uniq<ConstantExpression>(Value::BOOLEAN(true));
+	lateral_join->condition = ConstantExpression::Boolean(true);
 	lateral_join->query_location = ref.query_location;
 	return Bind(*lateral_join);
 }
@@ -365,6 +365,18 @@ BoundStatement Binder::Bind(JoinRef &ref) {
 		}
 	}
 
+	// a positional join pads the shorter side with NULLs
+	const bool full_outer = result->type == JoinType::OUTER || ref.ref_type == JoinRefType::POSITIONAL;
+	if (result->type == JoinType::LEFT || full_outer) {
+		for (auto &binding : right_binder.bind_context.GetBindingsList()) {
+			binding->SetNullExtended();
+		}
+	}
+	if (result->type == JoinType::RIGHT || full_outer) {
+		for (auto &binding : left_binder.bind_context.GetBindingsList()) {
+			binding->SetNullExtended();
+		}
+	}
 	auto right_bindings = right_binder.bind_context.GetBindingAliases();
 	auto left_bindings = left_binder.bind_context.GetBindingAliases();
 	bind_context.AddContext(std::move(left_binder.bind_context));

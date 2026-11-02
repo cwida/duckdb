@@ -1,0 +1,81 @@
+# name: test/sql/alter/add_pk/test_add_pk_wal_generated.test
+# description: WAL replay of ADD PRIMARY KEY / ADD UNIQUE must use physical column ids when the table has generated columns
+# group: [add_pk]
+
+load {TEST_DIR}/test_add_pk_wal_generated.db
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+statement ok
+PRAGMA wal_autocheckpoint='1TB';
+
+statement ok
+CREATE TABLE t_lead(g INTEGER GENERATED ALWAYS AS (a + 1), a INTEGER);
+
+statement ok
+INSERT INTO t_lead(a) VALUES (1), (2);
+
+statement ok
+ALTER TABLE t_lead ADD PRIMARY KEY (a);
+
+statement ok
+CREATE TABLE t_mid(a INTEGER, g INTEGER GENERATED ALWAYS AS (a + 1), c INTEGER);
+
+statement ok
+INSERT INTO t_mid(a, c) VALUES (1, 10), (2, 20);
+
+statement ok
+ALTER TABLE t_mid ADD PRIMARY KEY (c);
+
+statement ok
+CREATE TABLE t_uq(g INTEGER GENERATED ALWAYS AS (a + 1), a INTEGER);
+
+statement ok
+INSERT INTO t_uq(a) VALUES (1);
+
+statement ok
+ALTER TABLE t_uq ADD UNIQUE (a);
+
+restart
+
+query II
+SELECT g, a FROM t_lead ORDER BY a;
+----
+2	1
+3	2
+
+query I
+SELECT a FROM t_lead WHERE a = 2;
+----
+2
+
+statement ok
+INSERT INTO t_lead(a) VALUES (3);
+
+statement error
+INSERT INTO t_lead(a) VALUES (1);
+----
+<REGEX>:Constraint Error.*Duplicate key "a: 1" violates primary key constraint.*
+
+query III
+SELECT a, g, c FROM t_mid ORDER BY c;
+----
+1	2	10
+2	3	20
+
+statement ok
+INSERT INTO t_mid(a, c) VALUES (3, 30);
+
+statement error
+INSERT INTO t_mid(a, c) VALUES (4, 10);
+----
+<REGEX>:Constraint Error.*Duplicate key "c: 10" violates primary key constraint.*
+
+statement ok
+INSERT INTO t_uq(a) VALUES (2);
+
+statement error
+INSERT INTO t_uq(a) VALUES (1);
+----
+<REGEX>:Constraint Error.*Duplicate key "a: 1" violates unique constraint.*

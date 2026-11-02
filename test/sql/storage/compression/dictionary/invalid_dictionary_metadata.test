@@ -3,102 +3,114 @@
 
 require vector_size 2048
 
-unzip data/storage/dictionary_invalid_offset.db.gz {TEST_DIR}/dictionary_invalid_offset.db
+unzip data/storage/corrupt/dictionary_invalid_offset.db.gz {TEST_DIR}/dictionary_invalid_offset.db
 
-unzip data/storage/dictionary_invalid_index.db.gz {TEST_DIR}/dictionary_invalid_index.db
+unzip data/storage/corrupt/dictionary_invalid_index.db.gz {TEST_DIR}/dictionary_invalid_index.db
 
-unzip data/storage/dictionary_invalid_dict_end.db.gz {TEST_DIR}/dictionary_invalid_dict_end.db
+unzip data/storage/corrupt/dictionary_invalid_dict_end.db.gz {TEST_DIR}/dictionary_invalid_dict_end.db
 
-unzip data/storage/dictionary_invalid_bitpacking_width.db.gz {TEST_DIR}/dictionary_invalid_bitpacking_width.db
+unzip data/storage/corrupt/dictionary_invalid_bitpacking_width.db.gz {TEST_DIR}/dictionary_invalid_bitpacking_width.db
 
-unzip data/storage/dictionary_invalid_selection_buffer.db.gz {TEST_DIR}/dictionary_invalid_selection_buffer.db
+unzip data/storage/corrupt/dictionary_invalid_selection_buffer.db.gz {TEST_DIR}/dictionary_invalid_selection_buffer.db
 
-unzip data/storage/dictionary_invalid_segment_end.db.gz {TEST_DIR}/dictionary_invalid_segment_end.db
+unzip data/storage/corrupt/dictionary_invalid_segment_end.db.gz {TEST_DIR}/dictionary_invalid_segment_end.db
+
+load {TEST_DIR}/dictionary_invalid_offset.db readonly
 
 statement ok
-ATTACH '{TEST_DIR}/dictionary_invalid_offset.db' AS offset_db
+USE dictionary_invalid_offset;
 
 query I
-SELECT count(*) FROM pragma_storage_info('offset_db.tbl') WHERE compression='Dictionary'
+SELECT count(*) FROM pragma_storage_info('tbl') WHERE compression='Dictionary'
 ----
 6
 
 statement error
-SELECT sum(length(STREET)) FROM offset_db.tbl
+SELECT sum(length(STREET)) FROM tbl
 ----
 Data Corruption Error: Failed to scan dictionary string - dictionary offset was out of range. Database file appears to be corrupted.
 
-restart
+load {TEST_DIR}/dictionary_invalid_index.db readonly
 
 statement ok
-ATTACH '{TEST_DIR}/dictionary_invalid_index.db' AS index_db
+USE dictionary_invalid_index;
 
 query I
-SELECT count(*) FROM pragma_storage_info('index_db.tbl') WHERE compression='Dictionary'
+SELECT count(*) FROM pragma_storage_info('tbl') WHERE compression='Dictionary'
 ----
 6
 
 statement error
-SELECT sum(length(STREET)) FROM index_db.tbl
+SELECT sum(length(STREET)) FROM tbl
 ----
 Data Corruption Error: Failed to scan dictionary string - dictionary index was out of range. Database file appears to be corrupted.
 
 restart
 
 statement ok
-ATTACH '{TEST_DIR}/dictionary_invalid_dict_end.db' AS dict_end_db
+SET debug_force_fetch_row=true;
+
+statement error
+SELECT sum(length(STREET)) FROM tbl
+----
+Data Corruption Error: Failed to scan dictionary string - dictionary index was out of range. Database file appears to be corrupted.
+
+load {TEST_DIR}/dictionary_invalid_dict_end.db readonly
+
+statement ok
+USE dictionary_invalid_dict_end;
 
 query I
-SELECT count(*) FROM pragma_storage_info('dict_end_db.tbl') WHERE compression='Dictionary'
+SELECT count(*) FROM pragma_storage_info('tbl') WHERE compression='Dictionary'
 ----
 6
 
 statement error
-SELECT sum(length(STREET)) FROM dict_end_db.tbl
+SELECT sum(length(STREET)) FROM tbl
 ----
 Data Corruption Error: Failed to scan dictionary string - dictionary was out of range. Database file appears to be corrupted.
 
-restart
+load {TEST_DIR}/dictionary_invalid_bitpacking_width.db readonly
 
 statement ok
-ATTACH '{TEST_DIR}/dictionary_invalid_bitpacking_width.db' AS bitpacking_width_db
+USE dictionary_invalid_bitpacking_width;
 
 query I
-SELECT count(*) FROM pragma_storage_info('bitpacking_width_db.tbl') WHERE compression='Dictionary'
+SELECT count(*) FROM pragma_storage_info('tbl') WHERE compression='Dictionary'
 ----
 2
 
 statement error
-SELECT sum(length(STREET)) FROM bitpacking_width_db.tbl
+SELECT sum(length(STREET)) FROM tbl
 ----
 Data Corruption Error: Failed to scan dictionary string - bitpacking width was invalid. Database file appears to be corrupted.
 
-restart
+load {TEST_DIR}/dictionary_invalid_selection_buffer.db readonly
 
 statement ok
-ATTACH '{TEST_DIR}/dictionary_invalid_selection_buffer.db' AS selection_buffer_db
+USE dictionary_invalid_selection_buffer;
 
 query I
-SELECT count(*) FROM pragma_storage_info('selection_buffer_db.tbl') WHERE compression='Dictionary'
+SELECT count(*) FROM pragma_storage_info('tbl') WHERE compression='Dictionary'
 ----
 2
 
 statement error
-SELECT sum(length(STREET)) FROM selection_buffer_db.tbl
+SELECT sum(length(STREET)) FROM tbl
 ----
 Data Corruption Error: Failed to scan dictionary string - selection buffer was out of range. Database file appears to be corrupted.
 
-restart
+load {TEST_DIR}/dictionary_invalid_segment_end.db readonly
 
 statement ok
-ATTACH '{TEST_DIR}/dictionary_invalid_segment_end.db' AS segment_end_db
+USE dictionary_invalid_segment_end;
 
 query I
-SELECT block_offset FROM pragma_storage_info('segment_end_db.tbl') WHERE compression='Dictionary' AND column_name='street'
+SELECT block_offset FROM pragma_storage_info('tbl') WHERE compression='Dictionary' AND column_name='street'
 ----
 992
 
 statement error
-SELECT sum(length(STREET)) FROM segment_end_db.tbl
+SELECT sum(length(STREET)) FROM tbl
 ----
-Data Corruption Error: Failed to scan dictionary string - dictionary was out of range. Database file appears to be corrupted.
+Data Corruption Error: Corrupted dictionary segment: requested range extends past the end of the segment

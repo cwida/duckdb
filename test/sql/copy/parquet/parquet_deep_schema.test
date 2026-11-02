@@ -1,0 +1,24 @@
+# name: test/sql/copy/parquet/parquet_deep_schema.test
+# description: Parquet files with a schema that is nested too deeply are rejected
+# group: [parquet]
+
+require parquet
+
+# a STRUCT nested 600 levels deep
+statement error
+SELECT * FROM read_parquet('data/parquet-testing/broken/deep_schema.parquet');
+----
+the schema is nested more than 500 levels deep
+
+statement error
+DESCRIBE SELECT * FROM 'data/parquet-testing/broken/deep_schema.parquet';
+----
+the schema is nested more than 500 levels deep
+
+statement ok
+COPY (SELECT {'a': {'a': {'a': [1, 2]}}} s) TO '{TEMP_DIR}/parquet_nested_ok.parquet';
+
+query I
+SELECT s.a.a.a FROM read_parquet('{TEMP_DIR}/parquet_nested_ok.parquet');
+----
+[1, 2]

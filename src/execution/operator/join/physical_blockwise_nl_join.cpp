@@ -253,6 +253,10 @@ public:
 	OuterJoinLocalScanState scan_state;
 };
 
+ProgressData PhysicalBlockwiseNLJoin::GetProgress(ClientContext &context, GlobalSourceState &gstate) const {
+	return gstate.Cast<BlockwiseNLJoinGlobalScanState>().scan_state.GetProgress();
+}
+
 unique_ptr<GlobalSourceState> PhysicalBlockwiseNLJoin::GetGlobalSourceState(ClientContext &context) const {
 	return make_uniq<BlockwiseNLJoinGlobalScanState>(*this);
 }

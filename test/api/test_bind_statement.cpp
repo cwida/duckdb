@@ -12,7 +12,7 @@
 using namespace duckdb;
 
 static StatementSignature BindOne(Connection &con, const string &sql) {
-	Parser parser(con.context->GetParserOptions());
+	Parser parser(*con.context);
 	parser.ParseQuery(sql);
 	REQUIRE(parser.statements.size() == 1);
 	return con.context->BindStatement(std::move(parser.statements[0]));
@@ -49,8 +49,7 @@ TEST_CASE("BindStatement does not disturb a live streaming result", "[api][bind_
 	Connection con(db);
 
 	// Open a stream and consume one chunk, leaving it live mid-flight.
-	auto stream = con.SendQuery("SELECT i FROM range(5000) t(i)");
-	REQUIRE(stream->GetResultType() == QueryResultType::STREAM_RESULT);
+	auto stream = OpenStream(con, "SELECT i FROM range(5000) t(i)");
 	auto first = stream->Fetch();
 	REQUIRE(first);
 	idx_t seen = first->size();
@@ -83,7 +82,7 @@ static const StatementParameter &FindParam(const StatementSignature &sig, const 
 static int64_t CountRows(Connection &con, const string &sql) {
 	auto r = con.Query(sql);
 	REQUIRE_NO_FAIL(*r);
-	return r->GetValue(0, 0).GetValue<int64_t>();
+	return r->Collection().GetValue(0, 0).GetValue<int64_t>();
 }
 
 TEST_CASE("A failing BindStatement leaves the enclosing transaction usable", "[api][bind_statement]") {
@@ -248,8 +247,7 @@ TEST_CASE("BindStatement does not advance a suspended streaming query", "[api][b
 	// A range far larger than the streaming buffer: the query cannot materialize, so
 	// after one fetch it is suspended with most rows still unproduced.
 	const idx_t N = 2000000;
-	auto stream = con.SendQuery("SELECT probe_rows(i) FROM range(" + std::to_string(N) + ") t(i)");
-	REQUIRE(stream->GetResultType() == QueryResultType::STREAM_RESULT);
+	auto stream = OpenStream(con, "SELECT probe_rows(i) FROM range(" + std::to_string(N) + ") t(i)");
 
 	auto first = stream->Fetch();
 	REQUIRE(first);
@@ -279,8 +277,7 @@ TEST_CASE("BindStatement does not advance a suspended streaming query", "[api][b
 TEST_CASE("A failing BindStatement while a stream is live", "[api][bind_statement]") {
 	DuckDB db(nullptr);
 	Connection con(db);
-	auto stream = con.SendQuery("SELECT i FROM range(5000) t(i)");
-	REQUIRE(stream->GetResultType() == QueryResultType::STREAM_RESULT);
+	auto stream = OpenStream(con, "SELECT i FROM range(5000) t(i)");
 	auto first = stream->Fetch();
 	REQUIRE(first);
 	idx_t seen = first->size();

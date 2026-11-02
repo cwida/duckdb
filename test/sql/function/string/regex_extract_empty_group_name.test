@@ -1,0 +1,23 @@
+# name: test/sql/function/string/regex_extract_empty_group_name.test
+# description: regexp_extract(_all) with an empty group name
+# group: [string]
+
+statement error
+SELECT regexp_extract_all('ababcd', '(ab){2}cd', ['']);
+----
+Empty group name in regexp_extract_all
+
+statement error
+SELECT regexp_extract('ab', '(a)', ['']);
+----
+Empty group name in regexp_extract
+
+statement error
+SELECT regexp_extract_all('ab', '(a)(b)', ['', 'y']);
+----
+Empty group name in regexp_extract_all
+
+query I
+SELECT regexp_extract('ab', '(a)(b)', ['x', 'y']);
+----
+{'x': a, 'y': b}

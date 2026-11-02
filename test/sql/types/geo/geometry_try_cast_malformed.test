@@ -1,0 +1,71 @@
+# name: test/sql/types/geo/geometry_try_cast_malformed.test
+# description: Test that malformed WKT is a cast error that TRY_CAST and CSV ignore_errors can handle
+# group: [geo]
+
+query IIII
+SELECT TRY_CAST('POINT(1 2' AS GEOMETRY), TRY_CAST('FOO(1 2)' AS GEOMETRY), TRY_CAST('POINT(1 2) x' AS GEOMETRY),
+       TRY_CAST('POINT(1 2)' AS GEOMETRY);
+----
+NULL	NULL	NULL	POINT (1 2)
+
+query I
+SELECT TRY_CAST(['POINT(1 2)', 'POINT('] AS GEOMETRY[]);
+----
+['POINT (1 2)', NULL]
+
+query I
+SELECT TRY_CAST(g AS GEOMETRY) FROM (VALUES ('POINT(1 2)'), ('LINESTRING(0 0'), (NULL), ('POINT EMPTY')) t(g);
+----
+POINT (1 2)
+NULL
+NULL
+POINT EMPTY
+
+# a regular cast still reports the parse error
+statement error
+SELECT CAST('POINT(1 2' AS GEOMETRY);
+----
+Failed to parse geometry: Expected ')' but got end of input at offset 9
+
+statement error
+SELECT CAST('POINT(1 2) x' AS GEOMETRY);
+----
+Could not convert string
+
+# CSV ignore_errors / store_rejects skip malformed rows
+statement ok
+COPY (SELECT * FROM (VALUES ('POINT(1 2)'), ('POINT(1'), ('POINT(3 4)')) t(g)) TO '{TEMP_DIR}/malformed_wkt.csv' (HEADER);
+
+query I
+SELECT g FROM read_csv('{TEMP_DIR}/malformed_wkt.csv', columns={'g': 'GEOMETRY'}, header=true, ignore_errors=true);
+----
+POINT (1 2)
+POINT (3 4)
+
+query I
+SELECT g FROM read_csv('{TEMP_DIR}/malformed_wkt.csv', columns={'g': 'GEOMETRY'}, header=true, store_rejects=true);
+----
+POINT (1 2)
+POINT (3 4)
+
+query II
+SELECT line, error_type FROM reject_errors;
+----
+3	CAST
+
+statement error
+SELECT g FROM read_csv('{TEMP_DIR}/malformed_wkt.csv', columns={'g': 'GEOMETRY'}, header=true);
+----
+Could not convert string "POINT(1" to 'GEOMETRY'
+
+statement ok
+CREATE TABLE geoms (g GEOMETRY);
+
+statement ok
+COPY geoms FROM '{TEMP_DIR}/malformed_wkt.csv' (HEADER, IGNORE_ERRORS);
+
+query I
+SELECT g FROM geoms;
+----
+POINT (1 2)
+POINT (3 4)

@@ -148,7 +148,7 @@ DROP SCHEMA s1.does_not_exist;
 statement error
 DROP SCHEMA s1.missing.child;
 ----
-<REGEX>:.*parent schema "missing" does not exist.*
+Schema with name missing does not exist
 
 # CREATE OR REPLACE on a nested schema that has nested children fails (REPLACE does not cascade)
 statement ok

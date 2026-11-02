@@ -1,0 +1,166 @@
+# name: test/sql/match_recognize/test_match_recognize_session_model.test
+# description: MATCH_RECOGNIZE as a reporting model uses it - a wide MEASURES list over a JSON payload
+# group: [match_recognize]
+
+# The shape a reporting model asks for, on data small enough to check by hand. It puts together the
+# things such a model leans on, which the other files cover one at a time:
+#
+#   - navigation over an expression, last(V.attributes ->> 'key')::DOUBLE, which reads the payload
+#     off the row it navigated to rather than the row the match is reported on
+#   - aggregates restricted to one pattern variable, count(CASE WHEN V...), array_agg with an
+#     ORDER BY of its own, and a lambda over the result
+#   - a CASE over those aggregates that classifies how the match ended
+#   - a partition holding several matches, and one holding none
+#
+# Every expected value below was also produced by Trino 483 running the same query, with the two
+# constructs Trino does not accept in a pattern recognition context removed: ORDER BY inside an
+# aggregate, and a lambda. Those two are covered by the queries at the end.
+
+require json
+
+statement ok
+pragma threads=1;
+
+statement ok
+CREATE TABLE events(
+    id VARCHAR, session_id VARCHAR, client_id VARCHAR, item_id VARCHAR,
+    occurred_at TIMESTAMP, action_type VARCHAR, ms_since_open BIGINT, attributes JSON
+);
+
+# c1/i1 opens, is inspected twice, then staged twice with the action changing between them.
+# c1/i2 opens and is escalated and suppressed, with no staging at all.
+# c2/i1 has no opening event, so nothing in that partition may match.
+# c2/i2 holds two matches: one staged, then an open on its own.
+statement ok
+INSERT INTO events VALUES
+('e01','s1','c1','i1','2026-01-01 10:00:00','opened_from_search',0,'{"is_prefetched":1}'),
+('e02','s1','c1','i1','2026-01-01 10:00:05','played_demo',5000,'{"demo_id":"d1","demo_variant":"v1"}'),
+('e03','s1','c1','i1','2026-01-01 10:00:07','viewed_specs',7000,NULL),
+('e04','s1','c1','i1','2026-01-01 10:00:10','staged_item',10000,'{"stage_action":"commit","matched_terms":3,"pct_assets_rendered":0.5}'),
+('e05','s1','c1','i1','2026-01-01 10:00:12','staged_item',12000,'{"stage_action":"defer","matched_terms":7,"pct_assets_rendered":0.9}'),
+('e06','s2','c1','i2','2026-01-01 10:01:00','opened_from_email',0,NULL),
+('e07','s2','c1','i2','2026-01-01 10:01:03','escalated_item',3000,'{"reason":"schema","has_note":1}'),
+('e08','s2','c1','i2','2026-01-01 10:01:04','suppressed_item',4000,'{"source":"detail"}'),
+('e09','s3','c2','i1','2026-01-01 10:02:00','played_demo',1000,'{"demo_id":"d9","demo_variant":"v9"}'),
+('e10','s3','c2','i1','2026-01-01 10:02:01','staged_item',2000,'{"stage_action":"commit"}'),
+('e11','s4','c2','i2','2026-01-01 10:03:00','opened_from_browse',0,'{"is_prefetched":0}'),
+('e12','s4','c2','i2','2026-01-01 10:03:02','staged_item',2000,'{"stage_action":"expedite"}'),
+('e13','s5','c2','i2','2026-01-01 10:04:00','opened_from_deeplink',0,NULL);
+
+# the model itself. c2/i1 is absent from the output: the pattern needs an opening event to start,
+# and everything after it is optional, so that partition is scanned and matches nothing.
+query IIIIIIIIIIII
+SELECT client_id, item_id, view_surface, session_end_action, stage_count,
+       coalesce(first_stage_action, '-'), coalesce(last_stage_action, '-'),
+       coalesce(changed_stage_action::VARCHAR, '-'),
+       total_engagement_count, demo_plays, spec_views,
+       coalesce(seconds_to_last_stage::VARCHAR, '-')
+FROM events MATCH_RECOGNIZE(
+    PARTITION BY client_id, item_id
+    ORDER BY occurred_at
+    MEASURES
+        replace(first(view_event.action_type), 'opened_from_', '') AS view_surface,
+        first(occurred_at) AS opened_at,
+        count(CASE WHEN engage_event.action_type = 'played_demo' THEN 1 END) AS demo_plays,
+        count(CASE WHEN engage_event.action_type = 'viewed_specs' THEN 1 END) AS spec_views,
+        count(engage_event.id) AS total_engagement_count,
+        count(stage_event.id) AS stage_count,
+        count(suppress_event.id) AS suppress_count,
+        count(escalate_event.id) AS escalate_count,
+        first(stage_event.attributes ->> 'stage_action') AS first_stage_action,
+        last(stage_event.attributes ->> 'stage_action') AS last_stage_action,
+        first(stage_event.attributes ->> 'stage_action')
+            != last(stage_event.attributes ->> 'stage_action') AS changed_stage_action,
+        date_diff('second', first(occurred_at), last(stage_event.occurred_at)) AS seconds_to_last_stage,
+        CASE
+            WHEN count(stage_event.id) > 0 AND count(suppress_event.id) = 0 AND count(escalate_event.id) = 0 THEN 'STAGE'
+            WHEN count(suppress_event.id) > 0 AND count(escalate_event.id) = 0 AND count(stage_event.id) = 0 THEN 'SUPPRESS'
+            WHEN count(escalate_event.id) > 0 AND count(suppress_event.id) = 0 AND count(stage_event.id) = 0 THEN 'ESCALATE'
+            WHEN count(suppress_event.id) > 0 AND count(escalate_event.id) > 0 THEN 'ESCALATE_AND_SUPPRESS'
+            WHEN count(stage_event.id) > 0 AND count(suppress_event.id) > 0 THEN 'STAGE_AND_SUPPRESS'
+            WHEN count(stage_event.id) > 0 AND count(escalate_event.id) > 0 THEN 'STAGE_AND_ESCALATE'
+            ELSE 'NO_ACTION'
+        END AS session_end_action
+    ONE ROW PER MATCH
+    AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (view_event engage_event* (stage_event | suppress_event | escalate_event)*)
+    DEFINE
+        view_event AS action_type LIKE 'opened_from_%',
+        stage_event AS action_type = 'staged_item',
+        suppress_event AS action_type = 'suppressed_item',
+        escalate_event AS action_type = 'escalated_item',
+        engage_event AS action_type NOT LIKE 'opened_from_%'
+            AND action_type NOT IN ('staged_item', 'suppressed_item', 'escalated_item')
+) ORDER BY opened_at;
+----
+c1	i1	search	STAGE	2	commit	defer	true	2	1	1	12
+c1	i2	email	ESCALATE_AND_SUPPRESS	0	-	-	-	0	0	0	-
+c2	i2	browse	STAGE	1	expedite	expedite	false	0	0	0	2
+c2	i2	deeplink	NO_ACTION	0	-	-	-	0	0	0	-
+
+# the payload read through the navigation is the one on the row navigated to: the last staged row
+# carries 7 and 0.9, the first carries 3 and 0.5
+query IIIII
+SELECT client_id, item_id,
+       coalesce(matched_terms::VARCHAR, '-'), coalesce(pct::VARCHAR, '-'), coalesce(first_terms::VARCHAR, '-')
+FROM events MATCH_RECOGNIZE(
+    PARTITION BY client_id, item_id
+    ORDER BY occurred_at
+    MEASURES
+        first(occurred_at) AS opened_at,
+        last((stage_event.attributes ->> 'matched_terms')::DOUBLE) AS matched_terms,
+        last((stage_event.attributes ->> 'pct_assets_rendered')::DOUBLE) AS pct,
+        first((stage_event.attributes ->> 'matched_terms')::DOUBLE) AS first_terms
+    ONE ROW PER MATCH
+    AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (view_event engage_event* (stage_event | suppress_event | escalate_event)*)
+    DEFINE
+        view_event AS action_type LIKE 'opened_from_%',
+        stage_event AS action_type = 'staged_item',
+        suppress_event AS action_type = 'suppressed_item',
+        escalate_event AS action_type = 'escalated_item',
+        engage_event AS action_type NOT LIKE 'opened_from_%'
+            AND action_type NOT IN ('staged_item', 'suppressed_item', 'escalated_item')
+) ORDER BY opened_at;
+----
+c1	i1	7.0	0.9	3.0
+c1	i2	-	-	-
+c2	i2	-	-	-
+c2	i2	-	-	-
+
+# an ordered aggregate and a lambda over its result, which is how the model collects what was
+# inspected and what was staged, in the order it happened
+query III
+SELECT client_id,
+       coalesce(all_stage_actions::VARCHAR, '-'),
+       coalesce(demos::VARCHAR, '-')
+FROM events MATCH_RECOGNIZE(
+    PARTITION BY client_id, item_id
+    ORDER BY occurred_at
+    MEASURES
+        first(occurred_at) AS opened_at,
+        array_agg(stage_event.attributes ->> 'stage_action'
+                  ORDER BY stage_event.occurred_at) AS all_stage_actions,
+        list_filter(
+            array_agg(
+                CASE WHEN engage_event.action_type = 'played_demo'
+                     THEN {'id': engage_event.attributes ->> 'demo_id',
+                           'variant': engage_event.attributes ->> 'demo_variant'} END
+                ORDER BY engage_event.occurred_at
+            ), lambda x: x IS NOT NULL) AS demos
+    ONE ROW PER MATCH
+    AFTER MATCH SKIP PAST LAST ROW
+    PATTERN (view_event engage_event* (stage_event | suppress_event | escalate_event)*)
+    DEFINE
+        view_event AS action_type LIKE 'opened_from_%',
+        stage_event AS action_type = 'staged_item',
+        suppress_event AS action_type = 'suppressed_item',
+        escalate_event AS action_type = 'escalated_item',
+        engage_event AS action_type NOT LIKE 'opened_from_%'
+            AND action_type NOT IN ('staged_item', 'suppressed_item', 'escalated_item')
+) ORDER BY opened_at;
+----
+c1	[commit, defer]	[{'id': d1, 'variant': v1}]
+c1	-	-
+c2	[expedite]	-
+c2	-	-

@@ -1,0 +1,21 @@
+# name: test/sql/join/pair_dependent_right_semi_anti.test
+# description: Test pair-dependent right semi and anti join conditions
+# group: [join]
+
+query I
+SELECT r.b
+FROM (VALUES (1), (2)) l(a)
+JOIN BY (TYPE RIGHT_SEMI) (VALUES (1), (3)) r(b)
+ON EXISTS (SELECT 1 WHERE l.a = r.b)
+ORDER BY r.b;
+----
+1
+
+query I
+SELECT r.b
+FROM (VALUES (1), (2)) l(a)
+JOIN BY (TYPE RIGHT_ANTI) (VALUES (1), (3)) r(b)
+ON EXISTS (SELECT 1 WHERE l.a = r.b)
+ORDER BY r.b;
+----
+3

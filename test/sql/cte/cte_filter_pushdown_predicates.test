@@ -1,0 +1,111 @@
+# name: test/sql/cte/cte_filter_pushdown_predicates.test
+# description: Copy repeatable conjuncts into materialized CTE producers
+# group: [cte]
+
+statement ok
+SET enable_optimizer=true;
+
+statement ok
+SET debug_verify_serializer=false;
+
+statement ok
+CREATE TABLE strings(s VARCHAR, id INTEGER);
+
+statement ok
+INSERT INTO strings VALUES ('1',1), ('2',2), ('3',3);
+
+# Throwing casts can be copied: each consumer already evaluates them on the producer's rows.
+query I
+WITH c AS MATERIALIZED (SELECT * FROM strings) SELECT count(*) FROM c WHERE s::INTEGER=1;
+----
+1
+
+query II
+EXPLAIN WITH c AS MATERIALIZED (SELECT * FROM strings) SELECT count(*) FROM c WHERE s::INTEGER=1;
+----
+physical_plan	<REGEX>:[\s\S]*CAST\(s AS INTEGER\) = 1[\s\S]*CAST\(s AS INTEGER\) = 1[\s\S]*
+
+# The safe conjunct can restrict the producer without copying random().
+query I
+WITH c AS MATERIALIZED (SELECT * FROM strings) SELECT count(*) FROM c WHERE id=1 AND random()<2;
+----
+1
+
+query II
+EXPLAIN WITH c AS MATERIALIZED (SELECT * FROM strings) SELECT count(*) FROM c WHERE id=1 AND random()<2;
+----
+physical_plan	<REGEX>:[\s\S]*Filters: id = 1[\s\S]*
+
+# All independent consumers contribute to the disjunction of retained rows.
+query II
+WITH c AS MATERIALIZED (SELECT * FROM strings)
+SELECT (SELECT count(*) FROM c WHERE id=1 AND random()<2),
+       (SELECT count(*) FROM c WHERE id=2 AND random()<2);
+----
+1	1
+
+# A consumer without a repeatable conjunct must still see the entire producer.
+query II
+WITH c AS MATERIALIZED (SELECT * FROM strings)
+SELECT (SELECT count(*) FROM c WHERE id=1 AND random()<2),
+       (SELECT count(*) FROM c WHERE random()<2);
+----
+1	3
+
+query II
+EXPLAIN WITH c AS MATERIALIZED (SELECT * FROM strings)
+SELECT (SELECT count(*) FROM c WHERE id=1 AND random()<2),
+       (SELECT count(*) FROM c WHERE random()<2);
+----
+physical_plan	<!REGEX>:[\s\S]*Filters: id = 1[\s\S]*
+
+statement ok
+CREATE SEQUENCE filter_calls;
+
+query I
+WITH c AS MATERIALIZED (SELECT * FROM strings)
+SELECT count(*) FROM c WHERE nextval('filter_calls') <= 3;
+----
+3
+
+query I
+SELECT currval('filter_calls');
+----
+3
+
+# Barriers remain at the consumer, including when they wrap a throwing expression.
+query II
+EXPLAIN WITH c AS MATERIALIZED (SELECT * FROM strings)
+SELECT count(*) FROM c WHERE __internal_barrier(id=1);
+----
+physical_plan	<!REGEX>:[\s\S]*Filters: id = 1[\s\S]*
+
+query I
+WITH c AS MATERIALIZED (SELECT * FROM strings)
+SELECT count(*) FROM c WHERE id=1 AND __internal_barrier(s::INTEGER=1);
+----
+1
+
+statement ok
+INSERT INTO strings VALUES ('invalid',4);
+
+# A skipped volatile conjunct can short-circuit a throwing predicate.
+query I
+WITH c AS MATERIALIZED (SELECT * FROM strings)
+SELECT count(*) FROM c WHERE random()<0 AND s::INTEGER=1;
+----
+0
+
+query I
+WITH c AS MATERIALIZED (SELECT * FROM strings)
+SELECT count(*) FROM c WHERE id=4 AND random()<0 AND s::INTEGER=1;
+----
+0
+
+statement error
+WITH c AS MATERIALIZED (SELECT * FROM strings) SELECT count(*) FROM c WHERE s::INTEGER=1;
+----
+Could not convert string 'invalid'
+
+statement ok
+RESET debug_verify_serializer;

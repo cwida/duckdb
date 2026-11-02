@@ -26,11 +26,55 @@
 #include "duckdb/planner/operator_extension.hpp"
 #include "duckdb/planner/planner_extension.hpp"
 #include "duckdb/planner/logical_plan_verifier.hpp"
+#include "duckdb/planner/operator/logical_explain.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
 
 namespace duckdb {
 
 Planner::Planner(ClientContext &context) : binder(Binder::CreateBinder(context)), context(context) {
+}
+
+static void RenderSQLExplain(unique_ptr<LogicalOperator> &op, ClientContext &context, Binder &binder) {
+	if (op->type == LogicalOperatorType::LOGICAL_PREPARE || op->type == LogicalOperatorType::LOGICAL_EXECUTE) {
+		for (auto &child : op->children) {
+			RenderSQLExplain(child, context, binder);
+		}
+	} else if (op->type == LogicalOperatorType::LOGICAL_EXPLAIN) {
+		auto &explain = op->Cast<LogicalExplain>();
+		if (explain.explain_type == ExplainType::EXPLAIN_SQL) {
+			op = explain.CreateSQLResult(context, binder.GenerateTableIndex());
+		}
+	}
+}
+
+void Planner::Optimize() {
+	auto &profiler = QueryProfiler::Get(context);
+#ifdef DEBUG
+	plan->Verify(context);
+#endif
+	bool optimize = Settings::Get<EnableOptimizerSetting>(context);
+	if (Settings::Get<DebugDisableOptimizerSetting>(context)) {
+		// verify disable optimizer - disable EXCEPT for explain, otherwise every single EXPLAIN query breaks
+		if (plan->type != LogicalOperatorType::LOGICAL_EXPLAIN) {
+			optimize = false;
+		}
+	}
+	if (plan->RequireOptimizer()) {
+		{
+			auto optimizer_timer = profiler.StartTimer<MetricOptimizerTotalTime>();
+			Optimizer optimizer(*binder, context);
+			if (optimize) {
+				plan = optimizer.Optimize(std::move(plan));
+			} else {
+				plan = optimizer.LowerMandatoryAggregateRewrites(std::move(plan));
+			}
+			D_ASSERT(plan);
+		}
+#ifdef DEBUG
+		plan->Verify(context);
+#endif
+	}
+	RenderSQLExplain(plan, context, *binder);
 }
 
 // Pre-decorrelation pass: replace LogicalTrigger with LogicalDependentJoin so the standard
@@ -71,6 +115,7 @@ static void CheckTreeDepth(const LogicalOperator &op, idx_t max_depth, idx_t dep
 	}
 }
 
+#ifdef D_ASSERT_IS_ENABLED
 static bool ContainsDependentJoin(const LogicalOperator &op) {
 	if (op.type == LogicalOperatorType::LOGICAL_DEPENDENT_JOIN) {
 		return true;
@@ -132,6 +177,16 @@ static bool VerifyPlannedExpressions(const LogicalOperator &plan) {
 	}
 	return true;
 }
+#endif
+
+static void RunPreBindExtensions(ClientContext &context, Binder &binder, SQLStatement &statement) {
+	for (auto &planner_extension : PlannerExtension::Iterate(context)) {
+		if (planner_extension.pre_bind_function) {
+			PlannerExtensionInput input {context, binder, planner_extension.planner_info.get()};
+			planner_extension.pre_bind_function(input, statement);
+		}
+	}
+}
 
 static void RunPostBindExtensions(ClientContext &context, Binder &binder, BoundStatement &statement) {
 	for (auto &planner_extension : PlannerExtension::Iterate(context)) {
@@ -153,6 +208,7 @@ void Planner::CreatePlan(SQLStatement &statement) {
 	try {
 		auto binding_timer = profiler.StartTimer<MetricPlannerBindingTime>();
 		binder->SetParameters(bound_parameters);
+		RunPreBindExtensions(context, *binder, statement);
 		auto bound_statement = binder->Bind(statement);
 		binding_timer.EndTimer();
 
@@ -194,9 +250,12 @@ void Planner::CreatePlan(SQLStatement &statement) {
 		auto max_tree_depth = Settings::Get<MaxExpressionDepthSetting>(context);
 		CheckTreeDepth(*plan, max_tree_depth);
 
-		RewriteTriggersToDependent(*this->binder, *this->plan);
-		RecursiveDependentJoinPlanner::Plan(*this->binder, this->plan);
-		this->plan = FlattenDependentJoins::DecorrelateIndependent(*this->binder, std::move(this->plan));
+		// A LogicalPlanStatement carries an already planned (and possibly optimized) plan
+		if (statement.type != StatementType::LOGICAL_PLAN_STATEMENT) {
+			RewriteTriggersToDependent(*this->binder, *this->plan);
+			RecursiveDependentJoinPlanner::Plan(*this->binder, this->plan);
+			this->plan = FlattenDependentJoins::DecorrelateIndependent(*this->binder, std::move(this->plan));
+		}
 		D_ASSERT(!ContainsDependentJoin(*this->plan));
 		D_ASSERT(VerifyPlannedExpressions(*this->plan));
 		D_ASSERT(VerifyCanonicalComparisonJoins(*this->plan));

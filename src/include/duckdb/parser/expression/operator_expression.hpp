@@ -23,6 +23,13 @@ public:
 	                                       unique_ptr<ParsedExpression> right = nullptr);
 	DUCKDB_API OperatorExpression(ExpressionType type, vector<unique_ptr<ParsedExpression>> children);
 
+	//! The placeholder for an omitted slice bound (arr[:n], arr[n:]): an empty list constructor
+	DUCKDB_API static unique_ptr<ParsedExpression> EmptySliceBound();
+	//! Whether the rendered slice bound is the placeholder (parsed: list_value(), bound and folded: [])
+	static bool IsEmptySliceBound(const string &rendered_bound) {
+		return rendered_bound == "list_value()" || rendered_bound == "[]";
+	}
+
 public:
 	const vector<unique_ptr<ParsedExpression>> &GetChildren() const {
 		return children;
@@ -73,6 +80,9 @@ public:
 		case ExpressionType::OPERATOR_TRY: {
 			return StringUtil::Format("TRY(%s)", children[0]->ToString());
 		}
+		case ExpressionType::OPERATOR_HAS_ERROR: {
+			return StringUtil::Format("HAS_ERROR(%s)", children[0]->ToString());
+		}
 		case ExpressionType::OPERATOR_NOT: {
 			string result = "(";
 			result += ExpressionTypeToString(entry.GetExpressionType());
@@ -99,11 +109,11 @@ public:
 			return children[0]->ToString() + "[" + children[1]->ToString() + "]";
 		case ExpressionType::ARRAY_SLICE: {
 			string begin = children[1]->ToString();
-			if (begin == "[]") {
+			if (IsEmptySliceBound(begin)) {
 				begin = "";
 			}
 			string end = children[2]->ToString();
-			if (end == "[]") {
+			if (IsEmptySliceBound(end)) {
 				if (children.size() == 4) {
 					end = "-";
 				} else {

@@ -1,0 +1,285 @@
+# name: test/sql/sql_export/recursive_payload_results.test
+# description: Recursive payload clauses retain nested collations, effects and failures
+# group: [sql_export]
+
+# These checks depend on session state across statements.
+require skip_reload
+
+statement ok
+SET debug_verify_statement='explain_sql_strict';
+
+statement ok
+SET threads=1;
+
+statement ok
+CREATE TABLE nested_payload AS SELECT ['A' COLLATE nocase] v UNION ALL SELECT ['a' COLLATE nocase];
+
+foreach serializer false true
+
+statement ok
+SET debug_verify_serializer={serializer};
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+query IT nosort payload_last
+WITH RECURSIVE r(k,v) USING KEY(k,last(v)) AS (SELECT 1,v FROM nested_payload UNION ALL SELECT k+1,v FROM r WHERE k<3) SELECT k,v FROM r ORDER BY k;
+
+endloop
+
+reset label payload_last
+
+endloop
+
+foreach serializer false true
+
+statement ok
+SET debug_verify_serializer={serializer};
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+query IT nosort payload_max
+WITH RECURSIVE r(k,v) USING KEY(k,max(v)) AS (SELECT 1,v FROM nested_payload UNION ALL SELECT k+1,v FROM r WHERE k<3) SELECT k,v FROM r ORDER BY k;
+
+endloop
+
+reset label payload_max
+
+endloop
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+statement ok
+BEGIN;
+
+query II rowsort payload_rows_000
+WITH RECURSIVE r(k,v) USING KEY(k,last(nextval('seq')) AS v) AS (VALUES(1,1) UNION SELECT k+1,v FROM r WHERE k<4) SELECT k,v FROM r;
+
+statement ok
+ROLLBACK;
+
+query I nosort payload_calls_000
+SELECT currval('seq');
+
+endloop
+
+reset label payload_rows_000
+
+reset label payload_calls_000
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+statement ok
+BEGIN;
+
+statement error
+WITH RECURSIVE r(k,v) USING KEY(k,last(CASE WHEN k=3 THEN error('payload call failure') ELSE nextval('seq') END) AS v) AS (VALUES(1,1) UNION SELECT k+1,v FROM r WHERE k<4) SELECT k,v FROM r;
+----
+<REGEX>:Invalid Input Error:.*payload call failure.*
+
+statement ok
+ROLLBACK;
+
+query I nosort payload_calls_001
+SELECT currval('seq');
+
+endloop
+
+reset label payload_calls_001
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+statement ok
+BEGIN;
+
+query II rowsort payload_rows_010
+WITH RECURSIVE r(k,v) USING KEY(k,last(nextval('seq')) AS v) AS (VALUES(1,1) UNION SELECT k+1,v FROM r WHERE k<4) SELECT k,v FROM r LIMIT 1;
+
+statement ok
+ROLLBACK;
+
+query I nosort payload_calls_010
+SELECT currval('seq');
+
+endloop
+
+reset label payload_rows_010
+
+reset label payload_calls_010
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+statement ok
+BEGIN;
+
+statement error
+WITH RECURSIVE r(k,v) USING KEY(k,last(CASE WHEN k=3 THEN error('payload call failure') ELSE nextval('seq') END) AS v) AS (VALUES(1,1) UNION SELECT k+1,v FROM r WHERE k<4) SELECT k,v FROM r LIMIT 1;
+----
+<REGEX>:Invalid Input Error:.*payload call failure.*
+
+statement ok
+ROLLBACK;
+
+query I nosort payload_calls_011
+SELECT currval('seq');
+
+endloop
+
+reset label payload_calls_011
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+statement ok
+BEGIN;
+
+query II rowsort payload_rows_100
+WITH RECURSIVE r(k,v) USING KEY(k,last(nextval('seq')) AS v) AS (VALUES(1,1) UNION ALL SELECT k+1,v FROM r WHERE k<4) SELECT k,v FROM r;
+
+statement ok
+ROLLBACK;
+
+query I nosort payload_calls_100
+SELECT currval('seq');
+
+endloop
+
+reset label payload_rows_100
+
+reset label payload_calls_100
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+statement ok
+BEGIN;
+
+statement error
+WITH RECURSIVE r(k,v) USING KEY(k,last(CASE WHEN k=3 THEN error('payload call failure') ELSE nextval('seq') END) AS v) AS (VALUES(1,1) UNION ALL SELECT k+1,v FROM r WHERE k<4) SELECT k,v FROM r;
+----
+<REGEX>:Invalid Input Error:.*payload call failure.*
+
+statement ok
+ROLLBACK;
+
+query I nosort payload_calls_101
+SELECT currval('seq');
+
+endloop
+
+reset label payload_calls_101
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+statement ok
+BEGIN;
+
+query II rowsort payload_rows_110
+WITH RECURSIVE r(k,v) USING KEY(k,last(nextval('seq')) AS v) AS (VALUES(1,1) UNION ALL SELECT k+1,v FROM r WHERE k<4) SELECT k,v FROM r LIMIT 1;
+
+statement ok
+ROLLBACK;
+
+query I nosort payload_calls_110
+SELECT currval('seq');
+
+endloop
+
+reset label payload_rows_110
+
+reset label payload_calls_110
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+statement ok
+DROP SEQUENCE IF EXISTS seq;
+
+statement ok
+CREATE SEQUENCE seq;
+
+statement ok
+BEGIN;
+
+statement error
+WITH RECURSIVE r(k,v) USING KEY(k,last(CASE WHEN k=3 THEN error('payload call failure') ELSE nextval('seq') END) AS v) AS (VALUES(1,1) UNION ALL SELECT k+1,v FROM r WHERE k<4) SELECT k,v FROM r LIMIT 1;
+----
+<REGEX>:Invalid Input Error:.*payload call failure.*
+
+statement ok
+ROLLBACK;
+
+query I nosort payload_calls_111
+SELECT currval('seq');
+
+endloop
+
+reset label payload_calls_111

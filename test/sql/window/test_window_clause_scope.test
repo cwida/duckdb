@@ -1,0 +1,80 @@
+# name: test/sql/window/test_window_clause_scope.test
+# description: Named windows are scoped to the SELECT that defines them
+# group: [window]
+
+# subquery before the window reference in the select list
+query II
+SELECT (SELECT 1), sum(1) OVER w WINDOW w AS (ORDER BY 1)
+----
+1	1
+
+query II
+SELECT sum(1) OVER w, (SELECT 1) WINDOW w AS (ORDER BY 1)
+----
+1	1
+
+# subquery in FROM / WHERE before a QUALIFY that references the window
+query I
+SELECT a FROM (SELECT 1) t(a) WINDOW w AS () QUALIFY sum(a) OVER w > 0
+----
+1
+
+query I
+SELECT count(*) FROM (SELECT * FROM range(3) WHERE (SELECT true) WINDOW w AS () QUALIFY sum(1) OVER w > 0)
+----
+3
+
+# nested subqueries in front of the reference
+query III
+SELECT (SELECT (SELECT 1)), (SELECT 2 WHERE (SELECT true)), sum(i) OVER w
+FROM range(3) t(i)
+WINDOW w AS (ORDER BY i ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+ORDER BY 3
+----
+1	2	0
+1	2	1
+1	2	3
+
+# an inner SELECT may define a window with the same name
+query II
+SELECT sum(1) OVER w, (SELECT sum(2) OVER w WINDOW w AS ()) WINDOW w AS ()
+----
+1	2
+
+query II
+SELECT (SELECT sum(2) OVER w WINDOW w AS ()), sum(1) OVER w WINDOW w AS ()
+----
+2	1
+
+# the inner definition does not leak into the outer SELECT
+query II
+SELECT (SELECT sum(i) OVER w FROM range(3) t(i) WINDOW w AS () LIMIT 1), sum(j) OVER w
+FROM range(2) t(j)
+WINDOW w AS (ORDER BY j ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+ORDER BY 2
+----
+3	0
+3	1
+
+# an outer window is not visible inside a subquery
+statement error
+SELECT (SELECT sum(1) OVER w) WINDOW w AS ()
+----
+window "w" does not exist
+
+statement error
+SELECT * FROM (SELECT sum(1) OVER w) WINDOW w AS ()
+----
+window "w" does not exist
+
+# a window defined only in a subquery is not visible outside of it
+statement error
+SELECT (SELECT sum(1) OVER w WINDOW w AS ()), sum(1) OVER w
+----
+window "w" does not exist
+
+# duplicate names within the same WINDOW clause are still rejected
+statement error
+SELECT (SELECT 1), sum(1) OVER w WINDOW w AS (), w AS (ORDER BY 1)
+----
+window "w" is already defined

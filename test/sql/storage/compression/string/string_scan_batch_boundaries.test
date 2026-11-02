@@ -1,0 +1,47 @@
+# name: test/sql/storage/compression/string/string_scan_batch_boundaries.test
+# description: Scan overflow strings, nulls and empty strings across vector boundaries
+# group: [string]
+
+require vector_size 2048
+
+statement ok
+ATTACH '{TEST_DIR}/string_scan_batch_boundaries.db' AS strings;
+
+statement ok
+USE strings;
+
+statement ok
+CREATE TABLE t (i INTEGER, s VARCHAR USING COMPRESSION UNCOMPRESSED);
+
+statement ok
+INSERT INTO t
+SELECT i, CASE i % 2048
+    WHEN 2047 THEN lpad(i::VARCHAR, 8192, 'y')
+    WHEN 0 THEN NULL
+    WHEN 1 THEN ''
+    ELSE lpad(i::VARCHAR, 16, 'x')
+END
+FROM range(6145) r(i);
+
+foreach storage transient persistent
+
+onlyif storage=persistent
+statement ok
+CHECKPOINT;
+
+query III
+SELECT count(*), count(s), sum(strlen(s)) FROM t;
+----
+6145	6141	122736
+
+query I
+SELECT count(*) FILTER (WHERE s IS DISTINCT FROM CASE i % 2048
+    WHEN 2047 THEN lpad(i::VARCHAR, 8192, 'y')
+    WHEN 0 THEN NULL
+    WHEN 1 THEN ''
+    ELSE lpad(i::VARCHAR, 16, 'x')
+END) FROM t;
+----
+0
+
+endloop

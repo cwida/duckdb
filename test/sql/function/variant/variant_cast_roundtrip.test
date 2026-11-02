@@ -1,0 +1,220 @@
+# name: test/sql/function/variant/variant_cast_roundtrip.test
+# description: Exercise VARIANT casts for primitive and nested target types
+# group: [variant]
+
+query I
+SELECT ((-7::TINYINT)::VARIANT)::TINYINT = -7;
+----
+true
+
+query I
+SELECT ((250::UTINYINT)::VARIANT)::UTINYINT = 250;
+----
+true
+
+query I
+SELECT ((65000::USMALLINT)::VARIANT)::USMALLINT = 65000;
+----
+true
+
+query I
+SELECT ((4000000000::UINTEGER)::VARIANT)::UINTEGER = 4000000000;
+----
+true
+
+query I
+SELECT ((18000000000000000000::UBIGINT)::VARIANT)::UBIGINT = 18000000000000000000;
+----
+true
+
+query I
+SELECT ((300000000000000000000000000000000000000::UHUGEINT)::VARIANT)::UHUGEINT =
+       300000000000000000000000000000000000000;
+----
+true
+
+query I
+SELECT ((TIMESTAMP_MS '2025-01-02 03:04:05.678')::VARIANT)::TIMESTAMP_MS =
+       TIMESTAMP_MS '2025-01-02 03:04:05.678';
+----
+true
+
+query I
+SELECT ((TIMESTAMP_S '2025-01-02 03:04:05')::VARIANT)::TIMESTAMP_S =
+       TIMESTAMP_S '2025-01-02 03:04:05';
+----
+true
+
+query I
+SELECT ((TIMESTAMP_NS '2025-01-02 03:04:05.123456789')::VARIANT)::TIMESTAMP_NS =
+       TIMESTAMP_NS '2025-01-02 03:04:05.123456789';
+----
+true
+
+query I
+SELECT ((TIME_NS '12:34:56.123456789')::VARIANT)::TIME_NS = TIME_NS '12:34:56.123456789';
+----
+true
+
+query I
+SELECT ((TIMETZ '12:34:56+02')::VARIANT)::TIMETZ = TIMETZ '12:34:56+02';
+----
+true
+
+query I
+SELECT ((TIMESTAMPTZ '2025-01-02 03:04:05+02')::VARIANT)::TIMESTAMPTZ =
+       TIMESTAMPTZ '2025-01-02 03:04:05+02';
+----
+true
+
+query I
+SELECT ((TIMESTAMPTZ_NS '2025-01-02 03:04:05.123456789+02')::VARIANT)::TIMESTAMPTZ_NS =
+       TIMESTAMPTZ_NS '2025-01-02 03:04:05.123456789+02';
+----
+true
+
+query I
+SELECT ((INTERVAL '2 years 3 months 4 days 05:06:07')::VARIANT)::INTERVAL =
+       INTERVAL '2 years 3 months 4 days 05:06:07';
+----
+true
+
+query I
+SELECT ((12.3::DECIMAL(4,1))::VARIANT)::DECIMAL(4,1) = 12.3;
+----
+true
+
+query I
+SELECT ((12345.67::DECIMAL(9,2))::VARIANT)::DECIMAL(9,2) = 12345.67;
+----
+true
+
+query I
+SELECT ((123456789012.3456::DECIMAL(18,4))::VARIANT)::DECIMAL(18,4) = 123456789012.3456;
+----
+true
+
+query I
+SELECT ((12345678901234567890.123456::DECIMAL(38,6))::VARIANT)::DECIMAL(38,6) =
+       12345678901234567890.123456;
+----
+true
+
+query I
+SELECT ((UUID '01234567-89ab-cdef-0123-456789abcdef')::VARIANT)::UUID =
+       UUID '01234567-89ab-cdef-0123-456789abcdef';
+----
+true
+
+query I
+SELECT ((B'101001')::VARIANT)::BIT = B'101001';
+----
+true
+
+query I
+SELECT ((1234567890123456789012345678901234567890::BIGNUM)::VARIANT)::BIGNUM =
+       1234567890123456789012345678901234567890::BIGNUM;
+----
+true
+
+query I
+SELECT ((row(7, 'duck')::TUPLE(INTEGER, VARCHAR))::VARIANT)::TUPLE(INTEGER, VARCHAR) = row(7, 'duck');
+----
+true
+
+query I
+SELECT (([1, 2, 3]::INTEGER[3])::VARIANT)::INTEGER[3] = [1, 2, 3];
+----
+true
+
+query I
+SELECT ((map(['a', 'b'], [1, 2]))::VARIANT)::MAP(VARCHAR, INTEGER) = map(['a', 'b'], [1, 2]);
+----
+true
+
+# Exercise conversion failures after the nested target has been initialized.
+query I
+SELECT try_cast(([1, 2]::VARIANT) AS TUPLE(INTEGER, INTEGER, INTEGER));
+----
+NULL
+
+query I
+SELECT try_cast(({'a': 1, 'b': 'bad'}::VARIANT) AS STRUCT(a INTEGER, b INTEGER));
+----
+NULL
+
+query I
+SELECT try_cast((42::VARIANT) AS DECIMAL(4,1));
+----
+42.0
+
+query I
+SELECT try_cast(({'a': 1}::VARIANT) AS INTEGER[1]);
+----
+NULL
+
+query I
+SELECT try_cast(([1, 2]::VARIANT) AS INTEGER[3]);
+----
+NULL
+
+query I
+SELECT try_cast((42::VARIANT) AS TUPLE(INTEGER));
+----
+NULL
+
+query TTT
+SELECT try_cast(v AS STRUCT(a INTEGER)),
+       try_cast(v AS TUPLE(INTEGER)),
+       try_cast(v AS INTEGER[1])
+FROM (VALUES (NULL::VARIANT), ({'a': 1}::VARIANT)) t(v)
+ORDER BY v IS NOT NULL;
+----
+NULL	NULL	NULL
+{'a': 1}	(1,)	NULL
+
+query I
+SELECT (([[1, 2], [3, 4]])::VARIANT)::TUPLE(INTEGER, INTEGER)[] = [row(1, 2), row(3, 4)];
+----
+true
+
+query I
+SELECT try_cast(([[1::VARIANT, 2::VARIANT], [3::VARIANT, 'bad'::VARIANT]])::VARIANT
+                AS TUPLE(INTEGER, INTEGER)[]);
+----
+NULL
+
+# GEOMETRY values are available from the core test_all_types table function.
+query I rowsort
+SELECT geometry::VARIANT::GEOMETRY = geometry FROM test_all_types() WHERE geometry IS NOT NULL;
+----
+true
+true
+
+# Scanning persisted variants produces shredded vectors. Cover direct casts both
+# from a primitive shredding type and from a typed_value struct.
+statement ok
+SET variant_minimum_shredding_size = 0;
+
+statement ok
+CREATE TABLE shredded_primitive AS SELECT i::VARIANT AS v FROM range(3) t(i);
+
+statement ok
+CREATE TABLE shredded_struct AS SELECT {'i': i, 's': i::VARCHAR}::VARIANT AS v FROM range(3) t(i);
+
+statement ok
+CHECKPOINT;
+
+query I rowsort
+SELECT v::BIGINT FROM shredded_primitive;
+----
+0
+1
+2
+
+query I rowsort
+SELECT (v::STRUCT(i BIGINT, s VARCHAR)).i FROM shredded_struct;
+----
+0
+1
+2

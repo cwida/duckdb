@@ -138,6 +138,12 @@ SELECT json_extract('{"a":2,"c":[4,5],"f":7}', ['$.c','$.a']);
 [[4,5], 2]
 
 query T
+SELECT json_extract_string('{"s":"duck","n":42,"z":null,"a":[1,2]}',
+                           ['$.s', '$.n', '$.z', '$.a', '$.missing']);
+----
+[duck, 42, NULL, '[1,2]', NULL]
+
+query T
 SELECT json_extract('{"a":2,"c":[4,5,{"f":7}]}', ['$.x', '$.a']);
 ----
 [NULL, 2]

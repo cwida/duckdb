@@ -1,0 +1,142 @@
+# name: test/sql/sql_export/rewritten_functions.test
+# description: SQL export preserves variadic rewrites, TABLE inputs and aggregate-state values
+# group: [sql_export]
+
+statement ok
+CREATE TABLE bounded_values(i INTEGER);
+
+statement ok
+INSERT INTO bounded_values VALUES (1), (NULL), (2), (1);
+
+statement ok
+ANALYZE bounded_values;
+
+query TT rowsort
+SELECT i > 100, i < 100 FROM bounded_values;
+----
+0	1
+0	1
+0	1
+NULL	NULL
+
+query TT
+EXPLAIN (SQL) SELECT i > 100, i < 100 FROM bounded_values;
+----
+sql	<REGEX>:.*constant_or_null.*
+
+statement ok
+CREATE TABLE measurements(x DOUBLE, y DOUBLE);
+
+statement ok
+INSERT INTO measurements VALUES (1, 10), (1, 10), (NULL, 5), (2, NULL);
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+query TTT rowsort summary_2
+SELECT * FROM summary((SELECT x AS first_value, y AS second_value FROM measurements));
+
+endloop
+
+reset label summary_2
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+query TTTTTTTTTTTT rowsort summary_3
+SELECT * FROM summary((SELECT x, y FROM measurements WHERE false));
+
+endloop
+
+reset label summary_3
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+query TTT rowsort summary_4
+SELECT * FROM summary((SELECT x, sum(y) FROM measurements GROUP BY x));
+
+endloop
+
+reset label summary_4
+
+statement ok
+RESET debug_verify_statement;
+
+query T rowsort
+SELECT to_aggregate_state(12::HUGEINT, 'sum', ['INTEGER']);
+----
+12
+
+query T rowsort
+SELECT to_aggregate_state(NULL::HUGEINT, 'sum', ['INTEGER']);
+----
+NULL
+
+query I rowsort
+SELECT finalize(to_aggregate_state(12::HUGEINT, 'sum', ['INTEGER']));
+----
+12
+
+query I rowsort
+SELECT finalize(combine_aggr(s)) FROM (SELECT approx_quantile(i, 0.5) EXPORT_STATE s FROM range(10) t(i) UNION ALL SELECT approx_quantile(NULL, 0.5) EXPORT_STATE s WHERE false);
+----
+4
+
+query T rowsort
+SELECT finalize(s) FROM (SELECT string_agg(s, '|' ORDER BY i DESC) EXPORT_STATE s FROM (VALUES (1, 'a'), (2, NULL), (3, 'a'), (4, 'b')) t(i,s));
+----
+b|a|a
+
+query TT rowsort
+SELECT min(s COLLATE nocase), max(s COLLATE nocase) FROM (VALUES ('a'), ('B'), (NULL), ('B')) t(s);
+----
+a	B
+
+query T rowsort
+SELECT min(s COLLATE nocase) FROM (VALUES (NULL::VARCHAR), (NULL)) t(s);
+----
+NULL
+
+query TT rowsort
+SELECT min(s), max(s) FROM (VALUES ('1'::BIT), ('01'::BIT), (NULL), ('01'::BIT)) t(s);
+----
+01	1
+
+query TTTT rowsort
+SELECT min(v), max(v), min(v, 2), max(v, 2) FROM (VALUES (2::VARIANT), (1::VARIANT), (NULL), (2::VARIANT)) t(v);
+----
+1	2	[1, 2]	[2, 2]
+
+query T rowsort
+SELECT finalize(min(s) EXPORT_STATE) FROM (VALUES ('1'::BIT), ('01'::BIT), (NULL)) t(s);
+----
+01
+
+# Function-owned unbinding must retain aggregate modifiers.
+foreach serializer false true
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_serializer={serializer};
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+query TT
+SELECT min(DISTINCT s COLLATE nocase ORDER BY s COLLATE nocase) FILTER (WHERE keep),
+       max(s COLLATE nocase ORDER BY s DESC) FILTER (WHERE NOT keep)
+FROM (VALUES ('z', false), ('a', true), ('B', true), (NULL, true), ('a', true)) t(s, keep);
+----
+a	z
+
+endloop
+
+endloop

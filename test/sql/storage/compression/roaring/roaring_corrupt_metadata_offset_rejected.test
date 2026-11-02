@@ -1,0 +1,34 @@
+# name: test/sql/storage/compression/roaring/roaring_corrupt_metadata_offset_rejected.test
+# description: Negative control for Roaring metadata-offset bounds
+# group: [roaring]
+
+require vector_size 2048
+
+require block_size 262144
+
+unzip data/storage/corrupt/roaring_corrupt_metadata_offset_rejected.db.gz {TEST_DIR}/roaring_corrupt_metadata_offset_rejected.db
+
+load {TEST_DIR}/roaring_corrupt_metadata_offset_rejected.db readonly
+
+statement ok
+USE roaring_corrupt_metadata_offset_rejected
+
+query I
+SELECT compression FROM pragma_storage_info('t') WHERE column_name='a' AND compression='Roaring' LIMIT 1;
+----
+Roaring
+
+statement error
+SELECT sum(a) FROM t;
+----
+Data Corruption Error: Corrupted Roaring segment body: offset is outside the segment
+
+restart
+
+statement ok
+SET debug_force_fetch_row=true;
+
+statement error
+SELECT sum(a) FROM t;
+----
+Data Corruption Error: Corrupted Roaring segment body: offset is outside the segment

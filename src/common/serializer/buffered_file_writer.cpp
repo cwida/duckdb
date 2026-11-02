@@ -75,6 +75,10 @@ void BufferedFileWriter::Close() {
 	handle.reset();
 }
 
+void BufferedFileWriter::SyncHandle() {
+	handle->Sync();
+}
+
 void BufferedFileWriter::Sync() {
 	Flush();
 	handle->Sync();

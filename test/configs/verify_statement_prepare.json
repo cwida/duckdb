@@ -11,7 +11,8 @@
       "reason": "Parameters don't work here",
       "paths": [
         "test/sql/collate/test_collate_orderby_column_number.test",
-        "test/sql/projection/select_star_like.test"
+        "test/sql/projection/select_star_like.test",
+        "test/sql/projection/select_star_similar_to_full_match.test"
       ]
     },
     {
@@ -52,6 +53,12 @@
         "test/sql/pragma/profiling/test_custom_profiling_using_groups.test",
         "test/sql/pragma/profiling/test_custom_profiling_row_group_metrics_local_storage.test",
         "test/sql/types/geo/geometry_parquet_pushdown.test"
+      ]
+    },
+    {
+      "reason": "Syntactic errors don't invalidate transaction",
+      "paths": [
+        "test/sql/transactions/test_parser_error_transaction_invalidation.test"
       ]
     }
   ]

@@ -21,6 +21,28 @@ statement error
 select row_number() over (range between unbounded preceding and unbounded preceding);
 ----
 
+foreach framing ROWS RANGE GROUPS
+
+statement error
+SELECT sum(a) OVER (ORDER BY a {framing} BETWEEN CURRENT ROW AND 1 PRECEDING)
+FROM (VALUES (1), (2)) t(a);
+----
+Frame starting from current row cannot have preceding rows
+
+statement error
+SELECT sum(a) OVER (ORDER BY a {framing} BETWEEN 1 FOLLOWING AND CURRENT ROW)
+FROM (VALUES (1), (2)) t(a);
+----
+Frame starting from following row cannot have preceding rows
+
+statement error
+SELECT sum(a) OVER (ORDER BY a {framing} BETWEEN 1 FOLLOWING AND 1 PRECEDING)
+FROM (VALUES (1), (2)) t(a);
+----
+Frame starting from following row cannot have preceding rows
+
+endloop
+
 # ORDER BY is now implemented for window functions!
 query I
 select LIST(salary ORDER BY enroll_date, salary) OVER (PARTITION BY depname) FROM empsalary

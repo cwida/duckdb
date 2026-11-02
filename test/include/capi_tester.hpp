@@ -329,6 +329,11 @@ struct CAPIPending {
 		return duckdb_pending_execute_task(pending);
 	}
 
+	duckdb_pending_state CheckState() {
+		REQUIRE(pending);
+		return duckdb_pending_execute_check_state(pending);
+	}
+
 	unique_ptr<CAPIResult> Execute() {
 		duckdb_result result;
 		auto success = duckdb_execute_pending(pending, &result) == DuckDBSuccess;

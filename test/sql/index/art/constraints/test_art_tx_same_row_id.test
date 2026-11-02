@@ -2,9 +2,6 @@
 # description: Test deletes that touch the same row ID repeatedly.
 # group: [constraints]
 
-# FIXME: We need to fix the internal issue #3702
-mode skip instable
-
 statement ok
 SET immediate_transaction_mode = true;
 

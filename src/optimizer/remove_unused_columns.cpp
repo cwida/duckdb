@@ -4,6 +4,9 @@
 #include "duckdb/common/pair.hpp"
 #include "duckdb/function/aggregate/distributive_functions.hpp"
 #include "duckdb/function/function_binder.hpp"
+#include "duckdb/function/scalar/struct_functions.hpp"
+#include "duckdb/function/scalar/variant_functions.hpp"
+#include "duckdb/function/builtin_function_lookup.hpp"
 #include "duckdb/parser/parsed_data/vacuum_info.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/column_binding_map.hpp"
@@ -23,8 +26,10 @@
 #include "duckdb/planner/operator/logical_projection.hpp"
 #include "duckdb/planner/operator/logical_recursive_cte.hpp"
 #include "duckdb/planner/operator/logical_set_operation.hpp"
+#include "duckdb/planner/operator/logical_secure_view.hpp"
 #include "duckdb/planner/operator/logical_cte.hpp"
 #include "duckdb/planner/operator/logical_cteref.hpp"
+#include "duckdb/planner/operator/logical_window.hpp"
 #include "duckdb/function/scalar/struct_utils.hpp"
 #include "duckdb/function/scalar/variant_utils.hpp"
 #include "duckdb/function/scalar/nested_functions.hpp"
@@ -32,6 +37,7 @@
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/planner/logical_operator_repeatability.hpp"
 #include "duckdb/planner/subquery/column_binding_layout.hpp"
+#include "duckdb/planner/expression_iterator.hpp"
 #include <utility>
 
 namespace duckdb {
@@ -133,6 +139,7 @@ void RemoveUnusedColumns::ApplyRecursiveProjections(LogicalRecursiveCTE &rec,
 		entries.push_back(i);
 	}
 	ClearUnusedExpressions(entries, rec.table_index);
+	ApplySecureViewReplacements();
 
 	for (auto &child : rec.children) {
 		child->ResolveOperatorTypes();
@@ -190,7 +197,9 @@ bool RemoveUnusedColumns::TryPruneRecursiveCTE(LogicalRecursiveCTE &rec) {
 	}
 	for (auto &replacement : reference_replacements) {
 		root.projection_map_replacements[replacement.old_binding] = {replacement.new_binding};
+		RecordSecureViewReplacement(replacement.old_binding, replacement.new_binding);
 	}
+	ApplySecureViewReplacements();
 	return true;
 }
 
@@ -222,26 +231,31 @@ idx_t BaseColumnPruner::ReplaceBinding(ColumnBinding current_binding, ColumnBind
 template <class T>
 void RemoveUnusedColumns::ClearUnusedExpressions(vector<T> &list, TableIndex table_idx, bool replace) {
 	D_ASSERT(mode == RemoveUnusedColumnsMode::APPLY);
-	idx_t offset = 0;
 	idx_t new_col_idx = 0;
+	// entries that are referred to are moved to the front of the list, the rest is erased at the end
+	idx_t kept_count = 0;
 	for (idx_t col_idx = 0; col_idx < list.size(); col_idx++) {
-		auto current_binding = ColumnBinding(table_idx, ProjectionIndex(col_idx + offset));
+		auto current_binding = ColumnBinding(table_idx, ProjectionIndex(col_idx));
+		if (replace && !root.active_secure_views.empty()) {
+			root.secure_view_replacements[current_binding].clear();
+		}
 		auto entry = column_references.find(current_binding);
 		if (entry == column_references.end()) {
 			if (replace) {
 				root.projection_map_replacements[current_binding].clear();
 			}
 			// this entry is not referred to, erase it from the set of expressions
-			list.erase_at(col_idx);
-			offset++;
-			col_idx--;
 			continue;
 		}
+		if (kept_count != col_idx) {
+			list[kept_count] = std::move(list[col_idx]);
+		}
+		kept_count++;
 		if (!replace) {
 			continue;
 		}
 		bool should_replace = false;
-		if (col_idx + offset != new_col_idx) {
+		if (col_idx != new_col_idx) {
 			should_replace = true;
 		}
 		if (!entry->second.child_columns.empty() &&
@@ -258,11 +272,17 @@ void RemoveUnusedColumns::ClearUnusedExpressions(vector<T> &list, TableIndex tab
 			for (idx_t binding_idx = 0; binding_idx < created_bindings; binding_idx++) {
 				map_replacements.emplace_back(table_idx, ProjectionIndex(new_col_idx + binding_idx));
 			}
+			if (entry->second.child_columns.empty() ||
+			    entry->second.supports_pushdown_extract != PushdownExtractSupport::ENABLED) {
+				RecordSecureViewReplacement(current_binding, new_binding);
+			}
 			new_col_idx += created_bindings;
 		} else {
+			RecordSecureViewReplacement(current_binding, current_binding);
 			new_col_idx++;
 		}
 	}
+	list.erase(list.begin() + NumericCast<int64_t>(kept_count), list.end());
 }
 
 enum class ProjectionBindingResolution : uint8_t { SELECTED, REPLACEMENT };
@@ -347,10 +367,182 @@ void RemoveUnusedColumns::VisitPrunableChildren(LogicalOperator &op) {
 	}
 }
 
+static idx_t ReplaceSecureViewSource(unique_ptr<Expression> &expression, const ColumnBinding &binding,
+                                     const Expression &source_expression, bool &has_other_binding) {
+	if (expression->GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
+		auto &column = expression->Cast<BoundColumnRefExpression>();
+		if (column.Binding() != binding || column.Depth() != 0) {
+			has_other_binding = true;
+			return 0;
+		}
+		expression = source_expression.Copy();
+		return 1;
+	}
+	idx_t replacements = 0;
+	ExpressionIterator::EnumerateChildren(*expression, [&](unique_ptr<Expression> &child) {
+		replacements += ReplaceSecureViewSource(child, binding, source_expression, has_other_binding);
+	});
+	return replacements;
+}
+
+static unique_ptr<Expression> ComposeSecureViewSource(const Expression &expression, const ColumnBinding &binding,
+                                                      const Expression &source_expression) {
+	auto result = expression.Copy();
+	bool has_other_binding = false;
+	auto replacements = ReplaceSecureViewSource(result, binding, source_expression, has_other_binding);
+	if (has_other_binding ||
+	    (replacements != 1 && expression.GetExpressionClass() != ExpressionClass::BOUND_CONSTANT)) {
+		return nullptr;
+	}
+	return result;
+}
+
+void RemoveUnusedColumns::RecordSecureViewReplacement(ColumnBinding old_binding, ColumnBinding new_binding,
+                                                      unique_ptr<Expression> expression) {
+	if (root.active_secure_views.empty()) {
+		return;
+	}
+	auto &columns = root.secure_view_replacements[old_binding];
+	for (auto &column : columns) {
+		if (column.binding == new_binding &&
+		    ((!column.expression && !expression) ||
+		     (column.expression && expression && column.expression->Equals(*expression)))) {
+			return;
+		}
+	}
+	columns.push_back({new_binding, std::move(expression)});
+}
+
+void RemoveUnusedColumns::ApplySecureViewReplacements() {
+	if (root.secure_view_replacements.empty()) {
+		return;
+	}
+	for (auto &view_ref : root.active_secure_views) {
+		auto &view = view_ref.get();
+		vector<ColumnBinding> bindings;
+		vector<unique_ptr<Expression>> expressions;
+		bool valid = true;
+		for (idx_t i = 0; valid && i < view.output_bindings.size(); i++) {
+			auto binding = view.output_bindings[i];
+			auto replacement = root.secure_view_replacements.find(binding);
+			if (replacement == root.secure_view_replacements.end()) {
+				bindings.push_back(binding);
+				expressions.push_back(std::move(view.output_expressions[i]));
+				continue;
+			}
+			for (auto &column : replacement->second) {
+				auto source = column.expression
+				                  ? ComposeSecureViewSource(*column.expression, binding, *view.output_expressions[i])
+				                  : view.output_expressions[i]->Copy();
+				if (!source) {
+					valid = false;
+					break;
+				}
+				bindings.push_back(column.binding);
+				expressions.push_back(std::move(source));
+			}
+		}
+		if (!valid) {
+			bindings.clear();
+			expressions.clear();
+		}
+		view.output_bindings = std::move(bindings);
+		view.output_expressions = std::move(expressions);
+	}
+	root.secure_view_replacements.clear();
+}
+
+void RemoveUnusedColumns::VisitSecureView(LogicalSecureView &view) {
+	D_ASSERT(mode == RemoveUnusedColumnsMode::APPLY);
+	D_ASSERT(!everything_referenced);
+	D_ASSERT(view.children.size() == 1);
+	D_ASSERT(view.output_bindings.size() == view.output_expressions.size());
+
+	root.active_secure_views.push_back(view);
+	VisitPrunableChildren(view);
+	root.active_secure_views.pop_back();
+	view.ResolveOperatorTypes();
+
+	auto new_bindings = view.children[0]->GetColumnBindings();
+	auto &new_types = view.children[0]->types;
+	vector<unique_ptr<Expression>> new_expressions;
+	new_expressions.reserve(new_bindings.size());
+	for (idx_t output_idx = 0; output_idx < new_bindings.size(); output_idx++) {
+		unique_ptr<Expression> source_expression;
+		for (idx_t i = 0; i < view.output_bindings.size(); i++) {
+			if (view.output_bindings[i] != new_bindings[output_idx] ||
+			    !view.output_expressions[i]->GetReturnType().EqualsIncludingCollation(new_types[output_idx])) {
+				continue;
+			}
+			if (source_expression && !source_expression->Equals(*view.output_expressions[i])) {
+				view.output_bindings.clear();
+				view.output_expressions.clear();
+				return;
+			}
+			source_expression = view.output_expressions[i]->Copy();
+		}
+		if (!source_expression) {
+			view.output_bindings.clear();
+			view.output_expressions.clear();
+			return;
+		}
+		new_expressions.push_back(std::move(source_expression));
+	}
+	view.output_bindings = std::move(new_bindings);
+	view.output_expressions = std::move(new_expressions);
+}
+
 void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 	const bool analyze = mode == RemoveUnusedColumnsMode::ANALYZE;
 	auto &op = *op_ref;
 	switch (op.type) {
+	case LogicalOperatorType::LOGICAL_WINDOW: {
+		auto &window = op.Cast<LogicalWindow>();
+		// Preserve volatile evaluation within the window expression, even when its output is unused.
+		// Column references do not propagate volatility from their producers.
+		if (!everything_referenced) {
+			for (idx_t i = 0; i < window.expressions.size(); i++) {
+				if (window.expressions[i]->IsVolatile()) {
+					column_references.emplace(ColumnBinding(window.window_index, ProjectionIndex(i)),
+					                          ReferencedColumn());
+				}
+			}
+		}
+		if (analyze) {
+			// Windows also pass through child columns, so retain the existing references.
+			for (idx_t i = 0; i < window.expressions.size(); i++) {
+				auto binding = ColumnBinding(window.window_index, ProjectionIndex(i));
+				if (everything_referenced || column_references.find(binding) != column_references.end()) {
+					VisitExpression(&window.expressions[i]);
+				}
+			}
+			VisitOperator(window.children[0]);
+			return;
+		}
+		if (!everything_referenced) {
+			ClearUnusedExpressions(window.expressions, window.window_index);
+			ApplySecureViewReplacements();
+		}
+		if (window.expressions.empty()) {
+			// A window with no remaining outputs preserves its child's rows and bindings.
+			auto child = std::move(window.children[0]);
+			op_ref = std::move(child);
+			VisitOperator(op_ref);
+			return;
+		}
+		VisitOperatorExpressions(window);
+		VisitPrunableChildren(window);
+		return;
+	}
+	case LogicalOperatorType::LOGICAL_SECURE_VIEW: {
+		auto &view = op.Cast<LogicalSecureView>();
+		if (!analyze && !everything_referenced && view.has_source &&
+		    view.output_bindings.size() == view.output_expressions.size()) {
+			VisitSecureView(view);
+			return;
+		}
+		break;
+	}
 	case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY: {
 		// aggregate
 		auto &aggr = op.Cast<LogicalAggregate>();
@@ -371,9 +563,10 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 		if (!everything_referenced) {
 			// FIXME: groups that are not referenced need to stay -> but they don't need to be scanned and output!
 			ClearUnusedExpressions(aggr.expressions, aggr.aggregate_index);
+			ApplySecureViewReplacements();
 			if (aggr.expressions.empty() && aggr.groups.empty()) {
 				// removed all expressions from the aggregate: push a COUNT(*)
-				auto count_star_fun = CountStarFun::GetFunction();
+				auto count_star_fun = GetBuiltinAggregateFunction(context, CountStarFun::Name, {});
 				FunctionBinder function_binder(context);
 				aggr.expressions.push_back(
 				    function_binder.BindAggregateFunction(count_star_fun, {}, nullptr, AggregateType::NON_DISTINCT));
@@ -484,6 +677,7 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 			}
 			ClearUnusedExpressions(entries, setop.table_index);
 			if (entries.size() >= setop.column_count) {
+				ApplySecureViewReplacements();
 				// We still need to recurse into the children to populate CTE info, etc.
 				for (auto &child : op.children) {
 					RemoveUnusedColumns remove(*this, true);
@@ -496,7 +690,10 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 				// no columns referenced: this happens in the case of a COUNT(*)
 				// extract the first column
 				entries.push_back(0);
+				auto binding = ColumnBinding(setop.table_index, ProjectionIndex(0));
+				RecordSecureViewReplacement(binding, binding);
 			}
+			ApplySecureViewReplacements();
 			for (idx_t child_idx = 0; child_idx < op.children.size(); child_idx++) {
 				RemoveUnusedColumns remove(*this, true);
 				auto &child = op.children[child_idx];
@@ -566,7 +763,10 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 				// this happens in the case of e.g. EXISTS(SELECT * FROM ...)
 				// in this case we only need to project a single constant
 				proj.expressions.push_back(make_uniq<BoundConstantExpression>(Value::INTEGER(42)));
+				auto binding = ColumnBinding(proj.table_index, ProjectionIndex(0));
+				RecordSecureViewReplacement(binding, binding, proj.expressions[0]->Copy());
 			}
+			ApplySecureViewReplacements();
 		}
 		// then recurse into the children of this projection
 		RemoveUnusedColumns remove(*this, false);
@@ -617,11 +817,13 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 			// need to implicitly reference everything.
 			break;
 		}
-		// distinct, all projected columns are used for the DISTINCT computation
-		// mark all columns as used and continue to the children
-		// FIXME: DISTINCT with expression list does not implicitly reference everything
+		// Preserve all DISTINCT inputs without affecting sibling branches.
+		const auto previous_everything_referenced = everything_referenced;
 		everything_referenced = true;
-		break;
+		LogicalOperatorVisitor::VisitOperatorExpressions(op);
+		VisitPrunableChildren(op);
+		everything_referenced = previous_everything_referenced;
+		return;
 	}
 	case LogicalOperatorType::LOGICAL_RECURSIVE_CTE: {
 		if (analyze) {
@@ -697,10 +899,7 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 		// Distinct column indexes here, unlike the per-reader map, so comparing sizes is a valid width check.
 		if (cte_map_entry.everything_referenced || readers_visible_in_output ||
 		    referenced_columns_in_rhs.size() == cte.children[0]->GetColumnBindings().size()) {
-			if (!analyze) {
-				everything_referenced = true;
-			}
-			// We may opt out here, but we still need to traverse the left-hand side of the CTE.
+			// Preserve the CTE input without marking unrelated sibling outputs as referenced.
 			RemoveUnusedColumns remove(*this, true);
 			remove.VisitOperator(cte.children[0]);
 			return;
@@ -747,7 +946,10 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 			cte_ref_pruner.VisitOperator(*cte.children[1]);
 			for (auto &replacement : cte_ref_pruner.binding_replacements) {
 				root.projection_map_replacements[replacement.old_binding] = {replacement.new_binding};
+				RecordSecureViewReplacement(replacement.old_binding, replacement.new_binding);
 			}
+
+			ApplySecureViewReplacements();
 
 			// We also need to rewrite the column bindings in the right-hand side of the CTE to account for the removed
 			// columns on the left-hand side. Conveniently, the CTERefPruner already has the information about which
@@ -897,6 +1099,8 @@ void RemoveUnusedColumns::WritePushdownExtractColumns(
 		auto return_type = expr->GetReturnType();
 
 		auto &colref = col.bindings[struct_extract.bindings_idx];
+		auto old_binding = colref.get().Binding();
+		auto source = root.active_secure_views.empty() ? nullptr : expr->Copy();
 		auto colref_copy = colref.get().Copy();
 		expr = std::move(colref_copy);
 		auto &new_expr = expr->Cast<BoundColumnRefExpression>();
@@ -904,6 +1108,7 @@ void RemoveUnusedColumns::WritePushdownExtractColumns(
 
 		auto column_index = callback(*entry, component.cast ? &(*component.cast)->GetReturnType() : nullptr);
 		new_expr.BindingMutable().column_index = column_index;
+		RecordSecureViewReplacement(old_binding, new_expr.Binding(), std::move(source));
 	}
 }
 
@@ -914,22 +1119,28 @@ static unique_ptr<Expression> ConstructStructExtractFromPath(ClientContext &cont
 	reference<const LogicalType> type_iter(struct_type);
 	reference<const ColumnIndex> path_iter(path);
 	while (true) {
-		auto child_index = path_iter.get().GetPrimaryIndex();
-		auto &child_types = StructType::GetChildTypes(type_iter.get());
-		D_ASSERT(child_index < child_types.size());
-		auto is_unnamed = StructType::IsUnnamed(type_iter.get());
-		auto function = is_unnamed ? GetIndexExtractFunction() : GetKeyExtractFunction();
-
-		type_iter = child_types[child_index].second;
-
 		vector<unique_ptr<Expression>> arguments(2);
 		arguments[0] = (std::move(target));
-		if (is_unnamed) {
-			arguments[1] = make_uniq<BoundConstantExpression>(Value::BIGINT(NumericCast<int64_t>(child_index + 1)));
+		if (type_iter.get().id() == LogicalTypeId::VARIANT) {
+			// a VARIANT field is addressed by key, and is itself a VARIANT
+			arguments[1] = make_uniq<BoundConstantExpression>(Value(path_iter.get().GetFieldName()));
+			target = BindBuiltinScalarFunction(context, VariantExtractFun::Name, std::move(arguments));
 		} else {
-			arguments[1] = make_uniq<BoundConstantExpression>(Value(child_types[child_index].first));
+			auto child_index = path_iter.get().GetPrimaryIndex();
+			auto &child_types = StructType::GetChildTypes(type_iter.get());
+			D_ASSERT(child_index < child_types.size());
+			auto is_unnamed = StructType::IsUnnamed(type_iter.get());
+
+			type_iter = child_types[child_index].second;
+
+			if (is_unnamed) {
+				arguments[1] = make_uniq<BoundConstantExpression>(Value::BIGINT(NumericCast<int64_t>(child_index + 1)));
+			} else {
+				arguments[1] = make_uniq<BoundConstantExpression>(Value(child_types[child_index].first));
+			}
+			// the constant argument selects the key or the index overload of struct_extract
+			target = BindBuiltinScalarFunction(context, StructExtractFun::Name, std::move(arguments));
 		}
-		target = function.Bind(context, std::move(arguments));
 		if (!path_iter.get().HasChildren()) {
 			break;
 		}
@@ -1082,6 +1293,7 @@ void RemoveUnusedColumns::RemoveColumnsFromLogicalColumnDataGet(LogicalColumnDat
 
 	auto column_ids = get.GetColumnIds();
 	ClearUnusedExpressions(column_ids, get.table_index);
+	ApplySecureViewReplacements();
 	get.SetColumnIds(std::move(column_ids));
 }
 
@@ -1136,19 +1348,24 @@ void RemoveUnusedColumns::RemoveColumnsFromLogicalGet(LogicalGet &get, unique_pt
 			filter_expr = std::move(column_ref);
 		}
 		filter_expressions.push_back(std::move(filter_expr));
-		//! Now visit the filter to add to the 'column_references'
-		VisitExpression(&filter_expressions.back());
 	}
+	for (auto &filter_expression : filter_expressions) {
+		//! Now visit the filter to add to the 'column_references'
+		VisitExpression(&filter_expression);
+	}
+	//! The 'column_references' hold references to these expressions, so they have to stay alive
+	vector<unique_ptr<Expression>> multi_filter_columns;
 	for (const auto &filter : get.table_filters.GetMultiColumnFilters()) {
 		const auto &expression_filter = ExpressionFilter::GetExpressionFilter(*filter, "RemoveUnusedColumns::VisitGet");
 		for (const auto &filter_idx : expression_filter.column_indexes) {
 			const auto &col_id = get.GetColumnIndex(filter_idx);
 			auto column_type = get.GetColumnType(col_id);
 			ColumnBinding filter_binding(get.table_index, filter_idx);
-			unique_ptr<Expression> column_ref =
-			    make_uniq<BoundColumnRefExpression>(std::move(column_type), filter_binding);
-			VisitExpression(&column_ref);
+			multi_filter_columns.push_back(make_uniq<BoundColumnRefExpression>(std::move(column_type), filter_binding));
 		}
+	}
+	for (auto &column_ref : multi_filter_columns) {
+		VisitExpression(&column_ref);
 	}
 
 	//! Check with the LogicalGet whether pushdown-extract is supported
@@ -1212,6 +1429,7 @@ void RemoveUnusedColumns::RemoveColumnsFromLogicalGet(LogicalGet &get, unique_pt
 		original_ids.emplace_back(any_column);
 		new_column_ids.emplace_back(any_column);
 	}
+	ApplySecureViewReplacements();
 	get.SetColumnIds(std::move(new_column_ids));
 
 	// remap table filters so they point towards the new set of ids
@@ -1453,6 +1671,15 @@ bool BaseColumnPruner::HandleExtractRecursive(unique_ptr<Expression> &expr_p,
 	}
 }
 
+//! A cast pushed into the scan of a shredded VARIANT is applied to the shredded value instead of the VARIANT. For a
+//! JSON target the two differ: a VARIANT serializes to JSON, a shredded VARCHAR would be parsed as JSON.
+static bool ExtractCastCanBePushedDown(const BoundColumnRefExpression &colref, const Expression &cast) {
+	if (colref.GetReturnType().id() != LogicalTypeId::VARIANT) {
+		return true;
+	}
+	return !cast.GetReturnType().IsJSONType();
+}
+
 bool BaseColumnPruner::HandleExtractExpression(unique_ptr<Expression> *expression,
                                                optional_ptr<unique_ptr<Expression>> cast_expression) {
 	optional_ptr<BoundColumnRefExpression> colref;
@@ -1462,6 +1689,10 @@ bool BaseColumnPruner::HandleExtractExpression(unique_ptr<Expression> *expressio
 	reference<ColumnIndex> path_ref(path);
 	if (!HandleExtractRecursive(*expression, colref, path_ref, expressions)) {
 		return false;
+	}
+	if (cast_expression && !ExtractCastCanBePushedDown(*colref, **cast_expression)) {
+		// the cast stays on top of the pushed-down extract
+		cast_expression = nullptr;
 	}
 	if (cast_expression) {
 		auto &top_level = expressions.back();
@@ -1549,10 +1780,14 @@ void ReferencedColumn::AddPath(const ColumnIndex &path) {
 	}
 
 	//! No parent path exists, but child paths could already be added, remove them if they exist
+	//! A child is only removed if the new path matches it - a path with different type information does not
+	column_index_set new_path_set;
+	new_path_set.emplace(path);
 	auto it = unique_paths.begin();
 	for (; it != unique_paths.end();) {
 		auto &unique_path = *it;
-		if (unique_path.IsChildPathOf(path)) {
+		if (unique_path.IsChildPathOf(path) &&
+		    FindShortestMatchingPath(new_path_set, unique_path).first != new_path_set.end()) {
 			auto current = it;
 			it++;
 			unique_paths.erase(current);
@@ -1604,15 +1839,26 @@ static bool TryGetCastChild(unique_ptr<Expression> &expr, optional_ptr<unique_pt
 	if (BoundCastExpression::IsTryCast(cast)) {
 		return false;
 	}
-
 	child = BoundCastExpression::ChildMutable(cast);
 	return true;
 }
 
 void BaseColumnPruner::VisitExpression(unique_ptr<Expression> *expression) {
-	//! Check if this is a struct extract wrapped in a cast
+	if ((*expression)->GetExpressionType() == ExpressionType::OPERATOR_TRY ||
+	    (*expression)->GetExpressionType() == ExpressionType::OPERATOR_HAS_ERROR) {
+		const auto was_inside_try = inside_try;
+		inside_try = true;
+		LogicalOperatorVisitor::VisitExpression(expression);
+		inside_try = was_inside_try;
+		return;
+	}
+
+	//! Check if this is a struct extract wrapped in a cast. TRY_CAST is already
+	//! skipped by TryGetCastChild. A throwing CAST under TRY must also stay put:
+	//! unused-columns would otherwise emit CAST(struct_extract) in a child
+	//! projection and leave TRY wrapping only the already-cast column (#25236).
 	optional_ptr<unique_ptr<Expression>> cast_child;
-	if (TryGetCastChild(*expression, cast_child)) {
+	if (!inside_try && TryGetCastChild(*expression, cast_child)) {
 		if (HandleExtractExpression(cast_child.get(), expression)) {
 			// already handled
 			return;

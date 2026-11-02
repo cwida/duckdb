@@ -1,15 +1,18 @@
 #include "duckdb/common/vector/array_vector.hpp"
 #include "duckdb/common/vector/constant_vector.hpp"
+#include "duckdb/common/vector/dictionary_vector.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
 #include "duckdb/common/vector/fsst_vector.hpp"
 #include "duckdb/common/vector/list_vector.hpp"
 #include "duckdb/common/vector/map_vector.hpp"
+#include "duckdb/common/vector/sequence_vector.hpp"
 #include "duckdb/common/vector/shredded_vector.hpp"
 #include "duckdb/common/vector/string_vector.hpp"
 #include "duckdb/common/vector/struct_vector.hpp"
 #include "duckdb/common/types/vector_buffer.hpp"
 
 #include "duckdb/common/assert.hpp"
+#include "duckdb/common/enum_util.hpp"
 #include "duckdb/common/types/vector.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/storage/buffer/buffer_handle.hpp"
@@ -143,6 +146,24 @@ string VectorBuffer::ToString(const LogicalType &type) const {
 
 void VectorBuffer::ToUnifiedFormat(UnifiedVectorFormat &format) const {
 	throw InternalException("ToUnifiedFormat not supported for this buffer type - flatten first");
+}
+
+bool VectorBuffer::TrySerialize(Serializer &serializer, const LogicalType &type, bool compressed_serialization) const {
+	return false;
+}
+
+buffer_ptr<VectorBuffer> VectorBuffer::Deserialize(Deserializer &deserializer, VectorType vector_type,
+                                                   const LogicalType &type, idx_t count) {
+	switch (vector_type) {
+	case VectorType::DICTIONARY_VECTOR:
+		return DictionaryBuffer::Deserialize(deserializer, type, count);
+	case VectorType::SEQUENCE_VECTOR:
+		return SequenceBuffer::Deserialize(deserializer, type, count);
+	case VectorType::SHREDDED_VECTOR:
+		return ShreddedVectorBuffer::Deserialize(deserializer, type, count);
+	default:
+		throw SerializationException("Unsupported vector type %s for deserialization", EnumUtil::ToString(vector_type));
+	}
 }
 
 buffer_ptr<VectorBuffer> VectorBuffer::Flatten(const LogicalType &type) const {
@@ -300,7 +321,7 @@ void VectorBuffer::Copy(const Vector &source_p, const SelectionVector &source_se
 			auto &dict_sel = DictionaryVector::SelVector(source);
 			// merge the selection vectors and verify the child
 			if (sel.IsSet()) {
-				auto new_buffer = dict_sel.Slice(sel, copy_count);
+				auto new_buffer = dict_sel.Slice(sel, source_offset + copy_count);
 				owned_sel.Initialize(new_buffer);
 				sel_ref = owned_sel;
 			} else {
@@ -310,18 +331,24 @@ void VectorBuffer::Copy(const Vector &source_p, const SelectionVector &source_se
 			break;
 		}
 		case VectorType::CONSTANT_VECTOR:
-			sel_ref = *ConstantVector::ZeroSelectionVector(copy_count, owned_sel);
+			sel_ref = *ConstantVector::ZeroSelectionVector(source_offset + copy_count, owned_sel);
 			finished = true;
 			break;
 		case VectorType::FLAT_VECTOR:
 			finished = true;
 			break;
 		default: {
-			// for exotic types we flatten followed by copying
+			// for exotic types we flatten followed by copying - only the copied rows are flattened, as e.g. list
+			// functions copy the children of every list at a different offset, and the selection vector might only
+			// cover the copied rows
+			D_ASSERT(source_count >= source_offset + copy_count);
+			SelectionVector range_sel(copy_count);
+			for (idx_t i = 0; i < copy_count; i++) {
+				range_sel.set_index(i, sel.get_index(source_offset + i));
+			}
 			Vector flattened_vector(Vector::Ref(source));
-			flattened_vector.Flatten(sel, source_offset + source_count);
-			Copy(flattened_vector, *FlatVector::IncrementalSelectionVector(), source_count, source_offset,
-			     target_offset, copy_count);
+			flattened_vector.Flatten(range_sel, copy_count);
+			Copy(flattened_vector, *FlatVector::IncrementalSelectionVector(), copy_count, 0, target_offset, copy_count);
 			return;
 		}
 		}

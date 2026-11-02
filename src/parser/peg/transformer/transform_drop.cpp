@@ -8,6 +8,9 @@ unique_ptr<SQLStatement> PEGTransformerFactory::TransformDropStatement(PEGTransf
                                                                        unique_ptr<DropStatement> drop_entries,
                                                                        const optional<bool> &drop_behavior) {
 	if (drop_behavior) {
+		if (drop_entries->info->type == CatalogType::SECRET_ENTRY) {
+			throw ParserException("CASCADE and RESTRICT are not supported for DROP SECRET");
+		}
 		drop_entries->info->cascade = *drop_behavior;
 	}
 	return std::move(drop_entries);
@@ -45,13 +48,13 @@ bool PEGTransformerFactory::TransformFunctionTypeFunction(PEGTransformer &transf
 unique_ptr<DropStatement>
 PEGTransformerFactory::TransformDropTableFunction(PEGTransformer &transformer, const CatalogType &comment_macro_table,
                                                   const optional<bool> &if_exists,
-                                                  const vector<Identifier> &table_function_name) {
+                                                  const vector<QualifiedName> &table_function_name) {
 	auto result = make_uniq<DropStatement>();
 	auto info = make_uniq<DropInfo>();
 	if (table_function_name.size() > 1) {
 		throw NotImplementedException("Can only drop one object at a time");
 	}
-	info->SetQualifiedName(QualifiedName(table_function_name[0]));
+	info->SetQualifiedName(table_function_name[0]);
 	info->type = comment_macro_table;
 	info->if_not_found = if_exists ? OnEntryNotFound::RETURN_NULL : OnEntryNotFound::THROW_EXCEPTION;
 	result->info = std::move(info);
@@ -211,6 +214,9 @@ unique_ptr<DropStatement> PEGTransformerFactory::TransformDropSecret(PEGTransfor
 	info->if_not_found = if_exists ? OnEntryNotFound::RETURN_NULL : OnEntryNotFound::THROW_EXCEPTION;
 	info->SetName(secret_name);
 	if (drop_secret_storage) {
+		if (extra_drop_info->persist_mode == SecretPersistType::TEMPORARY) {
+			throw ParserException("Can not combine TEMPORARY with specifying a storage for drop secret");
+		}
 		extra_drop_info->secret_storage = drop_secret_storage->GetIdentifierName();
 	}
 	info->extra_drop_info = std::move(extra_drop_info);

@@ -451,7 +451,7 @@ struct TanFun {
 
 struct TruncFun {
 	static constexpr const char *Name = "trunc";
-	static constexpr const char *Parameters = "x";
+	static constexpr const char *Parameters = "x,precision";
 	static constexpr const char *Description = "Truncates the number";
 	static constexpr const char *Example = "trunc(17.4)";
 	static constexpr const char *Categories = "";

@@ -1,0 +1,47 @@
+# name: test/sql/storage/compression/roaring/roaring_bitset_boundaries.test
+# description: Read Roaring bitsets at validity-word and metadata-group boundaries
+# group: [roaring]
+
+require block_size 262144
+
+load {TEST_DIR}/roaring_bitset_boundaries.db readwrite v1.5.0
+
+# Partial validity words, then 32 containers and 33 containers with a partial bitset.
+foreach rows 63 64 65 65536 65601
+
+statement ok
+SET force_compression = 'roaring'
+
+statement ok
+CREATE TABLE test AS
+SELECT i, i % 3 = 0 AS a, CASE WHEN i % 3 = 0 THEN i ELSE NULL END AS b
+FROM range({rows}) t(i)
+
+statement ok
+CHECKPOINT
+
+restart
+
+query I
+SELECT count(*) > 0 FROM pragma_storage_info('test')
+WHERE segment_type = 'BOOLEAN' AND compression = 'Roaring'
+----
+true
+
+query I
+SELECT count(*) > 0 FROM pragma_storage_info('test')
+WHERE column_name = 'b' AND segment_type = 'VALIDITY' AND compression = 'Roaring'
+----
+true
+
+query I
+SELECT count(*) FROM test
+WHERE a IS DISTINCT FROM (i % 3 = 0)
+   OR b IS DISTINCT FROM CASE WHEN i % 3 = 0 THEN i ELSE NULL END
+----
+0
+
+statement ok
+DROP TABLE test
+
+endloop

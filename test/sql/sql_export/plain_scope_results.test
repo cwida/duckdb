@@ -1,0 +1,176 @@
+# name: test/sql/sql_export/plain_scope_results.test
+# description: Reusing SQL scopes preserves ordering, window inputs, and UNNEST expansion
+# group: [sql_export]
+
+statement ok
+CREATE TABLE scope_rows(id INTEGER, i INTEGER, label VARCHAR COLLATE nocase, xs INTEGER[], ys INTEGER[], payload VARCHAR);
+
+statement ok
+INSERT INTO scope_rows VALUES (1,2,'B',[2,NULL],[10],'2'),(2,1,'a',[1,3],[],'1'),(3,1,'A',[],[30,40],'bad'),(4,NULL,'c',NULL,NULL,'4'),(5,2,'b',[2],[50,60],'5');
+
+foreach mode none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{mode}';
+
+foreach serializer false true
+
+statement ok
+SET debug_verify_serializer={serializer};
+
+query II
+SELECT id AS i,i AS id FROM scope_rows WHERE id<>3 ORDER BY id NULLS LAST,i DESC LIMIT 3 OFFSET 1;
+----
+5	2
+1	2
+4	NULL
+
+query II
+SELECT id,id AS id FROM scope_rows WHERE i IS NOT NULL ORDER BY i,id DESC;
+----
+3	3
+2	2
+5	5
+1	1
+
+query IIII
+SELECT id,row_number() OVER(ORDER BY i NULLS LAST,id),sum(i) OVER(PARTITION BY label),count(*) OVER() FROM scope_rows WHERE id<>3 ORDER BY id;
+----
+1	2	4	4
+2	1	1	4
+4	4	NULL	4
+5	3	4	4
+
+query III rowsort
+SELECT id,unnest(xs),unnest(ys) FROM scope_rows WHERE id<>3;
+----
+1	2	10
+1	NULL	NULL
+2	1	NULL
+2	3	NULL
+5	2	50
+5	NULL	60
+
+# The filter must still remove the invalid cast before the window or expansion.
+query II
+SELECT id,sum(CAST(payload AS INTEGER)) OVER() FROM scope_rows WHERE id<>3 ORDER BY id;
+----
+1	12
+2	12
+4	12
+5	12
+
+query II rowsort
+SELECT id,unnest([CAST(payload AS INTEGER)]) FROM scope_rows WHERE id<>3;
+----
+1	2
+2	1
+4	4
+5	5
+
+# LIMIT, aggregation, and prior windows keep their evaluation boundaries.
+query II
+SELECT id,row_number() OVER(ORDER BY id DESC) FROM (SELECT id FROM scope_rows ORDER BY id LIMIT 2) q ORDER BY id;
+----
+1	2
+2	1
+
+query II
+SELECT i,sum(n) OVER(ORDER BY i NULLS LAST) FROM (SELECT i,count(*) n FROM scope_rows GROUP BY i) q ORDER BY i NULLS LAST;
+----
+1	2
+2	4
+NULL	5
+
+query II
+SELECT id,sum(n) OVER() FROM (SELECT id,row_number() OVER(ORDER BY id) n FROM scope_rows) q ORDER BY id;
+----
+1	15
+2	15
+3	15
+4	15
+5	15
+
+query I rowsort
+WITH c AS MATERIALIZED (SELECT xs FROM scope_rows WHERE id IN (1,2)) SELECT unnest(xs) FROM c;
+----
+1
+2
+3
+NULL
+
+# Plain join scopes keep both aliases and outer-join NULL extension.
+query III
+SELECT r.id,row_number() OVER(ORDER BY r.id),sum(b.id) OVER() FROM scope_rows r LEFT JOIN (VALUES (1),(2)) b(id) ON r.id=b.id ORDER BY r.id;
+----
+1	1	3
+2	2	3
+3	3	3
+4	4	3
+5	5	3
+
+query III rowsort
+SELECT r.id,unnest(r.xs),b.id FROM scope_rows r LEFT JOIN (VALUES (1),(2)) b(id) ON r.id=b.id;
+----
+1	2	1
+1	NULL	1
+2	1	2
+2	3	2
+5	2	NULL
+
+query III rowsort
+SELECT id,count(*) OVER(PARTITION BY id),x FROM (SELECT id,unnest(xs) x FROM scope_rows) q;
+----
+1	2	2
+1	2	NULL
+2	2	1
+2	2	3
+5	1	2
+
+query II rowsort
+SELECT id,unnest([n,n+1]) FROM (SELECT id,row_number() OVER(ORDER BY id) n FROM scope_rows) q;
+----
+1	1
+1	2
+2	2
+2	3
+3	3
+3	4
+4	4
+4	5
+5	5
+5	6
+
+statement ok
+CREATE OR REPLACE SEQUENCE scope_sequence;
+
+query I
+SELECT sum(v) OVER() FROM (SELECT nextval('scope_sequence') v FROM range(2)) q;
+----
+3
+3
+
+query I
+SELECT currval('scope_sequence');
+----
+2
+
+statement ok
+CREATE OR REPLACE SEQUENCE scope_sequence;
+
+query I rowsort
+SELECT unnest([nextval('scope_sequence'),nextval('scope_sequence')]) FROM range(2);
+----
+1
+2
+3
+4
+
+query I
+SELECT currval('scope_sequence');
+----
+4
+
+endloop
+
+endloop

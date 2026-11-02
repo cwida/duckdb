@@ -6,6 +6,7 @@
 #include "duckdb/planner/expression/list.hpp"
 #include "duckdb/planner/filter/expression_filter.hpp"
 #include "duckdb/planner/filter/table_filter_functions.hpp"
+#include "duckdb/planner/expression/expression_barrier.hpp"
 
 namespace duckdb {
 
@@ -47,8 +48,8 @@ void ExpressionHeuristics::ReorderExpressions(vector<unique_ptr<Expression>> &ex
 	};
 
 	for (idx_t i = 0; i < expressions.size(); i++) {
-		if (expressions[i]->CanThrow()) {
-			// do not allow reordering if an expression can throw
+		if (expressions[i]->CanThrow() || ExpressionBarrier::Contains(*expressions[i])) {
+			// do not allow reordering if an expression can throw, or carries a barrier
 			return;
 		}
 	}
@@ -229,6 +230,10 @@ idx_t ExpressionHeuristics::Cost(const Expression &expr) {
 idx_t ExpressionHeuristics::Cost(const TableFilter &filter) {
 	auto &expr_filter = ExpressionFilter::GetExpressionFilter(filter, "ExpressionHeuristics::Cost");
 	auto &expr = *expr_filter.expr;
+	if (ExpressionBarrier::Contains(expr)) {
+		// a barrier filter is always evaluated last, so that it never runs on rows another filter removes
+		return NumericLimits<idx_t>::Maximum();
+	}
 	if (ExpressionFilter::ContainsInternalFunction(expr, DynamicFilterScalarFun::NAME)) {
 		return 0;
 	}
@@ -238,8 +243,8 @@ idx_t ExpressionHeuristics::Cost(const TableFilter &filter) {
 			return 0;
 		}
 		if (func.Function().GetName() == SelectivityOptionalFilterScalarFun::NAME && func.BindInfo()) {
-			auto &data = func.BindInfo()->Cast<SelectivityOptionalFilterFunctionData>();
-			return data.child_filter_expr ? Cost(*data.child_filter_expr) : 0;
+			auto optional_child = ExpressionFilter::GetOptionalFilterChild(func);
+			return optional_child ? Cost(*optional_child) : 0;
 		}
 	}
 	if (ExpressionFilter::IsOptionalExpression(expr)) {

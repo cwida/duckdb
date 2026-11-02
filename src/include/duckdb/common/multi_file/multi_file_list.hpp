@@ -73,7 +73,6 @@ public:
 };
 
 struct MultiFilePushdownInfo {
-	explicit MultiFilePushdownInfo(LogicalGet &get);
 	MultiFilePushdownInfo(TableIndex table_index, const vector<Identifier> &column_names,
 	                      const vector<ColumnIndex> &column_indexes, ExtraOperatorInfo &extra_info);
 
@@ -111,7 +110,7 @@ public:
 	                                                        vector<unique_ptr<Expression>> &filters) const;
 	virtual unique_ptr<MultiFileList> DynamicFilterPushdown(MultiFileDynamicPushdownInfo &dynamic_pushdown_info) const;
 
-	virtual vector<OpenFileInfo> GetAllFiles() const = 0;
+	virtual vector<OpenFileInfo> GetAllFiles() const;
 	virtual FileExpandResult GetExpandResult() const = 0;
 	//! Get the total file count - forces all files to be expanded / known so the exact count can be computed
 	virtual idx_t GetTotalFileCount() const = 0;
@@ -196,6 +195,9 @@ protected:
 class GlobMultiFileList : public LazyMultiFileList {
 public:
 	GlobMultiFileList(ClientContext &context, vector<string> globs, FileGlobInput input);
+	//! Entries that carry explicit open options (i.e. an ExtendedOpenFileInfo) are emitted as-is instead of
+	//! being glob-expanded - they refer to a file the caller already knows the exact identity of
+	GlobMultiFileList(ClientContext &context, vector<OpenFileInfo> globs, FileGlobInput input);
 
 	vector<OpenFileInfo> GetDisplayFileList(optional_idx max_files = optional_idx()) const override;
 
@@ -206,7 +208,7 @@ protected:
 	//! The ClientContext for globbing
 	ClientContext &context;
 	//! The list of globs to expand
-	const vector<string> globs;
+	const vector<OpenFileInfo> globs;
 	//! Glob input
 	const FileGlobInput glob_input;
 	//! The current glob to expand

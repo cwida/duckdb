@@ -14,7 +14,7 @@ class GrammarTypeInfo:
     cpp_type: str
     by_value: bool = False  # True for unique_ptr<T>, vector<unique_ptr<T>> (non-copyable)
     default_initializer: str = ""  # Optional enum member/full C++ initializer for Optional(...) values
-    pass_location: bool = False  # Pass parse_result.offset to the hand-written body
+    pass_location: bool = False  # Pass the parse result's offset to the hand-written body
 
 
 def load_grammar_types_yaml(types_file):
@@ -98,7 +98,7 @@ def load_grammar_types(types_file):
 
     # Top-level overrides: RuleName -> "type" string OR {type, by_value, default_initializer} dict.
     # default_initializer usually names an enum member (e.g. "INNER"), but full C++ initializers
-    # that start with "=" or "{" are also accepted by generate_transformer.py.
+    # that start with "=" or "{" are also accepted by generate_transformer_trampoline.py.
     overrides = data.get("overrides", {})
     if isinstance(overrides, dict):
         for name, value in overrides.items():
@@ -113,7 +113,17 @@ def load_grammar_types(types_file):
 
     # Category entries: CategoryName -> {type: "...", by_value: bool, default_initializer: "...", rules: [...]}
     for key, value in data.items():
-        if key in ("overrides", "excluded_rules", "matcher_rule_overrides", "packrat_memoized_rules"):
+        if key in (
+            "overrides",
+            "excluded_rules",
+            "matcher_rule_overrides",
+            "packrat_memoized_rules",
+            "rule_labels",
+            "collapsible_rules",
+            "expression_depth_nesting_rules",
+            "expression_depth_chain_rules",
+            "additional_transform_result_types",
+        ):
             continue
         if not isinstance(value, dict):
             continue
@@ -138,6 +148,16 @@ def load_grammar_types(types_file):
     return rule_types, excluded_rules
 
 
+def load_additional_transform_result_types(types_file):
+    """Load result types used by transformer infrastructure rather than grammar rules."""
+    data = load_grammar_types_yaml(types_file)
+    result_types = data.get("additional_transform_result_types", [])
+    if not isinstance(result_types, list) or not all(isinstance(result_type, str) for result_type in result_types):
+        print(f"Error: additional_transform_result_types in {types_file} must be a list of strings.", file=sys.stderr)
+        sys.exit(1)
+    return result_types
+
+
 def load_matcher_rule_overrides(types_file):
     """Load matcher_rule_overrides from grammar_types.yml."""
     data = load_grammar_types_yaml(types_file)
@@ -149,13 +169,13 @@ def load_matcher_rule_overrides(types_file):
     return overrides
 
 
-def load_packrat_memoized_rules(types_file, known_rules=None):
-    """Load packrat_memoized_rules from grammar_types.yml."""
+def load_rule_name_list(types_file, key, known_rules=None):
+    """Load a list of grammar rule names from grammar_types.yml."""
     data = load_grammar_types_yaml(types_file)
 
-    rules = data.get("packrat_memoized_rules", [])
+    rules = data.get(key, [])
     if not isinstance(rules, list):
-        print(f"Error: packrat_memoized_rules in {types_file} must be a list.", file=sys.stderr)
+        print(f"Error: {key} in {types_file} must be a list.", file=sys.stderr)
         sys.exit(1)
     rules = [str(rule) for rule in rules]
 
@@ -163,9 +183,63 @@ def load_packrat_memoized_rules(types_file, known_rules=None):
         known_rules = set(known_rules)
         missing_rules = sorted(rule for rule in rules if rule not in known_rules)
         if missing_rules:
-            print(f"Error: packrat_memoized_rules in {types_file} contains unknown grammar rules:", file=sys.stderr)
+            print(f"Error: {key} in {types_file} contains unknown grammar rules:", file=sys.stderr)
             for rule in missing_rules:
                 print(f"  - {rule}", file=sys.stderr)
             sys.exit(1)
 
     return rules
+
+
+def load_rule_labels(types_file, known_rules=None):
+    """Load rule_labels from grammar_types.yml as a list of (rule, label) pairs."""
+    data = load_grammar_types_yaml(types_file)
+
+    labels = data.get("rule_labels", {})
+    if not isinstance(labels, dict):
+        print(f"Error: rule_labels in {types_file} must be a mapping from label to a list of rules.", file=sys.stderr)
+        sys.exit(1)
+    result = []
+    seen = {}
+    for label, rules in labels.items():
+        if not isinstance(rules, list):
+            print(f"Error: rule_labels entry {label!r} in {types_file} must be a list of rules.", file=sys.stderr)
+            sys.exit(1)
+        for rule in rules:
+            rule = str(rule)
+            if rule in seen:
+                print(
+                    f"Error: rule {rule} has two labels in {types_file}: {seen[rule]!r} and {label!r}.", file=sys.stderr
+                )
+                sys.exit(1)
+            seen[rule] = label
+            result.append((rule, str(label)))
+
+    if known_rules is not None:
+        known_rules = set(known_rules)
+        missing_rules = sorted(rule for rule, _ in result if rule not in known_rules)
+        if missing_rules:
+            print(f"Error: rule_labels in {types_file} contains unknown grammar rules:", file=sys.stderr)
+            for rule in missing_rules:
+                print(f"  - {rule}", file=sys.stderr)
+            sys.exit(1)
+
+    return result
+
+
+def load_packrat_memoized_rules(types_file, known_rules=None):
+    """Load packrat_memoized_rules from grammar_types.yml."""
+    return load_rule_name_list(types_file, "packrat_memoized_rules", known_rules)
+
+
+def load_expression_depth_rules(types_file, known_rules=None):
+    """Load expression_depth_nesting_rules and expression_depth_chain_rules from grammar_types.yml."""
+    return (
+        load_rule_name_list(types_file, "expression_depth_nesting_rules", known_rules),
+        load_rule_name_list(types_file, "expression_depth_chain_rules", known_rules),
+    )
+
+
+def load_collapsible_rules(types_file, known_rules=None):
+    """Load collapsible_rules from grammar_types.yml."""
+    return load_rule_name_list(types_file, "collapsible_rules", known_rules)

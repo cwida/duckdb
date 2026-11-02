@@ -3,7 +3,6 @@ add_library_unity(
   OBJECT
   peg_transformer.cpp
   peg_transformer_factory.cpp
-  transform_generated.cpp
   transform_generated_trampoline.cpp
   transform_alter.cpp
   transform_analyze.cpp
@@ -14,6 +13,7 @@ add_library_unity(
   transform_common.cpp
   transform_connect.cpp
   transform_external_resource.cpp
+  transform_external_resource_source.cpp
   transform_copy.cpp
   transform_create_index.cpp
   transform_create_macro.cpp
@@ -37,6 +37,7 @@ add_library_unity(
   transform_insert.cpp
   transform_load.cpp
   transform_merge_into.cpp
+  transform_match_recognize.cpp
   transform_pivot.cpp
   transform_pragma.cpp
   transform_prepare.cpp

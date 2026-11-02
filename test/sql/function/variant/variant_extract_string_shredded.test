@@ -41,6 +41,6 @@ SELECT
 FROM variants
 ORDER BY id;
 ----
-{"obj":{"x":"duck","y":2},"arr":[10,null,30],"a":1,"z":9}	1	9
-{"obj":null,"arr":[],"a":2}	2	NULL
+{"a":1,"arr":[10,null,30],"obj":{"x":"duck","y":2},"z":9}	1	9
+{"a":2,"arr":[],"obj":null}	2	NULL
 NULL	NULL	NULL

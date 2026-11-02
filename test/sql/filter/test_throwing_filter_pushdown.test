@@ -1,0 +1,69 @@
+# name: test/sql/filter/test_throwing_filter_pushdown.test
+# description: Pushing a filter that can throw into a dictionary or into RLE runs must not raise new errors
+# group: [filter]
+
+require parquet
+
+load {TEST_DIR}/throwing_filter_pushdown.db
+
+# the value that the cast cannot convert only occurs in rows that the other filter removes, but it is part of the
+# dictionary of the segment - a filter evaluated on the dictionary rather than on the selected rows would throw
+statement ok
+CREATE TABLE dict_strings AS
+    SELECT (i % 5)::INTEGER AS id, CASE WHEN i % 5 = 0 THEN 'not_a_number' ELSE ((i % 5) * 10)::VARCHAR END AS s
+    FROM range(100000) t(i)
+
+statement ok
+CREATE TABLE rle_values AS
+    SELECT (i // 20000)::INTEGER AS grp, CASE WHEN i < 20000 THEN 100000 ELSE 5 END::INTEGER AS val
+    FROM range(100000) t(i)
+
+statement ok
+CHECKPOINT
+
+restart
+
+# the segment count depends on the block size, and the dictionary scheme on the storage version - all that matters
+# is that the column is dictionary compressed
+query I
+SELECT count(*) > 0 FROM pragma_storage_info('dict_strings')
+WHERE column_name = 's' AND compression IN ('DICT_FSST', 'Dictionary')
+----
+true
+
+query I
+SELECT count(*) > 0 FROM pragma_storage_info('rle_values') WHERE column_name = 'val' AND compression = 'RLE'
+----
+true
+
+query I
+SELECT count(*) FROM dict_strings WHERE id <> 0 AND s::INT = 10
+----
+20000
+
+query I
+SELECT count(*) FROM rle_values WHERE grp <> 0 AND val::TINYINT = 5
+----
+80000
+
+# the same holds for the dictionary of a parquet column chunk: it covers every row of the chunk, including the rows
+# that the query never reaches
+statement ok
+COPY (SELECT CASE WHEN i < 50000 THEN (i % 100)::VARCHAR ELSE 'not_a_number' END AS s FROM range(100000) t(i))
+    TO '{TEST_DIR}/throwing_filter_pushdown.parquet' (FORMAT parquet)
+
+query I
+SELECT s FROM '{TEST_DIR}/throwing_filter_pushdown.parquet' WHERE s::INT = 10 LIMIT 1
+----
+10
+
+# the error is still raised when the rows that cannot be converted are actually scanned
+statement error
+SELECT count(*) FROM dict_strings WHERE s::INT = 10
+----
+<REGEX>:.*Conversion Error.*not_a_number.*
+
+statement error
+SELECT count(*) FROM '{TEST_DIR}/throwing_filter_pushdown.parquet' WHERE s::INT = 10
+----
+<REGEX>:.*Conversion Error.*not_a_number.*

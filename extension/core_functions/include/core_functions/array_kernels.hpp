@@ -57,8 +57,49 @@ struct CosineSimilarityOp {
 			norm_r += y * y;
 		}
 
-		auto similarity = distance / std::sqrt(norm_l * norm_r);
+		const auto norm_product = norm_l * norm_r;
+		if (!std::isfinite(distance) || !std::isfinite(norm_product) ||
+		    norm_product < std::numeric_limits<TYPE>::min()) {
+			// the computation overflowed or underflowed (or there are NaN / infinite values)
+			return ScaledSimilarity(lhs_data, rhs_data, count);
+		}
+		return Clamp(distance / std::sqrt(norm_product));
+	}
+
+private:
+	template <class TYPE>
+	static TYPE Clamp(TYPE similarity) {
+		if (std::isnan(similarity)) {
+			return similarity;
+		}
 		return std::max(static_cast<TYPE>(-1.0), std::min(similarity, static_cast<TYPE>(1.0)));
+	}
+
+	//! Computes the similarity with both vectors scaled by their largest absolute value, which does not change the
+	//! similarity, but avoids overflow and underflow
+	template <class TYPE>
+	static TYPE ScaledSimilarity(const TYPE *lhs_data, const TYPE *rhs_data, const idx_t count) {
+		TYPE max_l = 0;
+		TYPE max_r = 0;
+		for (idx_t i = 0; i < count; i++) {
+			max_l = std::max(max_l, std::abs(lhs_data[i]));
+			max_r = std::max(max_r, std::abs(rhs_data[i]));
+		}
+		if (max_l == 0 || max_r == 0 || !std::isfinite(max_l) || !std::isfinite(max_r)) {
+			// the similarity is undefined for zero and infinite vectors
+			return std::numeric_limits<TYPE>::quiet_NaN();
+		}
+		TYPE distance = 0;
+		TYPE norm_l = 0;
+		TYPE norm_r = 0;
+		for (idx_t i = 0; i < count; i++) {
+			const auto x = lhs_data[i] / max_l;
+			const auto y = rhs_data[i] / max_r;
+			distance += x * y;
+			norm_l += x * x;
+			norm_r += y * y;
+		}
+		return Clamp(distance / std::sqrt(norm_l * norm_r));
 	}
 };
 

@@ -14,11 +14,11 @@ CALL dbgen(sf=1, suffix='_normal');
 CALL enable_logging('FileSystem', storage_path='${BENCHMARK_DIR}/parquet_q1_with_logging')
 
 run
-COPY lineitem_normal TO '${BENCHMARK_DIR}/parquet_q1_with_logging.parquet';
+COPY (FROM lineitem_normal LIMIT 600000) TO '${BENCHMARK_DIR}/parquet_q1_with_logging.parquet';
 CREATE OR REPLACE VIEW lineitem AS SELECT * FROM read_parquet('${BENCHMARK_DIR}/parquet_q1_with_logging.parquet');
 PRAGMA tpch(1)
 
 cleanup
 CALL truncate_duckdb_logs()
 
-result extension/tpch/dbgen/answers/sf1/q01.csv
+result benchmark/micro/logger/logging_overhead/answers/q1_600k.csv

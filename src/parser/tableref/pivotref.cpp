@@ -138,99 +138,6 @@ PivotColumnEntry PivotColumnEntry::Copy() const {
 	return result;
 }
 
-static bool TryFoldConstantForBackwardsCompatibility(const ParsedExpression &expr, Value &value) {
-	switch (expr.GetExpressionType()) {
-	case ExpressionType::FUNCTION: {
-		auto &function = expr.Cast<FunctionExpression>();
-		if (function.FunctionName() == "struct_pack") {
-			identifier_set_t unique_names;
-			child_list_t<Value> values;
-			values.reserve(function.GetArguments().size());
-			for (const auto &child : function.GetArguments()) {
-				if (!unique_names.insert(child.GetExpression().GetAlias()).second) {
-					return false;
-				}
-				Value child_value;
-				if (!TryFoldConstantForBackwardsCompatibility(child.GetExpression(), child_value)) {
-					return false;
-				}
-				values.emplace_back(child.GetExpression().GetAlias(), std::move(child_value));
-			}
-			value = Value::STRUCT(std::move(values));
-			return true;
-		} else if (function.FunctionName() == "list_value") {
-			vector<Value> values;
-			values.reserve(function.GetArguments().size());
-			for (const auto &child : function.GetArguments()) {
-				Value child_value;
-				if (!TryFoldConstantForBackwardsCompatibility(child.GetExpression(), child_value)) {
-					return false;
-				}
-				values.emplace_back(std::move(child_value));
-			}
-
-			// figure out child type
-			LogicalType child_type(LogicalTypeId::SQLNULL);
-			for (auto &child_value : values) {
-				child_type = LogicalType::DefaultForceMaxLogicalType(child_type, child_value.type());
-			}
-
-			// finally create the list
-			value = Value::LIST(child_type, values);
-			return true;
-		} else if (function.FunctionName() == "map") {
-			Value keys;
-			if (!TryFoldConstantForBackwardsCompatibility(function.GetArguments()[0].GetExpression(), keys)) {
-				return false;
-			}
-
-			Value values;
-			if (!TryFoldConstantForBackwardsCompatibility(function.GetArguments()[1].GetExpression(), values)) {
-				return false;
-			}
-
-			vector<Value> keys_unpacked = ListValue::GetChildren(keys);
-			vector<Value> values_unpacked = ListValue::GetChildren(values);
-
-			value = Value::MAP(ListType::GetChildType(keys.type()), ListType::GetChildType(values.type()),
-			                   keys_unpacked, values_unpacked);
-			return true;
-		} else {
-			return false;
-		}
-	}
-	case ExpressionType::VALUE_CONSTANT: {
-		auto &constant = expr.Cast<ConstantExpression>();
-		value = constant.GetValue();
-		return true;
-	}
-	case ExpressionType::OPERATOR_CAST: {
-		auto &cast = expr.Cast<CastExpression>();
-		Value dummy_value;
-		if (!TryFoldConstantForBackwardsCompatibility(cast.Child(), dummy_value)) {
-			return false;
-		}
-
-		// Try to default bind cast
-		auto cast_type = UnboundType::TryDefaultBind(cast.TargetType());
-
-		if (cast_type.id() == LogicalTypeId::INVALID || cast_type.id() == LogicalTypeId::UNBOUND) {
-			return false;
-		}
-
-		string error_message;
-		auto cast_value = dummy_value.DefaultTryCastAs(cast_type, &error_message);
-		if (!cast_value) {
-			return false;
-		}
-		value = std::move(*cast_value);
-		return true;
-	}
-	default:
-		return false;
-	}
-}
-
 static bool TryFoldForBackwardsCompatibility(const unique_ptr<ParsedExpression> &expr, vector<Value> &values) {
 	if (!expr) {
 		return true;
@@ -257,14 +164,12 @@ static bool TryFoldForBackwardsCompatibility(const unique_ptr<ParsedExpression> 
 		}
 		return true;
 	}
-	default: {
-		Value val;
-		if (!TryFoldConstantForBackwardsCompatibility(*expr, val)) {
-			return false;
-		}
-		values.push_back(std::move(val));
+	case ExpressionType::VALUE_CONSTANT: {
+		values.push_back(expr->Cast<ConstantExpression>().GetLiteral().ToValue());
 		return true;
 	}
+	default:
+		return false;
 	}
 }
 

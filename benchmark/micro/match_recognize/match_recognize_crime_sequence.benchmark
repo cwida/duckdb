@@ -1,0 +1,41 @@
+# name: benchmark/micro/match_recognize/match_recognize_crime_sequence.benchmark
+# description: Three related crime reports separated by unconstrained ones, within a time and area box
+# group: [match_recognize]
+
+# The data is the Chicago crime reports used by the row pattern recognition benchmark in Zhu,
+# Huang and Chaudhuri, "High-Performance Row Pattern Recognition Using Joins", PVLDB 16(5), 2023,
+# cut at that paper's June 2020 boundary and projected to the columns its queries read.
+#
+# This is that paper's headline query. It runs over a few thousand reports rather than all 7.2M
+# because the cost grows faster than the square of the row count: 2k rows take 0.5s, 4k take 3s and
+# 20k take 347s. Every report can start a match, Z is unconstrained, and the conditions of B and M
+# are relative to R - a condition that reads another variable depends on the rows matched so far, so
+# the matcher cannot reuse the states it has already walked. That is the cost the paper set out to
+# remove by filtering with joins first, and it is the reason this benchmark is capped.
+
+require httpfs
+
+name MatchRecognize Crime Sequence
+group micro
+subgroup match_recognize
+
+load
+CREATE TABLE crimes AS
+    SELECT * FROM read_parquet('http://blobs.duckdb.org/data/crimes.parquet') ORDER BY datetime LIMIT 4000;
+
+run
+SELECT count(*) FROM crimes MATCH_RECOGNIZE(
+    ORDER BY datetime
+    MEASURES R.id AS rid, B.id AS bid, M.id AS mid, count(Z.id) AS gap
+    ONE ROW PER MATCH
+    AFTER MATCH SKIP TO NEXT ROW
+    PATTERN (R Z* B Z* M)
+    DEFINE R AS R.primary_type = 'ROBBERY',
+           B AS B.primary_type = 'BATTERY'
+               AND B.lon BETWEEN R.lon - 0.05 AND R.lon + 0.05
+               AND B.lat BETWEEN R.lat - 0.02 AND R.lat + 0.02,
+           M AS M.primary_type = 'MOTOR VEHICLE THEFT'
+               AND M.lon BETWEEN R.lon - 0.05 AND R.lon + 0.05
+               AND M.lat BETWEEN R.lat - 0.02 AND R.lat + 0.02
+               AND M.datetime - R.datetime <= INTERVAL '30' MINUTE
+);

@@ -1,0 +1,80 @@
+# name: test/sql/constraints/foreignkey/test_fk_create_or_replace.test
+# description: Test replacing tables with foreign key constraints
+# group: [foreignkey]
+
+statement ok
+CREATE TABLE parent (id INTEGER PRIMARY KEY)
+
+statement ok
+INSERT INTO parent VALUES (1), (2)
+
+statement ok
+CREATE TABLE child (fk INTEGER REFERENCES parent(id))
+
+# a table that is still referenced by a foreign key cannot be replaced
+statement error
+CREATE OR REPLACE TABLE parent (id INTEGER PRIMARY KEY)
+----
+<REGEX>:Catalog Error.*table is main key table of the table.*
+
+# rolling back the replace restores the foreign key reference in the parent table
+statement ok
+BEGIN
+
+statement ok
+CREATE OR REPLACE TABLE child (fk INTEGER)
+
+statement ok
+ROLLBACK
+
+statement error
+DROP TABLE parent
+----
+<REGEX>:Catalog Error.*table is main key table of the table.*
+
+# replacing the child removes the foreign key reference from the parent table
+statement ok
+CREATE OR REPLACE TABLE child (fk INTEGER)
+
+statement ok
+DELETE FROM parent WHERE id = 1
+
+statement ok
+DROP TABLE parent
+
+statement ok
+DROP TABLE child
+
+# replacing the child with a table that still references the parent keeps the reference
+statement ok
+CREATE TABLE parent (id INTEGER PRIMARY KEY)
+
+statement ok
+CREATE TABLE child (fk INTEGER REFERENCES parent(id))
+
+statement ok
+CREATE OR REPLACE TABLE child (fk INTEGER REFERENCES parent(id))
+
+statement error
+DROP TABLE parent
+----
+<REGEX>:Catalog Error.*table is main key table of the table.*
+
+statement ok
+DROP TABLE child
+
+statement ok
+DROP TABLE parent
+
+# CREATE OR REPLACE TABLE ... AS SELECT removes the foreign key reference from the parent table
+statement ok
+CREATE TABLE parent (id INTEGER PRIMARY KEY)
+
+statement ok
+CREATE TABLE child (fk INTEGER REFERENCES parent(id))
+
+statement ok
+CREATE OR REPLACE TABLE child AS SELECT 1 AS fk
+
+statement ok
+DROP TABLE parent

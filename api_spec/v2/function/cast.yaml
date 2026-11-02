@@ -24,7 +24,7 @@ enums:
       (SQL TRY_CAST, and implicit casts the engine probes speculatively)
       tolerates per-row failures: the callback writes NULL for the rows it
       could not convert instead of aborting. Read with
-      `[[cast_function_exec_get_mode]]`.
+      `[[cast_function_exec_get_mode]]`, and passed to `[[vector_cast]]`.
     values:
       CAST_MODE_NORMAL:
         value: 0
@@ -39,10 +39,9 @@ enums:
 handles:
   cast_function:
     description: |
-      An owned opaque handle to a cast function being built. Created with `[[cast_function_create_with_connection]]`
-      or `[[cast_function_create_with_extension]]`, configured with the setter functions (e.g.
+      An owned opaque handle to a cast function being built. Created with `[[cast_function_create]]`, configured with the setter functions (e.g.
       `[[cast_function_set_source_type]]`, `[[cast_function_set_exec_callback]]`, etc.), made available with
-      `[[cast_function_register]]`, and destroyed with `[[cast_function_destroy]]`.
+      `[[connection_register_cast_function]]` or `[[extension_register_cast_function]]`, and destroyed with `[[cast_function_destroy]]`.
 
   cast_function_exec_info:
     description: |
@@ -75,46 +74,23 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   # Constructors
   #---------------------------------------------------------------------------------------------------------------------
-  cast_function_create_with_connection:
+  cast_function_create:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
-      Creates a new cast function that will be registered on the connection's database.
+      Creates a new cast function through a factory.
 
-      The function starts out empty: configure it with the setter functions (e.g.
-      `[[cast_function_set_source_type]]`, `[[cast_function_set_exec_callback]]`, etc.), then make it available
-      with `[[cast_function_register]]`. The caller owns the returned handle and must destroy it with
+      The function starts out empty: configure it with the setter functions (e.g. `[[cast_function_set_source_type]]`,
+      `[[cast_function_set_exec_callback]]`, etc.), then make it available with `[[connection_register_cast_function]]` or `[[extension_register_cast_function]]`. The caller owns the returned handle and must destroy it with
       `[[cast_function_destroy]]`, also after registration.
-    parameters:
-      connection:
-        type: connection
-        description: The connection to create the function in.
-      function:
-        type: cast_function
-        indirection: 1
-        kind: OUT
-        description: On success, receives the newly created cast function. Owned by the caller.
-      err:
-        type: error_info
-        indirection: 1
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
-    return_type: ERROR
 
-  cast_function_create_with_extension:
-    lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
-    description: |
-      Creates a new cast function that will be registered on the loading extension's database.
-
-      Use this from an extension load callback, where an extension handle is available. The function starts out
-      empty: configure it with the setter functions (e.g. `[[cast_function_set_source_type]]`,
-      `[[cast_function_set_exec_callback]]`, etc.), then make it available with `[[cast_function_register]]`.
-      The caller owns the returned handle and must destroy it with `[[cast_function_destroy]]`, also after
-      registration.
+      The cast function can only be registered on the database the factory belongs to.
+    role: constructor
+    belongs_to: cast_function
     parameters:
-      extension:
-        type: extension
-        description: The extension to create the function in.
+      factory:
+        type: factory
+        description: The factory to create the cast function through.
       function:
         type: cast_function
         indirection: 1
@@ -131,7 +107,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   cast_function_set_source_type:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Sets the type the cast converts from.
 
@@ -152,7 +128,7 @@ functions:
 
   cast_function_set_target_type:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Sets the type the cast converts to.
 
@@ -173,7 +149,7 @@ functions:
 
   cast_function_set_implicit_cast_cost:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Sets what it costs to apply this cast implicitly.
 
@@ -196,7 +172,7 @@ functions:
 
   cast_function_set_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Sets arbitrary user data on the cast function.
 
@@ -220,7 +196,7 @@ functions:
 
   cast_function_set_exec_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Sets the exec callback of the cast function.
 
@@ -244,7 +220,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   cast_function_exec_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: Retrieves the user data set via `[[cast_function_set_user_data]]`.
     parameters:
       info:
@@ -263,7 +239,7 @@ functions:
 
   cast_function_exec_get_row_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Returns how many rows this execution must convert.
 
@@ -287,7 +263,7 @@ functions:
 
   cast_function_exec_get_input:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Retrieves the input vector holding the values to convert.
 
@@ -310,7 +286,7 @@ functions:
 
   cast_function_exec_get_output:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Retrieves the output vector the exec callback must write into.
 
@@ -333,7 +309,7 @@ functions:
 
   cast_function_exec_get_mode:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Returns the mode the cast is being executed in.
 
@@ -358,25 +334,57 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   # Register
   #---------------------------------------------------------------------------------------------------------------------
-  cast_function_register:
+  connection_register_cast_function:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Registers the cast function, making it available to CAST and TRY_CAST.
 
-      The function is registered on the target given at creation: the connection's database or the loading
-      extension. Registration requires a source type, a target type and an exec callback; both types must be
-      fully defined concrete types. Registering a cast for a pair that already has one replaces it. The caller
-      still owns the handle after registration and must destroy it with `[[cast_function_destroy]]`, which does
-      not affect the registered function.
+      The cast is registered on the connection's database and takes effect immediately for every connection; it is not
+      part of the connection's transaction, so a rollback does not undo it. Registration requires a source type, a
+      target type and an exec callback; both types must be fully defined concrete types. Registering a cast for a pair
+      that already has one replaces it. The cast function must have been created through a factory of the same database.
+      The caller still owns the handle after registration and must destroy it with `[[cast_function_destroy]]`, which
+      does not affect the registered function.
+    role: method
+    belongs_to: connection
     parameters:
+      conn:
+        type: connection
+        description: The connection to register on.
       function:
         type: cast_function
-        description: The function to register.
+        description: The cast function to register.
       err:
         type: error_info
         indirection: 1
-        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
+    return_type: ERROR
+
+  extension_register_cast_function:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
+    description: |
+      Registers the cast function, making it available to CAST and TRY_CAST.
+
+      The cast is registered on the loading extension's database. Use this from the extension's load callback.
+      Registration requires a source type, a target type and an exec callback; both types must be fully defined concrete
+      types. Registering a cast for a pair that already has one replaces it. The cast function must have been created
+      through a factory of the same database. The caller still owns the handle after registration and must destroy it
+      with `[[cast_function_destroy]]`, which does not affect the registered function.
+    role: method
+    belongs_to: extension
+    parameters:
+      extension:
+        type: extension
+        description: The loading extension.
+      function:
+        type: cast_function
+        description: The cast function to register.
+      err:
+        type: error_info
+        indirection: 1
+        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
     return_type: ERROR
 
   #---------------------------------------------------------------------------------------------------------------------
@@ -384,7 +392,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   cast_function_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-09-02" ]
+      - [ "unstable", "v2.0.0", "2026-09-02" ]
     description: |
       Destroys the cast function, releasing its resources.
 

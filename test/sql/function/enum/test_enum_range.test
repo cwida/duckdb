@@ -34,6 +34,26 @@ SELECT enum_range_boundary('orange'::rainbow, NULL)
 ----
 [orange, yellow, green, blue, purple]
 
+query I
+SELECT enum_range_boundary(NULL, NULL::rainbow)
+----
+[red, orange, yellow, green, blue, purple]
+
+query I
+SELECT enum_range_boundary(NULL::rainbow, NULL)
+----
+[red, orange, yellow, green, blue, purple]
+
+query I
+SELECT enum_range_boundary(NULL::rainbow, NULL::rainbow)
+----
+[red, orange, yellow, green, blue, purple]
+
+query I
+SELECT enum_range_boundary(NULL::rainbow, 'orange'::rainbow)
+----
+[red, orange]
+
 statement error
 SELECT enum_range_boundary('orange'::rainbow, 'brl'::currency)
 ----

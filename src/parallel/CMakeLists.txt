@@ -17,6 +17,8 @@ add_library_unity(
   pipeline_initialize_event.cpp
   pipeline_prepare_finish_event.cpp
   pipeline_schedule.cpp
+  progress_verifier.cpp
+  runtime_filter_schedule.cpp
   scan_read_ahead.cpp
   task_executor.cpp
   task_notifier.cpp

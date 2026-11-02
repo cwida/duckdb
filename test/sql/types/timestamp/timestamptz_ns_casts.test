@@ -1,0 +1,25 @@
+# name: test/sql/types/timestamp/timestamptz_ns_casts.test
+# description: Casts from TIMESTAMPTZ_NS to the millisecond and second timestamp types
+# group: [timestamp]
+
+# an inline relation rather than a table: a persisted TIMESTAMPTZ_NS column cannot be read by
+# older DuckDB versions, which the storage compatibility run checks
+query TT
+SELECT CAST(t AS TIMESTAMP_MS), CAST(t AS TIMESTAMP_S)
+FROM (VALUES (CAST('2020-01-02 03:04:05.123456789+00' AS TIMESTAMPTZ_NS)),
+             (CAST('1969-12-31 23:59:59.123456789+00' AS TIMESTAMPTZ_NS)),
+             (NULL::TIMESTAMPTZ_NS)) ts(t)
+----
+2020-01-02 03:04:05.123	2020-01-02 03:04:05
+1969-12-31 23:59:59.123	1969-12-31 23:59:59
+NULL	NULL
+
+query T
+SELECT CAST('infinity'::TIMESTAMPTZ_NS AS TIMESTAMP_MS)
+----
+infinity
+
+query T
+SELECT CAST('-infinity'::TIMESTAMPTZ_NS AS TIMESTAMP_S)
+----
+-infinity

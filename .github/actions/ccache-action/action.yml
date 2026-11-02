@@ -12,11 +12,27 @@ inputs:
 runs:
   using: "composite"
   steps:
+     - name: Resolve Ccache key
+       id: cache-key
+       shell: bash
+       env:
+         CACHE_KEY: ${{ inputs.key }}
+         DUCKDB_VERSION: ${{ env.DUCKDB_VERSION }}
+       run: |
+         set -euo pipefail
+         if [[ "$DUCKDB_VERSION" =~ ^v([0-9]+\.[0-9]+)\. ]]; then
+           release_line="${BASH_REMATCH[1]}"
+         else
+           release_line="unversioned"
+         fi
+         echo "key=duckdb-${release_line}-${CACHE_KEY}" >> "$GITHUB_OUTPUT"
+
      - name: Setup Ccache
        if: ${{ github.workflow != 'NightlyTests' }}
        uses: hendrikmuhs/ccache-action@v1.2.22
        with:
-         key: ${{ inputs.key }}
+         key: ${{ steps.cache-key.outputs.key }}
+         restore-keys: ${{ steps.cache-key.outputs.key }}
          save: ${{ inputs.save }}
          # Dump verbose ccache statistics report at end of CI job.
          verbose: 1

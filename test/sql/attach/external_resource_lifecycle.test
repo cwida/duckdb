@@ -1,0 +1,230 @@
+# name: test/sql/attach/external_resource_lifecycle.test
+# description: CREATE / REGISTER / DESTROY EXTERNAL RESOURCE — provision + register + teardown lifecycle
+# group: [attach]
+
+require quack
+
+# Capture recipe calls so we can prove the deleter fired (the deleter runs on an internal connection).
+statement ok
+CALL enable_logging('ExternalResource', storage='memory');
+
+statement ok
+CALL quack_serve(token='test_token');
+
+statement ok
+CREATE MACRO qk_create(p) AS TABLE SELECT MAP {'id': 'q1'} AS handle;
+
+statement ok
+CREATE MACRO qk_status(h) AS TABLE
+  SELECT 'ready' AS state, MAP {'uri': 'localhost', 'attached_db_type': 'quack', 'token': 'test_token'} AS result;
+
+statement ok
+CREATE MACRO qk_destroy(h) AS TABLE SELECT 'gone' AS status;
+
+statement ok
+CALL register_external_resource_type('quack@local', kind := 'catalog', create_function := 'qk_create',
+    status_function := 'qk_status', destroy_function := 'qk_destroy');
+
+# CREATE provisions and registers under the name.
+statement ok
+CREATE EXTERNAL RESOURCE 'quack@local' AS beefy;
+
+# A second CREATE under the same name errors (first-wins).
+statement error
+CREATE EXTERNAL RESOURCE 'quack@local' AS beefy;
+----
+<REGEX>:.*already registered.*
+
+# DESTROY tears the resource down and deregisters.
+statement ok
+DESTROY EXTERNAL RESOURCE beefy;
+
+# DESTROY again errors: it is no longer registered (proves DESTROY removed it).
+statement error
+DESTROY EXTERNAL RESOURCE beefy;
+----
+<REGEX>:.*not registered.*
+
+# REGISTER registers an already-provisioned resource from its handle (skips create, resolves via status).
+statement ok
+REGISTER EXTERNAL RESOURCE 'quack@local' AS adopted FROM MAP {'id': 'q1'};
+
+statement ok
+DESTROY EXTERNAL RESOURCE adopted;
+
+# The deleter fired once per DESTROY, labelled with the registered name.
+query II
+SELECT resource_name, outcome FROM duckdb_logs_parsed('ExternalResource')
+WHERE operation = 'destroy' ORDER BY timestamp;
+----
+beefy	ok
+adopted	ok
+
+# A durable resource must be named: CREATE without AS is rejected at bind (before provisioning).
+statement error
+CREATE EXTERNAL RESOURCE 'quack@local';
+----
+<REGEX>:.*requires a name.*
+
+# SHOW / duckdb_external_resources() lists the locally registered resources.
+statement ok
+CREATE EXTERNAL RESOURCE 'quack@local' AS r1;
+
+statement ok
+CREATE EXTERNAL RESOURCE 'quack@local' AS r2;
+
+query IIII
+SELECT name, type, uri, attached_db_type FROM duckdb_external_resources() ORDER BY name;
+----
+r1	quack@local	localhost	quack
+r2	quack@local	localhost	quack
+
+# DESTROY deregisters, so it drops out of the listing.
+statement ok
+DESTROY EXTERNAL RESOURCE r1;
+
+query I
+SELECT name FROM duckdb_external_resources() ORDER BY name;
+----
+r2
+
+# SHOW EXTERNAL RESOURCES is sugar over the function; SHOW ALL adds the discovery union. The 'quack@local'
+# type has no `list` callback, so ALL returns the same locally-managed rows.
+statement ok
+SHOW EXTERNAL RESOURCES;
+
+query IIT
+SELECT name, type, managed FROM duckdb_external_resources(discover := true) ORDER BY name;
+----
+r2	quack@local	true
+
+statement ok
+DESTROY EXTERNAL RESOURCE r2;
+
+# Reference form: `ATTACH TO EXTERNAL RESOURCE <name>` (a bare identifier) borrows a registered
+# resource — attach to it without owning its teardown.
+statement ok
+CREATE EXTERNAL RESOURCE 'quack@local' AS shared;
+
+statement ok
+ATTACH TO EXTERNAL RESOURCE shared AS borrow1;
+
+query I
+SELECT count(*) FROM duckdb_databases() WHERE database_name = 'borrow1';
+----
+1
+
+statement ok
+DETACH borrow1;
+
+# The borrowed resource survives the detach (DETACH does not tear down what it only borrowed).
+query I
+SELECT count(*) FROM duckdb_external_resources() WHERE name = 'shared';
+----
+1
+
+# It can be borrowed again — multiple non-owning attachments.
+statement ok
+ATTACH TO EXTERNAL RESOURCE shared AS borrow2;
+
+statement ok
+DETACH borrow2;
+
+# Referencing an unregistered name errors.
+statement error
+ATTACH TO EXTERNAL RESOURCE ghost AS z;
+----
+<REGEX>:.*no external resource named.*
+
+# DESTROY tears the shared resource down — teardown is owned by DESTROY, not by any borrower.
+statement ok
+DESTROY EXTERNAL RESOURCE shared;
+
+query I
+SELECT count(*) FROM duckdb_external_resources() WHERE name = 'shared';
+----
+0
+
+# DESTROY is never blocked by a live borrower: it is the operation that stops the meter, so it must not
+# depend on a DETACH that can itself be refused. It cleans up after itself instead — the attachments that
+# borrowed the resource are detached best-effort, since they now point at nothing.
+statement ok
+CREATE EXTERNAL RESOURCE 'quack@local' AS busy;
+
+statement ok
+ATTACH TO EXTERNAL RESOURCE busy AS still_here1;
+
+statement ok
+ATTACH TO EXTERNAL RESOURCE busy AS still_here2;
+
+# A second resource with its own borrower — DESTROY must only detach ITS borrowers.
+statement ok
+CREATE EXTERNAL RESOURCE 'quack@local' AS bystander;
+
+statement ok
+ATTACH TO EXTERNAL RESOURCE bystander AS untouched;
+
+statement ok
+DESTROY EXTERNAL RESOURCE busy;
+
+# Both borrowers of 'busy' are gone; the unrelated borrow survives.
+query I
+SELECT count(*) FROM duckdb_databases() WHERE database_name IN ('still_here1', 'still_here2');
+----
+0
+
+query I
+SELECT count(*) FROM duckdb_databases() WHERE database_name = 'untouched';
+----
+1
+
+statement ok
+DESTROY EXTERNAL RESOURCE bystander;
+
+query I
+SELECT count(*) FROM duckdb_databases() WHERE database_name = 'untouched';
+----
+0
+
+# A borrower that DETACH refuses is left attached rather than force-removed: DETACH will not detach a
+# connection's default database. DESTROY still goes through, and the stale attachment is the user's to
+# clean up. (It is not marked invalid: that would also block the USE/DETACH needed to recover.)
+statement ok
+CREATE EXTERNAL RESOURCE 'quack@local' AS pinned;
+
+statement ok
+ATTACH TO EXTERNAL RESOURCE pinned AS in_use;
+
+statement ok
+USE in_use;
+
+statement ok
+DESTROY EXTERNAL RESOURCE pinned;
+
+# DESTROY went through — the resource is deregistered.
+query I
+SELECT count(*) FROM duckdb_external_resources() WHERE name = 'pinned';
+----
+0
+
+# The default database could not be detached, so it is still attached (pointing at nothing now).
+query I
+SELECT count(*) FROM duckdb_databases() WHERE database_name = 'in_use';
+----
+1
+
+# The connection is not wedged: USE and DETACH both still work, so the user can clean up. Switch to a
+# scratch database rather than a named one -- the default database differs between test configs.
+statement ok
+ATTACH ':memory:' AS scratch;
+
+statement ok
+USE scratch;
+
+statement ok
+DETACH in_use;
+
+query I
+SELECT count(*) FROM duckdb_databases() WHERE database_name = 'in_use';
+----
+0

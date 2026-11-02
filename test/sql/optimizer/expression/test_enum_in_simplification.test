@@ -130,7 +130,129 @@ WHERE sym NOT IN (
 GROUP BY sym 
 ORDER BY sym;
 ----
-physical_plan	<REGEX>:.*NOT constant_or_null.*
+physical_plan	<!REGEX>:.*constant_or_null.*
+
+#
+# Test full ENUM domain
+#
+query II
+explain
+SELECT count(*)
+FROM quote
+WHERE sym IN (
+	'0',
+	'1',
+	'2',
+	'3',
+	'4',
+	'5',
+	'6',
+	'7',
+	'8',
+	'9'
+)
+----
+physical_plan	<!REGEX>:.*constant_or_null.*
+
+query II
+explain
+SELECT count(*)
+FROM quote
+WHERE sym NOT IN (
+	'0',
+	'1',
+	'2',
+	'3',
+	'4',
+	'5',
+	'6',
+	'7',
+	'8',
+	'9'
+)
+----
+physical_plan	<REGEX>:.*EMPTY_RESULT.*
+
+query II
+explain
+SELECT count(*)
+FROM quote
+WHERE NOT (sym IN (
+	'0',
+	'1',
+	'2',
+	'3',
+	'4',
+	'5',
+	'6',
+	'7',
+	'8',
+	'9'
+))
+----
+physical_plan	<REGEX>:.*EMPTY_RESULT.*
+
+query II
+SELECT
+	sym NOT IN (
+		'0',
+		'1',
+		'2',
+		'3',
+		'4',
+		'5',
+		'6',
+		'7',
+		'8',
+		'9'
+	),
+	NOT (sym IN (
+		'0',
+		'1',
+		'2',
+		'3',
+		'4',
+		'5',
+		'6',
+		'7',
+		'8',
+		'9'
+	))
+FROM (VALUES ('0'::sym_enum), ('1'::sym_enum)) tbl(sym)
+ORDER BY sym
+----
+false	false
+false	false
+
+#
+# Test full ENUM domain with DML CTE
+#
+statement ok
+CREATE TABLE dml_quote(sym sym_enum);
+
+statement ok
+INSERT INTO dml_quote VALUES ('0'), ('1');
+
+query I
+WITH ins AS (
+	INSERT INTO dml_quote VALUES (NULL) RETURNING *
+)
+SELECT count(*)
+FROM dml_quote
+WHERE sym IN (
+	'0',
+	'1',
+	'2',
+	'3',
+	'4',
+	'5',
+	'6',
+	'7',
+	'8',
+	'9'
+)
+----
+2
 
 #
 # Test no valid strings and NULL
@@ -170,7 +292,7 @@ FROM (
 	WHERE n IS NOT NULL
 ) tbl;
 ----
-physical_plan	<REGEX>:.*NOT.*constant_or_null.*IS.*NOT.*NULL.*
+physical_plan	<REGEX>:.*constant_or_null.*IS.*NOT.*NULL.*
 
 query II
 SELECT count(*), max(n) 
@@ -182,11 +304,203 @@ FROM (
 ----
 100	true
 
+query I
+SELECT count(*)
+FROM quote
+WHERE (NOT constant_or_null(true, sym)) IS NULL
+----
+1
+
+query I
+SELECT count(*)
+FROM quote
+WHERE sym IN (
+	'0',
+	'1',
+	'2',
+	'3',
+	'4',
+	'5',
+	'6',
+	'7',
+	'8',
+	'9'
+)
+----
+100
+
+query II
+explain
+SELECT count(*)
+FROM quote
+WHERE sym IN (
+	'0',
+	'1',
+	'2',
+	'3',
+	'4',
+	'5',
+	'6',
+	'7',
+	'8',
+	'9'
+)
+----
+physical_plan	<REGEX>:.*IS NOT NULL.*
+
+query II
+explain
+SELECT count(*)
+FROM quote
+WHERE sym NOT IN (
+	'0',
+	'1',
+	'2',
+	'3',
+	'4',
+	'5',
+	'6',
+	'7',
+	'8',
+	'9'
+)
+----
+physical_plan	<REGEX>:.*EMPTY_RESULT.*
+
+query I
+SELECT count(*)
+FROM quote
+WHERE sym NOT IN (
+	'0',
+	'1',
+	'2',
+	'3',
+	'4',
+	'5',
+	'6',
+	'7',
+	'8',
+	'9'
+)
+----
+0
+
+query III
+SELECT
+	sym IS NULL,
+	sym NOT IN (
+		'0',
+		'1',
+		'2',
+		'3',
+		'4',
+		'5',
+		'6',
+		'7',
+		'8',
+		'9'
+	),
+	NOT (sym IN (
+		'0',
+		'1',
+		'2',
+		'3',
+		'4',
+		'5',
+		'6',
+		'7',
+		'8',
+		'9'
+	))
+FROM (VALUES ('0'::sym_enum), (NULL::sym_enum)) tbl(sym)
+ORDER BY sym IS NULL
+----
+false	false	false
+true	NULL	NULL
+
+query III
+SELECT
+	sym IS NULL,
+	sym IN (
+		NULL,
+		'0',
+		'1',
+		'2',
+		'3',
+		'4',
+		'5',
+		'6',
+		'7',
+		'8',
+		'9'
+	),
+	sym NOT IN (
+		NULL,
+		'0',
+		'1',
+		'2',
+		'3',
+		'4',
+		'5',
+		'6',
+		'7',
+		'8',
+		'9'
+	)
+FROM (VALUES ('0'::sym_enum), (NULL::sym_enum)) tbl(sym)
+ORDER BY sym IS NULL
+----
+false	true	false
+true	NULL	NULL
+
+query III
+SELECT
+	sym IS NULL,
+	sym NOT IN (
+		NULL,
+		'0',
+		'1',
+		'2',
+		'3',
+		'4',
+		'5',
+		'6',
+		'7',
+		'8',
+		'9'
+	),
+	NOT (sym IN (
+		NULL,
+		'0',
+		'1',
+		'2',
+		'3',
+		'4',
+		'5',
+		'6',
+		'7',
+		'8',
+		'9'
+	))
+FROM (VALUES ('0'::sym_enum), (NULL::sym_enum)) tbl(sym)
+ORDER BY sym IS NULL
+----
+false	false	false
+true	NULL	NULL
+
 # Test comparisons
 query II
 EXPLAIN
 FROM quote
 WHERE sym = '0';
+----
+physical_plan	<!REGEX>:.*AS VARCHAR.*
+
+# Comparisons are simplified when the constant is on the left-hand side as well
+query II
+EXPLAIN
+FROM quote
+WHERE '0' = sym::VARCHAR;
 ----
 physical_plan	<!REGEX>:.*AS VARCHAR.*
 
@@ -238,4 +552,3 @@ FROM quote
 WHERE sym IS DISTINCT FROM '100';
 ----
 physical_plan	<!REGEX>:.*AS VARCHAR.*
-

@@ -21,6 +21,8 @@ class ClientContext;
 class Catalog;
 class DatabaseInstance;
 class CompressionInfo;
+class Expression;
+using const_expression_list_t = vector<reference<const Expression>>;
 enum class ExpressionType : uint8_t;
 
 struct SerializationData {
@@ -44,6 +46,7 @@ struct SerializationData {
 	stack<idx_t> enums;
 	stack<reference<bound_parameter_map_t>> parameter_data;
 	stack<const_reference<LogicalType>> types;
+	stack<const_reference<const_expression_list_t>> function_children;
 	stack<const_reference<CompressionInfo>> compression_infos;
 	duckdb::unordered_map<std::string, duckdb::stack<duckdb::reference<CustomData>>> customs;
 
@@ -236,6 +239,23 @@ inline void SerializationData::Unset<bound_parameter_map_t>() {
 template <>
 inline void SerializationData::Set(LogicalType &type) {
 	types.emplace(type);
+}
+
+template <>
+inline void SerializationData::Set(const const_expression_list_t &children) {
+	function_children.emplace(children);
+}
+
+template <>
+inline const const_expression_list_t &SerializationData::Get() {
+	AssertNotEmpty(function_children);
+	return function_children.top();
+}
+
+template <>
+inline void SerializationData::Unset<const_expression_list_t>() {
+	AssertNotEmpty(function_children);
+	function_children.pop();
 }
 
 template <>

@@ -19,6 +19,9 @@ class ManagedResultSet;
 //! LogicalColumnDataGet represents a scan operation from a ColumnDataCollection
 class LogicalColumnDataGet : public LogicalOperator {
 public:
+	LogicalPlanSQLExportResult ToSQL(LogicalPlanSQLExportContext &context,
+	                                 const LogicalPlanVerificationPath &path) override;
+
 	static constexpr const LogicalOperatorType TYPE = LogicalOperatorType::LOGICAL_CHUNK_GET;
 
 public:

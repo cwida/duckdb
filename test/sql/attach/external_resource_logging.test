@@ -1,0 +1,176 @@
+# name: test/sql/attach/external_resource_logging.test
+# description: ExternalResource log type — recipe create/status/destroy calls are logged on response
+# group: [attach]
+
+require quack
+
+statement ok
+CALL enable_logging('ExternalResource', storage='memory');
+
+statement ok
+CALL quack_serve(token='test_token');
+
+statement ok
+CREATE MACRO qk_create(p) AS TABLE SELECT MAP {'id': 'q1'} AS handle;
+
+statement ok
+CREATE MACRO qk_status(h) AS TABLE
+  SELECT 'ready' AS state, MAP {'uri': 'localhost', 'attached_db_type': 'quack', 'token': 'test_token'} AS result;
+
+statement ok
+CREATE MACRO qk_destroy(h) AS TABLE SELECT 'destroyed' AS status;
+
+statement ok
+CALL register_external_resource_type('quack@local', kind := 'catalog', create_function := 'qk_create',
+    status_function := 'qk_status', destroy_function := 'qk_destroy');
+
+# A registered resource's name is threaded to every operation, including the DESTROY-time destroy.
+statement ok
+CREATE EXTERNAL RESOURCE 'quack@local' AS yoooo;
+
+statement ok
+DESTROY EXTERNAL RESOURCE yoooo;
+
+# All three operations carry the resource type + name; status carries the returned state in extra_info;
+# all succeed so error is NULL.
+query IIIIII
+SELECT operation, outcome, coalesce(resource_type, '<null>'), coalesce(resource_name, '<null>'),
+       coalesce(error, '<null>'), extra_info['state']
+FROM duckdb_logs_parsed('ExternalResource')
+ORDER BY timestamp;
+----
+create	ok	quack@local	yoooo	<null>	NULL
+status	ok	quack@local	yoooo	<null>	ready
+destroy	ok	quack@local	yoooo	<null>	NULL
+
+# A scoped resource (ATTACH TO NEW) has no name of its own, so its log entries are labelled with the
+# database it backs — the only handle the user has on it.
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+ATTACH TO NEW TEMPORARY EXTERNAL RESOURCE 'quack@local' AS anon;
+
+statement ok
+DETACH anon;
+
+query II
+SELECT operation, resource_name FROM duckdb_logs_parsed('ExternalResource') ORDER BY timestamp;
+----
+create	anon
+status	anon
+destroy	anon
+
+# CONNECT has no alias to borrow, so there the resource stays unlabelled.
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+CONNECT TO NEW TEMPORARY EXTERNAL RESOURCE 'quack@local';
+
+statement ok
+DISCONNECT;
+
+query II
+SELECT operation, resource_name IS NULL FROM duckdb_logs_parsed('ExternalResource') ORDER BY timestamp;
+----
+create	true
+status	true
+destroy	true
+
+# A failing recipe call is logged with outcome 'error' and a non-NULL error message.
+statement ok
+CREATE MACRO qk_create_fail(p) AS TABLE SELECT CAST('boom' AS INTEGER) AS handle;
+
+statement ok
+CALL register_external_resource_type('quackfail@local', kind := 'catalog', create_function := 'qk_create_fail',
+    status_function := 'qk_status', destroy_function := 'qk_destroy');
+
+statement error
+ATTACH TO NEW TEMPORARY EXTERNAL RESOURCE 'quackfail@local' AS bad;
+----
+<REGEX>:.*create function.*failed.*
+
+query III
+SELECT operation, outcome, error IS NOT NULL
+FROM duckdb_logs_parsed('ExternalResource')
+WHERE resource_type = 'quackfail@local';
+----
+create	error	true
+
+# A resource whose status reports no uri cannot be attached. It is already provisioned by then and
+# nothing owns it yet, so the failed ATTACH reaps it rather than stranding it: destroy is logged.
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+CREATE MACRO nouri_status(h) AS TABLE SELECT 'ready' AS state, MAP {'foo': 'bar'} AS result;
+
+statement ok
+CALL register_external_resource_type('nouri@local', kind := 'compute', create_function := 'qk_create',
+    status_function := 'nouri_status', destroy_function := 'qk_destroy');
+
+statement error
+ATTACH TO NEW TEMPORARY EXTERNAL RESOURCE 'nouri@local' AS nouri;
+----
+<REGEX>:.*returned a NULL uri.*
+
+query II
+SELECT operation, outcome FROM duckdb_logs_parsed('ExternalResource') ORDER BY timestamp;
+----
+create	ok
+status	ok
+destroy	ok
+
+# Only ever reap what we created. REGISTER names a resource the caller merely takes over a handle to, so
+# when the same no-uri failure hits, the resource must be left alone -- destroying it would tear down
+# something provisioned elsewhere. Contrast with the CREATE case above, which does reap.
+statement ok
+CALL truncate_duckdb_logs();
+
+statement error
+REGISTER EXTERNAL RESOURCE 'nouri@local' AS adopted FROM MAP {'id': 'q1'};
+----
+<REGEX>:.*returned a NULL uri.*
+
+query I
+SELECT count(*) FROM duckdb_logs_parsed('ExternalResource') WHERE operation = 'destroy';
+----
+0
+
+# ATTACH OR REPLACE over a resource-owning attachment detaches the original, reaping its resource. The
+# teardown is eager -- it happens inside the transaction, not at commit -- and ROLLBACK does not bring
+# the resource back. This follows from ATTACH not being transactional: a plain ATTACH OR REPLACE loses
+# the attachment on rollback too, with no resource involved. Pinned because the consequence differs:
+# re-ATTACHing a file is trivial, a destroyed resource is not recoverable.
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+ATTACH TO NEW TEMPORARY EXTERNAL RESOURCE 'quack@local' AS repl_db;
+
+statement ok
+BEGIN;
+
+statement ok
+ATTACH OR REPLACE ':memory:' AS repl_db;
+
+# The replaced attachment's resource is already destroyed, before the transaction ends.
+query I
+SELECT count(*) FROM duckdb_logs_parsed('ExternalResource') WHERE operation = 'destroy';
+----
+1
+
+statement ok
+ROLLBACK;
+
+# ROLLBACK neither re-runs the teardown nor resurrects the resource, and the attachment is gone.
+query I
+SELECT count(*) FROM duckdb_logs_parsed('ExternalResource') WHERE operation = 'destroy';
+----
+1
+
+query I
+SELECT count(*) FROM duckdb_databases() WHERE database_name = 'repl_db';
+----
+0

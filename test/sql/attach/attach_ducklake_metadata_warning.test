@@ -1,0 +1,196 @@
+# name: test/sql/attach/attach_ducklake_metadata_warning.test
+# description: Attaching a DuckLake metadata catalog as a DuckDB database warns
+# group: [attach]
+
+require skip_reload
+
+statement ok
+ATTACH '{TEST_DIR}/lake.ducklake' AS lake
+
+statement ok
+CREATE TABLE lake.ducklake_metadata(key VARCHAR NOT NULL, value VARCHAR NOT NULL)
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH '{TEST_DIR}/plain.db' AS plain
+
+statement ok
+CREATE TABLE plain.t(i INTEGER)
+
+statement ok
+DETACH plain
+
+statement ok
+SET enable_logging = true
+
+statement ok
+ATTACH '{TEST_DIR}/lake.ducklake' AS lake
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE log_level = 'WARNING' AND contains(message, 'is a DuckLake metadata catalog')
+----
+1
+
+statement ok
+DETACH lake
+
+# no warning for an explicit TYPE duckdb, a hidden attach, or a database without DuckLake metadata
+statement ok
+CALL truncate_duckdb_logs()
+
+statement ok
+ATTACH '{TEST_DIR}/lake.ducklake' AS lake (TYPE duckdb)
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH 'duckdb:{TEST_DIR}/lake.ducklake' AS lake
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH '{TEST_DIR}/lake.ducklake' AS lake (HIDDEN)
+
+statement ok
+DETACH lake
+
+statement ok
+ATTACH '{TEST_DIR}/plain.db' AS plain
+
+statement ok
+DETACH plain
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE log_level = 'WARNING' AND contains(message, 'is a DuckLake metadata catalog')
+----
+0
+
+# the metadata table must be in the default schema
+statement ok
+ATTACH '{TEST_DIR}/other_schema.db' AS other
+
+statement ok
+CREATE SCHEMA other.s
+
+statement ok
+CREATE TABLE other.s.ducklake_metadata(key VARCHAR, value VARCHAR)
+
+statement ok
+DETACH other
+
+statement ok
+ATTACH '{TEST_DIR}/other_schema.db' AS other
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE log_level = 'WARNING' AND contains(message, 'is a DuckLake metadata catalog')
+----
+0
+
+
+statement ok
+DETACH other
+
+# the check does not leave a transaction open on the attached database
+statement ok
+BEGIN
+
+statement ok
+ATTACH '{TEST_DIR}/lake.ducklake' AS lake
+
+statement ok
+DETACH lake
+
+statement ok
+COMMIT
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE log_level = 'WARNING' AND contains(message, 'is a DuckLake metadata catalog')
+----
+1
+
+# a nested schema named after the default schema does not count
+statement ok
+CALL truncate_duckdb_logs()
+
+statement ok
+ATTACH '{TEST_DIR}/nested_schema.db' AS nested (STORAGE_VERSION 'v2.0.0')
+
+statement ok
+CREATE SCHEMA nested.s
+
+statement ok
+CREATE SCHEMA nested.s.main
+
+statement ok
+CREATE TABLE nested.s.main.ducklake_metadata(key VARCHAR, value VARCHAR)
+
+statement ok
+DETACH nested
+
+statement ok
+ATTACH '{TEST_DIR}/nested_schema.db' AS nested
+
+statement ok
+DETACH nested
+
+# a view named ducklake_metadata does not count
+statement ok
+ATTACH '{TEST_DIR}/view.db' AS v
+
+statement ok
+CREATE VIEW v.ducklake_metadata AS SELECT 'version' AS key, '1' AS value
+
+statement ok
+DETACH v
+
+statement ok
+ATTACH '{TEST_DIR}/view.db' AS v
+
+statement ok
+DETACH v
+
+# IF NOT EXISTS returning an existing attachment does not open the requested path
+statement ok
+ATTACH '{TEST_DIR}/lake.ducklake' AS lake (TYPE duckdb)
+
+statement ok
+ATTACH IF NOT EXISTS '{TEST_DIR}/missing.db' AS lake
+
+statement ok
+ATTACH IF NOT EXISTS '{TEST_DIR}/lake.ducklake' AS lake
+
+query I
+SELECT count(*) FROM duckdb_logs WHERE log_level = 'WARNING' AND contains(message, 'is a DuckLake metadata catalog')
+----
+0
+
+statement ok
+DETACH lake
+
+# with warnings_as_errors, only an actual DuckLake metadata catalog fails
+statement ok
+SET warnings_as_errors = true
+
+statement ok
+ATTACH '{TEST_DIR}/nested_schema.db' AS nested
+
+statement ok
+ATTACH '{TEST_DIR}/view.db' AS v
+
+statement ok
+ATTACH '{TEST_DIR}/lake.ducklake' AS lake (TYPE duckdb)
+
+statement ok
+ATTACH IF NOT EXISTS '{TEST_DIR}/missing.db' AS lake
+
+statement ok
+DETACH lake
+
+statement error
+ATTACH '{TEST_DIR}/lake.ducklake' AS lake
+----
+is a DuckLake metadata catalog

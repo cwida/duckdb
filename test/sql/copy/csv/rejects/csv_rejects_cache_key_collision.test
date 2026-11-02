@@ -1,0 +1,42 @@
+# name: test/sql/copy/csv/rejects/csv_rejects_cache_key_collision.test
+# description: Rejects table names that concatenate to the same string must not share a cache entry
+# group: [rejects]
+
+require skip_reload
+
+statement ok
+COPY (SELECT '42' UNION ALL SELECT 'bad_A') TO '{TEMP_DIR}/rejects_a.csv' (HEADER false);
+
+statement ok
+COPY (SELECT '99' UNION ALL SELECT 'bad_B') TO '{TEMP_DIR}/rejects_b.csv' (HEADER false);
+
+query I
+SELECT * FROM read_csv('{TEMP_DIR}/rejects_a.csv', columns={'col1':'INTEGER'},
+    store_rejects=true, rejects_scan='foo_bar', rejects_table='baz', auto_detect=false);
+----
+42
+
+query I
+SELECT * FROM read_csv('{TEMP_DIR}/rejects_b.csv', columns={'col1':'INTEGER'},
+    store_rejects=true, rejects_scan='foo', rejects_table='bar_baz', auto_detect=false);
+----
+99
+
+query T
+SELECT table_name FROM information_schema.tables
+WHERE table_name IN ('foo_bar', 'baz', 'foo', 'bar_baz') ORDER BY table_name;
+----
+bar_baz
+baz
+foo
+foo_bar
+
+query T
+SELECT csv_line FROM baz;
+----
+bad_A
+
+query T
+SELECT csv_line FROM bar_baz;
+----
+bad_B

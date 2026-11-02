@@ -135,8 +135,9 @@ static void JSONContainsFunction(DataChunk &args, ExpressionState &state, Vector
 }
 
 static void GetContainsFunctionInternal(ScalarFunctionSet &set, const LogicalType &lhs, const LogicalType &rhs) {
-	set.AddFunction(ScalarFunction({lhs, rhs}, LogicalType::BOOLEAN, JSONContainsFunction, nullptr, nullptr,
-	                               JSONFunctionLocalState::Init));
+	ScalarFunction fun({}, LogicalType::BOOLEAN, JSONContainsFunction, nullptr, nullptr, JSONFunctionLocalState::Init);
+	fun.GetSignature().AddParameter("haystack", lhs).AddParameter("needle", rhs);
+	set.AddFunction(fun);
 }
 
 ScalarFunctionSet JSONFunctions::GetContainsFunction() {

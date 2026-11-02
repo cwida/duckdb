@@ -1,0 +1,10 @@
+# name: test/sql/types/timestamp/timestamp_time_of_day_overflow.test
+# description: Test time of day extraction below the minimum timestamp
+# group: [timestamp]
+
+# The time of day used to be timestamp - days * MICROS_PER_DAY, and that
+# product overflows int64_t on the first day of the TIMESTAMP range.
+query I
+SELECT make_timestamp(-9223372036854775806)::TIME;
+----
+19:59:05.224194

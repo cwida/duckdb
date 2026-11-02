@@ -1,7 +1,7 @@
 [
     {
         "name": "age",
-        "parameters": "timestamp,timestamp",
+        "parameters": "timestamp1,timestamp2",
         "description": "Subtract arguments, resulting in the time difference between the two timestamps",
         "example": "age(TIMESTAMP '2001-04-10', TIMESTAMP '1992-09-20')",
         "type": "scalar_function_set"
@@ -23,7 +23,7 @@
     },
     {
         "name": "date_part",
-        "parameters": "ts",
+        "parameters": "part,ts",
         "description": "Get subfield (equivalent to extract)",
         "example": "date_part('minute', TIMESTAMP '1992-09-20 20:38:40')",
         "type": "scalar_function_set",

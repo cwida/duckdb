@@ -1,8 +1,8 @@
 #include "duckdb/optimizer/aggregate_rewrite.hpp"
 
-#include "duckdb/catalog/catalog_entry/aggregate_function_catalog_entry.hpp"
 #include "duckdb/function/aggregate/distributive_functions.hpp"
 #include "duckdb/function/function_binder.hpp"
+#include "duckdb/function/builtin_function_lookup.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
@@ -71,10 +71,7 @@ FrequencyAggregateFinalizeInput::FrequencyAggregateFinalizeInput(
 }
 
 static unique_ptr<BoundAggregateExpression> BindMinAggregate(ClientContext &context, unique_ptr<Expression> child) {
-	auto &catalog = Catalog::GetSystemCatalog(context);
-	auto &entry = catalog.GetEntry<AggregateFunctionCatalogEntry>(
-	    context, QualifiedName(catalog.GetName(), Identifier::DefaultSchema(), "min"));
-	const auto &function = entry.functions.GetFunctionByArguments(context, {child->GetReturnType()});
+	auto function = GetBuiltinAggregateFunction(context, MinFun::Name, {child->GetReturnType()});
 	FunctionBinder function_binder(context);
 	vector<unique_ptr<Expression>> children;
 	children.push_back(std::move(child));
@@ -88,13 +85,7 @@ static unique_ptr<Expression> CreateAggregateSortKey(ClientContext &context, con
 		sort_children.push_back(make_uniq<BoundConstantExpression>(Value(order.GetOrderModifier())));
 	}
 	FunctionBinder function_binder(context);
-	ErrorData error;
-	auto sort_key = function_binder.BindScalarFunction(Identifier::DefaultSchema(), "create_sort_key",
-	                                                   std::move(sort_children), error);
-	if (!sort_key) {
-		error.Throw();
-	}
-	return sort_key;
+	return function_binder.BindScalarFunction(Identifier::DefaultSchema(), "create_sort_key", std::move(sort_children));
 }
 
 unique_ptr<AggregateRewritePlan> FrequencyAggregateRewrite::Create(AggregateRewriteInput &input, bool ignore_nulls,
@@ -126,7 +117,8 @@ unique_ptr<AggregateRewritePlan> FrequencyAggregateRewrite::Create(AggregateRewr
 	if (!input.aggregate.IsDistinct()) {
 		count_column = frequency_aggregates.size();
 		FunctionBinder function_binder(input.context);
-		frequency_aggregates.push_back(function_binder.BindAggregateFunction(CountStarFun::GetFunction(), {}));
+		auto count_star = GetBuiltinAggregateFunction(input.context, CountStarFun::Name, {});
+		frequency_aggregates.push_back(function_binder.BindAggregateFunction(count_star, {}));
 	}
 
 	optional_idx order_column;

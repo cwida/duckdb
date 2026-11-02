@@ -1,0 +1,36 @@
+# name: test/sql/types/timestamp/timestamp_ns_lower_bound.test
+# description: Round-trip finite nanosecond timestamps at the lower storage boundary
+# group: [timestamp]
+
+# INT64_MIN is finite; INT64_MIN + 1 is reserved for negative infinity.
+query II
+SELECT epoch_ns(make_timestamp_ns(-9223372036854775807::BIGINT - 1)),
+       epoch_ns(make_timestamp_ns(-9223372036854775806::BIGINT))
+----
+-9223372036854775808	-9223372036854775806
+
+# These timestamps fit in BIGINT, but midnight on their date does not.
+query II
+SELECT CAST(make_timestamp_ns(-9223372036854775807::BIGINT - 1) AS VARCHAR),
+       CAST(make_timestamp_ns(-9223372036854775806::BIGINT) AS VARCHAR)
+----
+1677-09-21 00:12:43.145224192	1677-09-21 00:12:43.145224194
+
+query II
+SELECT CAST(make_timestamp_ns(-9223372036854775807::BIGINT - 1) AS TIME_NS),
+       CAST(make_timestamp_ns(-9223372036854775806::BIGINT) AS TIME_NS)
+----
+00:12:43.145224192	00:12:43.145224194
+
+# Scaling the microseconds to nanoseconds gives INT64_MIN - 192; adding 192 makes the value fit.
+query II
+SELECT epoch_ns(CAST('1677-09-21 00:12:43.145224192' AS TIMESTAMP_NS)),
+       epoch_ns(CAST('1677-09-21 00:12:43.145224194' AS TIMESTAMP_NS))
+----
+-9223372036854775808	-9223372036854775806
+
+# One nanosecond before the earliest finite timestamp is outside the storage range.
+statement error
+SELECT CAST('1677-09-21 00:12:43.145224191' AS TIMESTAMP_NS)
+----
+Could not convert string

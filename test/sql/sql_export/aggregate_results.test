@@ -1,0 +1,185 @@
+# name: test/sql/sql_export/aggregate_results.test
+# description: Aggregate SQL results, modifiers, separators and compatibility settings
+# group: [sql_export]
+
+statement ok
+CREATE TABLE decimal_values(i DECIMAL(9,2));
+
+statement ok
+INSERT INTO decimal_values VALUES(1.25),(2.50);
+
+statement ok
+CREATE TABLE string_values(x VARCHAR);
+
+statement ok
+INSERT INTO string_values VALUES('a'),('b');
+
+statement ok
+CREATE TABLE compatibility_values(i INTEGER);
+
+statement ok
+INSERT INTO compatibility_values VALUES(1),(2);
+
+statement ok
+CREATE TABLE aggregate_values(i INTEGER);
+
+statement ok
+INSERT INTO aggregate_values VALUES(1),(2),(2),(NULL);
+
+statement ok
+CREATE TABLE count_values(i INTEGER NOT NULL);
+
+statement ok
+INSERT INTO count_values VALUES(1),(2);
+
+statement ok
+CREATE TABLE large_sum_values(i BIGINT);
+
+statement ok
+INSERT INTO large_sum_values SELECT 4000000000000000000 FROM range(5);
+
+query IT
+SELECT sum(i),typeof(sum(i)) FROM (VALUES (1),(2)) t(i) GROUP BY ();
+----
+3	HUGEINT
+
+query TT
+EXPLAIN (SQL) SELECT sum(i) FROM (VALUES (1),(2)) t(i) GROUP BY ();
+----
+sql	<REGEX>:.*GROUP BY [(][)].*
+
+foreach serializer false true
+
+statement ok
+SET debug_verify_serializer={serializer};
+
+statement ok
+PRAGMA enable_optimizer;
+
+query TT
+SELECT sum(i),typeof(sum(i)) FROM decimal_values;
+----
+3.75	DECIMAL(38,2)
+
+query TT
+SELECT sum(i),typeof(sum(i)) FROM (VALUES (1.25::DECIMAL(9,2)),(2.50::DECIMAL(9,2))) values_to_sum(i);
+----
+3.75	DECIMAL(38,2)
+
+query T
+SELECT sum(i) FROM aggregate_values;
+----
+5
+
+query T
+SELECT avg(i) FROM aggregate_values;
+----
+1.6666666666666667
+
+query T
+SELECT mean(i) FROM aggregate_values;
+----
+1.6666666666666667
+
+query T
+SELECT sum(i) FROM large_sum_values;
+----
+20000000000000000000
+
+query T
+SELECT finalize(sum(i) EXPORT_STATE) FROM aggregate_values;
+----
+5
+
+query T
+SELECT count(*) FROM count_values;
+----
+2
+
+query T
+SELECT string_agg(x, '&') FROM string_values;
+----
+a&b
+
+query T
+SELECT string_agg(x, '&') FILTER (WHERE x IS NOT NULL) FROM string_values;
+----
+a&b
+
+query T
+SELECT string_agg(x, '&' ORDER BY x) FROM string_values;
+----
+a&b
+
+query T
+SELECT finalize(string_agg(x, '&') EXPORT_STATE) FROM string_values;
+----
+a&b
+
+query T
+SELECT finalize(string_agg(x, '&' ORDER BY x) EXPORT_STATE) FROM string_values;
+----
+a&b
+
+foreach disable_optimizer true false
+
+statement ok
+SET debug_disable_optimizer={disable_optimizer};
+
+query T
+SELECT sum(DISTINCT i) FILTER (WHERE i>1) FROM aggregate_values;
+----
+2
+
+query II
+SELECT first(i ORDER BY i DESC NULLS LAST), last(i ORDER BY i DESC NULLS LAST) FROM aggregate_values;
+----
+2	NULL
+
+query T
+SELECT list(i ORDER BY i DESC NULLS FIRST) FROM aggregate_values;
+----
+[NULL, 2, 2, 1]
+
+query T
+SELECT quantile_cont(v.exported_0,0.5) FROM (VALUES(1),(2)) v(exported_0);
+----
+1.5
+
+query T
+SELECT array_to_string(list_sort(string_split(string_agg(DISTINCT x, '&'), '&')), '&') FROM string_values;
+----
+a&b
+
+query T
+SELECT string_agg(DISTINCT x, '&' ORDER BY x) FROM string_values;
+----
+a&b
+
+endloop
+
+endloop
+
+statement ok
+PRAGMA enable_optimizer;
+
+query TT
+EXPLAIN (SQL) SELECT count(i) AS n FROM count_values WHERE random()>0.5;
+----
+sql	<REGEX>:.*"?system"?[.]main[.]"?count_star"?[(][)].*
+
+query I
+SELECT n BETWEEN 0 AND 2 FROM (SELECT count(i) AS n FROM count_values WHERE random()>0.5);
+----
+1
+
+statement ok
+SET storage_compatibility_version='v1.5.0';
+
+statement ok
+SET debug_verify_serializer=true;
+
+query IRIR
+SELECT abs(-7),log2(8),sum(i),quantile_cont(i,0.5) FROM compatibility_values;
+----
+7	3	3	1.5

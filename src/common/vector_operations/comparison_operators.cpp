@@ -21,109 +21,6 @@
 
 namespace duckdb {
 
-template <class T>
-static bool EqualsFloat(T left, T right) {
-	if (DUCKDB_UNLIKELY(Value::IsNan(left) && Value::IsNan(right))) {
-		return true;
-	}
-	return left == right;
-}
-
-template <>
-bool Equals::Operation(const float &left, const float &right) {
-	return EqualsFloat<float>(left, right);
-}
-
-template <>
-bool Equals::Operation(const double &left, const double &right) {
-	return EqualsFloat<double>(left, right);
-}
-
-template <class T>
-static bool GreaterThanFloat(T left, T right) {
-	// handle nans
-	// nan is always bigger than everything else
-	bool left_is_nan = Value::IsNan(left);
-	bool right_is_nan = Value::IsNan(right);
-	// if right is nan, there is no number that is bigger than right
-	if (DUCKDB_UNLIKELY(right_is_nan)) {
-		return false;
-	}
-	// if left is nan, but right is not, left is always bigger
-	if (DUCKDB_UNLIKELY(left_is_nan)) {
-		return true;
-	}
-	return left > right;
-}
-
-template <>
-bool GreaterThan::Operation(const float &left, const float &right) {
-	return GreaterThanFloat<float>(left, right);
-}
-
-template <>
-bool GreaterThan::Operation(const double &left, const double &right) {
-	return GreaterThanFloat<double>(left, right);
-}
-
-template <class T>
-static bool GreaterThanEqualsFloat(T left, T right) {
-	// handle nans
-	// nan is always bigger than everything else
-	bool left_is_nan = Value::IsNan(left);
-	bool right_is_nan = Value::IsNan(right);
-	// if right is nan, there is no bigger number
-	// we only return true if left is also nan (in which case the numbers are equal)
-	if (DUCKDB_UNLIKELY(right_is_nan)) {
-		return left_is_nan;
-	}
-	// if left is nan, but right is not, left is always bigger
-	if (DUCKDB_UNLIKELY(left_is_nan)) {
-		return true;
-	}
-	return left >= right;
-}
-
-template <>
-bool GreaterThanEquals::Operation(const float &left, const float &right) {
-	return GreaterThanEqualsFloat<float>(left, right);
-}
-
-template <>
-bool GreaterThanEquals::Operation(const double &left, const double &right) {
-	return GreaterThanEqualsFloat<double>(left, right);
-}
-
-template <class T>
-static int8_t ComparatorFloat(T left, T right) {
-	bool left_is_nan = Value::IsNan(left);
-	bool right_is_nan = Value::IsNan(right);
-	if (DUCKDB_UNLIKELY(left_is_nan || right_is_nan)) {
-		if (left_is_nan && right_is_nan) {
-			return Comparator::VALUES_ARE_EQUAL;
-		}
-		// NaN is bigger than anything
-		return left_is_nan ? Comparator::LEFT_IS_GREATER : Comparator::RIGHT_IS_GREATER;
-	}
-	if (left < right) {
-		return Comparator::RIGHT_IS_GREATER;
-	}
-	if (left > right) {
-		return Comparator::LEFT_IS_GREATER;
-	}
-	return Comparator::VALUES_ARE_EQUAL;
-}
-
-template <>
-int8_t Comparator::Operation(const float &left, const float &right) {
-	return ComparatorFloat<float>(left, right);
-}
-
-template <>
-int8_t Comparator::Operation(const double &left, const double &right) {
-	return ComparatorFloat<double>(left, right);
-}
-
 //===--------------------------------------------------------------------===//
 // Fast path: direct BinaryExecutor for primitive types (single pass, no intermediate vector)
 //===--------------------------------------------------------------------===//
@@ -191,6 +88,13 @@ static void ComparatorToBoolean(const Vector &left, const Vector &right, Vector 
 	VectorOperations::Comparator(left, right, comparator_result, comp);
 	const auto count = comparator_result.size();
 	auto cmp_data = comparator_result.Values<int8_t>();
+	if (left.GetVectorType() == VectorType::CONSTANT_VECTOR && right.GetVectorType() == VectorType::CONSTANT_VECTOR) {
+		// the comparison of two constants is a constant
+		auto entry = cmp_data[0];
+		auto value = entry.IsValid() ? Value::BOOLEAN(predicate(entry.GetValue())) : Value(LogicalType::BOOLEAN);
+		result.Reference(value, count_t(count));
+		return;
+	}
 	result.SetVectorType(VectorType::FLAT_VECTOR);
 	auto result_data = FlatVector::Writer<bool>(result, count);
 	for (idx_t i = 0; i < count; i++) {
@@ -421,46 +325,20 @@ static void StructComparator(const Vector &left, const Vector &right, int8_t *re
 		case ExpressionType::COMPARE_GREATERTHAN:
 		case ExpressionType::COMPARE_LESSTHANOREQUALTO:
 		case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
+		case ExpressionType::COMPARE_EQUAL:
+		case ExpressionType::COMPARE_NOTEQUAL:
+			// children always compare with distinct semantics - a NULL child makes the structs distinct
+			// rather than the result NULL, matching the Value comparison path. only a NULL struct itself
+			// makes the result NULL, which the validity pass above handled
 			DistinctComparatorTypeSwitch(lchildren[child_idx], rchildren[child_idx], child_result.get(),
 			                             remaining_lhs_sel, remaining_rhs_sel, remaining_count);
 			remaining_count = NestedScatter(child_result.get(), result_data, remaining_count, remaining_lhs_sel,
 			                                remaining_rhs_sel, remaining_result_sel, child_validity, nullptr,
 			                                [](int8_t c, bool n) { return c != Comparator::VALUES_ARE_EQUAL || n; });
-			break;
-		case ExpressionType::COMPARE_EQUAL:
-		case ExpressionType::COMPARE_NOTEQUAL:
-			child_validity.SetAllValid(remaining_count);
-			ComparatorTypeSwitch(lchildren[child_idx], rchildren[child_idx], child_result.get(), remaining_lhs_sel,
-			                     remaining_rhs_sel, remaining_count, comp, child_validity);
-			//	STRUCT columns all interact, so for [not] equals,
-			//	we can only finalize rows that we know to be not equal and not NULL
-			remaining_count = NestedScatter(child_result.get(), result_data, remaining_count, remaining_lhs_sel,
-			                                remaining_rhs_sel, remaining_result_sel, child_validity, nullptr,
-			                                [](int8_t c, bool n) { return c != Comparator::VALUES_ARE_EQUAL && !n; });
 			break;
 		default:
 			throw InternalException("Invalid STRUCT Comparison");
 		}
-	}
-
-	//	NULL cleanup pass
-	switch (comp) {
-	case ExpressionType::COMPARE_EQUAL:
-	case ExpressionType::COMPARE_NOTEQUAL:
-		//	The remaining rows are all not distinct, so check for NULLs
-		for (idx_t child_idx = 0; child_idx < lchildren.size() && remaining_count > 0; child_idx++) {
-			child_validity.SetAllValid(remaining_count);
-			DistinctComparatorTypeSwitch(lchildren[child_idx], rchildren[child_idx], child_result.get(),
-			                             remaining_lhs_sel, remaining_rhs_sel, remaining_count);
-
-			// partition active into resolved vs still-remaining
-			remaining_count = NestedScatter(child_result.get(), result_data, remaining_count, remaining_lhs_sel,
-			                                remaining_rhs_sel, remaining_result_sel, child_validity, nullptr,
-			                                [](int8_t c, bool n) { return c != Comparator::VALUES_ARE_EQUAL || n; });
-		}
-		break;
-	default:
-		break;
 	}
 }
 
@@ -676,11 +554,11 @@ static void ListOrArrayComparator(const Vector &left, const Vector &right, int8_
 	auto child_result = make_unsafe_uniq_array<int8_t>(remaining_count);
 
 	for (idx_t index_in_list = 0; remaining_count > 0; index_in_list++) {
-		// partition remaining into: exhausted (one or both ended) vs active (both have element at pos)
-		idx_t active_count =
+		// resolve the rows whose list ran out of elements, and compact the selections to the rest
+		remaining_count =
 		    ListOrArrayExhausted(left_format, right_format, left_child_sel, right_child_sel, index_in_list, result_data,
 		                         remaining_count, remaining_lhs_sel, remaining_rhs_sel, remaining_result_sel, accessor);
-		if (active_count == 0) {
+		if (remaining_count == 0) {
 			break;
 		}
 
@@ -692,54 +570,21 @@ static void ListOrArrayComparator(const Vector &left, const Vector &right, int8_
 		case ExpressionType::COMPARE_GREATERTHAN:
 		case ExpressionType::COMPARE_LESSTHANOREQUALTO:
 		case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
+		case ExpressionType::COMPARE_EQUAL:
+		case ExpressionType::COMPARE_NOTEQUAL:
+			// child elements always compare with distinct semantics - a NULL element makes the lists
+			// distinct rather than the result NULL, which is what the Value comparison path does too.
+			// only a NULL list itself makes the result NULL, which the validity pass above handled
 			DistinctComparatorTypeSwitch(left_child, right_child, child_result.get(), left_child_sel, right_child_sel,
-			                             active_count);
-			// partition active into resolved vs still-remaining
+			                             remaining_count);
+			// partition into resolved vs still-remaining
 			remaining_count = NestedScatter(child_result.get(), result_data, remaining_count, remaining_lhs_sel,
 			                                remaining_rhs_sel, remaining_result_sel, child_validity, nullptr,
 			                                [](int8_t c, bool n) { return c != Comparator::VALUES_ARE_EQUAL || n; });
-			break;
-		case ExpressionType::COMPARE_EQUAL:
-		case ExpressionType::COMPARE_NOTEQUAL:
-			child_validity.SetAllValid(remaining_count);
-			ComparatorTypeSwitch(left_child, right_child, child_result.get(), left_child_sel, right_child_sel,
-			                     active_count, comp, child_validity);
-			//	Only keep values we know are not equal.
-			remaining_count = NestedScatter(child_result.get(), result_data, remaining_count, remaining_lhs_sel,
-			                                remaining_rhs_sel, remaining_result_sel, child_validity, nullptr,
-			                                [](int8_t c, bool n) { return c != Comparator::VALUES_ARE_EQUAL && !n; });
 			break;
 		default:
 			throw InternalException("Invalid LIST Comparison");
 		}
-	}
-
-	//	NULL cleanup pass
-	switch (comp) {
-	case ExpressionType::COMPARE_EQUAL:
-	case ExpressionType::COMPARE_NOTEQUAL:
-		//	The remaining rows are all not distinct, so check for NULLs
-		for (idx_t index_in_list = 0; remaining_count > 0; index_in_list++) {
-			// partition remaining into: exhausted (one or both ended) vs active (both have element at pos)
-			idx_t active_count = ListOrArrayExhausted(left_format, right_format, left_child_sel, right_child_sel,
-			                                          index_in_list, result_data, remaining_count, remaining_lhs_sel,
-			                                          remaining_rhs_sel, remaining_result_sel, accessor);
-			if (active_count == 0) {
-				break;
-			}
-
-			child_validity.SetAllValid(remaining_count);
-			DistinctComparatorTypeSwitch(left_child, right_child, child_result.get(), left_child_sel, right_child_sel,
-			                             active_count);
-
-			// partition active into resolved vs still-remaining
-			remaining_count = NestedScatter(child_result.get(), result_data, remaining_count, remaining_lhs_sel,
-			                                remaining_rhs_sel, remaining_result_sel, child_validity, nullptr,
-			                                [](int8_t c, bool n) { return c != Comparator::VALUES_ARE_EQUAL || n; });
-		}
-		break;
-	default:
-		break;
 	}
 }
 

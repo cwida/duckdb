@@ -1,0 +1,80 @@
+# name: test/sql/aggregate/aggregates/approx_quantile_many_groups.test_slow
+# description: approx_quantile over hundreds of thousands of groups must not reserve the full t-digest buffers per group
+# group: [aggregates]
+
+require tpcds
+
+statement ok
+CALL dsdgen(sf=0.1)
+
+statement ok
+SET memory_limit='2GB'
+
+statement ok
+SET threads=2
+
+# ~263k groups with two t-digests each: with the buffers reserved eagerly (~20 KB per state) this ran out of memory
+query ITT
+SELECT count(*), max(perc95) BETWEEN 8000 AND 9000, max(perc99) BETWEEN 8000 AND 9000 FROM (
+    SELECT 
+      COUNT(ss_ticket_number) as count,
+      AVG(CAST(ss_net_profit AS DOUBLE)) as avg,
+      approx_quantile(CAST(ss_net_profit AS DOUBLE), 0.95) as perc95,
+      approx_quantile(CAST(ss_net_profit AS DOUBLE), 0.99) as perc99,
+      AVG(CAST(ss_quantity AS DOUBLE)) as avg_request_size,
+      AVG(CAST(ss_net_paid AS DOUBLE)) as avg_response_size,
+      s_store_sk as status,
+      s_store_name as pool_from,
+      s_city as platform_from,
+      s_county as department_from,
+      s_state as region_from,
+      s_company_name as application_from,
+      s_division_name as scope_from,
+      s_market_desc as service_type_from,
+      c_customer_id as pool_to,
+      c_first_name as platform_to,
+      c_last_name as department_to,
+      c_birth_country as region_to,
+      c_email_address as application_to,
+      c_salutation as scope_to,
+      c_login as service_type_to,
+      i_item_id as http_host,
+      i_brand as http_x_product_id,
+      i_category as traffic_scope,
+      i_class as http_x_api_client_criticality,
+      i_color as http_x_api_client_type,
+      i_size as http_x_api_client_segment,
+      CASE WHEN i_manufact IS NULL OR i_manufact = i_product_name THEN false ELSE true END as is_retry,
+      i_container as sent_http_x_api_server_segment
+    FROM store_sales
+    JOIN store ON ss_store_sk = s_store_sk
+    JOIN customer ON ss_customer_sk = c_customer_sk
+    JOIN item ON ss_item_sk = i_item_sk
+    WHERE ss_ticket_number IS NOT NULL AND ss_sold_date_sk IS NOT NULL
+    GROUP BY 
+      s_store_sk,
+      s_store_name,
+      s_city,
+      s_county,
+      s_state,
+      s_company_name,
+      s_division_name,
+      s_market_desc,
+      c_customer_id,
+      c_first_name,
+      c_last_name,
+      c_birth_country,
+      c_email_address,
+      c_salutation,
+      c_login,
+      i_item_id,
+      i_brand,
+      i_category,
+      i_class,
+      i_color,
+      i_size,
+      CASE WHEN i_manufact IS NULL OR i_manufact = i_product_name THEN false ELSE true END,
+      i_container
+) t
+----
+263205	true	true

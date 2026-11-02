@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include "duckdb/common/atomic.hpp"
 #include "duckdb/common/multi_file/base_file_reader.hpp"
 
 namespace duckdb {
@@ -26,13 +27,14 @@ public:
 	AsyncResult Scan(ClientContext &context, GlobalTableFunctionState &global_state,
 	                 LocalTableFunctionState &local_state, DataChunk &chunk) override;
 	void FinishFile(ClientContext &context, GlobalTableFunctionState &gstate) override;
+	double GetProgressInFile(ClientContext &context) override;
 
 	string GetReaderType() const override {
 		return "File";
 	};
 
 private:
-	bool done;
+	atomic<bool> done;
 	LogicalType type;
 };
 
