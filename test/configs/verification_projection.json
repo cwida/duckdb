@@ -4,6 +4,12 @@
   "skip_compiled": "true",
   "skip_tests": [
     {
+      "reason": "Synthetic projections change common-subplan matching; result coverage remains in companion tests.",
+      "paths": [
+        "test/sql/optimizer/test_common_subplan_matching_plan.test"
+      ]
+    },
+    {
       "reason": "Type and function pushdown optimizers collapses projections and check for that",
       "paths": [
         "test/optimizer/pushdown/csv_type_pushdown.test",
