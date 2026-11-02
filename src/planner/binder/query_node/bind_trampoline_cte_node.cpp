@@ -1,6 +1,9 @@
 #include "duckdb/main/settings.hpp"
 #include "duckdb/parser/query_node/trampoline_cte_node.hpp"
 #include "duckdb/planner/binder.hpp"
+#include "duckdb/planner/expression/bound_subquery_expression.hpp"
+#include "duckdb/planner/expression_iterator.hpp"
+#include "duckdb/planner/logical_operator_visitor.hpp"
 #include "duckdb/planner/operator/logical_cteref.hpp"
 #include "duckdb/planner/operator/logical_trampoline.hpp"
 
@@ -8,6 +11,24 @@ namespace duckdb {
 
 //! Finds frontier references to the given trampoline in a bound branch plan. A
 //! reference below a nested trampoline would cross round scopes and is rejected.
+static void DetectFrontierReferences(const LogicalOperator &op, TableIndex cte_index, idx_t nested_depth,
+                                     bool &reads_frontier);
+
+//! Subqueries in non-inner join conditions stay unplanned expressions until physical
+//! planning, so their bound plans must be analyzed through the expressions as well.
+static void DetectFrontierReferencesInExpression(const Expression &expr, TableIndex cte_index, idx_t nested_depth,
+                                                 bool &reads_frontier) {
+	if (expr.GetExpressionClass() == ExpressionClass::BOUND_SUBQUERY) {
+		auto &subquery = expr.Cast<BoundSubqueryExpression>();
+		if (subquery.Subquery().plan) {
+			DetectFrontierReferences(*subquery.Subquery().plan, cte_index, nested_depth, reads_frontier);
+		}
+	}
+	ExpressionIterator::EnumerateChildren(expr, [&](const Expression &child) {
+		DetectFrontierReferencesInExpression(child, cte_index, nested_depth, reads_frontier);
+	});
+}
+
 static void DetectFrontierReferences(const LogicalOperator &op, TableIndex cte_index, idx_t nested_depth,
                                      bool &reads_frontier) {
 	if (op.type == LogicalOperatorType::LOGICAL_CTE_REF) {
@@ -19,6 +40,11 @@ static void DetectFrontierReferences(const LogicalOperator &op, TableIndex cte_i
 			reads_frontier = true;
 		}
 	}
+	LogicalOperatorVisitor::EnumerateExpressions(op, [&](const unique_ptr<Expression> *child) {
+		if (*child) {
+			DetectFrontierReferencesInExpression(**child, cte_index, nested_depth, reads_frontier);
+		}
+	});
 	const auto next_depth = nested_depth + (op.type == LogicalOperatorType::LOGICAL_TRAMPOLINE ? 1 : 0);
 	for (auto &child : op.children) {
 		DetectFrontierReferences(*child, cte_index, next_depth, reads_frontier);

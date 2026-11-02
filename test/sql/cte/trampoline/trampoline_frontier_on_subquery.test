@@ -1,0 +1,61 @@
+# name: test/sql/cte/trampoline/trampoline_frontier_on_subquery.test
+# description: Frontier references inside non-inner join ON subqueries engage the round snapshot
+# group: [trampoline]
+
+statement ok
+CREATE TABLE ninetynine AS SELECT 99 AS n;
+
+# the only frontier reference sits in a LEFT JOIN ON subquery, which stays an unplanned
+# expression at bind time; it must still set up rounds and read the snapshot (7), not the
+# empty placeholder (99)
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 7))
+	BRANCH 1: (SELECT 0, coalesce(v.y, x.n)
+	           FROM ninetynine x LEFT JOIN (VALUES (7)) v(y) ON EXISTS (SELECT 1 FROM frontier.t))
+) SELECT n FROM t;
+----
+7
+
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 7))
+	BRANCH 1: (SELECT 0, coalesce(v.y, x.n)
+	           FROM (VALUES (7)) v(y) RIGHT JOIN ninetynine x ON EXISTS (SELECT 1 FROM frontier.t))
+) SELECT n FROM t;
+----
+7
+
+# scalar-count variant
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 7))
+	BRANCH 1: (SELECT 0, coalesce(v.y, x.n)
+	           FROM ninetynine x LEFT JOIN (VALUES (7)) v(y) ON (SELECT count(*) FROM frontier.t) > 0)
+) SELECT n FROM t;
+----
+7
+
+# control: a frontier reference in the projection already engaged rounds before this fix
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 7))
+	BRANCH 1: (SELECT 0, (SELECT max(f.n) FROM frontier.t f) FROM t)
+) SELECT n FROM t;
+----
+7
+
+# a cross-trampoline frontier reference routed through an ON subquery is still rejected
+statement error
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 7))
+	BRANCH 1: (
+		SELECT 0, (WITH RECURSIVE u(c, m) USING TRAMPOLINE (c) AS (
+			(VALUES (1, 1))
+			BRANCH 1: (SELECT 0, coalesce(v.y, 0)
+			           FROM u LEFT JOIN (VALUES (5)) v(y) ON EXISTS (SELECT 1 FROM frontier.t))
+		) SELECT max(m) FROM u)
+		FROM t)
+) SELECT n FROM t;
+----
+<REGEX>:.*frontier references across nested TRAMPOLINE CTEs are not supported.*
