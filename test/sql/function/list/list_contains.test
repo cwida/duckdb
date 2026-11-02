@@ -474,3 +474,56 @@ query I
 SELECT list_filter(l1, lambda x: list_contains(l2, x)) FROM list_of_list;
 ----
 []
+
+# Empty list with NULL needle: map_contains matches list_contains for constant and non-constant needles.
+
+query I
+SELECT map_contains(map([]::INT[], []::INT[]), NULL::INT);
+----
+false
+
+query I
+SELECT map_contains(empty_map, needle) FROM (VALUES (map([]::INT[], []::INT[]), NULL::INT)) inputs(empty_map, needle);
+----
+false
+
+query I
+SELECT map_contains(empty_map, needle) FROM (VALUES (map([]::VARCHAR[], []::INT[]), NULL::VARCHAR COLLATE NOCASE)) inputs(empty_map, needle);
+----
+false
+
+query I
+SELECT map_contains(m, NULL::INT) FROM (VALUES (map([1], [1]))) t(m);
+----
+NULL
+
+statement ok
+SET debug_verification_mode = 'verify_functions';
+
+query I
+SELECT map_contains(empty_map, needle) FROM (VALUES (map([]::INT[], []::INT[]), NULL::INT)) inputs(empty_map, needle);
+----
+false
+
+statement ok
+RESET debug_verification_mode;
+
+# Volatile and throwing needles are not dropped for an empty list.
+
+statement ok
+CREATE SEQUENCE empty_list_seq;
+
+query I
+SELECT list_contains([]::BIGINT[], nextval('empty_list_seq'));
+----
+false
+
+query I
+SELECT nextval('empty_list_seq');
+----
+2
+
+statement error
+SELECT list_contains([]::INT[], needle::INT) FROM (VALUES ('x')) inputs(needle);
+----
+Conversion Error
