@@ -149,9 +149,14 @@ BoundStatement Binder::Bind(BaseTableRef &ref) {
 	// check if the table name refers to a CTE
 
 	// CTE name should never be qualified (i.e. schema_name should be empty)
-	// unless we want to refer to the recurring table of "using key".
-	BindingAlias binding_alias(ref.GetQualifiedName().Schema(), ref.Table());
-	auto ctebinding = GetCTEBinding(binding_alias);
+	// unless we want to refer to the recurring table of "using key" or a trampoline frontier.
+	// Those virtual qualifiers are exactly two parts: any deeper qualification (a catalog, a
+	// nested schema) names a real object, never a CTE.
+	optional_ptr<CTEBinding> ctebinding;
+	if (ref.GetQualifiedName().Path().size() <= 2) {
+		BindingAlias binding_alias(ref.GetQualifiedName().Schema(), ref.Table());
+		ctebinding = GetCTEBinding(binding_alias);
+	}
 	if (ctebinding && ctebinding->CanBeReferenced()) {
 		ctebinding->Reference();
 
