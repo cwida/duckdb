@@ -1112,12 +1112,22 @@ bool TopNWindowElimination::CanUseLateMaterialization(const LogicalWindow &windo
 		}
 	}
 	// Check if we need the projection map
-	for (idx_t i = 0; i < projections.size(); i++) {
-		if (projections[i].column_index != i) {
-			for (auto &proj : projections) {
-				lhs_projections.push_back(proj.column_index);
+	bool need_projection = false;
+	for (idx_t i = 0; i < projections.size() && !need_projection; i++) {
+		need_projection = projections[i].column_index != i;
+	}
+	// ConstructJoin expects the row id columns to be the last columns of the LHS. A row id that is also used as a
+	// payload column sits somewhere before that, so it has to be projected again to end up in the right position.
+	for (const auto &col_idx : rowid_column_idxs) {
+		for (auto &column_index : logical_get.GetColumnIds()) {
+			if (column_index.GetPrimaryIndex() == col_idx) {
+				need_projection = true;
 			}
-			break;
+		}
+	}
+	if (need_projection) {
+		for (auto &proj : projections) {
+			lhs_projections.push_back(proj.column_index);
 		}
 	}
 	return true;
