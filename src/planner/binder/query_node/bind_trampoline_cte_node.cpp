@@ -108,6 +108,12 @@ BoundStatement Binder::BindNode(TrampolineCTENode &statement) {
 	case LogicalTypeId::UBIGINT:
 		break;
 	default:
+		if (GetBindingMode() == BindingMode::EXTRACT_NAMES ||
+		    GetBindingMode() == BindingMode::EXTRACT_QUALIFIED_NAMES) {
+			// name extraction binds tables as dummies with SQLNULL columns; execution-time
+			// type requirements do not apply
+			break;
+		}
 		throw BinderException("TRAMPOLINE selector column \"%s\" must have an integer type, not %s",
 		                      statement.selector.GetIdentifierName(), result.types[selector_idx].ToString());
 	}
