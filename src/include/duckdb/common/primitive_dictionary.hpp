@@ -77,6 +77,10 @@ public:
 	//! Insert value into dictionary (if not full)
 	template <bool ADD_TO_TARGET = false>
 	void Insert(SRC value) {
+		if (full) {
+			// nothing can be inserted anymore, so do not pay for the hash
+			return;
+		}
 		Insert<ADD_TO_TARGET>(value, Hash(value));
 	}
 
@@ -159,6 +163,7 @@ public:
 	void Reset() {
 		allocated_dictionary.Reset();
 		allocated_target.Reset();
+		occupied = vector<uint32_t>();
 	}
 
 	//! Empty the dictionary, in time proportional to the entries it holds rather than to its capacity
