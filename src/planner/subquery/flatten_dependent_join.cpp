@@ -1158,8 +1158,13 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownJoin(unique
 	bool left_requires_domain = RequiresDomain(*plan->children[0]);
 	bool right_requires_domain = RequiresDomain(*plan->children[1]);
 
+	// An ASOF join selects at most one match per left row from its entire right input. If the right input
+	// varies per domain, the left input must carry the domain too, so the selection partitions per domain.
+	bool selects_over_right = plan->type == LogicalOperatorType::LOGICAL_ASOF_JOIN;
+
 	bool can_push_left_only = !right_requires_domain && (join_type == JoinType::INNER || join_type == JoinType::LEFT);
-	bool can_push_right_only = !left_requires_domain && (join_type == JoinType::INNER || join_type == JoinType::RIGHT);
+	bool can_push_right_only =
+	    !left_requires_domain && !selects_over_right && (join_type == JoinType::INNER || join_type == JoinType::RIGHT);
 
 	if (can_push_left_only) {
 		return PushDownSingleCorrelatedChild(plan, propagate_null_values, std::move(state), true);
