@@ -1217,6 +1217,9 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownJoin(unique
 			auto left_state = PushDownChild(plan, propagate_null_values, right_state.bindings, false, 0);
 
 			auto &comparison_join = plan->Cast<LogicalComparisonJoin>();
+			AppendStateToProjectionMap(comparison_join.left_projection_map,
+			                           ColumnBindingLayout(plan->children[0]->GetColumnBindings()),
+			                           left_state.bindings);
 			auto conditions = std::move(comparison_join.conditions);
 			comparison_join.conditions.clear();
 			AddCorrelatedJoinConditions(comparison_join, left_state.bindings, right_state.bindings);
@@ -1232,6 +1235,8 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownJoin(unique
 		}
 
 		auto left_state = PushDownChild(plan, propagate_null_values, state, false);
+		AppendStateToProjectionMap(plan->Cast<LogicalJoin>().left_projection_map,
+		                           ColumnBindingLayout(plan->children[0]->GetColumnBindings()), left_state.bindings);
 		auto old_right_bindings = plan->children[1]->GetColumnBindings();
 		auto independent_state = DecorrelateIndependentSubtree(plan->children[1]);
 		ColumnBindingRewrite::ApplyToChild(plan, 1, std::move(old_right_bindings), independent_state.replacement_graph);
