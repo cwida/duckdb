@@ -91,6 +91,19 @@ hugeint_t Hugeint::Abs(hugeint_t n) {
 
 hugeint_t Hugeint::DivModPositive(hugeint_t lhs, uint64_t rhs, uint64_t &remainder) {
 	D_ASSERT(lhs.upper >= 0);
+// Not under clang-cl (_MSC_VER): 128-bit division lowers to __divti3/__udivti3/__modti3 from
+// compiler-rt, which the MSVC toolchain does not link (multiplication is inlined and needs no helper).
+#if ((__GNUC__ >= 5) || defined(__clang__)) && defined(__SIZEOF_INT128__) && !defined(_MSC_VER)
+	// Native division for every non-zero divisor. It is also exact for divisors of 2^63 and
+	// above, where the 64-bit remainder of the loop below overflows; a zero divisor keeps the
+	// loop's result.
+	if (rhs != 0) {
+		const auto left = (static_cast<__uint128_t>(static_cast<uint64_t>(lhs.upper)) << 64) | lhs.lower;
+		const auto q = left / rhs;
+		remainder = static_cast<uint64_t>(left % rhs);
+		return hugeint_t(static_cast<int64_t>(static_cast<uint64_t>(q >> 64)), static_cast<uint64_t>(q));
+	}
+#endif
 	// DivMod code adapted from:
 	// https://github.com/calccrypto/uint128_t/blob/master/uint128_t.cpp
 

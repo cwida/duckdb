@@ -298,6 +298,25 @@ constexpr HugeintDivModResult HugeintDivMod(hugeint_t lhs, hugeint_t rhs) {
 		return HugeintDivModMinimum(lhs, rhs);
 	}
 
+// Not under clang-cl (_MSC_VER): 128-bit division lowers to __divti3/__udivti3/__modti3 from
+// compiler-rt, which the MSVC toolchain does not link (multiplication is inlined and needs no helper).
+#if ((__GNUC__ >= 5) || defined(__clang__)) && defined(__SIZEOF_INT128__) && !defined(_MSC_VER)
+	// Native 128-bit division: truncates toward zero and gives the remainder the sign of lhs, as
+	// the bit-at-a-time loop below does. Zero and MINIMUM (the only overflowing case) are handled
+	// above.
+	{
+		const auto left =
+		    static_cast<__int128>((static_cast<__uint128_t>(static_cast<uint64_t>(lhs.upper)) << 64) | lhs.lower);
+		const auto right =
+		    static_cast<__int128>((static_cast<__uint128_t>(static_cast<uint64_t>(rhs.upper)) << 64) | rhs.lower);
+		const auto q = static_cast<__uint128_t>(left / right);
+		const auto r = static_cast<__uint128_t>(left % right);
+		return HugeintDivModResult {
+		    hugeint_t(static_cast<int64_t>(static_cast<uint64_t>(q >> 64)), static_cast<uint64_t>(q)),
+		    hugeint_t(static_cast<int64_t>(static_cast<uint64_t>(r >> 64)), static_cast<uint64_t>(r))};
+	}
+#endif
+
 	bool lhs_negative = lhs.upper < 0;
 	bool rhs_negative = rhs.upper < 0;
 	if (lhs_negative) {
