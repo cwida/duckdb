@@ -46,6 +46,16 @@ optional<DistinctCount> RelationStatisticsHelper::SelectTotalDomain(const vector
 	return fallback;
 }
 
+idx_t RelationStatisticsHelper::CardinalityFromDouble(double cardinality) {
+	if (!(cardinality > 0)) {
+		return 0;
+	}
+	if (cardinality >= static_cast<double>(NumericLimits<idx_t>::Maximum())) {
+		return NumericLimits<idx_t>::Maximum();
+	}
+	return LossyNumericCast<idx_t>(cardinality);
+}
+
 static bool MatchesTargetColumn(const Expression &expression, optional<ColumnBinding> target_binding) {
 	if (expression.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
 		return !target_binding || expression.Cast<BoundColumnRefExpression>().Binding() == *target_binding;
@@ -222,7 +232,7 @@ idx_t RelationStatisticsHelper::EstimateDistinctCardinality(const vector<Distinc
 	product *= pow(0.95, static_cast<double>(distinct_counts.size() - 1));
 	const auto multiplier = 1.0 - exp(-static_cast<double>(input_cardinality) / product);
 	const auto estimate = multiplier == 0 ? static_cast<double>(input_cardinality) : product * multiplier;
-	auto result = LossyNumericCast<idx_t>(MinValue(estimate, static_cast<double>(input_cardinality)));
+	auto result = MinValue(CardinalityFromDouble(estimate), input_cardinality);
 	return input_cardinality > 0 ? MaxValue<idx_t>(result, 1) : 0;
 }
 
@@ -240,7 +250,7 @@ DistinctCount RelationStatisticsHelper::EstimateCurrentDomain(const DistinctCoun
 	const auto multiplicity = static_cast<double>(input_cardinality) / static_cast<double>(count);
 	const auto retained_fraction = -expm1(multiplicity * log1p(-row_survival));
 	const auto estimate = round(static_cast<double>(count) * retained_fraction);
-	auto result = LossyNumericCast<idx_t>(MinValue(estimate, static_cast<double>(output_cardinality)));
+	auto result = MinValue(CardinalityFromDouble(estimate), output_cardinality);
 	result = MinValue(result, count);
 	return DistinctCount(MaxValue<idx_t>(result, 1), DistinctCountSource::CARDINALITY);
 }
@@ -561,33 +571,6 @@ optional<RelationStats> RelationStatisticsHelper::ExtractDistinctStats(LogicalDi
 					break;
 				}
 			}
-		}
-	}
-	return result;
-}
-
-optional<RelationStats> RelationStatisticsHelper::ExtractFilterStats(LogicalFilter &filter,
-                                                                     const RelationStats &child_stats) {
-	auto result = ProjectOutputStats(child_stats, filter);
-	if (!result) {
-		return {};
-	}
-	auto cardinality = child_stats.cardinality;
-	if (cardinality > 0) {
-		cardinality = MaxValue<idx_t>(LossyNumericCast<idx_t>(double(cardinality) * DEFAULT_SELECTIVITY), 1);
-	}
-	ApplyCardinality(*result, cardinality);
-	for (auto &column : result->columns) {
-		for (auto &expression : filter.expressions) {
-			auto direct_bound =
-			    EstimateDirectFilterDomain(*expression, column.binding, column.total_domain.distinct_count);
-			if (!direct_bound.IsValid()) {
-				continue;
-			}
-			column.current_domain =
-			    DistinctCount(MinValue(column.current_domain.distinct_count, direct_bound.GetIndex()),
-			                  DistinctCountSource::CARDINALITY);
-			column.semi_anti_join_domain_evidence.TightenFilterDomainBound(direct_bound.GetIndex());
 		}
 	}
 	return result;

@@ -362,30 +362,31 @@ bool RelationManager::ExtractJoinRelations(JoinOrderOptimizer &optimizer, Logica
                                            vector<reference<LogicalOperator>> &filter_operators,
                                            optional_ptr<LogicalOperator> parent) {
 	optional_ptr<LogicalOperator> op = &input_op;
+	vector<reference<LogicalOperator>> unary_filters;
 	// pass through single child operators (but never past a non-reorderable op such as a DML node, which
 	// must be preserved as its own relation rather than skipped over and dropped during reconstruction)
-	auto filter_chain_start = filter_operators.size();
 	while (op->children.size() == 1 && !OperatorNeedsRelation(op->type) && !OperatorIsNonReorderable(*op)) {
 		if (op->type == LogicalOperatorType::LOGICAL_FILTER) {
-			filter_operators.push_back(*op);
+			unary_filters.push_back(*op);
 		}
 		op = op->children[0].get();
 	}
 	// stacked filters are re-applied in this order: keep the lower (earlier evaluated) filters first
-	std::reverse(filter_operators.begin() + NumericCast<int64_t>(filter_chain_start), filter_operators.end());
+	std::reverse(unary_filters.begin(), unary_filters.end());
 	bool non_reorderable_operation = false;
 	if (OperatorIsNonReorderable(*op)) {
 		// set operation, optimize separately in children
 		non_reorderable_operation = true;
 	}
 
-	if (op->type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
-		if (JoinIsReorderable(*op)) {
-			// extract join conditions from inner join
+	// Filters inside a leaf are already priced by its statistics and stay with that relation.
+	if (JoinIsReorderable(*op)) {
+		filter_operators.insert(filter_operators.end(), unary_filters.begin(), unary_filters.end());
+		if (op->type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
 			filter_operators.push_back(*op);
-		} else {
-			non_reorderable_operation = true;
 		}
+	} else if (op->type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
+		non_reorderable_operation = true;
 	}
 	if (non_reorderable_operation) {
 		// we encountered a non-reordable operation (setop or non-inner join)

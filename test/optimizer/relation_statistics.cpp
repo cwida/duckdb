@@ -23,7 +23,11 @@
 #include "duckdb/planner/operator/logical_projection.hpp"
 #include "duckdb/planner/operator/logical_window.hpp"
 
+#include "duckdb/planner/operator/logical_get.hpp"
+#include "duckdb/storage/statistics/node_statistics.hpp"
+
 #include <cmath>
+#include <limits>
 
 using namespace duckdb;
 
@@ -1029,4 +1033,83 @@ TEST_CASE("Shared key filters restrict domains only with supported input statist
 			}
 		}
 	}
+}
+
+TEST_CASE("Large cardinality estimates saturate and preserve integer bounds", "[optimizer][relation_statistics]") {
+	auto maximum = NumericLimits<idx_t>::Maximum();
+	REQUIRE(RelationStatisticsHelper::CardinalityFromDouble(0) == 0);
+	REQUIRE(RelationStatisticsHelper::CardinalityFromDouble(-1) == 0);
+	REQUIRE(RelationStatisticsHelper::CardinalityFromDouble(std::numeric_limits<double>::quiet_NaN()) == 0);
+	REQUIRE(RelationStatisticsHelper::CardinalityFromDouble(std::numeric_limits<double>::infinity()) == maximum);
+	REQUIRE(RelationStatisticsHelper::CardinalityFromDouble(static_cast<double>(maximum)) == maximum);
+	REQUIRE(RelationStatisticsHelper::CardinalityFromDouble(20.4) == 20);
+
+	vector<DistinctCount> domains {{maximum, DistinctCountSource::EXACT}, {maximum, DistinctCountSource::EXACT}};
+	REQUIRE(RelationStatisticsHelper::EstimateDistinctCardinality(domains, maximum) == maximum);
+	REQUIRE(RelationStatisticsHelper::EstimateDistinctCardinality(domains, maximum - 1) == maximum - 1);
+	REQUIRE(RelationStatisticsHelper::EstimateCurrentDomain(domains[0], maximum, maximum - 1).distinct_count ==
+	        maximum - 1);
+}
+
+struct CardinalityProviderData : public TableFunctionData {
+	NodeStatistics statistics {0, 0};
+	shared_ptr<idx_t> calls = make_shared_ptr<idx_t>(0);
+	shared_ptr<idx_t> column_calls = make_shared_ptr<idx_t>(0);
+};
+
+static unique_ptr<LogicalGet> CreateCardinalityProvider(optional_idx estimate, optional_idx maximum) {
+	auto data = make_uniq<CardinalityProviderData>();
+	data->statistics.has_estimated_cardinality = estimate.IsValid();
+	data->statistics.has_max_cardinality = maximum.IsValid();
+	if (estimate.IsValid()) {
+		data->statistics.estimated_cardinality = estimate.GetIndex();
+	}
+	if (maximum.IsValid()) {
+		data->statistics.max_cardinality = maximum.GetIndex();
+	}
+	TableFunction function("cardinality_provider", {}, nullptr);
+	function.cardinality = [](ClientContext &, auto bind_data) -> unique_ptr<NodeStatistics> {
+		auto &data = bind_data->template Cast<CardinalityProviderData>();
+		(*data.calls)++;
+		return make_uniq<NodeStatistics>(data.statistics);
+	};
+	auto get = make_uniq<LogicalGet>(TableIndex(10), BoundTableFunction(function), std::move(data),
+	                                 vector<LogicalType> {LogicalType::INTEGER}, vector<Identifier> {"i"});
+	get->AddColumnId(0);
+	return get;
+}
+
+TEST_CASE("Scan filters acquire hidden input columns once and apply conjunction rows once",
+          "[optimizer][relation_statistics]") {
+	DuckDB db;
+	Connection connection(db);
+	auto scan = CreateCardinalityProvider(100, 1000);
+	scan->returned_types.push_back(LogicalType::INTEGER);
+	scan->names.emplace_back("hidden");
+	scan->AddColumnId(1);
+	scan->projection_ids = {ProjectionIndex(0)};
+	auto &data = scan->bind_data->Cast<CardinalityProviderData>();
+	scan->function.statistics = [](ClientContext &, auto bind_data, column_t) -> unique_ptr<BaseStatistics> {
+		auto &data = bind_data->template Cast<CardinalityProviderData>();
+		(*data.column_calls)++;
+		auto result = BaseStatistics::CreateUnknown(LogicalType::INTEGER);
+		result.SetDistinctCount(10);
+		return result.ToUnique();
+	};
+	scan->table_filters.PushFilter(
+	    ProjectionIndex(1), ExpressionFilter::CreateComparisonFilter(ExpressionType::COMPARE_EQUAL, Value::INTEGER(1)));
+	scan->table_filters.PushFilter(ProjectionIndex(0), ExpressionFilter::CreateComparisonFilter(
+	                                                       ExpressionType::COMPARE_GREATERTHAN, Value::INTEGER(1)));
+	RelationStatsExtractor extractor(*connection.context);
+	auto result = extractor.Extract(*scan);
+	REQUIRE(result);
+	REQUIRE(result->columns.size() == 1);
+	REQUIRE(result->cardinality == 10);
+	REQUIRE(result->row_retention == Approx(0.1));
+	REQUIRE(result->columns[0].current_domain.distinct_count ==
+	        RelationStatisticsHelper::EstimateCurrentDomain(DistinctCount(10, DistinctCountSource::HLL), 100, 10)
+	            .distinct_count);
+	REQUIRE(extractor.Extract(*scan));
+	REQUIRE(*data.column_calls == 2);
+	REQUIRE(*data.calls == 1);
 }
