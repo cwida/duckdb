@@ -46,14 +46,6 @@ Logger &Logger::Get(const shared_ptr<Logger> &logger) {
 	return *logger;
 }
 
-ThreadSafeLogger::ThreadSafeLogger(LogConfig &config_p, LoggingContext &context_p, LogManager &manager)
-    : ThreadSafeLogger(config_p, manager.RegisterLoggingContext(context_p), manager) {
-}
-
-ThreadSafeLogger::ThreadSafeLogger(LogConfig &config_p, RegisteredLoggingContext context_p, LogManager &manager)
-    : ThreadSafeLogger(make_shared_ptr<const LogConfig>(config_p), context_p, manager) {
-}
-
 ThreadSafeLogger::ThreadSafeLogger(shared_ptr<const LogConfig> config_p, RegisteredLoggingContext context_p,
                                    LogManager &manager)
     : Logger(manager), config(std::move(config_p)), context(context_p) {

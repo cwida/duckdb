@@ -111,8 +111,6 @@ protected:
 // Thread-safe logger
 class ThreadSafeLogger : public Logger {
 public:
-	explicit ThreadSafeLogger(LogConfig &config_p, LoggingContext &context_p, LogManager &manager);
-	explicit ThreadSafeLogger(LogConfig &config_p, RegisteredLoggingContext context_p, LogManager &manager);
 	explicit ThreadSafeLogger(shared_ptr<const LogConfig> config_p, RegisteredLoggingContext context_p,
 	                          LogManager &manager);
 
