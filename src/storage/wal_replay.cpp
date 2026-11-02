@@ -375,7 +375,7 @@ unique_ptr<WriteAheadLog> WriteAheadLog::Replay(QueryContext context, StorageMan
 WriteAheadLogReplayer::WriteAheadLogReplayer(QueryContext context, StorageManager &storage_manager,
                                              const string &main_wal_path)
     : context(context), storage_manager(storage_manager), database(storage_manager.GetAttached()),
-      main_wal_path(main_wal_path), fs(FileSystem::Get(context, storage_manager.GetAttached())) {
+      main_wal_path(main_wal_path), fs(FileSystem::Get(storage_manager.GetAttached())) {
 }
 
 unique_ptr<WriteAheadLog> WriteAheadLogReplayer::Replay() {
@@ -385,6 +385,7 @@ unique_ptr<WriteAheadLog> WriteAheadLogReplayer::Replay() {
 		return make_uniq<WriteAheadLog>(storage_manager, main_wal_path);
 	}
 
+	// context is passed for metric collection purposes only!!
 	auto wal_handle = ReplayLog(std::move(handle));
 	if (wal_handle) {
 		return wal_handle;
