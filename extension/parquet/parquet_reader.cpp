@@ -2114,11 +2114,13 @@ ParquetReader::PlanBloomFilterReads(ClientContext &context, ThriftFileTransport 
 	const auto budget = MinValue<idx_t>(PrefetchCostModel::GAP_MAX, available_memory / 8);
 	idx_t retained_bytes = 0;
 	for (auto &head : read_ahead.read_heads) {
-		if (head->size > budget - retained_bytes) {
+		// Include the block header and sector rounding in the retained-memory estimate.
+		const auto allocation_size = BufferManager::GetAllocSize(head->size + Storage::DEFAULT_BLOCK_HEADER_SIZE);
+		if (allocation_size > budget - retained_bytes) {
 			read_ahead.read_heads.clear();
 			break;
 		}
-		retained_bytes += head->size;
+		retained_bytes += allocation_size;
 	}
 	// AddReadHead prepends heads; match them to the ranges in file order.
 	std::reverse(read_ahead.read_heads.begin(), read_ahead.read_heads.end());

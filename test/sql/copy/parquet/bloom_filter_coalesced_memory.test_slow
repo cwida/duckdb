@@ -65,6 +65,31 @@ SELECT count(*) FROM '{TEST_DIR}/bloom_singletons.parquet' WHERE x = 1;
 statement ok
 RESET memory_limit;
 
+# Surviving filters merge in pairs: 94 bytes per pair still needs a 4 KiB buffer.
+statement ok
+COPY (SELECT (range // 4096 % 2) * 100 + (range % 4) * 2 AS x FROM range(8388608))
+TO '{TEST_DIR}/bloom_small_pairs.parquet' (ROW_GROUP_SIZE 2048);
+
+query III
+SELECT count(*), min(bloom_filter_length), max(bloom_filter_length)
+FROM parquet_metadata('{TEST_DIR}/bloom_small_pairs.parquet');
+----
+4096	47	47
+
+statement ok
+SET parquet_prefetch_column_gap = 0;
+
+statement ok
+SET memory_limit = '4MB';
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/bloom_small_pairs.parquet' WHERE x = 1;
+----
+0
+
+statement ok
+RESET memory_limit;
+
 statement ok
 SET parquet_prefetch_column_gap = 16384;
 
