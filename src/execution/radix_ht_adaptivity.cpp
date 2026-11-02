@@ -49,7 +49,7 @@ bool RadixHTAdaptivity::TryGrow(RadixHTGlobalSinkState &gstate, RadixHTLocalSink
 		auto &memory_state = *gstate.temporary_memory_state;
 		const auto request = desired_size * gstate.number_of_threads;
 		const auto doubled_request = request <= NumericLimits<idx_t>::Maximum() / 2 ? request * 2 : request;
-		memory_state.SetRemainingSizeAndUpdateReservation(gstate.context,
+		memory_state.SetRemainingSizeAndUpdateReservation(gstate.context.Services(),
 		                                                  MaxValue(memory_state.GetRemainingSize(), doubled_request));
 	}
 	const auto thread_limit = gstate.GetThreadLimit();

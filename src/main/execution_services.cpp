@@ -6,6 +6,7 @@
 #include "duckdb/main/client_config.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/client_context_file_opener.hpp"
+#include "duckdb/main/client_context_state.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/profiler/metrics_manager.hpp"
@@ -26,14 +27,14 @@ public:
 	}
 
 	optional_ptr<FileOpener> GetOpener() const override {
-		return context.Services()->TryGetFileOpener();
+		return context.Services().TryGetFileOpener();
 	}
 
 private:
 	ClientContext &context;
 };
 
-ExecutionServices::ExecutionServices(shared_ptr<DatabaseInstance> db_p) : db(std::move(db_p)) {
+ExecutionServices::ExecutionServices(DatabaseInstance &db_p) : db(db_p) {
 }
 
 ExecutionServices::~ExecutionServices() {
@@ -44,17 +45,14 @@ void ExecutionServices::InitializeClient(ClientContext &context_p) {
 	context = &context_p;
 	config = make_uniq<ClientConfig>();
 	LoggingContext logging_context(LogContextScope::CONNECTION);
-	logger = db->GetLogManager().CreateLogger(logging_context, true);
+	logger = db.GetLogManager().CreateLogger(logging_context, true);
 	file_opener = make_uniq<ClientContextFileOpener>(context_p);
 	client_file_system = make_uniq<ClientFileSystem>(context_p);
 	profiler = make_shared_ptr<QueryProfiler>(context_p);
+	registered_state = make_uniq<RegisteredStateManager>();
 }
 
 DatabaseInstance &ExecutionServices::GetDatabase() const {
-	return *db;
-}
-
-const shared_ptr<DatabaseInstance> &ExecutionServices::GetDatabasePtr() const {
 	return db;
 }
 
@@ -93,11 +91,11 @@ SettingLookupResult ExecutionServices::TryGetCurrentSetting(const Identifier &ke
 	if (context) {
 		return context->TryGetCurrentSetting(key, result);
 	}
-	return db->TryGetCurrentSetting(key, result);
+	return db.TryGetCurrentSetting(key, result);
 }
 
 SettingLookupResult ExecutionServices::TryGetCurrentUserSetting(idx_t setting_index, Value &result) const {
-	auto &db_config = DBConfig::GetConfig(*db);
+	auto &db_config = DBConfig::GetConfig(db);
 	if (config) {
 		return config->user_settings.TryGetSetting(db_config.user_settings, setting_index, result);
 	}
@@ -108,7 +106,7 @@ Logger &ExecutionServices::GetLogger() const {
 	if (logger) {
 		return *logger;
 	}
-	return Logger::Get(*db);
+	return Logger::Get(db);
 }
 
 void ExecutionServices::SetLogger(shared_ptr<Logger> new_logger) {
@@ -123,7 +121,7 @@ FileSystem &ExecutionServices::GetFileSystem() const {
 	if (client_file_system) {
 		return *client_file_system;
 	}
-	return FileSystem::GetFileSystem(*db);
+	return FileSystem::GetFileSystem(db);
 }
 
 optional_ptr<FileOpener> ExecutionServices::TryGetFileOpener() const {
@@ -131,11 +129,16 @@ optional_ptr<FileOpener> ExecutionServices::TryGetFileOpener() const {
 }
 
 TaskScheduler &ExecutionServices::GetTaskScheduler() const {
-	return db->GetScheduler();
+	return db.GetScheduler();
 }
 
 MetricsManager &ExecutionServices::GetMetricsManager() const {
-	return db->GetMetricsManager();
+	return db.GetMetricsManager();
+}
+
+RegisteredStateManager &ExecutionServices::GetRegisteredState() const {
+	D_ASSERT(registered_state);
+	return *registered_state;
 }
 
 optional_ptr<QueryProfiler> ExecutionServices::TryGetQueryProfiler() const {
@@ -152,7 +155,7 @@ const shared_ptr<QueryProfiler> &ExecutionServices::GetQueryProfilerPtr() const 
 }
 
 shared_ptr<ExecutionServices> DatabaseInstance::Services() {
-	return make_shared_ptr<ExecutionServices>(shared_from_this());
+	return make_shared_ptr<ExecutionServices>(*this);
 }
 
 } // namespace duckdb

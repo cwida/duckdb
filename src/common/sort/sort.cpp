@@ -161,8 +161,8 @@ class SortGlobalSinkState : public GlobalSinkState {
 public:
 	explicit SortGlobalSinkState(ClientContext &context)
 	    : num_threads(TaskScheduler::GetScheduler(context).NumberOfThreads()),
-	      temporary_memory_state(TemporaryMemoryManager::Get(context).Register(context)), sorted_tuples(0),
-	      sunk_tuples(0), external(Settings::Get<DebugForceExternalSetting>(context)), total_count(0),
+	      temporary_memory_state(TemporaryMemoryManager::Get(context.Services()).Register(context.Services())),
+	      sorted_tuples(0), sunk_tuples(0), external(Settings::Get<DebugForceExternalSetting>(context)), total_count(0),
 	      partition_size(0) {
 	}
 
@@ -193,7 +193,7 @@ public:
 		}
 
 		// Send the request
-		temporary_memory_state->SetRemainingSizeAndUpdateReservation(context, request);
+		temporary_memory_state->SetRemainingSizeAndUpdateReservation(context.Services(), request);
 
 		// If we got less than we required, we have to go external
 		if (temporary_memory_state->GetReservation() < required) {
@@ -207,7 +207,7 @@ public:
 		if (sorted_runs.empty()) {
 			return;
 		}
-		TaskExecutor executor(context);
+		TaskExecutor executor(context.Services());
 		vector<unique_ptr<BaseExecutorTask>> tasks;
 		tasks.reserve(sorted_runs.size());
 		for (auto &sorted_run : sorted_runs) {

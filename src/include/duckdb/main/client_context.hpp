@@ -129,8 +129,6 @@ public:
 	shared_ptr<ClientContext> base_context;
 	//! The number of internal connections between this client and its base client (0 for a base client)
 	idx_t internal_depth = 0;
-	//! Set of optional states (e.g. Caches) that can be held by the ClientContext
-	unique_ptr<RegisteredStateManager> registered_state;
 	//! The services of this ClientContext: owns the client configuration, logger, query profiler, file system, ...
 	shared_ptr<ExecutionServices> services;
 	//! The set of client-specific data
@@ -304,8 +302,8 @@ public:
 	Logger &GetLogger() const;
 
 	//! Returns the services (client configuration, logging, metrics, file system) owned by this context
-	const shared_ptr<ExecutionServices> &Services() const {
-		return services;
+	ExecutionServices &Services() const {
+		return *services;
 	}
 
 	//! Returns the current query string (if any)

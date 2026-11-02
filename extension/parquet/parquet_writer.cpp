@@ -518,7 +518,7 @@ ParquetWriter::ParquetWriter(ClientContext &context, FileSystem &fs, ParquetWrit
     : context(context), options(std::move(options_p)), metadata_arena(BufferAllocator::Get(context)),
       file_meta_data(metadata_arena) {
 	// initialize the file writer
-	writer = make_uniq<AsyncFileWriter>(context, fs, options.file_name.c_str(), options.open_flags);
+	writer = make_uniq<AsyncFileWriter>(context.Services(), fs, options.file_name.c_str(), options.open_flags);
 
 	if (options.encryption_config) {
 		// Get the encryption util

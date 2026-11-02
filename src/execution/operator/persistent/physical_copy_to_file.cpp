@@ -320,7 +320,7 @@ class CopyFileLifecycleExecutor {
 
 public:
 	explicit CopyFileLifecycleExecutor(ClientContext &context_p)
-	    : context(context_p), executor(context_p, TaskSchedulerType::ASYNC) {
+	    : context(context_p), executor(context_p.Services(), TaskSchedulerType::ASYNC) {
 		auto &scheduler = TaskScheduler::GetScheduler(context);
 		async_threads = scheduler.NumberOfAsyncThreads();
 		auto regular_threads = scheduler.NumberOfThreads();

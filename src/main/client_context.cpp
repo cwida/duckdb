@@ -140,11 +140,10 @@ struct DebugClientContextState : public ClientContextState {
 
 ClientContext::ClientContext(shared_ptr<DatabaseInstance> database)
     : db(std::move(database)), interrupt_state(ClientInterruptState::NOT_INTERRUPTED),
-      services(make_shared_ptr<ExecutionServices>(db)), transaction(*this), connection_id(DConstants::INVALID_INDEX) {
+      services(make_shared_ptr<ExecutionServices>(*db)), transaction(*this), connection_id(DConstants::INVALID_INDEX) {
 	services->InitializeClient(*this);
-	registered_state = make_uniq<RegisteredStateManager>();
 #ifdef DEBUG
-	registered_state->GetOrCreate<DebugClientContextState>("debug_client_context_state");
+	services->GetRegisteredState().GetOrCreate<DebugClientContextState>("debug_client_context_state");
 #endif
 	client_data = make_uniq<ClientData>(*this);
 
@@ -364,7 +363,7 @@ shared_ptr<PreparedStatementData> ClientContext::CreatePreparedStatement(ClientC
                                                                          const QueryParameters &parameters) {
 	// check if any client context state could request a rebind
 	bool can_request_rebind = false;
-	for (auto &state : registered_state->States()) {
+	for (auto &state : services->GetRegisteredState().States()) {
 		if (state->CanRequestRebind()) {
 			can_request_rebind = true;
 		}
@@ -378,7 +377,7 @@ shared_ptr<PreparedStatementData> ClientContext::CreatePreparedStatement(ClientC
 		} catch (std::exception &ex) {
 			ErrorData error(ex);
 			// check if any registered client context state wants to try a rebind
-			for (auto &state : registered_state->States()) {
+			for (auto &state : services->GetRegisteredState().States()) {
 				auto info = state->OnPlanningError(*this, *statement, error);
 				if (info == RebindQueryInfo::ATTEMPT_TO_REBIND) {
 					rebind = true;
@@ -390,7 +389,7 @@ shared_ptr<PreparedStatementData> ClientContext::CreatePreparedStatement(ClientC
 		}
 		if (result) {
 			D_ASSERT(!rebind);
-			for (auto &state : registered_state->States()) {
+			for (auto &state : services->GetRegisteredState().States()) {
 				auto info = state->OnFinalizePrepare(*this, *result, PreparedStatementMode::PREPARE_AND_EXECUTE);
 				if (info == RebindQueryInfo::ATTEMPT_TO_REBIND) {
 					rebind = true;

@@ -1063,7 +1063,8 @@ TEST_CASE("Registered states see one QueryBegin and QueryEnd per group", "[api][
 	DuckDB db(nullptr);
 	Connection con(db);
 	CreateSales(con);
-	auto counter = con.context->registered_state->GetOrCreate<QueryCounter>("expanding_statements_query_counter");
+	auto counter =
+	    con.context->Services().GetRegisteredState().GetOrCreate<QueryCounter>("expanding_statements_query_counter");
 
 	auto handle = SubmitGroup(con, SALES_PIVOT);
 	handle->Complete();

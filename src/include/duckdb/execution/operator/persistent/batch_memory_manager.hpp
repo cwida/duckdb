@@ -20,7 +20,7 @@ public:
 	BatchMemoryManager(ClientContext &context, idx_t initial_memory_request)
 	    : context(context), unflushed_memory_usage(0), min_batch_index(0), available_memory(0),
 	      can_increase_memory(true) {
-		memory_state = TemporaryMemoryManager::Get(context).Register(context);
+		memory_state = TemporaryMemoryManager::Get(context.Services()).Register(context.Services());
 		SetMemorySize(initial_memory_request);
 	}
 
@@ -48,7 +48,7 @@ public:
 			return;
 		}
 
-		memory_state->SetRemainingSizeAndUpdateReservation(context, size);
+		memory_state->SetRemainingSizeAndUpdateReservation(context.Services(), size);
 		auto next_reservation = memory_state->GetReservation();
 		if (available_memory >= next_reservation) {
 			// we tried to ask for more memory but were declined

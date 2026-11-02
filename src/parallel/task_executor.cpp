@@ -23,7 +23,7 @@ public:
 		}
 		TaskExecutionResult result;
 		try {
-			TaskNotifier task_notifier {executor.context};
+			TaskNotifier task_notifier {executor.services};
 			// PROCESS_ALL must run to completion, so loop the steps; PROCESS_PARTIAL does one and yields
 			do {
 				result = task->ExecuteTaskStep();
@@ -109,14 +109,9 @@ TaskExecutor::TaskExecutor(TaskScheduler &scheduler, TaskSchedulerType type_p)
     : scheduler(scheduler), type(type_p), token(scheduler.CreateProducer()) {
 }
 
-TaskExecutor::TaskExecutor(ClientContext &context_p, TaskSchedulerType type_p)
-    : TaskExecutor(TaskScheduler::GetScheduler(context_p), type_p) {
-	context = context_p;
-}
-
-TaskExecutor::TaskExecutor(ExecutionServices &services, TaskSchedulerType type_p)
-    : TaskExecutor(services.GetTaskScheduler(), type_p) {
-	context = services.TryGetClientContext();
+TaskExecutor::TaskExecutor(ExecutionServices &services_p, TaskSchedulerType type_p)
+    : TaskExecutor(services_p.GetTaskScheduler(), type_p) {
+	services = &services_p;
 }
 
 TaskExecutor::~TaskExecutor() {

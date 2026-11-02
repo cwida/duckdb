@@ -1,6 +1,7 @@
 #include "duckdb/common/types/data_chunk.hpp"
 #include "duckdb/parallel/executor_task.hpp"
 #include "duckdb/parallel/async_result.hpp"
+#include "duckdb/main/client_context.hpp"
 #include "duckdb/parallel/interrupt.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
 #include "duckdb/parallel/task_executor.hpp"
@@ -185,7 +186,7 @@ void AsyncResult::ExecuteTasksSynchronously(ClientContext &context) {
 		// the tasks are independent (they run concurrently when scheduled on the pool): run them side by side
 		DUCKDB_LOG(context, AsyncTaskScheduleLogType, "SYNCHRONOUS_" + EnumUtil::ToString(pool_type),
 		           async_tasks.size());
-		TaskExecutor executor(context, pool_type);
+		TaskExecutor executor(context.Services(), pool_type);
 		for (auto &async_task : async_tasks) {
 			executor.ScheduleTask(make_uniq<ExecutorAsyncTask>(executor, std::move(async_task)));
 		}

@@ -259,7 +259,7 @@ unique_ptr<JSONStructureNode> JSONScan::DetectStructure(ClientContext &context, 
 	}
 
 	// Same idea as in union_by_name.hpp
-	TaskExecutor executor(context);
+	TaskExecutor executor(context.Services());
 	for (idx_t task_idx = 0; task_idx < num_tasks; task_idx++) {
 		const auto file_idx_start = task_idx * files_per_task;
 		const auto file_idx_end = MinValue(file_idx_start + files_per_task, file_count);

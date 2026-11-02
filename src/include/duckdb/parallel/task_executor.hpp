@@ -64,7 +64,6 @@ protected:
 //! The TaskExecutor is a helper class that enables parallel scheduling and execution of tasks
 class TaskExecutor {
 public:
-	explicit TaskExecutor(ClientContext &context, TaskSchedulerType type = TaskSchedulerType::REGULAR);
 	explicit TaskExecutor(ExecutionServices &services, TaskSchedulerType type = TaskSchedulerType::REGULAR);
 	explicit TaskExecutor(TaskScheduler &scheduler, TaskSchedulerType type = TaskSchedulerType::REGULAR);
 	~TaskExecutor();
@@ -125,7 +124,7 @@ private:
 	idx_t completed_tasks DUCKDB_GUARDED_BY(token->producer_lock) = 0;
 	idx_t total_tasks DUCKDB_GUARDED_BY(token->producer_lock) = 0;
 	atomic<bool> cancelled {false};
-	optional_ptr<ClientContext> context;
+	optional_ptr<ExecutionServices> services;
 };
 
 } // namespace duckdb

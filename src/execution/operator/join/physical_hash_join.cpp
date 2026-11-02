@@ -441,16 +441,16 @@ class HashJoinGlobalSinkState : public GlobalSinkState {
 public:
 	HashJoinGlobalSinkState(const PhysicalHashJoin &op_p, ClientContext &context_p)
 	    : context(context_p), op(op_p), num_threads(TaskScheduler::GetScheduler(context).NumberOfThreads()),
-	      temporary_memory_state(TemporaryMemoryManager::Get(context).Register(context)), initial_radix_bits(4),
-	      finalized(false), active_local_states(0), total_size(0), max_partition_size(0), max_partition_count(0),
-	      probe_side_requirement(0), scanned_data(false) {
+	      temporary_memory_state(TemporaryMemoryManager::Get(context.Services()).Register(context.Services())),
+	      initial_radix_bits(4), finalized(false), active_local_states(0), total_size(0), max_partition_size(0),
+	      max_partition_count(0), probe_side_requirement(0), scanned_data(false) {
 		hash_table = op.InitializeHashTable(context, initial_radix_bits);
 		// Reserve the initial partition buffers before upstream hash tables are finalized.
 		auto minimum_reservation = MinValue(temporary_memory_state->GetMinimumReservation(),
 		                                    GetBuildSpaceRequirement(context, *hash_table, num_threads));
 		temporary_memory_state->SetMinimumReservation(minimum_reservation);
 		temporary_memory_state->SetRemainingSize(minimum_reservation);
-		temporary_memory_state->UpdateReservation(context);
+		temporary_memory_state->UpdateReservation(context.Services());
 
 		// Multiple build producers can change dictionaries after the layout has been published.
 		build_side_multi_source = BuildSideHasMultipleSources(op.children[1].get());
@@ -1520,7 +1520,7 @@ public:
 		sink.temporary_memory_state->SetMinimumReservation(sink.max_partition_size +
 		                                                   sink.hash_table->PointerTableSize(sink.max_partition_count) +
 		                                                   sink.probe_side_requirement);
-		sink.temporary_memory_state->UpdateReservation(executor.context);
+		sink.temporary_memory_state->UpdateReservation(executor.context.Services());
 
 		FinalizeExternalRuntimeFilters(sink.context, op, sink);
 
@@ -2084,7 +2084,7 @@ SinkFinalizeType PhysicalHashJoin::Finalize(Pipeline &pipeline, Event &event, Cl
 	// the filter covers the whole build side once Sink is done
 	ht.SealBloomFilter();
 
-	sink.temporary_memory_state->UpdateReservation(context);
+	sink.temporary_memory_state->UpdateReservation(context.Services());
 	sink.external = sink.temporary_memory_state->GetReservation() < sink.total_size;
 	if (sink.external) {
 		// For external join we reduce the load factor, this may even prevent the external join altogether
@@ -2098,7 +2098,7 @@ SinkFinalizeType PhysicalHashJoin::Finalize(Pipeline &pipeline, Event &event, Cl
 		if (temp_total_size < sink.temporary_memory_state->GetReservation()) {
 			// We prevented the external join by reducing the load factor. Update the state accordingly
 			sink.temporary_memory_state->SetMinimumReservation(temp_total_size);
-			sink.temporary_memory_state->SetRemainingSizeAndUpdateReservation(context, temp_total_size);
+			sink.temporary_memory_state->SetRemainingSizeAndUpdateReservation(context.Services(), temp_total_size);
 
 			sink.total_size = temp_total_size;
 			sink.max_partition_size = temp_max_partition_size;
@@ -2647,8 +2647,8 @@ void HashJoinGlobalSourceState::PrepareBuild(HashJoinGlobalSinkState &sink) {
 	auto &ht = *sink.hash_table;
 
 	// Update remaining size
-	sink.temporary_memory_state->SetRemainingSizeAndUpdateReservation(sink.context, ht.GetRemainingSize() +
-	                                                                                    sink.probe_side_requirement);
+	sink.temporary_memory_state->SetRemainingSizeAndUpdateReservation(
+	    sink.context.Services(), ht.GetRemainingSize() + sink.probe_side_requirement);
 
 	// Try to put the next partitions in the block collection of the HT
 	if (!sink.external || !ht.PrepareExternalFinalize(sink.GetMaxExternalHTSize())) {

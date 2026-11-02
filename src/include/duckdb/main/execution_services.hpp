@@ -24,6 +24,7 @@ class FileSystem;
 class Logger;
 class MetricsManager;
 class QueryProfiler;
+class RegisteredStateManager;
 class TaskScheduler;
 class Value;
 
@@ -34,7 +35,8 @@ class Value;
 class ExecutionServices {
 public:
 	//! Creates database-wide services
-	DUCKDB_API explicit ExecutionServices(shared_ptr<DatabaseInstance> db);
+	//! The database must outlive the services
+	DUCKDB_API explicit ExecutionServices(DatabaseInstance &db);
 	DUCKDB_API ~ExecutionServices();
 
 	//! Turns these into the services of the given client context: creates the client config, the connection logger,
@@ -45,7 +47,6 @@ public:
 public:
 	//! The database instance the services belong to
 	DUCKDB_API DatabaseInstance &GetDatabase() const;
-	DUCKDB_API const shared_ptr<DatabaseInstance> &GetDatabasePtr() const;
 	//! The client context owning the services (if any) - only present for the services of a ClientContext
 	DUCKDB_API optional_ptr<ClientContext> TryGetClientContext() const;
 	//! Null-safe variants for optional services
@@ -86,18 +87,21 @@ public:
 	DUCKDB_API TaskScheduler &GetTaskScheduler() const;
 	//! The database-wide metrics manager
 	DUCKDB_API MetricsManager &GetMetricsManager() const;
+	//! The states (e.g. caches) registered by extensions - only present for the services of a ClientContext
+	DUCKDB_API RegisteredStateManager &GetRegisteredState() const;
 	//! The query profiler of the client - only present for the services of a ClientContext
 	DUCKDB_API optional_ptr<QueryProfiler> TryGetQueryProfiler() const;
 	DUCKDB_API QueryProfiler &GetQueryProfiler() const;
 	DUCKDB_API const shared_ptr<QueryProfiler> &GetQueryProfilerPtr() const;
 
 private:
-	shared_ptr<DatabaseInstance> db;
+	DatabaseInstance &db;
 	//! Back reference to the owning client context
 	optional_ptr<ClientContext> context;
 	unique_ptr<ClientConfig> config;
 	shared_ptr<Logger> logger;
 	shared_ptr<QueryProfiler> profiler;
+	unique_ptr<RegisteredStateManager> registered_state;
 	unique_ptr<FileOpener> file_opener;
 	unique_ptr<FileSystem> client_file_system;
 };

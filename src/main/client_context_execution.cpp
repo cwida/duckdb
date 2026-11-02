@@ -68,7 +68,7 @@ void ClientContext::BeginQueryInternal(ClientContextLock &lock, PreprocessedStat
 		query_deadline.SetInvalid();
 	}
 	// Notify any registered state of query begin
-	for (auto &state : registered_state->States()) {
+	for (auto &state : services->GetRegisteredState().States()) {
 		state->QueryBegin(*this);
 	}
 	RefreshLoggerInternal();
@@ -142,7 +142,7 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 	services->SetLogger(db->GetLogManager().CreateLogger(context, true));
 
 	// Notify any registered state of query end
-	for (auto const &s : registered_state->States()) {
+	for (auto const &s : services->GetRegisteredState().States()) {
 		if (error.HasError()) {
 			s->QueryEnd(*this, &error);
 		} else {
@@ -155,7 +155,7 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 void ClientContext::EndQueryProfiling(ErrorData &error) {
 	// this also runs while a connection with an open result is destroyed, so it must not throw
 	try {
-		services->GetQueryProfiler().EndQuery();
+		QueryProfiler::Get(*services).EndQuery();
 	} catch (std::exception &ex) {
 		if (!error.HasError()) {
 			error = ErrorData(ex);
@@ -472,7 +472,7 @@ void ClientContext::AbandonActiveQuery(ClientContextLock &lock) {
 		AbortInternal(lock);
 	}
 	interrupt_state = ClientInterruptState::NOT_INTERRUPTED;
-	services->GetQueryProfiler().ResetQueryStart();
+	QueryProfiler::Get(*services).ResetQueryStart();
 }
 
 unique_ptr<QueryResult> ClientContext::CompleteInternal(ClientContextLock &lock, unique_ptr<QueryResult> result) {
@@ -564,7 +564,7 @@ void ClientContext::EndStatementInternal(ClientContextLock &lock) {
 	// The plan outlives the executor
 	active_query->prepared.reset();
 	transaction.ResetActiveQuery();
-	services->GetQueryProfiler().EndQuery();
+	QueryProfiler::Get(*services).EndQuery();
 }
 
 unique_ptr<QueryResult> ClientContext::TakeFinishedResultInternal(ClientContextLock &lock) {

@@ -909,6 +909,10 @@ BufferAllocator &BufferAllocator::Get(ClientContext &context) {
 	return manager.GetBufferAllocator();
 }
 
+BufferAllocator &BufferAllocator::Get(ExecutionServices &services) {
+	return Get(services.GetDatabase());
+}
+
 BufferAllocator &BufferAllocator::Get(DatabaseInstance &db) {
 	return StandardBufferManager::GetBufferManager(db).GetBufferAllocator();
 }

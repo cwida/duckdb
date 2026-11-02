@@ -1603,9 +1603,9 @@ void DataTable::Checkpoint(TableDataWriter &writer, Serializer &serializer) {
 	}
 	if (writer.GetRebuildIndexes()) {
 		MetricsTimer timer;
-		auto context = writer.TryGetClientContext();
-		if (context) {
-			timer = QueryProfiler::Get(*context).StartTimer<MetricStorageTotalVacuumTime>();
+		auto profiler = writer.GetServices().TryGetQueryProfiler();
+		if (profiler) {
+			timer = profiler->StartTimer<MetricStorageTotalVacuumTime>();
 		}
 		RebuildIndexes();
 		timer.EndTimer();

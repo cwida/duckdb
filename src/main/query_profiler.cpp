@@ -14,6 +14,7 @@
 #include "duckdb/main/client_config.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/client_data.hpp"
+#include "duckdb/main/execution_services.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/profiler/profiling_utils.hpp"
 #include "duckdb/main/profiler/gathered_metrics.hpp"
@@ -115,7 +116,11 @@ string QueryProfiler::GetSaveLocation() const {
 }
 
 QueryProfiler &QueryProfiler::Get(ClientContext &context) {
-	return context.services->GetQueryProfiler();
+	return Get(*context.services);
+}
+
+QueryProfiler &QueryProfiler::Get(ExecutionServices &services) {
+	return services.GetQueryProfiler();
 }
 
 void QueryProfiler::Start(const string &query) {
@@ -678,7 +683,7 @@ void QueryProfiler::RenderQueryTree(BaseTreeRenderer &ss) const {
 
 	// the registered states write profiling info through an ostream - capture it and emit as layout text
 	duckdb::stringstream state_info;
-	for (auto &state : context.registered_state->States()) {
+	for (auto &state : context.Services().GetRegisteredState().States()) {
 		state->WriteProfilingInformation(state_info);
 	}
 	ss << state_info.str();

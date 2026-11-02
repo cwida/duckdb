@@ -516,10 +516,9 @@ unique_ptr<WriteAheadLog> WriteAheadLogReplayer::ReplayLog(unique_ptr<FileHandle
 				}
 			}
 		}
-		auto client_context = ExecutionServices::TryGetClientContext(context.GetServices());
-		if (client_context) {
-			auto &profiler = client_context->services->GetQueryProfiler();
-			profiler.AddToMetricCounter(MetricStorageWALReplayEntryCount::Name, replay_entry_count);
+		auto profiler = ExecutionServices::TryGetQueryProfiler(context.GetServices());
+		if (profiler) {
+			profiler->AddToMetricCounter(MetricStorageWALReplayEntryCount::Name, replay_entry_count);
 		}
 	} catch (std::exception &ex) { // LCOV_EXCL_START
 		ErrorData error(ex);

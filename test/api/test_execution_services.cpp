@@ -16,7 +16,7 @@ TEST_CASE("Test ExecutionServices", "[api]") {
 	con.Query("SET threads=2");
 
 	SECTION("services owned by a ClientContext") {
-		auto &services = *con.context->Services();
+		auto &services = con.context->Services();
 		REQUIRE(services.IsClient());
 		REQUIRE(services.TryGetClientContext().get() == con.context.get());
 		REQUIRE(&services.GetDatabase() == db.instance.get());
@@ -58,8 +58,8 @@ TEST_CASE("Test ExecutionServices", "[api]") {
 		REQUIRE(!invalid.GetServices());
 		QueryContext valid(*con.context);
 		REQUIRE(valid.Valid());
-		REQUIRE(valid.GetServices().get() == con.context->Services().get());
+		REQUIRE(valid.GetServices().get() == con.context->services.get());
 		QueryContext from_ptr(optional_ptr<ClientContext>(con.context.get()));
-		REQUIRE(from_ptr.GetServices().get() == con.context->Services().get());
+		REQUIRE(from_ptr.GetServices().get() == con.context->services.get());
 	}
 }

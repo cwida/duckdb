@@ -44,10 +44,10 @@
 
 namespace duckdb {
 
-ActiveCheckpointWrapper::ActiveCheckpointWrapper(optional_ptr<ClientContext> context, AttachedDatabase &db_p,
+ActiveCheckpointWrapper::ActiveCheckpointWrapper(ExecutionServices &services, AttachedDatabase &db_p,
                                                  DuckTransactionManager &transaction_manager_p)
     : db(db_p), transaction_manager(transaction_manager_p) {
-	if (!context) {
+	if (!services.IsClient()) {
 		return;
 	}
 	checkpoint_connection = make_uniq<Connection>(Connection::CreateInternal(db.GetDatabase()));
@@ -101,11 +101,19 @@ optional_ptr<ClientContext> ActiveCheckpointWrapper::GetCheckpointContext() cons
 	return checkpoint_context;
 }
 
+CheckpointWriter::CheckpointWriter(AttachedDatabase &db_p, QueryContext context)
+    : db(db_p), owned_services(context.Valid() ? nullptr : db_p.GetDatabase().Services()),
+      services(context.Valid() ? *context.GetServices() : *owned_services) {
+}
+
+CheckpointWriter::~CheckpointWriter() {
+}
+
 void ReorderTableEntries(catalog_entry_vector_t &tables);
 
 SingleFileCheckpointWriter::SingleFileCheckpointWriter(QueryContext context, AttachedDatabase &db,
                                                        BlockManager &block_manager, CheckpointOptions options_p)
-    : CheckpointWriter(db), context(ExecutionServices::TryGetClientContext(context.GetServices())),
+    : CheckpointWriter(db, context), context(GetServices().TryGetClientContext()),
       partial_block_manager(context, block_manager, PartialBlockType::FULL_CHECKPOINT),
       index_partial_block_manager(context, block_manager, PartialBlockType::FULL_CHECKPOINT), options(options_p) {
 }
@@ -271,7 +279,7 @@ void SingleFileCheckpointWriter::CreateCheckpoint() {
 
 	// If there is a context (non shutdown path): this will create a new connection for the checkpoint, then in
 	// WALStartCheckpoint we will create a transaction for the checkpoint.
-	ActiveCheckpointWrapper active_checkpoint(context, db, transaction_manager);
+	ActiveCheckpointWrapper active_checkpoint(GetServices(), db, transaction_manager);
 	auto has_wal = storage_manager.WALStartCheckpoint(meta_block, options, active_checkpoint);
 	checkpoint_context = active_checkpoint.GetCheckpointContext();
 

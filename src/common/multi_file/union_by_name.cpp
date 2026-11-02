@@ -43,7 +43,7 @@ vector<shared_ptr<BaseUnionData>> UnionByName::UnionCols(ClientContext &context,
 	vector<shared_ptr<BaseUnionData>> union_readers;
 	union_readers.resize(files.size());
 
-	TaskExecutor executor(context);
+	TaskExecutor executor(context.Services());
 	// schedule tasks for all files
 	for (idx_t file_idx = 0; file_idx < files.size(); ++file_idx) {
 		auto task = make_uniq<UnionByReaderTask>(executor, context, files[file_idx], file_idx, union_readers, options,

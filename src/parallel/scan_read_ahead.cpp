@@ -154,7 +154,7 @@ ScanReadAhead::ScanReadAhead(ClientContext &context, idx_t read_ahead_depth_p,
       open_file_budget(GetOpenFileBudget(context)) {
 	D_ASSERT(read_ahead_depth_p > 0);
 	backlog_budget = memory_governor ? memory_governor->BackpressureBudget() : NumericLimits<idx_t>::Maximum();
-	executor = make_shared_ptr<TaskExecutor>(context, TaskSchedulerType::ASYNC);
+	executor = make_shared_ptr<TaskExecutor>(context.Services(), TaskSchedulerType::ASYNC);
 }
 
 ScanReadAhead::~ScanReadAhead() {
@@ -177,7 +177,7 @@ unique_ptr<ScanReadAhead> ScanReadAhead::Create(ClientContext &context) {
 	if (configured_depth < 0) {
 		// automatic mode, unlimited depth, the backlog is bounded by a temp-memory reservation instead
 		return make_uniq<ScanReadAhead>(context, NumericLimits<idx_t>::Maximum(),
-		                                make_uniq<ManagedAsyncMemoryGovernor>(context));
+		                                make_uniq<ManagedAsyncMemoryGovernor>(context.Services()));
 	}
 	return make_uniq<ScanReadAhead>(context, NumericCast<idx_t>(configured_depth), nullptr);
 }
