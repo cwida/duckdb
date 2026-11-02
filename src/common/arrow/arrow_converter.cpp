@@ -242,7 +242,7 @@ void SetArrowFormat(DuckDBArrowSchemaHolder &root_holder, ArrowSchema &child, co
 		child.format = "tin";
 		break;
 	case LogicalTypeId::DECIMAL: {
-		uint8_t width, scale;
+		uint32_t width, scale;
 		idx_t bit_width;
 		if (type.InternalType() == PhysicalType::VARCHAR) {
 			// wide decimals become Arrow decimal256 (format version 1.1), which holds up to 76 digits

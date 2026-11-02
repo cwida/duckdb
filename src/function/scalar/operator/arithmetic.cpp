@@ -414,12 +414,12 @@ template <bool IS_MODULO>
 LogicalType DecimalArithmeticResultType(const vector<LogicalType> &input_types, bool &check_overflow) {
 	check_overflow = false;
 	// get the max width and scale of the input arguments
-	uint8_t max_width = 0, max_scale = 0, max_width_over_scale = 0;
+	uint32_t max_width = 0, max_scale = 0, max_width_over_scale = 0;
 	for (auto &input_type : input_types) {
 		if (input_type.id() == LogicalTypeId::UNKNOWN) {
 			continue;
 		}
-		uint8_t width, scale;
+		uint32_t width, scale;
 		auto can_convert = input_type.GetDecimalProperties(width, scale);
 		if (!can_convert) {
 			throw BinderException("Could not convert type %s to a decimal for the arithmetic operator - add an "
@@ -429,11 +429,11 @@ LogicalType DecimalArithmeticResultType(const vector<LogicalType> &input_types, 
 		if (width > max_width) {
 			max_width = width;
 		}
-		max_scale = MaxValue<uint8_t>(scale, max_scale);
-		max_width_over_scale = MaxValue<uint8_t>(width - scale, max_width_over_scale);
+		max_scale = MaxValue<uint32_t>(scale, max_scale);
+		max_width_over_scale = MaxValue<uint32_t>(width - scale, max_width_over_scale);
 	}
 	D_ASSERT(max_width > 0);
-	idx_t required_width = MaxValue<idx_t>(idx_t(max_scale) + max_width_over_scale, max_width);
+	uint32_t required_width = MaxValue<uint32_t>(max_scale + max_width_over_scale, max_width);
 	if (!IS_MODULO) {
 		// for addition/subtraction, we add 1 to the width to ensure we don't overflow
 		required_width++;
@@ -443,7 +443,7 @@ LogicalType DecimalArithmeticResultType(const vector<LogicalType> &input_types, 
 		check_overflow = true;
 		required_width = Decimal::MAX_WIDTH_DECIMAL;
 	}
-	return LogicalType::DECIMAL(NumericCast<uint8_t>(required_width), max_scale);
+	return LogicalType::DECIMAL(required_width, max_scale);
 }
 
 //! Resolves the types of a decimal addition, subtraction or modulo, returns whether overflow checks are required
@@ -458,7 +458,7 @@ bool ResolveDecimalArithmeticTypes(ResolveScalarFunctionTypesInput &input) {
 		// first check if the cast is necessary
 		// if the argument has a matching scale and internal type as the output type, no casting is necessary
 		auto &argument_type = argument_types[i];
-		uint8_t width, scale;
+		uint32_t width, scale;
 		argument_type.GetDecimalProperties(width, scale);
 		if (scale == DecimalType::GetScale(result_type) && argument_type.InternalType() == result_type.InternalType()) {
 			bound_function.GetArguments()[i] = argument_type;
@@ -1125,20 +1125,19 @@ struct MultiplyPropagateStatistics {
 //! Computes the result type of a decimal multiplication over the given input types
 LogicalType DecimalMultiplyResultType(const vector<LogicalType> &input_types, bool &check_overflow) {
 	check_overflow = false;
-	idx_t result_width = 0, result_scale = 0;
-	uint8_t max_width = 0;
+	uint32_t result_width = 0, result_scale = 0, max_width = 0;
 	for (auto &input_type : input_types) {
 		if (input_type.id() == LogicalTypeId::UNKNOWN) {
 			continue;
 		}
-		uint8_t width, scale;
+		uint32_t width, scale;
 		auto can_convert = input_type.GetDecimalProperties(width, scale);
 		if (!can_convert) {
 			throw BinderException("Could not convert type %s to a decimal for the arithmetic operator - add an "
 			                      "explicit cast",
 			                      input_type.ToString());
 		}
-		max_width = MaxValue<uint8_t>(width, max_width);
+		max_width = MaxValue<uint32_t>(width, max_width);
 		result_width += width;
 		result_scale += scale;
 	}
@@ -1159,7 +1158,7 @@ LogicalType DecimalMultiplyResultType(const vector<LogicalType> &input_types, bo
 		check_overflow = true;
 		result_width = Decimal::MAX_WIDTH_DECIMAL;
 	}
-	return LogicalType::DECIMAL(NumericCast<uint8_t>(result_width), NumericCast<uint8_t>(result_scale));
+	return LogicalType::DECIMAL(result_width, result_scale);
 }
 
 void DecimalMultiplyResolveTypes(ResolveScalarFunctionTypesInput &input) {
@@ -1175,7 +1174,7 @@ void DecimalMultiplyResolveTypes(ResolveScalarFunctionTypesInput &input) {
 		if (argument_type.InternalType() == result_type.InternalType()) {
 			bound_function.GetArguments()[i] = argument_type;
 		} else {
-			uint8_t width, scale;
+			uint32_t width, scale;
 			if (!argument_type.GetDecimalProperties(width, scale)) {
 				scale = 0;
 			}

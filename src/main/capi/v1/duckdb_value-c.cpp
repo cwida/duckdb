@@ -179,7 +179,7 @@ duckdb_decimal duckdb_get_decimal(duckdb_value val) {
 	} else {
 		hugeint = duckdb::IntegralValue::Get(v);
 	}
-	return {width, scale, {hugeint.lower, hugeint.upper}};
+	return {duckdb::NumericCast<uint8_t>(width), duckdb::NumericCast<uint8_t>(scale), {hugeint.lower, hugeint.upper}};
 }
 duckdb_value duckdb_create_float(float input) {
 	return CAPICreateValue(input);

@@ -141,7 +141,7 @@ string FractionDigits(uint64_t fraction, idx_t bits, idx_t max_digits) {
 	return digits.empty() ? "" : "." + digits;
 }
 
-bool FitsWidthInternal(const BignumIntermediate &value, uint8_t width) {
+bool FitsWidthInternal(const BignumIntermediate &value, uint32_t width) {
 	BorrowedBignum limit(string_t(BignumDecimal::PowerOfTen(width)));
 	return value.IsAbsoluteBigger(limit.intermediate) == SMALLER;
 }
@@ -162,12 +162,12 @@ const string &BignumDecimal::PowerOfTen(idx_t exponent) {
 	return POWERS[exponent];
 }
 
-bool BignumDecimal::FitsWidth(const string_t &value, uint8_t width) {
+bool BignumDecimal::FitsWidth(const string_t &value, uint32_t width) {
 	BorrowedBignum borrowed(value);
 	return FitsWidthInternal(borrowed.intermediate, width);
 }
 
-bool BignumDecimal::FitsWidth(const BignumIntermediate &value, uint8_t width) {
+bool BignumDecimal::FitsWidth(const BignumIntermediate &value, uint32_t width) {
 	return FitsWidthInternal(value, width);
 }
 
@@ -180,7 +180,7 @@ bool BignumDecimal::IsZero(const string_t &value) {
 	       value.GetData()[Bignum::BIGNUM_HEADER_SIZE] == 0;
 }
 
-string BignumDecimal::ToString(const string_t &value, uint8_t scale) {
+string BignumDecimal::ToString(const string_t &value, uint32_t scale) {
 	const bignum_t bignum(value);
 	auto digits = Bignum::BignumToVarchar(bignum);
 	if (scale == 0) {
@@ -202,7 +202,7 @@ string BignumDecimal::ToString(const string_t &value, uint8_t scale) {
 	return digits;
 }
 
-bool BignumDecimal::TryParse(const char *data, idx_t size, uint8_t width, uint8_t scale, string &result,
+bool BignumDecimal::TryParse(const char *data, idx_t size, uint32_t width, uint32_t scale, string &result,
                              char decimal_separator) {
 	idx_t pos = 0;
 	// skip surrounding whitespace
@@ -306,8 +306,8 @@ bool BignumDecimal::TryParse(const char *data, idx_t size, uint8_t width, uint8_
 	return true;
 }
 
-bool BignumDecimal::TryRescale(const string_t &value, uint8_t source_scale, uint8_t target_width, uint8_t target_scale,
-                               string &result) {
+bool BignumDecimal::TryRescale(const string_t &value, uint32_t source_scale, uint32_t target_width,
+                               uint32_t target_scale, string &result) {
 	BorrowedBignum source(value);
 	if (target_scale == source_scale) {
 		if (!FitsWidthInternal(source.intermediate, target_width)) {
@@ -395,7 +395,7 @@ bool BignumDecimal::TryToHugeint(const string_t &value, hugeint_t &result) {
 	return Bignum::BignumToInt(bignum_t(value), result, strict);
 }
 
-double BignumDecimal::ToDouble(const string_t &value, uint8_t scale) {
+double BignumDecimal::ToDouble(const string_t &value, uint32_t scale) {
 	auto text = ToString(value, scale);
 	double result;
 	if (!TryCast::Operation(string_t(text), result, false)) {
@@ -471,7 +471,7 @@ void BignumDecimal::ToTwosComplement(const string_t &value, data_ptr_t result, i
 	}
 }
 
-bool BignumDecimal::TryFromDouble(double value, uint8_t width, uint8_t scale, string &result) {
+bool BignumDecimal::TryFromDouble(double value, uint32_t width, uint32_t scale, string &result) {
 	if (!std::isfinite(value)) {
 		return false;
 	}

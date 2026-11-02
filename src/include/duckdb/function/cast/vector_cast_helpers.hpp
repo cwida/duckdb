@@ -82,13 +82,13 @@ struct VectorTryCastStringOperator {
 };
 
 struct VectorDecimalCastData {
-	VectorDecimalCastData(Vector &result, CastParameters &parameters, uint8_t width_p, uint8_t scale_p)
+	VectorDecimalCastData(Vector &result, CastParameters &parameters, uint32_t width_p, uint32_t scale_p)
 	    : vector_cast_data(result, parameters), width(width_p), scale(scale_p) {
 	}
 
 	VectorTryCastData vector_cast_data;
-	uint8_t width;
-	uint8_t scale;
+	uint32_t width;
+	uint32_t scale;
 };
 
 template <class OP>
@@ -149,7 +149,7 @@ struct VectorCastHelpers {
 
 	template <class SRC, class T, class OP>
 	static bool TemplatedDecimalCast(Vector &source, Vector &result, idx_t count, CastParameters &parameters,
-	                                 uint8_t width, uint8_t scale) {
+	                                 uint32_t width, uint32_t scale) {
 		VectorDecimalCastData input(result, parameters, width, scale);
 		UnaryExecutor::GenericExecute<SRC, T, VectorDecimalCastOperator<OP>>(source, result, count, input,
 		                                                                     parameters.error_message);

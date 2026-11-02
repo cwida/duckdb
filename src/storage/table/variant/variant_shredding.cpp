@@ -477,8 +477,7 @@ bool VariantShreddingStats::GetShreddedTypeInternal(const VariantColumnStatsData
 		return true;
 	}
 	if (type_index == static_cast<uint8_t>(VariantLogicalType::DECIMAL)) {
-		auto shredded_type = LogicalType::DECIMAL(static_cast<uint8_t>(column.decimal_width),
-		                                          static_cast<uint8_t>(column.decimal_scale));
+		auto shredded_type = LogicalType::DECIMAL(column.decimal_width, column.decimal_scale);
 		out_type = SetShreddedType(shredded_type, fully_consistent);
 		return true;
 	}

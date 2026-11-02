@@ -157,12 +157,12 @@ static Value NumberToValue(const string &val) {
 		if (decimal_position.GetIndex() > width + num_integer_underscores) {
 			throw ParserException("Could not convert string \"%s\" to a decimal value", val);
 		}
-		auto scale = NumericCast<uint8_t>(width - decimal_position.GetIndex() + num_integer_underscores);
+		auto scale = NumericCast<uint32_t>(width - decimal_position.GetIndex() + num_integer_underscores);
 		if (val[0] == '-') {
 			width--;
 		}
 		// literals wider than 38 digits become wide decimals, which keep every digit
-		return Value(str_val).DefaultCastAs(LogicalType::DECIMAL(NumericCast<uint8_t>(width), scale));
+		return Value(str_val).DefaultCastAs(LogicalType::DECIMAL(NumericCast<uint32_t>(width), scale));
 	}
 	// there is an exponent, or the value is too wide for any decimal
 	double dbl_value = Cast::Operation<string_t, double>(str_val);

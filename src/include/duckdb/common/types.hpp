@@ -486,7 +486,7 @@ struct LogicalType {
 	DUCKDB_API static LogicalType ConstructNestedType(const LogicalType &type, child_list_t<LogicalType> children);
 
 	//! Gets the decimal properties of a numeric type. Fails if the type is not numeric.
-	DUCKDB_API bool GetDecimalProperties(uint8_t &width, uint8_t &scale) const;
+	DUCKDB_API bool GetDecimalProperties(uint32_t &width, uint32_t &scale) const;
 
 	DUCKDB_API void Verify() const;
 
@@ -559,7 +559,7 @@ public:
 	static constexpr const LogicalTypeId ROW_TYPE = LogicalTypeId::BIGINT;
 
 	// explicitly allowing these functions to be capitalized to be in-line with the remaining functions
-	DUCKDB_API static LogicalType DECIMAL(uint8_t width, uint8_t scale);      // NOLINT
+	DUCKDB_API static LogicalType DECIMAL(uint32_t width, uint32_t scale);      // NOLINT
 	DUCKDB_API static LogicalType VARCHAR_COLLATION(string collation);        // NOLINT
 	DUCKDB_API static LogicalType LIST(const LogicalType &child);             // NOLINT
 	DUCKDB_API static LogicalType STRUCT(child_list_t<LogicalType> children); // NOLINT
@@ -602,9 +602,9 @@ public:
 };
 
 struct DecimalType {
-	DUCKDB_API static uint8_t GetWidth(const LogicalType &type);
-	DUCKDB_API static uint8_t GetScale(const LogicalType &type);
-	DUCKDB_API static uint8_t MaxWidth();
+	DUCKDB_API static uint32_t GetWidth(const LogicalType &type);
+	DUCKDB_API static uint32_t GetScale(const LogicalType &type);
+	DUCKDB_API static uint32_t MaxWidth();
 };
 
 struct StringType {

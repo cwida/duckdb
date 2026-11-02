@@ -291,8 +291,8 @@ struct VariantBuilder {
 		case LogicalTypeId::DECIMAL: {
 			variant_type = VariantLogicalType::DECIMAL;
 			auto &type = primitive.type();
-			uint8_t width;
-			uint8_t scale;
+			uint32_t width;
+			uint32_t scale;
 			type.GetDecimalProperties(width, scale);
 			VariantBuilderAppendVarint(blob, width);
 			VariantBuilderAppendVarint(blob, scale);

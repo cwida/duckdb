@@ -964,11 +964,11 @@ struct TimeTZStatsUnifier : public BaseNumericStatsUnifier<int64_t> {
 
 template <class T>
 struct DecimalStatsUnifier : public NumericStatsUnifier<T> {
-	DecimalStatsUnifier(uint8_t width, uint8_t scale) : width(width), scale(scale) {
+	DecimalStatsUnifier(uint32_t width, uint32_t scale) : width(width), scale(scale) {
 	}
 
-	uint8_t width;
-	uint8_t scale;
+	uint32_t width;
+	uint32_t scale;
 
 	string StatsToString(const string &stats) override {
 		if (stats.empty()) {
@@ -1124,11 +1124,11 @@ struct UUIDStatsUnifier : public BaseStringStatsUnifier {
 //! Wide decimal statistics are the big-endian two's complement bytes of the FIXED_LEN_BYTE_ARRAY column; they are
 //! compared as BIGNUM blobs, whose byte order is the numeric order
 struct WideDecimalStatsUnifier : public ColumnStatsUnifier {
-	WideDecimalStatsUnifier(uint8_t width, uint8_t scale) : width(width), scale(scale) {
+	WideDecimalStatsUnifier(uint32_t width, uint32_t scale) : width(width), scale(scale) {
 	}
 
-	uint8_t width;
-	uint8_t scale;
+	uint32_t width;
+	uint32_t scale;
 
 	static string Decode(const string &stats) {
 		return ParquetDecimalUtils::ReadWideDecimalValue(const_data_ptr_cast(stats.data()), stats.size());
