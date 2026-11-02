@@ -1,0 +1,39 @@
+# name: test/sql/cte/trampoline/trampoline_view_catalog.test
+# description: Stored views strip their own catalog qualifier inside trampoline seeds and branches
+# group: [trampoline]
+
+statement ok
+ATTACH '{TEST_DIR}/trampoline_view_catalog_1.db' AS db1;
+
+statement ok
+CREATE TABLE db1.src AS SELECT 7 AS n;
+
+statement ok
+CREATE VIEW db1.v AS WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(SELECT 1, n FROM db1.src)
+	BRANCH 1: (SELECT 0, n + (SELECT min(n) - min(n) FROM db1.src) FROM t)
+) SELECT n FROM t;
+
+query I
+SELECT * FROM db1.v;
+----
+7
+
+statement ok
+DETACH db1;
+
+# a different database takes over the stored catalog name
+statement ok
+ATTACH '{TEST_DIR}/trampoline_view_catalog_2.db' AS db1;
+
+statement ok
+CREATE TABLE db1.src AS SELECT 99 AS n;
+
+# the stored view must read its own catalog's table, not the replacement database
+statement ok
+ATTACH '{TEST_DIR}/trampoline_view_catalog_1.db' AS db2;
+
+query I
+SELECT * FROM db2.v;
+----
+7
