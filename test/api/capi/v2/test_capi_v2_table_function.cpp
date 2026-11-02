@@ -1318,6 +1318,18 @@ TEST_CASE("V2 table: claimed filters are no longer applied by the engine", "[cap
 	REQUIRE(QueryI64(fx.conn, "SELECT count(*) FROM claim_probe(100) WHERE i > 90") == 9);
 }
 
+TEST_CASE("V2 table: scans with different claimed filters are not merged", "[capi_v2][table_function]") {
+	EnvFixture fx;
+	RegisterClaim(fx, "claim_probe", ClaimPushdownCb);
+	using Cells = std::vector<int64_t>;
+
+	// Each scan keeps its own claimed bound (plus the two rows past it).
+	REQUIRE(QueryCells(fx.conn, "SELECT (SELECT count(*) FROM claim_probe(100) WHERE i < 10), "
+	                            "(SELECT count(*) FROM claim_probe(100) WHERE i < 20)") == Cells {12, 22});
+	REQUIRE(QueryI64(fx.conn, "SELECT count(*) FROM (SELECT i FROM claim_probe(100) WHERE i < 10 UNION ALL "
+	                          "SELECT i FROM claim_probe(100) WHERE i < 20)") == 34);
+}
+
 TEST_CASE("V2 table: filter pushdown errors fail the query", "[capi_v2][table_function]") {
 	EnvFixture fx;
 	RegisterClaim(fx, "claim_fail", FailingPushdownCb);

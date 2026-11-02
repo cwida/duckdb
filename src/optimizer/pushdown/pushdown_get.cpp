@@ -131,7 +131,12 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownGet(unique_ptr<LogicalOperat
 		}
 		filters.clear();
 
+		const auto offered_filters = expressions.size();
 		get.function.pushdown_complex_filter(optimizer.context, get, get.bind_data.get(), expressions);
+		if (expressions.size() < offered_filters && !get.function.HasSerializationCallbacks()) {
+			// the consumed filters now live only in the bind data, which is not serialized
+			get.function.verify_serialization = false;
+		}
 
 		if (expressions.empty()) {
 			restore_barrier_filters();
