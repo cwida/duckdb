@@ -151,6 +151,32 @@ const ParquetReader &ColumnReader::Reader() {
 	return reader;
 }
 
+//! A column chunk with at least this many small cached blocks is read whole instead of page by page ...
+static constexpr idx_t PAGE_INDEX_WHOLE_CHUNK_AFTER_CACHED_BLOCKS = 4;
+//! ... unless it is larger than this share of the memory limit
+static constexpr idx_t PAGE_INDEX_WHOLE_CHUNK_MAX_MEMORY_SHARE = 4;
+
+//! Whether a chunk the cache already holds several small pieces of should be fetched whole instead of the given
+//! (offset, size) page ranges: only when a range misses the cache, and only when the chunk fits the memory budget
+static bool ShouldReadChunkWhole(CachingFileHandle &handle, idx_t chunk_start, idx_t chunk_size,
+                                 const vector<pair<idx_t, idx_t>> &ranges) {
+	if (handle.CountCachedBlocks(chunk_start, chunk_size) < PAGE_INDEX_WHOLE_CHUNK_AFTER_CACHED_BLOCKS) {
+		return false;
+	}
+	bool all_cached = true;
+	for (auto &range : ranges) {
+		if (!handle.IsCached(range.first, range.second)) {
+			all_cached = false;
+			break;
+		}
+	}
+	if (all_cached) {
+		// the probe needs no I/O at all
+		return false;
+	}
+	return chunk_size <= handle.GetMaxMemory() / PAGE_INDEX_WHOLE_CHUNK_MAX_MEMORY_SHARE;
+}
+
 idx_t ColumnReader::PrefetchOffset() const {
 	return prefetch_offset.IsValid() ? prefetch_offset.GetIndex() : FileOffset();
 }
@@ -169,14 +195,17 @@ void ColumnReader::RegisterPrefetch(ThriftFileTransport &transport, bool allow_m
 		transport.RegisterPrefetch(FileOffset(), size, allow_merge);
 		return;
 	}
-	// the page index tells which pages hold rows that may match: fetch the dictionary page (and anything else in
-	// front of the first data page) plus only those pages - adjacent pages are coalesced by the transport
+	// the page index tells which pages hold rows that may match: the dictionary page (and anything else in front of
+	// the first data page) plus only those pages - adjacent pages are coalesced by the transport
 	auto &locations = offset_index->page_locations;
 	const auto chunk_start = FileOffset();
+	const auto chunk_size = NumericCast<idx_t>(chunk->meta_data.total_compressed_size);
 	const auto first_data_page = NumericCast<idx_t>(locations[0].offset);
+	vector<pair<idx_t, idx_t>> ranges;
 	if (chunk_start < first_data_page) {
-		transport.RegisterPrefetch(chunk_start, first_data_page - chunk_start, allow_merge);
+		ranges.emplace_back(chunk_start, first_data_page - chunk_start);
 	}
+	optional_idx first_page_offset;
 	const auto row_group_rows = NumericCast<idx_t>(chunk->meta_data.num_values);
 	for (idx_t page_idx = 0; page_idx < locations.size(); page_idx++) {
 		const auto begin = NumericCast<idx_t>(locations[page_idx].first_row_index);
@@ -186,11 +215,22 @@ void ColumnReader::RegisterPrefetch(ThriftFileTransport &transport, bool allow_m
 			continue;
 		}
 		const auto page_offset = NumericCast<idx_t>(locations[page_idx].offset);
-		if (!prefetch_offset.IsValid() && chunk_start >= first_data_page) {
-			prefetch_offset = page_offset;
+		if (!first_page_offset.IsValid() && chunk_start >= first_data_page) {
+			first_page_offset = page_offset;
 		}
-		transport.RegisterPrefetch(page_offset, NumericCast<idx_t>(locations[page_idx].compressed_page_size),
-		                           allow_merge);
+		ranges.emplace_back(page_offset, NumericCast<idx_t>(locations[page_idx].compressed_page_size));
+	}
+	// a chunk the cache already holds several small pieces of is being probed repeatedly: once a probe misses a page,
+	// fetch the chunk whole, so this and every later read of it is served from the cache, as it would be without the
+	// page index. The read re-fetches the cached pieces with the gaps around them, so it sends about as many requests
+	// as on a cold cache
+	if (ShouldReadChunkWhole(transport.GetCachingFileHandle(), chunk_start, chunk_size, ranges)) {
+		transport.RegisterPrefetch(chunk_start, chunk_size, allow_merge, true);
+		return;
+	}
+	prefetch_offset = first_page_offset;
+	for (auto &range : ranges) {
+		transport.RegisterPrefetch(range.first, range.second, allow_merge);
 	}
 }
 

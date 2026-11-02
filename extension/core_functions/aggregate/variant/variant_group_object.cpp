@@ -199,6 +199,7 @@ AggregateFunction VariantGroupObjectFun::GetFunction() {
 	function.GetSignature().GetParameter(0).SetName("key");
 	function.GetSignature().GetParameter(1).SetName("value");
 	function.SetStructStateExport(VariantObjStateLayout);
+	function.SetFallible(); // NULL keys are rejected at update time and duplicate keys at finalize time
 	return function;
 }
 

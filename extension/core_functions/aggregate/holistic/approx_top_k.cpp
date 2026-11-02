@@ -599,6 +599,7 @@ AggregateFunction ApproxTopKFun::GetFunction() {
 	fun.GetSignature().AddParameter("val", LogicalTypeId::ANY).AddParameter("k", LogicalType::BIGINT);
 	fun.SetStateExportCallbacks(ApproxTopKGetStateType, ApproxTopKExportState<HistogramGenericFunctor>,
 	                            ApproxTopKImportState<HistogramGenericFunctor>);
+	fun.SetFallible(); // the update callback rejects NULL and out-of-range k values at runtime
 	return fun;
 }
 

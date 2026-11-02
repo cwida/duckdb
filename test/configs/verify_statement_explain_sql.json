@@ -112,6 +112,24 @@
       "paths": [
         "test/sql/collate/collate_distinct_aggregate_icu.test"
       ]
+    },
+    {
+      "reason": "The internal EXPLAIN and the generated SQL change the pipelines of the probes, so their logging context spans differ",
+      "paths": [
+        "test/sql/table_function/range_lateral_threads.test"
+      ]
+    },
+    {
+      "reason": "FIXME: the exact DECIMAL quantile parameter lives in the bind data while the bound child is a DOUBLE cast, so the rendered SQL rebinds a non-throwing DOUBLE-rank quantile",
+      "paths": [
+        "test/sql/aggregate/aggregates/quantile_fallible_decimal_param.test"
+      ]
+    },
+    {
+      "reason": "FIXME: name-bound sum_no_overflow delegates its binding to sum, so the rendered SQL rebinds the checked HUGEINT sum and no longer raises",
+      "paths": [
+        "test/sql/aggregate/aggregates/sum_no_overflow_fallible.test"
+      ]
     }
   ]
 }

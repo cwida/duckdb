@@ -6,6 +6,12 @@
   "inherit_skip_tests": "test/configs/force_storage.json",
   "skip_tests": [
     {
+      "reason": "The default of the column calls list_value of core_functions, which is not loaded while the WAL is replayed at the restart.",
+      "paths": [
+        "test/sql/alter/struct/add_col_struct_column_default.test"
+      ]
+    },
+    {
       "reason": "In-memory external resource type registry is instance-scoped and does not survive database restarts.",
       "paths": [
         "test/sql/table_function/external_resource_types.test",
@@ -74,6 +80,7 @@
         "test/sql/copy/parquet/page_index/page_index_robustness.test",
         "test/sql/copy/parquet/page_index/page_index_cache.test",
         "test/sql/copy/parquet/page_index/page_index_cache_disabled.test",
+        "test/sql/copy/parquet/page_index/page_index_cache_budget.test",
         "test/sql/copy/parquet/read_ahead/readahead_depth_learning.test",
         "test/sql/copy/parquet/read_ahead/readahead_dynamic_pruning.test",
         "test/sql/copy/parquet/read_ahead/readahead_dynamic_pruning_nulls_first.test",

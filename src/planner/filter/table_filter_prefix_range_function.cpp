@@ -340,6 +340,10 @@ public:
 		return initialized;
 	}
 
+	bool IsDense() const {
+		return dense;
+	}
+
 	U Min() const {
 		return min;
 	}
@@ -461,6 +465,9 @@ public:
 		const auto bitmap_max = static_cast<T>(bitmap.Min() + bitmap.Span());
 		if (ub < bitmap_min || lb > bitmap_max) {
 			return FilterPropagateResult::FILTER_ALWAYS_FALSE;
+		}
+		if (bitmap.IsDense() && lb >= bitmap_min && ub <= bitmap_max) {
+			return FilterPropagateResult::FILTER_ALWAYS_TRUE;
 		}
 
 		const auto adjusted_lb = NumericConverter<T>::Convert(MaxValue<T>(lb, bitmap_min));
@@ -795,7 +802,11 @@ FilterPropagateResult PrefixRangeScalarFun::FilterPrune(const FunctionStatistics
 		if (min > max) {
 			return FilterPropagateResult::NO_PRUNING_POSSIBLE;
 		}
-		return data.filter->LookupRange(min, max);
+		const auto result = data.filter->LookupRange(min, max);
+		if (result == FilterPropagateResult::FILTER_ALWAYS_TRUE && stats.CanHaveNull()) {
+			return FilterPropagateResult::NO_PRUNING_POSSIBLE;
+		}
+		return result;
 	}
 	case StatisticsType::STRING_STATS: {
 		if (!StringStats::HasMinMax(stats)) {

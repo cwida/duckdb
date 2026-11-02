@@ -50,7 +50,9 @@ benchmark/micro/aggregate/min_double.benchmark
 benchmark/micro/aggregate/max_double.benchmark
 benchmark/micro/pushdown/view_filter_below_delim_join.benchmark
 benchmark/micro/string/lpad.benchmark
+benchmark/micro/table_function/lateral_generate_series.benchmark
 benchmark/micro/insert/bulk_insert_commit_batch.benchmark
 benchmark/micro/insert/bulk_insert_commit_parallel.benchmark
 benchmark/micro/insert/bulk_insert_commit_in_memory.benchmark
+benchmark/micro/order/order_external_after_early_finish.benchmark
 benchmark/micro/json/lateral_json_each.benchmark

@@ -59,7 +59,7 @@ SQLLogicTestRunner::SQLLogicTestRunner(string dbpath) : dbpath(std::move(dbpath)
 	}
 	}
 
-	auto repo = string(DUCKDB_BUILD_DIRECTORY) + "/repository";
+	auto repo = TestBuildDirectory() + "/repository";
 	auto env_var = std::getenv("LOCAL_EXTENSION_REPO");
 	if (env_var) {
 		local_extension_repo = env_var;
@@ -435,11 +435,11 @@ string SQLLogicTestRunner::ReplaceKeywords(string input) {
 	}
 	auto &test_config = TestConfiguration::Get();
 	test_config.ProcessPath(input, file_name);
-	input = StringUtil::Replace(input, "{BUILD_DIRECTORY}", DUCKDB_BUILD_DIRECTORY);
+	input = StringUtil::Replace(input, "{BUILD_DIRECTORY}", TestBuildDirectory());
 	if (StringUtil::Contains(input, "__BUILD_DIRECTORY__")) {
 		Printer::PrintF("Replacing deprecated __BUILD_DIRECTORY__ in test %s - please replace with {BUILD_DIRECTORY}",
 		                file_name);
-		input = StringUtil::Replace(input, "__BUILD_DIRECTORY__", DUCKDB_BUILD_DIRECTORY);
+		input = StringUtil::Replace(input, "__BUILD_DIRECTORY__", TestBuildDirectory());
 	}
 
 	return input;
@@ -1281,7 +1281,7 @@ void SQLLogicTestRunner::ExecuteScript(SQLLogicParser &parser, const string &scr
 			} else {
 				env_actual = std::getenv(env_var.c_str());
 			}
-			string default_local_repo = string(DUCKDB_BUILD_DIRECTORY) + "/repository";
+			string default_local_repo = TestBuildDirectory() + "/repository";
 			if (env_actual == nullptr && env_var == "LOCAL_EXTENSION_REPO" &&
 			    Settings::Get<AutoloadKnownExtensionsSetting>(*config)) {
 				// Overriding LOCAL_EXTENSION_REPO here is a hacky
