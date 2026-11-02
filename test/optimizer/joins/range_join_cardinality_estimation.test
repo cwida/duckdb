@@ -81,16 +81,62 @@ SELECT count(*) FROM e1 JOIN e2 ON e1.k = e2.k AND e1.c < e2.d;
 ----
 4500
 
-# a LEFT join also keeps its equality domain when an additional range condition is present
+# a LEFT join keeps its equality domain and applies the same range ratio as the INNER join,
+# bounded below by the preserved input: 1M / 100 / 2 = 5000 (actual 4600)
 query II
 EXPLAIN (FORMAT JSON) SELECT * FROM e1 LEFT JOIN e2 ON e1.k = e2.k AND e1.c < e2.d;
 ----
-logical_opt	<REGEX>:.*"name":\s*"COMPARISON_JOIN".*"Estimated Cardinality":\s*"(9[0-9]{3}|1[01][0-9]{3})".*
+logical_opt	<REGEX>:.*"name":\s*"COMPARISON_JOIN".*"Estimated Cardinality":\s*"[456][0-9]{3}".*
 
 query I
 SELECT count(*) FROM e1 LEFT JOIN e2 ON e1.k = e2.k AND e1.c < e2.d;
 ----
 4600
+
+# the same mixed predicates with an additional relation: the same-pair range edge arrives after
+# the equality edges completed the denominator graph and must contribute the same factor
+statement ok
+CREATE TABLE m1 AS SELECT (range % 100)::INTEGER AS k, (range % 1000)::INTEGER AS c, (range % 10)::INTEGER AS m FROM range(1000);
+
+statement ok
+CREATE TABLE m2 AS SELECT (range % 100)::INTEGER AS k, (range % 1000)::INTEGER AS d FROM range(1000);
+
+statement ok
+CREATE TABLE m3 AS SELECT (range % 10)::INTEGER AS m FROM range(100);
+
+# 100M / (100 * 10 * 2) = 50000 modulo sampled distinct counts (actual 45000)
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM m1, m2, m3 WHERE m1.k = m2.k AND m1.c < m2.d AND m1.m = m3.m;
+----
+logical_opt	<REGEX>:.*"name":\s*"COMPARISON_JOIN".*"Estimated Cardinality":\s*"[45][0-9]{4}".*
+
+query I
+SELECT count(*) FROM m1, m2, m3 WHERE m1.k = m2.k AND m1.c < m2.d AND m1.m = m3.m;
+----
+45000
+
+# the LEFT variant of the same shape estimates the same way (actual 46000)
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM m3 JOIN m1 ON m3.m = m1.m LEFT JOIN m2 ON m1.k = m2.k AND m1.c < m2.d;
+----
+logical_opt	<REGEX>:.*"name":\s*"COMPARISON_JOIN".*"Estimated Cardinality":\s*"[45][0-9]{4}".*
+
+query I
+SELECT count(*) FROM m3 JOIN m1 ON m3.m = m1.m LEFT JOIN m2 ON m1.k = m2.k AND m1.c < m2.d;
+----
+46000
+
+# the range edge also applies when it lands inside a subgraph that does not yet cover the
+# requested set (m3 attaches by cross product only): 5050 * 100 = 505050
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM (m1 LEFT JOIN m2 ON m1.k = m2.k AND m1.c < m2.d) CROSS JOIN m3;
+----
+logical_opt	<REGEX>:.*"name":\s*"CROSS_PRODUCT".*"Estimated Cardinality":\s*"[45][0-9]{5}".*
+
+query I
+SELECT count(*) FROM (m1 LEFT JOIN m2 ON m1.k = m2.k AND m1.c < m2.d) CROSS JOIN m3;
+----
+460000
 
 # a range edge that connects a third relation applies the floored ratio on top of the equality:
 # 1G / (100 * 2) = 5000000 (actual 4995000 strict, 5005000 non-strict)

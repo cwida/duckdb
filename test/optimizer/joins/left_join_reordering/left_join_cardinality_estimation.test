@@ -109,6 +109,23 @@ select count(*) from pres_a cross join pres_b left join pres_c on pres_b.k = pre
 ----
 20000
 
+# an additional INNER relation shrinks the preserved input before the LEFT range edge merges the
+# subgraphs: the bound follows the estimate of the complete preserved input (~202), not the
+# unfiltered cross product
+
+statement ok
+create table pres_d as select (range * 100)::INTEGER AS x from range(100);
+
+query II
+explain select count(*) from pres_d join pres_a on pres_d.x = pres_a.x cross join pres_b left join pres_c on pres_b.k = pres_c.k and pres_a.x < pres_c.x;
+----
+physical_plan	<REGEX>:.*k = k[^~]*~2[0-9][0-9] rows.*
+
+query I
+select count(*) from pres_d join pres_a on pres_d.x = pres_a.x cross join pres_b left join pres_c on pres_b.k = pres_c.k and pres_a.x < pres_c.x;
+----
+200
+
 # a dependent later LEFT input is not part of the preserved input: the bound for the b-c join
 # must not include a cross product with a
 
@@ -176,3 +193,32 @@ query I
 select count(*) from mix_a a cross join mix_x x left join mix_b b on a.k = b.k left join mix_c c on b.j = c.j and x.t = c.t;
 ----
 2000
+
+# an INNER join above the LEFT operator reduces the preserved side: the bound follows the
+# estimate of the component, not the operator's original left input
+
+statement ok
+SET disabled_optimizers='statistics_propagation,filter_pushdown';
+
+statement ok
+create table red_a as select i::INTEGER AS id, (i % 100)::INTEGER AS k from range(10000) t(i);
+
+statement ok
+create table red_b as select i::INTEGER AS k from range(100) t(i);
+
+statement ok
+create table red_c as select (100 * i)::INTEGER AS id from range(100) t(i);
+
+query II
+explain select * from red_a left join red_b on red_a.k = red_b.k join red_c on red_a.id = red_c.id;
+----
+physical_plan	<REGEX>:.*k = k[^~]*~1[0-9][0-9] rows.*
+
+query I
+select count(*) from red_a left join red_b on red_a.k = red_b.k join red_c on red_a.id = red_c.id;
+----
+100
+
+statement ok
+SET disabled_optimizers='';
+

@@ -106,6 +106,7 @@ void QueryGraphManager::BuildPredicateModel() {
 }
 
 void QueryGraphManager::BuildLeftEqualityPairs() {
+	idx_t next_left_equality_group = 0;
 	for (auto &op : join_operators) {
 		if (op->type != JoinOrderOperatorType::LEFT) {
 			continue;
@@ -147,6 +148,7 @@ void QueryGraphManager::BuildLeftEqualityPairs() {
 		}
 		reference_map_t<JoinRelationSet, RelationPairEqualitySummary> summaries;
 		vector<pair<reference<JoinPredicate>, reference<JoinRelationSet>>> pairs;
+		unordered_map<idx_t, idx_t> group_ids;
 		for (auto predicate_index : op->costing_predicate_indices) {
 			auto &predicate = predicate_model.GetPredicates()[predicate_index].get();
 			auto type = predicate.GetComparisonType();
@@ -166,7 +168,13 @@ void QueryGraphManager::BuildLeftEqualityPairs() {
 			if (pair.relations[0] != first_relation) {
 				std::swap(first_binding, second_binding);
 			}
-			summaries[pair].AddEquality(groups.GetGroup(first_binding), first_binding, second_binding);
+			auto group_root = groups.GetGroup(first_binding);
+			auto group_entry = group_ids.find(group_root);
+			if (group_entry == group_ids.end()) {
+				group_entry = group_ids.insert(make_pair(group_root, next_left_equality_group++)).first;
+			}
+			predicate.GetFilter().left_equality_group = optional_idx(group_entry->second);
+			summaries[pair].AddEquality(group_root, first_binding, second_binding);
 			pairs.emplace_back(predicate, pair);
 		}
 		for (auto &entry : pairs) {

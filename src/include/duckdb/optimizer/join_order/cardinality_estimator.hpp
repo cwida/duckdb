@@ -73,8 +73,12 @@ private:
 	JoinDenomInfo CalculateJoinDenomInfo(Subgraph2Denominator &left, Subgraph2Denominator &right,
 	                                     FilterInfoWithTotalDomains &filter);
 	double CalculateInnerJoinDenom(double base_denom, FilterInfoWithTotalDomains &filter);
+	optional<double> CalculateLeftPreservedDenom(JoinRelationSet &merged_relations, JoinRelationSet &inner_numerator,
+	                                             FilterInfoWithTotalDomains &filter);
 	JoinDenomInfo CalculateLeftJoinDenomInfo(Subgraph2Denominator &left, Subgraph2Denominator &right,
 	                                         FilterInfoWithTotalDomains &filter);
+	bool ApplyInternalLeftJoinEdge(DenominatorState &state, Subgraph2Denominator &subgraph,
+	                               FilterInfoWithTotalDomains &edge);
 	double CalculateSemiAntiJoinDenom(Subgraph2Denominator &left, Subgraph2Denominator &right,
 	                                  FilterInfoWithTotalDomains &filter);
 	bool ApplyJoinIncrement(double &target_denom, FilterInfoWithTotalDomains &edge,

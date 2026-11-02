@@ -500,16 +500,14 @@ double CardinalityEstimator::CalculateInnerJoinDenom(double base_denom, FilterIn
 	return ApplyComparisonRatio(base_denom, comparison_type, effective_d);
 }
 
-JoinDenomInfo CardinalityEstimator::CalculateLeftJoinDenomInfo(Subgraph2Denominator &left, Subgraph2Denominator &right,
-                                                               FilterInfoWithTotalDomains &filter) {
+optional<double> CardinalityEstimator::CalculateLeftPreservedDenom(JoinRelationSet &merged_relations,
+                                                                   JoinRelationSet &inner_numerator,
+                                                                   FilterInfoWithTotalDomains &filter) {
 	auto &predicate = filter.GetPredicate();
-	D_ASSERT(left.relations && right.relations);
-	D_ASSERT(left.numerator_relations && right.numerator_relations);
 	// The RHS of a LEFT predicate is its nullable side. The preserved input is the merged component
 	// without the nullable side and without nullable relations that attach through it: it can span
 	// both subgraphs (a CROSS JOIN b LEFT JOIN c), while a dependent later LEFT input is not preserved.
 	auto &nullable_set = predicate.GetRightSet();
-	auto &merged_relations = set_manager.Union(*left.relations, *right.relations);
 	unordered_set<idx_t> excluded_relations;
 	for (idx_t i = 0; i < nullable_set.count; i++) {
 		excluded_relations.insert(nullable_set.relations[i].index);
@@ -557,24 +555,39 @@ JoinDenomInfo CardinalityEstimator::CalculateLeftJoinDenomInfo(Subgraph2Denomina
 		auto &relation = set_manager.GetJoinRelation(merged_relations.relations[i]);
 		preserved_set = preserved_set ? &set_manager.Union(*preserved_set, relation) : &relation;
 	}
+	if (!preserved_set || preserved_set->count >= merged_relations.count) {
+		return optional<double>();
+	}
+	// lower-bound the output by the memoized estimate of the preserved input, expressed over the
+	// inner numerator so relations eliminated by SEMI/ANTI joins stay out of the numerator
+	auto preserved_input_cardinality = GetCardinalityBeforeFilters(*preserved_set).cardinality_before_filters;
+	// negated positive-form comparisons so a NaN cardinality or bound is rejected
+	if (!(preserved_input_cardinality > 0)) {
+		return optional<double>();
+	}
+	auto synthetic_denom = GetNumerator(inner_numerator) / preserved_input_cardinality;
+	if (!(synthetic_denom > 0 && synthetic_denom < NumericLimits<double>::Maximum())) {
+		return optional<double>();
+	}
+	return optional<double>(synthetic_denom);
+}
+
+JoinDenomInfo CardinalityEstimator::CalculateLeftJoinDenomInfo(Subgraph2Denominator &left, Subgraph2Denominator &right,
+                                                               FilterInfoWithTotalDomains &filter) {
+	auto &predicate = filter.GetPredicate();
+	D_ASSERT(left.relations && right.relations);
+	D_ASSERT(left.numerator_relations && right.numerator_relations);
+	auto &merged_relations = set_manager.Union(*left.relations, *right.relations);
 	auto &inner_numerator = set_manager.Union(*left.numerator_relations, *right.numerator_relations);
+	auto preserved_bound = CalculateLeftPreservedDenom(merged_relations, inner_numerator, filter);
 	optional_ptr<JoinRelationSet> preserved_numerator_ptr;
 	double preserved_denom = 1;
-	if (preserved_set && preserved_set->count < merged_relations.count) {
-		// lower-bound the output by the memoized estimate of the preserved input, expressed over the
-		// inner numerator so relations eliminated by SEMI/ANTI joins stay out of the numerator
-		auto preserved_input_cardinality = GetCardinalityBeforeFilters(*preserved_set).cardinality_before_filters;
-		if (preserved_input_cardinality > 0) {
-			auto synthetic_denom = GetNumerator(inner_numerator) / preserved_input_cardinality;
-			if (synthetic_denom > 0 && synthetic_denom < NumericLimits<double>::Maximum()) {
-				preserved_numerator_ptr = &inner_numerator;
-				preserved_denom = synthetic_denom;
-			}
-		}
-	}
-	if (!preserved_numerator_ptr) {
+	if (preserved_bound) {
+		preserved_numerator_ptr = &inner_numerator;
+		preserved_denom = *preserved_bound;
+	} else {
 		// no usable preserved input estimate: keep the subgraph that does not contain the nullable side
-		auto left_is_preserved = !JoinRelationSet::IsSubset(*left.relations, nullable_set);
+		auto left_is_preserved = !JoinRelationSet::IsSubset(*left.relations, predicate.GetRightSet());
 		preserved_numerator_ptr = left_is_preserved ? left.numerator_relations : right.numerator_relations;
 		preserved_denom = GetEffectiveDenom(left_is_preserved ? left.denom : right.denom);
 	}
@@ -824,7 +837,50 @@ struct DenominatorState {
 	unordered_set<idx_t> unused_edge_tdoms;
 	unordered_set<idx_t> applied_semi_anti_operators;
 	unordered_set<idx_t> applied_semi_anti_predicates;
+	//! LEFT equality groups that already contributed their domain to a subgraph denominator.
+	unordered_set<idx_t> applied_left_equality_groups;
+	//! Distinct counts of composite-pair LEFT equalities seen so far, to detect a plausible row-count cap.
+	reference_map_t<JoinRelationSet, CompositeJoinPairStats> left_join_pair_stats;
 };
+
+static bool LeftEqualityGroupApplied(DenominatorState &state, FilterInfoWithTotalDomains &edge) {
+	auto group = edge.GetFilter().left_equality_group;
+	return group.IsValid() && !state.applied_left_equality_groups.insert(group.GetIndex()).second;
+}
+
+bool CardinalityEstimator::ApplyInternalLeftJoinEdge(DenominatorState &state, Subgraph2Denominator &subgraph,
+                                                     FilterInfoWithTotalDomains &edge) {
+	auto &predicate = edge.GetPredicate();
+	if (predicate.GetJoinType() != JoinType::LEFT) {
+		return false;
+	}
+	// Transitively connected ON equalities of one LEFT operator describe the same key, so a group
+	// that already entered the denominator contributes nothing further.
+	if (LeftEqualityGroupApplied(state, edge)) {
+		return true;
+	}
+	// A plausible composite-pair row-count cap already accounts for the pair's other key parts.
+	auto composite_pair = predicate.GetCompositeJoinPair();
+	if (composite_pair) {
+		auto &pair_stats = state.left_join_pair_stats[*composite_pair];
+		pair_stats.RegisterDistinctCount(edge.GetDistinctCount());
+		if (pair_stats.CanApplyCap(GetJoinPairCap(*composite_pair))) {
+			return true;
+		}
+	}
+	D_ASSERT(subgraph.relations && subgraph.numerator_relations);
+	auto preserved_bound = CalculateLeftPreservedDenom(*subgraph.relations, *subgraph.numerator_relations, edge);
+	if (!preserved_bound) {
+		// without a usable preserved input estimate the condition cannot be bounded: keep the
+		// previous no-penalty behavior
+		return false;
+	}
+	// Apply the condition like a merging one: its domain enters the denominator and the
+	// preserved-input lower bound keeps LEFT semantics intact.
+	auto inner_denom = CalculateInnerJoinDenom(GetEffectiveDenom(subgraph.denom), edge);
+	subgraph.denom = MinValue<double>(inner_denom, *preserved_bound);
+	return true;
+}
 
 static bool DenominatorSubgraphComplete(DenominatorState &state, JoinRelationSet &set) {
 	return state.subgraphs.size() == 1 && state.subgraphs.at(0).relations &&
@@ -848,6 +904,9 @@ void CardinalityEstimator::ProcessDenominatorEdge(FilterInfoWithTotalDomains &ed
 		ApplyCompositeJoinPairCaps(complete_subgraph.denom, *complete_subgraph.relations, state.join_pair_stats,
 		                           state.capped_join_pairs);
 		if (edge_kind == DenominatorEdgeKind::REDUNDANT_TRANSITIVE_EQUALITY) {
+			return;
+		}
+		if (ApplyInternalLeftJoinEdge(state, complete_subgraph, edge)) {
 			return;
 		}
 		if (CanIncrementExistingJoin(edge_kind) &&
@@ -882,6 +941,17 @@ void CardinalityEstimator::ProcessDenominatorEdge(FilterInfoWithTotalDomains &ed
 	} else if (subgraph_connections.size() == 2) {
 		MergeDenominatorSubgraphs(subgraph_connections, edge, state);
 	}
+	auto &predicate = edge.GetPredicate();
+	if (predicate.GetJoinType() == JoinType::LEFT) {
+		auto left_equality_group = edge.GetFilter().left_equality_group;
+		if (left_equality_group.IsValid()) {
+			state.applied_left_equality_groups.insert(left_equality_group.GetIndex());
+		}
+		auto composite_pair = predicate.GetCompositeJoinPair();
+		if (composite_pair) {
+			state.left_join_pair_stats[*composite_pair].RegisterDistinctCount(edge.GetDistinctCount());
+		}
+	}
 }
 
 void CardinalityEstimator::CreateDenominatorSubgraph(FilterInfoWithTotalDomains &edge, JoinRelationSet &edge_left_set,
@@ -915,7 +985,7 @@ void CardinalityEstimator::ExtendDenominatorSubgraph(idx_t subgraph_index, Filte
 
 	if (JoinRelationSet::IsSubset(*left_subgraph->relations, edge_left_set) &&
 	    JoinRelationSet::IsSubset(*left_subgraph->relations, edge_right_set)) {
-		if (can_increment_existing_join) {
+		if (!ApplyInternalLeftJoinEdge(state, *left_subgraph, edge) && can_increment_existing_join) {
 			ApplyJoinIncrement(left_subgraph->denom, edge, state.join_pair_stats, state.capped_join_pairs,
 			                   *left_subgraph->relations);
 		}
