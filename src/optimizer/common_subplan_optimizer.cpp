@@ -1247,7 +1247,7 @@ public:
 	}
 
 private:
-	static bool CanExpandExpressionOutputs(const LogicalOperator &op) {
+	bool CanExpandExpressionOutputs(const LogicalOperator &op) {
 		switch (op.type) {
 		case LogicalOperatorType::LOGICAL_PROJECTION:
 			break;
@@ -1269,6 +1269,15 @@ private:
 		}
 		for (const auto &expression : op.expressions) {
 			if (!CanShareSubplanExpression(*expression)) {
+				return false;
+			}
+		}
+		unordered_map<TableIndex, TableIndex> input_tables;
+		for (const auto &binding : GetExpandedColumnBindings(*op.children[0])) {
+			const auto canonical_table_index = to_canonical_table_index.at(binding.table_index);
+			auto entry = input_tables.emplace(canonical_table_index, binding.table_index);
+			if (!entry.second && entry.first->second != binding.table_index) {
+				// Expression matching must distinguish repeated occurrences of the same input.
 				return false;
 			}
 		}
