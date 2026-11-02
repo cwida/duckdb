@@ -216,8 +216,9 @@ BoundStatement Binder::FinishCTE(BoundCTEData &bound_cte, BoundStatement child) 
 	auto cte_query = std::move(bind_state.query.plan);
 	auto cte_child = std::move(child.plan);
 
-	auto root = make_uniq<LogicalMaterializedCTE>(bound_cte.ctename, bound_cte.setop_index, result.types.size(),
-	                                              std::move(cte_query), std::move(cte_child), bound_cte.materialized);
+	auto root =
+	    make_uniq<LogicalMaterializedCTE>(bound_cte.ctename, bound_cte.setop_index, bind_state.query.types.size(),
+	                                      std::move(cte_query), std::move(cte_child), bound_cte.materialized);
 
 	result.plan = std::move(root);
 	return result;

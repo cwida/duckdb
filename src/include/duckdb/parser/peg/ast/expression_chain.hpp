@@ -42,6 +42,11 @@ struct IsExpressionTail {
 	unique_ptr<ParsedExpression> cast;
 };
 
+struct SimpleCaseCheck {
+	vector<ComparisonExpressionTail> when;
+	unique_ptr<ParsedExpression> then_expr;
+};
+
 struct BinaryExpressionTail {
 	string op;
 	unique_ptr<ParsedExpression> expression;

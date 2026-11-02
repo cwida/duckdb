@@ -28,6 +28,7 @@ add_library_unity(
   cte_filter_pusher.cpp
   cte_join_filter_collector.cpp
   cte_join_filter_pusher.cpp
+  cte_runtime_filter_pushdown.cpp
   cte_inlining.cpp
   deliminator.cpp
   multi_stage_aggregate_rewriter.cpp

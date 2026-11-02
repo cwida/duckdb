@@ -17,9 +17,11 @@ namespace duckdb {
 
 void ApplyFunctionalDependencies::VisitLogicalGet(LogicalGet &get) {
 	VisitOperatorChildren(get);
+	// Table-in/out functions need not preserve the multiplicity of their input keys.
+	result.clear();
 
 	auto table = get.GetTable();
-	if (!table || !table->IsDuckTable() || !get.projected_input.empty() || get.GetColumnIds().empty()) {
+	if (!table || !table->IsDuckTable() || !get.children.empty() || get.GetColumnIds().empty()) {
 		return;
 	}
 	unordered_map<idx_t, ColumnBinding> column_bindings;
