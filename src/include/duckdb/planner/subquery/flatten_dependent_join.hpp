@@ -147,6 +147,13 @@ private:
 	UnnestingState PushDownCTE(unique_ptr<LogicalOperator> &plan, bool propagate_null_values,
 	                           vector<ColumnBinding> state);
 	UnnestingState PushDownCTERef(unique_ptr<LogicalOperator> &plan);
+	//! Rewrites the full-domain scans this flattener created inside a trampoline branch into
+	//! distinct projections of the branch's current wave domains
+	void RestrictBranchDomainScans(unique_ptr<LogicalOperator> &plan, TableIndex cte_index,
+	                               const vector<LogicalType> &wave_types, const vector<Identifier> &wave_names,
+	                               const set<idx_t> &own_delim_gets);
+	//! Table indexes of every domain scan this flattener instance created, in creation order
+	vector<idx_t> delim_gets_created;
 };
 
 } // namespace duckdb

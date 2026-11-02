@@ -1,0 +1,124 @@
+# name: test/sql/cte/trampoline/trampoline_active_domains.test
+# description: Branch decorrelation evaluates nonlinear subplans only for domains in the current wave
+# group: [trampoline]
+
+statement ok
+SET default_null_order='nulls_first';
+
+# the restriction must not be schedule-dependent
+statement ok
+SET threads=1;
+
+# domain 2 never enters the trampoline: the materialized aggregate over the wave must not
+# reconstruct an empty-input result for it, whose expression would raise the cast error
+query II
+SELECT o.k, q.n FROM (VALUES (1), (2)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, 7 WHERE o.k = 1)
+		BRANCH 1: (
+			WITH agg AS MATERIALIZED (
+				SELECT CASE WHEN count(*) = 0 THEN CAST('inactive' AS INTEGER) ELSE max(n) END AS m FROM t)
+			SELECT 0, (SELECT m FROM agg) FROM t
+		)
+	) SELECT n FROM t
+) q ORDER BY ALL;
+----
+1	7
+
+# protection: a domain that IS in the wave still gets empty-group reconstruction when the
+# aggregate's filtered input is empty
+query II
+SELECT o.k, q.v FROM (VALUES (1), (2)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.k)
+		BRANCH 1: (
+			WITH agg AS MATERIALIZED (SELECT count(*) AS c FROM t WHERE n > 100)
+			SELECT 0, (SELECT c FROM agg) FROM t
+		)
+	) SELECT n AS v FROM t
+) q ORDER BY ALL;
+----
+1	0
+2	0
+
+# empty-input recovery draws from the sequence only when it actually evaluates: after the
+# baseline draw, the inactive domain must not add draws
+statement ok
+CREATE SEQUENCE dseq;
+
+query I
+SELECT nextval('dseq');
+----
+1
+
+query II
+SELECT o.k, q.v FROM (VALUES (1), (2)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.k WHERE o.k = 1)
+		BRANCH 1: (
+			WITH agg AS MATERIALIZED (
+				SELECT CASE WHEN count(*) = 0 THEN nextval('dseq')::INTEGER ELSE -1 END AS c FROM t)
+			SELECT 0, (SELECT c FROM agg) FROM t
+		)
+	) SELECT n AS v FROM t
+) q ORDER BY ALL;
+----
+1	-1
+
+# no draw happened for the inactive domain
+query I
+SELECT currval('dseq');
+----
+1
+
+# an inactive domain must not start the nested recursion that only terminates on a
+# nonempty wave; bounded so a regression fails fast instead of hanging
+statement ok
+SET max_execution_time=1000;
+
+query II
+SELECT o.k, q.v FROM (VALUES (1), (2)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.k WHERE o.k = 1)
+		BRANCH 1: (
+			WITH RECURSIVE loop(x) AS (
+				SELECT count(*)::INTEGER FROM t
+				UNION ALL
+				SELECT x FROM loop WHERE x = 0)
+			SELECT 0, (SELECT max(x) FROM loop) FROM t
+		)
+	) SELECT n AS v FROM t
+) q ORDER BY ALL;
+----
+1	1
+
+statement ok
+SET max_execution_time=0;
+
+# controls: a single active domain and a fully inactive domain set behave plainly
+query II
+SELECT o.k, q.n FROM (VALUES (1)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, 7 WHERE o.k = 1)
+		BRANCH 1: (
+			WITH agg AS MATERIALIZED (
+				SELECT CASE WHEN count(*) = 0 THEN CAST('inactive' AS INTEGER) ELSE max(n) END AS m FROM t)
+			SELECT 0, (SELECT m FROM agg) FROM t
+		)
+	) SELECT n FROM t
+) q ORDER BY ALL;
+----
+1	7
+
+query II
+SELECT o.k, q.n FROM (VALUES (2)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, 7 WHERE o.k = 1)
+		BRANCH 1: (
+			WITH agg AS MATERIALIZED (
+				SELECT CASE WHEN count(*) = 0 THEN CAST('inactive' AS INTEGER) ELSE max(n) END AS m FROM t)
+			SELECT 0, (SELECT m FROM agg) FROM t
+		)
+	) SELECT n FROM t
+) q ORDER BY ALL;
+----

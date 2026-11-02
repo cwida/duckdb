@@ -657,6 +657,7 @@ FlattenDependentJoins::AttachDelimToIndependentJoinLeft(unique_ptr<LogicalOperat
 	auto delim_index = binder.GenerateTableIndex();
 	auto left_state = CreateContiguousState(ColumnBinding(delim_index, ProjectionIndex(0)));
 	auto delim_scan = make_uniq<LogicalDelimGet>(delim_index, delim_types);
+	delim_gets_created.push_back(delim_index.index);
 	left_state = CreateDelimCrossProduct(left, std::move(delim_scan), std::move(left_state));
 
 	auto attached_output = ColumnBindingLayout(left->GetColumnBindings());
@@ -993,6 +994,7 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownAggregate(u
 	unique_ptr<LogicalComparisonJoin> join = make_uniq<LogicalComparisonJoin>(join_type);
 	auto left_index = binder.GenerateTableIndex();
 	auto delim_scan = make_uniq<LogicalDelimGet>(left_index, delim_types);
+	delim_gets_created.push_back(left_index.index);
 	join->children.push_back(std::move(delim_scan));
 	join->children.push_back(std::move(plan));
 	for (idx_t i = 0; i < new_group_count; i++) {
@@ -1525,6 +1527,7 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownDML(unique_
 	// the parent DelimJoin can reference.
 	auto expose_idx = binder.GenerateTableIndex();
 	unique_ptr<LogicalOperator> expose_delim = make_uniq<LogicalDelimGet>(expose_idx, delim_types);
+	delim_gets_created.push_back(expose_idx.index);
 	plan = LogicalCrossProduct::Create(std::move(plan), std::move(expose_delim));
 	result.bindings = CreateContiguousState(ColumnBinding(expose_idx, ProjectionIndex(0)));
 	return result;
@@ -1784,13 +1787,32 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownTrampoline(
 	}
 	InvalidateAccessCache();
 
+	// the wave layout every branch observes is the pushed-down seed's layout: the base
+	// columns followed by the appended domain suffix, in correlated-column order
+	plan->children[0]->ResolveOperatorTypes();
+	const auto wave_types = plan->children[0]->types;
+	vector<Identifier> wave_names;
+	for (idx_t i = 0; i < wave_types.size(); i++) {
+		wave_names.emplace_back("c" + to_string(i));
+	}
+
 	// every branch starts from the same contiguous appended-domain layout
 	auto cte_state = CreateContiguousState(ColumnBinding(cte.table_index, ProjectionIndex(cte.column_count)));
 	for (idx_t branch_idx = 1; branch_idx < plan->children.size(); branch_idx++) {
 		auto old_bindings = plan->children[branch_idx]->GetColumnBindings();
+		const auto delim_log_start = delim_gets_created.size();
 		auto branch_state = PushDownCorrelatedNode(plan->children[branch_idx], false, cte_state);
 		ColumnBindingRewrite::ApplyToChild(plan, branch_idx, std::move(old_bindings), branch_state.replacement_graph);
 		result.replacement_graph.Merge(branch_state.replacement_graph);
+		// Restrict the domain scans this flattener created inside the branch to the domains
+		// present in the branch's current wave: anchoring already guarantees no output rows
+		// for absent domains, but empty-group recovery against the full outer domain would
+		// still evaluate expressions for them, which is observable (errors, sequences,
+		// nontermination). Nested flatteners register in their own instance, so this set
+		// contains exactly this correlation's feeds.
+		set<idx_t> own_delim_gets(delim_gets_created.begin() + NumericCast<int64_t>(delim_log_start),
+		                          delim_gets_created.end());
+		RestrictBranchDomainScans(plan->children[branch_idx], cte.table_index, wave_types, wave_names, own_delim_gets);
 	}
 	RewriteCorrelatedBindings(*plan, cte_state);
 
@@ -1803,6 +1825,40 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownTrampoline(
 	cte.column_count += correlated_columns.size();
 	result.bindings = std::move(cte_state);
 	return result;
+}
+
+void FlattenDependentJoins::RestrictBranchDomainScans(unique_ptr<LogicalOperator> &plan, TableIndex cte_index,
+                                                      const vector<LogicalType> &wave_types,
+                                                      const vector<Identifier> &wave_names,
+                                                      const set<idx_t> &own_delim_gets) {
+	if (plan->type == LogicalOperatorType::LOGICAL_DELIM_GET) {
+		auto &delim_get = plan->Cast<LogicalDelimGet>();
+		if (own_delim_gets.find(delim_get.table_index.index) != own_delim_gets.end()) {
+			// replace the full-domain scan with the distinct domains of the current wave,
+			// keeping the delim scan's output bindings for its consumers
+			auto ref_index = binder.GenerateTableIndex();
+			auto wave_ref = make_uniq<LogicalCTERef>(ref_index, cte_index, wave_types, wave_names);
+			wave_ref->correlated_columns = correlated_columns.size();
+			const idx_t base_count = wave_types.size() - correlated_columns.size();
+			vector<unique_ptr<Expression>> domain_exprs;
+			vector<unique_ptr<Expression>> distinct_targets;
+			for (idx_t i = 0; i < correlated_columns.size(); i++) {
+				domain_exprs.push_back(make_uniq<BoundColumnRefExpression>(
+				    correlated_columns[i].type, ColumnBinding(ref_index, ProjectionIndex(base_count + i))));
+				distinct_targets.push_back(make_uniq<BoundColumnRefExpression>(
+				    correlated_columns[i].type, ColumnBinding(delim_get.table_index, ProjectionIndex(i))));
+			}
+			auto projection = make_uniq<LogicalProjection>(delim_get.table_index, std::move(domain_exprs));
+			projection->children.push_back(std::move(wave_ref));
+			auto distinct = make_uniq<LogicalDistinct>(std::move(distinct_targets), DistinctType::DISTINCT);
+			distinct->children.push_back(std::move(projection));
+			plan = std::move(distinct);
+			return;
+		}
+	}
+	for (auto &child : plan->children) {
+		RestrictBranchDomainScans(child, cte_index, wave_types, wave_names, own_delim_gets);
+	}
 }
 
 FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownCTERef(unique_ptr<LogicalOperator> &plan) {
@@ -1824,6 +1880,7 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownCTERef(uniq
 	auto delim_index = binder.GenerateTableIndex();
 	auto delim_state = CreateContiguousState(ColumnBinding(delim_index, ProjectionIndex(0)));
 	auto delim_scan = make_uniq<LogicalDelimGet>(delim_index, delim_types);
+	delim_gets_created.push_back(delim_index.index);
 	auto join = make_uniq<LogicalComparisonJoin>(JoinType::INNER);
 	AddCTERefJoinConditions(*join, cteref, positions, delim_state);
 	if (!join->conditions.empty()) {
@@ -1968,6 +2025,7 @@ FlattenDependentJoins::AttachDomainToIndependentSubtree(unique_ptr<LogicalOperat
 	auto delim_index = binder.GenerateTableIndex();
 	auto delim_state = CreateContiguousState(ColumnBinding(delim_index, ProjectionIndex(0)));
 	auto delim_scan = make_uniq<LogicalDelimGet>(delim_index, delim_types);
+	delim_gets_created.push_back(delim_index.index);
 	auto result = DecorrelateIndependentSubtree(plan, propagate_null_values);
 	result.bindings = CreateDelimCrossProduct(plan, std::move(delim_scan), std::move(delim_state));
 	return result;
