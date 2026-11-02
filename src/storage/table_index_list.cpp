@@ -411,20 +411,20 @@ void TableIndexList::Bind(ClientContext &context, DataTableInfo &table_info, con
 			throw InternalException("index entry bind state cannot be BOUND here");
 		}
 
-		// Create a binder to bind this index.
-		auto binder = Binder::CreateBinder(context);
-
-		// Add the table to the binder.
-		vector<ColumnIndex> dummy_column_ids;
-		binder->bind_context.AddBaseTable(TableIndex(0), Identifier(), StringsToIdentifiers(column_names), column_types,
-		                                  dummy_column_ids, table);
-
-		// Create an IndexBinder to bind the index
-		IndexBinder idx_binder(*binder, context);
-
 		// Apply any outstanding buffered replays and replace the unbound index with a bound index.
 		unique_ptr<BoundIndex> bound_idx;
 		try {
+			// Create a binder to bind this index.
+			auto binder = Binder::CreateBinder(context);
+
+			// Add the table to the binder.
+			vector<ColumnIndex> dummy_column_ids;
+			binder->bind_context.AddBaseTable(TableIndex(0), Identifier(), StringsToIdentifiers(column_names),
+			                                  column_types, dummy_column_ids, table);
+
+			// Create an IndexBinder to bind the index
+			IndexBinder idx_binder(*binder, context);
+
 			vector<LogicalType> physical_column_types;
 			for (auto &col : table.GetColumns().Physical()) {
 				physical_column_types.push_back(col.Type());
