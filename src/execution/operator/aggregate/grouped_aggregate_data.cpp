@@ -15,6 +15,7 @@ void GroupedAggregateData::InitializeGroupby(vector<unique_ptr<Expression>> grou
                                              vector<unsafe_vector<ProjectionIndex>> grouping_functions) {
 	InitializeGroupbyGroups(std::move(groups));
 	vector<LogicalType> payload_types_filters;
+	vector<reference<const Expression>> filters;
 
 	SetGroupingFunctions(grouping_functions);
 
@@ -30,8 +31,19 @@ void GroupedAggregateData::InitializeGroupby(vector<unique_ptr<Expression>> grou
 			payload_types.push_back(child->GetReturnType());
 		}
 		if (aggr.GetFilter()) {
-			filter_count++;
-			payload_types_filters.push_back(aggr.GetFilter()->GetReturnType());
+			// aggregates with an identical filter share one payload column
+			bool shared = false;
+			for (auto &filter : filters) {
+				if (filter.get().Equals(*aggr.GetFilter())) {
+					shared = true;
+					break;
+				}
+			}
+			if (!shared) {
+				filters.push_back(*aggr.GetFilter());
+				filter_count++;
+				payload_types_filters.push_back(aggr.GetFilter()->GetReturnType());
+			}
 		}
 		if (!aggr.Function().HasStateCombineCallback()) {
 			throw InternalException("Aggregate function %s is missing a combine method", aggr.Function().GetName());

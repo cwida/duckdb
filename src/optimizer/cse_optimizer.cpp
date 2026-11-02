@@ -1,4 +1,6 @@
 #include "duckdb/optimizer/cse_optimizer.hpp"
+#include "duckdb/planner/operator/logical_aggregate.hpp"
+#include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
@@ -34,6 +36,11 @@ struct CSEReplacementState {
 	bool short_circuited = false;
 	//! True while visiting the child of a TRY or HAS_ERROR, whose errors must stay inside the capture
 	bool inside_try = false;
+	//! Whether the filters of the aggregates stay intact: an ungrouped aggregate evaluates each distinct filter once
+	//! with the selection fast path, which beats materializing the filter in a projection
+	bool keep_aggregate_filters = false;
+	//! True while visiting a filter that stays intact
+	bool inside_kept_filter = false;
 };
 
 void CommonSubExpressionOptimizer::VisitOperator(LogicalOperator &op) {
@@ -60,7 +67,8 @@ void CommonSubExpressionOptimizer::CountExpressions(Expression &expr, CSEReplace
 	default:
 		break;
 	}
-	if (expr.GetExpressionClass() != ExpressionClass::BOUND_AGGREGATE && !expr.IsVolatile() && !state.inside_try) {
+	if (expr.GetExpressionClass() != ExpressionClass::BOUND_AGGREGATE && !expr.IsVolatile() && !state.inside_try &&
+	    !state.inside_kept_filter) {
 		// we can't move aggregates to a projection, so we only consider the children of the aggregate
 		auto node = state.expression_count.find(expr);
 		if (node == state.expression_count.end()) {
@@ -99,6 +107,18 @@ void CommonSubExpressionOptimizer::CountExpressions(Expression &expr, CSEReplace
 		state.inside_try = save_inside_try;
 		break;
 	}
+	case ExpressionClass::BOUND_AGGREGATE: {
+		auto &aggr = expr.Cast<BoundAggregateExpression>();
+		ExpressionIterator::EnumerateChildren(expr, [&](Expression &child) {
+			const auto save_inside_kept_filter = state.inside_kept_filter;
+			if (state.keep_aggregate_filters && aggr.GetFilter().get() == &child) {
+				state.inside_kept_filter = true;
+			}
+			CountExpressions(child, state);
+			state.inside_kept_filter = save_inside_kept_filter;
+		});
+		break;
+	}
 	default:
 		// recursively count the children
 		ExpressionIterator::EnumerateChildren(expr, [&](Expression &child) { CountExpressions(child, state); });
@@ -126,7 +146,8 @@ void CommonSubExpressionOptimizer::PerformCSEReplacement(unique_ptr<Expression> 
 		return;
 	}
 	// check if this child is eligible for CSE elimination
-	if (!state.inside_try && state.expression_count.find(expr) != state.expression_count.end()) {
+	if (!state.inside_try && !state.inside_kept_filter &&
+	    state.expression_count.find(expr) != state.expression_count.end()) {
 		auto &node = state.expression_count[expr];
 		if (node.count > 1) {
 			// this expression occurs more than once! push it into the projection
@@ -152,8 +173,21 @@ void CommonSubExpressionOptimizer::PerformCSEReplacement(unique_ptr<Expression> 
 	if (expression_type == ExpressionType::OPERATOR_TRY || expression_type == ExpressionType::OPERATOR_HAS_ERROR) {
 		state.inside_try = true;
 	}
-	ExpressionIterator::EnumerateChildren(expr,
-	                                      [&](unique_ptr<Expression> &child) { PerformCSEReplacement(child, state); });
+	if (expr.GetExpressionClass() == ExpressionClass::BOUND_AGGREGATE) {
+		// a kept filter is not extracted, but its column references still move to the new projection
+		auto &aggr = expr.Cast<BoundAggregateExpression>();
+		ExpressionIterator::EnumerateChildren(expr, [&](unique_ptr<Expression> &child) {
+			const auto save_inside_kept_filter = state.inside_kept_filter;
+			if (state.keep_aggregate_filters && aggr.GetFilter() && &aggr.GetFilterMutable() == &child) {
+				state.inside_kept_filter = true;
+			}
+			PerformCSEReplacement(child, state);
+			state.inside_kept_filter = save_inside_kept_filter;
+		});
+	} else {
+		ExpressionIterator::EnumerateChildren(
+		    expr, [&](unique_ptr<Expression> &child) { PerformCSEReplacement(child, state); });
+	}
 	state.inside_try = save_inside_try;
 }
 
@@ -162,6 +196,10 @@ void CommonSubExpressionOptimizer::ExtractCommonSubExpressions(LogicalOperator &
 
 	// first we count for each expression with children how many types it occurs
 	CSEReplacementState state;
+	if (op.type == LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY) {
+		auto &aggr = op.Cast<LogicalAggregate>();
+		state.keep_aggregate_filters = aggr.groups.empty() && aggr.grouping_sets.size() <= 1;
+	}
 	LogicalOperatorVisitor::EnumerateExpressions(
 	    op, [&](unique_ptr<Expression> *child) { CountExpressions(**child, state); });
 	// check if there are any expressions to extract

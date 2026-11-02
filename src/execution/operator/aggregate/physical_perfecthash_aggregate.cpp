@@ -2,6 +2,7 @@
 
 #include "duckdb/execution/perfect_aggregate_hashtable.hpp"
 #include "duckdb/common/atomic.hpp"
+#include "duckdb/common/unordered_map.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
@@ -33,6 +34,7 @@ PhysicalPerfectHashAggregate::PhysicalPerfectHashAggregate(PhysicalPlan &physica
 
 	vector<BoundAggregateExpression *> bindings;
 	vector<LogicalType> payload_types_filters;
+	vector<reference<const Expression>> filters;
 	for (auto &expr : aggregates) {
 		D_ASSERT(expr->GetExpressionClass() == ExpressionClass::BOUND_AGGREGATE);
 		D_ASSERT(expr->IsAggregate());
@@ -45,7 +47,18 @@ PhysicalPerfectHashAggregate::PhysicalPerfectHashAggregate(PhysicalPlan &physica
 			payload_types.push_back(child->GetReturnType());
 		}
 		if (aggr.GetFilter()) {
-			payload_types_filters.push_back(aggr.GetFilter()->GetReturnType());
+			// aggregates with an identical filter share one payload column
+			bool shared = false;
+			for (auto &filter : filters) {
+				if (filter.get().Equals(*aggr.GetFilter())) {
+					shared = true;
+					break;
+				}
+			}
+			if (!shared) {
+				filters.push_back(*aggr.GetFilter());
+				payload_types_filters.push_back(aggr.GetFilter()->GetReturnType());
+			}
 		}
 	}
 	for (const auto &pay_filters : payload_types_filters) {
@@ -59,18 +72,20 @@ PhysicalPerfectHashAggregate::PhysicalPerfectHashAggregate(PhysicalPlan &physica
 		auto &aggr = aggregate->Cast<BoundAggregateExpression>();
 		aggregate_input_idx += aggr.GetChildren().size();
 	}
+	// The filters follow the children in the payload chunk: one column per distinct input column
+	unordered_map<idx_t, idx_t> filter_payload_indexes;
 	for (auto &aggregate : aggregates) {
 		auto &aggr = aggregate->Cast<BoundAggregateExpression>();
 		if (aggr.GetFilter()) {
 			auto &filter_ref = *aggr.GetFilter();
 			auto &bound_ref_expr = filter_ref.Cast<BoundReferenceExpression>();
-			auto it = filter_indexes.find(filter_ref);
-			if (it == filter_indexes.end()) {
-				filter_indexes[filter_ref] = bound_ref_expr.Index();
-				bound_ref_expr.IndexMutable() = aggregate_input_idx++;
-			} else {
-				++aggregate_input_idx;
+			auto input_idx = bound_ref_expr.Index();
+			filter_indexes[filter_ref] = input_idx;
+			auto entry = filter_payload_indexes.find(input_idx);
+			if (entry == filter_payload_indexes.end()) {
+				entry = filter_payload_indexes.emplace(input_idx, aggregate_input_idx++).first;
 			}
+			bound_ref_expr.IndexMutable() = entry->second;
 		}
 	}
 }
@@ -144,9 +159,12 @@ SinkResultType PhysicalPerfectHashAggregate::Sink(ExecutionContext &context, Dat
 	for (auto &aggregate : aggregates) {
 		auto &aggr = aggregate->Cast<BoundAggregateExpression>();
 		if (aggr.GetFilter()) {
-			auto it = filter_indexes.find(*aggr.GetFilter());
+			auto &filter_ref = *aggr.GetFilter();
+			auto it = filter_indexes.find(filter_ref);
 			D_ASSERT(it != filter_indexes.end());
-			aggregate_input_chunk.data[aggregate_input_idx++].Reference(chunk.data[it->second]);
+			auto &filter_bound_ref = filter_ref.Cast<BoundReferenceExpression>();
+			D_ASSERT(filter_bound_ref.Index() >= aggregate_input_idx);
+			aggregate_input_chunk.data[filter_bound_ref.Index()].Reference(chunk.data[it->second]);
 		}
 	}
 

@@ -198,6 +198,35 @@ UngroupedAggregateExecuteState::UngroupedAggregateExecuteState(ClientContext &co
 		aggregate_input_chunk.Initialize(allocator, payload_types);
 	}
 	filter_set.Initialize(context, aggregate_objects, child_types);
+
+	// find children that are computed over the same rows by an earlier aggregate
+	struct PayloadColumn {
+		idx_t payload_idx;
+		idx_t filter_idx;
+		reference<const Expression> child;
+	};
+	vector<PayloadColumn> columns;
+	idx_t payload_idx = 0;
+	for (idx_t aggr_idx = 0; aggr_idx < aggregates.size(); aggr_idx++) {
+		auto &aggr = aggregates[aggr_idx]->Cast<BoundAggregateExpression>();
+		auto filter_idx = filter_set.GetFilterIndex(aggr_idx);
+		for (auto &child : aggr.GetChildren()) {
+			idx_t source = payload_idx;
+			if (!aggr.IsDistinct() && !child->IsVolatile()) {
+				for (auto &column : columns) {
+					if (column.filter_idx == filter_idx && column.child.get().Equals(*child)) {
+						source = column.payload_idx;
+						break;
+					}
+				}
+				if (source == payload_idx) {
+					columns.push_back({payload_idx, filter_idx, *child});
+				}
+			}
+			payload_source.push_back(source);
+			payload_idx++;
+		}
+	}
 }
 
 void UngroupedAggregateExecuteState::Reset() {
@@ -206,6 +235,7 @@ void UngroupedAggregateExecuteState::Reset() {
 
 void UngroupedAggregateExecuteState::Sink(LocalUngroupedAggregateState &state, DataChunk &input) {
 	DataChunk &payload_chunk = aggregate_input_chunk;
+	child_executor.SetChunk(input);
 
 	idx_t payload_idx = 0;
 	idx_t next_payload_idx = 0;
@@ -220,23 +250,33 @@ void UngroupedAggregateExecuteState::Sink(LocalUngroupedAggregateState &state, D
 			continue;
 		}
 
-		idx_t payload_cnt = 0;
-		idx_t chunk_count;
-		// resolve the filter (if any)
+		// resolve the filter (if any): a filter is evaluated once per chunk and shared by the aggregates that use it
+		idx_t chunk_count = input.size();
+		optional_ptr<const SelectionVector> sel;
 		if (aggregate.GetFilter()) {
 			auto &filtered_data = filter_set.GetFilterData(aggr_idx);
-			chunk_count = filtered_data.ApplyFilter(input);
-
-			child_executor.SetChunk(filtered_data.filtered_payload);
-		} else {
-			chunk_count = input.size();
-			child_executor.SetChunk(input);
+			if (filter_set.IsFirstFilterUse(aggr_idx)) {
+				filtered_data.Select(input);
+			}
+			chunk_count = filtered_data.selected_count;
+			sel = &filtered_data.true_sel;
+		}
+		if (chunk_count == 0) {
+			continue;
 		}
 
-		// resolve the child expressions of the aggregate (if any)
+		// resolve the child expressions of the aggregate (if any) on the selected rows
 		for (idx_t i = 0; i < aggregate.GetChildren().size(); ++i) {
-			child_executor.ExecuteExpression(payload_idx + payload_cnt, payload_chunk.data[payload_idx + payload_cnt]);
-			payload_cnt++;
+			auto col_idx = payload_idx + i;
+			auto &result = payload_chunk.data[col_idx];
+			auto source_idx = payload_source[col_idx];
+			if (source_idx != col_idx) {
+				result.Reference(payload_chunk.data[source_idx]);
+			} else if (sel) {
+				child_executor.ExecuteExpression(col_idx, result, *sel, chunk_count);
+			} else {
+				child_executor.ExecuteExpression(col_idx, result);
+			}
 		}
 
 		state.Sink(payload_chunk, payload_idx, aggr_idx, chunk_count);

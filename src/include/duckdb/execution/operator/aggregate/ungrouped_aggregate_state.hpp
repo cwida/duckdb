@@ -92,6 +92,9 @@ public:
 	DataChunk aggregate_input_chunk;
 	//! Aggregate filter data set
 	AggregateFilterDataSet filter_set;
+	//! Per payload column: the first payload column holding the same child expression under the same filter
+	//! (its own index if there is none); shared children are referenced instead of being computed again
+	unsafe_vector<idx_t> payload_source;
 
 public:
 	void Sink(LocalUngroupedAggregateState &state, DataChunk &input);

@@ -3,6 +3,7 @@
 #include "duckdb/catalog/catalog_entry/aggregate_function_catalog_entry.hpp"
 #include "duckdb/common/atomic.hpp"
 #include "duckdb/common/optional_idx.hpp"
+#include "duckdb/common/unordered_map.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/execution/aggregate_hashtable.hpp"
 #include "duckdb/execution/operator/aggregate/distinct_aggregate_data.hpp"
@@ -165,18 +166,22 @@ PhysicalHashAggregate::PhysicalHashAggregate(PhysicalPlan &physical_plan, Client
 		} // LCOV_EXCL_STOP
 	}
 
+	// The filters follow the children in the payload chunk: one column per distinct input column
+	unordered_map<idx_t, idx_t> filter_payload_indexes;
 	for (idx_t i = 0; i < aggregates.size(); i++) {
 		auto &aggregate = aggregates[i];
 		auto &aggr = aggregate->Cast<BoundAggregateExpression>();
 		if (aggr.GetFilter()) {
 			auto &filter_ref = *aggr.GetFilter();
 			auto &bound_ref_expr = filter_ref.Cast<BoundReferenceExpression>();
-			if (!filter_indexes.count(filter_ref)) {
-				// Replace the bound reference expression's index with the corresponding index of the payload chunk
-				filter_indexes[filter_ref] = bound_ref_expr.Index();
-				bound_ref_expr.IndexMutable() = aggregate_input_idx;
+			auto input_idx = bound_ref_expr.Index();
+			filter_indexes[filter_ref] = input_idx;
+			auto entry = filter_payload_indexes.find(input_idx);
+			if (entry == filter_payload_indexes.end()) {
+				entry = filter_payload_indexes.emplace(input_idx, aggregate_input_idx++).first;
 			}
-			aggregate_input_idx++;
+			// Replace the bound reference expression's index with the corresponding index of the payload chunk
+			bound_ref_expr.IndexMutable() = entry->second;
 		}
 	}
 
@@ -199,18 +204,7 @@ public:
 			auto &grouping = op.groupings[i];
 			grouping_states.emplace_back(grouping, context);
 		}
-		vector<LogicalType> filter_types;
-		for (auto &aggr : op.grouped_aggregate_data.aggregates) {
-			auto &aggregate = aggr->Cast<BoundAggregateExpression>();
-			for (auto &child : aggregate.GetChildren()) {
-				payload_types.push_back(child->GetReturnType());
-			}
-			if (aggregate.GetFilter()) {
-				filter_types.push_back(aggregate.GetFilter()->GetReturnType());
-			}
-		}
-		payload_types.reserve(payload_types.size() + filter_types.size());
-		payload_types.insert(payload_types.end(), filter_types.begin(), filter_types.end());
+		payload_types = op.grouped_aggregate_data.payload_types;
 	}
 
 	const PhysicalHashAggregate &op;
@@ -458,14 +452,17 @@ SinkResultType PhysicalHashAggregate::Sink(ExecutionContext &context, DataChunk 
 			aggregate_input_chunk.data[aggregate_input_idx++].Reference(chunk.data[bound_ref_expr.Index()]);
 		}
 	}
-	// Populate the filter vectors
+	// Populate the filter vectors (aggregates with an identical filter share a column)
 	for (auto &aggregate : aggregates) {
 		auto &aggr = aggregate->Cast<BoundAggregateExpression>();
 		if (aggr.GetFilter()) {
-			auto it = filter_indexes.find(*aggr.GetFilter());
+			auto &filter_ref = *aggr.GetFilter();
+			auto it = filter_indexes.find(filter_ref);
 			D_ASSERT(it != filter_indexes.end());
 			D_ASSERT(it->second < chunk.data.size());
-			aggregate_input_chunk.data[aggregate_input_idx++].Reference(chunk.data[it->second]);
+			auto &filter_bound_ref = filter_ref.Cast<BoundReferenceExpression>();
+			D_ASSERT(filter_bound_ref.Index() >= aggregate_input_idx);
+			aggregate_input_chunk.data[filter_bound_ref.Index()].Reference(chunk.data[it->second]);
 		}
 	}
 

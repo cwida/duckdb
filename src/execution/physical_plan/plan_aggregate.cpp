@@ -11,7 +11,10 @@
 #include "duckdb/function/function_binder.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
+#include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/operator/logical_aggregate.hpp"
+
+#include <functional>
 
 namespace duckdb {
 
@@ -250,7 +253,9 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalAggregate &op) {
 	D_ASSERT(op.children.size() == 1);
 
 	reference<PhysicalOperator> plan = CreatePlan(*op.children[0]);
-	plan = ExtractAggregateExpressions(plan, op.expressions, op.groups, op.grouping_sets);
+	// the ungrouped aggregate evaluates its filters directly; grouped aggregates need them as payload columns
+	const bool ungrouped = op.groups.empty() && op.grouping_sets.size() <= 1;
+	plan = ExtractAggregateExpressions(plan, op.expressions, op.groups, op.grouping_sets, !ungrouped);
 
 	bool can_use_simple_aggregation = true;
 	for (auto &expression : op.expressions) {
@@ -313,7 +318,8 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalAggregate &op) {
 PhysicalOperator &PhysicalPlanGenerator::ExtractAggregateExpressions(PhysicalOperator &child,
                                                                      vector<unique_ptr<Expression>> &aggregates,
                                                                      vector<unique_ptr<Expression>> &groups,
-                                                                     optional_ptr<vector<GroupingSet>> grouping_sets) {
+                                                                     optional_ptr<vector<GroupingSet>> grouping_sets,
+                                                                     bool extract_filters) {
 	vector<unique_ptr<Expression>> expressions;
 	vector<LogicalType> types;
 
@@ -331,20 +337,48 @@ PhysicalOperator &PhysicalPlanGenerator::ExtractAggregateExpressions(PhysicalOpe
 		expressions.push_back(std::move(group));
 		group = std::move(ref);
 	}
+	// children and filters that several aggregates share are projected (and later evaluated) once
+	// distinct aggregates keep their own columns: their distinct hash tables are keyed on them
+	vector<idx_t> shared_columns;
+	auto extract = [&](unique_ptr<Expression> &expr, bool share) {
+		idx_t index = expressions.size();
+		if (share && !expr->IsVolatile()) {
+			for (auto &i : shared_columns) {
+				if (expressions[i]->Equals(*expr)) {
+					index = i;
+					break;
+				}
+			}
+		}
+		auto ref = make_uniq<BoundReferenceExpression>(expr->GetReturnType(), index);
+		if (index == expressions.size()) {
+			types.push_back(expr->GetReturnType());
+			expressions.push_back(std::move(expr));
+			if (share) {
+				shared_columns.push_back(index);
+			}
+		}
+		expr = std::move(ref);
+	};
+	// when the filter stays with the aggregate only the columns it reads are projected
+	std::function<void(unique_ptr<Expression> &)> extract_references = [&](unique_ptr<Expression> &expr) {
+		if (expr->GetExpressionClass() == ExpressionClass::BOUND_REF) {
+			extract(expr, true);
+			return;
+		}
+		ExpressionIterator::EnumerateChildren(*expr, extract_references);
+	};
 	for (auto &aggr : aggregates) {
 		auto &bound_aggr = aggr->Cast<BoundAggregateExpression>();
 		for (auto &child_expr : bound_aggr.GetChildrenMutable()) {
-			auto ref = make_uniq<BoundReferenceExpression>(child_expr->GetReturnType(), expressions.size());
-			types.push_back(child_expr->GetReturnType());
-			expressions.push_back(std::move(child_expr));
-			child_expr = std::move(ref);
+			extract(child_expr, !bound_aggr.IsDistinct());
 		}
 		if (bound_aggr.GetFilter()) {
-			auto &filter = bound_aggr.GetFilterMutable();
-			auto ref = make_uniq<BoundReferenceExpression>(filter->GetReturnType(), expressions.size());
-			types.push_back(filter->GetReturnType());
-			expressions.push_back(std::move(filter));
-			bound_aggr.GetFilterMutable() = std::move(ref);
+			if (extract_filters) {
+				extract(bound_aggr.GetFilterMutable(), true);
+			} else {
+				extract_references(bound_aggr.GetFilterMutable());
+			}
 		}
 	}
 	if (expressions.empty()) {
