@@ -17,6 +17,10 @@
 
 namespace duckdb {
 
+struct bignum_t;
+class StringHeap;
+struct BignumArithmeticState;
+
 struct interval_t;
 struct date_t;
 
@@ -25,6 +29,8 @@ struct SubtractOperator {
 	static inline TR Operation(TA left, TB right) {
 		return left - right;
 	}
+	//! BIGNUM-backed values allocate their result in the heap
+	DUCKDB_API static bignum_t Operation(bignum_t left, bignum_t right, StringHeap &heap, BignumArithmeticState &state);
 };
 
 template <>
@@ -92,6 +98,9 @@ struct TryDecimalSubtract {
 	static inline bool Operation(TA left, TB right, TR &result) {
 		InternalException::Throw("Unimplemented type for TryDecimalSubtract");
 	}
+	//! The bignum_t tier (width > 38), see TryDecimalAdd
+	DUCKDB_API static bool Operation(bignum_t left, bignum_t right, bignum_t &result, StringHeap &heap,
+	                                 BignumArithmeticState &state);
 };
 
 template <>
@@ -114,6 +123,7 @@ struct DecimalSubtractOverflowCheck {
 		}
 		return result;
 	}
+	DUCKDB_API static bignum_t Operation(bignum_t left, bignum_t right, StringHeap &heap, BignumArithmeticState &state);
 };
 
 template <>

@@ -12,7 +12,7 @@ SELECT 99999999999999999999999999999999999999::DECIMAL(38,0) + 1::DECIMAL(38,0) 
 statement error
 SELECT repeat('9', 255)::DECIMAL(255,0) + 1::DECIMAL(255,0);
 ----
-Overflow in addition of DECIMAL(255,0)
+Overflow in addition of DECIMAL(255)
 
 query I
 SELECT 1.5::DECIMAL(38,1) * 2.5::DECIMAL(38,1);

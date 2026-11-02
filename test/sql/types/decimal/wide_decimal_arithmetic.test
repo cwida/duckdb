@@ -42,7 +42,7 @@ SELECT (repeat('9', 40))::DECIMAL(40,0) + (repeat('9', 40))::DECIMAL(40,0)
 statement error
 SELECT repeat('9', 255)::DECIMAL(255,0) + repeat('9', 255)::DECIMAL(255,0)
 ----
-Overflow in addition of DECIMAL(255,0)
+Overflow in addition of DECIMAL(255)
 
 query I
 SELECT repeat('9', 255)::DECIMAL(255,0) + ('-' || repeat('9', 255))::DECIMAL(255,0)
@@ -52,7 +52,7 @@ SELECT repeat('9', 255)::DECIMAL(255,0) + ('-' || repeat('9', 255))::DECIMAL(255
 statement error
 SELECT ('-' || repeat('9', 255))::DECIMAL(255,0) - repeat('9', 255)::DECIMAL(255,0)
 ----
-Overflow in subtraction of DECIMAL(255,0)
+Overflow in subtraction of DECIMAL(255)
 
 # multiplication
 query II
@@ -73,7 +73,7 @@ SELECT repeat('9', 127)::DECIMAL(255,0) * repeat('9', 128)::DECIMAL(255,0)
 statement error
 SELECT repeat('9', 128)::DECIMAL(255,0) * repeat('9', 128)::DECIMAL(255,0)
 ----
-Overflow in multiplication of DECIMAL(255,0)
+Overflow in multiplication of DECIMAL(255)
 
 statement error
 SELECT '1'::DECIMAL(200,150) * '1'::DECIMAL(200,150)

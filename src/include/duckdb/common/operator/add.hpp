@@ -15,11 +15,17 @@
 
 namespace duckdb {
 
+struct bignum_t;
+class StringHeap;
+struct BignumArithmeticState;
+
 struct AddOperator {
 	template <class TA, class TB, class TR>
 	static inline TR Operation(TA left, TB right) {
 		return left + right;
 	}
+	//! BIGNUM-backed values allocate their result in the heap
+	DUCKDB_API static bignum_t Operation(bignum_t left, bignum_t right, StringHeap &heap, BignumArithmeticState &state);
 };
 
 template <>
@@ -96,11 +102,15 @@ struct AddOperatorOverflowCheck {
 	}
 };
 
+//! Decimals are stored in four fixed-size integer tiers and, above 38 digits, as a bignum_t whose results are
+//! allocated in the heap of the result vector (the scratch state serves the BIGNUM multiplication)
 struct TryDecimalAdd {
 	template <class TA, class TB, class TR>
 	static inline bool Operation(TA left, TB right, TR &result) {
 		InternalException::Throw("Unimplemented type for TryDecimalAdd");
 	}
+	DUCKDB_API static bool Operation(bignum_t left, bignum_t right, bignum_t &result, StringHeap &heap,
+	                                 BignumArithmeticState &state);
 };
 
 template <>
@@ -123,6 +133,7 @@ struct DecimalAddOverflowCheck {
 		}
 		return result;
 	}
+	DUCKDB_API static bignum_t Operation(bignum_t left, bignum_t right, StringHeap &heap, BignumArithmeticState &state);
 };
 
 template <>
