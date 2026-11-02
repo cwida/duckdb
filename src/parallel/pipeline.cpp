@@ -1489,9 +1489,9 @@ PipelineBuildState::ResolveExternalInputs(const vector<shared_ptr<MetaPipeline>>
 			// the exchange liveness analysis must see those edges: an edge they never saw can gate a buffered
 			// exchange consumer invisibly and deadlock the producer at the exchange watermark. The selection is
 			// a deterministic function of the schedule graph, so the final iteration models exactly the edges
-			// the executor will add. A modeled edge can also close a WITH_ANALYSIS cycle (TryAddDependency only
-			// guards against scheduled cycles); such cycles resolve through candidate or starved demotion like
-			// any other, or fail loudly below where the pre-fix behavior was a runtime deadlock.
+			// the executor will add. The suppression check inside the selection already refuses edges that would
+			// cycle through streaming EOF waits, so an admitted edge cannot close a WITH_ANALYSIS cycle; it can
+			// still gate a consumer through producer backpressure, which the liveness analysis resolves.
 			AddRuntimeFilterScheduleDependencies(*schedule);
 		}
 		auto cycle = schedule->GetCycle();

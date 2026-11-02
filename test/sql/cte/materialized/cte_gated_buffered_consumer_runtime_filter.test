@@ -16,8 +16,8 @@ CREATE TABLE t AS SELECT (range % 2000000)::BIGINT k FROM range(8000000);
 # The executor orders the t scan after the join build through a runtime-filter edge added after consumer
 # selection. The buffered consumer of c is ordered behind the t branch through the union's optional
 # dependency, and the build reads c through d, so the producer of c parks at the exchange watermark unless
-# the liveness analysis models that edge and demotes the buffered consumer. On regression this deadlocks
-# idle, hence the timeout.
+# the liveness analysis models that edge and resolves the gate (it drops the union's optional ordering and
+# keeps the consumer streaming). On regression this deadlocks idle, so the timeout is the pin for the gate.
 query I
 WITH c AS MATERIALIZED (SELECT range i FROM range(2000000)),
      d AS MATERIALIZED (SELECT i FROM c WHERE i % 100000 = 0)
@@ -43,8 +43,8 @@ CREATE TABLE t2 AS SELECT (range % 2000000)::BIGINT k FROM range(8000000);
 
 # Coexistence coverage: a runtime filter inside the CTE's own body alongside the union-gated shape. The
 # scan feeding c sits in the outer join's build closure and statistics can push a static filter into t2,
-# so this query need not add a runtime-filter scheduling edge; the modeled-edge demotion is pinned through
-# the operator log in cte_buffered_consumer_cycle_demotion.test instead.
+# so this query need not add a runtime-filter scheduling edge; the streaming resolution of the modeled edge
+# is pinned through the operator log in cte_buffered_consumer_cycle_demotion.test instead.
 query I
 WITH c AS MATERIALIZED (SELECT t.k FROM t JOIN sel ON t.k = sel.k),
      d AS MATERIALIZED (SELECT k FROM c WHERE k % 100000 = 0)

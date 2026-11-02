@@ -121,10 +121,15 @@ static void ScheduleRuntimeFiltersInternal(PipelineSchedule &schedule, bool clea
 		return;
 	}
 
-	auto dependency_check = RuntimeFilterDependencyCheck(schedule);
-	auto join_build_stages = CollectJoinBuildStages(schedule);
+	// The clear-only path never adds edges, so the admission state is not needed there.
+	PipelineSchedule dependency_check;
+	vector<bool> join_build_stages;
+	if (add_edges) {
+		dependency_check = RuntimeFilterDependencyCheck(schedule);
+		join_build_stages = CollectJoinBuildStages(schedule);
+	}
 	reference_map_t<DynamicTableFilterSet, vector<idx_t>> sources;
-	for (idx_t stage_idx = 0; stage_idx < schedule.stages.size(); stage_idx++) {
+	for (idx_t stage_idx = 0; add_edges && stage_idx < schedule.stages.size(); stage_idx++) {
 		auto &stage = schedule.stages[stage_idx];
 		auto &pipeline = *stage.pipeline;
 		auto source = pipeline.GetSource();
