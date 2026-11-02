@@ -275,6 +275,10 @@ unique_ptr<PipelineSchedule> BuildPipelineSchedule(const vector<shared_ptr<MetaP
 			if (child1->Type() != MetaPipelineType::JOIN_BUILD) {
 				continue;
 			}
+			// Small builds can finalize without coordinating memory reservations with their siblings.
+			if (child1->GetSink()->children[1].get().estimated_cardinality < 1000000) {
+				continue;
+			}
 			auto child1_entry = stage_map.find(*child1->GetBasePipeline());
 			if (child1_entry == stage_map.end()) {
 				if (!allow_missing_meta_pipelines) {

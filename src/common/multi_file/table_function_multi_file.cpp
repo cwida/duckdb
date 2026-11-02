@@ -732,11 +732,31 @@ shared_ptr<BaseFileReader> TableFunctionMultiFileWrapper::CreateReader(ClientCon
 unique_ptr<NodeStatistics> TableFunctionMultiFileWrapper::GetCardinality(ClientContext &context,
                                                                          const MultiFileBindData &bind_data,
                                                                          idx_t file_count) {
+	if (bind_data.file_list->IsEmpty()) {
+		return make_uniq<NodeStatistics>(idx_t(0), idx_t(0));
+	}
 	auto &data = bind_data.bind_data->Cast<TableFunctionMultiFileData>();
-	if (!data.cardinality.IsValid()) {
+	auto result = make_uniq<NodeStatistics>();
+	if (data.cardinality.IsValid()) {
+		result->has_estimated_cardinality = true;
+		result->estimated_cardinality = data.cardinality.GetIndex() * file_count;
+	}
+	if (!bind_data.file_options.union_by_name && bind_data.union_readers.size() == 1 &&
+	    bind_data.file_list->GetExpandResult() == FileExpandResult::SINGLE_FILE &&
+	    bind_data.union_readers[0]->GetFileName() == bind_data.file_list->GetFirstFile().path) {
+		auto &file = bind_data.union_readers[0]->Cast<TableFunctionUnionData>();
+		if (function.cardinality && file.bind_data) {
+			auto stats = function.cardinality(context, file.bind_data.get());
+			if (stats && stats->has_max_cardinality) {
+				result->has_max_cardinality = true;
+				result->max_cardinality = stats->max_cardinality;
+			}
+		}
+	}
+	if (!result->has_estimated_cardinality && !result->has_max_cardinality) {
 		return nullptr;
 	}
-	return make_uniq<NodeStatistics>(data.cardinality.GetIndex() * file_count);
+	return result;
 }
 
 //===--------------------------------------------------------------------===//
