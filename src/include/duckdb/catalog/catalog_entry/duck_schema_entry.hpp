@@ -67,6 +67,7 @@ public:
 	//! Create a nested schema inside this schema
 	optional_ptr<CatalogEntry> CreateSchema(CatalogTransaction transaction, CreateSchemaInfo &info);
 	void Alter(CatalogTransaction transaction, AlterInfo &info) override;
+	using SchemaCatalogEntry::Scan;
 	void Scan(ClientContext &context, CatalogType type, const std::function<void(CatalogEntry &)> &callback) override;
 	void Scan(CatalogTransaction transaction, CatalogType type,
 	          const std::function<void(CatalogEntry &)> &callback) override;
