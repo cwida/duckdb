@@ -73,6 +73,10 @@ struct SettingCallbackInfo {
 	SetScope scope;
 	//! Whether the callback fires for a RESET rather than a SET
 	bool is_reset = false;
+
+public:
+	//! Logs that the setting is deprecated; resetting it back to its default does not
+	DUCKDB_API void WarnDeprecated(const string &name) const;
 };
 
 typedef void (*set_callback_t)(SettingCallbackInfo &info, Value &parameter);

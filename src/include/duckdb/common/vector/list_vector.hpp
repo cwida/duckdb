@@ -17,6 +17,7 @@ namespace duckdb {
 class VectorListBuffer : public StandardVectorBuffer {
 public:
 	explicit VectorListBuffer(Allocator &allocator, capacity_t capacity, unique_ptr<Vector> vector);
+	explicit VectorListBuffer(AllocatedData allocated_data, capacity_t capacity, unique_ptr<Vector> vector);
 	explicit VectorListBuffer(Allocator &allocator, capacity_t capacity, const LogicalType &list_type,
 	                          capacity_t child_capacity = capacity_t(STANDARD_VECTOR_SIZE));
 	explicit VectorListBuffer(capacity_t capacity, const LogicalType &list_type,

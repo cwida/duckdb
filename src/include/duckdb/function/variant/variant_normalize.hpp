@@ -77,9 +77,9 @@ struct VariantNormalizer {
 	}
 
 	static void VisitArray(const UnifiedVariantVectorData &variant, idx_t row, const VariantNestedData &nested_data,
-	                       VariantNormalizerState &state);
+	                       idx_t depth, VariantNormalizerState &state);
 	static void VisitObject(const UnifiedVariantVectorData &variant, idx_t row, const VariantNestedData &nested_data,
-	                        VariantNormalizerState &state);
+	                        idx_t depth, VariantNormalizerState &state);
 	static void VisitDefault(VariantLogicalType type_id, const_data_ptr_t, VariantNormalizerState &state);
 
 public:

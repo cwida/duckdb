@@ -16,7 +16,6 @@
 #include "duckdb/optimizer/rule/monotone_preimage.hpp"
 #include "duckdb/optimizer/rule/predicate_factoring.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
-#include "duckdb/planner/expression/bound_function_expression.hpp"
 
 namespace duckdb {
 
@@ -160,8 +159,8 @@ unique_ptr<Expression> ExpressionRewriter::ConstantOrNull(ClientContext &context
 unique_ptr<Expression> ExpressionRewriter::ConstantOrNull(ClientContext &context,
                                                           vector<unique_ptr<Expression>> children, Value value) {
 	children.insert(children.begin(), make_uniq<BoundConstantExpression>(std::move(value)));
-	// the bind of constant_or_null derives the return type and the bind data from the leading constant
-	return BindBuiltinScalarFunction(context, ConstantOrNullFun::Name, std::move(children));
+	// constant_or_null has the type of the leading constant, also when a typed NULL child folds the call
+	return BindBuiltinScalarExpression(context, ConstantOrNullFun::Name, std::move(children));
 }
 
 void ExpressionRewriter::VisitOperator(LogicalOperator &op) {

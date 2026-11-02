@@ -1,0 +1,41 @@
+# name: test/sql/table_function/range_lateral_parallel.test
+# description: range and generate_series called per input row give the same results on many threads
+# group: [table_function]
+
+statement ok
+SET threads = 8;
+
+statement ok
+CREATE TABLE t AS SELECT i AS val1 FROM range(1, 1000001) t(i);
+
+query II
+SELECT count(*), sum(series) FROM t CROSS JOIN generate_series(1, CASE WHEN t.val1 % 10 = 0 THEN 0 WHEN t.val1 % 100 = 71 THEN 2 ELSE 1 END) AS g(series);
+----
+910000	920000
+
+query II
+SELECT count(*), sum(x) FROM t, LATERAL range(t.val1 % 3) r(x);
+----
+1000000	333333
+
+# every output belongs to its own input row, also when one row's output spans several chunks
+query IIII
+SELECT count(*), count(*) FILTER (WHERE x < val1 OR x >= val1 + n), count(*) FILTER (WHERE o <> x - val1 + 1), sum(x - val1)
+FROM (SELECT val1, CASE WHEN val1 % 100000 = 0 THEN 5000 ELSE val1 % 3 END AS n FROM t), LATERAL range(val1, val1 + n) WITH ORDINALITY r(x, o);
+----
+1049990	0	0	125308330
+
+query III
+SELECT count(*), count(DISTINCT x), max(x) FROM t, LATERAL range(TIMESTAMP '2020-01-01', TIMESTAMP '2020-01-01' + (t.val1 % 3) * INTERVAL 1 DAY, INTERVAL 1 DAY) r(x);
+----
+1000000	2	2020-01-02 00:00:00
+
+require icu
+
+statement ok
+SET TimeZone='UTC';
+
+query III
+SELECT count(*), count(DISTINCT x), max(x) = TIMESTAMPTZ '2020-01-03 00:00:00+00' FROM t, LATERAL generate_series(TIMESTAMPTZ '2020-01-01 00:00:00+00', TIMESTAMPTZ '2020-01-01 00:00:00+00' + (t.val1 % 3) * INTERVAL 1 DAY, INTERVAL 1 DAY) r(x);
+----
+2000000	3	true

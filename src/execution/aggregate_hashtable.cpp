@@ -141,6 +141,9 @@ idx_t GroupedAggregateHashTable::GetSizeInBytes() const {
 }
 
 unique_ptr<PartitionedTupleData> GroupedAggregateHashTable::AcquirePartitionedData() {
+	// Release destination pins before copying the buffered rows.
+	partitioned_data->FlushAppendState(state.partitioned_append_state);
+	partitioned_data->Unpin();
 	if (radix_bits >= UNPARTITIONED_RADIX_BITS_THRESHOLD) {
 		// Flush/unpin unpartitioned data and append to partitioned data
 		if (unpartitioned_data) {
@@ -153,10 +156,6 @@ unique_ptr<PartitionedTupleData> GroupedAggregateHashTable::AcquirePartitionedDa
 		InitializeUnpartitionedData();
 	}
 
-	// Flush/unpin partitioned data
-	partitioned_data->FlushAppendState(state.partitioned_append_state);
-	partitioned_data->Unpin();
-
 	// Return and re-initialize
 	auto result = std::move(partitioned_data);
 	InitializePartitionedData();
@@ -165,6 +164,8 @@ unique_ptr<PartitionedTupleData> GroupedAggregateHashTable::AcquirePartitionedDa
 
 void GroupedAggregateHashTable::Abandon() {
 	if (radix_bits >= UNPARTITIONED_RADIX_BITS_THRESHOLD) {
+		partitioned_data->FlushAppendState(state.partitioned_append_state);
+		partitioned_data->Unpin();
 		// Flush/unpin unpartitioned data and append to partitioned data
 		if (unpartitioned_data) {
 			unpartitioned_data->FlushAppendState(state.unpartitioned_append_state);
@@ -377,7 +378,8 @@ void GroupedAggregateHashTable::ReinsertTuples(PartitionedTupleData &data) {
 		TupleDataChunkIterator iterator(*data_collection, TupleDataPinProperties::ALREADY_PINNED, false);
 		const auto row_locations = iterator.GetRowLocations();
 		do {
-			for (idx_t i = 0; i < iterator.GetCurrentChunkCount(); i++) {
+			const auto row_count = iterator.GetCurrentChunkCount();
+			for (idx_t i = 0; i < row_count; i++) {
 				const auto &row_location = row_locations[i];
 				const auto hash = Load<hash_t>(row_location + hash_offset);
 				const auto salt = ht_entry_t::ExtractSalt(hash);
@@ -801,6 +803,10 @@ static void GroupedAggregateHashTableInnerLoop(ht_entry_t *const entries, const 
                                                idx_t &empty_count, idx_t &compare_count) {
 	// For each remaining entry, figure out whether or not it belongs to a full or empty group
 	for (idx_t i = 0; i < remaining_entries; i++) {
+		PrefetchHashTableEntry(i, remaining_entries, [&](idx_t next_idx) {
+			const auto next_index = HAS_SEL ? sel_vector->get_index_unsafe(next_idx) : next_idx;
+			return &entries[ht_offsets[next_index]];
+		});
 		const auto index = HAS_SEL ? sel_vector->get_index_unsafe(i) : i;
 		const auto salt = hash_salts[index];
 		auto &ht_offset = ht_offsets[index];
@@ -834,7 +840,8 @@ static void GroupedAggregateHashTableInnerLoop(ht_entry_t *const entries, const 
 __attribute__((aligned(128)))
 #endif
 idx_t GroupedAggregateHashTable::FindOrCreateGroupsInternal(DataChunk &groups, Vector &group_hashes_v,
-                                                            Vector &addresses_v, SelectionVector &new_groups_out) {
+                                                            Vector &addresses_v, SelectionVector &new_groups_out,
+                                                            optional_ptr<TupleDataChunkState> source_rows) {
 	D_ASSERT(state.initialized && state.owner.get() == this);
 	D_ASSERT(groups.ColumnCount() + 1 == layout_ptr->ColumnCount());
 	D_ASSERT(group_hashes_v.GetType() == LogicalType::HASH);
@@ -877,10 +884,14 @@ idx_t GroupedAggregateHashTable::FindOrCreateGroupsInternal(DataChunk &groups, V
 			adaptivity.ObserveHashes(group_hashes_v);
 		}
 		// Just appending now
-		partitioned_data->AppendUnified(state.partitioned_append_state, state.group_chunk,
-		                                *FlatVector::IncrementalSelectionVector(), chunk_size);
-		RowOperations::InitializeStates(*layout_ptr, state.partitioned_append_state.chunk_state.row_locations,
-		                                *FlatVector::IncrementalSelectionVector(), chunk_size);
+		if (source_rows) {
+			partitioned_data->Append(state.partitioned_append_state, *source_rows, chunk_size);
+		} else {
+			partitioned_data->AppendUnified(state.partitioned_append_state, state.group_chunk,
+			                                *FlatVector::IncrementalSelectionVector(), chunk_size);
+			RowOperations::InitializeStates(*layout_ptr, state.partitioned_append_state.chunk_state.row_locations,
+			                                *FlatVector::IncrementalSelectionVector(), chunk_size);
+		}
 
 		const auto row_locations =
 		    FlatVector::GetData<data_ptr_t>(state.partitioned_append_state.chunk_state.row_locations);
@@ -944,9 +955,13 @@ idx_t GroupedAggregateHashTable::FindOrCreateGroupsInternal(DataChunk &groups, V
 				data = partitioned_data.get();
 				append_state = &state.partitioned_append_state;
 			}
-			data->AppendUnified(*append_state, state.group_chunk, empty_vector, new_entry_count);
-			RowOperations::InitializeStates(*layout_ptr, append_state->chunk_state.row_locations,
-			                                *FlatVector::IncrementalSelectionVector(), new_entry_count);
+			if (source_rows) {
+				data->Append(*append_state, *source_rows, new_entry_count, empty_vector);
+			} else {
+				data->AppendUnified(*append_state, state.group_chunk, empty_vector, new_entry_count);
+				RowOperations::InitializeStates(*layout_ptr, append_state->chunk_state.row_locations,
+				                                *FlatVector::IncrementalSelectionVector(), new_entry_count);
+			}
 
 			// Set the entry pointers in the 1st part of the HT now that the data has been appended
 			const auto row_locations = FlatVector::GetData<data_ptr_t>(append_state->chunk_state.row_locations);
@@ -1207,11 +1222,41 @@ void GroupedAggregateHashTable::Combine(TupleDataCollection &other_data, optiona
 	while (fm_state.Scan()) {
 		// Check for interrupts with each chunk
 		context.InterruptCheck();
-		FindOrCreateGroups(fm_state.groups, fm_state.hashes, fm_state.group_addresses, fm_state.new_groups_sel);
-		RowOperations::CombineStates(state.row_state, *layout_ptr, fm_state.scan_state.chunk_state.row_locations,
-		                             fm_state.group_addresses);
-		if (layout_ptr->HasDestructor()) {
-			RowOperations::DestroyStates(state.row_state, *layout_ptr, fm_state.scan_state.chunk_state.row_locations);
+		auto &source_rows = fm_state.scan_state.chunk_state;
+		const auto chunk_count = fm_state.groups.size();
+		if (!layout_ptr->AllConstant()) {
+			other_data.FindHeapPointers(source_rows, chunk_count);
+		}
+		const auto new_count = FindOrCreateGroupsInternal(fm_state.groups, fm_state.hashes, fm_state.group_addresses,
+		                                                  fm_state.new_groups_sel, source_rows);
+		if (new_count != chunk_count) {
+			auto &sources = source_rows.row_locations;
+			auto &targets = fm_state.group_addresses;
+			if (new_count != 0) {
+				// Newly copied states need no combination or destruction.
+				auto target_pointers = FlatVector::ScatterWriter<data_ptr_t>(targets);
+				for (idx_t i = 0; i < new_count; i++) {
+					target_pointers[fm_state.new_groups_sel.get_index_unsafe(i)] = nullptr;
+				}
+
+				const auto combine_count = chunk_count - new_count;
+				const auto source_values = sources.Values<data_ptr_t>();
+				const auto target_values = targets.Values<data_ptr_t>();
+				auto source_writer = FlatVector::Writer<data_ptr_t>(sources, combine_count);
+				auto target_writer = FlatVector::Writer<data_ptr_t>(targets, combine_count);
+				// Compact forwards so unread pointers are never overwritten.
+				for (idx_t i = 0; i < chunk_count; i++) {
+					const auto target = target_values[i].GetValue();
+					if (target) {
+						source_writer.WriteValue(source_values[i].GetValue());
+						target_writer.WriteValue(target);
+					}
+				}
+			}
+			RowOperations::CombineStates(state.row_state, *layout_ptr, sources, targets);
+			if (layout_ptr->HasDestructor()) {
+				RowOperations::DestroyStates(state.row_state, *layout_ptr, sources);
+			}
 		}
 
 		if (combined_chunks) {

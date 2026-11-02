@@ -929,6 +929,7 @@ static constexpr const char *AUTOLOADABLE_EXTENSIONS[] = {
     "legacy_parser",
     "motherduck",
     "mysql_scanner",
+    "odbc_scanner",
     "parquet",
     "postgres_scanner",
     "quack",

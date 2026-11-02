@@ -15,6 +15,7 @@ from grammar_types import (
     load_collapsible_rules,
     load_expression_depth_rules,
     load_packrat_memoized_rules,
+    load_rule_labels,
 )
 from transformer_trampoline_config import (
     TrampolineRuleMode,
@@ -102,6 +103,8 @@ PACKRAT_START_BLOCK = SEPARATOR + "\t// START GENERATED PACKRAT MEMOIZED RULES\n
 PACKRAT_END_BLOCK = SEPARATOR + "\t// END GENERATED PACKRAT MEMOIZED RULES\n" + SEPARATOR
 COLLAPSIBLE_START_BLOCK = SEPARATOR + "\t// START GENERATED COLLAPSIBLE RULES\n" + SEPARATOR
 COLLAPSIBLE_END_BLOCK = SEPARATOR + "\t// END GENERATED COLLAPSIBLE RULES\n" + SEPARATOR
+LABELS_START_BLOCK = SEPARATOR + "\t// START GENERATED RULE LABELS\n" + SEPARATOR
+LABELS_END_BLOCK = SEPARATOR + "\t// END GENERATED RULE LABELS\n" + SEPARATOR
 DEPTH_START_BLOCK = SEPARATOR + "\t// START GENERATED EXPRESSION DEPTH RULES\n" + SEPARATOR
 DEPTH_END_BLOCK = SEPARATOR + "\t// END GENERATED EXPRESSION DEPTH RULES\n" + SEPARATOR
 RESULT_TYPE_SEPARATOR = "//===--------------------------------------------------------------------===//\n"
@@ -799,16 +802,14 @@ class UseGramPreviewEmitter:
         lines = []
         if plan.list_child:
             list_child = plan.list_child
-            lines.append(f"\tauto dynamic_list_items = ExtractParseResultsFromList({list_child.parse_expr});")
-            lines.append("\tauto dynamic_child_count = dynamic_list_items.size();")
+            lines.append(f"\tauto dynamic_child_count = CountParseResultsFromList({list_child.parse_expr});")
         elif plan.optional_list_child:
             list_child = plan.optional_list_child
             lines.append("\tidx_t dynamic_child_count = 0;")
             lines.append(f"\tauto &dynamic_list_opt = {list_child.parse_expr}.Cast<OptionalParseResult>();")
             lines.append("\tif (dynamic_list_opt.HasResult()) {")
             child_expr = list_child.result_expr_template.format(opt="dynamic_list_opt")
-            lines.append(f"\t\tauto dynamic_list_items = ExtractParseResultsFromList({child_expr});")
-            lines.append("\t\tdynamic_child_count = dynamic_list_items.size();")
+            lines.append(f"\t\tdynamic_child_count = CountParseResultsFromList({child_expr});")
             lines.append("\t}")
         elif plan.required_repeat_child:
             repeat_child = plan.required_repeat_child
@@ -1630,6 +1631,20 @@ def write_packrat_memoized_rules(packrat_memoized_rules):
     print(f"Updated {matcher_cpp_path}")
 
 
+def write_rule_labels(rule_labels):
+    content = matcher_cpp_path.read_text()
+    lines = [f'\tLabelRule("{rule}", "{label}");\n' for rule, label in rule_labels]
+    content = replace_generated_block(
+        content,
+        LABELS_START_BLOCK,
+        LABELS_END_BLOCK,
+        "".join(lines),
+        matcher_cpp_path,
+    )
+    matcher_cpp_path.write_text(content)
+    print(f"Updated {matcher_cpp_path}")
+
+
 def write_collapsible_rules(collapsible_rules):
     content = transformer_factory_cpp_path.read_text()
     lines = [f'\tcollapsible_rules.insert("{rule_name}");\n' for rule_name in collapsible_rules]
@@ -1708,6 +1723,7 @@ def main():
         packrat_rules = load_packrat_memoized_rules(grammar_types_file, all_rules.keys())
         collapsible_rules = load_collapsible_rules(grammar_types_file, emitter.emitted_ops_rules())
         write_packrat_memoized_rules(packrat_rules)
+        write_rule_labels(load_rule_labels(grammar_types_file, all_rules.keys()))
         write_collapsible_rules(collapsible_rules)
         write_expression_depth_rules(*load_expression_depth_rules(grammar_types_file, all_rules.keys()))
         write_rule_ids(all_rules)

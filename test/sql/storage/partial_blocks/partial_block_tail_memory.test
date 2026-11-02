@@ -1,0 +1,66 @@
+# name: test/sql/storage/partial_blocks/partial_block_tail_memory.test
+# description: Segments copied into a partial block release their own buffers before the block is written
+# group: [partial_blocks]
+
+# the memory limit below is calibrated for the default 256KB block size
+require block_size 262144
+
+load {TEST_DIR}/partial_block_tail_memory.db
+
+# every row group compresses to about 1KB per column, so a partial block takes ~150 segments before it is written
+statement ok
+SET memory_limit='8MB'
+
+# nothing can be offloaded, so a full buffer kept alive per segment runs out of memory
+statement ok
+SET temp_directory=''
+
+statement ok
+CREATE TABLE t AS SELECT i, i::INTEGER AS j FROM range(5000000) t(i);
+
+query III
+SELECT COUNT(*), SUM(i), SUM(j) FROM t
+----
+5000000	12499997500000	12499997500000
+
+# a serial insert writes its partial blocks only at commit, so these reads go through the shared block
+statement ok
+SET threads=1
+
+statement ok
+SET preserve_insertion_order=false
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO t SELECT i, i::INTEGER FROM range(5000000) t(i)
+
+query III
+SELECT COUNT(*), SUM(i), SUM(j) FROM t
+----
+10000000	24999995000000	24999995000000
+
+statement ok
+ROLLBACK
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO t SELECT i, i::INTEGER FROM range(5000000) t(i)
+
+query III
+SELECT COUNT(*), SUM(i), SUM(j) FROM t
+----
+10000000	24999995000000	24999995000000
+
+statement ok
+COMMIT
+
+restart
+
+query III
+SELECT COUNT(*), SUM(i), SUM(j) FROM t
+----
+10000000	24999995000000	24999995000000

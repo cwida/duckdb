@@ -415,7 +415,7 @@ static unique_ptr<Expression> BindUncollatedFirst(Binder &binder, unique_ptr<Exp
 	vector<unique_ptr<Expression>> first_children;
 	first_children.push_back(std::move(uncollated_expr));
 	FunctionBinder function_binder(binder);
-	auto function = function_binder.BindAggregateFunction(std::move(first_fun), std::move(first_children));
+	auto function = function_binder.BindAggregateFunction(first_fun, std::move(first_children));
 	function->SetAlias("__collated_group");
 	return std::move(function);
 }
@@ -577,6 +577,9 @@ BoundStatement Binder::BindSelectNode(SelectNode &statement, BoundStatement from
 		// set up a mapping of expression -> group index so we can map expressions in the select list / having to groups
 		auto grp_copy = grp->Copy();
 		bind_state.group_map[*grp_copy] = ProjectionIndex(i);
+		if (grp_copy->GetExpressionClass() != ExpressionClass::COLUMN_REF) {
+			bind_state.has_compound_groups = true;
+		}
 		bind_state.unbound_groups.push_back(std::move(grp_copy));
 	}
 
@@ -686,7 +689,13 @@ BoundStatement Binder::BindSelectNode(SelectNode &statement, BoundStatement from
 		bool is_window = statement.select_list[i]->IsWindow();
 		idx_t unnest_count = result.unnests.SelectList().size();
 		LogicalType result_type;
+		// the select item of a TRY subquery transports the error flags of nested scalar subqueries to
+		// the TRY lowering of this node; GROUP BY ALL may move the item into the group expressions,
+		// where the flag would have no consumer, so such items bind as plain subqueries
+		select_binder.SetTransportTryErrors(i == 0 && IsBindingTrySubquery() &&
+		                                    statement.aggregate_handling != AggregateHandling::FORCE_AGGREGATES);
 		auto expr = select_binder.Bind(statement.select_list[i], &result_type, true);
+		select_binder.SetTransportTryErrors(false);
 		bool is_original_column = i < result.column_count;
 		bool can_group_by_all =
 		    statement.aggregate_handling == AggregateHandling::FORCE_AGGREGATES && is_original_column;

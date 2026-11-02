@@ -21,6 +21,13 @@
 			"paths": [
 				"test/sql/types/variant/variant_stats_merge_decimal.test"
 			]
+		},
+		{
+			"reason": "Shredding a VARIANT recurses once per nesting level: the depth-50000 fixture overflows the stack, and the depth-500 fixture exceeds the VariantVisitor recursion limit",
+			"paths": [
+				"test/sql/types/variant/json_cast_depth.test",
+				"test/sql/types/variant/json_cast_depth_thread.test"
+			]
 		}
 	]
 }

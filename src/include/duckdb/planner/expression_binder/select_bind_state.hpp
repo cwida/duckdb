@@ -28,6 +28,8 @@ struct SelectBindState {
 	vector<unique_ptr<ParsedExpression>> unbound_groups;
 	parsed_expression_map_t<ProjectionIndex> group_map;
 	identifier_map_t<ProjectionIndex> group_alias_map;
+	//! Whether any group is an expression other than a plain column reference
+	bool has_compound_groups = false;
 	unordered_map<ProjectionIndex, ProjectionIndex> collated_groups;
 	unordered_set<idx_t> used_group_aliases;
 

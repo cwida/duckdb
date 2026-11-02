@@ -1,0 +1,303 @@
+# name: test/sql/json/table/read_json_decimal.test
+# description: read_json reads a DECIMAL column from the number's text, not through a double
+# group: [table]
+
+require json
+
+# a double carries 15-17 significant digits; these numbers need 32 and 38
+statement ok
+COPY (SELECT * FROM (VALUES
+    ('{"id": 1, "d": 12345678901234.567890123456789012, "x": 1.5}'),
+    ('{"id": 2, "d": 99999999999999999999.999999999999999999, "x": 2.5}'),
+    ('{"id": 3, "d": -0.000000000000000001, "x": 3}'),
+    ('{"id": 4, "d": 7, "x": null}'),
+    ('{"id": 5, "d": "1.25", "x": 5.5}'),
+    ('{"id": 6, "d": null, "x": 6.5}')) t(j))
+TO '{TEMP_DIR}/decimals.json' (FORMAT CSV, HEADER false, QUOTE '');
+
+# every digit survives; the other columns are unaffected
+query III
+SELECT id, d, x FROM read_json('{TEMP_DIR}/decimals.json', columns = {id: 'INTEGER', d: 'DECIMAL(38,18)', x: 'DOUBLE'}) ORDER BY id;
+----
+1	12345678901234.567890123456789012	1.5
+2	99999999999999999999.999999999999999999	2.5
+3	-0.000000000000000001	3.0
+4	7.000000000000000000	NULL
+5	1.250000000000000000	5.5
+6	NULL	6.5
+
+# the same through the typed COPY ... FROM path
+statement ok
+CREATE TABLE decimals (id INTEGER, d DECIMAL(38,18), x DOUBLE);
+
+statement ok
+COPY decimals FROM '{TEMP_DIR}/decimals.json';
+
+query II
+SELECT id, d FROM decimals WHERE id <= 2 ORDER BY id;
+----
+1	12345678901234.567890123456789012
+2	99999999999999999999.999999999999999999
+
+# the array format, which parses the documents in place
+statement ok
+COPY (SELECT '[{"d": 12345678901234.567890123456789012}, {"d": 99999999999999999999.999999999999999999}]' AS j)
+TO '{TEMP_DIR}/decimals_array.json' (FORMAT CSV, HEADER false, QUOTE '');
+
+query I
+SELECT d FROM read_json('{TEMP_DIR}/decimals_array.json', columns = {d: 'DECIMAL(38,18)'}, format = 'array') ORDER BY d;
+----
+12345678901234.567890123456789012
+99999999999999999999.999999999999999999
+
+# a number as the whole document
+statement ok
+COPY (SELECT * FROM (VALUES ('12345678901234.567890123456789012'), ('7')) t(j))
+TO '{TEMP_DIR}/decimal_values.json' (FORMAT CSV, HEADER false, QUOTE '');
+
+query I
+SELECT d FROM read_json('{TEMP_DIR}/decimal_values.json', columns = {d: 'DECIMAL(38,18)'}, records = false) ORDER BY d;
+----
+7.000000000000000000
+12345678901234.567890123456789012
+
+# a DECIMAL inside a STRUCT or a LIST
+statement ok
+COPY (SELECT '{"s": {"d": 12345678901234.567890123456789012}, "l": [99999999999999999999.999999999999999999, 1]}' AS j)
+TO '{TEMP_DIR}/nested_decimals.json' (FORMAT CSV, HEADER false, QUOTE '');
+
+query II
+SELECT s.d, l FROM read_json('{TEMP_DIR}/nested_decimals.json', columns = {s: 'STRUCT(d DECIMAL(38,18))', l: 'DECIMAL(38,18)[]'});
+----
+12345678901234.567890123456789012	[99999999999999999999.999999999999999999, 1.000000000000000000]
+
+# a DECIMAL inside a MAP or a UNION
+statement ok
+COPY (SELECT * FROM (VALUES
+    ('{"m": {"a": 12345678901234.567890123456789012}, "u": {"d": 99999999999999999999.999999999999999999}}'),
+    ('{"m": {}, "u": {"s": "text"}}')) t(j))
+TO '{TEMP_DIR}/map_union_decimals.json' (FORMAT CSV, HEADER false, QUOTE '');
+
+query III
+SELECT m, u, union_tag(u) FROM read_json('{TEMP_DIR}/map_union_decimals.json', columns = {m: 'MAP(VARCHAR, DECIMAL(38,18))', u: 'UNION(d DECIMAL(38,18), s VARCHAR)'}) ORDER BY union_tag(u);
+----
+{a=12345678901234.567890123456789012}	99999999999999999999.999999999999999999	d
+{}	text	s
+
+# a bare number array
+statement ok
+COPY (SELECT '[12345678901234.567890123456789012, 7]' AS j) TO '{TEMP_DIR}/decimal_array_values.json' (FORMAT CSV, HEADER false, QUOTE '');
+
+query I
+SELECT d FROM read_json('{TEMP_DIR}/decimal_array_values.json', columns = {d: 'DECIMAL(38,18)'}, format = 'array', records = false) ORDER BY d;
+----
+7.000000000000000000
+12345678901234.567890123456789012
+
+# narrow DECIMAL columns are cast from the text too, so a tie rounds as CAST('1.005' AS DECIMAL(4,2)) does, not as the
+# nearest double (1.00499999...) would
+statement ok
+COPY (SELECT * FROM (VALUES ('{"d18": 123456789012345.678, "d4": 12.3, "t": 1.005}'), ('{"d18": -0.001, "d4": 1e1, "t": 2.675}')) t(j))
+TO '{TEMP_DIR}/narrow_decimals.json' (FORMAT CSV, HEADER false, QUOTE '');
+
+query III
+SELECT d18, d4, t FROM read_json('{TEMP_DIR}/narrow_decimals.json', columns = {d18: 'DECIMAL(18,3)', d4: 'DECIMAL(4,1)', t: 'DECIMAL(4,2)'}) ORDER BY d18;
+----
+-0.001	10.0	2.68
+123456789012345.678	12.3	1.01
+
+query I
+SELECT CAST('1.005' AS DECIMAL(4,2));
+----
+1.01
+
+# a number the column cannot hold is an error naming the value, or NULL with ignore_errors
+statement ok
+COPY (SELECT '{"d": 123456789012345678901.5}' AS j) TO '{TEMP_DIR}/too_wide.json' (FORMAT CSV, HEADER false, QUOTE '');
+
+statement error
+SELECT d FROM read_json('{TEMP_DIR}/too_wide.json', columns = {d: 'DECIMAL(38,18)'});
+----
+Failed to cast value to decimal: 123456789012345678901.5
+
+query I
+SELECT d FROM read_json('{TEMP_DIR}/too_wide.json', columns = {d: 'DECIMAL(38,18)'}, ignore_errors = true);
+----
+NULL
+
+statement error
+SELECT d FROM read_json('{TEMP_DIR}/too_wide.json', columns = {d: 'DECIMAL(4,1)'});
+----
+Failed to cast value to decimal: 123456789012345678901.5
+
+# what the parser keeps as text either way is cast from the text and named in the error
+statement ok
+COPY (SELECT '{"d": Infinity}' AS j) TO '{TEMP_DIR}/infinity.json' (FORMAT CSV, HEADER false, QUOTE '');
+
+statement error
+SELECT d FROM read_json('{TEMP_DIR}/infinity.json', columns = {d: 'DECIMAL(10,2)'});
+----
+Failed to cast value to decimal: Infinity
+
+statement ok
+COPY (SELECT '{"d": 1e400}' AS j) TO '{TEMP_DIR}/huge.json' (FORMAT CSV, HEADER false, QUOTE '');
+
+statement error
+SELECT d FROM read_json('{TEMP_DIR}/huge.json', columns = {d: 'DECIMAL(10,2)'});
+----
+Failed to cast value to decimal: 1e400
+
+# the other columns of such a file read as they do without the DECIMAL column: a number into BOOLEAN or an integer
+# type takes the number path, not a strict string cast; an integer too large for a UBIGINT is still cast from its text
+statement ok
+COPY (SELECT * FROM (VALUES
+    ('{"d": 1.25, "b": 1, "i": 2.5, "u": 18446744073709551615, "h": 123456789012345678901234567890, "f": 2.5e-1, "s": "7", "v": 1.50, "w": 1e2, "n": [1.50, {"e": 1e2}]}'),
+    ('{"d": 2.5, "b": 0, "i": -3, "u": 0, "h": -1, "f": 0.5, "s": "8", "v": 1e2, "w": 123456789012345678901234567890, "n": {"k": 1}}')) t(j))
+TO '{TEMP_DIR}/siblings.json' (FORMAT CSV, HEADER false, QUOTE '');
+
+query IIIIIII
+SELECT d, b, i, u, h, f, s FROM read_json('{TEMP_DIR}/siblings.json', columns = {d: 'DECIMAL(10,2)', b: 'BOOLEAN', i: 'BIGINT', u: 'UBIGINT', h: 'HUGEINT', f: 'FLOAT', s: 'INTEGER'}) ORDER BY d;
+----
+1.25	true	2	18446744073709551615	123456789012345678901234567890	0.25	7
+2.50	false	-3	0	-1	0.5	8
+
+query IIIIII
+SELECT b, i, u, h, f, s FROM read_json('{TEMP_DIR}/siblings.json', columns = {b: 'BOOLEAN', i: 'BIGINT', u: 'UBIGINT', h: 'HUGEINT', f: 'FLOAT', s: 'INTEGER'}) ORDER BY i;
+----
+false	-3	0	-1	0.5	8
+true	2	18446744073709551615	123456789012345678901234567890	0.25	7
+
+# a VARCHAR, BLOB or JSON column holding a number, or a value with numbers inside, reads the same with and without the
+# DECIMAL column: the number as the parser writes it, not as the file spells it
+query IIII
+SELECT v, w, n, typeof(n) FROM read_json('{TEMP_DIR}/siblings.json', columns = {d: 'DECIMAL(10,2)', v: 'VARCHAR', w: 'VARCHAR', n: 'VARCHAR'}) ORDER BY d;
+----
+1.5	100.0	[1.5,{"e":100.0}]	VARCHAR
+100.0	123456789012345678901234567890	{"k":1}	VARCHAR
+
+query III
+SELECT v, w, n FROM read_json('{TEMP_DIR}/siblings.json', columns = {v: 'VARCHAR', w: 'VARCHAR', n: 'VARCHAR'}) ORDER BY v;
+----
+1.5	100.0	[1.5,{"e":100.0}]
+100.0	123456789012345678901234567890	{"k":1}
+
+query III
+SELECT v, n, typeof(n) FROM read_json('{TEMP_DIR}/siblings.json', columns = {d: 'DECIMAL(10,2)', v: 'JSON', n: 'JSON'}) ORDER BY d;
+----
+1.5	[1.5,{"e":100.0}]	JSON
+100.0	{"k":1}	JSON
+
+query II
+SELECT v, n FROM read_json('{TEMP_DIR}/siblings.json', columns = {v: 'JSON', n: 'JSON'}) ORDER BY v;
+----
+1.5	[1.5,{"e":100.0}]
+100.0	{"k":1}
+
+query I
+SELECT decode(n) FROM read_json('{TEMP_DIR}/siblings.json', columns = {d: 'DECIMAL(10,2)', n: 'BLOB'}) ORDER BY d;
+----
+[1.5,{"e":100.0}]
+{"k":1}
+
+# a JSON column without numbers is written as is
+statement ok
+COPY (SELECT '{"d": 1.5, "j": {"name": "x", "tags": ["a", "b"], "ok": true}}' AS j) TO '{TEMP_DIR}/json_no_numbers.json' (FORMAT CSV, HEADER false, QUOTE '');
+
+query II
+SELECT j, j = (SELECT j FROM read_json('{TEMP_DIR}/json_no_numbers.json', columns = {j: 'JSON'})) FROM read_json('{TEMP_DIR}/json_no_numbers.json', columns = {d: 'DECIMAL(10,2)', j: 'JSON'});
+----
+{"name":"x","tags":["a","b"],"ok":true}	true
+
+# the same for json_transform, which also reads the numbers as text when a DECIMAL is asked for
+query II
+SELECT json_transform('{"d": 1.5, "n": [1.50, {"e": 1e2}]}', '{"d": "DECIMAL(4,1)", "n": "VARCHAR"}'), json_transform('{"n": [1.50, {"e": 1e2}]}', '{"n": "VARCHAR"}');
+----
+{'d': 1.5, 'n': '[1.5,{"e":100.0}]'}	{'n': '[1.5,{"e":100.0}]'}
+
+# an integer beyond 2^53 written with a fraction converts through a double, as it does without the DECIMAL: a DECIMAL
+# target is what keeps the digits
+query III
+SELECT json_transform('{"d": 1, "n": 9007199254740993.0, "m": 9223372036854775807.0}', '{"d": "DECIMAL(2,0)", "n": "BIGINT", "m": "BIGINT"}'),
+       json_transform('{"n": 9007199254740993.0, "m": 9223372036854775807.0}', '{"n": "BIGINT", "m": "BIGINT"}'),
+       json_transform('{"n": 9007199254740993.0}', '{"n": "DECIMAL(20,1)"}');
+----
+{'d': 1, 'n': 9007199254740992, 'm': NULL}	{'n': 9007199254740992, 'm': NULL}	{'n': 9007199254740993.0}
+
+# GeoJSON coordinates next to a DECIMAL column
+statement ok
+COPY (SELECT '{"d": 1.25, "g": {"type": "Point", "coordinates": [1.5, 2]}, "z": {"type": "Point", "coordinates": [1, 2, 3]}}' AS j)
+TO '{TEMP_DIR}/geo.json' (FORMAT CSV, HEADER false, QUOTE '');
+
+query III
+SELECT d, g::VARCHAR, z::VARCHAR FROM read_json('{TEMP_DIR}/geo.json', columns = {d: 'DECIMAL(10,2)', g: 'GEOMETRY', z: 'GEOMETRY'});
+----
+1.25	POINT (1.5 2)	POINT Z (1 2 3)
+
+# a GeoJSON Feature with a DECIMAL property: the properties are unnested into columns
+statement ok
+COPY (SELECT '{"type": "Feature", "geometry": {"type": "Point", "coordinates": [1.5, 2]}, "properties": {"d": 12345678901234.567890123456789012, "n": 1.50}}' AS j)
+TO '{TEMP_DIR}/feature.geojson' (FORMAT CSV, HEADER false, QUOTE '');
+
+query III
+SELECT d, n, geometry::VARCHAR FROM read_json('{TEMP_DIR}/feature.geojson', columns = {d: 'DECIMAL(38,18)', n: 'VARCHAR', geometry: 'GEOMETRY'});
+----
+12345678901234.567890123456789012	1.5	POINT (1.5 2)
+
+# more than one file, also when the schema is settled on the first file alone and the others are bound to it
+query II
+SELECT count(*), max(d) FROM read_json(['{TEMP_DIR}/decimals.json', '{TEMP_DIR}/siblings.json'], columns = {d: 'DECIMAL(38,18)'});
+----
+8	99999999999999999999.999999999999999999
+
+query II
+SELECT count(*), max(d) FROM read_json(['{TEMP_DIR}/siblings.json', '{TEMP_DIR}/decimals.json'], columns = {d: 'DECIMAL(38,18)'}, maximum_sample_files = 1);
+----
+8	99999999999999999999.999999999999999999
+
+query I
+SELECT d FROM read_json(['{TEMP_DIR}/siblings.json', '{TEMP_DIR}/decimals.json'], columns = {d: 'DECIMAL(38,18)'}, maximum_sample_files = 1) WHERE d > 1000 ORDER BY d;
+----
+12345678901234.567890123456789012
+99999999999999999999.999999999999999999
+
+# a number too large for a double is still cast from its text, with or without a DECIMAL column: inf as a DOUBLE,
+# not a BOOLEAN
+statement ok
+COPY (SELECT '{"d": 1.5, "b": 1e400, "x": 1e400, "i": Infinity}' AS j) TO '{TEMP_DIR}/overflow.json' (FORMAT CSV, HEADER false, QUOTE '');
+
+query II
+SELECT x, i FROM read_json('{TEMP_DIR}/overflow.json', columns = {d: 'DECIMAL(10,2)', x: 'DOUBLE', i: 'DOUBLE'});
+----
+inf	inf
+
+query II
+SELECT x, i FROM read_json('{TEMP_DIR}/overflow.json', columns = {x: 'DOUBLE', i: 'DOUBLE'});
+----
+inf	inf
+
+statement error
+SELECT b FROM read_json('{TEMP_DIR}/overflow.json', columns = {d: 'DECIMAL(10,2)', b: 'BOOLEAN'});
+----
+Failed to cast value to numerical: 1e400
+
+statement error
+SELECT b FROM read_json('{TEMP_DIR}/overflow.json', columns = {b: 'BOOLEAN'});
+----
+Failed to cast value to numerical: 1e400
+
+query II
+SELECT json_transform('1e400', '"BOOLEAN"'), json_transform('1e400', '"DOUBLE"');
+----
+NULL	inf
+
+# without a DECIMAL column numbers are still read as numbers: the auto-detected type is DOUBLE, as before
+query I
+SELECT typeof(x) FROM read_json('{TEMP_DIR}/decimals.json') LIMIT 1;
+----
+DOUBLE
+
+# read_json_objects keeps the document text whole
+query I
+SELECT json FROM read_json_objects('{TEMP_DIR}/too_wide.json');
+----
+{"d": 123456789012345678901.5}

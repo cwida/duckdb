@@ -183,14 +183,15 @@ void IntegerPartitionedTupleData::ComputePartitionIndices(PartitionedTupleDataAp
 }
 
 void IntegerPartitionedTupleData::ComputePartitionIndices(Vector &row_locations, idx_t count, Vector &partition_indices,
-                                                          unique_ptr<Vector> &utility_vector) const {
+                                                          unique_ptr<Vector> &utility_vector,
+                                                          const SelectionVector &append_sel) const {
 	const auto &key_type = layout.GetTypes()[key_col_idx];
 	if (!utility_vector || utility_vector->GetType() != key_type) {
 		utility_vector = make_uniq<Vector>(key_type);
 	}
 	auto &keys = *utility_vector;
 	keys.SetVectorType(VectorType::FLAT_VECTOR);
-	partitions[0]->Gather(row_locations, *FlatVector::IncrementalSelectionVector(), count, key_col_idx, keys,
+	partitions[0]->Gather(row_locations, append_sel, count, key_col_idx, keys,
 	                      *FlatVector::IncrementalSelectionVector(), nullptr);
 	FlatVector::SetSize(keys, count);
 	ComputePartitionIndices(keys, *FlatVector::IncrementalSelectionVector(), count, partition_indices);

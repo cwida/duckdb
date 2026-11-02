@@ -52,7 +52,7 @@ public:
 	template <class TARGET>
 	TARGET &Cast() {
 		if (type != TARGET::TYPE && TARGET::TYPE != StatementType::INVALID_STATEMENT) {
-			throw InternalException("Failed to cast statement to type - statement type mismatch");
+			InternalException::Throw("Failed to cast statement to type - statement type mismatch");
 		}
 		return reinterpret_cast<TARGET &>(*this);
 	}
@@ -60,7 +60,7 @@ public:
 	template <class TARGET>
 	const TARGET &Cast() const {
 		if (type != TARGET::TYPE && TARGET::TYPE != StatementType::INVALID_STATEMENT) {
-			throw InternalException("Failed to cast statement to type - statement type mismatch");
+			InternalException::Throw("Failed to cast statement to type - statement type mismatch");
 		}
 		return reinterpret_cast<const TARGET &>(*this);
 	}

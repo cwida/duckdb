@@ -71,31 +71,65 @@ RecursiveCTEKeyedProperties RecursiveCTEKeyedProperties::Derive(const PhysicalRe
 	return result;
 }
 
-//===--------------------------------------------------------------------===//
-// Sink
-//===--------------------------------------------------------------------===//
-RecursiveCTEKeyedState::RecursiveCTEKeyedState(ClientContext &context, const PhysicalRecursiveCTE &op)
-    : RecursiveCTEState(context, op), executor(context), new_group_addresses(LogicalType::POINTER),
-      new_groups(STANDARD_VECTOR_SIZE), intermediate_table(context, op.internal_types),
-      preaggregation_hashes(LogicalType::HASH, nullptr, 0) {
-	vector<LogicalType> aggr_input_types;
-	for (idx_t i = 0; i < op.payload_aggregates.size(); i++) {
-		D_ASSERT(op.payload_aggregates[i]->GetExpressionClass() == ExpressionClass::BOUND_AGGREGATE);
-		auto &bound_aggr_expr = op.payload_aggregates[i]->Cast<BoundAggregateExpression>();
-		for (auto &child_expr : bound_aggr_expr.GetChildren()) {
-			executor.AddExpression(*child_expr);
-			aggr_input_types.push_back(child_expr->GetReturnType());
+RecursiveCTEKeyedCandidateExtractor::RecursiveCTEKeyedCandidateExtractor(ClientContext &context,
+                                                                         const PhysicalRecursiveCTE &op)
+    : op(op), payload_executor(context) {
+	for (auto &payload_aggregate : op.payload_aggregates) {
+		D_ASSERT(payload_aggregate->GetExpressionClass() == ExpressionClass::BOUND_AGGREGATE);
+		auto &bound_aggregate = payload_aggregate->Cast<BoundAggregateExpression>();
+		for (auto &child : bound_aggregate.GetChildren()) {
+			payload_executor.AddExpression(*child);
+			payload_types.push_back(child->GetReturnType());
 		}
-		payload_aggregate_objects.emplace_back(bound_aggr_expr);
 	}
 	if (!op.key_normalizers.empty()) {
 		key_executor = make_uniq<ExpressionExecutor>(context);
 		for (auto &normalizer : op.key_normalizers) {
 			key_executor->AddExpression(*normalizer);
 		}
+		raw_keys.Initialize(Allocator::Get(context), op.distinct_types);
+	}
+}
+
+void RecursiveCTEKeyedCandidateExtractor::ExtractKeys(DataChunk &source, DataChunk &keys) {
+	keys.Reset();
+	if (!key_executor) {
+		for (idx_t key_idx = 0; key_idx < op.distinct_idx.size(); key_idx++) {
+			keys.data[key_idx].Reference(source.data[op.distinct_idx[key_idx]]);
+		}
+		keys.CheckCardinality(source.size());
+		return;
+	}
+	raw_keys.Reset();
+	for (idx_t key_idx = 0; key_idx < op.distinct_idx.size(); key_idx++) {
+		raw_keys.data[key_idx].Reference(source.data[op.distinct_idx[key_idx]]);
+	}
+	raw_keys.CheckCardinality(source.size());
+	key_executor->Execute(raw_keys, keys);
+}
+
+void RecursiveCTEKeyedCandidateExtractor::EvaluatePayload(DataChunk &source, DataChunk &payload) {
+	if (payload_executor.expressions.empty()) {
+		return;
+	}
+	payload.Reset();
+	payload_executor.Execute(source, payload);
+}
+
+//===--------------------------------------------------------------------===//
+// Sink
+//===--------------------------------------------------------------------===//
+RecursiveCTEKeyedState::RecursiveCTEKeyedState(ClientContext &context, const PhysicalRecursiveCTE &op)
+    : RecursiveCTEState(context, op), extractor(context, op), new_group_addresses(LogicalType::POINTER),
+      new_groups(STANDARD_VECTOR_SIZE), intermediate_table(context, op.internal_types),
+      preaggregation_hashes(LogicalType::HASH, nullptr, 0) {
+	for (idx_t i = 0; i < op.payload_aggregates.size(); i++) {
+		D_ASSERT(op.payload_aggregates[i]->GetExpressionClass() == ExpressionClass::BOUND_AGGREGATE);
+		auto &bound_aggr_expr = op.payload_aggregates[i]->Cast<BoundAggregateExpression>();
+		payload_aggregate_objects.emplace_back(bound_aggr_expr);
 	}
 
-	payload_rows.Initialize(Allocator::Get(context), aggr_input_types);
+	payload_rows.Initialize(Allocator::Get(context), extractor.PayloadTypes());
 	for (auto &comparison : op.payload_comparisons) {
 		if (comparison) {
 			payload_comparison_executors.push_back(make_uniq<ExpressionExecutor>(context, *comparison));
@@ -116,9 +150,6 @@ RecursiveCTEKeyedState::RecursiveCTEKeyedState(ClientContext &context, const Phy
 		key_delta = make_uniq<RecursiveCTEKeyDeltaState>(context, op);
 	}
 	distinct_rows.Initialize(Allocator::DefaultAllocator(), op.hash_key_types);
-	if (!op.key_normalizers.empty()) {
-		raw_distinct_rows.Initialize(Allocator::DefaultAllocator(), op.distinct_types);
-	}
 	update_rows.Initialize(Allocator::DefaultAllocator(), op.internal_types);
 	source_distinct_rows.Initialize(Allocator::DefaultAllocator(), op.hash_key_types);
 	source_aggregate_rows.Initialize(Allocator::DefaultAllocator(), op.aggregate_types);
@@ -229,24 +260,6 @@ void RecursiveCTEKeyedState::FinalizeAggregateRows(RowOperationsState &row_state
 	}
 }
 
-void RecursiveCTEKeyedState::ExtractUsingKeyKeys(DataChunk &input) {
-	distinct_rows.Reset();
-	if (op.key_normalizers.empty()) {
-		for (idx_t key_idx = 0; key_idx < op.distinct_idx.size(); key_idx++) {
-			distinct_rows.data[key_idx].Reference(input.data[op.distinct_idx[key_idx]]);
-		}
-		distinct_rows.CheckCardinality(input.size());
-		return;
-	}
-	raw_distinct_rows.Reset();
-	for (idx_t key_idx = 0; key_idx < op.distinct_idx.size(); key_idx++) {
-		raw_distinct_rows.data[key_idx].Reference(input.data[op.distinct_idx[key_idx]]);
-	}
-	raw_distinct_rows.CheckCardinality(input.size());
-	D_ASSERT(key_executor);
-	key_executor->Execute(raw_distinct_rows, distinct_rows);
-}
-
 void RecursiveCTEKeyedState::InitializeIntermediateAppend() {
 	intermediate_table.InitializeAppend(intermediate_append_state);
 }
@@ -256,25 +269,13 @@ enum class RecursiveCTELocalPreaggregationDecision : uint8_t { DEFER, PREAGGREGA
 class RecursiveCTELocalPreaggregationState {
 public:
 	RecursiveCTELocalPreaggregationState(ClientContext &context_p, const PhysicalRecursiveCTE &op_p)
-	    : context(context_p), op(op_p), payload_executor(context), hashes(LogicalType::HASH) {
-		vector<LogicalType> aggregate_input_types;
+	    : context(context_p), op(op_p), extractor(context, op), hashes(LogicalType::HASH) {
 		for (auto &payload_aggregate : op.payload_aggregates) {
 			auto &bound_aggregate = payload_aggregate->Cast<BoundAggregateExpression>();
-			for (auto &child : bound_aggregate.GetChildren()) {
-				payload_executor.AddExpression(*child);
-				aggregate_input_types.push_back(child->GetReturnType());
-			}
 			aggregates.emplace_back(bound_aggregate);
 		}
-		if (!op.key_normalizers.empty()) {
-			key_executor = make_uniq<ExpressionExecutor>(context);
-			for (auto &normalizer : op.key_normalizers) {
-				key_executor->AddExpression(*normalizer);
-			}
-			raw_keys.Initialize(Allocator::Get(context), op.distinct_types);
-		}
 		keys.Initialize(Allocator::Get(context), op.hash_key_types);
-		payload.Initialize(Allocator::Get(context), aggregate_input_types);
+		payload.Initialize(Allocator::Get(context), extractor.PayloadTypes());
 		input.Initialize(Allocator::Get(context), op.internal_types);
 	}
 
@@ -285,7 +286,7 @@ public:
 		ColumnDataScanState scan_state;
 		candidates.InitializeScan(scan_state);
 		while (candidates.Scan(scan_state, input)) {
-			ExtractKeys(input);
+			extractor.ExtractKeys(input, keys);
 			keys.Hash(hashes);
 			cardinality.Update(hashes);
 		}
@@ -314,41 +315,18 @@ public:
 		ColumnDataScanState scan_state;
 		candidates.InitializeScan(scan_state);
 		while (candidates.Scan(scan_state, input)) {
-			ExtractKeys(input);
-			if (!payload_executor.expressions.empty()) {
-				payload.Reset();
-				payload_executor.Execute(input, payload);
-			}
+			extractor.ExtractKeys(input, keys);
+			extractor.EvaluatePayload(input, payload);
 			result->AddChunk(keys, payload, AggregateType::NON_DISTINCT);
 		}
 		return result;
 	}
 
 private:
-	void ExtractKeys(DataChunk &source) {
-		keys.Reset();
-		if (!key_executor) {
-			for (idx_t key_idx = 0; key_idx < op.distinct_idx.size(); key_idx++) {
-				keys.data[key_idx].Reference(source.data[op.distinct_idx[key_idx]]);
-			}
-			keys.CheckCardinality(source.size());
-			return;
-		}
-		raw_keys.Reset();
-		for (idx_t key_idx = 0; key_idx < op.distinct_idx.size(); key_idx++) {
-			raw_keys.data[key_idx].Reference(source.data[op.distinct_idx[key_idx]]);
-		}
-		raw_keys.CheckCardinality(source.size());
-		key_executor->Execute(raw_keys, keys);
-	}
-
-private:
 	ClientContext &context;
 	const PhysicalRecursiveCTE &op;
-	ExpressionExecutor payload_executor;
-	unique_ptr<ExpressionExecutor> key_executor;
+	RecursiveCTEKeyedCandidateExtractor extractor;
 	vector<AggregateObject> aggregates;
-	DataChunk raw_keys;
 	DataChunk keys;
 	DataChunk payload;
 	DataChunk input;
@@ -475,7 +453,7 @@ bool RecursiveCTEKeyedState::ShouldPreaggregateUsingKeyUpdates(idx_t candidate_c
 	ColumnDataScanState sample_scan_state;
 	intermediate_table.InitializeScan(sample_scan_state);
 	while (intermediate_table.Scan(sample_scan_state, update_rows)) {
-		ExtractUsingKeyKeys(update_rows);
+		extractor.ExtractKeys(update_rows, distinct_rows);
 		distinct_rows.Hash(preaggregation_hashes);
 		key_cardinality.Update(preaggregation_hashes);
 		const auto distinct_upper_bound =
@@ -583,11 +561,8 @@ void RecursiveCTEKeyedState::CommitUsingKeyUpdatesInternal() {
 		const auto hash_start =
 		    COLLECT_METRICS ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
 		idx_t snapshot_work_ns = 0;
-		ExtractUsingKeyKeys(update_rows);
-		if (!executor.expressions.empty()) {
-			payload_rows.Reset();
-			executor.Execute(update_rows, payload_rows);
-		}
+		extractor.ExtractKeys(update_rows, distinct_rows);
+		extractor.EvaluatePayload(update_rows, payload_rows);
 		if (!op.UnionAll()) {
 			const auto new_group_count = ht->AddChunk(
 			    distinct_rows, payload_rows, AggregateType::NON_DISTINCT,
@@ -754,11 +729,8 @@ void RecursiveCTEKeyedState::CommitMixedUsingKeyUpdatesInternal(unique_ptr<Group
 		const auto hash_start =
 		    COLLECT_METRICS ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
 		idx_t snapshot_work_ns = 0;
-		ExtractUsingKeyKeys(update_rows);
-		if (!executor.expressions.empty()) {
-			payload_rows.Reset();
-			executor.Execute(update_rows, payload_rows);
-		}
+		extractor.ExtractKeys(update_rows, distinct_rows);
+		extractor.EvaluatePayload(update_rows, payload_rows);
 		ht->AddChunk(
 		    distinct_rows, payload_rows, AggregateType::NON_DISTINCT,
 		    [&](const Vector &group_addresses, const SelectionVector &new_groups, idx_t new_group_count) {
@@ -812,11 +784,8 @@ idx_t RecursiveCTEKeyedState::PreaggregateUsingKeyUpdates(GroupedAggregateHashTa
 		}
 		const auto hash_start =
 		    COLLECT_METRICS ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
-		ExtractUsingKeyKeys(update_rows);
-		if (!executor.expressions.empty()) {
-			payload_rows.Reset();
-			executor.Execute(update_rows, payload_rows);
-		}
+		extractor.ExtractKeys(update_rows, distinct_rows);
+		extractor.EvaluatePayload(update_rows, payload_rows);
 		epoch_ht.AddChunk(distinct_rows, payload_rows, AggregateType::NON_DISTINCT);
 		if constexpr (COLLECT_METRICS) {
 			const auto hash_end = std::chrono::steady_clock::now();

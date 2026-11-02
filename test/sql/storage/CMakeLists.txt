@@ -6,6 +6,7 @@ add_library_unity(
   test_checksum.cpp
   test_storage.cpp
   test_database_size.cpp
+  test_revert_append_segments.cpp
   wal_checkpoint_marker.cpp
   wal_prescan.cpp
   wal_torn_write.cpp)

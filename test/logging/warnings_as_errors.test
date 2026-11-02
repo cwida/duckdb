@@ -12,7 +12,7 @@ SELECT write_log('test warning', level := 'warning');
 statement error
 SET warnings_as_errors = True;
 ----
-Settings Error: Can not set 'warnings_as_errors=true'; no logger is available. To solve, run: 'SET enable_logging=true;'
+Invalid Input Error: Cannot set 'warnings_as_errors=true'; no logger is available. To solve, run: 'SET enable_logging=true;'
 
 statement ok
 SET enable_logging=true;

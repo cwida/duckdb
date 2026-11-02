@@ -72,6 +72,8 @@ private:
 	SubtreeAccess GetSubtreeAccess(LogicalOperator &op) const;
 	idx_t GetDelimKeyIndex(idx_t index) const;
 
+	//! propagate_null_values: everything above cannot distinguish one row with all-NULL original columns from
+	//! no row at all. Must be cleared when descending below any operator that breaks that equivalence.
 	UnnestingState PushDownCorrelatedNode(unique_ptr<LogicalOperator> &plan, bool propagate_null_values = true);
 	UnnestingState PushDownCorrelatedNode(unique_ptr<LogicalOperator> &plan, bool propagate_null_values,
 	                                      vector<ColumnBinding> state);
@@ -131,7 +133,8 @@ private:
 	UnnestingState PushDownWindow(unique_ptr<LogicalOperator> &plan, bool propagate_null_values,
 	                              vector<ColumnBinding> state);
 	UnnestingState PushDownSetOperation(unique_ptr<LogicalOperator> &plan, vector<ColumnBinding> state);
-	UnnestingState PushDownDistinct(unique_ptr<LogicalOperator> &plan, vector<ColumnBinding> state);
+	UnnestingState PushDownDistinct(unique_ptr<LogicalOperator> &plan, bool propagate_null_values,
+	                                vector<ColumnBinding> state);
 	UnnestingState PushDownExpressionGet(unique_ptr<LogicalOperator> &plan, bool propagate_null_values,
 	                                     vector<ColumnBinding> state);
 	UnnestingState PushDownDML(unique_ptr<LogicalOperator> &plan, bool propagate_null_values,

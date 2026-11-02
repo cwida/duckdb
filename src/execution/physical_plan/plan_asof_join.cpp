@@ -241,20 +241,12 @@ optional_ptr<PhysicalOperator> PhysicalPlanGenerator::PlanAsOfLoopJoin(LogicalCo
 		aggr_children.push_back(std::move(col_ref));
 		auto comp_expr = make_uniq<BoundReferenceExpression>(comp_types.back(), comp_types.size() - 1);
 		aggr_children.push_back(std::move(comp_expr));
-		vector<LogicalType> child_types;
-		for (const auto &child : aggr_children) {
-			child_types.emplace_back(child->GetReturnType());
-		}
 
-		auto &func = arg_min_max_entry;
 		ErrorData error;
-		auto best_function = function_binder.BindFunction(func.name, func.functions, child_types, error);
-		if (!best_function.IsValid()) {
+		auto aggr_expr = function_binder.BindAggregateFunction(arg_min_max_entry, std::move(aggr_children), error);
+		if (!aggr_expr) {
 			return nullptr;
 		}
-		const auto &bound_function = func.functions.GetFunctionByOffset(best_function.GetIndex());
-		auto aggr_expr = function_binder.BindAggregateFunction(bound_function, std::move(aggr_children), nullptr,
-		                                                       AggregateType::NON_DISTINCT);
 		D_ASSERT(col_type == aggr_expr->GetReturnType());
 		if (!HasOnlyReferenceChildren(*aggr_expr)) {
 			return nullptr;

@@ -102,6 +102,8 @@ SQLStatement:
     - ResetVariableOrSetting
     - SelectStatement
     - SetStatement
+    - SetKeywordStatement
+    - VariableAssignment
     - TransactionStatement
     - BeginTransaction
     - CommitTransaction
@@ -1269,6 +1271,7 @@ LogicalType:
   by_value: false
   rules:
     - Type
+    - ReturnsType
 
 LogicalTypeList:
   type: "vector<LogicalType>"
@@ -1960,6 +1963,34 @@ packrat_memoized_rules:
   - CatalogQualification
   - SchemaQualification
   - ReservedSchemaQualification
+
+# rule_labels: see Matcher::SetLabel. When a syntax error lists what the parser expected at the failure point,
+# every alternative inside a labelled rule is summarised by the label instead of being spelled out. Only label
+# rules that cannot match empty input and that accept a plain identifier somewhere.
+rule_labels:
+  an expression:
+    - Expression
+    - LambdaArrowExpression
+    - LogicalOrExpression
+    - LogicalAndExpression
+    - LogicalNotExpression
+    - IsExpression
+    - IsDistinctFromExpression
+    - ComparisonExpression
+    - BetweenInLikeExpression
+    - OtherOperatorExpression
+    - InContainsExpression
+    - BitwiseExpression
+    - AdditiveExpression
+    - MultiplicativeExpression
+    - ExponentiationExpression
+    - CollateExpression
+    - AtTimeZoneExpression
+    - PrefixExpression
+    - BaseExpression
+    - SingleExpression
+  a type:
+    - Type
 
 # ---------------------------------------------------------------------------
 # excluded_rules: no transformer stub generated, no semantic value extracted

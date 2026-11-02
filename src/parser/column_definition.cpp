@@ -133,22 +133,7 @@ string ColumnDefinition::ToSQLString() const {
 	string result = SQLIdentifier(Name()) + " ";
 	auto &column_type = Type();
 	if (column_type.id() != LogicalTypeId::ANY) {
-		result += Type().ToString();
-	}
-	auto &type_info = column_type.GetTypeInfo();
-	if (type_info.type == LogicalTypeInfoType::STRING_TYPE_INFO) {
-		auto &string_info = type_info.Cast<StringTypeInfo>();
-		if (!string_info.collation.empty()) {
-			result += " COLLATE ";
-			// collations may be chained with '.'; quote each component as an identifier
-			auto collations = StringUtil::Split(string_info.collation, '.');
-			for (idx_t i = 0; i < collations.size(); i++) {
-				if (i > 0) {
-					result += ".";
-				}
-				result += SQLIdentifier(collations[i]);
-			}
-		}
+		result += column_type.ToString();
 	}
 	if (Generated()) {
 		reference<const ParsedExpression> generated_expression = GeneratedExpression();

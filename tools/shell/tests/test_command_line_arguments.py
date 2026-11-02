@@ -52,6 +52,25 @@ def test_command(shell):
     result = test.run()
     result.check_stdout("42")
 
+def test_command_parser_setting_applies_to_later_statements(shell):
+    # a SET that changes parser behavior must reach the following statements of the same -c string
+    test = (
+        ShellTest(shell)
+        .add_argument("-csv", "-c", "SET integer_division=true; SELECT 2/4 AS q")
+    )
+    result = test.run()
+    result.check_stdout("0")
+    result.check_not_exist("0.5")
+
+def test_command_identifier_case_applies_to_later_statements(shell):
+    test = (
+        ShellTest(shell)
+        .add_argument("-csv", "-c", "SET preserve_identifier_case=false; SELECT 42 AS MyColumn")
+    )
+    result = test.run()
+    result.check_stdout("mycolumn")
+    result.check_not_exist("MyColumn")
+
 def test_command_unterminated_block_comment(shell):
     test = ShellTest(shell).add_argument("-c", "SELECT 1/*;")
     result = test.run()

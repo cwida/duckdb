@@ -223,6 +223,15 @@ void VariantColumnReader::RegisterPrefetch(ThriftFileTransport &transport, bool 
 	}
 }
 
+void VariantColumnReader::InitializePageIndex(const ParquetRowGroupPageIndex &page_index) {
+	for (auto &child : child_readers) {
+		if (!child) {
+			continue;
+		}
+		child->InitializePageIndex(page_index);
+	}
+}
+
 void VariantColumnReader::GatherColumnChunks(unordered_set<idx_t> &column_chunks) {
 	for (auto &child : child_readers) {
 		if (!child) {

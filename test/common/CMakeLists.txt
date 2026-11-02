@@ -11,16 +11,19 @@ add_library_unity(
   test_checksum.cpp
   test_dictionary_hash_cache.cpp
   test_column_data_allocator.cpp
+  test_column_data_compact.cpp
   test_file_buffer_handle_group.cpp
   test_file_system.cpp
   test_fsst.cpp
   test_gzip_file_system.cpp
   test_caching_file_system_wrapper.cpp
   test_external_file_cache.cpp
+  test_expression_executor.cpp
   test_hyperlog.cpp
   test_hugeint_constexpr.cpp
   test_http_transport_manager.cpp
   test_http_retry_budget.cpp
+  test_httplib_header_length.cpp
   test_httplib_sigpipe.cpp
   test_literal.cpp
   test_lru_cache.cpp
@@ -48,6 +51,7 @@ add_library_unity(
   test_substring_oob.cpp
   test_swar.cpp
   test_aggregate_hll.cpp
+  test_jemalloc_tcache.cpp
   test_radix_ht_sink.cpp
   test_utf8_codepoint_oob.cpp
   test_temporary_memory_manager.cpp
@@ -57,6 +61,7 @@ add_library_unity(
   test_value_to_expression.cpp
   test_variant_size.cpp
   test_vector_buffer_validity.cpp
+  test_lazy_vector.cpp
   test_musl_stack_size.cpp)
 
 set(UNITTEST_OBJECT_FILES

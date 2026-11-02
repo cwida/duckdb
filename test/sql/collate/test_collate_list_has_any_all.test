@@ -1,0 +1,72 @@
+# name: test/sql/collate/test_collate_list_has_any_all.test
+# description: list_has_any and list_has_all compare the elements under their collation
+# group: [collate]
+
+query IIII
+SELECT list_has_any(['A' COLLATE NOCASE, 'b'], ['B', 'z']), list_has_any(['A', 'b'], ['B' COLLATE NOCASE]),
+	list_has_all(['A' COLLATE NOCASE, 'b'], ['a', 'B']), list_has_all(['A', 'b'], ['B' COLLATE NOCASE, 'c'])
+----
+true	true	true	false
+
+# without a collation the comparison stays binary
+query II
+SELECT list_has_any(['A', 'b'], ['a', 'B']), list_has_all(['A', 'b'], ['a'])
+----
+false	false
+
+# combined collations
+query II
+SELECT list_has_any(['héllo'], ['HELLO' COLLATE NOACCENT.NOCASE]), list_has_all(['HÉLLO', 'x'], ['hello' COLLATE NOACCENT.NOCASE])
+----
+true	true
+
+# NULL elements and empty lists
+query IIII
+SELECT list_has_any([NULL, 'BB'], ['bb' COLLATE NOCASE]), list_has_all([NULL, 'BB'], ['bb' COLLATE NOCASE, NULL]),
+	list_has_any([]::VARCHAR[], ['a' COLLATE NOCASE]), list_has_all(['A' COLLATE NOCASE], []::VARCHAR[])
+----
+true	true	false	true
+
+# the aliases and operators
+query IIIIII
+SELECT array_has_any(['A' COLLATE NOCASE], ['a']), array_has_all(['A' COLLATE NOCASE], ['a']),
+	['A' COLLATE NOCASE] && ['a'], ['A' COLLATE NOCASE] @> ['a'], ['a'] <@ ['A' COLLATE NOCASE],
+	['A'] <@ ['a' COLLATE NOCASE, 'b']
+----
+true	true	true	true	true	true
+
+# an array next to a collated list
+query III
+SELECT list_has_any(['A', 'B']::VARCHAR[2], ['b' COLLATE NOCASE]), list_has_all(['A', 'B']::VARCHAR[2], ['b' COLLATE NOCASE, 'a']),
+	list_has_any(['A', 'B']::VARCHAR[2], ['b'])
+----
+true	true	false
+
+# collated fields of a struct, and variant fields of a struct, which compare by value
+query III
+SELECT list_has_any([{'s': 'A' COLLATE NOCASE}], [{'s': 'a'}]),
+	list_has_any([{'v': 1::TINYINT::VARIANT}], [{'v': 1::BIGINT::VARIANT}]),
+	list_has_all([{'v': 1::TINYINT::VARIANT}, {'v': 'x'::VARIANT}], [{'v': 1::BIGINT::VARIANT}])
+----
+true	true	true
+
+statement error
+SELECT list_has_any(['A' COLLATE NOCASE], ['a' COLLATE NOACCENT])
+----
+Cannot combine types with different collation
+
+# a collated column in a filter, over more than one vector
+statement ok
+CREATE TABLE t AS SELECT i AS id, ['A' || (i % 7), 'B'] AS tags, ('a' || (i % 3))::VARCHAR COLLATE NOCASE AS needle
+FROM range(5000) r(i);
+
+query II
+SELECT count(*) FILTER (WHERE list_has_any(tags, [needle])), count(*) FILTER (WHERE list_has_all(tags, [needle, 'b']))
+FROM t
+----
+716	716
+
+query I
+SELECT count(*) FROM t WHERE list_has_any(tags, [needle]) = list_contains(tags, needle)
+----
+5000

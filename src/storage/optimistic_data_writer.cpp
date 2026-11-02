@@ -3,6 +3,8 @@
 #include "duckdb/main/settings.hpp"
 #include "duckdb/storage/partial_block_manager.hpp"
 #include "duckdb/storage/data_table.hpp"
+#include "duckdb/storage/storage_manager.hpp"
+#include "duckdb/storage/table_io_manager.hpp"
 #include "duckdb/storage/table/column_checkpoint_state.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/config.hpp"
@@ -227,7 +229,7 @@ void OptimisticDataWriter::FinalFlush() {
 
 void OptimisticDataWriter::Rollback() {
 	if (partial_manager) {
-		partial_manager->Rollback();
+		partial_manager->ClearBlocks();
 		partial_manager.reset();
 	}
 }

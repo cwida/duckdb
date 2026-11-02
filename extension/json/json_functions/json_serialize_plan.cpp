@@ -1,5 +1,7 @@
+#include "duckdb/common/storage_compatibility.hpp"
 #include "duckdb/execution/column_binding_resolver.hpp"
 #include "duckdb/execution/expression_executor.hpp"
+#include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/parser/parsed_data/create_pragma_function_info.hpp"
@@ -153,8 +155,12 @@ static void JsonSerializePlanFunction(DataChunk &args, ExpressionState &state, V
 					throw InvalidInputException("Operator '%s' does not support serialization", operator_name);
 				}
 
-				auto plan_json =
-				    JsonSerializer::Serialize(*plan, doc, info.skip_if_null, info.skip_if_empty, info.skip_if_default);
+				// plan inspection needs the complete current representation, not the default
+				// storage compatibility
+				SerializationOptions serialization_options;
+				serialization_options.storage_compatibility = StorageCompatibility::Latest();
+				auto plan_json = JsonSerializer::Serialize(*plan, doc, info.skip_if_null, info.skip_if_empty,
+				                                           info.skip_if_default, std::move(serialization_options));
 				yyjson_mut_arr_append(plans_arr, plan_json);
 			}
 

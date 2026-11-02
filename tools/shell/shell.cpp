@@ -1318,7 +1318,8 @@ void ShellState::OpenDB(ShellOpenFlags flags) {
 #endif
 		db->LoadStaticExtension<duckdb::ShellExtension>();
 		// bare expressions / table names as statements - only in the CLI, so it is opt-in grammar
-		ExecuteQuery("SET active_grammar_extensions=['shell']");
+		// appended rather than SET, so grammar extensions that activated themselves on this connection stay active
+		ExecuteQuery("CALL add_grammar_extension('shell')");
 		if (stdout_is_console || agent_mode_active) {
 			ExecuteQuery("PRAGMA enable_progress_bar");
 			ExecuteQuery("PRAGMA enable_print_progress_bar");

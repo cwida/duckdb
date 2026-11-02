@@ -131,7 +131,7 @@ TEST_CASE("Test using a remote optimizer pass in case thats important to someone
 			return;
 		}
 
-		REQUIRE_NO_FAIL(con1.Query("LOAD '" DUCKDB_BUILD_DIRECTORY
+		REQUIRE_NO_FAIL(con1.Query("LOAD '" + TestBuildDirectory() +
 		                           "/test/extension/loadable_extension_optimizer_demo.duckdb_extension'"));
 		REQUIRE_NO_FAIL(con1.Query("SET waggle_location_host='127.0.0.1'"));
 		REQUIRE_NO_FAIL(con1.Query("SET waggle_location_port=4242"));

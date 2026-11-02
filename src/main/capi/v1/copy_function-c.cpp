@@ -450,6 +450,9 @@ void CCopyToSink(ExecutionContext &context, FunctionData &bind_data, GlobalFunct
 	// Flatten input (we dont support compressed execution yet!)
 	// TODO: Dont flatten!
 	input.Flatten();
+	for (auto &vector : input.data) {
+		PrepareCAPIVector(vector);
+	}
 
 	CCopyToSinkInfo copy_to_sink_info(context.client, bind_data, gstate);
 

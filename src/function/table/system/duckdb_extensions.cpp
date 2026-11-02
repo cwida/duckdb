@@ -114,7 +114,7 @@ unique_ptr<GlobalTableFunctionState> DuckDBExtensionsInit(ClientContext &context
 	auto ext_directories = ExtensionHelper::GetExtensionDirectoryPath(context);
 	for (const auto &ext_directory : ext_directories) {
 		fs.ListFiles(ext_directory, [&](const string &path, bool is_directory) {
-			if (!StringUtil::EndsWith(path, ".duckdb_extension")) {
+			if (!ExtensionHelper::IsInstalledExtensionFile(path)) {
 				return;
 			}
 			ExtensionInformation info;

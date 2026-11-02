@@ -74,7 +74,7 @@ void DictionaryBuffer::ToUnifiedFormat(UnifiedVectorFormat &format) const {
 		entry->data.Flatten();
 	}
 	format.data = FlatVector::GetData(entry->data);
-	format.validity = FlatVector::ValidityMutable(entry->data);
+	format.validity = FlatVector::Validity(entry->data);
 }
 
 buffer_ptr<VectorBuffer> DictionaryBuffer::SliceWithCache(SelCache &cache, const LogicalType &type,
@@ -162,7 +162,7 @@ buffer_ptr<VectorBuffer> DictionaryBuffer::FlattenSliceInternal(const LogicalTyp
 	auto &sel = sel_ref.get();
 
 	// flatten the child using the selection vector
-	return entry->data.BufferMutable().FlattenSlice(type, sel, count);
+	return entry->data.Buffer().FlattenSlice(type, sel, count);
 }
 
 buffer_ptr<DictionaryEntry> DictionaryVector::CreateReusableDictionary(const LogicalType &type, const idx_t &size) {

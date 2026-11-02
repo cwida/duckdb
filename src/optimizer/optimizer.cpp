@@ -43,6 +43,7 @@
 #include "duckdb/optimizer/late_materialization.hpp"
 #include "duckdb/optimizer/common_subplan_optimizer.hpp"
 #include "duckdb/optimizer/partitioned_execution.hpp"
+#include "duckdb/optimizer/window_join_pushdown.hpp"
 #include "duckdb/optimizer/window_self_join.hpp"
 #include "duckdb/optimizer/row_number_rewriter.hpp"
 #include "duckdb/optimizer/optimizer_extension.hpp"
@@ -309,6 +310,12 @@ void Optimizer::RunBuiltInOptimizers() {
 	RunOptimizer(OptimizerType::PROJECTION_PULLUP, [&]() {
 		ProjectionPullup projection_pullup(*this, plan);
 		projection_pullup.Optimize(plan);
+	});
+
+	// Push down joins against windows
+	RunOptimizer(OptimizerType::WINDOW_JOIN_PUSHDOWN, [&]() {
+		WindowJoinPushdown optimizer;
+		plan = optimizer.Optimize(std::move(plan));
 	});
 
 	// Simplifies FULL OUTER -> LEFT/RIGHT OUTER -> INNER if NULLs are filtered anyway

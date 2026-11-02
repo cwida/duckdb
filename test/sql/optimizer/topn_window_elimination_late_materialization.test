@@ -249,3 +249,16 @@ b	9	n4
 
 statement ok
 SET disabled_optimizers = ''
+
+require icu
+
+statement ok
+SET TimeZone = 'UTC'
+
+statement ok
+CREATE TABLE tstz_t AS SELECT TIMESTAMPTZ '2026-10-27 00:31:02+00' AS ts
+
+query II
+SELECT * FROM (SELECT ts, ts::DATE AS d FROM tstz_t) QUALIFY row_number() OVER (ORDER BY d) = 1
+----
+2026-10-27 00:31:02+00	2026-10-27

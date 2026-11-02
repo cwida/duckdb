@@ -53,11 +53,18 @@ SettingInfo PEGTransformerFactory::TransformSetSetting(PEGTransformer &transform
 	return result;
 }
 
-// SetStatement <- 'SET' SetAssignmentOrTimeZone
+// SetKeywordStatement <- 'SET' SetAssignmentOrTimeZone
 unique_ptr<SQLStatement>
-PEGTransformerFactory::TransformSetStatement(PEGTransformer &transformer,
-                                             unique_ptr<SetStatement> set_assignment_or_time_zone) {
+PEGTransformerFactory::TransformSetKeywordStatement(PEGTransformer &transformer,
+                                                    unique_ptr<SetStatement> set_assignment_or_time_zone) {
 	return std::move(set_assignment_or_time_zone);
+}
+
+// VariableAssignment <- '$' Identifier ':=' Expression
+unique_ptr<SQLStatement> PEGTransformerFactory::TransformVariableAssignment(PEGTransformer &transformer,
+                                                                            const Identifier &identifier,
+                                                                            unique_ptr<ParsedExpression> expression) {
+	return make_uniq<SetVariableStatement>(identifier, std::move(expression), SetScope::VARIABLE);
 }
 
 // SetSchema <- SettingScope? 'SCHEMA' StringLiteral

@@ -1,0 +1,109 @@
+# name: test/sql/subquery/any_all/test_correlated_mark_row_identity.test
+# description: Row-identity MARK groups count only their own candidates and NULL values
+# group: [any_all]
+
+statement ok
+CREATE TABLE probes(id INTEGER,g INTEGER,v INTEGER);
+
+statement ok
+CREATE TABLE candidates(g INTEGER,v INTEGER);
+
+statement ok
+CREATE TABLE lookup(k INTEGER);
+
+statement ok
+INSERT INTO probes VALUES(0,0,NULL),(1,1,1),(2,1,7),(3,1,NULL),(4,2,1),(5,2,2),(6,2,NULL),(7,3,1),(8,3,NULL),(9,NULL,1),(10,2,2);
+
+statement ok
+INSERT INTO candidates VALUES(1,1),(1,1),(1,NULL),(2,2),(2,2),(NULL,1);
+
+statement ok
+INSERT INTO lookup VALUES(1);
+
+# The scalar subquery's cardinality check prevents duplicate elimination. Correlation
+# is then keyed by row identity, while g remains a payload column.
+foreach verification none explain_sql_strict
+
+statement ok
+SET debug_verify_statement='{verification}';
+
+foreach serializer false true
+
+statement ok
+SET debug_verify_serializer={serializer};
+
+foreach external false true
+
+statement ok
+SET debug_force_external={external};
+
+query T
+SELECT list(marker ORDER BY id) FROM (SELECT id,v IN(SELECT c.v FROM candidates c WHERE c.g=p.g AND (SELECT k FROM lookup)=1) marker FROM probes p);
+----
+[false, true, NULL, NULL, false, true, NULL, false, false, false, true]
+
+query T
+SELECT list(marker ORDER BY id) FROM (SELECT id,v NOT IN(SELECT c.v FROM candidates c WHERE c.g=p.g AND (SELECT k FROM lookup)=1) marker FROM probes p);
+----
+[true, false, NULL, NULL, true, false, NULL, true, true, true, false]
+
+# NULL grouping keys match only when the correlation itself is null-safe.
+query T
+SELECT list(marker ORDER BY id) FROM (SELECT id,v IN(SELECT c.v FROM candidates c WHERE c.g IS NOT DISTINCT FROM p.g AND (SELECT k FROM lookup)=1) marker FROM probes p);
+----
+[false, true, NULL, NULL, false, true, NULL, false, false, true, true]
+
+# Nested decorrelation under an outer join must retain its own grouping prefix.
+query II
+SELECT p.id,q.v FROM probes p LEFT JOIN (VALUES(1),(2),(NULL::INTEGER)) q(v) ON q.v IN(SELECT c.v FROM candidates c WHERE c.g=p.g AND (SELECT k FROM lookup)=1) ORDER BY ALL;
+----
+0	NULL
+1	1
+2	1
+3	1
+4	2
+5	2
+6	2
+7	NULL
+8	NULL
+9	NULL
+10	2
+
+foreach comparison = <> < <= > >=
+
+# Compute the three-valued quantifier independently as an aggregate over each group.
+query I
+WITH actual AS (SELECT id,v {comparison} ANY(SELECT c.v FROM candidates c WHERE c.g=p.g AND (SELECT k FROM lookup)=1) m FROM probes p), expected AS (SELECT id,(SELECT CASE WHEN bool_or(p.v {comparison} c.v) THEN true WHEN bool_or((p.v {comparison} c.v) IS NULL) THEN NULL ELSE false END FROM candidates c WHERE c.g=p.g) m FROM probes p) SELECT count(*) FROM actual a JOIN expected e USING(id) WHERE a.m IS DISTINCT FROM e.m;
+----
+0
+
+endloop
+
+endloop
+
+endloop
+
+endloop
+
+statement ok
+RESET debug_force_external;
+
+statement ok
+RESET debug_verify_serializer;
+
+# Duplicate matches spanning chunks do not change either NULL or empty-group handling.
+statement ok
+INSERT INTO candidates SELECT 2,2 FROM range(4096);
+
+query T
+SELECT list(marker ORDER BY id) FROM (SELECT id,v IN(SELECT c.v FROM candidates c WHERE c.g=p.g AND (SELECT k FROM lookup)=1) marker FROM probes p);
+----
+[false, true, NULL, NULL, false, true, NULL, false, false, false, true]
+
+statement ok
+DELETE FROM candidates;
+
+query T
+SELECT list(marker ORDER BY id) FROM (SELECT id,v IN(SELECT c.v FROM candidates c WHERE c.g=p.g AND (SELECT k FROM lookup)=1) marker FROM probes p);
+----
+[false, false, false, false, false, false, false, false, false, false, false]

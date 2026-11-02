@@ -144,6 +144,8 @@ public:
 	// Get all extension directory paths
 	static vector<string> GetExtensionDirectoryPath(ClientContext &context);
 	static vector<string> GetExtensionDirectoryPath(DatabaseInstance &db, FileSystem &fs);
+	//! Whether a file in an extension directory is an installed extension, and not the temporary file of an install
+	static bool IsInstalledExtensionFile(const string &path);
 
 	// Check signature of an Extension stored as FileHandle
 	static bool CheckExtensionSignature(DatabaseInstance &db, FileHandle &handle,

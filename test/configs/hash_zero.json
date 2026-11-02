@@ -45,6 +45,7 @@
         "test/sql/storage/test_eviction_queue_dead_nodes_underflow.test",
         "test/sql/copy/parquet/parquet_prefetch_tracked_memory.test",
         "test/sql/join/hash_join/hash_join_dict_surviving.test",
+        "test/sql/join/hash_join/hash_join_bucket_boundaries.test",
         "test/sql/filter/filter_cache_dictionary.test",
         "test/optimizer/row_number_virtual_column.test",
         "test/issues/general/test_24936.test",

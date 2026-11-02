@@ -121,6 +121,13 @@ unique_ptr<LogicalOperator> FilterPullup::PullupDistinct(unique_ptr<LogicalOpera
 	if (distinct.distinct_type == DistinctType::DISTINCT) {
 		// Can pull up through a DISTINCT
 		op->children[0] = Rewrite(std::move(op->children[0]));
+		for (auto &expr : filters_expr_pullup) {
+			if (expr->IsVolatile()) {
+				// Keep volatile predicates below the DISTINCT, where they run once per input row
+				op->children[0] = GeneratePullupFilter(std::move(op->children[0]), filters_expr_pullup);
+				return op;
+			}
+		}
 		return op;
 	}
 	// Cannot pull up through a DISTINCT ON (see #19327)

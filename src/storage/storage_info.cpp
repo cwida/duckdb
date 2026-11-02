@@ -13,7 +13,7 @@ constexpr uint64_t MainHeader::DEFAULT_ENCRYPTION_KEY_LENGTH;
 
 const uint64_t VERSION_NUMBER = 69;
 const uint64_t VERSION_NUMBER_LOWER = 64;
-const uint64_t VERSION_NUMBER_UPPER = 69;
+const uint64_t VERSION_NUMBER_UPPER = 70;
 
 static_assert(VERSION_NUMBER_LOWER <= VERSION_NUMBER, "Check on VERSION_NUMBER lower bound");
 static_assert(VERSION_NUMBER <= VERSION_NUMBER_UPPER, "Check on VERSION_NUMBER upper bound");
@@ -91,7 +91,8 @@ static const StorageVersionInfo storage_version_info[] = {
 	{"v1.5.5", StorageVersion::V1_5_5},
 	{"v1.5.6", StorageVersion::V1_5_6},
 	{"v2.0.0", StorageVersion::V2_0_0},
-	{"latest", StorageVersion::V2_0_0},
+	{"v2.1.0", StorageVersion::V2_1_0},
+	{"latest", StorageVersion::V2_1_0},
 	{nullptr, StorageVersion::INVALID}
 };
 // END OF STORAGE_ARRAY VERSION INFO
@@ -131,7 +132,8 @@ static const SerializationVersionInfo serialization_version_info[] = {
 	{"v1.5.5", SerializationVersionDeprecated::V1_5_5},
 	{"v1.5.6", SerializationVersionDeprecated::V1_5_6},
 	{"v2.0.0", SerializationVersionDeprecated::V2_0_0},
-	{"latest", SerializationVersionDeprecated::V2_0_0},
+	{"v2.1.0", SerializationVersionDeprecated::V2_1_0},
+	{"latest", SerializationVersionDeprecated::V2_1_0},
 	{nullptr, SerializationVersionDeprecated::INVALID}
 };
 // END OF SER_ARRAY VERSION INFO

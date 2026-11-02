@@ -1,0 +1,58 @@
+# name: test/sql/aggregate/group/aggregate_combine_row_append.test
+# description: Combining new and duplicate groups with nested keys and owning aggregate states
+# group: [group]
+
+load {TEST_DIR}/aggregate_combine_row_append.db
+
+statement ok
+SET threads = 4
+
+statement ok
+SET disabled_optimizers = 'compressed_materialization'
+
+statement ok
+CREATE TABLE input AS SELECT i % 5000 AS g, i // 5000 AS v FROM range(500000) t(i)
+
+statement ok
+CREATE VIEW keyed AS
+SELECT struct_pack(
+    text := CASE WHEN g % 11 = 0 THEN NULL ELSE repeat('long group key ', 8) || g::VARCHAR END,
+    numbers := [g, NULL]
+) AS k, v
+FROM input
+
+statement ok
+PREPARE grouped AS
+SELECT count(*), count(*) FILTER (
+    WHERE n IS DISTINCT FROM 100 OR s IS DISTINCT FROM 4950 OR m IS DISTINCT FROM 49.5
+       OR values IS DISTINCT FROM range(100)
+       OR joined IS DISTINCT FROM array_to_string(range(100), ',')
+       OR k.numbers[2] IS NOT NULL OR len(k.numbers) <> 2
+       OR k.text IS DISTINCT FROM CASE
+           WHEN k.numbers[1] % 11 = 0 THEN NULL
+           ELSE repeat('long group key ', 8) || k.numbers[1]::VARCHAR
+       END
+)
+FROM (
+    SELECT k, count(*) AS n, sum(v) AS s, median(v) AS m,
+           list_sort(list(v)) AS values, string_agg(v::VARCHAR, ',' ORDER BY v) AS joined
+    FROM keyed
+    GROUP BY k
+)
+
+foreach memory_limit 256MB 1GB
+
+statement ok
+SET memory_limit = '{memory_limit}'
+
+loop repeat 0 2
+
+query II
+EXECUTE grouped
+----
+5000	0
+
+endloop
+
+endloop
+

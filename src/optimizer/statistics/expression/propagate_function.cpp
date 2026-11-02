@@ -89,7 +89,7 @@ bool TryInferConstantBounds(const BaseStatistics &stats, Value &constant) {
 unique_ptr<BaseStatistics> StatisticsPropagator::PropagateConstantInputs(ClientContext &context,
                                                                          const BoundFunctionExpression &func,
                                                                          const vector<BaseStatistics> &child_stats) {
-	if (func.Function().GetStability() != FunctionStability::CONSISTENT || func.GetChildren().empty()) {
+	if (func.Function().GetStability() == FunctionStability::VOLATILE || func.GetChildren().empty()) {
 		return nullptr;
 	}
 	// Lambda arguments are placeholders, not SQL values that can be evaluated independently.
@@ -126,7 +126,7 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateMonotoneBounds(ClientC
 	if (!func.Function().HasArgProperties() || func.GetChildren().empty()) {
 		return nullptr;
 	}
-	if (func.Function().GetStability() != FunctionStability::CONSISTENT) {
+	if (func.Function().GetStability() == FunctionStability::VOLATILE) {
 		return nullptr;
 	}
 	if (BaseStatistics::GetStatsType(func.GetReturnType()) != StatisticsType::NUMERIC_STATS ||
@@ -245,13 +245,22 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundFuncti
 	}
 	vector<BaseStatistics> stats;
 	stats.reserve(func.GetChildrenMutable().size());
-	for (idx_t i = 0; i < func.GetChildrenMutable().size(); i++) {
-		auto stat = PropagateExpression(func.GetChildrenMutable()[i]);
+	bool has_invalidated_parameter = false;
+	for (auto &child : func.GetChildrenMutable()) {
+		auto stat = PropagateExpression(child);
+		// an invalidated parameter has no statistics until it is rebound at execution
+		if (child->GetExpressionType() == ExpressionType::VALUE_PARAMETER &&
+		    child->GetReturnType().id() == LogicalTypeId::SQLNULL) {
+			has_invalidated_parameter = true;
+		}
 		if (!stat) {
-			stats.push_back(BaseStatistics::CreateUnknown(func.GetChildrenMutable()[i]->GetReturnType()));
+			stats.push_back(BaseStatistics::CreateUnknown(child->GetReturnType()));
 		} else {
 			stats.push_back(stat->Copy());
 		}
+	}
+	if (has_invalidated_parameter) {
+		return nullptr;
 	}
 	auto constant_stats = PropagateConstantInputs(context, func, stats);
 	if (constant_stats) {

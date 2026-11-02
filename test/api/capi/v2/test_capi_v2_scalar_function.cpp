@@ -68,6 +68,50 @@ int32_t QueryI32(duckdb_v2_connection_handle conn, const char *sql) {
 // Exec callbacks
 // ---------------------------------------------------------------------------
 
+struct MixedWriteState {
+	duckdb_v2_factory_handle factory = nullptr;
+	idx_t calls = 0;
+	idx_t dictionary_outputs = 0;
+};
+
+void MixedWriteExec(duckdb_v2_scalar_function_exec_info_handle info, duckdb_v2_context_handle,
+                    duckdb_v2_error_info_handle *err) {
+	duckdb_v2_vector_handle input = nullptr;
+	duckdb_v2_vector_handle output = nullptr;
+	idx_t count = 0;
+	void *user_data = nullptr;
+	if (duckdb_v2_scalar_function_exec_get_user_data(info, &user_data, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_scalar_function_exec_get_arg(info, 0, &input, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_scalar_function_exec_get_result(info, &output, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_scalar_function_exec_get_row_count(info, &count, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	auto &state = *static_cast<MixedWriteState *>(user_data);
+	if (state.calls++ % 2 == 0) {
+		if (duckdb_v2_vector_cast(state.factory, input, output, DUCKDB_V2_CAST_MODE_NORMAL, nullptr, nullptr, err) !=
+		    DUCKDB_V2_ERROR_NONE) {
+			return;
+		}
+		DUCKDB_V2_VECTOR_TYPE type;
+		if (duckdb_v2_vector_get_vector_type(output, &type, err) == DUCKDB_V2_ERROR_NONE &&
+		    type == DUCKDB_V2_VECTOR_TYPE_DICTIONARY) {
+			state.dictionary_outputs++;
+		}
+		return;
+	}
+	duckdb_v2_vector_view view {};
+	void *raw = nullptr;
+	if (duckdb_v2_vector_get_view(input, &view, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_vector_get_data_mutable(output, &raw, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	auto source = static_cast<const int64_t *>(view.data);
+	auto target = static_cast<int64_t *>(raw);
+	for (idx_t row = 0; row < count; row++) {
+		target[row] = source[SelAt(view.sel, row)];
+	}
+}
+
 // out[i] = a[i] + b[i]
 void AddExec(duckdb_v2_scalar_function_exec_info_handle info, duckdb_v2_context_handle,
              duckdb_v2_error_info_handle *err) {
@@ -407,6 +451,38 @@ TEST_CASE("V2 scalar: parameter defaults and named-argument calls", "[capi_v2][s
 	REQUIRE(QueryI32(fx.conn, "SELECT defsum(10, 20)") == 30);
 	REQUIRE(QueryI32(fx.conn, "SELECT defsum(a := 7)") == 12);
 	REQUIRE(QueryI32(fx.conn, "SELECT defsum(a := 7, b := 8)") == 15);
+}
+
+TEST_CASE("V2 scalar: dictionary results can be followed by mutable writes",
+          "[capi_v2][scalar_function][lazy_vector]") {
+	EnvFixture fx;
+	MixedWriteState state;
+	REQUIRE(duckdb_v2_instance_get_factory(fx.instance, &state.factory, nullptr) == DUCKDB_V2_ERROR_NONE);
+	auto input_type = MakeType(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP);
+	auto output_type = MakeType(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_TIMESTAMP_TZ);
+	auto function = MakeScalar(fx.conn, "mixed_timestamp");
+	auto sig = SigOf(function);
+	SigParam(sig, "ts", input_type);
+	REQUIRE(duckdb_v2_function_signature_set_return_type(sig, output_type, nullptr) == DUCKDB_V2_ERROR_NONE);
+	duckdb_v2_opaque user_data = {&state, nullptr, nullptr};
+	REQUIRE(duckdb_v2_scalar_function_set_user_data(function, &user_data, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_scalar_function_set_property(function, DUCKDB_V2_FUNCTION_PROPERTY_STABILITY,
+	                                               DUCKDB_V2_FUNCTION_PROPERTY_STABILITY_VOLATILE,
+	                                               nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_scalar_function_set_exec_callback(function, MixedWriteExec, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_connection_register_scalar_function(fx.conn, function, nullptr) == DUCKDB_V2_ERROR_NONE);
+	duckdb_v2_scalar_function_destroy(&function);
+	duckdb_v2_logical_type_destroy(&input_type);
+	duckdb_v2_logical_type_destroy(&output_type);
+
+	REQUIRE(RunSql(fx.conn, "SET threads=1") == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(RunSql(fx.conn,
+	               "CREATE TABLE numbers AS SELECT i, TIMESTAMP '2000-01-01' + i * INTERVAL 1 MICROSECOND AS ts "
+	               "FROM range(100000) t(i)") == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(QueryI32(fx.conn, "SELECT (sum(epoch_us(mixed_timestamp(ts))) = sum(epoch_us(ts)))::INTEGER "
+	                          "FROM numbers WHERE i % 3 <> 0") == 1);
+	REQUIRE(state.calls > 1);
+	REQUIRE(state.dictionary_outputs > 0);
 }
 
 TEST_CASE("V2 scalar: variadic tail", "[capi_v2][scalar_function]") {
@@ -788,6 +864,24 @@ TEST_CASE("V2 scalar: function properties", "[capi_v2][scalar_function]") {
 
 	// With default null handling this would be NULL without invoking the callback.
 	REQUIRE(QueryI32(fx.conn, "SELECT COALESCE(always42(NULL::INTEGER), -1)") == 42);
+
+	// The catalog reports CONSISTENT_WITHIN_QUERY, and index keys cannot contain the function.
+	function = MakeScalar(fx.conn, "prop_query");
+	sig = SigOf(function);
+	SigParam(sig, "a", integer);
+	REQUIRE(duckdb_v2_function_signature_set_return_type(sig, integer, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_scalar_function_set_exec_callback(function, Const42Exec, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_scalar_function_set_property(function, DUCKDB_V2_FUNCTION_PROPERTY_STABILITY,
+	                                               DUCKDB_V2_FUNCTION_PROPERTY_STABILITY_CONSISTENT_WITHIN_QUERY,
+	                                               nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_connection_register_scalar_function(fx.conn, function, nullptr) == DUCKDB_V2_ERROR_NONE);
+	duckdb_v2_scalar_function_destroy(&function);
+
+	REQUIRE(QueryI32(fx.conn, "SELECT prop_query(1)") == 42);
+	REQUIRE(QueryI32(fx.conn, "SELECT count(*)::INTEGER FROM duckdb_functions() WHERE function_name = 'prop_query' "
+	                          "AND stability = 'CONSISTENT_WITHIN_QUERY'") == 1);
+	REQUIRE(RunSql(fx.conn, "CREATE TABLE prop_keys (a INTEGER)") == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(RunSql(fx.conn, "CREATE INDEX prop_index ON prop_keys ((prop_query(a)))") == DUCKDB_V2_ERROR_QUERY_BINDER);
 
 	// Invalid combinations are rejected.
 	function = MakeScalar(fx.conn, "prop_errors");

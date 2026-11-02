@@ -105,6 +105,37 @@ bool PipelineSchedule::HasCycle() const {
 	return !GetCycle().empty();
 }
 
+bool PipelineSchedule::DependsOn(idx_t dependent, idx_t dependency) const {
+	D_ASSERT(dependent < stages.size() && dependency < stages.size());
+	vector<bool> visited(stages.size(), false);
+	vector<idx_t> pending {dependent};
+	while (!pending.empty()) {
+		auto current = pending.back();
+		pending.pop_back();
+		if (current == dependency) {
+			return true;
+		}
+		if (visited[current]) {
+			continue;
+		}
+		visited[current] = true;
+		for (auto child : stages[current].dependencies) {
+			pending.push_back(child);
+		}
+	}
+	return false;
+}
+
+bool PipelineSchedule::TryAddDependency(idx_t dependent, idx_t dependency) {
+	if (dependent == dependency || DependsOn(dependency, dependent)) {
+		return false;
+	}
+	if (!DependsOn(dependent, dependency)) {
+		stages[dependent].dependencies.push_back(dependency);
+	}
+	return true;
+}
+
 static PipelineScheduleStageStack AddBasePipeline(PipelineSchedule &result, const shared_ptr<Pipeline> &pipeline) {
 	auto initialize = AddStage(result, PipelineScheduleStageType::INITIALIZE, pipeline);
 	auto execute = AddStage(result, PipelineScheduleStageType::EXECUTE, pipeline);

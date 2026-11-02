@@ -167,6 +167,7 @@ struct ICUCalendarSub : public ICUDateFunc {
 		set.AddFunction(GetFunction<timestamp_tz_t>(LogicalType::TIMESTAMP_TZ));
 		// throws for unrecognized part specifiers and for dates that overflow the timestamp range
 		set.SetFallible();
+		set.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 		set.SetArgProperties(1, ArgProperties().NonIncreasing());
 		set.SetArgProperties(2, ArgProperties().NonDecreasing());
 		set.SetStatisticsCallback(StatisticsPropagator::PropagateFiniteMonotoneBounds);
@@ -352,6 +353,7 @@ struct ICUCalendarDiff : public ICUDateFunc {
 		set.AddFunction(GetFunction<timestamp_tz_ns_t>(LogicalType::TIMESTAMP_TZ_NS));
 		// throws for unrecognized part specifiers and for dates that overflow the timestamp range
 		set.SetFallible();
+		set.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 		set.SetArgProperties(1, ArgProperties().NonIncreasing());
 		set.SetArgProperties(2, ArgProperties().NonDecreasing());
 		set.SetStatisticsCallback(StatisticsPropagator::PropagateFiniteMonotoneBounds);

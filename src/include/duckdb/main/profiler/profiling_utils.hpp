@@ -10,6 +10,7 @@
 
 #include "duckdb/common/enums/metric_type.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/mutex.hpp"
 #include "duckdb/main/profiler/gathered_metrics.hpp"
 #include "duckdb/main/profiler/profiling_node.hpp"
 #include "duckdb/common/profiler.hpp"
@@ -54,15 +55,23 @@ public:
 
 public:
 	void UpdateMetric(const string &key, idx_t addition) {
+		annotated_lock_guard<annotated_mutex> guard(string_metrics_lock);
 		string_timings[key].Add(addition);
 	}
 
 	void UpdateMetric(const string &key, idx_t addition, timestamp_t start_time, timestamp_t end_time) {
+		annotated_lock_guard<annotated_mutex> guard(string_metrics_lock);
 		string_timings[key].Add(addition, start_time, end_time);
 	}
 
 	void UpdateMetricCounter(const string &key, idx_t addition) {
+		annotated_lock_guard<annotated_mutex> guard(string_metrics_lock);
 		string_counters[key] += addition;
+	}
+
+	void SetMetricValue(const string &key, Value value) {
+		annotated_lock_guard<annotated_mutex> guard(string_metrics_lock);
+		string_values[key] = std::move(value);
 	}
 
 	void UpdateBytesRead(idx_t n, idx_t elapsed_us) {
@@ -89,6 +98,7 @@ public:
 	}
 
 	double GetStringMetricInSeconds(const string &key) const {
+		annotated_lock_guard<annotated_mutex> guard(string_metrics_lock);
 		auto it = string_timings.find(key);
 		if (it == string_timings.end()) {
 			return 0.0;
@@ -97,6 +107,7 @@ public:
 	}
 
 	idx_t GetStringCounter(const string &key) const {
+		annotated_lock_guard<annotated_mutex> guard(string_metrics_lock);
 		auto it = string_counters.find(key);
 		if (it == string_counters.end()) {
 			return 0;
@@ -139,11 +150,14 @@ public:
 		return total_memory_allocated.load();
 	}
 
-	const unordered_map<string, MetricTiming> &GetMetricTimings() const {
+	//! A copy, as timers and counters may still be updated from other threads
+	unordered_map<string, MetricTiming> GetMetricTimings() const {
+		annotated_lock_guard<annotated_mutex> guard(string_metrics_lock);
 		return string_timings;
 	}
 
-	const unordered_map<string, idx_t> &GetMetricCounters() const {
+	unordered_map<string, idx_t> GetMetricCounters() const {
+		annotated_lock_guard<annotated_mutex> guard(string_metrics_lock);
 		return string_counters;
 	}
 
@@ -161,9 +175,14 @@ public:
 	}
 
 	void Reset() {
+		// ended before taking the lock: the timer adds its time to string_timings
 		latency_timer.reset();
-		string_timings.clear();
-		string_counters.clear();
+		{
+			annotated_lock_guard<annotated_mutex> guard(string_metrics_lock);
+			string_timings.clear();
+			string_counters.clear();
+			string_values.clear();
+		}
 
 		query_sql = "";
 		system_peak_buffer_memory = 0;
@@ -172,17 +191,25 @@ public:
 		blocked_thread_time = 0;
 	}
 
+	//! Write the values set with QueryProfiler::SetMetric into the given GatheredMetrics, before the metrics the
+	//! profiler computes itself, which take precedence.
+	void FinalizeMetricValues(GatheredMetrics &info);
 	//! Write all query-level metrics into the given GatheredMetrics.
 	void FinalizeMetrics(GatheredMetrics &info);
 	//! The metrics backed by atomic counters, which can be read from any thread while the query runs
 	profiler_metrics_t GetLiveMetrics() const;
 
 	void Merge(const QueryMetrics &other) {
-		for (const auto &entry : other.string_timings) {
-			string_timings[entry.first].Merge(entry.second);
-		}
-		for (const auto &entry : other.string_counters) {
-			string_counters[entry.first] += entry.second;
+		auto other_timings = other.GetMetricTimings();
+		auto other_counters = other.GetMetricCounters();
+		{
+			annotated_lock_guard<annotated_mutex> guard(string_metrics_lock);
+			for (const auto &entry : other_timings) {
+				string_timings[entry.first].Merge(entry.second);
+			}
+			for (const auto &entry : other_counters) {
+				string_counters[entry.first] += entry.second;
+			}
 		}
 		bytes_read += other.bytes_read.load();
 		read_operations += other.read_operations.load();
@@ -196,13 +223,18 @@ public:
 	}
 
 private:
+	// Guards the string-keyed metrics below, which operators, timers and extensions update from any thread
+	mutable annotated_mutex string_metrics_lock;
 	// String-keyed timings for optimizer, storage and phase timing metrics
-	unordered_map<string, MetricTiming> string_timings;
+	unordered_map<string, MetricTiming> string_timings DUCKDB_GUARDED_BY(string_metrics_lock);
 	// String-keyed counters for storage counter metrics (e.g. "storage.wal_replay_entry_count")
-	unordered_map<string, idx_t> string_counters;
+	unordered_map<string, idx_t> string_counters DUCKDB_GUARDED_BY(string_metrics_lock);
+	// Values set by QueryProfiler::SetMetric, kept until the query's metrics are gathered
+	profiler_metrics_t string_values DUCKDB_GUARDED_BY(string_metrics_lock);
 
 public:
-	// Declared after string_timings so it is destroyed first; its destructor writes to string_timings.
+	// Declared after string_timings and string_metrics_lock so it is destroyed first; its destructor writes to
+	// string_timings.
 	unique_ptr<MetricsTimer> latency_timer;
 };
 

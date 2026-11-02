@@ -1751,10 +1751,12 @@ void BoxRendererImplementation::ComputeRenderWidths(vector<RenderDataCollection>
 	for (auto &collection : collections) {
 		for (auto &chunk : collection.render_values->Chunks(column_ids)) {
 			for (idx_t c = 0; c < column_count; c++) {
-				auto render_widths = FlatVector::GetData<uint64_t>(chunk.data[c]);
+				// scans can return constant and dictionary vectors - read the cells in place
+				auto render_widths = chunk.data[c].Values<uint64_t>();
 				for (idx_t r = 0; r < chunk.size(); r++) {
-					if (render_widths[r] > column_widths[c]) {
-						column_widths[c] = render_widths[r];
+					const auto render_width = render_widths[r].GetValueUnsafe();
+					if (render_width > column_widths[c]) {
+						column_widths[c] = render_width;
 					}
 				}
 			}
@@ -2138,8 +2140,9 @@ void BoxRendererImplementation::RenderValues(BaseResultRenderer &ss, vector<Rend
 				auto &string_vector = render_collection.Values(chunk, c);
 				auto &render_lengths_vector = render_collection.RenderLengths(chunk, c);
 
-				auto string_data = FlatVector::GetData<string_t>(string_vector);
-				auto render_length_data = FlatVector::GetData<uint64_t>(render_lengths_vector);
+				// scans can return constant and dictionary vectors - read the cells in place
+				auto string_data = string_vector.Values<string_t>();
+				auto render_length_data = render_lengths_vector.Values<uint64_t>();
 				for (idx_t r = 0; r < chunk.size(); r++) {
 					if (context.IsInterrupted()) {
 						return;
@@ -2148,11 +2151,12 @@ void BoxRendererImplementation::RenderValues(BaseResultRenderer &ss, vector<Rend
 					ResultRenderType render_type;
 					ValueRenderAlignment alignment;
 					optional_idx column_idx;
-					if (FlatVector::IsNull(string_vector, r)) {
+					const auto string_entry = string_data[r];
+					if (!string_entry.IsValid()) {
 						render_value = config.null_value;
 						render_type = ResultRenderType::NULL_VALUE;
 					} else {
-						render_value = string_data[r].GetString();
+						render_value = string_entry.GetValue().GetString();
 						render_type = ResultRenderType::VALUE;
 					}
 					if (config.render_mode == RenderMode::ROWS) {
@@ -2186,7 +2190,7 @@ void BoxRendererImplementation::RenderValues(BaseResultRenderer &ss, vector<Rend
 							render_type = ResultRenderType::NULL_VALUE;
 						}
 					}
-					auto render_length = render_length_data[r];
+					auto render_length = render_length_data[r].GetValue();
 					chunk_rows[r].values.emplace_back(std::move(render_value), render_type, alignment, column_idx,
 					                                  render_length);
 				}

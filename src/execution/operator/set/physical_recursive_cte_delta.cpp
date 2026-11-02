@@ -141,6 +141,40 @@ static idx_t SelectDistinctPayloadRows(const Vector &previous, const Vector &cur
 	                                      &changed, &unchanged);
 }
 
+//! Whether the finalized payload of every row equals the candidate payload that produced it
+static bool FinalizedPayloadsEqualCandidates(RecursiveCTEKeyDeltaState &delta, const PhysicalRecursiveCTE &op,
+                                             DataChunk &finalized, DataChunk &candidates, idx_t count) {
+	for (idx_t payload_idx = 0; payload_idx < op.payload_idx.size(); payload_idx++) {
+		const auto mismatch_count =
+		    VectorOperations::DistinctFrom(finalized.data[payload_idx], candidates.data[op.payload_idx[payload_idx]],
+		                                   nullptr, count, &delta.changed_column_groups, &delta.equal_groups_a);
+		if (mismatch_count != 0) {
+			return false;
+		}
+	}
+	return true;
+}
+
+//! Rows whose payload differs from the previous payload in some column; previous_payload_offset selects the
+//! first previous payload column, as the layouts of the previous rows differ between callers
+static idx_t CountChangedPayloadRows(RecursiveCTEKeyDeltaState &delta, const PhysicalRecursiveCTE &op,
+                                     DataChunk &previous, idx_t previous_payload_offset, DataChunk &current,
+                                     idx_t count) {
+	idx_t changed_count = 0;
+	idx_t equal_count = count;
+	optional_ptr<SelectionVector> equal_groups;
+	for (idx_t payload_idx = 0; payload_idx < op.payload_idx.size() && equal_count > 0; payload_idx++) {
+		auto &next_equal_groups = payload_idx % 2 == 0 ? delta.equal_groups_a : delta.equal_groups_b;
+		const auto changed_column_count =
+		    SelectDistinctPayloadRows(previous.data[previous_payload_offset + payload_idx], current.data[payload_idx],
+		                              equal_groups, equal_count, delta.changed_column_groups, next_equal_groups);
+		changed_count += changed_column_count;
+		equal_count -= changed_column_count;
+		equal_groups = &next_equal_groups;
+	}
+	return changed_count;
+}
+
 static void CopySelectedAddresses(const Vector &source, const SelectionVector &selection, idx_t count, Vector &target) {
 	source.Flatten();
 	target.SetVectorType(VectorType::FLAT_VECTOR);
@@ -196,7 +230,7 @@ void RecursiveCTEKeyedState::SnapshotUsingKeyDelta(const Vector &group_addresses
 		return;
 	}
 	if (allow_candidate_reuse && op.keyed.can_reuse_new_group_candidates) {
-		delta.new_group_addresses.reserve(candidate_count);
+		delta.ReserveNewGroupAddresses(candidate_count);
 	}
 
 	group_addresses.Flatten();
@@ -204,9 +238,8 @@ void RecursiveCTEKeyedState::SnapshotUsingKeyDelta(const Vector &group_addresses
 	const auto update_partial_indexes = !partial_key_indexes.empty();
 	auto partial_index_addresses =
 	    update_partial_indexes ? FlatVector::GetDataMutable<data_ptr_t>(new_group_addresses) : nullptr;
-	if (!update_partial_indexes && !delta.new_group_address_set_built && new_group_count == row_count) {
-		delta.new_group_addresses.insert(delta.new_group_addresses.end(), source_addresses,
-		                                 source_addresses + new_group_count);
+	if (!update_partial_indexes && !delta.HasNewGroupAddressSet() && new_group_count == row_count) {
+		delta.AppendNewGroupAddresses(source_addresses, new_group_count);
 		delta.new_count += new_group_count;
 		delta.touched_count += new_group_count;
 		return;
@@ -214,10 +247,7 @@ void RecursiveCTEKeyedState::SnapshotUsingKeyDelta(const Vector &group_addresses
 	for (idx_t new_group_idx = 0; new_group_idx < new_group_count; new_group_idx++) {
 		const auto input_idx = new_groups.get_index_unsafe(new_group_idx);
 		const auto address = source_addresses[input_idx];
-		delta.new_group_addresses.push_back(address);
-		if (delta.new_group_address_set_built) {
-			delta.new_group_address_set.Insert(address);
-		}
+		delta.AddNewGroupAddress(address);
 		if (update_partial_indexes) {
 			this->new_groups.set_index(new_group_idx, input_idx);
 			partial_index_addresses[new_group_idx] = address;
@@ -238,17 +268,11 @@ void RecursiveCTEKeyedState::SnapshotUsingKeyDelta(const Vector &group_addresses
 		D_ASSERT(row_count == 1);
 		matched_addresses[matched_count++] = source_addresses[0];
 	} else {
-		if (!delta.new_group_address_set_built) {
-			delta.new_group_address_set.Reserve(delta.new_group_addresses.size());
-			for (auto address : delta.new_group_addresses) {
-				delta.new_group_address_set.Insert(address);
-			}
-			delta.new_group_address_set_built = true;
-		}
+		delta.EnsureNewGroupAddressSet();
 		delta.touched_addresses.Reserve(delta.touched_count + row_count);
 		for (idx_t row_idx = 0; row_idx < row_count; row_idx++) {
 			const auto address = source_addresses[row_idx];
-			if (!delta.touched_addresses.Insert(address) || delta.new_group_address_set.Contains(address)) {
+			if (!delta.touched_addresses.Insert(address) || delta.ContainsNewGroupAddress(address)) {
 				continue;
 			}
 			matched_addresses[matched_count++] = address;
@@ -269,29 +293,14 @@ void RecursiveCTEKeyedState::ValidateDeferredUsingKeyCandidateReuse(DataChunk &c
 	FinalizeAggregateRows(delta.row_state, delta.finalize_addresses, delta.updated_aggregate_rows,
 	                      delta.deferred_count);
 
-	for (idx_t payload_idx = 0; payload_idx < op.payload_idx.size(); payload_idx++) {
-		const auto mismatch_count = VectorOperations::DistinctFrom(
-		    delta.updated_aggregate_rows.data[payload_idx], candidates.data[op.payload_idx[payload_idx]], nullptr,
-		    delta.deferred_count, &delta.changed_column_groups, &delta.equal_groups_a);
-		if (mismatch_count != 0) {
-			AppendPreviousUsingKeyDeltaRows(delta.matched_addresses, delta.deferred_count);
-			delta.deferred_previous_rows = false;
-			return;
-		}
+	if (!FinalizedPayloadsEqualCandidates(delta, op, delta.updated_aggregate_rows, candidates, delta.deferred_count)) {
+		AppendPreviousUsingKeyDeltaRows(delta.matched_addresses, delta.deferred_count);
+		delta.deferred_previous_rows = false;
+		return;
 	}
 
-	idx_t changed_count = 0;
-	idx_t equal_count = delta.deferred_count;
-	optional_ptr<SelectionVector> equal_groups;
-	for (idx_t payload_idx = 0; payload_idx < op.payload_idx.size() && equal_count > 0; payload_idx++) {
-		auto &next_equal_groups = payload_idx % 2 == 0 ? delta.equal_groups_a : delta.equal_groups_b;
-		const auto changed_column_count = SelectDistinctPayloadRows(
-		    delta.aggregate_rows.data[payload_idx], delta.updated_aggregate_rows.data[payload_idx], equal_groups,
-		    equal_count, delta.changed_column_groups, next_equal_groups);
-		changed_count += changed_column_count;
-		equal_count -= changed_column_count;
-		equal_groups = &next_equal_groups;
-	}
+	const auto changed_count =
+	    CountChangedPayloadRows(delta, op, delta.aggregate_rows, 0, delta.updated_aggregate_rows, delta.deferred_count);
 	if (changed_count != delta.deferred_count) {
 		AppendPreviousUsingKeyDeltaRows(delta.matched_addresses, delta.deferred_count);
 		delta.deferred_previous_rows = false;
@@ -325,13 +334,7 @@ void RecursiveCTEKeyedState::SnapshotPreaggregatedUsingKeyDeltaGroups(DataChunk 
 	delta.touched_count += missing_count;
 
 	if (found_count > 0) {
-		if (!delta.new_group_address_set_built) {
-			delta.new_group_address_set.Reserve(delta.new_group_addresses.size());
-			for (auto address : delta.new_group_addresses) {
-				delta.new_group_address_set.Insert(address);
-			}
-			delta.new_group_address_set_built = true;
-		}
+		delta.EnsureNewGroupAddressSet();
 		delta.lookup_state.addresses.Flatten();
 		auto source_addresses = FlatVector::GetData<data_ptr_t>(delta.lookup_state.addresses);
 		auto matched_addresses = FlatVector::GetDataMutable<data_ptr_t>(delta.matched_addresses);
@@ -340,7 +343,7 @@ void RecursiveCTEKeyedState::SnapshotPreaggregatedUsingKeyDeltaGroups(DataChunk 
 		for (idx_t match_idx = 0; match_idx < found_count; match_idx++) {
 			const auto input_idx = delta.found_groups.get_index_unsafe(match_idx);
 			const auto address = source_addresses[input_idx];
-			if (delta.new_group_address_set.Contains(address) || !delta.touched_addresses.Insert(address)) {
+			if (delta.ContainsNewGroupAddress(address) || !delta.touched_addresses.Insert(address)) {
 				continue;
 			}
 			matched_addresses[matched_count++] = address;
@@ -386,26 +389,13 @@ bool RecursiveCTEKeyedState::TryReuseChangedGroupCandidates(idx_t candidate_coun
 		                      delta.finalize_addresses);
 		FinalizeAggregateRows(delta.row_state, delta.finalize_addresses, delta.aggregate_rows, row_count);
 
-		for (idx_t payload_idx = 0; payload_idx < op.payload_idx.size(); payload_idx++) {
-			const auto mismatch_count = VectorOperations::DistinctFrom(
-			    delta.aggregate_rows.data[payload_idx], update_rows.data[op.payload_idx[payload_idx]], nullptr,
-			    row_count, &delta.changed_column_groups, &delta.equal_groups_a);
-			if (mismatch_count != 0) {
-				return false;
-			}
+		if (!FinalizedPayloadsEqualCandidates(delta, op, delta.aggregate_rows, update_rows, row_count)) {
+			return false;
 		}
 
-		idx_t equal_count = row_count;
-		optional_ptr<SelectionVector> equal_groups;
-		for (idx_t payload_idx = 0; payload_idx < op.payload_idx.size() && equal_count > 0; payload_idx++) {
-			auto &next_equal_groups = payload_idx % 2 == 0 ? delta.equal_groups_a : delta.equal_groups_b;
-			const auto changed_column_count = SelectDistinctPayloadRows(
-			    delta.previous_scan_rows.data[1 + payload_idx], delta.aggregate_rows.data[payload_idx], equal_groups,
-			    equal_count, delta.changed_column_groups, next_equal_groups);
-			changed_count += changed_column_count;
-			equal_count -= changed_column_count;
-			equal_groups = &next_equal_groups;
-		}
+		// The previous rows carry the group address in their first column
+		changed_count +=
+		    CountChangedPayloadRows(delta, op, delta.previous_scan_rows, 1, delta.aggregate_rows, row_count);
 	}
 	if (intermediate_table.Scan(candidate_scan_state, update_rows)) {
 		return false;
@@ -502,10 +492,9 @@ idx_t RecursiveCTEKeyedState::FinalizeUsingKeyDelta(bool update_partial_indexes,
 		op.working_table->Append(working_append_state, delta.result_rows);
 	};
 
-	for (idx_t offset = 0; offset < delta.new_group_addresses.size(); offset += STANDARD_VECTOR_SIZE) {
-		const auto count = MinValue<idx_t>(STANDARD_VECTOR_SIZE, delta.new_group_addresses.size() - offset);
-		Vector group_addresses(LogicalType::POINTER,
-		                       reinterpret_cast<data_ptr_t>(delta.new_group_addresses.data() + offset), count);
+	for (idx_t offset = 0; offset < delta.NewGroupAddressCount(); offset += STANDARD_VECTOR_SIZE) {
+		const auto count = MinValue<idx_t>(STANDARD_VECTOR_SIZE, delta.NewGroupAddressCount() - offset);
+		auto group_addresses = delta.NewGroupAddressVector(offset, count);
 		finalize_new_groups(group_addresses, count);
 	}
 

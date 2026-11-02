@@ -1,6 +1,7 @@
 #include "duckdb/planner/table_filter_state.hpp"
 #include "duckdb/common/operator/comparison_operators.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
+#include "duckdb/common/vector_operations/selection_helpers.hpp"
 #include "duckdb/common/vector/constant_vector.hpp"
 #include "duckdb/common/vector/flat_vector.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
@@ -93,7 +94,21 @@ private:
 		auto data = UnifiedVectorFormat::GetData<T>(vdata);
 		auto &mask = vdata.validity;
 		idx_t result_count = 0;
-		for (idx_t i = 0; i < approved_tuple_count; i++) {
+		idx_t i = 0;
+		if constexpr (UseBooleanSelectionBatch<T>() && !CAN_HAVE_NULL) {
+			if (!sel.IsSet() && !vdata.sel->IsSet()) {
+				array_ptr<sel_t> output(result_sel.data(), result_sel.Capacity());
+				for (; i + 64 <= approved_tuple_count; i += 64) {
+					bool matches[64];
+					for (idx_t j = 0; j < 64; j++) {
+						matches[j] = OP::Operation(data[i + j], predicate);
+					}
+					auto destination = output.SubArray(result_count, 64);
+					result_count += SelectionVector::SelectFromBoolean(matches, nullptr, 64, destination, {}, i);
+				}
+			}
+		}
+		for (; i < approved_tuple_count; i++) {
 			auto idx = sel.get_index(i);
 			auto vector_idx = vdata.sel->get_index(idx);
 			bool comparison_result =
@@ -129,7 +144,7 @@ private:
 		case ExpressionType::COMPARE_LESSTHANOREQUALTO:
 			return SelectOperation<T, LessThanEquals>(vdata, sel, approved_tuple_count);
 		default:
-			throw InternalException("Unsupported comparison type for comparison filter executor");
+			InternalException::Throw("Unsupported comparison type for comparison filter executor");
 		}
 	}
 
@@ -166,7 +181,7 @@ private:
 		case PhysicalType::VARCHAR:
 			return SelectTyped<string_t>(vdata, sel, approved_tuple_count);
 		default:
-			throw InternalException("Unsupported physical type for comparison filter executor");
+			InternalException::Throw("Unsupported physical type for comparison filter executor");
 		}
 	}
 
