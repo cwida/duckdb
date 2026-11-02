@@ -14,8 +14,8 @@ namespace duckdb {
 static void DetectFrontierReferences(const LogicalOperator &op, TableIndex cte_index, idx_t nested_depth,
                                      bool &reads_frontier);
 
-//! Subqueries in non-inner join conditions stay unplanned expressions until physical
-//! planning, so their bound plans must be analyzed through the expressions as well.
+//! Subqueries in non-inner join conditions stay bound expressions until the dependent
+//! join planner lowers them, so their plans must be analyzed through the expressions.
 static void DetectFrontierReferencesInExpression(const Expression &expr, TableIndex cte_index, idx_t nested_depth,
                                                  bool &reads_frontier) {
 	if (expr.GetExpressionClass() == ExpressionClass::BOUND_SUBQUERY) {

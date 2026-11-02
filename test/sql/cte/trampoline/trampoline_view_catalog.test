@@ -10,14 +10,14 @@ CREATE TABLE db1.src AS SELECT 7 AS n;
 
 statement ok
 CREATE VIEW db1.v AS WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
-	(SELECT 1, n FROM db1.src)
-	BRANCH 1: (SELECT 0, n + (SELECT min(n) - min(n) FROM db1.src) FROM t)
+	(SELECT 1, (SELECT min(n) FROM db1.src) FROM db1.src)
+	BRANCH 1: (SELECT 0, n + 100 * (SELECT min(n) FROM db1.src) FROM t)
 ) SELECT n FROM t;
 
 query I
 SELECT * FROM db1.v;
 ----
-7
+707
 
 statement ok
 DETACH db1;
@@ -36,4 +36,4 @@ ATTACH '{TEST_DIR}/trampoline_view_catalog_1.db' AS db2;
 query I
 SELECT * FROM db2.v;
 ----
-7
+707
