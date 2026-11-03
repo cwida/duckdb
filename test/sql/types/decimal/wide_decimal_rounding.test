@@ -61,3 +61,17 @@ query I
 SELECT round(NULL::DECIMAL(40,3), 1)
 ----
 NULL
+
+# NULLs stay NULL, also when every value rounds to zero
+query IIIIII
+SELECT round(x), round(x, 1), round(x, -300), round_even(x, -300), trunc(x, -300), ceil(x) FROM (VALUES ('1.5'::DECIMAL(40,3)), (NULL), ('-2.5')) t(x) ORDER BY x NULLS LAST
+----
+-3	-2.5	0	0	0	-2
+2	1.5	0	0	0	2
+NULL	NULL	NULL	NULL	NULL	NULL
+
+query III
+SELECT round(x, -300), round_even(x, -300), trunc(x, -300) FROM (VALUES ('1.5'::DECIMAL(38,3)), (NULL)) t(x) ORDER BY x NULLS LAST
+----
+0	0	0
+NULL	NULL	NULL

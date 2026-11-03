@@ -743,10 +743,10 @@ static void BignumRoundPrecisionDecimal(DataChunk &input, ExpressionState &state
 	const idx_t restore_digits = info.target_scale < 0 ? NumericCast<idx_t>(-info.target_scale) : 0;
 	const idx_t drop_digits = source_scale + restore_digits - (info.target_scale > 0 ? info.target_scale : 0);
 	if (drop_digits > Decimal::MAX_WIDTH_DECIMAL) {
-		// more digits than any decimal holds are dropped: the result is zero
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
-		result.SetValue(0, Value::DECIMAL(int64_t(0), DecimalType::GetWidth(result.GetType()),
-		                                  DecimalType::GetScale(result.GetType())));
+		// more digits than any decimal holds are dropped: every value rounds to zero
+		auto zero_blob = BignumDecimal::FromInteger(hugeint_t(0));
+		auto zero = StringVector::AddStringOrBlob(result, zero_blob.data(), zero_blob.size());
+		UnaryExecutor::Execute<bignum_t, string_t>(input.data[0], result, input.size(), [&](bignum_t) { return zero; });
 		return;
 	}
 	BignumRoundDecimal<OP::BIGNUM_ROUNDING>(input.data[0], result, input.size(), drop_digits, restore_digits, OP::NAME);
@@ -900,9 +900,8 @@ struct TruncDecimalNegativePrecisionOperator {
 		auto source_scale = DecimalType::GetScale(func_expr.GetChildren()[0]->GetReturnType());
 		auto width = DecimalType::GetWidth(func_expr.GetChildren()[0]->GetReturnType());
 		if (info.target_scale <= -int32_t(width - source_scale)) {
-			// scale too big for width
-			result.SetVectorType(VectorType::CONSTANT_VECTOR);
-			result.SetValue(0, Value::INTEGER(0));
+			// scale too big for width: every value truncates to zero
+			UnaryExecutor::Execute<T, T>(input.data[0], result, input.size(), [](T) { return T(0); });
 			return;
 		}
 		T divide_power_of_ten =
@@ -1233,9 +1232,8 @@ struct DecimalRoundNegativePrecisionOperator {
 		auto &info = func_expr.BindInfo()->Cast<RoundPrecisionFunctionData>();
 		auto source_scale = DecimalType::GetScale(func_expr.GetChildren()[0]->GetReturnType());
 		if (info.target_scale < -int32_t(info.source_width - source_scale)) {
-			// scale too big for width
-			result.SetVectorType(VectorType::CONSTANT_VECTOR);
-			result.SetValue(0, Value::INTEGER(0));
+			// scale too big for width: every value rounds to zero
+			UnaryExecutor::Execute<T, T>(input.data[0], result, input.size(), [](T) { return T(0); });
 			return;
 		}
 		T divide_power_of_ten =
