@@ -962,7 +962,7 @@ void ColumnData::AppendTransientSegment(SegmentLock &l, optional_ptr<Suballocati
 
 	auto function = config.GetCompressionFunction(CompressionType::COMPRESSION_UNCOMPRESSED, type.InternalType());
 	unique_ptr<ColumnSegment> new_segment;
-	// unlike a tiny buffer, the shared block can be offloaded, but a table that never grows should not allocate one
+	// first segments stay tiny until a column grows and creates the shared block, so small tables never allocate one
 	if (transient && segment_size < block_size && (!first_transient_segment || transient->block)) {
 		new_segment = transient->CreateTransientSegment(db, function, type, segment_size, block_manager);
 	} else {
