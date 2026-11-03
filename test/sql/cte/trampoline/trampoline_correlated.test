@@ -520,3 +520,18 @@ WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
 
 statement ok
 RESET max_execution_time;
+
+# A row-wise in-out table function (no final emission) is anchored when its
+# input derives from the wave, so this correlated branch stays accepted.
+query II
+SELECT o.k, q.n
+FROM (VALUES (1), (2)) o(k), LATERAL (
+	WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+		(SELECT 1, o.k)
+		BRANCH 1: (SELECT 0, n FROM summary((SELECT n FROM t)))
+	)
+	SELECT n FROM t
+) q ORDER BY o.k;
+----
+1	1
+2	2

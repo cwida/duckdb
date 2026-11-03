@@ -61,7 +61,8 @@ struct TrampolineBranchPipelines {
 //! unobservable targets cannot observe wave boundaries, so their pending waves
 //! may merge (branch_wave_merge, computed by a backward fixed point over the
 //! selector routing graph at physical planning). Nonlinear or volatile branches
-//! observe exact boundaries and never merge.
+//! observe exact boundaries and are never merged automatically. Explicit MERGE
+//! and DISTINCT still coalesce their round at the boundary.
 //!
 //! Rounds. frontier reads, MERGE, and DISTINCT make generation boundaries
 //! observable, so execution switches to lockstep rounds: a round seals every
@@ -87,10 +88,12 @@ struct TrampolineBranchPipelines {
 //! (TrampolineWaveAnchoring), so nothing is produced or evaluated for outer
 //! rows whose wave is empty.
 //!
-//! SQL export. The exported text must retain a round witness (a frontier
-//! reference or a surviving MERGE/DISTINCT branch); an export that lost the
-//! last witness is rejected, because re-binding it would silently drop the
-//! round contract. EXPLAIN (SQL) requires CTE inlining.
+//! SQL export. When the trampoline requires rounds, the exported text must
+//! retain a round witness (a frontier reference or a surviving MERGE/DISTINCT
+//! branch); an export that lost the last witness is rejected, because
+//! re-binding it would silently drop the round contract. Trampolines without a
+//! round contract export without a witness. EXPLAIN (SQL) requires CTE
+//! inlining.
 class PhysicalTrampoline : public PhysicalOperator {
 public:
 	static constexpr const PhysicalOperatorType TYPE = PhysicalOperatorType::TRAMPOLINE;

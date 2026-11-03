@@ -1700,6 +1700,23 @@ struct TrampolineWaveAnchoring {
 		case LogicalOperatorType::LOGICAL_EMPTY_RESULT:
 			// produces no rows at all
 			return true;
+		case LogicalOperatorType::LOGICAL_GET: {
+			// a row-wise in-out table function maps input rows to output rows, so it is
+			// anchored when its input is; a final callback can emit rows after the input
+			// is exhausted and so can fabricate output from an empty wave
+			if (op.children.empty()) {
+				return false;
+			}
+			auto &get = op.Cast<LogicalGet>();
+			if (!get.function.in_out_function || get.function.in_out_function_final) {
+				return false;
+			}
+			bool anchored = true;
+			for (auto &child : op.children) {
+				anchored = Anchored(*child) && anchored;
+			}
+			return anchored;
+		}
 		case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY: {
 			auto &aggregate = op.Cast<LogicalAggregate>();
 			bool has_empty_set = aggregate.groups.empty();
