@@ -212,6 +212,7 @@ TEST_CASE("Read-ahead reports an async I/O failure instead of hanging or ending 
 	                                             << ", result: " << (result->HasError() ? result->GetError() : "ok"));
 	REQUIRE(finished);
 	REQUIRE(result->HasError());
-	REQUIRE(StringUtil::Contains(result->GetError(), "injected read-ahead I/O failure"));
+	const string debug_error = result->GetError().substr(0, 600);
+	REQUIRE(debug_error == "injected read-ahead I/O failure");
 	blocker.Release();
 }
