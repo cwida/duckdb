@@ -1,0 +1,103 @@
+# name: test/sql/function/list/lambdas/lambda_collation.test
+# description: COLLATE on a lambda parameter keeps the collation (duckdblabs/bot-issue-tracker#711)
+# group: [lambdas]
+
+query I
+SELECT ('A' COLLATE NOCASE) = 'a';
+----
+true
+
+# the parameter itself is the lambda body
+query III
+SELECT list_transform(['A'], lambda x: x COLLATE NOCASE)[1] = 'a',
+       invoke(lambda x: x COLLATE NOCASE, 'A') = 'a',
+       [x COLLATE NOCASE FOR x IN ['A']][1] = 'a';
+----
+true	true	true
+
+query III
+SELECT typeof(list_transform(['A'], lambda x: x COLLATE NOCASE)),
+       typeof(list_transform(['A'], lambda x: (x || '') COLLATE NOCASE)),
+       typeof(['A' COLLATE NOCASE]);
+----
+VARCHAR('NOCASE')[]	VARCHAR('NOCASE')[]	VARCHAR('NOCASE')[]
+
+query II
+SELECT list_sort(list_transform(['b', 'A', 'a', 'B'], lambda x: x COLLATE NOCASE)),
+       list_sort(['b' COLLATE NOCASE, 'A', 'a', 'B']);
+----
+[A, a, b, B]	[A, a, b, B]
+
+query III
+SELECT list_transform(['A'], lambda x: x COLLATE NOCASE) = ['a'],
+       list_contains(list_transform(['A'], lambda x: x COLLATE NOCASE), 'a'),
+       list_position(list_transform(['b', 'A'], lambda x: x COLLATE NOCASE), 'a');
+----
+true	true	2
+
+# the second parameter, the accumulator of list_reduce, and nested lambdas
+query IIII
+SELECT list_transform(['A'], lambda x, i: x COLLATE NOCASE)[1] = 'a',
+       list_reduce(['A', 'b'], lambda acc, x: acc COLLATE NOCASE) = 'a',
+       list_transform([['A']], lambda l: list_transform(l, lambda x: x COLLATE NOCASE))[1][1] = 'a',
+       list_transform(['A'], lambda x: list_transform([1], lambda i: x COLLATE NOCASE))[1][1] = 'a';
+----
+true	true	true	true
+
+query I
+SELECT list_reduce(['b', 'A', 'c'], lambda acc, x: CASE WHEN acc COLLATE NOCASE < x THEN acc ELSE x END);
+----
+A
+
+# an ARRAY input
+query I
+SELECT list_transform(['A']::VARCHAR[1], lambda x: x COLLATE NOCASE)[1] = 'a';
+----
+true
+
+# other collations
+query II
+SELECT list_transform(['é'], lambda x: x COLLATE NOACCENT)[1] = 'e',
+       list_transform(['É'], lambda x: x COLLATE NOCASE.NOACCENT)[1] = 'e';
+----
+true	true
+
+# over a table
+statement ok
+CREATE TABLE t (l VARCHAR[], k VARCHAR);
+
+statement ok
+INSERT INTO t VALUES (['b', 'A'], 'A'), (['c'], 'b'), (NULL, NULL);
+
+query III
+SELECT list_transform(l, lambda x: x COLLATE NOCASE) = ['B', 'a'],
+       list_transform([1], lambda y: k COLLATE NOCASE)[1] = 'a',
+       list_sort(list_transform(l, lambda x: x COLLATE NOCASE))
+FROM t;
+----
+true	true	[A, b]
+false	false	[c]
+NULL	NULL	NULL
+
+query I
+SELECT count(*) FROM t WHERE list_contains(list_transform(l, lambda x: x COLLATE NOCASE), 'a');
+----
+1
+
+# the parameter is still compared under the collation inside the body
+query II
+SELECT list_filter(['A', 'b'], lambda x: x COLLATE NOCASE = 'a'),
+       list_transform(['A', 'b'], lambda x: x COLLATE NOCASE = 'a');
+----
+[A]	[true, false]
+
+# a parameter of another type takes no collation
+statement error
+SELECT list_transform([1], lambda x: x COLLATE NOCASE);
+----
+collations are only supported for type varchar
+
+statement error
+SELECT list_transform(['A'], lambda x, i: i COLLATE NOCASE);
+----
+collations are only supported for type varchar

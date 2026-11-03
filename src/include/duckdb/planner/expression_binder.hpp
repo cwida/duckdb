@@ -312,15 +312,9 @@ protected:
 	BindResult BindPositionalReference(unique_ptr<ParsedExpression> &expr, idx_t depth, bool root_expression);
 
 	void TransformCapturedLambdaColumn(unique_ptr<Expression> &original, unique_ptr<Expression> &replacement,
-	                                   BoundLambdaExpression &bound_lambda_expr,
-	                                   const optional_ptr<bind_lambda_function_t> bind_lambda_function,
-	                                   const optional_ptr<BindLambdaContext> bind_lambda_context,
-	                                   const vector<LogicalType> &function_child_types);
+	                                   BoundLambdaExpression &bound_lambda_expr);
 
-	void CaptureLambdaColumns(BoundLambdaExpression &bound_lambda_expr, unique_ptr<Expression> &expr,
-	                          const optional_ptr<bind_lambda_function_t> bind_lambda_function,
-	                          const optional_ptr<BindLambdaContext> bind_lambda_context,
-	                          const vector<LogicalType> &function_child_types);
+	void CaptureLambdaColumns(BoundLambdaExpression &bound_lambda_expr, unique_ptr<Expression> &expr);
 
 	unique_ptr<ParsedExpression> GetSQLValueFunction(const Identifier &column_name);
 
