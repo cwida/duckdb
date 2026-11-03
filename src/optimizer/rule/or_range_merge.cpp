@@ -5,6 +5,7 @@
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/planner/expression/bound_lambda_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/common/algorithm.hpp"
 
@@ -58,12 +59,20 @@ bool SupportsRangeMerge(const LogicalType &type) {
 	}
 }
 
-//! Whether the expression holds a constant anywhere in its tree
+//! Whether the expression holds a constant anywhere in its tree; a lambda body is not a child of its function, so it
+//! is walked explicitly
 bool HasConstant(const Expression &expr) {
 	if (expr.GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
 		return true;
 	}
 	bool found = false;
+	if (expr.GetExpressionClass() == ExpressionClass::BOUND_LAMBDA) {
+		auto &lambda = expr.Cast<BoundLambdaExpression>();
+		found = HasConstant(*lambda.LambdaExpr());
+		for (auto &capture : lambda.Captures()) {
+			found = found || HasConstant(*capture);
+		}
+	}
 	ExpressionIterator::EnumerateChildren(expr, [&](const Expression &child) { found = found || HasConstant(child); });
 	return found;
 }

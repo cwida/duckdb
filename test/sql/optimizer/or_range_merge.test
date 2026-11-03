@@ -289,6 +289,38 @@ SELECT count(*) FROM iv WHERE day(v) BETWEEN 1 AND 10 OR day(v) BETWEEN 11 AND 2
 ----
 1
 
+# a constant inside a lambda body counts too: the body is not a child of its function
+query II
+EXPLAIN SELECT v FROM iv WHERE invoke(lambda a: day(a + INTERVAL '1 month'), v) BETWEEN 0 AND 10 OR invoke(lambda a: day(a + INTERVAL '30 days'), v) BETWEEN 10 AND 20;
+----
+logical_opt	<REGEX>:.*'1 month'.* OR .*'30 days'.*
+
+query I nosort lambda_shift
+SELECT v FROM iv WHERE invoke(lambda a: day(a + INTERVAL '1 month'), v) BETWEEN 0 AND 10 OR invoke(lambda a: day(a + INTERVAL '30 days'), v) BETWEEN 10 AND 20;
+----
+
+# the same through a pair of comparisons joined by AND
+query I nosort lambda_shift_and
+SELECT count(*) FROM (VALUES (INTERVAL '5 days')) t(v) WHERE (invoke(lambda a: day(a + INTERVAL '1 month'), v) >= 0 AND invoke(lambda a: day(a + INTERVAL '30 days'), v) <= 10) OR invoke(lambda a: day(a + INTERVAL '1 month'), v) BETWEEN 10 AND 20;
+----
+0
+
+# a lambda without a constant still merges
+query II
+EXPLAIN SELECT count(*) FROM iv WHERE invoke(lambda a: day(a), v) BETWEEN 1 AND 10 OR invoke(lambda a: day(a), v) BETWEEN 11 AND 20;
+----
+logical_opt	<REGEX>:.*invoke.* BETWEEN 1 AND 20.*
+
+query II
+EXPLAIN SELECT count(*) FROM iv WHERE invoke(lambda a: day(a), v) BETWEEN 1 AND 10 OR invoke(lambda a: day(a), v) BETWEEN 11 AND 20;
+----
+logical_opt	<!REGEX>:.* OR .*
+
+query I nosort lambda_day
+SELECT count(*) FROM iv WHERE invoke(lambda a: day(a), v) BETWEEN 1 AND 10 OR invoke(lambda a: day(a), v) BETWEEN 11 AND 20;
+----
+1
+
 # ---- an empty range is left alone ----
 
 query II
@@ -575,6 +607,18 @@ SELECT x FROM (VALUES (0.0), (1.0), (-1.0)) t(x) WHERE atan2(x, 0.0::DOUBLE) BET
 
 query I nosort day_input
 SELECT count(*) FROM iv WHERE day(v) BETWEEN 1 AND 10 OR day(v) BETWEEN 11 AND 20;
+----
+
+query I nosort lambda_shift
+SELECT v FROM iv WHERE invoke(lambda a: day(a + INTERVAL '1 month'), v) BETWEEN 0 AND 10 OR invoke(lambda a: day(a + INTERVAL '30 days'), v) BETWEEN 10 AND 20;
+----
+
+query I nosort lambda_shift_and
+SELECT count(*) FROM (VALUES (INTERVAL '5 days')) t(v) WHERE (invoke(lambda a: day(a + INTERVAL '1 month'), v) >= 0 AND invoke(lambda a: day(a + INTERVAL '30 days'), v) <= 10) OR invoke(lambda a: day(a + INTERVAL '1 month'), v) BETWEEN 10 AND 20;
+----
+
+query I nosort lambda_day
+SELECT count(*) FROM iv WHERE invoke(lambda a: day(a), v) BETWEEN 1 AND 10 OR invoke(lambda a: day(a), v) BETWEEN 11 AND 20;
 ----
 
 query I nosort empty_range
