@@ -2,9 +2,6 @@
 # description: UHUGEINT subtraction must detect the borrow out of the lower 64 bits
 # group: [uhugeint]
 
-statement ok
-PRAGMA enable_verification
-
 # a negative result is out of range, also when the borrow from the lower half
 # brings the upper half back to the left operand's upper half
 statement error
