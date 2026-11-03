@@ -101,6 +101,40 @@ void RegisterRepeatabilityTableFunctions(DuckDB &db) {
 	loader.RegisterFunction(repeatable);
 }
 
+atomic<int32_t> zero_argument_bind_count {0};
+
+struct ZeroArgumentBindData : public TableFunctionData {
+	// Statement caching stays supported: rebinding this call is fine, but each bind captures its own row.
+	int32_t bound_value = 0;
+};
+
+unique_ptr<FunctionData> ZeroArgumentBind(ClientContext &, TableFunctionBindInput &, vector<LogicalType> &return_types,
+                                          vector<Identifier> &names) {
+	return_types.emplace_back(LogicalType::INTEGER);
+	names.emplace_back("i");
+	auto result = make_uniq<ZeroArgumentBindData>();
+	result->bound_value = ++zero_argument_bind_count;
+	return std::move(result);
+}
+
+unique_ptr<GlobalTableFunctionState> ZeroArgumentInit(ClientContext &, TableFunctionInitInput &input) {
+	auto result = make_uniq<NonSerializableGlobalState>();
+	result->value = input.bind_data->Cast<ZeroArgumentBindData>().bound_value;
+	return std::move(result);
+}
+
+void RegisterZeroArgumentTableFunction(DuckDB &db) {
+	ExtensionInfo extension_info {};
+	ExtensionActiveLoad load_info {*db.instance, extension_info, "test_extension", ""};
+	ExtensionLoader loader {load_info};
+	TableFunction zero_argument("repeatability_zero_arg", {}, NonSerializableFunction, ZeroArgumentBind,
+	                            ZeroArgumentInit);
+	zero_argument.is_repeatable = [](optional_ptr<const FunctionData>) {
+		return true;
+	};
+	loader.RegisterFunction(zero_argument);
+}
+
 string GetExplainPlan(Connection &con, const string &query) {
 	auto result = con.Query("EXPLAIN " + query);
 	REQUIRE_NO_FAIL(*result);
@@ -163,4 +197,24 @@ TEST_CASE("Common subplans require affirmative table function repeatability", "[
 	REQUIRE_NO_FAIL(*result);
 	REQUIRE(CHECK_COLUMN(result, 0, {1}));
 	REQUIRE(StringUtil::Contains(GetExplainPlan(con, repeatable_query), "__common_subplan_"));
+}
+
+// SQL cannot register a statement-cache-supporting, affirmatively repeatable scan whose separate binds
+// capture different fixed rows. Keep the zero-positional-argument identity guard contract here.
+TEST_CASE("Common subplans require positional parameters to identify repeatable scans", "[optimizer][common_subplan]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	RegisterZeroArgumentTableFunction(db);
+	REQUIRE_NO_FAIL(con.Query("SET explain_output='optimized_only'"));
+
+	// Without serialization callbacks or positional parameters, equal serialized bytes cannot prove that
+	// two binds captured the same rows, so the identity guard must keep sharing disabled.
+	const string query = "SELECT count(*) FROM (SELECT i FROM repeatability_zero_arg() "
+	                     "INTERSECT ALL SELECT i FROM repeatability_zero_arg())";
+	zero_argument_bind_count = 0;
+	auto result = con.Query(query);
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(CHECK_COLUMN(result, 0, {0}));
+	REQUIRE(zero_argument_bind_count.load() >= 2);
+	REQUIRE(!StringUtil::Contains(GetExplainPlan(con, query), "__common_subplan_"));
 }

@@ -102,7 +102,8 @@ SELECT count(*) FROM (SELECT * FROM repeat_row(1, num_rows=0) INTERSECT ALL SELE
 ----
 0
 
-# A repeatable function cannot make its volatile input repeatable.
+# A repeatable function cannot make its volatile input repeatable. The volatile argument is rejected
+# by the expression admission check rather than the scan guard, so this pins results, not the guard.
 statement ok
 CREATE SEQUENCE repeatability_seq;
 
@@ -113,6 +114,27 @@ SELECT count(*) FROM (
     SELECT * FROM unnest([nextval('repeatability_seq')]));
 ----
 0
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT * FROM unnest([nextval('repeatability_seq')])
+INTERSECT ALL
+SELECT * FROM unnest([nextval('repeatability_seq')]);
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+# The guard alone excludes an unannotated parameterized scan: its serialized call parameters match,
+# it supports the statement cache, and nothing but the missing repeatability promise blocks sharing.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT * FROM pragma_storage_info('repeatable_input') INTERSECT ALL SELECT * FROM pragma_storage_info('repeatable_input');
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+query I
+SELECT (SELECT count(*) FROM pragma_storage_info('repeatable_input')) = (SELECT count(*) FROM pragma_storage_info('repeatable_input'));
+----
+true
 
 # Live execution statistics do not promise repeatability.
 query II
@@ -134,3 +156,78 @@ SELECT * FROM unnest([1,1,NULL]::INTEGER[3])
 INTERSECT ALL SELECT * FROM unnest([1,1,NULL]::INTEGER[3]);
 ----
 logical_opt	<REGEX>:.*__common_subplan_.*
+
+# Sampling pushed into a table scan is only repeatable with an explicit seed.
+statement ok
+CREATE TABLE repeatability_sample_source AS SELECT i FROM range(10000) t(i);
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT * FROM repeatability_sample_source USING SAMPLE 50% (system)
+INTERSECT ALL
+SELECT * FROM repeatability_sample_source USING SAMPLE 50% (system);
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+# A seeded sample is repeatable, but sampling pushdown runs after common-subplan discovery, so the
+# sample is still a LOGICAL_SAMPLE operator there and sample subtrees never share today. If sampling
+# pushdown ever moves ahead of common-subplan discovery, only the seeded form may start sharing.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT * FROM repeatability_sample_source USING SAMPLE 50% (system, 42)
+INTERSECT ALL
+SELECT * FROM repeatability_sample_source USING SAMPLE 50% (system, 42);
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+query I
+SELECT count(*) = (SELECT count(*) FROM repeatability_sample_source USING SAMPLE 50% (system, 42))
+FROM (
+    SELECT * FROM repeatability_sample_source USING SAMPLE 50% (system, 42)
+    INTERSECT ALL
+    SELECT * FROM repeatability_sample_source USING SAMPLE 50% (system, 42));
+----
+true
+
+# The classification also feeds recursive invariant build reuse: an annotated scan's hash build is
+# retained across iterations instead of being rebuilt.
+statement ok
+SET enable_caching_operators=true;
+
+statement ok
+SET disabled_optimizers='join_order,build_side_probe_side';
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query I
+WITH RECURSIVE r(i, c) AS (
+    VALUES (0, 0::BIGINT)
+    UNION ALL
+    SELECT r.i + 1, build.c
+    FROM r
+    JOIN (
+        SELECT row_number() OVER () AS k, count(*) OVER () AS c
+        FROM repeat_row(1, 'x', num_rows=5)
+    ) build ON build.k = r.i + 1
+    WHERE r.i < 3
+)
+SELECT list(c ORDER BY i) FROM r;
+----
+[0, 5, 5, 5]
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT info.retained_build_executions::UBIGINT >= 1
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class = 'PhysicalRecursiveCTE' AND event = 'RuntimeMetrics';
+----
+1
+
+statement ok
+RESET disabled_optimizers;

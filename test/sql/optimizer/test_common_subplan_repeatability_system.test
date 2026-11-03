@@ -69,3 +69,27 @@ query I
 SELECT count(*) FROM (SELECT * FROM pragma_show('repeatable_schema') INTERSECT ALL SELECT * FROM pragma_show('repeatable_schema'));
 ----
 2
+
+# Views are rebound during execution, so their bound definition must not be shared.
+statement ok
+CREATE VIEW repeatable_schema_view AS SELECT i, s FROM repeatable_schema;
+
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM pragma_table_info('repeatable_schema_view') INTERSECT ALL SELECT * FROM pragma_table_info('repeatable_schema_view');
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+query I
+SELECT count(*) FROM (SELECT * FROM pragma_table_info('repeatable_schema_view') INTERSECT ALL SELECT * FROM pragma_table_info('repeatable_schema_view'));
+----
+2
+
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM pragma_show('repeatable_schema_view') INTERSECT ALL SELECT * FROM pragma_show('repeatable_schema_view');
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+query I
+SELECT count(*) FROM (SELECT * FROM pragma_show('repeatable_schema_view') INTERSECT ALL SELECT * FROM pragma_show('repeatable_schema_view'));
+----
+2
