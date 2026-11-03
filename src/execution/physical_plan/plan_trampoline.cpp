@@ -241,7 +241,7 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalTrampoline &op) {
 	trampoline.non_repeatable_operators = non_repeatable_operators;
 	trampoline.branch_options = op.branch_options;
 	trampoline.branch_options.resize(branches.size());
-	trampoline.reads_frontier = op.reads_frontier;
+	trampoline.frontier_rounds = op.reads_frontier;
 	trampoline.frontier_table = frontier_table;
 	for (auto &options : trampoline.branch_options) {
 		trampoline.has_coalescing_branch = trampoline.has_coalescing_branch || options.Coalescing();

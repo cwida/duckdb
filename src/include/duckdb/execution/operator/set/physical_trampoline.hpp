@@ -76,9 +76,9 @@ public:
 	vector<bool> branch_wave_merge;
 	//! Options of branch i+1: input mode (DEFAULT, DISTINCT or MERGE) and the TEE flag
 	vector<TrampolineBranchOptions> branch_options;
-	//! Whether any branch reads frontier.<ctename>: execution switches to lockstep
-	//! rounds with a frozen frontier snapshot per round
-	bool reads_frontier = false;
+	//! Whether any branch read frontier.<ctename> at binding: the round contract
+	//! holds even when optimization pruned every surviving frontier scan
+	bool frontier_rounds = false;
 	//! Whether any branch destination coalesces its round (DISTINCT or MERGE)
 	bool has_coalescing_branch = false;
 	//! Whether emitted rows are deduplicated online against all prior emissions
@@ -86,7 +86,7 @@ public:
 
 	//! Lockstep rounds are required whenever their boundary is observable
 	bool RequiresRounds() const {
-		return reads_frontier || has_coalescing_branch;
+		return frontier_rounds || has_coalescing_branch;
 	}
 	//! Placeholder collection the frontier scans are planned against
 	shared_ptr<ColumnDataCollection> frontier_table;
@@ -138,6 +138,9 @@ private:
 	vector<vector<reference<PhysicalColumnDataScan>>> branch_recursive_scans;
 	//! Frontier scans per branch, rebound to the frozen snapshot each round
 	vector<vector<reference<PhysicalColumnDataScan>>> branch_frontier_scans;
+	//! Whether any frontier scan survived into the physical plan; only then is
+	//! the round's frontier snapshot materialized
+	bool frontier_scans_present = false;
 	//! Precomputed pipelines, schedules and sink-reset lists per branch
 	vector<TrampolineBranchPipelines> branch_pipelines;
 	mutable shared_ptr<RecursiveExecutorPool> shared_executor_pool;

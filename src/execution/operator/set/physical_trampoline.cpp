@@ -480,7 +480,7 @@ bool TrampolineState::StartRound() {
 	if (!any_waves) {
 		return false;
 	}
-	if (!op.reads_frontier) {
+	if (!op.frontier_scans_present) {
 		for (idx_t branch_idx = 1; branch_idx <= branch_count; branch_idx++) {
 			std::swap(pending[branch_idx], next_pending[branch_idx]);
 		}
@@ -558,7 +558,7 @@ SourceResultType TrampolineState::GetData(ExecutionContext &execution_context, D
 		for (auto &scan_ref : op.branch_recursive_scans[branch_idx - 1]) {
 			scan_ref.get().collection = *current_input;
 		}
-		if (op.reads_frontier) {
+		if (op.frontier_scans_present) {
 			for (auto &scan_ref : op.branch_frontier_scans[branch_idx - 1]) {
 				scan_ref.get().collection = *frontier_current;
 			}
@@ -710,7 +710,7 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 		auto chunk_units = gstate.current_input->ChunkCount() * scan_count;
 		// a frontier-reading branch scans the whole round snapshot regardless of its own wave
 		// size, so that work participates in worker sizing as well
-		const auto frontier_scan_count = reads_frontier ? branch_frontier_scans[branch_idx - 1].size() : 0;
+		const auto frontier_scan_count = branch_frontier_scans[branch_idx - 1].size();
 		if (frontier_scan_count > 0 && gstate.frontier_current) {
 			input_rows += gstate.frontier_current->Count() * frontier_scan_count;
 			chunk_units += gstate.frontier_current->ChunkCount() * frontier_scan_count;
@@ -848,6 +848,7 @@ void PhysicalTrampoline::BuildPipelines(Pipeline &current, MetaPipeline &meta_pi
 	branch_meta_pipelines.clear();
 	branch_recursive_scans.clear();
 	branch_frontier_scans.clear();
+	frontier_scans_present = false;
 	branch_pipelines.clear();
 	{
 		D_ASSERT(shared_executor_pool);
@@ -877,6 +878,7 @@ void PhysicalTrampoline::BuildPipelines(Pipeline &current, MetaPipeline &meta_pi
 
 		vector<reference<PhysicalColumnDataScan>> frontier_scans;
 		GatherFrontierScans(children[branch_idx], table_index, frontier_scans);
+		frontier_scans_present = frontier_scans_present || !frontier_scans.empty();
 		branch_frontier_scans.push_back(std::move(frontier_scans));
 
 		vector<const_reference<PhysicalOperator>> cte_scan_ops;
