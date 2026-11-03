@@ -52,6 +52,45 @@ struct TrampolineBranchPipelines {
 //! Trampoline-style iteration: rows carry a selector column; selector 0 emits a
 //! row, selector t in 1..n routes it to branch plan t for the next round.
 //! children[0] is the seed, children[1..n] are the branch plans.
+//!
+//! Design notes:
+//!
+//! Waves. One wave of branch k is the bag of rows a single producing execution
+//! (the seed or one branch invocation) routes to k. A branch is invoked once per
+//! nonempty wave. Linear, repeatable branches whose rows only reach equally
+//! unobservable targets cannot observe wave boundaries, so their pending waves
+//! may merge (branch_wave_merge, computed by a backward fixed point over the
+//! selector routing graph at physical planning). Nonlinear or volatile branches
+//! observe exact boundaries and never merge.
+//!
+//! Rounds. frontier reads, MERGE, and DISTINCT make generation boundaries
+//! observable, so execution switches to lockstep rounds: a round seals every
+//! pending wave at once, and the frontier is the bag union of the round's input
+//! waves across all branches, excluding emitted rows. frontier_rounds carries
+//! the binding-time contract; the snapshot is materialized only while a frontier
+//! scan survived planning (frontier_scans_present).
+//!
+//! Admission (BRANCH DISTINCT). Round-wide full-row admission against all rows
+//! ever routed to the branch, yielding one admitted wave per round. Admission
+//! hashes physical values, so collated payloads are rejected at bind time, and
+//! a correlation suffix joins the admission identity.
+//!
+//! TEE ordering. BRANCH k TEE emits the arriving row (selector rewritten to 0)
+//! before the branch transforms it and before DISTINCT admission arbitrates the
+//! round, so a row rejected by admission is still emitted.
+//!
+//! Correlation. Correlated trampolines append the outer domain suffix through
+//! the seed. Branch domain feeds are built as the distinct domains of the
+//! branch's current wave (FlattenDependentJoins::CreateDomainSource) and
+//! surviving frontier reads are wrapped in a null-safe semi join against the
+//! wave's domains. Every branch's output must be anchored in its wave
+//! (TrampolineWaveAnchoring), so nothing is produced or evaluated for outer
+//! rows whose wave is empty.
+//!
+//! SQL export. The exported text must retain a round witness (a frontier
+//! reference or a surviving MERGE/DISTINCT branch); an export that lost the
+//! last witness is rejected, because re-binding it would silently drop the
+//! round contract. EXPLAIN (SQL) requires CTE inlining.
 class PhysicalTrampoline : public PhysicalOperator {
 public:
 	static constexpr const PhysicalOperatorType TYPE = PhysicalOperatorType::TRAMPOLINE;
