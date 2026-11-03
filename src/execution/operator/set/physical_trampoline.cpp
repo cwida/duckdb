@@ -732,37 +732,18 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 	const auto epoch_task_start = collect_metrics ? gstate.metrics.TaskCount() : 0;
 	const auto epoch_start =
 	    collect_metrics ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
+	RecursiveSchedulingContext scheduling_context {executor, scheduler, collect_metrics ? &gstate.metrics : nullptr,
+	                                               collect_metrics ? gstate.epoch_metrics.get() : nullptr, go_parallel};
 	if (go_parallel) {
-		RecursiveSchedulingContext scheduling_context {executor, scheduler, collect_metrics ? &gstate.metrics : nullptr,
-		                                               collect_metrics ? gstate.epoch_metrics.get() : nullptr, true};
 		vector<shared_ptr<Event>> events;
 		ScheduleRecursivePlan(plan, scheduling_context, events,
 		                      RecursiveCTEParallelism(frontier_workers, source_task_workers));
 		WaitForRecursiveEvents(executor, events);
-		if (can_cache_invariant && !materialized &&
-		    InvariantRecursiveBuildsRemainReusable(branch.invariant_meta_pipelines)) {
-			if (collect_metrics) {
-				RecordInvariantRetentionTransition(gstate.metrics, branch.invariant_meta_pipelines);
-			}
-			gstate.invariant_materialized[branch_idx - 1] = true;
-		}
-		if (collect_metrics) {
-			const auto epoch_end = std::chrono::steady_clock::now();
-			const auto elapsed_us = NumericCast<idx_t>(
-			    std::chrono::duration_cast<std::chrono::microseconds>(epoch_end - epoch_start).count());
-			const auto &wave = *gstate.current_input;
-			gstate.metrics.RecordEpoch(workers, elapsed_us, wave.Count(), wave.ChunkCount(), input_rows);
-			gstate.epoch_metrics->Record(wave.Count(), workers, gstate.metrics.TaskCount() - epoch_task_start,
-			                             elapsed_us, wave.SizeInBytes(), wave.AllocationSize());
-		}
-		return;
+	} else {
+		// single-threaded wave: run the shared inline plan executor, which creates missing
+		// operator state per ready stage and skips the finish events of flagged trivial stages
+		ExecuteRecursiveInlinePlan(scheduling_context, plan);
 	}
-
-	// single-threaded wave: run the shared inline plan executor, which creates missing operator
-	// state per ready stage and skips the finish event machinery for flagged trivial stages
-	RecursiveSchedulingContext scheduling_context {executor, scheduler, collect_metrics ? &gstate.metrics : nullptr,
-	                                               collect_metrics ? gstate.epoch_metrics.get() : nullptr};
-	ExecuteRecursiveInlinePlan(scheduling_context, plan);
 	if (can_cache_invariant && !materialized &&
 	    InvariantRecursiveBuildsRemainReusable(branch.invariant_meta_pipelines)) {
 		if (collect_metrics) {
@@ -775,8 +756,8 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 		const auto elapsed_us =
 		    NumericCast<idx_t>(std::chrono::duration_cast<std::chrono::microseconds>(epoch_end - epoch_start).count());
 		const auto &wave = *gstate.current_input;
-		gstate.metrics.RecordEpoch(1, elapsed_us, wave.Count(), wave.ChunkCount(), input_rows);
-		gstate.epoch_metrics->Record(wave.Count(), 1, gstate.metrics.TaskCount() - epoch_task_start, elapsed_us,
+		gstate.metrics.RecordEpoch(workers, elapsed_us, wave.Count(), wave.ChunkCount(), input_rows);
+		gstate.epoch_metrics->Record(wave.Count(), workers, gstate.metrics.TaskCount() - epoch_task_start, elapsed_us,
 		                             wave.SizeInBytes(), wave.AllocationSize());
 	}
 }

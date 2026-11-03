@@ -162,6 +162,10 @@ private:
 	//! delim scan, inside a trampoline branch the distinct domains of the current wave.
 	//! Both expose the same (delim_index, i) bindings to the consumer.
 	unique_ptr<LogicalOperator> CreateDomainSource(TableIndex delim_index);
+	//! Builds the distinct correlation domains of a trampoline wave, exposed as
+	//! (output_index, 0..n-1) in correlated-column order
+	unique_ptr<LogicalOperator> CreateWaveDomainDistinct(TableIndex cte_index, const vector<LogicalType> &wave_types,
+	                                                     const vector<Identifier> &wave_names, TableIndex output_index);
 	unique_ptr<TrampolineDomainScope> trampoline_domain_scope;
 	//! Nonzero while pushing down the branches of a trampoline (nested trampolines)
 	idx_t trampoline_branch_depth = 0;

@@ -1890,19 +1890,26 @@ unique_ptr<LogicalOperator> FlattenDependentJoins::CreateDomainSource(TableIndex
 		return make_uniq<LogicalDelimGet>(delim_index, delim_types);
 	}
 	auto &scope = *trampoline_domain_scope;
+	return CreateWaveDomainDistinct(scope.cte_index, scope.wave_types, scope.wave_names, delim_index);
+}
+
+unique_ptr<LogicalOperator> FlattenDependentJoins::CreateWaveDomainDistinct(TableIndex cte_index,
+                                                                            const vector<LogicalType> &wave_types,
+                                                                            const vector<Identifier> &wave_names,
+                                                                            TableIndex output_index) {
 	auto ref_index = binder.GenerateTableIndex();
-	auto wave_ref = make_uniq<LogicalCTERef>(ref_index, scope.cte_index, scope.wave_types, scope.wave_names);
+	auto wave_ref = make_uniq<LogicalCTERef>(ref_index, cte_index, wave_types, wave_names);
 	wave_ref->correlated_columns = correlated_columns.size();
-	const idx_t base_count = scope.wave_types.size() - correlated_columns.size();
+	const idx_t base_count = wave_types.size() - correlated_columns.size();
 	vector<unique_ptr<Expression>> domain_exprs;
 	vector<unique_ptr<Expression>> distinct_targets;
 	for (idx_t i = 0; i < correlated_columns.size(); i++) {
 		domain_exprs.push_back(make_uniq<BoundColumnRefExpression>(
 		    correlated_columns[i].type, ColumnBinding(ref_index, ProjectionIndex(base_count + i))));
-		distinct_targets.push_back(make_uniq<BoundColumnRefExpression>(correlated_columns[i].type,
-		                                                               ColumnBinding(delim_index, ProjectionIndex(i))));
+		distinct_targets.push_back(make_uniq<BoundColumnRefExpression>(
+		    correlated_columns[i].type, ColumnBinding(output_index, ProjectionIndex(i))));
 	}
-	auto projection = make_uniq<LogicalProjection>(delim_index, std::move(domain_exprs));
+	auto projection = make_uniq<LogicalProjection>(output_index, std::move(domain_exprs));
 	projection->children.push_back(std::move(wave_ref));
 	auto distinct = make_uniq<LogicalDistinct>(std::move(distinct_targets), DistinctType::DISTINCT);
 	distinct->children.push_back(std::move(projection));
@@ -1918,23 +1925,8 @@ void FlattenDependentJoins::RestrictBranchFrontierScans(unique_ptr<LogicalOperat
 			// Per-domain semantics invoke a branch only for domains whose wave is nonempty,
 			// so a frontier read keeps every branch's rows of the active domains and nothing
 			// of the others: a null-safe semi join against the wave's distinct domains.
-			auto wave_index = binder.GenerateTableIndex();
-			auto wave_ref = make_uniq<LogicalCTERef>(wave_index, cte_index, wave_types, wave_names);
-			wave_ref->correlated_columns = correlated_columns.size();
-			const idx_t wave_base = wave_types.size() - correlated_columns.size();
 			auto domain_index = binder.GenerateTableIndex();
-			vector<unique_ptr<Expression>> domain_exprs;
-			vector<unique_ptr<Expression>> distinct_targets;
-			for (idx_t i = 0; i < correlated_columns.size(); i++) {
-				domain_exprs.push_back(make_uniq<BoundColumnRefExpression>(
-				    correlated_columns[i].type, ColumnBinding(wave_index, ProjectionIndex(wave_base + i))));
-				distinct_targets.push_back(make_uniq<BoundColumnRefExpression>(
-				    correlated_columns[i].type, ColumnBinding(domain_index, ProjectionIndex(i))));
-			}
-			auto projection = make_uniq<LogicalProjection>(domain_index, std::move(domain_exprs));
-			projection->children.push_back(std::move(wave_ref));
-			auto distinct = make_uniq<LogicalDistinct>(std::move(distinct_targets), DistinctType::DISTINCT);
-			distinct->children.push_back(std::move(projection));
+			auto distinct = CreateWaveDomainDistinct(cte_index, wave_types, wave_names, domain_index);
 
 			auto semi = make_uniq<LogicalComparisonJoin>(JoinType::SEMI);
 			const idx_t ref_base = ref.chunk_types.size() - ref.correlated_columns;
