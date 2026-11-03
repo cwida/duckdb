@@ -2207,6 +2207,11 @@ AdbcStatusCode StatementExecuteQuery(struct AdbcStatement *statement, struct Arr
 			arrow_array_wrapper = duckdb::ArrowArrayWrapper();
 			stream.get_next(&stream, &arrow_array_wrapper.arrow_array);
 		}
+		if (!stream_wrapper->result.internal_data) {
+			// The bound stream had no rows (e.g. it was already consumed by a previous execution)
+			SetError(error, "Please provide a non-empty chunk to be bound");
+			return ADBC_STATUS_INVALID_ARGUMENT;
+		}
 	} else {
 		auto res = duckdb_execute_prepared_streaming(wrapper->statement, &stream_wrapper->result);
 		if (res != DuckDBSuccess) {
