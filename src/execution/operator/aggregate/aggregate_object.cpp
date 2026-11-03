@@ -42,12 +42,8 @@ vector<AggregateObject> AggregateObject::CreateAggregateObjects(const vector<Bou
 }
 
 AggregateFilterData::AggregateFilterData(ClientContext &context, const Expression &filter_expr,
-                                         const vector<LogicalType> &payload_types)
-    : filter_executor(context, &filter_expr), true_sel(STANDARD_VECTOR_SIZE) {
-	if (payload_types.empty()) {
-		return;
-	}
-	filtered_payload.InitializeEmpty(payload_types);
+                                         DataChunk &filtered_payload)
+    : filter_executor(context, &filter_expr), filtered_payload(filtered_payload), true_sel(STANDARD_VECTOR_SIZE) {
 }
 
 idx_t AggregateFilterData::Select(DataChunk &chunk) {
@@ -60,7 +56,6 @@ idx_t AggregateFilterData::ApplyFilter(DataChunk &payload) {
 	for (auto col_idx : sliced_columns) {
 		filtered_payload.data[col_idx].Slice(payload.data[col_idx], true_sel, selected_count);
 	}
-	filtered_payload.SetCardinalityUnsafe(selected_count);
 	return selected_count;
 }
 
@@ -80,6 +75,8 @@ void AggregateFilterDataSet::Initialize(ClientContext &context, const vector<Agg
 		// no filters: nothing to do
 		return;
 	}
+	filtered_payload = make_uniq<DataChunk>();
+	filtered_payload->InitializeEmpty(payload_types);
 	aggregate_filter_idx.resize(aggregates.size(), DConstants::INVALID_INDEX);
 	expression_map_t<idx_t> filter_indexes;
 	idx_t payload_idx = 0;
@@ -90,7 +87,7 @@ void AggregateFilterDataSet::Initialize(ClientContext &context, const vector<Agg
 			auto entry = filter_indexes.find(*aggr.filter);
 			if (entry == filter_indexes.end()) {
 				entry = filter_indexes.emplace(*aggr.filter, filter_data.size()).first;
-				filter_data.push_back(make_uniq<AggregateFilterData>(context, *aggr.filter, payload_types));
+				filter_data.push_back(make_uniq<AggregateFilterData>(context, *aggr.filter, *filtered_payload));
 			}
 			aggregate_filter_idx[aggr_idx] = entry->second;
 			if (!aggr.IsDistinct()) {

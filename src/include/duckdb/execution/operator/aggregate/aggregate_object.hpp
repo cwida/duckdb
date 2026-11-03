@@ -50,8 +50,7 @@ public:
 };
 
 struct AggregateFilterData {
-	AggregateFilterData(ClientContext &context, const Expression &filter_expr,
-	                    const vector<LogicalType> &payload_types);
+	AggregateFilterData(ClientContext &context, const Expression &filter_expr, DataChunk &filtered_payload);
 
 	//! Evaluates the filter on the chunk into true_sel and selected_count
 	idx_t Select(DataChunk &chunk);
@@ -59,7 +58,8 @@ struct AggregateFilterData {
 	idx_t ApplyFilter(DataChunk &payload);
 
 	ExpressionExecutor filter_executor;
-	DataChunk filtered_payload;
+	//! Shared by all filters of the set: this filter only fills its own sliced_columns
+	DataChunk &filtered_payload;
 	SelectionVector true_sel;
 	//! The number of rows selected by the last Select
 	idx_t selected_count = 0;
@@ -73,6 +73,8 @@ struct AggregateFilterData {
 struct AggregateFilterDataSet {
 	AggregateFilterDataSet();
 
+	//! One buffer-less chunk for the whole set: the filters slice disjoint payload columns into it
+	unique_ptr<DataChunk> filtered_payload;
 	//! One entry per distinct filter expression
 	vector<unique_ptr<AggregateFilterData>> filter_data;
 

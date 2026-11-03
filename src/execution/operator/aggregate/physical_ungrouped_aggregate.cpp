@@ -354,15 +354,17 @@ void PhysicalUngroupedAggregate::SinkDistinct(ExecutionContext &context, DataChu
 		OperatorSinkInput sink_input {radix_global_sink, radix_local_sink, input.interrupt_state};
 
 		if (aggregate.GetFilter()) {
-			// The hashtable can apply a filter, but only on the payload
-			// And in our case, we need to filter the groups (the distinct aggr children)
-
-			// Apply the filter before inserting into the hashtable
+			// the hash table groups on the aggregate's children: filter those columns before sinking
 			auto &filtered_data = sink.execute_state.filter_set.GetFilterData(idx);
 			auto count = filtered_data.Select(chunk);
-			filtered_data.filtered_payload.Slice(chunk, filtered_data.true_sel, count);
+			auto &filtered_payload = filtered_data.filtered_payload;
+			for (auto &group : distinct_data->grouped_aggregate_data[table_idx]->groups) {
+				auto col_idx = group->Cast<BoundReferenceExpression>().Index();
+				filtered_payload.data[col_idx].Slice(chunk.data[col_idx], filtered_data.true_sel, count);
+			}
+			filtered_payload.SetCardinalityUnsafe(count);
 
-			radix_table.Sink(context, filtered_data.filtered_payload, sink_input, empty_chunk, distinct_filter);
+			radix_table.Sink(context, filtered_payload, sink_input, empty_chunk, distinct_filter);
 		} else {
 			radix_table.Sink(context, chunk, sink_input, empty_chunk, distinct_filter);
 		}
