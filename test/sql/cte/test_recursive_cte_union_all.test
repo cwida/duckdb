@@ -136,3 +136,26 @@ statement error
 with recursive t as (select 1 as x union all select x+1 from t where x < 3 LIMIT 1 OFFSET 1) select * from t
 ----
 <REGEX>:.*Parser Error.*recursive query is not allowed.*
+
+# Issue #28053: WITH RECURSIVE incorrectly casts BOOLEAN to NULL in a non-recursive UNION ALL CTE
+query T
+with recursive c as (
+    select null
+    union all
+    select true
+)
+select * from c;
+----
+NULL
+true
+
+query T
+with recursive c as (
+    select true
+    union all
+    select null
+)
+select * from c;
+----
+true
+NULL

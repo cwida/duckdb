@@ -260,10 +260,6 @@ BoundStatement Binder::BindNode(RecursiveCTENode &statement) {
 	auto left_node = std::move(left.plan);
 	auto right_node = std::move(right.plan);
 
-	// for both the left and right sides, cast them to the same types
-	left_node = CastLogicalOperatorToTypes(left.types, internal_types, std::move(left_node));
-	right_node = CastLogicalOperatorToTypes(right.types, internal_types, std::move(right_node));
-
 	auto recurring_binding = right_binder->GetCTEBinding(BindingAlias("recurring", ctename));
 	bool ref_recurring = recurring_binding && recurring_binding->IsReferenced();
 
@@ -271,7 +267,21 @@ BoundStatement Binder::BindNode(RecursiveCTENode &statement) {
 	auto cte_binding = right_binder->GetCTEBinding(BindingAlias(ctename));
 	bool ref_cte = cte_binding && cte_binding->IsReferenced();
 	if (!ref_cte && !ref_recurring) {
-		auto root = make_uniq<LogicalSetOperation>(setop_index, internal_types.size(), std::move(left_node),
+		vector<LogicalType> setop_types;
+		for (idx_t i = 0; i < left.types.size(); i++) {
+			auto result_type = LogicalType::ForceMaxLogicalType(context, left.types[i], right.types[i]);
+			if (!CanContainNulls()) {
+				if (ExpressionBinder::ContainsNullType(result_type)) {
+					result_type = ExpressionBinder::ExchangeNullType(result_type);
+				}
+			}
+			setop_types.push_back(result_type);
+		}
+		left_node = CastLogicalOperatorToTypes(left.types, setop_types, std::move(left_node));
+		right_node = CastLogicalOperatorToTypes(right.types, setop_types, std::move(right_node));
+		result.types = setop_types;
+
+		auto root = make_uniq<LogicalSetOperation>(setop_index, setop_types.size(), std::move(left_node),
 		                                           std::move(right_node), LogicalOperatorType::LOGICAL_UNION,
 		                                           is_using_key || union_all);
 		if (!is_using_key) {
@@ -326,6 +336,10 @@ BoundStatement Binder::BindNode(RecursiveCTENode &statement) {
 		projection->AddChild(std::move(aggregate));
 		result.plan = std::move(projection);
 	} else {
+		// for both the left and right sides, cast them to the same types
+		left_node = CastLogicalOperatorToTypes(left.types, internal_types, std::move(left_node));
+		right_node = CastLogicalOperatorToTypes(right.types, internal_types, std::move(right_node));
+
 		auto root = make_uniq<LogicalRecursiveCTE>(ctename, setop_index, result.types.size(), union_all,
 		                                           std::move(key_targets), std::move(left_node), std::move(right_node));
 		root->ref_recurring = ref_recurring;
