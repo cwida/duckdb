@@ -19,9 +19,7 @@ ByteStreamSplitDecoder::ByteStreamSplitDecoder(ColumnReader &reader)
 
 void ByteStreamSplitDecoder::InitializePage() {
 	auto &block = reader.block;
-	// Subtract 1 from length as the block is allocated with 1 extra byte,
-	// but the byte stream split encoder needs to know the correct data size.
-	bss_decoder = make_uniq<BssDecoder>(block->ptr, block->len - 1);
+	bss_decoder = make_uniq<BssDecoder>(block->ptr, block->len);
 	block->inc(block->len);
 }
 

@@ -386,7 +386,7 @@ protected:
 	virtual void ResetPage();
 
 private:
-	void AllocateBlock(idx_t size);
+	void AllocateBlock(idx_t payload_size);
 	void PrepareRead(optional_ptr<const TableFilter> filter, optional_ptr<TableFilterState> filter_state,
 	                 idx_t rows_to_skip = 0);
 	void PreparePage(PageHeader &page_hdr);
