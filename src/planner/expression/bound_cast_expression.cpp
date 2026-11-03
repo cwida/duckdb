@@ -369,6 +369,10 @@ static uint8_t IntegerTypeDecimalDigits(const LogicalType &type) {
 		return 19;
 	case LogicalTypeId::UBIGINT:
 		return 20;
+	case LogicalTypeId::HUGEINT:
+	case LogicalTypeId::UHUGEINT:
+		// a decimal wider than 38 digits holds every HUGEINT
+		return 39;
 	default:
 		return 0;
 	}
@@ -447,6 +451,7 @@ bool BoundCastExpression::CastCanThrow(const LogicalType &source_type, const Log
 	// unless the target holds every value of the source type: a DECIMAL that keeps the source's integral and fractional
 	// digits, or an integer type whose digits fit before the decimal point. The max-type check below cannot decide
 	// this, since the maximum DECIMAL of two types is capped at the maximum width, e.g. HUGEINT -> DECIMAL(38,0)
+	// in databases that stay within 38 digits
 	if (target_type.id() == LogicalTypeId::DECIMAL) {
 		return !DecimalHoldsEveryValue(source_type, target_type);
 	}
