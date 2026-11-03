@@ -389,7 +389,6 @@ unique_ptr<WriteAheadLog> WriteAheadLogReplayer::Replay() {
 		return make_uniq<WriteAheadLog>(storage_manager, main_wal_path);
 	}
 
-	// context is passed for metric collection purposes only!!
 	auto wal_handle = ReplayLog(std::move(handle));
 	if (wal_handle) {
 		return wal_handle;
