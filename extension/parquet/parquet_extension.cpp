@@ -26,6 +26,7 @@
 #include <vector>
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/table_function_catalog_entry.hpp"
+#include "duckdb/common/bind_helpers.hpp"
 #include "duckdb/common/constants.hpp"
 #include "duckdb/common/enums/file_compression_type.hpp"
 #include "duckdb/common/file_system.hpp"
@@ -114,6 +115,7 @@ struct ParquetWriteBindData : public TableFunctionData {
 	bool write_page_index = false;
 	//! What false positive rate are we willing to accept for bloom filters
 	double bloom_filter_false_positive_ratio = 0.01;
+	idx_t bloom_filter_fallback_max_bytes = ParquetBloomFilterMemory::DEFAULT_LIMIT;
 
 	//! After how many row groups to rotate to a new file
 	optional_idx row_groups_per_file;
@@ -157,6 +159,7 @@ static void ParquetListCopyOptions(ClientContext &context, CopyOptionsInput &inp
 	copy_options["bloom_filter_false_positive_ratio"] = CopyOption(LogicalType::DOUBLE, CopyOptionMode::WRITE_ONLY);
 	copy_options["debug_use_openssl"] = CopyOption(LogicalType::BOOLEAN, CopyOptionMode::READ_WRITE);
 	copy_options["write_bloom_filter"] = CopyOption(LogicalType::BOOLEAN, CopyOptionMode::WRITE_ONLY);
+	copy_options["bloom_filter_fallback_max_bytes"] = CopyOption(LogicalType::ANY, CopyOptionMode::WRITE_ONLY);
 	copy_options["write_page_index"] = CopyOption(LogicalType::BOOLEAN, CopyOptionMode::WRITE_ONLY);
 	copy_options["compression_level"] = CopyOption(LogicalType::BIGINT, CopyOptionMode::WRITE_ONLY);
 	copy_options["parquet_version"] = CopyOption(LogicalType::VARCHAR, CopyOptionMode::WRITE_ONLY);
@@ -324,6 +327,8 @@ static unique_ptr<FunctionData> ParquetWriteBind(ClientContext &context, CopyFun
 			bind_data->data_page_size_limit = val;
 		} else if (option_name == "write_bloom_filter") {
 			bind_data->enable_bloom_filters = BooleanValue::Get(option_values[0].DefaultCastAs(LogicalType::BOOLEAN));
+		} else if (option_name == "bloom_filter_fallback_max_bytes") {
+			bind_data->bloom_filter_fallback_max_bytes = ParseBytesArg(option_name, option_values[0]);
 		} else if (option_name == "write_page_index") {
 			bind_data->write_page_index = BooleanValue::Get(option_values[0].DefaultCastAs(LogicalType::BOOLEAN));
 		} else if (option_name == "bloom_filter_false_positive_ratio") {
@@ -424,6 +429,7 @@ static unique_ptr<GlobalFunctionData> ParquetWriteInitializeGlobal(ClientContext
 	options.enable_bloom_filters = parquet_bind.enable_bloom_filters,
 	options.write_page_index = parquet_bind.write_page_index;
 	options.bloom_filter_false_positive_ratio = parquet_bind.bloom_filter_false_positive_ratio;
+	options.bloom_filter_fallback_max_bytes = parquet_bind.bloom_filter_fallback_max_bytes;
 	options.compression_level = parquet_bind.compression_level;
 	options.parquet_version = parquet_bind.parquet_version,
 	options.geoparquet_version = parquet_bind.geoparquet_version;
@@ -828,6 +834,11 @@ static void ParquetCopySerialize(Serializer &serializer, const FunctionData &bin
 	                                    default_value.data_page_size_limit);
 	serializer.WritePropertyWithDefault(122, "write_page_index", bind_data.write_page_index,
 	                                    default_value.write_page_index);
+	serializer.WritePropertyWithDefault(123, "enable_bloom_filters", bind_data.enable_bloom_filters,
+	                                    default_value.enable_bloom_filters);
+	serializer.WritePropertyWithDefault(124, "bloom_filter_fallback_max_bytes",
+	                                    bind_data.bloom_filter_fallback_max_bytes,
+	                                    default_value.bloom_filter_fallback_max_bytes);
 }
 
 static unique_ptr<FunctionData> ParquetCopyDeserialize(Deserializer &deserializer, CopyFunction &function) {
@@ -872,6 +883,10 @@ static unique_ptr<FunctionData> ParquetCopyDeserialize(Deserializer &deserialize
 	    deserializer.ReadPropertyWithExplicitDefault(121, "data_page_size_limit", default_value.data_page_size_limit);
 	data->write_page_index =
 	    deserializer.ReadPropertyWithExplicitDefault(122, "write_page_index", default_value.write_page_index);
+	data->enable_bloom_filters =
+	    deserializer.ReadPropertyWithExplicitDefault(123, "enable_bloom_filters", default_value.enable_bloom_filters);
+	data->bloom_filter_fallback_max_bytes = deserializer.ReadPropertyWithExplicitDefault(
+	    124, "bloom_filter_fallback_max_bytes", default_value.bloom_filter_fallback_max_bytes);
 
 	return std::move(data);
 }
