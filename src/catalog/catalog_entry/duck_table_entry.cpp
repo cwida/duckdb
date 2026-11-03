@@ -52,96 +52,10 @@ IndexStorageInfo GetIndexInfo(const IndexConstraintType type, const bool v1_0_0_
 }
 
 static void CheckTypeIsSupported(const LogicalType &logical_type, AttachedDatabase &db) {
-	TypeVisitor::Contains(logical_type, [&](const LogicalType &type) {
-		if (type.IsAggregateState()) {
-			const auto storage_version = db.GetStorageManager().GetStorageVersion();
-
-			if (storage_version < StorageVersion::V2_0_0) {
-				auto required = GetStorageVersionName(StorageVersion::V2_0_0, false);
-				auto current = GetStorageVersionName(storage_version, false);
-
-				throw InvalidInputException("Aggregate state columns are not supported in storage versions prior to %s "
-				                            "(database %s is using storage version %s)",
-				                            required, db.GetName(), current);
-			}
-			return false;
-		}
-		switch (type.id()) {
-		case LogicalTypeId::TYPE: {
-			throw InvalidInputException("A table cannot be created with a 'TYPE' column");
-		} break;
-		case LogicalTypeId::STRUCT: {
-			const auto storage_version = db.GetStorageManager().GetStorageVersion();
-
-			if (storage_version < StorageVersion::V2_0_0 && StructType::GetChildCount(type) == 0) {
-				auto required = GetStorageVersionName(StorageVersion::V2_0_0, false);
-				auto current = GetStorageVersionName(storage_version, false);
-
-				throw InvalidInputException("Empty STRUCT columns are not supported in storage versions prior to %s "
-				                            "(database %s is using storage version %s)",
-				                            required, db.GetName(), current);
-			}
-		} break;
-		case LogicalTypeId::TUPLE: {
-			// TUPLEs are stored as unnamed STRUCTs on disk, which older engines reject - gate creation to v2.0.0+
-			// existing unnamed STRUCTs (deserialized as TUPLE while loading an older file) must stay attachable
-			const auto storage_version = db.GetStorageManager().GetStorageVersion();
-
-			if (storage_version < StorageVersion::V2_0_0 && db.GetStorageManager().IsLoaded()) {
-				auto required = GetStorageVersionName(StorageVersion::V2_0_0, false);
-				auto current = GetStorageVersionName(storage_version, false);
-
-				throw InvalidInputException("TUPLE columns are not supported in storage versions prior to %s "
-				                            "(database %s is using storage version %s)",
-				                            required, db.GetName(), current);
-			}
-		} break;
-		case LogicalTypeId::DECIMAL: {
-			// decimals wider than 38 digits are stored as BIGNUM blobs, which older engines cannot read
-			const auto storage_version = db.GetStorageManager().GetStorageVersion();
-			if (storage_version < Decimal::WIDE_VERSION_ADDED && Decimal::IsWide(DecimalType::GetWidth(type))) {
-				auto required = GetStorageVersionName(Decimal::WIDE_VERSION_ADDED, false);
-				auto current = GetStorageVersionName(storage_version, false);
-
-				throw InvalidInputException(
-				    "DECIMAL columns wider than %d digits are not supported in storage versions "
-				    "prior to %s (database %s is using storage version %s)",
-				    Decimal::MAX_WIDTH_INT128, required, db.GetName(), current);
-			}
-		} break;
-		case LogicalTypeId::VARIANT: {
-			const auto storage_version = db.GetStorageManager().GetStorageVersion();
-
-			if (storage_version < Variant::VERSION_ADDED) {
-				auto required = GetStorageVersionName(Variant::VERSION_ADDED, false);
-				auto current = GetStorageVersionName(storage_version, false);
-
-				throw InvalidInputException("VARIANT columns are not supported in storage versions prior to %s "
-				                            "(database %s is using storage version %s)",
-				                            required, db.GetName(), current);
-			}
-		} break;
-		case LogicalTypeId::GEOMETRY: {
-			const auto storage_version = db.GetStorageManager().GetStorageVersion();
-
-			if (GeoType::HasCRS(type) && storage_version < Geometry::VERSION_ADDED) {
-				auto required = GetStorageVersionName(Geometry::VERSION_ADDED, false);
-				auto current = GetStorageVersionName(storage_version, false);
-
-				// TODO: Turn this into a hard error
-				auto &logger = Logger::Get(db.GetDatabase());
-				logger.WriteLog(DefaultLogType::NAME, LogLevel::LOG_WARNING,
-				                "GEOMETRY columns with coordinate reference system identifiers are not supported in "
-				                "storage versions prior "
-				                "to %s (database %s is using storage version %s). CRS will not be persisted.",
-				                required, db.GetName(), current);
-			}
-		} break;
-		default:
-			break;
-		}
-		return false;
-	});
+	if (TypeVisitor::Contains(logical_type, LogicalTypeId::TYPE)) {
+		throw InvalidInputException("A table cannot be created with a 'TYPE' column");
+	}
+	db.GetStorageManager().CheckTypeIsSupported(logical_type);
 }
 
 static void SetAlterDependencies(ClientContext &context, BoundCreateTableInfo &info, AlterInfo &alter_info) {

@@ -563,6 +563,15 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 			}
 		}
 
+		if (!info.temporary && attached.HasStorageManager()) {
+			// the parameter and return types are written to the catalog
+			auto &storage_manager = attached.GetStorageManager();
+			for (const auto &type : function->types) {
+				storage_manager.CheckTypeIsSupported(type);
+			}
+			storage_manager.CheckTypeIsSupported(function->return_type);
+		}
+
 		vector<LogicalType> dummy_types;
 		vector<Identifier> dummy_names;
 		// positional parameters
@@ -1038,6 +1047,11 @@ BoundStatement Binder::Bind(CreateStatement &stmt) {
 			SetCatalogLookupCallback(dependency_callback);
 			// Bind the underlying type
 			BindLogicalType(create_type_info.type);
+			// the type is written to the catalog
+			auto &attached = catalog.GetAttached();
+			if (!create_type_info.temporary && attached.HasStorageManager()) {
+				attached.GetStorageManager().CheckTypeIsSupported(create_type_info.type);
+			}
 		}
 		break;
 	}

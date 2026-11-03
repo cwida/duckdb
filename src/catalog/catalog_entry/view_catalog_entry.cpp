@@ -9,6 +9,8 @@
 #include "duckdb/common/limits.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/main/attached_database.hpp"
+#include "duckdb/storage/storage_manager.hpp"
 
 namespace duckdb {
 
@@ -45,6 +47,23 @@ ViewCatalogEntry::ViewCatalogEntry(Catalog &catalog, SchemaCatalogEntry &schema,
 	Initialize(info);
 }
 
+//! Whether the column types of a view can be stored in its database. A view whose result types cannot be stored at
+//! the storage version of the database (e.g. a wide DECIMAL result in a database written before wide decimals) is
+//! stored without types, like a view that was never bound, so that older engines read it and bind it by their rules.
+static bool CanStoreViewTypes(const Catalog &catalog, const vector<LogicalType> &types) {
+	auto &db = catalog.GetAttached();
+	if (!db.HasStorageManager()) {
+		return true;
+	}
+	auto &storage_manager = db.GetStorageManager();
+	for (auto &type : types) {
+		if (!storage_manager.GetUnsupportedTypeReason(type).empty()) {
+			return false;
+		}
+	}
+	return true;
+}
+
 unique_ptr<CreateInfo> ViewCatalogEntry::GetInfo() const {
 	auto result = make_uniq<CreateViewInfo>();
 	result->SetQualifiedName(schema.GetQualifiedName(name));
@@ -53,7 +72,7 @@ unique_ptr<CreateInfo> ViewCatalogEntry::GetInfo() const {
 	result->aliases = aliases;
 	result->security_type = security_type;
 	auto view_columns = GetColumnInfo();
-	if (view_columns) {
+	if (view_columns && CanStoreViewTypes(ParentCatalog(), view_columns->types)) {
 		result->names = view_columns->names;
 		result->types = view_columns->types;
 	}

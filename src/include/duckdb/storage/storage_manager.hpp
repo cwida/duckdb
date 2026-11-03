@@ -136,6 +136,11 @@ public:
 		D_ASSERT(HasStorageVersion());
 		return StorageVersionInfo::GetStorageVersionString(storage_version);
 	}
+	//! Why a type cannot be stored at the storage version of this database, empty when it can: every type that is
+	//! written to the catalog or to a column passes through here, so that older engines can read the database.
+	string GetUnsupportedTypeReason(const LogicalType &type) const;
+	//! Throws when a type cannot be stored at the storage version of this database.
+	void CheckTypeIsSupported(const LogicalType &type) const;
 	bool CompressionIsEnabled() const {
 		return storage_options.compress_in_memory == CompressInMemory::COMPRESS;
 	}

@@ -4,6 +4,10 @@
 #include "duckdb/common/enums/checkpoint_abort.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/common/type_visitor.hpp"
+#include "duckdb/common/types/decimal.hpp"
+#include "duckdb/common/types/geometry.hpp"
+#include "duckdb/common/types/variant.hpp"
 #include "duckdb/logging/logger.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/client_context.hpp"
@@ -235,6 +239,76 @@ bool StorageManager::TargetAtLeastVersion(StorageVersion target_version, Storage
 		return false;
 	}
 	return true;
+}
+
+string StorageManager::GetUnsupportedTypeReason(const LogicalType &logical_type) const {
+	const auto storage_version = GetStorageVersion();
+	auto unsupported = [&](const string &what, StorageVersion required) {
+		return StringUtil::Format("%s are not supported in storage versions prior to %s (database %s is using storage "
+		                          "version %s)",
+		                          what, GetStorageVersionName(required, false), db.GetName(),
+		                          GetStorageVersionName(storage_version, false));
+	};
+	string reason;
+	TypeVisitor::Contains(logical_type, [&](const LogicalType &type) {
+		if (type.IsAggregateState()) {
+			if (storage_version < StorageVersion::V2_0_0) {
+				reason = unsupported("Aggregate state columns", StorageVersion::V2_0_0);
+			}
+			return !reason.empty();
+		}
+		switch (type.id()) {
+		case LogicalTypeId::STRUCT:
+			if (storage_version < StorageVersion::V2_0_0 && StructType::GetChildCount(type) == 0) {
+				reason = unsupported("Empty STRUCT columns", StorageVersion::V2_0_0);
+			}
+			break;
+		case LogicalTypeId::TUPLE:
+			// TUPLEs are stored as unnamed STRUCTs, which older engines reject; the unnamed STRUCTs of an older file
+			// are deserialized as TUPLE while loading and must stay attachable
+			if (storage_version < StorageVersion::V2_0_0 && IsLoaded()) {
+				reason = unsupported("TUPLE columns", StorageVersion::V2_0_0);
+			}
+			break;
+		case LogicalTypeId::DECIMAL:
+			// decimals wider than 38 digits are stored as BIGNUM blobs, which older engines cannot read
+			if (storage_version < Decimal::WIDE_VERSION_ADDED && Decimal::IsWide(DecimalType::GetWidth(type))) {
+				auto what = StringUtil::Format("DECIMAL columns wider than %d digits", Decimal::MAX_WIDTH_INT128);
+				reason = unsupported(what, Decimal::WIDE_VERSION_ADDED);
+			}
+			break;
+		case LogicalTypeId::VARIANT:
+			if (storage_version < Variant::VERSION_ADDED) {
+				reason = unsupported("VARIANT columns", Variant::VERSION_ADDED);
+			}
+			break;
+		case LogicalTypeId::GEOMETRY:
+			if (GeoType::HasCRS(type) && storage_version < Geometry::VERSION_ADDED) {
+				auto required = GetStorageVersionName(Geometry::VERSION_ADDED, false);
+				auto current = GetStorageVersionName(storage_version, false);
+
+				// TODO: Turn this into a hard error
+				auto &logger = Logger::Get(db.GetDatabase());
+				logger.WriteLog(DefaultLogType::NAME, LogLevel::LOG_WARNING,
+				                "GEOMETRY columns with coordinate reference system identifiers are not supported in "
+				                "storage versions prior "
+				                "to %s (database %s is using storage version %s). CRS will not be persisted.",
+				                required, db.GetName(), current);
+			}
+			break;
+		default:
+			break;
+		}
+		return !reason.empty();
+	});
+	return reason;
+}
+
+void StorageManager::CheckTypeIsSupported(const LogicalType &type) const {
+	auto reason = GetUnsupportedTypeReason(type);
+	if (!reason.empty()) {
+		throw InvalidInputException(reason);
+	}
 }
 
 bool StorageManager::HasWAL() const {
