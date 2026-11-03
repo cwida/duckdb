@@ -7,6 +7,10 @@
 
 namespace duckdb {
 
+static bool UnnestIsRepeatable(optional_ptr<const FunctionData>) {
+	return true;
+}
+
 struct UnnestBindData : public FunctionData {
 	explicit UnnestBindData(LogicalType input_type_p) : input_type(std::move(input_type_p)) {
 	}
@@ -94,6 +98,7 @@ void UnnestTableFunction::RegisterFunction(BuiltinFunctions &set) {
 	                              UnnestBind, UnnestInit, UnnestLocalInit);
 	unnest_function.in_out_function = UnnestFunction;
 	unnest_function.return_type = TableFunctionReturnType::SET_RETURNING_FUNCTION;
+	unnest_function.is_repeatable = UnnestIsRepeatable;
 	set.AddFunction(unnest_function);
 }
 

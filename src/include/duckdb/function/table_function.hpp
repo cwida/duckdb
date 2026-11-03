@@ -378,7 +378,8 @@ typedef bool (*table_function_supports_pushdown_type_t)(const FunctionData &bind
 
 typedef bool (*table_function_supports_pushdown_extract_t)(const FunctionData &bind_data, const LogicalIndex &col_idx);
 
-//! Whether repeated executions with the same bound data are stable within one query.
+//! Whether repeated executions with the same bound data and input rows produce equivalent rows within one query.
+//! Used by optimizers that may share or repeat a scan. Do not opt in when execution reads mutable external state.
 typedef bool (*table_function_is_repeatable_t)(optional_ptr<const FunctionData> bind_data);
 
 typedef double (*table_function_progress_t)(ClientContext &context, const FunctionData *bind_data,

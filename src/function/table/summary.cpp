@@ -7,6 +7,10 @@
 
 namespace duckdb {
 
+static bool SummaryIsRepeatable(optional_ptr<const FunctionData>) {
+	return true;
+}
+
 static unique_ptr<FunctionData> SummaryFunctionBind(ClientContext &context, TableFunctionBindInput &input,
                                                     vector<LogicalType> &return_types, vector<Identifier> &names) {
 	return_types.emplace_back(LogicalType::VARCHAR);
@@ -45,6 +49,7 @@ void SummaryTableFunction::RegisterFunction(BuiltinFunctions &set) {
 	TableFunction summary_function("summary", FunctionSignature().AddPositionalOnly("input", LogicalType::TABLE),
 	                               nullptr, SummaryFunctionBind);
 	summary_function.in_out_function = SummaryFunction;
+	summary_function.is_repeatable = SummaryIsRepeatable;
 	set.AddFunction(summary_function);
 }
 

@@ -5,6 +5,10 @@
 
 namespace duckdb {
 
+static bool KeywordsAreRepeatable(optional_ptr<const FunctionData>) {
+	return true;
+}
+
 struct DuckDBKeywordsData : public GlobalTableFunctionState {
 	DuckDBKeywordsData() : offset(0) {
 	}
@@ -58,6 +62,7 @@ void DuckDBKeywordsFunction(ClientContext &context, TableFunctionInput &data_p, 
 void DuckDBKeywordsFun::RegisterFunction(BuiltinFunctions &set) {
 	TableFunction duckdb_keywords("duckdb_keywords", {}, DuckDBKeywordsFunction, DuckDBKeywordsBind,
 	                              DuckDBKeywordsInit);
+	duckdb_keywords.is_repeatable = KeywordsAreRepeatable;
 	set.AddFunction(duckdb_keywords);
 }
 

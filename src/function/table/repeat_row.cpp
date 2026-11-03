@@ -4,6 +4,10 @@
 
 namespace duckdb {
 
+static bool RepeatRowIsRepeatable(optional_ptr<const FunctionData>) {
+	return true;
+}
+
 struct RepeatRowFunctionData : public TableFunctionData {
 	RepeatRowFunctionData(vector<Value> values, idx_t target_count)
 	    : values(std::move(values)), target_count(target_count) {
@@ -79,6 +83,7 @@ void RepeatRowTableFunction::RegisterFunction(BuiltinFunctions &set) {
 	repeat_row.GetSignature().AddKeywordOnly("num_rows", LogicalType::BIGINT);
 	repeat_row.cardinality = RepeatRowCardinality;
 	repeat_row.table_scan_progress = RepeatRowProgress;
+	repeat_row.is_repeatable = RepeatRowIsRepeatable;
 	set.AddFunction(repeat_row);
 }
 
