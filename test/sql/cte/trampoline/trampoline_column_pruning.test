@@ -172,3 +172,19 @@ FROM (VALUES (1), (2)) o(k) ORDER BY o.k;
 ----
 1	4
 2	4
+
+# Hidden recursive state requires multiple dependency-closure passes:
+# a needs c on the first pass, then c needs d on the second pass.
+# Neither c nor d is an outer output, and both dead payloads can disappear.
+query I
+WITH RECURSIVE t(dead0, b, step, a, c, d, dead1) USING TRAMPOLINE (b) AS (
+    (VALUES ('unused', 1, 0, 10, 20, 30, 'also unused'))
+    BRANCH 1: (SELECT dead0, 2, step+1, c, d, d+1, dead1 FROM t)
+    BRANCH 2: (
+        SELECT dead0, CASE WHEN step<3 THEN 1 ELSE 0 END,
+               step+1, a+1, c, d, dead1 FROM t
+    )
+)
+SELECT a FROM t;
+----
+31
