@@ -55,6 +55,8 @@ public:
 	JoinRelationSet &GetJoinRelation(unsafe_unique_array<RelationIndex> relations, idx_t count);
 	//! Union two sets of relations together and create a new relation set
 	JoinRelationSet &Union(JoinRelationSet &left, JoinRelationSet &right);
+	JoinRelationSet &Intersection(const JoinRelationSet &left, const JoinRelationSet &right);
+	JoinRelationSet &Difference(const JoinRelationSet &left, const JoinRelationSet &right);
 	string ToString() const;
 	void Print();
 

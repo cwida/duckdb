@@ -121,6 +121,7 @@
       "reason": "Time-out without optimizer.",
       "paths": [
         "test/optimizer/join_dependent_filter.test",
+        "test/optimizer/joins/inequality_only_join_order.test",
         "test/optimizer/joins/no_duplicate_elimination_join.test",
         "test/optimizer/joins/tpcds_nofail.test",
         "test/sql/limit/test_limit0.test",

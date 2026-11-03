@@ -1,0 +1,50 @@
+# name: test/optimizer/joins/inequality_only_join_order.test
+# description: The join order optimizer must not isolate an inequality predicate into its own join
+# group: [joins]
+
+# estimates depend on sampled distinct counts
+require vector_size 2048
+
+# A decorrelated scalar subquery with one equality and one inequality correlation. Underestimating
+# the inequality edge makes the optimizer join ord with the correlation domain on od alone, which
+# only a piecewise merge join can execute and which outputs roughly half the cross product.
+
+statement ok
+CREATE TABLE ord AS SELECT r::INT AS ok, ((r * 37) % 2400)::INT AS od FROM range(15000) t(r);
+
+statement ok
+CREATE TABLE li AS SELECT (r % 15000)::INT AS ok, (r % 250)::BIGINT AS pk FROM range(60000) t(r);
+
+statement ok
+CREATE TABLE driver AS SELECT (r % 250)::BIGINT AS pk, {'k': (r % 97)::INT, 'od': ((r * 41) % 2400)::INT} AS st, (r % 7)::INT AS x FROM range(4000) t(r);
+
+query II
+EXPLAIN SELECT count(*), count(nxt) FROM (
+  SELECT (SELECT o.od FROM li, ord o
+          WHERE li.ok = o.ok AND li.pk = dr.pk AND o.od > dr.st.od AND dr.x IS NOT NULL
+          ORDER BY o.od, o.ok LIMIT 1) AS nxt
+  FROM driver dr
+) z;
+----
+physical_plan	<!REGEX>:.*PIECEWISE_MERGE_JOIN.*
+
+query II
+SELECT count(*), count(nxt) FROM (
+  SELECT (SELECT o.od FROM li, ord o
+          WHERE li.ok = o.ok AND li.pk = dr.pk AND o.od > dr.st.od AND dr.x IS NOT NULL
+          ORDER BY o.od, o.ok LIMIT 1) AS nxt
+  FROM driver dr
+) z;
+----
+4000	3957
+
+# the inequality stays a secondary condition of the equality hash join
+query II
+EXPLAIN SELECT count(*), count(nxt) FROM (
+  SELECT (SELECT o.od FROM li, ord o
+          WHERE li.ok = o.ok AND li.pk = dr.pk AND o.od > dr.st.od AND dr.x IS NOT NULL
+          ORDER BY o.od, o.ok LIMIT 1) AS nxt
+  FROM driver dr
+) z;
+----
+physical_plan	<REGEX>:.*pk = pk,[^a-zA-Z]*od > struct_extract.*
