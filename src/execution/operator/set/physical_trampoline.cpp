@@ -142,7 +142,7 @@ public:
 	RecursiveCTESchedulerState scheduler;
 
 	~TrampolineState() override {
-		metrics.Log({});
+		metrics.Log();
 		if (epoch_metrics) {
 			metrics.LogEpochSummary(*epoch_metrics);
 		}

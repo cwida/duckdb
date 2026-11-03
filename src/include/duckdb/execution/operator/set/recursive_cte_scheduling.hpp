@@ -222,6 +222,7 @@ public:
 	void RecordRetainedCTEMaterialization();
 	void RecordRetainedCTEReuse();
 	void LogDistinctPromotion(idx_t partitions, idx_t migrated_rows, idx_t elapsed_us) const;
+	void Log() const;
 	void Log(const vector<unique_ptr<RecursiveCTEPartialKeyIndex>> &partial_key_indexes) const;
 	void LogEpochSummary(const RecursiveCTEEpochMetrics &epoch_metrics) const;
 

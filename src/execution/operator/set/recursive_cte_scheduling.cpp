@@ -1,9 +1,14 @@
 #include "duckdb/execution/operator/set/recursive_cte_scheduling.hpp"
 
 #include "duckdb/common/bit_utils.hpp"
+#include "duckdb/execution/operator/aggregate/physical_hash_aggregate.hpp"
+#include "duckdb/execution/operator/join/physical_blockwise_nl_join.hpp"
 #include "duckdb/execution/operator/join/physical_delim_join.hpp"
+#include "duckdb/execution/operator/join/physical_hash_join.hpp"
+#include "duckdb/execution/operator/join/physical_nested_loop_join.hpp"
 #include "duckdb/execution/operator/join/physical_recursive_cte_key_join.hpp"
 #include "duckdb/execution/operator/scan/physical_column_data_scan.hpp"
+#include "duckdb/execution/operator/set/physical_cte.hpp"
 #include "duckdb/execution/operator/set/physical_recursive_cte.hpp"
 #include "duckdb/execution/operator/set/physical_recursive_cte_state.hpp"
 #include "duckdb/logging/logger.hpp"
@@ -256,6 +261,12 @@ void RecursiveCTEMetrics::LogDistinctPromotion(idx_t partitions, idx_t migrated_
 	            {"partitions", to_string(partitions)},
 	            {"migrated_rows", to_string(migrated_rows)},
 	            {"elapsed_us", to_string(elapsed_us_p)}});
+}
+
+//! For operators without partial key indexes; the vector type needs the complete
+//! key-index class, which callers of this overload do not see
+void RecursiveCTEMetrics::Log() const {
+	Log(vector<unique_ptr<RecursiveCTEPartialKeyIndex>>());
 }
 
 void RecursiveCTEMetrics::Log(const vector<unique_ptr<RecursiveCTEPartialKeyIndex>> &partial_key_indexes) const {
