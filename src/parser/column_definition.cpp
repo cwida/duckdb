@@ -243,6 +243,10 @@ const ParsedExpression &ColumnDefinition::GeneratedExpression() const {
 	return *expression;
 }
 
+bool ColumnDefinition::HasGeneratedExpression() const {
+	return expression != nullptr;
+}
+
 ParsedExpression &ColumnDefinition::GeneratedExpressionMutable() {
 	D_ASSERT(Generated());
 	return *expression;

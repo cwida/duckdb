@@ -316,8 +316,14 @@ AllocatedData JSONReader::RemoveBuffer(JSONBufferHandle &handle) {
 }
 
 idx_t JSONReader::GetBufferIndex() {
+	lock_guard<mutex> guard(lock);
 	buffer_line_or_object_counts.push_back(-1);
 	return next_buffer_index++;
+}
+
+idx_t JSONReader::GetNextBufferIndex() {
+	lock_guard<mutex> guard(lock);
+	return next_buffer_index;
 }
 
 void JSONReader::SetBufferLineOrObjectCount(JSONBufferHandle &handle, idx_t count) {
@@ -1231,7 +1237,7 @@ void JSONReader::PrepareForReadInternal(JSONReaderScanState &scan_state) {
 bool JSONReader::PrepareBufferForRead(JSONReaderScanState &scan_state) {
 	if (auto_detect_data.IsSet()) {
 		// we have auto-detected data - re-use the buffer
-		if (next_buffer_index != 0 || auto_detect_data_size == 0 || scan_state.prev_buffer_remainder != 0) {
+		if (GetNextBufferIndex() != 0 || auto_detect_data_size == 0 || scan_state.prev_buffer_remainder != 0) {
 			throw InternalException("Invalid re-use of auto-detect data in JSON");
 		}
 		scan_state.buffer_index = GetBufferIndex();

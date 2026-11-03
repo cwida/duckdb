@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/common/common.hpp"
+#include "duckdb/common/mutex.hpp"
 
 namespace duckdb {
 
@@ -53,6 +54,8 @@ private:
 	ClientContext &client_context;
 	//! Temporary memory reservation state used to limit queued async data. Absent when draining synchronously.
 	unique_ptr<TemporaryMemoryState> memory_state;
+	//! Serializes concurrent reservation updates and releases from multiple producers.
+	mutex reservation_lock;
 	//! Last remaining-size request sent to TemporaryMemoryManager. Grows monotonically until Release().
 	idx_t memory_request_bytes = 0;
 	//! Minimum TemporaryMemoryManager reservation while work is outstanding.
