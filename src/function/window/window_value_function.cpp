@@ -1,4 +1,6 @@
+#include "duckdb/common/bignum.hpp"
 #include "duckdb/common/types/bignum_decimal.hpp"
+#include "duckdb/common/types/string_heap.hpp"
 #include "duckdb/function/window/window_executor.hpp"
 #include "duckdb/common/operator/add.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
@@ -1448,18 +1450,31 @@ static void FillInterpolateFunc(Vector &result, idx_t i, WindowCursor &cursor, i
 	data[i] = InterpolateOperator::Operation<T>(y0, slope, y1);
 }
 
-//! The bignum_t tier of decimals: the interpolated unscaled value is converted back from DOUBLE, NULL if it does
-//! not fit the width
+//! The bignum_t tier of decimals: like the hugeint tier, the exact delta between the ends is scaled by the slope in
+//! DOUBLE, truncated towards zero and added to the exact start value, NULL if the result does not fit the width
 static void FillInterpolateBignum(Vector &result, idx_t i, WindowCursor &cursor, idx_t lo, idx_t hi, double slope) {
-	const auto y0 = LossyFillCast<double>(cursor.GetCell<bignum_t>(0, lo));
-	const auto y1 = LossyFillCast<double>(cursor.GetCell<bignum_t>(0, hi));
-	const auto interpolated = InterpolateOperator::Operation<double>(y0, slope, y1);
-	string blob;
-	if (!Value::IsFinite(interpolated) ||
-	    !BignumDecimal::TryFromDouble(interpolated, DecimalType::GetWidth(result.GetType()), 0, blob)) {
+	// an intermediate refers to the bytes of the bignum_t it is built from, which therefore outlives it
+	StringHeap heap;
+	const auto y0 = cursor.GetCell<bignum_t>(0, lo);
+	const auto y1 = cursor.GetCell<bignum_t>(0, hi);
+	const BignumIntermediate start(y0);
+	const BignumIntermediate end(y1);
+	const bignum_t negated_start(start.Negate(heap));
+	const BignumIntermediate negated(negated_start);
+	const bignum_t delta(BignumIntermediate::Add(heap, end, negated));
+	const auto offset = std::trunc(BignumDecimal::ToDouble(delta, 0) * slope);
+	string offset_blob;
+	if (!BignumDecimal::TryFromDouble(offset, Decimal::MAX_WIDTH_DECIMAL, 0, offset_blob)) {
 		return;
 	}
-	FlatVector::GetDataMutable<string_t>(result)[i] = StringVector::AddStringOrBlob(result, blob);
+	const string_t offset_string(offset_blob);
+	const bignum_t offset_value(offset_string);
+	const BignumIntermediate offset_intermediate(offset_value);
+	const bignum_t filled(BignumIntermediate::Add(heap, start, offset_intermediate));
+	if (!BignumDecimal::FitsWidth(filled, DecimalType::GetWidth(result.GetType()))) {
+		return;
+	}
+	FlatVector::GetDataMutable<string_t>(result)[i] = StringVector::AddStringOrBlob(result, filled.data);
 	FlatVector::SetNull(result, i, false);
 }
 
