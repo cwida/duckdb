@@ -15,6 +15,7 @@
 namespace duckdb {
 
 class LogicalGet;
+class LogicalWindow;
 class Optimizer;
 
 class FilterPushdown {
@@ -35,6 +36,12 @@ public:
 	//! guaranteed not to remove any rows. A barred expression must never be evaluated on rows that an operator below
 	//! it filters out.
 	static bool BarrierCanPassThrough(LogicalOperatorType type);
+	//! Whether the filter compares something that every window expression partitions by with constants, so that it
+	//! keeps or removes whole partitions
+	static bool ComparesWindowPartitions(const LogicalWindow &window, const Expression &filter);
+	//! Whether every window expression is a ranking function without arguments, e.g. row_number(), which neither fails
+	//! nor has side effects, so a filter may change the partitions it runs for
+	static bool OnlyRanksWithoutArguments(const LogicalWindow &window);
 
 	struct Filter {
 		unordered_set<TableIndex> bindings;
