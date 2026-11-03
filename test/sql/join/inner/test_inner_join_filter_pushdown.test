@@ -55,3 +55,31 @@ INNER JOIN right_table r ON l.id = r.id AND l.amount + r.budget > 1100;
 ----
 2	1	75	2	2	2000
 3	2	60	3	1	1500
+
+# join filter pushdown must not push below LIMIT/OFFSET
+statement ok
+CREATE TABLE ordered_probe(flag BOOLEAN, ord INTEGER);
+
+statement ok
+INSERT INTO ordered_probe VALUES (true, 1), (true, 2), (false, 3);
+
+statement ok
+CREATE TABLE boolean_keys(flag_key BOOLEAN);
+
+statement ok
+INSERT INTO boolean_keys VALUES (false);
+
+query II
+WITH c AS (
+	SELECT flag FROM ordered_probe ORDER BY ord OFFSET 2
+)
+SELECT * FROM c INNER JOIN boolean_keys ON flag = flag_key;
+----
+false	false
+
+query II
+WITH c AS (
+	SELECT flag FROM ordered_probe ORDER BY ord LIMIT 1
+)
+SELECT * FROM c INNER JOIN boolean_keys ON flag = flag_key;
+----
