@@ -1,4 +1,4 @@
-#include "duckdb/common/types/decimal.hpp"
+#include "duckdb/common/types/bignum_decimal.hpp"
 #include "duckdb/function/window/window_executor.hpp"
 #include "duckdb/common/operator/add.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
@@ -1302,6 +1302,12 @@ double LossyFillCast(uhugeint_t val) {
 	return d;
 }
 
+//! The bignum_t tier of decimals interpolates on the unscaled value, like the fixed-size tiers
+template <>
+double LossyFillCast(bignum_t val) {
+	return BignumDecimal::ToDouble(val, 0);
+}
+
 template <typename T>
 static double FillSlopeFunc(WindowCursor &cursor, idx_t row_idx, idx_t prev_valid, idx_t next_valid) {
 	//	Cast everything to doubles immediately so we can interpolate backwards (x < x0)
@@ -1351,6 +1357,8 @@ static fill_slope_t GetFillSlopeFunction(const LogicalType &type) {
 		return FillSlopeFunc<float>;
 	case PhysicalType::DOUBLE:
 		return FillSlopeFunc<double>;
+	case PhysicalType::VARCHAR:
+		return FillSlopeFunc<bignum_t>;
 	default:
 		throw InternalException("Unsupported FILL slope type.");
 	}
@@ -1440,6 +1448,21 @@ static void FillInterpolateFunc(Vector &result, idx_t i, WindowCursor &cursor, i
 	data[i] = InterpolateOperator::Operation<T>(y0, slope, y1);
 }
 
+//! The bignum_t tier of decimals: the interpolated unscaled value is converted back from DOUBLE, NULL if it does
+//! not fit the width
+static void FillInterpolateBignum(Vector &result, idx_t i, WindowCursor &cursor, idx_t lo, idx_t hi, double slope) {
+	const auto y0 = LossyFillCast<double>(cursor.GetCell<bignum_t>(0, lo));
+	const auto y1 = LossyFillCast<double>(cursor.GetCell<bignum_t>(0, hi));
+	const auto interpolated = InterpolateOperator::Operation<double>(y0, slope, y1);
+	string blob;
+	if (!Value::IsFinite(interpolated) ||
+	    !BignumDecimal::TryFromDouble(interpolated, DecimalType::GetWidth(result.GetType()), 0, blob)) {
+		return;
+	}
+	FlatVector::GetDataMutable<string_t>(result)[i] = StringVector::AddStringOrBlob(result, blob);
+	FlatVector::SetNull(result, i, false);
+}
+
 static fill_interpolate_t GetFillInterpolateFunction(const LogicalType &type) {
 	switch (type.InternalType()) {
 	case PhysicalType::UINT8:
@@ -1466,6 +1489,8 @@ static fill_interpolate_t GetFillInterpolateFunction(const LogicalType &type) {
 		return FillInterpolateFunc<float>;
 	case PhysicalType::DOUBLE:
 		return FillInterpolateFunc<double>;
+	case PhysicalType::VARCHAR:
+		return FillInterpolateBignum;
 	default:
 		throw InternalException("Unsupported FILL interpolation type.");
 	}
@@ -1489,6 +1514,10 @@ static bool FillValidateDecimal(Vector &result, idx_t i, const LogicalType &type
 		return true;
 	}
 	return value < limit && value > -limit;
+}
+
+static bool FillValidateBignum(Vector &result, idx_t i, const LogicalType &type) {
+	return BignumDecimal::FitsWidth(FlatVector::GetData<bignum_t>(result)[i], DecimalType::GetWidth(type));
 }
 
 template <typename T>
@@ -1533,6 +1562,8 @@ static fill_validate_t GetFillValidateFunction(const LogicalType &type) {
 			return FillValidateDecimal<int64_t>;
 		case PhysicalType::INT128:
 			return FillValidateDecimal<hugeint_t>;
+		case PhysicalType::VARCHAR:
+			return FillValidateBignum;
 		default:
 			throw InternalException("Unsupported FILL decimal type.");
 		}
@@ -1546,6 +1577,10 @@ typedef bool (*fill_value_t)(idx_t i, WindowCursor &cursor);
 template <typename T>
 static bool FillValueFunction(idx_t row_idx, WindowCursor &cursor) {
 	return !cursor.CellIsNull(0, row_idx) && Value::IsFinite(cursor.GetCell<T>(0, row_idx));
+}
+
+static bool FillValueBignum(idx_t row_idx, WindowCursor &cursor) {
+	return !cursor.CellIsNull(0, row_idx);
 }
 
 static fill_value_t GetFillValueFunction(const LogicalType &type) {
@@ -1589,6 +1624,8 @@ static fill_value_t GetFillValueFunction(const LogicalType &type) {
 		return FillValueFunction<float>;
 	case PhysicalType::DOUBLE:
 		return FillValueFunction<double>;
+	case PhysicalType::VARCHAR:
+		return FillValueBignum;
 	default:
 		throw InternalException("Unsupported FILL value type.");
 	}
@@ -1607,15 +1644,9 @@ unique_ptr<FunctionData> WindowFillExecutor::Bind(BindWindowFunctionInput &input
 	if (!IsFillType(arguments[0]->GetReturnType())) {
 		throw BinderException("FILL argument must support subtraction");
 	}
-	const auto &fill_argument_type = arguments[0]->GetReturnType();
-	if (fill_argument_type.id() == LogicalTypeId::DECIMAL &&
-	    fill_argument_type.InternalType() == PhysicalType::VARCHAR) {
-		throw NotImplementedException("FILL is not supported for DECIMAL types wider than %d digits",
-		                              Decimal::MAX_WIDTH_INT128);
-	}
 
 	// Can we validate?
-	if (!input.HasOrders() && !input.HasArgumentOrders()) {
+	if (!input.HasOrders() || !input.HasArgumentOrders()) {
 		return nullptr;
 	}
 
@@ -1635,10 +1666,6 @@ unique_ptr<FunctionData> WindowFillExecutor::Bind(BindWindowFunctionInput &input
 	}
 	if (!IsFillType(order_type)) {
 		throw BinderException("FILL ordering must support subtraction");
-	}
-	if (order_type.id() == LogicalTypeId::DECIMAL && order_type.InternalType() == PhysicalType::VARCHAR) {
-		throw NotImplementedException("FILL is not supported for DECIMAL types wider than %d digits",
-		                              Decimal::MAX_WIDTH_INT128);
 	}
 
 	return nullptr;

@@ -254,18 +254,35 @@ CREATE TABLE old.fixed(d DECIMAL(38,2))
 statement ok
 ALTER TABLE old.fixed ALTER d TYPE DECIMAL(38,0)
 
-# FILL rejects wide decimals both as the filled value and as the ordering key
-statement error
-SELECT fill(v) OVER (ORDER BY k) FROM (VALUES ('1'::DECIMAL(39,0), 1::DECIMAL(39,0)), ('2', NULL), ('3', 3)) t(k, v);
+# FILL interpolates wide decimals both as the filled value and as the ordering key
+query II
+SELECT k, fill(v) OVER (ORDER BY k) FROM (VALUES ('1'::DECIMAL(39,0), 1::DECIMAL(39,0)), ('2', NULL), ('3', 3)) t(k, v) ORDER BY k;
 ----
-<REGEX>:.*FILL is not supported for DECIMAL types wider than 38 digits.*
+1	1
+2	2
+3	3
 
-statement error
+query II
 SELECT k, fill(v ORDER BY k + k) OVER () FROM (VALUES (1::DECIMAL(38,0), 1), (2, NULL), (3, 3)) t(k, v) ORDER BY k;
 ----
-<REGEX>:.*FILL is not supported for DECIMAL types wider than 38 digits.*
+1	1
+2	2
+3	3
 
-statement error
+query II
 SELECT k, fill(v) OVER (ORDER BY k + k) FROM (VALUES (1::DECIMAL(38,0), 1), (2, NULL), (3, 3)) t(k, v) ORDER BY k;
 ----
-<REGEX>:.*FILL is not supported for DECIMAL types wider than 38 digits.*
+1	1
+2	2
+3	3
+
+# wide decimals interpolate and extrapolate through DOUBLE like the fixed-size tiers
+query II
+SELECT k, fill(v) OVER (ORDER BY k)
+FROM (VALUES (1, '1000.00'::DECIMAL(50,2)), (2, NULL), (3, '3000.00'::DECIMAL(50,2)), (5, NULL)) t(k, v)
+ORDER BY k;
+----
+1	1000.00
+2	2000.00
+3	3000.00
+5	5000.00
