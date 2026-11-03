@@ -11,6 +11,7 @@
     {
       "reason": "Asserts DECIMAL column semantics (declared type, scale, 38-digit width, statistics) that this configuration replaces with NUMERIC.",
       "paths": [
+        "test/sql/optimizer/pushdown/pushdown_safe_decimal_cast.test",
         "test/sql/types/decimal/decimal_aggregates.test",
         "test/sql/types/decimal/decimal_average.test",
         "test/sql/types/decimal/decimal_overflow_table.test",

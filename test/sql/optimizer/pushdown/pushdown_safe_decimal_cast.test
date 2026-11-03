@@ -50,11 +50,12 @@ EXPLAIN SELECT * FROM (SELECT u, d, u // 2 AS j FROM casts) WHERE u BETWEEN 100.
 ----
 logical_opt	<REGEX>:[\s\S]*SEQ_SCAN[\s\S]*Filters:[\s\S]*CAST\(u AS DECIMAL\(21,1\)\) BETWEEN 100.5 AND 200.5[\s\S]*
 
-# no DECIMAL holds every HUGEINT: the filter stays above the projection
+# a HUGEINT compared with decimal literals is cast to a DECIMAL(39,1), whose 38 integral digits are one short of
+# a HUGEINT: the filter stays above the projection
 query II
 EXPLAIN SELECT * FROM (SELECT h, d, h // 2 AS j FROM casts) WHERE h BETWEEN 100.5 AND 200.5
 ----
-logical_opt	<REGEX>:[\s\S]*FILTER[\s\S]*CAST\(h AS DECIMAL\(38,1\)\) BETWEEN 100.5 AND 200.5[\s\S]*SEQ_SCAN[^│]*│ Table:[\s\S]*
+logical_opt	<REGEX>:[\s\S]*FILTER[\s\S]*CAST\(h AS DECIMAL\(39,1\)\) BETWEEN '100.5'::DECIMAL\(39,1\) AND '200.5'::DECIMAL\(39,1\)[\s\S]*SEQ_SCAN[^│]*│ Table:[\s\S]*
 
 # explicit casts: more digits on both sides of the decimal point
 query II
@@ -77,6 +78,12 @@ query II
 EXPLAIN SELECT * FROM (SELECT u, d, u // 2 AS j FROM casts) WHERE CAST(u AS DECIMAL(20,0)) BETWEEN 100 AND 200
 ----
 logical_opt	<REGEX>:[\s\S]*SEQ_SCAN[\s\S]*Filters:[\s\S]*CAST\(u AS DECIMAL\(20,0\)\) BETWEEN 100 AND 200[\s\S]*
+
+# HUGEINT and UHUGEINT have 39 digits: a decimal wider than 38 digits holds every value
+query II
+EXPLAIN SELECT * FROM (SELECT h, d, h // 2 AS j FROM casts) WHERE CAST(h AS DECIMAL(39,0)) BETWEEN 100 AND 200
+----
+logical_opt	<REGEX>:[\s\S]*SEQ_SCAN[\s\S]*Filters:[\s\S]*CAST\(h AS DECIMAL\(39,0\)\) BETWEEN '100'::DECIMAL\(39,0\) AND '200'::DECIMAL\(39,0\)[\s\S]*
 
 # one digit short: these casts overflow for the extremes, so the filter stays above the projection
 query II
@@ -170,6 +177,11 @@ SELECT u FROM (SELECT u, d, u // 2 AS j FROM casts) WHERE CAST(u AS DECIMAL(20,0
 150
 
 query I
+SELECT h FROM (SELECT h, d, h // 2 AS j FROM casts) WHERE CAST(h AS DECIMAL(39,0)) BETWEEN 100 AND 200
+----
+150
+
+query I
 SELECT d FROM (SELECT i, d, i // 2 AS j FROM casts) WHERE CAST(d AS DECIMAL(18,4)) BETWEEN 100 AND 200
 ----
 150.25
@@ -180,13 +192,13 @@ SELECT i, d, c FROM (SELECT i, d, count(*) AS c FROM casts GROUP BY ALL) WHERE d
 150	150.25	1
 
 # every extreme survives the widening casts, and NULL stays NULL
-query IIII
-SELECT CAST(i AS DECIMAL(10,0)), CAST(b AS DECIMAL(19,0)), CAST(u AS DECIMAL(20,0)), CAST(d AS DECIMAL(18,4)) FROM casts ORDER BY i NULLS LAST
+query IIIII
+SELECT CAST(i AS DECIMAL(10,0)), CAST(b AS DECIMAL(19,0)), CAST(u AS DECIMAL(20,0)), CAST(h AS DECIMAL(39,0)), CAST(d AS DECIMAL(18,4)) FROM casts ORDER BY i NULLS LAST
 ----
--2147483648	-9223372036854775808	0	-99999999.9900
-150	150	150	150.2500
-2147483647	9223372036854775807	18446744073709551615	99999999.9900
-NULL	NULL	NULL	NULL
+-2147483648	-9223372036854775808	0	-170141183460469231731687303715884105728	-99999999.9900
+150	150	150	150	150.2500
+2147483647	9223372036854775807	18446744073709551615	170141183460469231731687303715884105727	99999999.9900
+NULL	NULL	NULL	NULL	NULL
 
 # the casts one digit short do overflow for the extremes, as does the cast of a HUGEINT
 statement error

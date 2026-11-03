@@ -94,7 +94,8 @@
 		{
 			"reason": "A wide decimal Value renders as a string literal cast in SQL text",
 			"paths": [
-				"test/extension/test_function_args_kwargs.test"
+				"test/extension/test_function_args_kwargs.test",
+				"test/sql/optimizer/pushdown/pushdown_safe_decimal_cast.test"
 			]
 		},
 		{
