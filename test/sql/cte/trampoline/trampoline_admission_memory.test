@@ -1,0 +1,37 @@
+# name: test/sql/cte/trampoline/trampoline_admission_memory.test
+# description: Historical admission state is in-memory and does not spill
+# group: [trampoline]
+
+# DISTINCT admission tracks every row ever routed to the branch in an in-memory
+# hash table over materialized candidate collections. That state does not spill:
+# under memory pressure the query fails with a clean out-of-memory error, and a
+# forced-external configuration does not change that. This file pins the boundary:
+# admission beyond the limit errors, the same workload within the limit returns
+# the exact count.
+
+statement ok
+SET max_execution_time=30000;
+
+statement ok
+SET memory_limit='32MB';
+
+statement error
+WITH RECURSIVE t(b, i, p) USING TRAMPOLINE (b) AS (
+	(SELECT 1, g, repeat('x', 64) || g::VARCHAR FROM range(200000) r(g))
+	BRANCH 1 DISTINCT: (SELECT CASE WHEN i < 400000 THEN 1 ELSE 0 END, i + 200000, p FROM t)
+)
+SELECT count(*) FROM t;
+----
+<REGEX>:.*Out of Memory Error.*
+
+statement ok
+SET memory_limit='1GB';
+
+query I
+WITH RECURSIVE t(b, i, p) USING TRAMPOLINE (b) AS (
+	(SELECT 1, g, repeat('x', 64) || g::VARCHAR FROM range(200000) r(g))
+	BRANCH 1 DISTINCT: (SELECT CASE WHEN i < 400000 THEN 1 ELSE 0 END, i + 200000, p FROM t)
+)
+SELECT count(*) FROM t;
+----
+200000
