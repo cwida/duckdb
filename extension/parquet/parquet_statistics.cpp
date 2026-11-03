@@ -20,6 +20,7 @@
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/common/types/hugeint.hpp"
 #include "duckdb/common/helper.hpp"
+#include "duckdb/common/array_ptr.hpp"
 #include "duckdb/storage/statistics/struct_stats.hpp"
 #include "duckdb/storage/statistics/list_stats.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
@@ -1264,21 +1265,98 @@ bool ParquetStatisticsUtils::BloomFilterExcludes(const TableFilter &duckdb_filte
 	return ApplyBloomFilter(duckdb_filter, bloom_filter, schema, hash_strategy);
 }
 
-ParquetBloomFilter::ParquetBloomFilter(idx_t num_entries, double bloom_filter_false_positive_ratio) {
-	// aim for hit ratio of 0.01%
-	// see http://tfk.mit.edu/pdf/bloom.pdf
-	double f = bloom_filter_false_positive_ratio;
-	double k = 8.0;
-	double n = LossyNumericCast<double>(num_entries);
-	double m = -k * n / std::log(1 - std::pow(f, 1 / k));
-	auto b = MaxValue<idx_t>(NextPowerOfTwo(LossyNumericCast<idx_t>(m / k)) / 32, 1);
+bool ParquetBloomFilterMemory::TryReserve(idx_t bytes) {
+	if (TryReserveInternal(bytes)) {
+		return true;
+	}
+	if (bytes > limit) {
+		return false;
+	}
+	make_room();
+	return TryReserveInternal(bytes);
+}
 
-	D_ASSERT(b > 0 && IsPowerOfTwo(b));
+bool ParquetBloomFilterMemory::TryReserveInternal(idx_t bytes) {
+	lock_guard<mutex> guard(lock);
+	if (bytes > limit - used) {
+		return false;
+	}
+	used += bytes;
+	return true;
+}
 
-	data = make_uniq<ResizeableBuffer>(Allocator::DefaultAllocator(), sizeof(ParquetBloomBlock) * b);
-	data->zero();
-	block_count = data->len / sizeof(ParquetBloomBlock);
-	D_ASSERT(data->len % sizeof(ParquetBloomBlock) == 0);
+void ParquetBloomFilterMemory::Release(idx_t bytes) {
+	lock_guard<mutex> guard(lock);
+	D_ASSERT(bytes <= used);
+	used -= bytes;
+}
+
+// see http://tfk.mit.edu/pdf/bloom.pdf
+static optional_idx BloomFilterSize(idx_t num_entries, double target) {
+	D_ASSERT(target > 0 && target <= 1);
+	// Check the floating-point size before converting or rounding to a power of two.
+	const auto bytes = -LossyNumericCast<double>(num_entries) / std::log1p(-std::pow(target, 1.0 / 8.0));
+	constexpr idx_t max_filter_bytes = 128ULL * 1024 * 1024;
+	if (!std::isfinite(bytes) || bytes > max_filter_bytes) {
+		return optional_idx();
+	}
+	return MaxValue<idx_t>(sizeof(ParquetBloomBlock), NextPowerOfTwo(LossyNumericCast<idx_t>(bytes)));
+}
+
+static unique_ptr<ResizeableBuffer> AllocateBloomFilter(Allocator &allocator, idx_t size) {
+	auto buffer = make_uniq<ResizeableBuffer>(allocator, size);
+	buffer->zero();
+	return buffer;
+}
+
+optional_idx ParquetBloomFilter::EstimateSize(idx_t num_entries, double target) {
+	return BloomFilterSize(num_entries, target);
+}
+
+unique_ptr<ParquetBloomFilter> ParquetBloomFilter::Create(Allocator &allocator, idx_t num_entries, double target) {
+	const auto size = BloomFilterSize(num_entries, target);
+	if (!size.IsValid()) {
+		return nullptr;
+	}
+	return make_uniq<ParquetBloomFilter>(AllocateBloomFilter(allocator, size.GetIndex()));
+}
+
+unique_ptr<ParquetBloomFilter> ParquetBloomFilter::TryCreate(Allocator &allocator, idx_t num_entries, double target,
+                                                             shared_ptr<ParquetBloomFilterMemory> memory) {
+	if (!num_entries) {
+		return nullptr;
+	}
+	const auto size = BloomFilterSize(num_entries, target);
+	if (!size.IsValid()) {
+		return nullptr;
+	}
+	// Reserve scratch space as well, so concurrent compaction stays within the budget.
+	const auto reservation = size.GetIndex() + size.GetIndex() / 2;
+	if (!memory->TryReserve(reservation)) {
+		return nullptr;
+	}
+	try {
+		auto result = make_uniq<ParquetBloomFilter>(AllocateBloomFilter(allocator, size.GetIndex()));
+		result->memory = memory;
+		result->reserved_bytes = reservation;
+		return result;
+	} catch (...) {
+		memory->Release(reservation);
+		throw;
+	}
+}
+
+ParquetBloomFilter::~ParquetBloomFilter() {
+	data.reset();
+	ReleaseReservation();
+}
+
+void ParquetBloomFilter::ReleaseReservation() {
+	if (memory) {
+		memory->Release(reserved_bytes);
+		memory.reset();
+		reserved_bytes = 0;
+	}
 }
 
 ParquetBloomFilter::ParquetBloomFilter(unique_ptr<ResizeableBuffer> data_p) {
@@ -1317,6 +1395,44 @@ double ParquetBloomFilter::OneRatio() {
 		one_count += PopCnt64(bloom_ptr[b_idx]);
 	}
 	return LossyNumericCast<double>(one_count) / (LossyNumericCast<double>(data->len) * 8.0);
+}
+
+void ParquetBloomFilter::Shrink(Allocator &allocator, idx_t new_block_count) {
+	D_ASSERT(new_block_count > 0 && block_count % new_block_count == 0);
+	auto folded = AllocateBloomFilter(allocator, new_block_count * sizeof(ParquetBloomBlock));
+	array_ptr<ParquetBloomBlock> source(reinterpret_cast<ParquetBloomBlock *>(data->ptr), block_count);
+	array_ptr<ParquetBloomBlock> target(reinterpret_cast<ParquetBloomBlock *>(folded->ptr), new_block_count);
+	const auto factor = block_count / new_block_count;
+	for (idx_t i = 0; i < new_block_count; i++) {
+		auto &merged = target[i];
+		for (idx_t j = i * factor; j < (i + 1) * factor; j++) {
+			for (idx_t word = 0; word < 8; word++) {
+				merged.block[word] |= source[j].block[word];
+			}
+		}
+	}
+	data = std::move(folded);
+	block_count = new_block_count;
+}
+
+void ParquetBloomFilter::FoldToTarget(Allocator &allocator, double target) {
+	D_ASSERT(IsPowerOfTwo(block_count));
+	double zero_ratio = 1.0 - OneRatio();
+	auto new_block_count = block_count;
+	while (new_block_count > 1) {
+		zero_ratio *= zero_ratio;
+		if (std::pow(1.0 - zero_ratio, 8) > target) {
+			break;
+		}
+		new_block_count /= 2;
+	}
+	if (new_block_count < block_count) {
+		Shrink(allocator, new_block_count);
+	}
+	if (memory) {
+		memory->Release(reserved_bytes - data->len);
+		reserved_bytes = data->len;
+	}
 }
 
 ResizeableBuffer *ParquetBloomFilter::Get() {

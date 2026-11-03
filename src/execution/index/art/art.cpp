@@ -723,6 +723,15 @@ void ART::ResetStorage(IndexLock &index_lock) {
 	root_ptr.Clear();
 }
 
+void ART::DisownStorage(IndexLock &index_lock) {
+	index_lock.AssertHeld(*this);
+	D_ASSERT(owns_data);
+	for (auto &allocator : *allocators) {
+		allocator->DisownBuffers();
+	}
+	root_ptr.Clear();
+}
+
 idx_t ART::TryDelete(IndexLock &state, DataChunk &entries, Vector &row_ids, optional_ptr<SelectionVector> deleted_sel,
                      optional_ptr<SelectionVector> non_deleted_sel) {
 	state.AssertHeld(*this);

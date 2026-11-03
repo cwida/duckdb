@@ -20,6 +20,9 @@
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/common/unique_ptr.hpp"
 #include "duckdb/common/vector.hpp"
+#include "duckdb/common/mutex.hpp"
+
+#include <functional>
 
 namespace duckdb_apache {
 namespace thrift {
@@ -89,21 +92,50 @@ private:
 	                                  const std::string &stats);
 };
 
+class ParquetBloomFilterMemory {
+public:
+	static constexpr idx_t DEFAULT_LIMIT = 64ULL * 1024 * 1024;
+
+	ParquetBloomFilterMemory(idx_t limit_p, std::function<void()> make_room_p)
+	    : limit(limit_p), make_room(std::move(make_room_p)) {
+	}
+	//! When the budget is exhausted, calls make_room once to free buffered filters and retries
+	bool TryReserve(idx_t bytes);
+	void Release(idx_t bytes);
+
+private:
+	bool TryReserveInternal(idx_t bytes);
+
+private:
+	mutex lock;
+	idx_t used = 0;
+	idx_t limit;
+	std::function<void()> make_room;
+};
+
 class ParquetBloomFilter {
 	static constexpr const idx_t DEFAULT_BLOCK_COUNT = 32; // 4k filter
 
 public:
-	ParquetBloomFilter(idx_t num_entries, double bloom_filter_false_positive_ratio);
 	ParquetBloomFilter(unique_ptr<ResizeableBuffer> data_p);
+	~ParquetBloomFilter();
+	static unique_ptr<ParquetBloomFilter> Create(Allocator &allocator, idx_t num_entries, double target);
+	static optional_idx EstimateSize(idx_t num_entries, double target);
+	static unique_ptr<ParquetBloomFilter> TryCreate(Allocator &allocator, idx_t num_entries, double target,
+	                                                shared_ptr<ParquetBloomFilterMemory> memory);
 	void FilterInsert(uint64_t x);
 	bool FilterCheck(uint64_t x);
-	void Shrink(idx_t new_block_count);
+	void Shrink(Allocator &allocator, idx_t new_block_count);
+	void FoldToTarget(Allocator &allocator, double target);
+	void ReleaseReservation();
 	double OneRatio();
 	ResizeableBuffer *Get();
 
 private:
 	unique_ptr<ResizeableBuffer> data;
 	idx_t block_count;
+	shared_ptr<ParquetBloomFilterMemory> memory;
+	idx_t reserved_bytes = 0;
 };
 
 // see https://github.com/apache/parquet-format/blob/master/BloomFilter.md

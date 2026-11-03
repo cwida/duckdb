@@ -12,11 +12,64 @@
 #include "parquet_interval.hpp"
 #include "parquet_timestamp.hpp"
 #include "zstd/common/xxhash.hpp"
+#include "duckdb/common/bswap.hpp"
 #include "duckdb/common/types/time.hpp"
 #include "duckdb/common/types/uhugeint.hpp"
 #include "duckdb/common/types/uuid.hpp"
 
 namespace duckdb {
+
+struct ParquetXXHash64Constants {
+	static constexpr uint64_t PRIME64_1 = 0x9E3779B185EBCA87ULL;
+	static constexpr uint64_t PRIME64_2 = 0xC2B2AE3D27D4EB4FULL;
+	static constexpr uint64_t PRIME64_3 = 0x165667B19E3779F9ULL;
+	static constexpr uint64_t PRIME64_4 = 0x85EBCA77C2B2AE63ULL;
+	static constexpr uint64_t PRIME64_5 = 0x27D4EB2F165667C5ULL;
+
+	static uint64_t RotateLeft(uint64_t x, uint8_t r) {
+		return (x << r) | (x >> (64 - r));
+	}
+
+	static uint64_t Avalanche(uint64_t h) {
+		h ^= h >> 33;
+		h *= PRIME64_2;
+		h ^= h >> 29;
+		h *= PRIME64_3;
+		h ^= h >> 32;
+		return h;
+	}
+};
+
+template <idx_t SIZE>
+struct ParquetFixedWidthXXHash64 {
+	template <class T>
+	static uint64_t Hash(const T &value) {
+		return duckdb_zstd::XXH64(&value, sizeof(value), 0);
+	}
+};
+
+template <>
+struct ParquetFixedWidthXXHash64<sizeof(uint32_t)> : public ParquetXXHash64Constants {
+	template <class T>
+	static uint64_t Hash(const T &value) {
+		uint32_t bits;
+		memcpy(&bits, &value, sizeof(bits));
+		auto h = (PRIME64_5 + sizeof(bits)) ^ (uint64_t(BSwapIfBE(bits)) * PRIME64_1);
+		return Avalanche(RotateLeft(h, 23) * PRIME64_2 + PRIME64_3);
+	}
+};
+
+template <>
+struct ParquetFixedWidthXXHash64<sizeof(uint64_t)> : public ParquetXXHash64Constants {
+	template <class T>
+	static uint64_t Hash(const T &value) {
+		uint64_t bits;
+		memcpy(&bits, &value, sizeof(bits));
+		auto lane = RotateLeft(BSwapIfBE(bits) * PRIME64_2, 31) * PRIME64_1;
+		auto h = (PRIME64_5 + sizeof(bits)) ^ lane;
+		return Avalanche(RotateLeft(h, 27) * PRIME64_1 + PRIME64_4);
+	}
+};
 
 struct BaseParquetOperator {
 	template <class SRC, class TGT>
@@ -31,7 +84,7 @@ struct BaseParquetOperator {
 
 	template <class SRC, class TGT>
 	static uint64_t XXHash64(const TGT &target_value) {
-		return duckdb_zstd::XXH64(&target_value, sizeof(target_value), 0);
+		return ParquetFixedWidthXXHash64<sizeof(TGT)>::template Hash<TGT>(target_value);
 	}
 
 	template <class SRC, class TGT>
@@ -42,6 +95,11 @@ struct BaseParquetOperator {
 	template <class SRC, class TGT>
 	static optional<uint64_t> GetExtraBloomFilterHash(const SRC &, const TGT &) {
 		return nullopt;
+	}
+
+	template <class SRC, class TGT>
+	static bool CanSeedBloomFilter(const TGT &) {
+		return true;
 	}
 
 	template <class SRC, class TGT>
@@ -85,6 +143,12 @@ struct FloatingPointOperator : public BaseParquetOperator {
 	template <class SRC, class TGT>
 	static TGT Operation(SRC input) {
 		return TGT(input);
+	}
+
+	//! The dictionary merges NaNs with different payloads, which hash differently
+	template <class SRC, class TGT>
+	static bool CanSeedBloomFilter(const TGT &target_value) {
+		return !Value::IsNan(target_value);
 	}
 
 	template <class SRC, class TGT>
