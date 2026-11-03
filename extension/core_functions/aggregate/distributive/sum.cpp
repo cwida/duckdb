@@ -525,6 +525,38 @@ struct BignumState {
 	BignumIntermediate value;
 };
 
+//! The BIGNUM sum states are exported as the BIGNUM blob of their sum, NULL for an empty state
+AggregateStateLayout BignumSumStateLayout(AggregateLayoutInput &input) {
+	return AggregateStateLayout(LogicalType::BIGNUM, AlignValue<idx_t>(sizeof(BignumState)));
+}
+
+void BignumSumExportState(Vector &state_vector, AggregateFinalizeInputData &, Vector &result, idx_t count,
+                          idx_t offset) {
+	auto states = state_vector.Values<BignumState *>();
+	auto result_data = FlatVector::GetDataMutable<string_t>(result);
+	auto &result_validity = FlatVector::ValidityMutable(result);
+	for (idx_t i = 0; i < count; i++) {
+		auto &state = *states[i].GetValue();
+		if (!state.is_set) {
+			result_validity.SetInvalid(offset + i);
+			continue;
+		}
+		result_data[offset + i] = BignumAggregates::WriteBignum(state.value, result);
+	}
+}
+
+void BignumSumImportState(AggregateImportInputData &input) {
+	auto entries = input.input_vec.Values<string_t>();
+	for (idx_t i = 0; i < input.input_vec.size(); i++) {
+		auto &state = *reinterpret_cast<BignumState *>(input.dest_buffer + i * input.layout.total_state_size);
+		const auto entry = entries[i];
+		state.is_set = entry.IsValid();
+		if (state.is_set) {
+			state.value = BignumAggregates::ImportBignum(entry.GetValue(), input.allocator);
+		}
+	}
+}
+
 struct BignumOperation {
 	template <class INPUT_TYPE, class STATE, class OP>
 	static void ConstantOperation(STATE &state, const INPUT_TYPE &input, AggregateUnaryInput &unary_input,
@@ -592,6 +624,7 @@ AggregateFunction GetWideDecimalSumAggregate() {
 	    LogicalTypeId::DECIMAL, LogicalTypeId::DECIMAL);
 	function.SetOrderDependent(AggregateOrderDependent::NOT_ORDER_DEPENDENT);
 	function.SetFallible(); // the finalize throws when the sum does not fit the width of the result
+	function.SetStateExportCallbacks(BignumSumStateLayout, BignumSumExportState, BignumSumImportState);
 	return function;
 }
 
@@ -616,6 +649,7 @@ AggregateFunctionSet SumFun::GetFunctions() {
 	auto sum_bignum = AggregateFunction::UnaryAggregate<BignumState, bignum_t, bignum_t, BignumOperation>(
 	    LogicalType::BIGNUM, LogicalType::BIGNUM);
 	sum_bignum.GetSignature().GetParameter(0).SetName("arg");
+	sum_bignum.SetStateExportCallbacks(BignumSumStateLayout, BignumSumExportState, BignumSumImportState);
 	sum.AddFunction(sum_bignum);
 	return sum;
 }

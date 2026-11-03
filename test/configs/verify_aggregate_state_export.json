@@ -117,10 +117,6 @@
         "test/sql/show_select/summarize_subquery.test",
         "test/sql/show_select/test_summarize.test",
         "test/sql/show_select/test_summarize_quoted.test",
-        "test/sql/types/bignum/test_big_bignum.test",
-        "test/sql/types/bignum/test_bignum_implicit_cast.test",
-        "test/sql/types/bignum/test_bignum_sum.test",
-        "test/sql/types/decimal/wide_decimal_storage.test",
         "test/sql/types/nested/array/array_summarize.test"
       ]
     },

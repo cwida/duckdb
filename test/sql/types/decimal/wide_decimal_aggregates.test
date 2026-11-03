@@ -1,0 +1,131 @@
+# name: test/sql/types/decimal/wide_decimal_aggregates.test
+# description: avg and sum of decimals wider than 38 digits: exact sums, exportable states
+# group: [decimal]
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES
+	('1000000000000000000000000000.1234567891'),
+	('0.0000000003'),
+	('-333333333333333333333333333.7777777777'),
+	('123456789012345678.0000000001'),
+	('7.5000000000'),
+	('0.0000000001'),
+	('-0.0000000001')) v(s);
+
+# the same values average to the same DOUBLE in the fixed-size and the bignum tier: both sum exactly and divide once
+query I
+SELECT avg(s::DECIMAL(38,10)) = avg(s::DECIMAL(39,10)) FROM t;
+----
+true
+
+query I
+SELECT avg(s::DECIMAL(38,10))::VARCHAR = avg(s::DECIMAL(255,10))::VARCHAR FROM t;
+----
+true
+
+query II
+SELECT typeof(avg(s::DECIMAL(39,10))), typeof(sum(s::DECIMAL(39,10))) FROM t;
+----
+DOUBLE	DECIMAL(255,10)
+
+# the averages agree per group and for repeated values whose DOUBLE accumulation would drift
+query I
+SELECT bool_and(a38 = a39) FROM (
+	SELECT avg(s::DECIMAL(38,10)) a38, avg(s::DECIMAL(39,10)) a39
+	FROM t, range(10) r
+	GROUP BY r % 3);
+----
+true
+
+query I
+SELECT avg(('100000000000000000000000000.1234567891'::DECIMAL(38,10))) = avg(('100000000000000000000000000.1234567891'::DECIMAL(39,10)))
+FROM range(10);
+----
+true
+
+# the sum is exact up to the full width
+query I
+SELECT sum(s::DECIMAL(39,10)) FROM t;
+----
+666666666790123455679012351.8456790118
+
+query I
+SELECT avg(x) FROM (SELECT NULL::DECIMAL(40,2) x);
+----
+NULL
+
+query I
+SELECT avg(x) FROM (SELECT '1.5'::DECIMAL(40,2) x WHERE false);
+----
+NULL
+
+# the states of the bignum sum and avg are exported as BIGNUM blobs of the unscaled sum
+query II
+SELECT finalize(sum(x) EXPORT_STATE), finalize(avg(x) EXPORT_STATE) FROM (VALUES ('1.5'::DECIMAL(40,2)), ('2.25'::DECIMAL(40,2))) t(x);
+----
+3.75	1.875
+
+query II
+SELECT (sum(x) EXPORT_STATE)::VARCHAR, (avg(x) EXPORT_STATE)::STRUCT(count UBIGINT, value VARCHAR) FROM (VALUES ('1.5'::DECIMAL(40,2)), ('2.25'::DECIMAL(40,2))) t(x);
+----
+375	{'count': 2, 'value': 375}
+
+query II
+SELECT (sum(x) EXPORT_STATE)::VARCHAR, (avg(x) EXPORT_STATE)::STRUCT(count UBIGINT, value VARCHAR) FROM (VALUES (NULL::DECIMAL(40,2))) t(x);
+----
+NULL	{'count': 0, 'value': NULL}
+
+query III
+SELECT g, finalize(sum(x) EXPORT_STATE), finalize(avg(x) EXPORT_STATE)
+FROM (SELECT range % 2 g, (range * 1000000000000000000000000000000)::DECIMAL(50,0) x FROM range(10))
+GROUP BY g ORDER BY g;
+----
+0	20000000000000000000000000000000	4e+30
+1	25000000000000000000000000000000	5e+30
+
+# imported states
+query I
+SELECT finalize(to_aggregate_state(375::BIGNUM, 'sum', ['DECIMAL(40,2)']));
+----
+3.75
+
+query I
+SELECT finalize(to_aggregate_state({'count': 2, 'value': 375::BIGNUM}, 'avg', ['DECIMAL(40,2)']));
+----
+1.875
+
+query I
+SELECT finalize(combine(to_aggregate_state(375::BIGNUM, 'sum', ['DECIMAL(40,2)']), to_aggregate_state(-1000::BIGNUM, 'sum', ['DECIMAL(40,2)'])));
+----
+-6.25
+
+query I
+SELECT finalize(combine(to_aggregate_state({'count': 2, 'value': 375::BIGNUM}, 'avg', ['DECIMAL(40,2)']), to_aggregate_state({'count': 2, 'value': 25::BIGNUM}, 'avg', ['DECIMAL(40,2)'])));
+----
+1.0
+
+query I
+SELECT finalize(to_aggregate_state(NULL::BIGNUM, 'sum', ['DECIMAL(40,2)']));
+----
+NULL
+
+query I
+SELECT finalize(to_aggregate_state(NULL::STRUCT(count UBIGINT, value BIGNUM), 'avg', ['DECIMAL(40,2)']));
+----
+NULL
+
+statement error
+SELECT finalize(to_aggregate_state({'count': 2, 'value': NULL::BIGNUM}, 'avg', ['DECIMAL(40,2)']));
+----
+Invalid avg state
+
+# the BIGNUM sum exports its state the same way
+query II
+SELECT finalize(sum(x) EXPORT_STATE), (sum(x) EXPORT_STATE)::VARCHAR FROM (VALUES ('99999999999999999999999999999999999999999'::BIGNUM), ('1'::BIGNUM)) t(x);
+----
+100000000000000000000000000000000000000000	100000000000000000000000000000000000000000
+
+query I
+SELECT finalize(combine(to_aggregate_state('-5'::BIGNUM, 'sum', ['BIGNUM']), to_aggregate_state('5'::BIGNUM, 'sum', ['BIGNUM'])));
+----
+0

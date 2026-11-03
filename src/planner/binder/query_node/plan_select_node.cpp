@@ -46,11 +46,6 @@ bool Binder::DebugAggregateStateExportVerify(BoundSelectNode &statement, unique_
 			// already an aggregate state export - skip verification
 			return false;
 		}
-		auto &function = aggr->Cast<BoundAggregateExpression>().Function();
-		if (!function.HasStateCombineCallback() || !function.HasGetStateTypeCallback()) {
-			// states that own memory (e.g. the BIGNUM sum of a wide decimal) have no exportable layout
-			return false;
-		}
 	}
 
 	// we transform a query like "SELECT grp, SUM(col) FROM tbl GROUP BY grp" into
