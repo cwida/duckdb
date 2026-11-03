@@ -894,6 +894,13 @@ vector<PartitionStatistics> TableFunctionMultiFileWrapper::GetPartitionStats(Cli
 	return function.get_partition_stats(context, file_input);
 }
 
+static bool MultiFileIsRepeatable(optional_ptr<const FunctionData>) {
+	// The file list is fixed at bind, and the engine already assumes file content is stable within one query:
+	// recursive CTE re-execution, dynamic-filter rescans, and statement-cache replays all re-read bound files.
+	// Repeatability within one query therefore encodes an existing engine assumption rather than a new promise.
+	return true;
+}
+
 TableFunction TableFunctionMultiFileWrapper::CreateFunction(TableFunction single_file_function, Identifier name,
                                                             TableFunctionMultiFileSettings settings,
                                                             table_function_bind_t bind) {
@@ -916,6 +923,7 @@ TableFunction TableFunctionMultiFileWrapper::CreateFunction(TableFunction single
 	if (wrapped_options) {
 		signature.ExtendTypedKwargs([&](TypedKwargs &options) { options = options.Merge(*wrapped_options); });
 	}
+	result.is_repeatable = MultiFileIsRepeatable;
 	result.projection_pushdown = single_file_function.projection_pushdown;
 	result.filter_pushdown = single_file_function.filter_pushdown;
 	result.filter_prune = single_file_function.filter_prune;

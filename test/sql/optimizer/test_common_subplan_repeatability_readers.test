@@ -1,0 +1,125 @@
+# name: test/sql/optimizer/test_common_subplan_repeatability_readers.test
+# description: Multi-file readers declare repeatable scans within one query
+# group: [optimizer]
+
+require parquet
+
+require json
+
+statement ok
+SET explain_output='optimized_only';
+
+statement ok
+CREATE TABLE reader_rows AS SELECT i, i % 3 AS j FROM range(100) t(i);
+
+statement ok
+COPY reader_rows TO '__TEST_DIR__/repeatability_rows.parquet' (FORMAT parquet);
+
+statement ok
+COPY reader_rows TO '__TEST_DIR__/repeatability_rows.csv' (FORMAT csv, HEADER);
+
+statement ok
+COPY (SELECT to_json(reader_rows) AS record FROM reader_rows) TO '__TEST_DIR__/repeatability_rows.json' (FORMAT csv, QUOTE '', HEADER false);
+
+# Identical reader calls keep full multiplicity through INTERSECT ALL.
+query I
+SELECT count(*) FROM (SELECT * FROM read_parquet('__TEST_DIR__/repeatability_rows.parquet') INTERSECT ALL SELECT * FROM read_parquet('__TEST_DIR__/repeatability_rows.parquet'));
+----
+100
+
+query I
+SELECT count(*) FROM (SELECT * FROM read_csv('__TEST_DIR__/repeatability_rows.csv') INTERSECT ALL SELECT * FROM read_csv('__TEST_DIR__/repeatability_rows.csv'));
+----
+100
+
+query I
+SELECT count(*) FROM (SELECT * FROM read_json('__TEST_DIR__/repeatability_rows.json') INTERSECT ALL SELECT * FROM read_json('__TEST_DIR__/repeatability_rows.json'));
+----
+100
+
+# Common subplan sharing additionally requires a serializable scan identity. The multi-file wrapper
+# has no bind-data serializers and MultiFileBindData opts out of the statement cache, so these scans
+# are still rejected by LogicalGet::SupportSerialization. If the readers gain real serialization
+# callbacks, sharing becomes reachable and these expectations should flip deliberately.
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM read_parquet('__TEST_DIR__/repeatability_rows.parquet') INTERSECT ALL SELECT * FROM read_parquet('__TEST_DIR__/repeatability_rows.parquet');
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM read_csv('__TEST_DIR__/repeatability_rows.csv') INTERSECT ALL SELECT * FROM read_csv('__TEST_DIR__/repeatability_rows.csv');
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+# The repeatability classification is consumed by recursive invariant build reuse, which does not
+# serialize the scan. A reader hash build is retained across iterations only with the annotation.
+# The build reads real column data so that it cannot be answered from file metadata.
+statement ok
+SET enable_caching_operators=true;
+
+statement ok
+SET disabled_optimizers='join_order,build_side_probe_side';
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query I
+WITH RECURSIVE r(i, total) AS (
+    VALUES (0, 0::BIGINT)
+    UNION ALL
+    SELECT r.i + 1, build.total
+    FROM r
+    JOIN (
+        SELECT i AS k, sum(i) OVER ()::BIGINT AS total
+        FROM read_parquet('__TEST_DIR__/repeatability_rows.parquet')
+    ) build ON build.k = r.i
+    WHERE r.i < 3
+)
+SELECT list(total ORDER BY i) FROM r;
+----
+[0, 4950, 4950, 4950]
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT info.retained_build_executions::UBIGINT >= 1
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class = 'PhysicalRecursiveCTE' AND event = 'RuntimeMetrics';
+----
+1
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query I
+WITH RECURSIVE r(i, total) AS (
+    VALUES (0, 0::BIGINT)
+    UNION ALL
+    SELECT r.i + 1, build.total
+    FROM r
+    JOIN (
+        SELECT i AS k, sum(i) OVER ()::BIGINT AS total
+        FROM read_csv('__TEST_DIR__/repeatability_rows.csv')
+    ) build ON build.k = r.i
+    WHERE r.i < 3
+)
+SELECT list(total ORDER BY i) FROM r;
+----
+[0, 4950, 4950, 4950]
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT info.retained_build_executions::UBIGINT >= 1
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class = 'PhysicalRecursiveCTE' AND event = 'RuntimeMetrics';
+----
+1
