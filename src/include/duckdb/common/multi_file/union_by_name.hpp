@@ -14,6 +14,7 @@
 #include "duckdb/common/helper.hpp"
 #include "duckdb/common/multi_file/base_file_reader.hpp"
 #include "duckdb/common/multi_file/multi_file_options.hpp"
+#include "duckdb/parallel/task_executor.hpp"
 
 namespace duckdb {
 struct MultiFileReader;
@@ -30,6 +31,20 @@ public:
 	UnionCols(ClientContext &context, const vector<OpenFileInfo> &files, vector<LogicalType> &union_col_types,
 	          vector<Identifier> &union_col_names, BaseFileReaderOptions &options, MultiFileOptions &file_options,
 	          MultiFileReader &multi_file_reader, MultiFileReaderInterface &interface);
+
+	//! Read the union data (schema, cardinality, statistics access) of every file in parallel, without combining the
+	//! schemas. With ignore_errors, a file that cannot be read yields a null entry instead of failing
+	DUCKDB_API static vector<shared_ptr<BaseUnionData>>
+	ReadUnionData(ClientContext &context, const vector<OpenFileInfo> &files, BaseFileReaderOptions &options,
+	              MultiFileOptions &file_options, MultiFileReader &multi_file_reader,
+	              MultiFileReaderInterface &interface, bool ignore_errors = false,
+	              TaskSchedulerType scheduler_type = TaskSchedulerType::REGULAR);
+
+	//! Merge the statistics of a column over the files. Null if some file with rows lacks the column or has it as a
+	//! type other than 'type'. Files known to be empty are skipped
+	DUCKDB_API static unique_ptr<BaseStatistics> MergeStatistics(ClientContext &context,
+	                                                             const vector<shared_ptr<BaseUnionData>> &readers,
+	                                                             const Identifier &name, const LogicalType &type);
 };
 
 } // namespace duckdb
