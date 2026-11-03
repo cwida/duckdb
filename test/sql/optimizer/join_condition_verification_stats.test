@@ -1,0 +1,125 @@
+# name: test/sql/optimizer/join_condition_verification_stats.test
+# description: Verification statistics of join conditions cannot claim NOT NULL after an earlier condition
+# group: [optimizer]
+
+statement ok
+PRAGMA enable_verification
+
+statement ok
+SET debug_verify_stats=true
+
+# the statistics propagation updates the column statistics after each join condition (both sides become NOT NULL),
+# but every condition is evaluated over candidate pairs that still hold the NULLs the earlier condition rejects,
+# so the verification statistics of a later condition's expression (t1.n + 1, a cast of t1.n) must keep the NULLs
+
+statement ok
+CREATE TABLE dec_small(n DECIMAL(10,2));
+
+statement ok
+INSERT INTO dec_small VALUES (1.5), (NULL), (0), (-7.5);
+
+query I
+SELECT count(*) FROM dec_small t1 JOIN dec_small t2 ON t1.n >= t2.n AND t1.n + 1 >= t2.n;
+----
+6
+
+query II
+SELECT t1.n, t2.n FROM dec_small t1 JOIN dec_small t2 ON t1.n >= t2.n AND t1.n + 1 >= t2.n ORDER BY ALL;
+----
+-7.50	-7.50
+0.00	-7.50
+0.00	0.00
+1.50	-7.50
+1.50	0.00
+1.50	1.50
+
+# three conditions, the later two derived from the key
+query I
+SELECT count(*) FROM dec_small t1 JOIN dec_small t2 ON t1.n >= t2.n AND t1.n + 1 >= t2.n AND t1.n * 2 >= t2.n;
+----
+5
+
+# the join conditions written as a WHERE clause take the same path
+query I
+SELECT count(*) FROM dec_small t1, dec_small t2 WHERE t1.n >= t2.n AND t1.n + 1 >= t2.n;
+----
+6
+
+# the arithmetic on the right side
+query I
+SELECT count(*) FROM dec_small t1 JOIN dec_small t2 ON t1.n >= t2.n AND t1.n >= t2.n - 1;
+----
+6
+
+# a LEFT JOIN with a disjunction becomes an any-join holding both conditions
+query I
+SELECT count(*) FROM dec_small t1 LEFT JOIN dec_small t2 ON t1.n >= t2.n AND (t1.n + 1 >= t2.n OR t2.n < -100);
+----
+7
+
+# an inner any-join over a non-comparison condition
+query I
+SELECT count(*) FROM dec_small t1 JOIN dec_small t2 ON (t1.n >= t2.n AND t1.n + 1 >= t2.n) IS TRUE;
+----
+6
+
+# wider decimal
+statement ok
+CREATE TABLE dec_wide(n DECIMAL(18,3));
+
+statement ok
+INSERT INTO dec_wide VALUES (1.5), (NULL), (0), (-7.5);
+
+query I
+SELECT count(*) FROM dec_wide t1 JOIN dec_wide t2 ON t1.n >= t2.n AND t1.n + 1 >= t2.n;
+----
+6
+
+query I
+SELECT count(*) FROM dec_wide t1 LEFT JOIN dec_wide t2 ON t1.n >= t2.n AND (t1.n + 1 >= t2.n OR t2.n < -100);
+----
+7
+
+# integers: a cast of the key in the later condition
+statement ok
+CREATE TABLE ints(n INTEGER);
+
+statement ok
+INSERT INTO ints VALUES (1), (NULL), (0), (-7);
+
+query I
+SELECT count(*) FROM ints t1 JOIN ints t2 ON t1.n >= t2.n AND t1.n::BIGINT >= t2.n;
+----
+6
+
+query I
+SELECT count(*) FROM ints t1 JOIN ints t2 ON t1.n >= t2.n AND t1.n::BIGINT >= t2.n::BIGINT;
+----
+6
+
+query I
+SELECT count(*) FROM ints t1 JOIN ints t2 ON t1.n >= t2.n AND t1.n + 1 >= t2.n;
+----
+6
+
+query I
+SELECT count(*) FROM ints t1 LEFT JOIN ints t2 ON t1.n >= t2.n AND (t1.n::BIGINT >= t2.n OR t2.n < -100);
+----
+7
+
+# NULLs on one side only
+statement ok
+CREATE TABLE no_nulls(n DECIMAL(10,2));
+
+statement ok
+INSERT INTO no_nulls VALUES (1.5), (0), (-7.5);
+
+query I
+SELECT count(*) FROM dec_small t1 JOIN no_nulls t2 ON t1.n >= t2.n AND t1.n + 1 >= t2.n;
+----
+6
+
+query I
+SELECT count(*) FROM no_nulls t1 JOIN dec_small t2 ON t1.n >= t2.n AND t1.n >= t2.n - 1;
+----
+6
