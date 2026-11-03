@@ -65,3 +65,20 @@ ATTACH '{TEMP_DIR}/my_name_duckdb_extension'
 
 statement ok
 FROM read_blob('build/*/repository/*/*/parquet.duckdb_extension');
+
+# the trust-domain marker is matched case-insensitively, since the default filesystems on macOS and
+# Windows are case-insensitive and would still resolve a differently-cased name to the same file
+statement error
+COPY (SELECT 42) TO '{TEMP_DIR}/name.DUCKDB_EXTENSION';
+----
+reserved for DuckDB extensions
+
+statement error
+COPY (SELECT 42) TO '{TEMP_DIR}/name.Duckdb_Extension.Info' (FORMAT CSV);
+----
+reserved for DuckDB extensions
+
+statement error
+COPY (SELECT 42) TO '{TEMP_DIR}/name.duckdb_extension.';
+----
+reserved for DuckDB extensions
