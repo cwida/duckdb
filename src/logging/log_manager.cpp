@@ -11,7 +11,7 @@
 namespace duckdb {
 
 unique_ptr<Logger> LogManager::CreateLogger(LoggingContext context, bool thread_safe, bool mutable_settings) {
-	unique_lock<mutex> lck(lock);
+	annotated_unique_lock<annotated_mutex> lck(lock);
 	if (mutable_settings) {
 		return make_uniq<MutableLogger>(*config, RegisterLoggingContextInternal(context), *this);
 	}
@@ -25,7 +25,7 @@ unique_ptr<Logger> LogManager::CreateLogger(LoggingContext context, const LogCon
 	if (snapshot.config && snapshot.version == config_version.load()) {
 		return CreateLoggerInternal(context, snapshot.config);
 	}
-	unique_lock<mutex> lck(lock);
+	annotated_unique_lock<annotated_mutex> lck(lock);
 	return CreateLoggerInternal(context, config);
 }
 
@@ -41,7 +41,7 @@ void LogManager::RefreshConfigSnapshot(LogConfigSnapshot &snapshot) {
 	if (snapshot.config && snapshot.version == config_version.load()) {
 		return;
 	}
-	unique_lock<mutex> lck(lock);
+	annotated_unique_lock<annotated_mutex> lck(lock);
 	snapshot.config = config;
 	snapshot.version = config_version.load();
 }
@@ -51,7 +51,7 @@ RegisteredLoggingContext LogManager::RegisterLoggingContext(LoggingContext &cont
 }
 
 bool LogManager::RegisterLogStorage(const string &name, shared_ptr<LogStorage> &storage) {
-	unique_lock<mutex> lck(lock);
+	annotated_unique_lock<annotated_mutex> lck(lock);
 	if (registered_log_storages.find(name) != registered_log_storages.end()) {
 		return false;
 	}
@@ -68,17 +68,17 @@ shared_ptr<Logger> LogManager::GlobalLoggerReference() {
 }
 
 void LogManager::Flush() {
-	unique_lock<mutex> lck(lock);
+	annotated_unique_lock<annotated_mutex> lck(lock);
 	log_storage->FlushAll();
 }
 
 shared_ptr<LogStorage> LogManager::GetLogStorage() {
-	unique_lock<mutex> lck(lock);
+	annotated_unique_lock<annotated_mutex> lck(lock);
 	return log_storage;
 }
 
 bool LogManager::CanScan(LoggingTargetTable table) {
-	unique_lock<mutex> lck(lock);
+	annotated_unique_lock<annotated_mutex> lck(lock);
 	return log_storage->CanScan(table);
 }
 
@@ -114,7 +114,7 @@ void LogManager::WriteLogEntry(timestamp_t timestamp, const char *log_type, LogL
 	if (log_level == LogLevel::LOG_WARNING && Settings::Get<WarningsAsErrorsSetting>(db_instance)) {
 		throw InvalidInputException(log_message);
 	} else {
-		unique_lock<mutex> lck(lock);
+		annotated_unique_lock<annotated_mutex> lck(lock);
 		log_storage->WriteLogEntry(timestamp, log_level, log_type, log_message, context);
 	}
 }
@@ -124,7 +124,7 @@ void LogManager::FlushCachedLogEntries(DataChunk &chunk, const RegisteredLogging
 }
 
 void LogManager::SetConfig(DatabaseInstance &db, const LogConfig &config_p) {
-	unique_lock<mutex> lck(lock);
+	annotated_unique_lock<annotated_mutex> lck(lock);
 
 	// We need extra handling for switching storage
 	auto new_config = config_p;
@@ -133,39 +133,39 @@ void LogManager::SetConfig(DatabaseInstance &db, const LogConfig &config_p) {
 }
 
 pair<LogConfig, shared_ptr<LogStorage>> LogManager::GetConfigAndStorage() {
-	unique_lock<mutex> lck(lock);
+	annotated_unique_lock<annotated_mutex> lck(lock);
 	return make_pair(*config, log_storage);
 }
 
 void LogManager::RestoreConfig(const LogConfig &config_p, shared_ptr<LogStorage> storage) {
-	unique_lock<mutex> lck(lock);
+	annotated_unique_lock<annotated_mutex> lck(lock);
 	log_storage = std::move(storage);
 	SetConfigInternal(config_p);
 }
 
 void LogManager::SetEnableLogging(bool enable) {
-	unique_lock<mutex> lck(lock);
+	annotated_unique_lock<annotated_mutex> lck(lock);
 	auto new_config = *config;
 	new_config.enabled = enable;
 	SetConfigInternal(std::move(new_config));
 }
 
 void LogManager::SetLogMode(LogMode mode) {
-	unique_lock<mutex> lck(lock);
+	annotated_unique_lock<annotated_mutex> lck(lock);
 	auto new_config = *config;
 	new_config.mode = mode;
 	SetConfigInternal(std::move(new_config));
 }
 
 void LogManager::SetLogLevel(LogLevel level) {
-	unique_lock<mutex> lck(lock);
+	annotated_unique_lock<annotated_mutex> lck(lock);
 	auto new_config = *config;
 	new_config.level = level;
 	SetConfigInternal(std::move(new_config));
 }
 
 void LogManager::SetEnabledLogTypes(optional_ptr<unordered_set<string>> enabled_log_types) {
-	unique_lock<mutex> lck(lock);
+	annotated_unique_lock<annotated_mutex> lck(lock);
 	auto new_config = *config;
 	if (enabled_log_types) {
 		new_config.enabled_log_types = *enabled_log_types;
@@ -176,7 +176,7 @@ void LogManager::SetEnabledLogTypes(optional_ptr<unordered_set<string>> enabled_
 }
 
 void LogManager::SetDisabledLogTypes(optional_ptr<unordered_set<string>> disabled_log_types) {
-	unique_lock<mutex> lck(lock);
+	annotated_unique_lock<annotated_mutex> lck(lock);
 	auto new_config = *config;
 	if (disabled_log_types) {
 		new_config.disabled_log_types = *disabled_log_types;
@@ -187,7 +187,7 @@ void LogManager::SetDisabledLogTypes(optional_ptr<unordered_set<string>> disable
 }
 
 void LogManager::SetLogStorage(DatabaseInstance &db, const string &storage_name) {
-	unique_lock<mutex> lck(lock);
+	annotated_unique_lock<annotated_mutex> lck(lock);
 	// 'SET logging_storage' cannot supply the path that file storage requires, so reject the switch
 	// here (active storage preserved) and point users at enable_logging instead of installing a
 	// path-less storage that throws on every later flush.
@@ -235,12 +235,12 @@ void LogManager::SetLogStorageInternal(DatabaseInstance &db, LogConfig &new_conf
 }
 
 void LogManager::UpdateLogStorageConfig(DatabaseInstance &db, case_insensitive_map_t<Value> &config_value) {
-	unique_lock<mutex> lck(lock);
+	annotated_unique_lock<annotated_mutex> lck(lock);
 	log_storage->UpdateConfig(db, config_value);
 }
 
 void LogManager::SetEnableStructuredLoggers(vector<string> &enabled_logger_types) {
-	unique_lock<mutex> lck(lock);
+	annotated_unique_lock<annotated_mutex> lck(lock);
 
 	LogConfig new_config = *config;
 	new_config.enabled_log_types.clear();
@@ -266,17 +266,17 @@ void LogManager::SetEnableStructuredLoggers(vector<string> &enabled_logger_types
 }
 
 void LogManager::TruncateLogStorage() {
-	unique_lock<mutex> lck(lock);
+	annotated_unique_lock<annotated_mutex> lck(lock);
 	log_storage->Truncate();
 }
 
 LogConfig LogManager::GetConfig() {
-	unique_lock<mutex> lck(lock);
+	annotated_unique_lock<annotated_mutex> lck(lock);
 	return *config;
 }
 
 optional_ptr<const LogType> LogManager::LookupLogType(const string &type) {
-	unique_lock<mutex> lck(lock);
+	annotated_unique_lock<annotated_mutex> lck(lock);
 	return LookupLogTypeInternal(type);
 }
 
@@ -298,7 +298,7 @@ void LogManager::SetConfigInternal(LogConfig new_config) {
 }
 
 void LogManager::RegisterLogType(unique_ptr<LogType> type) {
-	unique_lock<mutex> lck(lock);
+	annotated_unique_lock<annotated_mutex> lck(lock);
 
 	auto lookup = registered_log_types.find(type->name);
 	if (lookup != registered_log_types.end()) {

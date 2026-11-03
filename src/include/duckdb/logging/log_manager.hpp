@@ -88,30 +88,31 @@ protected:
 	void FlushCachedLogEntries(DataChunk &chunk, const RegisteredLoggingContext &context);
 
 	//! Switches the log storage and sets the storage of new_config accordingly
-	void SetLogStorageInternal(DatabaseInstance &db, LogConfig &new_config, const string &storage_name);
+	void SetLogStorageInternal(DatabaseInstance &db, LogConfig &new_config, const string &storage_name)
+	    DUCKDB_REQUIRES(lock);
 
-	optional_ptr<const LogType> LookupLogTypeInternal(const string &type);
+	optional_ptr<const LogType> LookupLogTypeInternal(const string &type) DUCKDB_REQUIRES(lock);
 
 	//! The only way to change the config: publishes it to the global logger and to newly created loggers
-	void SetConfigInternal(LogConfig new_config);
+	void SetConfigInternal(LogConfig new_config) DUCKDB_REQUIRES(lock);
 	unique_ptr<Logger> CreateLoggerInternal(LoggingContext &context, const shared_ptr<const LogConfig> &logger_config);
 
 protected:
-	mutex lock;
-	//! Shared by the created loggers; replaced (under lock) only by SetConfigInternal
-	shared_ptr<const LogConfig> config;
+	annotated_mutex lock;
+	//! Shared by the created loggers; replaced only by SetConfigInternal
+	shared_ptr<const LogConfig> config DUCKDB_GUARDED_BY(lock);
 	//! Incremented whenever config is replaced, invalidating the snapshots of it
 	atomic<idx_t> config_version {0};
 
 	shared_ptr<Logger> global_logger;
-	shared_ptr<LogStorage> log_storage;
+	shared_ptr<LogStorage> log_storage DUCKDB_GUARDED_BY(lock);
 	DatabaseInstance &db_instance;
 
 	atomic<idx_t> next_registered_logging_context_index {0};
 
 	// Any additional LogStorages registered (by extensions for example)
-	case_insensitive_map_t<shared_ptr<LogStorage>> registered_log_storages;
-	case_insensitive_map_t<unique_ptr<LogType>> registered_log_types;
+	case_insensitive_map_t<shared_ptr<LogStorage>> registered_log_storages DUCKDB_GUARDED_BY(lock);
+	case_insensitive_map_t<unique_ptr<LogType>> registered_log_types DUCKDB_GUARDED_BY(lock);
 };
 
 } // namespace duckdb
