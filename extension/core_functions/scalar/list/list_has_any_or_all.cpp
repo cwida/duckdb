@@ -12,8 +12,9 @@ static void ListHasAnyFunction(DataChunk &args, ExpressionState &, Vector &resul
 
 	if (ListType::GetChildType(l_vec.GetType()) == LogicalType::SQLNULL ||
 	    ListType::GetChildType(r_vec.GetType()) == LogicalType::SQLNULL) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
-		ConstantVector::GetData<bool>(result)[0] = false;
+		// a list whose elements can only be NULL shares no element with any list, while a NULL list gives NULL
+		BinaryExecutor::Execute<list_entry_t, list_entry_t, bool>(
+		    l_vec, r_vec, result, [](const list_entry_t &, const list_entry_t &) { return false; });
 		return;
 	}
 
@@ -102,8 +103,9 @@ static void ListHasAllFunction(DataChunk &args, ExpressionState &state, Vector &
 
 	if (ListType::GetChildType(l_vec.GetType()) == LogicalType::SQLNULL &&
 	    ListType::GetChildType(r_vec.GetType()) == LogicalType::SQLNULL) {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
-		ConstantVector::GetData<bool>(result)[0] = true;
+		// NULL elements are never looked for, so a list holds all of them, while a NULL list gives NULL
+		BinaryExecutor::Execute<list_entry_t, list_entry_t, bool>(
+		    l_vec, r_vec, result, [](const list_entry_t &, const list_entry_t &) { return true; });
 		return;
 	}
 

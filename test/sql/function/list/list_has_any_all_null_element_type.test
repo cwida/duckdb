@@ -1,0 +1,72 @@
+# name: test/sql/function/list/list_has_any_all_null_element_type.test
+# description: list_has_any and list_has_all keep NULL lists NULL when the element type is NULL
+# group: [list]
+
+# a CASE with an untyped empty list and NULL gives a list whose elements can only be NULL
+statement ok
+CREATE TABLE lists AS SELECT id, CASE WHEN id = 0 THEN [] ELSE NULL END AS l FROM range(2) AS input(id);
+
+query I
+SELECT typeof(l) FROM lists LIMIT 1;
+----
+"NULL"[]
+
+query III
+SELECT id, list_has_any(l, []), list_has_all(l, []) FROM lists ORDER BY id;
+----
+0	false	true
+1	NULL	NULL
+
+query III
+SELECT id, list_has_any([], l), list_has_all([], l) FROM lists ORDER BY id;
+----
+0	false	true
+1	NULL	NULL
+
+# with a NULL element on one side and a typed list on the other
+query III
+SELECT id, list_has_any(l, [1]), list_has_all([1], l) FROM lists ORDER BY id;
+----
+0	false	true
+1	NULL	NULL
+
+query III
+SELECT id, list_has_any([NULL], l), list_has_all([NULL], l) FROM lists ORDER BY id;
+----
+0	false	true
+1	NULL	NULL
+
+# the operators take the same path
+query III
+SELECT id, l && [], l @> [] FROM lists ORDER BY id;
+----
+0	false	true
+1	NULL	NULL
+
+query II
+SELECT id, [] <@ l FROM lists ORDER BY id;
+----
+0	true
+1	NULL
+
+# constants fold through the same function
+query IIII
+SELECT list_has_any(NULL, []), list_has_all(NULL, []), list_has_any([], NULL), list_has_all([], NULL);
+----
+NULL	NULL	NULL	NULL
+
+query II
+SELECT list_has_any([], []), list_has_all([], []);
+----
+false	true
+
+query II
+SELECT list_has_any([NULL], [NULL]), list_has_all([NULL], [NULL]);
+----
+false	true
+
+# a typed NULL list gave NULL already
+query II
+SELECT list_has_any(NULL::INT[], [1]), list_has_all(NULL::INT[], [1]);
+----
+NULL	NULL
