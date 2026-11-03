@@ -382,26 +382,84 @@ ParsedExtensionMetaData ExtensionHelper::ParseExtensionMetaData(const char *meta
 	}
 
 	result.signature = string(metadata, ParsedExtensionMetaData::FOOTER_SIZE - ParsedExtensionMetaData::SIGNATURE_SIZE);
+
+	// field 6 holds the signature size as a canonical decimal string; empty means legacy RSA-2048
+	auto marker = metadata_field[6];
+	while (!marker.empty() && marker.back() == '\0') {
+		marker.pop_back();
+	}
+	if (!marker.empty()) {
+		bool supported = false;
+		for (auto size : ParsedExtensionMetaData::SUPPORTED_SIGNATURE_SIZES) {
+			if (size != ParsedExtensionMetaData::SIGNATURE_SIZE && marker == std::to_string(size)) {
+				result.signature_size = size;
+				supported = true;
+			}
+		}
+		if (!supported) {
+			for (auto &c : marker) {
+				c = (c >= ' ' && c <= '~') ? c : '?';
+			}
+			result.metadata_error = "The extension footer contains an unrecognized signature-size marker '" + marker +
+			                        "'; expected no marker (256-byte signature), '384' or '512'";
+		}
+	}
+
+	return result;
+}
+
+ParsedExtensionMetaData ExtensionHelper::ParseExtensionFooter(const char *tail, idx_t tail_size,
+                                                              idx_t file_size) noexcept {
+	D_ASSERT(tail_size <= file_size);
+	if (tail_size < ParsedExtensionMetaData::FOOTER_SIZE || tail_size > file_size) {
+		return ParsedExtensionMetaData();
+	}
+	auto tail_end = tail + tail_size;
+	auto metadata = tail_end - ParsedExtensionMetaData::FOOTER_SIZE;
+	auto result = ParseExtensionMetaData(metadata);
+	if (!result.AppearsValid() || !result.metadata_error.empty()) {
+		return result;
+	}
+	auto size = result.signature_size;
+	if (size == ParsedExtensionMetaData::SIGNATURE_SIZE) {
+		result.signature_offset = file_size - ParsedExtensionMetaData::SIGNATURE_SIZE;
+		return result;
+	}
+	// [metadata copy][signature][metadata][256 zero bytes]; the signed prefix ends with the metadata copy
+	auto footer_size = ParsedExtensionMetaData::FOOTER_SIZE + ParsedExtensionMetaData::METADATA_SIZE + size;
+	if (tail_size < footer_size) {
+		result.metadata_error = StringUtil::Format(
+		    "The extension footer is truncated: a %llu-byte signature requires a %llu-byte footer", size, footer_size);
+		return result;
+	}
+	for (auto trailer = metadata + ParsedExtensionMetaData::METADATA_SIZE; trailer < tail_end; trailer++) {
+		if (*trailer != '\0') {
+			result.metadata_error =
+			    StringUtil::Format("The extension footer's last %llu bytes must be zero for a %llu-byte signature",
+			                       ParsedExtensionMetaData::SIGNATURE_SIZE, size);
+			return result;
+		}
+	}
+	if (memcmp(tail_end - footer_size, metadata, ParsedExtensionMetaData::METADATA_SIZE) != 0) {
+		result.metadata_error = "The extension footer's two metadata copies do not match";
+		return result;
+	}
+	result.signature_offset = file_size - ParsedExtensionMetaData::FOOTER_SIZE - size;
 	return result;
 }
 
 ParsedExtensionMetaData ExtensionHelper::ParseExtensionMetaData(FileHandle &handle) {
-	const string engine_version = string(ExtensionHelper::GetVersionDirectoryName());
-	const string engine_platform = string(DuckDB::Platform());
-
-	string metadata_segment;
-	metadata_segment.resize(ParsedExtensionMetaData::FOOTER_SIZE);
-
-	if (handle.GetFileSize() < ParsedExtensionMetaData::FOOTER_SIZE) {
+	auto file_size = handle.GetFileSize();
+	if (file_size < ParsedExtensionMetaData::FOOTER_SIZE) {
 		throw InvalidInputException(
 		    "File '%s' is not a DuckDB extension. Valid DuckDB extensions must be at least %llu bytes", handle.path,
 		    ParsedExtensionMetaData::FOOTER_SIZE);
 	}
 
-	handle.Read((void *)metadata_segment.data(), metadata_segment.size(),
-	            handle.GetFileSize() - ParsedExtensionMetaData::FOOTER_SIZE);
-
-	return ParseExtensionMetaData(metadata_segment.data());
+	auto tail_size = MinValue<idx_t>(file_size, ParsedExtensionMetaData::MAX_FOOTER_SIZE);
+	string tail(tail_size, '\0');
+	handle.Read((void *)tail.data(), tail_size, file_size - tail_size);
+	return ParseExtensionFooter(tail.data(), tail_size, file_size);
 }
 
 static bool CheckKnownSignatures(DatabaseInstance &db, const string &two_level_hash, const string &signature,
@@ -424,7 +482,10 @@ static bool CheckKnownSignatures(DatabaseInstance &db, const string &two_level_h
 bool ExtensionHelper::CheckExtensionSignature(DatabaseInstance &db, FileHandle &handle,
                                               ParsedExtensionMetaData &parsed_metadata,
                                               ExtensionRepositoryType repository_type, const string &repository_name) {
-	auto signature_offset = handle.GetFileSize() - ParsedExtensionMetaData::SIGNATURE_SIZE;
+	if (!parsed_metadata.AppearsValid() || !parsed_metadata.metadata_error.empty()) {
+		return false;
+	}
+	auto signature_offset = parsed_metadata.signature_offset;
 
 	vector<string> hash_chunks;
 	vector<idx_t> splits;
@@ -435,9 +496,10 @@ bool ExtensionHelper::CheckExtensionSignature(DatabaseInstance &db, FileHandle &
 	const string resulting_hash = ComputeFinalHash(hash_chunks);
 
 	// TODO maybe we should do a stream read / hash update here
-	handle.Read((void *)parsed_metadata.signature.data(), parsed_metadata.signature.size(), signature_offset);
+	string signature(parsed_metadata.signature_size, '\0');
+	handle.Read((void *)signature.data(), signature.size(), signature_offset);
 
-	return CheckKnownSignatures(db, resulting_hash, parsed_metadata.signature, repository_type, repository_name);
+	return CheckKnownSignatures(db, resulting_hash, signature, repository_type, repository_name);
 }
 
 bool ExtensionHelper::CheckExtensionBufferSignature(DatabaseInstance &db, const char *buffer, idx_t buffer_length,
@@ -460,8 +522,13 @@ bool ExtensionHelper::CheckExtensionBufferSignature(DatabaseInstance &db, const 
                                                     ExtensionRepositoryType repository_type,
                                                     const string &repository_name,
                                                     optional_ptr<string> signature_key_fingerprint) {
-	auto signature_offset = total_buffer_length - ParsedExtensionMetaData::SIGNATURE_SIZE;
-	string signature = std::string(buffer + signature_offset, ParsedExtensionMetaData::SIGNATURE_SIZE);
+	auto tail_size = MinValue<idx_t>(total_buffer_length, ParsedExtensionMetaData::MAX_FOOTER_SIZE);
+	auto parsed = ParseExtensionFooter(buffer + total_buffer_length - tail_size, tail_size, total_buffer_length);
+	if (!parsed.AppearsValid() || !parsed.metadata_error.empty()) {
+		return false;
+	}
+	auto signature_offset = parsed.signature_offset;
+	string signature = std::string(buffer + signature_offset, parsed.signature_size);
 
 	return CheckExtensionBufferSignature(db, buffer, signature_offset, signature, repository_type, repository_name,
 	                                     signature_key_fingerprint);
@@ -676,7 +743,7 @@ bool ExtensionHelper::TryInitialLoad(DatabaseInstance &db, FileSystem &fs, const
 			}
 			throw IOException(db.config.error_manager->FormatException(ErrorType::UNSIGNED_EXTENSION, filename));
 		}
-	} else if (!Settings::Get<AllowExtensionsMetadataMismatchSetting>(db)) {
+	} else if (!Settings::Get<AllowExtensionsMetadataMismatchSetting>(db) || parsed_metadata.HasFooterError()) {
 		if (!metadata_mismatch_error.empty()) {
 			// Unsigned extensions AND configuration allowing n, loading allowed, mainly for
 			// debugging purposes

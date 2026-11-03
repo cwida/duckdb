@@ -42,8 +42,15 @@ enum class ExtensionABIType : uint8_t {
 
 //! The parsed extension metadata footer
 struct ParsedExtensionMetaData {
+	//! Legacy footer: [metadata][256-byte signature]. Larger signatures: [metadata][signature][metadata][256 zeros]
 	static constexpr const idx_t FOOTER_SIZE = 512;
+	static constexpr const idx_t METADATA_SIZE = 256;
+	//! Legacy RSA-2048 signature size, used when the footer carries no signature-size marker
 	static constexpr const idx_t SIGNATURE_SIZE = 256;
+	//! Supported signature sizes (RSA-2048/3072/4096)
+	static constexpr const idx_t SUPPORTED_SIGNATURE_SIZES[] = {256, 384, 512};
+	static constexpr const idx_t MAX_SIGNATURE_SIZE = 512;
+	static constexpr const idx_t MAX_FOOTER_SIZE = FOOTER_SIZE + METADATA_SIZE + MAX_SIGNATURE_SIZE;
 	static constexpr const char *EXPECTED_MAGIC_VALUE = {
 	    "4\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"};
 
@@ -62,8 +69,20 @@ struct ParsedExtensionMetaData {
 	string signature;
 	string extension_abi_metadata;
 
+	//! Signature size, from the signed marker in metadata field 6
+	idx_t signature_size = SIGNATURE_SIZE;
+	//! Offset of the signature in the file, which is also the length of the signed prefix
+	idx_t signature_offset = 0;
+	//! Set when the footer structure is malformed
+	string metadata_error;
+
 	bool AppearsValid() {
 		return magic_value == EXPECTED_MAGIC_VALUE;
+	}
+
+	//! A malformed footer structure, which no setting can override
+	bool HasFooterError() {
+		return AppearsValid() && !metadata_error.empty();
 	}
 
 	// Returns an error string describing which parts of the metadata are mismatcheds

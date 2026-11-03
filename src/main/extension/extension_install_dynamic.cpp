@@ -74,12 +74,12 @@ static void CheckExtensionMetadataOnInstall(DatabaseInstance &db, void *in_buffe
 		throw IOException("Failed to install '%s', file too small to be a valid DuckDB extension!", extension_name);
 	}
 
-	auto parsed_metadata = ExtensionHelper::ParseExtensionMetaData(static_cast<char *>(in_buffer) +
-	                                                               (file_size - ParsedExtensionMetaData::FOOTER_SIZE));
+	auto parsed_metadata = ExtensionHelper::ParseExtensionFooter(static_cast<char *>(in_buffer), file_size, file_size);
 
 	auto metadata_mismatch_error = parsed_metadata.GetInvalidMetadataError();
 
-	if (!metadata_mismatch_error.empty() && !Settings::Get<AllowExtensionsMetadataMismatchSetting>(db)) {
+	if (!metadata_mismatch_error.empty() &&
+	    (parsed_metadata.HasFooterError() || !Settings::Get<AllowExtensionsMetadataMismatchSetting>(db))) {
 		throw IOException("Failed to install '%s'\n%s", extension_name, metadata_mismatch_error);
 	}
 
