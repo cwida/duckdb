@@ -163,10 +163,10 @@ struct NFCNormalizeFun {
 
 struct LengthFun {
 	static constexpr const char *Name = "length";
-	static constexpr const char *Parameters = "string::VARCHAR\001bit::BIT\001list::ANY[]";
-	static constexpr const char *Description = "Number of characters in `string`.\001Returns the bit-length of the `bit` argument.\001Returns the length of the `list`.";
-	static constexpr const char *Example = "length('Hello🦆')\001length(42::TINYINT::BIT)\001length([1,2,3])";
-	static constexpr const char *Categories = "string\001numeric\001list";
+	static constexpr const char *Parameters = "string::VARCHAR\001bit::BIT\001list::ANY[]\001variant::VARIANT";
+	static constexpr const char *Description = "Number of characters in `string`.\001Returns the bit-length of the `bit` argument.\001Returns the length of the `list`.\001Returns the length of the list, string or bit string that the `variant` holds.";
+	static constexpr const char *Example = "length('Hello🦆')\001length(42::TINYINT::BIT)\001length([1,2,3])\001length([1,2,3]::VARIANT)";
+	static constexpr const char *Categories = "string\001numeric\001list\001variant";
 
 	static ScalarFunctionSet GetFunctions();
 };
@@ -231,10 +231,10 @@ struct LengthGraphemeFun {
 
 struct ArrayLengthFun {
 	static constexpr const char *Name = "array_length";
-	static constexpr const char *Parameters = "list::ANY[]\001list::ANY[],dimension::ANY";
-	static constexpr const char *Description = "Returns the length of the `list`.\001`array_length` for lists with dimensions other than 1 not implemented";
-	static constexpr const char *Example = "array_length([1, 2, 3])\001";
-	static constexpr const char *Categories = "list\001";
+	static constexpr const char *Parameters = "list::ANY[]\001list::ANY[],dimension::ANY\001variant::VARIANT";
+	static constexpr const char *Description = "Returns the length of the `list`.\001`array_length` for lists with dimensions other than 1 not implemented\001Returns the number of elements of the list that the `variant` holds.";
+	static constexpr const char *Example = "array_length([1, 2, 3])\001\001array_length([1, 2, 3]::VARIANT)";
+	static constexpr const char *Categories = "list\001\001variant";
 
 	static ScalarFunctionSet GetFunctions();
 };

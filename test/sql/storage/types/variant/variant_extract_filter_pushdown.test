@@ -44,17 +44,17 @@ SELECT v.z FROM variant_extract_pushdown WHERE v.x=5 AND v.y=500
 50000
 
 query I
-SELECT COUNT(*) FROM variant_extract_pushdown WHERE v.x + v.y = 505
+SELECT COUNT(*) FROM variant_extract_pushdown WHERE v.x::BIGINT + v.y::BIGINT = 505
 ----
 1
 
 query I
-SELECT v.x FROM variant_extract_pushdown WHERE v.x + v.y = 505
+SELECT v.x FROM variant_extract_pushdown WHERE v.x::BIGINT + v.y::BIGINT = 505
 ----
 5
 
 query I
-SELECT v.z FROM variant_extract_pushdown WHERE v.x + v.y = 505
+SELECT v.z FROM variant_extract_pushdown WHERE v.x::BIGINT + v.y::BIGINT = 505
 ----
 50000
 

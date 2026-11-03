@@ -1,0 +1,116 @@
+# name: test/sql/types/variant/variant_overload_selection.test
+# description: The type a VARIANT argument would be cast to does not select one function overload over another
+# group: [variant]
+
+statement ok
+CREATE TABLE t AS SELECT 1.5::VARIANT AS v, 'abc'::VARIANT AS s;
+
+# overloads that differ only in the type the VARIANT is cast to
+statement error
+SELECT abs(v) FROM t
+----
+Could not choose a best candidate function for the function call "abs(VARIANT)"
+
+statement error
+SELECT sum(v) FROM t
+----
+Could not choose a best candidate function for the function call "sum(VARIANT)"
+
+statement error
+SELECT v + v FROM t
+----
+Could not choose a best candidate function for the function call "+(VARIANT, VARIANT)"
+
+statement error
+SELECT md5(s) FROM t
+----
+Could not choose a best candidate function for the function call "md5(VARIANT)"
+
+statement error
+SELECT variant_extract({'a': 1}::VARIANT, 'a'::VARIANT)
+----
+Could not choose a best candidate function for the function call "variant_extract(VARIANT, VARIANT)"
+
+statement ok
+CREATE MACRO pick_type(x INTEGER) AS 'INTEGER', (x VARCHAR) AS 'VARCHAR';
+
+statement error
+SELECT pick_type(v) FROM t
+----
+Macro pick_type() has multiple overloads that match the supplied arguments
+
+statement ok
+PREPARE abs_of AS SELECT abs($1), typeof(abs($1));
+
+statement error
+EXECUTE abs_of(1.5::VARIANT)
+----
+Could not choose a best candidate function for the function call "abs(VARIANT)"
+
+# the same holds for the UNION member that a list of VARIANT values converts to
+statement error
+SELECT CAST([v] AS UNION(i BIGINT[], d DOUBLE[])) FROM t
+----
+The cast is ambiguous, multiple possible members in target
+
+# a cast selects the overload
+query IIII
+SELECT abs(v::DOUBLE), v::DOUBLE + v::DOUBLE, md5(s::VARCHAR) = md5('abc'), pick_type(v::VARCHAR) FROM t
+----
+1.5	3.0	true	VARCHAR
+
+query I
+SELECT sum(v::DOUBLE) FROM t
+----
+1.5
+
+query II
+EXECUTE abs_of(1.5::DOUBLE)
+----
+1.5	DOUBLE
+
+query I
+SELECT CAST([v::DOUBLE] AS UNION(i BIGINT[], d DOUBLE[])) FROM t
+----
+[1.5]
+
+# another argument selects one of the overloads that could take the VARIANT
+statement ok
+CREATE MACRO pick_by_second(x DOUBLE, y INTEGER) AS 'DOUBLE', (x BIGINT, y BIGINT) AS 'BIGINT';
+
+query III
+SELECT pick_by_second(v, 1::INTEGER), 2::VARIANT + 1::BIGINT, typeof(2::VARIANT + 1::BIGINT) FROM t
+----
+DOUBLE	3	BIGINT
+
+statement error
+SELECT pick_by_second(v, v) FROM t
+----
+Macro pick_by_second() has multiple overloads that match the supplied arguments
+
+# a cast from VARIANT costs as much as a cast to VARIANT, so other arguments are cast before the VARIANT is
+statement ok
+CREATE MACRO cast_least(x VARIANT, d TIMESTAMP) AS 'VARIANT', (x BIGINT, d DATE) AS 'BIGINT';
+
+query I
+SELECT cast_least(v, DATE '2024-01-01') FROM t
+----
+VARIANT
+
+# passing a VARIANT to an ANY parameter costs less than casting it
+statement error
+SELECT equi_width_bins(v, v, 5, true) FROM t
+----
+Unsupported type "VARIANT" for equi_width_bins
+
+# a function with only one overload that takes the arguments still accepts a VARIANT
+query III
+SELECT lower(s), s || 'd', ['x', 'y', 'z'][2::VARIANT] FROM t
+----
+abc	abcd	y
+
+# an overload that takes a VARIANT needs no cast
+query II
+SELECT len(s), variant_typeof(v) FROM t
+----
+3	DECIMAL(2, 1)

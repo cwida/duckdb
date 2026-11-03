@@ -261,3 +261,15 @@ query I
 select v['helo'] from (values ({'hello': 42}::variant)) t(v);
 ----
 NULL
+
+# an array of VARIANT values and a list of NULLs combine into an array of VARIANT values
+query II
+SELECT x, typeof(x) FROM (SELECT [array_value(1::VARIANT, 2::VARIANT), [NULL, NULL]] AS x)
+----
+[[1, 2], [NULL, NULL]]	VARIANT[2][]
+
+query I rowsort
+SELECT array_value(1::VARIANT, 2::VARIANT) UNION ALL SELECT [NULL, NULL]
+----
+[1, 2]
+[NULL, NULL]

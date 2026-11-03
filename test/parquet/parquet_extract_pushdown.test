@@ -65,17 +65,17 @@ SELECT v.z FROM '{TEST_DIR}/{logical_type}_filter_pushdown.parquet' WHERE v.x=5 
 50000
 
 query I
-SELECT COUNT(*) FROM '{TEST_DIR}/{logical_type}_filter_pushdown.parquet' WHERE v.x + v.y = 505
+SELECT COUNT(*) FROM '{TEST_DIR}/{logical_type}_filter_pushdown.parquet' WHERE v.x::BIGINT + v.y::BIGINT = 505
 ----
 1
 
 query I
-SELECT v.x FROM '{TEST_DIR}/{logical_type}_filter_pushdown.parquet' WHERE v.x + v.y = 505
+SELECT v.x FROM '{TEST_DIR}/{logical_type}_filter_pushdown.parquet' WHERE v.x::BIGINT + v.y::BIGINT = 505
 ----
 5
 
 query I
-SELECT v.z FROM '{TEST_DIR}/{logical_type}_filter_pushdown.parquet' WHERE v.x + v.y = 505
+SELECT v.z FROM '{TEST_DIR}/{logical_type}_filter_pushdown.parquet' WHERE v.x::BIGINT + v.y::BIGINT = 505
 ----
 50000
 
@@ -180,22 +180,22 @@ SELECT v.z FROM '{TEST_DIR}/variant_unshredded_filter_pushdown.parquet' WHERE va
 50000
 
 query I
-SELECT COUNT(*) FROM '{TEST_DIR}/variant_unshredded_filter_pushdown.parquet' WHERE variant_typeof(v.x) == 'INT64' AND variant_typeof(v.y) == 'INT64' AND v.x + v.y = 505
+SELECT COUNT(*) FROM '{TEST_DIR}/variant_unshredded_filter_pushdown.parquet' WHERE variant_typeof(v.x) == 'INT64' AND variant_typeof(v.y) == 'INT64' AND v.x::BIGINT + v.y::BIGINT = 505
 ----
 1
 
 query I
-SELECT COUNT(*) FROM '{TEST_DIR}/variant_unshredded_filter_pushdown.parquet' WHERE variant_typeof(v.x) == 'INT64' AND variant_typeof(v.y) == 'INT64' AND v.x + v.y = 505
+SELECT COUNT(*) FROM '{TEST_DIR}/variant_unshredded_filter_pushdown.parquet' WHERE variant_typeof(v.x) == 'INT64' AND variant_typeof(v.y) == 'INT64' AND v.x::BIGINT + v.y::BIGINT = 505
 ----
 1
 
 query I
-SELECT v.x FROM '{TEST_DIR}/variant_unshredded_filter_pushdown.parquet' WHERE variant_typeof(v.x) == 'INT64' AND variant_typeof(v.y) == 'INT64' AND v.x + v.y = 505
+SELECT v.x FROM '{TEST_DIR}/variant_unshredded_filter_pushdown.parquet' WHERE variant_typeof(v.x) == 'INT64' AND variant_typeof(v.y) == 'INT64' AND v.x::BIGINT + v.y::BIGINT = 505
 ----
 5
 
 query I
-SELECT v.z FROM '{TEST_DIR}/variant_unshredded_filter_pushdown.parquet' WHERE variant_typeof(v.x) == 'INT64' AND variant_typeof(v.y) == 'INT64' AND v.x + v.y = 505
+SELECT v.z FROM '{TEST_DIR}/variant_unshredded_filter_pushdown.parquet' WHERE variant_typeof(v.x) == 'INT64' AND variant_typeof(v.y) == 'INT64' AND v.x::BIGINT + v.y::BIGINT = 505
 ----
 50000
 

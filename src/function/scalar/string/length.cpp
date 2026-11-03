@@ -1,6 +1,8 @@
+#include "duckdb/common/enum_util.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/numeric_utils.hpp"
 #include "duckdb/common/types/bit.hpp"
+#include "duckdb/common/types/variant_iterator.hpp"
 #include "duckdb/common/vector/vector_iterator.hpp"
 #include "duckdb/common/vector/vector_writer.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
@@ -280,6 +282,54 @@ unique_ptr<FunctionData> ArrayOrListLengthBinaryBind(BindScalarFunctionInput &in
 	return nullptr;
 }
 
+//! The length of the list, string or bit string that a VARIANT holds
+void VariantLengthFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	const VectorIterator<VectorVariantType> variants(args.data[0]);
+	auto writer = FlatVector::Writer<int64_t>(result, args.size());
+	for (idx_t row = 0; row < args.size(); row++) {
+		// a NULL row has a NULL root
+		auto node = variants[row];
+		if (node.IsNull()) {
+			writer.WriteNull();
+			continue;
+		}
+		switch (node.GetTypeId()) {
+		case VariantLogicalType::ARRAY:
+			writer.WriteValue(UnsafeNumericCast<int64_t>(node.GetArrayChildren().size()));
+			break;
+		case VariantLogicalType::VARCHAR:
+			writer.WriteValue(StringLengthOperator::Operation<string_t, int64_t>(node.GetString()));
+			break;
+		case VariantLogicalType::BITSTRING:
+			writer.WriteValue(BitStringLenOperator::Operation<string_t, int64_t>(node.GetString()));
+			break;
+		default:
+			throw InvalidInputException("length is not defined for a VARIANT holding %s, only for a list, a string or "
+			                            "a bit string",
+			                            EnumUtil::ToString(node.GetTypeId()));
+		}
+	}
+}
+
+//! The number of elements of the list that a VARIANT holds
+void VariantArrayLengthFunction(DataChunk &args, ExpressionState &state, Vector &result) {
+	const VectorIterator<VectorVariantType> variants(args.data[0]);
+	auto writer = FlatVector::Writer<int64_t>(result, args.size());
+	for (idx_t row = 0; row < args.size(); row++) {
+		// a NULL row has a NULL root
+		auto node = variants[row];
+		if (node.IsNull()) {
+			writer.WriteNull();
+			continue;
+		}
+		if (node.GetTypeId() != VariantLogicalType::ARRAY) {
+			throw InvalidInputException("array_length can only be used on a VARIANT holding a list, not %s",
+			                            EnumUtil::ToString(node.GetTypeId()));
+		}
+		writer.WriteValue(UnsafeNumericCast<int64_t>(node.GetArrayChildren().size()));
+	}
+}
+
 } // namespace
 
 ScalarFunctionSet LengthFun::GetFunctions() {
@@ -301,6 +351,11 @@ ScalarFunctionSet LengthFun::GetFunctions() {
 	list_fun.GetSignature().AddParameter("list", LogicalType::LIST(LogicalType::ANY));
 	length.AddFunction(list_fun);
 
+	ScalarFunction variant_fun({}, LogicalType::BIGINT, VariantLengthFunction);
+	variant_fun.GetSignature().AddParameter("variant", LogicalType::VARIANT());
+	variant_fun.SetFallible();
+	length.AddFunction(variant_fun);
+
 	return (length);
 }
 
@@ -320,6 +375,10 @@ ScalarFunctionSet ArrayLengthFun::GetFunctions() {
 	unary.SetResolveTypesCallback(ArrayOrListLengthResolveTypes);
 	unary.GetSignature().AddParameter("list", LogicalType::LIST(LogicalType::ANY));
 	array_length.AddFunction(unary);
+
+	ScalarFunction variant_unary({}, LogicalType::BIGINT, VariantArrayLengthFunction);
+	variant_unary.GetSignature().AddParameter("variant", LogicalType::VARIANT());
+	array_length.AddFunction(variant_unary);
 
 	ScalarFunction binary({}, LogicalType::BIGINT, nullptr, ArrayOrListLengthBinaryBind);
 	binary.GetSignature()

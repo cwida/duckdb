@@ -147,6 +147,12 @@
                 "description": "Returns the length of the `list`.",
                 "example": "length([1,2,3])",
                 "categories": ["list"]
+            },
+            {
+                "parameters": [{"name": "variant", "type": "VARIANT"}],
+                "description": "Returns the length of the list, string or bit string that the `variant` holds.",
+                "example": "length([1,2,3]::VARIANT)",
+                "categories": ["variant"]
             }
         ],
         "type": "scalar_function_set",
@@ -227,6 +233,14 @@
                 "description": "`array_length` for lists with dimensions other than 1 not implemented",
                 "example": "",
                 "categories": []
+            },
+            {
+                "parameters": [
+                    {"name": "variant", "type": "VARIANT"}
+                ],
+                "description": "Returns the number of elements of the list that the `variant` holds.",
+                "example": "array_length([1, 2, 3]::VARIANT)",
+                "categories": ["variant"]
             }
         ],
         "type": "scalar_function_set"

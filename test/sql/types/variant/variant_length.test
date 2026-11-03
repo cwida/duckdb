@@ -1,0 +1,95 @@
+# name: test/sql/types/variant/variant_length.test
+# description: len, length and array_length measure the list, string or bit string that a VARIANT holds (duckdblabs/bot-issue-tracker#551)
+# group: [variant]
+
+statement ok
+CREATE TABLE t AS SELECT [10, 20, 30]::VARIANT AS v, 'hello'::VARCHAR::VARIANT AS s;
+
+query III
+SELECT len(v), length(s), array_length(v) FROM t;
+----
+3	5	3
+
+query IIII
+SELECT char_length(v), character_length(s), len([]::INTEGER[]::VARIANT), len(''::VARIANT)
+FROM t;
+----
+3	5	0	0
+
+# the elements of nested lists, the characters of a string and the bits of a bit string
+query IIII
+SELECT len([[1, 2], [3]]::VARIANT), length('Hello🦆'::VARIANT), length('0101'::BIT::VARIANT), array_length([{'a': 1}, NULL]::VARIANT)
+----
+2	6	4	2
+
+query IIII
+SELECT len(NULL::VARIANT), len(NULL::INTEGER::VARIANT), array_length(NULL::VARIANT), len(v[1]) IS NULL
+FROM (SELECT [NULL, 'xy']::VARIANT AS v);
+----
+NULL	NULL	NULL	true
+
+# values held in a list or a struct
+query II
+SELECT len(v[2]), len(o.a) FROM (SELECT [NULL, 'xyz']::VARIANT AS v, {'a': [1, 2, 3, 4]}::VARIANT AS o);
+----
+3	4
+
+# other values have no length
+statement error
+SELECT len(42::VARIANT)
+----
+length is not defined for a VARIANT holding INT32
+
+statement error
+SELECT length({'a': 1}::VARIANT)
+----
+length is not defined for a VARIANT holding OBJECT
+
+statement error
+SELECT array_length('hello'::VARIANT)
+----
+array_length can only be used on a VARIANT holding a list, not VARCHAR
+
+# a column of mixed values, also when stored
+statement ok
+CREATE TABLE mixed AS
+SELECT i, CASE i % 3 WHEN 0 THEN range(i % 7)::VARIANT WHEN 1 THEN repeat('ab', i % 5)::VARIANT ELSE NULL::VARIANT END AS v
+FROM range(3000) t(i);
+
+query IIII
+SELECT count(*), sum(len(v)), count(len(v)), sum(CASE WHEN i % 3 = 0 THEN array_length(v) END) FROM mixed;
+----
+3000	6999	2000	2999
+
+statement ok
+CHECKPOINT
+
+query III
+SELECT sum(len(v)), count(len(v)), sum(CASE WHEN i % 3 = 0 THEN array_length(v) END) FROM mixed;
+----
+6999	2000	2999
+
+# an untyped NULL binds to an overload of a concrete type before the VARIANT one
+query II
+SELECT len(NULL), array_length(NULL)
+----
+NULL	NULL
+
+statement ok
+CREATE MACRO pick(x VARCHAR[]) AS 'VARCHAR[]', (x VARIANT[]) AS 'VARIANT[]';
+
+query I
+SELECT pick([NULL]);
+----
+VARCHAR[]
+
+# the overloads that take a VARIANT have their descriptions
+query II
+SELECT function_name, description IS NOT NULL
+FROM duckdb_functions()
+WHERE function_name IN ('length', 'array_length', 'variant_array_length') AND parameter_types = ['VARIANT']
+ORDER BY ALL;
+----
+array_length	true
+length	true
+variant_array_length	true

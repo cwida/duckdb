@@ -12,7 +12,7 @@ insert into tbl select * from (VALUES
 	('99'::VARIANT),
 	('1'::VARIANT),
 	('101'::VARIANT),
-	(-123::VARIANT),
+	((-123::BIGINT)::VARIANT),
 	((-100.5::decimal(5,1))::VARIANT),
 	((100.5::decimal(5,1))::VARIANT)
 ) t(col)
