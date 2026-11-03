@@ -1560,11 +1560,12 @@ uint32_t DecimalType::MaxWidth() {
 }
 
 LogicalType LogicalType::DECIMAL(uint32_t width, uint32_t scale) {
-	if (!Decimal::IsValidWidthScale(width, scale)) {
-		throw InternalException("Invalid DECIMAL(%d, %d): the width must be between 1 and %d and the scale cannot "
-		                        "exceed the width",
-		                        width, scale, Decimal::MAX_WIDTH_DECIMAL);
+	// width 0 and scale > width stay constructible and are reported by IsComplete, like upstream
+	if (width > Decimal::MAX_WIDTH_DECIMAL) {
+		throw InternalException("Invalid DECIMAL(%d, %d): the width cannot exceed %d", width, scale,
+		                        Decimal::MAX_WIDTH_DECIMAL);
 	}
+	D_ASSERT(width >= scale);
 	auto type_info = make_uniq<DecimalTypeInfo>(width, scale);
 	return LogicalType(LogicalTypeId::DECIMAL, std::move(type_info));
 }
