@@ -1,0 +1,99 @@
+# name: test/sql/table_function/duckdb_catalog_filter_pushdown.test
+# description: Push database_name filters into system catalog scans
+# group: [table_function]
+
+statement ok
+PRAGMA explain_output = OPTIMIZED_ONLY;
+
+statement ok
+ATTACH ':memory:' AS db1;
+
+statement ok
+ATTACH ':memory:' AS db2;
+
+statement ok
+CREATE SCHEMA db1.s1;
+
+statement ok
+CREATE SCHEMA db2.s2;
+
+statement ok
+CREATE TABLE db1.s1.t1(i INTEGER);
+
+statement ok
+CREATE TABLE db2.s2.t2(j INTEGER);
+
+statement ok
+CREATE VIEW db1.s1.v1 AS SELECT 1;
+
+statement ok
+CREATE VIEW db2.s2.v2 AS SELECT 2;
+
+foreach function duckdb_schemas duckdb_tables duckdb_views duckdb_columns
+
+query II
+EXPLAIN SELECT * FROM ${function}() WHERE database_name = 'db1'
+----
+logical_opt	<REGEX>:.*Catalog: db1.*
+
+query II
+EXPLAIN SELECT * FROM ${function}() WHERE database_name = 'db1'
+----
+logical_opt	<!REGEX>:.*database_name = 'db1'.*
+
+query I
+SELECT count(*) FROM ${function}() WHERE database_name = ''
+----
+0
+
+endloop
+
+query II
+EXPLAIN SELECT * FROM duckdb_schemas() WHERE 'db1' = database_name
+----
+logical_opt	<REGEX>:.*Catalog: db1.*
+
+query II
+EXPLAIN SELECT * FROM duckdb_schemas() WHERE lower(database_name) = 'db1'
+----
+logical_opt	<!REGEX>:.*Catalog: db1.*
+
+query II
+EXPLAIN SELECT * FROM duckdb_schemas() WHERE lower(database_name) = 'db1'
+----
+logical_opt	<REGEX>:.*database_name.*
+
+query I
+SELECT count(*) FROM duckdb_schemas() WHERE schema_name IN ('s1', 's2')
+----
+2
+
+query I
+SELECT count(*) FROM duckdb_schemas() WHERE database_name = 'db1' AND schema_name = 's1'
+----
+1
+
+query I
+SELECT count(*) FROM duckdb_tables() WHERE database_name = 'db1' AND table_name = 't1'
+----
+1
+
+query I
+SELECT count(*) FROM duckdb_views() WHERE database_name = 'db1' AND view_name = 'v1'
+----
+1
+
+query I
+SELECT count(*) FROM duckdb_columns() WHERE database_name = 'db1' AND table_name = 't1'
+----
+1
+
+query I
+SELECT count(*) FROM duckdb_schemas() WHERE database_name = 'missing'
+----
+0
+
+query I
+SELECT count(*) FROM duckdb_schemas() WHERE database_name = 'DB1'
+----
+0

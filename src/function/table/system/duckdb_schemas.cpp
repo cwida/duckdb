@@ -1,4 +1,5 @@
 #include "duckdb/function/table/system_functions.hpp"
+#include "duckdb/function/table/system_catalog_functions.hpp"
 
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
@@ -42,14 +43,13 @@ static unique_ptr<FunctionData> DuckDBSchemasBind(ClientContext &context, TableF
 	names.emplace_back("sql");
 	return_types.emplace_back(LogicalType::VARCHAR);
 
-	return nullptr;
+	return SystemCatalogScanFunction::Bind();
 }
 
 unique_ptr<GlobalTableFunctionState> DuckDBSchemasInit(ClientContext &context, TableFunctionInitInput &input) {
 	auto result = make_uniq<DuckDBSchemasData>();
 
-	// scan all the schemas and collect them
-	result->entries = Catalog::GetAllSchemas(context);
+	result->entries = SystemCatalogScanFunction::GetSchemas(context, input.bind_data);
 
 	return std::move(result);
 }
@@ -92,7 +92,9 @@ void DuckDBSchemasFunction(ClientContext &context, TableFunctionInput &data_p, D
 }
 
 void DuckDBSchemasFun::RegisterFunction(BuiltinFunctions &set) {
-	set.AddFunction(TableFunction("duckdb_schemas", {}, DuckDBSchemasFunction, DuckDBSchemasBind, DuckDBSchemasInit));
+	TableFunction function("duckdb_schemas", {}, DuckDBSchemasFunction, DuckDBSchemasBind, DuckDBSchemasInit);
+	SystemCatalogScanFunction::Register(function);
+	set.AddFunction(std::move(function));
 }
 
 } // namespace duckdb
