@@ -41,11 +41,13 @@ SELECT max(v.d::VARCHAR), max(v.d::VARCHAR || '') FROM read_parquet('{TEST_DIR}/
 ----
 ffeabd223de0d4eacb9a3e6e53e5448d	ffeabd223de0d4eacb9a3e6e53e5448d
 
+# the extract only reads the shredded field it descends into, so less than 95% of the row group is scanned
+# and the columns are prefetched eagerly one by one instead of as a whole group
 query II
 SELECT row_group_id, strategy
 FROM duckdb_logs_parsed('ParquetPrefetch')
 WHERE file_path LIKE '%shared_chunks.parquet'
 ORDER BY row_group_id
 ----
-0	whole_group
-1	whole_group
+0	column_wise_eager
+1	column_wise_eager
