@@ -21,6 +21,7 @@ add_library_unity(
   test_expression_executor.cpp
   test_hyperlog.cpp
   test_hugeint_constexpr.cpp
+  test_hugeint_division.cpp
   test_http_transport_manager.cpp
   test_http_retry_budget.cpp
   test_httplib_header_length.cpp
