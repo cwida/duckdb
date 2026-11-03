@@ -57,6 +57,25 @@ optional_idx ParquetFileMetadataCache::GetEstimatedCacheMemory() const {
 	return memory;
 }
 
+unique_ptr<BaseStatistics>
+ParquetFileMetadataCache::GetColumnStatistics(const string &key, const LogicalType &type,
+                                              const std::function<unique_ptr<BaseStatistics>()> &compute) {
+	{
+		const annotated_lock_guard<annotated_mutex> guard(column_statistics_lock);
+		auto entry = column_statistics.find(key);
+		if (entry != column_statistics.end() && entry->second.type == type) {
+			return entry->second.statistics ? entry->second.statistics->ToUnique() : nullptr;
+		}
+	}
+	// computed outside of the lock: a concurrent caller may compute the same statistics, the last one is kept
+	auto statistics = compute();
+	const annotated_lock_guard<annotated_mutex> guard(column_statistics_lock);
+	auto &entry = column_statistics[key];
+	entry.type = type;
+	entry.statistics = statistics ? statistics->ToUnique() : nullptr;
+	return statistics;
+}
+
 bool ParquetFileMetadataCache::IsEncrypted() const {
 	return crypto_metadata != nullptr;
 }
