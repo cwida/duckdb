@@ -42,16 +42,43 @@ static bool SameRepresentation(const Value &left, const Value &right) {
 	return VectorOperations::NotDistinctFrom(left_vector, right_vector, nullptr, 1, nullptr, nullptr) == 1;
 }
 
+//! INTERVALs that are only equal after normalization (e.g. INTERVAL 1 MONTH vs INTERVAL 30 DAY) can have different
+//! effects in expressions: DATE '2008-05-17' + INTERVAL 1 MONTH is 2008-06-17, but DATE '2008-05-17' + INTERVAL 30 DAY
+//! is 2008-06-16. So for expression deduplication INTERVALs compare by their raw (months, days, micros) fields, not by
+//! normalized equality.
+static bool IntervalSameRepresentation(const Value &left, const Value &right) {
+	if (left.IsNull() || right.IsNull()) {
+		return left.IsNull() == right.IsNull();
+	}
+	auto left_interval = left.GetValueUnsafe<interval_t>();
+	auto right_interval = right.GetValueUnsafe<interval_t>();
+	return left_interval.months == right_interval.months && left_interval.days == right_interval.days &&
+	       left_interval.micros == right_interval.micros;
+}
+
 bool BoundConstantExpression::Equals(const BaseExpression &other_p) const {
 	if (!Expression::Equals(other_p)) {
 		return false;
 	}
 	auto &other = other_p.Cast<BoundConstantExpression>();
-	return value.type() == other.value.type() && SameRepresentation(value, other.value);
+	if (value.type() != other.value.type()) {
+		return false;
+	}
+	if (value.type().id() == LogicalTypeId::INTERVAL) {
+		return IntervalSameRepresentation(value, other.value);
+	}
+	return SameRepresentation(value, other.value);
 }
 
 hash_t BoundConstantExpression::Hash() const {
 	hash_t result = Expression::Hash();
+	if (value.type().id() == LogicalTypeId::INTERVAL && !value.IsNull()) {
+		// Hash by the raw (months, days, micros) fields: Value::Hash normalizes first, which would put intervals
+		// that are only equal after normalization in the same bucket and make Equals the deciding factor
+		auto interval = value.GetValueUnsafe<interval_t>();
+		return CombineHash(duckdb::Hash(interval.months) ^ duckdb::Hash(interval.days) ^ duckdb::Hash(interval.micros),
+		                   result);
+	}
 	return CombineHash(value.Hash(), result);
 }
 
