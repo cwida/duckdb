@@ -129,3 +129,24 @@ query I
 SELECT finalize(combine(to_aggregate_state('-5'::BIGNUM, 'sum', ['BIGNUM']), to_aggregate_state('5'::BIGNUM, 'sum', ['BIGNUM'])));
 ----
 0
+
+# a scale above 38 divides by its own scale factor
+query II
+SELECT avg(1::DECIMAL(40,39)), avg(x) FROM (VALUES (1::DECIMAL(40,39)), (2::DECIMAL(40,39))) t(x);
+----
+1.0	1.5
+
+query I
+SELECT avg(x) FROM (VALUES ('0.123456789012345678901234567890123456789'::DECIMAL(40,39)), ('-0.123456789012345678901234567890123456789')) t(x);
+----
+0.0
+
+query I
+SELECT avg(x) = 0.123456789012345678901234567890123456789::DOUBLE FROM (VALUES ('0.123456789012345678901234567890123456789'::DECIMAL(40,39))) t(x);
+----
+true
+
+query I
+SELECT avg(x) FROM (VALUES ('12.5'::DECIMAL(255,250)), ('-2.5'), (NULL)) t(x);
+----
+5.0

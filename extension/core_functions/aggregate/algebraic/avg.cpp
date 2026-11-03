@@ -582,6 +582,14 @@ AggregateFunction GetAverageAggregate(PhysicalType type) {
 	}
 }
 
+//! 10^scale as a double, through the hugeint table where it reaches so that both decimal tiers divide identically
+static double DecimalScaleFactor(uint32_t scale) {
+	if (scale < Hugeint::CACHED_POWERS_OF_TEN) {
+		return Hugeint::Cast<double>(Hugeint::POWERS_OF_TEN[scale]);
+	}
+	return std::pow(10.0, static_cast<double>(scale));
+}
+
 unique_ptr<FunctionData> BindDecimalAvg(BindAggregateFunctionInput &input) {
 	auto &function = input.GetBoundFunction();
 	auto &arguments = input.GetArguments();
@@ -595,8 +603,7 @@ unique_ptr<FunctionData> BindDecimalAvg(BindAggregateFunctionInput &input) {
 	function.SetName("avg");
 	function.GetArguments()[0] = decimal_type;
 	function.SetReturnType(LogicalType::DOUBLE);
-	return make_uniq<AverageDecimalBindData>(
-	    Hugeint::Cast<double>(Hugeint::POWERS_OF_TEN[DecimalType::GetScale(decimal_type)]));
+	return make_uniq<AverageDecimalBindData>(DecimalScaleFactor(DecimalType::GetScale(decimal_type)));
 }
 
 } // namespace
