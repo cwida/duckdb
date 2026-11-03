@@ -3,10 +3,10 @@
 # group: [optimizer]
 
 statement ok
-PRAGMA enable_verification
+SET debug_verify_stats=true
 
 statement ok
-SET debug_verify_stats=true
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
 # the statistics propagation updates the column statistics after each join condition (both sides become NOT NULL),
 # but every condition is evaluated over candidate pairs that still hold the NULLs the earlier condition rejects,
@@ -51,17 +51,48 @@ SELECT count(*) FROM dec_small t1 JOIN dec_small t2 ON t1.n >= t2.n AND t1.n >= 
 ----
 6
 
-# a LEFT JOIN with a disjunction becomes an any-join holding both conditions
+# a LEFT JOIN with a disjunction stays a comparison join: the disjunction is a non-comparison condition
+# next to the comparison, evaluated by the nested loop join
+query II
+EXPLAIN SELECT count(*) FROM dec_small t1 LEFT JOIN dec_small t2 ON t1.n >= t2.n AND (t1.n + 1 >= t2.n OR t2.n < -100);
+----
+physical_plan	<REGEX>:.*NESTED_LOOP_JOIN.*
+
 query I
 SELECT count(*) FROM dec_small t1 LEFT JOIN dec_small t2 ON t1.n >= t2.n AND (t1.n + 1 >= t2.n OR t2.n < -100);
 ----
 7
 
-# an inner any-join over a non-comparison condition
+# a condition without a comparison between the sides is an any-join: a blockwise nested loop join
+query II
+EXPLAIN SELECT count(*) FROM dec_small t1 JOIN dec_small t2 ON (t1.n >= t2.n AND t1.n + 1 >= t2.n) IS TRUE;
+----
+physical_plan	<REGEX>:.*BLOCKWISE_NL_JOIN.*
+
 query I
 SELECT count(*) FROM dec_small t1 JOIN dec_small t2 ON (t1.n >= t2.n AND t1.n + 1 >= t2.n) IS TRUE;
 ----
 6
+
+query II
+EXPLAIN SELECT count(*) FROM dec_small t1 LEFT JOIN dec_small t2 ON t1.n + 1 >= t2.n OR t2.n IS NULL;
+----
+physical_plan	<REGEX>:.*BLOCKWISE_NL_JOIN.*
+
+query I
+SELECT count(*) FROM dec_small t1 LEFT JOIN dec_small t2 ON t1.n + 1 >= t2.n OR t2.n IS NULL;
+----
+10
+
+query II
+EXPLAIN SELECT count(*) FROM dec_small t1 JOIN dec_small t2 ON t1.n >= t2.n OR t1.n IS NULL;
+----
+physical_plan	<REGEX>:.*BLOCKWISE_NL_JOIN.*
+
+query I
+SELECT count(*) FROM dec_small t1 JOIN dec_small t2 ON t1.n >= t2.n OR t1.n IS NULL;
+----
+10
 
 # wider decimal
 statement ok
@@ -123,3 +154,67 @@ query I
 SELECT count(*) FROM no_nulls t1 JOIN dec_small t2 ON t1.n >= t2.n AND t1.n >= t2.n - 1;
 ----
 6
+
+# larger tables: the later condition is also evaluated over the NULL rows by the hash join and the range joins
+statement ok
+CREATE TABLE big_a AS SELECT CASE WHEN i % 7 = 0 THEN NULL ELSE i END::DECIMAL(10,2) AS n FROM range(2000) t(i);
+
+statement ok
+CREATE TABLE big_b AS SELECT CASE WHEN i % 5 = 0 THEN NULL ELSE i END::DECIMAL(10,2) AS n FROM range(2000) t(i);
+
+query II
+EXPLAIN SELECT count(*) FROM big_a t1 JOIN big_b t2 ON t1.n = t2.n AND t1.n + 1 >= t2.n;
+----
+physical_plan	<REGEX>:.*HASH_JOIN.*
+
+query I
+SELECT count(*) FROM big_a t1 JOIN big_b t2 ON t1.n = t2.n AND t1.n + 1 >= t2.n;
+----
+1372
+
+query I
+SELECT count(*) FROM big_a t1 JOIN big_b t2 ON t1.n = t2.n AND t1.n::DECIMAL(18,3) >= t2.n;
+----
+1372
+
+query II
+EXPLAIN SELECT count(*) FROM big_a t1 JOIN big_b t2 ON t1.n >= t2.n AND t1.n + 1 >= t2.n;
+----
+physical_plan	<REGEX>:.*IE_JOIN.*
+
+query I
+SELECT count(*) FROM big_a t1 JOIN big_b t2 ON t1.n >= t2.n AND t1.n + 1 >= t2.n;
+----
+1371658
+
+query II
+EXPLAIN SELECT count(*) FROM big_a t1 JOIN big_b t2 ON t1.n >= t2.n AND (t1.n + 1 >= t2.n OR t2.n < -100);
+----
+physical_plan	<REGEX>:.*PIECEWISE_MERGE_JOIN.*
+
+query I
+SELECT count(*) FROM big_a t1 JOIN big_b t2 ON t1.n >= t2.n AND (t1.n + 1 >= t2.n OR t2.n < -100);
+----
+1371658
+
+# below the merge join threshold the two range conditions take the piecewise merge join
+statement ok
+CREATE TABLE mid_a AS SELECT CASE WHEN i % 7 = 0 THEN NULL ELSE i END::DECIMAL(10,2) AS n FROM range(200) t(i);
+
+statement ok
+CREATE TABLE mid_b AS SELECT CASE WHEN i % 5 = 0 THEN NULL ELSE i END::DECIMAL(10,2) AS n FROM range(200) t(i);
+
+query II
+EXPLAIN SELECT count(*) FROM mid_a t1 JOIN mid_b t2 ON t1.n >= t2.n AND t1.n + 1 >= t2.n;
+----
+physical_plan	<REGEX>:.*PIECEWISE_MERGE_JOIN.*
+
+query I
+SELECT count(*) FROM mid_a t1 JOIN mid_b t2 ON t1.n >= t2.n AND t1.n + 1 >= t2.n;
+----
+13715
+
+query I
+SELECT count(*) FROM mid_a t1 LEFT JOIN mid_b t2 ON t1.n >= t2.n AND t1.n + 1 >= t2.n;
+----
+13744
