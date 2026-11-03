@@ -166,7 +166,6 @@ AsyncResult DirectFileReader::Scan(ClientContext &context, GlobalTableFunctionSt
 					const auto timestamp_seconds =
 					    file_metadata ? file_metadata->last_modification_time : fs.GetLastModifiedTime(*file_handle);
 					if (!timestamp_seconds.IsFinite()) {
-						// stats of a file system without modification times leave the time unknown
 						FlatVector::SetNull(last_modified_vector, out_idx, true);
 					} else {
 						FlatVector::GetDataMutable<timestamp_tz_t>(last_modified_vector)[out_idx] =

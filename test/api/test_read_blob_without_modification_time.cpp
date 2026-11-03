@@ -40,15 +40,8 @@ public:
 		return LocalFileSystem::FileExists(MapPath(path), opener);
 	}
 
-	vector<OpenFileInfo> Glob(const string &path, FileOpener *opener) override {
-		vector<OpenFileInfo> result;
-		if (LocalFileSystem::FileExists(MapPath(path), opener)) {
-			result.emplace_back(path);
-		}
-		return result;
-	}
-
-	//! Opens for reading without the direct IO that the reader asks of remote files, which a local file rejects
+	//! Opens for reading without the direct IO the reader asks of remote files, whose buffers a local file needs
+	//! aligned
 	unique_ptr<FileHandle> OpenFile(const string &path, FileOpenFlags flags, optional_ptr<FileOpener> opener) override {
 		FileOpenFlags read_flags = FileFlags::FILE_FLAGS_READ;
 		if (flags.ReturnNullIfNotExists()) {
@@ -58,7 +51,7 @@ public:
 	}
 
 	timestamp_t GetLastModifiedTime(FileHandle &handle) override {
-		throw NotImplementedException("%s: GetLastModifiedTime is not implemented!", GetName());
+		return FileSystem::GetLastModifiedTime(handle);
 	}
 
 	//! The generic stats, which ask GetLastModifiedTime, instead of the local stat call
@@ -105,15 +98,11 @@ TEST_CASE("read_blob leaves last_modified NULL when the file system has no modif
 		string file = string(prefix) + "a.txt";
 		// metadata only reads take the stats of the file, remote ones through the caching file system
 		auto result = con.Query("SELECT size, last_modified FROM read_blob('" + file + "')");
-		string error = result->HasError() ? result->GetError() : string();
-		INFO(error);
 		REQUIRE_NO_FAIL(*result);
 		REQUIRE(CHECK_COLUMN(result, 0, {3}));
 		REQUIRE(CHECK_COLUMN(result, 1, {Value()}));
 
 		result = con.Query("SELECT content, last_modified FROM read_blob('" + file + "')");
-		error = result->HasError() ? result->GetError() : string();
-		INFO(error);
 		REQUIRE_NO_FAIL(*result);
 		REQUIRE(CHECK_COLUMN(result, 0, {Value::BLOB_RAW(string("one"))}));
 		REQUIRE(CHECK_COLUMN(result, 1, {Value()}));
