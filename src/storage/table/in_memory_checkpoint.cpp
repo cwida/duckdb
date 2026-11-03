@@ -7,6 +7,7 @@
 #include "duckdb/common/enums/checkpoint_abort.hpp"
 #include "duckdb/common/serializer/binary_serializer.hpp"
 #include "duckdb/main/settings.hpp"
+#include "duckdb/storage/checkpoint/pending_publication.hpp"
 #include "duckdb/storage/data_table.hpp"
 #include "duckdb/storage/partial_block_manager.hpp"
 #include "duckdb/storage/storage_manager.hpp"
@@ -24,6 +25,16 @@ InMemoryCheckpointer::InMemoryCheckpointer(QueryContext context, AttachedDatabas
     : CheckpointWriter(db), context(context.GetClientContext()),
       partial_block_manager(context, block_manager, PartialBlockType::IN_MEMORY_CHECKPOINT),
       storage_manager(storage_manager), options(options_p) {
+}
+
+InMemoryCheckpointer::~InMemoryCheckpointer() {
+	// Discard pending packable references before destroying their publication owners.
+	partial_block_manager.ClearBlocks();
+}
+
+void InMemoryCheckpointer::AddPendingPublication(unique_ptr<PendingPublication> publication) {
+	D_ASSERT(publication);
+	pending_publications.push_back(std::move(publication));
 }
 
 void InMemoryCheckpointer::CreateCheckpoint() {
@@ -69,6 +80,12 @@ void InMemoryCheckpointer::CreateCheckpoint() {
 			throw IOException("In-memory checkpoint aborted because of PRAGMA debug_checkpoint_abort flag");
 		}
 	}
+	partial_block_manager.FlushPartialBlocks();
+	for (auto &pending : pending_publications) {
+		pending->Publish();
+	}
+	pending_publications.clear();
+
 	for (auto &table : tables) {
 		// index entries added or removed while the checkpoint ran went to delta indexes
 		auto &index_list = table.get().GetStorage().GetDataTableInfo()->GetIndexes();
@@ -141,6 +158,15 @@ unique_ptr<RowGroupWriter> InMemoryTableDataWriter::GetRowGroupWriter() {
 unique_ptr<TableIndexWriter> InMemoryTableDataWriter::GetTableIndexWriter(StorageVersion) {
 	return nullptr;
 };
+
+bool InMemoryTableDataWriter::CanDeferPublication() const {
+	return !GetRebuildIndexes();
+}
+
+void InMemoryTableDataWriter::AddPendingPublication(unique_ptr<PendingPublication> publication) {
+	D_ASSERT(CanDeferPublication());
+	checkpoint_manager.AddPendingPublication(std::move(publication));
+}
 
 void InMemoryTableDataWriter::FlushPartialBlocks() {
 	// Finalize packed buffers before the checkpoint row groups become visible.

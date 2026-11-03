@@ -1,5 +1,7 @@
 #include "duckdb/storage/checkpoint/table_data_writer.hpp"
 #include "duckdb/common/shared_ptr_ipp.hpp"
+#include "duckdb/common/exception.hpp"
+#include "duckdb/storage/checkpoint/pending_publication.hpp"
 #include "duckdb/storage/checkpoint/table_index_writer.hpp"
 
 #include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
@@ -39,6 +41,10 @@ TableDataWriter::~TableDataWriter() {
 void TableDataWriter::WriteTableData(Serializer &metadata_serializer) {
 	// start scanning the table and append the data to the uncompressed segments
 	table.GetStorage().Checkpoint(*this, metadata_serializer);
+}
+
+void TableDataWriter::AddPendingPublication(unique_ptr<PendingPublication> publication) {
+	throw InternalException("This table writer does not support deferred publication");
 }
 
 void TableDataWriter::AddRowGroup(RowGroupPointer &&row_group_pointer, unique_ptr<RowGroupWriter> writer) {
@@ -94,6 +100,15 @@ void SingleFileTableDataWriter::WriteUnchangedTable(MetaBlockPointer pointer,
 
 unique_ptr<TableIndexWriter> SingleFileTableDataWriter::GetTableIndexWriter(StorageVersion version) {
 	return make_uniq<SingleFileTableIndexWriter>(checkpoint_manager, version);
+}
+
+bool SingleFileTableDataWriter::CanDeferPublication() const {
+	return !GetRebuildIndexes();
+}
+
+void SingleFileTableDataWriter::AddPendingPublication(unique_ptr<PendingPublication> publication) {
+	D_ASSERT(CanDeferPublication());
+	checkpoint_manager.AddPendingPublication(std::move(publication));
 }
 
 void SingleFileTableDataWriter::FlushPartialBlocks() {

@@ -2122,14 +2122,13 @@ CollectionCheckpointResult RowGroupCollection::Checkpoint(TableDataWriter &write
 		}
 	}
 
-	// flush any partial blocks BEFORE updating the row group pointer
-	// flushing partial blocks updates where data lives
-	// this cannot be done after other threads start scanning the row groups
-	// so this HAS to happen before we call "SetRowGroups" to update the row groups
-	writer.FlushPartialBlocks();
-	// Rebuild indexes if the REBUILD strategy was chosen (legacy vacuum_rebuild_indexes path) and rowids changed.
+	// Index rebuilds need the checkpointed row groups to be installed first.
 	if (vacuum_state.index_strategy == VacuumIndexStrategy::REBUILD && writer.RowIdsChanged()) {
 		writer.SetRebuildIndexes();
+	}
+	// Flush before installing row groups, since flushing changes their segment locations.
+	if (!writer.CanDeferPublication()) {
+		writer.FlushPartialBlocks();
 	}
 
 	CollectionCheckpointResult result;

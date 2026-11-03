@@ -15,10 +15,15 @@
 
 namespace duckdb {
 
+class PendingPublication;
+
 class InMemoryCheckpointer final : public CheckpointWriter {
+	friend class InMemoryTableDataWriter;
+
 public:
 	InMemoryCheckpointer(QueryContext context, AttachedDatabase &db, BlockManager &block_manager,
 	                     StorageManager &storage_manager, CheckpointOptions options);
+	~InMemoryCheckpointer() override;
 
 	void CreateCheckpoint() override;
 
@@ -39,10 +44,15 @@ public:
 	void WriteTable(TableCatalogEntry &table, Serializer &serializer) override;
 
 private:
+	void AddPendingPublication(unique_ptr<PendingPublication> publication);
+
+private:
 	optional_ptr<ClientContext> context;
 	PartialBlockManager partial_block_manager;
 	StorageManager &storage_manager;
 	CheckpointOptions options;
+	//! Owns prepared collections until the shared packing buffers are finalized.
+	vector<unique_ptr<PendingPublication>> pending_publications;
 };
 
 class InMemoryTableDataWriter : public TableDataWriter {
@@ -56,6 +66,8 @@ public:
 	                   const vector<shared_ptr<const IndexStorageInfo>> &index_infos, Serializer &serializer) override;
 	unique_ptr<RowGroupWriter> GetRowGroupWriter() override;
 	unique_ptr<TableIndexWriter> GetTableIndexWriter(StorageVersion version) override;
+	bool CanDeferPublication() const override;
+	void AddPendingPublication(unique_ptr<PendingPublication> publication) override;
 	void FlushPartialBlocks() override;
 	CheckpointOptions GetCheckpointOptions() const override;
 	MetadataManager &GetMetadataManager() override;
