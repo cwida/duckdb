@@ -5,6 +5,7 @@
 #include "parquet_reader.hpp"
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/once_flag.hpp"
+#include "duckdb/common/operator/add.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 
@@ -397,7 +398,20 @@ static unique_ptr<NodeStatistics> ReadSingleParquetFileCardinality(ClientContext
 	if (!parquet_data.cardinality.IsValid()) {
 		return nullptr;
 	}
-	return make_uniq<NodeStatistics>(parquet_data.cardinality.GetIndex());
+	auto result = make_uniq<NodeStatistics>(parquet_data.cardinality.GetIndex());
+	if (!parquet_data.metadata) {
+		return result;
+	}
+	// Execution reuses these row groups; the footer's total is not validated against their population.
+	idx_t maximum = 0;
+	for (auto &group : parquet_data.metadata->metadata->file_metadata.row_groups) {
+		if (group.num_rows < 0 || !TryAddOperator::Operation(maximum, static_cast<idx_t>(group.num_rows), maximum)) {
+			return result;
+		}
+	}
+	result->has_max_cardinality = true;
+	result->max_cardinality = maximum;
+	return result;
 }
 
 //! The virtual columns the parquet reader can produce for a file

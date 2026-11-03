@@ -93,7 +93,7 @@ static void SniffCSVFile(ClientContext &context, ReadSingleCSVFileData &result, 
                          const MultiFileOptions &file_options, vector<LogicalType> &return_types,
                          vector<Identifier> &names) {
 	auto &options = result.options;
-	result.buffer_manager = CSVBufferManager::Open(context, options, options.file_path, false);
+	result.buffer_manager = CSVBufferManager::Open(context, options, result.file, false);
 	auto &state_machine_cache = CSVStateMachineCache::Get(context);
 	if (file_schema.Empty()) {
 		// the columns of this file are fixed - only its dialect is sniffed

@@ -7,6 +7,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/exception/conversion_exception.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
+#include "duckdb/common/operator/multiply.hpp"
 #include "duckdb/common/types/date_lookup_cache.hpp"
 #include "duckdb/common/types/time.hpp"
 #include "duckdb/common/types/timestamp.hpp"
@@ -144,6 +145,18 @@ struct DatePart {
 		}
 	};
 
+	//! Evaluates the operator without throwing: operators whose result can overflow define a TryOperation
+	template <class OP, class T, class TR>
+	static auto TryDatePartOperation(T input, TR &result, int)
+	    -> decltype(OP::template TryOperation<T, TR>(input, result)) {
+		return OP::template TryOperation<T, TR>(input, result);
+	}
+	template <class OP, class T, class TR>
+	static bool TryDatePartOperation(T input, TR &result, long) {
+		result = OP::template Operation<T, TR>(input);
+		return true;
+	}
+
 	template <typename TA, typename TR = timestamp_t>
 	static inline TR Truncate(const TA &input) {
 		if (!input.IsFinite()) {
@@ -174,8 +187,12 @@ struct DatePart {
 		if (!min.IsFinite() || !max.IsFinite()) {
 			return nullptr;
 		}
-		TR min_part = OP::template Operation<T, TR>(min);
-		TR max_part = OP::template Operation<T, TR>(max);
+		TR min_part;
+		TR max_part;
+		if (!TryDatePartOperation<OP, T, TR>(min, min_part, 0) || !TryDatePartOperation<OP, T, TR>(max, max_part, 0)) {
+			// the bounds are not representable (e.g. epoch_ns overflow): the error is raised per row during execution
+			return nullptr;
+		}
 		auto result = NumericStats::CreateEmpty(stats_type);
 		NumericStats::SetMin(result, Value(min_part));
 		NumericStats::SetMax(result, Value(max_part));
@@ -487,6 +504,13 @@ struct DatePart {
 			return Timestamp::GetEpochNanoSeconds(input);
 		}
 
+		//! Returns false instead of throwing when the result does not fit (specialized for the types that can overflow)
+		template <class TA, class TR>
+		static inline bool TryOperation(TA input, TR &result) {
+			result = Operation<TA, TR>(input);
+			return true;
+		}
+
 		template <class T>
 		static unique_ptr<BaseStatistics> PropagateStatistics(ClientContext &context, FunctionStatisticsInput &input) {
 			return PropagateDatePartStatistics<T, EpochNanosecondsOperator>(input.child_stats);
@@ -497,6 +521,13 @@ struct DatePart {
 		template <class TA, class TR>
 		static inline TR Operation(TA input) {
 			return Timestamp::GetEpochMicroSeconds(Truncate(input));
+		}
+
+		//! Returns false instead of throwing when the result does not fit (specialized for the types that can overflow)
+		template <class TA, class TR>
+		static inline bool TryOperation(TA input, TR &result) {
+			result = Operation<TA, TR>(input);
+			return true;
 		}
 
 		template <class T>
@@ -1266,6 +1297,28 @@ int64_t DatePart::YearWeekOperator::Operation(dtime_tz_t input) {
 }
 
 template <>
+bool DatePart::EpochNanosecondsOperator::TryOperation(timestamp_t input, int64_t &result) {
+	D_ASSERT(input.IsFinite());
+	return Timestamp::TryGetEpochNanoSeconds(input, result);
+}
+
+template <>
+bool DatePart::EpochNanosecondsOperator::TryOperation(date_t input, int64_t &result) {
+	D_ASSERT(input.IsFinite());
+	return TryMultiplyOperator::Operation<int64_t, int64_t, int64_t>(input.days, Interval::MICROS_PER_DAY * 1000,
+	                                                                 result);
+}
+
+template <>
+int64_t DatePart::EpochNanosecondsOperator::Operation(timestamp_t input) {
+	int64_t result;
+	if (!TryOperation<timestamp_t, int64_t>(input, result)) {
+		throw ConversionException("Could not convert Timestamp(US) to Timestamp(NS)");
+	}
+	return result;
+}
+
+template <>
 int64_t DatePart::EpochNanosecondsOperator::Operation(timestamp_tz_ns_t input) {
 	D_ASSERT(input.IsFinite());
 	return Timestamp::GetEpochNanoSeconds(timestamp_ns_t(input.value));
@@ -1273,8 +1326,11 @@ int64_t DatePart::EpochNanosecondsOperator::Operation(timestamp_tz_ns_t input) {
 
 template <>
 int64_t DatePart::EpochNanosecondsOperator::Operation(date_t input) {
-	D_ASSERT(input.IsFinite());
-	return Date::EpochNanoseconds(input);
+	int64_t result;
+	if (!TryOperation<date_t, int64_t>(input, result)) {
+		throw ConversionException("Could not convert DATE (%s) to nanoseconds", Date::ToString(input));
+	}
+	return result;
 }
 
 template <>
@@ -1298,8 +1354,17 @@ int64_t DatePart::EpochNanosecondsOperator::Operation(dtime_tz_t input) {
 }
 
 template <>
+bool DatePart::EpochMicrosecondsOperator::TryOperation(date_t input, int64_t &result) {
+	return TryMultiplyOperator::Operation<int64_t, int64_t, int64_t>(input.days, Interval::MICROS_PER_DAY, result);
+}
+
+template <>
 int64_t DatePart::EpochMicrosecondsOperator::Operation(date_t input) {
-	return Date::EpochMicroseconds(input);
+	int64_t result;
+	if (!TryOperation<date_t, int64_t>(input, result)) {
+		throw ConversionException("Could not convert DATE (%s) to microseconds", Date::ToString(input));
+	}
+	return result;
 }
 
 template <>

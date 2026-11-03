@@ -10,11 +10,12 @@
 
 #include "duckdb/planner/logical_operator_visitor.hpp"
 #include "duckdb/planner/column_binding_map.hpp"
+#include "duckdb/common/reference_map.hpp"
+#include "duckdb/execution/operator/join/join_filter_pushdown.hpp"
 
 namespace duckdb {
 class Optimizer;
-struct JoinFilterPushdownColumn;
-struct PushdownFilterTarget;
+class LogicalCTERef;
 
 enum class EqualityPropagation { DISABLED, ENABLED };
 
@@ -25,6 +26,7 @@ public:
 	explicit JoinFilterPushdownOptimizer(Optimizer &optimizer);
 
 public:
+	void Optimize(LogicalOperator &op);
 	void VisitOperator(LogicalOperator &op) override;
 	//! Find scan targets independently for each column, allowing both NULL-retaining and NULL-rejecting filters.
 	//! Equality propagation can return multiple equivalent columns per scan; single-column callers leave it disabled.
@@ -35,9 +37,15 @@ public:
 	static bool IsFiltering(const unique_ptr<LogicalOperator> &op);
 
 private:
+	void CollectCTEFilters(LogicalOperator &op);
+	void GenerateCTEFilters(LogicalMaterializedCTE &cte);
 	void GenerateJoinFilters(LogicalComparisonJoin &join);
+	static bool CanGenerateJoinFilters(const LogicalComparisonJoin &join);
+	static void GetCTEFilterTargets(LogicalOperator &op, vector<JoinFilterPushdownColumn> columns,
+	                                reference_map_t<LogicalCTERef, vector<JoinFilterPushdownColumn>> &targets);
 
 private:
 	Optimizer &optimizer;
+	reference_map_t<LogicalComparisonJoin, vector<JoinFilterPushdownFilter>> cte_filters;
 };
 } // namespace duckdb

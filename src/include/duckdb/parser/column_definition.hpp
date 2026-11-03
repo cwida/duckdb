@@ -83,6 +83,8 @@ public:
 
 	ParsedExpression &GeneratedExpressionMutable();
 	const ParsedExpression &GeneratedExpression() const;
+	//! Whether the generated expression is set (always the case for valid generated columns)
+	bool HasGeneratedExpression() const;
 	void SetGeneratedExpression(unique_ptr<ParsedExpression> expression);
 	void ChangeGeneratedExpressionType(const LogicalType &type);
 	void GetListOfDependencies(vector<string> &dependencies) const;

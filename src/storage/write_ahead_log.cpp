@@ -343,7 +343,8 @@ void WriteAheadLog::WriteSequenceValue(SequenceValue val) {
 	WriteAheadLogSerializer serializer(*this, WALType::SEQUENCE_VALUE);
 	// last_value (id 105) is only serialized from storage version v2.0.0 onwards, and is omitted when unset
 	serializer.WriteEntry(WALSequenceValue(QualifiedName(sequence.schema.GetSchemaPath(), sequence.name),
-	                                       val.usage_count, val.counter, val.entry->GetData().last_value));
+	                                       val.usage_count, val.counter,
+	                                       val.has_last_value ? optional<int64_t>(val.last_value) : nullopt));
 	serializer.End();
 }
 
