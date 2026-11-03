@@ -143,7 +143,7 @@ TEST_CASE("Common subplans require affirmative table function repeatability", "[
 		non_repeatable_scan_count = 0;
 		auto result = con.Query(query);
 		REQUIRE_NO_FAIL(*result);
-		REQUIRE(result->GetValue(0, 0) == Value::BIGINT(0));
+		REQUIRE(CHECK_COLUMN(result, 0, {0}));
 		REQUIRE(non_repeatable_scan_count.load() == 2);
 		REQUIRE(!StringUtil::Contains(GetExplainPlan(con, query), "__common_subplan_"));
 	}
@@ -153,6 +153,6 @@ TEST_CASE("Common subplans require affirmative table function repeatability", "[
 	                                "INTERSECT ALL SELECT i FROM repeatability_true(7))";
 	auto result = con.Query(repeatable_query);
 	REQUIRE_NO_FAIL(*result);
-	REQUIRE(result->GetValue(0, 0) == Value::BIGINT(1));
+	REQUIRE(CHECK_COLUMN(result, 0, {1}));
 	REQUIRE(StringUtil::Contains(GetExplainPlan(con, repeatable_query), "__common_subplan_"));
 }
