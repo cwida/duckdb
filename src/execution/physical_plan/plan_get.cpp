@@ -82,6 +82,9 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalGet &op) {
 				auto column_idx = projection_indices.empty() ? output_idx : projection_indices[output_idx];
 				if (column_ids[column_idx].GetPrimaryIndex() == op.ordinality_idx.GetIndex()) {
 					ordinality_idx = output_idx;
+					// the operator produces the ordinality column, not the function:
+					// present the position as an empty column so strict functions do not reject it
+					column_ids[column_idx] = ColumnIndex(COLUMN_IDENTIFIER_EMPTY);
 					break;
 				}
 			}
