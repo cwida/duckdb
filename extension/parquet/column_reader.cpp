@@ -431,7 +431,8 @@ bool ColumnReader::PageIsFilteredOut(PageHeader &page_hdr, optional_ptr<const Ta
 			return false;
 		}
 		auto stats =
-		    ParquetStatisticsUtils::TransformParquetStatistics(Type(), Schema(), *page_stats, /*can_have_nan=*/true);
+		    ParquetStatisticsUtils::TransformParquetStatistics(Type(), Schema(), *page_stats, reader.parquet_options,
+		                                                       /*can_have_nan=*/true);
 		auto &expr_filter = filter->Cast<ExpressionFilter>();
 		if (stats) {
 			auto prune_result = expr_filter.CheckStatistics(*stats);
