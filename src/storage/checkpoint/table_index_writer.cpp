@@ -29,8 +29,4 @@ void SingleFileTableIndexWriter::AddPendingPublication(unique_ptr<PendingPublica
 	checkpoint_manager.AddPendingPublication(std::move(publication));
 }
 
-void SingleFileTableIndexWriter::Flush() {
-	partial_block_manager.FlushPartialBlocks();
-}
-
 } // namespace duckdb
