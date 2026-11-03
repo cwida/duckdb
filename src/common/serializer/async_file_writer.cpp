@@ -208,7 +208,7 @@ void AsyncFileWriter::RegisterWrite(unique_ptr<AsyncWriteBuffer> buffer, Schedul
 	}
 
 	auto write_size = buffer->Size();
-	auto offset = total_written;
+	idx_t offset = total_written;
 	total_written += write_size;
 	RegisterWriteInternal(std::move(buffer), offset, schedule_mode);
 }
@@ -240,7 +240,7 @@ void AsyncFileWriter::WriteDataSynchronously(data_ptr_t buffer, idx_t write_size
 		}
 		auto remaining_size = write_size - copied_prefix;
 		if (remaining_size > 0) {
-			auto remaining_offset = total_written;
+			idx_t remaining_offset = total_written;
 			total_written += remaining_size;
 			if (GetWriteMode() != FileWriteMode::SEQUENTIAL) {
 				Write(buffer + copied_prefix, remaining_size, remaining_offset);
@@ -407,9 +407,9 @@ void AsyncFileWriter::Close() {
 		if (handle->file_system.IsLocalFileSystem() && handle->GetFileCompressionType().IsUncompressed()) {
 			auto metadata = handle->Stats();
 			if (metadata.file_type == FileType::FILE_TYPE_REGULAR &&
-			    metadata.file_size != NumericCast<int64_t>(total_written)) {
+			    metadata.file_size != NumericCast<int64_t>(total_written.load())) {
 				throw IOException("File size mismatch for file \"%s\": expected %llu bytes, found %lld bytes", path,
-				                  total_written, metadata.file_size);
+				                  total_written.load(), metadata.file_size);
 			}
 		}
 	} catch (...) {

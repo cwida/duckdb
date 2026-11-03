@@ -112,8 +112,8 @@ public:
 	unique_ptr<GlobalFunctionData> prepare_state_owned;
 	//! The number of files opened
 	idx_t file_count = 0;
-	//! Whether the file being written reached its size, so the next batch starts a new file
-	bool rotate_pending = false;
+	//! The number of batches flushed into the file being written
+	idx_t file_batches = 0;
 	//! Unpartitioned batches
 	map<idx_t, unique_ptr<FixedRawBatchData>> raw_batches;
 	//! The prepared batch data by batch index - ready to flush
@@ -183,7 +183,13 @@ public:
 		}
 		lock_guard<mutex> guard(lock);
 		OpenFileLocked(context, op);
-		rotate_pending = false;
+		file_batches = 0;
+	}
+
+	//! Whether the file being written holds batches and reached the size, so the next batch starts a new file
+	bool FileReachedSize(const PhysicalBatchCopyToFile &op) {
+		return op.RotatesFiles() && file_batches > 0 &&
+		       op.function.file_size_bytes(*global_state) >= op.file_size_bytes.GetIndex();
 	}
 
 	//! Finishes the files that are still open, once every batch is flushed
@@ -658,18 +664,14 @@ void PhysicalBatchCopyToFile::FlushBatchData(ClientContext &context, GlobalSinkS
 		            {"rows", to_string(batch_data->batch_analyzer.current_batch_size)},
 		            {"size", to_string(batch_data->batch_analyzer.current_batch_size_bytes)},
 		            {"reason", EnumUtil::ToString(batch_data->batch_analyzer.ToReason())}});
-		if (gstate.rotate_pending) {
+		if (gstate.FileReachedSize(*this)) {
 			gstate.RotateFile(context, *this);
 		}
 		function.flush_batch(context, *bind_data, *gstate.global_state, *batch_data->prepared_data);
 		batch_data->prepared_data.reset();
 		memory_manager.ReduceUnflushedMemory(batch_data->memory_usage);
 		gstate.flushed_batch_index++;
-		if (RotatesFiles() && function.file_size_bytes &&
-		    function.file_size_bytes(*gstate.global_state) >= file_size_bytes.GetIndex()) {
-			// the next batch starts a new file, so that no file is left empty
-			gstate.rotate_pending = true;
-		}
+		gstate.file_batches++;
 	}
 }
 

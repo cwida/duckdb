@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "duckdb/common/atomic.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/common/serializer/async_write_queue.hpp"
@@ -155,8 +156,9 @@ private:
 	unique_ptr<CopiedAsyncWriteBuffer> copied_buffer;
 	//! Logical file offset of the first byte in copied_buffer.
 	idx_t copied_buffer_offset = 0;
-	//! Logical stream position, including copied/staged/pending bytes. Updated by the registering thread.
-	idx_t total_written = 0;
+	//! Logical stream position, including copied/staged/pending bytes. Updated by the registering thread, read
+	//! by other threads as the file size.
+	atomic<idx_t> total_written {0};
 	//! Set once the handle has been closed or detached.
 	bool finished = false;
 	//! Result of the underlying file handle's close attempt.
