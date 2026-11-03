@@ -182,10 +182,12 @@ unique_ptr<DPJoinNode> PlanEnumerator::CreateJoinTree(JoinRelationSet &set,
 	if (!best_candidate) {
 		return nullptr;
 	}
-	auto cost = cost_model.ComputeCost(left, right, set, applicable_connections);
+	auto cardinality =
+	    cost_model.GetCardinalityEstimator().EstimateJoinCardinality(left, right, set, best_candidate->join_operator);
+	auto cost = cost_model.ComputeCost(left, right, best_candidate->join_operator, cardinality);
 	auto result = make_uniq<DPJoinNode>(set, best_candidate->join_operator, std::move(best_candidate->predicates),
 	                                    best_candidate->generated_cross_product, left.set, right.set, cost);
-	result->cardinality = cost_model.GetCardinalityEstimator().EstimateCardinalityWithSet<idx_t>(set);
+	result->cardinality = cardinality;
 	return result;
 }
 

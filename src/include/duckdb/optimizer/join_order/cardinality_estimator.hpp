@@ -15,6 +15,8 @@ namespace duckdb {
 
 class FilterInfo;
 class JoinPredicateModel;
+class DPJoinNode;
+struct JoinOrderOperator;
 struct CardinalityEstimatorState;
 struct CardinalityHelper;
 struct CompositeJoinPairStats;
@@ -37,10 +39,14 @@ public:
 	void InitCardinalityEstimatorProps(optional_ptr<JoinRelationSet> set, RelationStats &stats);
 	void RestrictFilterDomains(const vector<RelationStats> &relation_stats);
 
-	//! cost model needs estimated cardinalities to the fraction since the formula captures
-	//! distinct count selectivities and multiplicities. Hence the template
+	//! Cached INNER-domain evidence used to derive selectivity across a candidate's inputs.
+	//! Non-inner output semantics are only applied by EstimateJoinCardinality.
 	template <class T>
 	T EstimateCardinalityWithSet(JoinRelationSet &new_set);
+
+	//! Compose a candidate from its actual inputs; output estimates are not cached by relation set.
+	double EstimateJoinCardinality(const DPJoinNode &left, const DPJoinNode &right, JoinRelationSet &set,
+	                               optional_ptr<JoinOrderOperator> join_operator);
 
 	//! used for debugging.
 	void AddRelationNamesToRelationStats(vector<RelationStats> &stats);
@@ -50,7 +56,6 @@ private:
 	double GetNumerator(JoinRelationSet &set);
 	double GetSubgraphCardinality(const Subgraph2Denominator &subgraph);
 	const CardinalityHelper &GetCardinalityBeforeFilters(JoinRelationSet &set);
-	optional<double> EstimateTopLevelSemiAnti(JoinRelationSet &set);
 	DenomInfo GetDenominator(JoinRelationSet &set);
 	void ProcessDenominatorEdge(FilterInfoWithTotalDomains &edge, JoinRelationSet &requested_set,
 	                            DenominatorState &state);
@@ -73,14 +78,7 @@ private:
 	JoinDenomInfo CalculateJoinDenomInfo(Subgraph2Denominator &left, Subgraph2Denominator &right,
 	                                     FilterInfoWithTotalDomains &filter);
 	double CalculateInnerJoinDenom(double base_denom, FilterInfoWithTotalDomains &filter);
-	optional<double> CalculateLeftPreservedDenom(JoinRelationSet &merged_relations, JoinRelationSet &inner_numerator,
-	                                             FilterInfoWithTotalDomains &filter);
-	JoinDenomInfo CalculateLeftJoinDenomInfo(Subgraph2Denominator &left, Subgraph2Denominator &right,
-	                                         FilterInfoWithTotalDomains &filter);
-	bool ApplyInternalLeftJoinEdge(DenominatorState &state, Subgraph2Denominator &subgraph,
-	                               FilterInfoWithTotalDomains &edge);
-	double CalculateSemiAntiJoinDenom(Subgraph2Denominator &left, Subgraph2Denominator &right,
-	                                  FilterInfoWithTotalDomains &filter);
+	double EstimateLeftJoinMatches(const JoinOrderOperator &join_operator, double left_rows, double right_rows);
 	bool ApplyJoinIncrement(double &target_denom, FilterInfoWithTotalDomains &edge,
 	                        reference_map_t<JoinRelationSet, CompositeJoinPairStats> &inner_join_pair_stats,
 	                        reference_set_t<JoinRelationSet> &capped_join_pairs, JoinRelationSet &scope,

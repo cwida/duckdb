@@ -766,7 +766,10 @@ GenerateJoinRelation QueryGraphManager::GenerateJoins(vector<unique_ptr<LogicalO
 		throw InternalException("Join Order Optimizer Error: No full plan was created");
 	}
 	auto &node = dp_entry->second;
-	auto result_cardinality = node->cardinality;
+	auto maximum_cardinality = NumericLimits<idx_t>::Maximum();
+	auto result_cardinality = node->cardinality >= static_cast<double>(maximum_cardinality)
+	                              ? maximum_cardinality
+	                              : LossyNumericCast<idx_t>(node->cardinality);
 	if (!dp_entry->second->is_leaf) {
 		// generate the left and right children
 		auto left = GenerateJoins(extracted_relations, node->left_set, relation_stats);
