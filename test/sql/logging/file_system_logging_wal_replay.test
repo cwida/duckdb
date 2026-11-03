@@ -32,12 +32,12 @@ SELECT i FROM db.t;
 ----
 42
 
-# the client's file system opens the database file and its WAL, so the session settings apply to both
-query III
-SELECT DISTINCT scope, fs, regexp_extract(path, 'wal_replay_logging.*$') AS file
+# the file system of the attaching connection opens the database file and its WAL, so the session settings apply to both
+query IIII
+SELECT DISTINCT scope, fs, parse_filename(path) AS file, connection_id = current_connection_id() AS attaching_connection
 FROM duckdb_logs_parsed('FileSystem')
-WHERE path LIKE '%wal_replay_logging.db%' AND op = 'OPEN'
+WHERE parse_filename(path) LIKE 'wal_replay_logging.db%' AND op = 'OPEN'
 ORDER BY file;
 ----
-CONNECTION	LocalFileSystem	wal_replay_logging.db
-CONNECTION	LocalFileSystem	wal_replay_logging.db.wal
+CONNECTION	LocalFileSystem	wal_replay_logging.db	true
+CONNECTION	LocalFileSystem	wal_replay_logging.db.wal	true
