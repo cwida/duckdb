@@ -1,0 +1,67 @@
+# name: test/sql/index/index_key_collation.test
+# description: Index keys do not use comparison keys or the default collation, so they survive a restart and a setting change
+# group: [index]
+
+load {TEST_DIR}/index_key_collation.db
+
+statement ok
+CREATE TABLE il(v INTERVAL[]);
+
+statement ok
+CREATE INDEX ii ON il (list_contains(v, INTERVAL 24 HOURS));
+
+statement ok
+CREATE TABLE vl(v VARIANT[]);
+
+statement ok
+CREATE INDEX vi ON vl (list_position(v, 1::TINYINT::VARIANT));
+
+statement ok
+CREATE TABLE t(s VARCHAR);
+
+statement ok
+CREATE INDEX i ON t(hash(s));
+
+statement ok
+INSERT INTO il VALUES ([INTERVAL 1 DAY]);
+
+statement ok
+INSERT INTO vl VALUES ([1::TINYINT::VARIANT]);
+
+statement ok
+INSERT INTO t VALUES ('A'), ('b');
+
+restart
+
+statement ok
+INSERT INTO il VALUES ([INTERVAL 2 DAY]);
+
+statement ok
+INSERT INTO vl VALUES ([2::TINYINT::VARIANT]);
+
+statement ok
+SET default_collation = 'nocase';
+
+statement ok
+DELETE FROM t WHERE s = 'A';
+
+statement ok
+DELETE FROM il WHERE v = [INTERVAL 1 DAY];
+
+statement ok
+DELETE FROM vl WHERE v = [1::TINYINT::VARIANT];
+
+query I
+SELECT count(*) FROM t
+----
+1
+
+query I
+SELECT count(*) FROM il
+----
+1
+
+query I
+SELECT count(*) FROM vl
+----
+1

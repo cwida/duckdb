@@ -377,7 +377,7 @@ void UpdateSegment::FetchUpdates(TransactionData transaction, idx_t vector_index
 	fetch_update_function(transaction.view, UpdateInfo::Get(pin), result);
 }
 
-UpdateNode::UpdateNode(BufferManager &manager) : allocator(manager) {
+UpdateNode::UpdateNode(BufferManager &manager) : allocator(manager, false) {
 }
 
 UpdateNode::~UpdateNode() {
@@ -1464,13 +1464,13 @@ void UpdateSegment::Update(TransactionData transaction, DuckTableEntry &table_en
 	UnifiedVectorFormat update_format;
 	update_p.ToUnifiedFormat(update_format);
 
-	// update statistics
+	// the statistics of this update join those of the segment only once it cannot fail anymore, as RowGroup::Update
+	// publishes them after the next update of the column, which must not see the values of a failed update
 	SelectionVector sel;
-	{
-		lock_guard<mutex> stats_guard(stats_lock);
-		count = statistics_update_function(this, stats, update_format, count, sel);
-	}
+	SegmentStatistics update_stats(column_data.type);
+	count = statistics_update_function(this, update_stats, update_format, count, sel);
 	if (count == 0) {
+		MergeStatistics(update_stats);
 		return;
 	}
 
@@ -1494,6 +1494,7 @@ void UpdateSegment::Update(TransactionData transaction, DuckTableEntry &table_en
 		// we could do it otherwise - but that would require merging updates in order to find the current values
 		count = get_effective_updates(update_format, ids, count, sel, base_data, vector_offset);
 		if (count == 0) {
+			MergeStatistics(update_stats);
 			return;
 		}
 	}
@@ -1617,6 +1618,12 @@ void UpdateSegment::Update(TransactionData transaction, DuckTableEntry &table_en
 	// write the new values into the root
 	merge_update_function(root_info, update_format, ids, count, sel, vector_offset);
 	root_info.Verify();
+	MergeStatistics(update_stats);
+}
+
+void UpdateSegment::MergeStatistics(const SegmentStatistics &update_stats) {
+	lock_guard<mutex> stats_guard(stats_lock);
+	stats.statistics.Merge(update_stats.statistics);
 }
 
 bool UpdateSegment::HasUpdates() const {

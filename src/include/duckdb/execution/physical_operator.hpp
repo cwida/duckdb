@@ -316,6 +316,8 @@ public:
 	}
 
 	unique_ptr<DataChunk> cached_chunk;
+	//! Largest cache capacity reached, retained across flushes and state resets.
+	idx_t cached_chunk_capacity = 0;
 	bool initialized = false;
 	//! Whether or not the chunk can be cached
 	OperatorCachingMode can_cache_chunk = OperatorCachingMode::NONE;

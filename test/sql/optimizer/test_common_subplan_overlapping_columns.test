@@ -1,0 +1,65 @@
+# name: test/sql/optimizer/test_common_subplan_overlapping_columns.test
+# description: Shared join producers combine partially overlapping column sets
+# group: [optimizer]
+
+statement ok
+CREATE TABLE overlap_fact AS
+SELECT (i % 20)::INTEGER AS k, i::INTEGER AS a, (i * 10)::BIGINT AS b
+FROM range(1000) t(i);
+
+statement ok
+CREATE TABLE overlap_dim(k INTEGER, label VARCHAR);
+
+statement ok
+INSERT INTO overlap_dim VALUES (1, 'one'), (2, 'two'), (2, 'again'), (NULL, 'null');
+
+statement ok
+CREATE VIEW overlap_join AS
+SELECT f.k, f.a, f.b, d.label FROM overlap_fact f JOIN overlap_dim d USING (k);
+
+# Each join reads the join key and a different payload; neither contains the union.
+query II
+SELECT (SELECT sum(a) FROM overlap_join), (SELECT sum(b) FROM overlap_join);
+----
+73750	737500
+
+# The producer must expose columns from both join inputs, including strings.
+query TI rowsort
+SELECT label, sum(a) FROM overlap_join GROUP BY label
+UNION ALL
+SELECT label, sum(b) FROM overlap_join GROUP BY label;
+----
+again	24600
+again	246000
+one	24550
+one	245500
+two	24600
+two	246000
+
+# Outer joins retain null extension when their scan columns are widened.
+statement ok
+CREATE VIEW overlap_outer AS
+SELECT d.k, f.a, f.b, d.label FROM overlap_dim d LEFT JOIN overlap_fact f USING (k);
+
+query III
+SELECT (SELECT sum(a) FROM overlap_outer),
+       (SELECT sum(b) FROM overlap_outer),
+       (SELECT count(*) FROM overlap_outer);
+----
+73750	737500	151
+
+# Semi and anti joins expose only their returned input's columns.
+query IIII
+SELECT (SELECT sum(a) FROM overlap_fact SEMI JOIN overlap_dim USING (k)),
+       (SELECT sum(b) FROM overlap_fact SEMI JOIN overlap_dim USING (k)),
+       (SELECT sum(a) FROM overlap_fact ANTI JOIN overlap_dim USING (k)),
+       (SELECT sum(b) FROM overlap_fact ANTI JOIN overlap_dim USING (k));
+----
+49150	491500	450350	4503500
+
+# Source identity and join conditions are still part of the match.
+query II
+SELECT (SELECT sum(f.a) FROM overlap_fact f JOIN overlap_dim d ON f.k = d.k),
+       (SELECT sum(f.b) FROM overlap_fact f JOIN overlap_dim d ON f.k = d.k + 1);
+----
+73750	739000

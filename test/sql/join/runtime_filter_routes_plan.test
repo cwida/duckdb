@@ -62,11 +62,11 @@ EXPLAIN ANALYZE SELECT count(*) FROM (
 ----
 analyzed_plan	<REGEX>:(?s).*Dynamic Filters:.*k = 42.*
 
-# Sibling builds share finalization without an intervening pipeline breaker.
-query II
-EXPLAIN ANALYZE SELECT count(*) FROM a JOIN b USING(id) JOIN c ON b.k=c.k;
+# Small sibling builds may publish opportunistically.
+query I
+SELECT count(*) FROM a JOIN b USING(id) JOIN c ON b.k=c.k;
 ----
-analyzed_plan	<!REGEX>:(?s).*Dynamic Filters:.*k = 42.*
+100
 
 query II
 EXPLAIN ANALYZE SELECT count(*) FROM (
