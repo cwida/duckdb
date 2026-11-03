@@ -1588,6 +1588,8 @@ unique_ptr<BlockingSample> DataTable::GetSample() {
 //===--------------------------------------------------------------------===//
 // Checkpoint
 //===--------------------------------------------------------------------===//
+namespace {
+
 class PendingRowGroupCollectionPublication final : public PendingPublication {
 public:
 	PendingRowGroupCollectionPublication(shared_ptr<DataTable> table_p, CollectionCheckpointResult result_p,
@@ -1610,6 +1612,8 @@ private:
 	CollectionCheckpointResult result;
 	TableStatistics checkpoint_stats;
 };
+
+} // namespace
 
 void DataTable::PublishCheckpoint(CollectionCheckpointResult result, TableStatistics &checkpoint_stats) {
 	lock_guard<mutex> lock(append_lock);
@@ -1636,6 +1640,7 @@ void DataTable::Checkpoint(TableDataWriter &writer, Serializer &serializer) {
 		D_ASSERT(!writer.GetRebuildIndexes());
 		writer.AddPendingPublication(std::move(publication));
 	} else {
+		// we cannot defer the publish of the collection when rebuilding needs it immediately
 		publication->Publish();
 		if (writer.GetRebuildIndexes()) {
 			MetricsTimer timer;

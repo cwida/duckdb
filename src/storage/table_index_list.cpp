@@ -488,6 +488,8 @@ unordered_set<column_t> TableIndexList::GetIndexedColumns() const {
 	return column_ids;
 }
 
+namespace {
+
 class PendingIndexPublication final : public PendingPublication {
 public:
 	PendingIndexPublication(shared_ptr<IndexEntry> entry_p, unique_ptr<BoundIndex> shadow_index_p)
@@ -506,6 +508,8 @@ private:
 	shared_ptr<IndexEntry> entry;
 	unique_ptr<BoundIndex> shadow_index;
 };
+
+} // namespace
 
 vector<shared_ptr<const IndexStorageInfo>> TableIndexList::Checkpoint(TableIndexWriter &writer) {
 	annotated_lock_guard lock(index_entries_lock);
