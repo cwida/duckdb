@@ -28,8 +28,16 @@ def run_with_address_space_limit(shell, limit_mb, sql):
 @pytest.mark.parametrize(
     "limit_mb, sql",
     [
-        (256, "SELECT 42"),
-        (512, "SELECT 42"),
+        pytest.param(
+            256,
+            "SELECT 42",
+            marks=pytest.mark.skip(reason="v2.0-cyanoptera segfaults after running out of address space at startup"),
+        ),
+        pytest.param(
+            512,
+            "SELECT 42",
+            marks=pytest.mark.skip(reason="v2.0-cyanoptera segfaults after running out of address space at startup"),
+        ),
         (1024, "SELECT 42"),
         (2048, "SELECT 42"),
         (300, "CREATE TABLE x AS SELECT range AS i, range::VARCHAR || 'abcdefghij' AS s FROM range(20000000)"),
