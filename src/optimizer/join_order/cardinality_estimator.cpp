@@ -140,7 +140,7 @@ struct CardinalityEstimatorState {
 	vector<CardinalityValue> leaf_cardinalities;
 	vector<reference<const JoinOrderOperator>> operators;
 	vector<LogicalJoinStats> boundaries;
-	reference_map_t<JoinRelationSet, CardinalityValue> inner_cardinalities;
+	reference_map_t<JoinRelationSet, CardinalityValue> inner_selectivities;
 	reference_map_t<JoinRelationSet, CardinalityValue> cardinalities;
 	vector<reference<FilterInfo>> residual_filters;
 };
@@ -289,7 +289,7 @@ CardinalityValue CardinalityEstimator::GetNumerator(JoinRelationSet &set) {
 	CardinalityValue numerator;
 	for (idx_t i = 0; i < set.count; i++) {
 		auto cardinality = state->leaf_cardinalities.at(set.relations[i].index);
-		// Domain ratios need a nonzero numerator even for an exactly empty logical input.
+		// Logical output handles exact zero separately from the selectivity model.
 		numerator *= cardinality.IsZero() ? CardinalityValue(1) : cardinality;
 	}
 	return numerator;
@@ -723,26 +723,27 @@ CardinalityValue CardinalityEstimator::GetSelectivity(JoinRelationSet &set) {
 	return result / CardinalityValue(1.0 + static_cast<double>(selectivity_state.unused_edge_tdoms.size()));
 }
 
-CardinalityValue CardinalityEstimator::GetInnerCardinality(JoinRelationSet &set) {
-	auto entry = state->inner_cardinalities.find(set);
-	if (entry != state->inner_cardinalities.end()) {
+CardinalityValue CardinalityEstimator::GetInnerSelectivity(JoinRelationSet &set) {
+	auto entry = state->inner_selectivities.find(set);
+	if (entry != state->inner_selectivities.end()) {
 		return entry->second;
 	}
-	auto result = GetNumerator(set) * GetSelectivity(set);
+	auto result = GetSelectivity(set);
 	for (auto &filter : state->residual_filters) {
 		if (IsFilterApplicable(filter, set)) {
 			result *= CardinalityValue(RelationStatisticsHelper::DEFAULT_SELECTIVITY);
 		}
 	}
-	state->inner_cardinalities.emplace(set, result);
+	state->inner_selectivities.emplace(set, result);
 	return result;
 }
 
 CardinalityValue CardinalityEstimator::GetJoinSelectivity(JoinRelationSet &set, JoinRelationSet &left,
                                                           JoinRelationSet &right) {
-	auto combined = GetInnerCardinality(set);
-	auto left_domains = GetInnerCardinality(left);
-	auto right_domains = GetInnerCardinality(right);
+	// Leaf cardinalities cancel because the inputs partition the combined set.
+	auto combined = GetInnerSelectivity(set);
+	auto left_domains = GetInnerSelectivity(left);
+	auto right_domains = GetInnerSelectivity(right);
 	D_ASSERT(!left_domains.IsZero() && !right_domains.IsZero());
 	return MinValue(CardinalityValue(1), combined / left_domains / right_domains);
 }
@@ -769,7 +770,7 @@ CardinalityValue CardinalityEstimator::EstimateCardinality(JoinRelationSet &set)
 	}
 	CardinalityValue result;
 	if (!boundary) {
-		result = GetInnerCardinality(set);
+		result = GetNumerator(set) * GetInnerSelectivity(set);
 		for (idx_t i = 0; i < set.count; i++) {
 			if (state->leaf_cardinalities.at(set.relations[i].index).IsZero()) {
 				result = CardinalityValue(0);

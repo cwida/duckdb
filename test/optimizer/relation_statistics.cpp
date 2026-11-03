@@ -924,6 +924,51 @@ TEST_CASE("SEMI fallback retains fractional cardinalities for enumeration", "[op
 	REQUIRE(RelationStatisticsHelper::EstimateSemiAntiJoinFallback(102, 0, JoinType::RIGHT_ANTI).cardinality == 102);
 }
 
+TEST_CASE("SEMI and ANTI fallback is independent of positive RHS cardinality", "[optimizer][relation_statistics]") {
+	for (auto type : {JoinOrderOperatorType::SEMI, JoinOrderOperatorType::ANTI}) {
+		for (idx_t left_rows : {idx_t(100003), idx_t(11997210)}) {
+			double expected = 0;
+			for (idx_t right_rows : {idx_t(1), idx_t(3), idx_t(17), idx_t(1000003), idx_t(59986052)}) {
+				JoinRelationSetManager sets;
+				auto &a = sets.GetJoinRelation(RelationIndex(0));
+				auto &b = sets.GetJoinRelation(RelationIndex(1));
+				auto &left = sets.Union(a, b);
+				auto &right = sets.GetJoinRelation(RelationIndex(2));
+				auto &root = sets.Union(left, right);
+				auto x = ColumnBinding(TableIndex(0), ProjectionIndex(0));
+				auto y = ColumnBinding(TableIndex(1), ProjectionIndex(0));
+				auto z = ColumnBinding(TableIndex(2), ProjectionIndex(0));
+				FilterInfo filter(CreateJoinComparison(x, y, ExpressionType::COMPARE_EQUAL), left, 0);
+				filter.SetLeftSet(a);
+				filter.SetRightSet(b);
+				filter.left_binding = x;
+				filter.right_binding = y;
+				JoinPredicateModel model;
+				auto &predicate = model.RegisterPredicate(filter, JoinPredicateClass::INNER_EQUALITY, x, y);
+				predicate.SetEqualityClassIndex(optional_idx(0));
+				JoinEqualityClass group;
+				group.index = 0;
+				group.columns = {x, y};
+				group.relations = {RelationIndex(0), RelationIndex(1)};
+				group.edges.emplace_back(predicate, RelationIndex(0), RelationIndex(1), x, y);
+				model.AddEqualityClass(std::move(group));
+				vector<unique_ptr<JoinOrderOperator>> operators;
+				AddOperator(operators, sets, left, right, type);
+				CardinalityEstimator estimator(sets, model);
+				estimator.Initialize(
+				    {CreateStats({x}, {7}, left_rows), CreateStats({y}, {7}, 31), CreateStats({z}, {1}, right_rows)},
+				    operators);
+				auto rows = estimator.EstimateCardinality(root).GetDouble();
+				if (right_rows == 1) {
+					expected = rows;
+				}
+				// Even a one-ULP difference can bypass the enumerator's cost tie-breaker.
+				REQUIRE(rows == expected);
+			}
+		}
+	}
+}
+
 TEST_CASE("Shared key filters restrict domains only with supported input statistics",
           "[optimizer][relation_statistics]") {
 	for (auto source : {DistinctCountSource::MIN_MAX, DistinctCountSource::HLL, DistinctCountSource::EXACT,

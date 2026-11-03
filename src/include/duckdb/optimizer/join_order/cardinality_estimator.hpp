@@ -41,7 +41,7 @@ private:
 	void RestrictFilterDomains(const vector<RelationStats> &relation_stats);
 	bool IsFilterApplicable(const FilterInfo &filter, JoinRelationSet &set) const;
 	CardinalityValue GetNumerator(JoinRelationSet &set);
-	CardinalityValue GetInnerCardinality(JoinRelationSet &set);
+	CardinalityValue GetInnerSelectivity(JoinRelationSet &set);
 	CardinalityValue GetJoinSelectivity(JoinRelationSet &set, JoinRelationSet &left, JoinRelationSet &right);
 	CardinalityValue GetSelectivity(JoinRelationSet &set);
 	void ProcessSelectivityEdge(FilterInfoWithTotalDomains &edge, JoinRelationSet &requested_set,
