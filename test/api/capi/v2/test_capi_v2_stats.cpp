@@ -1030,8 +1030,16 @@ TEST_CASE("V2 stats: nested, geometry and variant statistics", "[capi_v2][stats]
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
 	const int32_t point_and_polygon[] = {1, 2003};
 	REQUIRE(duckdb_v2_stats_set_geometry_types(geometry_stats, point_and_polygon, 2, nullptr) == DUCKDB_V2_ERROR_NONE);
-	const int32_t bogus = 9999;
-	REQUIRE(duckdb_v2_stats_set_geometry_types(geometry_stats, &bogus, 1, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	// codes outside the ISO WKB table are refused, also a well-formed list holding one
+	const int32_t rejected_codes[] = {9999, 0, 1000, -1, 8};
+	for (auto code : rejected_codes) {
+		const int32_t with_bogus[] = {1, code};
+		REQUIRE(duckdb_v2_stats_set_geometry_types(geometry_stats, &code, 1, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+		REQUIRE(duckdb_v2_stats_set_geometry_types(geometry_stats, with_bogus, 2, nullptr) ==
+		        DUCKDB_V2_ERROR_INPUT_INVALID);
+	}
+	const int32_t all_vertex_types[] = {1, 1001, 2001, 3007};
+	REQUIRE(duckdb_v2_stats_set_geometry_types(geometry_stats, all_vertex_types, 4, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_stats_set_geometry_types(geometry_stats, nullptr, 0, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_stats_set_geometry_extent(list_stats, 0, 1, 0, 1, false, 0, 0, false, 0, 0, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);

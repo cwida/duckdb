@@ -376,20 +376,15 @@ DUCKDB_V2_ERROR duckdb_v2_stats_set_geometry_types(duckdb_v2_stats_handle stats,
 			GeometryStats::GetTypes(result) = GeometryTypeSet::Unknown();
 			return;
 		}
+		// collect into a fresh set first so a refused code leaves the statistics untouched
+		GeometryTypeSet types = GeometryTypeSet::Empty();
 		for (idx_t i = 0; i < count; i++) {
-			const auto code = wkb_types[i];
-			const bool valid =
-			    code >= 0 && (code / 1000) < GeometryTypeSet::VERT_TYPES && (code % 1000) < GeometryTypeSet::PART_TYPES;
-			if (!valid) {
+			if (!types.TryAddWKBType(wkb_types[i])) {
 				throw InvalidInputException("duckdb_v2_stats_set_geometry_types: %d is not an ISO WKB geometry type",
-				                            code);
+				                            wkb_types[i]);
 			}
 		}
-		auto &types = GeometryStats::GetTypes(result);
-		types.Clear();
-		for (idx_t i = 0; i < count; i++) {
-			types.AddWKBType(wkb_types[i]);
-		}
+		GeometryStats::GetTypes(result) = types;
 	});
 }
 
