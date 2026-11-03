@@ -20,6 +20,7 @@ template <>
 double CardinalityEstimator::EstimateCardinalityWithSet<double>(JoinRelationSet &new_set);
 
 //! Retain scaled numerator and denominator products until the final division.
+//! Inputs are finite nonnegative row/domain counts or selectivity factors; only accumulated products need extra range.
 class CardinalityValue {
 public:
 	explicit CardinalityValue(double value = 1) : CardinalityValue(Product(value), Product(1)) {
@@ -36,6 +37,8 @@ public:
 		Product quotient(numerator.significand / denominator);
 		quotient.exponent += numerator.exponent;
 		if (quotient.exponent > std::numeric_limits<double>::max_exponent) {
+			// A final overflow remains infinity. Saturating here would also tie costs and can overflow when adding
+			// them.
 			return std::numeric_limits<double>::infinity();
 		}
 		if (quotient.exponent < std::numeric_limits<double>::min_exponent - std::numeric_limits<double>::digits) {
@@ -111,17 +114,6 @@ private:
 	Product numerator;
 	double denominator;
 };
-
-static CardinalityValue EstimateSemiAntiJoinFallbackCardinality(const CardinalityValue &preserved_cardinality,
-                                                                idx_t rhs_cardinality, JoinType join_type) {
-	auto is_anti = join_type == JoinType::ANTI || join_type == JoinType::RIGHT_ANTI;
-	if (rhs_cardinality == 0) {
-		return is_anti ? preserved_cardinality : CardinalityValue(0);
-	}
-	return MinValue(preserved_cardinality,
-	                MaxValue(CardinalityValue(1),
-	                         preserved_cardinality * CardinalityValue(RelationStatisticsHelper::DEFAULT_SELECTIVITY)));
-}
 
 struct SelectivityInfo {
 public:
@@ -484,7 +476,8 @@ optional<CardinalityValue> CardinalityEstimator::EstimateTopLevelSemiAnti(JoinRe
 		auto &preserved = GetCardinalityBeforeFilters(*semantic_left);
 		auto preserved_cardinality = preserved.is_empty ? CardinalityValue(0) : preserved.cardinality_before_filters;
 		idx_t rhs_cardinality = GetCardinalityBeforeFilters(*semantic_right).is_empty ? 0 : 1;
-		return EstimateSemiAntiJoinFallbackCardinality(preserved_cardinality, rhs_cardinality, predicate.GetJoinType());
+		return RelationStatisticsHelper::EstimateSemiAntiJoinFallbackCardinality(preserved_cardinality, rhs_cardinality,
+		                                                                         predicate.GetJoinType());
 	}
 	return {};
 }
@@ -675,8 +668,8 @@ CardinalityValue CardinalityEstimator::CalculateSemiAntiJoinSelectivity(Selectiv
 	auto rhs_is_empty =
 	    semantic_rhs ? GetCardinalityBeforeFilters(*semantic_rhs).is_empty : GetSubgraphCardinality(rhs).IsZero();
 	idx_t rhs_cardinality = rhs_is_empty ? 0 : 1;
-	auto estimate =
-	    EstimateSemiAntiJoinFallbackCardinality(preserved_cardinality, rhs_cardinality, predicate.GetJoinType());
+	auto estimate = RelationStatisticsHelper::EstimateSemiAntiJoinFallbackCardinality(
+	    preserved_cardinality, rhs_cardinality, predicate.GetJoinType());
 	return estimate.IsZero() ? CardinalityValue(0) : preserved.selectivity * (estimate / preserved_cardinality);
 }
 
@@ -760,7 +753,7 @@ bool CardinalityEstimator::ApplyJoinPairCap(CardinalityValue &target_selectivity
 		return false;
 	}
 	if (cap > 0 && first_d < cap && first_d > 0) {
-		// Raise weak same-pair composite evidence to the FK/PK selectivity floor.
+		// Lower weak same-pair composite evidence to the FK/PK cap.
 		target_selectivity = target_selectivity * CardinalityValue(first_d) / CardinalityValue(cap);
 		first_d = cap;
 	}
