@@ -1,6 +1,7 @@
 #include "duckdb/main/database.hpp"
 #include "duckdb/common/multi_file/multi_file_list.hpp"
 #include "duckdb/common/arrow/arrow_type_extension.hpp"
+#include "duckdb/common/query_context.hpp"
 #include "duckdb/main/profiler/metrics_manager.hpp"
 #include "duckdb/parser/peg/compiled_grammar.hpp"
 
@@ -172,6 +173,14 @@ FileSystem &FileSystem::GetLocal(DatabaseInstance &db) {
 
 FileSystem &FileSystem::Get(AttachedDatabase &db) {
 	return FileSystem::GetFileSystem(db.GetDatabase());
+}
+
+FileSystem &FileSystem::Get(QueryContext context, AttachedDatabase &db) {
+	auto client_context = context.GetClientContext();
+	if (client_context) {
+		return FileSystem::GetFileSystem(*client_context);
+	}
+	return FileSystem::Get(db);
 }
 
 DBConfig &DBConfig::GetConfig(DatabaseInstance &db) {

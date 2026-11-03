@@ -197,6 +197,8 @@ public:
 	DUCKDB_API static FileSystem &GetFileSystem(DatabaseInstance &db);
 	DUCKDB_API static FileSystem &GetLocal(DatabaseInstance &db);
 	DUCKDB_API static FileSystem &Get(AttachedDatabase &db);
+	//! The file system of the client when the context has one, else the file system of the database
+	DUCKDB_API static FileSystem &Get(QueryContext context, AttachedDatabase &db);
 
 	DUCKDB_API virtual unique_ptr<FileHandle> OpenFile(const string &path, FileOpenFlags flags,
 	                                                   optional_ptr<FileOpener> opener = nullptr);
