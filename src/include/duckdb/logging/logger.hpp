@@ -96,7 +96,7 @@ public:
 	DUCKDB_API virtual bool IsMutable() {
 		return false;
 	};
-	DUCKDB_API virtual void UpdateConfig(LogConfig &new_config) {
+	DUCKDB_API virtual void UpdateConfig(const LogConfig &new_config) {
 		throw InternalException("Cannot update the config of this logger!");
 	}
 	DUCKDB_API virtual const LogConfig &GetConfig() const = 0;
@@ -159,8 +159,8 @@ protected:
 // Thread-safe Logger with mutable log settings
 class MutableLogger : public Logger {
 public:
-	explicit MutableLogger(LogConfig &config_p, LoggingContext &context_p, LogManager &manager);
-	explicit MutableLogger(LogConfig &config_p, RegisteredLoggingContext context_p, LogManager &manager);
+	explicit MutableLogger(const LogConfig &config_p, LoggingContext &context_p, LogManager &manager);
+	explicit MutableLogger(const LogConfig &config_p, RegisteredLoggingContext context_p, LogManager &manager);
 
 	// Main Logger API
 	bool ShouldLog(const char *log_type, LogLevel log_level) override;
@@ -176,7 +176,7 @@ public:
 	const LogConfig &GetConfig() const override {
 		return config;
 	}
-	void UpdateConfig(LogConfig &new_config) override;
+	void UpdateConfig(const LogConfig &new_config) override;
 
 protected:
 	// Atomics for lock-free log setting checks

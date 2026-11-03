@@ -100,18 +100,18 @@ void ThreadLocalLogger::Flush() {
 	manager.Flush();
 }
 
-MutableLogger::MutableLogger(LogConfig &config_p, LoggingContext &context_p, LogManager &manager)
+MutableLogger::MutableLogger(const LogConfig &config_p, LoggingContext &context_p, LogManager &manager)
     : MutableLogger(config_p, manager.RegisterLoggingContext(context_p), manager) {
 }
 
-MutableLogger::MutableLogger(LogConfig &config_p, RegisteredLoggingContext context_p, LogManager &manager)
+MutableLogger::MutableLogger(const LogConfig &config_p, RegisteredLoggingContext context_p, LogManager &manager)
     : Logger(manager), config(config_p), context(context_p) {
 	enabled = config.enabled;
 	level = config.level;
 	mode = config.mode;
 }
 
-void MutableLogger::UpdateConfig(LogConfig &new_config) {
+void MutableLogger::UpdateConfig(const LogConfig &new_config) {
 	unique_lock<mutex> lck(lock);
 	config = new_config;
 

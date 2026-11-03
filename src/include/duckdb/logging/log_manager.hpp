@@ -83,20 +83,19 @@ protected:
 	// This allows efficiently pushing a cached set of log entries into the log manager
 	void FlushCachedLogEntries(DataChunk &chunk, const RegisteredLoggingContext &context);
 
-	void SetLogStorageInternal(DatabaseInstance &db, const string &storage_name);
+	//! Switches the log storage and sets the storage of new_config accordingly
+	void SetLogStorageInternal(DatabaseInstance &db, LogConfig &new_config, const string &storage_name);
 
 	optional_ptr<const LogType> LookupLogTypeInternal(const string &type);
 
-	void SetConfigInternal(LogConfig config);
-	//! Publishes the current config to the global logger and to newly created loggers
-	void PublishConfigInternal();
+	//! The only way to change the config: publishes it to the global logger and to newly created loggers
+	void SetConfigInternal(LogConfig new_config);
 
 protected:
 	mutex lock;
-	LogConfig config;
-	//! Immutable copy of config shared by the created loggers, only accessed atomically
-	shared_ptr<const LogConfig> config_snapshot;
-	//! Mirrors config.enabled, so disabled logging does not contend on the atomic load of config_snapshot
+	//! Shared by the created loggers; replaced (under lock) only by SetConfigInternal, loaded atomically without lock
+	shared_ptr<const LogConfig> config;
+	//! Mirrors config->enabled, so disabled logging does not contend on the atomic load of config
 	atomic<bool> logging_enabled;
 
 	shared_ptr<Logger> global_logger;
