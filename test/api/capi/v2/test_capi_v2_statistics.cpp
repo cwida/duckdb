@@ -38,6 +38,8 @@ int64_t CountI64(duckdb_v2_connection_handle conn, const char *sql) {
 // What a function's statistics callback does, passed as its user data.
 struct MinMaxMode {
 	bool report = true;
+	// The pushdown callback checks against statistics merged from [5, 10] and [1, 20] instead of [20, 30].
+	bool merged = false;
 };
 
 // What the last statistics / pushdown callback saw.
@@ -53,6 +55,7 @@ struct MinMaxObserved {
 	DUCKDB_V2_ERROR string_on_numeric_rc = DUCKDB_V2_ERROR_NONE;
 	idx_t pushdown_checks = 0;
 	DUCKDB_V2_FILTER_PROPAGATE_RESULT check_result = DUCKDB_V2_FILTER_PROPAGATE_RESULT_NO_PRUNING_POSSIBLE;
+	DUCKDB_V2_ERROR merge_rc = DUCKDB_V2_ERROR_NONE;
 };
 
 MinMaxObserved g_mm;
@@ -164,26 +167,51 @@ void MinMaxStatisticsCb(duckdb_v2_table_function_statistics_info_handle info, du
 	duckdb_v2_logical_type_destroy(&column_type);
 }
 
-void MinMaxPushdownCb(duckdb_v2_table_function_filter_pushdown_info_handle info, duckdb_v2_context_handle context,
-                      duckdb_v2_error_info_handle *err) {
-	idx_t count = 0;
-	duckdb_v2_factory_handle factory = nullptr;
-	if (duckdb_v2_table_function_filter_pushdown_get_filter_count(info, &count, err) != DUCKDB_V2_ERROR_NONE ||
-	    duckdb_v2_context_get_factory(context, &factory, err) != DUCKDB_V2_ERROR_NONE) {
-		return;
-	}
-	duckdb_v2_logical_type_handle integer = nullptr;
+// INTEGER statistics bounded by [min, max] without NULLs, or null when they cannot be built.
+duckdb_v2_statistics_handle IntStatistics(duckdb_v2_factory_handle factory, duckdb_v2_logical_type_handle integer,
+                                          int32_t min, int32_t max, duckdb_v2_error_info_handle *err) {
 	duckdb_v2_statistics_handle statistics = nullptr;
 	duckdb_v2_value_handle min_value = nullptr;
 	duckdb_v2_value_handle max_value = nullptr;
-	if (duckdb_v2_factory_create_type_from_id(factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER, nullptr, nullptr, 0, &integer,
-	                                          err) == DUCKDB_V2_ERROR_NONE &&
-	    duckdb_v2_statistics_create(factory, integer, &statistics, err) == DUCKDB_V2_ERROR_NONE &&
-	    duckdb_v2_value_create_int(factory, 20, &min_value, err) == DUCKDB_V2_ERROR_NONE &&
-	    duckdb_v2_value_create_int(factory, 30, &max_value, err) == DUCKDB_V2_ERROR_NONE) {
+	if (duckdb_v2_statistics_create(factory, integer, &statistics, err) == DUCKDB_V2_ERROR_NONE &&
+	    duckdb_v2_value_create_int(factory, min, &min_value, err) == DUCKDB_V2_ERROR_NONE &&
+	    duckdb_v2_value_create_int(factory, max, &max_value, err) == DUCKDB_V2_ERROR_NONE) {
 		duckdb_v2_statistics_set_min(statistics, min_value, err);
 		duckdb_v2_statistics_set_max(statistics, max_value, err);
 		duckdb_v2_statistics_set_has_no_null(statistics, true, err);
+	} else {
+		duckdb_v2_statistics_destroy(&statistics);
+	}
+	duckdb_v2_value_destroy(&min_value);
+	duckdb_v2_value_destroy(&max_value);
+	return statistics;
+}
+
+void MinMaxPushdownCb(duckdb_v2_table_function_filter_pushdown_info_handle info, duckdb_v2_context_handle context,
+                      duckdb_v2_error_info_handle *err) {
+	idx_t count = 0;
+	void *user_data = nullptr;
+	duckdb_v2_factory_handle factory = nullptr;
+	duckdb_v2_logical_type_handle integer = nullptr;
+	if (duckdb_v2_table_function_filter_pushdown_get_filter_count(info, &count, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_table_function_filter_pushdown_get_user_data(info, &user_data, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_context_get_factory(context, &factory, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_factory_create_type_from_id(factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER, nullptr, nullptr, 0, &integer,
+	                                          err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	auto *mode = static_cast<MinMaxMode *>(user_data);
+	duckdb_v2_statistics_handle statistics = nullptr;
+	if (mode && mode->merged) {
+		// Merging [1, 20] into [5, 10] widens the bounds to [1, 20].
+		statistics = IntStatistics(factory, integer, 5, 10, err);
+		auto other = IntStatistics(factory, integer, 1, 20, err);
+		g_mm.merge_rc = duckdb_v2_statistics_merge(statistics, other, err);
+		duckdb_v2_statistics_destroy(&other);
+	} else {
+		statistics = IntStatistics(factory, integer, 20, 30, err);
+	}
+	if (statistics) {
 		for (idx_t i = 0; i < count; i++) {
 			duckdb_v2_expression_handle filter = nullptr;
 			if (duckdb_v2_table_function_filter_pushdown_get_filter(info, i, &filter, err) != DUCKDB_V2_ERROR_NONE) {
@@ -212,8 +240,6 @@ void MinMaxPushdownCb(duckdb_v2_table_function_filter_pushdown_info_handle info,
 		}
 	}
 	duckdb_v2_statistics_destroy(&statistics);
-	duckdb_v2_value_destroy(&min_value);
-	duckdb_v2_value_destroy(&max_value);
 	duckdb_v2_logical_type_destroy(&integer);
 }
 
@@ -288,6 +314,20 @@ TEST_CASE("V2 statistics: a predicate is checked against statistics", "[capi_v2]
 	g_mm = MinMaxObserved {};
 	REQUIRE(CountI64(fx.conn, "SELECT count(*) FROM mm_filter() WHERE i <= j") == 3);
 	REQUIRE(g_mm.check_error_rc == DUCKDB_V2_ERROR_INPUT_INVALID);
+
+	// Statistics merged from [5, 10] and [1, 20] span [1, 20]: "i < 1" cannot match, "i < 2" can.
+	MinMaxMode merged {false, true};
+	RegisterMinMax(fx.conn, "mm_merged", &merged, false, true);
+	g_mm = MinMaxObserved {};
+	(void)CountI64(fx.conn, "SELECT count(*) FROM mm_merged() WHERE i < 1");
+	REQUIRE(g_mm.merge_rc == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(g_mm.pushdown_checks >= 1);
+	REQUIRE(g_mm.check_result == DUCKDB_V2_FILTER_PROPAGATE_RESULT_ALWAYS_FALSE);
+	g_mm = MinMaxObserved {};
+	(void)CountI64(fx.conn, "SELECT count(*) FROM mm_merged() WHERE i < 2");
+	REQUIRE(g_mm.merge_rc == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(g_mm.pushdown_checks >= 1);
+	REQUIRE(g_mm.check_result != DUCKDB_V2_FILTER_PROPAGATE_RESULT_ALWAYS_FALSE);
 }
 
 TEST_CASE("V2 statistics: the statistics object narrows and merges", "[capi_v2][statistics]") {
@@ -316,7 +356,7 @@ TEST_CASE("V2 statistics: the statistics object narrows and merges", "[capi_v2][
 	REQUIRE(duckdb_v2_statistics_set_has_no_null(stats, true, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_statistics_set_distinct_count(stats, 6, nullptr) == DUCKDB_V2_ERROR_NONE);
 
-	// Merge in a wider part of the column: afterwards "i < 0" still has no match, "i < 1" does.
+	// Merge in a wider part of the column: the bounds widen to [1, 20].
 	duckdb_v2_statistics_handle other = nullptr;
 	REQUIRE(duckdb_v2_statistics_create(fx.factory, integer, &other, nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_value_handle one = nullptr;
