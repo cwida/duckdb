@@ -320,14 +320,27 @@ template <typename T, typename F>
 static void ComputeHashesOnSegments(F ComputeHashFun, T handle, const vector<idx_t> &splits,
                                     vector<string> &hash_chunks) {
 #ifndef DUCKDB_NO_THREADS
+	// an exception leaving a thread would terminate the process, so each thread keeps its error for after the join
+	vector<ErrorData> errors(hash_chunks.size());
 	vector<std::thread> threads;
 	threads.reserve(hash_chunks.size());
 	for (idx_t i = 0; i < hash_chunks.size(); i++) {
-		threads.emplace_back(ComputeHashFun, handle, splits[i], splits[i + 1], &hash_chunks[i]);
+		threads.emplace_back([&, i]() {
+			try {
+				ComputeHashFun(handle, splits[i], splits[i + 1], &hash_chunks[i]);
+			} catch (std::exception &ex) {
+				errors[i] = ErrorData(ex);
+			}
+		});
 	}
 
 	for (auto &thread : threads) {
 		thread.join();
+	}
+	for (auto &error : errors) {
+		if (error.HasError()) {
+			error.Throw();
+		}
 	}
 #else
 	for (idx_t i = 0; i < hash_chunks.size(); i++) {

@@ -288,3 +288,49 @@ TEST_CASE("Test that a user repository does not block an unsigned load", "[api]"
 	// it fails on the stub binary, not on a user-provided-origin rule: the dev flow is not blocked
 	REQUIRE(!StringUtil::Contains(bare->GetError(), "installed from a user-provided repository"));
 }
+
+namespace {
+
+// An 8 MiB file whose reads fail past its first MiB
+class FailingReadFileSystem : public FileSystem {
+public:
+	string GetName() const override {
+		return "FailingReadFileSystem";
+	}
+
+	void Read(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) override {
+		if (location >= 1024ULL * 1024ULL) {
+			throw IOException("Injected read failure at offset %llu", location);
+		}
+		memset(buffer, 0, NumericCast<idx_t>(nr_bytes));
+	}
+
+	int64_t GetFileSize(FileHandle &handle) override {
+		return 8LL * 1024LL * 1024LL;
+	}
+};
+
+class FailingReadFileHandle : public FileHandle {
+public:
+	explicit FailingReadFileHandle(FileSystem &file_system)
+	    : FileHandle(file_system, "failing_read.duckdb_extension", FileFlags::FILE_FLAGS_READ) {
+	}
+
+	void Close() override {
+	}
+};
+
+} // namespace
+
+TEST_CASE("Test that a read error while checking a signature is reported", "[api]") {
+	DuckDB db(nullptr);
+	auto &instance = *db.instance;
+	FailingReadFileSystem file_system;
+	FailingReadFileHandle handle(file_system);
+	ParsedExtensionMetaData metadata;
+
+	// the chunks are hashed on threads: the read error must come back as an exception instead of terminating
+	REQUIRE_THROWS_WITH(
+	    ExtensionHelper::CheckExtensionSignature(instance, handle, metadata, ExtensionRepositoryType::CORE, ""),
+	    Catch::Contains("Injected read failure"));
+}
