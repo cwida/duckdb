@@ -97,6 +97,8 @@ private:
 	timestamp_t last_modified;
 	string version_tag;
 	annotated_mutex column_statistics_lock;
+	// Maps from the column statistics key (column schema, type and options) to the statistics of that column merged
+	// over all row groups.
 	unordered_map<string, CachedColumnStatistics> column_statistics;
 };
 

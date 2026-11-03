@@ -721,8 +721,7 @@ static void AppendColumnStatisticsKey(const ParquetColumnSchema &schema, string 
 static unique_ptr<BaseStatistics> ReadCachedColumnStatistics(ParquetFileMetadataCache &metadata,
                                                              const ParquetColumnSchema &column,
                                                              const ParquetOptions &parquet_options) {
-	string key = parquet_options.can_have_nan ? "nan|" : "|";
-	key += column.type.ToString() + "|";
+	auto key = StringUtil::Format("%s|%s|", parquet_options.can_have_nan ? "nan" : "", column.type.ToString());
 	AppendColumnStatisticsKey(column, key);
 	return metadata.GetColumnStatistics(key, column.type, [&]() {
 		return ReadColumnStatistics(metadata.metadata->file_metadata, column, parquet_options);
