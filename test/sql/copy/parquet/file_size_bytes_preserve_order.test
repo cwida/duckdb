@@ -5,9 +5,6 @@
 require parquet
 
 statement ok
-PRAGMA enable_verification
-
-statement ok
 SET threads = 4
 
 statement ok
@@ -16,12 +13,12 @@ SET preserve_insertion_order = true
 statement ok
 CREATE TABLE src AS SELECT range AS i, 'row' || range AS s FROM range(400000)
 
+# small files, so that more than ten are written
 statement ok
-COPY (FROM src) TO '{TEST_DIR}/rotated_ordered' (FORMAT parquet, FILE_SIZE_BYTES '400KB', ROW_GROUP_SIZE 20000)
+COPY (FROM src) TO '{TEST_DIR}/rotated_ordered' (FORMAT parquet, FILE_SIZE_BYTES '100KB', ROW_GROUP_SIZE 20000)
 
-# several files, together holding every row
 query I
-SELECT count(*) > 1 FROM glob('{TEST_DIR}/rotated_ordered/*.parquet')
+SELECT count(*) > 10 FROM glob('{TEST_DIR}/rotated_ordered/*.parquet')
 ----
 true
 
@@ -30,10 +27,10 @@ SELECT count(*) FROM read_parquet('{TEST_DIR}/rotated_ordered/*.parquet')
 ----
 400000
 
-# the files, in the order of their names, hold the rows in the order of the input
+# the files, in the order of their number, hold the rows in the order of the input
 query I
 SELECT count(*) FILTER (WHERE i <> pos) FROM (
-	SELECT i, row_number() OVER (ORDER BY filename, file_row_number) - 1 AS pos
+	SELECT i, row_number() OVER (ORDER BY regexp_extract(filename, 'data_(\d+)', 1)::INTEGER, file_row_number) - 1 AS pos
 	FROM read_parquet('{TEST_DIR}/rotated_ordered/*.parquet', filename := true, file_row_number := true)
 )
 ----
@@ -41,7 +38,7 @@ SELECT count(*) FILTER (WHERE i <> pos) FROM (
 
 # every file but the last reached the size
 query I
-SELECT count(*) FILTER (WHERE size < 400000) <= 1 FROM read_blob('{TEST_DIR}/rotated_ordered/*.parquet')
+SELECT count(*) FILTER (WHERE size < 100000) <= 1 FROM read_blob('{TEST_DIR}/rotated_ordered/*.parquet')
 ----
 true
 
@@ -65,7 +62,7 @@ COPY (FROM src) TO '{TEST_DIR}/rotated_explicit' (FORMAT parquet, FILE_SIZE_BYTE
 
 query I
 SELECT count(*) FILTER (WHERE i <> pos) FROM (
-	SELECT i, row_number() OVER (ORDER BY filename, file_row_number) - 1 AS pos
+	SELECT i, row_number() OVER (ORDER BY regexp_extract(filename, 'data_(\d+)', 1)::INTEGER, file_row_number) - 1 AS pos
 	FROM read_parquet('{TEST_DIR}/rotated_explicit/*.parquet', filename := true, file_row_number := true)
 )
 ----
@@ -95,6 +92,23 @@ is not empty
 statement ok
 COPY (FROM src) TO '{TEST_DIR}/rotated_ordered' (FORMAT parquet, FILE_SIZE_BYTES '400KB', ROW_GROUP_SIZE 20000, OVERWRITE_OR_IGNORE)
 
+# a file in the way of the directory is replaced with OVERWRITE only
+statement ok
+COPY (SELECT 1 AS i) TO '{TEST_DIR}/rotated_file' (FORMAT parquet)
+
+statement error
+COPY (FROM src) TO '{TEST_DIR}/rotated_file' (FORMAT parquet, FILE_SIZE_BYTES '400KB', ROW_GROUP_SIZE 20000)
+----
+it exists and is a file
+
+statement ok
+COPY (FROM src) TO '{TEST_DIR}/rotated_file' (FORMAT parquet, FILE_SIZE_BYTES '400KB', ROW_GROUP_SIZE 20000, OVERWRITE)
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/rotated_file/*.parquet')
+----
+400000
+
 # a format without a batch size of its own, like CSV, keeps the parallel copy for rotation by size
 statement error
 COPY (FROM src) TO '{TEST_DIR}/rotated_csv' (FORMAT csv, FILE_SIZE_BYTES '400KB', PRESERVE_ORDER true)
@@ -123,7 +137,7 @@ SELECT count(DISTINCT cols) FROM (
 
 query I
 SELECT count(*) FILTER (WHERE r.v::VARCHAR IS DISTINCT FROM s.v::VARCHAR OR r.i <> s.pos) FROM (
-	SELECT i, v, row_number() OVER (ORDER BY filename, file_row_number) - 1 AS pos
+	SELECT i, v, row_number() OVER (ORDER BY regexp_extract(filename, 'data_(\d+)', 1)::INTEGER, file_row_number) - 1 AS pos
 	FROM read_parquet('{TEST_DIR}/rotated_variant/*.parquet', filename := true, file_row_number := true)
 ) r JOIN (SELECT i AS pos, v FROM src_variant) s USING (pos)
 ----

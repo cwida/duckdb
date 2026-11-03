@@ -42,8 +42,8 @@ public:
 	//! Fine-grained control over writes
 	optional_idx batch_size;
 	optional_idx batch_size_bytes;
-	//! Rotation by size: the files are written into the directory file_path, named by the pattern and extension,
-	//! and a file that reached file_size_bytes is finished before the next batch
+	//! With file_size_bytes the files are written into the directory file_path, named by the pattern and extension,
+	//! and a file that reached the size is finished before the next batch
 	optional_idx file_size_bytes;
 	FilenamePattern filename_pattern;
 	string file_extension;

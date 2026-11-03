@@ -106,9 +106,9 @@ public:
 	atomic<idx_t> rows_copied;
 	//! Global copy state of the file being written
 	unique_ptr<GlobalFunctionData> global_state;
-	//! The state of the first file, which every batch is prepared with; a batch can be flushed into any file
+	//! The state of the first file, which every batch is prepared with before it is flushed into any file
 	optional_ptr<GlobalFunctionData> prepare_state;
-	//! The first file once it rotated away: the batches keep being prepared with it, so it is finished at the end
+	//! The first file once it rotated away, kept for the batches still prepared with it and finished at the end
 	unique_ptr<GlobalFunctionData> prepare_state_owned;
 	//! The number of files opened
 	idx_t file_count = 0;
@@ -140,13 +140,8 @@ public:
 			return;
 		}
 		if (op.RotatesFiles()) {
-			auto &fs = FileSystem::GetFileSystem(context);
-			if (fs.DirectoryExists(op.file_path)) {
-				PhysicalCopyToFile::CheckDirectory(fs, op.file_path, op.overwrite_mode);
-			} else {
-				fs.CreateDirectory(op.file_path);
-				output_lifecycle.RegisterCreatedDirectory(op.file_path);
-			}
+			PhysicalCopyToFile::PrepareOutputDirectory(FileSystem::GetFileSystem(context), op.file_path,
+			                                           op.overwrite_mode, output_lifecycle);
 		}
 		OpenFileLocked(context, op);
 		prepare_state = global_state.get();
@@ -178,7 +173,7 @@ public:
 		global_state = std::move(new_global_state);
 	}
 
-	//! Finishes the file that reached its size and opens the next one; only the flushing thread calls this
+	//! Finishes the file that reached its size and opens the next one, called by the flushing thread only
 	void RotateFile(ClientContext &context, const PhysicalBatchCopyToFile &op) {
 		auto finished_state = std::move(global_state);
 		if (RefersToSameObject(*finished_state, *prepare_state)) {

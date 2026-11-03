@@ -21,6 +21,7 @@ namespace duckdb {
 struct GlobalFileState;
 struct FileStateHandle;
 struct BoundOrderByNode;
+class CopyOutputLifecycle;
 
 struct CopyToFileInfo {
 	explicit CopyToFileInfo(string file_path_p) : file_path(std::move(file_path_p)) {
@@ -48,6 +49,9 @@ public:
 	static string GetTrimmedPath(ClientContext &context, const string &file_path);
 	//! Checks an output directory for existing files, as the overwrite mode asks
 	static void CheckDirectory(FileSystem &fs, const string &file_path, CopyOverwriteMode overwrite_mode);
+	//! Creates the output directory of a copy that writes several files, or checks the existing one
+	static void PrepareOutputDirectory(FileSystem &fs, const string &file_path, CopyOverwriteMode overwrite_mode,
+	                                   CopyOutputLifecycle &output_lifecycle);
 	static void MoveTmpFile(ClientContext &context, const string &tmp_file_path);
 	static string GetNonTmpFile(ClientContext &context, const string &tmp_file_path);
 	static void ReturnStatistics(DataChunk &chunk, CopyToFileInfo &written_file_info);

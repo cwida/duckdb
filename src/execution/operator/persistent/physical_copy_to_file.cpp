@@ -4510,29 +4510,34 @@ void CopyToFileGlobalState::Initialize() {
 	initialized = true;
 }
 
-void CopyToFileGlobalState::PrepareOutputDirectory() {
-	auto &fs = FileSystem::GetFileSystem(context);
-	if (!fs.IsRemoteFile(op.file_path)) {
-		if (fs.FileExists(op.file_path)) {
-			if (op.overwrite_mode == CopyOverwriteMode::COPY_OVERWRITE) {
-				fs.RemoveFile(op.file_path);
+void PhysicalCopyToFile::PrepareOutputDirectory(FileSystem &fs, const string &file_path,
+                                                CopyOverwriteMode overwrite_mode, CopyOutputLifecycle &output_lifecycle) {
+	if (!fs.IsRemoteFile(file_path)) {
+		if (fs.FileExists(file_path)) {
+			if (overwrite_mode == CopyOverwriteMode::COPY_OVERWRITE) {
+				fs.RemoveFile(file_path);
 			} else {
 				throw IOException("Cannot write to \"%s\" - it exists and is a file, not a directory! Enable "
 				                  "OVERWRITE option to overwrite the file",
-				                  op.file_path);
+				                  file_path);
 			}
 		}
 	}
 
-	if (!fs.DirectoryExists(op.file_path)) {
-		if (fs.CreateDirectoryExtended(op.file_path, {CreateDirectoryMode::SINGLE})) {
-			output_lifecycle.RegisterCreatedDirectory(op.file_path);
+	if (!fs.DirectoryExists(file_path)) {
+		if (fs.CreateDirectoryExtended(file_path, {CreateDirectoryMode::SINGLE})) {
+			output_lifecycle.RegisterCreatedDirectory(file_path);
 		} else {
-			PhysicalCopyToFile::CheckDirectory(fs, op.file_path, op.overwrite_mode);
+			CheckDirectory(fs, file_path, overwrite_mode);
 		}
 	} else {
-		PhysicalCopyToFile::CheckDirectory(fs, op.file_path, op.overwrite_mode);
+		CheckDirectory(fs, file_path, overwrite_mode);
 	}
+}
+
+void CopyToFileGlobalState::PrepareOutputDirectory() {
+	PhysicalCopyToFile::PrepareOutputDirectory(FileSystem::GetFileSystem(context), op.file_path, op.overwrite_mode,
+	                                           output_lifecycle);
 }
 
 void CopyToFileGlobalState::ScheduleOutputDirectorySetup() {
