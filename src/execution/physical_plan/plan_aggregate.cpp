@@ -10,11 +10,10 @@
 #include "duckdb/execution/physical_plan_generator.hpp"
 #include "duckdb/function/function_binder.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/parser/expression_map.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/operator/logical_aggregate.hpp"
-
-#include <functional>
 
 namespace duckdb {
 
@@ -339,34 +338,23 @@ PhysicalOperator &PhysicalPlanGenerator::ExtractAggregateExpressions(PhysicalOpe
 	}
 	// children and filters that several aggregates share are projected (and later evaluated) once
 	// distinct aggregates keep their own columns: their distinct hash tables are keyed on them
-	vector<idx_t> shared_columns;
+	expression_map_t<idx_t> shared_columns;
 	auto extract = [&](unique_ptr<Expression> &expr, bool share) {
-		idx_t index = expressions.size();
-		if (share && !expr->IsVolatile()) {
-			for (auto &i : shared_columns) {
-				if (expressions[i]->Equals(*expr)) {
-					index = i;
-					break;
-				}
-			}
-		}
-		auto ref = make_uniq<BoundReferenceExpression>(expr->GetReturnType(), index);
-		if (index == expressions.size()) {
-			types.push_back(expr->GetReturnType());
+		auto type = expr->GetReturnType();
+		share = share && !expr->IsVolatile();
+		auto entry = share ? shared_columns.find(*expr) : shared_columns.end();
+		idx_t index;
+		if (entry != shared_columns.end()) {
+			index = entry->second;
+		} else {
+			index = expressions.size();
+			types.push_back(type);
 			expressions.push_back(std::move(expr));
 			if (share) {
-				shared_columns.push_back(index);
+				shared_columns.emplace(*expressions[index], index);
 			}
 		}
-		expr = std::move(ref);
-	};
-	// when the filter stays with the aggregate only the columns it reads are projected
-	std::function<void(unique_ptr<Expression> &)> extract_references = [&](unique_ptr<Expression> &expr) {
-		if (expr->GetExpressionClass() == ExpressionClass::BOUND_REF) {
-			extract(expr, true);
-			return;
-		}
-		ExpressionIterator::EnumerateChildren(*expr, extract_references);
+		expr = make_uniq<BoundReferenceExpression>(type, index);
 	};
 	for (auto &aggr : aggregates) {
 		auto &bound_aggr = aggr->Cast<BoundAggregateExpression>();
@@ -379,7 +367,9 @@ PhysicalOperator &PhysicalPlanGenerator::ExtractAggregateExpressions(PhysicalOpe
 			if (extract_filters || filter->IsVolatile()) {
 				extract(filter, true);
 			} else {
-				extract_references(filter);
+				// the filter stays with the aggregate: only the columns it reads are projected
+				ExpressionIterator::VisitExpressionMutable<BoundReferenceExpression>(
+				    filter, [&](BoundReferenceExpression &, unique_ptr<Expression> &ref) { extract(ref, true); });
 			}
 		}
 	}

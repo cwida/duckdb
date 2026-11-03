@@ -53,7 +53,7 @@ struct AggregateFilterData {
 	AggregateFilterData(ClientContext &context, const Expression &filter_expr,
 	                    const vector<LogicalType> &payload_types);
 
-	//! Evaluates the filter on the chunk; the selected rows are stored in true_sel and selected_count
+	//! Evaluates the filter on the chunk into true_sel and selected_count
 	idx_t Select(DataChunk &chunk);
 	//! Evaluates the filter and slices the payload columns in sliced_columns into filtered_payload
 	idx_t ApplyFilter(DataChunk &payload);
@@ -61,14 +61,15 @@ struct AggregateFilterData {
 	ExpressionExecutor filter_executor;
 	DataChunk filtered_payload;
 	SelectionVector true_sel;
-	//! The payload columns read by the aggregates that share this filter
-	unsafe_vector<idx_t> sliced_columns;
-	//! The number of rows selected by the most recent Select/ApplyFilter
+	//! The number of rows selected by the last Select
 	idx_t selected_count = 0;
+	//! The non-distinct aggregates that use this filter
+	unsafe_vector<idx_t> aggregates;
+	//! The payload columns (the children of those aggregates) that ApplyFilter slices
+	unsafe_vector<idx_t> sliced_columns;
 };
 
-//! The filters of a set of aggregates: aggregates with an identical filter expression share one AggregateFilterData,
-//! so a filter is evaluated once per chunk and every payload column it covers is sliced once
+//! The filters of a set of aggregates: aggregates with an identical filter share one AggregateFilterData
 struct AggregateFilterDataSet {
 	AggregateFilterDataSet();
 
@@ -76,34 +77,17 @@ struct AggregateFilterDataSet {
 	vector<unique_ptr<AggregateFilterData>> filter_data;
 
 public:
-	//! Initializes the filters of the aggregates. If payload_holds_children is set the payload chunk holds the
-	//! concatenated children of the aggregates and ApplyFilter only slices the children of the aggregates that share
-	//! the filter; otherwise every payload column is sliced.
+	//! Initializes the filters of the aggregates; ApplyFilter expects the payload to hold their children
 	void Initialize(ClientContext &context, const vector<AggregateObject> &aggregates,
-	                const vector<LogicalType> &payload_types, bool payload_holds_children = false);
+	                const vector<LogicalType> &payload_types);
 
-	bool HasFilters() const {
-		return !filter_data.empty();
-	}
-	//! The index into filter_data of the filter of the aggregate, or DConstants::INVALID_INDEX if it has none
-	idx_t GetFilterIndex(idx_t aggr_idx) const;
-	//! Whether the aggregate is the first non-distinct aggregate that uses its filter
-	bool IsFirstFilterUse(idx_t aggr_idx) const;
 	AggregateFilterData &GetFilterData(idx_t aggr_idx);
-
-	//! Applies every filter used by a non-distinct aggregate in aggregate_indices (ascending) once to the payload
-	void ApplyFilters(DataChunk &payload, const unsafe_vector<idx_t> &aggregate_indices);
-	//! Applies every filter once to the payload
-	void ApplyFilters(DataChunk &payload);
+	//! Applies each filter used by one of the aggregates in aggregate_indices (all aggregates if not given) once
+	void ApplyFilters(DataChunk &payload, optional_ptr<const unsafe_vector<idx_t>> aggregate_indices = nullptr);
 
 private:
 	//! Per aggregate: index into filter_data, or DConstants::INVALID_INDEX for aggregates without a filter
 	unsafe_vector<idx_t> aggregate_filter_idx;
-	//! Per aggregate: the filter applied when updating its state (INVALID_INDEX for distinct aggregates, whose
-	//! filter is applied before their distinct hash table)
-	unsafe_vector<idx_t> update_filter_idx;
-	//! Per aggregate: whether it is the first non-distinct aggregate that uses its filter
-	vector<bool> first_filter_use;
 };
 
 } // namespace duckdb

@@ -36,12 +36,21 @@ struct CSEReplacementState {
 	bool short_circuited = false;
 	//! True while visiting the child of a TRY or HAS_ERROR, whose errors must stay inside the capture
 	bool inside_try = false;
-	//! Whether the root of each aggregate filter stays intact: an ungrouped aggregate evaluates each distinct filter
-	//! once with the selection fast path, which beats materializing the filter in a projection
+	//! Whether the root of each aggregate filter stays intact (ungrouped aggregates evaluate their filters directly)
 	bool keep_aggregate_filters = false;
-	//! True when the expression being visited is the root of a kept filter; its sub-expressions are still extracted
+	//! True when visiting the root of a kept filter; its sub-expressions are still extracted
 	bool at_kept_filter_root = false;
+	//! The kept filters counted so far; identical filters are evaluated once, so they are counted once
+	expression_set_t counted_filters;
 };
+
+//! Whether child is the filter of an aggregate whose root stays with the aggregate
+static bool IsKeptFilterRoot(const CSEReplacementState &state, const Expression &parent, const Expression &child) {
+	if (!state.keep_aggregate_filters || parent.GetExpressionClass() != ExpressionClass::BOUND_AGGREGATE) {
+		return false;
+	}
+	return parent.Cast<BoundAggregateExpression>().GetFilter().get() == &child;
+}
 
 void CommonSubExpressionOptimizer::VisitOperator(LogicalOperator &op) {
 	switch (op.type) {
@@ -68,6 +77,9 @@ void CommonSubExpressionOptimizer::CountExpressions(Expression &expr, CSEReplace
 		return;
 	default:
 		break;
+	}
+	if (kept_filter_root && !state.counted_filters.insert(expr).second) {
+		return;
 	}
 	if (expr.GetExpressionClass() != ExpressionClass::BOUND_AGGREGATE && !expr.IsVolatile() && !state.inside_try &&
 	    !kept_filter_root) {
@@ -109,17 +121,12 @@ void CommonSubExpressionOptimizer::CountExpressions(Expression &expr, CSEReplace
 		state.inside_try = save_inside_try;
 		break;
 	}
-	case ExpressionClass::BOUND_AGGREGATE: {
-		auto &aggr = expr.Cast<BoundAggregateExpression>();
-		ExpressionIterator::EnumerateChildren(expr, [&](Expression &child) {
-			state.at_kept_filter_root = state.keep_aggregate_filters && aggr.GetFilter().get() == &child;
-			CountExpressions(child, state);
-		});
-		break;
-	}
 	default:
 		// recursively count the children
-		ExpressionIterator::EnumerateChildren(expr, [&](Expression &child) { CountExpressions(child, state); });
+		ExpressionIterator::EnumerateChildren(expr, [&](Expression &child) {
+			state.at_kept_filter_root = IsKeptFilterRoot(state, expr, child);
+			CountExpressions(child, state);
+		});
 		break;
 	}
 }
@@ -172,18 +179,10 @@ void CommonSubExpressionOptimizer::PerformCSEReplacement(unique_ptr<Expression> 
 	if (expression_type == ExpressionType::OPERATOR_TRY || expression_type == ExpressionType::OPERATOR_HAS_ERROR) {
 		state.inside_try = true;
 	}
-	if (expr.GetExpressionClass() == ExpressionClass::BOUND_AGGREGATE) {
-		// the root of a kept filter is not extracted, but its sub-expressions and column references are
-		auto &aggr = expr.Cast<BoundAggregateExpression>();
-		ExpressionIterator::EnumerateChildren(expr, [&](unique_ptr<Expression> &child) {
-			state.at_kept_filter_root =
-			    state.keep_aggregate_filters && aggr.GetFilter() && &aggr.GetFilterMutable() == &child;
-			PerformCSEReplacement(child, state);
-		});
-	} else {
-		ExpressionIterator::EnumerateChildren(
-		    expr, [&](unique_ptr<Expression> &child) { PerformCSEReplacement(child, state); });
-	}
+	ExpressionIterator::EnumerateChildren(expr, [&](unique_ptr<Expression> &child) {
+		state.at_kept_filter_root = IsKeptFilterRoot(state, expr, *child);
+		PerformCSEReplacement(child, state);
+	});
 	state.inside_try = save_inside_try;
 }
 

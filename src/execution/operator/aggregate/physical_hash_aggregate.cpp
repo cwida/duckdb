@@ -3,7 +3,6 @@
 #include "duckdb/catalog/catalog_entry/aggregate_function_catalog_entry.hpp"
 #include "duckdb/common/atomic.hpp"
 #include "duckdb/common/optional_idx.hpp"
-#include "duckdb/common/unordered_map.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/execution/aggregate_hashtable.hpp"
 #include "duckdb/execution/operator/aggregate/distinct_aggregate_data.hpp"
@@ -97,7 +96,7 @@ static vector<LogicalType> CreateGroupChunkTypes(vector<unique_ptr<Expression>> 
 }
 
 bool PhysicalHashAggregate::CanSkipRegularSink() const {
-	if (!filter_indexes.empty()) {
+	if (!filter_columns.empty()) {
 		// If we have filters, we can't skip the regular sink, because we might lose groups otherwise.
 		return false;
 	}
@@ -150,13 +149,9 @@ PhysicalHashAggregate::PhysicalHashAggregate(PhysicalPlan &physical_plan, Client
 	                                         std::move(grouping_functions_p));
 
 	auto &aggregates = grouped_aggregate_data.aggregates;
-	// filter_indexes must be pre-built, not lazily instantiated in parallel...
-	// Because everything that lives in this class should be read-only at execution time
-	idx_t aggregate_input_idx = 0;
 	for (idx_t i = 0; i < aggregates.size(); i++) {
 		auto &aggregate = aggregates[i];
 		auto &aggr = aggregate->Cast<BoundAggregateExpression>();
-		aggregate_input_idx += aggr.GetChildren().size();
 		if (aggr.GetAggregateType() == AggregateType::DISTINCT) {
 			distinct_filter.push_back(i);
 		} else if (aggr.GetAggregateType() == AggregateType::NON_DISTINCT) {
@@ -166,24 +161,8 @@ PhysicalHashAggregate::PhysicalHashAggregate(PhysicalPlan &physical_plan, Client
 		} // LCOV_EXCL_STOP
 	}
 
-	// The filters follow the children in the payload chunk: one column per distinct input column
-	unordered_map<idx_t, idx_t> filter_payload_indexes;
-	for (idx_t i = 0; i < aggregates.size(); i++) {
-		auto &aggregate = aggregates[i];
-		auto &aggr = aggregate->Cast<BoundAggregateExpression>();
-		if (aggr.GetFilter()) {
-			auto &filter_ref = *aggr.GetFilter();
-			auto &bound_ref_expr = filter_ref.Cast<BoundReferenceExpression>();
-			auto input_idx = bound_ref_expr.Index();
-			filter_indexes[filter_ref] = input_idx;
-			auto entry = filter_payload_indexes.find(input_idx);
-			if (entry == filter_payload_indexes.end()) {
-				entry = filter_payload_indexes.emplace(input_idx, aggregate_input_idx++).first;
-			}
-			// Replace the bound reference expression's index with the corresponding index of the payload chunk
-			bound_ref_expr.IndexMutable() = entry->second;
-		}
-	}
+	// filter_columns must be pre-built: everything that lives in this class is read-only at execution time
+	filter_columns = GroupedAggregateData::AddFilterColumns(aggregates, grouped_aggregate_data.payload_types);
 
 	distinct_collection_info = DistinctAggregateCollectionInfo::Create(grouped_aggregate_data.aggregates);
 
@@ -376,12 +355,11 @@ void PhysicalHashAggregate::SinkDistinctGrouping(ExecutionContext &context, Data
 			filter_chunk.InitializeEmpty(filtered_data.filtered_payload.GetTypes());
 
 			// Add the filter Vector (BOOL)
-			auto &filter_ref = *aggregate.GetFilter();
-			auto it = filter_indexes.find(filter_ref);
-			D_ASSERT(it != filter_indexes.end());
+			auto filter_idx = aggregate.GetFilter()->Cast<BoundReferenceExpression>().Index();
+			auto it = filter_columns.find(filter_idx);
+			D_ASSERT(it != filter_columns.end());
 			D_ASSERT(it->second < chunk.data.size());
-			auto &filter_bound_ref = filter_ref.Cast<BoundReferenceExpression>();
-			filter_chunk.data[filter_bound_ref.Index()].Reference(chunk.data[it->second]);
+			filter_chunk.data[filter_idx].Reference(chunk.data[it->second]);
 
 			// We cant use the AggregateFilterData::ApplyFilter method, because the chunk we need to
 			// apply the filter to also has the groups, and the filtered_data.filtered_payload does not have those.
@@ -452,18 +430,10 @@ SinkResultType PhysicalHashAggregate::Sink(ExecutionContext &context, DataChunk 
 			aggregate_input_chunk.data[aggregate_input_idx++].Reference(chunk.data[bound_ref_expr.Index()]);
 		}
 	}
-	// Populate the filter vectors (aggregates with an identical filter share a column)
-	for (auto &aggregate : aggregates) {
-		auto &aggr = aggregate->Cast<BoundAggregateExpression>();
-		if (aggr.GetFilter()) {
-			auto &filter_ref = *aggr.GetFilter();
-			auto it = filter_indexes.find(filter_ref);
-			D_ASSERT(it != filter_indexes.end());
-			D_ASSERT(it->second < chunk.data.size());
-			auto &filter_bound_ref = filter_ref.Cast<BoundReferenceExpression>();
-			D_ASSERT(filter_bound_ref.Index() >= aggregate_input_idx);
-			aggregate_input_chunk.data[filter_bound_ref.Index()].Reference(chunk.data[it->second]);
-		}
+	// Populate the filter vectors: one per distinct filter, following the children
+	for (auto &entry : filter_columns) {
+		D_ASSERT(entry.first >= aggregate_input_idx && entry.second < chunk.data.size());
+		aggregate_input_chunk.data[entry.first].Reference(chunk.data[entry.second]);
 	}
 
 	aggregate_input_chunk.SetChildCardinality(chunk.size());

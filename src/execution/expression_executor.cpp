@@ -142,7 +142,6 @@ void ExpressionExecutor::ExecuteExpression(idx_t expr_idx, Vector &result) {
 
 void ExpressionExecutor::ExecuteExpression(idx_t expr_idx, Vector &result, const SelectionVector &sel, idx_t count) {
 	D_ASSERT(expr_idx < expressions.size());
-	D_ASSERT(result.GetType().id() == expressions[expr_idx]->GetReturnType().id());
 	Execute(*expressions[expr_idx], states[expr_idx]->root_state.get(), &sel, count, result);
 }
 

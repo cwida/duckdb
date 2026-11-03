@@ -198,35 +198,6 @@ UngroupedAggregateExecuteState::UngroupedAggregateExecuteState(ClientContext &co
 		aggregate_input_chunk.Initialize(allocator, payload_types);
 	}
 	filter_set.Initialize(context, aggregate_objects, child_types);
-
-	// find children that are computed over the same rows by an earlier aggregate
-	struct PayloadColumn {
-		idx_t payload_idx;
-		idx_t filter_idx;
-		reference<const Expression> child;
-	};
-	vector<PayloadColumn> columns;
-	idx_t payload_idx = 0;
-	for (idx_t aggr_idx = 0; aggr_idx < aggregates.size(); aggr_idx++) {
-		auto &aggr = aggregates[aggr_idx]->Cast<BoundAggregateExpression>();
-		auto filter_idx = filter_set.GetFilterIndex(aggr_idx);
-		for (auto &child : aggr.GetChildren()) {
-			idx_t source = payload_idx;
-			if (!aggr.IsDistinct() && !child->IsVolatile()) {
-				for (auto &column : columns) {
-					if (column.filter_idx == filter_idx && column.child.get().Equals(*child)) {
-						source = column.payload_idx;
-						break;
-					}
-				}
-				if (source == payload_idx) {
-					columns.push_back({payload_idx, filter_idx, *child});
-				}
-			}
-			payload_source.push_back(source);
-			payload_idx++;
-		}
-	}
 }
 
 void UngroupedAggregateExecuteState::Reset() {
@@ -236,6 +207,12 @@ void UngroupedAggregateExecuteState::Reset() {
 void UngroupedAggregateExecuteState::Sink(LocalUngroupedAggregateState &state, DataChunk &input) {
 	DataChunk &payload_chunk = aggregate_input_chunk;
 	child_executor.SetChunk(input);
+	// evaluate each filter once per chunk (filters used only by distinct aggregates are applied in SinkDistinct)
+	for (auto &filter : filter_set.filter_data) {
+		if (!filter->aggregates.empty()) {
+			filter->Select(input);
+		}
+	}
 
 	idx_t payload_idx = 0;
 	idx_t next_payload_idx = 0;
@@ -250,14 +227,11 @@ void UngroupedAggregateExecuteState::Sink(LocalUngroupedAggregateState &state, D
 			continue;
 		}
 
-		// resolve the filter (if any): a filter is evaluated once per chunk and shared by the aggregates that use it
+		// resolve the filter (if any)
 		idx_t chunk_count = input.size();
 		optional_ptr<const SelectionVector> sel;
 		if (aggregate.GetFilter()) {
 			auto &filtered_data = filter_set.GetFilterData(aggr_idx);
-			if (filter_set.IsFirstFilterUse(aggr_idx)) {
-				filtered_data.Select(input);
-			}
 			chunk_count = filtered_data.selected_count;
 			sel = &filtered_data.true_sel;
 		}
@@ -267,15 +241,11 @@ void UngroupedAggregateExecuteState::Sink(LocalUngroupedAggregateState &state, D
 
 		// resolve the child expressions of the aggregate (if any) on the selected rows
 		for (idx_t i = 0; i < aggregate.GetChildren().size(); ++i) {
-			auto col_idx = payload_idx + i;
-			auto &result = payload_chunk.data[col_idx];
-			auto source_idx = payload_source[col_idx];
-			if (source_idx != col_idx) {
-				result.Reference(payload_chunk.data[source_idx]);
-			} else if (sel) {
-				child_executor.ExecuteExpression(col_idx, result, *sel, chunk_count);
+			auto &result = payload_chunk.data[payload_idx + i];
+			if (sel) {
+				child_executor.ExecuteExpression(payload_idx + i, result, *sel, chunk_count);
 			} else {
-				child_executor.ExecuteExpression(col_idx, result);
+				child_executor.ExecuteExpression(payload_idx + i, result);
 			}
 		}
 
@@ -389,7 +359,8 @@ void PhysicalUngroupedAggregate::SinkDistinct(ExecutionContext &context, DataChu
 
 			// Apply the filter before inserting into the hashtable
 			auto &filtered_data = sink.execute_state.filter_set.GetFilterData(idx);
-			filtered_data.ApplyFilter(chunk);
+			auto count = filtered_data.Select(chunk);
+			filtered_data.filtered_payload.Slice(chunk, filtered_data.true_sel, count);
 
 			radix_table.Sink(context, filtered_data.filtered_payload, sink_input, empty_chunk, distinct_filter);
 		} else {
