@@ -100,6 +100,8 @@ enum class AsyncResultsExecutionMode : uint8_t;
 
 enum class BaseColumnPrunerMode : uint8_t;
 
+enum class BignumRounding : uint8_t;
+
 enum class BinderType : uint8_t;
 
 enum class BindingMode : uint8_t;
@@ -800,6 +802,9 @@ const char* EnumUtil::ToChars<AsyncResultsExecutionMode>(AsyncResultsExecutionMo
 
 template<>
 const char* EnumUtil::ToChars<BaseColumnPrunerMode>(BaseColumnPrunerMode value);
+
+template<>
+const char* EnumUtil::ToChars<BignumRounding>(BignumRounding value);
 
 template<>
 const char* EnumUtil::ToChars<BinderType>(BinderType value);
@@ -1800,6 +1805,9 @@ AsyncResultsExecutionMode EnumUtil::FromString<AsyncResultsExecutionMode>(const 
 
 template<>
 BaseColumnPrunerMode EnumUtil::FromString<BaseColumnPrunerMode>(const char *value);
+
+template<>
+BignumRounding EnumUtil::FromString<BignumRounding>(const char *value);
 
 template<>
 BinderType EnumUtil::FromString<BinderType>(const char *value);

@@ -140,22 +140,23 @@ SELECT abs('-1.5'::DECIMAL(40,1)), abs('1.5'::DECIMAL(40,1))
 ----
 1.5	1.5
 
-# functions without a wide implementation compute through DOUBLE
+# rounding keeps the decimal type, like for the fixed-size tiers
 query IIII
 SELECT round('1.555'::DECIMAL(40,3), 2), ceil('1.555'::DECIMAL(40,3)), floor('-1.555'::DECIMAL(40,3)), trunc('1.555'::DECIMAL(40,3))
 ----
-1.56	2.0	-2.0	1.0
+1.56	2	-2	1
 
 query IIII
 SELECT typeof(round('1.555'::DECIMAL(40,3), 2)), typeof(round('1.5'::DECIMAL(40,1))), typeof(ceil('1.5'::DECIMAL(40,1))), typeof(trunc('1.5'::DECIMAL(40,1), 0))
 ----
-DOUBLE	DOUBLE	DOUBLE	DOUBLE
+DECIMAL(40,2)	DECIMAL(40,0)	DECIMAL(40,0)	DECIMAL(40,0)
 
 query IIII
 SELECT round('1.5'::DECIMAL(40,1)), round_even('2.5'::DECIMAL(40,1), 0), trunc('-1.5'::DECIMAL(40,1), 0), round('1234.5'::DECIMAL(40,1), -2)
 ----
-2.0	2.0	-1.0	1200.0
+2	2	-1	1200
 
+# avg sums exactly and divides once, the interpolating quantiles compute through DOUBLE like the fixed-size tiers
 query III
 SELECT avg(x), median(x), quantile_cont(x, 0.5) FROM (VALUES ('1'::DECIMAL(40,3)), ('2'::DECIMAL(40,3)), ('3'::DECIMAL(40,3))) t(x)
 ----
@@ -179,7 +180,7 @@ SELECT avg(x) FROM (VALUES ('123456789012345678901234567890123456789012345678901
 query I
 SELECT round('123456789012345678901234567890.5'::DECIMAL(40,1))
 ----
-1.2345678901234568e+29
+123456789012345678901234567891
 
 # discrete quantiles stay exact
 query II

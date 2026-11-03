@@ -1,0 +1,63 @@
+# name: test/sql/types/decimal/wide_decimal_rounding.test
+# description: round, round_even, ceil, floor and trunc of decimals wider than 38 digits return decimals
+# group: [decimal]
+
+# the bignum tier follows the rules of the fixed-size tiers: types and values agree with DECIMAL(38,s)
+foreach expr round(x) round(x,1) round(x,-1) round(x,-2) round(x,-3) round(x,-300) round_even(x,0) round_even(x,1) round_even(x,-1) ceil(x) floor(x) trunc(x) trunc(x,1) trunc(x,-1) trunc(x,-3) round(x,5) trunc(x,5)
+
+query I
+SELECT bool_and({expr}::VARCHAR IS NOT DISTINCT FROM (SELECT {expr}::VARCHAR FROM (SELECT w::DECIMAL(38,3) x) WHERE true) AND typeof({expr}) = replace((SELECT typeof({expr}) FROM (SELECT w::DECIMAL(38,3) x)), 'DECIMAL(38,', 'DECIMAL(40,'))
+FROM (SELECT w, w::DECIMAL(40,3) x FROM (VALUES ('1.555'), ('-1.555'), ('2.5'), ('-2.5'), ('3.5'), ('0.5'), ('-0.5'), ('0'), ('123.456'), ('-123.456'), ('999.999'), ('-999.999'), (NULL)) v(w));
+----
+true
+
+endloop
+
+# values above 38 digits round exactly
+query IIII
+SELECT round('123456789012345678901234567890123456789012.5'::DECIMAL(50,1)), ceil('-123456789012345678901234567890123456789012.5'::DECIMAL(50,1)), floor('-123456789012345678901234567890123456789012.5'::DECIMAL(50,1)), trunc('123456789012345678901234567890123456789012.5'::DECIMAL(50,1))
+----
+123456789012345678901234567890123456789013	-123456789012345678901234567890123456789012	-123456789012345678901234567890123456789013	123456789012345678901234567890123456789012
+
+query II
+SELECT round('123456789012345678901234567890123456789012.5'::DECIMAL(50,1), -40), typeof(round('123456789012345678901234567890123456789012.5'::DECIMAL(50,1), -40))
+----
+120000000000000000000000000000000000000000	DECIMAL(50,0)
+
+query II
+SELECT round_even('123456789012345678901234567890123456789012.5'::DECIMAL(50,1), 0), round_even('123456789012345678901234567890123456789013.5'::DECIMAL(50,1), 0)
+----
+123456789012345678901234567890123456789012	123456789012345678901234567890123456789014
+
+# a round at the top digit carries into a wider decimal
+query II
+SELECT round('9'::DECIMAL(39,0), -1), typeof(round('99'::DECIMAL(39,0), -1))
+----
+10	DECIMAL(40,0)
+
+query I
+SELECT round((repeat('9', 200) || '.' || repeat('9', 55))::DECIMAL(255,55), 54) = ('1' || repeat('0', 200))::DECIMAL(255,54)
+----
+true
+
+# the widest decimal has no room to carry
+statement error
+SELECT round(repeat('9', 255)::DECIMAL(255,0), -1)
+----
+Overflow in ROUND of DECIMAL(255)
+
+query I
+SELECT round(('1' || repeat('0', 254))::DECIMAL(255,0), -1) = ('1' || repeat('0', 254))::DECIMAL(255,0)
+----
+true
+
+# a precision at or above the scale changes nothing
+query II
+SELECT round('1.555'::DECIMAL(40,3), 3), typeof(trunc('1.555'::DECIMAL(40,3), 7))
+----
+1.555	DECIMAL(40,3)
+
+query I
+SELECT round(NULL::DECIMAL(40,3), 1)
+----
+NULL

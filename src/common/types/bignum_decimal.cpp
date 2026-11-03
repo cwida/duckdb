@@ -149,6 +149,27 @@ bool FitsWidthInternal(const BignumIntermediate &value, uint32_t width) {
 	return value.IsAbsoluteBigger(limit.intermediate) == SMALLER;
 }
 
+//! The small constants are built once; their blobs outlive the intermediates that point into them
+const OwnedBignum &BignumConstant(int32_t value) {
+	static const OwnedBignum TWO(Bignum::VarcharToBignum(string_t("2")));
+	static const OwnedBignum ONE(Bignum::VarcharToBignum(string_t("1")));
+	static const OwnedBignum MINUS_ONE(Bignum::VarcharToBignum(string_t("-1")));
+	switch (value) {
+	case 2:
+		return TWO;
+	case 1:
+		return ONE;
+	default:
+		D_ASSERT(value == -1);
+		return MINUS_ONE;
+	}
+}
+
+//! Whether the magnitude of a value is odd
+bool IsOdd(const BignumIntermediate &value) {
+	return value.GetAbsoluteByte(NumericCast<int64_t>(value.size) - 1) & 1;
+}
+
 } // namespace
 
 const string &BignumDecimal::PowerOfTen(idx_t exponent) {
@@ -337,18 +358,15 @@ bool BignumDecimal::TryRescale(const bignum_t &value, uint32_t source_scale, uin
 	if (!BignumIntermediate::TryDivMod(heap, state, source.intermediate, divisor.intermediate, quotient, remainder)) {
 		throw InternalException("BignumDecimal::TryRescale: division by a power of ten failed");
 	}
-	// the small constants are built once; their blobs outlive the intermediates that point into them
-	static const OwnedBignum TWO(Bignum::VarcharToBignum(string_t("2")));
-	static const OwnedBignum ONE(Bignum::VarcharToBignum(string_t("1")));
-	static const OwnedBignum MINUS_ONE(Bignum::VarcharToBignum(string_t("-1")));
 	const bignum_t remainder_bignum(remainder);
 	BorrowedBignum remainder_value(remainder_bignum);
-	auto twice_remainder = BignumIntermediate::Multiply(heap, state, remainder_value.intermediate, TWO.intermediate);
+	auto twice_remainder =
+	    BignumIntermediate::Multiply(heap, state, remainder_value.intermediate, BignumConstant(2).intermediate);
 	const bignum_t twice_remainder_bignum(twice_remainder);
 	BorrowedBignum twice_remainder_value(twice_remainder_bignum);
 	if (twice_remainder_value.intermediate.IsAbsoluteBigger(divisor.intermediate) != SMALLER) {
 		// |remainder| >= divisor / 2 rounds away from zero
-		auto &one = source.intermediate.is_negative ? MINUS_ONE : ONE;
+		auto &one = BignumConstant(source.intermediate.is_negative ? -1 : 1);
 		const bignum_t quotient_bignum(quotient);
 		BorrowedBignum quotient_value(quotient_bignum);
 		quotient = BignumIntermediate::Add(heap, quotient_value.intermediate, one.intermediate);
@@ -357,6 +375,72 @@ bool BignumDecimal::TryRescale(const bignum_t &value, uint32_t source_scale, uin
 		return false;
 	}
 	result = quotient.GetString();
+	return true;
+}
+
+bool BignumDecimal::TryRound(const bignum_t &value, idx_t drop_digits, idx_t restore_digits, BignumRounding rounding,
+                             uint32_t width, StringHeap &heap, BignumArithmeticState &state, string_t &result) {
+	D_ASSERT(drop_digits <= Decimal::MAX_WIDTH_DECIMAL && restore_digits <= Decimal::MAX_WIDTH_DECIMAL);
+	BorrowedBignum source(value);
+	string_t rounded = value.data;
+	if (drop_digits > 0) {
+		BorrowedBignum divisor(PowerOfTen(drop_digits));
+		string_t quotient;
+		string_t remainder;
+		if (!BignumIntermediate::TryDivMod(heap, state, source.intermediate, divisor.intermediate, quotient,
+		                                   remainder)) {
+			throw InternalException("BignumDecimal::TryRound: division by a power of ten failed");
+		}
+		// the remainder has the sign of the value: the quotient is truncated towards zero
+		const bool negative = source.intermediate.is_negative;
+		int32_t adjustment = 0;
+		if (!IsZero(bignum_t(remainder))) {
+			switch (rounding) {
+			case BignumRounding::TRUNCATE:
+				break;
+			case BignumRounding::FLOOR:
+				adjustment = negative ? -1 : 0;
+				break;
+			case BignumRounding::CEIL:
+				adjustment = negative ? 0 : 1;
+				break;
+			default: {
+				const bignum_t remainder_bignum(remainder);
+				BorrowedBignum remainder_value(remainder_bignum);
+				auto twice_remainder = BignumIntermediate::Multiply(heap, state, remainder_value.intermediate,
+				                                                    BignumConstant(2).intermediate);
+				const bignum_t twice_remainder_bignum(twice_remainder);
+				BorrowedBignum twice_remainder_value(twice_remainder_bignum);
+				const bignum_t quotient_bignum(quotient);
+				BorrowedBignum quotient_value(quotient_bignum);
+				auto comparison = twice_remainder_value.intermediate.IsAbsoluteBigger(divisor.intermediate);
+				// above the half the value rounds away from zero, on the half the rounding mode decides
+				const bool away =
+				    comparison == GREATER || (comparison == EQUAL && (rounding == BignumRounding::HALF_AWAY_FROM_ZERO ||
+				                                                      IsOdd(quotient_value.intermediate)));
+				adjustment = away ? (negative ? -1 : 1) : 0;
+				break;
+			}
+			}
+		}
+		rounded = quotient;
+		if (adjustment != 0) {
+			const bignum_t quotient_bignum(quotient);
+			BorrowedBignum quotient_value(quotient_bignum);
+			rounded =
+			    BignumIntermediate::Add(heap, quotient_value.intermediate, BignumConstant(adjustment).intermediate);
+		}
+	}
+	if (restore_digits > 0) {
+		const bignum_t rounded_bignum(rounded);
+		BorrowedBignum rounded_value(rounded_bignum);
+		BorrowedBignum factor(PowerOfTen(restore_digits));
+		rounded = BignumIntermediate::Multiply(heap, state, rounded_value.intermediate, factor.intermediate);
+	}
+	if (!FitsWidth(bignum_t(rounded), width)) {
+		return false;
+	}
+	result = rounded;
 	return true;
 }
 
