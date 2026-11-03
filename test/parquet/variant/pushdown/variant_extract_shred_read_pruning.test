@@ -4,6 +4,8 @@
 
 require parquet
 
+require json
+
 # The reader prunes the shredded `typed_value` subtree down to the extracted field path. Both files
 # hold identical rows, so every query below has to return the same result with and without shredding.
 foreach shredded true false
