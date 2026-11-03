@@ -15,6 +15,8 @@
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/function/table/table_scan.hpp"
 #include "duckdb/planner/operator/logical_create_index.hpp"
+#include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/planner/expression_iterator.hpp"
 
 namespace duckdb {
 
@@ -75,6 +77,23 @@ void IndexBinder::InitCreateIndexInfo(LogicalGet &get, CreateIndexInfo &info) {
 	get.AddColumnId(COLUMN_IDENTIFIER_ROW_ID);
 }
 
+//! Returns a lambda function of the key, if any
+static optional_ptr<const BoundFunctionExpression> FindLambdaFunction(const Expression &expr) {
+	if (expr.GetExpressionClass() == ExpressionClass::BOUND_FUNCTION) {
+		auto &function = expr.Cast<BoundFunctionExpression>();
+		if (function.Function().HasBindLambdaCallback()) {
+			return &function;
+		}
+	}
+	optional_ptr<const BoundFunctionExpression> result;
+	ExpressionIterator::EnumerateChildren(expr, [&](const Expression &child) {
+		if (!result) {
+			result = FindLambdaFunction(child);
+		}
+	});
+	return result;
+}
+
 unique_ptr<LogicalOperator> IndexBinder::BindCreateIndex(ClientContext &context,
                                                          unique_ptr<CreateIndexInfo> create_index_info,
                                                          TableCatalogEntry &table_entry,
@@ -110,6 +129,12 @@ unique_ptr<LogicalOperator> IndexBinder::BindCreateIndex(ClientContext &context,
 		if (properties.always_require_rebind || expressions.back()->RequiresRebind()) {
 			throw BinderException("Index keys cannot contain expressions with side effects. They also cannot depend on "
 			                      "settings such as TimeZone.");
+		}
+		// lambda functions need a ClientContext to execute, which appends and deletes do not have
+		auto lambda_function = FindLambdaFunction(*expressions.back());
+		if (lambda_function) {
+			throw BinderException(*lambda_function, "Index keys cannot contain lambda functions such as %s.",
+			                      lambda_function->Function().GetName());
 		}
 	}
 	properties.always_require_rebind = statement_requires_rebind;
