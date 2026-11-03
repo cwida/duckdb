@@ -1357,7 +1357,7 @@ PEGTransformerFactory::TransformInfixOtherOperatorExpression(PEGTransformer &tra
 			auto expression_type = OperatorToExpressionType(op_string);
 
 			auto subquery_expr = make_uniq<SubqueryExpression>();
-			if (right_expr->GetExpressionClass() == ExpressionClass::SUBQUERY) {
+			if (other_operator_expr.is_subquery) {
 				if (expression_type == ExpressionType::INVALID) {
 					throw ParserException("ANY and ALL operators require one of =,<>,>,<,>=,<= comparisons!");
 				}
@@ -1431,9 +1431,22 @@ PEGTransformerFactory::TransformCustomPrefixExpression(PEGTransformer &transform
 	return TransformOperatorFunction(operator_literal, std::move(children));
 }
 
-OtherOperatorTail PEGTransformerFactory::TransformInfixOperatorTail(PEGTransformer &transformer,
-                                                                    ParsedOperator other_operator,
-                                                                    unique_ptr<ParsedExpression> bitwise_expression) {
+OtherOperatorTail PEGTransformerFactory::TransformAnyAllSubqueryTail(PEGTransformer &transformer,
+                                                                     ParsedOperator any_all_parsed_operator,
+                                                                     unique_ptr<TableRef> subquery_reference) {
+	auto subquery = make_uniq<SubqueryExpression>();
+	subquery->GetSubqueryTypeMutable() = SubqueryType::SCALAR;
+	subquery->SubqueryMutable() = std::move(subquery_reference->Cast<SubqueryRef>().subquery);
+	OtherOperatorTail result;
+	result.op = std::move(any_all_parsed_operator);
+	result.expression = std::move(subquery);
+	result.is_subquery = true;
+	return result;
+}
+
+OtherOperatorTail
+PEGTransformerFactory::TransformOtherOperatorExpressionTail(PEGTransformer &transformer, ParsedOperator other_operator,
+                                                            unique_ptr<ParsedExpression> bitwise_expression) {
 	OtherOperatorTail result;
 	result.op = std::move(other_operator);
 	result.expression = std::move(bitwise_expression);
@@ -2759,28 +2772,64 @@ bool PEGTransformerFactory::TransformTryCastKeyword(PEGTransformer &transformer)
 	return true;
 }
 
-unique_ptr<ParsedExpression> PEGTransformerFactory::TransformCaseExpression(
-    PEGTransformer &transformer, optional<unique_ptr<ParsedExpression>> expression, vector<CaseCheck> case_when_then,
+static void SetCaseElse(CaseExpression &result, optional<unique_ptr<ParsedExpression>> case_else) {
+	if (case_else) {
+		result.ElseMutable() = std::move(*case_else);
+	} else {
+		result.ElseMutable() = ConstantExpression::Null();
+	}
+}
+
+unique_ptr<ParsedExpression> PEGTransformerFactory::TransformSimpleCaseExpression(
+    PEGTransformer &transformer, unique_ptr<ParsedExpression> expression, vector<SimpleCaseCheck> simple_case_when_then,
     optional<unique_ptr<ParsedExpression>> case_else) {
 	auto result = make_uniq<CaseExpression>();
-
-	for (auto &case_expr : case_when_then) {
+	for (auto &case_expr : simple_case_when_then) {
+		vector<unique_ptr<ParsedExpression>> comparisons;
+		for (auto &when : case_expr.when) {
+			comparisons.push_back(ApplyComparisonTail(expression->Copy(), std::move(when)));
+		}
 		CaseCheck new_case;
-		if (expression) {
-			new_case.when_expr = make_uniq<ComparisonExpression>(ExpressionType::COMPARE_EQUAL, (*expression)->Copy(),
-			                                                     std::move(case_expr.when_expr));
+		if (comparisons.size() == 1) {
+			new_case.when_expr = std::move(comparisons[0]);
 		} else {
-			new_case.when_expr = std::move(case_expr.when_expr);
+			new_case.when_expr =
+			    make_uniq<ConjunctionExpression>(ExpressionType::CONJUNCTION_OR, std::move(comparisons));
 		}
 		new_case.then_expr = std::move(case_expr.then_expr);
 		result->CaseChecksMutable().push_back(std::move(new_case));
 	}
-	if (case_else) {
-		result->ElseMutable() = std::move(*case_else);
-	} else {
-		result->ElseMutable() = ConstantExpression::Null();
-	}
+	SetCaseElse(*result, std::move(case_else));
 	return std::move(result);
+}
+
+unique_ptr<ParsedExpression>
+PEGTransformerFactory::TransformSearchedCaseExpression(PEGTransformer &transformer, vector<CaseCheck> case_when_then,
+                                                       optional<unique_ptr<ParsedExpression>> case_else) {
+	auto result = make_uniq<CaseExpression>();
+	for (auto &case_expr : case_when_then) {
+		result->CaseChecksMutable().push_back(std::move(case_expr));
+	}
+	SetCaseElse(*result, std::move(case_else));
+	return std::move(result);
+}
+
+SimpleCaseCheck
+PEGTransformerFactory::TransformSimpleCaseWhenThen(PEGTransformer &transformer,
+                                                   vector<ComparisonExpressionTail> simple_case_when_operand,
+                                                   unique_ptr<ParsedExpression> expression) {
+	SimpleCaseCheck result;
+	result.when = std::move(simple_case_when_operand);
+	result.then_expr = std::move(expression);
+	return result;
+}
+
+ComparisonExpressionTail PEGTransformerFactory::TransformSimpleCaseWhenEquals(PEGTransformer &transformer,
+                                                                              unique_ptr<ParsedExpression> expression) {
+	ComparisonExpressionTail result;
+	result.comparison_type = ExpressionType::COMPARE_EQUAL;
+	result.expression = std::move(expression);
+	return result;
 }
 
 unique_ptr<ParsedExpression> PEGTransformerFactory::TransformCaseElse(PEGTransformer &transformer,

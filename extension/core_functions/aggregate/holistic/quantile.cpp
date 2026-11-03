@@ -547,7 +547,7 @@ AggregateFunction GetContinuousQuantileTemplated(const LogicalType &type) {
 		}
 	case LogicalTypeId::DATE: {
 		auto fun = OP::template GetFunction<date_t, timestamp_t>(type, LogicalType::TIMESTAMP);
-		fun.SetFallible(); // interpolation casts to TIMESTAMP, which throws for dates outside of the timestamp range
+		fun.SetFallible(); // the TIMESTAMP cast throws for out-of-range dates, interpolation for the infinities
 		return fun;
 	}
 	case LogicalTypeId::TIMESTAMP:
@@ -555,8 +555,11 @@ AggregateFunction GetContinuousQuantileTemplated(const LogicalType &type) {
 	case LogicalTypeId::TIMESTAMP_TZ_NS:
 	case LogicalTypeId::TIMESTAMP_SEC:
 	case LogicalTypeId::TIMESTAMP_MS:
-	case LogicalTypeId::TIMESTAMP_NS:
-		return OP::template GetFunction<timestamp_t, timestamp_t>(type, type);
+	case LogicalTypeId::TIMESTAMP_NS: {
+		auto fun = OP::template GetFunction<timestamp_t, timestamp_t>(type, type);
+		fun.SetFallible(); // interpolation throws for the infinities
+		return fun;
+	}
 	case LogicalTypeId::TIME:
 		return OP::template GetFunction<dtime_t, dtime_t>(type, type);
 	case LogicalTypeId::TIME_TZ:

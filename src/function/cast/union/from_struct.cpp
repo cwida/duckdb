@@ -6,6 +6,7 @@
 #include "duckdb/function/cast/bound_cast_data.hpp"
 #include "duckdb/common/exception/conversion_exception.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
+#include "duckdb/common/vector_operations/vector_operations.hpp"
 
 namespace duckdb {
 
@@ -80,8 +81,11 @@ bool StructToUnionCast::Cast(Vector &source, Vector &result, idx_t count, CastPa
 			// the failing values have been set to NULL by the (TRY_CAST) member cast
 			all_converted = false;
 		}
-		// we flatten the child because we use FlatVector::SetNull below and we may get non-flat from source/cast
-		result_child_vector.Flatten();
+		// copy the member into a flat vector we own - the member cast may reference the source, and we set NULLs below
+		Vector member(result_child_vector.GetType(), count);
+		VectorOperations::Copy(result_child_vector, member, count, 0, 0);
+		FlatVector::SetSize(member, count_t(count));
+		result_child_vector.Reference(member);
 	}
 
 	if (source.GetVectorType() == VectorType::CONSTANT_VECTOR) {

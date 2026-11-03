@@ -1,0 +1,98 @@
+# name: test/optimizer/pushdown/pushdown_window_partition_expression.test
+# description: A filter that only depends on the partition expressions of every window expression moves below the window
+# group: [pushdown]
+
+statement ok
+CREATE TABLE t AS SELECT range AS i, (range % 3)::VARCHAR || CASE WHEN range % 2 = 0 THEN 'a' ELSE 'A' END AS s FROM range(30);
+
+query II
+EXPLAIN SELECT * FROM (SELECT s, row_number() OVER (PARTITION BY lower(s) ORDER BY i) AS rn FROM t) WHERE lower(s) = '1a';
+----
+physical_plan	<REGEX>:.*Window.*Filters: lower\(s\) = '1a'.*
+
+query II
+EXPLAIN SELECT * FROM (SELECT s, row_number() OVER (PARTITION BY lower(s) ORDER BY i) AS rn FROM t) WHERE s = '1a';
+----
+physical_plan	<!REGEX>:.*Window.*Filters:.*
+
+query III
+SELECT s, rn, i FROM (SELECT s, i, row_number() OVER (PARTITION BY lower(s) ORDER BY i) AS rn FROM t) WHERE lower(s) = '1a' ORDER BY i LIMIT 4;
+----
+1A	1	1
+1a	2	4
+1A	3	7
+1a	4	10
+
+query III
+SELECT s, rn, i FROM (SELECT s, i, row_number() OVER (PARTITION BY lower(s) ORDER BY i) AS rn FROM t) WHERE s = '1a' ORDER BY i LIMIT 2;
+----
+1a	2	4
+1a	4	10
+
+# every window expression has to partition by it
+query II
+EXPLAIN SELECT * FROM (SELECT s, row_number() OVER (PARTITION BY lower(s) ORDER BY i) AS rn, sum(i) OVER () AS total FROM t) WHERE lower(s) = '1a';
+----
+physical_plan	<!REGEX>:.*Window.*Filters:.*
+
+query III
+SELECT s, rn, total FROM (SELECT s, i, row_number() OVER (PARTITION BY lower(s) ORDER BY i) AS rn, sum(i) OVER () AS total FROM t) WHERE lower(s) = '1a' ORDER BY i LIMIT 2;
+----
+1A	1	435
+1a	2	435
+
+# a volatile window expression still runs for the rows of all partitions
+statement ok
+CREATE SEQUENCE window_seq;
+
+query I
+SELECT count(n) FROM (SELECT s, first_value(nextval('window_seq')) OVER (PARTITION BY lower(s) ORDER BY i) AS n FROM t) WHERE lower(s) = '1a';
+----
+10
+
+query I
+SELECT currval('window_seq');
+----
+30
+
+# MATCH_RECOGNIZE also runs its DEFINE conditions for the rows of all partitions
+statement ok
+CREATE SEQUENCE mr_seq;
+
+statement ok
+CREATE TABLE mr_input (s VARCHAR);
+
+statement ok
+INSERT INTO mr_input VALUES ('a'), ('b');
+
+query I
+SELECT count(*) FROM mr_input MATCH_RECOGNIZE (PARTITION BY lower(s) ONE ROW PER MATCH PATTERN (A) DEFINE A AS nextval('mr_seq') > 0) AS m(k) WHERE k = 'b';
+----
+1
+
+query I
+SELECT currval('mr_seq');
+----
+2
+
+# with a collation the filter is on the collation key, through the row numbers of EXCEPT ALL and INTERSECT ALL
+statement ok
+CREATE TABLE nocase_a AS SELECT range::VARCHAR COLLATE NOCASE AS s FROM range(100);
+
+statement ok
+CREATE TABLE nocase_b AS SELECT range::VARCHAR COLLATE NOCASE AS s FROM range(50);
+
+query II
+EXPLAIN SELECT * FROM (SELECT s FROM nocase_a INTERSECT ALL SELECT s FROM nocase_b) WHERE s = '7';
+----
+physical_plan	<REGEX>:.*Filters: lower\(s\) = '7'.*Filters: lower\(s\) = '7'.*
+
+query II
+EXPLAIN SELECT s FROM nocase_a WHERE s = '7' EXCEPT ALL SELECT s FROM nocase_b;
+----
+physical_plan	<REGEX>:.*Filters: lower\(s\) = '7'.*Filters: lower\(s\) = '7'.*
+
+query I
+SELECT count(*) FROM (SELECT s FROM nocase_a INTERSECT ALL SELECT s FROM nocase_b) WHERE s = '7';
+----
+1

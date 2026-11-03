@@ -29,35 +29,6 @@ static LogicalPlanVerificationIssue UnsupportedDML(const LogicalPlanVerification
 	return LogicalPlanSQLExportHelpers::PlanUnsupportedFeature(path, std::move(feature), std::move(message));
 }
 
-SQLExportDMLHelpers::SelectedRowId SQLExportDMLHelpers::SelectRowIdColumn(const vector<column_t> &row_id_columns,
-                                                                          const virtual_column_map_t &virtual_columns) {
-	// A single row-id column is the key by itself. Among several, only the logical row identifier
-	// can key the generated statement: the remaining columns are physical coordinates, not identity.
-	SelectedRowId result;
-	result.count = row_id_columns.size();
-	optional<column_t> selected;
-	if (row_id_columns.size() == 1) {
-		selected = row_id_columns[0];
-	} else {
-		for (idx_t i = 0; i < row_id_columns.size(); i++) {
-			if (row_id_columns[i] == COLUMN_IDENTIFIER_ROW_ID) {
-				selected = row_id_columns[i];
-				result.ordinal = i;
-				break;
-			}
-		}
-	}
-	if (!selected) {
-		return result;
-	}
-	auto entry = virtual_columns.find(*selected);
-	if (entry == virtual_columns.end()) {
-		return result;
-	}
-	result.column = &entry->second;
-	return result;
-}
-
 struct ExportedRowId {
 	Identifier name;
 	//! Index of the key column within the row-id columns the binder appends to the source
@@ -66,19 +37,40 @@ struct ExportedRowId {
 	idx_t count;
 };
 
-//! The row-id column SQL can reference on the modified table; row-id sets without a logical row id have
-//! no SQL key, and a physical column with the row-id name would capture the generated references.
+//! The row-id column SQL can reference on the modified table. A single row-id column is the key by
+//! itself. Among several, only the logical row identifier can key the generated statement: the
+//! remaining columns are physical coordinates, not identity. Row-id sets without such a key have no
+//! SQL form, and a physical column with the row-id name would capture the generated references.
 static LogicalPlanVerificationResult<ExportedRowId> ExportedRowIdName(const TableCatalogEntry &table,
                                                                       const LogicalPlanVerificationPath &path) {
 	auto row_id_columns = table.GetRowIdColumns();
 	auto virtual_columns = table.GetVirtualColumns();
-	auto selected = SQLExportDMLHelpers::SelectRowIdColumn(row_id_columns, virtual_columns);
-	if (!selected.column || table.ColumnExists(selected.column->name)) {
+	optional<column_t> selected;
+	idx_t ordinal = 0;
+	if (row_id_columns.size() == 1) {
+		selected = row_id_columns[0];
+	} else {
+		for (idx_t i = 0; i < row_id_columns.size(); i++) {
+			if (row_id_columns[i] == COLUMN_IDENTIFIER_ROW_ID) {
+				selected = row_id_columns[i];
+				ordinal = i;
+				break;
+			}
+		}
+	}
+	optional_ptr<const TableColumn> column;
+	if (selected) {
+		auto entry = virtual_columns.find(*selected);
+		if (entry != virtual_columns.end()) {
+			column = &entry->second;
+		}
+	}
+	if (!column || table.ColumnExists(column->name)) {
 		return LogicalPlanVerificationResult<ExportedRowId>::Failure(
 		    {UnsupportedDML(path, "dml_row_id", "The modified table does not expose an exportable row-id column")});
 	}
 	return LogicalPlanVerificationResult<ExportedRowId>::Success(
-	    {Identifier(selected.column->name), selected.ordinal, selected.count});
+	    {Identifier(column->name), ordinal, row_id_columns.size()});
 }
 
 static unique_ptr<TableRef> ModifiedTableRef(const TableCatalogEntry &table) {

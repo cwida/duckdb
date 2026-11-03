@@ -44,9 +44,6 @@ static void SetGenericCopyOptionExpression(GenericCopyOption &copy_option, uniqu
 				                        ExpressionClassToString(child->GetExpressionClass()));
 			}
 		}
-	} else if (expression->GetExpressionType() == ExpressionType::FUNCTION ||
-	           expression->GetExpressionType() == ExpressionType::VALUE_PARAMETER) {
-		copy_option.expression = std::move(expression);
 	} else if (expression->GetExpressionType() == ExpressionType::STAR) {
 		copy_option.children.push_back(Value("*"));
 	} else if (expression->GetExpressionType() == ExpressionType::OPERATOR_CAST) {
@@ -64,8 +61,7 @@ static void SetGenericCopyOptionExpression(GenericCopyOption &copy_option, uniqu
 			copy_option.expression = std::move(expression);
 		}
 	} else {
-		throw NotImplementedException("Unrecognized expression type %s",
-		                              ExpressionTypeToString(expression->GetExpressionType()));
+		copy_option.expression = std::move(expression);
 	}
 }
 

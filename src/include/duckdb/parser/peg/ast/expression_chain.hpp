@@ -35,6 +35,8 @@ struct ArrowChainLink {
 struct OtherOperatorTail {
 	ParsedOperator op;
 	unique_ptr<ParsedExpression> expression;
+	//! Whether the right-hand side is a subquery, as in ANY(SELECT ...)
+	bool is_subquery = false;
 	//! Set for the '->' operator, whose operand may be followed by a chain of arrows
 	bool is_arrow = false;
 	vector<ArrowChainLink> arrow_chain;
@@ -55,6 +57,11 @@ struct IsExpressionTail {
 	ComparisonExpressionTail comparison;
 	OtherOperatorTail other;
 	unique_ptr<ParsedExpression> cast;
+};
+
+struct SimpleCaseCheck {
+	vector<ComparisonExpressionTail> when;
+	unique_ptr<ParsedExpression> then_expr;
 };
 
 struct BinaryExpressionTail {

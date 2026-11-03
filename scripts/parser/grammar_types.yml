@@ -483,6 +483,8 @@ Expression:
     - ForExpression
     - CastExpression
     - CaseExpression
+    - SimpleCaseExpression
+    - SearchedCaseExpression
     - CaseElse
     - TypeLiteral
     - DefaultExpression
@@ -1691,6 +1693,15 @@ overrides:
   ComparisonExpressionTail:
     type: "ComparisonExpressionTail"
     by_value: true
+  SimpleCaseWhenOperand:
+    type: "ComparisonExpressionTail"
+    by_value: true
+  SimpleCaseWhenEquals:
+    type: "ComparisonExpressionTail"
+    by_value: true
+  SimpleCaseWhenThen:
+    type: "SimpleCaseCheck"
+    by_value: true
   IsExpressionTail:
     type: "IsExpressionTail"
     by_value: true
@@ -1730,7 +1741,10 @@ overrides:
   OtherOperatorTail:
     type: "OtherOperatorTail"
     by_value: true
-  InfixOperatorTail:
+  AnyAllSubqueryTail:
+    type: "OtherOperatorTail"
+    by_value: true
+  OtherOperatorExpressionTail:
     type: "OtherOperatorTail"
     by_value: true
   SingleArrowTail:
