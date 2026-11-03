@@ -343,18 +343,6 @@ static void DetectExportedFrontierReference(QueryNode &node, const Identifier &n
 	ParsedExpressionIterator::EnumerateQueryNodeChildren(node, expr_cb, ref_cb);
 }
 
-static void DetectFrontierWitness(const LogicalOperator &op, TableIndex cte_index, bool &found) {
-	if (op.type == LogicalOperatorType::LOGICAL_CTE_REF) {
-		auto &ref = op.Cast<LogicalCTERef>();
-		if (ref.is_frontier && ref.cte_index == cte_index) {
-			found = true;
-		}
-	}
-	for (auto &child : op.children) {
-		DetectFrontierWitness(*child, cte_index, found);
-	}
-}
-
 LogicalPlanSQLExportResult LogicalTrampoline::ExportSQLDefinition(LogicalPlanSQLExportContext &export_context,
                                                                   const LogicalPlanVerificationPath &path,
                                                                   const Identifier &name) {
