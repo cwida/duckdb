@@ -1,6 +1,6 @@
 # name: test/sql/storage/partial_blocks/deferred_checkpoint_in_memory.test
 # description: In-memory publication supports compression, vacuum-only checkpoints, and incremental remapping.
-# group: [storage]
+# group: [partial_blocks]
 
 foreach compression true false
 

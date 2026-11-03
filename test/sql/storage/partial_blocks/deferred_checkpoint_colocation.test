@@ -1,6 +1,6 @@
 # name: test/sql/storage/partial_blocks/deferred_checkpoint_colocation.test
 # description: Full and concurrent checkpoints pack table and index data across tables before publication.
-# group: [storage]
+# group: [partial_blocks]
 
 require noforcestorage
 

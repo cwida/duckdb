@@ -13,13 +13,11 @@
 namespace duckdb {
 
 enum class MemoryTag : uint8_t {
-	//! Cached persistent table/index blocks and base-table bookkeeping.
 	BASE_TABLE = 0,
 	HASH_TABLE = 1,
 	PARQUET_READER = 2,
 	CSV_READER = 3,
 	ORDER_BY = 4,
-	//! ART working buffers; cached persistent index blocks use BASE_TABLE.
 	ART_INDEX = 5,
 	COLUMN_DATA = 6,
 	METADATA = 7,

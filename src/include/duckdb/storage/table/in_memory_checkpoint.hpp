@@ -51,7 +51,7 @@ private:
 	PartialBlockManager partial_block_manager;
 	StorageManager &storage_manager;
 	CheckpointOptions options;
-	//! Owns prepared collections until the shared packing buffers are finalized.
+	//! Owns prepared state until it is published or discarded.
 	vector<unique_ptr<PendingPublication>> pending_publications;
 };
 

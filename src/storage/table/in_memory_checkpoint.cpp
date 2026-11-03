@@ -28,7 +28,6 @@ InMemoryCheckpointer::InMemoryCheckpointer(QueryContext context, AttachedDatabas
 }
 
 InMemoryCheckpointer::~InMemoryCheckpointer() {
-	// Discard pending packable references before destroying their publication owners.
 	partial_block_manager.ClearBlocks();
 }
 

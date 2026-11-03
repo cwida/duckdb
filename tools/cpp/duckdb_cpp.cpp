@@ -280,7 +280,7 @@ namespace {
 }
 
 template <class F, class... ARGS>
-auto CheckedAPICall(F &&func, ARGS &&...args) -> void {
+auto CheckedAPICall(F &&func, ARGS &&... args) -> void {
 	duckdb_v2_error_info_handle err = nullptr;
 	const auto code = func(std::forward<ARGS>(args)..., &err);
 	if (code != DUCKDB_V2_ERROR_NONE) {
@@ -422,7 +422,7 @@ auto ExecutePreparedArrow(duckdb_v2_prepared_statement_handle prepared, const Pa
 // then a buffer with room for the terminator receives the text. The library
 // never allocates, so there is nothing to free.
 template <class F, class... ARGS>
-auto RenderText(F &&func, ARGS &&...args) -> std::string {
+auto RenderText(F &&func, ARGS &&... args) -> std::string {
 	idx_t length = 0;
 	CheckedAPICall(func, args..., static_cast<char *>(nullptr), static_cast<idx_t>(0), &length);
 	std::string out;

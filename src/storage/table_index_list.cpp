@@ -504,7 +504,6 @@ public:
 	}
 
 private:
-	//! Keep the target alive until after its shadow is consumed or destroyed.
 	shared_ptr<IndexEntry> entry;
 	unique_ptr<BoundIndex> shadow_index;
 };

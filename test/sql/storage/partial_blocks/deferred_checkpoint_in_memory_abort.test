@@ -1,6 +1,6 @@
 # name: test/sql/storage/partial_blocks/deferred_checkpoint_in_memory_abort.test
 # description: Aborting in-memory checkpoint preparation discards queued collections and packing buffers safely.
-# group: [storage]
+# group: [partial_blocks]
 
 foreach compression true false
 
