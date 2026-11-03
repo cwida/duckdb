@@ -72,20 +72,28 @@ unique_ptr<GlobalTableFunctionState> NonRepeatableInit(ClientContext &, TableFun
 	return std::move(result);
 }
 
+unique_ptr<FunctionData> RepeatabilityBind(ClientContext &, TableFunctionBindInput &, vector<LogicalType> &return_types,
+                                           vector<Identifier> &names) {
+	return_types.emplace_back(LogicalType::INTEGER);
+	names.emplace_back("i");
+	// Rebinding these parameterized calls is supported, independently of whether their scans are repeatable.
+	return make_uniq<TableFunctionData>();
+}
+
 void RegisterRepeatabilityTableFunctions(DuckDB &db) {
 	ExtensionInfo extension_info {};
 	ExtensionActiveLoad load_info {*db.instance, extension_info, "test_extension", ""};
 	ExtensionLoader loader {load_info};
-	TableFunction unknown("repeatability_unknown", {LogicalType::INTEGER}, NonSerializableFunction, NonSerializableBind,
+	TableFunction unknown("repeatability_unknown", {LogicalType::INTEGER}, NonSerializableFunction, RepeatabilityBind,
 	                      NonRepeatableInit);
 	loader.RegisterFunction(unknown);
 	TableFunction non_repeatable("repeatability_false", {LogicalType::INTEGER}, NonSerializableFunction,
-	                             NonSerializableBind, NonRepeatableInit);
+	                             RepeatabilityBind, NonRepeatableInit);
 	non_repeatable.is_repeatable = [](optional_ptr<const FunctionData>) {
 		return false;
 	};
 	loader.RegisterFunction(non_repeatable);
-	TableFunction repeatable("repeatability_true", {LogicalType::INTEGER}, NonSerializableFunction, NonSerializableBind,
+	TableFunction repeatable("repeatability_true", {LogicalType::INTEGER}, NonSerializableFunction, RepeatabilityBind,
 	                         NonSerializableInit);
 	repeatable.is_repeatable = [](optional_ptr<const FunctionData>) {
 		return true;
