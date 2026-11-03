@@ -78,9 +78,9 @@ unique_ptr<ValueComparator> GetComparator(const Identifier &fun_name) {
 unique_ptr<ValueComparator> GetComparator(const Identifier &fun_name, const LogicalType &type) {
 	if (type == LogicalType::VARCHAR) {
 		return GetComparator<StringStats>(fun_name);
-	} else if ((type.IsNumeric() || type.IsTemporal()) &&
-	           BaseStatistics::GetStatsType(type) == StatisticsType::NUMERIC_STATS) {
-		// wide decimals are numeric but carry string statistics
+	} else if (BaseStatistics::GetStatsType(type) == StatisticsType::BIGNUM_STATS) {
+		return GetComparator<BignumStats>(fun_name);
+	} else if (type.IsNumeric() || type.IsTemporal()) {
 		return GetComparator<NumericStats>(fun_name);
 	}
 	return nullptr;
@@ -138,6 +138,10 @@ bool TryGetValueFromStats(const PartitionStatistics &stats, const StorageIndex &
 	if (column_stats->GetStatsType() == StatisticsType::NUMERIC_STATS) {
 		if (!NumericStats::HasMinMax(*column_stats)) {
 			// TODO: This also returns if an entire row group is null. In that case, we could skip/compare null
+			return false;
+		}
+	} else if (column_stats->GetStatsType() == StatisticsType::BIGNUM_STATS) {
+		if (!BignumStats::HasMinMax(*column_stats)) {
 			return false;
 		}
 	} else {

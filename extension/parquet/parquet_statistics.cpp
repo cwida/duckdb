@@ -90,10 +90,10 @@ unique_ptr<BaseStatistics> ParquetStatisticsUtils::CreateNumericStats(const Logi
 	return stats.ToUnique();
 }
 
-//! Wide decimals (width > 38) carry string statistics on their BIGNUM blobs, whose byte order is the numeric order
+//! Decimals wider than 38 digits are BIGNUM blobs with exact min/max statistics
 static unique_ptr<BaseStatistics> CreateWideDecimalStats(const LogicalType &type, const ParquetColumnSchema &schema_ele,
                                                          const duckdb_parquet::Statistics &parquet_stats) {
-	auto stats = StringStats::CreateUnknown(type);
+	auto stats = BignumStats::CreateUnknown(type);
 	Value min;
 	Value max;
 	if (parquet_stats.__isset.min_value) {
@@ -106,12 +106,8 @@ static unique_ptr<BaseStatistics> CreateWideDecimalStats(const LogicalType &type
 	} else if (parquet_stats.__isset.max) {
 		max = ParquetStatisticsUtils::ConvertValue(type, schema_ele, parquet_stats.max);
 	}
-	if (!min.IsNull()) {
-		StringStats::SetMin(stats, string_t(StringValue::Get(min)), StringStatsType::EXACT_STATS);
-	}
-	if (!max.IsNull()) {
-		StringStats::SetMax(stats, string_t(StringValue::Get(max)), StringStatsType::EXACT_STATS);
-	}
+	BignumStats::SetMin(stats, min);
+	BignumStats::SetMax(stats, max);
 	return stats.ToUnique();
 }
 

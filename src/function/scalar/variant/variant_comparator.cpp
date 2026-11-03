@@ -295,6 +295,12 @@ void GetTypedBounds(const BaseStatistics &typed_stats, Value &min_bound, Value &
 			max_bound = NumericStats::Max(typed_stats);
 		}
 		break;
+	case StatisticsType::BIGNUM_STATS:
+		if (BignumStats::HasMinMax(typed_stats)) {
+			min_bound = BignumStats::Min(typed_stats);
+			max_bound = BignumStats::Max(typed_stats);
+		}
+		break;
 	case StatisticsType::STRING_STATS:
 		// only VARCHAR has UTF-8 ordered min/max we can turn into valid lower/upper bounds
 		if (typed_stats.GetType().id() == LogicalTypeId::VARCHAR) {

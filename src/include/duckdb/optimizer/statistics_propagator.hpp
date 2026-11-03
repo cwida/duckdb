@@ -89,6 +89,12 @@ private:
 
 	//! Return statistics from a constant value
 	unique_ptr<BaseStatistics> StatisticsFromValue(const Value &input);
+	//! The min/max of numeric statistics: the fixed-size types and the bignum_t tier of decimals
+	static bool HasNumericMinMax(const BaseStatistics &stats);
+	static Value NumericMin(const BaseStatistics &stats);
+	static Value NumericMax(const BaseStatistics &stats);
+	static void SetNumericMin(BaseStatistics &stats, const Value &val);
+	static void SetNumericMax(BaseStatistics &stats, const Value &val);
 	//! Update filter statistics from a filter with a constant
 	void UpdateFilterStatistics(BaseStatistics &input, ExpressionType comparison_type, const Value &constant);
 	//! Update statistics from a filter between two stats

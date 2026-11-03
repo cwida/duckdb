@@ -230,6 +230,13 @@ optional_ptr<SegmentNode<RowGroup>> RowGroupReorderer::GetNextRowGroup(SegmentNo
 Value RowGroupReorderer::RetrieveStat(const BaseStatistics &stats, OrderByStatistics order_by,
                                       OrderByColumnType column_type) {
 	if (column_type == OrderByColumnType::NUMERIC) {
+		if (stats.GetStatsType() == StatisticsType::BIGNUM_STATS) {
+			// the bignum_t tier of decimals
+			if (!BignumStats::HasMinMax(stats)) {
+				return Value();
+			}
+			return order_by == OrderByStatistics::MIN ? BignumStats::Min(stats) : BignumStats::Max(stats);
+		}
 		if (!NumericStats::HasMinMax(stats)) {
 			return Value();
 		}

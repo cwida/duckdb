@@ -53,30 +53,60 @@ static bool WidenByInfinities(const BaseStatistics &input, const LogicalType &ta
 	return true;
 }
 
+//! The statistics of numeric values: the fixed-size types and the bignum_t tier of decimals
+static bool IsNumericStats(const BaseStatistics &stats) {
+	return stats.GetStatsType() == StatisticsType::NUMERIC_STATS ||
+	       stats.GetStatsType() == StatisticsType::BIGNUM_STATS;
+}
+
+static bool HasNumericMinMax(const BaseStatistics &stats) {
+	if (stats.GetStatsType() == StatisticsType::BIGNUM_STATS) {
+		return BignumStats::HasMinMax(stats);
+	}
+	return NumericStats::HasMinMax(stats);
+}
+
+static Value NumericMin(const BaseStatistics &stats) {
+	return stats.GetStatsType() == StatisticsType::BIGNUM_STATS ? BignumStats::Min(stats) : NumericStats::Min(stats);
+}
+
+static Value NumericMax(const BaseStatistics &stats) {
+	return stats.GetStatsType() == StatisticsType::BIGNUM_STATS ? BignumStats::Max(stats) : NumericStats::Max(stats);
+}
+
+static void SetNumericMinMax(BaseStatistics &stats, const Value &min, const Value &max) {
+	if (stats.GetStatsType() == StatisticsType::BIGNUM_STATS) {
+		BignumStats::SetMin(stats, min);
+		BignumStats::SetMax(stats, max);
+	} else {
+		NumericStats::SetMin(stats, min);
+		NumericStats::SetMax(stats, max);
+	}
+}
+
 static unique_ptr<BaseStatistics> StatisticsOperationsNumericNumericCast(const BaseStatistics &input,
                                                                          const LogicalType &target) {
 	// Bail out if the stats are not numeric
-	if (input.GetStatsType() != StatisticsType::NUMERIC_STATS) {
+	if (!IsNumericStats(input)) {
 		return nullptr;
 	}
 	if (!input.CanHaveNoNull()) {
-		auto result = NumericStats::CreateEmpty(target);
+		auto result = BaseStatistics::CreateEmpty(target);
 		result.CopyBase(input);
 		return result.ToUnique();
 	}
-	if (!NumericStats::HasMinMax(input)) {
+	if (!HasNumericMinMax(input)) {
 		return nullptr;
 	}
-	auto min = NumericStats::Min(input).DefaultTryCastAs(target);
-	auto max = NumericStats::Max(input).DefaultTryCastAs(target);
+	auto min = NumericMin(input).DefaultTryCastAs(target);
+	auto max = NumericMax(input).DefaultTryCastAs(target);
 	if (!min || !max || !WidenByInfinities(input, target, *min, *max)) {
 		// overflow in cast: bailout
 		return nullptr;
 	}
-	auto result = NumericStats::CreateEmpty(target);
+	auto result = BaseStatistics::CreateEmpty(target);
 	result.CopyBase(input);
-	NumericStats::SetMin(result, *min);
-	NumericStats::SetMax(result, *max);
+	SetNumericMinMax(result, *min, *max);
 	return result.ToUnique();
 }
 
@@ -88,6 +118,13 @@ bool CastStatistics::CanPropagate(const LogicalType &source, const LogicalType &
 		return false;
 	}
 	// we can only propagate numeric -> numeric
+	if (BaseStatistics::GetStatsType(source) == StatisticsType::BIGNUM_STATS) {
+		// the bignum_t tier of decimals casts to the numeric types
+		return target.IsNumeric();
+	}
+	if (BaseStatistics::GetStatsType(target) == StatisticsType::BIGNUM_STATS) {
+		return source.IsNumeric();
+	}
 	switch (source.InternalType()) {
 	case PhysicalType::INT8:
 	case PhysicalType::INT16:

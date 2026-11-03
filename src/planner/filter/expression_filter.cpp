@@ -219,6 +219,9 @@ static FilterPropagateResult CheckZonemapAgainstConstants(const BaseStatistics &
 		if (stats.GetStatsType() == StatisticsType::STRING_STATS) {
 			return StringStats::CheckZonemap(stats, comparison_type, values);
 		}
+		if (stats.GetStatsType() == StatisticsType::BIGNUM_STATS) {
+			return BignumStats::CheckZonemap(stats, comparison_type, values);
+		}
 		return FilterPropagateResult::NO_PRUNING_POSSIBLE;
 	default:
 		return FilterPropagateResult::NO_PRUNING_POSSIBLE;

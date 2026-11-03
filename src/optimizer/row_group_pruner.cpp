@@ -7,7 +7,6 @@
 #include "duckdb/planner/operator/logical_limit.hpp"
 #include "duckdb/planner/operator/logical_order.hpp"
 #include "duckdb/storage/table/row_group_reorderer.hpp"
-#include "duckdb/storage/statistics/base_statistics.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 
@@ -169,10 +168,8 @@ RowGroupPruner::CreateRowGroupReordererOptions(const optional_idx row_limit, con
                                                const BoundOrderByNode &primary_order, const LogicalGet &logical_get,
                                                const StorageIndex &storage_index, LogicalLimit &logical_limit) const {
 	const auto &colref = primary_order.expression->Cast<BoundColumnRefExpression>();
-	// wide decimals are numeric but carry order-preserving string statistics, which decides how min/max are read
-	const auto column_type = BaseStatistics::GetStatsType(colref.GetReturnType()) == StatisticsType::STRING_STATS
-	                             ? OrderByColumnType::STRING
-	                             : OrderByColumnType::NUMERIC;
+	const auto column_type =
+	    colref.GetReturnType() == LogicalType::VARCHAR ? OrderByColumnType::STRING : OrderByColumnType::NUMERIC;
 	const auto order_type = primary_order.type;
 	const auto null_order = primary_order.null_order;
 	const auto order_by = order_type == OrderType::ASCENDING ? OrderByStatistics::MIN : OrderByStatistics::MAX;

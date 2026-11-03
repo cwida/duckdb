@@ -17,12 +17,13 @@
 #include "duckdb/common/serializer/deserializer.hpp"
 #include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/common/types/date.hpp"
+#include "duckdb/common/types/bignum_decimal.hpp"
 #include "duckdb/common/types/decimal.hpp"
 #include "duckdb/common/types/interval.hpp"
+#include "duckdb/common/types/string_heap.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/function/scalar/operators.hpp"
 #include "duckdb/function/scalar/operator_functions.hpp"
-#include "duckdb/planner/binder.hpp"
 #include "duckdb/function/scalar/string_functions.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
@@ -30,6 +31,7 @@
 #include "duckdb/storage/statistics/numeric_stats.hpp"
 #include <cmath>
 #include <limits>
+#include <type_traits>
 
 namespace duckdb {
 
@@ -214,6 +216,50 @@ struct SubtractPropagateStatistics {
 	}
 };
 
+//! Whether an operator has a kernel for the bignum_t tier of decimals
+template <class OP, class = void>
+struct HasBignumOperation : std::false_type {};
+
+template <class OP>
+struct HasBignumOperation<
+    OP, std::void_t<decltype(OP::Operation(std::declval<bignum_t>(), std::declval<bignum_t>(),
+                                           std::declval<StringHeap &>(), std::declval<BignumArithmeticState &>()))>>
+    : std::true_type {};
+
+//! The bounds of an operation in the bignum_t tier of decimals: the combinations of the input bounds are computed
+//! exactly, the result overflows when one of them does not fit the width of the result type
+template <class OP>
+static bool BignumDecimalPropagateStatistics(const LogicalType &type, const BaseStatistics &lstats,
+                                             const BaseStatistics &rstats, Value &new_min, Value &new_max) {
+	const auto width = DecimalType::GetWidth(type);
+	const string_t lvals[] {BignumStats::MinBlob(lstats), BignumStats::MaxBlob(lstats)};
+	const string_t rvals[] {BignumStats::MinBlob(rstats), BignumStats::MaxBlob(rstats)};
+	StringHeap heap;
+	BignumArithmeticState state;
+	string_t min;
+	string_t max;
+	for (idx_t l = 0; l < 2; l++) {
+		for (idx_t r = 0; r < 2; r++) {
+			// the bounds are at most Decimal::MAX_WIDTH_DECIMAL digits, their combination cannot overflow a BIGNUM
+			auto result = OP::Operation(bignum_t(lvals[l]), bignum_t(rvals[r]), heap, state).data;
+			if (!BignumDecimal::FitsWidth(bignum_t(result), width)) {
+				// potential overflow
+				return true;
+			}
+			// the byte order of the BIGNUM encoding is the numeric order
+			if ((l == 0 && r == 0) || LessThan::Operation(result, min)) {
+				min = result;
+			}
+			if ((l == 0 && r == 0) || GreaterThan::Operation(result, max)) {
+				max = result;
+			}
+		}
+	}
+	new_min = Value::DECIMAL(bignum_t(min), width, DecimalType::GetScale(type));
+	new_max = Value::DECIMAL(bignum_t(max), width, DecimalType::GetScale(type));
+	return false;
+}
+
 struct DecimalArithmeticBindData : public FunctionData {
 	DecimalArithmeticBindData() : check_overflow(false) {
 	}
@@ -240,14 +286,19 @@ unique_ptr<BaseStatistics> PropagateNumericStats(ClientContext &context, Functio
 	// can only propagate stats if the children have stats
 	auto &lstats = child_stats[0];
 	auto &rstats = child_stats[1];
-	if (lstats.GetStatsType() != StatisticsType::NUMERIC_STATS ||
-	    rstats.GetStatsType() != StatisticsType::NUMERIC_STATS) {
-		// the bignum_t tier of decimals carries string statistics
-		return nullptr;
-	}
 	Value new_min, new_max;
 	bool potential_overflow = true;
-	if (NumericStats::HasMinMax(lstats) && NumericStats::HasMinMax(rstats)) {
+	const bool bignum_tier = BaseStatistics::GetStatsType(expr.GetReturnType()) == StatisticsType::BIGNUM_STATS;
+	if (bignum_tier) {
+		if constexpr (HasBignumOperation<BASEOP>::value) {
+			if (lstats.GetStatsType() == StatisticsType::BIGNUM_STATS &&
+			    rstats.GetStatsType() == StatisticsType::BIGNUM_STATS && BignumStats::HasMinMax(lstats) &&
+			    BignumStats::HasMinMax(rstats)) {
+				potential_overflow =
+				    BignumDecimalPropagateStatistics<BASEOP>(expr.GetReturnType(), lstats, rstats, new_min, new_max);
+			}
+		}
+	} else if (NumericStats::HasMinMax(lstats) && NumericStats::HasMinMax(rstats)) {
 		switch (expr.GetReturnType().InternalType()) {
 		case PhysicalType::INT8:
 			potential_overflow =
@@ -302,12 +353,22 @@ unique_ptr<BaseStatistics> PropagateNumericStats(ClientContext &context, Functio
 			auto &bind_data = input.bind_data->Cast<DecimalArithmeticBindData>();
 			bind_data.check_overflow = false;
 		}
-		expr.FunctionMutable().SetFunctionCallback(
-		    GetScalarIntegerFunction<BASEOP>(expr.GetReturnType().InternalType()));
+		if constexpr (HasBignumOperation<BASEOP>::value) {
+			expr.FunctionMutable().SetFunctionCallback(
+			    GetScalarDecimalFunction<BASEOP>(expr.GetReturnType().InternalType()));
+		} else {
+			expr.FunctionMutable().SetFunctionCallback(
+			    GetScalarIntegerFunction<BASEOP>(expr.GetReturnType().InternalType()));
+		}
 	}
-	auto result = NumericStats::CreateEmpty(expr.GetReturnType());
-	NumericStats::SetMin(result, new_min);
-	NumericStats::SetMax(result, new_max);
+	auto result = BaseStatistics::CreateEmpty(expr.GetReturnType());
+	if (bignum_tier) {
+		BignumStats::SetMin(result, new_min);
+		BignumStats::SetMax(result, new_max);
+	} else {
+		NumericStats::SetMin(result, new_min);
+		NumericStats::SetMax(result, new_max);
+	}
 	result.CombineValidity(lstats, rstats);
 	return result.ToUnique();
 }
@@ -1714,7 +1775,7 @@ unique_ptr<BaseStatistics> PropagateModuloStats(ClientContext &context, Function
 	auto &rstats = child_stats[1];
 	if (lstats.GetStatsType() != StatisticsType::NUMERIC_STATS ||
 	    rstats.GetStatsType() != StatisticsType::NUMERIC_STATS) {
-		// wide decimals carry string statistics
+		// the bignum_t tier of decimals has no modulo bounds
 		return nullptr;
 	}
 	if (!NumericStats::HasMinMax(rstats)) {
