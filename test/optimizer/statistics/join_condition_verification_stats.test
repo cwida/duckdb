@@ -1,0 +1,84 @@
+# name: test/optimizer/statistics/join_condition_verification_stats.test
+# description: Join condition expressions are verified against the statistics of the join's input rows
+# group: [statistics]
+
+# a join condition runs over the input rows of its side, while the filters the conditions imply only hold for
+# the rows that survive them. The statistics narrowed by one condition must therefore not be labeled onto the
+# expression of another condition: `a < b` rejects nulls, but `(b - 1)` is still evaluated over the null row of
+# the build side, and verifying it against "no null values" raises a spurious internal error
+
+statement ok
+SET debug_verify_stats=true;
+
+statement ok
+CREATE TABLE t1 AS SELECT * FROM (VALUES (0), (1)) t(a);
+
+statement ok
+CREATE TABLE t2 AS SELECT * FROM (VALUES (2), (NULL)) t(b);
+
+# an equality over an expression of the nullable column, next to a column-to-column comparison
+query I
+SELECT count(*) FROM t1 JOIN t2 ON a = b - 1 AND a < b;
+----
+1
+
+# the same conditions in the other order
+query I
+SELECT count(*) FROM t1 JOIN t2 ON a < b AND a = b - 1;
+----
+1
+
+query II
+SELECT a, b FROM t1 JOIN t2 ON a < b AND a = b - 1 ORDER BY a, b;
+----
+1	2
+
+# grouped, as reported
+query II
+SELECT a, count(*) FROM t1 JOIN t2 ON a = b - 1 AND a < b GROUP BY a ORDER BY a;
+----
+1	1
+
+# a residual condition over the same column
+query I
+SELECT count(*) FROM t1 JOIN t2 ON a = b - 1 AND a <> b;
+----
+1
+
+# semi join: the condition is evaluated over candidate pairs, and only the surviving rows are emitted
+query I
+SELECT count(*) FROM t1 SEMI JOIN t2 ON a = b - 1 AND a < b;
+----
+1
+
+# the same query inside a scalar subquery, where the join sits in a delimited subplan
+query I
+SELECT (SELECT count(*) FROM t1 JOIN t2 ON a = b - 1 AND a < b);
+----
+1
+
+# an expression of the probe side column, next to a comparison that rejects nulls on that side
+statement ok
+CREATE TABLE p1 AS SELECT * FROM (VALUES (0), (NULL)) t(a);
+
+statement ok
+CREATE TABLE p2 AS SELECT * FROM (VALUES (1), (2)) t(b);
+
+query I
+SELECT count(*) FROM p1 JOIN p2 ON a - 1 = b AND a < b;
+----
+0
+
+# control cases: a single condition narrows nothing beyond its own comparison, and an outer join keeps the null
+# row of its null-supplying side regardless of the conditions, so neither reproduced the mismatch
+
+query I
+SELECT count(*) FROM t1 JOIN t2 ON a = b - 1;
+----
+1
+
+query II
+SELECT a, b FROM t1 LEFT JOIN t2 ON a < b AND a = b - 1 ORDER BY a, b;
+----
+0	NULL
+1	2

@@ -1,4 +1,5 @@
 #include "duckdb/common/types/hugeint.hpp"
+#include "duckdb/main/settings.hpp"
 #include "duckdb/optimizer/filter_pushdown.hpp"
 #include "duckdb/optimizer/statistics_propagator.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
@@ -12,6 +13,22 @@
 #include "duckdb/planner/operator/logical_positional_join.hpp"
 
 namespace duckdb {
+
+//! Stops verification statistics from being recorded for the expressions propagated until it goes out of scope, so
+//! that statistics narrowed by an operator are not labeled onto expressions it evaluates over its input rows.
+class ScopedNoVerificationStats {
+public:
+	explicit ScopedNoVerificationStats(bool &target_p) : target(target_p), previous(target_p) {
+		target = false;
+	}
+	~ScopedNoVerificationStats() {
+		target = previous;
+	}
+
+private:
+	bool &target;
+	bool previous;
+};
 
 bool StatisticsPropagator::HandleJoinNeverMatches(LogicalJoin &join, unique_ptr<LogicalOperator> &node_ptr) {
 	switch (join.join_type) {
@@ -107,6 +124,20 @@ bool StatisticsPropagator::HandleJoinAlwaysMatches(LogicalJoin &join, unique_ptr
 }
 
 void StatisticsPropagator::PropagateStatistics(LogicalComparisonJoin &join, unique_ptr<LogicalOperator> &node_ptr) {
+	// A join condition is evaluated over the input rows of its side, while the statistics below are narrowed by the
+	// filters the conditions imply, which only hold for the rows that survive them. Label the condition expressions
+	// with the input statistics first, and keep the narrowed statistics out of them afterwards.
+	if (Settings::Get<DebugVerifyStatsSetting>(context)) {
+		for (auto &condition : join.conditions) {
+			if (!condition.IsComparison()) {
+				PropagateExpression(condition.JoinExpressionReference());
+				continue;
+			}
+			PropagateExpression(condition.LeftReference());
+			PropagateExpression(condition.RightReference());
+		}
+	}
+	ScopedNoVerificationStats no_verification_stats(record_verification_stats);
 	for (idx_t i = 0; i < join.conditions.size(); i++) {
 		auto &condition = join.conditions[i];
 		if (!condition.IsComparison()) {

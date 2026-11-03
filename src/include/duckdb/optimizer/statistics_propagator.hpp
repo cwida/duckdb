@@ -183,6 +183,11 @@ private:
 	unique_ptr<NodeStatistics> node_stats;
 	//! Whether statistics changed which relations a filter depends on
 	bool filter_bindings_changed = false;
+	//! Whether propagation labels the expressions it visits with the statistics of the current point in the plan
+	//! (verification statistics, only used by debug_verify_stats). Operators that re-propagate an expression after
+	//! narrowing the statistics of their input rows switch this off while they do, because those narrowed statistics
+	//! do not describe the rows the expression is evaluated over.
+	bool record_verification_stats = true;
 	//! The chain of operators from the root down to the operator currently being propagated
 	vector<reference<unique_ptr<LogicalOperator>>> propagation_path;
 };
