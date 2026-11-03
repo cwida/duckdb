@@ -721,8 +721,7 @@ struct ICUTimeZoneFunc : public ICUDateFunc {
 
 	template <typename OP, typename SRC, typename DST>
 	static unique_ptr<BaseStatistics> PropagateStatistics(ClientContext &context, FunctionStatisticsInput &input) {
-		// the result is the argument shifted by an offset of the zone, so the smallest and largest offset that
-		// applies to the argument range bound it
+		// the result is the argument shifted by an offset of the zone
 		auto &child_stats = input.child_stats;
 		if (!NumericStats::HasMinMax(child_stats[1])) {
 			return nullptr;
@@ -745,8 +744,7 @@ struct ICUTimeZoneFunc : public ICUDateFunc {
 			return nullptr;
 		}
 
-		// the operation shifts the microseconds of the argument, truncated towards zero, and the offsets change
-		// on whole seconds, so the range over the enclosing milliseconds of those covers the arguments
+		// the offsets of the microseconds the operation truncates the arguments to, which change on whole seconds
 		constexpr auto PER_MICRO = SRC::PRECISION / Interval::MICROS_PER_SEC;
 		constexpr auto PER_MILLI = SRC::PRECISION / Interval::MSECS_PER_SEC;
 		int64_t lo_shift;

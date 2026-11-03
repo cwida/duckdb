@@ -47,8 +47,8 @@ public:
 	//! The smallest and largest total offset that applies to an instant in [start_millis, end_millis]
 	virtual void GetOffsetRange(int64_t start_millis, int64_t end_millis, int32_t &min_offset,
 	                            int32_t &max_offset) const = 0;
-	//! The smallest and largest total offset that GetOffsetFromLocal returns for a local time in
-	//! [start_millis, end_millis]
+	//! Bounds on the total offsets that GetOffsetFromLocal returns for a local time in [start_millis, end_millis],
+	//! which can include offsets of the instants around that interval
 	virtual void GetOffsetRangeFromLocal(int64_t start_millis, int64_t end_millis, int32_t &min_offset,
 	                                     int32_t &max_offset) const;
 	//! Whether the two zones describe the same offsets. Aliases of one another are equivalent.

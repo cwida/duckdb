@@ -17,6 +17,13 @@
 namespace duckdb {
 namespace datetime {
 
+void TimeZone::GetOffsetRangeFromLocal(int64_t start_millis, int64_t end_millis, int32_t &min_offset,
+                                       int32_t &max_offset) const {
+	// a local time is resolved with the offsets of the instants at most the largest offset away from it
+	const auto margin = MAX_OFFSET_SECONDS * MILLIS_PER_SECOND;
+	GetOffsetRange(start_millis - margin, end_millis + margin, min_offset, max_offset);
+}
+
 //===--------------------------------------------------------------------===//
 // SimpleTimeZone
 //===--------------------------------------------------------------------===//
@@ -409,16 +416,6 @@ void OlsonTimeZone::GetOffsetRangeFromLocal(int64_t start_millis, int64_t end_mi
 
 unique_ptr<TimeZone> OlsonTimeZone::Copy() const {
 	return make_uniq<OlsonTimeZone>(id, data);
-}
-
-//===--------------------------------------------------------------------===//
-// TimeZone
-//===--------------------------------------------------------------------===//
-void TimeZone::GetOffsetRangeFromLocal(int64_t start_millis, int64_t end_millis, int32_t &min_offset,
-                                       int32_t &max_offset) const {
-	// a local time is resolved with the offsets of the instants at most the largest offset away from it
-	const auto margin = MAX_OFFSET_SECONDS * MILLIS_PER_SECOND;
-	GetOffsetRange(start_millis - margin, end_millis + margin, min_offset, max_offset);
 }
 
 //===--------------------------------------------------------------------===//
