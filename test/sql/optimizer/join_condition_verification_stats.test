@@ -1,5 +1,5 @@
 # name: test/sql/optimizer/join_condition_verification_stats.test
-# description: Verification statistics of join conditions cannot claim NOT NULL after an earlier condition
+# description: Verification statistics of join conditions cannot claim NOT NULL or narrowed bounds after an earlier condition
 # group: [optimizer]
 
 statement ok
@@ -8,9 +8,10 @@ SET debug_verify_stats=true
 statement ok
 SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
-# the statistics propagation updates the column statistics after each join condition (both sides become NOT NULL),
-# but every condition is evaluated over candidate pairs that still hold the NULLs the earlier condition rejects,
-# so the verification statistics of a later condition's expression (t1.n + 1, a cast of t1.n) must keep the NULLs
+# the statistics propagation updates the column statistics after each join condition (both sides become NOT NULL
+# and their bounds narrow to the overlap), but every condition is evaluated over candidate pairs that still hold the
+# NULLs and the values the earlier condition rejects, so the verification statistics of a later condition's
+# expression (t1.n + 1, a cast of t1.n) can claim neither the absence of NULLs nor the narrowed bounds
 
 statement ok
 CREATE TABLE dec_small(n DECIMAL(10,2));
@@ -245,3 +246,83 @@ query I
 SELECT count(*) FROM mid_a t1 LEFT JOIN mid_b t2 ON t1.n >= t2.n AND t1.n + 1 >= t2.n;
 ----
 13744
+
+# the narrowed bounds: the first condition narrows lhs.n to the range of rhs.n, so lhs.n + 1 is propagated as
+# [1.00, 2.50] while the join evaluates it over all rows of lhs
+statement ok
+CREATE TABLE lhs(n DECIMAL(10,2));
+
+statement ok
+CREATE TABLE rhs(n DECIMAL(10,2));
+
+statement ok
+INSERT INTO lhs VALUES (-7.5), (0), (1.5), (NULL);
+
+statement ok
+INSERT INTO rhs VALUES (0), (1.5), (NULL);
+
+query I
+SELECT count(*) FROM lhs JOIN rhs ON lhs.n >= rhs.n AND lhs.n + 1 >= rhs.n;
+----
+3
+
+# a hash join whose sides cover different ranges: the equality narrows t1.n to the range of t2.n
+statement ok
+CREATE TABLE big_c AS SELECT i AS k, CASE WHEN i % 5 = 0 THEN NULL ELSE i + 1000 END::DECIMAL(10,2) AS n FROM range(2000) t(i);
+
+query I
+SELECT count(*) FROM big_a t1 JOIN big_c t2 ON t1.n = t2.n AND t1.n + 1 >= t2.n;
+----
+686
+
+# without the optimizers that filter the inputs from the join statistics the narrowed bounds reach the join
+statement ok
+SET disabled_optimizers = 'filter_pushdown,join_order,build_side_probe_side,join_filter_pushdown,expression_rewriter';
+
+query II
+EXPLAIN SELECT count(*) FROM lhs JOIN rhs ON lhs.n >= rhs.n AND lhs.n + 1 >= rhs.n;
+----
+physical_plan	<REGEX>:.*NESTED_LOOP_JOIN.*
+
+query I
+SELECT count(*) FROM lhs JOIN rhs ON lhs.n >= rhs.n AND lhs.n + 1 >= rhs.n;
+----
+3
+
+query II
+EXPLAIN SELECT count(*) FROM big_a t1 JOIN big_c t2 ON t1.n = t2.n AND t1.n + 1 >= t2.n;
+----
+physical_plan	<REGEX>:.*HASH_JOIN.*Join Type: INNER.*
+
+query I
+SELECT count(*) FROM big_a t1 JOIN big_c t2 ON t1.n = t2.n AND t1.n + 1 >= t2.n;
+----
+686
+
+query I
+SELECT count(*) FROM big_a t1 JOIN big_c t2 ON t1.n = t2.n AND t1.n::DECIMAL(18,3) >= t2.n;
+----
+686
+
+query II
+EXPLAIN SELECT count(*) FROM big_a t1 SEMI JOIN big_c t2 ON t1.n = t2.n AND t1.n + 1 >= t2.n;
+----
+physical_plan	<REGEX>:.*HASH_JOIN.*Join Type: SEMI.*
+
+query I
+SELECT count(*) FROM big_a t1 SEMI JOIN big_c t2 ON t1.n = t2.n AND t1.n + 1 >= t2.n;
+----
+686
+
+query II
+EXPLAIN SELECT count(*) FROM big_a t1 JOIN big_c t2 ON t1.n >= t2.n AND t1.n + 1 >= t2.n;
+----
+physical_plan	<REGEX>:.*IE_JOIN.*
+
+query I
+SELECT count(*) FROM big_a t1 JOIN big_c t2 ON t1.n >= t2.n AND t1.n + 1 >= t2.n;
+----
+342972
+
+statement ok
+SET disabled_optimizers = '';

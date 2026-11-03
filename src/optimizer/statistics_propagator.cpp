@@ -58,9 +58,8 @@ void StatisticsPropagator::ResetAdditiveStatistics(const vector<ColumnBinding> &
 void StatisticsPropagator::RelaxJoinConditionVerificationStats(Expression &expr) {
 	auto &stats = expr.GetVerificationStats();
 	if (stats) {
-		stats->ResetAdditiveStatistics();
-		// the candidate pairs still hold the NULLs that the comparison rejects
-		stats->Set(StatsInfo::CAN_HAVE_NULL_VALUES);
+		// the candidate pairs still hold the values and NULLs that earlier conditions reject
+		expr.SetVerificationStats(BaseStatistics::CreateUnknown(stats->GetType()).ToUnique());
 	}
 	ExpressionIterator::EnumerateChildren(expr, [&](Expression &child) { RelaxJoinConditionVerificationStats(child); });
 }

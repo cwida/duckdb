@@ -221,8 +221,7 @@ void StatisticsPropagator::PropagateStatistics(LogicalComparisonJoin &join, uniq
 	}
 
 	// join conditions are evaluated over candidate pairs that repeat rows of either side and that still hold the
-	// NULLs rejected by the earlier conditions, so their verification statistics carry neither additive totals nor
-	// the absence of NULLs
+	// values and NULLs rejected by the earlier conditions, so their verification statistics are unknown
 	for (auto &condition : join.conditions) {
 		if (condition.IsComparison()) {
 			RelaxJoinConditionVerificationStats(condition.GetLHS());
@@ -237,8 +236,8 @@ void StatisticsPropagator::PropagateStatistics(LogicalAnyJoin &join, unique_ptr<
 	// propagate the expression into the join condition
 	// note that a condition that is TRUE_OR_NULL does not always match: a NULL condition rejects the pair
 	PropagateExpression(join.condition);
-	// the condition is evaluated over candidate pairs that repeat rows of either side and hold NULLs,
-	// so its verification statistics carry neither additive totals nor the absence of NULLs
+	// the condition is evaluated over candidate pairs that repeat rows of either side and still hold the values
+	// and NULLs rejected by its earlier conjuncts, so its verification statistics are unknown
 	RelaxJoinConditionVerificationStats(*join.condition);
 	switch (ClassifyFilter(*join.condition)) {
 	case FilterPropagateResult::FILTER_ALWAYS_TRUE:
