@@ -1,0 +1,49 @@
+# name: test/sql/function/numeric/test_round_double_exact_midpoint.test
+# description: round and round_even of a DOUBLE with a precision follow the exact stored value near a midpoint
+# group: [numeric]
+
+# results are compared as text, a DOUBLE result is compared with a tolerance
+
+# the stored 2.675 is 2.67499999999999982236431605997495353221893310546875, below the midpoint
+query TTTTTTTTTTTTTT
+SELECT round(2.675::DOUBLE, 2)::VARCHAR, round(-2.675::DOUBLE, 2)::VARCHAR, round(1.005::DOUBLE, 2)::VARCHAR, round(4.025::DOUBLE, 2)::VARCHAR, round(1.115::DOUBLE, 2)::VARCHAR, round(0.45::DOUBLE, 1)::VARCHAR, round(1.0005::DOUBLE, 3)::VARCHAR, round(-1.0005::DOUBLE, 3)::VARCHAR, round(123.456785::DOUBLE, 5)::VARCHAR, round(2.675::FLOAT, 2)::VARCHAR, round(0.125::DOUBLE, 2)::VARCHAR, round(0.375::DOUBLE, 2)::VARCHAR, round(2.5::DOUBLE, 0)::VARCHAR, round(3.5::DOUBLE, 0)::VARCHAR
+----
+2.67	-2.67	1.0	4.03	1.11	0.5	1.0	-1.0	123.45678	2.67	0.13	0.38	3.0	4.0
+
+# exact midpoints such as 0.125 still go to the even neighbour
+query TTTTTTTTTTTTTT
+SELECT round_even(2.675::DOUBLE, 2)::VARCHAR, round_even(-2.675::DOUBLE, 2)::VARCHAR, round_even(1.005::DOUBLE, 2)::VARCHAR, round_even(4.025::DOUBLE, 2)::VARCHAR, round_even(1.115::DOUBLE, 2)::VARCHAR, round_even(0.45::DOUBLE, 1)::VARCHAR, round_even(1.0005::DOUBLE, 3)::VARCHAR, round_even(-1.0005::DOUBLE, 3)::VARCHAR, round_even(123.456785::DOUBLE, 5)::VARCHAR, round_even(2.675::FLOAT, 2)::VARCHAR, round_even(0.125::DOUBLE, 2)::VARCHAR, round_even(0.375::DOUBLE, 2)::VARCHAR, round_even(2.5::DOUBLE, 0)::VARCHAR, round_even(3.5::DOUBLE, 0)::VARCHAR
+----
+2.67	-2.67	1.0	4.03	1.11	0.5	1.0	-1.0	123.45678	2.67	0.12	0.38	2.0	4.0
+
+# values just below a half whose product is not a midpoint keep their result
+query TTTTTT
+SELECT round(-0.049999999999999996::DOUBLE, 1)::VARCHAR, round(0.049999999999999996::DOUBLE, 1)::VARCHAR, round(-0.49999999999999994::DOUBLE, 0)::VARCHAR, round_even(-0.049999999999999996::DOUBLE, 1)::VARCHAR, round_even(0.049999999999999996::DOUBLE, 1)::VARCHAR, round_even(-0.49999999999999994::DOUBLE, 0)::VARCHAR
+----
+-0.0	0.0	-0.0	-0.0	0.0	-0.0
+
+# the largest precision that is corrected
+query TT
+SELECT round(1.5e-22::DOUBLE, 22)::VARCHAR, round(2.5e-22::DOUBLE, 22)::VARCHAR
+----
+1e-22	2e-22
+
+# values from a table
+statement ok
+CREATE TABLE doubles AS SELECT * FROM (VALUES (2.675::DOUBLE, 2), (1.005::DOUBLE, 2), (0.125::DOUBLE, 2), (-0.049999999999999996::DOUBLE, 1), (NULL, 2), (2.675::DOUBLE, NULL)) t(d, p)
+
+query TT
+SELECT round(d, p)::VARCHAR, round_even(d, p)::VARCHAR FROM doubles
+----
+2.67	2.67
+1.0	1.0
+0.13	0.12
+-0.0	-0.0
+NULL	NULL
+NULL	NULL
+
+# precisions above 22 and values too large for the product keep their result
+query TTTT
+SELECT round(1.5::DOUBLE, 23)::VARCHAR, round_even(1e300::DOUBLE, 10)::VARCHAR, round('inf'::DOUBLE, 2)::VARCHAR, round(NULL::DOUBLE, 2)::VARCHAR
+----
+1.5	1e+300	inf	NULL

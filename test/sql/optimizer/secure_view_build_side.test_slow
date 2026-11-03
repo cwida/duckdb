@@ -11,7 +11,7 @@ CREATE TABLE d AS SELECT i AS k, i % 5 AS f FROM range(100000) t(i);
 foreach x x1 x2 x3 x4
 
 statement ok
-CREATE TABLE ${x} AS SELECT i * 2 AS id FROM range(1000) t(i);
+CREATE TABLE {x} AS SELECT i * 2 AS id FROM range(1000) t(i);
 
 endloop
 

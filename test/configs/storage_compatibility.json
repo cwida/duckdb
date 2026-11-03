@@ -109,7 +109,8 @@
         "test/parquet/timens_parquet.test",
         "test/sql/types/time/test_time_ns.test",
         "test/sql/copy/parquet/int96_as.test",
-        "test/sql/copy/parquet/byte_stream_split_flba.test"
+        "test/sql/copy/parquet/byte_stream_split_flba.test",
+        "test/sql/function/timestamp/test_icu_time_bucket_timestamptz_ns.test"
       ]
     },
     {
