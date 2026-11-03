@@ -70,7 +70,6 @@ private:
 	void MeasureFSST();
 
 public:
-	idx_t max_string_length = 0;
 	bool contains_nulls = false;
 	//! Effective exclusive size limit for plain dictionary encoding.
 	idx_t string_size_limit = 0;
