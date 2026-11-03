@@ -1,0 +1,26 @@
+diff --git a/src/storage/ducklake_transaction.cpp b/src/storage/ducklake_transaction.cpp
+index 77f92ff..0173f32 100644
+--- a/src/storage/ducklake_transaction.cpp
++++ b/src/storage/ducklake_transaction.cpp
+@@ -843,7 +843,7 @@ Connection &DuckLakeTransaction::GetConnection() {
+ 	lock_guard<mutex> lock(connection_lock);
+ 	if (!connection) {
+ 		connection = make_uniq<Connection>(db);
+-		connection->context->registered_state->GetOrCreate<DuckLakeInternalConnectionState>(
++		connection->context->Services().GetRegisteredState().GetOrCreate<DuckLakeInternalConnectionState>(
+ 		    DuckLakeInternalConnectionState::KEY);
+ 		auto caller_context = context.lock();
+ 		if (caller_context) {
+diff --git a/src/storage/ducklake_transaction_manager.cpp b/src/storage/ducklake_transaction_manager.cpp
+index 9078754..2e8ede0 100644
+--- a/src/storage/ducklake_transaction_manager.cpp
++++ b/src/storage/ducklake_transaction_manager.cpp
+@@ -13,7 +13,7 @@ Transaction &DuckLakeTransactionManager::StartTransaction(ClientContext &context
+ 	auto transaction = make_shared_ptr<DuckLakeTransaction>(ducklake_catalog, *this, context);
+ 	transaction->Start();
+ 	if (Settings::Get<ImmediateTransactionModeSetting>(context) && get_snapshot && ducklake_catalog.IsInitialized() &&
+-	    !context.registered_state->Get<DuckLakeInternalConnectionState>(DuckLakeInternalConnectionState::KEY)) {
++	    !context.Services().GetRegisteredState().Get<DuckLakeInternalConnectionState>(DuckLakeInternalConnectionState::KEY)) {
+ 		get_snapshot = false;
+ 		// no snapshot loaded yet for this transaction - load it
+ 		transaction->GetSnapshot();
