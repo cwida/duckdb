@@ -1,6 +1,6 @@
 
 #include "parquet_geometry.hpp"
-#include "duckdb/main/runtime_services.hpp"
+#include "duckdb/main/context.hpp"
 
 #include <stdlib.h>
 #include <string.h>
@@ -355,7 +355,7 @@ bool GeoParquetFileMetadata::IsGeometryColumn(const string &column_name) const {
 	return geometry_columns.find(column_name) != geometry_columns.end();
 }
 
-bool GeoParquetFileMetadata::IsGeoParquetConversionEnabled(const RuntimeServices &services) {
+bool GeoParquetFileMetadata::IsGeoParquetConversionEnabled(const Context &services) {
 	bool geoparquet_enabled = false;
 	services.TryGetCurrentSetting("enable_geoparquet_conversion", geoparquet_enabled);
 	return geoparquet_enabled;

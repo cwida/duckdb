@@ -140,7 +140,7 @@ struct DebugClientContextState : public ClientContextState {
 
 ClientContext::ClientContext(shared_ptr<DatabaseInstance> database)
     : db(std::move(database)), interrupt_state(ClientInterruptState::NOT_INTERRUPTED),
-      services(make_shared_ptr<RuntimeServices>(*db)), transaction(*this), connection_id(DConstants::INVALID_INDEX) {
+      services(make_shared_ptr<Context>(*db)), transaction(*this), connection_id(DConstants::INVALID_INDEX) {
 	services->InitializeClient(*this);
 #ifdef DEBUG
 	services->GetRegisteredState().GetOrCreate<DebugClientContextState>("debug_client_context_state");

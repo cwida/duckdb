@@ -84,8 +84,8 @@ ColumnDataCollection::ColumnDataCollection(ClientContext &context, vector<Logica
     : ColumnDataCollection(context.Services(), std::move(types_p), type, lifetime) {
 }
 
-ColumnDataCollection::ColumnDataCollection(RuntimeServices &services, vector<LogicalType> types_p,
-                                           ColumnDataAllocatorType type, ColumnDataCollectionLifetime lifetime)
+ColumnDataCollection::ColumnDataCollection(Context &services, vector<LogicalType> types_p, ColumnDataAllocatorType type,
+                                           ColumnDataCollectionLifetime lifetime)
     : ColumnDataCollection(make_shared_ptr<ColumnDataAllocator>(services, type, lifetime), std::move(types_p)) {
 }
 

@@ -416,7 +416,7 @@ bool CollectionScanState::RecheckPreparedRowGroup() {
 	if (!row_group || prepared_vector.prepare_state == VectorPrepareState::NONE) {
 		return true;
 	}
-	if (pinned_row_group->CheckZonemap(RuntimeServices::TryGetClientContext(context.GetServices()), GetFilterInfo(),
+	if (pinned_row_group->CheckZonemap(Context::TryGetClientContext(context.GetServices()), GetFilterInfo(),
 	                                   row_group->GetRowStart())) {
 		return true;
 	}

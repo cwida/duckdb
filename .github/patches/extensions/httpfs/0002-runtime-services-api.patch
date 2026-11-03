@@ -40,7 +40,7 @@ index b15a929..14091ce 100644
  	auto snapshot_params = captured.snapshot->Params();
  	if (database) {
 -		const auto validation = ExternalFileCacheUtil::GetCacheValidationMode(file, client_context, *database);
-+		optional_ptr<RuntimeServices> services;
++		optional_ptr<Context> services;
 +		if (client_context) {
 +			services = &client_context->Services();
 +		}

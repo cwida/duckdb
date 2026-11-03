@@ -4,7 +4,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/exception/http_exception.hpp"
 #include "duckdb/common/helper.hpp"
-#include "duckdb/main/runtime_services.hpp"
+#include "duckdb/main/context.hpp"
 #include "duckdb/parallel/task_executor.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
@@ -85,7 +85,7 @@ private:
 	AsyncWriteQueue &queue;
 };
 
-AsyncWriteQueue::AsyncWriteQueue(RuntimeServices &services_p, AsyncWriteTarget &target_p)
+AsyncWriteQueue::AsyncWriteQueue(Context &services_p, AsyncWriteTarget &target_p)
     : services(services_p), target(target_p) {
 	auto &scheduler = services.GetTaskScheduler();
 	auto async_threads = scheduler.NumberOfAsyncThreads();
@@ -504,7 +504,7 @@ idx_t ManagedAsyncWriteQueue::PendingWrite::Size() const {
 	return size;
 }
 
-ManagedAsyncWriteQueue::ManagedAsyncWriteQueue(RuntimeServices &services_p, AsyncWriteTarget &target_p)
+ManagedAsyncWriteQueue::ManagedAsyncWriteQueue(Context &services_p, AsyncWriteTarget &target_p)
     : services(services_p), target(target_p), memory_governor(services_p) {
 	auto &scheduler = services.GetTaskScheduler();
 	auto async_threads = scheduler.NumberOfAsyncThreads();
@@ -958,7 +958,7 @@ idx_t ManagedAsyncWriteStreamQueue::PendingWrite::Size() const {
 
 class ManagedAsyncWriteStreamQueue::CoalescedWritePayload : public AsyncWritePayload {
 public:
-	CoalescedWritePayload(RuntimeServices &services_p, deque<PendingWrite> writes_p, idx_t size_p)
+	CoalescedWritePayload(Context &services_p, deque<PendingWrite> writes_p, idx_t size_p)
 	    : services(services_p), writes(std::move(writes_p)), size(size_p) {
 	}
 
@@ -986,7 +986,7 @@ public:
 	}
 
 private:
-	RuntimeServices &services;
+	Context &services;
 	deque<PendingWrite> writes;
 	AllocatedData coalesced;
 	idx_t size;
@@ -1020,8 +1020,7 @@ private:
 	idx_t size;
 };
 
-ManagedAsyncWriteStreamQueue::ManagedAsyncWriteStreamQueue(RuntimeServices &services_p,
-                                                           ManagedAsyncWriteStreamTarget &target_p)
+ManagedAsyncWriteStreamQueue::ManagedAsyncWriteStreamQueue(Context &services_p, ManagedAsyncWriteStreamTarget &target_p)
     : services(services_p), target(target_p) {
 	auto local_file = target.IsLocalFile();
 	coalesce_threshold =

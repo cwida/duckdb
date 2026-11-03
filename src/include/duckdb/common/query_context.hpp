@@ -9,7 +9,7 @@
 #pragma once
 
 #include "duckdb/common/optional_ptr.hpp"
-#include "duckdb/main/runtime_services.hpp"
+#include "duckdb/main/context.hpp"
 
 namespace duckdb {
 
@@ -21,9 +21,9 @@ class QueryContext {
 public:
 	QueryContext() {
 	}
-	QueryContext(optional_ptr<ClientContext> context);                  // NOLINT: allow implicit construction
-	QueryContext(ClientContext &context);                               // NOLINT: allow implicit construction
-	QueryContext(RuntimeServices &services_p) : services(&services_p) { // NOLINT: allow implicit construction
+	QueryContext(optional_ptr<ClientContext> context);          // NOLINT: allow implicit construction
+	QueryContext(ClientContext &context);                       // NOLINT: allow implicit construction
+	QueryContext(Context &services_p) : services(&services_p) { // NOLINT: allow implicit construction
 	}
 
 public:
@@ -31,12 +31,12 @@ public:
 		return services != nullptr;
 	}
 	//! The execution services (null if the context is not valid)
-	optional_ptr<RuntimeServices> GetServices() const {
+	optional_ptr<Context> GetServices() const {
 		return services;
 	}
 
 private:
-	optional_ptr<RuntimeServices> services;
+	optional_ptr<Context> services;
 };
 
 } // namespace duckdb

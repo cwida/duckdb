@@ -242,7 +242,7 @@ void PartialBlock::Clear() {
 // PartialBlockManager
 //===--------------------------------------------------------------------===//
 
-PartialBlockManager::PartialBlockManager(RuntimeServices &services_p, BlockManager &block_manager,
+PartialBlockManager::PartialBlockManager(Context &services_p, BlockManager &block_manager,
                                          PartialBlockType partial_block_type, optional_idx max_partial_block_size_p,
                                          uint32_t max_use_count)
     : services(services_p), block_manager(block_manager), partial_block_type(partial_block_type),

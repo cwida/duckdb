@@ -2,7 +2,7 @@
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/helper.hpp"
-#include "duckdb/main/runtime_services.hpp"
+#include "duckdb/main/context.hpp"
 #include "duckdb/parallel/task_executor.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
 
@@ -79,7 +79,7 @@ private:
 	bool started = false;
 };
 
-AsyncTaskQueue::AsyncTaskQueue(RuntimeServices &services_p, idx_t max_active_tasks_p) : services(services_p) {
+AsyncTaskQueue::AsyncTaskQueue(Context &services_p, idx_t max_active_tasks_p) : services(services_p) {
 	auto &scheduler = services.GetTaskScheduler();
 	auto async_threads = NumericCast<idx_t>(scheduler.NumberOfAsyncThreads());
 	max_active_tasks = max_active_tasks_p > 0 ? max_active_tasks_p : MaxValue<idx_t>(async_threads, 1);
@@ -366,7 +366,7 @@ void AsyncTaskQueue::VerifyOpen() const {
 //===--------------------------------------------------------------------===//
 // ManagedAsyncTaskQueue
 //===--------------------------------------------------------------------===//
-ManagedAsyncTaskQueue::ManagedAsyncTaskQueue(RuntimeServices &services_p, idx_t max_active_tasks)
+ManagedAsyncTaskQueue::ManagedAsyncTaskQueue(Context &services_p, idx_t max_active_tasks)
     : services(services_p), memory_governor(services_p) {
 	auto &scheduler = services.GetTaskScheduler();
 	auto async_threads = NumericCast<idx_t>(scheduler.NumberOfAsyncThreads());

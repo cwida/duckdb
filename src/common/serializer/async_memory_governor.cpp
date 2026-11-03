@@ -1,14 +1,14 @@
 #include "duckdb/common/serializer/async_memory_governor.hpp"
 
 #include "duckdb/common/helper.hpp"
-#include "duckdb/main/runtime_services.hpp"
+#include "duckdb/main/context.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
 #include "duckdb/storage/temporary_memory_manager.hpp"
 
 namespace duckdb {
 
-ManagedAsyncMemoryGovernor::ManagedAsyncMemoryGovernor(RuntimeServices &services_p) : services(services_p) {
+ManagedAsyncMemoryGovernor::ManagedAsyncMemoryGovernor(Context &services_p) : services(services_p) {
 	auto &scheduler = services.GetTaskScheduler();
 	auto regular_threads = MaxValue<idx_t>(NumericCast<idx_t>(scheduler.NumberOfThreads()), 1);
 	auto async_threads = NumericCast<idx_t>(scheduler.NumberOfAsyncThreads());

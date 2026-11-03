@@ -1,7 +1,7 @@
 //===----------------------------------------------------------------------===//
 //                         DuckDB
 //
-// duckdb/main/runtime_services.hpp
+// duckdb/main/context.hpp
 //
 //
 //===----------------------------------------------------------------------===//
@@ -29,16 +29,16 @@ class RegisteredStateManager;
 class TaskScheduler;
 class Value;
 
-//! RuntimeServices owns the services that operations need to do their work: reading settings, logging, recording
+//! Context owns the services that operations need to do their work: reading settings, logging, recording
 //! metrics and accessing the file system.
 //! A ClientContext owns one (see ClientContext::Services) that holds all of its connection-specific services.
 //! A DatabaseInstance can create one (see DatabaseInstance::Services) that only provides database-wide services.
-class RuntimeServices {
+class Context {
 public:
 	//! Creates database-wide services
 	//! The database must outlive the services
-	DUCKDB_API explicit RuntimeServices(DatabaseInstance &db);
-	DUCKDB_API ~RuntimeServices();
+	DUCKDB_API explicit Context(DatabaseInstance &db);
+	DUCKDB_API ~Context();
 
 	//! Turns these into the services of the given client context: creates the client config, the connection logger,
 	//! the query profiler, the file opener and the client file system.
@@ -51,8 +51,8 @@ public:
 	//! The client context owning the services (if any) - only present for the services of a ClientContext
 	DUCKDB_API optional_ptr<ClientContext> TryGetClientContext() const;
 	//! Null-safe variants for optional services
-	DUCKDB_API static optional_ptr<ClientContext> TryGetClientContext(optional_ptr<RuntimeServices> services);
-	DUCKDB_API static optional_ptr<QueryProfiler> TryGetQueryProfiler(optional_ptr<RuntimeServices> services);
+	DUCKDB_API static optional_ptr<ClientContext> TryGetClientContext(optional_ptr<Context> services);
+	DUCKDB_API static optional_ptr<QueryProfiler> TryGetQueryProfiler(optional_ptr<Context> services);
 	//! Whether or not these are the services of a client
 	DUCKDB_API bool IsClient() const;
 

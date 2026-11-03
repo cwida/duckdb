@@ -40,7 +40,7 @@ struct TransactionData;
 class LocalTableStorage : public enable_shared_from_this<LocalTableStorage> {
 public:
 	// Create a new LocalTableStorage
-	explicit LocalTableStorage(RuntimeServices &services, DataTable &table);
+	explicit LocalTableStorage(Context &services, DataTable &table);
 	//! Create a LocalTableStorage from an ALTER TYPE.
 	LocalTableStorage(ClientContext &context, DataTable &new_data_table, LocalTableStorage &parent,
 	                  const idx_t alter_column_index, const LogicalType &target_type,
@@ -52,7 +52,7 @@ public:
 	                  ExpressionExecutor &default_executor);
 	~LocalTableStorage();
 
-	RuntimeServices &services;
+	Context &services;
 
 	reference<DataTable> table_ref;
 	//! The DuckTableEntry visible to this transaction that references table_ref.
@@ -127,7 +127,7 @@ public:
 	reference_map_t<const DataTable, shared_ptr<LocalTableStorage>> MoveEntries();
 	vector<shared_ptr<LocalTableStorage>> GetEntries() const;
 	optional_ptr<LocalTableStorage> GetStorage(const DataTable &table) const;
-	LocalTableStorage &GetOrCreateStorage(RuntimeServices &services, DataTable &table);
+	LocalTableStorage &GetOrCreateStorage(Context &services, DataTable &table);
 	idx_t EstimatedSize() const;
 	bool IsEmpty() const;
 	void InsertEntry(DataTable &table, shared_ptr<LocalTableStorage> entry);
@@ -148,7 +148,7 @@ public:
 	};
 
 public:
-	explicit LocalStorage(RuntimeServices &services, DuckTransaction &transaction);
+	explicit LocalStorage(Context &services, DuckTransaction &transaction);
 
 	static LocalStorage &Get(DuckTransaction &transaction);
 	static LocalStorage &Get(ClientContext &context, AttachedDatabase &db);
@@ -220,7 +220,7 @@ public:
 
 	void VerifyNewConstraint(DataTable &parent, const BoundConstraint &constraint);
 
-	RuntimeServices &GetServices() const {
+	Context &GetServices() const {
 		return services;
 	}
 	DuckTransaction &GetTransaction() const {
@@ -233,7 +233,7 @@ public:
 	}
 
 private:
-	RuntimeServices &services;
+	Context &services;
 	DuckTransaction &transaction;
 	LocalTableManager table_manager;
 	bool synced_flushed_blocks = false;

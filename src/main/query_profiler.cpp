@@ -14,7 +14,7 @@
 #include "duckdb/main/client_config.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/client_data.hpp"
-#include "duckdb/main/runtime_services.hpp"
+#include "duckdb/main/context.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/profiler/profiling_utils.hpp"
 #include "duckdb/main/profiler/gathered_metrics.hpp"
@@ -120,7 +120,7 @@ QueryProfiler &QueryProfiler::Get(ClientContext &context) {
 	return Get(*context.services);
 }
 
-QueryProfiler &QueryProfiler::Get(RuntimeServices &services) {
+QueryProfiler &QueryProfiler::Get(Context &services) {
 	return services.GetQueryProfiler();
 }
 

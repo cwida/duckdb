@@ -20,7 +20,7 @@
 
 namespace duckdb {
 
-LocalTableStorage::LocalTableStorage(RuntimeServices &services, DataTable &table)
+LocalTableStorage::LocalTableStorage(Context &services, DataTable &table)
     : services(services), table_ref(table), allocator(Allocator::Get(table.db)), deleted_rows(0),
       optimistic_writer(services, table) {
 	auto types = table.GetTypes();
@@ -307,7 +307,7 @@ optional_ptr<LocalTableStorage> LocalTableManager::GetStorage(const DataTable &t
 	return entry == table_storage.end() ? nullptr : entry->second.get();
 }
 
-LocalTableStorage &LocalTableManager::GetOrCreateStorage(RuntimeServices &services, DataTable &table) {
+LocalTableStorage &LocalTableManager::GetOrCreateStorage(Context &services, DataTable &table) {
 	lock_guard<mutex> l(table_storage_lock);
 	auto entry = table_storage.find(table);
 	if (entry == table_storage.end()) {
@@ -369,7 +369,7 @@ void LocalTableManager::InsertEntry(DataTable &table, shared_ptr<LocalTableStora
 //===--------------------------------------------------------------------===//
 // LocalStorage
 //===--------------------------------------------------------------------===//
-LocalStorage::LocalStorage(RuntimeServices &services, DuckTransaction &transaction)
+LocalStorage::LocalStorage(Context &services, DuckTransaction &transaction)
     : services(services), transaction(transaction) {
 }
 

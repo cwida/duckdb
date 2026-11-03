@@ -18,8 +18,7 @@ OptimisticDataWriter::OptimisticDataWriter(ClientContext &context, DataTable &ta
     : OptimisticDataWriter(context.Services(), table) {
 }
 
-OptimisticDataWriter::OptimisticDataWriter(RuntimeServices &services, DataTable &table)
-    : services(services), table(table) {
+OptimisticDataWriter::OptimisticDataWriter(Context &services, DataTable &table) : services(services), table(table) {
 }
 
 OptimisticDataWriter::OptimisticDataWriter(DataTable &table, OptimisticDataWriter &parent)

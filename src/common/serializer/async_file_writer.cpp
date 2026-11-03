@@ -2,7 +2,7 @@
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/helper.hpp"
-#include "duckdb/main/runtime_services.hpp"
+#include "duckdb/main/context.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
 
 #include <cstring>
@@ -14,7 +14,7 @@ const FileOpenFlags AsyncFileWriter::DEFAULT_OPEN_FLAGS =
 
 class CopiedAsyncWriteBuffer : public AsyncWriteBuffer {
 public:
-	CopiedAsyncWriteBuffer(RuntimeServices &services, idx_t capacity_p)
+	CopiedAsyncWriteBuffer(Context &services, idx_t capacity_p)
 	    : data(BufferAllocator::Get(services).Allocate(capacity_p)), capacity(capacity_p) {
 	}
 
@@ -42,7 +42,7 @@ private:
 	idx_t size = 0;
 };
 
-AsyncFileWriter::AsyncFileWriter(RuntimeServices &services_p, FileSystem &fs_p, const string &path_p,
+AsyncFileWriter::AsyncFileWriter(Context &services_p, FileSystem &fs_p, const string &path_p,
                                  const FileOpenFlags &open_flags)
     : context(services_p), services(services_p), fs(fs_p), path(path_p) {
 	handle = fs.OpenFile(path, open_flags | FileLockType::WRITE_LOCK);

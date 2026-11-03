@@ -50,8 +50,7 @@ class ActiveCheckpointWrapper {
 public:
 	//! Creates a connection if we have a context.
 	//! If there is no context, we are on shutdown and a checkpoint connection/transaction is not created.
-	ActiveCheckpointWrapper(RuntimeServices &services, AttachedDatabase &db,
-	                        DuckTransactionManager &transaction_manager);
+	ActiveCheckpointWrapper(Context &services, AttachedDatabase &db, DuckTransactionManager &transaction_manager);
 
 	~ActiveCheckpointWrapper();
 
@@ -80,7 +79,7 @@ public:
 	AttachedDatabase &db;
 
 	//! The services of the query that triggered the checkpoint, or database-wide services if there is none
-	RuntimeServices &GetServices() const {
+	Context &GetServices() const {
 		return services;
 	}
 
@@ -90,8 +89,8 @@ public:
 	virtual unique_ptr<TableDataWriter> GetTableDataWriter(TableCatalogEntry &table) = 0;
 
 private:
-	shared_ptr<RuntimeServices> owned_services;
-	RuntimeServices &services;
+	shared_ptr<Context> owned_services;
+	Context &services;
 
 protected:
 	virtual void WriteEntry(CatalogEntry &entry, Serializer &serializer);

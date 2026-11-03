@@ -37,7 +37,7 @@ add_library_unity(
   database_manager.cpp
   db_instance_cache.cpp
   error_manager.cpp
-  runtime_services.cpp
+  context.cpp
   external_resource_type_registry.cpp
   external_resources_manager.cpp
   extension.cpp
