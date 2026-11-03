@@ -1,0 +1,32 @@
+# name: test/optimizer/statistics/positive_join_cardinality.test
+# description: Positive fractional join estimates stay positive across materialized CTE boundaries
+# group: [statistics]
+
+statement ok
+CREATE TABLE positive_join_input AS SELECT i::INTEGER k FROM range(100) r(i);
+
+# The CTE's selective joins have a fractional estimate; neither consumer is empty.
+query II
+EXPLAIN (FORMAT JSON)
+WITH c AS MATERIALIZED (
+	SELECT a.k
+	FROM positive_join_input a
+	JOIN positive_join_input b USING (k)
+	JOIN positive_join_input c USING (k)
+	WHERE a.k % 10 = 5 AND b.k % 10 = 5 AND c.k % 10 = 5
+)
+SELECT count(*) FROM c c1 JOIN c c2 USING (k);
+----
+physical_plan	<!REGEX>:(?s).*"Estimated Cardinality":\s*"0".*
+
+query I
+WITH c AS MATERIALIZED (
+	SELECT a.k
+	FROM positive_join_input a
+	JOIN positive_join_input b USING (k)
+	JOIN positive_join_input c USING (k)
+	WHERE a.k % 10 = 5 AND b.k % 10 = 5 AND c.k % 10 = 5
+)
+SELECT count(*) FROM c c1 JOIN c c2 USING (k);
+----
+10

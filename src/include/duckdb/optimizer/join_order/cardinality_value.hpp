@@ -43,6 +43,10 @@ public:
 
 	idx_t GetIndex() const {
 		auto value = GetDouble();
+		// Keep a positive estimate from becoming an empty input in subsequent optimization.
+		if (value < 1) {
+			return IsZero() ? 0 : 1;
+		}
 		auto maximum = std::numeric_limits<idx_t>::max();
 		return value >= static_cast<double>(maximum) ? maximum : static_cast<idx_t>(value);
 	}

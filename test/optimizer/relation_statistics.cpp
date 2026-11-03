@@ -258,7 +258,7 @@ TEST_CASE("Join cardinality divides large products before converting to double",
 				// Neither product fits in a double. The quotients are 2^60 and 2^-20.
 				auto expected = rows == population ? double(population) : std::ldexp(1.0, -20);
 				REQUIRE(estimator.EstimateCardinality(*root).GetDouble() == Approx(expected));
-				REQUIRE(estimator.EstimateCardinality(*root).GetIndex() == idx_t(expected));
+				REQUIRE(estimator.EstimateCardinality(*root).GetIndex() == MaxValue<idx_t>(1, idx_t(expected)));
 			} else {
 				REQUIRE(std::isinf(estimator.EstimateCardinality(*root).GetDouble()));
 				REQUIRE(estimator.EstimateCardinality(*root).GetIndex() == NumericLimits<idx_t>::Maximum());
@@ -343,6 +343,10 @@ TEST_CASE("Tiny positive cardinalities remain distinct from zero",
 	auto tiny = factor * factor;
 	REQUIRE(tiny.GetDouble() == 0);
 	REQUIRE_FALSE(tiny.IsZero());
+	REQUIRE(tiny.GetIndex() == 1);
+	REQUIRE(CardinalityValue(0).GetIndex() == 0);
+	REQUIRE(CardinalityValue(0.5).GetIndex() == 1);
+	REQUIRE(CardinalityValue(2.5).GetIndex() == 2);
 	REQUIRE(tiny > CardinalityValue(0));
 	REQUIRE(tiny < factor);
 	for (auto type : {JoinType::SEMI, JoinType::ANTI}) {
