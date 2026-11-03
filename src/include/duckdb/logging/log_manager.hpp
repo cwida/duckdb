@@ -34,6 +34,10 @@ public:
 
 	DUCKDB_API static LogManager &Get(ClientContext &context);
 	unique_ptr<Logger> CreateLogger(LoggingContext context, bool thread_safe = true, bool mutable_settings = false);
+	//! Creates a logger from the snapshot without locking, unless the config changed since the snapshot was taken
+	unique_ptr<Logger> CreateLogger(LoggingContext context, const LogConfigSnapshot &snapshot);
+	//! Brings the snapshot up to date, only locking if the config changed since it was taken
+	void RefreshConfigSnapshot(LogConfigSnapshot &snapshot);
 
 	RegisteredLoggingContext RegisterLoggingContext(LoggingContext &context);
 
@@ -90,13 +94,14 @@ protected:
 
 	//! The only way to change the config: publishes it to the global logger and to newly created loggers
 	void SetConfigInternal(LogConfig new_config);
+	unique_ptr<Logger> CreateLoggerInternal(LoggingContext &context, const shared_ptr<const LogConfig> &logger_config);
 
 protected:
 	mutex lock;
-	//! Shared by the created loggers; replaced (under lock) only by SetConfigInternal, loaded atomically without lock
+	//! Shared by the created loggers; replaced (under lock) only by SetConfigInternal
 	shared_ptr<const LogConfig> config;
-	//! Mirrors config->enabled, so disabled logging does not contend on the atomic load of config
-	atomic<bool> logging_enabled;
+	//! Incremented whenever config is replaced, invalidating the snapshots of it
+	atomic<idx_t> config_version {0};
 
 	shared_ptr<Logger> global_logger;
 	shared_ptr<LogStorage> log_storage;

@@ -25,6 +25,46 @@ SELECT message FROM duckdb_logs WHERE type = 'config_change_test' ORDER BY times
 ----
 logged
 
+# only log the selected types
+statement ok con1
+SET enabled_log_types = 'type_filter_a';
+
+statement ok con1
+SET logging_mode = 'enable_selected';
+
+statement ok con2
+SELECT write_log('a selected', level := 'info', log_type := 'type_filter_a')
+
+statement ok con2
+SELECT write_log('b not selected', level := 'info', log_type := 'type_filter_b')
+
+query II con1
+SELECT type, message FROM duckdb_logs WHERE type LIKE 'type_filter_%' ORDER BY type
+----
+type_filter_a	a selected
+
+# log everything except the disabled types
+statement ok con1
+SET disabled_log_types = 'type_filter_a';
+
+statement ok con1
+SET logging_mode = 'disable_selected';
+
+statement ok con2
+SELECT write_log('a disabled', level := 'info', log_type := 'type_filter_a')
+
+statement ok con2
+SELECT write_log('b not disabled', level := 'info', log_type := 'type_filter_b')
+
+query II con1
+SELECT type, message FROM duckdb_logs WHERE type LIKE 'type_filter_%' ORDER BY type
+----
+type_filter_a	a selected
+type_filter_b	b not disabled
+
+statement ok con1
+SET logging_mode = 'level_only';
+
 statement ok con1
 SET enable_logging = false;
 

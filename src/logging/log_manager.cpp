@@ -11,21 +11,39 @@
 namespace duckdb {
 
 unique_ptr<Logger> LogManager::CreateLogger(LoggingContext context, bool thread_safe, bool mutable_settings) {
+	unique_lock<mutex> lck(lock);
 	if (mutable_settings) {
-		unique_lock<mutex> lck(lock);
 		return make_uniq<MutableLogger>(*config, RegisterLoggingContextInternal(context), *this);
-	}
-	if (!logging_enabled) {
-		return make_uniq<NopLogger>(*this);
-	}
-	auto current_config = config.atomic_load();
-	if (!current_config->enabled) {
-		return make_uniq<NopLogger>(*this);
 	}
 	if (!thread_safe) {
 		// TODO: implement ThreadLocalLogger and return it here
 	}
-	return make_uniq<ThreadSafeLogger>(std::move(current_config), RegisterLoggingContextInternal(context), *this);
+	return CreateLoggerInternal(context, config);
+}
+
+unique_ptr<Logger> LogManager::CreateLogger(LoggingContext context, const LogConfigSnapshot &snapshot) {
+	if (snapshot.config && snapshot.version == config_version.load()) {
+		return CreateLoggerInternal(context, snapshot.config);
+	}
+	unique_lock<mutex> lck(lock);
+	return CreateLoggerInternal(context, config);
+}
+
+unique_ptr<Logger> LogManager::CreateLoggerInternal(LoggingContext &context,
+                                                    const shared_ptr<const LogConfig> &logger_config) {
+	if (!logger_config->enabled) {
+		return make_uniq<NopLogger>(*this);
+	}
+	return make_uniq<ThreadSafeLogger>(logger_config, RegisterLoggingContextInternal(context), *this);
+}
+
+void LogManager::RefreshConfigSnapshot(LogConfigSnapshot &snapshot) {
+	if (snapshot.config && snapshot.version == config_version.load()) {
+		return;
+	}
+	unique_lock<mutex> lck(lock);
+	snapshot.config = config;
+	snapshot.version = config_version.load();
 }
 
 RegisteredLoggingContext LogManager::RegisterLoggingContext(LoggingContext &context) {
@@ -65,7 +83,7 @@ bool LogManager::CanScan(LoggingTargetTable table) {
 }
 
 LogManager::LogManager(DatabaseInstance &db, LogConfig config_p)
-    : config(make_shared_ptr<const LogConfig>(std::move(config_p))), logging_enabled(config->enabled), db_instance(db) {
+    : config(make_shared_ptr<const LogConfig>(std::move(config_p))), db_instance(db) {
 	log_storage = make_uniq<InMemoryLogStorage>(db);
 }
 
@@ -274,8 +292,8 @@ optional_ptr<const LogType> LogManager::LookupLogTypeInternal(const string &type
 }
 
 void LogManager::SetConfigInternal(LogConfig new_config) {
-	config.atomic_store(make_shared_ptr<const LogConfig>(std::move(new_config)));
-	logging_enabled = config->enabled;
+	config = make_shared_ptr<const LogConfig>(std::move(new_config));
+	config_version++;
 	global_logger->UpdateConfig(*config);
 }
 
