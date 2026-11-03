@@ -69,4 +69,3 @@ query I
 SELECT count(*) FROM (SELECT * FROM pragma_show('repeatable_schema') INTERSECT ALL SELECT * FROM pragma_show('repeatable_schema'));
 ----
 2
-

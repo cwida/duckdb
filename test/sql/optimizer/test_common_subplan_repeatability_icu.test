@@ -37,4 +37,3 @@ query II
 EXPLAIN (FORMAT JSON) SELECT * FROM icu_calendar_names() INTERSECT ALL SELECT * FROM icu_calendar_names();
 ----
 logical_opt	<REGEX>:.*__common_subplan_.*
-

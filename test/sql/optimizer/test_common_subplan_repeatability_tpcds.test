@@ -23,4 +23,3 @@ query II
 EXPLAIN (FORMAT JSON) SELECT * FROM tpcds_answers() INTERSECT ALL SELECT * FROM tpcds_answers();
 ----
 logical_opt	<REGEX>:.*__common_subplan_.*
-

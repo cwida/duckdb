@@ -21,4 +21,3 @@ query II
 EXPLAIN (FORMAT JSON) SELECT * FROM check_peg_parser('SELECT 42') INTERSECT ALL SELECT * FROM check_peg_parser('SELECT 42');
 ----
 logical_opt	<REGEX>:.*__common_subplan_.*
-
