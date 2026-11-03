@@ -143,6 +143,9 @@ public:
 		auto start_of_data_segment = dataptr + segment.GetBlockOffset() + ChimpPrimitives::HEADER_SIZE;
 		group_state.Init(start_of_data_segment);
 		auto metadata_offset = Load<uint32_t>(dataptr + segment.GetBlockOffset());
+		if (segment.GetBlockOffset() + metadata_offset > segment.GetBlockSize()) {
+			throw IOException("Corrupted Chimp segment: metadata_offset reaches outside of the blocks memory");
+		}
 		metadata_ptr = dataptr + segment.GetBlockOffset() + metadata_offset;
 	}
 
@@ -195,7 +198,9 @@ public:
 		// Load how many blocks of leading zero bits we have
 		metadata_ptr -= sizeof(uint8_t);
 		auto leading_zero_block_count = Load<uint8_t>(metadata_ptr);
-		D_ASSERT(leading_zero_block_count <= ChimpPrimitives::CHIMP_SEQUENCE_SIZE / 8);
+		if (leading_zero_block_count > ChimpPrimitives::CHIMP_SEQUENCE_SIZE / 8) {
+			throw IOException("Corrupted Chimp segment: leading zero block count exceeds the maximum");
+		}
 
 		// Load the leading zero block count
 		metadata_ptr -= 3ULL * leading_zero_block_count;

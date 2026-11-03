@@ -1,0 +1,36 @@
+# name: test/sql/storage/compression/chimp/chimp_corrupted_file.test
+# group: [chimp]
+
+require vector_size 2048
+
+# metadata_offset points outside of the block -> out-of-bounds read while decoding the group metadata
+
+unzip data/storage/chimp_corrupted_metadata_offset.db.gz {TEST_DIR}/chimp_corrupted_metadata_offset.db
+
+statement ok
+ATTACH '{TEST_DIR}/chimp_corrupted_metadata_offset.db' AS db2;
+
+query I
+SELECT compression FROM pragma_storage_info('db2.temperatures_double') WHERE compression='Chimp' LIMIT 1;
+----
+Chimp
+
+statement error
+SELECT * FROM db2.temperatures_double LIMIT 1;
+----
+IO Error: Corrupted Chimp segment: metadata_offset reaches outside of the blocks memory
+
+statement ok
+DETACH db2;
+
+# leading_zero_block_count exceeds the maximum -> out-of-bounds write into the leading_zeros buffer
+
+unzip data/storage/chimp_corrupted_leading_zero.db.gz {TEST_DIR}/chimp_corrupted_leading_zero.db
+
+statement ok
+ATTACH '{TEST_DIR}/chimp_corrupted_leading_zero.db' AS db3;
+
+statement error
+SELECT * FROM db3.temperatures_double LIMIT 1;
+----
+IO Error: Corrupted Chimp segment: leading zero block count exceeds the maximum
