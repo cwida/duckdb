@@ -1292,7 +1292,7 @@ public:
 	static unique_ptr<NodeStatistics> MultiFileCardinality(ClientContext &context, const FunctionData *bind_data) {
 		auto &data = bind_data->Cast<MultiFileBindData>();
 		if (IsEmptyResult(data)) {
-			return make_uniq<NodeStatistics>(idx_t(0));
+			return make_uniq<NodeStatistics>(idx_t(0), idx_t(0));
 		}
 		auto file_list_cardinality_estimate = data.file_list->GetCardinality(context);
 		if (file_list_cardinality_estimate) {
