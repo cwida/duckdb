@@ -3,6 +3,7 @@
 #include "duckdb/catalog/catalog.hpp"
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/function/table/system_catalog_scanner.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/client_data.hpp"
 
@@ -14,6 +15,7 @@ struct DuckDBSchemasData : public GlobalTableFunctionState {
 
 	vector<reference<SchemaCatalogEntry>> entries;
 	idx_t offset;
+	SystemCatalogScannerStats stats;
 };
 
 static unique_ptr<FunctionData> DuckDBSchemasBind(ClientContext &context, TableFunctionBindInput &input,
@@ -48,14 +50,14 @@ static unique_ptr<FunctionData> DuckDBSchemasBind(ClientContext &context, TableF
 	names.emplace_back("parent_schema_oid");
 	return_types.emplace_back(LogicalType::BIGINT);
 
-	return nullptr;
+	return SystemCatalogScanner::CreateBindData(names);
 }
 
 unique_ptr<GlobalTableFunctionState> DuckDBSchemasInit(ClientContext &context, TableFunctionInitInput &input) {
 	auto result = make_uniq<DuckDBSchemasData>();
 
-	// scan all the schemas and collect them
-	result->entries = Catalog::GetAllSchemas(context);
+	// collect the schemas that survive the pushed-down filters
+	result->entries = SystemCatalogScanner::GetSchemas(context, input, result->stats);
 
 	return std::move(result);
 }
@@ -116,8 +118,15 @@ void DuckDBSchemasFunction(ClientContext &context, TableFunctionInput &data_p, D
 	}
 }
 
+static void DuckDBSchemasGetMetrics(TableFunctionGetMetricsInput &input) {
+	SystemCatalogScanner::ReportMetrics(input, input.global_state->Cast<DuckDBSchemasData>().stats);
+}
+
 void DuckDBSchemasFun::RegisterFunction(BuiltinFunctions &set) {
-	set.AddFunction(TableFunction("duckdb_schemas", {}, DuckDBSchemasFunction, DuckDBSchemasBind, DuckDBSchemasInit));
+	TableFunction function("duckdb_schemas", {}, DuckDBSchemasFunction, DuckDBSchemasBind, DuckDBSchemasInit);
+	SystemCatalogScanner::RegisterPushdown(function);
+	function.get_metrics = DuckDBSchemasGetMetrics;
+	set.AddFunction(std::move(function));
 }
 
 } // namespace duckdb
