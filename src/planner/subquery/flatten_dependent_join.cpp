@@ -1632,6 +1632,25 @@ struct TrampolineWaveAnchoring {
 	TableIndex cte_index;
 	unordered_set<idx_t> anchored_ctes;
 
+	//! Row-transforming operators that cannot fabricate output rows from empty input;
+	//! anything not classified here or in Anchored is conservatively unanchored
+	static bool CannotFabricateFromEmpty(LogicalOperatorType type) {
+		switch (type) {
+		case LogicalOperatorType::LOGICAL_PROJECTION:
+		case LogicalOperatorType::LOGICAL_FILTER:
+		case LogicalOperatorType::LOGICAL_WINDOW:
+		case LogicalOperatorType::LOGICAL_UNNEST:
+		case LogicalOperatorType::LOGICAL_LIMIT:
+		case LogicalOperatorType::LOGICAL_ORDER_BY:
+		case LogicalOperatorType::LOGICAL_TOP_N:
+		case LogicalOperatorType::LOGICAL_DISTINCT:
+		case LogicalOperatorType::LOGICAL_SAMPLE:
+			return true;
+		default:
+			return false;
+		}
+	}
+
 	bool Anchored(const LogicalOperator &op) {
 		switch (op.type) {
 		case LogicalOperatorType::LOGICAL_CTE_REF: {
@@ -1715,16 +1734,13 @@ struct TrampolineWaveAnchoring {
 			return left || right;
 		}
 		default: {
-			// row-transforming operators are anchored when all inputs are; leaves
-			// (scans, VALUES, dummy scans) have no children and are not anchored
-			if (op.children.empty()) {
-				return false;
-			}
-			bool anchored = true;
+			// leaves (scans, VALUES, dummy scans) are not anchored; the children of
+			// everything else are still walked so materialized aliases get recorded
+			bool anchored = !op.children.empty();
 			for (auto &child : op.children) {
 				anchored = Anchored(*child) && anchored;
 			}
-			return anchored;
+			return anchored && CannotFabricateFromEmpty(op.type);
 		}
 		}
 	}
