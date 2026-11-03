@@ -320,10 +320,18 @@ template <typename T, typename F>
 static void ComputeHashesOnSegments(F ComputeHashFun, T handle, const vector<idx_t> &splits,
                                     vector<string> &hash_chunks) {
 #ifndef DUCKDB_NO_THREADS
+	// one worker per core, each hashing every worker_count-th chunk
+	const idx_t chunk_count = hash_chunks.size();
+	const idx_t worker_count =
+	    MinValue<idx_t>(MaxValue<idx_t>(std::thread::hardware_concurrency(), 1), MaxValue<idx_t>(chunk_count, 1));
 	vector<std::thread> threads;
-	threads.reserve(hash_chunks.size());
-	for (idx_t i = 0; i < hash_chunks.size(); i++) {
-		threads.emplace_back(ComputeHashFun, handle, splits[i], splits[i + 1], &hash_chunks[i]);
+	threads.reserve(worker_count);
+	for (idx_t worker = 0; worker < worker_count; worker++) {
+		threads.emplace_back([&, worker]() {
+			for (idx_t i = worker; i < chunk_count; i += worker_count) {
+				ComputeHashFun(handle, splits[i], splits[i + 1], &hash_chunks[i]);
+			}
+		});
 	}
 
 	for (auto &thread : threads) {
