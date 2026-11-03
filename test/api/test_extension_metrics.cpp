@@ -173,8 +173,8 @@ TEST_CASE("A metric can be set while the query binds", "[api]") {
 	// the profiler's own metrics cannot be registered
 	metrics_manager.RegisterMetric({"query.total_bytes_scanned", "uint64", "Not an extension's", "bytes"});
 	REQUIRE(!metrics_manager.IsRegisteredMetric("query.total_bytes_scanned"));
-	metrics_manager.RegisterMetric({"optimizer.window_join_pushdown", "double", "Not an extension's", "seconds"});
-	REQUIRE(!metrics_manager.IsRegisteredMetric("optimizer.window_join_pushdown"));
+	metrics_manager.RegisterMetric({"optimizer.filter_pushdown", "double", "Not an extension's", "seconds"});
+	REQUIRE(!metrics_manager.IsRegisteredMetric("optimizer.filter_pushdown"));
 	REQUIRE_NO_FAIL(con.Query("CREATE TABLE numbers AS SELECT range AS i FROM range(10)"));
 	con.EnableProfiling();
 	con.context->config.profiler_save_location = TestCreatePath("test_set_metric_output.txt");
