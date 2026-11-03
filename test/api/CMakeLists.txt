@@ -30,8 +30,10 @@ set(TEST_API_OBJECTS
     test_connection_secrets.cpp
     test_copy_output_lifecycle.cpp
     test_custom_allocator.cpp
+    test_database_instance_partial_init.cpp
     test_extension_install_in_progress.cpp
     test_extension_repositories.cpp
+    test_extension_signature_check.cpp
     test_external_extension_provider.cpp
     test_extension_setting_autoload.cpp
     test_instance_cache.cpp
