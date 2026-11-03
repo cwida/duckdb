@@ -1,0 +1,23 @@
+diff --git a/test/sql/storage/attach_external_access.test b/test/sql/storage/attach_external_access.test
+index 8b3ca72..e5a7c66 100644
+--- a/test/sql/storage/attach_external_access.test
++++ b/test/sql/storage/attach_external_access.test
+@@ -29,10 +29,14 @@ SELECT * FROM sqlite_scan('{TEMP_DIR}/external_access.db', 't');
+ ----
+ <REGEX>:.*Permission Error.*
+ 
+-# files in an allowed directory can still be opened
+-statement ok
++# DuckDB refuses any storage extension's ATTACH without external access, since those do their own I/O,
++# so neither a file in an allowed directory nor an in-memory database can be attached
++statement error
+ ATTACH 'data/db/borked.db' AS allowed (TYPE SQLITE, READ_ONLY);
++----
++<REGEX>:.*Permission Error.*
+ 
+-# in-memory databases do not access files
+-statement ok
++statement error
+ ATTACH ':memory:' AS mem (TYPE SQLITE);
++----
++<REGEX>:.*Permission Error.*

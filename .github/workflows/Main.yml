@@ -425,7 +425,8 @@ jobs:
       needs.linux-release-musl.result == 'success' &&
       needs.windows.result == 'success' &&
       (needs.osx.result == 'success' || needs.osx.result == 'skipped')
-    uses: duckdb/extension-ci-tools/.github/workflows/build.yml@main
+    # Pinned: extension-ci-tools main broke wasm_threads linking on 2026-11-02 (upstream fails the same way)
+    uses: duckdb/extension-ci-tools/.github/workflows/build.yml@c11425453b27611440bf0abb8bdc024f54134fa2
     needs:
       - prepare
       - linux-relassert
@@ -469,7 +470,7 @@ jobs:
       extension_repository: duckdb/extension-template
       extension_ref: main
       ci_tools_repository: duckdb/extension-ci-tools
-      ci_tools_version: main
+      ci_tools_version: c11425453b27611440bf0abb8bdc024f54134fa2
       exclude_archs: ${{ needs.prepare.outputs.extensions_extra_exclude_archs }}
       allow_failure_archs: ${{ needs.prepare.outputs.extension_allow_failure_archs }}
       vcpkg_commit: cd61e1e26a038e82d6550a3ebbe0fbbfe7da78e3 # Release 2026.06.24
