@@ -872,7 +872,7 @@ static bool ContainsVisibleRecursiveScan(const PhysicalOperator &op, TableIndex 
 }
 
 void CountDirectRecursiveReferences(const PhysicalOperator &op, TableIndex cte_index,
-                                           RecursiveCTEReferenceInfo &references) {
+                                    RecursiveCTEReferenceInfo &references) {
 	if (IsDirectRecursiveKeyProbe(op, cte_index)) {
 		auto &key_join = op.Cast<PhysicalRecursiveCTEKeyJoin>();
 		if (key_join.Layout().IsPartial()) {
