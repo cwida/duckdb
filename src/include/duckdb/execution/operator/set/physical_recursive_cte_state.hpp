@@ -396,6 +396,11 @@ void ExecuteRecursivePipelineFinishInline(Pipeline &pipeline, Executor &executor
 //! (optional, indexed like plan.stages) skip the finish event machinery and mark the sink READY.
 void ExecuteRecursiveInlinePlan(const RecursiveSchedulingContext &context, Executor &executor,
                                 const RecursiveCTEPipelineSchedulePlan &plan, const vector<bool> *trivial_finish);
+//! Retention accounting beside its state transition, shared by recursive CTE and trampoline
+void RecordInvariantRetentionTransition(RecursiveCTEMetrics &metrics,
+                                        const reference_set_t<const MetaPipeline> &invariant_meta_pipelines);
+void RecordInvariantRetentionReuse(RecursiveCTEMetrics &metrics,
+                                   const reference_set_t<const MetaPipeline> &invariant_meta_pipelines);
 void GatherRecursiveScans(PhysicalOperator &op, TableIndex cte_index,
                           vector<reference<PhysicalColumnDataScan>> &recursive_scans);
 reference_set_t<const MetaPipeline>

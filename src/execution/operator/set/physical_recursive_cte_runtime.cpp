@@ -729,6 +729,30 @@ bool InvariantRecursiveBuildsRemainReusable(const reference_set_t<const MetaPipe
 	return true;
 }
 
+//! Retention accounting lives beside the state transitions it describes, shared by the
+//! recursive CTE and the trampoline so the counters cannot drift between callers.
+void RecordInvariantRetentionTransition(RecursiveCTEMetrics &metrics,
+                                        const reference_set_t<const MetaPipeline> &invariant_meta_pipelines) {
+	for (auto &meta_pipeline : invariant_meta_pipelines) {
+		auto sink = meta_pipeline.get().GetSink();
+		if (sink && sink->type == PhysicalOperatorType::CTE) {
+			metrics.RecordRetainedCTEMaterialization();
+		} else {
+			metrics.RecordRetainedBuild();
+		}
+	}
+}
+
+void RecordInvariantRetentionReuse(RecursiveCTEMetrics &metrics,
+                                   const reference_set_t<const MetaPipeline> &invariant_meta_pipelines) {
+	for (auto &meta_pipeline : invariant_meta_pipelines) {
+		auto sink = meta_pipeline.get().GetSink();
+		if (sink && sink->type == PhysicalOperatorType::CTE) {
+			metrics.RecordRetainedCTEReuse();
+		}
+	}
+}
+
 static void ProcessRecursiveExecutorTasks(Executor &executor) {
 	// Only drain the recursive executor here. Re-entering the outer query executor while waiting for
 	// recursive work can run unrelated tasks and used to break recursive completion tracking.
@@ -928,12 +952,7 @@ void PhysicalRecursiveCTE::ExecuteRecursivePipelines(ExecutionContext &context) 
 	const auto collect_metrics = gstate.GetMetrics().Enabled();
 	auto can_cache_invariant_meta_pipelines = allow_reuse && !invariant_meta_pipelines.empty();
 	if (collect_metrics && gstate.HasMaterializedInvariantPipelines()) {
-		for (auto &meta_pipeline : invariant_meta_pipelines) {
-			auto sink = meta_pipeline.get().GetSink();
-			if (sink && sink->type == PhysicalOperatorType::CTE) {
-				gstate.GetMetrics().RecordRetainedCTEReuse();
-			}
-		}
+		RecordInvariantRetentionReuse(gstate.GetMetrics(), invariant_meta_pipelines);
 	}
 
 	// The generic executor path would rebuild the recursive event graph and allocate fresh
@@ -1086,14 +1105,7 @@ void PhysicalRecursiveCTE::ExecuteRecursivePipelines(ExecutionContext &context) 
 	}
 	if (can_cache_invariant_meta_pipelines && InvariantRecursiveBuildsRemainReusable(invariant_meta_pipelines)) {
 		if (collect_metrics && !gstate.HasMaterializedInvariantPipelines()) {
-			for (auto &meta_pipeline : invariant_meta_pipelines) {
-				auto sink = meta_pipeline.get().GetSink();
-				if (sink && sink->type == PhysicalOperatorType::CTE) {
-					gstate.GetMetrics().RecordRetainedCTEMaterialization();
-				} else {
-					gstate.GetMetrics().RecordRetainedBuild();
-				}
-			}
+			RecordInvariantRetentionTransition(gstate.GetMetrics(), invariant_meta_pipelines);
 		}
 		gstate.MarkInvariantPipelinesMaterialized();
 	}

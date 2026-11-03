@@ -751,6 +751,9 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 	}
 
 	const auto collect_metrics = gstate.metrics.Enabled();
+	if (collect_metrics && materialized && can_cache_invariant) {
+		RecordInvariantRetentionReuse(gstate.metrics, branch.invariant_meta_pipelines);
+	}
 	const auto epoch_task_start = collect_metrics ? gstate.metrics.TaskCount() : 0;
 	const auto epoch_start =
 	    collect_metrics ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
@@ -763,6 +766,9 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 		WaitForRecursiveEvents(executor, events);
 		if (can_cache_invariant && !materialized &&
 		    InvariantRecursiveBuildsRemainReusable(branch.invariant_meta_pipelines)) {
+			if (collect_metrics) {
+				RecordInvariantRetentionTransition(gstate.metrics, branch.invariant_meta_pipelines);
+			}
 			gstate.invariant_materialized[branch_idx - 1] = true;
 		}
 		if (collect_metrics) {
@@ -784,6 +790,9 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 	ExecuteRecursiveInlinePlan(scheduling_context, executor, plan, &trivial_finish);
 	if (can_cache_invariant && !materialized &&
 	    InvariantRecursiveBuildsRemainReusable(branch.invariant_meta_pipelines)) {
+		if (collect_metrics) {
+			RecordInvariantRetentionTransition(gstate.metrics, branch.invariant_meta_pipelines);
+		}
 		gstate.invariant_materialized[branch_idx - 1] = true;
 	}
 	if (collect_metrics && gstate.current_input) {

@@ -61,3 +61,44 @@ WHERE class = 'JoinHashTable' AND event = 'Build'
   AND info['rows']::UBIGINT = 100;
 ----
 1
+
+# retention is also visible in the shared counters: the lookup build and the
+# materialized CTE each retain once, with one reuse per later wave
+statement ok
+CALL enable_logging('PhysicalOperator', storage='memory');
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query II
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 0))
+	BRANCH 1: (
+		WITH inv AS MATERIALIZED (SELECT i FROM range(16384) r(i))
+		SELECT CASE WHEN n < 2 THEN 1 ELSE 0 END, n + 1
+		FROM t JOIN inv ON inv.i = t.n
+	)
+)
+SELECT count(*), max(n) FROM t;
+----
+1	3
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT count(*)
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class = 'JoinHashTable' AND event = 'Build'
+  AND info.rows::UBIGINT = 16384;
+----
+1
+
+query III
+SELECT info.retained_build_executions::UBIGINT,
+       info.retained_cte_materializations::UBIGINT,
+       info.retained_cte_reuses::UBIGINT
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class = 'PhysicalTrampoline' AND event = 'RuntimeMetrics';
+----
+1	1	2
