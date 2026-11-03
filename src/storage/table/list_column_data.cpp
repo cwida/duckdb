@@ -217,6 +217,9 @@ void ListColumnData::Append(ColumnAppendState &state, const Vector &vector, idx_
 	auto input_offsets = vector.Values<list_entry_t>();
 	auto start_offset = child_column->GetMaxEntry();
 	idx_t child_count = 0;
+	idx_t min_length = NumericLimits<idx_t>::Maximum();
+	idx_t max_length = 0;
+	bool has_valid_list = false;
 
 	ValidityMask append_mask(count);
 	auto append_offsets = unique_ptr<uint64_t[]>(new uint64_t[count]);
@@ -229,11 +232,17 @@ void ListColumnData::Append(ColumnAppendState &state, const Vector &vector, idx_
 			continue;
 		}
 		auto &input_list = list_entry.GetValue();
+		has_valid_list = true;
+		min_length = MinValue<idx_t>(min_length, input_list.length);
+		max_length = MaxValue<idx_t>(max_length, input_list.length);
 		if (input_list.offset != child_count) {
 			child_contiguous = false;
 		}
 		append_offsets[i] = start_offset + child_count + input_list.length;
 		child_count += input_list.length;
+	}
+	if (has_valid_list) {
+		ListStats::MergeInLengths(*state.append_stats, min_length, max_length, child_count);
 	}
 	auto &list_child = ListVector::GetChild(vector);
 	Vector child_vector(Vector::Ref(list_child));
@@ -409,10 +418,13 @@ struct ListColumnCheckpointState : public ColumnCheckpointState {
 	                          PartialBlockManager &partial_block_manager)
 	    : ColumnCheckpointState(row_group, column_data, partial_block_manager) {
 		global_stats = ListStats::CreateEmpty(column_data.type).ToUnique();
+		length_data = ListStats::GetLengthData(*global_stats);
 	}
 
 	unique_ptr<ColumnCheckpointState> validity_state;
 	unique_ptr<ColumnCheckpointState> child_state;
+	//! The list length stats of the column - these cannot be reconstructed from the offsets that are checkpointed
+	ListStatsData length_data;
 
 public:
 	shared_ptr<ColumnData> CreateEmptyColumnData() override {
@@ -435,11 +447,21 @@ public:
 		auto stats = global_stats->Copy();
 		stats.Merge(*validity_state->GetStatistics());
 		ListStats::SetChildStats(stats, child_state->GetStatistics());
+		ListStats::SetLengthData(stats, length_data);
 		return stats.ToUnique();
 	}
 
 	PersistentColumnData ToPersistentData() override {
 		auto data = ColumnCheckpointState::ToPersistentData();
+		// the length stats are stored in the first segment - all other segments store empty length stats
+		for (idx_t i = 0; i < data.pointers.size(); i++) {
+			auto &pointer_stats = data.pointers[i].statistics;
+			if (i == 0) {
+				ListStats::SetLengthData(pointer_stats, length_data);
+			} else {
+				ListStats::ResetLengthData(pointer_stats);
+			}
+		}
 		data.child_columns.push_back(validity_state->ToPersistentData());
 		data.child_columns.push_back(child_state->ToPersistentData());
 		return data;
@@ -461,6 +483,7 @@ unique_ptr<ColumnCheckpointState> ListColumnData::Checkpoint(const RowGroup &row
 	auto &checkpoint_state = base_state->Cast<ListColumnCheckpointState>();
 	checkpoint_state.validity_state = std::move(validity_state);
 	checkpoint_state.child_state = std::move(child_state);
+	checkpoint_state.length_data = ListStats::GetLengthData(old_stats);
 	return base_state;
 }
 
