@@ -73,7 +73,7 @@ private:
 	void PublishRegistry(shared_ptr<ExtensionCallbackRegistry> new_registry);
 
 private:
-	mutex registry_lock;
+	mutable mutex registry_lock;
 	//! The current registry, read without locking or reference counting
 	atomic<ExtensionCallbackRegistry *> callback_registry;
 	//! Every published registry, kept alive so that readers of an older one stay valid

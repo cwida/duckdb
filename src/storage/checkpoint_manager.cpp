@@ -791,7 +791,10 @@ void CheckpointReader::ReadTableData(CatalogTransaction transaction, Deserialize
 	// Read next_row_id as total_rows for backwards compatibility. Older storage versions do not allow for gaps in
 	// row_id numbering, in which case next_row_id = total_rows.
 	auto next_row_id = deserializer.ReadPropertyWithExplicitDefault<idx_t>(105, "next_row_id", total_rows);
-	D_ASSERT(next_row_id >= total_rows);
+	if (next_row_id < total_rows) {
+		throw DataCorruptionException("corrupt database file - next row id %llu is lower than the total row count %llu",
+		                              next_row_id, total_rows);
+	}
 
 	if (!index_storage_infos.empty()) {
 		bound_info.indexes = std::move(index_storage_infos);

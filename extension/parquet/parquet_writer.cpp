@@ -1278,6 +1278,10 @@ void ParquetWriter::FlushColumnStats(idx_t col_idx, duckdb_parquet::ColumnChunk 
 			stats_unifier->max_is_exact = stats_unifier->max_is_exact &&
 			                              column.meta_data.statistics.__isset.is_max_value_exact &&
 			                              column.meta_data.statistics.is_max_value_exact;
+		} else if (column.meta_data.statistics.__isset.null_count &&
+		           column.meta_data.statistics.null_count == column.meta_data.num_values) {
+			// every value of this column in the row group is NULL, so the row group has no min/max to contribute:
+			// the min/max of the other row groups still describe every non-NULL value in the file
 		} else {
 			stats_unifier->all_min_max_set = false;
 		}

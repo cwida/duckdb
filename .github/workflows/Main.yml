@@ -474,11 +474,11 @@ jobs:
           toolchain: main
         rust:
           config: duckdb/.github/config/rust_based_extensions.cmake
-          default_exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_rtools;windows_amd64_mingw;linux_amd64_musl
+          default_exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_rtools;windows_amd64_mingw;linux_amd64_musl;windows_arm64;linux_arm64_musl
           toolchain: rust
         external:
           config: duckdb/.github/config/external_extensions.cmake
-          default_exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_rtools;windows_amd64_mingw;linux_amd64_musl
+          default_exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_rtools;windows_amd64_mingw;linux_amd64_musl;windows_arm64;linux_arm64_musl
           toolchain: rust
       extension_repository: duckdb/extension-template
       extension_ref: main

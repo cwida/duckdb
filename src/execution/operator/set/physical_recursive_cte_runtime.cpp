@@ -409,8 +409,9 @@ BuildRecursivePipelineSchedulePlan(const vector<shared_ptr<MetaPipeline>> &meta_
 	for (auto &meta_pipeline : meta_pipelines) {
 		auto metric_type = RecursiveCTEPipelineMetricType::RECURSIVE;
 		bool is_invariant_build = false;
-		if (recursive_cte.invariant_meta_pipelines.find(*meta_pipeline) !=
-		    recursive_cte.invariant_meta_pipelines.end()) {
+		const auto is_invariant =
+		    recursive_cte.invariant_meta_pipelines.find(*meta_pipeline) != recursive_cte.invariant_meta_pipelines.end();
+		if (is_invariant) {
 			auto sink = meta_pipeline->GetSink();
 			is_invariant_build = !sink || sink->type != PhysicalOperatorType::CTE;
 			metric_type = sink && sink->type == PhysicalOperatorType::CTE
@@ -424,6 +425,7 @@ BuildRecursivePipelineSchedulePlan(const vector<shared_ptr<MetaPipeline>> &meta_
 			if (is_invariant_build) {
 				invariant_build_pipelines.insert(*pipeline);
 			}
+			plan->pipelines.emplace_back(*pipeline, is_invariant);
 		}
 	}
 	// Retained invariant meta-pipelines are absent after the first epoch, so build the induced schedule for
@@ -714,25 +716,6 @@ FindInvariantRecursiveMetaPipelines(const vector<shared_ptr<MetaPipeline>> &meta
 	return result;
 }
 
-static vector<shared_ptr<MetaPipeline>> GetActiveRecursiveMetaPipelines(const PhysicalRecursiveCTE &op,
-                                                                        RecursiveCTEState &state) {
-	vector<shared_ptr<MetaPipeline>> meta_pipelines;
-	op.recursive_meta_pipeline->GetMetaPipelines(meta_pipelines, true, false);
-	if (!state.AllowsExecutorReuse() || !state.HasMaterializedInvariantPipelines() ||
-	    op.invariant_meta_pipelines.empty()) {
-		return meta_pipelines;
-	}
-
-	vector<shared_ptr<MetaPipeline>> active_meta_pipelines;
-	active_meta_pipelines.reserve(meta_pipelines.size());
-	for (auto &meta_pipeline : meta_pipelines) {
-		if (op.invariant_meta_pipelines.find(*meta_pipeline) == op.invariant_meta_pipelines.end()) {
-			active_meta_pipelines.push_back(meta_pipeline);
-		}
-	}
-	return active_meta_pipelines;
-}
-
 static void ConfigureInvariantRecursiveBuildReuse(const PhysicalRecursiveCTE &op, bool preserve_build) {
 	for (auto &meta_pipeline_ref : op.invariant_meta_pipelines) {
 		auto sink = meta_pipeline_ref.get().GetSink();
@@ -934,7 +917,6 @@ void PhysicalRecursiveCTE::ExecuteRecursivePipelines(ExecutionContext &context) 
 	auto &executor = recursive_meta_pipeline->GetExecutor();
 	const auto allow_reuse = gstate.AllowsExecutorReuse();
 	const auto collect_metrics = gstate.GetMetrics().Enabled();
-	auto active_meta_pipelines = GetActiveRecursiveMetaPipelines(*this, gstate);
 	auto can_cache_invariant_meta_pipelines = allow_reuse && !invariant_meta_pipelines.empty();
 	if (collect_metrics && gstate.HasMaterializedInvariantPipelines()) {
 		for (auto &meta_pipeline : invariant_meta_pipelines) {
@@ -979,39 +961,32 @@ void PhysicalRecursiveCTE::ExecuteRecursivePipelines(ExecutionContext &context) 
 	// materialized CTE that this iteration refills, stays at the epoch limit.
 	const auto configured_threads = TaskScheduler::GetScheduler(executor.context).NumberOfThreads();
 	reference_map_t<const PhysicalOperator, RecursiveSinkWorkerBound> sink_worker_bounds;
-	for (auto &meta_pipeline : active_meta_pipelines) {
-		const auto is_invariant = invariant_meta_pipelines.find(*meta_pipeline) != invariant_meta_pipelines.end();
-		const auto worker_limit = is_invariant ? configured_threads : parallelism.MaxWorkerCount();
-		vector<shared_ptr<Pipeline>> pipelines;
-		meta_pipeline->GetPipelines(pipelines, false);
-		for (auto &pipeline : pipelines) {
-			auto sink = pipeline->GetSink();
-			if (sink.get() != this) {
-				auto &sink_bound = sink_worker_bounds[*sink];
-				sink_bound.worker_bound =
-				    MaxValue(sink_bound.worker_bound, GetRecursiveProducerWorkerBound(*pipeline, worker_limit));
-				sink_bound.producer_count++;
-			}
+	for (auto &entry : schedule_plan->pipelines) {
+		auto &pipeline = entry.pipeline.get();
+		auto sink = pipeline.GetSink();
+		if (sink.get() != this) {
+			const auto worker_limit = entry.is_invariant ? configured_threads : parallelism.MaxWorkerCount();
+			auto &sink_bound = sink_worker_bounds[*sink];
+			sink_bound.worker_bound =
+			    MaxValue(sink_bound.worker_bound, GetRecursiveProducerWorkerBound(pipeline, worker_limit));
+			sink_bound.producer_count++;
 		}
 	}
 
 	// Reset sink state from the main thread so recursive iterations can reuse or recreate
 	// pipeline-local global sinks without tearing down the rest of the runtime state graph. A sink
 	// with a single producer additionally learns the exact worker count at schedule time.
-	for (auto &meta_pipeline : active_meta_pipelines) {
-		vector<shared_ptr<Pipeline>> pipelines;
-		meta_pipeline->GetPipelines(pipelines, false);
-		for (auto &pipeline : pipelines) {
-			auto sink = pipeline->GetSink();
-			if (sink.get() != this) {
-				auto &sink_bound = sink_worker_bounds[*sink];
-				if (sink_bound.reset_done) {
-					// several producer pipelines feed this sink; it was already reset for this iteration
-					continue;
-				}
-				sink_bound.reset_done = true;
-				pipeline->ResetSinkForReschedule(sink_bound.worker_bound, sink_bound.producer_count == 1);
+	for (auto &entry : schedule_plan->pipelines) {
+		auto &pipeline = entry.pipeline.get();
+		auto sink = pipeline.GetSink();
+		if (sink.get() != this) {
+			auto &sink_bound = sink_worker_bounds[*sink];
+			if (sink_bound.reset_done) {
+				// several producer pipelines feed this sink; it was already reset for this iteration
+				continue;
 			}
+			sink_bound.reset_done = true;
+			pipeline.ResetSinkForReschedule(sink_bound.worker_bound, sink_bound.producer_count == 1);
 		}
 	}
 
@@ -1037,13 +1012,9 @@ void PhysicalRecursiveCTE::ExecuteRecursivePipelines(ExecutionContext &context) 
 	// entries only need to be registered once for each recursive state.
 	if (prepare_cached_executor_entries) {
 		reference_set_t<Pipeline> prepared_pipelines;
-		for (auto &meta_pipeline : active_meta_pipelines) {
-			vector<shared_ptr<Pipeline>> pipelines;
-			meta_pipeline->GetPipelines(pipelines, false);
-			for (auto &pipeline : pipelines) {
-				if (prepared_pipelines.insert(*pipeline).second) {
-					gstate.GetScheduler().PrepareExecutorEntry(*pipeline);
-				}
+		for (auto &entry : schedule_plan->pipelines) {
+			if (prepared_pipelines.insert(entry.pipeline.get()).second) {
+				gstate.GetScheduler().PrepareExecutorEntry(entry.pipeline.get());
 			}
 		}
 	}
