@@ -39,7 +39,7 @@ DuckTransaction::DuckTransaction(DuckTransactionManager &manager, ClientContext 
                                  SnapshotView view_p, idx_t catalog_version_p)
     : Transaction(manager, context_p), start_time(start_time), view(view_p), commit_id(0),
       catalog_version(catalog_version_p), awaiting_cleanup(false), undo_buffer(*this, context_p),
-      storage(make_uniq<LocalStorage>(context_p, *this)) {
+      storage(make_uniq<LocalStorage>(context_p.Services(), *this)) {
 	D_ASSERT(IsCommitted(start_time) && !IsCommitted(view.transaction_id));
 }
 
