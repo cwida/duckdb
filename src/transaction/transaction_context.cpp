@@ -97,7 +97,13 @@ void TransactionContext::Commit() {
 		err.Throw();
 	}
 	if (callback_error.HasError()) {
-		throw InternalException("Failed to commit: %s", callback_error.RawMessage());
+		if (Exception::InvalidatesDatabase(callback_error.Type()) ||
+		    callback_error.Type() == ExceptionType::INTERNAL) {
+			// fatal / internal callback errors invalidate the database - report them directly
+			callback_error.Throw();
+		}
+		// non-fatal callback errors do not invalidate the database - report them as a transaction error
+		throw TransactionException("Failed to commit: %s", callback_error.RawMessage());
 	}
 }
 
