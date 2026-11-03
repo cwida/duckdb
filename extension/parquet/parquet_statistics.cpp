@@ -657,8 +657,8 @@ static uint64_t ValueXXH64(const Value &constant) {
 	case PhysicalType::DOUBLE:
 		return ValueXH64FixedWidth<double>(constant);
 	case PhysicalType::VARCHAR: {
-		auto val = constant.GetValue<string>();
-		return duckdb_zstd::XXH64(val.c_str(), val.length(), 0);
+		auto &val = StringValue::Get(constant);
+		return duckdb_zstd::XXH64(val.data(), val.size(), 0);
 	}
 	default:
 		return 0;
