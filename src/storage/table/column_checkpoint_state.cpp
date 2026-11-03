@@ -172,12 +172,16 @@ void ColumnCheckpointState::FlushSegmentInternal(unique_ptr<ColumnSegment> segme
 			// Use an existing block.
 			D_ASSERT(offset_in_block > 0);
 			auto &pstate = *allocation.partial_block;
-			// pin the source block
-			auto old_handle = buffer_manager.Pin(segment->GetBlockHandle());
-			// pin the target block
-			auto new_handle = buffer_manager.Pin(pstate.block_handle);
-			// memcpy the contents of the old block to the new block
-			memcpy(new_handle.GetDataMutable() + offset_in_block, old_handle.Ptr(), segment_size);
+			{
+				// pin the source block
+				auto old_handle = buffer_manager.Pin(segment->GetBlockHandle());
+				// pin the target block
+				auto new_handle = buffer_manager.Pin(pstate.block_handle);
+				// memcpy the contents of the old block to the new block
+				memcpy(new_handle.GetDataMutable() + offset_in_block, old_handle.Ptr(), segment_size);
+			}
+			// read the copy from now on, which frees the segment's own buffer
+			segment->UsePackedCopy(pstate.block_handle, offset_in_block);
 			pstate.AddSegmentToTail(*result_column, *segment, offset_in_block);
 		} else {
 			// Create a new block for future reuse.
