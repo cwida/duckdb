@@ -352,3 +352,23 @@ ORDER BY n;
 4	3	3
 5	4	4
 6	5	5
+
+# Issue 27026: parameters in the copied window input must be bound on EXECUTE
+statement ok
+PREPARE q AS SELECT * FROM (SELECT r, count(*) OVER (PARTITION BY r) AS n FROM (VALUES ('EU'), ('US'), ('EU')) t(r)) WHERE r = $1;
+
+query II
+EXPLAIN EXECUTE q('EU');
+----
+physical_plan	<REGEX>:.*Join Type: INNER.*
+
+query II
+EXECUTE q('EU');
+----
+EU	2
+EU	2
+
+query II
+EXECUTE q('US');
+----
+US	1
