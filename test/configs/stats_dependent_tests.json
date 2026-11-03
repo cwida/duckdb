@@ -13,6 +13,7 @@
         "test/sql/optimizer/power_zonemap_pruning.test",
         "test/sql/optimizer/modulo_zonemap_pruning.test",
         "test/sql/types/decimal/wide_decimal_statistics.test",
+        "test/sql/types/variant/variant_wide_decimal.test",
         "test/sql/copy/parquet/parquet_wrong_geometry_types.test",
         "test/sql/optimizer/unsigned_divide_statistics.test",
         "test/fuzzer/pedro/vacuum_table_with_generated_column.test",
