@@ -22,6 +22,12 @@ SELECT round(-0.049999999999999996::DOUBLE, 1)::VARCHAR, round(0.049999999999999
 ----
 -0.0	0.0	-0.0	-0.0	0.0	-0.0
 
+# round without a precision, too, keeps a value just below a half
+query TTTT
+SELECT round(-0.49999999999999994::DOUBLE)::VARCHAR, round(0.49999999999999994::DOUBLE)::VARCHAR, round(0.49999997::FLOAT)::VARCHAR, round(-2.5::DOUBLE)::VARCHAR
+----
+-0.0	0.0	0.0	-3.0
+
 # the largest precision that is corrected
 query TT
 SELECT round(1.5e-22::DOUBLE, 22)::VARCHAR, round(2.5e-22::DOUBLE, 22)::VARCHAR

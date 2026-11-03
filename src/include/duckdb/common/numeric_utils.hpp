@@ -34,6 +34,21 @@ T RoundToNearestEven(T value) {
 	return std::fmod(truncated, static_cast<T>(2)) == 0 ? truncated : next;
 }
 
+//! Rounds halfway cases away from zero like std::round, which some C runtimes (MinGW) get wrong just below a half:
+//! they round 0.49999999999999994 to 1
+template <class T>
+T RoundToNearestAwayFromZero(T value) {
+	static_assert(std::is_floating_point<T>::value, "RoundToNearestAwayFromZero requires a floating point type");
+	if (!std::isfinite(value)) {
+		return value;
+	}
+	const T truncated = std::trunc(value);
+	if (std::fabs(value - truncated) < static_cast<T>(0.5)) {
+		return truncated;
+	}
+	return value < 0 ? truncated - static_cast<T>(1) : truncated + static_cast<T>(1);
+}
+
 template <class T>
 struct MakeSigned {
 	using type = typename std::make_signed<T>::type;

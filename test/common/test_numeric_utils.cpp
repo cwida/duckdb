@@ -133,3 +133,52 @@ TEST_CASE("RoundToNearestEven returns non-finite values unchanged", "[numeric_ut
 	REQUIRE(RoundToNearestEven(-inf_float) == -inf_float);
 	REQUIRE(std::isnan(RoundToNearestEven(std::numeric_limits<float>::quiet_NaN())));
 }
+
+TEST_CASE("RoundToNearestAwayFromZero rounds halfway cases away from zero, and values just below a half down",
+          "[numeric_utils]") {
+	struct RoundingCase {
+		double input;
+		double expected;
+	};
+	// 0.49999999999999994 is the largest double below 0.5, which C runtimes that add 0.5 and floor round to 1
+	const RoundingCase cases[] = {{0.0, 0.0},
+	                              {0.5, 1.0},
+	                              {1.5, 2.0},
+	                              {2.5, 3.0},
+	                              {-0.5, -1.0},
+	                              {-2.5, -3.0},
+	                              {2.25, 2.0},
+	                              {-2.75, -3.0},
+	                              {0.49999999999999994, 0.0},
+	                              {-0.49999999999999994, 0.0},
+	                              {4503599627370497.0, 4503599627370497.0}};
+
+	RoundingModeGuard guard;
+	const int modes[] = {FE_TONEAREST, FE_DOWNWARD, FE_UPWARD, FE_TOWARDZERO};
+	for (const auto mode : modes) {
+		if (std::fesetround(mode) != 0) {
+			// mode not supported on this platform
+			continue;
+		}
+		REQUIRE(std::fegetround() == mode);
+		for (const auto &test_case : cases) {
+			// volatile stops the compiler from rounding these at compile time instead
+			volatile double input = test_case.input;
+			REQUIRE(RoundToNearestAwayFromZero(static_cast<double>(input)) == test_case.expected);
+		}
+	}
+	volatile float below_half = 0.49999997f;
+	REQUIRE(RoundToNearestAwayFromZero(static_cast<float>(below_half)) == 0.0f);
+	REQUIRE(RoundToNearestAwayFromZero(2.5f) == 3.0f);
+}
+
+TEST_CASE("RoundToNearestAwayFromZero preserves the sign of zero and non-finite values", "[numeric_utils]") {
+	REQUIRE(IsNegativeZero(RoundToNearestAwayFromZero(-0.0)));
+	REQUIRE(IsNegativeZero(RoundToNearestAwayFromZero(-0.49999999999999994)));
+	REQUIRE(!IsNegativeZero(RoundToNearestAwayFromZero(0.4)));
+
+	const auto inf = std::numeric_limits<double>::infinity();
+	REQUIRE(RoundToNearestAwayFromZero(inf) == inf);
+	REQUIRE(RoundToNearestAwayFromZero(-inf) == -inf);
+	REQUIRE(std::isnan(RoundToNearestAwayFromZero(std::numeric_limits<double>::quiet_NaN())));
+}
