@@ -72,7 +72,7 @@ loop reuse 0 2
 unzip data/storage/null_stats_v1_5.db.gz {TEST_DIR}/null_stats_v1_5_reuse.db
 
 statement ok
-SET experimental_metadata_reuse = ${reuse}::BOOLEAN
+SET experimental_metadata_reuse = {reuse}::BOOLEAN
 
 statement ok
 ATTACH '{TEST_DIR}/null_stats_v1_5_reuse.db' AS reuse (STORAGE_VERSION 'v2.0.0')
@@ -98,3 +98,26 @@ statement ok
 DETACH reuse
 
 endloop
+
+# segments rewritten with the 2.0 storage version carry their own statistics
+unzip data/storage/null_stats_v1_5.db.gz {TEST_DIR}/null_stats_v1_5_rewrite.db
+
+statement ok
+ATTACH '{TEST_DIR}/null_stats_v1_5_rewrite.db' AS rewrite (STORAGE_VERSION 'v2.0.0')
+
+statement ok
+UPDATE rewrite.t SET x = 1 WHERE x = 1
+
+statement ok
+CHECKPOINT rewrite
+
+statement ok
+DETACH rewrite
+
+statement ok
+ATTACH '{TEST_DIR}/null_stats_v1_5_rewrite.db' AS rewrite
+
+query I
+SELECT count(*) FROM rewrite.t WHERE x IS NULL OR x > 2
+----
+1024

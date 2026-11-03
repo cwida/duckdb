@@ -6,7 +6,7 @@
 # CREATE TABLE f(id INTEGER, end_snapshot BIGINT);
 # INSERT INTO f SELECT i, CASE WHEN i % 2048 < 1500 THEN 3 END FROM range(250000) r(i);
 # CHECKPOINT;
-# so every vector of the three row groups ends with 548 NULL rows
+# so every full vector of the three row groups ends with 548 NULL rows
 require exact_vector_size 2048
 
 unzip data/storage/null_rows_v1_5.db.gz {TEST_DIR}/null_rows_v1_5.db
