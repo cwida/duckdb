@@ -104,10 +104,11 @@ void RemoveUnusedColumns::GatherRecursiveDependencies(unique_ptr<LogicalOperator
 	}
 }
 
-bool RemoveUnusedColumns::ComputeRecursiveRequiredColumns(LogicalRecursiveCTE &rec,
+bool RemoveUnusedColumns::ComputeCTEMemberRequiredColumns(LogicalCTE &cte,
                                                           unordered_set<ProjectionIndex> &required_columns) {
+	// the caller pre-seeds columns the construct itself needs (e.g. the trampoline selector)
 	for (auto &entry : column_references) {
-		if (entry.first.table_index == rec.table_index) {
+		if (entry.first.table_index == cte.table_index) {
 			required_columns.insert(entry.first.column_index);
 		}
 	}
@@ -115,11 +116,14 @@ bool RemoveUnusedColumns::ComputeRecursiveRequiredColumns(LogicalRecursiveCTE &r
 		required_columns.insert(ProjectionIndex(0));
 	}
 	while (true) {
-		unordered_set<ProjectionIndex> recursive_dependencies;
-		GatherRecursiveDependencies(rec.children[1], rec.table_index, required_columns, recursive_dependencies);
+		unordered_set<ProjectionIndex> member_dependencies;
+		for (idx_t child_idx = 1; child_idx < cte.children.size(); child_idx++) {
+			GatherRecursiveDependencies(cte.children[child_idx], cte.table_index, required_columns,
+			                            member_dependencies);
+		}
 		const auto old_count = required_columns.size();
-		required_columns.insert(recursive_dependencies.begin(), recursive_dependencies.end());
-		if (required_columns.size() >= rec.column_count) {
+		required_columns.insert(member_dependencies.begin(), member_dependencies.end());
+		if (required_columns.size() >= cte.column_count) {
 			return false;
 		}
 		if (required_columns.size() == old_count) {
@@ -128,20 +132,22 @@ bool RemoveUnusedColumns::ComputeRecursiveRequiredColumns(LogicalRecursiveCTE &r
 	}
 }
 
-void RemoveUnusedColumns::ApplyRecursiveProjections(LogicalRecursiveCTE &rec,
-                                                    const unordered_set<ProjectionIndex> &required_columns) {
+//! Projects every child onto the kept columns and returns them in order: the old-to-new
+//! column map the callers use to remap their own metadata
+vector<idx_t> RemoveUnusedColumns::ApplyCTEMemberProjections(LogicalCTE &cte,
+                                                             const unordered_set<ProjectionIndex> &required_columns) {
 	D_ASSERT(mode == RemoveUnusedColumnsMode::APPLY);
 	for (auto column_idx : required_columns) {
-		column_references.emplace(ColumnBinding(rec.table_index, column_idx), ReferencedColumn());
+		column_references.emplace(ColumnBinding(cte.table_index, column_idx), ReferencedColumn());
 	}
 	vector<idx_t> entries;
-	for (idx_t i = 0; i < rec.column_count; i++) {
+	for (idx_t i = 0; i < cte.column_count; i++) {
 		entries.push_back(i);
 	}
-	ClearUnusedExpressions(entries, rec.table_index);
+	ClearUnusedExpressions(entries, cte.table_index);
 	ApplySecureViewReplacements();
 
-	for (auto &child : rec.children) {
+	for (auto &child : cte.children) {
 		child->ResolveOperatorTypes();
 		auto bindings = child->GetColumnBindings();
 		vector<unique_ptr<Expression>> expressions;
@@ -156,26 +162,26 @@ void RemoveUnusedColumns::ApplyRecursiveProjections(LogicalRecursiveCTE &rec,
 		projection->children.push_back(std::move(child));
 		child = std::move(projection);
 	}
-	vector<LogicalType> internal_types;
-	internal_types.reserve(entries.size());
-	for (auto column_idx : entries) {
-		internal_types.push_back(rec.internal_types[column_idx]);
-	}
-	rec.internal_types = std::move(internal_types);
-	rec.column_count = entries.size();
+	cte.column_count = entries.size();
+	return entries;
 }
 
 vector<ReplacementBinding>
-RemoveUnusedColumns::RewriteRecursiveCTEReferences(LogicalRecursiveCTE &rec,
-                                                   const unordered_set<ProjectionIndex> &required_columns) {
+RemoveUnusedColumns::RewriteCTEMemberReferences(LogicalCTE &cte,
+                                                const unordered_set<ProjectionIndex> &required_columns) {
 	D_ASSERT(mode == RemoveUnusedColumnsMode::APPLY);
-	CTERefPruner cte_ref_pruner(rec.table_index, required_columns);
-	cte_ref_pruner.VisitOperator(*rec.children[1]);
-	auto binding_replacements = std::move(cte_ref_pruner.binding_replacements);
-	ColumnBindingReplacer column_binding_replacer;
-	column_binding_replacer.replacement_bindings = binding_replacements;
-	column_binding_replacer.VisitOperator(*rec.children[1]);
-	return binding_replacements;
+	vector<ReplacementBinding> reference_replacements;
+	for (idx_t child_idx = 1; child_idx < cte.children.size(); child_idx++) {
+		CTERefPruner cte_ref_pruner(cte.table_index, required_columns);
+		cte_ref_pruner.VisitOperator(*cte.children[child_idx]);
+		ColumnBindingReplacer column_binding_replacer;
+		column_binding_replacer.replacement_bindings = cte_ref_pruner.binding_replacements;
+		column_binding_replacer.VisitOperator(*cte.children[child_idx]);
+		for (auto &replacement : cte_ref_pruner.binding_replacements) {
+			reference_replacements.push_back(replacement);
+		}
+	}
+	return reference_replacements;
 }
 
 bool RemoveUnusedColumns::TryPruneRecursiveCTE(LogicalRecursiveCTE &rec) {
@@ -186,11 +192,17 @@ bool RemoveUnusedColumns::TryPruneRecursiveCTE(LogicalRecursiveCTE &rec) {
 		return false;
 	}
 	unordered_set<ProjectionIndex> required_columns;
-	if (!ComputeRecursiveRequiredColumns(rec, required_columns)) {
+	if (!ComputeCTEMemberRequiredColumns(rec, required_columns)) {
 		return false;
 	}
-	ApplyRecursiveProjections(rec, required_columns);
-	auto reference_replacements = RewriteRecursiveCTEReferences(rec, required_columns);
+	auto entries = ApplyCTEMemberProjections(rec, required_columns);
+	vector<LogicalType> internal_types;
+	internal_types.reserve(entries.size());
+	for (auto column_idx : entries) {
+		internal_types.push_back(rec.internal_types[column_idx]);
+	}
+	rec.internal_types = std::move(internal_types);
+	auto reference_replacements = RewriteCTEMemberReferences(rec, required_columns);
 	for (auto &child : rec.children) {
 		RemoveUnusedColumns remove(*this, true);
 		remove.VisitOperator(child);
@@ -201,87 +213,6 @@ bool RemoveUnusedColumns::TryPruneRecursiveCTE(LogicalRecursiveCTE &rec) {
 	}
 	ApplySecureViewReplacements();
 	return true;
-}
-
-bool RemoveUnusedColumns::ComputeTrampolineRequiredColumns(LogicalTrampoline &tramp,
-                                                           unordered_set<ProjectionIndex> &required_columns) {
-	for (auto &entry : column_references) {
-		if (entry.first.table_index == tramp.table_index) {
-			required_columns.insert(entry.first.column_index);
-		}
-	}
-	// the selector routes every row, so it stays live regardless of outer references
-	required_columns.insert(ProjectionIndex(tramp.selector_idx));
-	while (true) {
-		unordered_set<ProjectionIndex> dependencies;
-		for (idx_t child_idx = 1; child_idx < tramp.children.size(); child_idx++) {
-			GatherRecursiveDependencies(tramp.children[child_idx], tramp.table_index, required_columns, dependencies);
-		}
-		const auto old_count = required_columns.size();
-		required_columns.insert(dependencies.begin(), dependencies.end());
-		if (required_columns.size() >= tramp.column_count) {
-			return false;
-		}
-		if (required_columns.size() == old_count) {
-			return true;
-		}
-	}
-}
-
-void RemoveUnusedColumns::ApplyTrampolineProjections(LogicalTrampoline &tramp,
-                                                     const unordered_set<ProjectionIndex> &required_columns) {
-	D_ASSERT(mode == RemoveUnusedColumnsMode::APPLY);
-	for (auto column_idx : required_columns) {
-		column_references.emplace(ColumnBinding(tramp.table_index, column_idx), ReferencedColumn());
-	}
-	vector<idx_t> entries;
-	for (idx_t i = 0; i < tramp.column_count; i++) {
-		entries.push_back(i);
-	}
-	ClearUnusedExpressions(entries, tramp.table_index);
-	ApplySecureViewReplacements();
-
-	for (auto &child : tramp.children) {
-		child->ResolveOperatorTypes();
-		auto bindings = child->GetColumnBindings();
-		vector<unique_ptr<Expression>> expressions;
-		expressions.reserve(entries.size());
-		for (auto column_idx : entries) {
-			expressions.push_back(make_uniq<BoundColumnRefExpression>(child->types[column_idx], bindings[column_idx]));
-		}
-		auto projection = make_uniq<LogicalProjection>(binder.GenerateTableIndex(), std::move(expressions));
-		if (child->has_estimated_cardinality) {
-			projection->SetEstimatedCardinality(child->estimated_cardinality);
-		}
-		projection->children.push_back(std::move(child));
-		child = std::move(projection);
-	}
-	for (idx_t i = 0; i < entries.size(); i++) {
-		if (entries[i] == tramp.selector_idx) {
-			tramp.selector_idx = i;
-			break;
-		}
-	}
-	tramp.column_count = entries.size();
-}
-
-vector<ReplacementBinding>
-RemoveUnusedColumns::RewriteTrampolineCTEReferences(LogicalTrampoline &tramp,
-                                                    const unordered_set<ProjectionIndex> &required_columns) {
-	D_ASSERT(mode == RemoveUnusedColumnsMode::APPLY);
-	vector<ReplacementBinding> reference_replacements;
-	for (idx_t child_idx = 1; child_idx < tramp.children.size(); child_idx++) {
-		// covers wave references and frontier references, which share the CTE index
-		CTERefPruner cte_ref_pruner(tramp.table_index, required_columns);
-		cte_ref_pruner.VisitOperator(*tramp.children[child_idx]);
-		ColumnBindingReplacer column_binding_replacer;
-		column_binding_replacer.replacement_bindings = cte_ref_pruner.binding_replacements;
-		column_binding_replacer.VisitOperator(*tramp.children[child_idx]);
-		for (auto &replacement : cte_ref_pruner.binding_replacements) {
-			reference_replacements.push_back(replacement);
-		}
-	}
-	return reference_replacements;
 }
 
 bool RemoveUnusedColumns::TryPruneTrampoline(LogicalTrampoline &tramp) {
@@ -302,11 +233,19 @@ bool RemoveUnusedColumns::TryPruneTrampoline(LogicalTrampoline &tramp) {
 		}
 	}
 	unordered_set<ProjectionIndex> required_columns;
-	if (!ComputeTrampolineRequiredColumns(tramp, required_columns)) {
+	// the selector routes every row, so it stays live regardless of outer references
+	required_columns.insert(ProjectionIndex(tramp.selector_idx));
+	if (!ComputeCTEMemberRequiredColumns(tramp, required_columns)) {
 		return false;
 	}
-	ApplyTrampolineProjections(tramp, required_columns);
-	auto reference_replacements = RewriteTrampolineCTEReferences(tramp, required_columns);
+	auto entries = ApplyCTEMemberProjections(tramp, required_columns);
+	for (idx_t i = 0; i < entries.size(); i++) {
+		if (entries[i] == tramp.selector_idx) {
+			tramp.selector_idx = i;
+			break;
+		}
+	}
+	auto reference_replacements = RewriteCTEMemberReferences(tramp, required_columns);
 	for (auto &child : tramp.children) {
 		RemoveUnusedColumns remove(*this, true);
 		remove.VisitOperator(child);
