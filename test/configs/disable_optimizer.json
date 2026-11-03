@@ -29,6 +29,12 @@
       ]
     },
     {
+      "reason": "Checks common sub-expression extraction performed by the optimizer.",
+      "paths": [
+        "test/sql/optimizer/cse_volatile_aggregate_filter.test"
+      ]
+    },
+    {
       "reason": "Checks filter reordering performed by the optimizer.",
       "paths": [
         "test/optimizer/struct_cast_can_throw_reordering.test"
