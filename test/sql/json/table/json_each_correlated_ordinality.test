@@ -14,6 +14,24 @@ ORDER BY ALL;
 3	1	2
 3	2	3
 
+# a TABLE parameter's rows form one invocation: the numbering continues across them
+query II
+SELECT s.v, s.ordinality
+FROM (VALUES (1)) o(k),
+     LATERAL summary((SELECT unnest(CASE WHEN typeof(o.k) = 'INTEGER' THEN [2, 3] END) AS v)) WITH ORDINALITY s
+ORDER BY ALL;
+----
+2	1
+3	2
+
+query II
+SELECT s.v, s.ordinality
+FROM summary((SELECT unnest([2, 3]) AS v)) WITH ORDINALITY s
+ORDER BY ALL;
+----
+2	1
+3	2
+
 require json
 
 # the ordinality column is produced by the operator, not by json_each

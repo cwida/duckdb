@@ -89,12 +89,21 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalGet &op) {
 				}
 			}
 		}
+		bool table_input = false;
+		const auto &signature = op.function.GetSignature();
+		for (idx_t i = 0; i < signature.GetPositionalParameterCount(); i++) {
+			if (signature.GetParameter(i).GetType().id() == LogicalTypeId::TABLE) {
+				table_input = true;
+				break;
+			}
+		}
 		auto &table_in_out = Make<PhysicalTableInOutFunction>(
 		    op.types, op.function, std::move(op.bind_data), column_ids, std::move(projection_indices),
 		    std::move(table_filters), op.estimated_cardinality, std::move(op.projected_input));
 		table_in_out.children.push_back(child);
 		auto &cast_table_in_out = table_in_out.Cast<PhysicalTableInOutFunction>();
 		cast_table_in_out.ordinality_idx = ordinality_idx;
+		cast_table_in_out.table_input = table_input;
 		return table_in_out;
 	}
 
