@@ -63,6 +63,7 @@
     {
       "reason": "Time (NS) not supported (new type).",
       "paths": [
+        "test/sql/copy/parquet/bloom_filter_fallback_types.test",
         "test/sql/optimizer/expression/test_time_ns_cast_comparison.test",
         "test/fuzzer/duckfuzz/arg_minmax_by_decimal.test",
         "test/fuzzer/duckfuzz/array_distance.test",
@@ -109,7 +110,8 @@
         "test/parquet/timens_parquet.test",
         "test/sql/types/time/test_time_ns.test",
         "test/sql/copy/parquet/int96_as.test",
-        "test/sql/copy/parquet/byte_stream_split_flba.test"
+        "test/sql/copy/parquet/byte_stream_split_flba.test",
+        "test/sql/function/timestamp/test_icu_time_bucket_timestamptz_ns.test"
       ]
     },
     {

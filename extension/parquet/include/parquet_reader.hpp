@@ -498,7 +498,7 @@ private:
 	                                                    ColumnReader &column_reader, const TableFilter &filter);
 	FilterPropagateResult CheckRowGroupFilterStatistics(ClientContext &context, idx_t group_index,
 	                                                    ColumnReader &column_reader, const TableFilter &filter);
-	bool DynamicFiltersExcludeRowGroup(ClientContext &context, ParquetReaderScanState &state);
+	bool FiltersExcludeRowGroup(ClientContext &context, ParquetReaderScanState &state, bool dynamic_filters_only);
 	void PrepareRowGroupBuffer(ClientContext &context, ParquetReaderScanState &state, idx_t out_col_idx);
 	//! Reads the page index of the row group and works out which rows may match the filters; a page index that
 	//! cannot be read or evaluated is ignored

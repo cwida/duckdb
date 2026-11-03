@@ -39,6 +39,7 @@ public:
 		} else {
 			reader = make_shared_ptr<JSONReader>(context, json_data.options, json_data.file);
 		}
+		reader->scanning = true;
 	}
 
 public:
@@ -233,6 +234,7 @@ static void ReadSingleJSONFileFunction(ClientContext &context, TableFunctionInpu
 		default:
 			throw InternalException("Unsupported scan type for read_single_json_file");
 		}
+		reader.CountBytesScanned();
 		if (output.size() != 0) {
 			return;
 		}
@@ -303,6 +305,17 @@ static unique_ptr<NodeStatistics> ReadSingleJSONFileCardinality(ClientContext &c
 	return make_uniq<NodeStatistics>(per_file_cardinality);
 }
 
+//! The bytes scanned are drained, so each is reported once - the profiler sums what every thread reports
+static void ReadSingleJSONFileGetMetrics(TableFunctionGetMetricsInput &input) {
+	if (!input.global_state) {
+		return;
+	}
+	auto &gstate = input.global_state->Cast<ReadSingleJSONFileGlobalState>();
+	if (gstate.reader) {
+		input.operator_metrics.bytes_scanned += gstate.reader->bytes_scanned_unreported.exchange(0);
+	}
+}
+
 TableFunction JSONFunctions::GetReadSingleJSONFileTableFunction(shared_ptr<JSONScanInfo> function_info) {
 	const auto scan_type = function_info->type;
 	TableFunction table_function(
@@ -316,6 +329,7 @@ TableFunction JSONFunctions::GetReadSingleJSONFileTableFunction(shared_ptr<JSONS
 	}
 	table_function.table_scan_progress = ReadSingleJSONFileProgress;
 	table_function.cardinality = ReadSingleJSONFileCardinality;
+	table_function.get_metrics = ReadSingleJSONFileGetMetrics;
 	table_function.function_info = std::move(function_info);
 	return table_function;
 }
@@ -332,6 +346,7 @@ TableFunction JSONFunctions::GetJSONTableFunction(Identifier name, shared_ptr<JS
 	settings.combine_schema = ReadSingleJSONFileCombineSchema;
 	settings.claim_batch = ReadSingleJSONFileClaimBatch;
 	settings.finish_batch = ReadSingleJSONFileFinishBatch;
+	settings.reports_bytes_scanned = true;
 	return TableFunctionMultiFileWrapper::CreateFunction(std::move(single_file_function), std::move(name),
 	                                                     std::move(settings));
 }

@@ -1,0 +1,182 @@
+# name: test/sql/pragma/profiling/test_profiling_bytes_scanned_json.test
+# description: Test query.total_bytes_scanned and operator.bytes_scanned for JSON scans
+# group: [profiling]
+
+require json
+
+statement ok
+COPY (SELECT range AS i, 'value ' || range AS s FROM range(100000)) TO '{TEST_DIR}/bytes_scanned_1.json';
+
+statement ok
+COPY (SELECT range AS i, 'value ' || range AS s FROM range(100000)) TO '{TEST_DIR}/bytes_scanned_2.json';
+
+statement ok
+COPY (SELECT range AS i, 'value ' || range AS s FROM range(100000)) TO '{TEST_DIR}/bytes_scanned_1.json.gz' (COMPRESSION gzip);
+
+statement ok
+COPY (SELECT range AS i, 'value ' || range AS s FROM range(100000)) TO '{TEST_DIR}/bytes_scanned_array.json' (ARRAY true);
+
+statement ok
+COPY (SELECT range AS i, 'value ' || range AS s FROM range(20000)) TO '{TEST_DIR}/bytes_scanned_many_1.json';
+
+statement ok
+COPY (SELECT range AS i, 'value ' || range AS s FROM range(20000)) TO '{TEST_DIR}/bytes_scanned_many_2.json';
+
+statement ok
+COPY (SELECT range AS i, 'value ' || range AS s FROM range(20000)) TO '{TEST_DIR}/bytes_scanned_many_3.json';
+
+statement ok
+COPY (SELECT range AS i, 'value ' || range AS s FROM range(20000)) TO '{TEST_DIR}/bytes_scanned_many_4.json';
+
+statement ok
+COPY (SELECT range AS i, 'value ' || range AS s FROM range(20000)) TO '{TEST_DIR}/bytes_scanned_many_5.json';
+
+statement ok
+CREATE TABLE sizes AS SELECT filename, size FROM read_blob('{TEST_DIR}/bytes_scanned_*.json*');
+
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+SET tracked_metrics = ['query.total_bytes_scanned', 'operator.bytes_scanned', 'operator.type'];
+
+# a scan of the whole file counts every byte of it
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/bytes_scanned_json_one.json';
+
+statement ok
+SELECT sum(i) FROM '{TEST_DIR}/bytes_scanned_1.json';
+
+statement ok
+PRAGMA disable_profiling;
+
+query I
+SELECT query.total_bytes_scanned = (SELECT size FROM sizes WHERE filename SIMILAR TO '.*bytes_scanned_1\.json')
+FROM '{TEST_DIR}/bytes_scanned_json_one.json';
+----
+true
+
+query II
+EXPLAIN ANALYZE (FORMAT json) SELECT sum(i) FROM '{TEST_DIR}/bytes_scanned_1.json'
+----
+analyzed_plan	<REGEX>:[\s\S]*"bytes_scanned": [1-9][\s\S]*
+
+# a compressed file counts its compressed bytes
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/bytes_scanned_json_gzip.json';
+
+statement ok
+SELECT sum(i) FROM '{TEST_DIR}/bytes_scanned_1.json.gz';
+
+statement ok
+PRAGMA disable_profiling;
+
+query I
+SELECT query.total_bytes_scanned = (SELECT size FROM sizes WHERE filename SIMILAR TO '.*bytes_scanned_1\.json\.gz')
+FROM '{TEST_DIR}/bytes_scanned_json_gzip.json';
+----
+true
+
+# a file holding a single array is scanned whole
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/bytes_scanned_json_array.json';
+
+statement ok
+SELECT sum(i) FROM read_json('{TEST_DIR}/bytes_scanned_array.json', format = 'array');
+
+statement ok
+PRAGMA disable_profiling;
+
+query I
+SELECT query.total_bytes_scanned = (SELECT size FROM sizes WHERE filename SIMILAR TO '.*bytes_scanned_array\.json')
+FROM '{TEST_DIR}/bytes_scanned_json_array.json';
+----
+true
+
+# several files count each of them
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/bytes_scanned_json_two.json';
+
+statement ok
+SELECT sum(i) FROM read_json(['{TEST_DIR}/bytes_scanned_1.json', '{TEST_DIR}/bytes_scanned_2.json']);
+
+statement ok
+PRAGMA disable_profiling;
+
+query I
+SELECT query.total_bytes_scanned = (SELECT sum(size) FROM sizes WHERE filename SIMILAR TO '.*bytes_scanned_[12]\.json')
+FROM '{TEST_DIR}/bytes_scanned_json_two.json';
+----
+true
+
+# a file scanned twice counts twice
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/bytes_scanned_json_twice.json';
+
+statement ok
+SELECT (SELECT sum(i) FROM '{TEST_DIR}/bytes_scanned_1.json') + (SELECT sum(i) FROM '{TEST_DIR}/bytes_scanned_1.json');
+
+statement ok
+PRAGMA disable_profiling;
+
+query I
+SELECT query.total_bytes_scanned = 2 * (SELECT size FROM sizes WHERE filename SIMILAR TO '.*bytes_scanned_1\.json')
+FROM '{TEST_DIR}/bytes_scanned_json_twice.json';
+----
+true
+
+# a file holding a single array that spans many buffers, read by several threads
+statement ok
+SET threads = 4;
+
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/bytes_scanned_json_array_buffers.json';
+
+statement ok
+SELECT sum(i) FROM read_json('{TEST_DIR}/bytes_scanned_array.json', format = 'array', maximum_object_size = 32768);
+
+statement ok
+PRAGMA disable_profiling;
+
+query I
+SELECT query.total_bytes_scanned = (SELECT size FROM sizes WHERE filename SIMILAR TO '.*bytes_scanned_array\.json')
+FROM '{TEST_DIR}/bytes_scanned_json_array_buffers.json';
+----
+true
+
+# more files than threads, each of several buffers
+statement ok
+SET threads = 2;
+
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/bytes_scanned_json_many.json';
+
+statement ok
+SELECT sum(i) FROM read_json('{TEST_DIR}/bytes_scanned_many_*.json', maximum_object_size = 32768);
+
+statement ok
+PRAGMA disable_profiling;
+
+query I
+SELECT query.total_bytes_scanned = (SELECT sum(size) FROM sizes WHERE filename SIMILAR TO '.*bytes_scanned_many_[1-5]\.json')
+FROM '{TEST_DIR}/bytes_scanned_json_many.json';
+----
+true

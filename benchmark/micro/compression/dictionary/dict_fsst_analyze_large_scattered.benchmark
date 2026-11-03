@@ -1,0 +1,21 @@
+# name: benchmark/micro/compression/dictionary/dict_fsst_analyze_large_scattered.benchmark
+# description: Storing large values whose duplicates are spread further apart than one block's dictionary
+# group: [dictionary]
+
+name Dictionary Compression Write
+group dictionary
+storage persistent v1.4.0
+require_reinit
+
+load
+PRAGMA force_compression='dict_fsst';
+DROP TABLE IF EXISTS test;
+CREATE OR REPLACE TABLE vals AS
+	SELECT g AS grp, (SELECT string_agg(md5(g::VARCHAR || '-' || x::VARCHAR), '') FROM range(180) x) AS txt
+	FROM range(300) t(g);
+CREATE OR REPLACE TABLE src AS
+	SELECT vals.txt AS i FROM (SELECT (hash(i) % 300) AS grp FROM range(0, 100_000) tbl(i)) t JOIN vals USING (grp);
+
+run
+CREATE TABLE test AS SELECT * FROM src;
+checkpoint;
