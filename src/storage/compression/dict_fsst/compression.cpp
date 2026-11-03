@@ -32,12 +32,6 @@ DictFSSTCompressionState::~DictFSSTCompressionState() {
 	}
 }
 
-static constexpr idx_t DICTIONARY_ENCODE_THRESHOLD = 4096;
-
-static inline bool IsEncoded(DictionaryAppendState state) {
-	return state == DictionaryAppendState::ENCODED || state == DictionaryAppendState::ENCODED_ALL_UNIQUE;
-}
-
 static DictFSSTMode ConvertToMode(DictionaryAppendState &state) {
 	switch (state) {
 	case DictionaryAppendState::ENCODED:
@@ -666,7 +660,7 @@ bool DictFSSTCompressionState::AllUnique() const {
 DictionaryAppendState DictFSSTCompressionState::TryEncode() {
 	//! We were appending normally, the segment is full
 
-	if (dictionary_offset < DICTIONARY_ENCODE_THRESHOLD) {
+	if (dictionary_offset < DictFSSTCompression::DICTIONARY_ENCODE_THRESHOLD) {
 		return DictionaryAppendState::NOT_ENCODED;
 	}
 
@@ -729,7 +723,7 @@ DictionaryAppendState DictFSSTCompressionState::TryEncode() {
 				max_length = str_len;
 			}
 		}
-		if (new_size + DICTIONARY_ENCODE_THRESHOLD > dictionary_offset) {
+		if (new_size + DictFSSTCompression::DICTIONARY_ENCODE_THRESHOLD > dictionary_offset) {
 			can_use_encoding = false;
 			break;
 		}

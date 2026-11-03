@@ -33,6 +33,7 @@
 #include "duckdb/optimizer/row_group_pruner.hpp"
 #include "duckdb/optimizer/sampling_pushdown.hpp"
 #include "duckdb/optimizer/scalar_fn_pushdown.hpp"
+#include "duckdb/optimizer/self_join_aggregate.hpp"
 #include "duckdb/optimizer/statistics_propagator.hpp"
 #include "duckdb/optimizer/aggregate_function_rewriter.hpp"
 #include "duckdb/optimizer/aggregate_reuse.hpp"
@@ -216,6 +217,14 @@ void Optimizer::RunBuiltInOptimizers() {
 	RunOptimizer(OptimizerType::CTE_INLINING, [&]() {
 		CTEInlining cte_inlining(*this);
 		plan = cte_inlining.Optimize(std::move(plan));
+	});
+
+	// Rewrites a self-join on equal keys and one inequality, read only through its keys by a parent that ignores
+	// duplicates, into GROUP BY keys HAVING min(x) <> max(x) over one scan. Runs before filter pushdown, which
+	// would move the join's filters into the scans and hide the pattern
+	RunOptimizer(OptimizerType::SELF_JOIN_AGGREGATE, [&]() {
+		SelfJoinAggregate self_join_aggregate(*this);
+		plan = self_join_aggregate.Optimize(std::move(plan));
 	});
 
 	// Rewrites AVG(x) -> SUM(x)/COUNT(x) and SUM(x+C) -> SUM(x) + C*COUNT(x)

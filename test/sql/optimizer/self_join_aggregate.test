@@ -1,0 +1,430 @@
+# name: test/sql/optimizer/self_join_aggregate.test
+# description: A self-join on equal keys and one inequality, read only through its keys by a parent that ignores duplicates, is a group-by
+# group: [optimizer]
+
+# ws: orders 0-49 ship from one warehouse, 50-59 from none known (NULL), 60-199 from two or three, with some NULL
+# warehouses among them. Every 97th row has a NULL order, and those rows have several warehouses: without the
+# IS NOT NULL on the key, the group-by would emit a NULL order, which turns a NOT IN's FALSE into NULL.
+statement ok
+CREATE TABLE ws AS SELECT
+    CASE WHEN i % 97 = 0 THEN NULL ELSE (i % 200)::INTEGER END AS o,
+    CASE WHEN i % 200 < 50 THEN 1 WHEN i % 200 < 60 THEN NULL WHEN i % 13 = 0 THEN NULL ELSE (i % 3)::INTEGER END AS w,
+    ((i % 200) % 2)::INTEGER AS p,
+    i AS v,
+    'w' || (i % 3) AS wname,
+    (i % 3)::DOUBLE AS wd
+FROM range(3000) r(i);
+
+statement ok
+CREATE TABLE ws2 AS FROM ws;
+
+statement ok
+CREATE TABLE wd AS SELECT o::BIGINT AS ob, DATE '2024-01-01' + w AS dw FROM ws;
+
+statement ok
+CREATE TABLE q AS SELECT CASE WHEN i % 37 = 0 THEN NULL ELSE (i % 250)::INTEGER END AS x FROM range(1000) r(i);
+
+statement ok
+CREATE TABLE r AS SELECT (i % 300)::INTEGER AS k FROM range(500) r(i);
+
+# ---- The shapes it rewrites: the answer is the same with the optimizer off and on --------------------------------
+
+# first with the optimizer off, then on
+loop i 0 2
+
+statement ok
+SET disabled_optimizers = CASE WHEN {i} = 0 THEN 'self_join_aggregate' ELSE '' END;
+
+# q95's shape: a CTE read by two INs, one of them through a join with another table
+query III
+WITH ws_wh AS (SELECT a.o, a.w AS w1, b.w AS w2 FROM ws a, ws b WHERE a.o = b.o AND a.w <> b.w)
+SELECT count(*), count(DISTINCT x), sum(x) FROM q
+WHERE x IN (SELECT o FROM ws_wh) AND x IN (SELECT k FROM r, ws_wh WHERE k = ws_wh.o)
+----
+545	140	70583
+
+# NOT IN: a NULL key that a missing key filter would let in shows here
+query II
+WITH ws_wh AS (SELECT a.o, a.w AS w1, b.w AS w2 FROM ws a, ws b WHERE a.o = b.o AND a.w <> b.w)
+SELECT count(*), sum(x) FROM q WHERE x NOT IN (SELECT o FROM ws_wh)
+----
+427	50431
+
+# the marker itself, NULL for a NULL x
+query III
+WITH ws_wh AS (SELECT a.o, a.w AS w1, b.w AS w2 FROM ws a, ws b WHERE a.o = b.o AND a.w <> b.w)
+SELECT m, count(*), sum(x) FROM (SELECT x, x IN (SELECT o FROM ws_wh) AS m FROM q) GROUP BY m ORDER BY m
+----
+false	427	50431
+true	545	70583
+NULL	28	NULL
+
+# no CTE, JOIN ... ON: a comparison join rather than a filter over a cross product
+query II
+SELECT count(*), sum(x) FROM q WHERE x IN (SELECT a.o FROM ws a JOIN ws b ON a.o = b.o AND a.w <> b.w)
+----
+545	70583
+
+# two keys under a DISTINCT
+query III
+SELECT count(*), sum(o), sum(p) FROM (SELECT DISTINCT a.o, a.p FROM ws a, ws b WHERE a.o = b.o AND a.p = b.p AND a.w <> b.w)
+----
+140	18130	70
+
+# under aggregates that ignore duplicates, the second scan's key read, the conditions written the other way round
+query III
+SELECT min(o), max(o), count(DISTINCT o) FROM (SELECT b.o FROM ws a, ws b WHERE b.o = a.o AND b.w <> a.w)
+----
+60	199	140
+
+# a BIGINT key and a DATE inequality
+query II
+SELECT count(*), sum(x) FROM q WHERE x IN (SELECT a.ob FROM wd a, wd b WHERE a.ob = b.ob AND a.dw <> b.dw)
+----
+545	70583
+
+# a projection in between that names every column, as the identity projection of an inlined CTE does
+query II
+SELECT count(*), sum(x) FROM q WHERE x IN (SELECT o FROM (SELECT * FROM (SELECT a.o, a.w AS w1, b.w AS w2 FROM ws a, ws b WHERE a.o = b.o AND a.w <> b.w)))
+----
+545	70583
+
+# the CTE inlined rather than materialized
+query II
+WITH ws_wh AS NOT MATERIALIZED (SELECT a.o, a.w AS w1, b.w AS w2 FROM ws a, ws b WHERE a.o = b.o AND a.w <> b.w)
+SELECT count(*), sum(x) FROM q WHERE x IN (SELECT o FROM ws_wh) AND x IN (SELECT k FROM r, ws_wh WHERE k = ws_wh.o)
+----
+545	70583
+
+endloop
+
+statement ok
+SET disabled_optimizers = '';
+
+# ---- The plans: one scan of ws under a group-by, and no `!=` join -----------------------------------------------
+
+query II
+EXPLAIN WITH ws_wh AS (SELECT a.o, a.w AS w1, b.w AS w2 FROM ws a, ws b WHERE a.o = b.o AND a.w <> b.w)
+SELECT count(*), count(DISTINCT x), sum(x) FROM q
+WHERE x IN (SELECT o FROM ws_wh) AND x IN (SELECT k FROM r, ws_wh WHERE k = ws_wh.o)
+----
+physical_plan	<REGEX>:[\s\S]*Group By[\s\S]*min\([\s\S]*max\([\s\S]*
+
+query II
+EXPLAIN SELECT DISTINCT a.o, a.p FROM ws a, ws b WHERE a.o = b.o AND a.p = b.p AND a.w <> b.w
+----
+physical_plan	<REGEX>:[\s\S]*Group By[\s\S]*min\([\s\S]*max\([\s\S]*
+
+query II
+EXPLAIN SELECT DISTINCT a.o, a.p FROM ws a, ws b WHERE a.o = b.o AND a.p = b.p AND a.w <> b.w
+----
+physical_plan	<!REGEX>:[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*
+
+query II
+EXPLAIN SELECT count(*), sum(x) FROM q WHERE x IN (SELECT a.o FROM ws a JOIN ws b ON a.o = b.o AND a.w <> b.w)
+----
+physical_plan	<REGEX>:[\s\S]*Group By[\s\S]*
+
+query II
+EXPLAIN SELECT count(*), sum(x) FROM q WHERE x IN (SELECT a.ob FROM wd a, wd b WHERE a.ob = b.ob AND a.dw <> b.dw)
+----
+physical_plan	<REGEX>:[\s\S]*Group By[\s\S]*
+
+query II
+EXPLAIN SELECT count(*), sum(x) FROM q WHERE x IN (SELECT o FROM (SELECT * FROM (SELECT a.o, a.w AS w1, b.w AS w2 FROM ws a, ws b WHERE a.o = b.o AND a.w <> b.w)))
+----
+physical_plan	<REGEX>:[\s\S]*Group By[\s\S]*min\([\s\S]*max\([\s\S]*
+
+query II
+EXPLAIN WITH ws_wh AS NOT MATERIALIZED (SELECT a.o, a.w AS w1, b.w AS w2 FROM ws a, ws b WHERE a.o = b.o AND a.w <> b.w)
+SELECT count(*), sum(x) FROM q WHERE x IN (SELECT o FROM ws_wh) AND x IN (SELECT k FROM r, ws_wh WHERE k = ws_wh.o)
+----
+physical_plan	<REGEX>:[\s\S]*Group By[\s\S]*min\([\s\S]*max\([\s\S]*
+
+# with the optimizer off the self-join is planned as written
+statement ok
+SET disabled_optimizers = 'self_join_aggregate';
+
+query II
+EXPLAIN SELECT DISTINCT a.o, a.p FROM ws a, ws b WHERE a.o = b.o AND a.p = b.p AND a.w <> b.w
+----
+physical_plan	<REGEX>:[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*
+
+statement ok
+SET disabled_optimizers = '';
+
+# ---- The shapes it leaves alone: the join of two scans stays -----------------------------------------------------
+
+# a parent that counts the pairs
+query II
+EXPLAIN WITH ws_wh AS (SELECT a.o, a.w AS w1, b.w AS w2 FROM ws a, ws b WHERE a.o = b.o AND a.w <> b.w)
+SELECT count(*) FROM ws_wh
+----
+physical_plan	<REGEX>:[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*
+
+query I
+WITH ws_wh AS (SELECT a.o, a.w AS w1, b.w AS w2 FROM ws a, ws b WHERE a.o = b.o AND a.w <> b.w)
+SELECT count(*) FROM ws_wh
+----
+17438
+
+# one reference counts them, the other only tests membership: the CTE is shared, so neither is rewritten
+query II
+EXPLAIN WITH ws_wh AS MATERIALIZED (SELECT a.o, a.w AS w1, b.w AS w2 FROM ws a, ws b WHERE a.o = b.o AND a.w <> b.w)
+SELECT (SELECT count(*) FROM ws_wh), count(*) FROM q WHERE x IN (SELECT o FROM ws_wh)
+----
+physical_plan	<REGEX>:[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*
+
+# a column that is not a key is read
+query II
+EXPLAIN SELECT count(*) FROM q WHERE x IN (SELECT a.w FROM ws a, ws b WHERE a.o = b.o AND a.w <> b.w)
+----
+physical_plan	<REGEX>:[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*
+
+# a DISTINCT over a non-key column
+query II
+EXPLAIN SELECT DISTINCT a.o, a.w FROM ws a, ws b WHERE a.o = b.o AND a.w <> b.w
+----
+physical_plan	<REGEX>:[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*
+
+# an aggregate that counts duplicates
+query II
+EXPLAIN SELECT count(o) FROM (SELECT a.o FROM ws a, ws b WHERE a.o = b.o AND a.w <> b.w)
+----
+physical_plan	<REGEX>:[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*
+
+# two different tables
+query II
+EXPLAIN SELECT count(*) FROM q WHERE x IN (SELECT a.o FROM ws a, ws2 b WHERE a.o = b.o AND a.w <> b.w)
+----
+physical_plan	<REGEX>:[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*
+
+# the inequality between two different columns
+query II
+EXPLAIN SELECT count(*) FROM q WHERE x IN (SELECT a.o FROM ws a, ws b WHERE a.o = b.o AND a.w <> b.p)
+----
+physical_plan	<REGEX>:[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*
+
+# a condition of one side only
+query II
+EXPLAIN SELECT count(*) FROM q WHERE x IN (SELECT a.o FROM ws a, ws b WHERE a.o = b.o AND a.w <> b.w AND a.v > 5)
+----
+physical_plan	<REGEX>:[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*
+
+# two inequalities: the pairs must differ in both, which no per-column test says
+query II
+EXPLAIN SELECT count(*) FROM q WHERE x IN (SELECT a.o FROM ws a, ws b WHERE a.o = b.o AND a.w <> b.w AND a.v <> b.v)
+----
+physical_plan	<REGEX>:[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*
+
+# no inequality at all
+query II
+EXPLAIN SELECT count(*) FROM q WHERE x IN (SELECT a.o FROM ws a, ws b WHERE a.o = b.o)
+----
+physical_plan	<REGEX>:[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*
+
+# an inequality against an expression
+query II
+EXPLAIN SELECT count(*) FROM q WHERE x IN (SELECT a.o FROM ws a, ws b WHERE a.o = b.o AND a.w <> b.w + 1)
+----
+physical_plan	<REGEX>:[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*
+
+# a LEFT join
+query II
+EXPLAIN SELECT count(*) FROM q WHERE x IN (SELECT a.o FROM ws a LEFT JOIN ws b ON a.o = b.o AND a.w <> b.w)
+----
+physical_plan	<REGEX>:[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*
+
+# a VARCHAR inequality, whose ordering may not agree with its equality under a collation
+query II
+EXPLAIN SELECT count(*) FROM q WHERE x IN (SELECT a.o FROM ws a, ws b WHERE a.o = b.o AND a.wname <> b.wname)
+----
+physical_plan	<REGEX>:[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*
+
+# a DOUBLE inequality
+query II
+EXPLAIN SELECT count(*) FROM q WHERE x IN (SELECT a.o FROM ws a, ws b WHERE a.o = b.o AND a.wd <> b.wd)
+----
+physical_plan	<REGEX>:[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*
+
+# a non-integral key
+query II
+EXPLAIN SELECT count(*) FROM q WHERE x::VARCHAR IN (SELECT a.wname FROM ws a, ws b WHERE a.wname = b.wname AND a.w <> b.w)
+----
+physical_plan	<REGEX>:[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*
+
+# a UNION reads its inputs' columns by position
+query II
+EXPLAIN WITH ws_wh AS (SELECT a.o, a.w AS w1, b.w AS w2 FROM ws a, ws b WHERE a.o = b.o AND a.w <> b.w)
+SELECT count(*) FROM q WHERE x IN (SELECT o FROM ws_wh UNION SELECT k FROM r)
+----
+physical_plan	<REGEX>:[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*
+
+# a correlated EXISTS: the correlation is a condition of one side, so the join stays and the answer is unchanged
+query II
+EXPLAIN SELECT count(*), sum(x) FROM q WHERE EXISTS (SELECT 1 FROM ws a, ws b WHERE a.o = b.o AND a.w <> b.w AND a.o = q.x)
+----
+physical_plan	<REGEX>:[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*
+
+query II
+SELECT count(*), sum(x) FROM q WHERE EXISTS (SELECT 1 FROM ws a, ws b WHERE a.o = b.o AND a.w <> b.w AND a.o = q.x)
+----
+545	70583
+
+# a volatile projection between the join and its parent
+query II
+EXPLAIN SELECT count(*) FROM q WHERE x IN (SELECT o FROM (SELECT a.o, random() AS rnd FROM ws a, ws b WHERE a.o = b.o AND a.w <> b.w) WHERE rnd >= 0)
+----
+physical_plan	<REGEX>:[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*
+
+# ---- NULL semantics of the inequality ----------------------------------------------------------------------------
+
+statement ok
+CREATE TABLE n (k INTEGER, x INTEGER);
+
+# key 1: one value and NULLs; key 2: two values and a NULL; key 3: NULLs only; key NULL: two values; key 4: one row
+statement ok
+INSERT INTO n VALUES (1, 10), (1, NULL), (1, 10), (2, 20), (2, 21), (2, NULL), (3, NULL), (3, NULL), (NULL, 30), (NULL, 31), (4, 40);
+
+# first with the optimizer off, then on
+loop i 0 2
+
+statement ok
+SET disabled_optimizers = CASE WHEN {i} = 0 THEN 'self_join_aggregate' ELSE '' END;
+
+query I
+SELECT DISTINCT a.k FROM n a, n b WHERE a.k = b.k AND a.x <> b.x ORDER BY 1
+----
+2
+
+query I
+SELECT k FROM (VALUES (1), (2), (3), (4), (NULL)) v(k) WHERE k NOT IN (SELECT a.k FROM n a, n b WHERE a.k = b.k AND a.x <> b.x) ORDER BY 1
+----
+1
+3
+4
+
+query II
+SELECT k, k IN (SELECT a.k FROM n a, n b WHERE a.k = b.k AND a.x <> b.x) FROM (VALUES (1), (2), (3), (4), (NULL)) v(k) ORDER BY 1
+----
+1	false
+2	true
+3	false
+4	false
+NULL	NULL
+
+endloop
+
+statement ok
+SET disabled_optimizers = '';
+
+query II
+EXPLAIN SELECT DISTINCT a.k FROM n a, n b WHERE a.k = b.k AND a.x <> b.x
+----
+physical_plan	<!REGEX>:[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*
+
+# ---- DISTINCT ON passes the columns it does not deduplicate on through by position: they all count as read -------
+
+statement ok
+CREATE TABLE t (k INTEGER, x INTEGER);
+
+statement ok
+INSERT INTO t VALUES (1, 10), (1, 20);
+
+# first with the optimizer off, then on
+loop i 0 2
+
+statement ok
+SET disabled_optimizers = CASE WHEN {i} = 0 THEN 'self_join_aggregate' ELSE '' END;
+
+# a non-key column is passed through: the join stays and the row keeps its values
+query III
+SELECT DISTINCT ON (a.k) a.k, b.k, a.x IS NULL FROM t a, t b WHERE a.k = b.k AND a.x <> b.x ORDER BY a.k
+----
+1	1	false
+
+# only keys are passed through: the second key copy comes from the group-by
+query II
+SELECT DISTINCT ON (a.k) a.k, b.k FROM t a, t b WHERE a.k = b.k AND a.x <> b.x ORDER BY a.k
+----
+1	1
+
+query II
+SELECT DISTINCT ON (a.k) a.k, b.k FROM n a, n b WHERE a.k = b.k AND a.x <> b.x ORDER BY a.k
+----
+2	2
+
+endloop
+
+statement ok
+SET disabled_optimizers = '';
+
+query II
+EXPLAIN SELECT DISTINCT ON (a.k) a.k, b.k, a.x IS NULL FROM t a, t b WHERE a.k = b.k AND a.x <> b.x ORDER BY a.k
+----
+physical_plan	<REGEX>:[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*
+
+query II
+EXPLAIN SELECT DISTINCT ON (a.k) a.k, b.k FROM t a, t b WHERE a.k = b.k AND a.x <> b.x ORDER BY a.k
+----
+physical_plan	<!REGEX>:[\s\S]*Seq Scan[\s\S]*Seq Scan[\s\S]*
+
+# ---- Two scans of a table function not marked repeatable need not return the same rows: the join stays ----------
+
+query II
+EXPLAIN SELECT DISTINCT a.type_size FROM duckdb_types() a, duckdb_types() b WHERE a.type_size = b.type_size AND a.type_oid <> b.type_oid
+----
+physical_plan	<REGEX>:[\s\S]*DUCKDB_TYPES[\s\S]*DUCKDB_TYPES[\s\S]*
+
+# ---- TPC-DS q95's shape on small data ----------------------------------------------------------------------------
+
+statement ok
+CREATE TABLE web_sales AS SELECT
+    CASE WHEN i % 89 = 0 THEN NULL ELSE (i % 400)::INTEGER END AS ws_order_number,
+    CASE WHEN i % 400 < 100 THEN 1 WHEN i % 400 < 120 THEN NULL WHEN i % 11 = 0 THEN NULL ELSE ((i // 400) % 3)::INTEGER END AS ws_warehouse_sk,
+    (i % 7)::INTEGER AS ws_ship_date_sk,
+    (i % 50)::DECIMAL(7,2) AS ws_net_profit
+FROM range(4000) r(i);
+
+statement ok
+CREATE TABLE web_returns AS SELECT (i % 300)::INTEGER AS wr_order_number FROM range(600) r(i);
+
+statement ok
+CREATE TABLE date_dim AS SELECT i AS d_date_sk FROM range(1, 7) r(i);
+
+# first with the optimizer off, then on
+loop i 0 2
+
+statement ok
+SET disabled_optimizers = CASE WHEN {i} = 0 THEN 'self_join_aggregate' ELSE '' END;
+
+query III
+WITH ws_wh AS (
+    SELECT ws1.ws_order_number, ws1.ws_warehouse_sk wh1, ws2.ws_warehouse_sk wh2
+    FROM web_sales ws1, web_sales ws2
+    WHERE ws1.ws_order_number = ws2.ws_order_number AND ws1.ws_warehouse_sk <> ws2.ws_warehouse_sk)
+SELECT count(DISTINCT ws_order_number) AS "order count", sum(ws_net_profit) AS "total net profit", count(*)
+FROM web_sales ws1, date_dim
+WHERE ws1.ws_ship_date_sk = d_date_sk
+  AND ws1.ws_order_number IN (SELECT ws_order_number FROM ws_wh)
+  AND ws1.ws_order_number IN (SELECT wr_order_number FROM web_returns, ws_wh WHERE wr_order_number = ws_wh.ws_order_number)
+----
+180	39996.00	1527
+
+endloop
+
+statement ok
+SET disabled_optimizers = '';
+
+query II
+EXPLAIN WITH ws_wh AS (
+    SELECT ws1.ws_order_number, ws1.ws_warehouse_sk wh1, ws2.ws_warehouse_sk wh2
+    FROM web_sales ws1, web_sales ws2
+    WHERE ws1.ws_order_number = ws2.ws_order_number AND ws1.ws_warehouse_sk <> ws2.ws_warehouse_sk)
+SELECT count(DISTINCT ws_order_number), sum(ws_net_profit), count(*)
+FROM web_sales ws1, date_dim
+WHERE ws1.ws_ship_date_sk = d_date_sk
+  AND ws1.ws_order_number IN (SELECT ws_order_number FROM ws_wh)
+  AND ws1.ws_order_number IN (SELECT wr_order_number FROM web_returns, ws_wh WHERE wr_order_number = ws_wh.ws_order_number)
+----
+physical_plan	<REGEX>:[\s\S]*Group By[\s\S]*min\([\s\S]*max\([\s\S]*
