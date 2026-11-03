@@ -1,7 +1,7 @@
 #include "duckdb/execution/operator/set/physical_trampoline.hpp"
 
 #include "duckdb/common/vector/vector_iterator.hpp"
-#include "duckdb/execution/operator/set/physical_recursive_cte_state.hpp"
+#include "duckdb/execution/operator/set/recursive_cte_scheduling.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/parallel/meta_pipeline.hpp"

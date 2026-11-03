@@ -7,6 +7,7 @@ add_library_unity(
   physical_recursive_cte_delta.cpp
   physical_recursive_cte_keyed.cpp
   physical_recursive_cte_runtime.cpp
+  recursive_cte_scheduling.cpp
   physical_recursive_cte_state.cpp
   physical_recursive_cte_union.cpp
   physical_cte.cpp)

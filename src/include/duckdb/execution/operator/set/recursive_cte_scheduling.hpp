@@ -7,6 +7,9 @@
 
 #pragma once
 
+#include "duckdb/common/array.hpp"
+#include "duckdb/common/atomic.hpp"
+#include "duckdb/common/enums/physical_operator_type.hpp"
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/common/reference_map.hpp"
@@ -16,11 +19,13 @@
 
 namespace duckdb {
 
+class Logger;
 class MetaPipeline;
 class PhysicalColumnDataScan;
+class PhysicalRecursiveCTE;
 class PipelineExecutor;
-class RecursiveCTEMetrics;
-struct RecursiveCTEEpochMetrics;
+class RecursiveCTEPartialKeyIndex;
+struct RecursiveCTEReferenceInfo;
 
 //! Pipeline executors cached across epochs so re-executions reuse their operator state
 using recursive_executor_cache_t = reference_map_t<Pipeline, vector<unique_ptr<PipelineExecutor>>>;
@@ -105,6 +110,148 @@ private:
 	vector<idx_t> ready_schedule_stages;
 };
 
+struct RecursiveCTEMetricDistribution {
+	static constexpr idx_t BIT_COUNT = sizeof(idx_t) * 8;
+	static constexpr idx_t BUCKET_COUNT = BIT_COUNT + 1;
+
+	void Add(idx_t value);
+	idx_t MedianUpperBound() const;
+
+	array<idx_t, BUCKET_COUNT> buckets {};
+	idx_t count = 0;
+	idx_t maximum = 0;
+};
+
+struct RecursiveCTEEpochMetrics {
+	void RecordPipelineWorkers(idx_t workers);
+
+	void Record(idx_t frontier_rows, idx_t workers, idx_t tasks, idx_t elapsed_us, idx_t frontier_storage_bytes,
+	            idx_t frontier_allocation_bytes);
+	void RecordDirectProbeLookup(idx_t elapsed_ns);
+	void RecordDirectProbeKeyGather(idx_t elapsed_ns);
+	void RecordDirectProbePayloadFinalize(idx_t elapsed_ns);
+	void RecordKeyedHashCommit(idx_t elapsed_ns);
+	void RecordKeyPreaggregationClassification(idx_t elapsed_ns);
+	void RecordKeyPreaggregation(idx_t candidate_rows, idx_t groups, idx_t elapsed_ns);
+	void RecordKeyPreaggregationCombine(idx_t elapsed_ns);
+	void RecordLocalKeyPreaggregationClassification(idx_t elapsed_ns);
+	void RecordLocalKeyPreaggregation(idx_t candidate_rows, idx_t groups, idx_t elapsed_ns);
+	void RecordLocalKeyPreaggregationResidual(idx_t candidate_rows);
+	void RecordPartialIndexMaintenance(idx_t elapsed_ns);
+	void RecordKeyDelta(idx_t candidate_rows, idx_t touched_keys, idx_t new_keys, idx_t changed_keys, idx_t elapsed_ns);
+	void RecordRecurringScan(idx_t elapsed_ns);
+	void RecordFinalStateDrain(idx_t elapsed_ns);
+	void RecordDistinctGrouping(idx_t candidate_rows, idx_t inserted_rows, idx_t elapsed_ns);
+	void RecordPipelineExecution(RecursiveCTEPipelineMetricType metric_type, idx_t elapsed_ns);
+
+	//! Maximum scheduled worker count of one EXECUTE stage across this invocation.
+	atomic<idx_t> max_pipeline_workers {1};
+	RecursiveCTEMetricDistribution frontier_rows;
+	RecursiveCTEMetricDistribution workers;
+	RecursiveCTEMetricDistribution tasks;
+	RecursiveCTEMetricDistribution elapsed_us;
+	idx_t frontier_storage_byte_epochs = 0;
+	idx_t peak_frontier_storage_bytes = 0;
+	idx_t frontier_allocation_byte_epochs = 0;
+	idx_t peak_frontier_allocation_bytes = 0;
+	atomic<idx_t> direct_probe_lookup_work_ns {0};
+	atomic<idx_t> direct_probe_key_gather_work_ns {0};
+	atomic<idx_t> direct_probe_payload_finalize_work_ns {0};
+	atomic<idx_t> keyed_hash_commit_work_ns {0};
+	atomic<idx_t> key_preaggregation_classification_work_ns {0};
+	atomic<idx_t> key_preaggregation_work_ns {0};
+	atomic<idx_t> key_preaggregation_combine_work_ns {0};
+	atomic<idx_t> key_preaggregation_candidate_rows {0};
+	atomic<idx_t> key_preaggregation_groups {0};
+	atomic<idx_t> local_key_preaggregation_classification_work_ns {0};
+	atomic<idx_t> local_key_preaggregation_work_ns {0};
+	atomic<idx_t> local_key_preaggregation_candidate_rows {0};
+	atomic<idx_t> local_key_preaggregation_groups {0};
+	atomic<idx_t> local_key_preaggregation_states {0};
+	atomic<idx_t> local_key_preaggregation_residual_rows {0};
+	atomic<idx_t> partial_index_maintenance_work_ns {0};
+	atomic<idx_t> key_delta_work_ns {0};
+	atomic<idx_t> key_delta_candidate_rows {0};
+	atomic<idx_t> key_delta_touched_keys {0};
+	atomic<idx_t> key_delta_new_keys {0};
+	atomic<idx_t> key_delta_changed_keys {0};
+	atomic<idx_t> key_delta_unchanged_keys {0};
+	atomic<idx_t> recurring_scan_work_ns {0};
+	atomic<idx_t> final_state_drain_work_ns {0};
+	atomic<idx_t> distinct_grouping_work_ns {0};
+	atomic<idx_t> distinct_candidate_rows {0};
+	atomic<idx_t> distinct_inserted_rows {0};
+	atomic<idx_t> recursive_pipeline_execute_work_ns {0};
+	atomic<idx_t> invariant_build_execute_work_ns {0};
+	atomic<idx_t> invariant_cte_materialization_execute_work_ns {0};
+};
+
+struct RecursiveCTELogIdentity {
+	RecursiveCTELogIdentity(PhysicalOperatorType operator_type_p, idx_t invocation_id_p)
+	    : operator_type(operator_type_p), invocation_id(invocation_id_p) {
+	}
+
+	PhysicalOperatorType operator_type;
+	vector<pair<string, string>> operator_parameters;
+	idx_t invocation_id;
+	const char *class_name = "PhysicalRecursiveCTE";
+};
+
+class RecursiveCTEMetrics {
+public:
+	RecursiveCTEMetrics(ClientContext &context, const PhysicalRecursiveCTE &op);
+	//! For other recursive operators (the trampoline), which track their own invocation ids
+	RecursiveCTEMetrics(ClientContext &context, const PhysicalOperator &op, idx_t invocation_id);
+
+	bool Enabled() const {
+		return enabled;
+	}
+	void RecordTasks(idx_t count);
+	idx_t TaskCount() const;
+	void RecordEpoch(idx_t workers, idx_t elapsed_us, idx_t frontier_rows, idx_t frontier_chunks,
+	                 idx_t scheduler_input_rows);
+	void RecordSink(idx_t wait_ns, idx_t work_ns, idx_t rows);
+	void RecordHashRows(idx_t rows);
+	void RecordRecurringScanRows(idx_t rows);
+	void RecordDirectProbeRows(idx_t rows);
+	void RecordDirectProbeMatches(idx_t rows);
+	void RecordPartialProbeChainVisits(idx_t count);
+	void RecordPartialIndexBuild(idx_t elapsed_us);
+	void RecordFinalStateRows(idx_t rows);
+	void RecordRetainedBuild();
+	void RecordRetainedCTEMaterialization();
+	void RecordRetainedCTEReuse();
+	void LogDistinctPromotion(idx_t partitions, idx_t migrated_rows, idx_t elapsed_us) const;
+	void Log(const vector<unique_ptr<RecursiveCTEPartialKeyIndex>> &partial_key_indexes) const;
+	void LogEpochSummary(const RecursiveCTEEpochMetrics &epoch_metrics) const;
+
+private:
+	unique_ptr<RecursiveCTELogIdentity> identity;
+	shared_ptr<Logger> logger;
+	bool enabled;
+	idx_t epochs = 0;
+	idx_t scheduled_workers = 0;
+	atomic<idx_t> scheduled_tasks {0};
+	idx_t elapsed_us = 0;
+	idx_t frontier_rows = 0;
+	idx_t frontier_chunks = 0;
+	idx_t scheduler_input_rows = 0;
+	atomic<idx_t> sink_wait_ns {0};
+	atomic<idx_t> sink_work_ns {0};
+	atomic<idx_t> sink_rows {0};
+	atomic<idx_t> sink_calls {0};
+	atomic<idx_t> hash_rows {0};
+	atomic<idx_t> recurring_scan_rows {0};
+	atomic<idx_t> direct_probe_rows {0};
+	atomic<idx_t> direct_probe_matches {0};
+	atomic<idx_t> partial_probe_chain_visits {0};
+	idx_t partial_index_build_us = 0;
+	idx_t final_state_rows = 0;
+	idx_t retained_build_executions = 0;
+	idx_t retained_cte_materializations = 0;
+	idx_t retained_cte_reuses = 0;
+};
+
 //! Worker counts of one recursive epoch; frontier work and independent source tasks can differ
 struct RecursiveCTEParallelism {
 	explicit RecursiveCTEParallelism(idx_t worker_count)
@@ -184,5 +331,19 @@ void ExecuteRecursivePipelineEventInline(Pipeline &pipeline, const RecursiveSche
                                          idx_t worker_limit, idx_t max_threads,
                                          RecursiveCTEPipelineMetricType metric_type);
 void WaitForRecursiveEvents(Executor &executor, vector<shared_ptr<Event>> &events);
+void WaitForRecursiveEvent(Executor &executor, Event &event);
+//! Conservative upper bound on the workers the schedule can assign to one producer pipeline
+idx_t GetRecursiveProducerWorkerBound(Pipeline &pipeline, idx_t worker_limit);
+void GatherColumnDataScans(const PhysicalOperator &op, vector<const_reference<PhysicalOperator>> &delim_scans);
+void CountDirectRecursiveReferences(const PhysicalOperator &op, TableIndex cte_index,
+                                    RecursiveCTEReferenceInfo &references);
+
+//! Combined worker bound of all producer pipelines that feed one sink
+struct RecursiveSinkWorkerBound {
+	idx_t worker_bound = 0;
+	idx_t producer_count = 0;
+	//! Whether the per-iteration reset already ran for this sink; shared sinks must reset exactly once
+	bool reset_done = false;
+};
 
 } // namespace duckdb
