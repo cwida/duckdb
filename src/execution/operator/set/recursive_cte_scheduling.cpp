@@ -25,6 +25,9 @@
 
 namespace duckdb {
 
+RecursiveExecutorPool::RecursiveExecutorPool() = default;
+RecursiveExecutorPool::~RecursiveExecutorPool() = default;
+
 void RecursiveCTEMetricDistribution::Add(idx_t value) {
 	const auto bucket = value == 0 ? idx_t(0) : BIT_COUNT - CountZeros<uint64_t>::Leading(value);
 	D_ASSERT(bucket < buckets.size());

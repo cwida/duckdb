@@ -31,6 +31,10 @@ struct RecursiveCTEReferenceInfo;
 using recursive_executor_cache_t = reference_map_t<Pipeline, vector<unique_ptr<PipelineExecutor>>>;
 
 struct RecursiveExecutorPool {
+	//! Out of line: constructing and destroying the cache needs the complete PipelineExecutor
+	RecursiveExecutorPool();
+	~RecursiveExecutorPool();
+
 	mutex lock;
 	recursive_executor_cache_t executors;
 };
