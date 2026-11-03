@@ -11,25 +11,24 @@
 namespace duckdb {
 
 unique_ptr<Logger> LogManager::CreateLogger(LoggingContext context, bool thread_safe, bool mutable_settings) {
-	unique_lock<mutex> lck(lock);
-
-	auto registered_logging_context = RegisterLoggingContextInternal(context);
-
 	if (mutable_settings) {
-		return make_uniq<MutableLogger>(config, registered_logging_context, *this);
+		unique_lock<mutex> lck(lock);
+		return make_uniq<MutableLogger>(config, RegisterLoggingContextInternal(context), *this);
 	}
-	if (!config.enabled) {
+	if (!logging_enabled) {
+		return make_uniq<NopLogger>(*this);
+	}
+	auto current_config = config_snapshot.atomic_load();
+	if (!current_config->enabled) {
 		return make_uniq<NopLogger>(*this);
 	}
 	if (!thread_safe) {
 		// TODO: implement ThreadLocalLogger and return it here
 	}
-	return make_uniq<ThreadSafeLogger>(config_snapshot, registered_logging_context, *this);
+	return make_uniq<ThreadSafeLogger>(std::move(current_config), RegisterLoggingContextInternal(context), *this);
 }
 
 RegisteredLoggingContext LogManager::RegisterLoggingContext(LoggingContext &context) {
-	unique_lock<mutex> lck(lock);
-
 	return RegisterLoggingContextInternal(context);
 }
 
@@ -66,7 +65,8 @@ bool LogManager::CanScan(LoggingTargetTable table) {
 }
 
 LogManager::LogManager(DatabaseInstance &db, LogConfig config_p)
-    : config(std::move(config_p)), config_snapshot(make_shared_ptr<const LogConfig>(config)), db_instance(db) {
+    : config(std::move(config_p)), config_snapshot(make_shared_ptr<const LogConfig>(config)),
+      logging_enabled(config.enabled), db_instance(db) {
 	log_storage = make_uniq<InMemoryLogStorage>(db);
 }
 
@@ -85,15 +85,11 @@ LogManager &LogManager::Get(ClientContext &context) {
 }
 
 RegisteredLoggingContext LogManager::RegisterLoggingContextInternal(LoggingContext &context) {
-	RegisteredLoggingContext result = {next_registered_logging_context_index, context};
-
-	next_registered_logging_context_index += 1;
-
-	if (next_registered_logging_context_index == NumericLimits<idx_t>::Maximum()) {
+	auto context_id = next_registered_logging_context_index++;
+	if (context_id >= NumericLimits<idx_t>::Maximum() - 1) {
 		throw InternalException("Ran out of available log context ids.");
 	}
-
-	return result;
+	return {context_id, context};
 }
 
 void LogManager::WriteLogEntry(timestamp_t timestamp, const char *log_type, LogLevel log_level, const char *log_message,
@@ -281,7 +277,8 @@ void LogManager::SetConfigInternal(LogConfig config_p) {
 }
 
 void LogManager::PublishConfigInternal() {
-	config_snapshot = make_shared_ptr<const LogConfig>(config);
+	config_snapshot.atomic_store(make_shared_ptr<const LogConfig>(config));
+	logging_enabled = config.enabled;
 	global_logger->UpdateConfig(config);
 }
 

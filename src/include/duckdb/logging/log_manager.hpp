@@ -94,14 +94,16 @@ protected:
 protected:
 	mutex lock;
 	LogConfig config;
-	//! Immutable copy of config shared by the created loggers, replaced whenever config changes
+	//! Immutable copy of config shared by the created loggers, only accessed atomically
 	shared_ptr<const LogConfig> config_snapshot;
+	//! Mirrors config.enabled, so disabled logging does not contend on the atomic load of config_snapshot
+	atomic<bool> logging_enabled;
 
 	shared_ptr<Logger> global_logger;
 	shared_ptr<LogStorage> log_storage;
 	DatabaseInstance &db_instance;
 
-	idx_t next_registered_logging_context_index = 0;
+	atomic<idx_t> next_registered_logging_context_index {0};
 
 	// Any additional LogStorages registered (by extensions for example)
 	case_insensitive_map_t<shared_ptr<LogStorage>> registered_log_storages;
