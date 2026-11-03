@@ -53,6 +53,10 @@ public:
 
 	~FixedSizeBuffer();
 
+public:
+	//! Leaves the on-disk block owned by the unbound index when binding fails.
+	void DisownBlock();
+
 private:
 	//! Returns a pointer to the buffer in memory, and calls Deserialize, if the buffer is not in memory.
 	//! DEPRECATED. Use segment handles.

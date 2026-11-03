@@ -61,6 +61,15 @@ void BoundIndex::ResetStorage() {
 	ResetStorage(index_lock);
 }
 
+void BoundIndex::DisownStorage(IndexLock &index_lock) {
+	// Indexes that do not reference on-disk blocks of their storage information have nothing to disown.
+}
+
+void BoundIndex::DisownStorage() {
+	IndexLock index_lock(*this);
+	DisownStorage(index_lock);
+}
+
 idx_t BoundIndex::TryDelete(DataChunk &entries, Vector &row_identifiers, optional_ptr<SelectionVector> deleted_sel,
                             optional_ptr<SelectionVector> non_deleted_sel) {
 	IndexLock state(*this);
