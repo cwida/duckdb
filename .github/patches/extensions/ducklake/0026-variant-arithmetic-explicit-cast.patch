@@ -1,0 +1,13 @@
+diff --git a/test/sql/types/variant.test b/test/sql/types/variant.test
+index e4fe4922..deef0959 100644
+--- a/test/sql/types/variant.test
++++ b/test/sql/types/variant.test
+@@ -71,7 +71,7 @@ NULL
+ 
+ # or run updates
+ statement ok
+-UPDATE variant_tbl SET v=v+100 WHERE variant_typeof(v) = 'INT32'
++UPDATE variant_tbl SET v=v::INTEGER+100 WHERE variant_typeof(v) = 'INT32'
+ 
+ query I
+ SELECT v FROM variant_tbl WHERE variant_typeof(v) = 'INT32'
