@@ -1,0 +1,89 @@
+# name: test/sql/copy/parquet/int96_invalid_stats.test
+# description: INT96 statistics must not be trusted to prune row groups (issue #27863)
+# group: [parquet]
+
+require parquet
+
+# int96_invalid_stats.parquet was written by parquet-mr 1.8.1, which computes the statistics of an INT96 column by
+# comparing the 12 raw bytes instead of the timestamp. The declared range is inside the range of the values:
+query II
+SELECT stats_min, stats_max FROM parquet_metadata('{DATA_DIR}/parquet-testing/int96_invalid_stats.parquet')
+WHERE path_in_schema = 'time';
+----
+2024-10-31 23:56:55.978222	2024-10-31 23:57:55.57325
+
+query II
+SELECT min(time)::VARCHAR, max(time)::VARCHAR FROM '{DATA_DIR}/parquet-testing/int96_invalid_stats.parquet';
+----
+2024-10-31 23:48:00.439912	2024-11-01 00:02:59.559069
+
+# Pruning the row group on those statistics returned 0 rows here. The sort order of INT96 is only defined by
+# INT96_TIMESTAMP_ORDER, which this file does not declare, so its statistics are ignored and all rows are read.
+query I
+SELECT count(*) FROM '{DATA_DIR}/parquet-testing/int96_invalid_stats.parquet'
+WHERE time >= TIMESTAMP '2024-11-01';
+----
+208
+
+# the same rows, selected without an expression the reader could push down
+query I
+SELECT count(*) FROM '{DATA_DIR}/parquet-testing/int96_invalid_stats.parquet'
+WHERE strftime(time, '%Y-%m-%d') >= '2024-11-01';
+----
+208
+
+# the other direction kept rows it should have dropped
+query I
+SELECT count(*) FROM '{DATA_DIR}/parquet-testing/int96_invalid_stats.parquet'
+WHERE time < TIMESTAMP '2024-11-01';
+----
+792
+
+query I
+SELECT count(*) FROM '{DATA_DIR}/parquet-testing/int96_invalid_stats.parquet'
+WHERE time < TIMESTAMP '2024-11-01' AND strftime(time, '%Y-%m-%d') >= '2024-11-01';
+----
+0
+
+# every row is on one side of the boundary or the other - none is dropped
+query I
+SELECT count(*) FROM '{DATA_DIR}/parquet-testing/int96_invalid_stats.parquet'
+WHERE time >= TIMESTAMP '2024-11-01' OR time < TIMESTAMP '2024-11-01';
+----
+1000
+
+query I
+SELECT count(*) FROM '{DATA_DIR}/parquet-testing/int96_invalid_stats.parquet'
+WHERE time IS NULL;
+----
+0
+
+# INT96 read as nanoseconds is pruned the same way
+query I
+SELECT count(*) FROM read_parquet('{DATA_DIR}/parquet-testing/int96_invalid_stats.parquet', int96_as = 'timestamp_ns')
+WHERE time >= TIMESTAMP '2024-11-01'::TIMESTAMP_NS;
+----
+208
+
+# INT96 read as a struct still returns every row
+query I
+SELECT count(*) FROM read_parquet('{DATA_DIR}/parquet-testing/int96_invalid_stats.parquet', int96_as = 'struct');
+----
+1000
+
+# a file written by DuckDB itself also declares TYPE_ORDER for its INT96 column, so its statistics are ignored too -
+# the values are unaffected
+statement ok
+COPY (SELECT UNNEST([TIMESTAMP '2024-01-01', TIMESTAMP '2024-06-01', TIMESTAMP '2024-12-01', NULL]) AS ts)
+TO '{TEMP_DIR}/int96_written_by_duckdb.parquet' (FORMAT 'parquet', write_timestamp_as_int96 true);
+
+query I
+SELECT count(*) FROM '{TEMP_DIR}/int96_written_by_duckdb.parquet'
+WHERE ts >= TIMESTAMP '2024-06-01';
+----
+2
+
+query II
+SELECT min(ts)::VARCHAR, max(ts)::VARCHAR FROM '{TEMP_DIR}/int96_written_by_duckdb.parquet';
+----
+2024-01-01 00:00:00	2024-12-01 00:00:00
