@@ -57,7 +57,7 @@ public:
 		return FileSystem::Stats(handle);
 	}
 
-	//! Through the local stat call, the generic stats would recurse
+	//! Avoid recursion through the overridden Stats
 	int64_t GetFileSize(FileHandle &handle) override {
 		return LocalFileSystem::Stats(handle).file_size;
 	}
@@ -67,7 +67,7 @@ public:
 	}
 
 	string GetVersionTag(FileHandle &handle) override {
-		return string();
+		return FileSystem::GetVersionTag(handle);
 	}
 
 	optional<FileMetadata> GetStatsIfExists(const OpenFileInfo &file, optional_ptr<FileOpener> opener) override {
