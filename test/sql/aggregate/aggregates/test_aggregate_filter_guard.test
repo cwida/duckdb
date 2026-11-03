@@ -1,0 +1,105 @@
+# name: test/sql/aggregate/aggregates/test_aggregate_filter_guard.test
+# description: Guard expressions that can throw when evaluated under aggregate FILTER (WHERE ...)
+# group: [aggregates]
+
+statement ok
+PRAGMA enable_verification
+
+statement ok
+CREATE TABLE t AS SELECT range AS a, range % 5 AS b, range % 3 AS g FROM range(1000);
+
+# 01 Ungrouped sum with FILTER excluding division by zero
+query I
+SELECT sum(a // b) FILTER (WHERE b <> 0) FROM t;
+----
+207900
+
+# 02 Grouped aggregation with FILTER
+query I
+SELECT sum(x) FROM (SELECT g, sum(a // b) FILTER (WHERE b <> 0) AS x FROM t GROUP BY g);
+----
+207900
+
+# 03 Count with FILTER
+query I
+SELECT count(a // b) FILTER (WHERE b <> 0) FROM t;
+----
+800
+
+# 04 DISTINCT + FILTER
+query I
+SELECT count(DISTINCT a // b) FILTER (WHERE b <> 0) FROM t;
+----
+433
+
+# 05 Modulo with FILTER
+query I
+SELECT sum(a % b) FILTER (WHERE b <> 0) FROM t;
+----
+600
+
+# 06 Equals CASE equivalence
+query T
+SELECT (SELECT sum(a // b) FILTER (WHERE b <> 0) FROM t) = (SELECT sum(CASE WHEN b <> 0 THEN a // b END) FROM t);
+----
+true
+
+# 07 NULL-filter rows excluded
+query I
+SELECT sum(a // b) FILTER (WHERE nullif(b, 0) > 0) FROM t;
+----
+207900
+
+# 08 Cast failure on filtered-out row must not raise error
+query I
+SELECT sum(x::INT) FILTER (WHERE x ~ '^[0-9]+$') FROM (VALUES ('12'), ('oops'), ('7')) v(x);
+----
+19
+
+# 09 First() with FILTER
+query T
+SELECT first(a // b) FILTER (WHERE b <> 0) IS NOT NULL FROM t;
+----
+true
+
+# 10 Window aggregation with FILTER
+query I
+SELECT count(*) FROM (SELECT sum(a // b) FILTER (WHERE b <> 0) OVER (PARTITION BY g) FROM t);
+----
+1000
+
+# 11 string_agg + ORDER BY + FILTER
+query I
+SELECT length(string_agg((a // b)::VARCHAR, ',' ORDER BY a) FILTER (WHERE b <> 0 AND a < 50)) FROM t;
+----
+86
+
+# 12 Empty filter results in NULL
+query I
+SELECT sum(a // b) FILTER (WHERE false) FROM t;
+----
+NULL
+
+# 13 Non-throwing child + FILTER
+query I
+SELECT sum(a + b) FILTER (WHERE b > 2) FROM t;
+----
+200400
+
+# 14 Passing row division by zero must STILL error
+statement error
+SELECT sum(a // (b - 1)) FILTER (WHERE b <> 0) FROM t;
+----
+Division by zero
+
+# 15 Unfiltered division by zero must error
+statement error
+SELECT sum(a // b) FROM t;
+----
+Division by zero
+
+# 16 Cast failure on row that passes filter must error
+statement error
+SELECT sum(x::INT) FILTER (WHERE x <> 'zz') FROM (VALUES ('12'), ('oops')) v(x);
+----
+Could not convert

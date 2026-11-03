@@ -9,6 +9,7 @@
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/bound_result_modifier.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
+#include "duckdb/planner/expression/bound_case_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression_binder.hpp"
@@ -210,7 +211,14 @@ static BranchResult CreateDistinctBranch(Optimizer &optimizer, LogicalAggregate 
 		auto value_binding = ColumnBinding(distinct_group_index, ProjectionIndex(distinct_groups.size()));
 		if (!Expression::Equals(*child, *key)) {
 			vector<unique_ptr<Expression>> first_children;
-			first_children.push_back(AggregateRewriteHelper::CopyAndRebind(*child, input_replacements));
+			auto distinct_child = AggregateRewriteHelper::CopyAndRebind(*child, input_replacements);
+			if (source_aggregate.GetFilter() && distinct_child->CanThrow()) {
+				auto null_value = make_uniq<BoundConstantExpression>(Value(distinct_child->GetReturnType()));
+				distinct_child = make_uniq<BoundCaseExpression>(
+				    AggregateRewriteHelper::CopyAndRebind(*source_aggregate.GetFilter(), input_replacements),
+				    std::move(distinct_child), std::move(null_value));
+			}
+			first_children.push_back(std::move(distinct_child));
 			auto first_aggregate =
 			    function_binder.BindAggregateFunction(FirstFunctionGetter::GetFunction(child->GetReturnType()),
 			                                          std::move(first_children), nullptr, AggregateType::NON_DISTINCT);
@@ -218,7 +226,16 @@ static BranchResult CreateDistinctBranch(Optimizer &optimizer, LogicalAggregate 
 			distinct_aggregates.push_back(std::move(first_aggregate));
 		}
 		value_columns.push_back(value_binding);
-		distinct_groups.push_back(AggregateRewriteHelper::CopyAndRebind(*key, input_replacements));
+		auto distinct_key = AggregateRewriteHelper::CopyAndRebind(*key, input_replacements);
+		if (source_aggregate.GetFilter() && distinct_key->CanThrow()) {
+			// The deduplication stage evaluates the argument for every input row, before the FILTER is applied.
+			// Guard arguments that can throw: child -> CASE WHEN <filter> THEN child ELSE NULL END
+			auto null_value = make_uniq<BoundConstantExpression>(Value(distinct_key->GetReturnType()));
+			distinct_key = make_uniq<BoundCaseExpression>(
+			    AggregateRewriteHelper::CopyAndRebind(*source_aggregate.GetFilter(), input_replacements),
+			    std::move(distinct_key), std::move(null_value));
+		}
+		distinct_groups.push_back(std::move(distinct_key));
 	}
 	for (auto &order_expr : set.order_expressions) {
 		distinct_groups.push_back(AggregateRewriteHelper::CopyAndRebind(*order_expr, input_replacements));

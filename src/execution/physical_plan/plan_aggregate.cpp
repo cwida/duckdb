@@ -10,6 +10,8 @@
 #include "duckdb/execution/physical_plan_generator.hpp"
 #include "duckdb/function/function_binder.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/planner/expression/bound_case_expression.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_reference_expression.hpp"
 #include "duckdb/planner/operator/logical_aggregate.hpp"
 
@@ -334,6 +336,14 @@ PhysicalOperator &PhysicalPlanGenerator::ExtractAggregateExpressions(PhysicalOpe
 	for (auto &aggr : aggregates) {
 		auto &bound_aggr = aggr->Cast<BoundAggregateExpression>();
 		for (auto &child_expr : bound_aggr.GetChildrenMutable()) {
+			if (bound_aggr.GetFilter() && child_expr->CanThrow()) {
+				// The child expressions are evaluated for every input row in the projection below the aggregate,
+				// before the FILTER is applied. Guard expressions that can throw so that rows excluded by the FILTER
+				// do not raise errors: child -> CASE WHEN <filter> THEN child ELSE NULL END
+				auto null_value = make_uniq<BoundConstantExpression>(Value(child_expr->GetReturnType()));
+				child_expr = make_uniq<BoundCaseExpression>(bound_aggr.GetFilter()->Copy(), std::move(child_expr),
+				                                            std::move(null_value));
+			}
 			auto ref = make_uniq<BoundReferenceExpression>(child_expr->GetReturnType(), expressions.size());
 			types.push_back(child_expr->GetReturnType());
 			expressions.push_back(std::move(child_expr));

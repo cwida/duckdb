@@ -8,6 +8,7 @@
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
+#include "duckdb/planner/expression/bound_case_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
 #include "duckdb/planner/operator/logical_aggregate.hpp"
@@ -104,7 +105,15 @@ unique_ptr<AggregateRewritePlan> FrequencyAggregateRewrite::Create(AggregateRewr
 	for (auto &group : op.groups) {
 		frequency_groups.push_back(group->Copy());
 	}
-	frequency_groups.push_back(input.aggregate.GetChildren()[0]->Copy());
+	auto frequency_value = input.aggregate.GetChildren()[0]->Copy();
+	if (input.aggregate.GetFilter() && frequency_value->CanThrow()) {
+		// The frequency stage evaluates the argument for every input row, before the FILTER is applied.
+		// Guard arguments that can throw: child -> CASE WHEN <filter> THEN child ELSE NULL END
+		auto null_value = make_uniq<BoundConstantExpression>(Value(frequency_value->GetReturnType()));
+		frequency_value = make_uniq<BoundCaseExpression>(input.aggregate.GetFilter()->Copy(), std::move(frequency_value),
+		                                                 std::move(null_value));
+	}
+	frequency_groups.push_back(std::move(frequency_value));
 
 	optional_idx filter_column;
 	if (input.aggregate.GetFilter()) {
