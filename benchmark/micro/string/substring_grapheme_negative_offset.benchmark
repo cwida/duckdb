@@ -1,0 +1,15 @@
+# name: benchmark/micro/string/substring_grapheme_negative_offset.benchmark
+# description: substring_grapheme with a negative offset on long strings that start with a non-ASCII character
+# group: [string]
+
+name Substring Grapheme Negative Offset (Long)
+group string
+
+load
+CREATE TABLE strings AS SELECT 'é' || repeat('x', 16384) || (i % 10)::VARCHAR AS s FROM range(4096) t(i);
+
+run
+SELECT min(r), max(r), count(*) FROM (SELECT substring_grapheme(s, -3) AS r FROM strings)
+
+result III
+xx0	xx9	4096
