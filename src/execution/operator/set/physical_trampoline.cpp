@@ -313,7 +313,7 @@ void TrampolineLocalSinkState::Route(ClientContext &context, DataChunk &chunk) {
 		}
 		if (target_rows == count) {
 			Staged(context, target).Append(appends[target], chunk);
-			if (target != 0 && op.branch_tee[target - 1]) {
+			if (target != 0 && op.branch_options[target - 1].tee) {
 				AppendTee(context, chunk);
 			}
 			return;
@@ -321,7 +321,7 @@ void TrampolineLocalSinkState::Route(ClientContext &context, DataChunk &chunk) {
 		route_chunk.Reset();
 		route_chunk.Slice(chunk, selections[target], target_rows);
 		Staged(context, target).Append(appends[target], route_chunk);
-		if (target != 0 && op.branch_tee[target - 1]) {
+		if (target != 0 && op.branch_options[target - 1].tee) {
 			AppendTee(context, route_chunk);
 		}
 	}
@@ -448,8 +448,8 @@ unique_ptr<ColumnDataCollection> TrampolineState::FilterSeenRows(idx_t target, C
 bool TrampolineState::StartRound() {
 	const auto branch_count = op.BranchCount();
 	for (idx_t branch_idx = 1; branch_idx <= branch_count; branch_idx++) {
-		const auto distinct = op.branch_distinct[branch_idx - 1];
-		if (!distinct && !op.branch_merge[branch_idx - 1]) {
+		const auto &options = op.branch_options[branch_idx - 1];
+		if (!options.Coalescing()) {
 			continue;
 		}
 		auto &waves = next_pending[branch_idx]->waves;
@@ -462,7 +462,7 @@ bool TrampolineState::StartRound() {
 			candidates->Combine(*waves.front());
 			waves.pop_front();
 		}
-		if (!distinct) {
+		if (!options.Distinct()) {
 			// MERGE: the round's routed rows form one bag wave, no admission
 			waves.push_back(std::move(candidates));
 			continue;
@@ -639,28 +639,25 @@ InsertionOrderPreservingMap<string> PhysicalTrampoline::ParamsToString() const {
 		result["Merged Branches"] = merged_list;
 	}
 	string tee_list;
-	for (idx_t branch_idx = 0; branch_idx < branch_tee.size(); branch_idx++) {
-		if (branch_tee[branch_idx]) {
+	string distinct_list;
+	string merge_list;
+	for (idx_t branch_idx = 0; branch_idx < branch_options.size(); branch_idx++) {
+		auto &options = branch_options[branch_idx];
+		if (options.tee) {
 			tee_list += (tee_list.empty() ? "" : ",") + to_string(branch_idx + 1);
+		}
+		if (options.Distinct()) {
+			distinct_list += (distinct_list.empty() ? "" : ",") + to_string(branch_idx + 1);
+		}
+		if (options.Merge()) {
+			merge_list += (merge_list.empty() ? "" : ",") + to_string(branch_idx + 1);
 		}
 	}
 	if (!tee_list.empty()) {
 		result["Tee Branches"] = tee_list;
 	}
-	string distinct_list;
-	for (idx_t branch_idx = 0; branch_idx < branch_distinct.size(); branch_idx++) {
-		if (branch_distinct[branch_idx]) {
-			distinct_list += (distinct_list.empty() ? "" : ",") + to_string(branch_idx + 1);
-		}
-	}
 	if (!distinct_list.empty()) {
 		result["Distinct Branches"] = distinct_list;
-	}
-	string merge_list;
-	for (idx_t branch_idx = 0; branch_idx < branch_merge.size(); branch_idx++) {
-		if (branch_merge[branch_idx]) {
-			merge_list += (merge_list.empty() ? "" : ",") + to_string(branch_idx + 1);
-		}
 	}
 	if (!merge_list.empty()) {
 		result["Merge Branches"] = merge_list;

@@ -44,6 +44,7 @@
 #include "duckdb/common/extra_operator_info.hpp"
 #include "duckdb/storage/table/row_group_reorderer.hpp"
 #include "duckdb/storage/storage_index.hpp"
+#include "duckdb/parser/trampoline_branch_options.hpp"
 
 namespace duckdb {
 
@@ -894,6 +895,18 @@ TableFilterSet TableFilterSet::Deserialize(Deserializer &deserializer) {
 	TableFilterSet result;
 	deserializer.ReadPropertyWithDefault<map<ProjectionIndex, unique_ptr<TableFilter>>>(100, "filters", result.GetTableFiltersForDeserialization(deserializer));
 	deserializer.ReadPropertyWithExplicitDefault<vector<unique_ptr<TableFilter>>>(101, "multi_column_filters", result.multi_column_filters, vector<unique_ptr<TableFilter>>());
+	return result;
+}
+
+void TrampolineBranchOptions::Serialize(Serializer &serializer) const {
+	serializer.WritePropertyWithDefault<TrampolineBranchInputMode>(100, "input_mode", input_mode, TrampolineBranchInputMode::DEFAULT);
+	serializer.WritePropertyWithDefault<bool>(101, "tee", tee);
+}
+
+TrampolineBranchOptions TrampolineBranchOptions::Deserialize(Deserializer &deserializer) {
+	TrampolineBranchOptions result;
+	deserializer.ReadPropertyWithExplicitDefault<TrampolineBranchInputMode>(100, "input_mode", result.input_mode, TrampolineBranchInputMode::DEFAULT);
+	deserializer.ReadPropertyWithDefault<bool>(101, "tee", result.tee);
 	return result;
 }
 

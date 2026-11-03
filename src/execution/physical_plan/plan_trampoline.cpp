@@ -239,17 +239,12 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalTrampoline &op) {
 	                       .Cast<PhysicalTrampoline>();
 	trampoline.working_table = working_table;
 	trampoline.non_repeatable_operators = non_repeatable_operators;
-	trampoline.branch_tee = op.branch_tee;
-	trampoline.branch_tee.resize(branches.size(), false);
+	trampoline.branch_options = op.branch_options;
+	trampoline.branch_options.resize(branches.size());
 	trampoline.reads_frontier = op.reads_frontier;
 	trampoline.frontier_table = frontier_table;
-	trampoline.branch_distinct = op.branch_distinct;
-	trampoline.branch_distinct.resize(branches.size(), false);
-	trampoline.branch_merge = op.branch_merge;
-	trampoline.branch_merge.resize(branches.size(), false);
-	for (idx_t branch_idx = 0; branch_idx < branches.size(); branch_idx++) {
-		trampoline.has_coalescing_branch = trampoline.has_coalescing_branch || trampoline.branch_distinct[branch_idx] ||
-		                                   trampoline.branch_merge[branch_idx];
+	for (auto &options : trampoline.branch_options) {
+		trampoline.has_coalescing_branch = trampoline.has_coalescing_branch || options.Coalescing();
 	}
 	trampoline.emit_distinct = op.emit_distinct;
 

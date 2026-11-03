@@ -213,23 +213,13 @@
       },
       {
         "id": 205,
-        "name": "branch_tee",
-        "type": "vector<bool>"
-      },
-      {
-        "id": 206,
-        "name": "branch_distinct",
-        "type": "vector<bool>"
+        "name": "branch_options",
+        "type": "vector<TrampolineBranchOptions>"
       },
       {
         "id": 207,
         "name": "emit_distinct",
         "type": "bool"
-      },
-      {
-        "id": 208,
-        "name": "branch_merge",
-        "type": "vector<bool>"
       }
     ]
   },

@@ -1183,9 +1183,7 @@ unique_ptr<TableRef> PEGTransformerFactory::TransformTrampolineCTEBody(PEGTransf
 	auto node = make_uniq<TrampolineCTENode>();
 	node->seed = std::move(seed->node);
 	node->branches.resize(branches.size());
-	node->branch_tee.resize(branches.size(), false);
-	node->branch_distinct.resize(branches.size(), false);
-	node->branch_merge.resize(branches.size(), false);
+	node->branch_options.resize(branches.size());
 	for (auto &branch : branches) {
 		if (branch.label > branches.size()) {
 			throw ParserException("BRANCH labels must form the contiguous range 1..%llu", branches.size());
@@ -1195,9 +1193,13 @@ unique_ptr<TableRef> PEGTransformerFactory::TransformTrampolineCTEBody(PEGTransf
 			throw ParserException("duplicate BRANCH label %llu", branch.label);
 		}
 		slot = std::move(branch.statement->node);
-		node->branch_tee[branch.label - 1] = branch.tee;
-		node->branch_distinct[branch.label - 1] = branch.distinct;
-		node->branch_merge[branch.label - 1] = branch.merge;
+		auto &options = node->branch_options[branch.label - 1];
+		if (branch.distinct) {
+			options.input_mode = TrampolineBranchInputMode::DISTINCT;
+		} else if (branch.merge) {
+			options.input_mode = TrampolineBranchInputMode::MERGE;
+		}
+		options.tee = branch.tee;
 	}
 	auto statement = make_uniq<SelectStatement>();
 	statement->node = std::move(node);

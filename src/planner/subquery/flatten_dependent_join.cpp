@@ -1778,8 +1778,8 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownTrampoline(
 		}
 	}
 	bool wants_admission = trampoline.emit_distinct;
-	for (auto distinct : trampoline.branch_distinct) {
-		wants_admission = wants_admission || distinct;
+	for (auto &options : trampoline.branch_options) {
+		wants_admission = wants_admission || options.Distinct();
 	}
 	if (wants_admission) {
 		// the correlation domain joins the admission identity; its equality must be physical

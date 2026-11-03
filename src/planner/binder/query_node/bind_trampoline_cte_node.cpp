@@ -149,15 +149,11 @@ BoundStatement Binder::BindNode(TrampolineCTENode &statement) {
 	auto seed_plan = std::move(seed.plan);
 	auto root = make_uniq<LogicalTrampoline>(ctename, setop_index, result.types.size(), selector_idx,
 	                                         std::move(seed_plan), std::move(branch_plans));
-	root->branch_tee = statement.branch_tee;
-	root->branch_tee.resize(statement.branches.size(), false);
-	root->branch_distinct = statement.branch_distinct;
-	root->branch_distinct.resize(statement.branches.size(), false);
-	root->branch_merge = statement.branch_merge;
-	root->branch_merge.resize(statement.branches.size(), false);
+	root->branch_options = statement.branch_options;
+	root->branch_options.resize(statement.branches.size());
 	bool wants_admission = statement.emit_distinct;
-	for (auto distinct : root->branch_distinct) {
-		wants_admission = wants_admission || distinct;
+	for (auto &options : root->branch_options) {
+		wants_admission = wants_admission || options.Distinct();
 	}
 	if (wants_admission) {
 		// admission hashes physical values; collation-aware equality is not wired up

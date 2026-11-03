@@ -375,12 +375,8 @@ LogicalPlanSQLExportResult LogicalTrampoline::ExportSQLDefinition(LogicalPlanSQL
 		query->aliases.push_back(LogicalPlanSQLExportHelpers::FieldIdentifier(i));
 	}
 	query->seed = std::move(seed.GetValue().query);
-	query->branch_tee = trampoline.branch_tee;
-	query->branch_tee.resize(trampoline.children.size() - 1, false);
-	query->branch_distinct = trampoline.branch_distinct;
-	query->branch_distinct.resize(trampoline.children.size() - 1, false);
-	query->branch_merge = trampoline.branch_merge;
-	query->branch_merge.resize(trampoline.children.size() - 1, false);
+	query->branch_options = trampoline.branch_options;
+	query->branch_options.resize(trampoline.children.size() - 1);
 	query->emit_distinct = trampoline.emit_distinct;
 	for (idx_t branch_idx = 1; branch_idx < trampoline.children.size(); branch_idx++) {
 		export_context.PushNamedRelation(trampoline.table_index, name, false);
@@ -400,11 +396,8 @@ LogicalPlanSQLExportResult LogicalTrampoline::ExportSQLDefinition(LogicalPlanSQL
 		// would change scheduling observably. A surviving MERGE or DISTINCT branch
 		// forces rounds on rebind by itself.
 		bool rounds_witness = false;
-		for (auto merge : query->branch_merge) {
-			rounds_witness = rounds_witness || merge;
-		}
-		for (auto distinct : query->branch_distinct) {
-			rounds_witness = rounds_witness || distinct;
+		for (auto &options : query->branch_options) {
+			rounds_witness = rounds_witness || options.Coalescing();
 		}
 		for (auto &branch_node : query->branches) {
 			DetectExportedFrontierReference(*branch_node, name, rounds_witness);

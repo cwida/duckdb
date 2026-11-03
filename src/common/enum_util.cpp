@@ -136,6 +136,7 @@
 #include "duckdb/execution/operator/set/physical_cte.hpp"
 #include "duckdb/execution/operator/set/physical_recursive_cte.hpp"
 #include "duckdb/execution/operator/set/physical_recursive_cte_state.hpp"
+#include "duckdb/execution/operator/set/recursive_cte_scheduling.hpp"
 #include "duckdb/execution/physical_operator.hpp"
 #include "duckdb/execution/physical_table_scan_enum.hpp"
 #include "duckdb/execution/reservoir_sample.hpp"
@@ -228,6 +229,7 @@
 #include "duckdb/parser/statement/insert_statement.hpp"
 #include "duckdb/parser/tableref/match_recognize_ref.hpp"
 #include "duckdb/parser/tableref/showref.hpp"
+#include "duckdb/parser/trampoline_branch_options.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/bound_result_modifier.hpp"
 #include "duckdb/planner/filter/table_filter_functions.hpp"
@@ -7155,6 +7157,25 @@ const char* EnumUtil::ToChars<TimestampCastResult>(TimestampCastResult value) {
 template<>
 TimestampCastResult EnumUtil::FromString<TimestampCastResult>(const char *value) {
 	return static_cast<TimestampCastResult>(StringUtil::StringToEnum(GetTimestampCastResultValues(), 5, "TimestampCastResult", value));
+}
+
+const StringUtil::EnumStringLiteral *GetTrampolineBranchInputModeValues() {
+	static constexpr StringUtil::EnumStringLiteral values[] {
+		{ static_cast<uint32_t>(TrampolineBranchInputMode::DEFAULT), "DEFAULT" },
+		{ static_cast<uint32_t>(TrampolineBranchInputMode::DISTINCT), "DISTINCT" },
+		{ static_cast<uint32_t>(TrampolineBranchInputMode::MERGE), "MERGE" }
+	};
+	return values;
+}
+
+template<>
+const char* EnumUtil::ToChars<TrampolineBranchInputMode>(TrampolineBranchInputMode value) {
+	return StringUtil::EnumToString(GetTrampolineBranchInputModeValues(), 3, "TrampolineBranchInputMode", static_cast<uint32_t>(value));
+}
+
+template<>
+TrampolineBranchInputMode EnumUtil::FromString<TrampolineBranchInputMode>(const char *value) {
+	return static_cast<TrampolineBranchInputMode>(StringUtil::StringToEnum(GetTrampolineBranchInputModeValues(), 3, "TrampolineBranchInputMode", value));
 }
 
 const StringUtil::EnumStringLiteral *GetTransactionInvalidationPolicyValues() {

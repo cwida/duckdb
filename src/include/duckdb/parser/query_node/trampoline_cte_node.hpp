@@ -11,6 +11,7 @@
 #include "duckdb/common/identifier.hpp"
 #include "duckdb/parser/parsed_expression.hpp"
 #include "duckdb/parser/query_node.hpp"
+#include "duckdb/parser/trampoline_branch_options.hpp"
 
 namespace duckdb {
 
@@ -31,12 +32,8 @@ public:
 	unique_ptr<QueryNode> seed;
 	//! Branch queries; branches[i] is BRANCH i+1
 	vector<unique_ptr<QueryNode>> branches;
-	//! Per-branch TEE flag: every row routed to the branch is also emitted
-	vector<bool> branch_tee;
-	//! Per-branch DISTINCT flag: round-wide admission against all rows ever routed
-	vector<bool> branch_distinct;
-	//! Per-branch MERGE flag: one bag wave per round, coalesced at the boundary
-	vector<bool> branch_merge;
+	//! Options of branches[i]: input mode (DEFAULT, DISTINCT or MERGE) and the TEE flag
+	vector<TrampolineBranchOptions> branch_options;
 	//! Whether emitted rows are deduplicated against all rows ever emitted
 	bool emit_distinct = false;
 	//! Aliases of the trampoline CTE node

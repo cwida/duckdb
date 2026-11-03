@@ -14,6 +14,7 @@
 #include "duckdb/execution/operator/scan/physical_column_data_scan.hpp"
 #include "duckdb/common/reference_map.hpp"
 #include "duckdb/execution/physical_operator.hpp"
+#include "duckdb/parser/trampoline_branch_options.hpp"
 
 namespace duckdb {
 
@@ -73,17 +74,11 @@ public:
 	//! repeatable, and so is every branch its rows can transitively reach along the
 	//! selector routing graph (coarsened partitioning must stay unobservable)
 	vector<bool> branch_wave_merge;
-	//! Per branch, whether every row routed to it is also emitted (BRANCH n TEE)
-	vector<bool> branch_tee;
+	//! Options of branch i+1: input mode (DEFAULT, DISTINCT or MERGE) and the TEE flag
+	vector<TrampolineBranchOptions> branch_options;
 	//! Whether any branch reads frontier.<ctename>: execution switches to lockstep
 	//! rounds with a frozen frontier snapshot per round
 	bool reads_frontier = false;
-	//! Per-branch DISTINCT flag: the destination receives one admitted wave per
-	//! round, arbitrated at the boundary against all rows ever routed to it
-	vector<bool> branch_distinct;
-	//! Per-branch MERGE flag: the destination receives its round's routed rows as
-	//! one bag wave, coalesced at the boundary without admission
-	vector<bool> branch_merge;
 	//! Whether any branch destination coalesces its round (DISTINCT or MERGE)
 	bool has_coalescing_branch = false;
 	//! Whether emitted rows are deduplicated online against all prior emissions

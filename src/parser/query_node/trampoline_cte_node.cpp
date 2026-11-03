@@ -8,11 +8,9 @@ string TrampolineCTENode::ToString() const {
 	result = cte_map.ToString();
 	result += "(" + seed->ToString() + ")";
 	for (idx_t branch_idx = 0; branch_idx < branches.size(); branch_idx++) {
-		const auto tee = branch_idx < branch_tee.size() && branch_tee[branch_idx];
-		const auto distinct = branch_idx < branch_distinct.size() && branch_distinct[branch_idx];
-		const auto merge = branch_idx < branch_merge.size() && branch_merge[branch_idx];
-		result += StringUtil::Format(" BRANCH %llu%s%s%s: (", branch_idx + 1, distinct ? " DISTINCT" : "",
-		                             merge ? " MERGE" : "", tee ? " TEE" : "");
+		const auto options = branch_idx < branch_options.size() ? branch_options[branch_idx] : TrampolineBranchOptions();
+		result += StringUtil::Format(" BRANCH %llu%s%s%s: (", branch_idx + 1, options.Distinct() ? " DISTINCT" : "",
+		                             options.Merge() ? " MERGE" : "", options.tee ? " TEE" : "");
 		result += branches[branch_idx]->ToString();
 		result += ")";
 	}
@@ -36,13 +34,7 @@ bool TrampolineCTENode::Equals(const QueryNode *other_p) const {
 	if (branches.size() != other.branches.size()) {
 		return false;
 	}
-	if (branch_tee != other.branch_tee) {
-		return false;
-	}
-	if (branch_distinct != other.branch_distinct) {
-		return false;
-	}
-	if (branch_merge != other.branch_merge) {
+	if (branch_options != other.branch_options) {
 		return false;
 	}
 	if (emit_distinct != other.emit_distinct) {
@@ -64,9 +56,7 @@ unique_ptr<QueryNode> TrampolineCTENode::Copy() const {
 	for (auto &branch : branches) {
 		result->branches.push_back(branch->Copy());
 	}
-	result->branch_tee = branch_tee;
-	result->branch_distinct = branch_distinct;
-	result->branch_merge = branch_merge;
+	result->branch_options = branch_options;
 	result->emit_distinct = emit_distinct;
 	result->aliases = aliases;
 	this->CopyProperties(*result);

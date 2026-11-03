@@ -929,11 +929,9 @@ void LogicalTrampoline::Serialize(Serializer &serializer) const {
 	serializer.WritePropertyWithDefault<TableIndex>(201, "table_index", table_index);
 	serializer.WritePropertyWithDefault<idx_t>(202, "column_count", column_count);
 	serializer.WritePropertyWithDefault<idx_t>(203, "selector_idx", selector_idx);
-	serializer.WritePropertyWithDefault<vector<bool>>(204, "branch_tee", branch_tee);
+	serializer.WritePropertyWithDefault<vector<TrampolineBranchOptions>>(204, "branch_options", branch_options);
 	serializer.WritePropertyWithDefault<bool>(205, "reads_frontier", reads_frontier);
-	serializer.WritePropertyWithDefault<vector<bool>>(206, "branch_distinct", branch_distinct);
 	serializer.WritePropertyWithDefault<bool>(207, "emit_distinct", emit_distinct);
-	serializer.WritePropertyWithDefault<vector<bool>>(208, "branch_merge", branch_merge);
 }
 
 unique_ptr<LogicalOperator> LogicalTrampoline::Deserialize(Deserializer &deserializer) {
@@ -942,11 +940,9 @@ unique_ptr<LogicalOperator> LogicalTrampoline::Deserialize(Deserializer &deseria
 	deserializer.ReadPropertyWithDefault<TableIndex>(201, "table_index", result->table_index);
 	deserializer.ReadPropertyWithDefault<idx_t>(202, "column_count", result->column_count);
 	deserializer.ReadPropertyWithDefault<idx_t>(203, "selector_idx", result->selector_idx);
-	deserializer.ReadPropertyWithDefault<vector<bool>>(204, "branch_tee", result->branch_tee);
+	deserializer.ReadPropertyWithDefault<vector<TrampolineBranchOptions>>(204, "branch_options", result->branch_options);
 	deserializer.ReadPropertyWithDefault<bool>(205, "reads_frontier", result->reads_frontier);
-	deserializer.ReadPropertyWithDefault<vector<bool>>(206, "branch_distinct", result->branch_distinct);
 	deserializer.ReadPropertyWithDefault<bool>(207, "emit_distinct", result->emit_distinct);
-	deserializer.ReadPropertyWithDefault<vector<bool>>(208, "branch_merge", result->branch_merge);
 	return std::move(result);
 }
 

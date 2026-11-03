@@ -1672,5 +1672,25 @@
       }
     ],
     "pointer_type": "none"
+  },
+  {
+    "class": "TrampolineBranchOptions",
+    "includes": [
+      "duckdb/parser/trampoline_branch_options.hpp"
+    ],
+    "members": [
+      {
+        "id": 100,
+        "name": "input_mode",
+        "type": "TrampolineBranchInputMode",
+        "default": "TrampolineBranchInputMode::DEFAULT"
+      },
+      {
+        "id": 101,
+        "name": "tee",
+        "type": "bool"
+      }
+    ],
+    "pointer_type": "none"
   }
 ]
