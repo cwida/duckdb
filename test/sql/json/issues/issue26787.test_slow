@@ -1,4 +1,4 @@
-# name: test/sql/json/issues/issue26787.test
+# name: test/sql/json/issues/issue26787.test_slow
 # description: A parallel newline-delimited scan reads lines that continue across a buffer without a newline
 # group: [issues]
 
