@@ -598,6 +598,19 @@ struct DebugCheckpointAbortSetting {
 	static void OnSet(SettingCallbackInfo &info, Value &input);
 };
 
+struct DebugCheckpointIndexSleepMsSetting {
+	using RETURN_TYPE = idx_t;
+	static constexpr const char *Name = "debug_checkpoint_index_sleep_ms";
+	static constexpr const char *Description = "DEBUG SETTING: time to sleep after a checkpoint has copied a table's "
+	                                           "indexes, before it writes and installs the copies";
+	static constexpr const char *InputType = "UBIGINT";
+	static constexpr bool IsDebug = false;
+	static constexpr bool IsDeprecated = false;
+	static constexpr const char *DefaultValue = "0";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::GLOBAL_DEFAULT;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+};
+
 struct DebugCheckpointScanSleepMsSetting {
 	using RETURN_TYPE = idx_t;
 	static constexpr const char *Name = "debug_checkpoint_scan_sleep_ms";

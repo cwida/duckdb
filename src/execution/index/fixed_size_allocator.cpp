@@ -144,6 +144,20 @@ void FixedSizeAllocator::Reset() {
 	total_segment_count = 0;
 }
 
+void FixedSizeAllocator::VisitBlockIds(BlockIdVisitor &visitor) const {
+	for (auto &buffer : buffers) {
+		if (buffer.second->OnDisk()) {
+			visitor.Visit(buffer.second->block_pointer.block_id);
+		}
+	}
+}
+
+void FixedSizeAllocator::DisownBlocks() {
+	for (auto &buffer : buffers) {
+		buffer.second->block_pointer = BlockPointer();
+	}
+}
+
 idx_t FixedSizeAllocator::GetInMemorySize() const {
 	idx_t memory_usage = 0;
 	for (auto &buffer : buffers) {

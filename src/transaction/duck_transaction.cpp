@@ -287,8 +287,8 @@ ErrorData DuckTransaction::Commit(AttachedDatabase &db, CommitInfo &commit_info,
 	if (db.HasStorageManager()) {
 		block_manager = db.GetStorageManager().GetBlockManager();
 	}
-	CommitDropState drop_state(block_manager);
-	commit_info.drop_state = &drop_state;
+	auto drop_state = make_uniq<CommitDropState>(block_manager);
+	commit_info.drop_state = drop_state.get();
 
 	ErrorData error_data;
 	try {
@@ -304,7 +304,10 @@ ErrorData DuckTransaction::Commit(AttachedDatabase &db, CommitInfo &commit_info,
 			bool sync_now = commit_info.active_transactions == ActiveTransactionState::NO_OTHER_TRANSACTIONS;
 			commit_info.wal_sync_offset = commit_state->FlushCommit(sync_now);
 		}
-		drop_state.FinalizeCommit();
+		if (!drop_state->Empty()) {
+			drop_state->commit_id = commit_info.commit_id;
+			dropped_storage = GetTransactionManager().AddDroppedStorage(std::move(drop_state));
+		}
 		return ErrorData();
 	} catch (std::exception &ex) {
 		// Record the error and run RevertCommit() outside this try-catch: RevertCommit() iterates the
@@ -352,6 +355,13 @@ ErrorData DuckTransaction::Rollback() {
 
 void DuckTransaction::Cleanup(VisibilityBound lowest_visibility_bound) {
 	undo_buffer.Cleanup(lowest_visibility_bound);
+	if (dropped_storage) {
+		// no snapshot reads the dropped storage any more, and no checkpoint writes it
+		D_ASSERT(commit_id < lowest_visibility_bound);
+		auto &drop_state = *dropped_storage;
+		dropped_storage = nullptr;
+		GetTransactionManager().FreeDroppedStorage(drop_state);
+	}
 }
 
 void DuckTransaction::SetModifications(DatabaseModificationType type) {
@@ -360,9 +370,9 @@ void DuckTransaction::SetModifications(DatabaseModificationType type) {
 		require_write_lock = require_write_lock || type.UpdateData();
 		require_write_lock = require_write_lock || type.AlterTable();
 		require_write_lock = require_write_lock || type.CreateCatalogEntry();
-		require_write_lock = require_write_lock || type.DropCatalogEntry();
 		require_write_lock = require_write_lock || type.CreateIndex();
 		// not SEQUENCE: a checkpoint writes a sequence's current state, and WAL replay keeps the most used one
+		// not DROP_CATALOG_ENTRY: dropped storage is freed once no snapshot or checkpoint reads it
 
 		if (require_write_lock) {
 			// obtain a shared checkpoint lock to prevent concurrent checkpoints while this transaction is running

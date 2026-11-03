@@ -96,6 +96,8 @@ public:
 	void MarkBlockAsUsed(block_id_t block_id) override;
 	//! Mark a block as modified (re-writeable after a checkpoint)
 	void MarkBlockAsModified(block_id_t block_id) override;
+	void MarkBlockAsExcluded(block_id_t block_id) override;
+	void MarkExcludedBlockAsModified(block_id_t block_id) override;
 	//! Increase the reference count of a block. The block should hold at least one reference
 	void IncreaseBlockReferenceCount(block_id_t block_id) override;
 	//! UnregisterBlock, only accepts non-temporary block ids
@@ -185,7 +187,28 @@ private:
 	void TrimFreeBlocks(const set<block_id_t> &blocks);
 	void TrimFreeBlockRange(block_id_t start, block_id_t end);
 
+	//! The uses of a block in use, unless it has a single use that headers list
+	struct BlockUses {
+		//! The uses of the block in memory
+		uint32_t uses = 1;
+		//! The uses that checkpoints no longer write, which headers no longer list
+		uint32_t excluded_uses = 0;
+		//! No header lists the block as used, so freeing its last use returns it to the free list
+		bool free_on_disk = false;
+
+		//! The uses that the next header lists
+		idx_t WrittenUses() const {
+			return free_on_disk ? 0 : uses - excluded_uses;
+		}
+		bool IsDefault() const {
+			return uses == 1 && excluded_uses == 0 && !free_on_disk;
+		}
+	};
+
 	void IncreaseBlockReferenceCountInternal(block_id_t block_id);
+	void MarkBlockAsModifiedInternal(unique_lock<mutex> &lock, block_id_t block_id);
+	//! Removes the entry of a block that is back to a single use that headers list
+	void EraseIfDefault(unordered_map<block_id_t, BlockUses>::iterator entry);
 
 	//! Verify the block usage count
 	void VerifyBlocks(const unordered_map<block_id_t, idx_t> &block_usage_count) override;
@@ -214,12 +237,12 @@ private:
 	set<block_id_t> free_list;
 	//! The list of blocks that have been freed, but cannot yet be re-used because they are still in-use
 	set<block_id_t> free_blocks_in_use;
-	//! The list of blocks that are in-use, but haven't been written as part of a checkpoint yet
-	set<block_id_t> newly_used_blocks;
-	//! The list of multi-use blocks (i.e. blocks that have >1 reference in the file)
+	//! Blocks added to the free list outside of a header, which the next header trims
+	set<block_id_t> free_blocks_to_trim;
+	//! The blocks in use that have more than one use, excluded uses, or no header that lists them
 	//! When a multi-use block is marked as modified, the reference count is decreased by 1 instead of directly
 	//! Appending the block to the modified_blocks list
-	unordered_map<block_id_t, uint32_t> multi_use_blocks;
+	unordered_map<block_id_t, BlockUses> block_uses;
 	//! The list of blocks that are no longer in-use, but cannot be re-used until the next checkpoint
 	unordered_set<block_id_t> modified_blocks;
 	//! The current meta block id

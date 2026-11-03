@@ -274,6 +274,8 @@ void SingleFileCheckpointWriter::CreateCheckpoint() {
 	ActiveCheckpointWrapper active_checkpoint(context, db, transaction_manager);
 	auto has_wal = storage_manager.WALStartCheckpoint(meta_block, options, active_checkpoint);
 	checkpoint_context = active_checkpoint.GetCheckpointContext();
+	// storage dropped before the bound is not part of this checkpoint
+	transaction_manager.ExcludeDroppedStorage(options.visibility_bound);
 
 	catalog_entry_vector_t catalog_entries;
 
@@ -292,6 +294,19 @@ void SingleFileCheckpointWriter::CreateCheckpoint() {
 	auto &dependency_manager = *catalog.GetDependencyManager();
 	catalog_entries = GetCatalogEntries(schemas, options.visibility_bound);
 	dependency_manager.ReorderEntries(catalog_entries, options.visibility_bound);
+	// the indexes of the catalog that the checkpoint writes
+	for (auto &entry : catalog_entries) {
+		auto &catalog_entry = entry.get();
+		if (catalog_entry.type == CatalogType::INDEX_ENTRY) {
+			index_oids.insert(catalog_entry.oid);
+		} else if (catalog_entry.type == CatalogType::TABLE_ENTRY) {
+			for (auto &constraint : catalog_entry.Cast<TableCatalogEntry>().GetConstraints()) {
+				if (constraint->NeedsBackingIndex()) {
+					index_oids.insert(constraint->GetBackingIndexOid());
+				}
+			}
+		}
+	}
 
 	// write the actual data into the database
 
@@ -320,6 +335,10 @@ void SingleFileCheckpointWriter::CreateCheckpoint() {
 		list.WriteObject([&](Serializer &obj) { WriteEntry(entry.get(), obj); });
 	});
 	serializer.End();
+	if (written_index_count != index_oids.size()) {
+		throw InternalException("A checkpoint wrote %llu of the %llu indexes of its catalog", written_index_count,
+		                        index_oids.size());
+	}
 
 	metadata_writer->Flush();
 	table_metadata_writer->Flush();

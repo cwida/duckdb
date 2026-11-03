@@ -1,6 +1,9 @@
 #include "duckdb/storage/checkpoint/table_index_writer.hpp"
 #include "duckdb/storage/partial_block_manager.hpp"
 #include "duckdb/storage/checkpoint_manager.hpp"
+#include "duckdb/common/thread.hpp"
+#include "duckdb/main/attached_database.hpp"
+#include "duckdb/main/settings.hpp"
 
 namespace duckdb {
 
@@ -25,7 +28,15 @@ PartialBlockManager SingleFileTableIndexWriter::CreatePerIndexPartialBlockManage
 	return checkpoint_manager.CreatePerIndexPartialBlockManager();
 }
 
+const unordered_set<idx_t> &SingleFileTableIndexWriter::GetIndexOids() const {
+	return checkpoint_manager.index_oids;
+}
+
 void SingleFileTableIndexWriter::Flush() {
+	auto sleep_ms = Settings::Get<DebugCheckpointIndexSleepMsSetting>(checkpoint_manager.db.GetDatabase());
+	if (sleep_ms > 0) {
+		ThreadUtil::SleepMs(sleep_ms);
+	}
 	partial_block_manager.FlushPartialBlocks();
 }
 

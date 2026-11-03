@@ -125,6 +125,8 @@ private:
 	unique_ptr<StorageLockKey> checkpoint_lock;
 	//! Lock that prevents vacuums from starting
 	unique_ptr<StorageLockKey> vacuum_lock;
+	//! The storage this transaction dropped, which the transaction manager owns until the cleanup frees it
+	optional_ptr<CommitDropState> dropped_storage;
 	//! Lock for accessing sequence_usage
 	mutex sequence_lock;
 	//! Map of all sequences that were used during the transaction and the value they had in this transaction

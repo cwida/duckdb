@@ -25,6 +25,8 @@
 #include "duckdb/transaction/duck_transaction.hpp"
 #include "duckdb/transaction/duck_transaction_manager.hpp"
 #include "duckdb/storage/data_table.hpp"
+#include "duckdb/storage/table/row_group_collection.hpp"
+#include "duckdb/storage/table/row_group_segment_tree.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
 
 namespace duckdb {
@@ -39,28 +41,86 @@ void CommitDropState::DropBlock(block_id_t block_id) {
 	dropped_block_ids.push_back(block_id);
 }
 
-void CommitDropState::RemoveIndex(TableIndexList &indexes, idx_t index_oid) {
-	pending_index_removals.push_back(PendingIndexRemoval {indexes, index_oid});
+void CommitDropState::DropIndex(shared_ptr<DataTableInfo> info, idx_t index_oid) {
+	dropped_indexes.push_back(DroppedIndex {std::move(info), index_oid, nullptr});
 }
 
-void CommitDropState::FinalizeCommit() {
+void CommitDropState::DropTable(shared_ptr<DataTable> table) {
+	dropped_tables.push_back(std::move(table));
+}
+
+void CommitDropState::DropColumn(shared_ptr<DataTable> table, idx_t column_index) {
+	dropped_columns.emplace_back(std::move(table), column_index);
+}
+
+void CommitDropState::DetachIndexes() {
+	for (auto &index : dropped_indexes) {
+		index.detached_entry = index.info->GetIndexes().DetachIndex(index.index_oid);
+	}
+}
+
+void CommitDropState::ExcludeFromCheckpoints() {
+	if (excluded) {
+		return;
+	}
+	// older snapshots still read the dropped tables, whose metadata the checkpoint frees
+	for (auto &table : dropped_tables) {
+		for (auto &row_group : table->GetRowGroupCollection()->GetRowGroups()->Segments()) {
+			row_group.LoadMetadata();
+		}
+	}
+	excluded = true;
+	Collect();
+	if (!block_manager) {
+		return;
+	}
+	for (auto block_id : dropped_block_ids) {
+		block_manager->MarkBlockAsExcluded(block_id);
+	}
+}
+
+void CommitDropState::Collect() {
+	// nothing uses the detached indexes any more
+	for (auto &index : dropped_indexes) {
+		if (index.detached_entry) {
+			index.info->GetIndexes().RemoveDetachedIndex(*index.detached_entry);
+		}
+	}
+	dropped_indexes.clear();
+	// collected now: a checkpoint that wrote the table frees the blocks it replaced itself
+	for (auto &table : dropped_tables) {
+		table->CommitDropTable(*this);
+	}
+	for (auto &column : dropped_columns) {
+		column.first->CommitDropColumn(column.second, *this);
+	}
+}
+
+void CommitDropState::Free() {
+	if (!excluded) {
+		// no snapshot reads the dropped tables any more
+		Collect();
+	}
+	// the index blocks are freed with the others, not when the indexes are destroyed
+	for (auto &table : dropped_tables) {
+		table->GetDataTableInfo()->GetIndexes().DisownBlocks();
+	}
 	if (block_manager) {
 		for (auto block_id : dropped_block_ids) {
-			block_manager->MarkBlockAsModified(block_id);
+			if (excluded) {
+				block_manager->MarkExcludedBlockAsModified(block_id);
+			} else {
+				block_manager->MarkBlockAsModified(block_id);
+			}
 		}
 	}
 	// assert that !block_manager -> dropped_block_ids.empty()
 	D_ASSERT(block_manager || dropped_block_ids.empty());
-
-	for (auto &removal : pending_index_removals) {
-		removal.indexes.get().RemoveIndex(removal.index_oid);
-	}
 	dropped_block_ids.clear();
-	pending_index_removals.clear();
 }
 
 bool CommitDropState::Empty() const {
-	return dropped_block_ids.empty() && pending_index_removals.empty();
+	return dropped_tables.empty() && dropped_columns.empty() && dropped_indexes.empty();
 }
 
 //===--------------------------------------------------------------------===//

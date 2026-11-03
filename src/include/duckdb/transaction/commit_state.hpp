@@ -20,6 +20,7 @@ namespace duckdb {
 class BlockManager;
 class CatalogEntry;
 class TableIndexList;
+class IndexEntry;
 class DataChunk;
 class DuckTransaction;
 class WriteAheadLog;
@@ -32,35 +33,51 @@ struct UpdateInfo;
 
 enum class CommitMode { COMMIT, REVERT_COMMIT };
 
-//! An index that has been marked for removal from a table's index list once the commit chain succeeds.
-struct PendingIndexRemoval {
-	reference<TableIndexList> indexes;
+//! An index that a commit drops, which is detached from its table's index list once the commit chain succeeds.
+struct DroppedIndex {
+	shared_ptr<DataTableInfo> info;
 	idx_t index_oid;
+	//! The detached index entry, destroyed when the dropped storage is freed
+	shared_ptr<IndexEntry> detached_entry;
 };
 
-//! Accumulates block marks and index removals during commit so they can be applied together once the
-//! commit chain has succeeded and FlushCommit() has been called, since these are side effects that can't be reverted
-//! if we need to rollback a transaction.
+//! Accumulates the storage a commit drops, which is freed once the commit can no longer be reverted
 class CommitDropState {
 public:
 	explicit CommitDropState(optional_ptr<BlockManager> block_manager);
 
 public:
-	//! Register an on-disk block to mark as modified during FinalizeCommit.
+	//! Register an on-disk block, which Free marks as modified.
 	void DropBlock(block_id_t block_id);
-	//! Register an index to be removed from a table's index list during FinalizeCommit. Index removal will drop in
-	//! memory index data and also marks all blocks on disk as free blocks allowing for reclamation. Block marking for
-	//! indexes is handled implicitly along destruction paths for index memory.
-	void RemoveIndex(TableIndexList &indexes, idx_t index_oid);
-	//! Finalize accumulated block marks and index removals.
-	void FinalizeCommit();
+	//! Register a dropped index, which is detached by DetachIndexes and destroyed when the dropped storage is freed
+	void DropIndex(shared_ptr<DataTableInfo> info, idx_t index_oid);
+	//! Register a dropped table, whose blocks are collected when the dropped storage is freed.
+	void DropTable(shared_ptr<DataTable> table);
+	//! Register a column that an ALTER replaced, whose blocks are collected when the dropped storage is freed.
+	void DropColumn(shared_ptr<DataTable> table, idx_t column_index);
+	//! Removes the dropped indexes from their tables, which keep them for checkpoints until they are destroyed.
+	void DetachIndexes();
+	//! Loads the dropped tables for older snapshots and excludes the dropped storage from checkpoints, once
+	void ExcludeFromCheckpoints();
+	//! Frees the dropped storage
+	void Free();
 	//! True if no work has been queued.
 	bool Empty() const;
 
+	//! The commit id of the transaction that dropped the storage
+	transaction_t commit_id = 0;
+
 private:
+	//! Collects the dropped blocks and destroys the dropped indexes
+	void Collect();
+
 	optional_ptr<BlockManager> block_manager;
 	vector<block_id_t> dropped_block_ids;
-	vector<PendingIndexRemoval> pending_index_removals;
+	vector<shared_ptr<DataTable>> dropped_tables;
+	vector<pair<shared_ptr<DataTable>, idx_t>> dropped_columns;
+	vector<DroppedIndex> dropped_indexes;
+	//! Whether ExcludeFromCheckpoints ran
+	bool excluded = false;
 };
 
 struct IndexDataRemover {

@@ -656,7 +656,7 @@ void RowGroup::CommitDropColumn(const idx_t column_index, CommitDropState &drop_
 void RowGroup::CommitDrop() {
 	CommitDropState drop_state(&GetBlockManager());
 	CommitDrop(drop_state);
-	drop_state.FinalizeCommit();
+	drop_state.Free();
 }
 
 void RowGroup::FinishVector(CollectionScanState &state) {
@@ -1184,6 +1184,13 @@ optional_ptr<RowVersionManager> RowGroup::GetVersionInfo() {
 
 shared_ptr<RowVersionManager> RowGroup::GetOrCreateVersionInfoPtr() {
 	return version_info->GetOrCreate(GetBlockManager());
+}
+
+void RowGroup::LoadMetadata() {
+	for (idx_t c = 0; c < GetColumnCount(); c++) {
+		LoadColumn(c);
+	}
+	GetVersionInfo();
 }
 
 RowVersionManager &RowGroup::GetOrCreateVersionInfo() {

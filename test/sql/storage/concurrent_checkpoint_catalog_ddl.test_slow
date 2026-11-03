@@ -1,5 +1,5 @@
 # name: test/sql/storage/concurrent_checkpoint_catalog_ddl.test_slow
-# description: DDL that keeps table storage and sequence use commit while a checkpoint runs, and replay from the WAL
+# description: DDL that keeps or drops table storage, and sequence use, commit while a checkpoint runs, and replay from the WAL
 # group: [storage]
 
 load {TEST_DIR}/concurrent_checkpoint_catalog_ddl.db
@@ -238,7 +238,7 @@ SELECT COUNT(*), COUNT(DISTINCT id), MAX(id) FROM ids
 ----
 12	12	12
 
-# an open transaction keeps checkpoints from running only if its DDL changes table storage
+# an open transaction keeps checkpoints from running only if its DDL creates or changes table storage
 statement ok
 CREATE TABLE u (i INTEGER)
 
@@ -362,7 +362,37 @@ CHECKPOINT
 statement ok con1
 ROLLBACK
 
-# DDL that changes table storage keeps them from running
+statement ok con1
+BEGIN TRANSACTION
+
+statement ok con1
+DROP TABLE u
+
+statement ok
+INSERT INTO t2 VALUES (1, 1)
+
+statement ok
+CHECKPOINT
+
+statement ok con1
+ROLLBACK
+
+statement ok con1
+BEGIN TRANSACTION
+
+statement ok con1
+DROP SCHEMA s2 CASCADE
+
+statement ok
+INSERT INTO t2 VALUES (1, 1)
+
+statement ok
+CHECKPOINT
+
+statement ok con1
+ROLLBACK
+
+# DDL that creates or changes table storage keeps them from running
 
 statement ok con1
 BEGIN TRANSACTION
@@ -455,40 +485,6 @@ BEGIN TRANSACTION
 
 statement ok con1
 ALTER TABLE u ALTER COLUMN i SET NOT NULL
-
-statement ok
-INSERT INTO t2 VALUES (1, 1)
-
-statement error
-CHECKPOINT
-----
-Cannot CHECKPOINT
-
-statement ok con1
-ROLLBACK
-
-statement ok con1
-BEGIN TRANSACTION
-
-statement ok con1
-DROP TABLE u
-
-statement ok
-INSERT INTO t2 VALUES (1, 1)
-
-statement error
-CHECKPOINT
-----
-Cannot CHECKPOINT
-
-statement ok con1
-ROLLBACK
-
-statement ok con1
-BEGIN TRANSACTION
-
-statement ok con1
-DROP SCHEMA s2 CASCADE
 
 statement ok
 INSERT INTO t2 VALUES (1, 1)

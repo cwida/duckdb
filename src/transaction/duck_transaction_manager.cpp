@@ -12,6 +12,7 @@
 #include "duckdb/catalog/dependency_manager.hpp"
 #include "duckdb/storage/storage_manager.hpp"
 #include "duckdb/transaction/duck_transaction.hpp"
+#include "duckdb/transaction/commit_state.hpp"
 #include "duckdb/transaction/transaction_data.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/connection_manager.hpp"
@@ -121,6 +122,51 @@ void DuckTransactionManager::ResetActiveCheckpoint() {
 	active_checkpoint = 0;
 }
 
+CommitDropState &DuckTransactionManager::AddDroppedStorage(unique_ptr<CommitDropState> drop_state) {
+	D_ASSERT(drop_state->commit_id != 0);
+	drop_state->DetachIndexes();
+	auto &result = *drop_state;
+	lock_guard<mutex> guard(dropped_storage_lock);
+	dropped_storage.push_back(std::move(drop_state));
+	return result;
+}
+
+void DuckTransactionManager::ExcludeDroppedStorage(VisibilityBound visibility_bound) {
+	lock_guard<mutex> exclude_or_free_guard(exclude_or_free_lock);
+	vector<reference<CommitDropState>> drop_states;
+	{
+		lock_guard<mutex> guard(dropped_storage_lock);
+		for (auto &drop_state : dropped_storage) {
+			if (drop_state->commit_id < visibility_bound) {
+				drop_states.push_back(*drop_state);
+			}
+		}
+	}
+	for (auto &drop_state : drop_states) {
+		drop_state.get().ExcludeFromCheckpoints();
+	}
+}
+
+void DuckTransactionManager::FreeDroppedStorage(CommitDropState &drop_state) {
+	lock_guard<mutex> exclude_or_free_guard(exclude_or_free_lock);
+	unique_ptr<CommitDropState> owned_state;
+	{
+		lock_guard<mutex> guard(dropped_storage_lock);
+		for (idx_t i = 0; i < dropped_storage.size(); i++) {
+			if (dropped_storage[i].get() == &drop_state) {
+				owned_state = std::move(dropped_storage[i]);
+				dropped_storage.erase_at(i);
+				break;
+			}
+		}
+	}
+	if (!owned_state) {
+		throw InternalException("FreeDroppedStorage called with storage that is not registered");
+	}
+	// removed first: if freeing fails, the state is destroyed while unwinding
+	owned_state->Free();
+}
+
 DuckTransactionManager::CheckpointDecision::CheckpointDecision(string reason_p)
     : can_checkpoint(false), reason(std::move(reason_p)) {
 }
@@ -174,9 +220,8 @@ DuckTransactionManager::GetCheckpointType(DuckTransaction &transaction, const Un
 	auto checkpoint_type = CheckpointType::FULL_CHECKPOINT;
 	bool has_other_transactions = HasOtherTransactions(transaction);
 	if (has_other_transactions) {
-		if (undo_properties.has_updates || undo_properties.has_dropped_entries) {
-			// if we have made updates/catalog changes in this transaction we cannot checkpoint
-			// in the presence of other transactions
+		if (undo_properties.has_updates) {
+			// if we have made updates in this transaction we cannot checkpoint in the presence of other transactions
 			string other_transactions;
 			for (auto &active_transaction : active_transactions) {
 				if (!RefersToSameObject(*active_transaction, transaction)) {
@@ -189,14 +234,6 @@ DuckTransactionManager::GetCheckpointType(DuckTransaction &transaction, const Un
 			if (!other_transactions.empty()) {
 				// there are other transactions!
 				// these active transactions might need data from BEFORE this transaction
-				// we might need to change our strategy here based on what changes THIS transaction has made
-				if (undo_properties.has_dropped_entries) {
-					// this transaction has changed the catalog - we cannot checkpoint
-					return CheckpointDecision(
-					    "Transaction has dropped catalog entries and there are other transactions "
-					    "active\nActive transactions: " +
-					    other_transactions);
-				}
 				// this transaction has performed updates - we cannot checkpoint
 				return CheckpointDecision(
 				    "Transaction has performed updates and there are other transactions active\nActive transactions: " +
@@ -546,7 +583,7 @@ ErrorData DuckTransactionManager::CommitTransaction(ClientContext &context, Tran
 
 	CleanupTransactions();
 
-	if (checkpoint_decision.can_checkpoint && (undo_properties.has_updates || undo_properties.has_dropped_entries) &&
+	if (checkpoint_decision.can_checkpoint && undo_properties.has_updates &&
 	    GetLastCommit() >= LowestVisibilityBound()) {
 		// GetCheckpointType does not checkpoint while another transaction might still need the state
 		// from before this commit. That check ran before the sync; transactions that started during

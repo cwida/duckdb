@@ -22,6 +22,7 @@
 
 namespace duckdb {
 
+struct BlockIdVisitor;
 class ConflictManager;
 class IndexEntry;
 class IndexBinder;
@@ -141,6 +142,10 @@ public:
 	bool HasBufferedReplays() const;
 	//! Destroys the physical index.
 	void Retire();
+	//! Visits the on-disk blocks of the physical index, once per use
+	void VisitBlockIds(BlockIdVisitor &visitor);
+	//! Disowns the on-disk blocks of the physical index: destroying it no longer frees them
+	void DisownBlocks();
 	//! Binds the unbound physical index without replacing it.
 	unique_ptr<BoundIndex> Bind(IndexBinder &binder, const vector<LogicalType> &table_types);
 	//! Replaces the unbound physical index with its bound representation.
@@ -224,6 +229,8 @@ private:
 	//! Whether the enforced constraint is deferred. Derived from the catalog constraint, not serialized.
 	const ConstraintCheckMode check_mode;
 	IndexDeltas deltas;
+	//! A checkpoint copied the physical index and installs the copy later: until then, only the deltas change
+	bool shadow_pending = false;
 };
 
 template <class TARGET>

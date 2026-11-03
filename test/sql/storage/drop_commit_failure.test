@@ -1,0 +1,76 @@
+# name: test/sql/storage/drop_commit_failure.test
+# description: A drop whose commit fails leaves the table and its indexes in place
+# group: [storage]
+
+load {TEST_DIR}/drop_commit_failure.db
+
+statement ok
+SET checkpoint_threshold='1TB'
+
+statement ok
+SET debug_verify_blocks=true
+
+statement ok
+CREATE TABLE t (i INTEGER PRIMARY KEY, s VARCHAR)
+
+statement ok
+INSERT INTO t SELECT i, repeat('x', 100) || i FROM range(100000) t(i)
+
+statement ok
+CREATE INDEX t_s ON t(s)
+
+statement ok
+CHECKPOINT
+
+statement ok
+SET GLOBAL debug_force_commit_failure = true
+
+statement error
+DROP TABLE t
+----
+Forced commit failure
+
+statement error
+DROP INDEX t_s
+----
+Forced commit failure
+
+statement ok
+SET GLOBAL debug_force_commit_failure = false
+
+query II
+SELECT COUNT(*), SUM(i) FROM t
+----
+100000	4999950000
+
+query I
+SELECT i FROM t WHERE s = repeat('x', 100) || '777'
+----
+777
+
+statement error
+INSERT INTO t VALUES (5, 'duplicate')
+----
+Duplicate key
+
+statement ok
+INSERT INTO t VALUES (100000, 'new')
+
+statement ok
+CHECKPOINT
+
+restart
+
+statement ok
+SET debug_verify_blocks=true
+
+query II
+SELECT COUNT(*), SUM(i) FROM t
+----
+100001	5000050000
+
+statement ok
+DROP TABLE t
+
+statement ok
+CHECKPOINT

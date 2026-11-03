@@ -1,0 +1,105 @@
+# name: test/sql/index/art/storage/test_art_checkpoint_added_indexes.test
+# description: A checkpoint writes the indexes of its catalog: added by committed transactions, not by failed commits
+# group: [storage]
+
+# the forced commit failure crashes the alternative-verify build
+require no_alternative_verify
+
+require skip_reload
+
+load {TEST_DIR}/test_art_checkpoint_added_indexes.db
+
+statement ok
+CREATE TABLE t (i INTEGER, j INTEGER);
+
+statement ok
+INSERT INTO t SELECT range, range FROM range(3000);
+
+statement ok
+CREATE TABLE v (m INTEGER);
+
+statement ok
+INSERT INTO v SELECT range FROM range(3000);
+
+# a table created with its index, and indexes added to both tables, in one transaction
+statement ok
+BEGIN
+
+statement ok
+CREATE TABLE u (k INTEGER PRIMARY KEY, l INTEGER);
+
+statement ok
+INSERT INTO u SELECT range, range FROM range(3000);
+
+statement ok
+CREATE UNIQUE INDEX idx_l ON u(l);
+
+statement ok
+CREATE INDEX idx_i ON t(i);
+
+statement ok
+COMMIT
+
+statement ok
+ALTER TABLE v ADD PRIMARY KEY (m);
+
+# new versions of the catalog entries of an index and of a table with a primary key
+statement ok
+COMMENT ON INDEX idx_i IS 'commented';
+
+statement ok
+ALTER TABLE v ADD COLUMN n INTEGER;
+
+# the commit of an index fails
+statement ok
+SET debug_force_commit_failure=true;
+
+statement ok
+BEGIN
+
+statement ok
+CREATE UNIQUE INDEX idx_failed ON t(i);
+
+statement error
+COMMIT
+----
+Forced commit failure
+
+statement ok
+SET debug_force_commit_failure=false;
+
+statement ok
+CHECKPOINT
+
+restart
+
+query III
+SELECT table_name, index_name, comment FROM duckdb_indexes() ORDER BY ALL
+----
+t	idx_i	commented
+u	idx_l	NULL
+
+statement error
+INSERT INTO v VALUES (1, NULL)
+----
+violates primary key constraint
+
+statement error
+INSERT INTO u VALUES (1, 3000)
+----
+violates primary key constraint
+
+statement error
+INSERT INTO u VALUES (3000, 1)
+----
+violates unique constraint
+
+# idx_failed is gone
+statement ok
+INSERT INTO t VALUES (1, 3000)
+
+query I
+SELECT j FROM t WHERE i = 1 ORDER BY j
+----
+1
+3000

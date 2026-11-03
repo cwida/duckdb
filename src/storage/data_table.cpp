@@ -1642,8 +1642,22 @@ idx_t DataTable::GetNextRowId() const {
 	return row_groups->GetNextRowId();
 }
 
+struct DroppedBlockCollector : public BlockIdVisitor {
+	explicit DroppedBlockCollector(CommitDropState &drop_state) : drop_state(drop_state) {
+	}
+
+	void Visit(block_id_t block_id) override {
+		drop_state.DropBlock(block_id);
+	}
+
+	CommitDropState &drop_state;
+};
+
 void DataTable::CommitDropTable(CommitDropState &drop_state) {
 	row_groups->CommitDropTable(drop_state);
+	// the indexes stay usable for older snapshots until the drop frees the blocks
+	DroppedBlockCollector collector(drop_state);
+	info->GetIndexes().VisitBlockIds(collector);
 }
 
 idx_t DataTable::GetRowGroupCount() const {

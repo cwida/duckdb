@@ -307,6 +307,13 @@
         "is_debug": true
     },
     {
+        "name": "debug_checkpoint_index_sleep_ms",
+        "description": "DEBUG SETTING: time to sleep after a checkpoint has copied a table's indexes, before it writes and installs the copies",
+        "type": "UBIGINT",
+        "default_scope": "global",
+        "default_value": "0"
+    },
+    {
         "name": "debug_checkpoint_scan_sleep_ms",
         "description": "DEBUG SETTING: time to sleep after a checkpoint has written a table's row groups, before it installs them",
         "type": "UBIGINT",

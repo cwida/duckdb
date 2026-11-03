@@ -104,6 +104,7 @@ void SingleFileTableDataWriter::FinalizeTable(const TableStatistics &global_stat
                                               RowGroupCollection &collection,
                                               const vector<shared_ptr<const IndexStorageInfo>> &index_infos,
                                               Serializer &serializer) {
+	checkpoint_manager.written_index_count += index_infos.size();
 	MetaBlockPointer pointer;
 	idx_t total_rows;
 	idx_t next_row_id;

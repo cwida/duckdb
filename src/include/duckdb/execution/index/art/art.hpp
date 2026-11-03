@@ -27,6 +27,7 @@ class ARTKey;
 class ARTKeySection;
 class RowIdVectorOutput;
 class FixedSizeAllocator;
+struct BlockIdVisitor;
 
 struct ARTIndexScanState;
 
@@ -133,6 +134,10 @@ public:
 
 	//! Reset all ART storage.
 	void ResetStorage(IndexLock &index_lock) override DUCKDB_REQUIRES(index_lock);
+	//! Visits the on-disk blocks of the ART, once per use
+	void VisitBlockIds(BlockIdVisitor &visitor) DUCKDB_EXCLUDES(lock);
+	//! Disowns the on-disk blocks of the ART: destroying it no longer frees them
+	void DisownBlocks() DUCKDB_EXCLUDES(lock);
 
 	//! Build an ART from a vector of sorted keys and their row IDs.
 	ARTConflictType Build(unsafe_vector<ARTKey> &keys, unsafe_vector<ARTKey> &row_ids, const idx_t row_count);

@@ -1,0 +1,62 @@
+# name: test/sql/storage/drop_column_shared_partial_block.test
+# description: A column dropped by ALTER TABLE shares a partial block with a column that stays
+# group: [storage]
+
+load {TEST_DIR}/drop_column_shared_partial_block.db
+
+statement ok
+CREATE TABLE t (x BIGINT, y BIGINT)
+
+statement ok
+INSERT INTO t SELECT range, range FROM range(100)
+
+statement ok
+CREATE TABLE tick (i INTEGER)
+
+statement ok
+CHECKPOINT
+
+query I
+SELECT COUNT(DISTINCT block_id) FROM pragma_storage_info('t') WHERE block_id >= 0
+----
+1
+
+statement ok
+SET debug_verify_blocks=true
+
+statement ok con2
+BEGIN TRANSACTION
+
+query I con2
+SELECT COUNT(*) FROM t
+----
+100
+
+# the commit checkpoints while con2 still reads the old table version, so y is freed on disk first
+statement ok
+ALTER TABLE t DROP COLUMN y
+
+statement ok con2
+COMMIT
+
+statement ok
+INSERT INTO tick VALUES (1)
+
+statement ok
+CHECKPOINT
+
+restart
+
+statement ok
+SET debug_verify_blocks=true
+
+query I
+SELECT SUM(x) FROM t
+----
+4950
+
+statement ok
+INSERT INTO tick VALUES (2)
+
+statement ok
+CHECKPOINT

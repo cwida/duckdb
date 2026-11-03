@@ -109,6 +109,7 @@ static const ConfigurationOption internal_options[] = {
     DUCKDB_GLOBAL(DebugAbortOnWalFailureSetting),
     DUCKDB_SETTING(DebugAsofIejoinSetting),
     DUCKDB_SETTING_CALLBACK(DebugCheckpointAbortSetting),
+    DUCKDB_SETTING(DebugCheckpointIndexSleepMsSetting),
     DUCKDB_SETTING(DebugCheckpointScanSleepMsSetting),
     DUCKDB_SETTING(DebugCheckpointSleepMsSetting),
     DUCKDB_GLOBAL(DebugDeltaOnlyVariantEncodingEnabledSetting),

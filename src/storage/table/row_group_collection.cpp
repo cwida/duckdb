@@ -2245,13 +2245,13 @@ void RowGroupCollection::CommitDropTable(CommitDropState &drop_state) {
 void RowGroupCollection::CommitDropColumn(const idx_t column_index) {
 	CommitDropState drop_state(&GetBlockManager());
 	CommitDropColumn(column_index, drop_state);
-	drop_state.FinalizeCommit();
+	drop_state.Free();
 }
 
 void RowGroupCollection::CommitDropTable() {
 	CommitDropState drop_state(&GetBlockManager());
 	CommitDropTable(drop_state);
-	drop_state.FinalizeCommit();
+	drop_state.Free();
 }
 
 //===--------------------------------------------------------------------===//

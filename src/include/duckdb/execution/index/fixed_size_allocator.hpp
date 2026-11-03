@@ -103,6 +103,10 @@ public:
 
 	//! Resets the allocator, e.g., during 'DELETE FROM table'
 	void Reset();
+	//! Visits the on-disk blocks of the buffers, once per buffer
+	void VisitBlockIds(BlockIdVisitor &visitor) const;
+	//! Disowns the on-disk blocks of the buffers: destroying a buffer no longer frees its block
+	void DisownBlocks();
 
 	//! Returns the in-memory size in bytes
 	idx_t GetInMemorySize() const;

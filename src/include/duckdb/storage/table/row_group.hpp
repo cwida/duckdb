@@ -288,6 +288,8 @@ public:
 	void WriteRows(TransactionData transaction, DuckTableEntry &table_entry, idx_t vector_idx, idx_t base_row,
 	               const row_t ids[], idx_t count, row_t offset, bool is_update, WrittenRows &written);
 	RowVersionManager &GetOrCreateVersionInfo();
+	//! Loads the columns and deletes, which are otherwise read from metadata when first needed
+	void LoadMetadata();
 
 	// Serialization
 	static void Serialize(RowGroupPointer &pointer, Serializer &serializer, bool supports_per_column_writes);
