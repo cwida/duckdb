@@ -272,14 +272,7 @@ static double RoundSemiAntiCardinality(double preserved_cardinality, double sele
 SemiAntiJoinCardinalityEstimate RelationStatisticsHelper::EstimateSemiAntiJoinFallback(double preserved_cardinality,
                                                                                        idx_t rhs_cardinality,
                                                                                        JoinType join_type) {
-	auto is_anti = join_type == JoinType::ANTI || join_type == JoinType::RIGHT_ANTI;
-	if (rhs_cardinality == 0) {
-		return {is_anti ? MaxValue(0.0, preserved_cardinality) : 0, false};
-	}
-	// Keep fractional estimates while composing costs. Rounding a small preserved input
-	// can otherwise make equivalent selectivities depend on where the SEMI/ANTI is placed.
-	auto estimate = MinValue(preserved_cardinality, MaxValue(1.0, preserved_cardinality * DEFAULT_SELECTIVITY));
-	return {MaxValue(0.0, estimate), false};
+	return {EstimateSemiAntiJoinFallbackCardinality(preserved_cardinality, rhs_cardinality, join_type), false};
 }
 
 static constexpr double MAX_BASE_CARDINALITY_TO_DOMAIN_RATIO = 8;

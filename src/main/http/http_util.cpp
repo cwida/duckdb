@@ -583,15 +583,13 @@ void HTTPParams::Initialize(optional_ptr<FileOpener> opener) {
 
 unique_ptr<HTTPParams> HTTPUtil::InitializeParameters(DatabaseInstance &db, const string &url) {
 	DatabaseFileOpener opener(db);
-	FileOpenerInfo info;
-	info.file_path = url;
+	FileOpenerInfo info(url);
 	return InitializeParameters(&opener, &info);
 }
 
 unique_ptr<HTTPParams> HTTPUtil::InitializeParameters(ClientContext &context, const string &url) {
 	ClientContextFileOpener opener(context);
-	FileOpenerInfo info;
-	info.file_path = url;
+	FileOpenerInfo info(url);
 	return InitializeParameters(&opener, &info);
 }
 

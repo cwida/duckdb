@@ -95,6 +95,7 @@ bool ColumnData::HasUpdates() const {
 }
 
 bool ColumnData::HasChanges(idx_t start_row, idx_t end_row) const {
+	lock_guard<mutex> update_guard(update_lock);
 	if (!updates) {
 		return false;
 	}
