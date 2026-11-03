@@ -75,3 +75,9 @@ SELECT round(x, -300), round_even(x, -300), trunc(x, -300) FROM (VALUES ('1.5'::
 ----
 0	0	0
 NULL	NULL	NULL
+
+# the most negative precision drops every digit and rounds to zero, like the fixed-size tiers
+query IIII
+SELECT round(1::DECIMAL(39,0), '-2147483648'::INTEGER), round(1::DECIMAL(38,0), '-2147483648'::INTEGER), trunc('-1.5'::DECIMAL(40,1), '-2147483648'::INTEGER), round_even('-1.5'::DECIMAL(38,1), '-2147483648'::INTEGER)
+----
+0	0	0	0

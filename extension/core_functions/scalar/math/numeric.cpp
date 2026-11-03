@@ -740,7 +740,8 @@ static void BignumRoundPrecisionDecimal(DataChunk &input, ExpressionState &state
 	auto &info = func_expr.BindInfo()->Cast<RoundPrecisionFunctionData>();
 	auto source_scale = DecimalType::GetScale(func_expr.GetChildren()[0]->GetReturnType());
 	// the digits below the target scale are dropped, those above a negative precision are restored as zeros
-	const idx_t restore_digits = info.target_scale < 0 ? NumericCast<idx_t>(-info.target_scale) : 0;
+	const idx_t restore_digits =
+	    info.target_scale < 0 ? NumericCast<idx_t>(-static_cast<int64_t>(info.target_scale)) : 0;
 	const idx_t drop_digits = source_scale + restore_digits - (info.target_scale > 0 ? info.target_scale : 0);
 	if (drop_digits > Decimal::MAX_WIDTH_DECIMAL) {
 		// more digits than any decimal holds are dropped: every value rounds to zero
