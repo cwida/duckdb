@@ -1,0 +1,64 @@
+# name: test/sql/copy/parquet/field_id_schema_missing_column_extract.test
+# description: a field extracted from a column that a file lacks takes the value the whole column has, with a field id schema
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT * FROM (VALUES (1, {'x': 1}), (2, NULL)) t(a, s)) TO '{TEST_DIR}/missing_extract_1.parquet' (FIELD_IDS {a: 1, s: {__duckdb_field_id: 2, x: 3}})
+
+statement ok
+COPY (SELECT 3 AS a) TO '{TEST_DIR}/missing_extract_2.parquet' (FIELD_IDS {a: 1})
+
+statement ok
+COPY (SELECT 4 AS a, {'k': 'hello'}::VARIANT AS v) TO '{TEST_DIR}/missing_extract_3.parquet' (FIELD_IDS {a: 1, v: 4})
+
+# the whole column takes its default in the file that lacks it
+query II
+SELECT a, s FROM read_parquet(['{TEST_DIR}/missing_extract_1.parquet', '{TEST_DIR}/missing_extract_2.parquet'], schema := MAP {1: {name: 'a', type: 'INTEGER', default_value: NULL}, 2: {name: 's', type: 'STRUCT(x INTEGER)', default_value: {'x': 9}}}) ORDER BY a
+----
+1	{'x': 1}
+2	NULL
+3	{'x': 9}
+
+# a field extracted from it takes the field of that default
+query II
+SELECT a, s.x FROM read_parquet(['{TEST_DIR}/missing_extract_1.parquet', '{TEST_DIR}/missing_extract_2.parquet'], schema := MAP {1: {name: 'a', type: 'INTEGER', default_value: NULL}, 2: {name: 's', type: 'STRUCT(x INTEGER)', default_value: {'x': 9}}}) ORDER BY a
+----
+1	1
+2	NULL
+3	9
+
+query II
+SELECT a, s.x FROM read_parquet(['{TEST_DIR}/missing_extract_1.parquet', '{TEST_DIR}/missing_extract_2.parquet'], schema := MAP {1: {name: 'a', type: 'INTEGER', default_value: NULL}, 2: {name: 's', type: 'STRUCT(x INTEGER)', default_value: NULL}}) ORDER BY a
+----
+1	1
+2	NULL
+3	NULL
+
+# a filter on the extracted field
+query I
+SELECT a FROM read_parquet(['{TEST_DIR}/missing_extract_1.parquet', '{TEST_DIR}/missing_extract_2.parquet'], schema := MAP {1: {name: 'a', type: 'INTEGER', default_value: NULL}, 2: {name: 's', type: 'STRUCT(x INTEGER)', default_value: NULL}}) WHERE s.x IS NULL ORDER BY a
+----
+2
+3
+
+query I
+SELECT a FROM read_parquet(['{TEST_DIR}/missing_extract_1.parquet', '{TEST_DIR}/missing_extract_2.parquet'], schema := MAP {1: {name: 'a', type: 'INTEGER', default_value: NULL}, 2: {name: 's', type: 'STRUCT(x INTEGER)', default_value: {'x': 9}}}) WHERE s.x = 9 ORDER BY a
+----
+3
+
+# a field of a VARIANT column that a file lacks
+query II
+SELECT a, v.k::VARCHAR FROM read_parquet(['{TEST_DIR}/missing_extract_2.parquet', '{TEST_DIR}/missing_extract_3.parquet'], schema := MAP {1: {name: 'a', type: 'INTEGER', default_value: NULL}, 4: {name: 'v', type: 'VARIANT', default_value: NULL}}) ORDER BY a
+----
+3	NULL
+4	hello
+
+# union_by_name fills the missing column before the mapping and is unchanged
+query II
+SELECT a, s.x FROM read_parquet(['{TEST_DIR}/missing_extract_1.parquet', '{TEST_DIR}/missing_extract_2.parquet'], union_by_name := true) ORDER BY a
+----
+1	1
+2	NULL
+3	NULL
