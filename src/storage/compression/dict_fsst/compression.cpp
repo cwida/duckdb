@@ -129,23 +129,6 @@ idx_t DictFSSTCompressionState::Finalize() {
 	return required_space;
 }
 
-idx_t DictFSSTCompressionState::CalculateRequiredSpace() const {
-	idx_t required_space = 0;
-	required_space += sizeof(dict_fsst_compression_header_t);
-	required_space = AlignValue<idx_t>(required_space);
-	required_space += dictionary_offset + to_encode_string_sum;
-	required_space = AlignValue<idx_t>(required_space);
-	if (IsEncoded(append_state)) {
-		required_space += symbol_table_size;
-		required_space = AlignValue<idx_t>(required_space);
-	}
-	required_space += string_lengths_space;
-	required_space = AlignValue<idx_t>(required_space);
-	required_space += dictionary_indices_space;
-
-	return required_space;
-}
-
 void DictFSSTCompressionState::FlushEncodingBuffer() {
 	if (dictionary_encoding_buffer.empty()) {
 		D_ASSERT(to_encode_string_sum == 0);
@@ -878,10 +861,6 @@ void DictFSSTCompressionState::Compress(const Vector &scan_vector) {
 		}
 		tuple_count++;
 	}
-}
-
-void DictFSSTCompressionState::FinalizeCompress() {
-	Flush(true);
 }
 
 } // namespace dict_fsst
