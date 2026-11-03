@@ -6,6 +6,12 @@
   "inherit_skip_tests": "test/configs/force_storage.json",
   "skip_tests": [
     {
+      "reason": "Ten scans of 2M rows under a 4MB memory limit, fetching row by row, take 255s on v2.0-cyanoptera (f5b4005d78) pinned to 4 cores and time out at 600s on GitHub's 4-vCPU runners; upstream fits them in 300s on its 12-worker runners.",
+      "paths": [
+        "test/sql/table_function/duckdb_eviction_queues.test"
+      ]
+    },
+    {
       "reason": "`Behavior changes when forcing row fetches`",
       "paths": [
         "test/sql/storage/compression/rle/rle_constant.test",
