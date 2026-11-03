@@ -177,6 +177,10 @@ public:
 
 	virtual bool TryExportPreparedShreddingType(ShreddingType &result) const;
 
+	virtual bool SupportsBloomFilterFallback() const {
+		return false;
+	}
+
 	virtual idx_t FinalizeSchema(duckdb_parquet::SchemaElementList &schemas) = 0;
 
 	//! Create the column writer for a specific type recursively
@@ -241,6 +245,7 @@ public:
 	ParquetColumnSchema column_schema;
 	vector<Identifier> schema_path;
 	bool can_have_nulls;
+	bool bloom_filter_fallback = false;
 
 protected:
 	vector<unique_ptr<ColumnWriter>> child_writers;
