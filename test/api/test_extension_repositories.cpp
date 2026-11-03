@@ -292,15 +292,44 @@ TEST_CASE("Test that a user repository does not block an unsigned load", "[api]"
 
 namespace {
 
-// Counts the hash states the signature check asks for
-class CountingHashFactory : public duckdb_mbedtls::MbedTlsWrapper::AESStateMBEDTLSFactory {
+// Records what the signature check hashes through the configured util
+class RecordingHashState : public CryptoHashState {
 public:
-	unique_ptr<CryptoHashState> CreateHashState(CryptoHashFunction function) const override {
-		hash_states++;
-		return AESStateMBEDTLSFactory::CreateHashState(function);
+	RecordingHashState(unique_ptr<CryptoHashState> inner_p, mutex &lock_p, vector<string> &inputs_p)
+	    : CryptoHashState(inner_p->GetFunction()), inner(std::move(inner_p)), lock(lock_p), inputs(inputs_p) {
 	}
 
-	mutable atomic<idx_t> hash_states {0};
+	void Hash(const_data_ptr_t input, idx_t input_len, data_ptr_t output) override {
+		{
+			lock_guard<mutex> guard(lock);
+			inputs.emplace_back(const_char_ptr_cast(input), input_len);
+		}
+		inner->Hash(input, input_len, output);
+	}
+
+private:
+	unique_ptr<CryptoHashState> inner;
+	mutex &lock;
+	vector<string> &inputs;
+};
+
+class RecordingHashFactory : public duckdb_mbedtls::MbedTlsWrapper::AESStateMBEDTLSFactory {
+public:
+	unique_ptr<CryptoHashState> CreateHashState(CryptoHashFunction function) const override {
+		return make_uniq<RecordingHashState>(AESStateMBEDTLSFactory::CreateHashState(function), lock, inputs);
+	}
+
+	//! The hashed inputs since the last call, sorted
+	vector<string> TakeInputs() {
+		lock_guard<mutex> guard(lock);
+		auto result = std::move(inputs);
+		inputs.clear();
+		std::sort(result.begin(), result.end());
+		return result;
+	}
+
+	mutable mutex lock;
+	mutable vector<string> inputs;
 };
 
 } // namespace
@@ -309,19 +338,46 @@ TEST_CASE("Test that the signature check hashes with the configured EncryptionUt
 	DuckDB db(nullptr);
 	auto &instance = *db.instance;
 	auto &config = DBConfig::GetConfig(instance);
-	// three chunks of 1 MiB and a (wrong) signature
-	string extension(3 * 1024 * 1024 + ParsedExtensionMetaData::SIGNATURE_SIZE, 'x');
+	// three chunks of 1 MiB, each with its own content, and a (wrong) signature
+	const idx_t chunk_size = 1024 * 1024;
+	vector<string> chunks {string(chunk_size, 'a'), string(chunk_size, 'b'), string(chunk_size, 'c')};
+	string extension = chunks[0] + chunks[1] + chunks[2] + string(ParsedExtensionMetaData::SIGNATURE_SIZE, 'x');
 
-	auto factory = make_shared_ptr<CountingHashFactory>();
+	auto factory = make_shared_ptr<RecordingHashFactory>();
 	config.encryption_util = factory;
+
+	// INSTALL checks the downloaded buffer: every chunk is hashed, as it is
 	REQUIRE(!ExtensionHelper::CheckExtensionBufferSignature(instance, extension.data(), extension.size(),
 	                                                        ExtensionRepositoryType::CORE, ""));
-	REQUIRE(factory->hash_states == 3);
+	REQUIRE(factory->TakeInputs() == chunks);
 
-	// force_mbedtls keeps the check on mbedtls
-	factory->hash_states = 0;
+	// LOAD checks the file: every chunk is read whole and hashed, as it is
+	auto path = TestCreatePath("signature_check.bin");
+	auto &fs = FileSystem::GetFileSystem(instance);
+	{
+		auto handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW);
+		handle->Write((void *)extension.data(), extension.size());
+		handle->Sync();
+	}
+	{
+		auto handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ);
+		ParsedExtensionMetaData metadata;
+		metadata.signature.resize(ParsedExtensionMetaData::SIGNATURE_SIZE);
+		REQUIRE(
+		    !ExtensionHelper::CheckExtensionSignature(instance, *handle, metadata, ExtensionRepositoryType::CORE, ""));
+	}
+	REQUIRE(factory->TakeInputs() == chunks);
+
+	// force_mbedtls keeps both checks on mbedtls
 	config.options.force_mbedtls = true;
 	REQUIRE(!ExtensionHelper::CheckExtensionBufferSignature(instance, extension.data(), extension.size(),
 	                                                        ExtensionRepositoryType::CORE, ""));
-	REQUIRE(factory->hash_states == 0);
+	{
+		auto handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ);
+		ParsedExtensionMetaData metadata;
+		metadata.signature.resize(ParsedExtensionMetaData::SIGNATURE_SIZE);
+		REQUIRE(
+		    !ExtensionHelper::CheckExtensionSignature(instance, *handle, metadata, ExtensionRepositoryType::CORE, ""));
+	}
+	REQUIRE(factory->TakeInputs().empty());
 }
