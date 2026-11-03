@@ -111,6 +111,24 @@ private:
 	idx_t size;
 };
 
+class ParquetBloomFilterWriteBuffer : public AsyncWriteBuffer {
+public:
+	explicit ParquetBloomFilterWriteBuffer(unique_ptr<ParquetBloomFilter> bloom_filter_p)
+	    : bloom_filter(std::move(bloom_filter_p)) {
+	}
+
+	data_ptr_t Ptr() override {
+		return bloom_filter->Get()->ptr;
+	}
+
+	idx_t Size() const override {
+		return bloom_filter->Get()->len;
+	}
+
+private:
+	unique_ptr<ParquetBloomFilter> bloom_filter;
+};
+
 bool ParquetWriter::TryGetParquetType(const LogicalType &duckdb_type, optional_ptr<Type::type> parquet_type_ptr,
                                       bool write_timestamp_as_int96) {
 	Type::type parquet_type;
@@ -565,6 +583,15 @@ ParquetWriter::ParquetWriter(ClientContext &context, FileSystem &fs, ParquetWrit
 		}
 	}
 
+	bloom_filter_fallback_memory =
+	    make_shared_ptr<ParquetBloomFilterMemory>(options.bloom_filter_fallback_max_bytes, [this]() {
+		    auto batch_guard = writer->StartBatch();
+		    {
+			    lock_guard<mutex> glock(lock);
+			    FlushBloomFilters();
+		    }
+		    batch_guard.Finish();
+	    });
 	InitializeColumnWriters();
 }
 
@@ -586,6 +613,9 @@ void ParquetWriter::InitializeColumnWriters() {
 		column_writers.push_back(ColumnWriter::CreateWriterRecursive(
 		    context, *this, path_in_schema, types[i], Identifier(unique_names[i]), allow_geometry, &options.field_ids,
 		    &options.shredding_types, 0, 1, can_have_nulls));
+		auto &column_writer = *column_writers.back();
+		column_writer.bloom_filter_fallback =
+		    options.enable_bloom_filters && !options.encryption_config && column_writer.SupportsBloomFilterFallback();
 	}
 }
 
@@ -1278,6 +1308,10 @@ void ParquetWriter::FlushColumnStats(idx_t col_idx, duckdb_parquet::ColumnChunk 
 			stats_unifier->max_is_exact = stats_unifier->max_is_exact &&
 			                              column.meta_data.statistics.__isset.is_max_value_exact &&
 			                              column.meta_data.statistics.is_max_value_exact;
+		} else if (column.meta_data.statistics.__isset.null_count &&
+		           column.meta_data.statistics.null_count == column.meta_data.num_values) {
+			// every value of this column in the row group is NULL, so the row group has no min/max to contribute:
+			// the min/max of the other row groups still describe every non-NULL value in the file
 		} else {
 			stats_unifier->all_min_max_set = false;
 		}
@@ -1435,17 +1469,13 @@ void ParquetWriter::InitializeSchemaFromPreparedRowGroup(const PreparedRowGroup 
 	InitializeStatsUnifiers();
 }
 
-void ParquetWriter::Finalize() {
-	InitializeSchemaElements();
-
-	// dump the bloom filters right before footer, not if stuff is encrypted
-
+void ParquetWriter::FlushBloomFilters() {
 	for (auto &bloom_filter_entry : bloom_filters) {
 		D_ASSERT(!options.encryption_config);
 		// write nonsense bloom filter header
 		duckdb_parquet::BloomFilterHeader filter_header;
-		auto bloom_filter_bytes = bloom_filter_entry.bloom_filter->Get();
-		filter_header.numBytes = NumericCast<int32_t>(bloom_filter_bytes->len);
+		const auto bloom_filter_size = bloom_filter_entry.bloom_filter->Get()->len;
+		filter_header.numBytes = NumericCast<int32_t>(bloom_filter_size);
 		filter_header.algorithm.__set_BLOCK(duckdb_parquet::SplitBlockAlgorithm());
 		filter_header.compression.__set_UNCOMPRESSED(duckdb_parquet::Uncompressed());
 		filter_header.hash.__set_XXHASH(duckdb_parquet::XxHash());
@@ -1458,13 +1488,44 @@ void ParquetWriter::Finalize() {
 		column_chunk.meta_data.bloom_filter_offset = NumericCast<int64_t>(writer->GetTotalWritten());
 
 		auto bloom_filter_header_size = Write(filter_header);
-		// write actual data
-		WriteData(bloom_filter_bytes->ptr, bloom_filter_bytes->len);
+		// the async writer accounts for the bytes it queues, so the filter no longer needs the budget
+		bloom_filter_entry.bloom_filter->ReleaseReservation();
+		WriteData(make_uniq<ParquetBloomFilterWriteBuffer>(std::move(bloom_filter_entry.bloom_filter)));
 
 		column_chunk.meta_data.__isset.bloom_filter_length = true;
-		column_chunk.meta_data.bloom_filter_length =
-		    NumericCast<int32_t>(bloom_filter_header_size + bloom_filter_bytes->len);
+		column_chunk.meta_data.bloom_filter_length = NumericCast<int32_t>(bloom_filter_header_size + bloom_filter_size);
 	}
+	bloom_filters.clear();
+}
+
+void ParquetWriter::Finalize() {
+	InitializeSchemaElements();
+
+	// dump the remaining bloom filters right before footer, not if stuff is encrypted
+	FlushBloomFilters();
+
+	// the page index goes right in front of the footer, after the bloom filters, so that it is part of the tail of the
+	// file a reader fetches together with the footer: first the ColumnIndex of every column chunk, then the
+	// OffsetIndex of every column chunk, their location is recorded in the ColumnChunk
+	for (auto &page_index : page_indexes) {
+		D_ASSERT(!options.encryption_config);
+		if (!page_index.has_column_index) {
+			continue;
+		}
+		auto &column_chunk = file_meta_data.row_groups[page_index.row_group_idx].columns[page_index.column_idx];
+		column_chunk.column_index_offset = NumericCast<int64_t>(writer->GetTotalWritten());
+		column_chunk.__isset.column_index_offset = true;
+		column_chunk.column_index_length = NumericCast<int32_t>(Write(page_index.column_index));
+		column_chunk.__isset.column_index_length = true;
+	}
+	for (auto &page_index : page_indexes) {
+		auto &column_chunk = file_meta_data.row_groups[page_index.row_group_idx].columns[page_index.column_idx];
+		column_chunk.offset_index_offset = NumericCast<int64_t>(writer->GetTotalWritten());
+		column_chunk.__isset.offset_index_offset = true;
+		column_chunk.offset_index_length = NumericCast<int32_t>(Write(page_index.offset_index));
+		column_chunk.__isset.offset_index_length = true;
+	}
+	page_indexes.clear();
 
 	const auto metadata_start_offset = writer->GetTotalWritten();
 	if (options.encryption_config) {
@@ -1513,6 +1574,16 @@ GeoParquetFileMetadata &ParquetWriter::GetGeoParquetData() {
 		geoparquet_data = make_uniq<GeoParquetFileMetadata>(GetGeoParquetVersion());
 	}
 	return *geoparquet_data;
+}
+
+void ParquetWriter::BufferPageIndex(idx_t col_idx, ParquetPageIndexEntry page_index) {
+	if (options.encryption_config) {
+		// the page index of an encrypted file has to be encrypted as well - not supported (yet)
+		return;
+	}
+	page_index.column_idx = col_idx;
+	page_index.row_group_idx = file_meta_data.row_groups.size();
+	page_indexes.push_back(std::move(page_index));
 }
 
 void ParquetWriter::BufferBloomFilter(idx_t col_idx, unique_ptr<ParquetBloomFilter> bloom_filter) {

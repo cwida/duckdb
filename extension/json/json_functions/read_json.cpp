@@ -70,7 +70,7 @@ public:
 		auto &context = auto_detect_state.context;
 		auto &files = auto_detect_state.files;
 		auto &json_data = auto_detect_state.json_data;
-		auto json_reader = make_shared_ptr<JSONReader>(context, json_data.options, files[file_idx].path);
+		auto json_reader = make_shared_ptr<JSONReader>(context, json_data.options, files[file_idx]);
 		if (auto_detect_state.sampled_readers[file_idx]) {
 			throw InternalException("Reader for file %llu was already created", file_idx);
 		}
@@ -119,6 +119,8 @@ public:
 			node.RefineCandidateTypes(scan_state.values, next, string_vector, allocator,
 			                          auto_detect_state.date_format_map, user_specified_timestamp_format);
 		}
+		// release the current buffer, otherwise the sampled reader keeps it alive after the bind
+		scan_state.ClearBufferHandle();
 		auto_detect_state.total_file_size += file_size;
 		auto_detect_state.bytes_scanned += total_read_size;
 		auto_detect_state.tuples_scanned += total_tuple_count;

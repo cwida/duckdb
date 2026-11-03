@@ -934,6 +934,7 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 				}
 			}
 
+			cte.column_count = expressions.size();
 			auto projection = make_uniq<LogicalProjection>(binder.GenerateTableIndex(), std::move(expressions));
 			projection->children.push_back(std::move(cte.children[0]));
 			cte.children[0] = std::move(projection);
@@ -1844,7 +1845,8 @@ static bool TryGetCastChild(unique_ptr<Expression> &expr, optional_ptr<unique_pt
 }
 
 void BaseColumnPruner::VisitExpression(unique_ptr<Expression> *expression) {
-	if ((*expression)->GetExpressionType() == ExpressionType::OPERATOR_TRY) {
+	if ((*expression)->GetExpressionType() == ExpressionType::OPERATOR_TRY ||
+	    (*expression)->GetExpressionType() == ExpressionType::OPERATOR_HAS_ERROR) {
 		const auto was_inside_try = inside_try;
 		inside_try = true;
 		LogicalOperatorVisitor::VisitExpression(expression);

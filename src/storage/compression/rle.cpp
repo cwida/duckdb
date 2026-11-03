@@ -538,7 +538,7 @@ void RLESelect(ColumnSegment &segment, ColumnScanState &state, idx_t vector_coun
 	for (idx_t i = 0; i < sel_count; i++) {
 		auto next_idx = sel.get_index(i);
 		if (next_idx < prev_idx) {
-			throw InternalException("Error in RLESelect - selection vector indices are not ordered");
+			InternalException::Throw("Error in RLESelect - selection vector indices are not ordered");
 		}
 		D_ASSERT(next_idx < vector_count);
 		while (next_idx >= run_end) {
@@ -637,7 +637,7 @@ void RLEFilter(ColumnSegment &segment, ColumnScanState &state, idx_t vector_coun
 		for (idx_t i = 0; i < sel_count; i++) {
 			auto read_idx = sel.get_index(i);
 			if (read_idx < prev_idx) {
-				throw InternalException("Error in RLEFilter - selection vector indices are not ordered");
+				InternalException::Throw("Error in RLEFilter - selection vector indices are not ordered");
 			}
 			D_ASSERT(read_idx < vector_count);
 			// skip forward to the next index

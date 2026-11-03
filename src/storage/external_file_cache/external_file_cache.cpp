@@ -30,6 +30,11 @@ bool IsLoadedBlock(CacheBlock &block) {
 	return block.state == CacheBlockState::LOADED;
 }
 
+//! A loaded block whose data can still be served: resident in memory or written to a temporary file
+bool IsAvailableBlock(CacheBlock &block) {
+	return IsLoadedBlock(block) && !IsDroppedBlock(block);
+}
+
 idx_t GapBlockCount(idx_t nr_bytes, idx_t max_block_size) {
 	return (nr_bytes + max_block_size - 1) / max_block_size;
 }
@@ -109,16 +114,85 @@ bool ExternalFileCache::ShouldCacheFile(const string &path) const {
 	return Settings::Get<CacheLocalFilesSetting>(db);
 }
 
-vector<shared_ptr<CacheBlock>> ExternalFileCache::AcquireBlocks(CachedFile &cached_file, idx_t location, idx_t nr_bytes,
-                                                                idx_t max_block_size) {
+static idx_t CountSmallAvailableBlocksLocked(const map<idx_t, shared_ptr<CacheBlock>> &blocks, idx_t location,
+                                             idx_t end, idx_t max_block_size) {
+	idx_t count = 0;
+	auto it = blocks.upper_bound(location);
+	if (it != blocks.begin()) {
+		--it;
+	}
+	for (; it != blocks.end() && it->first < end; ++it) {
+		auto &block = *it->second;
+		if (it->first + block.size > location && block.size < max_block_size && IsAvailableBlock(block)) {
+			count++;
+		}
+	}
+	return count;
+}
+
+idx_t ExternalFileCache::CountSmallAvailableBlocks(CachedFile &cached_file, idx_t location, idx_t nr_bytes,
+                                                   idx_t max_block_size) {
+	const annotated_lock_guard<annotated_mutex> map_guard(cached_file.map_lock);
+	return CountSmallAvailableBlocksLocked(cached_file.blocks, location, location + nr_bytes, max_block_size);
+}
+
+static bool IsRangeAvailableLocked(const map<idx_t, shared_ptr<CacheBlock>> &blocks, idx_t location, idx_t end) {
+	idx_t pos = location;
+	auto it = blocks.upper_bound(location);
+	if (it != blocks.begin()) {
+		--it;
+	}
+	for (; it != blocks.end() && pos < end; ++it) {
+		auto &block = *it->second;
+		const idx_t block_end = it->first + block.size;
+		if (block_end <= pos) {
+			// the block before `location` ends in front of it
+			continue;
+		}
+		if (it->first > pos || !IsAvailableBlock(block)) {
+			return false;
+		}
+		pos = block_end;
+	}
+	return pos >= end;
+}
+
+bool ExternalFileCache::IsRangeAvailable(CachedFile &cached_file, idx_t location, idx_t nr_bytes) {
+	const annotated_lock_guard<annotated_mutex> map_guard(cached_file.map_lock);
+	return IsRangeAvailableLocked(cached_file.blocks, location, location + nr_bytes);
+}
+
+//! Whether [begin, end) lies within one of the ranges
+static bool WithinRanges(optional_ptr<const vector<pair<idx_t, idx_t>>> ranges, idx_t begin, idx_t end) {
+	if (!ranges) {
+		return false;
+	}
+	for (auto &range : *ranges) {
+		if (range.first <= begin && end <= range.second) {
+			return true;
+		}
+	}
+	return false;
+}
+
+vector<shared_ptr<CacheBlock>>
+ExternalFileCache::AcquireBlocks(CachedFile &cached_file, idx_t location, idx_t nr_bytes, idx_t max_block_size,
+                                 optional_ptr<const vector<pair<idx_t, idx_t>>> absorb_ranges) {
 	D_ASSERT(nr_bytes > 0);
 	D_ASSERT(max_block_size > 0);
 	const idx_t end = location + nr_bytes;
-	// smaller cached blocks between two gaps are re-fetched with them when that saves a request
-	const idx_t absorb_size = max_block_size / 8;
 
 	const annotated_lock_guard<annotated_mutex> map_guard(cached_file.map_lock);
 	auto &blocks = cached_file.blocks;
+	// smaller cached blocks between two gaps are re-fetched with them when that saves a request; within the ranges a
+	// read asks for (a column chunk read whole after point lookups left pages of it in the cache) that holds for
+	// cached blocks of any size below a full block, so the read sends about as many requests as on a cold cache
+	auto absorbable = [&](idx_t block_start, const CacheBlock &block) {
+		if (block.size < max_block_size / 8) {
+			return true;
+		}
+		return block.size < max_block_size && WithinRanges(absorb_ranges, block_start, block_start + block.size);
+	};
 	// start at the block that covers `location`, if any
 	auto it = blocks.upper_bound(location);
 	if (it != blocks.begin()) {
@@ -143,7 +217,8 @@ vector<shared_ptr<CacheBlock>> ExternalFileCache::AcquireBlocks(CachedFile &cach
 		}
 		// create blocks for the missing bytes up to the next cached block
 		idx_t gap_end = it == blocks.end() ? end : MinValue(end, it->first);
-		while (it != blocks.end() && it->first < end && it->second->size < absorb_size && IsLoadedBlock(*it->second)) {
+		while (it != blocks.end() && it->first < end && absorbable(it->first, *it->second) &&
+		       IsLoadedBlock(*it->second)) {
 			const idx_t block_end = it->first + it->second->size;
 			const auto next = std::next(it);
 			const idx_t next_gap_end = next == blocks.end() ? end : MinValue(end, next->first);

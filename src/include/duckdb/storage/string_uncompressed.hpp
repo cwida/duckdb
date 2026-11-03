@@ -104,8 +104,6 @@ struct UncompressedStringStorage {
 public:
 	//! Dictionary header size at the beginning of the string segment (offset + length)
 	static constexpr uint16_t DICTIONARY_HEADER_SIZE = sizeof(uint32_t) + sizeof(uint32_t);
-	//! Marker used in length field to indicate the presence of a big string
-	static constexpr uint16_t BIG_STRING_MARKER = (uint16_t)-1;
 	//! Base size of big string marker (block id + offset)
 	static constexpr idx_t BIG_STRING_MARKER_BASE_SIZE = sizeof(block_id_t) + sizeof(int32_t);
 	//! The marker size of the big string
@@ -135,13 +133,6 @@ public:
 	static idx_t StringAppend(CompressionAppendState &append_state, ColumnSegment &segment, BaseStatistics &stats,
 	                          UnifiedVectorFormat &data, idx_t offset, idx_t count) {
 		return StringAppendBase(append_state.handle, segment, stats, data, offset, count);
-	}
-
-	static idx_t StringAppendBase(ColumnSegment &segment, BaseStatistics &stats, UnifiedVectorFormat &data,
-	                              idx_t offset, idx_t count) {
-		auto &buffer_manager = BufferManager::GetBufferManager(segment.GetDatabase());
-		auto handle = buffer_manager.Pin(segment.GetBlockHandle());
-		return StringAppendBase(handle, segment, stats, data, offset, count);
 	}
 
 	static idx_t StringAppendBase(BufferHandle &handle, ColumnSegment &segment, BaseStatistics &stats,
@@ -283,36 +274,6 @@ public:
 	                                   block_id_t block, int32_t offset);
 	static string_t ReadStringWithLength(CompressionSegmentReader reader, int32_t offset);
 	static void WriteStringMarker(data_ptr_t target, block_id_t block_id, int32_t offset);
-
-	// FIXME: Remove this raw pointer helper once FSST no longer needs it.
-	inline static string_t FetchStringFromDict(const QueryContext &context, ColumnSegment &segment,
-	                                           uint32_t dict_end_offset, Vector &result, data_ptr_t base_ptr,
-	                                           int32_t dict_offset, uint32_t string_length) {
-		D_ASSERT(dict_offset <= NumericCast<int32_t>(segment.GetBlockSize()));
-		if (DUCKDB_LIKELY(dict_offset >= 0)) {
-			// regular string - fetch from dictionary
-			auto dict_end = base_ptr + dict_end_offset;
-			auto dict_pos = dict_end - dict_offset;
-			auto str_ptr = char_ptr_cast(dict_pos);
-			return string_t(str_ptr, string_length);
-		} else if (string_length == 0) {
-			// NULL values are stored as a copy of the previous entry's dictionary offset (see
-			// StringAppendBase). When the previous entry is a big (overflow) string, its offset is
-			// negative, so the NULL inherits that negative offset even though it references no
-			// overflow data (its computed length is 0). Return an empty string here instead of
-			// following the marker into ReadOverflowString - otherwise every NULL that trails a big
-			// string re-reads and re-allocates the entire overflow string (O(num_nulls * big_size)
-			// memory, tagged OVERFLOW_STRINGS). The value is masked NULL by the caller regardless.
-			return string_t(char_ptr_cast(base_ptr), 0);
-		} else {
-			// read overflow string
-			auto marker = base_ptr + dict_end_offset - AbsValue<int32_t>(dict_offset);
-			block_id_t block_id = Load<block_id_t>(marker);
-			int32_t offset = Load<int32_t>(marker + sizeof(block_id_t));
-
-			return ReadOverflowString(context, segment, result, block_id, offset);
-		}
-	}
 
 	inline static string_t FetchStringFromEntry(const QueryContext &context, ColumnSegment &segment, Vector &result,
 	                                            const StringDictionaryEntry &entry) {

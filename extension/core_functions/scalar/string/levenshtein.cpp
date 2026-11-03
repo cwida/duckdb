@@ -15,7 +15,7 @@ namespace duckdb {
 // (too muach memory usage)
 
 template <class T>
-static idx_t LevenshteinDistance(ClientContext &context, const T *txt_str, idx_t txt_len, const T *tgt_str,
+static idx_t LevenshteinDistance(optional_ptr<ClientContext> context, const T *txt_str, idx_t txt_len, const T *tgt_str,
                                  idx_t tgt_len) {
 	// If one string is empty, the distance equals the length of the other string
 	if (txt_len == 0) {
@@ -39,7 +39,9 @@ static idx_t LevenshteinDistance(ClientContext &context, const T *txt_str, idx_t
 	}
 
 	for (idx_t pos_txt = 0; pos_txt < txt_len; pos_txt++) {
-		context.InterruptCheck();
+		if (context) {
+			context->InterruptCheck();
+		}
 		// calculate distances1 (current raw distances) from the previous row
 
 		distances1[0] = pos_txt + 1;
@@ -64,7 +66,7 @@ static idx_t LevenshteinDistance(ClientContext &context, const T *txt_str, idx_t
 }
 
 //! The distance between the characters of the strings - not their bytes
-static idx_t LevenshteinDistance(ClientContext &context, const string_t &txt, const string_t &tgt) {
+static idx_t LevenshteinDistance(optional_ptr<ClientContext> context, const string_t &txt, const string_t &tgt) {
 	if (StringIsAscii(txt) && StringIsAscii(tgt)) {
 		return LevenshteinDistance(context, txt.GetData(), txt.GetSize(), tgt.GetData(), tgt.GetSize());
 	}
@@ -73,7 +75,7 @@ static idx_t LevenshteinDistance(ClientContext &context, const string_t &txt, co
 	return LevenshteinDistance(context, txt_chars.data(), txt_chars.size(), tgt_chars.data(), tgt_chars.size());
 }
 
-static int64_t LevenshteinScalarFunction(ClientContext &context, const string_t str, string_t tgt) {
+static int64_t LevenshteinScalarFunction(optional_ptr<ClientContext> context, const string_t str, string_t tgt) {
 	return (int64_t)LevenshteinDistance(context, str, tgt);
 }
 
@@ -81,7 +83,8 @@ static void LevenshteinFunction(DataChunk &args, ExpressionState &state, Vector 
 	const auto &str_vec = args.data[0];
 	const auto &tgt_vec = args.data[1];
 
-	auto &context = state.GetContext();
+	// the client context only serves interrupt checks, and index keys are computed without one
+	optional_ptr<ClientContext> context = state.HasContext() ? &state.GetContext() : nullptr;
 	BinaryExecutor::Execute<string_t, string_t, int64_t>(str_vec, tgt_vec, result, [&](string_t str, string_t tgt) {
 		return LevenshteinScalarFunction(context, str, tgt);
 	});

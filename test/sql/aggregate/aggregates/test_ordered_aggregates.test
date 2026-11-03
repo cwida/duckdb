@@ -147,6 +147,20 @@ statement error
 SELECT percentile_disc([]) WITHIN GROUP (ORDER BY LAST);
 ----
 
+# A NULL list is rejected like a NULL fraction, in either order
+foreach agg percentile_disc percentile_cont
+
+foreach direction ASC DESC
+
+statement error
+SELECT {agg}(NULL::DOUBLE[]) WITHIN GROUP (ORDER BY i {direction}) FROM range(3) t(i);
+----
+must not be NULL
+
+endloop
+
+endloop
+
 # Wrong number of arguments for MODE
 statement error
 select mode(0.25) within group(order by i) from generate_series(0,100) tbl(i);

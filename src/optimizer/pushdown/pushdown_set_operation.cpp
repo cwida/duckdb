@@ -29,10 +29,16 @@ unique_ptr<LogicalOperator> FilterPushdown::PushdownSetOperation(unique_ptr<Logi
 	         op->type == LogicalOperatorType::LOGICAL_INTERSECT);
 	auto &setop = op->Cast<LogicalSetOperation>();
 
-	for (auto &child : op->children) {
+	for (idx_t child_idx = 0; child_idx < op->children.size(); child_idx++) {
+		auto &child = op->children[child_idx];
 		auto child_bindings = child->GetColumnBindings();
 
 		FilterPushdown child_pushdown(optimizer, convert_mark_joins, projection_mode);
+		// a filter on the result of EXCEPT and INTERSECT only applies to their left child
+		if (child_idx > 0 && op->type != LogicalOperatorType::LOGICAL_UNION) {
+			child = child_pushdown.Rewrite(std::move(child));
+			continue;
+		}
 		for (auto &original_filter : filters) {
 			// first create a copy of the filter
 			auto filter = make_uniq<Filter>();

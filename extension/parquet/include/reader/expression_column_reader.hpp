@@ -85,6 +85,11 @@ public:
 			child_reader->RegisterPrefetch(transport, allow_merge);
 		}
 	}
+	void InitializePageIndex(const ParquetRowGroupPageIndex &page_index) override {
+		for (auto &child_reader : child_readers) {
+			child_reader->InitializePageIndex(page_index);
+		}
+	}
 
 private:
 	ClientContext &context;

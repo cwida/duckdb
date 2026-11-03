@@ -38,7 +38,9 @@ public:
 	//! "<name>.duckdb_extension.info" or "<name>.duckdb_extension.repo.json". Matching is on the file name only, so a
 	//! directory that happens to contain the marker does not reserve the files inside it
 	bool IsDuckDBExtensionName(const string &path) {
-		auto name = FileSystem::ExtractName(path);
+		// match the canonical name case-insensitively: on the default macOS and Windows file systems a
+		// differently-cased name refers to the same file
+		auto name = StringUtil::Lower(FileSystem::ExtractName(CanonicalizePath(path)));
 		return StringUtil::EndsWith(name, ".duckdb_extension") || StringUtil::Contains(name, ".duckdb_extension.");
 	}
 

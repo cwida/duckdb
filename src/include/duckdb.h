@@ -1608,6 +1608,8 @@ DUCKDB_C_API duckdb_date_struct duckdb_from_date(duckdb_date date);
 /*!
  * Re-compose a `duckdb_date` from year, month and date (`duckdb_date_struct`).
  *
+ * If the year, month and day do not form a valid date the result will be 0.
+ *
  * history:
  * - stable: v0.2.9
  *
@@ -1701,6 +1703,8 @@ DUCKDB_C_API duckdb_timestamp_struct duckdb_from_timestamp(duckdb_timestamp ts);
 #if DUCKDB_API_VERSION_AT_LEAST(0, 2, 9)
 /*!
  * Re-compose a `duckdb_timestamp` from a duckdb_timestamp_struct.
+ *
+ * If the date is not valid or the timestamp is out of range the result will be 0.
  *
  * history:
  * - stable: v0.2.9

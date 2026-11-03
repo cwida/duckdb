@@ -31,6 +31,10 @@ public:
 	void SetFallible() {
 		ApplyToFunctions([](ScalarFunction &fun) { fun.SetFallible(); });
 	}
+	//! Set the stability of every overload in the set
+	void SetStability(FunctionStability stability) {
+		ApplyToFunctions([&](ScalarFunction &fun) { fun.SetStability(stability); });
+	}
 
 	//! Apply the same per-arg property to every overload in the set.
 	void SetArgProperties(idx_t arg_idx, ArgProperties props) {

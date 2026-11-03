@@ -296,7 +296,7 @@ public:
 		if (state->callback) {
 			state->callback();
 		}
-		state->initialized_paths.push_back(info ? info->file_path : string());
+		state->initialized_paths.push_back(info ? info->file.path : string());
 		state->initialized_with_context.push_back(bool(FileOpener::TryGetClientContext(opener)));
 		auto result = make_uniq<MockHTTPParams>(*this);
 		result->Initialize(opener);

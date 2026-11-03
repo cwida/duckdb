@@ -455,7 +455,7 @@ public:
 		}
 		auto io_result = AsyncResult::FromTasks(std::move(io_tasks), TaskSchedulerType::ASYNC);
 		// on resume the prepared vector is decoded without registering I/O again
-		if (io_result.GetResultType() == AsyncResultType::BLOCKED && data_p.HandleBlocked(io_result)) {
+		if (io_result.GetResultType() == AsyncResultType::BLOCKED && data_p.HandleBlocked(context, io_result)) {
 			return PersistentScanResult::YIELD;
 		}
 		EmitChunk(l_state, output, [&](DataChunk &chunk) { table_state.ProcessPreparedScan(tx, chunk); });
@@ -575,7 +575,7 @@ public:
 #ifdef DUCKDB_DEBUG_ASYNC_SINK_SOURCE
 		{
 			AsyncResult test_result;
-			if (AsyncResult::TryGenerateTestResult(test_result) && data_p.HandleBlocked(test_result)) {
+			if (AsyncResult::TryGenerateTestResult(test_result) && data_p.HandleBlocked(context, test_result)) {
 				return;
 			}
 		}

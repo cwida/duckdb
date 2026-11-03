@@ -88,8 +88,8 @@ public:
 	                        data_ptr_t current_state);
 	//! Writes result and calls destructors
 	void Finalize(Vector &result, idx_t count);
-	//! Calls the destructors of the accumulation states (statef) without finalizing
-	void Destroy(idx_t count);
+	//! Calls the destructors of the live accumulation states (statef) without finalizing
+	void Destroy();
 
 	void Combine(WindowSegmentTreePart &other, idx_t count);
 
@@ -141,6 +141,8 @@ public:
 	Vector statef;
 	//! Count of buffered values
 	idx_t flush_count;
+	//! Number of initialized accumulation states that have not been destroyed yet
+	idx_t live_count;
 	//! Cache of right side tree ranges for ordered aggregates
 	vector<RightEntry> right_stack;
 };
@@ -173,7 +175,7 @@ WindowSegmentTreePart::WindowSegmentTreePart(ArenaAllocator &allocator, const Ag
       order_insensitive(aggr.function.GetOrderDependent() == AggregateOrderDependent::NOT_ORDER_DEPENDENT),
       filter_mask(filter_mask), state_size(aggr.function.GetStateSize(aggr.GetFunctionData())),
       state(state_size * STANDARD_VECTOR_SIZE), cursor(std::move(cursor_p)), statep(LogicalType::POINTER),
-      statel(LogicalType::POINTER), statef(LogicalType::POINTER), flush_count(0) {
+      statel(LogicalType::POINTER), statef(LogicalType::POINTER), flush_count(0), live_count(0) {
 	auto &inputs = cursor->chunk;
 	if (inputs.ColumnCount() > 0) {
 		leaves.Initialize(Allocator::DefaultAllocator(), inputs.GetTypes());
@@ -193,6 +195,8 @@ WindowSegmentTreePart::WindowSegmentTreePart(ArenaAllocator &allocator, const Ag
 }
 
 WindowSegmentTreePart::~WindowSegmentTreePart() {
+	// destroy any states left live by an exception during evaluation
+	Destroy();
 }
 
 unique_ptr<GlobalSinkState> WindowSegmentTree::GetGlobalState(ClientContext &context, idx_t group_count,
@@ -310,14 +314,18 @@ void WindowSegmentTreePart::Finalize(Vector &result, idx_t count) {
 	if (aggr.function.HasStateDestructorCallback()) {
 		aggr.function.GetStateDestructorCallback()(statef, aggr_input_data, count);
 	}
+	live_count = 0;
 }
 
-void WindowSegmentTreePart::Destroy(idx_t count) {
-	if (!aggr.function.HasStateDestructorCallback()) {
+void WindowSegmentTreePart::Destroy() {
+	if (!live_count) {
 		return;
 	}
-	AggregateFinalizeInputData aggr_input_data(aggr, allocator);
-	aggr.function.GetStateDestructorCallback()(statef, aggr_input_data, count);
+	if (aggr.function.HasStateDestructorCallback()) {
+		AggregateFinalizeInputData aggr_input_data(aggr, allocator);
+		aggr.function.GetStateDestructorCallback()(statef, aggr_input_data, live_count);
+	}
+	live_count = 0;
 }
 
 WindowSegmentTreeGlobalState::WindowSegmentTreeGlobalState(ClientContext &client, const WindowSegmentTree &aggregator,
@@ -514,7 +522,7 @@ void WindowSegmentTreeLocalState::Evaluate(ExecutionContext &context, const Wind
 
 		// right_part's states are re-initialized on every chunk, so destroy them after combining to avoid leaking
 		// aggregate states that own heap memory (e.g. histogram, reservoir_quantile)
-		right_part->Destroy(count);
+		right_part->Destroy();
 	} else {
 		part->Evaluate(gtstate, window_begin, window_end, nullptr, result, count, row_idx, WindowSegmentTreePart::FULL);
 	}
@@ -542,9 +550,11 @@ void WindowSegmentTreePart::Evaluate(const WindowSegmentTreeGlobalState &tree, c
 }
 
 void WindowSegmentTreePart::Initialize(idx_t count) {
+	D_ASSERT(live_count == 0);
 	auto fdata = FlatVector::GetDataMutable<data_ptr_t>(statef);
 	AggregateStateInput state_input(aggr.function, aggr.GetFunctionData());
 	aggr.function.GetStateInitCallback()(state_input, fdata, count);
+	live_count = count;
 }
 
 void WindowSegmentTreePart::EvaluateUpperLevels(const WindowSegmentTreeGlobalState &tree, const idx_t *begins,

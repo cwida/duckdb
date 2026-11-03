@@ -1,0 +1,163 @@
+# name: test/sql/alter/struct/add_col_struct_column_default.test
+# description: Adding a field with a default to a struct column also adds the field to the default of the column (duckdblabs/bot-issue-tracker#489)
+# group: [struct]
+
+load {TEST_DIR}/add_col_struct_column_default.db
+
+statement ok
+CREATE TABLE d(i INT, s STRUCT(a INT, b INT) DEFAULT {'a': 0, 'b': 0});
+
+statement ok
+INSERT INTO d(i) VALUES (0);
+
+statement ok
+ALTER TABLE d ADD COLUMN s.c INT DEFAULT 9;
+
+statement ok
+INSERT INTO d(i) VALUES (1);
+
+query II
+SELECT i, s FROM d ORDER BY i;
+----
+0	{'a': 0, 'b': 0, 'c': 9}
+1	{'a': 0, 'b': 0, 'c': 9}
+
+# a field without a default is NULL in the column default
+statement ok
+ALTER TABLE d ADD COLUMN s.e VARCHAR;
+
+statement ok
+INSERT INTO d(i) VALUES (2);
+
+query II
+SELECT i, s FROM d ORDER BY i;
+----
+0	{'a': 0, 'b': 0, 'c': 9, 'e': NULL}
+1	{'a': 0, 'b': 0, 'c': 9, 'e': NULL}
+2	{'a': 0, 'b': 0, 'c': 9, 'e': NULL}
+
+# the default survives a restart
+restart
+
+statement ok
+INSERT INTO d(i) VALUES (3);
+
+query II
+SELECT i, s FROM d WHERE i = 3;
+----
+3	{'a': 0, 'b': 0, 'c': 9, 'e': NULL}
+
+# nested structs and structs in lists
+statement ok
+CREATE TABLE n(i INT, s STRUCT(x STRUCT(a INT), b INT) DEFAULT {'x': {'a': 1}, 'b': 2});
+
+statement ok
+ALTER TABLE n ADD COLUMN s.x.c VARCHAR DEFAULT 'deep';
+
+statement ok
+INSERT INTO n(i) VALUES (1);
+
+query II
+SELECT i, s FROM n;
+----
+1	{'x': {'a': 1, 'c': deep}, 'b': 2}
+
+statement ok
+CREATE TABLE l(i INT, v STRUCT(a INT)[] DEFAULT [{'a': 1}, {'a': 2}]);
+
+statement ok
+ALTER TABLE l ADD COLUMN v.element.c INT DEFAULT 9;
+
+statement ok
+INSERT INTO l(i) VALUES (1);
+
+query II
+SELECT i, v FROM l;
+----
+1	[{'a': 1, 'c': 9}, {'a': 2, 'c': 9}]
+
+# a column without a default keeps none, and struct values without the field still get NULL
+statement ok
+CREATE TABLE t(i INT, s STRUCT(a INT, b INT));
+
+statement ok
+ALTER TABLE t ADD COLUMN s.c INT DEFAULT 9;
+
+statement ok
+INSERT INTO t VALUES (1, {'a': 1, 'b': 2});
+
+statement ok
+INSERT INTO t(i) VALUES (2);
+
+query II
+SELECT i, s FROM t ORDER BY i;
+----
+1	{'a': 1, 'b': 2, 'c': NULL}
+2	NULL
+
+query I
+SELECT column_default IS NULL FROM duckdb_columns() WHERE table_name = 't' AND column_name = 's';
+----
+true
+
+# defaults that are cast to the column type when they are used
+statement ok
+CREATE TABLE c(i INT, s STRUCT(a INT) DEFAULT NULL, p STRUCT(a INT, b VARCHAR) DEFAULT {'a': 1},
+	q STRUCT(a INT) DEFAULT '{a: 5}', l STRUCT(a INT)[] DEFAULT [], m MAP(VARCHAR, STRUCT(a INT)) DEFAULT MAP {});
+
+statement ok
+ALTER TABLE c ADD COLUMN s.c INT DEFAULT 9;
+
+statement ok
+ALTER TABLE c ADD COLUMN p.c INT DEFAULT 9;
+
+statement ok
+ALTER TABLE c ADD COLUMN q.c INT DEFAULT 9;
+
+statement ok
+ALTER TABLE c ADD COLUMN l.element.c INT DEFAULT 9;
+
+statement ok
+ALTER TABLE c ADD COLUMN m.value.c INT DEFAULT 9;
+
+statement ok
+INSERT INTO c(i) VALUES (1);
+
+query IIIIII
+SELECT * FROM c;
+----
+1	NULL	{'a': 1, 'b': NULL, 'c': 9}	{'a': 5, 'c': 9}	[]	{}
+
+# renaming a field remaps such defaults as well
+statement ok
+ALTER TABLE c RENAME s.c TO d;
+
+statement ok
+ALTER TABLE c RENAME q.c TO d;
+
+statement ok
+INSERT INTO c(i) VALUES (2);
+
+query III
+SELECT i, s, q FROM c ORDER BY i;
+----
+1	NULL	{'a': 5, 'd': 9}
+2	NULL	{'a': 5, 'd': 9}
+
+# renaming fields of defaults that are not cast yet
+statement ok
+CREATE TABLE r(i INT, s STRUCT(a INT) DEFAULT NULL, q STRUCT(a INT) DEFAULT '{a: 5}');
+
+statement ok
+ALTER TABLE r RENAME s.a TO b;
+
+statement ok
+ALTER TABLE r RENAME q.a TO b;
+
+statement ok
+INSERT INTO r(i) VALUES (1);
+
+query III
+SELECT * FROM r;
+----
+1	NULL	{'b': 5}

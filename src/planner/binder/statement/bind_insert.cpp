@@ -747,9 +747,8 @@ BoundStatement Binder::BindNode(InsertQueryNode &node) {
 
 	// bind the default values
 	auto &catalog_name = table.ParentCatalog().GetName();
-	auto &schema_name = table.ParentSchema().name;
 	BindDefaultValues(table.GetColumns(), insert->bound_defaults, catalog_name.GetIdentifierName(),
-	                  schema_name.GetIdentifierName());
+	                  table.ParentSchema().GetSchemaPath());
 	insert->bound_constraints = BindConstraints(table);
 	if (!node.select_statement && !node.default_values) {
 		result.plan = std::move(insert);
