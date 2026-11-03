@@ -67,8 +67,9 @@ TaskExecutionResult PipelineTask::ExecuteTask(TaskExecutionMode mode) {
 		}
 	}
 
-	event->FinishTask();
+	// release the local states and their buffer pins before the sink can be finalized
 	pipeline_executor.reset();
+	event->FinishTask();
 	return TaskExecutionResult::TASK_FINISHED;
 }
 
