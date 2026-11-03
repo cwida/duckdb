@@ -178,7 +178,8 @@ TransformStack::~TransformStack() {
 }
 
 void TransformStack::PushFrame(TransformInput input) {
-	frames.emplace_back(input.Unwrap());
+	// inline fast path: in-tree frames always carry a rule
+	frames.emplace_back(input.GetRule() ? input : input.Unwrap());
 	auto &frame = frames.back();
 	frame.process_arena_position = transformer.process_allocator.GetPosition();
 	auto weight = transformer.ExpressionDepthWeight(frame.rule, frame.parse_result);
@@ -199,9 +200,8 @@ void TransformStack::PopFrame() {
 }
 
 void TransformStack::InitializeFrame(TransformStackFrame &frame) {
-	if (!frame.rule) {
-		throw InternalException("No registered data exists for rule '%s'", frame.parse_result.Name());
-	}
+	// PushFrame unwraps every input to a rule-bearing node or throws
+	D_ASSERT(frame.rule);
 	frame.process = frame.rule->StartTransform(transformer, frame.parse_result);
 }
 
