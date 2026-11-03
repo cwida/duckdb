@@ -275,8 +275,8 @@ static shared_ptr<EncryptionUtil> GetConfiguredSHA256(DatabaseInstance &db) {
 	return encryption_util;
 }
 
-static void ComputeSHA256Buffer(const EncryptionUtil *hasher, const char *buffer, const idx_t start, const idx_t end,
-                                string *res) {
+static void ComputeSHA256Buffer(optional_ptr<const EncryptionUtil> hasher, const char *buffer, const idx_t start,
+                                const idx_t end, string *res) {
 	char hash[duckdb_mbedtls::MbedTlsWrapper::SHA256_HASH_LENGTH_BYTES];
 	if (hasher) {
 		auto state = hasher->CreateHashState(CryptoHashFunction::SHA256);
@@ -318,7 +318,7 @@ static void InitializeAncillaryData(vector<string> &hash_chunks, vector<idx_t> &
 	splits.back() = length;
 }
 
-static void ComputeSHA256FileSegment(const EncryptionUtil *hasher, FileHandle *handle, const idx_t start,
+static void ComputeSHA256FileSegment(optional_ptr<const EncryptionUtil> hasher, FileHandle *handle, const idx_t start,
                                      const idx_t end, string *res) {
 	if (hasher) {
 		// the hash state of an EncryptionUtil hashes one buffer at a time, so read the whole chunk
@@ -348,7 +348,7 @@ static void ComputeSHA256FileSegment(const EncryptionUtil *hasher, FileHandle *h
 }
 
 template <typename T, typename F>
-static void ComputeHashesOnSegments(F ComputeHashFun, const EncryptionUtil *hasher, T handle,
+static void ComputeHashesOnSegments(F ComputeHashFun, optional_ptr<const EncryptionUtil> hasher, T handle,
                                     const vector<idx_t> &splits, vector<string> &hash_chunks) {
 #ifndef DUCKDB_NO_THREADS
 	vector<std::thread> threads;
