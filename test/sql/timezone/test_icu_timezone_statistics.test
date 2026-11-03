@@ -1,0 +1,382 @@
+# name: test/sql/timezone/test_icu_timezone_statistics.test
+# description: Statistics of timezone(), so that AT TIME ZONE filters prune row groups
+# group: [timezone]
+
+require icu
+
+statement ok
+ATTACH '{TEST_DIR}/timezone_statistics.duckdb' AS db (ROW_GROUP_SIZE 2048);
+
+statement ok
+USE db;
+
+statement ok
+SET TimeZone = 'UTC';
+
+#################### row group pruning ####################
+
+# three row groups of 2048 instants, one per day from 2026-01-01: 25 seconds apart from midnight UTC, so a group
+# covers 00:00 to 14:13 of its day
+statement ok
+CREATE TABLE events AS
+    SELECT to_timestamp(1767225600 + (range // 2048) * 86400 + (range % 2048) * 25) AS utcbegin FROM range(6144);
+
+# midnight of 2026-01-02 in Los Angeles is 08:00 UTC, which only the second row group holds
+query I
+SELECT count(*) FROM events WHERE utcbegin AT TIME ZONE 'America/Los_Angeles' = TIMESTAMP '2026-01-02 00:00:00';
+----
+1
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM events WHERE utcbegin AT TIME ZONE 'America/Los_Angeles' = TIMESTAMP '2026-01-02 00:00:00';
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*
+
+# a local day spans two row groups
+query I
+SELECT count(*) FROM events
+WHERE utcbegin AT TIME ZONE 'America/Los_Angeles' >= TIMESTAMP '2026-01-02'
+  AND utcbegin AT TIME ZONE 'America/Los_Angeles' < TIMESTAMP '2026-01-03';
+----
+2048
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM events
+WHERE utcbegin AT TIME ZONE 'America/Los_Angeles' >= TIMESTAMP '2026-01-02'
+  AND utcbegin AT TIME ZONE 'America/Los_Angeles' < TIMESTAMP '2026-01-03';
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 2 / 3.*
+
+# a local time outside the table is folded away by the statistics of the table
+query II
+EXPLAIN SELECT count(*) FROM events WHERE utcbegin AT TIME ZONE 'America/Los_Angeles' = TIMESTAMP '2026-01-05 00:00:00';
+----
+physical_plan	<REGEX>:.*Empty Result.*
+
+# the other direction: local times of three days, 25 seconds apart from midnight
+statement ok
+CREATE TABLE locals AS
+    SELECT TIMESTAMP '2026-01-01' + to_seconds((range // 2048) * 86400 + (range % 2048) * 25) AS localbegin FROM range(6144);
+
+# midnight of 2026-01-02 in Los Angeles is the instant 08:00 UTC
+query I
+SELECT count(*) FROM locals WHERE localbegin AT TIME ZONE 'America/Los_Angeles' = TIMESTAMPTZ '2026-01-02 08:00:00+00';
+----
+1
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM locals WHERE localbegin AT TIME ZONE 'America/Los_Angeles' = TIMESTAMPTZ '2026-01-02 08:00:00+00';
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*
+
+query II
+EXPLAIN SELECT count(*) FROM locals WHERE localbegin AT TIME ZONE 'America/Los_Angeles' = TIMESTAMPTZ '2026-01-05 08:00:00+00';
+----
+physical_plan	<REGEX>:.*Empty Result.*
+
+# nanosecond timestamps
+statement ok
+CREATE TABLE events_ns AS SELECT timezone('UTC', localbegin::TIMESTAMP_NS) AS utcbegin FROM locals;
+
+statement ok
+CREATE TABLE locals_ns AS SELECT localbegin::TIMESTAMP_NS AS localbegin FROM locals;
+
+query I
+SELECT count(*) FROM events_ns WHERE timezone('America/Los_Angeles', utcbegin) = TIMESTAMP_NS '2026-01-02 00:00:00';
+----
+1
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM events_ns WHERE timezone('America/Los_Angeles', utcbegin) = TIMESTAMP_NS '2026-01-02 00:00:00';
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*
+
+query I
+SELECT count(*) FROM locals_ns WHERE timezone('America/Los_Angeles', localbegin) = TIMESTAMPTZ_NS '2026-01-02 08:00:00+00';
+----
+1
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM locals_ns WHERE timezone('America/Los_Angeles', localbegin) = TIMESTAMPTZ_NS '2026-01-02 08:00:00+00';
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*
+
+#################### tight bounds ####################
+
+# a day without a transition, in the era of the recurring rule of the zone: the bounds are the shifted ends
+statement ok
+CREATE TABLE day AS SELECT to_timestamp(16725225600 + range * 3600) AS utc FROM range(25);
+
+query II
+EXPLAIN SELECT utc FROM day WHERE timezone('America/Los_Angeles', utc) = TIMESTAMP '2500-01-01 16:00:00';
+----
+physical_plan	<!REGEX>:.*Empty Result.*
+
+query II
+EXPLAIN SELECT utc FROM day WHERE timezone('America/Los_Angeles', utc) = TIMESTAMP '2500-01-01 16:00:00.000001';
+----
+physical_plan	<REGEX>:.*Empty Result.*
+
+query II
+EXPLAIN SELECT utc FROM day WHERE timezone('America/Los_Angeles', utc) = TIMESTAMP '2499-12-31 16:00:00';
+----
+physical_plan	<!REGEX>:.*Empty Result.*
+
+query II
+EXPLAIN SELECT utc FROM day WHERE timezone('America/Los_Angeles', utc) = TIMESTAMP '2499-12-31 15:59:59.999999';
+----
+physical_plan	<REGEX>:.*Empty Result.*
+
+# the same day in the era of the transition data
+statement ok
+CREATE TABLE old_day AS SELECT to_timestamp(915148800 + range * 3600) AS utc FROM range(25);
+
+query II
+EXPLAIN SELECT utc FROM old_day WHERE timezone('America/Los_Angeles', utc) = TIMESTAMP '1999-01-01 16:00:00';
+----
+physical_plan	<!REGEX>:.*Empty Result.*
+
+query II
+EXPLAIN SELECT utc FROM old_day WHERE timezone('America/Los_Angeles', utc) = TIMESTAMP '1999-01-01 16:00:00.000001';
+----
+physical_plan	<REGEX>:.*Empty Result.*
+
+query II
+EXPLAIN SELECT utc FROM old_day WHERE timezone('America/Los_Angeles', utc) = TIMESTAMP '1998-12-31 15:59:59.999999';
+----
+physical_plan	<REGEX>:.*Empty Result.*
+
+# a zone with a fixed offset, and a fixed offset given directly
+foreach zone Asia/Kolkata GMT+05:30
+
+query II
+EXPLAIN SELECT utc FROM day WHERE timezone('{zone}', utc) = TIMESTAMP '2500-01-02 05:30:00';
+----
+physical_plan	<!REGEX>:.*Empty Result.*
+
+query II
+EXPLAIN SELECT utc FROM day WHERE timezone('{zone}', utc) = TIMESTAMP '2500-01-02 05:30:00.000001';
+----
+physical_plan	<REGEX>:.*Empty Result.*
+
+query II
+EXPLAIN SELECT utc FROM day WHERE timezone('{zone}', utc) = TIMESTAMP '2500-01-01 05:29:59.999999';
+----
+physical_plan	<REGEX>:.*Empty Result.*
+
+endloop
+
+# local times to instants
+statement ok
+CREATE TABLE local_day AS SELECT TIMESTAMP '2500-01-01' + to_hours(range) AS local FROM range(25);
+
+query II
+EXPLAIN SELECT local FROM local_day WHERE timezone('America/Los_Angeles', local) = TIMESTAMPTZ '2500-01-02 08:00:00+00';
+----
+physical_plan	<!REGEX>:.*Empty Result.*
+
+query II
+EXPLAIN SELECT local FROM local_day WHERE timezone('America/Los_Angeles', local) = TIMESTAMPTZ '2500-01-02 08:00:00.000001+00';
+----
+physical_plan	<REGEX>:.*Empty Result.*
+
+query II
+EXPLAIN SELECT local FROM local_day WHERE timezone('America/Los_Angeles', local) = TIMESTAMPTZ '2500-01-01 07:59:59.999999+00';
+----
+physical_plan	<REGEX>:.*Empty Result.*
+
+#################### bounds around transitions ####################
+
+# every value of a table is found through a filter on its shifted value, as a scan without pruning finds it
+
+# the fall back of Los Angeles in 2026, when the local hour from 01:00 occurs twice
+statement ok
+CREATE OR REPLACE TABLE w AS SELECT to_timestamp(1793523600 - 7200 + range * 300) AS utc FROM range(49);
+
+loop i 0 49
+
+query I
+SELECT (SELECT count(*) FROM w WHERE timezone('America/Los_Angeles', utc) = timezone('America/Los_Angeles', to_timestamp(1793523600 - 7200 + {i} * 300)))
+     = (SELECT count(*) FILTER (WHERE timezone('America/Los_Angeles', utc) = timezone('America/Los_Angeles', to_timestamp(1793523600 - 7200 + {i} * 300))) FROM w);
+----
+true
+
+endloop
+
+# the same local times, which are resolved to instants
+statement ok
+CREATE OR REPLACE TABLE w AS SELECT TIMESTAMP '2026-11-01 00:00:00' + to_minutes(range * 5) AS local FROM range(37);
+
+loop i 0 37
+
+query I
+SELECT (SELECT count(*) FROM w WHERE timezone('America/Los_Angeles', local) = timezone('America/Los_Angeles', TIMESTAMP '2026-11-01 00:00:00' + to_minutes({i} * 5)))
+     = (SELECT count(*) FILTER (WHERE timezone('America/Los_Angeles', local) = timezone('America/Los_Angeles', TIMESTAMP '2026-11-01 00:00:00' + to_minutes({i} * 5))) FROM w);
+----
+true
+
+endloop
+
+# the spring forward of 2026, when the local hour from 02:00 does not exist
+statement ok
+CREATE OR REPLACE TABLE w AS SELECT TIMESTAMP '2026-03-08 01:00:00' + to_minutes(range * 5) AS local FROM range(37);
+
+loop i 0 37
+
+query I
+SELECT (SELECT count(*) FROM w WHERE timezone('America/Los_Angeles', local) = timezone('America/Los_Angeles', TIMESTAMP '2026-03-08 01:00:00' + to_minutes({i} * 5)))
+     = (SELECT count(*) FILTER (WHERE timezone('America/Los_Angeles', local) = timezone('America/Los_Angeles', TIMESTAMP '2026-03-08 01:00:00' + to_minutes({i} * 5))) FROM w);
+----
+true
+
+endloop
+
+# windows that start and end with the same offset and hold the other one in between, with rows right after the
+# transitions: a bound that misses the offset in between leaves them out
+foreach rows (1772960400),(1772964000),(1781524800),(1793523599),(1793523600),(1793525400) (1762072200),(1762074000),(1768478400),(1772963999),(1772964000),(1772967600) (923216400),(923220000),(930830400),(941360399),(941360400),(941362200) (1162110600),(1162112400),(1168862400),(1173607199),(1173607200),(1173610800) (1735689600),(1762072200),(1762074000),(1781524800),(1793523599),(1798675200)
+
+statement ok
+CREATE OR REPLACE TABLE w AS SELECT to_timestamp(s) AS utc FROM (VALUES {rows}) t(s);
+
+query I
+SELECT count(*) FROM w;
+----
+6
+
+query I
+SELECT bool_and((SELECT count(*) FROM w WHERE timezone('America/Los_Angeles', utc) = timezone('America/Los_Angeles', to_timestamp(s)))
+              = (SELECT count(*) FILTER (WHERE timezone('America/Los_Angeles', utc) = timezone('America/Los_Angeles', to_timestamp(s))) FROM w))
+FROM (VALUES {rows}) t(s);
+----
+true
+
+endloop
+
+# a 24 hour move of the date line
+statement ok
+CREATE OR REPLACE TABLE w AS SELECT to_timestamp(1325232000 + range * 300) AS utc FROM range(49);
+
+loop i 0 49
+
+query I
+SELECT (SELECT count(*) FROM w WHERE timezone('Pacific/Apia', utc) = timezone('Pacific/Apia', to_timestamp(1325232000 + {i} * 300)))
+     = (SELECT count(*) FILTER (WHERE timezone('Pacific/Apia', utc) = timezone('Pacific/Apia', to_timestamp(1325232000 + {i} * 300))) FROM w);
+----
+true
+
+endloop
+
+statement ok
+CREATE OR REPLACE TABLE w AS SELECT TIMESTAMP '2011-12-29 22:00:00' + to_minutes(range * 30) AS local FROM range(57);
+
+loop i 0 57
+
+query I
+SELECT (SELECT count(*) FROM w WHERE timezone('Pacific/Apia', local) = timezone('Pacific/Apia', TIMESTAMP '2011-12-29 22:00:00' + to_minutes({i} * 30)))
+     = (SELECT count(*) FILTER (WHERE timezone('Pacific/Apia', local) = timezone('Pacific/Apia', TIMESTAMP '2011-12-29 22:00:00' + to_minutes({i} * 30))) FROM w);
+----
+true
+
+endloop
+
+# a half hour of daylight savings
+statement ok
+CREATE OR REPLACE TABLE w AS SELECT to_timestamp(1712408400 + range * 900) AS utc FROM range(17);
+
+loop i 0 17
+
+query I
+SELECT (SELECT count(*) FROM w WHERE timezone('Australia/Lord_Howe', utc) = timezone('Australia/Lord_Howe', to_timestamp(1712408400 + {i} * 900)))
+     = (SELECT count(*) FILTER (WHERE timezone('Australia/Lord_Howe', utc) = timezone('Australia/Lord_Howe', to_timestamp(1712408400 + {i} * 900))) FROM w);
+----
+true
+
+endloop
+
+# negative daylight savings, and a zone that leaves its standard time during Ramadan
+foreach zone Europe/Dublin Africa/Casablanca
+
+statement ok
+CREATE OR REPLACE TABLE w AS SELECT to_timestamp(1771027200 + range * 43200) AS utc FROM range(80);
+
+loop i 0 80
+
+query I
+SELECT (SELECT count(*) FROM w WHERE timezone('{zone}', utc) = timezone('{zone}', to_timestamp(1771027200 + {i} * 43200)))
+     = (SELECT count(*) FILTER (WHERE timezone('{zone}', utc) = timezone('{zone}', to_timestamp(1771027200 + {i} * 43200))) FROM w);
+----
+true
+
+endloop
+
+statement ok
+CREATE OR REPLACE TABLE w AS SELECT to_timestamp(s) AS utc FROM (VALUES (1774742400), (1774746000), (1782907200), (1792889999), (1792890000), (1792891800)) t(s);
+
+query I
+SELECT bool_and((SELECT count(*) FROM w WHERE timezone('{zone}', utc) = timezone('{zone}', to_timestamp(s)))
+              = (SELECT count(*) FILTER (WHERE timezone('{zone}', utc) = timezone('{zone}', to_timestamp(s))) FROM w))
+FROM (VALUES (1774742400), (1774746000), (1782907200), (1792889999), (1792890000), (1792891800)) t(s);
+----
+true
+
+endloop
+
+#################### no statistics ####################
+
+# the fields of other calendars do not describe a shift
+statement ok
+SET Calendar = 'japanese';
+
+query II
+EXPLAIN SELECT count(*) FROM events WHERE utcbegin AT TIME ZONE 'America/Los_Angeles' = TIMESTAMP '2026-01-05 00:00:00';
+----
+physical_plan	<!REGEX>:.*Empty Result.*
+
+query I
+SELECT count(*) FROM events WHERE timezone('America/Los_Angeles', utcbegin) = timezone('America/Los_Angeles', to_timestamp(1767254400));
+----
+1
+
+statement ok
+RESET Calendar;
+
+# a zone per row
+statement ok
+CREATE TABLE zoned AS SELECT utcbegin, CASE WHEN rowid % 2 = 0 THEN 'America/Los_Angeles' ELSE 'Asia/Tokyo' END AS zone FROM events;
+
+query I
+SELECT count(*) FROM zoned WHERE timezone(zone, utcbegin) = TIMESTAMP '2026-01-02 00:00:00';
+----
+1
+
+query I
+SELECT count(*) FROM events WHERE timezone(NULL::VARCHAR, utcbegin) = TIMESTAMP '2026-01-02 00:00:00';
+----
+0
+
+statement error
+SELECT count(*) FROM events WHERE timezone('Mars/Olympus_Mons', utcbegin) = TIMESTAMP '2026-01-02 00:00:00';
+----
+Unknown TimeZone 'Mars/Olympus_Mons'
+
+# infinite values pass through the function unshifted
+statement ok
+CREATE TABLE infinite(utc TIMESTAMPTZ);
+
+statement ok
+INSERT INTO infinite VALUES ('infinity'), ('-infinity'), ('2026-01-01 08:00:00+00');
+
+query I
+SELECT count(*) FROM infinite WHERE timezone('America/Los_Angeles', utc) = TIMESTAMP '2026-01-01 00:00:00';
+----
+1
+
+query I
+SELECT count(*) FROM infinite WHERE timezone('America/Los_Angeles', utc) = TIMESTAMP 'infinity';
+----
+1
+
+query I
+SELECT count(*) FROM infinite WHERE timezone('America/Los_Angeles', utc) = TIMESTAMP '-infinity';
+----
+1

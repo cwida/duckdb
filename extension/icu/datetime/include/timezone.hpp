@@ -44,6 +44,13 @@ public:
 	//! The offsets that apply at a local (wall clock) time
 	virtual void GetOffsetFromLocal(int64_t millis, LocalOption non_existing, LocalOption duplicated,
 	                                int32_t &raw_offset, int32_t &dst_offset) const = 0;
+	//! The smallest and largest total offset that applies to an instant in [start_millis, end_millis]
+	virtual void GetOffsetRange(int64_t start_millis, int64_t end_millis, int32_t &min_offset,
+	                            int32_t &max_offset) const = 0;
+	//! The smallest and largest total offset that GetOffsetFromLocal returns for a local time in
+	//! [start_millis, end_millis]
+	virtual void GetOffsetRangeFromLocal(int64_t start_millis, int64_t end_millis, int32_t &min_offset,
+	                                     int32_t &max_offset) const;
 	//! Whether the two zones describe the same offsets. Aliases of one another are equivalent.
 	bool Equals(const TimeZone &other) const {
 		return id == other.id;
@@ -53,6 +60,9 @@ public:
 protected:
 	explicit TimeZone(string id_p) : id(std::move(id_p)) {
 	}
+
+	//! The largest absolute offset of any zone, in seconds
+	static constexpr int64_t MAX_OFFSET_SECONDS = 86400;
 
 	string id;
 };
@@ -68,6 +78,8 @@ public:
 	void GetOffset(int64_t millis, int32_t &raw_offset, int32_t &dst_offset) const override;
 	void GetOffsetFromLocal(int64_t millis, LocalOption non_existing, LocalOption duplicated, int32_t &raw_offset,
 	                        int32_t &dst_offset) const override;
+	void GetOffsetRange(int64_t start_millis, int64_t end_millis, int32_t &min_offset,
+	                    int32_t &max_offset) const override;
 	unique_ptr<TimeZone> Copy() const override;
 
 private:
@@ -87,9 +99,15 @@ private:
 	};
 
 	static Boundary DecodeRule(int8_t month, int8_t day, int8_t day_of_week, int32_t time, int8_t time_mode);
+	//! The day of month a rule selects in a month of month_len days whose first day falls on first_dow
+	static int32_t RuleDayOfMonth(const Boundary &rule, int8_t month_len, int32_t first_dow);
 	//! Compares a date within a year to a rule: 1 if it is after, 0 if equal and -1 if before
 	static int32_t CompareToRule(int8_t month, int8_t month_len, int8_t prev_month_len, int8_t dom, int8_t dow,
 	                             int32_t millis, int32_t millis_delta, const Boundary &rule);
+	//! The shift that takes a local standard time to the scale the time of a rule is expressed in
+	int32_t RuleTimeDelta(const Boundary &rule, bool is_end) const;
+	//! The instant at which the boundary of a rule takes effect in a year
+	int64_t BoundaryMillis(int32_t year, const Boundary &rule, bool is_end) const;
 	//! The total offset that applies to a local standard time
 	int32_t GetOffsetForFields(int32_t year, int8_t month, int8_t dom, int8_t dow, int32_t millis) const;
 
@@ -109,6 +127,10 @@ public:
 	void GetOffset(int64_t millis, int32_t &raw_offset, int32_t &dst_offset) const override;
 	void GetOffsetFromLocal(int64_t millis, LocalOption non_existing, LocalOption duplicated, int32_t &raw_offset,
 	                        int32_t &dst_offset) const override;
+	void GetOffsetRange(int64_t start_millis, int64_t end_millis, int32_t &min_offset,
+	                    int32_t &max_offset) const override;
+	void GetOffsetRangeFromLocal(int64_t start_millis, int64_t end_millis, int32_t &min_offset,
+	                             int32_t &max_offset) const override;
 	unique_ptr<TimeZone> Copy() const override;
 
 private:
@@ -117,6 +139,11 @@ private:
 	//! The offsets at an instant (local == false) or a local time (local == true)
 	void GetHistoricalOffset(int64_t millis, bool local, LocalOption non_existing, LocalOption duplicated,
 	                         int32_t &raw_offset, int32_t &dst_offset) const;
+	//! The smallest and largest total offset the transition data has for the seconds [start_sec, end_sec]
+	void GetHistoricalOffsetRange(int64_t start_sec, int64_t end_sec, int32_t &min_offset, int32_t &max_offset) const;
+	//! The offset range of instants (local == false) or local times (local == true)
+	void GetOffsetRangeInternal(int64_t start_millis, int64_t end_millis, bool local, int32_t &min_offset,
+	                            int32_t &max_offset) const;
 
 	const TZZoneData &data;
 	//! The rule that applies after the transition data runs out, if any

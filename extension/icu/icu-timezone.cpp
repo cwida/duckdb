@@ -2,12 +2,17 @@
 #include "duckdb/common/types/time.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/common/exception/conversion_exception.hpp"
+#include "duckdb/common/operator/add.hpp"
+#include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/function/cast/cast_function_set.hpp"
 #include "duckdb/function/cast_rules.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/storage/statistics/numeric_stats.hpp"
+#include "grego.hpp"
 #include "include/icu-casts.hpp"
 #include "include/icu-datefunc.hpp"
+#include "include/icu-helpers.hpp"
 #include "duckdb/transaction/meta_transaction.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
 #include "duckdb/main/settings.hpp"
@@ -88,6 +93,18 @@ static void ICUTimeZoneFunction(ClientContext &context, TableFunctionInput &data
 }
 
 struct ICUFromNaiveTimestamp : public ICUDateFunc {
+	//! The smallest and largest shift in milliseconds the operation applies to a local time in
+	//! [start_millis, end_millis]
+	static void GetShiftRange(const TimeZone &tz, int64_t start_millis, int64_t end_millis, int64_t &lo_shift,
+	                          int64_t &hi_shift) {
+		int32_t min_offset;
+		int32_t max_offset;
+		tz.GetOffsetRangeFromLocal(start_millis, end_millis, min_offset, max_offset);
+		// the instant is the local time minus its offset
+		lo_shift = -int64_t(max_offset);
+		hi_shift = -int64_t(min_offset);
+	}
+
 	//! Non-throwing form, so a TRY_CAST can turn the failure into NULL rather than an error.
 	static bool TryOperation(Calendar *calendar, timestamp_t naive, timestamp_tz_t &result, string &error) {
 		if (!naive.IsFinite()) {
@@ -290,6 +307,18 @@ struct ICUFromNaiveTimestamp : public ICUDateFunc {
 };
 
 struct ICUToNaiveTimestamp : public ICUDateFunc {
+	//! The smallest and largest shift in milliseconds the operation applies to an instant in
+	//! [start_millis, end_millis]
+	static void GetShiftRange(const TimeZone &tz, int64_t start_millis, int64_t end_millis, int64_t &lo_shift,
+	                          int64_t &hi_shift) {
+		int32_t min_offset;
+		int32_t max_offset;
+		tz.GetOffsetRange(start_millis, end_millis, min_offset, max_offset);
+		// the local time is the instant plus its offset
+		lo_shift = min_offset;
+		hi_shift = max_offset;
+	}
+
 	//! Non-throwing form, so a TRY_CAST can turn the failure into NULL rather than an error. The error text is
 	//! returned for the throwing form and for CastParameters, keeping both spellings identical.
 	static bool TryOperation(Calendar *calendar, timestamp_tz_t instant, timestamp_t &naive, string &error) {
@@ -675,6 +704,63 @@ void ICUToTimeTZ::AddCasts(ExtensionLoader &loader) {
 }
 
 struct ICUTimeZoneFunc : public ICUDateFunc {
+	//! The zone a constant first argument names, or nullptr if the argument is not constant or not a zone
+	static unique_ptr<TimeZone> GetConstantTimeZone(ClientContext &context, const Expression &tz_expr) {
+		if (!tz_expr.IsFoldable()) {
+			return nullptr;
+		}
+		Value tz_value;
+		if (!ExpressionExecutor::TryEvaluateScalar(context, tz_expr, tz_value) || tz_value.IsNull()) {
+			return nullptr;
+		}
+		auto tz_name = StringValue::Get(tz_value);
+		string error;
+		return ICUHelpers::GetTimeZone(tz_name, &error);
+	}
+
+	template <typename OP, typename SRC, typename DST>
+	static unique_ptr<BaseStatistics> PropagateStatistics(ClientContext &context, FunctionStatisticsInput &input) {
+		// the result is the argument shifted by an offset of the zone, so the smallest and largest offset that
+		// applies to the argument range bound it
+		auto &child_stats = input.child_stats;
+		if (!NumericStats::HasMinMax(child_stats[1])) {
+			return nullptr;
+		}
+		const auto min = NumericStats::GetMin<SRC>(child_stats[1]);
+		const auto max = NumericStats::GetMax<SRC>(child_stats[1]);
+		if (!min.IsFinite() || !max.IsFinite() || max < min) {
+			return nullptr;
+		}
+		// the result is built from calendar fields, which only the Gregorian calendar maps back to a shift
+		auto &info = input.bind_data->Cast<BindData>();
+		if (!StringUtil::Equals(info.calendar->GetType(), "gregorian")) {
+			return nullptr;
+		}
+		auto tz = GetConstantTimeZone(context, *input.expr.GetChildren()[0]);
+		if (!tz) {
+			return nullptr;
+		}
+
+		// the offsets change on whole seconds, so the range over the enclosing milliseconds covers the arguments
+		constexpr auto PER_MILLI = SRC::PRECISION / Interval::MSECS_PER_SEC;
+		int64_t lo_shift;
+		int64_t hi_shift;
+		OP::GetShiftRange(*tz, datetime::FloorDiv::Divide(min.value, PER_MILLI),
+		                  datetime::FloorDiv::Divide(max.value, PER_MILLI), lo_shift, hi_shift);
+		int64_t lo;
+		int64_t hi;
+		if (!TryAddOperator::Operation(min.value, lo_shift * PER_MILLI, lo) ||
+		    !TryAddOperator::Operation(max.value, hi_shift * PER_MILLI, hi) || !DST(lo).IsFinite() ||
+		    !DST(hi).IsFinite()) {
+			return nullptr;
+		}
+		auto result = NumericStats::CreateEmpty(input.expr.GetReturnType());
+		NumericStats::SetMin(result, Value::CreateValue(DST(lo)));
+		NumericStats::SetMax(result, Value::CreateValue(DST(hi)));
+		result.CombineValidity(child_stats[0], child_stats[1]);
+		return result.ToUnique();
+	}
+
 	template <typename OP, typename SRC, typename DST>
 	static void Execute(DataChunk &input, ExpressionState &state, Vector &result) {
 		auto &cache = ExecuteFunctionState::GetFunctionState(state)->Cast<CalendarCacheState>();
@@ -707,12 +793,14 @@ struct ICUTimeZoneFunc : public ICUDateFunc {
 		ts_fun.GetSignature()
 		    .AddParameter("timezone", LogicalType::VARCHAR)
 		    .AddParameter("timestamp", LogicalType::TIMESTAMP);
+		ts_fun.SetStatisticsCallback(PropagateStatistics<ICUFromNaiveTimestamp, timestamp_t, timestamp_tz_t>);
 		set.AddFunction(ts_fun);
 		ScalarFunction tstz_fun({}, LogicalType::TIMESTAMP, Execute<ICUToNaiveTimestamp, timestamp_tz_t, timestamp_t>,
 		                        Bind);
 		tstz_fun.GetSignature()
 		    .AddParameter("timezone", LogicalType::VARCHAR)
 		    .AddParameter("timestamp", LogicalType::TIMESTAMP_TZ);
+		tstz_fun.SetStatisticsCallback(PropagateStatistics<ICUToNaiveTimestamp, timestamp_tz_t, timestamp_t>);
 		set.AddFunction(tstz_fun);
 
 		ScalarFunction timetz_fun({}, LogicalType::TIME_TZ, Execute<ICUToTimeTZ, dtime_tz_t, dtime_tz_t>, Bind);
@@ -726,6 +814,7 @@ struct ICUTimeZoneFunc : public ICUDateFunc {
 		timens_fun.GetSignature()
 		    .AddParameter("timezone", LogicalType::VARCHAR)
 		    .AddParameter("timestamp", LogicalType::TIMESTAMP_NS);
+		timens_fun.SetStatisticsCallback(PropagateStatistics<ICUFromNaiveTimestamp, timestamp_ns_t, timestamp_tz_ns_t>);
 		set.AddFunction(timens_fun);
 
 		ScalarFunction timetzns_fun({}, LogicalType::TIMESTAMP_NS,
@@ -733,6 +822,7 @@ struct ICUTimeZoneFunc : public ICUDateFunc {
 		timetzns_fun.GetSignature()
 		    .AddParameter("timezone", LogicalType::VARCHAR)
 		    .AddParameter("timestamp", LogicalType::TIMESTAMP_TZ_NS);
+		timetzns_fun.SetStatisticsCallback(PropagateStatistics<ICUToNaiveTimestamp, timestamp_tz_ns_t, timestamp_ns_t>);
 		set.AddFunction(timetzns_fun);
 
 		set.ApplyToFunctions([](ScalarFunction &func) {

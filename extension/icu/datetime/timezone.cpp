@@ -3,6 +3,7 @@
 #include "duckdb/common/string_util.hpp"
 #include "grego.hpp"
 
+#include <algorithm>
 #include <climits>
 #include <cstdio>
 #include <cstdlib>
@@ -59,6 +60,31 @@ SimpleTimeZone::Boundary SimpleTimeZone::DecodeRule(int8_t month, int8_t day, in
 	return result;
 }
 
+int32_t SimpleTimeZone::RuleDayOfMonth(const Boundary &rule, int8_t month_len, int32_t first_dow) {
+	// adjust the rule day for February 29 rules in non-leap years
+	int32_t rule_day = rule.day;
+	if (rule_day > month_len) {
+		rule_day = month_len;
+	}
+
+	switch (rule.day_mode) {
+	case DayMode::DAY_OF_MONTH:
+		return rule_day;
+	case DayMode::DAY_OF_WEEK_IN_MONTH:
+		if (rule_day > 0) {
+			return 1 + (rule_day - 1) * 7 + (7 + rule.day_of_week - first_dow) % 7;
+		}
+		// counted back from the last day of the month, whose day of week follows from the first
+		return month_len + (rule_day + 1) * 7 - (7 + (first_dow + month_len - 1) - rule.day_of_week) % 7;
+	case DayMode::DAY_OF_WEEK_GE_DOM:
+		return rule_day + (49 + rule.day_of_week - rule_day + 1 - first_dow) % 7;
+	default:
+		D_ASSERT(rule.day_mode == DayMode::DAY_OF_WEEK_LE_DOM);
+		// note that this can be less than 1 for rules that are not well-formed
+		return rule_day - (49 - rule.day_of_week + rule_day + first_dow - 1) % 7;
+	}
+}
+
 int32_t SimpleTimeZone::CompareToRule(int8_t month, int8_t month_len, int8_t prev_month_len, int8_t dom, int8_t dow,
                                       int32_t millis, int32_t millis_delta, const Boundary &rule) {
 	// shift the date so that the time can be compared against the rule directly
@@ -90,33 +116,9 @@ int32_t SimpleTimeZone::CompareToRule(int8_t month, int8_t month_len, int8_t pre
 		return 1;
 	}
 
-	// adjust the rule day for February 29 rules in non-leap years
-	auto rule_day = rule.day;
-	if (rule_day > month_len) {
-		rule_day = month_len;
-	}
-
-	int32_t rule_dom = 0;
-	switch (rule.day_mode) {
-	case DayMode::DAY_OF_MONTH:
-		rule_dom = rule_day;
-		break;
-	case DayMode::DAY_OF_WEEK_IN_MONTH:
-		// the day of week of the first of the month follows from the given day and day of week
-		if (rule_day > 0) {
-			rule_dom = 1 + (rule_day - 1) * 7 + (7 + rule.day_of_week - (dow - dom + 1)) % 7;
-		} else {
-			rule_dom = month_len + (rule_day + 1) * 7 - (7 + (dow + month_len - dom) - rule.day_of_week) % 7;
-		}
-		break;
-	case DayMode::DAY_OF_WEEK_GE_DOM:
-		rule_dom = rule_day + (49 + rule.day_of_week - rule_day - dow + dom) % 7;
-		break;
-	case DayMode::DAY_OF_WEEK_LE_DOM:
-		// note that this can be less than 1 for rules that are not well-formed
-		rule_dom = rule_day - (49 - rule.day_of_week + rule_day + dow - dom) % 7;
-		break;
-	}
+	// the day of week of the first of the month follows from the given day and day of week
+	const auto first_dow = 1 + ((dow - dom) % 7 + 7) % 7;
+	const auto rule_dom = RuleDayOfMonth(rule, month_len, first_dow);
 
 	if (dom < rule_dom) {
 		return -1;
@@ -131,6 +133,26 @@ int32_t SimpleTimeZone::CompareToRule(int8_t month, int8_t month_len, int8_t pre
 	return 0;
 }
 
+int32_t SimpleTimeZone::RuleTimeDelta(const Boundary &rule, bool is_end) const {
+	switch (rule.time_mode) {
+	case TimeMode::UTC:
+		return -raw_offset;
+	case TimeMode::WALL:
+		// the wall clock includes the savings while they are in effect, which is at the end of the period
+		return is_end ? dst_savings : 0;
+	default:
+		return 0;
+	}
+}
+
+int64_t SimpleTimeZone::BoundaryMillis(int32_t year, const Boundary &rule, bool is_end) const {
+	const auto month_len = Grego::MonthLength(year, rule.month);
+	const auto first_day = Grego::FieldsToDay(year, rule.month, 1);
+	const auto rule_dom = RuleDayOfMonth(rule, month_len, Grego::DayOfWeek(static_cast<int32_t>(first_day)));
+	// the boundary is where the shifted local standard time reaches the time of the rule
+	return (first_day + rule_dom - 1) * MILLIS_PER_DAY + rule.time - raw_offset - RuleTimeDelta(rule, is_end);
+}
+
 int32_t SimpleTimeZone::GetOffsetForFields(int32_t year, int8_t month, int8_t dom, int8_t dow, int32_t millis) const {
 	if (!use_daylight || year < 0) {
 		return raw_offset;
@@ -142,16 +164,13 @@ int32_t SimpleTimeZone::GetOffsetForFields(int32_t year, int8_t month, int8_t do
 	// in the southern hemisphere the daylight savings period wraps around the end of the year
 	const auto southern = start.month > end.month;
 
-	const auto start_compare = CompareToRule(month, month_len, prev_month_len, dom, dow, millis,
-	                                         start.time_mode == TimeMode::UTC ? -raw_offset : 0, start);
+	const auto start_compare =
+	    CompareToRule(month, month_len, prev_month_len, dom, dow, millis, RuleTimeDelta(start, false), start);
 	int32_t end_compare = 0;
 	// in the northern hemisphere a date before the start rule can never be in the daylight savings
 	// period, and in the southern hemisphere a date after the start rule always is
 	if (southern != (start_compare >= 0)) {
-		const auto delta = end.time_mode == TimeMode::WALL  ? dst_savings
-		                   : end.time_mode == TimeMode::UTC ? -raw_offset
-		                                                    : 0;
-		end_compare = CompareToRule(month, month_len, prev_month_len, dom, dow, millis, delta, end);
+		end_compare = CompareToRule(month, month_len, prev_month_len, dom, dow, millis, RuleTimeDelta(end, true), end);
 	}
 
 	if ((!southern && (start_compare >= 0 && end_compare < 0)) ||
@@ -204,6 +223,52 @@ void SimpleTimeZone::GetOffsetFromLocal(int64_t millis, LocalOption non_existing
 		return;
 	}
 	dst_offset_out = GetOffsetForFields(year, month, dom, dow, mid) - raw_offset;
+}
+
+void SimpleTimeZone::GetOffsetRange(int64_t start_millis, int64_t end_millis, int32_t &min_offset,
+                                    int32_t &max_offset) const {
+	min_offset = raw_offset;
+	max_offset = raw_offset;
+	if (!use_daylight) {
+		return;
+	}
+
+	int32_t raw;
+	int32_t dst;
+	auto sample = [&](int64_t millis) {
+		GetOffset(millis, raw, dst);
+		min_offset = MinValue(min_offset, raw + dst);
+		max_offset = MaxValue(max_offset, raw + dst);
+	};
+	GetOffset(start_millis, raw, dst);
+	min_offset = raw + dst;
+	max_offset = raw + dst;
+	sample(end_millis);
+
+	// the offsets change at the boundaries of the rule only, so the offsets at both ends of the interval
+	// and on both sides of every boundary inside it cover the whole interval
+	int32_t start_year;
+	int32_t end_year;
+	int8_t month, dom, dow;
+	int16_t doy;
+	int32_t mid;
+	if (!Grego::TimeToFields(start_millis + raw_offset, start_year, month, dom, dow, doy, mid) ||
+	    !Grego::TimeToFields(end_millis + raw_offset, end_year, month, dom, dow, doy, mid) || start_year < 1 ||
+	    end_year - start_year > 1) {
+		// an interval of more than a year holds both offsets, and before year 1 the rule is not applied
+		min_offset = MinValue(raw_offset, raw_offset + dst_savings);
+		max_offset = MaxValue(raw_offset, raw_offset + dst_savings);
+		return;
+	}
+	for (auto year = start_year - 1; year <= end_year + 1; year++) {
+		for (auto is_end : {false, true}) {
+			const auto boundary = BoundaryMillis(year, is_end ? end : start, is_end);
+			if (boundary > start_millis && boundary <= end_millis) {
+				sample(boundary - 1);
+				sample(boundary);
+			}
+		}
+	}
 }
 
 unique_ptr<TimeZone> SimpleTimeZone::Copy() const {
@@ -285,8 +350,78 @@ void OlsonTimeZone::GetOffsetFromLocal(int64_t millis, LocalOption non_existing,
 	}
 }
 
+void OlsonTimeZone::GetHistoricalOffsetRange(int64_t start_sec, int64_t end_sec, int32_t &min_offset,
+                                             int32_t &max_offset) const {
+	auto total_offset = [](const TZTypeOffset &offsets) {
+		return (offsets.raw_offset + offsets.dst_offset) * int32_t(MILLIS_PER_SECOND);
+	};
+	// the offsets in effect at the start, and the ones taking effect at every transition up to the end
+	const auto begin = data.transitions;
+	const auto stop = begin + data.transition_count;
+	auto transition = std::upper_bound(begin, stop, start_sec);
+	auto transition_index = static_cast<int32_t>(transition - begin) - 1;
+	min_offset = total_offset(OffsetsAt(transition_index));
+	max_offset = min_offset;
+	for (; transition != stop && *transition <= end_sec; ++transition) {
+		const auto total = total_offset(OffsetsAt(++transition_index));
+		min_offset = MinValue(min_offset, total);
+		max_offset = MaxValue(max_offset, total);
+	}
+}
+
+void OlsonTimeZone::GetOffsetRangeInternal(int64_t start_millis, int64_t end_millis, bool local, int32_t &min_offset,
+                                           int32_t &max_offset) const {
+	if (final_zone && start_millis >= final_start_millis) {
+		if (local) {
+			final_zone->GetOffsetRangeFromLocal(start_millis, end_millis, min_offset, max_offset);
+		} else {
+			final_zone->GetOffsetRange(start_millis, end_millis, min_offset, max_offset);
+		}
+		return;
+	}
+
+	// the transition data covers everything before the final rule starts, which is at a whole second
+	const auto historical_end = final_zone ? MinValue(end_millis, final_start_millis - 1) : end_millis;
+	// a local time is resolved with the transitions at most the largest offset away from it
+	const auto margin = local ? MAX_OFFSET_SECONDS : 0;
+	GetHistoricalOffsetRange(FloorDiv::Divide(start_millis, MILLIS_PER_SECOND) - margin,
+	                         FloorDiv::Divide(historical_end, MILLIS_PER_SECOND) + margin, min_offset, max_offset);
+	if (!final_zone || end_millis < final_start_millis) {
+		return;
+	}
+	int32_t final_min;
+	int32_t final_max;
+	if (local) {
+		final_zone->GetOffsetRangeFromLocal(final_start_millis, end_millis, final_min, final_max);
+	} else {
+		final_zone->GetOffsetRange(final_start_millis, end_millis, final_min, final_max);
+	}
+	min_offset = MinValue(min_offset, final_min);
+	max_offset = MaxValue(max_offset, final_max);
+}
+
+void OlsonTimeZone::GetOffsetRange(int64_t start_millis, int64_t end_millis, int32_t &min_offset,
+                                   int32_t &max_offset) const {
+	GetOffsetRangeInternal(start_millis, end_millis, false, min_offset, max_offset);
+}
+
+void OlsonTimeZone::GetOffsetRangeFromLocal(int64_t start_millis, int64_t end_millis, int32_t &min_offset,
+                                            int32_t &max_offset) const {
+	GetOffsetRangeInternal(start_millis, end_millis, true, min_offset, max_offset);
+}
+
 unique_ptr<TimeZone> OlsonTimeZone::Copy() const {
 	return make_uniq<OlsonTimeZone>(id, data);
+}
+
+//===--------------------------------------------------------------------===//
+// TimeZone
+//===--------------------------------------------------------------------===//
+void TimeZone::GetOffsetRangeFromLocal(int64_t start_millis, int64_t end_millis, int32_t &min_offset,
+                                       int32_t &max_offset) const {
+	// a local time is resolved with the offsets of the instants at most the largest offset away from it
+	const auto margin = MAX_OFFSET_SECONDS * MILLIS_PER_SECOND;
+	GetOffsetRange(start_millis - margin, end_millis + margin, min_offset, max_offset);
 }
 
 //===--------------------------------------------------------------------===//
