@@ -529,7 +529,11 @@ FileMetadata FileSystem::Stats(FileHandle &handle) {
 	// leave unsupported modification times unknown
 	try {
 		metadata.last_modification_time = GetLastModifiedTime(handle);
-	} catch (NotImplementedException &) {
+	} catch (std::exception &ex) {
+		ErrorData error(ex);
+		if (error.Type() != ExceptionType::NOT_IMPLEMENTED) {
+			throw;
+		}
 	}
 	metadata.file_type = GetFileType(handle);
 	metadata.version_tag = GetVersionTag(handle);
