@@ -60,6 +60,8 @@ public:
 	DUCKDB_API void SetPosition(idx_t position);
 	DUCKDB_API void SetPosition(const TokenIterator &other);
 	DUCKDB_API void SetPreviousTokenType(TokenType type);
+	//! Drop the literal lookups the tokens cached, e.g. before matching them with another grammar.
+	DUCKDB_API void ResetLiteralInfo();
 
 	DUCKDB_API vector<SimpleToken> RemainingTokens() const;
 	DUCKDB_API string ToString() const;

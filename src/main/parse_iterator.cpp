@@ -117,6 +117,12 @@ bool ParseIterator::PeekInternal() {
 	// integer_division or active_grammar_extensions), so each statement gets a parser with fresh options
 	Parser parser(options);
 	EnsureTokenized();
+	// A previous statement can change the grammar (LOAD, SET active_grammar_extensions): the tokens' cached literal
+	// lookups belong to the grammar they were matched with
+	if (options.compiled_grammar != matched_grammar) {
+		token_iterator->ResetLiteralInfo();
+		matched_grammar = options.compiled_grammar;
+	}
 	// Walk the token cursor through the cached `tokens`, calling Parser::ParseTopLevelStatement
 	// repeatedly. A nullptr return with cursor advanced means a separator-only TopLevelStatement
 	// (e.g. between statements or trailing ';'s); we loop past it. A nullptr return with cursor

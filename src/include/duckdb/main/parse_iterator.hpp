@@ -9,11 +9,13 @@
 #pragma once
 
 #include "duckdb/common/optional_ptr.hpp"
+#include "duckdb/common/shared_ptr.hpp"
 #include "duckdb/common/string.hpp"
 #include "duckdb/common/unique_ptr.hpp"
 #include "duckdb/common/vector.hpp"
 
 namespace duckdb {
+struct CompiledGrammar;
 class ClientContext;
 class ClientContextLock;
 class ErrorData;
@@ -82,6 +84,8 @@ private:
 	optional_ptr<ClientContextLock> held_lock;
 	//! Tokenized view of `sql` and its current position. Populated once on the first Peek.
 	unique_ptr<TokenIterator> token_iterator;
+	//! The grammar `token_iterator`'s tokens were last matched with; kept alive so its address is not reused.
+	shared_ptr<CompiledGrammar> matched_grammar;
 	//! Single-statement buffer holding the result of the most recent Peek. Cleared by
 	//! GetStatement.
 	unique_ptr<SQLStatement> current_statement;

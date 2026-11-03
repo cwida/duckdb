@@ -2,19 +2,14 @@
 
 #include "duckdb/common/atomic.hpp"
 #include "duckdb/common/exception.hpp"
-#include "duckdb/common/random_engine.hpp"
 #include "duckdb/parser/peg/parsed_grammar.hpp"
 
 namespace duckdb {
 
 static uint64_t NextLiteralTableId() {
-	// Extensions that link DuckDB statically have their own copy of this counter: a random start keeps their ids
-	// apart from the host's, so a token never reuses a literal lookup cached for another grammar's table
-	static atomic<uint64_t> next_id {RandomEngine().NextRandomInteger64()};
-	uint64_t result;
-	do {
-		result = next_id.fetch_add(1, std::memory_order_relaxed);
-	} while (result == 0);
+	static atomic<uint64_t> next_id {1};
+	auto result = next_id.fetch_add(1, std::memory_order_relaxed);
+	D_ASSERT(result != 0);
 	return result;
 }
 
