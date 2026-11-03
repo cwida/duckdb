@@ -1882,8 +1882,8 @@ unique_ptr<LogicalOperator> FlattenDependentJoins::CreateDomainSource(TableIndex
 	for (idx_t i = 0; i < correlated_columns.size(); i++) {
 		domain_exprs.push_back(make_uniq<BoundColumnRefExpression>(
 		    correlated_columns[i].type, ColumnBinding(ref_index, ProjectionIndex(base_count + i))));
-		distinct_targets.push_back(make_uniq<BoundColumnRefExpression>(
-		    correlated_columns[i].type, ColumnBinding(delim_index, ProjectionIndex(i))));
+		distinct_targets.push_back(make_uniq<BoundColumnRefExpression>(correlated_columns[i].type,
+		                                                               ColumnBinding(delim_index, ProjectionIndex(i))));
 	}
 	auto projection = make_uniq<LogicalProjection>(delim_index, std::move(domain_exprs));
 	projection->children.push_back(std::move(wave_ref));

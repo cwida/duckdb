@@ -8,7 +8,8 @@ string TrampolineCTENode::ToString() const {
 	result = cte_map.ToString();
 	result += "(" + seed->ToString() + ")";
 	for (idx_t branch_idx = 0; branch_idx < branches.size(); branch_idx++) {
-		const auto options = branch_idx < branch_options.size() ? branch_options[branch_idx] : TrampolineBranchOptions();
+		const auto options =
+		    branch_idx < branch_options.size() ? branch_options[branch_idx] : TrampolineBranchOptions();
 		result += StringUtil::Format(" BRANCH %llu%s%s%s: (", branch_idx + 1, options.Distinct() ? " DISTINCT" : "",
 		                             options.Merge() ? " MERGE" : "", options.tee ? " TEE" : "");
 		result += branches[branch_idx]->ToString();
