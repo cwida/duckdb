@@ -102,10 +102,10 @@ void QueryGraphManager::BuildPredicateModel() {
 			predicate_model.AddDirectEqualityPairClass(pair, equality_class.index, first_binding, second_binding);
 		}
 	}
-	BuildLeftEqualityPairs();
+	BuildLeftJoinPredicates();
 }
 
-void QueryGraphManager::BuildLeftEqualityPairs() {
+void QueryGraphManager::BuildLeftJoinPredicates() {
 	idx_t next_left_equality_group = 0;
 	for (auto &op : join_operators) {
 		if (op->type != JoinOrderOperatorType::LEFT) {
@@ -114,37 +114,48 @@ void QueryGraphManager::BuildLeftEqualityPairs() {
 		JoinEqualityGroups groups;
 		auto add_equality = [&](ExpressionType type, const Expression &left, const Expression &right) {
 			if (type != ExpressionType::COMPARE_EQUAL && type != ExpressionType::COMPARE_NOT_DISTINCT_FROM) {
-				return;
+				return ColumnBinding();
 			}
 			ColumnBinding left_binding;
 			ColumnBinding right_binding;
 			GetEquivalenceBinding(left, left_binding);
 			GetEquivalenceBinding(right, right_binding);
-			if (left_binding.table_index.IsValid() && right_binding.table_index.IsValid()) {
-				groups.AddEquality(left_binding, right_binding);
+			if (!left_binding.table_index.IsValid() || !right_binding.table_index.IsValid()) {
+				return ColumnBinding();
 			}
+			groups.AddEquality(left_binding, right_binding);
+			return left_binding;
 		};
-		vector<reference<const Expression>> residuals;
+		vector<ColumnBinding> modeled_equalities;
+		vector<reference<const Expression>> pending_residuals;
+		vector<pair<reference<const Expression>, ColumnBinding>> residuals;
 		for (auto &condition : op->conditions) {
 			if (condition.IsComparison()) {
-				add_equality(condition.GetComparisonType(), condition.GetLHS(), condition.GetRHS());
+				auto binding = add_equality(condition.GetComparisonType(), condition.GetLHS(), condition.GetRHS());
+				if (binding.table_index.IsValid()) {
+					modeled_equalities.push_back(binding);
+				}
 			} else {
-				residuals.push_back(condition.GetJoinExpression());
+				pending_residuals.push_back(condition.GetJoinExpression());
 			}
 		}
 		// Same-side ON equalities can connect keys even though they are not costing predicates.
-		while (!residuals.empty()) {
-			auto &expression = residuals.back().get();
-			residuals.pop_back();
+		while (!pending_residuals.empty()) {
+			auto &expression = pending_residuals.back().get();
+			pending_residuals.pop_back();
 			if (expression.GetExpressionType() == ExpressionType::CONJUNCTION_AND) {
 				for (auto &child : expression.Cast<BoundConjunctionExpression>().GetChildren()) {
-					residuals.push_back(*child);
+					pending_residuals.push_back(*child);
 				}
-			} else if (BoundComparisonExpression::IsComparison(expression)) {
-				auto &comparison = expression.Cast<BoundFunctionExpression>();
-				add_equality(expression.GetExpressionType(), BoundComparisonExpression::Left(comparison),
-				             BoundComparisonExpression::Right(comparison));
+				continue;
 			}
+			ColumnBinding binding;
+			if (BoundComparisonExpression::IsComparison(expression)) {
+				auto &comparison = expression.Cast<BoundFunctionExpression>();
+				binding = add_equality(expression.GetExpressionType(), BoundComparisonExpression::Left(comparison),
+				                       BoundComparisonExpression::Right(comparison));
+			}
+			residuals.emplace_back(expression, binding);
 		}
 		reference_map_t<JoinRelationSet, RelationPairEqualitySummary> summaries;
 		vector<pair<reference<JoinPredicate>, reference<JoinRelationSet>>> pairs;
@@ -180,6 +191,16 @@ void QueryGraphManager::BuildLeftEqualityPairs() {
 		for (auto &entry : pairs) {
 			if (summaries.at(entry.second).HasDirectCompositeEquality()) {
 				entry.first.get().SetCompositeJoinPair(entry.second);
+			}
+		}
+		unordered_set<idx_t> accounted_groups;
+		for (auto &binding : modeled_equalities) {
+			accounted_groups.insert(groups.GetGroup(binding));
+		}
+		for (auto &residual : residuals) {
+			auto &binding = residual.second;
+			if (!binding.table_index.IsValid() || accounted_groups.insert(groups.GetGroup(binding)).second) {
+				op->residual_predicates.push_back(residual.first);
 			}
 		}
 	}

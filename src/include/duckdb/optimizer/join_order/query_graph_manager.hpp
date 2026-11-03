@@ -72,7 +72,7 @@ private:
 
 	//! Build the normalized predicate model after filter endpoints and stats bindings are populated.
 	void BuildPredicateModel();
-	void BuildLeftEqualityPairs();
+	void BuildLeftJoinPredicates();
 	void BuildInnerCompanionSets();
 	void ClearExtractedExpressions();
 	idx_t FindGraphComponent(RelationIndex relation);

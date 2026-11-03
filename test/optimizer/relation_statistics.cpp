@@ -14,6 +14,7 @@
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
+#include "duckdb/planner/expression/bound_parameter_expression.hpp"
 #include "duckdb/planner/operator/logical_aggregate.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
 #include "duckdb/planner/operator/logical_cteref.hpp"
@@ -714,6 +715,7 @@ TEST_CASE("LEFT ON residuals precede preservation and post-filters follow it", "
 			vector<unique_ptr<JoinOrderOperator>> operators;
 			auto &op = AddOperator(operators, sets, left, right, JoinOrderOperatorType::LEFT);
 			op.conditions.emplace_back(residual.filter->Copy());
+			op.residual_predicates.push_back(op.conditions.back().GetJoinExpression());
 			CardinalityEstimator estimator(sets, model);
 			estimator.Initialize(
 			    {CreateStats({a}, {100}, 100), CreateStats({b}, {MinValue(idx_t(100), right_rows)}, right_rows)},
@@ -728,33 +730,42 @@ TEST_CASE("LEFT ON residuals precede preservation and post-filters follow it", "
 }
 
 TEST_CASE("Owned INNER residuals wait for their complete operator", "[optimizer][relation_statistics]") {
-	JoinRelationSetManager sets;
-	auto &a = sets.GetJoinRelation(RelationIndex(0));
-	auto &b = sets.GetJoinRelation(RelationIndex(1));
-	auto &d = sets.GetJoinRelation(RelationIndex(2));
-	auto &ab = sets.Union(a, b);
-	auto &ad = sets.Union(a, d);
-	auto &root = sets.Union(ab, d);
-	auto x = ColumnBinding(TableIndex(0), ProjectionIndex(0));
-	auto y = ColumnBinding(TableIndex(1), ProjectionIndex(0));
-	auto z = ColumnBinding(TableIndex(2), ProjectionIndex(0));
-	FilterInfo residual(make_uniq<BoundConjunctionExpression>(
-	                        ExpressionType::CONJUNCTION_OR, CreateJoinComparison(x, z, ExpressionType::COMPARE_EQUAL),
-	                        CreateJoinComparison(x, z, ExpressionType::COMPARE_GREATERTHAN)),
-	                    ad, 0);
-	residual.source_operator_index = optional_idx(1);
-	JoinPredicateModel model;
-	model.RegisterPredicate(residual, JoinPredicateClass::OTHER, x, z);
-	vector<unique_ptr<JoinOrderOperator>> operators;
-	AddOperator(operators, sets, a, b, JoinOrderOperatorType::LEFT);
-	auto &op = AddOperator(operators, sets, ab, d, JoinOrderOperatorType::INNER);
-	op.must_apply_as_operator = true;
-	CardinalityEstimator estimator(sets, model);
-	estimator.Initialize({CreateStats({x}, {100}, 100), CreateStats({y}, {1}, 1), CreateStats({z}, {10}, 10)},
-	                     operators);
-	REQUIRE(estimator.EstimateCardinality(ad).GetDouble() == 1000);
-	REQUIRE(estimator.EstimateCardinality(ab).GetDouble() == 100);
-	REQUIRE(estimator.EstimateCardinality(root).GetDouble() == 200);
+	for (bool has_bindings : {false, true}) {
+		JoinRelationSetManager sets;
+		auto &a = sets.GetJoinRelation(RelationIndex(0));
+		auto &b = sets.GetJoinRelation(RelationIndex(1));
+		auto &d = sets.GetJoinRelation(RelationIndex(2));
+		auto &ab = sets.Union(a, b);
+		auto &ad = sets.Union(a, d);
+		auto &root = sets.Union(ab, d);
+		auto x = ColumnBinding(TableIndex(0), ProjectionIndex(0));
+		auto y = ColumnBinding(TableIndex(1), ProjectionIndex(0));
+		auto z = ColumnBinding(TableIndex(2), ProjectionIndex(0));
+		unique_ptr<Expression> expression;
+		if (has_bindings) {
+			expression = make_uniq<BoundConjunctionExpression>(
+			    ExpressionType::CONJUNCTION_OR, CreateJoinComparison(x, z, ExpressionType::COMPARE_EQUAL),
+			    CreateJoinComparison(x, z, ExpressionType::COMPARE_GREATERTHAN));
+		} else {
+			expression = make_uniq<BoundParameterExpression>(Identifier("1"));
+		}
+		auto &referenced = has_bindings ? ad : sets.GetJoinRelation(unordered_set<RelationIndex>());
+		FilterInfo residual(std::move(expression), referenced, 0);
+		residual.source_operator_index = optional_idx(1);
+		residual.from_residual_predicate = true;
+		JoinPredicateModel model;
+		model.RegisterPredicate(residual, JoinPredicateClass::OTHER, ColumnBinding(), ColumnBinding());
+		vector<unique_ptr<JoinOrderOperator>> operators;
+		AddOperator(operators, sets, a, b, JoinOrderOperatorType::LEFT);
+		auto &op = AddOperator(operators, sets, ab, d, JoinOrderOperatorType::INNER);
+		op.must_apply_as_operator = true;
+		CardinalityEstimator estimator(sets, model);
+		estimator.Initialize({CreateStats({x}, {100}, 100), CreateStats({y}, {1}, 1), CreateStats({z}, {10}, 10)},
+		                     operators);
+		REQUIRE(estimator.EstimateCardinality(ad).GetDouble() == 1000);
+		REQUIRE(estimator.EstimateCardinality(ab).GetDouble() == 100);
+		REQUIRE(estimator.EstimateCardinality(root).GetDouble() == 200);
+	}
 }
 
 TEST_CASE("Projection and window preserve the statistics source", "[optimizer][relation_statistics]") {

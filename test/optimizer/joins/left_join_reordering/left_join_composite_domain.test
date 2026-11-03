@@ -234,6 +234,43 @@ SELECT count(*) FROM cast_left l LEFT JOIN cast_right r ON l.a = r.x AND l.b = r
 ----
 10000
 
+# A separate residual equality component contributes once, in either condition order.
+statement ok
+CREATE TABLE residual_left AS
+SELECT (i % 10)::INTEGER a, (i % 10)::BIGINT b, (i % 10)::INTEGER c, (i % 10)::BIGINT d
+FROM range(100) t(i);
+
+query II
+EXPLAIN SELECT * FROM residual_left l LEFT JOIN cast_right r
+ON l.a = r.x AND (l.a = l.b AND (l.c = l.d AND l.d = l.c));
+----
+physical_plan	<REGEX>:.*HASH_JOIN[^~]*~1,818 rows.*
+
+query II
+EXPLAIN SELECT * FROM residual_left l LEFT JOIN cast_right r
+ON ((l.d = l.c AND l.b = l.a) AND l.c = l.d) AND r.x = l.a;
+----
+physical_plan	<REGEX>:.*HASH_JOIN[^~]*~1,818 rows.*
+
+query I
+SELECT count(*) FROM residual_left l LEFT JOIN cast_right r
+ON l.a = r.x AND (l.a = l.b AND (l.c = l.d AND l.d = l.c));
+----
+10000
+
+# OR stays one residual and does not connect the equality keys inside it.
+query II
+EXPLAIN SELECT * FROM residual_left l LEFT JOIN cast_right r
+ON l.a = r.x AND (l.b = r.x OR l.c = l.d) AND l.c = l.d;
+----
+physical_plan	<REGEX>:.*HASH_JOIN[^~]*~363 rows.*
+
+query I
+SELECT count(*) FROM residual_left l LEFT JOIN cast_right r
+ON l.a = r.x AND (l.b = r.x OR l.c = l.d) AND l.c = l.d;
+----
+10000
+
 statement ok
 SET disabled_optimizers='statistics_propagation';
 

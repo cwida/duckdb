@@ -256,7 +256,6 @@ void JoinPredicateModel::Clear() {
 	equality_join_predicates.clear();
 	selectivity_predicates.clear();
 	graph_predicates.clear();
-	has_left_join_predicates = false;
 	equality_classes.clear();
 	equality_pairs.clear();
 }
@@ -269,9 +268,6 @@ JoinPredicate &JoinPredicateModel::RegisterPredicate(FilterInfo &filter, JoinPre
 	auto &result = *predicate;
 	predicates.push_back(std::move(predicate));
 	all_predicates.push_back(result);
-	if (predicate_class == JoinPredicateClass::LEFT_JOIN) {
-		has_left_join_predicates = true;
-	}
 	if (result.HasDisjointJoinEndpoints()) {
 		graph_predicates.push_back(result);
 	}
@@ -324,10 +320,6 @@ const vector<reference<JoinPredicate>> &JoinPredicateModel::GetGraphPredicates()
 
 const vector<JoinEqualityClass> &JoinPredicateModel::GetEqualityClasses() const {
 	return equality_classes;
-}
-
-bool JoinPredicateModel::HasLeftJoinPredicates() const {
-	return has_left_join_predicates;
 }
 
 bool JoinPredicateModel::HasDirectCompositeEquality(JoinRelationSet &pair) const {

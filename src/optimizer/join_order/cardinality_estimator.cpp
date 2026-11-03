@@ -3,7 +3,6 @@
 #include "duckdb/optimizer/join_order/join_order_operator.hpp"
 #include "duckdb/optimizer/join_order/join_predicate.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
-#include "duckdb/planner/expression/bound_conjunction_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 
 #include <algorithm>
@@ -296,7 +295,7 @@ CardinalityValue CardinalityEstimator::GetNumerator(JoinRelationSet &set) {
 }
 
 bool CardinalityEstimator::IsFilterApplicable(const FilterInfo &filter, JoinRelationSet &set) const {
-	if (!JoinRelationSet::IsSubset(set, filter.set)) {
+	if (!filter.set.get().Empty() && !JoinRelationSet::IsSubset(set, filter.set)) {
 		return false;
 	}
 	if (filter.source_operator_index.IsValid()) {
@@ -802,41 +801,10 @@ CardinalityValue CardinalityEstimator::EstimateCardinality(JoinRelationSet &set)
 	return result;
 }
 
-static optional_idx RegisterOnEquality(JoinEqualityGroups &groups, ExpressionType type, const Expression &left,
-                                       const Expression &right) {
-	if (type != ExpressionType::COMPARE_EQUAL && type != ExpressionType::COMPARE_NOT_DISTINCT_FROM) {
-		return optional_idx();
-	}
-	auto left_binding = JoinOrderUtil::GetEquivalenceBinding(left);
-	auto right_binding = JoinOrderUtil::GetEquivalenceBinding(right);
-	if (!left_binding.table_index.IsValid() || !right_binding.table_index.IsValid()) {
-		return optional_idx();
-	}
-	groups.AddEquality(left_binding, right_binding);
-	return optional_idx(groups.GetGroup(left_binding));
-}
-
-static CardinalityValue GetResidualOnSelectivity(const Expression &expression, JoinEqualityGroups &groups,
-                                                 unordered_set<idx_t> &applied_groups) {
+static CardinalityValue GetResidualOnSelectivity(const Expression &expression) {
 	if (expression.GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
 		auto &value = expression.Cast<BoundConstantExpression>().GetValue();
 		return CardinalityValue(!value.IsNull() && value.GetValue<bool>() ? 1 : 0);
-	}
-	if (expression.GetExpressionType() == ExpressionType::CONJUNCTION_AND) {
-		CardinalityValue result;
-		for (auto &child : expression.Cast<BoundConjunctionExpression>().GetChildren()) {
-			result *= GetResidualOnSelectivity(*child, groups, applied_groups);
-		}
-		return result;
-	}
-	if (BoundComparisonExpression::IsComparison(expression)) {
-		auto &comparison = expression.Cast<BoundFunctionExpression>();
-		auto group =
-		    RegisterOnEquality(groups, expression.GetExpressionType(), BoundComparisonExpression::Left(comparison),
-		                       BoundComparisonExpression::Right(comparison));
-		if (group.IsValid() && !applied_groups.insert(group.GetIndex()).second) {
-			return CardinalityValue(1);
-		}
 	}
 	return CardinalityValue(RelationStatisticsHelper::DEFAULT_SELECTIVITY);
 }
@@ -881,43 +849,8 @@ CardinalityValue CardinalityEstimator::GetLeftJoinSelectivity(const JoinOrderOpe
 			selectivity *= CardinalityValue(RelationStatisticsHelper::DEFAULT_SELECTIVITY);
 		}
 	}
-	JoinEqualityGroups groups;
-	vector<reference<const Expression>> residuals;
-	for (auto &condition : join_operator.conditions) {
-		if (condition.IsComparison()) {
-			RegisterOnEquality(groups, condition.GetComparisonType(), condition.GetLHS(), condition.GetRHS());
-		} else {
-			residuals.push_back(condition.GetJoinExpression());
-		}
-	}
-	while (!residuals.empty()) {
-		auto &expression = residuals.back().get();
-		residuals.pop_back();
-		if (expression.GetExpressionType() == ExpressionType::CONJUNCTION_AND) {
-			for (auto &child : expression.Cast<BoundConjunctionExpression>().GetChildren()) {
-				residuals.push_back(*child);
-			}
-		} else if (BoundComparisonExpression::IsComparison(expression)) {
-			auto &comparison = expression.Cast<BoundFunctionExpression>();
-			RegisterOnEquality(groups, expression.GetExpressionType(), BoundComparisonExpression::Left(comparison),
-			                   BoundComparisonExpression::Right(comparison));
-		}
-	}
-	unordered_set<idx_t> applied_groups;
-	for (auto &condition : join_operator.conditions) {
-		if (condition.IsComparison()) {
-			auto group =
-			    RegisterOnEquality(groups, condition.GetComparisonType(), condition.GetLHS(), condition.GetRHS());
-			if (group.IsValid()) {
-				applied_groups.insert(group.GetIndex());
-			}
-		}
-	}
-	for (auto &condition : join_operator.conditions) {
-		if (!condition.IsComparison()) {
-			// Same-side equalities can already belong to a modeled cross-input key component.
-			selectivity *= GetResidualOnSelectivity(condition.GetJoinExpression(), groups, applied_groups);
-		}
+	for (auto &residual : join_operator.residual_predicates) {
+		selectivity *= GetResidualOnSelectivity(residual);
 	}
 	return selectivity;
 }
