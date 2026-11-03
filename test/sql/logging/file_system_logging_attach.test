@@ -37,6 +37,9 @@ CONNECTION	FileSystem	TRACE	{"fs":"LocalFileSystem","path":"filehandle_logging.d
 CONNECTION	FileSystem	TRACE	{"fs":"LocalFileSystem","path":"filehandle_logging.db","op":"WRITE","bytes":"4096","pos":"0"}
 CONNECTION	FileSystem	TRACE	{"fs":"LocalFileSystem","path":"filehandle_logging.db","op":"WRITE","bytes":"4096","pos":"4096"}
 CONNECTION	FileSystem	TRACE	{"fs":"LocalFileSystem","path":"filehandle_logging.db","op":"WRITE","bytes":"4096","pos":"8192"}
+CONNECTION	FileSystem	TRACE	{"fs":"LocalFileSystem","path":"filehandle_logging.db","op":"SYNC"}
 CONNECTION	FileSystem	TRACE	{"fs":"LocalFileSystem","path":"filehandle_logging.db","op":"WRITE","bytes":"262144","pos":"12288"}
+CONNECTION	FileSystem	TRACE	{"fs":"LocalFileSystem","path":"filehandle_logging.db","op":"SYNC"}
 CONNECTION	FileSystem	TRACE	{"fs":"LocalFileSystem","path":"filehandle_logging.db","op":"WRITE","bytes":"4096","pos":"4096"}
+CONNECTION	FileSystem	TRACE	{"fs":"LocalFileSystem","path":"filehandle_logging.db","op":"SYNC"}
 CONNECTION	FileSystem	TRACE	{"fs":"LocalFileSystem","path":"filehandle_logging.db","op":"CLOSE"}
