@@ -10,6 +10,10 @@ namespace duckdb {
 // ===========================================
 static bool CombineNoAliasTypes(LogicalTypeResolver &logical_type_resolver, const LogicalType &left,
                                 const LogicalType &right, LogicalType &result) {
+	// a plain value cannot implicitly become an aggregate state
+	if (left.IsAggregateState() != right.IsAggregateState()) {
+		return false;
+	}
 	// we always prefer aliased types
 	if (!left.GetAlias().empty()) {
 		result = left;
@@ -347,6 +351,13 @@ static bool CombineStringLiteral(LogicalTypeResolver &, const LogicalType &left,
 	return true;
 }
 
+// BIGNUM has no implicit cast to or from FLOAT and DECIMAL; like their arithmetic, these pairs meet in DOUBLE
+static bool CombineBignumFloatOrDecimal(LogicalTypeResolver &, const LogicalType &, const LogicalType &,
+                                        LogicalType &result) {
+	result = LogicalType::DOUBLE;
+	return true;
+}
+
 static bool UnequalMatchesVariant(const LogicalType &left, const LogicalType &right) {
 	if (left.id() == right.id()) {
 		// rule only applies to unequal types
@@ -374,6 +385,13 @@ static bool UnequalMatchesEnum(const LogicalType &left, const LogicalType &right
 	return left.id() == LogicalTypeId::ENUM || right.id() == LogicalTypeId::ENUM;
 }
 
+static bool UnequalMatchesBignumFloatOrDecimal(const LogicalType &left, const LogicalType &right) {
+	auto is_pair = [](const LogicalType &a, const LogicalType &b) {
+		return a.id() == LogicalTypeId::BIGNUM && (b.id() == LogicalTypeId::FLOAT || b.id() == LogicalTypeId::DECIMAL);
+	};
+	return is_pair(left, right) || is_pair(right, left);
+}
+
 static bool UnequalMatchesStringLiteral(const LogicalType &left, const LogicalType &right) {
 	if (left.id() == right.id()) {
 		// rule only applies to unequal types
@@ -391,6 +409,7 @@ const vector<CombineTypesRule> &DefaultCombineTypesRules() {
 	    {UnequalMatchesEnum, CombineEnum},
 	    {UnequalMatchesStruct, CombineStructTypes},
 	    {UnequalMatchesStringLiteral, CombineStringLiteral},
+	    {UnequalMatchesBignumFloatOrDecimal, CombineBignumFloatOrDecimal},
 	    {EqualMatchesStringLiteral, CombineEqualStringLiteral},
 	    {EqualMatchesIntegerLiteral, CombineEqualIntegerLiteral},
 	    {EqualMatchesEnum, CombineEqualEnum},

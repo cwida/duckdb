@@ -8,40 +8,40 @@ statement ok
 SET max_execution_time = 60000
 
 statement ok
-COPY (SELECT i FROM range(5) r(i)) TO '__TEST_DIR__/tiny_fsb' (FORMAT csv, FILE_SIZE_BYTES 1)
+COPY (SELECT i FROM range(5) r(i)) TO '{TEST_DIR}/tiny_fsb' (FORMAT csv, FILE_SIZE_BYTES 1)
 
 query I
-SELECT count(*) <= 5 FROM glob('__TEST_DIR__/tiny_fsb/*.csv')
+SELECT count(*) <= 5 FROM glob('{TEST_DIR}/tiny_fsb/*.csv')
 ----
 true
 
 query I
-SELECT sum(i) FROM read_csv('__TEST_DIR__/tiny_fsb/*.csv')
+SELECT sum(i) FROM read_csv('{TEST_DIR}/tiny_fsb/*.csv')
 ----
 10
 
 statement ok
-COPY (SELECT i FROM range(5) r(i)) TO '__TEST_DIR__/tiny_fsb_parquet' (FORMAT parquet, FILE_SIZE_BYTES 1)
+COPY (SELECT i FROM range(5) r(i)) TO '{TEST_DIR}/tiny_fsb_parquet' (FORMAT parquet, FILE_SIZE_BYTES 1)
 
 query I
-SELECT sum(i) FROM read_parquet('__TEST_DIR__/tiny_fsb_parquet/*.parquet')
+SELECT sum(i) FROM read_parquet('{TEST_DIR}/tiny_fsb_parquet/*.parquet')
 ----
 10
 
 statement error
-COPY (SELECT 1 i) TO '__TEST_DIR__/rgpf0' (FORMAT parquet, ROW_GROUPS_PER_FILE 0)
+COPY (SELECT 1 i) TO '{TEST_DIR}/rgpf0' (FORMAT parquet, ROW_GROUPS_PER_FILE 0)
 ----
 ROW_GROUPS_PER_FILE must be a positive number
 
 statement ok
-COPY (SELECT i, i % 3 p FROM range(30000) r(i)) TO '__TEST_DIR__/tiny_fsb_partitioned' (FORMAT csv, PARTITION_BY (p), FILE_SIZE_BYTES '10KB')
+COPY (SELECT i, i % 3 p FROM range(30000) r(i)) TO '{TEST_DIR}/tiny_fsb_partitioned' (FORMAT csv, PARTITION_BY (p), FILE_SIZE_BYTES '10KB')
 
 query II
-SELECT count(*), sum(i) FROM read_csv('__TEST_DIR__/tiny_fsb_partitioned/*/*.csv')
+SELECT count(*), sum(i) FROM read_csv('{TEST_DIR}/tiny_fsb_partitioned/*/*.csv')
 ----
 30000	449985000
 
 query I
-SELECT count(*) > 3 FROM glob('__TEST_DIR__/tiny_fsb_partitioned/*/*.csv')
+SELECT count(*) > 3 FROM glob('{TEST_DIR}/tiny_fsb_partitioned/*/*.csv')
 ----
 true

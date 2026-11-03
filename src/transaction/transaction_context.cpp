@@ -106,7 +106,6 @@ void TransactionContext::Rollback(optional_ptr<ErrorData> error) {
 	}
 	auto transaction = std::move(current_transaction);
 	ClearTransaction();
-	context.client_data->profiler->Reset();
 
 	ErrorData rollback_error;
 	try {

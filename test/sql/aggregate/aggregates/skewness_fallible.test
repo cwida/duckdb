@@ -1,0 +1,34 @@
+# name: test/sql/aggregate/aggregates/skewness_fallible.test
+# description: skewness validates its finalize result and must be registered as fallible
+# group: [aggregates]
+
+# the non-finite result check raises as a regular error
+
+statement error
+SELECT skewness(x) FROM (VALUES (0.0), (1e150), (2e150)) t(x);
+----
+SKEW is out of range!
+
+# the EXPLAIN (SQL) pivot default export fixtures live in fallible_pivot_default_export.test,
+# which is excluded from the aggregate state export verification config
+
+# the scalarized window form keeps working under dictionary vector verification
+
+statement ok
+SET debug_verify_vector='dictionary_expression';
+
+query I rowsort
+SELECT skewness(x) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW) FROM (VALUES (1.0), (2.0)) t(x);
+----
+NULL
+NULL
+
+statement ok
+RESET debug_verify_vector;
+
+# valid aggregation is unaffected
+
+query I
+SELECT round(skewness(x), 4) FROM (VALUES (1.0), (2.0), (10.0)) t(x);
+----
+1.6523

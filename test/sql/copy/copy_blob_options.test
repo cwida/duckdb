@@ -25,6 +25,6 @@ expects a string argument
 
 # an option without a value is rejected instead of indexing an empty option list (#26363)
 statement error
-COPY (SELECT 'abc'::BLOB AS b) TO '__TEST_DIR__/no_value.bin' (FORMAT BLOB, COMPRESSION);
+COPY (SELECT 'abc'::BLOB AS b) TO '{TEST_DIR}/no_value.bin' (FORMAT BLOB, COMPRESSION);
 ----
 COPY (FORMAT BLOB) option "compression" requires a value

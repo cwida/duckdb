@@ -156,7 +156,7 @@ private:
 			return snapshot;
 		}
 		lock_guard<mutex> l(lock);
-		snapshot = state_snapshot;
+		snapshot = state_snapshot.atomic_load();
 		if (!snapshot && !registered_state.empty()) {
 			snapshot = make_shared_ptr<vector<shared_ptr<ClientContextState>>>(StatesInternal());
 			state_snapshot.atomic_store(snapshot);

@@ -246,3 +246,22 @@ query I
 select date_trunc('day', '2024-05-06 16:09:28+05:00'::timestamptz) >= '2024-05-06 17:19:18+05:20'::date as r
 ----
 True
+
+#
+# Nanoseconds
+#
+query I
+SELECT date_trunc('day', '2026-10-12 12:34:56.123456789'::TIMESTAMP_NS AT TIME ZONE 'UTC');
+----
+2026-10-12 00:00:00+00
+
+query I
+SELECT date_trunc('microsecond', '2026-10-12 12:34:56.123456789'::TIMESTAMP_NS AT TIME ZONE 'UTC');
+----
+2026-10-12 12:34:56.123456+00
+
+query I
+SELECT date_trunc('microsecond', '1969-12-31 12:34:56.123456789'::TIMESTAMP_NS AT TIME ZONE 'UTC');
+----
+1969-12-31 12:34:56.123456+00
+

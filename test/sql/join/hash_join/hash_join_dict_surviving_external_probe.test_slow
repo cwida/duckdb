@@ -2,7 +2,7 @@
 # description: A probe column of a hash join on the build side is not narrowed - it loses its dictionary when the probe side spills
 # group: [hash_join]
 
-load __TEST_DIR__/hash_join_dict_surviving_external_probe.db
+load {TEST_DIR}/hash_join_dict_surviving_external_probe.db
 
 statement ok
 SET threads=4

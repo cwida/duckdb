@@ -52,6 +52,12 @@ public:
 	optional_idx edge_equivalence_index;
 	//! Original binary operator that supplied this costing predicate, if any.
 	optional_idx source_operator_index;
+	//! Semantic operator sides, including relations not referenced by this predicate.
+	optional_ptr<JoinRelationSet> semantic_left_set;
+	optional_ptr<JoinRelationSet> semantic_right_set;
+	//! Identifies transitively connected ON equalities of one LEFT operator: they share a key and
+	//! only one of them contributes its domain to the denominator.
+	optional_idx left_equality_group;
 };
 
 } // namespace duckdb

@@ -130,6 +130,11 @@ protected:
 	             Vector &result);
 	void Execute(const BoundParameterExpression &expr, ExpressionState *state, const SelectionVector *sel, idx_t count,
 	             Vector &result);
+	//! Evaluate the child of TRY or HAS_ERROR, capturing execution errors. Returns true when the whole
+	//! vector evaluated without an error. Otherwise the child is evaluated per row: values holds the child
+	//! value, or NULL for a failing row, and error_flags (if given) flags the failing rows.
+	bool ExecuteErrorCapture(const Expression &child, ExpressionState &child_state, const SelectionVector *sel,
+	                         idx_t count, Vector &values, optional_ptr<Vector> error_flags);
 	void Execute(const BoundReferenceExpression &expr, ExpressionState *state, const SelectionVector *sel, idx_t count,
 	             Vector &result);
 

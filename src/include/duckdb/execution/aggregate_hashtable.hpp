@@ -232,7 +232,7 @@ private:
 	//! The capacity of the HT. This can be increased using GroupedAggregateHashTable::Resize
 	idx_t capacity;
 	//! The hash map (pointer table) of the HT: allocated data and pointer into it
-	AllocatedData hash_map;
+	HugeAllocation hash_map;
 	ht_entry_t *entries;
 	//! Offset of the hash column in the rows
 	idx_t hash_offset;
@@ -284,7 +284,8 @@ private:
 
 	//! Does the actual group matching / creation
 	idx_t FindOrCreateGroupsInternal(DataChunk &groups, Vector &group_hashes, Vector &addresses,
-	                                 SelectionVector &new_groups);
+	                                 SelectionVector &new_groups,
+	                                 optional_ptr<TupleDataChunkState> source_rows = nullptr);
 	void InitializeLookupState(AggregateHTLookupState &lookup_state) const;
 
 	//! Verify the pointer table of the HT

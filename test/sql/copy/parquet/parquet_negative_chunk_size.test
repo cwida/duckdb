@@ -1,0 +1,20 @@
+# name: test/sql/copy/parquet/parquet_negative_chunk_size.test
+# description: Parquet files with a negative column chunk size are rejected when the row group is read
+# group: [parquet]
+
+require parquet
+
+statement error
+SELECT count(*), min(COLUMNS(*)), max(COLUMNS(*)) FROM read_parquet('data/parquet-testing/broken/neg_compressed_size.parquet');
+----
+Column chunk has a negative offset or size
+
+# the metadata can still be inspected, the row group is only rejected when it is read
+statement ok
+SELECT * FROM parquet_metadata('data/parquet-testing/broken/neg_compressed_size.parquet');
+
+# the database is still usable afterwards
+query I
+SELECT 42
+----
+42

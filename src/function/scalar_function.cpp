@@ -19,7 +19,7 @@ void ThrowNonFallibleFunctionError(const Identifier &name, std::exception &ex) {
 	if (!Exception::IsExecutionError(error.Type())) {
 		throw;
 	}
-	throw InternalException("Scalar function \"%s\" threw an execution error, but the function is not marked as "
+	throw InternalException("Scalar function %s threw an execution error, but the function is not marked as "
 	                        "fallible - the function must call SetFallible(). Error: %s",
 	                        name, error.RawMessage());
 }

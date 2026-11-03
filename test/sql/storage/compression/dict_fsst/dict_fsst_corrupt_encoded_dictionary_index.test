@@ -1,0 +1,32 @@
+# name: test/sql/storage/compression/dict_fsst/dict_fsst_corrupt_encoded_dictionary_index.test
+# description: An out-of-range index into an FSST-encoded dictionary must be rejected
+# group: [dict_fsst]
+
+require vector_size 2048
+
+unzip data/storage/corrupt/dict_fsst_corrupt_encoded_dictionary_index.db.gz {TEST_DIR}/dict_fsst_corrupt_encoded_dictionary_index.db
+
+load {TEST_DIR}/dict_fsst_corrupt_encoded_dictionary_index.db readonly
+
+statement ok
+USE dict_fsst_corrupt_encoded_dictionary_index
+
+query I
+SELECT compression FROM pragma_storage_info('t') WHERE column_name='s' AND compression='DICT_FSST' LIMIT 1;
+----
+DICT_FSST
+
+statement error
+SELECT count(DISTINCT s) FROM t;
+----
+Data Corruption Error: Corrupted DICT_FSST segment: dictionary index is out of range
+
+restart
+
+statement ok
+SET debug_force_fetch_row=true;
+
+statement error
+SELECT count(DISTINCT s) FROM t;
+----
+Data Corruption Error: Corrupted DICT_FSST segment: dictionary index is out of range

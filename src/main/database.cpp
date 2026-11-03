@@ -98,7 +98,10 @@ DatabaseInstance::~DatabaseInstance() {
 	if (db_manager) {
 		db_manager->ResetDatabases();
 	}
-	config.http_transport_manager->Close();
+	// an instance whose initialization failed may not have every member yet, and a destructor cannot throw
+	if (config.http_transport_manager) {
+		config.http_transport_manager->Close();
+	}
 	// destroy child elements
 	connection_manager.reset();
 	object_cache.reset();
@@ -113,8 +116,10 @@ DatabaseInstance::~DatabaseInstance() {
 
 	buffer_manager.reset();
 
-	// flush allocations and disable the background thread
-	config.block_allocator->FlushAll();
+	// Flush allocations and disable the background thread.
+	if (config.block_allocator) {
+		config.block_allocator->FlushOnShutdown();
+	}
 	Allocator::SetBackgroundThreads(false);
 	// after all destruction is complete clear the cache entry
 	config.db_cache_entry.reset();
@@ -283,7 +288,7 @@ void DatabaseInstance::LoadExtensionSettings() {
 			}
 			ExtensionOption extension_option;
 			if (!config.TryGetExtensionOption(name, extension_option)) {
-				throw InternalException("Extension %s did not provide the '%s' config setting", extension_name, name);
+				throw InternalException("Extension %s did not provide the %s config setting", extension_name, name);
 			}
 			// if the extension provided the option, it should no longer be unrecognized.
 			D_ASSERT(config.options.unrecognized_options.find(name) == config.options.unrecognized_options.end());
@@ -523,6 +528,7 @@ Allocator &Allocator::Get(AttachedDatabase &db) {
 
 void DatabaseInstance::Configure(DBConfig &new_config, const char *database_path) {
 	config.options = new_config.options;
+	config.SetDisabledOptimizers(config.options.disabled_optimizers);
 	config.user_settings = new_config.user_settings;
 	os_util = make_uniq<OSUtil>(*this, config.options.configuration_env);
 	// carry over a capability set handed to us, so a database created by code with its own copy of
@@ -581,10 +587,10 @@ void DatabaseInstance::Configure(DBConfig &new_config, const char *database_path
 	config.block_allocator = std::move(new_config.block_allocator);
 	if (!config.block_allocator) {
 		auto default_block_size = Settings::Get<DefaultBlockSizeSetting>(config);
-		config.block_allocator = make_uniq<BlockAllocator>(
-		    *config.allocator, default_block_size, DBConfig::GetSystemAvailableMemory(*config.file_system) * 8 / 10,
-		    config.options.block_allocator_size);
+		config.block_allocator = make_uniq<BlockAllocator>(*config.allocator, default_block_size,
+		                                                   DBConfig::GetSystemAvailableMemory(*config.file_system));
 	}
+	config.block_allocator->SetEnabled(config.options.enable_block_allocator);
 	config.replacement_scans = std::move(new_config.replacement_scans);
 	if (new_config.callback_manager) {
 		config.callback_manager = std::move(new_config.callback_manager);

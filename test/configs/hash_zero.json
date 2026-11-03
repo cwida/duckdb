@@ -45,6 +45,7 @@
         "test/sql/storage/test_eviction_queue_dead_nodes_underflow.test",
         "test/sql/copy/parquet/parquet_prefetch_tracked_memory.test",
         "test/sql/join/hash_join/hash_join_dict_surviving.test",
+        "test/sql/join/hash_join/hash_join_bucket_boundaries.test",
         "test/sql/filter/filter_cache_dictionary.test",
         "test/optimizer/row_number_virtual_column.test",
         "test/issues/general/test_24936.test",
@@ -100,13 +101,15 @@
         "test/sql/sql_export/empty_aggregate_state.test",
         "test/sql/storage/distinct_statistics_sample.test",
         "test/optimizer/statistics/statistics_early_join_range.test",
-        "test/optimizer/joins/left_join_reordering/left_join_composite_domain.test"
+        "test/optimizer/joins/left_join_reordering/left_join_composite_domain.test",
+        "test/optimizer/joins/not_equal_join_cardinality_estimation.test"
       ]
     },
     {
       "reason": "Relies on exact hash function output.",
       "paths": [
         "test/sql/function/generic/hash_func.test",
+        "test/sql/function/generic/hash_comparison_keys.test",
         "test/sql/copy/file_size_bytes.test",
         "test/sql/copy/parquet/parquet_prefetch_projection.test",
         "test/sql/copy/parquet/parquet_prefetch_shared_column_chunks.test",

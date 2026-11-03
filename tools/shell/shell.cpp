@@ -419,12 +419,17 @@ ShellState::ShellState() : seenInterrupt(0), program_name("duckdb") {
 }
 
 ShellState::~ShellState() {
+	Destroy();
+	// Do not launch an external viewer while shutting down.
+	doXdgOpen = 0;
+	ResetOutput();
+	ClearTempFile();
 }
 
 void ShellState::Destroy() {
-	db.reset();
-	conn.reset();
 	last_result.reset();
+	conn.reset();
+	db.reset();
 }
 
 bool ShellState::IsSpace(char c) {
@@ -528,21 +533,23 @@ static int notNormalFile(const char *zFile) {
 ** If zLine is not NULL then it is a malloced buffer returned from
 ** a previous call to this routine that may be reused.
 */
-static char *local_getline(char *zLine, FILE *in) {
+static char *local_getline(char *&zLine, FILE *in) {
 	idx_t nLine = zLine == 0 ? 0 : 100;
 	idx_t n = 0;
 
 	while (1) {
 		if (n + 100 > nLine) {
 			nLine = nLine * 2 + 100;
-			zLine = (char *)realloc(zLine, nLine);
-			if (!zLine) {
+			auto new_line = (char *)realloc(zLine, nLine);
+			if (!new_line) {
 				shell_out_of_memory();
 			}
+			zLine = new_line;
 		}
 		if (fgets(&zLine[n], nLine - n, in) == 0) {
 			if (n == 0) {
 				free(zLine);
+				zLine = nullptr;
 				return 0;
 			}
 			zLine[n] = 0;
@@ -575,7 +582,7 @@ static char *local_getline(char *zLine, FILE *in) {
 ** be freed by the caller or else passed back into this routine via the
 ** zPrior argument for reuse.
 */
-char *ShellState::OneInputLine(FILE *in, char *zPrior, int isContinuation) {
+char *ShellState::OneInputLine(FILE *in, char *&zPrior, int isContinuation) {
 	if (in) {
 		// use local_getline when reading from a file
 		// don't print prompt in this scenario
@@ -594,6 +601,9 @@ char *ShellState::OneInputLine(FILE *in, char *zPrior, int isContinuation) {
 			prompt_text = continuePrompt;
 		}
 		free(zPrior);
+		zPrior = nullptr;
+		// probing the terminal inside the line editor is not possible - detect before editing
+		DetectDarkLightMode();
 		return linenoise(prompt_text);
 	}
 #endif
@@ -775,22 +785,6 @@ string ShellState::EscapeCString(const string &str) {
 	return result;
 }
 
-void ShellState::Exit(int exit_code) {
-	if (GetReference()) {
-		GetReference()->PrintExitHint(exit_code);
-	}
-	if (exit_code == 0) {
-		// clean-up shell state if this is a successful exit
-		auto shell_state = GetReference();
-		if (shell_state) {
-			delete shell_state;
-		}
-		shell_state = nullptr;
-	}
-	// then exit
-	exit(exit_code);
-}
-
 extern "C" {
 
 /*
@@ -801,7 +795,7 @@ static void InterruptHandler(int NotUsed) {
 	auto &state = ShellState::Get();
 	state.seenInterrupt++;
 	if (state.seenInterrupt > 2) {
-		ShellState::Exit(1);
+		exit(1);
 	}
 	if (state.conn) {
 		state.conn->Interrupt();
@@ -822,6 +816,22 @@ static BOOL WINAPI ConsoleCtrlHandler(DWORD dwCtrlType /* One of the CTRL_*_EVEN
 	return FALSE;
 }
 #endif
+
+// Stop routing signals to ShellState before any of its owners are destroyed.
+void ShellState::IgnoreInterrupts() {
+#ifdef SIGINT
+	signal(SIGINT, SIG_IGN);
+#elif (defined(_WIN32) || defined(WIN32)) && !defined(_WIN32_WCE)
+	SetConsoleCtrlHandler(ConsoleCtrlHandler, FALSE);
+#endif
+#if !defined(_WIN32) && !defined(WIN32)
+	signal(SIGPIPE, SIG_IGN);
+#endif
+}
+
+void ShellState::Exit(int exit_code) {
+	throw ShellExitException(exit_code);
+}
 
 void ShellState::ClearInterrupt() {
 	seenInterrupt = 0;
@@ -1310,7 +1320,8 @@ void ShellState::OpenDB(ShellOpenFlags flags) {
 #endif
 		db->LoadStaticExtension<duckdb::ShellExtension>();
 		// bare expressions / table names as statements - only in the CLI, so it is opt-in grammar
-		ExecuteQuery("SET active_grammar_extensions=['shell']");
+		// appended rather than SET, so grammar extensions that activated themselves on this connection stay active
+		ExecuteQuery("CALL add_grammar_extension('shell')");
 		if (stdout_is_console || agent_mode_active) {
 			ExecuteQuery("PRAGMA enable_progress_bar");
 			ExecuteQuery("PRAGMA enable_print_progress_bar");
@@ -1876,7 +1887,7 @@ bool ShellState::ImportData(const vector<string> &args) {
 			// verbose - ignore
 		} else if (strcmp(z, "-ascii") == 0) {
 			PrintF(PrintOutput::STDERR, "-ascii mode is no longer supported for .import");
-			ShellState::Exit(1);
+			return false;
 		} else if (strcmp(z, "-csv") == 0) {
 			function = "read_csv";
 		} else if (strcmp(z, "-parquet") == 0) {
@@ -2217,6 +2228,28 @@ bool ShellState::SetOutputFile(const vector<string> &args, OutputCommand output_
 	return true;
 }
 
+struct ShellInputFile {
+	ShellInputFile(ShellState &state, FILE *file, const string *active_file = nullptr)
+	    : state(state), file(file), saved_in(state.in), saved_lineno(state.lineno), active_file(active_file) {
+		state.in = file;
+	}
+	~ShellInputFile() {
+		if (file) {
+			fclose(file);
+		}
+		state.in = saved_in;
+		state.lineno = saved_lineno;
+		if (active_file) {
+			state.active_read_files.erase(*active_file);
+		}
+	}
+	ShellState &state;
+	FILE *file;
+	FILE *saved_in;
+	int saved_lineno;
+	const string *active_file;
+};
+
 bool ShellState::ReadFromFile(const string &file) {
 	if (safe_mode) {
 		PrintF(PrintOutput::STDERR, ".read cannot be used in -safe mode\n");
@@ -2228,20 +2261,12 @@ bool ShellState::ReadFromFile(const string &file) {
 		PrintF(PrintOutput::STDERR, "Error: recursive .read of \"%s\"\n", file);
 		return false;
 	}
-	FILE *inSaved = in;
-	int savedLineno = lineno;
-	int rc;
-	if (notNormalFile(file.c_str()) || (in = fopen(file.c_str(), "rb")) == 0) {
+	ShellInputFile input(*this, notNormalFile(file.c_str()) ? nullptr : fopen(file.c_str(), "rb"), &canonical_file);
+	if (!in) {
 		PrintF(PrintOutput::STDERR, "Error: cannot open \"%s\"\n", file.c_str());
-		rc = 1;
-	} else {
-		rc = ProcessInput(InputMode::FILE);
-		fclose(in);
+		return false;
 	}
-	active_read_files.erase(canonical_file);
-	in = inSaved;
-	lineno = savedLineno;
-	return rc == 0;
+	return ProcessInput(InputMode::FILE) == 0;
 }
 
 bool ShellState::DisplaySchemas(const vector<string> &args) {
@@ -2536,7 +2561,7 @@ LIMIT 5)");
 		if (!style.layout_on.empty()) {
 			style.layout_off = ShellHighlight::ResetTerminalCode();
 		}
-		if (linenoiseGetTerminalColorMode() == LINENOISE_LIGHT_MODE) {
+		if (highlight_mode == HighlightMode::LIGHT_MODE) {
 			style.heading_on = ShellHighlight::TerminalCode(PrintColor::BLACK, PrintIntensity::BOLD);
 			style.path_on = ShellHighlight::TerminalCode(PrintColor::BLACK, PrintIntensity::STANDARD);
 		} else {
@@ -3127,15 +3152,25 @@ bool ShellState::GetBailOnError(InputMode mode) {
 **
 ** Return the number of errors.
 */
+struct ShellInputBuffers {
+	~ShellInputBuffers() {
+		free(line);
+		free(sql);
+	}
+	char *line = nullptr;
+	char *sql = nullptr;
+};
+
 int ShellState::ProcessInput(InputMode mode) {
-	char *zLine = nullptr; /* A single input line */
-	char *zSql = nullptr;  /* Accumulated SQL text */
-	idx_t nLine;           /* Length of current line */
-	idx_t nSql = 0;        /* Bytes of zSql[] used */
-	idx_t nAlloc = 0;      /* Allocated zSql[] space */
-	idx_t nSqlPrior = 0;   /* Bytes of zSql[] used by prior line */
-	int rc;                /* Error code */
-	idx_t errCnt = 0;      /* Number of errors seen */
+	ShellInputBuffers buffers;
+	auto &zLine = buffers.line;
+	auto &zSql = buffers.sql;
+	idx_t nLine;         /* Length of current line */
+	idx_t nSql = 0;      /* Bytes of zSql[] used */
+	idx_t nAlloc = 0;    /* Allocated zSql[] space */
+	idx_t nSqlPrior = 0; /* Bytes of zSql[] used by prior line */
+	int rc;              /* Error code */
+	idx_t errCnt = 0;    /* Number of errors seen */
 	idx_t numCtrlC = 0;
 	lineno = 0;
 	while (errCnt == 0 || !GetBailOnError(mode) || (!in && stdin_is_interactive)) {
@@ -3218,10 +3253,11 @@ int ShellState::ProcessInput(InputMode mode) {
 		nLine = StringLength(zLine);
 		if (nSql + nLine + 2 >= nAlloc) {
 			nAlloc = nSql + nLine + 100;
-			zSql = (char *)realloc(zSql, nAlloc);
-			if (!zSql) {
+			auto new_sql = (char *)realloc(zSql, nAlloc);
+			if (!new_sql) {
 				shell_out_of_memory();
 			}
+			zSql = new_sql;
 		}
 		nSqlPrior = nSql;
 		if (nSql == 0) {
@@ -3255,8 +3291,6 @@ int ShellState::ProcessInput(InputMode mode) {
 	if (nSql && !_all_whitespace(zSql)) {
 		errCnt += RunOneSqlLine(mode, zSql);
 	}
-	free(zSql);
-	free(zLine);
 	return errCnt > 0;
 }
 
@@ -3317,13 +3351,11 @@ string ShellState::ReadFileContents(FILE *f) {
 }
 
 string ShellState::ReadFileContents(const string &filename) {
-	FILE *f = fopen(filename.c_str(), "rb");
+	unique_ptr<FILE, decltype(&fclose)> f(fopen(filename.c_str(), "rb"), fclose);
 	if (!f) {
 		throw duckdb::IOException("cannot open '%s' for reading: %s\n", filename.c_str(), strerror(errno));
 	}
-	string result = ReadFileContents(f);
-	fclose(f);
-	return result;
+	return ReadFileContents(f.get());
 }
 
 /*
@@ -3334,23 +3366,15 @@ string ShellState::ReadFileContents(const string &filename) {
 */
 
 bool ShellState::ProcessFile(const string &file, InputMode input_mode, bool default_duckdb_rc) {
-	FILE *inSaved = in;
-	int savedLineno = lineno;
-	int rc = 0;
-
-	in = fopen(file.c_str(), "rb");
+	ShellInputFile input(*this, fopen(file.c_str(), "rb"));
 	if (in) {
-		rc = ProcessInput(input_mode);
-		fclose(in);
-	} else if (input_mode != InputMode::DUCKDB_RC || !default_duckdb_rc) {
-		// we always error in regular file reading mode
-		// when reading the init file we only error if the file is explicitly specified by the user
-		PrintDatabaseError("IO Error: Failed to open file \"" + file + "\"");
-		rc = 1;
+		return ProcessInput(input_mode) == 0;
 	}
-	in = inSaved;
-	lineno = savedLineno;
-	return rc == 0;
+	if (input_mode != InputMode::DUCKDB_RC || !default_duckdb_rc) {
+		PrintDatabaseError("IO Error: Failed to open file \"" + file + "\"");
+		return false;
+	}
+	return true;
 }
 
 bool ShellState::ProcessDuckDBRC(const char *file) {
@@ -3740,6 +3764,10 @@ void ShellState::PrintQueryEstimate(const string &sql, const duckdb::SQLStatemen
 void ShellState::DetectDarkLightMode() {
 #ifdef HAVE_LINENOISE
 	ShellHighlight highlight(*this);
+	if (!ShellHighlight::IsEnabled()) {
+		// no colors are printed - no need to detect
+		return;
+	}
 	if (highlight_mode != HighlightMode::AUTOMATIC) {
 		// highlight mode is specified by the user - avoid setting manually
 		return;
@@ -3749,7 +3777,9 @@ void ShellState::DetectDarkLightMode() {
 		return;
 	}
 	// detect terminal colors
-	auto terminal_color = linenoiseGetTerminalColorMode();
+	// the terminal is not queried while stdin is read by the shell itself (-batch) - only COLORFGBG is used then
+	auto terminal_color =
+	    linenoiseGetTerminalColorMode(rl_version == ReadLineVersion::LINENOISE && (stdin_is_interactive || !readStdin));
 	if (terminal_color == LINENOISE_DARK_MODE) {
 		highlight_mode = HighlightMode::DARK_MODE;
 		highlight.ToggleMode(HighlightMode::DARK_MODE);
@@ -3762,6 +3792,18 @@ void ShellState::DetectDarkLightMode() {
 #endif
 }
 
+struct ShellHistory {
+	ShellHistory(ShellState &state, const char *path) : state(state), path(path) {
+	}
+	~ShellHistory() {
+		if (path) {
+			state.ShellSetHistoryMaxLength(2000);
+			state.ShellSaveHistory(path);
+		}
+	}
+	ShellState &state;
+	const char *path;
+};
 static bool IsStdStreamAConsole(int std_fd) {
 	if (!isatty(std_fd)) {
 		return false;
@@ -3807,6 +3849,12 @@ int RunShell(int argc, const char **argv) {
 	data.stderr_is_console = IsStdStreamAConsole(2);
 
 	data.Initialize();
+
+	auto no_color = getenv("NO_COLOR");
+	if (no_color && no_color[0]) {
+		// https://no-color.org - can still be turned on explicitly with .highlight on
+		ShellHighlight::SetHighlighting(false);
+	}
 
 	/* On Windows, we must translate command-line arguments into UTF-8.
 	 */
@@ -3925,8 +3973,6 @@ int RunShell(int argc, const char **argv) {
 		data.PrintAgentHelp(PrintOutput::STDERR, true);
 	}
 
-	data.DetectDarkLightMode();
-
 	/* Make a second pass through the command-line argument and set
 	** options.  This second pass is delayed until after the initialization
 	** file is processed so that the command-line arguments will override
@@ -3938,6 +3984,10 @@ int RunShell(int argc, const char **argv) {
 			continue;
 		}
 		auto result = option.post_init_callback(data, call.arguments);
+		if (result == MetadataResult::FAIL) {
+			// Return through main so database owners are destroyed before process-wide cleanup.
+			return 1;
+		}
 		if (result == MetadataResult::EXIT) {
 			return 0;
 		}
@@ -3997,30 +4047,15 @@ int RunShell(int argc, const char **argv) {
 				linenoiseSetFormatCallback(linenoise_format);
 			}
 #endif
+			ShellHistory history(data, zHistory);
 			data.in = 0;
+			// the line editor needs the colors up front
+			data.DetectDarkLightMode();
 			rc = data.ProcessInput(InputMode::STANDARD);
-			if (zHistory) {
-				data.ShellSetHistoryMaxLength(2000);
-				data.ShellSaveHistory(zHistory);
-			}
 		} else {
 			data.in = stdin;
 			rc = data.ProcessInput(InputMode::STANDARD);
 		}
 	}
-#if !defined(_WIN32) && !defined(WIN32)
-	signal(SIGINT, SIG_IGN);
-#else
-	SetConsoleCtrlHandler(ConsoleCtrlHandler, FALSE);
-#endif
-	// before ResetOutput, which forgets that stdout was not a console
-	data.PrintExitHint(rc);
-	data.SetTableName(0);
-	data.last_result.reset();
-	data.db.reset();
-	data.conn.reset();
-	data.ResetOutput();
-	data.doXdgOpen = 0;
-	data.ClearTempFile();
 	return rc;
 }

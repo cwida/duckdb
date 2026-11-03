@@ -210,7 +210,36 @@ KeyValueSecretReader::KeyValueSecretReader(FileOpener &opener_p, optional_ptr<Fi
 	context = opener_p.TryGetClientContext();
 
 	if (info) {
-		path = info->file_path;
+		path = info->file.path;
+	}
+	string secret_name;
+	if (info && info->file.extended_info && info->file.extended_info->TryGetSecretName(secret_name)) {
+		// the file names the secret to open it with: look up none by path
+		if (!db) {
+			throw InvalidConfigurationException("Secret '%s' named by '%s' cannot be looked up without a database",
+			                                    secret_name, path);
+		}
+		auto transaction = context ? CatalogTransaction::GetSystemCatalogTransaction(*context)
+		                           : CatalogTransaction::GetSystemTransaction(*db);
+		secret_entry = db->GetSecretManager().GetSecretByName(transaction, secret_name);
+		if (!secret_entry) {
+			throw InvalidConfigurationException("Secret '%s' named by '%s' not found", secret_name, path);
+		}
+		auto &named_secret = *secret_entry->secret;
+		if (named_secret.MatchScore(path) == NumericLimits<int64_t>::Minimum()) {
+			throw InvalidConfigurationException(
+			    "Secret '%s' named by '%s' does not apply to it: the path is outside the secret's scope", secret_name,
+			    path);
+		}
+		auto &type = named_secret.GetType();
+		for (idx_t i = 0; i < secret_types_len; i++) {
+			if (StringUtil::CIEquals(type.GetIdentifierName(), secret_types[i])) {
+				secret = named_secret.Cast<KeyValueSecret>();
+				return;
+			}
+		}
+		throw InvalidConfigurationException("Secret '%s' named by '%s' is of type %s, which this read does not take",
+		                                    secret_name, path, type);
 	}
 
 	Initialize(secret_types, secret_types_len);
@@ -295,7 +324,7 @@ void CreateSecretFunctionSet::AddFunction(CreateSecretFunction &function, OnCrea
 	if (ProviderExists(function.provider)) {
 		if (on_conflict == OnCreateConflict::ERROR_ON_CONFLICT) {
 			throw InternalException(
-			    "Attempted to override a Create Secret Function with OnCreateConflict::ERROR_ON_CONFLICT for: '%s'",
+			    "Attempted to override a Create Secret Function with OnCreateConflict::ERROR_ON_CONFLICT for: %s",
 			    function.provider);
 		} else if (on_conflict == OnCreateConflict::REPLACE_ON_CONFLICT) {
 			functions[function.provider] = function;

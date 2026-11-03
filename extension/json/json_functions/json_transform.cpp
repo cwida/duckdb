@@ -9,13 +9,14 @@
 
 #include "duckdb/common/enum_util.hpp"
 #include "duckdb/common/error_data.hpp"
+#include "duckdb/common/operator/decimal_cast_operators.hpp"
+#include "duckdb/common/operator/string_cast.hpp"
 #include "duckdb/common/serializer/deserializer.hpp"
 #include "duckdb/common/types/geometry.hpp"
 #include "duckdb/common/types/value_map.hpp"
 #include "json_geojson.hpp"
 #include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/common/types.hpp"
-#include "duckdb/common/type_visitor.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/function/cast/cast_function_set.hpp"
 #include "duckdb/function/cast/default_casts.hpp"
@@ -114,9 +115,17 @@ static inline bool GetValueNumerical(yyjson_val *val, T &result, JSONTransformOp
 	switch (unsafe_yyjson_get_tag(val)) {
 	case YYJSON_TYPE_STR | YYJSON_SUBTYPE_NOESC:
 	case YYJSON_TYPE_STR | YYJSON_SUBTYPE_NONE:
-	case YYJSON_TYPE_RAW | YYJSON_SUBTYPE_NONE:
 		success = OP::template Operation<string_t, T>(GetString(val), result, options.strict_cast);
 		break;
+	case YYJSON_TYPE_RAW | YYJSON_SUBTYPE_NONE: {
+		// a number kept as text for a DECIMAL column reads as the default flags would have read it
+		yyjson_val number;
+		if (JSONCommon::ReadRawNumber(val, number)) {
+			return GetValueNumerical<T, OP>(&number, result, options);
+		}
+		success = OP::template Operation<string_t, T>(GetString(val), result, options.strict_cast);
+		break;
+	}
 	case YYJSON_TYPE_ARR | YYJSON_SUBTYPE_NONE:
 	case YYJSON_TYPE_OBJ | YYJSON_SUBTYPE_NONE:
 		success = false;
@@ -181,17 +190,26 @@ static inline bool GetValueDecimal(yyjson_val *val, T &result, uint8_t w, uint8_
 	return success;
 }
 
-static inline bool GetValueString(yyjson_val *val, yyjson_alc *alc, string_t &result, Vector &vector) {
+static inline bool GetValueString(yyjson_val *val, yyjson_alc *alc, string_t &result, Vector &vector,
+                                  optional_ptr<JSONRawNumberWriter> raw_writer) {
 	D_ASSERT(unsafe_yyjson_get_tag(val) != (YYJSON_TYPE_NULL | YYJSON_SUBTYPE_NONE));
 	switch (unsafe_yyjson_get_tag(val)) {
+	case YYJSON_TYPE_RAW | YYJSON_SUBTYPE_NONE: {
+		// a number kept as text for a DECIMAL column reads as the default flags would have written it
+		yyjson_val number;
+		if (JSONCommon::ReadRawNumber(val, number)) {
+			return GetValueString(&number, alc, result, vector, raw_writer);
+		}
+		result = string_t(unsafe_yyjson_get_str(val), unsafe_yyjson_get_len(val));
+		return true;
+	}
 	case YYJSON_TYPE_STR | YYJSON_SUBTYPE_NOESC:
 	case YYJSON_TYPE_STR | YYJSON_SUBTYPE_NONE:
-	case YYJSON_TYPE_RAW | YYJSON_SUBTYPE_NONE:
 		result = string_t(unsafe_yyjson_get_str(val), unsafe_yyjson_get_len(val));
 		return true;
 	case YYJSON_TYPE_ARR | YYJSON_SUBTYPE_NONE:
 	case YYJSON_TYPE_OBJ | YYJSON_SUBTYPE_NONE:
-		result = JSONCommon::WriteVal<yyjson_val>(val, alc);
+		result = raw_writer ? raw_writer->Write(val) : JSONCommon::WriteVal<yyjson_val>(val, alc);
 		return true;
 	case YYJSON_TYPE_BOOL | YYJSON_SUBTYPE_TRUE:
 	case YYJSON_TYPE_BOOL | YYJSON_SUBTYPE_FALSE:
@@ -456,14 +474,16 @@ static bool TransformFromStringWithFormat(yyjson_val *vals[], Vector &result, co
 	return success;
 }
 
-static bool TransformToString(yyjson_val *vals[], yyjson_alc *alc, Vector &result, const idx_t count) {
+static bool TransformToString(yyjson_val *vals[], yyjson_alc *alc, Vector &result, const idx_t count,
+                              const JSONTransformOptions &options) {
 	auto data = FlatVector::GetDataMutable<string_t>(result);
 	auto &validity = FlatVector::ValidityMutable(result);
+	JSONRawNumberWriter raw_writer(alc);
 	for (idx_t i = 0; i < count; i++) {
 		const auto &val = vals[i];
 		if (!val || unsafe_yyjson_is_null(vals[i])) {
 			validity.SetInvalid(i);
-		} else if (!GetValueString(val, alc, data[i], result)) {
+		} else if (!GetValueString(val, alc, data[i], result, options.numbers_as_raw ? &raw_writer : nullptr)) {
 			validity.SetInvalid(i);
 		}
 	}
@@ -471,25 +491,17 @@ static bool TransformToString(yyjson_val *vals[], yyjson_alc *alc, Vector &resul
 	return true;
 }
 
-bool JSONTransform::TransformObject(yyjson_val *objects[], yyjson_alc *alc, const idx_t count,
-                                    const vector<string> &names, const vector<Vector *> &result_vectors,
-                                    JSONTransformOptions &options,
-                                    optional_ptr<const vector<ColumnIndex>> column_indices, bool error_unknown_key) {
-	if (column_indices && column_indices->empty()) {
-		column_indices = nullptr;
-	}
-	D_ASSERT(alc);
-	D_ASSERT(names.size() == result_vectors.size());
-	D_ASSERT(!column_indices || column_indices->size() == names.size());
+//! Assigns the values of each object's keys to the columns; templated on the key map so that the exact match keeps
+//! its own hash and equality
+template <class KEY_MAP>
+static bool AssignObjectValues(yyjson_val *objects[], yyjson_alc *alc, const idx_t count, const vector<string> &names,
+                               vector<yyjson_val **> &nested_vals, JSONTransformOptions &options,
+                               bool error_unknown_key) {
 	const idx_t column_count = names.size();
-
 	// Build hash map from key to column index so we don't have to linearly search using the key
-	json_key_map_t<idx_t> key_map;
-	vector<yyjson_val **> nested_vals;
-	nested_vals.reserve(column_count);
+	KEY_MAP key_map;
 	for (idx_t col_idx = 0; col_idx < column_count; col_idx++) {
 		key_map.insert({{names[col_idx].c_str(), names[col_idx].length()}, col_idx});
-		nested_vals.push_back(JSONCommon::AllocateArray<yyjson_val *>(alc, count));
 	}
 
 	idx_t found_key_count;
@@ -572,6 +584,33 @@ bool JSONTransform::TransformObject(yyjson_val *objects[], yyjson_alc *alc, cons
 			}
 		}
 	}
+
+	return success;
+}
+
+bool JSONTransform::TransformObject(yyjson_val *objects[], yyjson_alc *alc, const idx_t count,
+                                    const vector<string> &names, const vector<Vector *> &result_vectors,
+                                    JSONTransformOptions &options,
+                                    optional_ptr<const vector<ColumnIndex>> column_indices, bool error_unknown_key) {
+	if (column_indices && column_indices->empty()) {
+		column_indices = nullptr;
+	}
+	D_ASSERT(alc);
+	D_ASSERT(names.size() == result_vectors.size());
+	D_ASSERT(!column_indices || column_indices->size() == names.size());
+	const idx_t column_count = names.size();
+
+	vector<yyjson_val **> nested_vals;
+	nested_vals.reserve(column_count);
+	for (idx_t col_idx = 0; col_idx < column_count; col_idx++) {
+		nested_vals.push_back(JSONCommon::AllocateArray<yyjson_val *>(alc, count));
+	}
+
+	bool success = options.key_match == JSONKeyMatch::CASE_INSENSITIVE
+	                   ? AssignObjectValues<json_key_ci_map_t<idx_t>>(objects, alc, count, names, nested_vals, options,
+	                                                                  error_unknown_key)
+	                   : AssignObjectValues<json_key_map_t<idx_t>>(objects, alc, count, names, nested_vals, options,
+	                                                               error_unknown_key);
 
 	for (idx_t col_idx = 0; col_idx < column_count; col_idx++) {
 		auto child_column_index = column_indices ? &(*column_indices)[col_idx] : nullptr;
@@ -962,13 +1001,17 @@ static bool TransformObjectToMap(yyjson_val *objects[], yyjson_alc *alc, Vector 
 	return success;
 }
 
-static bool TransformToJSON(yyjson_val *vals[], yyjson_alc *alc, Vector &result, const idx_t count) {
+static bool TransformToJSON(yyjson_val *vals[], yyjson_alc *alc, Vector &result, const idx_t count,
+                            const JSONTransformOptions &options) {
 	auto data = FlatVector::GetDataMutable<string_t>(result);
 	auto &validity = FlatVector::ValidityMutable(result);
+	JSONRawNumberWriter raw_writer(alc);
 	for (idx_t i = 0; i < count; i++) {
 		const auto &val = vals[i];
 		if (!val || unsafe_yyjson_is_null(val)) {
 			validity.SetInvalid(i);
+		} else if (options.numbers_as_raw) {
+			data[i] = raw_writer.Write(val);
 		} else {
 			data[i] = JSONCommon::WriteVal(val, alc);
 		}
@@ -1058,7 +1101,7 @@ bool JSONTransform::Transform(yyjson_val *vals[], yyjson_alc *alc, Vector &resul
 	}
 
 	if (result_type.IsJSONType()) {
-		return TransformToJSON(vals, alc, result, count);
+		return TransformToJSON(vals, alc, result, count, options);
 	}
 
 	switch (result_type.id()) {
@@ -1125,7 +1168,7 @@ bool JSONTransform::Transform(yyjson_val *vals[], yyjson_alc *alc, Vector &resul
 		return TransformGeometry(vals, result, count, options);
 	case LogicalTypeId::VARCHAR:
 	case LogicalTypeId::BLOB:
-		return TransformToString(vals, alc, result, count);
+		return TransformToString(vals, alc, result, count, options);
 	case LogicalTypeId::STRUCT:
 		return TransformObjectInternal(vals, alc, result, count, options, column_index);
 	case LogicalTypeId::TUPLE:
@@ -1153,11 +1196,8 @@ static bool TransformFunctionInternal(const Vector &input, const idx_t count, Ve
 	auto docs = JSONCommon::AllocateArray<yyjson_doc *>(alc, count);
 	auto vals = JSONCommon::AllocateArray<yyjson_val *>(alc, count);
 	auto &result_validity = FlatVector::ValidityMutable(result);
-	auto read_flags = JSONCommon::READ_FLAG;
-	if (TypeVisitor::Contains(result.GetType(), LogicalTypeId::DECIMAL)) {
-		read_flags &= ~YYJSON_READ_BIGNUM_AS_RAW;
-		read_flags |= YYJSON_READ_NUMBER_AS_RAW;
-	}
+	options.numbers_as_raw = JSONCommon::NumbersAsRaw(result.GetType());
+	const auto read_flags = JSONCommon::GetReadFlag(JSONCommon::READ_FLAG, options.numbers_as_raw);
 	for (idx_t i = 0; i < count; i++) {
 		auto idx = input_data.sel->get_index(i);
 		if (!input_data.validity.RowIsValid(idx)) {

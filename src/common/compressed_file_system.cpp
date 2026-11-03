@@ -91,6 +91,11 @@ void CompressedFile::Initialize(QueryContext context, bool write) {
 	initialized = true;
 }
 
+void CompressedFile::AddConsumedBytes(idx_t bytes) {
+	compressed_bytes_read += bytes;
+	compressed_bytes_consumed.fetch_add(bytes, std::memory_order_relaxed);
+}
+
 idx_t CompressedFile::GetProgress() {
 	return compressed_bytes_consumed.load(std::memory_order_relaxed);
 }

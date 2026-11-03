@@ -39,6 +39,8 @@ struct ExceptionFormatValue {
 	DUCKDB_API ExceptionFormatValue(uhugeint_t uhg_val);    // NOLINT
 
 	ExceptionFormatValueType type;
+	//! Whether the value is an identifier that was quoted by the formatter
+	bool quoted_identifier = false;
 
 	double dbl_val = 0;
 	hugeint_t int_val = 0;

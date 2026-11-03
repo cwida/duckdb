@@ -218,6 +218,10 @@ Value VectorStructBuffer::GetValue(const LogicalType &type, idx_t index) const {
 		}
 		auto tag = tag_val.GetValue<union_tag_t>();
 		// member is at tag + 1 (tag is child 0)
+		if (static_cast<idx_t>(tag) + 1 >= children.size()) {
+			throw DataCorruptionException("Union tag (%d) is out of bounds for a union with %d members", tag,
+			                              children.size() - 1);
+		}
 		auto value = children[tag + 1].GetValue(index);
 		auto members = UnionType::CopyMemberTypes(type);
 		return Value::UNION(members, tag, std::move(value));

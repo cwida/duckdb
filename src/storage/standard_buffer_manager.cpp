@@ -41,6 +41,12 @@ struct BufferAllocatorData : PrivateAllocatorData {
 	}
 
 	StandardBufferManager &manager;
+
+	TempBufferPoolReservation Reserve(idx_t size);
+	void Release(idx_t size);
+	data_ptr_t Allocate(idx_t size);
+	void Free(data_ptr_t pointer, idx_t size);
+	data_ptr_t Reallocate(data_ptr_t pointer, idx_t old_size, idx_t size);
 };
 
 unique_ptr<FileBuffer> StandardBufferManager::ConstructManagedBuffer(idx_t size, idx_t block_header_size,
@@ -71,9 +77,7 @@ void StandardBufferManager::SetTemporaryDirectory(const string &new_dir) {
 }
 
 StandardBufferManager::StandardBufferManager(DatabaseInstance &db, string tmp)
-    : BufferManager(), db(db), buffer_pool(db.GetBufferPool()), temporary_id(MAXIMUM_BLOCK),
-      buffer_allocator(BufferAllocatorAllocate, BufferAllocatorFree, BufferAllocatorRealloc,
-                       make_uniq<BufferAllocatorData>(*this)) {
+    : BufferManager(), db(db), buffer_pool(db.GetBufferPool()), temporary_id(MAXIMUM_BLOCK), buffer_allocator(*this) {
 	temp_block_manager =
 	    make_uniq<InMemoryBlockManager>(*this, DEFAULT_BLOCK_ALLOC_SIZE, DEFAULT_BLOCK_HEADER_STORAGE_SIZE);
 	temporary_directory.path = std::move(tmp);
@@ -370,6 +374,9 @@ BufferHandle StandardBufferManager::Pin(const QueryContext &context, shared_ptr<
 
 	idx_t required_memory;
 	auto &block_memory = handle->GetMemory();
+	if (block_memory.TryIncrementPinnedReaders()) {
+		return BufferHandle(handle, block_memory.GetBuffer());
+	}
 	{
 		// lock the block
 		auto lock = block_memory.GetLock();
@@ -455,14 +462,16 @@ void StandardBufferManager::VerifyZeroReaders(BlockLock &lock, shared_ptr<BlockH
 void StandardBufferManager::Unpin(shared_ptr<BlockHandle> &handle) {
 	bool purge = false;
 	auto &block_memory = handle->GetMemory();
+	if (block_memory.TryDecrementPinnedReaders()) {
+		return;
+	}
 	{
 		auto lock = block_memory.GetLock();
-		if (!block_memory.GetBuffer(lock) || block_memory.GetBufferType() == FileBufferType::TINY_BUFFER) {
-			return;
-		}
 		D_ASSERT(block_memory.GetReaders() > 0);
 		auto new_readers = block_memory.DecrementReaders(lock);
-		if (new_readers == 0) {
+		// Tiny buffers are never evicted, and a block converted to a persistent block has no buffer left
+		if (new_readers == 0 && block_memory.GetBuffer(lock) &&
+		    block_memory.GetBufferType() != FileBufferType::TINY_BUFFER) {
 			VerifyZeroReaders(lock, handle);
 			if (block_memory.MustAddToEvictionQueue()) {
 				purge = buffer_pool.AddToEvictionQueue(lock, handle);
@@ -799,51 +808,119 @@ void StandardBufferManager::FreeReservedMemory(idx_t size) {
 //===--------------------------------------------------------------------===//
 // Buffer Allocator
 //===--------------------------------------------------------------------===//
-data_ptr_t StandardBufferManager::BufferAllocatorAllocate(PrivateAllocatorData *private_data, idx_t size) {
-	auto &data = private_data->Cast<BufferAllocatorData>();
-	auto reservation = data.manager.EvictBlocksOrThrow(QueryContext(), MemoryTag::ALLOCATOR, size, nullptr,
-	                                                   "failed to allocate data of size %s%s",
-	                                                   StringUtil::BytesToHumanReadableString(size));
-	// We rely on manual tracking of this one. :(
-	reservation.size = 0;
-	return BlockAllocator::Get(data.manager.db).AllocateData(size);
+TempBufferPoolReservation BufferAllocatorData::Reserve(idx_t size) {
+	return manager.EvictBlocksOrThrow(QueryContext(), MemoryTag::ALLOCATOR, size, nullptr,
+	                                  "failed to allocate data of size %s%s",
+	                                  StringUtil::BytesToHumanReadableString(size));
 }
 
-void StandardBufferManager::BufferAllocatorFree(PrivateAllocatorData *private_data, data_ptr_t pointer, idx_t size) {
-	auto &data = private_data->Cast<BufferAllocatorData>();
-	BufferPoolReservation r(MemoryTag::ALLOCATOR, data.manager.GetBufferPool());
+void BufferAllocatorData::Release(idx_t size) {
+	BufferPoolReservation r(MemoryTag::ALLOCATOR, manager.GetBufferPool());
 	r.size = size;
 	r.Resize(0);
-	return BlockAllocator::Get(data.manager.db).FreeData(pointer, size);
 }
 
-data_ptr_t StandardBufferManager::BufferAllocatorRealloc(PrivateAllocatorData *private_data, data_ptr_t pointer,
-                                                         idx_t old_size, idx_t size) {
+data_ptr_t BufferAllocatorData::Allocate(idx_t size) {
+	auto reservation = Reserve(size);
+	auto pointer = BlockAllocator::Get(manager.db).AllocateData(size);
+	// Commit the reservation only after backing allocation succeeds.
+	reservation.size = 0;
+	return pointer;
+}
+
+void BufferAllocatorData::Free(data_ptr_t pointer, idx_t size) {
+	Release(size);
+	BlockAllocator::Get(manager.db).FreeData(pointer, size);
+}
+
+data_ptr_t BufferAllocatorData::Reallocate(data_ptr_t pointer, idx_t old_size, idx_t size) {
 	if (old_size == size) {
 		return pointer;
 	}
-	auto &data = private_data->Cast<BufferAllocatorData>();
-	BufferPoolReservation r(MemoryTag::ALLOCATOR, data.manager.GetBufferPool());
-	r.size = old_size;
-	r.Resize(size);
-	r.size = 0;
-	return BlockAllocator::Get(data.manager.db).ReallocateData(pointer, old_size, size);
+	auto result = BlockAllocator::Get(manager.db).ReallocateData(pointer, old_size, size);
+	// Reallocation only adjusts accounting, and backing failure must leave the old reservation intact.
+	BufferPoolReservation reservation(MemoryTag::ALLOCATOR, manager.GetBufferPool());
+	reservation.size = old_size;
+	reservation.Resize(size);
+	reservation.size = 0;
+	return result;
 }
 
-Allocator &BufferAllocator::Get(ClientContext &context) {
+BufferAllocator::BufferAllocator(StandardBufferManager &manager)
+    : Allocator([](PrivateAllocatorData *data, idx_t size) { return data->Cast<BufferAllocatorData>().Allocate(size); },
+                [](PrivateAllocatorData *data, data_ptr_t pointer, idx_t size) {
+	                data->Cast<BufferAllocatorData>().Free(pointer, size);
+                },
+                [](PrivateAllocatorData *data, data_ptr_t pointer, idx_t old_size, idx_t size) {
+	                return data->Cast<BufferAllocatorData>().Reallocate(pointer, old_size, size);
+                },
+                make_uniq<BufferAllocatorData>(manager)) {
+}
+
+HugeAllocation BufferAllocator::AllocateHuge(idx_t size) {
+	D_ASSERT(size > 0);
+	auto &data = GetPrivateData()->Cast<BufferAllocatorData>();
+	auto reservation = data.Reserve(size);
+	auto pointer = BlockAllocator::Get(data.manager.GetDatabase()).AllocateHugeData(size);
+	reservation.size = 0;
+	return HugeAllocation(*this, pointer, size);
+}
+
+void BufferAllocator::FreeHuge(data_ptr_t pointer, idx_t size) {
+	auto &data = GetPrivateData()->Cast<BufferAllocatorData>();
+	data.Release(size);
+	BlockAllocator::Get(data.manager.GetDatabase()).FreeHugeData(pointer, size);
+}
+
+HugeAllocation::HugeAllocation() : allocator(nullptr), pointer(nullptr), allocated_size(0) {
+}
+
+HugeAllocation::HugeAllocation(BufferAllocator &allocator, data_ptr_t pointer, idx_t allocated_size)
+    : allocator(allocator), pointer(pointer), allocated_size(allocated_size) {
+	D_ASSERT(pointer);
+}
+
+HugeAllocation::~HugeAllocation() {
+	Reset();
+}
+
+HugeAllocation::HugeAllocation(HugeAllocation &&other) noexcept
+    : allocator(other.allocator), pointer(nullptr), allocated_size(0) {
+	std::swap(pointer, other.pointer);
+	std::swap(allocated_size, other.allocated_size);
+}
+
+HugeAllocation &HugeAllocation::operator=(HugeAllocation &&other) noexcept {
+	std::swap(allocator, other.allocator);
+	std::swap(pointer, other.pointer);
+	std::swap(allocated_size, other.allocated_size);
+	return *this;
+}
+
+void HugeAllocation::Reset() {
+	if (!pointer) {
+		return;
+	}
+	D_ASSERT(allocator);
+	allocator->FreeHuge(pointer, allocated_size);
+	pointer = nullptr;
+	allocated_size = 0;
+}
+
+BufferAllocator &BufferAllocator::Get(ClientContext &context) {
 	auto &manager = StandardBufferManager::GetBufferManager(context);
 	return manager.GetBufferAllocator();
 }
 
-Allocator &BufferAllocator::Get(DatabaseInstance &db) {
+BufferAllocator &BufferAllocator::Get(DatabaseInstance &db) {
 	return StandardBufferManager::GetBufferManager(db).GetBufferAllocator();
 }
 
-Allocator &BufferAllocator::Get(AttachedDatabase &db) {
+BufferAllocator &BufferAllocator::Get(AttachedDatabase &db) {
 	return BufferAllocator::Get(db.GetDatabase());
 }
 
-Allocator &StandardBufferManager::GetBufferAllocator() {
+BufferAllocator &StandardBufferManager::GetBufferAllocator() {
 	return buffer_allocator;
 }
 

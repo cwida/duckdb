@@ -8,13 +8,15 @@
 
 #pragma once
 
+#include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/common/string.hpp"
 #include "duckdb/common/unique_ptr.hpp"
 #include "duckdb/common/vector.hpp"
 
 namespace duckdb {
 class ClientContext;
-class Parser;
+class ClientContextLock;
+class ErrorData;
 class SQLStatement;
 class TokenIterator;
 
@@ -32,8 +34,14 @@ class TokenIterator;
 class ParseIterator {
 public:
 	//! Peel parse-facing statements out of a SQL string (PEG / parser_override). The context is
-	//! bound for the lifetime of the iterator and must outlive it.
-	DUCKDB_API ParseIterator(ClientContext &context, const string &sql);
+	//! bound for the lifetime of the iterator and must outlive it. With apply_invalidation_policy,
+	//! a parse error invalidates the active transaction according to the transaction invalidation
+	//! policy. Without it, a parse error leaves the transaction untouched, for callers that only
+	//! inspect the statements or that handle the error through ErrorResult themselves. A caller that
+	//! holds the context lock while using the iterator passes it as held_lock, otherwise the iterator
+	//! takes the lock itself to apply the policy.
+	DUCKDB_API ParseIterator(ClientContext &context, const string &sql, bool apply_invalidation_policy = true,
+	                         optional_ptr<ClientContextLock> held_lock = nullptr);
 	DUCKDB_API ~ParseIterator();
 
 	ParseIterator(const ParseIterator &) = delete;
@@ -44,6 +52,7 @@ public:
 
 	//! Returns true if a statement is currently available (after parsing as needed). Returns
 	//! false when the iterator is exhausted. Non-const: parses on demand and buffers the result.
+	//! A parse error ends the iteration: after it is thrown, Peek returns false.
 	DUCKDB_API bool Peek();
 
 	//! Returns the next buffered statement and clears the buffer. Returns nullptr if no
@@ -60,6 +69,8 @@ public:
 	DUCKDB_API ClientContext &GetClientContext();
 
 private:
+	bool PeekInternal();
+	void ApplyInvalidationPolicy(const ErrorData &error);
 	//! Tokenize the full input once (grammar-free); no-op if already tokenized.
 	void EnsureTokenized();
 
@@ -67,9 +78,8 @@ private:
 	//! The bound context, used for parser options / metrics / override extensions.
 	ClientContext &context;
 	string sql;
-	//! Parser instance kept alive across Peek calls so its PEG matcher / transformer caches
-	//! stay warm. Constructed lazily on the first Peek.
-	unique_ptr<Parser> parser;
+	bool apply_invalidation_policy;
+	optional_ptr<ClientContextLock> held_lock;
 	//! Tokenized view of `sql` and its current position. Populated once on the first Peek.
 	unique_ptr<TokenIterator> token_iterator;
 	//! Single-statement buffer holding the result of the most recent Peek. Cleared by

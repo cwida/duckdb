@@ -8,6 +8,7 @@
 #include "duckdb/common/smaller_binary.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/common/types/sql_value_map.hpp"
+#include "duckdb/common/vector/vector_iterator.hpp"
 #include "duckdb/common/uhugeint.hpp"
 #include "duckdb/function/aggregate/sort_key_helpers.hpp"
 #include "duckdb/function/create_sort_key.hpp"
@@ -204,10 +205,8 @@ struct ModeState {
 	ColumnDataScanState *scan = nullptr;
 	//! The data chunk paged into into
 	DataChunk page;
-	//! The data pointer
-	const KEY_TYPE *data = nullptr;
-	//! The validity mask
-	const ValidityMask *validity = nullptr;
+	//! Cell access into the page, rebuilt per page load - scans can return constant and dictionary vectors
+	unique_ptr<VectorIterator<KEY_TYPE>> values;
 
 	~ModeState() {
 		if (frequency_map) {
@@ -245,20 +244,19 @@ struct ModeState {
 		if (!RowIsVisible(row_idx)) {
 			D_ASSERT(inputs);
 			inputs->Seek(row_idx, *scan, page);
-			data = FlatVector::GetData<KEY_TYPE>(page.data[0]);
-			validity = &FlatVector::ValidityMutable(page.data[0]);
+			values = make_uniq<VectorIterator<KEY_TYPE>>(page.data[0]);
 		}
 		return RowOffset(row_idx);
 	}
 
 	inline const KEY_TYPE &GetCell(idx_t row_idx) {
 		const auto offset = Seek(row_idx);
-		return data[offset];
+		return (*values)[offset].GetValueUnsafe();
 	}
 
 	inline bool RowIsValid(idx_t row_idx) {
 		const auto offset = Seek(row_idx);
-		return validity->RowIsValid(offset);
+		return (*values)[offset].IsValid();
 	}
 
 	void Reset() {

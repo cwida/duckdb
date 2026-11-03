@@ -1,7 +1,11 @@
 #include "duckdb/parser/literal.hpp"
 
+#include "duckdb/common/exception.hpp"
 #include "duckdb/common/exception/parser_exception.hpp"
+#include "duckdb/common/limits.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
+#include "duckdb/common/serializer/deserializer.hpp"
+#include "duckdb/common/serializer/serializer.hpp"
 #include "duckdb/common/sql_identifier.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/bignum.hpp"
@@ -118,7 +122,10 @@ static Value NumberToValue(const string &val) {
 	if (try_cast_as_integer) {
 		int32_t int_value;
 		if (TryCast::Operation<string_t, int32_t>(str_val, int_value)) {
-			return Value::INTEGER(int_value);
+			// the magnitude of INT32_MIN does not fit an INTEGER, so -2147483648 is typed as BIGINT
+			if (int_value != NumericLimits<int32_t>::Minimum()) {
+				return Value::INTEGER(int_value);
+			}
 		}
 		int64_t bigint_value;
 		if (TryCast::Operation<string_t, int64_t>(str_val, bigint_value)) {
@@ -189,6 +196,58 @@ Value Literal::ToValue() const {
 		return Value::POINTER(CastToPointer::Operation<string_t, uintptr_t>(string_t(text)));
 	default:
 		throw InternalException("Cannot convert an invalid literal to a value");
+	}
+}
+
+void Literal::Verify() const {
+	// validates that text conforms to kind so a (potentially deserialized) literal never renders arbitrary SQL text
+	auto all_of = [&](const char *allowed) {
+		return text.find_first_not_of(allowed) == string::npos;
+	};
+	auto has_digit = [&]() {
+		return text.find_first_of("0123456789") != string::npos;
+	};
+	switch (kind) {
+	case LiteralKind::NULL_LITERAL:
+		if (!text.empty()) {
+			throw SerializationException("Invalid NULL literal: text must be empty");
+		}
+		return;
+	case LiteralKind::BOOLEAN:
+		if (text != "true" && text != "false") {
+			throw SerializationException("Invalid BOOLEAN literal text '%s'", text);
+		}
+		return;
+	case LiteralKind::INTEGER:
+		if (!has_digit() || !all_of("0123456789_-")) {
+			throw SerializationException("Invalid INTEGER literal text '%s'", text);
+		}
+		return;
+	case LiteralKind::NUMERIC:
+		if (!has_digit() || !all_of("0123456789_.eE+-")) {
+			throw SerializationException("Invalid NUMERIC literal text '%s'", text);
+		}
+		return;
+	case LiteralKind::STRING:
+		// any text; rendered through SQLString quoting
+		return;
+	case LiteralKind::HEX:
+		if (text.size() % 2 != 0 || !all_of("0123456789abcdefABCDEF")) {
+			throw SerializationException("Invalid HEX literal text '%s'", text);
+		}
+		return;
+	case LiteralKind::BIT:
+		if (!all_of("01")) {
+			throw SerializationException("Invalid BIT literal text '%s'", text);
+		}
+		return;
+	case LiteralKind::POINTER:
+		if (text.empty() || !all_of("0123456789abcdefABCDEFxX")) {
+			throw SerializationException("Invalid POINTER literal text '%s'", text);
+		}
+		return;
+	default:
+		throw SerializationException("Invalid literal kind");
 	}
 }
 

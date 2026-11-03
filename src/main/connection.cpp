@@ -38,6 +38,14 @@ Connection Connection::CreateInternal(DatabaseInstance &database) {
 	return Connection(database, ConnectionType::INTERNAL);
 }
 
+Connection Connection::CreateInternal(ClientContext &caller) {
+	auto con = CreateInternal(*caller.db);
+	auto &context = *con.context;
+	context.base_context = caller.base_context ? caller.base_context : caller.shared_from_this();
+	context.internal_depth = caller.internal_depth + 1;
+	return con;
+}
+
 Connection::Connection(Connection &&other) noexcept {
 	std::swap(context, other.context);
 	std::swap(connection_id, other.connection_id);
@@ -175,11 +183,11 @@ unique_ptr<TableDescription> Connection::TableInfo(const Identifier &table_name)
 	return TableInfo(Identifier::InvalidCatalog(), Identifier::DefaultSchema(), table_name);
 }
 
-vector<unique_ptr<SQLStatement>> Connection::ExtractStatements(const string &query) {
+vector<unique_ptr<SQLStatement>> Connection::ExtractStatements(const string &query, bool apply_invalidation_policy) {
 	auto &client_context = *context;
 	vector<unique_ptr<SQLStatement>> result;
 	try {
-		auto iterator = client_context.IterateStatements(query);
+		auto iterator = client_context.IterateStatements(query, apply_invalidation_policy);
 		while (iterator.Peek()) {
 			result.push_back(iterator.GetStatement());
 		}

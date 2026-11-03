@@ -9,7 +9,9 @@
 #pragma once
 
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/storage/metadata/metadata_writer.hpp"
 #include "duckdb/storage/partial_block_manager.hpp"
+#include "duckdb/storage/storage_manager.hpp"
 #include "duckdb/storage/checkpoint/table_index_writer.hpp"
 
 namespace duckdb {

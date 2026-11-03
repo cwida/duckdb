@@ -1404,9 +1404,16 @@ bool StrpTimeFormat::Parse(const char *data, size_t size, ParseResult &result, b
 	}
 	case StrTimeSpecifier::DAY_OF_YEAR_PADDED:
 	case StrTimeSpecifier::DAY_OF_YEAR_DECIMAL: {
-		auto yeardate = Date::FromDate(result_data[0], 1, 1);
+		auto year = result_data[0];
+		auto yeardate = Date::FromDate(year, 1, 1);
 		yeardate += UnsafeNumericCast<int32_t>(yearday - 1);
 		Date::Convert(yeardate, result_data[0], result_data[1], result_data[2]);
+		if (result_data[0] != year) {
+			// day 366 of a year that is not a leap year
+			error_message = "Year day out of range for the year";
+			error_position = 0;
+			return false;
+		}
 		break;
 	}
 	case StrTimeSpecifier::DAY_OF_MONTH_PADDED:
@@ -1541,11 +1548,10 @@ timestamp_ns_t StrpTimeFormat::ParseResult::ToTimestampNS() {
 		// Don't use rounded µs
 		const auto date = ToDate();
 		const auto time = ToTimeNS();
-		if (!TryMultiplyOperator::Operation<int64_t, int64_t, int64_t>(date.days, Interval::NANOS_PER_DAY,
-		                                                               result.value)) {
+		if (!Timestamp::TryCombineUnits(date.days, time, Interval::NANOS_PER_DAY, result.value)) {
 			throw ConversionException("Date out of nanosecond range: %d-%d-%d", data[0], data[1], data[2]);
 		}
-		if (!TryAddOperator::Operation<int64_t, int64_t, int64_t>(result.value, time, result.value)) {
+		if (!result.IsFinite()) {
 			throw ConversionException("Overflow exception in date/time -> timestamp_ns conversion");
 		}
 	}
@@ -1561,10 +1567,7 @@ bool StrpTimeFormat::ParseResult::TryToTimestampNS(timestamp_ns_t &result) {
 
 	// Don't use rounded µs
 	const auto time = ToTimeNS();
-	if (!TryMultiplyOperator::Operation<int64_t, int64_t, int64_t>(date.days, Interval::NANOS_PER_DAY, result.value)) {
-		return false;
-	}
-	if (!TryAddOperator::Operation<int64_t, int64_t, int64_t>(result.value, time, result.value)) {
+	if (!Timestamp::TryCombineUnits(date.days, time, Interval::NANOS_PER_DAY, result.value)) {
 		return false;
 	}
 	return result.IsFinite();

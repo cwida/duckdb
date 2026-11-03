@@ -1,0 +1,125 @@
+# name: test/optimizer/statistics/statistics_additive_duplication.test
+# description: Row-duplicating operators invalidate additive statistics such as the total string length
+# group: [statistics]
+
+# additive statistics describe the stored row population, so an operator that emits an input row
+# more than once must reset them: struct_pack embeds the child column statistics into its result,
+# which makes a stale total string length observable through expression verification
+
+statement ok
+SET debug_verify_stats=true;
+
+statement ok
+CREATE TABLE dim AS SELECT 1::BIGINT AS k, 'Package was damaged' AS d;
+
+statement ok
+CREATE TABLE fact AS SELECT 1::BIGINT AS k, range AS amt FROM range(1000);
+
+# comparison join duplicating the single dimension row
+query I
+SELECT max(len(s.d)) FROM (SELECT struct_pack(amt := amt, d := d) AS s FROM fact, dim WHERE fact.k = dim.k);
+----
+19
+
+# cross product
+query I
+SELECT max(len(s.d)) FROM (SELECT struct_pack(d := d) AS s FROM fact CROSS JOIN dim);
+----
+19
+
+# unnest repeats its input row once per unnested entry
+query I
+SELECT max(len(s.d)) FROM (SELECT struct_pack(d := d, u := u) AS s FROM (SELECT d, unnest([x FOR x IN range(100)]) AS u FROM dim));
+----
+19
+
+# single join (scalar subquery) duplicating the inner side
+query I
+SELECT max(len(s.d)) FROM (SELECT struct_pack(d := (SELECT d FROM dim WHERE dim.k = fact.k)) AS s FROM fact);
+----
+19
+
+# non-additive statistics still propagate: the join key range prunes an impossible predicate
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+PRAGMA explain_output = OPTIMIZED_ONLY;
+
+query II
+EXPLAIN SELECT struct_pack(d := d) AS s FROM fact, dim WHERE fact.k = dim.k AND dim.k > 100;
+----
+logical_opt	<REGEX>:.*EMPTY_RESULT.*
+
+# SEMI and ANTI join conditions are evaluated over candidate pairs that repeat rows of
+# either side, even though the join output emits each surviving row at most once
+
+statement ok
+CREATE TABLE l(d VARCHAR, n BIGINT);
+
+statement ok
+INSERT INTO l VALUES ('a', 1), ('bb', 2);
+
+statement ok
+CREATE TABLE r AS SELECT CASE WHEN i % 2 = 0 THEN 'a' ELSE 'bb' END AS d, i % 2 + 1 AS n FROM range(1000) t(i);
+
+query I
+SELECT count(*) FROM l SEMI JOIN r ON struct_pack(d := l.d, n := r.n) = struct_pack(d := r.d, n := l.n);
+----
+2
+
+query I
+SELECT count(*) FROM l ANTI JOIN r ON struct_pack(d := l.d, n := r.n) = struct_pack(d := r.d, n := l.n);
+----
+0
+
+# side-local struct operands classify as a comparison join and reset through the comparison arm
+query I
+SELECT count(*) FROM l SEMI JOIN r ON struct_pack(d := l.d, n := l.n) <> struct_pack(d := r.d, n := r.n);
+----
+2
+
+query I
+SELECT count(*) FROM l ANTI JOIN r ON struct_pack(d := l.d, n := l.n) <> struct_pack(d := r.d, n := r.n);
+----
+0
+
+# a mixed-side struct residual next to an equality key resets inside a comparison join
+query I
+SELECT count(*) FROM l SEMI JOIN r ON l.n = r.n AND struct_pack(d := l.d, n := r.n) = struct_pack(d := r.d, n := l.n);
+----
+2
+
+# the output of a SEMI join emits each surviving row at most once and keeps its additive totals,
+# joining on the numeric key so the string stays out of merged join-key statistics
+query I
+SELECT stats(d) FROM l SEMI JOIN r ON l.n = r.n LIMIT 1;
+----
+<REGEX>:.*'total_string_length': 3.*
+
+# multiple grouping sets emit a group key once per set that contains it
+
+statement ok
+CREATE TABLE grouped_strings(d VARCHAR);
+
+statement ok
+INSERT INTO grouped_strings VALUES ('a'), ('bb');
+
+query I
+SELECT struct_pack(d := d) FROM (SELECT d FROM grouped_strings GROUP BY GROUPING SETS ((d), (d)) ORDER BY d) q;
+----
+{'d': a}
+{'d': a}
+{'d': bb}
+{'d': bb}
+
+query I
+SELECT stats(d) FROM (SELECT d FROM grouped_strings GROUP BY GROUPING SETS ((d), (d))) q LIMIT 1;
+----
+<!REGEX>:.*total_string_length.*
+
+# a single grouping set emits each group at most once and keeps its additive totals
+query I
+SELECT stats(d) FROM (SELECT d FROM grouped_strings GROUP BY d) q LIMIT 1;
+----
+<REGEX>:.*'total_string_length': 3.*

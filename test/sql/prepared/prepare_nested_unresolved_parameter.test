@@ -1,0 +1,32 @@
+# name: test/sql/prepared/prepare_nested_unresolved_parameter.test
+# description: Test parameters with unresolved types nested inside a correlated subquery column
+# group: [prepared]
+
+statement ok
+PREPARE p1 AS SELECT (SELECT a) FROM (SELECT ARRAY[{'a': $1}, $1]) t(a);
+
+query I
+EXECUTE p1(NULL);
+----
+[{'a': NULL}, NULL]
+
+statement error
+EXECUTE p1(1);
+----
+Cannot deduce template type
+
+statement ok
+PREPARE p2 AS SELECT (SELECT a) FROM (SELECT [$1, $1]) t(a);
+
+query I
+EXECUTE p2(5);
+----
+[5, 5]
+
+statement ok
+SET debug_verify_statement='prepared_statement';
+
+query I
+SELECT (SELECT a) FROM (SELECT ARRAY[{'a': NULL}, NULL]) t(a);
+----
+[{'a': NULL}, NULL]

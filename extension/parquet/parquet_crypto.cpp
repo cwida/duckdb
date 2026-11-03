@@ -168,7 +168,7 @@ ParquetEncryptionConfig::ParquetEncryptionConfig(ClientContext &context, const V
 		} else if (struct_key == "column_keys") {
 			throw NotImplementedException("Parquet encryption_config column_keys not yet implemented");
 		} else {
-			throw BinderException("Unknown key in encryption_config \"%s\"", struct_key);
+			throw BinderException("Unknown key in encryption_config %s", struct_key);
 		}
 	}
 }
@@ -333,6 +333,9 @@ private:
 		data_t length_buf[ParquetCrypto::LENGTH_BYTES];
 		trans.read(length_buf, ParquetCrypto::LENGTH_BYTES);
 		total_bytes = Load<uint32_t>(length_buf);
+		if (total_bytes < ParquetCrypto::NONCE_BYTES + ParquetCrypto::TAG_BYTES) {
+			throw InvalidInputException("Encoded ciphertext length %d is smaller than the nonce and tag", total_bytes);
+		}
 		transport_remaining = total_bytes;
 		// Read nonce and initialize AES
 		transport_remaining -= trans.read(nonce.data(), nonce.total_size());

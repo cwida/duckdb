@@ -184,6 +184,15 @@ static void RunPreSubqueryPlanningExtensions(ClientContext &context, Binder &bin
 		if (planner_extension.pre_subquery_planning_function) {
 			PlannerExtensionInput input {context, binder, planner_extension.planner_info.get()};
 			planner_extension.pre_subquery_planning_function(input, statement);
+  	}
+	}
+}
+
+static void RunPreBindExtensions(ClientContext &context, Binder &binder, SQLStatement &statement) {
+	for (auto &planner_extension : PlannerExtension::Iterate(context)) {
+		if (planner_extension.pre_bind_function) {
+			PlannerExtensionInput input {context, binder, planner_extension.planner_info.get()};
+			planner_extension.pre_bind_function(input, statement);
 		}
 	}
 }
@@ -208,6 +217,7 @@ void Planner::CreatePlan(SQLStatement &statement) {
 	try {
 		auto binding_timer = profiler.StartTimer<MetricPlannerBindingTime>();
 		binder->SetParameters(bound_parameters);
+		RunPreBindExtensions(context, *binder, statement);
 		auto bound_statement = binder->Bind(statement);
 		binding_timer.EndTimer();
 

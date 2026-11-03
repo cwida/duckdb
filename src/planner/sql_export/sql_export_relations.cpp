@@ -179,7 +179,8 @@ LogicalPlanSQLExportResult LogicalProjection::ToSQL(LogicalPlanSQLExportContext 
 		return LogicalPlanSQLExportResult::Failure(fields);
 	}
 	D_ASSERT(projection.expressions.size() == fields.GetValue().size());
-	bool fromless = projection.children[0]->type == LogicalOperatorType::LOGICAL_DUMMY_SCAN;
+	bool fromless = projection.children[0]->type == LogicalOperatorType::LOGICAL_DUMMY_SCAN &&
+	                !export_context.FindSource(*projection.children[0]);
 	auto child =
 	    export_context.ExportChild(*projection.children[0], LogicalPlanSQLExportHelpers::PlanChildPath(path, 0));
 	if (child.HasError()) {
@@ -428,6 +429,10 @@ LogicalPlanSQLExportResult LogicalAggregate::ToSQL(LogicalPlanSQLExportContext &
 			all_groups.insert(ProjectionIndex(i));
 		}
 		select->groups.grouping_sets.push_back(std::move(all_groups));
+	}
+	if (select->groups.grouping_sets.empty() && aggregate.expressions.empty()) {
+		// GROUP BY () keeps an aggregate without groups or aggregates producing a single row
+		select->groups.grouping_sets.emplace_back();
 	}
 	for (auto &grouping : aggregate.grouping_functions) {
 		vector<unique_ptr<ParsedExpression>> arguments;

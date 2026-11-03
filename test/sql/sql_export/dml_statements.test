@@ -243,12 +243,12 @@ CREATE TABLE dml_shadowed(rowid INTEGER, v TEXT);
 statement error
 EXPLAIN (SQL) DELETE FROM dml_shadowed WHERE v = 'a';
 ----
-The modified table does not expose a single named row-id column
+The modified table does not expose an exportable row-id column
 
 statement error
 EXPLAIN (SQL) UPDATE dml_shadowed SET v = 'b';
 ----
-The modified table does not expose a single named row-id column
+The modified table does not expose an exportable row-id column
 
 # inserting into a shadowed table needs no row-id key
 query TT

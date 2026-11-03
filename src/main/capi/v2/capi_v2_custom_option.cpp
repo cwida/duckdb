@@ -86,7 +86,7 @@ public:
 
 		auto &config = DBConfig::GetConfig(target);
 		if (DBConfig::GetOptionByName(name) || config.HasExtensionOption(name)) {
-			throw InvalidInputException("An option named \"%s\" already exists.", name);
+			throw InvalidInputException("An option named %s already exists.", name);
 		}
 
 		ExtensionOption option;

@@ -69,6 +69,9 @@ public:
 
 	//! Push an error into the TaskExecutor
 	void PushError(ErrorData error);
+	//! Push the error of a task, which reports an out of memory error when memory runs out while recording it
+	void PushTaskError(const std::exception &ex);
+	void PushTaskError(const char *message);
 	//! Whether or not any task has encountered an error
 	bool HasError();
 	//! Throw an error that was encountered during execution (if HasError() is true)

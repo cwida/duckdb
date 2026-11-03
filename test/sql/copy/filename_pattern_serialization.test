@@ -10,45 +10,45 @@ CREATE TABLE t AS SELECT 1 AS a;
 
 # an explicitly empty pattern writes the bare extension
 statement ok
-COPY t TO '__TEST_DIR__/fp_empty' (FORMAT csv, PER_THREAD_OUTPUT true, FILENAME_PATTERN '');
+COPY t TO '{TEST_DIR}/fp_empty' (FORMAT csv, PER_THREAD_OUTPUT true, FILENAME_PATTERN '');
 
 query I
-SELECT count(*) FROM read_csv_auto('__TEST_DIR__/fp_empty/.csv');
+SELECT count(*) FROM read_csv_auto('{TEST_DIR}/fp_empty/.csv');
 ----
 1
 
 # a legacy-compatible custom pattern
 statement ok
-COPY t TO '__TEST_DIR__/fp_custom' (FORMAT csv, PER_THREAD_OUTPUT true, FILENAME_PATTERN 'custom_{i}');
+COPY t TO '{TEST_DIR}/fp_custom' (FORMAT csv, PER_THREAD_OUTPUT true, FILENAME_PATTERN 'custom_{i}');
 
 query I
-SELECT count(*) FROM read_csv_auto('__TEST_DIR__/fp_custom/custom_0.csv');
+SELECT count(*) FROM read_csv_auto('{TEST_DIR}/fp_custom/custom_0.csv');
 ----
 1
 
 # a uuid prefix shape through the legacy representation
 statement ok
-COPY t TO '__TEST_DIR__/fp_uuid' (FORMAT csv, PER_THREAD_OUTPUT true, FILENAME_PATTERN 'prefix_{uuid}');
+COPY t TO '{TEST_DIR}/fp_uuid' (FORMAT csv, PER_THREAD_OUTPUT true, FILENAME_PATTERN 'prefix_{uuid}');
 
 query I
-SELECT count(*) FROM read_csv_auto('__TEST_DIR__/fp_uuid/prefix_*.csv');
+SELECT count(*) FROM read_csv_auto('{TEST_DIR}/fp_uuid/prefix_*.csv');
 ----
 1
 
 # a uuid v7 shape through the segment representation
 statement ok
-COPY t TO '__TEST_DIR__/fp_uuidv7' (FORMAT csv, PER_THREAD_OUTPUT true, FILENAME_PATTERN 'v7_{uuidv7}_tail');
+COPY t TO '{TEST_DIR}/fp_uuidv7' (FORMAT csv, PER_THREAD_OUTPUT true, FILENAME_PATTERN 'v7_{uuidv7}_tail');
 
 query I
-SELECT count(*) FROM read_csv_auto('__TEST_DIR__/fp_uuidv7/v7_*_tail.csv');
+SELECT count(*) FROM read_csv_auto('{TEST_DIR}/fp_uuidv7/v7_*_tail.csv');
 ----
 1
 
 # the default pattern stays the default
 statement ok
-COPY t TO '__TEST_DIR__/fp_default' (FORMAT csv, PER_THREAD_OUTPUT true);
+COPY t TO '{TEST_DIR}/fp_default' (FORMAT csv, PER_THREAD_OUTPUT true);
 
 query I
-SELECT count(*) FROM read_csv_auto('__TEST_DIR__/fp_default/data_0.csv');
+SELECT count(*) FROM read_csv_auto('{TEST_DIR}/fp_default/data_0.csv');
 ----
 1

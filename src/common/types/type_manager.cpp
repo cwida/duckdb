@@ -19,7 +19,7 @@ const CastFunctionSet &TypeManager::GetCastFunctions() const {
 }
 
 static LogicalType TransformStringToUnboundType(const string &str, ClientContext &context) {
-	if (StringUtil::Lower(str) == "null") {
+	if (StringUtil::CIEquals(str, "null")) {
 		return LogicalType::SQLNULL;
 	}
 	ColumnList column_list;

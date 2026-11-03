@@ -134,9 +134,39 @@ FileSystem &VirtualFileSystem::GetDefaultFileSystem() {
 	return fs;
 }
 
+//! The part of a path whose extension names its compression: a URL's path without its host, query or fragment, or a
+//! local path up to a '?' (as IsFileCompressed treats it), except in a Windows long path prefix
+static string CompressionSuffixPath(const string &lower_path) {
+	auto scheme_end = lower_path.find("://");
+	if (scheme_end == string::npos) {
+		return StringUtil::StartsWith(lower_path, "\\\\?\\") ? lower_path : lower_path.substr(0, lower_path.find('?'));
+	}
+	// the host ends at the first '/', '?' or '#'; only a '/' starts a path
+	auto path_start = lower_path.find_first_of("/?#", scheme_end + 3);
+	if (path_start == string::npos || lower_path[path_start] != '/') {
+		return string();
+	}
+	auto path_end = lower_path.find_first_of("?#", path_start);
+	return lower_path.substr(path_start, path_end == string::npos ? string::npos : path_end - path_start);
+}
+
+//! The compression a file extension indicates, whether or not a filesystem for it is registered
+static FileCompressionType CompressionFromExtension(const string &lower_path) {
+	static const pair<const char *, const char *> compression_extensions[] = {
+	    {".zst", "zstd"},  {".bz2", "bzip2"}, {".xz", "xz"},  {".lz4", "lz4"},
+	    {".br", "brotli"}, {".lzma", "lzma"}, {".zip", "zip"}};
+	auto path = CompressionSuffixPath(lower_path);
+	for (auto &entry : compression_extensions) {
+		if (StringUtil::EndsWith(path, entry.first)) {
+			return FileCompressionType(entry.second);
+		}
+	}
+	return FileCompressionType::UNCOMPRESSED;
+}
+
 optional_ptr<FileSystem> VirtualFileSystem::FindCompressionFileSystem(FileSystemRegistry &registry,
                                                                       const FileCompressionType &compression,
-                                                                      const string &filepath) {
+                                                                      const string &filepath, bool for_writing) {
 	auto resolved = compression;
 	// For auto-detection, check whether any registered compression filesystem can handle this file.
 	if (resolved.IsAutoDetect()) {
@@ -150,12 +180,17 @@ optional_ptr<FileSystem> VirtualFileSystem::FindCompressionFileSystem(FileSystem
 				return entry.second->file_system.get();
 			}
 		}
-		if (!IsFileCompressed(lower_path, FileCompressionType::ZSTD)) {
+		resolved = CompressionFromExtension(lower_path);
+		// a file written under such a name is written as is (e.g. a blob that is already compressed), except zstd,
+		// which has always required its filesystem
+		if (for_writing && resolved != FileCompressionType::ZSTD) {
+			return nullptr;
+		}
+		if (resolved.IsUncompressed()) {
 			// no applicable compression filesystem was found - consider the file uncompressed
 			return nullptr;
 		}
-		// the file looks zstd-compressed but zstd is not registered - fall through to raise an error below
-		resolved = FileCompressionType::ZSTD;
+		// the file looks compressed but its compression is not registered - fall through to raise an error below
 	}
 	if (resolved.IsUncompressed()) {
 		return nullptr;
@@ -170,6 +205,12 @@ optional_ptr<FileSystem> VirtualFileSystem::FindCompressionFileSystem(FileSystem
 	string hint;
 	if (resolved == FileCompressionType::ZSTD) {
 		hint = "\nConsider explicitly \"INSTALL parquet; LOAD parquet;\" to support this compression scheme";
+	}
+	if (compression.IsAutoDetect()) {
+		hint +=
+		    StringUtil::Format("\nThe compression was detected from the name of \"%s\"; set compression = 'none' to "
+		                       "treat it as uncompressed",
+		                       filepath);
 	}
 	throw NotImplementedException(
 	    "Attempting to open a compressed file, but the compression type is not supported (compression type \"%s\")%s",
@@ -207,7 +248,8 @@ unique_ptr<FileHandle> VirtualFileSystem::OpenFileExtended(const OpenFileInfo &f
 		if (file_handle->GetType() == FileType::FILE_TYPE_FIFO) {
 			file_handle = PipeFileSystem::OpenPipe(context, std::move(file_handle));
 		} else {
-			auto compression_filesystem = FindCompressionFileSystem(*registry, compression, file.path);
+			auto compression_filesystem =
+			    FindCompressionFileSystem(*registry, compression, file.path, flags.OpenForWriting());
 			if (compression_filesystem) {
 				file_handle =
 				    compression_filesystem->OpenCompressedFile(context, std::move(file_handle), flags.OpenForWriting());

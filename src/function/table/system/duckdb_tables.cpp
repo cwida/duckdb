@@ -4,6 +4,7 @@
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/function/table/system_catalog_scanner.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/client_data.hpp"
 #include "duckdb/parser/constraint.hpp"
@@ -19,6 +20,7 @@ struct DuckDBTablesData : public GlobalTableFunctionState {
 
 	vector<reference<CatalogEntry>> entries;
 	idx_t offset;
+	SystemCatalogScannerStats stats;
 };
 
 static unique_ptr<FunctionData> DuckDBTablesBind(ClientContext &context, TableFunctionBindInput &input,
@@ -71,18 +73,14 @@ static unique_ptr<FunctionData> DuckDBTablesBind(ClientContext &context, TableFu
 	names.emplace_back("sql");
 	return_types.emplace_back(LogicalType::VARCHAR);
 
-	return nullptr;
+	return SystemCatalogScanner::CreateBindData(names, return_types, "table_name", "table_oid");
 }
 
 unique_ptr<GlobalTableFunctionState> DuckDBTablesInit(ClientContext &context, TableFunctionInitInput &input) {
 	auto result = make_uniq<DuckDBTablesData>();
 
-	// scan all the schemas for tables and collect themand collect them
-	auto schemas = Catalog::GetAllSchemas(context);
-	for (auto &schema : schemas) {
-		schema.get().Scan(context, CatalogType::TABLE_ENTRY,
-		                  [&](CatalogEntry &entry) { result->entries.push_back(entry); });
-	};
+	// collect the tables that survive the pushed-down filters
+	result->entries = SystemCatalogScanner::GetEntries(context, input, CatalogType::TABLE_ENTRY, result->stats);
 	return std::move(result);
 }
 
@@ -174,8 +172,14 @@ void DuckDBTablesFunction(ClientContext &context, TableFunctionInput &data_p, Da
 	}
 }
 
+static void DuckDBTablesGetMetrics(TableFunctionGetMetricsInput &input) {
+	SystemCatalogScanner::ReportMetrics(input, input.global_state->Cast<DuckDBTablesData>().stats);
+}
+
 void DuckDBTablesFun::RegisterFunction(BuiltinFunctions &set) {
 	auto function = TableFunction("duckdb_tables", {}, DuckDBTablesFunction, DuckDBTablesBind, DuckDBTablesInit);
+	SystemCatalogScanner::RegisterPushdown(function);
+	function.get_metrics = DuckDBTablesGetMetrics;
 	set.AddFunction(std::move(function));
 }
 

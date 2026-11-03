@@ -26,6 +26,7 @@ class AsyncResult;
 class DataChunk;
 struct GlobalTableFunctionState;
 struct LocalTableFunctionState;
+class ReadAheadOpenFile;
 
 struct BaseFileReaderExpression {
 public:
@@ -69,6 +70,8 @@ public:
 	unique_ptr<DeleteFilter> deletion_filter;
 	//! Global identifiers (which column position of the projected output this filter operates) for the filters
 	vector<MultiFileGlobalIndex> filter_global_indices;
+	//! Counts the file against the open file budget of read-ahead until the reader closes it
+	shared_ptr<ReadAheadOpenFile> read_ahead_open_file;
 
 public:
 	const vector<MultiFileColumnDefinition> &GetColumns() const {
@@ -170,6 +173,8 @@ public:
 		return optional_idx();
 	}
 	virtual unique_ptr<BaseStatistics> GetStatistics(ClientContext &context, const Identifier &name);
+	DUCKDB_API virtual unique_ptr<BaseStatistics> GetVirtualColumnStatistics(ClientContext &context,
+	                                                                         column_t virtual_column_id);
 
 public:
 	template <class TARGET>

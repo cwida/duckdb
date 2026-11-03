@@ -21,28 +21,45 @@ select +1234.56789e-1::DECIMAL(38,5)
 ----
 123.45679
 
-foreach exp_sign + -
-
-foreach base_sign + -
-
 foreach scale 0 1 2 3 4 5 6
 
-foreach exponent 1 2 3 4 5 6 7 8 9 10
-
-foreach num 1 1.23456789 1234 1234.56789 0.12345678 0.00001234
-
 query I
-select '{base_sign}{num}e{exp_sign}{exponent}'::DECIMAL(38,{scale}) == {base_sign}{num}e{exp_sign}{exponent}::DECIMAL(38,{scale});
+WITH numbers(num_text, num) AS (VALUES
+	('1', 1::DECIMAL(18,8)),
+	('1.23456789', 1.23456789::DECIMAL(18,8)),
+	('1234', 1234::DECIMAL(18,8)),
+	('1234.56789', 1234.56789::DECIMAL(18,8)),
+	('0.12345678', 0.12345678::DECIMAL(18,8)),
+	('0.00001234', 0.00001234::DECIMAL(18,8))
+), exponents(exp_sign, exponent, factor) AS (VALUES
+	('+', 1, 10::DECIMAL(38,10)),
+	('+', 2, 100::DECIMAL(38,10)),
+	('+', 3, 1000::DECIMAL(38,10)),
+	('+', 4, 10000::DECIMAL(38,10)),
+	('+', 5, 100000::DECIMAL(38,10)),
+	('+', 6, 1000000::DECIMAL(38,10)),
+	('+', 7, 10000000::DECIMAL(38,10)),
+	('+', 8, 100000000::DECIMAL(38,10)),
+	('+', 9, 1000000000::DECIMAL(38,10)),
+	('+', 10, 10000000000::DECIMAL(38,10)),
+	('-', 1, 0.1::DECIMAL(38,10)),
+	('-', 2, 0.01::DECIMAL(38,10)),
+	('-', 3, 0.001::DECIMAL(38,10)),
+	('-', 4, 0.0001::DECIMAL(38,10)),
+	('-', 5, 0.00001::DECIMAL(38,10)),
+	('-', 6, 0.000001::DECIMAL(38,10)),
+	('-', 7, 0.0000001::DECIMAL(38,10)),
+	('-', 8, 0.00000001::DECIMAL(38,10)),
+	('-', 9, 0.000000001::DECIMAL(38,10)),
+	('-', 10, 0.0000000001::DECIMAL(38,10))
+), signs(base_sign, multiplier) AS (VALUES ('+', 1), ('-', -1))
+SELECT count(*) FILTER (
+	WHERE CAST(base_sign || num_text || 'e' || exp_sign || exponent AS DECIMAL(38,{scale}))
+	      IS DISTINCT FROM CAST(multiplier * num * factor AS DECIMAL(38,{scale}))
+)
+FROM numbers, exponents, signs;
 ----
-True
-
-endloop
-
-endloop
-
-endloop
-
-endloop
+0
 
 endloop
 

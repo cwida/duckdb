@@ -424,7 +424,10 @@ void QueryResult::CompleteInternal(ClientContextLock &lock) {
 	try {
 		QueryResultState state;
 		while (!IsTerminal(state = context->ExecuteTaskInternal(lock, *this))) {
-			if (state == QueryResultState::BLOCKED || state == QueryResultState::READY) {
+			// NO_TASKS_AVAILABLE: the remaining tasks run on other threads. Wait (bounded, woken when a task
+			// completes) as RunToResultStatementInternal does, instead of spinning on the executor lock
+			if (state == QueryResultState::BLOCKED || state == QueryResultState::READY ||
+			    state == QueryResultState::NO_TASKS_AVAILABLE) {
 				context->WaitForTask(lock, *this);
 			}
 		}

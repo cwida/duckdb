@@ -212,6 +212,14 @@ struct HandleTraits<ColumnDescription> {
 	using handle = duckdb_v2_column_description_handle;
 };
 template <>
+struct HandleTraits<QueryMetrics> {
+	using handle = duckdb_v2_query_metrics_handle;
+};
+template <>
+struct HandleTraits<QueryMetricsNode> {
+	using handle = duckdb_v2_query_metrics_node_handle;
+};
+template <>
 struct HandleTraits<FileSystem> {
 	using handle = duckdb_v2_file_system_handle;
 };
@@ -985,9 +993,9 @@ auto StatementIterator::Next() -> SqlStatement {
 	return detail::HandleFactory::Make<SqlStatement>(statement);
 }
 
-auto Connection::ParseSQL(const char *sql) -> StatementIterator {
+auto Connection::ParseSQL(const char *sql, bool apply_invalidation_policy) -> StatementIterator {
 	duckdb_v2_statement_iterator_handle iterator = nullptr;
-	CheckedAPICall(duckdb_v2_parse_sql, handle(), sql, &iterator);
+	CheckedAPICall(duckdb_v2_parse_sql, handle(), sql, apply_invalidation_policy, &iterator);
 	return detail::HandleFactory::Make<StatementIterator>(iterator);
 }
 
@@ -1643,6 +1651,16 @@ auto Connection::DescribeTable(const QualifiedName &name) const -> TableDescript
 	duckdb_v2_table_description_handle _h = nullptr;
 	CheckedAPICall(duckdb_v2_connection_describe_table, handle(), name.handle(), &_h);
 	return detail::HandleFactory::Make<TableDescription>(_h);
+}
+
+auto Connection::EnableProfiling(bool enabled) -> void {
+	CheckedAPICall(duckdb_v2_connection_enable_profiling, handle(), enabled);
+}
+
+auto Connection::GetQueryMetrics() const -> QueryMetrics {
+	duckdb_v2_query_metrics_handle _h = nullptr;
+	CheckedAPICall(duckdb_v2_connection_get_query_metrics, handle(), &_h);
+	return detail::HandleFactory::Make<QueryMetrics>(_h);
 }
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -6977,6 +6995,78 @@ auto TableDescription::IsReadOnly() const -> bool {
 	bool result = false;
 	CheckedAPICall(duckdb_v2_table_description_is_readonly, handle(), &result);
 	return result;
+}
+
+//----------------------------------------------------------------------------------------------------------------------
+// Query Metrics
+//----------------------------------------------------------------------------------------------------------------------
+
+QueryMetrics::QueryMetrics(void *impl) : detail::Handle<QueryMetrics>(impl) {
+}
+
+QueryMetrics::~QueryMetrics() {
+	auto _h = handle();
+	duckdb_v2_query_metrics_destroy(&_h);
+}
+
+auto QueryMetrics::GetRoot() const -> QueryMetricsNode {
+	duckdb_v2_query_metrics_node_handle _h = nullptr;
+	CheckedAPICall(duckdb_v2_query_metrics_get_root, handle(), &_h);
+	return detail::HandleFactory::Make<QueryMetricsNode>(_h);
+}
+
+QueryMetricsNode::QueryMetricsNode(void *impl) : detail::Handle<QueryMetricsNode>(impl) {
+}
+
+QueryMetricsNode::~QueryMetricsNode() {
+	/* Nodes are borrowed from their snapshot, so we don't destroy the handle here */
+}
+
+auto QueryMetricsNode::GetName() const -> std::string_view {
+	duckdb_v2_str name = {nullptr, 0};
+	CheckedAPICall(duckdb_v2_query_metrics_node_get_name, handle(), &name);
+	return FromStr(name);
+}
+
+auto QueryMetricsNode::GetChildCount() const -> idx_t {
+	idx_t count = 0;
+	CheckedAPICall(duckdb_v2_query_metrics_node_get_child_count, handle(), &count);
+	return count;
+}
+
+auto QueryMetricsNode::GetChild(idx_t index) const -> QueryMetricsNode {
+	duckdb_v2_query_metrics_node_handle _h = nullptr;
+	CheckedAPICall(duckdb_v2_query_metrics_node_get_child, handle(), index, &_h);
+	return detail::HandleFactory::Make<QueryMetricsNode>(_h);
+}
+
+auto QueryMetricsNode::GetMetricCount() const -> idx_t {
+	idx_t count = 0;
+	CheckedAPICall(duckdb_v2_query_metrics_node_get_metric_count, handle(), &count);
+	return count;
+}
+
+auto QueryMetricsNode::GetMetricName(idx_t index) const -> std::string_view {
+	duckdb_v2_str name = {nullptr, 0};
+	CheckedAPICall(duckdb_v2_query_metrics_node_get_metric_name, handle(), index, &name);
+	return FromStr(name);
+}
+
+auto QueryMetricsNode::GetMetricValue(idx_t index) const -> Value {
+	duckdb_v2_value_handle value = nullptr;
+	CheckedAPICall(duckdb_v2_query_metrics_node_get_metric_value, handle(), index, &value);
+	return detail::HandleFactory::Make<Value>(value);
+}
+
+auto QueryMetricsNode::GetMetric(std::string_view name) const -> std::optional<Value> {
+	const auto name_str = ToStr(name);
+	duckdb_v2_value_handle value = nullptr;
+	bool present = false;
+	CheckedAPICall(duckdb_v2_query_metrics_node_get_metric, handle(), &name_str, &value, &present);
+	if (!present) {
+		return std::nullopt;
+	}
+	return detail::HandleFactory::Make<Value>(value);
 }
 
 //----------------------------------------------------------------------------------------------------------------------

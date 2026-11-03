@@ -93,7 +93,7 @@ public:
 			// The engine would otherwise raise an InternalException, which invalidates the database.
 			if (data.batch_index < last_index) {
 				throw InvalidInputException(
-				    "The partition data callback of table function \"%s\" reported batch index %llu after "
+				    "The partition data callback of table function %s reported batch index %llu after "
 				    "previously reporting %llu on the same thread; the batch index must not decrease.",
 				    function_name, data.batch_index, last_index);
 			}
@@ -105,7 +105,7 @@ public:
 						continue;
 					}
 					throw InvalidInputException(
-					    "The partition data callback of table function \"%s\" reported a different partitioning "
+					    "The partition data callback of table function %s reported a different partitioning "
 					    "column value at index %llu without changing the batch index.",
 					    function_name, i);
 				}
@@ -432,7 +432,7 @@ static auto CV2TableBind(ClientContext &context, TableFunctionBindInput &input, 
 	}
 
 	if (args.out_column_types.empty()) {
-		throw InvalidInputException("The bind callback of table function \"%s\" did not declare any result columns.",
+		throw InvalidInputException("The bind callback of table function %s did not declare any result columns.",
 		                            input.table_function.GetName());
 	}
 
@@ -756,14 +756,14 @@ static auto CV2TableFilterPushdown(ClientContext &context, LogicalGet &get, Func
 static auto CV2TakePartitionData(CV2TablePartitionDataInfo &args, const Identifier &function_name)
     -> OperatorPartitionData {
 	if (!args.out_batch_index.IsValid()) {
-		throw InvalidInputException("The partition data callback of table function \"%s\" did not set a batch index.",
+		throw InvalidInputException("The partition data callback of table function %s did not set a batch index.",
 		                            function_name);
 	}
 	OperatorPartitionData result(args.out_batch_index.GetIndex());
 	result.partition_data.reserve(args.out_partition_values.size());
 	for (idx_t i = 0; i < args.out_partition_values.size(); i++) {
 		if (!args.out_partition_value_set[i]) {
-			throw InvalidInputException("The partition data callback of table function \"%s\" did not set the "
+			throw InvalidInputException("The partition data callback of table function %s did not set the "
 			                            "partitioning column value at index %llu.",
 			                            function_name, i);
 		}
@@ -953,7 +953,7 @@ private:
 	//! The overload of the single-file function that takes the path of the file to read
 	TableFunction SelectSingleFileFunction(unique_ptr<TableFunctionSet> overloads) const {
 		if (!overloads) {
-			throw InvalidInputException("Table function \"%s\" to read single files with does not exist.",
+			throw InvalidInputException("Table function %s to read single files with does not exist.",
 			                            single_file_function);
 		}
 		for (auto &function : overloads->functions) {
@@ -967,7 +967,7 @@ private:
 			}
 		}
 		throw InvalidInputException(
-		    "Table function \"%s\" cannot read single files: it must take the file to read as its only positional "
+		    "Table function %s cannot read single files: it must take the file to read as its only positional "
 		    "parameter, of type ANY (or VARCHAR).",
 		    single_file_function);
 	}

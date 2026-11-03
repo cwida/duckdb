@@ -123,7 +123,7 @@ void WindowValueLocalState::Finalizer(ExecutionContext &context, CollectionPtr c
 	if (local_value) {
 		auto &value_state = local_value->Cast<WindowIndexTreeLocalState>();
 		value_state.Finalize(context, sink.interrupt_state);
-		value_state.index_tree.Build();
+		value_state.index_tree.Build(context.client);
 	}
 
 	// Prepare to scan
@@ -347,7 +347,7 @@ void WindowLeadLagLocalState::Finalizer(ExecutionContext &context, CollectionPtr
 	if (local_row) {
 		auto &row_state = local_row->Cast<WindowMergeSortTreeLocalState>();
 		row_state.Finalize(context, sink.interrupt_state);
-		row_state.window_tree.Build();
+		row_state.window_tree.Build(context.client);
 	}
 }
 
@@ -610,6 +610,7 @@ WindowFunction LeadFun::GetTypedFunction(const LogicalType &type, idx_t nargs) {
 	if (nargs > 2) {
 		func.GetSignature().GetParameter(2).SetType(type);
 	}
+	func.GetSignature().SetReturnType(type);
 	return func;
 }
 

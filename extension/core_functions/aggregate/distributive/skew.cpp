@@ -100,6 +100,7 @@ AggregateFunction SkewnessFun::GetFunction() {
 	auto fun = AggregateFunction::UnaryAggregate<SkewState, double, double, SkewnessOperation>(LogicalType::DOUBLE,
 	                                                                                           LogicalType::DOUBLE);
 	fun.GetSignature().GetParameter(0).SetName("x");
+	fun.SetFallible(); // finalize throws when the skewness is not finite
 	return fun;
 }
 

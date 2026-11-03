@@ -1,8 +1,9 @@
 #include "duckdb/storage/compression/dict_fsst/compression.hpp"
-#include "duckdb/common/typedefs.hpp"
-#include "fsst.h"
+
 #include "duckdb/common/fsst.hpp"
 #include "duckdb/main/config.hpp"
+#include "duckdb/storage/compression/dict_fsst/analyze.hpp"
+#include "fsst.h"
 
 #if defined(__MVS__) && !defined(alloca)
 #define alloca __builtin_alloca
@@ -29,12 +30,6 @@ DictFSSTCompressionState::~DictFSSTCompressionState() {
 		auto fsst_encoder = reinterpret_cast<duckdb_fsst_encoder_t *>(encoder);
 		duckdb_fsst_destroy(fsst_encoder);
 	}
-}
-
-static constexpr idx_t DICTIONARY_ENCODE_THRESHOLD = 4096;
-
-static inline bool IsEncoded(DictionaryAppendState state) {
-	return state == DictionaryAppendState::ENCODED || state == DictionaryAppendState::ENCODED_ALL_UNIQUE;
 }
 
 static DictFSSTMode ConvertToMode(DictionaryAppendState &state) {
@@ -665,7 +660,7 @@ bool DictFSSTCompressionState::AllUnique() const {
 DictionaryAppendState DictFSSTCompressionState::TryEncode() {
 	//! We were appending normally, the segment is full
 
-	if (dictionary_offset < DICTIONARY_ENCODE_THRESHOLD) {
+	if (dictionary_offset < DictFSSTCompression::DICTIONARY_ENCODE_THRESHOLD) {
 		return DictionaryAppendState::NOT_ENCODED;
 	}
 
@@ -728,7 +723,7 @@ DictionaryAppendState DictFSSTCompressionState::TryEncode() {
 				max_length = str_len;
 			}
 		}
-		if (new_size + DICTIONARY_ENCODE_THRESHOLD > dictionary_offset) {
+		if (new_size + DictFSSTCompression::DICTIONARY_ENCODE_THRESHOLD > dictionary_offset) {
 			can_use_encoding = false;
 			break;
 		}

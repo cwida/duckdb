@@ -46,7 +46,7 @@ statement ok
 UPDATE test SET a=concat(a, 'a')
 
 query I
-SELECT a = repeat('a', 1000001 + ${i}) FROM test
+SELECT a = repeat('a', 1000001 + {i}) FROM test
 ----
 true
 
@@ -57,7 +57,7 @@ query I nosort expected_blocks
 SELECT used_blocks FROM pragma_database_size() WHERE database_name = current_database();
 
 query I
-SELECT a = repeat('a', 1000001 + ${i}) FROM test
+SELECT a = repeat('a', 1000001 + {i}) FROM test
 ----
 true
 

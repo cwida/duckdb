@@ -215,7 +215,7 @@ void TryTransformStarLike(unique_ptr<ParsedExpression> &root) {
 	                                     "like_escape"};
 	if (supported_ops.count(function.FunctionName().GetIdentifierName()) == 0) {
 		// unsupported op for * expression
-		throw BinderException(*root, "Function \"%s\" cannot be applied to a star expression", function.FunctionName());
+		throw BinderException(*root, "Function %s cannot be applied to a star expression", function.FunctionName());
 	}
 	auto &right = function.GetArgumentsMutable()[1];
 	if (right.GetExpression().GetExpressionClass() != ExpressionClass::CONSTANT) {

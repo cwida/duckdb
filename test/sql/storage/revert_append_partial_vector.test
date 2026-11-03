@@ -1,0 +1,131 @@
+# name: test/sql/storage/revert_append_partial_vector.test
+# description: A failed commit that appended into a partially filled vector does not cause later appends to be checkpointed as deleted
+# group: [storage]
+
+require skip_reload
+
+require no_alternative_verify
+
+# keep the deletes uncheckpointed until the explicit checkpoints
+statement ok
+SET wal_autocheckpoint = '1TB'
+
+# storage versions below v2.0.0 keep deleted rows of indexed tables in place instead of vacuuming them
+statement ok
+ATTACH '{TEST_DIR}/revert_append_partial_vector.db' AS db (STORAGE_VERSION 'v1.0.0')
+
+statement ok con1
+CREATE TABLE db.t (id INTEGER PRIMARY KEY, v VARCHAR)
+
+statement ok con1
+INSERT INTO db.t SELECT i, 'a' FROM range(100) r(i)
+
+statement ok con1
+DELETE FROM db.t WHERE id < 10
+
+statement ok con1
+CREATE TABLE db.u (id INTEGER PRIMARY KEY, v VARCHAR)
+
+statement ok con1
+INSERT INTO db.u SELECT i, 'a' FROM range(100) r(i)
+
+statement ok con1
+DELETE FROM db.u WHERE id < 10
+
+# the commit fails after appending its rows, because another transaction altered the tables
+statement ok con1
+BEGIN
+
+statement ok con1
+INSERT INTO db.t SELECT i, 'x' FROM range(100, 600) r(i)
+
+statement ok con2
+COMMENT ON TABLE db.t IS 'x'
+
+statement error con1
+COMMIT
+----
+another transaction has
+
+statement ok con1
+BEGIN
+
+statement ok con1
+INSERT INTO db.u SELECT i, 'x' FROM range(100, 600) r(i)
+
+statement ok con2
+ALTER TABLE db.u RENAME COLUMN v TO w
+
+statement error con1
+COMMIT
+----
+another transaction has
+
+statement ok con1
+CHECKPOINT db
+
+statement ok con1
+INSERT INTO db.t VALUES (1000, 'b')
+
+query II con1
+SELECT count(*), count(*) FILTER (WHERE id >= 1000) FROM db.t
+----
+91	1
+
+statement ok
+DETACH db
+
+statement ok
+ATTACH '{TEST_DIR}/revert_append_partial_vector.db' AS db
+
+query II
+SELECT count(*), count(*) FILTER (WHERE id >= 1000) FROM db.t
+----
+91	1
+
+statement ok
+INSERT INTO db.u SELECT i, 'b' FROM range(1000, 1600) r(i)
+
+query II
+SELECT count(*), count(*) FILTER (WHERE id >= 1000) FROM db.u
+----
+690	600
+
+statement ok
+DETACH db
+
+statement ok
+ATTACH '{TEST_DIR}/revert_append_partial_vector.db' AS db
+
+query II
+SELECT count(*), count(*) FILTER (WHERE id >= 1000) FROM db.u
+----
+690	600
+
+# a partially filled vector whose rows are all deleted must not mark its unused slots as deleted
+statement ok
+CREATE TABLE db.w (id INTEGER PRIMARY KEY, v VARCHAR)
+
+statement ok
+INSERT INTO db.w SELECT i, 'a' FROM range(2148) r(i)
+
+# keep the first vector alive so that the row group is not dropped at checkpoint
+statement ok
+DELETE FROM db.w WHERE id >= 2048
+
+statement ok
+CHECKPOINT db
+
+statement ok
+INSERT INTO db.w SELECT i, 'b' FROM range(10000, 10005) r(i)
+
+statement ok
+DETACH db
+
+statement ok
+ATTACH '{TEST_DIR}/revert_append_partial_vector.db' AS db
+
+query II
+SELECT count(*), count(*) FILTER (WHERE id >= 10000) FROM db.w
+----
+2053	5

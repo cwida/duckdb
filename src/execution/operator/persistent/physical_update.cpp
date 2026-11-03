@@ -2,6 +2,7 @@
 
 #include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
+#include "duckdb/common/algorithm.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/execution/expression_executor.hpp"
@@ -72,36 +73,67 @@ public:
 
 class UpdateLocalState : public LocalSinkState {
 public:
-	UpdateLocalState(ClientContext &context, const vector<unique_ptr<Expression>> &expressions,
+	UpdateLocalState(ClientContext &context, DataTable &table, const vector<unique_ptr<Expression>> &expressions,
 	                 const vector<LogicalType> &table_types, const vector<unique_ptr<Expression>> &bound_defaults,
-	                 const vector<unique_ptr<BoundConstraint>> &bound_constraints, bool capture_old_rows)
-	    : default_executor(context, bound_defaults), bound_constraints(bound_constraints) {
-		// Initialize the update chunk.
+	                 const vector<unique_ptr<BoundConstraint>> &bound_constraints, bool capture_old_rows,
+	                 bool index_update)
+	    : table_types(table_types), bound_constraints(bound_constraints) {
+		// Only DEFAULT columns are computed into the update chunk, all other columns reference the input.
 		auto &allocator = Allocator::Get(context);
 		vector<LogicalType> update_types;
+		vector<bool> initialize;
 		update_types.reserve(expressions.size());
+		initialize.reserve(expressions.size());
+		bool has_default = false;
 		for (auto &expr : expressions) {
+			const bool is_default = expr->GetExpressionType() == ExpressionType::VALUE_DEFAULT;
 			update_types.push_back(expr->GetReturnType());
+			initialize.push_back(is_default);
+			has_default = has_default || is_default;
 		}
-		update_chunk.Initialize(allocator, update_types);
+		update_chunk.Initialize(allocator, update_types, initialize);
+		if (has_default) {
+			default_executor = make_uniq<ExpressionExecutor>(context, bound_defaults);
+		}
 
-		// Initialize the mock and delete chunk.
-		mock_chunk.Initialize(allocator, table_types);
-		delete_chunk.Initialize(allocator, table_types);
+		// The mock and delete chunks only reference other vectors.
+		mock_chunk.InitializeEmpty(table_types);
+		if (index_update) {
+			delete_chunk.InitializeEmpty(table_types);
+
+			// Only unique indexes keep delete entries, so only their key columns are fetched; the rest are NULL.
+			auto unique_columns = table.GetDataTableInfo()->GetIndexes().GetUniqueIndexColumns();
+			vector<column_t> sorted_columns(unique_columns.begin(), unique_columns.end());
+			std::sort(sorted_columns.begin(), sorted_columns.end());
+			vector<LogicalType> fetch_types;
+			fetch_column_ids.reserve(sorted_columns.size());
+			fetch_types.reserve(sorted_columns.size());
+			for (auto col : sorted_columns) {
+				fetch_column_ids.emplace_back(col);
+				fetch_types.push_back(table_types[col]);
+			}
+			if (!fetch_column_ids.empty()) {
+				fetch_chunk.Initialize(allocator, fetch_types);
+			}
+		}
 
 		// When capturing OLD rows, the return chunk holds the NEW image followed by the OLD image.
 		if (capture_old_rows) {
 			vector<LogicalType> combined_types(table_types);
 			combined_types.insert(combined_types.end(), table_types.begin(), table_types.end());
-			combined_chunk.Initialize(allocator, combined_types);
+			combined_chunk.InitializeEmpty(combined_types);
 		}
 	}
 
+	vector<LogicalType> table_types;
 	DataChunk update_chunk;
 	DataChunk mock_chunk;
 	DataChunk delete_chunk;
+	//! Sorted unique-index key columns fetched into fetch_chunk for the delete indexes
+	vector<StorageIndex> fetch_column_ids;
+	DataChunk fetch_chunk;
 	DataChunk combined_chunk;
-	ExpressionExecutor default_executor;
+	unique_ptr<ExpressionExecutor> default_executor;
 	unique_ptr<TableDeleteState> delete_state;
 	unique_ptr<TableUpdateState> update_state;
 	const vector<unique_ptr<BoundConstraint>> &bound_constraints;
@@ -147,7 +179,9 @@ SinkResultType PhysicalUpdate::Sink(ExecutionContext &context, DataChunk &chunk,
 	auto &l_state = input.local_state.Cast<UpdateLocalState>();
 
 	chunk.Flatten();
-	l_state.default_executor.SetChunk(chunk);
+	if (l_state.default_executor) {
+		l_state.default_executor->SetChunk(chunk);
+	}
 
 	DataChunk &update_chunk = l_state.update_chunk;
 	update_chunk.Reset();
@@ -155,7 +189,7 @@ SinkResultType PhysicalUpdate::Sink(ExecutionContext &context, DataChunk &chunk,
 	for (idx_t i = 0; i < expressions.size(); i++) {
 		// Default expression, set to the default value of the column.
 		if (expressions[i]->GetExpressionType() == ExpressionType::VALUE_DEFAULT) {
-			l_state.default_executor.ExecuteExpression(columns[i].index, update_chunk.data[i]);
+			l_state.default_executor->ExecuteExpression(columns[i].index, update_chunk.data[i]);
 			continue;
 		}
 
@@ -241,18 +275,26 @@ SinkResultType PhysicalUpdate::Sink(ExecutionContext &context, DataChunk &chunk,
 	auto &delete_chunk = index_update ? l_state.delete_chunk : l_state.mock_chunk;
 	delete_chunk.Reset();
 
-	if (index_update) {
-		auto &transaction = DuckTransaction::Get(context.client, table.db);
-		vector<StorageIndex> column_ids;
-		for (idx_t i = 0; i < table.ColumnCount(); i++) {
-			column_ids.emplace_back(i);
-		};
-		// Fetch the previous index keys for exactly the rows we delete. Use the deduplicated row-ids
-		// (del_row_ids) so Fetch, Delete, and LocalAppend all operate on the same rows; flatten first because
-		// deduplication slices del_row_ids into a dictionary vector, which Fetch cannot read.
+	// Without unique indexes the delete chunk stays empty, so no delete index entries are added.
+	if (index_update && !l_state.fetch_column_ids.empty()) {
+		auto &column_ids = l_state.fetch_column_ids;
+		auto &fetch_chunk = l_state.fetch_chunk;
+		// Fetch needs a flat vector, but deduplication may have sliced del_row_ids into a dictionary.
 		del_row_ids.Flatten();
+		fetch_chunk.Reset();
 		auto fetch_state = ColumnFetchState();
-		table.Fetch(transaction, delete_chunk, column_ids, del_row_ids, update_count, fetch_state);
+		auto &transaction = DuckTransaction::Get(context.client, table.db);
+		table.Fetch(transaction, fetch_chunk, column_ids, del_row_ids, update_count, fetch_state);
+
+		idx_t fetch_idx = 0;
+		for (idx_t i = 0; i < delete_chunk.ColumnCount(); i++) {
+			if (fetch_idx < column_ids.size() && column_ids[fetch_idx].GetPrimaryIndex() == i) {
+				delete_chunk.data[i].Reference(fetch_chunk.data[fetch_idx++]);
+			} else {
+				delete_chunk.data[i].Reference(Value(l_state.table_types[i]), count_t(update_count));
+			}
+		}
+		delete_chunk.CheckCardinality(update_count);
 	}
 
 	auto &delete_state = l_state.GetDeleteState(table, tableref, context.client);
@@ -285,8 +327,8 @@ unique_ptr<GlobalSinkState> PhysicalUpdate::GetGlobalSinkState(ClientContext &co
 }
 
 unique_ptr<LocalSinkState> PhysicalUpdate::GetLocalSinkState(ExecutionContext &context) const {
-	return make_uniq<UpdateLocalState>(context.client, expressions, table.GetTypes(), bound_defaults, bound_constraints,
-	                                   capture_old_rows);
+	return make_uniq<UpdateLocalState>(context.client, table, expressions, table.GetTypes(), bound_defaults,
+	                                   bound_constraints, capture_old_rows, index_update);
 }
 
 SinkCombineResultType PhysicalUpdate::Combine(ExecutionContext &context, OperatorSinkCombineInput &input) const {

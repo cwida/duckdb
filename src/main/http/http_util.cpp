@@ -190,9 +190,10 @@ unique_ptr<HTTPResponse> HTTPUtil::Request(BaseRequest &request, unique_ptr<HTTP
 		// HTTP requests access an external resource - check this is allowed by the file access settings. This is the
 		// central check for requests that do not go through the file system (e.g. the REST catalog calls of iceberg).
 		auto &config = request.params.db->config;
-		if (!config.CanAccessFile(request.url, FileType::FILE_TYPE_REGULAR)) {
+		auto &access_path = request.params.access_path.empty() ? request.url : request.params.access_path;
+		if (!config.CanAccessFile(access_path, FileType::FILE_TYPE_REGULAR)) {
 			throw PermissionException("Cannot access \"%s\" - file system operations are disabled by configuration",
-			                          request.url);
+			                          access_path);
 		}
 	}
 	auto response = SendRequest(request, client);
@@ -582,15 +583,13 @@ void HTTPParams::Initialize(optional_ptr<FileOpener> opener) {
 
 unique_ptr<HTTPParams> HTTPUtil::InitializeParameters(DatabaseInstance &db, const string &url) {
 	DatabaseFileOpener opener(db);
-	FileOpenerInfo info;
-	info.file_path = url;
+	FileOpenerInfo info(url);
 	return InitializeParameters(&opener, &info);
 }
 
 unique_ptr<HTTPParams> HTTPUtil::InitializeParameters(ClientContext &context, const string &url) {
 	ClientContextFileOpener opener(context);
-	FileOpenerInfo info;
-	info.file_path = url;
+	FileOpenerInfo info(url);
 	return InitializeParameters(&opener, &info);
 }
 

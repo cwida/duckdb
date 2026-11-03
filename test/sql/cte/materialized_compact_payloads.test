@@ -1,0 +1,117 @@
+# name: test/sql/cte/materialized_compact_payloads.test
+# description: Constant and repetitive payloads through materialized CTEs
+# group: [cte]
+
+# constant columns of every major type through a pipeline-dependent materialized CTE
+query IIIIIIIIII
+WITH m AS MATERIALIZED (
+	SELECT i,
+	       42::BIGINT AS c_bigint,
+	       2.5::DOUBLE AS c_double,
+	       'short' AS c_str_inlined,
+	       'a_constant_string_payload_longer_than_twelve_bytes' AS c_str_long,
+	       DATE '2024-02-29' AS c_date,
+	       INTERVAL 3 MONTH AS c_interval,
+	       170141183460469231731687303715884105727::HUGEINT AS c_hugeint,
+	       true AS c_bool,
+	       NULL::INTEGER AS c_null
+	FROM range(100000) t(i)
+)
+SELECT count(*), min(c_bigint), max(c_double), min(c_str_inlined), max(c_str_long), min(c_date),
+       max(c_interval), min(c_hugeint), bool_and(c_bool), count(c_null)
+FROM m JOIN (SELECT max(i) AS mi FROM m) x ON m.i <= x.mi
+----
+100000	42	2.5	short	a_constant_string_payload_longer_than_twelve_bytes	2024-02-29	3 months	170141183460469231731687303715884105727	true	0
+
+# mixed appends into the same collection: constant chunks interleaved with varying chunks
+# and with constant chunks of a different value
+query IIII
+WITH m AS MATERIALIZED (
+	SELECT 'constant_a' AS c, i FROM range(1000) t(i)
+	UNION ALL
+	SELECT 'v' || (i % 13), i + 1000 FROM range(777) t(i)
+	UNION ALL
+	SELECT 'constant_b', i + 2000 FROM range(1000) t(i)
+	UNION ALL
+	SELECT 'constant_a', i + 3000 FROM range(500) t(i)
+)
+SELECT count(*), count(DISTINCT c), min(c), max(c)
+FROM m JOIN (SELECT max(i) AS mi FROM m) x ON m.i <= x.mi
+----
+3277	15	constant_a	v9
+
+# a NULL constant interleaved with non-NULL constants of the same column
+query III
+WITH m AS MATERIALIZED (
+	SELECT NULL::VARCHAR AS c, i FROM range(900) t(i)
+	UNION ALL
+	SELECT 'present', i + 900 FROM range(900) t(i)
+	UNION ALL
+	SELECT NULL, i + 1800 FROM range(900) t(i)
+)
+SELECT count(*), count(c), min(c) FROM m JOIN (SELECT max(i) AS mi FROM m) x ON m.i <= x.mi
+----
+2700	900	present
+
+# the compact form survives a hop into a second materialized collection
+query IIII
+WITH m1 AS MATERIALIZED (SELECT i, 'hop_payload_string_longer_than_twelve' AS c FROM range(50000) t(i)),
+     m2 AS MATERIALIZED (SELECT i, c FROM m1)
+SELECT count(*), count(DISTINCT c), min(c), max(c)
+FROM m2 JOIN (SELECT max(i) AS mi FROM m2) x ON m2.i <= x.mi
+----
+50000	1	hop_payload_string_longer_than_twelve	hop_payload_string_longer_than_twelve
+
+# UNION (distinct) consuming constant columns out of a materialized CTE
+query II
+WITH m AS MATERIALIZED (SELECT 'dup_value' AS c, i % 10 AS g FROM range(10000) t(i))
+SELECT count(*), min(c) FROM (SELECT c, g FROM m UNION SELECT c, g FROM m)
+----
+10	dup_value
+
+# window function over constant payload columns
+query III
+WITH m AS MATERIALIZED (SELECT i, 'window_const_payload' AS c FROM range(20000) t(i))
+SELECT count(lc), min(lc), count(*) FROM (SELECT lag(c) OVER (ORDER BY i) AS lc FROM m)
+----
+19999	window_const_payload	20000
+
+# constants carried through a recursive CTE: the working table re-appends scanned chunks
+query IIII
+WITH RECURSIVE r(i, c, n) AS (
+	SELECT 0, 'recursive_constant_payload_string', NULL::VARCHAR
+	UNION ALL
+	SELECT i + 1, c, n FROM r WHERE i < 3000
+)
+SELECT count(*), count(DISTINCT c), min(c), count(n) FROM r
+----
+3001	1	recursive_constant_payload_string	0
+
+# a very long constant string exceeding the inlined representation by far
+query III
+WITH m AS MATERIALIZED (SELECT i, repeat('x', 50000) AS c FROM range(5000) t(i))
+SELECT count(*), min(strlen(c)), count(DISTINCT c) FROM m JOIN (SELECT max(i) AS mi FROM m) x ON m.i <= x.mi
+----
+5000	50000	1
+
+# fetching rows out of order still returns the constant values
+query II
+WITH m AS MATERIALIZED (SELECT i, 'ordered_constant' AS c FROM range(10000) t(i))
+SELECT c, i FROM m JOIN (SELECT max(i) AS mi FROM m) x ON m.i <= x.mi ORDER BY i DESC LIMIT 2
+----
+ordered_constant	9999
+ordered_constant	9998
+
+# constant list and struct columns keep working through the flatten fallback
+query IIII
+WITH m AS MATERIALIZED (SELECT i, [1, 2, 3, 4, 5, 6, 7, 8] AS l, {'a': 7, 'b': 'str'} AS s FROM range(20000) t(i))
+SELECT count(*), sum(l[3]), min(s.a), max(s.b) FROM m JOIN (SELECT max(i) AS mi FROM m) x ON m.i <= x.mi
+----
+20000	60000	7	str
+
+# cross product rescanning a materialized constant string
+query II
+WITH big AS MATERIALIZED (SELECT repeat('y', 100000) AS s)
+SELECT count(*), sum(strlen(s)) FROM range(10000) r(x), big
+----
+10000	1000000000

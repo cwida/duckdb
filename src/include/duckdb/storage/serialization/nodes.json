@@ -311,7 +311,10 @@
     ],
     "constructor": [
       "seed"
-    ]
+    ],
+    "methods": {
+      "Verify": []
+    }
   },
   {
     "class": "BaseReservoirSampling",
@@ -624,7 +627,12 @@
       "expression",
       "category"
     ],
-    "pointer_type": "none"
+    "pointer_type": "none",
+    "finalize_deserialization": [
+      "if (result.Generated() && !result.HasGeneratedExpression()) {",
+      "\tthrow SerializationException(\"Failed to deserialize: generated column has no expression\");",
+      "}"
+    ]
   },
   {
     "class": "ColumnList",
@@ -1333,6 +1341,9 @@
         "type": "string"
       }
     ],
+    "methods": {
+      "Verify": []
+    },
     "pointer_type": "none"
   },
   {

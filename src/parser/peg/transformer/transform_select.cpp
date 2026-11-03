@@ -1711,7 +1711,13 @@ optional_idx PEGTransformerFactory::TransformRepeatableSample(PEGTransformer &tr
 optional_idx PEGTransformerFactory::TransformSampleSeed(PEGTransformer &transformer,
                                                         unique_ptr<ParsedExpression> number_literal) {
 	auto &const_expr = number_literal->Cast<ConstantExpression>();
-	return optional_idx(const_expr.GetLiteral().ToValue().GetValue<idx_t>());
+	auto seed = const_expr.GetLiteral().ToValue().GetValue<idx_t>();
+	if (seed > static_cast<idx_t>(NumericLimits<int64_t>::Maximum())) {
+		// larger seeds are seen as "no seed" and give a different sample every time
+		throw ParserException("REPEATABLE seed %llu is out of range, the maximum is %lld", seed,
+		                      NumericLimits<int64_t>::Maximum());
+	}
+	return optional_idx(seed);
 }
 
 unique_ptr<SampleOptions> PEGTransformerFactory::TransformSampleCount(PEGTransformer &transformer,

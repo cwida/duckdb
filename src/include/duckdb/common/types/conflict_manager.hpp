@@ -18,6 +18,9 @@ namespace duckdb {
 class Index;
 class IndexEntry;
 class ConflictInfo;
+class DataTable;
+class DuckTransaction;
+class LocalStorage;
 
 enum class ConflictManagerMode : uint8_t {
 	SCAN, // Gather conflicts without throwing a constraint exception.

@@ -11,7 +11,7 @@ functions:
   # TODO: This should probably take an "alignment" parameter too
   arena_allocate:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Allocate `byte_len` bytes from the arena.
 

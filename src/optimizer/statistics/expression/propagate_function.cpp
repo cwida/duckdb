@@ -24,6 +24,24 @@ bool TryEvaluateAtConstants(ClientContext &context, const BoundFunctionExpressio
 	return ExpressionExecutor::TryEvaluateScalar(context, *clone, result);
 }
 
+// Whether [lo, hi] holds -infinity and another value. The smallest finite DATE or TIMESTAMP sorts below -infinity.
+bool HoldsNegativeInfinity(const Value &lo, const Value &hi) {
+	switch (lo.type().id()) {
+	case LogicalTypeId::DATE:
+	case LogicalTypeId::TIMESTAMP:
+	case LogicalTypeId::TIMESTAMP_SEC:
+	case LogicalTypeId::TIMESTAMP_MS:
+	case LogicalTypeId::TIMESTAMP_NS:
+	case LogicalTypeId::TIMESTAMP_TZ:
+	case LogicalTypeId::TIMESTAMP_TZ_NS: {
+		auto ninfinity = Value::NegativeInfinity(lo.type());
+		return lo < hi && lo <= ninfinity && ninfinity <= hi;
+	}
+	default:
+		return false;
+	}
+}
+
 // Equal bounds need not imply identical inputs for certain types, so we skip this optimization for those values.
 // Floating-point bounds only lose information for the sign of zero.
 bool CanInferConstantFromNumericBounds(const Value &value) {
@@ -71,7 +89,7 @@ bool TryInferConstantBounds(const BaseStatistics &stats, Value &constant) {
 unique_ptr<BaseStatistics> StatisticsPropagator::PropagateConstantInputs(ClientContext &context,
                                                                          const BoundFunctionExpression &func,
                                                                          const vector<BaseStatistics> &child_stats) {
-	if (func.Function().GetStability() != FunctionStability::CONSISTENT || func.GetChildren().empty()) {
+	if (func.Function().GetStability() == FunctionStability::VOLATILE || func.GetChildren().empty()) {
 		return nullptr;
 	}
 	// Lambda arguments are placeholders, not SQL values that can be evaluated independently.
@@ -108,7 +126,7 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateMonotoneBounds(ClientC
 	if (!func.Function().HasArgProperties() || func.GetChildren().empty()) {
 		return nullptr;
 	}
-	if (func.Function().GetStability() != FunctionStability::CONSISTENT) {
+	if (func.Function().GetStability() == FunctionStability::VOLATILE) {
 		return nullptr;
 	}
 	if (BaseStatistics::GetStatsType(func.GetReturnType()) != StatisticsType::NUMERIC_STATS ||
@@ -190,7 +208,7 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateMonotoneBounds(ClientC
 		return nullptr;
 	}
 	if (out_hi < out_lo) {
-		throw InternalException("Monotonic arg annotation violated for '%s': output min exceeds output max",
+		throw InternalException("Monotonic arg annotation violated for %s: output min exceeds output max",
 		                        func.Function().GetName());
 	}
 
@@ -205,6 +223,18 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateMonotoneBounds(ClientC
 	return result.ToUnique();
 }
 
+unique_ptr<BaseStatistics> StatisticsPropagator::PropagateFiniteMonotoneBounds(ClientContext &context,
+                                                                               FunctionStatisticsInput &input) {
+	// -infinity gives NULL, and it can lie between the bounds of an argument
+	for (auto &stats : input.child_stats) {
+		if (stats.GetStatsType() == StatisticsType::NUMERIC_STATS && NumericStats::HasMinMax(stats) &&
+		    HoldsNegativeInfinity(NumericStats::Min(stats), NumericStats::Max(stats))) {
+			return nullptr;
+		}
+	}
+	return PropagateMonotoneBounds(context, input.expr, input.child_stats);
+}
+
 unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundFunctionExpression &func,
                                                                      unique_ptr<Expression> &expr_ptr) {
 	if (func.GetExpressionType() == ExpressionType::COMPARE_BETWEEN) {
@@ -215,13 +245,22 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(BoundFuncti
 	}
 	vector<BaseStatistics> stats;
 	stats.reserve(func.GetChildrenMutable().size());
-	for (idx_t i = 0; i < func.GetChildrenMutable().size(); i++) {
-		auto stat = PropagateExpression(func.GetChildrenMutable()[i]);
+	bool has_invalidated_parameter = false;
+	for (auto &child : func.GetChildrenMutable()) {
+		auto stat = PropagateExpression(child);
+		// an invalidated parameter has no statistics until it is rebound at execution
+		if (child->GetExpressionType() == ExpressionType::VALUE_PARAMETER &&
+		    child->GetReturnType().id() == LogicalTypeId::SQLNULL) {
+			has_invalidated_parameter = true;
+		}
 		if (!stat) {
-			stats.push_back(BaseStatistics::CreateUnknown(func.GetChildrenMutable()[i]->GetReturnType()));
+			stats.push_back(BaseStatistics::CreateUnknown(child->GetReturnType()));
 		} else {
 			stats.push_back(stat->Copy());
 		}
+	}
+	if (has_invalidated_parameter) {
+		return nullptr;
 	}
 	auto constant_stats = PropagateConstantInputs(context, func, stats);
 	if (constant_stats) {

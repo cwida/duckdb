@@ -31,7 +31,7 @@ struct RadixHTConfig {
 public:
 	explicit RadixHTConfig(RadixHTGlobalSinkState &sink);
 
-	void Reset();
+	void ResetForNewIteration(idx_t scheduled_workers);
 	void SetRadixBits(const idx_t &radix_bits_p);
 	bool SetRadixBitsToExternal();
 	idx_t GetRadixBits() const;
@@ -39,7 +39,7 @@ public:
 
 private:
 	void SetRadixBitsInternal(idx_t radix_bits_p, bool external);
-	idx_t InitialSinkRadixBits() const;
+	idx_t InitialSinkRadixBits(idx_t num_threads) const;
 	idx_t ExternalRadixBits(bool dynamic) const;
 	idx_t MaximumSinkRadixBits() const;
 	idx_t SinkCapacity() const;
@@ -95,6 +95,12 @@ public:
 	//! Destroys aggregate states (if multi-scan)
 	~RadixHTGlobalSinkState() override;
 	void Destroy();
+	//! Minimum reservation to sink into HTs partitioned by the given radix bits
+	idx_t CalculateMinimumReservation(idx_t radix_bits) const;
+	//! Recomputes and publishes the reservation floor for the given radix bits
+	void SetReservationFloor(ClientContext &context, idx_t radix_bits);
+	//! Restarts the sink configuration for a recursive iteration and resets the floor to match
+	void ResetConfigForNewIteration(ClientContext &context, idx_t scheduled_workers);
 
 public:
 	idx_t GetThreadLimit() const {
@@ -113,6 +119,8 @@ public:
 	bool finalized;
 	//! Whether we are doing an external aggregation
 	atomic<bool> external;
+	//! Whether the recursive runtime reset this sink for reuse across iterations
+	atomic<bool> iteration_reused;
 	//! Threads that have called Sink
 	atomic<idx_t> active_threads;
 	//! Number of threads (from TaskScheduler)
@@ -128,13 +136,13 @@ public:
 
 	//! The radix HT
 	const RadixPartitionedHashTable &radix_ht;
+	//! The spill metadata of the aggregate layout, set if the states can spill
+	unique_ptr<AggregateStateSpillPlan> spill_plan;
 	//! Config for partitioning
 	RadixHTConfig config;
 
 	//! Uncombined partitioned data that will be put into the AggregatePartitions
 	unique_ptr<PartitionedTupleData> uncombined_data;
-	//! The spill metadata of the aggregate layout, set if the states can spill
-	unique_ptr<AggregateStateSpillPlan> spill_plan;
 	//! Synchronizes the transition to exported-only aggregation with concurrent combines
 	SpillPhase spill_phase DUCKDB_GUARDED_BY(lock);
 	//! Uncombined exported data, aligned one-to-one with the partitions of uncombined_data

@@ -21,12 +21,14 @@ namespace duckdb::capiv2 {
 namespace {
 
 struct StatementIteratorWrapperV2 {
-	StatementIteratorWrapperV2(shared_ptr<ClientContext> context_p, string query_p)
-	    : context(std::move(context_p)), query(std::move(query_p)) {
+	StatementIteratorWrapperV2(shared_ptr<ClientContext> context_p, string query_p, bool apply_invalidation_policy_p)
+	    : context(std::move(context_p)), query(std::move(query_p)),
+	      apply_invalidation_policy(apply_invalidation_policy_p) {
 	}
 	shared_ptr<ClientContext> context;
 	//! The original query string, kept to render a parse error through ProcessError.
 	string query;
+	bool apply_invalidation_policy;
 	//! Constructed on the first next(): the ParseIterator constructor runs UTF-8
 	//! validation and can throw, and that must route through the same parse-error
 	//! rendering as a per-statement syntax error.
@@ -85,7 +87,7 @@ auto Convert(StatementIteratorWrapperV2 *ptr) -> duckdb_v2_statement_iterator_ha
 
 using namespace duckdb::capiv2;
 
-DUCKDB_V2_ERROR duckdb_v2_parse_sql(duckdb_v2_connection_handle conn, const char *sql,
+DUCKDB_V2_ERROR duckdb_v2_parse_sql(duckdb_v2_connection_handle conn, const char *sql, bool apply_invalidation_policy,
                                     duckdb_v2_statement_iterator_handle *out_iterator,
                                     duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(conn);
@@ -103,7 +105,8 @@ DUCKDB_V2_ERROR duckdb_v2_parse_sql(duckdb_v2_connection_handle conn, const char
 		// statement_execute, so a statement group is never split across the API
 		// boundary. A parse error is not raised here; it surfaces from the next()
 		// that reaches the failing statement.
-		auto wrapper = duckdb::make_uniq<StatementIteratorWrapperV2>(connection->context, std::string(sql));
+		auto wrapper = duckdb::make_uniq<StatementIteratorWrapperV2>(connection->context, std::string(sql),
+		                                                             apply_invalidation_policy);
 		*out_iterator = Convert(wrapper.release());
 	});
 }
@@ -125,7 +128,8 @@ DUCKDB_V2_ERROR duckdb_v2_statement_iterator_next(duckdb_v2_statement_iterator_h
 			// Construct the ParseIterator on first use: its constructor runs UTF-8
 			// validation and can throw, routed through the same rendering below.
 			if (!wrapper->iterator) {
-				wrapper->iterator = duckdb::make_uniq<duckdb::ParseIterator>(*wrapper->context, wrapper->query);
+				wrapper->iterator = duckdb::make_uniq<duckdb::ParseIterator>(*wrapper->context, wrapper->query,
+				                                                             wrapper->apply_invalidation_policy);
 			}
 			// Parse the next statement on demand. Peek returns false at exhaustion;
 			// *out_statement then stays NULL, idempotently.

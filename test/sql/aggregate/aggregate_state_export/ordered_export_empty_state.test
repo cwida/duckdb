@@ -1,0 +1,32 @@
+# name: test/sql/aggregate/aggregate_state_export/ordered_export_empty_state.test
+# description: an ordered aggregate EXPORT_STATE over an empty group must finalize to the aggregate's empty result
+# group: [aggregate_state_export]
+
+# count over an empty group is 0 - previously the exported sorted-aggregate state was NULL, so finalize returned NULL
+query I
+SELECT finalize(count(i ORDER BY k) EXPORT_STATE) FROM (SELECT 1 i, 1 k) WHERE false;
+----
+0
+
+# aggregates whose empty-group result is NULL stay NULL
+query I
+SELECT finalize(sum(i ORDER BY k) EXPORT_STATE) FROM (SELECT 1 i, 1 k) WHERE false;
+----
+NULL
+
+query I
+SELECT finalize(list(i ORDER BY i) EXPORT_STATE) FROM (SELECT 1 AS i WHERE false) t;
+----
+NULL
+
+# non-empty groups are unaffected
+query I
+SELECT finalize(count(i ORDER BY k) EXPORT_STATE) FROM (VALUES (1,1),(2,2),(3,3)) t(i,k);
+----
+3
+
+# matches plain execution (no EXPORT_STATE round-trip)
+query I
+SELECT count(i ORDER BY k) FROM (SELECT 1 i, 1 k) WHERE false;
+----
+0

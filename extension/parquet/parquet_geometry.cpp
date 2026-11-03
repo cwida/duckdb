@@ -338,7 +338,8 @@ void GeoParquetFileMetadata::Write(duckdb_parquet::FileMetaData &file_meta_data)
 	}
 
 	// Create a string from the JSON
-	duckdb_parquet::KeyValue kv;
+	file_meta_data.key_value_metadata.emplace_back();
+	auto &kv = file_meta_data.key_value_metadata.back();
 	kv.__set_key("geo");
 	kv.__set_value(string(json, len));
 
@@ -346,7 +347,6 @@ void GeoParquetFileMetadata::Write(duckdb_parquet::FileMetaData &file_meta_data)
 	free(json);
 	yyjson_mut_doc_free(doc);
 
-	file_meta_data.key_value_metadata.push_back(kv);
 	file_meta_data.__isset.key_value_metadata = true;
 }
 

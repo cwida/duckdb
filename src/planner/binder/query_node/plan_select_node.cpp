@@ -26,6 +26,11 @@ bool Binder::DebugAggregateStateExportVerify(BoundSelectNode &statement, unique_
 	if (!Settings::Get<DebugVerifyAggregateStateExportSetting>(context)) {
 		return false;
 	}
+	if (IsBindingTrySubquery()) {
+		// TRY is lowered onto these aggregates after planning; the verification rewrite would hide
+		// them behind an aggregate-state export, so the error capture could no longer reach them
+		return false;
+	}
 	if (statement.groups.grouping_sets.size() > 1 || !statement.grouping_functions.empty()) {
 		// verification is not supported with multiple grouping sets / grouping functions (yet?)
 		return false;
@@ -128,6 +133,23 @@ bool Binder::DebugAggregateStateExportVerify(BoundSelectNode &statement, unique_
 
 unique_ptr<LogicalOperator> Binder::CreatePlan(BoundSelectNode &statement) {
 	D_ASSERT(statement.from_table.plan);
+	if (IsBindingTrySubquery()) {
+		// record the indexes of this node, so TRY can be lowered onto exactly this node's projection
+		auto &try_indexes = GetTrySubqueryPlanIndexesMutable();
+		try_indexes.recorded = true;
+		try_indexes.projection_index = statement.projection_index;
+		if (statement.need_prune) {
+			try_indexes.prune_index = statement.prune_index;
+		}
+		try_indexes.aggregate_index = statement.aggregate_index;
+		try_indexes.window_index = statement.window_index;
+		for (auto &entry : statement.unnests.SelectList()) {
+			try_indexes.unnest_indexes.push_back(entry.second.index);
+		}
+		for (auto &entry : statement.unnests.GroupBy()) {
+			try_indexes.unnest_indexes.push_back(entry.second.index);
+		}
+	}
 	auto root = std::move(statement.from_table.plan);
 
 	auto plan_unnests = [&](BoundUnnestMap &unnests) {

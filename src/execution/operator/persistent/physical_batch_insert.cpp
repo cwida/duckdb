@@ -387,7 +387,8 @@ SinkNextBatchType PhysicalBatchInsert::NextBatch(ExecutionContext &context, Oper
 			throw InternalException("NextBatch called with the same batch index?");
 		}
 		// batch index has changed: move the old collection to the global state and create a new collection
-		auto tdata = TransactionData::Unversioned();
+		// the transaction id keeps the rows invisible to other transactions until the commit
+		TransactionData tdata(DuckTransaction::Get(context.client, gstate.table.catalog));
 		auto &optimistic_collection =
 		    gstate.table.GetStorage().GetOptimisticCollection(context.client, lstate.collection_index);
 		auto &collection = *optimistic_collection.collection;
@@ -497,7 +498,7 @@ SinkCombineResultType PhysicalBatchInsert::Combine(ExecutionContext &context, Op
 	memory_manager.UpdateMinBatchIndex(lstate.partition_info.min_batch_index.GetIndex());
 
 	if (lstate.collection_index.IsValid()) {
-		auto tdata = TransactionData::Unversioned();
+		TransactionData tdata(DuckTransaction::Get(context.client, gstate.table.catalog));
 		auto &optimistic_collection =
 		    gstate.table.GetStorage().GetOptimisticCollection(context.client, lstate.collection_index);
 		auto &collection = *optimistic_collection.collection;

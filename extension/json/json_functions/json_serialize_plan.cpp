@@ -1,5 +1,7 @@
+#include "duckdb/common/storage_compatibility.hpp"
 #include "duckdb/execution/column_binding_resolver.hpp"
 #include "duckdb/execution/expression_executor.hpp"
+#include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/main/connection.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/parser/parsed_data/create_pragma_function_info.hpp"
@@ -84,7 +86,7 @@ static unique_ptr<FunctionData> JsonSerializePlanBind(BindScalarFunctionInput &i
 			}
 			optimize = BooleanValue::Get(input.GetConstant(i));
 		} else {
-			throw BinderException(StringUtil::Format("json_serialize_plan: Unknown argument '%s'", alias));
+			throw BinderException(StringUtil::Format("json_serialize_plan: Unknown argument %s", alias));
 		}
 	}
 	return make_uniq<JsonSerializePlanBindData>(skip_if_null, skip_if_empty, skip_if_default, format, optimize);
@@ -133,6 +135,10 @@ static void JsonSerializePlanFunction(DataChunk &args, ExpressionState &state, V
 				Planner planner(context);
 				planner.CreatePlan(std::move(stmt));
 				auto plan = std::move(planner.plan);
+				if (!plan) {
+					throw InvalidInputException("json_serialize_plan: statement cannot be planned, parameters need "
+					                            "to have a known value to serialize the plan");
+				}
 
 				if (info.optimize && plan->RequireOptimizer()) {
 					Optimizer optimizer(*planner.binder, context);
@@ -149,8 +155,12 @@ static void JsonSerializePlanFunction(DataChunk &args, ExpressionState &state, V
 					throw InvalidInputException("Operator '%s' does not support serialization", operator_name);
 				}
 
-				auto plan_json =
-				    JsonSerializer::Serialize(*plan, doc, info.skip_if_null, info.skip_if_empty, info.skip_if_default);
+				// plan inspection needs the complete current representation, not the default
+				// storage compatibility
+				SerializationOptions serialization_options;
+				serialization_options.storage_compatibility = StorageCompatibility::Latest();
+				auto plan_json = JsonSerializer::Serialize(*plan, doc, info.skip_if_null, info.skip_if_empty,
+				                                           info.skip_if_default, std::move(serialization_options));
 				yyjson_mut_arr_append(plans_arr, plan_json);
 			}
 

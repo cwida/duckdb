@@ -319,7 +319,7 @@ static bool TryParseCustomOffset(const string &id, int32_t &offset) {
 	static constexpr int32_t MAX_MINUTE = 59;
 	static constexpr int32_t MAX_SECOND = 59;
 
-	if (id.size() < GMT_LENGTH + 2 || !StringUtil::CIEquals(id.substr(0, GMT_LENGTH), "GMT")) {
+	if (id.size() < GMT_LENGTH + 2 || !StringUtil::CIStartsWith(id, "GMT")) {
 		return false;
 	}
 	int32_t sign;

@@ -1529,7 +1529,7 @@ void StringValueScanner::ProcessOverBufferValue() {
 	}
 	bool skip_value = false;
 	if (result.projecting_columns) {
-		if (!result.projected_columns[result.cur_col_id] && result.cur_col_id != result.number_of_columns) {
+		if (result.cur_col_id < result.number_of_columns && !result.projected_columns[result.cur_col_id]) {
 			result.cur_col_id++;
 			skip_value = true;
 		}

@@ -49,7 +49,7 @@ int64_t SubtractOperator::Operation(timestamp_t left, timestamp_t right);
 struct TrySubtractOperator {
 	template <class TA, class TB, class TR>
 	static inline bool Operation(TA left, TB right, TR &result) {
-		throw InternalException("Unimplemented type for TrySubtractOperator");
+		InternalException::Throw("Unimplemented type for TrySubtractOperator");
 	}
 };
 
@@ -90,7 +90,7 @@ struct SubtractOperatorOverflowCheck {
 struct TryDecimalSubtract {
 	template <class TA, class TB, class TR>
 	static inline bool Operation(TA left, TB right, TR &result) {
-		throw InternalException("Unimplemented type for TryDecimalSubtract");
+		InternalException::Throw("Unimplemented type for TryDecimalSubtract");
 	}
 };
 

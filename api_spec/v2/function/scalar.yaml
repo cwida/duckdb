@@ -131,7 +131,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   scalar_function_create:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: |
       Creates a new scalar function through a factory.
 
@@ -164,7 +164,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   scalar_function_set_name:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: |
       Sets the name of the scalar function.
 
@@ -189,7 +189,7 @@ functions:
 
   scalar_function_get_docs:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-09" ]
+      - [ "unstable", "v2.0.0", "2026-10-09" ]
     description: |
       Returns the documentation of the function so it can be filled in.
 
@@ -215,7 +215,7 @@ functions:
 
   scalar_function_get_signature:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: |
       Returns the function's signature so it can be configured.
 
@@ -242,7 +242,7 @@ functions:
 
   scalar_function_set_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: |
       Sets arbitrary user data on the scalar function.
 
@@ -266,7 +266,7 @@ functions:
 
   scalar_function_set_property:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-31" ]
+      - [ "unstable", "v2.0.0", "2026-08-31" ]
     description: |
       Sets a property on the scalar function.
 
@@ -292,7 +292,7 @@ functions:
 
   scalar_function_set_resolve_types_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-05" ]
+      - [ "unstable", "v2.0.0", "2026-10-05" ]
     description: |
       Sets the optional resolve types callback of the scalar function.
 
@@ -316,7 +316,7 @@ functions:
 
   scalar_function_set_bind_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: |
       Sets the optional bind callback of the scalar function.
 
@@ -340,7 +340,7 @@ functions:
 
   scalar_function_set_init_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: |
       Sets the optional init callback of the scalar function.
 
@@ -362,7 +362,7 @@ functions:
 
   scalar_function_set_exec_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: |
       Sets the exec callback of the scalar function.
 
@@ -409,7 +409,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   scalar_function_resolve_types_set_return_type:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-05" ]
+      - [ "unstable", "v2.0.0", "2026-10-05" ]
     description: |
       Sets the concrete return type of the call site being bound.
 
@@ -434,7 +434,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   scalar_function_bind_set_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-07" ]
+      - [ "unstable", "v2.0.0", "2026-10-07" ]
     description: |
       Sets the function's "bind data" from the bind callback.
 
@@ -462,7 +462,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   scalar_function_init_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: Retrieves the user data set via `[[scalar_function_set_user_data]]`.
     parameters:
       info:
@@ -481,7 +481,7 @@ functions:
 
   scalar_function_init_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: Retrieves the bind data set by the function's bind callback.
     parameters:
       info:
@@ -500,7 +500,7 @@ functions:
 
   scalar_function_init_set_init_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: |
       Sets the function's worker-local "init data" from the init callback.
 
@@ -526,7 +526,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   scalar_function_exec_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: Retrieves the user data set via `[[scalar_function_set_user_data]]`.
     parameters:
       info:
@@ -545,7 +545,7 @@ functions:
 
   scalar_function_exec_get_bind_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: Retrieves the bind data set by the function's bind callback.
     parameters:
       info:
@@ -564,7 +564,7 @@ functions:
 
   scalar_function_exec_get_init_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: Retrieves the worker-local init data set by the function's init callback.
     parameters:
       info:
@@ -583,7 +583,7 @@ functions:
 
   scalar_function_exec_get_row_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: |
       Returns how many rows this execution must produce. The exec callback
       must write exactly this many rows to the result vector. Note that this
@@ -606,7 +606,7 @@ functions:
 
   scalar_function_exec_get_arg_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: |
       Returns how many argument vectors this invocation carries, split into the four parts of the argument list.
 
@@ -645,7 +645,7 @@ functions:
 
   scalar_function_exec_get_arg:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: |
       Retrieves the argument vector at the given index.
 
@@ -672,7 +672,7 @@ functions:
 
   scalar_function_exec_get_result:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: |
       Retrieves the result vector the exec callback must write into.
 
@@ -830,7 +830,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   connection_register_scalar_function:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: |
       Registers the scalar function, making it available for use in SQL queries.
 
@@ -858,7 +858,7 @@ functions:
 
   extension_register_scalar_function:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: |
       Registers the scalar function, making it available for use in SQL queries.
 
@@ -888,7 +888,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   scalar_function_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-11" ]
+      - [ "unstable", "v2.0.0", "2026-08-11" ]
     description: |
       Destroys the scalar function, releasing its resources.
 

@@ -6,10 +6,10 @@ statement ok
 SET enable_profiling='json'
 
 statement ok
-SET profiling_output='__TEST_DIR__/profiling_outside.json'
+SET profiling_output='{TEST_DIR}/profiling_outside.json'
 
 statement ok
-SET allowed_directories=['__TEST_DIR__/profiling_allowed']
+SET allowed_directories=['{TEST_DIR}/profiling_allowed']
 
 # writing the profiling output of this statement can already fail
 statement maybe

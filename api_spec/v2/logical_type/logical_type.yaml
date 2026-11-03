@@ -143,7 +143,7 @@ functions:
   # -----------------------------------------------------------------------
   factory_create_type_from_id:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a logical type from a type id plus value parameters.
 
@@ -209,7 +209,7 @@ functions:
 
   factory_create_type_from_name:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a logical type from a type name plus value parameters.
 
@@ -284,7 +284,7 @@ functions:
 
   factory_create_type_from_text:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a logical type by parsing SQL text.
 
@@ -334,7 +334,7 @@ functions:
 
   logical_type_copy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a copy of a logical type.
 
@@ -360,7 +360,7 @@ functions:
 
   logical_type_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Destroys a logical type handle.
 
@@ -379,7 +379,7 @@ functions:
   # -----------------------------------------------------------------------
   logical_type_is_equal:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Compares two logical types for deep equality.
 
@@ -409,7 +409,7 @@ functions:
 
   logical_type_get_id:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: Returns the logical type id.
     role: getter
     belongs_to: logical_type
@@ -431,7 +431,7 @@ functions:
 
   logical_type_get_name:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Borrows the logical type's name.
 
@@ -461,7 +461,7 @@ functions:
 
   logical_type_to_text:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Renders a logical type as SQL text.
 
@@ -512,7 +512,7 @@ functions:
   # -----------------------------------------------------------------------
   logical_type_get_param_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the number of value parameters of a logical type.
 
@@ -545,7 +545,7 @@ functions:
 
   logical_type_get_param:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns one value parameter of a logical type.
 
@@ -587,7 +587,7 @@ functions:
   # TODO: This function should be moved/removed/changed
   factory_create_type_with_alias:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a logical type that is an alias of another logical type.
 

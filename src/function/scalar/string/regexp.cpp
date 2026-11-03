@@ -77,12 +77,9 @@ RegexpMatchesBindData::RegexpMatchesBindData(duckdb_re2::RE2::Options options, s
                                              bool constant_pattern)
     : RegexpBaseBindData(options, std::move(constant_string_p), constant_pattern) {
 	if (constant_pattern) {
+		// an invalid pattern is reported when the function state is initialized
 		auto pattern = make_uniq<RE2>(constant_string, options);
-		if (!pattern->ok()) {
-			throw InvalidInputException(pattern->error());
-		}
-
-		range_success = pattern->PossibleMatchRange(&range_min, &range_max, 1000);
+		range_success = pattern->ok() && pattern->PossibleMatchRange(&range_min, &range_max, 1000);
 	} else {
 		range_success = false;
 	}
@@ -183,6 +180,18 @@ static unique_ptr<FunctionData> RegexReplaceBind(BindScalarFunctionInput &input)
 		ParseRegexOptions(input.GetConstant(3), data->options, &data->global_replace);
 	}
 	data->options.set_log_errors(false);
+
+	auto replacement = input.TryGetConstant(2);
+	if (data->constant_pattern && replacement && !replacement->IsNull() &&
+	    data->constant_string.find("\\C") == string::npos) {
+		RE2 validation_re(data->constant_string, data->options);
+		std::string rewrite_error;
+		if (validation_re.ok() &&
+		    validation_re.CheckRewriteString(CreateStringPiece(StringValue::Get(*replacement)), &rewrite_error)) {
+			// A valid pattern without byte escapes and a valid replacement cannot throw.
+			input.GetBoundFunction().SetErrorMode(FunctionErrors::CANNOT_ERROR);
+		}
+	}
 	return std::move(data);
 }
 

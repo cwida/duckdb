@@ -109,7 +109,7 @@ public:
 	//! If mode is set to destructive (default) - the old_block will be destroyed as part of this method
 	//! This can only be safely used when there is no other (lingering) usage of old_block
 	//! If there is concurrent usage of the block elsewhere - use the THREAD_SAFE mode which creates an extra copy
-	//! The new block keeps the memory tag of old_block, unless a tag is given
+	//! Unless a tag is given, keep old_block's tag, except IN_MEMORY_TABLE becomes BASE_TABLE.
 	shared_ptr<BlockHandle> ConvertToPersistent(QueryContext context, block_id_t block_id,
 	                                            shared_ptr<BlockHandle> old_block, BufferHandle old_handle,
 	                                            ConvertToPersistentMode mode = ConvertToPersistentMode::DESTRUCTIVE,

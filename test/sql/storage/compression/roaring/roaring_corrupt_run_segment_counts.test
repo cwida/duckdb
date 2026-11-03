@@ -1,0 +1,34 @@
+# name: test/sql/storage/compression/roaring/roaring_corrupt_run_segment_counts.test
+# description: Reject out-of-range Roaring runs decoded from corrupt subsegment counts
+# group: [roaring]
+
+require vector_size 2048
+
+require block_size 262144
+
+unzip data/storage/corrupt/roaring_corrupt_run_segment_counts.db.gz {TEST_DIR}/roaring_corrupt_run_segment_counts.db
+
+load {TEST_DIR}/roaring_corrupt_run_segment_counts.db readonly
+
+statement ok
+USE roaring_corrupt_run_segment_counts
+
+query I
+SELECT compression FROM pragma_storage_info('t') WHERE column_name='a' AND compression='Roaring' LIMIT 1;
+----
+Roaring
+
+statement error
+SELECT sum(a) FROM t;
+----
+Data Corruption Error: Corrupted Roaring segment: invalid run bounds or ordering
+
+restart
+
+statement ok
+SET debug_force_fetch_row=true;
+
+statement error
+SELECT sum(a) FROM t;
+----
+Data Corruption Error: Corrupted Roaring segment: invalid run bounds or ordering

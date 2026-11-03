@@ -1,0 +1,39 @@
+# name: test/sql/storage/external_file_cache/external_file_cache_metadata_memory.test
+# description: Block metadata of cached files is accounted as object cache memory
+# group: [external_file_cache]
+
+require parquet
+
+statement ok
+SET cache_local_files=true;
+
+statement ok
+SET parquet_metadata_cache=false;
+
+statement ok
+SET external_file_cache_local_max_block_size=4096;
+
+statement ok
+COPY (SELECT i, md5(i::VARCHAR) AS s FROM range(100000) r(i)) TO '{TEST_DIR}/efc_metadata_memory.parquet' (FORMAT PARQUET);
+
+statement ok
+SELECT sum(length(s)) FROM '{TEST_DIR}/efc_metadata_memory.parquet';
+
+query I
+SELECT count(*) > 100 FROM duckdb_external_file_cache();
+----
+true
+
+# the object cache memory covers every cached block, not only the file path
+query I
+SELECT (SELECT memory_usage_bytes FROM duckdb_memory() WHERE tag = 'OBJECT_CACHE') >= 100 * (SELECT count(*) FROM duckdb_external_file_cache());
+----
+true
+
+statement ok
+SET enable_external_file_cache=false;
+
+query II
+SELECT (SELECT count(*) FROM duckdb_external_file_cache()), (SELECT memory_usage_bytes FROM duckdb_memory() WHERE tag = 'OBJECT_CACHE');
+----
+0	0

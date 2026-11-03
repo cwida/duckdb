@@ -1,0 +1,129 @@
+# name: test/extension/test_add_grammar_extension.test
+# description: Activate and deactivate grammar extensions with add_grammar_extension / remove_grammar_extension
+# group: [extension]
+
+require skip_reload
+
+statement ok
+LOAD '{BUILD_DIRECTORY}/test/extension/loadable_grammar_extension_demo.duckdb_extension';
+
+statement ok
+CREATE TABLE produce(item VARCHAR, sales INTEGER);
+
+statement ok
+INSERT INTO produce VALUES ('apples', 10), ('bananas', 20);
+
+# registered, but not active until it is added
+query TI
+SELECT name, active FROM duckdb_grammar_extensions() WHERE name = 'pipe_query_syntax';
+----
+pipe_query_syntax	false
+
+statement error
+FROM produce |> WHERE item != 'bananas';
+----
+Parser Error
+
+statement ok
+CALL add_grammar_extension('pipe_query_syntax');
+
+query T
+SELECT current_setting('active_grammar_extensions');
+----
+[pipe_query_syntax]
+
+query TI
+SELECT name, active FROM duckdb_grammar_extensions() WHERE name = 'pipe_query_syntax';
+----
+pipe_query_syntax	true
+
+query TI
+FROM produce |> WHERE item != 'bananas';
+----
+apples	10
+
+# adding an active extension again is a no-op - names are case insensitive
+statement ok
+CALL add_grammar_extension('PIPE_QUERY_SYNTAX');
+
+query T
+SELECT current_setting('active_grammar_extensions');
+----
+[pipe_query_syntax]
+
+# unknown names are rejected without changing the active extensions
+statement error
+CALL add_grammar_extension('missing');
+----
+Grammar extension "missing" does not exist
+
+# close names get a suggestion
+statement error
+CALL add_grammar_extension('pipe_query_syntx');
+----
+<REGEX>:.*Grammar extension "pipe_query_syntx" does not exist.*Did you mean: "pipe_query_syntax".*
+
+statement error
+CALL remove_grammar_extension('missing');
+----
+Grammar extension "missing" does not exist
+
+statement error
+CALL add_grammar_extension(NULL);
+----
+cannot be NULL
+
+query T
+SELECT current_setting('active_grammar_extensions');
+----
+[pipe_query_syntax]
+
+statement ok
+CALL remove_grammar_extension('pipe_query_syntax');
+
+query T
+SELECT current_setting('active_grammar_extensions');
+----
+[]
+
+query TI
+SELECT name, active FROM duckdb_grammar_extensions() WHERE name = 'pipe_query_syntax';
+----
+pipe_query_syntax	false
+
+statement error
+FROM produce |> WHERE item != 'bananas';
+----
+Parser Error
+
+# removing an inactive extension is a no-op
+statement ok
+CALL remove_grammar_extension('pipe_query_syntax');
+
+query T
+SELECT current_setting('active_grammar_extensions');
+----
+[]
+
+# the functions change the same setting as SET / RESET
+statement ok
+SET active_grammar_extensions = ['pipe_query_syntax'];
+
+statement ok
+CALL remove_grammar_extension('pipe_query_syntax');
+
+statement error
+FROM produce |> WHERE item != 'bananas';
+----
+Parser Error
+
+statement ok
+CALL add_grammar_extension('pipe_query_syntax');
+
+statement ok
+RESET active_grammar_extensions;
+
+statement error
+FROM produce |> WHERE item != 'bananas';
+----
+Parser Error

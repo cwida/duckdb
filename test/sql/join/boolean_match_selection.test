@@ -1,0 +1,116 @@
+# name: test/sql/join/boolean_match_selection.test
+# description: Boolean join match arrays preserve membership, payloads and partial chunks
+# group: [join]
+
+statement ok
+CREATE TABLE probe AS
+SELECT i AS id, CASE WHEN i % 17 = 0 THEN NULL ELSE i % 257 END AS k,
+       CASE WHEN i % 13 = 0 THEN NULL ELSE 'row_' || i END AS payload
+FROM range(4099) t(i)
+
+statement ok
+CREATE TABLE build AS SELECT i AS k, i * 7 AS payload FROM range(257) t(i) WHERE i % 3 = 0
+
+statement ok
+CREATE TABLE duplicates AS SELECT * FROM build UNION ALL SELECT * FROM build
+
+statement ok
+INSERT INTO duplicates VALUES (NULL, -1)
+
+# Hash semi/anti membership with duplicate build keys and NULL probe/build keys.
+query I
+WITH actual AS (SELECT p.* FROM probe p SEMI JOIN duplicates b ON p.k = b.k),
+expected AS (SELECT * FROM probe WHERE k % 3 = 0)
+SELECT count(*) FROM (
+    (SELECT * FROM actual EXCEPT ALL SELECT * FROM expected)
+    UNION ALL
+    (SELECT * FROM expected EXCEPT ALL SELECT * FROM actual))
+----
+0
+
+query I
+WITH actual AS (SELECT p.* FROM probe p ANTI JOIN duplicates b ON p.k = b.k),
+expected AS (SELECT * FROM probe WHERE k % 3 <> 0 OR k IS NULL)
+SELECT count(*) FROM (
+    (SELECT * FROM actual EXCEPT ALL SELECT * FROM expected)
+    UNION ALL
+    (SELECT * FROM expected EXCEPT ALL SELECT * FROM actual))
+----
+0
+
+# Unique-left gathers must keep RHS values at their original probe positions.
+query I
+WITH actual AS (SELECT p.*, b.payload AS rhs FROM probe p LEFT JOIN build b ON p.k = b.k),
+expected AS (SELECT *, CASE WHEN k % 3 = 0 THEN k * 7 END AS rhs FROM probe)
+SELECT count(*) FROM (
+    (SELECT * FROM actual EXCEPT ALL SELECT * FROM expected)
+    UNION ALL
+    (SELECT * FROM expected EXCEPT ALL SELECT * FROM actual))
+----
+0
+
+statement ok
+CREATE TABLE bounds(k BIGINT)
+
+statement ok
+INSERT INTO bounds VALUES (128), (60), (NULL)
+
+# A small inequality build exercises nested-loop match-array result construction.
+query I
+WITH actual AS (SELECT p.* FROM probe p SEMI JOIN bounds b ON p.k < b.k),
+expected AS (SELECT * FROM probe WHERE k < 128)
+SELECT count(*) FROM (
+    (SELECT * FROM actual EXCEPT ALL SELECT * FROM expected)
+    UNION ALL
+    (SELECT * FROM expected EXCEPT ALL SELECT * FROM actual))
+----
+0
+
+query I
+WITH actual AS (SELECT p.* FROM probe p ANTI JOIN bounds b ON p.k < b.k),
+expected AS (SELECT * FROM probe WHERE k >= 128 OR k IS NULL)
+SELECT count(*) FROM (
+    (SELECT * FROM actual EXCEPT ALL SELECT * FROM expected)
+    UNION ALL
+    (SELECT * FROM expected EXCEPT ALL SELECT * FROM actual))
+----
+0
+
+query I
+WITH actual AS (SELECT p.*, b.k AS rhs FROM probe p LEFT JOIN bounds b ON p.k < b.k),
+expected AS (
+    SELECT *, 128::BIGINT AS rhs FROM probe WHERE k < 128
+    UNION ALL SELECT *, 60::BIGINT AS rhs FROM probe WHERE k < 60
+    UNION ALL SELECT *, NULL::BIGINT AS rhs FROM probe WHERE k >= 128 OR k IS NULL)
+SELECT count(*) FROM (
+    (SELECT * FROM actual EXCEPT ALL SELECT * FROM expected)
+    UNION ALL
+    (SELECT * FROM expected EXCEPT ALL SELECT * FROM actual))
+----
+0
+
+# Reuse the same prepared join with different probe selections.
+statement ok
+PREPARE selected_join AS
+SELECT count(*), sum(p.id), sum(b.payload)
+FROM probe p LEFT JOIN build b ON p.k = b.k WHERE p.id < $1
+
+query III
+EXECUTE selected_join(0)
+----
+0	NULL	NULL
+
+query III
+EXECUTE selected_join(1)
+----
+1	0	NULL
+
+query III
+EXECUTE selected_join(65)
+----
+65	2080	4494
+
+query III
+EXECUTE selected_join(1)
+----
+1	0	NULL

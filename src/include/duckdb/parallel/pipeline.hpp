@@ -144,8 +144,20 @@ public:
 	void Ready();
 	void Reset();
 	void ResetSink();
-	void ResetSinkForReschedule();
-	void ResetForReschedule(bool reset_sink);
+	void ResetSinkForReschedule(idx_t scheduled_workers, bool single_producer);
+	//! Invalidate one operator's global state for the next reschedule round: reusable state is
+	//! reset in place, all other state is destroyed and lazily recreated by
+	//! InitializeOperatorState. Must run exactly once per operator per round, while no pipeline
+	//! sharing the operator executes.
+	static void InvalidateOperatorStateForReschedule(ClientContext &client, PhysicalOperator &op);
+	//! Create missing global operator state under the operator's lock. Safe to call from
+	//! concurrently scheduling pipelines: the first caller initializes shared state, later
+	//! callers observe it. On the execute scheduling paths this runs after the pipeline's
+	//! dependencies have finished, so state construction may consume dependency-produced sink
+	//! state there; the external-input initialization path calls it before dependency completion.
+	void InitializeOperatorState();
+	//! Reset the pipeline-local global source state for the next reschedule
+	void ResetSourceForReschedule();
 	void ResetSource(bool force);
 	void PrepareExternalInput();
 	void ClearSource();
@@ -176,6 +188,10 @@ public:
 
 	optional_ptr<PhysicalOperator> GetSource() {
 		return source;
+	}
+
+	bool HasSourceState() {
+		return bool(GetSourceState());
 	}
 
 	//! Returns whether any of the operators in the pipeline care about preserving order

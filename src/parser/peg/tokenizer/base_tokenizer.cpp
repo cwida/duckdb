@@ -16,6 +16,9 @@ uint8_t ComputeMatcherTokenClass(TokenType type, const string &text) {
 	case TokenType::NUMBER_LITERAL:
 		return MatcherTokenClass::NUMBER;
 	case TokenType::OPERATOR:
+		if (!text.empty() && !Tokenizer::CharacterIsOperator(text[0])) {
+			return 0;
+		}
 		if (OperatorMatcher::HasSpecialPrecedence(text)) {
 			return MatcherTokenClass::OPERATOR;
 		}

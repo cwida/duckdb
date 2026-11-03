@@ -10,6 +10,7 @@
       "reason": "Cannot install extensions without a local filesystem",
       "paths": [
         "test/extension/install_extension_httpfs.test",
+        "test/extension/install_extension_httpfs.test_slow",
         "test/sql/logging/http_response_log_redaction.test",
         "test/sql/logging/http_url_log_redaction.test"
       ]

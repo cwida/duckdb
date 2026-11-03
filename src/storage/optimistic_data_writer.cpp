@@ -3,6 +3,8 @@
 #include "duckdb/main/settings.hpp"
 #include "duckdb/storage/partial_block_manager.hpp"
 #include "duckdb/storage/data_table.hpp"
+#include "duckdb/storage/storage_manager.hpp"
+#include "duckdb/storage/table_io_manager.hpp"
 #include "duckdb/storage/table/column_checkpoint_state.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/config.hpp"
@@ -92,11 +94,8 @@ void OptimisticDataWriter::WriteNewRowGroup(OptimisticWriteCollection &row_group
 		// we don't need to flush based on the amount of row groups - but we still might need to flush based on the
 		// amount of
 		auto &config = DBConfig::GetConfig(context);
-		auto memory_limit = config.options.write_buffer_row_group_memory_limit;
-		if (!memory_limit.IsValid()) {
-			memory_limit = config.options.maximum_memory / 5 / (config.options.maximum_threads + 1);
-		}
-		if (row_groups.unflushed_data_size >= memory_limit.GetIndex()) {
+		auto memory_limit = config.GetWriteBufferMemoryLimit();
+		if (row_groups.unflushed_data_size >= memory_limit) {
 			// we exhausted our memory available for buffering - flush
 			need_to_flush = true;
 		}
@@ -230,7 +229,7 @@ void OptimisticDataWriter::FinalFlush() {
 
 void OptimisticDataWriter::Rollback() {
 	if (partial_manager) {
-		partial_manager->Rollback();
+		partial_manager->ClearBlocks();
 		partial_manager.reset();
 	}
 }

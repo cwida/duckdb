@@ -1169,6 +1169,8 @@ WindowFunction MatchRecognizeFun::GetFunction() {
 	fun.SetSerializeCallback(WindowMatchRecognizeExecutor::Serialize);
 	fun.SetDeserializeCallback(WindowMatchRecognizeExecutor::Deserialize);
 
+	fun.SetFallible(); // AFTER MATCH SKIP validation and matcher budget checks throw at runtime
+
 	return fun;
 }
 

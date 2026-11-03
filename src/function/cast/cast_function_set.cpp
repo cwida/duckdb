@@ -16,10 +16,30 @@ BindCastInput::BindCastInput(CastFunctionSet &function_set, optional_ptr<BindCas
     : function_set(function_set), info(info), context(context) {
 }
 
+//! Orders the stabilities from the most to the least stable
+static idx_t StabilityRank(FunctionStability stability) {
+	switch (stability) {
+	case FunctionStability::CONSISTENT:
+		return 0;
+	case FunctionStability::CONSISTENT_WITHIN_QUERY:
+		return 1;
+	case FunctionStability::VOLATILE:
+		return 2;
+	}
+	throw InternalException("Unsupported FunctionStability");
+}
+
+//! A cast that applies other casts is as stable as the least stable of them
+static FunctionStability LeastStable(FunctionStability left, FunctionStability right) {
+	return StabilityRank(left) >= StabilityRank(right) ? left : right;
+}
+
 BoundCastInfo BindCastInput::GetCastFunction(const LogicalType &source, const LogicalType &target) {
 	GetCastFunctionInput input(context);
 	input.query_location = query_location;
-	return function_set.GetCastFunction(source, target, input);
+	auto result = function_set.GetCastFunction(source, target, input);
+	stability = LeastStable(stability, result.GetStability());
+	return result;
 }
 
 BindCastFunction::BindCastFunction(bind_cast_function_t function_p, unique_ptr<BindCastInfo> info_p)
@@ -70,7 +90,9 @@ BoundCastInfo CastFunctionSet::GetCastFunction(const LogicalType &source, const 
 	auto bind_cast = [&](BindCastFunction &bind_function) {
 		BindCastInput input(*this, bind_function.info.get(), get_input.context);
 		input.query_location = get_input.query_location;
-		return bind_function.function(input, source, target);
+		auto result = bind_function.function(input, source, target);
+		result.SetStability(LeastStable(result.GetStability(), input.stability));
+		return result;
 	};
 
 	// Registered casts can have different semantics, so only their own statistics callbacks are valid.

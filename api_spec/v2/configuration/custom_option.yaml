@@ -59,7 +59,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   custom_option_create:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Creates a new custom option through a factory.
 
@@ -90,7 +90,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   custom_option_set_name:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Sets the name of the custom option, as `SET` and the config functions refer to it.
 
@@ -114,7 +114,7 @@ functions:
 
   custom_option_set_type:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Sets the type of the custom option. Every value written to the option is cast to it, as SQL `SET` does.
 
@@ -134,7 +134,7 @@ functions:
 
   custom_option_set_default_value:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Sets the default value of the custom option: its value until it is set, and the value `RESET` restores.
 
@@ -155,7 +155,7 @@ functions:
 
   custom_option_set_description:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Sets the description of the custom option, as `[[option_get_description]]` and `duckdb_settings()` report it.
 
@@ -178,7 +178,7 @@ functions:
 
   custom_option_set_default_scope:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Sets the scope a write at `SETTING_SCOPE_DEFAULT` goes to, like SQL `SET name = value`.
 
@@ -199,7 +199,7 @@ functions:
 
   custom_option_set_supports_scope:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Sets whether the custom option can be written at a scope, as `[[option_supports_scope]]` reports it.
 
@@ -223,7 +223,7 @@ functions:
 
   custom_option_set_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Sets arbitrary user data on the custom option.
 
@@ -247,7 +247,7 @@ functions:
 
   custom_option_set_update_callback:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Sets the optional update callback of the custom option.
 
@@ -273,7 +273,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   custom_option_update_get_user_data:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: Retrieves the user data set via `[[custom_option_set_user_data]]`.
     parameters:
       info:
@@ -292,7 +292,7 @@ functions:
 
   custom_option_update_get_value:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Retrieves the value the option is updated to, already cast to the option's type. On a reset this is the
       default value, which may be NULL. The returned value is owned by the caller and must be destroyed via
@@ -314,7 +314,7 @@ functions:
 
   custom_option_update_set_value:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Replaces the value the option is updated to, e.g. to normalize it. The value is borrowed and copied, and cast to
       the option's type, which fails when the cast does.
@@ -333,7 +333,7 @@ functions:
 
   custom_option_update_get_scope:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Retrieves the scope the value is written at: GLOBAL or SESSION, a DEFAULT write already resolved to the option's
       default scope.
@@ -354,7 +354,7 @@ functions:
 
   custom_option_update_is_reset:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: Retrieves whether the update is a reset to the default value, like SQL `RESET`.
     parameters:
       info:
@@ -376,7 +376,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   connection_register_custom_option:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Registers the custom option on the connection's instance, visible to every connection.
 
@@ -402,7 +402,7 @@ functions:
 
   extension_register_custom_option:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Registers the custom option on the loading extension's instance, visible to every connection.
 
@@ -431,7 +431,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   custom_option_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Destroys the custom option, releasing its resources.
 

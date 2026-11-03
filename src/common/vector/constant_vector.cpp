@@ -7,6 +7,10 @@
 
 namespace duckdb {
 
+void ConstantVector::ThrowVectorTypeMismatch(PhysicalType expected, PhysicalType found) {
+	throw InternalException("Expected vector of type %s, but found vector of type %s", expected, found);
+}
+
 buffer_ptr<VectorBuffer> CreateConstantBuffer(const Value &value, count_t count) {
 	auto &type = value.type();
 	auto internal_type = type.InternalType();

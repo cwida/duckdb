@@ -106,7 +106,33 @@ bool StatisticsPropagator::HandleJoinAlwaysMatches(LogicalJoin &join, unique_ptr
 	}
 }
 
+//! Suspends attaching verification statistics to propagated expressions for the lifetime of the guard
+struct VerificationStatsGuard {
+	explicit VerificationStatsGuard(bool &attach_p) : attach(attach_p), previous(attach_p) {
+		attach = false;
+	}
+	~VerificationStatsGuard() {
+		attach = previous;
+	}
+
+	bool &attach;
+	bool previous;
+};
+
 void StatisticsPropagator::PropagateStatistics(LogicalComparisonJoin &join, unique_ptr<LogicalOperator> &node_ptr) {
+	// every condition is evaluated over the candidate pairs of the join inputs, so the verification statistics of
+	// the condition expressions are derived from the input statistics before any condition narrows them
+	for (auto &condition : join.conditions) {
+		if (condition.IsComparison()) {
+			PropagateExpression(condition.LeftReference());
+			PropagateExpression(condition.RightReference());
+		} else {
+			PropagateExpression(condition.JoinExpressionReference());
+		}
+	}
+	// below, the conditions are propagated again against statistics narrowed by the earlier conditions: these hold
+	// for the join output and the later conditions, but not for the vectors the conditions are evaluated on
+	VerificationStatsGuard narrowing_guard(attach_verification_stats);
 	for (idx_t i = 0; i < join.conditions.size(); i++) {
 		auto &condition = join.conditions[i];
 		if (!condition.IsComparison()) {
@@ -116,6 +142,11 @@ void StatisticsPropagator::PropagateStatistics(LogicalComparisonJoin &join, uniq
 
 		const auto stats_left = PropagateExpression(condition.LeftReference());
 		const auto stats_right = PropagateExpression(condition.RightReference());
+		if (join.join_type != JoinType::MARK) {
+			// Ordinary joins reject both FALSE and NULL candidate pairs.
+			condition.SetComparisonType(SimplifyDistinctComparison(condition.GetComparisonType(), stats_left.get(),
+			                                                       stats_right.get(), ComparisonContext::JOIN));
+		}
 		if (stats_left && stats_right) {
 			if ((condition.GetComparisonType() == ExpressionType::COMPARE_DISTINCT_FROM ||
 			     condition.GetComparisonType() == ExpressionType::COMPARE_NOT_DISTINCT_FROM) &&
@@ -189,7 +220,8 @@ void StatisticsPropagator::PropagateStatistics(LogicalComparisonJoin &join, uniq
 		}
 		switch (join.join_type) {
 		case JoinType::INNER:
-		case JoinType::SEMI: {
+		case JoinType::SEMI:
+		case JoinType::RIGHT_SEMI: {
 			UpdateFilterStatistics(condition.GetLHS(), condition.GetRHS(), condition.GetComparisonType());
 			auto updated_stats_left = PropagateExpression(condition.LeftReference());
 			auto updated_stats_right = PropagateExpression(condition.RightReference());
@@ -213,12 +245,26 @@ void StatisticsPropagator::PropagateStatistics(LogicalComparisonJoin &join, uniq
 			break;
 		}
 	}
+
+	// join conditions can be evaluated over candidate pairs that repeat rows of either side,
+	// so their verification statistics must not carry additive totals
+	for (auto &condition : join.conditions) {
+		if (condition.IsComparison()) {
+			ResetAdditiveVerificationStats(condition.GetLHS());
+			ResetAdditiveVerificationStats(condition.GetRHS());
+		} else {
+			ResetAdditiveVerificationStats(condition.GetJoinExpression());
+		}
+	}
 }
 
 void StatisticsPropagator::PropagateStatistics(LogicalAnyJoin &join, unique_ptr<LogicalOperator> &node_ptr) {
 	// propagate the expression into the join condition
 	// note that a condition that is TRUE_OR_NULL does not always match: a NULL condition rejects the pair
 	PropagateExpression(join.condition);
+	// the condition is evaluated over candidate pairs that repeat rows of either side,
+	// so its verification statistics must not carry additive totals
+	ResetAdditiveVerificationStats(*join.condition);
 	switch (ClassifyFilter(*join.condition)) {
 	case FilterPropagateResult::FILTER_ALWAYS_TRUE:
 		HandleJoinAlwaysMatches(join, node_ptr);
@@ -283,6 +329,17 @@ unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalJoin
 	}
 	if (adds_null_on_right) {
 		right_bindings = join.children[1]->GetColumnBindings();
+	}
+
+	// joins that can emit a row of a side multiple times invalidate that side's additive statistics
+	bool duplicates_left = join_type == JoinType::INNER || join_type == JoinType::LEFT ||
+	                       join_type == JoinType::RIGHT || join_type == JoinType::OUTER;
+	bool duplicates_right = duplicates_left || join_type == JoinType::SINGLE;
+	if (duplicates_left) {
+		ResetAdditiveStatistics(join.children[0]->GetColumnBindings());
+	}
+	if (duplicates_right) {
+		ResetAdditiveStatistics(join.children[1]->GetColumnBindings());
 	}
 
 	// then propagate into the join conditions

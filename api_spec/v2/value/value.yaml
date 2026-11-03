@@ -50,7 +50,7 @@ functions:
   # -----------------------------------------------------------------------
   value_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Destroys a value handle.
 
@@ -69,7 +69,7 @@ functions:
   # --------------------------------------------------------------------------------------------------------------------
   value_get_bool:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a BOOLEAN.
 
@@ -96,7 +96,7 @@ functions:
 
   value_get_utinyint:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a UTINYINT.
 
@@ -123,7 +123,7 @@ functions:
 
   value_get_usmallint:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a USMALLINT.
 
@@ -150,7 +150,7 @@ functions:
 
   value_get_uint:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a UINTEGER.
 
@@ -177,7 +177,7 @@ functions:
 
   value_get_ubigint:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a UBIGINT.
 
@@ -204,7 +204,7 @@ functions:
 
   value_get_uhugeint:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a UHUGEINT.
 
@@ -231,7 +231,7 @@ functions:
 
   value_get_tinyint:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a TINYINT.
 
@@ -258,7 +258,7 @@ functions:
 
   value_get_smallint:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a SMALLINT.
 
@@ -285,7 +285,7 @@ functions:
 
   value_get_int:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as an INTEGER.
 
@@ -312,7 +312,7 @@ functions:
 
   value_get_bigint:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a BIGINT.
 
@@ -339,7 +339,7 @@ functions:
 
   value_get_hugeint:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a HUGEINT.
 
@@ -366,7 +366,7 @@ functions:
 
   value_get_varchar:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a VARCHAR.
 
@@ -394,7 +394,7 @@ functions:
 
   value_get_blob:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a byte string: a BLOB, or the storage bytes of a BIT
       or BIGNUM.
@@ -423,7 +423,7 @@ functions:
 
   value_get_float:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a FLOAT.
 
@@ -450,7 +450,7 @@ functions:
 
   value_get_double:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a DOUBLE.
 
@@ -477,7 +477,7 @@ functions:
 
   value_get_date:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a DATE.
 
@@ -507,7 +507,7 @@ functions:
 
   value_get_time:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a TIME.
 
@@ -537,7 +537,7 @@ functions:
 
   value_get_time_ns:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a TIME_NS.
 
@@ -567,7 +567,7 @@ functions:
 
   value_get_time_tz:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a TIME_TZ.
 
@@ -598,7 +598,7 @@ functions:
 
   value_get_timestamp:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a TIMESTAMP.
 
@@ -628,7 +628,7 @@ functions:
 
   value_get_timestamp_sec:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a TIMESTAMP_SEC.
 
@@ -658,7 +658,7 @@ functions:
 
   value_get_timestamp_ms:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a TIMESTAMP_MS.
 
@@ -688,7 +688,7 @@ functions:
 
   value_get_timestamp_ns:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a TIMESTAMP_NS.
 
@@ -718,7 +718,7 @@ functions:
 
   value_get_timestamp_tz:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a TIMESTAMP_TZ.
 
@@ -748,7 +748,7 @@ functions:
 
   value_get_timestamp_tz_ns:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a TIMESTAMP_TZ_NS.
 
@@ -778,7 +778,7 @@ functions:
 
   value_get_interval:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as an INTERVAL.
 
@@ -808,7 +808,7 @@ functions:
 
   value_get_uuid:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a UUID, in its internal 128-bit form.
 
@@ -836,7 +836,7 @@ functions:
 
   value_get_decimal:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the value as a DECIMAL: its backing integer plus the width and
       scale of its type.
@@ -878,7 +878,7 @@ functions:
 
   value_get_type:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Unwraps the logical type carried by a TYPE value.
 
@@ -908,7 +908,7 @@ functions:
   # --------------------------------------------------------------------------------------------------------------------
   value_create_null:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a NULL value of the given logical type.
 
@@ -937,7 +937,7 @@ functions:
 
   value_create_bool:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a BOOLEAN value from a bool.
 
@@ -966,7 +966,7 @@ functions:
 
   value_create_utinyint:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a UTINYINT value from a uint8_t.
 
@@ -995,7 +995,7 @@ functions:
 
   value_create_usmallint:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a USMALLINT value from a uint16_t.
 
@@ -1024,7 +1024,7 @@ functions:
 
   value_create_uint:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a UINTEGER value from a uint32_t.
 
@@ -1053,7 +1053,7 @@ functions:
 
   value_create_ubigint:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a UBIGINT value from a uint64_t.
 
@@ -1082,7 +1082,7 @@ functions:
 
   value_create_uhugeint:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a UHUGEINT value from a uint128_t.
 
@@ -1113,7 +1113,7 @@ functions:
 
   value_create_tinyint:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a TINYINT value from an int8_t.
 
@@ -1142,7 +1142,7 @@ functions:
 
   value_create_smallint:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a SMALLINT value from an int16_t.
 
@@ -1171,7 +1171,7 @@ functions:
 
   value_create_int:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates an INTEGER value from an int32_t.
 
@@ -1200,7 +1200,7 @@ functions:
 
   value_create_bigint:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a BIGINT value from an int64_t.
 
@@ -1229,7 +1229,7 @@ functions:
 
   value_create_hugeint:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a HUGEINT value from an int128_t.
 
@@ -1260,7 +1260,7 @@ functions:
 
   value_create_varchar:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a VARCHAR value from a UTF-8 string.
 
@@ -1292,7 +1292,7 @@ functions:
 
   value_create_blob:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a BLOB value from a byte string.
 
@@ -1324,7 +1324,7 @@ functions:
 
   value_create_float:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a FLOAT value from a float.
 
@@ -1353,7 +1353,7 @@ functions:
 
   value_create_double:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a DOUBLE value from a double.
 
@@ -1382,7 +1382,7 @@ functions:
 
   value_create_type:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a TYPE value from a logical type.
 
@@ -1414,7 +1414,7 @@ functions:
   # -----------------------------------------------------------------------
   value_create_date:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a DATE value.
 
@@ -1444,7 +1444,7 @@ functions:
 
   value_create_time:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a TIME value.
 
@@ -1474,7 +1474,7 @@ functions:
 
   value_create_time_ns:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a TIME_NS value.
 
@@ -1504,7 +1504,7 @@ functions:
 
   value_create_time_tz:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a TIME_TZ value.
 
@@ -1536,7 +1536,7 @@ functions:
 
   value_create_timestamp:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a TIMESTAMP value.
 
@@ -1566,7 +1566,7 @@ functions:
 
   value_create_timestamp_sec:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a TIMESTAMP_SEC value.
 
@@ -1596,7 +1596,7 @@ functions:
 
   value_create_timestamp_ms:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a TIMESTAMP_MS value.
 
@@ -1626,7 +1626,7 @@ functions:
 
   value_create_timestamp_ns:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a TIMESTAMP_NS value.
 
@@ -1656,7 +1656,7 @@ functions:
 
   value_create_timestamp_tz:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a TIMESTAMP_TZ value.
 
@@ -1687,7 +1687,7 @@ functions:
 
   value_create_timestamp_tz_ns:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a TIMESTAMP_TZ_NS value.
 
@@ -1718,7 +1718,7 @@ functions:
 
   value_create_interval:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a INTERVAL value.
 
@@ -1750,7 +1750,7 @@ functions:
 
   value_create_decimal:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a DECIMAL value from its backing integer.
 
@@ -1791,7 +1791,7 @@ functions:
 
   value_create_uuid:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a UUID value from its internal 128-bit form.
 
@@ -1824,7 +1824,7 @@ functions:
 
   value_create_bit:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a BIT value from its wire bytes.
 
@@ -1858,7 +1858,7 @@ functions:
 
   value_create_bignum:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a BIGNUM value from its storage bytes.
 
@@ -1896,7 +1896,7 @@ functions:
   # -----------------------------------------------------------------------
   value_create_list:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a LIST value from its elements.
 
@@ -1940,7 +1940,7 @@ functions:
     return_type: ERROR
   value_create_array:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates an ARRAY value from its elements, sized by their count.
 
@@ -1981,7 +1981,7 @@ functions:
     return_type: ERROR
   value_create_struct:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a STRUCT value from named fields, in order.
 
@@ -2025,7 +2025,7 @@ functions:
     return_type: ERROR
   value_create_tuple:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a TUPLE value from positional fields.
 
@@ -2063,7 +2063,7 @@ functions:
     return_type: ERROR
   value_create_map:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Creates a MAP value from parallel key and value arrays.
 
@@ -2113,7 +2113,7 @@ functions:
     return_type: ERROR
   value_get_child_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the number of child values of a value.
 
@@ -2140,7 +2140,7 @@ functions:
     return_type: ERROR
   value_get_child:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns one child of a composite value as an owned copy.
 
@@ -2180,7 +2180,7 @@ functions:
     return_type: ERROR
   value_cast:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Casts a value to a target type, using a factory.
 
@@ -2224,7 +2224,7 @@ functions:
   # -----------------------------------------------------------------------
   value_is_null:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: Returns whether the value is NULL.
     role: getter
     belongs_to: value
@@ -2245,7 +2245,7 @@ functions:
     return_type: ERROR
   value_get_logical_type:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the logical type of the value.
 
@@ -2270,7 +2270,7 @@ functions:
     return_type: ERROR
   value_to_string:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Renders the value as a human-readable string. Diagnostic only.
 

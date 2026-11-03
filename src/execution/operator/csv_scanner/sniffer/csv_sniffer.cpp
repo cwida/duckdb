@@ -121,15 +121,17 @@ AdaptiveSnifferResult CSVSniffer::MinimalSniff() {
 
 	// Possibly Gather Header
 	vector<HeaderValue> potential_header;
-	for (idx_t col_idx = 0; col_idx < data_chunk.ColumnCount(); col_idx++) {
-		auto &cur_vector = data_chunk.data[col_idx];
-		const auto vector_data = FlatVector::GetData<string_t>(cur_vector);
-		auto &validity = FlatVector::ValidityMutable(cur_vector);
-		HeaderValue val;
-		if (validity.RowIsValid(0)) {
-			val = HeaderValue(vector_data[0]);
+	if (data_chunk.size() > 0) {
+		for (idx_t col_idx = 0; col_idx < data_chunk.ColumnCount(); col_idx++) {
+			auto &cur_vector = data_chunk.data[col_idx];
+			const auto vector_data = FlatVector::GetData<string_t>(cur_vector);
+			auto &validity = FlatVector::ValidityMutable(cur_vector);
+			HeaderValue val;
+			if (validity.RowIsValid(0)) {
+				val = HeaderValue(vector_data[0]);
+			}
+			potential_header.emplace_back(val);
 		}
-		potential_header.emplace_back(val);
 	}
 
 	auto names = DetectHeaderInternal(buffer_manager->context, potential_header, *state_machine, set_columns,

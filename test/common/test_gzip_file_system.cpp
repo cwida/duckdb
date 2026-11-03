@@ -126,6 +126,29 @@ idx_t FindGZipHeaderEnd(const vector<data_t> &data, idx_t header_start) {
 
 } // namespace
 
+TEST_CASE("GZIP progress counts every compressed byte, the header included", "[file_system][gzip]") {
+	for (auto &file_name : {"concat.gz", "bgzf.gz", "test_comp.csv.gz"}) {
+		auto compressed_data = ReadGZipTestFile(file_name);
+		for (idx_t read_size : {idx_t(1), idx_t(64), NumericCast<idx_t>(compressed_data.size())}) {
+			CAPTURE(file_name, read_size);
+			ShortReadFileSystem file_system(compressed_data, read_size, optional_idx());
+			auto child_handle = make_uniq<ShortReadFileHandle>(file_system, "progress.gz");
+			GZipFileSystem gzip_file_system;
+			auto compressed_handle =
+			    gzip_file_system.OpenCompressedFile(QueryContext(), std::move(child_handle), false);
+			data_t buffer[37];
+			idx_t previous_progress = 0;
+			while (compressed_handle->Read(QueryContext(), buffer, sizeof(buffer)) != 0) {
+				auto progress = compressed_handle->GetProgress();
+				REQUIRE(progress >= previous_progress);
+				REQUIRE(progress <= compressed_data.size());
+				previous_progress = progress;
+			}
+			REQUIRE(compressed_handle->GetProgress() == compressed_data.size());
+		}
+	}
+}
+
 TEST_CASE("GZIP reads tolerate short input reads", "[file_system][gzip]") {
 	for (auto &file_name : {"concat.gz", "bgzf.gz"}) {
 		auto compressed_data = ReadGZipTestFile(file_name);

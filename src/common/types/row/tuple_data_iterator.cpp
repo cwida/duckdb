@@ -34,6 +34,30 @@ TupleDataChunkIterator::TupleDataChunkIterator(TupleDataCollection &collection_p
 	Reset();
 }
 
+TupleDataChunkIterator::TupleDataChunkIterator(TupleDataCollection &collection_p, TupleDataPinProperties properties,
+                                               const TupleDataChunkPosition &position, bool init_heap_p)
+    : collection(collection_p), init_heap(init_heap_p) {
+	state.pin_state.properties = properties;
+	D_ASSERT(position.segment_index < collection.segments.size());
+	const auto &segment = *collection.segments[position.segment_index];
+	D_ASSERT(position.chunk_index < segment.ChunkCount());
+	start_segment_idx = position.segment_index;
+	start_chunk_idx = position.chunk_index;
+	// the end is the next chunk: within this segment, at the start of the next one, or past the last chunk
+	if (position.chunk_index + 1 < segment.ChunkCount()) {
+		end_segment_idx = position.segment_index;
+		end_chunk_idx = position.chunk_index + 1;
+	} else if (position.segment_index + 1 < collection.segments.size()) {
+		end_segment_idx = position.segment_index + 1;
+		end_chunk_idx = 0;
+	} else {
+		end_segment_idx = position.segment_index;
+		end_chunk_idx = segment.ChunkCount();
+	}
+
+	Reset();
+}
+
 void TupleDataChunkIterator::InitializeCurrentChunk() {
 	auto &segment = *collection.segments[current_segment_idx];
 	segment.allocator->InitializeChunkState(segment, state.pin_state, state.chunk_state, current_chunk_idx, init_heap);
@@ -91,6 +115,39 @@ data_ptr_t *TupleDataChunkIterator::GetHeapLocations() {
 
 idx_t *TupleDataChunkIterator::GetHeapSizes() {
 	return FlatVector::GetDataMutable<idx_t>(state.chunk_state.heap_sizes);
+}
+
+TupleDataChunkCursor::TupleDataChunkCursor(const TupleDataCollection &collection_p)
+    : collection(collection_p), started(false) {
+}
+
+bool TupleDataChunkCursor::Next() {
+	auto &segments = collection.segments;
+	if (!started) {
+		started = true;
+		position.segment_index = 0;
+		position.chunk_index = 0;
+	} else if (position.segment_index < segments.size()) {
+		position.chunk_index++;
+	}
+	while (position.segment_index < segments.size() &&
+	       position.chunk_index >= segments[position.segment_index]->ChunkCount()) {
+		position.segment_index++;
+		position.chunk_index = 0;
+	}
+	return position.segment_index < segments.size();
+}
+
+TupleDataChunkPosition TupleDataChunkCursor::Position() const {
+	return position;
+}
+
+idx_t TupleDataChunkCursor::Count() const {
+	return collection.segments[position.segment_index]->chunks[position.chunk_index]->count;
+}
+
+idx_t TupleDataChunkCursor::HeapSize() const {
+	return collection.segments[position.segment_index]->ChunkHeapSize(position.chunk_index);
 }
 
 } // namespace duckdb

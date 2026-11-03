@@ -3,7 +3,7 @@
 # group: [table]
 
 statement ok
-ATTACH '__TEST_DIR__/rd_struct.db' AS rds (STORAGE_VERSION 'v2.0.0')
+ATTACH '{TEST_DIR}/rd_struct.db' AS rds (STORAGE_VERSION 'v2.0.0')
 
 statement ok
 CREATE TABLE rds.t AS SELECT {'a': 1, 'b': 'x'} s, {'x': {'y': 2}} n, [{'q': 3}] ls, row(4, 'z') tu, 5 i
@@ -12,26 +12,26 @@ statement ok
 DETACH rds
 
 query IIIII
-SELECT * FROM read_duckdb('__TEST_DIR__/rd_struct.db')
+SELECT * FROM read_duckdb('{TEST_DIR}/rd_struct.db')
 ----
 {'a': 1, 'b': x}	{'x': {'y': 2}}	[{'q': 3}]	(4, z)	5
 
 query III
-SELECT s.a, n.x.y, i FROM read_duckdb('__TEST_DIR__/rd_struct.db')
+SELECT s.a, n.x.y, i FROM read_duckdb('{TEST_DIR}/rd_struct.db')
 ----
 1	2	5
 
 query I
-SELECT count(*) FROM read_duckdb('__TEST_DIR__/rd_struct.db') WHERE s.a IS NULL
+SELECT count(*) FROM read_duckdb('{TEST_DIR}/rd_struct.db') WHERE s.a IS NULL
 ----
 0
 
 statement error
-SELECT * FROM read_duckdb('__TEST_DIR__/rd_struct.db', table_name := NULL)
+SELECT * FROM read_duckdb('{TEST_DIR}/rd_struct.db', table_name := NULL)
 ----
 read_duckdb parameter "table_name" cannot be NULL
 
 statement error
-SELECT * FROM read_duckdb('__TEST_DIR__/rd_struct.db', schema_name := NULL)
+SELECT * FROM read_duckdb('{TEST_DIR}/rd_struct.db', schema_name := NULL)
 ----
 read_duckdb parameter "schema_name" cannot be NULL

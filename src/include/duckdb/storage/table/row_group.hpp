@@ -121,6 +121,19 @@ private:
 	atomic<optional_ptr<RowVersionManager>> version_info;
 };
 
+//! Collects the ids of the rows that a delete actually deleted, but only once rows were skipped (e.g. because they
+//! were matched more than once) - in the common case all input rows are deleted and nothing is collected
+struct DeletedRowIds {
+	explicit DeletedRowIds(const row_t *input_ids) : input_ids(input_ids) {
+	}
+
+	//! The row ids passed to the delete
+	const row_t *input_ids;
+	//! Whether any of the input rows were skipped - only then are the deleted row ids collected
+	bool has_skipped_rows = false;
+	vector<row_t> row_ids;
+};
+
 class RowGroup : public SegmentBase<RowGroup> {
 public:
 	friend class ColumnData;
@@ -217,9 +230,10 @@ public:
 	//! Clean up append states that can either be compressed or deleted
 	void CleanupAppend(VisibilityBound lowest_visibility_bound, idx_t start, idx_t count);
 
-	//! Delete the given set of rows in the version manager
+	//! Delete the given set of rows in the version manager - optionally collects the ids of the rows that were deleted
+	//! (input_offset is the position of row_ids in the row ids passed to the collection delete)
 	idx_t Delete(TransactionData transaction, DuckTableEntry &table_entry, row_t *row_ids, idx_t count,
-	             idx_t row_group_start);
+	             idx_t row_group_start, optional_ptr<DeletedRowIds> deleted_ids = nullptr, idx_t input_offset = 0);
 
 	static vector<RowGroupWriteData> WriteToDisk(RowGroupWriteInfo &info,
 	                                             const vector<const_reference<RowGroup>> &row_groups);
@@ -270,7 +284,9 @@ public:
 
 	void NextVector(CollectionScanState &state);
 
-	idx_t DeleteRows(idx_t vector_idx, transaction_t transaction_id, row_t rows[], idx_t count);
+	//! Writes a delete or an update into the version info of the rows (ids[i] - offset) and pushes its undo entry
+	void WriteRows(TransactionData transaction, DuckTableEntry &table_entry, idx_t vector_idx, idx_t base_row,
+	               const row_t ids[], idx_t count, row_t offset, bool is_update, WrittenRows &written);
 	RowVersionManager &GetOrCreateVersionInfo();
 
 	// Serialization

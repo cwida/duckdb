@@ -149,6 +149,8 @@ public:
 	void FinalizeAppend(TransactionData transaction, TableAppendState &state);
 	void CommitAppend(transaction_t commit_id, idx_t row_start, idx_t count);
 	void RevertAppendInternal(idx_t start_row);
+	//! Reverts an append that failed before it was finalized
+	void RevertFailedAppend(TableAppendState &state);
 	void CleanupAppend(VisibilityBound lowest_visibility_bound, idx_t start, idx_t count);
 
 	void MergeStorage(RowGroupCollection &data, optional_ptr<DataTable> table,
@@ -158,7 +160,9 @@ public:
 	void RemoveFromIndexes(const QueryContext &context, TableIndexList &indexes, Vector &row_identifiers, idx_t count,
 	                       IndexRemovalType removal_type, optional_idx active_checkpoint = optional_idx());
 
-	idx_t Delete(TransactionData transaction, DuckTableEntry &table_entry, row_t *ids, idx_t count);
+	//! Delete the given rows - optionally collects the ids of the rows that were deleted (excluding duplicates)
+	idx_t Delete(TransactionData transaction, DuckTableEntry &table_entry, row_t *ids, idx_t count,
+	             optional_ptr<DeletedRowIds> deleted_ids = nullptr);
 	void Update(TransactionData transaction, DuckTableEntry &table_entry, row_t *ids,
 	            const vector<PhysicalIndex> &column_ids, DataChunk &updates);
 	void UpdateColumn(TransactionData transaction, DuckTableEntry &table_entry, Vector &row_ids,
@@ -243,6 +247,11 @@ public:
 
 	//! Get a ptr to the raw segment tree. This can be useful for some extensions to have directly exposed.
 	shared_ptr<RowGroupSegmentTree> GetRowGroups() const;
+
+	//! The metadata blocks of the table data of this collection, as read from disk or written by the last checkpoint
+	const vector<MetaBlockPointer> &GetMetadataPointers() const {
+		return metadata_pointers;
+	}
 
 private:
 	optional_ptr<SegmentNode<RowGroup>> NextUpdateRowGroup(RowGroupSegmentTree &row_groups, row_t *ids, idx_t &pos,

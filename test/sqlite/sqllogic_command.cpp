@@ -186,7 +186,7 @@ void Command::RestartDatabase(ExecuteContext &context, reference<Connection> &co
 	}
 	bool query_fail = false;
 	try {
-		connection.get().ExtractStatements(sql_query);
+		connection.get().ExtractStatements(sql_query, false);
 	} catch (...) {
 		query_fail = true;
 	}
@@ -259,7 +259,7 @@ unique_ptr<QueryResult> Command::ExecuteQuery(ExecuteContext &context, reference
 		// reports it with its location and type, and runs text that only parses after a LOAD
 		idx_t statement_count = 0;
 		try {
-			statement_count = connection.get().ExtractStatements(context.sql_query).size();
+			statement_count = connection.get().ExtractStatements(context.sql_query, false).size();
 		} catch (std::exception &) {
 		}
 		if (statement_count != 1) {

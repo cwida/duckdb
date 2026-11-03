@@ -50,7 +50,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   instance_get_config:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-08" ]
+      - [ "unstable", "v2.0.0", "2026-10-08" ]
     description: |
       Borrows the config of an instance: the GLOBAL scope.
 
@@ -79,7 +79,7 @@ functions:
 
   connection_get_config:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-08" ]
+      - [ "unstable", "v2.0.0", "2026-10-08" ]
     description: |
       Borrows the config of a connection.
 
@@ -107,7 +107,7 @@ functions:
 
   context_get_config:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-08" ]
+      - [ "unstable", "v2.0.0", "2026-10-08" ]
     description: |
       Borrows the config of a context.
 
@@ -137,7 +137,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   config_get_option_value:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-08" ]
+      - [ "unstable", "v2.0.0", "2026-10-08" ]
     description: |
       Reads the effective value of an option in this config, and the scope it
       came from.
@@ -175,7 +175,7 @@ functions:
 
   config_set_option_value:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-08" ]
+      - [ "unstable", "v2.0.0", "2026-10-08" ]
     description: |
       Writes an option in this config.
 
@@ -218,7 +218,7 @@ functions:
 
   config_set_option_text:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-08" ]
+      - [ "unstable", "v2.0.0", "2026-10-08" ]
     description: |
       Writes an option in this config from text, the form SQL `SET` accepts.
 
@@ -259,7 +259,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   config_get_option_by_name:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Describes a config option registered on this config's instance, by name.
 
@@ -295,7 +295,7 @@ functions:
 
   config_get_option_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the number of config options registered on this config's instance.
 
@@ -322,7 +322,7 @@ functions:
 
   config_get_option_by_index:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Describes the config option at the given index on this config's instance.
 
@@ -353,7 +353,7 @@ functions:
 
   option_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Destroys an option descriptor.
 
@@ -370,7 +370,7 @@ functions:
 
   option_get_name:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Borrows the option's canonical name.
 
@@ -396,7 +396,7 @@ functions:
 
   option_get_default_value:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the option's static default, as a value of the option's type.
 
@@ -422,7 +422,7 @@ functions:
 
   option_get_description:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Borrows the option's human-readable description.
     role: getter
@@ -445,7 +445,7 @@ functions:
 
   option_supports_scope:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-08" ]
+      - [ "unstable", "v2.0.0", "2026-10-08" ]
     description: |
       Reports whether the option may be written at a scope.
 
@@ -475,7 +475,7 @@ functions:
 
   option_get_default_scope:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-08" ]
+      - [ "unstable", "v2.0.0", "2026-10-08" ]
     description: |
       Returns the scope a DEFAULT write of the option goes to: GLOBAL or
       SESSION.
@@ -499,7 +499,7 @@ functions:
 
   option_get_alias_count:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Returns the number of aliases registered for this option.
 
@@ -524,7 +524,7 @@ functions:
 
   option_get_alias:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-08-04" ]
+      - [ "unstable", "v2.0.0", "2026-08-04" ]
     description: |
       Borrows the alias name at the given index.
 

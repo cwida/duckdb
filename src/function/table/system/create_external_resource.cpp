@@ -169,12 +169,21 @@ static void CreateExternalResourceFunction(ClientContext &context, TableFunction
 	}
 	auto &bind_data = data_p.bind_data->Cast<CreateExternalResourceBindData>();
 
-	auto type = ExternalResourceTypeRegistry::Get(context).Lookup(bind_data.type_name);
+	// An unknown type autoloads the extension known to provide it, like an unknown function or file format does
+	auto type =
+	    ExternalResourceTypeRegistry::LookupOrAutoload(DatabaseInstance::GetDatabase(context), bind_data.type_name);
 	if (!type) {
+		auto extension = ExternalResourceTypeRegistry::ProvidingExtension(bind_data.type_name);
+		if (!extension.empty()) {
+			throw InvalidInputException("create_external_resource: unknown resource type \"%s\": it is provided by the "
+			                            "%s extension, which could not be autoloaded. Try: INSTALL %s; LOAD %s;",
+			                            bind_data.type_name, extension, extension, extension);
+		}
 		throw InvalidInputException("create_external_resource: unknown resource type \"%s\"", bind_data.type_name);
 	}
 	// Separate internal connection: the current connection's context lock is held here.
-	Connection con(DatabaseInstance::GetDatabase(context));
+	auto callback_con = CreateExternalResourceCallbackConnection(DatabaseInstance::GetDatabase(context), &context);
+	auto &con = *callback_con;
 	// Resolve the callbacks in the search path captured at registration, so unqualified names in a non-default
 	// schema/catalog keep resolving here (not against this fresh connection's default, nor the current path).
 	if (!type->search_path.empty()) {
@@ -430,7 +439,8 @@ static void DestroyExternalResourceFunction(ClientContext &context, TableFunctio
 	auto &bind_data = data_p.bind_data->Cast<DestroyExternalResourceBindData>();
 
 	// CALL <deleter_function>(<deleter_payload>) on a separate internal connection.
-	Connection con(DatabaseInstance::GetDatabase(context));
+	auto callback_con = CreateExternalResourceCallbackConnection(DatabaseInstance::GetDatabase(context), &context);
+	auto &con = *callback_con;
 	auto sql = "SELECT * FROM " + QualifiedName::Parse(bind_data.deleter_function).ToString() + "(" +
 	           bind_data.deleter_payload.ToSQLString() + ")";
 	// resource_type/name are unknown at this callsite (the deleter binding does not carry them).

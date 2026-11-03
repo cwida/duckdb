@@ -60,7 +60,7 @@ static auto CV2PragmaQuery(ClientContext &context, const FunctionParameters &par
 		info.query_cb(bind_info, Convert(&result_info), ctx, err);
 	});
 	if (!result_info.out_query) {
-		throw InvalidInputException("The query callback of pragma function \"%s\" did not set a query.",
+		throw InvalidInputException("The query callback of pragma function %s did not set a query.",
 		                            parameters.function->name);
 	}
 	return std::move(*result_info.out_query);

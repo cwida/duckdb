@@ -58,21 +58,15 @@ public:
 	//! variable.
 	void ParseQuery(const string &query);
 
-	//! Parse a single TopLevelStatement from an already-tokenized stream. On success advances
-	//! `token_iterator` past the consumed tokens and returns
-	//! the SQLStatement. Returns nullptr at end-of-input or when the matched TLS was a
-	//! separator-only run (no statement). Throws ParserException on syntax error.
+	//! Parse a single TopLevelStatement from the already-tokenized `query`. On success advances
+	//! `token_iterator` past the consumed tokens and returns the SQLStatement. Returns nullptr at
+	//! end-of-input or when the matched TLS was a separator-only run (no statement). A segment the
+	//! PEG grammar rejects is offered to the `parse_function` extensions first; only if none claims
+	//! it is a ParserException with the detailed syntax error thrown.
 	//!
 	//! Does NOT populate `stmt->query` — the caller owns the source string and can slice it
 	//! using `stmt->stmt_location` if needed.
-	DUCKDB_API unique_ptr<SQLStatement> ParseTopLevelStatement(TokenIterator &token_iterator);
-
-	//! Run the `parse_function` extensions over the unconsumed tail of `query`,
-	//! the way `ParseQuery` does in its catch handler. Returns the produced `ExtensionStatement`
-	//! and advances `token_iterator` past the bytes the extension claimed. Returns nullptr if no
-	//! extension claims the segment. Used by both `ParseQuery` and the lazy `ParseIterator`
-	//! so the two paths handle PEG failures identically.
-	DUCKDB_API unique_ptr<SQLStatement> TryParseExtensionStatement(TokenIterator &token_iterator, const string &query);
+	DUCKDB_API unique_ptr<SQLStatement> ParseTopLevelStatement(TokenIterator &token_iterator, const string &query);
 
 	//! Tokenize a query, returning the raw tokens together with their locations
 	static vector<SimplifiedToken> Tokenize(const string &query);
@@ -114,6 +108,10 @@ public:
 	void ThrowParserOverrideError(ParserOverrideResult &result);
 
 private:
+	//! Run the `parse_function` extensions over the unconsumed tail of `query`. Returns the produced
+	//! `ExtensionStatement` and advances `token_iterator` past the tokens the extension claimed, or
+	//! nullptr if no extension claims the segment.
+	unique_ptr<SQLStatement> TryParseExtensionStatement(TokenIterator &token_iterator, const string &query);
 	CompiledGrammar &GetGrammar();
 
 	ParserOptions options;

@@ -70,7 +70,7 @@ string CreateTableInfo::ExtraOptionsToString() const {
 	if (!options.empty()) {
 		ret += " WITH (";
 		for (auto &entry : options) {
-			ret += "'" + entry.first + "'=" + entry.second->ToString() + ",";
+			ret += SQLString(entry.first) + "=" + entry.second->ToString() + ",";
 		}
 		ret.pop_back();
 		ret += ")";

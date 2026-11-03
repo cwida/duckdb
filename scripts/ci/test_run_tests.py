@@ -5,6 +5,7 @@ import shlex
 import sys
 import tempfile
 import textwrap
+
 import threading
 import unittest
 from io import BytesIO, StringIO, TextIOWrapper
@@ -340,9 +341,89 @@ class RunTestsScriptTest(unittest.TestCase):
                 "--force-storage --label 'two words'",
                 "--test-config",
                 "test/configs/a config.json",
-                '"test/sql/a.test","Compiled, test\'s name"',
+                '"test/sql/a.test","Compiled\\, test\'s name"',
             ],
         )
+
+    def test_batch_filter_preserves_literal_sql_paths_and_escapes_catch_names(self):
+        cases = [
+            (
+                ["test/sql/a,b.test", "test/sql/c,d.test_slow", "test/sql/e,f.test_coverage"],
+                "test/sql/a,b.test\ntest/sql/c,d.test_slow\ntest/sql/e,f.test_coverage\n",
+            ),
+            (
+                ["test/sql/a,b.test", "Compiled, test"],
+                '"test/sql/a\\,b.test"\n"Compiled\\, test"\n',
+            ),
+            (
+                ["Compiled, test", "test/sql/a,b.test"],
+                '"Compiled\\, test"\n"test/sql/a\\,b.test"\n',
+            ),
+            (
+                ['Compiled "quoted", test', r"Compiled\test"],
+                '"Compiled \\"quoted\\"\\, test"\n"Compiled\\\\test"\n',
+            ),
+        ]
+        for names, expected in cases:
+            with self.subTest(names=names):
+                test_list = create_temp_file("{names}", names="\n".join(names))
+                helper = create_temp_file(
+                    """
+                    import sys
+                    from pathlib import Path
+                    actual = Path(sys.argv[1]).read_text()
+                    assert actual == {expected!r}, repr(actual)
+                    """,
+                    expected=expected,
+                )
+                try:
+                    proc = start_runner(
+                        [
+                            "unused-binary",
+                            "--test-list",
+                            str(test_list),
+                            "--workers",
+                            "1",
+                            "--retry",
+                            "0",
+                            "--test-command",
+                            f"{shlex.quote(sys.executable)} {shlex.quote(str(helper))} {{test_list}}",
+                        ]
+                    )
+                    self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                finally:
+                    test_list.unlink(missing_ok=True)
+                    helper.unlink(missing_ok=True)
+
+    def test_invalid_catch_filter_is_not_counted_as_a_pass(self):
+        test_list = create_temp_file("compiled,test\n")
+        helper = create_temp_file(
+            """
+            print('Invalid Filter: "compiled,test"')
+            print('All tests passed (1 assertion in 1 test case)')
+            """
+        )
+        try:
+            proc = start_runner(
+                [
+                    "unused-binary",
+                    "--test-list",
+                    str(test_list),
+                    "--workers",
+                    "1",
+                    "--retry",
+                    "2",
+                    "--test-command",
+                    f"{shlex.quote(sys.executable)} {shlex.quote(str(helper))} {{test_list}}",
+                ]
+            )
+            self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn('Invalid Filter: "compiled,test"', proc.stdout)
+            self.assertNotIn("retrying failed test", proc.stdout)
+            self.assertNotIn("ran tests: 1 passed", proc.stdout)
+        finally:
+            test_list.unlink(missing_ok=True)
+            helper.unlink(missing_ok=True)
 
     def test_summarizes_wrong_result_failure(self):
         stderr = """
@@ -793,7 +874,7 @@ require windows: 2
         helper_path = create_temp_file(
             """
             #!/bin/sh
-            cat <<'EOF'
+            cat <<'EOF' >&2
             Skipped tests for the following reasons:
             require mysql_scanner: 56
             require postgres_scanner: 2
@@ -2174,34 +2255,34 @@ For more information, see https://duckdb.org/docs/current/dev/internal_errors
         )
 
     def test_generic_failure_extracts_sqllogictest_assertion_details(self):
-        batch = ["test/sql/copy/partitioned/partitioned_order_by_flush_race.test"]
+        batch = ["test/sql/copy/partitioned/partitioned_order_by_flush_race.test_slow"]
         stdout = """
-Filters: test/sql/copy/partitioned/partitioned_order_by_flush_race.test
-[0/1] (0%): test/sql/copy/partitioned/partitioned_order_by_flush_race.test
+Filters: test/sql/copy/partitioned/partitioned_order_by_flush_race.test_slow
+[0/1] (0%): test/sql/copy/partitioned/partitioned_order_by_flush_race.test_slow
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 unittest is a Catch v2.13.7 host application.
 Run with -? for options
 
 -------------------------------------------------------------------------------
-test/sql/copy/partitioned/partitioned_order_by_flush_race.test
+test/sql/copy/partitioned/partitioned_order_by_flush_race.test_slow
 -------------------------------------------------------------------------------
 /Users/sander/dev/duckdb/duckdb/test/sqlite/test_sqllogictest.cpp:41
 ...............................................................................
 
-test/sql/copy/partitioned/partitioned_order_by_flush_race.test:27: FAILED:
+test/sql/copy/partitioned/partitioned_order_by_flush_race.test_slow:27: FAILED:
 explicitly with message:
   0
 
-[1/1] (100%): test/sql/copy/partitioned/partitioned_order_by_flush_race.test took 1.086s
+[1/1] (100%): test/sql/copy/partitioned/partitioned_order_by_flush_race.test_slow took 1.086s
 ===============================================================================
 test cases: 1 | 1 failed
 assertions: 8 | 7 passed | 1 failed
 """
         stderr = """
-1. test/sql/copy/partitioned/partitioned_order_by_flush_race.test:27
+1. test/sql/copy/partitioned/partitioned_order_by_flush_race.test_slow:27
 ================================================================================
 
-::error::Query unexpectedly failed! (test/sql/copy/partitioned/partitioned_order_by_flush_race.test:27)!
+::error::Query unexpectedly failed! (test/sql/copy/partitioned/partitioned_order_by_flush_race.test_slow:27)!
 ================================================================================
 COPY (SELECT p, v FROM large_ordered_source ORDER BY v DESC, p DESC)
 TO 'duckdb_unittest_tempdir/11276/large_ordered_partitioned_1'
@@ -2224,7 +2305,7 @@ For more information, see https://duckdb.org/docs/current/dev/internal_errors
         self.assertEqual(
             strip_ansi_lines(lines)[1:],
             [
-                "error: FAIL test/sql/copy/partitioned/partitioned_order_by_flush_race.test",
+                "error: FAIL test/sql/copy/partitioned/partitioned_order_by_flush_race.test_slow",
                 "",
                 "  > 27  statement ok",
                 "    28  COPY (SELECT p, v FROM large_ordered_source ORDER BY v DESC, p DESC)",

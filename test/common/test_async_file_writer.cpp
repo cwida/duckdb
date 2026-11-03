@@ -44,6 +44,33 @@ public:
 		lock_guard<mutex> guard(queue.lock);
 		return queue.pending_bytes;
 	}
+	static ManagedAsyncWriteQueue &UnderlyingQueue(ManagedAsyncWriteStreamQueue &queue) {
+		return *queue.write_queue;
+	}
+
+	static bool IsClosed(ManagedAsyncWriteQueue &queue) {
+		lock_guard<mutex> guard(queue.lock);
+		return queue.closed;
+	}
+
+	static idx_t PendingBytes(ManagedAsyncWriteStreamQueue &queue) {
+		annotated_lock_guard<annotated_mutex> guard(queue.lock);
+		return queue.pending_bytes;
+	}
+
+	static bool TryCompletionRefill(ManagedAsyncWriteStreamQueue &queue) {
+		// Bound the wait so the broken lock order fails instead of hanging this completion.
+		auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while (!queue.submission_lock.try_lock()) {
+			if (std::chrono::steady_clock::now() >= deadline) {
+				return false;
+			}
+			std::this_thread::yield();
+		}
+		queue.submission_lock.unlock();
+		queue.SchedulePendingWritesInternal();
+		return true;
+	}
 };
 
 } // namespace duckdb
@@ -727,6 +754,35 @@ public:
 	bool release_writes = false;
 };
 
+class SequentialAsyncWriteStreamTarget : public ManagedAsyncWriteStreamTarget {
+public:
+	SequentialAsyncWriteStreamTarget(BlockingAsyncWriteTarget &target_p, bool local_file_p)
+	    : target(target_p), local_file(local_file_p) {
+	}
+
+	FileWriteMode GetWriteMode() override {
+		return FileWriteMode::SEQUENTIAL;
+	}
+
+	bool IsLocalFile() override {
+		return local_file;
+	}
+
+	void Write(data_ptr_t, idx_t, idx_t) override {
+		throw InternalException("Unexpected positional write to sequential test target");
+	}
+
+	void Write(data_ptr_t buffer, idx_t size) override {
+		target.Write(buffer, size, offset);
+		offset += size;
+	}
+
+private:
+	BlockingAsyncWriteTarget &target;
+	const bool local_file;
+	idx_t offset = 0;
+};
+
 class BlockingAsyncTaskState {
 public:
 	bool WaitForStarted(idx_t count) {
@@ -957,6 +1013,76 @@ TEST_CASE("ManagedAsyncWriteQueue accepts non-contiguous positional writes", "[a
 	}
 	REQUIRE(saw_first);
 	REQUIRE(saw_second);
+}
+
+TEST_CASE("ManagedAsyncWriteStreamQueue abort permits an in-flight completion refill", "[async_write_queue]") {
+	DuckDB db(nullptr);
+	auto con = CreateConnectionWithAsyncThreads(db);
+	BlockingAsyncWriteTarget target;
+	target.ReleaseWrites();
+	SequentialAsyncWriteStreamTarget stream_target(target, true);
+	ManagedAsyncWriteStreamQueue queue(*con->context, stream_target);
+	auto &underlying_queue = ManagedAsyncWriteQueueTest::UnderlyingQueue(queue);
+	REQUIRE(underlying_queue.IsAsync());
+	mutex completion_lock;
+	std::condition_variable completion_cv;
+	bool completion_entered = false;
+	bool release_completion = false;
+	atomic<bool> completion_released {false};
+	atomic<bool> refill_finished {false};
+	// Stand in for a completion that already selected a refill before the stream was closed.
+	auto completion = [&](idx_t, idx_t, optional_ptr<const ErrorData>) {
+		{
+			unique_lock<mutex> guard(completion_lock);
+			completion_entered = true;
+			completion_cv.notify_all();
+			completion_released =
+			    completion_cv.wait_for(guard, std::chrono::seconds(5), [&]() { return release_completion; });
+		}
+		if (completion_released) {
+			refill_finished = ManagedAsyncWriteQueueTest::TryCompletionRefill(queue);
+		}
+	};
+	underlying_queue.RegisterWrite(AsyncWriteRequest(make_uniq<StringAsyncWriteBuffer>("abc"), 0, completion));
+	bool entered_completion;
+	{
+		unique_lock<mutex> guard(completion_lock);
+		entered_completion =
+		    completion_cv.wait_for(guard, std::chrono::seconds(5), [&]() { return completion_entered; });
+	}
+
+	queue.RegisterWrite(make_uniq<StringAsyncWriteBuffer>("pending"), 0,
+	                    ManagedAsyncWriteStreamQueue::ScheduleMode::DEFER);
+	auto pending_bytes = ManagedAsyncWriteQueueTest::PendingBytes(queue);
+
+	string abort_error;
+	std::thread abort_thread([&]() { abort_error = CaptureException([&]() { queue.AbortWrites(); }); });
+	// Closing the underlying queue follows closing the stream and discarding its pending writes.
+	auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	bool underlying_closed = false;
+	while (std::chrono::steady_clock::now() < deadline) {
+		if (ManagedAsyncWriteQueueTest::IsClosed(underlying_queue)) {
+			underlying_closed = true;
+			break;
+		}
+		std::this_thread::yield();
+	}
+	{
+		lock_guard<mutex> guard(completion_lock);
+		release_completion = true;
+		completion_cv.notify_all();
+	}
+	abort_thread.join();
+
+	REQUIRE(entered_completion);
+	REQUIRE(underlying_closed);
+	REQUIRE(completion_released);
+	REQUIRE(refill_finished);
+	REQUIRE(pending_bytes == 7);
+	REQUIRE(abort_error.empty());
+	REQUIRE(ManagedAsyncWriteQueueTest::PendingBytes(queue) == 0);
+	REQUIRE(ManagedAsyncWriteQueueTest::ExternalPendingBytes(underlying_queue) == 0);
+	REQUIRE(target.write_sizes == vector<idx_t> {3});
 }
 
 TEST_CASE("ManagedAsyncWriteQueue reports accounted request adoption ownership", "[async_write_queue]") {

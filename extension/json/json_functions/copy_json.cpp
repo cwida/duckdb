@@ -7,6 +7,7 @@
 #include "duckdb/parser/expression/star_expression.hpp"
 #include "duckdb/parser/query_node/select_node.hpp"
 #include "duckdb/parser/tableref/subqueryref.hpp"
+#include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/planner/binder.hpp"
@@ -18,6 +19,7 @@
 #include "json_transform.hpp"
 #include "duckdb/common/multi_file/table_function_multi_file.hpp"
 #include "duckdb/parser/expression/cast_expression.hpp"
+#include "duckdb/main/query_result.hpp"
 
 namespace duckdb {
 
@@ -107,9 +109,50 @@ static unique_ptr<Expression> JSONCopyBoundFormatConstant(const string &format) 
 	return make_uniq<BoundConstantExpression>(Value(format));
 }
 
+//! Sets the names and types of the copied query for RETURN_COLUMN_TYPES. The binder described the rewrite, which writes
+//! one JSON column, so they are replaced here: the types are the output of the query below the rewrite's projection,
+//! and the names are the fields of its struct_pack, or the query's names when partitioning already looked them up.
+static void SetJSONCopyQueryColumns(LogicalCopyToFile &copy, LogicalProjection &projection,
+                                    const vector<Identifier> &original_column_names) {
+	// The rewrite binds the query as the only child of its projection
+	D_ASSERT(projection.children.size() == 1);
+	auto &query = *projection.children[0];
+	query.ResolveOperatorTypes();
+	auto query_types = query.types;
+	vector<Identifier> query_names;
+	if (!original_column_names.empty()) {
+		// With PARTITION_BY, the partition columns can be left out of the struct_pack
+		query_names = original_column_names;
+	} else {
+		// The payload is to_json, or the GeoJSON writer, with the struct_pack of every column as its first argument
+		auto &payload = projection.expressions[0]->Cast<BoundFunctionExpression>();
+		D_ASSERT(!payload.GetChildren().empty());
+		// Binding the payload can cast the struct_pack, e.g., to turn a VARIANT field into JSON
+		const Expression *struct_pack = payload.GetChildren()[0].get();
+		while (BoundCastExpression::IsCast(*struct_pack)) {
+			struct_pack = &BoundCastExpression::Child(struct_pack->Cast<BoundFunctionExpression>());
+		}
+		auto &struct_pack_function = struct_pack->Cast<BoundFunctionExpression>();
+		D_ASSERT(struct_pack_function.Function().GetName() == "struct_pack");
+		for (auto &field : struct_pack_function.GetChildren()) {
+			query_names.push_back(field->GetAlias());
+		}
+	}
+	// Every column of the query is named, by the struct_pack or by the partition lookup
+	D_ASSERT(query_names.size() == query_types.size());
+	QueryResult::DeduplicateColumns(query_names);
+	copy.query_names = std::move(query_names);
+	copy.query_types = std::move(query_types);
+}
+
 static void BindJSONCopyToJSONFunction(Binder &binder, BoundStatement &bound, const string &date_format,
-                                       const string &timestamp_format) {
-	if (date_format.empty() && timestamp_format.empty()) {
+                                       const string &timestamp_format, bool is_geojson,
+                                       const vector<Identifier> &original_column_names) {
+	// Unlike to_json, the GeoJSON writer takes the formats as regular arguments, so it needs no post-bind fixup
+	const auto fix_up_formats = !is_geojson && !(date_format.empty() && timestamp_format.empty());
+	const auto set_column_types = bound.plan && bound.plan->type == LogicalOperatorType::LOGICAL_COPY_TO_FILE &&
+	                              CopyFunctionReturnsColumnTypes(bound.plan->Cast<LogicalCopyToFile>().return_type);
+	if (!fix_up_formats && !set_column_types) {
 		return;
 	}
 	if (!bound.plan || bound.plan->type != LogicalOperatorType::LOGICAL_COPY_TO_FILE) {
@@ -123,7 +166,12 @@ static void BindJSONCopyToJSONFunction(Binder &binder, BoundStatement &bound, co
 	if (projection.expressions.empty()) {
 		throw InternalException("Expected JSON COPY rewrite projection to contain a JSON payload expression");
 	}
-
+	if (set_column_types) {
+		SetJSONCopyQueryColumns(copy, projection, original_column_names);
+	}
+	if (!fix_up_formats) {
+		return;
+	}
 	auto to_json = std::move(projection.expressions[0]);
 	if (to_json->GetExpressionClass() != ExpressionClass::BOUND_FUNCTION) {
 		throw InternalException("Expected JSON COPY payload expression to be a bound function");
@@ -145,10 +193,10 @@ static void BindJSONCopyToJSONFunction(Binder &binder, BoundStatement &bound, co
 
 static BoundStatement CopyToJSONPlanInternal(Binder &binder, CopyStatement &stmt, const JSONCopyToFormat format) {
 	static const identifier_set_t SUPPORTED_BASE_OPTIONS {
-	    "compression",      "encoding",         "use_tmp_file",   "overwrite_or_ignore", "overwrite",
-	    "append",           "filename_pattern", "file_extension", "per_thread_output",   "file_size_bytes",
-	    "partition_by",     "return_files",     "preserve_order", "return_stats",        "write_partition_columns",
-	    "write_empty_file", "hive_file_pattern"};
+	    "compression",      "encoding",          "use_tmp_file",       "overwrite_or_ignore", "overwrite",
+	    "append",           "filename_pattern",  "file_extension",     "per_thread_output",   "file_size_bytes",
+	    "partition_by",     "return_files",      "preserve_order",     "return_stats",        "write_partition_columns",
+	    "write_empty_file", "hive_file_pattern", "return_column_types"};
 
 	auto &copy_info = *stmt.info;
 
@@ -285,7 +333,6 @@ static BoundStatement CopyToJSONPlanInternal(Binder &binder, CopyStatement &stmt
 	auto struct_pack = make_uniq<FunctionExpression>("struct_pack", std::move(struct_pack_args));
 
 	if (is_geojson) {
-		// Unlike to_json, the GeoJSON writer takes the formats as regular arguments, so it needs no post-bind fixup
 		vector<unique_ptr<ParsedExpression>> geojson_args;
 		geojson_args.push_back(std::move(struct_pack));
 		geojson_args.push_back(
@@ -320,9 +367,7 @@ static BoundStatement CopyToJSONPlanInternal(Binder &binder, CopyStatement &stmt
 	copy_info.options["header"] = {{0}};
 
 	auto result = binder.Bind(stmt);
-	if (!is_geojson) {
-		BindJSONCopyToJSONFunction(binder, result, date_format, timestamp_format);
-	}
+	BindJSONCopyToJSONFunction(binder, result, date_format, timestamp_format, is_geojson, original_column_names);
 	return result;
 }
 

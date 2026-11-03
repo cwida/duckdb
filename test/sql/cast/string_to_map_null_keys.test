@@ -3,10 +3,10 @@
 # group: [cast]
 
 statement ok
-COPY (SELECT 1 a, 2 b) TO '__TEST_DIR__/string_to_map_null_keys.csv';
+COPY (SELECT 1 a, 2 b) TO '{TEST_DIR}/string_to_map_null_keys.csv';
 
 statement error
-FROM '__TEST_DIR__/string_to_map_null_keys.csv' EXCEPT SELECT 'bla' AS a, MAP {} AS b;
+FROM '{TEST_DIR}/string_to_map_null_keys.csv' EXCEPT SELECT 'bla' AS a, MAP {} AS b;
 ----
 Could not convert string "2" to 'MAP("NULL", "NULL")'
 

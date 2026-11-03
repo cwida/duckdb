@@ -37,6 +37,7 @@ add_library_unity(
   capi_v2_option.cpp
   capi_v2_prepared_statement.cpp
   capi_v2_qname.cpp
+  capi_v2_query_metrics.cpp
   capi_v2_replacement_scan.cpp
   capi_v2_result.cpp
   capi_v2_schema.cpp

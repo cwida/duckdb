@@ -15,6 +15,7 @@
 #include "duckdb/function/aggregate_state.hpp"
 #include "duckdb/function/aggregate_state_layout.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
+#include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include <type_traits>
 #include <utility>
 
@@ -268,5 +269,22 @@ struct BaseSumOperation {
 		return true;
 	}
 };
+
+//! The DECIMAL overloads can be selected for non-DECIMAL arguments (e.g. through named arguments) - the bind runs
+//! before the argument is cast, so cast it to the DECIMAL type that represents its values here
+inline LogicalType BindDecimalArgument(ClientContext &context, unique_ptr<Expression> &argument,
+                                       const string &function_name) {
+	auto type = argument->GetReturnType();
+	if (type.id() == LogicalTypeId::DECIMAL) {
+		return type;
+	}
+	uint8_t width, scale;
+	if (!type.GetDecimalProperties(width, scale)) {
+		throw BinderException("%s: cannot compute the DECIMAL aggregate of type %s", function_name, type.ToString());
+	}
+	auto decimal_type = LogicalType::DECIMAL(width, scale);
+	argument = BoundCastExpression::AddCastToType(context, std::move(argument), decimal_type);
+	return decimal_type;
+}
 
 } // namespace duckdb

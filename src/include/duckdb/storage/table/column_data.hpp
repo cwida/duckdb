@@ -28,6 +28,7 @@ class DatabaseInstance;
 class PartialBlockManager;
 class DuckTableEntry;
 struct ColumnCheckpointState;
+struct ColumnFetchState;
 struct ColumnSegmentInfo;
 struct ColumnSegmentInfoScanOptions;
 class RowGroup;
@@ -35,10 +36,10 @@ class RowGroupWriter;
 class StorageManager;
 class TableDataWriter;
 class TableStorageInfo;
+class UpdateSegment;
 struct DataTableInfo;
 struct PrefetchState;
 struct RowGroupWriteInfo;
-struct TableScanOptions;
 struct TransactionData;
 struct PersistentColumnData;
 class ValidityColumnData;
@@ -183,6 +184,12 @@ public:
 	//! Fetches a batch of row offsets for leaf columns.
 	void FetchRowsAtSegmentLevel(TransactionData transaction, ColumnFetchState &state, const idx_t *offsets,
 	                             const SelectionVector &sel, idx_t count, Vector &result, idx_t result_offset);
+	//! Fetches the base data of a batch of row offsets, without updates
+	void FetchBaseRows(const QueryContext &context, const idx_t *offsets, const SelectionVector &sel, idx_t count,
+	                   Vector &result, idx_t result_offset);
+	//! Reads the selected rows of a scan through FetchBaseRows (debug_force_fetch_row)
+	void FetchScannedRows(ColumnScanState &state, const SelectionVector &sel, idx_t count, Vector &result,
+	                      idx_t result_offset);
 
 	virtual void Update(TransactionData transaction, DuckTableEntry &table_entry, idx_t column_index,
 	                    Vector &update_vector, row_t *row_ids, idx_t update_count, idx_t row_group_start);
@@ -247,7 +254,7 @@ protected:
 	idx_t ScanVector(TransactionData transaction, idx_t vector_index, ColumnScanState &state, Vector &result,
 	                 idx_t target_scan, UpdateScanType update_type);
 	void SelectVector(ColumnScanState &state, Vector &result, idx_t target_count, const SelectionVector &sel,
-	                  idx_t sel_count, ScanVectorType scan_type);
+	                  idx_t sel_count, ScanVectorType scan_type, idx_t result_offset = 0);
 	void FilterVector(ColumnScanState &state, Vector &result, idx_t target_count, SelectionVector &sel,
 	                  idx_t &sel_count, const TableFilter &filter, TableFilterState &filter_state);
 

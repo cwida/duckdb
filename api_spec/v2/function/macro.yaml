@@ -40,7 +40,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   macro_function_create:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Creates a new macro function through a factory.
 
@@ -74,7 +74,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   macro_function_set_name:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Sets the name of the macro function, as SQL calls it.
 
@@ -98,7 +98,7 @@ functions:
 
   macro_function_set_body:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Sets the body of the macro function, as SQL text.
 
@@ -124,7 +124,7 @@ functions:
 
   macro_function_get_signature:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Returns the macro function's signature so its parameters can be declared.
 
@@ -152,7 +152,7 @@ functions:
 
   macro_function_get_docs:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Returns the documentation of the macro function so it can be filled in.
 
@@ -181,7 +181,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   extension_register_macro_function:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Registers the macro function, making it available for use in SQL queries.
 
@@ -211,7 +211,7 @@ functions:
   #---------------------------------------------------------------------------------------------------------------------
   macro_function_destroy:
     lifecycle:
-      - [ "stable", "v2.0.0", "2026-10-11" ]
+      - [ "unstable", "v2.0.0", "2026-10-11" ]
     description: |
       Destroys the macro function, releasing its resources.
 

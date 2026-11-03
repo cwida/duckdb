@@ -37,3 +37,24 @@ statement ok
 DROP TABLE fl
 
 endloop
+
+# a signaling NaN is ignored by MIN, also in the statistics used when checkpointing to disk
+statement ok
+ATTACH '{TEST_DIR}/signaling_nan.db' AS db
+
+statement ok
+CREATE TABLE db.t AS SELECT * FROM (VALUES (1.0::DOUBLE), ('0111111111110000000000000000000000000000000000000000000000000001'::BIT::DOUBLE)) t(d)
+
+query I
+SELECT MIN(d) FROM db.t
+----
+1.0
+
+statement ok
+CHECKPOINT db
+
+query I
+SELECT d FROM db.t
+----
+1.0
+nan

@@ -1,0 +1,33 @@
+# name: test/sql/copy/parquet/parquet_wrong_geometry_types.test
+# description: GeoParquet file whose geospatial_types statistics claim POINT, while the column has no points
+# group: [parquet]
+
+require parquet
+
+# the statistics are used to compress the points during materialization
+# keep the sort below the aggregate, the optimizer would otherwise remove it
+statement ok
+SET disabled_optimizers = 'redundant_order';
+
+statement error
+SELECT st_astext(g) s, count(*) FROM (SELECT g, i FROM 'data/parquet-testing/broken/geoparquet_wrong_geometry_types.parquet' ORDER BY i DESC) GROUP BY ALL ORDER BY 1;
+----
+Expected only 2D POINT geometries based on the column statistics
+
+statement ok
+SET disabled_optimizers = '';
+
+query II
+SELECT st_astext(g) s, count(*) FROM 'data/parquet-testing/broken/geoparquet_wrong_geometry_types.parquet' GROUP BY ALL ORDER BY 1;
+----
+GEOMETRYCOLLECTION EMPTY	1500
+MULTIPOINT EMPTY	1500
+
+# points are still compressed during materialization
+statement ok
+CREATE TABLE points AS SELECT ('POINT(' || i || ' ' || -i || ')')::GEOMETRY g, i FROM range(3000) t(i);
+
+query IIII
+SELECT count(*), min(s), max(s), count(DISTINCT s) FROM (SELECT st_astext(g) s FROM (SELECT g, i FROM points ORDER BY i DESC));
+----
+3000	POINT (0 0)	POINT (999 -999)	3000

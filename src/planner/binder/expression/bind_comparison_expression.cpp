@@ -160,30 +160,12 @@ LogicalType ExpressionBinder::GetExpressionReturnType(const Expression &expr) {
 unique_ptr<Expression> ExpressionBinder::CreateBoundComparison(ExpressionType comparison_type,
                                                                unique_ptr<Expression> left,
                                                                unique_ptr<Expression> right, ErrorData &error) {
-	auto left_sql_type = ExpressionBinder::GetExpressionReturnType(*left);
-	auto right_sql_type = ExpressionBinder::GetExpressionReturnType(*right);
-	// cast the input types to the same type
-	// now obtain the result type of the input types
-	LogicalType input_type;
-	if (!BoundComparisonExpression::TryBindComparison(context, left_sql_type, right_sql_type, input_type,
-	                                                  comparison_type)) {
-		error =
-		    ErrorData(ExceptionType::BINDER,
-		              StringUtil::Format("Cannot compare values of type %s and type %s - an explicit cast is required",
-		                                 left_sql_type.ToString(), right_sql_type.ToString()));
+	try {
+		return BoundComparisonExpression::Bind(context, comparison_type, std::move(left), std::move(right));
+	} catch (const std::exception &ex) {
+		error = ErrorData(ex);
 		return nullptr;
 	}
-	// add casts (if necessary)
-	left = BoundCastExpression::AddCastToType(context, std::move(left), input_type,
-	                                          input_type.id() == LogicalTypeId::ENUM);
-	right = BoundCastExpression::AddCastToType(context, std::move(right), input_type,
-	                                           input_type.id() == LogicalTypeId::ENUM);
-
-	PushCollation(context, left, input_type);
-	PushCollation(context, right, input_type);
-
-	// now create the bound comparison expression
-	return BoundComparisonExpression::Create(comparison_type, std::move(left), std::move(right));
 }
 
 BindResult ExpressionBinder::BindExpression(ComparisonExpression &expr, idx_t depth) {

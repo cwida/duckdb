@@ -23,7 +23,7 @@ ALTER TABLE t ADD PRIMARY KEY (id);
 # delay the insert by a varying amount, so it lands at different points of the index build
 onlyif task=insert
 statement ok
-SELECT sum(i) FROM range(${attempt} * 2000) tbl(i);
+SELECT sum(i) FROM range({attempt} * 2000) tbl(i);
 
 onlyif task=insert
 statement maybe

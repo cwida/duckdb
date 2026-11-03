@@ -1,0 +1,37 @@
+# name: test/sql/aggregate/aggregates/quantile_fallible_decimal_param.test
+# description: High-scale DECIMAL quantile parameters make the exact discrete rank arithmetic fallible
+# group: [aggregates]
+
+# The exact DECIMAL quantile lives in the bind data while the bound child is a DOUBLE cast, so the
+# EXPLAIN (SQL) export rebinds a non-throwing DOUBLE-rank quantile. These raising fixtures are
+# excluded from the explain_sql verification config for that reason.
+
+statement error
+SELECT quantile_disc(v, 0.5::DECIMAL(38,38)) FROM (VALUES (1), (2)) t(v);
+----
+Overflow in multiplication of DECIMAL
+
+statement error
+SELECT quantile_disc(v, [0.5::DECIMAL(38,38)]) FROM (VALUES (1), (2)) t(v);
+----
+Overflow in multiplication of DECIMAL
+
+statement error
+SELECT quantile_disc(v, 0.5::DECIMAL(38,38)) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW)
+FROM (VALUES (1), (2)) t(v);
+----
+Overflow in multiplication of DECIMAL
+
+# the marking survives plan serialization, which rebuilds the implementation in deserialize
+
+statement ok
+SET debug_verify_serializer=true;
+
+statement error
+SELECT quantile_disc(v, 0.5::DECIMAL(38,38)) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW)
+FROM (VALUES (1), (2)) t(v);
+----
+Overflow in multiplication of DECIMAL
+
+statement ok
+SET debug_verify_serializer=false;

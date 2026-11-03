@@ -2,13 +2,20 @@
 # description: Safe regex dictionary reuse preserves UTF-8, selection and expression lifetimes
 # group: [string]
 
-load {TEST_DIR}/regex_extract_dictionary.db
+statement ok
+ATTACH '{TEST_DIR}/regex_extract_dictionary.db' AS regex_db (ROW_GROUP_SIZE 2048)
+
+statement ok
+USE regex_db
 
 statement ok
 SET force_compression='dictionary'
 
+# Three small row groups cover cross-chunk and cross-row-group dictionary reuse.
 statement ok
-CREATE TABLE strings AS SELECT i, CASE i % 3 WHEN 0 THEN 'abcdefghijklé://foo' WHEN 1 THEN 'äabcdefghijk://bar' ELSE NULL END AS s FROM range(300000) t(i)
+CREATE TABLE strings AS
+SELECT i, CASE i % 3 WHEN 0 THEN 'abcdefghijklé://foo' WHEN 1 THEN 'äabcdefghijk://bar' ELSE NULL END AS s
+FROM range(6144) t(i)
 
 statement ok
 CHECKPOINT
@@ -16,41 +23,39 @@ CHECKPOINT
 query I
 SELECT count(*) FROM strings WHERE regexp_extract(s, '^([^:]+)://', 1) = 'abcdefghijklé'
 ----
-100000
+2048
 
-# Repeat across chunks and row groups, including strings referenced by a cached output dictionary.
 query II
-SELECT count(*) FILTER (WHERE k = 'abcdefghijklé'), count(*) FILTER (WHERE k = 'äabcdefghijk') FROM (SELECT regexp_extract(s, '^([^:]+)://', 1) AS k FROM strings)
+SELECT count(*) FILTER (WHERE k = 'abcdefghijklé'), count(*) FILTER (WHERE k = 'äabcdefghijk')
+FROM (SELECT regexp_extract(s, '^([^:]+)://', 1) AS k FROM strings)
 ----
-100000	100000
+2048	2048
 
 query I
 SELECT count(*) FROM strings WHERE regexp_extract(s, '^([^:]+)://', 1, 'i') = 'äabcdefghijk'
 ----
-100000
+2048
 
 query I
 SELECT count(*) FROM strings WHERE regexp_extract(s, '://', 'l') = '://'
 ----
-200000
+4096
 
 query I
 SELECT count(*) FROM strings WHERE regexp_extract(s, '(missing)', 1, 'k') = s
 ----
-200000
+4096
 
-# A byte escape stays fallible: an unreferenced dictionary entry must not be evaluated.
 query I
 SELECT count(*) FROM strings WHERE s LIKE 'a%' AND regexp_extract(s, '\C') = 'a'
 ----
-100000
+2048
 
 query I
 SELECT count(TRY(regexp_extract(s, '\C'))) FROM strings
 ----
-100000
+2048
 
-# Invalid constant patterns bind successfully and fail only when executed.
 statement ok
 PREPARE invalid_constant_pattern AS SELECT regexp_extract(s, '[') FROM strings
 
@@ -59,18 +64,17 @@ EXECUTE invalid_constant_pattern
 ----
 missing ]: [
 
-# Variable patterns remain fallible, even after a previous non-fallible binding of the same overload.
 query I
 SELECT count(TRY(regexp_extract(s, CASE i % 3 WHEN 0 THEN '^a' ELSE '[' END))) FROM strings
 ----
-100000
+2048
 
 query I
 SELECT count(regexp_extract(s, '^([^:]+)://', NULL)) FROM strings
 ----
-200000
+4096
 
 query I
 SELECT count(*) FROM strings WHERE regexp_extract(s, '^([^:]+)://', ['protocol']).protocol = 'äabcdefghijk'
 ----
-100000
+2048

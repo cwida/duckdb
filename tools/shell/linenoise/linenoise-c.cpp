@@ -6,6 +6,10 @@
 #include "duckdb/common/string_util.hpp"
 #include "shell_highlight.hpp"
 
+#if defined(_WIN32) || defined(WIN32)
+#define strdup _strdup
+#endif
+
 using duckdb::Highlighting;
 using duckdb::History;
 using duckdb::idx_t;
@@ -161,12 +165,9 @@ void linenoiseClearScreen(void) {
 	Terminal::ClearScreen();
 }
 
-int linenoiseGetTerminalColorMode() {
-	// buffer any available input - we need to interact with stdin
-	Terminal::BufferAvailableInput();
-
+int linenoiseGetTerminalColorMode(int allow_probe) {
 	duckdb::TerminalColor background_color;
-	if (!duckdb::Terminal::TryGetBackgroundColor(background_color)) {
+	if (!duckdb::Terminal::TryGetBackgroundColor(background_color, allow_probe != 0)) {
 		return LINENOISE_UNKNOWN_MODE;
 	}
 	// calculate the brightness
