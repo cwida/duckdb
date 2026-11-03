@@ -492,6 +492,15 @@ unique_ptr<BaseStatistics>
 ParquetStatisticsUtils::TransformParquetStatistics(const LogicalType &type, const ParquetColumnSchema &schema,
                                                    const duckdb_parquet::Statistics &parquet_stats, bool can_have_nan,
                                                    optional_ptr<const ColumnChunk> column_chunk) {
+	// INT96 has no defined sort order: a column is only ordered chronologically when the file declares
+	// INT96_TIMESTAMP_ORDER for it. Under the default TYPE_ORDER the statistics bound the values by byte comparison,
+	// which is a different order, so pruning on them silently drops rows - the specification requires readers to
+	// ignore all statistics of such a column, whether it declares TYPE_ORDER or no column order at all.
+	// See test/sql/copy/parquet/int96_invalid_stats.test
+	if (schema.parquet_type == Type::INT96) {
+		auto unknown_stats = BaseStatistics::CreateUnknown(type);
+		return unknown_stats.ToUnique();
+	}
 	switch (type.id()) {
 	case LogicalTypeId::BOOLEAN:
 	case LogicalTypeId::UTINYINT:

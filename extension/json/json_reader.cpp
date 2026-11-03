@@ -1298,7 +1298,7 @@ void JSONReader::ReadNextBufferSeek(JSONReaderScanState &scan_state) {
 				    scan_state.thread_local_filehandle->GetPath() != raw_handle.GetPath()) {
 					FileOpenFlags flags = FileFlags::FILE_FLAGS_READ | FileFlags::FILE_FLAGS_DIRECT_IO;
 					flags.SetCachingMode(CachingMode::CACHE_REMOTE_ONLY);
-					scan_state.thread_local_filehandle = scan_state.fs.OpenFile(raw_handle.GetPath(), flags);
+					scan_state.thread_local_filehandle = scan_state.fs.OpenFile(file, flags);
 				}
 			} else if (scan_state.thread_local_filehandle) {
 				scan_state.thread_local_filehandle = nullptr;
