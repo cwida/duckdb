@@ -262,7 +262,7 @@ void SimpleTimeZone::GetOffsetRange(int64_t start_millis, int64_t end_millis, in
 	if (!Grego::TimeToFields(start_millis + raw_offset, start_year, month, dom, dow, doy, mid) ||
 	    !Grego::TimeToFields(end_millis + raw_offset, end_year, month, dom, dow, doy, mid) || start_year < 1 ||
 	    end_year - start_year > 1) {
-		// an interval of more than a year holds both offsets, and before year 1 the rule is not applied
+		// an interval of more than a year holds both offsets, and the rule starts at year 0 without a boundary
 		min_offset = MinValue(raw_offset, raw_offset + dst_savings);
 		max_offset = MaxValue(raw_offset, raw_offset + dst_savings);
 		return;

@@ -94,8 +94,7 @@ static void ICUTimeZoneFunction(ClientContext &context, TableFunctionInput &data
 }
 
 struct ICUFromNaiveTimestamp : public ICUDateFunc {
-	//! The smallest and largest shift in milliseconds the operation applies to a local time in
-	//! [start_millis, end_millis]
+	//! Bounds on the shift in milliseconds the operation applies to a local time in [start_millis, end_millis]
 	static void GetShiftRange(const TimeZone &tz, int64_t start_millis, int64_t end_millis, int64_t &lo_shift,
 	                          int64_t &hi_shift) {
 		int32_t min_offset;
