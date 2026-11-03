@@ -86,8 +86,8 @@ public:
 	static constexpr const idx_t MINIMUM_MEMORY_PER_COLUMN_PER_THREAD = 4ULL * 1024ULL * 1024ULL;
 
 public:
-	explicit FixedBatchCopyGlobalState(ClientContext &context_p, idx_t minimum_memory_per_thread)
-	    : output_lifecycle(context_p), memory_manager(context_p, minimum_memory_per_thread), rows_copied(0),
+	FixedBatchCopyGlobalState(ClientContext &context_p, idx_t minimum_memory_per_thread, bool fsync)
+	    : output_lifecycle(context_p, fsync), memory_manager(context_p, minimum_memory_per_thread), rows_copied(0),
 	      scheduled_batch_index(0), flushed_batch_index(0), any_flushing(false), any_finished(false),
 	      minimum_memory_per_thread(minimum_memory_per_thread) {
 	}
@@ -343,10 +343,12 @@ SinkFinalizeType PhysicalBatchCopyToFile::FinalFlush(ClientContext &context, Glo
 	gstate.memory_manager.FinalCheck();
 	if (function.copy_to_finalize && gstate.global_state) {
 		function.copy_to_finalize(context, *bind_data, *gstate.global_state);
+		gstate.output_lifecycle.SyncFile(file_path);
 		if (use_tmp_file) {
 			PhysicalCopyToFile::MoveTmpFile(context, file_path);
 		}
 	}
+	gstate.output_lifecycle.SyncDirectories();
 	gstate.output_lifecycle.MarkSuccessful();
 	return SinkFinalizeType::READY;
 }
@@ -696,7 +698,7 @@ unique_ptr<GlobalSinkState> PhysicalBatchCopyToFile::GetGlobalSinkState(ClientCo
 	// request memory based on the minimum amount of memory per column
 	auto minimum_memory_per_thread =
 	    FixedBatchCopyGlobalState::MINIMUM_MEMORY_PER_COLUMN_PER_THREAD * children[0].get().GetTypes().size();
-	auto result = make_uniq<FixedBatchCopyGlobalState>(context, minimum_memory_per_thread);
+	auto result = make_uniq<FixedBatchCopyGlobalState>(context, minimum_memory_per_thread, fsync);
 	if (write_empty_file) {
 		// if we are writing the file also if it is empty - initialize now
 		result->Initialize(context, *this);

@@ -53,6 +53,8 @@ public:
 	bool write_partition_columns;
 	bool write_empty_file = true;
 	bool hive_file_pattern = true;
+	//! Whether to sync the written files and their directories to stable storage
+	bool fsync = false;
 	PreserveOrderType preserve_order = PreserveOrderType::AUTOMATIC;
 	vector<idx_t> partition_columns;
 	vector<BoundOrderByNode> order_columns;

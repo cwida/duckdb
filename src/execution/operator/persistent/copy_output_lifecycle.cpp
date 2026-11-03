@@ -1,13 +1,14 @@
 #include "duckdb/execution/operator/persistent/copy_output_lifecycle.hpp"
 
 #include "duckdb/common/file_system.hpp"
+#include "duckdb/common/opener_file_system.hpp"
 #include "duckdb/main/client_context.hpp"
 
 #include <algorithm>
 
 namespace duckdb {
 
-CopyOutputLifecycle::CopyOutputLifecycle(ClientContext &context_p) : context(context_p) {
+CopyOutputLifecycle::CopyOutputLifecycle(ClientContext &context_p, bool fsync_p) : context(context_p), fsync(fsync_p) {
 }
 
 CopyOutputLifecycle::~CopyOutputLifecycle() {
@@ -81,6 +82,58 @@ void CopyOutputLifecycle::RegisterFile(string path) {
 void CopyOutputLifecycle::RegisterCreatedDirectory(string path) {
 	annotated_lock_guard<annotated_mutex> guard(lock);
 	created_directories.push_back(std::move(path));
+}
+
+static string ParentDirectory(FileSystem &fs, const string &path) {
+	auto separator = fs.PathSeparator(path);
+	auto end = path.find_last_not_of(separator);
+	if (end == string::npos) {
+		return path;
+	}
+	auto pos = path.find_last_of(separator, end);
+	if (pos == string::npos) {
+		return ".";
+	}
+	return pos == 0 ? separator : path.substr(0, pos);
+}
+
+void CopyOutputLifecycle::SyncFile(const string &path) {
+	if (!fsync) {
+		return;
+	}
+	auto &fs = FileSystem::GetFileSystem(context);
+	// remote paths and pipes are not synced
+	if (fs.IsRemoteFile(path) || fs.IsPipe(path)) {
+		return;
+	}
+	fs.OpenFile(path, FileFlags::FILE_FLAGS_WRITE)->Sync();
+	auto directory = ParentDirectory(fs, path);
+	annotated_lock_guard<annotated_mutex> guard(lock);
+	synced_file_directories.insert(std::move(directory));
+}
+
+void CopyOutputLifecycle::SyncDirectories() {
+#ifndef _WIN32
+	if (!fsync) {
+		return;
+	}
+	auto &client_fs = FileSystem::GetFileSystem(context).Cast<OpenerFileSystem>();
+	set<string> directories;
+	{
+		annotated_lock_guard<annotated_mutex> guard(lock);
+		directories = synced_file_directories;
+		for (auto &directory : created_directories) {
+			if (!FileSystem::IsRemoteFile(directory)) {
+				directories.insert(ParentDirectory(client_fs, directory));
+			}
+		}
+	}
+	// the client file system checks an opened path as a file, so check the directory as one before opening it
+	for (auto &directory : directories) {
+		client_fs.VerifyCanAccessDirectory(directory);
+		client_fs.GetFileSystem().OpenFile(directory, FileFlags::FILE_FLAGS_READ, client_fs.GetOpener())->Sync();
+	}
+#endif
 }
 
 void CopyOutputLifecycle::MarkSuccessful() noexcept {

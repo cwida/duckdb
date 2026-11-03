@@ -1779,7 +1779,7 @@ CreateColumnStatistics(const case_insensitive_map_t<case_insensitive_map_t<Value
 // Copy File Lifecycle
 //===--------------------------------------------------------------------===//
 static void FinalizeLifecycleFileState(ClientContext &context, copy_to_finalize_t finalize, FunctionData &bind_data,
-                                       unique_ptr<GlobalFileState> state) {
+                                       CopyOutputLifecycle &output_lifecycle, unique_ptr<GlobalFileState> state) {
 	if (!finalize) {
 		throw InternalException("COPY file lifecycle finalize requires a finalize callback");
 	}
@@ -1787,6 +1787,7 @@ static void FinalizeLifecycleFileState(ClientContext &context, copy_to_finalize_
 		throw InternalException("COPY file lifecycle finalize reached an empty file state");
 	}
 	finalize(context, bind_data, *state->data);
+	output_lifecycle.SyncFile(state->path);
 }
 void CopyFileLifecycleExecutor::WaitForJob(CopyFileLifecycleJob &job, CopyFileLifecycleWaitMode mode) {
 	while (!job.IsFinished()) {
@@ -4000,6 +4001,7 @@ public:
 			partitioned_copy.FinalizeActiveWrites();
 			partitioned_copy.copy_gstate.TryFinalizeOwnedFileState();
 			partitioned_copy.copy_gstate.WaitForLifecycleTasks();
+			partitioned_copy.copy_gstate.output_lifecycle.SyncDirectories();
 			partitioned_copy.copy_gstate.MarkSuccessful();
 		}
 	}
@@ -4030,6 +4032,7 @@ void PartitionedCopy::Finalize(Pipeline &pipeline, Event &event, InterruptState 
 		FinalizeActiveWrites();
 		copy_gstate.TryFinalizeOwnedFileState();
 		copy_gstate.WaitForLifecycleTasks();
+		copy_gstate.output_lifecycle.SyncDirectories();
 		copy_gstate.MarkSuccessful();
 	}
 }
@@ -4490,7 +4493,8 @@ void PartitionedCopy::FinalizeFileStates(vector<FileStateHandle> files_to_finali
 // Copy Global State
 //===--------------------------------------------------------------------===//
 CopyToFileGlobalState::CopyToFileGlobalState(const PhysicalCopyToFile &op_p, ClientContext &context_p)
-    : op(op_p), context(context_p), output_lifecycle(context_p), initialized(false), prepare_global_state(nullptr),
+    : op(op_p), context(context_p), output_lifecycle(context_p, op_p.fsync), initialized(false),
+      prepare_global_state(nullptr),
       create_file_state_fun([&](FileStateHandle &file_state) DUCKDB_EXCLUDES(lock) { RequestFileState(file_state); }),
       lifecycle_executor(context_p), output_files(op_p), rows_copied(0), last_file_offset(0) {
 }
@@ -4745,16 +4749,17 @@ void CopyToFileGlobalState::FinalizeFileState(FileStateHandle file_state) {
 		auto finalize = op.function.copy_to_finalize;
 		auto &context_ref = context;
 		auto &bind_data = *op.bind_data;
+		auto &lifecycle = output_lifecycle;
 		try {
 			lifecycle_executor.Schedule(finalize_job, CopyFileLifecycleWaitMode::DRAIN,
-			                            [finalize, &context_ref, &bind_data, state_holder]() mutable {
-				                            FinalizeLifecycleFileState(context_ref, finalize, bind_data,
+			                            [finalize, &context_ref, &bind_data, &lifecycle, state_holder]() mutable {
+				                            FinalizeLifecycleFileState(context_ref, finalize, bind_data, lifecycle,
 				                                                       std::move(*state_holder));
 			                            });
 		} catch (...) {
 			if (!finalize_job->IsFinished() && state_holder && *state_holder) {
 				try {
-					FinalizeLifecycleFileState(context_ref, finalize, bind_data, std::move(*state_holder));
+					FinalizeLifecycleFileState(context_ref, finalize, bind_data, lifecycle, std::move(*state_holder));
 				} catch (...) {
 				}
 			}
@@ -5130,6 +5135,7 @@ SinkFinalizeType PhysicalCopyToFile::Finalize(Pipeline &pipeline, Event &event, 
 		D_ASSERT(!Rotate());
 		MoveTmpFile(context, file_path);
 	}
+	gstate.output_lifecycle.SyncDirectories();
 	gstate.MarkSuccessful();
 
 	return SinkFinalizeType::READY;

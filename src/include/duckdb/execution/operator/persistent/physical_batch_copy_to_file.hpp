@@ -37,6 +37,8 @@ public:
 	vector<Identifier> query_names;
 	vector<LogicalType> query_types;
 	bool write_empty_file;
+	//! Whether to sync the written file and its directory to stable storage
+	bool fsync = false;
 
 	//! Fine-grained control over writes
 	optional_idx batch_size;

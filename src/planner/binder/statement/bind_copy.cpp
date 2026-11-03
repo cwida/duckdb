@@ -102,6 +102,7 @@ identifier_map_t<CopyOption> Binder::GetFullCopyOptionsList(const CopyFunction &
 		copy_options["write_partition_columns"] = CopyOption(LogicalType::BOOLEAN, CopyOptionMode::WRITE_ONLY);
 		copy_options["write_empty_file"] = CopyOption(LogicalType::BOOLEAN, CopyOptionMode::WRITE_ONLY);
 		copy_options["hive_file_pattern"] = CopyOption(LogicalType::BOOLEAN, CopyOptionMode::WRITE_ONLY);
+		copy_options["fsync"] = CopyOption(LogicalType::BOOLEAN, CopyOptionMode::WRITE_ONLY);
 	}
 	return copy_options;
 }
@@ -120,6 +121,7 @@ struct CopyToParsedOptions {
 	optional<bool> write_partition_columns;
 	optional<bool> write_empty_file;
 	optional<bool> hive_file_pattern;
+	optional<bool> fsync;
 	optional<PreserveOrderType> preserve_order;
 	optional<CopyFunctionReturnType> return_type;
 	optional<bool> return_column_types;
@@ -143,6 +145,10 @@ struct CopyToParsedOptions {
 
 	bool HiveFilePattern() const {
 		return hive_file_pattern.value_or(true);
+	}
+
+	bool Fsync() const {
+		return fsync.value_or(false);
 	}
 
 	PreserveOrderType PreserveOrder() const {
@@ -202,6 +208,7 @@ struct CopyToResolvedOptions {
 	bool write_partition_columns = false;
 	bool write_empty_file = true;
 	bool hive_file_pattern = true;
+	bool fsync = false;
 	PreserveOrderType preserve_order = PreserveOrderType::AUTOMATIC;
 	CopyFunctionReturnType return_type = CopyFunctionReturnType::CHANGED_ROWS;
 	//! Unbound, as it is bound against the partition columns
@@ -260,6 +267,7 @@ static CopyToResolvedOptions ResolveCopyToOptions(ClientContext &context, const 
 	result.write_partition_columns = options.WritePartitionColumns();
 	result.write_empty_file = options.WriteEmptyFile();
 	result.hive_file_pattern = options.HiveFilePattern();
+	result.fsync = options.Fsync();
 	result.preserve_order = options.PreserveOrder();
 	result.return_type = options.ReturnType();
 	result.partition_path = std::move(options.partition_path);
@@ -508,6 +516,8 @@ BoundStatement Binder::BindCopyTo(CopyStatement &stmt, const CopyFunction &funct
 			parsed_options.write_empty_file = GetBooleanArg(context, option_values);
 		} else if (option_name == "hive_file_pattern") {
 			parsed_options.hive_file_pattern = GetBooleanArg(context, option_values);
+		} else if (option_name == "fsync") {
+			parsed_options.fsync = GetBooleanArg(context, option_values);
 		} else {
 			stmt.info->options[option_name] = option_values;
 		}
@@ -608,6 +618,7 @@ BoundStatement Binder::BindCopyTo(CopyStatement &stmt, const CopyFunction &funct
 	copy->query_types = std::move(query_types);
 	copy->preserve_order = resolved_options.preserve_order;
 	copy->hive_file_pattern = resolved_options.hive_file_pattern;
+	copy->fsync = resolved_options.fsync;
 	copy->order_columns = std::move(resolved_options.order_columns);
 	copy->partition_path_expression = std::move(partition_path_expression);
 

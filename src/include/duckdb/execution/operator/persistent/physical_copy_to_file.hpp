@@ -145,6 +145,8 @@ public:
 	vector<LogicalType> query_types;
 	//! Whether to write an empty file if there was no data
 	bool write_empty_file;
+	//! Whether to sync the written files and their directories to stable storage
+	bool fsync = false;
 
 	//! Partitioning-related
 	vector<idx_t> partition_columns;

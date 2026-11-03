@@ -193,10 +193,10 @@ static void BindJSONCopyToJSONFunction(Binder &binder, BoundStatement &bound, co
 
 static BoundStatement CopyToJSONPlanInternal(Binder &binder, CopyStatement &stmt, const JSONCopyToFormat format) {
 	static const identifier_set_t SUPPORTED_BASE_OPTIONS {
-	    "compression",      "encoding",          "use_tmp_file",       "overwrite_or_ignore", "overwrite",
-	    "append",           "filename_pattern",  "file_extension",     "per_thread_output",   "file_size_bytes",
-	    "partition_by",     "return_files",      "preserve_order",     "return_stats",        "write_partition_columns",
-	    "write_empty_file", "hive_file_pattern", "return_column_types"};
+	    "compression",  "encoding",         "use_tmp_file",      "overwrite_or_ignore", "overwrite",
+	    "append",       "filename_pattern", "file_extension",    "per_thread_output",   "file_size_bytes",
+	    "partition_by", "return_files",     "preserve_order",    "return_stats",        "write_partition_columns",
+	    "fsync",        "write_empty_file", "hive_file_pattern", "return_column_types"};
 
 	auto &copy_info = *stmt.info;
 
