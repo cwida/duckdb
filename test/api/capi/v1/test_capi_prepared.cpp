@@ -1042,3 +1042,41 @@ TEST_CASE("Preparing an extracted dynamic PIVOT in the C API", "[capi][expanding
 	REQUIRE(statement_type == DUCKDB_STATEMENT_TYPE_MULTI);
 	RequirePivotRows(*result);
 }
+
+TEST_CASE("duckdb_result_statement_type preserves prepared statement type", "[capi]") {
+	CAPITester tester;
+	REQUIRE(tester.OpenDatabase(nullptr));
+	REQUIRE_NO_FAIL(tester.Query("CREATE TABLE t (i INTEGER)"));
+
+	struct Case {
+		const char *sql;
+		duckdb_statement_type expected_type;
+	};
+	Case cases[] = {
+	    {"SELECT 42", DUCKDB_STATEMENT_TYPE_SELECT},
+	    {"INSERT INTO t VALUES (1)", DUCKDB_STATEMENT_TYPE_INSERT},
+	    {"UPDATE t SET i = 2", DUCKDB_STATEMENT_TYPE_UPDATE},
+	    {"DELETE FROM t", DUCKDB_STATEMENT_TYPE_DELETE},
+	};
+
+	for (auto &tc : cases) {
+		CAPIPrepared prepared;
+		REQUIRE(prepared.Prepare(tester, tc.sql));
+		REQUIRE(duckdb_prepared_statement_type(prepared.prepared) == tc.expected_type);
+
+		auto executed = tester.QueryPrepared(prepared.prepared);
+		REQUIRE(!executed->HasError());
+		REQUIRE(duckdb_result_statement_type(executed->InternalResult()) == tc.expected_type);
+
+		duckdb_result streamed_res;
+		REQUIRE(duckdb_execute_prepared_streaming(prepared.prepared, &streamed_res) == DuckDBSuccess);
+		REQUIRE(duckdb_result_statement_type(streamed_res) == tc.expected_type);
+		duckdb_destroy_result(&streamed_res);
+
+		CAPIPending pending;
+		REQUIRE(pending.Pending(prepared));
+		auto via_pending = pending.Execute();
+		REQUIRE(!via_pending->HasError());
+		REQUIRE(duckdb_result_statement_type(via_pending->InternalResult()) == tc.expected_type);
+	}
+}

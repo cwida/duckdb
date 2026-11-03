@@ -28,10 +28,13 @@ struct BoxRendererConfig;
 class BufferedData;
 class ClientContext;
 class ClientContextLock;
+class PreparedStatement;
 class PreparedStatementData;
 class QueryResult;
 
 class BaseQueryResult {
+	friend class PreparedStatement;
+
 public:
 	//! Creates a successful query result with the specified names and types
 	DUCKDB_API BaseQueryResult(StatementType statement_type, StatementProperties properties, vector<LogicalType> types,

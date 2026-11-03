@@ -143,7 +143,11 @@ unique_ptr<QueryResult> PreparedStatement::Execute(identifier_map_t<BoundParamet
 	}
 	auto parameters = query_parameters;
 	auto statement = CreateStatement(named_values, parameters);
-	return client_context->RunInternalStatement(std::move(statement), parameters);
+	auto result = client_context->RunInternalStatement(std::move(statement), parameters);
+	if (!result->HasError()) {
+		result->statement_type = info.statement_type;
+	}
+	return result;
 }
 
 unique_ptr<QueryResult> PreparedStatement::Execute(vector<Value> &values, const QueryParameters &query_parameters) {
@@ -177,7 +181,11 @@ unique_ptr<QueryResult> PreparedStatement::Submit(identifier_map_t<BoundParamete
 	}
 	auto parameters = query_parameters;
 	auto statement = CreateStatement(named_values, parameters);
-	return client_context->SubmitInternalStatement(std::move(statement), parameters);
+	auto result = client_context->SubmitInternalStatement(std::move(statement), parameters);
+	if (!result->HasError()) {
+		result->statement_type = info.statement_type;
+	}
+	return result;
 }
 
 } // namespace duckdb
