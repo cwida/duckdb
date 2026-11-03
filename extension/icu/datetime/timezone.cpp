@@ -296,9 +296,6 @@ const TZTypeOffset &OlsonTimeZone::OffsetsAt(int32_t transition_index) const {
 
 void OlsonTimeZone::GetHistoricalOffset(int64_t millis, bool local, LocalOption non_existing, LocalOption duplicated,
                                         int32_t &raw_offset, int32_t &dst_offset) const {
-	// the maximum absolute offset of a zone, used as a safety margin when scanning the transitions
-	static constexpr int64_t MAX_OFFSET_SECONDS = 86400;
-
 	const auto transition_count = int32_t(data.transition_count);
 	int32_t transition_index = -1;
 	if (transition_count > 0) {

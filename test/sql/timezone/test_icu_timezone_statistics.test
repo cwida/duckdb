@@ -15,8 +15,7 @@ SET TimeZone = 'UTC';
 
 #################### row group pruning ####################
 
-# three row groups of 2048 instants, one per day from 2026-01-01: 25 seconds apart from midnight UTC, so a group
-# covers 00:00 to 14:13 of its day
+# three row groups of 2048 instants 25 seconds apart, one per day from 2026-01-01, each covering 00:00 to 14:13 UTC
 statement ok
 CREATE TABLE events AS
     SELECT to_timestamp(1767225600 + (range // 2048) * 86400 + (range % 2048) * 25) AS utcbegin FROM range(6144);
@@ -53,7 +52,7 @@ EXPLAIN SELECT count(*) FROM events WHERE utcbegin AT TIME ZONE 'America/Los_Ang
 ----
 physical_plan	<REGEX>:.*Empty Result.*
 
-# the other direction: local times of three days, 25 seconds apart from midnight
+# the other direction, local times of three days 25 seconds apart
 statement ok
 CREATE TABLE locals AS
     SELECT TIMESTAMP '2026-01-01' + to_seconds((range // 2048) * 86400 + (range % 2048) * 25) AS localbegin FROM range(6144);
@@ -103,7 +102,7 @@ analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*
 
 #################### tight bounds ####################
 
-# a day without a transition, in the era of the recurring rule of the zone: the bounds are the shifted ends
+# a day without a transition in the era of the recurring rule, so the bounds are the shifted ends
 statement ok
 CREATE TABLE day AS SELECT to_timestamp(16725225600 + range * 3600) AS utc FROM range(25);
 
@@ -231,22 +230,74 @@ true
 
 endloop
 
-# windows that start and end with the same offset and hold the other one in between, with rows right after the
-# transitions: a bound that misses the offset in between leaves them out
-foreach rows (1772960400),(1772964000),(1781524800),(1793523599),(1793523600),(1793525400) (1762072200),(1762074000),(1768478400),(1772963999),(1772964000),(1772967600) (923216400),(923220000),(930830400),(941360399),(941360400),(941362200) (1162110600),(1162112400),(1168862400),(1173607199),(1173607200),(1173610800) (1735689600),(1762072200),(1762074000),(1781524800),(1793523599),(1798675200)
+# windows that start and end with one offset and hold the other one in between, with rows right after the
+# transitions that a range missing the offset in between leaves out
 
+# the daylight savings of 2026
 statement ok
-CREATE OR REPLACE TABLE w AS SELECT to_timestamp(s) AS utc FROM (VALUES {rows}) t(s);
+CREATE OR REPLACE TABLE w AS SELECT to_timestamp(s) AS utc FROM (VALUES (1772960400), (1772964000), (1781524800), (1793523599), (1793523600), (1793525400)) t(s);
+
+foreach s 1772960400 1772964000 1781524800 1793523599 1793523600 1793525400
 
 query I
-SELECT count(*) FROM w;
+SELECT (SELECT count(*) FROM w WHERE timezone('America/Los_Angeles', utc) = timezone('America/Los_Angeles', to_timestamp({s})))
+     = (SELECT count(*) FILTER (WHERE timezone('America/Los_Angeles', utc) = timezone('America/Los_Angeles', to_timestamp({s}))) FROM w);
 ----
-6
+true
+
+endloop
+
+# the standard time from the fall back of 2025 to the spring forward of 2026
+statement ok
+CREATE OR REPLACE TABLE w AS SELECT to_timestamp(s) AS utc FROM (VALUES (1762072200), (1762074000), (1768478400), (1772963999), (1772964000), (1772967600)) t(s);
+
+foreach s 1762072200 1762074000 1768478400 1772963999 1772964000 1772967600
 
 query I
-SELECT bool_and((SELECT count(*) FROM w WHERE timezone('America/Los_Angeles', utc) = timezone('America/Los_Angeles', to_timestamp(s)))
-              = (SELECT count(*) FILTER (WHERE timezone('America/Los_Angeles', utc) = timezone('America/Los_Angeles', to_timestamp(s))) FROM w))
-FROM (VALUES {rows}) t(s);
+SELECT (SELECT count(*) FROM w WHERE timezone('America/Los_Angeles', utc) = timezone('America/Los_Angeles', to_timestamp({s})))
+     = (SELECT count(*) FILTER (WHERE timezone('America/Los_Angeles', utc) = timezone('America/Los_Angeles', to_timestamp({s}))) FROM w);
+----
+true
+
+endloop
+
+# the daylight savings of 1999, which the transition data covers
+statement ok
+CREATE OR REPLACE TABLE w AS SELECT to_timestamp(s) AS utc FROM (VALUES (923216400), (923220000), (930830400), (941360399), (941360400), (941362200)) t(s);
+
+foreach s 923216400 923220000 930830400 941360399 941360400 941362200
+
+query I
+SELECT (SELECT count(*) FROM w WHERE timezone('America/Los_Angeles', utc) = timezone('America/Los_Angeles', to_timestamp({s})))
+     = (SELECT count(*) FILTER (WHERE timezone('America/Los_Angeles', utc) = timezone('America/Los_Angeles', to_timestamp({s}))) FROM w);
+----
+true
+
+endloop
+
+# from the fall back of 2006 in the transition data to the spring forward of 2007 under the recurring rule
+statement ok
+CREATE OR REPLACE TABLE w AS SELECT to_timestamp(s) AS utc FROM (VALUES (1162110600), (1162112400), (1168862400), (1173607199), (1173607200), (1173610800)) t(s);
+
+foreach s 1162110600 1162112400 1168862400 1173607199 1173607200 1173610800
+
+query I
+SELECT (SELECT count(*) FROM w WHERE timezone('America/Los_Angeles', utc) = timezone('America/Los_Angeles', to_timestamp({s})))
+     = (SELECT count(*) FILTER (WHERE timezone('America/Los_Angeles', utc) = timezone('America/Los_Angeles', to_timestamp({s}))) FROM w);
+----
+true
+
+endloop
+
+# two years, which hold both offsets wherever the ends fall
+statement ok
+CREATE OR REPLACE TABLE w AS SELECT to_timestamp(s) AS utc FROM (VALUES (1735689600), (1762072200), (1762074000), (1781524800), (1793523599), (1798675200)) t(s);
+
+foreach s 1735689600 1762072200 1762074000 1781524800 1793523599 1798675200
+
+query I
+SELECT (SELECT count(*) FROM w WHERE timezone('America/Los_Angeles', utc) = timezone('America/Los_Angeles', to_timestamp({s})))
+     = (SELECT count(*) FILTER (WHERE timezone('America/Los_Angeles', utc) = timezone('America/Los_Angeles', to_timestamp({s}))) FROM w);
 ----
 true
 
@@ -312,10 +363,27 @@ endloop
 statement ok
 CREATE OR REPLACE TABLE w AS SELECT to_timestamp(s) AS utc FROM (VALUES (1774742400), (1774746000), (1782907200), (1792889999), (1792890000), (1792891800)) t(s);
 
+foreach s 1774742400 1774746000 1782907200 1792889999 1792890000 1792891800
+
 query I
-SELECT bool_and((SELECT count(*) FROM w WHERE timezone('{zone}', utc) = timezone('{zone}', to_timestamp(s)))
-              = (SELECT count(*) FILTER (WHERE timezone('{zone}', utc) = timezone('{zone}', to_timestamp(s))) FROM w))
-FROM (VALUES (1774742400), (1774746000), (1782907200), (1792889999), (1792890000), (1792891800)) t(s);
+SELECT (SELECT count(*) FROM w WHERE timezone('{zone}', utc) = timezone('{zone}', to_timestamp({s})))
+     = (SELECT count(*) FILTER (WHERE timezone('{zone}', utc) = timezone('{zone}', to_timestamp({s}))) FROM w);
+----
+true
+
+endloop
+
+endloop
+
+# nanoseconds right before a transition, which the function shifts with the microsecond they truncate to
+statement ok
+CREATE TABLE ns_edge AS SELECT s::TIMESTAMPTZ_NS AS utc FROM (VALUES ('1969-10-26T08:59:59.999999997+00'), ('1969-10-26T08:59:59.999999998+00'), ('1969-10-26T08:59:59.999999999+00')) t(s);
+
+foreach s 1969-10-26T08:59:59.999999997+00 1969-10-26T08:59:59.999999998+00 1969-10-26T08:59:59.999999999+00
+
+query I
+SELECT (SELECT count(*) FROM ns_edge WHERE timezone('America/Los_Angeles', utc) = timezone('America/Los_Angeles', '{s}'::TIMESTAMPTZ_NS))
+     = (SELECT count(*) FILTER (WHERE timezone('America/Los_Angeles', utc) = timezone('America/Los_Angeles', '{s}'::TIMESTAMPTZ_NS)) FROM ns_edge);
 ----
 true
 
@@ -378,5 +446,19 @@ SELECT count(*) FROM infinite WHERE timezone('America/Los_Angeles', utc) = TIMES
 
 query I
 SELECT count(*) FROM infinite WHERE timezone('America/Los_Angeles', utc) = TIMESTAMP '-infinity';
+----
+1
+
+# the smallest finite timestamp sorts below -infinity
+statement ok
+CREATE TABLE lowest AS SELECT utc FROM (VALUES (TIMESTAMPTZ '-infinity'), (make_timestamp((-9223372036854775807)::BIGINT - 1)::TIMESTAMPTZ), (TIMESTAMPTZ '1970-01-01 00:00:00+00')) t(utc);
+
+query I
+SELECT count(*) FROM lowest WHERE timezone('GMT+01:00', utc) = TIMESTAMP '-infinity';
+----
+1
+
+query I
+SELECT count(*) FROM lowest WHERE timezone('GMT+01:00', utc) = TIMESTAMP '1970-01-01 01:00:00';
 ----
 1

@@ -24,24 +24,6 @@ bool TryEvaluateAtConstants(ClientContext &context, const BoundFunctionExpressio
 	return ExpressionExecutor::TryEvaluateScalar(context, *clone, result);
 }
 
-// Whether [lo, hi] holds -infinity and another value. The smallest finite DATE or TIMESTAMP sorts below -infinity.
-bool HoldsNegativeInfinity(const Value &lo, const Value &hi) {
-	switch (lo.type().id()) {
-	case LogicalTypeId::DATE:
-	case LogicalTypeId::TIMESTAMP:
-	case LogicalTypeId::TIMESTAMP_SEC:
-	case LogicalTypeId::TIMESTAMP_MS:
-	case LogicalTypeId::TIMESTAMP_NS:
-	case LogicalTypeId::TIMESTAMP_TZ:
-	case LogicalTypeId::TIMESTAMP_TZ_NS: {
-		auto ninfinity = Value::NegativeInfinity(lo.type());
-		return lo < hi && lo <= ninfinity && ninfinity <= hi;
-	}
-	default:
-		return false;
-	}
-}
-
 // Equal bounds need not imply identical inputs for certain types, so we skip this optimization for those values.
 // Floating-point bounds only lose information for the sign of zero.
 bool CanInferConstantFromNumericBounds(const Value &value) {
@@ -85,6 +67,23 @@ bool TryInferConstantBounds(const BaseStatistics &stats, Value &constant) {
 	return false;
 }
 } // namespace
+
+bool StatisticsPropagator::HoldsNegativeInfinity(const Value &lo, const Value &hi) {
+	switch (lo.type().id()) {
+	case LogicalTypeId::DATE:
+	case LogicalTypeId::TIMESTAMP:
+	case LogicalTypeId::TIMESTAMP_SEC:
+	case LogicalTypeId::TIMESTAMP_MS:
+	case LogicalTypeId::TIMESTAMP_NS:
+	case LogicalTypeId::TIMESTAMP_TZ:
+	case LogicalTypeId::TIMESTAMP_TZ_NS: {
+		auto ninfinity = Value::NegativeInfinity(lo.type());
+		return lo < hi && lo <= ninfinity && ninfinity <= hi;
+	}
+	default:
+		return false;
+	}
+}
 
 unique_ptr<BaseStatistics> StatisticsPropagator::PropagateConstantInputs(ClientContext &context,
                                                                          const BoundFunctionExpression &func,

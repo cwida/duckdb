@@ -7,6 +7,7 @@
 #include "duckdb/function/cast/cast_function_set.hpp"
 #include "duckdb/function/cast_rules.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
+#include "duckdb/optimizer/statistics_propagator.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/storage/statistics/numeric_stats.hpp"
 #include "grego.hpp"
@@ -728,7 +729,10 @@ struct ICUTimeZoneFunc : public ICUDateFunc {
 		}
 		const auto min = NumericStats::GetMin<SRC>(child_stats[1]);
 		const auto max = NumericStats::GetMax<SRC>(child_stats[1]);
-		if (!min.IsFinite() || !max.IsFinite() || max < min) {
+		// infinite arguments pass through unshifted, and -infinity can lie between finite bounds
+		if (!min.IsFinite() || !max.IsFinite() || max < min ||
+		    StatisticsPropagator::HoldsNegativeInfinity(NumericStats::Min(child_stats[1]),
+		                                                NumericStats::Max(child_stats[1]))) {
 			return nullptr;
 		}
 		// the result is built from calendar fields, which only the Gregorian calendar maps back to a shift
@@ -741,12 +745,15 @@ struct ICUTimeZoneFunc : public ICUDateFunc {
 			return nullptr;
 		}
 
-		// the offsets change on whole seconds, so the range over the enclosing milliseconds covers the arguments
+		// the operation shifts the microseconds of the argument, truncated towards zero, and the offsets change
+		// on whole seconds, so the range over the enclosing milliseconds of those covers the arguments
+		constexpr auto PER_MICRO = SRC::PRECISION / Interval::MICROS_PER_SEC;
 		constexpr auto PER_MILLI = SRC::PRECISION / Interval::MSECS_PER_SEC;
 		int64_t lo_shift;
 		int64_t hi_shift;
-		OP::GetShiftRange(*tz, datetime::FloorDiv::Divide(min.value, PER_MILLI),
-		                  datetime::FloorDiv::Divide(max.value, PER_MILLI), lo_shift, hi_shift);
+		OP::GetShiftRange(*tz, datetime::FloorDiv::Divide(min.value / PER_MICRO, Interval::MICROS_PER_MSEC),
+		                  datetime::FloorDiv::Divide(max.value / PER_MICRO, Interval::MICROS_PER_MSEC), lo_shift,
+		                  hi_shift);
 		int64_t lo;
 		int64_t hi;
 		if (!TryAddOperator::Operation(min.value, lo_shift * PER_MILLI, lo) ||

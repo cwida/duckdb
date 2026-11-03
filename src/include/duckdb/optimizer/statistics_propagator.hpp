@@ -56,6 +56,8 @@ public:
 	static unique_ptr<BaseStatistics> PropagateMonotoneBounds(ClientContext &context,
 	                                                          const BoundFunctionExpression &func,
 	                                                          const vector<BaseStatistics> &child_stats);
+	//! Whether [lo, hi] holds -infinity and another value. The smallest finite DATE or TIMESTAMP sorts below -infinity.
+	DUCKDB_API static bool HoldsNegativeInfinity(const Value &lo, const Value &hi);
 	//! Statistics callback for monotone functions that return NULL for infinite arguments
 	DUCKDB_API static unique_ptr<BaseStatistics> PropagateFiniteMonotoneBounds(ClientContext &context,
 	                                                                           FunctionStatisticsInput &input);
