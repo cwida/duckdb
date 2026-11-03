@@ -206,6 +206,8 @@ TEST_CASE("Read-ahead reports an async I/O failure instead of hanging or ending 
 		con.Interrupt();
 	}
 	auto result = pending.get();
+	fprintf(stderr, "DEBUG-28017 reads=%d data_reads=%d error=%s\n", (int)total_reads.load(), (int)data_reads.load(),
+	        result->HasError() ? result->GetError().c_str() : "ok");
 	INFO("reads seen by the fault file system: " << total_reads.load() << ", data reads: " << data_reads.load()
 	                                             << ", result: " << (result->HasError() ? result->GetError() : "ok"));
 	REQUIRE(finished);
