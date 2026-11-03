@@ -11,6 +11,7 @@
 #include "column_reader.hpp"
 #include "parquet_arena.h"
 #include "reader/templated_column_reader.hpp"
+#include "duckdb/common/optional_idx.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
 
 namespace duckdb {
@@ -22,8 +23,11 @@ public:
 public:
 	VariantColumnReader(ClientContext &context, const ParquetReader &reader, const ParquetColumnSchema &schema,
 	                    vector<unique_ptr<ColumnReader>> child_readers_p);
+	//! 'typed_value_field' is the shredded field that the pushed-down extract descends into, as decided by the
+	//! reader factory (invalid when the extract cannot be restricted to a single shredded field)
 	VariantColumnReader(ClientContext &context, const ParquetReader &reader, const ParquetColumnSchema &schema,
-	                    vector<unique_ptr<ColumnReader>> child_readers_p, const struct ColumnIndex &index);
+	                    vector<unique_ptr<ColumnReader>> child_readers_p, const struct ColumnIndex &index,
+	                    optional_idx typed_value_field_p);
 
 	ClientContext &context;
 	//! Optional: ColumnIndex used when pushing down extract to the scan
@@ -61,6 +65,10 @@ protected:
 
 	DataChunk intermediate_chunk;
 	idx_t intermediate_capacity = 0;
+
+	//! Reusable group restricted to 'typed_value_field', handed to 'Convert' instead of the full intermediate group
+	DataChunk narrow_chunk;
+	idx_t narrow_capacity = 0;
 
 	DataChunk shredded_chunk;
 	idx_t shredded_capacity = 0;

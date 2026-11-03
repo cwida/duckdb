@@ -359,3 +359,133 @@ SELECT id, v.a::VARCHAR FROM '{TEST_DIR}/variant_shred_read_pruning_list.parquet
 1	NULL
 2	42
 3	NULL
+
+# A type mismatch on a mid-level node has to fall back to the parent's value column
+foreach shredded true false
+
+onlyif shredded=true
+statement ok
+COPY (
+	FROM (VALUES
+		(1, {'o': {'m': {'x': 1}}}::VARIANT),
+		(2, {'o': {'m': 5}}::VARIANT),
+		(3, {'o': 7}::VARIANT),
+		(4, {'o': {'m': {'x': 'str'}}}::VARIANT),
+		(5, 42::VARIANT)
+	) t(id, v)
+) TO '{TEST_DIR}/variant_shred_read_pruning_mid_mismatch.parquet' (
+	SHREDDING {'v': 'STRUCT(o STRUCT(m STRUCT(x INTEGER)))'}
+);
+
+onlyif shredded=false
+statement ok
+COPY (
+	FROM (VALUES
+		(1, {'o': {'m': {'x': 1}}}::VARIANT),
+		(2, {'o': {'m': 5}}::VARIANT),
+		(3, {'o': 7}::VARIANT),
+		(4, {'o': {'m': {'x': 'str'}}}::VARIANT),
+		(5, 42::VARIANT)
+	) t(id, v)
+) TO '{TEST_DIR}/variant_shred_read_pruning_mid_mismatch.parquet' (SHREDDING {'v': 'NULL'});
+
+query II
+SELECT id, v.o::VARCHAR FROM '{TEST_DIR}/variant_shred_read_pruning_mid_mismatch.parquet' ORDER BY id
+----
+1	{'m': {'x': 1}}
+2	{'m': 5}
+3	7
+4	{'m': {'x': str}}
+5	NULL
+
+query II
+SELECT id, v.o.m::VARCHAR FROM '{TEST_DIR}/variant_shred_read_pruning_mid_mismatch.parquet' ORDER BY id
+----
+1	{'x': 1}
+2	5
+3	NULL
+4	{'x': str}
+5	NULL
+
+query II
+SELECT id, v.o.m.x::VARCHAR FROM '{TEST_DIR}/variant_shred_read_pruning_mid_mismatch.parquet' ORDER BY id
+----
+1	1
+2	NULL
+3	NULL
+4	str
+5	NULL
+
+# A shredded field only matches the exact key, so a key that differs in case has to come from the value column
+onlyif shredded=true
+statement ok
+COPY (
+	FROM (VALUES
+		(1, {'a': 1}::VARIANT),
+		(2, json('{"A": 2}')::VARIANT),
+		(3, json('{"a": 1, "A": 2}')::VARIANT)
+	) t(id, v)
+) TO '{TEST_DIR}/variant_shred_read_pruning_key_case.parquet' (SHREDDING {'v': 'STRUCT(a INTEGER)'});
+
+onlyif shredded=false
+statement ok
+COPY (
+	FROM (VALUES
+		(1, {'a': 1}::VARIANT),
+		(2, json('{"A": 2}')::VARIANT),
+		(3, json('{"a": 1, "A": 2}')::VARIANT)
+	) t(id, v)
+) TO '{TEST_DIR}/variant_shred_read_pruning_key_case.parquet' (SHREDDING {'v': 'NULL'});
+
+query II
+SELECT id, v.a::VARCHAR FROM '{TEST_DIR}/variant_shred_read_pruning_key_case.parquet' ORDER BY id
+----
+1	1
+2	NULL
+3	1
+
+query II
+SELECT id, v['A']::VARCHAR FROM '{TEST_DIR}/variant_shred_read_pruning_key_case.parquet' ORDER BY id
+----
+1	NULL
+2	2
+3	2
+
+# A dotted key is a single key, so it must not be confused with a path through a shredded nested field
+onlyif shredded=true
+statement ok
+COPY (
+	FROM (VALUES
+		(1, {'a.b': 1}::VARIANT),
+		(2, {'a': {'b': 2}}::VARIANT),
+		(3, {'a.b': 3, 'a': {'b': 4}}::VARIANT)
+	) t(id, v)
+) TO '{TEST_DIR}/variant_shred_read_pruning_dotted_key.parquet' (
+	SHREDDING {'v': 'STRUCT("a.b" INTEGER, a STRUCT(b INTEGER))'}
+);
+
+onlyif shredded=false
+statement ok
+COPY (
+	FROM (VALUES
+		(1, {'a.b': 1}::VARIANT),
+		(2, {'a': {'b': 2}}::VARIANT),
+		(3, {'a.b': 3, 'a': {'b': 4}}::VARIANT)
+	) t(id, v)
+) TO '{TEST_DIR}/variant_shred_read_pruning_dotted_key.parquet' (SHREDDING {'v': 'NULL'});
+
+query II
+SELECT id, v['a.b']::VARCHAR FROM '{TEST_DIR}/variant_shred_read_pruning_dotted_key.parquet' ORDER BY id
+----
+1	1
+2	NULL
+3	3
+
+query II
+SELECT id, v.a.b::VARCHAR FROM '{TEST_DIR}/variant_shred_read_pruning_dotted_key.parquet' ORDER BY id
+----
+1	NULL
+2	2
+3	4
+
+endloop
