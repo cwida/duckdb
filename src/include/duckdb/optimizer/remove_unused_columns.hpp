@@ -25,6 +25,7 @@ class ClientContext;
 class LogicalColumnDataGet;
 class LogicalRecursiveCTE;
 class LogicalSecureView;
+class LogicalTrampoline;
 class Optimizer;
 
 struct ReferencedExtractComponent {
@@ -181,6 +182,11 @@ private:
 	vector<ReplacementBinding> RewriteRecursiveCTEReferences(LogicalRecursiveCTE &rec,
 	                                                         const unordered_set<ProjectionIndex> &required_columns);
 	bool TryPruneRecursiveCTE(LogicalRecursiveCTE &rec);
+	bool ComputeTrampolineRequiredColumns(LogicalTrampoline &tramp, unordered_set<ProjectionIndex> &required_columns);
+	void ApplyTrampolineProjections(LogicalTrampoline &tramp, const unordered_set<ProjectionIndex> &required_columns);
+	vector<ReplacementBinding> RewriteTrampolineCTEReferences(LogicalTrampoline &tramp,
+	                                                          const unordered_set<ProjectionIndex> &required_columns);
+	bool TryPruneTrampoline(LogicalTrampoline &tramp);
 	void VisitPrunableChildren(LogicalOperator &op);
 	void WritePushdownExtractColumns(
 	    ReferencedColumn &col,
