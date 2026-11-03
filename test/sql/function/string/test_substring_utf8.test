@@ -162,3 +162,12 @@ SELECT substring_grapheme(s, -3), substring_grapheme(s, -4, 1), substring_graphe
 FROM (SELECT 'x' || repeat('🇳', 7) || 'abc' AS s);
 ----
 abc	🇳	🇳🇳	🇳🇳🇳
+
+# CR LF is one grapheme cluster, also after a non-ascii character and in ascii strings
+query TTT
+SELECT hex(substring_grapheme('é' || chr(13) || chr(10) || 'x', -2, 1)),
+       hex(substring_grapheme('a' || chr(13) || chr(10) || 'b', -2, 1)),
+       substring_grapheme('a' || chr(13) || chr(10) || 'b', 3, 1)
+FROM range(1);
+----
+0D0A	0D0A	b

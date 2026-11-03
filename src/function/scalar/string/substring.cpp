@@ -220,7 +220,10 @@ string_t SubstringGrapheme(Vector &result, string_t input, int64_t offset, int64
 		// counted from the start, check up to one after the window (a combining diacritic, e.g. i + diacritic is ï)
 		ascii_end = MinValue<idx_t>(UnsafeNumericCast<idx_t>(end + 1), input_size);
 	}
-	if (IsAscii(input_data + ascii_start, ascii_end - ascii_start)) {
+	// a CR may join with an LF into one grapheme cluster, which byte slicing would split
+	auto ascii_range = input_data + ascii_start;
+	auto ascii_range_size = ascii_end - ascii_start;
+	if (IsAscii(ascii_range, ascii_range_size) && !memchr(ascii_range, '\r', ascii_range_size)) {
 		// all characters are ascii, we can just slice the substring
 		return SubstringSlice(result, input_data, start, end - start);
 	}
