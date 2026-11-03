@@ -1,5 +1,5 @@
 # name: test/sql/logging/file_system_logging_wal_replay.test
-# description: the WAL of an attached database is replayed through the file system of the attaching client, like its database file
+# description: the WAL of an attached database is replayed through the attaching client's file system
 # group: [logging]
 
 require noforcestorage
