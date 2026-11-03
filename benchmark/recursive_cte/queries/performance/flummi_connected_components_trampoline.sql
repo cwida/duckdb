@@ -1,9 +1,7 @@
--- Trampoline formulation of flummi_connected_components.sql: selector-routed recursion in the
--- style of "Trampoline-Style Queries for SQL" (CIDR 2025), mechanically
--- translated label-per-branch from the recursive formulation.
--- Trampoline formulation, mechanically translated from rcte.sql by
--- scripts/translate_flummi_trampoline.py: one branch per label, entry
--- filters of other labels become FALSE, the selector mirrors the label.
+-- Selector-routed recursion in the style of "Trampoline-Style Queries for SQL" (CIDR 2025).
+-- Trampoline formulation, mechanically translated from flummi_connected_components.sql
+-- by flummi/translate_trampoline.py: one branch per label, entry filters of
+-- other labels become FALSE, the selector mirrors the label.
 WITH RECURSIVE
   "🔄"("b", "#️⃣", "🏷️", "📊.1", "📊.2", "node", "component", "components") USING TRAMPOLINE ("b") AS (
   (SELECT CASE WHEN q."🏷️" IS NULL THEN 0 WHEN q."🏷️" = 'start.1' THEN 1 WHEN q."🏷️" = 'start.2' THEN 2 END AS "b", q.* FROM (SELECT CAST((0) AS INTEGER) AS "#️⃣",

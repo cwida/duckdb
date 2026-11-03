@@ -24,6 +24,7 @@ single-label frontier; leaving MERGE off rests on the sequential-program
 invariant above and the byte-identical check.
 """
 
+import os
 import re
 import sys
 
@@ -56,8 +57,7 @@ def main(path_in, path_out):
     header = re.search(r'WITH RECURSIVE\s*\n\s*"🔄"\(([^)]*)\) AS \(', sql)
     assert header, "unexpected frame"
     cols = header.group(1)
-    def_open = sql.index("(", header.end() - 1 - 0) if False else header.end() - 1
-    # header.end() points just past 'AS (' opening paren; find its match
+    # header.end() points just past the 'AS (' opening paren; find its match
     def_open = sql.rindex("(", 0, header.end())
     def_close = match_paren(sql, def_open)
     body = sql[def_open + 1 : def_close]
@@ -132,7 +132,7 @@ def main(path_in, path_out):
             pos = comma.end()
         return blocks, text[pos:]
 
-    def slice_member(branch_member, dead_entries, label_count):
+    def slice_member(branch_member, dead_entries):
         """Static emptiness propagation: entries of other labels are empty, a block is
         empty when any referenced block is (inner joins only, the one aggregate carries
         HAVING COUNT(*) > 0), empty exit arms drop, unreferenced blocks drop."""
@@ -212,7 +212,7 @@ def main(path_in, path_out):
             assert old in branch_member
             branch_member = branch_member.replace(old, "WHERE  FALSE")
             dead_entries.append(other)
-        branch_member = slice_member(branch_member, dead_entries, len(labels))
+        branch_member = slice_member(branch_member, dead_entries)
         # with whole-frontier barriers, labels wait across rounds and per-label
         # populations must be processed wholesale like a recursive CTE iteration
         modifier = " MERGE" if barrier_count else ""
@@ -222,12 +222,16 @@ def main(path_in, path_out):
         )
 
     out = []
-    out.append("-- Trampoline formulation, mechanically translated from rcte.sql by")
-    out.append("-- scripts/translate_flummi_trampoline.py: one branch per label, entry")
-    out.append("-- filters of other labels become FALSE, the selector mirrors the label.")
+    out.append("-- Trampoline formulation, mechanically translated from %s" % os.path.basename(path_in))
+    out.append("-- by flummi/translate_trampoline.py: one branch per label, entry filters of")
+    if barrier_count:
+        out.append("-- other labels become FALSE, the selector mirrors the label, and the SYNC")
+        out.append("-- barrier becomes a frontier read with MERGE branches.")
+    else:
+        out.append("-- other labels become FALSE, the selector mirrors the label.")
     out.append("WITH RECURSIVE")
     out.append('  "🔄"("b", %s) USING TRAMPOLINE ("b") AS (' % cols)
-    out.append('  (SELECT %s AS "b", q.* FROM (%s\n) AS q)' % (selector_case.replace('q."🏷️"', 'q."🏷️"'), seed))
+    out.append('  (SELECT %s AS "b", q.* FROM (%s\n) AS q)' % (selector_case, seed))
     out.extend(branches)
     out.append("  )")
     out.append(outer.rstrip())
