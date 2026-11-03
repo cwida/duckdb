@@ -30,6 +30,11 @@
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 
 namespace duckdb {
+
+static bool AutoCompleteIsRepeatable(optional_ptr<const FunctionData>) {
+	// Tokenization and suggestions are captured at bind time. Execution only reads the bound rows.
+	return true;
+}
 struct AutoCompleteSuggestion;
 
 struct SQLTokenizeFunctionData : public TableFunctionData {
@@ -681,16 +686,19 @@ static void LoadInternal(ExtensionLoader &loader) {
 		    .Add("max_file_suggestion_count", LogicalType::UBIGINT)
 		    .Add("max_exact_suggestion_count", LogicalType::UBIGINT);
 	});
+	auto_complete_fun.is_repeatable = AutoCompleteIsRepeatable;
 	loader.RegisterFunction(auto_complete_fun);
 
 	TableFunction check_peg_parser_fun("check_peg_parser",
 	                                   FunctionSignature().AddPositionalOnly("sql", LogicalType::VARCHAR),
 	                                   CheckPEGParserFunction, CheckPEGParserBind, nullptr);
+	check_peg_parser_fun.is_repeatable = AutoCompleteIsRepeatable;
 	loader.RegisterFunction(check_peg_parser_fun);
 
 	TableFunction tokenize_fun("sql_tokenize", FunctionSignature().AddPositionalOnly("sql", LogicalType::VARCHAR),
 	                           SQLTokenizeFunction, SQLTokenizeBind, SQLTokenizeInit);
 
+	tokenize_fun.is_repeatable = AutoCompleteIsRepeatable;
 	loader.RegisterFunction(tokenize_fun);
 
 	const auto map_config_type = LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR);

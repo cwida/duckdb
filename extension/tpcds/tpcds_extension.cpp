@@ -14,6 +14,10 @@
 
 namespace duckdb {
 
+static bool TPCDSQueriesAreRepeatable(optional_ptr<const FunctionData>) {
+	return true;
+}
+
 struct DSDGenFunctionData : public TableFunctionData {
 	DSDGenFunctionData() {
 	}
@@ -320,6 +324,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	TableFunctionSet tpcds_queries_set("tpcds_queries");
 	for (auto &arguments : vector<vector<LogicalType>> {{}, {LogicalType::DOUBLE}}) {
 		TableFunction tpcds_query_func(arguments, TPCDSQueryFunction, TPCDSQueryBind, TPCDSInit);
+		tpcds_query_func.is_repeatable = TPCDSQueriesAreRepeatable;
 		tpcds_query_func.GetSignature().WithTypedKwargs(
 		    "options", [](TypedKwargs &options) { options.Add("sf", LogicalType::DOUBLE); });
 		tpcds_queries_set.AddFunction(tpcds_query_func);
@@ -330,6 +335,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	TableFunction tpcds_query_answer_func("tpcds_answers", {}, TPCDSQueryAnswerFunction, TPCDSQueryAnswerBind,
 	                                      TPCDSInit);
 
+	tpcds_query_answer_func.is_repeatable = TPCDSQueriesAreRepeatable;
 	loader.RegisterFunction(tpcds_query_answer_func);
 }
 

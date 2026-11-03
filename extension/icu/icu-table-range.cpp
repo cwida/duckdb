@@ -12,6 +12,10 @@
 namespace duckdb {
 
 struct ICUTableRange {
+	static bool IsRepeatable(optional_ptr<const FunctionData>) {
+		return true;
+	}
+
 	using CalendarPtr = unique_ptr<Calendar>;
 
 	struct ICURangeBindData : public TableFunctionData {
@@ -268,6 +272,7 @@ struct ICUTableRange {
 		                            .AddPositionalOnly("step", LogicalType::INTERVAL);
 		TableFunctionSet range("range");
 		TableFunction range_function(timestamps, nullptr, Bind<false>, RangeDateTimeGlobalInit, RangeDateTimeLocalInit);
+		range_function.is_repeatable = IsRepeatable;
 		range_function.in_out_function = ICUTableRangeFunction<false>;
 		range_function.table_scan_progress = Progress;
 		range_function.cardinality = Cardinality;
@@ -280,6 +285,7 @@ struct ICUTableRange {
 		TableFunctionSet generate_series("generate_series");
 		TableFunction generate_series_function(timestamps, nullptr, Bind<true>, RangeDateTimeGlobalInit,
 		                                       RangeDateTimeLocalInit);
+		generate_series_function.is_repeatable = IsRepeatable;
 		generate_series_function.in_out_function = ICUTableRangeFunction<true>;
 		generate_series_function.table_scan_progress = Progress;
 		generate_series_function.cardinality = Cardinality;
