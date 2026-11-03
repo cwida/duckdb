@@ -1,4 +1,5 @@
 #include "duckdb.h"
+#include "duckdb/common/encryption_state.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/virtual_file_system.hpp"
@@ -259,15 +260,36 @@ typedef void (*ext_init_fun_t)(ExtensionLoader &);
 // The C init function
 typedef bool (*ext_init_c_api_fun_t)(duckdb_extension_info info, duckdb_extension_access *access);
 
-static void ComputeSHA256Buffer(const char *buffer, const idx_t start, const idx_t end, string *res) {
-	// Invoke MbedTls function to actually compute sha256
+// The SHA-256 implementation of the configured EncryptionUtil when it has one (httpfs installs OpenSSL's, which uses
+// the CPU's SHA instructions), or nullptr to hash with mbedtls. This reads the configured util as it is: going through
+// GetEncryptionUtil would autoload, or even install, httpfs from inside a signature check, possibly httpfs's own
+static shared_ptr<EncryptionUtil> GetConfiguredSHA256(DatabaseInstance &db) {
+	auto &config = DBConfig::GetConfig(db);
+	if (config.options.force_mbedtls) {
+		return nullptr;
+	}
+	auto encryption_util = config.encryption_util;
+	if (!encryption_util || !encryption_util->SupportsHash(CryptoHashFunction::SHA256)) {
+		return nullptr;
+	}
+	return encryption_util;
+}
+
+static void ComputeSHA256Buffer(optional_ptr<const EncryptionUtil> hasher, const char *buffer, const idx_t start,
+                                const idx_t end, string *res) {
 	char hash[duckdb_mbedtls::MbedTlsWrapper::SHA256_HASH_LENGTH_BYTES];
-	duckdb_mbedtls::MbedTlsWrapper::ComputeSha256Hash(buffer + start, end - start, hash);
+	if (hasher) {
+		auto state = hasher->CreateHashState(CryptoHashFunction::SHA256);
+		state->Hash(const_data_ptr_cast(buffer + start), end - start, data_ptr_cast(hash));
+	} else {
+		// Invoke MbedTls function to actually compute sha256
+		duckdb_mbedtls::MbedTlsWrapper::ComputeSha256Hash(buffer + start, end - start, hash);
+	}
 	*res = std::string(hash, duckdb_mbedtls::MbedTlsWrapper::SHA256_HASH_LENGTH_BYTES);
 }
 
 static void ComputeSHA256String(const string &to_hash, string *res) {
-	ComputeSHA256Buffer(to_hash.data(), 0, to_hash.length(), res);
+	ComputeSHA256Buffer(nullptr, to_hash.data(), 0, to_hash.length(), res);
 }
 
 static string ComputeFinalHash(const vector<string> &chunks) {
@@ -296,7 +318,16 @@ static void InitializeAncillaryData(vector<string> &hash_chunks, vector<idx_t> &
 	splits.back() = length;
 }
 
-static void ComputeSHA256FileSegment(FileHandle *handle, const idx_t start, const idx_t end, string *res) {
+static void ComputeSHA256FileSegment(optional_ptr<const EncryptionUtil> hasher, FileHandle *handle, const idx_t start,
+                                     const idx_t end, string *res) {
+	if (hasher) {
+		// the hash state of an EncryptionUtil hashes one buffer at a time, so read the whole chunk
+		string chunk(end - start, '\0');
+		handle->Read((void *)chunk.data(), chunk.size(), start);
+		ComputeSHA256Buffer(hasher, chunk.data(), 0, chunk.size(), res);
+		return;
+	}
+
 	idx_t iter = start;
 	const idx_t segment_size = 1024ULL * 8ULL;
 
@@ -317,13 +348,13 @@ static void ComputeSHA256FileSegment(FileHandle *handle, const idx_t start, cons
 }
 
 template <typename T, typename F>
-static void ComputeHashesOnSegments(F ComputeHashFun, T handle, const vector<idx_t> &splits,
-                                    vector<string> &hash_chunks) {
+static void ComputeHashesOnSegments(F ComputeHashFun, optional_ptr<const EncryptionUtil> hasher, T handle,
+                                    const vector<idx_t> &splits, vector<string> &hash_chunks) {
 #ifndef DUCKDB_NO_THREADS
 	vector<std::thread> threads;
 	threads.reserve(hash_chunks.size());
 	for (idx_t i = 0; i < hash_chunks.size(); i++) {
-		threads.emplace_back(ComputeHashFun, handle, splits[i], splits[i + 1], &hash_chunks[i]);
+		threads.emplace_back(ComputeHashFun, hasher, handle, splits[i], splits[i + 1], &hash_chunks[i]);
 	}
 
 	for (auto &thread : threads) {
@@ -331,7 +362,7 @@ static void ComputeHashesOnSegments(F ComputeHashFun, T handle, const vector<idx
 	}
 #else
 	for (idx_t i = 0; i < hash_chunks.size(); i++) {
-		ComputeHashFun(handle, splits[i], splits[i + 1], &hash_chunks[i]);
+		ComputeHashFun(hasher, handle, splits[i], splits[i + 1], &hash_chunks[i]);
 	}
 #endif // DUCKDB_NO_THREADS
 }
@@ -430,7 +461,8 @@ bool ExtensionHelper::CheckExtensionSignature(DatabaseInstance &db, FileHandle &
 	vector<idx_t> splits;
 	InitializeAncillaryData(hash_chunks, splits, signature_offset);
 
-	ComputeHashesOnSegments(ComputeSHA256FileSegment, &handle, splits, hash_chunks);
+	auto hasher = GetConfiguredSHA256(db);
+	ComputeHashesOnSegments(ComputeSHA256FileSegment, hasher.get(), &handle, splits, hash_chunks);
 
 	const string resulting_hash = ComputeFinalHash(hash_chunks);
 
@@ -448,7 +480,8 @@ bool ExtensionHelper::CheckExtensionBufferSignature(DatabaseInstance &db, const 
 	vector<idx_t> splits;
 	InitializeAncillaryData(hash_chunks, splits, buffer_length);
 
-	ComputeHashesOnSegments(ComputeSHA256Buffer, buffer, splits, hash_chunks);
+	auto hasher = GetConfiguredSHA256(db);
+	ComputeHashesOnSegments(ComputeSHA256Buffer, hasher.get(), buffer, splits, hash_chunks);
 
 	const string resulting_hash = ComputeFinalHash(hash_chunks);
 
