@@ -1437,6 +1437,7 @@ static constexpr ExtensionEntry EXTENSION_SETTINGS[] = {
     {"mysql_session_time_zone", "mysql_scanner"},
     {"mysql_time_as_time", "mysql_scanner"},
     {"mysql_tinyint1_as_boolean", "mysql_scanner"},
+    {"parquet_can_have_nan", "parquet"},
     {"parquet_metadata_cache", "parquet"},
     {"parquet_prefetch_column_gap", "parquet"},
     {"parquet_use_page_index", "parquet"},

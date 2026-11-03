@@ -1156,6 +1156,10 @@ static void LoadInternal(ExtensionLoader &loader) {
 	config.replacement_scans.emplace_back(ParquetScanReplacement);
 	config.AddExtensionOption("binary_as_string", "In Parquet files, interpret binary data as a string.",
 	                          LogicalType::BOOLEAN, Value(false));
+	config.AddExtensionOption("parquet_can_have_nan",
+	                          "In Parquet files without a nan_count, assume FLOAT/DOUBLE columns can hold NaN outside "
+	                          "their min/max. The default for the can_have_nan option of Parquet scans.",
+	                          LogicalType::BOOLEAN, Value(false));
 	config.AddExtensionOption("disable_parquet_prefetching", "Disable the prefetching mechanism in Parquet",
 	                          LogicalType::BOOLEAN, Value(false));
 	config.AddExtensionOption("prefetch_all_parquet_files",

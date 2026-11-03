@@ -29,6 +29,8 @@ struct ParsedOperator {
 struct OtherOperatorTail {
 	ParsedOperator op;
 	unique_ptr<ParsedExpression> expression;
+	//! Whether the right-hand side is a subquery, as in ANY(SELECT ...)
+	bool is_subquery = false;
 };
 
 enum class ExpressionTailType : uint8_t { IS_TEST, DISTINCT, COMPARISON, OTHER_OPERATOR, CAST };

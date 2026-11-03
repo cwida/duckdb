@@ -694,6 +694,8 @@ static const char *const PEG_RULE_NAMES[] = {
     "OtherOperatorExpression",
     "InfixOtherOperatorExpression",
     "OtherOperatorTail",
+    "AnyAllSubqueryTail",
+    "OtherOperatorExpressionTail",
     "OtherOperator",
     "AnyAllParsedOperator",
     "NamedOtherOperator",
