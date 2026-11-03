@@ -61,6 +61,14 @@ struct HistogramFunction {
 		}
 		if (!target.hist) {
 			target.hist = MAP_TYPE::CreateEmpty(input_data.allocator);
+		} else if (!MAP_TYPE::AllocatesFrom(*target.hist, input_data.allocator)) {
+			// a row copied from another thread’s hash table must not have its strings allocated in that thread’s arena.
+			auto rehomed = MAP_TYPE::CreateEmpty(input_data.allocator);
+			for (auto &entry : *target.hist) {
+				(*rehomed)[entry.first] = entry.second;
+			}
+			delete target.hist;
+			target.hist = rehomed;
 		}
 		for (auto &entry : *source.hist) {
 			(*target.hist)[entry.first] += entry.second;
@@ -75,6 +83,9 @@ struct DefaultMapType {
 	static TYPE *CreateEmpty(ArenaAllocator &) {
 		return new TYPE();
 	}
+	static bool AllocatesFrom(const TYPE &, ArenaAllocator &) {
+		return true;
+	}
 };
 
 template <class TYPE>
@@ -83,6 +94,9 @@ struct StringMapType {
 
 	static TYPE *CreateEmpty(ArenaAllocator &allocator) {
 		return new TYPE(allocator);
+	}
+	static bool AllocatesFrom(const TYPE &map, ArenaAllocator &allocator) {
+		return &map.GetStringAllocator() == &allocator.GetAllocator();
 	}
 };
 

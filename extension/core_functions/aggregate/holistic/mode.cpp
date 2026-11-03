@@ -113,6 +113,9 @@ struct ModeStandard {
 	static MAP_TYPE *CreateEmpty(Allocator &) {
 		return new MAP_TYPE();
 	}
+	static bool AllocatesFrom(const MAP_TYPE &, ArenaAllocator &) {
+		return true;
+	}
 
 	template <class INPUT_TYPE, class RESULT_TYPE>
 	static RESULT_TYPE Assign(Vector &result, INPUT_TYPE input) {
@@ -141,6 +144,9 @@ struct ModeString {
 	}
 	static MAP_TYPE *CreateEmpty(Allocator &allocator) {
 		return new MAP_TYPE(allocator);
+	}
+	static bool AllocatesFrom(const MAP_TYPE &map, ArenaAllocator &allocator) {
+		return &map.GetStringAllocator() == &allocator.GetAllocator();
 	}
 
 	template <class INPUT_TYPE, class RESULT_TYPE>
@@ -394,6 +400,14 @@ struct BaseModeFunction {
 		}
 		if (!target.frequency_map) {
 			target.frequency_map = TYPE_OP::CreateEmpty(aggr_input_data.allocator);
+		} else if (!TYPE_OP::AllocatesFrom(*target.frequency_map, aggr_input_data.allocator)) {
+			// a row copied from another thread’s hash table must not have its strings allocated in that thread’s arena
+			auto rehomed = TYPE_OP::CreateEmpty(aggr_input_data.allocator);
+			for (auto &val : *target.frequency_map) {
+				(*rehomed)[val.first] = val.second;
+			}
+			delete target.frequency_map;
+			target.frequency_map = rehomed;
 		}
 		for (auto &val : *source.frequency_map) {
 			auto &i = (*target.frequency_map)[val.first];

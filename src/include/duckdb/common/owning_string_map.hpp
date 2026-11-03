@@ -73,6 +73,11 @@ public:
 		return map.size();
 	}
 
+	//! The allocator the non-inlined strings are copied into
+	Allocator &GetStringAllocator() const {
+		return allocator;
+	}
+
 	bool empty() const noexcept { // NOLINT: match std style
 		return map.empty();
 	}
