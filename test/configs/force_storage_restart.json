@@ -6,6 +6,12 @@
   "inherit_skip_tests": "test/configs/force_storage.json",
   "skip_tests": [
     {
+      "reason": "The metadata cache of the database does not survive the restart between statements.",
+      "paths": [
+        "test/sql/copy/parquet/parquet_glob_cache_list.test"
+      ]
+    },
+    {
       "reason": "The default of the column calls list_value of core_functions, which is not loaded while the WAL is replayed at the restart.",
       "paths": [
         "test/sql/alter/struct/add_col_struct_column_default.test"
