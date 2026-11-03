@@ -269,28 +269,28 @@ DUCKDB_V2_ERROR duckdb_v2_expression_cast_get_mode(duckdb_v2_expression_handle e
 
 DUCKDB_V2_ERROR duckdb_v2_expression_check_statistics(duckdb_v2_context_handle context,
                                                       duckdb_v2_expression_handle expression,
-                                                      duckdb_v2_statistics_handle statistics,
+                                                      duckdb_v2_stats_handle stats,
                                                       DUCKDB_V2_FILTER_PROPAGATE_RESULT *result,
                                                       duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(context);
 	DUCKDB_CHECK_ARG(expression);
-	DUCKDB_CHECK_ARG(statistics);
+	DUCKDB_CHECK_ARG(stats);
 	DUCKDB_CHECK_ARG(result);
 	*result = DUCKDB_V2_FILTER_PROPAGATE_RESULT_NO_PRUNING_POSSIBLE;
 	return WithErrorHandler(err, [&]() {
 		auto &client_context = Convert(context)->context;
-		const auto &stats = *Convert(statistics);
+		const auto &column_stats = Convert(stats)->GetStats();
 		const auto &predicate_expr = *Convert(expression);
 		if (predicate_expr.GetReturnType().id() != duckdb::LogicalTypeId::BOOLEAN) {
 			throw duckdb::InvalidInputException(
 			    "duckdb_v2_expression_check_statistics: the expression is not a predicate (it is not BOOLEAN)");
 		}
 		duckdb::optional_ptr<const duckdb::BoundColumnRefExpression> column;
-		CV2CheckPredicateColumn(predicate_expr, stats.GetType(), column);
+		CV2CheckPredicateColumn(predicate_expr, column_stats.GetType(), column);
 		auto predicate = predicate_expr.Copy();
 		CV2ReplaceColumnRefsWithReference(predicate);
 		const auto outcome = duckdb::ExpressionFilter::CheckExpressionStatistics(
-		    &client_context, *predicate, duckdb::array_ptr<const duckdb::BaseStatistics>(&stats, 1));
+		    &client_context, *predicate, duckdb::array_ptr<const duckdb::BaseStatistics>(&column_stats, 1));
 		*result = static_cast<DUCKDB_V2_FILTER_PROPAGATE_RESULT>(outcome);
 	});
 }

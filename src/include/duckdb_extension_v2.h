@@ -1547,61 +1547,43 @@ typedef struct {
 	 duckdb_v2_column_data_collection_handle collection, const duckdb_v2_identifier_t *column_names, idx_t column_count,
 	 duckdb_v2_error_info_handle *err);
 	DUCKDB_V2_ERROR(*duckdb_v2_expression_check_statistics)
-	(duckdb_v2_context_handle context, duckdb_v2_expression_handle expression, duckdb_v2_statistics_handle statistics,
+	(duckdb_v2_context_handle context, duckdb_v2_expression_handle expression, duckdb_v2_stats_handle stats,
 	 DUCKDB_V2_FILTER_PROPAGATE_RESULT *result, duckdb_v2_error_info_handle *err);
-	DUCKDB_V2_ERROR(*duckdb_v2_statistics_create)
-	(duckdb_v2_factory_handle factory, duckdb_v2_logical_type_handle type, duckdb_v2_statistics_handle *statistics,
+	DUCKDB_V2_ERROR(*duckdb_v2_stats_create)
+	(duckdb_v2_factory_handle factory, duckdb_v2_logical_type_handle type, duckdb_v2_stats_handle *stats,
 	 duckdb_v2_error_info_handle *err);
-	DUCKDB_V2_ERROR(*duckdb_v2_statistics_create_variant_shredded)
-	(duckdb_v2_factory_handle factory, duckdb_v2_statistics_handle shredded_statistics,
-	 duckdb_v2_statistics_handle *statistics, duckdb_v2_error_info_handle *err);
-	DUCKDB_V2_ERROR (*duckdb_v2_statistics_destroy)(duckdb_v2_statistics_handle *statistics);
-	DUCKDB_V2_ERROR(*duckdb_v2_statistics_get_type)
-	(duckdb_v2_statistics_handle statistics, duckdb_v2_logical_type_handle *type, duckdb_v2_error_info_handle *err);
-	DUCKDB_V2_ERROR(*duckdb_v2_statistics_merge)
-	(duckdb_v2_statistics_handle statistics, duckdb_v2_statistics_handle other, duckdb_v2_error_info_handle *err);
-	DUCKDB_V2_ERROR(*duckdb_v2_statistics_set_child)
-	(duckdb_v2_statistics_handle statistics, idx_t child_index, duckdb_v2_statistics_handle child,
+	DUCKDB_V2_ERROR(*duckdb_v2_stats_create_variant_shredded)
+	(duckdb_v2_factory_handle factory, duckdb_v2_stats_handle shredded_stats, duckdb_v2_stats_handle *stats,
 	 duckdb_v2_error_info_handle *err);
-	DUCKDB_V2_ERROR(*duckdb_v2_statistics_set_constant)
-	(duckdb_v2_statistics_handle statistics, duckdb_v2_value_handle value, duckdb_v2_error_info_handle *err);
-	DUCKDB_V2_ERROR(*duckdb_v2_statistics_set_distinct_count)
-	(duckdb_v2_statistics_handle statistics, idx_t count, duckdb_v2_error_info_handle *err);
-	DUCKDB_V2_ERROR(*duckdb_v2_statistics_set_geometry_extent)
-	(duckdb_v2_statistics_handle statistics, double x_min, double x_max, double y_min, double y_max, bool has_z,
-	 double z_min, double z_max, bool has_m, double m_min, double m_max, duckdb_v2_error_info_handle *err);
-	DUCKDB_V2_ERROR(*duckdb_v2_statistics_set_geometry_types)
-	(duckdb_v2_statistics_handle statistics, const int32_t *wkb_types, idx_t count, duckdb_v2_error_info_handle *err);
-	DUCKDB_V2_ERROR(*duckdb_v2_statistics_set_has_no_null)
-	(duckdb_v2_statistics_handle statistics, bool has_no_null, duckdb_v2_error_info_handle *err);
-	DUCKDB_V2_ERROR(*duckdb_v2_statistics_set_has_null)
-	(duckdb_v2_statistics_handle statistics, bool has_null, duckdb_v2_error_info_handle *err);
-	DUCKDB_V2_ERROR(*duckdb_v2_statistics_set_max)
-	(duckdb_v2_statistics_handle statistics, duckdb_v2_value_handle value, duckdb_v2_error_info_handle *err);
-	DUCKDB_V2_ERROR(*duckdb_v2_statistics_set_min)
-	(duckdb_v2_statistics_handle statistics, duckdb_v2_value_handle value, duckdb_v2_error_info_handle *err);
-	DUCKDB_V2_ERROR(*duckdb_v2_statistics_set_string_max)
-	(duckdb_v2_statistics_handle statistics, duckdb_v2_str *value, bool is_exact, duckdb_v2_error_info_handle *err);
-	DUCKDB_V2_ERROR(*duckdb_v2_statistics_set_string_min)
-	(duckdb_v2_statistics_handle statistics, duckdb_v2_str *value, bool is_exact, duckdb_v2_error_info_handle *err);
-	DUCKDB_V2_ERROR(*duckdb_v2_statistics_variant_shredding_type)
+	DUCKDB_V2_ERROR (*duckdb_v2_stats_destroy)(duckdb_v2_stats_handle *stats);
+	DUCKDB_V2_ERROR(*duckdb_v2_stats_get_type)
+	(duckdb_v2_stats_handle stats, duckdb_v2_logical_type_handle *type, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_stats_merge)
+	(duckdb_v2_stats_handle stats, duckdb_v2_stats_handle other, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_stats_set_child)
+	(duckdb_v2_stats_handle stats, idx_t child_index, duckdb_v2_stats_handle child, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_stats_set_constant)
+	(duckdb_v2_stats_handle stats, duckdb_v2_value_handle value, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_stats_set_distinct_count)
+	(duckdb_v2_stats_handle stats, idx_t count, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_stats_set_geometry_extent)
+	(duckdb_v2_stats_handle stats, double x_min, double x_max, double y_min, double y_max, bool has_z, double z_min,
+	 double z_max, bool has_m, double m_min, double m_max, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_stats_set_geometry_types)
+	(duckdb_v2_stats_handle stats, const int32_t *wkb_types, idx_t count, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_stats_set_max)
+	(duckdb_v2_stats_handle stats, duckdb_v2_value_handle value, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_stats_set_min)
+	(duckdb_v2_stats_handle stats, duckdb_v2_value_handle value, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_stats_set_string_max)
+	(duckdb_v2_stats_handle stats, duckdb_v2_str *value, bool is_exact, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_stats_set_string_min)
+	(duckdb_v2_stats_handle stats, duckdb_v2_str *value, bool is_exact, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_stats_variant_shredding_type)
 	(duckdb_v2_factory_handle factory, duckdb_v2_logical_type_handle structured_type,
 	 duckdb_v2_logical_type_handle *type, duckdb_v2_error_info_handle *err);
-	DUCKDB_V2_ERROR(*duckdb_v2_table_function_set_statistics_callback)
-	(duckdb_v2_table_function_handle function, duckdb_v2_table_function_statistics_callback_fn callback,
-	 duckdb_v2_error_info_handle *err);
-	DUCKDB_V2_ERROR(*duckdb_v2_table_function_statistics_get_bind_data)
-	(duckdb_v2_table_function_statistics_info_handle info, void **data, duckdb_v2_error_info_handle *err);
-	DUCKDB_V2_ERROR(*duckdb_v2_table_function_statistics_get_column_index)
-	(duckdb_v2_table_function_statistics_info_handle info, idx_t *column_index, duckdb_v2_error_info_handle *err);
-	DUCKDB_V2_ERROR(*duckdb_v2_table_function_statistics_get_column_type)
-	(duckdb_v2_table_function_statistics_info_handle info, duckdb_v2_logical_type_handle *type,
-	 duckdb_v2_error_info_handle *err);
-	DUCKDB_V2_ERROR(*duckdb_v2_table_function_statistics_get_user_data)
-	(duckdb_v2_table_function_statistics_info_handle info, void **data, duckdb_v2_error_info_handle *err);
-	DUCKDB_V2_ERROR(*duckdb_v2_table_function_statistics_set_result)
-	(duckdb_v2_table_function_statistics_info_handle info, duckdb_v2_statistics_handle statistics,
-	 duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_stats_assign)
+	(duckdb_v2_stats_handle stats, duckdb_v2_stats_handle other, duckdb_v2_error_info_handle *err);
 #endif
 	// capigen:end appended
 } duckdb_ext_api_v2;
@@ -3619,77 +3601,52 @@ typedef struct {
 #define duckdb_v2_expression_check_statistics duckdb_ext_api.duckdb_v2_expression_check_statistics
 #endif
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
-#define duckdb_v2_statistics_create duckdb_ext_api.duckdb_v2_statistics_create
+#define duckdb_v2_stats_create duckdb_ext_api.duckdb_v2_stats_create
 #endif
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
-#define duckdb_v2_statistics_create_variant_shredded duckdb_ext_api.duckdb_v2_statistics_create_variant_shredded
+#define duckdb_v2_stats_create_variant_shredded duckdb_ext_api.duckdb_v2_stats_create_variant_shredded
 #endif
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
-#define duckdb_v2_statistics_destroy duckdb_ext_api.duckdb_v2_statistics_destroy
+#define duckdb_v2_stats_destroy duckdb_ext_api.duckdb_v2_stats_destroy
 #endif
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
-#define duckdb_v2_statistics_get_type duckdb_ext_api.duckdb_v2_statistics_get_type
+#define duckdb_v2_stats_get_type duckdb_ext_api.duckdb_v2_stats_get_type
 #endif
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
-#define duckdb_v2_statistics_merge duckdb_ext_api.duckdb_v2_statistics_merge
+#define duckdb_v2_stats_merge duckdb_ext_api.duckdb_v2_stats_merge
 #endif
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
-#define duckdb_v2_statistics_set_child duckdb_ext_api.duckdb_v2_statistics_set_child
+#define duckdb_v2_stats_set_child duckdb_ext_api.duckdb_v2_stats_set_child
 #endif
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
-#define duckdb_v2_statistics_set_constant duckdb_ext_api.duckdb_v2_statistics_set_constant
+#define duckdb_v2_stats_set_constant duckdb_ext_api.duckdb_v2_stats_set_constant
 #endif
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
-#define duckdb_v2_statistics_set_distinct_count duckdb_ext_api.duckdb_v2_statistics_set_distinct_count
+#define duckdb_v2_stats_set_distinct_count duckdb_ext_api.duckdb_v2_stats_set_distinct_count
 #endif
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
-#define duckdb_v2_statistics_set_geometry_extent duckdb_ext_api.duckdb_v2_statistics_set_geometry_extent
+#define duckdb_v2_stats_set_geometry_extent duckdb_ext_api.duckdb_v2_stats_set_geometry_extent
 #endif
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
-#define duckdb_v2_statistics_set_geometry_types duckdb_ext_api.duckdb_v2_statistics_set_geometry_types
+#define duckdb_v2_stats_set_geometry_types duckdb_ext_api.duckdb_v2_stats_set_geometry_types
 #endif
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
-#define duckdb_v2_statistics_set_has_no_null duckdb_ext_api.duckdb_v2_statistics_set_has_no_null
+#define duckdb_v2_stats_set_max duckdb_ext_api.duckdb_v2_stats_set_max
 #endif
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
-#define duckdb_v2_statistics_set_has_null duckdb_ext_api.duckdb_v2_statistics_set_has_null
+#define duckdb_v2_stats_set_min duckdb_ext_api.duckdb_v2_stats_set_min
 #endif
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
-#define duckdb_v2_statistics_set_max duckdb_ext_api.duckdb_v2_statistics_set_max
+#define duckdb_v2_stats_set_string_max duckdb_ext_api.duckdb_v2_stats_set_string_max
 #endif
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
-#define duckdb_v2_statistics_set_min duckdb_ext_api.duckdb_v2_statistics_set_min
+#define duckdb_v2_stats_set_string_min duckdb_ext_api.duckdb_v2_stats_set_string_min
 #endif
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
-#define duckdb_v2_statistics_set_string_max duckdb_ext_api.duckdb_v2_statistics_set_string_max
+#define duckdb_v2_stats_variant_shredding_type duckdb_ext_api.duckdb_v2_stats_variant_shredding_type
 #endif
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
-#define duckdb_v2_statistics_set_string_min duckdb_ext_api.duckdb_v2_statistics_set_string_min
-#endif
-#if DUCKDB_V2_API_ALLOW_UNSTABLE
-#define duckdb_v2_statistics_variant_shredding_type duckdb_ext_api.duckdb_v2_statistics_variant_shredding_type
-#endif
-#if DUCKDB_V2_API_ALLOW_UNSTABLE
-#define duckdb_v2_table_function_set_statistics_callback duckdb_ext_api.duckdb_v2_table_function_set_statistics_callback
-#endif
-#if DUCKDB_V2_API_ALLOW_UNSTABLE
-#define duckdb_v2_table_function_statistics_get_bind_data                                                              \
-	duckdb_ext_api.duckdb_v2_table_function_statistics_get_bind_data
-#endif
-#if DUCKDB_V2_API_ALLOW_UNSTABLE
-#define duckdb_v2_table_function_statistics_get_column_index                                                           \
-	duckdb_ext_api.duckdb_v2_table_function_statistics_get_column_index
-#endif
-#if DUCKDB_V2_API_ALLOW_UNSTABLE
-#define duckdb_v2_table_function_statistics_get_column_type                                                            \
-	duckdb_ext_api.duckdb_v2_table_function_statistics_get_column_type
-#endif
-#if DUCKDB_V2_API_ALLOW_UNSTABLE
-#define duckdb_v2_table_function_statistics_get_user_data                                                              \
-	duckdb_ext_api.duckdb_v2_table_function_statistics_get_user_data
-#endif
-#if DUCKDB_V2_API_ALLOW_UNSTABLE
-#define duckdb_v2_table_function_statistics_set_result duckdb_ext_api.duckdb_v2_table_function_statistics_set_result
+#define duckdb_v2_stats_assign duckdb_ext_api.duckdb_v2_stats_assign
 #endif
 // capigen:end appended
 #endif // DUCKDB_BUILD_STATIC_EXTENSION

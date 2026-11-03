@@ -42,7 +42,6 @@ add_library_unity(
   capi_v2_result.cpp
   capi_v2_schema.cpp
   capi_v2_statement.cpp
-  capi_v2_statistics.cpp
   capi_v2_stats.cpp
   capi_v2_tokenizer.cpp
   capi_v2_utf8.cpp

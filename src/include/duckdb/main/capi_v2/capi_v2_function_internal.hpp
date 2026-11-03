@@ -135,7 +135,9 @@ private:
 	const named_argument_map_t &named;
 };
 
-//! The statistics a stats callback reads or narrows. Argument statistics are read-only: they have no mutable view
+//! The statistics a stats callback reads or narrows, or statistics a function builds itself with
+//! duckdb_v2_stats_create. Argument statistics are read-only: they have no mutable view. Created statistics own their
+//! BaseStatistics.
 class CV2Stats {
 public:
 	explicit CV2Stats(const BaseStatistics &stats) : stats(stats) {
@@ -145,16 +147,27 @@ public:
 		result.mutable_stats = &stats;
 		return result;
 	}
+	//! Heap-allocated owning statistics, freed by duckdb_v2_stats_destroy
+	static unique_ptr<CV2Stats> Owned(BaseStatistics &&stats) {
+		auto owned = make_uniq<BaseStatistics>(std::move(stats));
+		auto result = make_uniq<CV2Stats>(Writable(*owned));
+		result->owned = std::move(owned);
+		return result;
+	}
 
 	const BaseStatistics &GetStats() const {
 		return stats;
 	}
 	//! Throws when the statistics are read-only
 	BaseStatistics &GetMutableStats(const char *function_name);
+	bool IsOwned() const {
+		return owned != nullptr;
+	}
 
 private:
 	const BaseStatistics &stats;
 	optional_ptr<BaseStatistics> mutable_stats;
+	unique_ptr<BaseStatistics> owned;
 };
 
 inline auto Convert(duckdb_v2_stats_handle stats) -> CV2Stats * {
@@ -162,17 +175,6 @@ inline auto Convert(duckdb_v2_stats_handle stats) -> CV2Stats * {
 }
 inline auto Convert(CV2Stats *stats) -> duckdb_v2_stats_handle {
 	return reinterpret_cast<duckdb_v2_stats_handle>(stats);
-}
-
-//! A statistics handle owns the BaseStatistics it points at: it is heap-allocated by duckdb_v2_statistics_create (and
-//! the variant_shredded variant), handed to the engine by copy, and freed by duckdb_v2_statistics_destroy.
-using CV2Statistics = duckdb::BaseStatistics;
-
-inline auto Convert(duckdb_v2_statistics_handle statistics) -> CV2Statistics * {
-	return reinterpret_cast<CV2Statistics *>(statistics);
-}
-inline auto Convert(CV2Statistics *statistics) -> duckdb_v2_statistics_handle {
-	return reinterpret_cast<duckdb_v2_statistics_handle>(statistics);
 }
 
 inline auto Convert(duckdb_v2_function_bind_info_handle info) -> CV2FunctionBindInfo * {

@@ -288,25 +288,6 @@ static auto Convert(CV2TableStatsInfo *info) -> duckdb_v2_table_function_stats_i
 	return reinterpret_cast<duckdb_v2_table_function_stats_info_handle>(info);
 }
 
-//! What the "statistics" callback is asked about: a declared column by its index (or a virtual column by its id) and
-//! the type it was declared with. The callback hands back the statistics of that column through out_statistics.
-class CV2TableStatisticsInfo {
-public:
-	void *in_user_data = nullptr;
-	void *in_bind_data = nullptr;
-	idx_t in_column_index = 0;
-	LogicalType in_column_type;
-
-	unique_ptr<BaseStatistics> out_statistics;
-};
-
-static auto Convert(duckdb_v2_table_function_statistics_info_handle info) -> CV2TableStatisticsInfo * {
-	return reinterpret_cast<CV2TableStatisticsInfo *>(info);
-}
-static auto Convert(CV2TableStatisticsInfo *info) -> duckdb_v2_table_function_statistics_info_handle {
-	return reinterpret_cast<duckdb_v2_table_function_statistics_info_handle>(info);
-}
-
 class CV2TablePartitioningInfo {
 public:
 	void *in_user_data = nullptr;
@@ -369,7 +350,6 @@ public:
 	duckdb_v2_table_function_partition_data_callback_fn partition_data_cb = nullptr;
 	duckdb_v2_table_function_partitioning_callback_fn partitioning_cb = nullptr;
 	duckdb_v2_table_function_stats_callback_fn stats_cb = nullptr;
-	duckdb_v2_table_function_statistics_callback_fn statistics_cb = nullptr;
 	duckdb_v2_table_function_claim_batch_callback_fn claim_batch_cb = nullptr;
 	duckdb_v2_table_function_get_bind_info_callback_fn get_bind_info_cb = nullptr;
 	shared_ptr<CV2UserData> user_data = nullptr;
@@ -681,62 +661,23 @@ static auto CV2TableCardinality(ClientContext &context, const FunctionData *bind
 	return CV2TableMakeStatistics(data.cardinality, data.cardinality_is_exact);
 }
 
-//! The "statistics" callback: asks the function what it knows about the values of one declared column of a bound
-//! call. The callback reports a BaseStatistics of the column's type, or nothing to leave the statistics unknown.
-static auto CV2TableReportedStatistics(ClientContext &context, const CV2TableFunctionData &data, column_t column_index)
-    -> unique_ptr<BaseStatistics> {
-	const auto &info = *data.info;
-	CV2TableStatisticsInfo args;
-	args.in_user_data = info.user_data ? info.user_data->GetData() : nullptr;
-	args.in_bind_data = data.handle ? data.handle->GetData() : nullptr;
-	args.in_column_index = column_index;
-	args.in_column_type = data.column_types[column_index];
-
-	CV2ErrorInfo err = {};
-	auto err_ptr = Convert(&err);
-	CV2CallbackContext callback_context(context);
-	info.statistics_cb(Convert(&args), Convert(&callback_context), &err_ptr);
-
-	if (err.HasError()) {
-		err.ThrowAsException();
-	}
-	return std::move(args.out_statistics);
-}
-
-//! The engine's statistics request for one column: what the "statistics" callback reports, which the "stats"
-//! callback then narrows further. Either callback alone works as well.
 static auto CV2TableStats(ClientContext &context, TableFunctionGetStatisticsInput &input)
     -> unique_ptr<BaseStatistics> {
 	const auto &data = input.bind_data->Cast<CV2TableFunctionData>();
 	const auto &info = *data.info;
 
-	// The callbacks only describe whole declared columns, not virtual columns or fields extracted from a column
+	// The callback only describes whole declared columns, not virtual columns or fields extracted from a column
 	const auto &column_index = input.column_index;
 	if (!column_index.HasPrimaryIndex() || column_index.HasChildren() || column_index.IsVirtualColumn() ||
 	    column_index.GetPrimaryIndex() >= data.column_types.size()) {
 		return nullptr;
 	}
-	const auto primary_index = column_index.GetPrimaryIndex();
-	const auto &column_type = data.column_types[primary_index];
 
-	unique_ptr<BaseStatistics> reported;
-	if (info.statistics_cb) {
-		reported = CV2TableReportedStatistics(context, data, primary_index);
-		if (reported && reported->GetType() != column_type) {
-			throw InvalidInputException(
-			    "The statistics callback reported statistics of type %s for a column of type %s",
-			    reported->GetType().ToString(), column_type.ToString());
-		}
-	}
-	if (!info.stats_cb) {
-		return reported;
-	}
-
-	auto result = reported ? reported->Copy() : BaseStatistics::CreateUnknown(column_type);
+	auto result = BaseStatistics::CreateUnknown(data.column_types[column_index.GetPrimaryIndex()]);
 	CV2TableStatsInfo args(result);
 	args.in_user_data = info.user_data ? info.user_data->GetData() : nullptr;
 	args.in_bind_data = data.handle ? data.handle->GetData() : nullptr;
-	args.in_column_index = primary_index;
+	args.in_column_index = column_index.GetPrimaryIndex();
 
 	CV2ErrorInfo err = {};
 	auto err_ptr = Convert(&err);
@@ -935,9 +876,8 @@ public:
 		if (info.partitioning_cb) {
 			function.get_partition_info = CV2TableGetPartitionInfo;
 		}
-		// One path serves both callbacks. The extended variant: setting the plain one would turn off pushing field
-		// extraction into the scan, and the engine ignores the plain one when the extended one is set.
-		if (info.stats_cb || info.statistics_cb) {
+		// The extended variant: setting the plain one would turn off pushing field extraction into the scan
+		if (info.stats_cb) {
 			function.statistics_extended = CV2TableStats;
 		}
 		function.projection_pushdown = info.projection_pushdown;
@@ -1678,64 +1618,6 @@ DUCKDB_V2_ERROR duckdb_v2_table_function_stats_get_result_stats(duckdb_v2_table_
 	DUCKDB_CHECK_ARG(info);
 	DUCKDB_CHECK_ARG(stats);
 	return WithErrorHandler(err, [&]() { *stats = Convert(&Convert(info)->result_stats); });
-}
-
-DUCKDB_V2_ERROR
-duckdb_v2_table_function_set_statistics_callback(duckdb_v2_table_function_handle function,
-                                                 duckdb_v2_table_function_statistics_callback_fn callback,
-                                                 duckdb_v2_error_info_handle *err) {
-	DUCKDB_CHECK_ARG(function);
-	return WithErrorHandler(err, [&]() { Convert(function)->info.statistics_cb = callback; });
-}
-
-DUCKDB_V2_ERROR duckdb_v2_table_function_statistics_get_user_data(duckdb_v2_table_function_statistics_info_handle info,
-                                                                  void **data, duckdb_v2_error_info_handle *err) {
-	DUCKDB_CHECK_ARG(info);
-	DUCKDB_CHECK_ARG(data);
-	return WithErrorHandler(err, [&]() { *data = Convert(info)->in_user_data; });
-}
-
-DUCKDB_V2_ERROR duckdb_v2_table_function_statistics_get_bind_data(duckdb_v2_table_function_statistics_info_handle info,
-                                                                  void **data, duckdb_v2_error_info_handle *err) {
-	DUCKDB_CHECK_ARG(info);
-	DUCKDB_CHECK_ARG(data);
-	return WithErrorHandler(err, [&]() { *data = Convert(info)->in_bind_data; });
-}
-
-DUCKDB_V2_ERROR
-duckdb_v2_table_function_statistics_get_column_index(duckdb_v2_table_function_statistics_info_handle info,
-                                                     idx_t *column_index, duckdb_v2_error_info_handle *err) {
-	DUCKDB_CHECK_ARG(info);
-	DUCKDB_CHECK_ARG(column_index);
-	return WithErrorHandler(err, [&]() { *column_index = Convert(info)->in_column_index; });
-}
-
-DUCKDB_V2_ERROR
-duckdb_v2_table_function_statistics_get_column_type(duckdb_v2_table_function_statistics_info_handle info,
-                                                    duckdb_v2_logical_type_handle *type,
-                                                    duckdb_v2_error_info_handle *err) {
-	DUCKDB_CHECK_ARG(info);
-	DUCKDB_CHECK_ARG(type);
-	*type = nullptr;
-	return WithErrorHandler(err, [&]() { *type = Convert(Convert(info)->in_column_type); });
-}
-
-DUCKDB_V2_ERROR duckdb_v2_table_function_statistics_set_result(duckdb_v2_table_function_statistics_info_handle info,
-                                                               duckdb_v2_statistics_handle statistics,
-                                                               duckdb_v2_error_info_handle *err) {
-	DUCKDB_CHECK_ARG(info);
-	DUCKDB_CHECK_ARG(statistics);
-	return WithErrorHandler(err, [&]() {
-		auto &args = *Convert(info);
-		auto &stats = *Convert(statistics);
-		if (stats.GetType() != args.in_column_type) {
-			throw duckdb::InvalidInputException(
-			    "duckdb_v2_table_function_statistics_set_result: the statistics are of type "
-			    "%s, but the column is of type %s",
-			    stats.GetType().ToString(), args.in_column_type.ToString());
-		}
-		args.out_statistics = stats.ToUnique();
-	});
 }
 
 DUCKDB_V2_ERROR duckdb_v2_connection_register_table_function(duckdb_v2_connection_handle conn,

@@ -363,8 +363,8 @@ functions:
       the statistics of the column are propagated through the expression - comparisons, conjunctions, IS NULL, IN, casts
       and the functions the engine knows the statistics of - to find out whether every row the statistics describe
       passes the predicate, none does, or nothing can be told. A table function uses it to skip a row group (or a file)
-      whose statistics make a pushed-down filter it did not take over false for every row. Every column reference of the
-      predicate stands for the column described by `statistics`.
+      whose statistics, built with `[[stats_create]]`, make a pushed-down filter it did not take over false for every
+      row. Every column reference of the predicate stands for the column described by `stats`.
     parameters:
       context:
         type: context
@@ -372,8 +372,8 @@ functions:
       expression:
         type: expression
         description: "The predicate: a boolean expression over one column, referenced by its column references."
-      statistics:
-        type: statistics
+      stats:
+        type: stats
         description: "The statistics of that column over the rows in question."
       result:
         type: FILTER_PROPAGATE_RESULT
