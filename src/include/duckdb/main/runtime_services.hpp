@@ -1,7 +1,7 @@
 //===----------------------------------------------------------------------===//
 //                         DuckDB
 //
-// duckdb/main/execution_services.hpp
+// duckdb/main/runtime_services.hpp
 //
 //
 //===----------------------------------------------------------------------===//
@@ -29,16 +29,16 @@ class RegisteredStateManager;
 class TaskScheduler;
 class Value;
 
-//! ExecutionServices owns the services that operations need to do their work: reading settings, logging, recording
+//! RuntimeServices owns the services that operations need to do their work: reading settings, logging, recording
 //! metrics and accessing the file system.
 //! A ClientContext owns one (see ClientContext::Services) that holds all of its connection-specific services.
 //! A DatabaseInstance can create one (see DatabaseInstance::Services) that only provides database-wide services.
-class ExecutionServices {
+class RuntimeServices {
 public:
 	//! Creates database-wide services
 	//! The database must outlive the services
-	DUCKDB_API explicit ExecutionServices(DatabaseInstance &db);
-	DUCKDB_API ~ExecutionServices();
+	DUCKDB_API explicit RuntimeServices(DatabaseInstance &db);
+	DUCKDB_API ~RuntimeServices();
 
 	//! Turns these into the services of the given client context: creates the client config, the connection logger,
 	//! the query profiler, the file opener and the client file system.
@@ -51,8 +51,8 @@ public:
 	//! The client context owning the services (if any) - only present for the services of a ClientContext
 	DUCKDB_API optional_ptr<ClientContext> TryGetClientContext() const;
 	//! Null-safe variants for optional services
-	DUCKDB_API static optional_ptr<ClientContext> TryGetClientContext(optional_ptr<ExecutionServices> services);
-	DUCKDB_API static optional_ptr<QueryProfiler> TryGetQueryProfiler(optional_ptr<ExecutionServices> services);
+	DUCKDB_API static optional_ptr<ClientContext> TryGetClientContext(optional_ptr<RuntimeServices> services);
+	DUCKDB_API static optional_ptr<QueryProfiler> TryGetQueryProfiler(optional_ptr<RuntimeServices> services);
 	//! Whether or not these are the services of a client
 	DUCKDB_API bool IsClient() const;
 

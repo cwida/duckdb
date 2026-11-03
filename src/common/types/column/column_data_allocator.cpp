@@ -1,6 +1,6 @@
 #include "duckdb/common/types/column/column_data_allocator.hpp"
 #include "duckdb/main/client_context.hpp"
-#include "duckdb/main/execution_services.hpp"
+#include "duckdb/main/runtime_services.hpp"
 
 #include "duckdb/common/radix_partitioning.hpp"
 #include "duckdb/common/types/column/column_data_collection_segment.hpp"
@@ -29,7 +29,7 @@ ColumnDataAllocator::ColumnDataAllocator(ClientContext &context, ColumnDataAlloc
     : ColumnDataAllocator(context.Services(), allocator_type, lifetime) {
 }
 
-ColumnDataAllocator::ColumnDataAllocator(ExecutionServices &services, ColumnDataAllocatorType allocator_type,
+ColumnDataAllocator::ColumnDataAllocator(RuntimeServices &services, ColumnDataAllocatorType allocator_type,
                                          ColumnDataCollectionLifetime lifetime)
     : type(allocator_type) {
 	switch (type) {

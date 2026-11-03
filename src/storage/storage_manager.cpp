@@ -564,7 +564,7 @@ void SingleFileStorageManager::LoadDatabase(QueryContext context) {
 		unique_ptr<MetricsTimer> timer = nullptr;
 
 		// Start timing the storage load step.
-		auto profiler = ExecutionServices::TryGetQueryProfiler(context.GetServices());
+		auto profiler = RuntimeServices::TryGetQueryProfiler(context.GetServices());
 		if (profiler) {
 			timer = make_uniq<MetricsTimer>(profiler->StartTimer<MetricStorageAttachLoadStorageLatency>());
 		}
@@ -794,7 +794,7 @@ void SingleFileStorageManager::CreateCheckpoint(QueryContext context, Checkpoint
 	if (wal_size > 0 || config.options.force_checkpoint || options.action == CheckpointAction::ALWAYS_CHECKPOINT) {
 		try {
 			// Start timing the checkpoint.
-			auto profiler = ExecutionServices::TryGetQueryProfiler(context.GetServices());
+			auto profiler = RuntimeServices::TryGetQueryProfiler(context.GetServices());
 			MetricsTimer timer;
 			if (profiler) {
 				timer = profiler->StartTimer<MetricStorageCheckpointLatency>();

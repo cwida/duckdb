@@ -19,7 +19,7 @@ class Allocator;
 class AttachedDatabase;
 class ClientContext;
 class DatabaseInstance;
-class ExecutionServices;
+class RuntimeServices;
 class ExecutionContext;
 class ThreadContext;
 
@@ -223,7 +223,7 @@ public:
 	//! Allocate with a huge-page hint, retaining the matching release path.
 	DUCKDB_API HugeAllocation AllocateHuge(idx_t size);
 	DUCKDB_API static BufferAllocator &Get(ClientContext &context);
-	DUCKDB_API static BufferAllocator &Get(ExecutionServices &services);
+	DUCKDB_API static BufferAllocator &Get(RuntimeServices &services);
 	DUCKDB_API static BufferAllocator &Get(DatabaseInstance &db);
 	DUCKDB_API static BufferAllocator &Get(AttachedDatabase &db);
 

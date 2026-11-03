@@ -21,7 +21,7 @@
 
 namespace duckdb {
 
-TableDataWriter::TableDataWriter(TableCatalogEntry &table_p, ExecutionServices &services_p)
+TableDataWriter::TableDataWriter(TableCatalogEntry &table_p, RuntimeServices &services_p)
     : table(table_p.Cast<DuckTableEntry>()), services(services_p) {
 	D_ASSERT(table_p.IsDuckTable());
 
@@ -57,7 +57,7 @@ unique_ptr<TaskExecutor> TableDataWriter::CreateTaskExecutor() {
 	return make_uniq<TaskExecutor>(services);
 }
 
-ExecutionServices &TableDataWriter::GetServices() const {
+RuntimeServices &TableDataWriter::GetServices() const {
 	return services;
 }
 

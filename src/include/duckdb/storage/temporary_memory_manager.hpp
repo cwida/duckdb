@@ -16,7 +16,7 @@
 
 namespace duckdb {
 
-class ExecutionServices;
+class RuntimeServices;
 class TemporaryMemoryManager;
 
 //! State of the temporary memory to be managed concurrently with other states
@@ -34,7 +34,7 @@ public:
 	//! Set the remaining size needed for this state (NOTE: does not update the reservation!)
 	void SetRemainingSize(idx_t new_remaining_size);
 	//! Set the remaining size needed for this state and update the reservation
-	void SetRemainingSizeAndUpdateReservation(ExecutionServices &services, idx_t new_remaining_size);
+	void SetRemainingSizeAndUpdateReservation(RuntimeServices &services, idx_t new_remaining_size);
 	//! Set the remaining size to 0 (NOTE: updates the reservation to 0 as well)
 	void SetZero();
 	//! Get the remaining size that was set for this state
@@ -44,7 +44,7 @@ public:
 	//! Get the minimum reservation for this state
 	idx_t GetMinimumReservation() const;
 	//! Updates the reservation based on current remaining size
-	void UpdateReservation(ExecutionServices &services);
+	void UpdateReservation(RuntimeServices &services);
 	//! Get the reservation of this state
 	idx_t GetReservation() const;
 	//! Set the materialization penalty for this state
@@ -95,9 +95,9 @@ private:
 
 public:
 	//! Get the TemporaryMemoryManager
-	static TemporaryMemoryManager &Get(ExecutionServices &services);
+	static TemporaryMemoryManager &Get(RuntimeServices &services);
 	//! Register a TemporaryMemoryState
-	unique_ptr<TemporaryMemoryState> Register(ExecutionServices &services);
+	unique_ptr<TemporaryMemoryState> Register(RuntimeServices &services);
 
 private:
 	//! Get the default minimum reservation
@@ -105,9 +105,9 @@ private:
 	//! Unregister a TemporaryMemoryState (called by the destructor of TemporaryMemoryState)
 	void Unregister(TemporaryMemoryState &temporary_memory_state);
 	//! Update memory_limit, has_temporary_directory, and num_threads (must hold the lock)
-	void UpdateConfiguration(ExecutionServices &services) DUCKDB_REQUIRES(lock);
+	void UpdateConfiguration(RuntimeServices &services) DUCKDB_REQUIRES(lock);
 	//! Update the TemporaryMemoryState to the new remaining size, and updates the reservation (must hold the lock)
-	void UpdateState(ExecutionServices &services, TemporaryMemoryState &temporary_memory_state) DUCKDB_REQUIRES(lock);
+	void UpdateState(RuntimeServices &services, TemporaryMemoryState &temporary_memory_state) DUCKDB_REQUIRES(lock);
 	//! Set the remaining size of a TemporaryMemoryState (must hold the lock)
 	void SetRemainingSize(TemporaryMemoryState &temporary_memory_state, idx_t new_remaining_size) DUCKDB_REQUIRES(lock);
 	//! Set the reservation of a TemporaryMemoryState (must hold the lock)

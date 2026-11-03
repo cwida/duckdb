@@ -35,7 +35,7 @@ struct ParquetColumnSchema;
 class ParquetReader;
 class ColumnReader;
 class ClientContext;
-class ExecutionServices;
+class RuntimeServices;
 
 struct GeometryColumnReader {
 	static unique_ptr<ColumnReader> Create(const ParquetReader &reader, const ParquetColumnSchema &schema,
@@ -113,7 +113,7 @@ public:
 
 	bool IsGeometryColumn(const string &column_name) const;
 
-	static bool IsGeoParquetConversionEnabled(const ExecutionServices &services);
+	static bool IsGeoParquetConversionEnabled(const RuntimeServices &services);
 
 private:
 	mutex write_lock;

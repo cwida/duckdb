@@ -1,7 +1,7 @@
 #include "duckdb/main/settings.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/config.hpp"
-#include "duckdb/main/execution_services.hpp"
+#include "duckdb/main/runtime_services.hpp"
 
 namespace duckdb {
 
@@ -9,7 +9,7 @@ bool Settings::TryGetSettingInternal(const ClientContext &context, idx_t setting
 	return context.TryGetCurrentUserSetting(setting_index, result);
 }
 
-bool Settings::TryGetSettingInternal(const ExecutionServices &services, idx_t setting_index, Value &result) {
+bool Settings::TryGetSettingInternal(const RuntimeServices &services, idx_t setting_index, Value &result) {
 	return services.TryGetCurrentUserSetting(setting_index, result);
 }
 

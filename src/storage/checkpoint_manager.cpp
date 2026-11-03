@@ -44,7 +44,7 @@
 
 namespace duckdb {
 
-ActiveCheckpointWrapper::ActiveCheckpointWrapper(ExecutionServices &services, AttachedDatabase &db_p,
+ActiveCheckpointWrapper::ActiveCheckpointWrapper(RuntimeServices &services, AttachedDatabase &db_p,
                                                  DuckTransactionManager &transaction_manager_p)
     : db(db_p), transaction_manager(transaction_manager_p) {
 	if (!services.IsClient()) {

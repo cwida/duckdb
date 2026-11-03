@@ -30,7 +30,7 @@ struct RowGroupPointer;
 //! Abstraction will support, for example: tiering, versioning, or splitting into multiple block managers.
 class TableDataWriter {
 public:
-	explicit TableDataWriter(TableCatalogEntry &table, ExecutionServices &services);
+	explicit TableDataWriter(TableCatalogEntry &table, RuntimeServices &services);
 	virtual ~TableDataWriter();
 
 public:
@@ -82,11 +82,11 @@ public:
 	AttachedDatabase &GetAttached();
 	DatabaseInstance &GetDatabase();
 	unique_ptr<TaskExecutor> CreateTaskExecutor();
-	ExecutionServices &GetServices() const;
+	RuntimeServices &GetServices() const;
 
 protected:
 	DuckTableEntry &table;
-	ExecutionServices &services;
+	RuntimeServices &services;
 	//! Pointers to the start of each row group.
 	vector<RowGroupPointer> row_group_pointers;
 

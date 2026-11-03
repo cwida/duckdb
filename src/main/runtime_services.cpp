@@ -1,4 +1,4 @@
-#include "duckdb/main/execution_services.hpp"
+#include "duckdb/main/runtime_services.hpp"
 
 #include "duckdb/common/opener_file_system.hpp"
 #include "duckdb/logging/log_manager.hpp"
@@ -35,13 +35,13 @@ private:
 	ClientContext &context;
 };
 
-ExecutionServices::ExecutionServices(DatabaseInstance &db_p) : db(db_p) {
+RuntimeServices::RuntimeServices(DatabaseInstance &db_p) : db(db_p) {
 }
 
-ExecutionServices::~ExecutionServices() {
+RuntimeServices::~RuntimeServices() {
 }
 
-void ExecutionServices::InitializeClient(ClientContext &context_p) {
+void RuntimeServices::InitializeClient(ClientContext &context_p) {
 	D_ASSERT(!context);
 	context = &context_p;
 	config = make_uniq<ClientConfig>();
@@ -53,49 +53,49 @@ void ExecutionServices::InitializeClient(ClientContext &context_p) {
 	registered_state = make_uniq<RegisteredStateManager>();
 }
 
-DatabaseInstance &ExecutionServices::GetDatabase() const {
+DatabaseInstance &RuntimeServices::GetDatabase() const {
 	return db;
 }
 
-optional_ptr<ClientContext> ExecutionServices::TryGetClientContext() const {
+optional_ptr<ClientContext> RuntimeServices::TryGetClientContext() const {
 	return context;
 }
 
-optional_ptr<ClientContext> ExecutionServices::TryGetClientContext(optional_ptr<ExecutionServices> services) {
+optional_ptr<ClientContext> RuntimeServices::TryGetClientContext(optional_ptr<RuntimeServices> services) {
 	if (!services) {
 		return nullptr;
 	}
 	return services->TryGetClientContext();
 }
 
-optional_ptr<QueryProfiler> ExecutionServices::TryGetQueryProfiler(optional_ptr<ExecutionServices> services) {
+optional_ptr<QueryProfiler> RuntimeServices::TryGetQueryProfiler(optional_ptr<RuntimeServices> services) {
 	if (!services) {
 		return nullptr;
 	}
 	return services->TryGetQueryProfiler();
 }
 
-bool ExecutionServices::IsClient() const {
+bool RuntimeServices::IsClient() const {
 	return context != nullptr;
 }
 
-optional_ptr<ClientConfig> ExecutionServices::TryGetClientConfig() const {
+optional_ptr<ClientConfig> RuntimeServices::TryGetClientConfig() const {
 	return config.get();
 }
 
-ClientConfig &ExecutionServices::GetClientConfig() const {
+ClientConfig &RuntimeServices::GetClientConfig() const {
 	D_ASSERT(config);
 	return *config;
 }
 
-SettingLookupResult ExecutionServices::TryGetCurrentSetting(const Identifier &key, Value &result) const {
+SettingLookupResult RuntimeServices::TryGetCurrentSetting(const Identifier &key, Value &result) const {
 	if (context) {
 		return context->TryGetCurrentSetting(key, result);
 	}
 	return db.TryGetCurrentSetting(key, result);
 }
 
-SettingLookupResult ExecutionServices::TryGetCurrentUserSetting(idx_t setting_index, Value &result) const {
+SettingLookupResult RuntimeServices::TryGetCurrentUserSetting(idx_t setting_index, Value &result) const {
 	auto &db_config = DBConfig::GetConfig(db);
 	if (config) {
 		return config->user_settings.TryGetSetting(db_config.user_settings, setting_index, result);
@@ -103,33 +103,33 @@ SettingLookupResult ExecutionServices::TryGetCurrentUserSetting(idx_t setting_in
 	return db_config.TryGetCurrentUserSetting(setting_index, result);
 }
 
-Logger &ExecutionServices::GetLogger() const {
+Logger &RuntimeServices::GetLogger() const {
 	if (logger) {
 		return *logger;
 	}
 	return Logger::Get(db);
 }
 
-void ExecutionServices::SetLogger(shared_ptr<Logger> new_logger) {
+void RuntimeServices::SetLogger(shared_ptr<Logger> new_logger) {
 	logger = std::move(new_logger);
 }
 
-const shared_ptr<Logger> &ExecutionServices::GetLoggerPtr() const {
+const shared_ptr<Logger> &RuntimeServices::GetLoggerPtr() const {
 	return logger;
 }
 
-FileSystem &ExecutionServices::GetFileSystem() const {
+FileSystem &RuntimeServices::GetFileSystem() const {
 	if (client_file_system) {
 		return *client_file_system;
 	}
 	return FileSystem::GetFileSystem(db);
 }
 
-optional_ptr<FileOpener> ExecutionServices::TryGetFileOpener() const {
+optional_ptr<FileOpener> RuntimeServices::TryGetFileOpener() const {
 	return file_opener.get();
 }
 
-BufferManager &ExecutionServices::GetBufferManager() const {
+BufferManager &RuntimeServices::GetBufferManager() const {
 	auto client_context = context;
 	if (client_context) {
 		return BufferManager::GetBufferManager(*client_context);
@@ -137,34 +137,34 @@ BufferManager &ExecutionServices::GetBufferManager() const {
 	return BufferManager::GetBufferManager(db);
 }
 
-TaskScheduler &ExecutionServices::GetTaskScheduler() const {
+TaskScheduler &RuntimeServices::GetTaskScheduler() const {
 	return db.GetScheduler();
 }
 
-MetricsManager &ExecutionServices::GetMetricsManager() const {
+MetricsManager &RuntimeServices::GetMetricsManager() const {
 	return db.GetMetricsManager();
 }
 
-RegisteredStateManager &ExecutionServices::GetRegisteredState() const {
+RegisteredStateManager &RuntimeServices::GetRegisteredState() const {
 	D_ASSERT(registered_state);
 	return *registered_state;
 }
 
-optional_ptr<QueryProfiler> ExecutionServices::TryGetQueryProfiler() const {
+optional_ptr<QueryProfiler> RuntimeServices::TryGetQueryProfiler() const {
 	return profiler.get();
 }
 
-QueryProfiler &ExecutionServices::GetQueryProfiler() const {
+QueryProfiler &RuntimeServices::GetQueryProfiler() const {
 	D_ASSERT(profiler);
 	return *profiler;
 }
 
-const shared_ptr<QueryProfiler> &ExecutionServices::GetQueryProfilerPtr() const {
+const shared_ptr<QueryProfiler> &RuntimeServices::GetQueryProfilerPtr() const {
 	return profiler;
 }
 
-shared_ptr<ExecutionServices> DatabaseInstance::Services() {
-	return make_shared_ptr<ExecutionServices>(*this);
+shared_ptr<RuntimeServices> DatabaseInstance::Services() {
+	return make_shared_ptr<RuntimeServices>(*this);
 }
 
 } // namespace duckdb

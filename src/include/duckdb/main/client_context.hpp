@@ -43,7 +43,7 @@ class CatalogSearchPath;
 class ColumnDataCollection;
 class DatabaseInstance;
 class FileOpener;
-class ExecutionServices;
+class RuntimeServices;
 class LogicalOperator;
 class PreparedStatement;
 class PreparedStatementData;
@@ -130,7 +130,7 @@ public:
 	//! The number of internal connections between this client and its base client (0 for a base client)
 	idx_t internal_depth = 0;
 	//! The services of this ClientContext: owns the client configuration, logger, query profiler, file system, ...
-	shared_ptr<ExecutionServices> services;
+	shared_ptr<RuntimeServices> services;
 	//! The set of client-specific data
 	unique_ptr<ClientData> client_data;
 	//! Data for the currently running transaction
@@ -302,7 +302,7 @@ public:
 	Logger &GetLogger() const;
 
 	//! Returns the services (client configuration, logging, metrics, file system) owned by this context
-	ExecutionServices &Services() const {
+	RuntimeServices &Services() const {
 		return *services;
 	}
 

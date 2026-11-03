@@ -13,7 +13,7 @@
 
 namespace duckdb {
 
-class ExecutionServices;
+class RuntimeServices;
 class TemporaryMemoryState;
 
 //! Memory policy shared by the managed async queues.
@@ -35,7 +35,7 @@ struct ManagedAsyncMemoryConfig {
 //! queued and in-flight backlog through the same memory logic.
 class ManagedAsyncMemoryGovernor {
 public:
-	explicit ManagedAsyncMemoryGovernor(ExecutionServices &services);
+	explicit ManagedAsyncMemoryGovernor(RuntimeServices &services);
 	~ManagedAsyncMemoryGovernor();
 
 	ManagedAsyncMemoryGovernor(const ManagedAsyncMemoryGovernor &) = delete;
@@ -51,7 +51,7 @@ public:
 	void Release();
 
 private:
-	ExecutionServices &services;
+	RuntimeServices &services;
 	//! Temporary memory reservation state used to limit queued async data. Absent when draining synchronously.
 	unique_ptr<TemporaryMemoryState> memory_state;
 	//! Serializes concurrent reservation updates and releases from multiple producers.

@@ -15,13 +15,13 @@ namespace duckdb {
 
 struct OpenFileInfo;
 class DatabaseInstance;
-class ExecutionServices;
+class RuntimeServices;
 
 struct ExternalFileCacheUtil {
 	//! Get the cache validation mode in order of file open info, execution services (for client-local settings), or
 	//! database config.
 	DUCKDB_API static CacheValidationMode
-	GetCacheValidationMode(const OpenFileInfo &info, optional_ptr<ExecutionServices> services, DatabaseInstance &db);
+	GetCacheValidationMode(const OpenFileInfo &info, optional_ptr<RuntimeServices> services, DatabaseInstance &db);
 };
 
 } // namespace duckdb

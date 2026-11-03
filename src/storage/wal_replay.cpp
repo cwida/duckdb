@@ -516,7 +516,7 @@ unique_ptr<WriteAheadLog> WriteAheadLogReplayer::ReplayLog(unique_ptr<FileHandle
 				}
 			}
 		}
-		auto profiler = ExecutionServices::TryGetQueryProfiler(context.GetServices());
+		auto profiler = RuntimeServices::TryGetQueryProfiler(context.GetServices());
 		if (profiler) {
 			profiler->AddToMetricCounter(MetricStorageWALReplayEntryCount::Name, replay_entry_count);
 		}

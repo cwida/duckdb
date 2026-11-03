@@ -33,7 +33,7 @@ namespace duckdb {
 
 class BaseTreeRenderer;
 class ClientContext;
-class ExecutionServices;
+class RuntimeServices;
 class ExpressionExecutor;
 class ProfilingNode;
 class PhysicalOperator;
@@ -97,7 +97,7 @@ public:
 	DUCKDB_API string GetSaveLocation() const;
 
 	DUCKDB_API static QueryProfiler &Get(ClientContext &context);
-	DUCKDB_API static QueryProfiler &Get(ExecutionServices &services);
+	DUCKDB_API static QueryProfiler &Get(RuntimeServices &services);
 
 	DUCKDB_API void Start(const string &query);
 	DUCKDB_API void Reset();

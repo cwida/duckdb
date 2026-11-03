@@ -11,13 +11,13 @@
 #include "duckdb/common/enums/cache_validation_mode.hpp"
 #include "duckdb/common/open_file_info.hpp"
 #include "duckdb/main/config.hpp"
-#include "duckdb/main/execution_services.hpp"
+#include "duckdb/main/runtime_services.hpp"
 #include "duckdb/main/settings.hpp"
 
 namespace duckdb {
 
 CacheValidationMode ExternalFileCacheUtil::GetCacheValidationMode(const OpenFileInfo &info,
-                                                                  optional_ptr<ExecutionServices> services,
+                                                                  optional_ptr<RuntimeServices> services,
                                                                   DatabaseInstance &db) {
 	// First check if explicitly set in OpenFileInfo options (per-file override).
 	bool validate_cache;

@@ -1,6 +1,6 @@
 #include "duckdb/storage/temporary_memory_manager.hpp"
 
-#include "duckdb/main/execution_services.hpp"
+#include "duckdb/main/runtime_services.hpp"
 #include "duckdb/main/connection_manager.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
@@ -25,7 +25,7 @@ void TemporaryMemoryState::SetRemainingSize(idx_t new_remaining_size) {
 	temporary_memory_manager.SetRemainingSize(*this, new_remaining_size);
 }
 
-void TemporaryMemoryState::SetRemainingSizeAndUpdateReservation(ExecutionServices &services, idx_t new_remaining_size) {
+void TemporaryMemoryState::SetRemainingSizeAndUpdateReservation(RuntimeServices &services, idx_t new_remaining_size) {
 	D_ASSERT(new_remaining_size != 0); // Use SetZero instead
 	const annotated_lock_guard<annotated_mutex> guard(temporary_memory_manager.lock);
 	temporary_memory_manager.SetRemainingSize(*this, new_remaining_size);
@@ -50,7 +50,7 @@ idx_t TemporaryMemoryState::GetMinimumReservation() const {
 	return minimum_reservation;
 }
 
-void TemporaryMemoryState::UpdateReservation(ExecutionServices &services) {
+void TemporaryMemoryState::UpdateReservation(RuntimeServices &services) {
 	const annotated_lock_guard<annotated_mutex> guard(temporary_memory_manager.lock);
 	temporary_memory_manager.UpdateState(services, *this);
 }
@@ -86,7 +86,7 @@ void TemporaryMemoryManager::Unregister(TemporaryMemoryState &temporary_memory_s
 	Verify();
 }
 
-void TemporaryMemoryManager::UpdateConfiguration(ExecutionServices &services) {
+void TemporaryMemoryManager::UpdateConfiguration(RuntimeServices &services) {
 	auto &buffer_manager = BufferManager::GetBufferManager(services.GetDatabase());
 	auto &task_scheduler = services.GetTaskScheduler();
 
@@ -98,11 +98,11 @@ void TemporaryMemoryManager::UpdateConfiguration(ExecutionServices &services) {
 	query_max_memory = buffer_manager.GetOperatorMemoryLimit();
 }
 
-TemporaryMemoryManager &TemporaryMemoryManager::Get(ExecutionServices &services) {
+TemporaryMemoryManager &TemporaryMemoryManager::Get(RuntimeServices &services) {
 	return BufferManager::GetBufferManager(services.GetDatabase()).GetTemporaryMemoryManager();
 }
 
-unique_ptr<TemporaryMemoryState> TemporaryMemoryManager::Register(ExecutionServices &services) {
+unique_ptr<TemporaryMemoryState> TemporaryMemoryManager::Register(RuntimeServices &services) {
 	const annotated_lock_guard<annotated_mutex> guard(lock);
 	UpdateConfiguration(services);
 
@@ -115,7 +115,7 @@ unique_ptr<TemporaryMemoryState> TemporaryMemoryManager::Register(ExecutionServi
 	return result;
 }
 
-void TemporaryMemoryManager::UpdateState(ExecutionServices &services, TemporaryMemoryState &temporary_memory_state) {
+void TemporaryMemoryManager::UpdateState(RuntimeServices &services, TemporaryMemoryState &temporary_memory_state) {
 	UpdateConfiguration(services);
 
 	// The lower bound for the reservation of this state is either the minimum reservation or the remaining size

@@ -4,13 +4,13 @@
 #include "duckdb/main/client_config.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/database.hpp"
-#include "duckdb/main/execution_services.hpp"
+#include "duckdb/main/runtime_services.hpp"
 #include "duckdb/main/query_profiler.hpp"
 #include "duckdb/parallel/task_executor.hpp"
 
 using namespace duckdb;
 
-TEST_CASE("Test ExecutionServices", "[api]") {
+TEST_CASE("Test RuntimeServices", "[api]") {
 	DuckDB db(nullptr);
 	Connection con(db);
 	con.Query("SET threads=2");
