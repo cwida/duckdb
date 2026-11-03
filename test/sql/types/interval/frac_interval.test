@@ -22,6 +22,12 @@ select interval '0.0004 CENTURY';
 ----
 00:00:00
 
+# 0.00041666666666666664 centuries scale to 0.49999999999999994 months, the double just below a half
+query II
+select interval '0.00041666666666666664 CENTURY', interval '-0.00041666666666666664 CENTURY';
+----
+00:00:00	00:00:00
+
 query I
 select interval '0.005 DECADE';
 ----

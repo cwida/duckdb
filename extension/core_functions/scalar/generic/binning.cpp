@@ -1,5 +1,6 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/hugeint.hpp"
+#include "duckdb/common/numeric_utils.hpp"
 #include "duckdb/common/operator/subtract.hpp"
 #include "duckdb/common/serializer/deserializer.hpp"
 #include "duckdb/common/types/date.hpp"
@@ -82,7 +83,7 @@ double GetPreviousPowerOfTen(double input) {
 double RoundToNumber(double input, double num, NiceRounding rounding) {
 	double result;
 	if (rounding == NiceRounding::ROUND) {
-		result = std::round(input / num) * num;
+		result = RoundToNearestAwayFromZero(input / num) * num;
 	} else {
 		result = std::ceil(input / num) * num;
 	}
@@ -204,7 +205,7 @@ struct EquiWidthBinsDouble {
 			// because floating point addition adds inaccuracies, we add rounding at every step
 			double real_boundary = bin_boundary;
 			if (nice_rounding) {
-				real_boundary = std::round(bin_boundary * round_multiplication) / round_multiplication;
+				real_boundary = RoundToNearestAwayFromZero(bin_boundary * round_multiplication) / round_multiplication;
 			}
 			if (!result.empty() && result.back().val == real_boundary) {
 				// skip this step

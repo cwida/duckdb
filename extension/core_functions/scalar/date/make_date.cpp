@@ -1,4 +1,5 @@
 #include "core_functions/scalar/date_functions.hpp"
+#include "duckdb/common/numeric_utils.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/common/types/time.hpp"
@@ -77,7 +78,7 @@ struct MakeTimeOperator {
 		}
 		// Truncate the seconds: safe casting of DOUBLE => INT32 rounds.
 		auto ss_32 = Cast::Operation<SS, int32_t>(std::floor(ss));
-		auto micros = LossyNumericCast<int32_t>(std::round((ss - ss_32) * Interval::MICROS_PER_SEC));
+		auto micros = LossyNumericCast<int32_t>(RoundToNearestAwayFromZero((ss - ss_32) * Interval::MICROS_PER_SEC));
 
 		if (!Time::IsValidTime(hh_32, mm_32, ss_32, micros)) {
 			throw ConversionException("Time out of range: %d:%d:%d.%06d", hh_32, mm_32, ss_32, micros);

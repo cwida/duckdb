@@ -1,3 +1,4 @@
+#include "duckdb/common/numeric_utils.hpp"
 #include "duckdb/common/operator/add.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
 #include "duckdb/common/operator/subtract.hpp"
@@ -109,7 +110,8 @@ struct ICUMakeTimestampTZFunc : public ICUDateFunc {
 		ss -= secs;
 		ss *= Interval::MSECS_PER_SEC;
 		const auto millis = int32_t(ss);
-		int64_t micros = LossyNumericCast<int64_t, double>(std::round((ss - millis) * Interval::MICROS_PER_MSEC));
+		int64_t micros =
+		    LossyNumericCast<int64_t, double>(RoundToNearestAwayFromZero((ss - millis) * Interval::MICROS_PER_MSEC));
 
 		calendar->Set(CAL_YEAR, year);
 		calendar->Set(CAL_MONTH, month);

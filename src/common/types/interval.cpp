@@ -55,7 +55,7 @@ bool IntervalTryAddition(T &target, int64_t input, int64_t multiplier, string *e
 		return false;
 	}
 	if (std::fabs(fraction) > 1e-10) {
-		addition = static_cast<int64_t>(round(fraction * static_cast<double>(multiplier)));
+		addition = static_cast<int64_t>(RoundToNearestAwayFromZero(fraction * static_cast<double>(multiplier)));
 		if (!TryCast::Operation<int64_t, T>(addition, addition_base)) {
 			AssignInvalidInputErrorOrThrow(CastExceptionText<int64_t, T>(addition), error_message);
 			return false;
