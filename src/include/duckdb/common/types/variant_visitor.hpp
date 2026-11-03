@@ -277,9 +277,11 @@ public:
 		return object_items;
 	}
 
-private:
+public:
+	//! Visit throws for a value nested this deep
 	static constexpr idx_t MAX_RECURSION_DEPTH = 128;
 
+private:
 	static void CheckDepth(idx_t depth) {
 		if (depth >= MAX_RECURSION_DEPTH) {
 			throw InvalidInputException("VARIANT exceeds maximum recursion depth of %d", MAX_RECURSION_DEPTH);

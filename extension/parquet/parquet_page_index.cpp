@@ -118,7 +118,8 @@ idx_t ParquetPageIndexUtils::PageRowCount(const duckdb_parquet::OffsetIndex &off
 
 void ParquetPageIndexUtils::FilterPages(const ParquetColumnSchema &schema,
                                         const duckdb_parquet::ColumnIndex &column_index, const TableFilter &filter,
-                                        bool can_have_nan, vector<bool> &result) {
+                                        const ParquetOptions &parquet_options, bool can_have_nan,
+                                        vector<bool> &result) {
 	const auto page_count = column_index.null_pages.size();
 	D_ASSERT(ColumnIndexIsValid(column_index, page_count));
 	auto &expr_filter = ExpressionFilter::GetExpressionFilter(filter, "ParquetPageIndexUtils::FilterPages");
@@ -140,7 +141,8 @@ void ParquetPageIndexUtils::FilterPages(const ParquetColumnSchema &schema,
 			if (has_null_count) {
 				page_stats.__set_null_count(column_index.null_counts[page_idx]);
 			}
-			stats = ParquetStatisticsUtils::TransformParquetStatistics(schema.type, schema, page_stats, can_have_nan);
+			stats = ParquetStatisticsUtils::TransformParquetStatistics(schema.type, schema, page_stats, parquet_options,
+			                                                           can_have_nan);
 			if (!stats) {
 				continue;
 			}
