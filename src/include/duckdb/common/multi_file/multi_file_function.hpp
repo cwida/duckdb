@@ -1198,8 +1198,9 @@ public:
 		}
 		// NOTE: we do not want to parse the file metadata for the sole purpose of getting column statistics
 		const bool multiple_files = bind_data.file_list->GetExpandResult() == FileExpandResult::MULTIPLE_FILES;
-		if (multiple_files && (!bind_data.file_options.union_by_name ||
-		                       bind_data.union_readers.size() != bind_data.file_list->GetTotalFileCount())) {
+		// multiple files: only if every file was opened at bind (union_by_name, maximum_sample_files or
+		// maximum_files_for_stats)
+		if (multiple_files && bind_data.union_readers.size() != bind_data.file_list->GetTotalFileCount()) {
 			return nullptr;
 		}
 		auto result = bind_data.initial_reader ? bind_data.initial_reader->GetStatistics(context, col_name)
@@ -1298,9 +1299,8 @@ public:
 		if (file_list_cardinality_estimate) {
 			return file_list_cardinality_estimate;
 		}
-		if (data.file_options.union_by_name && !data.union_readers.empty() &&
-		    data.union_readers.size() == data.file_list->GetTotalFileCount()) {
-			// for UNION BY NAME - check if we can get a cardinality estimate from the (already opened) union readers
+		if (!data.union_readers.empty() && data.union_readers.size() == data.file_list->GetTotalFileCount()) {
+			// check if we can get a cardinality estimate from the (already opened) union readers
 			bool has_exact_cardinality = true;
 			idx_t cardinality = 0;
 			for (auto &union_data : data.union_readers) {
