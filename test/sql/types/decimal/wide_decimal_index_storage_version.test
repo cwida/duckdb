@@ -3,9 +3,10 @@
 # group: [decimal]
 
 # The engines of the storage versions before wide decimals clamp DECIMAL(38,2) * DECIMAL(38,2) to DECIMAL(38,4) and
-# DECIMAL(38,2) + DECIMAL(38,2) to DECIMAL(38,2), and the ART keys of an expression index they write have that type.
-# In a database of such a storage version this engine binds the index keys the same way, in both directions: the
-# stored keys of an index written by those engines are matched, and an index written here is read back by them.
+# DECIMAL(38,2) + DECIMAL(38,2) to DECIMAL(38,2), type a literal above 38 digits as DOUBLE, and the ART keys of an
+# expression index they write have those types. An index written in a database of such a storage version binds its
+# keys the same way, in both directions: the stored keys of an index written by those engines are matched, and an
+# index written here is read back by them. The rule stays with the index when the database is upgraded.
 
 foreach version v1.4.0 v2.0.0
 
@@ -88,6 +89,27 @@ SELECT count(*) FROM old.t
 ----
 3
 
+# a literal above 38 digits in a key is a DOUBLE, as those engines type it
+statement ok
+CREATE TABLE old.lit(a DECIMAL(1,0));
+
+statement ok
+CREATE UNIQUE INDEX i_lit ON old.lit((a + 10000000000000000000000000000000000000.01));
+
+statement ok
+INSERT INTO old.lit VALUES (1);
+
+statement error
+INSERT INTO old.lit VALUES (1);
+----
+<REGEX>:.*Duplicate key "\(CAST\(a AS DOUBLE\) \+ 1e\+37\).*
+
+# outside the index keys the literal is an exact wide decimal
+query I
+SELECT typeof(10000000000000000000000000000000000000.01)
+----
+DECIMAL(40,2)
+
 # the type of a generated column is written to the catalog as well, a wide one is refused like a wide column
 statement error
 CREATE TABLE old.g(a DECIMAL(38,0), b DECIMAL(38,0), c AS (a * b))
@@ -96,6 +118,72 @@ DECIMAL columns wider than 38 digits are not supported in storage versions prior
 
 statement ok
 CREATE TABLE old.g(a DECIMAL(38,0), b DECIMAL(38,0), c AS ((a * b)::DECIMAL(38,0)))
+
+statement ok
+DETACH old
+
+# upgrading the database to the current storage version keeps the key types of the indexes it holds
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_index_{version}.db' AS old (STORAGE_VERSION 'latest');
+
+statement error
+INSERT INTO old.t VALUES (0.75, 5);
+----
+Duplicate key "(a * b): 3.7500"
+
+statement error
+INSERT INTO old.lit VALUES (1);
+----
+<REGEX>:.*Duplicate key "\(CAST\(a AS DOUBLE\) \+ 1e\+37\).*
+
+# an index created after the upgrade keys on the exact result
+statement ok
+CREATE TABLE old.n(a DECIMAL(38,2), b DECIMAL(38,2));
+
+statement ok
+CREATE UNIQUE INDEX i_n ON old.n((a * b));
+
+statement ok
+INSERT INTO old.n VALUES (1.5, 2.5), (repeat('9', 36)::DECIMAL(38,2), 10);
+
+statement error
+INSERT INTO old.n VALUES (0.75, 5);
+----
+<REGEX>:.*Duplicate key.*3\.7500.*
+
+statement ok
+CHECKPOINT old;
+
+statement ok
+DETACH old
+
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_index_{version}.db' AS old;
+
+statement error
+INSERT INTO old.t VALUES (0.75, 5);
+----
+Duplicate key "(a * b): 3.7500"
+
+statement error
+INSERT INTO old.lit VALUES (1);
+----
+<REGEX>:.*Duplicate key "\(CAST\(a AS DOUBLE\) \+ 1e\+37\).*
+
+query I
+SELECT count(*) FROM old.t
+----
+3
+
+statement error
+INSERT INTO old.n VALUES (0.75, 5);
+----
+<REGEX>:.*Duplicate key.*3\.7500.*
+
+query I
+SELECT count(*) FROM old.n
+----
+2
 
 statement ok
 DETACH old

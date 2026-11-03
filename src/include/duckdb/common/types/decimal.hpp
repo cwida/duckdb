@@ -66,6 +66,9 @@ public:
 	//! MAX_WIDTH_DECIMAL, except under the legacy rule of databases written before wide decimals (see
 	//! ClientContext::legacy_decimal_result_types), where fixed-size inputs stay within MAX_WIDTH_INT128.
 	static uint32_t MaxResultWidth(optional_ptr<ClientContext> context, uint32_t max_input_width);
+	//! The widest DECIMAL a numeric literal binds to, wider literals bind to DOUBLE: MAX_WIDTH_DECIMAL, or
+	//! MAX_WIDTH_INT128 under the legacy rule, as every literal above 38 digits was a DOUBLE before wide decimals.
+	static uint32_t MaxLiteralWidth(optional_ptr<ClientContext> context);
 	static string ToString(int16_t value, uint32_t width, uint32_t scale);
 	static string ToString(int32_t value, uint32_t width, uint32_t scale);
 	static string ToString(int64_t value, uint32_t width, uint32_t scale);

@@ -23,18 +23,36 @@ namespace duckdb {
 
 namespace {
 
-//! Binds index keys under the decimal result-type rule of the storage version the index is stored in. An engine of a
-//! version before wide decimals clamps the result of decimal arithmetic to 38 digits, and the keys of an index it
-//! writes have that type: binding the same keys to a wide type here would leave the stored keys unmatched (a UNIQUE
-//! index would accept duplicates). Such a database therefore binds its index keys as those engines do, in both
-//! directions: an index this engine writes into it is read back by them with the same key type.
+//! The storage version the keys of an index are written with: the version its stored data records (the ART saves
+//! the version it was created under), or the version of the database for an index that is being created. The version
+//! stays with the index when the database is upgraded to a newer storage version, since the stored keys keep their
+//! type.
+static StorageVersion IndexKeyStorageVersion(AttachedDatabase &db, optional_ptr<const IndexStorageInfo> storage_info) {
+	if (storage_info && storage_info->IsValid()) {
+		auto entry = storage_info->options.find("storage_version");
+		if (entry == storage_info->options.end()) {
+			// indexes written before v1.5.0 record no version, all of them predate wide decimals
+			return StorageVersion::INVALID;
+		}
+		return static_cast<StorageVersion>(entry->second.GetValue<uint64_t>());
+	}
+	return db.GetStorageManager().GetStorageVersion();
+}
+
+//! Binds index keys under the decimal rules of the storage version the index is written with. An engine of a version
+//! before wide decimals clamps the result of decimal arithmetic to 38 digits and types a literal above 38 digits as
+//! DOUBLE, and the keys of an index it writes have those types: binding the same keys to a wide type here would leave
+//! the stored keys unmatched (a UNIQUE index would accept duplicates). Such an index therefore binds its keys as those
+//! engines do, in both directions: an index this engine writes into their database is read back by them with the same
+//! key type.
 class LegacyDecimalIndexKeyScope {
 public:
-	LegacyDecimalIndexKeyScope(ClientContext &context, AttachedDatabase &db)
+	LegacyDecimalIndexKeyScope(ClientContext &context, AttachedDatabase &db,
+	                           optional_ptr<const IndexStorageInfo> storage_info)
 	    : context(context), previous(context.legacy_decimal_result_types) {
 		context.legacy_decimal_result_types =
 		    db.HasStorageManager() &&
-		    StorageManager::IsPriorToVersion(Decimal::WIDE_VERSION_ADDED, db.GetStorageManager().GetStorageVersion());
+		    StorageManager::IsPriorToVersion(Decimal::WIDE_VERSION_ADDED, IndexKeyStorageVersion(db, storage_info));
 	}
 	~LegacyDecimalIndexKeyScope() {
 		context.legacy_decimal_result_types = previous;
@@ -70,7 +88,7 @@ unique_ptr<BoundIndex> IndexBinder::BindIndex(const UnboundIndex &unbound_index)
 	vector<unique_ptr<Expression>> unbound_expressions;
 	unbound_expressions.reserve(parsed_expressions.size());
 	{
-		LegacyDecimalIndexKeyScope key_scope(context, unbound_index.db);
+		LegacyDecimalIndexKeyScope key_scope(context, unbound_index.db, unbound_index.GetStorageInfo());
 		for (auto &expr : parsed_expressions) {
 			auto copy = expr->Copy();
 			unbound_expressions.push_back(Bind(copy));
@@ -136,7 +154,7 @@ unique_ptr<LogicalOperator> IndexBinder::BindCreateIndex(ClientContext &context,
 	const auto statement_requires_rebind = properties.always_require_rebind;
 	vector<unique_ptr<Expression>> expressions;
 	{
-		LegacyDecimalIndexKeyScope key_scope(context, table_entry.ParentCatalog().GetAttached());
+		LegacyDecimalIndexKeyScope key_scope(context, table_entry.ParentCatalog().GetAttached(), nullptr);
 		for (auto &expr : create_index_info->expressions) {
 			properties.always_require_rebind = false;
 			expressions.push_back(Bind(expr));

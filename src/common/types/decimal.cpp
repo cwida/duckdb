@@ -17,6 +17,13 @@ uint32_t Decimal::MaxResultWidth(optional_ptr<ClientContext> context, uint32_t m
 	return MAX_WIDTH_DECIMAL;
 }
 
+uint32_t Decimal::MaxLiteralWidth(optional_ptr<ClientContext> context) {
+	if (context && context->legacy_decimal_result_types) {
+		return MAX_WIDTH_INT128;
+	}
+	return MAX_WIDTH_DECIMAL;
+}
+
 template <class SIGNED>
 string TemplatedDecimalToString(SIGNED value, uint32_t width, uint32_t scale) {
 	auto len = DecimalToString::DecimalLength<SIGNED>(value, width, scale);
