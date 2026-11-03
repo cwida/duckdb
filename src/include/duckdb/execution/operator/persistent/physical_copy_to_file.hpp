@@ -46,6 +46,8 @@ public:
 
 public:
 	static string GetTrimmedPath(ClientContext &context, const string &file_path);
+	//! Checks an output directory for existing files, as the overwrite mode asks
+	static void CheckDirectory(FileSystem &fs, const string &file_path, CopyOverwriteMode overwrite_mode);
 	static void MoveTmpFile(ClientContext &context, const string &tmp_file_path);
 	static string GetNonTmpFile(ClientContext &context, const string &tmp_file_path);
 	static void ReturnStatistics(DataChunk &chunk, CopyToFileInfo &written_file_info);

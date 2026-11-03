@@ -25,8 +25,16 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalCopyToFile &op, Physi
 	} else if (op.preserve_order == PreserveOrderType::DONT_PRESERVE_ORDER) {
 		preserve_insertion_order = false;
 	}
-	if (op.per_thread_output || op.file_size_bytes.IsValid() || op.rotate || op.partition_output ||
-	    !op.partition_columns.empty() || !op.order_columns.empty()) {
+	// files rotated by size alone keep the order of the batches, when the function writes whole batches of its own size
+	bool size_rotation_only = op.file_size_bytes.IsValid() && !op.batches_per_file.IsValid() &&
+	                          !op.per_thread_output && !op.partition_output && op.partition_columns.empty() &&
+	                          op.order_columns.empty();
+	bool ordered_rotation = size_rotation_only && preserve_insertion_order && supports_batch_index &&
+	                        op.function.prepare_batch && op.function.flush_batch && op.function.file_size_bytes &&
+	                        op.function.desired_batch_size;
+	if ((op.per_thread_output || op.file_size_bytes.IsValid() || op.rotate || op.partition_output ||
+	     !op.partition_columns.empty() || !op.order_columns.empty()) &&
+	    !ordered_rotation) {
 		if (op.preserve_order == PreserveOrderType::PRESERVE_ORDER) {
 			throw InvalidInputException("PRESERVE_ORDER is not supported with these parameters");
 		}
@@ -49,6 +57,13 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalCopyToFile &op, Physi
 		auto &cast_copy = copy.Cast<PhysicalBatchCopyToFile>();
 		cast_copy.file_path = op.file_path;
 		cast_copy.use_tmp_file = op.use_tmp_file;
+		if (ordered_rotation) {
+			cast_copy.file_path = PhysicalCopyToFile::GetTrimmedPath(context, op.file_path);
+			cast_copy.file_size_bytes = op.file_size_bytes;
+			cast_copy.filename_pattern = op.filename_pattern;
+			cast_copy.file_extension = op.file_extension;
+			cast_copy.overwrite_mode = op.overwrite_mode;
+		}
 		cast_copy.children.push_back(plan);
 		cast_copy.return_type = op.return_type;
 		cast_copy.query_names = op.query_names;

@@ -1712,7 +1712,7 @@ static string EvaluatePartitionPath(ClientContext &context, const PhysicalCopyTo
 	return StringValue::Get(path);
 }
 
-void CheckDirectory(FileSystem &fs, const string &file_path, CopyOverwriteMode overwrite_mode) {
+void PhysicalCopyToFile::CheckDirectory(FileSystem &fs, const string &file_path, CopyOverwriteMode overwrite_mode) {
 	if (overwrite_mode == CopyOverwriteMode::COPY_OVERWRITE_OR_IGNORE ||
 	    overwrite_mode == CopyOverwriteMode::COPY_APPEND) {
 		// with overwrite or ignore we fully ignore the presence of any files instead of erasing them
@@ -4528,10 +4528,10 @@ void CopyToFileGlobalState::PrepareOutputDirectory() {
 		if (fs.CreateDirectoryExtended(op.file_path, {CreateDirectoryMode::SINGLE})) {
 			output_lifecycle.RegisterCreatedDirectory(op.file_path);
 		} else {
-			CheckDirectory(fs, op.file_path, op.overwrite_mode);
+			PhysicalCopyToFile::CheckDirectory(fs, op.file_path, op.overwrite_mode);
 		}
 	} else {
-		CheckDirectory(fs, op.file_path, op.overwrite_mode);
+		PhysicalCopyToFile::CheckDirectory(fs, op.file_path, op.overwrite_mode);
 	}
 }
 

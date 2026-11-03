@@ -1,0 +1,130 @@
+# name: test/sql/copy/parquet/file_size_bytes_preserve_order.test
+# description: a Parquet COPY rotated by FILE_SIZE_BYTES keeps the insertion order when the setting asks for it
+# group: [parquet]
+
+require parquet
+
+statement ok
+PRAGMA enable_verification
+
+statement ok
+SET threads = 4
+
+statement ok
+SET preserve_insertion_order = true
+
+statement ok
+CREATE TABLE src AS SELECT range AS i, 'row' || range AS s FROM range(400000)
+
+statement ok
+COPY (FROM src) TO '{TEST_DIR}/rotated_ordered' (FORMAT parquet, FILE_SIZE_BYTES '400KB', ROW_GROUP_SIZE 20000)
+
+# several files, together holding every row
+query I
+SELECT count(*) > 1 FROM glob('{TEST_DIR}/rotated_ordered/*.parquet')
+----
+true
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/rotated_ordered/*.parquet')
+----
+400000
+
+# the files, in the order of their names, hold the rows in the order of the input
+query I
+SELECT count(*) FILTER (WHERE i <> pos) FROM (
+	SELECT i, row_number() OVER (ORDER BY filename, file_row_number) - 1 AS pos
+	FROM read_parquet('{TEST_DIR}/rotated_ordered/*.parquet', filename := true, file_row_number := true)
+)
+----
+0
+
+# every file but the last reached the size
+query I
+SELECT count(*) FILTER (WHERE size < 400000) <= 1 FROM read_blob('{TEST_DIR}/rotated_ordered/*.parquet')
+----
+true
+
+# the statistics are returned per file
+statement ok
+COPY (FROM src) TO '{TEST_DIR}/rotated_ordered_stats' (FORMAT parquet, FILE_SIZE_BYTES '400KB', ROW_GROUP_SIZE 20000, RETURN_STATS)
+
+query I
+SELECT count(*) > 1 FROM glob('{TEST_DIR}/rotated_ordered_stats/*.parquet')
+----
+true
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/rotated_ordered_stats/*.parquet')
+----
+400000
+
+# an explicit PRESERVE_ORDER is accepted with rotation by size
+statement ok
+COPY (FROM src) TO '{TEST_DIR}/rotated_explicit' (FORMAT parquet, FILE_SIZE_BYTES '400KB', ROW_GROUP_SIZE 20000, PRESERVE_ORDER true)
+
+query I
+SELECT count(*) FILTER (WHERE i <> pos) FROM (
+	SELECT i, row_number() OVER (ORDER BY filename, file_row_number) - 1 AS pos
+	FROM read_parquet('{TEST_DIR}/rotated_explicit/*.parquet', filename := true, file_row_number := true)
+)
+----
+0
+
+# without order preservation the parallel copy still rotates
+statement ok
+SET preserve_insertion_order = false
+
+statement ok
+COPY (FROM src) TO '{TEST_DIR}/rotated_unordered' (FORMAT parquet, FILE_SIZE_BYTES '400KB', ROW_GROUP_SIZE 20000)
+
+query I
+SELECT count(*) FROM read_parquet('{TEST_DIR}/rotated_unordered/*.parquet')
+----
+400000
+
+# a directory with files refuses the copy without an overwrite mode
+statement ok
+SET preserve_insertion_order = true
+
+statement error
+COPY (FROM src) TO '{TEST_DIR}/rotated_ordered' (FORMAT parquet, FILE_SIZE_BYTES '400KB', ROW_GROUP_SIZE 20000)
+----
+is not empty
+
+statement ok
+COPY (FROM src) TO '{TEST_DIR}/rotated_ordered' (FORMAT parquet, FILE_SIZE_BYTES '400KB', ROW_GROUP_SIZE 20000, OVERWRITE_OR_IGNORE)
+
+# a format without a batch size of its own, like CSV, keeps the parallel copy for rotation by size
+statement error
+COPY (FROM src) TO '{TEST_DIR}/rotated_csv' (FORMAT csv, FILE_SIZE_BYTES '400KB', PRESERVE_ORDER true)
+----
+PRESERVE_ORDER is not supported with these parameters
+
+# a VARIANT column, shredded by the values of the first batch, keeps that layout in every file
+statement ok
+CREATE TABLE src_variant AS SELECT range AS i, CASE WHEN range < 200000 THEN range::VARIANT ELSE ('row' || range)::VARIANT END AS v FROM range(400000)
+
+statement ok
+COPY (FROM src_variant) TO '{TEST_DIR}/rotated_variant' (FORMAT parquet, FILE_SIZE_BYTES '400KB', ROW_GROUP_SIZE 20000)
+
+query I
+SELECT count(*) > 1 FROM glob('{TEST_DIR}/rotated_variant/*.parquet')
+----
+true
+
+query I
+SELECT count(DISTINCT cols) FROM (
+	SELECT file_name, string_agg(name || ' ' || coalesce(type, ''), ',' ORDER BY name) AS cols
+	FROM parquet_schema('{TEST_DIR}/rotated_variant/*.parquet') GROUP BY file_name
+)
+----
+1
+
+query I
+SELECT count(*) FILTER (WHERE r.v::VARCHAR IS DISTINCT FROM s.v::VARCHAR OR r.i <> s.pos) FROM (
+	SELECT i, v, row_number() OVER (ORDER BY filename, file_row_number) - 1 AS pos
+	FROM read_parquet('{TEST_DIR}/rotated_variant/*.parquet', filename := true, file_row_number := true)
+) r JOIN (SELECT i AS pos, v FROM src_variant) s USING (pos)
+----
+0
