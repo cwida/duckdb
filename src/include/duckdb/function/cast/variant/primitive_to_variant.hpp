@@ -2,7 +2,6 @@
 
 #include "duckdb/function/cast/variant/to_variant_fwd.hpp"
 #include "duckdb/common/types.hpp"
-#include "duckdb/common/types/decimal.hpp"
 
 namespace duckdb {
 namespace variant {
@@ -58,15 +57,15 @@ VariantLogicalType GetTypeId<bool, VariantLogicalType::BOOL_TRUE>(bool val) {
 //! -------- Write the 'value' data for the Value --------
 
 template <typename T>
-static void WriteData(data_ptr_t ptr, const T &val, uint32_t lengths[3], EmptyConversionPayloadToVariant &) {
+static void WriteData(data_ptr_t ptr, const T &val, uint32_t lengths[4], EmptyConversionPayloadToVariant &) {
 	Store(val, ptr);
 }
 template <>
-void WriteData(data_ptr_t ptr, const bool &val, uint32_t lengths[3], EmptyConversionPayloadToVariant &) {
+void WriteData(data_ptr_t ptr, const bool &val, uint32_t lengths[4], EmptyConversionPayloadToVariant &) {
 	return;
 }
 template <>
-void WriteData(data_ptr_t ptr, const string_t &val, uint32_t lengths[3], EmptyConversionPayloadToVariant &) {
+void WriteData(data_ptr_t ptr, const string_t &val, uint32_t lengths[4], EmptyConversionPayloadToVariant &) {
 	auto str_length = val.GetSize();
 	VarintEncode(str_length, ptr);
 	memcpy(ptr + lengths[0], val.GetData(), str_length);
@@ -75,54 +74,63 @@ void WriteData(data_ptr_t ptr, const string_t &val, uint32_t lengths[3], EmptyCo
 //! decimal
 
 template <typename T>
-static void WriteData(data_ptr_t ptr, const T &val, uint32_t lengths[3], DecimalConversionPayloadToVariant &payload) {
+static void WriteData(data_ptr_t ptr, const T &val, uint32_t lengths[4], DecimalConversionPayloadToVariant &payload) {
 	InternalException::Throw("WriteData not implemented for this type");
 }
 template <>
-void WriteData(data_ptr_t ptr, const int16_t &val, uint32_t lengths[3], DecimalConversionPayloadToVariant &payload) {
+void WriteData(data_ptr_t ptr, const int16_t &val, uint32_t lengths[4], DecimalConversionPayloadToVariant &payload) {
 	VarintEncode(payload.width, ptr);
 	VarintEncode(payload.scale, ptr + lengths[0]);
 	Store(val, ptr + lengths[0] + lengths[1]);
 }
 template <>
-void WriteData(data_ptr_t ptr, const int32_t &val, uint32_t lengths[3], DecimalConversionPayloadToVariant &payload) {
+void WriteData(data_ptr_t ptr, const int32_t &val, uint32_t lengths[4], DecimalConversionPayloadToVariant &payload) {
 	VarintEncode(payload.width, ptr);
 	VarintEncode(payload.scale, ptr + lengths[0]);
 	Store(val, ptr + lengths[0] + lengths[1]);
 }
 template <>
-void WriteData(data_ptr_t ptr, const int64_t &val, uint32_t lengths[3], DecimalConversionPayloadToVariant &payload) {
+void WriteData(data_ptr_t ptr, const int64_t &val, uint32_t lengths[4], DecimalConversionPayloadToVariant &payload) {
 	VarintEncode(payload.width, ptr);
 	VarintEncode(payload.scale, ptr + lengths[0]);
 	Store(val, ptr + lengths[0] + lengths[1]);
 }
 template <>
-void WriteData(data_ptr_t ptr, const hugeint_t &val, uint32_t lengths[3], DecimalConversionPayloadToVariant &payload) {
+void WriteData(data_ptr_t ptr, const hugeint_t &val, uint32_t lengths[4], DecimalConversionPayloadToVariant &payload) {
 	VarintEncode(payload.width, ptr);
 	VarintEncode(payload.scale, ptr + lengths[0]);
 	Store(val, ptr + lengths[0] + lengths[1]);
+}
+
+template <>
+void WriteData(data_ptr_t ptr, const string_t &val, uint32_t lengths[4], DecimalConversionPayloadToVariant &payload) {
+	// the BIGNUM blob of a decimal wider than 38 digits
+	VarintEncode(payload.width, ptr);
+	VarintEncode(payload.scale, ptr + lengths[0]);
+	VarintEncode(val.GetSize(), ptr + lengths[0] + lengths[1]);
+	memcpy(ptr + lengths[0] + lengths[1] + lengths[2], val.GetData(), val.GetSize());
 }
 
 //! enum
 
 template <typename T>
-static void WriteData(data_ptr_t ptr, const T &val, uint32_t lengths[3], EnumConversionPayload &payload) {
+static void WriteData(data_ptr_t ptr, const T &val, uint32_t lengths[4], EnumConversionPayload &payload) {
 	InternalException::Throw("WriteData not implemented for this Enum physical type");
 }
 template <>
-void WriteData(data_ptr_t ptr, const uint8_t &val, uint32_t lengths[3], EnumConversionPayload &payload) {
+void WriteData(data_ptr_t ptr, const uint8_t &val, uint32_t lengths[4], EnumConversionPayload &payload) {
 	EmptyConversionPayloadToVariant empty_payload;
 	auto &str = payload.GetString(val);
 	WriteData(ptr, str, lengths, empty_payload);
 }
 template <>
-void WriteData(data_ptr_t ptr, const uint16_t &val, uint32_t lengths[3], EnumConversionPayload &payload) {
+void WriteData(data_ptr_t ptr, const uint16_t &val, uint32_t lengths[4], EnumConversionPayload &payload) {
 	EmptyConversionPayloadToVariant empty_payload;
 	auto &str = payload.GetString(val);
 	WriteData(ptr, str, lengths, empty_payload);
 }
 template <>
-void WriteData(data_ptr_t ptr, const uint32_t &val, uint32_t lengths[3], EnumConversionPayload &payload) {
+void WriteData(data_ptr_t ptr, const uint32_t &val, uint32_t lengths[4], EnumConversionPayload &payload) {
 	EmptyConversionPayloadToVariant empty_payload;
 	auto &str = payload.GetString(val);
 	WriteData(ptr, str, lengths, empty_payload);
@@ -131,15 +139,15 @@ void WriteData(data_ptr_t ptr, const uint32_t &val, uint32_t lengths[3], EnumCon
 //! -------- Determine size of the 'value' data for the Value --------
 
 template <typename T>
-static void GetValueSize(const T &val, uint32_t lengths[3], idx_t &lengths_size, EmptyConversionPayloadToVariant &) {
+static void GetValueSize(const T &val, uint32_t lengths[4], idx_t &lengths_size, EmptyConversionPayloadToVariant &) {
 	lengths[0] = sizeof(T);
 	lengths_size = 1;
 }
 template <>
-void GetValueSize(const bool &val, uint32_t lengths[3], idx_t &lengths_size, EmptyConversionPayloadToVariant &) {
+void GetValueSize(const bool &val, uint32_t lengths[4], idx_t &lengths_size, EmptyConversionPayloadToVariant &) {
 }
 template <>
-void GetValueSize(const string_t &val, uint32_t lengths[3], idx_t &lengths_size, EmptyConversionPayloadToVariant &) {
+void GetValueSize(const string_t &val, uint32_t lengths[4], idx_t &lengths_size, EmptyConversionPayloadToVariant &) {
 	auto value_size = val.GetSize();
 	lengths[0] = GetVarintSize(value_size);
 	lengths[1] = static_cast<uint32_t>(value_size);
@@ -149,12 +157,12 @@ void GetValueSize(const string_t &val, uint32_t lengths[3], idx_t &lengths_size,
 //! decimal
 
 template <typename T>
-static void GetValueSize(const T &val, uint32_t lengths[3], idx_t &lengths_size,
+static void GetValueSize(const T &val, uint32_t lengths[4], idx_t &lengths_size,
                          DecimalConversionPayloadToVariant &payload) {
 	InternalException::Throw("GetValueSize not implemented for this Decimal physical type");
 }
 template <>
-void GetValueSize(const int16_t &val, uint32_t lengths[3], idx_t &lengths_size,
+void GetValueSize(const int16_t &val, uint32_t lengths[4], idx_t &lengths_size,
                   DecimalConversionPayloadToVariant &payload) {
 	lengths[0] = GetVarintSize(payload.width);
 	lengths[1] = GetVarintSize(payload.scale);
@@ -162,7 +170,7 @@ void GetValueSize(const int16_t &val, uint32_t lengths[3], idx_t &lengths_size,
 	lengths_size = 3;
 }
 template <>
-void GetValueSize(const int32_t &val, uint32_t lengths[3], idx_t &lengths_size,
+void GetValueSize(const int32_t &val, uint32_t lengths[4], idx_t &lengths_size,
                   DecimalConversionPayloadToVariant &payload) {
 	lengths[0] = GetVarintSize(payload.width);
 	lengths[1] = GetVarintSize(payload.scale);
@@ -170,7 +178,7 @@ void GetValueSize(const int32_t &val, uint32_t lengths[3], idx_t &lengths_size,
 	lengths_size = 3;
 }
 template <>
-void GetValueSize(const int64_t &val, uint32_t lengths[3], idx_t &lengths_size,
+void GetValueSize(const int64_t &val, uint32_t lengths[4], idx_t &lengths_size,
                   DecimalConversionPayloadToVariant &payload) {
 	lengths[0] = GetVarintSize(payload.width);
 	lengths[1] = GetVarintSize(payload.scale);
@@ -178,7 +186,7 @@ void GetValueSize(const int64_t &val, uint32_t lengths[3], idx_t &lengths_size,
 	lengths_size = 3;
 }
 template <>
-void GetValueSize(const hugeint_t &val, uint32_t lengths[3], idx_t &lengths_size,
+void GetValueSize(const hugeint_t &val, uint32_t lengths[4], idx_t &lengths_size,
                   DecimalConversionPayloadToVariant &payload) {
 	lengths[0] = GetVarintSize(payload.width);
 	lengths[1] = GetVarintSize(payload.scale);
@@ -186,26 +194,36 @@ void GetValueSize(const hugeint_t &val, uint32_t lengths[3], idx_t &lengths_size
 	lengths_size = 3;
 }
 
+template <>
+void GetValueSize(const string_t &val, uint32_t lengths[4], idx_t &lengths_size,
+                  DecimalConversionPayloadToVariant &payload) {
+	lengths[0] = GetVarintSize(payload.width);
+	lengths[1] = GetVarintSize(payload.scale);
+	lengths[2] = GetVarintSize(val.GetSize());
+	lengths[3] = static_cast<uint32_t>(val.GetSize());
+	lengths_size = 4;
+}
+
 //! enum
 
 template <typename T>
-static void GetValueSize(const T &val, uint32_t lengths[3], idx_t &lengths_size, EnumConversionPayload &payload) {
+static void GetValueSize(const T &val, uint32_t lengths[4], idx_t &lengths_size, EnumConversionPayload &payload) {
 	InternalException::Throw("GetValueSize not implemented for this Enum physical type");
 }
 template <>
-void GetValueSize(const uint8_t &val, uint32_t lengths[3], idx_t &lengths_size, EnumConversionPayload &payload) {
+void GetValueSize(const uint8_t &val, uint32_t lengths[4], idx_t &lengths_size, EnumConversionPayload &payload) {
 	EmptyConversionPayloadToVariant empty_payload;
 	auto &str = payload.GetString(val);
 	GetValueSize(str, lengths, lengths_size, empty_payload);
 }
 template <>
-void GetValueSize(const uint16_t &val, uint32_t lengths[3], idx_t &lengths_size, EnumConversionPayload &payload) {
+void GetValueSize(const uint16_t &val, uint32_t lengths[4], idx_t &lengths_size, EnumConversionPayload &payload) {
 	EmptyConversionPayloadToVariant empty_payload;
 	auto &str = payload.GetString(val);
 	GetValueSize(str, lengths, lengths_size, empty_payload);
 }
 template <>
-void GetValueSize(const uint32_t &val, uint32_t lengths[3], idx_t &lengths_size, EnumConversionPayload &payload) {
+void GetValueSize(const uint32_t &val, uint32_t lengths[4], idx_t &lengths_size, EnumConversionPayload &payload) {
 	EmptyConversionPayloadToVariant empty_payload;
 	auto &str = payload.GetString(val);
 	GetValueSize(str, lengths, lengths_size, empty_payload);
@@ -225,7 +243,7 @@ static bool ConvertPrimitiveTemplated(ToVariantSourceData &source, ToVariantGlob
 	auto source_data = source_format.GetData<T>(source_format);
 
 	auto &variant = result.variant;
-	uint32_t lengths[3];
+	uint32_t lengths[4];
 	for (idx_t i = 0; i < count; i++) {
 		auto index = source[i];
 		// the blob space to reserve for this row - nothing for NULL rows
@@ -364,9 +382,9 @@ bool ConvertPrimitiveToVariant(ToVariantSourceData &source, ToVariantGlobalResul
 			return ConvertPrimitiveTemplated<WRITE_DATA, IGNORE_NULLS, VariantLogicalType::DECIMAL, hugeint_t>(
 			    source, result, count, selvec, values_index_selvec, payload, is_root);
 		case PhysicalType::VARCHAR:
-			throw NotImplementedException("Can't convert %s to VARIANT: DECIMAL values wider than %d digits are not "
-			                              "supported in VARIANT",
-			                              type.ToString(), Decimal::MAX_WIDTH_INT128);
+			// decimals wider than 38 digits are BIGNUM blobs
+			return ConvertPrimitiveTemplated<WRITE_DATA, IGNORE_NULLS, VariantLogicalType::DECIMAL, string_t>(
+			    source, result, count, selvec, values_index_selvec, payload, is_root);
 		default:
 			NotImplementedException::Throw("Can't convert DECIMAL value of physical type: %s", physical_type);
 		};

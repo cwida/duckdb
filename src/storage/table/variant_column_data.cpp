@@ -4,6 +4,8 @@
 #include "duckdb/storage/table/variant_column_data.hpp"
 
 #include "duckdb/common/serializer/deserializer.hpp"
+#include "duckdb/common/type_visitor.hpp"
+#include "duckdb/common/types/decimal.hpp"
 #include "duckdb/function/variant/variant_shredding.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/storage/statistics/struct_stats.hpp"
@@ -13,6 +15,7 @@
 #include "duckdb/storage/table/data_table_info.hpp"
 #include "duckdb/storage/table/scan_state.hpp"
 #include "duckdb/storage/table/struct_column_data.hpp"
+#include "duckdb/storage/storage_manager.hpp"
 #include "duckdb/transaction/duck_transaction.hpp"
 #include "duckdb/main/config.hpp"
 
@@ -755,6 +758,13 @@ unique_ptr<ColumnCheckpointState> VariantColumnData::Checkpoint(const RowGroup &
 			shredded_type = config.options.force_variant_shredding;
 		} else {
 			shredded_type = GetShreddedType();
+		}
+		if (GetStorageManager().GetStorageVersion() < Decimal::WIDE_VERSION_ADDED &&
+		    TypeVisitor::Contains(shredded_type, [](const LogicalType &type) {
+			    return type.id() == LogicalTypeId::DECIMAL && Decimal::IsWide(DecimalType::GetWidth(type));
+		    })) {
+			// a shredded column of a decimal wider than 38 digits cannot be stored in this storage version
+			should_shred = false;
 		}
 		D_ASSERT(shredded_type.id() == LogicalTypeId::STRUCT);
 		auto &type_entries = StructType::GetChildTypes(shredded_type);

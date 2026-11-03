@@ -100,6 +100,8 @@ struct ValueConverter {
 			return Value::DECIMAL(val, width, scale);
 		} else if (std::is_same<T, hugeint_t>::value) {
 			return Value::DECIMAL(val, width, scale);
+		} else if (std::is_same<T, bignum_t>::value) {
+			return Value::DECIMAL(val, width, scale);
 		} else {
 			throw InternalException("Unhandled decimal type");
 		}

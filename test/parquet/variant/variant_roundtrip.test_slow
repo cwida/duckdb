@@ -36,8 +36,13 @@ SELECT COLUMNS(*)::VARIANT FROM read_parquet('{TEST_DIR}/variant_{parquet_file}'
 
 endloop
 
-# bigdecimal.parquet holds a DECIMAL(77, 38): decimals wider than 38 digits are not supported in VARIANT
-statement error
-SELECT COLUMNS(*)::VARIANT FROM read_parquet('data/parquet-testing/bigdecimal.parquet')
+# bigdecimal.parquet holds a DECIMAL(77, 38): VARIANT holds it, but the Parquet VARIANT specification does not
+query I
+SELECT count(*) FROM (SELECT COLUMNS(*)::VARIANT FROM read_parquet('data/parquet-testing/bigdecimal.parquet'))
 ----
-DECIMAL values wider than 38 digits are not supported in VARIANT
+6
+
+statement error
+COPY (SELECT COLUMNS(*)::VARIANT FROM read_parquet('data/parquet-testing/bigdecimal.parquet')) TO '{TEST_DIR}/variant_bigdecimal.parquet' (FORMAT PARQUET);
+----
+Parquet VARIANT specification holds decimals of at most 38 digits

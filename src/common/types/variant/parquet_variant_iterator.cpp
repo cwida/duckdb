@@ -557,6 +557,10 @@ string_t ParquetVariantNode::GetString() const {
 	return string_t(string_data, size);
 }
 
+string_t ParquetVariantNode::GetWideDecimal() const {
+	throw InternalException("Parquet VARIANT decimals have at most 38 digits");
+}
+
 VariantDecimalProperties ParquetVariantNode::GetDecimalProperties() const {
 	if (kind == Kind::SHREDDED) {
 		uint32_t width;

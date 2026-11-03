@@ -363,8 +363,9 @@ static idx_t AnalyzeValueData(const UnifiedVariantVectorData &variant, idx_t row
 		} else if (decimal_data.width <= 38) {
 			total_size += sizeof(uhugeint_t);
 		} else {
-			throw InvalidInputException("Can't convert VARIANT DECIMAL(%d, %d) to Parquet VARIANT", decimal_data.width,
-			                            decimal_data.scale);
+			throw InvalidInputException("Can't convert VARIANT DECIMAL(%d, %d) to Parquet VARIANT: the Parquet VARIANT "
+			                            "specification holds decimals of at most 38 digits",
+			                            decimal_data.width, decimal_data.scale);
 		}
 		break;
 	}
@@ -559,8 +560,9 @@ static void WritePrimitiveValueData(const UnifiedVariantVectorData &variant, idx
 		auto decimal_data = VariantUtils::DecodeDecimalData(variant, row, values_index);
 
 		if (decimal_data.width > 38) {
-			throw InvalidInputException("Can't convert VARIANT DECIMAL(%d, %d) to Parquet VARIANT", decimal_data.width,
-			                            decimal_data.scale);
+			throw InvalidInputException("Can't convert VARIANT DECIMAL(%d, %d) to Parquet VARIANT: the Parquet VARIANT "
+			                            "specification holds decimals of at most 38 digits",
+			                            decimal_data.width, decimal_data.scale);
 		} else if (decimal_data.width <= 4) {
 			// DuckDB uses INT16 to store small decimals, but parquet only supports DECIMAL4 at minimum, so here we
 			// promote to INT32.

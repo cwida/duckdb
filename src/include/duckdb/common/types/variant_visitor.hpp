@@ -350,7 +350,9 @@ private:
 		auto &scale = decoded_decimal.scale;
 		auto &ptr = decoded_decimal.value_ptr;
 		if (width > DecimalWidth<hugeint_t>::max) {
-			throw InternalException("Can't handle decimal of width: %d", width);
+			// decimals wider than 38 digits are BIGNUM blobs
+			auto blob = VariantUtils::DecodeWideDecimalData(variant, row, values_idx);
+			return Visitor::template VisitDecimal<bignum_t>(bignum_t(blob), width, scale, std::forward<Args>(args)...);
 		} else if (width > DecimalWidth<int64_t>::max) {
 			return Visitor::template VisitDecimal<hugeint_t>(Load<hugeint_t>(ptr), width, scale,
 			                                                 std::forward<Args>(args)...);
@@ -370,7 +372,9 @@ private:
 	static ReturnType VisitDecimal(const VariantNode &node, Args &&...args) {
 		auto decimal = node.GetDecimal();
 		if (decimal.width > DecimalWidth<hugeint_t>::max) {
-			throw InternalException("Can't handle decimal of width: %d", decimal.width);
+			// decimals wider than 38 digits are BIGNUM blobs
+			return Visitor::template VisitDecimal<bignum_t>(bignum_t(node.GetWideDecimal()), decimal.width,
+			                                                decimal.scale, std::forward<Args>(args)...);
 		} else if (decimal.width > DecimalWidth<int64_t>::max) {
 			return Visitor::template VisitDecimal<hugeint_t>(node.GetData<hugeint_t>(), decimal.width, decimal.scale,
 			                                                 std::forward<Args>(args)...);

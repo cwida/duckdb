@@ -12,26 +12,6 @@
 			]
 		},
 		{
-			"reason": "DECIMAL values wider than 38 digits are not supported in VARIANT",
-			"paths": [
-				"test/fuzzer/afl/limit_out_of_range.test",
-				"test/sql/copy/csv/csv_wide_decimal_separator.test",
-				"test/sql/copy/parquet/bigdecimal.test",
-				"test/sql/copy/parquet/test_parquet_decimal_gt38.test",
-				"test/sql/json/scalar/json_transform_wide_decimal.test",
-				"test/sql/json/test_json_execute_serialized_types.test",
-				"test/sql/types/decimal/decimal_zero_to_float.test",
-				"test/sql/types/decimal/large_decimal_constants.test",
-				"test/sql/types/decimal/wide_decimal_arithmetic.test",
-				"test/sql/types/decimal/wide_decimal_casts.test",
-				"test/sql/types/decimal/wide_decimal_literals.test",
-				"test/sql/types/decimal/wide_decimal_quantiles.test",
-				"test/sql/types/decimal/wide_decimal_statistics.test",
-				"test/sql/types/decimal/wide_decimal_review.test",
-				"test/sql/types/decimal/wide_decimal_storage.test"
-			]
-		},
-		{
 			"reason": "Roundtrip is not possible (MAP type)",
 			"paths": [
 				"test/parquet/test_parquet_schema.test",

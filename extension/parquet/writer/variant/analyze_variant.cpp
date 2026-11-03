@@ -1,3 +1,4 @@
+#include "duckdb/common/types/decimal.hpp"
 #include <stdint.h>
 #include <string>
 #include <unordered_map>
@@ -131,7 +132,8 @@ static void CheckPrimitive(const VariantAnalyzeData &state, ShredAnalysisState &
 	}
 	if (VARIANT_TYPE == VariantLogicalType::DECIMAL) {
 		D_ASSERT(count);
-		if (!state.decimal_consistent) {
+		if (!state.decimal_consistent || state.decimal_width > Decimal::MAX_WIDTH_INT128) {
+			// the Parquet VARIANT specification holds decimals of at most 38 digits: wider ones stay in the value
 			return;
 		}
 		result.highest_count = count;

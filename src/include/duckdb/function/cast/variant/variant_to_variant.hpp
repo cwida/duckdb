@@ -116,9 +116,14 @@ struct VariantToVariantSizeAnalyzer {
 	}
 
 	template <typename T>
-	static uint32_t VisitDecimal(T, uint32_t width, uint32_t scale, AnalyzeState &state) {
+	static uint32_t VisitDecimal(T val, uint32_t width, uint32_t scale, AnalyzeState &state) {
 		uint32_t size = GetVarintSize(width) + GetVarintSize(scale);
-		size += sizeof(T);
+		if constexpr (std::is_same<T, bignum_t>::value) {
+			// the BIGNUM blob of a decimal wider than 38 digits
+			size += VisitString(val.data, state);
+		} else {
+			size += sizeof(T);
+		}
 		return size;
 	}
 
@@ -222,8 +227,13 @@ struct VariantToVariantDataWriter {
 	static void VisitDecimal(T val, uint32_t width, uint32_t scale, WriteState &state) {
 		state.blob_size += VarintEncode(width, state.GetDestination());
 		state.blob_size += VarintEncode(scale, state.GetDestination());
-		Store<T>(val, state.GetDestination());
-		state.blob_size += sizeof(T);
+		if constexpr (std::is_same<T, bignum_t>::value) {
+			// the BIGNUM blob of a decimal wider than 38 digits
+			VisitString(val.data, state);
+		} else {
+			Store<T>(val, state.GetDestination());
+			state.blob_size += sizeof(T);
+		}
 	}
 
 	static void VisitArray(const UnifiedVariantVectorData &variant, idx_t row, const VariantNestedData &nested_data,

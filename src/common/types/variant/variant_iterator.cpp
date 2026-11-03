@@ -410,6 +410,18 @@ string_t VariantNode::GetString() const {
 	return content.unified.GetData<string_t>()[content.unified.sel->get_index(shredded_index)];
 }
 
+string_t VariantNode::GetWideDecimal() const {
+	if (kind == Kind::UNSHREDDED) {
+		auto &blob = state->unshredded.GetBlob(row);
+		auto decimal = DecodeDecimalData(blob, state->unshredded.GetByteOffset(row, value_index));
+		D_ASSERT(decimal.GetPhysicalType() == PhysicalType::VARCHAR);
+		auto data = const_data_ptr_cast(blob.GetData());
+		return DecodeStringData(blob, NumericCast<uint32_t>(decimal.value_ptr - data));
+	}
+	D_ASSERT(kind == Kind::SHREDDED);
+	return GetString();
+}
+
 VariantDecimalData VariantNode::GetDecimal() const {
 	if (kind == Kind::UNSHREDDED) {
 		return DecodeDecimalData(state->unshredded.GetBlob(row), state->unshredded.GetByteOffset(row, value_index));

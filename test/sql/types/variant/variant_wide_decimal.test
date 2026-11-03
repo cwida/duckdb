@@ -1,0 +1,166 @@
+# name: test/sql/types/variant/variant_wide_decimal.test
+# description: VARIANT holds decimals wider than 38 digits exactly
+# group: [variant]
+
+# wide decimal columns need the latest storage version, the configs that force the default one on disk cannot hold them
+require no_force_storage
+
+load {TEST_DIR}/variant_wide_decimal.db readwrite v2.1.0
+
+# round trip through VARIANT, the type survives
+query III
+SELECT v, variant_typeof(v), v::DECIMAL(40,2)
+FROM (SELECT '123456789012345678901234567890.12'::DECIMAL(40,2)::VARIANT v);
+----
+123456789012345678901234567890.12	DECIMAL(40, 2)	123456789012345678901234567890.12
+
+# negative values, zero and the widest decimal
+query II
+SELECT v::DECIMAL(255,10) = d, variant_typeof(v)
+FROM (SELECT d, d::VARIANT v FROM (VALUES
+	('-98765432109876543210987654321098765432109876543210.0123456789'::DECIMAL(255,10)),
+	('0'::DECIMAL(255,10)),
+	(('-' || repeat('9', 245) || '.' || repeat('9', 10))::DECIMAL(255,10)),
+	((repeat('9', 245) || '.' || repeat('9', 10))::DECIMAL(255,10))) t(d));
+----
+true	DECIMAL(255, 10)
+true	DECIMAL(255, 10)
+true	DECIMAL(255, 10)
+true	DECIMAL(255, 10)
+
+# NULLs stay NULL
+query II
+SELECT v IS NULL, v::DECIMAL(40,2) FROM (SELECT NULL::DECIMAL(40,2)::VARIANT v);
+----
+true	NULL
+
+# the value is rendered as a number in JSON and in the VARIANT itself
+require json
+
+query II
+SELECT v::JSON, v::VARCHAR FROM (SELECT '-123456789012345678901234567890.12'::DECIMAL(40,2)::VARIANT v);
+----
+-123456789012345678901234567890.12	-123456789012345678901234567890.12
+
+# a cast to a different decimal type goes through the value
+query I
+SELECT v::DECIMAL(45,3) FROM (SELECT '123456789012345678901234567890.12'::DECIMAL(40,2)::VARIANT v);
+----
+123456789012345678901234567890.120
+
+query I
+SELECT v::DOUBLE FROM (SELECT '12345678901234567890.5'::DECIMAL(40,2)::VARIANT v);
+----
+1.2345678901234567e+19
+
+# extraction from nested values
+query II
+SELECT variant_extract(v, 'a')::DECIMAL(40,2), variant_typeof(variant_extract(v, 'b')[1])
+FROM (SELECT {'a': '123456789012345678901234567890.12'::DECIMAL(40,2), 'b': ['7'::DECIMAL(50,5)]}::VARIANT v);
+----
+123456789012345678901234567890.12	DECIMAL(50, 5)
+
+# mixed widths in one column
+query II
+SELECT variant_typeof(v), v::VARCHAR FROM (VALUES
+	('1.5'::DECIMAL(40,2)::VARIANT),
+	('2.5'::DECIMAL(18,2)::VARIANT),
+	('3.5'::DECIMAL(60,3)::VARIANT)) t(v) ORDER BY ALL;
+----
+DECIMAL(18, 2)	2.50
+DECIMAL(40, 2)	1.50
+DECIMAL(60, 3)	3.500
+
+# wide decimals compare by value with the other numbers in a VARIANT
+query I
+SELECT list(v::VARCHAR ORDER BY v) FROM (VALUES
+	('100000000000000000000000000000000000000.0'::DECIMAL(40,1)::VARIANT),
+	(5::INTEGER::VARIANT),
+	('-7.5'::DECIMAL(40,1)::VARIANT),
+	('99999999999999999999999999999999999999'::BIGNUM::VARIANT)) t(v);
+----
+[-7.5, 5, 99999999999999999999999999999999999999, 100000000000000000000000000000000000000.0]
+
+query I
+SELECT '10'::DECIMAL(40,2)::VARIANT = 10::INTEGER::VARIANT;
+----
+true
+
+# a VARIANT to VARIANT cast keeps the value
+query I
+SELECT v::VARIANT::DECIMAL(40,2) FROM (SELECT '123456789012345678901234567890.12'::DECIMAL(40,2)::VARIANT v);
+----
+123456789012345678901234567890.12
+
+# shredded storage: a column of a single wide decimal type is shredded into that type
+statement ok
+SET variant_minimum_shredding_size = 0;
+
+statement ok
+CREATE TABLE t(v VARIANT);
+
+statement ok
+INSERT INTO t SELECT (range + 0.25)::DECIMAL(40,2)::VARIANT FROM range(2000);
+
+statement ok
+INSERT INTO t VALUES (NULL), ('123456789012345678901234567890.12'::DECIMAL(40,2));
+
+statement ok
+CHECKPOINT;
+
+restart
+
+query I
+SELECT s.shredding_state FROM (SELECT stats(v) s FROM t LIMIT 1);
+----
+SHREDDED
+
+query I
+SELECT s.fully_shredded.type FROM (SELECT stats(v) s FROM t LIMIT 1);
+----
+DECIMAL(40,2)
+
+query IIII
+SELECT count(*), count(v), min(v::DECIMAL(40,2)), max(v::DECIMAL(40,2)) FROM t;
+----
+2002	2001	0.25	123456789012345678901234567890.12
+
+query I
+SELECT v FROM t WHERE v::DECIMAL(40,2) > '1998.00'::DECIMAL(40,2) ORDER BY ALL;
+----
+1998.25
+1999.25
+123456789012345678901234567890.12
+
+query I
+SELECT variant_typeof(v) FROM t WHERE v IS NOT NULL LIMIT 1;
+----
+DECIMAL(40, 2)
+
+# mixed widths are not shredded on a single decimal type
+statement ok
+CREATE TABLE mixed(v VARIANT);
+
+statement ok
+INSERT INTO mixed VALUES ('1.5'::DECIMAL(40,2)), ('2.5'::DECIMAL(10,2)), (3), ('x');
+
+statement ok
+CHECKPOINT;
+
+restart
+
+query II
+SELECT variant_typeof(v), v::VARCHAR FROM mixed ORDER BY ALL;
+----
+DECIMAL(10, 2)	2.50
+DECIMAL(40, 2)	1.50
+INT32	3
+VARCHAR	x
+
+# the Parquet VARIANT specification holds decimals of at most 38 digits
+require parquet
+
+statement error
+COPY (SELECT v FROM t) TO '{TEST_DIR}/variant_wide_decimal.parquet' (FORMAT PARQUET);
+----
+Parquet VARIANT specification holds decimals of at most 38 digits

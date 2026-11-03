@@ -16,7 +16,10 @@
 namespace duckdb {
 
 PhysicalType VariantDecimalData::GetPhysicalType() const {
-	if (width > DecimalWidth<int64_t>::max) {
+	if (width > DecimalWidth<hugeint_t>::max) {
+		// decimals wider than 38 digits are BIGNUM blobs
+		return PhysicalType::VARCHAR;
+	} else if (width > DecimalWidth<int64_t>::max) {
 		return PhysicalType::INT128;
 	} else if (width > DecimalWidth<int32_t>::max) {
 		return PhysicalType::INT64;
@@ -54,6 +57,18 @@ VariantDecimalData VariantUtils::DecodeDecimalData(const UnifiedVariantVectorDat
 	auto value_ptr = ptr;
 	VariantUtils::Available(blob_size, NumericCast<idx_t>(value_ptr - data), 0);
 	return VariantDecimalData(width, scale, value_ptr);
+}
+
+string_t VariantUtils::DecodeWideDecimalData(const UnifiedVariantVectorData &variant, idx_t row, uint32_t value_index) {
+	auto decimal = DecodeDecimalData(variant, row, value_index);
+	D_ASSERT(decimal.GetPhysicalType() == PhysicalType::VARCHAR);
+	auto &blob = variant.GetData(row);
+	auto data = const_data_ptr_cast(blob.GetData());
+	auto ptr = decimal.value_ptr;
+	VariantUtils::Available(blob.GetSize(), NumericCast<idx_t>(ptr - data), 1);
+	auto length = VarintDecode<uint32_t>(ptr);
+	VariantUtils::Available(blob.GetSize(), NumericCast<idx_t>(ptr - data), length);
+	return string_t(reinterpret_cast<const char *>(ptr), length);
 }
 
 string_t VariantUtils::DecodeStringData(const UnifiedVariantVectorData &variant, idx_t row, uint32_t value_index) {
@@ -457,10 +472,8 @@ bool VariantUtils::VariantSupportsType(const LogicalType &type) {
 	case LogicalTypeId::INTERVAL:
 	case LogicalTypeId::BIT:
 	case LogicalTypeId::GEOMETRY:
-		return true;
 	case LogicalTypeId::DECIMAL:
-		// the VARIANT decimal encoding holds at most 128 bits, wide decimals (BIGNUM blobs) do not fit
-		return type.InternalType() != PhysicalType::VARCHAR;
+		return true;
 	default:
 		return false;
 	}
