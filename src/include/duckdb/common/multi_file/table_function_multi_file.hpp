@@ -239,6 +239,7 @@ public:
 		return cardinality;
 	}
 	unique_ptr<BaseStatistics> GetStatistics(ClientContext &context, const Identifier &name) override;
+	unique_ptr<BaseStatistics> GetVirtualColumnStatistics(ClientContext &context, column_t virtual_column_id) override;
 };
 
 //! Reads a single file by binding and executing the wrapped table function over that file

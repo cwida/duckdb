@@ -9,17 +9,27 @@ namespace duckdb::capiv2 {
 
 class CV2AggregateFunctionData final : public FunctionData {
 public:
+	// The function this call binds to. All V2 aggregates share the same C++ callbacks, so the bind data
+	// must tell them apart, or different aggregates over the same arguments are merged.
+	const AggregateFunctionInfo *function = nullptr;
 	// The bind data set by the user
 	shared_ptr<CV2UserData> handle;
 
 	auto Copy() const -> unique_ptr<FunctionData> override {
 		auto copy = make_uniq<CV2AggregateFunctionData>();
+		copy->function = function;
 		copy->handle = handle;
 		return std::move(copy);
 	}
 
 	auto Equals(const FunctionData &other) const -> bool override {
 		const auto &other_data = other.Cast<CV2AggregateFunctionData>();
+		if (function != other_data.function) {
+			return false;
+		}
+		if (!handle && !other_data.handle) {
+			return true;
+		}
 		return handle && other_data.handle && handle->Equals(*other_data.handle);
 	}
 };
@@ -184,6 +194,12 @@ static auto GetUserBindData(const FunctionData *bind_data) -> void * {
 static auto CV2AggregateBind(BindAggregateFunctionInput &input) -> unique_ptr<FunctionData> {
 	const auto &info = input.GetBoundFunction().GetExtraFunctionInfo().Cast<CV2AggregateFunctionInfo>();
 
+	auto result = make_uniq<CV2AggregateFunctionData>();
+	result->function = &info;
+	if (!info.bind_cb) {
+		return std::move(result);
+	}
+
 	auto &bound_function = input.GetBoundFunction();
 	CV2ExpressionBindInfo bind_info(bound_function, info.user_data ? info.user_data->GetData() : nullptr, input);
 	CV2AggregateBindInfo result_info = {};
@@ -194,18 +210,15 @@ static auto CV2AggregateBind(BindAggregateFunctionInput &input) -> unique_ptr<Fu
 	CV2CallbackContext callback_context(input.GetClientContext());
 	info.bind_cb(Convert(&bind_info), Convert(&result_info), Convert(&callback_context), &err_ptr);
 
-	unique_ptr<FunctionData> result = nullptr;
 	if (bind_info.out_bind_data) {
-		auto set_result = make_uniq<CV2AggregateFunctionData>();
-		set_result->handle = std::move(bind_info.out_bind_data);
-		result = std::move(set_result);
+		result->handle = std::move(bind_info.out_bind_data);
 	}
 
 	if (err.HasError()) {
 		err.ThrowAsException();
 	}
 
-	return result;
+	return std::move(result);
 }
 
 static auto CV2AggregateSize(AggregateStateInput &input) -> idx_t {
@@ -416,9 +429,9 @@ public:
 		function.SetProperties(properties);
 		function.GetSignature() = signature;
 
-		if (info.bind_cb) {
-			function.SetBindCallback(CV2AggregateBind);
-		}
+		// Always bound, even without a user bind callback: the bind data identifies the function (see
+		// CV2AggregateFunctionData).
+		function.SetBindCallback(CV2AggregateBind);
 		if (info.destroy_cb) {
 			function.SetStateDestructorCallback(CV2AggregateDestroy);
 		}

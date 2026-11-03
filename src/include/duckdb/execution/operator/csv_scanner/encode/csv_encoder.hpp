@@ -54,6 +54,10 @@ public:
 	idx_t Encode(FileHandle &file_handle_input, char *output_buffer, const idx_t decoded_buffer_size);
 	//! Resets the encoder so the file can be read again from the beginning
 	void Reset();
+	//! The encoded bytes read from the file
+	idx_t EncodedBytesRead() const {
+		return encoded_bytes_read;
+	}
 	string encoding_name;
 
 private:
@@ -68,5 +72,6 @@ private:
 	//! Pass-on Byte, used to check if we are done with the file, but must be appended to next buffer
 	char pass_on_byte;
 	bool has_pass_on_byte = false;
+	idx_t encoded_bytes_read = 0;
 };
 } // namespace duckdb

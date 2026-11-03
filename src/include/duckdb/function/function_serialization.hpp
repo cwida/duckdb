@@ -419,6 +419,7 @@ public:
 
 		// Lookup the function (and the correct overload)
 		FunctionBinder binder(context);
+		binder.arguments_collated = true;
 		const auto func_idx = FunctionBinder::SelectFunction(context, functions, {positional_types, keyword_types});
 
 		// Ensure the function overload was found

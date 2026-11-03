@@ -1,0 +1,32 @@
+# name: test/optimizer/temporal_cardinality_bounds_icu.test
+# description: Approximate ICU range counts cannot prove a LIMIT redundant
+# group: [optimizer]
+
+require icu
+
+statement ok
+SET TimeZone = 'UTC';
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+# The inclusive endpoint produces a row even though the estimated count is zero.
+query I
+SELECT count(*) FROM generate_series(TIMESTAMPTZ '2024-01-01 00:00:00+00', TIMESTAMPTZ '2024-01-01 00:00:00+00', INTERVAL '1 day')
+----
+1
+
+query II
+EXPLAIN SELECT * FROM generate_series(TIMESTAMPTZ '2024-01-01 00:00:00+00', TIMESTAMPTZ '2024-01-01 00:00:00+00', INTERVAL '1 day') LIMIT 1
+----
+physical_plan	<REGEX>:.*LIMIT.*
+
+query I
+SELECT count(*) FROM range(TIMESTAMPTZ '2024-02-01 00:00:00+00', TIMESTAMPTZ '2024-03-01 00:00:00+00', INTERVAL '1 month')
+----
+1
+
+query II
+EXPLAIN SELECT * FROM range(TIMESTAMPTZ '2024-02-01 00:00:00+00', TIMESTAMPTZ '2024-03-01 00:00:00+00', INTERVAL '1 month') LIMIT 1
+----
+physical_plan	<REGEX>:.*LIMIT.*

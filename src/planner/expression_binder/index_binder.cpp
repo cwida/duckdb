@@ -132,8 +132,20 @@ BindResult IndexBinder::BindExpression(unique_ptr<ParsedExpression> &expr_ptr, i
 		return BindResult(BinderException::Unsupported(expr, "window functions are not allowed in index expressions"));
 	case ExpressionClass::SUBQUERY:
 		return BindResult(BinderException::Unsupported(expr, "cannot use subquery in index expressions"));
-	default:
+	default: {
+		// restores the previous state on exit, binding is recursive
+		struct IndexKeyScope {
+			explicit IndexKeyScope(Binder &binder_p) : binder(binder_p), previous(binder_p.IsBindingIndexKey()) {
+				binder.SetBindingIndexKey(true);
+			}
+			~IndexKeyScope() {
+				binder.SetBindingIndexKey(previous);
+			}
+			Binder &binder;
+			bool previous;
+		} scope(binder);
 		return ExpressionBinder::BindExpression(expr_ptr, depth);
+	}
 	}
 }
 

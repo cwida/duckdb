@@ -49,7 +49,7 @@ public:
 		FormatException(error_msg + std::string(": ") + (err ? err : "Unknown error code"));
 	}
 
-	void Decompress(const char *compressed_data, size_t compressed_size, char *out_data, size_t out_size) {
+	size_t Decompress(const char *compressed_data, size_t compressed_size, char *out_data, size_t out_size) {
 		type = MiniZStreamType::MINIZ_TYPE_INFLATE;
 
 		// Loop over blocks
@@ -96,6 +96,7 @@ public:
 
 			ResetStreamInternal();
 		}
+		return out_size;
 	}
 
 	static size_t MaxCompressedLength(size_t input_size) {
