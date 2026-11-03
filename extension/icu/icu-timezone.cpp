@@ -100,7 +100,6 @@ struct ICUFromNaiveTimestamp : public ICUDateFunc {
 		int32_t min_offset;
 		int32_t max_offset;
 		tz.GetOffsetRangeFromLocal(start_millis, end_millis, min_offset, max_offset);
-		// the instant is the local time minus its offset
 		lo_shift = -int64_t(max_offset);
 		hi_shift = -int64_t(min_offset);
 	}
@@ -314,7 +313,6 @@ struct ICUToNaiveTimestamp : public ICUDateFunc {
 		int32_t min_offset;
 		int32_t max_offset;
 		tz.GetOffsetRange(start_millis, end_millis, min_offset, max_offset);
-		// the local time is the instant plus its offset
 		lo_shift = min_offset;
 		hi_shift = max_offset;
 	}
@@ -720,7 +718,6 @@ struct ICUTimeZoneFunc : public ICUDateFunc {
 
 	template <typename OP, typename SRC, typename DST>
 	static unique_ptr<BaseStatistics> PropagateStatistics(ClientContext &context, FunctionStatisticsInput &input) {
-		// the result is the argument shifted by an offset of the zone
 		auto &child_stats = input.child_stats;
 		if (!NumericStats::HasMinMax(child_stats[1])) {
 			return nullptr;

@@ -230,8 +230,7 @@ true
 
 endloop
 
-# windows that start and end with one offset and hold the other one in between, with rows right after the
-# transitions that a range missing the offset in between leaves out
+# windows whose ends share an offset, with rows right after the transitions inside them
 
 # the daylight savings of 2026
 statement ok
