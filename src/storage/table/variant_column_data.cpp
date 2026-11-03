@@ -6,6 +6,7 @@
 #include "duckdb/common/serializer/deserializer.hpp"
 #include "duckdb/common/type_visitor.hpp"
 #include "duckdb/common/types/decimal.hpp"
+#include "duckdb/common/types/variant_iterator.hpp"
 #include "duckdb/function/variant/variant_shredding.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/storage/statistics/struct_stats.hpp"
@@ -377,6 +378,50 @@ struct VariantShreddedAppendInput {
 
 } // namespace
 
+//! Whether a VARIANT value holds a decimal wider than 38 digits, which engines before wide decimals cannot read
+static bool ContainsWideDecimal(const VariantNode &node) {
+	switch (node.GetTypeId()) {
+	case VariantLogicalType::DECIMAL:
+		return Decimal::IsWide(node.GetDecimalProperties().width);
+	case VariantLogicalType::OBJECT:
+		for (auto &entry : node.GetObjectChildren()) {
+			if (ContainsWideDecimal(entry.value)) {
+				return true;
+			}
+		}
+		return false;
+	case VariantLogicalType::ARRAY:
+		for (auto child : node.GetArrayChildren()) {
+			if (ContainsWideDecimal(child)) {
+				return true;
+			}
+		}
+		return false;
+	default:
+		return false;
+	}
+}
+
+//! The unshredded payload of a wide decimal is stored as it is, so a storage version before wide decimals refuses it
+static void CheckWideDecimals(StorageManager &storage_manager, const Vector &vector, idx_t count) {
+	const auto storage_version = storage_manager.GetStorageVersion();
+	if (storage_version >= Decimal::WIDE_VERSION_ADDED) {
+		return;
+	}
+	VariantIterator iterator(vector);
+	for (idx_t row = 0; row < count; row++) {
+		if (!iterator.RowIsValid(row) || !ContainsWideDecimal(iterator.Root(row))) {
+			continue;
+		}
+		auto required = GetStorageVersionName(Decimal::WIDE_VERSION_ADDED, false);
+		auto current = GetStorageVersionName(storage_version, false);
+		throw InvalidInputException("DECIMAL values wider than %d digits cannot be stored in a VARIANT column in "
+		                            "storage versions prior to %s (database %s is using storage version %s)",
+		                            Decimal::MAX_WIDTH_INT128, required, storage_manager.GetAttached().GetName(),
+		                            current);
+	}
+}
+
 void VariantColumnData::Append(ColumnAppendState &state, const Vector &vector, idx_t count) {
 	if (vector.GetVectorType() != VectorType::FLAT_VECTOR) {
 		Vector append_vector(Vector::Ref(vector));
@@ -384,6 +429,7 @@ void VariantColumnData::Append(ColumnAppendState &state, const Vector &vector, i
 		Append(state, append_vector, count);
 		return;
 	}
+	CheckWideDecimals(GetStorageManager(), vector, count);
 
 	// append the null values
 	validity->Append(state.child_appends[0], vector, count);

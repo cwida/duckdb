@@ -1,0 +1,90 @@
+# name: test/sql/storage/types/variant/variant_wide_decimal_storage_version.test
+# description: A VARIANT column of a database written before wide decimals refuses decimals wider than 38 digits
+# group: [variant]
+
+statement ok
+ATTACH '{TEST_DIR}/variant_wide_decimal_old.db' AS old (STORAGE_VERSION 'v2.0.0');
+
+statement ok
+CREATE TABLE old.v(x VARIANT);
+
+statement ok
+INSERT INTO old.v VALUES (1::DECIMAL(38,2)::VARIANT), ({'a': [1.5::DECIMAL(18,1)]}::VARIANT), (NULL);
+
+# the unshredded payload of a wide decimal cannot be read by the engines of this storage version
+statement error
+INSERT INTO old.v SELECT CAST(repeat('9', 45) || '.5' AS DECIMAL(50,1))::VARIANT
+----
+DECIMAL values wider than 38 digits cannot be stored in a VARIANT column in storage versions prior to v2.1.0
+
+statement error
+INSERT INTO old.v SELECT {'a': [1::DECIMAL(39,0)]}::VARIANT
+----
+DECIMAL values wider than 38 digits cannot be stored in a VARIANT column in storage versions prior to v2.1.0
+
+statement error
+INSERT INTO old.v SELECT [{'a': 1::DECIMAL(39,0)}]::VARIANT
+----
+DECIMAL values wider than 38 digits cannot be stored in a VARIANT column in storage versions prior to v2.1.0
+
+statement error
+UPDATE old.v SET x = 1::DECIMAL(39,0)::VARIANT
+----
+DECIMAL values wider than 38 digits cannot be stored in a VARIANT column in storage versions prior to v2.1.0
+
+statement error
+CREATE TABLE old.v2 AS SELECT 1::DECIMAL(39,0)::VARIANT x
+----
+DECIMAL values wider than 38 digits cannot be stored in a VARIANT column in storage versions prior to v2.1.0
+
+query I
+SELECT x::VARCHAR FROM old.v ORDER BY ALL
+----
+1.00
+{'a': [1.5]}
+NULL
+
+statement ok
+CHECKPOINT old
+
+statement ok
+DETACH old
+
+statement ok
+ATTACH '{TEST_DIR}/variant_wide_decimal_old.db' AS old;
+
+query I
+SELECT count(*) FROM old.v
+----
+3
+
+statement ok
+DETACH old
+
+# a database of the current storage version stores them
+statement ok
+ATTACH '{TEST_DIR}/variant_wide_decimal_new.db' AS new (STORAGE_VERSION 'latest');
+
+statement ok
+CREATE TABLE new.v(x VARIANT);
+
+statement ok
+INSERT INTO new.v SELECT CAST(repeat('9', 45) || '.5' AS DECIMAL(50,1))::VARIANT
+
+statement ok
+INSERT INTO new.v SELECT {'a': [1::DECIMAL(39,0)]}::VARIANT
+
+statement ok
+CHECKPOINT new
+
+statement ok
+DETACH new
+
+statement ok
+ATTACH '{TEST_DIR}/variant_wide_decimal_new.db' AS new;
+
+query I
+SELECT x::VARCHAR FROM new.v ORDER BY ALL
+----
+999999999999999999999999999999999999999999999.5
+{'a': [1]}
