@@ -1755,7 +1755,9 @@ optional<FileMetadata> LocalFileSystem::GetStatsIfExists(const OpenFileInfo &fil
 	                              OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
 	if (raw_handle == INVALID_HANDLE_VALUE) {
 		auto error_code = GetLastError();
-		if (error_code == ERROR_FILE_NOT_FOUND || error_code == ERROR_PATH_NOT_FOUND) {
+		// a name that cannot be a local file does not exist, as for ENOENT and ENOTDIR
+		if (error_code == ERROR_FILE_NOT_FOUND || error_code == ERROR_PATH_NOT_FOUND ||
+		    error_code == ERROR_INVALID_NAME || error_code == ERROR_BAD_PATHNAME || error_code == ERROR_DIRECTORY) {
 			return nullopt;
 		}
 		SetLastError(error_code);
