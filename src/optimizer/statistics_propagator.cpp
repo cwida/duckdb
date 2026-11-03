@@ -55,13 +55,12 @@ void StatisticsPropagator::ResetAdditiveStatistics(const vector<ColumnBinding> &
 	}
 }
 
-void StatisticsPropagator::RelaxJoinConditionVerificationStats(Expression &expr) {
+void StatisticsPropagator::ResetAdditiveVerificationStats(Expression &expr) {
 	auto &stats = expr.GetVerificationStats();
 	if (stats) {
-		// the candidate pairs still hold the values and NULLs that earlier conditions reject
-		expr.SetVerificationStats(BaseStatistics::CreateUnknown(stats->GetType()).ToUnique());
+		stats->ResetAdditiveStatistics();
 	}
-	ExpressionIterator::EnumerateChildren(expr, [&](Expression &child) { RelaxJoinConditionVerificationStats(child); });
+	ExpressionIterator::EnumerateChildren(expr, [&](Expression &child) { ResetAdditiveVerificationStats(child); });
 }
 
 unique_ptr<NodeStatistics> StatisticsPropagator::PropagateStatistics(LogicalOperator &node,
@@ -210,7 +209,7 @@ unique_ptr<BaseStatistics> StatisticsPropagator::PropagateExpression(unique_ptr<
 #endif
 	auto stats = PropagateExpression(*expr, expr);
 	D_ASSERT(expr->GetReturnType() != return_type || expr->GetReturnType().EqualsIncludingCollation(return_type));
-	if (Settings::Get<DebugVerifyStatsSetting>(context) && stats) {
+	if (attach_verification_stats && stats && Settings::Get<DebugVerifyStatsSetting>(context)) {
 		expr->SetVerificationStats(stats->ToUnique());
 	}
 	return stats;

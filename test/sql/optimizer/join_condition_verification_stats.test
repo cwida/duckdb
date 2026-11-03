@@ -8,10 +8,11 @@ SET debug_verify_stats=true
 statement ok
 SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
 
-# the statistics propagation updates the column statistics after each join condition (both sides become NOT NULL
-# and their bounds narrow to the overlap), but every condition is evaluated over candidate pairs that still hold the
-# NULLs and the values the earlier condition rejects, so the verification statistics of a later condition's
-# expression (t1.n + 1, a cast of t1.n) can claim neither the absence of NULLs nor the narrowed bounds
+# the statistics propagation narrows the column statistics after each join condition (both sides become NOT NULL
+# and their bounds narrow to the overlap) for the join output and the later conditions, but every condition is
+# evaluated over candidate pairs that still hold the NULLs and the values the earlier conditions reject: the
+# verification statistics of the condition expressions (t1.n + 1, a cast of t1.n) are derived from the input
+# statistics before any condition narrows them
 
 statement ok
 CREATE TABLE dec_small(n DECIMAL(10,2));

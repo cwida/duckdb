@@ -101,9 +101,8 @@ private:
 	void SetStatisticsNotNull(ColumnBinding binding);
 	//! Reset additive statistics of bindings whose rows an operator can emit more than once
 	void ResetAdditiveStatistics(const vector<ColumnBinding> &bindings);
-	//! Join conditions are evaluated over candidate pairs that repeat rows and still hold the values and NULLs that
-	//! earlier conditions reject: their verification statistics are unknown
-	void RelaxJoinConditionVerificationStats(Expression &expr);
+	//! Reset additive statistics in the verification statistics of an expression tree
+	void ResetAdditiveVerificationStats(Expression &expr);
 	//! Determine whether a propagated condition can be pruned
 	FilterPropagateResult ClassifyFilter(Expression &condition);
 	//! Simplify conjunctions using filter truth semantics
@@ -184,6 +183,8 @@ private:
 	unique_ptr<NodeStatistics> node_stats;
 	//! Whether statistics changed which relations a filter depends on
 	bool filter_bindings_changed = false;
+	//! Whether propagated statistics are attached to the expressions as verification statistics
+	bool attach_verification_stats = true;
 	//! The chain of operators from the root down to the operator currently being propagated
 	vector<reference<unique_ptr<LogicalOperator>>> propagation_path;
 };

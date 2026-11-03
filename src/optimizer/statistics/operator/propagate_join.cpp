@@ -106,7 +106,33 @@ bool StatisticsPropagator::HandleJoinAlwaysMatches(LogicalJoin &join, unique_ptr
 	}
 }
 
+//! Suspends attaching verification statistics to propagated expressions for the lifetime of the guard
+struct VerificationStatsGuard {
+	explicit VerificationStatsGuard(bool &attach_p) : attach(attach_p), previous(attach_p) {
+		attach = false;
+	}
+	~VerificationStatsGuard() {
+		attach = previous;
+	}
+
+	bool &attach;
+	bool previous;
+};
+
 void StatisticsPropagator::PropagateStatistics(LogicalComparisonJoin &join, unique_ptr<LogicalOperator> &node_ptr) {
+	// every condition is evaluated over the candidate pairs of the join inputs, so the verification statistics of
+	// the condition expressions are derived from the input statistics before any condition narrows them
+	for (auto &condition : join.conditions) {
+		if (condition.IsComparison()) {
+			PropagateExpression(condition.LeftReference());
+			PropagateExpression(condition.RightReference());
+		} else {
+			PropagateExpression(condition.JoinExpressionReference());
+		}
+	}
+	// below, the conditions are propagated again against statistics narrowed by the earlier conditions: these hold
+	// for the join output and the later conditions, but not for the vectors the conditions are evaluated on
+	VerificationStatsGuard narrowing_guard(attach_verification_stats);
 	for (idx_t i = 0; i < join.conditions.size(); i++) {
 		auto &condition = join.conditions[i];
 		if (!condition.IsComparison()) {
@@ -220,14 +246,14 @@ void StatisticsPropagator::PropagateStatistics(LogicalComparisonJoin &join, uniq
 		}
 	}
 
-	// join conditions are evaluated over candidate pairs that repeat rows of either side and that still hold the
-	// values and NULLs rejected by the earlier conditions, so their verification statistics are unknown
+	// join conditions can be evaluated over candidate pairs that repeat rows of either side,
+	// so their verification statistics must not carry additive totals
 	for (auto &condition : join.conditions) {
 		if (condition.IsComparison()) {
-			RelaxJoinConditionVerificationStats(condition.GetLHS());
-			RelaxJoinConditionVerificationStats(condition.GetRHS());
+			ResetAdditiveVerificationStats(condition.GetLHS());
+			ResetAdditiveVerificationStats(condition.GetRHS());
 		} else {
-			RelaxJoinConditionVerificationStats(condition.GetJoinExpression());
+			ResetAdditiveVerificationStats(condition.GetJoinExpression());
 		}
 	}
 }
@@ -236,9 +262,9 @@ void StatisticsPropagator::PropagateStatistics(LogicalAnyJoin &join, unique_ptr<
 	// propagate the expression into the join condition
 	// note that a condition that is TRUE_OR_NULL does not always match: a NULL condition rejects the pair
 	PropagateExpression(join.condition);
-	// the condition is evaluated over candidate pairs that repeat rows of either side and still hold the values
-	// and NULLs rejected by its earlier conjuncts, so its verification statistics are unknown
-	RelaxJoinConditionVerificationStats(*join.condition);
+	// the condition is evaluated over candidate pairs that repeat rows of either side,
+	// so its verification statistics must not carry additive totals
+	ResetAdditiveVerificationStats(*join.condition);
 	switch (ClassifyFilter(*join.condition)) {
 	case FilterPropagateResult::FILTER_ALWAYS_TRUE:
 		HandleJoinAlwaysMatches(join, node_ptr);
