@@ -24,8 +24,6 @@ class RewriteCorrelatedExpressions : public LogicalOperatorVisitor {
 public:
 	static void Rewrite(LogicalOperator &op, column_binding_map_t<ColumnBinding> current_binding_map,
 	                    column_binding_map_t<ColumnBinding> &correlated_aliases);
-	static void RewriteExpression(unique_ptr<Expression> &expr, column_binding_map_t<ColumnBinding> current_binding_map,
-	                              column_binding_map_t<ColumnBinding> &correlated_aliases);
 
 private:
 	RewriteCorrelatedExpressions(column_binding_map_t<ColumnBinding> current_binding_map,

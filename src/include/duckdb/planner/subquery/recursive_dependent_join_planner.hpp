@@ -40,6 +40,7 @@ private:
 	                                                                JoinType join_type);
 	BindingReplacementGraph PlanOperator(unique_ptr<LogicalOperator> &op);
 	BindingReplacementGraph PlanAnyJoinCondition(unique_ptr<LogicalOperator> &op);
+	BindingReplacementGraph NormalizeJoinConditionOperands(unique_ptr<LogicalOperator> &op);
 	void PlanJoinChildFilters(LogicalOperator &op);
 	void PlanJoinExpressions(LogicalOperator &op);
 	void PlanJoinSubqueries(LogicalJoin &join, unique_ptr<Expression> &expr, JoinSide uncorrelated_side);

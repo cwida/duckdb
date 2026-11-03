@@ -320,3 +320,194 @@ FROM (VALUES (1), (2)) o(k), LATERAL (
 
 statement ok
 SET debug_asof_iejoin=false;
+
+# a volatile condition operand evaluates once per owning child row per domain
+statement ok
+CREATE SEQUENCE seq_operand START 1;
+
+statement ok
+SET asof_loop_join_threshold=0;
+
+query I
+SELECT q.ts
+FROM (VALUES (1), (1), (1)) o(k), LATERAL (
+    SELECT r.ts
+    FROM (SELECT o.k + 2 AS x) v
+    ASOF JOIN (VALUES (2)) r(ts)
+        ON v.x >= r.ts + nextval('seq_operand')
+) q;
+----
+2
+
+query I
+SELECT currval('seq_operand');
+----
+3
+
+statement ok
+RESET asof_loop_join_threshold;
+
+# nested joins normalizing the same descendant binding
+query IIII
+SELECT o.k, q.x, q.a, q.b
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT l.x, r.ts AS a, s.ts AS b
+    FROM (VALUES (4)) l(x)
+    ASOF JOIN (VALUES (1)) r(ts) ON l.x - o.k >= r.ts
+    ASOF JOIN (VALUES (2)) s(ts) ON l.x - o.k >= s.ts
+) q ORDER BY ALL;
+----
+1	4	1	2
+2	4	1	2
+
+# correlated probe of a generated MARK join
+query II
+SELECT o.k, q.matches
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT (l.i + o.k) IN (SELECT x FROM (VALUES (2)) b(x)) AS matches
+    FROM (VALUES (1)) l(i)
+) q ORDER BY ALL;
+----
+1	true
+2	false
+
+# ASOF SEMI and ANTI lower to regular comparison joins: the pruning left map
+# must survive the nested loop strategy
+statement ok
+SET nested_loop_join_threshold = 1000000;
+
+query II
+SELECT o.k, q.x
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT l.x FROM (VALUES (3)) l(x)
+    ASOF SEMI JOIN (VALUES (2)) r(ts) ON l.x - o.k >= r.ts
+) q ORDER BY ALL;
+----
+1	3
+
+query II
+SELECT o.k, q.x
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT l.x FROM (VALUES (3)) l(x)
+    ASOF ANTI JOIN (VALUES (2)) r(ts) ON l.x - o.k >= r.ts
+) q ORDER BY ALL;
+----
+2	3
+
+# the evaluation-domain rule also holds for ordinary comparison joins
+statement ok
+CREATE SEQUENCE seq_domain START 1;
+
+query I
+SELECT count(*)
+FROM (VALUES (1), (1), (1)) o(k), LATERAL (
+    SELECT r.ts FROM (SELECT o.k + 2 AS x) v
+    JOIN (VALUES (2)) r(ts) ON v.x >= r.ts + nextval('seq_domain')
+) q;
+----
+1
+
+query I
+SELECT currval('seq_domain');
+----
+3
+
+statement ok
+RESET nested_loop_join_threshold;
+
+# a pruned right payload survives the nested loop and blockwise strategies
+statement ok
+SET nested_loop_join_threshold = 1000000;
+
+statement ok
+CREATE SEQUENCE seq_rhs START 1;
+
+query II
+SELECT l.x, r.y
+FROM (VALUES (10)) l(x)
+JOIN (VALUES (2)) r(y)
+    ON l.x > r.y + nextval('seq_rhs');
+----
+10	2
+
+statement ok
+CREATE SEQUENCE seq_bw START 1;
+
+query II
+SELECT l.x, r.y
+FROM (VALUES ([10])) l(x)
+JOIN (VALUES (2)) r(y)
+    ON l.x > [r.y + nextval('seq_bw')];
+----
+[10]	2
+
+# the expanded physical join keeps the logical schema intact for CTE planning
+statement ok
+CREATE SEQUENCE seq_cte START 1;
+
+query III
+SELECT l.x, r.y, s.z
+FROM (VALUES ('a')) l(x)
+JOIN (VALUES (10)) r(y)
+    ON length(l.x) + nextval('seq_cte') < r.y
+FULL OUTER JOIN (VALUES (1)) s(z)
+    ON (SELECT length(l.x) + s.z) = 2;
+----
+a	10	1
+
+statement ok
+RESET nested_loop_join_threshold;
+
+# a MARK probe with both correlation and volatility keeps its empty-build laziness
+statement ok
+CREATE SEQUENCE seq_mark START 1;
+
+query II
+SELECT o.k, q.matches
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT (l.i + o.k + nextval('seq_mark')) IN (
+        SELECT i FROM range(1) b(i) WHERE i < 0
+    ) AS matches
+    FROM (VALUES (1)) l(i)
+) q ORDER BY ALL;
+----
+1	false
+2	false
+
+query I
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name = 'seq_mark';
+----
+NULL
+
+# identity projection maps from decorrelation stay valid for strategies requiring empty maps
+statement ok
+SET nested_loop_join_threshold = 1000000;
+
+statement ok
+SET delim_join_as_cte = false;
+
+query II
+SELECT o.k, q.x
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT v.x
+    FROM (SELECT o.k + 2 AS x) v
+    ASOF SEMI JOIN (VALUES (4)) r(ts) ON v.x >= r.ts
+) q ORDER BY ALL;
+----
+2	4
+
+query II
+SELECT o.k, q.x
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT v.x
+    FROM (SELECT o.k + 2 AS x) v
+    ASOF ANTI JOIN (VALUES (4)) r(ts) ON [v.x] >= [r.ts]
+) q ORDER BY ALL;
+----
+1	3
+
+statement ok
+RESET nested_loop_join_threshold;
+
+statement ok
+RESET delim_join_as_cte;
