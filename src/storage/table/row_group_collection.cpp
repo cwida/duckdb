@@ -133,7 +133,7 @@ optional<LoadedSegment<RowGroup>> RowGroupSegmentTree::LoadSegment() const {
 RowGroupCollection::RowGroupCollection(shared_ptr<DataTableInfo> info_p, TableIOManager &io_manager,
                                        vector<LogicalType> types_p, idx_t row_start, idx_t total_rows)
     : RowGroupCollection(std::move(info_p), io_manager.GetBlockManagerForRowData(), std::move(types_p), row_start,
-                         total_rows, io_manager.GetRowGroupSize()) {
+	                     total_rows, io_manager.GetRowGroupSize()) {
 }
 
 RowGroupCollection::RowGroupCollection(shared_ptr<DataTableInfo> info_p, BlockManager &block_manager,
@@ -1201,7 +1201,7 @@ public:
 	void ExecuteTask() override {
 		auto entry = checkpoint_state.GetSegment(index);
 		auto &row_group = entry->GetNode();
-		checkpoint_state.writers[index] = checkpoint_state.writer.GetRowGroupWriter(row_group);
+		checkpoint_state.writers[index] = checkpoint_state.writer.GetRowGroupWriter();
 		checkpoint_state.write_data[index] = row_group.WriteToDisk(*checkpoint_state.writers[index]);
 	}
 
@@ -1420,7 +1420,7 @@ public:
 				// Buffer shifted rows and strip the scanned rowid column before appending to the new row groups.
 				auto &append_chunk =
 				    remapper ? remapper->ProcessScanChunk(scan_chunk, row_start.GetIndex() + live_row_offset)
-				             : scan_chunk;
+					         : scan_chunk;
 				idx_t remaining = append_chunk.size();
 				while (remaining > 0) {
 					auto &current_append_row_group = new_row_groups[current_append_idx]->GetNode();
@@ -1845,7 +1845,7 @@ CollectionCheckpointResult RowGroupCollection::Checkpoint(TableDataWriter &write
 				         RowGroupWriteAction::REUSE_EXISTING_ROW_GROUP_METADATA);
 				vector<MetaBlockPointer> extra_metadata_block_pointers = row_group.GetExtraMetadataBlockPointers();
 				metadata_manager.ClearModifiedBlocks(extra_metadata_block_pointers);
-				auto row_group_writer = checkpoint_state.writer.GetRowGroupWriter(row_group);
+				auto row_group_writer = checkpoint_state.writer.GetRowGroupWriter();
 				row_group.CheckpointDeletes(*row_group_writer);
 			}
 			// the totals as of the snapshot: rows appended since stay in the WAL
@@ -2410,7 +2410,7 @@ shared_ptr<RowGroupCollection> RowGroupCollection::AlterType(ClientContext &cont
 		auto &current_row_group = node.GetNode();
 		auto new_row_group =
 		    current_row_group.AlterType(*result, target_type, changed_idx, executor, scan_state.table_state, node,
-		                                scan_chunk, transaction, changed_stats);
+			                            scan_chunk, transaction, changed_stats);
 		new_row_group->MergeIntoStatistics(changed_idx, changed_stats.Statistics());
 		result_row_groups->AppendSegment(std::move(new_row_group), node.GetRowStart());
 	}

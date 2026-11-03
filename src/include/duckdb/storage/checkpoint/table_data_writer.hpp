@@ -43,7 +43,7 @@ public:
 	                           const vector<shared_ptr<const IndexStorageInfo>> &index_infos,
 	                           Serializer &serializer) = 0;
 
-	virtual unique_ptr<RowGroupWriter> GetRowGroupWriter(RowGroup &row_group) = 0;
+	virtual unique_ptr<RowGroupWriter> GetRowGroupWriter() = 0;
 	virtual unique_ptr<TableIndexWriter> GetTableIndexWriter(StorageVersion version) = 0;
 
 	virtual void AddRowGroup(RowGroupPointer &&row_group_pointer, unique_ptr<RowGroupWriter> writer);
@@ -108,7 +108,7 @@ public:
 	void FinalizeTable(const TableStatistics &global_stats, DataTableInfo &info, RowGroupCollection &collection,
 	                   const vector<shared_ptr<const IndexStorageInfo>> &index_infos, Serializer &serializer) override;
 
-	unique_ptr<RowGroupWriter> GetRowGroupWriter(RowGroup &row_group) override;
+	unique_ptr<RowGroupWriter> GetRowGroupWriter() override;
 	unique_ptr<TableIndexWriter> GetTableIndexWriter(StorageVersion version) override;
 
 	CheckpointOptions GetCheckpointOptions() const override;

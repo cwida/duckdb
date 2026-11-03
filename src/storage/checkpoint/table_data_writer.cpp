@@ -70,7 +70,7 @@ SingleFileTableDataWriter::SingleFileTableDataWriter(SingleFileCheckpointWriter 
       table_data_writer(table_data_writer) {
 }
 
-unique_ptr<RowGroupWriter> SingleFileTableDataWriter::GetRowGroupWriter(RowGroup &row_group) {
+unique_ptr<RowGroupWriter> SingleFileTableDataWriter::GetRowGroupWriter() {
 	return make_uniq<SingleFileRowGroupWriter>(table, checkpoint_manager.partial_block_manager, *this,
 	                                           table_data_writer);
 }
