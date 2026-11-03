@@ -42,6 +42,7 @@ class TriggerCatalogEntry;
 class ViewCatalogEntry;
 class TableDataWriter;
 class TypeCatalogEntry;
+class PendingPublication;
 struct BoundCreateTableInfo;
 struct CheckpointOptions;
 
@@ -147,6 +148,7 @@ class SingleFileCheckpointWriter final : public CheckpointWriter {
 public:
 	SingleFileCheckpointWriter(QueryContext context, AttachedDatabase &db, BlockManager &block_manager,
 	                           CheckpointOptions options);
+	~SingleFileCheckpointWriter() override;
 
 	void CreateCheckpoint() override;
 
@@ -168,6 +170,10 @@ public:
 	void WriteTable(TableCatalogEntry &table, Serializer &serializer) override;
 
 private:
+	//! Retain prepared state until the shared blocks are flushed and publication can run.
+	void AddPendingPublication(unique_ptr<PendingPublication> publication);
+
+private:
 	optional_ptr<ClientContext> context;
 	//! Context of the checkpoint transaction, used for catalog lookups during the checkpoint.
 	//! Only set while CreateCheckpoint runs, which owns the connection it belongs to.
@@ -179,12 +185,12 @@ private:
 	//! Because this is single-file storage, we can share partial blocks across
 	//! an entire checkpoint.
 	PartialBlockManager partial_block_manager;
-	//! Need to have a separate partial block manager for indexes due to different block shapes.
-	PartialBlockManager index_partial_block_manager;
 	//! Checkpoint type
 	CheckpointOptions options;
 	//! Block usage count for verification purposes
 	unordered_map<block_id_t, idx_t> verify_block_usage_count;
+	//! Owns prepared state in publication order.
+	vector<unique_ptr<PendingPublication>> pending_publications;
 };
 
 } // namespace duckdb
