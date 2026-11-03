@@ -110,14 +110,19 @@ SELECT sum(nextval('s')) FILTER (WHERE i = 0), max(nextval('s')) FILTER (WHERE i
 ----
 1	2
 
-# volatile filters are not shared: the second filter consumes its own sequence values
+# volatile filters are not shared: the two filters draw 20 sequence values of which the 10 smallest pass
 statement ok
 CREATE OR REPLACE SEQUENCE s2
 
-query II
-SELECT count(*) FILTER (WHERE nextval('s2') <= 10), count(i) FILTER (WHERE nextval('s2') <= 10) FROM range(10) t(i)
+query I
+SELECT count(*) FILTER (WHERE nextval('s2') <= 10) + count(i) FILTER (WHERE nextval('s2') <= 10) FROM range(10) t(i)
 ----
-10	0
+10
+
+query I
+SELECT currval('s2')
+----
+20
 
 # a deterministic sub-expression of volatile filters is shared, the volatile filters themselves are not
 statement ok
