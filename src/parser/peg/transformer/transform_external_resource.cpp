@@ -45,11 +45,13 @@ unique_ptr<SQLStatement> PEGTransformerFactory::TransformDestroyExternalResource
 	return std::move(result);
 }
 
-unique_ptr<SQLStatement>
-PEGTransformerFactory::TransformShowExternalResourcesStmt(PEGTransformer &transformer,
-                                                          const optional<bool> &show_all_modifier) {
+unique_ptr<SQLStatement> PEGTransformerFactory::TransformShowExternalResourcesStmt(
+    PEGTransformer &transformer, const optional<bool> &show_all_modifier, const optional<string> &string_literal) {
 	auto result = make_uniq<ExternalResourceStatement>(ExternalResourceOperation::SHOW);
 	result->all = show_all_modifier.has_value();
+	if (string_literal) {
+		result->type = *string_literal;
+	}
 	return std::move(result);
 }
 

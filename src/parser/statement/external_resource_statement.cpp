@@ -53,6 +53,9 @@ string ExternalResourceStatement::ToString() const {
 		break;
 	case ExternalResourceOperation::SHOW:
 		result = all ? "SHOW ALL EXTERNAL RESOURCES" : "SHOW EXTERNAL RESOURCES";
+		if (!type.empty()) {
+			result += " " + SQLString(type);
+		}
 		break;
 	}
 	return result;

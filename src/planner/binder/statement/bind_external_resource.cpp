@@ -27,12 +27,18 @@ void Binder::BindExternalResourceParams(case_insensitive_map_t<unique_ptr<Parsed
 
 BoundStatement Binder::Bind(ExternalResourceStatement &stmt) {
 	if (stmt.operation == ExternalResourceOperation::SHOW) {
-		// SHOW [ALL] EXTERNAL RESOURCES desugars to `SELECT * FROM duckdb_external_resources(all := <all>)`.
+		// SHOW [ALL] EXTERNAL RESOURCES ['<type>'] desugars to
+		// `SELECT * FROM duckdb_external_resources(discover := <all>, type := '<type>')`.
 		vector<unique_ptr<ParsedExpression>> children;
 		if (stmt.all) {
 			auto all_expr = ConstantExpression::Boolean(true);
 			all_expr->SetAlias("discover");
 			children.push_back(std::move(all_expr));
+		}
+		if (!stmt.type.empty()) {
+			auto type_expr = ConstantExpression::String(stmt.type);
+			type_expr->SetAlias("type");
+			children.push_back(std::move(type_expr));
 		}
 		auto table_function = make_uniq<TableFunctionRef>();
 		table_function->function = make_uniq<FunctionExpression>("duckdb_external_resources", std::move(children));

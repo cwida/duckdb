@@ -3,6 +3,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/value.hpp"
+#include "duckdb/main/database.hpp"
 #include "duckdb/main/external_resource_type_registry.hpp"
 #include "duckdb/main/external_resources_manager.hpp"
 #include "duckdb/parser/keyword_helper.hpp"
@@ -78,6 +79,10 @@ static unique_ptr<TableRef> ExternalResourcesBindReplace(ClientContext &context,
 	branches.push_back("SELECT name, type, managed, NULL::VARCHAR AS state, NULL::VARCHAR AS reference, uri, "
 	                   "attached_db_type, handle FROM " +
 	                   RegistryScan(params.type));
+	if (!params.type.empty()) {
+		// An unknown type autoloads the extension known to provide it, like an unknown function does
+		ExternalResourceTypeRegistry::LookupOrAutoload(DatabaseInstance::GetDatabase(context), params.type);
+	}
 	bool matched = false;
 	for (auto &type : ExternalResourceTypeRegistry::Get(context).List()) {
 		if (!MatchesType(params.type, type.name)) {
@@ -109,6 +114,13 @@ static unique_ptr<TableRef> ExternalResourcesBindReplace(ClientContext &context,
 	// opaque type) has nothing to discover, like a type without a list callback. A type neither knows is most
 	// likely a typo, or a missing extension.
 	if (!matched && !params.type.empty() && !RegistryHasType(context, params.type)) {
+		auto extension = ExternalResourceTypeRegistry::ProvidingExtension(params.type);
+		if (!extension.empty()) {
+			throw InvalidInputException(
+			    "duckdb_external_resources: unknown resource type \"%s\": it is provided by the "
+			    "%s extension, which could not be autoloaded. Try: INSTALL %s; LOAD %s;",
+			    params.type, extension, extension, extension);
+		}
 		throw InvalidInputException("duckdb_external_resources: unknown resource type \"%s\"", params.type);
 	}
 	Parser parser(context);

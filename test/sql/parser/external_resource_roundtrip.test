@@ -104,6 +104,18 @@ REGISTER EXTERNAL RESOURCE 'aws:ec2:quack' AS x FROM 'plain-handle'
 statement ok
 SHOW EXTERNAL RESOURCES
 
+# the optional type literal is printed quoted, escaped like any string literal
+statement ok
+SHOW EXTERNAL RESOURCES 'aws:ec2:quack'
+
+statement ok
+SHOW EXTERNAL RESOURCES 'aws:ec2:it''s quacky'
+
+statement error
+SHOW ALL EXTERNAL RESOURCES 'aws:ec2:it''s quacky'
+----
+<REGEX>:.*unknown resource type "aws:ec2:it's quacky".*
+
 statement ok
 SELECT count(*) FROM duckdb_external_resources()
 

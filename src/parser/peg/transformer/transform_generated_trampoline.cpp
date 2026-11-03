@@ -16214,11 +16214,17 @@ PEGTransformerFactory::FinalizeDestroyExternalResourceStmtTrampoline(PEGTransfor
 arena_ptr<TransformResultValue>
 PEGTransformerFactory::FinalizeShowExternalResourcesStmtTrampoline(PEGTransformer &transformer,
                                                                    GeneratedTransformProcess &process) {
+	auto &list_pr = process.parse_result.Cast<ListParseResult>();
 	optional<bool> show_all_modifier {};
 	if (process.child_results[0]) {
 		show_all_modifier = process.TakeResult<bool>(0);
 	}
-	auto result = TransformShowExternalResourcesStmt(transformer, show_all_modifier);
+	optional<string> string_literal {};
+	auto &string_literal_opt = list_pr.GetChild(4).Cast<OptionalParseResult>();
+	if (string_literal_opt.HasResult()) {
+		string_literal = TransformStringLiteral(transformer, string_literal_opt.GetResult());
+	}
+	auto result = TransformShowExternalResourcesStmt(transformer, show_all_modifier, string_literal);
 	return transformer.MakeResult<unique_ptr<SQLStatement>>(std::move(result));
 }
 

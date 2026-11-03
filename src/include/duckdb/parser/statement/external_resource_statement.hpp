@@ -28,7 +28,8 @@ public:
 	explicit ExternalResourceStatement(ExternalResourceOperation operation);
 
 	ExternalResourceOperation operation;
-	//! The resource type ('<recipe>'): a string literal, so it is fixed at parse time. Set for CREATE and REGISTER.
+	//! The resource type ('<recipe>'): a string literal, so it is fixed at parse time. Set for CREATE and REGISTER;
+	//! optional for SHOW, where it restricts the listing to that type.
 	string type;
 	//! The local name: the `AS <name>` alias for CREATE/REGISTER (optional), or the target for DESTROY.
 	Identifier name;
