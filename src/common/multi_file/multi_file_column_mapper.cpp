@@ -671,6 +671,8 @@ static ColumnMapResult MapColumn(ClientContext &context, const MultiFileColumnDe
 		                 ? global_index.GetScanType()
 		                 : global_column.type;
 		result.default_value = make_uniq<BoundConstantExpression>(Value(type));
+		// a pushed down extract of it is NULL as well, with nothing left to extract
+		result.extract_null = global_index.IsPushdownExtract();
 		return result;
 	}
 	auto mapping_idx = is_root ? top_level_index : local_idx;

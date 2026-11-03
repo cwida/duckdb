@@ -55,6 +55,17 @@ SELECT a, v.k::VARCHAR FROM read_parquet(['{TEST_DIR}/missing_extract_2.parquet'
 3	NULL
 4	hello
 
+# a column that a file holds as NULL without a type is NULL in every row, so are its fields
+statement ok
+COPY (SELECT 5 AS a, NULL AS s) TO '{TEST_DIR}/missing_extract_4.parquet' (FIELD_IDS {a: 1, s: 2})
+
+query II
+SELECT a, s.x FROM read_parquet(['{TEST_DIR}/missing_extract_1.parquet', '{TEST_DIR}/missing_extract_4.parquet'], schema := MAP {1: {name: 'a', type: 'INTEGER', default_value: NULL}, 2: {name: 's', type: 'STRUCT(x INTEGER)', default_value: {'x': 9}}}) ORDER BY a
+----
+1	1
+2	NULL
+5	NULL
+
 # union_by_name fills the missing column before the mapping and is unchanged
 query II
 SELECT a, s.x FROM read_parquet(['{TEST_DIR}/missing_extract_1.parquet', '{TEST_DIR}/missing_extract_2.parquet'], union_by_name := true) ORDER BY a
