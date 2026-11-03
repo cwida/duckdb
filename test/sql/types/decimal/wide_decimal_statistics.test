@@ -116,6 +116,25 @@ SELECT count(*) FROM t t1 JOIN t t2 ON t1.w >= t2.w AND t1.w + 1 >= t2.w;
 ----
 6
 
+# the propagated statistics keep the NULLs of the column through arithmetic, casts and comparisons
+query IIIIII
+SELECT w + n, w - 1, w * w, w::DECIMAL(45,3), TRY_CAST(w AS DECIMAL(20,2)), w > n FROM t ORDER BY w NULLS LAST;
+----
+-18.25	-8.50	56.2500	-7.500	-7.50	true
+3.00	-1.00	0.0000	0.000	0.00	false
+123456789012345678901234567891.37	123456789012345678901234567889.12	15241578753238836750495351562565828416864868162811315348393.6144	123456789012345678901234567890.120	NULL	true
+NULL	NULL	NULL	NULL	NULL	NULL
+
+query IIII
+SELECT s.has_null, s.has_no_null, s.min IS NOT NULL, s.max IS NOT NULL FROM (SELECT STATS(w + n) s FROM t LIMIT 1);
+----
+true	true	true	true
+
+query I
+SELECT count(*) FROM t t1 JOIN t t2 ON t1.w + 1 = t2.w + 1 AND t1.w * 2 >= t2.n;
+----
+1
+
 query IIII
 SELECT min(w), max(w), min(w % 7), max(w % 7) FROM t WHERE w % 7 <> 0;
 ----
