@@ -104,8 +104,6 @@ struct UncompressedStringStorage {
 public:
 	//! Dictionary header size at the beginning of the string segment (offset + length)
 	static constexpr uint16_t DICTIONARY_HEADER_SIZE = sizeof(uint32_t) + sizeof(uint32_t);
-	//! Marker used in length field to indicate the presence of a big string
-	static constexpr uint16_t BIG_STRING_MARKER = (uint16_t)-1;
 	//! Base size of big string marker (block id + offset)
 	static constexpr idx_t BIG_STRING_MARKER_BASE_SIZE = sizeof(block_id_t) + sizeof(int32_t);
 	//! The marker size of the big string
@@ -135,13 +133,6 @@ public:
 	static idx_t StringAppend(CompressionAppendState &append_state, ColumnSegment &segment, BaseStatistics &stats,
 	                          UnifiedVectorFormat &data, idx_t offset, idx_t count) {
 		return StringAppendBase(append_state.handle, segment, stats, data, offset, count);
-	}
-
-	static idx_t StringAppendBase(ColumnSegment &segment, BaseStatistics &stats, UnifiedVectorFormat &data,
-	                              idx_t offset, idx_t count) {
-		auto &buffer_manager = BufferManager::GetBufferManager(segment.GetDatabase());
-		auto handle = buffer_manager.Pin(segment.GetBlockHandle());
-		return StringAppendBase(handle, segment, stats, data, offset, count);
 	}
 
 	static idx_t StringAppendBase(BufferHandle &handle, ColumnSegment &segment, BaseStatistics &stats,
