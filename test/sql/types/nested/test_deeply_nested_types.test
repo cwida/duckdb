@@ -27,7 +27,12 @@ INTEGER[][][][][]
 
 # Collation propagation on nested LIST
 statement ok
-SELECT list_contains(CAST(NULL AS VARCHAR[][][][][]), 'abc' COLLATE NOCASE);
+SELECT list_contains(CAST(NULL AS VARCHAR[][][][][]), [[[['abc' COLLATE NOCASE]]]]);
+
+query I
+SELECT list_contains([[[[['ABC']]]]]::VARCHAR[][][][][], [[[['abc' COLLATE NOCASE]]]]);
+----
+true
 
 # Mixed STRUCT, MAP, UNION, LIST and ARRAY nesting (parsed and bound type names)
 query TT
