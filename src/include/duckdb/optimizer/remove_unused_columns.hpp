@@ -179,8 +179,9 @@ private:
 	                                 const unordered_set<ProjectionIndex> &required_columns,
 	                                 unordered_set<ProjectionIndex> &recursive_dependencies);
 	//! Shared across the recursive CTE and the trampoline: dependency closure over the
-	//! member children, child projections onto the kept columns (returning the old-to-new
-	//! map), and CTE-reference pruning. Eligibility and metadata remaps stay in the callers.
+	//! member children, child projections onto the kept columns (returning the retained
+	//! old indices in new-column order), and CTE-reference pruning. Eligibility and
+	//! metadata remaps stay in the callers.
 	bool ComputeCTEMemberRequiredColumns(LogicalCTE &cte, unordered_set<ProjectionIndex> &required_columns);
 	vector<idx_t> ApplyCTEMemberProjections(LogicalCTE &cte, const unordered_set<ProjectionIndex> &required_columns);
 	vector<ReplacementBinding> RewriteCTEMemberReferences(LogicalCTE &cte,

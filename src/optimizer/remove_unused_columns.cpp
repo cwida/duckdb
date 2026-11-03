@@ -132,27 +132,28 @@ bool RemoveUnusedColumns::ComputeCTEMemberRequiredColumns(LogicalCTE &cte,
 	}
 }
 
-//! Projects every child onto the kept columns and returns them in order: the old-to-new
-//! column map the callers use to remap their own metadata
+//! Projects every child onto the kept columns and returns the retained old column
+//! indices in new-column order: kept_columns[new_idx] is the old index, so keeping
+//! old columns 0 and 2 returns [0, 2]
 vector<idx_t> RemoveUnusedColumns::ApplyCTEMemberProjections(LogicalCTE &cte,
                                                              const unordered_set<ProjectionIndex> &required_columns) {
 	D_ASSERT(mode == RemoveUnusedColumnsMode::APPLY);
 	for (auto column_idx : required_columns) {
 		column_references.emplace(ColumnBinding(cte.table_index, column_idx), ReferencedColumn());
 	}
-	vector<idx_t> entries;
+	vector<idx_t> kept_columns;
 	for (idx_t i = 0; i < cte.column_count; i++) {
-		entries.push_back(i);
+		kept_columns.push_back(i);
 	}
-	ClearUnusedExpressions(entries, cte.table_index);
+	ClearUnusedExpressions(kept_columns, cte.table_index);
 	ApplySecureViewReplacements();
 
 	for (auto &child : cte.children) {
 		child->ResolveOperatorTypes();
 		auto bindings = child->GetColumnBindings();
 		vector<unique_ptr<Expression>> expressions;
-		expressions.reserve(entries.size());
-		for (auto column_idx : entries) {
+		expressions.reserve(kept_columns.size());
+		for (auto column_idx : kept_columns) {
 			expressions.push_back(make_uniq<BoundColumnRefExpression>(child->types[column_idx], bindings[column_idx]));
 		}
 		auto projection = make_uniq<LogicalProjection>(binder.GenerateTableIndex(), std::move(expressions));
@@ -162,8 +163,8 @@ vector<idx_t> RemoveUnusedColumns::ApplyCTEMemberProjections(LogicalCTE &cte,
 		projection->children.push_back(std::move(child));
 		child = std::move(projection);
 	}
-	cte.column_count = entries.size();
-	return entries;
+	cte.column_count = kept_columns.size();
+	return kept_columns;
 }
 
 vector<ReplacementBinding>
@@ -195,10 +196,10 @@ bool RemoveUnusedColumns::TryPruneRecursiveCTE(LogicalRecursiveCTE &rec) {
 	if (!ComputeCTEMemberRequiredColumns(rec, required_columns)) {
 		return false;
 	}
-	auto entries = ApplyCTEMemberProjections(rec, required_columns);
+	auto kept_columns = ApplyCTEMemberProjections(rec, required_columns);
 	vector<LogicalType> internal_types;
-	internal_types.reserve(entries.size());
-	for (auto column_idx : entries) {
+	internal_types.reserve(kept_columns.size());
+	for (auto column_idx : kept_columns) {
 		internal_types.push_back(rec.internal_types[column_idx]);
 	}
 	rec.internal_types = std::move(internal_types);
@@ -238,9 +239,9 @@ bool RemoveUnusedColumns::TryPruneTrampoline(LogicalTrampoline &tramp) {
 	if (!ComputeCTEMemberRequiredColumns(tramp, required_columns)) {
 		return false;
 	}
-	auto entries = ApplyCTEMemberProjections(tramp, required_columns);
-	for (idx_t i = 0; i < entries.size(); i++) {
-		if (entries[i] == tramp.selector_idx) {
+	auto kept_columns = ApplyCTEMemberProjections(tramp, required_columns);
+	for (idx_t i = 0; i < kept_columns.size(); i++) {
+		if (kept_columns[i] == tramp.selector_idx) {
 			tramp.selector_idx = i;
 			break;
 		}

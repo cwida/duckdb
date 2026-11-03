@@ -13,7 +13,22 @@ statement ok
 SET max_execution_time=30000;
 
 statement ok
+SET threads=4;
+
+statement ok
 SET memory_limit='32MB';
+
+# Control: the same seed, payload and round count through MERGE (no admission state)
+# completes within the limit, so the DISTINCT failure below is admission growth and
+# not an unrelated materialization regression. sum(length(p)) keeps the payload live.
+query II
+WITH RECURSIVE t(b, i, p) USING TRAMPOLINE (b) AS (
+	(SELECT 1, g, repeat('x', 64) || g::VARCHAR FROM range(200000) r(g))
+	BRANCH 1 MERGE: (SELECT CASE WHEN i < 400000 THEN 1 ELSE 0 END, i + 200000, p FROM t)
+)
+SELECT count(*), sum(length(p)) FROM t;
+----
+200000	13888890
 
 statement error
 WITH RECURSIVE t(b, i, p) USING TRAMPOLINE (b) AS (
