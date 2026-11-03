@@ -684,12 +684,19 @@ Value Value::DECIMAL(hugeint_t value, uint32_t width, uint32_t scale) {
 
 Value Value::DECIMAL(bignum_t value, uint32_t width, uint32_t scale) {
 	if (!Decimal::IsWide(width)) {
-		// the fixed-size tiers hold the unscaled value as an integer
+		// the fixed-size tiers hold the unscaled value as the integer of their width
 		hugeint_t unscaled;
 		if (!BignumDecimal::TryToHugeint(value, unscaled)) {
 			throw InternalException("Value::DECIMAL: the BIGNUM does not fit a DECIMAL(%d,%d)", width, scale);
 		}
-		return Value::DECIMAL(unscaled, width, scale);
+		if (width > Decimal::MAX_WIDTH_INT64) {
+			return Value::DECIMAL(unscaled, width, scale);
+		}
+		int64_t narrow;
+		if (!Hugeint::TryCast(unscaled, narrow)) {
+			throw InternalException("Value::DECIMAL: the BIGNUM does not fit a DECIMAL(%d,%d)", width, scale);
+		}
+		return Value::DECIMAL(narrow, width, scale);
 	}
 	Value result(LogicalType::DECIMAL(width, scale));
 	result.is_null = false;
