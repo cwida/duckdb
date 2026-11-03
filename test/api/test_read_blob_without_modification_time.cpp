@@ -1,15 +1,20 @@
 #include "catch.hpp"
+#include "duckdb/common/error_data.hpp"
 #include "duckdb/common/local_file_system.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "test_helpers.hpp"
 
 using namespace duckdb;
 
+enum class ModificationTimeFailure { NOT_IMPLEMENTED, REWRAPPED_NOT_IMPLEMENTED, IO_ERROR };
+
 //! Serves the files of a test directory under a remote and a local prefix, without modification times
 class NoModificationTimeFileSystem : public LocalFileSystem {
 public:
 	static constexpr const char *REMOTE_PREFIX = "s3://no-modification-time/";
 	static constexpr const char *LOCAL_PREFIX = "no-modification-time://";
+
+	ModificationTimeFailure failure = ModificationTimeFailure::NOT_IMPLEMENTED;
 
 	explicit NoModificationTimeFileSystem(string directory_p) : directory(std::move(directory_p)) {
 	}
@@ -49,7 +54,20 @@ public:
 	}
 
 	timestamp_t GetLastModifiedTime(FileHandle &handle) override {
-		return FileSystem::GetLastModifiedTime(handle);
+		switch (failure) {
+		case ModificationTimeFailure::IO_ERROR:
+			throw IOException("no time today");
+		case ModificationTimeFailure::REWRAPPED_NOT_IMPLEMENTED:
+			try {
+				return FileSystem::GetLastModifiedTime(handle);
+			} catch (std::exception &ex) {
+				// an error passed on through ErrorData keeps its type but not its class
+				ErrorData error(ex);
+				error.Throw();
+			}
+		default:
+			return FileSystem::GetLastModifiedTime(handle);
+		}
 	}
 
 	//! The generic stats ask GetLastModifiedTime, the local stat call would not
@@ -90,19 +108,34 @@ TEST_CASE("read_blob leaves last_modified NULL when the file system has no modif
 	char content[] = "one";
 	handle->Write(content, 3);
 	handle.reset();
-	FileSystem::GetFileSystem(*con.context).RegisterSubSystem(make_uniq<NoModificationTimeFileSystem>(directory));
+	auto fs = make_uniq<NoModificationTimeFileSystem>(directory);
+	auto &no_time_fs = *fs;
+	FileSystem::GetFileSystem(*con.context).RegisterSubSystem(std::move(fs));
 
+	for (auto failure :
+	     {ModificationTimeFailure::NOT_IMPLEMENTED, ModificationTimeFailure::REWRAPPED_NOT_IMPLEMENTED}) {
+		no_time_fs.failure = failure;
+		for (auto prefix : {NoModificationTimeFileSystem::REMOTE_PREFIX, NoModificationTimeFileSystem::LOCAL_PREFIX}) {
+			string file = string(prefix) + "a.txt";
+			// metadata only reads take the stats of the file, remote ones through the caching file system
+			auto result = con.Query("SELECT size, last_modified FROM read_blob('" + file + "')");
+			REQUIRE_NO_FAIL(*result);
+			REQUIRE(CHECK_COLUMN(result, 0, {3}));
+			REQUIRE(CHECK_COLUMN(result, 1, {Value()}));
+
+			result = con.Query("SELECT content, last_modified FROM read_blob('" + file + "')");
+			REQUIRE_NO_FAIL(*result);
+			REQUIRE(CHECK_COLUMN(result, 0, {Value::BLOB_RAW(string("one"))}));
+			REQUIRE(CHECK_COLUMN(result, 1, {Value()}));
+		}
+	}
+
+	// other errors of the modification time still fail the read
+	no_time_fs.failure = ModificationTimeFailure::IO_ERROR;
 	for (auto prefix : {NoModificationTimeFileSystem::REMOTE_PREFIX, NoModificationTimeFileSystem::LOCAL_PREFIX}) {
 		string file = string(prefix) + "a.txt";
-		// metadata only reads take the stats of the file, remote ones through the caching file system
 		auto result = con.Query("SELECT size, last_modified FROM read_blob('" + file + "')");
-		REQUIRE_NO_FAIL(*result);
-		REQUIRE(CHECK_COLUMN(result, 0, {3}));
-		REQUIRE(CHECK_COLUMN(result, 1, {Value()}));
-
-		result = con.Query("SELECT content, last_modified FROM read_blob('" + file + "')");
-		REQUIRE_NO_FAIL(*result);
-		REQUIRE(CHECK_COLUMN(result, 0, {Value::BLOB_RAW(string("one"))}));
-		REQUIRE(CHECK_COLUMN(result, 1, {Value()}));
+		REQUIRE_FAIL(result);
+		REQUIRE(StringUtil::Contains(result->GetError(), "no time today"));
 	}
 }
