@@ -16,7 +16,7 @@
 
 namespace duckdb {
 
-class ClientConfig;
+struct ClientConfig;
 class BufferManager;
 class ClientContext;
 class DatabaseInstance;

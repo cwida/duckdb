@@ -41,6 +41,7 @@
 #include "duckdb/transaction/meta_transaction.hpp"
 #include "duckdb/storage/data_table.hpp"
 #include "duckdb/parser/parsed_data/create_view_info.hpp"
+#include "duckdb/main/database.hpp"
 
 namespace duckdb {
 

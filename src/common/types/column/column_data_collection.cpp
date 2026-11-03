@@ -17,6 +17,7 @@
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
+#include "duckdb/main/client_context.hpp"
 
 namespace duckdb {
 

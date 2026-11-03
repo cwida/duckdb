@@ -3,6 +3,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/limits.hpp"
 #include "duckdb/execution/radix_ht_sink_state.hpp"
+#include "duckdb/main/client_context.hpp"
 
 namespace duckdb {
 
