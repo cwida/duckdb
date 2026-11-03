@@ -526,7 +526,7 @@ FileType FileSystem::GetFileType(FileHandle &handle) {
 FileMetadata FileSystem::Stats(FileHandle &handle) {
 	FileMetadata metadata;
 	metadata.file_size = GetFileSize(handle);
-	// a file system without modification times leaves the time unknown, the readers and the cache expect that
+	// leave unsupported modification times unknown
 	try {
 		metadata.last_modification_time = GetLastModifiedTime(handle);
 	} catch (NotImplementedException &) {

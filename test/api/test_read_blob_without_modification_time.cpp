@@ -5,8 +5,7 @@
 
 using namespace duckdb;
 
-//! Serves the files of a test directory under a remote and a local prefix, without modification times, like a
-//! Python file system whose info() has no mtime
+//! Serves the files of a test directory under a remote and a local prefix, without modification times
 class NoModificationTimeFileSystem : public LocalFileSystem {
 public:
 	static constexpr const char *REMOTE_PREFIX = "s3://no-modification-time/";
@@ -40,8 +39,7 @@ public:
 		return LocalFileSystem::FileExists(MapPath(path), opener);
 	}
 
-	//! Opens for reading without the direct IO the reader asks of remote files, whose buffers a local file needs
-	//! aligned
+	//! Without the direct IO of remote reads, which needs aligned buffers on a local file
 	unique_ptr<FileHandle> OpenFile(const string &path, FileOpenFlags flags, optional_ptr<FileOpener> opener) override {
 		FileOpenFlags read_flags = FileFlags::FILE_FLAGS_READ;
 		if (flags.ReturnNullIfNotExists()) {
@@ -54,12 +52,12 @@ public:
 		return FileSystem::GetLastModifiedTime(handle);
 	}
 
-	//! The generic stats, which ask GetLastModifiedTime, instead of the local stat call
+	//! The generic stats ask GetLastModifiedTime, the local stat call would not
 	FileMetadata Stats(FileHandle &handle) override {
 		return FileSystem::Stats(handle);
 	}
 
-	//! The local answers go through the stat call, not through the generic stats, which would ask them again
+	//! Through the local stat call, the generic stats would recurse
 	int64_t GetFileSize(FileHandle &handle) override {
 		return LocalFileSystem::Stats(handle).file_size;
 	}
@@ -84,7 +82,7 @@ TEST_CASE("read_blob leaves last_modified NULL when the file system has no modif
 	DuckDB db(nullptr);
 	Connection con(db);
 
-	auto directory = TestCreatePath("no_modification_time");
+	auto directory = TestJoinPath(LocalTestDirectoryPath(), "no_modification_time");
 	LocalFileSystem local;
 	local.CreateDirectory(directory);
 	auto handle = local.OpenFile(local.JoinPath(directory, "a.txt"),
