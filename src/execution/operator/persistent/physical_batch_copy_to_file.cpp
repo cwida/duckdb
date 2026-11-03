@@ -173,7 +173,7 @@ public:
 		global_state = std::move(new_global_state);
 	}
 
-	//! Finishes the file that reached its size and opens the next one, called by the flushing thread only
+	//! Opens the next file once the current one reached its size, called by the flushing thread only
 	void RotateFile(ClientContext &context, const PhysicalBatchCopyToFile &op) {
 		auto finished_state = std::move(global_state);
 		if (RefersToSameObject(*finished_state, *prepare_state)) {

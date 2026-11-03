@@ -43,7 +43,7 @@ public:
 	optional_idx batch_size;
 	optional_idx batch_size_bytes;
 	//! With file_size_bytes the files are written into the directory file_path, named by the pattern and extension,
-	//! and a file that reached the size is finished before the next batch
+	//! and once a file reached the size the next batch starts a new one
 	optional_idx file_size_bytes;
 	FilenamePattern filename_pattern;
 	string file_extension;
