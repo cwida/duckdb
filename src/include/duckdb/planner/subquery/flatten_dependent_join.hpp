@@ -147,15 +147,22 @@ private:
 	UnnestingState PushDownCTE(unique_ptr<LogicalOperator> &plan, bool propagate_null_values,
 	                           vector<ColumnBinding> state);
 	UnnestingState PushDownCTERef(unique_ptr<LogicalOperator> &plan);
-	//! Rewrites the full-domain scans this flattener created inside a trampoline branch into
-	//! distinct projections of the branch's current wave domains
-	void RestrictBranchDomainScans(unique_ptr<LogicalOperator> &plan, TableIndex cte_index,
-	                               const vector<LogicalType> &wave_types, const vector<Identifier> &wave_names,
-	                               const set<idx_t> &own_delim_gets);
-	//! Creates a domain scan and records it in delim_gets_created
-	unique_ptr<LogicalDelimGet> CreateDelimGet(TableIndex delim_index);
-	//! Table indexes of every domain scan this flattener instance created, in creation order
-	vector<idx_t> delim_gets_created;
+	//! Wraps surviving frontier reads of a trampoline branch in a null-safe semi join
+	//! against the wave's distinct domains
+	void RestrictBranchFrontierScans(unique_ptr<LogicalOperator> &plan, TableIndex cte_index,
+	                                 const vector<LogicalType> &wave_types, const vector<Identifier> &wave_names);
+	//! Wave layout of the trampoline branch currently being pushed down; while set,
+	//! domain sources are built from the wave instead of the full outer domain
+	struct TrampolineDomainScope {
+		TableIndex cte_index;
+		vector<LogicalType> wave_types;
+		vector<Identifier> wave_names;
+	};
+	//! Creates the domain feed of one decorrelated consumer: ordinarily the full-domain
+	//! delim scan, inside a trampoline branch the distinct domains of the current wave.
+	//! Both expose the same (delim_index, i) bindings to the consumer.
+	unique_ptr<LogicalOperator> CreateDomainSource(TableIndex delim_index);
+	unique_ptr<TrampolineDomainScope> trampoline_domain_scope;
 	//! Nonzero while pushing down the branches of a trampoline (nested trampolines)
 	idx_t trampoline_branch_depth = 0;
 };
