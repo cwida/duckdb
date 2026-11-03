@@ -116,6 +116,7 @@
 			"reason": "Wide decimal columns are written without a Parquet bloom filter, and their size differs from the fixed-size columns",
 			"paths": [
 				"test/sql/copy/parquet/bloom_filter_decimal.test",
+				"test/sql/copy/parquet/bloom_filter_fallback_types.test",
 				"test/sql/copy/return_stats.test"
 			]
 		},
