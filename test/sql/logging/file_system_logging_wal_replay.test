@@ -32,7 +32,7 @@ SELECT i FROM db.t;
 ----
 42
 
-# the file system of the attaching connection opens the database file and its WAL, so the session settings apply to both
+# the attaching connection opens both files
 query IIII
 SELECT DISTINCT scope, fs, parse_filename(path) AS file, connection_id = current_connection_id() AS attaching_connection
 FROM duckdb_logs_parsed('FileSystem')
