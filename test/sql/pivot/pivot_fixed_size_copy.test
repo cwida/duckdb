@@ -1,0 +1,96 @@
+# name: test/sql/pivot/pivot_fixed_size_copy.test
+# description: Physical PIVOT copies fixed-size values at nonzero offsets and retains nested values
+# group: [pivot]
+
+statement ok
+SET pivot_filter_threshold = 0;
+
+statement ok
+CREATE TABLE fixed_input(g INTEGER, p VARCHAR, v INTEGER);
+
+statement ok
+INSERT INTO fixed_input VALUES (1, 'a', 12), (1, 'b', NULL), (2, 'b', 34), (3, 'a', NULL), (3, 'b', NULL);
+
+# Fixed-size values, present NULLs and absent pivot columns.
+foreach type TINYINT SMALLINT INTEGER BIGINT HUGEINT UTINYINT USMALLINT UINTEGER UBIGINT UHUGEINT FLOAT DOUBLE DECIMAL(4,0) DECIMAL(9,0) DECIMAL(18,0) DECIMAL(38,0)
+
+query IIII
+PIVOT (SELECT g, p, v::{type} AS v FROM fixed_input) ON p IN ('a', 'b', 'absent') USING first(v) GROUP BY g ORDER BY g;
+----
+1	12	NULL	NULL
+2	NULL	34	NULL
+3	NULL	NULL	NULL
+
+endloop
+
+query IIII
+PIVOT (SELECT * FROM (VALUES (1, 'a', 12345678901234567890.25::DECIMAL(38,2)),
+                            (1, 'b', -98765432109876543210.75::DECIMAL(38,2))) t(g, p, v))
+ON p IN ('a', 'b', 'absent') USING first(v) GROUP BY g;
+----
+1	12345678901234567890.25	-98765432109876543210.75	NULL
+
+query IIII
+PIVOT (SELECT * FROM (VALUES (1, 'a', true), (1, 'b', false), (2, 'a', NULL)) t(g, p, v))
+ON p IN ('a', 'b', 'absent') USING first(v) GROUP BY g ORDER BY g;
+----
+1	1	0	NULL
+2	NULL	NULL	NULL
+
+query IIII
+PIVOT (SELECT 1 AS g, 'a' AS p, INTERVAL '2 months 3 days 4 microseconds' AS v)
+ON p IN ('a', 'b', 'absent') USING first(v) GROUP BY g;
+----
+1	2 months 3 days 00:00:00.000004	NULL	NULL
+
+# Multiple chunks and aggregates, with nonzero source and output offsets.
+statement ok
+CREATE TABLE chunk_input AS
+SELECT g, p, CASE WHEN g % 5 = 0 THEN NULL ELSE g * 10 + p END AS v
+FROM range(4099) groups(g), range(3) pivots(p)
+WHERE p != 1 OR g % 3 != 0;
+
+statement ok
+CREATE TABLE chunk_pivot AS PIVOT chunk_input ON p IN (0, 1, 2, 3) USING first(v) AS v, count(v) AS n GROUP BY g;
+
+query II
+SELECT count(*), count(*) FILTER (WHERE
+    "0_v" IS DISTINCT FROM CASE WHEN g % 5 != 0 THEN g * 10 END OR
+    "1_v" IS DISTINCT FROM CASE WHEN g % 5 != 0 AND g % 3 != 0 THEN g * 10 + 1 END OR
+    "2_v" IS DISTINCT FROM CASE WHEN g % 5 != 0 THEN g * 10 + 2 END OR
+    "3_v" IS NOT NULL OR
+    "0_n" IS DISTINCT FROM (g % 5 != 0)::INTEGER OR
+    "1_n" IS DISTINCT FROM (g % 5 != 0 AND g % 3 != 0)::INTEGER OR
+    "2_n" IS DISTINCT FROM (g % 5 != 0)::INTEGER OR "3_n" IS DISTINCT FROM 0)
+FROM chunk_pivot;
+----
+4099	0
+
+# Variable-size and nested values, including NULLs and absent pivots.
+statement ok
+CREATE TABLE fallback_input AS
+SELECT g, p,
+       CASE WHEN g % 5 != 0 THEN repeat(g::VARCHAR || ':' || p::VARCHAR, 20) END AS s,
+       CASE WHEN g % 5 != 0 THEN [g, p, NULL] END AS l,
+       CASE WHEN g % 5 != 0 THEN {'g': g, 'p': p} END AS st
+FROM range(4099) groups(g), range(2) pivots(p);
+
+statement ok
+CREATE TABLE fallback_pivot AS PIVOT fallback_input ON p IN (0, 1, 2)
+USING first(s) AS s, first(l) AS l, first(st) AS st GROUP BY g;
+
+query II
+SELECT count(*), count(*) FILTER (WHERE
+    "0_s" IS DISTINCT FROM CASE WHEN g % 5 != 0 THEN repeat(g::VARCHAR || ':0', 20) END OR
+    "1_s" IS DISTINCT FROM CASE WHEN g % 5 != 0 THEN repeat(g::VARCHAR || ':1', 20) END OR
+    "0_l" IS DISTINCT FROM CASE WHEN g % 5 != 0 THEN [g, 0, NULL] END OR
+    "1_l" IS DISTINCT FROM CASE WHEN g % 5 != 0 THEN [g, 1, NULL] END OR
+    "0_st" IS DISTINCT FROM CASE WHEN g % 5 != 0 THEN {'g': g, 'p': 0} END OR
+    "1_st" IS DISTINCT FROM CASE WHEN g % 5 != 0 THEN {'g': g, 'p': 1} END OR
+    "2_s" IS NOT NULL OR "2_l" IS NOT NULL OR "2_st" IS NOT NULL)
+FROM fallback_pivot;
+----
+4099	0
+
+statement ok
+RESET pivot_filter_threshold;

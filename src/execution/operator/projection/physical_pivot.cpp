@@ -77,7 +77,13 @@ OperatorResultType PhysicalPivot::Execute(ExecutionContext &context, DataChunk &
 				if (list.length != pivot_value_lists[r].length) {
 					throw InternalException("Pivot - unaligned lists between values and columns!?");
 				}
-				chunk.data[column_idx + aggr].SetValue(r, pivot_value_child.GetValue(pivot_value_lists[r].offset + l));
+				auto source_idx = pivot_value_lists[r].offset + l;
+				if (TypeIsConstantSize(pivot_value_child.GetType().InternalType())) {
+					chunk.data[column_idx + aggr].Copy(pivot_value_child, SelectionVector(), pivot_value_child.size(),
+					                                   source_idx, r, 1);
+				} else {
+					chunk.data[column_idx + aggr].SetValue(r, pivot_value_child.GetValue(source_idx));
+				}
 			}
 		}
 	}
