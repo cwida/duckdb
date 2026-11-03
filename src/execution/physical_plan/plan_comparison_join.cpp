@@ -6,6 +6,7 @@
 #include "duckdb/execution/operator/join/physical_join.hpp"
 #include "duckdb/execution/operator/join/physical_nested_loop_join.hpp"
 #include "duckdb/execution/operator/join/physical_piecewise_merge_join.hpp"
+#include "duckdb/execution/operator/projection/physical_projection.hpp"
 #include "duckdb/execution/operator/join/physical_recursive_cte_key_join.hpp"
 #include "duckdb/execution/operator/set/physical_recursive_cte.hpp"
 #include "duckdb/execution/physical_plan_generator.hpp"
