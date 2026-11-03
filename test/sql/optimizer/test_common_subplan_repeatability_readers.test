@@ -13,27 +13,27 @@ statement ok
 CREATE TABLE reader_rows AS SELECT i, i % 3 AS j FROM range(100) t(i);
 
 statement ok
-COPY reader_rows TO '__TEST_DIR__/repeatability_rows.parquet' (FORMAT parquet);
+COPY reader_rows TO '{TEST_DIR}/repeatability_rows.parquet' (FORMAT parquet);
 
 statement ok
-COPY reader_rows TO '__TEST_DIR__/repeatability_rows.csv' (FORMAT csv, HEADER);
+COPY reader_rows TO '{TEST_DIR}/repeatability_rows.csv' (FORMAT csv, HEADER);
 
 statement ok
-COPY (SELECT to_json(reader_rows) AS record FROM reader_rows) TO '__TEST_DIR__/repeatability_rows.json' (FORMAT csv, QUOTE '', HEADER false);
+COPY (SELECT to_json(reader_rows) AS record FROM reader_rows) TO '{TEST_DIR}/repeatability_rows.json' (FORMAT csv, QUOTE '', HEADER false);
 
 # Identical reader calls keep full multiplicity through INTERSECT ALL.
 query I
-SELECT count(*) FROM (SELECT * FROM read_parquet('__TEST_DIR__/repeatability_rows.parquet') INTERSECT ALL SELECT * FROM read_parquet('__TEST_DIR__/repeatability_rows.parquet'));
+SELECT count(*) FROM (SELECT * FROM read_parquet('{TEST_DIR}/repeatability_rows.parquet') INTERSECT ALL SELECT * FROM read_parquet('{TEST_DIR}/repeatability_rows.parquet'));
 ----
 100
 
 query I
-SELECT count(*) FROM (SELECT * FROM read_csv('__TEST_DIR__/repeatability_rows.csv') INTERSECT ALL SELECT * FROM read_csv('__TEST_DIR__/repeatability_rows.csv'));
+SELECT count(*) FROM (SELECT * FROM read_csv('{TEST_DIR}/repeatability_rows.csv') INTERSECT ALL SELECT * FROM read_csv('{TEST_DIR}/repeatability_rows.csv'));
 ----
 100
 
 query I
-SELECT count(*) FROM (SELECT * FROM read_json('__TEST_DIR__/repeatability_rows.json') INTERSECT ALL SELECT * FROM read_json('__TEST_DIR__/repeatability_rows.json'));
+SELECT count(*) FROM (SELECT * FROM read_json('{TEST_DIR}/repeatability_rows.json') INTERSECT ALL SELECT * FROM read_json('{TEST_DIR}/repeatability_rows.json'));
 ----
 100
 
@@ -42,12 +42,12 @@ SELECT count(*) FROM (SELECT * FROM read_json('__TEST_DIR__/repeatability_rows.j
 # are still rejected by LogicalGet::SupportSerialization. If the readers gain real serialization
 # callbacks, sharing becomes reachable and these expectations should flip deliberately.
 query II
-EXPLAIN (FORMAT JSON) SELECT * FROM read_parquet('__TEST_DIR__/repeatability_rows.parquet') INTERSECT ALL SELECT * FROM read_parquet('__TEST_DIR__/repeatability_rows.parquet');
+EXPLAIN (FORMAT JSON) SELECT * FROM read_parquet('{TEST_DIR}/repeatability_rows.parquet') INTERSECT ALL SELECT * FROM read_parquet('{TEST_DIR}/repeatability_rows.parquet');
 ----
 logical_opt	<!REGEX>:.*__common_subplan_.*
 
 query II
-EXPLAIN (FORMAT JSON) SELECT * FROM read_csv('__TEST_DIR__/repeatability_rows.csv') INTERSECT ALL SELECT * FROM read_csv('__TEST_DIR__/repeatability_rows.csv');
+EXPLAIN (FORMAT JSON) SELECT * FROM read_csv('{TEST_DIR}/repeatability_rows.csv') INTERSECT ALL SELECT * FROM read_csv('{TEST_DIR}/repeatability_rows.csv');
 ----
 logical_opt	<!REGEX>:.*__common_subplan_.*
 
@@ -74,7 +74,7 @@ WITH RECURSIVE r(i, total) AS (
     FROM r
     JOIN (
         SELECT i AS k, sum(i) OVER ()::BIGINT AS total
-        FROM read_parquet('__TEST_DIR__/repeatability_rows.parquet')
+        FROM read_parquet('{TEST_DIR}/repeatability_rows.parquet')
     ) build ON build.k = r.i
     WHERE r.i < 3
 )
@@ -106,7 +106,7 @@ WITH RECURSIVE r(i, total) AS (
     FROM r
     JOIN (
         SELECT i AS k, sum(i) OVER ()::BIGINT AS total
-        FROM read_csv('__TEST_DIR__/repeatability_rows.csv')
+        FROM read_csv('{TEST_DIR}/repeatability_rows.csv')
     ) build ON build.k = r.i
     WHERE r.i < 3
 )
