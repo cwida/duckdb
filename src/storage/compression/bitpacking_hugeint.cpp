@@ -281,10 +281,29 @@ void HugeIntPacker::Unpack(const uint32_t *__restrict in, uhugeint_t *__restrict
 		UnpackDelta128(in, out);
 		break;
 	default:
-		for (idx_t oindex = 0; oindex < BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE - 1; ++oindex) {
-			UnpackSingle(in, out + oindex, width,
-			             (width * oindex) % BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE);
+		const uhugeint_t mask = (uhugeint_t(1) << width) - 1;
+		uint32_t bit_pos = 0;
+		for (idx_t oindex = 0; oindex < BitpackingPrimitives::BITPACKING_ALGORITHM_GROUP_SIZE - 1;
+		     ++oindex, bit_pos += width) {
+			const uint32_t idx = bit_pos >> 5;
+			const uint16_t shr = static_cast<uint16_t>(bit_pos & 31U);
+			const uint16_t span = width + shr;
+			uhugeint_t val = static_cast<uhugeint_t>(in[idx]) >> shr;
+			if (span > 32) {
+				val |= static_cast<uhugeint_t>(in[idx + 1]) << (32 - shr);
+			}
+			if (span > 64) {
+				val |= static_cast<uhugeint_t>(in[idx + 2]) << (64 - shr);
+			}
+			if (span > 96) {
+				val |= static_cast<uhugeint_t>(in[idx + 3]) << (96 - shr);
+			}
+			if (span > 128) {
+				val |= static_cast<uhugeint_t>(in[idx + 4]) << (128 - shr);
+			}
+			out[oindex] = val & mask;
 		}
+		in += (bit_pos >> 5);
 		UnpackLast(in, out, width);
 	}
 }
