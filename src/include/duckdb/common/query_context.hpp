@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/common/optional_ptr.hpp"
+#include "duckdb/common/winapi.hpp"
 #include "duckdb/main/context.hpp"
 
 namespace duckdb {
@@ -21,9 +22,9 @@ class QueryContext {
 public:
 	QueryContext() {
 	}
-	QueryContext(optional_ptr<ClientContext> context);          // NOLINT: allow implicit construction
-	QueryContext(ClientContext &context);                       // NOLINT: allow implicit construction
-	QueryContext(Context &services_p) : services(&services_p) { // NOLINT: allow implicit construction
+	DUCKDB_API QueryContext(optional_ptr<ClientContext> context); // NOLINT: allow implicit construction
+	DUCKDB_API QueryContext(ClientContext &context);              // NOLINT: allow implicit construction
+	QueryContext(Context &services_p) : services(&services_p) {   // NOLINT: allow implicit construction
 	}
 
 public:

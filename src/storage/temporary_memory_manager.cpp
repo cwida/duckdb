@@ -87,7 +87,7 @@ void TemporaryMemoryManager::Unregister(TemporaryMemoryState &temporary_memory_s
 }
 
 void TemporaryMemoryManager::UpdateConfiguration(Context &services) {
-	auto &buffer_manager = BufferManager::GetBufferManager(services.GetDatabase());
+	auto &buffer_manager = services.GetBufferManager();
 	auto &task_scheduler = services.GetTaskScheduler();
 
 	memory_limit =
@@ -99,7 +99,7 @@ void TemporaryMemoryManager::UpdateConfiguration(Context &services) {
 }
 
 TemporaryMemoryManager &TemporaryMemoryManager::Get(Context &services) {
-	return BufferManager::GetBufferManager(services.GetDatabase()).GetTemporaryMemoryManager();
+	return services.GetBufferManager().GetTemporaryMemoryManager();
 }
 
 unique_ptr<TemporaryMemoryState> TemporaryMemoryManager::Register(Context &services) {

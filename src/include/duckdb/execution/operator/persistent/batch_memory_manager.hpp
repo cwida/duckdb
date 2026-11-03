@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/common/common.hpp"
+#include "duckdb/main/client_context.hpp"
 #include "duckdb/storage/temporary_memory_manager.hpp"
 #include "duckdb/parallel/interrupt.hpp"
 #include "duckdb/storage/buffer_manager.hpp"

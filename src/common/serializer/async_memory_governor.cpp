@@ -12,7 +12,7 @@ ManagedAsyncMemoryGovernor::ManagedAsyncMemoryGovernor(Context &services_p) : se
 	auto &scheduler = services.GetTaskScheduler();
 	auto regular_threads = MaxValue<idx_t>(NumericCast<idx_t>(scheduler.NumberOfThreads()), 1);
 	auto async_threads = NumericCast<idx_t>(scheduler.NumberOfAsyncThreads());
-	auto max_memory = BufferManager::GetBufferManager(services.GetDatabase()).GetMaxMemory();
+	auto max_memory = services.GetBufferManager().GetMaxMemory();
 	max_pending_bytes = MinValue(ManagedAsyncMemoryConfig::MAX_PENDING_BYTES_PER_THREAD * regular_threads,
 	                             max_memory / ManagedAsyncMemoryConfig::MAX_PENDING_MEMORY_LIMIT_DIVISOR);
 	min_pending_bytes =
