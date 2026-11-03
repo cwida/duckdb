@@ -23,7 +23,7 @@ def run_with_address_space_limit(shell, limit_mb, sql):
     )
 
 
-# no segmentation fault when the address space runs out
+# no segmentation fault or abort when the address space runs out
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="RLIMIT_AS limits the address space on Linux")
 @pytest.mark.parametrize(
     "limit_mb, sql",
@@ -40,5 +40,7 @@ def test_address_space_limit(shell, limit_mb, sql):
     for _ in range(3):
         result = run_with_address_space_limit(shell, limit_mb, sql)
         assert result.returncode != -signal.SIGSEGV, result.stderr
+        assert result.returncode != -signal.SIGABRT, result.stderr
+        assert b"terminate called" not in result.stderr, result.stderr
         if result.returncode == 1:
             assert b"Out of Memory" in result.stderr, result.stderr
