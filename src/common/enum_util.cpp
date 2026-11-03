@@ -140,7 +140,6 @@
 #include "duckdb/function/aggregate_state.hpp"
 #include "duckdb/function/aggregate_state_serialization.hpp"
 #include "duckdb/function/arg_properties.hpp"
-#include "duckdb/function/cast/bound_cast_data.hpp"
 #include "duckdb/function/compression_function.hpp"
 #include "duckdb/function/copy_function.hpp"
 #include "duckdb/function/function.hpp"
@@ -3953,26 +3952,6 @@ const char* EnumUtil::ToChars<MapInvalidReason>(MapInvalidReason value) {
 template<>
 MapInvalidReason EnumUtil::FromString<MapInvalidReason>(const char *value) {
 	return static_cast<MapInvalidReason>(StringUtil::StringToEnum(GetMapInvalidReasonValues(), 5, "MapInvalidReason", value));
-}
-
-const StringUtil::EnumStringLiteral *GetMatchKindValues() {
-	static constexpr StringUtil::EnumStringLiteral values[] {
-		{ static_cast<uint32_t>(MatchKind::VALID), "VALID" },
-		{ static_cast<uint32_t>(MatchKind::SIZE_MISMATCH), "SIZE_MISMATCH" },
-		{ static_cast<uint32_t>(MatchKind::DUPLICATE_TARGET_NAME), "DUPLICATE_TARGET_NAME" },
-		{ static_cast<uint32_t>(MatchKind::NO_MATCHING_FIELD), "NO_MATCHING_FIELD" }
-	};
-	return values;
-}
-
-template<>
-const char* EnumUtil::ToChars<MatchKind>(MatchKind value) {
-	return StringUtil::EnumToString(GetMatchKindValues(), 4, "MatchKind", static_cast<uint32_t>(value));
-}
-
-template<>
-MatchKind EnumUtil::FromString<MatchKind>(const char *value) {
-	return static_cast<MatchKind>(StringUtil::StringToEnum(GetMatchKindValues(), 4, "MatchKind", value));
 }
 
 const StringUtil::EnumStringLiteral *GetMatchModeValues() {
