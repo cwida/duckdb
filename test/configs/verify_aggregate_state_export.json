@@ -22,6 +22,7 @@
         "test/sql/copy/parquet/parquet_encryption.test",
         "test/sql/copy/parquet/parquet_glob_cache.test",
         "test/sql/copy/parquet/parquet_expression_filter_pruning.test",
+        "test/sql/copy/parquet/parquet_nan_setting.test",
         "test/sql/copy/parquet/parquet_stats.test",
         "test/sql/copy/parquet/read_single_parquet_file.test",
         "test/sql/optimizer/aggregate_stats_propagation.test",

@@ -1,0 +1,36 @@
+# name: test/sql/copy/parquet/parquet_timestamptz_ns_as_timestamp.test
+# description: A Parquet TIMESTAMP(NANOS, isAdjustedToUTC=true) column can be read into a TIMESTAMP column
+# group: [parquet]
+
+require parquet
+
+require icu
+
+statement ok
+SET TimeZone='UTC'
+
+statement ok
+COPY (SELECT CAST('2024-01-15 12:34:56.123456789+00' AS TIMESTAMPTZ_NS) AS ts UNION ALL SELECT NULL) TO '{TEST_DIR}/timestamptz_ns.parquet'
+
+# the file stores the column the way pyarrow writes a time zone aware nanosecond timestamp
+query II
+SELECT logical_type LIKE '%isAdjustedToUTC=1%', logical_type LIKE '%NANOS%' FROM parquet_schema('{TEST_DIR}/timestamptz_ns.parquet') WHERE name = 'ts'
+----
+true	true
+
+query T
+SELECT typeof(ts) FROM read_parquet('{TEST_DIR}/timestamptz_ns.parquet') LIMIT 1
+----
+TIMESTAMPTZ_NS
+
+# reading the file into a table whose column is TIMESTAMP casts the column while scanning
+statement ok
+CREATE TABLE t (ts TIMESTAMP)
+
+statement ok
+COPY t FROM '{TEST_DIR}/timestamptz_ns.parquet'
+
+query TII
+SELECT max(ts), count(ts), count(*) FROM t
+----
+2024-01-15 12:34:56.123457	1	2
