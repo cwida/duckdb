@@ -49,7 +49,11 @@ static bool IsKeptFilterRoot(const CSEReplacementState &state, const Expression 
 	if (!state.keep_aggregate_filters || parent.GetExpressionClass() != ExpressionClass::BOUND_AGGREGATE) {
 		return false;
 	}
-	return parent.Cast<BoundAggregateExpression>().GetFilter().get() == &child;
+	if (parent.Cast<BoundAggregateExpression>().GetFilter().get() != &child) {
+		return false;
+	}
+	// the planner moves volatile filters into the projection, one per aggregate: their sub-expressions are shared
+	return !child.IsVolatile();
 }
 
 void CommonSubExpressionOptimizer::VisitOperator(LogicalOperator &op) {

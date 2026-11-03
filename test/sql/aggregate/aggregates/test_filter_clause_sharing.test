@@ -119,6 +119,20 @@ SELECT count(*) FILTER (WHERE nextval('s2') <= 10), count(i) FILTER (WHERE nextv
 ----
 10	0
 
+# a deterministic sub-expression of volatile filters is shared, the volatile filters themselves are not
+statement ok
+CREATE OR REPLACE TABLE h AS SELECT i, repeat(i::VARCHAR, 32) AS s FROM range(20000) t(i)
+
+query IIII
+SELECT count(*) FILTER (WHERE sha256(s) < '8' AND random() < 2.0), sum(i) FILTER (WHERE sha256(s) < '8' AND random() < 2.0), count(*) FILTER (WHERE sha256(s) < '8'), sum(i) FILTER (WHERE sha256(s) < '8') FROM h
+----
+10056	100093689	10056	100093689
+
+query II
+SELECT count(*), sum(i) FROM h WHERE sha256(s) < '8'
+----
+10056	100093689
+
 # deterministic children and filters are shared
 query III
 SELECT list(i * 2) FILTER (WHERE i < 10), sum(i * 2) FILTER (WHERE i < 10), count(i * 2) FILTER (WHERE i < 10) FROM range(100) t(i)
