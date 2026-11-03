@@ -660,10 +660,12 @@ Please double check if '{args.extension_repository}' is the right location to lo
 
     def verify_export(self):
         if len(self.function_map) == 0 or len(self.settings_map) == 0 or len(self.secret_types_map) == 0:
-            log("""
+            log(
+                """
 The provided configuration produced an empty function map or empty settings map or empty secret types map
 This is likely caused by building DuckDB with extensions linked in
-""")
+"""
+            )
             exit(1)
 
     def export_functions(self) -> str:
