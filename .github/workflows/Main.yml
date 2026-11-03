@@ -1278,6 +1278,9 @@ jobs:
     runs-on: ${{ needs.prepare.outputs.runner_linux_x64 }}
     container:
       image: ${{ fromJson(needs.prepare.outputs.images).manylinux_amd64_main }}
+      # TSAN re-executes itself with ASLR disabled when the host's mmap entropy is too high for its memory layout,
+      # which Docker's default seccomp profile blocks on GitHub-hosted runners
+      options: --security-opt seccomp=unconfined
     env:
       DUCKDB_VERSION: ${{ needs.prepare.outputs.duckdb_version }}
       DUCKDB_COMMIT: ${{ needs.prepare.outputs.duckdb_commit }}

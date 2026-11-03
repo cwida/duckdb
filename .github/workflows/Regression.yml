@@ -93,7 +93,9 @@ jobs:
               BASE_REF="${BASE_HASH}"
             fi
           else
-            git fetch https://github.com/duckdb/duckdb.git "${BASE_BRANCH}:refs/remotes/duckdb/${BASE_BRANCH}"
+            # A fork's pull requests target its own branches, which duckdb/duckdb doesn't have
+            BASE_REPOSITORY="${{ github.event.pull_request.base.repo.full_name || 'duckdb/duckdb' }}"
+            git fetch "https://github.com/${BASE_REPOSITORY}.git" "${BASE_BRANCH}:refs/remotes/duckdb/${BASE_BRANCH}"
             if [[ "${{ github.event_name }}" == "pull_request" || "${{ github.event_name }}" == "merge_group" ]]; then
               BASE_REF="$(git merge-base "${GIT_REF}" "duckdb/${BASE_BRANCH}")"
               if [[ -z "${BASE_REF}" ]]; then

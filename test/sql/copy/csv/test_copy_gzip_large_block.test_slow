@@ -2,6 +2,9 @@
 # description: Regression test for COPY to gzip when a single write exceeds 4 GiB (UINT32_MAX)
 # group: [csv]
 
+# writing a single block over 4 GiB peaks at about 8 GiB
+require ram 12gb
+
 statement ok
 COPY (SELECT repeat('x', 2100000) AS doc FROM range(2048)) TO '{TEST_DIR}/large_gzip_block.csv.gz' (FORMAT CSV, HEADER false);
 

@@ -11,6 +11,12 @@
       ]
     },
     {
+      "reason": "Measures the bytes saved by pushing VARIANT extract paths into the Parquet scan, which the optimizer does.",
+      "paths": [
+        "test/parquet/variant/pushdown/variant_extract_partial_shredding_projection.test"
+      ]
+    },
+    {
       "reason": "Checks evaluation counts after optimizer filter pushdown.",
       "paths": [
         "test/optimizer/pushdown/lateral_projection_evaluation.test",

@@ -127,6 +127,10 @@ def enabled_jobs(selection_input: JobSelectionInput, reduced_ci_mode: str) -> li
         selected_jobs = [job for job in selected_jobs if job != "regression"]
         selected_jobs.extend(RELEASE_JOBS)
 
+    if selection_input.event_name == "push" and selection_input.repository != "duckdb/duckdb":
+        # A fork's branches have no base to compare against; its pull requests run the regression job
+        selected_jobs = [job for job in selected_jobs if job != "regression"]
+
     if selection_input.skip_tests:
         selected_jobs = [job for job in selected_jobs if job not in SKIP_TESTS_JOBS]
 
