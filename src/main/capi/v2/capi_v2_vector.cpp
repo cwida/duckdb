@@ -296,6 +296,7 @@ DUCKDB_V2_ERROR duckdb_v2_vector_constant_set_valid(duckdb_v2_vector_handle vect
 //   ARRAY   → 1 child  ([0] = elements)
 //   STRUCT  → N children ([i] = field i)
 //   UNION   → N+1 children ([0] = tag, [1..N] = members)
+//   VARIANT → 4 children ([0] = keys, [1] = children, [2] = values, [3] = data)
 //   others  → 0
 // ---------------------------------------------------------------------------
 
@@ -317,6 +318,9 @@ DUCKDB_V2_ERROR duckdb_v2_vector_get_child_count(duckdb_v2_vector_handle vector,
 			return;
 		case duckdb::LogicalTypeId::UNION:
 			*out_count = duckdb::UnionType::GetMemberCount(vec->GetType()) + 1;
+			return;
+		case duckdb::LogicalTypeId::VARIANT:
+			*out_count = 4;
 			return;
 		default:
 			*out_count = 0;
@@ -363,6 +367,21 @@ DUCKDB_V2_ERROR duckdb_v2_vector_get_child(duckdb_v2_vector_handle vector, idx_t
 			auto &entries = duckdb::StructVector::GetEntries(*vec);
 			if (index >= entries.size()) {
 				throw duckdb::InvalidInputException("duckdb_v2_vector_get_child: field index out of range");
+			}
+			*out_child = Convert(&entries[index]);
+			return;
+		}
+		case duckdb::LogicalTypeId::VARIANT: {
+			// The canonical layout: a shredded or dictionary vector is flattened into it first.
+			auto vt = vec->GetVectorType();
+			if (vt != duckdb::VectorType::FLAT_VECTOR && vt != duckdb::VectorType::CONSTANT_VECTOR) {
+				vec->Flatten();
+			}
+			auto &entries = duckdb::StructVector::GetEntries(*vec);
+			if (index >= entries.size()) {
+				throw duckdb::InvalidInputException(
+				    "duckdb_v2_vector_get_child: VARIANT has children [0] = keys, [1] = "
+				    "children, [2] = values and [3] = data");
 			}
 			*out_child = Convert(&entries[index]);
 			return;

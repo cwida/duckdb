@@ -83,7 +83,42 @@ module: vector
 #             returns [0] = tag and [1] = the ACTIVE member only, for a child
 #             count of 2: a union value holds one member, a union vector holds
 #             all of them.
+#   VARIANT → 4 children, its canonical layout (see below)
 #   others  → 0
+#
+# The VARIANT layout. A VARIANT vector stores semi-structured values in four
+# children, one row of each per VARIANT row, and exposes them like a STRUCT so
+# a producer can write a VARIANT directly (and a consumer read one) without
+# going through a cast:
+#
+#   [0] keys     LIST(VARCHAR)                     the row's object keys, distinct
+#   [1] children LIST(STRUCT(keys_index UINTEGER,  one entry per container child:
+#                            values_index UINTEGER))  which key (NULL for array
+#                                                  elements) and which value
+#   [2] values   LIST(STRUCT(type_id UTINYINT,     one entry per value, the root
+#                            byte_offset UINTEGER))  first: its kind (VARIANT_TYPE)
+#                                                  and where its payload starts
+#   [3] data     BLOB                              the row's payloads
+#
+# Indices are row-relative: keys_index counts into the row's keys list,
+# values_index into the row's values list, byte_offset into the row's data. A
+# container's children are contiguous in the row's children list; its payload
+# is the child count as a varint followed, when the count is nonzero, by the
+# index of its first child as a varint (varints are unsigned LEB128: 7 bits
+# per byte, low bits first, high bit set on every byte but the last). The
+# other payloads are listed with VARIANT_TYPE. A SQL NULL row is a NULL VARIANT
+# row (vector_set_null); a VARIANT null inside a container is a VARIANT_TYPE_NULL
+# value. A row's keys are in the order its producer gave them; readers look
+# keys up by value, so no order is required.
+#
+# To write: size the four list children and their element vectors with
+# vector_set_size, fill the list entries and the struct fields through
+# vector_get_data_mutable, clear the keys_index validity bits of array
+# elements through vector_flat_get_validity_mutable, and build the keys and
+# data strings in the vectors' arenas (vector_get_arena). Reading is the
+# reverse, through vector_get_view on each child. A shredded or dictionary
+# VARIANT vector is flattened into the canonical layout when its children are
+# first asked for.
 #
 # The "how many fields / how many members" questions are answered by
 # logical_type_get_param_count, not by a vector-side accessor.
@@ -134,6 +169,131 @@ structs:
       - {name: days, type: i32}
       - {name: micros, type: i64}
 enums:
+  VARIANT_TYPE:
+    description: |
+      The kind of a value inside a VARIANT, the `type_id` of its entry in the values child (see the module
+      comment for the layout). The payload of a value starts at its `byte_offset` in the row's data and is laid out as
+      the member says; fixed-width payloads are little-endian in the storage representation of the matching
+      logical type (see vector_get_view).
+    values:
+      VARIANT_TYPE_NULL:
+        value: 0
+        description: A VARIANT null. No payload.
+      VARIANT_TYPE_BOOL_TRUE:
+        value: 1
+        description: true. No payload.
+      VARIANT_TYPE_BOOL_FALSE:
+        value: 2
+        description: false. No payload.
+      VARIANT_TYPE_INT8:
+        value: 3
+        description: int8_t.
+      VARIANT_TYPE_INT16:
+        value: 4
+        description: int16_t.
+      VARIANT_TYPE_INT32:
+        value: 5
+        description: int32_t.
+      VARIANT_TYPE_INT64:
+        value: 6
+        description: int64_t.
+      VARIANT_TYPE_INT128:
+        value: 7
+        description: hugeint_t.
+      VARIANT_TYPE_UINT8:
+        value: 8
+        description: uint8_t.
+      VARIANT_TYPE_UINT16:
+        value: 9
+        description: uint16_t.
+      VARIANT_TYPE_UINT32:
+        value: 10
+        description: uint32_t.
+      VARIANT_TYPE_UINT64:
+        value: 11
+        description: uint64_t.
+      VARIANT_TYPE_UINT128:
+        value: 12
+        description: uhugeint_t.
+      VARIANT_TYPE_FLOAT:
+        value: 13
+        description: float.
+      VARIANT_TYPE_DOUBLE:
+        value: 14
+        description: double.
+      VARIANT_TYPE_DECIMAL:
+        value: 15
+        description: |
+          A DECIMAL: the width as a varint, the scale as a varint, then the unscaled value in the storage tier of the
+          width (int16_t up to 4 digits, int32_t up to 9, int64_t up to 18, hugeint_t up to 38).
+      VARIANT_TYPE_VARCHAR:
+        value: 16
+        description: |
+          Text: the byte length as a varint, then the UTF-8 bytes.
+      VARIANT_TYPE_BLOB:
+        value: 17
+        description: |
+          Binary data: the byte length as a varint, then the bytes.
+      VARIANT_TYPE_UUID:
+        value: 18
+        description: hugeint_t, as a UUID vector stores it.
+      VARIANT_TYPE_DATE:
+        value: 19
+        description: int32_t days since 1970-01-01.
+      VARIANT_TYPE_TIME_MICROS:
+        value: 20
+        description: int64_t microseconds since midnight (TIME).
+      VARIANT_TYPE_TIME_NANOS:
+        value: 21
+        description: int64_t nanoseconds since midnight (TIME_NS).
+      VARIANT_TYPE_TIMESTAMP_SEC:
+        value: 22
+        description: int64_t seconds since the epoch (TIMESTAMP_S).
+      VARIANT_TYPE_TIMESTAMP_MILLIS:
+        value: 23
+        description: int64_t milliseconds since the epoch (TIMESTAMP_MS).
+      VARIANT_TYPE_TIMESTAMP_MICROS:
+        value: 24
+        description: int64_t microseconds since the epoch (TIMESTAMP).
+      VARIANT_TYPE_TIMESTAMP_NANOS:
+        value: 25
+        description: int64_t nanoseconds since the epoch (TIMESTAMP_NS).
+      VARIANT_TYPE_TIME_MICROS_TZ:
+        value: 26
+        description: The 64-bit storage value of TIME_TZ.
+      VARIANT_TYPE_TIMESTAMP_MICROS_TZ:
+        value: 27
+        description: int64_t microseconds since the epoch, UTC (TIMESTAMP_TZ).
+      VARIANT_TYPE_INTERVAL:
+        value: 28
+        description: interval_t.
+      VARIANT_TYPE_OBJECT:
+        value: 29
+        description: |
+          An object: the member count as a varint and, when nonzero, the row-relative index of its first entry in
+          the children child as a varint. Its members are that many consecutive children entries, each with a
+          keys_index and a values_index.
+      VARIANT_TYPE_ARRAY:
+        value: 30
+        description: |
+          An array: the element count as a varint and, when nonzero, the row-relative index of its first entry in
+          the children child as a varint. Its elements are that many consecutive children entries, each with a NULL
+          keys_index and a values_index.
+      VARIANT_TYPE_BIGNUM:
+        value: 31
+        description: |
+          A BIGNUM: the byte length as a varint, then its storage bytes (bignum_encode).
+      VARIANT_TYPE_BITSTRING:
+        value: 32
+        description: |
+          A BIT: the byte length as a varint, then its storage bytes (byte 0 the padding count).
+      VARIANT_TYPE_GEOMETRY:
+        value: 33
+        description: |
+          A GEOMETRY: the byte length as a varint, then its storage bytes.
+      VARIANT_TYPE_TIMESTAMP_NANOS_TZ:
+        value: 34
+        description: int64_t nanoseconds since the epoch, UTC (TIMESTAMP_TZ_NS).
   VECTOR_TYPE:
     description: |
       Internal representation of a vector, with FSST / SEQUENCE / SHREDDED
@@ -745,8 +905,9 @@ functions:
       Returns the number of child vectors a nested vector exposes.
 
       1 for LIST, MAP and ARRAY; the field count for STRUCT; member_count + 1
-      for UNION, the tag plus the members; and 0 for any non-nested kind.
-      vector_get_child documents what each index addresses.
+      for UNION, the tag plus the members; 4 for VARIANT, its canonical
+      layout; and 0 for any non-nested kind. vector_get_child documents what
+      each index addresses.
     role: getter
     belongs_to: vector
     parameters:
@@ -774,7 +935,10 @@ functions:
       elements; MAP [0] = the entries, a STRUCT(key, value) whose children are
       the keys and the values; STRUCT and TUPLE [i] = field i; and UNION [0] =
       the tag with [1..N] = the members. Note that value_get_child diverges on
-      UNION, exposing only the active member.
+      UNION, exposing only the active member. VARIANT exposes its canonical
+      layout, [0] = keys, [1] = children, [2] = values and [3] = data (see the
+      module comment); a shredded or dictionary VARIANT vector is flattened
+      into that layout first.
 
       The returned child is borrowed and lives as long as the owning chunk.
       Returns ERROR_INPUT_INVALID if the vector has no children, or if the

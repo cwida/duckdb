@@ -41,7 +41,7 @@ add_library_unity(
   test_capi_v2_tokenizer.cpp
   test_capi_v2_static_extension.cpp
   test_capi_v2_value.cpp
-  test_capi_v2_variant_builder.cpp
+  test_capi_v2_variant.cpp
   test_capi_v2_vector_cast.cpp
   test_capi_v2_vector_write.cpp)
 # The tests cover the whole surface, the unstable functions included.

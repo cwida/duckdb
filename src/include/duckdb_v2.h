@@ -11650,6 +11650,131 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_statement_iterator_destroy(duckdb_v2_stat
 /* --- Enums for vector --- */
 
 /*!
+ * The kind of a value inside a VARIANT, the `type_id` of its entry in the values child (see the module comment for the
+ * layout). The payload of a value starts at its `byte_offset` in the row's data and is laid out as the member says;
+ * fixed-width payloads are little-endian in the storage representation of the matching logical type (see
+ * vector_get_view).
+ */
+typedef enum DUCKDB_V2_VARIANT_TYPE {
+	//! A VARIANT null. No payload.
+	DUCKDB_V2_VARIANT_TYPE_NULL = 0,
+
+	//! true. No payload.
+	DUCKDB_V2_VARIANT_TYPE_BOOL_TRUE = 1,
+
+	//! false. No payload.
+	DUCKDB_V2_VARIANT_TYPE_BOOL_FALSE = 2,
+
+	//! int8_t.
+	DUCKDB_V2_VARIANT_TYPE_INT8 = 3,
+
+	//! int16_t.
+	DUCKDB_V2_VARIANT_TYPE_INT16 = 4,
+
+	//! int32_t.
+	DUCKDB_V2_VARIANT_TYPE_INT32 = 5,
+
+	//! int64_t.
+	DUCKDB_V2_VARIANT_TYPE_INT64 = 6,
+
+	//! hugeint_t.
+	DUCKDB_V2_VARIANT_TYPE_INT128 = 7,
+
+	//! uint8_t.
+	DUCKDB_V2_VARIANT_TYPE_UINT8 = 8,
+
+	//! uint16_t.
+	DUCKDB_V2_VARIANT_TYPE_UINT16 = 9,
+
+	//! uint32_t.
+	DUCKDB_V2_VARIANT_TYPE_UINT32 = 10,
+
+	//! uint64_t.
+	DUCKDB_V2_VARIANT_TYPE_UINT64 = 11,
+
+	//! uhugeint_t.
+	DUCKDB_V2_VARIANT_TYPE_UINT128 = 12,
+
+	//! float.
+	DUCKDB_V2_VARIANT_TYPE_FLOAT = 13,
+
+	//! double.
+	DUCKDB_V2_VARIANT_TYPE_DOUBLE = 14,
+
+	/*!
+	 * A DECIMAL: the width as a varint, the scale as a varint, then the unscaled value in the storage tier of the width
+	 * (int16_t up to 4 digits, int32_t up to 9, int64_t up to 18, hugeint_t up to 38).
+	 */
+	DUCKDB_V2_VARIANT_TYPE_DECIMAL = 15,
+
+	//! Text: the byte length as a varint, then the UTF-8 bytes.
+	DUCKDB_V2_VARIANT_TYPE_VARCHAR = 16,
+
+	//! Binary data: the byte length as a varint, then the bytes.
+	DUCKDB_V2_VARIANT_TYPE_BLOB = 17,
+
+	//! hugeint_t, as a UUID vector stores it.
+	DUCKDB_V2_VARIANT_TYPE_UUID = 18,
+
+	//! int32_t days since 1970-01-01.
+	DUCKDB_V2_VARIANT_TYPE_DATE = 19,
+
+	//! int64_t microseconds since midnight (TIME).
+	DUCKDB_V2_VARIANT_TYPE_TIME_MICROS = 20,
+
+	//! int64_t nanoseconds since midnight (TIME_NS).
+	DUCKDB_V2_VARIANT_TYPE_TIME_NANOS = 21,
+
+	//! int64_t seconds since the epoch (TIMESTAMP_S).
+	DUCKDB_V2_VARIANT_TYPE_TIMESTAMP_SEC = 22,
+
+	//! int64_t milliseconds since the epoch (TIMESTAMP_MS).
+	DUCKDB_V2_VARIANT_TYPE_TIMESTAMP_MILLIS = 23,
+
+	//! int64_t microseconds since the epoch (TIMESTAMP).
+	DUCKDB_V2_VARIANT_TYPE_TIMESTAMP_MICROS = 24,
+
+	//! int64_t nanoseconds since the epoch (TIMESTAMP_NS).
+	DUCKDB_V2_VARIANT_TYPE_TIMESTAMP_NANOS = 25,
+
+	//! The 64-bit storage value of TIME_TZ.
+	DUCKDB_V2_VARIANT_TYPE_TIME_MICROS_TZ = 26,
+
+	//! int64_t microseconds since the epoch, UTC (TIMESTAMP_TZ).
+	DUCKDB_V2_VARIANT_TYPE_TIMESTAMP_MICROS_TZ = 27,
+
+	//! interval_t.
+	DUCKDB_V2_VARIANT_TYPE_INTERVAL = 28,
+
+	/*!
+	 * An object: the member count as a varint and, when nonzero, the row-relative index of its first entry in the
+	 * children child as a varint. Its members are that many consecutive children entries, each with a keys_index and a
+	 * values_index.
+	 */
+	DUCKDB_V2_VARIANT_TYPE_OBJECT = 29,
+
+	/*!
+	 * An array: the element count as a varint and, when nonzero, the row-relative index of its first entry in the
+	 * children child as a varint. Its elements are that many consecutive children entries, each with a NULL keys_index
+	 * and a values_index.
+	 */
+	DUCKDB_V2_VARIANT_TYPE_ARRAY = 30,
+
+	//! A BIGNUM: the byte length as a varint, then its storage bytes (bignum_encode).
+	DUCKDB_V2_VARIANT_TYPE_BIGNUM = 31,
+
+	//! A BIT: the byte length as a varint, then its storage bytes (byte 0 the padding count).
+	DUCKDB_V2_VARIANT_TYPE_BITSTRING = 32,
+
+	//! A GEOMETRY: the byte length as a varint, then its storage bytes.
+	DUCKDB_V2_VARIANT_TYPE_GEOMETRY = 33,
+
+	//! int64_t nanoseconds since the epoch, UTC (TIMESTAMP_TZ_NS).
+	DUCKDB_V2_VARIANT_TYPE_TIMESTAMP_NANOS_TZ = 34,
+	DUCKDB_V2_VARIANT_TYPE_MAX_ENUM = 0x7FFFFFFF,
+} DUCKDB_V2_VARIANT_TYPE;
+
+/*!
  * Internal representation of a vector, with FSST / SEQUENCE / SHREDDED collapsed into OTHER: the view getter rejects
  * those and requires an explicit vector_flatten first. OTHER is the 0-value, so a zero-initialized out-param reads as
  * "unspecified, needs flatten" rather than silently looking like FLAT.
@@ -12093,8 +12218,8 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_vector_get_arena(duckdb_v2_vector_handle 
 /*!
  * Returns the number of child vectors a nested vector exposes.
  *
- * 1 for LIST, MAP and ARRAY; the field count for STRUCT; member_count + 1 for UNION, the tag plus the members; and 0
- * for any non-nested kind. vector_get_child documents what each index addresses.
+ * 1 for LIST, MAP and ARRAY; the field count for STRUCT; member_count + 1 for UNION, the tag plus the members; 4 for
+ * VARIANT, its canonical layout; and 0 for any non-nested kind. vector_get_child documents what each index addresses.
  *
  * history:
  * - unstable: v2.0.0
@@ -12114,7 +12239,9 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_vector_get_child_count(duckdb_v2_vector_h
  *
  * What each index addresses, by kind: LIST and ARRAY expose [0] = the elements; MAP [0] = the entries, a STRUCT(key,
  * value) whose children are the keys and the values; STRUCT and TUPLE [i] = field i; and UNION [0] = the tag with
- * [1..N] = the members. Note that value_get_child diverges on UNION, exposing only the active member.
+ * [1..N] = the members. Note that value_get_child diverges on UNION, exposing only the active member. VARIANT exposes
+ * its canonical layout, [0] = keys, [1] = children, [2] = values and [3] = data (see the module comment); a shredded or
+ * dictionary VARIANT vector is flattened into that layout first.
  *
  * The returned child is borrowed and lives as long as the owning chunk. Returns ERROR_INPUT_INVALID if the vector has
  * no children, or if the index is out of range.
@@ -16457,359 +16584,6 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_value_to_string(duckdb_v2_value_handle va
 #endif
 
 /* --- Struct definitions for value --- */
-
-/* ============================================================================
- * MODULE: variant_builder
- * ============================================================================ */
-
-/* --- Enums for variant_builder --- */
-
-/* --- Struct forward declarations for variant_builder --- */
-
-/* --- Types for variant_builder --- */
-
-/*!
- * An owned opaque handle to a VARIANT vector under construction. Created with `duckdb_v2_variant_builder_create()` for
- * one vector and one batch of rows, fed one value tree per row between `duckdb_v2_variant_builder_begin_row()` and
- * `duckdb_v2_variant_builder_end_row()`, written into the vector by `duckdb_v2_variant_builder_finish()`, and destroyed
- * with `duckdb_v2_variant_builder_destroy()`.
- */
-typedef struct _duckdb_v2_variant_builder {
-	void *internal_ptr;
-} * duckdb_v2_variant_builder_handle;
-
-/* --- Constants for variant_builder --- */
-
-/* --- Function pointer typedefs for variant_builder --- */
-
-/* --- Functions for variant_builder --- */
-
-#if DUCKDB_V2_API_ALLOW_UNSTABLE
-/*!
- * Creates a builder that fills `row_count` rows of a VARIANT vector.
- *
- * `vector` must be a FLAT vector of logical type VARIANT with room for `row_count` rows, typically a column of a data
- * chunk the caller created or the output vector of a table function. It is borrowed until
- * `duckdb_v2_variant_builder_finish()` returns and must not be read or written through other calls in between: the
- * builder accumulates the rows and writes the whole layout in `finish`. Rows the caller never begins are SQL NULL. The
- * caller owns the returned handle and must destroy it with `duckdb_v2_variant_builder_destroy()`, also when a call
- * failed part-way.
- *
- * Returns ERROR_INPUT_INVALID when the vector is not a flat VARIANT vector or cannot hold `row_count` rows.
- *
- * history:
- * - unstable: v2.0.0
- *
- * @param vector The VARIANT vector to fill. Borrowed until finish returns.
- * @param row_count The number of rows the builder writes, 0 to `row_count - 1`.
- * @param out_builder On success, receives the new builder. Owned by the caller.
- * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
- * `duckdb_v2_error_info_destroy()`.
- * @return DUCKDB_V2_ERROR
- */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_variant_builder_create(duckdb_v2_vector_handle vector, idx_t row_count,
-                                                              duckdb_v2_variant_builder_handle *out_builder,
-                                                              duckdb_v2_error_info_handle *err);
-#endif
-
-#if DUCKDB_V2_API_ALLOW_UNSTABLE
-/*!
- * Destroys the builder, releasing its buffers.
- *
- * Null-safe: passing a null pointer or null handle is a no-op. The handle is set to null on return to prevent
- * double-destruction. Destroying a builder that was not finished leaves the vector as it was before
- * `duckdb_v2_variant_builder_create()`.
- *
- * history:
- * - unstable: v2.0.0
- *
- * @param builder The builder to destroy.
- * @return DUCKDB_V2_ERROR
- */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_variant_builder_destroy(duckdb_v2_variant_builder_handle *builder);
-#endif
-
-#if DUCKDB_V2_API_ALLOW_UNSTABLE
-/*!
- * Starts the value of row `row`.
- *
- * Exactly one value follows (a scalar, a null, or one container with its children), then
- * `duckdb_v2_variant_builder_end_row()`. Rows may be begun in any order, each at most once; rows never begun are SQL
- * NULL. Returns ERROR_INPUT_INVALID when another row is still open, `row` is out of range, the row was begun before, or
- * the builder is finished.
- *
- * history:
- * - unstable: v2.0.0
- *
- * @param builder The builder.
- * @param row The row to fill, below the `row_count` the builder was created with.
- * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
- * `duckdb_v2_error_info_destroy()`.
- * @return DUCKDB_V2_ERROR
- */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_variant_builder_begin_row(duckdb_v2_variant_builder_handle builder, idx_t row,
-                                                                 duckdb_v2_error_info_handle *err);
-#endif
-
-#if DUCKDB_V2_API_ALLOW_UNSTABLE
-/*!
- * Completes the row begun by `duckdb_v2_variant_builder_begin_row()`.
- *
- * The row must hold exactly one value and every container opened in it must be ended. A row whose value is
- * `duckdb_v2_variant_builder_append_null()` becomes a SQL NULL. Returns ERROR_INPUT_INVALID when no row is open, the
- * row has no value yet, or a container is still open; ERROR_INPUT_OBJECT_SIZE when the row's encoded payload exceeds 4
- * GiB.
- *
- * history:
- * - unstable: v2.0.0
- *
- * @param builder The builder.
- * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
- * `duckdb_v2_error_info_destroy()`.
- * @return DUCKDB_V2_ERROR
- */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_variant_builder_end_row(duckdb_v2_variant_builder_handle builder,
-                                                               duckdb_v2_error_info_handle *err);
-#endif
-
-#if DUCKDB_V2_API_ALLOW_UNSTABLE
-/*!
- * Appends a VARIANT null as the next value.
- *
- * Inside a container this is a null child (`variant_typeof` reports `VARIANT_NULL`); as the only value of a row it
- * makes the row a SQL NULL. Returns ERROR_INPUT_INVALID when no value may be appended here: no row is open, the row
- * already holds its value, the enclosing container has all its children, or an object child lacks its
- * `duckdb_v2_variant_builder_append_key()`.
- *
- * history:
- * - unstable: v2.0.0
- *
- * @param builder The builder.
- * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
- * `duckdb_v2_error_info_destroy()`.
- * @return DUCKDB_V2_ERROR
- */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_variant_builder_append_null(duckdb_v2_variant_builder_handle builder,
-                                                                   duckdb_v2_error_info_handle *err);
-#endif
-
-#if DUCKDB_V2_API_ALLOW_UNSTABLE
-/*!
- * Appends a fixed-width scalar as the next value.
- *
- * `type_id` names the logical type of the value and `data` points at its storage representation, the bytes one row of a
- * FLAT vector of that type holds (see the vector module): BOOLEAN as bool; TINYINT .. BIGINT and UTINYINT .. UBIGINT as
- * the integer of that width; HUGEINT and UUID as hugeint_t; UHUGEINT as uhugeint_t; FLOAT and DOUBLE as float and
- * double; DATE as int32_t days since 1970-01-01; TIME, TIME_TZ, TIMESTAMP_SEC, TIMESTAMP_MS, TIMESTAMP, TIMESTAMP_NS,
- * TIMESTAMP_TZ and TIMESTAMP_TZ_NS as the 64-bit value in their unit; TIME_NS as int64_t nanoseconds; INTERVAL as
- * interval_t. The value keeps that type inside the VARIANT, so a DATE reads back as a DATE, not as text.
- *
- * Returns ERROR_INPUT_INVALID for a type that is not one of these (DECIMAL goes through
- * `duckdb_v2_variant_builder_append_decimal()`, the text and binary kinds through
- * `duckdb_v2_variant_builder_append_bytes()`), a null `data`, or when no value may be appended here (see
- * `duckdb_v2_variant_builder_append_null()`).
- *
- * history:
- * - unstable: v2.0.0
- *
- * @param builder The builder.
- * @param type_id The logical type of the value.
- * @param data The value in the storage representation of `type_id`. Borrowed for the call and copied.
- * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
- * `duckdb_v2_error_info_destroy()`.
- * @return DUCKDB_V2_ERROR
- */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_variant_builder_append_scalar(duckdb_v2_variant_builder_handle builder,
-                                                                     DUCKDB_V2_LOGICAL_TYPE_ID type_id,
-                                                                     const void *data,
-                                                                     duckdb_v2_error_info_handle *err);
-#endif
-
-#if DUCKDB_V2_API_ALLOW_UNSTABLE
-/*!
- * Appends a DECIMAL(width, scale) as the next value.
- *
- * `data` points at the unscaled integer in the storage tier of `width`, as a DECIMAL vector holds it: int16_t for a
- * width up to 4, int32_t up to 9, int64_t up to 18, hugeint_t up to 38 (boundaries inclusive). The value reads back as
- * a DECIMAL of that width and scale.
- *
- * Returns ERROR_INPUT_INVALID for a width of 0 or above 38, a scale above the width, a null `data`, or when no value
- * may be appended here (see `duckdb_v2_variant_builder_append_null()`).
- *
- * history:
- * - unstable: v2.0.0
- *
- * @param builder The builder.
- * @param width The total number of digits, 1 to 38.
- * @param scale The number of digits after the decimal point, at most `width`.
- * @param data The unscaled value in the storage tier of `width`. Borrowed for the call and copied.
- * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
- * `duckdb_v2_error_info_destroy()`.
- * @return DUCKDB_V2_ERROR
- */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_variant_builder_append_decimal(duckdb_v2_variant_builder_handle builder,
-                                                                      uint8_t width, uint8_t scale, const void *data,
-                                                                      duckdb_v2_error_info_handle *err);
-#endif
-
-#if DUCKDB_V2_API_ALLOW_UNSTABLE
-/*!
- * Appends a variable-length value as the next value: text or binary data.
- *
- * `type_id` is VARCHAR, BLOB, BIT, BIGNUM or GEOMETRY; `data` and `length` are its bytes, which are copied. A VARCHAR
- * must be valid UTF-8, which is not checked here: validate it with `duckdb_v2_validate_utf8()` when it comes from an
- * untrusted source. BIT, BIGNUM and GEOMETRY take the storage bytes of their vector payload (see the vector module),
- * BLOB any bytes. `data` may be null when `length` is 0.
- *
- * Returns ERROR_INPUT_INVALID for another type, a null `data` with a nonzero `length`, a `length` of 4 GiB or more, or
- * when no value may be appended here (see `duckdb_v2_variant_builder_append_null()`).
- *
- * history:
- * - unstable: v2.0.0
- *
- * @param builder The builder.
- * @param type_id VARCHAR, BLOB, BIT, BIGNUM or GEOMETRY.
- * @param data The bytes of the value. Borrowed for the call and copied.
- * @param length The number of bytes in `data`.
- * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
- * `duckdb_v2_error_info_destroy()`.
- * @return DUCKDB_V2_ERROR
- */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_variant_builder_append_bytes(duckdb_v2_variant_builder_handle builder,
-                                                                    DUCKDB_V2_LOGICAL_TYPE_ID type_id,
-                                                                    const uint8_t *data, idx_t length,
-                                                                    duckdb_v2_error_info_handle *err);
-#endif
-
-#if DUCKDB_V2_API_ALLOW_UNSTABLE
-/*!
- * Appends an object with `child_count` members as the next value and opens it.
- *
- * Each member is a `duckdb_v2_variant_builder_append_key()` followed by one value (a scalar, a null, or a nested
- * container with its own children); after exactly `child_count` members, `duckdb_v2_variant_builder_end_object()`
- * closes it. The count is needed up front because the layout stores it ahead of the children; a producer walking a
- * binary format usually has it at hand. Members are stored in the order given. Returns ERROR_INPUT_INVALID when no
- * value may be appended here (see `duckdb_v2_variant_builder_append_null()`) or `child_count` does not fit 32 bits.
- *
- * history:
- * - unstable: v2.0.0
- *
- * @param builder The builder.
- * @param child_count The number of members that follow. May be 0.
- * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
- * `duckdb_v2_error_info_destroy()`.
- * @return DUCKDB_V2_ERROR
- */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_variant_builder_begin_object(duckdb_v2_variant_builder_handle builder,
-                                                                    idx_t child_count,
-                                                                    duckdb_v2_error_info_handle *err);
-#endif
-
-#if DUCKDB_V2_API_ALLOW_UNSTABLE
-/*!
- * Names the next member of the open object; the member's value follows.
- *
- * The key is copied. Keys are interned per row, so repeating a key across objects of the same row costs one dictionary
- * entry. A key used twice in the same object is refused with ERROR_INPUT_INVALID, as the engine does for every other
- * VARIANT source; the caller decides which value to keep. Also ERROR_INPUT_INVALID when the innermost open container is
- * not an object, it already has all its members, or the previous member still awaits its value.
- *
- * history:
- * - unstable: v2.0.0
- *
- * @param builder The builder.
- * @param key The member name, valid UTF-8. Borrowed for the call and copied.
- * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
- * `duckdb_v2_error_info_destroy()`.
- * @return DUCKDB_V2_ERROR
- */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_variant_builder_append_key(duckdb_v2_variant_builder_handle builder,
-                                                                  const duckdb_v2_str *key,
-                                                                  duckdb_v2_error_info_handle *err);
-#endif
-
-#if DUCKDB_V2_API_ALLOW_UNSTABLE
-/*!
- * Closes the innermost open object.
- *
- * Returns ERROR_INPUT_INVALID when the innermost open container is not an object, or it has fewer members than
- * `duckdb_v2_variant_builder_begin_object()` announced.
- *
- * history:
- * - unstable: v2.0.0
- *
- * @param builder The builder.
- * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
- * `duckdb_v2_error_info_destroy()`.
- * @return DUCKDB_V2_ERROR
- */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_variant_builder_end_object(duckdb_v2_variant_builder_handle builder,
-                                                                  duckdb_v2_error_info_handle *err);
-#endif
-
-#if DUCKDB_V2_API_ALLOW_UNSTABLE
-/*!
- * Appends an array with `child_count` elements as the next value and opens it.
- *
- * Each element is one value (a scalar, a null, or a nested container with its own children); after exactly
- * `child_count` elements, `duckdb_v2_variant_builder_end_array()` closes it. The count is needed up front because the
- * layout stores it ahead of the elements. Returns ERROR_INPUT_INVALID when no value may be appended here (see
- * `duckdb_v2_variant_builder_append_null()`) or `child_count` does not fit 32 bits.
- *
- * history:
- * - unstable: v2.0.0
- *
- * @param builder The builder.
- * @param child_count The number of elements that follow. May be 0.
- * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
- * `duckdb_v2_error_info_destroy()`.
- * @return DUCKDB_V2_ERROR
- */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_variant_builder_begin_array(duckdb_v2_variant_builder_handle builder,
-                                                                   idx_t child_count, duckdb_v2_error_info_handle *err);
-#endif
-
-#if DUCKDB_V2_API_ALLOW_UNSTABLE
-/*!
- * Closes the innermost open array.
- *
- * Returns ERROR_INPUT_INVALID when the innermost open container is not an array, or it has fewer elements than
- * `duckdb_v2_variant_builder_begin_array()` announced.
- *
- * history:
- * - unstable: v2.0.0
- *
- * @param builder The builder.
- * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
- * `duckdb_v2_error_info_destroy()`.
- * @return DUCKDB_V2_ERROR
- */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_variant_builder_end_array(duckdb_v2_variant_builder_handle builder,
-                                                                 duckdb_v2_error_info_handle *err);
-#endif
-
-#if DUCKDB_V2_API_ALLOW_UNSTABLE
-/*!
- * Writes the accumulated rows into the vector.
- *
- * Every row below `row_count` is written: the rows given through the builder with their values, the others as SQL NULL.
- * The vector's size becomes `row_count`. After this call the builder only accepts
- * `duckdb_v2_variant_builder_destroy()`. Returns ERROR_INPUT_INVALID when a row is still open or the builder was
- * finished before; the vector is then unchanged.
- *
- * history:
- * - unstable: v2.0.0
- *
- * @param builder The builder.
- * @param err Optional. On failure, receives an opaque info handle the caller must destroy via
- * `duckdb_v2_error_info_destroy()`.
- * @return DUCKDB_V2_ERROR
- */
-DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_variant_builder_finish(duckdb_v2_variant_builder_handle builder,
-                                                              duckdb_v2_error_info_handle *err);
-#endif
-
-/* --- Struct definitions for variant_builder --- */
 
 /* ============================================================================
  * MODULE: arrow
