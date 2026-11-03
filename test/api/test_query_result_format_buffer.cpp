@@ -3,6 +3,9 @@
 
 #include "duckdb/main/query_result_stream.hpp"
 
+#include <chrono>
+#include <thread>
+
 using namespace duckdb;
 
 #ifndef DUCKDB_NO_THREADS
@@ -26,6 +29,14 @@ struct DrainReport {
 DrainReport Drain(QueryResultStream<TestFormat> &stream) {
 	DrainReport report;
 	while (true) {
+		// A producer parks once it finds the queue full, which a consumer that keeps up can sample right past on a
+		// busy machine. Give it a moment to park before draining the first units.
+		for (idx_t wait = 0; !report.saw_blocked_sink && report.unit_count < 3 && wait < 100; wait++) {
+			report.saw_blocked_sink = stream.GetBufferedData().HasBlockedSink();
+			if (!report.saw_blocked_sink) {
+				std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			}
+		}
 		report.saw_blocked_sink |= stream.GetBufferedData().HasBlockedSink();
 		auto unit = stream.Fetch();
 		if (!unit) {
