@@ -178,10 +178,12 @@ analyzed_plan	<REGEX>:[\s\S]*"bytes_scanned": [1-9][\s\S]*
 statement ok
 COPY (SELECT range AS i FROM range(100000)) TO '{TEST_DIR}/bytes_scanned_uncounted.csv';
 
+# the key, not the bare name: EXPLAIN ANALYZE keeps the full metric set in this fork, query text included, and the
+# file name contains bytes_scanned
 query II
 EXPLAIN ANALYZE (FORMAT json) SELECT sum(i) FROM '{TEST_DIR}/bytes_scanned_uncounted.csv'
 ----
-analyzed_plan	<!REGEX>:[\s\S]*bytes_scanned[\s\S]*
+analyzed_plan	<!REGEX>:[\s\S]*"(total_)?bytes_scanned"[\s\S]*
 
 query II
 EXPLAIN ANALYZE (FORMAT json)

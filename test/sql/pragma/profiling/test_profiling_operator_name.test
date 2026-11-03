@@ -19,10 +19,28 @@ analyzed_plan	<REGEX>:.*Table Scan.*
 statement ok
 SET tracked_metrics = ['operator.type'];
 
+# EXPLAIN ANALYZE keeps the full metric set in this fork, so tracked_metrics only narrows the regular profile
 query II
 EXPLAIN (ANALYZE, FORMAT json) SELECT i FROM integers WHERE i > 10;
 ----
-analyzed_plan	<!REGEX>:.*"name".*
+analyzed_plan	<REGEX>:.*"name": "SEQ_SCAN".*
+
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/operator_name.json';
+
+statement ok
+SELECT i FROM integers WHERE i > 10;
+
+statement ok
+PRAGMA disable_profiling;
+
+query II
+SELECT contains(content, '"name"'), contains(content, '"type": "TABLE_SCAN"') FROM read_text('{TEST_DIR}/operator_name.json');
+----
+false	true
 
 statement ok
 RESET tracked_metrics;
