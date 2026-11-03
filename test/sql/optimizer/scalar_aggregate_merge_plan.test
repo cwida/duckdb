@@ -2,6 +2,10 @@
 # description: The plans of sibling scalar aggregates over the same table read it once
 # group: [optimizer]
 
+# the tables here are small: merge sibling aggregates over every table that has a row
+statement ok
+SET scalar_aggregate_merge_threshold = 1
+
 # sales: quantities 1-100, a DECIMAL with NULLs, a key, a value and a name; sales2 is a copy, empty_sales has no rows
 statement ok
 CREATE TABLE sales AS SELECT
@@ -206,3 +210,44 @@ EXPLAIN SELECT (SELECT sum(CASE WHEN k = 1 THEN 1 ELSE CAST('bad' AS INTEGER) EN
        (SELECT count(*) FROM two_keys WHERE k = 2) AS c
 ----
 physical_plan	<REGEX>:([\s\S]*Table: (\S*\.)?two_keys\b){3}[\s\S]*
+
+# ---- the size gate: a catalog table merges when it has at least scalar_aggregate_merge_threshold rows -------------
+
+# by default, size never merges a catalog table
+statement ok
+RESET scalar_aggregate_merge_threshold
+
+query II
+EXPLAIN SELECT (SELECT count(*) FROM sales WHERE q < 10) AS a, (SELECT sum(paid) FROM sales WHERE q > 90) AS b
+----
+physical_plan	<REGEX>:([\s\S]*Table: (\S*\.)?sales\b){2}[\s\S]*
+
+# sales has 5000 rows
+statement ok
+SET scalar_aggregate_merge_threshold = 5001
+
+query II
+EXPLAIN SELECT (SELECT count(*) FROM sales WHERE q < 10) AS a, (SELECT sum(paid) FROM sales WHERE q > 90) AS b
+----
+physical_plan	<REGEX>:([\s\S]*Table: (\S*\.)?sales\b){2}[\s\S]*
+
+statement ok
+SET scalar_aggregate_merge_threshold = 5000
+
+query II
+EXPLAIN SELECT (SELECT count(*) FROM sales WHERE q < 10) AS a, (SELECT sum(paid) FROM sales WHERE q > 90) AS b
+----
+physical_plan	<!REGEX>:[\s\S]*Table: (\S*\.)?sales\b[\s\S]*Table: (\S*\.)?sales\b[\s\S]*
+
+# over a join, one table of that size is enough (dim1 has 50 rows)
+query II
+EXPLAIN SELECT (SELECT sum(paid) FROM sales, dim1 WHERE sales.k = dim1.dk AND dim1.dname = 'a') AS a,
+       (SELECT avg(disc) FROM sales, dim1 WHERE sales.k = dim1.dk AND dim1.dname = 'b') AS b
+----
+physical_plan	<!REGEX>:[\s\S]*Table: (\S*\.)?dim1\b[\s\S]*Table: (\S*\.)?dim1\b[\s\S]*
+
+# the tables of the other branches are not counted: dim1 alone stays below
+query II
+EXPLAIN SELECT (SELECT count(*) FROM dim1 WHERE dname = 'a') AS a, (SELECT count(*) FROM dim1 WHERE dname = 'b') AS b
+----
+physical_plan	<REGEX>:([\s\S]*Table: (\S*\.)?dim1\b){2}[\s\S]*

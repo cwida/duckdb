@@ -23,6 +23,10 @@ class Optimizer;
 //! scan, filtered by the predicates every sibling shares and the OR of what each has beyond them, feeding one aggregate
 //! that holds every sibling's aggregates, each with a FILTER (WHERE ...) of its own predicate. A projection then hands
 //! every sibling's columns back under new bindings (TPC-DS q9, q28, q88 and q90).
+//!
+//! The merge trades scans for FILTERs, which pays off when the scan is the expensive part: siblings over a table
+//! function (read_parquet, read_csv, ...) are merged, siblings over a catalog table only when it has at least
+//! scalar_aggregate_merge_threshold rows.
 class ScalarAggregateMerger {
 public:
 	explicit ScalarAggregateMerger(Optimizer &optimizer);
@@ -40,6 +44,9 @@ private:
 	void MergeCrossProduct(unique_ptr<LogicalOperator> &op);
 	//! Appends `leaf` to `branches` when it has the shape of a branch
 	static void TryMatchBranch(unique_ptr<LogicalOperator> &leaf, vector<Branch> &branches);
+	//! Whether the scans of `branch` cost enough for the merge to pay off: a table function (files, remote sources)
+	//! or a table of at least scalar_aggregate_merge_threshold rows
+	bool IsWorthMerging(const Branch &branch);
 	//! The merged leaf that replaces the branches of `group`, or null when the group cannot be merged
 	unique_ptr<LogicalOperator> MergeBranches(vector<Branch> &branches, const vector<idx_t> &group);
 

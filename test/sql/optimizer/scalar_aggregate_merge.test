@@ -2,6 +2,10 @@
 # description: Sibling scalar aggregates over the same table keep their answers when they are computed in one pass
 # group: [optimizer]
 
+# the tables here are small: merge sibling aggregates over every table that has a row
+statement ok
+SET scalar_aggregate_merge_threshold = 1
+
 # sales: quantities 1-100, a DECIMAL with NULLs, a key, a value and a name; sales2 is a copy, empty_sales has no rows
 statement ok
 CREATE TABLE sales AS SELECT
@@ -73,7 +77,7 @@ SELECT (SELECT count(DISTINCT k) FROM sales WHERE q < 10) AS a, (SELECT sum(DIST
 ----
 9	171	25.115	9.00	5	7
 
-# a branch that matches nothing, one without a WHERE, and an empty table
+# a branch that matches nothing, one without a WHERE, and an empty table (below the threshold: left alone)
 query IIIIII
 SELECT (SELECT count(*) FROM sales WHERE q > 1000) AS a, (SELECT avg(paid) FROM sales WHERE q > 1000) AS b,
        (SELECT count(*) FROM sales) AS c, (SELECT sum(paid) FROM sales WHERE q = 7) AS d,

@@ -1,5 +1,6 @@
 #include "duckdb/optimizer/scalar_aggregate_merger.hpp"
 
+#include "duckdb/main/settings.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/column_binding_map.hpp"
@@ -86,12 +87,13 @@ static void SplitConjunction(const Expression &expr, vector<reference<const Expr
 	conjuncts.push_back(expr);
 }
 
-//! A scan of a catalog table as bound: no filters, time travel, named parameters, ordinality or projection list,
+//! A scan as bound: no filters, time travel, ordinality, projection list, sample, input table or process-local input,
 //! and only plain columns
-static bool IsPlainTableScan(const LogicalGet &get) {
-	if (!get.GetTable() || get.table_filters.HasFilters() || get.at_clause || !get.named_parameters.empty() ||
+static bool IsPlainScan(const LogicalGet &get) {
+	if (!get.children.empty() || get.bind_info || get.table_filters.HasFilters() || get.at_clause ||
 	    get.source_ordinality != OrdinalityType::WITHOUT_ORDINALITY || !get.projection_ids.empty() ||
-	    get.extra_info.sample_options || get.dynamic_filters) {
+	    get.has_pushed_projection || get.extra_info.sample_options || get.dynamic_filters ||
+	    !get.input_table_types.empty() || !get.projected_input.empty()) {
 		return false;
 	}
 	for (auto &column_id : get.GetColumnIds()) {
@@ -102,22 +104,48 @@ static bool IsPlainTableScan(const LogicalGet &get) {
 	return true;
 }
 
-//! Two plain table scans that read the same rows: the same table through the same function with the same arguments
-static bool IsSameRelation(const LogicalGet &a, const LogicalGet &b) {
-	if (a.GetTable().get() != b.GetTable().get() || a.function.GetName() != b.function.GetName() ||
-	    a.parameters.size() != b.parameters.size()) {
+static bool SameValues(const vector<Value> &a, const vector<Value> &b) {
+	if (a.size() != b.size()) {
 		return false;
 	}
-	for (idx_t i = 0; i < a.parameters.size(); i++) {
-		if (!Value::NotDistinctFrom(a.parameters[i], b.parameters[i])) {
+	for (idx_t i = 0; i < a.size(); i++) {
+		if (a[i].type() != b[i].type() || !Value::NotDistinctFrom(a[i], b[i])) {
 			return false;
 		}
 	}
 	return true;
 }
 
-//! The plain scans under `op`: one scan, or a cross product of scans of different tables (a self-join's copies of a
-//! table would not pair one to one with another branch's)
+static bool SameNamedParameters(const named_argument_map_t &a, const named_argument_map_t &b) {
+	if (a.size() != b.size()) {
+		return false;
+	}
+	for (auto &entry : a) {
+		auto other = b.find(entry.first);
+		if (other == b.end() || entry.second.type() != other->second.type() ||
+		    !Value::NotDistinctFrom(entry.second, other->second)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+//! Two plain scans that read the same rows: the same catalog table, or the same table function (read_parquet,
+//! read_csv, ...) called with the same arguments. What a call without arguments reads is known to its bind data alone.
+static bool IsSameRelation(const LogicalGet &a, const LogicalGet &b) {
+	if (a.function != b.function || !SameValues(a.parameters, b.parameters) ||
+	    !SameNamedParameters(a.named_parameters, b.named_parameters)) {
+		return false;
+	}
+	auto table = a.GetTable();
+	if (table || b.GetTable()) {
+		return table.get() == b.GetTable().get();
+	}
+	return !a.parameters.empty() || FunctionData::Equals(a.bind_data.get(), b.bind_data.get());
+}
+
+//! The plain scans under `op`: one scan, or a cross product of scans of different relations (a self-join's copies of
+//! a table would not pair one to one with another branch's)
 static bool CollectScans(LogicalOperator &op, vector<reference<LogicalGet>> &scans) {
 	if (op.type == LogicalOperatorType::LOGICAL_CROSS_PRODUCT) {
 		for (auto &child : op.children) {
@@ -131,11 +159,11 @@ static bool CollectScans(LogicalOperator &op, vector<reference<LogicalGet>> &sca
 		return false;
 	}
 	auto &scan = op.Cast<LogicalGet>();
-	if (!IsPlainTableScan(scan)) {
+	if (!IsPlainScan(scan)) {
 		return false;
 	}
 	for (auto &other : scans) {
-		if (other.get().GetTable().get() == scan.GetTable().get()) {
+		if (IsSameRelation(other.get(), scan)) {
 			return false;
 		}
 	}
@@ -294,6 +322,19 @@ static idx_t LeafPosition(const vector<reference<unique_ptr<LogicalOperator>>> &
 	throw InternalException("ScalarAggregateMerger: a branch's leaf is not among its tree's leaves");
 }
 
+bool ScalarAggregateMerger::IsWorthMerging(const Branch &branch) {
+	auto threshold = Settings::Get<ScalarAggregateMergeThresholdSetting>(optimizer.context);
+	for (auto &scan : branch.scans) {
+		if (!scan.get().GetTable()) {
+			return true;
+		}
+		if (threshold != 0 && scan.get().EstimateCardinality(optimizer.context) >= threshold) {
+			return true;
+		}
+	}
+	return false;
+}
+
 void ScalarAggregateMerger::MergeCrossProduct(unique_ptr<LogicalOperator> &op) {
 	vector<reference<unique_ptr<LogicalOperator>>> leaves;
 	CollectLeaves(op, leaves);
@@ -324,7 +365,7 @@ void ScalarAggregateMerger::MergeCrossProduct(unique_ptr<LogicalOperator> &op) {
 	vector<bool> removed(leaves.size(), false);
 	bool changed = false;
 	for (auto &group : groups) {
-		if (group.size() < 2) {
+		if (group.size() < 2 || !IsWorthMerging(branches[group[0]])) {
 			continue;
 		}
 		auto merged_leaf = MergeBranches(branches, group);

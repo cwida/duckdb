@@ -7,6 +7,10 @@ require tpcds
 statement ok
 CALL dsdgen(sf=0.01)
 
+# the SF0.01 tables are small and the test is about the rewrite: merge over every table that has a row
+statement ok
+SET scalar_aggregate_merge_threshold = 1
+
 # q9: fifteen scalar subqueries of store_sales become one scan
 query II
 EXPLAIN SELECT CASE
