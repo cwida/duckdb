@@ -33,3 +33,48 @@ SET max_execution_time = 0;
 # ASOF joins against the routed input inherit the upstream recursive-CTE
 # limitation ("AsOf joins are not supported in recursive CTEs yet") in plans
 # that keep the ASOF operator, so no per-wave ASOF case is asserted here.
+
+# Already emitted prefixes stay consumable before a nonterminating branch invocation.
+statement ok
+SET threads=1;
+
+statement ok
+SET max_execution_time=5000;
+
+# The seed already satisfies LIMIT. Starting branch 1 must not prevent delivery.
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (0, 42), (1, 0))
+	BRANCH 1: (
+		WITH RECURSIVE r(x) AS (
+			SELECT n FROM t
+			UNION ALL
+			SELECT x FROM r
+		)
+		SELECT 0, max(x) FROM r
+	)
+)
+SELECT n FROM t LIMIT 1;
+----
+42
+
+# The same dependency can arise after a branch produces both output and work.
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (2, 42))
+	BRANCH 1: (
+		WITH RECURSIVE r(x) AS (
+			SELECT n FROM t
+			UNION ALL
+			SELECT x FROM r
+		)
+		SELECT 0, max(x) FROM r
+	)
+	BRANCH 2: (SELECT 0, n FROM t UNION ALL SELECT 1, n FROM t)
+)
+SELECT n FROM t LIMIT 1;
+----
+42
+
+statement ok
+RESET max_execution_time;
