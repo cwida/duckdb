@@ -77,7 +77,9 @@
         "test/sql/copy/parquet/page_index/page_index_cache_budget.test",
         "test/sql/copy/parquet/parquet_virtual_file_row_group_number.test",
         "test/sql/copy/parquet/parquet_nan_setting.test",
-        "test/sql/storage/prefetch/async_native_scan_read_ahead_pruning.test"
+        "test/sql/storage/prefetch/async_native_scan_read_ahead_pruning.test",
+        "test/sql/optimizer/test_rowid_vector_pruning.test",
+        "test/sql/optimizer/test_rowid_vector_pruning_prefetch.test"
       ]
     },
     {

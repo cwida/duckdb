@@ -371,8 +371,7 @@ vector<unique_ptr<AsyncTask>> CollectionScanState::RegisterAssignmentIO() {
 	D_ASSERT(row_group);
 	D_ASSERT(!assignment_io_registered);
 	assignment_io_registered = true;
-	auto &current_row_group = *pinned_row_group;
-	return current_row_group.CollectScanIOTasks(*this, current_row_group.PrefetchRowCount(*this));
+	return pinned_row_group->CollectAssignmentIOTasks(*this);
 }
 
 void CollectionScanState::InitializeColumnScans() {

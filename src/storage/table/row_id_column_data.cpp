@@ -1,6 +1,7 @@
 #include "duckdb/storage/table/row_id_column_data.hpp"
 
 #include "duckdb/common/vector/flat_vector.hpp"
+#include "duckdb/planner/filter/expression_filter.hpp"
 #include "duckdb/storage/table/scan_state.hpp"
 
 namespace duckdb {
@@ -15,14 +16,49 @@ idx_t RowIdColumnData::GetRowStart(ColumnScanState &state) {
 	return state.parent->GetRowGroup()->GetRowStart();
 }
 
-FilterPropagateResult RowIdColumnData::CheckZonemap(ColumnScanState &state, TableFilter &filter,
-                                                    optional_ptr<SegmentNode<ColumnSegment>> &checked_segment) {
-	checked_segment = nullptr;
-	auto row_start = GetRowStart(state);
-	return RowGroup::CheckRowIdFilter(filter, row_start, row_start + count);
+//! Optional filters are not executed, but the row ids they reject still let the scan skip vectors
+static bool PrunesVectors(const ScanFilter &filter) {
+	return !filter.IsAlwaysTrue() || ExpressionFilter::IsRootNonSelectivityOptionalFilter(filter.filter);
 }
 
-void RowIdColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t rows) {
+static bool RejectsRowIds(const TableFilter &filter, idx_t start_row_id, idx_t end_row_id) {
+	const auto prune_result = RowGroup::CheckRowIdFilter(filter, start_row_id, end_row_id);
+	return prune_result == FilterPropagateResult::FILTER_ALWAYS_FALSE ||
+	       prune_result == FilterPropagateResult::FILTER_FALSE_OR_NULL;
+}
+
+FilterPropagateResult RowIdColumnData::CheckZonemap(ColumnScanState &state, const ScanFilter &filter,
+                                                    optional_idx &checked_end) {
+	return CheckZonemapAt(state, filter, state.parent->vector_index * STANDARD_VECTOR_SIZE, checked_end);
+}
+
+FilterPropagateResult RowIdColumnData::CheckZonemapAt(ColumnScanState &state, const ScanFilter &filter, idx_t row,
+                                                      optional_idx &checked_end) {
+	if (!PrunesVectors(filter)) {
+		return FilterPropagateResult::NO_PRUNING_POSSIBLE;
+	}
+	// the row ids of each vector are known, so look ahead for the first vector with a row id the filter accepts
+	const auto row_group_start = GetRowStart(state);
+	const idx_t scan_end = state.parent->max_row_group_row;
+	idx_t vector_start = row;
+	while (vector_start < scan_end) {
+		const idx_t vector_end = MinValue<idx_t>(AlignValue<idx_t, STANDARD_VECTOR_SIZE>(vector_start + 1), scan_end);
+		if (!RejectsRowIds(filter.filter, row_group_start + vector_start, row_group_start + vector_end)) {
+			break;
+		}
+		vector_start = vector_end;
+	}
+	if (vector_start == row) {
+		// the vector of row can hold row ids the filter accepts, the next vector has to be checked again
+		checked_end = MinValue<idx_t>(AlignValue<idx_t, STANDARD_VECTOR_SIZE>(row + 1), scan_end);
+		return FilterPropagateResult::NO_PRUNING_POSSIBLE;
+	}
+	checked_end = vector_start;
+	return FilterPropagateResult::FILTER_ALWAYS_FALSE;
+}
+
+void RowIdColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t start_row,
+                                         idx_t end_row) {
 }
 
 void RowIdColumnData::InitializeScan(ColumnScanState &state) {

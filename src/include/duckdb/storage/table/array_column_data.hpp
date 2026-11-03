@@ -21,10 +21,11 @@ public:
 
 public:
 	void SetDataType(ColumnDataType data_type) override;
-	FilterPropagateResult CheckZonemap(ColumnScanState &state, TableFilter &filter,
-	                                   optional_ptr<SegmentNode<ColumnSegment>> &checked_segment) override;
+	FilterPropagateResult CheckZonemap(ColumnScanState &state, const ScanFilter &filter,
+	                                   optional_idx &checked_end) override;
 
-	void InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t rows) override;
+	void InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t start_row,
+	                        idx_t end_row) override;
 	void InitializeScan(ColumnScanState &state) override;
 	void InitializeScanWithOffset(ColumnScanState &state, idx_t row_idx) override;
 

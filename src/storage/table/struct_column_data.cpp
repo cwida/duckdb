@@ -47,18 +47,28 @@ idx_t StructColumnData::GetMaxEntry() {
 	return validity->GetMaxEntry();
 }
 
-FilterPropagateResult StructColumnData::CheckZonemap(ColumnScanState &state, TableFilter &filter,
-                                                     optional_ptr<SegmentNode<ColumnSegment>> &checked_segment) {
-	if (state.expression_state) {
-		checked_segment = nullptr;
+FilterPropagateResult StructColumnData::CheckZonemap(ColumnScanState &state, const ScanFilter &filter,
+                                                     optional_idx &checked_end) {
+	if (state.expression_state || filter.IsAlwaysTrue()) {
 		return FilterPropagateResult::NO_PRUNING_POSSIBLE;
 	}
 	if (state.storage_index.IsPushdownExtract()) {
 		auto children = GetStructChildren(state);
 		D_ASSERT(children.size() == 1);
-		return children[0].col.CheckZonemap(children[0].state, filter, checked_segment);
+		return children[0].col.CheckZonemap(children[0].state, filter, checked_end);
 	}
-	return CheckValidityZonemap(state, filter, checked_segment, *validity);
+	return CheckValidityZonemap(state, filter, checked_end, *validity);
+}
+
+FilterPropagateResult StructColumnData::CheckZonemapAt(ColumnScanState &state, const ScanFilter &filter, idx_t row,
+                                                       optional_idx &checked_end) {
+	if (state.expression_state || !state.storage_index.IsPushdownExtract()) {
+		// the scan judges null checks on the validity child
+		return FilterPropagateResult::NO_PRUNING_POSSIBLE;
+	}
+	auto children = GetStructChildren(state);
+	D_ASSERT(children.size() == 1);
+	return children[0].col.CheckZonemapAt(children[0].state, filter, row, checked_end);
 }
 
 vector<StructColumnData::StructColumnDataChild> StructColumnData::GetStructChildren(ColumnScanState &state) const {
@@ -80,14 +90,15 @@ vector<StructColumnData::StructColumnDataChild> StructColumnData::GetStructChild
 	return res;
 }
 
-void StructColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t rows) {
-	validity->InitializePrefetch(prefetch_state, scan_state.child_states[0], rows);
+void StructColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t start_row,
+                                          idx_t end_row) {
+	validity->InitializePrefetch(prefetch_state, scan_state.child_states[0], start_row, end_row);
 	auto struct_children = GetStructChildren(scan_state);
 	for (auto &child : struct_children) {
 		if (!child.should_scan) {
 			continue;
 		}
-		child.col.InitializePrefetch(prefetch_state, child.state, rows);
+		child.col.InitializePrefetch(prefetch_state, child.state, start_row, end_row);
 	}
 }
 

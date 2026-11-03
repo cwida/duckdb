@@ -184,11 +184,12 @@ idx_t VariantColumnData::GetMaxEntry() {
 	return sub_columns[0]->GetMaxEntry();
 }
 
-void VariantColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t rows) {
+void VariantColumnData::InitializePrefetch(PrefetchState &prefetch_state, ColumnScanState &scan_state, idx_t start_row,
+                                           idx_t end_row) {
 	//! FIXME: does this also need CreateScanStates ??
-	validity->InitializePrefetch(prefetch_state, scan_state.child_states[0], rows);
+	validity->InitializePrefetch(prefetch_state, scan_state.child_states[0], start_row, end_row);
 	for (idx_t i = 0; i < sub_columns.size(); i++) {
-		sub_columns[i]->InitializePrefetch(prefetch_state, scan_state.child_states[i + 1], rows);
+		sub_columns[i]->InitializePrefetch(prefetch_state, scan_state.child_states[i + 1], start_row, end_row);
 	}
 }
 

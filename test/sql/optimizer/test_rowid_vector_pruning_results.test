@@ -1,0 +1,174 @@
+# name: test/sql/optimizer/test_rowid_vector_pruning_results.test
+# description: Scans that skip the vectors a row id filter rejects return the rows of the row ids
+# group: [optimizer]
+
+# 300000 rows in three row groups, row id i holds k = (i * 7919) % 300000 and g = 'geom i'
+statement ok
+CREATE TABLE r (k BIGINT PRIMARY KEY, g VARCHAR, risk BIGINT, zone VARCHAR, score DOUBLE);
+
+statement ok
+INSERT INTO r SELECT (i * 7919) % 300000, 'geom ' || i, i % 7, 'zone ' || (i % 13), i * 0.5 FROM range(300000) t(i);
+
+statement ok
+CREATE TABLE plain AS SELECT * FROM r;
+
+statement ok
+CREATE TABLE nested AS
+SELECT [i, i + 1] AS l, {'a': i, 'b': 'v' || i} AS st, CASE WHEN i % 3 = 0 THEN NULL ELSE i END AS maybe
+FROM range(300000) t(i);
+
+# row ids at the edges of vectors and row groups
+query II
+SELECT rowid, g FROM r WHERE rowid IN (2047, 2048, 122879, 122880, 299999) ORDER BY rowid
+----
+2047	geom 2047
+2048	geom 2048
+122879	geom 122879
+122880	geom 122880
+299999	geom 299999
+
+query IIII
+SELECT rowid, l, st, maybe FROM nested WHERE rowid IN (2047, 2048, 150000, 299999) ORDER BY rowid
+----
+2047	[2047, 2048]	{'a': 2047, 'b': v2047}	2047
+2048	[2048, 2049]	{'a': 2048, 'b': v2048}	2048
+150000	[150000, 150001]	{'a': 150000, 'b': v150000}	NULL
+299999	[299999, 300000]	{'a': 299999, 'b': v299999}	299999
+
+query IIIII
+SELECT k, risk, zone, score, length(g) AS d FROM r WHERE k BETWEEN 4242 AND 4300 ORDER BY d DESC, k LIMIT 3
+----
+4242	3	zone 11	147159.0	11
+4243	2	zone 6	105998.5	11
+4244	1	zone 1	64838.0	11
+
+query IIII
+SELECT risk, zone, score, length(g) AS d FROM r WHERE k = 4242 ORDER BY d LIMIT 1
+----
+3	zone 11	147159.0	11
+
+# a row id filter that cannot prune keeps every vector
+query I
+SELECT count(*) FROM r WHERE rowid % 7 = 0
+----
+42858
+
+# deleted rows in the vectors that are read and in the vectors that are skipped
+statement ok
+DELETE FROM r WHERE rowid IN (2048, 122880, 200000)
+
+query II
+SELECT rowid, g FROM r WHERE rowid IN (2047, 2048, 122879, 122880, 200000, 299999) ORDER BY rowid
+----
+2047	geom 2047
+122879	geom 122879
+299999	geom 299999
+
+# rows a transaction appended get row ids of its local storage, which spans several vectors here
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO r SELECT -1 - i, 'local ' || i, 3, 'zone x', 1000000.0 + i FROM range(5000) t(i)
+
+query II
+SELECT k, g FROM r WHERE rowid IN (SELECT rowid FROM r WHERE k IN (-1, -3000, -5000, 4242)) ORDER BY k
+----
+-5000	local 4999
+-3000	local 2999
+-1	local 0
+4242	geom 294318
+
+query II
+SELECT k, g FROM r WHERE k < 0 ORDER BY score DESC LIMIT 2
+----
+-5000	local 4999
+-4999	local 4998
+
+statement ok
+ROLLBACK
+
+# without an index, late materialization scans the table for the row ids first
+query IIIII
+SELECT * FROM plain WHERE risk = 3 ORDER BY score DESC LIMIT 2
+----
+260405	geom 299995	3	zone 7	149997.5
+204972	geom 299988	3	zone 0	149994.0
+
+# rows the transaction appended, changed or deleted
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO plain VALUES (-1, 'appended', 3, 'zone x', 1000000.0)
+
+statement ok
+UPDATE plain SET g = 'changed' WHERE k = 260405
+
+statement ok
+DELETE FROM plain WHERE k = 204972
+
+query IIIII
+SELECT * FROM plain WHERE risk = 3 ORDER BY score DESC LIMIT 3
+----
+-1	appended	3	zone x	1000000.0
+260405	changed	3	zone 7	149997.5
+149539	geom 299981	3	zone 6	149990.5
+
+statement ok
+ROLLBACK
+
+query IIIII
+SELECT * FROM plain WHERE risk = 3 ORDER BY score DESC LIMIT 2 OFFSET 1
+----
+204972	geom 299988	3	zone 0	149994.0
+149539	geom 299981	3	zone 6	149990.5
+
+# segments rejected up to a partial last vector are skipped, the rows in the last segment are not
+statement ok
+SET force_compression = 'uncompressed'
+
+statement ok
+CREATE TABLE seg AS SELECT i AS x, {'a': i} AS st FROM range(100001) t(i);
+
+statement ok
+CHECKPOINT
+
+statement ok
+RESET force_compression
+
+query III
+SELECT count(*), min(x), max(x) FROM seg WHERE x < 10
+----
+10	0	9
+
+query III
+SELECT count(*), min(x), max(x) FROM seg WHERE x >= 99990
+----
+11	99990	100000
+
+query III
+SELECT count(*), min(st.a), max(st.a) FROM seg WHERE st.a >= 99990
+----
+11	99990	100000
+
+# the first rows of a segment share a vector with the end of the rejected segment before it
+query III
+SELECT count(*), min(x), max(x) FROM seg WHERE x >= 98301
+----
+1700	98301	100000
+
+query II
+SELECT count(*), min(x) FROM seg WHERE x = 98301
+----
+1	98301
+
+query II
+SELECT count(*), min(st.a) FROM seg WHERE st.a = 98301
+----
+1	98301
+
+query II
+SELECT count(*), max(x) FROM seg WHERE rowid < 10 AND x < 10
+----
+10	9
