@@ -33,6 +33,10 @@ COPY (FROM read_parquet('{TEST_DIR}/sam_a.parquet')) TO '{TEST_DIR}/sam_sales.cs
 statement ok
 COPY (FROM read_parquet('{TEST_DIR}/sam_a.parquet')) TO '{TEST_DIR}/sam_sales.json' (FORMAT json);
 
+# sam_bad.csv: x and y count 1 to 30, except that y is not a number where x is a multiple of 7
+statement ok
+COPY (SELECT i AS x, CASE WHEN i % 7 = 0 THEN 'oops' ELSE i::VARCHAR END AS y FROM range(1, 31) r(i)) TO '{TEST_DIR}/sam_bad.csv' (FORMAT csv, HEADER);
+
 statement ok
 CREATE TABLE dim1 AS SELECT i::INTEGER AS dk, CASE WHEN i % 3 = 0 THEN 'a' WHEN i % 3 = 1 THEN 'b' ELSE 'c' END AS dname FROM range(50) r(i);
 
@@ -60,6 +64,14 @@ SELECT (SELECT count(*) FROM read_parquet('{TEST_DIR}/sam_*.parquet') WHERE q < 
 ----
 720	19992.00	8000
 
+# the branch without a condition first: its scan reads no column of its own and gains the others' columns
+query III
+SELECT (SELECT count(*) FROM read_parquet('{TEST_DIR}/sam_*.parquet')) AS c,
+       (SELECT count(*) FROM read_parquet('{TEST_DIR}/sam_*.parquet') WHERE q < 10) AS a,
+       (SELECT sum(paid) FROM read_parquet('{TEST_DIR}/sam_*.parquet') WHERE q > 90) AS b
+----
+8000	720	19992.00
+
 query III
 SELECT (SELECT count(*) FROM read_parquet(['{TEST_DIR}/sam_a.parquet', '{TEST_DIR}/sam_b.parquet']) WHERE q < 10) AS a,
        (SELECT sum(paid) FROM read_parquet(['{TEST_DIR}/sam_a.parquet', '{TEST_DIR}/sam_b.parquet']) WHERE q > 90) AS b,
@@ -81,6 +93,33 @@ SELECT (SELECT count(*) FROM read_json('{TEST_DIR}/sam_sales.json') WHERE q < 10
        (SELECT min(k) FROM read_json('{TEST_DIR}/sam_sales.json') WHERE q = 7) AS c
 ----
 450	4999	6
+
+# a CSV scan that drops the rows it fails to parse returns a row when every column it reads parses: the count over x
+# alone sees every row, the sum over y only the rows whose y is a number
+query II
+SELECT (SELECT count(*) FROM read_csv('{TEST_DIR}/sam_bad.csv', ignore_errors = true, columns = {'x': 'INTEGER', 'y': 'INTEGER'}) WHERE x > 0) AS a,
+       (SELECT sum(y) FROM read_csv('{TEST_DIR}/sam_bad.csv', ignore_errors = true, columns = {'x': 'INTEGER', 'y': 'INTEGER'}) WHERE x > 10) AS b
+----
+30	347
+
+# the same columns read by both branches: one scan returns the same rows to both
+query II
+SELECT (SELECT count(*) FROM read_csv('{TEST_DIR}/sam_bad.csv', ignore_errors = true, columns = {'x': 'INTEGER', 'y': 'INTEGER'}) WHERE y > 0) AS a,
+       (SELECT sum(y) FROM read_csv('{TEST_DIR}/sam_bad.csv', ignore_errors = true, columns = {'x': 'INTEGER', 'y': 'INTEGER'}) WHERE y > 10) AS b
+----
+26	347
+
+# without ignore_errors a value that fails to parse is an error, whichever branch reads it
+statement error
+SELECT (SELECT count(*) FROM read_csv('{TEST_DIR}/sam_bad.csv', columns = {'x': 'INTEGER', 'y': 'INTEGER'}) WHERE x > 0) AS a,
+       (SELECT sum(y) FROM read_csv('{TEST_DIR}/sam_bad.csv', columns = {'x': 'INTEGER', 'y': 'INTEGER'}) WHERE x > 10) AS b
+----
+<REGEX>:.*Conversion Error.*oops.*
+
+query I
+SELECT (SELECT count(*) FROM read_csv('{TEST_DIR}/sam_bad.csv', columns = {'x': 'INTEGER', 'y': 'INTEGER'}) WHERE x > 0) AS a
+----
+30
 
 # derived tables with DISTINCT aggregates (TPC-DS q28)
 query IIIIII

@@ -1,5 +1,6 @@
 #include "duckdb/optimizer/scalar_aggregate_merger.hpp"
 
+#include "duckdb/common/set.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/planner/binder.hpp"
@@ -88,7 +89,7 @@ static void SplitConjunction(const Expression &expr, vector<reference<const Expr
 }
 
 //! A scan as bound: no filters, time travel, ordinality, projection list, sample, input table or process-local input,
-//! and only plain columns
+//! and only plain columns. A scan that reads no column gets the empty placeholder once its types are resolved.
 static bool IsPlainScan(const LogicalGet &get) {
 	if (!get.children.empty() || get.bind_info || get.table_filters.HasFilters() || get.at_clause ||
 	    get.source_ordinality != OrdinalityType::WITHOUT_ORDINALITY || !get.projection_ids.empty() ||
@@ -97,6 +98,9 @@ static bool IsPlainScan(const LogicalGet &get) {
 		return false;
 	}
 	for (auto &column_id : get.GetColumnIds()) {
+		if (column_id.IsEmptyColumn()) {
+			continue;
+		}
 		if (column_id.IsVirtualColumn() || column_id.HasChildren()) {
 			return false;
 		}
@@ -144,6 +148,42 @@ static bool IsSameRelation(const LogicalGet &a, const LogicalGet &b) {
 	return !a.parameters.empty() || FunctionData::Equals(a.bind_data.get(), b.bind_data.get());
 }
 
+//! The columns a scan reads, without the empty placeholder
+static set<column_t> ReadColumns(const LogicalGet &get) {
+	set<column_t> columns;
+	for (auto &column_id : get.GetColumnIds()) {
+		if (!column_id.IsEmptyColumn()) {
+			columns.insert(column_id.GetPrimaryIndex());
+		}
+	}
+	return columns;
+}
+
+//! A named argument that is set: given, not NULL and not false
+static bool HasOption(const LogicalGet &get, const char *name) {
+	auto entry = get.named_parameters.find(name);
+	if (entry == get.named_parameters.end() || entry->second.IsNull()) {
+		return false;
+	}
+	return entry->second.type().id() != LogicalTypeId::BOOLEAN || BooleanValue::Get(entry->second);
+}
+
+//! A scan that stores the rows it rejects writes them as a side effect of each scan
+static bool RecordsRejects(const LogicalGet &get) {
+	return HasOption(get, "store_rejects") || HasOption(get, "rejects_table") || HasOption(get, "rejects_scan") ||
+	       HasOption(get, "rejects_limit");
+}
+
+//! Two scans that one scan reading both of their columns can replace: the same relation, and the rows a scan returns do
+//! not depend on the columns it reads. A scan that drops the rows it fails to parse (ignore_errors) returns a row when
+//! every column it reads parses, so such scans are only shared when they read the same columns.
+static bool CanShareScan(const LogicalGet &a, const LogicalGet &b) {
+	if (!IsSameRelation(a, b) || RecordsRejects(a)) {
+		return false;
+	}
+	return !HasOption(a, "ignore_errors") || ReadColumns(a) == ReadColumns(b);
+}
+
 //! The plain scans under `op`: one scan, or a cross product of scans of different relations (a self-join's copies of
 //! a table would not pair one to one with another branch's)
 static bool CollectScans(LogicalOperator &op, vector<reference<LogicalGet>> &scans) {
@@ -171,7 +211,7 @@ static bool CollectScans(LogicalOperator &op, vector<reference<LogicalGet>> &sca
 	return true;
 }
 
-//! Two branches read the same tables when their scans pair up one to one
+//! Two branches read the same tables when their scans pair up one to one as scans that can be shared
 static bool ReadSameTables(const ScalarAggregateMerger::Branch &a, const ScalarAggregateMerger::Branch &b) {
 	if (a.scans.size() != b.scans.size()) {
 		return false;
@@ -179,7 +219,7 @@ static bool ReadSameTables(const ScalarAggregateMerger::Branch &a, const ScalarA
 	for (auto &scan : a.scans) {
 		bool found = false;
 		for (auto &other : b.scans) {
-			found = found || IsSameRelation(scan.get(), other.get());
+			found = found || CanShareScan(scan.get(), other.get());
 		}
 		if (!found) {
 			return false;
@@ -453,13 +493,17 @@ unique_ptr<LogicalOperator> ScalarAggregateMerger::MergeBranches(vector<Branch> 
 			auto &scan = branch_scan.get();
 			optional_ptr<MergeTarget> target;
 			for (auto &candidate : targets) {
-				if (IsSameRelation(candidate.scan.get(), scan)) {
+				if (CanShareScan(candidate.scan.get(), scan)) {
 					target = &candidate;
 				}
 			}
 			D_ASSERT(target);
 			auto &column_ids = scan.GetColumnIds();
 			for (idx_t i = 0; i < column_ids.size(); i++) {
+				// nothing refers to the empty placeholder
+				if (column_ids[i].IsEmptyColumn()) {
+					continue;
+				}
 				remaps[k][ColumnBinding(scan.table_index, ProjectionIndex(i))] =
 				    TargetBinding(*target, column_ids[i].GetPrimaryIndex());
 			}
