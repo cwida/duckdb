@@ -524,7 +524,7 @@ jobs:
         name: Download all extensions
         with:
           pattern: '*-extensions-*'
-          path: /tmp/repository_generation
+          path: ${{ runner.temp }}/repository_generation
           # When multiple artifacts are matched:
           # - if true: the downloaded artifacts will be in the same directory
           #   specified by path.
@@ -537,9 +537,9 @@ jobs:
 
       - name: Print all extensions
         run: |
-          tree /tmp/repository_generation
+          tree "$RUNNER_TEMP/repository_generation"
 
-          ls /tmp/repository_generation/*/*/*.duckdb_extension*
+          ls "$RUNNER_TEMP"/repository_generation/*/*/*.duckdb_extension*
 
       - name: Validate extension signing
         if: ${{ github.event_name == 'pull_request' }}
@@ -548,23 +548,23 @@ jobs:
           AWS_ENDPOINT_URL: https://example.com
           AWS_ACCESS_KEY_ID: duckdb-signing-validation
           AWS_SECRET_ACCESS_KEY: duckdb-signing-validation
-          DUCKDB_EXTENSION_SIGNING_OUTPUT_DIR: /tmp/repository_signed_validation
+          DUCKDB_EXTENSION_SIGNING_OUTPUT_DIR: ${{ runner.temp }}/repository_signed_validation
         run: |
           set -euo pipefail
 
-          private_key_file=$(mktemp "${TMPDIR:-/tmp}/duckdb-extension-signing-validation.XXXXXX.pem")
-          public_key_file=$(mktemp "${TMPDIR:-/tmp}/duckdb-extension-signing-validation.XXXXXX.pub")
-          trap 'rm -f "$private_key_file" "$public_key_file"' EXIT
+          private_key_file=$(mktemp "$RUNNER_TEMP/duckdb-extension-signing-validation.XXXXXX.pem")
+          public_key_file=$(mktemp "$RUNNER_TEMP/duckdb-extension-signing-validation.XXXXXX.pub")
+          trap 'rm -f "$private_key_file" "$public_key_file"; rm -rf "$DUCKDB_EXTENSION_SIGNING_OUTPUT_DIR"' EXIT
 
           openssl genrsa -out "$private_key_file" 2048
           openssl rsa -in "$private_key_file" -pubout -out "$public_key_file"
           DUCKDB_EXTENSION_SIGNING_PK="$(cat "$private_key_file")"
           export DUCKDB_EXTENSION_SIGNING_PK
 
-          rm -rf /tmp/repository_signed_validation
-          make upload-extensions EXTENSION_REPOSITORY_PATH=/tmp/repository_generation
+          rm -rf "$DUCKDB_EXTENSION_SIGNING_OUTPUT_DIR"
+          make upload-extensions EXTENSION_REPOSITORY_PATH="$RUNNER_TEMP/repository_generation"
           make verify-extension-signing \
-            SIGNED_EXTENSIONS_DIR=/tmp/repository_signed_validation \
+            SIGNED_EXTENSIONS_DIR="$DUCKDB_EXTENSION_SIGNING_OUTPUT_DIR" \
             EXTENSION_SIGNING_PUBLIC_KEY_FILE="$public_key_file"
 
       - name: Deploy extensions
@@ -576,7 +576,7 @@ jobs:
           DUCKDB_DEPLOY_SCRIPT_MODE: for_real
           DUCKDB_EXTENSION_SIGNING_PK: ${{ secrets.DUCKDB_EXTENSION_SIGNING_PK }}
         run: |
-          make upload-extensions EXTENSION_REPOSITORY_PATH=/tmp/repository_generation
+          make upload-extensions EXTENSION_REPOSITORY_PATH="$RUNNER_TEMP/repository_generation"
 
       - name: Build DuckDB
         if: ${{ !fromJson(needs.prepare.outputs.skip_tests) }}
@@ -595,7 +595,7 @@ jobs:
       - name: Run Tests
         if: ${{ !fromJson(needs.prepare.outputs.skip_tests) }}
         env:
-          LOCAL_EXTENSION_REPO: /tmp/repository_generation
+          LOCAL_EXTENSION_REPO: ${{ runner.temp }}/repository_generation
           DUCKDB_TEST_DESCRIPTION: 'Running with autoloading of extensions. Run unittest --autoloading available to reproduce locally. Add require no_extension_autoloading to skip the test'
         run: make unittest_release SKIP_BUILD=1 T="--test-flags='--autoloading available --skip-compiled'"
 
@@ -612,7 +612,7 @@ jobs:
       - name: Copy over local extension repository
         if: ${{ !fromJson(needs.prepare.outputs.skip_tests) }}
         run: |
-          cp -r /tmp/repository_generation build/release/repository
+          cp -r "$RUNNER_TEMP/repository_generation" build/release/repository
           tree build/release/repository
           find build/release/repository -type f ! -path "build/release/repository/*/linux_amd64/*" -delete
           tree build/release/repository

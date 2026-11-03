@@ -89,3 +89,76 @@ query TTT
 SELECT substring_grapheme('ääääää', -10, 2), substring_grapheme('ääääää', -10, 5), substring_grapheme('ääääää', -10, 6)
 ----
 (empty)	ä	ää
+
+# a negative offset counts from the end, so a non-ASCII character after the window counts as well
+query TTTTTT
+SELECT substring_grapheme('xyé', -4, 1), substring_grapheme('xyé', -3, -1), substring_grapheme('xyzwé', -5, 1),
+       substring_grapheme('xyzwé', -5, 2), substring_grapheme('xyzwé', -6, 2), substring('xyzwé', -5, 2);
+----
+(empty)	(empty)	x	xy	x	xy
+
+query II
+SELECT o, l FROM (VALUES (-6, 3), (-5, 1), (-4, 2), (-2, -2), (-1, 1), (-7, 4)) t(o, l)
+WHERE substring_grapheme('abcdé', o, l) <> substring('abcdé', o, l);
+----
+
+# windows next to long grapheme clusters, where C stands for the cluster in the input and the expected result
+statement ok
+CREATE TABLE clusters AS SELECT * FROM (VALUES
+	('zwj', repeat('🦆' || chr(8205), 20) || '🦆'),
+	('family', '👨‍👩‍👧‍👦'),
+	('flag', '🇳🇱'),
+	('combining', 'e' || repeat(chr(769), 30)),
+	('hangul', chr(4352) || chr(4449) || chr(4520)),
+	('indic', chr(2325) || chr(2381) || chr(2359)),
+	('spacing_mark', 'a' || chr(2366)),
+	('prepend', chr(1536) || chr(1537) || 'x')
+) t(name, c);
+
+query T
+SELECT name FROM clusters WHERE length_grapheme(c) <> 1;
+----
+
+statement ok
+CREATE TABLE windows AS SELECT * FROM (VALUES
+	('Cabc', -3, 3, 'abc'),
+	('Cabc', -2, 2, 'bc'),
+	('Cabc', -4, 1, 'C'),
+	('Cabc', -4, 2, 'Ca'),
+	('Cabc', -5, 2, 'C'),
+	('Cabc', -5, 1, ''),
+	('Cabc', -3, -1, 'C'),
+	('Cabc', -2, -1, 'a'),
+	('Cabc', -1, -3, 'Cab'),
+	('Cabc', 1, 1, 'C'),
+	('Cabc', 2, 2, 'ab'),
+	('abcC', -4, 3, 'abc'),
+	('abcC', -2, 1, 'c'),
+	('abcC', -1, 1, 'C'),
+	('abcC', -5, 2, 'a'),
+	('abcC', -5, 1, ''),
+	('abcC', -1, -2, 'bc'),
+	('abcC', 3, 1, 'c'),
+	('abcC', 4, 1, 'C'),
+	('abCcd', -4, 3, 'bCc'),
+	('abCcd', -3, 1, 'C'),
+	('abCcd', -2, 2, 'cd'),
+	('abCcd', -1, 1, 'd'),
+	('abCcd', -2, -2, 'bC'),
+	('abCcd', -6, 3, 'ab'),
+	('abCcd', 2, 1, 'b'),
+	('abCcd', 3, 2, 'Cc')
+) t(template, o, l, expected);
+
+query TTII
+SELECT name, template, o, l FROM clusters, windows
+WHERE substring_grapheme(replace(template, 'C', c), o, l) <> replace(expected, 'C', c);
+----
+
+# an odd run of regional indicators pairs up from its start
+query TTTT
+SELECT substring_grapheme(s, -3), substring_grapheme(s, -4, 1), substring_grapheme(s, -5, 1),
+       substring_grapheme(s, -5, 2)
+FROM (SELECT 'x' || repeat('🇳', 7) || 'abc' AS s);
+----
+abc	🇳	🇳🇳	🇳🇳🇳
