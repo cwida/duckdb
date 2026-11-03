@@ -115,6 +115,72 @@ ORDER BY ALL;
 2	8	1
 2	9	2
 
+# the json virtual column in a folded correlation references the input document
+query IIII
+SELECT o.k, q.json::VARCHAR, q.value::VARCHAR, q.ordinality::INTEGER
+FROM (VALUES (1), (2)) o(k),
+     LATERAL json_each((CASE WHEN typeof(o.k) = 'INTEGER' THEN '[8,9]' ELSE '[]' END)::JSON)
+     WITH ORDINALITY q
+ORDER BY ALL;
+----
+1	[8,9]	8	1
+1	[8,9]	9	2
+2	[8,9]	8	1
+2	[8,9]	9	2
+
+# a folded unnest feeds the function a multi-row input chunk: every row must be processed
+query III
+SELECT q.json::VARCHAR, q.value::VARCHAR, q.ordinality::INTEGER
+FROM (VALUES (1)) o(k),
+     LATERAL json_each(unnest(CASE WHEN typeof(o.k) = 'INTEGER' THEN ['[1,2]', '[3]'] END)::JSON)
+     WITH ORDINALITY q
+ORDER BY ALL;
+----
+[1,2]	1	1
+[1,2]	2	2
+[3]	3	1
+
+# a NULL document in the multi-row chunk is skipped
+query II
+SELECT q.value::VARCHAR, q.ordinality::INTEGER
+FROM (VALUES (1)) o(k),
+     LATERAL json_each(unnest(CASE WHEN typeof(o.k) = 'INTEGER' THEN ['[1]', NULL, '[2,3]'] END)::JSON)
+     WITH ORDINALITY q
+ORDER BY ALL;
+----
+1	1
+2	1
+3	2
+
+# json_tree over a multi-row input chunk
+query I
+SELECT q.fullkey
+FROM (VALUES (1)) o(k),
+     LATERAL json_tree(unnest(CASE WHEN typeof(o.k) = 'INTEGER' THEN ['[1]', '{"a":2}'] END)::JSON) q
+ORDER BY ALL;
+----
+$
+$
+$.a
+$[0]
+
+# a path argument over a multi-row input chunk
+query I
+SELECT q.value::VARCHAR
+FROM (VALUES (1)) o(k),
+     LATERAL json_each(unnest(CASE WHEN typeof(o.k) = 'INTEGER' THEN ['{"a":[1]}', '{"a":[2]}'] END)::JSON, '$.a') q
+ORDER BY ALL;
+----
+1
+2
+
+# a NULL path argument produces no rows
+query III
+SELECT o.id, q.value::VARCHAR, q.ordinality::INTEGER
+FROM (VALUES (1, '[7]')) o(id, j), LATERAL json_each(o.j::JSON, NULL) WITH ORDINALITY q
+ORDER BY ALL;
+----
+
 # a virtual column selected next to the ordinality column
 query III
 SELECT o.id, q.json::VARCHAR, q.ordinality::INTEGER
