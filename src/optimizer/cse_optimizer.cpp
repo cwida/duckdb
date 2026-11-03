@@ -36,11 +36,11 @@ struct CSEReplacementState {
 	bool short_circuited = false;
 	//! True while visiting the child of a TRY or HAS_ERROR, whose errors must stay inside the capture
 	bool inside_try = false;
-	//! Whether the filters of the aggregates stay intact: an ungrouped aggregate evaluates each distinct filter once
-	//! with the selection fast path, which beats materializing the filter in a projection
+	//! Whether the root of each aggregate filter stays intact: an ungrouped aggregate evaluates each distinct filter
+	//! once with the selection fast path, which beats materializing the filter in a projection
 	bool keep_aggregate_filters = false;
-	//! True while visiting a filter that stays intact
-	bool inside_kept_filter = false;
+	//! True when the expression being visited is the root of a kept filter; its sub-expressions are still extracted
+	bool at_kept_filter_root = false;
 };
 
 void CommonSubExpressionOptimizer::VisitOperator(LogicalOperator &op) {
@@ -56,6 +56,8 @@ void CommonSubExpressionOptimizer::VisitOperator(LogicalOperator &op) {
 }
 
 void CommonSubExpressionOptimizer::CountExpressions(Expression &expr, CSEReplacementState &state) {
+	const bool kept_filter_root = state.at_kept_filter_root;
+	state.at_kept_filter_root = false;
 	// we only consider expressions with children for CSE elimination
 	switch (expr.GetExpressionClass()) {
 	case ExpressionClass::BOUND_COLUMN_REF:
@@ -68,7 +70,7 @@ void CommonSubExpressionOptimizer::CountExpressions(Expression &expr, CSEReplace
 		break;
 	}
 	if (expr.GetExpressionClass() != ExpressionClass::BOUND_AGGREGATE && !expr.IsVolatile() && !state.inside_try &&
-	    !state.inside_kept_filter) {
+	    !kept_filter_root) {
 		// we can't move aggregates to a projection, so we only consider the children of the aggregate
 		auto node = state.expression_count.find(expr);
 		if (node == state.expression_count.end()) {
@@ -110,12 +112,8 @@ void CommonSubExpressionOptimizer::CountExpressions(Expression &expr, CSEReplace
 	case ExpressionClass::BOUND_AGGREGATE: {
 		auto &aggr = expr.Cast<BoundAggregateExpression>();
 		ExpressionIterator::EnumerateChildren(expr, [&](Expression &child) {
-			const auto save_inside_kept_filter = state.inside_kept_filter;
-			if (state.keep_aggregate_filters && aggr.GetFilter().get() == &child) {
-				state.inside_kept_filter = true;
-			}
+			state.at_kept_filter_root = state.keep_aggregate_filters && aggr.GetFilter().get() == &child;
 			CountExpressions(child, state);
-			state.inside_kept_filter = save_inside_kept_filter;
 		});
 		break;
 	}
@@ -128,6 +126,8 @@ void CommonSubExpressionOptimizer::CountExpressions(Expression &expr, CSEReplace
 
 void CommonSubExpressionOptimizer::PerformCSEReplacement(unique_ptr<Expression> &expr_ptr, CSEReplacementState &state) {
 	Expression &expr = *expr_ptr;
+	const bool kept_filter_root = state.at_kept_filter_root;
+	state.at_kept_filter_root = false;
 	if (expr.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
 		auto &bound_column_ref = expr.Cast<BoundColumnRefExpression>();
 		// bound column ref, check if this one has already been recorded in the expression list
@@ -146,8 +146,7 @@ void CommonSubExpressionOptimizer::PerformCSEReplacement(unique_ptr<Expression> 
 		return;
 	}
 	// check if this child is eligible for CSE elimination
-	if (!state.inside_try && !state.inside_kept_filter &&
-	    state.expression_count.find(expr) != state.expression_count.end()) {
+	if (!state.inside_try && !kept_filter_root && state.expression_count.find(expr) != state.expression_count.end()) {
 		auto &node = state.expression_count[expr];
 		if (node.count > 1) {
 			// this expression occurs more than once! push it into the projection
@@ -174,15 +173,12 @@ void CommonSubExpressionOptimizer::PerformCSEReplacement(unique_ptr<Expression> 
 		state.inside_try = true;
 	}
 	if (expr.GetExpressionClass() == ExpressionClass::BOUND_AGGREGATE) {
-		// a kept filter is not extracted, but its column references still move to the new projection
+		// the root of a kept filter is not extracted, but its sub-expressions and column references are
 		auto &aggr = expr.Cast<BoundAggregateExpression>();
 		ExpressionIterator::EnumerateChildren(expr, [&](unique_ptr<Expression> &child) {
-			const auto save_inside_kept_filter = state.inside_kept_filter;
-			if (state.keep_aggregate_filters && aggr.GetFilter() && &aggr.GetFilterMutable() == &child) {
-				state.inside_kept_filter = true;
-			}
+			state.at_kept_filter_root =
+			    state.keep_aggregate_filters && aggr.GetFilter() && &aggr.GetFilterMutable() == &child;
 			PerformCSEReplacement(child, state);
-			state.inside_kept_filter = save_inside_kept_filter;
 		});
 	} else {
 		ExpressionIterator::EnumerateChildren(

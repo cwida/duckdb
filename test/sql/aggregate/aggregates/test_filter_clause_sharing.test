@@ -102,16 +102,34 @@ SELECT count(DISTINCT g), count(DISTINCT v), sum(DISTINCT v), count(DISTINCT s),
 7	11	55	4	40000	200004
 
 # volatile children are not shared
-query III
-SELECT a <> b, len(a), len(b) FROM (SELECT list(random()) FILTER (WHERE i < 10) a, list(random()) FILTER (WHERE i < 10) b FROM range(100) t(i))
-----
-false	10	10
+statement ok
+CREATE OR REPLACE SEQUENCE s
 
-# deterministic children are
 query II
-SELECT a = b, len(a) FROM (SELECT list(i * 2) FILTER (WHERE i < 10) a, list(i * 2) FILTER (WHERE i < 10) b FROM range(100) t(i))
+SELECT sum(nextval('s')) FILTER (WHERE i = 0), max(nextval('s')) FILTER (WHERE i = 0) FROM range(1) t(i)
 ----
-true	10
+1	2
+
+# volatile filters are not shared: the second filter consumes its own sequence values
+statement ok
+CREATE OR REPLACE SEQUENCE s2
+
+query II
+SELECT count(*) FILTER (WHERE nextval('s2') <= 10), count(i) FILTER (WHERE nextval('s2') <= 10) FROM range(10) t(i)
+----
+10	0
+
+# deterministic children and filters are shared
+query III
+SELECT list(i * 2) FILTER (WHERE i < 10), sum(i * 2) FILTER (WHERE i < 10), count(i * 2) FILTER (WHERE i < 10) FROM range(100) t(i)
+----
+[0, 2, 4, 6, 8, 10, 12, 14, 16, 18]	90	10
+
+# filters that differ only in a constant share their sub-expression
+query IIII
+SELECT count(*) FILTER (WHERE (i * 7) % 100 < 25), count(*) FILTER (WHERE (i * 7) % 100 < 50), count(*) FILTER (WHERE (i * 7) % 100 < 75), sum(i) FILTER (WHERE (i * 7) % 100 < 50 AND i % 2 = 0) FROM range(1000) t(i)
+----
+250	500	750	124500
 
 # no rows pass the filter
 query IIII
@@ -231,3 +249,21 @@ NULL	40000	200004	40000	200004
 endloop
 
 endloop
+
+# a filter that requires ordered execution is evaluated serially
+statement ok
+SET threads=1
+
+statement ok
+CREATE TABLE ordered_input AS SELECT i FROM range(1000000) t(i)
+
+statement ok
+SET threads=8
+
+statement ok
+CREATE SEQUENCE seq
+
+query I
+SELECT count(*) FILTER (WHERE nextval('seq') = i + 1) FROM ordered_input
+----
+1000000

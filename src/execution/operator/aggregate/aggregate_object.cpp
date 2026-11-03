@@ -106,12 +106,14 @@ void AggregateFilterDataSet::Initialize(ClientContext &context, const vector<Agg
 			payload_idx += aggr.child_count;
 			continue;
 		}
-		// aggregates with an identical filter share the filter data
+		// aggregates with an identical deterministic filter share the filter data
 		idx_t filter_idx = DConstants::INVALID_INDEX;
-		for (idx_t i = 0; i < filters.size(); i++) {
-			if (filters[i].get().Equals(*aggr.filter)) {
-				filter_idx = i;
-				break;
+		if (!aggr.filter->IsVolatile()) {
+			for (idx_t i = 0; i < filters.size(); i++) {
+				if (filters[i].get().Equals(*aggr.filter)) {
+					filter_idx = i;
+					break;
+				}
 			}
 		}
 		if (filter_idx == DConstants::INVALID_INDEX) {

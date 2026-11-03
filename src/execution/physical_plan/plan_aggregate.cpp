@@ -374,10 +374,12 @@ PhysicalOperator &PhysicalPlanGenerator::ExtractAggregateExpressions(PhysicalOpe
 			extract(child_expr, !bound_aggr.IsDistinct());
 		}
 		if (bound_aggr.GetFilter()) {
-			if (extract_filters) {
-				extract(bound_aggr.GetFilterMutable(), true);
+			auto &filter = bound_aggr.GetFilterMutable();
+			// volatile filters stay in the projection: evaluated per aggregate, and in order for nextval
+			if (extract_filters || filter->IsVolatile()) {
+				extract(filter, true);
 			} else {
-				extract_references(bound_aggr.GetFilterMutable());
+				extract_references(filter);
 			}
 		}
 	}
