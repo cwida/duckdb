@@ -184,7 +184,7 @@ unique_ptr<DPJoinNode> PlanEnumerator::CreateJoinTree(JoinRelationSet &set,
 	}
 	auto cardinality =
 	    cost_model.GetCardinalityEstimator().EstimateJoinCardinality(left, right, set, best_candidate->join_operator);
-	auto cost = cost_model.ComputeCost(left, right, best_candidate->join_operator, cardinality);
+	auto cost = cost_model.ComputeCost(left, right, best_candidate->join_operator, cardinality.GetDouble());
 	auto result = make_uniq<DPJoinNode>(set, best_candidate->join_operator, std::move(best_candidate->predicates),
 	                                    best_candidate->generated_cross_product, left.set, right.set, cost);
 	result->cardinality = cardinality;
@@ -425,12 +425,19 @@ bool PlanEnumerator::SolveJoinOrderApproximately() {
 		double cost;
 	};
 	vector<GreedyCandidate> candidates;
-	auto EmitCandidate = [&](JoinRelationSet &left, JoinRelationSet &right) {
+	auto EmitOrientation = [&](JoinRelationSet &left, JoinRelationSet &right) -> optional_ptr<DPJoinNode> {
 		auto &connection = GetConnections(left, right);
 		if (connection.empty()) {
-			return;
+			return nullptr;
 		}
-		auto node = EmitPair(left, right, connection);
+		return EmitPair(left, right, connection);
+	};
+	auto EmitCandidate = [&](JoinRelationSet &left, JoinRelationSet &right) {
+		// non-commutative joins (e.g. LEFT, SEMI, ANTI) are only valid in one orientation
+		auto node = EmitOrientation(left, right);
+		if (!node) {
+			node = EmitOrientation(right, left);
+		}
 		if (node) {
 			candidates.push_back({&left, &right, node->cost});
 		}
@@ -572,7 +579,7 @@ void PlanEnumerator::InitLeafPlans() {
 		auto &relation_set = query_graph_manager.set_manager.GetJoinRelation(RelationIndex(i));
 		auto join_node = make_uniq<DPJoinNode>(relation_set);
 		join_node->cost = 0;
-		join_node->cardinality = stats.cardinality;
+		join_node->cardinality = CardinalityValue(static_cast<double>(stats.cardinality));
 		D_ASSERT(join_node->set.count == 1);
 		plans[relation_set] = std::move(join_node);
 		cost_model.GetCardinalityEstimator().InitCardinalityEstimatorProps(&relation_set, stats);

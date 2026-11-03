@@ -8,6 +8,7 @@
 #pragma once
 
 #include "duckdb/optimizer/join_order/join_relation_set.hpp"
+#include "duckdb/optimizer/join_order/cardinality_value.hpp"
 
 namespace duckdb {
 
@@ -44,7 +45,7 @@ public:
 	//! the whole Join Order Optimizer can start exhibiting undesired behavior.
 	double cost;
 	//! Candidate output used when composing parent estimates and costs.
-	double cardinality = 0;
+	CardinalityValue cardinality {0};
 };
 
 } // namespace duckdb

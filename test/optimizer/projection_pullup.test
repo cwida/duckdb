@@ -96,9 +96,9 @@ EXPLAIN SELECT DISTINCT a FROM (SELECT a, b FROM (SELECT i AS a, i AS b FROM ran
 logical_opt	<REGEX>:.*DISTINCT.*PROJECTION.*
 
 query II
-EXPLAIN SELECT * FROM range(5) INTERSECT SELECT * FROM range(5);
+EXPLAIN SELECT * FROM range(5) UNION SELECT * FROM range(5);
 ----
-logical_opt	<REGEX>:.*INTERSECT.*PROJECTION.*
+logical_opt	<REGEX>:.*UNION.*PROJECTION.*
 
 #Test that the projection on the RHS of a semi join is not removed, but the plan is optimized deeper
 query II

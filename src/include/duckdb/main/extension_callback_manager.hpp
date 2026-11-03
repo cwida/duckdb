@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "duckdb/common/atomic.hpp"
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/common/shared_ptr.hpp"
@@ -68,20 +69,26 @@ public:
 	optional_ptr<DialectExtension> GetDialectExtension(const string &name) const;
 
 private:
+	shared_ptr<ExtensionCallbackRegistry> CopyRegistry() const;
+	void PublishRegistry(shared_ptr<ExtensionCallbackRegistry> new_registry);
+
+private:
 	mutex registry_lock;
-	shared_ptr<ExtensionCallbackRegistry> callback_registry;
+	//! The current registry, read without locking or reference counting
+	atomic<ExtensionCallbackRegistry *> callback_registry;
+	//! Every published registry, kept alive so that readers of an older one stay valid
+	vector<shared_ptr<ExtensionCallbackRegistry>> registry_versions;
 	vector<string> extension_schemas;
 };
 
 template <class T>
 class ExtensionCallbackIteratorHelper {
 public:
-	ExtensionCallbackIteratorHelper(const vector<T> &vec, shared_ptr<ExtensionCallbackRegistry> callback_registry);
+	explicit ExtensionCallbackIteratorHelper(const vector<T> &vec);
 	~ExtensionCallbackIteratorHelper();
 
 private:
 	const vector<T> &vec;
-	shared_ptr<ExtensionCallbackRegistry> callback_registry;
 
 public:
 	typename vector<T>::const_iterator begin() { // NOLINT: match stl API

@@ -116,7 +116,7 @@ TEST_CASE("LEFT candidate estimates use input rows independently of domain cache
 				auto node = make_uniq<DPJoinNode>(set, edge.join_operator, edge.predicates,
 				                                  edge.generated_cross_product, left.set, right.set, 0);
 				node->cardinality = estimator.EstimateJoinCardinality(left, right, set, edge.join_operator);
-				REQUIRE(node->cardinality >= left.cardinality);
+				REQUIRE(node->cardinality.GetDouble() >= left.cardinality.GetDouble());
 				return node;
 			}
 			throw InternalException("Expected a legal LEFT candidate");
@@ -125,16 +125,16 @@ TEST_CASE("LEFT candidate estimates use input rows independently of domain cache
 		auto abc = join(*ab, c);
 		auto ac = join(a, c);
 		auto acb = join(*ac, b);
-		REQUIRE(abc->cardinality == Approx(acb->cardinality));
+		REQUIRE(abc->cardinality.GetDouble() == Approx(acb->cardinality.GetDouble()));
 		if (warm) {
-			REQUIRE(abc->cardinality == Approx(cold_estimate));
+			REQUIRE(abc->cardinality.GetDouble() == Approx(cold_estimate));
 		} else {
-			cold_estimate = abc->cardinality;
+			cold_estimate = abc->cardinality.GetDouble();
 		}
-		b.cardinality = 0;
-		REQUIRE(join(a, b)->cardinality == a.cardinality);
-		a.cardinality = 0;
-		REQUIRE(join(a, c)->cardinality == 0);
+		b.cardinality = CardinalityValue(0);
+		REQUIRE(join(a, b)->cardinality.GetDouble() == a.cardinality.GetDouble());
+		a.cardinality = CardinalityValue(0);
+		REQUIRE(join(a, c)->cardinality.IsZero());
 	}
 	connection.Rollback();
 }

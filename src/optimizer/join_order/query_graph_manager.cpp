@@ -767,9 +767,10 @@ GenerateJoinRelation QueryGraphManager::GenerateJoins(vector<unique_ptr<LogicalO
 	}
 	auto &node = dp_entry->second;
 	auto maximum_cardinality = NumericLimits<idx_t>::Maximum();
-	auto result_cardinality = node->cardinality >= static_cast<double>(maximum_cardinality)
+	auto estimated_cardinality = node->cardinality.GetDouble();
+	auto result_cardinality = estimated_cardinality >= static_cast<double>(maximum_cardinality)
 	                              ? maximum_cardinality
-	                              : LossyNumericCast<idx_t>(node->cardinality);
+	                              : LossyNumericCast<idx_t>(estimated_cardinality);
 	if (!dp_entry->second->is_leaf) {
 		// generate the left and right children
 		auto left = GenerateJoins(extracted_relations, node->left_set, relation_stats);

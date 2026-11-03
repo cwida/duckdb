@@ -16,7 +16,8 @@ CardinalityEstimator &CostModel::GetCardinalityEstimator() {
 
 double CostModel::ComputeCost(const DPJoinNode &left, const DPJoinNode &right,
                               optional_ptr<JoinOrderOperator> join_operator, double output_rows) {
-	auto input_cost = join_operator && join_operator->type == JoinOrderOperatorType::LEFT ? right.cardinality : 0;
+	auto input_cost =
+	    join_operator && join_operator->type == JoinOrderOperatorType::LEFT ? right.cardinality.GetDouble() : 0;
 	return left.cost + right.cost + input_cost + output_rows;
 }
 

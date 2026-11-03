@@ -5,6 +5,8 @@
 #include "duckdb/optimizer/join_order/cardinality_estimator.hpp"
 #include "duckdb/optimizer/join_order/filter_info.hpp"
 #include "duckdb/optimizer/join_order/join_predicate.hpp"
+#include "duckdb/optimizer/join_order/join_node.hpp"
+#include "duckdb/optimizer/join_order/join_order_operator.hpp"
 #include "duckdb/optimizer/join_order/relation_manager.hpp"
 #include "duckdb/optimizer/relation_statistics/relation_statistics_extractor.hpp"
 #include "duckdb/optimizer/relation_statistics/relation_statistics_helper.hpp"
@@ -19,6 +21,8 @@
 #include "duckdb/planner/operator/logical_dummy_scan.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
 #include "duckdb/planner/operator/logical_window.hpp"
+
+#include <cmath>
 
 using namespace duckdb;
 
@@ -35,6 +39,19 @@ static RelationStats CreateStats(const vector<ColumnBinding> &bindings, const ve
 	}
 	result.Verify(bindings);
 	return result;
+}
+
+static CardinalityValue EstimateCandidate(CardinalityEstimator &estimator, JoinRelationSetManager &sets,
+                                          JoinRelationSet &left, JoinRelationSet &right, CardinalityValue left_rows,
+                                          CardinalityValue right_rows, JoinOrderOperatorType type,
+                                          idx_t operator_index = 0) {
+	DPJoinNode left_plan(left);
+	DPJoinNode right_plan(right);
+	left_plan.cardinality = left_rows;
+	right_plan.cardinality = right_rows;
+	auto &combined = sets.Union(left, right);
+	JoinOrderOperator op(operator_index, type, left, right, combined, {});
+	return estimator.EstimateJoinCardinality(left_plan, right_plan, combined, op);
 }
 
 static unique_ptr<LogicalOperator> CreateProjectedDummy(TableIndex input_index, TableIndex projection_index) {
@@ -92,7 +109,7 @@ TEST_CASE("Composite SEMI domains retain their correlation constraints", "[optim
 	        .cardinality == 1);
 }
 
-TEST_CASE("Nested empty SEMI remains exact in the enumeration cache", "[optimizer][relation_statistics]") {
+TEST_CASE("Nested empty SEMI remains exact in candidate estimates", "[optimizer][relation_statistics]") {
 	for (auto outer_join_type : {JoinType::SEMI, JoinType::ANTI}) {
 		JoinRelationSetManager set_manager;
 		auto &left_set = set_manager.GetJoinRelation(RelationIndex(0));
@@ -142,9 +159,13 @@ TEST_CASE("Nested empty SEMI remains exact in the enumeration cache", "[optimize
 		estimator.InitCardinalityEstimatorProps(right_set, right_stats);
 		estimator.InitCardinalityEstimatorProps(empty_set, empty_stats);
 
-		REQUIRE(estimator.EstimateCardinalityWithSet<idx_t>(root_set) ==
-		        (outer_join_type == JoinType::SEMI ? 0 : 1000));
-		REQUIRE(estimator.EstimateCardinalityWithSet<idx_t>(inner_set) == 0);
+		auto inner_rows = EstimateCandidate(estimator, set_manager, right_set, empty_set, CardinalityValue(100),
+		                                    CardinalityValue(0), JoinOrderOperatorType::SEMI);
+		auto type = outer_join_type == JoinType::SEMI ? JoinOrderOperatorType::SEMI : JoinOrderOperatorType::ANTI;
+		auto outer_rows =
+		    EstimateCandidate(estimator, set_manager, left_set, inner_set, CardinalityValue(1000), inner_rows, type, 1);
+		REQUIRE(outer_rows.GetDouble() == (outer_join_type == JoinType::SEMI ? 0 : 1000));
+		REQUIRE(inner_rows.IsZero());
 	}
 }
 
@@ -182,13 +203,340 @@ TEST_CASE("Empty multi-relation preserved SEMI remains exact", "[optimizer][rela
 	estimator.InitCardinalityEstimatorProps(empty_set, empty_stats);
 	estimator.InitCardinalityEstimatorProps(rhs_set, rhs_stats);
 
-	REQUIRE(estimator.EstimateCardinalityWithSet<idx_t>(root_set) == 0);
+	auto preserved_rows = EstimateCandidate(estimator, set_manager, nonempty_set, empty_set, CardinalityValue(100),
+	                                        CardinalityValue(0), JoinOrderOperatorType::INNER);
+	auto rows = EstimateCandidate(estimator, set_manager, preserved_set, rhs_set, preserved_rows, CardinalityValue(100),
+	                              JoinOrderOperatorType::SEMI);
+	REQUIRE(rows.IsZero());
+	// Domain evidence still substitutes one for zero; candidate output retains exact emptiness.
 	REQUIRE(estimator.EstimateCardinalityWithSet<idx_t>(preserved_set) == 100);
 }
 
 static unique_ptr<Expression> CreateJoinComparison(ColumnBinding left, ColumnBinding right, ExpressionType type) {
 	return BoundComparisonExpression::Create(type, make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, left),
 	                                         make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, right));
+}
+
+TEST_CASE("Join cardinality divides large products before converting to double",
+          "[optimizer][relation_statistics][cardinality_arithmetic]") {
+	const idx_t count = 20;
+	const idx_t population = idx_t(1) << 60;
+	for (idx_t rows : {population, population >> 4}) {
+		for (bool equality : {false, true}) {
+			CAPTURE(rows, equality);
+			JoinRelationSetManager sets;
+			JoinPredicateModel model;
+			vector<unique_ptr<FilterInfo>> filters;
+			vector<RelationStats> stats;
+			JoinEqualityClass group;
+			group.index = 0;
+			auto root = &sets.GetJoinRelation(RelationIndex(0));
+			for (idx_t i = 0; i < count; i++) {
+				auto binding = ColumnBinding(TableIndex(i), ProjectionIndex(0));
+				auto &relation = sets.GetJoinRelation(RelationIndex(i));
+				stats.push_back(CreateStats({binding}, {rows}, rows));
+				stats.back().columns[0].total_domain = DistinctCount(population, DistinctCountSource::EXACT);
+				group.columns.insert(binding);
+				group.relations.insert(RelationIndex(i));
+				if (i > 0) {
+					auto previous = ColumnBinding(TableIndex(i - 1), ProjectionIndex(0));
+					auto &left = sets.GetJoinRelation(RelationIndex(i - 1));
+					if (equality) {
+						auto filter = make_uniq<FilterInfo>(
+						    CreateJoinComparison(previous, binding, ExpressionType::COMPARE_EQUAL),
+						    sets.Union(left, relation), i - 1);
+						filter->SetLeftSet(left);
+						filter->SetRightSet(relation);
+						filter->left_binding = previous;
+						filter->right_binding = binding;
+						auto &predicate =
+						    model.RegisterPredicate(*filter, JoinPredicateClass::INNER_EQUALITY, previous, binding);
+						predicate.SetEqualityClassIndex(optional_idx(0));
+						group.edges.emplace_back(predicate, RelationIndex(i - 1), RelationIndex(i), previous, binding);
+						filters.push_back(std::move(filter));
+					}
+					root = &sets.Union(*root, relation);
+				}
+			}
+			if (equality) {
+				model.AddEqualityClass(std::move(group));
+			}
+			CardinalityEstimator estimator(sets, model);
+			estimator.InitEquivalentRelations();
+			for (idx_t i = 0; i < count; i++) {
+				estimator.InitCardinalityEstimatorProps(sets.GetJoinRelation(RelationIndex(i)), stats[i]);
+			}
+			if (equality) {
+				// Neither product fits in a double. The quotients are 2^60 and 2^-20.
+				auto expected = rows == population ? double(population) : std::ldexp(1.0, -20);
+				REQUIRE(estimator.EstimateCardinalityWithSet<double>(*root) == Approx(expected));
+				REQUIRE(estimator.EstimateCardinalityWithSet<idx_t>(*root) == idx_t(expected));
+			} else {
+				REQUIRE(std::isinf(estimator.EstimateCardinalityWithSet<double>(*root)));
+				REQUIRE(estimator.EstimateCardinalityWithSet<idx_t>(*root) == NumericLimits<idx_t>::Maximum());
+			}
+		}
+	}
+}
+
+TEST_CASE("Candidate cardinalities recover across stored overflowing and underflowing inputs",
+          "[optimizer][relation_statistics][cardinality_arithmetic]") {
+	const idx_t population = idx_t(1) << 60;
+	for (bool overflow : {false, true}) {
+		CAPTURE(overflow);
+		const idx_t count = overflow ? 21 : 22;
+		JoinRelationSetManager sets;
+		JoinPredicateModel model;
+		vector<RelationStats> stats;
+		vector<unique_ptr<FilterInfo>> filters;
+		for (idx_t i = 0; i < count; i++) {
+			const idx_t columns = overflow && i == 20 ? 20 : 2;
+			const idx_t rows = overflow || i >= 20 ? population : 1;
+			vector<ColumnBinding> bindings;
+			vector<idx_t> domains;
+			for (idx_t column = 0; column < columns; column++) {
+				bindings.emplace_back(TableIndex(i), ProjectionIndex(column));
+				domains.push_back(rows);
+			}
+			stats.push_back(CreateStats(bindings, domains, rows));
+			for (auto &column : stats.back().columns) {
+				column.total_domain = DistinctCount(population, DistinctCountSource::EXACT);
+			}
+		}
+		for (idx_t i = 0; i < (overflow ? 20 : 19); i++) {
+			auto right_index = overflow ? 20 : i + 1;
+			auto a = ColumnBinding(TableIndex(i), ProjectionIndex(1));
+			auto b = ColumnBinding(TableIndex(right_index), ProjectionIndex(overflow ? i : 0));
+			auto &left = sets.GetJoinRelation(RelationIndex(i));
+			auto &right = sets.GetJoinRelation(RelationIndex(right_index));
+			auto filter = make_uniq<FilterInfo>(CreateJoinComparison(a, b, ExpressionType::COMPARE_EQUAL),
+			                                    sets.Union(left, right), i);
+			filter->SetLeftSet(left);
+			filter->SetRightSet(right);
+			filter->left_binding = a;
+			filter->right_binding = b;
+			auto &predicate = model.RegisterPredicate(*filter, JoinPredicateClass::INNER_EQUALITY, a, b);
+			predicate.SetEqualityClassIndex(optional_idx(i));
+			JoinEqualityClass group;
+			group.index = i;
+			group.columns = {a, b};
+			group.relations = {RelationIndex(i), RelationIndex(right_index)};
+			group.edges.emplace_back(predicate, RelationIndex(i), RelationIndex(right_index), a, b);
+			model.AddEqualityClass(std::move(group));
+			filters.push_back(std::move(filter));
+		}
+		CardinalityEstimator estimator(sets, model);
+		estimator.InitEquivalentRelations();
+		for (idx_t i = 0; i < count; i++) {
+			estimator.InitCardinalityEstimatorProps(sets.GetJoinRelation(RelationIndex(i)), stats[i]);
+		}
+		reference<JoinRelationSet> prefix = sets.GetJoinRelation(RelationIndex(0));
+		CardinalityValue rows(static_cast<double>(stats[0].cardinality));
+		for (idx_t i = 1; i < count; i++) {
+			auto &right = sets.GetJoinRelation(RelationIndex(i));
+			rows = EstimateCandidate(estimator, sets, prefix, right, rows,
+			                         CardinalityValue(static_cast<double>(stats[i].cardinality)),
+			                         JoinOrderOperatorType::INNER);
+			prefix = sets.Union(prefix, right);
+			if (i == 19) {
+				// The stored candidate is 2^1200 or 2^-1140; both must survive conversion boundaries.
+				REQUIRE_FALSE(rows.IsZero());
+				if (overflow) {
+					REQUIRE(std::isinf(rows.GetDouble()));
+				} else {
+					REQUIRE(rows.GetDouble() == 0);
+				}
+			}
+		}
+		auto expected = overflow ? double(population) : std::ldexp(1.0, -1020);
+		REQUIRE(rows.GetDouble() == expected);
+	}
+}
+
+TEST_CASE("Tiny positive candidate inputs do not become empty SEMI or ANTI inputs",
+          "[optimizer][relation_statistics][cardinality_arithmetic]") {
+	JoinRelationSetManager sets;
+	auto &left = sets.GetJoinRelation(RelationIndex(0));
+	auto &right = sets.GetJoinRelation(RelationIndex(1));
+	JoinPredicateModel model;
+	CardinalityEstimator estimator(sets, model);
+	CardinalityValue factor(std::ldexp(1.0, -600));
+	auto tiny = factor * factor;
+	REQUIRE(tiny.GetDouble() == 0);
+	REQUIRE_FALSE(tiny.IsZero());
+	for (auto type : {JoinOrderOperatorType::SEMI, JoinOrderOperatorType::ANTI}) {
+		auto positive = EstimateCandidate(estimator, sets, left, right, CardinalityValue(102), tiny, type);
+		REQUIRE(positive.GetDouble() == Approx(20.4));
+		auto empty = EstimateCandidate(estimator, sets, left, right, CardinalityValue(102), CardinalityValue(0), type);
+		REQUIRE(empty.GetDouble() == (type == JoinOrderOperatorType::SEMI ? 0 : 102));
+	}
+}
+
+TEST_CASE("SEMI and ANTI estimator arithmetic preserves fractional inputs and outputs",
+          "[optimizer][relation_statistics][cardinality_arithmetic]") {
+	for (bool fractional_input : {false, true}) {
+		for (auto join_type : {JoinType::SEMI, JoinType::ANTI}) {
+			for (idx_t rhs_rows : {idx_t(0), idx_t(1)}) {
+				CAPTURE(fractional_input, join_type, rhs_rows);
+				JoinRelationSetManager sets;
+				auto &left = sets.GetJoinRelation(RelationIndex(0));
+				auto &second = sets.GetJoinRelation(RelationIndex(1));
+				auto &rhs = sets.GetJoinRelation(RelationIndex(2));
+				auto &pair = sets.Union(left, second);
+				auto &preserved = fractional_input ? pair : left;
+				auto &root = sets.Union(preserved, rhs);
+				auto a = ColumnBinding(TableIndex(0), ProjectionIndex(0));
+				auto b = ColumnBinding(TableIndex(1), ProjectionIndex(0));
+				auto c = ColumnBinding(TableIndex(2), ProjectionIndex(0));
+				FilterInfo equality(CreateJoinComparison(a, b, ExpressionType::COMPARE_EQUAL), pair, 0);
+				equality.SetLeftSet(left);
+				equality.SetRightSet(second);
+				equality.left_binding = a;
+				equality.right_binding = b;
+				FilterInfo semi(CreateJoinComparison(a, c, ExpressionType::COMPARE_EQUAL), root, 1, join_type);
+				semi.SetLeftSet(preserved);
+				semi.SetRightSet(rhs);
+				semi.semantic_left_set = preserved;
+				semi.semantic_right_set = rhs;
+				JoinPredicateModel model;
+				if (fractional_input) {
+					auto &predicate = model.RegisterPredicate(equality, JoinPredicateClass::INNER_EQUALITY, a, b);
+					predicate.SetEqualityClassIndex(optional_idx(0));
+					JoinEqualityClass group;
+					group.index = 0;
+					group.columns = {a, b};
+					group.relations = {RelationIndex(0), RelationIndex(1)};
+					group.edges.emplace_back(predicate, RelationIndex(0), RelationIndex(1), a, b);
+					model.AddEqualityClass(std::move(group));
+				}
+				model.RegisterPredicate(semi, JoinPredicateClass::SEMI_ANTI_JOIN, a, c);
+				auto left_stats =
+				    CreateStats({a}, {fractional_input ? idx_t(2) : idx_t(102)}, fractional_input ? 2 : 102);
+				auto second_stats = CreateStats({b}, {1}, 1);
+				if (fractional_input) {
+					left_stats.columns[0].total_domain = DistinctCount(4, DistinctCountSource::EXACT);
+					second_stats.columns[0].total_domain = DistinctCount(4, DistinctCountSource::EXACT);
+				}
+				auto rhs_stats = CreateStats({c}, {rhs_rows}, rhs_rows);
+				CardinalityEstimator estimator(sets, model);
+				estimator.InitEquivalentRelations();
+				estimator.InitCardinalityEstimatorProps(left, left_stats);
+				estimator.InitCardinalityEstimatorProps(second, second_stats);
+				estimator.InitCardinalityEstimatorProps(rhs, rhs_stats);
+				double input = fractional_input ? 0.5 : 102;
+				auto expected = rhs_rows ? (fractional_input ? 0.5 : 20.4) : (join_type == JoinType::ANTI ? input : 0);
+				auto type = join_type == JoinType::SEMI ? JoinOrderOperatorType::SEMI : JoinOrderOperatorType::ANTI;
+				auto estimate = [&]() {
+					return EstimateCandidate(estimator, sets, preserved, rhs,
+					                         estimator.EstimateCardinalityWithSet<CardinalityValue>(preserved),
+					                         CardinalityValue(static_cast<double>(rhs_rows)), type);
+				};
+				REQUIRE(estimate().GetDouble() == Approx(expected));
+				REQUIRE(estimator.EstimateCardinalityWithSet<double>(preserved) == Approx(input));
+				estimator.EstimateCardinalityWithSet<CardinalityValue>(root);
+				REQUIRE(estimate().GetDouble() == Approx(expected));
+			}
+		}
+	}
+}
+
+TEST_CASE("Large LEFT and composite joins retain their cardinality bounds",
+          "[optimizer][relation_statistics][cardinality_arithmetic]") {
+	const idx_t count = 20;
+	const idx_t population = idx_t(1) << 60;
+	for (auto configuration : {make_pair(JoinType::LEFT, population / 2), make_pair(JoinType::LEFT, population * 2),
+	                           make_pair(JoinType::INNER, population / 2)}) {
+		auto join_type = configuration.first;
+		auto final_domain = configuration.second;
+		CAPTURE(join_type, final_domain);
+		JoinRelationSetManager sets;
+		JoinPredicateModel model;
+		vector<unique_ptr<FilterInfo>> filters;
+		vector<RelationStats> stats;
+		JoinEqualityClass chain;
+		chain.index = 0;
+		auto root = &sets.GetJoinRelation(RelationIndex(0));
+		for (idx_t i = 0; i < count; i++) {
+			auto binding = ColumnBinding(TableIndex(i), ProjectionIndex(0));
+			auto first_key = ColumnBinding(TableIndex(i), ProjectionIndex(1));
+			auto second_key = ColumnBinding(TableIndex(i), ProjectionIndex(2));
+			stats.push_back(CreateStats(
+			    {binding, first_key, second_key},
+			    {population, MinValue(population, final_domain), MinValue(population, final_domain)}, population));
+			stats.back().columns[0].total_domain = DistinctCount(population * 4, DistinctCountSource::EXACT);
+			stats.back().columns[1].total_domain = DistinctCount(final_domain, DistinctCountSource::EXACT);
+			stats.back().columns[2].total_domain = DistinctCount(final_domain, DistinctCountSource::EXACT);
+			if (i == count - 1) {
+				break;
+			}
+			chain.columns.insert(binding);
+			chain.relations.insert(RelationIndex(i));
+			if (i == 0) {
+				continue;
+			}
+			auto previous = ColumnBinding(TableIndex(i - 1), ProjectionIndex(0));
+			auto &left = sets.GetJoinRelation(RelationIndex(i - 1));
+			auto &right = sets.GetJoinRelation(RelationIndex(i));
+			auto filter = make_uniq<FilterInfo>(CreateJoinComparison(previous, binding, ExpressionType::COMPARE_EQUAL),
+			                                    sets.Union(left, right), filters.size());
+			filter->SetLeftSet(left);
+			filter->SetRightSet(right);
+			filter->left_binding = previous;
+			filter->right_binding = binding;
+			auto &predicate = model.RegisterPredicate(*filter, JoinPredicateClass::INNER_EQUALITY, previous, binding);
+			predicate.SetEqualityClassIndex(optional_idx(0));
+			chain.edges.emplace_back(predicate, RelationIndex(i - 1), RelationIndex(i), previous, binding);
+			filters.push_back(std::move(filter));
+			root = &sets.Union(*root, right);
+		}
+		model.AddEqualityClass(std::move(chain));
+		auto &last_left = sets.GetJoinRelation(RelationIndex(count - 2));
+		auto &right = sets.GetJoinRelation(RelationIndex(count - 1));
+		auto &pair = sets.Union(last_left, right);
+		auto &left = last_left;
+		for (idx_t key = 1; key <= (join_type == JoinType::LEFT ? 1 : 2); key++) {
+			auto a = ColumnBinding(TableIndex(count - 2), ProjectionIndex(key));
+			auto b = ColumnBinding(TableIndex(count - 1), ProjectionIndex(key));
+			auto filter = make_uniq<FilterInfo>(CreateJoinComparison(a, b, ExpressionType::COMPARE_EQUAL),
+			                                    sets.Union(left, right), filters.size(), join_type);
+			filter->SetLeftSet(left);
+			filter->SetRightSet(right);
+			filter->left_binding = a;
+			filter->right_binding = b;
+			filter->source_operator_index = optional_idx(0);
+			auto &predicate = model.RegisterPredicate(
+			    *filter,
+			    join_type == JoinType::LEFT ? JoinPredicateClass::LEFT_JOIN : JoinPredicateClass::INNER_EQUALITY, a, b);
+			if (join_type == JoinType::INNER) {
+				predicate.SetEqualityClassIndex(optional_idx(key));
+				JoinEqualityClass group;
+				group.index = key;
+				group.columns = {a, b};
+				group.relations = {RelationIndex(count - 2), RelationIndex(count - 1)};
+				group.edges.emplace_back(predicate, RelationIndex(count - 2), RelationIndex(count - 1), a, b);
+				model.AddEqualityClass(std::move(group));
+				model.AddDirectEqualityPairClass(pair, key, a, b);
+			}
+			filters.push_back(std::move(filter));
+		}
+		auto &preserved_set = *root;
+		root = &sets.Union(*root, right);
+		CardinalityEstimator estimator(sets, model);
+		estimator.InitEquivalentRelations();
+		for (idx_t i = 0; i < count; i++) {
+			estimator.InitCardinalityEstimatorProps(sets.GetJoinRelation(RelationIndex(i)), stats[i]);
+		}
+		// The chain has 2^24 rows despite its overflowing numerator.
+		// LEFT doubles/preserves this input; the composite cap preserves it.
+		auto preserved_cardinality = population >> (2 * (count - 2));
+		auto expected = preserved_cardinality * (join_type == JoinType::LEFT && final_domain < population ? 2 : 1);
+		auto type = join_type == JoinType::LEFT ? JoinOrderOperatorType::LEFT : JoinOrderOperatorType::INNER;
+		auto rows = EstimateCandidate(estimator, sets, preserved_set, right,
+		                              estimator.EstimateCardinalityWithSet<CardinalityValue>(preserved_set),
+		                              CardinalityValue(static_cast<double>(population)), type);
+		REQUIRE(rows.GetDouble() == Approx(double(expected)));
+		REQUIRE(LossyNumericCast<idx_t>(rows.GetDouble()) == expected);
+	}
 }
 
 TEST_CASE("Deferred OR selectivity is applied once through nested SEMI joins", "[optimizer][relation_statistics]") {
@@ -232,11 +580,21 @@ TEST_CASE("Deferred OR selectivity is applied once through nested SEMI joins", "
 	estimator.InitCardinalityEstimatorProps(second, second_stats);
 	estimator.InitCardinalityEstimatorProps(third, third_stats);
 	estimator.InitCardinalityEstimatorProps(fourth, fourth_stats);
-	// Query both cached and uncached subsets in different orders.
-	REQUIRE(estimator.EstimateCardinalityWithSet<idx_t>(root) == 8);
-	REQUIRE(estimator.EstimateCardinalityWithSet<idx_t>(preserved) == 200);
-	REQUIRE(estimator.EstimateCardinalityWithSet<idx_t>(inner) == 40);
-	REQUIRE(estimator.EstimateCardinalityWithSet<idx_t>(root) == 8);
+	auto estimate = [&]() {
+		auto preserved_rows = EstimateCandidate(estimator, set_manager, first, second, CardinalityValue(1000),
+		                                        CardinalityValue(1), JoinOrderOperatorType::INNER);
+		auto inner_rows = EstimateCandidate(estimator, set_manager, preserved, third, preserved_rows,
+		                                    CardinalityValue(100), JoinOrderOperatorType::SEMI);
+		auto rows = EstimateCandidate(estimator, set_manager, inner, fourth, inner_rows, CardinalityValue(100),
+		                              JoinOrderOperatorType::SEMI);
+		REQUIRE(preserved_rows.GetDouble() == 200);
+		REQUIRE(inner_rows.GetDouble() == 40);
+		return rows;
+	};
+	REQUIRE(estimate().GetDouble() == 8);
+	estimator.EstimateCardinalityWithSet<CardinalityValue>(root);
+	estimator.EstimateCardinalityWithSet<CardinalityValue>(inner);
+	REQUIRE(estimate().GetDouble() == 8);
 }
 
 TEST_CASE("SEMI and ANTI residual OR conditions use one fallback", "[optimizer][relation_statistics]") {
@@ -263,8 +621,14 @@ TEST_CASE("SEMI and ANTI residual OR conditions use one fallback", "[optimizer][
 		auto right_stats = CreateStats({b}, {100}, 100);
 		estimator.InitCardinalityEstimatorProps(left, left_stats);
 		estimator.InitCardinalityEstimatorProps(right, right_stats);
-		REQUIRE(estimator.EstimateCardinalityWithSet<idx_t>(root) == 200);
-		REQUIRE(estimator.EstimateCardinalityWithSet<idx_t>(root) == 200);
+		auto type = join_type == JoinType::SEMI ? JoinOrderOperatorType::SEMI : JoinOrderOperatorType::ANTI;
+		auto estimate = [&]() {
+			return EstimateCandidate(estimator, set_manager, left, right, CardinalityValue(1000), CardinalityValue(100),
+			                         type);
+		};
+		REQUIRE(estimate().GetDouble() == 200);
+		estimator.EstimateCardinalityWithSet<CardinalityValue>(root);
+		REQUIRE(estimate().GetDouble() == 200);
 	}
 }
 
@@ -420,15 +784,19 @@ TEST_CASE("Relation statistics extraction rejects recurring and cyclic CTEs", "[
 }
 
 TEST_CASE("SEMI fallback retains fractional cardinalities for enumeration", "[optimizer][relation_statistics]") {
-	for (auto join_type : {JoinType::SEMI, JoinType::ANTI}) {
+	for (auto join_type : {JoinType::SEMI, JoinType::ANTI, JoinType::RIGHT_SEMI, JoinType::RIGHT_ANTI}) {
 		auto estimate = RelationStatisticsHelper::EstimateSemiAntiJoinFallback(102, 1, join_type);
 		REQUIRE(estimate.cardinality == Approx(20.4));
 		REQUIRE_FALSE(estimate.used_domain_evidence);
 		REQUIRE(RelationStatisticsHelper::EstimateSemiAntiJoinFallback(0, 1, join_type).cardinality == 0);
 		REQUIRE(RelationStatisticsHelper::EstimateSemiAntiJoinFallback(0.5, 1, join_type).cardinality == 0.5);
+		REQUIRE(RelationStatisticsHelper::EstimateSemiAntiJoinFallback(-1, 1, join_type).cardinality == 0);
+		REQUIRE(RelationStatisticsHelper::EstimateSemiAntiJoinFallback(-1, 0, join_type).cardinality == 0);
 	}
 	REQUIRE(RelationStatisticsHelper::EstimateSemiAntiJoinFallback(102, 0, JoinType::SEMI).cardinality == 0);
 	REQUIRE(RelationStatisticsHelper::EstimateSemiAntiJoinFallback(102, 0, JoinType::ANTI).cardinality == 102);
+	REQUIRE(RelationStatisticsHelper::EstimateSemiAntiJoinFallback(102, 0, JoinType::RIGHT_SEMI).cardinality == 0);
+	REQUIRE(RelationStatisticsHelper::EstimateSemiAntiJoinFallback(102, 0, JoinType::RIGHT_ANTI).cardinality == 102);
 }
 
 TEST_CASE("Shared key filters restrict domains only with supported input statistics",
