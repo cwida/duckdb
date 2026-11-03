@@ -858,9 +858,8 @@ void ExecuteRecursivePipelineFinishInline(Pipeline &pipeline, Executor &executor
 }
 
 template <bool COLLECT_METRICS>
-static void ExecuteRecursiveInlinePlanInternal(RecursiveSchedulingContext context, Executor &executor,
-                                               const RecursiveCTEPipelineSchedulePlan &plan,
-                                               const vector<bool> *trivial_finish) {
+static void ExecuteRecursiveInlinePlanInternal(RecursiveSchedulingContext context,
+                                               const RecursiveCTEPipelineSchedulePlan &plan) {
 	for (auto &pipeline : plan.initialize_on_schedule_pipelines) {
 		pipeline.get().ResetSource(true);
 	}
@@ -879,8 +878,9 @@ static void ExecuteRecursiveInlinePlanInternal(RecursiveSchedulingContext contex
 			pipeline.InitializeOperatorState();
 			pipeline.ResetSourceForReschedule();
 			// Invariant builds have independent source work even when the recursive frontier is tiny.
-			const auto worker_limit =
-			    stage.is_invariant_build ? TaskScheduler::GetScheduler(executor.context).NumberOfThreads() : idx_t(1);
+			const auto worker_limit = stage.is_invariant_build
+			                              ? TaskScheduler::GetScheduler(context.executor.context).NumberOfThreads()
+			                              : idx_t(1);
 			const auto max_threads = GetRecursivePipelineMaxThreads(pipeline, worker_limit);
 			if (max_threads > 1) {
 				ExecuteRecursivePipelineEventInline(pipeline, context, worker_limit, max_threads, stage.metric_type);
@@ -911,13 +911,13 @@ static void ExecuteRecursiveInlinePlanInternal(RecursiveSchedulingContext contex
 			pipeline.PrepareFinalize();
 			break;
 		case PipelineScheduleStageType::FINISH:
-			if (trivial_finish && (*trivial_finish)[stage_idx]) {
+			if (stage.trivial_finish) {
 				// the sink has no finalize work and no operator on this pipeline requires
 				// finalization, so the finish event machinery is skipped
 				pipeline.GetSink()->sink_state->state = SinkFinalizeType::READY;
 				break;
 			}
-			ExecuteRecursivePipelineFinishInline(pipeline, executor);
+			ExecuteRecursivePipelineFinishInline(pipeline, context.executor);
 			break;
 		default:
 			throw InternalException("Unsupported recursive inline stage");
@@ -931,12 +931,12 @@ static void ExecuteRecursiveInlinePlanInternal(RecursiveSchedulingContext contex
 	}
 }
 
-void ExecuteRecursiveInlinePlan(const RecursiveSchedulingContext &context, Executor &executor,
-                                const RecursiveCTEPipelineSchedulePlan &plan, const vector<bool> *trivial_finish) {
+void ExecuteRecursiveInlinePlan(const RecursiveSchedulingContext &context,
+                                const RecursiveCTEPipelineSchedulePlan &plan) {
 	if (context.metrics) {
-		ExecuteRecursiveInlinePlanInternal<true>(context, executor, plan, trivial_finish);
+		ExecuteRecursiveInlinePlanInternal<true>(context, plan);
 	} else {
-		ExecuteRecursiveInlinePlanInternal<false>(context, executor, plan, trivial_finish);
+		ExecuteRecursiveInlinePlanInternal<false>(context, plan);
 	}
 }
 
@@ -1086,7 +1086,7 @@ void PhysicalRecursiveCTE::ExecuteRecursivePipelines(ExecutionContext &context) 
 	                                               collect_metrics ? &gstate.GetMetrics() : nullptr,
 	                                               collect_metrics ? &gstate.GetEpochMetrics() : nullptr};
 	if (inline_execution) {
-		ExecuteRecursiveInlinePlan(scheduling_context, executor, *schedule_plan, nullptr);
+		ExecuteRecursiveInlinePlan(scheduling_context, *schedule_plan);
 	} else {
 		vector<shared_ptr<Event>> events;
 		ScheduleRecursivePlan(*schedule_plan, scheduling_context, events, parallelism);

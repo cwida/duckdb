@@ -46,10 +46,6 @@ struct TrampolineBranchPipelines {
 	unique_ptr<RecursiveCTEPipelineSchedulePlan> plan;
 	//! Schedule without the invariant builds, used once they are materialized
 	unique_ptr<RecursiveCTEPipelineSchedulePlan> active_plan;
-	//! Per-stage flag of `plan`: a FINISH of the trampoline sink with no operator finalization
-	vector<bool> trivial_finish;
-	//! The same flag for `active_plan`
-	vector<bool> active_trivial_finish;
 };
 
 //! Trampoline-style iteration: rows carry a selector column; selector 0 emits a

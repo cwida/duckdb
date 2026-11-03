@@ -700,7 +700,6 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 	const bool materialized = gstate.invariant_materialized[branch_idx - 1];
 	const auto use_active_plan = can_cache_invariant && materialized && branch.active_plan;
 	auto &plan = use_active_plan ? *branch.active_plan : *branch.plan;
-	auto &trivial_finish = use_active_plan ? branch.active_trivial_finish : branch.trivial_finish;
 
 	// one wave is executed by as many workers as its rows and chunks support; branches with
 	// independent source work (table scans) parallelize that work regardless of the wave size,
@@ -787,7 +786,7 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 	// state per ready stage and skips the finish event machinery for flagged trivial stages
 	RecursiveSchedulingContext scheduling_context {executor, scheduler, collect_metrics ? &gstate.metrics : nullptr,
 	                                               collect_metrics ? gstate.epoch_metrics.get() : nullptr};
-	ExecuteRecursiveInlinePlan(scheduling_context, executor, plan, &trivial_finish);
+	ExecuteRecursiveInlinePlan(scheduling_context, plan);
 	if (can_cache_invariant && !materialized &&
 	    InvariantRecursiveBuildsRemainReusable(branch.invariant_meta_pipelines)) {
 		if (collect_metrics) {
@@ -954,10 +953,8 @@ void PhysicalTrampoline::BuildPipelines(Pipeline &current, MetaPipeline &meta_pi
 			collect(active_meta_pipelines_flat, branch_entry.active_sink_resets, nullptr);
 		}
 
-		auto flag_trivial = [&](const RecursiveCTEPipelineSchedulePlan &schedule, vector<bool> &flags) {
-			flags.resize(schedule.stages.size(), false);
-			for (idx_t stage_idx = 0; stage_idx < schedule.stages.size(); stage_idx++) {
-				auto &stage = schedule.stages[stage_idx];
+		auto flag_trivial = [&](RecursiveCTEPipelineSchedulePlan &schedule) {
+			for (auto &stage : schedule.stages) {
 				if (stage.type != PipelineScheduleStageType::FINISH) {
 					continue;
 				}
@@ -969,12 +966,12 @@ void PhysicalTrampoline::BuildPipelines(Pipeline &current, MetaPipeline &meta_pi
 				for (auto &op_ref : pipeline.GetIntermediateOperators()) {
 					requires_finalize = requires_finalize || op_ref.get().RequiresOperatorFinalize();
 				}
-				flags[stage_idx] = !requires_finalize;
+				stage.trivial_finish = !requires_finalize;
 			}
 		};
-		flag_trivial(*branch_entry.plan, branch_entry.trivial_finish);
+		flag_trivial(*branch_entry.plan);
 		if (branch_entry.active_plan) {
-			flag_trivial(*branch_entry.active_plan, branch_entry.active_trivial_finish);
+			flag_trivial(*branch_entry.active_plan);
 		}
 
 		branch_pipelines.push_back(std::move(branch_entry));

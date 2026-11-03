@@ -7,69 +7,19 @@
 #include "duckdb/execution/aggregate_hashtable.hpp"
 #include "duckdb/execution/executor.hpp"
 #include "duckdb/execution/operator/set/physical_recursive_cte.hpp"
-#include "duckdb/parallel/pipeline_schedule.hpp"
-
-#include <chrono>
+#include "duckdb/execution/operator/set/recursive_cte_scheduling.hpp"
 
 namespace duckdb {
 
-class Event;
-class InterruptState;
 class Logger;
-
-struct RecursiveExecutorPool {
-	mutex lock;
-	PhysicalRecursiveCTE::executor_cache_t executors;
-};
 
 enum class RecursiveCTESourcePhase : uint8_t {
 	INITIAL,
 	SCANNING_UNION,
 	RECURSING_KEY,
-	//! A recursive epoch is in progress; its per-iteration setup already ran and must not rerun
-	EXECUTING_RECURSION,
 	DRAINING_FINAL_KEY_STATE,
 	FINISHED
 };
-
-//! Progress of an inline stage within a suspended recursive epoch
-enum class RecursiveCTEStageStep : uint8_t { START, PIPELINE_RUNNING, EVENT_WAIT, FINISH_FINALIZE, FINISH_EVENT_WAIT };
-
-//! Progress of one recursive epoch across BLOCKED suspensions of the operator's source.
-//! ExecuteRecursivePipelines runs its prologue exactly once per epoch, the drive advances this
-//! state and suspends by returning BLOCKED up the stack, and the epilogue resets it.
-struct RecursiveCTEEpochProgress {
-	RecursiveCTEEpochProgress();
-	~RecursiveCTEEpochProgress();
-
-	//! Whether an epoch is in progress (the prologue has run)
-	bool active = false;
-	//! Whether this epoch runs the cached inline dependency plan or the event schedule
-	bool inline_execution = false;
-	//! Position in the inline ready-stage list and progress within the current stage
-	idx_t ready_idx = 0;
-	RecursiveCTEStageStep step = RecursiveCTEStageStep::START;
-	//! Operator-finalize resume point of a suspended inline finish stage
-	idx_t finish_operator_idx = 0;
-	//! Stage event of a suspended inline wait and the wake event that re-enters the source
-	shared_ptr<Event> stage_event;
-	shared_ptr<Event> wake_event;
-	//! Live events of an event-schedule epoch
-	vector<shared_ptr<Event>> events;
-	//! Prologue decisions and metric snapshots consumed by the epilogue
-	idx_t max_worker_count = 1;
-	idx_t scheduler_input_rows = 0;
-	idx_t frontier_rows = 0;
-	idx_t frontier_chunks = 0;
-	idx_t frontier_storage_bytes = 0;
-	idx_t frontier_allocation_bytes = 0;
-	idx_t epoch_task_start = 0;
-	std::chrono::steady_clock::time_point epoch_start;
-
-	void Reset();
-};
-
-enum class RecursiveCTEPipelineMetricType : uint8_t { RECURSIVE, INVARIANT_BUILD, INVARIANT_CTE_MATERIALIZATION };
 
 //! Epoch-stable secondary index over a proper subset of USING KEY columns.
 class RecursiveCTEPartialKeyIndex {
@@ -101,53 +51,6 @@ private:
 	Vector hashes;
 	vector<idx_t> heads;
 	vector<Entry> entries;
-};
-
-struct RecursiveCTEScheduleStage {
-	RecursiveCTEScheduleStage(PipelineScheduleStageType type_p, Pipeline &pipeline_p, bool has_source_tasks_p,
-	                          bool has_parallel_source_p, RecursiveCTEPipelineMetricType metric_type_p,
-	                          bool is_invariant_build_p)
-	    : type(type_p), pipeline(pipeline_p), has_source_tasks(has_source_tasks_p),
-	      has_parallel_source(has_parallel_source_p), is_invariant_build(is_invariant_build_p),
-	      metric_type(metric_type_p), dependency_count(0) {
-	}
-
-	PipelineScheduleStageType type;
-	reference<Pipeline> pipeline;
-	bool has_source_tasks;
-	//! The source parallelizes independently of recursive inputs (e.g. a table scan)
-	bool has_parallel_source;
-	bool is_invariant_build;
-	RecursiveCTEPipelineMetricType metric_type;
-	vector<idx_t> dependents;
-	idx_t dependency_count;
-};
-
-struct RecursiveCTESchedulePipeline {
-	RecursiveCTESchedulePipeline(Pipeline &pipeline_p, bool is_invariant_p)
-	    : pipeline(pipeline_p), is_invariant(is_invariant_p) {
-	}
-
-	reference<Pipeline> pipeline;
-	//! Whether the pipeline's meta-pipeline is invariant; invariant producers keep the configured thread count
-	bool is_invariant;
-};
-
-struct RecursiveCTEPipelineSchedulePlan {
-	vector<RecursiveCTEScheduleStage> stages;
-	//! Every pipeline of the meta-pipelines this plan schedules, in traversal order, for the per-iteration resets
-	//! and executor registration; a pipeline shared by two meta-pipelines appears once per meta-pipeline
-	vector<RecursiveCTESchedulePipeline> pipelines;
-	vector<reference<Pipeline>> initialize_on_schedule_pipelines;
-	//! Deduplicated intermediate operators of this plan's execute stages. Their global operator
-	//! state is invalidated exactly once per iteration, before any stage prepares or executes.
-	vector<reference<PhysicalOperator>> invalidate_operators;
-	idx_t execute_pipeline_count = 0;
-	idx_t cte_scan_pipeline_count = 0;
-	bool has_source_tasks = false;
-	//! Any execute stage reads a source that parallelizes independently of recursive inputs
-	bool has_parallel_source = false;
-	bool source_tasks_write_recursive_output = false;
 };
 
 struct RecursiveCTEMetricDistribution {
@@ -292,29 +195,6 @@ private:
 	idx_t retained_cte_reuses = 0;
 };
 
-class RecursiveCTESchedulerState {
-public:
-	RecursiveCTESchedulerState(shared_ptr<RecursiveExecutorPool> executor_pool, bool allow_executor_reuse);
-	~RecursiveCTESchedulerState();
-
-	void PrepareExecutorEntry(Pipeline &pipeline);
-	void PrepareExecutors(Pipeline &pipeline, idx_t max_threads);
-	vector<unique_ptr<PipelineExecutor>> &GetExecutors(Pipeline &pipeline);
-	bool HasExecutorEntries() const;
-	void ClearExecutors();
-	void InitializeInlinePlan(const RecursiveCTEPipelineSchedulePlan &plan);
-	idx_t ReadyStageCount() const;
-	idx_t ReadyStage(idx_t index) const;
-	void CompleteInlineStage(const RecursiveCTEPipelineSchedulePlan &plan, idx_t stage_idx);
-
-private:
-	shared_ptr<RecursiveExecutorPool> executor_pool;
-	bool allow_executor_reuse;
-	PhysicalRecursiveCTE::executor_cache_t cached_executors;
-	vector<idx_t> remaining_schedule_dependencies;
-	vector<idx_t> ready_schedule_stages;
-};
-
 //! The source state of a recursive CTE - tracks the rows emitted to estimate the progress, as the number of recursive
 //! iterations is not known up front
 class RecursiveCTEGlobalSourceState : public GlobalSourceState {
@@ -346,76 +226,6 @@ private:
 	MonotonicProgress progress;
 };
 
-//! Worker counts of one recursive epoch; frontier work and independent source tasks can differ
-struct RecursiveCTEParallelism {
-	explicit RecursiveCTEParallelism(idx_t worker_count)
-	    : frontier_worker_count(worker_count), source_task_worker_count(worker_count) {
-	}
-
-	RecursiveCTEParallelism(idx_t frontier_worker_count_p, idx_t source_task_worker_count_p)
-	    : frontier_worker_count(frontier_worker_count_p), source_task_worker_count(source_task_worker_count_p) {
-	}
-
-	idx_t WorkerCount(bool has_source_tasks) const {
-		return has_source_tasks ? source_task_worker_count : frontier_worker_count;
-	}
-
-	idx_t MaxWorkerCount() const {
-		return MaxValue(frontier_worker_count, source_task_worker_count);
-	}
-
-	bool IsInline() const {
-		return MaxWorkerCount() == 1;
-	}
-
-	idx_t frontier_worker_count;
-	idx_t source_task_worker_count;
-};
-
-//! What the shared event-based scheduling of recursive plans needs from its operator:
-//! the executor, the cached-executor state, and optional metrics (both set or both null)
-struct RecursiveSchedulingContext {
-	Executor &executor;
-	RecursiveCTESchedulerState &scheduler;
-	optional_ptr<RecursiveCTEMetrics> metrics;
-	optional_ptr<RecursiveCTEEpochMetrics> epoch_metrics;
-	//! Give stages with independent parallel sources the source-task worker count;
-	//! off by default so recursive CTE scheduling is unchanged
-	bool scan_sources_use_source_workers = false;
-};
-
-//! Shared with the trampoline operator: schedule-plan construction and the single-threaded inline execution helpers
-unique_ptr<RecursiveCTEPipelineSchedulePlan>
-BuildRecursivePipelineSchedulePlan(const vector<shared_ptr<MetaPipeline>> &meta_pipelines,
-                                   const reference_set_t<const MetaPipeline> &invariant_meta_pipelines,
-                                   const PhysicalOperator &recursive_sink);
-void ExecuteRecursivePipelineInline(PipelineExecutor &pipeline_executor);
-void ExecuteRecursivePipelineFinishInline(Pipeline &pipeline, Executor &executor);
-//! Run a schedule plan single-threaded with the shared operator-state lifecycle: missing state is
-//! created per ready stage, after its dependencies finished. Stages flagged in trivial_finish
-//! (optional, indexed like plan.stages) skip the finish event machinery and mark the sink READY.
-void ExecuteRecursiveInlinePlan(const RecursiveSchedulingContext &context, Executor &executor,
-                                const RecursiveCTEPipelineSchedulePlan &plan, const vector<bool> *trivial_finish);
-//! Retention accounting beside its state transition, shared by recursive CTE and trampoline
-void RecordInvariantRetentionTransition(RecursiveCTEMetrics &metrics,
-                                        const reference_set_t<const MetaPipeline> &invariant_meta_pipelines);
-void RecordInvariantRetentionReuse(RecursiveCTEMetrics &metrics,
-                                   const reference_set_t<const MetaPipeline> &invariant_meta_pipelines);
-void GatherRecursiveScans(PhysicalOperator &op, TableIndex cte_index,
-                          vector<reference<PhysicalColumnDataScan>> &recursive_scans);
-reference_set_t<const MetaPipeline>
-FindInvariantRecursiveMetaPipelines(const vector<shared_ptr<MetaPipeline>> &meta_pipelines, TableIndex cte_index,
-                                    const reference_set_t<const PhysicalOperator> &non_repeatable_operators);
-void ConfigureInvariantRecursiveBuildReuse(const reference_set_t<const MetaPipeline> &invariant_meta_pipelines,
-                                           bool preserve_build);
-bool InvariantRecursiveBuildsRemainReusable(const reference_set_t<const MetaPipeline> &invariant_meta_pipelines);
-void ScheduleRecursivePlan(const RecursiveCTEPipelineSchedulePlan &plan, const RecursiveSchedulingContext &context,
-                           vector<shared_ptr<Event>> &events, const RecursiveCTEParallelism &parallelism);
-void ExecuteRecursivePipelineEventInline(Pipeline &pipeline, const RecursiveSchedulingContext &context,
-                                         idx_t worker_limit, idx_t max_threads,
-                                         RecursiveCTEPipelineMetricType metric_type);
-void WaitForRecursiveEvents(Executor &executor, vector<shared_ptr<Event>> &events);
-
 //! The part of the recursion every mode shares: the operator, the scheduler and the metrics of one invocation.
 //! RecursiveCTEUnionState and RecursiveCTEKeyedState own the state of their mode and implement the sink and source
 //! sides of the operator on top of it.
@@ -428,10 +238,9 @@ public:
 	virtual unique_ptr<LocalSinkState> GetLocalSinkState(ExecutionContext &context) const = 0;
 	virtual SinkResultType Sink(ExecutionContext &context, DataChunk &chunk, OperatorSinkInput &input) = 0;
 	virtual SinkCombineResultType Combine(ExecutionContext &context, OperatorSinkCombineInput &input) = 0;
-	//! Source side: hands out result rows and drives the recursive iterations. May return BLOCKED
-	//! while a recursive epoch waits for blocked inner work; the interrupt state re-enters it.
-	virtual SourceResultType GetData(ExecutionContext &context, DataChunk &chunk, RecursiveCTEGlobalSourceState &source,
-	                                 const InterruptState &interrupt_state) = 0;
+	//! Source side: hands out result rows and drives the recursive iterations
+	virtual SourceResultType GetData(ExecutionContext &context, DataChunk &chunk,
+	                                 RecursiveCTEGlobalSourceState &source) = 0;
 	//! Frontier the recursive member scans in the current iteration
 	virtual const ColumnDataCollection &CurrentInputTable() const = 0;
 	//! Rows and chunks of the recurring state the member can scan in the current iteration
@@ -462,9 +271,6 @@ public:
 	const RecursiveCTESchedulerState &GetScheduler() const {
 		return scheduler;
 	}
-	RecursiveCTEEpochProgress &GetEpochProgress() {
-		return epoch_progress;
-	}
 	bool AllowsExecutorReuse() const {
 		return allow_executor_reuse;
 	}
@@ -484,7 +290,6 @@ protected:
 	const bool allow_executor_reuse;
 	RecursiveCTEMetrics metrics;
 	RecursiveCTESchedulerState scheduler;
-	RecursiveCTEEpochProgress epoch_progress;
 	RecursiveCTESourcePhase source_phase = RecursiveCTESourcePhase::INITIAL;
 	//! Whether invariant recursive meta-pipelines have already been materialized for this state
 	bool invariant_meta_pipelines_materialized = false;
