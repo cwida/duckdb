@@ -1911,8 +1911,10 @@ public:
 	                                                                       GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue>
 	FinalizeInfixOtherOperatorExpressionTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
-	static arena_ptr<TransformResultValue> FinalizeOtherOperatorTailTrampoline(PEGTransformer &transformer,
-	                                                                           GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeAnyAllSubqueryTailTrampoline(PEGTransformer &transformer,
+	                                                                            GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue>
+	FinalizeOtherOperatorExpressionTailTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeAnyAllParsedOperatorTrampoline(PEGTransformer &transformer,
 	                                                                              GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeNamedOtherOperatorTrampoline(PEGTransformer &transformer,
@@ -3750,8 +3752,12 @@ public:
 	static unique_ptr<ParsedExpression>
 	TransformInfixOtherOperatorExpression(PEGTransformer &transformer, unique_ptr<ParsedExpression> bitwise_expression,
 	                                      optional<vector<OtherOperatorTail>> other_operator_tail);
-	static OtherOperatorTail TransformOtherOperatorTail(PEGTransformer &transformer, ParsedOperator other_operator,
-	                                                    unique_ptr<ParsedExpression> bitwise_expression);
+	static OtherOperatorTail TransformAnyAllSubqueryTail(PEGTransformer &transformer,
+	                                                     ParsedOperator any_all_parsed_operator,
+	                                                     unique_ptr<TableRef> subquery_reference);
+	static OtherOperatorTail TransformOtherOperatorExpressionTail(PEGTransformer &transformer,
+	                                                              ParsedOperator other_operator,
+	                                                              unique_ptr<ParsedExpression> bitwise_expression);
 	static ParsedOperator TransformAnyAllParsedOperator(PEGTransformer &transformer,
 	                                                    const pair<string, bool> &any_all_operator);
 	static ParsedOperator TransformNamedOtherOperator(PEGTransformer &transformer, const string &child);

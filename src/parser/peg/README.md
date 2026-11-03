@@ -233,6 +233,9 @@ generated process. Listed rules are either `excluded`, `forward` (delegate to a 
 4. Implement the body in the matching `transform_*.cpp` file (e.g. rules from `describe.gram` go in
    `transform_describe.cpp`), then run `make parser-grammar` again so the declarations pick it up.
 
+Generated transformer code refers to child rules by `PEGRuleId` rather than by name. Rules that grammar extensions
+add at runtime receive IDs past `PEGRuleId::BUILTIN_COUNT` in the compiled grammar that defines them.
+
 ### Transformer Implementation Pattern
 
 The hand-written body receives already-transformed children in grammar order; literal tokens are skipped. For

@@ -1,0 +1,230 @@
+# name: test/sql/index/art/create_index_needs_client_context.test
+# description: Appends and deletes compute index keys without a client context, so keys that need one are rejected
+# group: [art]
+
+load {TEST_DIR}/create_index_needs_client_context.db
+
+statement ok
+CREATE TABLE t (id INTEGER, l INTEGER[], s VARCHAR);
+
+statement ok
+INSERT INTO t VALUES (1, [3, 1, 2], 'abc');
+
+statement error
+CREATE INDEX i ON t ((list_transform(l, lambda x: x + 1)[1]));
+----
+Index keys cannot contain lambda functions such as "list_transform"
+
+statement error
+CREATE INDEX i ON t ((list_filter(l, lambda x: x > 1)[1]));
+----
+Index keys cannot contain lambda functions such as "list_filter"
+
+statement error
+CREATE UNIQUE INDEX i ON t ((list_reduce(l, lambda a, b: a + b)));
+----
+Index keys cannot contain lambda functions such as "list_reduce"
+
+statement error
+CREATE INDEX i ON t ((invoke(lambda x: x + 1, id)));
+----
+Index keys cannot contain lambda functions such as "invoke"
+
+# a collated element comparison is bound as a lambda over the list
+statement error
+CREATE INDEX i ON t ((list_contains(l::VARCHAR[], 'a' COLLATE nocase)));
+----
+Index keys cannot contain lambda functions such as "list_transform"
+
+# a macro hides the lambda, and a list comprehension is one
+statement ok
+CREATE MACRO plus_one(x) AS list_transform(x, lambda e: e + 1);
+
+statement error
+CREATE INDEX i ON t ((plus_one(l)[1]));
+----
+Index keys cannot contain lambda functions such as "list_transform"
+
+statement error
+CREATE INDEX i ON t (([e + 1 FOR e IN l][1]));
+----
+Index keys cannot contain lambda functions such as "list_apply"
+
+# the age of a single timestamp is taken at the start of the transaction
+statement error
+CREATE INDEX i ON t ((age(TIMESTAMP '2026-01-01' + id * INTERVAL 1 DAY)::VARCHAR));
+----
+Index keys cannot contain expressions with side effects
+
+query II
+SELECT parameter_types, stability FROM duckdb_functions() WHERE function_name = 'age' AND parameter_types[1] = 'TIMESTAMP' ORDER BY length(parameter_types);
+----
+[TIMESTAMP]	CONSISTENT_WITHIN_QUERY
+[TIMESTAMP, TIMESTAMP]	CONSISTENT
+
+# the age of two timestamps is arithmetic
+statement ok
+CREATE INDEX i_age ON t ((age(TIMESTAMP '2026-01-01' + id * INTERVAL 1 DAY, TIMESTAMP '2026-01-01')::VARCHAR));
+
+# can_cast_implicitly is replaced by a constant when it is bound, also with a NULL argument
+statement ok
+CREATE INDEX i_cast ON t ((CASE WHEN can_cast_implicitly(id, 1.5) THEN id ELSE -id END));
+
+statement ok
+CREATE INDEX i_cast_null ON t ((CASE WHEN can_cast_implicitly(id, NULL) THEN id ELSE -id END));
+
+# list_sort keeps the Sort of its bind, so its keys need no context from the executor
+statement ok
+CREATE INDEX i_sort ON t ((list_sort(l)[1]));
+
+# the edit distances check for interrupts only when there is a client context
+statement ok
+CREATE UNIQUE INDEX i_lev ON t ((levenshtein(s, 'abd')));
+
+statement ok
+CREATE INDEX i_dlev ON t ((damerau_levenshtein(s, 'acb')));
+
+statement ok
+INSERT INTO t VALUES (2, [5, 4], 'abdxx');
+
+statement error
+INSERT INTO t VALUES (3, [7], 'abe');
+----
+Duplicate key "levenshtein(s, 'abd'): 1"
+
+query I
+SELECT id FROM t WHERE levenshtein(s, 'abd') = 2;
+----
+2
+
+query I
+SELECT id FROM t WHERE damerau_levenshtein(s, 'acb') = 1;
+----
+1
+
+query I
+SELECT id FROM t WHERE list_sort(l)[1] = 4;
+----
+2
+
+statement ok
+DELETE FROM t WHERE id = 1;
+
+statement ok
+INSERT INTO t VALUES (3, [7], 'abe');
+
+query IIII
+SELECT id, levenshtein(s, 'abd'), damerau_levenshtein(s, 'acb'), list_sort(l)[1] FROM t ORDER BY id;
+----
+2	2	4	4
+3	1	2	7
+
+# the distances compare characters, not bytes
+statement error
+INSERT INTO t VALUES (4, [1], 'ábd');
+----
+Duplicate key "levenshtein(s, 'abd'): 1"
+
+statement ok
+INSERT INTO t VALUES (4, [1], 'ábdéx');
+
+query III
+SELECT id, levenshtein(s, 'abd'), damerau_levenshtein(s, 'acb') FROM t WHERE id = 4;
+----
+4	3	5
+
+# a transposition involving a non-ASCII character is one edit
+statement ok
+CREATE TABLE d (id INTEGER, s VARCHAR);
+
+statement ok
+INSERT INTO d VALUES (1, 'cáb');
+
+statement ok
+CREATE UNIQUE INDEX i_d ON d ((damerau_levenshtein(s, 'ácb')));
+
+statement error
+INSERT INTO d VALUES (2, 'ácd');
+----
+Duplicate key "damerau_levenshtein(s, 'ácb'): 1"
+
+statement ok
+INSERT INTO d VALUES (2, 'ácb');
+
+statement ok
+DELETE FROM d WHERE id = 1;
+
+statement ok
+INSERT INTO d VALUES (3, 'ácd');
+
+query II
+SELECT id, damerau_levenshtein(s, 'ácb') FROM d ORDER BY id;
+----
+2	0
+3	1
+
+# variant_extract_string uses the allocator of the executor when there is no client context
+statement ok
+CREATE TABLE v (id INTEGER, x VARIANT);
+
+statement ok
+INSERT INTO v VALUES (1, {'a': 'one'}::VARIANT), (2, {'a': {'b': [1, 2, 3], 'c': 'a string longer than the inline size'}}::VARIANT);
+
+statement ok
+CREATE UNIQUE INDEX i_var ON v ((variant_extract_string(x, 'a')));
+
+statement ok
+INSERT INTO v VALUES (3, {'a': 'two'}::VARIANT), (4, {'a': {'b': [4], 'c': 'another string longer than the inline size'}}::VARIANT);
+
+statement error
+INSERT INTO v VALUES (5, {'a': {'b': [1, 2, 3], 'c': 'a string longer than the inline size'}}::VARIANT);
+----
+Duplicate key
+
+statement ok
+DELETE FROM v WHERE id IN (1, 2);
+
+statement ok
+INSERT INTO v VALUES (5, {'a': {'b': [1, 2, 3], 'c': 'a string longer than the inline size'}}::VARIANT);
+
+query II
+SELECT id, variant_extract_string(x, 'a') FROM v ORDER BY id;
+----
+3	two
+4	{"b":[4],"c":"another string longer than the inline size"}
+5	{"b":[1,2,3],"c":"a string longer than the inline size"}
+
+# the keys are bound again when the indexes are loaded from disk
+restart
+
+statement ok
+INSERT INTO t VALUES (5, [2], 'abd');
+
+statement error
+INSERT INTO t VALUES (6, [1], 'abdy');
+----
+Duplicate key "levenshtein(s, 'abd'): 1"
+
+statement error
+INSERT INTO v VALUES (6, {'a': 'two'}::VARIANT);
+----
+Duplicate key
+
+statement ok
+DELETE FROM t WHERE id = 3;
+
+statement ok
+INSERT INTO t VALUES (6, [1], 'abdy');
+
+query III
+SELECT id, levenshtein(s, 'abd'), list_sort(l)[1] FROM t ORDER BY id;
+----
+2	2	4
+4	3	1
+5	0	2
+6	1	1
+
+query II
+SELECT id, variant_extract_string(x, 'a') FROM v WHERE id > 4 ORDER BY id;
+----
+5	{"b":[1,2,3],"c":"a string longer than the inline size"}

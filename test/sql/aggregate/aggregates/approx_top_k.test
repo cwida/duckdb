@@ -104,3 +104,17 @@ FROM (VALUES
 ORDER BY id;
 ----
 Binder Error: The "k" argument in function "approx_top_k" must be a constant expression
+
+# combining partial states that are not full adds nothing for the values a state lacks:
+# per group, 0 occurs 5 times and every other value once
+statement ok
+SET threads=4;
+
+query I
+SELECT count(*) FROM (
+	SELECT g, approx_top_k(v, 1) a
+	FROM (SELECT i % 100000 g, CASE WHEN (i // 100000) < 5 THEN 0 ELSE i // 100000 END v FROM range(1600000) r(i))
+	GROUP BY g
+) WHERE a != [0];
+----
+0

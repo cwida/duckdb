@@ -813,9 +813,8 @@ struct TruncDecimalNegativePrecisionOperator {
 		auto source_scale = DecimalType::GetScale(func_expr.GetChildren()[0]->GetReturnType());
 		auto width = DecimalType::GetWidth(func_expr.GetChildren()[0]->GetReturnType());
 		if (info.target_scale <= -int32_t(width - source_scale)) {
-			// scale too big for width
-			result.SetVectorType(VectorType::CONSTANT_VECTOR);
-			result.SetValue(0, Value::INTEGER(0));
+			// scale too big for width: every value truncates to zero, NULL stays NULL
+			UnaryExecutor::Execute<T, T>(input.data[0], result, [](T) { return T(0); });
 			return;
 		}
 		T divide_power_of_ten =
@@ -978,7 +977,7 @@ struct RoundHalfAwayFromZero {
 	static constexpr const char *Name = "ROUND";
 
 	static double Nearest(double value) {
-		return std::round(value);
+		return RoundToNearestAwayFromZero(value);
 	}
 	template <class T>
 	static bool RoundsAway(T) {
@@ -1053,7 +1052,7 @@ struct RoundOperatorPrecision {
 struct RoundOperator {
 	template <class TA, class TR>
 	static inline TR Operation(TA input) {
-		double rounded_value = round(input);
+		double rounded_value = RoundToNearestAwayFromZero(static_cast<double>(input));
 		if (std::isinf(rounded_value) || std::isnan(rounded_value)) {
 			return input;
 		}
@@ -1135,9 +1134,8 @@ struct DecimalRoundNegativePrecisionOperator {
 		auto &info = func_expr.BindInfo()->Cast<RoundPrecisionFunctionData>();
 		auto source_scale = DecimalType::GetScale(func_expr.GetChildren()[0]->GetReturnType());
 		if (info.target_scale < -int32_t(info.source_width - source_scale)) {
-			// scale too big for width
-			result.SetVectorType(VectorType::CONSTANT_VECTOR);
-			result.SetValue(0, Value::INTEGER(0));
+			// scale too big for width: every value rounds to zero, NULL stays NULL
+			UnaryExecutor::Execute<T, T>(input.data[0], result, [](T) { return T(0); });
 			return;
 		}
 		T divide_power_of_ten =
