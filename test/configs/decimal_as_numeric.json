@@ -6,5 +6,21 @@
       "value": "true"
     }
   ],
-  "skip_compiled": "true"
+  "skip_compiled": "true",
+  "skip_tests": [
+    {
+      "reason": "Asserts DECIMAL column semantics (declared type, scale, 38-digit width, statistics) that this configuration replaces with NUMERIC.",
+      "paths": [
+        "test/sql/types/decimal/decimal_aggregates.test",
+        "test/sql/types/decimal/decimal_average.test",
+        "test/sql/types/decimal/decimal_overflow_table.test",
+        "test/sql/types/decimal/test_decimal_4106.test",
+        "test/sql/types/decimal/wide_decimal_casts.test",
+        "test/sql/types/decimal/wide_decimal_review.test",
+        "test/sql/types/decimal/wide_decimal_statistics.test",
+        "test/sql/types/decimal/wide_decimal_storage.test",
+        "test/sql/types/numeric/numeric_type.test"
+      ]
+    }
+  ]
 }
