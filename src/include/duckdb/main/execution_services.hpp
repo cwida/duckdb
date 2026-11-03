@@ -17,6 +17,7 @@
 namespace duckdb {
 
 class ClientConfig;
+class BufferManager;
 class ClientContext;
 class DatabaseInstance;
 class FileOpener;
@@ -83,6 +84,8 @@ public:
 	DUCKDB_API FileSystem &GetFileSystem() const;
 	//! The file opener of the client - only present for the services of a ClientContext
 	DUCKDB_API optional_ptr<FileOpener> TryGetFileOpener() const;
+	//! The buffer manager: client-specific for the services of a ClientContext, otherwise the database one
+	DUCKDB_API BufferManager &GetBufferManager() const;
 	//! The database-wide task scheduler
 	DUCKDB_API TaskScheduler &GetTaskScheduler() const;
 	//! The database-wide metrics manager

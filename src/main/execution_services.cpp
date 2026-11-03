@@ -12,6 +12,7 @@
 #include "duckdb/main/profiler/metrics_manager.hpp"
 #include "duckdb/main/query_profiler.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
+#include "duckdb/storage/buffer_manager.hpp"
 
 namespace duckdb {
 
@@ -126,6 +127,14 @@ FileSystem &ExecutionServices::GetFileSystem() const {
 
 optional_ptr<FileOpener> ExecutionServices::TryGetFileOpener() const {
 	return file_opener.get();
+}
+
+BufferManager &ExecutionServices::GetBufferManager() const {
+	auto client_context = context;
+	if (client_context) {
+		return BufferManager::GetBufferManager(*client_context);
+	}
+	return BufferManager::GetBufferManager(db);
 }
 
 TaskScheduler &ExecutionServices::GetTaskScheduler() const {

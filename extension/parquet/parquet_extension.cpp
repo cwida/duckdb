@@ -989,7 +989,7 @@ static bool IsExtensionGeometryType(const LogicalType &type, ClientContext &cont
 	if (type.GetAlias() != "GEOMETRY") {
 		return false;
 	}
-	return GeoParquetFileMetadata::IsGeoParquetConversionEnabled(context);
+	return GeoParquetFileMetadata::IsGeoParquetConversionEnabled(context.Services());
 }
 
 static vector<unique_ptr<Expression>> ParquetWriteSelect(CopyToSelectInput &input) {

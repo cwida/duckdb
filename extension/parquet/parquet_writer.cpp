@@ -1501,7 +1501,7 @@ void ParquetWriter::Finalize() {
 	}
 
 	// Add geoparquet metadata to the file metadata
-	if (geoparquet_data && GeoParquetFileMetadata::IsGeoParquetConversionEnabled(context) &&
+	if (geoparquet_data && GeoParquetFileMetadata::IsGeoParquetConversionEnabled(context.Services()) &&
 	    GetGeoParquetVersion() != GeoParquetVersion::NONE) {
 		geoparquet_data->Write(file_meta_data);
 	}
