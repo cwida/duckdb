@@ -3778,7 +3778,8 @@ void ShellState::DetectDarkLightMode() {
 	}
 	// detect terminal colors
 	// the terminal is not queried while stdin is read by the shell itself (-batch) - only COLORFGBG is used then
-	auto terminal_color = linenoiseGetTerminalColorMode(rl_version == ReadLineVersion::LINENOISE && (stdin_is_interactive || !readStdin));
+	auto terminal_color =
+	    linenoiseGetTerminalColorMode(rl_version == ReadLineVersion::LINENOISE && (stdin_is_interactive || !readStdin));
 	if (terminal_color == LINENOISE_DARK_MODE) {
 		highlight_mode = HighlightMode::DARK_MODE;
 		highlight.ToggleMode(HighlightMode::DARK_MODE);
