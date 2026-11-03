@@ -114,6 +114,8 @@ public:
 	idx_t file_count = 0;
 	//! The number of batches flushed into the file being written
 	idx_t file_batches = 0;
+	//! The path of the file being written
+	string current_file;
 	//! Unpartitioned batches
 	map<idx_t, unique_ptr<FixedRawBatchData>> raw_batches;
 	//! The prepared batch data by batch index - ready to flush
@@ -156,6 +158,7 @@ public:
 			file_path = op.filename_pattern.CreateFilename(fs, op.file_path, op.file_extension, file_count);
 		}
 		file_count++;
+		current_file = file_path;
 		output_lifecycle.RegisterFile(file_path);
 		auto new_global_state = op.function.copy_to_initialize_global(context, *op.bind_data, file_path);
 		if (op.function.initialize_operator) {
@@ -659,14 +662,14 @@ void PhysicalBatchCopyToFile::FlushBatchData(ClientContext &context, GlobalSinkS
 			batch_data = std::move(entry->second);
 			gstate.batch_data.erase(entry);
 		}
-		DUCKDB_LOG(context, PhysicalOperatorLogType, *this, "PhysicalBatchCopyToFile", "FlushBatch",
-		           {{"file", file_path},
-		            {"rows", to_string(batch_data->batch_analyzer.current_batch_size)},
-		            {"size", to_string(batch_data->batch_analyzer.current_batch_size_bytes)},
-		            {"reason", EnumUtil::ToString(batch_data->batch_analyzer.ToReason())}});
 		if (gstate.FileReachedSize(*this)) {
 			gstate.RotateFile(context, *this);
 		}
+		DUCKDB_LOG(context, PhysicalOperatorLogType, *this, "PhysicalBatchCopyToFile", "FlushBatch",
+		           {{"file", gstate.current_file},
+		            {"rows", to_string(batch_data->batch_analyzer.current_batch_size)},
+		            {"size", to_string(batch_data->batch_analyzer.current_batch_size_bytes)},
+		            {"reason", EnumUtil::ToString(batch_data->batch_analyzer.ToReason())}});
 		function.flush_batch(context, *bind_data, *gstate.global_state, *batch_data->prepared_data);
 		batch_data->prepared_data.reset();
 		memory_manager.ReduceUnflushedMemory(batch_data->memory_usage);
