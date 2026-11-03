@@ -209,6 +209,34 @@ LEFT JOIN connected_right ON a = x AND b = y AND a = b;
 statement ok
 SET disabled_optimizers='statistics_propagation';
 
+# Implicit widening casts share the same ON equality component as their underlying columns.
+statement ok
+CREATE TABLE cast_left AS SELECT (i % 10)::INTEGER a, (i % 10)::BIGINT b FROM range(100) t(i);
+
+statement ok
+CREATE TABLE cast_right AS SELECT (i % 10)::BIGINT x FROM range(1000) t(i);
+
+statement ok
+SET disabled_optimizers='statistics_propagation,filter_pushdown,expression_rewriter';
+
+query II
+EXPLAIN SELECT * FROM cast_left l LEFT JOIN cast_right r ON l.a = r.x AND l.b = r.x;
+----
+physical_plan	<REGEX>:.*HASH_JOIN[^~]*~9,090 rows.*
+
+query II
+EXPLAIN SELECT * FROM cast_left l LEFT JOIN cast_right r ON l.a = r.x AND l.b = r.x AND l.a = l.b;
+----
+physical_plan	<REGEX>:.*HASH_JOIN[^~]*~9,090 rows.*
+
+query I
+SELECT count(*) FROM cast_left l LEFT JOIN cast_right r ON l.a = r.x AND l.b = r.x AND l.a = l.b;
+----
+10000
+
+statement ok
+SET disabled_optimizers='statistics_propagation';
+
 # NULLs and missing matches still preserve the left input.
 statement ok
 INSERT INTO composite_left VALUES (NULL, NULL), (-1, -1);

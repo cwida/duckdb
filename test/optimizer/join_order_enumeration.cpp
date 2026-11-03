@@ -48,7 +48,7 @@ TEST_CASE("Connected hypergraphs can require original cross products", "[optimiz
 		REQUIRE(graph.Build(join_optimizer, *root));
 		REQUIRE_FALSE(graph.RequiresCrossProduct());
 		CardinalityEstimator estimator(graph.set_manager, graph.GetPredicateModel());
-		CostModel cost_model(graph, estimator);
+		CostModel cost_model(estimator);
 		PlanEnumerator enumerator(graph, cost_model, graph.GetQueryGraphEdges());
 		enumerator.InitLeafPlans();
 		// Result correctness alone cannot distinguish successful enumeration from the original-plan fallback.
@@ -60,7 +60,7 @@ TEST_CASE("Connected hypergraphs can require original cross products", "[optimiz
 	connection.Rollback();
 }
 
-TEST_CASE("LEFT candidate estimates use input rows independently of domain cache warmup", "[optimizer][join_order]") {
+TEST_CASE("Equivalent LEFT candidates share logical estimates in both cache orders", "[optimizer][join_order]") {
 	DuckDB db;
 	Connection connection(db);
 	for (auto sql : {"CREATE TABLE a AS SELECT (i%100)::INT k, i::INT v FROM range(1000)t(i)",
@@ -88,7 +88,7 @@ TEST_CASE("LEFT candidate estimates use input rows independently of domain cache
 	double cold_estimate = 0;
 	for (auto warm : {false, true}) {
 		CardinalityEstimator estimator(graph.set_manager, graph.GetPredicateModel());
-		CostModel costs(graph, estimator);
+		CostModel costs(estimator);
 		PlanEnumerator enumerator(graph, costs, graph.GetQueryGraphEdges());
 		enumerator.InitLeafPlans();
 		auto &plans = enumerator.GetPlans();
@@ -98,8 +98,8 @@ TEST_CASE("LEFT candidate estimates use input rows independently of domain cache
 		auto &ab_set = graph.set_manager.Union(a.set, b.set);
 		auto &ac_set = graph.set_manager.Union(a.set, c.set);
 		if (warm) {
-			estimator.EstimateCardinalityWithSet<double>(ab_set);
-			estimator.EstimateCardinalityWithSet<double>(ac_set);
+			estimator.EstimateCardinality(ab_set);
+			estimator.EstimateCardinality(ac_set);
 		}
 		auto join = [&](DPJoinNode &left, DPJoinNode &right) {
 			auto connections = graph.GetQueryGraphEdges().GetConnections(left.set, right.set);
@@ -115,7 +115,7 @@ TEST_CASE("LEFT candidate estimates use input rows independently of domain cache
 				auto &set = graph.set_manager.Union(left.set, right.set);
 				auto node = make_uniq<DPJoinNode>(set, edge.join_operator, edge.predicates,
 				                                  edge.generated_cross_product, left.set, right.set, 0);
-				node->cardinality = estimator.EstimateJoinCardinality(left, right, set, edge.join_operator);
+				node->cardinality = estimator.EstimateCardinality(set);
 				REQUIRE(node->cardinality.GetDouble() >= left.cardinality.GetDouble());
 				return node;
 			}
@@ -131,10 +131,180 @@ TEST_CASE("LEFT candidate estimates use input rows independently of domain cache
 		} else {
 			cold_estimate = abc->cardinality.GetDouble();
 		}
+		// Candidate mutations cannot change logical group statistics.
+		auto original = ab->cardinality;
 		b.cardinality = CardinalityValue(0);
-		REQUIRE(join(a, b)->cardinality.GetDouble() == a.cardinality.GetDouble());
 		a.cardinality = CardinalityValue(0);
-		REQUIRE(join(a, c)->cardinality.IsZero());
+		auto changed = estimator.EstimateCardinality(ab_set);
+		REQUIRE_FALSE(original < changed);
+		REQUIRE_FALSE(original > changed);
+	}
+	connection.Rollback();
+}
+static vector<unique_ptr<DPJoinNode>> EnumerateAlternatives(QueryGraphManager &graph, CardinalityEstimator &estimator,
+                                                            CostModel &costs, idx_t mask) {
+	unordered_set<RelationIndex> bindings;
+	for (idx_t i = 0; i < graph.relation_manager.NumRelations(); i++) {
+		if (mask & (idx_t(1) << i)) {
+			bindings.insert(RelationIndex(i));
+		}
+	}
+	auto &set = graph.set_manager.GetJoinRelation(bindings);
+	vector<unique_ptr<DPJoinNode>> result;
+	if (set.count == 1) {
+		auto node = make_uniq<DPJoinNode>(set);
+		node->cardinality = estimator.EstimateCardinality(set);
+		node->cost = 0;
+		result.push_back(std::move(node));
+		return result;
+	}
+	for (idx_t left_mask = (mask - 1) & mask; left_mask; left_mask = (left_mask - 1) & mask) {
+		auto left_plans = EnumerateAlternatives(graph, estimator, costs, left_mask);
+		auto right_plans = EnumerateAlternatives(graph, estimator, costs, mask ^ left_mask);
+		for (auto &left : left_plans) {
+			for (auto &right : right_plans) {
+				for (auto &connection : graph.GetQueryGraphEdges().GetConnections(left->set, right->set)) {
+					auto &edge = connection.get();
+					if (!graph.IsConnectionApplicable(edge, left->set, right->set) ||
+					    !graph.IsJoinOrderCandidate(edge.join_operator, edge.generated_cross_product, left->set,
+					                                right->set)) {
+						continue;
+					}
+					auto rows = estimator.EstimateCardinality(set);
+					auto node = make_uniq<DPJoinNode>(
+					    set, edge.join_operator, edge.predicates, edge.generated_cross_product, left->set, right->set,
+					    costs.ComputeCost(*left, *right, edge.join_operator, rows.GetDouble()));
+					node->cardinality = rows;
+					result.push_back(std::move(node));
+				}
+			}
+		}
+	}
+	return result;
+}
+
+static double VerifySelectedCost(const DPJoinNode &node,
+                                 const reference_map_t<JoinRelationSet, unique_ptr<DPJoinNode>> &plans) {
+	if (node.is_leaf) {
+		REQUIRE(node.cost == 0);
+		return 0;
+	}
+	auto &left = *plans.at(node.left_set);
+	auto &right = *plans.at(node.right_set);
+	auto cost = VerifySelectedCost(left, plans) + VerifySelectedCost(right, plans) + node.cardinality.GetDouble();
+	if (node.join_operator && node.join_operator->type == JoinOrderOperatorType::LEFT) {
+		cost += right.cardinality.GetDouble();
+	}
+	CAPTURE(node.set.ToString());
+	REQUIRE(node.cost == Approx(cost));
+	return cost;
+}
+
+TEST_CASE("Equivalent mixed join plans share estimates and the cheapest plan survives", "[optimizer][join_order]") {
+	DuckDB db;
+	Connection connection(db);
+	for (auto sql : {"CREATE TABLE a AS SELECT (i%100)::INT k FROM range(1000)t(i)",
+	                 "CREATE TABLE b AS SELECT (i%100)::INT k FROM range(10)t(i)",
+	                 "CREATE TABLE c AS SELECT (i%100)::INT k FROM range(10000)t(i)"}) {
+		auto result = connection.Query(sql);
+		REQUIRE_NO_FAIL(*result);
+	}
+	connection.BeginTransaction();
+	for (auto query : {"SELECT * FROM (a SEMI JOIN b ON a.k=b.k) JOIN c ON a.k=c.k",
+	                   "SELECT * FROM (a ANTI JOIN b ON a.k=b.k) JOIN c ON a.k=c.k",
+	                   "SELECT * FROM (a LEFT JOIN b ON a.k=b.k) JOIN c ON a.k=c.k",
+	                   "SELECT * FROM a LEFT JOIN b ON a.k=b.k LEFT JOIN c ON a.k=c.k"}) {
+		CAPTURE(query);
+		Parser parser(*connection.context);
+		parser.ParseQuery(query);
+		Planner planner(*connection.context);
+		planner.CreatePlan(std::move(parser.statements[0]));
+		JoinOrderOptimizer optimizer(*connection.context);
+		QueryGraphManager graph(*connection.context);
+		optional_ptr<LogicalOperator> logical_root = planner.plan.get();
+		while (logical_root->children.size() == 1) {
+			logical_root = logical_root->children[0].get();
+		}
+		REQUIRE(graph.Build(optimizer, *logical_root));
+		REQUIRE(graph.relation_manager.NumRelations() == 3);
+		auto &root = graph.set_manager.GetJoinRelation({RelationIndex(0), RelationIndex(1), RelationIndex(2)});
+		CardinalityValue cold;
+		for (bool root_first : {false, true}) {
+			CardinalityEstimator estimator(graph.set_manager, graph.GetPredicateModel());
+			CostModel costs(estimator);
+			PlanEnumerator enumerator(graph, costs, graph.GetQueryGraphEdges());
+			enumerator.InitLeafPlans();
+			if (root_first) {
+				auto estimate = estimator.EstimateCardinality(root);
+				REQUIRE_FALSE(estimate < cold);
+				REQUIRE_FALSE(estimate > cold);
+			}
+			auto alternatives = EnumerateAlternatives(graph, estimator, costs, 7);
+			REQUIRE(alternatives.size() >= 2);
+			double minimum = NumericLimits<double>::Maximum();
+			cold = alternatives[0]->cardinality;
+			for (auto &node : alternatives) {
+				REQUIRE_FALSE(node->cardinality < cold);
+				REQUIRE_FALSE(node->cardinality > cold);
+				minimum = MinValue(minimum, node->cost);
+			}
+			REQUIRE(enumerator.SolveJoinOrder());
+			auto &plans = enumerator.GetPlans();
+			auto &selected = *plans.at(root);
+			REQUIRE(selected.cost == Approx(minimum));
+			VerifySelectedCost(selected, plans);
+		}
+	}
+	connection.Rollback();
+}
+
+TEST_CASE("Selected costs remain current across exact and greedy enumeration", "[optimizer][join_order]") {
+	DuckDB db;
+	Connection connection(db);
+	for (idx_t i = 0; i < 12; i++) {
+		auto result = connection.Query("CREATE TABLE t" + to_string(i) + " AS SELECT i%17 AS k FROM range(" +
+		                               to_string(20 + i * 73) + ") t(i)");
+		REQUIRE_NO_FAIL(*result);
+	}
+	connection.BeginTransaction();
+	for (idx_t count : {idx_t(5), idx_t(12)}) {
+		for (idx_t threshold : {idx_t(1), idx_t(30)}) {
+			CAPTURE(count, threshold);
+			auto setting = connection.Query("SET approximate_join_order_threshold=" + to_string(threshold));
+			REQUIRE_NO_FAIL(*setting);
+			string sql = "SELECT count(*) FROM t0";
+			for (idx_t i = 1; i < count; i++) {
+				sql += " JOIN t" + to_string(i) + " ON t0.k=t" + to_string(i) + ".k";
+			}
+			Parser parser(*connection.context);
+			parser.ParseQuery(sql);
+			Planner planner(*connection.context);
+			planner.CreatePlan(std::move(parser.statements[0]));
+			JoinOrderOptimizer optimizer(*connection.context);
+			QueryGraphManager graph(*connection.context);
+			optional_ptr<LogicalOperator> logical_root = planner.plan.get();
+			while (logical_root->children.size() == 1) {
+				logical_root = logical_root->children[0].get();
+			}
+			REQUIRE(graph.Build(optimizer, *logical_root));
+			CardinalityEstimator estimator(graph.set_manager, graph.GetPredicateModel());
+			CostModel costs(estimator);
+			PlanEnumerator enumerator(graph, costs, graph.GetQueryGraphEdges());
+			enumerator.InitLeafPlans();
+			REQUIRE(enumerator.SolveJoinOrder());
+			unordered_set<RelationIndex> bindings;
+			for (idx_t i = 0; i < count; i++) {
+				bindings.insert(RelationIndex(i));
+			}
+			auto &root = graph.set_manager.GetJoinRelation(bindings);
+			auto &plans = enumerator.GetPlans();
+			if (count == 12 && threshold == 30) {
+				// A complete 12-relation star exceeds the 10,000-pair budget.
+				REQUIRE(plans.size() > 500);
+				REQUIRE(plans.size() < (idx_t(1) << (count - 1)) + count - 1);
+			}
+			VerifySelectedCost(*plans.at(root), plans);
+		}
 	}
 	connection.Rollback();
 }

@@ -16,12 +16,9 @@ namespace duckdb {
 
 class FilterInfo;
 class JoinPredicateModel;
-class DPJoinNode;
 struct JoinOrderOperator;
 struct CardinalityEstimatorState;
-struct CardinalityHelper;
 struct CompositeJoinPairStats;
-struct SelectivityInfo;
 struct SelectivityState;
 struct FilterInfoWithTotalDomains;
 struct SelectivitySubgraph;
@@ -32,31 +29,21 @@ public:
 	~CardinalityEstimator();
 
 public:
-	void RemoveEmptyTotalDomains();
-	void UpdateTotalDomains(optional_ptr<JoinRelationSet> set, RelationStats &stats);
-	void InitEquivalentRelations();
-
-	void InitCardinalityEstimatorProps(optional_ptr<JoinRelationSet> set, RelationStats &stats);
-	void RestrictFilterDomains(const vector<RelationStats> &relation_stats);
-
-	//! Cached INNER-domain evidence used to derive selectivity across a candidate's inputs.
-	//! Non-inner output semantics are only applied by EstimateJoinCardinality.
-	template <class T>
-	T EstimateCardinalityWithSet(JoinRelationSet &new_set);
-
-	//! Compose a candidate from its actual inputs; output estimates are not cached by relation set.
-	CardinalityValue EstimateJoinCardinality(const DPJoinNode &left, const DPJoinNode &right, JoinRelationSet &set,
-	                                         optional_ptr<JoinOrderOperator> join_operator);
-
-	//! used for debugging.
-	void AddRelationNamesToRelationStats(vector<RelationStats> &stats);
-	void PrintRelationStats();
+	//! Initialize immutable logical statistics before estimating any relation set.
+	void Initialize(const vector<RelationStats> &relations,
+	                const vector<unique_ptr<JoinOrderOperator>> &operators = {});
+	//! All equivalent plans in a memo group share this estimate.
+	CardinalityValue EstimateCardinality(JoinRelationSet &set);
 
 private:
+	void InitEquivalentRelations();
+	void UpdateTotalDomains(RelationIndex relation, const RelationStats &stats);
+	void RestrictFilterDomains(const vector<RelationStats> &relation_stats);
+	bool IsFilterApplicable(const FilterInfo &filter, JoinRelationSet &set) const;
 	CardinalityValue GetNumerator(JoinRelationSet &set);
-	CardinalityValue GetSubgraphCardinality(const SelectivitySubgraph &subgraph);
-	const CardinalityHelper &GetCardinalityBeforeFilters(JoinRelationSet &set);
-	SelectivityInfo GetSelectivity(JoinRelationSet &set);
+	CardinalityValue GetInnerCardinality(JoinRelationSet &set);
+	CardinalityValue GetJoinSelectivity(JoinRelationSet &set, JoinRelationSet &left, JoinRelationSet &right);
+	CardinalityValue GetSelectivity(JoinRelationSet &set);
 	void ProcessSelectivityEdge(FilterInfoWithTotalDomains &edge, JoinRelationSet &requested_set,
 	                            SelectivityState &state);
 	void CreateSelectivitySubgraph(FilterInfoWithTotalDomains &edge, JoinRelationSet &edge_left_set,
@@ -67,20 +54,12 @@ private:
 	void MergeSelectivitySubgraphs(const vector<idx_t> &subgraph_connections, FilterInfoWithTotalDomains &edge,
 	                               SelectivityState &state);
 	void MergeDisconnectedSelectivitySubgraphs(SelectivityState &state);
-	void AddCrossProductRelations(JoinRelationSet &set, SelectivityState &state);
-	SelectivityInfo CreateSelectivityResult(JoinRelationSet &set, SelectivityState &state);
-	//! Applied outside the cardinality cache so stored values stay pre-OR.
-	CardinalityValue ApplyOrFilterSelectivities(JoinRelationSet &new_set, CardinalityValue cardinality) const;
-
 	bool SingleColumnFilter(const FilterInfo &filter_info);
 
 	//! Selectivity calculation
-	SelectivityInfo CalculateJoinSelectivityInfo(SelectivitySubgraph &left, SelectivitySubgraph &right,
-	                                             FilterInfoWithTotalDomains &filter);
 	CardinalityValue CalculateInnerJoinSelectivity(CardinalityValue base_selectivity,
 	                                               FilterInfoWithTotalDomains &filter);
-	CardinalityValue EstimateLeftJoinMatches(const JoinOrderOperator &join_operator, CardinalityValue left_rows,
-	                                         CardinalityValue right_rows);
+	CardinalityValue GetLeftJoinSelectivity(const JoinOrderOperator &join_operator);
 	bool ApplyJoinIncrement(CardinalityValue &target_selectivity, FilterInfoWithTotalDomains &edge,
 	                        reference_map_t<JoinRelationSet, CompositeJoinPairStats> &inner_join_pair_stats,
 	                        reference_set_t<JoinRelationSet> &capped_join_pairs, JoinRelationSet &scope,

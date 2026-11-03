@@ -30,6 +30,8 @@ struct JoinOrderUtil {
 	static bool HasValidJoinEndpoints(const FilterInfo &filter);
 	static bool HasDisjointJoinEndpoints(const FilterInfo &filter);
 	static RelationIndex GetBindingRelation(const ColumnBinding &binding);
+	//! Extract a column binding through invertible, non-TRY casts.
+	static ColumnBinding GetEquivalenceBinding(const Expression &expression);
 };
 
 class JoinPredicate {

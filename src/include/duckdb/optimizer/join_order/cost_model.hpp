@@ -12,11 +12,9 @@
 
 namespace duckdb {
 
-class QueryGraphManager;
-
 class CostModel {
 public:
-	explicit CostModel(QueryGraphManager &query_graph_manager, CardinalityEstimator &cardinality_estimator);
+	explicit CostModel(CardinalityEstimator &cardinality_estimator);
 
 public:
 	//! Compute work for the selected operator and its estimated output.
@@ -25,8 +23,6 @@ public:
 	CardinalityEstimator &GetCardinalityEstimator();
 
 private:
-	//! query graph storing relation manager information
-	QueryGraphManager &query_graph_manager;
 	CardinalityEstimator &cardinality_estimator;
 };
 

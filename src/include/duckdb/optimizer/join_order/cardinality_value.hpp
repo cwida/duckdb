@@ -41,6 +41,12 @@ public:
 		return std::ldexp(quotient.significand, static_cast<int>(quotient.exponent));
 	}
 
+	idx_t GetIndex() const {
+		auto value = GetDouble();
+		auto maximum = std::numeric_limits<idx_t>::max();
+		return value >= static_cast<double>(maximum) ? maximum : static_cast<idx_t>(value);
+	}
+
 	CardinalityValue operator*(const CardinalityValue &other) const {
 		return CardinalityValue(numerator * other.numerator, Product(denominator * other.denominator));
 	}

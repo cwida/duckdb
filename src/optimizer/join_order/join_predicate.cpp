@@ -1,9 +1,27 @@
 #include "duckdb/optimizer/join_order/join_predicate.hpp"
+#include "duckdb/planner/expression/bound_cast_expression.hpp"
+#include "duckdb/planner/expression/bound_columnref_expression.hpp"
 
 #include "duckdb/common/assert.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 
 namespace duckdb {
+
+ColumnBinding JoinOrderUtil::GetEquivalenceBinding(const Expression &expression) {
+	if (expression.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
+		auto &colref = expression.Cast<BoundColumnRefExpression>();
+		D_ASSERT(colref.Depth() == 0);
+		return colref.Binding();
+	}
+	if (BoundCastExpression::IsCast(expression)) {
+		auto &cast = expression.Cast<BoundFunctionExpression>();
+		if (!BoundCastExpression::IsTryCast(cast) &&
+		    BoundCastExpression::CastIsInvertible(BoundCastExpression::SourceType(cast), cast.GetReturnType())) {
+			return GetEquivalenceBinding(BoundCastExpression::Child(cast));
+		}
+	}
+	return ColumnBinding();
+}
 
 ExpressionType JoinOrderUtil::GetJoinPredicateComparisonType(const FilterInfo &filter) {
 	if (!filter.filter) {
