@@ -164,9 +164,6 @@ public:
 	DataChunk admission_chunk;
 	//! Emitted rows that have not yet been handed to the consumer
 	unique_ptr<ColumnDataCollection> emit_backlog;
-	ColumnDataAppendState backlog_append;
-	DataChunk backlog_scan_chunk;
-	bool backlog_append_valid = false;
 	//! Emitted rows currently being scanned
 	unique_ptr<ColumnDataCollection> emit_table;
 	ColumnDataScanState emit_scan;
@@ -363,28 +360,11 @@ void TrampolineState::CloseExecution() {
 		}
 	}
 	if (emitted && emitted->Count() > 0) {
-		if (!emit_backlog) {
-			emit_backlog = std::move(emitted);
-			backlog_append_valid = false;
-		} else if (emitted->Count() >= STANDARD_VECTOR_SIZE) {
-			emit_backlog->Combine(*emitted);
-			backlog_append_valid = false;
-		} else {
-			// repack small emissions so the consumer sees full chunks, not one per wave
-			if (!backlog_append_valid) {
-				emit_backlog->InitializeAppend(backlog_append);
-				backlog_append_valid = true;
-			}
-			if (backlog_scan_chunk.data.empty()) {
-				emitted->InitializeScanChunk(backlog_scan_chunk);
-			}
-			ColumnDataScanState emitted_scan;
-			emitted->InitializeScan(emitted_scan);
-			while (emitted->Scan(emitted_scan, backlog_scan_chunk)) {
-				emit_backlog->Append(backlog_append, backlog_scan_chunk);
-			}
-			Recycle(std::move(emitted));
-		}
+		// GetData drains the backlog before it invokes another branch, so a completed
+		// invocation's emissions are handed over directly; the invocation's producers
+		// were already combined in CombineLocal
+		D_ASSERT(!emit_backlog);
+		emit_backlog = std::move(emitted);
 	}
 	emitted.reset();
 }
@@ -541,7 +521,6 @@ SourceResultType TrampolineState::GetData(ExecutionContext &execution_context, D
 			emit_table = std::move(emit_backlog);
 			emit_table->InitializeScan(emit_scan);
 			emit_active = true;
-			backlog_append_valid = false;
 			continue;
 		}
 		idx_t branch_idx;
