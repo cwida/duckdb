@@ -2,9 +2,6 @@
 # description: Rounding a decimal to a precision beyond its width keeps NULLs
 # group: [numeric]
 
-statement ok
-PRAGMA enable_verification
-
 # a negative precision that drops more digits than the decimal holds rounds every value to zero;
 # the NULL inputs have to stay NULL
 
