@@ -977,8 +977,10 @@ inline T RoundDivide(T input, T power_of_ten) {
 struct RoundHalfAwayFromZero {
 	static constexpr const char *Name = "ROUND";
 
+	// std::round is wrong for the largest double below 0.5 on some platforms (MinGW rounds it up to 1)
 	static double Nearest(double value) {
-		return std::round(value);
+		double truncated = std::trunc(value);
+		return std::fabs(value - truncated) >= 0.5 ? truncated + std::copysign(1.0, value) : truncated;
 	}
 	template <class T>
 	static bool RoundsAway(T) {
@@ -1053,7 +1055,7 @@ struct RoundOperatorPrecision {
 struct RoundOperator {
 	template <class TA, class TR>
 	static inline TR Operation(TA input) {
-		double rounded_value = round(input);
+		double rounded_value = RoundHalfAwayFromZero::Nearest(input);
 		if (std::isinf(rounded_value) || std::isnan(rounded_value)) {
 			return input;
 		}
