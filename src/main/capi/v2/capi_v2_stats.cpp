@@ -41,6 +41,51 @@ static void ExpectStatsType(const char *function, const BaseStatistics &stats, S
 	}
 }
 
+static void CheckShreddedLayout(const BaseStatistics &layout, const BaseStatistics &node);
+
+//! The fields of an OBJECT and the element of an ARRAY are shredded layout nodes again; anything else is a leaf.
+static void CheckShreddedTypedValue(const BaseStatistics &layout, const BaseStatistics &typed_value) {
+	auto &type = typed_value.GetType();
+	switch (type.id()) {
+	case LogicalTypeId::STRUCT:
+		for (idx_t i = 0; i < StructType::GetChildCount(type); i++) {
+			CheckShreddedLayout(layout, StructStats::GetChildStats(typed_value, i));
+		}
+		break;
+	case LogicalTypeId::LIST:
+		CheckShreddedLayout(layout, ListStats::GetChildStats(typed_value));
+		break;
+	default:
+		break;
+	}
+}
+
+//! Throws unless the node is a primitive or a STRUCT(typed_value, untyped_value_index UINTEGER), as the engine expects.
+static void CheckShreddedLayout(const BaseStatistics &layout, const BaseStatistics &node) {
+	auto &type = node.GetType();
+	if (!type.IsNested()) {
+		return;
+	}
+	bool valid = type.id() == LogicalTypeId::STRUCT;
+	if (valid) {
+		auto &children = StructType::GetChildTypes(type);
+		valid = (children.size() == 1 || children.size() == 2) &&
+		        children[VariantStats::TYPED_VALUE_INDEX].first == "typed_value";
+		if (valid && children.size() == 2) {
+			auto &untyped = children[VariantStats::UNTYPED_VALUE_INDEX];
+			valid = untyped.first == "untyped_value_index" && untyped.second.id() == LogicalTypeId::UINTEGER;
+		}
+	}
+	if (!valid) {
+		throw InvalidInputException("duckdb_v2_stats_create_variant_shredded: statistics of type %s do not describe a "
+		                            "shredded layout: %s is not a primitive type or a STRUCT(typed_value, "
+		                            "untyped_value_index UINTEGER), derive the layout with "
+		                            "duckdb_v2_stats_variant_shredding_type",
+		                            layout.GetType().ToString(), type.ToString());
+	}
+	CheckShreddedTypedValue(layout, StructStats::GetChildStats(node, VariantStats::TYPED_VALUE_INDEX));
+}
+
 } // namespace duckdb::capiv2
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -130,6 +175,7 @@ DUCKDB_V2_ERROR duckdb_v2_stats_create_variant_shredded(duckdb_v2_factory_handle
 	*stats = nullptr;
 	return WithErrorHandler(err, [&]() {
 		auto &shredded = Convert(shredded_stats)->GetStats();
+		CheckShreddedLayout(shredded, shredded);
 		auto result = VariantStats::CreateShredded(shredded.GetType());
 		// The shredded statistics start out empty: like duckdb_v2_stats_create, claim nothing about NULLs
 		result.SetHasNull();

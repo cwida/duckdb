@@ -854,8 +854,10 @@ TEST_CASE("V2 stats: table function min/max reach the optimizer", "[capi_v2][sta
 	// scan never runs.
 	REQUIRE(StatsQueryI64(fx.conn, "SELECT count(*) FROM mm_report() WHERE i < 15") == 0);
 	REQUIRE(g_mm.exec_calls == 0);
-	// "i > 100" exceeds the maximum 30 as well: 0 again, whichever bound is acted on.
+	// "i > 100" exceeds the reported maximum 30: the scan does not run for it either.
+	g_mm = MinMaxObserved {};
 	REQUIRE(StatsQueryI64(fx.conn, "SELECT count(*) FROM mm_report() WHERE i > 100") == 0);
+	REQUIRE(g_mm.exec_calls == 0);
 	REQUIRE(g_mm.user_data == &report);
 	REQUIRE(g_mm.column_index == 0);
 	REQUIRE(g_mm.stats_type == DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER);
@@ -906,6 +908,203 @@ TEST_CASE("V2 stats: a predicate is checked against statistics", "[capi_v2][stat
 	REQUIRE(g_mm.merge_rc == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(g_mm.pushdown_checks >= 1);
 	REQUIRE(g_mm.check_result != DUCKDB_V2_FILTER_PROPAGATE_RESULT_ALWAYS_FALSE);
+	// The merged maximum is 20: "i > 20" cannot match, "i > 19" can.
+	g_mm = MinMaxObserved {};
+	(void)StatsQueryI64(fx.conn, "SELECT count(*) FROM mm_merged() WHERE i > 20");
+	REQUIRE(g_mm.pushdown_checks >= 1);
+	REQUIRE(g_mm.check_result == DUCKDB_V2_FILTER_PROPAGATE_RESULT_ALWAYS_FALSE);
+	g_mm = MinMaxObserved {};
+	(void)StatsQueryI64(fx.conn, "SELECT count(*) FROM mm_merged() WHERE i > 19");
+	REQUIRE(g_mm.pushdown_checks >= 1);
+	REQUIRE(g_mm.check_result != DUCKDB_V2_FILTER_PROPAGATE_RESULT_ALWAYS_FALSE);
+}
+
+// ---------------------------------------------------------------------------
+// Shredded VARIANT: a table function with one VARIANT column reports a shredded layout, and checks a predicate on an
+// extracted field against the same statistics.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct ShreddedObserved {
+	idx_t exec_calls = 0;
+	DUCKDB_V2_ERROR malformed_rc = DUCKDB_V2_ERROR_NONE;
+	DUCKDB_V2_ERROR assign_rc = DUCKDB_V2_ERROR_NONE;
+	idx_t pushdown_checks = 0;
+	DUCKDB_V2_ERROR check_rc = DUCKDB_V2_ERROR_NONE;
+	DUCKDB_V2_FILTER_PROPAGATE_RESULT check_result = DUCKDB_V2_FILTER_PROPAGATE_RESULT_NO_PRUNING_POSSIBLE;
+};
+
+ShreddedObserved g_shredded;
+
+// Owned statistics of a type given as text, or null when they cannot be built.
+duckdb_v2_stats_handle StatsOfText(duckdb_v2_factory_handle factory, const char *type_text,
+                                   duckdb_v2_error_info_handle *err) {
+	auto text = Convert(type_text);
+	duckdb_v2_logical_type_handle type = nullptr;
+	duckdb_v2_stats_handle stats = nullptr;
+	if (duckdb_v2_factory_create_type_from_text(factory, &text, &type, err) == DUCKDB_V2_ERROR_NONE) {
+		duckdb_v2_stats_create(factory, type, &stats, err);
+	}
+	duckdb_v2_logical_type_destroy(&type);
+	return stats;
+}
+
+// Owned VARIANT statistics shredded on STRUCT(x INTEGER): every value is an object whose x is an INTEGER in [1, 5].
+duckdb_v2_stats_handle ShreddedVariantStats(duckdb_v2_factory_handle factory, duckdb_v2_error_info_handle *err) {
+	// untyped_value_index 0 everywhere: no value fell back to the generic layout
+	auto untyped = StatsOfText(factory, "UINTEGER", err);
+	duckdb_v2_value_handle zero = nullptr;
+	if (duckdb_v2_value_create_uint(factory, 0, &zero, err) == DUCKDB_V2_ERROR_NONE) {
+		duckdb_v2_stats_set_constant(untyped, zero, err);
+	}
+	duckdb_v2_value_destroy(&zero);
+
+	auto integer = StatsOfText(factory, "INTEGER", err);
+	IntBounds(factory, integer, 1, 5, err);
+	auto x_node = StatsOfText(factory, "STRUCT(typed_value INTEGER, untyped_value_index UINTEGER)", err);
+	duckdb_v2_stats_set_child(x_node, 0, integer, err);
+	duckdb_v2_stats_set_child(x_node, 1, untyped, err);
+	duckdb_v2_stats_set_can_have_null(x_node, false, err);
+
+	auto object = StatsOfText(factory, "STRUCT(x STRUCT(typed_value INTEGER, untyped_value_index UINTEGER))", err);
+	duckdb_v2_stats_set_child(object, 0, x_node, err);
+	duckdb_v2_stats_set_can_have_null(object, false, err);
+
+	auto structured_text = Convert("STRUCT(x INTEGER)");
+	duckdb_v2_logical_type_handle structured = nullptr;
+	duckdb_v2_logical_type_handle layout = nullptr;
+	duckdb_v2_stats_handle layout_stats = nullptr;
+	duckdb_v2_stats_handle variant = nullptr;
+	if (duckdb_v2_factory_create_type_from_text(factory, &structured_text, &structured, err) == DUCKDB_V2_ERROR_NONE &&
+	    duckdb_v2_stats_variant_shredding_type(factory, structured, &layout, err) == DUCKDB_V2_ERROR_NONE &&
+	    duckdb_v2_stats_create(factory, layout, &layout_stats, err) == DUCKDB_V2_ERROR_NONE) {
+		duckdb_v2_stats_set_child(layout_stats, 0, object, err);
+		duckdb_v2_stats_set_child(layout_stats, 1, untyped, err);
+		if (duckdb_v2_stats_create_variant_shredded(factory, layout_stats, &variant, err) == DUCKDB_V2_ERROR_NONE) {
+			duckdb_v2_stats_set_can_have_null(variant, false, err);
+		}
+	}
+	duckdb_v2_stats_destroy(&layout_stats);
+	duckdb_v2_logical_type_destroy(&layout);
+	duckdb_v2_logical_type_destroy(&structured);
+	duckdb_v2_stats_destroy(&object);
+	duckdb_v2_stats_destroy(&x_node);
+	duckdb_v2_stats_destroy(&integer);
+	duckdb_v2_stats_destroy(&untyped);
+	return variant;
+}
+
+void ShreddedBindCb(duckdb_v2_function_bind_info_handle, duckdb_v2_table_function_bind_info_handle result,
+                    duckdb_v2_context_handle context, duckdb_v2_error_info_handle *err) {
+	duckdb_v2_factory_handle factory = nullptr;
+	duckdb_v2_logical_type_handle variant = nullptr;
+	auto variant_text = Convert("VARIANT");
+	if (duckdb_v2_context_get_factory(context, &factory, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_factory_create_type_from_text(factory, &variant_text, &variant, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	auto v = StatsIdent("v");
+	duckdb_v2_table_function_bind_add_result_column(result, &v, variant, err);
+	duckdb_v2_logical_type_destroy(&variant);
+}
+
+// Produces no rows: only the statistics matter.
+void ShreddedExecCb(duckdb_v2_table_function_exec_info_handle info, duckdb_v2_context_handle,
+                    duckdb_v2_error_info_handle *err) {
+	g_shredded.exec_calls++;
+	duckdb_v2_data_chunk_handle chunk = nullptr;
+	duckdb_v2_vector_handle vec = nullptr;
+	if (duckdb_v2_table_function_exec_get_output_chunk(info, &chunk, err) == DUCKDB_V2_ERROR_NONE &&
+	    duckdb_v2_data_chunk_get_vector(chunk, 0, &vec, err) == DUCKDB_V2_ERROR_NONE) {
+		duckdb_v2_vector_set_size(vec, 0, err);
+	}
+}
+
+void ShreddedStatsCb(duckdb_v2_table_function_stats_info_handle info, duckdb_v2_context_handle context,
+                     duckdb_v2_error_info_handle *err) {
+	duckdb_v2_stats_handle result = nullptr;
+	duckdb_v2_factory_handle factory = nullptr;
+	if (duckdb_v2_table_function_stats_get_result_stats(info, &result, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_context_get_factory(context, &factory, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	// A plain STRUCT(x INTEGER) is not a shredded layout and is refused before it can reach the optimizer.
+	auto malformed = StatsOfText(factory, "STRUCT(x INTEGER)", err);
+	duckdb_v2_stats_handle malformed_variant = nullptr;
+	g_shredded.malformed_rc = duckdb_v2_stats_create_variant_shredded(factory, malformed, &malformed_variant, nullptr);
+	duckdb_v2_stats_destroy(&malformed_variant);
+	duckdb_v2_stats_destroy(&malformed);
+
+	auto variant = ShreddedVariantStats(factory, err);
+	g_shredded.assign_rc = duckdb_v2_stats_assign(result, variant, err);
+	duckdb_v2_stats_destroy(&variant);
+}
+
+void ShreddedPushdownCb(duckdb_v2_table_function_filter_pushdown_info_handle info, duckdb_v2_context_handle context,
+                        duckdb_v2_error_info_handle *err) {
+	idx_t count = 0;
+	duckdb_v2_factory_handle factory = nullptr;
+	if (duckdb_v2_table_function_filter_pushdown_get_filter_count(info, &count, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_context_get_factory(context, &factory, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	auto variant = ShreddedVariantStats(factory, err);
+	for (idx_t i = 0; i < count && variant; i++) {
+		duckdb_v2_expression_handle filter = nullptr;
+		if (duckdb_v2_table_function_filter_pushdown_get_filter(info, i, &filter, err) != DUCKDB_V2_ERROR_NONE) {
+			break;
+		}
+		g_shredded.pushdown_checks++;
+		g_shredded.check_rc =
+		    duckdb_v2_expression_check_statistics(context, filter, variant, &g_shredded.check_result, nullptr);
+	}
+	duckdb_v2_stats_destroy(&variant);
+}
+
+void RegisterShredded(duckdb_v2_connection_handle conn, const char *name, bool with_stats, bool with_pushdown) {
+	duckdb_v2_table_function_handle function = nullptr;
+	REQUIRE(duckdb_v2_table_function_create(FactoryOf(conn), &function, nullptr) == DUCKDB_V2_ERROR_NONE);
+	auto name_str = Convert(name);
+	REQUIRE(duckdb_v2_table_function_set_name(function, &name_str, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_table_function_set_bind_callback(function, ShreddedBindCb, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_table_function_set_exec_callback(function, ShreddedExecCb, nullptr) == DUCKDB_V2_ERROR_NONE);
+	if (with_stats) {
+		REQUIRE(duckdb_v2_table_function_set_stats_callback(function, ShreddedStatsCb, nullptr) ==
+		        DUCKDB_V2_ERROR_NONE);
+	}
+	if (with_pushdown) {
+		REQUIRE(duckdb_v2_table_function_set_filter_pushdown_callback(function, ShreddedPushdownCb, nullptr) ==
+		        DUCKDB_V2_ERROR_NONE);
+	}
+	REQUIRE(duckdb_v2_connection_register_table_function(conn, function, nullptr) == DUCKDB_V2_ERROR_NONE);
+	duckdb_v2_table_function_destroy(&function);
+}
+
+} // namespace
+
+TEST_CASE("V2 stats: shredded VARIANT statistics reach variant_extract", "[capi_v2][stats][statistics]") {
+	EnvFixture fx;
+	g_shredded = ShreddedObserved {};
+
+	RegisterShredded(fx.conn, "vs_report", true, false);
+	RegisterShredded(fx.conn, "vs_filter", false, true);
+
+	// x is fully shredded and never NULL: "variant_extract(v, 'x') IS NULL" is unsatisfiable, so the scan never runs.
+	REQUIRE(StatsQueryI64(fx.conn, "SELECT count(*) FROM vs_report() WHERE variant_extract(v, 'x') IS NULL") == 0);
+	REQUIRE(g_shredded.malformed_rc == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(g_shredded.assign_rc == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(g_shredded.exec_calls == 0);
+	// "IS NOT NULL" always holds: nothing is pruned and the (empty) function is scanned.
+	REQUIRE(StatsQueryI64(fx.conn, "SELECT count(*) FROM vs_report() WHERE variant_extract(v, 'x') IS NOT NULL") == 0);
+	REQUIRE(g_shredded.exec_calls > 0);
+
+	// The pushdown callback checks the same predicate against the statistics it built.
+	g_shredded = ShreddedObserved {};
+	REQUIRE(StatsQueryI64(fx.conn, "SELECT count(*) FROM vs_filter() WHERE variant_extract(v, 'x') IS NULL") == 0);
+	REQUIRE(g_shredded.pushdown_checks >= 1);
+	REQUIRE(g_shredded.check_rc == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(g_shredded.check_result == DUCKDB_V2_FILTER_PROPAGATE_RESULT_ALWAYS_FALSE);
 }
 
 TEST_CASE("V2 stats: owned statistics narrow, merge and assign", "[capi_v2][stats][statistics]") {
@@ -1071,6 +1270,77 @@ TEST_CASE("V2 stats: nested, geometry and variant statistics", "[capi_v2][stats]
 	REQUIRE(duckdb_v2_stats_set_can_have_null(variant_stats, false, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_stats_can_have_null(variant_stats, &can_have_null, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(!can_have_null);
+
+	// Only a tree of typed_value nodes is a shredded layout: other statistics are refused at construction.
+	auto shredded_rc = [&](const char *layout_text, std::string *message = nullptr) {
+		auto text = Convert(layout_text);
+		duckdb_v2_logical_type_handle layout = nullptr;
+		REQUIRE(duckdb_v2_factory_create_type_from_text(fx.factory, &text, &layout, nullptr) == DUCKDB_V2_ERROR_NONE);
+		duckdb_v2_stats_handle layout_stats = nullptr;
+		duckdb_v2_stats_handle result = nullptr;
+		REQUIRE(duckdb_v2_stats_create(fx.factory, layout, &layout_stats, nullptr) == DUCKDB_V2_ERROR_NONE);
+		duckdb_v2_error_info_handle err = nullptr;
+		auto rc = duckdb_v2_stats_create_variant_shredded(fx.factory, layout_stats, &result, &err);
+		if (err && message) {
+			duckdb_v2_str err_text = {nullptr, 0};
+			duckdb_v2_error_info_get_text(err, &err_text);
+			*message = Convert(err_text);
+		}
+		duckdb_v2_error_info_destroy(&err);
+		REQUIRE((rc == DUCKDB_V2_ERROR_NONE) == (result != nullptr));
+		duckdb_v2_stats_destroy(&result);
+		duckdb_v2_stats_destroy(&layout_stats);
+		duckdb_v2_logical_type_destroy(&layout);
+		return rc;
+	};
+	std::string message;
+	REQUIRE(shredded_rc("STRUCT(x INTEGER)", &message) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(message.find("STRUCT(x INTEGER)") != std::string::npos);
+	REQUIRE(shredded_rc("STRUCT(typed_value INTEGER, untyped_value_index INTEGER)") == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(shredded_rc("STRUCT(typed_value INTEGER, untyped_value_index UINTEGER, other INTEGER)") ==
+	        DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(shredded_rc("STRUCT(value INTEGER, untyped_value_index UINTEGER)") == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(shredded_rc("VARIANT") == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(shredded_rc("INTEGER[]") == DUCKDB_V2_ERROR_INPUT_INVALID);
+	// nested fields and elements must be nodes themselves
+	REQUIRE(shredded_rc("STRUCT(typed_value STRUCT(x STRUCT(y INTEGER)), untyped_value_index UINTEGER)") ==
+	        DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(shredded_rc("STRUCT(typed_value INTEGER[][], untyped_value_index UINTEGER)") ==
+	        DUCKDB_V2_ERROR_INPUT_INVALID);
+	// a primitive layout and nodes without untyped_value_index are accepted
+	REQUIRE(shredded_rc("INTEGER") == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(shredded_rc("STRUCT(typed_value STRUCT(x INTEGER, y STRUCT(typed_value INTEGER[])))") ==
+	        DUCKDB_V2_ERROR_NONE);
+
+	// The layout derived for a nested type wraps every level and is accepted.
+	auto nested_text = Convert("STRUCT(x INTEGER, y INTEGER[])");
+	duckdb_v2_logical_type_handle nested = nullptr;
+	REQUIRE(duckdb_v2_factory_create_type_from_text(fx.factory, &nested_text, &nested, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
+	duckdb_v2_logical_type_handle nested_shredding = nullptr;
+	REQUIRE(duckdb_v2_stats_variant_shredding_type(fx.factory, nested, &nested_shredding, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
+	auto expected_text =
+	    Convert("STRUCT(typed_value STRUCT(x STRUCT(typed_value INTEGER, untyped_value_index UINTEGER), "
+	            "y STRUCT(typed_value STRUCT(typed_value INTEGER, untyped_value_index UINTEGER)[], "
+	            "untyped_value_index UINTEGER)), untyped_value_index UINTEGER)");
+	duckdb_v2_logical_type_handle expected = nullptr;
+	REQUIRE(duckdb_v2_factory_create_type_from_text(fx.factory, &expected_text, &expected, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
+	bool same_layout = false;
+	REQUIRE(duckdb_v2_logical_type_is_equal(nested_shredding, expected, &same_layout, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(same_layout);
+	duckdb_v2_stats_handle nested_stats = nullptr;
+	duckdb_v2_stats_handle nested_variant = nullptr;
+	REQUIRE(duckdb_v2_stats_create(fx.factory, nested_shredding, &nested_stats, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_stats_create_variant_shredded(fx.factory, nested_stats, &nested_variant, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
+	REQUIRE(nested_variant != nullptr);
+	duckdb_v2_stats_destroy(&nested_variant);
+	duckdb_v2_stats_destroy(&nested_stats);
+	duckdb_v2_logical_type_destroy(&expected);
+	duckdb_v2_logical_type_destroy(&nested_shredding);
+	duckdb_v2_logical_type_destroy(&nested);
 
 	duckdb_v2_logical_type_destroy(&variant_type);
 	duckdb_v2_stats_destroy(&variant_stats);

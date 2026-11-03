@@ -4893,9 +4893,11 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_stats_create(duckdb_v2_factory_handle fac
  * a node, the statistics of `typed_value` describe the values stored in the typed layout and those of
  * `untyped_value_index` whether any value fell back to the generic layout: a node whose `untyped_value_index` is known
  * to hold no index (its minimum and maximum are 0, and it holds no NULL) is fully shredded, so that a filter on the
- * field can be answered from the typed statistics. The resulting VARIANT statistics claim nothing about NULLs; narrow
- * them with `duckdb_v2_stats_set_can_have_null()` and `duckdb_v2_stats_set_can_have_valid()`. The caller owns the
- * returned handle and must destroy it with `duckdb_v2_stats_destroy()`.
+ * field can be answered from the typed statistics. Fails with `ERROR_INPUT_INVALID` for statistics that do not describe
+ * such a layout, e.g. a plain `STRUCT(x INTEGER)` or a node whose `untyped_value_index` is not a UINTEGER. The
+ * resulting VARIANT statistics claim nothing about NULLs; narrow them with `duckdb_v2_stats_set_can_have_null()` and
+ * `duckdb_v2_stats_set_can_have_valid()`. The caller owns the returned handle and must destroy it with
+ * `duckdb_v2_stats_destroy()`.
  *
  * history:
  * - unstable: v2.0.0
