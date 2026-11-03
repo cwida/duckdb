@@ -252,8 +252,7 @@ void SimpleTimeZone::GetOffsetRange(int64_t start_millis, int64_t end_millis, in
 	max_offset = raw + dst;
 	sample(end_millis);
 
-	// the offsets change at the boundaries of the rule only, so the offsets at both ends of the interval
-	// and on both sides of every boundary inside it cover the whole interval
+	// sample both sides of every boundary inside the interval
 	int32_t start_year;
 	int32_t end_year;
 	int8_t month, dom, dow;

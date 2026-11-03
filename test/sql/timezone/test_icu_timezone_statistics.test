@@ -275,11 +275,11 @@ true
 
 endloop
 
-# from the fall back of 2006 in the transition data to the spring forward of 2007 under the recurring rule
+# from the fall back of 2007 in the transition data to the spring forward of 2008 under the recurring rule
 statement ok
-CREATE OR REPLACE TABLE w AS SELECT to_timestamp(s) AS utc FROM (VALUES (1162110600), (1162112400), (1168862400), (1173607199), (1173607200), (1173610800)) t(s);
+CREATE OR REPLACE TABLE w AS SELECT to_timestamp(s) AS utc FROM (VALUES (1194165000), (1194166800), (1200398400), (1205056799), (1205056800), (1205060400)) t(s);
 
-foreach s 1162110600 1162112400 1168862400 1173607199 1173607200 1173610800
+foreach s 1194165000 1194166800 1200398400 1205056799 1205056800 1205060400
 
 query I
 SELECT (SELECT count(*) FROM w WHERE timezone('America/Los_Angeles', utc) = timezone('America/Los_Angeles', to_timestamp({s})))
@@ -344,7 +344,7 @@ true
 
 endloop
 
-# negative daylight savings, and a zone that leaves its standard time during Ramadan
+# a European zone, and a zone that leaves its standard time during Ramadan
 foreach zone Europe/Dublin Africa/Casablanca
 
 statement ok

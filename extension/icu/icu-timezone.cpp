@@ -743,7 +743,7 @@ struct ICUTimeZoneFunc : public ICUDateFunc {
 			return nullptr;
 		}
 
-		// the offsets of the microseconds the operation truncates the arguments to, which change on whole seconds
+		// the operation truncates the arguments towards zero to microseconds, and the offsets change on whole seconds
 		constexpr auto PER_MICRO = SRC::PRECISION / Interval::MICROS_PER_SEC;
 		constexpr auto PER_MILLI = SRC::PRECISION / Interval::MSECS_PER_SEC;
 		int64_t lo_shift;
