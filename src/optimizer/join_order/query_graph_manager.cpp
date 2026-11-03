@@ -3,6 +3,7 @@
 #include "duckdb/common/assert.hpp"
 #include "duckdb/common/enums/join_type.hpp"
 #include "duckdb/main/settings.hpp"
+#include "duckdb/optimizer/column_binding_replacer.hpp"
 #include "duckdb/planner/column_binding_map.hpp"
 #include "duckdb/optimizer/join_order/join_relation_set.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
@@ -497,6 +498,20 @@ void QueryGraphManager::ClearExtractedExpressions() {
 unique_ptr<LogicalOperator> QueryGraphManager::Reconstruct(unique_ptr<LogicalOperator> plan) {
 	// now we have to rewrite the plan
 	bool root_is_join = plan->children.size() > 1;
+	// find the operator whose child is replaced by the new join tree
+	optional_ptr<unique_ptr<LogicalOperator>> parent;
+	vector<ColumnBinding> old_child_bindings;
+	if (!root_is_join) {
+		D_ASSERT(plan->children.size() == 1);
+		parent = &plan;
+		while ((*parent)->children[0]->type != LogicalOperatorType::LOGICAL_CROSS_PRODUCT &&
+		       (*parent)->children[0]->type != LogicalOperatorType::LOGICAL_COMPARISON_JOIN &&
+		       (*parent)->children[0]->type != LogicalOperatorType::LOGICAL_ASOF_JOIN) {
+			D_ASSERT((*parent)->children[0]->children.size() == 1);
+			parent = &(*parent)->children[0];
+		}
+		old_child_bindings = (*parent)->children[0]->GetColumnBindings();
+	}
 	ClearExtractedExpressions();
 
 	unordered_set<RelationIndex> bindings;
@@ -542,19 +557,10 @@ unique_ptr<LogicalOperator> QueryGraphManager::Reconstruct(unique_ptr<LogicalOpe
 		// first node is the join, return it immediately
 		return std::move(join_tree.op);
 	}
-	D_ASSERT(plan->children.size() == 1);
-	// have to move up through the relations
-	auto op = plan.get();
-	auto parent = plan.get();
-	while (op->type != LogicalOperatorType::LOGICAL_CROSS_PRODUCT &&
-	       op->type != LogicalOperatorType::LOGICAL_COMPARISON_JOIN &&
-	       op->type != LogicalOperatorType::LOGICAL_ASOF_JOIN) {
-		D_ASSERT(op->children.size() == 1);
-		parent = op;
-		op = op->children[0].get();
-	}
 	// have to replace at this node
-	parent->children[0] = std::move(join_tree.op);
+	(*parent)->children[0] = std::move(join_tree.op);
+	// the new join tree can emit its columns in a different order: preserve the parent's output layout
+	ColumnBindingRewrite::ApplyToChild(*parent, 0, std::move(old_child_bindings), BindingReplacementGraph());
 	return plan;
 }
 
