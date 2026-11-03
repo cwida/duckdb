@@ -11,6 +11,7 @@
 #include "duckdb/optimizer/column_binding_replacer.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/optimizer/topn_optimizer.hpp"
+#include "duckdb/optimizer/variant_comparison_rewriter.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
@@ -386,28 +387,6 @@ void CompressedMaterialization::GetReferencedBindings(const Expression &root_exp
                                                       column_binding_set_t &referenced_bindings) {
 	ExpressionIterator::VisitExpression<BoundColumnRefExpression>(
 	    root_expr, [&](const BoundColumnRefExpression &col_ref) { referenced_bindings.insert(col_ref.Binding()); });
-}
-
-bool CompressedMaterialization::IsVariantWrapperFunction(const BoundFunctionExpression &expr) {
-	const auto &function_name = expr.Function().GetName();
-	return function_name == "variant_comparator" || function_name == "variant_normalize";
-}
-
-optional_ptr<const BoundColumnRefExpression>
-CompressedMaterialization::TryGetVariantWrapperColumnRef(const Expression &expr) {
-	if (expr.GetExpressionClass() != ExpressionClass::BOUND_FUNCTION) {
-		return nullptr;
-	}
-	auto &function_expr = expr.Cast<BoundFunctionExpression>();
-	if (!IsVariantWrapperFunction(function_expr) || function_expr.GetChildren().size() != 1) {
-		return nullptr;
-	}
-	auto &child = *function_expr.GetChildren()[0];
-	if (child.GetExpressionType() != ExpressionType::BOUND_COLUMN_REF ||
-	    child.GetReturnType().id() != LogicalTypeId::VARIANT) {
-		return nullptr;
-	}
-	return child.Cast<BoundColumnRefExpression>();
 }
 
 optional_ptr<BaseStatistics> CompressedMaterialization::GetVariantWrapperStats(const Expression &expr) {

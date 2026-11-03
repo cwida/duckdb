@@ -1,5 +1,6 @@
 #include "duckdb/optimizer/compressed_materialization.hpp"
 #include "duckdb/function/cast/cast_statistics.hpp"
+#include "duckdb/optimizer/variant_comparison_rewriter.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
@@ -44,25 +45,15 @@ bool CompressedMaterialization::TryGetVariantJoinKeyInfo(const Expression &expr,
 	}
 
 	auto &variant_stats = *stats_it->second;
-	if (variant_stats.GetType().id() != LogicalTypeId::VARIANT || !VariantStats::IsShredded(variant_stats)) {
+	LogicalType shredded_type;
+	if (!TryGetFullyShreddedIntegralType(variant_stats, shredded_type)) {
 		return false;
 	}
 	auto &shredded_stats = VariantStats::GetShreddedStats(variant_stats);
-	if (!VariantShreddedStats::IsFullyShredded(shredded_stats)) {
-		return false;
-	}
-
-	auto shredded_type = VariantStats::GetShreddedStructuredType(variant_stats);
-	if (!shredded_type.IsIntegral()) {
-		return false;
-	}
 	auto &typed_stats = VariantStats::GetTypedStats(shredded_stats);
-	if (typed_stats.GetType() != shredded_type) { // LCOV_EXCL_START
-		return false;
-	} // LCOV_EXCL_STOP
 
 	result.child = child.get();
-	result.shredded_type = std::move(shredded_type);
+	result.shredded_type = shredded_type;
 	result.typed_stats = typed_stats.ToUnique();
 	if (variant_stats.CanHaveNull()) {
 		result.typed_stats->Set(StatsInfo::CAN_HAVE_NULL_VALUES);
@@ -76,16 +67,6 @@ unique_ptr<BaseStatistics> CompressedMaterialization::CastVariantJoinKeyStats(co
 		return key_info.typed_stats->ToUnique();
 	}
 	return CastStatistics::TryPropagate(*key_info.typed_stats, key_info.shredded_type, target_type);
-}
-
-unique_ptr<Expression> CompressedMaterialization::CreateVariantJoinKeyCast(unique_ptr<Expression> input,
-                                                                           const LogicalType &shredded_type,
-                                                                           const LogicalType &target_type) {
-	input = BoundCastExpression::AddCastToType(context, std::move(input), shredded_type);
-	if (shredded_type == target_type) {
-		return input;
-	}
-	return BoundCastExpression::AddCastToType(context, std::move(input), target_type);
 }
 
 bool CompressedMaterialization::TryCompressVariantComparisonJoinKey(JoinCondition &condition) {
@@ -107,8 +88,9 @@ bool CompressedMaterialization::TryCompressVariantComparisonJoinKey(JoinConditio
 		return false;
 	}
 
-	condition.LeftReference() = CreateVariantJoinKeyCast(left.child->Copy(), left.shredded_type, target_type);
-	condition.RightReference() = CreateVariantJoinKeyCast(right.child->Copy(), right.shredded_type, target_type);
+	condition.LeftReference() = CreateVariantShreddedCast(context, left.child->Copy(), left.shredded_type, target_type);
+	condition.RightReference() =
+	    CreateVariantShreddedCast(context, right.child->Copy(), right.shredded_type, target_type);
 	condition.SetLeftStats(std::move(left_stats));
 	condition.SetRightStats(std::move(right_stats));
 	return true;

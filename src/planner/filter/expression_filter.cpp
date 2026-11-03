@@ -18,6 +18,7 @@
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
 #include "duckdb/planner/expression/expression_barrier.hpp"
 #include "duckdb/optimizer/statistics_propagator.hpp"
+#include "duckdb/optimizer/variant_comparison_rewriter.hpp"
 #include "duckdb/planner/filter/bloom_filter.hpp"
 #include "duckdb/planner/filter/dynamic_filter.hpp"
 #include "duckdb/planner/filter/optional_filter.hpp"
@@ -486,13 +487,7 @@ static bool TryGetVariantComparisonStatsType(const LogicalType &typed_type, cons
 		comparison_type = typed_type;
 		return true;
 	}
-	if (!typed_type.IsIntegral() || !constant_type.IsIntegral()) {
-		return false;
-	}
-	if (!LogicalType::DefaultTryGetMaxLogicalTypeUnchecked(typed_type, constant_type, comparison_type)) {
-		return false;
-	}
-	return comparison_type.IsIntegral();
+	return TryGetVariantIntegralComparisonType(typed_type, constant_type, comparison_type);
 }
 
 static optional_ptr<const BaseStatistics>

@@ -125,8 +125,6 @@ private:
 
 	//! Adds bindings referenced in expression to referenced_bindings
 	static void GetReferencedBindings(const Expression &expression, column_binding_set_t &referenced_bindings);
-	static bool IsVariantWrapperFunction(const BoundFunctionExpression &expr);
-	static optional_ptr<const BoundColumnRefExpression> TryGetVariantWrapperColumnRef(const Expression &expr);
 	//! Updates CMBindingInfo in the binding_map in info
 	void UpdateBindingInfo(CompressedMaterializationInfo &info, const ColumnBinding &binding,
 	                       CompressedMaterializationType materialization_type);
@@ -156,8 +154,6 @@ private:
 	bool TryGetVariantJoinKeyInfo(const Expression &expr, VariantJoinKeyInfo &result);
 	static unique_ptr<BaseStatistics> CastVariantJoinKeyStats(const VariantJoinKeyInfo &key_info,
 	                                                          const LogicalType &target_type);
-	unique_ptr<Expression> CreateVariantJoinKeyCast(unique_ptr<Expression> input, const LogicalType &shredded_type,
-	                                                const LogicalType &target_type);
 	bool TryCompressVariantComparisonJoinKey(JoinCondition &condition);
 
 	//! Create an expression that applies a scalar decompression function
