@@ -76,3 +76,46 @@ statement error
 SELECT sum(v) OVER (PARTITION BY id ROWS BETWEEN CURRENT ROW AND -1 FOLLOWING) FROM frame_input;
 ----
 Window ROWS FOLLOWING expression cannot be negative
+
+# ordered aggregate arguments in the scalarized position: the scalar wrapper captured its fallibility
+# from the window expression while the inner aggregate still carried its own properties - these pin
+# that capture so a change in what the wrapper sees surfaces here
+
+statement ok
+SET debug_verify_vector='dictionary_expression';
+
+# a fallible ordered aggregate's runtime error must stay a regular error in the scalarized wrapper
+
+statement error
+SELECT approx_top_k(i, NULL ORDER BY i DESC) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW) FROM range(3) t(i);
+----
+k value cannot be NULL
+
+# a fallible ordered aggregate executes correctly under dictionary verification
+
+query I rowsort
+SELECT approx_top_k(i, 1 ORDER BY i DESC) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW) FROM range(3) t(i);
+----
+[0]
+[1]
+[2]
+
+# an infallible ordered aggregate executes correctly under dictionary verification
+
+query I rowsort
+SELECT list(i ORDER BY i DESC) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW) FROM range(3) t(i);
+----
+[0]
+[1]
+[2]
+
+# the bound bin cast of an ordered histogram throws at runtime and must stay a regular error
+
+statement error
+SELECT histogram(d, ['not a date'] ORDER BY d) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW)
+FROM (SELECT ('2020-01-0' || (range+1))::DATE AS d FROM range(5)) t;
+----
+invalid date field format
+
+statement ok
+RESET debug_verify_vector;

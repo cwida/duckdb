@@ -22,6 +22,8 @@ struct SequenceValue {
 	SequenceCatalogEntry *entry;
 	uint64_t usage_count;
 	int64_t counter;
+	bool has_last_value;
+	int64_t last_value;
 };
 
 struct SequenceData {

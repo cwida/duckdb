@@ -1,0 +1,26 @@
+# name: test/sql/join/runtime_filter_scalar_pushdown.test
+# description: Join filters must not filter stored strings using their pushed-down lengths
+# group: [join]
+
+require parquet
+
+statement ok
+SET threads=1;
+
+# Keep the join filter dynamic and the Parquet scan on the probe side.
+statement ok
+SET disabled_optimizers='statistics_propagation,join_order,build_side_probe_side';
+
+statement ok
+COPY (SELECT repeat('x', (i%10+1)::INTEGER) AS s FROM range(10000) t(i))
+TO '{TEST_DIR}/strings.parquet';
+
+statement ok
+CREATE TABLE build AS SELECT 3::BIGINT k;
+
+query II
+SELECT count(*), sum(p.k)
+FROM (SELECT strlen(s) k FROM '{TEST_DIR}/strings.parquet') p
+JOIN build ON p.k=build.k;
+----
+1000	3000

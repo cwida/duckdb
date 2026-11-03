@@ -1,0 +1,19 @@
+# name: test/sql/aggregate/aggregates/summarize_nanosecond_types.test
+# description: SUMMARIZE works for TIME_NS and TIMESTAMPTZ_NS columns
+# group: [aggregates]
+
+query III
+SELECT column_name, column_type, avg IS NULL FROM (SUMMARIZE SELECT '12:34:56'::TIME_NS AS t);
+----
+t	TIME_NS	true
+
+query III
+SELECT column_name, column_type, avg IS NULL FROM (SUMMARIZE SELECT '2020-01-01 00:00:00'::TIMESTAMPTZ_NS AS ts);
+----
+ts	TIMESTAMPTZ_NS	true
+
+# other temporal types are still averaged
+query III
+SELECT column_name, column_type, avg IS NULL FROM (SUMMARIZE SELECT '2020-01-01 00:00:00'::TIMESTAMP AS ts);
+----
+ts	TIMESTAMP	false

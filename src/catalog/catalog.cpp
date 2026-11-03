@@ -40,9 +40,11 @@
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/database_manager.hpp"
+#include "duckdb/transaction/meta_transaction.hpp"
 #include "duckdb/function/built_in_functions.hpp"
 #include "duckdb/catalog/similar_catalog_entry.hpp"
 #include "duckdb/catalog/schema_scan_filters.hpp"
+#include "duckdb/catalog/entry_scan_filters.hpp"
 #include "duckdb/common/numeric_utils.hpp"
 #include "duckdb/planner/filter/expression_filter.hpp"
 #include "duckdb/storage/database_size.hpp"
@@ -1282,8 +1284,15 @@ CatalogEntryLookup Catalog::TryLookupDefaultTable(CatalogEntryRetriever &retriev
 		auto transaction = catalog_by_name->GetCatalogTransaction(retriever.GetContext());
 		QueryErrorContext context;
 
-		auto table_schema = catalog_by_name->GetDefaultTableSchema();
-		auto table_name = catalog_by_name->GetDefaultTable();
+		// read the schema and the table under one lock: ATTACH can change both while we look them up
+		Identifier table_schema;
+		Identifier table_name;
+		{
+			lock_guard<mutex> guard(catalog_by_name->default_table_lock);
+			table_schema = !catalog_by_name->default_table_schema.empty() ? catalog_by_name->default_table_schema
+			                                                              : Identifier(DEFAULT_SCHEMA);
+			table_name = catalog_by_name->default_table;
+		}
 
 		optional_ptr<BoundAtClause> at_clause;
 		if (!catalog_by_name->SupportsTimeTravel() && allow_ignore_at_clause) {
@@ -1509,6 +1518,11 @@ bool SchemaScanFilters::Accepts(ClientContext &context, const SchemaCatalogEntry
 	       Satisfies(context, schema_oid, Value::BIGINT(NumericCast<int64_t>(schema.oid)));
 }
 
+bool EntryScanFilters::Accepts(ClientContext &context, const CatalogEntry &entry) const {
+	return SchemaScanFilters::Satisfies(context, name, Value(entry.name.GetIdentifierName())) &&
+	       SchemaScanFilters::Satisfies(context, oid, Value::BIGINT(NumericCast<int64_t>(entry.oid)));
+}
+
 vector<reference<SchemaCatalogEntry>> Catalog::GetSchemasForScan(ClientContext &context,
                                                                  const SchemaScanFilters &filters) {
 	vector<reference<SchemaCatalogEntry>> schemas;
@@ -1562,11 +1576,14 @@ vector<reference<SchemaCatalogEntry>> Catalog::GetAllSchemas(ClientContext &cont
 	vector<reference<SchemaCatalogEntry>> result;
 
 	auto &db_manager = DatabaseManager::Get(context);
+	auto &meta_transaction = MetaTransaction::Get(context);
 	auto databases = db_manager.GetDatabases(context);
 	for (auto &database : databases) {
 		if (database->GetVisibility() == AttachVisibility::HIDDEN) {
 			continue;
 		}
+		// keep the database alive until the end of the transaction, the returned schemas reference it
+		meta_transaction.UseDatabase(database);
 		auto &catalog = database->GetCatalog();
 		auto new_schemas = catalog.GetSchemas(context);
 		result.insert(result.end(), new_schemas.begin(), new_schemas.end());
@@ -1678,19 +1695,23 @@ optional<Identifier> Catalog::GetDefaultSchema() const {
 
 //! Whether this catalog has a default table. Catalogs with a default table can be queries by their catalog name
 bool Catalog::HasDefaultTable() const {
+	lock_guard<mutex> guard(default_table_lock);
 	return !default_table.empty();
 }
 
 void Catalog::SetDefaultTable(const Identifier &schema, const Identifier &name) {
+	lock_guard<mutex> guard(default_table_lock);
 	default_table = name;
 	default_table_schema = schema;
 }
 
 Identifier Catalog::GetDefaultTable() const {
+	lock_guard<mutex> guard(default_table_lock);
 	return default_table;
 }
 
 Identifier Catalog::GetDefaultTableSchema() const {
+	lock_guard<mutex> guard(default_table_lock);
 	return !default_table_schema.empty() ? default_table_schema : DEFAULT_SCHEMA;
 }
 
