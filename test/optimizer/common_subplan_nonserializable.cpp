@@ -1,5 +1,6 @@
 #include "catch.hpp"
 #include "duckdb.hpp"
+#include "duckdb/common/atomic.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
@@ -11,6 +12,7 @@ namespace {
 
 struct NonSerializableGlobalState : public GlobalTableFunctionState {
 	bool emitted = false;
+	int32_t value = 42;
 };
 
 struct NonSerializableBindData : public TableFunctionData {
@@ -45,19 +47,50 @@ void NonSerializableFunction(ClientContext &, TableFunctionInput &data, DataChun
 		return;
 	}
 	auto result_data = FlatVector::GetDataMutable<int32_t>(output.data[0]);
-	result_data[0] = 42;
+	result_data[0] = state.value;
 	output.SetChildCardinality(1);
 	state.emitted = true;
 }
 
 void RegisterNonSerializableTableFunction(DuckDB &db) {
-	const TableFunction table_function("nonserial_tf", {}, NonSerializableFunction, NonSerializableBind,
-	                                   NonSerializableInit);
+	TableFunction table_function("nonserial_tf", {}, NonSerializableFunction, NonSerializableBind, NonSerializableInit);
+	table_function.is_repeatable = [](optional_ptr<const FunctionData>) {
+		return true;
+	};
 
 	ExtensionInfo extension_info {};
 	ExtensionActiveLoad load_info {*db.instance, extension_info, "test_extension", ""};
 	ExtensionLoader loader {load_info};
 	loader.RegisterFunction(table_function);
+}
+
+atomic<int32_t> non_repeatable_scan_count {0};
+
+unique_ptr<GlobalTableFunctionState> NonRepeatableInit(ClientContext &, TableFunctionInitInput &) {
+	auto result = make_uniq<NonSerializableGlobalState>();
+	result->value = ++non_repeatable_scan_count;
+	return std::move(result);
+}
+
+void RegisterRepeatabilityTableFunctions(DuckDB &db) {
+	ExtensionInfo extension_info {};
+	ExtensionActiveLoad load_info {*db.instance, extension_info, "test_extension", ""};
+	ExtensionLoader loader {load_info};
+	TableFunction unknown("repeatability_unknown", {LogicalType::INTEGER}, NonSerializableFunction, NonSerializableBind,
+	                      NonRepeatableInit);
+	loader.RegisterFunction(unknown);
+	TableFunction non_repeatable("repeatability_false", {LogicalType::INTEGER}, NonSerializableFunction,
+	                             NonSerializableBind, NonRepeatableInit);
+	non_repeatable.is_repeatable = [](optional_ptr<const FunctionData>) {
+		return false;
+	};
+	loader.RegisterFunction(non_repeatable);
+	TableFunction repeatable("repeatability_true", {LogicalType::INTEGER}, NonSerializableFunction, NonSerializableBind,
+	                         NonSerializableInit);
+	repeatable.is_repeatable = [](optional_ptr<const FunctionData>) {
+		return true;
+	};
+	loader.RegisterFunction(repeatable);
 }
 
 string GetExplainPlan(Connection &con, const string &query) {
@@ -94,4 +127,32 @@ TEST_CASE("Common subplan skips table functions without serialization callbacks"
 	REQUIRE_NO_FAIL(con.Query("PRAGMA explain_output='optimized_only'"));
 	const auto explain = GetExplainPlan(con, query);
 	REQUIRE(!StringUtil::Contains(explain, "__common_subplan_"));
+}
+
+// SQL cannot register the repeatability callback or make an opaque scan return a different value
+// deterministically on each initialization. Keep that API contract here, with builtin scan coverage in SQL.
+TEST_CASE("Common subplans require affirmative table function repeatability", "[optimizer][common_subplan]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	RegisterRepeatabilityTableFunctions(db);
+	REQUIRE_NO_FAIL(con.Query("SET explain_output='optimized_only'"));
+
+	for (const auto &name : {"repeatability_unknown", "repeatability_false"}) {
+		const string query =
+		    "SELECT count(*) FROM (SELECT i FROM " + string(name) + "(7) INTERSECT ALL SELECT i FROM " + name + "(7))";
+		non_repeatable_scan_count = 0;
+		auto result = con.Query(query);
+		REQUIRE_NO_FAIL(*result);
+		REQUIRE(result->GetValue(0, 0) == Value::BIGINT(0));
+		REQUIRE(non_repeatable_scan_count.load() == 2);
+		REQUIRE(!StringUtil::Contains(GetExplainPlan(con, query), "__common_subplan_"));
+	}
+
+	// Positional parameters identify this stable scan without serializing its bind data.
+	const string repeatable_query = "SELECT count(*) FROM (SELECT i FROM repeatability_true(7) "
+	                                "INTERSECT ALL SELECT i FROM repeatability_true(7))";
+	auto result = con.Query(repeatable_query);
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->GetValue(0, 0) == Value::BIGINT(1));
+	REQUIRE(StringUtil::Contains(GetExplainPlan(con, repeatable_query), "__common_subplan_"));
 }

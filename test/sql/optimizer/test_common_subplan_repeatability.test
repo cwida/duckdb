@@ -1,0 +1,56 @@
+# name: test/sql/optimizer/test_common_subplan_repeatability.test
+# description: Common subplans share only scans with known repeatability
+# group: [optimizer]
+
+statement ok
+COPY (SELECT * FROM (VALUES (1), (1), (NULL::INTEGER)) t(i))
+TO '{TEST_DIR}/repeatability.csv' (HEADER);
+
+statement ok
+SET explain_output='optimized_only';
+
+# An unknown table-function capability cannot justify sharing its window and scan.
+# File contents happen to be stable here, but identical call arguments are not a repeatability promise.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT i FROM read_csv('{TEST_DIR}/repeatability.csv', columns={'i': 'INTEGER'})
+INTERSECT ALL
+SELECT i FROM read_csv('{TEST_DIR}/repeatability.csv', columns={'i': 'INTEGER'});
+----
+logical_opt	<!REGEX>:.*__common_subplan_.*
+
+query I
+SELECT count(*) FROM (
+  SELECT i FROM read_csv('{TEST_DIR}/repeatability.csv', columns={'i': 'INTEGER'})
+  INTERSECT ALL
+  SELECT i FROM read_csv('{TEST_DIR}/repeatability.csv', columns={'i': 'INTEGER'}));
+----
+3
+
+# RANGE declares repeatability. The window introduced by ALL remains a sharing candidate.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT i FROM range(3) t(i) INTERSECT ALL SELECT i FROM range(3) t(i);
+----
+logical_opt	<REGEX>:.*__common_subplan_.*
+
+query I
+SELECT count(*) FROM (SELECT i FROM range(3) t(i) INTERSECT ALL SELECT i FROM range(3) t(i));
+----
+3
+
+# Catalog table scans retain sharing, including duplicate and NULL rows.
+statement ok
+CREATE TABLE repeatable_input AS SELECT * FROM (VALUES (1), (1), (NULL::INTEGER)) t(i);
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT i FROM repeatable_input INTERSECT ALL SELECT i FROM repeatable_input;
+----
+logical_opt	<REGEX>:.*__common_subplan_.*
+
+query I
+SELECT count(*) FROM (
+  SELECT i FROM repeatable_input INTERSECT ALL SELECT i FROM repeatable_input);
+----
+3
