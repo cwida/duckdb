@@ -125,7 +125,8 @@ unique_ptr<BaseStatistics> RelationStatisticsHelper::GetColumnStatistics(Logical
 RelationStats RelationStatisticsHelper::ExtractGetStats(LogicalGet &get, ClientContext &context) {
 	RelationStats result;
 	auto base_table_cardinality = get.EstimateSourceCardinality(context);
-	auto cardinality_after_filters = base_table_cardinality;
+	auto postfilter_cardinality = MinValue(base_table_cardinality, get.EstimateSourceCardinalityPostFilter(context));
+	auto cardinality_after_filters = postfilter_cardinality;
 	result.table_name = get.GetTable() ? get.GetTable()->name : Identifier(get.GetName());
 
 	if (get.table_filters.HasFilters()) {
@@ -141,15 +142,15 @@ RelationStats RelationStatisticsHelper::ExtractGetStats(LogicalGet &get, ClientC
 				}
 				cardinality_after_filters =
 				    MinValue(cardinality_after_filters,
-				             InspectTableFilter(base_table_cardinality, entry.Filter(), *column_statistics));
+				             InspectTableFilter(postfilter_cardinality, entry.Filter(), *column_statistics));
 			}
 			if (!ExpressionFilter::IsOptionalFilter(entry.Filter())) {
 				has_non_optional_filters = true;
 			}
 		}
-		if (cardinality_after_filters == base_table_cardinality && has_non_optional_filters) {
+		if (cardinality_after_filters == postfilter_cardinality && has_non_optional_filters) {
 			cardinality_after_filters =
-			    MaxValue<idx_t>(LossyNumericCast<idx_t>(double(base_table_cardinality) * DEFAULT_SELECTIVITY), 1);
+			    MaxValue<idx_t>(LossyNumericCast<idx_t>(double(postfilter_cardinality) * DEFAULT_SELECTIVITY), 1);
 		}
 		if (base_table_cardinality == 0) {
 			cardinality_after_filters = 0;

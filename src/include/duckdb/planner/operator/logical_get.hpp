@@ -71,10 +71,6 @@ public:
 	ExtraOperatorInfo extra_info;
 	//! The scan consumed a projection whose source expression is no longer retained.
 	bool has_pushed_projection = false;
-	//! The scan consumed some complex filters which are evaluated when files
-	//! are read. Set this to true to account for cardinality for such pushed
-	//! filters
-	bool has_pushed_some_complex_filters = false;
 	//! The effective AT clause the table was looked up with, retained for SQL reconstruction
 	unique_ptr<BoundAtClause> at_clause;
 	//! Contains a reference to dynamically generated table filters (through e.g. a join up in the tree)
@@ -108,6 +104,8 @@ public:
 	idx_t EstimateCardinality(ClientContext &context) override;
 	//! Estimate cardinality from the source without using this operator's cached estimate.
 	idx_t EstimateSourceCardinality(ClientContext &context);
+	//! Estimate post-filter cardinality from the source without using this operator's cached estimate.
+	idx_t EstimateSourceCardinalityPostFilter(ClientContext &context);
 	bool TryGetStorageIndex(const ColumnIndex &column_index, StorageIndex &out_index) const;
 	void SetScanOrder(unique_ptr<RowGroupOrderOptions> options);
 	void SetPartitionsToScan(vector<idx_t> partition_indices);

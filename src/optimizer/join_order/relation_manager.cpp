@@ -509,10 +509,6 @@ bool RelationManager::ExtractJoinRelations(JoinOrderOptimizer &optimizer, Logica
 			return AddRelationWithChildren(optimizer, *op, input_op, parent, child_stats);
 		}
 		auto stats = RelationStatisticsHelper::ExtractGetStats(get, context);
-		if (get.has_pushed_some_complex_filters) {
-			stats.cardinality = static_cast<idx_t>(
-			    MaxValue(1., double(stats.cardinality) * RelationStatisticsHelper::DEFAULT_SELECTIVITY));
-		}
 		// if there is another logical filter that could not be pushed down into the
 		// table scan, apply another selectivity.
 		get.SetEstimatedCardinality(stats.cardinality);
