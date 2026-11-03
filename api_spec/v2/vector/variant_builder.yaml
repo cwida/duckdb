@@ -1,0 +1,434 @@
+module: variant_builder
+#
+# Building VARIANT vectors value by value.
+#
+# A VARIANT vector stores semi-structured data in a layout of its own: a per-row
+# dictionary of object keys, a flat table of (type, byte offset) value entries,
+# the parent/child links between them and a blob holding the payloads. Writing
+# that layout directly is error-prone and ties the writer to its details, so
+# the only way to produce a VARIANT today is to cast into it, typically from
+# JSON text. For a producer that already holds a typed tree (an extension
+# decoding a binary format of its own, say) that costs rendering the text, then
+# parsing it again, and it loses everything JSON has no syntax for: dates,
+# times, timestamps, decimals and binary data arrive as strings or doubles.
+#
+# The builder writes the layout from a stream of events instead, in one pass,
+# the way the engine's own converters do it internally:
+#
+#   duckdb_v2_variant_builder_handle b;
+#   duckdb_v2_variant_builder_create(vector, row_count, &b, err);
+#   for each row:
+#     duckdb_v2_variant_builder_begin_row(b, row, err);
+#     ... exactly one value: a scalar, or a container holding further values ...
+#     duckdb_v2_variant_builder_end_row(b, err);
+#   duckdb_v2_variant_builder_finish(b, err);
+#   duckdb_v2_variant_builder_destroy(&b);
+#
+# A value is one of: append_null (the VARIANT null), append_scalar (every
+# fixed-width type), append_decimal, append_bytes (text and binary kinds), or
+# a container: begin_object / begin_array announcing its child count, the
+# children (each object child preceded by append_key), and the matching end.
+# Children nest without limit. A row that is never begun is a SQL NULL, as is
+# a row whose only value is append_null.
+#
+# Scalar payloads use the storage representation the vector module documents
+# for vector_view: the same bytes a FLAT vector of that logical type would
+# hold for one row (int32_t days for DATE, int64_t micros for TIMESTAMP,
+# hugeint_t for HUGEINT / UUID, interval_t for INTERVAL, ...). Decimals follow
+# the same width tiers as DECIMAL vectors.
+#
+# The builder buffers the rows it is given and writes the vector in finish, so
+# nothing is visible in the vector before that call, and the vector must stay
+# alive and untouched until then. One builder serves one vector for one batch
+# of rows; create a new one for the next batch.
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Handles
+#-----------------------------------------------------------------------------------------------------------------------
+handles:
+  variant_builder:
+    description: |
+      An owned opaque handle to a VARIANT vector under construction. Created with `[[variant_builder_create]]` for one
+      vector and one batch of rows, fed one value tree per row between `[[variant_builder_begin_row]]` and
+      `[[variant_builder_end_row]]`, written into the vector by `[[variant_builder_finish]]`, and destroyed with
+      `[[variant_builder_destroy]]`.
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Functions
+#-----------------------------------------------------------------------------------------------------------------------
+functions:
+  #---------------------------------------------------------------------------------------------------------------------
+  # Lifecycle
+  #---------------------------------------------------------------------------------------------------------------------
+  variant_builder_create:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-03" ]
+    description: |
+      Creates a builder that fills `row_count` rows of a VARIANT vector.
+
+      `vector` must be a FLAT vector of logical type VARIANT with room for `row_count` rows, typically a column of a
+      data chunk the caller created or the output vector of a table function. It is borrowed until
+      `[[variant_builder_finish]]` returns and must not be read or written through other calls in between: the
+      builder accumulates the rows and writes the whole layout in `finish`. Rows the caller never begins are SQL
+      NULL. The caller owns the returned handle and must destroy it with `[[variant_builder_destroy]]`, also when
+      a call failed part-way.
+
+      Returns ERROR_INPUT_INVALID when the vector is not a flat VARIANT vector or cannot hold `row_count` rows.
+    role: constructor
+    belongs_to: variant_builder
+    parameters:
+      vector:
+        type: vector
+        description: The VARIANT vector to fill. Borrowed until finish returns.
+      row_count:
+        type: idx
+        description: The number of rows the builder writes, 0 to `row_count - 1`.
+      out_builder:
+        type: variant_builder
+        indirection: 1
+        kind: OUT
+        description: On success, receives the new builder. Owned by the caller.
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  variant_builder_destroy:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-03" ]
+    description: |
+      Destroys the builder, releasing its buffers.
+
+      Null-safe: passing a null pointer or null handle is a no-op. The handle is set to null on return to prevent
+      double-destruction. Destroying a builder that was not finished leaves the vector as it was before
+      `[[variant_builder_create]]`.
+    parameters:
+      builder:
+        type: variant_builder
+        indirection: 1
+        description: The builder to destroy.
+    return_type: ERROR
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # Rows
+  #---------------------------------------------------------------------------------------------------------------------
+  variant_builder_begin_row:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-03" ]
+    description: |
+      Starts the value of row `row`.
+
+      Exactly one value follows (a scalar, a null, or one container with its children), then
+      `[[variant_builder_end_row]]`. Rows may be begun in any order, each at most once; rows never begun are SQL
+      NULL. Returns ERROR_INPUT_INVALID when another row is still open, `row` is out of range, the row was begun
+      before, or the builder is finished.
+    parameters:
+      builder:
+        type: variant_builder
+        description: The builder.
+      row:
+        type: idx
+        description: The row to fill, below the `row_count` the builder was created with.
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  variant_builder_end_row:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-03" ]
+    description: |
+      Completes the row begun by `[[variant_builder_begin_row]]`.
+
+      The row must hold exactly one value and every container opened in it must be ended. A row whose value is
+      `[[variant_builder_append_null]]` becomes a SQL NULL. Returns ERROR_INPUT_INVALID when no row is open, the row
+      has no value yet, or a container is still open; ERROR_INPUT_OBJECT_SIZE when the row's encoded payload exceeds
+      4 GiB.
+    parameters:
+      builder:
+        type: variant_builder
+        description: The builder.
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # Values
+  #---------------------------------------------------------------------------------------------------------------------
+  variant_builder_append_null:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-03" ]
+    description: |
+      Appends a VARIANT null as the next value.
+
+      Inside a container this is a null child (`variant_typeof` reports `VARIANT_NULL`); as the only value of a row
+      it makes the row a SQL NULL. Returns ERROR_INPUT_INVALID when no value may be appended here: no row is open,
+      the row already holds its value, the enclosing container has all its children, or an object child lacks its
+      `[[variant_builder_append_key]]`.
+    parameters:
+      builder:
+        type: variant_builder
+        description: The builder.
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  variant_builder_append_scalar:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-03" ]
+    description: |
+      Appends a fixed-width scalar as the next value.
+
+      `type_id` names the logical type of the value and `data` points at its storage representation, the bytes one
+      row of a FLAT vector of that type holds (see the vector module): BOOLEAN as bool; TINYINT .. BIGINT and
+      UTINYINT .. UBIGINT as the integer of that width; HUGEINT and UUID as hugeint_t; UHUGEINT as uhugeint_t;
+      FLOAT and DOUBLE as float and double; DATE as int32_t days since 1970-01-01; TIME, TIME_TZ, TIMESTAMP_SEC,
+      TIMESTAMP_MS, TIMESTAMP, TIMESTAMP_NS, TIMESTAMP_TZ and TIMESTAMP_TZ_NS as the 64-bit value in their unit;
+      TIME_NS as int64_t nanoseconds; INTERVAL as interval_t. The value keeps that type inside the VARIANT, so a
+      DATE reads back as a DATE, not as text.
+
+      Returns ERROR_INPUT_INVALID for a type that is not one of these (DECIMAL goes through
+      `[[variant_builder_append_decimal]]`, the text and binary kinds through `[[variant_builder_append_bytes]]`),
+      a null `data`, or when no value may be appended here (see `[[variant_builder_append_null]]`).
+    parameters:
+      builder:
+        type: variant_builder
+        description: The builder.
+      type_id:
+        type: LOGICAL_TYPE_ID
+        description: The logical type of the value.
+      data:
+        type: void
+        indirection: 1
+        const: true
+        kind: IN
+        description: The value in the storage representation of `type_id`. Borrowed for the call and copied.
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  variant_builder_append_decimal:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-03" ]
+    description: |
+      Appends a DECIMAL(width, scale) as the next value.
+
+      `data` points at the unscaled integer in the storage tier of `width`, as a DECIMAL vector holds it: int16_t
+      for a width up to 4, int32_t up to 9, int64_t up to 18, hugeint_t up to 38 (boundaries inclusive). The value
+      reads back as a DECIMAL of that width and scale.
+
+      Returns ERROR_INPUT_INVALID for a width of 0 or above 38, a scale above the width, a null `data`, or when no
+      value may be appended here (see `[[variant_builder_append_null]]`).
+    parameters:
+      builder:
+        type: variant_builder
+        description: The builder.
+      width:
+        type: u8
+        description: The total number of digits, 1 to 38.
+      scale:
+        type: u8
+        description: The number of digits after the decimal point, at most `width`.
+      data:
+        type: void
+        indirection: 1
+        const: true
+        kind: IN
+        description: The unscaled value in the storage tier of `width`. Borrowed for the call and copied.
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  variant_builder_append_bytes:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-03" ]
+    description: |
+      Appends a variable-length value as the next value: text or binary data.
+
+      `type_id` is VARCHAR, BLOB, BIT, BIGNUM or GEOMETRY; `data` and `length` are its bytes, which are copied. A
+      VARCHAR must be valid UTF-8, which is not checked here: validate it with `[[validate_utf8]]` when it comes
+      from an untrusted source. BIT, BIGNUM and GEOMETRY take the storage bytes of their vector payload (see the
+      vector module), BLOB any bytes. `data` may be null when `length` is 0.
+
+      Returns ERROR_INPUT_INVALID for another type, a null `data` with a nonzero `length`, a `length` of 4 GiB or
+      more, or when no value may be appended here (see `[[variant_builder_append_null]]`).
+    parameters:
+      builder:
+        type: variant_builder
+        description: The builder.
+      type_id:
+        type: LOGICAL_TYPE_ID
+        description: VARCHAR, BLOB, BIT, BIGNUM or GEOMETRY.
+      data:
+        type: u8
+        indirection: 1
+        const: true
+        kind: IN
+        description: The bytes of the value. Borrowed for the call and copied.
+      length:
+        type: idx
+        description: The number of bytes in `data`.
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # Containers
+  #---------------------------------------------------------------------------------------------------------------------
+  variant_builder_begin_object:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-03" ]
+    description: |
+      Appends an object with `child_count` members as the next value and opens it.
+
+      Each member is a `[[variant_builder_append_key]]` followed by one value (a scalar, a null, or a nested
+      container with its own children); after exactly `child_count` members, `[[variant_builder_end_object]]` closes
+      it. The count is needed up front because the layout stores it ahead of the children; a producer walking a
+      binary format usually has it at hand. Members are stored in the order given. Returns ERROR_INPUT_INVALID when
+      no value may be appended here (see `[[variant_builder_append_null]]`) or `child_count` does not fit 32 bits.
+    parameters:
+      builder:
+        type: variant_builder
+        description: The builder.
+      child_count:
+        type: idx
+        description: The number of members that follow. May be 0.
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  variant_builder_append_key:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-03" ]
+    description: |
+      Names the next member of the open object; the member's value follows.
+
+      The key is copied. Keys are interned per row, so repeating a key across objects of the same row costs one
+      dictionary entry. A key used twice in the same object is refused with ERROR_INPUT_INVALID, as the engine does
+      for every other VARIANT source; the caller decides which value to keep. Also ERROR_INPUT_INVALID when the
+      innermost open container is not an object, it already has all its members, or the previous member still
+      awaits its value.
+    parameters:
+      builder:
+        type: variant_builder
+        description: The builder.
+      key:
+        type: str
+        indirection: 1
+        const: true
+        kind: IN
+        description: The member name, valid UTF-8. Borrowed for the call and copied.
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  variant_builder_end_object:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-03" ]
+    description: |
+      Closes the innermost open object.
+
+      Returns ERROR_INPUT_INVALID when the innermost open container is not an object, or it has fewer members than
+      `[[variant_builder_begin_object]]` announced.
+    parameters:
+      builder:
+        type: variant_builder
+        description: The builder.
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  variant_builder_begin_array:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-03" ]
+    description: |
+      Appends an array with `child_count` elements as the next value and opens it.
+
+      Each element is one value (a scalar, a null, or a nested container with its own children); after exactly
+      `child_count` elements, `[[variant_builder_end_array]]` closes it. The count is needed up front because the
+      layout stores it ahead of the elements. Returns ERROR_INPUT_INVALID when no value may be appended here (see
+      `[[variant_builder_append_null]]`) or `child_count` does not fit 32 bits.
+    parameters:
+      builder:
+        type: variant_builder
+        description: The builder.
+      child_count:
+        type: idx
+        description: The number of elements that follow. May be 0.
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  variant_builder_end_array:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-03" ]
+    description: |
+      Closes the innermost open array.
+
+      Returns ERROR_INPUT_INVALID when the innermost open container is not an array, or it has fewer elements than
+      `[[variant_builder_begin_array]]` announced.
+    parameters:
+      builder:
+        type: variant_builder
+        description: The builder.
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  #---------------------------------------------------------------------------------------------------------------------
+  # Completion
+  #---------------------------------------------------------------------------------------------------------------------
+  variant_builder_finish:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-03" ]
+    description: |
+      Writes the accumulated rows into the vector.
+
+      Every row below `row_count` is written: the rows given through the builder with their values, the others as
+      SQL NULL. The vector's size becomes `row_count`. After this call the builder only accepts
+      `[[variant_builder_destroy]]`. Returns ERROR_INPUT_INVALID when a row is still open or the builder was finished
+      before; the vector is then unchanged.
+    parameters:
+      builder:
+        type: variant_builder
+        description: The builder.
+      err:
+        type: error_info
+        indirection: 1
+        kind: OUT
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR

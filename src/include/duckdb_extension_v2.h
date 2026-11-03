@@ -1546,6 +1546,37 @@ typedef struct {
 	(duckdb_v2_sql_statement_handle statement, const duckdb_v2_identifier_t *name,
 	 duckdb_v2_column_data_collection_handle collection, const duckdb_v2_identifier_t *column_names, idx_t column_count,
 	 duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_variant_builder_append_bytes)
+	(duckdb_v2_variant_builder_handle builder, DUCKDB_V2_LOGICAL_TYPE_ID type_id, const uint8_t *data, idx_t length,
+	 duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_variant_builder_append_decimal)
+	(duckdb_v2_variant_builder_handle builder, uint8_t width, uint8_t scale, const void *data,
+	 duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_variant_builder_append_key)
+	(duckdb_v2_variant_builder_handle builder, const duckdb_v2_str *key, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_variant_builder_append_null)
+	(duckdb_v2_variant_builder_handle builder, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_variant_builder_append_scalar)
+	(duckdb_v2_variant_builder_handle builder, DUCKDB_V2_LOGICAL_TYPE_ID type_id, const void *data,
+	 duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_variant_builder_begin_array)
+	(duckdb_v2_variant_builder_handle builder, idx_t child_count, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_variant_builder_begin_object)
+	(duckdb_v2_variant_builder_handle builder, idx_t child_count, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_variant_builder_begin_row)
+	(duckdb_v2_variant_builder_handle builder, idx_t row, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_variant_builder_create)
+	(duckdb_v2_vector_handle vector, idx_t row_count, duckdb_v2_variant_builder_handle *out_builder,
+	 duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR (*duckdb_v2_variant_builder_destroy)(duckdb_v2_variant_builder_handle *builder);
+	DUCKDB_V2_ERROR(*duckdb_v2_variant_builder_end_array)
+	(duckdb_v2_variant_builder_handle builder, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_variant_builder_end_object)
+	(duckdb_v2_variant_builder_handle builder, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_variant_builder_end_row)
+	(duckdb_v2_variant_builder_handle builder, duckdb_v2_error_info_handle *err);
+	DUCKDB_V2_ERROR(*duckdb_v2_variant_builder_finish)
+	(duckdb_v2_variant_builder_handle builder, duckdb_v2_error_info_handle *err);
 #endif
 	// capigen:end appended
 } duckdb_ext_api_v2;
@@ -3558,6 +3589,48 @@ typedef struct {
 #endif
 #if DUCKDB_V2_API_ALLOW_UNSTABLE
 #define duckdb_v2_statement_add_collection duckdb_ext_api.duckdb_v2_statement_add_collection
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_variant_builder_append_bytes duckdb_ext_api.duckdb_v2_variant_builder_append_bytes
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_variant_builder_append_decimal duckdb_ext_api.duckdb_v2_variant_builder_append_decimal
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_variant_builder_append_key duckdb_ext_api.duckdb_v2_variant_builder_append_key
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_variant_builder_append_null duckdb_ext_api.duckdb_v2_variant_builder_append_null
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_variant_builder_append_scalar duckdb_ext_api.duckdb_v2_variant_builder_append_scalar
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_variant_builder_begin_array duckdb_ext_api.duckdb_v2_variant_builder_begin_array
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_variant_builder_begin_object duckdb_ext_api.duckdb_v2_variant_builder_begin_object
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_variant_builder_begin_row duckdb_ext_api.duckdb_v2_variant_builder_begin_row
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_variant_builder_create duckdb_ext_api.duckdb_v2_variant_builder_create
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_variant_builder_destroy duckdb_ext_api.duckdb_v2_variant_builder_destroy
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_variant_builder_end_array duckdb_ext_api.duckdb_v2_variant_builder_end_array
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_variant_builder_end_object duckdb_ext_api.duckdb_v2_variant_builder_end_object
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_variant_builder_end_row duckdb_ext_api.duckdb_v2_variant_builder_end_row
+#endif
+#if DUCKDB_V2_API_ALLOW_UNSTABLE
+#define duckdb_v2_variant_builder_finish duckdb_ext_api.duckdb_v2_variant_builder_finish
 #endif
 // capigen:end appended
 #endif // DUCKDB_BUILD_STATIC_EXTENSION
