@@ -1,7 +1,30 @@
 #include "duckdb/main/capi/capi_internal.hpp"
+#include "duckdb/common/vector/array_vector.hpp"
+#include "duckdb/common/vector/flat_vector.hpp"
+#include "duckdb/common/vector/list_vector.hpp"
+#include "duckdb/common/vector/struct_vector.hpp"
 #include "utf8proc_wrapper.hpp"
 
 namespace duckdb {
+
+void PrepareCAPIVector(Vector &result) {
+	switch (result.GetType().InternalType()) {
+	case PhysicalType::STRUCT:
+		for (auto &child : StructVector::GetEntries(result)) {
+			PrepareCAPIVector(child);
+		}
+		return;
+	case PhysicalType::ARRAY:
+		PrepareCAPIVector(ArrayVector::GetChildMutable(result));
+		return;
+	case PhysicalType::LIST:
+		PrepareCAPIVector(ListVector::GetChildMutable(result));
+		break;
+	default:
+		break;
+	}
+	FlatVector::GetDataMutable(result);
+}
 
 LogicalTypeId LogicalTypeIdFromC(const duckdb_type type) {
 	switch (type) {

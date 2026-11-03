@@ -136,13 +136,13 @@ public:
 
 	//! The radix HT
 	const RadixPartitionedHashTable &radix_ht;
+	//! The spill metadata of the aggregate layout, set if the states can spill
+	unique_ptr<AggregateStateSpillPlan> spill_plan;
 	//! Config for partitioning
 	RadixHTConfig config;
 
 	//! Uncombined partitioned data that will be put into the AggregatePartitions
 	unique_ptr<PartitionedTupleData> uncombined_data;
-	//! The spill metadata of the aggregate layout, set if the states can spill
-	unique_ptr<AggregateStateSpillPlan> spill_plan;
 	//! Synchronizes the transition to exported-only aggregation with concurrent combines
 	SpillPhase spill_phase DUCKDB_GUARDED_BY(lock);
 	//! Uncombined exported data, aligned one-to-one with the partitions of uncombined_data

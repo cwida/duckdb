@@ -6,6 +6,7 @@ import subprocess
 import tarfile
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -39,6 +40,25 @@ class PackageReleaseArtifactTest(unittest.TestCase):
                 self.assertEqual([member.name for member in members], ["duckdb"])
                 self.assertTrue(members[0].mode & stat.S_IXUSR)
                 self.assertEqual(archive.extractfile(members[0]).read(), b"binary")
+
+    def test_cli_zip_release_artifact(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cli = root / "duckdb.exe"
+            cli.write_bytes(b"binary")
+
+            self.run_make(
+                "cli-zip-release-artifact",
+                root,
+                ARTIFACT_SUFFIX="windows-amd64",
+                CLI_BINARY=str(cli),
+            )
+
+            archive_path = root / "duckdb-cli-windows-amd64.zip"
+            with zipfile.ZipFile(archive_path) as archive:
+                self.assertEqual(archive.namelist(), ["duckdb.exe"])
+                self.assertEqual(archive.getinfo("duckdb.exe").compress_type, zipfile.ZIP_DEFLATED)
+                self.assertEqual(archive.read("duckdb.exe"), b"binary")
 
     def test_shared_libraries_release_artifact(self):
         with tempfile.TemporaryDirectory() as temp_dir:

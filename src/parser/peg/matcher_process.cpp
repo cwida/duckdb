@@ -1,5 +1,7 @@
 #include "duckdb/parser/peg/matcher.hpp"
 #include "duckdb/parser/peg/matcher/list_matcher.hpp"
+#include "duckdb/parser/peg/matcher/choice_matcher.hpp"
+#include "duckdb/parser/peg/matcher/optional_matcher.hpp"
 
 namespace duckdb {
 
@@ -46,15 +48,35 @@ arena_ptr<MatchProcess> AtomicMatcher::StartMatch(MatchState &state) const {
 }
 
 void ListMatcher::InitializeListChain() {
-	first_child_is_chainable = false;
+	chain_child_index = optional_idx();
+	first_choice = nullptr;
+	prepared_chain = nullptr;
+	prepared_chain_index = 0;
 	if (!IsStructural() || suppress_suggestions || matchers.empty()) {
 		return;
 	}
+
 	auto &first = matchers[0].get();
-	if (!first.IsStructural() || first.Type() != MatcherType::LIST || first.IsPackratMemoized()) {
+	if (first.IsStructural() && first.Type() == MatcherType::CHOICE && !first.IsPackratMemoized() &&
+	    first.Cast<ChoiceMatcher>().PreservesSelectionState()) {
+		first_choice = first.Cast<ChoiceMatcher>();
+	}
+
+	idx_t child_index = 0;
+	if (IsCollapsible() && matchers.size() == 2 && first.IsStructural() && first.Type() == MatcherType::OPTIONAL) {
+		// The prefix can be omitted only when its FIRST predicate proves it absent at execution time.
+		// A named final list always supplies the nonempty result required by the collapse contract.
+		if (!matchers[1].get().GetRule()) {
+			return;
+		}
+		child_index = 1;
+	}
+	auto &child = matchers[child_index].get();
+	if (!child.IsStructural() || child.Type() != MatcherType::LIST || child.IsPackratMemoized() ||
+	    child.Cast<ListMatcher>().suppress_suggestions) {
 		return;
 	}
-	first_child_is_chainable = !first.Cast<ListMatcher>().suppress_suggestions;
+	chain_child_index = optional_idx(child_index);
 }
 
 } // namespace duckdb

@@ -52,8 +52,11 @@ public:
 	void Sink(DataChunk &key, DataChunk &payload);
 	//! Sorts the data (physically reorder data if external)
 	void Finalize(bool external);
-	//! Destroy data between these tuple indices
-	void DestroyData(idx_t tuple_idx_begin, idx_t tuple_idx_end);
+	//! Physically reorders the data of a run that was finalized for an in-memory sort, as an external sort needs
+	void MakeExternal();
+	//! Destroy keys/payload between these tuple indices
+	void DestroyKeyData(idx_t tuple_idx_begin, idx_t tuple_idx_end);
+	void DestroyPayloadData(idx_t tuple_idx_begin, idx_t tuple_idx_end);
 	//! Number of tuples
 	idx_t Count() const;
 	//! Size of this sorted run
@@ -80,6 +83,12 @@ public:
 
 	//! Whether this run has been finalized
 	bool finalized;
+	//! Whether its data has been physically reordered for an external sort
+	bool external = false;
+
+private:
+	//! Reorder the variable-size portion of the sorted keys and the payload, and unpin the data
+	void ReorderForExternal();
 };
 
 } // namespace duckdb

@@ -67,9 +67,7 @@ public:
 	bool AddRelation(LogicalOperator &op, optional_ptr<LogicalOperator> parent, const RelationStats &stats);
 	//! Add an unnest relation which can come from a logical unnest or a logical get which has an unnest function
 	bool AddRelationWithChildren(JoinOrderOptimizer &optimizer, LogicalOperator &op, LogicalOperator &input_op,
-	                             optional_ptr<LogicalOperator> parent, RelationStats &child_stats,
-	                             optional_ptr<LogicalOperator> limit_op,
-	                             vector<reference<LogicalOperator>> &datasource_filters);
+	                             optional_ptr<LogicalOperator> parent, RelationStats &child_stats);
 	vector<unique_ptr<SingleJoinRelation>> GetRelations();
 
 	const vector<RelationStats> GetRelationStats();

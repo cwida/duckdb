@@ -1,0 +1,135 @@
+# name: test/optimizer/remove_redundant_order_keys_deferred.test
+# description: Deferred unique keys can hold duplicates until commit, so the keys behind them are kept (issue #26986)
+# group: [optimizer]
+
+statement ok
+CREATE TABLE pk(a INTEGER PRIMARY KEY DEFERRED, b INTEGER);
+
+statement ok
+CREATE TABLE uk(a INTEGER UNIQUE DEFERRED NOT NULL, b INTEGER);
+
+statement ok
+CREATE TABLE ck(a INTEGER, c INTEGER, b INTEGER, PRIMARY KEY (a, c) DEFERRED);
+
+statement ok
+CREATE TABLE immediate(a INTEGER PRIMARY KEY, b INTEGER);
+
+statement ok
+CREATE TABLE mixed(a INTEGER PRIMARY KEY DEFERRED, c INTEGER UNIQUE NOT NULL, b INTEGER);
+
+statement ok
+BEGIN TRANSACTION;
+
+statement ok
+INSERT INTO pk VALUES (1, 10), (1, 20);
+
+statement ok
+INSERT INTO uk VALUES (1, 10), (1, 20);
+
+statement ok
+INSERT INTO ck VALUES (1, 1, 10), (1, 1, 20);
+
+statement ok
+INSERT INTO mixed VALUES (1, 2, 10), (1, 1, 20);
+
+foreach table pk uk
+
+query II
+EXPLAIN SELECT b FROM {table} ORDER BY a, b DESC
+----
+physical_plan	<REGEX>:.*b DESC.*
+
+query I
+SELECT b FROM {table} ORDER BY a, b DESC
+----
+20
+10
+
+query II
+SELECT b, rank() OVER (ORDER BY a, b DESC) AS r FROM {table} ORDER BY b
+----
+10	2
+20	1
+
+query II
+EXPLAIN SELECT b, row_number() OVER (PARTITION BY a, b) AS rn FROM {table} ORDER BY b
+----
+physical_plan	<REGEX>:.*PARTITION BY a, b\).*
+
+query II
+SELECT b, row_number() OVER (PARTITION BY a, b) AS rn FROM {table} ORDER BY b
+----
+10	1
+20	1
+
+# a second row with the same partition keys is numbered within the same partition
+statement ok
+INSERT INTO {table} VALUES (1, 10);
+
+query II
+SELECT b, row_number() OVER (PARTITION BY a, b) AS rn FROM {table} ORDER BY b, rn
+----
+10	1
+10	2
+20	1
+
+endloop
+
+query I
+SELECT b FROM ck ORDER BY a, c, b DESC
+----
+20
+10
+
+query II
+EXPLAIN SELECT b, row_number() OVER (PARTITION BY a, c, b) AS rn FROM ck ORDER BY b
+----
+physical_plan	<REGEX>:.*PARTITION BY a, c, b\).*
+
+query II
+SELECT b, row_number() OVER (PARTITION BY a, c, b) AS rn FROM ck ORDER BY b
+----
+10	1
+20	1
+
+statement ok
+INSERT INTO ck VALUES (1, 1, 10);
+
+query II
+SELECT b, row_number() OVER (PARTITION BY a, c, b) AS rn FROM ck ORDER BY b, rn
+----
+10	1
+10	2
+20	1
+
+# an immediate primary key still erases the keys behind it
+query II
+EXPLAIN SELECT b FROM immediate ORDER BY a, b DESC
+----
+physical_plan	<!REGEX>:.*b DESC.*
+
+# in a table with both, only the immediate key erases the keys behind it
+query II
+EXPLAIN SELECT b FROM mixed ORDER BY a, b DESC
+----
+physical_plan	<REGEX>:.*b DESC.*
+
+query I
+SELECT b FROM mixed ORDER BY a, b DESC
+----
+20
+10
+
+query II
+EXPLAIN SELECT b FROM mixed ORDER BY c, b DESC
+----
+physical_plan	<!REGEX>:.*b DESC.*
+
+query I
+SELECT b FROM mixed ORDER BY c, b DESC
+----
+20
+10
+
+statement ok
+ROLLBACK

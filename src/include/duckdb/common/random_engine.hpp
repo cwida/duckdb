@@ -37,6 +37,9 @@ public:
 	uint64_t NextRandomInteger64();
 
 	void SetSeed(uint64_t seed);
+	//! A seed for another generator, mixed with OS entropy unless this engine was seeded explicitly
+	uint64_t NextSeed();
+	uint32_t NextSeed32();
 
 	void RandomData(duckdb::data_ptr_t data, duckdb::idx_t len);
 
@@ -46,6 +49,8 @@ public:
 
 private:
 	unique_ptr<RandomState> random_state;
+	//! Whether the engine was given a seed (at construction or with SetSeed) rather than seeded from entropy
+	bool explicitly_seeded;
 };
 
 } // namespace duckdb

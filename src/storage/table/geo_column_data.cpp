@@ -7,6 +7,7 @@
 #include "duckdb/common/serializer/deserializer.hpp"
 #include "duckdb/common/vector_operations/generic_executor.hpp"
 #include "duckdb/storage/statistics/list_stats.hpp"
+#include "duckdb/storage/storage_manager.hpp"
 #include "duckdb/storage/table/append_state.hpp"
 #include "duckdb/storage/table/scan_state.hpp"
 #include "duckdb/storage/table/column_checkpoint_state.hpp"

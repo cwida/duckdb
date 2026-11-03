@@ -234,7 +234,7 @@ void VariantUtils::TraversePath(const UnifiedVariantVectorData &variant, const v
 }
 
 Value VariantUtils::ConvertVariantToValue(const UnifiedVariantVectorData &variant, idx_t row, uint32_t values_idx) {
-	return VariantVisitor<ValueConverter>::Visit(variant, row, values_idx);
+	return VariantVisitor<ValueConverter>::Visit(variant, row, values_idx, 0);
 }
 
 void VariantUtils::FinalizeVariantKeys(Vector &variant, OrderedOwningStringMap<uint32_t> &dictionary,

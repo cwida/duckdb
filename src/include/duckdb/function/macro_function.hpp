@@ -43,6 +43,8 @@ public:
 	InsertionOrderPreservingMap<unique_ptr<ParsedExpression>, Identifier, identifier_map_t<idx_t>> default_parameters;
 	//! The types of the parameters
 	vector<LogicalType> types;
+	//! The declared return type, UNKNOWN when none was declared: the member's result is cast to it
+	LogicalType return_type = LogicalType::UNKNOWN;
 
 public:
 	virtual ~MacroFunction() {
@@ -75,7 +77,7 @@ public:
 	template <class TARGET>
 	TARGET &Cast() {
 		if (type != TARGET::TYPE) {
-			throw InternalException("Failed to cast macro to type - macro type mismatch");
+			InternalException::Throw("Failed to cast macro to type - macro type mismatch");
 		}
 		return reinterpret_cast<TARGET &>(*this);
 	}
@@ -83,7 +85,7 @@ public:
 	template <class TARGET>
 	const TARGET &Cast() const {
 		if (type != TARGET::TYPE) {
-			throw InternalException("Failed to cast macro to type - macro type mismatch");
+			InternalException::Throw("Failed to cast macro to type - macro type mismatch");
 		}
 		return reinterpret_cast<const TARGET &>(*this);
 	}

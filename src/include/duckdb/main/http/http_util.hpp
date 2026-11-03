@@ -274,7 +274,7 @@ struct PutRequestInfo : public BaseRequest {
 
 	const_data_ptr_t buffer_in;
 	idx_t buffer_in_len;
-	const string &content_type;
+	string content_type;
 };
 
 struct HeadRequestInfo : public BaseRequest {

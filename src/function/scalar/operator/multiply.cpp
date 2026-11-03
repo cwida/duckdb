@@ -223,49 +223,41 @@ bool TryMultiplyOperator::Operation(int64_t left, int64_t right, int64_t &result
 		}
 		return false;
 	}
-	uint64_t left_non_negative = uint64_t(std::abs(left));
-	uint64_t right_non_negative = uint64_t(std::abs(right));
+	uint64_t left_magnitude = uint64_t(std::abs(left));
+	uint64_t right_magnitude = uint64_t(std::abs(right));
+	bool negative = (left < 0) != (right < 0);
 	// split values into 2 32-bit parts
-	uint64_t left_high_bits = left_non_negative >> 32;
-	uint64_t left_low_bits = left_non_negative & 0xffffffff;
-	uint64_t right_high_bits = right_non_negative >> 32;
-	uint64_t right_low_bits = right_non_negative & 0xffffffff;
+	uint64_t left_high_bits = left_magnitude >> 32;
+	uint64_t left_low_bits = left_magnitude & 0xffffffff;
+	uint64_t right_high_bits = right_magnitude >> 32;
+	uint64_t right_low_bits = right_magnitude & 0xffffffff;
 
-	// check the high bits of both
-	// the high bits define the overflow
-	if (left_high_bits == 0) {
-		if (right_high_bits != 0) {
-			// only the right has high bits set
-			// multiply the high bits of right with the low bits of left
-			// multiply the low bits, and carry any overflow to the high bits
-			// then check for any overflow
-			auto low_low = left_low_bits * right_low_bits;
-			auto low_high = left_low_bits * right_high_bits;
-			auto high_bits = low_high + (low_low >> 32);
-			if (high_bits & 0xffffff80000000) {
-				// there is! abort
-				return false;
-			}
-		}
-	} else if (right_high_bits == 0) {
-		// only the left has high bits set
-		// multiply the high bits of left with the low bits of right
-		// multiply the low bits, and carry any overflow to the high bits
-		// then check for any overflow
-		auto low_low = left_low_bits * right_low_bits;
-		auto high_low = left_high_bits * right_low_bits;
-		auto high_bits = high_low + (low_low >> 32);
-		if (high_bits & 0xffffff80000000) {
-			// there is! abort
-			return false;
-		}
-	} else {
-		// both left and right have high bits set: guaranteed overflow
-		// abort!
+	if (left_high_bits != 0 && right_high_bits != 0) {
+		// both left and right have high bits set: the product is at least 2^64
 		return false;
 	}
-	// now we know that there is no overflow, we can just perform the multiplication
-	result = left * right;
+	// at most one cross term is non-zero here, and it is below 2^63
+	uint64_t cross_bits = left_high_bits * right_low_bits + left_low_bits * right_high_bits;
+	if (cross_bits >> 32) {
+		// the shifted cross term alone is at least 2^64
+		return false;
+	}
+	uint64_t low_bits = left_low_bits * right_low_bits;
+	uint64_t magnitude = (cross_bits << 32) + low_bits;
+	if (magnitude < low_bits) {
+		// adding the cross term wrapped: the product is at least 2^64
+		return false;
+	}
+	if (magnitude > (uint64_t(1) << 63) - (negative ? 0 : 1)) {
+		// the magnitude exceeds the signed range (the minimum is representable when negative)
+		return false;
+	}
+	// the magnitude fits: produce the signed result (the minimum cannot be negated)
+	if (negative) {
+		result = magnitude == (uint64_t(1) << 63) ? std::numeric_limits<int64_t>::min() : -int64_t(magnitude);
+	} else {
+		result = int64_t(magnitude);
+	}
 #endif
 	return true;
 }

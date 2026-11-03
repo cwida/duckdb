@@ -1,0 +1,213 @@
+# name: test/sql/subquery/lateral/lateral_unnest_intermediate_projection.test
+# description: Lateral over unnest with intermediate projections (unnest rewriter trailing-slot chains)
+# group: [lateral]
+
+# original reproducer: correlated list reference above one intermediate projection over a correlated unnest
+query III
+SELECT * FROM (SELECT [1,2,3]::INTEGER[] AS xs, 1 AS i) s
+CROSS JOIN (SELECT xs[j] AS a FROM (SELECT elem AS j FROM (SELECT unnest(range(i+1, 4)) AS elem) b) r) e
+ORDER BY a;
+----
+[1, 2, 3]	1	2
+[1, 2, 3]	1	3
+
+# star-wrapper variant of the same shape
+query III
+SELECT * FROM (SELECT [1,2,3]::INTEGER[] AS xs, 1 AS i) s
+CROSS JOIN (SELECT * FROM (SELECT xs[j] AS a FROM (SELECT elem AS j FROM (SELECT unnest(range(i+1, 4)) AS elem) b) r)) e
+ORDER BY a;
+----
+[1, 2, 3]	1	2
+[1, 2, 3]	1	3
+
+# reduced minimal case: correlated reference above the intermediate projection without using the unnest value
+query III
+SELECT * FROM (SELECT [1,2,3]::INTEGER[] AS xs, 1 AS i) s
+CROSS JOIN (SELECT xs[1] AS a FROM (SELECT elem AS j FROM (SELECT unnest(range(i+1, 4)) AS elem) b) r) e
+ORDER BY a;
+----
+[1, 2, 3]	1	1
+[1, 2, 3]	1	1
+
+# two intermediate projections
+query III
+SELECT * FROM (SELECT [10,20,30]::INTEGER[] AS xs, 1 AS i) s
+CROSS JOIN (SELECT xs[k] AS a FROM (SELECT j AS k FROM (SELECT elem AS j FROM (SELECT unnest(range(i+1, 4)) AS elem) b) r1) r2) e
+ORDER BY a;
+----
+[10, 20, 30]	1	20
+[10, 20, 30]	1	30
+
+# multi-row outer relation
+query III
+SELECT * FROM (SELECT [1,2,3,4]::INTEGER[] AS xs, r AS i FROM range(1, 3) t(r)) s
+CROSS JOIN (SELECT xs[j] AS a FROM (SELECT elem AS j FROM (SELECT unnest(range(i, 5)) AS elem) b) r) e
+ORDER BY i, a;
+----
+[1, 2, 3, 4]	1	1
+[1, 2, 3, 4]	1	2
+[1, 2, 3, 4]	1	3
+[1, 2, 3, 4]	1	4
+[1, 2, 3, 4]	2	2
+[1, 2, 3, 4]	2	3
+[1, 2, 3, 4]	2	4
+
+# verification against an uncorrelated rewrite of the same query
+query I
+WITH expected AS (
+	SELECT s.i AS i, xs[j] AS a
+	FROM (SELECT [1,2,3,4]::INTEGER[] AS xs, r AS i FROM range(1, 3) t(r)) s,
+	     (SELECT unnest(range(1, 5)) AS j) u
+	WHERE j >= s.i
+), actual AS (
+	SELECT i, a FROM (SELECT [1,2,3,4]::INTEGER[] AS xs, r AS i FROM range(1, 3) t(r)) s
+	CROSS JOIN (SELECT xs[j] AS a FROM (SELECT elem AS j FROM (SELECT unnest(range(i, 5)) AS elem) b) r) e
+)
+SELECT count(*) FROM (
+	(SELECT * FROM expected EXCEPT ALL SELECT * FROM actual)
+	UNION ALL
+	(SELECT * FROM actual EXCEPT ALL SELECT * FROM expected)
+);
+----
+0
+
+# unnesting the correlated list itself through an intermediate projection
+query III
+SELECT * FROM (SELECT [5,7]::INTEGER[] AS xs, 1 AS i) s
+CROSS JOIN (SELECT v + i AS a FROM (SELECT elem AS v FROM (SELECT unnest(xs) AS elem) b) r) e
+ORDER BY a;
+----
+[5, 7]	1	6
+[5, 7]	1	8
+
+# string outer column above the intermediate projection
+query III
+SELECT * FROM (SELECT 'abc' AS w, 1 AS i) s
+CROSS JOIN (SELECT w || CAST(j AS VARCHAR) AS a FROM (SELECT elem AS j FROM (SELECT unnest(range(i+1, 4)) AS elem) b) r) e
+ORDER BY a;
+----
+abc	1	abc2
+abc	1	abc3
+
+# LEFT lateral with matches
+query III
+SELECT * FROM (SELECT [1,2,3]::INTEGER[] AS xs, 1 AS i) s
+LEFT JOIN LATERAL (SELECT xs[j] AS a FROM (SELECT elem AS j FROM (SELECT unnest(range(i+1, 4)) AS elem) b) r) e ON true
+ORDER BY a;
+----
+[1, 2, 3]	1	2
+[1, 2, 3]	1	3
+
+# LEFT lateral without matches: empty domain keeps the outer row
+query III
+SELECT * FROM (SELECT [1,2,3]::INTEGER[] AS xs, 5 AS i) s
+LEFT JOIN LATERAL (SELECT xs[j] AS a FROM (SELECT elem AS j FROM (SELECT unnest(range(i+1, 4)) AS elem) b) r) e ON true;
+----
+[1, 2, 3]	5	NULL
+
+# empty domain under CROSS JOIN removes the row
+query III
+SELECT * FROM (SELECT [1,2,3]::INTEGER[] AS xs, 5 AS i) s
+CROSS JOIN (SELECT xs[j] AS a FROM (SELECT elem AS j FROM (SELECT unnest(range(i+1, 4)) AS elem) b) r) e;
+----
+
+# NULL list element access through the chain
+query III
+SELECT * FROM (SELECT NULL::INTEGER[] AS xs, 1 AS i) s
+CROSS JOIN (SELECT xs[j] AS a FROM (SELECT elem AS j FROM (SELECT unnest(range(i+1, 4)) AS elem) b) r) e
+ORDER BY a;
+----
+NULL	1	NULL
+NULL	1	NULL
+
+# mixed NULL and non-NULL outer rows
+query II
+SELECT i, a FROM (SELECT CASE WHEN r = 1 THEN [1,2,3]::INTEGER[] ELSE NULL END AS xs, r AS i FROM range(1, 3) t(r)) s
+CROSS JOIN (SELECT xs[j] AS a FROM (SELECT elem AS j FROM (SELECT unnest(range(i+1, 4)) AS elem) b) r) e
+ORDER BY i, a;
+----
+1	2
+1	3
+2	NULL
+
+# protection: single-level lateral over unnest still works
+query III
+SELECT * FROM (SELECT [1,2,3]::INTEGER[] AS xs, 1 AS i) s
+CROSS JOIN (SELECT xs[j] AS a FROM (SELECT unnest(range(i+1, 4)) AS j) b) e
+ORDER BY a;
+----
+[1, 2, 3]	1	2
+[1, 2, 3]	1	3
+
+# protection: correlated scalar subquery over unnest
+query III
+SELECT xs, i, (SELECT max(xs[j]) FROM (SELECT elem AS j FROM (SELECT unnest(range(i+1, 4)) AS elem) b) r) AS a
+FROM (SELECT [1,2,3]::INTEGER[] AS xs, 1 AS i) s;
+----
+[1, 2, 3]	1	3
+
+# protection: correlated table function without unnest
+query III
+SELECT * FROM (SELECT [1,2,3]::INTEGER[] AS xs, 1 AS i) s
+CROSS JOIN (SELECT xs[r] AS a FROM range(i, i + 2) t(r)) e
+ORDER BY a;
+----
+[1, 2, 3]	1	1
+[1, 2, 3]	1	2
+
+# mixed payload widths: the intermediate projection carries two payload columns
+query II
+SELECT i, a FROM (SELECT [1,2,3]::INTEGER[] AS xs, 1 AS i) s
+CROSS JOIN (SELECT xs[j] + twice AS a FROM (SELECT elem AS j, elem * 2 AS twice FROM (SELECT unnest(range(i+1, 4)) AS elem) b) r) e
+ORDER BY a;
+----
+1	6
+1	9
+
+# duplicate outer rows keep their multiplicity
+query II
+SELECT i, a FROM (VALUES ([1,2,3]::INTEGER[], 1), ([1,2,3]::INTEGER[], 1)) s(xs, i)
+CROSS JOIN (SELECT xs[j] AS a FROM (SELECT elem AS j FROM (SELECT unnest(range(i+1, 4)) AS elem) b) r) e
+ORDER BY a;
+----
+1	2
+1	2
+1	3
+1	3
+
+# the explicit dedup CTE path (CTE inlining disabled)
+statement ok
+SET disabled_optimizers='cte_inlining';
+
+query III
+SELECT * FROM (SELECT [1,2,3]::INTEGER[] AS xs, 1 AS i) s
+CROSS JOIN (SELECT xs[j] AS a FROM (SELECT elem AS j FROM (SELECT unnest(range(i+1, 4)) AS elem) b) r) e
+ORDER BY a;
+----
+[1, 2, 3]	1	2
+[1, 2, 3]	1	3
+
+statement ok
+SET disabled_optimizers='';
+
+# the unnest rewriter still eliminates the delim join for the multi-projection path
+query II
+EXPLAIN SELECT * FROM (SELECT [1,2,3]::INTEGER[] AS xs, 1 AS i) s
+CROSS JOIN (SELECT xs[j] AS a FROM (SELECT elem AS j FROM (SELECT unnest(range(i+1, 4)) AS elem) b) r) e;
+----
+physical_plan	<REGEX>:.*Unnest.*
+
+query II
+EXPLAIN SELECT * FROM (SELECT [1,2,3]::INTEGER[] AS xs, 1 AS i) s
+CROSS JOIN (SELECT xs[j] AS a FROM (SELECT elem AS j FROM (SELECT unnest(range(i+1, 4)) AS elem) b) r) e;
+----
+physical_plan	<!REGEX>:.*(Delim|Join|CTE).*
+
+# aggregate above the chain
+query II
+SELECT i, (SELECT sum(xs[j]) FROM (SELECT elem AS j FROM (SELECT unnest(range(i, 4)) AS elem) b) r) AS total
+FROM (SELECT [1,2,3]::INTEGER[] AS xs, r AS i FROM range(1, 3) t(r)) s
+ORDER BY i;
+----
+1	6
+2	5

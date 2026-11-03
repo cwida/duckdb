@@ -92,6 +92,16 @@ optional_idx Allocator::GetMappedMemory() const {
 	return optional_idx(mapped);
 }
 
+//! A thread runs without a tcache when jemalloc had no memory for one, and flushing it then fails
+static void FlushThreadCache() {
+	bool enabled = false;
+	size_t enabled_size = sizeof(enabled);
+	if (duckdb_je_mallctl("thread.tcache.enabled", &enabled, &enabled_size, nullptr, 0) != 0 || !enabled) {
+		return;
+	}
+	SetJemallocCTL("thread.tcache.flush");
+}
+
 bool Allocator::SupportsFlush() {
 	return true;
 }
@@ -109,7 +119,7 @@ void Allocator::ThreadFlush(bool allocator_background_threads, idx_t threshold, 
 		}
 
 		// Flush thread-local cache
-		SetJemallocCTL("thread.tcache.flush");
+		FlushThreadCache();
 
 		// Reset the peak after flushing
 		SetJemallocCTL("thread.peak.reset");
@@ -126,7 +136,7 @@ void Allocator::ThreadIdle() {
 
 void Allocator::FlushAll() {
 	// Flush thread-local cache
-	SetJemallocCTL("thread.tcache.flush");
+	FlushThreadCache();
 
 	// Flush all arenas
 	const auto purge_arena = PurgeArenaString(MALLCTL_ARENAS_ALL);

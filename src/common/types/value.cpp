@@ -1220,7 +1220,7 @@ Value Value::CreateValue(Value value) {
 template <class T>
 T Value::GetValueInternal() const {
 	if (IsNull()) {
-		throw InternalException("Calling GetValueInternal on a value that is NULL");
+		InternalException::Throw("Calling GetValueInternal on a value that is NULL");
 	}
 	switch (type_.id()) {
 	case LogicalTypeId::BOOLEAN:
@@ -1285,7 +1285,7 @@ T Value::GetValueInternal() const {
 		case PhysicalType::UINT32:
 			return Cast::Operation<uint32_t, T>(value_.uinteger);
 		default:
-			throw InternalException("Invalid Internal Type for ENUMs");
+			InternalException::Throw("Invalid Internal Type for ENUMs");
 		}
 	}
 	default:

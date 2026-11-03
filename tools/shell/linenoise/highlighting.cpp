@@ -54,6 +54,9 @@ static vector<highlightToken> GetParseTokens(char *buf, size_t len) {
 		highlightToken new_token;
 		if (token.unterminated) {
 			new_token.type = tokenType::TOKEN_ERROR;
+		} else if (token.type == TokenType::IDENTIFIER && keyword_helper.IsGrammarWord(token.text)) {
+			// a word the grammar matches literally that is in none of the keyword lists, e.g. REPOSITORY
+			new_token.type = tokenType::TOKEN_KEYWORD;
 		} else {
 			new_token.type = convertToken(token.type);
 		}

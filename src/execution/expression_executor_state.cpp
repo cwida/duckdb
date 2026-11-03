@@ -4,6 +4,7 @@
 #include "duckdb/planner/expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/common/exception/binder_exception.hpp"
+#include "duckdb/storage/standard_buffer_manager.hpp"
 
 namespace duckdb {
 
@@ -22,7 +23,8 @@ void ExpressionState::Finalize() {
 	if (types.empty()) {
 		return;
 	}
-	intermediate_chunk.Initialize(GetAllocator(), types, initialize);
+	auto &allocator = HasContext() ? BufferAllocator::Get(GetContext()) : GetAllocator();
+	intermediate_chunk.Initialize(allocator, types, initialize);
 }
 
 Allocator &ExpressionState::GetAllocator() {

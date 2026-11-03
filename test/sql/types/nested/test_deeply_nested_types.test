@@ -7,7 +7,7 @@ SET max_expression_depth = 300000;
 
 # Deeply nested LIST
 statement ok
-SELECT list_contains(CAST(NULL AS INTEGER[][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][]), 1);
+SELECT list_contains(CAST(NULL AS INTEGER[][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][]), NULL);
 
 # Deeply nested ARRAY
 statement ok
@@ -27,7 +27,12 @@ INTEGER[][][][][]
 
 # Collation propagation on nested LIST
 statement ok
-SELECT list_contains(CAST(NULL AS VARCHAR[][][][][]), 'abc' COLLATE NOCASE);
+SELECT list_contains(CAST(NULL AS VARCHAR[][][][][]), [[[['abc' COLLATE NOCASE]]]]);
+
+query I
+SELECT list_contains([[[[['ABC']]]]]::VARCHAR[][][][][], [[[['abc' COLLATE NOCASE]]]]);
+----
+true
 
 # Mixed STRUCT, MAP, UNION, LIST and ARRAY nesting (parsed and bound type names)
 query TT

@@ -1,10 +1,12 @@
 CreateMacroStmt <- MacroOrFunction IfNotExists? QualifiedName List(MacroDefinition)
 
+ReturnsType <- 'RETURNS' Type
+
 MacroOrFunction <- MacroKeyword / FunctionKeyword
 MacroKeyword <- 'MACRO'
 FunctionKeyword <- 'FUNCTION'
 
-MacroDefinition <- Parens(MacroParameters?) 'AS' MacroDefinitionBody
+MacroDefinition <- Parens(MacroParameters?) ReturnsType? 'AS' MacroDefinitionBody
 MacroDefinitionBody <- TableMacroDefinition / ScalarMacroDefinition
 
 MacroParameters <- List(MacroParameter)

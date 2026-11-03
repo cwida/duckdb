@@ -284,7 +284,8 @@ private:
 
 	//! Does the actual group matching / creation
 	idx_t FindOrCreateGroupsInternal(DataChunk &groups, Vector &group_hashes, Vector &addresses,
-	                                 SelectionVector &new_groups);
+	                                 SelectionVector &new_groups,
+	                                 optional_ptr<TupleDataChunkState> source_rows = nullptr);
 	void InitializeLookupState(AggregateHTLookupState &lookup_state) const;
 
 	//! Verify the pointer table of the HT

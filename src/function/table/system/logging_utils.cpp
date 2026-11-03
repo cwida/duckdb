@@ -24,6 +24,29 @@ public:
 	vector<string> log_types_to_set;
 };
 
+//! File logging requires a path. Reject switching to file storage without one before mutating any state, so the
+//! active storage is preserved instead of becoming a path-less storage that throws on every later flush (end-of-query
+//! and shutdown included).
+static void VerifyFileStoragePath(LogManager &log_manager, const string &storage,
+                                  const case_insensitive_map_t<Value> &storage_config) {
+	if (StringUtil::Lower(storage) != LogConfig::FILE_STORAGE_NAME) {
+		return;
+	}
+	auto current_storage = StringUtil::Lower(log_manager.GetConfig().storage);
+	// Already-active file storage keeps its existing path, only a fresh switch is guarded.
+	if (current_storage == LogConfig::FILE_STORAGE_NAME) {
+		return;
+	}
+	auto path_entry = storage_config.find("path");
+	bool has_usable_path =
+	    path_entry != storage_config.end() && !path_entry->second.IsNull() && !path_entry->second.ToString().empty();
+	if (!has_usable_path) {
+		throw InvalidInputException(
+		    "Cannot enable 'file' log storage without a valid path. Provide one via storage_path, "
+		    "e.g. CALL enable_logging(storage='file', storage_path='mylog.csv');");
+	}
+}
+
 static void EnableLogging(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
 	auto bind_data = data.bind_data->Cast<EnableLoggingBindData>();
 
@@ -33,8 +56,11 @@ static void EnableLogging(ClientContext &context, TableFunctionInput &data, Data
 
 	auto &log_manager = context.db->GetLogManager();
 
+	// a prepared call can run after the storage it was bound against changed
+	VerifyFileStoragePath(log_manager, bind_data.config.storage, bind_data.storage_config);
+
 	// Apply the config generated from the input - restoring the previous config if that fails part-way
-	auto previous_config = log_manager.GetConfig();
+	auto previous = log_manager.GetConfigAndStorage();
 	try {
 		log_manager.SetConfig(*context.db, bind_data.config);
 
@@ -49,7 +75,8 @@ static void EnableLogging(ClientContext &context, TableFunctionInput &data, Data
 			log_manager.UpdateLogStorageConfig(*context.db, bind_data.storage_config);
 		}
 	} catch (...) {
-		log_manager.SetConfig(*context.db, previous_config);
+		// the previous storage itself, as a new one of its kind would lack its storage config
+		log_manager.RestoreConfig(previous.first, std::move(previous.second));
 		throw;
 	}
 }
@@ -122,23 +149,7 @@ static unique_ptr<FunctionData> BindEnableLogging(ClientContext &context, TableF
 		}
 	}
 
-	// File logging requires a path. Reject switching to file storage without one before mutating any
-	// state, so the active storage is preserved instead of becoming a path-less storage that throws
-	// on every later flush (end-of-query and shutdown included).
-	if (StringUtil::Lower(result->config.storage) == LogConfig::FILE_STORAGE_NAME) {
-		auto current_storage = StringUtil::Lower(context.db->GetLogManager().GetConfig().storage);
-		// Already-active file storage keeps its existing path; only guard a fresh switch.
-		if (current_storage != LogConfig::FILE_STORAGE_NAME) {
-			auto path_entry = result->storage_config.find("path");
-			bool has_usable_path = path_entry != result->storage_config.end() && !path_entry->second.IsNull() &&
-			                       !path_entry->second.ToString().empty();
-			if (!has_usable_path) {
-				throw InvalidInputException(
-				    "Cannot enable 'file' log storage without a valid path. Provide one via storage_path, "
-				    "e.g. CALL enable_logging(storage='file', storage_path='mylog.csv');");
-			}
-		}
-	}
+	VerifyFileStoragePath(context.db->GetLogManager(), result->config.storage, result->storage_config);
 
 	// Process positional params
 	if (!input.inputs.empty()) {

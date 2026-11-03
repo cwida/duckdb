@@ -2,6 +2,9 @@
 # description: Regression test for COPY to gzip when a single write exceeds 4 GiB (UINT32_MAX)
 # group: [csv]
 
+# Growing the write buffer can temporarily require about 12 GiB of buffers.
+require ram 20GB
+
 statement ok
 COPY (SELECT repeat('x', 2100000) AS doc FROM range(2048)) TO '{TEST_DIR}/large_gzip_block.csv.gz' (FORMAT CSV, HEADER false);
 
@@ -9,6 +12,7 @@ COPY (SELECT repeat('x', 2100000) AS doc FROM range(2048)) TO '{TEST_DIR}/large_
 # valid and decompresses to exactly the original data (2048 rows of 2100000 'x' characters).
 query II
 SELECT count(*), sum(length(doc))::BIGINT
-FROM read_csv('{TEST_DIR}/large_gzip_block.csv.gz', columns={'doc': 'VARCHAR'}, header=false, max_line_size=20000000);
+FROM read_csv('{TEST_DIR}/large_gzip_block.csv.gz', columns={'doc': 'VARCHAR'},
+              header=false, auto_detect=false, max_line_size=20000000);
 ----
 2048	4300800000

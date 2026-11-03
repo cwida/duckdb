@@ -1,0 +1,372 @@
+# name: test/sql/cte/recursive_cte_key_finalize_reads.test
+# description: Repeated finalizes of frozen USING KEY payload aggregates leave the states valid for later reads and updates
+# group: [cte]
+
+require vector_size 2048
+
+# A keyed payload state is finalized by every recurring read and by the final drain, and updated again afterwards.
+statement ok
+SET threads=8;
+
+query IIIIIII
+WITH RECURSIVE t(k, mn, mx, sm, cnt, am) USING KEY (k, min(mn), max(mx), sum(sm), count(cnt), arg_min(am, mn)) AS (
+	SELECT i, 0, 0, 0, 0, i FROM range(16384) r(i)
+	UNION
+	SELECT n.k, r.mn + 1, r.mx + 1, 1, 1, n.am + 1
+	FROM t n JOIN (SELECT * FROM recurring.t WHERE mx < 3) r USING (k)
+)
+SELECT count(*), min(mn), max(mx), sum(sm)::BIGINT, sum(cnt)::BIGINT, sum(am)::BIGINT, sum(k)::BIGINT FROM t;
+----
+16384	0	3	49152	65536	134209536	134209536
+
+# Holistic payload aggregates: results at 8 threads equal the single-threaded results.
+statement ok
+SET threads=1;
+
+statement ok
+CREATE TABLE expected_approx AS
+WITH RECURSIVE t(k, v) USING KEY (k, approx_quantile(v, 0.5)) AS (
+	SELECT i, 0.0::DOUBLE FROM range(16384) r(i)
+	UNION
+	SELECT n.k, r.v + 1
+	FROM t n JOIN (SELECT * FROM recurring.t WHERE v < 3) r USING (k)
+)
+SELECT * FROM t;
+
+statement ok
+CREATE TABLE expected_reservoir AS
+WITH RECURSIVE t(k, v) USING KEY (k, reservoir_quantile(v, 1.0)) AS (
+	SELECT i, 0.0::DOUBLE FROM range(16384) r(i)
+	UNION
+	SELECT n.k, r.v + 1
+	FROM t n JOIN recurring.t r USING (k)
+	WHERE r.v < 3
+)
+SELECT * FROM t;
+
+statement ok
+SET threads=8;
+
+query II
+WITH RECURSIVE t(k, v) USING KEY (k, approx_quantile(v, 0.5)) AS (
+	SELECT i, 0.0::DOUBLE FROM range(16384) r(i)
+	UNION
+	SELECT n.k, r.v + 1
+	FROM t n JOIN (SELECT * FROM recurring.t WHERE v < 3) r USING (k)
+),
+actual AS (SELECT * FROM t)
+SELECT (SELECT count(*) FROM (TABLE actual EXCEPT TABLE expected_approx)),
+       (SELECT count(*) FROM (TABLE expected_approx EXCEPT TABLE actual));
+----
+0	0
+
+query II
+WITH RECURSIVE t(k, v) USING KEY (k, reservoir_quantile(v, 1.0)) AS (
+	SELECT i, 0.0::DOUBLE FROM range(16384) r(i)
+	UNION
+	SELECT n.k, r.v + 1
+	FROM t n JOIN recurring.t r USING (k)
+	WHERE r.v < 3
+),
+actual AS (SELECT * FROM t)
+SELECT (SELECT count(*) FROM (TABLE actual EXCEPT TABLE expected_reservoir)),
+       (SELECT count(*) FROM (TABLE expected_reservoir EXCEPT TABLE actual));
+----
+0	0
+
+query II
+SELECT count(*), count(DISTINCT k) FROM expected_reservoir;
+----
+16384	16384
+
+# The n-variants of min, max, arg_min and arg_max export their heap in sorted order and must leave the heap intact.
+statement ok
+SET threads=2;
+
+statement ok
+SET max_execution_time=5000;
+
+query II
+WITH RECURSIVE t(k, v, iter) USING KEY (k, min(v, 3), max(iter)) AS (
+	SELECT i % 10, (i % 100)::INTEGER, 0 FROM range(4096) r(i)
+	UNION ALL
+	SELECT n.k, r.v[1], 1 FROM t n JOIN recurring.t r USING (k) WHERE n.iter = 0
+)
+SELECT count(*), sum(len(v)) FROM t;
+----
+10	30
+
+statement ok
+SET threads=8;
+
+# max(v, 3)
+statement ok
+SET threads=1;
+
+statement ok
+CREATE OR REPLACE TABLE expected_payload AS
+WITH RECURSIVE t(k, v, iter) USING KEY (k, max(v, 3), max(iter)) AS (
+	SELECT i % 100, (i % 7)::INTEGER, 0 FROM range(16384) r(i)
+	UNION ALL
+	SELECT n.k, (r.iter + 1)::INTEGER, r.iter + 1 FROM t n JOIN recurring.t r USING (k) WHERE r.iter < 3
+)
+SELECT k, v::VARCHAR AS v, iter FROM t;
+
+statement ok
+SET threads=8;
+
+query II
+WITH RECURSIVE t(k, v, iter) USING KEY (k, max(v, 3), max(iter)) AS (
+	SELECT i % 100, (i % 7)::INTEGER, 0 FROM range(16384) r(i)
+	UNION ALL
+	SELECT n.k, (r.iter + 1)::INTEGER, r.iter + 1 FROM t n JOIN recurring.t r USING (k) WHERE r.iter < 3
+),
+actual AS (SELECT k, v::VARCHAR AS v, iter FROM t)
+SELECT (SELECT count(*) FROM (TABLE actual EXCEPT TABLE expected_payload)),
+       (SELECT count(*) FROM (TABLE expected_payload EXCEPT TABLE actual));
+----
+0	0
+
+# arg_min(v, k, 2)
+statement ok
+SET threads=1;
+
+statement ok
+CREATE OR REPLACE TABLE expected_payload AS
+WITH RECURSIVE t(k, v, iter) USING KEY (k, arg_min(v, k, 2), max(iter)) AS (
+	SELECT i % 100, (i % 7)::INTEGER, 0 FROM range(16384) r(i)
+	UNION ALL
+	SELECT n.k, (r.iter + 1)::INTEGER, r.iter + 1 FROM t n JOIN recurring.t r USING (k) WHERE r.iter < 3
+)
+SELECT k, v::VARCHAR AS v, iter FROM t;
+
+statement ok
+SET threads=8;
+
+query II
+WITH RECURSIVE t(k, v, iter) USING KEY (k, arg_min(v, k, 2), max(iter)) AS (
+	SELECT i % 100, (i % 7)::INTEGER, 0 FROM range(16384) r(i)
+	UNION ALL
+	SELECT n.k, (r.iter + 1)::INTEGER, r.iter + 1 FROM t n JOIN recurring.t r USING (k) WHERE r.iter < 3
+),
+actual AS (SELECT k, v::VARCHAR AS v, iter FROM t)
+SELECT (SELECT count(*) FROM (TABLE actual EXCEPT TABLE expected_payload)),
+       (SELECT count(*) FROM (TABLE expected_payload EXCEPT TABLE actual));
+----
+0	0
+
+# arg_max(v, iter, 2)
+statement ok
+SET threads=1;
+
+statement ok
+CREATE OR REPLACE TABLE expected_payload AS
+WITH RECURSIVE t(k, v, iter) USING KEY (k, arg_max(v, iter, 2), max(iter)) AS (
+	SELECT i % 100, (i % 7)::INTEGER, 0 FROM range(16384) r(i)
+	UNION ALL
+	SELECT n.k, (r.iter + 1)::INTEGER, r.iter + 1 FROM t n JOIN recurring.t r USING (k) WHERE r.iter < 3
+)
+SELECT k, v::VARCHAR AS v, iter FROM t;
+
+statement ok
+SET threads=8;
+
+query II
+WITH RECURSIVE t(k, v, iter) USING KEY (k, arg_max(v, iter, 2), max(iter)) AS (
+	SELECT i % 100, (i % 7)::INTEGER, 0 FROM range(16384) r(i)
+	UNION ALL
+	SELECT n.k, (r.iter + 1)::INTEGER, r.iter + 1 FROM t n JOIN recurring.t r USING (k) WHERE r.iter < 3
+),
+actual AS (SELECT k, v::VARCHAR AS v, iter FROM t)
+SELECT (SELECT count(*) FROM (TABLE actual EXCEPT TABLE expected_payload)),
+       (SELECT count(*) FROM (TABLE expected_payload EXCEPT TABLE actual));
+----
+0	0
+
+# quantile_cont(v, 0.5)
+statement ok
+SET threads=1;
+
+statement ok
+CREATE OR REPLACE TABLE expected_payload AS
+WITH RECURSIVE t(k, v, iter) USING KEY (k, quantile_cont(v, 0.5), max(iter)) AS (
+	SELECT i % 100, (i % 7)::INTEGER, 0 FROM range(16384) r(i)
+	UNION ALL
+	SELECT n.k, (r.iter + 1)::INTEGER, r.iter + 1 FROM t n JOIN recurring.t r USING (k) WHERE r.iter < 3
+)
+SELECT k, v::VARCHAR AS v, iter FROM t;
+
+statement ok
+SET threads=8;
+
+query II
+WITH RECURSIVE t(k, v, iter) USING KEY (k, quantile_cont(v, 0.5), max(iter)) AS (
+	SELECT i % 100, (i % 7)::INTEGER, 0 FROM range(16384) r(i)
+	UNION ALL
+	SELECT n.k, (r.iter + 1)::INTEGER, r.iter + 1 FROM t n JOIN recurring.t r USING (k) WHERE r.iter < 3
+),
+actual AS (SELECT k, v::VARCHAR AS v, iter FROM t)
+SELECT (SELECT count(*) FROM (TABLE actual EXCEPT TABLE expected_payload)),
+       (SELECT count(*) FROM (TABLE expected_payload EXCEPT TABLE actual));
+----
+0	0
+
+# mode(v)
+statement ok
+SET threads=1;
+
+statement ok
+CREATE OR REPLACE TABLE expected_payload AS
+WITH RECURSIVE t(k, v, iter) USING KEY (k, mode(v), max(iter)) AS (
+	SELECT i % 100, (i % 7)::INTEGER, 0 FROM range(16384) r(i)
+	UNION ALL
+	SELECT n.k, (r.iter + 1)::INTEGER, r.iter + 1 FROM t n JOIN recurring.t r USING (k) WHERE r.iter < 3
+)
+SELECT k, v::VARCHAR AS v, iter FROM t;
+
+statement ok
+SET threads=8;
+
+query II
+WITH RECURSIVE t(k, v, iter) USING KEY (k, mode(v), max(iter)) AS (
+	SELECT i % 100, (i % 7)::INTEGER, 0 FROM range(16384) r(i)
+	UNION ALL
+	SELECT n.k, (r.iter + 1)::INTEGER, r.iter + 1 FROM t n JOIN recurring.t r USING (k) WHERE r.iter < 3
+),
+actual AS (SELECT k, v::VARCHAR AS v, iter FROM t)
+SELECT (SELECT count(*) FROM (TABLE actual EXCEPT TABLE expected_payload)),
+       (SELECT count(*) FROM (TABLE expected_payload EXCEPT TABLE actual));
+----
+0	0
+
+# approx_top_k(v, 2)
+statement ok
+SET threads=1;
+
+statement ok
+CREATE OR REPLACE TABLE expected_payload AS
+WITH RECURSIVE t(k, v, iter) USING KEY (k, approx_top_k(v, 2), max(iter)) AS (
+	SELECT i % 100, (i % 7)::INTEGER, 0 FROM range(16384) r(i)
+	UNION ALL
+	SELECT n.k, (r.iter + 1)::INTEGER, r.iter + 1 FROM t n JOIN recurring.t r USING (k) WHERE r.iter < 3
+)
+SELECT k, v::VARCHAR AS v, iter FROM t;
+
+statement ok
+SET threads=8;
+
+query II
+WITH RECURSIVE t(k, v, iter) USING KEY (k, approx_top_k(v, 2), max(iter)) AS (
+	SELECT i % 100, (i % 7)::INTEGER, 0 FROM range(16384) r(i)
+	UNION ALL
+	SELECT n.k, (r.iter + 1)::INTEGER, r.iter + 1 FROM t n JOIN recurring.t r USING (k) WHERE r.iter < 3
+),
+actual AS (SELECT k, v::VARCHAR AS v, iter FROM t)
+SELECT (SELECT count(*) FROM (TABLE actual EXCEPT TABLE expected_payload)),
+       (SELECT count(*) FROM (TABLE expected_payload EXCEPT TABLE actual));
+----
+0	0
+
+# histogram(v)
+statement ok
+SET threads=1;
+
+statement ok
+CREATE OR REPLACE TABLE expected_payload AS
+WITH RECURSIVE t(k, v, iter) USING KEY (k, histogram(v), max(iter)) AS (
+	SELECT i % 100, (i % 7)::INTEGER, 0 FROM range(16384) r(i)
+	UNION ALL
+	SELECT n.k, (r.iter + 1)::INTEGER, r.iter + 1 FROM t n JOIN recurring.t r USING (k) WHERE r.iter < 3
+)
+SELECT k, v::VARCHAR AS v, iter FROM t;
+
+statement ok
+SET threads=8;
+
+query II
+WITH RECURSIVE t(k, v, iter) USING KEY (k, histogram(v), max(iter)) AS (
+	SELECT i % 100, (i % 7)::INTEGER, 0 FROM range(16384) r(i)
+	UNION ALL
+	SELECT n.k, (r.iter + 1)::INTEGER, r.iter + 1 FROM t n JOIN recurring.t r USING (k) WHERE r.iter < 3
+),
+actual AS (SELECT k, v::VARCHAR AS v, iter FROM t)
+SELECT (SELECT count(*) FROM (TABLE actual EXCEPT TABLE expected_payload)),
+       (SELECT count(*) FROM (TABLE expected_payload EXCEPT TABLE actual));
+----
+0	0
+
+# Reading a state must leave it valid for later reads and updates: min(v, 3) used to sort its heap in place while
+# finalizing, so the inserts of the next iteration corrupted the kept values.
+statement ok
+SET threads=1;
+
+query III
+WITH RECURSIVE t(k, v, iter) USING KEY (k, min(v, 3), max(iter)) AS (
+	SELECT 0, i, 0 FROM range(1, 4) r(i)
+	UNION ALL
+	SELECT n.k, 2, 1 FROM t n JOIN recurring.t r USING (k) WHERE n.iter = 0
+)
+SELECT k, v, iter FROM t;
+----
+0	[1, 2, 2]	1
+
+query III
+WITH RECURSIVE t(k, v, iter) USING KEY (k, max(v, 3), max(iter)) AS (
+	SELECT 0, i, 0 FROM range(1, 4) r(i)
+	UNION ALL
+	SELECT n.k, 2, 1 FROM t n JOIN recurring.t r USING (k) WHERE n.iter = 0
+)
+SELECT k, v, iter FROM t;
+----
+0	[3, 2, 2]	1
+
+query III
+WITH RECURSIVE t(k, v, iter) USING KEY (k, arg_min(v, v, 3), max(iter)) AS (
+	SELECT 0, i, 0 FROM range(1, 4) r(i)
+	UNION ALL
+	SELECT n.k, 2, 1 FROM t n JOIN recurring.t r USING (k) WHERE n.iter = 0
+)
+SELECT k, v, iter FROM t;
+----
+0	[1, 2, 2]	1
+
+# sum(BIGNUM) exports a trimmed copy of its intermediate without shrinking the state it keeps.
+statement ok
+SET threads=2;
+
+query I
+WITH RECURSIVE t(k, v, iter) USING KEY (k, sum(v), max(iter)) AS (
+	SELECT i % 10, (i % 100)::BIGNUM, 0 FROM range(4096) r(i)
+	UNION ALL
+	SELECT n.k, r.v, 1 FROM t n JOIN recurring.t r USING (k) WHERE n.iter = 0
+)
+SELECT count(*) FROM t;
+----
+10
+
+statement ok
+SET threads=1;
+
+statement ok
+CREATE OR REPLACE TABLE expected_bignum AS
+WITH RECURSIVE t(k, v, iter) USING KEY (k, sum(v), max(iter)) AS (
+	SELECT i % 10, (i % 100)::BIGNUM, 0 FROM range(4096) r(i)
+	UNION ALL
+	SELECT n.k, r.v, 1 FROM t n JOIN recurring.t r USING (k) WHERE n.iter = 0
+)
+SELECT k, v::VARCHAR AS v, iter FROM t;
+
+statement ok
+SET threads=8;
+
+query II
+WITH RECURSIVE t(k, v, iter) USING KEY (k, sum(v), max(iter)) AS (
+	SELECT i % 10, (i % 100)::BIGNUM, 0 FROM range(4096) r(i)
+	UNION ALL
+	SELECT n.k, r.v, 1 FROM t n JOIN recurring.t r USING (k) WHERE n.iter = 0
+),
+actual AS (SELECT k, v::VARCHAR AS v, iter FROM t)
+SELECT (SELECT count(*) FROM (TABLE actual EXCEPT TABLE expected_bignum)),
+       (SELECT count(*) FROM (TABLE expected_bignum EXCEPT TABLE actual));
+----
+0	0

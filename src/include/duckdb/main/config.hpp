@@ -198,7 +198,7 @@ public:
 	}
 
 	template <class... ARGS>
-	void emplace_back(ARGS &&...args) { // NOLINT
+	void emplace_back(ARGS &&... args) { // NOLINT
 		auto scan = make_shared_ptr<ReplacementScan>(std::forward<ARGS>(args)...);
 		lock_guard<mutex> guard(lock);
 		scans.push_back(std::move(scan));

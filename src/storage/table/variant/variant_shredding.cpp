@@ -105,14 +105,14 @@ struct VariantStatsVisitor {
 	}
 
 	static void VisitArray(const UnifiedVariantVectorData &variant, idx_t row, const VariantNestedData &nested_data,
-	                       VariantShreddingStats &stats, idx_t stats_column_index) {
+	                       idx_t depth, VariantShreddingStats &stats, idx_t stats_column_index) {
 		auto &element_stats = stats.GetOrCreateElement(stats_column_index);
 		auto index = element_stats.index;
-		VariantVisitor<VariantStatsVisitor>::VisitArrayItems(variant, row, nested_data, stats, index);
+		VariantVisitor<VariantStatsVisitor>::VisitArrayItems(variant, row, nested_data, depth, stats, index);
 	}
 
 	static void VisitObject(const UnifiedVariantVectorData &variant, idx_t row, const VariantNestedData &nested_data,
-	                        VariantShreddingStats &stats, idx_t stats_column_index) {
+	                        idx_t depth, VariantShreddingStats &stats, idx_t stats_column_index) {
 		//! Then visit the fields in sorted order
 		for (idx_t i = 0; i < nested_data.child_count; i++) {
 			auto source_children_idx = nested_data.children_idx + i;
@@ -121,12 +121,12 @@ struct VariantStatsVisitor {
 			auto keys_index = variant.GetKeysIndex(row, source_children_idx);
 			auto &key = variant.GetKey(row, keys_index);
 
-			auto &child_stats = stats.GetOrCreateField(stats_column_index, key.GetString());
+			auto &child_stats = stats.GetOrCreateField(stats_column_index, key);
 			auto index = child_stats.index;
 
 			//! Visit the child value
 			auto values_index = variant.GetValuesIndex(row, source_children_idx);
-			VariantVisitor<VariantStatsVisitor>::Visit(variant, row, values_index, stats, index);
+			VariantVisitor<VariantStatsVisitor>::Visit(variant, row, values_index, depth + 1, stats, index);
 		}
 	}
 
@@ -283,13 +283,13 @@ VariantColumnStatsData &VariantShreddingStats::GetOrCreateElement(idx_t parent_i
 	return GetColumnStats(element_stats);
 }
 
-VariantColumnStatsData &VariantShreddingStats::GetOrCreateField(idx_t parent_index, const string &name) {
+VariantColumnStatsData &VariantShreddingStats::GetOrCreateField(idx_t parent_index, const string_t &name) {
 	auto &parent_column = columns[parent_index];
 	auto it = parent_column.field_stats.find(name);
 
 	idx_t field_stats;
 	if (it == parent_column.field_stats.end()) {
-		it = parent_column.field_stats.emplace(name, columns.size()).first;
+		it = parent_column.field_stats.emplace(field_names.AddBlob(name), columns.size()).first;
 		field_stats = it->second;
 		columns.emplace_back(field_stats);
 	} else {
@@ -442,17 +442,18 @@ bool VariantShreddingStats::GetShreddedTypeInternal(const VariantColumnStatsData
 		case_insensitive_string_set_t field_names;
 		for (auto &entry : column.field_stats) {
 			auto &child_column = GetColumnStats(entry.second);
-			if (entry.first.empty()) {
+			if (entry.first.Empty()) {
 				//! Do not include empty field names in the shredded type!
 				continue;
 			}
-			if (!field_names.emplace(entry.first).second) {
+			auto field_name = entry.first.GetString();
+			if (!field_names.emplace(field_name).second) {
 				//! STRUCT field names are case-insensitive, but VARIANT object keys are case-sensitive.
 				return false;
 			}
 			LogicalType child_type;
 			if (GetShreddedTypeInternal(child_column, child_type, total_value_count, force_partial)) {
-				child_types.emplace_back(entry.first, child_type);
+				child_types.emplace_back(field_name, child_type);
 			}
 		}
 		if (child_types.empty()) {
@@ -506,7 +507,7 @@ void VariantShreddingStats::Update(const Vector &input, idx_t count) {
 	UnifiedVariantVectorData variant(recursive_format);
 
 	for (idx_t i = 0; i < count; i++) {
-		VariantVisitor<VariantStatsVisitor>::Visit(variant, i, 0, *this, static_cast<idx_t>(0));
+		VariantVisitor<VariantStatsVisitor>::Visit(variant, i, 0, 0, *this, static_cast<idx_t>(0));
 	}
 }
 
@@ -546,7 +547,7 @@ static void VisitObject(const UnifiedVariantVectorData &variant, idx_t row, cons
 		state.keys_indexes[children_idx] = keys_idx;
 		children_idx++;
 		keys_idx++;
-		VariantVisitor<VariantNormalizer>::Visit(variant, row, values_index, state);
+		VariantVisitor<VariantNormalizer>::Visit(variant, row, values_index, 0, state);
 	}
 }
 
@@ -554,13 +555,13 @@ static vector<uint32_t> UnshreddedObjectChildren(UnifiedVariantVectorData &varia
                                                  DuckDBVariantShreddingState &shredding_state) {
 	auto nested_data = VariantUtils::DecodeNestedData(variant, row, value_index);
 
-	auto shredded_fields = shredding_state.ObjectFields();
+	auto &shredded_fields = shredding_state.ObjectFields();
 	vector<uint32_t> unshredded_children;
 	unshredded_children.reserve(nested_data.child_count);
 	for (uint32_t i = 0; i < nested_data.child_count; i++) {
 		auto keys_index = variant.GetKeysIndex(row, nested_data.children_idx + i);
 		auto &key = variant.GetKey(row, keys_index);
-		if (shredded_fields.count(key.GetString())) {
+		if (shredded_fields.count(key)) {
 			continue;
 		}
 		unshredded_children.emplace_back(i);
@@ -778,7 +779,7 @@ void VariantColumnData::ShredVariantData(const Vector &input, Vector &output, id
 				VisitObject(variant, row, nested_data, normalizer_state, unshredded_value.unshredded_children);
 				continue;
 			}
-			VariantVisitor<VariantNormalizer>::Visit(variant, row, value_index, normalizer_state);
+			VariantVisitor<VariantNormalizer>::Visit(variant, row, value_index, 0, normalizer_state);
 		}
 		blob_data.SetSizeAndFinalize(normalizer_state.blob_size, original_data.GetSize());
 		keys_list_entry.length = normalizer_state.keys_size;

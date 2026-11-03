@@ -1,0 +1,48 @@
+# name: test/sql/copy/parquet/read_ahead/readahead_budget_growth.test
+# description: In automatic mode the read-ahead reservation grows past its minimum, and the backlog never exceeds the budget it was admitted under
+# group: [read_ahead]
+
+require parquet
+
+statement ok
+SET threads=16
+
+# the budget may grow to min(64 MB x threads, memory_limit / 8) and starts at min(8 MB x threads, memory_limit / 16)
+statement ok
+SET memory_limit='8GB'
+
+loop i 0 64
+
+statement ok
+COPY (SELECT range AS b FROM range(1000)) TO '{TEST_DIR}/budget_growth_{i}.parquet' (FORMAT parquet)
+
+endloop
+
+# slow reads: the producers run ahead of the I/O and fill the backlog up to the budget
+statement ok
+SET GLOBAL debug_local_file_system_delay_ms=5
+
+statement ok
+CALL enable_logging('ReadAheadBudget')
+
+query I
+SELECT sum(b) FROM read_parquet('{TEST_DIR}/budget_growth_*.parquet')
+----
+31968000
+
+statement ok
+SET GLOBAL debug_local_file_system_delay_ms=0
+
+# every job carries a 16 MB minimum charge, so the 8 MB x 16 threads minimum reservation admits only 8 jobs; the budget
+# must have doubled its way well past that (to the cap, here 1 GB) rather than stay at the minimum or one racy doubling above
+query T
+SELECT max(budget_bytes) > 4 * 16 * 8 * 1024 * 1024 FROM duckdb_logs_parsed('ReadAheadBudget')
+----
+true
+
+# ... and a job is admitted only while the backlog is below the budget, so the backlog never exceeds the budget by more
+# than one minimum charge per producing thread
+query T
+SELECT bool_and(pending_bytes <= budget_bytes + 16 * 16 * 1024 * 1024) FROM duckdb_logs_parsed('ReadAheadBudget')
+----
+true

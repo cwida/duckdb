@@ -43,6 +43,7 @@
 #include "duckdb/optimizer/late_materialization.hpp"
 #include "duckdb/optimizer/common_subplan_optimizer.hpp"
 #include "duckdb/optimizer/partitioned_execution.hpp"
+#include "duckdb/optimizer/window_join_pushdown.hpp"
 #include "duckdb/optimizer/window_self_join.hpp"
 #include "duckdb/optimizer/row_number_rewriter.hpp"
 #include "duckdb/optimizer/optimizer_extension.hpp"
@@ -311,6 +312,12 @@ void Optimizer::RunBuiltInOptimizers() {
 		projection_pullup.Optimize(plan);
 	});
 
+	// Push down joins against windows
+	RunOptimizer(OptimizerType::WINDOW_JOIN_PUSHDOWN, [&]() {
+		WindowJoinPushdown optimizer;
+		plan = optimizer.Optimize(std::move(plan));
+	});
+
 	// Simplifies FULL OUTER -> LEFT/RIGHT OUTER -> INNER if NULLs are filtered anyway
 	RunOptimizer(OptimizerType::OUTER_JOIN_SIMPLIFICATION, [&]() {
 		OuterJoinSimplification outer_join_simplification;
@@ -494,10 +501,10 @@ void Optimizer::RunBuiltInOptimizers() {
 		partitioned_execution.Optimize(plan);
 	});
 
-	// perform join filter pushdown after the dust has settled
+	// Generate join filters before row-number and scan-expression rewrites.
 	RunOptimizer(OptimizerType::JOIN_FILTER_PUSHDOWN, [&]() {
 		JoinFilterPushdownOptimizer join_filter_pushdown(*this);
-		join_filter_pushdown.VisitOperator(*plan);
+		join_filter_pushdown.Optimize(*plan);
 	});
 
 	// Rewrite ROW_NUMBER() OVER() window functions to use the row_number virtual column

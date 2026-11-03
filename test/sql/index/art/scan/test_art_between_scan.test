@@ -1,0 +1,44 @@
+# name: test/sql/index/art/scan/test_art_between_scan.test
+# description: Test that BETWEEN uses an ART index scan.
+# group: [scan]
+
+statement ok
+CREATE TABLE tbl AS SELECT range AS i FROM range(500000);
+
+statement ok
+CREATE INDEX idx_i ON tbl(i);
+
+query II
+EXPLAIN ANALYZE SELECT i FROM tbl WHERE i BETWEEN 100 AND 102;
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+query I
+SELECT i FROM tbl WHERE i BETWEEN 100 AND 102 ORDER BY i;
+----
+100
+101
+102
+
+query I
+SELECT i FROM tbl WHERE i > 100 AND i < 103 ORDER BY i;
+----
+101
+102
+
+query II
+EXPLAIN ANALYZE SELECT i FROM tbl WHERE i > 100 AND i < 103;
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+query II
+EXPLAIN ANALYZE SELECT i FROM tbl WHERE i < 103 AND 100 <= i;
+----
+analyzed_plan	<REGEX>:.*Type: Index Scan.*
+
+query I
+SELECT i FROM tbl WHERE i < 103 AND 100 <= i ORDER BY i;
+----
+100
+101
+102

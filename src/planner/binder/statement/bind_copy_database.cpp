@@ -1,4 +1,5 @@
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/parser/parsed_data/create_macro_info.hpp"
 #include "duckdb/planner/binder.hpp"
 #include "duckdb/parser/statement/copy_database_statement.hpp"
 #include "duckdb/catalog/catalog_entry/list.hpp"
@@ -28,10 +29,15 @@ unique_ptr<LogicalOperator> Binder::BindCopyDatabaseSchema(Catalog &from_databas
 	catalog_entries = PhysicalExport::GetNaiveExportOrder(context, from_database);
 
 	auto info = make_uniq<CopyDatabaseInfo>(target_database_name);
+	auto &target_catalog = Catalog::GetCatalog(context, target_database_name);
 	for (auto &entry : catalog_entries) {
 		auto create_info = entry.get().GetInfo();
 		// re-root the entry (keeping its possibly nested schema path) in the target database
 		create_info->SetQualifiedName(create_info->GetQualifiedName().WithCatalog(target_database_name));
+		if (create_info->type == CatalogType::MACRO_ENTRY || create_info->type == CatalogType::TABLE_MACRO_ENTRY) {
+			// this path bypasses the CREATE binder, enforce the storage-version gate here
+			CheckMacroStorageVersion(target_catalog, create_info->Cast<CreateMacroInfo>());
+		}
 		auto on_conflict = create_info->type == CatalogType::SCHEMA_ENTRY ? OnCreateConflict::IGNORE_ON_CONFLICT
 		                                                                  : OnCreateConflict::ERROR_ON_CONFLICT;
 		// Update all the dependencies of the entry to point to the newly created entries on the target database

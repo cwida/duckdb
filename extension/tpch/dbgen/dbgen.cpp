@@ -87,7 +87,8 @@ struct tpch_append_information {
 		    optimistic_writer->CreateCollection(table.GetStorage(), table.GetTypes(), partial_manager_type);
 		auto &row_collection = *collection->collection;
 		row_collection.InitializeEmpty();
-		row_collection.InitializeAppend(append_state);
+		// the transaction id keeps the rows invisible to other transactions until the commit
+		row_collection.InitializeAppend(DuckTransaction::Get(context, table.catalog), append_state);
 		optimistic_collection_index = table.GetStorage().CreateOptimisticCollection(context, std::move(collection));
 		optimistic_collection = table.GetStorage().GetOptimisticCollection(context, optimistic_collection_index);
 		chunk.Initialize(context, table.GetTypes());
@@ -179,9 +180,8 @@ struct tpch_append_information {
 			return;
 		}
 		FlushChunk();
-		auto transaction_data = TransactionData::Unversioned();
 		auto &row_collection = *optimistic_collection->collection;
-		row_collection.FinalizeAppend(transaction_data, append_state);
+		row_collection.FinalizeAppend(append_state.transaction, append_state);
 		finalized = true;
 	}
 

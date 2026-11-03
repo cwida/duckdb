@@ -33,7 +33,6 @@ static void StructInsertFunction(DataChunk &args, ExpressionState &state, Vector
 static unique_ptr<FunctionData> StructInsertBind(BindScalarFunctionInput &input) {
 	auto &bound_function = input.GetBoundFunction();
 	auto &arguments = input.GetArguments();
-	auto &names = *input.GetArgumentNames();
 	for (auto &argument : arguments) {
 		if (argument->GetReturnType().id() == LogicalTypeId::UNKNOWN) {
 			throw ParameterNotResolvedException();
@@ -58,11 +57,12 @@ static unique_ptr<FunctionData> StructInsertBind(BindScalarFunctionInput &input)
 
 	// Loop through the fields that are inserted
 	for (idx_t i = 1; i < arguments.size(); i++) {
-		if (name_collision_set.find(names[i]) != name_collision_set.end()) {
-			throw BinderException("Duplicate struct entry name %s", names[i]);
+		auto &name = input.GetArgumentName(i);
+		if (name_collision_set.find(name) != name_collision_set.end()) {
+			throw BinderException("Duplicate struct entry name %s", name);
 		}
-		name_collision_set.insert(names[i]);
-		new_children.emplace_back(make_pair(names[i], arguments[i]->GetReturnType()));
+		name_collision_set.insert(name);
+		new_children.emplace_back(make_pair(name, arguments[i]->GetReturnType()));
 	}
 
 	bound_function.SetReturnType(LogicalType::STRUCT(new_children));

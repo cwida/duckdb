@@ -161,9 +161,9 @@ struct JSONConverterBase {
 
 struct JSONConverter : JSONConverterBase {
 	static yyjson_mut_val *VisitArray(const UnifiedVariantVectorData &variant, idx_t row,
-	                                  const VariantNestedData &nested_data, yyjson_mut_doc *doc) {
+	                                  const VariantNestedData &nested_data, idx_t depth, yyjson_mut_doc *doc) {
 		auto arr = yyjson_mut_arr(doc);
-		auto array_items = VariantVisitor<JSONConverter>::VisitArrayItems(variant, row, nested_data, doc);
+		auto array_items = VariantVisitor<JSONConverter>::VisitArrayItems(variant, row, nested_data, depth, doc);
 		for (auto &entry : array_items) {
 			yyjson_mut_arr_add_val(arr, entry);
 		}
@@ -171,9 +171,9 @@ struct JSONConverter : JSONConverterBase {
 	}
 
 	static yyjson_mut_val *VisitObject(const UnifiedVariantVectorData &variant, idx_t row,
-	                                   const VariantNestedData &nested_data, yyjson_mut_doc *doc) {
+	                                   const VariantNestedData &nested_data, idx_t depth, yyjson_mut_doc *doc) {
 		auto obj = yyjson_mut_obj(doc);
-		auto object_items = VariantVisitor<JSONConverter>::VisitObjectItems(variant, row, nested_data, doc);
+		auto object_items = VariantVisitor<JSONConverter>::VisitObjectItems(variant, row, nested_data, depth, doc);
 		for (auto &entry : object_items) {
 			yyjson_mut_obj_put(obj, yyjson_mut_strncpy(doc, entry.first.c_str(), entry.first.size()), entry.second);
 		}
@@ -183,20 +183,20 @@ struct JSONConverter : JSONConverterBase {
 
 template <VariantIterationOrder OBJECT_ORDER>
 struct NodeJSONConverter : JSONConverterBase {
-	static yyjson_mut_val *VisitArray(const VariantNode &variant, yyjson_mut_doc *doc) {
+	static yyjson_mut_val *VisitArray(const VariantNode &variant, idx_t depth, yyjson_mut_doc *doc) {
 		const auto arr = yyjson_mut_arr(doc);
-		const auto array_items = VariantVisitor<NodeJSONConverter<OBJECT_ORDER>>::VisitArrayItems(variant, doc);
+		const auto array_items = VariantVisitor<NodeJSONConverter<OBJECT_ORDER>>::VisitArrayItems(variant, depth, doc);
 		for (const auto &entry : array_items) {
 			yyjson_mut_arr_add_val(arr, entry);
 		}
 		return arr;
 	}
 
-	static yyjson_mut_val *VisitObject(const VariantNode &variant, yyjson_mut_doc *doc) {
+	static yyjson_mut_val *VisitObject(const VariantNode &variant, idx_t depth, yyjson_mut_doc *doc) {
 		const auto obj = yyjson_mut_obj(doc);
 		for (const auto &[key, value] : variant.GetObjectChildren(OBJECT_ORDER)) {
 			const auto key_value = yyjson_mut_strncpy(doc, key.GetData(), key.GetSize());
-			const auto json_value = VariantVisitor<NodeJSONConverter<OBJECT_ORDER>>::Visit(value, doc);
+			const auto json_value = VariantVisitor<NodeJSONConverter<OBJECT_ORDER>>::Visit(value, depth + 1, doc);
 			if (!yyjson_mut_obj_add(obj, key_value, json_value)) {
 				throw InternalException("Failed to append VARIANT object child to yyjson value");
 			}
@@ -210,14 +210,14 @@ struct NodeJSONConverter : JSONConverterBase {
 yyjson_mut_val *VariantCasts::ConvertVariantToJSON(yyjson_mut_doc *doc, const VariantNode &variant,
                                                    bool sort_object_keys) {
 	if (sort_object_keys) {
-		return VariantVisitor<NodeJSONConverter<VariantIterationOrder::LEXICOGRAPHIC>>::Visit(variant, doc);
+		return VariantVisitor<NodeJSONConverter<VariantIterationOrder::LEXICOGRAPHIC>>::Visit(variant, 0, doc);
 	}
-	return VariantVisitor<NodeJSONConverter<VariantIterationOrder::INTERNAL>>::Visit(variant, doc);
+	return VariantVisitor<NodeJSONConverter<VariantIterationOrder::INTERNAL>>::Visit(variant, 0, doc);
 }
 
 yyjson_mut_val *VariantCasts::ConvertVariantToJSON(yyjson_mut_doc *doc, const UnifiedVariantVectorData &variant,
                                                    idx_t row, uint32_t values_idx) {
-	return VariantVisitor<JSONConverter>::Visit(variant, row, values_idx, doc);
+	return VariantVisitor<JSONConverter>::Visit(variant, row, values_idx, 0, doc);
 }
 
 } // namespace duckdb

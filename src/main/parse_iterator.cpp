@@ -113,9 +113,9 @@ bool ParseIterator::PeekInternal() {
 		current_statement = std::move((*overridden_statements)[override_cursor++]);
 		return true;
 	}
-	if (!parser) {
-		parser = make_uniq<Parser>(options);
-	}
+	// parser options can change between statements of the same input (SET statements such as
+	// integer_division or active_grammar_extensions), so each statement gets a parser with fresh options
+	Parser parser(options);
 	EnsureTokenized();
 	// Walk the token cursor through the cached `tokens`, calling Parser::ParseTopLevelStatement
 	// repeatedly. A nullptr return with cursor advanced means a separator-only TopLevelStatement
@@ -126,17 +126,7 @@ bool ParseIterator::PeekInternal() {
 			exhausted = true;
 			return false;
 		}
-		unique_ptr<SQLStatement> stmt;
-		try {
-			stmt = parser->ParseTopLevelStatement(*token_iterator);
-		} catch (ParserException &) {
-			// Mirror Parser::ParseQuery's parse_function-extension fallback so extensions like
-			// `quack` can claim a segment that PEG couldn't parse.
-			stmt = parser->TryParseExtensionStatement(*token_iterator, sql);
-			if (!stmt) {
-				throw;
-			}
-		}
+		auto stmt = parser.ParseTopLevelStatement(*token_iterator, sql);
 		if (stmt) {
 			// ParseTopLevelStatement doesn't populate stmt->query (it operates on tokens, not the
 			// source string). Mirror Parser::ParseQuery's per-statement post-processing: extend from

@@ -377,7 +377,7 @@ void CommitState::CommitEntry(UndoFlags type, data_ptr_t data, CommitInfo &info)
 			throw TransactionException("Attempting to modify table %s but another transaction has %s this table",
 			                           table_name, table_modification);
 		}
-		CommitDelete(*info);
+		CommitDelete(*info, transaction.GetTransactionId());
 		break;
 	}
 	case UndoFlags::UPDATE_TUPLE: {
@@ -393,6 +393,11 @@ void CommitState::CommitEntry(UndoFlags type, data_ptr_t data, CommitInfo &info)
 		info->version_number = commit_id;
 		break;
 	}
+	case UndoFlags::UPDATE_ROWS: {
+		auto info = reinterpret_cast<DeleteInfo *>(data);
+		info->version_info->CommitWrite(transaction.GetTransactionId(), commit_id, *info, false);
+		break;
+	}
 	case UndoFlags::ATTACHED_DATABASE:
 	case UndoFlags::SEQUENCE_VALUE: {
 		break;
@@ -402,9 +407,9 @@ void CommitState::CommitEntry(UndoFlags type, data_ptr_t data, CommitInfo &info)
 	}
 }
 
-void CommitState::CommitDelete(DeleteInfo &info) {
+void CommitState::CommitDelete(DeleteInfo &info, transaction_t old_id) {
 	// mark the tuples as committed
-	info.version_info->CommitDelete(info.vector_idx, commit_id, info);
+	info.version_info->CommitWrite(old_id, commit_id, info, true);
 	// delete from indexes
 	index_data_remover.PushDelete(info);
 }
@@ -432,13 +437,19 @@ void CommitState::RevertCommit(UndoFlags type, data_ptr_t data) {
 		// deletion:
 		auto info = reinterpret_cast<DeleteInfo *>(data);
 		// revert the commit by writing the (uncommitted) transaction_id back into the version info
-		CommitDelete(*info);
+		CommitDelete(*info, transaction.commit_id);
 		break;
 	}
 	case UndoFlags::UPDATE_TUPLE: {
 		// update:
 		auto info = reinterpret_cast<UpdateInfo *>(data);
 		info->version_number = transaction_id;
+		break;
+	}
+	case UndoFlags::UPDATE_ROWS: {
+		auto info = reinterpret_cast<DeleteInfo *>(data);
+		// revert the commit by writing the (uncommitted) transaction_id back into the version info
+		info->version_info->CommitWrite(transaction.commit_id, transaction_id, *info, false);
 		break;
 	}
 	case UndoFlags::ATTACHED_DATABASE:

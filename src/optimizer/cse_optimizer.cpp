@@ -32,7 +32,7 @@ struct CSEReplacementState {
 	vector<unique_ptr<Expression>> cached_expressions;
 	//! Short circuit argument tracking
 	bool short_circuited = false;
-	//! True while visiting the child of a TRY, whose errors must stay inside the TRY
+	//! True while visiting the child of a TRY or HAS_ERROR, whose errors must stay inside the capture
 	bool inside_try = false;
 };
 
@@ -91,7 +91,8 @@ void CommonSubExpressionOptimizer::CountExpressions(Expression &expr, CSEReplace
 	}
 	case ExpressionClass::BOUND_OPERATOR: {
 		const auto save_inside_try = state.inside_try;
-		if (expr.GetExpressionType() == ExpressionType::OPERATOR_TRY) {
+		const auto expression_type = expr.GetExpressionType();
+		if (expression_type == ExpressionType::OPERATOR_TRY || expression_type == ExpressionType::OPERATOR_HAS_ERROR) {
 			state.inside_try = true;
 		}
 		ExpressionIterator::EnumerateChildren(expr, [&](Expression &child) { CountExpressions(child, state); });
@@ -147,7 +148,8 @@ void CommonSubExpressionOptimizer::PerformCSEReplacement(unique_ptr<Expression> 
 	// this expression only occurs once, we can't perform CSE elimination
 	// look into the children to see if we can replace them
 	const auto save_inside_try = state.inside_try;
-	if (expr.GetExpressionType() == ExpressionType::OPERATOR_TRY) {
+	const auto expression_type = expr.GetExpressionType();
+	if (expression_type == ExpressionType::OPERATOR_TRY || expression_type == ExpressionType::OPERATOR_HAS_ERROR) {
 		state.inside_try = true;
 	}
 	ExpressionIterator::EnumerateChildren(expr,

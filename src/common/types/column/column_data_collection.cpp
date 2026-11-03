@@ -416,6 +416,15 @@ struct StructValueCopy {
 	}
 };
 
+static void EnsureVectorDataAllocated(ColumnDataMetaData &meta_data, VectorDataIndex index, idx_t type_size) {
+	auto &segment = meta_data.segment;
+	if (segment.GetVectorData(index).is_allocated) {
+		return;
+	}
+	const auto allocation_size = ColumnDataCollectionSegment::GetDataSize(type_size) + ValidityMask::STANDARD_MASK_SIZE;
+	segment.AllocateVectorStorage(index, allocation_size, meta_data.chunk_data, &meta_data.state.current_chunk_state);
+}
+
 template <class OP>
 static void TemplatedColumnDataCopy(ColumnDataMetaData &meta_data, const UnifiedVectorFormat &source_data,
                                     Vector &source, idx_t offset, idx_t count) {
@@ -425,6 +434,7 @@ static void TemplatedColumnDataCopy(ColumnDataMetaData &meta_data, const Unified
 	auto current_index = meta_data.vector_data_index;
 	idx_t remaining = count;
 	while (remaining > 0) {
+		EnsureVectorDataAllocated(meta_data, current_index, OP::TypeSize());
 		auto &current_segment = segment.GetVectorData(current_index);
 		idx_t append_count = MinValue<idx_t>(STANDARD_VECTOR_SIZE - current_segment.count, remaining);
 
@@ -476,6 +486,8 @@ static void ColumnDataCopy(ColumnDataMetaData &meta_data, const UnifiedVectorFor
 	TemplatedColumnDataCopy<StandardValueCopy<T>>(meta_data, source_data, source, offset, copy_count);
 }
 
+//! Shares the string bytes of constant and small-dictionary appends that did not become a compact entry,
+//! e.g. in managed result collections or entries that already hold flat rows
 bool ColumnDataCopyCompressedStrings(ColumnDataMetaData &meta_data, const VectorDataIndex &current_index,
                                      VectorDataIndex &child_index, const UnifiedVectorFormat &source_data,
                                      Vector &source, const idx_t &offset, const idx_t &vector_remaining,
@@ -725,6 +737,7 @@ void ColumnDataCopy<string_t>(ColumnDataMetaData &meta_data, const UnifiedVector
 	idx_t remaining = copy_count;
 	auto block_size = meta_data.segment.allocator->GetBufferManager().GetBlockSize();
 	while (remaining > 0) {
+		EnsureVectorDataAllocated(meta_data, current_index, sizeof(string_t));
 		// how many values fit in the current string vector
 		const auto vector_remaining =
 		    MinValue<idx_t>(STANDARD_VECTOR_SIZE - segment.GetVectorData(current_index).count, remaining);
@@ -1031,6 +1044,355 @@ ColumnDataCopyFunction ColumnDataCollection::GetCopyFunction(const LogicalType &
 	return result;
 }
 
+//===--------------------------------------------------------------------===//
+// Compact representations
+//===--------------------------------------------------------------------===//
+static bool UsesStringHeap(ColumnDataAllocatorType allocator_type) {
+	return allocator_type == ColumnDataAllocatorType::IN_MEMORY_ALLOCATOR ||
+	       allocator_type == ColumnDataAllocatorType::HYBRID;
+}
+
+static void AppendConstantEntry(ColumnDataMetaData &meta_data, const UnifiedVectorFormat &source_data, Vector &source,
+                                idx_t offset, idx_t copy_count) {
+	auto &segment = meta_data.segment;
+	auto internal_type = source.GetType().InternalType();
+	auto source_idx = source_data.sel->get_index(offset);
+
+	ColumnDataConstantValue constant;
+	constant.is_valid = source_data.validity.RowIsValid(source_idx);
+	if (constant.is_valid) {
+		auto type_size = GetTypeIdSize(internal_type);
+		D_ASSERT(type_size <= sizeof(constant.data));
+		if (internal_type == PhysicalType::VARCHAR) {
+			auto value = UnifiedVectorFormat::GetData<string_t>(source_data)[source_idx];
+			if (!value.IsInlined()) {
+				if (UsesStringHeap(segment.allocator->GetType())) {
+					value = segment.heap->AddBlob(value);
+				} else {
+					// copy the string bytes once into a heap entry
+					auto heap_index =
+					    segment.AllocateStringHeap(value.GetSize(), meta_data.chunk_data, meta_data.state);
+					auto &heap_vdata = segment.GetVectorData(heap_index);
+					auto heap_ptr = segment.allocator->GetDataPointer(meta_data.state.current_chunk_state,
+					                                                  heap_vdata.block_id, heap_vdata.offset);
+					memcpy(heap_ptr, value.GetData(), value.GetSize());
+					constant.heap_index = heap_index;
+				}
+			}
+			Store<string_t>(value, constant.data);
+		} else {
+			memcpy(constant.data, source_data.data + source_idx * type_size, type_size);
+		}
+	}
+	auto &vdata = meta_data.GetVectorMetaData();
+	vdata.constant = constant;
+	vdata.representation = ColumnDataRepresentation::CONSTANT;
+	vdata.count = UnsafeNumericCast<uint16_t>(copy_count);
+	// account the metadata bytes that hold the value
+	segment.constant_metadata_size += sizeof(ColumnDataConstantValue);
+	segment.total_allocated += sizeof(ColumnDataConstantValue);
+}
+
+static bool TryExtendConstantEntry(ColumnDataMetaData &meta_data, const UnifiedVectorFormat &source_data,
+                                   Vector &source, idx_t offset, idx_t copy_count) {
+	if (source.GetVectorType() != VectorType::CONSTANT_VECTOR) {
+		return false;
+	}
+	auto &segment = meta_data.segment;
+	auto &vdata = meta_data.GetVectorMetaData();
+	D_ASSERT(vdata.count + copy_count <= STANDARD_VECTOR_SIZE);
+	auto source_idx = source_data.sel->get_index(offset);
+	if (vdata.constant.is_valid != source_data.validity.RowIsValid(source_idx)) {
+		return false;
+	}
+	if (vdata.constant.is_valid) {
+		auto internal_type = source.GetType().InternalType();
+		if (internal_type == PhysicalType::VARCHAR) {
+			auto stored = segment.GetConstantString(meta_data.state.current_chunk_state, vdata);
+			auto value = UnifiedVectorFormat::GetData<string_t>(source_data)[source_idx];
+			if (stored != value) {
+				return false;
+			}
+		} else {
+			auto type_size = GetTypeIdSize(internal_type);
+			if (memcmp(vdata.constant.data, source_data.data + source_idx * type_size, type_size) != 0) {
+				return false;
+			}
+		}
+	}
+	vdata.count += UnsafeNumericCast<uint16_t>(copy_count);
+	return true;
+}
+
+static void MaterializeConstantEntry(ColumnDataMetaData &meta_data, const LogicalType &type) {
+	auto &segment = meta_data.segment;
+	auto &state = meta_data.state;
+	auto internal_type = type.InternalType();
+	auto type_size = GetTypeIdSize(internal_type);
+	EnsureVectorDataAllocated(meta_data, meta_data.vector_data_index, type_size);
+
+	auto &vdata = meta_data.GetVectorMetaData();
+	auto base_ptr = segment.allocator->GetDataPointer(state.current_chunk_state, vdata.block_id, vdata.offset);
+	auto validity_data = ColumnDataCollectionSegment::GetValidityPointerForWriting(base_ptr, type_size);
+	ValidityMask validity(validity_data, STANDARD_VECTOR_SIZE);
+	validity.SetAllValid(STANDARD_VECTOR_SIZE);
+
+	const idx_t count = vdata.count;
+	if (!vdata.constant.is_valid) {
+		for (idx_t i = 0; i < count; i++) {
+			validity.SetInvalid(i);
+		}
+	} else if (internal_type == PhysicalType::VARCHAR) {
+		auto value = segment.GetConstantString(state.current_chunk_state, vdata);
+		auto entries = reinterpret_cast<string_t *>(base_ptr);
+		for (idx_t i = 0; i < count; i++) {
+			entries[i] = value;
+		}
+		if (vdata.constant.heap_index.IsValid()) {
+			// the entries point into the heap entry: track them so relocated blocks can be repaired
+			auto &heap_vdata = segment.GetVectorData(vdata.constant.heap_index);
+			auto heap_ptr =
+			    segment.allocator->GetDataPointer(state.current_chunk_state, heap_vdata.block_id, heap_vdata.offset);
+			vdata.swizzle_data.emplace_back(vdata.constant.heap_index, heap_ptr, 0, UnsafeNumericCast<uint16_t>(count));
+		}
+	} else {
+		for (idx_t i = 0; i < count; i++) {
+			memcpy(base_ptr + i * type_size, vdata.constant.data, type_size);
+		}
+	}
+	vdata.representation = ColumnDataRepresentation::FLAT;
+	vdata.constant = ColumnDataConstantValue();
+	// the constant charge stays counted, like the storage of any superseded entry: batching
+	// consumers require that collection sizes never shrink while appending
+}
+
+static idx_t DictionaryCodesAllocationSize() {
+	return AlignValue(STANDARD_VECTOR_SIZE * sizeof(sel_t));
+}
+
+static idx_t GetOrCreateSegmentDictionary(ColumnDataMetaData &meta_data, Vector &dict_child, idx_t dict_size,
+                                          const string &dict_id) {
+	auto &segment = meta_data.segment;
+	auto entry = segment.dictionary_map.find(dict_id);
+	if (entry != segment.dictionary_map.end()) {
+		auto slot = entry->second;
+		auto &dict_data = segment.dictionaries[slot];
+		if (dict_data.type != dict_child.GetType() || segment.GetVectorData(dict_data.data_index).count != dict_size) {
+			return DConstants::INVALID_INDEX;
+		}
+		return slot;
+	}
+	auto &type = dict_child.GetType();
+	auto allocator_type = segment.allocator->GetType();
+	if (type.InternalType() == PhysicalType::VARCHAR && !UsesStringHeap(allocator_type)) {
+		// the dictionary values must stay a single entry with a single string heap
+		idx_t heap_size = 0;
+		auto strings = FlatVector::GetData<string_t>(dict_child);
+		auto &validity = FlatVector::Validity(dict_child);
+		for (idx_t i = 0; i < dict_size; i++) {
+			if (validity.RowIsValid(i) && !strings[i].IsInlined()) {
+				heap_size += strings[i].GetSize();
+			}
+		}
+		if (heap_size > segment.allocator->GetBufferManager().GetBlockSize()) {
+			return DConstants::INVALID_INDEX;
+		}
+	}
+	// materialize the dictionary values once for the whole segment
+	auto dict_index = segment.AllocateVector(type, meta_data.chunk_data, meta_data.state);
+	ColumnDataMetaData dict_meta(meta_data.copy_function, meta_data, dict_index);
+	UnifiedVectorFormat dict_format;
+	dict_child.ToUnifiedFormat(dict_format);
+	meta_data.copy_function.function(dict_meta, dict_format, dict_child, 0, dict_size);
+
+	auto &dict_vdata = segment.GetVectorData(dict_index);
+	D_ASSERT(!dict_vdata.next_data.IsValid());
+	D_ASSERT(dict_vdata.swizzle_data.size() <= 1);
+	SegmentDictionaryData dict_data;
+	dict_data.id = dict_id;
+	dict_data.type = type;
+	dict_data.data_index = dict_index;
+	if (allocator_type == ColumnDataAllocatorType::BUFFER_MANAGER_ALLOCATOR ||
+	    allocator_type == ColumnDataAllocatorType::HYBRID) {
+		dict_data.block_ids.insert(dict_vdata.block_id);
+		for (auto &swizzle_segment : dict_vdata.swizzle_data) {
+			dict_data.block_ids.insert(segment.GetVectorData(swizzle_segment.child_index).block_id);
+		}
+	}
+	auto slot = segment.dictionaries.size();
+	segment.dictionaries.push_back(std::move(dict_data));
+	segment.dictionary_map[dict_id] = slot;
+	return slot;
+}
+
+static void WriteDictionaryCodes(ColumnDataMetaData &meta_data, const UnifiedVectorFormat &source_data, idx_t offset,
+                                 idx_t copy_count, idx_t target_offset) {
+	auto &segment = meta_data.segment;
+	auto &vdata = meta_data.GetVectorMetaData();
+	auto base_ptr =
+	    segment.allocator->GetDataPointer(meta_data.state.current_chunk_state, vdata.block_id, vdata.offset);
+	auto codes = reinterpret_cast<sel_t *>(base_ptr);
+	for (idx_t i = 0; i < copy_count; i++) {
+		codes[target_offset + i] = UnsafeNumericCast<sel_t>(source_data.sel->get_index(offset + i));
+	}
+}
+
+static bool TryAppendDictionaryEntry(ColumnDataMetaData &meta_data, const UnifiedVectorFormat &source_data,
+                                     Vector &source, idx_t offset, idx_t copy_count) {
+	auto internal_type = source.GetType().InternalType();
+	if (GetTypeIdSize(internal_type) < sizeof(sel_t)) {
+		// the codes would be larger than the values
+		return false;
+	}
+	auto dict_size = DictionaryVector::DictionarySize(source);
+	if (!dict_size.IsValid() || dict_size.GetIndex() > STANDARD_VECTOR_SIZE) {
+		return false;
+	}
+	auto &dict_id = DictionaryVector::DictionaryId(source);
+	if (dict_id.empty()) {
+		// an ad hoc selection, not a re-occurring dictionary
+		return false;
+	}
+	auto &dict_child = DictionaryVector::Child(source);
+	if (dict_child.GetVectorType() != VectorType::FLAT_VECTOR) {
+		return false;
+	}
+	auto &segment = meta_data.segment;
+	if (segment.dictionary_map.find(dict_id) == segment.dictionary_map.end() && copy_count * 2 < dict_size.GetIndex()) {
+		// copying a fresh dictionary only pays off when the append covers enough of it - the factor
+		// matches the compressed string fallback gate; reusing an existing dictionary is always free
+		return false;
+	}
+	auto slot = GetOrCreateSegmentDictionary(meta_data, dict_child, dict_size.GetIndex(), dict_id);
+	if (slot == DConstants::INVALID_INDEX) {
+		return false;
+	}
+	D_ASSERT(!meta_data.GetVectorMetaData().is_allocated);
+	segment.AllocateVectorStorage(meta_data.vector_data_index, DictionaryCodesAllocationSize(), meta_data.chunk_data,
+	                              &meta_data.state.current_chunk_state);
+	// the chunk must reference and pin the dictionary blocks of earlier chunks
+	for (auto &block_id : segment.dictionaries[slot].block_ids) {
+		meta_data.chunk_data.block_ids.insert(block_id);
+	}
+	segment.allocator->InitializeChunkState(meta_data.state.current_chunk_state, meta_data.chunk_data);
+
+	auto &vdata = meta_data.GetVectorMetaData();
+	vdata.representation = ColumnDataRepresentation::DICTIONARY;
+	vdata.dictionary_slot = slot;
+	WriteDictionaryCodes(meta_data, source_data, offset, copy_count, 0);
+	meta_data.GetVectorMetaData().count = UnsafeNumericCast<uint16_t>(copy_count);
+	return true;
+}
+
+static bool TryExtendDictionaryEntry(ColumnDataMetaData &meta_data, const UnifiedVectorFormat &source_data,
+                                     Vector &source, idx_t offset, idx_t copy_count) {
+	if (source.GetVectorType() != VectorType::DICTIONARY_VECTOR) {
+		return false;
+	}
+	auto &segment = meta_data.segment;
+	auto &vdata = meta_data.GetVectorMetaData();
+	auto &dict_data = segment.dictionaries[vdata.dictionary_slot];
+	auto dict_size = DictionaryVector::DictionarySize(source);
+	if (!dict_size.IsValid() || DictionaryVector::DictionaryId(source) != dict_data.id) {
+		return false;
+	}
+	if (segment.GetVectorData(dict_data.data_index).count != dict_size.GetIndex()) {
+		return false;
+	}
+	D_ASSERT(vdata.count + copy_count <= STANDARD_VECTOR_SIZE);
+	WriteDictionaryCodes(meta_data, source_data, offset, copy_count, vdata.count);
+	vdata.count += UnsafeNumericCast<uint16_t>(copy_count);
+	return true;
+}
+
+static void MaterializeDictionaryEntry(ColumnDataMetaData &meta_data, const LogicalType &type) {
+	auto &segment = meta_data.segment;
+	auto &state = meta_data.state;
+	auto internal_type = type.InternalType();
+	auto type_size = GetTypeIdSize(internal_type);
+
+	// copy out the codes before replacing the entry storage
+	auto &vdata_before = meta_data.GetVectorMetaData();
+	const idx_t count = vdata_before.count;
+	const auto slot = vdata_before.dictionary_slot;
+	sel_t codes[STANDARD_VECTOR_SIZE];
+	auto codes_ptr =
+	    segment.allocator->GetDataPointer(state.current_chunk_state, vdata_before.block_id, vdata_before.offset);
+	memcpy(codes, codes_ptr, count * sizeof(sel_t));
+
+	// read the dictionary with current pointers and decode into freshly allocated flat storage
+	auto dict = segment.ReadSegmentDictionary(state.current_chunk_state, slot);
+	auto dict_values = FlatVector::GetData(dict);
+	auto &dict_validity = FlatVector::Validity(dict);
+	segment.AllocateVectorStorage(meta_data.vector_data_index,
+	                              ColumnDataCollectionSegment::GetDataSize(type_size) +
+	                                  ValidityMask::STANDARD_MASK_SIZE,
+	                              meta_data.chunk_data, &state.current_chunk_state);
+	auto &vdata = meta_data.GetVectorMetaData();
+	auto base_ptr = segment.allocator->GetDataPointer(state.current_chunk_state, vdata.block_id, vdata.offset);
+	auto validity_data = ColumnDataCollectionSegment::GetValidityPointerForWriting(base_ptr, type_size);
+	ValidityMask validity(validity_data, STANDARD_VECTOR_SIZE);
+	validity.SetAllValid(STANDARD_VECTOR_SIZE);
+
+	for (idx_t i = 0; i < count; i++) {
+		auto code = codes[i];
+		if (!dict_validity.RowIsValid(code)) {
+			validity.SetInvalid(i);
+			continue;
+		}
+		memcpy(base_ptr + i * type_size, dict_values + code * type_size, type_size);
+	}
+	if (internal_type == PhysicalType::VARCHAR) {
+		auto &dict_vdata = segment.GetVectorData(segment.dictionaries[slot].data_index);
+		if (!dict_vdata.swizzle_data.empty()) {
+			// the decoded entries point into the dictionary heap entry
+			auto &dict_swizzle = dict_vdata.swizzle_data[0];
+			auto &heap_vdata = segment.GetVectorData(dict_swizzle.child_index);
+			auto heap_ptr =
+			    segment.allocator->GetDataPointer(state.current_chunk_state, heap_vdata.block_id, heap_vdata.offset);
+			vdata.swizzle_data.emplace_back(dict_swizzle.child_index, heap_ptr, 0, UnsafeNumericCast<uint16_t>(count));
+		}
+	}
+	vdata.representation = ColumnDataRepresentation::FLAT;
+	vdata.dictionary_slot = DConstants::INVALID_INDEX;
+}
+
+static bool TryAppendCompactVector(ColumnDataMetaData &meta_data, const UnifiedVectorFormat &source_data,
+                                   Vector &source, idx_t offset, idx_t copy_count) {
+	if (meta_data.segment.allocator->IsManagedResultSet()) {
+		// client result sets keep flat data, external consumers may rely on it
+		return false;
+	}
+	auto &vdata = meta_data.GetVectorMetaData();
+	switch (vdata.representation) {
+	case ColumnDataRepresentation::CONSTANT:
+		if (TryExtendConstantEntry(meta_data, source_data, source, offset, copy_count)) {
+			return true;
+		}
+		MaterializeConstantEntry(meta_data, source.GetType());
+		return false;
+	case ColumnDataRepresentation::DICTIONARY:
+		if (TryExtendDictionaryEntry(meta_data, source_data, source, offset, copy_count)) {
+			return true;
+		}
+		MaterializeDictionaryEntry(meta_data, source.GetType());
+		return false;
+	default:
+		break;
+	}
+	if (vdata.count != 0) {
+		return false;
+	}
+	if (source.GetVectorType() == VectorType::CONSTANT_VECTOR) {
+		AppendConstantEntry(meta_data, source_data, source, offset, copy_count);
+		return true;
+	}
+	if (source.GetVectorType() == VectorType::DICTIONARY_VECTOR) {
+		return TryAppendDictionaryEntry(meta_data, source_data, source, offset, copy_count);
+	}
+	return false;
+}
+
 static bool IsComplexType(const LogicalType &type) {
 	switch (type.InternalType()) {
 	case PhysicalType::STRUCT:
@@ -1066,8 +1428,13 @@ void ColumnDataCollection::Append(ColumnDataAppendState &state, DataChunk &input
 			for (idx_t vector_idx = 0; vector_idx < types.size(); vector_idx++) {
 				ColumnDataMetaData meta_data(copy_functions[vector_idx], segment, state, chunk_data,
 				                             chunk_data.vector_data[vector_idx]);
-				copy_functions[vector_idx].function(meta_data, state.vector_data[vector_idx], input.data[vector_idx],
-				                                    offset, append_amount);
+				const auto allocated_before = segment.total_allocated;
+				if (!TryAppendCompactVector(meta_data, state.vector_data[vector_idx], input.data[vector_idx], offset,
+				                            append_amount)) {
+					copy_functions[vector_idx].function(meta_data, state.vector_data[vector_idx],
+					                                    input.data[vector_idx], offset, append_amount);
+				}
+				chunk_data.allocation_sizes[vector_idx] += segment.total_allocated - allocated_before;
 			}
 			chunk_data.count += append_amount;
 		}
@@ -1318,6 +1685,10 @@ idx_t ColumnDataChunkCursor::Count() const {
 
 idx_t ColumnDataChunkCursor::AllocationSize() const {
 	return collection.GetSegments()[position.segment_index]->GetChunkAllocationSize(position.chunk_index);
+}
+
+idx_t ColumnDataChunkCursor::AllocationSize(const vector<column_t> &column_ids) const {
+	return collection.GetSegments()[position.segment_index]->GetChunkAllocationSize(position.chunk_index, column_ids);
 }
 
 ColumnDataRowCollection ColumnDataCollection::GetRows() const {

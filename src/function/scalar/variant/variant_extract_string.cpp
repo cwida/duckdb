@@ -59,8 +59,10 @@ static void VariantExtractStringFunction(DataChunk &input, ExpressionState &stat
 }
 
 ScalarFunctionSet VariantExtractStringFun::GetFunctions() {
-	return VariantPathFunction::CreateFunctionSet("variant_extract_string", VariantExtractStringFunction,
-	                                              LogicalType::VARCHAR, false);
+	auto functions = VariantPathFunction::CreateFunctionSet("variant_extract_string", VariantExtractStringFunction,
+	                                                        LogicalType::VARCHAR, false);
+	functions.SetFallible();
+	return functions;
 }
 
 } // namespace duckdb

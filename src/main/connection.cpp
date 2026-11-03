@@ -38,6 +38,14 @@ Connection Connection::CreateInternal(DatabaseInstance &database) {
 	return Connection(database, ConnectionType::INTERNAL);
 }
 
+Connection Connection::CreateInternal(ClientContext &caller) {
+	auto con = CreateInternal(*caller.db);
+	auto &context = *con.context;
+	context.base_context = caller.base_context ? caller.base_context : caller.shared_from_this();
+	context.internal_depth = caller.internal_depth + 1;
+	return con;
+}
+
 Connection::Connection(Connection &&other) noexcept {
 	std::swap(context, other.context);
 	std::swap(connection_id, other.connection_id);

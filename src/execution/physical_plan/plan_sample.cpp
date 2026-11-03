@@ -27,7 +27,7 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalSample &op) {
 	auto &plan = CreatePlan(*op.children[0]);
 	if (!op.sample_options->seed.IsValid()) {
 		auto &random_engine = RandomEngine::Get(context);
-		op.sample_options->SetSeed(random_engine.NextRandomInteger());
+		op.sample_options->SetSeed(random_engine.NextSeed32());
 	}
 
 	switch (op.sample_options->method) {

@@ -13,7 +13,7 @@ PRAG
 statement error
 PRAGMA 
 ----
-Parser Error: syntax error at or near "PRAGMA"
+Parser Error: syntax error at end of input
 
 # Unknown pragma error
 statement error

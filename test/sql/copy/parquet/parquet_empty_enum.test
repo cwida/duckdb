@@ -14,9 +14,9 @@ statement ok
 INSERT INTO t VALUES (NULL), (NULL);
 
 statement ok
-COPY t TO '__TEST_DIR__/empty_enum.parquet' (FORMAT PARQUET);
+COPY t TO '{TEST_DIR}/empty_enum.parquet' (FORMAT PARQUET);
 
 query I
-SELECT count(*) FROM read_parquet('__TEST_DIR__/empty_enum.parquet') WHERE m IS NULL;
+SELECT count(*) FROM read_parquet('{TEST_DIR}/empty_enum.parquet') WHERE m IS NULL;
 ----
 2

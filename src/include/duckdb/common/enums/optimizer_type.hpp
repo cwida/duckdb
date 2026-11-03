@@ -62,7 +62,8 @@ enum class OptimizerType : uint32_t {
 	PROJECTION_PLACEMENT = 45,
 	REDUNDANT_ORDER_KEYS = 46,
 	DISJUNCTIVE_JOIN_REWRITER = 47,
-	REDUNDANT_ORDER = 48
+	REDUNDANT_ORDER = 48,
+	WINDOW_JOIN_PUSHDOWN = 49
 };
 
 string OptimizerTypeToString(OptimizerType type);

@@ -70,8 +70,9 @@ public:
 	void DetachResourceBorrowers(ClientContext &context, const string &resource_name);
 	//! Alter operation dispatcher
 	void Alter(ClientContext &context, AlterInfo &info);
-	//! Rollback the attach of a database
-	shared_ptr<AttachedDatabase> DetachInternal(const Identifier &name);
+	//! Rollback the attach of a database, given the database only when its name still refers to it
+	shared_ptr<AttachedDatabase> DetachInternal(const Identifier &name,
+	                                            optional_ptr<AttachedDatabase> database = nullptr);
 	//! Returns a reference to the system catalog
 	Catalog &GetSystemCatalog();
 

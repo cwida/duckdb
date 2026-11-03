@@ -616,6 +616,8 @@ void ParquetWriter::AnalyzeSchema(ColumnDataCollection &buffer, vector<unique_pt
 	}
 
 	for (auto &chunk : buffer.Chunks(column_ids)) {
+		// the column writers assume flat vectors, scans can return compact representations
+		chunk.Flatten();
 		idx_t index = 0;
 		for (idx_t i = 0; i < column_writers.size(); i++) {
 			auto &state = states[i];
@@ -759,6 +761,8 @@ void ParquetWriter::PrepareRowGroup(ColumnDataCollection &raw_buffer, PreparedRo
 		}
 
 		for (auto &chunk : buffer.Chunks(column_ids)) {
+			// the column writers assume flat vectors, scans can return compact representations
+			chunk.Flatten();
 			for (idx_t i = 0; i < next; i++) {
 				if (col_writers[i].get().HasAnalyze()) {
 					col_writers[i].get().Analyze(*write_states[i], nullptr, chunk.data[i], chunk.size());
@@ -778,6 +782,8 @@ void ParquetWriter::PrepareRowGroup(ColumnDataCollection &raw_buffer, PreparedRo
 		}
 
 		for (auto &chunk : buffer.Chunks({column_ids})) {
+			// the column writers assume flat vectors, scans can return compact representations
+			chunk.Flatten();
 			for (idx_t i = 0; i < next; i++) {
 				col_writers[i].get().Prepare(*write_states[i], nullptr, chunk.data[i], chunk.size(), true);
 			}
@@ -788,6 +794,8 @@ void ParquetWriter::PrepareRowGroup(ColumnDataCollection &raw_buffer, PreparedRo
 		}
 
 		for (auto &chunk : buffer.Chunks({column_ids})) {
+			// the column writers assume flat vectors, scans can return compact representations
+			chunk.Flatten();
 			for (idx_t i = 0; i < next; i++) {
 				col_writers[i].get().Write(*write_states[i], chunk.data[i], chunk.size());
 			}
@@ -1458,6 +1466,29 @@ void ParquetWriter::Finalize() {
 		    NumericCast<int32_t>(bloom_filter_header_size + bloom_filter_bytes->len);
 	}
 
+	// the page index goes right in front of the footer, after the bloom filters, so that it is part of the tail of the
+	// file a reader fetches together with the footer: first the ColumnIndex of every column chunk, then the
+	// OffsetIndex of every column chunk, their location is recorded in the ColumnChunk
+	for (auto &page_index : page_indexes) {
+		D_ASSERT(!options.encryption_config);
+		if (!page_index.has_column_index) {
+			continue;
+		}
+		auto &column_chunk = file_meta_data.row_groups[page_index.row_group_idx].columns[page_index.column_idx];
+		column_chunk.column_index_offset = NumericCast<int64_t>(writer->GetTotalWritten());
+		column_chunk.__isset.column_index_offset = true;
+		column_chunk.column_index_length = NumericCast<int32_t>(Write(page_index.column_index));
+		column_chunk.__isset.column_index_length = true;
+	}
+	for (auto &page_index : page_indexes) {
+		auto &column_chunk = file_meta_data.row_groups[page_index.row_group_idx].columns[page_index.column_idx];
+		column_chunk.offset_index_offset = NumericCast<int64_t>(writer->GetTotalWritten());
+		column_chunk.__isset.offset_index_offset = true;
+		column_chunk.offset_index_length = NumericCast<int32_t>(Write(page_index.offset_index));
+		column_chunk.__isset.offset_index_length = true;
+	}
+	page_indexes.clear();
+
 	const auto metadata_start_offset = writer->GetTotalWritten();
 	if (options.encryption_config) {
 		// Crypto metadata is written unencrypted
@@ -1505,6 +1536,16 @@ GeoParquetFileMetadata &ParquetWriter::GetGeoParquetData() {
 		geoparquet_data = make_uniq<GeoParquetFileMetadata>(GetGeoParquetVersion());
 	}
 	return *geoparquet_data;
+}
+
+void ParquetWriter::BufferPageIndex(idx_t col_idx, ParquetPageIndexEntry page_index) {
+	if (options.encryption_config) {
+		// the page index of an encrypted file has to be encrypted as well - not supported (yet)
+		return;
+	}
+	page_index.column_idx = col_idx;
+	page_index.row_group_idx = file_meta_data.row_groups.size();
+	page_indexes.push_back(std::move(page_index));
 }
 
 void ParquetWriter::BufferBloomFilter(idx_t col_idx, unique_ptr<ParquetBloomFilter> bloom_filter) {

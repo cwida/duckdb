@@ -1,0 +1,11 @@
+# name: test/parquet/corrupt/brotli_short_output.test
+# description: Reject Brotli pages that decompress to fewer bytes than declared
+# group: [corrupt]
+
+require parquet
+
+# The page declares 100 uncompressed bytes, but the Brotli stream produces only four.
+statement error
+SELECT * FROM read_parquet('data/parquet-testing/corrupt/brotli_short_output.parquet');
+----
+<REGEX>:Data Corruption Error: Failed to read file ".*": Brotli uncompressed data size mismatch \(expected 100, actual: 4\).*

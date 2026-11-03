@@ -1017,3 +1017,54 @@ TEST_CASE("Test C-API Arrow rejects non-monotonic string offsets", "[capi][arrow
 	duckdb_destroy_error_data(&err);
 	duckdb_destroy_arrow_converted_schema(&converted);
 }
+
+TEST_CASE("Test C-API Arrow round trip of timestamps below the first midnight of the range", "[capi][arrow]") {
+	if (STANDARD_VECTOR_SIZE < 3) {
+		return;
+	}
+	CAPITester tester;
+	REQUIRE(tester.OpenDatabase(nullptr));
+	REQUIRE_NO_FAIL(
+	    tester.Query("CREATE TABLE source AS SELECT * FROM (VALUES (make_timestamp(-9223372036854775807 - 1)), "
+	                 "(make_timestamp(-9223372022400000001)), (make_timestamp(9223372036854775806))) t(ts)"));
+	REQUIRE_NO_FAIL(tester.Query("CREATE TABLE target (ts TIMESTAMP)"));
+
+	duckdb_result result;
+	REQUIRE(duckdb_query(tester.connection, "SELECT ts FROM source", &result) == DuckDBSuccess);
+	auto chunk = duckdb_fetch_chunk(result);
+	REQUIRE(chunk);
+
+	duckdb_arrow_options arrow_options;
+	duckdb_connection_get_arrow_options(tester.connection, &arrow_options);
+	ArrowArray arrow_array;
+	REQUIRE(duckdb_data_chunk_to_arrow(arrow_options, chunk, &arrow_array) == nullptr);
+	auto type = duckdb_create_logical_type(DUCKDB_TYPE_TIMESTAMP);
+	const char *names[] = {"ts"};
+	ArrowSchemaWrapper arrow_schema;
+	REQUIRE(duckdb_to_arrow_schema(arrow_options, &type, names, 1, &arrow_schema.arrow_schema) == nullptr);
+	duckdb_arrow_converted_schema converted = nullptr;
+	REQUIRE(duckdb_schema_from_arrow(tester.connection, &arrow_schema.arrow_schema, &converted) == nullptr);
+	duckdb_data_chunk imported = nullptr;
+	REQUIRE(duckdb_data_chunk_from_arrow(tester.connection, &arrow_array, converted, &imported) == nullptr);
+
+	duckdb_appender appender;
+	REQUIRE(duckdb_appender_create(tester.connection, nullptr, "target", &appender) == DuckDBSuccess);
+	REQUIRE(duckdb_append_data_chunk(appender, imported) == DuckDBSuccess);
+	REQUIRE(duckdb_appender_destroy(&appender) == DuckDBSuccess);
+
+	auto rendered = tester.Query("SELECT ts::VARCHAR FROM target ORDER BY ts");
+	REQUIRE_NO_FAIL(*rendered);
+	REQUIRE(rendered->Fetch<string>(0, 0) == "290309-12-21 (BC) 19:59:05.224192");
+	REQUIRE(rendered->Fetch<string>(0, 1) == "290309-12-21 (BC) 23:59:59.999999");
+	REQUIRE(rendered->Fetch<string>(0, 2) == "294247-01-10 04:00:54.775806");
+
+	duckdb_destroy_data_chunk(&imported);
+	if (arrow_array.release) {
+		arrow_array.release(&arrow_array);
+	}
+	duckdb_destroy_arrow_converted_schema(&converted);
+	duckdb_destroy_logical_type(&type);
+	duckdb_destroy_arrow_options(&arrow_options);
+	duckdb_destroy_data_chunk(&chunk);
+	duckdb_destroy_result(&result);
+}

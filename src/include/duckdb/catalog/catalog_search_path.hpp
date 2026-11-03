@@ -21,6 +21,9 @@ class ClientContext;
 
 struct CatalogSearchEntry {
 	CatalogSearchEntry(Identifier catalog, Identifier schema, bool default_schema_precedence = false);
+	//! An entry for the last schema of the path, which is nested in the schemas before it
+	static CatalogSearchEntry FromSchemaPath(Identifier catalog, vector<Identifier> schema_path,
+	                                         bool default_schema_precedence = false);
 
 public:
 	//! For unqualified non-table lookups, search this implicit catalog's default schema at its position in the search
@@ -40,6 +43,12 @@ public:
 	void SetSchema(Identifier new_schema) {
 		schema = std::move(new_schema);
 	}
+	//! Whether the schema is nested in other schemas
+	bool IsNested() const {
+		return !parent_schemas.empty();
+	}
+	//! The names of the schemas from the top level down to this schema
+	vector<Identifier> GetSchemaPath() const;
 
 	string ToString() const;
 	static string ListToString(const vector<CatalogSearchEntry> &input);
@@ -54,6 +63,8 @@ private:
 	Identifier catalog;
 	Identifier schema;
 	bool default_schema_precedence;
+	//! The schemas that contain the schema, from the top level down
+	vector<Identifier> parent_schemas;
 };
 
 enum class CatalogSetPathType { SET_SCHEMA, SET_SCHEMAS, SET_DIRECTLY };
@@ -84,6 +95,8 @@ public:
 	DUCKDB_API Identifier ResolveCatalog(const Identifier &schema) const;
 
 	DUCKDB_API vector<Identifier> GetSchemasForCatalog(const Identifier &catalog) const;
+	//! The entries of the catalog that name a schema, nested schemas included
+	DUCKDB_API vector<CatalogSearchEntry> GetEntriesForCatalog(const Identifier &catalog) const;
 	DUCKDB_API vector<Identifier> GetCatalogsForSchema(const Identifier &schema) const;
 
 	DUCKDB_API vector<CatalogSearchEntry> GetImplicitSearchCatalogs() const;

@@ -101,20 +101,24 @@ inline idx_t TranslateSelection(idx_t count, optional_ptr<const SelectionVector>
 		}
 		return local_true_count;
 	}
-	if (true_sel) {
-		for (idx_t i = 0; i < local_true_count; i++) {
-			true_sel->set_index(i, input_sel->get_index(local_true_sel.get_index(i)));
-		}
-	}
 	if (false_sel) {
 		idx_t false_count = 0;
 		idx_t true_offset = 0;
 		for (idx_t i = 0; i < count; i++) {
+			// Read both indices before either output can overwrite them.
+			auto row = input_sel->get_index(i);
 			if (true_offset < local_true_count && local_true_sel.get_index(true_offset) == i) {
+				if (true_sel) {
+					true_sel->set_index(true_offset, row);
+				}
 				true_offset++;
-				continue;
+			} else {
+				false_sel->set_index(false_count++, row);
 			}
-			false_sel->set_index(false_count++, input_sel->get_index(i));
+		}
+	} else if (true_sel) {
+		for (idx_t i = 0; i < local_true_count; i++) {
+			true_sel->set_index(i, input_sel->get_index(local_true_sel.get_index(i)));
 		}
 	}
 	return local_true_count;

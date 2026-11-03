@@ -18,7 +18,7 @@ No function matches
 statement error
 SELECT [i, v] FROM integers
 ----
-Binder Error: Cannot deduce template type
+<REGEX>:Binder Error: No function matches.*Cannot deduce template type.*
 
 statement ok
 SET old_implicit_casting=true
