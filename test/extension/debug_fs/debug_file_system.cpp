@@ -235,6 +235,10 @@ bool DebugFileSystem::DirectoryExists(const string &directory, optional_ptr<File
 	return inner_fs->DirectoryExists(directory, opener);
 }
 
+optional_idx DebugFileSystem::GetAvailableDiskSpace(const string &path, optional_ptr<FileOpener> opener) {
+	return inner_fs->GetAvailableDiskSpace(path, opener);
+}
+
 void DebugFileSystem::CreateDirectory(const string &directory, optional_ptr<FileOpener> opener) {
 	CreateDirectoryExtended(directory, {CreateDirectoryMode::SINGLE}, opener);
 }

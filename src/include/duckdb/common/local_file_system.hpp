@@ -13,6 +13,8 @@
 
 namespace duckdb {
 
+//! A bare LocalFileSystem answers to no database: allowed_paths and enable_external_access do not apply to it.
+//! Code that has a database reaches the local file system through FileSystem::GetLocal(db), which enforces them.
 class LocalFileSystem : public FileSystem {
 public:
 	unique_ptr<FileHandle> OpenFile(const string &path, FileOpenFlags flags,
@@ -57,6 +59,7 @@ public:
 
 	//! Check if a directory exists
 	bool DirectoryExists(const string &directory, optional_ptr<FileOpener> opener = nullptr) override;
+	optional_idx GetAvailableDiskSpace(const string &path, optional_ptr<FileOpener> opener = nullptr) override;
 	//! Create a directory if it does not exist
 	void CreateDirectory(const string &directory, optional_ptr<FileOpener> opener = nullptr) override;
 	bool CreateDirectoryExtended(const string &directory, const CreateDirectoryOptions &options,

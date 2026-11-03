@@ -233,6 +233,10 @@ bool CachingFileSystemWrapper::DirectoryExists(const string &directory, optional
 	return underlying_file_system.DirectoryExists(directory, opener);
 }
 
+optional_idx CachingFileSystemWrapper::GetAvailableDiskSpace(const string &path, optional_ptr<FileOpener> opener) {
+	return underlying_file_system.GetAvailableDiskSpace(path, opener);
+}
+
 void CachingFileSystemWrapper::CreateDirectory(const string &directory, optional_ptr<FileOpener> opener) {
 	CreateDirectoryExtended(directory, {CreateDirectoryMode::SINGLE}, opener);
 }

@@ -298,7 +298,9 @@ public:
 	//! Returns the system-available memory in bytes. Returns DConstants::INVALID_INDEX if the system function fails.
 	DUCKDB_API static optional_idx GetAvailableMemory();
 	//! Returns the space available on the disk. Returns DConstants::INVALID_INDEX if the information was not available.
-	DUCKDB_API static optional_idx GetAvailableDiskSpace(const string &path);
+	//! The space available for new files in the file system holding path; invalid if it cannot be determined
+	DUCKDB_API virtual optional_idx GetAvailableDiskSpace(const string &path,
+	                                                      optional_ptr<FileOpener> opener = nullptr);
 	//! Returns the soft limit on open file descriptors, or an invalid index when it is unlimited or unknown.
 	DUCKDB_API static optional_idx GetFileDescriptorLimit();
 	//! Returns the share of the file descriptor limit that one consumer of descriptors may hold open.

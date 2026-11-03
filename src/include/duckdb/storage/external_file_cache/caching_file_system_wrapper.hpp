@@ -79,6 +79,7 @@ public:
 	DUCKDB_API void FileSync(FileHandle &handle) override;
 
 	DUCKDB_API bool DirectoryExists(const string &directory, optional_ptr<FileOpener> opener = nullptr) override;
+	DUCKDB_API optional_idx GetAvailableDiskSpace(const string &path, optional_ptr<FileOpener> opener) override;
 	DUCKDB_API void CreateDirectory(const string &directory, optional_ptr<FileOpener> opener = nullptr) override;
 	DUCKDB_API bool CreateDirectoryExtended(const string &directory, const CreateDirectoryOptions &options,
 	                                        optional_ptr<FileOpener> opener = nullptr) override;

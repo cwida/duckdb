@@ -633,9 +633,9 @@ optional_idx TemporaryFileManager::GetMaxSwapSpace() const {
 	return max_swap_space;
 }
 
-static idx_t GetDefaultMax(const string &path) {
+static idx_t GetDefaultMax(FileSystem &fs, const string &path) {
 	D_ASSERT(!path.empty());
-	auto disk_space = FileSystem::GetAvailableDiskSpace(path);
+	auto disk_space = fs.GetAvailableDiskSpace(path);
 	// Use the available disk space
 	// We have made sure that the file exists before we call this, it shouldn't fail
 	if (!disk_space.IsValid()) {
@@ -652,7 +652,7 @@ void TemporaryFileManager::SetMaxSwapSpace(optional_idx limit) {
 	if (limit.IsValid()) {
 		new_limit = limit.GetIndex();
 	} else {
-		new_limit = GetDefaultMax(temp_directory);
+		new_limit = GetDefaultMax(FileSystem::GetFileSystem(db), temp_directory);
 	}
 
 	auto current_size_on_disk = GetTotalUsedSpaceInBytes();

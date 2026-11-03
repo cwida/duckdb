@@ -316,6 +316,9 @@ void VirtualFileSystem::FileSync(FileHandle &handle) {
 bool VirtualFileSystem::DirectoryExists(const string &directory, optional_ptr<FileOpener> opener) {
 	return FindFileSystem(directory, opener).DirectoryExists(directory, opener);
 }
+optional_idx VirtualFileSystem::GetAvailableDiskSpace(const string &path, optional_ptr<FileOpener> opener) {
+	return FindFileSystem(path, opener).GetAvailableDiskSpace(path, opener);
+}
 void VirtualFileSystem::CreateDirectory(const string &directory, optional_ptr<FileOpener> opener) {
 	CreateDirectoryExtended(directory, {CreateDirectoryMode::SINGLE}, opener);
 }

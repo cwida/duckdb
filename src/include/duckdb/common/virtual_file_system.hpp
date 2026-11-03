@@ -46,6 +46,7 @@ public:
 
 	// need to look up correct fs for this
 	bool DirectoryExists(const string &directory, optional_ptr<FileOpener> opener) override;
+	optional_idx GetAvailableDiskSpace(const string &path, optional_ptr<FileOpener> opener) override;
 	void CreateDirectory(const string &directory, optional_ptr<FileOpener> opener) override;
 	bool CreateDirectoryExtended(const string &directory, const CreateDirectoryOptions &options,
 	                             optional_ptr<FileOpener> opener = nullptr) override;

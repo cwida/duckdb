@@ -87,6 +87,11 @@ public:
 		VerifyCanAccessDirectory(directory);
 		return GetFileSystem().DirectoryExists(directory, GetOpener());
 	}
+	optional_idx GetAvailableDiskSpace(const string &path, optional_ptr<FileOpener> opener) override {
+		VerifyNoOpener(opener);
+		VerifyCanAccessDirectory(path);
+		return GetFileSystem().GetAvailableDiskSpace(path, GetOpener());
+	}
 	void CreateDirectory(const string &directory, optional_ptr<FileOpener> opener) override {
 		CreateDirectoryExtended(directory, {CreateDirectoryMode::SINGLE}, opener);
 	}

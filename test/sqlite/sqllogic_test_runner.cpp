@@ -4,6 +4,7 @@
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/file_open_flags.hpp"
 #include "duckdb/common/json_document.hpp"
+#include "duckdb/common/local_file_system.hpp"
 #include "duckdb/common/virtual_file_system.hpp"
 #include "duckdb/common/types/uuid.hpp"
 #include "duckdb/main/extension_entries.hpp"
@@ -582,7 +583,7 @@ RequireResult SQLLogicTestRunner::CheckRequire(SQLLogicParser &parser, const vec
 		}
 		// require a minimum amount of disk space
 		auto required_limit = DBConfig::ParseMemoryLimitOrMaximum(params[1]);
-		auto available_space = FileSystem::GetAvailableDiskSpace(".");
+		auto available_space = LocalFileSystem().GetAvailableDiskSpace(".");
 		if (!available_space.IsValid()) {
 			return RequireResult::MISSING;
 		}
