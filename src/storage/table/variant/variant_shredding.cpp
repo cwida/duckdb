@@ -460,14 +460,14 @@ bool VariantShreddingStats::GetShreddedTypeInternal(const VariantColumnStatsData
 				//! Do not include empty field names in the shredded type!
 				continue;
 			}
-			auto field_name = entry.first.GetString();
-			if (!field_names.emplace(field_name).second) {
+			//! the set only refers to the name, which the stats own for as long as this runs
+			if (!field_names.emplace(entry.first).second) {
 				//! STRUCT field names are case-insensitive, but VARIANT object keys are case-sensitive.
 				return false;
 			}
 			LogicalType child_type;
 			if (GetShreddedTypeInternal(child_column, child_type, total_value_count, force_partial)) {
-				child_types.emplace_back(field_name, child_type);
+				child_types.emplace_back(entry.first.GetString(), child_type);
 			}
 		}
 		if (child_types.empty()) {
