@@ -8,6 +8,7 @@
 #include "duckdb/common/types/decimal.hpp"
 #include "duckdb/common/types/variant_iterator.hpp"
 #include "duckdb/function/variant/variant_shredding.hpp"
+#include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/storage/statistics/struct_stats.hpp"
 #include "duckdb/storage/statistics/variant_stats.hpp"
