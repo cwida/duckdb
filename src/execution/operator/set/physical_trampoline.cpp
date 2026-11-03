@@ -765,43 +765,6 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 //===--------------------------------------------------------------------===//
 // Pipeline construction
 //===--------------------------------------------------------------------===//
-static void GatherFrontierScansInternal(PhysicalOperator &op, TableIndex cte_index,
-                                        vector<reference<PhysicalColumnDataScan>> &frontier_scans,
-                                        reference_set_t<const PhysicalOperator> &visited) {
-	if (!visited.insert(op).second) {
-		return;
-	}
-	if (op.type == PhysicalOperatorType::TRAMPOLINE_FRONTIER_SCAN) {
-		auto &scan = op.Cast<PhysicalColumnDataScan>();
-		if (scan.cte_index == cte_index) {
-			frontier_scans.push_back(scan);
-		}
-	}
-	for (auto &child : op.children) {
-		GatherFrontierScansInternal(child.get(), cte_index, frontier_scans, visited);
-	}
-	if (op.type == PhysicalOperatorType::LEFT_DELIM_JOIN || op.type == PhysicalOperatorType::RIGHT_DELIM_JOIN) {
-		auto &delim_join = op.Cast<PhysicalDelimJoin>();
-		GatherFrontierScansInternal(delim_join.join, cte_index, frontier_scans, visited);
-		GatherFrontierScansInternal(delim_join.distinct, cte_index, frontier_scans, visited);
-	}
-}
-
-static void GatherFrontierScans(PhysicalOperator &op, TableIndex cte_index,
-                                vector<reference<PhysicalColumnDataScan>> &frontier_scans) {
-	reference_set_t<const PhysicalOperator> visited;
-	GatherFrontierScansInternal(op, cte_index, frontier_scans, visited);
-}
-
-static void GatherTrampolineCTEScans(const PhysicalOperator &op, vector<const_reference<PhysicalOperator>> &cte_scans) {
-	if (op.type == PhysicalOperatorType::DELIM_SCAN || op.type == PhysicalOperatorType::CTE_SCAN) {
-		cte_scans.push_back(op);
-	}
-	for (auto child : op.GetChildren()) {
-		GatherTrampolineCTEScans(child.get(), cte_scans);
-	}
-}
-
 void PhysicalTrampoline::BuildPipelines(Pipeline &current, MetaPipeline &meta_pipeline) {
 	op_state.reset();
 	sink_state.reset();
@@ -842,7 +805,7 @@ void PhysicalTrampoline::BuildPipelines(Pipeline &current, MetaPipeline &meta_pi
 		branch_frontier_scans.push_back(std::move(frontier_scans));
 
 		vector<const_reference<PhysicalOperator>> cte_scan_ops;
-		GatherTrampolineCTEScans(children[branch_idx], cte_scan_ops);
+		GatherColumnDataScans(children[branch_idx], cte_scan_ops);
 		bool has_delim_scan = false;
 		for (auto scan_op : cte_scan_ops) {
 			has_delim_scan = has_delim_scan || scan_op.get().type == PhysicalOperatorType::DELIM_SCAN;
@@ -940,7 +903,7 @@ void PhysicalTrampoline::BuildPipelines(Pipeline &current, MetaPipeline &meta_pi
 	// materialized CTEs scanned inside branches must finish before this pipeline starts
 	for (idx_t branch_idx = 1; branch_idx < children.size(); branch_idx++) {
 		vector<const_reference<PhysicalOperator>> cte_scans;
-		GatherTrampolineCTEScans(children[branch_idx], cte_scans);
+		GatherColumnDataScans(children[branch_idx], cte_scans);
 		for (auto scan : cte_scans) {
 			auto entry = state.cte_dependencies.find(scan);
 			if (entry == state.cte_dependencies.end()) {

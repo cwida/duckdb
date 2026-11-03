@@ -319,6 +319,8 @@ void RecordInvariantRetentionReuse(RecursiveCTEMetrics &metrics,
                                    const reference_set_t<const MetaPipeline> &invariant_meta_pipelines);
 void GatherRecursiveScans(PhysicalOperator &op, TableIndex cte_index,
                           vector<reference<PhysicalColumnDataScan>> &recursive_scans);
+void GatherFrontierScans(PhysicalOperator &op, TableIndex cte_index,
+                         vector<reference<PhysicalColumnDataScan>> &frontier_scans);
 reference_set_t<const MetaPipeline>
 FindInvariantRecursiveMetaPipelines(const vector<shared_ptr<MetaPipeline>> &meta_pipelines, TableIndex cte_index,
                                     const reference_set_t<const PhysicalOperator> &non_repeatable_operators);

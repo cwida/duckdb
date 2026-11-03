@@ -1313,32 +1313,40 @@ void GatherColumnDataScans(const PhysicalOperator &op, vector<const_reference<Ph
 	}
 }
 
-static void GatherRecursiveScansInternal(PhysicalOperator &op, TableIndex cte_index,
-                                         vector<reference<PhysicalColumnDataScan>> &recursive_scans,
-                                         reference_set_t<const PhysicalOperator> &visited) {
+//! One scan-discovery traversal for every CTE scan kind: walks the owned children plus
+//! the delim join's hidden join and distinct operators, deduplicated by a visited set
+static void GatherCTEScansInternal(PhysicalOperator &op, PhysicalOperatorType scan_type, TableIndex cte_index,
+                                   vector<reference<PhysicalColumnDataScan>> &scans,
+                                   reference_set_t<const PhysicalOperator> &visited) {
 	if (!visited.insert(op).second) {
 		return;
 	}
-	if (op.type == PhysicalOperatorType::RECURSIVE_CTE_SCAN) {
+	if (op.type == scan_type) {
 		auto &scan = op.Cast<PhysicalColumnDataScan>();
 		if (scan.cte_index == cte_index) {
-			recursive_scans.push_back(scan);
+			scans.push_back(scan);
 		}
 	}
 	for (auto &child : op.children) {
-		GatherRecursiveScansInternal(child.get(), cte_index, recursive_scans, visited);
+		GatherCTEScansInternal(child.get(), scan_type, cte_index, scans, visited);
 	}
 	if (op.type == PhysicalOperatorType::LEFT_DELIM_JOIN || op.type == PhysicalOperatorType::RIGHT_DELIM_JOIN) {
 		auto &delim_join = op.Cast<PhysicalDelimJoin>();
-		GatherRecursiveScansInternal(delim_join.join, cte_index, recursive_scans, visited);
-		GatherRecursiveScansInternal(delim_join.distinct, cte_index, recursive_scans, visited);
+		GatherCTEScansInternal(delim_join.join, scan_type, cte_index, scans, visited);
+		GatherCTEScansInternal(delim_join.distinct, scan_type, cte_index, scans, visited);
 	}
 }
 
 void GatherRecursiveScans(PhysicalOperator &op, TableIndex cte_index,
                           vector<reference<PhysicalColumnDataScan>> &recursive_scans) {
 	reference_set_t<const PhysicalOperator> visited;
-	GatherRecursiveScansInternal(op, cte_index, recursive_scans, visited);
+	GatherCTEScansInternal(op, PhysicalOperatorType::RECURSIVE_CTE_SCAN, cte_index, recursive_scans, visited);
+}
+
+void GatherFrontierScans(PhysicalOperator &op, TableIndex cte_index,
+                         vector<reference<PhysicalColumnDataScan>> &frontier_scans) {
+	reference_set_t<const PhysicalOperator> visited;
+	GatherCTEScansInternal(op, PhysicalOperatorType::TRAMPOLINE_FRONTIER_SCAN, cte_index, frontier_scans, visited);
 }
 
 } // namespace duckdb
