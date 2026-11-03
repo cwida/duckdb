@@ -10,6 +10,7 @@
 
 #include "duckdb/common/optional.hpp"
 #include "duckdb/common/enums/join_type.hpp"
+#include "duckdb/common/helper.hpp"
 #include "duckdb/optimizer/relation_statistics/relation_statistics.hpp"
 #include "duckdb/planner/filter/expression_filter.hpp"
 #include "duckdb/planner/logical_operator.hpp"
@@ -74,6 +75,18 @@ public:
 	static DistinctCount EstimateCurrentDomain(const DistinctCount &current_domain, idx_t input_cardinality,
 	                                           idx_t output_cardinality);
 	static void ApplyCardinality(RelationStats &stats, idx_t output_cardinality);
+	//! Share fallback policy between ordinary statistics and scaled join cardinalities.
+	template <class T>
+	static T EstimateSemiAntiJoinFallbackCardinality(const T &preserved_cardinality, idx_t rhs_cardinality,
+	                                                 JoinType join_type) {
+		auto is_anti = join_type == JoinType::ANTI || join_type == JoinType::RIGHT_ANTI;
+		if (rhs_cardinality == 0) {
+			return is_anti ? MaxValue(T(0), preserved_cardinality) : T(0);
+		}
+		// Retain fractional estimates while composing costs.
+		auto estimate = MinValue(preserved_cardinality, MaxValue(T(1), preserved_cardinality * T(DEFAULT_SELECTIVITY)));
+		return MaxValue(T(0), estimate);
+	}
 	static SemiAntiJoinCardinalityEstimate EstimateSemiAntiJoinFallback(double preserved_cardinality,
 	                                                                    idx_t rhs_cardinality, JoinType join_type);
 	static SemiAntiJoinCardinalityEstimate

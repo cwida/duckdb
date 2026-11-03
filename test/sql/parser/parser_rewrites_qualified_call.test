@@ -1,0 +1,107 @@
+# name: test/sql/parser/parser_rewrites_qualified_call.test
+# description: a name that the parser rewrites, called on a column as in col.ifnull(x), takes the column as its first argument (duckdblabs/bot-issue-tracker#562)
+# group: [parser]
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES (NULL::VARCHAR), ('2020-01-01')) v(col);
+
+query IIII
+SELECT col.ifnull('b'), col.coalesce(NULL, 'c'), t.col.ifnull('d'), col.coalesce('e').ifnull('f') FROM t ORDER BY ALL;
+----
+2020-01-01	2020-01-01	2020-01-01	2020-01-01
+b	c	d	e
+
+query III
+SELECT col.date(), col.try(), col.construct_array('x') FROM t ORDER BY ALL;
+----
+2020-01-01	2020-01-01	[2020-01-01, x]
+NULL	NULL	[NULL, x]
+
+# the column counts towards the arguments
+statement error
+SELECT col.ifnull('x', 'y') FROM t;
+----
+Wrong number of arguments to IFNULL.
+
+statement error
+SELECT col.date('2020-02-02') FROM t;
+----
+Wrong number of arguments provided to DATE function
+
+statement error
+SELECT col.unpack() FROM t;
+----
+UNPACK can only be used in combination with a STAR
+
+# a qualification that is not a column
+statement error
+SELECT foo.ifnull(1);
+----
+Referenced column "foo" was not found
+
+# the qualified form reaches the checks of a function call, which the plain form skips
+statement error
+SELECT col.ifnull('b' IGNORE NULLS) FROM t;
+----
+RESPECT/IGNORE NULLS is not supported for non-window functions
+
+statement error
+SELECT col.ifnull('b') WITHIN GROUP (ORDER BY 1) FROM t;
+----
+Unknown ordered aggregate
+
+# after the main schema the qualification is dropped as before, as main.lower() is lower()
+statement ok
+ATTACH ':memory:' AS mem_db;
+
+query IIII
+SELECT main.ifnull(NULL, 'z'), MAIN.ifnull(NULL, 'y'), system.main.date('2020-01-01'), mem_db.main.try('x'::INTEGER);
+----
+z	y	2020-01-01	NULL
+
+query I
+SELECT [main.unpack(COLUMNS(*))] FROM (SELECT 1 AS a, 2 AS b);
+----
+[1, 2]
+
+# a coalesce qualified with main is looked up in the catalog as before
+statement ok
+CREATE MACRO mem_db.main.coalesce(a, b) AS 777;
+
+query I
+SELECT mem_db.main.coalesce(NULL, 5);
+----
+777
+
+# any other qualification is the column the function is called on, also when a schema or a database of that name
+# exists
+statement ok
+CREATE SCHEMA s;
+
+query II
+SELECT s.ifnull('z'), s.lower() FROM (VALUES (NULL), ('A')) v(s) ORDER BY ALL;
+----
+A	a
+z	NULL
+
+query I
+SELECT mem_db.ifnull(2) FROM (SELECT 1 AS mem_db);
+----
+1
+
+statement error
+SELECT s.ifnull(NULL, 'z');
+----
+Wrong number of arguments to IFNULL.
+
+statement ok
+DETACH mem_db;
+
+# the column is an ordinary column reference, so a macro parameter takes its place
+statement ok
+CREATE MACRO or_z(p) AS p.ifnull('z');
+
+query II
+SELECT or_z(NULL), or_z('q');
+----
+z	q

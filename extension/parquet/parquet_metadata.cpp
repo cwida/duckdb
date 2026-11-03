@@ -80,9 +80,9 @@ struct ParquetMetadataFilePaths {
 };
 
 struct ParquetMetaDataBindData : public TableFunctionData {
-	unique_ptr<ParquetMetadataFilePaths> file_paths;
+	shared_ptr<MultiFileList> file_list;
 
-	//! The file list is consumed by the first execution
+	//! The file list is a glob snapshot taken at bind time
 	bool SupportStatementCache() const override {
 		return false;
 	}
@@ -1348,10 +1348,8 @@ unique_ptr<FunctionData> ParquetMetaDataOperator::Bind(ClientContext &context, T
 		result = std::move(probe_bind_data);
 	}
 
-	result->file_paths = make_uniq<ParquetMetadataFilePaths>();
-	result->file_paths->file_list = multi_file_reader->CreateFileList(context, input.inputs[0], glob_input);
-	D_ASSERT(!result->file_paths->file_list->IsEmpty());
-	result->file_paths->file_list->InitializeScan(result->file_paths->scan_data);
+	result->file_list = multi_file_reader->CreateFileList(context, input.inputs[0], glob_input);
+	D_ASSERT(!result->file_list->IsEmpty());
 
 	BindSchema<OP_TYPE>(return_types, names);
 
@@ -1360,8 +1358,13 @@ unique_ptr<FunctionData> ParquetMetaDataOperator::Bind(ClientContext &context, T
 
 unique_ptr<GlobalTableFunctionState> ParquetMetaDataOperator::InitGlobal(ClientContext &context,
                                                                          TableFunctionInitInput &input) {
-	auto &bind_data = input.bind_data->CastNoConst<ParquetMetaDataBindData>();
-	return make_uniq<ParquetMetadataGlobalState>(std::move(bind_data.file_paths), context);
+	auto &bind_data = input.bind_data->Cast<ParquetMetaDataBindData>();
+	// The file cursor is scan state: a scan can be initialized multiple times and must restart from the
+	// first file each time.
+	auto file_paths = make_uniq<ParquetMetadataFilePaths>();
+	file_paths->file_list = bind_data.file_list;
+	file_paths->file_list->InitializeScan(file_paths->scan_data);
+	return make_uniq<ParquetMetadataGlobalState>(std::move(file_paths), context);
 }
 
 template <ParquetMetadataOperatorType OP_TYPE>

@@ -37,6 +37,11 @@ public:
 	//! Called after an extension fails to load loading
 	virtual void OnExtensionLoadFail(DatabaseInstance &db, const string &name, const ErrorData &error) {
 	}
+	//! Called after removal from the connection manager, without holding its lock.
+	//! Destruction waits for this callback. The context and database are still alive.
+	//! Must not throw. Calls for different connections can overlap.
+	virtual void OnConnectionUnregistered(ClientContext &context) {
+	}
 
 	static void Register(DBConfig &config, shared_ptr<ExtensionCallback> extension);
 	static ExtensionCallbackIteratorHelper<shared_ptr<ExtensionCallback>> Iterate(ClientContext &context) {

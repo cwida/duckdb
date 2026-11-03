@@ -813,9 +813,8 @@ struct TruncDecimalNegativePrecisionOperator {
 		auto source_scale = DecimalType::GetScale(func_expr.GetChildren()[0]->GetReturnType());
 		auto width = DecimalType::GetWidth(func_expr.GetChildren()[0]->GetReturnType());
 		if (info.target_scale <= -int32_t(width - source_scale)) {
-			// scale too big for width
-			result.SetVectorType(VectorType::CONSTANT_VECTOR);
-			result.SetValue(0, Value::INTEGER(0));
+			// scale too big for width: every value truncates to zero, NULL stays NULL
+			UnaryExecutor::Execute<T, T>(input.data[0], result, [](T) { return T(0); });
 			return;
 		}
 		T divide_power_of_ten =
@@ -978,7 +977,7 @@ struct RoundHalfAwayFromZero {
 	static constexpr const char *Name = "ROUND";
 
 	static double Nearest(double value) {
-		return std::round(value);
+		return RoundToNearestAwayFromZero(value);
 	}
 	template <class T>
 	static bool RoundsAway(T) {
@@ -998,6 +997,18 @@ struct RoundHalfToEven {
 	}
 };
 
+//! The error of the rounded product, computed with Dekker's algorithm because fma is not exact on every platform
+static double ProductError(double a, double b, double product) {
+	constexpr double SPLITTER = 134217729.0; // 2^27 + 1
+	double a_scaled = SPLITTER * a;
+	double a_high = a_scaled - (a_scaled - a);
+	double a_low = a - a_high;
+	double b_scaled = SPLITTER * b;
+	double b_high = b_scaled - (b_scaled - b);
+	double b_low = b - b_high;
+	return ((a_high * b_high - product) + a_high * b_low + a_low * b_high) + a_low * b_low;
+}
+
 template <class ROUND_POLICY>
 struct RoundOperatorPrecision {
 	template <class TA, class TB, class TR>
@@ -1016,7 +1027,20 @@ struct RoundOperatorPrecision {
 			}
 		} else {
 			double modifier = std::pow(10, TA(precision));
-			rounded_value = ROUND_POLICY::Nearest(input * modifier) / modifier;
+			double scaled = input * modifier;
+			double nearest;
+			// the product can round onto a midpoint that the input itself is not on, as 2.675 * 100 becomes 267.5
+			// while the stored 2.675 is below it, so the exact product decides (10^22 is the largest exact modifier)
+			double error = 0;
+			if (precision > 0 && precision <= 22 && std::fabs(scaled - std::trunc(scaled)) == 0.5) {
+				error = ProductError(double(input), modifier, scaled);
+			}
+			if (error != 0) {
+				nearest = error < 0 ? std::floor(scaled) : std::ceil(scaled);
+			} else {
+				nearest = ROUND_POLICY::Nearest(scaled);
+			}
+			rounded_value = nearest / modifier;
 			if (std::isinf(rounded_value) || std::isnan(rounded_value)) {
 				return input;
 			}
@@ -1028,7 +1052,7 @@ struct RoundOperatorPrecision {
 struct RoundOperator {
 	template <class TA, class TR>
 	static inline TR Operation(TA input) {
-		double rounded_value = round(input);
+		double rounded_value = RoundToNearestAwayFromZero(static_cast<double>(input));
 		if (std::isinf(rounded_value) || std::isnan(rounded_value)) {
 			return input;
 		}
@@ -1110,9 +1134,8 @@ struct DecimalRoundNegativePrecisionOperator {
 		auto &info = func_expr.BindInfo()->Cast<RoundPrecisionFunctionData>();
 		auto source_scale = DecimalType::GetScale(func_expr.GetChildren()[0]->GetReturnType());
 		if (info.target_scale < -int32_t(info.source_width - source_scale)) {
-			// scale too big for width
-			result.SetVectorType(VectorType::CONSTANT_VECTOR);
-			result.SetValue(0, Value::INTEGER(0));
+			// scale too big for width: every value rounds to zero, NULL stays NULL
+			UnaryExecutor::Execute<T, T>(input.data[0], result, [](T) { return T(0); });
 			return;
 		}
 		T divide_power_of_ten =

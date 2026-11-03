@@ -322,6 +322,12 @@ struct ParquetOptions {
 	StringColumnReader::Utf8ValidationOption utf8_validation_option =
 	    StringColumnReader::Utf8ValidationOption::STRICT_UTF8;
 	ParquetInt96AsOption int96_as = ParquetInt96AsOption::TIMESTAMP;
+
+	//! Whether invalid UTF-8 in a VARCHAR column (not JSON) is changed as it is read, so that the values no longer lie
+	//! within the statistics and bloom filters of the stored bytes
+	bool RepairsInvalidUTF8() const {
+		return utf8_validation_option != StringColumnReader::Utf8ValidationOption::STRICT_UTF8;
+	}
 };
 
 struct ParquetOptionsSerialization {
@@ -495,7 +501,7 @@ private:
 	uint64_t GetGroupSpan(ParquetReaderScanState &state);
 	FilterPropagateResult CheckRowGroupFilterStatistics(ClientContext &context, ParquetReaderScanState &state,
 	                                                    ColumnReader &column_reader, const TableFilter &filter);
-	bool DynamicFiltersExcludeRowGroup(ClientContext &context, ParquetReaderScanState &state);
+	bool FiltersExcludeRowGroup(ClientContext &context, ParquetReaderScanState &state, bool dynamic_filters_only);
 	void PrepareRowGroupBuffer(ClientContext &context, ParquetReaderScanState &state, idx_t out_col_idx);
 	//! Reads the page index of the row group and works out which rows may match the filters; a page index that
 	//! cannot be read or evaluated is ignored

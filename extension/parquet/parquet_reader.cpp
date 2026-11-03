@@ -1420,6 +1420,8 @@ void ParquetReader::AddVirtualColumn(column_t virtual_column_id) {
 
 ParquetOptions::ParquetOptions(ClientContext &context) {
 	context.TryGetCurrentSetting("binary_as_string", binary_as_string);
+	// a can_have_nan option of the scan is parsed after this, so it overrides the setting
+	context.TryGetCurrentSetting("parquet_can_have_nan", can_have_nan);
 	context.TryGetCurrentSetting("debug_delta_only_variant_encoding_enabled", variant_legacy_encoding);
 }
 
@@ -1539,6 +1541,9 @@ optional_idx ParquetUnionData::TryGetCardinalityEstimate() const {
 unique_ptr<BaseStatistics> ParquetUnionData::GetStatistics(ClientContext &context, const Identifier &name) {
 	if (reader) {
 		return reader->Cast<ParquetReader>().GetStatistics(context, name);
+	}
+	if (!root_schema) {
+		return nullptr;
 	}
 	return ParquetReader::ReadStatistics(context, *this, name);
 }
@@ -1900,12 +1905,15 @@ FilterPropagateResult ParquetReader::CheckRowGroupFilterStatistics(ClientContext
 	return prune_result;
 }
 
-bool ParquetReader::DynamicFiltersExcludeRowGroup(ClientContext &context, ParquetReaderScanState &state) {
+bool ParquetReader::FiltersExcludeRowGroup(ClientContext &context, ParquetReaderScanState &state,
+                                           bool dynamic_filters_only) {
 	for (auto &scan_filter : state.scan_filters) {
-		auto &expr_filter =
-		    ExpressionFilter::GetExpressionFilter(scan_filter.filter, "ParquetReader::DynamicFiltersExcludeRowGroup");
-		if (!ExpressionFilter::ContainsInternalFunction(*expr_filter.expr, DynamicFilterScalarFun::NAME)) {
-			continue;
+		if (dynamic_filters_only) {
+			auto &expr_filter =
+			    ExpressionFilter::GetExpressionFilter(scan_filter.filter, "ParquetReader::FiltersExcludeRowGroup");
+			if (!ExpressionFilter::ContainsInternalFunction(*expr_filter.expr, DynamicFilterScalarFun::NAME)) {
+				continue;
+			}
 		}
 		auto &column_reader = state.GetColumnReader(MultiFileLocalIndex(scan_filter.filter_idx));
 		auto prune_result = CheckRowGroupFilterStatistics(context, state, column_reader, scan_filter.filter);
@@ -1935,6 +1943,11 @@ void ParquetReader::PrepareRowGroupBuffer(ClientContext &context, ParquetReaderS
 	}
 	auto row_group_num_rows = NumericCast<idx_t>(group.num_rows);
 
+	if (filters && row_group_num_rows > 0 && state.offset_in_group == row_group_num_rows) {
+		// the row group is already ruled out (statistics pass or an earlier column): no Bloom filter reads
+		return;
+	}
+
 	if (filters) {
 		// filters contain output chunk index, not file col idx!
 		auto filter_entry = filters->TryGetFilterByColumnIndex(col_idx);
@@ -1956,6 +1969,12 @@ void ParquetReader::PrepareRowGroupBuffer(ClientContext &context, ParquetReaderS
 						bloom_filter = leaf_filter.get();
 						check_bloom_filter = prune_result != FilterPropagateResult::FILTER_ALWAYS_FALSE;
 					}
+				}
+				if (bloom_reader && parquet_options.RepairsInvalidUTF8() &&
+				    StringColumnReader::GetStringColumnType(bloom_reader->Type()) ==
+				        StringColumnReader::StringColumnType::VARCHAR) {
+					// the bloom filter holds the stored bytes, which repairing invalid UTF-8 changes
+					bloom_reader = nullptr;
 				}
 				auto hash_strategy = bloom_reader ? ParquetStatisticsUtils::GetBloomFilterHashStrategy(
 				                                        bloom_reader->Schema(), interval_bloom_filter_version)
@@ -2150,7 +2169,7 @@ void ParquetReader::PreparePageIndexInternal(ClientContext &context, ParquetRead
 			can_have_nan = ParquetStatisticsUtils::CanHaveNaN(column_chunk.meta_data.statistics, can_have_nan);
 		}
 		ParquetPageIndexUtils::FilterPages(column_reader.Schema(), column_index, filter_column.filter.get(),
-		                                   can_have_nan, page_may_match[i]);
+		                                   parquet_options, can_have_nan, page_may_match[i]);
 		for (auto may_match : page_may_match[i]) {
 			any_page_pruned = any_page_pruned || !may_match;
 		}
@@ -2593,6 +2612,11 @@ ParquetPrefetchStrategy ParquetReader::RegisterRowGroupReads(ClientContext &cont
 	state.group_offset = GetRowGroupOffset(*this, state.group_index);
 
 	auto &group = GetGroup(state);
+	// rule the row group out on the statistics of all filters before any column reads a Bloom filter
+	if (filters && group.num_rows > 0 && FiltersExcludeRowGroup(context, state, false)) {
+		rows_read += NumericCast<idx_t>(group.num_rows);
+		state.offset_in_group = NumericCast<idx_t>(group.num_rows);
+	}
 	// several readers can read the same column chunk (e.g. two fields of one variant column), count each chunk once
 	unordered_set<idx_t> scanned_column_chunks;
 	for (idx_t i = 0; i < column_ids.size(); i++) {
@@ -2851,7 +2875,7 @@ AsyncResult ParquetReader::Process(ClientContext &context, ParquetReaderScanStat
 	    Logger::Get(context).ShouldLog(ParquetPrefetchLogType::NAME, ParquetPrefetchLogType::LEVEL);
 	const idx_t group_num_rows = GetGroup(state).num_rows;
 	// Queued row groups may predate the current dynamic filter. Do not revisit a partially decoded chunk.
-	if (state.offset_in_group == 0 && !state.resuming_payload && DynamicFiltersExcludeRowGroup(context, state)) {
+	if (state.offset_in_group == 0 && !state.resuming_payload && FiltersExcludeRowGroup(context, state, true)) {
 		rows_read += group_num_rows;
 		state.offset_in_group = group_num_rows;
 	}

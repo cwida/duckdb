@@ -80,6 +80,11 @@ ListSortBindData::ListSortBindData(OrderType order_type_p, OrderByNullType null_
 	vector<BoundOrderByNode> orders;
 	orders.emplace_back(OrderType::ASCENDING, OrderByNullType::ORDER_DEFAULT, std::move(idx_col_expr));
 	orders.emplace_back(order_type, null_order, std::move(sort_key_p));
+	if (is_grade_up) {
+		// break ties on the original position, so equal elements are graded in a deterministic order
+		auto position_expr = make_uniq_base<Expression, BoundReferenceExpression>(LogicalType::UINTEGER, 2U);
+		orders.emplace_back(OrderType::ASCENDING, OrderByNullType::ORDER_DEFAULT, std::move(position_expr));
+	}
 	sort =
 	    shared_ptr<Sort>(new Sort(context, orders, {LogicalType::USMALLINT, child_type, LogicalType::UINTEGER}, {2}));
 }
@@ -281,12 +286,11 @@ static void ListSortFunction(DataChunk &args, ExpressionState &state, Vector &re
 
 			// construct the selection vector with the new order from the result vectors
 			auto row_count = result_chunk.size();
-			Vector result_vector(Vector::Ref(result_chunk.data[0]));
-
-			auto result_data = FlatVector::GetData<uint32_t>(result_vector);
+			auto result_values = result_chunk.data[0].Values<uint32_t>();
 			for (idx_t i = 0; i < row_count; i++) {
-				sel_sorted.set_index(sel_sorted_idx, result_data[i]);
-				D_ASSERT(result_data[i] < lists_size);
+				auto sorted_idx = result_values[i].GetValue();
+				sel_sorted.set_index(sel_sorted_idx, sorted_idx);
+				D_ASSERT(sorted_idx < lists_size);
 				sel_sorted_idx++;
 			}
 		}
