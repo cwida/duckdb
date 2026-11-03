@@ -380,27 +380,34 @@ struct VariantShreddedAppendInput {
 } // namespace
 
 //! Whether a VARIANT value holds a decimal wider than 38 digits, which engines before wide decimals cannot read
-static bool ContainsWideDecimal(const VariantNode &node) {
-	switch (node.GetTypeId()) {
-	case VariantLogicalType::DECIMAL:
-		return Decimal::IsWide(node.GetDecimalProperties().width);
-	case VariantLogicalType::OBJECT:
-		for (auto &entry : node.GetObjectChildren()) {
-			if (ContainsWideDecimal(entry.value)) {
+static bool ContainsWideDecimal(const VariantNode &root) {
+	// an explicit work list, deeply nested values must not consume stack
+	vector<VariantNode> pending;
+	pending.push_back(root);
+	while (!pending.empty()) {
+		auto node = pending.back();
+		pending.pop_back();
+		switch (node.GetTypeId()) {
+		case VariantLogicalType::DECIMAL:
+			if (Decimal::IsWide(node.GetDecimalProperties().width)) {
 				return true;
 			}
-		}
-		return false;
-	case VariantLogicalType::ARRAY:
-		for (auto child : node.GetArrayChildren()) {
-			if (ContainsWideDecimal(child)) {
-				return true;
+			break;
+		case VariantLogicalType::OBJECT:
+			for (auto &entry : node.GetObjectChildren()) {
+				pending.push_back(entry.value);
 			}
+			break;
+		case VariantLogicalType::ARRAY:
+			for (auto child : node.GetArrayChildren()) {
+				pending.push_back(child);
+			}
+			break;
+		default:
+			break;
 		}
-		return false;
-	default:
-		return false;
 	}
+	return false;
 }
 
 //! The unshredded payload of a wide decimal is stored as it is, so a storage version before wide decimals refuses it
