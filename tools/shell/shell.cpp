@@ -3777,8 +3777,8 @@ void ShellState::DetectDarkLightMode() {
 		return;
 	}
 	// detect terminal colors
-	// pending input is only kept if linenoise is the one reading it
-	auto terminal_color = linenoiseGetTerminalColorMode(rl_version == ReadLineVersion::LINENOISE && !in);
+	// the terminal is not queried while stdin is read by the shell itself (-batch) - only COLORFGBG is used then
+	auto terminal_color = linenoiseGetTerminalColorMode(rl_version == ReadLineVersion::LINENOISE && (stdin_is_interactive || !readStdin));
 	if (terminal_color == LINENOISE_DARK_MODE) {
 		highlight_mode = HighlightMode::DARK_MODE;
 		highlight.ToggleMode(HighlightMode::DARK_MODE);
@@ -4053,10 +4053,6 @@ int RunShell(int argc, const char **argv) {
 			rc = data.ProcessInput(InputMode::STANDARD);
 		} else {
 			data.in = stdin;
-			if (isatty(0)) {
-				// -batch on a terminal: the probe shares stdin, so detect before reading any input
-				data.DetectDarkLightMode();
-			}
 			rc = data.ProcessInput(InputMode::STANDARD);
 		}
 	}
