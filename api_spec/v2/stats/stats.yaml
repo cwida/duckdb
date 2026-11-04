@@ -160,8 +160,9 @@ functions:
         `child_stats.child_stats.key` and `child_stats.child_stats.value`;
       - GEOMETRY: `extent`, a struct with the bounding box `x_min`, `x_max`, `y_min`, `y_max` and, when the
         geometries have those coordinates, `z_min`, `z_max`, `m_min`, `m_max`; `types`, the list of geometry types
-        the column holds (`'point'`, `'linestring_z'`, `'polygon_m'`, `'multipoint_zm'`, ...); and the flags
-        `has_empty_geom`, `has_non_empty_geom`, `has_empty_part` and `has_non_empty_part`;
+        the column holds (`'point'`, `'linestring_z'`, `'polygon_m'`, `'multipoint_zm'`, ...; `stats()` does not
+        show this field); and the flags `has_empty_geom`, `has_non_empty_geom`, `has_empty_part` and
+        `has_non_empty_part`;
       - VARIANT: `shredding_state` (`'SHREDDED'` when the values are stored in a structured layout, `'NOT_SHREDDED'`,
         `'INCONSISTENT'` or `'UNINITIALIZED'`), and for a shredded column `fully_shredded` and `partially_shredded`:
         trees over the structured layout whose leaves are `{'type': <type name>, 'stats': <statistics struct>}` for

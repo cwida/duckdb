@@ -89,7 +89,7 @@ DUCKDB_V2_ERROR duckdb_v2_stats_get_value(duckdb_v2_stats_handle stats, duckdb_v
 	DUCKDB_CHECK_ARG(value);
 	*value = nullptr;
 	return WithErrorHandler(err, [&]() {
-		// string bounds as the bytes they are, not as the rendering stats() shows
+		// the statistics as they are (string bounds as their bytes, geometry types), not the rendering stats() shows
 		*value = Convert(new Value(Convert(stats)->GetStats().ToStruct(true)));
 	});
 }

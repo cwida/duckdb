@@ -159,7 +159,7 @@ void GeometryStats::Deserialize(Deserializer &deserializer, BaseStatistics &base
 	deserializer.ReadPropertyWithDefault<uint8_t>(302, "flags", data.flags.flags);
 }
 
-child_list_t<Value> GeometryStats::ToStruct(const BaseStatistics &stats) {
+child_list_t<Value> GeometryStats::ToStruct(const BaseStatistics &stats, bool exact) {
 	const auto &data = GetDataUnsafe(stats);
 	child_list_t<Value> result;
 	child_list_t<Value> extent;
@@ -179,7 +179,8 @@ child_list_t<Value> GeometryStats::ToStruct(const BaseStatistics &stats) {
 
 	result.emplace_back("extent", Value::STRUCT(std::move(extent)));
 
-	if (!data.types.IsUnknown()) {
+	// the types the column holds are not part of the rendering stats() shows
+	if (exact && !data.types.IsUnknown()) {
 		vector<Value> types;
 		for (auto &name : data.types.ToString(true)) {
 			types.emplace_back(name);

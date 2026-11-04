@@ -472,29 +472,29 @@ BaseStatistics BaseStatistics::Deserialize(Deserializer &deserializer) {
 	return stats;
 }
 
-Value BaseStatistics::ToStruct(bool exact_string_bounds) const {
+Value BaseStatistics::ToStruct(bool exact) const {
 	child_list_t<Value> children;
 	switch (GetStatsType()) {
 	case StatisticsType::NUMERIC_STATS:
 		children = NumericStats::ToStruct(*this);
 		break;
 	case StatisticsType::STRING_STATS:
-		children = StringStats::ToStruct(*this, exact_string_bounds);
+		children = StringStats::ToStruct(*this, exact);
 		break;
 	case StatisticsType::LIST_STATS:
-		children = ListStats::ToStruct(*this, exact_string_bounds);
+		children = ListStats::ToStruct(*this, exact);
 		break;
 	case StatisticsType::STRUCT_STATS:
-		children = StructStats::ToStruct(*this, exact_string_bounds);
+		children = StructStats::ToStruct(*this, exact);
 		break;
 	case StatisticsType::ARRAY_STATS:
-		children = ArrayStats::ToStruct(*this, exact_string_bounds);
+		children = ArrayStats::ToStruct(*this, exact);
 		break;
 	case StatisticsType::GEOMETRY_STATS:
-		children = GeometryStats::ToStruct(*this);
+		children = GeometryStats::ToStruct(*this, exact);
 		break;
 	case StatisticsType::VARIANT_STATS:
-		children = VariantStats::ToStruct(*this, exact_string_bounds);
+		children = VariantStats::ToStruct(*this, exact);
 		break;
 	default:
 		break;

@@ -400,7 +400,7 @@ void VariantStats::Deserialize(Deserializer &deserializer, BaseStatistics &base)
 	}
 }
 
-static Value GetShreddedStatsStruct(const BaseStatistics &stats, bool fully_shredded, bool exact_string_bounds) {
+static Value GetShreddedStatsStruct(const BaseStatistics &stats, bool fully_shredded, bool exact) {
 	if (VariantShreddedStats::IsFullyShredded(stats) != fully_shredded) {
 		return Value();
 	}
@@ -411,7 +411,7 @@ static Value GetShreddedStatsStruct(const BaseStatistics &stats, bool fully_shre
 		// list
 		auto &child_stats = ListStats::GetChildStats(typed_value);
 		child_list_t<Value> result;
-		auto result_stats = GetShreddedStatsStruct(child_stats, fully_shredded, exact_string_bounds);
+		auto result_stats = GetShreddedStatsStruct(child_stats, fully_shredded, exact);
 		if (result_stats.IsNull()) {
 			return Value();
 		}
@@ -435,7 +435,7 @@ static Value GetShreddedStatsStruct(const BaseStatistics &stats, bool fully_shre
 		for (idx_t i = 0; i < indices.size(); i++) {
 			auto &child_stats = StructStats::GetChildStats(typed_value, indices[i]);
 			auto &field = fields[indices[i]];
-			auto child_stats_entry = GetShreddedStatsStruct(child_stats, fully_shredded, exact_string_bounds);
+			auto child_stats_entry = GetShreddedStatsStruct(child_stats, fully_shredded, exact);
 			if (child_stats_entry.IsNull()) {
 				continue;
 			}
@@ -448,21 +448,21 @@ static Value GetShreddedStatsStruct(const BaseStatistics &stats, bool fully_shre
 	}
 	child_list_t<Value> result;
 	result.emplace_back("type", Value(typed_value.GetType().ToString()));
-	result.emplace_back("stats", typed_value.ToStruct(exact_string_bounds));
+	result.emplace_back("stats", typed_value.ToStruct(exact));
 	return Value::STRUCT(std::move(result));
 }
 
-child_list_t<Value> VariantStats::ToStruct(const BaseStatistics &stats, bool exact_string_bounds) {
+child_list_t<Value> VariantStats::ToStruct(const BaseStatistics &stats, bool exact) {
 	child_list_t<Value> result;
 	bool is_shredded = IsShredded(stats);
 	auto &data = GetDataUnsafe(stats);
 	result.emplace_back("shredding_state", Value(EnumUtil::ToString(data.shredding_state)));
 	if (is_shredded) {
-		auto fully_shredded_stats = GetShreddedStatsStruct(stats.child_stats[1], true, exact_string_bounds);
+		auto fully_shredded_stats = GetShreddedStatsStruct(stats.child_stats[1], true, exact);
 		if (!fully_shredded_stats.IsNull()) {
 			result.emplace_back("fully_shredded", std::move(fully_shredded_stats));
 		}
-		auto partially_shredded_stats = GetShreddedStatsStruct(stats.child_stats[1], false, exact_string_bounds);
+		auto partially_shredded_stats = GetShreddedStatsStruct(stats.child_stats[1], false, exact);
 		if (!partially_shredded_stats.IsNull()) {
 			result.emplace_back("partially_shredded", std::move(partially_shredded_stats));
 		}

@@ -815,11 +815,11 @@ static Value StringStatsBoundValue(const LogicalType &type, const string_t &boun
 	return Value::BLOB(const_data_ptr_cast(bound.GetData()), bound.GetSize());
 }
 
-child_list_t<Value> StringStats::ToStruct(const BaseStatistics &stats, bool exact_string_bounds) {
+child_list_t<Value> StringStats::ToStruct(const BaseStatistics &stats, bool exact) {
 	child_list_t<Value> result;
 	auto &string_data = GetDataUnsafe(stats);
 	if (HasMinMax(stats)) {
-		if (exact_string_bounds) {
+		if (exact) {
 			result.emplace_back("min", StringStatsBoundValue(stats.GetType(), string_data.min));
 			result.emplace_back("max", StringStatsBoundValue(stats.GetType(), string_data.max));
 		} else {
