@@ -234,8 +234,8 @@ void IntegerResolveTypes(duckdb_v2_function_bind_info_handle,
 	duckdb_v2_factory_handle factory = nullptr;
 	duckdb_v2_context_get_factory(context, &factory, nullptr);
 	duckdb_v2_logical_type_handle integer = nullptr;
-	if (duckdb_v2_factory_create_type_from_id(factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER, nullptr, nullptr, 0, &integer,
-	                                          err) != DUCKDB_V2_ERROR_NONE) {
+	if (duckdb_v2_factory_create_type_from_id(factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER, nullptr, nullptr, nullptr, 0,
+	                                          &integer, err) != DUCKDB_V2_ERROR_NONE) {
 		return;
 	}
 	duckdb_v2_scalar_function_resolve_types_set_return_type(result, integer, err);

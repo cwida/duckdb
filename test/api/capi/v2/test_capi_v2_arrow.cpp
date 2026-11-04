@@ -36,7 +36,8 @@ duckdb_v2_logical_type_handle ArrowTypeInCallback(duckdb_v2_context_handle conte
 	duckdb_v2_factory_handle factory = nullptr;
 	duckdb_v2_context_get_factory(context, &factory, nullptr);
 	duckdb_v2_logical_type_handle type = nullptr;
-	if (duckdb_v2_factory_create_type_from_id(factory, id, nullptr, nullptr, 0, &type, err) != DUCKDB_V2_ERROR_NONE) {
+	if (duckdb_v2_factory_create_type_from_id(factory, id, nullptr, nullptr, nullptr, 0, &type, err) !=
+	    DUCKDB_V2_ERROR_NONE) {
 		return nullptr;
 	}
 	return type;
@@ -62,8 +63,9 @@ ArrowRoundtrip *ArrowMakeRoundtrip(duckdb_v2_context_handle context, const duckd
                                    const duckdb_v2_str *names, idx_t count, idx_t export_batch, idx_t import_batch,
                                    duckdb_v2_error_info_handle *err) {
 	duckdb_v2_arrow_exporter_handle exporter = nullptr;
-	if (duckdb_v2_arrow_exporter_create(context, types, names, count, export_batch, &exporter, err) !=
-	    DUCKDB_V2_ERROR_NONE) {
+	StrArray name_array(names, count);
+	if (duckdb_v2_arrow_exporter_create(context, types, name_array.ptrs(), name_array.lengths(), count, export_batch,
+	                                    &exporter, err) != DUCKDB_V2_ERROR_NONE) {
 		return nullptr;
 	}
 	// The importer is resolved from the exporter's own schema, so the two agree by construction.
@@ -1087,7 +1089,7 @@ TEST_CASE("V2 arrow: functions guard null arguments", "[capi_v2][arrow]") {
 
 	duckdb_v2_arrow_exporter_handle exporter = nullptr;
 	duckdb_v2_str name = Convert("a");
-	REQUIRE(duckdb_v2_arrow_exporter_create(nullptr, nullptr, &name, 0, 0, &exporter, nullptr) ==
+	REQUIRE(duckdb_v2_arrow_exporter_create(nullptr, nullptr, &name.ptr, &name.len, 0, 0, &exporter, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(exporter == nullptr);
 	REQUIRE(duckdb_v2_arrow_exporter_get_schema(nullptr, &schema, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
@@ -1172,7 +1174,7 @@ struct ArrowBatches {
 
 duckdb_v2_sql_statement_handle ParseOne(duckdb_v2_connection_handle conn, const char *sql) {
 	duckdb_v2_statement_iterator_handle iter = nullptr;
-	REQUIRE(duckdb_v2_parse_sql(conn, sql, true, &iter, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_parse_sql(conn, sql, strlen(sql), true, &iter, nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_sql_statement_handle statement = nullptr;
 	auto rc = duckdb_v2_statement_iterator_next(iter, &statement, nullptr);
 	duckdb_v2_statement_iterator_destroy(&iter);
@@ -1186,8 +1188,9 @@ DUCKDB_V2_ERROR QueryArrow(duckdb_v2_connection_handle conn, const char *sql, id
                            const duckdb_v2_identifier_t *names = nullptr,
                            const duckdb_v2_value_handle *values = nullptr, idx_t value_count = 0) {
 	auto statement = ParseOne(conn, sql);
-	auto rc =
-	    duckdb_v2_statement_execute_arrow(conn, statement, names, values, value_count, batch_size, out_result, err);
+	StrArray name_array(names, names ? value_count : 0);
+	auto rc = duckdb_v2_statement_execute_arrow(conn, statement, name_array.ptrs(), name_array.lengths(), values,
+	                                            value_count, batch_size, out_result, err);
 	duckdb_v2_sql_statement_destroy(&statement);
 	return rc;
 }
@@ -1464,7 +1467,7 @@ TEST_CASE("V2 arrow result: a prepared statement executes as an Arrow result, re
 	for (int64_t base : {0, 100}) {
 		auto value = MakeInt64Value(fx.factory, base);
 		ArrowResult r;
-		REQUIRE(duckdb_v2_prepared_statement_execute_arrow(prepared, nullptr, &value, 1, 0, &r, nullptr) ==
+		REQUIRE(duckdb_v2_prepared_statement_execute_arrow(prepared, nullptr, nullptr, &value, 1, 0, &r, nullptr) ==
 		        DUCKDB_V2_ERROR_NONE);
 		duckdb_v2_value_destroy(&value);
 		auto statement_type = DUCKDB_V2_STATEMENT_TYPE_INVALID;
@@ -1482,7 +1485,7 @@ TEST_CASE("V2 arrow result: a prepared statement executes as an Arrow result, re
 	duckdb_v2_sql_statement_destroy(&statement);
 	auto value = MakeInt64Value(fx.factory, 17);
 	ArrowResult r;
-	REQUIRE(duckdb_v2_prepared_statement_execute_arrow(prepared, nullptr, &value, 1, 0, &r, nullptr) ==
+	REQUIRE(duckdb_v2_prepared_statement_execute_arrow(prepared, nullptr, nullptr, &value, 1, 0, &r, nullptr) ==
 	        DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_value_destroy(&value);
 	idx_t rows_changed = 0;
@@ -1948,11 +1951,11 @@ TEST_CASE("V2 arrow result: a prepared Arrow result honours its batch size and c
 	duckdb_v2_sql_statement_destroy(&statement);
 	{
 		ArrowResult r;
-		REQUIRE(duckdb_v2_prepared_statement_execute_arrow(prepared, nullptr, nullptr, 0, 700, &r, nullptr) ==
+		REQUIRE(duckdb_v2_prepared_statement_execute_arrow(prepared, nullptr, nullptr, nullptr, 0, 700, &r, nullptr) ==
 		        DUCKDB_V2_ERROR_NONE);
 		ArrowResult busy;
-		REQUIRE(duckdb_v2_prepared_statement_execute_arrow(prepared, nullptr, nullptr, 0, 700, &busy, nullptr) ==
-		        DUCKDB_V2_ERROR_RESOURCE_IN_USE);
+		REQUIRE(duckdb_v2_prepared_statement_execute_arrow(prepared, nullptr, nullptr, nullptr, 0, 700, &busy,
+		                                                   nullptr) == DUCKDB_V2_ERROR_RESOURCE_IN_USE);
 		REQUIRE(busy.handle == nullptr);
 		ArrowBatches batches;
 		FetchAll(r, batches);
@@ -1962,7 +1965,7 @@ TEST_CASE("V2 arrow result: a prepared Arrow result honours its batch size and c
 	}
 	{
 		ArrowResult r;
-		REQUIRE(duckdb_v2_prepared_statement_execute_arrow(prepared, nullptr, nullptr, 0, 700, &r, nullptr) ==
+		REQUIRE(duckdb_v2_prepared_statement_execute_arrow(prepared, nullptr, nullptr, nullptr, 0, 700, &r, nullptr) ==
 		        DUCKDB_V2_ERROR_NONE);
 		OwnedStream stream;
 		REQUIRE(duckdb_v2_arrow_result_to_arrow_c_stream(&r, &stream.stream, nullptr) == DUCKDB_V2_ERROR_NONE);
@@ -1998,16 +2001,16 @@ TEST_CASE("V2 arrow result: functions guard null arguments", "[capi_v2][arrow]")
 	EnvFixture fx;
 	auto statement = ParseOne(fx.conn, "SELECT 1");
 	duckdb_v2_arrow_result_handle out = nullptr;
-	REQUIRE(duckdb_v2_statement_execute_arrow(nullptr, statement, nullptr, nullptr, 0, 0, &out, nullptr) ==
+	REQUIRE(duckdb_v2_statement_execute_arrow(nullptr, statement, nullptr, nullptr, nullptr, 0, 0, &out, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(duckdb_v2_statement_execute_arrow(fx.conn, nullptr, nullptr, nullptr, 0, 0, &out, nullptr) ==
+	REQUIRE(duckdb_v2_statement_execute_arrow(fx.conn, nullptr, nullptr, nullptr, nullptr, 0, 0, &out, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(duckdb_v2_statement_execute_arrow(fx.conn, statement, nullptr, nullptr, 1, 0, &out, nullptr) ==
+	REQUIRE(duckdb_v2_statement_execute_arrow(fx.conn, statement, nullptr, nullptr, nullptr, 1, 0, &out, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(duckdb_v2_statement_execute_arrow(fx.conn, statement, nullptr, nullptr, 0, 0, nullptr, nullptr) ==
+	REQUIRE(duckdb_v2_statement_execute_arrow(fx.conn, statement, nullptr, nullptr, nullptr, 0, 0, nullptr, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(out == nullptr);
-	REQUIRE(duckdb_v2_prepared_statement_execute_arrow(nullptr, nullptr, nullptr, 0, 0, &out, nullptr) ==
+	REQUIRE(duckdb_v2_prepared_statement_execute_arrow(nullptr, nullptr, nullptr, nullptr, 0, 0, &out, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(out == nullptr);
 
@@ -2034,7 +2037,7 @@ TEST_CASE("V2 arrow result: functions guard null arguments", "[capi_v2][arrow]")
 	REQUIRE(stream.release == nullptr);
 
 	ArrowResult r;
-	REQUIRE(duckdb_v2_statement_execute_arrow(fx.conn, statement, nullptr, nullptr, 0, 0, &r, nullptr) ==
+	REQUIRE(duckdb_v2_statement_execute_arrow(fx.conn, statement, nullptr, nullptr, nullptr, 0, 0, &r, nullptr) ==
 	        DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_sql_statement_destroy(&statement);
 	REQUIRE(duckdb_v2_arrow_result_step(r, nullptr, &status, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);

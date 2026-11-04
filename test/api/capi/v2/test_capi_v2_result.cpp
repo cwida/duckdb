@@ -838,11 +838,12 @@ TEST_CASE("V2: result_get_schema outlives the result", "[capi_v2][query_result]"
 TEST_CASE("V2: statement_execute null-arg rejection", "[capi_v2][query_result]") {
 	EnvFixture fx;
 
-	// Exercise the real duckdb_v2_str signature. A {NULL, 0} sql is a valid
-	// empty view; the malformed case is a null pointer with a nonzero length.
+	// A NULL sql with a zero length is the empty input; the malformed case is a null pointer with a nonzero length.
 	duckdb_v2_result_handle r = nullptr;
 	REQUIRE(Query(nullptr, "SELECT 1", &r, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(Query(fx.conn, nullptr, &r, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	duckdb_v2_statement_iterator_handle iter = nullptr;
+	REQUIRE(duckdb_v2_parse_sql(fx.conn, nullptr, 1, true, &iter, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(iter == nullptr);
 	REQUIRE(Query(fx.conn, "SELECT 1", nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 }
 
@@ -1091,11 +1092,11 @@ TEST_CASE("V2: a statement that expands into a group is refused while another st
 //! Executes through the Arrow entry point, destroying any result
 DUCKDB_V2_ERROR ExecuteArrow(duckdb_v2_connection_handle conn, const char *sql) {
 	duckdb_v2_statement_iterator_handle iter = nullptr;
-	REQUIRE(duckdb_v2_parse_sql(conn, sql, true, &iter, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_parse_sql(conn, sql, strlen(sql), true, &iter, nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_sql_statement_handle stmt = nullptr;
 	REQUIRE(duckdb_v2_statement_iterator_next(iter, &stmt, nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_arrow_result_handle result = nullptr;
-	auto rc = duckdb_v2_statement_execute_arrow(conn, stmt, nullptr, nullptr, 0, 0, &result, nullptr);
+	auto rc = duckdb_v2_statement_execute_arrow(conn, stmt, nullptr, nullptr, nullptr, 0, 0, &result, nullptr);
 	if (result) {
 		duckdb_v2_arrow_result_destroy(&result);
 	}
@@ -1639,7 +1640,7 @@ TEST_CASE("V2: statement_bind on a statement that expands reports deferred metad
 	for (const char *sql :
 	     {"PIVOT sales ON year USING sum(amount)", "ALTER TABLE sales ADD COLUMN c DOUBLE DEFAULT random()"}) {
 		duckdb_v2_statement_iterator_handle iter = nullptr;
-		REQUIRE(duckdb_v2_parse_sql(fx.conn, sql, true, &iter, nullptr) == DUCKDB_V2_ERROR_NONE);
+		REQUIRE(duckdb_v2_parse_sql(fx.conn, sql, strlen(sql), true, &iter, nullptr) == DUCKDB_V2_ERROR_NONE);
 		duckdb_v2_sql_statement_handle stmt = nullptr;
 		REQUIRE(duckdb_v2_statement_iterator_next(iter, &stmt, nullptr) == DUCKDB_V2_ERROR_NONE);
 		duckdb_v2_schema_handle out = nullptr;

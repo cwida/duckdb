@@ -311,11 +311,12 @@ TEST_CASE("V2 db option: startup options are applied when the instance is create
 		auto default_value = Setting(plain_config, "memory_limit");
 		duckdb_v2_instance_destroy(&plain);
 
-		duckdb_v2_str names[] = {Convert("max_memory"), Convert("threads")};
-		duckdb_v2_str values[] = {Convert("2GB"), Convert("3")};
+		StrArray names = {Convert("max_memory"), Convert("threads")};
+		StrArray values = {Convert("2GB"), Convert("3")};
 		duckdb_v2_instance_handle instance = nullptr;
-		REQUIRE(duckdb_v2_instance_create_with_options(env, names, values, 2, &instance, nullptr) ==
-		        DUCKDB_V2_ERROR_NONE);
+		REQUIRE(duckdb_v2_instance_create_with_options(env, names.ptrs(), names.lengths(), values.ptrs(),
+		                                               values.lengths(), 2, &instance,
+		                                               nullptr) == DUCKDB_V2_ERROR_NONE);
 		duckdb_v2_config_handle instance_config = nullptr;
 		duckdb_v2_instance_get_config(instance, &instance_config, nullptr);
 		auto applied = Setting(instance_config, "memory_limit");
@@ -347,8 +348,8 @@ TEST_CASE("V2 db option: startup options are applied when the instance is create
 		auto name_str = Convert("access_mode");
 		auto value_str = Convert("READ_ONLY");
 		duckdb_v2_instance_handle instance = nullptr;
-		REQUIRE(duckdb_v2_instance_create_with_options(env, &name_str, &value_str, 1, &instance, nullptr) ==
-		        DUCKDB_V2_ERROR_NONE);
+		REQUIRE(duckdb_v2_instance_create_with_options(env, &name_str.ptr, &name_str.len, &value_str.ptr,
+		                                               &value_str.len, 1, &instance, nullptr) == DUCKDB_V2_ERROR_NONE);
 		auto path_str = Convert(path);
 		REQUIRE(duckdb_v2_instance_attach(instance, nullptr, &path_str, nullptr, true, nullptr) ==
 		        DUCKDB_V2_ERROR_NONE);
@@ -380,8 +381,8 @@ TEST_CASE("V2 db option: startup options are applied when the instance is create
 		auto value_str = Convert("1");
 		duckdb_v2_instance_handle instance = nullptr;
 		duckdb_v2_error_info_handle err = nullptr;
-		REQUIRE(duckdb_v2_instance_create_with_options(env, &name_str, &value_str, 1, &instance, &err) !=
-		        DUCKDB_V2_ERROR_NONE);
+		REQUIRE(duckdb_v2_instance_create_with_options(env, &name_str.ptr, &name_str.len, &value_str.ptr,
+		                                               &value_str.len, 1, &instance, &err) != DUCKDB_V2_ERROR_NONE);
 		REQUIRE(instance == nullptr);
 		REQUIRE(err != nullptr);
 		duckdb_v2_str msg = {nullptr, 0};
@@ -394,8 +395,9 @@ TEST_CASE("V2 db option: startup options are applied when the instance is create
 		auto name_str = Convert("allowed_directories");
 		auto value_str = Convert("[]");
 		duckdb_v2_instance_handle instance = nullptr;
-		REQUIRE(duckdb_v2_instance_create_with_options(env, &name_str, &value_str, 1, &instance, nullptr) ==
-		        DUCKDB_V2_ERROR_INPUT_INVALID);
+		REQUIRE(duckdb_v2_instance_create_with_options(env, &name_str.ptr, &name_str.len, &value_str.ptr,
+		                                               &value_str.len, 1, &instance,
+		                                               nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 		REQUIRE(instance == nullptr);
 	}
 
@@ -403,14 +405,14 @@ TEST_CASE("V2 db option: startup options are applied when the instance is create
 		duckdb_v2_instance_handle instance = nullptr;
 		auto name_str = Convert("threads");
 		auto value_str = Convert("2");
-		REQUIRE(duckdb_v2_instance_create_with_options(env, nullptr, &value_str, 1, &instance, nullptr) ==
-		        DUCKDB_V2_ERROR_INPUT_INVALID);
-		REQUIRE(duckdb_v2_instance_create_with_options(env, &name_str, nullptr, 1, &instance, nullptr) ==
-		        DUCKDB_V2_ERROR_INPUT_INVALID);
+		REQUIRE(duckdb_v2_instance_create_with_options(env, nullptr, nullptr, &value_str.ptr, &value_str.len, 1,
+		                                               &instance, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+		REQUIRE(duckdb_v2_instance_create_with_options(env, &name_str.ptr, &name_str.len, nullptr, nullptr, 1,
+		                                               &instance, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 		REQUIRE(instance == nullptr);
 		// No options at all is the same as instance_create.
-		REQUIRE(duckdb_v2_instance_create_with_options(env, nullptr, nullptr, 0, &instance, nullptr) ==
-		        DUCKDB_V2_ERROR_NONE);
+		REQUIRE(duckdb_v2_instance_create_with_options(env, nullptr, nullptr, nullptr, nullptr, 0, &instance,
+		                                               nullptr) == DUCKDB_V2_ERROR_NONE);
 		duckdb_v2_instance_destroy(&instance);
 	}
 

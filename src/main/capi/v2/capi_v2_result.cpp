@@ -395,7 +395,7 @@ auto ExecutePreparedStatementV2(const shared_ptr<ClientContext> &context, Prepar
 }
 
 auto ExecuteStatementV2(const shared_ptr<ClientContext> &context, const SQLStatement &statement,
-                        const duckdb_v2_identifier_t *parameter_names, const duckdb_v2_value_handle *parameter_values,
+                        const string_view_array &parameter_names, const duckdb_v2_value_handle *parameter_values,
                         idx_t parameter_count, const char *function_name, shared_ptr<ResultFormat> format)
     -> unique_ptr<ResultWrapperV2> {
 	auto wrapper = make_uniq<ResultWrapperV2>();
@@ -431,7 +431,7 @@ auto ExecuteStatementV2(const shared_ptr<ClientContext> &context, const SQLState
 using namespace duckdb::capiv2;
 
 DUCKDB_V2_ERROR duckdb_v2_statement_execute(duckdb_v2_connection_handle conn, duckdb_v2_sql_statement_handle statement,
-                                            const duckdb_v2_identifier_t *parameter_names,
+                                            const char **parameter_names, const idx_t *parameter_names_lengths,
                                             const duckdb_v2_value_handle *parameter_values, idx_t parameter_count,
                                             duckdb_v2_result_handle *out_result, duckdb_v2_error_info_handle *err) {
 	// The refusals here never reach the engine and leave the statement intact
@@ -444,9 +444,11 @@ DUCKDB_V2_ERROR duckdb_v2_statement_execute(duckdb_v2_connection_handle conn, du
 		return NullArgumentError(err, __func__, "parameter_values");
 	}
 	return WithErrorHandler(err, [&]() {
-		*out_result = Convert(ExecuteStatementV2(Convert(conn)->context, *Convert(statement), parameter_names,
-		                                         parameter_values, parameter_count, __func__, nullptr)
-		                          .release());
+		*out_result =
+		    Convert(ExecuteStatementV2(Convert(conn)->context, *Convert(statement),
+		                               string_view_array(parameter_names, parameter_names_lengths, parameter_count),
+		                               parameter_values, parameter_count, __func__, nullptr)
+		                .release());
 	});
 }
 

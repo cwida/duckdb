@@ -11,6 +11,8 @@
 
 #include <string>
 #include <cstring>
+#include <initializer_list>
+#include <vector>
 
 //----------------------------------------------------------------------------------------------------------------------
 // String helpers (need to be in global namespace)
@@ -137,6 +139,47 @@ inline auto Convert(const std::string &s) -> duckdb_v2_str {
 inline auto Convert(duckdb_v2_str s) -> std::string {
 	return s.ptr ? std::string(s.ptr, s.len) : std::string();
 }
+
+// Parallel pointer/length arrays for a string-array parameter, built from views. Both are NULL while empty.
+class StrArray {
+public:
+	StrArray() = default;
+	StrArray(std::initializer_list<duckdb_v2_str> views) {
+		for (auto &view : views) {
+			push_back(view);
+		}
+	}
+	StrArray(const duckdb_v2_str *views, idx_t count) {
+		for (idx_t i = 0; i < count; i++) {
+			push_back(views[i]);
+		}
+	}
+
+	void push_back(duckdb_v2_str view) {
+		ptr_storage.push_back(view.ptr);
+		length_storage.push_back(view.len);
+	}
+	void Set(idx_t i, duckdb_v2_str view) {
+		ptr_storage[i] = view.ptr;
+		length_storage[i] = view.len;
+	}
+	auto ptrs() -> const char ** {
+		return ptr_storage.empty() ? nullptr : ptr_storage.data();
+	}
+	auto lengths() -> const idx_t * {
+		return length_storage.empty() ? nullptr : length_storage.data();
+	}
+	auto size() const -> idx_t {
+		return ptr_storage.size();
+	}
+	auto empty() const -> bool {
+		return ptr_storage.empty();
+	}
+
+private:
+	std::vector<const char *> ptr_storage;
+	std::vector<idx_t> length_storage;
+};
 
 inline auto Convert(const duckdb_v2_bytes &s) -> duckdb_v2_str {
 #ifdef DUCKDB_DEBUG_NO_INLINE
@@ -308,7 +351,7 @@ inline DUCKDB_V2_ERROR Query(duckdb_v2_connection_handle conn, const char *sql, 
 		*out_result = nullptr;
 	}
 	duckdb_v2_statement_iterator_handle iter = nullptr;
-	auto rc = duckdb_v2_parse_sql(conn, sql, true, &iter, err);
+	auto rc = duckdb_v2_parse_sql(conn, sql, strlen(sql), true, &iter, err);
 	if (rc != DUCKDB_V2_ERROR_NONE) {
 		return rc;
 	}
@@ -328,7 +371,7 @@ inline DUCKDB_V2_ERROR Query(duckdb_v2_connection_handle conn, const char *sql, 
 		}
 	}
 	if (rc == DUCKDB_V2_ERROR_NONE) {
-		rc = duckdb_v2_statement_execute(conn, stmt, nullptr, nullptr, 0, out_result, err);
+		rc = duckdb_v2_statement_execute(conn, stmt, nullptr, nullptr, nullptr, 0, out_result, err);
 	}
 	// The statement is always still alive (it executes a copy), so destroy it unconditionally.
 	duckdb_v2_sql_statement_destroy(&stmt);
@@ -585,7 +628,7 @@ inline duckdb_v2_value_handle MakeValueFromText(duckdb_v2_factory_handle factory
 inline duckdb_v2_value_handle MakeValueFromText(duckdb_v2_factory_handle factory, DUCKDB_V2_LOGICAL_TYPE_ID id,
                                                 const char *text) {
 	duckdb_v2_logical_type_handle type = nullptr;
-	REQUIRE(duckdb_v2_factory_create_type_from_id(factory, id, nullptr, nullptr, 0, &type, nullptr) ==
+	REQUIRE(duckdb_v2_factory_create_type_from_id(factory, id, nullptr, nullptr, nullptr, 0, &type, nullptr) ==
 	        DUCKDB_V2_ERROR_NONE);
 	auto value = MakeValueFromText(factory, type, text);
 	duckdb_v2_logical_type_destroy(&type);
@@ -670,7 +713,7 @@ inline std::string ConsumeBlob(duckdb_v2_value_handle &value) {
 
 inline duckdb_v2_logical_type_handle MakeType(duckdb_v2_factory_handle factory, DUCKDB_V2_LOGICAL_TYPE_ID id) {
 	duckdb_v2_logical_type_handle t = nullptr;
-	REQUIRE(duckdb_v2_factory_create_type_from_id(factory, id, nullptr, nullptr, 0, &t, nullptr) ==
+	REQUIRE(duckdb_v2_factory_create_type_from_id(factory, id, nullptr, nullptr, nullptr, 0, &t, nullptr) ==
 	        DUCKDB_V2_ERROR_NONE);
 	return t;
 }
@@ -683,7 +726,7 @@ inline duckdb_v2_value_handle MakeTypeValue(duckdb_v2_factory_handle factory, du
 
 inline duckdb_v2_value_handle MakeTypeValue(duckdb_v2_factory_handle factory, DUCKDB_V2_LOGICAL_TYPE_ID id) {
 	duckdb_v2_logical_type_handle t = nullptr;
-	duckdb_v2_factory_create_type_from_id(factory, id, nullptr, nullptr, 0, &t, nullptr);
+	duckdb_v2_factory_create_type_from_id(factory, id, nullptr, nullptr, nullptr, 0, &t, nullptr);
 	auto v = MakeTypeValue(factory, t);
 	duckdb_v2_logical_type_destroy(&t);
 	return v;
@@ -692,19 +735,19 @@ inline duckdb_v2_value_handle MakeTypeValue(duckdb_v2_factory_handle factory, DU
 inline duckdb_v2_logical_type_handle MakeType(duckdb_v2_factory_handle factory, const char *name,
                                               const std::vector<const char *> *names,
                                               std::vector<duckdb_v2_value_handle> values) {
-	std::vector<duckdb_v2_str> name_views;
+	StrArray name_views;
 	if (names) {
 		for (auto *n : *names) {
 			name_views.push_back(Convert(n));
 		}
 	}
 	// The type name is a qualified name; an unqualified one is a single part.
-	duckdb_v2_identifier_t parts[1] = {Convert(name)};
+	auto part = Convert(name);
 	duckdb_v2_qname_handle qname = nullptr;
-	DUCKDB_V2_ERROR rc = duckdb_v2_qname_create(parts, 1, &qname, nullptr);
+	DUCKDB_V2_ERROR rc = duckdb_v2_qname_create(&part.ptr, &part.len, 1, &qname, nullptr);
 	duckdb_v2_logical_type_handle t = nullptr;
 	if (rc == DUCKDB_V2_ERROR_NONE) {
-		rc = duckdb_v2_factory_create_type_from_name(factory, qname, names ? name_views.data() : nullptr,
+		rc = duckdb_v2_factory_create_type_from_name(factory, qname, name_views.ptrs(), name_views.lengths(),
 		                                             values.empty() ? nullptr : values.data(), values.size(), &t,
 		                                             nullptr);
 	}

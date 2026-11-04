@@ -52,7 +52,7 @@ duckdb_v2_column_data_collection_handle CollMake(duckdb_v2_factory_handle factor
 
 duckdb_v2_sql_statement_handle CollParse(duckdb_v2_connection_handle conn, const char *sql) {
 	duckdb_v2_statement_iterator_handle iter = nullptr;
-	REQUIRE(duckdb_v2_parse_sql(conn, sql, true, &iter, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_parse_sql(conn, sql, strlen(sql), true, &iter, nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_sql_statement_handle stmt = nullptr;
 	auto rc = duckdb_v2_statement_iterator_next(iter, &stmt, nullptr);
 	duckdb_v2_statement_iterator_destroy(&iter);
@@ -65,11 +65,11 @@ DUCKDB_V2_ERROR CollBind(duckdb_v2_sql_statement_handle stmt, const char *name,
                          duckdb_v2_column_data_collection_handle cdc,
                          const std::vector<const char *> &column_names = {}) {
 	auto name_id = Convert(name);
-	std::vector<duckdb_v2_identifier_t> names;
+	StrArray names;
 	for (auto column_name : column_names) {
 		names.push_back(Convert(column_name));
 	}
-	return duckdb_v2_statement_add_collection(stmt, &name_id, cdc, names.empty() ? nullptr : names.data(), names.size(),
+	return duckdb_v2_statement_add_collection(stmt, &name_id, cdc, names.ptrs(), names.lengths(), names.size(),
 	                                          nullptr);
 }
 
@@ -94,7 +94,8 @@ std::vector<int64_t> CollDrainI64(duckdb_v2_result_handle result) {
 
 std::vector<int64_t> CollExecute(duckdb_v2_connection_handle conn, duckdb_v2_sql_statement_handle stmt) {
 	duckdb_v2_result_handle result = nullptr;
-	REQUIRE(duckdb_v2_statement_execute(conn, stmt, nullptr, nullptr, 0, &result, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_statement_execute(conn, stmt, nullptr, nullptr, nullptr, 0, &result, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
 	return CollDrainI64(result);
 }
 
@@ -176,7 +177,7 @@ TEST_CASE("V2 statement collection: each execution reads the current contents", 
 		REQUIRE(duckdb_v2_column_data_collection_clear(cdc, nullptr) == DUCKDB_V2_ERROR_NONE);
 		CollAppend(fx.factory, cdc, {batch});
 		duckdb_v2_result_handle result = nullptr;
-		REQUIRE(duckdb_v2_prepared_statement_execute(prepared, nullptr, nullptr, 0, &result, nullptr) ==
+		REQUIRE(duckdb_v2_prepared_statement_execute(prepared, nullptr, nullptr, nullptr, 0, &result, nullptr) ==
 		        DUCKDB_V2_ERROR_NONE);
 		CollDrainI64(result);
 	}
@@ -185,7 +186,7 @@ TEST_CASE("V2 statement collection: each execution reads the current contents", 
 	// An empty collection is a valid binding.
 	REQUIRE(duckdb_v2_column_data_collection_clear(cdc, nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_result_handle result = nullptr;
-	REQUIRE(duckdb_v2_prepared_statement_execute(prepared, nullptr, nullptr, 0, &result, nullptr) ==
+	REQUIRE(duckdb_v2_prepared_statement_execute(prepared, nullptr, nullptr, nullptr, 0, &result, nullptr) ==
 	        DUCKDB_V2_ERROR_NONE);
 	REQUIRE(DrainChangedRows(result) == 0);
 	duckdb_v2_result_destroy(&result);
@@ -242,14 +243,15 @@ TEST_CASE("V2 statement collection: refusals", "[capi_v2][statement_collection]"
 	REQUIRE(CollBind(stmt, "other", cdc, {"a", "b"}) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(CollBind(stmt, "other", cdc, {""}) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	auto name = Convert("other");
-	REQUIRE(duckdb_v2_statement_add_collection(stmt, &name, cdc, nullptr, 1, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_statement_add_collection(stmt, &name, cdc, nullptr, nullptr, 1, nullptr) ==
+	        DUCKDB_V2_ERROR_INPUT_INVALID);
 
 	// Null arguments.
-	REQUIRE(duckdb_v2_statement_add_collection(nullptr, &name, cdc, nullptr, 0, nullptr) ==
+	REQUIRE(duckdb_v2_statement_add_collection(nullptr, &name, cdc, nullptr, nullptr, 0, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(duckdb_v2_statement_add_collection(stmt, nullptr, cdc, nullptr, 0, nullptr) ==
+	REQUIRE(duckdb_v2_statement_add_collection(stmt, nullptr, cdc, nullptr, nullptr, 0, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(duckdb_v2_statement_add_collection(stmt, &name, nullptr, nullptr, 0, nullptr) ==
+	REQUIRE(duckdb_v2_statement_add_collection(stmt, &name, nullptr, nullptr, nullptr, 0, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
 
 	// The refusals left the statement as it was.

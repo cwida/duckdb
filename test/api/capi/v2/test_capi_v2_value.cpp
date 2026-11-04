@@ -45,8 +45,8 @@ TEST_CASE("V2: value destroy is null-safe", "[capi_v2][value][lifecycle]") {
 TEST_CASE("V2: value_create_null carries the borrowed type", "[capi_v2][value][null]") {
 	EnvFixture fx;
 	duckdb_v2_logical_type_handle int_type = nullptr;
-	REQUIRE(duckdb_v2_factory_create_type_from_id(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER, nullptr, nullptr, 0,
-	                                              &int_type, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_factory_create_type_from_id(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER, nullptr, nullptr,
+	                                              nullptr, 0, &int_type, nullptr) == DUCKDB_V2_ERROR_NONE);
 
 	duckdb_v2_value_handle v = nullptr;
 	REQUIRE(duckdb_v2_value_create_null(fx.factory, int_type, &v, nullptr) == DUCKDB_V2_ERROR_NONE);
@@ -78,8 +78,8 @@ TEST_CASE("V2: value_create_null rejects null type / null out", "[capi_v2][value
 	REQUIRE(v == nullptr);
 
 	duckdb_v2_logical_type_handle int_type = nullptr;
-	duckdb_v2_factory_create_type_from_id(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER, nullptr, nullptr, 0, &int_type,
-	                                      nullptr);
+	duckdb_v2_factory_create_type_from_id(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER, nullptr, nullptr, nullptr, 0,
+	                                      &int_type, nullptr);
 	REQUIRE(duckdb_v2_value_create_null(fx.factory, int_type, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	duckdb_v2_logical_type_destroy(&int_type);
 }
@@ -867,8 +867,8 @@ TEST_CASE("V2: failure path populates error info", "[capi_v2][value][error]") {
 TEST_CASE("V2: TYPE value wraps and unwraps a logical type", "[capi_v2][value][type_value]") {
 	EnvFixture fx;
 	duckdb_v2_logical_type_handle int_type = nullptr;
-	REQUIRE(duckdb_v2_factory_create_type_from_id(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER, nullptr, nullptr, 0,
-	                                              &int_type, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_factory_create_type_from_id(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER, nullptr, nullptr,
+	                                              nullptr, 0, &int_type, nullptr) == DUCKDB_V2_ERROR_NONE);
 
 	duckdb_v2_value_handle v = nullptr;
 	REQUIRE(duckdb_v2_value_create_type(fx.factory, int_type, &v, nullptr) == DUCKDB_V2_ERROR_NONE);
@@ -893,8 +893,8 @@ TEST_CASE("V2: TYPE value wraps and unwraps a logical type", "[capi_v2][value][t
 	REQUIRE(duckdb_v2_value_get_type(v, &unwrapped, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(unwrapped != nullptr);
 	duckdb_v2_logical_type_handle expected = nullptr;
-	duckdb_v2_factory_create_type_from_id(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER, nullptr, nullptr, 0, &expected,
-	                                      nullptr);
+	duckdb_v2_factory_create_type_from_id(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER, nullptr, nullptr, nullptr, 0,
+	                                      &expected, nullptr);
 	bool equal = false;
 	REQUIRE(duckdb_v2_logical_type_is_equal(unwrapped, expected, &equal, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(equal);
@@ -962,8 +962,8 @@ TEST_CASE("V2: value_get_type rejects non-TYPE and NULL TYPE values", "[capi_v2]
 	// NULL TYPE value: no payload to unwrap. The TYPE logical type is taken
 	// from a TYPE value's own type (create_from_id does not construct it).
 	duckdb_v2_logical_type_handle int_type = nullptr;
-	duckdb_v2_factory_create_type_from_id(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER, nullptr, nullptr, 0, &int_type,
-	                                      nullptr);
+	duckdb_v2_factory_create_type_from_id(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER, nullptr, nullptr, nullptr, 0,
+	                                      &int_type, nullptr);
 	duckdb_v2_value_handle type_value = nullptr;
 	REQUIRE(duckdb_v2_value_create_type(fx.factory, int_type, &type_value, nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_logical_type_destroy(&int_type);
@@ -992,8 +992,8 @@ TEST_CASE("V2: value_create_type / value_get_type null-arg refusals", "[capi_v2]
 	REQUIRE(v == nullptr);
 
 	duckdb_v2_logical_type_handle int_type = nullptr;
-	duckdb_v2_factory_create_type_from_id(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER, nullptr, nullptr, 0, &int_type,
-	                                      nullptr);
+	duckdb_v2_factory_create_type_from_id(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER, nullptr, nullptr, nullptr, 0,
+	                                      &int_type, nullptr);
 	REQUIRE(duckdb_v2_value_create_type(fx.factory, int_type, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	// The scope handle is mandatory too.
 	REQUIRE(duckdb_v2_value_create_type(nullptr, int_type, &v, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
@@ -1030,7 +1030,7 @@ duckdb_v2_value_handle V2Varchar(duckdb_v2_factory_handle factory, const char *s
 
 duckdb_v2_value_handle V2NullOf(duckdb_v2_factory_handle factory, DUCKDB_V2_LOGICAL_TYPE_ID id) {
 	duckdb_v2_logical_type_handle t = nullptr;
-	duckdb_v2_factory_create_type_from_id(factory, id, nullptr, nullptr, 0, &t, nullptr);
+	duckdb_v2_factory_create_type_from_id(factory, id, nullptr, nullptr, nullptr, 0, &t, nullptr);
 	duckdb_v2_value_handle v = nullptr;
 	auto rc = duckdb_v2_value_create_null(factory, t, &v, nullptr);
 	duckdb_v2_logical_type_destroy(&t);
@@ -1096,12 +1096,12 @@ auto TupleCall(duckdb_v2_factory_handle factory) {
 // STRUCT and MAP take parallel arrays, so they get their own shapes.
 duckdb_v2_value_handle V2Struct(duckdb_v2_factory_handle factory, const std::vector<const char *> &names,
                                 std::vector<duckdb_v2_value_handle> children) {
-	std::vector<duckdb_v2_identifier_t> name_views;
+	StrArray name_views;
 	for (auto *n : names) {
 		name_views.push_back(Convert(n));
 	}
 	duckdb_v2_value_handle v = nullptr;
-	auto rc = duckdb_v2_value_create_struct(factory, name_views.empty() ? nullptr : name_views.data(),
+	auto rc = duckdb_v2_value_create_struct(factory, name_views.ptrs(), name_views.lengths(),
 	                                        children.empty() ? nullptr : children.data(), children.size(), &v, nullptr);
 	for (auto &c : children) {
 		duckdb_v2_value_destroy(&c);
@@ -1348,11 +1348,11 @@ TEST_CASE("V2: composite constructors invalid-arg refusals", "[capi_v2][value][c
 	// STRUCT needs its names array whenever it has fields.
 	auto one = V2I32(fx.factory, 1);
 	const duckdb_v2_value_handle fields[1] = {one};
-	REQUIRE(duckdb_v2_value_create_struct(fx.factory, nullptr, fields, 1, &out, nullptr) ==
+	REQUIRE(duckdb_v2_value_create_struct(fx.factory, nullptr, nullptr, fields, 1, &out, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
 	// Field names must contain valid UTF-8.
-	const duckdb_v2_identifier_t invalid_names[1] = {Convert("\x80")};
-	REQUIRE(duckdb_v2_value_create_struct(fx.factory, invalid_names, fields, 1, &out, nullptr) ==
+	duckdb_v2_identifier_t invalid_name = Convert("\x80");
+	REQUIRE(duckdb_v2_value_create_struct(fx.factory, &invalid_name.ptr, &invalid_name.len, fields, 1, &out, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(out == nullptr);
 	duckdb_v2_value_destroy(&one);
@@ -1409,7 +1409,7 @@ TEST_CASE("V2: value_cast converts across types and from text", "[capi_v2][value
 	// Widening numeric cast.
 	auto small = V2I32(f.factory, 42);
 	duckdb_v2_logical_type_handle bigint_type = nullptr;
-	duckdb_v2_factory_create_type_from_id(f.factory, DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT, nullptr, nullptr, 0,
+	duckdb_v2_factory_create_type_from_id(f.factory, DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT, nullptr, nullptr, nullptr, 0,
 	                                      &bigint_type, nullptr);
 	auto widened = V2CastValue(f.factory, small, bigint_type);
 	REQUIRE(ConsumeValue<int64_t>(widened) == 42);
@@ -1420,8 +1420,8 @@ TEST_CASE("V2: value_cast converts across types and from text", "[capi_v2][value
 	// Text to DATE.
 	auto date_text = V2Varchar(f.factory, "2024-03-15");
 	duckdb_v2_logical_type_handle date_type = nullptr;
-	duckdb_v2_factory_create_type_from_id(f.factory, DUCKDB_V2_LOGICAL_TYPE_ID_DATE, nullptr, nullptr, 0, &date_type,
-	                                      nullptr);
+	duckdb_v2_factory_create_type_from_id(f.factory, DUCKDB_V2_LOGICAL_TYPE_ID_DATE, nullptr, nullptr, nullptr, 0,
+	                                      &date_type, nullptr);
 	auto date = V2CastValue(f.factory, date_text, date_type);
 	auto rendered = Render(date);
 	REQUIRE(rendered == "2024-03-15");
@@ -1443,8 +1443,8 @@ TEST_CASE("V2: value_cast converts across types and from text", "[capi_v2][value
 	// A failing cast surfaces the conversion error and nulls the out param.
 	auto bad = V2Varchar(f.factory, "abc");
 	duckdb_v2_logical_type_handle int_type = nullptr;
-	duckdb_v2_factory_create_type_from_id(f.factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER, nullptr, nullptr, 0, &int_type,
-	                                      nullptr);
+	duckdb_v2_factory_create_type_from_id(f.factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER, nullptr, nullptr, nullptr, 0,
+	                                      &int_type, nullptr);
 	auto out = reinterpret_cast<duckdb_v2_value_handle>(0x1);
 	duckdb_v2_error_info_handle err = nullptr;
 	REQUIRE(duckdb_v2_value_cast(f.factory, bad, int_type, &out, &err) == DUCKDB_V2_ERROR_INPUT_INVALID);
@@ -1511,7 +1511,7 @@ TEST_CASE("V2: ENUM values build via value_cast from VARCHAR", "[capi_v2][value]
 
 	// And back to text through the cast machinery.
 	duckdb_v2_logical_type_handle varchar_type = nullptr;
-	duckdb_v2_factory_create_type_from_id(f.factory, DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR, nullptr, nullptr, 0,
+	duckdb_v2_factory_create_type_from_id(f.factory, DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR, nullptr, nullptr, nullptr, 0,
 	                                      &varchar_type, nullptr);
 	auto back = V2CastValue(f.factory, e, varchar_type);
 	REQUIRE(ConsumeValue<std::string>(back) == "happy");
@@ -1536,8 +1536,8 @@ TEST_CASE("V2: value_cast null-arg refusals", "[capi_v2][value][cast]") {
 	duckdb_v2_value_handle out = nullptr;
 	auto v = V2I32(f.factory, 1);
 	duckdb_v2_logical_type_handle int_type = nullptr;
-	duckdb_v2_factory_create_type_from_id(f.factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER, nullptr, nullptr, 0, &int_type,
-	                                      nullptr);
+	duckdb_v2_factory_create_type_from_id(f.factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER, nullptr, nullptr, nullptr, 0,
+	                                      &int_type, nullptr);
 
 	// A null connection is refused without any scope.
 	REQUIRE(duckdb_v2_value_cast(nullptr, v, int_type, &out, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);

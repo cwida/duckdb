@@ -256,7 +256,7 @@ DUCKDB_V2_ERROR duckdb_v2_replacement_scan_add_named_argument(duckdb_v2_replacem
 
 DUCKDB_V2_ERROR duckdb_v2_replacement_scan_set_collection(duckdb_v2_replacement_scan_info_handle info,
                                                           duckdb_v2_column_data_collection_handle collection,
-                                                          const duckdb_v2_identifier_t *column_names,
+                                                          const char **column_names, const idx_t *column_names_lengths,
                                                           idx_t column_count, duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(info);
 	DUCKDB_CHECK_ARG(collection);
@@ -275,8 +275,9 @@ DUCKDB_V2_ERROR duckdb_v2_replacement_scan_set_collection(duckdb_v2_replacement_
 			    cdc.ColumnCount());
 		}
 		duckdb::vector<duckdb::Identifier> names;
+		string_view_array name_views(column_names, column_names_lengths, column_count);
 		for (idx_t i = 0; i < column_count; i++) {
-			auto name = duckdb::Identifier(ConvertIdentifierName(column_names[i]));
+			auto name = duckdb::Identifier(name_views[i]);
 			if (name.empty()) {
 				throw duckdb::InvalidInputException("Column names cannot be empty.");
 			}

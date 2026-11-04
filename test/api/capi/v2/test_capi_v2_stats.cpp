@@ -336,8 +336,8 @@ void StatsPairBindCb(duckdb_v2_function_bind_info_handle, duckdb_v2_table_functi
 	duckdb_v2_factory_handle factory = nullptr;
 	duckdb_v2_logical_type_handle integer = nullptr;
 	if (duckdb_v2_context_get_factory(context, &factory, err) != DUCKDB_V2_ERROR_NONE ||
-	    duckdb_v2_factory_create_type_from_id(factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER, nullptr, nullptr, 0, &integer,
-	                                          err) != DUCKDB_V2_ERROR_NONE) {
+	    duckdb_v2_factory_create_type_from_id(factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER, nullptr, nullptr, nullptr, 0,
+	                                          &integer, err) != DUCKDB_V2_ERROR_NONE) {
 		return;
 	}
 	auto a = StatsIdent("a");

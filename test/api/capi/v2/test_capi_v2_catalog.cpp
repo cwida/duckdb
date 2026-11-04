@@ -17,12 +17,13 @@ namespace {
 
 // Owned qname built from parts; the caller destroys it.
 duckdb_v2_qname_handle MakeQName(const std::vector<const char *> &parts) {
-	std::vector<duckdb_v2_identifier_t> views;
+	StrArray views;
 	for (auto *part : parts) {
 		views.push_back(Convert(part));
 	}
 	duckdb_v2_qname_handle qname = nullptr;
-	REQUIRE(duckdb_v2_qname_create(views.data(), views.size(), &qname, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_qname_create(views.ptrs(), views.lengths(), views.size(), &qname, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
 	return qname;
 }
 

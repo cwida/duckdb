@@ -72,9 +72,9 @@ void ReplRecordName(duckdb_v2_replacement_scan_info_handle info, duckdb_v2_error
 // Claims by an unqualified function name, which now means building a one-part qualified name.
 DUCKDB_V2_ERROR ReplClaimFunction(duckdb_v2_replacement_scan_info_handle info, const char *function_name,
                                   duckdb_v2_error_info_handle *err) {
-	duckdb_v2_identifier_t parts[1] = {Convert(function_name)};
+	StrArray parts = {Convert(function_name)};
 	duckdb_v2_qname_handle name = nullptr;
-	auto rc = duckdb_v2_qname_create(parts, 1, &name, err);
+	auto rc = duckdb_v2_qname_create(parts.ptrs(), parts.lengths(), 1, &name, err);
 	if (rc != DUCKDB_V2_ERROR_NONE) {
 		return rc;
 	}
@@ -349,24 +349,24 @@ void ReplClaimCollection(duckdb_v2_replacement_scan_info_handle info, duckdb_v2_
 		return; // not ours: decline
 	}
 
-	std::vector<duckdb_v2_identifier_t> names;
+	StrArray names;
 	for (auto &name : registry.column_names) {
 		names.push_back(Convert(name));
 	}
 
 	if (registry.probe_refusals) {
-		duckdb_v2_identifier_t too_many[3] = {Convert("a"), Convert("b"), Convert("c")};
-		registry.wrong_count_rc =
-		    duckdb_v2_replacement_scan_set_collection(info, registry.collection, too_many, 3, nullptr);
-		duckdb_v2_identifier_t empty[1] = {Convert("")};
-		registry.empty_name_rc =
-		    duckdb_v2_replacement_scan_set_collection(info, registry.collection, empty, 1, nullptr);
+		StrArray too_many = {Convert("a"), Convert("b"), Convert("c")};
+		registry.wrong_count_rc = duckdb_v2_replacement_scan_set_collection(info, registry.collection, too_many.ptrs(),
+		                                                                    too_many.lengths(), 3, nullptr);
+		StrArray empty = {Convert("")};
+		registry.empty_name_rc = duckdb_v2_replacement_scan_set_collection(info, registry.collection, empty.ptrs(),
+		                                                                   empty.lengths(), 1, nullptr);
 		registry.null_names_rc =
-		    duckdb_v2_replacement_scan_set_collection(info, registry.collection, nullptr, 1, nullptr);
+		    duckdb_v2_replacement_scan_set_collection(info, registry.collection, nullptr, nullptr, 1, nullptr);
 	}
 
-	duckdb_v2_replacement_scan_set_collection(info, registry.collection, names.empty() ? nullptr : names.data(),
-	                                          names.size(), err);
+	duckdb_v2_replacement_scan_set_collection(info, registry.collection, names.ptrs(), names.lengths(), names.size(),
+	                                          err);
 }
 
 // Registers a collection-serving scan whose user data is the caller-owned registry.
@@ -668,8 +668,8 @@ TEST_CASE("V2 replacement scan: a prepared collection claim caches its borrow", 
 	ReplRegisterRegistry(fx.conn, registry);
 
 	duckdb_v2_statement_iterator_handle iter = nullptr;
-	REQUIRE(duckdb_v2_parse_sql(fx.conn, "SELECT col1 FROM cached_batch ORDER BY col1", true, &iter, nullptr) ==
-	        DUCKDB_V2_ERROR_NONE);
+	const char *sql = "SELECT col1 FROM cached_batch ORDER BY col1";
+	REQUIRE(duckdb_v2_parse_sql(fx.conn, sql, strlen(sql), true, &iter, nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_sql_statement_handle stmt = nullptr;
 	REQUIRE(duckdb_v2_statement_iterator_next(iter, &stmt, nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_statement_iterator_destroy(&iter);
@@ -686,7 +686,8 @@ TEST_CASE("V2 replacement scan: a prepared collection claim caches its borrow", 
 	REQUIRE(reuses);
 
 	duckdb_v2_result_handle r = nullptr;
-	REQUIRE(duckdb_v2_prepared_statement_execute(prepared, nullptr, nullptr, 0, &r, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_prepared_statement_execute(prepared, nullptr, nullptr, nullptr, 0, &r, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
 	REQUIRE(DrainRowCount(r) == 2);
 	duckdb_v2_result_destroy(&r);
 

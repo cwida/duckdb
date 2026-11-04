@@ -1999,11 +1999,17 @@ functions:
         type: factory
         description: The factory to create with.
       names:
-        type: identifier
-        indirection: 1
+        type: char
+        indirection: 2
         const: true
         kind: IN
         description: An array of field_count field names. Pass NULL when field_count is 0.
+      names_lengths:
+        type: idx
+        indirection: 1
+        const: true
+        kind: IN
+        description: Byte lengths of the entries in `names`; element i is the length of `names[i]`. May be NULL only when `names` is NULL.
       children:
         type: value
         indirection: 1

@@ -106,12 +106,12 @@ using namespace duckdb::capiv2;
 
 DUCKDB_V2_ERROR duckdb_v2_instance_create(duckdb_v2_environment_handle env, duckdb_v2_instance_handle *out_instance,
                                           duckdb_v2_error_info_handle *err) {
-	return duckdb_v2_instance_create_with_options(env, nullptr, nullptr, 0, out_instance, err);
+	return duckdb_v2_instance_create_with_options(env, nullptr, nullptr, nullptr, nullptr, 0, out_instance, err);
 }
 
-DUCKDB_V2_ERROR duckdb_v2_instance_create_with_options(duckdb_v2_environment_handle env,
-                                                       const duckdb_v2_str *option_names,
-                                                       const duckdb_v2_str *option_values, idx_t option_count,
+DUCKDB_V2_ERROR duckdb_v2_instance_create_with_options(duckdb_v2_environment_handle env, const char **option_names,
+                                                       const idx_t *option_names_lengths, const char **option_values,
+                                                       const idx_t *option_values_lengths, idx_t option_count,
                                                        duckdb_v2_instance_handle *out_instance,
                                                        duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(env);
@@ -125,12 +125,11 @@ DUCKDB_V2_ERROR duckdb_v2_instance_create_with_options(duckdb_v2_environment_han
 	}
 	return WithErrorHandler(err, [&]() {
 		duckdb::DBConfig startup_config;
+		string_view_array names(option_names, option_names_lengths, option_count);
+		string_view_array values(option_values, option_values_lengths, option_count);
 		for (idx_t i = 0; i < option_count; i++) {
-			if (IsNullArgument(&option_names[i]) || IsNullArgument(&option_values[i])) {
-				throw duckdb::InvalidInputException("malformed startup option at index %llu", i);
-			}
-			startup_config.SetOptionByName(duckdb::Identifier(duckdb::string(Convert(&option_names[i]))),
-			                               duckdb::Value(duckdb::string(Convert(&option_values[i]))));
+			startup_config.SetOptionByName(duckdb::Identifier(duckdb::string(names[i])),
+			                               duckdb::Value(duckdb::string(values[i])));
 		}
 		auto *env_wrapper = Convert(env);
 		auto wrapper = duckdb::make_uniq<CV2Instance>(*env_wrapper, startup_config);

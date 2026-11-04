@@ -182,11 +182,17 @@ functions:
         type: LOGICAL_TYPE_ID
         description: The type id to instantiate.
       param_names:
-        type: identifier
+        type: char
+        indirection: 2
+        const: true
+        kind: IN
+        description: Optional. An array of param_count parameter names; an empty entry (NULL or zero length) is positional. Pass NULL for all-positional parameters.
+      param_names_lengths:
+        type: idx
         indirection: 1
         const: true
         kind: IN
-        description: Optional. An array of param_count parameter names; a {NULL, 0} entry is positional. Pass NULL for all-positional parameters.
+        description: Byte lengths of the entries in `param_names`; element i is the length of `param_names[i]`. May be NULL only when `param_names` is NULL.
       param_values:
         type: value
         indirection: 1
@@ -257,11 +263,17 @@ functions:
         type: qname
         description: The type name to resolve. Parts are matched case-insensitively; qualify it to name a type in a particular catalog or schema.
       param_names:
-        type: identifier
+        type: char
+        indirection: 2
+        const: true
+        kind: IN
+        description: Optional. An array of param_count parameter names; an empty entry (NULL or zero length) is positional. Pass NULL for all-positional parameters.
+      param_names_lengths:
+        type: idx
         indirection: 1
         const: true
         kind: IN
-        description: Optional. An array of param_count parameter names; a {NULL, 0} entry is positional. Pass NULL for all-positional parameters.
+        description: Byte lengths of the entries in `param_names`; element i is the length of `param_names[i]`. May be NULL only when `param_names` is NULL.
       param_values:
         type: value
         indirection: 1

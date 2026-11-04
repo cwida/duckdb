@@ -12,6 +12,26 @@ auto ConvertIdentifierName(duckdb_v2_identifier_t name) -> std::string_view {
 	return bytes;
 }
 
+std::string_view string_view_array::operator[](idx_t i) const {
+	D_ASSERT(i < count);
+	if (!ptrs) {
+		return std::string_view();
+	}
+	if (!lengths) {
+		throw InvalidInputException("string array lengths cannot be null when the array is not null");
+	}
+	if (!ptrs[i]) {
+		if (lengths[i] > 0) {
+			throw InvalidInputException("string array entry %llu is null with a non-zero length", i);
+		}
+		return std::string_view();
+	}
+	if (!Utf8Proc::IsValid(ptrs[i], lengths[i])) {
+		throw InvalidInputException("string array entry %llu is not valid UTF-8", i);
+	}
+	return std::string_view(ptrs[i], lengths[i]);
+}
+
 } // namespace duckdb::capiv2
 
 using namespace duckdb::capiv2;

@@ -84,7 +84,8 @@ duckdb_v2_logical_type_handle MakeTypeInCallback(duckdb_v2_context_handle contex
 	duckdb_v2_factory_handle factory = nullptr;
 	duckdb_v2_context_get_factory(context, &factory, nullptr);
 	duckdb_v2_logical_type_handle type = nullptr;
-	if (duckdb_v2_factory_create_type_from_id(factory, id, nullptr, nullptr, 0, &type, err) != DUCKDB_V2_ERROR_NONE) {
+	if (duckdb_v2_factory_create_type_from_id(factory, id, nullptr, nullptr, nullptr, 0, &type, err) !=
+	    DUCKDB_V2_ERROR_NONE) {
 		return nullptr;
 	}
 	return type;
@@ -156,8 +157,8 @@ void RangeBindCb(duckdb_v2_function_bind_info_handle info, duckdb_v2_table_funct
 	}
 
 	duckdb_v2_logical_type_handle bigint = nullptr;
-	if (duckdb_v2_factory_create_type_from_id(factory, DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT, nullptr, nullptr, 0, &bigint,
-	                                          err) != DUCKDB_V2_ERROR_NONE) {
+	if (duckdb_v2_factory_create_type_from_id(factory, DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT, nullptr, nullptr, nullptr, 0,
+	                                          &bigint, err) != DUCKDB_V2_ERROR_NONE) {
 		return;
 	}
 	auto name_str = TableIdent("i");

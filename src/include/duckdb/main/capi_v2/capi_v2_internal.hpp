@@ -87,6 +87,27 @@ inline auto Convert(const duckdb_v2_str *str) -> std::string_view {
 	return Convert(*str);
 }
 
+//! A borrowed, parallel pointer/length UTF-8 string array of `count` entries as passed through the API. A NULL array
+//! reads as all-empty entries.
+class string_view_array {
+public:
+	string_view_array(const char **ptrs, const idx_t *lengths, idx_t count)
+	    : ptrs(ptrs), lengths(lengths), count(count) {
+	}
+
+public:
+	bool empty() const {
+		return !ptrs || count == 0;
+	}
+	//! Validates entry `i` and returns it; throws on a malformed entry or invalid UTF-8. Defined in capi_v2_utf8.cpp.
+	std::string_view operator[](idx_t i) const;
+
+private:
+	const char **ptrs;
+	const idx_t *lengths;
+	idx_t count;
+};
+
 // Validates identifier UTF-8 and returns its text; throws on invalid input. Defined in capi_v2_utf8.cpp.
 auto ConvertIdentifierName(duckdb_v2_identifier_t name) -> std::string_view;
 inline auto ConvertIdentifierName(const duckdb_v2_identifier_t *name) -> std::string_view {
@@ -980,21 +1001,16 @@ private:
 // Misc
 //----------------------------------------------------------------------------------------------------------------------
 
-inline void BuildParameterMap(const duckdb_v2_identifier_t *parameter_names,
-                              const duckdb_v2_value_handle *parameter_values, idx_t parameter_count,
-                              const char *function_name, identifier_map_t<BoundParameterData> &out) {
+inline void BuildParameterMap(const string_view_array &parameter_names, const duckdb_v2_value_handle *parameter_values,
+                              idx_t parameter_count, const char *function_name,
+                              identifier_map_t<BoundParameterData> &out) {
 	for (idx_t i = 0; i < parameter_count; i++) {
-		auto name = parameter_names ? parameter_names[i] : duckdb_v2_identifier_t {nullptr, 0};
-		// A {NULL, 0} view is a valid (empty) name; only a null pointer with a nonzero length is malformed.
-		if (!name.ptr && name.len > 0) {
-			throw InvalidInputException("malformed parameter name passed to %s", function_name);
-		}
+		// Named iff the name is non-empty; otherwise positional
+		auto name = parameter_names[i];
 		if (!parameter_values[i]) {
 			throw InvalidInputException("null parameter value passed to %s", function_name);
 		}
-		// Named iff the name view is non-empty; otherwise positional
-		auto str = ConvertIdentifierName(name);
-		Identifier key = (name.ptr && name.len > 0) ? Identifier(str) : Identifier(std::to_string(i + 1));
+		Identifier key = name.empty() ? Identifier(std::to_string(i + 1)) : Identifier(name);
 		out[key] = BoundParameterData(*Convert(parameter_values[i]));
 	}
 }

@@ -318,7 +318,7 @@ void ProbeBindCb(duckdb_v2_function_bind_info_handle, duckdb_v2_table_function_b
 	               {"c", DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT}};
 	for (auto &column : columns) {
 		duckdb_v2_logical_type_handle type = nullptr;
-		if (duckdb_v2_factory_create_type_from_id(factory, column.id, nullptr, nullptr, 0, &type, err) !=
+		if (duckdb_v2_factory_create_type_from_id(factory, column.id, nullptr, nullptr, nullptr, 0, &type, err) !=
 		    DUCKDB_V2_ERROR_NONE) {
 			return;
 		}

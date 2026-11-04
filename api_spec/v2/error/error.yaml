@@ -30,8 +30,8 @@ functions:
     description: |
       Retrieves the error text associated with an error info handle.
 
-      Returns a borrowed pointer to the info's null-terminated error text.
-      The pointer is owned by DuckDB and is valid until the info is destroyed 
+      Returns a borrowed view of the info's error text.
+      The text is owned by DuckDB and is valid until the info is destroyed 
       or a new text is set; callers must not free it, and must not read it once 
       the info has been destroyed.
     role: getter

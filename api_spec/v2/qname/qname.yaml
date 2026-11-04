@@ -75,11 +75,17 @@ functions:
     belongs_to: qname
     parameters:
       parts:
-        type: identifier
+        type: char
+        indirection: 2
+        const: true
+        kind: IN
+        description: An array of `part_count` non-empty identifiers, outermost first.
+      parts_lengths:
+        type: idx
         indirection: 1
         const: true
         kind: IN
-        description: An array of `part_count` non-empty identifier views, outermost first.
+        description: Byte lengths of the entries in `parts`; element i is the length of `parts[i]`. May be NULL only when `parts` is NULL.
       part_count:
         type: idx
         description: The number of parts, between one and three.

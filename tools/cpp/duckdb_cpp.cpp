@@ -280,7 +280,7 @@ namespace {
 }
 
 template <class F, class... ARGS>
-auto CheckedAPICall(F &&func, ARGS &&...args) -> void {
+auto CheckedAPICall(F &&func, ARGS &&... args) -> void {
 	duckdb_v2_error_info_handle err = nullptr;
 	const auto code = func(std::forward<ARGS>(args)..., &err);
 	if (code != DUCKDB_V2_ERROR_NONE) {
@@ -316,6 +316,36 @@ auto ToStr(const blob_t &bytes) -> duckdb_v2_str {
 	return duckdb_v2_str {bytes.data(), bytes.size()};
 }
 
+// Borrows strings as the C API's parallel pointer and length arrays; both are NULL when empty. Held in plain arrays
+// because the C API takes `const char **`, which a const std::vector cannot hand out.
+class StringArrays {
+public:
+	explicit StringArrays(size_t capacity)
+	    : string_ptrs(capacity ? std::make_unique<const char *[]>(capacity) : nullptr),
+	      string_lengths(capacity ? std::make_unique<idx_t[]>(capacity) : nullptr) {
+	}
+
+	void Push(std::string_view str) {
+		string_ptrs[count] = str.data();
+		string_lengths[count] = str.size();
+		count++;
+	}
+	auto ptrs() const -> const char ** {
+		return string_ptrs.get();
+	}
+	auto lengths() const -> const idx_t * {
+		return string_lengths.get();
+	}
+	auto size() const -> idx_t {
+		return count;
+	}
+
+private:
+	std::unique_ptr<const char *[]> string_ptrs;
+	std::unique_ptr<idx_t[]> string_lengths;
+	idx_t count = 0;
+};
+
 // The 128-bit mirrors carry the same halves as their C counterparts, converted
 // field-wise rather than by reinterpretation so the compiler checks them.
 auto ToC(int128_t value) -> duckdb_v2_hugeint_t {
@@ -336,39 +366,40 @@ auto FromStr(duckdb_v2_str s) -> std::string_view {
 }
 
 // Splits type parameters into the C API's parallel arrays; a TypeParam with an
-// empty name crosses as the positional {NULL, 0} view. The arrays borrow from
+// empty name crosses as a positional empty entry. The arrays borrow from
 // `params`, so this must outlive the call it feeds.
 class TypeParamArrays {
 public:
-	explicit TypeParamArrays(const std::vector<TypeParam> &params) {
-		name_views.reserve(params.size());
+	explicit TypeParamArrays(const std::vector<TypeParam> &params) : name_arrays(params.size()) {
 		value_handles.reserve(params.size());
 		for (const auto &param : params) {
-			name_views.push_back(param.GetName().empty() ? duckdb_v2_identifier_t {nullptr, 0}
-			                                             : ToStr(param.GetName()));
+			name_arrays.Push(param.GetName());
 			value_handles.push_back(param.GetValue().handle());
 		}
 	}
 
-	auto names() const -> const duckdb_v2_identifier_t * {
-		return name_views.empty() ? nullptr : name_views.data();
+	auto names() const -> const char ** {
+		return name_arrays.ptrs();
+	}
+	auto names_lengths() const -> const idx_t * {
+		return name_arrays.lengths();
 	}
 	auto values() const -> const duckdb_v2_value_handle * {
 		return value_handles.empty() ? nullptr : value_handles.data();
 	}
 
 private:
-	std::vector<duckdb_v2_identifier_t> name_views;
+	StringArrays name_arrays;
 	std::vector<duckdb_v2_value_handle> value_handles;
 };
 
 // Splits statement parameters into the C API's parallel arrays; a NamedParam
-// with an empty name crosses as the positional {NULL, 0} view. The arrays
+// with an empty name crosses as a positional empty entry. The arrays
 // borrow from the parameters, so this must outlive the call it feeds.
 class ParameterArrays {
 public:
 	// A null pointer with a nonzero count produces no handles, so the C API reports the null argument.
-	ParameterArrays(const Value *parameters, idx_t parameter_count) {
+	ParameterArrays(const Value *parameters, idx_t parameter_count) : name_arrays(0) {
 		if (!parameters) {
 			return;
 		}
@@ -377,44 +408,46 @@ public:
 			value_handles.push_back(parameters[i].handle());
 		}
 	}
-	ParameterArrays(const NamedParam *parameters, idx_t parameter_count) {
+	ParameterArrays(const NamedParam *parameters, idx_t parameter_count)
+	    : name_arrays(parameters ? parameter_count : 0) {
 		if (!parameters) {
 			return;
 		}
-		name_views.reserve(parameter_count);
 		value_handles.reserve(parameter_count);
 		for (idx_t i = 0; i < parameter_count; i++) {
-			name_views.push_back(parameters[i].name.empty() ? duckdb_v2_identifier_t {nullptr, 0}
-			                                                : ToStr(parameters[i].name));
+			name_arrays.Push(parameters[i].name);
 			value_handles.push_back(parameters[i].value.handle());
 		}
 	}
 
-	auto names() const -> const duckdb_v2_identifier_t * {
-		return name_views.empty() ? nullptr : name_views.data();
+	auto names() const -> const char ** {
+		return name_arrays.ptrs();
+	}
+	auto names_lengths() const -> const idx_t * {
+		return name_arrays.lengths();
 	}
 	auto values() const -> const duckdb_v2_value_handle * {
 		return value_handles.empty() ? nullptr : value_handles.data();
 	}
 
 private:
-	std::vector<duckdb_v2_identifier_t> name_views;
+	StringArrays name_arrays;
 	std::vector<duckdb_v2_value_handle> value_handles;
 };
 
 auto ExecuteStatementArrow(duckdb_v2_connection_handle conn, duckdb_v2_sql_statement_handle statement,
                            const ParameterArrays &split, idx_t parameter_count, ArrowFormat format) -> ArrowResult {
 	duckdb_v2_arrow_result_handle result = nullptr;
-	CheckedAPICall(duckdb_v2_statement_execute_arrow, conn, statement, split.names(), split.values(), parameter_count,
-	               format.batch_size, &result);
+	CheckedAPICall(duckdb_v2_statement_execute_arrow, conn, statement, split.names(), split.names_lengths(),
+	               split.values(), parameter_count, format.batch_size, &result);
 	return detail::HandleFactory::Make<ArrowResult>(result);
 }
 
 auto ExecutePreparedArrow(duckdb_v2_prepared_statement_handle prepared, const ParameterArrays &split,
                           idx_t parameter_count, ArrowFormat format) -> ArrowResult {
 	duckdb_v2_arrow_result_handle result = nullptr;
-	CheckedAPICall(duckdb_v2_prepared_statement_execute_arrow, prepared, split.names(), split.values(), parameter_count,
-	               format.batch_size, &result);
+	CheckedAPICall(duckdb_v2_prepared_statement_execute_arrow, prepared, split.names(), split.names_lengths(),
+	               split.values(), parameter_count, format.batch_size, &result);
 	return detail::HandleFactory::Make<ArrowResult>(result);
 }
 
@@ -422,7 +455,7 @@ auto ExecutePreparedArrow(duckdb_v2_prepared_statement_handle prepared, const Pa
 // then a buffer with room for the terminator receives the text. The library
 // never allocates, so there is nothing to free.
 template <class F, class... ARGS>
-auto RenderText(F &&func, ARGS &&...args) -> std::string {
+auto RenderText(F &&func, ARGS &&... args) -> std::string {
 	idx_t length = 0;
 	CheckedAPICall(func, args..., static_cast<char *>(nullptr), static_cast<idx_t>(0), &length);
 	std::string out;
@@ -512,17 +545,15 @@ auto Environment::GetInstanceCount() const -> size_t {
 namespace {
 
 auto CreateInstanceHandle(Environment &env, const std::vector<std::pair<std::string, std::string>> &options) -> void * {
-	std::vector<duckdb_v2_str> names;
-	std::vector<duckdb_v2_str> values;
-	names.reserve(options.size());
-	values.reserve(options.size());
+	StringArrays names(options.size());
+	StringArrays values(options.size());
 	for (auto &[name, value] : options) {
-		names.push_back(ToStr(name));
-		values.push_back(ToStr(value));
+		names.Push(name);
+		values.Push(value);
 	}
 	duckdb_v2_instance_handle instance = nullptr;
-	CheckedAPICall(duckdb_v2_instance_create_with_options, env.handle(), names.data(), values.data(),
-	               static_cast<idx_t>(options.size()), &instance);
+	CheckedAPICall(duckdb_v2_instance_create_with_options, env.handle(), names.ptrs(), names.lengths(), values.ptrs(),
+	               values.lengths(), static_cast<idx_t>(options.size()), &instance);
 	return instance;
 }
 
@@ -956,13 +987,12 @@ auto SqlStatement::GetText() const -> std::string_view {
 auto SqlStatement::AddCollection(std::string_view name, const ColumnDataCollection &collection,
                                  const std::vector<std::string> &column_names) -> void {
 	auto name_str = ToStr(name);
-	std::vector<duckdb_v2_identifier_t> names;
-	names.reserve(column_names.size());
+	StringArrays names(column_names.size());
 	for (auto &column_name : column_names) {
-		names.push_back(ToStr(column_name));
+		names.Push(column_name);
 	}
-	CheckedAPICall(duckdb_v2_statement_add_collection, handle(), &name_str, collection.handle(),
-	               names.empty() ? nullptr : names.data(), names.size());
+	CheckedAPICall(duckdb_v2_statement_add_collection, handle(), &name_str, collection.handle(), names.ptrs(),
+	               names.lengths(), names.size());
 }
 
 auto SqlStatement::GetParameterNames() const -> std::vector<std::string_view> {
@@ -993,9 +1023,9 @@ auto StatementIterator::Next() -> SqlStatement {
 	return detail::HandleFactory::Make<SqlStatement>(statement);
 }
 
-auto Connection::ParseSQL(const char *sql, bool apply_invalidation_policy) -> StatementIterator {
+auto Connection::ParseSQL(std::string_view sql, bool apply_invalidation_policy) -> StatementIterator {
 	duckdb_v2_statement_iterator_handle iterator = nullptr;
-	CheckedAPICall(duckdb_v2_parse_sql, handle(), sql, apply_invalidation_policy, &iterator);
+	CheckedAPICall(duckdb_v2_parse_sql, handle(), sql.data(), sql.size(), apply_invalidation_policy, &iterator);
 	return detail::HandleFactory::Make<StatementIterator>(iterator);
 }
 
@@ -1048,16 +1078,16 @@ auto Connection::Execute(const SqlStatement &statement, const Value *parameters,
 	// caller's SqlStatement keeps ownership and can be executed again.
 	ParameterArrays split(parameters, parameter_count);
 	duckdb_v2_result_handle result = nullptr;
-	CheckedAPICall(duckdb_v2_statement_execute, handle(), statement.handle(), split.names(), split.values(),
-	               parameter_count, &result);
+	CheckedAPICall(duckdb_v2_statement_execute, handle(), statement.handle(), split.names(), split.names_lengths(),
+	               split.values(), parameter_count, &result);
 	return detail::HandleFactory::Make<QueryResult>(result);
 }
 
 auto Connection::Execute(const SqlStatement &statement, const std::vector<NamedParam> &parameters) -> QueryResult {
 	ParameterArrays split(parameters.data(), parameters.size());
 	duckdb_v2_result_handle result = nullptr;
-	CheckedAPICall(duckdb_v2_statement_execute, handle(), statement.handle(), split.names(), split.values(),
-	               static_cast<idx_t>(parameters.size()), &result);
+	CheckedAPICall(duckdb_v2_statement_execute, handle(), statement.handle(), split.names(), split.names_lengths(),
+	               split.values(), static_cast<idx_t>(parameters.size()), &result);
 	return detail::HandleFactory::Make<QueryResult>(result);
 }
 
@@ -1115,15 +1145,15 @@ auto Connection::Prepare(const SqlStatement &statement, bool require_cacheable) 
 auto PreparedStatement::Execute(const Value *parameters, idx_t parameter_count) -> QueryResult {
 	ParameterArrays split(parameters, parameter_count);
 	duckdb_v2_result_handle result = nullptr;
-	CheckedAPICall(duckdb_v2_prepared_statement_execute, handle(), split.names(), split.values(), parameter_count,
-	               &result);
+	CheckedAPICall(duckdb_v2_prepared_statement_execute, handle(), split.names(), split.names_lengths(), split.values(),
+	               parameter_count, &result);
 	return detail::HandleFactory::Make<QueryResult>(result);
 }
 
 auto PreparedStatement::Execute(const std::vector<NamedParam> &parameters) -> QueryResult {
 	ParameterArrays split(parameters.data(), parameters.size());
 	duckdb_v2_result_handle result = nullptr;
-	CheckedAPICall(duckdb_v2_prepared_statement_execute, handle(), split.names(), split.values(),
+	CheckedAPICall(duckdb_v2_prepared_statement_execute, handle(), split.names(), split.names_lengths(), split.values(),
 	               static_cast<idx_t>(parameters.size()), &result);
 	return detail::HandleFactory::Make<QueryResult>(result);
 }
@@ -1389,8 +1419,8 @@ auto Factory::CreateType(const QualifiedName &name) const -> LogicalType {
 auto Factory::CreateType(const QualifiedName &name, const std::vector<TypeParam> &params) const -> LogicalType {
 	TypeParamArrays split(params);
 	duckdb_v2_logical_type_handle type = nullptr;
-	CheckedAPICall(duckdb_v2_factory_create_type_from_name, handle(), name.handle(), split.names(), split.values(),
-	               static_cast<idx_t>(params.size()), &type);
+	CheckedAPICall(duckdb_v2_factory_create_type_from_name, handle(), name.handle(), split.names(),
+	               split.names_lengths(), split.values(), static_cast<idx_t>(params.size()), &type);
 	return detail::HandleFactory::Make<LogicalType>(type);
 }
 
@@ -1402,7 +1432,7 @@ auto Factory::CreateType(LogicalTypeId id, const std::vector<TypeParam> &params)
 	TypeParamArrays split(params);
 	duckdb_v2_logical_type_handle type = nullptr;
 	CheckedAPICall(duckdb_v2_factory_create_type_from_id, handle(), static_cast<DUCKDB_V2_LOGICAL_TYPE_ID>(id),
-	               split.names(), split.values(), static_cast<idx_t>(params.size()), &type);
+	               split.names(), split.names_lengths(), split.values(), static_cast<idx_t>(params.size()), &type);
 	return detail::HandleFactory::Make<LogicalType>(type);
 }
 
@@ -2182,15 +2212,14 @@ namespace {
 
 // STRUCT crosses as parallel name and child arrays.
 struct StructArrays {
-	explicit StructArrays(const std::vector<std::pair<std::string, Value>> &values) {
-		names.reserve(values.size());
+	explicit StructArrays(const std::vector<std::pair<std::string, Value>> &values) : names(values.size()) {
 		children.reserve(values.size());
 		for (const auto &field : values) {
-			names.push_back(ToStr(field.first));
+			names.Push(field.first);
 			children.push_back(field.second.handle());
 		}
 	}
-	std::vector<duckdb_v2_identifier_t> names;
+	StringArrays names;
 	std::vector<duckdb_v2_value_handle> children;
 };
 
@@ -2199,8 +2228,8 @@ struct StructArrays {
 auto Value::CreateStruct(Factory &factory, NamedValueList values) -> Value {
 	StructArrays split(values);
 	duckdb_v2_value_handle out = nullptr;
-	CheckedAPICall(duckdb_v2_value_create_struct, factory.handle(), DataOrNull(split.names), DataOrNull(split.children),
-	               static_cast<idx_t>(values.size()), &out);
+	CheckedAPICall(duckdb_v2_value_create_struct, factory.handle(), split.names.ptrs(), split.names.lengths(),
+	               DataOrNull(split.children), static_cast<idx_t>(values.size()), &out);
 	return FromHandle(out);
 }
 
@@ -2874,23 +2903,21 @@ ArrowExporter::ArrowExporter(Context &context, const std::vector<LogicalType> &t
 	// LogicalType is a Handle with a vtable, so its storage is not layout-compatible with a raw
 	// handle array; extract into contiguous buffers.
 	std::vector<duckdb_v2_logical_type_handle> type_handles;
-	std::vector<duckdb_v2_str> name_views;
+	StringArrays name_arrays(names.size());
 	type_handles.reserve(types.size());
-	name_views.reserve(names.size());
 	for (const auto &type : types) {
 		type_handles.push_back(type.handle());
 	}
 	for (const auto &name : names) {
-		name_views.push_back(ToStr(name));
+		name_arrays.Push(name);
 	}
-	if (type_handles.size() != name_views.size()) {
+	if (type_handles.size() != name_arrays.size()) {
 		throw InvalidInputException("ArrowExporter: one name is required per column type");
 	}
 	duckdb_v2_arrow_exporter_handle exporter = nullptr;
 	CheckedAPICall(duckdb_v2_arrow_exporter_create, context.handle(),
-	               type_handles.empty() ? nullptr : type_handles.data(),
-	               name_views.empty() ? nullptr : name_views.data(), static_cast<idx_t>(type_handles.size()),
-	               batch_size, &exporter);
+	               type_handles.empty() ? nullptr : type_handles.data(), name_arrays.ptrs(), name_arrays.lengths(),
+	               static_cast<idx_t>(type_handles.size()), batch_size, &exporter);
 	impl = exporter;
 }
 
@@ -6915,13 +6942,12 @@ auto QualifiedName::Parse(std::string_view text) -> QualifiedName {
 }
 
 auto QualifiedName::Create(const std::vector<std::string> &parts) -> QualifiedName {
-	std::vector<duckdb_v2_identifier_t> views;
-	views.reserve(parts.size());
+	StringArrays views(parts.size());
 	for (auto &part : parts) {
-		views.push_back(ToStr(part));
+		views.Push(part);
 	}
 	duckdb_v2_qname_handle _h = nullptr;
-	CheckedAPICall(duckdb_v2_qname_create, views.empty() ? nullptr : views.data(), views.size(), &_h);
+	CheckedAPICall(duckdb_v2_qname_create, views.ptrs(), views.lengths(), views.size(), &_h);
 	return detail::HandleFactory::Make<QualifiedName>(_h);
 }
 
@@ -7194,13 +7220,12 @@ auto ReplacementScan::Input::AddNamedArgument(std::string_view name, const Value
 
 auto ReplacementScan::Input::SetCollection(const ColumnDataCollection &collection,
                                            const std::vector<std::string> &column_names) -> void {
-	std::vector<duckdb_v2_identifier_t> names;
-	names.reserve(column_names.size());
+	StringArrays names(column_names.size());
 	for (auto &name : column_names) {
-		names.push_back(ToStr(name));
+		names.Push(name);
 	}
 	CheckedAPICall(duckdb_v2_replacement_scan_set_collection, static_cast<duckdb_v2_replacement_scan_info_handle>(args),
-	               collection.handle(), names.empty() ? nullptr : names.data(), names.size());
+	               collection.handle(), names.ptrs(), names.lengths(), names.size());
 }
 
 auto ReplacementScan::Input::SetSubquery(std::string_view sql) -> void {

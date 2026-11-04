@@ -1287,8 +1287,8 @@ TEST_CASE("V2: vector_set_value writes FLAT cells with casts and NULLs", "[capi_
 
 	// A NULL value clears the row's validity.
 	duckdb_v2_logical_type_handle bigint_v2 = nullptr;
-	duckdb_v2_factory_create_type_from_id(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT, nullptr, nullptr, 0, &bigint_v2,
-	                                      nullptr);
+	duckdb_v2_factory_create_type_from_id(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT, nullptr, nullptr, nullptr, 0,
+	                                      &bigint_v2, nullptr);
 	duckdb_v2_value_handle null_value = nullptr;
 	REQUIRE(duckdb_v2_value_create_null(fx.factory, bigint_v2, &null_value, nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_logical_type_destroy(&bigint_v2);

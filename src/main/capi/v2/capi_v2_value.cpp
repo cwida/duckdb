@@ -791,7 +791,7 @@ duckdb::Value BuildArray(CV2Factory &factory, duckdb_v2_logical_type_handle chil
 	return duckdb::Value::ARRAY(type, std::move(values));
 }
 
-duckdb::Value BuildStruct(const duckdb_v2_identifier_t *names, const duckdb_v2_value_handle *children,
+duckdb::Value BuildStruct(const char **names, const idx_t *names_lengths, const duckdb_v2_value_handle *children,
                           idx_t field_count) {
 	if (field_count > 0 && !names) {
 		throw duckdb::InvalidInputException("'names' cannot be null when field_count > 0");
@@ -801,11 +801,9 @@ duckdb::Value BuildStruct(const duckdb_v2_identifier_t *names, const duckdb_v2_v
 	// rather than resolved across the fields.
 	duckdb::child_list_t<duckdb::Value> fields;
 	fields.reserve(field_count);
+	string_view_array name_views(names, names_lengths, field_count);
 	for (idx_t i = 0; i < field_count; i++) {
-		if (!names[i].ptr && names[i].len > 0) {
-			throw duckdb::InvalidInputException("field names cannot be null");
-		}
-		fields.emplace_back(std::string(ConvertIdentifierName(names[i])), std::move(values[i]));
+		fields.emplace_back(std::string(name_views[i]), std::move(values[i]));
 	}
 	return duckdb::Value::STRUCT(std::move(fields));
 }
@@ -852,13 +850,15 @@ DUCKDB_V2_ERROR duckdb_v2_value_create_array(duckdb_v2_factory_handle factory, d
 	    err, [&]() { *out_value = Emit(BuildArray(*Convert(factory), child_type, children, child_count)); });
 }
 
-DUCKDB_V2_ERROR duckdb_v2_value_create_struct(duckdb_v2_factory_handle factory, const duckdb_v2_identifier_t *names,
-                                              const duckdb_v2_value_handle *children, idx_t field_count,
-                                              duckdb_v2_value_handle *out_value, duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_value_create_struct(duckdb_v2_factory_handle factory, const char **names,
+                                              const idx_t *names_lengths, const duckdb_v2_value_handle *children,
+                                              idx_t field_count, duckdb_v2_value_handle *out_value,
+                                              duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(factory);
 	DUCKDB_CHECK_ARG(out_value);
 	*out_value = nullptr;
-	return WithErrorHandler(err, [&]() { *out_value = Emit(BuildStruct(names, children, field_count)); });
+	return WithErrorHandler(err,
+	                        [&]() { *out_value = Emit(BuildStruct(names, names_lengths, children, field_count)); });
 }
 
 DUCKDB_V2_ERROR duckdb_v2_value_create_tuple(duckdb_v2_factory_handle factory, const duckdb_v2_value_handle *children,
