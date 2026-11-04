@@ -165,6 +165,39 @@ public:
 	idx_t ends = 0;
 };
 
+//! Records the query and statement notifications in order
+class StatementRecorder : public ClientContextState {
+public:
+	using ClientContextState::QueryEnd;
+	using ClientContextState::StatementEnd;
+	void QueryBegin(ClientContext &context) override {
+		events.push_back("QueryBegin");
+	}
+	void StatementBegin(ClientContext &context) override {
+		events.push_back(Describe("StatementBegin", &context, nullptr));
+	}
+	void StatementEnd(ClientContext &context, optional_ptr<ErrorData> error) override {
+		events.push_back(Describe("StatementEnd", &context, error));
+	}
+	void QueryEnd(ClientContext &context, optional_ptr<ErrorData> error) override {
+		events.push_back(Describe("QueryEnd", nullptr, error));
+	}
+
+	vector<string> events;
+
+private:
+	static string Describe(const string &event, optional_ptr<ClientContext> context, optional_ptr<ErrorData> error) {
+		auto result = event;
+		if (context && context->ActiveQueryIsLastStatement()) {
+			result += " last";
+		}
+		if (error && error->HasError()) {
+			result += " error";
+		}
+		return result;
+	}
+};
+
 class OwnResultState : public GlobalSinkState {
 public:
 	OwnResultState(ClientContext &context, const vector<LogicalType> &types)
@@ -1070,6 +1103,31 @@ TEST_CASE("Registered states see one QueryBegin and QueryEnd per group", "[api][
 	REQUIRE_NO_FAIL(*handle);
 	REQUIRE(counter->begins == 1);
 	REQUIRE(counter->ends == 1);
+}
+
+TEST_CASE("Registered states see a StatementBegin and StatementEnd per statement", "[api][expanding_statements]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query(SYNTACTIC_ERRORS_POLICY));
+	CreateSales(con);
+	CreateNumbers(con, 10);
+	auto recorder = con.context->registered_state->GetOrCreate<StatementRecorder>("expanding_statements_recorder");
+
+	SECTION("a single statement") {
+		REQUIRE_NO_FAIL(con.Query("SELECT 42"));
+		REQUIRE(recorder->events ==
+		        vector<string> {"QueryBegin", "StatementBegin last", "StatementEnd last", "QueryEnd"});
+	}
+	SECTION("a statement that expands") {
+		REQUIRE_NO_FAIL(con.Query(SALES_PIVOT));
+		REQUIRE(recorder->events == vector<string> {"QueryBegin", "StatementBegin", "StatementEnd",
+		                                            "StatementBegin last", "StatementEnd last", "QueryEnd"});
+	}
+	SECTION("a statement that expands and fails before its last statement") {
+		REQUIRE_FAIL(con.Query(FAILING_DEFAULT));
+		REQUIRE(recorder->events == vector<string> {"QueryBegin", "StatementBegin", "StatementEnd", "StatementBegin",
+		                                            "StatementEnd error", "QueryEnd error"});
+	}
 }
 
 //===--------------------------------------------------------------------===//

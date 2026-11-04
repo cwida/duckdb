@@ -508,6 +508,11 @@ void PhysicalCTE::RegisterMaterializedConsumer(idx_t consumer_idx) {
 	exchange->SelectMaterializedConsumer(consumer_idx);
 }
 
+void PhysicalCTE::DemoteBufferedConsumer(idx_t consumer_idx) {
+	D_ASSERT(exchange);
+	exchange->DemoteBufferedConsumerToMaterialized(consumer_idx);
+}
+
 CTEExecutionMode PhysicalCTE::GetExecutionMode() const {
 	if (!exchange) {
 		return CTEExecutionMode::MATERIALIZED;

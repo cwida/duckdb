@@ -95,11 +95,8 @@ void ClientContext::RefreshLoggerInternal() {
 
 ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success, bool invalidate_transaction,
                                           optional_ptr<ErrorData> previous_error) {
-	if (active_query->executor) {
-		active_query->executor->CancelTasks();
-	}
-	active_query->progress_bar.reset();
 	D_ASSERT(active_query.get());
+	EndStatementInternal(lock, previous_error);
 	invalidate_transaction = invalidate_transaction && !active_query->outside_local_transaction;
 	active_query.reset();
 	query_deadline.SetInvalid();
@@ -217,6 +214,10 @@ Executor &ClientContext::GetExecutor() {
 const string &ClientContext::GetCurrentQuery() {
 	D_ASSERT(active_query);
 	return active_query->query;
+}
+
+bool ClientContext::ActiveQueryIsLastStatement() const {
+	return !active_query || !active_query->HasNextStatement();
 }
 
 void BindPreparedStatementParameters(ClientContext &context, PreparedStatementData &statement,
@@ -513,10 +514,13 @@ unique_ptr<QueryResult> ClientContext::AdvanceStatementInternal(ClientContextLoc
 	if (QueryDeadlinePassed()) {
 		throw InterruptException(QUERY_DEADLINE_ERROR);
 	}
-	EndStatementInternal(lock);
+	EndStatementInternal(lock, nullptr);
+	transaction.ResetActiveQuery();
+	client_data->profiler->EndQuery();
 	auto statement = active_query->TakeNextStatement();
 	BeginStatementInternal(lock, statement->query);
 	RefreshLoggerInternal();
+	NotifyStatementBeginInternal(lock);
 	QueryParameters parameters(active_query->format);
 	auto produced = SubmitStatementInternal(lock, std::move(statement), parameters);
 	// A statement that could not start fails the query; the result object of a collector already ended it
@@ -556,14 +560,19 @@ unique_ptr<QueryResult> ClientContext::RunToResultStatementInternal(ClientContex
 	return nullptr;
 }
 
-void ClientContext::EndStatementInternal(ClientContextLock &lock) {
-	active_query->executor->CancelTasks();
-	active_query->executor.reset();
+void ClientContext::EndStatementInternal(ClientContextLock &lock, optional_ptr<ErrorData> error) {
+	if (active_query->executor) {
+		active_query->executor->CancelTasks();
+		active_query->executor.reset();
+	}
 	active_query->progress_bar.reset();
 	// The plan outlives the executor
 	active_query->prepared.reset();
-	transaction.ResetActiveQuery();
-	client_data->profiler->EndQuery();
+	registered_state->ForEachState([&](ClientContextState &state) { state.StatementEnd(*this, error); });
+}
+
+void ClientContext::NotifyStatementBeginInternal(ClientContextLock &lock) {
+	registered_state->ForEachState([&](ClientContextState &state) { state.StatementBegin(*this); });
 }
 
 unique_ptr<QueryResult> ClientContext::TakeFinishedResultInternal(ClientContextLock &lock) {

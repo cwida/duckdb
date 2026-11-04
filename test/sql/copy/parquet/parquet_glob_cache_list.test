@@ -1,0 +1,65 @@
+# name: test/sql/copy/parquet/parquet_glob_cache_list.test
+# description: Test usage of metadata cache in COUNT(*) for an explicit list of files
+# group: [parquet]
+
+require parquet
+
+# the version tags of files on Windows do not let a list of files use the cache
+require notwindows
+
+statement ok
+SET parquet_metadata_cache=true;
+
+# fill the metadata cache
+query I
+select count(*) from parquet_scan('{DATA_DIR}/parquet-testing/glob/*')
+----
+2
+
+# a list of files is answered from the metadata cache as well
+query II
+EXPLAIN select count(*) from parquet_scan(['{DATA_DIR}/parquet-testing/glob/t1.parquet', '{DATA_DIR}/parquet-testing/glob/t2.parquet'])
+----
+physical_plan	<!REGEX>:.*PARQUET_SCAN.*
+
+query I
+select count(*) from parquet_scan(['{DATA_DIR}/parquet-testing/glob/t1.parquet', '{DATA_DIR}/parquet-testing/glob/t2.parquet'])
+----
+2
+
+# also when the files of the list are found through the file search path
+statement ok
+SET file_search_path = '{DATA_DIR}/parquet-testing/glob';
+
+query II
+EXPLAIN select count(*) from parquet_scan(['t1.parquet', 't2.parquet'])
+----
+physical_plan	<!REGEX>:.*PARQUET_SCAN.*
+
+query I
+select count(*) from parquet_scan(['t1.parquet', 't2.parquet'])
+----
+2
+
+statement ok
+RESET file_search_path;
+
+# a file of a list rewritten after its metadata was cached
+statement ok
+COPY (SELECT i FROM range(3) t(i)) TO '{TEST_DIR}/glob_cache_list_1.parquet';
+
+statement ok
+COPY (SELECT i FROM range(5) t(i)) TO '{TEST_DIR}/glob_cache_list_2.parquet';
+
+query I
+select count(*) from parquet_scan(['{TEST_DIR}/glob_cache_list_1.parquet', '{TEST_DIR}/glob_cache_list_2.parquet'])
+----
+8
+
+statement ok
+COPY (SELECT i FROM range(7) t(i)) TO '{TEST_DIR}/glob_cache_list_2.parquet';
+
+query I
+select count(*) from parquet_scan(['{TEST_DIR}/glob_cache_list_1.parquet', '{TEST_DIR}/glob_cache_list_2.parquet'])
+----
+10
