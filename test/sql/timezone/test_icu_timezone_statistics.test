@@ -396,17 +396,46 @@ endloop
 
 endloop
 
-# nanoseconds right before a transition, which the function shifts with the microsecond they truncate to
-statement ok
-CREATE TABLE ns_edge AS SELECT s::TIMESTAMPTZ_NS AS utc FROM (VALUES ('1969-10-26T08:59:59.999999997+00'), ('1969-10-26T08:59:59.999999998+00'), ('1969-10-26T08:59:59.999999999+00')) t(s);
+# nanoseconds before the epoch are shifted with the offset of the microsecond that holds them
+query II
+SELECT timezone('America/Los_Angeles', TIMESTAMPTZ_NS '1969-10-26 08:59:59.999999999+00'), timezone('America/Los_Angeles', TIMESTAMP_NS '1969-10-26 00:59:59.999999999');
+----
+1969-10-26 01:59:59.999999999	1969-10-26 07:59:59.999999999+00
 
-foreach s 1969-10-26T08:59:59.999999997+00 1969-10-26T08:59:59.999999998+00 1969-10-26T08:59:59.999999999+00
+# three row groups of nanoseconds around the fall back of 1969 at 09:00 UTC, the second starting on the last one before it
+statement ok
+CREATE TABLE ns_edge AS SELECT timezone('UTC', make_timestamp_ns(-5756400000000001 - 2048 + range)) AS utc FROM range(6144);
+
+# the last nanosecond is still daylight time, and the first row group ends a nanosecond before it
+foreach local 01:59:59.999999999 01:00:00.000000001
 
 query I
-SELECT (SELECT count(*) FROM ns_edge WHERE timezone('America/Los_Angeles', utc) = timezone('America/Los_Angeles', '{s}'::TIMESTAMPTZ_NS))
-     = (SELECT count(*) FILTER (WHERE timezone('America/Los_Angeles', utc) = timezone('America/Los_Angeles', '{s}'::TIMESTAMPTZ_NS)) FROM ns_edge);
+SELECT count(*) FROM ns_edge WHERE timezone('America/Los_Angeles', utc) = TIMESTAMP_NS '1969-10-26 {local}';
 ----
-true
+1
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM ns_edge WHERE timezone('America/Los_Angeles', utc) = TIMESTAMP_NS '1969-10-26 {local}';
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*
+
+endloop
+
+# the same nanoseconds as local times, around 01:00, when the repeated hour starts
+statement ok
+CREATE TABLE ns_edge_local AS SELECT make_timestamp_ns(-5785200000000000 - 2048 + range) AS local FROM range(4096);
+
+foreach utc 07:59:59.999999999 09:00:00.000000001
+
+query I
+SELECT count(*) FROM ns_edge_local WHERE timezone('America/Los_Angeles', local) = TIMESTAMPTZ_NS '1969-10-26 {utc}+00';
+----
+1
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM ns_edge_local WHERE timezone('America/Los_Angeles', local) = TIMESTAMPTZ_NS '1969-10-26 {utc}+00';
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 2.*
 
 endloop
 

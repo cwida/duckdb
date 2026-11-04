@@ -124,15 +124,16 @@ struct ICUFromNaiveTimestamp : public ICUDateFunc {
 			return true;
 		}
 
-		auto nanos = UnsafeNumericCast<int32_t>(naive.value % Interval::NANOS_PER_MICRO);
-		timestamp_t micros(naive.value / Interval::NANOS_PER_MICRO);
+		int64_t micros;
+		int64_t nanos;
+		Timestamp::SplitTime(naive.value, Interval::NANOS_PER_MICRO, micros, nanos);
 		timestamp_tz_t cast;
-		if (!TryOperation(calendar, micros, cast, error)) {
+		if (!TryOperation(calendar, timestamp_t(micros), cast, error)) {
 			return false;
 		}
 
 		timestamp_ns_t scaled;
-		if (!Timestamp::TryFromTimestampNanos(timestamp_t(cast), nanos, scaled)) {
+		if (!Timestamp::TryFromTimestampNanos(timestamp_t(cast), UnsafeNumericCast<int32_t>(nanos), scaled)) {
 			error = "ICU date overflows timestamp_ns range";
 			return false;
 		}
@@ -211,12 +212,13 @@ struct ICUFromNaiveTimestamp : public ICUDateFunc {
 			return timestamp_tz_ns_t(naive);
 		}
 
-		auto nanos = UnsafeNumericCast<int32_t>(naive.value % Interval::NANOS_PER_MICRO);
-		timestamp_t micros(naive.value / Interval::NANOS_PER_MICRO);
-		timestamp_t cast(Operation(calendar, micros));
+		int64_t micros;
+		int64_t nanos;
+		Timestamp::SplitTime(naive.value, Interval::NANOS_PER_MICRO, micros, nanos);
+		timestamp_t cast(Operation(calendar, timestamp_t(micros)));
 
 		timestamp_ns_t result;
-		if (!Timestamp::TryFromTimestampNanos(cast, nanos, result)) {
+		if (!Timestamp::TryFromTimestampNanos(cast, UnsafeNumericCast<int32_t>(nanos), result)) {
 			throw ConversionException("ICU date overflows timestamp_ns range");
 		}
 		return timestamp_tz_ns_t(result);
@@ -369,14 +371,15 @@ struct ICUToNaiveTimestamp : public ICUDateFunc {
 			return true;
 		}
 
-		auto nanos = UnsafeNumericCast<int32_t>(instant.value % Interval::NANOS_PER_MICRO);
-		timestamp_tz_t micros(instant.value / Interval::NANOS_PER_MICRO);
+		int64_t micros;
+		int64_t nanos;
+		Timestamp::SplitTime(instant.value, Interval::NANOS_PER_MICRO, micros, nanos);
 		timestamp_t cast;
-		if (!TryOperation(calendar, micros, cast, error)) {
+		if (!TryOperation(calendar, timestamp_tz_t(micros), cast, error)) {
 			return false;
 		}
 
-		if (!Timestamp::TryFromTimestampNanos(cast, nanos, result)) {
+		if (!Timestamp::TryFromTimestampNanos(cast, UnsafeNumericCast<int32_t>(nanos), result)) {
 			error = "ICU date overflows timestamp_ns range";
 			return false;
 		}
@@ -395,15 +398,9 @@ struct ICUToNaiveTimestamp : public ICUDateFunc {
 	//! Rounds the local time micros * 1000 + nanos to microseconds, away from zero on ties like the other casts.
 	//! The nanosecond value is not formed, as it can overflow int64 where the microsecond value does not.
 	static timestamp_t RoundToMicros(timestamp_t micros, int32_t nanos) {
-		auto value = micros.value;
-		if (value == 0) {
-			value = nanos >= 500 ? 1 : (nanos <= -500 ? -1 : 0);
-		} else if (value > 0) {
-			value += nanos >= 0 ? (nanos >= 500 ? 1 : 0) : (nanos < -500 ? -1 : 0);
-		} else {
-			value += nanos <= 0 ? (nanos <= -500 ? -1 : 0) : (nanos > 500 ? 1 : 0);
-		}
-		return timestamp_t(value);
+		// the nanoseconds are never negative, so a tie below zero stays on its microsecond to round away from zero
+		const auto round_up = micros.value >= 0 ? nanos >= 500 : nanos > 500;
+		return timestamp_t(micros.value + (round_up ? 1 : 0));
 	}
 
 	template <class SRC, class DST>
@@ -419,14 +416,15 @@ struct ICUToNaiveTimestamp : public ICUDateFunc {
 					// shift in microseconds: the local time can lie outside the timestamp_ns range
 					timestamp_t micros_naive;
 					string micros_error;
-					const auto nanos = UnsafeNumericCast<int32_t>(input.value % Interval::NANOS_PER_MICRO);
-					const timestamp_tz_t micros(input.value / Interval::NANOS_PER_MICRO);
-					if (!TryOperation(calendar.get(), micros, micros_naive, micros_error)) {
+					int64_t micros;
+					int64_t nanos;
+					Timestamp::SplitTime(input.value, Interval::NANOS_PER_MICRO, micros, nanos);
+					if (!TryOperation(calendar.get(), timestamp_tz_t(micros), micros_naive, micros_error)) {
 						HandleCastError::AssignError(micros_error, parameters);
 						all_converted = false;
 						return nullopt;
 					}
-					return RoundToMicros(micros_naive, nanos);
+					return RoundToMicros(micros_naive, UnsafeNumericCast<int32_t>(nanos));
 				}
 			}
 			using NAIVE = timestamp_base_t<SRC::PRECISION, false>;
@@ -739,14 +737,12 @@ struct ICUTimeZoneFunc : public ICUDateFunc {
 			return nullptr;
 		}
 
-		// the operation truncates the arguments towards zero to microseconds, and the offsets change on whole seconds
-		constexpr auto PER_MICRO = SRC::PRECISION / Interval::MICROS_PER_SEC;
+		// a value is shifted with the offset of the microsecond that holds it, and the offsets change on whole seconds
 		constexpr auto PER_MILLI = SRC::PRECISION / Interval::MSECS_PER_SEC;
 		int64_t lo_shift;
 		int64_t hi_shift;
-		OP::GetShiftRange(*tz, datetime::FloorDiv::Divide(min.value / PER_MICRO, Interval::MICROS_PER_MSEC),
-		                  datetime::FloorDiv::Divide(max.value / PER_MICRO, Interval::MICROS_PER_MSEC), lo_shift,
-		                  hi_shift);
+		OP::GetShiftRange(*tz, datetime::FloorDiv::Divide(min.value, PER_MILLI),
+		                  datetime::FloorDiv::Divide(max.value, PER_MILLI), lo_shift, hi_shift);
 		int64_t lo;
 		int64_t hi;
 		if (!TryAddOperator::Operation(min.value, lo_shift * PER_MILLI, lo) ||
