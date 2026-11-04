@@ -1,0 +1,51 @@
+# name: test/sql/cte/trampoline/trampoline_source_routing_adaptive.test
+# description: Measured arbitration recovers an underestimated independent source
+# group: [trampoline]
+# The selective equality estimates ~a hundred output rows, far below the parallelization
+# threshold, but every wave scans the full table. The first inline wave crosses the slow
+# probe threshold, the next wave probes the parallel route, and the faster route is
+# pinned, so at least one wave runs parallel. The assertions are tolerant: they require
+# only that the probe fired, not which route won.
+
+statement ok
+SET threads=4;
+
+statement ok
+CREATE TABLE s AS SELECT i, (i * 7919) % 100000 AS k FROM range(20000000) r(i);
+
+statement ok
+ANALYZE s;
+
+statement ok
+CALL enable_logging('PhysicalOperator');
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query I
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 0::BIGINT))
+	BRANCH 1: (SELECT CASE WHEN n < 3 THEN 1 ELSE 0 END, n + 1 FROM t
+	           UNION ALL SELECT 0, i FROM s WHERE k = 42424 AND sin(i) < 2)
+)
+SELECT count(*) FROM t;
+----
+801
+
+statement ok
+CALL disable_logging();
+
+query II
+SELECT info.epochs::UBIGINT = 4,
+       info.scheduled_workers::UBIGINT > info.epochs::UBIGINT
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class = 'PhysicalTrampoline' AND event = 'RuntimeMetrics';
+----
+1	1
+
+query I
+SELECT info.workers_max::UBIGINT > 1
+FROM duckdb_logs_parsed('PhysicalOperator')
+WHERE class = 'PhysicalTrampoline' AND event = 'EpochSummary';
+----
+1

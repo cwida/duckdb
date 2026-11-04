@@ -32,16 +32,22 @@ SELECT count(*), max(n) FROM t;
 statement ok
 CALL disable_logging();
 
+# Measured route arbitration may spend at most one probe wave per branch on the parallel
+# route (on a slow host an inline wave can cross the probe threshold), so the pins bound
+# the estimate policy with a one-probe allowance instead of exact worker counts: the
+# median epoch worker count stays 1, and the worker total can exceed the epoch count by
+# at most one probe wave's workers. Reverting the estimate-sized policy puts every wave
+# on the parallel route and fails both.
 query II
 SELECT info.epochs::UBIGINT = 21,
-       info.scheduled_workers::UBIGINT = info.epochs::UBIGINT
+       info.scheduled_workers::UBIGINT BETWEEN info.epochs::UBIGINT AND info.epochs::UBIGINT + 3
 FROM duckdb_logs_parsed('PhysicalOperator')
 WHERE class = 'PhysicalTrampoline' AND event = 'RuntimeMetrics';
 ----
 1	1
 
 query I
-SELECT info.workers_max::UBIGINT = 1
+SELECT info.workers_p50_upper_bound::UBIGINT = 1
 FROM duckdb_logs_parsed('PhysicalOperator')
 WHERE class = 'PhysicalTrampoline' AND event = 'EpochSummary';
 ----
