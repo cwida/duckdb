@@ -490,9 +490,15 @@ void Binder::CollectMacroDependencies(ClientContext &context, Catalog &catalog, 
 				error = ErrorData(ex);
 			}
 		}
-		// unresolved parameters are expected for untyped members, like at CREATE
-		if (error.HasError() && error.Type() != ExceptionType::PARAMETER_NOT_RESOLVED) {
-			rebind_failed = true;
+		if (error.HasError()) {
+			if (error.Type() == ExceptionType::INTERNAL || error.Type() == ExceptionType::FATAL) {
+				// containment is for user-level bind failures, not for violated invariants
+				error.Throw();
+			}
+			// unresolved parameters are expected for untyped members, like at CREATE
+			if (error.Type() != ExceptionType::PARAMETER_NOT_RESOLVED) {
+				rebind_failed = true;
+			}
 		}
 	}
 	if (rebind_failed) {
