@@ -25,6 +25,7 @@
 				"test/sql/types/numeric/numeric_variant_arithmetic.test",
 				"test/sql/types/numeric/numeric_variant_smoke.test",
 				"test/sql/types/numeric/numeric_variant_storage_smoke.test",
+				"test/sql/types/variant/variant_numeric_ordering.test",
 				"test/sql/types/numeric/postgres_numeric_big.test",
 				"test/sql/types/numeric/numeric_limits_review.test",
 				"test/sql/types/numeric/numeric_magnitude_overflow.test",
