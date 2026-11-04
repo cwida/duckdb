@@ -485,7 +485,7 @@ void StringValueResult::AddValueToVector(const char *value_ptr, idx_t size, bool
 	default: {
 		// By default, we add a string
 		// We only evaluate if a string is utf8 valid, if it's actually a varchar
-		if (parse_types[chunk_col_id].validate_utf8 &&
+		if (parse_types[chunk_col_id].validate_utf8 && !ascii_value &&
 		    !Utf8Proc::IsValid(value_ptr, UnsafeNumericCast<uint32_t>(size))) {
 			bool force_error = !state_machine.options.ignore_errors.GetValue() && sniffing;
 			// Invalid unicode, we must error

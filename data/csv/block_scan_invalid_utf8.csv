@@ -1,0 +1,13 @@
+1,abc,x
+2,ÿbad,y
+3,"qÿ",z
+4,Ã©,ok
+5,fine,ÿ
+ÿ6,a,b
+7,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,b
+8,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaÿaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,c
+9,"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaÿ",d
+10,ascii,"quoted"
+11,"a""b",e
+12,â‚¬,euro
+13,x,Ã

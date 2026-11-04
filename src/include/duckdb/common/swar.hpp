@@ -107,6 +107,15 @@ struct SwarBlock {
 	static constexpr idx_t MAX_PATTERNS = 5;
 
 	//! Mask of the bytes matching any pattern plus possibly bytes right above a match, no match is ever missed
+	//! Whether any byte of the block has its high bit set, so the block is not all ASCII
+	static inline bool HasHighBits(const_data_ptr_t block) {
+		uint64_t bits = 0;
+		for (idx_t i = 0; i < WORDS; i++) {
+			bits |= Load<uint64_t>(block + i * SwarWord::SIZE);
+		}
+		return (bits & 0x8080808080808080ULL) != 0;
+	}
+
 	static inline uint64_t MaybeAnyMask(const_data_ptr_t block, const vector<BytePattern> &patterns) {
 		//! We have between 2 (delimiter/newline) and 5 (delimiter,newline,comment,quote,escape) patterns
 		switch (patterns.size()) {
