@@ -585,6 +585,9 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 	case LogicalOperatorType::LOGICAL_FILTER:
 	case LogicalOperatorType::LOGICAL_UNNEST:
 	case LogicalOperatorType::LOGICAL_SAMPLE:
+	case LogicalOperatorType::LOGICAL_LIMIT:
+	case LogicalOperatorType::LOGICAL_TOP_N:
+	case LogicalOperatorType::LOGICAL_CROSS_PRODUCT:
 		KeepCastsAbove();
 		break;
 	case LogicalOperatorType::LOGICAL_ASOF_JOIN:
@@ -818,6 +821,7 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 		return;
 	}
 	case LogicalOperatorType::LOGICAL_DISTINCT: {
+		KeepCastsAbove();
 		auto &distinct = op.Cast<LogicalDistinct>();
 		if (distinct.distinct_type == DistinctType::DISTINCT_ON) {
 			// distinct type references columns that need to be distinct on, so no
@@ -1532,9 +1536,18 @@ void RemoveUnusedColumns::RemoveColumnsFromLogicalGet(LogicalGet &get, unique_pt
 
 void RemoveUnusedColumns::LiftCastsAboveFilter(LogicalGet &get, unique_ptr<LogicalOperator> &op_ref,
                                                const unordered_set<idx_t> &cast_positions) {
-	// the filter evaluates the casts it reads on every row anyway, the others must only see the rows that pass
+	// the filters evaluate the casts they read on every row anyway, the others must only see the rows that pass
 	auto &filter = op_ref->Cast<LogicalFilter>();
 	unordered_set<idx_t> filter_columns;
+	for (auto &entry : get.table_filters) {
+		filter_columns.insert(entry.GetIndex());
+	}
+	for (const auto &table_filter : get.table_filters.GetMultiColumnFilters()) {
+		auto &expression_filter = ExpressionFilter::GetExpressionFilter(*table_filter, "LiftCastsAboveFilter");
+		for (const auto &column_index : expression_filter.column_indexes) {
+			filter_columns.insert(column_index);
+		}
+	}
 	for (auto &expr : filter.expressions) {
 		ExpressionIterator::EnumerateExpression(expr, [&](Expression &child) {
 			if (child.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {

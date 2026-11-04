@@ -148,3 +148,35 @@ SELECT s.n::INTEGER FROM cast_unnest, unnest(l) u(x)
 query I
 SELECT s.n::INTEGER FROM cast_unnest USING SAMPLE 0 ROWS
 ----
+
+# a cast the scan filters on stays in the scan next to the filter that stays above it
+query I
+SELECT s.a::VARCHAR FROM cast_two_fields WHERE s.a = s.b AND s.a::VARCHAR > '0' ORDER BY 1
+----
+1
+
+# limits, distinct on and cross products drop rows too
+query I
+SELECT s.n::INTEGER FROM (SELECT * FROM cast_unnest ORDER BY s.n LIMIT 1)
+----
+42
+
+statement ok
+CREATE TABLE cast_limit AS SELECT {'n': n} AS s FROM (VALUES ('42'), ('bad')) v(n);
+
+query I
+SELECT s.n::INTEGER FROM (SELECT s FROM cast_limit LIMIT 1)
+----
+42
+
+query I
+SELECT s.n::INTEGER FROM (SELECT DISTINCT ON (1 + 0) s FROM cast_unnest ORDER BY 1 + 0, s.n)
+----
+42
+
+statement ok
+CREATE TABLE cast_empty (i INTEGER);
+
+query I
+SELECT s.n::INTEGER FROM cast_unnest CROSS JOIN cast_empty
+----
