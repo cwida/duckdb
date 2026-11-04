@@ -21,6 +21,7 @@ namespace duckdb {
 class LogicalAggregate;
 class LogicalComparisonJoin;
 class LogicalCTERef;
+class LogicalDependentJoin;
 class LogicalExpressionGet;
 class LogicalJoin;
 
@@ -115,6 +116,7 @@ private:
 	                             vector<ColumnBinding> state, bool rewrite_parent = true, idx_t child_idx = 0);
 	UnnestingState FinalizeDependentJoin(unique_ptr<LogicalOperator> &plan, UnnestingState outer_state,
 	                                     const UnnestingState &right_state, DependentJoinOutput output);
+	void MaterializeCorrelatedAggregateRewrites(LogicalDependentJoin &op, UnnestingState &outer_state);
 	UnnestingState AttachDelimToIndependentJoinLeft(unique_ptr<LogicalOperator> &plan);
 	UnnestingState PushDownSingleCorrelatedChild(unique_ptr<LogicalOperator> &plan, bool propagate_null_values,
 	                                             vector<ColumnBinding> state, bool correlated_left);
