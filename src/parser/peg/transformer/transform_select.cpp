@@ -133,8 +133,16 @@ unique_ptr<SelectStatement> PEGTransformerFactory::TransformSelectSetOpChain(
 	for (auto &tail : *select_set_op_chain_tail) {
 		auto setop_result = std::move(tail.first);
 		auto right_select = std::move(tail.second);
+		// Accumulate unparenthesized left-deep chains of the same set operation into a single
+		// N-ary node (`A UNION B UNION C` is one node with three children). A node that came
+		// from explicit parentheses resolves its own result type first - flattening it would
+		// cast its branches directly to the outer result type, skipping the intermediate
+		// stage: in `(SELECT 1.5::DOUBLE UNION SELECT 87::INTEGER) UNION SELECT 'text'`, the
+		// inner UNION resolves to DOUBLE and 87::INTEGER must surface as '87.0', but a flat
+		// re-unification casts 87::INTEGER to VARCHAR directly, yielding '87' and changing
+		// which rows de-duplicate (duckdb#28372).
 		if (select->node->type == QueryNodeType::SET_OPERATION_NODE && select->node->modifiers.empty() &&
-		    select->node->cte_map.map.empty()) {
+		    select->node->cte_map.map.empty() && !select->node->Cast<SetOperationNode>().parenthesized) {
 			auto &existing = select->node->Cast<SetOperationNode>();
 			if (existing.setop_type == setop_result->setop_type && existing.setop_all == setop_result->setop_all &&
 			    (existing.setop_type == SetOperationType::UNION ||
@@ -1205,6 +1213,14 @@ bool PEGTransformerFactory::TransformSampleRows(PEGTransformer &transformer) {
 unique_ptr<SelectStatement>
 PEGTransformerFactory::TransformSelectParens(PEGTransformer &transformer,
                                              unique_ptr<SelectStatement> select_statement_internal) {
+	// A parenthesized set operation resolves its own result type before any outer
+	// operation unifies over it - mark it so TransformSelectSetOpChain keeps it
+	// nested instead of flattening it into an N-ary chain of plain branches
+	// (duckdb#28372).
+	if (select_statement_internal->node->type == QueryNodeType::SET_OPERATION_NODE) {
+		auto &setop = select_statement_internal->node->Cast<SetOperationNode>();
+		setop.parenthesized = true;
+	}
 	return select_statement_internal;
 }
 

@@ -62,6 +62,7 @@ unique_ptr<QueryNode> SetOperationNode::Copy() const {
 	auto result = make_uniq<SetOperationNode>();
 	result->setop_type = setop_type;
 	result->setop_all = setop_all;
+	result->parenthesized = parenthesized;
 	for (auto &child : children) {
 		result->children.push_back(child->Copy());
 	}
