@@ -68,14 +68,45 @@ EXPLAIN SELECT v.n::INTEGER FROM read_parquet('{TEST_DIR}/pushdown_extract_cast_
 ----
 physical_plan	<REGEX>:.*CAST\(v AS INTEGER\).*Filter.*READ_PARQUET.*v\.n.*
 
-# a filter the scan applies itself keeps the cast in the scan
+# a filter the scan applies itself keeps the cast in the scan, so no cast is left in the plan
 query II
 EXPLAIN SELECT v.n::INTEGER FROM read_parquet('{TEST_DIR}/pushdown_extract_cast_filters.parquet') WHERE id > 0
 ----
-physical_plan	<!REGEX>:.*CAST\(v AS INTEGER\).*
+physical_plan	<!REGEX>:.*CAST.*
 
 query I
 SELECT v.n::INTEGER FROM read_parquet('{TEST_DIR}/pushdown_extract_cast_filters.parquet') WHERE id > 0 ORDER BY id
 ----
 42
 7
+
+# two casts of one field above the filter share one scan column, the columns next to it keep their place
+statement ok
+CREATE TABLE cast_siblings AS
+SELECT i AS id, {'n': i::VARCHAR} AS s, 'wanted' AS extra, {'n': 'other'} AS z FROM range(4) r(i);
+
+query IIII
+SELECT s.n::INTEGER, s.n::BIGINT, extra, z.n FROM cast_siblings WHERE id IN (1, 3) ORDER BY id
+----
+1	1	wanted	other
+3	3	wanted	other
+
+query III
+SELECT s.n::INTEGER, s.n::BIGINT, extra FROM cast_siblings WHERE id IN (1, 3) ORDER BY id
+----
+1	1	wanted
+3	3	wanted
+
+# a reference above the filter and one in the filter cast the same field, the projection below keeps both forms
+statement ok
+CREATE TABLE cast_once AS SELECT {'n': '42'} AS s;
+
+query I
+SELECT s.n::INTEGER FROM (SELECT * FROM cast_once LIMIT 1) WHERE s.n::INTEGER > 0
+----
+42
+
+query I
+SELECT s.n::INTEGER FROM (SELECT * FROM cast_once LIMIT 1) JOIN (SELECT 42 AS j) ON j = s.n::INTEGER
+----
+42

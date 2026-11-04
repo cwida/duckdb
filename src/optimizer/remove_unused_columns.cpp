@@ -1575,11 +1575,37 @@ BaseColumnPrunerMode BaseColumnPruner::GetMode() const {
 	return mode;
 }
 
+static void ClearLeafType(ColumnIndex &path) {
+	reference<ColumnIndex> leaf(path);
+	while (leaf.get().HasChildren()) {
+		leaf = leaf.get().GetChildIndex(0);
+	}
+	leaf.get().SetType(LogicalType());
+}
+
 void BaseColumnPruner::KeepCastsAbove() {
 	// a cast in the scan would run on the rows that the filter or join below the reference drops
 	for (auto &entry : column_references) {
-		for (auto &struct_extract : entry.second.struct_extracts) {
+		auto &column = entry.second;
+		bool paths_changed = false;
+		for (auto &struct_extract : column.struct_extracts) {
+			if (!struct_extract.push_cast) {
+				continue;
+			}
 			struct_extract.push_cast = false;
+			if (!struct_extract.components.back().cast) {
+				continue;
+			}
+			// the path was registered with the type of the cast, it now stands for the plain extract
+			ClearLeafType(struct_extract.extract_path);
+			paths_changed = true;
+		}
+		if (!paths_changed) {
+			continue;
+		}
+		column.unique_paths.clear();
+		for (auto &struct_extract : column.struct_extracts) {
+			column.AddPath(struct_extract.extract_path);
 		}
 	}
 }
