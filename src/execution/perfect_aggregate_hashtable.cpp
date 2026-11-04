@@ -146,6 +146,8 @@ void PerfectAggregateHashTable::AddChunk(DataChunk &groups, DataChunk &payload) 
 		ComputeGroupLocation(groups.data[i], group_minima[i], address_data, current_shift);
 	}
 
+	// evaluate every aggregate filter once for this chunk
+	filter_set.ApplyFilters(payload);
 	if (AddChunkClustered(address_data, payload)) {
 		return;
 	}
@@ -165,7 +167,7 @@ void PerfectAggregateHashTable::AddChunk(DataChunk &groups, DataChunk &payload) 
 		auto &aggregate = aggregates[aggr_idx];
 		if (aggregate.filter) {
 			RowOperations::UpdateFilteredStates(row_state, filter_set.GetFilterData(aggr_idx), aggregate, addresses,
-			                                    payload, payload_idx);
+			                                    payload_idx);
 		} else {
 			RowOperations::UpdateStates(row_state, aggregate, addresses, payload, payload_idx);
 		}

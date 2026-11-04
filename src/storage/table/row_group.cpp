@@ -1992,7 +1992,7 @@ void RowGroup::CompressVersionInfo(VisibilityBound lowest_visibility_bound) {
 	if (!vinfo) {
 		return;
 	}
-	vinfo->CompressVersionIds(lowest_visibility_bound);
+	vinfo->CompressVersionIds(lowest_visibility_bound, count);
 }
 
 vector<MetaBlockPointer> RowGroup::CheckpointDeletes(RowGroupWriter &writer) {
@@ -2009,7 +2009,7 @@ vector<MetaBlockPointer> RowGroup::CheckpointDeletes(RowGroupWriter &writer) {
 		// no version information: write nothing
 		return vector<MetaBlockPointer>();
 	}
-	return vinfo->Checkpoint(writer);
+	return vinfo->Checkpoint(writer, count);
 }
 
 void RowGroup::Serialize(RowGroupPointer &pointer, Serializer &serializer, bool supports_per_column_writes) {

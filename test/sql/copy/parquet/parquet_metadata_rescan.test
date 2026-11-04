@@ -1,0 +1,55 @@
+# name: test/sql/copy/parquet/parquet_metadata_rescan.test
+# description: parquet metadata functions must produce their rows on every scan initialization
+# group: [parquet]
+
+require parquet
+
+statement ok
+COPY (SELECT 1 AS a UNION ALL SELECT 2) TO '{TEST_DIR}/metadata_rescan.parquet' (FORMAT parquet);
+
+# A recursive CTE re-initializes the scan of the inlined condition subquery on every iteration.
+query I
+WITH RECURSIVE
+c AS (
+    SELECT * FROM parquet_schema('{TEST_DIR}/metadata_rescan.parquet')
+),
+walk(depth) AS (
+    SELECT 0
+    UNION ALL
+    SELECT depth + 1 FROM walk
+    WHERE depth < (SELECT count(*) FROM c) AND depth < 5
+)
+SELECT max(depth) FROM walk;
+----
+2
+
+query I
+WITH RECURSIVE
+c AS (
+    SELECT * FROM parquet_file_metadata('{TEST_DIR}/metadata_rescan.parquet')
+),
+walk(depth) AS (
+    SELECT 0
+    UNION ALL
+    SELECT depth + 1 FROM walk
+    WHERE depth < (SELECT count(*) FROM c) AND depth < 5
+)
+SELECT max(depth) FROM walk;
+----
+1
+
+# Bloom probing has its own bind data class derived from the shared one.
+query I
+WITH RECURSIVE
+c AS (
+    SELECT * FROM parquet_bloom_probe('{TEST_DIR}/metadata_rescan.parquet', 'a', 1)
+),
+walk(depth) AS (
+    SELECT 0
+    UNION ALL
+    SELECT depth + 1 FROM walk
+    WHERE depth < (SELECT count(*) FROM c) AND depth < 5
+)
+SELECT max(depth) FROM walk;
+----
+1

@@ -63,6 +63,7 @@
     {
       "reason": "Time (NS) not supported (new type).",
       "paths": [
+        "test/sql/copy/parquet/bloom_filter_fallback_types.test",
         "test/sql/optimizer/expression/test_time_ns_cast_comparison.test",
         "test/fuzzer/duckfuzz/arg_minmax_by_decimal.test",
         "test/fuzzer/duckfuzz/array_distance.test",

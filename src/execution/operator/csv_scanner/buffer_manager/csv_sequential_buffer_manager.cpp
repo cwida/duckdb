@@ -127,6 +127,7 @@ void CSVSequentialBufferManager::ResetBuffer(const idx_t buffer_idx) {
 }
 
 bool CSVSequentialBufferManager::Done() const {
+	lock_guard<mutex> parallel_lock(main_mutex);
 	return done;
 }
 

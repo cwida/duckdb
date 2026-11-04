@@ -24,6 +24,7 @@ class Catalog;
 class CatalogSet;
 struct CatalogTransaction;
 class DatabaseInstance;
+class FileSystem;
 struct SecretMatch;
 struct SecretEntry;
 class SecretManager;
@@ -168,10 +169,36 @@ public:
 protected:
 };
 
+//! The file of each persistent secret. The file name alone does not identify the secret: names are escaped in file
+//! names, and files written before that are named after the plain secret name, so one file name can belong to two
+//! different secrets (the escaped `a/b` and the plain `a%2Fb`).
+class PersistentSecretFiles {
+public:
+	//! Registers the file that holds the secret
+	void Set(const Identifier &secret_name, const string &path);
+	//! Unregisters the secret
+	void Remove(const Identifier &secret_name);
+	//! The file that holds the secret, or an empty string if the secret has no file
+	string Get(const Identifier &secret_name);
+	//! Whether the file at the path holds a secret other than the given one
+	bool TryGetOtherSecretAt(const string &path, const Identifier &secret_name, string &other_secret_name);
+
+private:
+	mutex lock;
+	identifier_map_t<string> paths;
+};
+
 class LocalFileSecretStorage : public CatalogSetSecretStorage {
 public:
 	LocalFileSecretStorage(SecretManager &manager, DatabaseInstance &db, const string &name_p,
 	                       const string &secret_path);
+
+public:
+	//! The file name of a persistent secret: path separators, ':', NUL, '%' and a leading '.' in the name are
+	//! percent-encoded
+	static string SecretFileName(const string &secret_name);
+	//! The secret name for a persistent secret file name (reverses SecretFileName)
+	static string SecretNameFromFileName(const string &file_name);
 
 protected:
 	//! Implements the writes to disk
@@ -181,6 +208,8 @@ protected:
 
 	//! Set of persistent secrets that are lazily loaded
 	identifier_set_t persistent_secrets;
+	//! The files of the persistent secrets, shared with the generator that loads them
+	shared_ptr<PersistentSecretFiles> files;
 	//! Path that is searched for secrets;
 	string secret_path;
 };

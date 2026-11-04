@@ -51,9 +51,10 @@ public:
 	//! lowest_visibility_bound look the same to every active and future transaction, so they can collapse.
 	//! Cheap when nothing can have changed: the pass only runs when version ids were modified since the
 	//! last pass, or when a previous pass left ids that can still compress once older transactions finish
-	void CompressVersionIds(VisibilityBound lowest_visibility_bound);
+	void CompressVersionIds(VisibilityBound lowest_visibility_bound, idx_t row_count);
 
-	vector<MetaBlockPointer> Checkpoint(RowGroupWriter &writer);
+	//! Writes the deletes of the first row_count rows of the row group
+	vector<MetaBlockPointer> Checkpoint(RowGroupWriter &writer, idx_t row_count);
 	static shared_ptr<RowVersionManager> Deserialize(MetaBlockPointer delete_pointer, MetadataManager &manager);
 
 	bool HasUnserializedChanges(VisibilityBound bound);

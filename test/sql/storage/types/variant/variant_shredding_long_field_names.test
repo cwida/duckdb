@@ -1,0 +1,63 @@
+# name: test/sql/storage/types/variant/variant_shredding_long_field_names.test
+# description: Shredding decisions on object keys longer than a small string buffer, equal ignoring case or distinct
+# group: [variant]
+
+require json
+
+load {TEST_DIR}/variant_shredding_long_field_names.db
+
+statement ok
+SET variant_minimum_shredding_size = 0;
+
+# two keys of 24 bytes that are equal ignoring case, so the object cannot shred into a STRUCT
+statement ok
+CREATE TABLE case_clash AS
+SELECT ('{"LONG_FIELD_NAME_ABCDEFGH": ' || i || ', "long_field_name_abcdefgh": ' || (i + 1) || '}')::JSON::VARIANT AS v
+FROM range(100) t(i);
+
+# the same with keys of 16 bytes, one past the inline buffer of a short string
+statement ok
+CREATE TABLE case_clash_16 AS
+SELECT ('{"ABCDEFGHIJKLMNOP": ' || i || ', "abcdefghijklmnop": ' || (i + 1) || '}')::JSON::VARIANT AS v
+FROM range(100) t(i);
+
+# two distinct long keys shred
+statement ok
+CREATE TABLE distinct_keys AS
+SELECT ('{"long_field_name_abcdefgh": ' || i || ', "other_long_field_name_xyz": ' || (i + 1) || '}')::JSON::VARIANT AS v
+FROM range(100) t(i);
+
+statement ok
+CHECKPOINT;
+
+restart
+
+query I
+SELECT DISTINCT vector_type(v) FROM case_clash;
+----
+FLAT_VECTOR
+
+query I
+SELECT DISTINCT vector_type(v) FROM case_clash_16;
+----
+FLAT_VECTOR
+
+query I
+SELECT DISTINCT vector_type(v) FROM distinct_keys;
+----
+SHREDDED_VECTOR
+
+query III
+SELECT sum(variant_extract(v, 'LONG_FIELD_NAME_ABCDEFGH')::INT), sum(variant_extract(v, 'long_field_name_abcdefgh')::INT), min(variant_keys(v)::VARCHAR) FROM case_clash;
+----
+4950	5050	[LONG_FIELD_NAME_ABCDEFGH, long_field_name_abcdefgh]
+
+query III
+SELECT sum(variant_extract(v, 'ABCDEFGHIJKLMNOP')::INT), sum(variant_extract(v, 'abcdefghijklmnop')::INT), min(variant_keys(v)::VARCHAR) FROM case_clash_16;
+----
+4950	5050	[ABCDEFGHIJKLMNOP, abcdefghijklmnop]
+
+query III
+SELECT sum((v).long_field_name_abcdefgh::INT), sum((v).other_long_field_name_xyz::INT), min(variant_keys(v)::VARCHAR) FROM distinct_keys;
+----
+4950	5050	[long_field_name_abcdefgh, other_long_field_name_xyz]

@@ -1,0 +1,15 @@
+# name: test/sql/copy/parquet/parquet_short_decompress.test
+# description: Test reading pages whose compressed data decompresses to fewer bytes than the page header claims
+# group: [parquet]
+
+require parquet
+
+statement error
+SELECT count(*), sum(i) FROM read_parquet('{DATA_DIR}/parquet-testing/gzip_short_page.parquet')
+----
+GZIP uncompressed data size mismatch
+
+statement error
+SELECT count(*), sum(i) FROM read_parquet('{DATA_DIR}/parquet-testing/brotli_short_page.parquet')
+----
+Brotli uncompressed data size mismatch
