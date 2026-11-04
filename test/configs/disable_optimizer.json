@@ -125,6 +125,8 @@
         "test/sql/function/generic/test_barrier.test",
         "test/sql/join/asof/test_asof_limit.test",
         "test/sql/optimizer/secure_view_pushdown.test",
+        "test/sql/optimizer/secure_view_join_filter_pushdown.test",
+        "test/sql/optimizer/secure_view_join_order.test",
         "test/sql/optimizer/test_in_rewrite_rule.test",
         "test/optimizer/unused_window_columns.test",
         "test/sql/storage/compression/rle/rle_constant.test",
