@@ -30,6 +30,6 @@ private:
 
 	Optimizer &optimizer;
 	BindingReplacementGraph replacements;
-	vector<optional_ptr<LogicalMaterializedCTE>> cte_scopes;
+	vector<reference<LogicalMaterializedCTE>> cte_scopes;
 };
 } // namespace duckdb

@@ -101,7 +101,7 @@ WITH first AS MATERIALIZED (SELECT * FROM demand),
 SELECT d.label, a.s FROM second d
 LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a USING(k);
 ----
-physical_plan	<!REGEX>:[\s\S]*SEMI[\s\S]*
+physical_plan	<REGEX>:[\s\S]*SEMI[\s\S]*
 
 query II
 EXPLAIN (FORMAT JSON)
@@ -110,7 +110,7 @@ LEFT JOIN (SELECT k, sum(v) s FROM fact GROUP BY k) a USING(k);
 ----
 physical_plan	<!REGEX>:[\s\S]*SEMI[\s\S]*
 
-# Runtime candidates inside an existing owner do not introduce a nested owner.
+# Runtime candidates can introduce a local owner inside an existing producer.
 query II
 EXPLAIN (FORMAT JSON)
 WITH result AS MATERIALIZED (
@@ -119,4 +119,4 @@ WITH result AS MATERIALIZED (
 )
 SELECT * FROM result UNION ALL SELECT * FROM result;
 ----
-physical_plan	<!REGEX>:[\s\S]*SEMI[\s\S]*
+physical_plan	<REGEX>:[\s\S]*SEMI[\s\S]*domain_source[\s\S]*
