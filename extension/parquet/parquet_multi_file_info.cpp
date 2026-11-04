@@ -257,7 +257,8 @@ void ParquetScanFunction::AddNamedParameters(TableFunction &table_function) {
 		    .Add("can_have_nan", LogicalType::BOOLEAN)
 		    .Add("prefetch_strategy", LogicalType::VARCHAR)
 		    .Add("utf8_validation", LogicalType::VARCHAR)
-		    .Add("int96_as", LogicalType::VARCHAR);
+		    .Add("int96_as", LogicalType::VARCHAR)
+		    .Add("maximum_files_for_stats", LogicalType::UBIGINT);
 	};
 	// the multi-file function already declares options of its own - the single-file function declares none
 	auto &signature = table_function.GetSignature();
