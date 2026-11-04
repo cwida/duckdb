@@ -428,6 +428,37 @@ bool RelationManager::AddRelationWithChildren(JoinOrderOptimizer &optimizer, Log
 bool RelationManager::ExtractJoinRelations(JoinOrderOptimizer &optimizer, LogicalOperator &input_op,
                                            vector<reference<LogicalOperator>> &filter_operators,
                                            optional_ptr<LogicalOperator> parent) {
+	// Keep the join-region walk off the call stack: leaf extraction has a substantial frame, and generated
+	// plans (e.g. many DISTINCT aggregates) can contain hundreds of nested binary joins.
+	vector<PendingRelation> pending_relations {{input_op, parent, false}};
+	bool can_reorder = true;
+	while (!pending_relations.empty()) {
+		auto relation = pending_relations.back();
+		pending_relations.pop_back();
+		can_reorder &= ExtractJoinRelation(optimizer, relation, filter_operators, pending_relations);
+	}
+	return can_reorder;
+}
+
+bool RelationManager::ExtractJoinRelation(JoinOrderOptimizer &optimizer, PendingRelation relation,
+                                          vector<reference<LogicalOperator>> &filter_operators,
+                                          vector<PendingRelation> &pending_relations) {
+	if (relation.optimize_as_leaf) {
+		// This job follows the left subtree, preserving relation numbering and the RHS boundary.
+		auto &join = *relation.parent;
+		RelationStats child_stats;
+		auto child_optimizer = optimizer.CreateChildOptimizer();
+		join.children[1] = child_optimizer.Optimize(std::move(join.children[1]), &child_stats);
+		if (!AddRelation(*join.children[1], join, child_stats)) {
+			return false;
+		}
+		for (auto &binding : join.children[1]->GetColumnBindings()) {
+			relation_mapping[binding.table_index] = RelationIndex(relations.size() - 1);
+		}
+		return true;
+	}
+	auto &input_op = relation.op;
+	auto parent = relation.parent;
 	optional_ptr<LogicalOperator> op = &input_op;
 	vector<reference<LogicalOperator>> unary_filters;
 	// pass through single child operators (but never past a non-reorderable op such as a DML node, which
@@ -518,40 +549,18 @@ bool RelationManager::ExtractJoinRelations(JoinOrderOptimizer &optimizer, Logica
 	}
 	case LogicalOperatorType::LOGICAL_COMPARISON_JOIN: {
 		auto &join = op->Cast<LogicalComparisonJoin>();
-		// Adding relations of the left side to the current join order optimizer
-		bool can_reorder_left = ExtractJoinRelations(optimizer, *op->children[0], filter_operators, op);
-		bool can_reorder_right = true;
-		// For semi & anti joins, you only reorder relations in the left side of the join.
-		// We do not want to reorder a relation A into the right side because then all column bindings A from A will be
-		// lost after the semi or anti join
-
-		// We cannot reorder a relation B out of the right side because any filter/join in the right side
-		// between a relation B and another RHS relation will be invalid. The semi join will remove
-		// all right column bindings,
-
-		// So we treat the right side of left join as its own relation so no relations
-		// are pushed into the right side, or taken out of the right side.
-		if (join.join_type == JoinType::SEMI || join.join_type == JoinType::ANTI || join.join_type == JoinType::LEFT) {
-			RelationStats child_stats;
-			// optimize the child and copy the stats
-			auto child_optimizer = optimizer.CreateChildOptimizer();
-			op->children[1] = child_optimizer.Optimize(std::move(op->children[1]), &child_stats);
-			if (!AddRelation(*op->children[1], op, child_stats)) {
-				return false;
-			}
-			auto right_child_bindings = op->children[1]->GetColumnBindings();
-			for (auto &bindings : right_child_bindings) {
-				relation_mapping[bindings.table_index] = RelationIndex(relations.size() - 1);
-			}
-		} else {
-			can_reorder_right = ExtractJoinRelations(optimizer, *op->children[1], filter_operators, op);
-		}
-		return can_reorder_left && can_reorder_right;
+		// SEMI/ANTI and LEFT RHS subtrees stay independent relations. Process the left subtree first,
+		// then optimize/register the RHS, just as for the recursive traversal.
+		auto separate_rhs =
+		    join.join_type == JoinType::SEMI || join.join_type == JoinType::ANTI || join.join_type == JoinType::LEFT;
+		pending_relations.push_back({*op->children[1], op, separate_rhs});
+		pending_relations.push_back({*op->children[0], op, false});
+		return true;
 	}
 	case LogicalOperatorType::LOGICAL_CROSS_PRODUCT: {
-		bool can_reorder_left = ExtractJoinRelations(optimizer, *op->children[0], filter_operators, op);
-		bool can_reorder_right = ExtractJoinRelations(optimizer, *op->children[1], filter_operators, op);
-		return can_reorder_left && can_reorder_right;
+		pending_relations.push_back({*op->children[1], op, false});
+		pending_relations.push_back({*op->children[0], op, false});
+		return true;
 	}
 	case LogicalOperatorType::LOGICAL_DUMMY_SCAN: {
 		auto &dummy_scan = op->Cast<LogicalDummyScan>();
