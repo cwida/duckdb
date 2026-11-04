@@ -104,12 +104,12 @@ public:
 	atomic<bool> initialized {false};
 	//! The total number of rows copied to the file
 	atomic<idx_t> rows_copied;
-	//! Global copy state of the file being written
-	unique_ptr<GlobalFunctionData> global_state;
-	//! The state of the first file, which every batch is prepared with before it is flushed into any file
-	optional_ptr<GlobalFunctionData> prepare_state;
-	//! The first file once it rotated away, kept for the batches still prepared with it and finished at the end
-	unique_ptr<GlobalFunctionData> prepare_state_owned;
+	//! The state of the first file, which every batch is prepared with
+	unique_ptr<GlobalFunctionData> first_file_state;
+	//! The state of the file opened by the last rotation
+	unique_ptr<GlobalFunctionData> rotated_file_state;
+	//! The state of the file being written
+	optional_ptr<GlobalFunctionData> global_state;
 	//! The number of files opened
 	idx_t file_count = 0;
 	//! The number of batches flushed into the file being written
@@ -145,13 +145,13 @@ public:
 			PhysicalCopyToFile::PrepareOutputDirectory(FileSystem::GetFileSystem(context), op.file_path,
 			                                           op.overwrite_mode, output_lifecycle);
 		}
-		OpenFileLocked(context, op);
-		prepare_state = global_state.get();
+		first_file_state = OpenFileLocked(context, op);
+		global_state = first_file_state.get();
 		initialized.store(true, std::memory_order_release);
 	}
 
-	//! Opens the next file, with the lock held
-	void OpenFileLocked(ClientContext &context, const PhysicalBatchCopyToFile &op) {
+	//! Opens the next file and returns its state, with the lock held
+	unique_ptr<GlobalFunctionData> OpenFileLocked(ClientContext &context, const PhysicalBatchCopyToFile &op) {
 		auto file_path = op.file_path;
 		if (op.RotatesFiles()) {
 			auto &fs = FileSystem::GetFileSystem(context);
@@ -173,19 +173,18 @@ public:
 			}
 			written_files.push_back(std::move(file_info));
 		}
-		global_state = std::move(new_global_state);
+		return new_global_state;
 	}
 
 	//! Opens the next file once the current one reached its size, called by the flushing thread only
 	void RotateFile(ClientContext &context, const PhysicalBatchCopyToFile &op) {
-		auto finished_state = std::move(global_state);
-		if (RefersToSameObject(*finished_state, *prepare_state)) {
-			prepare_state_owned = std::move(finished_state);
-		} else if (op.function.copy_to_finalize) {
-			op.function.copy_to_finalize(context, *op.bind_data, *finished_state);
+		// the first file stays open for the batches still prepared with its state
+		if (rotated_file_state && op.function.copy_to_finalize) {
+			op.function.copy_to_finalize(context, *op.bind_data, *rotated_file_state);
 		}
 		lock_guard<mutex> guard(lock);
-		OpenFileLocked(context, op);
+		rotated_file_state = OpenFileLocked(context, op);
+		global_state = rotated_file_state.get();
 		file_batches = 0;
 	}
 
@@ -195,16 +194,11 @@ public:
 		       op.function.file_size_bytes(*global_state) >= op.file_size_bytes.GetIndex();
 	}
 
-	//! Finishes the files that are still open, once every batch is flushed
+	//! Finishes the first file and the file being written, once every batch is flushed
 	void FinalizeFiles(ClientContext &context, const PhysicalBatchCopyToFile &op) {
-		if (!op.function.copy_to_finalize) {
-			return;
-		}
-		if (global_state) {
-			op.function.copy_to_finalize(context, *op.bind_data, *global_state);
-		}
-		if (prepare_state_owned) {
-			op.function.copy_to_finalize(context, *op.bind_data, *prepare_state_owned);
+		op.function.copy_to_finalize(context, *op.bind_data, *first_file_state);
+		if (rotated_file_state) {
+			op.function.copy_to_finalize(context, *op.bind_data, *rotated_file_state);
 		}
 	}
 
@@ -459,9 +453,9 @@ public:
 		auto &gstate = gstate_p.Cast<FixedBatchCopyGlobalState>();
 		auto memory_usage = batch_data->memory_usage;
 		const CopyFunctionBatchAnalyzer batch_analyzer(*batch_data->collection, op.batch_size, op.batch_size_bytes);
-		// every batch is prepared with the first file, so that the files share one layout whichever gets the batch
-		auto prepared_batch =
-		    op.function.prepare_batch(context, *op.bind_data, *gstate.prepare_state, std::move(batch_data->collection));
+		// every batch is prepared with the first file, so that the files share one layout
+		auto prepared_batch = op.function.prepare_batch(context, *op.bind_data, *gstate.first_file_state,
+		                                                std::move(batch_data->collection));
 		gstate.AddBatchData(batch_index, std::move(prepared_batch), memory_usage, batch_analyzer);
 		if (batch_index == gstate.flushed_batch_index) {
 			gstate.task_manager.AddTask(make_uniq<RepartitionedFlushTask>());
