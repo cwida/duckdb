@@ -1,0 +1,12 @@
+# name: benchmark/recursive_cte/logistic_descent.benchmark
+# description: Synthetic logistic-regression descent loop: one-row waves with a per-iteration base-table aggregate
+# group: [recursive_cte]
+
+name Logistic descent loop
+group Recursive CTE
+
+load benchmark/recursive_cte/load/performance/logistic_descent.sql
+
+run benchmark/recursive_cte/queries/performance/logistic_descent.sql
+
+result benchmark/recursive_cte/answers/performance/logistic_descent.csv

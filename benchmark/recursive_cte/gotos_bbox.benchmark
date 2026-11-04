@@ -1,0 +1,12 @@
+# name: benchmark/recursive_cte/gotos_bbox.benchmark
+# description: Bounding-box map walk from the One-WITH-RECURSIVE-is-Worth-Many-GOTOs use cases (bbox), machine-compiled recursive CTE
+# group: [recursive_cte]
+
+name GOTOs bbox walk
+group Recursive CTE
+
+load benchmark/recursive_cte/load/performance/gotos_bbox.sql
+
+run benchmark/recursive_cte/queries/performance/gotos_bbox.sql
+
+result benchmark/recursive_cte/answers/performance/gotos_bbox.csv

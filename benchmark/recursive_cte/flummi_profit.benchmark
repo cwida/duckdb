@@ -1,0 +1,12 @@
+# name: benchmark/recursive_cte/flummi_profit.benchmark
+# description: Per-day profit scan loop from the flummi compiler PVLDB samples (samples/profit), machine-compiled recursive CTE
+# group: [recursive_cte]
+
+name Flummi profit day loop
+group Recursive CTE
+
+load benchmark/recursive_cte/load/performance/flummi_profit.sql
+
+run benchmark/recursive_cte/queries/performance/flummi_profit.sql
+
+result benchmark/recursive_cte/answers/performance/flummi_profit.csv
