@@ -9,7 +9,7 @@ statement ok
 SET memory_limit='32MB'
 
 statement ok
-SET temp_directory='__TEST_DIR__/aggregate_limit_memory_pressure'
+SET temp_directory='{TEST_DIR}/aggregate_limit_memory_pressure'
 
 query I
 SELECT count(*) FROM (SELECT i, count(*) FROM range(2000000) t(i) GROUP BY i LIMIT 5)
