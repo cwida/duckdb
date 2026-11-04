@@ -1,6 +1,6 @@
 # name: test/sql/storage/checkpoint/sql_maintenance_checkpoint_lock.test
 # description: SQL VACUUM and ANALYZE exclude checkpoints without making their transactions read-write.
-# group: [storage]
+# group: [checkpoint]
 
 require noforcestorage
 
