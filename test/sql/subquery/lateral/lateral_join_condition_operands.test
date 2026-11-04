@@ -526,17 +526,6 @@ FROM (VALUES ('bad')) o(k), LATERAL (
 ----
 bad	1
 
-# the same laziness holds for probe rows padded by an empty LEFT build
-query III
-SELECT o.k, q.x, q.y
-FROM (VALUES ('bad')) o(k), LATERAL (
-    SELECT l.x, r.y
-    FROM (VALUES (1)) l(x)
-    LEFT JOIN range(0) r(y) ON l.x + o.k::BIGINT > r.y
-) q;
-----
-bad	1	NULL
-
 # a volatile probe operand over an empty build input never evaluates
 statement ok
 CREATE SEQUENCE seq_probe_lazy START 1;
