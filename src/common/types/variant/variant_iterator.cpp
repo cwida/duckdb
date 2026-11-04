@@ -72,6 +72,84 @@ bool ShreddedIsValid(const ShreddedVariantIterator &node, idx_t index) {
 	return node.unified.validity.RowIsValid(node.unified.sel->get_index(index));
 }
 
+//! Resolve the type_id of a shredded layer up-front - it is the same for every value of the layer,
+//! except for BOOLEAN (which is BOOL_TRUE or BOOL_FALSE per value) and the layers that are never read
+//! as a scalar value (LIST/ARRAY/STRUCT), which are handled structurally by the iterator.
+VariantLogicalType ResolveShreddedTypeId(const LogicalType &type, bool &resolved) {
+	resolved = true;
+	switch (type.id()) {
+	case LogicalTypeId::TINYINT:
+		return VariantLogicalType::INT8;
+	case LogicalTypeId::SMALLINT:
+		return VariantLogicalType::INT16;
+	case LogicalTypeId::INTEGER:
+		return VariantLogicalType::INT32;
+	case LogicalTypeId::BIGINT:
+		return VariantLogicalType::INT64;
+	case LogicalTypeId::HUGEINT:
+		return VariantLogicalType::INT128;
+	case LogicalTypeId::UTINYINT:
+		return VariantLogicalType::UINT8;
+	case LogicalTypeId::USMALLINT:
+		return VariantLogicalType::UINT16;
+	case LogicalTypeId::UINTEGER:
+		return VariantLogicalType::UINT32;
+	case LogicalTypeId::UBIGINT:
+		return VariantLogicalType::UINT64;
+	case LogicalTypeId::UHUGEINT:
+		return VariantLogicalType::UINT128;
+	case LogicalTypeId::FLOAT:
+		return VariantLogicalType::FLOAT;
+	case LogicalTypeId::DOUBLE:
+		return VariantLogicalType::DOUBLE;
+	case LogicalTypeId::DECIMAL:
+		return VariantLogicalType::DECIMAL;
+	case LogicalTypeId::VARCHAR:
+		return VariantLogicalType::VARCHAR;
+	case LogicalTypeId::BLOB:
+		return VariantLogicalType::BLOB;
+	case LogicalTypeId::UUID:
+		return VariantLogicalType::UUID;
+	case LogicalTypeId::DATE:
+		return VariantLogicalType::DATE;
+	case LogicalTypeId::TIME:
+		return VariantLogicalType::TIME_MICROS;
+	case LogicalTypeId::TIME_NS:
+		return VariantLogicalType::TIME_NANOS;
+	case LogicalTypeId::TIME_TZ:
+		return VariantLogicalType::TIME_MICROS_TZ;
+	case LogicalTypeId::TIMESTAMP_SEC:
+		return VariantLogicalType::TIMESTAMP_SEC;
+	case LogicalTypeId::TIMESTAMP_MS:
+		return VariantLogicalType::TIMESTAMP_MILIS;
+	case LogicalTypeId::TIMESTAMP:
+		return VariantLogicalType::TIMESTAMP_MICROS;
+	case LogicalTypeId::TIMESTAMP_NS:
+		return VariantLogicalType::TIMESTAMP_NANOS;
+	case LogicalTypeId::TIMESTAMP_TZ:
+		return VariantLogicalType::TIMESTAMP_MICROS_TZ;
+	case LogicalTypeId::TIMESTAMP_TZ_NS:
+		return VariantLogicalType::TIMESTAMP_NANOS_TZ;
+	case LogicalTypeId::INTERVAL:
+		return VariantLogicalType::INTERVAL;
+	case LogicalTypeId::BIGNUM:
+		return VariantLogicalType::BIGNUM;
+	case LogicalTypeId::BIT:
+		return VariantLogicalType::BITSTRING;
+	case LogicalTypeId::GEOMETRY:
+		return VariantLogicalType::GEOMETRY;
+	case LogicalTypeId::STRUCT:
+		return VariantLogicalType::OBJECT;
+	case LogicalTypeId::LIST:
+		return VariantLogicalType::ARRAY;
+	case LogicalTypeId::BOOLEAN:
+		// BOOLEAN resolves to BOOL_TRUE / BOOL_FALSE per value
+	default:
+		resolved = false;
+		return VariantLogicalType::VARIANT_NULL;
+	}
+}
+
 } // namespace
 
 //===--------------------------------------------------------------------===//
@@ -104,6 +182,8 @@ VariantIterator::VariantIterator(const Vector &unshredded_vec, const Vector &shr
 void ShreddedVariantIterator::Build(const Vector &vec) {
 	vec.ToUnifiedFormat(unified);
 	logical_type = vec.GetType();
+	type_size = GetTypeIdSize(unified.physical_type);
+	type_id = ResolveShreddedTypeId(logical_type, has_fixed_type_id);
 
 	switch (vec.GetType().InternalType()) {
 	case PhysicalType::LIST:
@@ -300,78 +380,17 @@ VariantNode VariantNode::ResolveShredded(const VariantIterator &state, const Shr
 // Type resolution
 //===--------------------------------------------------------------------===//
 static VariantLogicalType ShreddedTypeId(const ShreddedVariantIterator &content, idx_t index) {
-	auto &type = content.logical_type;
-	switch (type.id()) {
-	case LogicalTypeId::STRUCT:
-		return VariantLogicalType::OBJECT;
-	case LogicalTypeId::LIST:
-		return VariantLogicalType::ARRAY;
-	case LogicalTypeId::BOOLEAN:
-		return content.unified.GetData<bool>()[content.unified.sel->get_index(index)] ? VariantLogicalType::BOOL_TRUE
-		                                                                              : VariantLogicalType::BOOL_FALSE;
-	case LogicalTypeId::TINYINT:
-		return VariantLogicalType::INT8;
-	case LogicalTypeId::SMALLINT:
-		return VariantLogicalType::INT16;
-	case LogicalTypeId::INTEGER:
-		return VariantLogicalType::INT32;
-	case LogicalTypeId::BIGINT:
-		return VariantLogicalType::INT64;
-	case LogicalTypeId::HUGEINT:
-		return VariantLogicalType::INT128;
-	case LogicalTypeId::UTINYINT:
-		return VariantLogicalType::UINT8;
-	case LogicalTypeId::USMALLINT:
-		return VariantLogicalType::UINT16;
-	case LogicalTypeId::UINTEGER:
-		return VariantLogicalType::UINT32;
-	case LogicalTypeId::UBIGINT:
-		return VariantLogicalType::UINT64;
-	case LogicalTypeId::UHUGEINT:
-		return VariantLogicalType::UINT128;
-	case LogicalTypeId::FLOAT:
-		return VariantLogicalType::FLOAT;
-	case LogicalTypeId::DOUBLE:
-		return VariantLogicalType::DOUBLE;
-	case LogicalTypeId::DECIMAL:
-		return VariantLogicalType::DECIMAL;
-	case LogicalTypeId::VARCHAR:
-		return VariantLogicalType::VARCHAR;
-	case LogicalTypeId::BLOB:
-		return VariantLogicalType::BLOB;
-	case LogicalTypeId::UUID:
-		return VariantLogicalType::UUID;
-	case LogicalTypeId::DATE:
-		return VariantLogicalType::DATE;
-	case LogicalTypeId::TIME:
-		return VariantLogicalType::TIME_MICROS;
-	case LogicalTypeId::TIME_NS:
-		return VariantLogicalType::TIME_NANOS;
-	case LogicalTypeId::TIME_TZ:
-		return VariantLogicalType::TIME_MICROS_TZ;
-	case LogicalTypeId::TIMESTAMP_SEC:
-		return VariantLogicalType::TIMESTAMP_SEC;
-	case LogicalTypeId::TIMESTAMP_MS:
-		return VariantLogicalType::TIMESTAMP_MILIS;
-	case LogicalTypeId::TIMESTAMP:
-		return VariantLogicalType::TIMESTAMP_MICROS;
-	case LogicalTypeId::TIMESTAMP_NS:
-		return VariantLogicalType::TIMESTAMP_NANOS;
-	case LogicalTypeId::TIMESTAMP_TZ:
-		return VariantLogicalType::TIMESTAMP_MICROS_TZ;
-	case LogicalTypeId::TIMESTAMP_TZ_NS:
-		return VariantLogicalType::TIMESTAMP_NANOS_TZ;
-	case LogicalTypeId::INTERVAL:
-		return VariantLogicalType::INTERVAL;
-	case LogicalTypeId::BIGNUM:
-		return VariantLogicalType::BIGNUM;
-	case LogicalTypeId::BIT:
-		return VariantLogicalType::BITSTRING;
-	case LogicalTypeId::GEOMETRY:
-		return VariantLogicalType::GEOMETRY;
-	default:
-		throw NotImplementedException("Shredded VARIANT type '%s' is not supported by VariantNode", type.ToString());
+	if (!content.has_fixed_type_id) {
+		// BOOLEAN is the only layer whose type_id depends on the value
+		if (content.logical_type.id() == LogicalTypeId::BOOLEAN) {
+			return content.unified.GetData<bool>()[content.unified.sel->get_index(index)]
+			           ? VariantLogicalType::BOOL_TRUE
+			           : VariantLogicalType::BOOL_FALSE;
+		}
+		throw NotImplementedException("Shredded VARIANT type '%s' is not supported by VariantNode",
+		                              content.logical_type.ToString());
 	}
+	return content.type_id;
 }
 
 VariantLogicalType VariantNode::GetTypeId() const {
@@ -397,8 +416,7 @@ const_data_ptr_t VariantNode::GetDataPointer() const {
 	}
 	D_ASSERT(kind == Kind::SHREDDED);
 	auto &content = *shredded_format;
-	auto type_size = GetTypeIdSize(content.unified.physical_type);
-	return content.unified.data + content.unified.sel->get_index(shredded_index) * type_size;
+	return content.unified.data + content.unified.sel->get_index(shredded_index) * content.type_size;
 }
 
 string_t VariantNode::GetString() const {
@@ -419,8 +437,7 @@ VariantDecimalData VariantNode::GetDecimal() const {
 	auto &type = content.logical_type;
 	auto width = DecimalType::GetWidth(type);
 	auto scale = DecimalType::GetScale(type);
-	auto type_size = GetTypeIdSize(content.unified.physical_type);
-	auto value_ptr = content.unified.data + content.unified.sel->get_index(shredded_index) * type_size;
+	auto value_ptr = content.unified.data + content.unified.sel->get_index(shredded_index) * content.type_size;
 	return VariantDecimalData(width, scale, value_ptr);
 }
 
