@@ -262,8 +262,10 @@ void Optimizer::RunBuiltInOptimizers() {
 	});
 
 	if (!CTEContainsDML(*plan)) {
-		RunOptimizer(OptimizerType::DUPLICATE_ELIMINATED_DOMAIN,
-		             [&]() { DuplicateEliminatedDomainOptimizer::Optimize(*this, *plan); });
+		RunOptimizer(OptimizerType::DUPLICATE_ELIMINATED_DOMAIN, [&]() {
+			DuplicateEliminatedDomainOptimizer domain_optimizer(*this);
+			domain_optimizer.VisitOperator(*plan);
+		});
 	}
 
 	if (!CTEContainsDML(*plan)) {

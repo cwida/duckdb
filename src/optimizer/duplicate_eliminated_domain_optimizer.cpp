@@ -23,6 +23,10 @@
 
 namespace duckdb {
 
+DuplicateEliminatedDomainOptimizer::DuplicateEliminatedDomainOptimizer(Optimizer &optimizer_p)
+    : optimizer(optimizer_p) {
+}
+
 static bool IsWorkReference(const Expression &expression) {
 	switch (expression.GetExpressionClass()) {
 	case ExpressionClass::BOUND_COLUMN_REF:
@@ -213,13 +217,13 @@ static bool IsProfitable(ClientContext &context, LogicalAggregate &aggregate, Lo
 	// The inserted SEMI is the new aggregate input; old input-shape refinements no longer apply.
 	auto group_count =
 	    RelationStatisticsHelper::EstimateDistinctCardinality({column->current_domain}, restricted.cardinality);
-	auto input_rows = double(input->cardinality);
+	auto input_rows = static_cast<double>(input->cardinality);
 	auto restricted_rows = estimate.cardinality;
-	auto original_groups = double(groups->cardinality);
-	auto restricted_groups = double(group_count);
-	auto fixed_key_rows = double(domain.children[0]->Cast<LogicalExpressionGet>().expressions.size());
-	auto distinct_key_rows = double(keys->cardinality);
-	auto aggregate_work_per_row = double(aggregate.expressions.size()) + 1;
+	auto original_groups = static_cast<double>(groups->cardinality);
+	auto restricted_groups = static_cast<double>(group_count);
+	auto fixed_key_rows = static_cast<double>(domain.children[0]->Cast<LogicalExpressionGet>().expressions.size());
+	auto distinct_key_rows = static_cast<double>(keys->cardinality);
+	auto aggregate_work_per_row = static_cast<double>(aggregate.expressions.size()) + 1;
 	// Cancel unchanged input/caller work and the consumer's identical output.
 	auto canonical =
 	    SumWork({aggregate_work_per_row * input_rows, aggregate_work_per_row * original_groups, original_groups});
@@ -273,14 +277,12 @@ static bool TryRestrict(Optimizer &optimizer, LogicalComparisonJoin &join, idx_t
 	return true;
 }
 
-static void Visit(Optimizer &optimizer, LogicalOperator &op) {
+void DuplicateEliminatedDomainOptimizer::VisitOperator(LogicalOperator &op) {
 	if (op.type == LogicalOperatorType::LOGICAL_RECURSIVE_CTE) {
 		return;
 	}
 	// Visit only original children; generated domain operators are never reconsidered.
-	for (auto &child : op.children) {
-		Visit(optimizer, *child);
-	}
+	VisitOperatorChildren(op);
 	if (op.type != LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
 		return;
 	}
@@ -299,10 +301,6 @@ static void Visit(Optimizer &optimizer, LogicalOperator &op) {
 	if (join.join_type == JoinType::INNER || join.join_type == JoinType::LEFT || join.join_type == JoinType::SINGLE) {
 		TryRestrict(optimizer, join, 1);
 	}
-}
-
-void DuplicateEliminatedDomainOptimizer::Optimize(Optimizer &optimizer, LogicalOperator &plan) {
-	Visit(optimizer, plan);
 }
 
 } // namespace duckdb

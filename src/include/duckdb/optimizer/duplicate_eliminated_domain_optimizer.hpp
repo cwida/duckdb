@@ -8,13 +8,19 @@
 
 #pragma once
 
+#include "duckdb/planner/logical_operator_visitor.hpp"
+
 namespace duckdb {
-class LogicalOperator;
 class Optimizer;
 
 //! Restrict local grouped aggregates to their consumer's fixed demand keys.
-class DuplicateEliminatedDomainOptimizer {
+class DuplicateEliminatedDomainOptimizer : public LogicalOperatorVisitor {
 public:
-	static void Optimize(Optimizer &optimizer, LogicalOperator &plan);
+	explicit DuplicateEliminatedDomainOptimizer(Optimizer &optimizer);
+
+	void VisitOperator(LogicalOperator &op) override;
+
+private:
+	Optimizer &optimizer;
 };
 } // namespace duckdb
