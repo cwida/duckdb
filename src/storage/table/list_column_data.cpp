@@ -459,14 +459,13 @@ public:
 
 	void FlushSegmentInternal(unique_ptr<ColumnSegment> segment, idx_t segment_size) override {
 		if (segment->count > 0) {
-			// the first segment stores the list length stats of the column and the other segments store none
-			auto &segment_stats = segment->GetStatsMutable();
+			// every segment stores the bounds of the column and the first segment stores the total
+			auto segment_data = length_data;
 			if (flushed_first_segment) {
-				ListStats::ResetLengthData(segment_stats);
-			} else {
-				ListStats::SetLengthData(segment_stats, length_data);
-				flushed_first_segment = true;
+				segment_data.total_list_length = 0;
 			}
+			ListStats::SetLengthData(segment->GetStatsMutable(), segment_data);
+			flushed_first_segment = true;
 		}
 		ColumnCheckpointState::FlushSegmentInternal(std::move(segment), segment_size);
 	}
