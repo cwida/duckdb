@@ -1,6 +1,7 @@
 # name: test/sql/cte/trampoline/trampoline_source_routing_adaptive.test
 # description: Measured arbitration recovers an underestimated independent source
 # group: [trampoline]
+
 # The selective equality estimates ~200 output rows, far below the parallelization
 # threshold, but every wave scans the full 20M-row table. The first inline wave crosses
 # the 8 ms slow-probe threshold (measured floor: 36 ms single-threaded on an idle

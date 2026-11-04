@@ -1,6 +1,7 @@
 # name: test/sql/cte/trampoline/trampoline_source_sizing_estimates.test
 # description: Large independent sources keep the parallel path on one-row waves
 # group: [trampoline]
+
 # Requires optimizer cardinality estimates (test/configs/stats_dependent_tests.json):
 # without them every independent source reads as empty and the workers_max assertion
 # cannot hold.

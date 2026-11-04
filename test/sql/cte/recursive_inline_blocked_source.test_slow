@@ -1,6 +1,7 @@
 # name: test/sql/cte/recursive_inline_blocked_source.test_slow
 # description: Inline recursive execution services executor tasks while a source blocks
 # group: [cte]
+
 # With threads == external_threads there are zero internal worker threads. An
 # async-yielding source (dbgen schedules its continuation as an executor task and returns
 # BLOCKED after every generation step; its ~1.6 s per-invocation text-pool setup is

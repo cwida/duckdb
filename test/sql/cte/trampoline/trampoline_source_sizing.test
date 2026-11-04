@@ -1,6 +1,7 @@
 # name: test/sql/cte/trampoline/trampoline_source_sizing.test
 # description: Small independent sources keep cheap waves on the inline path
 # group: [trampoline]
+
 # Holds with and without optimizer estimates: a missing estimate reads as zero and stays
 # below the parallelization threshold as well.
 
