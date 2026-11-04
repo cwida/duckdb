@@ -83,6 +83,12 @@ private:
 	void GetColumnBindingsFromOperator(LogicalOperator &op, column_binding_set_t &column_bindings);
 	void RegisterRelationBindings(LogicalOperator &op, RelationIndex relation_id, const RelationStats &stats);
 	optional<RelationStats> AlignStatsWithRelationRoot(LogicalOperator &op, const RelationStats &stats);
+	//! Leaf cases of ExtractJoinRelations, kept out of its recursive frame because they hold child optimizers
+	bool ExtractNonReorderableRelation(JoinOrderOptimizer &optimizer, LogicalOperator &op, LogicalOperator &input_op,
+	                                   optional_ptr<LogicalOperator> parent);
+	bool AddOptimizedJoinChild(JoinOrderOptimizer &optimizer, LogicalOperator &join, idx_t child_idx);
+	bool ExtractRelationFromOperator(JoinOrderOptimizer &optimizer, LogicalOperator &op, LogicalOperator &input_op,
+	                                 optional_ptr<LogicalOperator> parent);
 
 private:
 	ClientContext &context;
