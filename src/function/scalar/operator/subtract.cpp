@@ -3,7 +3,6 @@
 #include "duckdb/common/bignum.hpp"
 #include "duckdb/common/limits.hpp"
 #include "duckdb/common/types/bignum.hpp"
-#include "duckdb/common/types/bignum_decimal.hpp"
 #include "duckdb/common/types/string_heap.hpp"
 #include "duckdb/common/operator/add.hpp"
 #include "duckdb/common/types/hugeint.hpp"
@@ -247,22 +246,6 @@ bignum_t SubtractOperator::Operation(bignum_t left, bignum_t right, StringHeap &
 	const bignum_t negated_rhs(rhs_value.Negate(heap));
 	const BignumIntermediate rhs(negated_rhs);
 	return bignum_t(BignumIntermediate::Add(heap, lhs, rhs));
-}
-
-bool TryDecimalSubtract::Operation(bignum_t left, bignum_t right, bignum_t &result, StringHeap &heap,
-                                   BignumArithmeticState &state) {
-	result = SubtractOperator::Operation(left, right, heap, state);
-	return BignumDecimal::FitsWidth(result, Decimal::MAX_WIDTH_DECIMAL);
-}
-
-bignum_t DecimalSubtractOverflowCheck::Operation(bignum_t left, bignum_t right, StringHeap &heap,
-                                                 BignumArithmeticState &state) {
-	bignum_t result;
-	if (!TryDecimalSubtract::Operation(left, right, result, heap, state)) {
-		throw OutOfRangeException("Overflow in subtraction of DECIMAL(%d) (%s - %s);", Decimal::MAX_WIDTH_DECIMAL,
-		                          Bignum::BignumToVarchar(left), Bignum::BignumToVarchar(right));
-	}
-	return result;
 }
 
 //===--------------------------------------------------------------------===//

@@ -170,7 +170,7 @@ static Value NumberToValue(const string &val, uint32_t max_decimal_width) {
 }
 
 Value Literal::ToValue() const {
-	return ToValue(Decimal::MAX_WIDTH_DECIMAL);
+	return ToValue(NumericLimits<uint32_t>::Maximum());
 }
 
 Value Literal::ToValue(uint32_t max_decimal_width) const {

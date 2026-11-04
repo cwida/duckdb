@@ -360,6 +360,10 @@ void ParquetWriter::SetSchemaProperties(const LogicalType &duckdb_type, duckdb_p
 		schema_ele.logicalType.__isset.UUID = true;
 		break;
 	case LogicalTypeId::DECIMAL:
+		if (DecimalType::GetWidth(duckdb_type) > idx_t(NumericLimits<int32_t>::Maximum())) {
+			throw NotImplementedException("Parquet DECIMAL precision is a 32-bit integer, %s cannot be written",
+			                              duckdb_type.ToString());
+		}
 		schema_ele.converted_type = ConvertedType::DECIMAL;
 		schema_ele.precision = NumericCast<int32_t>(DecimalType::GetWidth(duckdb_type));
 		schema_ele.scale = NumericCast<int32_t>(DecimalType::GetScale(duckdb_type));

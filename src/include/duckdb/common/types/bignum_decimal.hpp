@@ -22,8 +22,8 @@ enum class BignumRounding : uint8_t { TRUNCATE, FLOOR, CEIL, HALF_AWAY_FROM_ZERO
 //! Helpers for DECIMAL values wider than 38 digits, whose unscaled value is a bignum_t (the BIGNUM blob)
 class BignumDecimal {
 public:
-	//! 10^exponent as a BIGNUM blob, for exponent in [0, Decimal::MAX_WIDTH_DECIMAL]
-	DUCKDB_API static const string &PowerOfTen(idx_t exponent);
+	//! 10^exponent as a BIGNUM blob, the powers of everyday widths are cached
+	DUCKDB_API static string PowerOfTen(idx_t exponent);
 	//! Whether |value| < 10^width, i.e. the unscaled value fits a DECIMAL of the given width
 	DUCKDB_API static bool FitsWidth(const bignum_t &value, uint32_t width);
 	DUCKDB_API static bool FitsWidth(const BignumIntermediate &value, uint32_t width);
@@ -35,6 +35,9 @@ public:
 	DUCKDB_API static bool TryParse(const char *data, idx_t size, uint32_t width, uint32_t scale, string &result,
 	                                char decimal_separator = '.');
 
+	//! Rescales an unscaled value to target_scale (rounding half away from zero), the result is the BIGNUM blob of the
+	//! rescaled value
+	DUCKDB_API static string Rescale(const bignum_t &value, uint32_t source_scale, uint32_t target_scale);
 	//! Rescales an unscaled value to target_scale (rounding half away from zero) and checks it fits target_width, the
 	//! result is the BIGNUM blob of the rescaled value
 	DUCKDB_API static bool TryRescale(const bignum_t &value, uint32_t source_scale, uint32_t target_width,

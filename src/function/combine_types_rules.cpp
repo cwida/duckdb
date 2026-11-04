@@ -144,15 +144,15 @@ static bool CombineEqualDecimal(LogicalTypeResolver &logical_type_resolver, cons
 	auto extra_width_right = DecimalType::GetWidth(right) - DecimalType::GetScale(right);
 	auto extra_width = MaxValue<uint32_t>(extra_width_left, extra_width_right);
 	auto scale = MaxValue<uint32_t>(DecimalType::GetScale(left), DecimalType::GetScale(right));
-	uint32_t width = extra_width + scale;
-	const auto width_limit = Decimal::MaxResultWidth(
+	idx_t width = idx_t(extra_width) + scale;
+	const idx_t width_limit = Decimal::MaxResultWidth(
 	    logical_type_resolver.context, MaxValue<uint32_t>(DecimalType::GetWidth(left), DecimalType::GetWidth(right)));
 	if (width > width_limit) {
 		// if the resulting decimal does not fit, we truncate the scale
 		width = width_limit;
-		scale = width - extra_width;
+		scale = NumericCast<uint32_t>(width - extra_width);
 	}
-	result = LogicalType::DECIMAL(width, scale);
+	result = LogicalType::DECIMAL(NumericCast<uint32_t>(width), scale);
 	return true;
 }
 static bool CombineEqualList(LogicalTypeResolver &logical_type_resolver, const LogicalType &left,

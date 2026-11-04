@@ -26,7 +26,7 @@ true
 query II
 SELECT typeof(avg(s::DECIMAL(39,10))), typeof(sum(s::DECIMAL(39,10))) FROM t;
 ----
-DOUBLE	DECIMAL(255,10)
+DOUBLE	DECIMAL(59,10)
 
 # the averages agree per group and for repeated values whose DOUBLE accumulation would drift
 query I

@@ -3518,13 +3518,9 @@ static bool TryCastStringToBignumDecimal(string_t input, bignum_t &result, Vecto
 	return true;
 }
 
-//! Rounds a decimal of the bignum_t tier to an integer, which always fits the widest decimal
+//! Rounds a decimal of the bignum_t tier to an integer
 static string RoundBignumDecimal(bignum_t input, uint32_t scale) {
-	string rounded;
-	if (!BignumDecimal::TryRescale(input, scale, Decimal::MAX_WIDTH_DECIMAL, 0, rounded)) {
-		throw InternalException("Rounding a decimal to an integer cannot exceed the width of the widest decimal");
-	}
-	return rounded;
+	return BignumDecimal::Rescale(input, scale, 0);
 }
 
 template <class DST>

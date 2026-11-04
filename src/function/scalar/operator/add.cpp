@@ -3,7 +3,6 @@
 #include "duckdb/common/bignum.hpp"
 #include "duckdb/common/limits.hpp"
 #include "duckdb/common/types/bignum.hpp"
-#include "duckdb/common/types/bignum_decimal.hpp"
 #include "duckdb/common/types/string_heap.hpp"
 #include "duckdb/common/types/value.hpp"
 
@@ -292,22 +291,6 @@ bignum_t AddOperator::Operation(bignum_t left, bignum_t right, StringHeap &heap,
 	const BignumIntermediate lhs(left);
 	const BignumIntermediate rhs(right);
 	return bignum_t(BignumIntermediate::Add(heap, lhs, rhs));
-}
-
-bool TryDecimalAdd::Operation(bignum_t left, bignum_t right, bignum_t &result, StringHeap &heap,
-                              BignumArithmeticState &state) {
-	result = AddOperator::Operation(left, right, heap, state);
-	return BignumDecimal::FitsWidth(result, Decimal::MAX_WIDTH_DECIMAL);
-}
-
-bignum_t DecimalAddOverflowCheck::Operation(bignum_t left, bignum_t right, StringHeap &heap,
-                                            BignumArithmeticState &state) {
-	bignum_t result;
-	if (!TryDecimalAdd::Operation(left, right, result, heap, state)) {
-		throw OutOfRangeException("Overflow in addition of DECIMAL(%d) (%s + %s);", Decimal::MAX_WIDTH_DECIMAL,
-		                          Bignum::BignumToVarchar(left), Bignum::BignumToVarchar(right));
-	}
-	return result;
 }
 
 //===--------------------------------------------------------------------===//

@@ -743,8 +743,8 @@ static void BignumRoundPrecisionDecimal(DataChunk &input, ExpressionState &state
 	const idx_t restore_digits =
 	    info.target_scale < 0 ? NumericCast<idx_t>(-static_cast<int64_t>(info.target_scale)) : 0;
 	const idx_t drop_digits = source_scale + restore_digits - (info.target_scale > 0 ? info.target_scale : 0);
-	if (drop_digits > Decimal::MAX_WIDTH_DECIMAL) {
-		// more digits than any decimal holds are dropped: every value rounds to zero
+	if (drop_digits > info.source_width) {
+		// more digits than the values hold are dropped, which leaves less than a tenth: every value rounds to zero
 		auto zero_blob = BignumDecimal::FromInteger(hugeint_t(0));
 		auto zero = StringVector::AddStringOrBlob(result, zero_blob.data(), zero_blob.size());
 		UnaryExecutor::Execute<bignum_t, string_t>(input.data[0], result, input.size(), [&](bignum_t) { return zero; });
@@ -770,10 +770,11 @@ unique_ptr<FunctionData> ResolveDecimalRoundPrecision(BoundScalarFunction &bound
 	bool check_overflow = false;
 	if (round_value < 0) {
 		target_scale = 0;
-		if (CAN_CARRY && scale == 0 && round_value >= -int32_t(width)) {
-			// a fixed-size decimal stays in the fixed-size tiers, a wide decimal grows up to the maximum width
-			const auto width_limit = Decimal::IsWide(width) ? Decimal::MAX_WIDTH_DECIMAL : Decimal::MAX_WIDTH_INT128;
-			if (result_width < width_limit) {
+		if (CAN_CARRY && scale == 0 && int64_t(round_value) >= -int64_t(width)) {
+			// a fixed-size decimal stays in the fixed-size tiers, a wide decimal grows by the carry digit
+			if (Decimal::IsWide(width)) {
+				result_width = Decimal::CheckedWidth(idx_t(result_width) + 1, "Rounding");
+			} else if (result_width < Decimal::MAX_WIDTH_INT128) {
 				result_width++;
 			} else {
 				check_overflow = true;

@@ -1008,13 +1008,13 @@ static LogicalType DecimalSizeCheck(optional_ptr<ClientContext> context, const L
 	D_ASSERT(other_scale == 0);
 	const auto effective_width = width - scale;
 	if (other_width > effective_width) {
-		uint32_t new_width = other_width + scale;
+		idx_t new_width = idx_t(other_width) + scale;
 		//! Cap the width at max, if an actual value exceeds this, an exception will be thrown later
-		const auto width_limit = Decimal::MaxResultWidth(context, width);
+		const idx_t width_limit = Decimal::MaxResultWidth(context, width);
 		if (new_width > width_limit) {
 			new_width = width_limit;
 		}
-		return LogicalType::DECIMAL(new_width, scale);
+		return LogicalType::DECIMAL(NumericCast<uint32_t>(new_width), scale);
 	}
 	return right;
 }
@@ -1556,15 +1556,11 @@ uint32_t DecimalType::GetScale(const LogicalType &type) {
 }
 
 uint32_t DecimalType::MaxWidth() {
-	return Decimal::MAX_WIDTH_DECIMAL;
+	return NumericLimits<uint32_t>::Maximum();
 }
 
 LogicalType LogicalType::DECIMAL(uint32_t width, uint32_t scale) {
-	// width 0 and scale > width stay constructible and are reported by IsComplete, like upstream
-	if (width > Decimal::MAX_WIDTH_DECIMAL) {
-		throw InternalException("Invalid DECIMAL(%d, %d): the width cannot exceed %d", width, scale,
-		                        Decimal::MAX_WIDTH_DECIMAL);
-	}
+	// width 0 and scale > width stay constructible and are reported by IsComplete
 	D_ASSERT(width >= scale);
 	auto type_info = make_uniq<DecimalTypeInfo>(width, scale);
 	return LogicalType(LogicalTypeId::DECIMAL, std::move(type_info));

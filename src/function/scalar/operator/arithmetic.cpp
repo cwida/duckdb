@@ -128,11 +128,26 @@ static void BignumDecimalBinaryFunction(DataChunk &args, ExpressionState &state,
 	    [&](bignum_t left, bignum_t right) { return OP::Operation(left, right, heap, arithmetic_state); });
 }
 
+//! Whether an operator has a kernel for the bignum_t tier of decimals
+template <class OP, class = void>
+struct HasBignumOperation : std::false_type {};
+
+template <class OP>
+struct HasBignumOperation<
+    OP, std::void_t<decltype(OP::Operation(std::declval<bignum_t>(), std::declval<bignum_t>(),
+                                           std::declval<StringHeap &>(), std::declval<BignumArithmeticState &>()))>>
+    : std::true_type {};
+
 //! The physical types of a DECIMAL: the integer tiers and, above 38 digits, bignum_t
 template <class OP>
 static scalar_function_t GetScalarDecimalFunction(PhysicalType type) {
 	if (type == PhysicalType::VARCHAR) {
-		return &BignumDecimalBinaryFunction<OP>;
+		if constexpr (HasBignumOperation<OP>::value) {
+			return &BignumDecimalBinaryFunction<OP>;
+		} else {
+			// the bignum_t tier binds exact result widths, so it has no overflow checking kernels
+			throw InternalException("The bignum_t tier of decimals has no kernel for this operator");
+		}
 	}
 	return GetScalarIntegerFunction<OP>(type);
 }
@@ -216,16 +231,6 @@ struct SubtractPropagateStatistics {
 	}
 };
 
-//! Whether an operator has a kernel for the bignum_t tier of decimals
-template <class OP, class = void>
-struct HasBignumOperation : std::false_type {};
-
-template <class OP>
-struct HasBignumOperation<
-    OP, std::void_t<decltype(OP::Operation(std::declval<bignum_t>(), std::declval<bignum_t>(),
-                                           std::declval<StringHeap &>(), std::declval<BignumArithmeticState &>()))>>
-    : std::true_type {};
-
 //! The bounds of an operation in the bignum_t tier of decimals: the combinations of the input bounds are computed
 //! exactly, the result overflows when one of them does not fit the width of the result type
 template <class OP>
@@ -240,7 +245,7 @@ static bool BignumDecimalPropagateStatistics(const LogicalType &type, const Base
 	string_t max;
 	for (idx_t l = 0; l < 2; l++) {
 		for (idx_t r = 0; r < 2; r++) {
-			// the bounds are at most Decimal::MAX_WIDTH_DECIMAL digits, their combination cannot overflow a BIGNUM
+			// the combination of two bounds is exact in a BIGNUM
 			auto result = OP::Operation(bignum_t(lvals[l]), bignum_t(rvals[r]), heap, state).data;
 			if (!BignumDecimal::FitsWidth(bignum_t(result), width)) {
 				// potential overflow
@@ -443,18 +448,18 @@ LogicalType DecimalArithmeticResultType(ClientContext &context, const vector<Log
 		max_width_over_scale = MaxValue<uint32_t>(width - scale, max_width_over_scale);
 	}
 	D_ASSERT(max_width > 0);
-	uint32_t required_width = MaxValue<uint32_t>(max_scale + max_width_over_scale, max_width);
+	idx_t required_width = MaxValue<idx_t>(idx_t(max_scale) + max_width_over_scale, max_width);
 	if (!IS_MODULO) {
 		// for addition/subtraction, we add 1 to the width to ensure we don't overflow
 		required_width++;
 	}
-	const auto width_limit = Decimal::MaxResultWidth(context, max_decimal_width);
-	if (required_width > width_limit) {
-		// target width does not fit in decimal at all: truncate the scale and perform overflow detection
+	const idx_t width_limit = Decimal::MaxResultWidth(context, max_decimal_width);
+	if (required_width > width_limit && !Decimal::IsWide(width_limit)) {
+		// the result does not fit the fixed-size tiers: clamp the width and perform overflow detection
 		check_overflow = true;
 		required_width = width_limit;
 	}
-	return LogicalType::DECIMAL(required_width, max_scale);
+	return LogicalType::DECIMAL(Decimal::CheckedWidth(required_width, IS_MODULO ? "Modulo" : "Addition"), max_scale);
 }
 
 //! Resolves the types of a decimal addition, subtraction or modulo, returns whether overflow checks are required
@@ -1130,7 +1135,8 @@ struct MultiplyPropagateStatistics {
 LogicalType DecimalMultiplyResultType(ClientContext &context, const vector<LogicalType> &input_types,
                                       bool &check_overflow) {
 	check_overflow = false;
-	uint32_t result_width = 0, result_scale = 0, max_width = 0, max_decimal_width = 0;
+	idx_t result_width = 0, result_scale = 0;
+	uint32_t max_width = 0, max_decimal_width = 0;
 	for (auto &input_type : input_types) {
 		if (input_type.id() == LogicalTypeId::UNKNOWN) {
 			continue;
@@ -1150,7 +1156,7 @@ LogicalType DecimalMultiplyResultType(ClientContext &context, const vector<Logic
 		result_scale += scale;
 	}
 	D_ASSERT(max_width > 0);
-	const auto width_limit = Decimal::MaxResultWidth(context, max_decimal_width);
+	const idx_t width_limit = Decimal::MaxResultWidth(context, max_decimal_width);
 	if (result_scale > width_limit) {
 		throw OutOfRangeException(
 		    "Needed scale %d to accurately represent the multiplication result, but this is out of range of the "
@@ -1163,11 +1169,13 @@ LogicalType DecimalMultiplyResultType(ClientContext &context, const vector<Logic
 		check_overflow = true;
 		result_width = Decimal::MAX_WIDTH_INT64;
 	}
-	if (result_width > width_limit) {
+	if (result_width > width_limit && !Decimal::IsWide(width_limit)) {
+		// the result does not fit the fixed-size tiers: clamp the width and perform overflow detection
 		check_overflow = true;
 		result_width = width_limit;
 	}
-	return LogicalType::DECIMAL(result_width, result_scale);
+	return LogicalType::DECIMAL(Decimal::CheckedWidth(result_width, "Multiplication"),
+	                            NumericCast<uint32_t>(result_scale));
 }
 
 void DecimalMultiplyResolveTypes(ResolveScalarFunctionTypesInput &input) {

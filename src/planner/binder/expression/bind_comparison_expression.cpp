@@ -103,13 +103,13 @@ bool BoundComparisonExpression::TryBindComparison(ClientContext &context, const 
 			max_scale = MaxValue<uint32_t>(scale, max_scale);
 			max_width_over_scale = MaxValue<uint32_t>(width - scale, max_width_over_scale);
 		}
-		uint32_t required_width = MaxValue<uint32_t>(max_scale + max_width_over_scale, max_width);
-		const auto width_limit = Decimal::MaxResultWidth(context, max_decimal_width);
+		idx_t required_width = MaxValue<idx_t>(idx_t(max_scale) + max_width_over_scale, max_width);
+		const idx_t width_limit = Decimal::MaxResultWidth(context, max_decimal_width);
 		if (required_width > width_limit) {
 			// target width does not fit in decimal: truncate the scale (if possible) to try and make it fit
 			required_width = width_limit;
 		}
-		res = LogicalType::DECIMAL(required_width, max_scale);
+		res = LogicalType::DECIMAL(NumericCast<uint32_t>(required_width), max_scale);
 		break;
 	}
 	case LogicalTypeId::VARCHAR:

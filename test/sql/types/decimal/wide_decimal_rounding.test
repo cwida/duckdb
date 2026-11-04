@@ -40,11 +40,11 @@ SELECT round((repeat('9', 200) || '.' || repeat('9', 55))::DECIMAL(255,55), 54) 
 ----
 true
 
-# the widest decimal has no room to carry
-statement error
-SELECT round(repeat('9', 255)::DECIMAL(255,0), -1)
+# the carry of a wide decimal always has room
+query II
+SELECT round(repeat('9', 255)::DECIMAL(255,0), -1) = ('1' || repeat('0', 255))::DECIMAL(256,0), typeof(round(repeat('9', 255)::DECIMAL(255,0), -1))
 ----
-Overflow in ROUND of DECIMAL(255)
+true	DECIMAL(256,0)
 
 query I
 SELECT round(('1' || repeat('0', 254))::DECIMAL(255,0), -1) = ('1' || repeat('0', 254))::DECIMAL(255,0)

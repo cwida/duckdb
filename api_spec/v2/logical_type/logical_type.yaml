@@ -554,7 +554,7 @@ functions:
       a positional parameter. A non-empty view is valid until the logical type
       is destroyed. out_value receives an owned value, destroyed via
       value_destroy: child types come back as TYPE values (unwrap them with
-      value_get_type), DECIMAL width and scale as UTINYINT, ARRAY size as
+      value_get_type), DECIMAL width and scale as UINTEGER, ARRAY size as
       BIGINT, and ENUM dictionary entries and collations as VARCHAR. An
       out-of-range index returns ERROR_INPUT_INVALID. Each call allocates one
       owned value.

@@ -1762,12 +1762,14 @@ functions:
       Creates a DECIMAL value from its backing integer.
 
       The value is scaled by 10^scale, so (18500, 18, 3) is 18.500. width is
-      the total digit count and must be 1..255; scale is the number of digits
-      after the point and must not exceed width. Violating either returns
-      ERROR_INPUT_INVALID, as does a value too wide for the storage tier the
-      width selects. Widths above 38 build a wide decimal stored as BIGNUM, for
-      which the 128-bit backing integer always fits. The value itself is not
-      range-checked against the width; value_cast is the validating path.
+      the total digit count and must be 1..255, the range of the uint8_t
+      parameter; scale is the number of digits after the point and must not
+      exceed width. Violating either returns ERROR_INPUT_INVALID, as does a
+      value too wide for the storage tier the width selects. Widths above 38
+      build a wide decimal stored as BIGNUM, for which the 128-bit backing
+      integer always fits. The value itself is not range-checked against the
+      width; value_cast is the validating path, and the one that reaches
+      decimals wider than 255 digits.
     role: constructor
     belongs_to: value
     parameters:
@@ -1781,7 +1783,7 @@ functions:
         description: The backing integer, scaled by 10^scale.
       width:
         type: u8
-        description: Total digit count, 1..255.
+        description: Total digit count, 1..255 (the range of the uint8_t).
       scale:
         type: u8
         description: Digits after the decimal point; must not exceed width.

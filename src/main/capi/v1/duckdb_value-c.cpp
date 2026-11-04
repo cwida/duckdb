@@ -167,7 +167,8 @@ duckdb_decimal duckdb_get_decimal(duckdb_value val) {
 	}
 	auto width = duckdb::DecimalType::GetWidth(type);
 	auto scale = duckdb::DecimalType::GetScale(type);
-	if (v.IsNull()) {
+	if (v.IsNull() || width > duckdb::NumericLimits<uint8_t>::Maximum()) {
+		// a duckdb_decimal holds widths up to 255
 		return {0, 0, {0, 0}};
 	}
 	duckdb::hugeint_t hugeint;

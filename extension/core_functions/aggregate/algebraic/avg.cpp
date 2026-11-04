@@ -1,6 +1,7 @@
 #include "core_functions/aggregate/algebraic_functions.hpp"
 #include "core_functions/aggregate/sum_helpers.hpp"
 #include "duckdb/common/bignum.hpp"
+#include "duckdb/common/types/bignum_decimal.hpp"
 #include "duckdb/common/types/decimal.hpp"
 #include "duckdb/common/types/hugeint.hpp"
 #include "duckdb/common/types/time.hpp"
@@ -9,6 +10,8 @@
 #include "duckdb/common/likely.hpp"
 #include "duckdb/function/function_set.hpp"
 #include "duckdb/planner/expression.hpp"
+
+#include <cmath>
 
 namespace duckdb {
 
@@ -57,19 +60,21 @@ struct KahanAvgState {
 };
 
 struct AverageDecimalBindData : public FunctionData {
-	explicit AverageDecimalBindData(double scale) : scale(scale) {
+	AverageDecimalBindData(double scale, uint32_t decimal_scale) : scale(scale), decimal_scale(decimal_scale) {
 	}
 
+	//! 10^decimal_scale, the divisor of the unscaled sum
 	double scale;
+	uint32_t decimal_scale;
 
 public:
 	unique_ptr<FunctionData> Copy() const override {
-		return make_uniq<AverageDecimalBindData>(scale);
+		return make_uniq<AverageDecimalBindData>(scale, decimal_scale);
 	};
 
 	bool Equals(const FunctionData &other_p) const override {
 		auto &other = other_p.Cast<AverageDecimalBindData>();
-		return scale == other.scale;
+		return scale == other.scale && decimal_scale == other.decimal_scale;
 	}
 };
 
@@ -460,10 +465,18 @@ struct BignumAverageOperation {
 	static void Finalize(STATE &state, T &target, AggregateFinalizeData &finalize_data) {
 		if (state.count == 0) {
 			finalize_data.ReturnNull();
-		} else {
-			long double divident = GetAverageDivident<long double>(state.count, finalize_data.input.bind_data);
-			target = BignumSumToLongDouble(state.value) / divident;
+			return;
 		}
+		long double divident = GetAverageDivident<long double>(state.count, finalize_data.input.bind_data);
+		const auto sum = BignumSumToLongDouble(state.value);
+		if (std::isfinite(sum) && std::isfinite(divident)) {
+			target = sum / divident;
+			return;
+		}
+		// beyond the range of a long double the sum is scaled through its decimal string
+		auto &bind_data = finalize_data.input.bind_data->Cast<AverageDecimalBindData>();
+		auto sum_blob = state.value.ToBignum(finalize_data.input.allocator);
+		target = BignumDecimal::ToDouble(sum_blob, bind_data.decimal_scale) / static_cast<double>(state.count);
 	}
 
 	static bool IgnoreNull() {
@@ -603,7 +616,8 @@ unique_ptr<FunctionData> BindDecimalAvg(BindAggregateFunctionInput &input) {
 	function.SetName("avg");
 	function.GetArguments()[0] = decimal_type;
 	function.SetReturnType(LogicalType::DOUBLE);
-	return make_uniq<AverageDecimalBindData>(DecimalScaleFactor(DecimalType::GetScale(decimal_type)));
+	const auto scale = DecimalType::GetScale(decimal_type);
+	return make_uniq<AverageDecimalBindData>(DecimalScaleFactor(scale), scale);
 }
 
 } // namespace

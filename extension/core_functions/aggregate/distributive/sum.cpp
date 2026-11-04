@@ -498,13 +498,17 @@ AggregateFunction GetDecimalSumAggregate(PhysicalType type) {
 	}
 }
 
+//! The digits a wide decimal sum adds to the width of its input, enough for the sum of 2^64 values
+static constexpr uint32_t WIDE_SUM_EXTRA_DIGITS = 20;
+
 unique_ptr<FunctionData> BindDecimalSum(BindAggregateFunctionInput &input) {
 	auto &function = input.GetBoundFunction();
 	auto &arguments = input.GetArguments();
 	auto decimal_type = BindDecimalArgument(input.GetClientContext(), arguments[0], "sum");
 	if (decimal_type.InternalType() == PhysicalType::VARCHAR) {
-		// wide decimals sum their BIGNUM blobs into the widest decimal of the same scale
-		const auto result_width = Decimal::MAX_WIDTH_DECIMAL;
+		// wide decimals sum their BIGNUM blobs exactly: 20 more digits hold the sum of any number of rows (below 2^64)
+		const auto result_width =
+		    Decimal::CheckedWidth(idx_t(DecimalType::GetWidth(decimal_type)) + WIDE_SUM_EXTRA_DIGITS, "The sum");
 		function.ReplaceImplementation(GetWideDecimalSumAggregate());
 		function.SetName("sum");
 		function.GetArguments()[0] = decimal_type;
@@ -602,28 +606,11 @@ struct BignumOperation {
 	}
 };
 
-//! Sums wide decimals as BIGNUMs, the result must still fit the width of the result decimal
-struct WideDecimalSumOperation : public BignumOperation {
-	template <class TARGET_TYPE, class STATE>
-	static void Finalize(STATE &state, TARGET_TYPE &target, AggregateFinalizeData &finalize_data) {
-		if (!state.is_set) {
-			finalize_data.ReturnNull();
-			return;
-		}
-		auto width = DecimalType::GetWidth(finalize_data.result.GetType());
-		if (!BignumDecimal::FitsWidth(state.value, width)) {
-			throw OutOfRangeException("Overflow in SUM of DECIMAL: the result does not fit in %s",
-			                          finalize_data.result.GetType().ToString());
-		}
-		target = state.value.ToBignum(finalize_data.input.allocator);
-	}
-};
-
+//! Sums wide decimals as BIGNUMs, the width of the result decimal holds the sum of any number of rows
 AggregateFunction GetWideDecimalSumAggregate() {
-	auto function = AggregateFunction::UnaryAggregate<BignumState, bignum_t, bignum_t, WideDecimalSumOperation>(
+	auto function = AggregateFunction::UnaryAggregate<BignumState, bignum_t, bignum_t, BignumOperation>(
 	    LogicalTypeId::DECIMAL, LogicalTypeId::DECIMAL);
 	function.SetOrderDependent(AggregateOrderDependent::NOT_ORDER_DEPENDENT);
-	function.SetFallible(); // the finalize throws when the sum does not fit the width of the result
 	function.SetStateExportCallbacks(BignumSumStateLayout, BignumSumExportState, BignumSumImportState);
 	return function;
 }

@@ -1039,17 +1039,17 @@ TEST_CASE("V2: parameterless kinds report zero params", "[capi_v2][logical_type]
 	duckdb_v2_logical_type_destroy(&geom);
 }
 
-TEST_CASE("V2: DECIMAL params are width and scale as UTINYINT", "[capi_v2][logical_type][param]") {
+TEST_CASE("V2: DECIMAL params are width and scale as UINTEGER", "[capi_v2][logical_type][param]") {
 	EnvFixture fx;
 	auto t = MakeType(fx.factory, "decimal", nullptr, {MakeInt32Value(fx.factory, 18), MakeInt32Value(fx.factory, 3)});
 	REQUIRE(V2ParamCount(t) == 2);
 	REQUIRE(V2ParamU8(t, 0) == 18);
 	REQUIRE(V2ParamU8(t, 1) == 3);
-	// The param values are UTINYINT typed.
+	// The param values are UINTEGER typed, wide decimals reach widths beyond a byte.
 	auto v = V2GetParam(t, 0, nullptr);
 	duckdb_v2_logical_type_handle vt = nullptr;
 	duckdb_v2_value_get_logical_type(v, &vt, nullptr);
-	REQUIRE(V2TypeIdOf(vt) == DUCKDB_V2_LOGICAL_TYPE_ID_UTINYINT);
+	REQUIRE(V2TypeIdOf(vt) == DUCKDB_V2_LOGICAL_TYPE_ID_UINTEGER);
 	duckdb_v2_logical_type_destroy(&vt);
 	duckdb_v2_value_destroy(&v);
 	duckdb_v2_logical_type_destroy(&t);

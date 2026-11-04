@@ -153,7 +153,7 @@ SELECT '0.1'::DECIMAL((-17));
 statement error
 SELECT '0.1'::DECIMAL(0);
 ----
-<REGEX>:Binder Error.*DECIMAL type width must be between 1 and 255.*
+<REGEX>:Binder Error.*DECIMAL type width must be at least 1.*
 
 statement error
 SELECT '0.1'::DECIMAL(1, 2, 3);

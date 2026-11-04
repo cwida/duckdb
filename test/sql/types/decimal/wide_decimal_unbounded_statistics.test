@@ -1,0 +1,40 @@
+# name: test/sql/types/decimal/wide_decimal_unbounded_statistics.test
+# description: Statistics of decimals wider than 255 digits: exact min/max, propagation and pruning
+# group: [decimal]
+
+# wide decimal columns need the latest storage version, the configs that force the default one on disk cannot hold them
+require no_force_storage
+
+statement ok
+CREATE TABLE wide(i INTEGER, d DECIMAL(300,100));
+
+statement ok
+INSERT INTO wide SELECT i, (repeat('9', 200) || '.' || repeat('9', 100))::DECIMAL(300,100) FROM range(3) t(i);
+
+statement ok
+INSERT INTO wide VALUES (3, NULL), (4, '-1.5');
+
+# the column carries exact min/max statistics
+query IIII
+SELECT s.min = '-1.5'::DECIMAL(300,100), s.max = (repeat('9', 200) || '.' || repeat('9', 100))::DECIMAL(300,100), s.has_null, s.has_no_null FROM (SELECT STATS(d) s FROM wide LIMIT 1);
+----
+true	true	true	true
+
+query II
+SELECT typeof(d + d), s.max::DECIMAL(301,100) = ('1' || repeat('9', 200) || '.' || repeat('9', 99) || '8')::DECIMAL(301,100) FROM (SELECT d, STATS(d + d) s FROM wide LIMIT 1);
+----
+DECIMAL(301,100)	true
+
+statement ok
+CREATE TABLE pruned AS SELECT (i::VARCHAR || repeat('0', 299))::DECIMAL(400,50) AS d FROM range(1, 4) t(i);
+
+query I
+SELECT count(*) FROM pruned WHERE d > ('25' || repeat('0', 298))::DECIMAL(400,50)
+----
+1
+
+query I
+SELECT count(*) FROM pruned WHERE d BETWEEN ('15' || repeat('0', 298))::DECIMAL(400,50) AND ('25' || repeat('0', 298))::DECIMAL(400,50)
+----
+1
+

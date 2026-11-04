@@ -170,6 +170,8 @@ functions:
     description: |
       Creates a DECIMAL type with the specified width and scale.
       The resulting type should be destroyed with `duckdb_destroy_logical_type`.
+
+      The uint8_t parameters reach widths up to 255; widths above 38 create wide decimals stored as BIGNUM.
     return_description: The logical type.
   get_type_id:
     offset: 166
@@ -194,7 +196,10 @@ functions:
     return_type: u8
     description: |
       Retrieves the width of a decimal type.
-    return_description: The width of the decimal type
+
+      The uint8_t reaches widths up to 255; a wider decimal reports 0, its values are best read through their
+      VARCHAR conversion.
+    return_description: The width of the decimal type, 0 if it does not fit in a uint8_t
   decimal_scale:
     offset: 168
     lifecycle:
@@ -206,6 +211,8 @@ functions:
     return_type: u8
     description: |
       Retrieves the scale of a decimal type.
+
+      Reports 0 for a decimal whose width does not fit in a uint8_t, like `duckdb_decimal_width`.
     return_description: The scale of the decimal type
   decimal_internal_type:
     offset: 169

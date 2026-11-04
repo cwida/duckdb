@@ -106,11 +106,11 @@ LogicalType RequireValueType(duckdb_v2_logical_type_handle type) {
 // The DECIMAL storage tier follows from the width, and the engine's hugeint
 // constructor covers only the widest one, so the narrower tiers go through the
 // int64 form. Width and scale are gated here: an out-of-range pair would build
-// a broken type rather than a bad value.
+// a broken type rather than a bad value. The uint8_t parameters reach widths
+// up to 255; wider decimals are built through value_cast.
 Value BuildDecimal(const duckdb_v2_hugeint_t *in_value, uint8_t width, uint8_t scale) {
-	if (width < 1 || width > Decimal::MAX_WIDTH_DECIMAL) {
-		throw InvalidInputException(": DECIMAL width must be between 1 and " +
-		                            std::to_string(Decimal::MAX_WIDTH_DECIMAL));
+	if (width < 1) {
+		throw InvalidInputException(": DECIMAL width must be at least 1");
 	}
 	if (scale > width) {
 		throw InvalidInputException(": DECIMAL scale cannot exceed the width");
@@ -346,6 +346,12 @@ DUCKDB_V2_ERROR duckdb_v2_value_get_decimal(duckdb_v2_value_handle value, duckdb
 		RequireTypedValue(value, duckdb::LogicalTypeId::DECIMAL);
 		auto &v = *Convert(value);
 		auto &type = v.type();
+		if (duckdb::DecimalType::GetWidth(type) > duckdb::NumericLimits<uint8_t>::Maximum()) {
+			throw duckdb::OutOfRangeException(
+			    "duckdb_v2_value_get_decimal: the width of %s does not fit the uint8_t of the API; read its storage "
+			    "with value_get_blob and bignum_decode, or convert it with value_cast",
+			    type.ToString());
+		}
 		*out_width = duckdb::NumericCast<uint8_t>(duckdb::DecimalType::GetWidth(type));
 		*out_scale = duckdb::NumericCast<uint8_t>(duckdb::DecimalType::GetScale(type));
 		// The storage tier follows from the width; widen it to the one form the

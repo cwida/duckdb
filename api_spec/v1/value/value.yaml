@@ -205,8 +205,8 @@ functions:
         description: The duckdb_decimal value
     return_type: value
     description: |
-      Creates a DECIMAL value from a duckdb_decimal. The width can be up to 255 digits; widths above 38 create a wide
-      decimal whose unscaled value is the 128-bit value of the duckdb_decimal.
+      Creates a DECIMAL value from a duckdb_decimal. The uint8_t fields of a duckdb_decimal reach widths up to 255
+      digits; widths above 38 create a wide decimal whose unscaled value is the 128-bit value of the duckdb_decimal.
     return_description: The value. This must be destroyed with `duckdb_destroy_value`.
   create_float:
     offset: 106

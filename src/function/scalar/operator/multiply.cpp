@@ -3,7 +3,6 @@
 #include "duckdb/common/bignum.hpp"
 #include "duckdb/common/limits.hpp"
 #include "duckdb/common/types/bignum.hpp"
-#include "duckdb/common/types/bignum_decimal.hpp"
 #include "duckdb/common/types/string_heap.hpp"
 #include "duckdb/common/operator/add.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
@@ -328,24 +327,6 @@ bignum_t MultiplyOperator::Operation(bignum_t left, bignum_t right, StringHeap &
 	const BignumIntermediate lhs(left);
 	const BignumIntermediate rhs(right);
 	return bignum_t(BignumIntermediate::Multiply(heap, state, lhs, rhs));
-}
-
-bool TryDecimalMultiply::Operation(bignum_t left, bignum_t right, bignum_t &result, StringHeap &heap,
-                                   BignumArithmeticState &state) {
-	result = MultiplyOperator::Operation(left, right, heap, state);
-	return BignumDecimal::FitsWidth(result, Decimal::MAX_WIDTH_DECIMAL);
-}
-
-bignum_t DecimalMultiplyOverflowCheck::Operation(bignum_t left, bignum_t right, StringHeap &heap,
-                                                 BignumArithmeticState &state) {
-	bignum_t result;
-	if (!TryDecimalMultiply::Operation(left, right, result, heap, state)) {
-		throw OutOfRangeException("Overflow in multiplication of DECIMAL(%d) (%s * %s). You might want to add an "
-		                          "explicit cast to a decimal with a smaller scale.",
-		                          Decimal::MAX_WIDTH_DECIMAL, Bignum::BignumToVarchar(left),
-		                          Bignum::BignumToVarchar(right));
-	}
-	return result;
 }
 
 } // namespace duckdb

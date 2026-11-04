@@ -45,30 +45,31 @@ public:
 	static constexpr uint32_t MAX_WIDTH_INT16 = DecimalWidth<int16_t>::max;
 	static constexpr uint32_t MAX_WIDTH_INT32 = DecimalWidth<int32_t>::max;
 	static constexpr uint32_t MAX_WIDTH_INT64 = DecimalWidth<int64_t>::max;
-	//! MAX_WIDTH_INT128 is also the widest decimal that is stored in a fixed-size integer
+	//! MAX_WIDTH_INT128 is also the widest decimal that is stored in a fixed-size integer: wider decimals store their
+	//! unscaled value as a BIGNUM blob and are bounded only by the uint32_t range of the width
 	static constexpr uint32_t MAX_WIDTH_INT128 = DecimalWidth<hugeint_t>::max;
-	//! The maximum width of a decimal, widths above MAX_WIDTH_INT128 store the unscaled value as a BIGNUM blob
-	static constexpr uint32_t MAX_WIDTH_DECIMAL = 255;
 	//! The storage version from which DECIMAL columns wider than MAX_WIDTH_INT128 digits can be stored: the engines of
 	//! the versions before it read a DECIMAL width as a single byte and bind decimal arithmetic within 38 digits
 	static constexpr StorageVersion WIDE_VERSION_ADDED = StorageVersion::V2_1_0;
 
 public:
-	//! Whether width/scale form a valid DECIMAL type: width in [1, MAX_WIDTH_DECIMAL] and scale not exceeding width.
+	//! Whether width/scale form a valid DECIMAL type: a width of at least 1 and a scale not exceeding the width
 	static bool IsValidWidthScale(uint32_t width, uint32_t scale) {
-		return width >= 1 && width <= MAX_WIDTH_DECIMAL && scale <= width;
+		return width >= 1 && scale <= width;
 	}
 	//! Whether a decimal of this width is stored as a BIGNUM blob instead of a fixed-size integer
 	static bool IsWide(uint32_t width) {
 		return width > MAX_WIDTH_INT128;
 	}
-	//! The widest result of combining decimals, given the widest DECIMAL among the inputs. The result grows up to
-	//! MAX_WIDTH_DECIMAL, except under the legacy rule of databases written before wide decimals (see
+	//! The widest result of combining decimals, given the widest DECIMAL among the inputs. The result grows as far as
+	//! the uint32_t width reaches, except under the legacy rule of databases written before wide decimals (see
 	//! ClientContext::legacy_decimal_result_types), where fixed-size inputs stay within MAX_WIDTH_INT128.
 	static uint32_t MaxResultWidth(optional_ptr<ClientContext> context, uint32_t max_input_width);
-	//! The widest DECIMAL a numeric literal binds to, wider literals bind to DOUBLE: MAX_WIDTH_DECIMAL, or
+	//! The widest DECIMAL a numeric literal binds to, wider literals bind to DOUBLE: every width the uint32_t holds, or
 	//! MAX_WIDTH_INT128 under the legacy rule, as every literal above 38 digits was a DOUBLE before wide decimals.
 	static uint32_t MaxLiteralWidth(optional_ptr<ClientContext> context);
+	//! Narrows a computed width to the uint32_t range of a DECIMAL width, throws when the operation needs more
+	static uint32_t CheckedWidth(idx_t width, const char *operation);
 	static string ToString(int16_t value, uint32_t width, uint32_t scale);
 	static string ToString(int32_t value, uint32_t width, uint32_t scale);
 	static string ToString(int64_t value, uint32_t width, uint32_t scale);

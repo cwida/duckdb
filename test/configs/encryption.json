@@ -23,7 +23,9 @@
         "test/sql/types/decimal/wide_decimal_arithmetic.test",
         "test/sql/types/decimal/wide_decimal_casts.test",
         "test/sql/types/decimal/wide_decimal_literals.test",
-        "test/sql/types/decimal/wide_decimal_statistics.test"
+        "test/sql/types/decimal/wide_decimal_statistics.test",
+        "test/sql/types/decimal/wide_decimal_unbounded_statistics.test",
+        "test/sql/types/decimal/wide_decimal_unbounded_width.test"
       ]
     },
     {

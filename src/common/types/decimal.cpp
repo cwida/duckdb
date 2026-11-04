@@ -2,26 +2,35 @@
 
 #include "duckdb/common/types/bignum_decimal.hpp"
 #include "duckdb/common/types/cast_helpers.hpp"
+#include "duckdb/common/limits.hpp"
 #include "duckdb/main/client_context.hpp"
 
 namespace duckdb {
-constexpr uint32_t Decimal::MAX_WIDTH_DECIMAL;
+
 uint32_t Decimal::MaxResultWidth(optional_ptr<ClientContext> context, uint32_t max_input_width) {
 	if (max_input_width > MAX_WIDTH_INT128) {
 		// a wide input never existed before wide decimals, its result is not bound by the legacy rule
-		return MAX_WIDTH_DECIMAL;
+		return NumericLimits<uint32_t>::Maximum();
 	}
 	if (context && context->legacy_decimal_result_types) {
 		return MAX_WIDTH_INT128;
 	}
-	return MAX_WIDTH_DECIMAL;
+	return NumericLimits<uint32_t>::Maximum();
 }
 
 uint32_t Decimal::MaxLiteralWidth(optional_ptr<ClientContext> context) {
 	if (context && context->legacy_decimal_result_types) {
 		return MAX_WIDTH_INT128;
 	}
-	return MAX_WIDTH_DECIMAL;
+	return NumericLimits<uint32_t>::Maximum();
+}
+
+uint32_t Decimal::CheckedWidth(idx_t width, const char *operation) {
+	if (width > NumericLimits<uint32_t>::Maximum()) {
+		throw OutOfRangeException("%s needs a DECIMAL of %llu digits, the width of a DECIMAL is at most %u", operation,
+		                          width, NumericLimits<uint32_t>::Maximum());
+	}
+	return NumericCast<uint32_t>(width);
 }
 
 template <class SIGNED>

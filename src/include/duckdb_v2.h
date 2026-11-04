@@ -9577,7 +9577,7 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_logical_type_get_param_count(duckdb_v2_lo
  * out_name receives a borrowed view of the parameter name — a STRUCT field name, a UNION member name, "collation" — or
  * the empty view {NULL, 0} for a positional parameter. A non-empty view is valid until the logical type is destroyed.
  * out_value receives an owned value, destroyed via value_destroy: child types come back as TYPE values (unwrap them
- * with value_get_type), DECIMAL width and scale as UTINYINT, ARRAY size as BIGINT, and ENUM dictionary entries and
+ * with value_get_type), DECIMAL width and scale as UINTEGER, ARRAY size as BIGINT, and ENUM dictionary entries and
  * collations as VARCHAR. An out-of-range index returns ERROR_INPUT_INVALID. Each call allocates one owned value.
  *
  * history:
@@ -16085,18 +16085,19 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_value_create_interval(duckdb_v2_factory_h
 /*!
  * Creates a DECIMAL value from its backing integer.
  *
- * The value is scaled by 10^scale, so (18500, 18, 3) is 18.500. width is the total digit count and must be 1..255;
- * scale is the number of digits after the point and must not exceed width. Violating either returns
- * ERROR_INPUT_INVALID, as does a value too wide for the storage tier the width selects. Widths above 38 build a wide
- * decimal stored as BIGNUM, for which the 128-bit backing integer always fits. The value itself is not range-checked
- * against the width; value_cast is the validating path.
+ * The value is scaled by 10^scale, so (18500, 18, 3) is 18.500. width is the total digit count and must be 1..255, the
+ * range of the uint8_t parameter; scale is the number of digits after the point and must not exceed width. Violating
+ * either returns ERROR_INPUT_INVALID, as does a value too wide for the storage tier the width selects. Widths above 38
+ * build a wide decimal stored as BIGNUM, for which the 128-bit backing integer always fits. The value itself is not
+ * range-checked against the width; value_cast is the validating path, and the one that reaches decimals wider than 255
+ * digits.
  *
  * history:
  * - unstable: v2.0.0
  *
  * @param factory The factory to create with.
  * @param in_value The backing integer, scaled by 10^scale.
- * @param width Total digit count, 1..255.
+ * @param width Total digit count, 1..255 (the range of the uint8_t).
  * @param scale Digits after the decimal point; must not exceed width.
  * @param out_value Receives the new DECIMAL value.
  * @param err Optional. On failure, receives an opaque info handle the caller must destroy via error_info_destroy.

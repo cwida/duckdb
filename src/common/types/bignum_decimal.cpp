@@ -1,8 +1,12 @@
 #include "duckdb/common/limits.hpp"
 #include "duckdb/common/types/bignum_decimal.hpp"
 
+#include "duckdb/common/array.hpp"
 #include "duckdb/common/bignum.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/mutex.hpp"
+#include "duckdb/common/once_flag.hpp"
+#include "duckdb/common/unordered_map.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/bignum.hpp"
@@ -144,9 +148,39 @@ string FractionDigits(uint64_t fraction, idx_t bits, idx_t max_digits) {
 	return digits.empty() ? "" : "." + digits;
 }
 
+//! The number of significant bits of the magnitude of a value
+idx_t MagnitudeBits(const BignumIntermediate &value) {
+	const idx_t start = value.GetStartDataPos();
+	if (start >= value.size) {
+		return 0;
+	}
+	idx_t top_bits = 0;
+	for (auto byte = value.GetAbsoluteByte(NumericCast<int64_t>(start)); byte != 0; byte >>= 1) {
+		top_bits++;
+	}
+	return (value.size - start - 1) * 8 + top_bits;
+}
+
 bool FitsWidthInternal(const BignumIntermediate &value, uint32_t width) {
-	BorrowedBignum limit(BignumDecimal::PowerOfTen(width));
+	// 10^width has floor(width * log2(10)) + 1 bits: a value with clearly fewer bits fits and one with clearly more
+	// does not, only a bit length near the boundary compares against the power itself (the margin covers the
+	// rounding of the logarithm), so the power is only ever built for values of about the width itself
+	const auto power_bits = static_cast<idx_t>(static_cast<long double>(width) * 3.3219280948873623478703194L);
+	const auto bits = MagnitudeBits(value);
+	if (bits + 1 < power_bits) {
+		return true;
+	}
+	if (bits > power_bits + 2) {
+		return false;
+	}
+	const auto power = BignumDecimal::PowerOfTen(width);
+	BorrowedBignum limit(power);
 	return value.IsAbsoluteBigger(limit.intermediate) == SMALLER;
+}
+
+//! 10^exponent as a BIGNUM blob
+string ComputePowerOfTen(idx_t exponent) {
+	return Bignum::VarcharToBignum(string_t("1" + string(exponent, '0')));
 }
 
 //! The small constants are built once; their blobs outlive the intermediates that point into them
@@ -172,18 +206,27 @@ bool IsOdd(const BignumIntermediate &value) {
 
 } // namespace
 
-const string &BignumDecimal::PowerOfTen(idx_t exponent) {
-	static const vector<string> POWERS = []() {
-		vector<string> result;
-		result.reserve(idx_t(Decimal::MAX_WIDTH_DECIMAL) + 1);
-		for (idx_t i = 0; i <= Decimal::MAX_WIDTH_DECIMAL; i++) {
-			string digits = "1" + string(i, '0');
-			result.push_back(Bignum::VarcharToBignum(string_t(digits)));
-		}
-		return result;
-	}();
-	D_ASSERT(exponent <= Decimal::MAX_WIDTH_DECIMAL);
-	return POWERS[exponent];
+string BignumDecimal::PowerOfTen(idx_t exponent) {
+	// the powers of everyday widths are computed once and read without locking afterwards
+	static constexpr idx_t CACHED_POWERS = 512;
+	static array<string, CACHED_POWERS> small_powers;
+	static array<OnceFlag, CACHED_POWERS> small_flags;
+	if (exponent < CACHED_POWERS) {
+		CallOnce(small_flags[exponent], [&]() { small_powers[exponent] = ComputePowerOfTen(exponent); });
+		return small_powers[exponent];
+	}
+	// wider powers are kept in a bounded cache
+	static mutex wide_lock;
+	static unordered_map<idx_t, string> wide_powers;
+	lock_guard<mutex> guard(wide_lock);
+	auto entry = wide_powers.find(exponent);
+	if (entry != wide_powers.end()) {
+		return entry->second;
+	}
+	if (wide_powers.size() >= 64) {
+		wide_powers.clear();
+	}
+	return wide_powers.emplace(exponent, ComputePowerOfTen(exponent)).first->second;
 }
 
 bool BignumDecimal::FitsWidth(const bignum_t &value, uint32_t width) {
@@ -329,30 +372,21 @@ bool BignumDecimal::TryParse(const char *data, idx_t size, uint32_t width, uint3
 	return true;
 }
 
-bool BignumDecimal::TryRescale(const bignum_t &value, uint32_t source_scale, uint32_t target_width,
-                               uint32_t target_scale, string &result) {
-	BorrowedBignum source(value);
+string BignumDecimal::Rescale(const bignum_t &value, uint32_t source_scale, uint32_t target_scale) {
 	if (target_scale == source_scale) {
-		if (!FitsWidthInternal(source.intermediate, target_width)) {
-			return false;
-		}
-		result = value.data.GetString();
-		return true;
+		return value.data.GetString();
 	}
+	BorrowedBignum source(value);
 	StringHeap heap;
-	// the operands have at most Decimal::MAX_WIDTH_DECIMAL digits, so no interrupt polling is needed
 	BignumArithmeticState state;
 	if (target_scale > source_scale) {
-		BorrowedBignum factor(PowerOfTen(target_scale - source_scale));
-		auto scaled = bignum_t(BignumIntermediate::Multiply(heap, state, source.intermediate, factor.intermediate));
-		if (!FitsWidth(scaled, target_width)) {
-			return false;
-		}
-		result = scaled.data.GetString();
-		return true;
+		const auto power = PowerOfTen(target_scale - source_scale);
+		BorrowedBignum factor(power);
+		return BignumIntermediate::Multiply(heap, state, source.intermediate, factor.intermediate).GetString();
 	}
 	// scaling down divides by the power of ten and rounds half away from zero
-	BorrowedBignum divisor(PowerOfTen(source_scale - target_scale));
+	const auto power = PowerOfTen(source_scale - target_scale);
+	BorrowedBignum divisor(power);
 	string_t quotient;
 	string_t remainder;
 	if (!BignumIntermediate::TryDivMod(heap, state, source.intermediate, divisor.intermediate, quotient, remainder)) {
@@ -371,20 +405,26 @@ bool BignumDecimal::TryRescale(const bignum_t &value, uint32_t source_scale, uin
 		BorrowedBignum quotient_value(quotient_bignum);
 		quotient = BignumIntermediate::Add(heap, quotient_value.intermediate, one.intermediate);
 	}
-	if (!FitsWidth(bignum_t(quotient), target_width)) {
+	return quotient.GetString();
+}
+
+bool BignumDecimal::TryRescale(const bignum_t &value, uint32_t source_scale, uint32_t target_width,
+                               uint32_t target_scale, string &result) {
+	auto rescaled = Rescale(value, source_scale, target_scale);
+	if (!FitsWidth(bignum_t(string_t(rescaled)), target_width)) {
 		return false;
 	}
-	result = quotient.GetString();
+	result = std::move(rescaled);
 	return true;
 }
 
 bool BignumDecimal::TryRound(const bignum_t &value, idx_t drop_digits, idx_t restore_digits, BignumRounding rounding,
                              uint32_t width, StringHeap &heap, BignumArithmeticState &state, string_t &result) {
-	D_ASSERT(drop_digits <= Decimal::MAX_WIDTH_DECIMAL && restore_digits <= Decimal::MAX_WIDTH_DECIMAL);
 	BorrowedBignum source(value);
 	string_t rounded = value.data;
 	if (drop_digits > 0) {
-		BorrowedBignum divisor(PowerOfTen(drop_digits));
+		const auto power = PowerOfTen(drop_digits);
+		BorrowedBignum divisor(power);
 		string_t quotient;
 		string_t remainder;
 		if (!BignumIntermediate::TryDivMod(heap, state, source.intermediate, divisor.intermediate, quotient,
@@ -434,7 +474,8 @@ bool BignumDecimal::TryRound(const bignum_t &value, idx_t drop_digits, idx_t res
 	if (restore_digits > 0) {
 		const bignum_t rounded_bignum(rounded);
 		BorrowedBignum rounded_value(rounded_bignum);
-		BorrowedBignum factor(PowerOfTen(restore_digits));
+		const auto power = PowerOfTen(restore_digits);
+		BorrowedBignum factor(power);
 		rounded = BignumIntermediate::Multiply(heap, state, rounded_value.intermediate, factor.intermediate);
 	}
 	if (!FitsWidth(bignum_t(rounded), width)) {

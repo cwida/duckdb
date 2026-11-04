@@ -120,6 +120,11 @@ bool CastDecimalCInternal(duckdb_result *source, duckdb_decimal &result, idx_t c
 	auto result_data = (duckdb::DuckDBResultData *)source->internal_data;
 	uint32_t width, scale;
 	result_data->result->GetTypes()[col].GetDecimalProperties(width, scale);
+	if (width > duckdb::NumericLimits<uint8_t>::Maximum()) {
+		// a duckdb_decimal holds widths up to 255
+		result = FetchDefaultValue::Operation<duckdb_decimal>();
+		return false;
+	}
 	result.width = duckdb::NumericCast<uint8_t>(width);
 	result.scale = duckdb::NumericCast<uint8_t>(scale);
 	auto source_address = UnsafeFetchPtr<hugeint_t>(source, col, row);

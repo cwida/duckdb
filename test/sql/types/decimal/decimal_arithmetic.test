@@ -179,11 +179,11 @@ SELECT '0.000000000000000000000000000001'::DECIMAL(38,30) * '0.00000000000000000
 ----
 0.000000000000000000000000000000000000000000000000000000000001
 
-# beyond 255 digits the needed scale cannot be represented
-statement error
-SELECT '0.1'::DECIMAL(200,150) * '0.1'::DECIMAL(200,150)
+# the scale of a product grows with the width
+query II
+SELECT '0.1'::DECIMAL(200,150) * '0.1'::DECIMAL(200,150) = '0.01'::DECIMAL(400,300), typeof('0.1'::DECIMAL(200,150) * '0.1'::DECIMAL(200,150))
 ----
-<REGEX>:Out of Range Error.*Needed scale.*
+true	DECIMAL(400,300)
 
 # test addition, subtraction and multiplication with various scales and precisions
 query IIII

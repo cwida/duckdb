@@ -604,6 +604,7 @@ public:
 struct DecimalType {
 	DUCKDB_API static uint32_t GetWidth(const LogicalType &type);
 	DUCKDB_API static uint32_t GetScale(const LogicalType &type);
+	//! The widest DECIMAL: widths above Decimal::MAX_WIDTH_INT128 are stored as BIGNUM blobs and reach the uint32_t range
 	DUCKDB_API static uint32_t MaxWidth();
 };
 

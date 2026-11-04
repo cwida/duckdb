@@ -92,9 +92,6 @@ struct TryDecimalMultiply {
 	static inline bool Operation(TA left, TB right, TR &result) {
 		InternalException::Throw("Unimplemented type for TryDecimalMultiply");
 	}
-	//! The bignum_t tier (width > 38), see TryDecimalAdd
-	DUCKDB_API static bool Operation(bignum_t left, bignum_t right, bignum_t &result, StringHeap &heap,
-	                                 BignumArithmeticState &state);
 };
 
 template <>
@@ -117,7 +114,6 @@ struct DecimalMultiplyOverflowCheck {
 		}
 		return result;
 	}
-	DUCKDB_API static bignum_t Operation(bignum_t left, bignum_t right, StringHeap &heap, BignumArithmeticState &state);
 };
 
 template <>

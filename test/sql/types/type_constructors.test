@@ -24,7 +24,7 @@ SELECT NULL::DECIMAL('ten');
 statement error
 SELECT NULL::DECIMAL('ten');
 ----
-<REGEX>:.*Candidates.*DECIMAL\(width UTINYINT, scale UTINYINT := 0\).*
+<REGEX>:.*Candidates.*DECIMAL\(width UINTEGER, scale UINTEGER := 0\).*
 
 # a NULL modifier is rejected before the constructor runs
 
@@ -61,7 +61,7 @@ SELECT NULL::no_modifiers(1);
 statement error
 SELECT NULL::DECIMAL(0);
 ----
-<REGEX>:.*DECIMAL type width must be between 1 and 255.*
+<REGEX>:.*DECIMAL type width must be at least 1.*
 
 statement error
 SELECT NULL::MAP;
@@ -87,7 +87,7 @@ SELECT DISTINCT parameters, parameter_types, varargs FROM duckdb_types()
 WHERE type_name = 'decimal' ORDER BY 1;
 ----
 []	[]	NULL
-[width, scale]	[UTINYINT, UTINYINT]	NULL
+[width, scale]	[UINTEGER, UINTEGER]	NULL
 
 query III
 SELECT DISTINCT parameters, parameter_types, varargs FROM duckdb_types()
