@@ -403,7 +403,7 @@ TEST_CASE("Partitioned COPY bounds overlapping input and wakes combined producer
 	copy.expected_types = {LogicalType::BIGINT, LogicalType::BIGINT};
 	copy.names = {Identifier("p"), Identifier("i")};
 	copy.file_path = TestCreatePath("copy_backpressure");
-	copy.file_extension = "test";
+	copy.file_options.file_extension = "test";
 	copy.per_thread_output = false;
 	copy.partition_output = true;
 	copy.partition_columns = {0};
@@ -411,7 +411,7 @@ TEST_CASE("Partitioned COPY bounds overlapping input and wakes combined producer
 	copy.hive_file_pattern = true;
 	copy.use_tmp_file = false;
 	copy.write_empty_file = true;
-	copy.overwrite_mode = CopyOverwriteMode::COPY_OVERWRITE;
+	copy.file_options.overwrite_mode = CopyOverwriteMode::COPY_OVERWRITE;
 	copy.return_type = CopyFunctionReturnType::CHANGED_ROWS;
 	copy.batch_size = STANDARD_VECTOR_SIZE;
 	copy.sink_state = copy.GetGlobalSinkState(context);
