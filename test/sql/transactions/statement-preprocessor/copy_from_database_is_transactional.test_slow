@@ -3,8 +3,12 @@
 
 require tpch
 
+# no temp directory: the copy into the in-memory db2 cannot spill, while the persistent db1 can be evicted
 statement ok
-attach ':memory:' as db1;
+SET temp_directory='';
+
+statement ok
+attach '{TEST_DIR}/copy_from_database_is_transactional.db' as db1;
 
 statement ok
 use db1;

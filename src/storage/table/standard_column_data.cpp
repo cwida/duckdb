@@ -125,6 +125,7 @@ void StandardColumnData::Select(TransactionData transaction, idx_t vector_index,
 void StandardColumnData::InitializeAppend(ColumnAppendState &state) {
 	ColumnData::InitializeAppend(state);
 	ColumnAppendState child_append;
+	child_append.transient = state.transient;
 	validity->InitializeAppend(child_append);
 	state.child_appends.push_back(std::move(child_append));
 }
