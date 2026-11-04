@@ -908,8 +908,8 @@ ResultColumnMapping MultiFileColumnMapper::CreateColumnMappingByMapper(const Col
 		auto local_index = std::move(column_map.column_index);
 		auto local_id = local_index->GetPrimaryIndex();
 		auto &local_type = local_columns[local_id].type;
-		auto global_column_type = global_id.HasType() && !column_map.extract_whole ? global_id.GetScanType()
-		                                                                           : global_column.type;
+		auto global_column_type =
+		    global_id.HasType() && !column_map.extract_whole ? global_id.GetScanType() : global_column.type;
 		auto local_column_type = local_index->HasType() ? local_index->GetScanType() : local_type;
 		auto expr =
 		    ConstructMapExpression(context, local_idx, column_map, global_column_type, local_column_type, trivial_map);
