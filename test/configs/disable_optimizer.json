@@ -174,6 +174,8 @@
     {
       "reason": "Parquet prefetch strategies and I/O metrics require optimizer rewrites.",
       "paths": [
+        "test/sql/copy/parquet/bloom_filter_coalesced_memory.test_slow",
+        "test/sql/copy/parquet/bloom_filter_coalesced_reads.test",
         "test/sql/copy/parquet/parquet_prefetch_first_group_cost.test",
         "test/sql/copy/parquet/parquet_prefetch_overlapping_ranges.test",
         "test/sql/copy/parquet/read_ahead/readahead_dynamic_pruning.test",

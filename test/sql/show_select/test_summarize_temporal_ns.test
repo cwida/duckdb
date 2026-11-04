@@ -1,0 +1,48 @@
+# name: test/sql/show_select/test_summarize_temporal_ns.test
+# description: SUMMARIZE over the nanosecond temporal types (added in 2.0) had no avg()/approx_quantile() overloads, so it raised a binder error (issue #27867).
+# group: [show_select]
+
+# avg() over TIMESTAMP_NS / TIME_NS now has native overloads (nanosecond precision preserved)
+query T
+SELECT avg(x) FROM (SELECT TIMESTAMP_NS '2026-01-01 00:00:00.000000001' AS x UNION ALL SELECT TIMESTAMP_NS '2026-01-01 00:00:00.000000003');
+----
+2026-01-01 00:00:00.000000002
+
+query T
+SELECT avg(x) FROM (SELECT TIME_NS '01:00:00.000000001' AS x UNION ALL SELECT TIME_NS '01:00:00.000000003');
+----
+01:00:00.000000002
+
+# avg() over TIMESTAMPTZ_NS (previously a hard Binder Error) must now bind
+statement ok
+SELECT avg(x) FROM (SELECT TIMESTAMPTZ_NS '2026-01-01 10:00:00+10:00' AS x);
+
+# approx_quantile() over the _NS temporal types (SUMMARIZE emits these) now binds and
+# returns the correct type. (Values are approximate by design -- the HLL sketch stores
+# through a 53-bit double -- so we assert on type, not exact sub-second value.)
+query T
+SELECT typeof(approx_quantile(x, 0.5)) FROM (SELECT TIME_NS '01:00:00.000000000' AS x);
+----
+TIME_NS
+
+query T
+SELECT typeof(approx_quantile(x, 0.5)) FROM (SELECT TIMESTAMP_NS '2026-01-01 00:00:00' AS x);
+----
+TIMESTAMP_NS
+
+query T
+SELECT typeof(approx_quantile(x, 0.5)) FROM (SELECT TIMESTAMPTZ_NS '2026-01-01 00:00:00+00:00' AS x);
+----
+TIMESTAMPTZ_NS
+
+# SUMMARIZE over the previously-failing types must not error
+statement ok
+CREATE OR REPLACE TABLE summarize_ns AS SELECT
+  TIMESTAMP_NS '2026-01-01 10:00:00.000000001' AS ts_ns,
+  TIME_NS '01:02:03.000000001' AS time_ns,
+  TIMESTAMPTZ_NS '2026-01-01 10:00:00+10:00' AS tstz_ns;
+
+query T
+SELECT count(*) FROM (SUMMARIZE summarize_ns);
+----
+3

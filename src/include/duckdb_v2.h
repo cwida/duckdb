@@ -6180,8 +6180,8 @@ typedef struct _duckdb_v2_column_description {
  * partial: an unqualified or schema-qualified name resolves through the connection's search path, exactly as the same
  * name resolves in SQL. A two-part name tries the first part as a schema and as an attached database, as SQL does, and
  * is rejected when both readings exist. A name that resolves to nothing is rejected with the engine's missing-table
- * error; a name that resolves to a view is rejected with the engine's not-a-table error, since a description snapshots
- * a base table.
+ * error. A name that resolves to a view is rejected with the same error: a description snapshots a base table, and a
+ * view is not one, so it is reported as a table that does not exist.
  *
  * history:
  * - unstable: v2.0.0
