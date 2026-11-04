@@ -1,0 +1,94 @@
+# name: test/sql/types/uhugeint/uhugeint_subtract_overflow.test
+# description: UHUGEINT subtraction must detect the borrow out of the lower 64 bits
+# group: [uhugeint]
+
+# a negative result is out of range, also when the borrow from the lower half
+# brings the upper half back to the left operand's upper half
+statement error
+SELECT 0::UHUGEINT - 340282366920938463463374607431768211455::UHUGEINT
+----
+Out of Range Error
+
+statement error
+SELECT 1::UHUGEINT - 340282366920938463463374607431768211455::UHUGEINT
+----
+Out of Range Error
+
+statement error
+SELECT 7::UHUGEINT - 340282366920938463463374607431768211455::UHUGEINT
+----
+Out of Range Error
+
+statement error
+SELECT 18446744073709551615::UHUGEINT - 18446744073709551616::UHUGEINT
+----
+Out of Range Error
+
+statement error
+SELECT 18446744073709551616::UHUGEINT - 340282366920938463463374607431768211455::UHUGEINT
+----
+Out of Range Error
+
+statement error
+SELECT 340282366920938463463374607431768211454::UHUGEINT - 340282366920938463463374607431768211455::UHUGEINT
+----
+Out of Range Error
+
+query I
+SELECT TRY(0::UHUGEINT - 340282366920938463463374607431768211455::UHUGEINT)
+----
+NULL
+
+# results that are in range, with and without a borrow
+query IIII
+SELECT 340282366920938463463374607431768211455::UHUGEINT - 340282366920938463463374607431768211455::UHUGEINT,
+       340282366920938463463374607431768211455::UHUGEINT - 7::UHUGEINT,
+       18446744073709551616::UHUGEINT - 1::UHUGEINT,
+       340282366920938463463374607431768211455::UHUGEINT - 18446744073709551616::UHUGEINT
+----
+0	340282366920938463463374607431768211448	18446744073709551615	340282366920938463444927863358058659839
+
+# subtraction over a table: the statistics of a - b are derived from min(a) - max(b),
+# and a missed overflow there used to give the column a wrong minimum
+statement ok
+CREATE TABLE t(a UHUGEINT, b UHUGEINT);
+
+statement ok
+INSERT INTO t VALUES (0, 0), (340282366920938463463374607431768211455, 340282366920938463463374607431768211455);
+
+query I
+SELECT a - b FROM t
+----
+0
+0
+
+query I
+SELECT a - b FROM t WHERE a - b = 0
+----
+0
+0
+
+query I
+SELECT count(*) FROM t WHERE a - b < 1
+----
+2
+
+query I
+SELECT count(*) FROM t WHERE a - b >= 1
+----
+0
+
+statement ok
+INSERT INTO t VALUES (7, 340282366920938463463374607431768211455);
+
+statement error
+SELECT a - b FROM t
+----
+Out of Range Error
+
+query I
+SELECT TRY(a - b) FROM t ORDER BY ALL
+----
+0
+0
+NULL

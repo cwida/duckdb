@@ -44,6 +44,8 @@ ScalarFunctionSet AgeFun::GetFunctions() {
 	ScalarFunctionSet age("age");
 	ScalarFunction standard_fun({}, LogicalType::INTERVAL, AgeFunctionStandard);
 	standard_fun.GetSignature().AddParameter("timestamp", LogicalType::TIMESTAMP);
+	// the age is taken at the start of the transaction
+	standard_fun.SetStability(FunctionStability::CONSISTENT_WITHIN_QUERY);
 	age.AddFunction(standard_fun);
 	ScalarFunction binary_fun({}, LogicalType::INTERVAL, AgeFunction);
 	binary_fun.GetSignature()
