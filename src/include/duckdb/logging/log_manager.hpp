@@ -102,13 +102,13 @@ protected:
 	//! Shared by the created loggers; replaced only by SetConfigInternal
 	shared_ptr<const LogConfig> config DUCKDB_GUARDED_BY(lock);
 	//! Incremented whenever config is replaced, invalidating the snapshots of it
-	atomic<idx_t> config_version {0};
+	PaddedAtomic<idx_t> config_version {0};
 
 	shared_ptr<Logger> global_logger;
 	shared_ptr<LogStorage> log_storage DUCKDB_GUARDED_BY(lock);
 	DatabaseInstance &db_instance;
 
-	atomic<idx_t> next_registered_logging_context_index {0};
+	PaddedAtomic<idx_t> next_registered_logging_context_index {0};
 
 	// Any additional LogStorages registered (by extensions for example)
 	case_insensitive_map_t<shared_ptr<LogStorage>> registered_log_storages DUCKDB_GUARDED_BY(lock);
