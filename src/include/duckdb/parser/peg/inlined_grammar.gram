@@ -1557,7 +1557,7 @@ DropEntries <-
 DropTrigger <- 'TRIGGER' IfExists? TriggerName 'ON' BaseTableName
 
 DropTable <- TableOrView IfExists? List(BaseTableName)
-DropTableFunction <- CommentMacroTable IfExists? List(QualifiedTableFunction)
+DropTableFunction <- CommentMacroTable IfExists? List(QualifiedTableFunction) DropFunctionSignature?
 DropFunction <- FunctionTypeMacro IfExists? List(FunctionIdentifier) DropFunctionSignature?
 DropFunctionSignature <- Parens(List(DropSignatureType)?)
 DropSignatureType <- DropSignatureAnyType / Type

@@ -272,3 +272,52 @@ SELECT v FROM tmm(7);
 
 statement ok
 DROP MACRO tmm;
+
+# DROP MACRO TABLE accepts a signature and targets the table entry past a same-named scalar macro
+statement ok
+CREATE MACRO shared() AS 42;
+
+statement ok
+CREATE MACRO shared(x INTEGER) AS TABLE (SELECT x AS v), (x VARCHAR) AS TABLE (SELECT 0 AS v);
+
+statement ok
+DROP MACRO TABLE shared(VARCHAR);
+
+query T
+SELECT v FROM shared(7);
+----
+7
+
+query T
+SELECT shared();
+----
+42
+
+statement error
+DROP MACRO TABLE shared(VARCHAR);
+----
+<REGEX>:.*has no overload with signature \(VARCHAR\).*
+
+statement ok
+DROP MACRO TABLE IF EXISTS shared(VARCHAR);
+
+query T
+SELECT v FROM shared(7);
+----
+7
+
+statement ok
+DROP MACRO TABLE shared(INTEGER);
+
+statement error
+SELECT v FROM shared(7);
+----
+<REGEX>:.*(Catalog Error|not exist|does not support).*
+
+query T
+SELECT shared();
+----
+42
+
+statement ok
+DROP MACRO shared;

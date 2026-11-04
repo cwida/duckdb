@@ -3367,10 +3367,10 @@ public:
 	static unique_ptr<DropStatement> TransformDropTable(PEGTransformer &transformer, const CatalogType &table_or_view,
 	                                                    const optional<bool> &if_exists,
 	                                                    vector<unique_ptr<BaseTableRef>> base_table_name);
-	static unique_ptr<DropStatement> TransformDropTableFunction(PEGTransformer &transformer,
-	                                                            const CatalogType &comment_macro_table,
-	                                                            const optional<bool> &if_exists,
-	                                                            const vector<QualifiedName> &table_function_name);
+	static unique_ptr<DropStatement>
+	TransformDropTableFunction(PEGTransformer &transformer, const CatalogType &comment_macro_table,
+	                           const optional<bool> &if_exists, const vector<QualifiedName> &table_function_name,
+	                           const optional<vector<LogicalType>> &drop_function_signature);
 	static unique_ptr<DropStatement>
 	TransformDropFunction(PEGTransformer &transformer, const bool &function_type_macro, const optional<bool> &if_exists,
 	                      const vector<QualifiedName> &function_identifier,

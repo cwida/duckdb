@@ -2489,7 +2489,14 @@ static const TransformChildPlan FRAME_CHILDREN_173[] = {{PEGRuleId::BaseTableNam
                                                          {0, TRANSFORM_PATH_END, 0},
                                                          {0, TRANSFORM_PATH_END, 0}}};
 static const TransformFramePlan FRAME_PLAN_187 = {FRAME_CHILDREN_173, 3, 3, true, 0, {}};
-static const TransformChildPlan FRAME_CHILDREN_174[] = {{PEGRuleId::QualifiedTableFunction,
+static const TransformChildPlan FRAME_CHILDREN_174[] = {{PEGRuleId::DropFunctionSignature,
+                                                         TransformChildKind::OPTIONAL,
+                                                         3,
+                                                         3,
+                                                         true,
+                                                         {0, TRANSFORM_PATH_END, 0},
+                                                         {0, TRANSFORM_PATH_END, 0}},
+                                                        {PEGRuleId::QualifiedTableFunction,
                                                          TransformChildKind::LIST,
                                                          2,
                                                          2,
@@ -2510,7 +2517,7 @@ static const TransformChildPlan FRAME_CHILDREN_174[] = {{PEGRuleId::QualifiedTab
                                                          false,
                                                          {0, TRANSFORM_PATH_END, 0},
                                                          {0, TRANSFORM_PATH_END, 0}}};
-static const TransformFramePlan FRAME_PLAN_188 = {FRAME_CHILDREN_174, 3, 3, true, 0, {}};
+static const TransformFramePlan FRAME_PLAN_188 = {FRAME_CHILDREN_174, 4, 4, true, 0, {}};
 static const TransformChildPlan FRAME_CHILDREN_175[] = {{PEGRuleId::DropFunctionSignature,
                                                          TransformChildKind::OPTIONAL,
                                                          3,
@@ -13120,7 +13127,12 @@ PEGTransformerFactory::FinalizeDropTableFunctionTrampoline(PEGTransformer &trans
 	for (idx_t i = 2; i < 2 + dynamic_child_count; i++) {
 		qualified_table_function.push_back(process.TakeResult<QualifiedName>(i));
 	}
-	auto result = TransformDropTableFunction(transformer, comment_macro_table, if_exists, qualified_table_function);
+	optional<vector<LogicalType>> drop_function_signature {};
+	if (process.child_results[3 + dynamic_child_count - 1]) {
+		drop_function_signature = process.TakeResult<vector<LogicalType>>(3 + dynamic_child_count - 1);
+	}
+	auto result = TransformDropTableFunction(transformer, comment_macro_table, if_exists, qualified_table_function,
+	                                         drop_function_signature);
 	return transformer.MakeResult<unique_ptr<DropStatement>>(std::move(result));
 }
 
