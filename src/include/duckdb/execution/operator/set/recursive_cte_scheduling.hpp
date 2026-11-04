@@ -313,7 +313,9 @@ unique_ptr<RecursiveCTEPipelineSchedulePlan>
 BuildRecursivePipelineSchedulePlan(const vector<shared_ptr<MetaPipeline>> &meta_pipelines,
                                    const reference_set_t<const MetaPipeline> &invariant_meta_pipelines,
                                    const PhysicalOperator &recursive_sink);
-void ExecuteRecursivePipelineInline(PipelineExecutor &pipeline_executor);
+//! The executor is pumped while the pipeline is blocked, so a blocked source's continuation
+//! task can run even when no internal worker threads exist
+void ExecuteRecursivePipelineInline(PipelineExecutor &pipeline_executor, Executor &executor);
 void ExecuteRecursivePipelineFinishInline(Pipeline &pipeline, Executor &executor);
 //! Run a schedule plan single-threaded with the shared operator-state lifecycle: missing state is
 //! created per ready stage, after its dependencies finished. Stages flagged trivial_finish skip the

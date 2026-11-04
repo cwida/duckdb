@@ -529,8 +529,35 @@ static idx_t GetRecursivePipelineMaxThreads(Pipeline &pipeline, idx_t worker_lim
 	return MinValue(max_threads, worker_limit);
 }
 
-void ExecuteRecursivePipelineInline(PipelineExecutor &pipeline_executor) {
-	auto signal_state = make_shared_ptr<InterruptDoneSignalState>();
+static void ProcessRecursiveExecutorTasks(Executor &executor);
+
+//! Signal state whose wait keeps the recursive executor making progress. A blocked source may
+//! have scheduled its continuation as an executor task; with zero internal workers
+//! (threads == external_threads) that task can only ever run on the waiting thread, so a bare
+//! condition-variable wait deadlocks. The event path pumps tasks in WaitForRecursiveEvents;
+//! the inline waits must do the same.
+struct RecursiveInterruptSignalState : public InterruptDoneSignalState {
+	//! Consume the signal if it fired; never blocks
+	bool ConsumeSignal() {
+		annotated_lock_guard<annotated_mutex> guard(lock);
+		if (!done) {
+			return false;
+		}
+		done = false;
+		return true;
+	}
+
+	void AwaitWithExecutorProgress(Executor &executor) {
+		while (!ConsumeSignal()) {
+			// runs pending tasks (including the blocking continuation) and propagates executor
+			// errors; otherwise waits bounded, woken by task completion or reschedule
+			ProcessRecursiveExecutorTasks(executor);
+		}
+	}
+};
+
+void ExecuteRecursivePipelineInline(PipelineExecutor &pipeline_executor, Executor &executor) {
+	auto signal_state = make_shared_ptr<RecursiveInterruptSignalState>();
 	pipeline_executor.SetInterruptState(InterruptState(weak_ptr<InterruptDoneSignalState>(signal_state)));
 	while (true) {
 		auto result = pipeline_executor.Execute();
@@ -540,7 +567,7 @@ void ExecuteRecursivePipelineInline(PipelineExecutor &pipeline_executor) {
 		case PipelineExecuteResult::NOT_FINISHED:
 			throw InternalException("Execute without limit should not return NOT_FINISHED");
 		case PipelineExecuteResult::INTERRUPTED:
-			signal_state->Await();
+			signal_state->AwaitWithExecutorProgress(executor);
 			break;
 		}
 	}
@@ -697,11 +724,12 @@ public:
 
 	void Schedule() override {
 		// This event is only used by the single-thread inline recursive fast path.
-		// Blocking here is safe because the caller runs it synchronously and explicitly waits for completion.
+		// Blocking here is safe because the caller runs it synchronously and explicitly waits for
+		// completion, and the wait keeps the executor making progress.
 		D_ASSERT(total_tasks == 0);
 		total_tasks = 1;
 
-		auto signal_state = make_shared_ptr<InterruptDoneSignalState>();
+		auto signal_state = make_shared_ptr<RecursiveInterruptSignalState>();
 		InterruptState interrupt_state {weak_ptr<InterruptDoneSignalState>(signal_state)};
 		auto sink = pipeline->GetSink();
 		auto &operators = pipeline->GetIntermediateOperators();
@@ -717,7 +745,7 @@ public:
 				OperatorFinalizeInput op_finalize_input {*op.op_state, interrupt_state};
 				auto op_state = op.OperatorFinalize(*pipeline, *this, executor.context, op_finalize_input);
 				if (op_state == OperatorFinalResultType::BLOCKED) {
-					signal_state->Await();
+					signal_state->AwaitWithExecutorProgress(executor);
 					blocked = true;
 					break;
 				}
@@ -729,7 +757,7 @@ public:
 			OperatorSinkFinalizeInput finalize_input {*sink->sink_state, interrupt_state};
 			auto sink_state = sink->Finalize(*pipeline, *this, executor.context, finalize_input);
 			if (sink_state == SinkFinalizeType::BLOCKED) {
-				signal_state->Await();
+				signal_state->AwaitWithExecutorProgress(executor);
 				continue;
 			}
 
@@ -1280,7 +1308,7 @@ static void ExecuteRecursiveInlinePlanInternal(RecursiveSchedulingContext contex
 			}
 			const auto execute_start =
 			    COLLECT_METRICS ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
-			ExecuteRecursivePipelineInline(*executors[0]);
+			ExecuteRecursivePipelineInline(*executors[0], context.executor);
 			if constexpr (COLLECT_METRICS) {
 				const auto execute_end = std::chrono::steady_clock::now();
 				context.epoch_metrics->RecordPipelineExecution(
