@@ -507,7 +507,8 @@ int64_t FileSystem::GetFileSize(FileHandle &handle) {
 }
 
 timestamp_t FileSystem::GetLastModifiedTime(FileHandle &handle) {
-	throw NotImplementedException("%s: GetLastModifiedTime is not implemented!", GetName());
+	// file systems without modification times report the unknown time
+	return timestamp_t::ninfinity();
 }
 
 string FileSystem::GetVersionTag(FileHandle &handle) {
@@ -526,15 +527,7 @@ FileType FileSystem::GetFileType(FileHandle &handle) {
 FileMetadata FileSystem::Stats(FileHandle &handle) {
 	FileMetadata metadata;
 	metadata.file_size = GetFileSize(handle);
-	// leave unsupported modification times unknown
-	try {
-		metadata.last_modification_time = GetLastModifiedTime(handle);
-	} catch (std::exception &ex) {
-		ErrorData error(ex);
-		if (error.Type() != ExceptionType::NOT_IMPLEMENTED) {
-			throw;
-		}
-	}
+	metadata.last_modification_time = GetLastModifiedTime(handle);
 	metadata.file_type = GetFileType(handle);
 	metadata.version_tag = GetVersionTag(handle);
 	metadata.cache_valid_until = GetCacheValidUntil(handle);
