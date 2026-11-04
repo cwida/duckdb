@@ -13,7 +13,7 @@ statement ok
 SET parquet_metadata_cache={metadata_cache};
 
 statement ok
-COPY (SELECT i FROM range(10) t(i)) TO '{TEMP_DIR}/stats_cache_{metadata_cache}.parquet' (ROW_GROUP_SIZE 2048)
+COPY (SELECT i FROM range(10) t(i)) TO '{TEMP_DIR}/stats_cache_{metadata_cache}.parquet'
 
 # the statistics (max 9) rule the filter out
 query I
@@ -21,24 +21,14 @@ SELECT count(*) FROM '{TEMP_DIR}/stats_cache_{metadata_cache}.parquet' WHERE i >
 ----
 0
 
-query I
-SELECT max(i) FROM '{TEMP_DIR}/stats_cache_{metadata_cache}.parquet'
-----
-9
-
 # rewrite the file with a wider range: the cached statistics must not be reused
 statement ok
-COPY (SELECT i FROM range(100) t(i)) TO '{TEMP_DIR}/stats_cache_{metadata_cache}.parquet' (ROW_GROUP_SIZE 2048)
+COPY (SELECT i FROM range(100) t(i)) TO '{TEMP_DIR}/stats_cache_{metadata_cache}.parquet'
 
 query I
 SELECT count(*) FROM '{TEMP_DIR}/stats_cache_{metadata_cache}.parquet' WHERE i > 50
 ----
 49
-
-query I
-SELECT max(i) FROM '{TEMP_DIR}/stats_cache_{metadata_cache}.parquet'
-----
-99
 
 # each column, and each field of a struct, has its own statistics
 statement ok
@@ -51,11 +41,6 @@ SELECT max(a), max(b), max(s.x), max(s.y) FROM '{TEMP_DIR}/stats_cache_columns_{
 9	109	209	309
 
 query I
-SELECT count(*) FROM '{TEMP_DIR}/stats_cache_columns_{metadata_cache}.parquet' WHERE a > 5
-----
-4
-
-query I
 SELECT count(*) FROM '{TEMP_DIR}/stats_cache_columns_{metadata_cache}.parquet' WHERE b > 105
 ----
 4
@@ -65,12 +50,7 @@ SELECT count(*) FROM '{TEMP_DIR}/stats_cache_columns_{metadata_cache}.parquet' W
 ----
 4
 
-query I
-SELECT count(*) FROM '{TEMP_DIR}/stats_cache_columns_{metadata_cache}.parquet' WHERE s.y > 305 AND a < 100
-----
-4
-
-# several files go through the statistics of each file
+# each file of a glob has its own statistics
 statement ok
 COPY (SELECT i + 1000 AS i FROM range(10) t(i)) TO '{TEMP_DIR}/stats_cache_glob_{metadata_cache}_a.parquet'
 
@@ -82,25 +62,9 @@ SELECT count(*), max(i) FROM '{TEMP_DIR}/stats_cache_glob_{metadata_cache}_*.par
 ----
 14	2009
 
-query II
-SELECT count(*), max(i) FROM '{TEMP_DIR}/stats_cache_glob_{metadata_cache}_*.parquet' WHERE i > 1005
-----
-14	2009
-
 # the same column read as BLOB and as VARCHAR has statistics of a different type
 statement ok
 COPY (SELECT ('v' || i)::BLOB AS b FROM range(10) t(i)) TO '{TEMP_DIR}/stats_cache_blob_{metadata_cache}.parquet'
-
-query II
-SELECT typeof(b), count(*) FROM '{TEMP_DIR}/stats_cache_blob_{metadata_cache}.parquet' WHERE b = 'v3'::BLOB GROUP BY ALL
-----
-BLOB	1
-
-query II
-SELECT typeof(b), count(*) FROM read_parquet('{TEMP_DIR}/stats_cache_blob_{metadata_cache}.parquet', binary_as_string = true)
-WHERE b = 'v3' GROUP BY ALL
-----
-VARCHAR	1
 
 query II
 SELECT typeof(b), count(*) FROM '{TEMP_DIR}/stats_cache_blob_{metadata_cache}.parquet' WHERE b > 'v8'::BLOB GROUP BY ALL

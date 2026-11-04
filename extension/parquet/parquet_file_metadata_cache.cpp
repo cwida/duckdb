@@ -1,6 +1,7 @@
 #include "parquet_file_metadata_cache.hpp"
 
 #include <memory>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 
@@ -76,9 +77,11 @@ static hash_t HashColumnStatisticsSchema(const ParquetColumnSchema &schema) {
 
 //! Compares everything the statistics of a column depend on
 static bool ColumnStatisticsSchemaEquals(const ParquetColumnSchema &a, const ParquetColumnSchema &b) {
-	if (a.schema_type != b.schema_type || a.schema_index != b.schema_index || a.column_index != b.column_index ||
-	    a.parquet_type != b.parquet_type || a.type_info != b.type_info || a.type_length != b.type_length ||
-	    a.type_scale != b.type_scale || a.type != b.type || a.children.size() != b.children.size()) {
+	auto fields = [](const ParquetColumnSchema &schema) {
+		return std::tie(schema.schema_type, schema.schema_index, schema.column_index, schema.parquet_type,
+		                schema.type_info, schema.type_length, schema.type_scale, schema.type);
+	};
+	if (fields(a) != fields(b) || a.children.size() != b.children.size()) {
 		return false;
 	}
 	for (idx_t i = 0; i < a.children.size(); i++) {
