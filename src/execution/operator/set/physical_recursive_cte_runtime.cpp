@@ -256,9 +256,10 @@ void PhysicalRecursiveCTE::ExecuteRecursivePipelines(ExecutionContext &context) 
 	if (inline_execution) {
 		ExecuteRecursiveInlinePlan(scheduling_context, *schedule_plan);
 	} else {
+		scheduling_context.completion_signal = make_shared_ptr<RecursiveInterruptSignalState>();
 		vector<shared_ptr<Event>> events;
 		ScheduleRecursivePlan(*schedule_plan, scheduling_context, events, parallelism);
-		WaitForRecursiveEvents(executor, events);
+		WaitForRecursiveEvents(executor, events, scheduling_context.completion_signal.get());
 	}
 
 	if (collect_metrics) {

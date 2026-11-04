@@ -827,10 +827,11 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 	                                               collect_metrics ? gstate.epoch_metrics.get() : nullptr, go_parallel};
 	const auto route_start = measure_route ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
 	if (go_parallel) {
+		scheduling_context.completion_signal = make_shared_ptr<RecursiveInterruptSignalState>();
 		vector<shared_ptr<Event>> events;
 		ScheduleRecursivePlan(plan, scheduling_context, events,
 		                      RecursiveCTEParallelism(frontier_workers, source_task_workers));
-		WaitForRecursiveEvents(executor, events);
+		WaitForRecursiveEvents(executor, events, scheduling_context.completion_signal.get());
 	} else {
 		// single-threaded wave: run the shared inline plan executor, which creates missing
 		// operator state per ready stage and skips the finish events of flagged trivial stages

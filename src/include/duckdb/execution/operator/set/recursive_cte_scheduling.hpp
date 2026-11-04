@@ -15,7 +15,10 @@
 #include "duckdb/common/reference_map.hpp"
 #include "duckdb/common/table_index.hpp"
 #include "duckdb/execution/executor.hpp"
+#include "duckdb/parallel/interrupt.hpp"
 #include "duckdb/parallel/pipeline_schedule.hpp"
+
+#include <chrono>
 
 namespace duckdb {
 
@@ -286,6 +289,19 @@ struct RecursiveCTEParallelism {
 	idx_t source_task_worker_count;
 };
 
+//! Signal state whose wait keeps the recursive executor making progress. A blocked source may
+//! have scheduled its continuation as an executor task; with zero internal workers
+//! (threads == external_threads) that task can only ever run on the waiting thread, so a bare
+//! condition-variable wait deadlocks. The recursive waits pump executor tasks while still
+//! waking immediately when the signal fires. Recursive task completions signal it as well, so
+//! the event waiter does not sleep a full bounded timeout behind a task finishing elsewhere.
+struct RecursiveInterruptSignalState : public InterruptDoneSignalState {
+	//! Wait for the signal with a bounded timeout; true when the signal fired
+	bool AwaitFor(std::chrono::milliseconds timeout);
+	//! Wait for the signal while running pending executor tasks and enforcing interrupts
+	void AwaitWithExecutorProgress(Executor &executor);
+};
+
 //! What the shared event-based scheduling of recursive plans needs from its operator:
 //! the executor, the cached-executor state, and optional metrics
 struct RecursiveSchedulingContext {
@@ -306,6 +322,8 @@ struct RecursiveSchedulingContext {
 	//! Give stages with independent parallel sources the source-task worker count;
 	//! off by default so recursive CTE scheduling is unchanged
 	bool scan_sources_use_source_workers = false;
+	//! Signalled by recursive task completions; the event waiter waits on it when set
+	shared_ptr<RecursiveInterruptSignalState> completion_signal;
 };
 
 //! Shared with the trampoline operator: schedule-plan construction and the single-threaded inline execution helpers
@@ -342,8 +360,10 @@ void ScheduleRecursivePlan(const RecursiveCTEPipelineSchedulePlan &plan, const R
 void ExecuteRecursivePipelineEventInline(Pipeline &pipeline, const RecursiveSchedulingContext &context,
                                          idx_t worker_limit, idx_t max_threads,
                                          RecursiveCTEPipelineMetricType metric_type);
-void WaitForRecursiveEvents(Executor &executor, vector<shared_ptr<Event>> &events);
-void WaitForRecursiveEvent(Executor &executor, Event &event);
+void WaitForRecursiveEvents(Executor &executor, vector<shared_ptr<Event>> &events,
+                            optional_ptr<RecursiveInterruptSignalState> completion_signal = nullptr);
+void WaitForRecursiveEvent(Executor &executor, Event &event,
+                           optional_ptr<RecursiveInterruptSignalState> completion_signal = nullptr);
 //! Conservative upper bound on the workers the schedule can assign to one producer pipeline
 idx_t GetRecursiveProducerWorkerBound(Pipeline &pipeline, idx_t worker_limit);
 void GatherColumnDataScans(const PhysicalOperator &op, vector<const_reference<PhysicalOperator>> &delim_scans);
