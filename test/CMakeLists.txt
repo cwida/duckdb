@@ -69,7 +69,39 @@ if(NOT WIN32 AND NOT SUN)
   endif()
 endif()
 
-add_executable(unittest unittest.cpp ${UNITTEST_OBJECT_FILES})
+build_loadable_extension_directory(
+  test
+  "CPP"
+  extension/test
+  "default-version"
+  ""
+  "-warnings"
+  "${PROJECT_SOURCE_DIR}/extension/test/test_extension.cpp"
+  $<TARGET_OBJECTS:test_debug_fs_extension>)
+set_target_properties(
+  test_loadable_extension
+  PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/extension/test"
+             RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/extension/test")
+target_include_directories(
+  test_loadable_extension
+  PRIVATE "${PROJECT_SOURCE_DIR}/extension/test/include"
+          "${PROJECT_SOURCE_DIR}/extension/test"
+          "${PROJECT_SOURCE_DIR}/test/sqlite"
+          "${PROJECT_SOURCE_DIR}/test/extension/debug_fs/include")
+target_link_libraries(test_loadable_extension test_helpers test_sqlite_runner)
+duckdb_link_extensions(test_loadable_extension core_functions parquet json icu)
+
+if(${ENABLE_UNITTEST_CPP_TESTS})
+  duckdb_add_test_bundle(duckdb_tests SOURCES ${UNITTEST_OBJECT_FILES})
+  target_compile_definitions(duckdb_tests_loadable_extension
+                             PRIVATE DUCKDB_TEST_BUNDLE_DEBUG_FS)
+  target_include_directories(
+    duckdb_tests_loadable_extension
+    PRIVATE
+      "${PROJECT_SOURCE_DIR}/test/extension/debug_fs/include")
+  duckdb_link_extensions(duckdb_tests_loadable_extension core_functions parquet
+                         json icu)
+endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux"
    AND NOT CMAKE_CROSSCOMPILING
@@ -93,23 +125,23 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux"
     -Wl,--wrap=munmap)
   set_target_properties(block_allocator_fault_injection
                         PROPERTIES BUILD_RPATH_USE_ORIGIN TRUE)
-  target_sources(unittest PRIVATE api/test_block_allocator_fault_injection.cpp)
-  add_dependencies(unittest block_allocator_fault_injection)
+  target_sources(duckdb_tests_loadable_extension
+                 PRIVATE api/test_block_allocator_fault_injection.cpp)
+  add_dependencies(duckdb_tests_loadable_extension block_allocator_fault_injection)
 endif()
 
-# Enable best-effort stack traces for fatal signals in the test runner without
-# enabling stack traces for every DuckDB exception.
-if((CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT MUSL_ENABLED) OR APPLE)
-  target_compile_definitions(unittest PRIVATE DUCKDB_UNITTEST_CRASH_STACKTRACE)
-endif()
-
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT MUSL_ENABLED)
-  set_target_properties(unittest PROPERTIES ENABLE_EXPORTS ON)
-endif()
-
-set(RUN_WRAPPER_UNITTEST_NAME "unittest")
+set(RUN_WRAPPER_DUCKDB_NAME "duckdb")
+set(RUN_WRAPPER_TEST_ROOTS
+    "${DUCKDB_TEST_ROOT_DIRECTORY}/test;${DUCKDB_TEST_ROOT_DIRECTORY}/third_party/sqllogictest/test")
+foreach(EXT_NAME IN LISTS DUCKDB_EXTENSION_NAMES)
+  string(TOUPPER ${EXT_NAME} EXT_NAME_UPPERCASE)
+  if(${DUCKDB_EXTENSION_${EXT_NAME_UPPERCASE}_LOAD_TESTS})
+    list(APPEND RUN_WRAPPER_TEST_ROOTS
+         "${DUCKDB_EXTENSION_${EXT_NAME_UPPERCASE}_TEST_PATH}")
+  endif()
+endforeach()
 if(WIN32)
-  set(RUN_WRAPPER_UNITTEST_NAME "unittest.exe")
+  set(RUN_WRAPPER_DUCKDB_NAME "duckdb.exe")
   configure_file("${PROJECT_SOURCE_DIR}/scripts/ci/test_runner_wrapper.py.in"
                  "${CMAKE_CURRENT_BINARY_DIR}/run.py" @ONLY)
   configure_file("${PROJECT_SOURCE_DIR}/scripts/ci/test_runner_wrapper.bat.in"
@@ -129,30 +161,3 @@ else()
     WORLD_READ
     WORLD_EXECUTE)
 endif()
-
-if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-  target_compile_options(unittest PRIVATE -Wno-error=maybe-uninitialized)
-endif()
-
-if(TARGET duckdb AND NOT WIN32)
-  # Some tests reference internal third-party symbols (e.g. re2/mbedtls) that
-  # are linked into duckdb but not exported from the shared library.
-  target_link_libraries(
-    unittest
-    duckdb
-    test_helpers
-    duckdb_re2
-    duckdb_mbedtls
-    duckdb_fsst
-    duckdb_cpp_api)
-else()
-  # On Windows, tests require internal DuckDB symbols that are not DLL-exported.
-  target_link_libraries(unittest duckdb_static test_helpers duckdb_cpp_api)
-  link_extension_libraries(unittest "")
-endif()
-
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  target_link_libraries(unittest atomic)
-endif()
-
-duckdb_codesign_for_debugging(unittest)

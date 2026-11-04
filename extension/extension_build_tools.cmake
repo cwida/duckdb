@@ -408,6 +408,35 @@ function(build_loadable_extension NAME PARAMETERS)
     build_loadable_extension_directory(${NAME} "CPP" "extension/${NAME}" "${DUCKDB_EXTENSION_${EXTENSION_NAME_UPPERCASE}_EXT_VERSION}" "" "${PARAMETERS}" ${FILES})
 endfunction()
 
+# Builds a Catch-based C++ test bundle without requiring an extension source
+# directory. The caller supplies existing test object libraries or sources.
+function(duckdb_add_test_bundle NAME)
+    cmake_parse_arguments(PARSE_ARGV 1 ARG "" "" "SOURCES;LINK_LIBRARIES")
+    build_loadable_extension_directory(
+        ${NAME}
+        "CPP"
+        test/extensions
+        "default-version"
+        ""
+        "-warnings"
+        "${DUCKDB_MODULE_BASE_DIR}/extension/test/test_bundle_extension.cpp"
+        ${ARG_SOURCES})
+    target_compile_definitions(
+        ${NAME}_loadable_extension
+        PRIVATE DUCKDB_TEST_BUNDLE_IDENTIFIER=${NAME}
+                DUCKDB_TEST_BUNDLE_NAME="${NAME}")
+    target_include_directories(
+        ${NAME}_loadable_extension
+        PRIVATE "${DUCKDB_MODULE_BASE_DIR}/extension/test/include")
+    target_link_libraries(
+        ${NAME}_loadable_extension test_helpers duckdb_cpp_api
+        ${ARG_LINK_LIBRARIES})
+    set_target_properties(
+        ${NAME}_loadable_extension
+        PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test/extensions"
+                   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/test/extensions")
+endfunction()
+
 function(build_loadable_extension_capi NAME CAPI_VERSION_MAJOR CAPI_VERSION_MINOR CAPI_VERSION_PATCH PARAMETERS)
     set(FILES "${ARGV}")
     list(REMOVE_AT FILES 0 1 2 3)

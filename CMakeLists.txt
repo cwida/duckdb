@@ -666,8 +666,9 @@ option(
   CLANG_TIDY
   "Enable build for clang-tidy, this disables all source files excluding the core database. This does not produce a working build."
   FALSE)
-option(BUILD_UNITTESTS "Build the unittest runner." TRUE)
-option(ENABLE_UNITTEST_CPP_TESTS "Build the C++ Unit Tests." TRUE)
+option(BUILD_UNITTESTS "Build the test extension, C++ test bundle, and runner."
+       TRUE)
+option(ENABLE_UNITTEST_CPP_TESTS "Build the C++ test bundle." TRUE)
 option(NATIVE_LTO_STATIC_LIBRARIES
        "Run LTO before writing static libraries so non-LTO linkers can use them"
        OFF)
