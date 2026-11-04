@@ -48,6 +48,16 @@ struct CopyToFileOptions {
 	}
 };
 
+//! The source state of a COPY, paging through the written files for RETURN_STATS
+class CopyToFileGlobalSourceState : public GlobalSourceState {
+public:
+	idx_t offset = 0;
+
+	idx_t MaxThreads() override {
+		return 1;
+	}
+};
+
 //! Copy the contents of a query into a table
 class PhysicalCopyToFile : public PhysicalOperator {
 public:
@@ -70,7 +80,12 @@ public:
 	                                   CopyOutputLifecycle &output_lifecycle);
 	static void MoveTmpFile(ClientContext &context, const string &tmp_file_path);
 	static string GetNonTmpFile(ClientContext &context, const string &tmp_file_path);
-	static void ReturnStatistics(DataChunk &chunk, CopyToFileInfo &written_file_info);
+	static void ReturnStatistics(DataChunk &chunk, const string &file_path, const CopyToFileInfo &info);
+	//! Adds the RETURN_STATS rows of the written files from the offset of the source state, a chunk per call
+	static SourceResultType ReturnWrittenFileStatistics(ClientContext &context, DataChunk &chunk,
+	                                                    CopyToFileGlobalSourceState &source_state,
+	                                                    const vector<unique_ptr<CopyToFileInfo>> &written_files,
+	                                                    bool use_tmp_file);
 	//! Adds the RETURN_STATS row of a COPY that wrote no file, so that RETURN_COLUMN_TYPES can still return the types
 	static void ReturnNoFileStatistics(DataChunk &chunk);
 	//! Sets the last column of every row in the chunk to the RETURN_COLUMN_TYPES value

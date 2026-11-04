@@ -761,22 +761,15 @@ unique_ptr<GlobalSinkState> PhysicalBatchCopyToFile::GetGlobalSinkState(ClientCo
 //===--------------------------------------------------------------------===//
 // Source
 //===--------------------------------------------------------------------===//
-class BatchCopyToFileSourceState : public GlobalSourceState {
-public:
-	idx_t offset = 0;
-};
-
 unique_ptr<GlobalSourceState> PhysicalBatchCopyToFile::GetGlobalSourceState(ClientContext &context) const {
-	return make_uniq<BatchCopyToFileSourceState>();
+	return make_uniq<CopyToFileGlobalSourceState>();
 }
 
 SourceResultType PhysicalBatchCopyToFile::GetDataInternal(ExecutionContext &context, DataChunk &chunk,
                                                           OperatorSourceInput &input) const {
 	auto &g = sink_state->Cast<FixedBatchCopyGlobalState>();
 	auto return_column_types = CopyFunctionReturnsColumnTypes(return_type);
-	auto written_path = [&](const string &path) {
-		return use_tmp_file ? PhysicalCopyToFile::GetNonTmpFile(context.client, path) : path;
-	};
+	auto result = SourceResultType::FINISHED;
 	switch (GetCopyFunctionBaseReturnType(return_type)) {
 	case CopyFunctionReturnType::CHANGED_ROWS:
 		chunk.data[0].Append(Value::BIGINT(NumericCast<int64_t>(g.rows_copied.load())));
@@ -784,30 +777,23 @@ SourceResultType PhysicalBatchCopyToFile::GetDataInternal(ExecutionContext &cont
 	case CopyFunctionReturnType::CHANGED_ROWS_AND_FILE_LIST: {
 		vector<Value> file_list;
 		for (auto &file_info : g.written_files) {
-			file_list.emplace_back(written_path(file_info->file_path));
+			file_list.emplace_back(use_tmp_file
+			                           ? PhysicalCopyToFile::GetNonTmpFile(context.client, file_info->file_path)
+			                           : file_info->file_path);
 		}
 		chunk.data[0].Append(Value::BIGINT(NumericCast<int64_t>(g.rows_copied.load())));
 		chunk.data[1].Append(Value::LIST(LogicalType::VARCHAR, std::move(file_list)));
 		break;
 	}
 	case CopyFunctionReturnType::WRITTEN_FILE_STATISTICS: {
-		auto &source_state = input.global_state.Cast<BatchCopyToFileSourceState>();
-		idx_t next_end = MinValue<idx_t>(source_state.offset + STANDARD_VECTOR_SIZE, g.written_files.size());
-		for (idx_t file_idx = source_state.offset; file_idx < next_end; file_idx++) {
-			auto &file_info = *g.written_files[file_idx];
-			file_info.file_path = written_path(file_info.file_path);
-			PhysicalCopyToFile::ReturnStatistics(chunk, file_info);
-		}
+		auto &source_state = input.global_state.Cast<CopyToFileGlobalSourceState>();
+		result = PhysicalCopyToFile::ReturnWrittenFileStatistics(context.client, chunk, source_state, g.written_files,
+		                                                         use_tmp_file);
 		if (return_column_types && g.written_files.empty()) {
 			// WRITE_EMPTY_FILE false writes no file without rows
 			PhysicalCopyToFile::ReturnNoFileStatistics(chunk);
 		}
-		source_state.offset = next_end;
-		if (return_column_types) {
-			PhysicalCopyToFile::ReturnColumnTypes(chunk, query_names, query_types);
-		}
-		return source_state.offset < g.written_files.size() ? SourceResultType::HAVE_MORE_OUTPUT
-		                                                    : SourceResultType::FINISHED;
+		break;
 	}
 	default:
 		throw NotImplementedException("Unknown CopyFunctionReturnType");
@@ -816,7 +802,7 @@ SourceResultType PhysicalBatchCopyToFile::GetDataInternal(ExecutionContext &cont
 	if (return_column_types) {
 		PhysicalCopyToFile::ReturnColumnTypes(chunk, query_names, query_types);
 	}
-	return SourceResultType::FINISHED;
+	return result;
 }
 
 } // namespace duckdb

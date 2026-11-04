@@ -156,10 +156,6 @@ public:
 		return written_files.size();
 	}
 
-	CopyToFileInfo &GetWrittenFile(idx_t file_idx) {
-		return *written_files[file_idx];
-	}
-
 	const vector<unique_ptr<CopyToFileInfo>> &GetWrittenFiles() const {
 		return written_files;
 	}
@@ -4892,11 +4888,11 @@ void PhysicalCopyToFile::ReturnColumnTypes(DataChunk &chunk, const vector<Identi
 	}
 }
 
-void PhysicalCopyToFile::ReturnStatistics(DataChunk &chunk, CopyToFileInfo &info) {
+void PhysicalCopyToFile::ReturnStatistics(DataChunk &chunk, const string &file_path, const CopyToFileInfo &info) {
 	auto &file_stats = *info.file_stats;
 
 	// filename VARCHAR
-	chunk.data[0].Append(Value(info.file_path));
+	chunk.data[0].Append(Value(file_path));
 	// count BIGINT
 	chunk.data[1].Append(Value::UBIGINT(file_stats.row_count));
 	// file size bytes BIGINT
@@ -4934,6 +4930,18 @@ void PhysicalCopyToFile::ReturnNoFileStatistics(DataChunk &chunk) {
 	for (idx_t col_idx = 2; col_idx < statistics_column_count; col_idx++) {
 		chunk.data[col_idx].Append(Value(chunk.data[col_idx].GetType()));
 	}
+}
+
+SourceResultType PhysicalCopyToFile::ReturnWrittenFileStatistics(
+    ClientContext &context, DataChunk &chunk, CopyToFileGlobalSourceState &source_state,
+    const vector<unique_ptr<CopyToFileInfo>> &written_files, bool use_tmp_file) {
+	idx_t next_end = MinValue<idx_t>(source_state.offset + STANDARD_VECTOR_SIZE, written_files.size());
+	for (; source_state.offset < next_end; source_state.offset++) {
+		auto &file_info = *written_files[source_state.offset];
+		auto file_path = use_tmp_file ? GetNonTmpFile(context, file_info.file_path) : file_info.file_path;
+		ReturnStatistics(chunk, file_path, file_info);
+	}
+	return source_state.offset < written_files.size() ? SourceResultType::HAVE_MORE_OUTPUT : SourceResultType::FINISHED;
 }
 
 bool PhysicalCopyToFile::Rotate() const {
@@ -5281,18 +5289,6 @@ void PhysicalCopyToFile::FlushBatch(ClientContext &context, GlobalSinkState &gst
 //===--------------------------------------------------------------------===//
 // Source Interface
 //===--------------------------------------------------------------------===//
-class CopyToFileGlobalSourceState : public GlobalSourceState {
-public:
-	CopyToFileGlobalSourceState() {
-	}
-
-	idx_t offset = 0;
-
-	idx_t MaxThreads() override {
-		return 1;
-	}
-};
-
 unique_ptr<GlobalSourceState> PhysicalCopyToFile::GetGlobalSourceState(ClientContext &context) const {
 	return make_uniq<CopyToFileGlobalSourceState>();
 }
@@ -5306,16 +5302,8 @@ SourceResultType PhysicalCopyToFile::GetDataInternal(ExecutionContext &context, 
 	auto return_column_types = CopyFunctionReturnsColumnTypes(return_type);
 	if (base_return_type == CopyFunctionReturnType::WRITTEN_FILE_STATISTICS) {
 		auto &source_state = input.global_state.Cast<CopyToFileGlobalSourceState>();
-		idx_t next_end =
-		    MinValue<idx_t>(source_state.offset + STANDARD_VECTOR_SIZE, gstate.output_files.WrittenFileCount());
-		idx_t count = next_end - source_state.offset;
-		for (idx_t i = 0; i < count; i++) {
-			auto &file_entry = gstate.output_files.GetWrittenFile(source_state.offset + i);
-			if (use_tmp_file) {
-				file_entry.file_path = GetNonTmpFile(context.client, file_entry.file_path);
-			}
-			ReturnStatistics(chunk, file_entry);
-		}
+		auto result = ReturnWrittenFileStatistics(context.client, chunk, source_state,
+		                                          gstate.output_files.GetWrittenFiles(), use_tmp_file);
 		if (return_column_types) {
 			if (gstate.output_files.WrittenFileCount() == 0) {
 				// WRITE_EMPTY_FILE false, or PARTITION_BY without rows, writes no file
@@ -5323,9 +5311,7 @@ SourceResultType PhysicalCopyToFile::GetDataInternal(ExecutionContext &context, 
 			}
 			ReturnColumnTypes(chunk, query_names, query_types);
 		}
-		source_state.offset += count;
-		return source_state.offset < gstate.output_files.WrittenFileCount() ? SourceResultType::HAVE_MORE_OUTPUT
-		                                                                    : SourceResultType::FINISHED;
+		return result;
 	}
 
 	switch (base_return_type) {
