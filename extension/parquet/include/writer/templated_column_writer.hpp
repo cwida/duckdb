@@ -81,7 +81,7 @@ public:
 	idx_t Entry(idx_t row) const {
 		return 0;
 	}
-	optional_idx ReferencedEntryCount(idx_t start, idx_t end) const {
+	idx_t EntryCount() const {
 		return 1;
 	}
 
@@ -116,17 +116,8 @@ public:
 	idx_t Entry(idx_t row) const {
 		return sel.get_index(row);
 	}
-	//! Number of entries the rows [start, end) can reference, or invalid when the dictionary is larger than the rows,
-	//! where resolving per entry costs more than resolving per row
-	optional_idx ReferencedEntryCount(idx_t start, idx_t end) const {
-		if (entries.size() > end - start) {
-			return optional_idx();
-		}
-		idx_t entry_count = 0;
-		for (idx_t row = start; row < end; row++) {
-			entry_count = MaxValue<idx_t>(entry_count, Entry(row) + 1);
-		}
-		return entry_count;
+	idx_t EntryCount() const {
+		return entries.size();
 	}
 
 private:
@@ -710,11 +701,12 @@ private:
 	//! so this builds the dictionary that inserting every row builds
 	template <class INPUT, typename std::enable_if<INPUT::HAS_ENTRIES, int>::type = 0>
 	bool InsertReferencedEntries(StandardColumnWriterState<SRC, TGT, OP> &state, INPUT input, idx_t count) {
-		auto entry_count = input.ReferencedEntryCount(0, count);
-		if (!entry_count.IsValid()) {
+		const auto entry_count = input.EntryCount();
+		if (entry_count > count) {
+			// a dictionary larger than the rows costs more to resolve per entry than per row
 			return false;
 		}
-		vector<bool> inserted(entry_count.GetIndex(), false);
+		vector<bool> inserted(entry_count, false);
 		for (idx_t row = 0; row < count; row++) {
 			const auto entry = input.Entry(row);
 			if (inserted[entry]) {
@@ -774,13 +766,14 @@ private:
 	void WriteDictionaryIndexes(WriteStream &temp_writer, ColumnWriterStatistics *stats,
 	                            StandardWriterPageState<SRC, TGT, OP> &page_state, INPUT input, idx_t r,
 	                            idx_t chunk_end) {
-		auto entry_count = input.ReferencedEntryCount(r, chunk_end);
-		if (!entry_count.IsValid()) {
+		const auto entry_count = input.EntryCount();
+		if (entry_count > chunk_end - r) {
+			// a dictionary larger than the rows costs more to resolve per entry than per row
 			WriteDictionaryIndexRows<ALL_VALID>(temp_writer, stats, page_state, input, r, chunk_end);
 			return;
 		}
 		static constexpr uint32_t UNRESOLVED = NumericLimits<uint32_t>::Maximum();
-		vector<uint32_t> entry_indexes(entry_count.GetIndex(), UNRESOLVED);
+		vector<uint32_t> entry_indexes(entry_count, UNRESOLVED);
 		// the page index needs the bounds of every page, which the dictionary cannot provide
 		const bool stats_per_occurrence = STATS_PER_OCCURRENCE || writer.WritePageIndex();
 		for (; r < chunk_end; r++) {
