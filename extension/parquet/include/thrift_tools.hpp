@@ -16,6 +16,7 @@
 #include "duckdb/storage/external_file_cache/file_buffer_handle_group.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/allocator.hpp"
+#include "duckdb/common/mutex.hpp"
 
 namespace duckdb {
 
@@ -31,6 +32,7 @@ struct ReadHead {
 	AllocatedData local_buffer;
 	const_data_ptr_t buffer_ptr = nullptr;
 	bool data_isset = false;
+	mutex fetch_lock;
 	// Sub-ranges whose smaller cached blocks are re-fetched with the gaps around them (see CachingFileHandle::Read)
 	vector<pair<idx_t, idx_t>> absorb_ranges;
 
@@ -39,18 +41,22 @@ struct ReadHead {
 	}
 
 	// Materialize [buffer_ptr], should call before access.
-	// TODO(hjiang): Currently it's only used for `Prefetch` operation, should be able to save one copy.
 	void Materialize(Allocator &allocator) {
 		if (handle_group.GetHandles().size() == 1) {
 			buffer_ptr = handle_group.Ptr();
 		} else {
 			local_buffer = allocator.Allocate(size);
 			handle_group.CopyTo(local_buffer.get(), size);
+			handle_group = FileBufferHandleGroup();
 			buffer_ptr = local_buffer.get();
 		}
 	}
 
 	void Fetch(CachingFileHandle &file_handle) {
+		lock_guard<mutex> guard(fetch_lock);
+		if (data_isset) {
+			return;
+		}
 		if (GetEnd() > file_handle.GetFileSize()) {
 			throw std::runtime_error("Prefetch registered requested for bytes outside file");
 		}
@@ -236,6 +242,12 @@ public:
 		ra_buffer.AddFilledReadHead(pos, len, data);
 	}
 
+	// Attach an immutable, fetched head without registering it for merging.
+	void AddFetchedReadHead(shared_ptr<ReadHead> read_head) {
+		D_ASSERT(read_head->data_isset);
+		ra_buffer.read_heads.insert(ra_buffer.read_heads.begin(), std::move(read_head));
+	}
+
 	// Prefetch a single buffer
 	void Prefetch(idx_t pos, uint64_t len) {
 		RegisterPrefetch(pos, len, false);
@@ -280,8 +292,8 @@ public:
 		return location;
 	}
 
-	optional_ptr<ReadHead> GetReadHead(idx_t pos) {
-		return ra_buffer.GetReadHead(pos);
+	optional_ptr<ReadHead> GetReadHead(idx_t pos, idx_t len = 1) {
+		return ra_buffer.GetReadHead(pos, len);
 	}
 
 	vector<shared_ptr<ReadHead>> &GetReadHeads() {
