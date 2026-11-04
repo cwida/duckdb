@@ -45,14 +45,14 @@ void AggSigParam(duckdb_v2_function_signature_handle sig, const char *name, duck
 	                                                   nullptr) == DUCKDB_V2_ERROR_NONE);
 }
 
-// Run a query producing a single BIGINT cell.
-int64_t AggQueryI64(duckdb_v2_connection_handle conn, const char *sql) {
+// Run a query and read the BIGINT cell of the first row in column `col`.
+int64_t AggQueryI64(duckdb_v2_connection_handle conn, const char *sql, idx_t col = 0) {
 	duckdb_v2_result_handle result = nullptr;
 	REQUIRE(Query(conn, sql, &result) == DUCKDB_V2_ERROR_NONE);
 	auto chunk = StepChunk(result);
 	REQUIRE(chunk != nullptr);
 	duckdb_v2_vector_handle vec = nullptr;
-	duckdb_v2_data_chunk_get_vector(chunk, 0, &vec, nullptr);
+	duckdb_v2_data_chunk_get_vector(chunk, col, &vec, nullptr);
 	duckdb_v2_vector_view view {};
 	duckdb_v2_vector_get_view(vec, &view, nullptr);
 	auto out = static_cast<const int64_t *>(view.data)[SelAt(view.sel, 0)];
@@ -149,12 +149,32 @@ void SumFinalize(duckdb_v2_aggregate_function_finalize_info_handle info, duckdb_
 	}
 }
 
-// Registers my_sum on the connection and destroys the builder handle.
-void RegisterMySum(EnvFixture &fx) {
+// Like SumFinalize, plus one: an aggregate that differs from my_sum only in its finalize callback.
+void SumPlusOneFinalize(duckdb_v2_aggregate_function_finalize_info_handle info, duckdb_v2_error_info_handle *err) {
+	SumFinalize(info, err);
+	duckdb_v2_vector_handle result = nullptr;
+	idx_t count = 0;
+	idx_t offset = 0;
+	void *raw = nullptr;
+	if (duckdb_v2_aggregate_function_finalize_get_result(info, &result, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_aggregate_function_finalize_get_state_count(info, &count, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_aggregate_function_finalize_get_result_offset(info, &offset, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_vector_get_data_mutable(result, &raw, err) != DUCKDB_V2_ERROR_NONE) {
+		return;
+	}
+	for (idx_t i = 0; i < count; i++) {
+		static_cast<int64_t *>(raw)[offset + i] += 1;
+	}
+}
+
+// Registers a sum aggregate `name`(INTEGER) -> BIGINT with the given finalize callback, and destroys the builder
+// handle.
+void RegisterSumAggregate(EnvFixture &fx, const char *name,
+                          duckdb_v2_aggregate_function_finalize_callback_fn finalize = SumFinalize) {
 	auto integer = MakeType(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER);
 	auto bigint = MakeType(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_BIGINT);
 
-	auto function = MakeAggregate(fx.conn, "my_sum");
+	auto function = MakeAggregate(fx.conn, name);
 	auto sig = AggSigOf(function);
 	AggSigParam(sig, "x", integer);
 	REQUIRE(duckdb_v2_function_signature_set_return_type(sig, bigint, nullptr) == DUCKDB_V2_ERROR_NONE);
@@ -162,13 +182,18 @@ void RegisterMySum(EnvFixture &fx) {
 	REQUIRE(duckdb_v2_aggregate_function_set_init_callback(function, SumInit, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_aggregate_function_set_update_callback(function, SumUpdate, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_aggregate_function_set_combine_callback(function, SumCombine, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_aggregate_function_set_finalize_callback(function, SumFinalize, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_aggregate_function_set_finalize_callback(function, finalize, nullptr) == DUCKDB_V2_ERROR_NONE);
 
 	REQUIRE(duckdb_v2_connection_register_aggregate_function(fx.conn, function, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_aggregate_function_destroy(&function) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(function == nullptr);
 	duckdb_v2_logical_type_destroy(&integer);
 	duckdb_v2_logical_type_destroy(&bigint);
+}
+
+// Registers my_sum on the connection.
+void RegisterMySum(EnvFixture &fx) {
+	RegisterSumAggregate(fx, "my_sum");
 }
 
 // Noop callbacks for registration-refusal tests.
@@ -439,6 +464,30 @@ TEST_CASE("V2 aggregate: register on connection and execute", "[capi_v2][aggrega
 	        5000LL * 4999 / 2);
 	REQUIRE(AggQueryI64(fx.conn, "SELECT my_sum(r::INTEGER ORDER BY r DESC) FROM range(5000) t(r)") ==
 	        5000LL * 4999 / 2);
+}
+
+// ===========================================================================
+// Different aggregates with the same signature stay separate in one query.
+// ===========================================================================
+
+TEST_CASE("V2 aggregate: different aggregates over the same arguments are not merged",
+          "[capi_v2][aggregate_function]") {
+	EnvFixture fx;
+	RegisterMySum(fx);
+	RegisterSumAggregate(fx, "my_sum_plus_one", SumPlusOneFinalize);
+
+	// Each on its own.
+	REQUIRE(AggQueryI64(fx.conn, "SELECT my_sum(r::INTEGER) FROM range(10) t(r)") == 45);
+	REQUIRE(AggQueryI64(fx.conn, "SELECT my_sum_plus_one(r::INTEGER) FROM range(10) t(r)") == 46);
+	// Together over the same column: both are computed, in either order.
+	const char *both = "SELECT my_sum(r::INTEGER), my_sum_plus_one(r::INTEGER) FROM range(10) t(r)";
+	REQUIRE(AggQueryI64(fx.conn, both, 0) == 45);
+	REQUIRE(AggQueryI64(fx.conn, both, 1) == 46);
+	const char *swapped = "SELECT my_sum_plus_one(r::INTEGER), my_sum(r::INTEGER) FROM range(10) t(r)";
+	REQUIRE(AggQueryI64(fx.conn, swapped, 0) == 46);
+	REQUIRE(AggQueryI64(fx.conn, swapped, 1) == 45);
+	// The same aggregate twice is still the same.
+	REQUIRE(AggQueryI64(fx.conn, "SELECT my_sum(r::INTEGER) - my_sum(r::INTEGER) FROM range(10) t(r)") == 0);
 }
 
 // ===========================================================================

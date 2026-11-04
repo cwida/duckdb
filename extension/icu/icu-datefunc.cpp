@@ -48,6 +48,11 @@ unique_ptr<FunctionData> ICUDateFunc::Bind(BindScalarFunctionInput &input) {
 	return make_uniq<BindData>(input.GetClientContext());
 }
 
+unique_ptr<ICUDateFunc::CastData> ICUDateFunc::BindCastData(BindCastInput &input) {
+	input.stability = FunctionStability::CONSISTENT_WITHIN_QUERY;
+	return make_uniq<CastData>(make_uniq<BindData>(*input.context));
+}
+
 const ICUDateFunc::CalendarCacheState::CacheEntry &ICUDateFunc::CalendarCacheState::GetEntry(const string_t &tz_id) {
 	if (last && last->first.size() == tz_id.GetSize() &&
 	    memcmp(last->first.data(), tz_id.GetData(), tz_id.GetSize()) == 0) {

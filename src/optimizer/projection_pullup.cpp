@@ -64,7 +64,11 @@ void ProjectionPullup::InsertProjectionBelowOp(unique_ptr<LogicalOperator> &op, 
 		}
 		replacer.VisitOperator(*root);
 	}
-	ProjectionPullup next(optimizer, root);
+	// the projection kept below this operator is a binding barrier: nothing above it
+	// can reference bindings produced underneath, so the subtree runs its own pass
+	// with the projection as replacement root instead of walking the whole plan for
+	// every pull inside it
+	ProjectionPullup next(optimizer, child);
 	next.Optimize(child->children[0]);
 }
 
@@ -174,6 +178,10 @@ void ProjectionPullup::PullUpNonColrefProjection(unique_ptr<LogicalOperator> &op
 			}
 		}
 	}
+
+	// The caller's traversal no longer reaches the subtree left behind by the moved projection.
+	ProjectionPullup next(optimizer, root);
+	next.Optimize(op);
 }
 
 static bool HasJoinBelow(const LogicalOperator &op) {

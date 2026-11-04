@@ -472,6 +472,8 @@ enum class PipelineBroadcastExchangeScanMode : uint8_t;
 
 enum class PipelineInputMode : uint8_t;
 
+enum class PipelineScheduleGraph : uint8_t;
+
 enum class PipelineScheduleMode : uint8_t;
 
 enum class PipelineScheduleStageType : uint8_t;
@@ -645,6 +647,8 @@ enum class TransactionInvalidationPolicy : uint8_t;
 enum class TransactionModifierType : uint8_t;
 
 enum class TransactionType : uint8_t;
+
+enum class TransformChildKind : uint8_t;
 
 enum class TriggerEventType : uint8_t;
 
@@ -1358,6 +1362,9 @@ template<>
 const char* EnumUtil::ToChars<PipelineInputMode>(PipelineInputMode value);
 
 template<>
+const char* EnumUtil::ToChars<PipelineScheduleGraph>(PipelineScheduleGraph value);
+
+template<>
 const char* EnumUtil::ToChars<PipelineScheduleMode>(PipelineScheduleMode value);
 
 template<>
@@ -1617,6 +1624,9 @@ const char* EnumUtil::ToChars<TransactionModifierType>(TransactionModifierType v
 
 template<>
 const char* EnumUtil::ToChars<TransactionType>(TransactionType value);
+
+template<>
+const char* EnumUtil::ToChars<TransformChildKind>(TransformChildKind value);
 
 template<>
 const char* EnumUtil::ToChars<TriggerEventType>(TriggerEventType value);
@@ -2355,6 +2365,9 @@ template<>
 PipelineInputMode EnumUtil::FromString<PipelineInputMode>(const char *value);
 
 template<>
+PipelineScheduleGraph EnumUtil::FromString<PipelineScheduleGraph>(const char *value);
+
+template<>
 PipelineScheduleMode EnumUtil::FromString<PipelineScheduleMode>(const char *value);
 
 template<>
@@ -2614,6 +2627,9 @@ TransactionModifierType EnumUtil::FromString<TransactionModifierType>(const char
 
 template<>
 TransactionType EnumUtil::FromString<TransactionType>(const char *value);
+
+template<>
+TransformChildKind EnumUtil::FromString<TransformChildKind>(const char *value);
 
 template<>
 TriggerEventType EnumUtil::FromString<TriggerEventType>(const char *value);

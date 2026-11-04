@@ -345,8 +345,20 @@ void Binder::BindModifiers(BoundQueryNode &result, TableIndex table_index, const
 		switch (bound_mod->type) {
 		case ResultModifierType::DISTINCT_MODIFIER: {
 			auto &distinct = bound_mod->Cast<BoundDistinctModifier>();
+			if (distinct.distinct_type == DistinctType::DISTINCT) {
+				// DISTINCT covers every result column: the targets were prepared before the select list was bound,
+				// and an UNNEST of a struct expands an entry into several columns
+				distinct.target_distincts.clear();
+				for (idx_t i = 0; i < result.types.size(); i++) {
+					distinct.target_distincts.push_back(make_uniq<BoundColumnRefExpression>(
+					    names[i], sql_types[i], ColumnBinding(table_index, ProjectionIndex(i))));
+				}
+			}
 			// set types of distinct targets
 			for (auto &expr : distinct.target_distincts) {
+				if (expr->GetExpressionType() == ExpressionType::BOUND_COLUMN_REF) {
+					continue;
+				}
 				expr = FinalizeBindOrderExpression(std::move(expr), table_index, names, sql_types, bind_state);
 				if (!expr) {
 					throw InternalException("DISTINCT ON ORDER BY ALL not supported");

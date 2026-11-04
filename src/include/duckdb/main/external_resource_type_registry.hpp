@@ -59,6 +59,11 @@ public:
 	vector<ExternalResourceType> List() const;
 	//! The registered type with the given name, or nullptr if none.
 	unique_ptr<ExternalResourceType> Lookup(const string &name) const;
+	//! Lookup that, for a type not registered yet, first autoloads the extension known to provide it (see
+	//! EXTENSION_EXTERNAL_RESOURCE_TYPES in extension_entries.hpp)
+	static unique_ptr<ExternalResourceType> LookupOrAutoload(DatabaseInstance &db, const string &name);
+	//! The extension known to provide the type, or empty if none
+	static string ProvidingExtension(const string &name);
 
 private:
 	mutable mutex lock;

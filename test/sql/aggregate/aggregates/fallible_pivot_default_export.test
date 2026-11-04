@@ -85,6 +85,12 @@ PIVOT (median(v) FOR k IN ('p','q'));
 A volatile or fallible PIVOT default must be evaluated before query execution
 
 statement error
+EXPLAIN (SQL) FROM (VALUES ('g','p','2000-01-01'::TIMESTAMP),('h','q','2000-01-02'::TIMESTAMP)) t(g,k,v)
+PIVOT (median(v) FOR k IN ('p','q'));
+----
+A volatile or fallible PIVOT default must be evaluated before query execution
+
+statement error
 EXPLAIN (SQL) FROM (VALUES ('g','p',1),('h','q',2)) t(g,k,v)
 PIVOT (quantile_disc(v, 0.5::DECIMAL(38,38)) FOR k IN ('p','q'));
 ----
@@ -108,6 +114,14 @@ sql	<REGEX>:.*quantile_cont.*
 
 query TT
 EXPLAIN (SQL) FROM (VALUES ('g','p',1),('h','q',2)) t(g,k,v)
+PIVOT (quantile_disc(v, 0.5) FOR k IN ('p','q'));
+----
+sql	<REGEX>:.*quantile_disc.*
+
+# the discrete form does not interpolate and stays exportable
+
+query TT
+EXPLAIN (SQL) FROM (VALUES ('g','p','2000-01-01'::TIMESTAMP),('h','q','2000-01-02'::TIMESTAMP)) t(g,k,v)
 PIVOT (quantile_disc(v, 0.5) FOR k IN ('p','q'));
 ----
 sql	<REGEX>:.*quantile_disc.*

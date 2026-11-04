@@ -7,6 +7,7 @@
 
 #include "duckdb/common/enum_util.hpp"
 #include "duckdb/common/bignum.hpp"
+#include "duckdb/common/exception/conversion_exception.hpp"
 #include "duckdb/common/operator/add.hpp"
 #include "duckdb/common/operator/interpolate.hpp"
 #include "duckdb/common/operator/multiply.hpp"
@@ -328,12 +329,12 @@ template <bool IS_MODULO>
 LogicalType DecimalArithmeticResultType(const vector<LogicalType> &input_types, bool &check_overflow) {
 	check_overflow = false;
 	// get the max width and scale of the input arguments
-	uint8_t max_width = 0, max_scale = 0, max_width_over_scale = 0;
+	uint32_t max_width = 0, max_scale = 0, max_width_over_scale = 0;
 	for (auto &input_type : input_types) {
 		if (input_type.id() == LogicalTypeId::UNKNOWN) {
 			continue;
 		}
-		uint8_t width, scale;
+		uint32_t width, scale;
 		auto can_convert = input_type.GetDecimalProperties(width, scale);
 		if (!can_convert) {
 			throw BinderException("Could not convert type %s to a decimal for the arithmetic operator - add an "
@@ -343,14 +344,14 @@ LogicalType DecimalArithmeticResultType(const vector<LogicalType> &input_types, 
 		if (width > max_width) {
 			max_width = width;
 		}
-		max_scale = MaxValue<uint8_t>(scale, max_scale);
-		max_width_over_scale = MaxValue<uint8_t>(width - scale, max_width_over_scale);
+		max_scale = MaxValue<uint32_t>(scale, max_scale);
+		max_width_over_scale = MaxValue<uint32_t>(width - scale, max_width_over_scale);
 	}
 	D_ASSERT(max_width > 0);
-	uint8_t required_width = MaxValue<uint8_t>(max_scale + max_width_over_scale, max_width);
+	uint32_t required_width = MaxValue<uint32_t>(max_scale + max_width_over_scale, max_width);
 	if (!IS_MODULO) {
 		// for addition/subtraction, we add 1 to the width to ensure we don't overflow
-		required_width = NumericCast<uint8_t>(required_width + 1);
+		required_width++;
 	}
 	if (required_width > Decimal::MAX_WIDTH_DECIMAL) {
 		// target width does not fit in decimal at all: truncate the scale and perform overflow detection
@@ -372,7 +373,7 @@ bool ResolveDecimalArithmeticTypes(ResolveScalarFunctionTypesInput &input) {
 		// first check if the cast is necessary
 		// if the argument has a matching scale and internal type as the output type, no casting is necessary
 		auto &argument_type = argument_types[i];
-		uint8_t width, scale;
+		uint32_t width, scale;
 		argument_type.GetDecimalProperties(width, scale);
 		if (scale == DecimalType::GetScale(result_type) && argument_type.InternalType() == result_type.InternalType()) {
 			bound_function.GetArguments()[i] = argument_type;
@@ -1033,20 +1034,19 @@ struct MultiplyPropagateStatistics {
 //! Computes the result type of a decimal multiplication over the given input types
 LogicalType DecimalMultiplyResultType(const vector<LogicalType> &input_types, bool &check_overflow) {
 	check_overflow = false;
-	uint8_t result_width = 0, result_scale = 0;
-	uint8_t max_width = 0;
+	uint32_t result_width = 0, result_scale = 0, max_width = 0;
 	for (auto &input_type : input_types) {
 		if (input_type.id() == LogicalTypeId::UNKNOWN) {
 			continue;
 		}
-		uint8_t width, scale;
+		uint32_t width, scale;
 		auto can_convert = input_type.GetDecimalProperties(width, scale);
 		if (!can_convert) {
 			throw BinderException("Could not convert type %s to a decimal for the arithmetic operator - add an "
 			                      "explicit cast",
 			                      input_type.ToString());
 		}
-		max_width = MaxValue<uint8_t>(width, max_width);
+		max_width = MaxValue<uint32_t>(width, max_width);
 		result_width += width;
 		result_scale += scale;
 	}
@@ -1083,7 +1083,7 @@ void DecimalMultiplyResolveTypes(ResolveScalarFunctionTypesInput &input) {
 		if (argument_type.InternalType() == result_type.InternalType()) {
 			bound_function.GetArguments()[i] = argument_type;
 		} else {
-			uint8_t width, scale;
+			uint32_t width, scale;
 			if (!argument_type.GetDecimalProperties(width, scale)) {
 				scale = 0;
 			}
@@ -1812,13 +1812,33 @@ double InterpolateOperator::Operation(const double &lo, const double d, const do
 	return lo * (1.0 - d) + hi * d;
 }
 
-//! Interpolates between two integers without going through a double for the values themselves
+//! Interpolates between two integers without going through a double for the values themselves.
+//! The result lies between the two values, but the double arithmetic can round past them (and past the int64 range,
+//! where llround is undefined), so bound it against the endpoints before converting back.
 static int64_t InterpolateInt64(const int64_t lo, const double d, const int64_t hi) {
 	int64_t delta;
 	if (!TrySubtractOperator::Operation(hi, lo, delta)) {
-		return std::llround(static_cast<double>(lo) * (1.0 - d) + static_cast<double>(hi) * d);
+		const auto range_min = MinValue(lo, hi);
+		const auto range_max = MaxValue(lo, hi);
+		const auto mixed = static_cast<double>(lo) * (1.0 - d) + static_cast<double>(hi) * d;
+		if (mixed <= static_cast<double>(range_min)) {
+			return range_min;
+		}
+		if (mixed >= static_cast<double>(range_max)) {
+			return range_max;
+		}
+		return std::llround(mixed);
 	}
-	return lo + std::llround(static_cast<double>(delta) * d);
+	const auto offset_min = MinValue<int64_t>(delta, 0);
+	const auto offset_max = MaxValue<int64_t>(delta, 0);
+	const auto offset = static_cast<double>(delta) * d;
+	if (offset <= static_cast<double>(offset_min)) {
+		return lo + offset_min;
+	}
+	if (offset >= static_cast<double>(offset_max)) {
+		return lo + offset_max;
+	}
+	return lo + std::llround(offset);
 }
 
 template <>
@@ -1846,6 +1866,13 @@ dtime_tz_t InterpolateOperator::Operation(const dtime_tz_t &lo, const double d, 
 
 template <>
 timestamp_t InterpolateOperator::Operation(const timestamp_t &lo, const double d, const timestamp_t &hi) {
+	if (lo == hi) {
+		return lo;
+	}
+	// the infinities are sentinel values, and interpolating with their raw encodings produces nonsense
+	if (!Value::IsFinite(lo) || !Value::IsFinite(hi)) {
+		throw ConversionException("Cannot interpolate infinite TIMESTAMP values");
+	}
 	return timestamp_t(InterpolateInt64(lo.value, d, hi.value));
 }
 

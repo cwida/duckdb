@@ -1,0 +1,161 @@
+# name: test/sql/sort/sort_external_after_early_finish.test_slow
+# description: A sort whose threads finish at different times goes external when its memory runs short after one of them finished (duckdblabs/bot-issue-tracker#595)
+# group: [sort]
+
+require noforcestorage
+
+statement ok
+ATTACH '{TEST_DIR}/sort_external_after_early_finish.db' AS store
+
+statement ok
+USE store
+
+statement ok
+CREATE TABLE specimen AS
+SELECT i AS id, (i * 7919) % 70000 AS sample_id, (i % 40) + 1 AS n, substr(md5(i::VARCHAR || 'f'), 1, 8) AS field_number
+FROM range(394493) t(i)
+
+statement ok
+CREATE TABLE link AS SELECT id AS wide_id, sample_id, n FROM specimen
+
+statement ok
+CREATE TABLE wide AS
+SELECT i AS id,
+  CASE WHEN i % 3 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l0'), 1, 9) END AS c0,
+  CASE WHEN i % 4 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l1'), 1, 9) END AS c1,
+  CASE WHEN i % 5 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l2'), 1, 8) END AS c2,
+  CASE WHEN i % 6 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l3'), 1, 15) END AS c3,
+  CASE WHEN i % 7 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l4'), 1, 45) END AS c4,
+  CASE WHEN i % 3 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l5'), 1, 6) END AS c5,
+  CASE WHEN i % 4 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l6'), 1, 9) END AS c6,
+  CASE WHEN i % 5 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l7'), 1, 6) END AS c7,
+  CASE WHEN i % 6 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l8'), 1, 2) END AS c8,
+  CASE WHEN i % 7 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l9'), 1, 8) END AS c9,
+  CASE WHEN i % 3 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l10'), 1, 15) END AS c10,
+  CASE WHEN i % 4 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l11'), 1, 2) END AS c11,
+  CASE WHEN i % 5 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l12'), 1, 1) END AS c12,
+  CASE WHEN i % 6 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l13'), 1, 10) END AS c13,
+  CASE WHEN i % 7 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l14'), 1, 3) END AS c14,
+  CASE WHEN i % 3 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l15'), 1, 2) END AS c15,
+  CASE WHEN i % 4 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l16'), 1, 6) END AS c16,
+  CASE WHEN i % 5 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l17'), 1, 10) END AS c17,
+  CASE WHEN i % 6 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l18'), 1, 3) END AS c18,
+  CASE WHEN i % 7 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l19'), 1, 7) END AS c19,
+  CASE WHEN i % 3 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l20'), 1, 9) END AS c20,
+  CASE WHEN i % 4 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l21'), 1, 1) END AS c21,
+  CASE WHEN i % 5 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l22'), 1, 6) END AS c22,
+  CASE WHEN i % 6 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l23'), 1, 10) END AS c23,
+  CASE WHEN i % 7 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l24'), 1, 16) END AS c24,
+  CASE WHEN i % 3 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l25'), 1, 45) END AS c25,
+  CASE WHEN i % 4 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l26'), 1, 36) END AS c26,
+  CASE WHEN i % 5 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l27'), 1, 17) END AS c27,
+  CASE WHEN i % 6 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l28'), 1, 12) END AS c28,
+  CASE WHEN i % 7 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l29'), 1, 9) END AS c29,
+  CASE WHEN i % 3 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l30'), 1, 10) END AS c30,
+  CASE WHEN i % 4 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l31'), 1, 9) END AS c31,
+  CASE WHEN i % 5 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l32'), 1, 18) END AS c32,
+  CASE WHEN i % 6 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l33'), 1, 7) END AS c33,
+  CASE WHEN i % 7 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l34'), 1, 50) END AS c34,
+  CASE WHEN i % 3 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l35'), 1, 10) END AS c35,
+  CASE WHEN i % 4 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l36'), 1, 7) END AS c36,
+  CASE WHEN i % 5 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l37'), 1, 11) END AS c37,
+  CASE WHEN i % 6 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l38'), 1, 9) END AS c38,
+  CASE WHEN i % 7 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l39'), 1, 8) END AS c39,
+  CASE WHEN i % 3 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l40'), 1, 14) END AS c40,
+  CASE WHEN i % 4 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l41'), 1, 9) END AS c41,
+  CASE WHEN i % 5 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l42'), 1, 11) END AS c42,
+  CASE WHEN i % 6 = 0 THEN NULL ELSE substr(md5(i::VARCHAR || 'l43'), 1, 14) END AS c43
+FROM range(394493) t(i)
+
+statement ok
+CHECKPOINT
+
+statement ok
+CHECKPOINT store
+
+statement ok
+USE memory
+
+statement ok
+DETACH store
+
+statement ok
+SET threads = 4
+
+statement ok
+ATTACH '{TEST_DIR}/sort_external_after_early_finish.db' AS store
+
+statement ok
+USE store
+
+statement ok
+SET memory_limit = '1280MB'
+
+statement ok
+COPY (SELECT sp.field_number, substr(md5(sp.sample_id::VARCHAR), 1, 10), substr(md5(sp.sample_id::VARCHAR || 'x'), 1, 10), CAST(sp.sample_id % 500 AS VARCHAR), CAST(sp.sample_id % 12 AS VARCHAR), CAST(sp.sample_id % 28 AS VARCHAR), CAST(sp.sample_id % 300 AS VARCHAR), CAST(sp.n AS VARCHAR), w.c0, w.c1, w.c2, w.c3, w.c4, w.c5, w.c6, w.c7, w.c8, w.c9, w.c10, w.c11, w.c12, w.c13, w.c14, w.c15, w.c16, w.c17, w.c18, w.c19, w.c20, w.c21, w.c22, w.c23, w.c24, w.c25, w.c26, w.c27, w.c28, w.c29, w.c30, w.c31, w.c32, w.c33, w.c34, w.c35, w.c36, w.c37, w.c38, w.c39, w.c40, w.c41, w.c42, w.c43 FROM specimen sp   LEFT JOIN link l ON l.sample_id = sp.sample_id AND l.n = sp.n   LEFT JOIN wide w ON w.id = l.wide_id ORDER BY sp.field_number, sp.id) TO '{TEST_DIR}/sort_external_after_early_finish_1280MB.csv' (FORMAT csv)
+
+statement ok
+SET memory_limit = '8GB'
+
+# every row once, in the order of the sort keys
+query II
+SELECT count(*), count(*) FILTER (WHERE field_number < previous)
+FROM (SELECT field_number, lag(field_number) OVER (ORDER BY rn) AS previous
+      FROM (SELECT field_number, row_number() OVER () AS rn
+            FROM read_csv('{TEST_DIR}/sort_external_after_early_finish_1280MB.csv', header = true, all_varchar = true)))
+----
+2239423	0
+
+query I
+SELECT count(*) FROM (
+	SELECT * FROM read_csv('{TEST_DIR}/sort_external_after_early_finish_1280MB.csv', header = true, all_varchar = true)
+	EXCEPT ALL
+	SELECT * FROM (SELECT sp.field_number, substr(md5(sp.sample_id::VARCHAR), 1, 10), substr(md5(sp.sample_id::VARCHAR || 'x'), 1, 10), CAST(sp.sample_id % 500 AS VARCHAR), CAST(sp.sample_id % 12 AS VARCHAR), CAST(sp.sample_id % 28 AS VARCHAR), CAST(sp.sample_id % 300 AS VARCHAR), CAST(sp.n AS VARCHAR), w.c0, w.c1, w.c2, w.c3, w.c4, w.c5, w.c6, w.c7, w.c8, w.c9, w.c10, w.c11, w.c12, w.c13, w.c14, w.c15, w.c16, w.c17, w.c18, w.c19, w.c20, w.c21, w.c22, w.c23, w.c24, w.c25, w.c26, w.c27, w.c28, w.c29, w.c30, w.c31, w.c32, w.c33, w.c34, w.c35, w.c36, w.c37, w.c38, w.c39, w.c40, w.c41, w.c42, w.c43 FROM specimen sp   LEFT JOIN link l ON l.sample_id = sp.sample_id AND l.n = sp.n   LEFT JOIN wide w ON w.id = l.wide_id)
+)
+----
+0
+
+statement ok
+USE memory
+
+statement ok
+DETACH store
+
+statement ok
+ATTACH '{TEST_DIR}/sort_external_after_early_finish.db' AS store
+
+statement ok
+USE store
+
+statement ok
+SET memory_limit = '1536MB'
+
+statement ok
+COPY (SELECT sp.field_number, substr(md5(sp.sample_id::VARCHAR), 1, 10), substr(md5(sp.sample_id::VARCHAR || 'x'), 1, 10), CAST(sp.sample_id % 500 AS VARCHAR), CAST(sp.sample_id % 12 AS VARCHAR), CAST(sp.sample_id % 28 AS VARCHAR), CAST(sp.sample_id % 300 AS VARCHAR), CAST(sp.n AS VARCHAR), w.c0, w.c1, w.c2, w.c3, w.c4, w.c5, w.c6, w.c7, w.c8, w.c9, w.c10, w.c11, w.c12, w.c13, w.c14, w.c15, w.c16, w.c17, w.c18, w.c19, w.c20, w.c21, w.c22, w.c23, w.c24, w.c25, w.c26, w.c27, w.c28, w.c29, w.c30, w.c31, w.c32, w.c33, w.c34, w.c35, w.c36, w.c37, w.c38, w.c39, w.c40, w.c41, w.c42, w.c43 FROM specimen sp   LEFT JOIN link l ON l.sample_id = sp.sample_id AND l.n = sp.n   LEFT JOIN wide w ON w.id = l.wide_id ORDER BY sp.field_number, sp.id) TO '{TEST_DIR}/sort_external_after_early_finish_1536MB.csv' (FORMAT csv)
+
+statement ok
+SET memory_limit = '8GB'
+
+# every row once, in the order of the sort keys
+query II
+SELECT count(*), count(*) FILTER (WHERE field_number < previous)
+FROM (SELECT field_number, lag(field_number) OVER (ORDER BY rn) AS previous
+      FROM (SELECT field_number, row_number() OVER () AS rn
+            FROM read_csv('{TEST_DIR}/sort_external_after_early_finish_1536MB.csv', header = true, all_varchar = true)))
+----
+2239423	0
+
+query I
+SELECT count(*) FROM (
+	SELECT * FROM read_csv('{TEST_DIR}/sort_external_after_early_finish_1536MB.csv', header = true, all_varchar = true)
+	EXCEPT ALL
+	SELECT * FROM (SELECT sp.field_number, substr(md5(sp.sample_id::VARCHAR), 1, 10), substr(md5(sp.sample_id::VARCHAR || 'x'), 1, 10), CAST(sp.sample_id % 500 AS VARCHAR), CAST(sp.sample_id % 12 AS VARCHAR), CAST(sp.sample_id % 28 AS VARCHAR), CAST(sp.sample_id % 300 AS VARCHAR), CAST(sp.n AS VARCHAR), w.c0, w.c1, w.c2, w.c3, w.c4, w.c5, w.c6, w.c7, w.c8, w.c9, w.c10, w.c11, w.c12, w.c13, w.c14, w.c15, w.c16, w.c17, w.c18, w.c19, w.c20, w.c21, w.c22, w.c23, w.c24, w.c25, w.c26, w.c27, w.c28, w.c29, w.c30, w.c31, w.c32, w.c33, w.c34, w.c35, w.c36, w.c37, w.c38, w.c39, w.c40, w.c41, w.c42, w.c43 FROM specimen sp   LEFT JOIN link l ON l.sample_id = sp.sample_id AND l.n = sp.n   LEFT JOIN wide w ON w.id = l.wide_id)
+)
+----
+0
+
+statement ok
+USE memory
+
+statement ok
+DETACH store

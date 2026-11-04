@@ -16,6 +16,8 @@
 #include "parquet_rle_bp_decoder.hpp"
 #include "parquet_rle_bp_encoder.hpp"
 #include "duckdb/common/primitive_dictionary.hpp"
+#include "duckdb/common/operator/comparison_operators.hpp"
+#include "duckdb/common/types/double_na_equal.hpp"
 
 namespace duckdb {
 
@@ -65,6 +67,86 @@ static void TemplatedWritePlain(Vector &col, ColumnWriterStatistics *stats, cons
 	// Else we already wrote to stream
 }
 
+template <class T>
+struct SortednessKey {
+	static constexpr bool TRACKED = std::is_integral<T>::value || std::is_same<T, hugeint_t>::value ||
+	                                std::is_same<T, uhugeint_t>::value || std::is_same<T, string_t>::value;
+	static const T &Get(const T &value) {
+		return value;
+	}
+};
+
+template <>
+struct SortednessKey<float_na_equal> {
+	static constexpr bool TRACKED = true;
+	static const float &Get(const float_na_equal &value) {
+		return value.val;
+	}
+};
+
+template <>
+struct SortednessKey<double_na_equal> {
+	static constexpr bool TRACKED = true;
+	static const double &Get(const double_na_equal &value) {
+		return value.val;
+	}
+};
+
+template <class T, bool TRACK = SortednessKey<T>::TRACKED>
+class SortednessTracker {
+public:
+	void Update(const T &) {
+	}
+	void Persist() {
+	}
+	bool IsSorted() const {
+		return false;
+	}
+};
+
+template <class T>
+class SortednessTracker<T, true> {
+public:
+	void Update(const T &value) {
+		if (count > 0) {
+			const auto &left = SortednessKey<T>::Get(previous);
+			const auto &right = SortednessKey<T>::Get(value);
+			ascending = ascending && !GreaterThan::Operation(left, right);
+			descending = descending && !GreaterThan::Operation(right, left);
+		}
+		previous = value;
+		count++;
+	}
+	//! Copies the last value out of the vector it points into, which may be freed before the next one
+	void Persist() {
+		if (count > 0) {
+			PersistValue(previous, owned_previous);
+		}
+	}
+	bool IsSorted() const {
+		return ascending || descending;
+	}
+
+private:
+	template <class V>
+	static void PersistValue(V &, string &) {
+	}
+	static void PersistValue(string_t &value, string &owned) {
+		if (value.IsInlined() || value.GetData() == owned.data()) {
+			return;
+		}
+		owned.assign(value.GetData(), value.GetSize());
+		value = string_t(owned.data(), UnsafeNumericCast<uint32_t>(owned.size()));
+	}
+
+private:
+	T previous;
+	string owned_previous;
+	idx_t count = 0;
+	bool ascending = true;
+	bool descending = true;
+};
+
 template <class SRC, class TGT, class OP>
 class StandardColumnWriterState : public PrimitiveColumnWriterState {
 public:
@@ -79,9 +161,11 @@ public:
 	~StandardColumnWriterState() override = default;
 
 	uint32_t key_bit_width = 0;
+	idx_t dictionary_values = 0;
 
 	PrimitiveDictionary<SRC, TGT, OP> dictionary;
 	duckdb_parquet::Encoding::type encoding;
+	SortednessTracker<SRC> sortedness;
 };
 
 template <class SRC, class TGT, class OP>
@@ -124,6 +208,10 @@ public:
 	//! Dictionary encoding normally updates the statistics once per distinct dictionary value.
 	//! Floating point statistics include nan_count, which counts every NaN value written, so they are updated per row.
 	static constexpr bool STATS_PER_OCCURRENCE = std::is_same<OP, FloatingPointOperator>::value;
+	//! Values the dictionary must have seen before they are used to skip a fallback filter
+	static constexpr idx_t MIN_PREFIX_VALUES = 1024;
+	//! Fallback filters are skipped unless the column chunk is estimated to be this many times larger
+	static constexpr idx_t MIN_COLUMN_TO_FILTER_RATIO = 4;
 
 public:
 	unique_ptr<ColumnWriterState> InitializeWriteState(duckdb_parquet::RowGroup &row_group) override {
@@ -209,12 +297,15 @@ public:
 		    check_parent_empty ? parent->definition_levels.size() - state.definition_levels.size() : count;
 
 		const auto &validity = FlatVector::Validity(vector);
+		const bool track_sortedness = TracksSortedness(state);
 
 		if (!check_parent_empty && validity.CannotHaveNull()) {
 			// Fast path
+			for (idx_t i = 0; track_sortedness && i < vcount && state.sortedness.IsSorted(); i++) {
+				state.sortedness.Update(data_ptr[i]);
+			}
 			for (; vector_index < vcount; vector_index++) {
-				const auto &src_value = data_ptr[vector_index];
-				state.dictionary.template Insert<true>(src_value);
+				AnalyzeValue(state, data_ptr[vector_index]);
 			}
 		} else {
 			for (idx_t i = 0; i < vcount; i++) {
@@ -222,11 +313,16 @@ public:
 					continue;
 				}
 				if (validity.RowIsValid(vector_index)) {
-					const auto &src_value = data_ptr[vector_index];
-					state.dictionary.template Insert<true>(src_value);
+					if (track_sortedness) {
+						state.sortedness.Update(data_ptr[vector_index]);
+					}
+					AnalyzeValue(state, data_ptr[vector_index]);
 				}
 				vector_index++;
 			}
+		}
+		if (track_sortedness) {
+			state.sortedness.Persist();
 		}
 	}
 
@@ -260,10 +356,21 @@ public:
 		} else {
 			state.key_bit_width = RleBpDecoder::ComputeBitWidthFromValueCount(state.dictionary.GetSize());
 		}
+		if (state.bloom_filter && state.sortedness.IsSorted()) {
+			state.bloom_filter.reset();
+		}
+		if (state.bloom_filter) {
+			state.bloom_filter->FoldToTarget(BufferAllocator::Get(writer.GetContext()),
+			                                 writer.BloomFilterFalsePositiveRatio());
+		}
 	}
 
 	unique_ptr<ColumnWriterStatistics> InitializeStatsState() override {
 		return OP::template InitializeStats<SRC, TGT>();
+	}
+
+	bool SupportsBloomFilterFallback() const override {
+		return !std::is_same<TGT, Int96>::value && !std::is_same<OP, ParquetGeometryOperator>::value;
 	}
 
 	bool HasDictionary(PrimitiveColumnWriterState &state_p) override {
@@ -296,7 +403,8 @@ public:
 			auto bloom_filter_entries =
 			    state.dictionary.GetSize() * OP::template BloomFilterEntriesPerValue<SRC, TGT>();
 			state.bloom_filter =
-			    make_uniq<ParquetBloomFilter>(bloom_filter_entries, writer.BloomFilterFalsePositiveRatio());
+			    ParquetBloomFilter::Create(BufferAllocator::Get(writer.GetContext()), bloom_filter_entries,
+			                               writer.BloomFilterFalsePositiveRatio());
 		}
 
 		// the chunk statistics are the merged page statistics when the page index is written
@@ -308,12 +416,7 @@ public:
 			}
 			if (state.bloom_filter) {
 				// update the bloom filter
-				auto hash = OP::template XXHash64<SRC, TGT>(tgt_value);
-				state.bloom_filter->FilterInsert(hash);
-				auto extra_hash = OP::template GetExtraBloomFilterHash<SRC, TGT>(src_value, tgt_value);
-				if (extra_hash) {
-					state.bloom_filter->FilterInsert(*extra_hash);
-				}
+				InsertBloomFilterValue(*state.bloom_filter, src_value, tgt_value);
 			}
 		});
 
@@ -335,6 +438,109 @@ public:
 	}
 
 private:
+	static void InsertBloomFilterValue(ParquetBloomFilter &bloom_filter, const SRC &src_value, const TGT &tgt_value) {
+		bloom_filter.FilterInsert(OP::template XXHash64<SRC, TGT>(tgt_value));
+		auto extra_hash = OP::template GetExtraBloomFilterHash<SRC, TGT>(src_value, tgt_value);
+		if (extra_hash) {
+			bloom_filter.FilterInsert(*extra_hash);
+		}
+	}
+
+	bool TracksSortedness(StandardColumnWriterState<SRC, TGT, OP> &state) const {
+		return bloom_filter_fallback && state.sortedness.IsSorted() &&
+		       (!state.dictionary.IsFull() || state.bloom_filter);
+	}
+
+	void AnalyzeValue(StandardColumnWriterState<SRC, TGT, OP> &state, const SRC &src_value) {
+		if (!state.dictionary.IsFull()) {
+			state.dictionary_values++;
+			state.dictionary.template Insert<true>(src_value);
+			if (!state.dictionary.IsFull()) {
+				return;
+			}
+			StartBloomFilterFallback(state);
+		}
+		if (state.bloom_filter) {
+			InsertBloomFilterValue(*state.bloom_filter, src_value, OP::template Operation<SRC, TGT>(src_value));
+		}
+	}
+
+	//! Extrapolates the distinct count, assuming the values seen so far are drawn uniformly from a fixed set
+	static idx_t EstimateDistinctValues(idx_t seen_distinct, idx_t seen_values, idx_t total_values) {
+		if (seen_distinct >= seen_values) {
+			return total_values;
+		}
+		const auto distinct = static_cast<double>(seen_distinct);
+		const auto values = static_cast<double>(seen_values);
+		auto expected_distinct = [](double population, double draws) {
+			return -population * std::expm1(-draws / population);
+		};
+		double low = distinct;
+		double high = distinct;
+		while (expected_distinct(high, values) < distinct) {
+			high *= 2;
+		}
+		for (idx_t i = 0; i < 64; i++) {
+			const auto mid = (low + high) / 2;
+			if (expected_distinct(mid, values) < distinct) {
+				low = mid;
+			} else {
+				high = mid;
+			}
+		}
+		const auto estimate = expected_distinct(high, static_cast<double>(total_values));
+		return MinValue<idx_t>(total_values, LossyNumericCast<idx_t>(std::ceil(estimate)));
+	}
+
+	bool SkipBloomFilterFallback(StandardColumnWriterState<SRC, TGT, OP> &state) const {
+		if (state.dictionary_values < MIN_PREFIX_VALUES) {
+			return false;
+		}
+		if (state.sortedness.IsSorted()) {
+			return true;
+		}
+		const auto rows = NumericCast<idx_t>(state.row_group.num_rows);
+		const auto distinct = EstimateDistinctValues(state.dictionary.GetSize() + 1, state.dictionary_values, rows);
+		const auto filter_size = ParquetBloomFilter::EstimateSize(
+		    distinct * OP::template BloomFilterEntriesPerValue<SRC, TGT>(), writer.BloomFilterFalsePositiveRatio());
+		if (!filter_size.IsValid()) {
+			return true;
+		}
+		const auto value_size =
+		    state.dictionary.GetTargetMemoryStream()->GetPosition() / MaxValue<idx_t>(state.dictionary.GetSize(), 1);
+		return filter_size.GetIndex() * MIN_COLUMN_TO_FILTER_RATIO > value_size * rows;
+	}
+
+	void StartBloomFilterFallback(StandardColumnWriterState<SRC, TGT, OP> &state) {
+		if (!bloom_filter_fallback || SkipBloomFilterFallback(state)) {
+			return;
+		}
+		auto bloom_filter = ParquetBloomFilter::TryCreate(
+		    BufferAllocator::Get(writer.GetContext()),
+		    NumericCast<idx_t>(state.row_group.num_rows) * OP::template BloomFilterEntriesPerValue<SRC, TGT>(),
+		    writer.BloomFilterFalsePositiveRatio(), writer.BloomFilterFallbackMemory());
+		if (!bloom_filter) {
+			return;
+		}
+		auto &filter = *bloom_filter;
+		bool seedable = true;
+		if (OP::template BloomFilterEntriesPerValue<SRC, TGT>() == 1) {
+			state.dictionary.IterateTargetValues([&](const TGT &tgt_value) {
+				seedable = seedable && OP::template CanSeedBloomFilter<SRC, TGT>(tgt_value);
+				filter.FilterInsert(OP::template XXHash64<SRC, TGT>(tgt_value));
+			});
+		} else {
+			state.dictionary.IterateValues([&](const SRC &src_value, const TGT &tgt_value) {
+				seedable = seedable && OP::template CanSeedBloomFilter<SRC, TGT>(tgt_value);
+				InsertBloomFilterValue(filter, src_value, tgt_value);
+			});
+		}
+		state.dictionary.Reset();
+		if (seedable) {
+			state.bloom_filter = std::move(bloom_filter);
+		}
+	}
+
 	template <bool ALL_VALID>
 	void WriteVectorInternal(WriteStream &temp_writer, ColumnWriterStatistics *stats,
 	                         ColumnWriterPageState *page_state_p, Vector &input_column, idx_t chunk_start,

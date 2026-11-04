@@ -4645,19 +4645,21 @@ const StringUtil::EnumStringLiteral *GetOptimizerTypeValues() {
 		{ static_cast<uint32_t>(OptimizerType::REDUNDANT_ORDER_KEYS), "REDUNDANT_ORDER_KEYS" },
 		{ static_cast<uint32_t>(OptimizerType::DISJUNCTIVE_JOIN_REWRITER), "DISJUNCTIVE_JOIN_REWRITER" },
 		{ static_cast<uint32_t>(OptimizerType::REDUNDANT_ORDER), "REDUNDANT_ORDER" },
-		{ static_cast<uint32_t>(OptimizerType::WINDOW_JOIN_PUSHDOWN), "WINDOW_JOIN_PUSHDOWN" }
+		{ static_cast<uint32_t>(OptimizerType::WINDOW_JOIN_PUSHDOWN), "WINDOW_JOIN_PUSHDOWN" },
+		{ static_cast<uint32_t>(OptimizerType::SELF_JOIN_AGGREGATE), "SELF_JOIN_AGGREGATE" },
+		{ static_cast<uint32_t>(OptimizerType::SCALAR_AGGREGATE_MERGE), "SCALAR_AGGREGATE_MERGE" }
 	};
 	return values;
 }
 
 template<>
 const char* EnumUtil::ToChars<OptimizerType>(OptimizerType value) {
-	return StringUtil::EnumToString(GetOptimizerTypeValues(), 50, "OptimizerType", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetOptimizerTypeValues(), 52, "OptimizerType", static_cast<uint32_t>(value));
 }
 
 template<>
 OptimizerType EnumUtil::FromString<OptimizerType>(const char *value) {
-	return static_cast<OptimizerType>(StringUtil::StringToEnum(GetOptimizerTypeValues(), 50, "OptimizerType", value));
+	return static_cast<OptimizerType>(StringUtil::StringToEnum(GetOptimizerTypeValues(), 52, "OptimizerType", value));
 }
 
 const StringUtil::EnumStringLiteral *GetOrderByColumnTypeValues() {
@@ -5214,6 +5216,24 @@ const char* EnumUtil::ToChars<PipelineInputMode>(PipelineInputMode value) {
 template<>
 PipelineInputMode EnumUtil::FromString<PipelineInputMode>(const char *value) {
 	return static_cast<PipelineInputMode>(StringUtil::StringToEnum(GetPipelineInputModeValues(), 2, "PipelineInputMode", value));
+}
+
+const StringUtil::EnumStringLiteral *GetPipelineScheduleGraphValues() {
+	static constexpr StringUtil::EnumStringLiteral values[] {
+		{ static_cast<uint32_t>(PipelineScheduleGraph::SCHEDULED), "SCHEDULED" },
+		{ static_cast<uint32_t>(PipelineScheduleGraph::WITH_ANALYSIS), "WITH_ANALYSIS" }
+	};
+	return values;
+}
+
+template<>
+const char* EnumUtil::ToChars<PipelineScheduleGraph>(PipelineScheduleGraph value) {
+	return StringUtil::EnumToString(GetPipelineScheduleGraphValues(), 2, "PipelineScheduleGraph", static_cast<uint32_t>(value));
+}
+
+template<>
+PipelineScheduleGraph EnumUtil::FromString<PipelineScheduleGraph>(const char *value) {
+	return static_cast<PipelineScheduleGraph>(StringUtil::StringToEnum(GetPipelineScheduleGraphValues(), 2, "PipelineScheduleGraph", value));
 }
 
 const StringUtil::EnumStringLiteral *GetPipelineScheduleModeValues() {
@@ -6111,6 +6131,7 @@ const StringUtil::EnumStringLiteral *GetSerializationVersionDeprecatedValues() {
 		{ static_cast<uint32_t>(SerializationVersionDeprecated::V1_5_5), "V1_5_5" },
 		{ static_cast<uint32_t>(SerializationVersionDeprecated::V1_5_6), "V1_5_6" },
 		{ static_cast<uint32_t>(SerializationVersionDeprecated::V2_0_0), "V2_0_0" },
+		{ static_cast<uint32_t>(SerializationVersionDeprecated::V2_0_1), "V2_0_1" },
 		{ static_cast<uint32_t>(SerializationVersionDeprecated::V2_1_0), "V2_1_0" },
 		{ static_cast<uint32_t>(SerializationVersionDeprecated::LATEST), "LATEST" },
 		{ static_cast<uint32_t>(SerializationVersionDeprecated::INVALID), "INVALID" }
@@ -6120,12 +6141,12 @@ const StringUtil::EnumStringLiteral *GetSerializationVersionDeprecatedValues() {
 
 template<>
 const char* EnumUtil::ToChars<SerializationVersionDeprecated>(SerializationVersionDeprecated value) {
-	return StringUtil::EnumToString(GetSerializationVersionDeprecatedValues(), 32, "SerializationVersionDeprecated", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetSerializationVersionDeprecatedValues(), 33, "SerializationVersionDeprecated", static_cast<uint32_t>(value));
 }
 
 template<>
 SerializationVersionDeprecated EnumUtil::FromString<SerializationVersionDeprecated>(const char *value) {
-	return static_cast<SerializationVersionDeprecated>(StringUtil::StringToEnum(GetSerializationVersionDeprecatedValues(), 32, "SerializationVersionDeprecated", value));
+	return static_cast<SerializationVersionDeprecated>(StringUtil::StringToEnum(GetSerializationVersionDeprecatedValues(), 33, "SerializationVersionDeprecated", value));
 }
 
 const StringUtil::EnumStringLiteral *GetSetOperationTypeValues() {
@@ -6690,6 +6711,7 @@ const StringUtil::EnumStringLiteral *GetStorageVersionValues() {
 		{ static_cast<uint32_t>(StorageVersion::V1_5_5), "V1_5_5" },
 		{ static_cast<uint32_t>(StorageVersion::V1_5_6), "V1_5_6" },
 		{ static_cast<uint32_t>(StorageVersion::V2_0_0), "V2_0_0" },
+		{ static_cast<uint32_t>(StorageVersion::V2_0_1), "V2_0_1" },
 		{ static_cast<uint32_t>(StorageVersion::V2_1_0), "V2_1_0" },
 		{ static_cast<uint32_t>(StorageVersion::LATEST), "LATEST" },
 		{ static_cast<uint32_t>(StorageVersion::DEPRECATED), "DEPRECATED" },
@@ -6700,12 +6722,12 @@ const StringUtil::EnumStringLiteral *GetStorageVersionValues() {
 
 template<>
 const char* EnumUtil::ToChars<StorageVersion>(StorageVersion value) {
-	return StringUtil::EnumToString(GetStorageVersionValues(), 72, "StorageVersion", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetStorageVersionValues(), 73, "StorageVersion", static_cast<uint32_t>(value));
 }
 
 template<>
 StorageVersion EnumUtil::FromString<StorageVersion>(const char *value) {
-	return static_cast<StorageVersion>(StringUtil::StringToEnum(GetStorageVersionValues(), 72, "StorageVersion", value));
+	return static_cast<StorageVersion>(StringUtil::StringToEnum(GetStorageVersionValues(), 73, "StorageVersion", value));
 }
 
 const StringUtil::EnumStringLiteral *GetStrTimeSpecifierValues() {
@@ -7149,6 +7171,28 @@ TransactionType EnumUtil::FromString<TransactionType>(const char *value) {
 	return static_cast<TransactionType>(StringUtil::StringToEnum(GetTransactionTypeValues(), 4, "TransactionType", value));
 }
 
+const StringUtil::EnumStringLiteral *GetTransformChildKindValues() {
+	static constexpr StringUtil::EnumStringLiteral values[] {
+		{ static_cast<uint32_t>(TransformChildKind::REQUIRED), "REQUIRED" },
+		{ static_cast<uint32_t>(TransformChildKind::OPTIONAL), "OPTIONAL" },
+		{ static_cast<uint32_t>(TransformChildKind::LIST), "LIST" },
+		{ static_cast<uint32_t>(TransformChildKind::OPTIONAL_LIST), "OPTIONAL_LIST" },
+		{ static_cast<uint32_t>(TransformChildKind::REPEAT), "REPEAT" },
+		{ static_cast<uint32_t>(TransformChildKind::OPTIONAL_REPEAT), "OPTIONAL_REPEAT" }
+	};
+	return values;
+}
+
+template<>
+const char* EnumUtil::ToChars<TransformChildKind>(TransformChildKind value) {
+	return StringUtil::EnumToString(GetTransformChildKindValues(), 6, "TransformChildKind", static_cast<uint32_t>(value));
+}
+
+template<>
+TransformChildKind EnumUtil::FromString<TransformChildKind>(const char *value) {
+	return static_cast<TransformChildKind>(StringUtil::StringToEnum(GetTransformChildKindValues(), 6, "TransformChildKind", value));
+}
+
 const StringUtil::EnumStringLiteral *GetTriggerEventTypeValues() {
 	static constexpr StringUtil::EnumStringLiteral values[] {
 		{ static_cast<uint32_t>(TriggerEventType::INSERT_EVENT), "INSERT" },
@@ -7270,19 +7314,20 @@ const StringUtil::EnumStringLiteral *GetUndoFlagsValues() {
 		{ static_cast<uint32_t>(UndoFlags::DELETE_TUPLE), "DELETE_TUPLE" },
 		{ static_cast<uint32_t>(UndoFlags::UPDATE_TUPLE), "UPDATE_TUPLE" },
 		{ static_cast<uint32_t>(UndoFlags::SEQUENCE_VALUE), "SEQUENCE_VALUE" },
-		{ static_cast<uint32_t>(UndoFlags::ATTACHED_DATABASE), "ATTACHED_DATABASE" }
+		{ static_cast<uint32_t>(UndoFlags::ATTACHED_DATABASE), "ATTACHED_DATABASE" },
+		{ static_cast<uint32_t>(UndoFlags::UPDATE_ROWS), "UPDATE_ROWS" }
 	};
 	return values;
 }
 
 template<>
 const char* EnumUtil::ToChars<UndoFlags>(UndoFlags value) {
-	return StringUtil::EnumToString(GetUndoFlagsValues(), 7, "UndoFlags", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetUndoFlagsValues(), 8, "UndoFlags", static_cast<uint32_t>(value));
 }
 
 template<>
 UndoFlags EnumUtil::FromString<UndoFlags>(const char *value) {
-	return static_cast<UndoFlags>(StringUtil::StringToEnum(GetUndoFlagsValues(), 7, "UndoFlags", value));
+	return static_cast<UndoFlags>(StringUtil::StringToEnum(GetUndoFlagsValues(), 8, "UndoFlags", value));
 }
 
 const StringUtil::EnumStringLiteral *GetUnionInvalidReasonValues() {

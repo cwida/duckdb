@@ -147,36 +147,37 @@ JoinRelationSet &JoinRelationSetManager::Union(JoinRelationSet &left, JoinRelati
 	return GetJoinRelation(std::move(relations), count);
 }
 
-// JoinRelationSet *JoinRelationSetManager::Difference(JoinRelationSet *left, JoinRelationSet *right) {
-// 	auto relations = unsafe_unique_array<idx_t>(new idx_t[left->count]);
-// 	idx_t count = 0;
-// 	// move through the left and right relations
-// 	idx_t i = 0, j = 0;
-// 	while (true) {
-// 		if (i == left->count) {
-// 			// exhausted left relation, we are done
-// 			break;
-// 		} else if (j == right->count) {
-// 			// exhausted right relation, add remaining of left
-// 			for (; i < left->count; i++) {
-// 				relations[count++] = left->relations[i];
-// 			}
-// 			break;
-// 		} else if (left->relations[i] == right->relations[j]) {
-// 			// equivalent, add nothing
-// 			i++;
-// 			j++;
-// 		} else if (left->relations[i] < right->relations[j]) {
-// 			// left is smaller, progress left and add it to the set
-// 			relations[count++] = left->relations[i];
-// 			i++;
-// 		} else {
-// 			// right is smaller, progress right
-// 			j++;
-// 		}
-// 	}
-// 	return GetJoinRelation(std::move(relations), count);
-// }
+JoinRelationSet &JoinRelationSetManager::Intersection(const JoinRelationSet &left, const JoinRelationSet &right) {
+	auto relations = make_unsafe_uniq_array<RelationIndex>(MinValue(left.count, right.count));
+	idx_t count = 0;
+	idx_t i = 0, j = 0;
+	while (i < left.count && j < right.count) {
+		if (left.relations[i] < right.relations[j]) {
+			i++;
+		} else if (right.relations[j] < left.relations[i]) {
+			j++;
+		} else {
+			relations[count++] = left.relations[i++];
+			j++;
+		}
+	}
+	return GetJoinRelation(std::move(relations), count);
+}
+
+JoinRelationSet &JoinRelationSetManager::Difference(const JoinRelationSet &left, const JoinRelationSet &right) {
+	auto relations = make_unsafe_uniq_array<RelationIndex>(left.count);
+	idx_t count = 0;
+	idx_t j = 0;
+	for (idx_t i = 0; i < left.count; i++) {
+		while (j < right.count && right.relations[j] < left.relations[i]) {
+			j++;
+		}
+		if (j == right.count || left.relations[i] != right.relations[j]) {
+			relations[count++] = left.relations[i];
+		}
+	}
+	return GetJoinRelation(std::move(relations), count);
+}
 
 static string JoinRelationTreeNodeToString(const JoinRelationTreeNode *node) {
 	string result = "";

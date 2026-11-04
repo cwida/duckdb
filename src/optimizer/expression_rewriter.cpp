@@ -31,6 +31,7 @@ const vector<unique_ptr<Rule>> &ExpressionRewriter::GetRules() {
 	rules.push_back(make_uniq<LeastGreatestSimplificationRule>(*this));
 	rules.push_back(make_uniq<CaseSimplificationRule>(*this));
 	rules.push_back(make_uniq<ConjunctionSimplificationRule>(*this));
+	rules.push_back(make_uniq<OrRangeMergeRule>(*this));
 	rules.push_back(make_uniq<DatePartSimplificationRule>(*this));
 	rules.push_back(make_uniq<DateTruncSimplificationRule>(*this));
 	rules.push_back(make_uniq<ComparisonSimplificationRule>(*this));
@@ -60,6 +61,7 @@ const vector<unique_ptr<Rule>> &ExpressionRewriter::GetRules() {
 	rules.push_back(make_uniq<ContainsToInClauseRule>(*this));
 	rules.push_back(make_uniq<NotComparisonSimplificationRule>(*this));
 	rules.push_back(make_uniq<NotConjunctionSimplificationRule>(*this));
+	rules.push_back(make_uniq<NotConstantOrNullSimplificationRule>(*this));
 
 #ifdef DEBUG
 	for (auto &rule : rules) {

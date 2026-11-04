@@ -43,6 +43,7 @@ BoundCastInfo::BoundCastInfo(cast_function_t function_p, unique_ptr<BoundCastDat
 BoundCastInfo BoundCastInfo::Copy() const {
 	auto result = BoundCastInfo(function, cast_data ? cast_data->Copy() : nullptr, init_local_state);
 	result.statistics = statistics;
+	result.stability = stability;
 	return result;
 }
 

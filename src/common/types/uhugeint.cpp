@@ -317,9 +317,13 @@ bool Uhugeint::TryAddInPlace(uhugeint_t &lhs, uhugeint_t rhs) {
 }
 
 bool Uhugeint::TrySubtractInPlace(uhugeint_t &lhs, uhugeint_t rhs) {
-	uint64_t new_upper = lhs.upper - rhs.upper - ((lhs.lower - rhs.lower) > lhs.lower);
-	bool no_overflow = !(new_upper > lhs.upper);
-	lhs.lower -= rhs.lower;
+	uint64_t new_lower = lhs.lower - rhs.lower;
+	uint64_t borrow = new_lower > lhs.lower;
+	uint64_t new_upper = lhs.upper - rhs.upper - borrow;
+	// the result is out of range exactly when rhs > lhs, i.e. when the upper half underflows
+	// either directly or through the borrow of the lower half
+	bool no_overflow = !(rhs.upper > lhs.upper || (rhs.upper == lhs.upper && borrow));
+	lhs.lower = new_lower;
 	lhs.upper = new_upper;
 	return no_overflow;
 }

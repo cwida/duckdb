@@ -291,6 +291,21 @@ SELECT reservoir_quantile(r, NULL)  from quantile
 ----
 
 statement error
+SELECT reservoir_quantile(r, NULL::DOUBLE[]) from quantile
+----
+RESERVOIR_QUANTILE QUANTILE parameter cannot be NULL
+
+statement error
+SELECT reservoir_quantile(r, NULL::DOUBLE[], 100) from quantile
+----
+RESERVOIR_QUANTILE QUANTILE parameter cannot be NULL
+
+statement error
+SELECT reservoir_quantile(r, NULL::DOUBLE[]) OVER () from quantile
+----
+RESERVOIR_QUANTILE QUANTILE parameter cannot be NULL
+
+statement error
 SELECT reservoir_quantile(r, 'nan'::DOUBLE)  from quantile
 ----
 cannot be NaN

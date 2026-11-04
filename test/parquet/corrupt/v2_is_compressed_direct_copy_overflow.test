@@ -1,0 +1,11 @@
+# name: test/parquet/corrupt/v2_is_compressed_direct_copy_overflow.test
+# description: Reject mismatched sizes for uncompressed V2 pages in compressed columns
+# group: [corrupt]
+
+require parquet
+
+# The SNAPPY column has an uncompressed V2 page with a 4096-byte body but a declared size of 100.
+statement error
+SELECT * FROM read_parquet('data/parquet-testing/corrupt/v2_is_compressed_direct_copy_overflow.parquet');
+----
+uncompressed page size mismatch (expected 100, actual: 4096)

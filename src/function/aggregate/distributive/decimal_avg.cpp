@@ -136,8 +136,8 @@ static unique_ptr<FunctionData> BindDecimalAverage(BindAggregateFunctionInput &i
 		                            input_type.ToString());
 	}
 
-	uint8_t width = DecimalType::GetWidth(input_type);
-	uint8_t scale = DecimalType::GetScale(input_type);
+	uint32_t width = DecimalType::GetWidth(input_type);
+	uint32_t scale = DecimalType::GetScale(input_type);
 	auto return_type = LogicalType::DECIMAL(width, scale);
 
 	auto name = function.GetName();

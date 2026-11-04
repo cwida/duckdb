@@ -1,0 +1,389 @@
+# name: test/sql/copy/parquet/bloom_filter_coalesced_reads.test
+# description: Bloom filters are stored per column and coalesced across surviving row groups
+# group: [parquet]
+
+require parquet
+
+statement ok
+SET threads = 1;
+
+statement ok
+CREATE TABLE data AS
+	SELECT 'v' || (hash(range) % 2000)::VARCHAR AS s, 'w' || (hash(range + 1) % 50)::VARCHAR AS c, range AS x
+	FROM range(200000);
+
+statement ok
+COPY data TO '{TEST_DIR}/bloom_coalesced.parquet' (ROW_GROUP_SIZE 20000);
+
+query TIT
+SELECT path_in_schema, count(*), max(bloom_filter_offset + bloom_filter_length) - min(bloom_filter_offset) = sum(bloom_filter_length)
+FROM parquet_metadata('{TEST_DIR}/bloom_coalesced.parquet')
+WHERE bloom_filter_offset IS NOT NULL
+GROUP BY ALL ORDER BY ALL;
+----
+c	10	true
+s	10	true
+
+statement ok
+CREATE MACRO bloom_span(f, col) AS TABLE
+	SELECT min(bloom_filter_offset) AS span_begin, max(bloom_filter_offset + bloom_filter_length) AS span_end
+	FROM parquet_metadata(f)
+	WHERE path_in_schema = col;
+
+statement ok
+CREATE MACRO bloom_reads(f, col) AS TABLE
+	SELECT count(*) AS reads, coalesce(sum(bytes), 0) AS bytes
+	FROM duckdb_logs_parsed('FileSystem'), bloom_span(f, col)
+	WHERE op = 'READ' AND parse_filename(path) = parse_filename(f) AND pos >= span_begin AND pos + bytes <= span_end;
+
+statement ok
+SET enable_external_file_cache = false;
+
+statement ok
+SET parquet_prefetch_column_gap = 1048576;
+
+statement ok
+CALL enable_logging('FileSystem');
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/bloom_coalesced.parquet' WHERE s = 'v1000x'
+----
+0
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/bloom_coalesced.parquet' WHERE s IN ('v1000x', 'v1001x')
+----
+0
+
+statement ok
+CALL disable_logging();
+
+query II
+SELECT count(*), count(*) FILTER (WHERE bytes = (SELECT span_end - span_begin FROM bloom_span('{TEST_DIR}/bloom_coalesced.parquet', 's')))
+FROM duckdb_logs_parsed('FileSystem'), bloom_span('{TEST_DIR}/bloom_coalesced.parquet', 's')
+WHERE op = 'READ' AND parse_filename(path) = 'bloom_coalesced.parquet' AND pos >= span_begin AND pos + bytes <= span_end;
+----
+2	2
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+SET parquet_prefetch_column_gap = 4096;
+
+# Filter bytes do not count as gaps: these ten adjacent filters still merge into one read.
+query I
+SELECT span_end - span_begin > 9 * 4096 FROM bloom_span('{TEST_DIR}/bloom_coalesced.parquet', 's');
+----
+true
+
+statement ok
+CALL enable_logging('FileSystem');
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/bloom_coalesced.parquet' WHERE s = 'v1000x'
+----
+0
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT reads FROM bloom_reads('{TEST_DIR}/bloom_coalesced.parquet', 's');
+----
+1
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+RESET parquet_prefetch_column_gap;
+
+query I
+SELECT count(*) = (SELECT count(*) FROM data WHERE s = 'v1000') FROM '{TEST_DIR}/bloom_coalesced.parquet' WHERE s = 'v1000'
+----
+true
+
+query I
+SELECT count(*) = (SELECT count(*) FROM data WHERE s IN ('v7', 'v1000x', 'v1999')) FROM '{TEST_DIR}/bloom_coalesced.parquet'
+WHERE s IN ('v7', 'v1000x', 'v1999')
+----
+true
+
+query I
+SELECT count(*) = (SELECT count(*) FROM data WHERE c = 'w10' AND s = 'v1000') FROM '{TEST_DIR}/bloom_coalesced.parquet'
+WHERE c = 'w10' AND s = 'v1000'
+----
+true
+
+statement ok
+COPY (SELECT range // 10000 AS g, range AS x FROM range(200000)) TO '{TEST_DIR}/bloom_single_probe.parquet' (ROW_GROUP_SIZE 20000);
+
+statement ok
+SET parquet_prefetch_column_gap = 1048576;
+
+statement ok
+CALL enable_logging('FileSystem');
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/bloom_single_probe.parquet' WHERE g = 7
+----
+10000
+
+statement ok
+CALL disable_logging();
+
+query II
+SELECT reads, bytes = (SELECT bloom_filter_length FROM parquet_metadata('{TEST_DIR}/bloom_single_probe.parquet') WHERE path_in_schema = 'g' AND row_group_id = 3)
+FROM bloom_reads('{TEST_DIR}/bloom_single_probe.parquet', 'g');
+----
+1	true
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+CALL enable_logging('FileSystem');
+
+query I
+SELECT count(*) = (SELECT count(*) FROM data WHERE s > 'v5') FROM '{TEST_DIR}/bloom_coalesced.parquet' WHERE s > 'v5'
+----
+true
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT reads FROM bloom_reads('{TEST_DIR}/bloom_coalesced.parquet', 's');
+----
+0
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+CREATE TABLE banded AS
+	SELECT 'r' || lpad((range // 20480)::VARCHAR, 3, '0') || '-' || (hash(range) % 1500)::VARCHAR AS h
+	FROM range(409600);
+
+statement ok
+COPY banded TO '{TEST_DIR}/bloom_survivors.parquet' (ROW_GROUP_SIZE 20480);
+
+statement ok
+CREATE MACRO survivor_span(f) AS TABLE
+	SELECT min(bloom_filter_offset) AS span_begin, max(bloom_filter_offset + bloom_filter_length) AS span_end
+	FROM parquet_metadata(f)
+	WHERE path_in_schema = 'h' AND row_group_id BETWEEN 3 AND 16;
+
+query I
+SELECT (SELECT span_end - span_begin FROM survivor_span('{TEST_DIR}/bloom_survivors.parquet')) > 4096
+   AND (SELECT span_end - span_begin FROM survivor_span('{TEST_DIR}/bloom_survivors.parquet')) <
+       (SELECT span_end - span_begin FROM bloom_span('{TEST_DIR}/bloom_survivors.parquet', 'h'))
+----
+true
+
+statement ok
+SET parquet_prefetch_column_gap = 4096;
+
+statement ok
+CALL enable_logging('FileSystem');
+
+query I
+SELECT count(*) = (SELECT count(*) FROM banded WHERE h IN ('r003-5', 'r016-5')) FROM '{TEST_DIR}/bloom_survivors.parquet'
+WHERE h IN ('r003-5', 'r016-5')
+----
+true
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT reads FROM bloom_reads('{TEST_DIR}/bloom_survivors.parquet', 'h');
+----
+2
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+SET parquet_prefetch_column_gap = 1048576;
+
+statement ok
+CALL enable_logging('FileSystem');
+
+query I
+SELECT count(*) = (SELECT count(*) FROM banded WHERE h IN ('r003-5', 'r016-5')) FROM '{TEST_DIR}/bloom_survivors.parquet'
+WHERE h IN ('r003-5', 'r016-5')
+----
+true
+
+statement ok
+CALL disable_logging();
+
+# The gap is accepted, but the merged span exceeds the group's byte budget.
+query II
+SELECT reads, bytes = (
+    SELECT sum(bloom_filter_length) FROM parquet_metadata('{TEST_DIR}/bloom_survivors.parquet')
+    WHERE path_in_schema = 'h' AND row_group_id IN (3, 16)
+) FROM bloom_reads('{TEST_DIR}/bloom_survivors.parquet', 'h');
+----
+2	true
+
+
+# Separated runs coalesce independently, and scan threads share the fetched heads.
+statement ok
+SET parquet_prefetch_column_gap = 4096;
+
+foreach threads 1 8
+
+statement ok
+SET threads = {threads};
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+CALL enable_logging('FileSystem');
+
+query I
+SELECT count(*) = (SELECT count(*) FROM banded WHERE h IN ('r003-5', 'r004-5', 'r015-5', 'r016-5'))
+FROM '{TEST_DIR}/bloom_survivors.parquet'
+WHERE h IN ('r003-5', 'r004-5', 'r015-5', 'r016-5');
+----
+true
+
+statement ok
+CALL disable_logging();
+
+query II
+SELECT reads = CASE WHEN {threads} = 1 THEN 2 ELSE 4 END, bytes = (
+    SELECT sum(bloom_filter_length) FROM parquet_metadata('{TEST_DIR}/bloom_survivors.parquet')
+    WHERE path_in_schema = 'h' AND row_group_id IN (3, 4, 15, 16)
+) FROM bloom_reads('{TEST_DIR}/bloom_survivors.parquet', 'h');
+----
+true	true
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+CALL enable_logging('FileSystem');
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/bloom_coalesced.parquet' WHERE s = 'v1000x';
+----
+0
+
+statement ok
+CALL disable_logging();
+
+query II
+SELECT reads = CASE WHEN {threads} = 1 THEN 1 ELSE 10 END, bytes = (SELECT span_end - span_begin FROM bloom_span('{TEST_DIR}/bloom_coalesced.parquet', 's'))
+FROM bloom_reads('{TEST_DIR}/bloom_coalesced.parquet', 's');
+----
+true	true
+
+endloop
+
+# Disabling prefetching preserves individual-filter reads, regardless of the gap.
+statement ok
+SET threads = 1;
+
+statement ok
+SET disable_parquet_prefetching = true;
+
+statement ok
+SET parquet_prefetch_column_gap = 1048576;
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+CALL enable_logging('FileSystem');
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/bloom_coalesced.parquet' WHERE s = 'v1000x';
+----
+0
+
+statement ok
+CALL disable_logging();
+
+query II
+SELECT reads, bytes = (SELECT span_end - span_begin FROM bloom_span('{TEST_DIR}/bloom_coalesced.parquet', 's'))
+FROM bloom_reads('{TEST_DIR}/bloom_coalesced.parquet', 's');
+----
+10	true
+
+
+# Files with few row groups must keep enough independent reads for the scan workers.
+statement ok
+SET disable_parquet_prefetching = false;
+
+statement ok
+SET threads = 1;
+
+loop file 0 32
+
+statement ok
+COPY (SELECT (range % 1000)::INTEGER * 2 AS x FROM range(32768))
+TO '{TEST_DIR}/bloom_lake_{file}.parquet' (ROW_GROUP_SIZE 8192, DICTIONARY_SIZE_LIMIT 2000);
+
+endloop
+
+query I
+SELECT count(*) FROM parquet_metadata('{TEST_DIR}/bloom_lake_*.parquet');
+----
+128
+
+foreach threads 4 8
+
+statement ok
+SET threads = {threads};
+
+statement ok
+CALL truncate_duckdb_logs();
+
+statement ok
+CALL enable_logging('FileSystem');
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/bloom_lake_*.parquet' WHERE x = 1;
+----
+0
+
+statement ok
+CALL disable_logging();
+
+query I
+SELECT count(*) FROM duckdb_logs_parsed('FileSystem') logs
+JOIN parquet_metadata('{TEST_DIR}/bloom_lake_*.parquet') metadata
+  ON parse_filename(logs.path) = parse_filename(metadata.file_name)
+ AND logs.pos = metadata.bloom_filter_offset AND logs.bytes = metadata.bloom_filter_length
+WHERE logs.op = 'READ';
+----
+128
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/bloom_lake_*.parquet' WHERE x = 0;
+----
+1056
+
+endloop
+
+
+# A downstream error must drain the Bloom fetch tasks before their reader is destroyed.
+loop iteration 0 5
+
+statement error
+SELECT sum(CAST(CASE WHEN filename LIKE '%bloom_lake_16.parquet' THEN 999 ELSE 1 END AS TINYINT))
+FROM read_parquet('{TEST_DIR}/bloom_lake_*.parquet', filename = true) WHERE x = 0;
+----
+Conversion Error
+
+endloop
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/bloom_lake_*.parquet' WHERE x = 0;
+----
+1056

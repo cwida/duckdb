@@ -168,7 +168,7 @@ BoundStatement Binder::Bind(AlterStatement &stmt) {
 
 	// Bind types in the same catalog as the entry
 	auto type_binder = Binder::CreateBinder(context, *this);
-	type_binder->SetSearchPath(catalog, stmt.info->GetQualifiedName().Schema());
+	type_binder->SetSearchPath(catalog, stmt.info->GetQualifiedName().SchemaPath());
 
 	BindAlterTypes(*type_binder, stmt);
 

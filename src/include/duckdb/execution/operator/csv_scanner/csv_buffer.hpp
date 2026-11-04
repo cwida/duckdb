@@ -56,7 +56,7 @@ public:
 	          bool last_buffer);
 
 	//! Creates a new buffer with the next part of the CSV File
-	shared_ptr<CSVBuffer> Next(CSVFileHandle &file_handle, idx_t buffer_size, bool &has_seeked) const;
+	shared_ptr<CSVBuffer> Next(CSVFileHandle &file_handle, idx_t buffer_size) const;
 
 	//! Allocates the buffer and fills it sequentially from the file handle's current position
 	void Load(CSVFileHandle &file_handle);
@@ -73,10 +73,8 @@ public:
 	//! Allocates internal buffer, sets 'block' and 'handle' variables.
 	void AllocateBuffer(idx_t buffer_size);
 
-	void Reload(CSVFileHandle &file_handle);
-	//! Wrapper for the Pin Function, if it can seek, it means that the buffer might have been destroyed, hence we must
-	//! Scan it from the disk file again.
-	shared_ptr<CSVBufferHandle> Pin(CSVFileHandle &file_handle, bool &has_seeked);
+	//! Pins the buffer, re-reading a destroyed random-access buffer from the file
+	shared_ptr<CSVBufferHandle> Pin(CSVFileHandle &file_handle);
 	//! Pins the buffer only if it is in memory and no load is in flight; never performs I/O and never blocks
 	bool TryPin(shared_ptr<CSVBufferHandle> &pinned);
 	//! Wrapper for unpin
@@ -87,9 +85,10 @@ public:
 	bool IsUnloaded() const {
 		return block->GetMemory().IsUnloaded();
 	}
-	//! Whether the underlying block is loaded in memory
+	//! Whether the buffer can be pinned without reading from the file (spilled sequential buffers are reloaded by the
+	//! buffer manager)
 	bool IsInMemory() const {
-		return block && (is_pipe || !block->GetMemory().IsUnloaded());
+		return block && (!random_access || !block->GetMemory().IsUnloaded());
 	}
 
 	//! By default, we use CSV_BUFFER_SIZE to allocate each buffer
@@ -110,8 +109,6 @@ private:
 	idx_t requested_size;
 	//! Global position from the CSV File where this buffer starts
 	idx_t global_csv_start = 0;
-	//! If this file is being fed by a pipe.
-	bool is_pipe;
 	//! If this is a random access buffer
 	bool random_access = false;
 	//! Buffer Index, used as a batch index for insertion-order preservation

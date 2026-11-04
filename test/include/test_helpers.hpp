@@ -37,6 +37,10 @@ void RegisterSqllogictestStdin();
 bool SummarizeFailures();
 //! Test directories of the extensions this build registered with LOAD_TESTS
 vector<string> LoadedExtensionTestPaths();
+//! The build directory of this build
+string TestBuildDirectory();
+//! The root directory that test paths are relative to (UNITTEST_ROOT_DIRECTORY, or the source directory)
+string TestRootDirectory();
 
 //! Test identity: the full test name sanitized to one filesystem/shell-safe path component (every char
 //! outside [A-Za-z0-9_-] -> '_', including '.'). The body suffix is kept, so siblings differing only by

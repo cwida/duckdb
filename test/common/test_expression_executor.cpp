@@ -15,7 +15,7 @@ static void VerifyBooleanSelection(ExpressionExecutor &executor, DataChunk &inpu
 	for (idx_t i = 0; i < input.size(); i++) {
 		mapping.set_index(i, (i * 17) % 97);
 	}
-	for (idx_t count : {0, 1, 63, 64, 65, 129, 193}) {
+	for (idx_t count : {0, 1, 7, 8, 9, 63, 64, 65, 129, 193}) {
 		DataChunk prefix;
 		prefix.InitializeEmpty(input.GetTypes());
 		prefix.Slice(input, 0, count);
@@ -60,11 +60,21 @@ TEST_CASE("Default expression selection preserves Boolean representations and ro
 
 	bool nullable = false;
 	bool dictionary = false;
+	optional<bool> uniform;
 	optional<Value> constant;
 	SECTION("dense") {
 	}
+	SECTION("flat true") {
+		uniform = true;
+	}
+	SECTION("flat false") {
+		uniform = false;
+	}
 	SECTION("mixed and entirely null validity words") {
 		nullable = true;
+	}
+	SECTION("dictionary with duplicates") {
+		dictionary = true;
 	}
 	SECTION("dictionary with duplicates and nulls") {
 		nullable = true;
@@ -87,7 +97,7 @@ TEST_CASE("Default expression selection preserves Boolean representations and ro
 			if (nullable && ((i >= 64 && i < 128) || (i >= 128 && i % 7 == 0))) {
 				writer.WriteNull();
 			} else {
-				writer.WriteValue(i % 3 == 0);
+				writer.WriteValue(uniform ? *uniform : i % 3 == 0);
 			}
 		}
 	}

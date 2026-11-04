@@ -69,6 +69,11 @@ FixedSizeBuffer::~FixedSizeBuffer() {
 	}
 }
 
+void FixedSizeBuffer::DisownBlock() {
+	lock_guard<mutex> l(lock);
+	block_pointer = BlockPointer();
+}
+
 void FixedSizeBuffer::Finalize(shared_ptr<BlockHandle> block_handle_p, uint32_t offset) {
 	D_ASSERT(readers == 0);
 	D_ASSERT(!buffer_handle.IsValid());

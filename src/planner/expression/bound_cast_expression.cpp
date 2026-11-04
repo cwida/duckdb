@@ -173,8 +173,8 @@ bool BoundCastExpression::CastIsInvertible(const LogicalType &source_type, const
 		return false;
 	}
 	if (source_type.id() == LogicalTypeId::DECIMAL || target_type.id() == LogicalTypeId::DECIMAL) {
-		uint8_t source_width, target_width;
-		uint8_t source_scale, target_scale;
+		uint32_t source_width, target_width;
+		uint32_t source_scale, target_scale;
 		// cast to or from decimal
 		// cast is only invertible if the cast is strictly widening
 		if (!source_type.GetDecimalProperties(source_width, source_scale)) {
@@ -350,6 +350,46 @@ static bool NestedCastCanThrow(const LogicalType &source_type, const LogicalType
 	}
 }
 
+//! The decimal digits that every value of an integer type fits in, e.g. 5 for SMALLINT: no five-digit DECIMAL
+//! overflows for 32767 or -32768. 0 for other types, and for HUGEINT and UHUGEINT, whose 39-digit values no DECIMAL
+//! holds
+static uint8_t IntegerTypeDecimalDigits(const LogicalType &type) {
+	switch (type.id()) {
+	case LogicalTypeId::TINYINT:
+	case LogicalTypeId::UTINYINT:
+		return 3;
+	case LogicalTypeId::SMALLINT:
+	case LogicalTypeId::USMALLINT:
+		return 5;
+	case LogicalTypeId::INTEGER:
+	case LogicalTypeId::UINTEGER:
+		return 10;
+	case LogicalTypeId::BIGINT:
+		return 19;
+	case LogicalTypeId::UBIGINT:
+		return 20;
+	default:
+		return 0;
+	}
+}
+
+//! Whether a DECIMAL target holds every value of the source type, so that the cast cannot overflow
+static bool DecimalHoldsEveryValue(const LogicalType &source_type, const LogicalType &target_type) {
+	D_ASSERT(target_type.id() == LogicalTypeId::DECIMAL);
+	const auto target_integral_digits = DecimalType::GetWidth(target_type) - DecimalType::GetScale(target_type);
+	if (source_type.id() == LogicalTypeId::DECIMAL) {
+		// The target needs the digits of the source on both sides of the decimal point: scaling up multiplies by a
+		// power of ten and keeps every digit, but scaling down rounds, which can carry into one more integral digit
+		// (9.99 -> DECIMAL(2,1) rounds to 10.0)
+		const auto source_integral_digits = DecimalType::GetWidth(source_type) - DecimalType::GetScale(source_type);
+		return DecimalType::GetScale(target_type) >= DecimalType::GetScale(source_type) &&
+		       target_integral_digits >= source_integral_digits;
+	}
+	// An integer fits when its digits fit before the decimal point: the cast checks the value against 10^(width-scale)
+	const auto source_digits = IntegerTypeDecimalDigits(source_type);
+	return source_digits > 0 && target_integral_digits >= source_digits;
+}
+
 bool BoundCastExpression::CastCanThrow(const LogicalType &source_type, const LogicalType &target_type, bool try_cast) {
 	if (source_type == target_type) {
 		return false;
@@ -397,9 +437,12 @@ bool BoundCastExpression::CastCanThrow(const LogicalType &source_type, const Log
 	if (source_type.IsNested() || target_type.IsNested()) {
 		return NestedCastCanThrow(source_type, target_type);
 	}
-	// Casting to DECIMAL overflows whenever the value does not fit in the width and scale, e.g. 100 -> DECIMAL(38,37)
+	// Casting to DECIMAL overflows whenever the value does not fit in the width and scale, e.g. 100 -> DECIMAL(38,37),
+	// unless the target holds every value of the source type: a DECIMAL that keeps the source's integral and fractional
+	// digits, or an integer type whose digits fit before the decimal point. The max-type check below cannot decide
+	// this, since the maximum DECIMAL of two types is capped at the maximum width, e.g. HUGEINT -> DECIMAL(38,0)
 	if (target_type.id() == LogicalTypeId::DECIMAL) {
-		return true;
+		return !DecimalHoldsEveryValue(source_type, target_type);
 	}
 	// Casting to a TIMESTAMP overflows for values outside of the timestamp range, even when widening the type,
 	// e.g. a DATE far in the future does not fit in a TIMESTAMP

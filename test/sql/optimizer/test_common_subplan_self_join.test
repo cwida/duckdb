@@ -1,0 +1,76 @@
+# name: test/sql/optimizer/test_common_subplan_self_join.test
+# description: Preserve input occurrence identity when matching expressions above self-joins
+# group: [optimizer]
+
+statement ok
+CREATE TABLE self_input(key INTEGER, val INTEGER, s VARCHAR);
+
+statement ok
+INSERT INTO self_input VALUES (1, 10, 'a'), (2, 20, 'bb'), (3, 30, 'ccc');
+
+# Reordered aggregate arguments must still refer to the correct join input.
+query II rowsort
+SELECT sum(lhs.val), sum(rhs.val) FROM self_input lhs JOIN self_input rhs ON lhs.key < rhs.key
+UNION ALL
+SELECT sum(rhs.val), sum(lhs.val) FROM self_input lhs JOIN self_input rhs ON lhs.key < rhs.key;
+----
+40	80
+80	40
+
+query II rowsort
+SELECT max(lhs.val), min(rhs.val) FROM self_input lhs JOIN self_input rhs ON lhs.key < rhs.key
+UNION ALL
+SELECT max(rhs.val), min(lhs.val) FROM self_input lhs JOIN self_input rhs ON lhs.key < rhs.key;
+----
+20	20
+30	10
+
+# Computed projections below the aggregates have the same input identity requirement.
+query RR rowsort
+SELECT sum(length(lhs.s)), avg(length(lhs.s))
+FROM self_input lhs JOIN self_input rhs ON lhs.key < rhs.key
+UNION ALL
+SELECT sum(length(rhs.s)), avg(length(rhs.s))
+FROM self_input lhs JOIN self_input rhs ON lhs.key < rhs.key;
+----
+4	1.3333333333333333
+8	2.6666666666666665
+
+# The preserved and null-extended sides of an outer join are different occurrences.
+query IIII rowsort
+SELECT sum(lhs.val), sum(rhs.val), count(lhs.val), count(rhs.val)
+FROM self_input lhs LEFT JOIN self_input rhs ON lhs.key < rhs.key
+UNION ALL
+SELECT sum(rhs.val), sum(lhs.val), count(rhs.val), count(lhs.val)
+FROM self_input lhs LEFT JOIN self_input rhs ON lhs.key < rhs.key;
+----
+70	80	4	3
+80	70	3	4
+
+# Identical expressions may still use exact common-subplan matching.
+query II
+SELECT sum(lhs.val), sum(rhs.val) FROM self_input lhs JOIN self_input rhs ON lhs.key < rhs.key
+UNION ALL
+SELECT sum(lhs.val), sum(rhs.val) FROM self_input lhs JOIN self_input rhs ON lhs.key < rhs.key;
+----
+40	80
+40	80
+
+# Equal projected inputs also remain distinct occurrences.
+statement ok
+SET disabled_optimizers='projection_pullup';
+
+query II rowsort
+SELECT sum(lhs.v), sum(rhs.v)
+FROM (SELECT key, length(s) v FROM self_input) lhs
+JOIN (SELECT key, length(s) v FROM self_input) rhs ON lhs.key < rhs.key
+UNION ALL
+SELECT sum(rhs.v), sum(lhs.v)
+FROM (SELECT key, length(s) v FROM self_input) lhs
+JOIN (SELECT key, length(s) v FROM self_input) rhs ON lhs.key < rhs.key;
+----
+4	8
+8	4
+
+statement ok
+SET disabled_optimizers='';

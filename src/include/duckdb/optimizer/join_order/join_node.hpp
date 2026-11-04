@@ -8,6 +8,7 @@
 #pragma once
 
 #include "duckdb/optimizer/join_order/join_relation_set.hpp"
+#include "duckdb/optimizer/join_order/cardinality_value.hpp"
 
 namespace duckdb {
 
@@ -43,8 +44,8 @@ public:
 	//! in the cost model is error prone. If the plan enumerator join node is updated and not the cost model
 	//! the whole Join Order Optimizer can start exhibiting undesired behavior.
 	double cost;
-	//! used only to populate logical operators with estimated cardinalities after the best join plan has been found.
-	idx_t cardinality = DConstants::INVALID_INDEX;
+	//! Candidate output used when composing parent estimates and costs.
+	CardinalityValue cardinality {0};
 };
 
 } // namespace duckdb
