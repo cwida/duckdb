@@ -102,7 +102,10 @@
         "test/sql/storage/prefetch/async_native_scan_pool.test",
         "test/sql/storage/prefetch/async_native_scan_read_ahead.test",
         "test/sql/storage/prefetch/prefetch_run_size_cap.test",
-        "test/sql/progress/test_verify_progress.test"
+        "test/sql/progress/test_verify_progress.test",
+        "test/sql/cte/trampoline/trampoline_source_sizing.test",
+        "test/sql/cte/trampoline/trampoline_source_routing_adaptive.test",
+        "test/sql/cte/trampoline/trampoline_source_sizing_estimates.test"
       ]
     },
     {
