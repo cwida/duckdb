@@ -268,6 +268,8 @@ public:
 	PrimitiveDictionary<SRC, TGT, OP> dictionary;
 	duckdb_parquet::Encoding::type encoding;
 	SortednessTracker<SRC> sortedness;
+	//! Scratch for the analyze entry shortcut, reused across the row group's vectors
+	vector<bool> inserted_entries;
 };
 
 template <class SRC, class TGT, class OP>
@@ -297,6 +299,8 @@ public:
 	bool dict_written_value;
 	uint32_t dict_bit_width;
 	RleBpEncoder dict_encoder;
+	//! Scratch for the write entry shortcut, reused across the page's vectors
+	vector<uint32_t> entry_indexes;
 };
 
 template <class SRC, class TGT, class OP = ParquetCastOperator>
@@ -717,7 +721,8 @@ private:
 			// a dictionary larger than the rows costs more to resolve per entry than per row
 			return false;
 		}
-		vector<bool> inserted(entry_count, false);
+		auto &inserted = state.inserted_entries;
+		inserted.assign(entry_count, false);
 		for (idx_t row = 0; row < count; row++) {
 			if (!input.RowIsValid(row)) {
 				continue;
@@ -785,7 +790,8 @@ private:
 			return;
 		}
 		static constexpr uint32_t UNRESOLVED = NumericLimits<uint32_t>::Maximum();
-		vector<uint32_t> entry_indexes(entry_count, UNRESOLVED);
+		auto &entry_indexes = page_state.entry_indexes;
+		entry_indexes.assign(entry_count, UNRESOLVED);
 		WriteDictionaryRows<ALL_VALID>(temp_writer, stats, page_state, input, r, chunk_end,
 		                               [&](idx_t row, const SRC &src_value) {
 			                               auto &value_index = entry_indexes[input.Entry(row)];
