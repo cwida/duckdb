@@ -74,16 +74,16 @@ struct TrampolineBranchPipelines {
 //! Worker sizing. A wave parallelizes on its own row count, and independent sources
 //! (parallel base-table scans, source-task operators) on their estimated row count,
 //! both against a shared minimum-work threshold. The estimate is the planner's output
-//! cardinality, not scan work: when the wave itself is small, an underestimated or
-//! unknown source (selective filter over a large table, a TVF without a cardinality
-//! callback) runs inline per wave with no runtime correction, while a large wave still
-//! parallelizes it through the frontier-sized workers. On small frontiers this matches
-//! what the recursive CTE does, which sizes on frontier work alone and reads no
-//! independent-source estimate at all (measured parity against the recursive CTE on
-//! the selective-filter shape). The threshold cannot repair an estimate-versus-work
-//! mismatch; the follow-up lever is runtime feedback from the first wave's measured
-//! source work (scanned rows, bytes or time, not emitted rows, which stay small in
-//! exactly the selective cases that mispredict).
+//! cardinality, not scan work, so a measured arbitration backs it up per branch: a wave
+//! whose wall time contradicts its route triggers one probe wave on the other route,
+//! and the faster of two comparable waves pins the branch's source routing for the
+//! invocation. The trigger bounds (a parallel wave at or below 2 ms, an inline wave at
+//! 8 ms or above) and the 2x row-comparability window are heuristics sized around the
+//! measured event-machinery cost, not guarantees. One probe per branch per invocation,
+//! no arbitration under lockstep rounds or before invariant builds are retained, and
+//! contaminated or incomparable probes fall back to the estimate. Large waves always
+//! parallelize through the frontier-sized workers. The recursive CTE sizes on frontier
+//! work alone and reads no independent-source estimate.
 //!
 //! Admission (BRANCH DISTINCT). Round-wide full-row admission against all rows
 //! ever routed to the branch, yielding one admitted wave per round. Admission
