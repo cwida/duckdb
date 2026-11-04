@@ -441,7 +441,7 @@ JOIN (VALUES (2)) r(y)
 ----
 [10]	2
 
-# the expanded physical join keeps the logical schema intact for CTE planning
+# protection: a volatile build operand next to a generated CTE exchange
 statement ok
 CREATE SEQUENCE seq_cte START 1;
 
@@ -525,6 +525,25 @@ FROM (VALUES ('bad')) o(k), LATERAL (
 ) q;
 ----
 bad	1
+
+# the same laziness holds for probe rows padded by an empty LEFT build
+# the build-probe swap may turn this probe into the build input, whose operands main
+# evaluates during the sink, so the intended probe-side plan is pinned explicitly
+statement ok
+SET disabled_optimizers = 'build_side_probe_side';
+
+query III
+SELECT o.k, q.x, q.y
+FROM (VALUES ('bad')) o(k), LATERAL (
+    SELECT l.x, r.y
+    FROM (VALUES (1)) l(x)
+    LEFT JOIN range(0) r(y) ON l.x + o.k::BIGINT > r.y
+) q;
+----
+bad	1	NULL
+
+statement ok
+RESET disabled_optimizers;
 
 # build operands are retained at the join as well: input swapping and the blockwise
 # join can skip them, so an empty probe input never evaluates them either
