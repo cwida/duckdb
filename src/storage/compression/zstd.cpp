@@ -959,7 +959,6 @@ public:
 			remaining -= to_scan;
 		}
 		scan_state.scanned_count += count;
-		scanned_count += count;
 	}
 
 	void ScanInternal(ZSTDVectorScanState &scan_state, idx_t count, Vector &result, idx_t result_offset) {
@@ -983,7 +982,6 @@ public:
 			offset += string_lengths[i];
 		}
 		scan_state.scanned_count += count;
-		scanned_count += count;
 	}
 
 	void ScanPartial(idx_t start_idx, Vector &result, idx_t offset, idx_t count) {
@@ -1019,8 +1017,6 @@ public:
 
 	//! The amount of tuples stored in the segment
 	idx_t segment_count;
-	//! The amount of tuples consumed
-	idx_t scanned_count = 0;
 	ColumnSegment &segment;
 
 	//! Buffer for skipping data
