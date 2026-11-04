@@ -1438,6 +1438,13 @@
         "is_deprecated": true
     },
     {
+        "name": "scalar_aggregate_merge_threshold",
+        "description": "The number of rows a table needs for sibling scalar aggregates over it to be computed in one pass. 0 computes them in one pass only over table functions such as read_parquet.",
+        "type": "UBIGINT",
+        "default_scope": "local",
+        "default_value": "0"
+    },
+    {
         "name": "scalar_subquery_error_on_multiple_rows",
         "description": "Deprecated setting. Throw an error when a scalar subquery returns more than one row. This will become the default behavior. When disabled, an arbitrary row is returned instead.",
         "type": "BOOLEAN",
