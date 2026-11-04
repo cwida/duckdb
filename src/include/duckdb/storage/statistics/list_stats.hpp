@@ -53,7 +53,7 @@ struct ListStats {
 	DUCKDB_API static optional_idx MaxListLength(const BaseStatistics &stats);
 	//! Returns the total list length of the non-NULL lists, if known
 	DUCKDB_API static optional_idx TotalListLength(const BaseStatistics &stats);
-	//! Sets the list length bounds (unknown if not set) - the total list length becomes unknown
+	//! Sets the list length bounds, which are unknown if not set, and makes the total list length unknown
 	DUCKDB_API static void SetLengthBounds(BaseStatistics &stats, optional_idx min_length, optional_idx max_length);
 	//! Merges in the length stats of a set of lists
 	DUCKDB_API static void MergeInLengths(BaseStatistics &stats, idx_t min_length, idx_t max_length,

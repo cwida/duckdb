@@ -182,7 +182,7 @@ unique_ptr<BaseStatistics> ListLengthPropagateStats(ClientContext &context, Func
 	NumericStats::SetMax(result, Value::BIGINT(NumericCast<int64_t>(max_length.GetIndex())));
 	result.CopyValidity(list_stats);
 	if (min_length.GetIndex() == max_length.GetIndex() && input.expr_ptr) {
-		// all lists have the same length: the result is that length, or NULL if the list is NULL
+		// all lists have the same length, so the result is that length unless the list is NULL
 		vector<unique_ptr<Expression>> children;
 		children.push_back(
 		    make_uniq<BoundConstantExpression>(Value::BIGINT(NumericCast<int64_t>(min_length.GetIndex()))));

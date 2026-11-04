@@ -423,8 +423,10 @@ struct ListColumnCheckpointState : public ColumnCheckpointState {
 
 	unique_ptr<ColumnCheckpointState> validity_state;
 	unique_ptr<ColumnCheckpointState> child_state;
-	//! The list length stats of the column - these cannot be reconstructed from the offsets that are checkpointed
+	//! The list length stats of the column, which cannot be rebuilt from the offsets that are checkpointed
 	ListStatsData length_data;
+	//! Whether the first segment, which stores the list length stats, was flushed
+	bool flushed_first_segment = false;
 
 public:
 	shared_ptr<ColumnData> CreateEmptyColumnData() override {
@@ -451,17 +453,26 @@ public:
 		return stats.ToUnique();
 	}
 
-	PersistentColumnData ToPersistentData() override {
-		auto data = ColumnCheckpointState::ToPersistentData();
-		// the length stats are stored in the first segment - all other segments store empty length stats
-		for (idx_t i = 0; i < data.pointers.size(); i++) {
-			auto &pointer_stats = data.pointers[i].statistics;
-			if (i == 0) {
-				ListStats::SetLengthData(pointer_stats, length_data);
+	void InitializeStatistics(const BaseStatistics &column_stats) override {
+		length_data = ListStats::GetLengthData(column_stats);
+	}
+
+	void FlushSegmentInternal(unique_ptr<ColumnSegment> segment, idx_t segment_size) override {
+		if (segment->count > 0) {
+			// the first segment stores the list length stats of the column and the other segments store none
+			auto &segment_stats = segment->GetStatsMutable();
+			if (flushed_first_segment) {
+				ListStats::ResetLengthData(segment_stats);
 			} else {
-				ListStats::ResetLengthData(pointer_stats);
+				ListStats::SetLengthData(segment_stats, length_data);
+				flushed_first_segment = true;
 			}
 		}
+		ColumnCheckpointState::FlushSegmentInternal(std::move(segment), segment_size);
+	}
+
+	PersistentColumnData ToPersistentData() override {
+		auto data = ColumnCheckpointState::ToPersistentData();
 		data.child_columns.push_back(validity_state->ToPersistentData());
 		data.child_columns.push_back(child_state->ToPersistentData());
 		return data;
@@ -483,7 +494,6 @@ unique_ptr<ColumnCheckpointState> ListColumnData::Checkpoint(const RowGroup &row
 	auto &checkpoint_state = base_state->Cast<ListColumnCheckpointState>();
 	checkpoint_state.validity_state = std::move(validity_state);
 	checkpoint_state.child_state = std::move(child_state);
-	checkpoint_state.length_data = ListStats::GetLengthData(old_stats);
 	return base_state;
 }
 

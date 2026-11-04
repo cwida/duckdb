@@ -44,6 +44,8 @@ public:
 	virtual shared_ptr<ColumnData> GetFinalResult();
 
 	virtual unique_ptr<BaseStatistics> GetStatistics();
+	//! Called before checkpointing with the statistics of the column that is being checkpointed
+	virtual void InitializeStatistics(const BaseStatistics &column_stats);
 
 	virtual void FlushSegmentInternal(unique_ptr<ColumnSegment> segment, idx_t segment_size);
 	virtual void FlushSegment(unique_ptr<ColumnSegment> segment, BufferHandle handle, idx_t segment_size);

@@ -332,7 +332,7 @@ unique_ptr<BaseStatistics> ListConcatStats(ClientContext &context, FunctionStati
 	for (idx_t i = 1; i < child_stats.size(); i++) {
 		stats->Merge(child_stats[i]);
 	}
-	// NULL lists are skipped, so they add no elements: the result length is the sum of the input lengths
+	// NULL lists are skipped, so the result length is the sum of the input lengths
 	idx_t min_length = 0;
 	optional_idx max_length = 0;
 	for (auto &child : child_stats) {

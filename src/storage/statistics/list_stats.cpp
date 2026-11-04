@@ -168,6 +168,9 @@ void ListStats::Serialize(const BaseStatistics &stats, Serializer &serializer) {
 		serializer.WritePropertyWithDefault(201, "min_list_length", MinListLength(stats));
 		serializer.WritePropertyWithDefault(202, "max_list_length", MaxListLength(stats));
 		serializer.WritePropertyWithDefault(203, "total_list_length", TotalListLength(stats));
+		auto &list_data = GetDataUnsafe(stats);
+		bool min_is_empty = list_data.has_min_list_length && !list_data.HasMinListLength();
+		serializer.WritePropertyWithDefault(204, "min_list_length_is_empty", min_is_empty, false);
 	}
 }
 
@@ -185,8 +188,12 @@ void ListStats::Deserialize(Deserializer &deserializer, BaseStatistics &base) {
 	auto min_list_length = deserializer.ReadPropertyWithDefault<optional_idx>(201, "min_list_length");
 	auto max_list_length = deserializer.ReadPropertyWithDefault<optional_idx>(202, "max_list_length");
 	auto total_list_length = deserializer.ReadPropertyWithDefault<optional_idx>(203, "total_list_length");
-	list_data.has_min_list_length = min_list_length.IsValid();
+	auto min_is_empty = deserializer.ReadPropertyWithExplicitDefault<bool>(204, "min_list_length_is_empty", false);
+	list_data.has_min_list_length = min_list_length.IsValid() || min_is_empty;
 	list_data.min_list_length = min_list_length.IsValid() ? min_list_length.GetIndex() : 0;
+	if (min_is_empty) {
+		list_data.min_list_length = NumericLimits<uint64_t>::Maximum();
+	}
 	list_data.has_max_list_length = max_list_length.IsValid();
 	list_data.max_list_length = max_list_length.IsValid() ? max_list_length.GetIndex() : 0;
 	list_data.has_total_list_length = total_list_length.IsValid();
