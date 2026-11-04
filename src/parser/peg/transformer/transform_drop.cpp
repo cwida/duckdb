@@ -45,11 +45,9 @@ bool PEGTransformerFactory::TransformFunctionTypeFunction(PEGTransformer &transf
 	return false;
 }
 
-unique_ptr<DropStatement>
-PEGTransformerFactory::TransformDropTableFunction(PEGTransformer &transformer, const CatalogType &comment_macro_table,
-                                                  const optional<bool> &if_exists,
-                                                  const vector<QualifiedName> &table_function_name,
-                                                  const optional<vector<LogicalType>> &drop_function_signature) {
+unique_ptr<DropStatement> PEGTransformerFactory::TransformDropTableFunction(
+    PEGTransformer &transformer, const CatalogType &comment_macro_table, const optional<bool> &if_exists,
+    const vector<QualifiedName> &table_function_name, const optional<vector<LogicalType>> &drop_function_signature) {
 	auto result = make_uniq<DropStatement>();
 	auto info = make_uniq<DropInfo>();
 	if (table_function_name.size() > 1) {
