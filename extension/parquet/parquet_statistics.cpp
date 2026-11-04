@@ -556,6 +556,10 @@ ParquetStatisticsUtils::TransformParquetStatistics(const LogicalType &type, cons
 		    max_stats_type == StringStatsType::EXACT_STATS && min_stats == max_stats) {
 			auto constant_stats = StringStats::CreateEmpty(type);
 			StringStats::FromConstant(constant_stats, string_t(min_stats));
+			// min/max statistics do not tell us whether the chunk also contains NULL values. CreateEmpty
+			// leaves the validity mask as "no rows at all", which lets an IS NULL filter prune pages that
+			// do contain nulls. Keep the validity unknown here; callers that know the null count refine it.
+			constant_stats.Set(StatsInfo::CAN_HAVE_NULL_AND_VALID_VALUES);
 			return constant_stats.ToUnique();
 		}
 		auto string_stats = StringStats::CreateUnknown(type);
