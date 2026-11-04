@@ -6,6 +6,7 @@
 #include "duckdb/catalog/catalog_entry/scalar_function_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/window_function_catalog_entry.hpp"
 #include "duckdb/common/limits.hpp"
+#include "duckdb/common/numeric_utils.hpp"
 #include "duckdb/common/type_visitor.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/function/aggregate_function.hpp"
@@ -906,8 +907,10 @@ FunctionBinder::BindTableInOutFunction(const TableFunctionSet &functions, const 
 	}
 	auto resolved = ResolveArguments(*definition, binding, input_arguments, named_arguments);
 	// Input columns remain in the subquery; only named options are cast and folded here.
-	resolved.arguments.erase(resolved.arguments.begin(), resolved.arguments.begin() + resolved.positional_count);
-	resolved.types.erase(resolved.types.begin(), resolved.types.begin() + resolved.positional_count);
+	const auto positional_count =
+	    NumericCast<vector<unique_ptr<Expression>>::difference_type>(resolved.positional_count);
+	resolved.arguments.erase(resolved.arguments.begin(), resolved.arguments.begin() + positional_count);
+	resolved.types.erase(resolved.types.begin(), resolved.types.begin() + positional_count);
 	resolved.positional_count = 0;
 	CastToFunctionArguments(definition->GetName(), resolved.types, resolved.arguments);
 	vector<Value> parameters;
