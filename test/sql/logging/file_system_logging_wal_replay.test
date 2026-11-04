@@ -33,10 +33,12 @@ SELECT i FROM db.t;
 42
 
 # the attaching connection opens both files
+# the parsed message loses the backslashes of a Windows path, so match the files by suffix
 query IIII
-SELECT DISTINCT scope, fs, parse_filename(path) AS file, connection_id = current_connection_id() AS attaching_connection
+SELECT DISTINCT scope, fs, regexp_extract(path, 'wal_replay_logging\.db(\.wal)?$') AS file,
+       connection_id = current_connection_id() AS attaching_connection
 FROM duckdb_logs_parsed('FileSystem')
-WHERE parse_filename(path) LIKE 'wal_replay_logging.db%' AND op = 'OPEN'
+WHERE path LIKE '%wal_replay_logging.db%' AND op = 'OPEN'
 ORDER BY file;
 ----
 CONNECTION	LocalFileSystem	wal_replay_logging.db	true
