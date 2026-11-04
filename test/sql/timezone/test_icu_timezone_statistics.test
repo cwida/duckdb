@@ -501,7 +501,7 @@ SELECT count(*) FROM infinite WHERE timezone('America/Los_Angeles', utc) = TIMES
 
 # the smallest finite timestamp sorts below -infinity
 statement ok
-CREATE TABLE lowest AS SELECT utc FROM (VALUES (TIMESTAMPTZ '-infinity'), (make_timestamp((-9223372036854775807)::BIGINT - 1)::TIMESTAMPTZ), (TIMESTAMPTZ '1970-01-01 00:00:00+00')) t(utc);
+CREATE TABLE lowest AS SELECT utc FROM (VALUES (TIMESTAMPTZ '-infinity'), (TIMESTAMPTZ '290309-12-21 (BC) 19:59:05.224192+00'), (TIMESTAMPTZ '1970-01-01 00:00:00+00')) t(utc);
 
 query I
 SELECT count(*) FROM lowest WHERE timezone('GMT+01:00', utc) = TIMESTAMP '-infinity';
@@ -515,7 +515,7 @@ SELECT count(*) FROM lowest WHERE timezone('GMT+01:00', utc) = TIMESTAMP '1970-0
 
 # a shift onto -infinity is an error, which the bounds must not fold away
 statement ok
-CREATE TABLE edge AS SELECT make_timestamp((-9223372033254775807)::BIGINT - 1 + range)::TIMESTAMPTZ AS ts FROM range(3);
+CREATE TABLE edge AS SELECT make_timestamptz((-9223372033254775807)::BIGINT - 1 + range) AS ts FROM range(3);
 
 query I
 SELECT TRY(timezone('GMT-01:00', ts) < TIMESTAMP '1970-01-01') FROM edge ORDER BY ts;
