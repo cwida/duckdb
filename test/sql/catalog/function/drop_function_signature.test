@@ -547,6 +547,77 @@ DROP SCHEMA at_a CASCADE;
 statement ok
 DROP SCHEMA at_b CASCADE;
 
+# a declared parameter type attributes to its member
+statement ok
+CREATE TYPE dep_mood AS ENUM ('ok', 'sad');
+
+statement ok
+CREATE MACRO dep_typed(x INTEGER) AS 1, (x dep_mood) AS 2;
+
+statement error
+DROP TYPE dep_mood;
+----
+<REGEX>:.*depend.*
+
+statement ok
+DROP MACRO dep_typed(INTEGER);
+
+# the type belongs to the surviving member: still protected
+statement error
+DROP TYPE dep_mood;
+----
+<REGEX>:.*depend.*
+
+# dropping the last member drops the entry, which releases the type
+statement ok
+DROP MACRO dep_typed(dep_mood);
+
+statement ok
+DROP TYPE dep_mood;
+
+# member records re-root through COPY FROM DATABASE alongside the entry dependencies
+statement ok
+ATTACH ':memory:' AS cpd_src;
+
+statement ok
+SET search_path = 'cpd_src';
+
+statement ok
+CREATE TABLE cpd_table(i INTEGER);
+
+statement ok
+CREATE MACRO cpd(x INTEGER) AS (SELECT count(*) FROM cpd_table), (x VARCHAR) AS 0;
+
+statement ok
+RESET search_path;
+
+statement ok
+ATTACH ':memory:' AS cpd_dst;
+
+statement ok
+COPY FROM DATABASE cpd_src TO cpd_dst;
+
+statement ok
+DROP MACRO cpd_dst.main.cpd(VARCHAR);
+
+# the copied survivor protects the copied table
+statement error
+DROP TABLE cpd_dst.cpd_table;
+----
+<REGEX>:.*depend.*
+
+statement ok
+DROP MACRO cpd_dst.main.cpd(INTEGER);
+
+statement ok
+DROP TABLE cpd_dst.cpd_table;
+
+statement ok
+DETACH cpd_src;
+
+statement ok
+DETACH cpd_dst;
+
 # a dependency shared by the removed member and a survivor stays
 statement ok
 CREATE TABLE shared_src(i INTEGER);

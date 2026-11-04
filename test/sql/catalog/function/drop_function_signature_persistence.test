@@ -78,46 +78,50 @@ DROP MACRO pdb.main.pf;
 statement ok
 DROP TABLE pdb.src;
 
-# the default database of this test file is on an older storage version: attribution does not fit
-# in its format, so a member drop on an entry with dependencies is rejected instead of guessed
+# a database pinned below v2.1.0 cannot store attribution, so a member drop on an entry with
+# dependencies is rejected after a round trip instead of guessed
 statement ok
 SET enable_macro_dependencies = true;
 
 statement ok
-CREATE TABLE old_src(i INTEGER);
+ATTACH '{TEST_DIR}/drop_function_signature_old.db' AS odb (STORAGE_VERSION 'v1.4.0');
 
 statement ok
-CREATE MACRO old_pf(x INTEGER) AS (SELECT count(*) FROM old_src), (x VARCHAR) AS x;
+CREATE TABLE odb.old_src(i INTEGER);
+
+statement ok
+CREATE MACRO odb.main.old_pf(x INTEGER) AS (SELECT count(*) FROM odb.old_src), (x VARCHAR) AS x;
+
+statement ok
+CREATE MACRO odb.main.old_plain(x INTEGER) AS 1, (x VARCHAR) AS 2;
 
 restart
 
 statement ok
 SET enable_macro_dependencies = true;
 
+statement ok
+ATTACH '{TEST_DIR}/drop_function_signature_old.db' AS odb;
+
 statement error
-DROP MACRO old_pf(VARCHAR);
+DROP MACRO odb.main.old_pf(VARCHAR);
 ----
 <REGEX>:.*before member dependency tracking.*
 
 # without dependencies the member drop works even without attribution
 statement ok
-CREATE MACRO old_plain(x INTEGER) AS 1, (x VARCHAR) AS 2;
-
-restart
-
-statement ok
-DROP MACRO old_plain(VARCHAR);
+DROP MACRO odb.main.old_plain(VARCHAR);
 
 query T
-SELECT old_plain(1);
+SELECT odb.main.old_plain(1);
 ----
 1
 
 statement ok
-DROP MACRO old_plain;
+DROP MACRO odb.main.old_plain;
 
 statement ok
-DROP MACRO old_pf;
+DROP MACRO odb.main.old_pf;
 
 statement ok
-DROP TABLE old_src;
+DROP TABLE odb.old_src;
