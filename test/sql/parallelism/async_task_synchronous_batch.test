@@ -4,9 +4,10 @@
 
 load {TEST_DIR}/async_task_synchronous_batch.db
 
-# several columns, each with its own segments: the first vector of a row group needs a block per column
+# a single row group, so the checkpoint lays out the blocks deterministically: the wide string column fills whole
+# blocks and comes first, the integer columns share its last block, so the first vector reads two non-adjacent blocks
 statement ok
-CREATE TABLE t AS SELECT range AS i, range * 2 AS a, range * 3 AS b, range * 5 AS c, 'v' || range::VARCHAR AS s FROM range(200000);
+CREATE TABLE t AS SELECT md5(range::VARCHAR) || md5((range + 1)::VARCHAR) AS s, range AS i, range * 2 AS a, range * 3 AS b, range * 5 AS c FROM range(100000);
 
 statement ok
 CHECKPOINT
@@ -33,7 +34,7 @@ CALL enable_logging('AsyncTaskSchedule')
 query IIIII
 SELECT sum(i), sum(a), sum(b), sum(c), max(s) FROM t
 ----
-19999900000	39999800000	59999700000	99999500000	v99999
+4999950000	9999900000	14999850000	24999750000	fffffe98d0963d27015c198262d972215f4e974a5f4e1643e264f86c20a74e64
 
 statement ok
 CALL disable_logging()

@@ -61,6 +61,7 @@ public:
 	//! Get a reference to the QueryGraphEdges structure that stores edges between nodes and hypernodes.
 	const QueryGraphEdges &GetQueryGraphEdges() const;
 	const JoinPredicateModel &GetPredicateModel() const;
+	const vector<unique_ptr<JoinOrderOperator>> &GetJoinOperators() const;
 
 private:
 	void GetColumnBinding(const Expression &expression, ColumnBinding &binding);
@@ -71,7 +72,7 @@ private:
 
 	//! Build the normalized predicate model after filter endpoints and stats bindings are populated.
 	void BuildPredicateModel();
-	void BuildLeftEqualityPairs();
+	void BuildLeftJoinPredicates();
 	void BuildInnerCompanionSets();
 	void ClearExtractedExpressions();
 	idx_t FindGraphComponent(RelationIndex relation);

@@ -355,8 +355,8 @@ void ParquetWriter::SetSchemaProperties(const LogicalType &duckdb_type, duckdb_p
 		break;
 	case LogicalTypeId::DECIMAL:
 		schema_ele.converted_type = ConvertedType::DECIMAL;
-		schema_ele.precision = DecimalType::GetWidth(duckdb_type);
-		schema_ele.scale = DecimalType::GetScale(duckdb_type);
+		schema_ele.precision = NumericCast<int32_t>(DecimalType::GetWidth(duckdb_type));
+		schema_ele.scale = NumericCast<int32_t>(DecimalType::GetScale(duckdb_type));
 		schema_ele.__isset.converted_type = true;
 		schema_ele.__isset.precision = true;
 		schema_ele.__isset.scale = true;
@@ -984,11 +984,11 @@ struct TimeTZStatsUnifier : public BaseNumericStatsUnifier<int64_t> {
 
 template <class T>
 struct DecimalStatsUnifier : public NumericStatsUnifier<T> {
-	DecimalStatsUnifier(uint8_t width, uint8_t scale) : width(width), scale(scale) {
+	DecimalStatsUnifier(uint32_t width, uint32_t scale) : width(width), scale(scale) {
 	}
 
-	uint8_t width;
-	uint8_t scale;
+	uint32_t width;
+	uint32_t scale;
 
 	string StatsToString(const string &stats) override {
 		if (stats.empty()) {
@@ -1470,6 +1470,11 @@ void ParquetWriter::InitializeSchemaFromPreparedRowGroup(const PreparedRowGroup 
 }
 
 void ParquetWriter::FlushBloomFilters() {
+	std::sort(bloom_filters.begin(), bloom_filters.end(),
+	          [](const ParquetBloomFilterEntry &a, const ParquetBloomFilterEntry &b) {
+		          return a.column_idx < b.column_idx ||
+		                 (a.column_idx == b.column_idx && a.row_group_idx < b.row_group_idx);
+	          });
 	for (auto &bloom_filter_entry : bloom_filters) {
 		D_ASSERT(!options.encryption_config);
 		// write nonsense bloom filter header

@@ -88,19 +88,19 @@ bool BoundComparisonExpression::TryBindComparison(ClientContext &context, const 
 	case LogicalTypeId::DECIMAL: {
 		// result is a decimal: we need the maximum width and the maximum scale over width
 		vector<LogicalType> argument_types = {left_type, right_type};
-		uint8_t max_width = 0, max_scale = 0, max_width_over_scale = 0;
+		uint32_t max_width = 0, max_scale = 0, max_width_over_scale = 0;
 		for (idx_t i = 0; i < argument_types.size(); i++) {
-			uint8_t width, scale;
+			uint32_t width, scale;
 			auto can_convert = argument_types[i].GetDecimalProperties(width, scale);
 			if (!can_convert) {
 				result_type = res;
 				return true;
 			}
-			max_width = MaxValue<uint8_t>(width, max_width);
-			max_scale = MaxValue<uint8_t>(scale, max_scale);
-			max_width_over_scale = MaxValue<uint8_t>(width - scale, max_width_over_scale);
+			max_width = MaxValue<uint32_t>(width, max_width);
+			max_scale = MaxValue<uint32_t>(scale, max_scale);
+			max_width_over_scale = MaxValue<uint32_t>(width - scale, max_width_over_scale);
 		}
-		max_width = MaxValue<uint8_t>(max_scale + max_width_over_scale, max_width);
+		max_width = MaxValue<uint32_t>(max_scale + max_width_over_scale, max_width);
 		if (max_width > Decimal::MAX_WIDTH_DECIMAL) {
 			// target width does not fit in decimal: truncate the scale (if possible) to try and make it fit
 			max_width = Decimal::MAX_WIDTH_DECIMAL;

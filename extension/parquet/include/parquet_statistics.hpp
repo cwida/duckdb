@@ -49,6 +49,7 @@ using duckdb_parquet::SchemaElement;
 
 struct LogicalType;
 struct ParquetColumnSchema;
+struct ParquetOptions;
 class ResizeableBuffer;
 
 enum class ParquetIntervalBloomFilterVersion : uint8_t { NONE, NORMALIZED_V1 };
@@ -61,12 +62,13 @@ struct ParquetStatisticsUtils {
 
 	static unique_ptr<BaseStatistics> TransformColumnStatistics(const ParquetColumnSchema &reader,
 	                                                            const duckdb_parquet::ColumnChunkList &columns,
-	                                                            bool can_have_nan);
+	                                                            const ParquetOptions &parquet_options);
 
+	//! can_have_nan is not taken from the options, as page statistics allow NaN whatever the option says
 	static unique_ptr<BaseStatistics>
 	TransformParquetStatistics(const LogicalType &type, const ParquetColumnSchema &schema,
-	                           const duckdb_parquet::Statistics &parquet_stats, bool can_have_nan,
-	                           optional_ptr<const ColumnChunk> column_chunk = nullptr);
+	                           const duckdb_parquet::Statistics &parquet_stats, const ParquetOptions &parquet_options,
+	                           bool can_have_nan, optional_ptr<const ColumnChunk> column_chunk = nullptr);
 
 	//! Whether the column can contain NaN values - uses nan_count if present, otherwise the can_have_nan option
 	static bool CanHaveNaN(const duckdb_parquet::Statistics &parquet_stats, bool can_have_nan);
@@ -80,6 +82,7 @@ struct ParquetStatisticsUtils {
 	GetBloomFilterHashStrategy(const ParquetColumnSchema &schema,
 	                           ParquetIntervalBloomFilterVersion interval_bloom_filter_version);
 
+	static bool HasBloomFilterConstants(const TableFilter &filter, ParquetBloomFilterHashStrategy hash_strategy);
 	static bool BloomFilterExcludes(const TableFilter &filter, const duckdb_parquet::ColumnMetaData &column_meta_data,
 	                                duckdb_apache::thrift::protocol::TProtocol &file_proto, Allocator &allocator,
 	                                const ParquetColumnSchema &schema, ParquetBloomFilterHashStrategy hash_strategy);

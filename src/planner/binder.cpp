@@ -278,6 +278,14 @@ void Binder::SetParameters(BoundParameterMap &parameters) {
 	global_binder_state->parameters = parameters;
 }
 
+void Binder::SetStatementParameters(const identifier_map_t<idx_t> &statement_parameters) {
+	global_binder_state->statement_parameters = statement_parameters;
+}
+
+bool Binder::StatementHasParameter(const Identifier &identifier) const {
+	return global_binder_state->statement_parameters.count(identifier) > 0;
+}
+
 void Binder::SetInsideSubquery() {
 	inside_subquery = true;
 }
