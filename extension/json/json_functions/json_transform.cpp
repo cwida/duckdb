@@ -9,10 +9,10 @@
 
 #include "duckdb/common/enum_util.hpp"
 #include "duckdb/common/error_data.hpp"
+#include "duckdb/common/operator/cast_operators.hpp"
 #include "duckdb/common/operator/decimal_cast_operators.hpp"
 #include "duckdb/common/operator/string_cast.hpp"
 #include "duckdb/common/serializer/deserializer.hpp"
-#include "duckdb/common/types/blob.hpp"
 #include "duckdb/common/types/geometry.hpp"
 #include "duckdb/common/types/value_map.hpp"
 #include "json_geojson.hpp"
@@ -340,20 +340,13 @@ static bool TransformToBlob(yyjson_val *vals[], yyjson_alc *alc, Vector &result,
 		if (!val || unsafe_yyjson_is_null(val)) {
 			validity.SetInvalid(i);
 		} else if (unsafe_yyjson_is_str(val)) {
-			const auto &input = GetString(val);
-			idx_t blob_size;
-			if (!Blob::TryGetBlobSize(input, blob_size, parameters)) {
+			if (!TryCastToBlob::Operation(GetString(val), data[i], result, parameters)) {
 				validity.SetInvalid(i);
 				if (success && options.strict_cast) {
 					options.object_index = i;
 					success = false;
 				}
-				continue;
 			}
-			auto blob = StringVector::EmptyString(result, blob_size);
-			Blob::ToBlob(input, reinterpret_cast<data_ptr_t>(blob.GetDataWriteable()));
-			blob.Finalize();
-			data[i] = blob;
 		} else if (!GetValueString(val, alc, data[i], result, options.numbers_as_raw ? &raw_writer : nullptr)) {
 			validity.SetInvalid(i);
 		}
