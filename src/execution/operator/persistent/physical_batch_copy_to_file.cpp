@@ -460,8 +460,8 @@ public:
 		auto memory_usage = batch_data->memory_usage;
 		const CopyFunctionBatchAnalyzer batch_analyzer(*batch_data->collection, op.batch_size, op.batch_size_bytes);
 		// every batch is prepared with the first file, so that the files share one layout whichever gets the batch
-		auto prepared_batch = op.function.prepare_batch(context, *op.bind_data, *gstate.prepare_state,
-		                                                std::move(batch_data->collection));
+		auto prepared_batch =
+		    op.function.prepare_batch(context, *op.bind_data, *gstate.prepare_state, std::move(batch_data->collection));
 		gstate.AddBatchData(batch_index, std::move(prepared_batch), memory_usage, batch_analyzer);
 		if (batch_index == gstate.flushed_batch_index) {
 			gstate.task_manager.AddTask(make_uniq<RepartitionedFlushTask>());
@@ -821,7 +821,7 @@ SourceResultType PhysicalBatchCopyToFile::GetDataInternal(ExecutionContext &cont
 			PhysicalCopyToFile::ReturnColumnTypes(chunk, query_names, query_types);
 		}
 		return source_state.offset < g.written_files.size() ? SourceResultType::HAVE_MORE_OUTPUT
-		                                                     : SourceResultType::FINISHED;
+		                                                    : SourceResultType::FINISHED;
 	}
 	default:
 		throw NotImplementedException("Unknown CopyFunctionReturnType");

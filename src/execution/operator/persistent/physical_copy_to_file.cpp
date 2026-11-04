@@ -4511,7 +4511,8 @@ void CopyToFileGlobalState::Initialize() {
 }
 
 void PhysicalCopyToFile::PrepareOutputDirectory(FileSystem &fs, const string &file_path,
-                                                CopyOverwriteMode overwrite_mode, CopyOutputLifecycle &output_lifecycle) {
+                                                CopyOverwriteMode overwrite_mode,
+                                                CopyOutputLifecycle &output_lifecycle) {
 	if (!fs.IsRemoteFile(file_path)) {
 		if (fs.FileExists(file_path)) {
 			if (overwrite_mode == CopyOverwriteMode::COPY_OVERWRITE) {
