@@ -302,6 +302,28 @@ true
 
 endloop
 
+# a row group of the day before the fall back of 2026, then one that spans the fall back
+statement ok
+CREATE TABLE fall_back AS SELECT to_timestamp(1793404800 + range * 25) AS utc FROM range(2048);
+
+# four instants whose ends 08:30 and 09:30 UTC both convert to 01:30, with 01:59:59 PDT and 01:00 PST between them
+statement ok
+INSERT INTO fall_back SELECT to_timestamp(s) FROM (VALUES (1793521800), (1793523599), (1793523600), (1793525400)) t(s);
+
+foreach local 01:59:59 01:00:00
+
+query I
+SELECT count(*) FROM fall_back WHERE timezone('America/Los_Angeles', utc) = TIMESTAMP '2026-11-01 {local}';
+----
+1
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM fall_back WHERE timezone('America/Los_Angeles', utc) = TIMESTAMP '2026-11-01 {local}';
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 2.*
+
+endloop
+
 # a 24 hour move of the date line
 statement ok
 CREATE OR REPLACE TABLE w AS SELECT to_timestamp(1325232000 + range * 300) AS utc FROM range(49);
