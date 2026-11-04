@@ -41,7 +41,7 @@ public:
 	void FetchCommitted(idx_t vector_index, Vector &result);
 	void FetchCommittedRange(idx_t start_row, idx_t count, Vector &result);
 	void Update(TransactionData transaction, DuckTableEntry &table_entry, idx_t column_index, Vector &update,
-	            row_t *ids, idx_t count, Vector &base_data, idx_t row_group_start);
+	            row_t *ids, idx_t count, const Vector &base_data, idx_t row_group_start);
 	void FetchRows(TransactionData transaction, const idx_t *offsets, const SelectionVector &sel, idx_t count,
 	               Vector &result, idx_t result_offset);
 
@@ -87,7 +87,7 @@ public:
 	typedef idx_t (*statistics_update_function_t)(UpdateSegment *segment, SegmentStatistics &stats,
 	                                              UnifiedVectorFormat &update, idx_t count, SelectionVector &sel);
 	typedef idx_t (*get_effective_updates_t)(UnifiedVectorFormat &update_format, idx_t count, SelectionVector &sel,
-	                                         Vector &base_data);
+	                                         const Vector &base_data);
 
 private:
 	merge_update_function_t merge_update_function;

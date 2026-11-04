@@ -188,7 +188,7 @@ public:
 	void FetchBaseRows(const QueryContext &context, const idx_t *offsets, const SelectionVector &sel, idx_t count,
 	                   Vector &result, idx_t result_offset);
 	//! Fetches base values of row_ids into result, densely and in the same order, without updates
-	void FetchBaseRows(row_t *row_ids, idx_t count, Vector &result, idx_t row_group_start);
+	void FetchBaseRows(const row_t *row_ids, idx_t count, Vector &result, idx_t row_group_start);
 	//! Reads the selected rows of a scan through FetchBaseRows (debug_force_fetch_row)
 	void FetchScannedRows(ColumnScanState &state, const SelectionVector &sel, idx_t count, Vector &result,
 	                      idx_t result_offset);
@@ -264,7 +264,7 @@ protected:
 	                  UpdateScanType update_type);
 	void FetchUpdateRow(TransactionData transaction, row_t row_id, Vector &result, idx_t result_idx);
 	void UpdateInternal(TransactionData transaction, DuckTableEntry &table_entry, idx_t column_index,
-	                    Vector &update_vector, row_t *row_ids, idx_t update_count, Vector &base_vector,
+	                    Vector &update_vector, row_t *row_ids, idx_t update_count, const Vector &base_vector,
 	                    idx_t row_group_start);
 	idx_t GetVectorCount(idx_t vector_index) const;
 

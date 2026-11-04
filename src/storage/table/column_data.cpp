@@ -367,7 +367,7 @@ void ColumnData::FetchUpdateRow(TransactionData transaction, row_t row_id, Vecto
 }
 
 void ColumnData::UpdateInternal(TransactionData transaction, DuckTableEntry &table_entry, idx_t column_index,
-                                Vector &update_vector, row_t *row_ids, idx_t update_count, Vector &base_vector,
+                                Vector &update_vector, row_t *row_ids, idx_t update_count, const Vector &base_vector,
                                 idx_t row_group_start) {
 	lock_guard<mutex> update_guard(update_lock);
 	if (!updates) {
@@ -898,7 +898,7 @@ void ColumnData::FetchBaseRows(const QueryContext &context, const idx_t *offsets
 	}
 }
 
-void ColumnData::FetchBaseRows(row_t *row_ids, idx_t count, Vector &result, idx_t row_group_start) {
+void ColumnData::FetchBaseRows(const row_t *row_ids, idx_t count, Vector &result, idx_t row_group_start) {
 	D_ASSERT(count > 0 && count <= STANDARD_VECTOR_SIZE);
 	vector<idx_t> offsets(count);
 	for (idx_t i = 0; i < count; i++) {

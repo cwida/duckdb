@@ -1273,8 +1273,9 @@ UpdateSegment::statistics_update_function_t GetStatisticsUpdateFunction(Physical
 // Get Effective Updates
 //===--------------------------------------------------------------------===//
 // base_data is dense and aligned with the update vector: index i is update row i
-idx_t GetEffectiveUpdatesValidity(UnifiedVectorFormat &update, idx_t count, SelectionVector &sel, Vector &base_data) {
-	auto &original_validity = FlatVector::ValidityMutable(base_data);
+idx_t GetEffectiveUpdatesValidity(UnifiedVectorFormat &update, idx_t count, SelectionVector &sel,
+                                  const Vector &base_data) {
+	auto &original_validity = FlatVector::Validity(base_data);
 
 	SelectionVector new_sel;
 	new_sel.Initialize(STANDARD_VECTOR_SIZE);
@@ -1293,11 +1294,12 @@ idx_t GetEffectiveUpdatesValidity(UnifiedVectorFormat &update, idx_t count, Sele
 }
 
 template <class T>
-idx_t TemplatedGetEffectiveUpdates(UnifiedVectorFormat &update, idx_t count, SelectionVector &sel, Vector &base_data) {
+idx_t TemplatedGetEffectiveUpdates(UnifiedVectorFormat &update, idx_t count, SelectionVector &sel,
+                                   const Vector &base_data) {
 	auto data = UnifiedVectorFormat::GetData<T>(update);
 
 	auto original_data = FlatVector::GetData<T>(base_data);
-	auto &original_validity = FlatVector::ValidityMutable(base_data);
+	auto &original_validity = FlatVector::Validity(base_data);
 
 	SelectionVector new_sel;
 	new_sel.Initialize(STANDARD_VECTOR_SIZE);
@@ -1454,7 +1456,7 @@ void UpdateSegment::ReallocateRootInfoIfNeeded(UpdateInfo &current_info, idx_t u
 }
 
 void UpdateSegment::Update(TransactionData transaction, DuckTableEntry &table_entry, idx_t column_index,
-                           Vector &update_p, row_t *ids, idx_t count, Vector &base_data, idx_t row_group_start) {
+                           Vector &update_p, row_t *ids, idx_t count, const Vector &base_data, idx_t row_group_start) {
 	// obtain an exclusive lock
 	auto write_lock = lock.GetExclusiveLock();
 

@@ -27,11 +27,11 @@ UPDATE t SET k = NULL, c = NULL WHERE id = 6
 statement ok
 UPDATE t SET k = -1, c = 'boundary', nn = -1 WHERE id IN (2047, 2048)
 
-# sparse rows within a single vector (below the full-vector threshold)
+# sparse rows within a single vector
 statement ok
 UPDATE t SET k = k + 1000000, c = c || '_sparse', nn = nn + 1 WHERE id BETWEEN 4096 AND 6143 AND id % 13 = 3
 
-# most of a vector (above the full-vector threshold)
+# most of a vector
 statement ok
 UPDATE t SET k = k + 2000000, c = c || '_dense' WHERE id BETWEEN 6144 AND 8191 AND id % 3 <> 0
 
