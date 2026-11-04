@@ -136,6 +136,15 @@ TEST_CASE("Stable C++API: per-kind type getters are sugar over GetParam", "[cpp_
 	REQUIRE(dec.GetDecimalWidth() == 18);
 	REQUIRE(dec.GetDecimalScale() == 3);
 
+	// Wide decimals: the width is any uint32_t, not capped at 38 or 255.
+	auto wide = factory.ParseType("DECIMAL(39,2)");
+	REQUIRE(wide.GetDecimalWidth() == 39);
+	REQUIRE(wide.GetDecimalScale() == 2);
+	auto wider = factory.ParseType("DECIMAL(300,10)");
+	REQUIRE(wider.GetDecimalWidth() == 300);
+	REQUIRE(wider.GetDecimalScale() == 10);
+	REQUIRE(wider.ToText() == "DECIMAL(300,10)");
+
 	std::vector<TypeParam> entries;
 	entries.push_back({"", Value::Create(factory, varchar_t("sad"))});
 	entries.push_back({"", Value::Create(factory, varchar_t("ok"))});
@@ -244,7 +253,7 @@ TEST_CASE("Stable C++API: storage-tier conveniences follow the committed tables"
 	} decimal_cases[] = {
 	    {4, LogicalTypeId::SMALLINT}, {5, LogicalTypeId::INTEGER}, {9, LogicalTypeId::INTEGER},
 	    {10, LogicalTypeId::BIGINT},  {18, LogicalTypeId::BIGINT}, {19, LogicalTypeId::HUGEINT},
-	    {38, LogicalTypeId::HUGEINT},
+	    {38, LogicalTypeId::HUGEINT}, {39, LogicalTypeId::BIGNUM}, {300, LogicalTypeId::BIGNUM},
 	};
 	for (auto &c : decimal_cases) {
 		auto dec = factory.ParseType("DECIMAL(" + std::to_string(c.width) + ",2)");

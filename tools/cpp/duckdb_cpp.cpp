@@ -1519,12 +1519,21 @@ auto LogicalType::GetParam(idx_t index) const -> TypeParam {
 	return TypeParam {std::string(FromStr(name)), detail::HandleFactory::Make<Value>(value)};
 }
 
-auto LogicalType::GetDecimalWidth() const -> uint8_t {
-	return GetParam(0).GetValue().Get<uint8_t>();
+// A DECIMAL's width and scale parameters are UINTEGER values; engines before the width cap was lifted hand over
+// UTINYINT.
+static auto ReadDecimalParam(const Value &param) -> uint32_t {
+	if (param.GetLogicalType().GetTypeId() == LogicalTypeId::UTINYINT) {
+		return param.Get<uint8_t>();
+	}
+	return param.Get<uint32_t>();
 }
 
-auto LogicalType::GetDecimalScale() const -> uint8_t {
-	return GetParam(1).GetValue().Get<uint8_t>();
+auto LogicalType::GetDecimalWidth() const -> uint32_t {
+	return ReadDecimalParam(GetParam(0).GetValue());
+}
+
+auto LogicalType::GetDecimalScale() const -> uint32_t {
+	return ReadDecimalParam(GetParam(1).GetValue());
 }
 
 auto LogicalType::GetEnumSize() const -> idx_t {
@@ -1582,7 +1591,7 @@ auto LogicalType::GetUnionMemberType(idx_t index) const -> LogicalType {
 
 auto LogicalType::GetDecimalInternalTypeId() const -> LogicalTypeId {
 	// The committed DECIMAL storage tiers: width <= 4 int16, <= 9 int32,
-	// <= 18 int64, <= 38 int128. Pinned against the engine in [capi_v2].
+	// <= 18 int64, <= 38 int128, wider BIGNUM. Pinned against the engine in [capi_v2].
 	auto width = GetDecimalWidth();
 	if (width <= 4) {
 		return LogicalTypeId::SMALLINT;
@@ -1593,7 +1602,10 @@ auto LogicalType::GetDecimalInternalTypeId() const -> LogicalTypeId {
 	if (width <= 18) {
 		return LogicalTypeId::BIGINT;
 	}
-	return LogicalTypeId::HUGEINT;
+	if (width <= 38) {
+		return LogicalTypeId::HUGEINT;
+	}
+	return LogicalTypeId::BIGNUM;
 }
 
 auto LogicalType::GetEnumInternalTypeId() const -> LogicalTypeId {

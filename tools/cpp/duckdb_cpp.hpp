@@ -1534,11 +1534,11 @@ public:
 	// kind they misread that type's parameters or throw, so check the kind first. Names and dictionary entries come
 	// back as owned strings.
 
-	/// The total number of digits a DECIMAL holds.
-	auto GetDecimalWidth() const -> uint8_t;
+	/// The total number of digits a DECIMAL holds; any `uint32_t`, widths above 38 are BIGNUM-backed.
+	auto GetDecimalWidth() const -> uint32_t;
 
 	/// The number of digits a DECIMAL keeps after the point.
-	auto GetDecimalScale() const -> uint8_t;
+	auto GetDecimalScale() const -> uint32_t;
 
 	/// How many entries an ENUM's dictionary holds.
 	auto GetEnumSize() const -> idx_t;
@@ -1584,8 +1584,8 @@ public:
 	/// @param index Member index in [0, GetUnionMemberCount()).
 	auto GetUnionMemberType(idx_t index) const -> LogicalType;
 
-	/// The integer type a DECIMAL's digits are stored in, which is what its vector elements are; determined by the
-	/// width.
+	/// The type a DECIMAL's digits are stored in, which is what its vector elements are; determined by the width:
+	/// SMALLINT, INTEGER, BIGINT or HUGEINT up to 38 digits, BIGNUM (`bignum_t` elements) beyond.
 	auto GetDecimalInternalTypeId() const -> LogicalTypeId;
 
 	/// The unsigned integer type an ENUM's dictionary indices are stored in, which is what its vector elements are;
@@ -1769,10 +1769,11 @@ struct list_entry_t {
 
 /// DECIMAL(WIDTH, SCALE): an exact number, kept as an integer of WIDTH digits with the point SCALE digits from the
 /// right. The width picks the storage integer, so DECIMAL(9, 2) and DECIMAL(18, 2) are different C++ types and their
-/// payloads are not interchangeable.
+/// payloads are not interchangeable. This covers the fixed-size decimals of up to 38 digits; a wider DECIMAL stores
+/// its digits as a `bignum_t`, see `LogicalType::GetDecimalInternalTypeId`.
 template <int8_t WIDTH, uint8_t SCALE>
 struct decimal_t {
-	static_assert(WIDTH >= 1 && WIDTH <= 38, "DECIMAL type width must be between 1 and 38");
+	static_assert(WIDTH >= 1 && WIDTH <= 38, "decimal_t covers fixed-size decimals, with a width between 1 and 38");
 	static_assert(SCALE <= WIDTH, "DECIMAL scale must be less than or equal to width");
 	using storage_type = std::conditional_t<
 	    (WIDTH <= 4), int16_t,
