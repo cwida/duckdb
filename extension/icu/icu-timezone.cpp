@@ -94,7 +94,7 @@ static void ICUTimeZoneFunction(ClientContext &context, TableFunctionInput &data
 }
 
 struct ICUFromNaiveTimestamp : public ICUDateFunc {
-	//! Bounds on the shift in milliseconds the operation applies to a local time in [start_millis, end_millis]
+	//! Bounds in milliseconds, which can be wider than the shifts of the local times in the interval
 	static void GetShiftRange(const TimeZone &tz, int64_t start_millis, int64_t end_millis, int64_t &lo_shift,
 	                          int64_t &hi_shift) {
 		int32_t min_offset;
@@ -306,8 +306,7 @@ struct ICUFromNaiveTimestamp : public ICUDateFunc {
 };
 
 struct ICUToNaiveTimestamp : public ICUDateFunc {
-	//! The smallest and largest shift in milliseconds the operation applies to an instant in
-	//! [start_millis, end_millis]
+	//! The smallest and largest shift in milliseconds over the interval of instants
 	static void GetShiftRange(const TimeZone &tz, int64_t start_millis, int64_t end_millis, int64_t &lo_shift,
 	                          int64_t &hi_shift) {
 		int32_t min_offset;
@@ -702,7 +701,7 @@ void ICUToTimeTZ::AddCasts(ExtensionLoader &loader) {
 }
 
 struct ICUTimeZoneFunc : public ICUDateFunc {
-	//! The zone a constant first argument names, or nullptr if the argument is not constant or not a zone
+	//! nullptr unless the argument is a constant naming a known zone
 	static unique_ptr<TimeZone> GetConstantTimeZone(ClientContext &context, const Expression &tz_expr) {
 		if (!tz_expr.IsFoldable()) {
 			return nullptr;
