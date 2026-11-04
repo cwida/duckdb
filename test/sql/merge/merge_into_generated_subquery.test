@@ -1,0 +1,73 @@
+# name: test/sql/merge/merge_into_generated_subquery.test
+# description: Source projections preserve MERGE join discovery with subquery conditions
+# group: [merge]
+
+statement ok
+CREATE TABLE source(i INTEGER, v VARCHAR, checked AS (CASE WHEN v IS NULL THEN error('unexpected source null') ELSE v END));
+
+statement ok
+INSERT INTO source VALUES (1, 'new');
+
+foreach optimizer enable disable
+
+statement ok
+PRAGMA {optimizer}_optimizer;
+
+statement ok
+CREATE OR REPLACE TABLE target(i INTEGER PRIMARY KEY, v VARCHAR, checked AS (CASE WHEN v IS NULL THEN error('unexpected target null') ELSE v END));
+
+statement ok
+INSERT INTO target VALUES (1, 'old'), (2, 'unmatched');
+
+# The source marker belongs on the MERGE input, below joins introduced by the subquery.
+query TIT rowsort
+MERGE INTO target t USING source s ON t.i = s.i AND t.i = (SELECT max(i) FROM source)
+WHEN MATCHED THEN UPDATE SET v = s.checked
+WHEN NOT MATCHED BY SOURCE THEN DELETE
+RETURNING merge_action, i, checked;
+----
+DELETE	2	unmatched
+UPDATE	1	new
+
+query IT
+SELECT i, checked FROM target;
+----
+1	new
+
+# Deleted primary keys can be reused after forwarding the target's physical columns.
+statement ok
+INSERT INTO target VALUES (2, 'unmatched');
+
+query TIT rowsort
+MERGE INTO target t USING source s ON t.i = s.i AND t.i IN (SELECT i FROM source)
+WHEN MATCHED AND s.checked = 'new' THEN DELETE
+WHEN NOT MATCHED BY SOURCE THEN DELETE
+RETURNING merge_action, i, checked;
+----
+DELETE	1	new
+DELETE	2	unmatched
+
+statement ok
+INSERT INTO target VALUES (1, 'old');
+
+# A missing target must also NULL-extend its generated values below the subquery join.
+query TIT rowsort
+MERGE INTO target t USING (VALUES (1, 'new'), (3, 'inserted')) s(i, v)
+ON t.i = s.i AND t.i = (SELECT max(i) FROM source)
+WHEN MATCHED AND t.checked = 'old' THEN UPDATE SET v = s.v
+WHEN NOT MATCHED BY TARGET THEN INSERT (i, v) VALUES (s.i, s.v)
+RETURNING merge_action, i, checked;
+----
+INSERT	3	inserted
+UPDATE	1	new
+
+query IT rowsort
+SELECT i, checked FROM target;
+----
+1	new
+3	inserted
+
+endloop
+
+statement ok
+PRAGMA enable_optimizer;

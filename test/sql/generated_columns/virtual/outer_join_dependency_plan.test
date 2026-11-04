@@ -1,0 +1,46 @@
+# name: test/sql/generated_columns/virtual/outer_join_dependency_plan.test
+# description: Generated dependency probes do not populate source projections
+# group: [virtual]
+
+require json
+
+statement ok
+CREATE TABLE r(
+	i INTEGER,
+	g0 AS (i + 1),
+	g1 AS (g0 + 1),
+	g2 AS (g1 + 1),
+	g3 AS (g2 + 1),
+	g4 AS (g3 + 1),
+	g5 AS (g4 + 1),
+	g6 AS (g5 + 1),
+	g7 AS (g6 + 1)
+);
+
+foreach last 0 3 7
+
+# Only the join key and requested generated expression belong in the source projection.
+query I
+WITH plan AS (
+	SELECT json_serialize_plan('SELECT r.g{last} FROM (VALUES (1)) l(i) LEFT JOIN r USING (i)') AS j
+)
+SELECT json_array_length(value, '$.expressions')
+FROM plan, json_tree(j)
+WHERE json_extract_string(value, '$.type') = 'LOGICAL_PROJECTION'
+  AND json_extract_string(value, '$.children[0].type') = 'LOGICAL_GET';
+----
+2
+
+# A successful reconstruction needs only the grouped source column.
+query I
+WITH plan AS (
+	SELECT json_serialize_plan('SELECT r.g{last}, count(*) FROM (VALUES (1)) l(i) LEFT JOIN r USING (i) GROUP BY r.i') AS j
+)
+SELECT json_array_length(value, '$.expressions')
+FROM plan, json_tree(j)
+WHERE json_extract_string(value, '$.type') = 'LOGICAL_PROJECTION'
+  AND json_extract_string(value, '$.children[0].type') = 'LOGICAL_GET';
+----
+1
+
+endloop

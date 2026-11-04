@@ -134,7 +134,13 @@ unique_ptr<ParsedExpression> ColumnQualifier::CreateStructPack(ColumnRefExpressi
 		                                                     ColumnBindType::DO_NOT_EXPAND_GENERATED_COLUMNS);
 		child_expressions.emplace_back(column_name, std::move(ref));
 	}
-	return make_uniq<FunctionExpression>("struct_pack", std::move(child_expressions));
+	auto expression = make_uniq<FunctionExpression>("struct_pack", std::move(child_expressions));
+	if (binding->HasSourceProjection() && binding->IsNullExtended()) {
+		auto result = binding->RegisterWholeRowExpression(std::move(expression));
+		result->SetAlias(col_ref.GetName());
+		return result;
+	}
+	return std::move(expression);
 }
 
 unique_ptr<ParsedExpression> ColumnQualifier::QualifyColumnName(const ParsedExpression &expr,

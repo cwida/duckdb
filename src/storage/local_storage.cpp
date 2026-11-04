@@ -307,17 +307,18 @@ optional_ptr<LocalTableStorage> LocalTableManager::GetStorage(const DataTable &t
 	return entry == table_storage.end() ? nullptr : entry->second.get();
 }
 
-LocalTableStorage &LocalTableManager::GetOrCreateStorage(ClientContext &context, DataTable &table) {
+LocalTableStorage &LocalTableManager::GetOrCreateStorage(ClientContext &context, DataTable &table,
+                                                         optional_ptr<DuckTableEntry> table_entry) {
 	lock_guard<mutex> l(table_storage_lock);
 	auto entry = table_storage.find(table);
 	if (entry == table_storage.end()) {
 		auto new_storage = make_shared_ptr<LocalTableStorage>(context, table);
-		auto storage = new_storage.get();
-		table_storage.insert(make_pair(reference<const DataTable>(table), std::move(new_storage)));
-		return *storage;
-	} else {
-		return *entry->second.get();
+		entry = table_storage.insert(make_pair(reference<const DataTable>(table), std::move(new_storage))).first;
 	}
+	if (table_entry) {
+		entry->second->table_entry = table_entry;
+	}
+	return *entry->second;
 }
 
 bool LocalTableManager::IsEmpty() const {
@@ -434,14 +435,12 @@ optional_idx LocalStorage::NextParallelScan(ClientContext &context, DataTable &t
 }
 
 void LocalStorage::InitializeAppend(LocalAppendState &state, DataTable &table, DuckTableEntry &table_entry) {
-	state.storage = &table_manager.GetOrCreateStorage(context, table);
-	state.storage->table_entry = &table_entry;
+	state.storage = &table_manager.GetOrCreateStorage(context, table, table_entry);
 	state.storage->GetCollection().InitializeAppend(TransactionData(transaction), state.append_state);
 }
 
 void LocalStorage::InitializeStorage(LocalAppendState &state, DataTable &table, DuckTableEntry &table_entry) {
-	state.storage = &table_manager.GetOrCreateStorage(context, table);
-	state.storage->table_entry = &table_entry;
+	state.storage = &table_manager.GetOrCreateStorage(context, table, table_entry);
 }
 
 void LocalTableStorage::AppendToDeleteIndexes(Vector &row_ids, DataChunk &delete_chunk) {
@@ -476,9 +475,8 @@ void LocalTableStorage::AppendToDeleteIndexes(Vector &row_ids, DataChunk &delete
 	delete_indexes.AppendToDeleteIndexes(committed_chunk, committed_row_ids);
 }
 
-void LocalStorage::Append(LocalAppendState &state, DuckTableEntry &table_entry, DataChunk &table_chunk) {
+void LocalStorage::Append(LocalAppendState &state, DataChunk &table_chunk) {
 	auto storage = state.storage;
-	storage->table_entry = &table_entry;
 	auto offset = NumericCast<idx_t>(MAX_ROW_ID) + storage->GetCollection().GetNextRowId();
 	idx_t base_id = offset + state.append_state.total_append_count;
 
@@ -504,8 +502,7 @@ void LocalStorage::FinalizeAppend(LocalAppendState &state) {
 }
 
 void LocalStorage::LocalMerge(DataTable &table, DuckTableEntry &table_entry, OptimisticWriteCollection &collection) {
-	auto &storage = table_manager.GetOrCreateStorage(context, table);
-	storage.table_entry = &table_entry;
+	auto &storage = table_manager.GetOrCreateStorage(context, table, table_entry);
 	if (!storage.append_indexes.Empty()) {
 		// append data to indexes if required
 		row_t base_id = MAX_ROW_ID + NumericCast<row_t>(storage.GetCollection().GetNextRowId());
@@ -660,7 +657,7 @@ void LocalStorage::Flush(DataTable &table, LocalTableStorage &storage, optional_
 			throw;
 		}
 	}
-	// table_entry is set through the append path (InitializeAppend/Append/LocalMerge/Alter)
+	// Initialization and ALTER keep table_entry current until commit.
 	D_ASSERT(storage.table_entry);
 	transaction.PushAppend(*storage.table_entry, NumericCast<idx_t>(append_state.row_start), append_count);
 

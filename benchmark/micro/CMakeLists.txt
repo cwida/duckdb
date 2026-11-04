@@ -9,6 +9,7 @@ add_library(
   concurrent_commits.cpp
   in.cpp
   parser.cpp
+  planning.cpp
   storage.cpp
   string_serialize.cpp)
 

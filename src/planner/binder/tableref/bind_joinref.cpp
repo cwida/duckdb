@@ -133,9 +133,14 @@ static vector<Identifier> RemoveDuplicateUsingColumns(const vector<Identifier> &
 	return result;
 }
 
-BoundStatement Binder::BindJoin(Binder &parent_binder, TableRef &ref) {
+BoundStatement Binder::BindJoin(Binder &parent_binder, TableRef &ref, bool null_extended) {
 	unnamed_subquery_index = parent_binder.unnamed_subquery_index;
+	requires_source_projection = parent_binder.requires_source_projection || null_extended;
 	auto result = Bind(ref);
+	if (requires_source_projection && ref.type != TableReferenceType::JOIN &&
+	    ref.type != TableReferenceType::BOUND_TABLE_REF) {
+		bind_context.AddSourceProjection(result);
+	}
 	parent_binder.unnamed_subquery_index = unnamed_subquery_index;
 	return result;
 }
@@ -196,14 +201,15 @@ BoundStatement Binder::Bind(JoinRef &ref) {
 	auto &right_binder = *result->right_binder;
 
 	result->type = ref.type;
-	result->left = left_binder.BindJoin(*this, *ref.left);
+	const bool full_outer = result->type == JoinType::OUTER || ref.ref_type == JoinRefType::POSITIONAL;
+	result->left = left_binder.BindJoin(*this, *ref.left, result->type == JoinType::RIGHT || full_outer);
 	result->delim_flipped = ref.delim_flipped;
 
 	{
 		LateralBinder lateral_binder(left_binder, context);
 
 		right_binder.BeginSubqueryBind(left_binder, lateral_binder);
-		result->right = right_binder.BindJoin(*this, *ref.right);
+		result->right = right_binder.BindJoin(*this, *ref.right, result->type == JoinType::LEFT || full_outer);
 		if (!ref.duplicate_eliminated_columns.empty()) {
 			if (ref.delim_flipped) {
 				// We gotta use the expression binder of the right side
@@ -366,7 +372,6 @@ BoundStatement Binder::Bind(JoinRef &ref) {
 	}
 
 	// a positional join pads the shorter side with NULLs
-	const bool full_outer = result->type == JoinType::OUTER || ref.ref_type == JoinRefType::POSITIONAL;
 	if (result->type == JoinType::LEFT || full_outer) {
 		for (auto &binding : right_binder.bind_context.GetBindingsList()) {
 			binding->SetNullExtended();

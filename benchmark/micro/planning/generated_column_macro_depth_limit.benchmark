@@ -1,0 +1,37 @@
+# name: benchmark/micro/planning/generated_column_macro_depth_limit.benchmark
+# description: Reject macro-generated dependency trees using the effective binding depth
+# group: [planning]
+
+require json
+
+load
+SET threads=1;
+CREATE MACRO generated_add(x, y) AS (x + y);
+CREATE TABLE r(
+	i INTEGER,
+	g0 AS (i + 1),
+	g1 AS (generated_add(g0, g0)),
+	g2 AS (generated_add(g1, g1)),
+	g3 AS (generated_add(g2, g2)),
+	g4 AS (generated_add(g3, g3)),
+	g5 AS (generated_add(g4, g4)),
+	g6 AS (generated_add(g5, g5)),
+	g7 AS (generated_add(g6, g6)),
+	g8 AS (generated_add(g7, g7)),
+	g9 AS (generated_add(g8, g8)),
+	g10 AS (generated_add(g9, g9)),
+	g11 AS (generated_add(g10, g10)),
+	g12 AS (generated_add(g11, g11)),
+	g13 AS (generated_add(g12, g12)),
+	g14 AS (generated_add(g13, g13)),
+	g15 AS (generated_add(g14, g14)),
+	g16 AS (generated_add(g15, g15)),
+	g17 AS (generated_add(g16, g16))
+);
+SET max_expression_depth=80;
+
+run
+SELECT json_extract_string(json_serialize_plan('SELECT r.g17 FROM (VALUES (1)) l(i) LEFT JOIN r USING (i)'), 'error_type');
+
+result I
+binder

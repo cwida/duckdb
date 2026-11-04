@@ -1,0 +1,247 @@
+# name: test/sql/join/whole_row_outer_join.test
+# description: Whole-row references distinguish source rows from outer join padding
+# group: [join]
+
+statement ok
+CREATE TABLE l(i INTEGER);
+
+statement ok
+INSERT INTO l VALUES (1), (2), (3);
+
+statement ok
+CREATE TABLE r(i INTEGER, v VARCHAR);
+
+statement ok
+INSERT INTO r VALUES (1, 'hello'), (3, 'world');
+
+query IT
+SELECT l.i, r FROM l LEFT JOIN r USING (i) ORDER BY l.i;
+----
+1	{'i': 1, 'v': hello}
+2	NULL
+3	{'i': 3, 'v': world}
+
+query II
+SELECT l.i, struct_pack(i := r.i, v := r.v) IS NULL FROM l LEFT JOIN r USING (i) ORDER BY l.i;
+----
+1	false
+2	false
+3	false
+
+query II
+SELECT l.i, s IS NULL FROM l LEFT JOIN (SELECT i, v FROM r) s USING (i) ORDER BY l.i;
+----
+1	false
+2	true
+3	false
+
+query II
+SELECT l.i, s IS NULL FROM l LEFT JOIN (VALUES (1, 'hello'), (3, 'world')) s(i,v) USING (i) ORDER BY l.i;
+----
+1	false
+2	true
+3	false
+
+query II
+SELECT l.i, s IS NULL FROM l LEFT JOIN LATERAL (SELECT l.i AS i, 'hello' AS v WHERE l.i <> 2) s ON true ORDER BY l.i;
+----
+1	false
+2	true
+3	false
+
+statement ok
+CREATE VIEW rv AS SELECT * FROM r;
+
+query II
+SELECT l.i, rv IS NULL FROM l LEFT JOIN rv USING (i) ORDER BY l.i;
+----
+1	false
+2	true
+3	false
+
+query II
+WITH c AS MATERIALIZED (SELECT * FROM r) SELECT l.i, c IS NULL FROM l LEFT JOIN c USING (i) ORDER BY l.i;
+----
+1	false
+2	true
+3	false
+
+query II
+WITH c AS NOT MATERIALIZED (SELECT * FROM r) SELECT l.i, c IS NULL FROM l LEFT JOIN c USING (i) ORDER BY l.i;
+----
+1	false
+2	true
+3	false
+
+query II
+SELECT l.i, s IS NULL FROM l LEFT JOIN (SELECT 1 AS i, 'hello' AS v UNION ALL SELECT 3, 'world') s USING (i) ORDER BY l.i;
+----
+1	false
+2	true
+3	false
+
+query II
+SELECT l.i, s IS NULL FROM l LEFT JOIN range(1) s(i) USING (i) ORDER BY l.i;
+----
+1	true
+2	true
+3	true
+
+query II
+SELECT l.i, s IS NULL FROM l LEFT JOIN (SELECT * FROM r ORDER BY i LIMIT 1) s USING (i) ORDER BY l.i;
+----
+1	false
+2	true
+3	true
+
+query III
+SELECT l.i, s IS NULL, s.v IS NULL FROM l LEFT JOIN (VALUES (1, NULL::VARCHAR)) s(i,v) USING (i) ORDER BY l.i;
+----
+1	false	true
+2	true	true
+3	true	true
+
+query II
+SELECT a IS NULL, b IS NULL FROM (VALUES (NULL::INTEGER), (NULL)) a(i) POSITIONAL JOIN (VALUES (NULL::INTEGER)) b(i);
+----
+false	false
+false	true
+
+query III
+SELECT coalesce(a.i, b.i), a IS NULL, b IS NULL FROM (VALUES (1), (2)) a(i) FULL JOIN (VALUES (2), (3)) b(i) USING (i) ORDER BY 1;
+----
+1	false	true
+2	false	false
+3	true	false
+
+query III
+SELECT l.i, s IS NULL, s.k FROM l LEFT JOIN (SELECT i, 42 AS k FROM r) s USING (i) ORDER BY l.i;
+----
+1	false	42
+2	true	NULL
+3	false	42
+
+query II
+SELECT l.i, s IS NULL FROM l ASOF LEFT JOIN (VALUES (2, 'hello')) s(i,v) ON l.i >= s.i ORDER BY l.i;
+----
+1	true
+2	false
+3	false
+
+query II
+SELECT l.i, r IS NULL FROM l LEFT JOIN r ON l.i = r.i AND r IS NOT NULL ORDER BY l.i;
+----
+1	false
+2	true
+3	false
+
+query I
+SELECT count(*) FROM l LEFT JOIN r USING (i);
+----
+3
+
+query I
+SELECT count(*) FROM l LEFT JOIN r ON false;
+----
+3
+
+query I
+SELECT count(*) FROM l LEFT JOIN r ON NULL;
+----
+3
+
+query I
+SELECT count(*) FROM l CROSS JOIN r;
+----
+6
+
+query III
+SELECT l.i, s.i, s.n FROM l LEFT JOIN range(1, 4, 2) WITH ORDINALITY s(i,n) USING (i) ORDER BY l.i;
+----
+1	1	1
+2	NULL	NULL
+3	3	2
+
+query II
+SELECT * FROM query('SELECT l.i, s IS NULL FROM l LEFT JOIN (VALUES (1), (3)) s("' || chr(0) || 'whole_row") ON l.i = s."' || chr(0) || 'whole_row" ORDER BY l.i');
+----
+1	false
+2	true
+3	false
+
+statement ok
+PRAGMA disable_optimizer;
+
+query IT
+SELECT l.i, r FROM l LEFT JOIN r USING (i) ORDER BY l.i;
+----
+1	{'i': 1, 'v': hello}
+2	NULL
+3	{'i': 3, 'v': world}
+
+query I
+SELECT count(*) FROM l CROSS JOIN r;
+----
+6
+
+query I
+SELECT count(*) FROM l LEFT JOIN r ON true;
+----
+6
+
+query I
+SELECT count(*) FROM l LEFT JOIN r ON false;
+----
+3
+
+# Empty projections preserve cardinality across multiple chunks and unmatched rows.
+query I
+SELECT count(*) FROM range(10000) l LEFT JOIN r ON true;
+----
+20000
+
+query I
+SELECT count(*) FROM range(10000) l LEFT JOIN (SELECT * FROM r WHERE false) r ON true;
+----
+10000
+
+query I
+SELECT count(*) FROM (SELECT * FROM l WHERE false) l LEFT JOIN r ON true;
+----
+0
+
+statement ok
+PRAGMA enable_optimizer;
+
+statement ok
+UPDATE r SET v = upper(v);
+
+statement ok
+DELETE FROM r WHERE i = 3;
+
+query IT
+SELECT l.i, r FROM l LEFT JOIN r USING (i) ORDER BY l.i;
+----
+1	{'i': 1, 'v': HELLO}
+2	NULL
+3	NULL
+
+statement error
+SELECT r, count(*) FROM (VALUES (1), (2)) l(i) LEFT JOIN r USING (i) GROUP BY r.i;
+----
+<REGEX>:.*column "r" must appear in the GROUP BY clause.*ANY_VALUE\("r"\).*
+
+statement error
+SELECT r AS row_alias, count(*) FROM (VALUES (1), (2)) l(i) LEFT JOIN r USING (i) GROUP BY r.i;
+----
+<REGEX>:.*column "r" must appear in the GROUP BY clause.*ANY_VALUE\("r"\).*
+
+statement error
+SELECT hash(r), count(*) FROM (VALUES (1), (2)) l(i) LEFT JOIN r USING (i) GROUP BY r.i;
+----
+<REGEX>:.*column "r" must appear in the GROUP BY clause.*ANY_VALUE\("r"\).*
+
+statement error
+SELECT s, count(*) FROM (VALUES (1), (2)) l(i) LEFT JOIN r AS s USING (i) GROUP BY s.i;
+----
+<REGEX>:.*column "s" must appear in the GROUP BY clause.*ANY_VALUE\("s"\).*

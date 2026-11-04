@@ -1,0 +1,36 @@
+# name: benchmark/micro/planning/generated_column_unused_macro_argument.benchmark
+# description: Reconstruct a grouped generated column without expanding an unused macro argument
+# group: [planning]
+
+load
+SET threads=1;
+CREATE MACRO keep_first(x, unused) AS x;
+CREATE TABLE r(
+	i INTEGER,
+	g0 AS (i + 1),
+	g1 AS (g0 + g0),
+	g2 AS (g1 + g1),
+	g3 AS (g2 + g2),
+	g4 AS (g3 + g3),
+	g5 AS (g4 + g4),
+	g6 AS (g5 + g5),
+	g7 AS (g6 + g6),
+	g8 AS (g7 + g7),
+	g9 AS (g8 + g8),
+	g10 AS (g9 + g9),
+	g11 AS (g10 + g10),
+	g12 AS (g11 + g11),
+	g13 AS (g12 + g12),
+	g14 AS (g13 + g13),
+	g15 AS (g14 + g14),
+	g16 AS (g15 + g15),
+	g17 AS (g16 + g16),
+	kept AS (keep_first(i, g17))
+);
+SET max_expression_depth=20;
+
+run
+SELECT r.kept, count(*) FROM (VALUES (1)) l(i) LEFT JOIN r USING (i) GROUP BY r.i;
+
+result II
+NULL	1

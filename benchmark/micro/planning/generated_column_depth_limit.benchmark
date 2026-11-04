@@ -1,0 +1,36 @@
+# name: benchmark/micro/planning/generated_column_depth_limit.benchmark
+# description: Reject branching generated dependencies before materializing the expanded tree
+# group: [planning]
+
+require json
+
+load
+SET threads=1;
+CREATE TABLE r(
+	i INTEGER,
+	g0 AS (i + 1),
+	g1 AS (g0 + g0),
+	g2 AS (g1 + g1),
+	g3 AS (g2 + g2),
+	g4 AS (g3 + g3),
+	g5 AS (g4 + g4),
+	g6 AS (g5 + g5),
+	g7 AS (g6 + g6),
+	g8 AS (g7 + g7),
+	g9 AS (g8 + g8),
+	g10 AS (g9 + g9),
+	g11 AS (g10 + g10),
+	g12 AS (g11 + g11),
+	g13 AS (g12 + g12),
+	g14 AS (g13 + g13),
+	g15 AS (g14 + g14),
+	g16 AS (g15 + g15),
+	g17 AS (g16 + g16)
+);
+SET max_expression_depth=20;
+
+run
+SELECT json_extract_string(json_serialize_plan('SELECT r.g17 FROM (VALUES (1)) l(i) LEFT JOIN r USING (i)'), 'error_type');
+
+result I
+binder

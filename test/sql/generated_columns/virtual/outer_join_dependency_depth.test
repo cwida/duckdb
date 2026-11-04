@@ -1,0 +1,107 @@
+# name: test/sql/generated_columns/virtual/outer_join_dependency_depth.test
+# description: Check expression depth before expanding branching generated dependencies
+# group: [virtual]
+
+statement ok
+CREATE TABLE r(
+	i INTEGER,
+	g0 AS (i + 1),
+	g1 AS (g0 + g0),
+	g2 AS (g1 + g1),
+	g3 AS (g2 + g2),
+	g4 AS (g3 + g3),
+	g5 AS (g4 + g4),
+	g6 AS (g5 + g5),
+	g7 AS (g6 + g6),
+	g8 AS (g7 + g7),
+	g9 AS (g8 + g8),
+	g10 AS (g9 + g9),
+	g11 AS (g10 + g10),
+	g12 AS (g11 + g11),
+	g13 AS (g12 + g12),
+	g14 AS (g13 + g13),
+	g15 AS (g14 + g14),
+	g16 AS (g15 + g15),
+	g17 AS (g16 + g16)
+);
+
+statement ok
+CREATE TABLE shallow(
+	i INTEGER,
+	g0 AS (i + 1),
+	g1 AS (g0 + g0),
+	g2 AS (g1 + g1)
+);
+
+statement ok
+INSERT INTO shallow VALUES (1);
+
+foreach optimizer enable disable
+
+statement ok
+PRAGMA {optimizer}_optimizer;
+
+# The source is empty: rejecting this query must not depend on execution.
+statement ok
+SET max_expression_depth=20;
+
+statement error
+SELECT r.g17 FROM (VALUES (1)) l(i) LEFT JOIN r USING (i);
+----
+Max expression depth limit of 20 exceeded
+
+statement error
+SELECT r.g17, count(*) FROM (VALUES (1)) l(i) LEFT JOIN r USING (i) GROUP BY r.i;
+----
+Max expression depth limit of 20 exceeded
+
+statement error
+SELECT (SELECT r.g17) FROM (VALUES (1)) l(i) LEFT JOIN r USING (i);
+----
+Max expression depth limit of 20 exceeded
+
+query I
+SELECT r.g0 FROM (VALUES (1)) l(i) LEFT JOIN r USING (i);
+----
+NULL
+
+query I
+SELECT r.g2 FROM (VALUES (1), (2)) l(i) LEFT JOIN shallow r USING (i) ORDER BY l.i;
+----
+8
+NULL
+
+# Retrying at a higher limit succeeds for a bounded branching expression.
+statement ok
+SET max_expression_depth=1000;
+
+query I
+SELECT r.g2 FROM (VALUES (1), (2)) l(i) LEFT JOIN shallow r USING (i) ORDER BY l.i;
+----
+8
+NULL
+
+query II
+SELECT r.g2, count(*) FROM (VALUES (1), (2)) l(i) LEFT JOIN shallow r USING (i) GROUP BY r.i ORDER BY r.i;
+----
+8	1
+NULL	1
+
+statement ok
+SET max_expression_depth=10;
+
+statement error
+SELECT r.g2 FROM (VALUES (1), (2)) l(i) LEFT JOIN shallow r USING (i);
+----
+Max expression depth limit of 10 exceeded
+
+statement ok
+SET max_expression_depth=1000;
+
+query I
+SELECT r.g2 FROM (VALUES (1), (2)) l(i) LEFT JOIN shallow r USING (i) ORDER BY l.i;
+----
+8
+NULL
+
+endloop

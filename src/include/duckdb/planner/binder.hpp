@@ -467,6 +467,8 @@ private:
 	bool is_outside_flattened = true;
 	//! LEGACY: Whether or not the binder can contain NULLs as the root of expressions
 	bool legacy_can_contain_nulls = false;
+	//! Whether source projections are needed below a surrounding NULL-extending join
+	bool requires_source_projection = false;
 	//! Whether this binder is inside a subquery boundary
 	bool inside_subquery = false;
 	//! Whether the key expressions of an index are being bound
@@ -614,7 +616,7 @@ private:
 
 	void BuildUnionByNameInfo(BoundSetOperationNode &result);
 
-	BoundStatement BindJoin(Binder &parent, TableRef &ref);
+	BoundStatement BindJoin(Binder &parent, TableRef &ref, bool null_extended = false);
 	BoundStatement Bind(BaseTableRef &ref);
 	BoundStatement Bind(BoundRefWrapper &ref);
 	BoundStatement Bind(JoinRef &ref);

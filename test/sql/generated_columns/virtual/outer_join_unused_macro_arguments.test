@@ -1,0 +1,132 @@
+# name: test/sql/generated_columns/virtual/outer_join_unused_macro_arguments.test
+# description: Grouped reconstruction does not expand discarded macro dependencies
+# group: [virtual]
+
+statement ok
+CREATE MACRO keep_first(x, unused) AS x;
+
+statement ok
+CREATE MACRO keep_named(x, unused := 0) AS x;
+
+statement ok
+CREATE MACRO nested_keep(x, unused) AS keep_first(x, unused);
+
+statement ok
+CREATE TABLE r(
+	i INTEGER,
+	g0 AS (i + 1),
+	g1 AS (g0 + g0),
+	g2 AS (g1 + g1),
+	g3 AS (g2 + g2),
+	g4 AS (g3 + g3),
+	g5 AS (g4 + g4),
+	g6 AS (g5 + g5),
+	g7 AS (g6 + g6),
+	h0 AS (i + 1),
+	h1 AS (h0 + h0),
+	h2 AS (h1 + h1),
+	h3 AS (h2 + h2),
+	h4 AS (h3 + h3),
+	h5 AS (h4 + h4),
+	h6 AS (h5 + h5),
+	h7 AS (h6 + h6),
+	fixed AS (42),
+	g AS (i + fixed),
+	kept AS (keep_first(i, g7)),
+	copied AS (keep_first(i, h7)),
+	nested AS (nested_keep(i, g7)),
+	named AS (keep_named(i, unused := g7)),
+	defaulted AS (keep_named(i)),
+	dependent AS (keep_first(g, g7)),
+	constant_argument AS (keep_first(i, fixed))
+);
+
+statement ok
+INSERT INTO r(i) VALUES (1), (3);
+
+foreach optimizer enable disable
+
+statement ok
+PRAGMA {optimizer}_optimizer;
+
+statement ok
+SET max_expression_depth=20;
+
+query II
+SELECT r.kept, count(*) FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN r USING (i) GROUP BY r.i ORDER BY 1;
+----
+1	1
+3	1
+NULL	1
+
+query II
+SELECT r.kept, count(*) FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN r USING (i) GROUP BY r.kept ORDER BY 1;
+----
+1	1
+3	1
+NULL	1
+
+# Preparing grouping matches must not bind an argument the group itself discards.
+query II
+SELECT r.kept, count(*) FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN r USING (i) GROUP BY r.i, keep_first(r.i, r.g7) ORDER BY 1;
+----
+1	1
+3	1
+NULL	1
+
+# Equivalent source definitions can match without materializing their dependency trees.
+query II
+SELECT r.kept, count(*) FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN r USING (i) GROUP BY r.copied ORDER BY 1;
+----
+1	1
+3	1
+NULL	1
+
+query II rowsort
+SELECT r.kept, count(*) FROM (VALUES (1)) l(i) LEFT JOIN r USING (i) GROUP BY GROUPING SETS ((r.i, r.kept), (r.i));
+----
+1	1
+NULL	1
+
+statement error
+SELECT r.g7, count(*) FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN r USING (i) GROUP BY r.i;
+----
+Max expression depth limit of 20 exceeded
+
+statement ok
+SET max_expression_depth=80;
+
+query IIIII
+SELECT r.nested, r.named, r.defaulted, r.dependent, count(*) FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN r USING (i) GROUP BY r.i ORDER BY 1;
+----
+1	1	1	43	1
+3	3	3	45	1
+NULL	NULL	NULL	NULL	1
+
+query II
+SELECT r.kept, count(*) FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN r USING (i) GROUP BY r.i HAVING r.dependent > 43;
+----
+3	1
+
+query II
+SELECT r.kept, count(*) FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN r USING (i) GROUP BY r.i QUALIFY row_number() OVER (ORDER BY r.dependent) = 1;
+----
+1	1
+
+# Match the original macro call before binding its body, including source dependencies.
+query II rowsort
+SELECT r.constant_argument, count(*) FROM (VALUES (1)) l(i) LEFT JOIN r USING (i) GROUP BY GROUPING SETS ((r.i, keep_first(r.i, 42::INTEGER)), (r.i));
+----
+1	1
+NULL	1
+
+query II rowsort
+SELECT r.constant_argument, count(*) FROM (VALUES (1)) l(i) LEFT JOIN r USING (i) GROUP BY GROUPING SETS ((r.i, keep_named(r.i, 42::INTEGER)), (r.i));
+----
+1	1
+1	1
+
+statement ok
+SET max_expression_depth=1000;
+
+endloop

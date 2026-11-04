@@ -22,6 +22,12 @@
       ]
     },
     {
+      "reason": "Replacing grouping literals with parameters changes matching against generated-column definitions.",
+      "paths": [
+        "test/sql/generated_columns/virtual/outer_join_grouping_literals.test"
+      ]
+    },
+    {
       "reason": "Different error message",
       "paths": [
         "test/sql/cast/cast_error_location.test",

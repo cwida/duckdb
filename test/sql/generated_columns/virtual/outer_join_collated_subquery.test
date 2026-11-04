@@ -1,0 +1,46 @@
+# name: test/sql/generated_columns/virtual/outer_join_collated_subquery.test
+# description: Collated subquery groups retain generated source values across outer joins
+# group: [virtual]
+
+statement ok
+CREATE TABLE r(i INTEGER, v VARCHAR, g AS (v COLLATE NOCASE));
+
+statement ok
+INSERT INTO r VALUES (1, 'UPPERCASE'), (3, 'MiXeD');
+
+foreach optimizer enable disable
+
+statement ok
+PRAGMA {optimizer}_optimizer;
+
+query TI rowsort
+SELECT (SELECT r.g), count(*)
+FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN r USING (i)
+GROUP BY (SELECT r.g);
+----
+MiXeD	1
+NULL	1
+UPPERCASE	1
+
+query TI
+SELECT (SELECT r.g) AS value, count(*)
+FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN r USING (i)
+GROUP BY value
+HAVING (SELECT r.g) = 'uppercase';
+----
+UPPERCASE	1
+
+query TI rowsort
+SELECT (SELECT r.g), count(*)
+FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN r USING (i)
+GROUP BY GROUPING SETS (((SELECT r.g)), ());
+----
+MiXeD	1
+NULL	1
+NULL	3
+UPPERCASE	1
+
+endloop
+
+statement ok
+PRAGMA enable_optimizer;

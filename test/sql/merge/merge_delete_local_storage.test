@@ -1,0 +1,59 @@
+# name: test/sql/merge/merge_delete_local_storage.test
+# description: MERGE delete actions initialize shared local storage safely
+# group: [merge]
+
+statement ok
+SET threads=4;
+
+statement ok
+CREATE TABLE target(i INTEGER PRIMARY KEY, v INTEGER);
+
+foreach optimizer enable disable
+
+statement ok
+PRAGMA {optimizer}_optimizer;
+
+loop iteration 0 20
+
+statement ok
+INSERT INTO target VALUES (1, 10), (2, 20), (3, 30);
+
+statement ok
+BEGIN;
+
+# Both delete operators initialize the same transaction-local index storage.
+query TII rowsort
+MERGE INTO target t USING (VALUES (1)) s(i) ON t.i = s.i
+WHEN MATCHED THEN DELETE
+WHEN NOT MATCHED BY SOURCE THEN DELETE
+RETURNING merge_action, i, v;
+----
+DELETE	1	10
+DELETE	2	20
+DELETE	3	30
+
+query I
+SELECT count(*) FROM target;
+----
+0
+
+# Both actions must release their primary keys within the transaction.
+statement ok
+INSERT INTO target VALUES (1, 11), (2, 21), (3, 31);
+
+statement ok
+COMMIT;
+
+query II rowsort
+SELECT * FROM target;
+----
+1	11
+2	21
+3	31
+
+statement ok
+DELETE FROM target;
+
+endloop
+
+endloop

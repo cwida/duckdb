@@ -9,6 +9,7 @@
 #include "duckdb/planner/bound_query_node.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_lambdaref_expression.hpp"
+#include "duckdb/planner/operator/logical_projection.hpp"
 #include "duckdb/parser/parsed_expression_iterator.hpp"
 
 #include <algorithm>
@@ -23,6 +24,23 @@ Binding::Binding(BindingType binding_type, BindingAlias alias_p, vector<LogicalT
 		names.emplace_back(std::move(colname));
 	}
 	Initialize();
+}
+
+Binding::Binding(const Binding &other)
+    : binding_type(other.binding_type), alias(other.alias), index(other.index), types(other.types), names(other.names),
+      name_map(other.name_map), null_extended(other.null_extended), source_projection(other.source_projection),
+      forwarded_columns(other.forwarded_columns), projected_columns(other.projected_columns),
+      whole_row_column(other.whole_row_column) {
+	for (auto &entry : other.projection_expressions) {
+		auto &source = entry.second;
+		auto copy = SourceExpression(source.expression->Copy(), source.diagnostic_name, source.generated);
+		if (source.bound_expression) {
+			copy.bound_expression = source.bound_expression->Copy();
+		}
+		copy.can_reconstruct = source.can_reconstruct;
+		copy.is_constant_null = source.is_constant_null;
+		projection_expressions.emplace(entry.first, std::move(copy));
+	}
 }
 
 void Binding::Initialize() {
@@ -71,6 +89,71 @@ void Binding::SetNullExtended() {
 
 bool Binding::IsNullExtended() const {
 	return null_extended;
+}
+
+bool Binding::HasSourceProjection() const {
+	return source_projection != nullptr;
+}
+
+unique_ptr<ParsedExpression> Binding::RegisterProjectionExpression(const Identifier &column_name,
+                                                                   unique_ptr<ParsedExpression> expression,
+                                                                   bool generated) {
+	D_ASSERT(source_projection);
+	if (projection_expressions.find(column_name) == projection_expressions.end()) {
+		projection_expressions.emplace(
+		    column_name, SourceExpression(std::move(expression), generated ? column_name : GetAlias(), generated));
+		if (name_map.find(column_name) == name_map.end()) {
+			name_map.emplace(column_name, DConstants::INVALID_INDEX);
+		}
+	}
+	auto result = make_uniq<ColumnRefExpression>(column_name, alias);
+	result->SetAlias(column_name);
+	return std::move(result);
+}
+
+unique_ptr<ParsedExpression> Binding::RegisterWholeRowExpression(unique_ptr<ParsedExpression> expression) {
+	if (whole_row_column.empty()) {
+		whole_row_column = Identifier(string(1, '\0') + "whole_row");
+		while (HasMatchingBinding(whole_row_column)) {
+			whole_row_column = Identifier(whole_row_column.GetIdentifierName() + "_");
+		}
+	}
+	return RegisterProjectionExpression(whole_row_column, std::move(expression), false);
+}
+
+unique_ptr<Expression> Binding::ProjectColumn(unique_ptr<BoundColumnRefExpression> expression) {
+	if (!source_projection) {
+		return std::move(expression);
+	}
+	auto source_index = expression->Binding().column_index.GetIndex();
+	auto entry = forwarded_columns.find(source_index);
+	if (entry == forwarded_columns.end()) {
+		auto projection_index = ProjectionIndex(source_projection->expressions.size());
+		source_projection->expressions.push_back(make_uniq<BoundColumnRefExpression>(
+		    expression->GetName(), expression->GetReturnType(), expression->Binding()));
+		entry = forwarded_columns.emplace(source_index, projection_index).first;
+	}
+	expression->BindingMutable() = ColumnBinding(source_projection->table_index, entry->second);
+	return std::move(expression);
+}
+
+unique_ptr<Binding> Binding::CopyForSourceBinding() {
+	unique_ptr<Binding> result;
+	if (binding_type == BindingType::TABLE) {
+		auto &table_binding = Cast<TableBinding>();
+		result = make_uniq<TableBinding>(alias.GetAlias(), types, names, table_binding.bound_column_ids,
+		                                 table_binding.entry, index, table_binding.virtual_columns);
+	} else {
+		result = make_uniq<Binding>(BindingType::BASE, alias, types, names, index);
+	}
+	result->alias = alias;
+	result->name_map = name_map;
+	for (auto &entry : projection_expressions) {
+		if (result->name_map.at(entry.first) == DConstants::INVALID_INDEX) {
+			result->name_map.erase(entry.first);
+		}
+	}
+	return result;
 }
 
 const Identifier &Binding::GetAlias() const {
@@ -138,7 +221,8 @@ BindResult Binding::Bind(ColumnRefExpression &colref, idx_t depth) {
 	binding.column_index = ProjectionIndex(column_index);
 	LogicalType sql_type = types[column_index];
 	SetBoundColumnAlias(colref);
-	return BindResult(make_uniq<BoundColumnRefExpression>(Identifier(colref.GetName()), sql_type, binding, depth));
+	return BindResult(
+	    ProjectColumn(make_uniq<BoundColumnRefExpression>(Identifier(colref.GetName()), sql_type, binding, depth)));
 }
 
 optional_ptr<StandardEntry> Binding::GetStandardEntry() {
@@ -317,7 +401,8 @@ BindResult TableBinding::Bind(ColumnRefExpression &colref, idx_t depth) {
 		SetBoundColumnAlias(colref);
 	}
 	ColumnBinding binding = GetColumnBinding(column_index);
-	return BindResult(make_uniq<BoundColumnRefExpression>(Identifier(colref.GetName()), col_type, binding, depth));
+	return BindResult(
+	    ProjectColumn(make_uniq<BoundColumnRefExpression>(Identifier(colref.GetName()), col_type, binding, depth)));
 }
 
 optional_ptr<StandardEntry> TableBinding::GetStandardEntry() {

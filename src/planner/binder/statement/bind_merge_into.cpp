@@ -226,6 +226,19 @@ BoundStatement Binder::Bind(MergeIntoStatement &stmt) {
 }
 
 BoundStatement Binder::BindNode(MergeQueryNode &node) {
+	JoinRef join;
+	auto has_not_matched_by_source = node.actions.count(MergeActionCondition::WHEN_NOT_MATCHED_BY_SOURCE) > 0;
+	auto has_not_matched_by_target = node.actions.count(MergeActionCondition::WHEN_NOT_MATCHED_BY_TARGET) > 0;
+	if (has_not_matched_by_source && has_not_matched_by_target) {
+		join.type = JoinType::OUTER;
+	} else if (has_not_matched_by_source) {
+		join.type = JoinType::RIGHT;
+	} else if (has_not_matched_by_target) {
+		join.type = JoinType::LEFT;
+	} else {
+		join.type = JoinType::INNER;
+	}
+
 	// bind the target table
 	auto target_binder = Binder::CreateBinder(context, this);
 	auto table_alias = node.target->alias;
@@ -238,6 +251,13 @@ BoundStatement Binder::BindNode(MergeQueryNode &node) {
 		throw BinderException("Can only merge into base tables!");
 	}
 	auto &table = *table_ptr;
+	auto &get = bound_table.plan->Cast<LogicalGet>();
+	if (has_not_matched_by_target) {
+		target_binder->bind_context.AddSourceProjection(bound_table);
+		for (auto &binding : target_binder->bind_context.GetBindingsList()) {
+			binding->SetNullExtended();
+		}
+	}
 
 	bool has_triggers = false;
 	auto transaction = table.ParentCatalog().GetCatalogTransaction(context);
@@ -270,7 +290,12 @@ BoundStatement Binder::BindNode(MergeQueryNode &node) {
 
 	// bind the source
 	auto source_binder = Binder::CreateBinder(context, this);
-	auto source_binding = source_binder->Bind(*node.source);
+	auto source_binding = source_binder->BindJoin(*this, *node.source, has_not_matched_by_source);
+	if (has_not_matched_by_source) {
+		for (auto &binding : source_binder->bind_context.GetBindingsList()) {
+			binding->SetNullExtended();
+		}
+	}
 
 	// get the source names/types and collect source table indices for validation
 	vector<BindingAlias> source_aliases;
@@ -284,7 +309,6 @@ BoundStatement Binder::BindNode(MergeQueryNode &node) {
 		}
 	}
 	// bind the WHEN NOT MATCHED BY SOURCE / TARGET merge actions
-	auto &get = bound_table.plan->Cast<LogicalGet>();
 	auto merge_into = make_uniq<LogicalMergeInto>(table);
 	merge_into->return_chunk = !node.returning_list.empty();
 	merge_into->table_index = GenerateTableIndex();
@@ -314,23 +338,6 @@ BoundStatement Binder::BindNode(MergeQueryNode &node) {
 	}
 
 	// bind the join between the source and target
-	// our conditions determine the join type we need
-	// if we have WHEN NOT MATCHED BY SOURCE we need all source rows -> RIGHT join
-	// if we have WHEN NOT MATCHED BY TARGET we need all target rows -> LEFT join
-	// if we have both                                               -> FULL join
-	// if we only have WHEN MATCHED we only need matches             -> INNER join
-	JoinRef join;
-	auto has_not_matched_by_source = node.actions.count(MergeActionCondition::WHEN_NOT_MATCHED_BY_SOURCE) > 0;
-	auto has_not_matched_by_target = node.actions.count(MergeActionCondition::WHEN_NOT_MATCHED_BY_TARGET) > 0;
-	if (has_not_matched_by_source && has_not_matched_by_target) {
-		join.type = JoinType::OUTER;
-	} else if (has_not_matched_by_source) {
-		join.type = JoinType::RIGHT;
-	} else if (has_not_matched_by_target) {
-		join.type = JoinType::LEFT;
-	} else {
-		join.type = JoinType::INNER;
-	}
 	auto &source_op = *source_binding.plan;
 	join.left = make_uniq<BoundRefWrapper>(std::move(source_binding), std::move(source_binder));
 	join.right = make_uniq<BoundRefWrapper>(std::move(bound_table), std::move(target_binder));
@@ -424,16 +431,12 @@ BoundStatement Binder::BindNode(MergeQueryNode &node) {
 	if (has_delete_action) {
 		if (!node.returning_list.empty()) {
 			// Use the overloaded helper to add physical columns to the scan and build projection expressions
-			auto &target_binding = join_ref.get().children[inverted ? 0 : 1];
-			BindDeleteReturningColumns(table, get, merge_into->delete_return_columns, projection_expressions,
-			                           *target_binding);
+			BindDeleteReturningColumns(table, get, merge_into->delete_return_columns, projection_expressions, get);
 		} else if (table.IsDuckTable()) {
 			// Only optimize for DuckDB tables (not attached external tables like SQLite)
 			auto &storage = table.GetStorage();
 			if (storage.HasUniqueIndexes()) {
-				auto &target_binding = join_ref.get().children[inverted ? 0 : 1];
-				BindDeleteIndexColumns(table, get, merge_into->delete_return_columns, projection_expressions,
-				                       *target_binding);
+				BindDeleteIndexColumns(table, get, merge_into->delete_return_columns, projection_expressions, get);
 			}
 		}
 	}
@@ -441,6 +444,9 @@ BoundStatement Binder::BindNode(MergeQueryNode &node) {
 	merge_into->row_id_start = projection_expressions.size();
 	// Row ID columns must remain last: PhysicalMergeInto treats the trailing columns as one composite key.
 	BindRowIdColumns(table, get, projection_expressions);
+	for (auto &expr : projection_expressions) {
+		bind_context.ProjectSourceColumns(expr);
+	}
 
 	auto proj = make_uniq<LogicalProjection>(proj_index, std::move(projection_expressions));
 	proj->AddChild(std::move(root));

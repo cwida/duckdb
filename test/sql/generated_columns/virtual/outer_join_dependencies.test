@@ -1,0 +1,192 @@
+# name: test/sql/generated_columns/virtual/outer_join_dependencies.test
+# description: Reconstruct complete generated definitions across outer joins
+# group: [virtual]
+
+statement ok
+CREATE TABLE r(i INTEGER, fixed AS (42), g AS (i + fixed), chained AS (g + fixed), shared AS (g + g), same_g AS (i + 42::INTEGER), zero AS (0), positive AS (i > zero));
+
+statement ok
+INSERT INTO r VALUES (1), (3);
+
+statement ok
+CREATE TABLE null_dependencies(i INTEGER, n AS (NULL), typed_n VARCHAR AS (n), chained_n AS (typed_n), nested_n INTEGER[] AS (n));
+
+statement ok
+INSERT INTO null_dependencies VALUES (1);
+
+statement ok
+CREATE TABLE text_dependencies(v VARCHAR, suffix AS ('!'), g AS (v || suffix));
+
+statement ok
+INSERT INTO text_dependencies VALUES ('a'), ('c');
+
+statement ok
+CREATE MACRO generated_add(x, y) AS (x + y);
+
+statement ok
+CREATE TABLE macro_dependencies(i INTEGER, fixed AS (42), g AS (generated_add(i, fixed)), payload AS (struct_pack(value := fixed)));
+
+statement ok
+INSERT INTO macro_dependencies VALUES (1);
+
+statement ok
+CREATE TABLE unsafe_dependencies(i INTEGER, filled AS (coalesce(i, 42)), g AS (filled + 1), value AS (random()), volatile_g AS (i + value));
+
+statement ok
+CREATE TABLE throwing_dependencies(i INTEGER, invalid AS (CAST('invalid' AS INTEGER)), g AS (i + invalid));
+
+foreach optimizer enable disable
+
+statement ok
+PRAGMA {optimizer}_optimizer;
+
+query II
+SELECT r.g, count(*) FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN r USING (i) GROUP BY r.i ORDER BY 1;
+----
+43	1
+45	1
+NULL	1
+
+query IIII
+SELECT r.g, r.chained, r.shared, count(*) FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN r USING (i) GROUP BY r.i ORDER BY 1;
+----
+43	85	86	1
+45	87	90	1
+NULL	NULL	NULL	1
+
+query II
+SELECT r.chained, count(*) FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN r USING (i) GROUP BY r.g ORDER BY 1;
+----
+85	1
+87	1
+NULL	1
+
+query II
+SELECT r.g, count(*) FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN r USING (i) GROUP BY r.same_g ORDER BY 1;
+----
+43	1
+45	1
+NULL	1
+
+query II
+SELECT r.g, count(*) FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN r USING (i) GROUP BY r.i + 42::INTEGER ORDER BY 1;
+----
+43	1
+45	1
+NULL	1
+
+query II
+SELECT x.result, count(*) FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN r AS x(k, constant_value, result) ON l.i = x.k GROUP BY x.k ORDER BY 1;
+----
+43	1
+45	1
+NULL	1
+
+query II
+SELECT r.g, count(*) FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN r USING (i) GROUP BY r.i HAVING r.chained > 85;
+----
+45	1
+
+query II
+SELECT r.g, count(*) FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN r USING (i) GROUP BY r.i QUALIFY row_number() OVER (ORDER BY r.shared) = 1;
+----
+43	1
+
+# A dependency's constant is independent of the projected grouping key.
+query II rowsort
+SELECT r.g, count(*) FROM (VALUES (1)) l(i) LEFT JOIN r USING (i) GROUP BY GROUPING SETS ((r.i, r.fixed), (r.i));
+----
+43	1
+43	1
+
+# Expanding dependencies must preserve parsed literal/cast distinctions.
+query II rowsort
+SELECT r.positive, count(*) FROM (VALUES (1)) l(i) LEFT JOIN r USING (i) GROUP BY GROUPING SETS ((r.i, 0::INTEGER), (r.i));
+----
+true	1
+NULL	1
+
+query II rowsort
+SELECT r.positive, count(*) FROM (VALUES (1)) l(i) LEFT JOIN r USING (i) GROUP BY GROUPING SETS ((r.i, 0::BIGINT), (r.i));
+----
+true	1
+true	1
+
+query III rowsort
+SELECT r.g, r.same_g, count(*) FROM (VALUES (1)) l(i) LEFT JOIN r USING (i) GROUP BY GROUPING SETS ((r.g), (r.same_g));
+----
+43	NULL	1
+NULL	43	1
+
+query TI
+SELECT r.g, count(*) FROM (VALUES ('a'), ('b'), ('c')) l(v) LEFT JOIN text_dependencies r USING (v) GROUP BY r.v ORDER BY 1;
+----
+a!	1
+c!	1
+NULL	1
+
+# Macro arguments expand in the same source scope as other dependencies.
+query II
+SELECT r.g, count(*) FROM (VALUES (1), (2)) l(i) LEFT JOIN macro_dependencies r USING (i) GROUP BY r.i ORDER BY 1;
+----
+43	1
+NULL	1
+
+query T
+SELECT r.payload FROM (VALUES (1), (2)) l(i) LEFT JOIN macro_dependencies r USING (i) ORDER BY l.i;
+----
+{'value': 42}
+NULL
+
+# Constant NULL reconstruction is independent of SELECT-list binding order.
+query TTI
+SELECT r.chained_n, r.nested_n, count(*) FROM (VALUES (1), (2)) l(i) LEFT JOIN null_dependencies r USING (i);
+----
+NULL	NULL	2
+
+query ITT
+SELECT count(*), r.chained_n, r.nested_n FROM (VALUES (1), (2)) l(i) LEFT JOIN null_dependencies r USING (i);
+----
+2	NULL	NULL
+
+query TI
+SELECT r.chained_n, count(*) FROM (VALUES (1)) l(i) LEFT JOIN null_dependencies r USING (i) GROUP BY ();
+----
+NULL	1
+
+query TI
+SELECT r.chained_n, count(*) FROM (VALUES (1)) l(i) LEFT JOIN null_dependencies r USING (i) WHERE false;
+----
+NULL	0
+
+query T
+SELECT r.chained_n FROM (VALUES (1), (2)) l(i) LEFT JOIN null_dependencies r USING (i) HAVING count(*) = 2;
+----
+NULL
+
+statement error
+SELECT r.fixed, count(*) FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN r USING (i) GROUP BY r.i;
+----
+column "fixed" must appear in the GROUP BY clause
+
+statement error
+SELECT r.g, count(*) FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN r USING (i);
+----
+column "g" must appear in the GROUP BY clause
+
+statement error
+SELECT r.g, count(*) FROM (VALUES (1)) l(i) LEFT JOIN unsafe_dependencies r USING (i) GROUP BY r.i;
+----
+column "g" must appear in the GROUP BY clause
+
+statement error
+SELECT r.volatile_g, count(*) FROM (VALUES (1)) l(i) LEFT JOIN unsafe_dependencies r USING (i) GROUP BY r.i;
+----
+column "volatile_g" must appear in the GROUP BY clause
+
+statement error
+SELECT r.g, count(*) FROM (VALUES (1)) l(i) LEFT JOIN throwing_dependencies r USING (i) GROUP BY r.i;
+----
+column "g" must appear in the GROUP BY clause
+
+endloop

@@ -1,0 +1,128 @@
+# name: test/sql/merge/merge_into_generated_columns.test
+# description: Generated columns are projected before MERGE NULL-extends its inputs
+# group: [merge]
+
+statement ok
+CREATE TABLE target(i INTEGER PRIMARY KEY, v VARCHAR);
+
+statement ok
+CREATE TABLE source(i INTEGER, v VARCHAR, checked AS (CASE WHEN v IS NULL THEN error('unexpected null') ELSE v END));
+
+statement ok
+INSERT INTO source VALUES (1, 'new');
+
+foreach optimizer enable disable
+
+statement ok
+PRAGMA {optimizer}_optimizer;
+
+statement ok
+DELETE FROM target;
+
+statement ok
+INSERT INTO target VALUES (1, 'old'), (2, 'unmatched');
+
+statement ok
+MERGE INTO target t USING source s ON t.i = s.i
+WHEN MATCHED THEN UPDATE SET v = s.checked
+WHEN NOT MATCHED BY SOURCE THEN DELETE;
+
+query IT
+FROM target;
+----
+1	new
+
+statement ok
+INSERT INTO target VALUES (2, 'unmatched');
+
+statement ok
+MERGE INTO target t USING (SELECT i, checked FROM source) s ON t.i = s.i
+WHEN MATCHED THEN UPDATE SET v = s.checked
+WHEN NOT MATCHED BY SOURCE THEN DELETE;
+
+query IT
+FROM target;
+----
+1	new
+
+# Both inputs are NULL-extended, and the insert expression is bound before the join.
+statement ok
+DELETE FROM target;
+
+statement ok
+INSERT INTO target VALUES (2, 'unmatched');
+
+query TIT rowsort
+MERGE INTO target t USING source s ON t.i = s.i
+WHEN MATCHED THEN UPDATE SET v = s.checked
+WHEN NOT MATCHED BY SOURCE THEN DELETE
+WHEN NOT MATCHED BY TARGET THEN INSERT VALUES (s.i, s.checked)
+RETURNING merge_action, i, v;
+----
+DELETE	2	unmatched
+INSERT	1	new
+
+# Projection requirements must reach the leaves of a joined source.
+statement ok
+INSERT INTO target VALUES (2, 'unmatched');
+
+statement ok
+MERGE INTO target t USING (source s INNER JOIN (VALUES (1)) x(k) ON s.i = x.k) ON t.i = s.i
+WHEN MATCHED THEN UPDATE SET v = s.checked
+WHEN NOT MATCHED BY SOURCE THEN DELETE;
+
+query IT
+FROM target;
+----
+1	new
+
+# The whole-row value is NULL on the missing source side of the internal join.
+statement ok
+INSERT INTO target VALUES (2, 'unmatched');
+
+statement ok
+MERGE INTO target t USING source s ON t.i = s.i
+WHEN MATCHED THEN UPDATE SET v = CASE WHEN s IS NOT NULL AND s.i IS NULL THEN error('unexpected source struct') ELSE s.checked END
+WHEN NOT MATCHED BY SOURCE THEN DELETE;
+
+# Target generated columns must also be projected, including in action conditions.
+statement ok
+CREATE OR REPLACE TABLE checked_target(i INTEGER PRIMARY KEY, v VARCHAR, checked AS (CASE WHEN v IS NULL THEN error('unexpected target null') ELSE v END), CHECK (i > 0 AND length(v) > 0));
+
+statement ok
+INSERT INTO checked_target VALUES (1, 'old');
+
+query TIT rowsort
+MERGE INTO checked_target t USING (VALUES (1, 'new'), (3, 'inserted')) s(i, v) ON t.i = s.i
+WHEN MATCHED AND CASE WHEN t IS NOT NULL AND t.i IS NULL THEN error('unexpected target struct') ELSE t.checked = 'old' END THEN UPDATE SET v = s.v
+WHEN NOT MATCHED THEN INSERT (i, v) VALUES (s.i, s.v)
+RETURNING merge_action, i, checked;
+----
+INSERT	3	inserted
+UPDATE	1	new
+
+# The unmatched target action is bound before a full join and needs forwarded constraint columns.
+query TIT rowsort
+MERGE INTO checked_target t USING source s ON t.i = s.i
+WHEN MATCHED THEN UPDATE SET v = s.checked
+WHEN NOT MATCHED BY SOURCE THEN UPDATE SET v = t.checked || '!'
+WHEN NOT MATCHED BY TARGET THEN INSERT (i, v) VALUES (s.i, s.checked)
+RETURNING merge_action, i, checked;
+----
+UPDATE	1	new
+UPDATE	3	inserted!
+
+query TIT rowsort
+MERGE INTO checked_target t USING (VALUES (4, 'last')) s(i, v) ON t.i = s.i
+WHEN NOT MATCHED BY SOURCE THEN DELETE
+WHEN NOT MATCHED BY TARGET THEN INSERT (i, v) VALUES (s.i, s.v)
+RETURNING merge_action, i, checked;
+----
+DELETE	1	new
+DELETE	3	inserted!
+INSERT	4	last
+
+endloop
+
+statement ok
+PRAGMA enable_optimizer;

@@ -1,0 +1,496 @@
+# name: test/sql/generated_columns/virtual/outer_join.test
+# description: Generated columns are evaluated before outer join NULL-extension
+# group: [virtual]
+
+statement ok
+CREATE TABLE grouped_constants(i INTEGER, b AS (i > 0), same_b AS (i > 0), cast_b AS (i > 0::INTEGER), n AS (NULL), typed_n VARCHAR AS (NULL), nested_n INTEGER[] AS (NULL), tagged_n UNION(x INTEGER) AS (NULL::INTEGER), fixed AS (42));
+
+statement ok
+INSERT INTO grouped_constants VALUES (1);
+
+statement ok
+CREATE SEQUENCE generated_sequence;
+
+statement ok
+CREATE TABLE sequenced(i INTEGER, v AS (nextval('generated_sequence')));
+
+statement ok
+INSERT INTO sequenced VALUES (1);
+
+foreach optimizer enable disable
+
+statement ok
+PRAGMA {optimizer}_optimizer;
+
+statement ok
+CREATE OR REPLACE TABLE sequence_before AS SELECT currval('generated_sequence') AS v;
+
+query I
+SELECT r.v = (SELECT v + 1 FROM sequence_before) FROM (VALUES (1)) l(i) LEFT JOIN sequenced r USING (i);
+----
+true
+
+# PREPARE preserves literal grouping matches; parameters remain distinct expressions.
+statement ok
+PREPARE literal_groups AS SELECT r.cast_b, count(*) FROM (VALUES (1)) l(i) LEFT JOIN grouped_constants r USING (i) GROUP BY GROUPING SETS ((r.i, 0::INTEGER), (r.i));
+
+query II rowsort
+EXECUTE literal_groups;
+----
+true	1
+NULL	1
+
+statement ok
+PREPARE parameter_groups AS SELECT r.cast_b, count(*) FROM (VALUES ($1)) l(i) LEFT JOIN grouped_constants r USING (i) GROUP BY GROUPING SETS ((r.i, $2::INTEGER), (r.i));
+
+query II rowsort
+EXECUTE parameter_groups(1, 0);
+----
+true	1
+true	1
+
+query II rowsort
+EXECUTE parameter_groups(1, 1);
+----
+true	1
+true	1
+
+statement ok
+DEALLOCATE literal_groups;
+
+statement ok
+DEALLOCATE parameter_groups;
+
+query II
+SELECT r.n, count(*) FROM (VALUES (1), (2)) l(i) LEFT JOIN grouped_constants r USING (i);
+----
+NULL	2
+
+query II rowsort
+SELECT r.same_b, count(*) FROM (VALUES (1), (2)) l(i) LEFT JOIN grouped_constants r USING (i) GROUP BY r.b;
+----
+true	1
+NULL	1
+
+# Explicit group references retain priority over equivalent generated definitions.
+query III rowsort
+SELECT r.b, r.same_b, count(*) FROM (VALUES (1)) l(i) LEFT JOIN grouped_constants r USING (i) GROUP BY GROUPING SETS ((r.b), (r.same_b));
+----
+true	NULL	1
+NULL	true	1
+
+query IT
+SELECT count(*), r.typed_n FROM (VALUES (1), (2)) l(i) LEFT JOIN grouped_constants r USING (i) GROUP BY ();
+----
+2	NULL
+
+query ITI
+SELECT r.n, r.typed_n, count(*) FROM (VALUES (1)) l(i) LEFT JOIN grouped_constants r USING (i) WHERE false;
+----
+NULL	NULL	0
+
+query TI
+SELECT r.typed_n, count(*) FROM (VALUES (1)) l(i) LEFT JOIN grouped_constants r ON false GROUP BY ();
+----
+NULL	1
+
+query TI
+SELECT r.nested_n, count(*) FROM (VALUES (1), (2)) l(i) LEFT JOIN grouped_constants r USING (i) GROUP BY ();
+----
+NULL	2
+
+statement error
+SELECT r.tagged_n, count(*) FROM (VALUES (1), (2)) l(i) LEFT JOIN grouped_constants r USING (i);
+----
+column "tagged_n" must appear in the GROUP BY clause
+
+statement error
+SELECT r.fixed, count(*) FROM (VALUES (1), (2)) l(i) LEFT JOIN grouped_constants r USING (i);
+----
+column "fixed" must appear in the GROUP BY clause
+
+statement error
+SELECT r.b, count(*) FROM (VALUES (1), (2)) l(i) LEFT JOIN grouped_constants r USING (i) GROUP BY ();
+----
+column "b" must appear in the GROUP BY clause
+
+endloop
+
+statement ok
+PRAGMA enable_optimizer;
+
+statement ok
+CREATE TABLE l(i INTEGER);
+
+statement ok
+INSERT INTO l VALUES (1), (2), (3), (4);
+
+statement ok
+CREATE TABLE r(i INTEGER, v VARCHAR, v_is_null AS (v IS NULL), fixed AS (42), nested AS (struct_pack(x := v)), dependent AS (CASE WHEN v_is_null THEN 'missing' ELSE v END));
+
+statement ok
+INSERT INTO r VALUES (1, 'hello'), (3, 'world'), (4, NULL), (5, 'extra');
+
+query IIITI
+SELECT l.i, r.i, r.v_is_null, r.dependent, r.fixed FROM l LEFT JOIN r USING (i) ORDER BY l.i;
+----
+1	1	false	hello	42
+2	NULL	NULL	NULL	NULL
+3	3	false	world	42
+4	4	true	missing	42
+
+query III
+SELECT l.i, r.nested IS NULL, r IS NULL FROM l LEFT JOIN r USING (i) ORDER BY l.i;
+----
+1	false	false
+2	true	true
+3	false	false
+4	false	false
+
+query I
+SELECT l.i FROM l LEFT JOIN r USING (i) WHERE r.v_is_null IS NULL;
+----
+2
+
+query I
+SELECT l.i FROM l LEFT JOIN r USING (i) WHERE r.v IS NULL ORDER BY l.i;
+----
+2
+4
+
+query III
+SELECT count(r.fixed), count(r.v_is_null), count(r) FROM l LEFT JOIN r USING (i);
+----
+3	3	3
+
+query II
+SELECT l.i, r.fixed FROM r RIGHT JOIN l USING (i) ORDER BY l.i;
+----
+1	42
+2	NULL
+3	42
+4	42
+
+query III
+SELECT coalesce(l.i, r.i), l.i, r.fixed FROM l FULL JOIN r USING (i) ORDER BY 1;
+----
+1	1	42
+2	2	NULL
+3	3	42
+4	4	42
+5	NULL	42
+
+query II
+SELECT l.i, r.fixed FROM l LEFT JOIN r ON l.i = r.i AND r.fixed = 42 ORDER BY l.i;
+----
+1	42
+2	NULL
+3	42
+4	42
+
+query III
+SELECT l.i, r.fixed, s.k FROM (l LEFT JOIN r USING (i)) LEFT JOIN (VALUES (42)) s(k) ON r.fixed = s.k ORDER BY l.i;
+----
+1	42	42
+2	NULL	NULL
+3	42	42
+4	42	42
+
+query III
+SELECT l.i, r.fixed, r IS NULL FROM l LEFT JOIN (r INNER JOIN (VALUES (1), (3)) s(i) USING (i)) ON l.i = r.i ORDER BY l.i;
+----
+1	42	false
+2	NULL	true
+3	42	false
+4	NULL	true
+
+query III
+SELECT l.i, (SELECT r.fixed), (SELECT r IS NULL) FROM l LEFT JOIN r USING (i) ORDER BY l.i;
+----
+1	42	false
+2	NULL	true
+3	42	false
+4	42	false
+
+query II
+SELECT l.i, s.f FROM (l LEFT JOIN r USING (i)) LEFT JOIN LATERAL (SELECT r.fixed AS f) s ON true ORDER BY l.i;
+----
+1	42
+2	NULL
+3	42
+4	42
+
+query II
+SELECT r.v_is_null, count(*) FROM l LEFT JOIN r USING (i) GROUP BY r.v_is_null ORDER BY r.v_is_null NULLS LAST;
+----
+false	2
+true	1
+NULL	1
+
+query I
+SELECT fixed FROM r GROUP BY v ORDER BY fixed;
+----
+42
+42
+42
+42
+
+query II
+SELECT r.v_is_null, count(*) FROM l LEFT JOIN r USING (i) GROUP BY r.v_is_null HAVING r.v_is_null IS NULL;
+----
+NULL	1
+
+statement ok
+CREATE TABLE nested_generated(i INTEGER, value INTEGER, items AS ([coalesce(value, 42)]));
+
+statement ok
+INSERT INTO nested_generated VALUES (1, NULL), (3, 7);
+
+query IT
+SELECT l.i, nested_generated.items FROM l LEFT JOIN nested_generated USING (i) ORDER BY l.i;
+----
+1	[42]
+2	NULL
+3	[7]
+4	NULL
+
+statement ok
+CREATE TABLE volatile_generated(i INTEGER, value AS (random()));
+
+statement ok
+INSERT INTO volatile_generated VALUES (1), (3);
+
+query I
+SELECT count(*) FROM l LEFT JOIN volatile_generated USING (i) WHERE volatile_generated.value = volatile_generated.value;
+----
+0
+
+statement ok
+CREATE TABLE throwing(i INTEGER, v VARCHAR, checked AS (CASE WHEN v IS NULL THEN error('v is not allowed to be null!') ELSE v END));
+
+statement ok
+INSERT INTO throwing VALUES (1, 'hello'), (3, 'world');
+
+query IT
+SELECT l.i, throwing.checked FROM l LEFT JOIN throwing USING (i) ORDER BY l.i;
+----
+1	hello
+2	NULL
+3	world
+4	NULL
+
+statement error
+INSERT INTO throwing VALUES (4, NULL);
+----
+v is not allowed to be null!
+
+statement ok
+CREATE TABLE generated_key(i INTEGER, k AS (i + 1), fixed AS (42));
+
+statement ok
+INSERT INTO generated_key VALUES (0), (2);
+
+query III
+SELECT l.i, g.k, g.fixed FROM l LEFT JOIN generated_key g ON l.i = g.k ORDER BY l.i;
+----
+1	1	42
+2	NULL	NULL
+3	3	42
+4	NULL	NULL
+
+query III
+SELECT l.i, g.k, g.fixed FROM l LEFT JOIN generated_key g USING (i) ORDER BY l.i;
+----
+1	NULL	NULL
+2	3	42
+3	NULL	NULL
+4	NULL	NULL
+
+query III
+SELECT a.k, g.k, g.fixed FROM (SELECT i AS k FROM l) a LEFT JOIN generated_key g USING (k) ORDER BY a.k;
+----
+1	1	42
+2	NULL	NULL
+3	3	42
+4	NULL	NULL
+
+query IIT
+SELECT l.i, x.flag, x.value FROM l LEFT JOIN r AS x(k, value, flag) ON l.i = x.k ORDER BY l.i;
+----
+1	false	hello
+2	NULL	NULL
+3	false	world
+4	true	NULL
+
+statement ok
+PRAGMA disable_optimizer;
+
+query IIITI
+SELECT l.i, r.i, r.v_is_null, r.dependent, r.fixed FROM l LEFT JOIN r USING (i) ORDER BY l.i;
+----
+1	1	false	hello	42
+2	NULL	NULL	NULL	NULL
+3	3	false	world	42
+4	4	true	missing	42
+
+statement ok
+PRAGMA enable_optimizer;
+
+statement ok
+CREATE TABLE grouped_inputs(i INTEGER, j INTEGER, g AS (i + 1), multiple_inputs AS (i + j), wide AS (i::BIGINT + 1), chained AS (g + 1), unit AS (1));
+
+statement ok
+INSERT INTO grouped_inputs VALUES (1, 10), (3, 30), (NULL, 99);
+
+query II
+SELECT r.g, count(*) FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN grouped_inputs r USING (i) GROUP BY r.i ORDER BY r.g;
+----
+2	1
+4	1
+NULL	1
+
+query II
+SELECT (SELECT r.g), count(*) FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN grouped_inputs r USING (i) GROUP BY r.i ORDER BY 1;
+----
+2	1
+4	1
+NULL	1
+
+statement error
+SELECT r, count(*) FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN grouped_inputs r USING (i) GROUP BY r.i;
+----
+<REGEX>:.*column "r" must appear in the GROUP BY clause.*ANY_VALUE\("r"\).*
+
+query IIII
+SELECT r.g, r.chained, r.wide, count(*) FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN grouped_inputs r USING (i) GROUP BY r.i ORDER BY r.g;
+----
+2	3	2	1
+4	5	4	1
+NULL	NULL	NULL	1
+
+query II
+SELECT r.multiple_inputs, count(*) FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN grouped_inputs r USING (i) GROUP BY r.i, r.j ORDER BY 1;
+----
+11	1
+33	1
+NULL	1
+
+statement error
+SELECT r.multiple_inputs, count(*) FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN grouped_inputs r USING (i) GROUP BY r.i;
+----
+column "multiple_inputs" must appear in the GROUP BY clause
+
+query II
+SELECT r.chained, count(*) FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN grouped_inputs r USING (i) GROUP BY r.g ORDER BY 1;
+----
+3	1
+5	1
+NULL	1
+
+query II
+SELECT r.g, count(*) FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN grouped_inputs r USING (i) GROUP BY r.i + 1 ORDER BY 1;
+----
+2	1
+4	1
+NULL	1
+
+query II
+SELECT r.g, count(*) FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN grouped_inputs r USING (i) GROUP BY r.i HAVING r.g > 2;
+----
+4	1
+
+query II
+SELECT r.g, count(*) FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN grouped_inputs r USING (i) GROUP BY r.i QUALIFY row_number() OVER (ORDER BY r.g) <= 2 ORDER BY 1;
+----
+2	1
+4	1
+
+query II
+SELECT r.g, count(*) FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN grouped_inputs r USING (i) GROUP BY GROUPING SETS ((r.i), ()) ORDER BY 1, 2;
+----
+2	1
+4	1
+NULL	1
+NULL	3
+
+query II
+SELECT sum(r.g), count(*) FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN grouped_inputs r USING (i) GROUP BY r.i ORDER BY 1;
+----
+2	1
+4	1
+NULL	1
+
+query II
+SELECT r.g, count(*) FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN grouped_inputs r USING (i) GROUP BY GROUPING SETS ((r.i, r.unit), (r.i)) ORDER BY 1, 2;
+----
+2	1
+2	1
+4	1
+4	1
+NULL	1
+NULL	1
+
+statement ok
+CREATE TABLE nullable_inputs(i INTEGER, is_null AS (i IS NULL), filled AS (coalesce(i, 42)), fixed AS (42), value AS (random()));
+
+statement ok
+INSERT INTO nullable_inputs VALUES (NULL);
+
+statement error
+SELECT r.is_null, count(*) FROM (VALUES (1), (2)) l(i) LEFT JOIN nullable_inputs r ON l.i = 1 GROUP BY r.i;
+----
+column "is_null" must appear in the GROUP BY clause
+
+statement error
+SELECT r.filled, count(*) FROM (VALUES (1), (2)) l(i) LEFT JOIN nullable_inputs r ON l.i = 1 GROUP BY r.i;
+----
+column "filled" must appear in the GROUP BY clause
+
+statement error
+SELECT r.fixed, count(*) FROM (VALUES (1), (2)) l(i) LEFT JOIN nullable_inputs r ON l.i = 1 GROUP BY r.i;
+----
+column "fixed" must appear in the GROUP BY clause
+
+statement error
+SELECT r.value, count(*) FROM (VALUES (1), (2)) l(i) LEFT JOIN nullable_inputs r ON l.i = 1 GROUP BY r.i;
+----
+column "value" must appear in the GROUP BY clause
+
+query II
+SELECT r.is_null, count(*) FROM (VALUES (1), (2)) l(i) LEFT JOIN nullable_inputs r ON l.i = 1 GROUP BY r.is_null ORDER BY 1;
+----
+true	1
+NULL	1
+
+statement ok
+CREATE TABLE collated_inputs(v VARCHAR COLLATE nocase, lowered AS (lower(v)));
+
+statement ok
+CREATE TABLE independently_throwing(i INTEGER, g AS (i + CAST('not an integer' AS INTEGER)));
+
+statement error
+SELECT r.g, count(*) FROM (VALUES (1), (2)) l(i) LEFT JOIN independently_throwing r USING (i) GROUP BY r.i;
+----
+column "g" must appear in the GROUP BY clause
+
+statement ok
+INSERT INTO collated_inputs VALUES ('Hello');
+
+query TI
+SELECT r.lowered, count(*) FROM (VALUES (1), (2)) l(i) LEFT JOIN collated_inputs r ON l.i = 1 GROUP BY r.v ORDER BY 1;
+----
+hello	1
+NULL	1
+
+statement ok
+PRAGMA disable_optimizer;
+
+query IIII
+SELECT r.g, r.chained, r.wide, count(*) FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN grouped_inputs r USING (i) GROUP BY r.i ORDER BY r.g;
+----
+2	3	2	1
+4	5	4	1
+NULL	NULL	NULL	1
+
+statement ok
+PRAGMA enable_optimizer;

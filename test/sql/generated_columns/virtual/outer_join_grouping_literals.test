@@ -1,0 +1,29 @@
+# name: test/sql/generated_columns/virtual/outer_join_grouping_literals.test
+# description: Literal grouping matches in generated columns across outer joins
+# group: [virtual]
+
+statement ok
+CREATE TABLE grouped_constants(i INTEGER, b AS (i > 0), cast_b AS (i > 0::INTEGER));
+
+statement ok
+INSERT INTO grouped_constants VALUES (1);
+
+foreach optimizer enable disable
+
+statement ok
+PRAGMA {optimizer}_optimizer;
+
+# Binding a cast must not make a different parsed expression match a grouping key.
+query II rowsort
+SELECT r.b, count(*) FROM (VALUES (1)) l(i) LEFT JOIN grouped_constants r USING (i) GROUP BY GROUPING SETS ((r.i, 0::INTEGER), (r.i));
+----
+true	1
+true	1
+
+query II rowsort
+SELECT r.cast_b, count(*) FROM (VALUES (1)) l(i) LEFT JOIN grouped_constants r USING (i) GROUP BY GROUPING SETS ((r.i, 0::INTEGER), (r.i));
+----
+true	1
+NULL	1
+
+endloop

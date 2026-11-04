@@ -1,0 +1,139 @@
+# name: test/sql/generated_columns/virtual/outer_join_macro_depth.test
+# description: Validate macro binding depth before materializing generated dependencies
+# group: [virtual]
+
+statement ok
+CREATE MACRO generated_add(x, y) AS (x + y);
+
+statement ok
+CREATE MACRO nested_add(x, y) AS generated_add(x, y);
+
+statement ok
+CREATE MACRO keep_first(x, unused) AS x;
+
+statement ok
+CREATE TABLE r(
+	i INTEGER,
+	g0 AS (i + 1),
+	g1 AS (generated_add(g0, g0)),
+	g2 AS (generated_add(g1, g1)),
+	g3 AS (generated_add(g2, g2)),
+	g4 AS (generated_add(g3, g3)),
+	g5 AS (generated_add(g4, g4)),
+	g6 AS (generated_add(g5, g5)),
+	g7 AS (generated_add(g6, g6)),
+	g8 AS (generated_add(g7, g7)),
+	g9 AS (generated_add(g8, g8)),
+	g10 AS (generated_add(g9, g9)),
+	g11 AS (generated_add(g10, g10)),
+	g12 AS (generated_add(g11, g11)),
+	g13 AS (generated_add(g12, g12)),
+	g14 AS (generated_add(g13, g13)),
+	g15 AS (generated_add(g14, g14)),
+	g16 AS (generated_add(g15, g15)),
+	g17 AS (generated_add(g16, g16)),
+	kept AS (keep_first(i, g17)),
+	n VARCHAR AS (keep_first(NULL::VARCHAR, g17))
+);
+
+statement ok
+CREATE TABLE nested_r(
+	i INTEGER,
+	g0 AS (i + 1),
+	g1 AS (nested_add(g0, g0)),
+	g2 AS (nested_add(g1, g1)),
+	g3 AS (nested_add(g2, g2)),
+	g4 AS (nested_add(g3, g3)),
+	g5 AS (nested_add(g4, g4)),
+	g6 AS (nested_add(g5, g5)),
+	g7 AS (nested_add(g6, g6)),
+	g8 AS (nested_add(g7, g7)),
+	g9 AS (nested_add(g8, g8)),
+	g10 AS (nested_add(g9, g9)),
+	g11 AS (nested_add(g10, g10))
+);
+
+statement ok
+CREATE TABLE small_r(i INTEGER, fixed AS (42), g AS (nested_add(i, fixed)), twice AS (generated_add(g, g)));
+
+statement ok
+INSERT INTO small_r VALUES (1), (3);
+
+foreach optimizer enable disable
+
+statement ok
+PRAGMA {optimizer}_optimizer;
+
+statement ok
+SET max_expression_depth=80;
+
+# The tables are empty, and the parsed dependency depth fits within this limit.
+statement error
+SELECT r.g17 FROM (VALUES (1)) l(i) LEFT JOIN r USING (i);
+----
+Max expression depth limit of 80 exceeded
+
+statement error
+SELECT r.g17, count(*) FROM (VALUES (1)) l(i) LEFT JOIN r USING (i) GROUP BY r.i;
+----
+Max expression depth limit of 80 exceeded
+
+statement error
+SELECT (SELECT r.g17) FROM (VALUES (1)) l(i) LEFT JOIN r USING (i);
+----
+Max expression depth limit of 80 exceeded
+
+statement error
+SELECT r.g11 FROM (VALUES (1)) l(i) LEFT JOIN nested_r r USING (i);
+----
+Max expression depth limit of 80 exceeded
+
+# Normal binding discards unused macro arguments before expanding their dependencies.
+query I
+SELECT r.kept FROM (VALUES (1)) l(i) LEFT JOIN r USING (i);
+----
+NULL
+
+query TI
+SELECT r.n, count(*) FROM (VALUES (1)) l(i) LEFT JOIN r USING (i);
+----
+NULL	1
+
+query TI
+SELECT r.n, count(*) FROM (VALUES (1)) l(i) LEFT JOIN r USING (i) WHERE false;
+----
+NULL	0
+
+query III
+SELECT r.g, r.twice, count(*) FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN small_r r USING (i) GROUP BY r.i ORDER BY 1;
+----
+43	86	1
+45	90	1
+NULL	NULL	1
+
+# Macro calls keep their parsed grouping matches.
+query II rowsort
+SELECT r.g, count(*) FROM (VALUES (1)) l(i) LEFT JOIN small_r r USING (i) GROUP BY GROUPING SETS ((r.i, nested_add(r.i, 42::INTEGER)), (r.i));
+----
+43	1
+NULL	1
+
+statement ok
+SET max_expression_depth=10;
+
+statement error
+SELECT r.twice FROM (VALUES (1)) l(i) LEFT JOIN small_r r USING (i);
+----
+Max expression depth limit of 10 exceeded
+
+statement ok
+SET max_expression_depth=1000;
+
+query I
+SELECT r.twice FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN small_r r USING (i) ORDER BY l.i;
+----
+86
+NULL
+90
+
+endloop

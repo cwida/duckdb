@@ -1,0 +1,66 @@
+# name: test/sql/generated_columns/virtual/outer_join_group_candidates.test
+# description: Limit generated grouping matches while preserving ordinary keys and match precedence
+# group: [virtual]
+
+statement ok
+CREATE TABLE r(c0 INTEGER, c1 INTEGER, c2 INTEGER, c3 INTEGER, g AS (c0 + 1), same_g AS (c0 + 1), third_g AS (c0 + 1), shifted AS (g + 1));
+
+statement ok
+INSERT INTO r(c0, c1, c2, c3) VALUES (1, 10, 100, 1000), (3, 30, 300, 3000);
+
+foreach optimizer enable disable
+
+statement ok
+PRAGMA {optimizer}_optimizer;
+
+# Selecting a generated column does not make ordinary keys expansion candidates.
+query IIIIII
+SELECT r.c0 + 1, r.c1 + 1, r.c2 + 1, r.c3 + 1, r.g, count(*) FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN r ON l.i = r.c0 GROUP BY r.c0, r.c1, r.c2, r.c3 ORDER BY 1;
+----
+2	11	101	1001	2	1
+4	31	301	3001	4	1
+NULL	NULL	NULL	NULL	NULL	1
+
+# A generated key among ordinary keys still matches equivalent definitions.
+query III
+SELECT r.same_g, r.c1 + 1, count(*) FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN r ON l.i = r.c0 GROUP BY r.c1, r.g, r.c2, r.c3 ORDER BY 1;
+----
+2	11	1
+4	31	1
+NULL	NULL	1
+
+# Generated references nested in a key are candidates too.
+query III
+SELECT r.shifted, r.c1 + 1, count(*) FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN r ON l.i = r.c0 GROUP BY r.c1, r.g + 1, r.c2 ORDER BY 1;
+----
+3	11	1
+5	31	1
+NULL	NULL	1
+
+# Source reconstruction must still match ordinary expression keys.
+query III
+SELECT r.g, r.shifted, count(*) FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN r ON l.i = r.c0 GROUP BY r.c1, (r.c0 + 1)::INTEGER ORDER BY 1;
+----
+2	3	1
+4	5	1
+NULL	NULL	1
+
+foreach group_ref key 1
+
+query III
+SELECT r.g AS key, r.same_g, count(*) FROM (VALUES (1), (2), (3)) l(i) LEFT JOIN r ON l.i = r.c0 GROUP BY {group_ref}, r.c1 ORDER BY 1;
+----
+2	2	1
+4	4	1
+NULL	NULL	1
+
+endloop
+
+# Exact keys win, and equivalent candidates retain their original reverse order.
+query IIIIII rowsort
+SELECT grouping(r.g), grouping(r.same_g), r.g, r.same_g, r.third_g, count(*) FROM (VALUES (1)) l(i) LEFT JOIN r ON l.i = r.c0 GROUP BY GROUPING SETS ((r.c1, r.g), (r.c1, r.same_g));
+----
+0	1	2	NULL	NULL	1
+1	0	NULL	2	2	1
+
+endloop

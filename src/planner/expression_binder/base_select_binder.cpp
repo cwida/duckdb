@@ -2,6 +2,7 @@
 
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/parser/expression/columnref_expression.hpp"
+#include "duckdb/parser/expression/lambda_expression.hpp"
 #include "duckdb/parser/expression/operator_expression.hpp"
 #include "duckdb/planner/expression/bound_operator_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
@@ -20,10 +21,24 @@ BaseSelectBinder::BaseSelectBinder(Binder &binder, ClientContext &context, Bound
 
 BindResult BaseSelectBinder::BindExpression(unique_ptr<ParsedExpression> &expr_ptr, idx_t depth, bool root_expression) {
 	auto &expr = *expr_ptr;
+	if (reconstructing_generated_column && expr.GetExpressionClass() == ExpressionClass::COLUMN_REF) {
+		auto dependency = binder.bind_context.GetGeneratedColumnDependency(expr.Cast<ColumnRefExpression>());
+		if (dependency) {
+			auto stack_checker = StackCheck(expr);
+			return BindExpression(dependency, depth, root_expression);
+		}
+	}
 	// check if the expression binds to one of the groups
 	auto group_index = TryBindGroup(expr);
 	if (group_index.IsValid()) {
 		return BindGroup(expr, depth, group_index);
+	}
+	if (!inside_aggregate && !reconstructing_generated_column &&
+	    expr.GetExpressionClass() == ExpressionClass::COLUMN_REF) {
+		auto result = TryBindGeneratedColumn(expr.Cast<ColumnRefExpression>(), depth);
+		if (result.expression) {
+			return result;
+		}
 	}
 	switch (expr.GetExpressionClass()) {
 	case ExpressionClass::COLUMN_REF:
@@ -38,6 +53,22 @@ BindResult BaseSelectBinder::BindExpression(unique_ptr<ParsedExpression> &expr_p
 	default:
 		return ExpressionBinder::BindExpression(expr_ptr, depth, root_expression);
 	}
+}
+
+BindResult BaseSelectBinder::TryBindGeneratedColumn(ColumnRefExpression &expr, idx_t depth) {
+	// Without grouping keys, only a constant NULL can bypass the source projection.
+	auto expression = binder.bind_context.GetGeneratedColumnExpression(expr, node.groups.group_expressions.empty());
+	if (!expression) {
+		return BindResult();
+	}
+	BaseSelectBinder generated_binder(binder, context, node);
+	generated_binder.reconstructing_generated_column = true;
+	auto result = generated_binder.BindExpression(expression, depth);
+	if (result.HasError() || generated_binder.HasBoundColumns()) {
+		return BindResult();
+	}
+	result.expression->SetAlias(expr.GetAlias());
+	return result;
 }
 
 bool BaseSelectBinder::ClaimsAlias(ColumnRefExpression &colref) {
@@ -76,7 +107,7 @@ bool BaseSelectBinder::MatchesGroupWithoutSubquery(ParsedExpression &expr) {
 }
 
 ProjectionIndex BaseSelectBinder::TryBindGroup(ParsedExpression &expr) {
-	if (inside_aggregate) {
+	if (inside_aggregate || node.bind_state.unbound_groups.empty()) {
 		return ProjectionIndex();
 	}
 	// first check the group alias map, if expr is a ColumnRefExpression
@@ -94,20 +125,51 @@ ProjectionIndex BaseSelectBinder::TryBindGroup(ParsedExpression &expr) {
 	// no alias reference found
 	// check the list of group columns for a match
 	auto &group_map = node.bind_state.group_map;
-	auto entry = group_map.find(expr);
-	if (entry != group_map.end()) {
-		return entry->second;
+	if (!reconstructing_generated_column) {
+		auto entry = group_map.find(expr);
+		if (entry != group_map.end()) {
+			return entry->second;
+		}
+	}
+	if (reconstructing_generated_column) {
+		// Original grouping keys take precedence over equivalent generated definitions.
+		for (idx_t i = 0; i < node.bind_state.unbound_groups.size(); i++) {
+			auto &group = *node.bind_state.unbound_groups[i];
+			if (binder.bind_context.MatchesGeneratedExpression(expr, group, true, false)) {
+				return ProjectionIndex(i);
+			}
+		}
+	}
+	auto &candidates = node.bind_state.generated_group_candidates;
+	for (idx_t index = candidates.size(); index > 0; index--) {
+		auto group_index = candidates[index - 1];
+		auto &group = *node.bind_state.unbound_groups[group_index.GetIndex()];
+		if (binder.bind_context.MatchesGeneratedExpression(expr, group, reconstructing_generated_column, true)) {
+			return group_index;
+		}
 	}
 #ifdef DEBUG
-	for (auto map_entry : group_map) {
-		D_ASSERT(!map_entry.first.get().Equals(expr));
-		D_ASSERT(!expr.Equals(map_entry.first.get()));
+	if (!reconstructing_generated_column) {
+		for (auto map_entry : group_map) {
+			D_ASSERT(!map_entry.first.get().Equals(expr));
+			D_ASSERT(!expr.Equals(map_entry.first.get()));
+		}
 	}
 #endif
 	return ProjectionIndex();
 }
 
 BindResult BaseSelectBinder::BindColumnRef(unique_ptr<ParsedExpression> &expr_ptr, idx_t depth, bool root_expression) {
+	if (reconstructing_generated_column) {
+		auto &colref = expr_ptr->Cast<ColumnRefExpression>();
+		auto lambda_ref = colref.IsQualified()
+		                      ? nullptr
+		                      : LambdaRefExpression::FindMatchingBinding(lambda_bindings, colref.GetColumnName());
+		if (!lambda_ref) {
+			// Reject before binding can add columns to the source projection.
+			return BindResult(BinderException(colref, "Cannot reconstruct an ungrouped column"));
+		}
+	}
 	return ExpressionBinder::BindExpression(expr_ptr, depth);
 }
 

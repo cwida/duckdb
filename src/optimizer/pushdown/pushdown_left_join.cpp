@@ -46,6 +46,12 @@ static unique_ptr<Expression> ReplaceColRefWithNull(unique_ptr<Expression> root_
 static unique_ptr<LogicalOperator> CreateDummyRHS(Optimizer &optimizer, unique_ptr<LogicalOperator> &rhs_op) {
 	unordered_map<TableIndex, vector<unique_ptr<Expression>>> projections_groups;
 	auto column_bindings = rhs_op->GetColumnBindings();
+	if (column_bindings.empty()) {
+		auto projection =
+		    make_uniq<LogicalProjection>(optimizer.binder.GenerateTableIndex(), vector<unique_ptr<Expression>>());
+		projection->AddChild(make_uniq<LogicalDummyScan>(optimizer.binder.GenerateTableIndex()));
+		return std::move(projection);
+	}
 	rhs_op->ResolveOperatorTypes();
 	auto &types = rhs_op->types;
 

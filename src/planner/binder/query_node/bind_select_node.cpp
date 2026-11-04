@@ -674,6 +674,11 @@ BoundStatement Binder::BindSelectNode(SelectNode &statement, BoundStatement from
 		SetCanContainNulls(prev_can_contain_nulls);
 	}
 	result.groups.grouping_sets = std::move(statement.groups.grouping_sets);
+	for (idx_t i = 0; i < bind_state.unbound_groups.size(); i++) {
+		if (bind_context.HasGeneratedColumnReference(*bind_state.unbound_groups[i])) {
+			bind_state.generated_group_candidates.emplace_back(i);
+		}
+	}
 
 	// bind the QUALIFY clause, if any
 	vector<BoundColumnReferenceInfo> bound_qualify_columns;

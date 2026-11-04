@@ -60,6 +60,16 @@ public:
 	//! Binds a column expression to the base table. Returns the bound expression
 	//! or throws an exception if the column could not be bound.
 	BindResult BindColumn(ColumnRefExpression &colref, idx_t depth);
+	Identifier GetColumnDiagnosticName(ColumnRefExpression &colref);
+	unique_ptr<ParsedExpression> GetGeneratedColumnExpression(ColumnRefExpression &colref,
+	                                                          bool only_constant_null = false);
+	//! Return one source definition, leaving its dependencies unexpanded.
+	unique_ptr<ParsedExpression> GetGeneratedColumnDependency(ColumnRefExpression &colref);
+	//! Inspect parsed references without binding or expanding generated dependencies.
+	bool HasGeneratedColumnReference(ParsedExpression &expression);
+	//! Compare parsed grouping expressions without materializing dependency trees.
+	bool MatchesGeneratedExpression(ParsedExpression &expression, ParsedExpression &group, bool source_expression,
+	                                bool expand_group);
 	string BindColumn(PositionalReferenceExpression &ref, Identifier &table_name, Identifier &column_name);
 	unique_ptr<ColumnRefExpression> PositionToColumn(PositionalReferenceExpression &ref);
 
@@ -90,6 +100,8 @@ public:
 	vector<BindingAlias> GetBindingAliases();
 
 	void GetTypesAndNames(vector<Identifier> &result_names, vector<LogicalType> &result_types);
+	void AddSourceProjection(BoundStatement &statement);
+	void ProjectSourceColumns(unique_ptr<Expression> &expression);
 
 	//! Adds a base table with the given alias to the BindContext.
 	void AddBaseTable(TableIndex index, const Identifier &alias, const vector<Identifier> &names,
@@ -173,6 +185,8 @@ public:
 	vector<reference<Binding>> GetBindings(const BindingAlias &alias, ErrorData &out_error);
 
 private:
+	shared_ptr<Binder> CreateSourceBinder(Binding &binding);
+	unique_ptr<Expression> BindSourceExpression(Binding &binding, SourceExpression &source);
 	void AddBinding(unique_ptr<Binding> binding);
 	static string AmbiguityException(const BindingAlias &alias, const vector<reference<Binding>> &bindings);
 

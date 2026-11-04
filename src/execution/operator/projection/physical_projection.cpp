@@ -10,7 +10,10 @@ namespace duckdb {
 class ProjectionState : public OperatorState {
 public:
 	explicit ProjectionState(ExecutionContext &context, const vector<unique_ptr<Expression>> &expressions)
-	    : executor(context.client, expressions) {
+	    : executor(context.client) {
+		for (auto &expression : expressions) {
+			executor.AddExpression(*expression);
+		}
 	}
 
 	ExpressionExecutor executor;
@@ -49,6 +52,10 @@ void PhysicalProjection::InitializeOutputChunk(Allocator &allocator, DataChunk &
 
 OperatorResultType PhysicalProjection::Execute(ExecutionContext &context, DataChunk &input, DataChunk &chunk,
                                                GlobalOperatorState &gstate, OperatorState &state_p) const {
+	if (select_list.empty()) {
+		chunk.SetChildCardinality(input.size());
+		return OperatorResultType::NEED_MORE_INPUT;
+	}
 	auto &state = state_p.Cast<ProjectionState>();
 	state.executor.Execute(input, chunk);
 	return OperatorResultType::NEED_MORE_INPUT;
