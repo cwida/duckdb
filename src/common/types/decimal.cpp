@@ -6,6 +6,7 @@
 #include "duckdb/main/client_context.hpp"
 
 namespace duckdb {
+constexpr uint32_t Decimal::MAX_WIDTH_DECIMAL;
 
 uint32_t Decimal::MaxResultWidth(optional_ptr<ClientContext> context, uint32_t max_input_width) {
 	if (max_input_width > MAX_WIDTH_INT128) {

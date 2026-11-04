@@ -48,6 +48,8 @@ public:
 	//! MAX_WIDTH_INT128 is also the widest decimal that is stored in a fixed-size integer: wider decimals store their
 	//! unscaled value as a BIGNUM blob and are bounded only by the uint32_t range of the width
 	static constexpr uint32_t MAX_WIDTH_INT128 = DecimalWidth<hugeint_t>::max;
+	//! The widest fixed-size decimal tier, kept for extensions; wider decimals are the BIGNUM-backed tier
+	static constexpr uint32_t MAX_WIDTH_DECIMAL = MAX_WIDTH_INT128;
 	//! The storage version from which DECIMAL columns wider than MAX_WIDTH_INT128 digits can be stored: the engines of
 	//! the versions before it read a DECIMAL width as a single byte and bind decimal arithmetic within 38 digits
 	static constexpr StorageVersion WIDE_VERSION_ADDED = StorageVersion::V2_1_0;
