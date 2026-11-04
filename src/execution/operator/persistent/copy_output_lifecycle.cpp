@@ -89,6 +89,17 @@ void CopyOutputLifecycle::RegisterCreatedDirectory(string path) {
 	created_directories.push_back(std::move(path));
 }
 
+void CopyOutputLifecycle::MoveFile(const string &path, const string &new_path) {
+	auto &fs = FileSystem::GetFileSystem(context);
+	fs.MoveFile(path, new_path);
+	annotated_lock_guard<annotated_mutex> guard(lock);
+	for (auto &file : files) {
+		if (file.path == path) {
+			file.path = new_path;
+		}
+	}
+}
+
 static string ParentDirectory(FileSystem &fs, const string &path) {
 	auto separator = fs.PathSeparator(path);
 	auto end = path.find_last_not_of(separator);

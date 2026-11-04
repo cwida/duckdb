@@ -4853,12 +4853,6 @@ string PhysicalCopyToFile::GetTrimmedPath(ClientContext &context, const string &
 	return trimmed_path;
 }
 
-void PhysicalCopyToFile::MoveTmpFile(ClientContext &context, const string &tmp_file_path) {
-	auto &fs = FileSystem::GetFileSystem(context);
-	auto file_path = GetNonTmpFile(context, tmp_file_path);
-	fs.MoveFile(tmp_file_path, file_path);
-}
-
 string PhysicalCopyToFile::GetNonTmpFile(ClientContext &context, const string &tmp_file_path) {
 	auto base = StringUtil::GetFileName(tmp_file_path);
 
@@ -5132,7 +5126,7 @@ SinkFinalizeType PhysicalCopyToFile::Finalize(Pipeline &pipeline, Event &event, 
 		D_ASSERT(!partition_output);
 		D_ASSERT(!file_size_bytes.IsValid());
 		D_ASSERT(!Rotate());
-		MoveTmpFile(context, file_path);
+		gstate.output_lifecycle.MoveFile(file_path, GetNonTmpFile(context, file_path));
 	}
 	gstate.output_lifecycle.SyncDirectories();
 	gstate.MarkSuccessful();

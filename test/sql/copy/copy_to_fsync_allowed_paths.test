@@ -1,0 +1,36 @@
+# name: test/sql/copy/copy_to_fsync_allowed_paths.test
+# description: COPY TO with FSYNC when the directory of the output is not an allowed path
+# group: [copy]
+
+require notwindows
+
+require skip_reload
+
+# enable_external_access = false disables extension loading
+require no_extension_autoloading "EXPECTED: Test disable loading of extensions"
+
+statement ok
+SET allowed_paths = ['{TEST_DIR}/fsync_allowed.csv', '{TEST_DIR}/tmp_fsync_allowed.csv']
+
+statement ok
+SET enable_external_access = false
+
+# the directory cannot be synced after the rename, so the renamed output is removed again
+statement error
+COPY (SELECT 42 AS i) TO '{TEST_DIR}/fsync_allowed.csv' (USE_TMP_FILE true, FSYNC)
+----
+Cannot access directory
+
+query I
+SELECT count(*) FROM (FROM glob('{TEST_DIR}/fsync_allowed.csv') UNION ALL FROM glob('{TEST_DIR}/tmp_fsync_allowed.csv'))
+----
+0
+
+# without FSYNC the directory is not accessed
+statement ok
+COPY (SELECT 42 AS i) TO '{TEST_DIR}/fsync_allowed.csv' (USE_TMP_FILE true)
+
+query I
+SELECT i FROM '{TEST_DIR}/fsync_allowed.csv'
+----
+42

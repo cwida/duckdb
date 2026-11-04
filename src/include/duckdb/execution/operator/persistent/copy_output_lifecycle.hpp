@@ -32,6 +32,8 @@ public:
 	//! Registers an output file, returning whether its writer syncs it to stable storage before closing it
 	bool RegisterFile(string path) DUCKDB_EXCLUDES(lock);
 	void RegisterCreatedDirectory(string path) DUCKDB_EXCLUDES(lock);
+	//! Renames a registered file, moving its cleanup to the new path
+	void MoveFile(const string &path, const string &new_path) DUCKDB_EXCLUDES(lock);
 	//! With FSYNC, syncs the directories holding the synced files and the created directories
 	void SyncDirectories() DUCKDB_EXCLUDES(lock);
 	void MarkSuccessful() noexcept DUCKDB_EXCLUDES(lock);
