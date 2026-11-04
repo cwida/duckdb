@@ -5,6 +5,11 @@
 
 namespace duckdb {
 
+//! Whether the function writes whole batches of its own size, so that files rotated between batches keep the order
+static bool SupportsOrderedRotation(const CopyFunction &function) {
+	return function.prepare_batch && function.flush_batch && function.file_size_bytes && function.desired_batch_size;
+}
+
 static CopyToFileOptions GetFileOptions(const LogicalCopyToFile &op) {
 	CopyToFileOptions result;
 	result.filename_pattern = op.filename_pattern;
@@ -34,15 +39,11 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalCopyToFile &op, Physi
 	} else if (op.preserve_order == PreserveOrderType::DONT_PRESERVE_ORDER) {
 		preserve_insertion_order = false;
 	}
-	// files rotated by size alone keep the order of the batches, when the function writes whole batches of its own size
-	bool size_rotation_only = op.file_size_bytes.IsValid() && !op.batches_per_file.IsValid() && !op.per_thread_output &&
-	                          !op.partition_output && op.partition_columns.empty() && op.order_columns.empty();
-	bool ordered_rotation = size_rotation_only && preserve_insertion_order && supports_batch_index &&
-	                        op.function.prepare_batch && op.function.flush_batch && op.function.file_size_bytes &&
-	                        op.function.desired_batch_size;
-	if ((op.per_thread_output || op.file_size_bytes.IsValid() || op.rotate || op.partition_output ||
-	     !op.partition_columns.empty() || !op.order_columns.empty()) &&
-	    !ordered_rotation) {
+	// the batch copy rotates files by size between whole batches, which keeps the order
+	bool ordered_rotation = op.file_size_bytes.IsValid() && !op.batches_per_file.IsValid() &&
+	                        preserve_insertion_order && supports_batch_index && SupportsOrderedRotation(op.function);
+	if (op.per_thread_output || (op.rotate && !ordered_rotation) || op.partition_output ||
+	    !op.partition_columns.empty() || !op.order_columns.empty()) {
 		if (op.preserve_order == PreserveOrderType::PRESERVE_ORDER) {
 			throw InvalidInputException("PRESERVE_ORDER is not supported with these parameters");
 		}
