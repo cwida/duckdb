@@ -52,7 +52,7 @@ private:
 
 private:
 	ClientContext &context;
-	//! Whether the output is synced to stable storage before the COPY completes
+	//! Whether the output is synced to stable storage, which fsync_mode none turns off
 	const bool fsync;
 	annotated_mutex lock;
 	vector<FileEntry> files DUCKDB_GUARDED_BY(lock);

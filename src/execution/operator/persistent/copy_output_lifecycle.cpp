@@ -1,15 +1,18 @@
 #include "duckdb/execution/operator/persistent/copy_output_lifecycle.hpp"
 
+#include "duckdb/common/enums/file_sync_mode.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/opener_file_system.hpp"
 #include "duckdb/common/set.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/main/settings.hpp"
 
 #include <algorithm>
 
 namespace duckdb {
 
-CopyOutputLifecycle::CopyOutputLifecycle(ClientContext &context_p, bool fsync_p) : context(context_p), fsync(fsync_p) {
+CopyOutputLifecycle::CopyOutputLifecycle(ClientContext &context_p, bool fsync_p)
+    : context(context_p), fsync(fsync_p && Settings::Get<FsyncModeSetting>(context_p) != FileSyncMode::NONE) {
 }
 
 CopyOutputLifecycle::~CopyOutputLifecycle() {

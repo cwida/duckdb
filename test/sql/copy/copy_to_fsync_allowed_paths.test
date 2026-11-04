@@ -34,3 +34,21 @@ query I
 SELECT i FROM '{TEST_DIR}/fsync_allowed.csv'
 ----
 42
+
+# fsync_mode none turns the syncs off, so the directory is not accessed either
+statement ok
+SET fsync_mode = 'none'
+
+statement ok
+COPY (SELECT 43 AS i) TO '{TEST_DIR}/fsync_allowed.csv' (USE_TMP_FILE false, FSYNC)
+
+statement ok
+COPY (SELECT 44 AS i) TO '{TEST_DIR}/fsync_allowed.csv' (USE_TMP_FILE true, FSYNC)
+
+query I
+SELECT i FROM '{TEST_DIR}/fsync_allowed.csv'
+----
+44
+
+statement ok
+RESET fsync_mode
