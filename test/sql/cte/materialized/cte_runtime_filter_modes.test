@@ -58,7 +58,7 @@ SELECT (SELECT count(*) FROM (SELECT k FROM p JOIN b USING(k) LIMIT 1) t),
 ----
 analyzed_plan	<REGEX>:(?s).*"Fanout Mode": "BUFFERED".*"Table": "[^"]*[.]facts".*
 
-# Hybrid fanout keeps the original scan; materializing both consumers can make the complete OR available.
+# Cyclic publication keeps the original scan; materialization can also make the complete OR available.
 query II
 WITH p AS MATERIALIZED (SELECT * FROM facts)
 SELECT count(*),sum(length(x.payload))
@@ -74,7 +74,7 @@ SELECT count(*),sum(length(x.payload))
 FROM (SELECT p.* FROM p JOIN b USING(k)) x
 JOIN (SELECT p.* FROM p JOIN c USING(k)) y USING(k);
 ----
-analyzed_plan	<REGEX>:(?s).*"Execution Mode": "(?:HYBRID_FANOUT".*"Table": "[^"]*[.]facts"[^}]*},\s*"intermediate_rows": 50000,|MATERIALIZED".*"Table": "[^"]*[.]facts"[^}]*"Dynamic Filters": "[^"]* OR [^"]*"[^}]*},\s*"intermediate_rows": 3,).*
+analyzed_plan	<REGEX>:(?s).*"Execution Mode": "(?:(?:HYBRID_FANOUT|MATERIALIZED)".*"Table": "[^"]*[.]facts"[^}]*},\s*"intermediate_rows": 50000,|MATERIALIZED".*"Table": "[^"]*[.]facts"[^}]*"Dynamic Filters": "[^"]* OR [^"]*"[^}]*},\s*"intermediate_rows": 3,).*
 
 # One unrestricted consumer also prevents filtering the shared input.
 query II

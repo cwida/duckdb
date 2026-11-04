@@ -6,6 +6,10 @@ require parquet
 
 require json
 
+# the counters are checked per scan, so sibling scalar subqueries over one file must each keep their own scan
+statement ok
+SET disabled_optimizers = 'scalar_aggregate_merge';
+
 # three row groups per file; i ascends, so a filter on it skips row groups by their statistics
 statement ok
 COPY (SELECT range AS i, repeat('x', 100) || range AS s FROM range(3 * 2048)) TO '{TEST_DIR}/bytes_scanned_1.parquet' (ROW_GROUP_SIZE 2048);

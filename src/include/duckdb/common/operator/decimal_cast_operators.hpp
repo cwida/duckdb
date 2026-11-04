@@ -715,7 +715,7 @@ struct DecimalCastOperation {
 			// Everything beyond that amount needs to be truncated
 			if (decimal_excess > UnsafeNumericCast<uint32_t>(exponent)) {
 				// We've allowed too many decimals
-				state.excessive_decimals = decimal_excess - UnsafeNumericCast<uint32_t>(exponent);
+				state.excessive_decimals = UnsafeNumericCast<uint32_t>(decimal_excess - exponent);
 				exponent = 0;
 			} else {
 				exponent -= UnsafeNumericCast<int32_t>(decimal_excess);

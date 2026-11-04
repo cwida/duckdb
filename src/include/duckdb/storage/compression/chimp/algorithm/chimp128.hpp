@@ -223,10 +223,6 @@ public:
 	static constexpr uint8_t INDEX_BITS_SIZE = 7;
 	static constexpr uint8_t BIT_SIZE = sizeof(CHIMP_TYPE) * 8;
 
-	static inline void UnpackPackedData(uint16_t packed_data, UnpackedData &dest) {
-		return PackedDataUtils<CHIMP_TYPE>::Unpack(packed_data, dest);
-	}
-
 	static inline CHIMP_TYPE Load(ChimpConstants::Flags flag, uint8_t leading_zeros[], uint32_t &leading_zero_index,
 	                              UnpackedData unpacked_data[], uint32_t &unpacked_index, DecompressState &state,
 	                              BitReader &input) {

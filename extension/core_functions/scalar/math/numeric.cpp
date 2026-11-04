@@ -1070,7 +1070,7 @@ struct RoundHalfAwayFromZero {
 	static constexpr BignumRounding BIGNUM_ROUNDING = BignumRounding::HALF_AWAY_FROM_ZERO;
 
 	static double Nearest(double value) {
-		return std::round(value);
+		return RoundToNearestAwayFromZero(value);
 	}
 	template <class T>
 	static bool RoundsAway(T) {
@@ -1146,7 +1146,7 @@ struct RoundOperatorPrecision {
 struct RoundOperator {
 	template <class TA, class TR>
 	static inline TR Operation(TA input) {
-		double rounded_value = round(input);
+		double rounded_value = RoundToNearestAwayFromZero(static_cast<double>(input));
 		if (std::isinf(rounded_value) || std::isnan(rounded_value)) {
 			return input;
 		}
