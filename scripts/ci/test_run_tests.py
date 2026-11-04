@@ -1594,7 +1594,7 @@ Error: Catalog Error: a failed
         command = proc.stdout.rstrip().splitlines()[-1]
         self.assertEqual(
             shlex.split(command),
-            ["run", '"test/sql/a.test","Compiled test name","test/sql/b.test"'],
+            ["test/run", '"test/sql/a.test","Compiled test name","test/sql/b.test"'],
         )
 
     def test_final_reproducer_unions_failures_across_exhausted_retries(self):
@@ -1634,7 +1634,7 @@ Error: Catalog Error: a failed
 
         self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
         command = proc.stdout.rstrip().splitlines()[-1]
-        self.assertEqual(shlex.split(command), ["run", '"test/sql/a.test","test/sql/b.test"'])
+        self.assertEqual(shlex.split(command), ["test/run", '"test/sql/a.test","test/sql/b.test"'])
 
     def test_failed_batch_includes_mismatch_context(self):
         test_list_path = create_temp_file("test/sql/a.test\n")
@@ -2580,6 +2580,8 @@ For more information, see https://duckdb.org/docs/current/dev/internal_errors
                             "test/configs/a.json",
                             "--test-config",
                             "test/configs/b.json",
+                            "--test-command",
+                            "{binary} {flags} {test_list}",
                             str(helper_path),
                         ]
                     )
@@ -2648,6 +2650,8 @@ For more information, see https://duckdb.org/docs/current/dev/internal_errors
                             "test/configs/a.json",
                             "--test-config",
                             "test/configs/b.json",
+                            "--test-command",
+                            "{binary} {flags} {test_list}",
                             str(helper_path),
                         ]
                     )
@@ -2697,6 +2701,8 @@ For more information, see https://duckdb.org/docs/current/dev/internal_errors
                             "test/configs/b.json",
                             "--test-config",
                             "test/configs/c.json",
+                            "--test-command",
+                            "{binary} {flags} {test_list}",
                             str(helper_path),
                         ]
                     )
@@ -2906,7 +2912,9 @@ For more information, see https://duckdb.org/docs/current/dev/internal_errors
                         "test/configs/pass.json",
                         "--test-config",
                         "test/configs/fail.json",
-                        "build/reldebug/test/unittest",
+                        "--test-command",
+                        "echo fake-run {test_list}",
+                        "build/reldebug/duckdb",
                     ]
                 )
         finally:

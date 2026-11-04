@@ -66,7 +66,7 @@ class TestRunnerConfig:
     test_config: str | None
     test_flags: str
     patterns: list[str]
-    test_command: str
+    test_command: str | None
     workers: int
     retry: int
     max_retries: int
@@ -453,7 +453,28 @@ def generate_test_list(
     coverage_profile_dir: Path | None = None,
     error_output=None,
     test_config: str | None = None,
+    test_command: str | None = None,
 ):
+    if test_command is not None:
+        list_file_args = []
+        if test_list_files:
+            list_file_args = [arg for test_list_file in test_list_files for arg in ("-f", str(test_list_file))]
+        command = [unittest_bin, *shlex.split(test_flags), "--list-tests", *list_file_args, *patterns]
+        proc = subprocess.run(
+            command,
+            text=True,
+            encoding="utf8",
+            errors="backslashreplace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if proc.returncode != 0 and not proc.stdout:
+            print("Stderr:", proc.stderr, end="", file=error_output if error_output is not None else sys.stderr)
+            raise RuntimeError(f"failed to generate test list from {unittest_bin} (exit: {proc.returncode})")
+        test_file.write(proc.stdout)
+        test_file.flush()
+        return
+
     _, test_roots, bundle_roots = resolve_test_protocol_paths(unittest_bin)
     selectors = [*read_test_selectors(test_list_files), *patterns]
     include_slow = any(
@@ -1742,7 +1763,115 @@ def generate_coverage_report(source_root: Path, unittest_bin: str, profile_dir: 
     return genhtml_proc.returncode
 
 
+def run_custom_batch(config: TestRunnerConfig, batch):
+    failed = False
+    stdout = ""
+    stderr = ""
+    message = None
+    allow_retry = True
+    timed_out = False
+    peak_rss_bytes = 0
+    child_env = os.environ.copy()
+    child_env["SUMMARIZE_FAILURES"] = "0"
+    if config.test_config is not None:
+        child_env["DUCKDB_TEST_CONFIG"] = os.fspath(Path(config.test_config).resolve())
+    if config.coverage_profile_dir is not None:
+        config.coverage_profile_dir.mkdir(parents=True, exist_ok=True)
+        child_env["LLVM_PROFILE_FILE"] = coverage_profile_file_pattern(config.coverage_profile_dir)
+
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf8", delete=False) as batch_file:
+        if all(name.endswith((".test", ".test_slow", ".test_coverage")) for name in batch):
+            batch_file.write("\n".join(batch))
+        else:
+            batch_file.write("\n".join(quote_catch_test_name(name) for name in batch))
+        batch_file.write("\n")
+        batch_file.flush()
+        batch_file_path = Path(batch_file.name)
+
+    command = build_test_command(config, shlex.quote(str(batch_file_path)))
+    stdout_capture = tempfile.NamedTemporaryFile(mode="w+b", delete=False)
+    stderr_capture = tempfile.NamedTemporaryFile(mode="w+b", delete=False)
+
+    def read_captures():
+        stdout_capture.seek(0)
+        stderr_capture.seek(0)
+        out = normalize_output(stdout_capture.read().decode("utf8", "backslashreplace"))
+        err = normalize_output(stderr_capture.read().decode("utf8", "backslashreplace"))
+        return out, err
+
+    try:
+        proc = subprocess.Popen(
+            shlex.split(command),
+            stdout=stdout_capture,
+            stderr=stderr_capture,
+            env=child_env,
+        )
+        deadline = time.monotonic() + config.batch_timeout_seconds
+        while proc.poll() is None:
+            if stop_requested():
+                proc.kill()
+                proc.wait()
+                stdout, stderr = read_captures()
+                failed = True
+                allow_retry = False
+                message = "interrupted"
+                break
+            rss_bytes = get_process_rss_bytes(proc.pid)
+            if rss_bytes is not None:
+                peak_rss_bytes = max(peak_rss_bytes, rss_bytes)
+            if time.monotonic() >= deadline:
+                proc.kill()
+                proc.wait()
+                stdout, stderr = read_captures()
+                failed = True
+                timed_out = proc.returncode == (1 if os.name == "nt" else -signal.SIGKILL)
+                message = f"batch timed out after {config.batch_timeout_seconds} seconds"
+                break
+            if proc.poll() is None:
+                time.sleep(DEFAULT_RSS_POLL_INTERVAL_SECONDS)
+
+        if message is None:
+            proc.wait()
+            stdout, stderr = read_captures()
+            failed = proc.returncode != 0
+            invalid_filters = [line for line in strip_ansi(stdout).splitlines() if line.startswith("Invalid Filter:")]
+            if not failed and invalid_filters:
+                failed = True
+                allow_retry = False
+                message = "error: " + invalid_filters[0]
+            if not failed and config.fail_require_skip:
+                require_skip_lines = find_require_skip_lines(stdout) + find_require_skip_lines(stderr)
+                if require_skip_lines:
+                    failed = True
+                    allow_retry = False
+                    message = "error: detected require-based skipped tests: " + require_skip_lines[0]
+    except OSError as exc:
+        failed = True
+        stderr = str(exc)
+        message = "failed to launch batch command"
+    finally:
+        batch_file_path.unlink(missing_ok=True)
+        stdout_capture.close()
+        stderr_capture.close()
+        Path(stdout_capture.name).unlink(missing_ok=True)
+        Path(stderr_capture.name).unlink(missing_ok=True)
+
+    return {
+        "failed": failed,
+        "stdout": stdout,
+        "stderr": stderr,
+        "message": message,
+        "returncode": proc.returncode if "proc" in locals() else None,
+        "peak_rss_bytes": peak_rss_bytes,
+        "allow_retry": allow_retry,
+        "timed_out": timed_out,
+    }
+
+
 def run_batch(config: TestRunnerConfig, batch):
+    if config.test_command is not None:
+        return run_custom_batch(config, batch)
+
     failed = False
     stdout = ""
     stderr = ""
@@ -2097,8 +2226,7 @@ def parse_args(argv: list[str] | None = None):
     parser.add_argument("patterns", nargs="*")
     parser.add_argument(
         "--test-command",
-        default="{binary} {flags} --use-colour yes -f {test_list}",
-        help="shell command template used to run a test batch; supports {binary}, {flags}, and {test_list}",
+        help="custom test command hook; supports {binary}, {flags}, and {test_list}",
     )
     parser.add_argument(
         "--track-runtime",
@@ -2197,6 +2325,7 @@ def create_temp_test_list(
     coverage_profile_dir: Path | None = None,
     error_output=None,
     test_config: str | None = None,
+    test_command: str | None = None,
 ):
     with tempfile.NamedTemporaryFile(mode="w", encoding="utf8", delete=False) as test_file:
         generate_test_list(
@@ -2208,6 +2337,7 @@ def create_temp_test_list(
             coverage_profile_dir,
             error_output,
             test_config,
+            test_command,
         )
         return Path(test_file.name)
 
@@ -2240,20 +2370,24 @@ def run_single_config(
         print(f"=== config run: {invocation.label} ===", file=output)
     generated_test_list: Path | None = None
     try:
-        create_args = (
-            unittest_bin,
-            invocation.test_flags,
-            args.patterns,
-            test_list_files,
-            args.coverage_profile_dir,
-            output,
-            invocation.test_config,
-        )
-        if executor is None:
-            generated_test_list = create_temp_test_list(*create_args)
+        if args.test_command is not None and args.test_list is not None and len(test_list_files) == 1:
+            test_list_path = args.test_list
         else:
-            generated_test_list = executor.submit(create_temp_test_list, *create_args).result()
-        test_list_path = generated_test_list
+            create_args = (
+                unittest_bin,
+                invocation.test_flags,
+                args.patterns,
+                test_list_files,
+                args.coverage_profile_dir,
+                output,
+                invocation.test_config,
+                args.test_command,
+            )
+            if executor is None:
+                generated_test_list = create_temp_test_list(*create_args)
+            else:
+                generated_test_list = executor.submit(create_temp_test_list, *create_args).result()
+            test_list_path = generated_test_list
         config = TestRunnerConfig(
             test_list=test_list_path,
             unittest_bin=unittest_bin,
