@@ -336,7 +336,10 @@ static void InitializeLocalState(JSONTableInOutLocalState &lstate, DataChunk &in
 		return;
 	}
 	const auto input_data = input_values[lstate.input_row].GetValue();
-	lstate.json_doc = input_data.GetString();
+	if (lstate.gstate.json_column_index.IsValid()) {
+		// Copy the document only when the "json" virtual column is selected
+		lstate.json_doc = input_data.GetString();
+	}
 	lstate.doc = JSONCommon::ReadDocument(input_data, JSONCommon::READ_FLAG, lstate.alc);
 	const auto root = JSONCommon::GetUnsafe(lstate.doc->root, lstate.path.c_str(), lstate.len);
 
