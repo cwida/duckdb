@@ -95,7 +95,7 @@ public:
 	      minimum_memory_per_thread(minimum_memory_per_thread) {
 	}
 
-	//! Destroy after global_state so its handle closes before cleanup.
+	//! Destroy after the file states so their handles close before cleanup.
 	CopyOutputLifecycle output_lifecycle;
 	BatchMemoryManager memory_manager;
 	BatchTaskManager<BatchCopyTask> task_manager;
@@ -180,7 +180,7 @@ public:
 		file_batches = 0;
 	}
 
-	//! Whether the file being written holds batches and reached the size, so the next batch starts a new file
+	//! Whether the file being written holds batches and reached the size
 	bool FileReachedSize(const PhysicalBatchCopyToFile &op) {
 		return op.file_options.RotatesFiles() && file_batches > 0 &&
 		       op.function.file_size_bytes(*global_state) >= op.file_options.file_size_bytes.GetIndex();
