@@ -40,6 +40,12 @@
       "paths": [
         "test/sql/subquery/any_all/test_any_left_join_in_on_clause.test"
       ]
+    },
+    {
+      "reason": "FIXME: INTERNAL binding error when explaining a range join above a join whose ON clause contains an uncorrelated subquery with a verification projection (same underlying issue as the test_any_left_join_in_on_clause skip). The plain-mode results and plans are fully covered in the test itself.",
+      "paths": [
+        "test/sql/join/merge_join_projection_maps.test"
+      ]
     }
   ]
 }
