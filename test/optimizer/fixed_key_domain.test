@@ -3,10 +3,14 @@
 # group: [optimizer]
 
 statement ok
-CREATE TABLE fact AS SELECT (i % 1000)::INTEGER k, i::BIGINT v FROM range(10000) t(i);
+CREATE TABLE fact_data AS SELECT (i % 1000)::INTEGER k, i::BIGINT v FROM range(10000) t(i);
 
 statement ok
-INSERT INTO fact VALUES (NULL, 4), (NULL, 7), (1, NULL);
+INSERT INTO fact_data VALUES (NULL, 4), (NULL, 7), (1, NULL);
+
+# The computed key prevents the consumer's runtime filters from reaching the scan.
+statement ok
+CREATE VIEW fact AS SELECT (k + 1000) % 1000 k, v FROM fact_data;
 
 query IIII rowsort
 SELECT d.k, a.s, a.n, a.c

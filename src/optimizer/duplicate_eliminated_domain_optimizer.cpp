@@ -1,6 +1,7 @@
 #include "duckdb/optimizer/duplicate_eliminated_domain_optimizer.hpp"
 
 #include "duckdb/optimizer/aggregate_rewrite_helper.hpp"
+#include "duckdb/optimizer/join_filter_pushdown_optimizer.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/optimizer/relation_statistics/relation_statistics_extractor.hpp"
 #include "duckdb/optimizer/relation_statistics/relation_statistics_helper.hpp"
@@ -223,6 +224,20 @@ static double SumWork(std::initializer_list<double> terms) {
 	return sum;
 }
 
+static bool HasRuntimeFilterTargets(Optimizer &optimizer, LogicalAggregate &aggregate) {
+	if (optimizer.OptimizerDisabled(OptimizerType::JOIN_FILTER_PUSHDOWN)) {
+		return false;
+	}
+	JoinFilterPushdownColumn column;
+	if (!JoinFilterPushdownUtil::PushdownJoinFilterExpression(*aggregate.groups[0], column)) {
+		return false;
+	}
+	vector<PushdownFilterTarget> targets;
+	JoinFilterPushdownOptimizer::GetPushdownFilterTargets(*aggregate.children[0], {std::move(column)}, targets,
+	                                                      EqualityPropagation::ENABLED);
+	return !targets.empty();
+}
+
 static bool IsProfitable(ClientContext &context, LogicalAggregate &aggregate, LogicalComparisonJoin &restriction,
                          LogicalOperator &domain) {
 	RelationStatsExtractor extractor(context);
@@ -268,6 +283,10 @@ static bool TryRestrict(Optimizer &optimizer, LogicalComparisonJoin &join, idx_t
 	}
 	auto aggregate = FindAggregate(*join.children[aggregate_side], aggregate_index.GetIndex());
 	if (!aggregate) {
+		return false;
+	}
+	// Existing consumer runtime filters can already save this work; their combined cost is outside this model.
+	if (join.join_type != JoinType::SINGLE && HasRuntimeFilterTargets(optimizer, *aggregate)) {
 		return false;
 	}
 	vector<vector<unique_ptr<Expression>>> rows;
