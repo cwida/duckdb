@@ -99,9 +99,14 @@ SELECT answer(1);
 ----
 untyped
 
-# DROP FUNCTION with a parameter type list drops one member, the untyped member owns its arity
-statement ok
+# DROP FUNCTION with a parameter type list drops one member, the untyped member is named by ANY
+statement error
 DROP FUNCTION answer(INTEGER);
+----
+<REGEX>:.*has no overload with signature \(INTEGER\).*
+
+statement ok
+DROP FUNCTION answer(ANY);
 
 query I
 SELECT answer();
