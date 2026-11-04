@@ -1,0 +1,161 @@
+# name: test/sql/parallelism/interquery/concurrent_checkpoint_null_updates_stress.test_slow
+# description: Updates to NULL on constant and dictionary columns, with open readers, rollbacks and checkpoints
+# group: [interquery]
+
+statement ok
+SET checkpoint_threshold='1TB'
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+foreach scan_sleep 0 20 60
+
+statement ok
+SET debug_checkpoint_scan_sleep_ms={scan_sleep}
+
+statement ok
+ATTACH '{TEST_DIR}/concurrent_checkpoint_null_updates{scan_sleep}.db' AS ccn
+
+# c is constant, d is constant once the rows the updaters own are NULL, k and s are low-cardinality, v is plain
+statement ok
+CREATE TABLE ccn.t AS SELECT i, 0 AS c, CASE WHEN i % 10 < 5 THEN i % 5 ELSE 7 END AS d, i % 100 AS k, 'str' || (i % 10) AS s, i AS v FROM range(50000) t(i)
+
+statement ok
+CHECKPOINT ccn
+
+concurrentloop threadid 0 11
+
+loop x 0 10
+
+# threads 0-4 set their own rows to NULL, a hundredth of the table per iteration, in c, d and s together; the last
+# slice is left for the end
+onlyif threadid<5
+statement ok
+UPDATE ccn.t SET c = NULL, d = NULL, s = NULL WHERE i % 10 = {threadid} AND (i // 10) % 10 = {x} AND {x} < 9
+
+# threads 5-6 update values in their own rows
+onlyif threadid>4&&threadid<7
+statement ok
+UPDATE ccn.t SET v = v + 1, k = k WHERE i % 10 = {threadid}
+
+# thread 7 updates to NULL and rolls back
+onlyif threadid=7
+statement ok
+BEGIN TRANSACTION
+
+onlyif threadid=7
+statement ok
+UPDATE ccn.t SET c = NULL, d = NULL, s = NULL, v = v + 1000 WHERE i % 10 = 7 AND (i // 10) % 10 = {x}
+
+onlyif threadid=7
+statement ok
+ROLLBACK
+
+# threads 8-9 read in a transaction, so that a checkpoint runs while they still see older values
+onlyif threadid>7&&threadid<10
+statement ok
+BEGIN TRANSACTION
+
+onlyif threadid>7&&threadid<10
+query I
+SELECT (SELECT COUNT(*) FROM ccn.t WHERE c IS NULL) = (SELECT COUNT(*) FROM ccn.t WHERE s IS NULL)
+   AND (SELECT COUNT(*) FROM ccn.t WHERE c IS NULL) = (SELECT COUNT(*) FROM ccn.t WHERE d IS NULL)
+   AND (SELECT COUNT(*) FROM ccn.t WHERE d = 7) = 25000
+   AND (SELECT COUNT(*) FROM ccn.t WHERE c = 0) + (SELECT COUNT(*) FROM ccn.t WHERE c IS NULL) = 50000
+   AND (SELECT COUNT(*) FROM ccn.t WHERE s = 'str' || (i % 10)) + (SELECT COUNT(*) FROM ccn.t WHERE s IS NULL) = 50000
+   AND (SELECT COUNT(*) FROM ccn.t WHERE k <> i % 100) = 0
+   AND (SELECT COUNT(*) FROM ccn.t WHERE i % 10 = 7 AND (c IS NULL OR v <> i)) = 0
+   AND (SELECT SUM(v - i) FROM ccn.t) % 5000 = 0
+   AND (SELECT MAX(v) FROM ccn.t) BETWEEN 49999 AND 50006
+   AND (SELECT MIN(c) FROM ccn.t) = 0
+----
+true
+
+onlyif threadid>7&&threadid<10
+statement ok
+COMMIT
+
+endloop
+
+# thread 10 checkpoints while the others modify the table
+loop x 0 3
+
+onlyif threadid=10
+statement ok
+CHECKPOINT ccn
+
+endloop
+
+endloop
+
+# threads 0-4 set nine of their ten slices to NULL; threads 5-6 incremented each of their rows ten times; thread 7
+# changed nothing
+query IIIIII
+SELECT COUNT(*), COUNT(*) FILTER (WHERE c IS NULL), COUNT(*) FILTER (WHERE d IS NULL), SUM(v - i), MAX(v), COUNT(*) FILTER (WHERE i % 10 = 7 AND (c IS NULL OR v <> i)) FROM ccn.t
+----
+50000	22500	22500	100000	50006	0
+
+# the last slice goes while con1 still reads it: the rewrite leaves d with the value 7 alone, which compresses to a
+# constant, and con1 must still find the slice's values
+statement ok con1
+BEGIN TRANSACTION
+
+query II con1
+SELECT COUNT(*) FILTER (WHERE d = 3), COUNT(*) FILTER (WHERE d IS NULL) FROM ccn.t
+----
+500	22500
+
+statement ok
+UPDATE ccn.t SET c = NULL, d = NULL, s = NULL WHERE i % 10 < 5 AND (i // 10) % 10 = 9
+
+statement ok
+CHECKPOINT ccn
+
+query III con1
+SELECT (SELECT COUNT(*) FROM ccn.t WHERE d = 3), (SELECT COUNT(*) FROM ccn.t WHERE d = 7), (SELECT COUNT(*) FROM ccn.t WHERE d IS NULL)
+----
+500	25000	22500
+
+query III
+SELECT (SELECT COUNT(*) FROM ccn.t WHERE d = 7), (SELECT COUNT(*) FROM ccn.t WHERE d IS NULL), (SELECT COUNT(*) FROM ccn.t WHERE c = 0)
+----
+25000	25000	25000
+
+statement ok con1
+COMMIT
+
+query IIII
+SELECT COUNT(*) FILTER (WHERE c IS NULL), COUNT(*) FILTER (WHERE d IS NULL), COUNT(*) FILTER (WHERE s IS NULL), COUNT(*) FILTER (WHERE d = 7) FROM ccn.t
+----
+25000	25000	25000	25000
+
+statement ok
+DETACH ccn
+
+# replay the WAL of the commits that ran concurrently with the checkpoints
+statement ok
+ATTACH '{TEST_DIR}/concurrent_checkpoint_null_updates{scan_sleep}.db' AS ccn
+
+query IIIIII
+SELECT COUNT(*), COUNT(*) FILTER (WHERE c IS NULL), COUNT(*) FILTER (WHERE d IS NULL), SUM(v - i), MAX(v), COUNT(*) FILTER (WHERE d = 7) FROM ccn.t
+----
+50000	25000	25000	100000	50006	25000
+
+statement ok
+CHECKPOINT ccn
+
+statement ok
+DETACH ccn
+
+statement ok
+ATTACH '{TEST_DIR}/concurrent_checkpoint_null_updates{scan_sleep}.db' AS ccn
+
+query III
+SELECT (SELECT COUNT(*) FROM ccn.t WHERE c = 0), (SELECT COUNT(*) FROM ccn.t WHERE d = 7), (SELECT COUNT(*) FROM ccn.t WHERE d IS NULL OR c IS NULL)
+----
+25000	25000	25000
+
+statement ok
+DETACH ccn
+
+endloop

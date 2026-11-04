@@ -1,0 +1,97 @@
+# name: test/sql/storage/concurrent_checkpoint_null_update.test
+# description: A checkpoint running concurrently with an older reader must keep the value below a row updated to NULL
+# group: [storage]
+
+load {TEST_DIR}/concurrent_checkpoint_null_update.db
+
+# every commit checkpoints
+statement ok
+SET checkpoint_threshold='0KB'
+
+# BEGIN takes the snapshot immediately
+statement ok
+SET immediate_transaction_mode=true
+
+statement ok
+CREATE TABLE test (a INTEGER, s VARCHAR, st STRUCT(x INTEGER, y VARCHAR));
+
+statement ok
+INSERT INTO test VALUES (1, 'hello', {'x': 1, 'y': 'a'}), (2, 'world', {'x': 2, 'y': 'b'}), (3, 'foo', {'x': 3, 'y': 'c'})
+
+statement ok con1
+BEGIN TRANSACTION
+
+# the commit checkpoints while con1 still needs the values of row 2
+query I con2
+UPDATE test SET a=NULL, s=NULL, st=NULL WHERE a=2
+----
+1
+
+query III con1
+SELECT a, s, st FROM test ORDER BY rowid
+----
+1	hello	{'x': 1, 'y': a}
+2	world	{'x': 2, 'y': b}
+3	foo	{'x': 3, 'y': c}
+
+query III con2
+SELECT a, s, st FROM test ORDER BY rowid
+----
+1	hello	{'x': 1, 'y': a}
+NULL	NULL	NULL
+3	foo	{'x': 3, 'y': c}
+
+# a value update in the same row group forces the value columns to be rewritten as well
+statement ok con2
+BEGIN TRANSACTION
+
+query I con2
+UPDATE test SET a=NULL, s=NULL WHERE a=3
+----
+1
+
+query I con2
+UPDATE test SET a=10, s='ten' WHERE a=1
+----
+1
+
+statement ok con2
+COMMIT
+
+# the checkpoint is triggered by an unrelated commit
+statement ok con2
+CREATE TABLE other(i INTEGER)
+
+statement ok con2
+INSERT INTO other VALUES (1)
+
+query III con1
+SELECT a, s, st FROM test ORDER BY rowid
+----
+1	hello	{'x': 1, 'y': a}
+2	world	{'x': 2, 'y': b}
+3	foo	{'x': 3, 'y': c}
+
+query I con1
+SELECT count(*) FROM test WHERE a=2 AND s='world'
+----
+1
+
+query III con2
+SELECT a, s, st FROM test ORDER BY rowid
+----
+10	ten	{'x': 1, 'y': a}
+NULL	NULL	NULL
+NULL	NULL	{'x': 3, 'y': c}
+
+statement ok con1
+COMMIT
+
+restart
+
+query III
+SELECT a, s, st FROM test ORDER BY rowid
+----
+10	ten	{'x': 1, 'y': a}
+NULL	NULL	NULL
+NULL	NULL	{'x': 3, 'y': c}

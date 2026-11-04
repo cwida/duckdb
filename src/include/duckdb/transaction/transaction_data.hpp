@@ -25,6 +25,11 @@ struct SnapshotView {
 	    : transaction_id(transaction_id_p), visibility_bound(visibility_bound_p) {
 	}
 
+	//! The view of what was committed before the bound, without any uncommitted changes
+	static SnapshotView CommittedBefore(VisibilityBound visibility_bound) {
+		return SnapshotView(MAX_TRANSACTION_ID, visibility_bound);
+	}
+
 	//! The reading transaction, so that its own writes are visible to it
 	transaction_t transaction_id;
 	//! Exclusive: timestamps below it are visible

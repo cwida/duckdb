@@ -1,0 +1,100 @@
+# name: test/sql/storage/concurrent_checkpoint_update_old_snapshot.test
+# description: A snapshot from before committed updates reads the old values through the columns a checkpoint rewrote
+# group: [storage]
+
+load {TEST_DIR}/concurrent_checkpoint_update_old_snapshot.db
+
+statement ok
+SET checkpoint_threshold='1TB'
+
+statement ok
+CREATE TABLE test (i INTEGER, s VARCHAR, st STRUCT(a INTEGER, b VARCHAR));
+
+statement ok
+INSERT INTO test SELECT i, 'str' || i, {'a': i, 'b': 'b' || i} FROM range(10000) t(i);
+
+statement ok
+CHECKPOINT
+
+statement ok con1
+BEGIN TRANSACTION
+
+query IIIIIIIII con1
+SELECT SUM(i), COUNT(i), MIN(s), MAX(s), COUNT(s), SUM(st.a), COUNT(st.a), MAX(st.b), COUNT(st.b) FROM test
+----
+49995000	10000	str0	str9999	10000	49995000	10000	b9999	10000
+
+# the rows have no earlier updates: the old values of these updates are in the base data
+statement ok con2
+UPDATE test SET i = i + 1000000, s = 'updated' || s, st = {'a': st.a, 'b': 'u' || st.b} WHERE st.a % 3 = 0
+
+statement ok con2
+UPDATE test SET i = NULL, s = NULL, st = {'a': NULL, 'b': NULL} WHERE st.a % 3 = 1
+
+# the checkpoint writes the updated values into the base data of the columns it rewrites
+statement ok con2
+CHECKPOINT
+
+query IIIIIIIII con1
+SELECT SUM(i), COUNT(i), MIN(s), MAX(s), COUNT(s), SUM(st.a), COUNT(st.a), MAX(st.b), COUNT(st.b) FROM test
+----
+49995000	10000	str0	str9999	10000	49995000	10000	b9999	10000
+
+query III con1
+SELECT i, s, st FROM test WHERE rowid < 3 ORDER BY rowid
+----
+0	str0	{'a': 0, 'b': b0}
+1	str1	{'a': 1, 'b': b1}
+2	str2	{'a': 2, 'b': b2}
+
+query IIIIIIIII con2
+SELECT SUM(i), COUNT(i), MIN(s), MAX(s), COUNT(s), SUM(st.a), COUNT(st.a), MAX(st.b), COUNT(st.b) FROM test
+----
+3367333333	6667	str1001	updatedstr9999	6667	33333333	6667	ub9999	6667
+
+# another update and checkpoint while con1 still reads the old values
+statement ok con2
+UPDATE test SET i = i + 1 WHERE st.a % 3 = 0
+
+statement ok con2
+CHECKPOINT
+
+query IIIIIIIII con1
+SELECT SUM(i), COUNT(i), MIN(s), MAX(s), COUNT(s), SUM(st.a), COUNT(st.a), MAX(st.b), COUNT(st.b) FROM test
+----
+49995000	10000	str0	str9999	10000	49995000	10000	b9999	10000
+
+query III con2
+SELECT i, s, st FROM test WHERE rowid < 3 ORDER BY rowid
+----
+1000001	updatedstr0	{'a': 0, 'b': ub0}
+NULL	NULL	{'a': NULL, 'b': NULL}
+2	str2	{'a': 2, 'b': b2}
+
+statement ok con1
+COMMIT
+
+# con1 was the last reader of the old values: its commit cleaned them up, and the next checkpoint drops the
+# update segments (a checkpoint with nothing in the WAL does nothing, so give it something)
+statement ok
+CREATE TABLE tick(i INTEGER)
+
+statement ok
+CHECKPOINT
+
+query I
+SELECT COUNT(*) FROM pragma_storage_info('test') WHERE has_updates
+----
+0
+
+query IIIIIIIII
+SELECT SUM(i), COUNT(i), MIN(s), MAX(s), COUNT(s), SUM(st.a), COUNT(st.a), MAX(st.b), COUNT(st.b) FROM test
+----
+3367336667	6667	str1001	updatedstr9999	6667	33333333	6667	ub9999	6667
+
+restart
+
+query IIIIIIIII
+SELECT SUM(i), COUNT(i), MIN(s), MAX(s), COUNT(s), SUM(st.a), COUNT(st.a), MAX(st.b), COUNT(st.b) FROM test
+----
+3367336667	6667	str1001	updatedstr9999	6667	33333333	6667	ub9999	6667

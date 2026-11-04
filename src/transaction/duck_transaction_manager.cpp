@@ -174,9 +174,8 @@ DuckTransactionManager::GetCheckpointType(DuckTransaction &transaction, const Un
 	auto checkpoint_type = CheckpointType::FULL_CHECKPOINT;
 	bool has_other_transactions = HasOtherTransactions(transaction);
 	if (has_other_transactions) {
-		if (undo_properties.has_updates || undo_properties.has_dropped_entries) {
-			// if we have made updates/catalog changes in this transaction we cannot checkpoint
-			// in the presence of other transactions
+		if (undo_properties.has_dropped_entries) {
+			// dropped catalog entries: other transactions might still need the entries from before this one
 			string other_transactions;
 			for (auto &active_transaction : active_transactions) {
 				if (!RefersToSameObject(*active_transaction, transaction)) {
@@ -187,20 +186,9 @@ DuckTransactionManager::GetCheckpointType(DuckTransaction &transaction, const Un
 				}
 			}
 			if (!other_transactions.empty()) {
-				// there are other transactions!
-				// these active transactions might need data from BEFORE this transaction
-				// we might need to change our strategy here based on what changes THIS transaction has made
-				if (undo_properties.has_dropped_entries) {
-					// this transaction has changed the catalog - we cannot checkpoint
-					return CheckpointDecision(
-					    "Transaction has dropped catalog entries and there are other transactions "
-					    "active\nActive transactions: " +
-					    other_transactions);
-				}
-				// this transaction has performed updates - we cannot checkpoint
-				return CheckpointDecision(
-				    "Transaction has performed updates and there are other transactions active\nActive transactions: " +
-				    other_transactions);
+				return CheckpointDecision("Transaction has dropped catalog entries and there are other transactions "
+				                          "active\nActive transactions: " +
+				                          other_transactions);
 			}
 		}
 		// otherwise - we need to do a concurrent checkpoint
@@ -546,7 +534,7 @@ ErrorData DuckTransactionManager::CommitTransaction(ClientContext &context, Tran
 
 	CleanupTransactions();
 
-	if (checkpoint_decision.can_checkpoint && (undo_properties.has_updates || undo_properties.has_dropped_entries) &&
+	if (checkpoint_decision.can_checkpoint && undo_properties.has_dropped_entries &&
 	    GetLastCommit() >= LowestVisibilityBound()) {
 		// GetCheckpointType does not checkpoint while another transaction might still need the state
 		// from before this commit. That check ran before the sync; transactions that started during

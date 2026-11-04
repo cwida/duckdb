@@ -57,8 +57,8 @@ public:
 	                                                        PartialBlockManager &partial_block_manager) override;
 	unique_ptr<ColumnCheckpointState> Checkpoint(const RowGroup &row_group, ColumnCheckpointInfo &info,
 	                                             const BaseStatistics &stats) override;
-	void CheckpointScan(ColumnSegment &segment, ColumnScanState &state, idx_t count,
-	                    Vector &scan_vector) const override;
+	void CheckpointScan(ColumnSegment &segment, ColumnScanState &state, idx_t count, Vector &scan_vector,
+	                    VisibilityBound visibility_bound) const override;
 
 	void GetColumnSegmentInfo(const QueryContext &context, duckdb::idx_t row_group_index,
 	                          vector<duckdb::idx_t> col_path, vector<duckdb::ColumnSegmentInfo> &result,
@@ -66,6 +66,7 @@ public:
 
 	bool IsPersistent() override;
 	bool HasAnyChanges() const override;
+	bool HasInexactStatistics() const override;
 	PersistentColumnData Serialize() override;
 	void InitializeColumn(PersistentColumnData &column_data, BaseStatistics &target_stats) override;
 

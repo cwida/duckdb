@@ -1,0 +1,239 @@
+# name: test/sql/storage/concurrent_checkpoint_update_commit_mid_checkpoint.test
+# description: An update transaction commits after the checkpoint scanned its rows, and the update segment goes away once nothing needs it
+# group: [storage]
+
+load {TEST_DIR}/concurrent_checkpoint_update_commit_mid_checkpoint.db
+
+statement ok
+SET checkpoint_threshold='1TB'
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+statement ok
+CREATE TABLE test (i INTEGER, s VARCHAR);
+
+statement ok
+INSERT INTO test SELECT i, 'str' || i FROM range(50000) t(i);
+
+statement ok
+CHECKPOINT
+
+query I
+SELECT COUNT(*) FROM pragma_storage_info('test') WHERE has_updates
+----
+0
+
+# the checkpoint pauses for two seconds after it scanned the row groups, before it replaces them
+statement ok
+SET debug_checkpoint_scan_sleep_ms=2000
+
+# a committed update makes the checkpoint rewrite the row group the concurrent transaction updates
+statement ok
+UPDATE test SET s = 'pre' WHERE i = 49999
+
+# ---------------------------------------------------------------------------------------------------------------------
+# thread 1 updates before the checkpoint starts and commits while the checkpoint is paused
+# ---------------------------------------------------------------------------------------------------------------------
+# every thread executes every sleep: the sleeps are the schedule
+concurrentloop threadid 0 2
+
+onlyif threadid=1
+statement ok
+BEGIN TRANSACTION
+
+onlyif threadid=1
+statement ok
+UPDATE test SET i = i + 1, s = 'mid' WHERE i < 10000
+
+sleep 500 millisecond
+
+onlyif threadid=0
+statement ok
+CHECKPOINT
+
+sleep 1000 millisecond
+
+onlyif threadid=1
+statement ok
+COMMIT
+
+endloop
+
+query II
+SELECT SUM(i), COUNT(*) FILTER (WHERE s = 'mid') FROM test
+----
+1249985000	10000
+
+# the update committed after the checkpoint bound: it stays in the update segment until the next checkpoint writes it
+query I
+SELECT COUNT(*) > 0 FROM pragma_storage_info('test') WHERE has_updates
+----
+true
+
+# replay the update from the WAL written concurrently to the checkpoint
+restart
+
+query II
+SELECT SUM(i), COUNT(*) FILTER (WHERE s = 'mid') FROM test
+----
+1249985000	10000
+
+statement ok
+SET debug_checkpoint_scan_sleep_ms=0
+
+statement ok
+CHECKPOINT
+
+query I
+SELECT COUNT(*) FROM pragma_storage_info('test') WHERE has_updates
+----
+0
+
+restart
+
+query II
+SELECT SUM(i), COUNT(*) FILTER (WHERE s = 'mid') FROM test
+----
+1249985000	10000
+
+# ---------------------------------------------------------------------------------------------------------------------
+# thread 1 rolls back while the checkpoint is paused
+# ---------------------------------------------------------------------------------------------------------------------
+statement ok
+SET debug_checkpoint_scan_sleep_ms=2000
+
+statement ok
+UPDATE test SET s = 'pre2' WHERE i = 49998
+
+concurrentloop threadid 0 2
+
+onlyif threadid=1
+statement ok
+BEGIN TRANSACTION
+
+onlyif threadid=1
+statement ok
+UPDATE test SET i = i + 1000, s = 'rolled back' WHERE i >= 20000 AND i < 30000
+
+sleep 500 millisecond
+
+onlyif threadid=0
+statement ok
+CHECKPOINT
+
+sleep 1000 millisecond
+
+onlyif threadid=1
+statement ok
+ROLLBACK
+
+endloop
+
+query II
+SELECT SUM(i), COUNT(*) FILTER (WHERE s = 'rolled back') FROM test
+----
+1249985000	0
+
+# the statistics still cover the rolled-back values: MIN/MAX must not come from them
+query II
+SELECT MIN(i), MAX(i) FROM test
+----
+1	49999
+
+statement ok
+SET debug_checkpoint_scan_sleep_ms=0
+
+# the rollback unlinked the last version: nothing needs the update segment anymore, so the checkpoint drops it and
+# rewrites the column to make its statistics exact again (a checkpoint with nothing in the WAL does nothing, so give
+# it something)
+statement ok
+CREATE TABLE tick(i INTEGER)
+
+statement ok
+CHECKPOINT
+
+query I
+SELECT COUNT(*) FROM pragma_storage_info('test') WHERE has_updates
+----
+0
+
+query II
+SELECT MIN(i), MAX(i) FROM test
+----
+1	49999
+
+restart
+
+query II
+SELECT SUM(i), COUNT(*) FILTER (WHERE s = 'rolled back') FROM test
+----
+1249985000	0
+
+# ---------------------------------------------------------------------------------------------------------------------
+# thread 2 updates while the checkpoint is paused: the value lands in the shared segment after the checkpoint took the
+# column's statistics, and the installed statistics must cover it
+# ---------------------------------------------------------------------------------------------------------------------
+statement ok
+SET debug_checkpoint_scan_sleep_ms=2000
+
+# a committed update to i makes the checkpoint rewrite the i column
+statement ok
+UPDATE test SET i = 50000 WHERE i = 49999
+
+concurrentloop threadid 0 3
+
+onlyif threadid=1
+statement ok
+BEGIN TRANSACTION
+
+onlyif threadid=1
+statement ok
+UPDATE test SET s = 'pin' WHERE i = 1
+
+sleep 500 millisecond
+
+onlyif threadid=0
+statement ok
+CHECKPOINT
+
+sleep 1000 millisecond
+
+onlyif threadid=2
+statement ok
+UPDATE test SET i = 10000000 WHERE i = 30000
+
+sleep 1500 millisecond
+
+onlyif threadid=1
+statement ok
+COMMIT
+
+endloop
+
+query I
+SELECT (stats(i)).max FROM test LIMIT 1
+----
+10000000
+
+query I
+SELECT COUNT(*) FROM test WHERE i = 10000000
+----
+1
+
+query II
+SELECT SUM(i), COUNT(*) FILTER (WHERE s = 'pin') FROM test
+----
+1259955001	1
+
+restart
+
+query I
+SELECT COUNT(*) FROM test WHERE i = 10000000
+----
+1
+
+query II
+SELECT SUM(i), COUNT(*) FILTER (WHERE s = 'pin') FROM test
+----
+1259955001	1

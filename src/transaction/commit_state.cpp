@@ -391,6 +391,8 @@ void CommitState::CommitEntry(UndoFlags type, data_ptr_t data, CommitInfo &info)
 			                           table_name, table_modification);
 		}
 		info->version_number = commit_id;
+		// the next checkpoint of the column has to write this update
+		info->segment->MarkCommitted(commit_id);
 		break;
 	}
 	case UndoFlags::UPDATE_ROWS: {

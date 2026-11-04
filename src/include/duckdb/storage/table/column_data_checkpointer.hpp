@@ -65,7 +65,7 @@ public:
 
 public:
 	void Checkpoint();
-	void FinalizeCheckpoint();
+	void FinalizeCheckpoint(const BaseStatistics &old_stats);
 
 private:
 	void ScanSegments(const std::function<void(Vector &)> &callback);

@@ -533,7 +533,7 @@ SELECT count(*), sum(v) FILTER (id = 7) FROM t18
 ----
 4096	-1
 
-# a checkpoint cannot fold an update that an active transaction does not see, so a later delete still conflicts
+# a checkpoint does not fold an update that an active transaction does not see, so a later delete still conflicts
 statement ok
 CREATE TABLE t15 AS SELECT i AS id, 'open' AS status FROM range(4096) t(i);
 
@@ -551,10 +551,8 @@ SELECT count(*) FROM t15
 statement ok con1
 UPDATE t15 SET status = 'closed' WHERE id = 7
 
-statement error con3
+statement ok con3
 CHECKPOINT
-----
-Cannot CHECKPOINT: there are other write transactions active
 
 statement error con2
 DELETE FROM t15 WHERE id = 7

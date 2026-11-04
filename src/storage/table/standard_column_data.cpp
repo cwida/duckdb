@@ -188,11 +188,8 @@ void StandardColumnData::UpdateColumn(TransactionData transaction, DuckTableEntr
 }
 
 unique_ptr<BaseStatistics> StandardColumnData::GetUpdateStatistics() {
-	unique_ptr<BaseStatistics> stats;
-	{
-		lock_guard<mutex> update_guard(update_lock);
-		stats = updates ? updates->GetStatistics() : nullptr;
-	}
+	auto updates_ref = GetUpdates();
+	auto stats = updates_ref ? updates_ref->GetStatistics() : nullptr;
 	auto validity_stats = validity->GetUpdateStatistics();
 	if (!stats && !validity_stats) {
 		return nullptr;
@@ -307,7 +304,7 @@ unique_ptr<ColumnCheckpointState> StandardColumnData::Checkpoint(const RowGroup 
 
 	ColumnDataCheckpointer checkpointer(checkpoint_states, GetStorageManager(), row_group, checkpoint_info);
 	checkpointer.Checkpoint();
-	checkpointer.FinalizeCheckpoint();
+	checkpointer.FinalizeCheckpoint(stats);
 
 	// merge validity stats into base stats
 	base_state->global_stats->Merge(*validity_state.global_stats);
@@ -316,11 +313,11 @@ unique_ptr<ColumnCheckpointState> StandardColumnData::Checkpoint(const RowGroup 
 }
 
 void StandardColumnData::CheckpointScan(ColumnSegment &segment, ColumnScanState &state, idx_t count,
-                                        Vector &scan_vector) const {
-	ColumnData::CheckpointScan(segment, state, count, scan_vector);
+                                        Vector &scan_vector, VisibilityBound visibility_bound) const {
+	ColumnData::CheckpointScan(segment, state, count, scan_vector, visibility_bound);
 
 	idx_t offset_in_row_group = state.offset_in_column;
-	validity->ScanCommittedRange(0, offset_in_row_group, count, scan_vector);
+	validity->ScanCommittedRange(0, offset_in_row_group, count, scan_vector, visibility_bound);
 }
 
 bool StandardColumnData::IsPersistent() {
@@ -329,6 +326,10 @@ bool StandardColumnData::IsPersistent() {
 
 bool StandardColumnData::HasAnyChanges() const {
 	return ColumnData::HasAnyChanges() || validity->HasAnyChanges();
+}
+
+bool StandardColumnData::HasInexactStatistics() const {
+	return ColumnData::HasInexactStatistics() || validity->HasInexactStatistics();
 }
 
 PersistentColumnData StandardColumnData::Serialize() {

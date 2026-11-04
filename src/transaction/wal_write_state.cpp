@@ -211,17 +211,19 @@ void WALWriteState::WriteDelete(DeleteInfo &info) {
 }
 
 void WALWriteState::WriteUpdate(UpdateInfo &info) {
-	// switch to the current table, if necessary
-	auto &column_data = info.segment->column_data;
+	// the segment describes the updated column, which a checkpoint may have replaced since
+	auto &segment = *info.segment;
+	auto &type = segment.GetType();
 
+	// switch to the current table, if necessary
 	SwitchTable(*info.table, UndoFlags::UPDATE_TUPLE);
 
 	// initialize the update chunk
 	vector<LogicalType> update_types;
-	if (column_data.type.id() == LogicalTypeId::VALIDITY) {
+	if (type.id() == LogicalTypeId::VALIDITY) {
 		update_types.emplace_back(LogicalType::BOOLEAN);
 	} else {
-		update_types.push_back(column_data.type);
+		update_types.push_back(type);
 	}
 	update_types.emplace_back(LogicalType::ROW_TYPE);
 
@@ -238,7 +240,7 @@ void WALWriteState::WriteUpdate(UpdateInfo &info) {
 	for (idx_t i = 0; i < info.N; i++) {
 		row_ids[tuples[i]] = UnsafeNumericCast<int64_t>(start + tuples[i]);
 	}
-	if (column_data.type.id() == LogicalTypeId::VALIDITY) {
+	if (type.id() == LogicalTypeId::VALIDITY) {
 		// zero-initialize the booleans
 		// FIXME: this is only required because of NullValue<T> in Vector::Serialize...
 		auto booleans = FlatVector::GetDataMutable<bool>(update_chunk->data[0]);
@@ -250,15 +252,11 @@ void WALWriteState::WriteUpdate(UpdateInfo &info) {
 	SelectionVector sel(tuples, info.N);
 	update_chunk->Slice(sel, info.N);
 
-	// construct the column index path
+	// construct the column index path: the top-level column, then the path down to the updated column
 	vector<column_t> column_indexes;
-	reference<const ColumnData> current_column_data = column_data;
-	while (current_column_data.get().HasParent()) {
-		column_indexes.push_back(current_column_data.get().column_index);
-		current_column_data = current_column_data.get().Parent();
-	}
 	column_indexes.push_back(info.column_index);
-	std::reverse(column_indexes.begin(), column_indexes.end());
+	auto &nested_column_path = segment.GetNestedColumnPath();
+	column_indexes.insert(column_indexes.end(), nested_column_path.begin(), nested_column_path.end());
 
 	log.WriteUpdate(*update_chunk, column_indexes);
 }
@@ -293,7 +291,7 @@ void WALWriteState::CommitEntry(UndoFlags type, data_ptr_t data) {
 		// update:
 		auto info = reinterpret_cast<UpdateInfo *>(data);
 		// update infos without updates were replaced by a larger update info
-		if (info->N > 0 && !info->segment->column_data.GetTableInfo().IsTemporary()) {
+		if (info->N > 0 && !info->table->GetStorage().IsTemporary()) {
 			WriteUpdate(*info);
 		}
 		break;

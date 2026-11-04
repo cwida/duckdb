@@ -45,18 +45,33 @@ SELECT COUNT(*) FROM integers WHERE val>1000000
 ----
 3
 
-# we cannot checkpoint because con2/con3 rely on older changes
-statement error
+# con2/con3 rely on older versions of the updated rows - the checkpoint keeps those versions around for them
+statement ok
 CHECKPOINT
-----
-Cannot CHECKPOINT
 
-# after committing, we can checkpoint
+query I con2
+SELECT COUNT(*) FROM integers WHERE val>1000000
+----
+1
+
+query I con3
+SELECT COUNT(*) FROM integers WHERE val>1000000
+----
+2
+
 statement ok con2
 COMMIT
 
 statement ok con3
 COMMIT
+
+query I
+SELECT COUNT(*) FROM integers WHERE val>1000000
+----
+3
+
+statement ok
+CHECKPOINT
 
 # even if con2 is active, we can still checkpoint
 statement ok con2

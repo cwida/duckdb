@@ -1387,7 +1387,11 @@ void RowGroup::Update(TransactionData transaction, DuckTableEntry &table_entry, 
 		} else {
 			col_data.Update(transaction, table_entry, column.index, update_chunk.data[i], ids, count, row_group_start);
 		}
-		MergeStatistics(column.index, *col_data.GetUpdateStatistics());
+		// a no-op update leaves no update statistics behind
+		auto update_stats = col_data.GetUpdateStatistics();
+		if (update_stats) {
+			MergeStatistics(column.index, *update_stats);
+		}
 	}
 }
 
@@ -1410,7 +1414,10 @@ void RowGroup::UpdateColumn(TransactionData transaction, DuckTableEntry &table_e
 		col_data.UpdateColumn(transaction, table_entry, column_path, updates.data[0], ids, count, depth,
 		                      row_group_start);
 	}
-	MergeStatistics(primary_column_idx, *col_data.GetUpdateStatistics());
+	auto update_stats = col_data.GetUpdateStatistics();
+	if (update_stats) {
+		MergeStatistics(primary_column_idx, *update_stats);
+	}
 }
 
 unique_ptr<BaseStatistics> RowGroup::GetStatistics(idx_t column_idx) const {
@@ -1435,6 +1442,11 @@ void RowGroup::MergeStatistics(idx_t column_idx, const BaseStatistics &other) {
 void RowGroup::MergeIntoStatistics(idx_t column_idx, BaseStatistics &other) {
 	auto &col_data = GetColumn(column_idx);
 	col_data.MergeIntoStatistics(other);
+	// an update made through an older column sharing the segment widened only that column's statistics
+	auto update_stats = col_data.GetUpdateStatistics();
+	if (update_stats) {
+		other.Merge(*update_stats, StatsMergeType::EXPAND_BOUNDS);
+	}
 }
 
 void RowGroup::MergeIntoStatistics(TableStatistics &other) {
@@ -1472,6 +1484,10 @@ PartialBlockManager &ColumnCheckpointInfo::GetPartialBlockManager() {
 
 CompressionType ColumnCheckpointInfo::GetCompressionType() {
 	return info.compression_types[column_idx];
+}
+
+VisibilityBound ColumnCheckpointInfo::GetVisibilityBound() const {
+	return info.options.visibility_bound;
 }
 
 shared_ptr<ColumnData> RowGroup::CheckpointColumn(const RowGroup &row_group, idx_t column_idx, RowGroupWriteInfo &info,
@@ -1814,7 +1830,7 @@ RowGroupPointer RowGroup::Checkpoint(RowGroupWriteData write_data, RowGroupWrite
 				writer.SetHasUnloadedColumn(column_idx);
 				continue;
 			}
-			GetColumn(column_idx).MergeIntoStatistics(global_stats.GetStats(*lock, column_idx).Statistics());
+			MergeIntoStatistics(column_idx, global_stats.GetStats(*lock, column_idx).Statistics());
 		}
 		return row_group_pointer;
 	}
@@ -1832,7 +1848,7 @@ RowGroupPointer RowGroup::Checkpoint(RowGroupWriteData write_data, RowGroupWrite
 					writer.SetHasUnloadedColumn(column_idx);
 					continue;
 				}
-				GetColumn(column_idx).MergeIntoStatistics(global_stats.GetStats(*lock, column_idx).Statistics());
+				MergeIntoStatistics(column_idx, global_stats.GetStats(*lock, column_idx).Statistics());
 			} else {
 				global_stats.GetStats(*lock, column_idx).Statistics().Merge(write_data.statistics[column_idx]);
 			}
@@ -1962,6 +1978,16 @@ bool RowGroup::HasChanges(VisibilityBound bound) const {
 	return false;
 }
 
+bool RowGroup::HasInexactStatistics() const {
+	for (idx_t c = 0; c < columns.size(); c++) {
+		// unloaded columns have no in-memory changes
+		if (ColumnIsLoaded(c) && columns[c]->HasInexactStatistics()) {
+			return true;
+		}
+	}
+	return false;
+}
+
 bool RowGroup::IsPersistent() const {
 	for (auto &column : columns) {
 		if (!column->IsPersistent()) {
@@ -2074,7 +2100,8 @@ struct DuckDBPartitionRowGroup : public PartitionRowGroup {
 	}
 
 	bool HasPendingWrites() override {
-		return row_group->HasChanges(VisibilityBound::AllCommitted());
+		// statistics that updates widened may list values no longer in the row group
+		return row_group->HasChanges(VisibilityBound::AllCommitted()) || row_group->HasInexactStatistics();
 	}
 };
 

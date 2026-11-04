@@ -30,7 +30,7 @@ struct PartitionRowGroup {
 	virtual ~PartitionRowGroup() = default;
 	virtual unique_ptr<BaseStatistics> GetColumnStatistics(const StorageIndex &storage_index) = 0;
 	virtual bool MinMaxIsExact(const StorageIndex &storage_index) = 0;
-	//! Whether this row group has data that has not been durably checkpointed/flushed yet.
+	//! Whether this row group has data that has not been durably checkpointed/flushed yet, or widened statistics.
 	virtual bool HasPendingWrites() = 0;
 };
 

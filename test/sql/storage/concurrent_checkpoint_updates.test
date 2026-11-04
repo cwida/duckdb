@@ -1,0 +1,361 @@
+# name: test/sql/storage/concurrent_checkpoint_updates.test
+# description: Checkpoints run concurrently with update transactions
+# group: [storage]
+
+load {TEST_DIR}/concurrent_checkpoint_updates.db
+
+statement ok
+SET checkpoint_threshold='1TB'
+
+statement ok
+CREATE TABLE test (i INTEGER, s VARCHAR, st STRUCT(a INTEGER, b VARCHAR));
+
+statement ok
+INSERT INTO test SELECT i, 'str' || i, {'a': i, 'b': 'b' || i} FROM range(100000) t(i);
+
+# make the base data persistent, so that the updates below land on persistent segments
+statement ok
+CHECKPOINT
+
+query IIII
+SELECT SUM(i), COUNT(s), SUM(st.a), COUNT(st.b) FROM test
+----
+4999950000	100000	4999950000	100000
+
+# ---------------------------------------------------------------------------------------------------------------------
+# an update transaction is in-flight while another connection checkpoints
+# ---------------------------------------------------------------------------------------------------------------------
+statement ok con1
+BEGIN TRANSACTION
+
+statement ok con1
+UPDATE test SET i = i + 1 WHERE i < 1000
+
+statement ok con1
+UPDATE test SET s = NULL WHERE i >= 2000 AND i < 3000
+
+statement ok con1
+UPDATE test SET st = {'a': st.a + 1, 'b': NULL} WHERE i >= 4000 AND i < 5000
+
+# the checkpoint no longer fails because of the in-flight updates
+statement ok con2
+CHECKPOINT
+
+# the updater sees its own updates
+query IIII con1
+SELECT SUM(i), COUNT(s), SUM(st.a), COUNT(st.b) FROM test
+----
+4999951000	99000	4999951000	99000
+
+# nobody else does - the checkpoint did not write the uncommitted values
+query IIII con2
+SELECT SUM(i), COUNT(s), SUM(st.a), COUNT(st.b) FROM test
+----
+4999950000	100000	4999950000	100000
+
+statement ok con1
+COMMIT
+
+query IIII
+SELECT SUM(i), COUNT(s), SUM(st.a), COUNT(st.b) FROM test
+----
+4999951000	99000	4999951000	99000
+
+query IIII
+SELECT MIN(i), MAX(i), COUNT(*) FILTER (WHERE i = 1000), COUNT(*) FILTER (WHERE i = 0) FROM test
+----
+1	99999	2	0
+
+statement ok
+CHECKPOINT
+
+restart
+
+query IIII
+SELECT SUM(i), COUNT(s), SUM(st.a), COUNT(st.b) FROM test
+----
+4999951000	99000	4999951000	99000
+
+# ---------------------------------------------------------------------------------------------------------------------
+# a snapshot taken before a committed update keeps seeing the old values after a checkpoint wrote the new ones
+# ---------------------------------------------------------------------------------------------------------------------
+statement ok con1
+BEGIN TRANSACTION
+
+query I con1
+SELECT SUM(i) FROM test
+----
+4999951000
+
+statement ok con2
+UPDATE test SET i = i + 10 WHERE i >= 10000 AND i < 11000
+
+statement ok con2
+CHECKPOINT
+
+query I con1
+SELECT SUM(i) FROM test
+----
+4999951000
+
+query I con2
+SELECT SUM(i) FROM test
+----
+4999961000
+
+statement ok con1
+COMMIT
+
+query I con1
+SELECT SUM(i) FROM test
+----
+4999961000
+
+# con1 was the last reader of the old versions: its commit cleaned them up, and the next checkpoint drops the
+# update segment (a checkpoint with nothing in the WAL does nothing, so give it something)
+statement ok
+CREATE TABLE tick(i INTEGER)
+
+statement ok
+CHECKPOINT
+
+query I
+SELECT COUNT(*) FROM pragma_storage_info('test') WHERE has_updates
+----
+0
+
+# ---------------------------------------------------------------------------------------------------------------------
+# an update rolled back after the checkpoint leaves no trace
+# ---------------------------------------------------------------------------------------------------------------------
+statement ok con1
+BEGIN TRANSACTION
+
+statement ok con1
+UPDATE test SET i = i + 100, s = 'rolled back' WHERE i >= 20000 AND i < 21000
+
+statement ok con2
+FORCE CHECKPOINT
+
+statement ok con1
+ROLLBACK
+
+query III
+SELECT SUM(i), COUNT(s), COUNT(*) FILTER (WHERE s = 'rolled back') FROM test
+----
+4999961000	99000	0
+
+statement ok
+CHECKPOINT
+
+restart
+
+query III
+SELECT SUM(i), COUNT(s), COUNT(*) FILTER (WHERE s = 'rolled back') FROM test
+----
+4999961000	99000	0
+
+# ---------------------------------------------------------------------------------------------------------------------
+# statistics: a value outside the checkpointed range that commits after the checkpoint must remain findable
+# ---------------------------------------------------------------------------------------------------------------------
+statement ok con1
+BEGIN TRANSACTION
+
+statement ok con1
+UPDATE test SET i = 10000000 WHERE i = 30000
+
+statement ok con2
+CHECKPOINT
+
+statement ok con1
+COMMIT
+
+query II
+SELECT COUNT(*), MAX(i) FROM test WHERE i = 10000000
+----
+1	10000000
+
+query I
+SELECT SUM(i) FROM test
+----
+5009931000
+
+statement ok
+CHECKPOINT
+
+query II
+SELECT COUNT(*), MAX(i) FROM test WHERE i = 10000000
+----
+1	10000000
+
+restart
+
+query II
+SELECT COUNT(*), MAX(i) FROM test WHERE i = 10000000
+----
+1	10000000
+
+query I
+SELECT SUM(i) FROM test
+----
+5009931000
+
+# ---------------------------------------------------------------------------------------------------------------------
+# in-place updates of a non-indexed column while the (indexed) table is checkpointed
+# ---------------------------------------------------------------------------------------------------------------------
+statement ok
+CREATE INDEX i_index ON test(i)
+
+statement ok con1
+BEGIN TRANSACTION
+
+statement ok con1
+UPDATE test SET s = 'indexed table' WHERE i >= 40000 AND i < 41000
+
+statement ok con2
+CHECKPOINT
+
+statement ok con1
+COMMIT
+
+query II
+SELECT COUNT(*) FILTER (WHERE s = 'indexed table'), COUNT(*) FILTER (WHERE i = 40500) FROM test
+----
+1000	1
+
+statement ok
+CHECKPOINT
+
+restart
+
+query II
+SELECT COUNT(*) FILTER (WHERE s = 'indexed table'), COUNT(*) FILTER (WHERE i = 40500) FROM test
+----
+1000	1
+
+# ---------------------------------------------------------------------------------------------------------------------
+# an automatic checkpoint at the commit of an update transaction while another transaction holds an older snapshot
+# ---------------------------------------------------------------------------------------------------------------------
+statement ok
+SET checkpoint_threshold='100KB'
+
+statement ok con1
+BEGIN TRANSACTION
+
+query I con1
+SELECT SUM(i) FROM test
+----
+5009931000
+
+# the WAL of this commit exceeds the threshold: the commit checkpoints, concurrently with con1's snapshot
+statement ok con2
+UPDATE test SET i = i + 1 WHERE i >= 60000 AND i < 70000
+
+query I con2
+SELECT wal_size FROM pragma_database_size()
+----
+0 bytes
+
+query I con1
+SELECT SUM(i) FROM test
+----
+5009931000
+
+statement ok con1
+COMMIT
+
+query I con1
+SELECT SUM(i) FROM test
+----
+5009941000
+
+restart
+
+query I
+SELECT SUM(i) FROM test
+----
+5009941000
+
+# ---------------------------------------------------------------------------------------------------------------------
+# statistics: a value the checkpoint wrote away must stay findable for a transaction that still sees it
+# ---------------------------------------------------------------------------------------------------------------------
+statement ok
+CREATE TABLE zonemap AS SELECT range AS i FROM range(100000)
+
+statement ok
+CHECKPOINT
+
+statement ok con1
+BEGIN TRANSACTION
+
+query I con1
+SELECT COUNT(*) FROM zonemap WHERE i = 99500
+----
+1
+
+# the update narrows the range of the last segment, and the checkpoint rewrites it with the narrower statistics
+statement ok con2
+UPDATE zonemap SET i = 0 WHERE i >= 99000
+
+statement ok con2
+CHECKPOINT
+
+query I con1
+SELECT COUNT(*) FROM zonemap WHERE i = 99500
+----
+1
+
+query I con2
+SELECT COUNT(*) FROM zonemap WHERE i = 99500
+----
+0
+
+statement ok con1
+COMMIT
+
+# ------------------------------------------------------------------------------------------------------------------
+# statistics: a struct child keeps the values an older snapshot still reads after a checkpoint rewrote it
+# ------------------------------------------------------------------------------------------------------------------
+statement ok
+SET checkpoint_threshold='1TB'
+
+statement ok
+CREATE TABLE structs(s STRUCT(a INTEGER), n STRUCT(b STRUCT(a INTEGER)))
+
+statement ok
+INSERT INTO structs SELECT {'a': r}, {'b': {'a': r}} FROM range(1, 101) t(r)
+
+statement ok
+CHECKPOINT
+
+statement ok con1
+BEGIN TRANSACTION
+
+query II con1
+SELECT COUNT(*) FILTER (WHERE s.a = 5), COUNT(*) FILTER (WHERE n.b.a = 5) FROM structs
+----
+1	1
+
+statement ok con2
+UPDATE structs SET s = {'a': 1000}, n = {'b': {'a': 1000}}
+
+statement ok con2
+CHECKPOINT
+
+# the rewritten children's statistics must still cover the old values, or the filters are folded away
+query II con1
+SELECT COUNT(*) FILTER (WHERE s.a = 5), COUNT(*) FILTER (WHERE n.b.a = 5) FROM structs
+----
+1	1
+
+query II con1
+SELECT COUNT(*) FILTER (WHERE s.a < 10), COUNT(*) FILTER (WHERE n.b.a < 10) FROM structs
+----
+9	9
+
+query II con2
+SELECT COUNT(*) FILTER (WHERE s.a = 1000), COUNT(*) FILTER (WHERE n.b.a = 1000) FROM structs
+----
+100	100
+
+statement ok con1
+COMMIT

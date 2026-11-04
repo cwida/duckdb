@@ -108,7 +108,7 @@ void ColumnDataCheckpointer::ScanSegments(const std::function<void(Vector &)> &c
 			idx_t count = MinValue<idx_t>(segment.count - base_row_index, STANDARD_VECTOR_SIZE);
 			scan_state.offset_in_column = segment_node.GetRowStart() + base_row_index;
 
-			col_data.CheckpointScan(segment, scan_state, count, scan_vector);
+			col_data.CheckpointScan(segment, scan_state, count, scan_vector, checkpoint_info.GetVisibilityBound());
 			scan_vector.BufferMutable().SetVectorSize(count);
 			callback(scan_vector);
 		}
@@ -435,16 +435,15 @@ void ColumnDataCheckpointer::Checkpoint() {
 	WriteToDisk();
 }
 
-void ColumnDataCheckpointer::FinalizeCheckpoint() {
-	if (has_changes) {
-		// something has undergone changes, we rewrote everything
-		// write the new data - not the old data
-		return;
-	}
-	// no changes - copy over the original columns
+void ColumnDataCheckpointer::FinalizeCheckpoint(const BaseStatistics &old_stats) {
+	auto visibility_bound = checkpoint_info.GetVisibilityBound();
 	for (idx_t i = 0; i < checkpoint_states.size(); i++) {
 		auto &state = checkpoint_states[i].get();
-		WritePersistentSegments(state);
+		if (!has_changes) {
+			// no changes - copy over the original columns
+			WritePersistentSegments(state);
+		}
+		state.CheckpointUpdates(visibility_bound, old_stats);
 	}
 }
 

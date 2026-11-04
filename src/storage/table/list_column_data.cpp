@@ -127,7 +127,7 @@ idx_t ListColumnData::ScanCount(ColumnScanState &state, Vector &result, idx_t co
 		return 0;
 	}
 	// updates not supported for lists
-	D_ASSERT(!updates);
+	D_ASSERT(!HasUpdates());
 
 	Vector offset_vector(LogicalType::UBIGINT, count);
 	idx_t scan_count = ScanVector(state, offset_vector, count, ScanVectorType::SCAN_FLAT_VECTOR);

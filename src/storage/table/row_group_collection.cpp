@@ -1032,11 +1032,12 @@ void RowGroupCollection::Update(TransactionData transaction, DuckTableEntry &tab
 		auto l = stats.GetLock();
 		for (idx_t i = 0; i < column_ids.size(); i++) {
 			auto column_id = column_ids[i];
+			auto row_group_stats = current_row_group.GetStatistics(column_id.index);
 			// Use EXPAND_BOUNDS here: the row group stats include original data already counted in collection stats,
 			// so additive stats (like total_string_length) cannot be maintained correctly here. EXPAND_BOUNDS
 			// correctly expands min/max bounds while invalidating total_string_length until the next checkpoint.
-			stats.MergeStats(*l, column_id.index, *current_row_group.GetStatistics(column_id.index),
-			                 StatsMergeType::EXPAND_BOUNDS);
+			stats.MergeStats(*l, column_id.index, *row_group_stats, StatsMergeType::EXPAND_BOUNDS);
+			RecordUpdateStatistics(column_id.index, *row_group_stats);
 		}
 	} while (pos < updates.size());
 }
@@ -1089,6 +1090,19 @@ void RowGroupCollection::RemoveFromIndexes(const QueryContext &context, TableInd
 	indexes.RemoveFromIndexes(result_chunk, row_identifiers, removal_type, active_checkpoint);
 }
 
+void RowGroupCollection::RecordUpdateStatistics(idx_t column_idx, const BaseStatistics &update_stats) {
+	if (concurrent_update_stats.empty()) {
+		// no checkpoint is running
+		return;
+	}
+	auto &entry = concurrent_update_stats[column_idx];
+	if (!entry) {
+		entry = update_stats.ToUnique();
+	} else {
+		entry->Merge(update_stats);
+	}
+}
+
 void RowGroupCollection::UpdateColumn(TransactionData transaction, DuckTableEntry &table_entry, Vector &row_ids,
                                       const vector<column_t> &column_path, DataChunk &updates) {
 	D_ASSERT(updates.size() >= 1);
@@ -1106,6 +1120,7 @@ void RowGroupCollection::UpdateColumn(TransactionData transaction, DuckTableEntr
 		auto primary_column_idx = column_path[0];
 		current_row_group.MergeIntoStatistics(primary_column_idx,
 		                                      stats.GetStats(*lock, primary_column_idx).Statistics());
+		RecordUpdateStatistics(primary_column_idx, *current_row_group.GetStatistics(primary_column_idx));
 	} while (pos < updates.size());
 }
 
@@ -1768,6 +1783,12 @@ CollectionCheckpointResult RowGroupCollection::Checkpoint(TableDataWriter &write
 		    MinValue<idx_t>(checkpointed_row_group_count, snapshot.row_group_count.GetIndex());
 	}
 	CollectionCheckpointState checkpoint_state(*this, writer, global_stats, *row_groups, checkpointed_row_group_count);
+	{
+		// the checkpoint's statistics may miss updates made from here on: record those for the install
+		auto stats_lock = stats.GetLock();
+		concurrent_update_stats.clear();
+		concurrent_update_stats.resize(types.size());
+	}
 
 	auto &vacuum_state = checkpoint_state.vacuum_state;
 	InitializeVacuumState(checkpoint_state, vacuum_state, writer.GetRowGroupCount());
@@ -2142,7 +2163,9 @@ CollectionCheckpointResult RowGroupCollection::Checkpoint(TableDataWriter &write
 
 void RowGroupCollection::InstallCheckpoint(CollectionCheckpointResult result, TableStatistics &checkpoint_stats) {
 	if (!result.row_groups) {
-		// the table was unchanged: the live statistics already describe it
+		// an unchanged table keeps its live statistics; stop recording updates
+		auto lock = stats.GetLock();
+		concurrent_update_stats.clear();
 		return;
 	}
 	auto &new_row_groups = result.row_groups;
@@ -2169,7 +2192,7 @@ void RowGroupCollection::InstallCheckpoint(CollectionCheckpointResult result, Ta
 		}
 	}
 	{
-		// the live statistics become those of the checkpoint plus those of the row groups appended meanwhile
+		// install the checkpoint's statistics plus those of the row groups appended and the updates made meanwhile
 		// the two statistics locks are never nested: ALTER takes the live one before a tree lock
 		vector<BaseStatistics> checkpoint_column_stats;
 		{
@@ -2182,11 +2205,16 @@ void RowGroupCollection::InstallCheckpoint(CollectionCheckpointResult result, Ta
 		auto lock = stats.GetLock();
 		for (idx_t column_idx = 0; column_idx < types.size(); column_idx++) {
 			auto &column_stats = stats.GetStats(*lock, column_idx).Statistics();
-			column_stats = std::move(checkpoint_column_stats[column_idx]);
+			auto &installed = checkpoint_column_stats[column_idx];
 			for (auto &row_group : appended_row_groups) {
-				column_stats.Merge(*row_group.get().GetStatistics(column_idx));
+				installed.Merge(*row_group.get().GetStatistics(column_idx));
 			}
+			if (column_idx < concurrent_update_stats.size() && concurrent_update_stats[column_idx]) {
+				installed.Merge(*concurrent_update_stats[column_idx], StatsMergeType::EXPAND_BOUNDS);
+			}
+			column_stats = std::move(installed);
 		}
+		concurrent_update_stats.clear();
 	}
 	total_rows = result.total_rows;
 	next_row_id = result.next_row_id;

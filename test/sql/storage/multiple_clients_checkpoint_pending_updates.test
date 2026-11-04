@@ -17,10 +17,8 @@ BEGIN TRANSACTION;
 statement ok con1
 UPDATE test SET i=i+1;
 
-statement error con2
+statement ok con2
 CHECKPOINT
-----
-Cannot CHECKPOINT: there are other write transactions
 
 statement ok con1
 ROLLBACK
@@ -74,10 +72,8 @@ BEGIN TRANSACTION
 statement ok con5
 UPDATE test SET i=i+1 WHERE i > 3000 AND i < 4000
 
-statement error
+statement ok
 CHECKPOINT
-----
-Cannot CHECKPOINT: there are other write transactions
 
 query III
 SELECT MIN(i), MAX(i), COUNT(*) FROM test;

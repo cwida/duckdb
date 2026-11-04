@@ -258,6 +258,8 @@ private:
 	                                                       idx_t count) const;
 
 	void SetRowGroups(shared_ptr<RowGroupSegmentTree> row_groups);
+	//! While a checkpoint runs, collects update statistics that its install merges in; caller holds the statistics lock
+	void RecordUpdateStatistics(idx_t column_idx, const BaseStatistics &update_stats);
 
 private:
 	//! BlockManager
@@ -279,6 +281,8 @@ private:
 	shared_ptr<RowGroupSegmentTree> owned_row_groups;
 	//! Table statistics
 	TableStatistics stats;
+	//! Per column, the statistics of updates made while a checkpoint runs; empty when none runs
+	vector<unique_ptr<BaseStatistics>> concurrent_update_stats;
 	//! Allocation size, only tracked for appends
 	atomic<idx_t> allocation_size;
 	//! Root metadata pointer, if the collection is loaded from disk

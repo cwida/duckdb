@@ -75,6 +75,7 @@ public:
 
 	bool IsPersistent() override;
 	bool HasAnyChanges() const override;
+	bool HasInexactStatistics() const override;
 	PersistentColumnData Serialize() override;
 	void InitializeColumn(PersistentColumnData &column_data, BaseStatistics &target_stats) override;
 
