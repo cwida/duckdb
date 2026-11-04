@@ -357,25 +357,36 @@ FlattenDependentJoins::DecorrelateSubtreeInternal(unique_ptr<LogicalOperator> &p
 		auto left_child_requires_domain = RequiresDomain(*plan->children[0]);
 		auto requires_full_rhs_decorrelation = left_child_requires_domain || op.join_type != JoinType::SINGLE;
 
+		// Phase 2's flattener is created before the left side is prepared so an independent CTE can be peeled
+		// first. Preparing the left side installs the row_number() delim window; doing that and then decorrelating
+		// this same join again stacks a second window on the same binding.
+		FlattenDependentJoins child_flatten(binder, op.correlated_columns, op.perform_delim, op.any_join, this);
+		if (requires_full_rhs_decorrelation &&
+		    plan->children[1]->type == LogicalOperatorType::LOGICAL_MATERIALIZED_CTE) {
+			auto &cte_ref = plan->children[1]->Cast<LogicalMaterializedCTE>();
+			if (!child_flatten.RequiresDomain(*cte_ref.children[0])) {
+				auto detached_cte = std::move(plan->children[1]);
+				plan->children[1] = std::move(detached_cte->children[1]);
+				auto result = DecorrelateSubtree(plan, propagate_null_values, std::move(state));
+				detached_cte->children[1] = std::move(plan);
+				plan = std::move(detached_cte);
+				return result;
+			}
+		}
+
 		// Phase 1: prepare the left side in the current flattener context.
 		auto outer_state = PrepareDependentJoinLeft(plan, propagate_null_values, std::move(state));
 		// Phase 2: push the active correlated state through the right subtree in a child flattener.
-		FlattenDependentJoins child_flatten(binder, op.correlated_columns, op.perform_delim, op.any_join, this);
 		child_flatten.AddReplacementAliases(outer_state.replacement_graph);
 
 		unique_ptr<LogicalOperator> detached_cte = nullptr;
 		if (plan->children[1]->type == LogicalOperatorType::LOGICAL_MATERIALIZED_CTE) {
 			auto &cte_ref = plan->children[1]->Cast<LogicalMaterializedCTE>();
 			if (!child_flatten.RequiresDomain(*cte_ref.children[0])) {
+				// Only the non-recursive case remains. A full RHS decorrelation already returned above.
+				D_ASSERT(!requires_full_rhs_decorrelation);
 				detached_cte = std::move(plan->children[1]);
 				plan->children[1] = std::move(detached_cte->children[1]);
-				if (requires_full_rhs_decorrelation) {
-					auto result = DecorrelateSubtree(plan, propagate_null_values, std::move(outer_state.bindings));
-					result.replacement_graph.Merge(outer_state.replacement_graph);
-					detached_cte->children[1] = std::move(plan);
-					plan = std::move(detached_cte);
-					return result;
-				}
 			}
 		}
 

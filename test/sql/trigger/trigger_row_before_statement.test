@@ -1,0 +1,133 @@
+# name: test/sql/trigger/trigger_row_before_statement.test
+# description: A FOR EACH ROW trigger may insert into a table that has a BEFORE statement trigger
+# group: [trigger]
+
+require noforcestorage
+
+# The row trigger decorrelates NEW.a through a delim join. The BEFORE statement trigger is an
+# independent CTE on that join's right side. Peeling it must not install the delim row_number twice.
+statement ok
+CREATE TABLE t(a INT);
+
+statement ok
+CREATE TABLE u(a INT);
+
+statement ok
+CREATE TABLE l(x INT);
+
+statement ok
+CREATE TRIGGER b BEFORE INSERT ON u FOR EACH STATEMENT
+    INSERT INTO l VALUES (1);
+
+statement ok
+CREATE TRIGGER r AFTER INSERT ON t FOR EACH ROW
+    INSERT INTO u VALUES (NEW.a);
+
+statement ok
+INSERT INTO t VALUES (1);
+
+query I
+SELECT a FROM t ORDER BY a;
+----
+1
+
+query I
+SELECT a FROM u ORDER BY a;
+----
+1
+
+query I
+SELECT x FROM l ORDER BY x;
+----
+1
+
+# Several rows are one INSERT statement. The row trigger still writes one u row per t row, and
+# u's statement trigger fires once for that insert.
+statement ok
+INSERT INTO t VALUES (2), (3);
+
+query I
+SELECT a FROM t ORDER BY a;
+----
+1
+2
+3
+
+query I
+SELECT a FROM u ORDER BY a;
+----
+1
+2
+3
+
+query I
+SELECT COUNT(*) FROM l;
+----
+2
+
+# Identical NEW values still fire once per row.
+statement ok
+INSERT INTO t VALUES (4), (4);
+
+query I
+SELECT COUNT(*) FROM u WHERE a = 4;
+----
+2
+
+query I
+SELECT COUNT(*) FROM l;
+----
+3
+
+# AFTER DELETE row trigger into the same BEFORE INSERT statement trigger.
+statement ok
+CREATE TRIGGER rd AFTER DELETE ON t FOR EACH ROW
+    INSERT INTO u VALUES (OLD.a);
+
+statement ok
+DELETE FROM t WHERE a = 2;
+
+query I
+SELECT COUNT(*) FROM u WHERE a = 2;
+----
+2
+
+query I
+SELECT COUNT(*) FROM l;
+----
+4
+
+# A statement-level trigger on t does not go through delim decorrelation.
+statement ok
+CREATE TABLE s(a INT);
+
+statement ok
+CREATE TRIGGER rs AFTER INSERT ON s FOR EACH STATEMENT
+    INSERT INTO u VALUES (1);
+
+statement ok
+INSERT INTO s VALUES (7), (8);
+
+query I
+SELECT COUNT(*) FROM u WHERE a = 1;
+----
+2
+
+query I
+SELECT COUNT(*) FROM l;
+----
+5
+
+# Direct insert into u fires only its statement trigger.
+statement ok
+INSERT INTO u VALUES (9);
+
+query I
+SELECT a FROM u WHERE a = 9;
+----
+9
+
+query I
+SELECT COUNT(*) FROM l;
+----
+6
