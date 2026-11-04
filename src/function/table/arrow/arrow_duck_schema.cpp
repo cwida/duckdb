@@ -119,17 +119,21 @@ unique_ptr<ArrowType> ArrowType::GetTypeFromFormat(string &format) {
 		}
 		switch (bitwidth) {
 		case 32:
-			return make_uniq<ArrowType>(LogicalType::DECIMAL(NumericCast<uint8_t>(width), NumericCast<uint8_t>(scale)),
-			                            make_uniq<ArrowDecimalInfo>(DecimalBitWidth::DECIMAL_32));
+			return make_uniq<ArrowType>(
+			    LogicalType::DECIMAL(NumericCast<uint32_t>(width), NumericCast<uint32_t>(scale)),
+			    make_uniq<ArrowDecimalInfo>(DecimalBitWidth::DECIMAL_32));
 		case 64:
-			return make_uniq<ArrowType>(LogicalType::DECIMAL(NumericCast<uint8_t>(width), NumericCast<uint8_t>(scale)),
-			                            make_uniq<ArrowDecimalInfo>(DecimalBitWidth::DECIMAL_64));
+			return make_uniq<ArrowType>(
+			    LogicalType::DECIMAL(NumericCast<uint32_t>(width), NumericCast<uint32_t>(scale)),
+			    make_uniq<ArrowDecimalInfo>(DecimalBitWidth::DECIMAL_64));
 		case 128:
-			return make_uniq<ArrowType>(LogicalType::DECIMAL(NumericCast<uint8_t>(width), NumericCast<uint8_t>(scale)),
-			                            make_uniq<ArrowDecimalInfo>(DecimalBitWidth::DECIMAL_128));
+			return make_uniq<ArrowType>(
+			    LogicalType::DECIMAL(NumericCast<uint32_t>(width), NumericCast<uint32_t>(scale)),
+			    make_uniq<ArrowDecimalInfo>(DecimalBitWidth::DECIMAL_128));
 		case 256:
-			return make_uniq<ArrowType>(LogicalType::DECIMAL(NumericCast<uint8_t>(width), NumericCast<uint8_t>(scale)),
-			                            make_uniq<ArrowDecimalInfo>(DecimalBitWidth::DECIMAL_256));
+			return make_uniq<ArrowType>(
+			    LogicalType::DECIMAL(NumericCast<uint32_t>(width), NumericCast<uint32_t>(scale)),
+			    make_uniq<ArrowDecimalInfo>(DecimalBitWidth::DECIMAL_256));
 		default:
 			throw NotImplementedException("Unsupported bit-width value of %d  for Arrow Decimal type", bitwidth);
 		}

@@ -5,5 +5,6 @@ if (NOT MINGW AND NOT ${WASM_ENABLED})
             GIT_TAG 8b310c81f227cf7630fd4ff52925f208f0d35278
             APPLY_PATCHES
             SUBMODULES extension-ci-tools
+            APPLY_PATCHES
             )
 endif()
