@@ -66,6 +66,10 @@ public:
 	DUCKDB_API const Identifier &GetRegisteredExtensionName() const {
 		return loader_info.extension_alias.empty() ? loader_info.extension_name : loader_info.extension_alias;
 	}
+	//! Registers a process-local service for communication between extensions loaded into this database.
+	DUCKDB_API void RegisterService(const string &name, void *service);
+	//! Returns a previously registered extension service, or nullptr when it is unavailable.
+	DUCKDB_API void *GetService(const string &name) const;
 
 public:
 	//! Register a new scalar function - merge overloads if the function already exists

@@ -86,6 +86,25 @@ bool ExtensionManager::ExtensionIsLoaded(const string &name) {
 	return info->is_loaded;
 }
 
+void ExtensionManager::RegisterService(const string &name, void *service) {
+	if (!service) {
+		throw InvalidInputException("Cannot register null extension service '%s'", name);
+	}
+	lock_guard<mutex> guard(lock);
+	if (!services.emplace(name, service).second) {
+		throw InvalidInputException("Extension service '%s' is already registered", name);
+	}
+}
+
+void *ExtensionManager::GetService(const string &name) {
+	lock_guard<mutex> guard(lock);
+	auto entry = services.find(name);
+	if (entry == services.end()) {
+		return nullptr;
+	}
+	return entry->second;
+}
+
 unique_ptr<ExtensionActiveLoad> ExtensionManager::BeginLoad(const ExtensionLoadOptions &options) {
 	unique_lock<mutex> extension_list_lock(lock);
 
