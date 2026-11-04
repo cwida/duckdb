@@ -66,6 +66,8 @@ public:
 	void PushCatalogEntry(CatalogEntry &entry, data_ptr_t extra_data, idx_t extra_data_size);
 	void PushAttach(AttachedDatabase &db);
 
+	//! Acquire checkpoint exclusion without marking the transaction read-write.
+	void RequireCheckpointLock();
 	void SetModifications(DatabaseModificationType type) override;
 
 	bool ShouldWriteToWAL(AttachedDatabase &db);

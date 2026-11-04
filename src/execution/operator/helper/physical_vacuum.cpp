@@ -3,6 +3,7 @@
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/storage/data_table.hpp"
 #include "duckdb/storage/statistics/distinct_statistics.hpp"
+#include "duckdb/transaction/duck_transaction.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/type_catalog_entry.hpp"
 
@@ -54,6 +55,10 @@ public:
 };
 
 unique_ptr<GlobalSinkState> PhysicalVacuum::GetGlobalSinkState(ClientContext &context) const {
+	if (table && table->IsDuckTable()) {
+		auto &catalog = table.get_mutable()->ParentCatalog();
+		DuckTransaction::Get(context, catalog).RequireCheckpointLock();
+	}
 	return make_uniq<VacuumGlobalSinkState>(*info, table);
 }
 
