@@ -17,7 +17,7 @@ namespace {
 atomic<idx_t> wrapped_reader_executions {0};
 
 struct WrappedReaderGlobalState : public GlobalTableFunctionState {
-	bool emitted = false;
+	idx_t emitted_rows = 0;
 };
 
 unique_ptr<FunctionData> WrappedReaderBind(ClientContext &, TableFunctionBindInput &, vector<LogicalType> &return_types,
@@ -32,18 +32,23 @@ unique_ptr<GlobalTableFunctionState> WrappedReaderInit(ClientContext &, TableFun
 }
 
 void WrappedReaderFunction(ClientContext &, TableFunctionInput &data, DataChunk &output) {
+	// emit chunk-wise: small STANDARD_VECTOR_SIZE builds cannot hold all rows in one chunk
+	constexpr idx_t TOTAL_ROWS = 3;
 	auto &state = data.global_state->Cast<WrappedReaderGlobalState>();
-	if (state.emitted) {
+	if (state.emitted_rows >= TOTAL_ROWS) {
 		output.SetChildCardinality(0);
 		return;
 	}
-	++wrapped_reader_executions;
-	auto result_data = FlatVector::GetDataMutable<int32_t>(output.data[0]);
-	for (int32_t i = 0; i < 3; i++) {
-		result_data[i] = i + 1;
+	if (state.emitted_rows == 0) {
+		++wrapped_reader_executions;
 	}
-	output.SetChildCardinality(3);
-	state.emitted = true;
+	const idx_t count = MinValue<idx_t>(TOTAL_ROWS - state.emitted_rows, STANDARD_VECTOR_SIZE);
+	auto result_data = FlatVector::GetDataMutable<int32_t>(output.data[0]);
+	for (idx_t i = 0; i < count; i++) {
+		result_data[i] = NumericCast<int32_t>(state.emitted_rows + i + 1);
+	}
+	output.SetChildCardinality(count);
+	state.emitted_rows += count;
 }
 
 void RegisterWrappedReader(DuckDB &db, const string &name, bool with_false_callback) {
