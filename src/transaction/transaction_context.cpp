@@ -78,14 +78,32 @@ void TransactionContext::Commit() {
 		}
 		throw TransactionException("Failed to commit: %s", error.RawMessage());
 	}
+	// Notify every registered state - also when one of them fails - and finalize the transaction
+	// before reporting the failure, so the remaining states do not miss the commit notification.
+	ErrorData callback_error;
 	for (auto &state : context.registered_state->States()) {
-		state->TransactionCommit(*transaction, context);
+		try {
+			state->TransactionCommit(*transaction, context);
+		} catch (std::exception &ex) {
+			if (!callback_error.HasError()) {
+				callback_error = ErrorData(ex);
+			}
+		}
 	}
 	transaction->Finalize();
 	if (autocheckpoint_error.HasError()) {
 		auto err = std::move(autocheckpoint_error);
 		autocheckpoint_error = ErrorData();
 		err.Throw();
+	}
+	if (callback_error.HasError()) {
+		if (Exception::InvalidatesDatabase(callback_error.Type()) ||
+		    callback_error.Type() == ExceptionType::INTERNAL) {
+			// fatal / internal callback errors invalidate the database - report them directly
+			callback_error.Throw();
+		}
+		// non-fatal callback errors do not invalidate the database - report them as a transaction error
+		throw TransactionException("Failed to commit: %s", callback_error.RawMessage());
 	}
 }
 

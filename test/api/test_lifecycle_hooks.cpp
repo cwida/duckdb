@@ -382,3 +382,38 @@ TEST_CASE("Dropping a connection whose rollback fails does not terminate", "[api
 	Connection conn(db);
 	REQUIRE_NO_FAIL(conn.Query("SELECT 42"));
 }
+
+struct ThrowingCommitState : ClientContextState {
+	explicit ThrowingCommitState(idx_t &calls_p) : calls(calls_p) {
+	}
+	idx_t &calls;
+
+	void TransactionCommit(MetaTransaction &transaction, ClientContext &context) override {
+		if (++calls == 1) {
+			throw InvalidInputException("commit notification failed");
+		}
+	}
+};
+
+TEST_CASE("A failing transaction commit callback does not skip the other callbacks", "[api]") {
+	DuckDB db(nullptr);
+	Connection conn(db);
+	REQUIRE_NO_FAIL(conn.Query("CREATE TABLE t(i INTEGER)"));
+
+	idx_t calls = 0;
+	conn.context->registered_state->Insert("first_commit_state", make_shared_ptr<ThrowingCommitState>(calls));
+	conn.context->registered_state->Insert("second_commit_state", make_shared_ptr<ThrowingCommitState>(calls));
+
+	REQUIRE_NO_FAIL(conn.Query("BEGIN"));
+	REQUIRE_NO_FAIL(conn.Query("INSERT INTO t VALUES (42)"));
+	// the first callback throws, the transaction is still committed
+	REQUIRE_FAIL(conn.Query("COMMIT"));
+	REQUIRE(calls == 2);
+
+	Connection reader(db);
+	auto result = reader.Query("SELECT count(*) FROM t");
+	REQUIRE(CHECK_COLUMN(result, 0, {1}));
+
+	// the connection remains usable after the failed notification
+	REQUIRE_NO_FAIL(conn.Query("SELECT 42"));
+}
