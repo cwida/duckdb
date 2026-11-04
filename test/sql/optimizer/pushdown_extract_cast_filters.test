@@ -4,6 +4,10 @@
 
 require parquet
 
+# compressed materialization adds casts of the join keys to the plans, always in debug builds
+statement ok
+SET disabled_optimizers = 'compressed_materialization'
+
 statement ok
 CREATE TABLE cast_rows AS SELECT * FROM (VALUES (0, 'bad'), (1, '42'), (3, '7')) t(id, s);
 
@@ -37,7 +41,7 @@ SELECT v.n::INTEGER FROM {SOURCE} WHERE v.n::VARCHAR <> 'bad' AND id IN (1, 3) O
 
 # joins drop rows as well, without the join filter that would already drop the row in the scan
 statement ok
-SET disabled_optimizers = 'join_filter_pushdown'
+SET disabled_optimizers = 'compressed_materialization,join_filter_pushdown'
 
 query I
 SELECT v.n::INTEGER FROM {SOURCE} WHERE id IN (SELECT unnest([1, 3])) ORDER BY id
@@ -58,7 +62,7 @@ SELECT v.n::INTEGER FROM {SOURCE} WHERE id NOT IN (SELECT unnest([0, 2])) ORDER 
 7
 
 statement ok
-SET disabled_optimizers = ''
+SET disabled_optimizers = 'compressed_materialization'
 
 # a cast the filter itself needs still runs on every row
 statement error
