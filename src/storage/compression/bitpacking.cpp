@@ -1154,9 +1154,8 @@ void BitpackingSelect(ColumnSegment &segment, ColumnScanState &state, idx_t vect
 	for (idx_t i = 1; i < sel_count && sorted; i++) {
 		sorted = sel.get_index(i - 1) < sel.get_index(i);
 	}
-	unique_ptr<Vector> scratch;
 	if (!sorted) {
-		scratch = make_uniq<Vector>(result.GetType(), vector_count);
+		auto scratch = make_uniq<Vector>(result.GetType(), vector_count);
 		BitpackingScanPartial<T>(segment, state, vector_count, *scratch, 0);
 		auto scratch_data = FlatVector::GetData<T>(*scratch);
 		for (idx_t i = 0; i < sel_count; i++) {
@@ -1213,22 +1212,11 @@ void BitpackingSelect(ColumnSegment &segment, ColumnScanState &state, idx_t vect
 			break;
 		}
 		default: {
-			// DELTA_FOR has to be decoded sequentially: scan up to the last selected row of this group
+			// DELTA_FOR is decoded sequentially: skip to the selected row (decoding on the way), then read it
 			D_ASSERT(group.metadata.mode == BitpackingMode::DELTA_FOR);
-			idx_t last = i;
-			while (last + 1 < sel_count && sel.get_index(last + 1) < run_end) {
-				last++;
-			}
-			const idx_t scan_len = sel.get_index(last) - pos + 1;
-			if (!scratch) {
-				scratch = make_uniq<Vector>(result.GetType(), STANDARD_VECTOR_SIZE);
-			}
-			BitpackingScanPartial<T>(segment, state, scan_len, *scratch, 0);
-			auto scratch_data = FlatVector::GetData<T>(*scratch);
-			for (; i <= last; i++) {
-				result_data[i] = scratch_data[sel.get_index(i) - pos];
-			}
-			pos += scan_len;
+			BitpackingScanPartial<T>(segment, state, 1, result, result_offset + i);
+			i++;
+			pos++;
 			continue;
 		}
 		}
