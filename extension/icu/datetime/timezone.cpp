@@ -155,7 +155,6 @@ int64_t SimpleTimeZone::BoundaryMillis(int32_t year, const Boundary &rule, bool 
 	const auto month_len = Grego::MonthLength(year, rule.month);
 	const auto first_day = Grego::FieldsToDay(year, rule.month, 1);
 	const auto rule_dom = RuleDayOfMonth(rule, month_len, Grego::DayOfWeek(static_cast<int32_t>(first_day)));
-	// the boundary is where the shifted local standard time reaches the time of the rule
 	return (first_day + rule_dom - 1) * MILLIS_PER_DAY + rule.time - raw_offset - RuleTimeDelta(rule, is_end);
 }
 
