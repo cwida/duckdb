@@ -154,7 +154,8 @@ ComparisonSimplificationRule::ComparisonSimplificationRule(ExpressionRewriter &r
 	root = std::move(op);
 }
 
-//! If the given expression is a row constructor (possibly wrapped in casts), return it.
+//! If the given expression is a row constructor, return it. A wrapping cast is only followed when it cannot
+//! throw, and nested TUPLE casts are currently always classified as throwing - so this does not unwrap today.
 //! effective_type is set to the type the comparison operates on (the cast target, if a cast is present)
 static optional_ptr<BoundFunctionExpression> UnwrapRowConstructor(Expression &expr, LogicalType &effective_type) {
 	auto *current = &expr;

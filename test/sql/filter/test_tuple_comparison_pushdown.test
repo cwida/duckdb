@@ -7,8 +7,10 @@
 statement ok
 CREATE TABLE t AS SELECT range::BIGINT AS id, mod(range, 10)::INTEGER AS b FROM range(500000);
 
-# the tuple comparison is decomposed into id IS NOT DISTINCT FROM 42 AND b IS NOT DISTINCT FROM 2, and both
-# per-column comparisons are pushed into the scan as (single-column) expression filters
+# Disable statistics_propagation to prevent IS NOT DISTINCT FROM filters from being rewritten as equality.
+statement ok
+SET disabled_optimizers='statistics_propagation';
+
 query II
 EXPLAIN SELECT count(*) FROM t WHERE (id, b) = (42, 2);
 ----
@@ -30,11 +32,11 @@ SELECT count(*) FROM t WHERE (id, b) = (42, 3);
 ----
 0
 
-# mismatched literal types are aligned to the tuple's common type at bind time: b is compared against 2 here
+# The tuple comparison uses TUPLE(BIGINT, DECIMAL(11,1)), so 2 is compared as 2.0 and does not equal 1.5.
 query I
 SELECT count(*) FROM t WHERE (id, b) = (42, 1.5);
 ----
-1
+0
 
 # nested rows are unpacked recursively, so the pruneable id inside the nested row is pushed down as well
 query II
@@ -57,3 +59,6 @@ query I
 SELECT count(*) FROM t WHERE (id, b) IS NOT DISTINCT FROM (42, 2);
 ----
 1
+
+statement ok
+SET disabled_optimizers='';
