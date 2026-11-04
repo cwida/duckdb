@@ -724,12 +724,11 @@ public:
 	}
 };
 
-//! Finish-stage events may run their finalize work inside Schedule() on whichever worker
-//! completed their last dependency, or through tasks of their own when the finalize blocks.
+//! Finish-stage events always run their finalize work through a single task of their own.
 //! The recursive event waiter sleeps on the completion signal, so these wrappers forward
-//! their completion to it. The finalize semantics are the wrapped events' own. A blocked
-//! finish task's reschedule still wakes only the executor's condition variable and is
-//! covered by the waiter's bounded timeout.
+//! the event's completion to it. The finalize semantics are the wrapped events' own. A
+//! blocked finish task's reschedule still wakes only the executor's condition variable
+//! and is covered by the waiter's bounded timeout.
 template <class EVENT>
 class RecursiveSignallingEvent : public EVENT {
 public:
