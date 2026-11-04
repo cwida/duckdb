@@ -60,15 +60,14 @@ SELECT (SELECT i FROM '{TEST_DIR}/fsync_single.csv.gz'), (SELECT i FROM '{TEST_D
 statement ok
 CALL truncate_duckdb_logs()
 
-# an existing file is replaced by a temporary file, which is synced before it is renamed
+# the temporary file replacing an existing file is synced before it is renamed, the directory after that
 statement ok
 COPY (SELECT 43 AS i) TO '{TEST_DIR}/fsync_single.parquet' (FSYNC)
 
 query I
-SELECT replace(path, '{TEST_DIR}', 'TEST_DIR') FROM duckdb_logs_parsed('FileSystem') WHERE op = 'SYNC' ORDER BY ALL
+SELECT list(replace(path, '{TEST_DIR}', 'TEST_DIR') ORDER BY timestamp) FROM duckdb_logs_parsed('FileSystem') WHERE op = 'SYNC'
 ----
-TEST_DIR
-TEST_DIR/tmp_fsync_single.parquet
+[TEST_DIR/tmp_fsync_single.parquet, TEST_DIR]
 
 query I
 SELECT i FROM '{TEST_DIR}/fsync_single.parquet'
