@@ -1,8 +1,8 @@
 # name: test/fuzzer/pedro/decimal_with_invalid_scale.test
 # group: [pedro]
 
-# scale is bigger than width, and both these numbers are ginormous
+# scale is bigger than width, and both these numbers are ginormous (both bind as UINTEGER)
 statement error
 CREATE TABLE x(x DECIMAL(38763269, 77914819));
 ----
-Binder Error: Type "DECIMAL" does not accept type parameters (INTEGER, INTEGER)
+Binder Error: DECIMAL type scale cannot be greater than width
