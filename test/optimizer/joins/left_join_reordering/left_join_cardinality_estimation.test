@@ -84,3 +84,151 @@ query I
 select count(*) from large_mc left join medium_ineq on (l_id = m_id and l_x < m_x);
 ----
 100000
+
+# The preserved input of a LEFT predicate can span both estimator subgraphs (here a CROSS JOIN b),
+# so the estimate must be lower-bounded by the complete preserved input (20000 rows), not by the
+# subgraph that happens to exclude the nullable relation. The broken classifications estimated
+# 43 with the range edge processed first and 5000000 with the equality first (actual 20000).
+
+statement ok
+create table pres_a as select range::INTEGER AS x from range(10000);
+
+statement ok
+create table pres_b as select k::INTEGER AS k from (VALUES (0), (999)) v(k);
+
+statement ok
+create table pres_c as select range::INTEGER AS k, (10 * range)::INTEGER AS x from range(1000);
+
+query II
+explain select count(*) from pres_a cross join pres_b left join pres_c on pres_b.k = pres_c.k and pres_a.x < pres_c.x;
+----
+physical_plan	<REGEX>:.*HASH_JOIN[^~]*~20,000 rows.*
+
+query I
+select count(*) from pres_a cross join pres_b left join pres_c on pres_b.k = pres_c.k and pres_a.x < pres_c.x;
+----
+20000
+
+# an additional INNER relation shrinks the preserved input before the LEFT range edge merges the
+# subgraphs: the bound follows the estimate of the complete preserved input (~202), not the
+# unfiltered cross product
+
+statement ok
+create table pres_d as select (range * 100)::INTEGER AS x from range(100);
+
+query II
+explain select count(*) from pres_d join pres_a on pres_d.x = pres_a.x cross join pres_b left join pres_c on pres_b.k = pres_c.k and pres_a.x < pres_c.x;
+----
+physical_plan	<REGEX>:.*k = k[^~]*~2[0-9][0-9] rows.*
+
+query I
+select count(*) from pres_d join pres_a on pres_d.x = pres_a.x cross join pres_b left join pres_c on pres_b.k = pres_c.k and pres_a.x < pres_c.x;
+----
+200
+
+# a dependent later LEFT input is not part of the preserved input: the bound for the b-c join
+# must not include a cross product with a
+
+statement ok
+create table dep_a as select (range % 2)::INTEGER AS k from range(1000);
+
+statement ok
+create table dep_b as select k::INTEGER AS k, (999 * k)::INTEGER AS j from range(2) t(k);
+
+statement ok
+create table dep_c as select range::INTEGER AS j from range(1000);
+
+query II
+explain select * from dep_a left join dep_b on dep_a.k = dep_b.k left join dep_c on dep_b.j = dep_c.j;
+----
+physical_plan	<REGEX>:.*j = j[^~]*~1,[01][0-9]{2} rows.*
+
+query I
+select count(*) from dep_a left join dep_b on dep_a.k = dep_b.k left join dep_c on dep_b.j = dep_c.j;
+----
+1000
+
+# fanout from an earlier LEFT join stays in the preserved input of a later LEFT join
+
+statement ok
+create table fan_a as select i::INTEGER AS k, (i % 10)::INTEGER AS j from range(100) t(i);
+
+statement ok
+create table fan_b as select (i % 100)::INTEGER AS k from range(1000) t(i);
+
+statement ok
+create table fan_c as select j::INTEGER AS j from (VALUES (0), (9)) t(j);
+
+query II
+explain select count(*) from fan_a a left join fan_b b on a.k = b.k left join fan_c c on a.j = c.j;
+----
+physical_plan	<REGEX>:.*k = k[^~]*~(9[0-9]{2}|1,[01][0-9]{2}) rows.*
+
+query I
+select count(*) from fan_a a left join fan_b b on a.k = b.k left join fan_c c on a.j = c.j;
+----
+1000
+
+# a dependent nullable input stays out of the bound even while one of its anchors has not
+# joined the component yet
+
+statement ok
+create table mix_a as select (i % 10)::INTEGER AS k from range(1000) t(i);
+
+statement ok
+create table mix_b as select i::INTEGER AS k, (100 * i)::INTEGER AS j from range(10) t(i);
+
+statement ok
+create table mix_c as select i::INTEGER AS j, (i % 2)::INTEGER AS t from range(1000) t(i);
+
+statement ok
+create table mix_x as select i::INTEGER AS t from range(2) t(i);
+
+query II
+explain select count(*) from mix_a a cross join mix_x x left join mix_b b on a.k = b.k left join mix_c c on b.j = c.j and x.t = c.t;
+----
+physical_plan	<REGEX>:.*j = j[^~]*~(2,0[0-9]{2}|[12],[0-9]{3}) rows.*
+
+query I
+select count(*) from mix_a a cross join mix_x x left join mix_b b on a.k = b.k left join mix_c c on b.j = c.j and x.t = c.t;
+----
+2000
+
+# an INNER join above the LEFT operator reduces the preserved side: the bound follows the
+# estimate of the component, not the operator's original left input
+
+statement ok
+SET disabled_optimizers='statistics_propagation,filter_pushdown';
+
+statement ok
+create table red_a as select i::INTEGER AS id, (i % 100)::INTEGER AS k from range(10000) t(i);
+
+statement ok
+create table red_b as select i::INTEGER AS k from range(100) t(i);
+
+statement ok
+create table red_c as select (100 * i)::INTEGER AS id from range(100) t(i);
+
+query II
+explain select * from red_a left join red_b on red_a.k = red_b.k join red_c on red_a.id = red_c.id;
+----
+physical_plan	<REGEX>:.*k = k[^~]*~1[0-9][0-9] rows.*
+
+query I
+select count(*) from red_a left join red_b on red_a.k = red_b.k join red_c on red_a.id = red_c.id;
+----
+100
+
+statement ok
+SET disabled_optimizers='';
+
+
+# planning-time canary: every LEFT pair's preserved-input bound spawns an estimate of a new
+# relation subset, and nested bounds previously multiplied these into exponentially many sets
+# (seconds of planning at 16 pairs, growing ~6x per two pairs)
+
+statement ok
+create table t_planning as select i::INT k, (i%17)::INT v, (i%2)::INT g from range(100) r(i);
+
+statement ok
+explain select * from (t_planning a1 LEFT JOIN t_planning b1 ON a1.k=b1.k AND a1.v<b1.v) JOIN (t_planning a2 LEFT JOIN t_planning b2 ON a2.k=b2.k AND a2.v<b2.v) ON a1.g=a2.g JOIN (t_planning a3 LEFT JOIN t_planning b3 ON a3.k=b3.k AND a3.v<b3.v) ON a2.g=a3.g JOIN (t_planning a4 LEFT JOIN t_planning b4 ON a4.k=b4.k AND a4.v<b4.v) ON a3.g=a4.g JOIN (t_planning a5 LEFT JOIN t_planning b5 ON a5.k=b5.k AND a5.v<b5.v) ON a4.g=a5.g JOIN (t_planning a6 LEFT JOIN t_planning b6 ON a6.k=b6.k AND a6.v<b6.v) ON a5.g=a6.g JOIN (t_planning a7 LEFT JOIN t_planning b7 ON a7.k=b7.k AND a7.v<b7.v) ON a6.g=a7.g JOIN (t_planning a8 LEFT JOIN t_planning b8 ON a8.k=b8.k AND a8.v<b8.v) ON a7.g=a8.g JOIN (t_planning a9 LEFT JOIN t_planning b9 ON a9.k=b9.k AND a9.v<b9.v) ON a8.g=a9.g JOIN (t_planning a10 LEFT JOIN t_planning b10 ON a10.k=b10.k AND a10.v<b10.v) ON a9.g=a10.g JOIN (t_planning a11 LEFT JOIN t_planning b11 ON a11.k=b11.k AND a11.v<b11.v) ON a10.g=a11.g JOIN (t_planning a12 LEFT JOIN t_planning b12 ON a12.k=b12.k AND a12.v<b12.v) ON a11.g=a12.g JOIN (t_planning a13 LEFT JOIN t_planning b13 ON a13.k=b13.k AND a13.v<b13.v) ON a12.g=a13.g JOIN (t_planning a14 LEFT JOIN t_planning b14 ON a14.k=b14.k AND a14.v<b14.v) ON a13.g=a14.g JOIN (t_planning a15 LEFT JOIN t_planning b15 ON a15.k=b15.k AND a15.v<b15.v) ON a14.g=a15.g JOIN (t_planning a16 LEFT JOIN t_planning b16 ON a16.k=b16.k AND a16.v<b16.v) ON a15.g=a16.g;

@@ -27,6 +27,7 @@ class TProtocol;
 namespace duckdb {
 class TableFilter;
 struct ParquetColumnSchema;
+struct ParquetOptions;
 
 //! A range of rows [begin, end) of a row group that may still contain matching rows
 struct ParquetPageRowRange {
@@ -74,7 +75,8 @@ struct ParquetPageIndexUtils {
 	                          idx_t row_group_num_rows);
 	//! Evaluates the filter against the bounds of every page: result[page] is false when the page cannot match
 	static void FilterPages(const ParquetColumnSchema &schema, const duckdb_parquet::ColumnIndex &column_index,
-	                        const TableFilter &filter, bool can_have_nan, vector<bool> &result);
+	                        const TableFilter &filter, const ParquetOptions &parquet_options, bool can_have_nan,
+	                        vector<bool> &result);
 	//! The rows of the pages that may match, as sorted non-overlapping ranges
 	static vector<ParquetPageRowRange> PagesToRowRanges(const duckdb_parquet::OffsetIndex &offset_index,
 	                                                    const vector<bool> &page_may_match, idx_t row_group_num_rows);
