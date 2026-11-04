@@ -57,12 +57,29 @@ SELECT f(1);
 ----
 <REGEX>:.*(Catalog Error|not exist).*
 
-# an untyped member is named by any type list of its arity
+# an untyped member is named by ANY in each untyped slot, a type list never falls back to it
 statement ok
 CREATE MACRO g(x) AS x + 1, (x, y) AS x + y;
 
-statement ok
+statement error
 DROP MACRO g(BIGINT);
+----
+<REGEX>:.*has no overload with signature \(BIGINT\).*
+
+# a typed signature on an untyped entry does nothing under IF EXISTS, repeatably
+statement ok
+DROP MACRO IF EXISTS g(BIGINT);
+
+statement ok
+DROP MACRO IF EXISTS g(BIGINT);
+
+query TT
+SELECT g(1), g(1, 2);
+----
+2	3
+
+statement ok
+DROP MACRO g(ANY);
 
 statement error
 SELECT g(1);
@@ -75,7 +92,30 @@ SELECT g(1, 2);
 3
 
 statement ok
-DROP MACRO g(INTEGER, INTEGER);
+DROP MACRO g(ANY, ANY);
+
+# a typed drop only ever names the typed member: repeating it cannot reach the untyped sibling
+statement ok
+CREATE MACRO r(x) AS x, (x INTEGER) AS x + 1;
+
+statement ok
+DROP MACRO IF EXISTS r(INTEGER);
+
+query T
+SELECT r(1);
+----
+1
+
+statement ok
+DROP MACRO IF EXISTS r(INTEGER);
+
+query T
+SELECT r(1);
+----
+1
+
+statement ok
+DROP MACRO r(ANY);
 
 # empty parentheses name the zero-parameter overload
 statement ok
@@ -160,32 +200,38 @@ SELECT txn_f(1), txn_f('x');
 ----
 1	x
 
-# a partially typed signature matches by its typed slots: distinct same-arity members stay apart
+# a partially typed member is named by its declared shape: ANY for untyped slots, the type otherwise
 statement ok
 CREATE MACRO pt(x INTEGER, y) AS 1, (x VARCHAR, y) AS 2;
 
 statement ok
-DROP MACRO pt(VARCHAR, INTEGER);
+DROP MACRO pt(VARCHAR, ANY);
 
 query T
 SELECT pt(1, NULL);
 ----
 1
 
-statement ok
+# the typed slot must match the declaration exactly
+statement error
 DROP MACRO pt(INTEGER, DATE);
+----
+<REGEX>:.*has no overload with signature \(INTEGER, DATE\).*
 
-# several compatible wildcard members are ambiguous
+statement ok
+DROP MACRO pt(INTEGER, ANY);
+
+# ANY does not match a typed slot, so same-arity members stay apart
 statement ok
 CREATE MACRO amb(x, y) AS 1, (x INTEGER, y) AS 2;
 
 statement error
 DROP MACRO amb(INTEGER, VARCHAR);
 ----
-<REGEX>:.*ambiguous.*
+<REGEX>:.*has no overload with signature \(INTEGER, VARCHAR\).*
 
 statement ok
-DROP MACRO amb(DATE, VARCHAR);
+DROP MACRO amb(ANY, ANY);
 
 query T
 SELECT amb(1, 'x');
@@ -193,7 +239,7 @@ SELECT amb(1, 'x');
 2
 
 statement ok
-DROP MACRO amb(INTEGER, VARCHAR);
+DROP MACRO amb(INTEGER, ANY);
 
 # a member drop replaces the entry like any overload mutation: EXPORT's naive order treats the
 # replacement as newest, so exports taken after mutating a callee entry may need reordering, the

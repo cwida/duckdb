@@ -2540,7 +2540,7 @@ static const TransformChildPlan FRAME_CHILDREN_175[] = {{PEGRuleId::DropFunction
                                                          {0, TRANSFORM_PATH_END, 0},
                                                          {0, TRANSFORM_PATH_END, 0}}};
 static const TransformFramePlan FRAME_PLAN_189 = {FRAME_CHILDREN_175, 4, 4, true, 0, {}};
-static const TransformChildPlan FRAME_CHILDREN_176[] = {{PEGRuleId::Type,
+static const TransformChildPlan FRAME_CHILDREN_176[] = {{PEGRuleId::DropSignatureType,
                                                          TransformChildKind::OPTIONAL_LIST,
                                                          0,
                                                          0,
@@ -7809,6 +7809,10 @@ static const TransformFrameOps GENERATED_FRAME_OPS[] = {
      &PEGTransformerFactory::FinalizeDropFunctionTrampoline, &FRAME_PLAN_189},
     {"DropFunctionSignature", &PEGTransformerFactory::InitializePlannedTrampoline,
      &PEGTransformerFactory::FinalizeDropFunctionSignatureTrampoline, &FRAME_PLAN_190},
+    {"DropSignatureType", &PEGTransformerFactory::InitializePlannedChoiceTrampoline,
+     &PEGTransformerFactory::FinalizePassthroughTrampoline, &FRAME_PLAN_1},
+    {"DropSignatureAnyType", &PEGTransformerFactory::InitializePlannedTrampoline,
+     &PEGTransformerFactory::FinalizeDropSignatureAnyTypeTrampoline, &FRAME_PLAN_12},
     {"DropSchema", &PEGTransformerFactory::InitializePlannedTrampoline,
      &PEGTransformerFactory::FinalizeDropSchemaTrampoline, &FRAME_PLAN_191},
     {"DropIndex", &PEGTransformerFactory::InitializePlannedTrampoline,
@@ -13152,18 +13156,25 @@ PEGTransformerFactory::FinalizeDropFunctionSignatureTrampoline(PEGTransformer &t
 	if (dynamic_list_opt.HasResult()) {
 		dynamic_child_count = CountParseResultsFromList(dynamic_list_opt.GetResult());
 	}
-	optional<vector<LogicalType>> type {};
-	auto &type_opt = ExtractResultFromParens(list_pr.GetChild(0)).Cast<OptionalParseResult>();
-	if (type_opt.HasResult()) {
-		vector<LogicalType> type_value;
-		type_value.reserve(dynamic_child_count);
+	optional<vector<LogicalType>> drop_signature_type {};
+	auto &drop_signature_type_opt = ExtractResultFromParens(list_pr.GetChild(0)).Cast<OptionalParseResult>();
+	if (drop_signature_type_opt.HasResult()) {
+		vector<LogicalType> drop_signature_type_value;
+		drop_signature_type_value.reserve(dynamic_child_count);
 		for (idx_t i = 0; i < 0 + dynamic_child_count; i++) {
-			type_value.push_back(process.TakeResult<LogicalType>(i));
+			drop_signature_type_value.push_back(process.TakeResult<LogicalType>(i));
 		}
-		type = std::move(type_value);
+		drop_signature_type = std::move(drop_signature_type_value);
 	}
-	auto result = TransformDropFunctionSignature(transformer, type);
+	auto result = TransformDropFunctionSignature(transformer, drop_signature_type);
 	return transformer.MakeResult<vector<LogicalType>>(result);
+}
+
+arena_ptr<TransformResultValue>
+PEGTransformerFactory::FinalizeDropSignatureAnyTypeTrampoline(PEGTransformer &transformer,
+                                                              GeneratedTransformProcess &process) {
+	auto result = TransformDropSignatureAnyType(transformer);
+	return transformer.MakeResult<LogicalType>(result);
 }
 
 arena_ptr<TransformResultValue>

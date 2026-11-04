@@ -17,7 +17,9 @@ DropTrigger <- 'TRIGGER' IfExists? TriggerName 'ON' BaseTableName
 DropTable <- TableOrView IfExists? List(BaseTableName)
 DropTableFunction <- CommentMacroTable IfExists? List(QualifiedTableFunction)
 DropFunction <- FunctionTypeMacro IfExists? List(FunctionIdentifier) DropFunctionSignature?
-DropFunctionSignature <- Parens(List(Type)?)
+DropFunctionSignature <- Parens(List(DropSignatureType)?)
+DropSignatureType <- DropSignatureAnyType / Type
+DropSignatureAnyType <- 'ANY'
 DropSchema <- 'SCHEMA' IfExists? List(QualifiedName)
 DropIndex <- 'INDEX' IfExists? List(QualifiedIndexName)
 QualifiedIndexName <- CatalogReservedSchemaIndex / SchemaReservedIndex / QualifiedIndexNameString

@@ -90,6 +90,11 @@ vector<LogicalType> PEGTransformerFactory::TransformDropFunctionSignature(PEGTra
 	return type ? *type : vector<LogicalType>();
 }
 
+LogicalType PEGTransformerFactory::TransformDropSignatureAnyType(PEGTransformer &transformer) {
+	// ANY names an untyped parameter slot of the stored overload
+	return LogicalType(LogicalTypeId::ANY);
+}
+
 unique_ptr<DropStatement> PEGTransformerFactory::TransformDropSchema(PEGTransformer &transformer,
                                                                      const optional<bool> &if_exists,
                                                                      const vector<QualifiedName> &qualified_name) {

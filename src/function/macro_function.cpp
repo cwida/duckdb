@@ -362,11 +362,19 @@ bool MacroFunction::HasUntypedParameter() const {
 }
 
 bool MacroFunction::MatchesSignature(const vector<LogicalType> &signature) const {
-	if (parameters.size() != signature.size() || HasUntypedParameter()) {
+	if (parameters.size() != signature.size()) {
 		return false;
 	}
 	for (idx_t i = 0; i < signature.size(); i++) {
-		if (types[i] != signature[i]) {
+		const auto member_type_id = i < types.size() ? types[i].id() : LogicalTypeId::UNKNOWN;
+		if (signature[i].id() == LogicalTypeId::ANY) {
+			// ANY names an untyped slot exactly, it does not match a typed slot
+			if (member_type_id != LogicalTypeId::UNKNOWN) {
+				return false;
+			}
+			continue;
+		}
+		if (member_type_id == LogicalTypeId::UNKNOWN || types[i] != signature[i]) {
 			return false;
 		}
 	}

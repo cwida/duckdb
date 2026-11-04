@@ -1272,6 +1272,8 @@ LogicalType:
   rules:
     - Type
     - ReturnsType
+    - DropSignatureType
+    - DropSignatureAnyType
 
 LogicalTypeList:
   type: "vector<LogicalType>"
