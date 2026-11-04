@@ -656,7 +656,7 @@ void ParquetWriter::AnalyzeSchema(ColumnDataCollection &buffer, vector<unique_pt
 	}
 
 	for (auto &chunk : buffer.Chunks(column_ids)) {
-		// the column writers assume flat vectors, scans can return compact representations
+		// schema analysis traverses nested values through the flat layout
 		chunk.Flatten();
 		idx_t index = 0;
 		for (idx_t i = 0; i < column_writers.size(); i++) {
@@ -801,8 +801,11 @@ void ParquetWriter::PrepareRowGroup(ColumnDataCollection &raw_buffer, PreparedRo
 		}
 
 		for (auto &chunk : buffer.Chunks(column_ids)) {
-			// the column writers assume flat vectors, scans can return compact representations
-			chunk.Flatten();
+			for (idx_t i = 0; i < next; i++) {
+				if (!col_writers[i].get().HandlesCompactVectors()) {
+					chunk.data[i].Flatten();
+				}
+			}
 			for (idx_t i = 0; i < next; i++) {
 				if (col_writers[i].get().HasAnalyze()) {
 					col_writers[i].get().Analyze(*write_states[i], nullptr, chunk.data[i], chunk.size());
@@ -822,7 +825,7 @@ void ParquetWriter::PrepareRowGroup(ColumnDataCollection &raw_buffer, PreparedRo
 		}
 
 		for (auto &chunk : buffer.Chunks({column_ids})) {
-			// the column writers assume flat vectors, scans can return compact representations
+			// page size estimation and definition levels read rows through the flat layout
 			chunk.Flatten();
 			for (idx_t i = 0; i < next; i++) {
 				col_writers[i].get().Prepare(*write_states[i], nullptr, chunk.data[i], chunk.size(), true);
@@ -834,8 +837,11 @@ void ParquetWriter::PrepareRowGroup(ColumnDataCollection &raw_buffer, PreparedRo
 		}
 
 		for (auto &chunk : buffer.Chunks({column_ids})) {
-			// the column writers assume flat vectors, scans can return compact representations
-			chunk.Flatten();
+			for (idx_t i = 0; i < next; i++) {
+				if (!col_writers[i].get().HandlesCompactVectors()) {
+					chunk.data[i].Flatten();
+				}
+			}
 			for (idx_t i = 0; i < next; i++) {
 				col_writers[i].get().Write(*write_states[i], chunk.data[i], chunk.size());
 			}
