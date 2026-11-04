@@ -17,13 +17,15 @@ class ClientContext;
 
 class WindowFusion : public LogicalOperatorVisitor {
 public:
-	WindowFusion(ClientContext &context, Optimizer &optimizer,
+	WindowFusion(ClientContext &client, Optimizer &optimizer,
 	             optional_ptr<column_binding_map_t<unique_ptr<BaseStatistics>>> stats);
 
 	unique_ptr<LogicalOperator> Optimize(unique_ptr<LogicalOperator> op);
 
 private:
-	ClientContext &context;
+	unique_ptr<LogicalOperator> OptimizeInternal(unique_ptr<LogicalOperator> op);
+
+	ClientContext &client;
 	Optimizer &optimizer;
 	optional_ptr<column_binding_map_t<unique_ptr<BaseStatistics>>> stats;
 };

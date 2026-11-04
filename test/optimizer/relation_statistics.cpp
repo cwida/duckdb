@@ -784,7 +784,7 @@ TEST_CASE("Projection and window preserve the statistics source", "[optimizer][r
 	REQUIRE(projected);
 	REQUIRE(projected->row_retention == child_stats.row_retention);
 	REQUIRE(projected->columns[0].GetSupportedSemiAntiDomainSize().GetIndex() == 10);
-	LogicalWindow window(TableIndex(30));
+	LogicalWindow window(TableIndex(30), optional_idx());
 	window.children.push_back(std::move(projection));
 	auto windowed = RelationStatisticsHelper::ExtractWindowStats(window, *projected);
 	REQUIRE(windowed);

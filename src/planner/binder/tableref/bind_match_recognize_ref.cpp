@@ -685,7 +685,7 @@ static unique_ptr<SelectNode> PlanPatternWindow(Binder &binder, ClientContext &c
 	bound_window->OrderByMutable() = std::move(inputs.orders);
 
 	const auto window_index = binder.GenerateTableIndex();
-	auto logical_window = make_uniq<LogicalWindow>(window_index);
+	auto logical_window = make_uniq<LogicalWindow>(window_index, optional_idx());
 	logical_window->expressions.push_back(std::move(bound_window));
 	logical_window->AddChild(std::move(bound_define.plan));
 

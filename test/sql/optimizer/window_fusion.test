@@ -1,0 +1,6 @@
+# name: test/sql/optimizer/window_fusion.test
+# description: Test basic window fusion rewrites
+# group: [optimizer]
+
+statement ok
+set debug_window_fusion = true;

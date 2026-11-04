@@ -592,6 +592,14 @@
         "is_debug": true
     },
     {
+        "name": "debug_window_fusion",
+        "description": "Apply the window fusion optimisation.",
+        "type": "BOOLEAN",
+        "default_scope": "global",
+        "default_value": "false",
+        "is_debug": true
+    },
+    {
         "name": "debug_window_mode",
         "description": "Switch the window mode being used.",
         "type": "ENUM<WindowAggregationMode>",

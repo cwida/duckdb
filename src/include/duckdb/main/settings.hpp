@@ -1011,6 +1011,18 @@ struct DebugWalFsyncSleepMsSetting {
 	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
 };
 
+struct DebugWindowFusionSetting {
+	using RETURN_TYPE = bool;
+	static constexpr const char *Name = "debug_window_fusion";
+	static constexpr const char *Description = "Apply the window fusion optimisation.";
+	static constexpr const char *InputType = "BOOLEAN";
+	static constexpr bool IsDebug = true;
+	static constexpr bool IsDeprecated = false;
+	static constexpr const char *DefaultValue = "false";
+	static constexpr SettingScopeTarget Scope = SettingScopeTarget::GLOBAL_DEFAULT;
+	static constexpr idx_t SettingIndex = NEXT_SETTING_INDEX();
+};
+
 struct DebugWindowModeSetting {
 	using RETURN_TYPE = WindowAggregationMode;
 	static constexpr const char *Name = "debug_window_mode";
