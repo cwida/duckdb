@@ -79,3 +79,18 @@ query I
 SELECT count(*) FROM read_parquet('{TEST_DIR}/rotated_file/*.parquet')
 ----
 400000
+
+# a VARIANT column, shredded by the values of the first batch, keeps that layout in every file
+statement ok
+CREATE TABLE src_variant AS SELECT range AS i, CASE WHEN range < 200000 THEN range::VARIANT ELSE ('row' || range)::VARIANT END AS v FROM range(400000)
+
+statement ok
+COPY (FROM src_variant) TO '{TEST_DIR}/rotated_variant' (FORMAT parquet, FILE_SIZE_BYTES '400KB', ROW_GROUP_SIZE 20000)
+
+query II
+SELECT count(*) > 1, count(DISTINCT cols) FROM (
+	SELECT file_name, string_agg(name || ' ' || coalesce(type, ''), ',' ORDER BY name) AS cols
+	FROM parquet_schema('{TEST_DIR}/rotated_variant/*.parquet') GROUP BY file_name
+)
+----
+true	1
