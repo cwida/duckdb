@@ -1,0 +1,175 @@
+# name: test/sql/optimizer/topn_window_elimination_multi_order.test
+# description: Top-N window elimination with multiple ORDER BY columns
+# group: [optimizer]
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+PRAGMA explain_output = OPTIMIZED_ONLY;
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES
+	(1, 1, NULL::INTEGER, 'nullkey'),
+	(1, 1, 5, 'a5'),
+	(1, NULL, 9, 'anull'),
+	(2, 2, 1, 'x'),
+	(2, 2, 2, 'y')
+) v(g, a, b, p);
+
+query II
+EXPLAIN SELECT g, p FROM t QUALIFY row_number() OVER (PARTITION BY g ORDER BY a DESC, b DESC) = 1
+----
+logical_opt	<REGEX>:.*AGGREGATE.*create_sort_key.*
+
+query II
+EXPLAIN SELECT g, p FROM t QUALIFY row_number() OVER (PARTITION BY g ORDER BY a DESC, b DESC) = 1
+----
+logical_opt	<!REGEX>:.*WINDOW.*
+
+# Payloads that cannot be NULL use arg_min, a single payload column keeps the nulls-last variant
+query II
+EXPLAIN SELECT * FROM t QUALIFY row_number() OVER (PARTITION BY g ORDER BY a DESC, b DESC) <= 2
+----
+logical_opt	<REGEX>:.*arg_min\(.*create_sort_key.*
+
+query II
+EXPLAIN SELECT g, p FROM t QUALIFY row_number() OVER (PARTITION BY g ORDER BY a DESC, b DESC) <= 2
+----
+logical_opt	<REGEX>:.*arg_min_nulls_last\(.*create_sort_key.*
+
+# A single ORDER BY column keeps aggregating the column directly
+query II
+EXPLAIN SELECT g, p FROM t QUALIFY row_number() OVER (PARTITION BY g ORDER BY a DESC) = 1
+----
+logical_opt	<!REGEX>:.*create_sort_key.*
+
+# NULLs in each ORDER BY column follow that column's NULL order
+query II
+SELECT g, p FROM t QUALIFY row_number() OVER (PARTITION BY g ORDER BY a DESC NULLS LAST, b DESC NULLS LAST) = 1 ORDER BY g
+----
+1	a5
+2	y
+
+query III
+SELECT g, p, row_number() OVER (PARTITION BY g ORDER BY a DESC NULLS LAST, b DESC NULLS LAST) AS rn
+FROM t QUALIFY rn <= 3 ORDER BY g, rn
+----
+1	a5	1
+1	nullkey	2
+1	anull	3
+2	y	1
+2	x	2
+
+query III
+SELECT g, p, row_number() OVER (PARTITION BY g ORDER BY a ASC NULLS FIRST, b DESC NULLS FIRST) AS rn
+FROM t QUALIFY rn < 3 ORDER BY g, rn
+----
+1	anull	1
+1	nullkey	2
+2	y	1
+2	x	2
+
+# Only the first ORDER BY column is projected
+query II
+SELECT g, a FROM t QUALIFY row_number() OVER (PARTITION BY g ORDER BY a DESC NULLS LAST, b DESC) = 1 ORDER BY g
+----
+1	1
+2	2
+
+query III
+SELECT g, a, row_number() OVER (PARTITION BY g ORDER BY a ASC NULLS FIRST, b DESC) AS rn
+FROM t QUALIFY rn <= 2 ORDER BY g, rn
+----
+1	NULL	1
+1	1	2
+2	2	1
+2	2	2
+
+# No payload: only the partition and the row number are projected
+query II
+SELECT g, row_number() OVER (PARTITION BY g ORDER BY a, b) AS rn FROM t QUALIFY rn <= 2 ORDER BY g, rn
+----
+1	1
+1	2
+2	1
+2	2
+
+# A NULL payload in the first row is kept
+query I
+SELECT p FROM (VALUES (NULL, 2, 1), ('z', 1, 1)) v(p, a, b) QUALIFY row_number() OVER (ORDER BY a DESC, b DESC) = 1
+----
+NULL
+
+query II
+SELECT p, row_number() OVER (ORDER BY a DESC, b DESC) AS rn
+FROM (VALUES (NULL, 2, 1), ('z', 1, 1), (NULL, 0, 1)) v(p, a, b) QUALIFY rn <= 3 ORDER BY rn
+----
+NULL	1
+z	2
+NULL	3
+
+# Empty input without partitions
+query I
+SELECT p FROM t WHERE g > 10 QUALIFY row_number() OVER (ORDER BY a, b) = 1
+----
+
+# Compare against the plan without the rewrite
+statement ok
+CREATE TABLE r AS SELECT i AS id, i % 100 AS g,
+	CASE WHEN i % 7 = 0 THEN NULL ELSE (i * 31) % 13 END AS a,
+	CASE WHEN i % 5 = 0 THEN NULL ELSE ['x', 'Y', 'zz', ''][(i % 4) + 1] END AS b,
+	CASE WHEN i % 11 = 0 THEN NULL ELSE [i % 3, i % 2] END AS l,
+	i * 3 AS p
+FROM range(10000) t(i);
+
+# Late materialization
+statement ok
+CREATE VIEW q1 AS SELECT * FROM r
+QUALIFY row_number() OVER (PARTITION BY g ORDER BY a DESC NULLS LAST, b ASC NULLS FIRST, id DESC) = 1;
+
+# Struct packed payload with a projected row number
+statement ok
+CREATE VIEW q2 AS SELECT g, id, p + 1 AS p1, row_number() OVER (PARTITION BY g ORDER BY a ASC NULLS LAST, l DESC NULLS FIRST, id) AS rn
+FROM r QUALIFY rn <= 3;
+
+# Single payload column
+statement ok
+CREATE VIEW q3 AS SELECT id FROM r QUALIFY row_number() OVER (PARTITION BY g ORDER BY b DESC, a DESC NULLS FIRST, id) < 4;
+
+# No partitions
+statement ok
+CREATE VIEW q4 AS SELECT id, b, row_number() OVER (ORDER BY a NULLS FIRST, b, id DESC) AS rn FROM r QUALIFY rn <= 5;
+
+# ORDER BY expressions and a collation
+statement ok
+CREATE VIEW q5 AS SELECT g, id, b FROM r
+QUALIFY row_number() OVER (PARTITION BY g ORDER BY a * 2 DESC, b COLLATE NOCASE NULLS FIRST, id) <= 2;
+
+# Join below the window
+statement ok
+CREATE VIEW q6 AS SELECT r.id, r.p, s.a AS sa FROM r JOIN r s ON r.id = s.id + 1
+QUALIFY row_number() OVER (PARTITION BY r.g ORDER BY s.a DESC, r.b, r.id DESC) = 1;
+
+foreach view q1 q2 q3 q4 q5 q6
+
+statement ok
+SET disabled_optimizers = 'top_n_window_elimination';
+
+statement ok
+CREATE OR REPLACE TABLE expected AS FROM {view};
+
+statement ok
+RESET disabled_optimizers;
+
+query I
+SELECT (SELECT count(*) FROM (FROM expected EXCEPT ALL FROM {view})) + (SELECT count(*) FROM (FROM {view} EXCEPT ALL FROM expected))
+----
+0
+
+query II
+EXPLAIN FROM {view}
+----
+logical_opt	<REGEX>:.*create_sort_key.*
+
+endloop

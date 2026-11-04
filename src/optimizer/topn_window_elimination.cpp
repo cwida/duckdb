@@ -207,6 +207,18 @@ bool IsRecreatableByLateMaterialization(const Expression &expr) {
 	return false;
 }
 
+//! Combines multiple ORDER BY columns into one key whose ascending order is the window order
+unique_ptr<Expression> CreateOrderSortKey(ClientContext &context, vector<BoundOrderByNode> &orders) {
+	vector<unique_ptr<Expression>> sort_key_args;
+	sort_key_args.reserve(orders.size() * 2);
+	for (auto &order : orders) {
+		auto modifier = order.GetOrderModifier();
+		sort_key_args.push_back(std::move(order.expression));
+		sort_key_args.push_back(make_uniq<BoundConstantExpression>(Value(modifier)));
+	}
+	return BindBuiltinScalarFunction(context, "create_sort_key", std::move(sort_key_args));
+}
+
 } // namespace
 
 TopNWindowElimination::TopNWindowElimination(ClientContext &context_p, Optimizer &optimizer,
@@ -354,7 +366,6 @@ unique_ptr<LogicalOperator>
 TopNWindowElimination::CreateAggregateOperator(LogicalWindow &window, vector<unique_ptr<Expression>> args,
                                                const TopNWindowEliminationParameters &params) const {
 	auto &window_expr = window.expressions[0]->Cast<BoundWindowExpression>();
-	D_ASSERT(window_expr.OrderBy().size() == 1);
 
 	vector<unique_ptr<Expression>> aggregate_params;
 	aggregate_params.reserve(3);
@@ -367,7 +378,12 @@ TopNWindowElimination::CreateAggregateOperator(LogicalWindow &window, vector<uni
 		aggregate_params.push_back(BindBuiltinScalarFunction(context, "struct_pack", std::move(args)));
 	}
 
-	aggregate_params.push_back(std::move(window_expr.OrderByMutable()[0].expression));
+	auto &orders = window_expr.OrderByMutable();
+	if (orders.size() == 1) {
+		aggregate_params.push_back(std::move(orders[0].expression));
+	} else {
+		aggregate_params.push_back(CreateOrderSortKey(context, orders));
+	}
 	if (params.limit > 1) {
 		aggregate_params.push_back(std::move(make_uniq<BoundConstantExpression>(Value::BIGINT(params.limit))));
 	}
@@ -662,14 +678,20 @@ bool TopNWindowElimination::CanOptimize(LogicalOperator &op) {
 	if (!window_expr.ArgOrders().empty()) {
 		return false;
 	}
-	if (window_expr.OrderBy().size() != 1) {
+	const auto &orders = window_expr.OrderBy();
+	if (orders.empty()) {
 		return false;
 	}
-	if (window_expr.OrderBy()[0].type != OrderType::DESCENDING &&
-	    window_expr.OrderBy()[0].type != OrderType::ASCENDING) {
-		return false;
+	for (const auto &order : orders) {
+		if (order.type != OrderType::DESCENDING && order.type != OrderType::ASCENDING) {
+			return false;
+		}
+		if (order.null_order != OrderByNullType::NULLS_LAST && order.null_order != OrderByNullType::NULLS_FIRST) {
+			return false;
+		}
 	}
-	if (window_expr.OrderBy()[0].null_order != OrderByNullType::NULLS_LAST) {
+	// A single ORDER BY column is aggregated directly, which only supports NULLS LAST
+	if (orders.size() == 1 && orders[0].null_order != OrderByNullType::NULLS_LAST) {
 		return false;
 	}
 
@@ -723,7 +745,7 @@ vector<unique_ptr<Expression>> TopNWindowElimination::GenerateAggregatePayload(c
 		}
 	}
 
-	if (aggregate_args.size() == 1) {
+	if (aggregate_args.size() == 1 && window_expr.OrderBy().size() == 1) {
 		// If we only project the aggregate value itself, we do not need it as an arg
 		VisitExpression(&window_expr.OrderByMutable()[0].expression);
 		if (column_references.size() != 1) {
@@ -904,12 +926,17 @@ TopNWindowElimination::ExtractOptimizerParameters(const LogicalWindow &window, c
 	params.payload_type = aggregate_payload.size() > 1 ? TopNPayloadType::STRUCT_PACK : TopNPayloadType::SINGLE_COLUMN;
 	auto &window_expr = window.expressions[0]->Cast<BoundWindowExpression>();
 	params.partition_count = window_expr.Partitions().size();
-	params.order_type = window_expr.OrderBy()[0].type;
+	// Multiple ORDER BY columns are aggregated through a sort key, which is minimized
+	params.order_type = window_expr.OrderBy().size() == 1 ? window_expr.OrderBy()[0].type : OrderType::ASCENDING;
 
 	// The statistics of a column binding are those at the top of the plan: a filter above the window (e.g. on the
 	// result of a decorrelated LATERAL join) can have narrowed them to non-NULL although the input of the window
 	// contains NULLs. They cannot tell whether the window input can be NULL, so keep the NULL-preserving variants.
 	params.can_be_null = true;
+	if (window_expr.OrderBy().size() > 1 && aggregate_payload.size() != 1) {
+		// A sort key is never NULL, and neither is a struct packed payload, a row id or the key copied as the payload
+		params.can_be_null = false;
+	}
 
 	return params;
 }
