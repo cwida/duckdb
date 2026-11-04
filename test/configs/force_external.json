@@ -20,6 +20,12 @@
       "paths": [
         "test/sql/storage/encryption/temp_files/encrypted_temp_file_size_accounting.test"
       ]
+    },
+    {
+      "reason": "Disables the temporary directory so a materialization fallback fails loudly, which conflicts with forced external execution.",
+      "paths": [
+        "test/sql/cte/materialized/cte_streaming_over_materialization.test"
+      ]
     }
   ]
 }

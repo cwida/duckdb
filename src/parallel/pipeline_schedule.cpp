@@ -53,7 +53,23 @@ static optional_ptr<Pipeline> GetExternalInputConsumer(const PipelineSchedule &s
 
 enum class CycleVisitState : uint8_t { UNVISITED, VISITING, VISITED };
 
-vector<PipelineScheduleEdge> PipelineSchedule::GetCycle() const {
+vector<PipelineScheduleEdge> PipelineSchedule::GetCycle(PipelineScheduleGraph graph) const {
+	auto dependency_count = [&](const PipelineScheduleStage &stage) {
+		auto count = stage.dependencies.size();
+		if (graph == PipelineScheduleGraph::WITH_ANALYSIS) {
+			count += stage.analysis_dependencies.size();
+		}
+		return count;
+	};
+	// Combined indices address the scheduled dependencies first, then the analysis dependencies. External-input
+	// tags always store indices below the scheduled-dependency count, so a combined index of an analysis edge can
+	// never falsely match a tag in GetExternalInputConsumer.
+	auto get_dependency = [&](const PipelineScheduleStage &stage, idx_t dependency_idx) {
+		if (dependency_idx < stage.dependencies.size()) {
+			return stage.dependencies[dependency_idx];
+		}
+		return stage.analysis_dependencies[dependency_idx - stage.dependencies.size()];
+	};
 	vector<CycleVisitState> states(stages.size(), CycleVisitState::UNVISITED);
 	for (idx_t stage_idx = 0; stage_idx < stages.size(); stage_idx++) {
 		if (states[stage_idx] != CycleVisitState::UNVISITED) {
@@ -64,13 +80,13 @@ vector<PipelineScheduleEdge> PipelineSchedule::GetCycle() const {
 		states[stage_idx] = CycleVisitState::VISITING;
 		while (!stack.empty()) {
 			auto &entry = stack.back();
-			auto &dependencies = stages[entry.first].dependencies;
-			if (entry.second == dependencies.size()) {
+			auto &stage = stages[entry.first];
+			if (entry.second == dependency_count(stage)) {
 				states[entry.first] = CycleVisitState::VISITED;
 				stack.pop_back();
 				continue;
 			}
-			auto dependency = dependencies[entry.second++];
+			auto dependency = get_dependency(stage, entry.second++);
 			D_ASSERT(dependency < stages.size());
 			if (states[dependency] == CycleVisitState::UNVISITED) {
 				states[dependency] = CycleVisitState::VISITING;
@@ -89,7 +105,7 @@ vector<PipelineScheduleEdge> PipelineSchedule::GetCycle() const {
 			for (idx_t path_idx = cycle_start; path_idx + 1 < stack.size(); path_idx++) {
 				auto dependent = stack[path_idx].first;
 				auto dependency_idx = stack[path_idx].second - 1;
-				result.emplace_back(dependent, stages[dependent].dependencies[dependency_idx],
+				result.emplace_back(dependent, get_dependency(stages[dependent], dependency_idx),
 				                    GetExternalInputConsumer(*this, dependent, dependency_idx));
 			}
 			auto dependent = stack.back().first;
@@ -101,8 +117,8 @@ vector<PipelineScheduleEdge> PipelineSchedule::GetCycle() const {
 	return {};
 }
 
-bool PipelineSchedule::HasCycle() const {
-	return !GetCycle().empty();
+bool PipelineSchedule::HasCycle(PipelineScheduleGraph graph) const {
+	return !GetCycle(graph).empty();
 }
 
 bool PipelineSchedule::DependsOn(idx_t dependent, idx_t dependency) const {
@@ -235,7 +251,8 @@ unique_ptr<PipelineSchedule> BuildPipelineSchedule(const vector<shared_ptr<MetaP
 				AddDependency(*result, entry.second.execute, dep_entry->second.complete);
 			}
 		}
-		// A dataflow dependency only needs the producer's source and sink state to be initialized.
+		// A dataflow dependency only needs the producer's source and sink state to be initialized to start.
+		// The completion-ordering constraint is added in a separate pass below.
 		for (auto &dependency : pipeline.GetDataflowDependencies()) {
 			auto dep = dependency.lock();
 			D_ASSERT(dep);
@@ -348,6 +365,41 @@ unique_ptr<PipelineSchedule> BuildPipelineSchedule(const vector<shared_ptr<MetaP
 			}
 			AddExternalInputDependency(*result, entry.second.execute, producer_entry->second.execute, consumer);
 			AddExternalInputDependency(*result, entry.second.prepare_finish, producer_entry->second.execute, consumer);
+		}
+	}
+
+	// A dataflow consumer's execute stage only completes once every dataflow producer has finalized, unless the
+	// consumer stops its source early: the producer's Finalize is what closes the exchange the consumer reads from.
+	// Mirror this runtime constraint onto every stage that waits on such an execute stage, so cycle analysis can
+	// demote a direct consumer to break the cycle. The mirrored edges are analysis-only: as event dependencies they
+	// could prevent a buffered consumer from starting while the producer waits on it to drain the exchange
+	// (backpressure), deadlocking schedules that are fine at runtime. These edges model only the
+	// consumer-waits-for-producer channel; the reverse backpressure channel is handled by the exchange liveness
+	// analysis that demotes buffered consumers of dead exchanges (FindExchangeStarvedBufferedConsumer).
+	unordered_map<idx_t, vector<idx_t>> dataflow_finish_stages;
+	for (auto &entry : stage_map) {
+		for (auto &dependency : entry.first.get().GetDataflowDependencies()) {
+			auto dep = dependency.lock();
+			D_ASSERT(dep);
+			auto dep_entry = stage_map.find(*dep);
+			if (dep_entry != stage_map.end()) {
+				dataflow_finish_stages[entry.second.execute].push_back(dep_entry->second.finish);
+			}
+		}
+	}
+	if (!dataflow_finish_stages.empty()) {
+		for (idx_t stage_idx = 0; stage_idx < result->stages.size(); stage_idx++) {
+			for (auto dependency : result->stages[stage_idx].dependencies) {
+				auto finish_entry = dataflow_finish_stages.find(dependency);
+				if (finish_entry == dataflow_finish_stages.end()) {
+					continue;
+				}
+				for (auto finish_stage : finish_entry->second) {
+					if (finish_stage != stage_idx) {
+						result->stages[stage_idx].analysis_dependencies.push_back(finish_stage);
+					}
+				}
+			}
 		}
 	}
 

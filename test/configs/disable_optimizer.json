@@ -241,6 +241,12 @@
         "test/sql/sql_export/recursive_state.test",
         "test/sql/sql_export/single_child_union.test"
       ]
+    },
+    {
+      "reason": "Without optimizer cardinality estimates the probe consumer is kept materialized by cost, so no cycle demotion occurs.",
+      "paths": [
+        "test/sql/cte/materialized/cte_buffered_consumer_cycle_demotion.test"
+      ]
     }
   ]
 }

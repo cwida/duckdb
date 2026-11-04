@@ -4960,6 +4960,24 @@ PipelineInputMode EnumUtil::FromString<PipelineInputMode>(const char *value) {
 	return static_cast<PipelineInputMode>(StringUtil::StringToEnum(GetPipelineInputModeValues(), 2, "PipelineInputMode", value));
 }
 
+const StringUtil::EnumStringLiteral *GetPipelineScheduleGraphValues() {
+	static constexpr StringUtil::EnumStringLiteral values[] {
+		{ static_cast<uint32_t>(PipelineScheduleGraph::SCHEDULED), "SCHEDULED" },
+		{ static_cast<uint32_t>(PipelineScheduleGraph::WITH_ANALYSIS), "WITH_ANALYSIS" }
+	};
+	return values;
+}
+
+template<>
+const char* EnumUtil::ToChars<PipelineScheduleGraph>(PipelineScheduleGraph value) {
+	return StringUtil::EnumToString(GetPipelineScheduleGraphValues(), 2, "PipelineScheduleGraph", static_cast<uint32_t>(value));
+}
+
+template<>
+PipelineScheduleGraph EnumUtil::FromString<PipelineScheduleGraph>(const char *value) {
+	return static_cast<PipelineScheduleGraph>(StringUtil::StringToEnum(GetPipelineScheduleGraphValues(), 2, "PipelineScheduleGraph", value));
+}
+
 const StringUtil::EnumStringLiteral *GetPipelineScheduleModeValues() {
 	static constexpr StringUtil::EnumStringLiteral values[] {
 		{ static_cast<uint32_t>(PipelineScheduleMode::COMPLETE), "COMPLETE" },

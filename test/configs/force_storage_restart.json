@@ -170,6 +170,12 @@
       "paths": [
         "test/sql/extensions/extension_repository_from_host_httpfs.test"
       ]
+    },
+    {
+      "reason": "Asserts the in-memory operator log, which does not survive the forced restarts.",
+      "paths": [
+        "test/sql/cte/materialized/cte_buffered_consumer_cycle_demotion.test"
+      ]
     }
   ]
 }
