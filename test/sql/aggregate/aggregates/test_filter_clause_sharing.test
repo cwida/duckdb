@@ -2,6 +2,8 @@
 # description: Aggregates whose FILTER clauses are shared: a filter is evaluated once per chunk and its selection is reused
 # group: [aggregates]
 
+require 64bit
+
 statement ok
 PRAGMA verify_parallelism
 
