@@ -43,6 +43,8 @@ public:
 	const idx_t buffer_size;
 	//! The start position in the buffer
 	idx_t buffer_start;
+	//! The start of the line copied in from the previous buffer, set once it is copied
+	atomic<idx_t> remainder_start;
 };
 
 struct JSONFileHandle {
