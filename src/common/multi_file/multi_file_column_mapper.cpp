@@ -16,7 +16,6 @@
 #include "duckdb/planner/filter/list.hpp"
 #include "duckdb/function/scalar/struct_functions.hpp"
 #include "duckdb/function/scalar/variant_functions.hpp"
-#include "duckdb/function/function_binder.hpp"
 #include "duckdb/function/scalar/struct_utils.hpp"
 #include "duckdb/function/scalar/nested_functions.hpp"
 #include "duckdb/planner/filter/expression_filter.hpp"
@@ -280,9 +279,7 @@ static unique_ptr<Expression> ApplyPushdownExtract(ClientContext &context, uniqu
 			vector<unique_ptr<Expression>> arguments;
 			arguments.push_back(std::move(expr));
 			arguments.push_back(make_uniq<BoundConstantExpression>(Value(child.GetFieldName())));
-			FunctionBinder binder(context);
-			expr = binder.BindScalarFunction(Identifier::DefaultSchema(), Identifier(VariantExtractFun::Name),
-			                                 std::move(arguments));
+			expr = BindBuiltinScalarExpression(context, VariantExtractFun::Name, std::move(arguments));
 		}
 		current = child;
 	}
