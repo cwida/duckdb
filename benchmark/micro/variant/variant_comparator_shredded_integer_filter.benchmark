@@ -1,0 +1,32 @@
+# name: benchmark/micro/variant/variant_comparator_shredded_integer_filter.benchmark
+# description: Range and equality filters over a VARIANT column shredded on an INTEGER value - stresses variant_comparator's key encoding on the shredded primitive path
+# group: [variant]
+
+name variant_comparator_shredded_integer_filter
+group variant
+storage persistent v2.0.0
+
+cache variant_comparator_shredded_integer_filter.duckdb
+
+load
+SET variant_minimum_shredding_size = 0;
+CREATE TABLE tbl AS SELECT i::INTEGER::VARIANT v FROM range(10000000) t(i);
+CHECKPOINT;
+
+run
+SELECT count(*) FROM tbl WHERE v > 5000000;
+
+result I
+4999999
+
+run
+SELECT count(*) FROM tbl WHERE v = 5000000;
+
+result I
+1
+
+run
+SELECT count(*) FROM tbl WHERE v BETWEEN 1000000 AND 2000000;
+
+result I
+1000001

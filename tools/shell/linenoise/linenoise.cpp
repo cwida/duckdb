@@ -171,7 +171,11 @@ bool Linenoise::CompleteLine(KeyPress &next_key) {
 			// instead we display the list of suggestions
 			// but first, complete up to the longest common prefix (like shell behavior)
 			auto &first = completions[0].completion;
+			// only consider the completed part - the text after the cursor is shared by all completions
 			idx_t common_len = first.size();
+			for (auto &completion : completions) {
+				common_len = MinValue<idx_t>(common_len, completion.cursor_pos);
+			}
 			for (idx_t i = 1; i < completions.size(); i++) {
 				auto &other = completions[i].completion;
 				idx_t min_len = MinValue<idx_t>(common_len, other.size());
@@ -183,23 +187,12 @@ bool Linenoise::CompleteLine(KeyPress &next_key) {
 				}
 				common_len = j;
 			}
-			if (common_len > (idx_t)len) {
-				// There is a common prefix longer than the current input - apply it.
-				// The completions only cover the text before the cursor, so keep the text
-				// after the cursor instead of truncating the line at the common prefix.
+			if (common_len > (idx_t)pos) {
+				// there is a common prefix longer than the input before the cursor - apply it
 				string suffix(buf + pos, len - pos);
-				idx_t suffix_start = first.size() - suffix.size();
-				idx_t suffix_copied = 0;
-				if (common_len > suffix_start) {
-					suffix_copied = MinValue<idx_t>(common_len - suffix_start, suffix.size());
-				}
-				int nwritten =
-				    snprintf(buf, buflen, "%.*s%s", (int)common_len, first.c_str(), suffix.c_str() + suffix_copied);
-				if (nwritten > (int)buflen - 1) {
-					nwritten = buflen - 1;
-				}
-				pos = MinValue<idx_t>(common_len, nwritten);
-				len = nwritten;
+				int nwritten = snprintf(buf, buflen, "%.*s%s", (int)common_len, first.c_str(), suffix.c_str());
+				len = MinValue<idx_t>((idx_t)nwritten, buflen - 1);
+				pos = MinValue<idx_t>(common_len, len);
 			}
 			completion_idx = optional_idx();
 			render_completion_suggestion = true;
