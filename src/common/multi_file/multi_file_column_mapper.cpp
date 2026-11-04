@@ -289,18 +289,6 @@ static unique_ptr<Expression> ApplyPushdownExtract(ClientContext &context, uniqu
 	return expr;
 }
 
-static bool HasFilter(optional_ptr<TableFilterSet> filters, MultiFileGlobalIndex global_index) {
-	if (!filters) {
-		return false;
-	}
-	for (auto &it : *filters) {
-		if (MultiFileGlobalIndex(it.GetIndex()).GetIndex() == global_index.GetIndex()) {
-			return true;
-		}
-	}
-	return false;
-}
-
 //! Folds the extract of a missing column's default to the constant the filters on the column are evaluated against
 static unique_ptr<Expression> FoldDefaultExtract(ClientContext &context, unique_ptr<Expression> expr, bool has_filter) {
 	if (!expr->IsFoldable()) {
@@ -921,8 +909,8 @@ ResultColumnMapping MultiFileColumnMapper::CreateColumnMappingByMapper(const Col
 			auto default_value = std::move(column_map.default_value);
 			if (global_id.IsPushdownExtract()) {
 				default_value = ApplyPushdownExtract(context, std::move(default_value), global_id);
-				default_value =
-				    FoldDefaultExtract(context, std::move(default_value), HasFilter(global_filters, global_idx));
+				auto has_filter = global_filters && global_filters->HasFilter(ProjectionIndex(global_idx.GetIndex()));
+				default_value = FoldDefaultExtract(context, std::move(default_value), has_filter);
 			}
 			reader_data.expressions.push_back(std::move(default_value));
 			continue;
