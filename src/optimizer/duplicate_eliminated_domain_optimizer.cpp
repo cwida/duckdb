@@ -9,6 +9,7 @@
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
+#include "duckdb/planner/expression/bound_operator_expression.hpp"
 #include "duckdb/planner/expression/bound_window_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/logical_operator_repeatability.hpp"
@@ -18,6 +19,7 @@
 #include "duckdb/planner/operator/logical_distinct.hpp"
 #include "duckdb/planner/operator/logical_dummy_scan.hpp"
 #include "duckdb/planner/operator/logical_expression_get.hpp"
+#include "duckdb/planner/operator/logical_filter.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
 #include "duckdb/parser/expression_map.hpp"
 
@@ -359,9 +361,47 @@ static bool IsProfitable(ClientContext &context, LogicalAggregate &aggregate, Lo
 	return std::isfinite(canonical) && std::isfinite(candidate) && canonical - candidate > tolerance;
 }
 
-static bool IsReplacementProfitable(Optimizer &optimizer, LogicalAggregate &aggregate,
-                                    LogicalComparisonJoin &restriction, LogicalDistinct &domain,
-                                    const vector<reference<LogicalProjection>> &projections) {
+enum class RestrictionAction { KEEP, REPLACE, REMOVE };
+
+static optional<RelationStats> ProjectRestrictionInput(RelationStats input,
+                                                       const vector<reference<LogicalProjection>> &projections) {
+	optional<RelationStats> result = std::move(input);
+	for (auto projection = projections.rbegin(); projection != projections.rend(); ++projection) {
+		result = RelationStatisticsHelper::ExtractProjectionStats(projection->get(), *result);
+		if (!result) {
+			return {};
+		}
+	}
+	return result;
+}
+
+static double EstimateAggregateWork(LogicalAggregate &aggregate, const RelationStats &input) {
+	auto column = input.GetColumnStats(aggregate.groups[0]->Cast<BoundColumnRefExpression>().Binding());
+	if (!column) {
+		return std::numeric_limits<double>::quiet_NaN();
+	}
+	auto group_count =
+	    RelationStatisticsHelper::EstimateDistinctCardinality({column->current_domain}, input.cardinality);
+	auto aggregate_work = static_cast<double>(aggregate.expressions.size()) + 1;
+	return SumWork({aggregate_work * static_cast<double>(input.cardinality),
+	                (aggregate_work + 1) * static_cast<double>(group_count)});
+}
+
+static bool CanRemoveRestriction(const vector<reference<LogicalProjection>> &projections) {
+	for (auto &projection : projections) {
+		for (auto &expression : projection.get().expressions) {
+			if (!IsWorkReference(*expression)) {
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+static RestrictionAction ChooseRestrictionAction(Optimizer &optimizer, LogicalAggregate &aggregate,
+                                                 LogicalComparisonJoin &restriction, LogicalDistinct &domain,
+                                                 const vector<reference<LogicalProjection>> &projections,
+                                                 bool filter_null_keys) {
 	auto &condition = restriction.conditions[0];
 	auto &fixed = domain.children[0]->Cast<LogicalExpressionGet>();
 	RelationStatsExtractor extractor(optimizer.context);
@@ -371,40 +411,49 @@ static bool IsReplacementProfitable(Optimizer &optimizer, LogicalAggregate &aggr
 	auto old_groups = extractor.Extract(aggregate);
 	auto new_keys = extractor.Extract(domain);
 	if (!input || !old_keys || !old_input || !old_groups || !new_keys) {
-		return false;
+		return RestrictionAction::KEEP;
 	}
 	LogicalComparisonJoin replacement(JoinType::SEMI);
 	replacement.conditions.emplace_back(condition.GetLHS().Copy(), domain.distinct_targets[0]->Copy(),
 	                                    condition.GetComparisonType());
-	optional<RelationStats> new_input = *input;
-	RelationStatisticsHelper::ApplySemiAntiJoinStats(replacement, *input, *new_keys, *new_input);
-	for (auto projection = projections.rbegin(); projection != projections.rend(); ++projection) {
-		new_input = RelationStatisticsHelper::ExtractProjectionStats(projection->get(), *new_input);
-		if (!new_input) {
-			return false;
+	auto restricted = *input;
+	RelationStatisticsHelper::ApplySemiAntiJoinStats(replacement, *input, *new_keys, restricted);
+	auto new_input = ProjectRestrictionInput(std::move(restricted), projections);
+	if (!new_input) {
+		return RestrictionAction::KEEP;
+	}
+	auto input_rows = static_cast<double>(input->cardinality);
+	auto aggregate_work = static_cast<double>(aggregate.expressions.size()) + 1;
+	// Ignore other removed producer work: its build rows alone are a saving.
+	auto best_work =
+	    SumWork({aggregate_work * static_cast<double>(old_input->cardinality),
+	             (aggregate_work + 1) * static_cast<double>(old_groups->cardinality),
+	             static_cast<double>(old_keys->cardinality), input_rows, static_cast<double>(old_input->cardinality)});
+	auto action = RestrictionAction::KEEP;
+	auto consider = [&](double work, RestrictionAction alternative) {
+		auto tolerance = 32 * std::numeric_limits<double>::epsilon() * MaxValue(best_work, work);
+		if (std::isfinite(best_work) && std::isfinite(work) && best_work - work > tolerance) {
+			best_work = work;
+			action = alternative;
+		}
+	};
+	consider(SumWork({EstimateAggregateWork(aggregate, *new_input), 2 * static_cast<double>(fixed.expressions.size()),
+	                  2 * static_cast<double>(new_keys->cardinality), input_rows,
+	                  static_cast<double>(new_input->cardinality), 3}),
+	         RestrictionAction::REPLACE);
+	if (CanRemoveRestriction(projections)) {
+		auto expanded = ProjectRestrictionInput(*input, projections);
+		if (expanded) {
+			// Charge the NULL filter without taking credit for rows it removes.
+			consider(SumWork({EstimateAggregateWork(aggregate, *expanded), filter_null_keys ? input_rows : 0}),
+			         RestrictionAction::REMOVE);
 		}
 	}
-	auto column = new_input->GetColumnStats(aggregate.groups[0]->Cast<BoundColumnRefExpression>().Binding());
-	if (!column) {
-		return false;
-	}
-	auto new_groups =
-	    RelationStatisticsHelper::EstimateDistinctCardinality({column->current_domain}, new_input->cardinality);
-	auto aggregate_work = static_cast<double>(aggregate.expressions.size()) + 1;
-	// The fact scan/probe is unchanged. Ignore other removed producer work: its build rows alone are a saving.
-	auto original = SumWork({aggregate_work * static_cast<double>(old_input->cardinality),
-	                         (aggregate_work + 1) * static_cast<double>(old_groups->cardinality),
-	                         static_cast<double>(old_keys->cardinality), static_cast<double>(old_input->cardinality)});
-	auto alternative = SumWork(
-	    {aggregate_work * static_cast<double>(new_input->cardinality),
-	     (aggregate_work + 1) * static_cast<double>(new_groups), 2 * static_cast<double>(fixed.expressions.size()),
-	     2 * static_cast<double>(new_keys->cardinality), static_cast<double>(new_input->cardinality), 3});
-	auto tolerance = 32 * std::numeric_limits<double>::epsilon() * MaxValue(original, alternative);
-	return std::isfinite(original) && std::isfinite(alternative) && original - alternative > tolerance;
+	return action;
 }
 
-static bool TryReplaceRestriction(Optimizer &optimizer, LogicalAggregate &aggregate,
-                                  unique_ptr<LogicalDistinct> &domain) {
+static bool TryOptimizeRestriction(Optimizer &optimizer, LogicalAggregate &aggregate,
+                                   unique_ptr<LogicalDistinct> &domain, ExpressionType consumer_comparison) {
 	vector<reference<LogicalProjection>> projections;
 	auto restriction = FindRestriction(*aggregate.children[0], *aggregate.groups[0], projections);
 	if (!restriction || HasKeyStatisticsCallback(aggregate, *restriction) ||
@@ -427,16 +476,34 @@ static bool TryReplaceRestriction(Optimizer &optimizer, LogicalAggregate &aggreg
 			return false;
 		}
 	}
-	if (!IsReplacementProfitable(optimizer, aggregate, *restriction, *domain, projections)) {
+	auto filter_null_keys = condition.GetComparisonType() == ExpressionType::COMPARE_EQUAL &&
+	                        consumer_comparison == ExpressionType::COMPARE_NOT_DISTINCT_FROM;
+	auto action = ChooseRestrictionAction(optimizer, aggregate, *restriction, *domain, projections, filter_null_keys);
+	if (action == RestrictionAction::KEEP) {
 		return false;
 	}
-	condition.RightReference() = domain->distinct_targets[0]->Copy();
-	restriction->children[1] = std::move(domain);
+	if (action == RestrictionAction::REPLACE) {
+		condition.RightReference() = domain->distinct_targets[0]->Copy();
+		restriction->children[1] = std::move(domain);
+	} else {
+		auto &slot = projections.empty() ? aggregate.children[0] : projections.back().get().children[0];
+		D_ASSERT(slot.get() == restriction.get());
+		auto input = std::move(restriction->children[0]);
+		if (filter_null_keys) {
+			auto predicate =
+			    make_uniq<BoundOperatorExpression>(ExpressionType::OPERATOR_IS_NOT_NULL, LogicalType::BOOLEAN);
+			predicate->GetChildrenMutable().push_back(condition.GetLHS().Copy());
+			auto filter = make_uniq<LogicalFilter>(std::move(predicate));
+			filter->children.push_back(std::move(input));
+			input = std::move(filter);
+		}
+		slot = LogicalJoin::PromoteJoinSide(std::move(input), std::move(restriction->left_projection_map));
+	}
 	return true;
 }
 
-static bool TryRestrict(Optimizer &optimizer, LogicalComparisonJoin &join, idx_t aggregate_side,
-                        bool allow_replacement) {
+static bool TryOptimizeDomain(Optimizer &optimizer, LogicalComparisonJoin &join, idx_t aggregate_side,
+                              bool allow_rewrite) {
 	auto &condition = join.conditions[0];
 	auto &aggregate_key = aggregate_side == 0 ? condition.GetLHS() : condition.GetRHS();
 	auto &demand_key = aggregate_side == 0 ? condition.GetRHS() : condition.GetLHS();
@@ -462,7 +529,7 @@ static bool TryRestrict(Optimizer &optimizer, LogicalComparisonJoin &join, idx_t
 	domain->distinct_targets.push_back(
 	    make_uniq<BoundColumnRefExpression>(demand_key.GetReturnType(), ColumnBinding(key_index, ProjectionIndex(0))));
 	domain->children.push_back(std::move(fixed));
-	if (allow_replacement && TryReplaceRestriction(optimizer, *aggregate, domain)) {
+	if (allow_rewrite && TryOptimizeRestriction(optimizer, *aggregate, domain, condition.GetComparisonType())) {
 		return true;
 	}
 	// Replacing an existing restriction keeps its filter opportunity. A new one may duplicate the consumer's work.
@@ -517,12 +584,12 @@ void DuplicateEliminatedDomainOptimizer::VisitOperator(LogicalOperator &op) {
 		return;
 	}
 	// Changing an existing restriction can change statistics observed by an ancestor aggregate.
-	auto allow_replacement = !preserve_input_statistics;
-	if (join.join_type == JoinType::INNER && TryRestrict(optimizer, join, 0, allow_replacement)) {
+	auto allow_rewrite = !preserve_input_statistics;
+	if (join.join_type == JoinType::INNER && TryOptimizeDomain(optimizer, join, 0, allow_rewrite)) {
 		return;
 	}
 	if (join.join_type == JoinType::INNER || join.join_type == JoinType::LEFT || join.join_type == JoinType::SINGLE) {
-		TryRestrict(optimizer, join, 1, allow_replacement);
+		TryOptimizeDomain(optimizer, join, 1, allow_rewrite);
 	}
 }
 
