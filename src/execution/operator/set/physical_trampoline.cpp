@@ -789,9 +789,11 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 	bool source_parallel = parallel_source_pays;
 	if (arbitrate && route.mode != TrampolineBranchSourceRoute::Mode::ESTIMATE) {
 		source_parallel = route.parallel;
-		if (source_parallel && source_task_workers <= 1) {
-			source_task_workers = configured_threads;
-		} else if (!source_parallel) {
+		if (source_parallel) {
+			// a pinned or probing parallel route restores estimate-independent source sizing,
+			// also over frontier-sized workers of multi-row waves
+			source_task_workers = MaxValue(source_task_workers, configured_threads);
+		} else {
 			// a pinned or probing inline route must not leak estimate-sized source workers
 			// into a wave that parallelizes on the frontier criterion
 			source_task_workers = frontier_workers;
