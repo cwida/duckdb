@@ -224,10 +224,6 @@ void ArrayColumnData::RevertAppend(row_t new_count) {
 	this->count = UnsafeNumericCast<idx_t>(new_count);
 }
 
-idx_t ArrayColumnData::Fetch(ColumnScanState &state, row_t row_id, Vector &result) {
-	throw NotImplementedException("Array Fetch");
-}
-
 void ArrayColumnData::Update(TransactionData transaction, DuckTableEntry &table_entry, idx_t column_index,
                              Vector &update_vector, row_t *row_ids, idx_t update_count, idx_t row_group_start) {
 	throw NotImplementedException("Array Update is not supported.");

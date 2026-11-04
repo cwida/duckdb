@@ -175,8 +175,6 @@ public:
 	//! Revert a set of appends to the ColumnData
 	virtual void RevertAppend(row_t new_count);
 
-	//! Fetch the vector from the column data that belongs to this specific row
-	virtual idx_t Fetch(ColumnScanState &state, row_t row_id, Vector &result);
 	//! Fetch a batch of row offsets and append them to the vector
 	virtual void FetchRows(TransactionData transaction, ColumnFetchState &state, const StorageIndex &storage_index,
 	                       const idx_t *offsets, const SelectionVector &sel, idx_t count, Vector &result,

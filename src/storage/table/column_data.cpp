@@ -760,18 +760,6 @@ void ColumnData::RevertAppend(row_t new_count_p) {
 	this->count = new_count;
 }
 
-idx_t ColumnData::Fetch(ColumnScanState &state, row_t row_id, Vector &result) {
-	if (UnsafeNumericCast<idx_t>(row_id) > count) {
-		throw InternalException("ColumnData::Fetch - row_id out of range");
-	}
-	D_ASSERT(row_id >= 0);
-	// perform the fetch within the segment
-	state.offset_in_column = UnsafeNumericCast<idx_t>(row_id) / STANDARD_VECTOR_SIZE * STANDARD_VECTOR_SIZE;
-	state.current = data.GetSegment(state.offset_in_column);
-	state.internal_index = state.current->GetRowStart();
-	return ScanVector(state, result, STANDARD_VECTOR_SIZE, ScanVectorType::SCAN_FLAT_VECTOR);
-}
-
 void ColumnData::FetchRows(TransactionData transaction, ColumnFetchState &state, const StorageIndex &storage_index,
                            const idx_t *offsets, const SelectionVector &sel, idx_t fetch_count, Vector &result,
                            idx_t result_offset) {
