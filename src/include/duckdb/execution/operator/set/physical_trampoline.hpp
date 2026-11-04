@@ -74,12 +74,16 @@ struct TrampolineBranchPipelines {
 //! Worker sizing. A wave parallelizes on its own row count, and independent sources
 //! (parallel base-table scans, source-task operators) on their estimated row count,
 //! both against a shared minimum-work threshold. The estimate is the planner's output
-//! cardinality, not scan work: an underestimated or unknown source (selective filter
-//! over a large table, a TVF without a cardinality callback) runs inline per wave with
-//! no runtime correction, matching the recursive CTE's frontier-sized policy by design
-//! (measured parity against the recursive CTE on the selective-filter shape). The
-//! threshold cannot repair an estimate-versus-work mismatch; the follow-up lever is
-//! runtime feedback, revising later waves from the actual source rows of the first.
+//! cardinality, not scan work: when the wave itself is small, an underestimated or
+//! unknown source (selective filter over a large table, a TVF without a cardinality
+//! callback) runs inline per wave with no runtime correction, while a large wave still
+//! parallelizes it through the frontier-sized workers. On small frontiers this matches
+//! what the recursive CTE does, which sizes on frontier work alone and reads no
+//! independent-source estimate at all (measured parity against the recursive CTE on
+//! the selective-filter shape). The threshold cannot repair an estimate-versus-work
+//! mismatch; the follow-up lever is runtime feedback from the first wave's measured
+//! source work (scanned rows, bytes or time, not emitted rows, which stay small in
+//! exactly the selective cases that mispredict).
 //!
 //! Admission (BRANCH DISTINCT). Round-wide full-row admission against all rows
 //! ever routed to the branch, yielding one admitted wave per round. Admission

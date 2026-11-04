@@ -694,7 +694,8 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 			input_rows += gstate.frontier_current->Count() * frontier_scan_count;
 			chunk_units += gstate.frontier_current->ChunkCount() * frontier_scan_count;
 		}
-		const auto row_limit = (input_rows + TRAMPOLINE_ROWS_PER_THREAD - 1) / TRAMPOLINE_ROWS_PER_THREAD;
+		const auto row_limit =
+		    input_rows / TRAMPOLINE_ROWS_PER_THREAD + (input_rows % TRAMPOLINE_ROWS_PER_THREAD != 0 ? 1 : 0);
 		const auto work_units = MaxValue<idx_t>(chunk_units, 1);
 		frontier_workers = MaxValue<idx_t>(MinValue(MinValue(row_limit, work_units), configured_threads), 1);
 	}
