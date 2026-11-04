@@ -12,6 +12,7 @@
 #include "reader/string_column_reader.hpp"
 #include "reader/variant_column_reader.hpp"
 #include "zstd/common/xxhash.hpp"
+#include "duckdb/common/types/bignum_decimal.hpp"
 #include "duckdb/common/types/blob.hpp"
 #include "duckdb/common/types/time.hpp"
 #include "duckdb/common/types/uuid.hpp"
@@ -259,10 +260,14 @@ Value ParquetStatisticsUtils::ConvertValueInternal(const LogicalType &type, cons
 				return ParquetDecimalStatsValue(
 				    ParquetDecimalUtils::ReadDecimalValue<hugeint_t>(stats_data, stats.size(), schema_ele), width,
 				    scale);
-			case PhysicalType::VARCHAR:
+			case PhysicalType::VARCHAR: {
 				// wide decimal stored as a BIGNUM blob
-				return Value::WIDEDECIMAL(ParquetDecimalUtils::ReadWideDecimalValue(stats_data, stats.size()), width,
-				                          scale);
+				auto blob = ParquetDecimalUtils::ReadWideDecimalValue(stats_data, stats.size());
+				if (!BignumDecimal::FitsWidth(string_t(blob), width)) {
+					return Value();
+				}
+				return Value::WIDEDECIMAL(blob, width, scale);
+			}
 			default:
 				throw InvalidInputException("Unsupported internal type for decimal");
 			}
