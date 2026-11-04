@@ -51,12 +51,6 @@
       ]
     },
     {
-      "reason": "Doesn't OOM when restarting",
-      "paths": [
-        "test/sql/storage/temp_directory/offloading_block_files.test_slow"
-      ]
-    },
-    {
       "reason": "Logging setting doesn't survive restarts",
       "paths": [
         "test/sql/copy/parquet/bloom_filter_coalesced_memory.test_slow",
