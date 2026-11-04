@@ -197,15 +197,6 @@ enum class AggregateDestructorType {
 	LEGACY
 };
 
-enum class AggregateStatisticsEffect : uint8_t {
-	UNKNOWN,
-	//! Any valid conservative statistics for the same demanded input bag preserve the bound invocation's values,
-	//! types and NULL semantics, including when the surrounding population changes. This guarantee must hold
-	//! through subsequent statistics passes: installed callbacks must be absent or carry the same guarantee.
-	//! Propagation and equivalent specialization qualify; deriving value-bearing implicit arguments does not.
-	VALUE_PRESERVING
-};
-
 class AggregateFunctionCallbacks {
 public:
 	// clang-format off
@@ -264,12 +255,7 @@ public:
 
 	bool HasStatisticsCallback() const { return statistics != nullptr; }
 	aggregate_statistics_t GetStatisticsCallback() const { return statistics; }
-	AggregateStatisticsEffect GetStatisticsEffect() const { return statistics_effect; }
-	void SetStatisticsCallback(aggregate_statistics_t callback,
-	                           AggregateStatisticsEffect effect = AggregateStatisticsEffect::UNKNOWN) {
-		statistics = callback;
-		statistics_effect = callback ? effect : AggregateStatisticsEffect::UNKNOWN;
-	}
+	void SetStatisticsCallback(aggregate_statistics_t callback) { statistics = callback; }
 
 	bool HasSerializationCallbacks() const { return serialize != nullptr && deserialize != nullptr; }
 	void SetSerializeCallback(aggregate_serialize_t callback) { serialize = callback; }
@@ -327,6 +313,9 @@ public:
 	//! The destructor method (may be null)
 	aggregate_destructor_t destructor = nullptr;
 
+	//! The statistics propagation function (may be null)
+	aggregate_statistics_t statistics = nullptr;
+
 	aggregate_serialize_t serialize = nullptr;
 
 	aggregate_deserialize_t deserialize = nullptr;
@@ -349,11 +338,6 @@ public:
 
 	bool operator==(const AggregateFunctionCallbacks &rhs) const;
 	bool operator!=(const AggregateFunctionCallbacks &rhs) const;
-
-private:
-	//! Replacing the callback must also replace its semantic guarantee.
-	aggregate_statistics_t statistics = nullptr;
-	AggregateStatisticsEffect statistics_effect = AggregateStatisticsEffect::UNKNOWN;
 };
 
 class AggregateFunctionProperties : public FunctionProperties {
@@ -477,12 +461,9 @@ public: // Callbacks
 	auto GetWindowBatchCallback() const -> aggregate_window_batch_t { return callbacks.window_batch; }
 	auto SetWindowBatchCallback(aggregate_window_batch_t callback) -> void { callbacks.window_batch = callback; }
 
-	auto HasStatisticsCallback() const -> bool { return callbacks.HasStatisticsCallback(); }
-	auto GetStatisticsCallback() const -> aggregate_statistics_t { return callbacks.GetStatisticsCallback(); }
-	auto SetStatisticsCallback(aggregate_statistics_t callback,
-	                           AggregateStatisticsEffect effect = AggregateStatisticsEffect::UNKNOWN) -> void {
-		callbacks.SetStatisticsCallback(callback, effect);
-	}
+	auto HasStatisticsCallback() const -> bool { return callbacks.statistics != nullptr; }
+	auto GetStatisticsCallback() const -> aggregate_statistics_t { return callbacks.statistics; }
+	auto SetStatisticsCallback(aggregate_statistics_t callback) -> void { callbacks.statistics = callback; }
 
 	auto HasSerializationCallbacks() const -> bool { return callbacks.serialize != nullptr && callbacks.deserialize != nullptr; }
 	auto SetSerializeCallback(aggregate_serialize_t callback) -> void { callbacks.serialize = callback; }
@@ -529,7 +510,7 @@ public: // Extra function info
 		function_info = std::move(info);
 	}
 	template <class T, class... ARGS>
-	auto SetExtraFunctionInfo(ARGS &&...args) -> void {
+	auto SetExtraFunctionInfo(ARGS &&... args) -> void {
 		function_info = make_shared_ptr<T>(std::forward<ARGS>(args)...);
 	}
 	auto GetFunctionInfo() const -> shared_ptr<AggregateFunctionInfo> {
@@ -579,7 +560,7 @@ public:
 		callbacks.window_batch = window_batch;
 		callbacks.bind = bind;
 		callbacks.destructor = destructor;
-		callbacks.SetStatisticsCallback(statistics);
+		callbacks.statistics = statistics;
 		callbacks.serialize = serialize;
 		callbacks.deserialize = deserialize;
 	}
@@ -600,7 +581,7 @@ public:
 		callbacks.cluster_update = cluster_update_p;
 		callbacks.bind = bind;
 		callbacks.destructor = destructor;
-		callbacks.SetStatisticsCallback(statistics);
+		callbacks.statistics = statistics;
 		callbacks.window_batch = window_batch;
 		callbacks.serialize = serialize;
 		callbacks.deserialize = deserialize;
@@ -643,7 +624,7 @@ public:
 		callbacks.window_init = window_init;
 		callbacks.bind = bind;
 		callbacks.destructor = destructor;
-		callbacks.SetStatisticsCallback(statistics);
+		callbacks.statistics = statistics;
 		callbacks.serialize = serialize;
 		callbacks.deserialize = deserialize;
 	}

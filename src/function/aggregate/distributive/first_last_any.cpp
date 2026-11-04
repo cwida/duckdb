@@ -486,8 +486,7 @@ unique_ptr<FunctionData> BindDecimalFirst(BindAggregateFunctionInput &input) {
 	function.SetDistinctDependent(AggregateDistinctDependent::NOT_DISTINCT_DEPENDENT);
 	function.SetDirectRewriteCallback(RewriteOrderedFirst<LAST, SKIP_NULLS>);
 	function.SetSingleValueIdentity(true);
-	function.SetStatisticsCallback(AggregateFunction::PropagateInputValueStats,
-	                               AggregateStatisticsEffect::VALUE_PRESERVING);
+	function.SetStatisticsCallback(AggregateFunction::PropagateInputValueStats);
 	function.SetReturnType(decimal_type);
 	return nullptr;
 }
@@ -512,8 +511,7 @@ unique_ptr<FunctionData> BindFirst(BindAggregateFunctionInput &input) {
 	function.SetDistinctDependent(AggregateDistinctDependent::NOT_DISTINCT_DEPENDENT);
 	function.SetDirectRewriteCallback(RewriteOrderedFirst<LAST, SKIP_NULLS>);
 	function.SetSingleValueIdentity(true);
-	function.SetStatisticsCallback(AggregateFunction::PropagateInputValueStats,
-	                               AggregateStatisticsEffect::VALUE_PRESERVING);
+	function.SetStatisticsCallback(AggregateFunction::PropagateInputValueStats);
 	return nullptr;
 }
 
@@ -538,7 +536,7 @@ AggregateFunction FirstFunctionGetter::GetFunction(const LogicalType &type) {
 	fun.SetName("first");
 	fun.SetDirectRewriteCallback(RewriteOrderedFirst<false, false>);
 	fun.SetSingleValueIdentity(true);
-	fun.SetStatisticsCallback(AggregateFunction::PropagateInputValueStats, AggregateStatisticsEffect::VALUE_PRESERVING);
+	fun.SetStatisticsCallback(AggregateFunction::PropagateInputValueStats);
 	return fun;
 }
 
@@ -547,7 +545,7 @@ AggregateFunction LastFunctionGetter::GetFunction(const LogicalType &type) {
 	fun.SetName("last");
 	fun.SetDirectRewriteCallback(RewriteOrderedFirst<true, false>);
 	fun.SetSingleValueIdentity(true);
-	fun.SetStatisticsCallback(AggregateFunction::PropagateInputValueStats, AggregateStatisticsEffect::VALUE_PRESERVING);
+	fun.SetStatisticsCallback(AggregateFunction::PropagateInputValueStats);
 	return fun;
 }
 

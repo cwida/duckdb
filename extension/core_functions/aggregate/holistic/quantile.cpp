@@ -498,7 +498,7 @@ struct ListDiscreteQuantile {
 
 AggregateFunction GetDiscreteQuantile(const LogicalType &type) {
 	auto fun = GetDiscreteQuantileTemplated<ScalarDiscreteQuantile>(type);
-	fun.SetStatisticsCallback(AggregateFunction::PropagateInputValueStats, AggregateStatisticsEffect::VALUE_PRESERVING);
+	fun.SetStatisticsCallback(AggregateFunction::PropagateInputValueStats);
 	return fun;
 }
 
@@ -611,7 +611,7 @@ struct ListContinuousQuantile {
 
 AggregateFunction GetContinuousQuantile(const LogicalType &type) {
 	auto fun = GetContinuousQuantileTemplated<ScalarContinuousQuantile>(type);
-	fun.SetStatisticsCallback(AggregateFunction::PropagateInputValueStats, AggregateStatisticsEffect::VALUE_PRESERVING);
+	fun.SetStatisticsCallback(AggregateFunction::PropagateInputValueStats);
 	return fun;
 }
 

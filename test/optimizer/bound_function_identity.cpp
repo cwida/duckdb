@@ -19,26 +19,6 @@
 
 using namespace duckdb;
 
-TEST_CASE("Aggregate statistics guarantees belong to the installed callback", "[optimizer][function_identity]") {
-	AggregateFunctionCallbacks callbacks;
-	auto statistics = AggregateFunction::PropagateInputValueStats;
-	callbacks.SetStatisticsCallback(statistics, AggregateStatisticsEffect::VALUE_PRESERVING);
-	auto original = callbacks;
-	REQUIRE(original.GetStatisticsEffect() == AggregateStatisticsEffect::VALUE_PRESERVING);
-	REQUIRE(callbacks == original);
-
-	// Even replacing a callback by the same pointer needs a new explicit guarantee.
-	callbacks.SetStatisticsCallback(statistics);
-	REQUIRE(callbacks.GetStatisticsEffect() == AggregateStatisticsEffect::UNKNOWN);
-	REQUIRE(callbacks != original);
-	callbacks = original;
-	REQUIRE(callbacks == original);
-
-	callbacks.SetStatisticsCallback(nullptr, AggregateStatisticsEffect::VALUE_PRESERVING);
-	REQUIRE_FALSE(callbacks.HasStatisticsCallback());
-	REQUIRE(callbacks.GetStatisticsEffect() == AggregateStatisticsEffect::UNKNOWN);
-}
-
 namespace {
 
 //! One bound function found in an optimized plan

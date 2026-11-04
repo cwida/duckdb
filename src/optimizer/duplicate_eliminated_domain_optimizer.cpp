@@ -6,11 +6,8 @@
 #include "duckdb/optimizer/relation_statistics/relation_statistics_extractor.hpp"
 #include "duckdb/optimizer/relation_statistics/relation_statistics_helper.hpp"
 #include "duckdb/planner/binder.hpp"
-#include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
-#include "duckdb/planner/expression/bound_parameter_expression.hpp"
-#include "duckdb/planner/expression/bound_window_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
 #include "duckdb/planner/logical_operator_repeatability.hpp"
 #include "duckdb/planner/operator/logical_aggregate.hpp"
@@ -19,50 +16,12 @@
 #include "duckdb/planner/operator/logical_distinct.hpp"
 #include "duckdb/planner/operator/logical_dummy_scan.hpp"
 #include "duckdb/planner/operator/logical_expression_get.hpp"
-#include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
 
 #include <cmath>
 #include <limits>
 
 namespace duckdb {
-namespace {
-
-static bool HasUnknownAggregateStatistics(const Expression &expression) {
-	optional_ptr<const BoundAggregateFunction> function;
-	if (expression.GetExpressionClass() == ExpressionClass::BOUND_AGGREGATE) {
-		function = expression.Cast<BoundAggregateExpression>().Function();
-	} else if (expression.GetExpressionClass() == ExpressionClass::BOUND_WINDOW) {
-		function = expression.Cast<BoundWindowExpression>().AggregateFunction().get();
-	}
-	if (function && function->HasStatisticsCallback() &&
-	    function->GetCallbacks().GetStatisticsEffect() != AggregateStatisticsEffect::VALUE_PRESERVING) {
-		return true;
-	}
-	bool unknown = false;
-	ExpressionIterator::EnumerateChildren(
-	    expression, [&](const Expression &child) { unknown |= HasUnknownAggregateStatistics(child); });
-	return unknown;
-}
-
-static bool HasUnknownAggregateStatistics(LogicalOperator &op) {
-	bool unknown = false;
-	LogicalOperatorVisitor::EnumerateExpressions(
-	    op, [&](unique_ptr<Expression> *expression) { unknown |= HasUnknownAggregateStatistics(**expression); });
-	if (op.type == LogicalOperatorType::LOGICAL_GET) {
-		auto &filters = op.Cast<LogicalGet>().table_filters;
-		for (auto &entry : filters) {
-			unknown |= HasUnknownAggregateStatistics(*entry.Filter().Cast<ExpressionFilter>().expr);
-		}
-		for (auto &filter : filters.GetMultiColumnFilters()) {
-			unknown |= HasUnknownAggregateStatistics(*filter->Cast<ExpressionFilter>().expr);
-		}
-	}
-	for (auto &child : op.children) {
-		unknown |= HasUnknownAggregateStatistics(*child);
-	}
-	return unknown;
-}
 
 static bool IsWorkReference(const Expression &expression) {
 	switch (expression.GetExpressionClass()) {
@@ -224,10 +183,7 @@ static double SumWork(std::initializer_list<double> terms) {
 	return sum;
 }
 
-static bool HasRuntimeFilterTargets(Optimizer &optimizer, LogicalAggregate &aggregate) {
-	if (optimizer.OptimizerDisabled(OptimizerType::JOIN_FILTER_PUSHDOWN)) {
-		return false;
-	}
+static bool HasRuntimeFilterTargets(LogicalAggregate &aggregate) {
 	JoinFilterPushdownColumn column;
 	if (!JoinFilterPushdownUtil::PushdownJoinFilterExpression(*aggregate.groups[0], column)) {
 		return false;
@@ -257,16 +213,19 @@ static bool IsProfitable(ClientContext &context, LogicalAggregate &aggregate, Lo
 	// The inserted SEMI is the new aggregate input; old input-shape refinements no longer apply.
 	auto group_count =
 	    RelationStatisticsHelper::EstimateDistinctCardinality({column->current_domain}, restricted.cardinality);
-	auto n = double(input->cardinality);
-	auto m = estimate.cardinality;
-	auto g = double(groups->cardinality);
-	auto h = double(group_count);
-	auto f = double(domain.children[0]->Cast<LogicalExpressionGet>().expressions.size());
-	auto d = double(keys->cardinality);
-	auto a = double(aggregate.expressions.size()) + 1;
+	auto input_rows = double(input->cardinality);
+	auto restricted_rows = estimate.cardinality;
+	auto original_groups = double(groups->cardinality);
+	auto restricted_groups = double(group_count);
+	auto fixed_key_rows = double(domain.children[0]->Cast<LogicalExpressionGet>().expressions.size());
+	auto distinct_key_rows = double(keys->cardinality);
+	auto aggregate_work_per_row = double(aggregate.expressions.size()) + 1;
 	// Cancel unchanged input/caller work and the consumer's identical output.
-	auto canonical = SumWork({a * n, a * g, g});
-	auto candidate = SumWork({a * m, a * h, h, f, f, d, n, d, m, 3});
+	auto canonical =
+	    SumWork({aggregate_work_per_row * input_rows, aggregate_work_per_row * original_groups, original_groups});
+	auto candidate = SumWork({aggregate_work_per_row * restricted_rows, aggregate_work_per_row * restricted_groups,
+	                          restricted_groups, fixed_key_rows, fixed_key_rows, distinct_key_rows, input_rows,
+	                          distinct_key_rows, restricted_rows, 3});
 	auto tolerance = 32 * std::numeric_limits<double>::epsilon() * MaxValue(canonical, candidate);
 	return std::isfinite(canonical) && std::isfinite(candidate) && canonical - candidate > tolerance;
 }
@@ -286,7 +245,7 @@ static bool TryRestrict(Optimizer &optimizer, LogicalComparisonJoin &join, idx_t
 		return false;
 	}
 	// Existing consumer runtime filters can already save this work; their combined cost is outside this model.
-	if (join.join_type != JoinType::SINGLE && HasRuntimeFilterTargets(optimizer, *aggregate)) {
+	if (join.join_type != JoinType::SINGLE && HasRuntimeFilterTargets(*aggregate)) {
 		return false;
 	}
 	vector<vector<unique_ptr<Expression>>> rows;
@@ -342,13 +301,8 @@ static void Visit(Optimizer &optimizer, LogicalOperator &op) {
 	}
 }
 
-} // namespace
-
 void DuplicateEliminatedDomainOptimizer::Optimize(Optimizer &optimizer, LogicalOperator &plan) {
-	// Later statistics passes also visit aggregates outside the rewritten branch.
-	if (!HasUnknownAggregateStatistics(plan)) {
-		Visit(optimizer, plan);
-	}
+	Visit(optimizer, plan);
 }
 
 } // namespace duckdb

@@ -620,8 +620,7 @@ unique_ptr<FunctionData> BindModeAggregate(BindAggregateFunctionInput &input) {
 	function.ReplaceImplementation(GetModeAggregate(arguments[0]->GetReturnType()));
 	function.SetName("mode");
 	function.SetRewriteCallback(RewriteMode, AggregateRewritePolicy::MANDATORY);
-	function.SetStatisticsCallback(AggregateFunction::PropagateInputValueStats,
-	                               AggregateStatisticsEffect::VALUE_PRESERVING);
+	function.SetStatisticsCallback(AggregateFunction::PropagateInputValueStats);
 	return nullptr;
 }
 

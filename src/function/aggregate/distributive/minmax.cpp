@@ -402,8 +402,7 @@ unique_ptr<FunctionData> BindMinMax(BindAggregateFunctionInput &input) {
 	minmax_func.SetOrderDependent(AggregateOrderDependent::NOT_ORDER_DEPENDENT);
 	minmax_func.SetDistinctDependent(AggregateDistinctDependent::NOT_DISTINCT_DEPENDENT);
 	minmax_func.SetSingleValueIdentity(true);
-	minmax_func.SetStatisticsCallback(AggregateFunction::PropagateInputValueStats,
-	                                  AggregateStatisticsEffect::VALUE_PRESERVING);
+	minmax_func.SetStatisticsCallback(AggregateFunction::PropagateInputValueStats);
 
 	auto expr = minmax_func.Bind(context, std::move(arguments));
 	arguments = std::move(expr->GetChildrenMutable());

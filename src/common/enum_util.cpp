@@ -514,24 +514,6 @@ AggregateStateExportMode EnumUtil::FromString<AggregateStateExportMode>(const ch
 	return static_cast<AggregateStateExportMode>(StringUtil::StringToEnum(GetAggregateStateExportModeValues(), 2, "AggregateStateExportMode", value));
 }
 
-const StringUtil::EnumStringLiteral *GetAggregateStatisticsEffectValues() {
-	static constexpr StringUtil::EnumStringLiteral values[] {
-		{ static_cast<uint32_t>(AggregateStatisticsEffect::UNKNOWN), "UNKNOWN" },
-		{ static_cast<uint32_t>(AggregateStatisticsEffect::VALUE_PRESERVING), "VALUE_PRESERVING" }
-	};
-	return values;
-}
-
-template<>
-const char* EnumUtil::ToChars<AggregateStatisticsEffect>(AggregateStatisticsEffect value) {
-	return StringUtil::EnumToString(GetAggregateStatisticsEffectValues(), 2, "AggregateStatisticsEffect", static_cast<uint32_t>(value));
-}
-
-template<>
-AggregateStatisticsEffect EnumUtil::FromString<AggregateStatisticsEffect>(const char *value) {
-	return static_cast<AggregateStatisticsEffect>(StringUtil::StringToEnum(GetAggregateStatisticsEffectValues(), 2, "AggregateStatisticsEffect", value));
-}
-
 const StringUtil::EnumStringLiteral *GetAggregateTypeValues() {
 	static constexpr StringUtil::EnumStringLiteral values[] {
 		{ static_cast<uint32_t>(AggregateType::NON_DISTINCT), "NON_DISTINCT" },
