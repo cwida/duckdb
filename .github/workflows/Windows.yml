@@ -78,28 +78,40 @@ jobs:
       shell: bash
       run: echo "$DUCKDB_INSTALL_LIB"
 
-    - name: Diagnose entropy with SQL trace
+    - name: Prepare entropy batch diagnostic
       shell: bash
       if: ${{ !inputs.skip_tests }}
       run: |
-        python - <<'PYTHON'
-        from pathlib import Path
-        import subprocess
-        import sys
-        fixture = Path("test/sql/aggregate/aggregates/test_entropy.test").read_text()
-        result = subprocess.run(
-            [str(Path("test/unittest.exe").resolve()), "--stdin"],
-            input="mode debug\n\n" + fixture,
-            text=True,
-        )
-        sys.exit(result.returncode)
-        PYTHON
+        python scripts/ci/diagnose_windows_entropy.py --prepare
 
     - name: Test
       shell: bash
       if: ${{ !inputs.skip_tests }}
       run: |
-        python test/run.py
+        python test/run.py --test-command "python scripts/ci/diagnose_windows_entropy.py --binary {binary} --batch-file {test_list} {flags}"
+
+    - name: Restore entropy fixture
+      shell: bash
+      if: ${{ always() && !inputs.skip_tests }}
+      run: python scripts/ci/diagnose_windows_entropy.py --restore
+
+    - uses: actions/upload-artifact@v7
+      if: ${{ always() && !inputs.skip_tests }}
+      with:
+        name: windows-entropy-diagnostic
+        path: |
+          windows-entropy-diagnostic/procdump-provenance.json
+          windows-entropy-diagnostic/*/batch.txt
+          windows-entropy-diagnostic/*/command.txt
+          windows-entropy-diagnostic/*/output.log
+          windows-entropy-diagnostic/*/debugger_exit.txt
+          windows-entropy-diagnostic/*/*.dmp
+          test/unittest.exe
+          test/*.pdb
+          src/duckdb.dll
+          src/*.pdb
+          extension/core_functions/core_functions.duckdb_extension
+        if-no-files-found: error
 
     - name: Test with VS2019 C++ stdlib
       shell: bash
