@@ -120,8 +120,8 @@ protected:
 	                            reference<ColumnIndex> &path_ref, vector<ReferencedExtractComponent> &expressions);
 	void SetMode(BaseColumnPrunerMode mode);
 	BaseColumnPrunerMode GetMode() const;
-	//! Keeps the casts of the references collected so far above the operators visited next, which drop rows
-	void KeepCastsAbove();
+	//! Keeps the casts of the references into the given bindings above the operator visited next, which drops rows
+	void KeepCastsAbove(const vector<ColumnBinding> &bindings);
 
 private:
 	void MergeChildColumns(vector<ColumnIndex> &current_child_columns, ColumnIndex &new_child_column);
@@ -177,6 +177,8 @@ private:
 	//! Moves the casts pushed into the scan that a filter left above it does not read into a projection above it
 	void LiftCastsAboveFilter(LogicalGet &get, unique_ptr<LogicalOperator> &op_ref,
 	                          const unordered_set<idx_t> &cast_positions);
+	//! Keeps the casts above the inputs of the join whose rows it can drop
+	void KeepCastsAboveJoin(LogicalOperator &op);
 	void VisitSecureView(LogicalSecureView &view);
 	void CheckPushdownExtract(LogicalOperator &op);
 	void RewriteExpressions(LogicalProjection &proj, idx_t expression_count);

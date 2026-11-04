@@ -22,6 +22,7 @@
 #include "duckdb/planner/operator/logical_distinct.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
+#include "duckdb/planner/operator/logical_join.hpp"
 #include "duckdb/planner/operator/logical_order.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
 #include "duckdb/planner/operator/logical_recursive_cte.hpp"
@@ -588,12 +589,12 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 	case LogicalOperatorType::LOGICAL_LIMIT:
 	case LogicalOperatorType::LOGICAL_TOP_N:
 	case LogicalOperatorType::LOGICAL_CROSS_PRODUCT:
-		KeepCastsAbove();
+		KeepCastsAbove(op.GetColumnBindings());
 		break;
 	case LogicalOperatorType::LOGICAL_ASOF_JOIN:
 	case LogicalOperatorType::LOGICAL_DELIM_JOIN:
 	case LogicalOperatorType::LOGICAL_COMPARISON_JOIN: {
-		KeepCastsAbove();
+		KeepCastsAboveJoin(op);
 		if (analyze || everything_referenced) {
 			break;
 		}
@@ -641,7 +642,7 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 		break;
 	}
 	case LogicalOperatorType::LOGICAL_ANY_JOIN:
-		KeepCastsAbove();
+		KeepCastsAboveJoin(op);
 		break;
 	case LogicalOperatorType::LOGICAL_UNION: {
 		auto &setop = op.Cast<LogicalSetOperation>();
@@ -821,7 +822,7 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 		return;
 	}
 	case LogicalOperatorType::LOGICAL_DISTINCT: {
-		KeepCastsAbove();
+		KeepCastsAbove(op.GetColumnBindings());
 		auto &distinct = op.Cast<LogicalDistinct>();
 		if (distinct.distinct_type == DistinctType::DISTINCT_ON) {
 			// distinct type references columns that need to be distinct on, so no
@@ -1667,9 +1668,13 @@ static void ClearLeafType(ColumnIndex &path) {
 	leaf.get().SetType(LogicalType());
 }
 
-void BaseColumnPruner::KeepCastsAbove() {
-	// a cast in the scan would run on the rows that the filter or join below the reference drops
+void BaseColumnPruner::KeepCastsAbove(const vector<ColumnBinding> &bindings) {
+	// a cast in the scan would run on the rows that the operator below the reference drops
+	column_binding_set_t binding_set(bindings.begin(), bindings.end());
 	for (auto &entry : column_references) {
+		if (binding_set.find(entry.first) == binding_set.end()) {
+			continue;
+		}
 		auto &column = entry.second;
 		bool paths_changed = false;
 		for (auto &struct_extract : column.struct_extracts) {
@@ -1691,6 +1696,39 @@ void BaseColumnPruner::KeepCastsAbove() {
 		for (auto &struct_extract : column.struct_extracts) {
 			column.AddPath(struct_extract.extract_path);
 		}
+	}
+}
+
+void RemoveUnusedColumns::KeepCastsAboveJoin(LogicalOperator &op) {
+	// only the inputs whose rows the join can drop need their casts above it
+	auto &join = op.Cast<LogicalJoin>();
+	bool drops_left = true;
+	bool drops_right = true;
+	switch (join.join_type) {
+	case JoinType::LEFT:
+	case JoinType::MARK:
+	case JoinType::SINGLE:
+	case JoinType::RIGHT_SEMI:
+	case JoinType::RIGHT_ANTI:
+		drops_left = false;
+		break;
+	case JoinType::RIGHT:
+	case JoinType::SEMI:
+	case JoinType::ANTI:
+		drops_right = false;
+		break;
+	case JoinType::OUTER:
+		drops_left = false;
+		drops_right = false;
+		break;
+	default:
+		break;
+	}
+	if (drops_left) {
+		KeepCastsAbove(op.children[0]->GetColumnBindings());
+	}
+	if (drops_right) {
+		KeepCastsAbove(op.children[1]->GetColumnBindings());
 	}
 }
 

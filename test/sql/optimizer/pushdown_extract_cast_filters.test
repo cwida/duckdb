@@ -186,3 +186,32 @@ CREATE TABLE cast_empty (i INTEGER);
 query I
 SELECT s.n::INTEGER FROM cast_unnest CROSS JOIN cast_empty
 ----
+
+# a filter in another join input and the preserved side of an outer join do not keep casts above the scan
+statement ok
+CREATE TABLE cast_probe AS SELECT i::INTEGER AS i, {'n': i::VARCHAR} AS s FROM range(5) r(i);
+
+statement ok
+CREATE TABLE cast_build AS SELECT i::INTEGER AS i FROM range(3) r(i);
+
+query II
+EXPLAIN SELECT cast_probe.i FROM (SELECT * FROM cast_build WHERE i IN (0, 2)) b JOIN cast_probe ON cast_probe.s.n::INTEGER = b.i
+----
+physical_plan	<!REGEX>:.*CAST.*
+
+query II
+EXPLAIN SELECT s.n::INTEGER FROM cast_probe LEFT JOIN cast_build USING (i)
+----
+physical_plan	<!REGEX>:.*CAST.*
+
+# the other side of the outer join can lose rows, so its cast stays above the join
+query II
+EXPLAIN SELECT cast_probe.s.n::INTEGER FROM cast_build LEFT JOIN cast_probe USING (i)
+----
+physical_plan	<REGEX>:.*CAST.*
+
+query I
+SELECT cast_probe.i FROM (SELECT * FROM cast_build WHERE i IN (0, 2)) b JOIN cast_probe ON cast_probe.s.n::INTEGER = b.i ORDER BY 1
+----
+0
+2
