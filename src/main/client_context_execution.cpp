@@ -137,7 +137,14 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
 	EndQueryProfiling(error);
 
 	// Refresh the logger
-	logger->Flush();
+	try {
+		logger->Flush();
+	} catch (std::exception &ex) {
+		// e.g. the log storage could not be written - report it as the error of the query
+		if (!error.HasError()) {
+			error = ErrorData(ex);
+		}
+	}
 	LoggingContext context(LogContextScope::CONNECTION);
 	context.connection_id = connection_id;
 	ResetLoggerInternal(context);

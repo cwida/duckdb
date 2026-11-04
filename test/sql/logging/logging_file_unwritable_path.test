@@ -1,0 +1,17 @@
+# name: test/sql/logging/logging_file_unwritable_path.test
+# description: A file log storage that cannot be created fails the query, and closing the connection afterwards does not throw out of its destructor
+# group: [logging]
+
+require noforcestorage
+
+# the parent of the log directory is a regular file, so the log files can never be created
+statement ok
+CALL enable_logging(storage='file', storage_path='{DATA_DIR}/csv/big_number.csv/logs');
+
+# the log storage is flushed when the query begins, and the flush fails
+statement error
+SELECT 42;
+----
+IO Error
+
+# the connection is closed at the end of the test, which ends the failed query and flushes the log storage again
