@@ -98,7 +98,7 @@ SELECT datediff('isodow',DATE '4765396-11-24',DATE '-4389735-12-13');
 #
 statement ok
 CREATE TABLE datetime1 AS
-SELECT '2005-12-31 23:59:59.9999999'::TIMESTAMP AS startdate, '2006-01-01 00:00:00.0000000'::TIMESTAMP AS enddate;
+SELECT '2005-12-31 23:59:59.999999'::TIMESTAMP AS startdate, '2006-01-01 00:00:00.000000'::TIMESTAMP AS enddate;
 
 foreach datepart year quarter month day dayofyear hour minute second millisecond microsecond julian
 
@@ -148,7 +148,7 @@ endloop
 #
 statement ok
 CREATE TABLE time1 AS
-SELECT '23:59:59.9999999'::TIME AS enddate, '00:00:00.0000000'::TIME AS startdate;
+SELECT '23:59:59.999999'::TIME AS enddate, '00:00:00.000000'::TIME AS startdate;
 
 foreach datepart year quarter month day dayofyear decade century millennium week yearweek isoyear julian
 
@@ -354,7 +354,7 @@ INSERT into parts VALUES('{datepart}');
 endloop
 
 query II
-SELECT datepart, DATEDIFF(datepart, '2005-12-31 23:59:59.9999999'::TIMESTAMP, '2006-01-01 00:00:00.0000000'::TIMESTAMP)
+SELECT datepart, DATEDIFF(datepart, '2005-12-31 23:59:59.999999'::TIMESTAMP, '2006-01-01 00:00:00.000000'::TIMESTAMP)
 FROM parts;
 ----
 NULL	NULL
@@ -380,6 +380,6 @@ statement ok
 INSERT into parts VALUES('duck');
 
 statement error
-SELECT datepart, DATEDIFF(datepart, '2005-12-31 23:59:59.9999999'::TIMESTAMP, '2006-01-01 00:00:00.0000000'::TIMESTAMP)
+SELECT datepart, DATEDIFF(datepart, '2005-12-31 23:59:59.999999'::TIMESTAMP, '2006-01-01 00:00:00.000000'::TIMESTAMP)
 FROM parts;
 ----

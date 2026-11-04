@@ -113,10 +113,20 @@ bool Time::TryConvertInternal(const char *buf, idx_t len, idx_t &pos, dtime_t &r
 			// do we expect nanoseconds?
 			mult *= Interval::NANOS_PER_MICRO;
 		}
+		int32_t round_digit = -1;
+		bool round_nonzero = false;
 		for (; pos < len && StringUtil::CharacterIsDigit(buf[pos]); pos++, mult /= 10) {
 			if (mult > 0) {
 				micros += (buf[pos] - '0') * mult;
+			} else if (round_digit < 0) {
+				round_digit = buf[pos] - '0';
+			} else if (buf[pos] != '0') {
+				round_nonzero = true;
 			}
+		}
+		// round half to even, so that a tie does not always round up
+		if (round_digit >= 5 && (round_digit > 5 || round_nonzero || micros % 2 != 0)) {
+			micros++;
 		}
 		if (nanos) {
 			*nanos = UnsafeNumericCast<int32_t>(micros % Interval::NANOS_PER_MICRO);

@@ -16,12 +16,12 @@ INSERT INTO ts_precision VALUES ('2020-01-01 01:23:45.123456789', '2020-01-01 01
 query IIII
 SELECT sec::VARCHAR, msec::VARCHAR, micros::VARCHAR, nanos::VARCHAR FROM ts_precision
 ----
-2020-01-01 01:23:45	2020-01-01 01:23:45.123	2020-01-01 01:23:45.123456	2020-01-01 01:23:45.123456789
+2020-01-01 01:23:45	2020-01-01 01:23:45.123	2020-01-01 01:23:45.123457	2020-01-01 01:23:45.123456789
 
 query IIII
 SELECT EXTRACT(microseconds FROM sec), EXTRACT(microseconds FROM msec), EXTRACT(microseconds FROM micros), EXTRACT(microseconds FROM nanos) FROM ts_precision
 ----
-45000000	45123000	45123456	45123456
+45000000	45123000	45123457	45123456
 
 # we only support precisions 0, 3, 6, and 9
 # any other precision is rounded up (e.g. 1/2 -> 3, 4/5 -> 6, 7/8 -> 9)
@@ -39,7 +39,7 @@ loop i 4 6
 query I
 SELECT '2020-01-01 01:23:45.123456789'::TIMESTAMP({i})
 ----
-2020-01-01 01:23:45.123456
+2020-01-01 01:23:45.123457
 
 endloop
 
