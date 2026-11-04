@@ -27,6 +27,25 @@
 
 using namespace duckdb;
 
+TEST_CASE("HDFS URLs are classified as remote files", "[file_system]") {
+	const auto path = GENERATE("hdfs://namenode:8020/data/file.parquet", "hdfs://nameservice/data/file.parquet",
+	                           "hdfs:///data/file.parquet");
+	CAPTURE(path);
+	string extension;
+	CHECK(FileSystem::IsRemoteFile(path));
+	CHECK(FileSystem::IsRemoteFile(path, extension));
+	CHECK(extension == "hdfs");
+}
+
+TEST_CASE("HDFS-like local paths are not classified as remote files", "[file_system]") {
+	const auto path = GENERATE("hdfs/file.parquet", "/tmp/hdfs/file.parquet", "hdfs:/data/file.parquet",
+	                           "hdfsx://namenode/data/file.parquet");
+	CAPTURE(path);
+	string extension;
+	CHECK_FALSE(FileSystem::IsRemoteFile(path));
+	CHECK_FALSE(FileSystem::IsRemoteFile(path, extension));
+}
+
 namespace {
 
 class ExistingDirectoryFileSystem : public FileSystem {
