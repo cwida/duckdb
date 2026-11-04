@@ -764,6 +764,7 @@ static constexpr ExtensionFunctionEntry EXTENSION_FUNCTIONS[] = {
     {"read_ndjson_objects", "json", CatalogType::TABLE_FUNCTION_ENTRY},
     {"read_parquet", "parquet", CatalogType::TABLE_FUNCTION_ENTRY},
     {"read_postgres_binary", "postgres_scanner", CatalogType::TABLE_FUNCTION_ENTRY},
+    {"read_single_avro_file", "avro", CatalogType::TABLE_FUNCTION_ENTRY},
     {"read_single_json_file", "json", CatalogType::TABLE_FUNCTION_ENTRY},
     {"read_single_parquet_file", "parquet", CatalogType::TABLE_FUNCTION_ENTRY},
     {"read_xlsx", "excel", CatalogType::TABLE_FUNCTION_ENTRY},
@@ -1436,6 +1437,7 @@ static constexpr ExtensionEntry EXTENSION_SETTINGS[] = {
     {"mysql_session_time_zone", "mysql_scanner"},
     {"mysql_time_as_time", "mysql_scanner"},
     {"mysql_tinyint1_as_boolean", "mysql_scanner"},
+    {"parquet_can_have_nan", "parquet"},
     {"parquet_metadata_cache", "parquet"},
     {"parquet_prefetch_column_gap", "parquet"},
     {"parquet_use_page_index", "parquet"},
@@ -1532,6 +1534,11 @@ static constexpr ExtensionEntry EXTENSION_SECRET_TYPES[] = {
     {"rds", "postgres_scanner"}, {"s3", "httpfs"},
     {"uc", "unity_catalog"},     {"unity_catalog", "unity_catalog"},
 }; // END_OF_EXTENSION_SECRET_TYPES
+
+// Resource types registered by extensions: CREATE/REGISTER EXTERNAL RESOURCE '<type>' autoloads the extension
+static constexpr ExtensionEntry EXTENSION_EXTERNAL_RESOURCE_TYPES[] = {
+    {"aws:cloudformation:quack-on-ec2", "aws"},
+}; // END_OF_EXTENSION_EXTERNAL_RESOURCE_TYPES
 
 // Note: these are currently hardcoded in scripts/generate_extensions_function.py
 // TODO: automate by passing though to script via duckdb

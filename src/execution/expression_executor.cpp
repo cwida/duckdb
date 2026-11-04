@@ -140,6 +140,11 @@ void ExpressionExecutor::ExecuteExpression(idx_t expr_idx, Vector &result) {
 	Execute(*expressions[expr_idx], states[expr_idx]->root_state.get(), nullptr, chunk ? chunk->size() : 1, result);
 }
 
+void ExpressionExecutor::ExecuteExpression(idx_t expr_idx, Vector &result, const SelectionVector &sel, idx_t count) {
+	D_ASSERT(expr_idx < expressions.size());
+	Execute(*expressions[expr_idx], states[expr_idx]->root_state.get(), &sel, count, result);
+}
+
 Value ExpressionExecutor::EvaluateScalar(ClientContext &context, const Expression &expr, bool allow_unfoldable) {
 	D_ASSERT(allow_unfoldable || expr.IsFoldable());
 	D_ASSERT(expr.IsScalar());
@@ -341,6 +346,20 @@ idx_t ExpressionExecutor::DefaultSelect(const Expression &expr, ExpressionState 
 	bool intermediate_bools[STANDARD_VECTOR_SIZE];
 	Vector intermediate(LogicalType::BOOLEAN, data_ptr_cast(intermediate_bools), STANDARD_VECTOR_SIZE);
 	Execute(expr, state, sel, count, intermediate);
+
+	if (!sel && intermediate.GetVectorType() == VectorType::FLAT_VECTOR &&
+	    !FlatVector::Validity(intermediate).CanHaveNull()) {
+		optional<array_ptr<sel_t>> true_output;
+		optional<array_ptr<sel_t>> false_output;
+		if (true_sel) {
+			true_output = array_ptr<sel_t>(true_sel->data(), true_sel->Capacity());
+		}
+		if (false_sel) {
+			false_output = array_ptr<sel_t>(false_sel->data(), false_sel->Capacity());
+		}
+		return SelectionVector::SelectFromBoolean(FlatVector::GetData<bool>(intermediate), nullptr, count, true_output,
+		                                          false_output);
+	}
 
 	return UnaryExecutor::Select<uint8_t>(
 	    intermediate, sel, count, [](uint8_t value) { return value > 0; }, true_sel, false_sel);

@@ -238,6 +238,28 @@ bool MultiFileList::IsEmpty() const {
 	return GetExpandResult() == FileExpandResult::NO_FILES;
 }
 
+optional_idx MultiFileList::EstimateRowsPerFile(idx_t bytes_per_row) const {
+	D_ASSERT(bytes_per_row > 0);
+	MultiFileListScanData scan_data;
+	scan_data.scan_type = MultiFileListScanType::FETCH_IF_AVAILABLE;
+	InitializeScan(scan_data);
+	OpenFileInfo file;
+	idx_t file_count = 0;
+	idx_t row_count = 0;
+	while (Scan(scan_data, file)) {
+		idx_t file_size;
+		if (!file.extended_info || !file.extended_info->TryGetOption("file_size", file_size)) {
+			return optional_idx();
+		}
+		row_count += MaxValue<idx_t>(file_size / bytes_per_row, 1);
+		file_count++;
+	}
+	if (file_count == 0) {
+		return optional_idx();
+	}
+	return row_count / file_count;
+}
+
 unique_ptr<MultiFileList> MultiFileList::Copy() const {
 	return make_uniq<SimpleMultiFileList>(GetAllFiles());
 }

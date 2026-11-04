@@ -306,6 +306,9 @@ public:
 
 	//! Returns the current query string (if any)
 	const string &GetCurrentQuery();
+	//! Whether the statement that runs now is the last of the active query. A statement that expands into several
+	//! runs them as one query in one transaction; for any other query this is always true
+	DUCKDB_API bool ActiveQueryIsLastStatement() const;
 
 	connection_t GetConnectionId() const;
 
@@ -426,8 +429,9 @@ private:
 	//! Whether this query or, for an internal connection, the base client's query has a deadline
 	bool HasQueryDeadline() const;
 	bool QueryDeadlinePassed() const;
-	//! Ends the statement of the active query that finished, when another one follows
-	void EndStatementInternal(ClientContextLock &lock);
+	//! Ends the statement that finished: releases its executor and plan and notifies registered state
+	void EndStatementInternal(ClientContextLock &lock, optional_ptr<ErrorData> error);
+	void NotifyStatementBeginInternal(ClientContextLock &lock);
 	ErrorData EndQueryInternal(ClientContextLock &lock, bool success, bool invalidate_transaction,
 	                           optional_ptr<ErrorData> previous_error);
 	//! End the query in the profiler; a failure to emit the profile becomes the error unless there is one already

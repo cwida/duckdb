@@ -1,0 +1,79 @@
+diff --git a/src/hffs.cpp b/src/hffs.cpp
+index 4a837f4..e3b3aec 100644
+--- a/src/hffs.cpp
++++ b/src/hffs.cpp
+@@ -251,7 +251,7 @@ vector<OpenFileInfo> HuggingFaceFileSystem::Glob(const string &path, FileOpener
+ 	}
+ 
+ 	FileOpenerInfo info;
+-	info.file_path = path;
++	info.file.path = path;
+ 	auto request_session = HTTPRequestSession::Create(opener, info);
+ 	auto captured = request_session->Capture();
+ 	auto http_params = captured.snapshot->Params();
+@@ -329,7 +329,7 @@ unique_ptr<HTTPFileHandle> HuggingFaceFileSystem::CreateHandle(const OpenFileInf
+ 	auto parsed_url = HFUrlParse(file.path);
+ 
+ 	FileOpenerInfo info;
+-	info.file_path = file.path;
++	info.file.path = file.path;
+ 
+ 	auto request_session = HTTPRequestSession::Create(opener, info);
+ 	auto captured = request_session->Capture();
+diff --git a/src/http/httpfs.cpp b/src/http/httpfs.cpp
+index 9dbdd18..b15a929 100644
+--- a/src/http/httpfs.cpp
++++ b/src/http/httpfs.cpp
+@@ -162,7 +162,7 @@ private:
+ 		}
+ 		auto db = FileOpener::TryGetDatabase(opener);
+ 		auto aliases = db ? S3UrlScheme::GetAliasPrefixes(db->config) : vector<string>();
+-		return S3UrlScheme::TryMatch(info->file_path, aliases).has_value();
++		return S3UrlScheme::TryMatch(info->file.path, aliases).has_value();
+ 	}
+ 
+ 	unique_ptr<KeyValueSecretReader> CreateSettingsReader() {
+@@ -312,7 +312,7 @@ unique_ptr<HTTPFileHandle> HTTPFileSystem::CreateHandle(const OpenFileInfo &file
+ 	D_ASSERT(flags.Compression() == FileCompressionType::UNCOMPRESSED);
+ 
+ 	FileOpenerInfo info;
+-	info.file_path = file.path;
++	info.file.path = file.path;
+ 
+ 	auto request_session = HTTPRequestSession::Create(opener, info);
+ 
+diff --git a/src/s3/s3_auth.cpp b/src/s3/s3_auth.cpp
+index 4dc2987..d4af493 100644
+--- a/src/s3/s3_auth.cpp
++++ b/src/s3/s3_auth.cpp
+@@ -112,14 +112,14 @@ S3AuthParams S3AuthResolver::Resolve(optional_ptr<FileOpener> opener, FileOpener
+ 	// Without a FileOpener we cannot access settings or secrets.
+ 	if (!opener) {
+ 		S3AuthConfig config;
+-		config.route = S3UrlScheme::MatchRoutedUrl(info.file_path);
++		config.route = S3UrlScheme::MatchRoutedUrl(info.file.path);
+ 		options.ApplyTo(config);
+-		return Resolve(std::move(config), info.file_path);
++		return Resolve(std::move(config), info.file.path);
+ 	}
+ 
+ 	auto secret_types = S3SecretConfig::SecretTypes();
+ 	S3KeyValueReader secret_reader(*opener, info, secret_types.data(), secret_types.size());
+-	return Resolve(secret_reader, info.file_path, options);
++	return Resolve(secret_reader, info.file.path, options);
+ }
+ 
+ S3AuthParams S3AuthResolver::Resolve(S3KeyValueReader &secret_reader, const string &file_path,
+diff --git a/test/unittest/http/browser_adapter_test.cpp b/test/unittest/http/browser_adapter_test.cpp
+index 855e498..4b8b2b9 100644
+--- a/test/unittest/http/browser_adapter_test.cpp
++++ b/test/unittest/http/browser_adapter_test.cpp
+@@ -81,7 +81,7 @@ TEST_CASE("HTTPFS owns browser parameters and preserves its provider", "[httpfs]
+ 		HTTPTestHelper::RequireQueryOk(con, "BEGIN TRANSACTION");
+ 		ClientContextFileOpener opener(*con.context);
+ 		FileOpenerInfo info;
+-		info.file_path = server.HTTPPath();
++		info.file.path = server.HTTPPath();
+ 		auto session = HTTPRequestSession::Create(&opener, &info);
+ 		auto snapshot = session->Capture().snapshot;
+ 		REQUIRE(&snapshot->Params().http_util == &adapter);

@@ -1,5 +1,6 @@
 #include "duckdb/parser/peg/autocomplete_catalog_provider.hpp"
 #include "duckdb/parser/peg/compiled_grammar.hpp"
+#include "duckdb/parser/peg/parser_packrat.hpp"
 #include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/parser/keyword_helper.hpp"
 #include "duckdb/parser/parser.hpp"
@@ -214,8 +215,11 @@ vector<AutoCompleteSuggestion> GenerateAutoCompleteSuggestions(AutoCompleteCatal
 		// run the root matcher
 		TokenIterator token_iterator(tokens);
 		ArenaAllocator process_allocator(Allocator::DefaultAllocator());
+		// memoize match results so backtracking over unbalanced input stays polynomial
+		ArenaAllocator packrat_allocator(Allocator::DefaultAllocator());
+		ParserPackratCache packrat_cache(packrat_allocator, token_iterator.Position(), token_iterator.Size());
 		MatchContext match_context(suggestions, parse_allocator, process_allocator, max_token_index,
-		                           MatchMode::RECOGNIZE_ONLY, IdentifierCaseMode::PRESERVE_CASE);
+		                           MatchMode::RECOGNIZE_ONLY, IdentifierCaseMode::PRESERVE_CASE, &packrat_cache);
 		MatchState state(token_iterator, match_context);
 		compiled_grammar->ProgramMatcher().MatchParseResult(state);
 	}

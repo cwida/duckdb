@@ -12,61 +12,61 @@ PRAGMA explain_output = 'OPTIMIZED_ONLY'
 query II
 explain select 42 intersect select 42;
 ----
-logical_opt	<REGEX>:.*INTERSECT.*
+logical_opt	<REGEX>:.*SEMI.*
 
 # intersect is empty if either side is empty
 query II
 explain select 42 intersect select 42 where 1=0;
 ----
-logical_opt	<!REGEX>:.*INTERSECT.*
+logical_opt	<!REGEX>:.*SEMI.*
 
 query II
 explain select 42 where 1=0 intersect select 42;
 ----
-logical_opt	<!REGEX>:.*INTERSECT.*
+logical_opt	<!REGEX>:.*SEMI.*
 
 # except is empty if LHS is empty
 query II
 explain select 42 where 1=0 except select 42;
 ----
-logical_opt	<!REGEX>:.*EXCEPT.*
+logical_opt	<!REGEX>:.*ANTI.*
 
 # if RHS is empty we can optimize away the except
 query II
 explain select 42 except all select 42 where 1=0;
 ----
-logical_opt	<!REGEX>:.*EXCEPT.*
+logical_opt	<!REGEX>:.*ANTI.*
 
 # now pushdown subquery with set ops
 query II
 explain select * from (select 42 intersect select 42) tbl(i) where i=42;
 ----
-logical_opt	<REGEX>:.*INTERSECT.*
+logical_opt	<REGEX>:.*SEMI.*
 
 query II
 explain select * from (select 42 intersect all select 43) tbl(i) where i=42;
 ----
-logical_opt	<!REGEX>:.*INTERSECT.*
+logical_opt	<!REGEX>:.*SEMI.*
 
 query II
 explain select * from (select 43 intersect all select 42) tbl(i) where i=42;
 ----
-logical_opt	<!REGEX>:.*INTERSECT.*
+logical_opt	<!REGEX>:.*SEMI.*
 
 query II
 explain select * from (select 42 except select 42) tbl(i) where i=42;
 ----
-logical_opt	<REGEX>:.*EXCEPT.*
+logical_opt	<REGEX>:.*ANTI.*
 
 query II
 explain select * from (select 42 except all select 43) tbl(i) where i=42;
 ----
-logical_opt	<!REGEX>:.*EXCEPT.*
+logical_opt	<!REGEX>:.*ANTI.*
 
 query II
 explain select * from (select 43 except all select 42) tbl(i) where i=42;
 ----
-logical_opt	<!REGEX>:.*EXCEPT.*
+logical_opt	<!REGEX>:.*ANTI.*
 
 query I
 select 42 intersect select 42;

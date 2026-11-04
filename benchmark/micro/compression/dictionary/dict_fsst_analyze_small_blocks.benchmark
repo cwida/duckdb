@@ -1,0 +1,16 @@
+# name: benchmark/micro/compression/dictionary/dict_fsst_analyze_small_blocks.benchmark
+# description: Storing short strings with 16KB blocks, so the block-local dictionary is rebuilt often
+# group: [dictionary]
+
+name Dictionary Compression Write
+group dictionary
+require_reinit
+
+load
+ATTACH ':memory:' AS small_blocks (BLOCK_SIZE 16384);
+PRAGMA force_compression='dict_fsst';
+CREATE OR REPLACE TABLE small_blocks.src AS SELECT (100 + (i%1000))::VARCHAR AS i FROM range(0, 20_000_000) tbl(i);
+
+run
+CREATE TABLE small_blocks.test AS SELECT * FROM small_blocks.src;
+CHECKPOINT small_blocks;

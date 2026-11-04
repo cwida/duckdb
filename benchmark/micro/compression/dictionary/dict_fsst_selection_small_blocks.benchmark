@@ -1,0 +1,18 @@
+# name: benchmark/micro/compression/dictionary/dict_fsst_selection_small_blocks.benchmark
+# description: Storing large scattered duplicates with 16KB blocks, leaving the compression choice to the size estimates
+# group: [dictionary]
+
+name Dictionary Compression Write
+group dictionary
+require_reinit
+
+load
+ATTACH ':memory:' AS small_blocks (BLOCK_SIZE 16384);
+CREATE OR REPLACE TABLE small_blocks.vals AS
+	SELECT g AS grp, (SELECT string_agg(md5(g::VARCHAR || '-' || x::VARCHAR), '') FROM range(180) x) AS txt
+	FROM range(300) t(g);
+
+run
+CREATE TABLE small_blocks.test AS
+	SELECT vals.txt AS i FROM (SELECT (hash(i) % 300) AS grp FROM range(0, 300_000) tbl(i)) t JOIN small_blocks.vals vals USING (grp);
+CHECKPOINT small_blocks;

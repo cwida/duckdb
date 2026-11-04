@@ -1158,8 +1158,13 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownJoin(unique
 	bool left_requires_domain = RequiresDomain(*plan->children[0]);
 	bool right_requires_domain = RequiresDomain(*plan->children[1]);
 
+	// An ASOF join selects at most one match per left row from its entire right input. If the right input
+	// varies per domain, the left input must carry the domain too, so the selection partitions per domain.
+	bool selects_over_right = plan->type == LogicalOperatorType::LOGICAL_ASOF_JOIN;
+
 	bool can_push_left_only = !right_requires_domain && (join_type == JoinType::INNER || join_type == JoinType::LEFT);
-	bool can_push_right_only = !left_requires_domain && (join_type == JoinType::INNER || join_type == JoinType::RIGHT);
+	bool can_push_right_only =
+	    !left_requires_domain && !selects_over_right && (join_type == JoinType::INNER || join_type == JoinType::RIGHT);
 
 	if (can_push_left_only) {
 		return PushDownSingleCorrelatedChild(plan, propagate_null_values, std::move(state), true);
@@ -1217,6 +1222,9 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownJoin(unique
 			auto left_state = PushDownChild(plan, propagate_null_values, right_state.bindings, false, 0);
 
 			auto &comparison_join = plan->Cast<LogicalComparisonJoin>();
+			AppendStateToProjectionMap(comparison_join.left_projection_map,
+			                           ColumnBindingLayout(plan->children[0]->GetColumnBindings()),
+			                           left_state.bindings);
 			auto conditions = std::move(comparison_join.conditions);
 			comparison_join.conditions.clear();
 			AddCorrelatedJoinConditions(comparison_join, left_state.bindings, right_state.bindings);
@@ -1232,6 +1240,8 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownJoin(unique
 		}
 
 		auto left_state = PushDownChild(plan, propagate_null_values, state, false);
+		AppendStateToProjectionMap(plan->Cast<LogicalJoin>().left_projection_map,
+		                           ColumnBindingLayout(plan->children[0]->GetColumnBindings()), left_state.bindings);
 		auto old_right_bindings = plan->children[1]->GetColumnBindings();
 		auto independent_state = DecorrelateIndependentSubtree(plan->children[1]);
 		ColumnBindingRewrite::ApplyToChild(plan, 1, std::move(old_right_bindings), independent_state.replacement_graph);

@@ -154,6 +154,7 @@ DUCKDB_REGISTER_TRANSFORM_RESULT_TYPE("duckdb.transform_result.SetOperationType"
 DUCKDB_REGISTER_TRANSFORM_RESULT_TYPE("duckdb.transform_result.SetScope", SetScope);
 DUCKDB_REGISTER_TRANSFORM_RESULT_TYPE("duckdb.transform_result.SettingInfo", SettingInfo);
 DUCKDB_REGISTER_TRANSFORM_RESULT_TYPE("duckdb.transform_result.ShowType", ShowType);
+DUCKDB_REGISTER_TRANSFORM_RESULT_TYPE("duckdb.transform_result.SimpleCaseCheck", SimpleCaseCheck);
 DUCKDB_REGISTER_TRANSFORM_RESULT_TYPE("duckdb.transform_result.TableAlias", TableAlias);
 DUCKDB_REGISTER_TRANSFORM_RESULT_TYPE("duckdb.transform_result.TransactionModifierType", TransactionModifierType);
 DUCKDB_REGISTER_TRANSFORM_RESULT_TYPE("duckdb.transform_result.TriggerEventInfo", TriggerEventInfo);
@@ -1678,8 +1679,14 @@ public:
 	                                                                     GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeSubqueryExistsTrampoline(PEGTransformer &transformer,
 	                                                                        GeneratedTransformProcess &process);
-	static arena_ptr<TransformResultValue> FinalizeCaseExpressionTrampoline(PEGTransformer &transformer,
-	                                                                        GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeSimpleCaseExpressionTrampoline(PEGTransformer &transformer,
+	                                                                              GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeSearchedCaseExpressionTrampoline(PEGTransformer &transformer,
+	                                                                                GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeSimpleCaseWhenThenTrampoline(PEGTransformer &transformer,
+	                                                                            GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeSimpleCaseWhenEqualsTrampoline(PEGTransformer &transformer,
+	                                                                              GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeCaseWhenThenTrampoline(PEGTransformer &transformer,
 	                                                                      GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeCaseElseTrampoline(PEGTransformer &transformer,
@@ -1904,8 +1911,10 @@ public:
 	                                                                       GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue>
 	FinalizeInfixOtherOperatorExpressionTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
-	static arena_ptr<TransformResultValue> FinalizeOtherOperatorTailTrampoline(PEGTransformer &transformer,
-	                                                                           GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue> FinalizeAnyAllSubqueryTailTrampoline(PEGTransformer &transformer,
+	                                                                            GeneratedTransformProcess &process);
+	static arena_ptr<TransformResultValue>
+	FinalizeOtherOperatorExpressionTailTrampoline(PEGTransformer &transformer, GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeAnyAllParsedOperatorTrampoline(PEGTransformer &transformer,
 	                                                                              GeneratedTransformProcess &process);
 	static arena_ptr<TransformResultValue> FinalizeNamedOtherOperatorTrampoline(PEGTransformer &transformer,
@@ -3513,10 +3522,18 @@ public:
 	                                                                unique_ptr<TableRef> subquery_reference);
 	static bool TransformSubqueryNot(PEGTransformer &transformer);
 	static bool TransformSubqueryExists(PEGTransformer &transformer);
-	static unique_ptr<ParsedExpression> TransformCaseExpression(PEGTransformer &transformer,
-	                                                            optional<unique_ptr<ParsedExpression>> expression,
-	                                                            vector<CaseCheck> case_when_then,
-	                                                            optional<unique_ptr<ParsedExpression>> case_else);
+	static unique_ptr<ParsedExpression> TransformSimpleCaseExpression(PEGTransformer &transformer,
+	                                                                  unique_ptr<ParsedExpression> expression,
+	                                                                  vector<SimpleCaseCheck> simple_case_when_then,
+	                                                                  optional<unique_ptr<ParsedExpression>> case_else);
+	static unique_ptr<ParsedExpression>
+	TransformSearchedCaseExpression(PEGTransformer &transformer, vector<CaseCheck> case_when_then,
+	                                optional<unique_ptr<ParsedExpression>> case_else);
+	static SimpleCaseCheck TransformSimpleCaseWhenThen(PEGTransformer &transformer,
+	                                                   vector<ComparisonExpressionTail> simple_case_when_operand,
+	                                                   unique_ptr<ParsedExpression> expression);
+	static ComparisonExpressionTail TransformSimpleCaseWhenEquals(PEGTransformer &transformer,
+	                                                              unique_ptr<ParsedExpression> expression);
 	static CaseCheck TransformCaseWhenThen(PEGTransformer &transformer, unique_ptr<ParsedExpression> expression,
 	                                       unique_ptr<ParsedExpression> expression_1);
 	static unique_ptr<ParsedExpression> TransformCaseElse(PEGTransformer &transformer,
@@ -3735,8 +3752,12 @@ public:
 	static unique_ptr<ParsedExpression>
 	TransformInfixOtherOperatorExpression(PEGTransformer &transformer, unique_ptr<ParsedExpression> bitwise_expression,
 	                                      optional<vector<OtherOperatorTail>> other_operator_tail);
-	static OtherOperatorTail TransformOtherOperatorTail(PEGTransformer &transformer, ParsedOperator other_operator,
-	                                                    unique_ptr<ParsedExpression> bitwise_expression);
+	static OtherOperatorTail TransformAnyAllSubqueryTail(PEGTransformer &transformer,
+	                                                     ParsedOperator any_all_parsed_operator,
+	                                                     unique_ptr<TableRef> subquery_reference);
+	static OtherOperatorTail TransformOtherOperatorExpressionTail(PEGTransformer &transformer,
+	                                                              ParsedOperator other_operator,
+	                                                              unique_ptr<ParsedExpression> bitwise_expression);
 	static ParsedOperator TransformAnyAllParsedOperator(PEGTransformer &transformer,
 	                                                    const pair<string, bool> &any_all_operator);
 	static ParsedOperator TransformNamedOtherOperator(PEGTransformer &transformer, const string &child);
