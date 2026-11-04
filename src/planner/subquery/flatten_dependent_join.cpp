@@ -150,6 +150,25 @@ bool FlattenDependentJoins::RequiresDomain(LogicalOperator &op) const {
 	return access.correlated || (!perform_delim && access.volatile_expression);
 }
 
+bool FlattenDependentJoins::ProbeOperandRequiresDomain(LogicalOperator &op) const {
+	// probe-side condition operands keep their computation at the join for empty-build laziness,
+	// so a volatile probe operand is invisible to RequiresDomain on the child subtree; it still
+	// pins the probe input to the domain under the same rule as a volatile child expression
+	if (perform_delim) {
+		return false;
+	}
+	if (op.type != LogicalOperatorType::LOGICAL_COMPARISON_JOIN && op.type != LogicalOperatorType::LOGICAL_ASOF_JOIN) {
+		return false;
+	}
+	auto &join = op.Cast<LogicalComparisonJoin>();
+	for (auto &cond : join.conditions) {
+		if (cond.IsComparison() && cond.GetLHS().IsVolatile()) {
+			return true;
+		}
+	}
+	return false;
+}
+
 optional_ptr<const ColumnBinding> FlattenDependentJoins::GetCorrelatedBase(const ColumnBinding &binding) const {
 	auto entry = correlated_aliases.find(binding);
 	if (entry == correlated_aliases.end()) {
@@ -1155,7 +1174,7 @@ FlattenDependentJoins::UnnestingState FlattenDependentJoins::PushDownJoin(unique
                                                                           vector<ColumnBinding> state) {
 	auto join_type = plan->Cast<LogicalJoin>().join_type;
 	D_ASSERT(plan->children.size() == 2);
-	bool left_requires_domain = RequiresDomain(*plan->children[0]);
+	bool left_requires_domain = RequiresDomain(*plan->children[0]) || ProbeOperandRequiresDomain(*plan);
 	bool right_requires_domain = RequiresDomain(*plan->children[1]);
 
 	// An ASOF join selects at most one match per left row from its entire right input. If the right input

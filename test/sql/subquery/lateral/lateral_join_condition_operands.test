@@ -686,3 +686,24 @@ JOIN (SELECT range::BIGINT AS y FROM range(5)) r
     ON l.x > r.y + nextval('seq_pmj_default') * 0;
 ----
 10
+
+# a volatile probe operand kept at the join still pins the probe input to the
+# correlation domain: each outer row draws its own sequence value
+statement ok
+CREATE SEQUENCE seq_probe_domain START 1;
+
+query I
+SELECT count(*)
+FROM (VALUES (1), (1), (1)) o(k), LATERAL (
+    SELECT r.y
+    FROM (VALUES (0)) l(x)
+    JOIN (SELECT o.k AS y) r
+        ON l.x + nextval('seq_probe_domain') = r.y
+) q;
+----
+1
+
+query I
+SELECT currval('seq_probe_domain');
+----
+3
