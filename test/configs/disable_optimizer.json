@@ -266,6 +266,11 @@
       "paths": [
         "test/sql/json/test_execute_serialized_reexecute.test"
       ]
+    },
+    {
+      "reason": "Without optimizer cardinality estimates the probe consumer is kept materialized by cost, so no cycle demotion occurs.",
+      "paths": [
+        "test/sql/cte/materialized/cte_buffered_consumer_cycle_demotion.test"      ]
     }
   ]
 }
