@@ -159,7 +159,9 @@ public:
 	idx_t minimum_memory_per_thread;
 	//! The written files, with their statistics for RETURN_STATS
 	vector<unique_ptr<CopyToFileInfo>> written_files;
-	//! Runs the file opens and the file finalizes next to the flushing thread
+	//! The setup of the output directory of a rotating copy
+	shared_ptr<CopyFileLifecycleJob> output_directory_job;
+	//! Runs the directory setup, the file opens and the file finalizes on the async threads
 	CopyFileLifecycleExecutor lifecycle_executor;
 
 	void Initialize() {
@@ -170,14 +172,26 @@ public:
 		if (initialized.load(std::memory_order_relaxed)) {
 			return;
 		}
-		if (op.file_options.RotatesFiles()) {
-			PhysicalCopyToFile::PrepareOutputDirectory(FileSystem::GetFileSystem(context), op.file_path,
-			                                           op.file_options.overwrite_mode, output_lifecycle);
-		}
 		ScheduleFileOpen();
 		first_file_state = TakeOpenedFile();
 		global_state = first_file_state.get();
 		initialized.store(true, std::memory_order_release);
+	}
+
+	//! Creates the output directory of a rotating copy, which exists even when no file is written
+	void ScheduleOutputDirectorySetup() {
+		auto job = make_shared_ptr<CopyFileLifecycleJob>();
+		lifecycle_executor.Schedule(job, CopyFileLifecycleWaitMode::INTERRUPTIBLE, [this]() {
+			PhysicalCopyToFile::PrepareOutputDirectory(FileSystem::GetFileSystem(context), op.file_path,
+			                                           op.file_options.overwrite_mode, output_lifecycle);
+		});
+		output_directory_job = std::move(job);
+	}
+
+	void EnsureOutputDirectoryReady() {
+		if (output_directory_job) {
+			lifecycle_executor.WaitForJob(*output_directory_job, CopyFileLifecycleWaitMode::INTERRUPTIBLE);
+		}
 	}
 
 	void ScheduleFileOpen() {
@@ -199,6 +213,7 @@ public:
 	}
 
 	unique_ptr<GlobalFunctionData> OpenFile(CopyToFileInfo &file_info) {
+		EnsureOutputDirectoryReady();
 		output_lifecycle.RegisterFile(file_info.file_path);
 		auto file_state = op.function.copy_to_initialize_global(context, *op.bind_data, file_info.file_path);
 		if (op.function.initialize_operator) {
@@ -477,6 +492,7 @@ SinkFinalizeType PhysicalBatchCopyToFile::FinalFlush(ClientContext &context, Glo
 			PhysicalCopyToFile::MoveTmpFile(context, file_path);
 		}
 	}
+	gstate.WaitForFileTasks();
 	gstate.output_lifecycle.MarkSuccessful();
 	return SinkFinalizeType::READY;
 }
@@ -832,6 +848,9 @@ unique_ptr<GlobalSinkState> PhysicalBatchCopyToFile::GetGlobalSinkState(ClientCo
 	auto minimum_memory_per_thread =
 	    FixedBatchCopyGlobalState::MINIMUM_MEMORY_PER_COLUMN_PER_THREAD * children[0].get().GetTypes().size();
 	auto result = make_uniq<FixedBatchCopyGlobalState>(context, *this, minimum_memory_per_thread);
+	if (file_options.RotatesFiles()) {
+		result->ScheduleOutputDirectorySetup();
+	}
 	if (write_empty_file) {
 		// if we are writing the file also if it is empty - initialize now
 		result->Initialize();

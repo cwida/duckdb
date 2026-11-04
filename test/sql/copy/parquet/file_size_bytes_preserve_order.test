@@ -54,6 +54,22 @@ COPY (FROM src WHERE i < 50000) TO '{TEST_DIR}/rotated_stats' (FORMAT parquet, F
 <REGEX>:.*rotated_stats.*data_1.parquet	<REGEX>:\d+	<REGEX>:\d+	<REGEX>:\d+	<REGEX>:.*	NULL	<REGEX>:.*
 <REGEX>:.*rotated_stats.*data_2.parquet	<REGEX>:\d+	<REGEX>:\d+	<REGEX>:\d+	<REGEX>:.*max=49999,.*	NULL	<REGEX>:.*
 
+# without rows and WRITE_EMPTY_FILE false, the output directory is created but holds no file
+query I
+COPY (FROM src WHERE i < 0) TO '{TEST_DIR}/rotated_empty' (FORMAT parquet, FILE_SIZE_BYTES '1KB', WRITE_EMPTY_FILE false)
+----
+0
+
+query I
+SELECT count(*) FROM glob('{TEST_DIR}/rotated_empt*/')
+----
+1
+
+query I
+SELECT count(*) FROM glob('{TEST_DIR}/rotated_empty/*')
+----
+0
+
 # a directory with files refuses the copy without an overwrite mode
 statement error
 COPY (FROM src) TO '{TEST_DIR}/rotated_ordered' (FORMAT parquet, FILE_SIZE_BYTES '400KB', ROW_GROUP_SIZE 20000)
