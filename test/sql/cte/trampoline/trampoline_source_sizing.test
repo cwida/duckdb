@@ -19,10 +19,15 @@ CREATE TABLE lr8 AS SELECT * FROM (VALUES (-2.0, 0),(-1.0, 0),(0.5, 0),(1.0, 1),
 # A scan-bearing light branch body: the correlated aggregate re-scans a tiny base table
 # every wave. The scan's estimated work is far below the parallelization threshold, so
 # every one-row wave must run inline instead of through the parallel event machinery.
+# MERGE forces lockstep rounds, under which measured route arbitration is disabled, so
+# the assertions observe the estimate policy deterministically. Reverting the
+# estimate-sized policy puts every round on the parallel route and fails both metric
+# checks; estimate protection for the parallel direction lives in
+# trampoline_source_sizing_estimates.test.
 query II
 WITH RECURSIVE t(b, w, n) USING TRAMPOLINE (b) AS (
 	(VALUES (1, 0.0, 0))
-	BRANCH 1: (SELECT CASE WHEN n < 20 THEN 1 ELSE 0 END,
+	BRANCH 1 MERGE: (SELECT CASE WHEN n < 20 THEN 1 ELSE 0 END,
 	                  w - (SELECT avg((w - y) * f) FROM lr8), n + 1 FROM t)
 )
 SELECT count(*), max(n) FROM t;
@@ -32,22 +37,16 @@ SELECT count(*), max(n) FROM t;
 statement ok
 CALL disable_logging();
 
-# Measured route arbitration may spend at most one probe wave per branch on the parallel
-# route (on a slow host an inline wave can cross the probe threshold), so the pins bound
-# the estimate policy with a one-probe allowance instead of exact worker counts: the
-# median epoch worker count stays 1, and the worker total can exceed the epoch count by
-# at most one probe wave's workers. Reverting the estimate-sized policy puts every wave
-# on the parallel route and fails both.
 query II
 SELECT info.epochs::UBIGINT = 21,
-       info.scheduled_workers::UBIGINT BETWEEN info.epochs::UBIGINT AND info.epochs::UBIGINT + 3
+       info.scheduled_workers::UBIGINT = info.epochs::UBIGINT
 FROM duckdb_logs_parsed('PhysicalOperator')
 WHERE class = 'PhysicalTrampoline' AND event = 'RuntimeMetrics';
 ----
 1	1
 
 query I
-SELECT info.workers_p50_upper_bound::UBIGINT = 1
+SELECT info.workers_max::UBIGINT = 1
 FROM duckdb_logs_parsed('PhysicalOperator')
 WHERE class = 'PhysicalTrampoline' AND event = 'EpochSummary';
 ----
