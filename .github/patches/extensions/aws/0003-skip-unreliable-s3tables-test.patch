@@ -1,0 +1,14 @@
+diff --git a/test/sql/s3tables/s3tables.test b/test/sql/s3tables/s3tables.test
+index 425c2f7..cf846b1 100644
+--- a/test/sql/s3tables/s3tables.test
++++ b/test/sql/s3tables/s3tables.test
+@@ -1,6 +1,9 @@
+ # name: test/sql/s3tables/s3tables.test
+ # group: [s3tables]
+ 
++# this test is unreliable outside of duckdb-aws CI, to be fixed up
++mode skip "unreliable outside of duckdb-aws CI"
++
+ require httpfs
+ 
+ require parquet

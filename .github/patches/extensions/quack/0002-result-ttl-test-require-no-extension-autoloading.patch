@@ -1,0 +1,12 @@
+diff --git a/test/sql/result_ttl_releases_query.test b/test/sql/result_ttl_releases_query.test
+--- a/test/sql/result_ttl_releases_query.test
++++ b/test/sql/result_ttl_releases_query.test
+@@ -2,6 +2,8 @@
+ # description: expiring a cache must release the abandoned server-side query too, not just the rows it retained
+ # group: [sql]
+ 
++require no_extension_autoloading "FIXME: ORDER_BY memory is already released at PREPARE when run with autoloading"
++
+ include test/template/quack_setup.test_template
+ 
+ statement ok quack_db:quack_server_con

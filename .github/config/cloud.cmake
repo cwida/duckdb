@@ -4,10 +4,12 @@ if (NOT DEFINED DUCKDB_MAIN_EXTENSION_CONFIG_TYPE OR DUCKDB_MAIN_EXTENSION_CONFI
 endif()
 
 if (NOT DEFINED DUCKDB_MAIN_EXTENSION_CONFIG_TYPE OR DUCKDB_MAIN_EXTENSION_CONFIG_TYPE STREQUAL "OUT_OF_TREE")
+    include("${EXTENSION_CONFIG_BASE_DIR}/avro.cmake")
     include("${EXTENSION_CONFIG_BASE_DIR}/aws.cmake")
     include("${EXTENSION_CONFIG_BASE_DIR}/azure.cmake")
     include("${EXTENSION_CONFIG_BASE_DIR}/ducklake.cmake")
     include("${EXTENSION_CONFIG_BASE_DIR}/glue.cmake")
     include("${EXTENSION_CONFIG_BASE_DIR}/httpfs.cmake")
     include("${EXTENSION_CONFIG_BASE_DIR}/iceberg.cmake")
+    include("${EXTENSION_CONFIG_BASE_DIR}/quack.cmake")
 endif()

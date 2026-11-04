@@ -1,0 +1,24 @@
+diff --git a/test/sql/local/iceberg_scans/iceberg_column_stats.test b/test/sql/local/iceberg_scans/iceberg_column_stats.test
+--- a/test/sql/local/iceberg_scans/iceberg_column_stats.test
++++ b/test/sql/local/iceberg_scans/iceberg_column_stats.test
+@@ -2,6 +2,8 @@
+ # description: test iceberg metadata function
+ # group: [iceberg_scans]
+ 
++require no_extension_autoloading "EXPECTED: the first statement checks the function is missing before the extension is loaded"
++
+ # Before we load the extension, this will fail
+ statement error
+ SELECT * FROM ICEBERG_COLUMN_STATS('{WORKING_DIRECTORY}/data/persistent/hive_partitioned_table') order by all;
+diff --git a/test/sql/local/iceberg_scans/iceberg_partition_stats.test b/test/sql/local/iceberg_scans/iceberg_partition_stats.test
+--- a/test/sql/local/iceberg_scans/iceberg_partition_stats.test
++++ b/test/sql/local/iceberg_scans/iceberg_partition_stats.test
+@@ -2,6 +2,8 @@
+ # description: test iceberg metadata function
+ # group: [iceberg_scans]
+ 
++require no_extension_autoloading "EXPECTED: the first statement checks the function is missing before the extension is loaded"
++
+ # Before we load the extension, this will fail
+ statement error
+ SELECT * FROM ICEBERG_PARTITION_STATS('{WORKING_DIRECTORY}/data/persistent/hive_partitioned_table') order by all;
