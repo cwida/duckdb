@@ -1491,7 +1491,6 @@ void UpdateSegment::Update(TransactionData transaction, DuckTableEntry &table_en
 		// if updates have the same value as the base row we can skip them
 		// we only do that if we have no updates for this vector
 		// we could do it otherwise - but that would require merging updates in order to find the current values
-		// base_data[i] is the base value of ids[i]
 		D_ASSERT(base_data.GetVectorType() == VectorType::FLAT_VECTOR);
 		count = get_effective_updates(update_format, count, sel, base_data);
 		if (count == 0) {
