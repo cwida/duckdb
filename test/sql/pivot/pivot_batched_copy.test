@@ -1,0 +1,75 @@
+# name: test/sql/pivot/pivot_batched_copy.test
+# description: Batched physical PIVOT preserves row selections, empty aggregates and nested values
+# group: [pivot]
+
+statement ok
+SET pivot_filter_threshold = 0;
+
+# Dense columns require an extra slot beyond a full output chunk; sparse columns
+# exercise nonzero source offsets, compacted destinations and missing rows.
+statement ok
+CREATE TABLE batched_input AS
+SELECT g, p,
+       CASE WHEN g % 7 != 0 THEN g * 10 + p END AS n,
+       CASE WHEN g % 7 != 0 THEN repeat(g::VARCHAR || ':' || p::VARCHAR || '☃', 25) END AS s,
+       CASE WHEN g % 7 != 0 THEN [[g, NULL], [], [p]] END AS l,
+       CASE WHEN g % 7 != 0 THEN {'g': g, 'payload': [p, NULL], 's': repeat(g::VARCHAR, 20)} END AS st,
+       CASE WHEN g % 7 != 0 THEN map(['g', 'p'], [g, p]) END AS m,
+       CASE WHEN g % 7 != 0 THEN [g, p]::BIGINT[2] END AS a,
+       CASE WHEN g % 7 != 0 THEN encode(repeat(g::VARCHAR || ':' || p::VARCHAR, 25)) END AS b
+FROM range(8195) groups(g), range(4) pivots(p)
+WHERE p != 1 OR g % 3 != 0;
+
+foreach threads 1 4
+
+statement ok
+SET threads = {threads};
+
+statement ok
+CREATE OR REPLACE TABLE batched_actual AS
+PIVOT batched_input ON p IN (0, 1, 2, 4)
+USING first(n) AS n, first(s) AS s, first(l) AS l, first(st) AS st,
+      first(m) AS m, first(a) AS a, first(b) AS b, count(n) AS c
+GROUP BY g;
+
+# Compare every field against independently selected source rows, including
+# an excluded pivot, present NULL values and non-NULL empty count defaults.
+query II
+SELECT count(*), count(*) FILTER (WHERE
+    a."0_n" IS DISTINCT FROM z.n OR a."0_s" IS DISTINCT FROM z.s OR
+    a."0_l" IS DISTINCT FROM z.l OR a."0_st" IS DISTINCT FROM z.st OR
+    a."0_m" IS DISTINCT FROM z.m OR a."0_a" IS DISTINCT FROM z.a OR
+    a."0_b" IS DISTINCT FROM z.b OR a."0_c" IS DISTINCT FROM (z.n IS NOT NULL)::BIGINT OR
+    a."1_n" IS DISTINCT FROM o.n OR a."1_s" IS DISTINCT FROM o.s OR
+    a."1_l" IS DISTINCT FROM o.l OR a."1_st" IS DISTINCT FROM o.st OR
+    a."1_m" IS DISTINCT FROM o.m OR a."1_a" IS DISTINCT FROM o.a OR
+    a."1_b" IS DISTINCT FROM o.b OR a."1_c" IS DISTINCT FROM (o.n IS NOT NULL)::BIGINT OR
+    a."2_n" IS DISTINCT FROM t.n OR a."2_s" IS DISTINCT FROM t.s OR
+    a."2_l" IS DISTINCT FROM t.l OR a."2_st" IS DISTINCT FROM t.st OR
+    a."2_m" IS DISTINCT FROM t.m OR a."2_a" IS DISTINCT FROM t.a OR
+    a."2_b" IS DISTINCT FROM t.b OR a."2_c" IS DISTINCT FROM (t.n IS NOT NULL)::BIGINT OR
+    a."4_n" IS NOT NULL OR a."4_s" IS NOT NULL OR a."4_l" IS NOT NULL OR
+    a."4_st" IS NOT NULL OR a."4_m" IS NOT NULL OR a."4_a" IS NOT NULL OR
+    a."4_b" IS NOT NULL OR a."4_c" IS DISTINCT FROM 0)
+FROM batched_actual a
+LEFT JOIN batched_input z ON a.g = z.g AND z.p = 0
+LEFT JOIN batched_input o ON a.g = o.g AND o.p = 1
+LEFT JOIN batched_input t ON a.g = t.g AND t.p = 2;
+----
+8195	0
+
+endloop
+
+statement ok
+CREATE TABLE empty_pivot_input(p VARCHAR, v BIGINT);
+
+query II
+PIVOT empty_pivot_input ON p IN ('missing') USING count(v) AS c, sum(v) AS s;
+----
+0	NULL
+
+statement ok
+RESET threads;
+
+statement ok
+RESET pivot_filter_threshold;
