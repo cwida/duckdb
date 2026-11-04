@@ -296,6 +296,8 @@ void MacroFunction::CopyProperties(MacroFunction &other) const {
 	}
 	other.types = types;
 	other.return_type = return_type;
+	other.dependencies_recorded = dependencies_recorded;
+	other.recorded_dependencies = recorded_dependencies;
 }
 
 vector<unique_ptr<ParsedExpression>>

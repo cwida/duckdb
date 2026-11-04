@@ -436,11 +436,33 @@ bool DuckSchemaEntry::DropMacroFunctionMember(CatalogTransaction transaction, Dr
 	auto removed_member = std::move(new_info.macros[member_idx.GetIndex()]);
 	new_info.macros.erase(new_info.macros.begin() + NumericCast<int64_t>(member_idx.GetIndex()));
 	new_info.temporary = existing.temporary;
-	if (transaction.context) {
-		// rebuild the dependency list from the surviving members: a dependency owned only by the
-		// removed member must not tie the replacement to a later cascade
-		Binder::CollectMacroDependencies(transaction.GetContext(), catalog, new_info, &existing, removed_member.get());
+	// derive the replacement's dependencies from the members' create-time attribution: a dependency
+	// owned only by the removed member must not tie the replacement to a later cascade
+	bool attribution_known = removed_member->dependencies_recorded;
+	for (auto &member : new_info.macros) {
+		attribution_known = attribution_known && member->dependencies_recorded;
 	}
+	if (!attribution_known && !new_info.dependencies.Set().empty()) {
+		throw CatalogException("Cannot drop an overload of %s: the entry was stored before member dependency "
+		                       "tracking, so its dependencies cannot be attributed to a single overload. Drop or "
+		                       "recreate the whole entry instead",
+		                       info.GetQualifiedName().Name());
+	}
+	LogicalDependencyList member_union = removed_member->recorded_dependencies;
+	LogicalDependencyList derived_dependencies;
+	for (auto &member : new_info.macros) {
+		for (auto &dep : member->recorded_dependencies.Set()) {
+			derived_dependencies.AddDependency(dep);
+			member_union.AddDependency(dep);
+		}
+	}
+	// entry-level dependencies no member accounts for are kept
+	for (auto &dep : new_info.dependencies.Set()) {
+		if (member_union.Set().count(dep) == 0) {
+			derived_dependencies.AddDependency(dep);
+		}
+	}
+	new_info.dependencies = std::move(derived_dependencies);
 	auto function = MacroCatalogEntry::Create(catalog, *this, new_info);
 	function->internal = existing.internal;
 	// the replacement is a fresh entry on purpose: the changed oid is what makes the existing

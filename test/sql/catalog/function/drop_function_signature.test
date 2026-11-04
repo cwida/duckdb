@@ -505,6 +505,129 @@ DROP SCHEMA sh_s2 CASCADE;
 statement ok
 DROP SCHEMA sh_s1 CASCADE;
 
+# per-member attribution: the removed member's resolution of a name does not release a survivor's
+# same-named dependency in another schema
+statement ok
+CREATE SCHEMA at_a;
+
+statement ok
+CREATE SCHEMA at_b;
+
+statement ok
+CREATE TABLE at_a.src(i INTEGER);
+
+statement ok
+CREATE TABLE at_b.src(i INTEGER);
+
+statement ok
+SET schema = 'at_b';
+
+statement ok
+CREATE MACRO at_a.f(x INTEGER) AS TABLE (SELECT * FROM src), (x VARCHAR) AS TABLE (SELECT * FROM at_a.src UNION ALL SELECT * FROM at_b.src);
+
+statement ok
+DROP MACRO at_a.f(VARCHAR);
+
+# the survivor bound at_b.src at CREATE: still protected
+statement error
+DROP TABLE at_b.src;
+----
+<REGEX>:.*depend.*
+
+# at_a.src belonged only to the removed member: released
+statement ok
+DROP TABLE at_a.src;
+
+statement ok
+RESET schema;
+
+statement ok
+DROP SCHEMA at_a CASCADE;
+
+statement ok
+DROP SCHEMA at_b CASCADE;
+
+# a dependency shared by the removed member and a survivor stays
+statement ok
+CREATE TABLE shared_src(i INTEGER);
+
+statement ok
+CREATE MACRO shared_dep(x INTEGER) AS (SELECT count(*) FROM shared_src), (x VARCHAR) AS (SELECT count(*) FROM shared_src), (x) AS 1;
+
+statement ok
+DROP MACRO shared_dep(VARCHAR);
+
+statement error
+DROP TABLE shared_src;
+----
+<REGEX>:.*depend.*
+
+statement ok
+DROP MACRO shared_dep(INTEGER);
+
+# the last member referencing it is gone: released
+statement ok
+DROP TABLE shared_src;
+
+statement ok
+DROP MACRO shared_dep;
+
+# a rolled back member drop leaves the original entry and its dependencies in place
+statement ok
+CREATE TABLE rb_src(i INTEGER);
+
+statement ok
+CREATE MACRO rb_dep(x INTEGER) AS (SELECT count(*) FROM rb_src), (x VARCHAR) AS x;
+
+statement ok
+BEGIN;
+
+statement ok
+DROP MACRO rb_dep(INTEGER);
+
+statement ok
+ROLLBACK;
+
+statement error
+DROP TABLE rb_src;
+----
+<REGEX>:.*depend.*
+
+query TT
+SELECT rb_dep(1), rb_dep('x');
+----
+0	x
+
+statement ok
+DROP TABLE rb_src CASCADE;
+
+# member attribution travels through COPY FROM DATABASE
+statement ok
+ATTACH ':memory:' AS attr_src;
+
+statement ok
+CREATE MACRO attr_src.main.cp(x INTEGER) AS 1, (x VARCHAR) AS 2;
+
+statement ok
+ATTACH ':memory:' AS attr_dst;
+
+statement ok
+COPY FROM DATABASE attr_src TO attr_dst;
+
+statement ok
+DROP MACRO attr_dst.main.cp(VARCHAR);
+
+query T
+SELECT attr_dst.main.cp(1);
+----
+1
+
+statement ok
+DETACH attr_src;
+
+statement ok
+DETACH attr_dst;
+
 statement ok
 SET enable_macro_dependencies = false;
 

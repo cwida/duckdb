@@ -338,11 +338,6 @@ public:
 	SchemaCatalogEntry &BindCreateFunctionInfo(CreateInfo &info);
 	//! Reject macro entries with declared RETURNS types in storage below v2.1.0
 	static void CheckMacroStorageVersion(Catalog &catalog, const CreateMacroInfo &info);
-	//! Rebuild info's dependency list by binding its members, skipping the excluded entry. An
-	//! original dependency is only dropped when the removed member accounts for it.
-	static void CollectMacroDependencies(ClientContext &context, Catalog &catalog, CreateMacroInfo &info,
-	                                     optional_ptr<CatalogEntry> exclude,
-	                                     optional_ptr<MacroFunction> removed_member);
 	SchemaCatalogEntry &BindCreateTriggerInfo(CreateTriggerInfo &info);
 
 	unique_ptr<BoundPragmaInfo> BindPragma(PragmaInfo &info, QueryErrorContext error_context);
