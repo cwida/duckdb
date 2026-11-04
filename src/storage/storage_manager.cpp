@@ -4,6 +4,7 @@
 #include "duckdb/common/enums/checkpoint_abort.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/common/extension_type_info.hpp"
 #include "duckdb/common/type_visitor.hpp"
 #include "duckdb/common/types/decimal.hpp"
 #include "duckdb/common/types/geometry.hpp"
@@ -241,6 +242,35 @@ bool StorageManager::TargetAtLeastVersion(StorageVersion target_version, Storage
 	return true;
 }
 
+//! The argument types recorded in the signature of an AGGREGATE_STATE type (see EncodeStateParameters)
+static vector<LogicalType> AggregateStateArgumentTypes(const LogicalType &state_type) {
+	vector<LogicalType> result;
+	auto ext_info = state_type.GetExtensionInfo();
+	if (!ext_info) {
+		return result;
+	}
+	auto entry = ext_info->properties.find("parameters");
+	if (entry == ext_info->properties.end() || entry->second.IsNull() ||
+	    entry->second.type().id() != LogicalTypeId::LIST) {
+		return result;
+	}
+	for (auto &parameter : ListValue::GetChildren(entry->second)) {
+		if (parameter.IsNull()) {
+			continue;
+		}
+		if (parameter.type().id() == LogicalTypeId::TYPE) {
+			result.push_back(TypeValue::GetType(parameter));
+		} else if (parameter.type().id() == LogicalTypeId::STRUCT) {
+			// a (type, value) pair of a parameter bound to a constant
+			auto &children = StructValue::GetChildren(parameter);
+			if (!children.empty() && !children[0].IsNull() && children[0].type().id() == LogicalTypeId::TYPE) {
+				result.push_back(TypeValue::GetType(children[0]));
+			}
+		}
+	}
+	return result;
+}
+
 string StorageManager::GetUnsupportedTypeReason(const LogicalType &logical_type) const {
 	const auto storage_version = GetStorageVersion();
 	auto unsupported = [&](const string &what, StorageVersion required) {
@@ -254,8 +284,16 @@ string StorageManager::GetUnsupportedTypeReason(const LogicalType &logical_type)
 		if (type.IsAggregateState()) {
 			if (storage_version < StorageVersion::V2_0_0) {
 				reason = unsupported("Aggregate state columns", StorageVersion::V2_0_0);
+				return true;
 			}
-			return !reason.empty();
+			// the argument types of the aggregate are stored with the state
+			for (auto &argument_type : AggregateStateArgumentTypes(type)) {
+				reason = GetUnsupportedTypeReason(argument_type);
+				if (!reason.empty()) {
+					return true;
+				}
+			}
+			return false;
 		}
 		switch (type.id()) {
 		case LogicalTypeId::STRUCT:
