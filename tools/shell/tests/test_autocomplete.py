@@ -428,3 +428,72 @@ def test_tab_completion_preserves_text_after_cursor(shell, tmp_path, autocomplet
 
 
 # fmt: on
+
+
+def run_interactive(shell, cwd, keys, history):
+    import pty
+    import select
+    import time
+
+    def drain(fd, wait_for_prompt=False):
+        # read until the shell is idle, answering cursor position queries like a terminal would
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            ready, _, _ = select.select([fd], [], [], 0.3)
+            if not ready:
+                if wait_for_prompt:
+                    continue
+                return
+            try:
+                chunk = os.read(fd, 65536)
+            except OSError:
+                return
+            if not chunk:
+                return
+            if b"\x1b[6n" in chunk:
+                # the shell queries the cursor position when it shows the prompt
+                wait_for_prompt = False
+                os.write(fd, b"\x1b[1;1R")
+
+    env = ShellTest(shell).get_environment()
+    env["TERM"] = "xterm"
+    env["DUCKDB_HISTORY"] = str(history)
+    master, slave = pty.openpty()
+    process = subprocess.Popen(
+        [os.path.abspath(shell), "-no-init", "-dark-mode"], stdin=slave, stdout=slave, stderr=slave, cwd=cwd, env=env
+    )
+    os.close(slave)
+    try:
+        drain(master, wait_for_prompt=True)
+        # submit the line, terminating it with an extra ';' if the completion dropped it
+        for key in keys + ["\r", ";\r", ".exit\r"]:
+            os.write(master, key.encode())
+            drain(master)
+        process.wait(timeout=30)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        os.close(master)
+    return history.read_text().splitlines()[0]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires a POSIX pseudo-terminal")
+@pytest.mark.parametrize(
+    "keys, expected",
+    [
+        # 'describe from '|';' - complete the common prefix, then cycle to the first match
+        (["describe from '';", "\x1b[D" * 2, "ta", "\t", "\t"], "describe from 'table_one.parquet';"),
+        # complete the common prefix, then narrow down by typing
+        (["describe from '';", "\x1b[D" * 2, "ta", "\t", "tw", "\t"], "describe from 'table_two.parquet';"),
+        # longer text after the cursor
+        (
+            ["describe from ''; select 42;", "\x1b[D" * 13, "ta", "\t", "th", "\t"],
+            "describe from 'table_three.parquet'; select 42;",
+        ),
+    ],
+)
+def test_tab_complete_keeps_text_after_cursor(shell, autocomplete_extension, tmp_path, keys, expected):
+    for name in ["table_one.parquet", "table_two.parquet", "table_three.parquet"]:
+        (tmp_path / name).touch()
+    assert run_interactive(shell, tmp_path, keys, tmp_path / "history") == expected
