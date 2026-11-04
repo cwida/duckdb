@@ -1,0 +1,104 @@
+# name: test/sql/table_function/external_resources_unknown_type_filter.test
+# description: A WHERE on `type` over discovery naming a type nothing provides is an error, not an empty result
+# group: [table_function]
+
+# The optimizer pushes the filter into the empty duckdb_external_resource_type_check branch, whose pushdown
+# hook raises the error. Without the optimizer there is nothing to push and the result is simply empty, which
+# is why this test is skipped in that configuration.
+
+statement ok
+CREATE SEQUENCE calls_a;
+
+statement ok
+CREATE MACRO list_a(opts) AS TABLE
+    SELECT MAP {'id': 'a' || nextval('calls_a')::VARCHAR} AS handle, 'a-ref' AS reference, 'running' AS state;
+
+statement ok
+CALL register_external_resource_type('a@uf', kind := 'catalog', create_function := 'noop_create', list_function := 'list_a');
+
+# A known type is fine, and runs its callback.
+query TT
+SELECT type, handle FROM duckdb_external_resources(discover := true) WHERE type = 'a@uf';
+----
+a@uf	{id=a1}
+
+# An unknown type is an error, as with the `type` parameter, and no callback runs.
+statement error
+SELECT * FROM duckdb_external_resources(discover := true) WHERE type = 'none@uf';
+----
+<REGEX>:.*unknown resource type "none@uf".*
+
+statement error
+SELECT * FROM duckdb_external_resources(discover := true) WHERE 'none@uf' = type;
+----
+<REGEX>:.*unknown resource type "none@uf".*
+
+statement error
+SELECT * FROM duckdb_external_resources(discover := true) WHERE type IN ('a@uf', 'none@uf');
+----
+<REGEX>:.*unknown resource type "none@uf".*
+
+statement error
+SELECT * FROM duckdb_external_resources(discover := true) WHERE type = 'a@uf' OR type = 'none@uf';
+----
+<REGEX>:.*unknown resource type "none@uf".*
+
+statement error
+SELECT * FROM duckdb_external_resources(discover := true) WHERE type = 'none@uf' AND handle['id'] = 'x';
+----
+<REGEX>:.*unknown resource type "none@uf".*
+
+query I
+SELECT currval('calls_a');
+----
+1
+
+# Only equality and IN are checked; a pattern or an inequality cannot name a type and gives the plain result.
+query I
+SELECT count(*) FROM duckdb_external_resources(discover := true) WHERE type LIKE 'none%';
+----
+0
+
+query I
+SELECT count(*) FROM duckdb_external_resources(discover := true) WHERE type <> 'none@uf';
+----
+1
+
+# A filter on another column is not a type check.
+query I
+SELECT count(*) FROM duckdb_external_resources(discover := true) WHERE managed;
+----
+0
+
+# A type nothing provides but the registry knows is not unknown.
+statement ok
+CALL register_external_resource('orphan@uf', 'kept', MAP {'id': 'o'});
+
+query TTT
+SELECT name, type, managed FROM duckdb_external_resources(discover := true) WHERE type = 'orphan@uf';
+----
+kept	orphan@uf	true
+
+# Without discovery there is nothing to check: the registry listing of an unknown type is just empty.
+query I
+SELECT count(*) FROM duckdb_external_resources() WHERE type = 'none@uf';
+----
+0
+
+# The check is for discovery of all types; with the `type` parameter the check happens at bind time instead.
+statement error
+SELECT * FROM duckdb_external_resources(discover := true, type := 'none@uf');
+----
+<REGEX>:.*unknown resource type "none@uf".*
+
+# A NULL compares with nothing and names no type.
+query I
+SELECT count(*) FROM duckdb_external_resources(discover := true) WHERE type = NULL;
+----
+0
+
+# A type an extension is known to provide (extension_entries.hpp) names that extension. Nothing is loaded here.
+statement error
+SELECT * FROM duckdb_external_resources(discover := true) WHERE type = 'aws:cloudformation:quack-on-ec2';
+----
+<REGEX>:.*unknown resource type "aws:cloudformation:quack-on-ec2".*provided by the aws extension.*INSTALL aws; LOAD aws;.*

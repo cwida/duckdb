@@ -10,6 +10,12 @@
 #include "duckdb/parser/qualified_name.hpp"
 #include "duckdb/parser/statement/select_statement.hpp"
 #include "duckdb/parser/tableref/subqueryref.hpp"
+#include "duckdb/planner/expression/bound_columnref_expression.hpp"
+#include "duckdb/planner/expression/bound_comparison_expression.hpp"
+#include "duckdb/planner/expression/bound_conjunction_expression.hpp"
+#include "duckdb/planner/expression/bound_constant_expression.hpp"
+#include "duckdb/planner/expression/bound_operator_expression.hpp"
+#include "duckdb/planner/operator/logical_get.hpp"
 
 namespace duckdb {
 
@@ -24,7 +30,9 @@ namespace duckdb {
 // each tagged with its type name and anti-joined against the registry, so a resource registered here is
 // shown once, as managed. A `type` restriction leaves out the other types' branches up front, and a
 // `WHERE type = ...` on the result is pushed into the branches by the optimizer, where it folds to a
-// constant and drops the branch - so only the callbacks of the types asked for run.
+// constant and drops the branch - so only the callbacks of the types asked for run. A last, empty branch
+// (duckdb_external_resource_type_check, below) receives that pushed filter too, and turns a type name
+// neither registry knows into an error instead of an empty result.
 //===--------------------------------------------------------------------===//
 
 struct ExternalResourcesParameters {
@@ -69,6 +77,24 @@ static bool RegistryHasType(ClientContext &context, const string &type) {
 	return false;
 }
 
+//! A type nothing provides but the registry knows (its extension is not loaded, or it was registered as an opaque
+//! type) has nothing to discover, like a type without a list callback. A type neither knows is most likely a typo,
+//! or a missing extension.
+static bool IsKnownType(ClientContext &context, const string &type) {
+	return ExternalResourceTypeRegistry::Get(context).Lookup(type) || RegistryHasType(context, type);
+}
+
+static InvalidInputException UnknownResourceType(const string &type) {
+	auto extension = ExternalResourceTypeRegistry::ProvidingExtension(type);
+	if (!extension.empty()) {
+		return InvalidInputException(
+		    "duckdb_external_resources: unknown resource type \"%s\": it is provided by the %s "
+		    "extension, which is not loaded. Try: INSTALL %s; LOAD %s;",
+		    type, extension, extension, extension);
+	}
+	return InvalidInputException("duckdb_external_resources: unknown resource type \"%s\"", type);
+}
+
 static unique_ptr<TableRef> ExternalResourcesBindReplace(ClientContext &context, TableFunctionBindInput &input) {
 	auto params = ReadParameters(input);
 	if (!params.discover) {
@@ -105,11 +131,13 @@ static unique_ptr<TableRef> ExternalResourcesBindReplace(ClientContext &context,
 		    "ANTI JOIN %s AS registry ON %s.handle = registry.handle",
 		    type_literal, alias, alias, alias, callback, alias, RegistryScan(type.name), alias));
 	}
-	// A type nothing provides but the registry knows (its extension is not loaded, or it was registered as an
-	// opaque type) has nothing to discover, like a type without a list callback. A type neither knows is most
-	// likely a typo, or a missing extension.
-	if (!matched && !params.type.empty() && !RegistryHasType(context, params.type)) {
-		throw InvalidInputException("duckdb_external_resources: unknown resource type \"%s\"", params.type);
+	if (!params.type.empty()) {
+		if (!matched && !RegistryHasType(context, params.type)) {
+			throw UnknownResourceType(params.type);
+		}
+	} else {
+		// Catches a `WHERE type = ...` naming a type no branch above is for (see duckdb_external_resource_type_check).
+		branches.push_back("SELECT * FROM duckdb_external_resource_type_check()");
 	}
 	Parser parser(context);
 	parser.ParseQuery(StringUtil::Join(branches, " UNION ALL "));
@@ -126,11 +154,10 @@ struct ExternalResourcesGlobalState : public GlobalTableFunctionState {
 	idx_t offset = 0;
 };
 
-static unique_ptr<FunctionData> ExternalResourcesBind(ClientContext &context, TableFunctionBindInput &input,
-                                                      vector<LogicalType> &return_types, vector<Identifier> &names) {
-	auto result = make_uniq<ExternalResourcesBindData>();
-	result->type = ReadParameters(input).type;
+//! The position of `type` in the columns below.
+static constexpr idx_t TYPE_COLUMN = 1;
 
+static void ExternalResourceColumns(vector<LogicalType> &return_types, vector<Identifier> &names) {
 	names.emplace_back("name");
 	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("type");
@@ -147,6 +174,13 @@ static unique_ptr<FunctionData> ExternalResourcesBind(ClientContext &context, Ta
 	return_types.emplace_back(LogicalType::VARCHAR);
 	names.emplace_back("handle");
 	return_types.emplace_back(LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR));
+}
+
+static unique_ptr<FunctionData> ExternalResourcesBind(ClientContext &context, TableFunctionBindInput &input,
+                                                      vector<LogicalType> &return_types, vector<Identifier> &names) {
+	auto result = make_uniq<ExternalResourcesBindData>();
+	result->type = ReadParameters(input).type;
+	ExternalResourceColumns(return_types, names);
 	return std::move(result);
 }
 
@@ -185,6 +219,107 @@ static void ExternalResourcesFunction(ClientContext &context, TableFunctionInput
 	}
 }
 
+//===--------------------------------------------------------------------===//
+// duckdb_external_resource_type_check()
+//
+// An empty scan with the columns of duckdb_external_resources, the last branch of the discovery rewrite. It is
+// there for its filter pushdown hook: a `WHERE type = ...` on discovery is pushed into every branch, and every
+// typed branch folds away, so the type names asked for are only visible here. A name neither registry knows
+// is the same error the `type` parameter gives, instead of an empty result. The scan itself never throws: with
+// no filter, or without the optimizer, the hook is not called and the branch is simply empty.
+//===--------------------------------------------------------------------===//
+
+static bool IsTypeColumn(const LogicalGet &get, const Expression &expr) {
+	if (expr.GetExpressionType() != ExpressionType::BOUND_COLUMN_REF) {
+		return false;
+	}
+	auto &binding = expr.Cast<BoundColumnRefExpression>().Binding();
+	if (binding.table_index != get.table_index) {
+		return false;
+	}
+	auto &column_ids = get.GetColumnIds();
+	return binding.column_index < column_ids.size() &&
+	       column_ids[binding.column_index].GetPrimaryIndex() == TYPE_COLUMN;
+}
+
+static void AddTypeConstant(const Expression &expr, vector<string> &types) {
+	if (expr.GetExpressionType() != ExpressionType::VALUE_CONSTANT) {
+		return;
+	}
+	auto &value = expr.Cast<BoundConstantExpression>().GetValue();
+	if (value.IsNull() || value.type().id() != LogicalTypeId::VARCHAR) {
+		return;
+	}
+	types.push_back(StringValue::Get(value));
+}
+
+//! The type names a filter compares `type` against: `type = 'x'`, `type IN ('x', ...)`, and AND/OR of those.
+static void CollectTypeConstants(const LogicalGet &get, const Expression &expr, vector<string> &types) {
+	switch (expr.GetExpressionType()) {
+	case ExpressionType::COMPARE_EQUAL: {
+		if (expr.GetExpressionClass() != ExpressionClass::BOUND_FUNCTION) {
+			break;
+		}
+		auto &cmp = expr.Cast<BoundFunctionExpression>();
+		auto &left = BoundComparisonExpression::Left(cmp);
+		auto &right = BoundComparisonExpression::Right(cmp);
+		if (IsTypeColumn(get, left)) {
+			AddTypeConstant(right, types);
+		} else if (IsTypeColumn(get, right)) {
+			AddTypeConstant(left, types);
+		}
+		break;
+	}
+	case ExpressionType::COMPARE_IN: {
+		auto &children = expr.Cast<BoundOperatorExpression>().GetChildren();
+		if (children.empty() || !IsTypeColumn(get, *children[0])) {
+			break;
+		}
+		for (idx_t i = 1; i < children.size(); i++) {
+			AddTypeConstant(*children[i], types);
+		}
+		break;
+	}
+	case ExpressionType::CONJUNCTION_AND:
+	case ExpressionType::CONJUNCTION_OR: {
+		for (auto &child : expr.Cast<BoundConjunctionExpression>().GetChildren()) {
+			CollectTypeConstants(get, *child, types);
+		}
+		break;
+	}
+	default:
+		break;
+	}
+}
+
+static void TypeCheckPushdown(ClientContext &context, LogicalGet &get, FunctionData *bind_data,
+                              vector<unique_ptr<Expression>> &filters) {
+	// The filters stay where they are: this scan has no rows for them to apply to.
+	vector<string> types;
+	for (auto &filter : filters) {
+		CollectTypeConstants(get, *filter, types);
+	}
+	for (auto &type : types) {
+		if (!IsKnownType(context, type)) {
+			throw UnknownResourceType(type);
+		}
+	}
+}
+
+static unique_ptr<FunctionData> TypeCheckBind(ClientContext &context, TableFunctionBindInput &input,
+                                              vector<LogicalType> &return_types, vector<Identifier> &names) {
+	ExternalResourceColumns(return_types, names);
+	return make_uniq<TableFunctionData>();
+}
+
+static unique_ptr<GlobalTableFunctionState> TypeCheckInit(ClientContext &context, TableFunctionInitInput &input) {
+	return make_uniq<GlobalTableFunctionState>();
+}
+
+static void TypeCheckFunction(ClientContext &context, TableFunctionInput &data_p, DataChunk &output) {
+	// no rows
+}
+
 void DuckDBExternalResourcesFun::RegisterFunction(BuiltinFunctions &set) {
 	TableFunction fn("duckdb_external_resources", {}, ExternalResourcesFunction, ExternalResourcesBind,
 	                 ExternalResourcesInit);
@@ -193,6 +328,11 @@ void DuckDBExternalResourcesFun::RegisterFunction(BuiltinFunctions &set) {
 		options.Add("discover", LogicalType::BOOLEAN).Add("type", LogicalType::VARCHAR);
 	});
 	set.AddFunction(fn);
+
+	TableFunction type_check("duckdb_external_resource_type_check", {}, TypeCheckFunction, TypeCheckBind,
+	                         TypeCheckInit);
+	type_check.pushdown_complex_filter = TypeCheckPushdown;
+	set.AddFunction(type_check);
 }
 
 //===--------------------------------------------------------------------===//

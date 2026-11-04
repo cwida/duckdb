@@ -51,11 +51,16 @@ SELECT currval('calls_a'), currval('calls_b');
 ----
 2	2
 
-# IN
-query TT
-SELECT type, handle FROM duckdb_external_resources(discover := true) WHERE type IN ('a@wp', 'none@wp');
+# IN. A type nothing provides but the registry knows has no callback branch to prune; an unknown type would be an
+# error (see external_resources_unknown_type_filter.test).
+statement ok
+CALL register_external_resource('orphan@wp', 'kept', MAP {'id': 'o'});
+
+query TT rowsort
+SELECT type, handle FROM duckdb_external_resources(discover := true) WHERE type IN ('a@wp', 'orphan@wp');
 ----
 a@wp	{id=a3}
+orphan@wp	{id=o}
 
 query II
 SELECT currval('calls_a'), currval('calls_b');
@@ -74,21 +79,22 @@ SELECT currval('calls_a'), currval('calls_b');
 3	3
 
 # <>
-query TT
+query TT rowsort
 SELECT type, handle FROM duckdb_external_resources(discover := true) WHERE type <> 'b@wp';
 ----
 a@wp	{id=a4}
+orphan@wp	{id=o}
 
 query II
 SELECT currval('calls_a'), currval('calls_b');
 ----
 4	3
 
-# A type no registered type matches calls no callback at all.
+# A type with no callback branch calls no callback at all.
 query I
-SELECT count(*) FROM duckdb_external_resources(discover := true) WHERE type = 'none@wp';
+SELECT count(*) FROM duckdb_external_resources(discover := true) WHERE type = 'orphan@wp';
 ----
-0
+1
 
 query II
 SELECT currval('calls_a'), currval('calls_b');
