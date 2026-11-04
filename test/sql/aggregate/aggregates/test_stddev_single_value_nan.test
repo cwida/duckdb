@@ -1,3 +1,7 @@
+# name: test/sql/aggregate/aggregates/test_stddev_single_value_nan.test
+# description: population variance/stddev of a single NaN or inf value is NaN
+# group: [aggregates]
+
 # Single-value (count == 1) population variance / standard deviation must
 # propagate NaN for a lone NaN or inf input instead of reporting 0.0.
 # Regression test for https://github.com/duckdb/duckdb/issues/28329
