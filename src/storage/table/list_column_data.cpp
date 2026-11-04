@@ -2,6 +2,8 @@
 #include "duckdb/common/vector/flat_vector.hpp"
 #include "duckdb/common/vector/list_vector.hpp"
 #include "duckdb/storage/table/list_column_data.hpp"
+#include "duckdb/common/vector/vector_iterator.hpp"
+#include <deque>
 #include "duckdb/storage/statistics/list_stats.hpp"
 #include "duckdb/common/serializer/deserializer.hpp"
 #include "duckdb/storage/table/column_checkpoint_state.hpp"
@@ -413,20 +415,26 @@ void ListColumnData::SetChildData(shared_ptr<ColumnData> child_column_p) {
 	this->child_column = std::move(child_column_p);
 }
 
+void ListColumnData::ScanValidityForCheckpoint(idx_t offset_in_column, idx_t count, Vector &result) {
+	validity->ScanCommittedRange(0, offset_in_column, count, result);
+}
+
 struct ListColumnCheckpointState : public ColumnCheckpointState {
+	static constexpr uint64_t INVALID_LENGTH = NumericLimits<uint64_t>::Maximum();
+
 	ListColumnCheckpointState(const RowGroup &row_group, ColumnData &column_data,
 	                          PartialBlockManager &partial_block_manager)
 	    : ColumnCheckpointState(row_group, column_data, partial_block_manager) {
 		global_stats = ListStats::CreateEmpty(column_data.type).ToUnique();
-		length_data = ListStats::GetLengthData(*global_stats);
 	}
 
 	unique_ptr<ColumnCheckpointState> validity_state;
 	unique_ptr<ColumnCheckpointState> child_state;
-	//! The list length stats of the column, which cannot be rebuilt from the offsets that are checkpointed
-	ListStatsData length_data;
-	//! Whether the first segment, which stores the list length stats, was flushed
-	bool flushed_first_segment = false;
+	//! The lengths of the scanned lists that are not yet part of a flushed segment, NULL lists are marked as invalid
+	std::deque<uint64_t> pending_lengths;
+	//! The number of rows that were scanned, and the offset at the end of the last scanned row
+	idx_t scanned_rows = 0;
+	uint64_t previous_offset = 0;
 
 public:
 	shared_ptr<ColumnData> CreateEmptyColumnData() override {
@@ -449,23 +457,46 @@ public:
 		auto stats = global_stats->Copy();
 		stats.Merge(*validity_state->GetStatistics());
 		ListStats::SetChildStats(stats, child_state->GetStatistics());
-		ListStats::SetLengthData(stats, length_data);
 		return stats.ToUnique();
 	}
 
-	void InitializeStatistics(const BaseStatistics &column_stats) override {
-		length_data = ListStats::GetLengthData(column_stats);
+	void ObserveScan(const Vector &scan_vector) override {
+		// the offsets that are compressed do not contain the validity, so scan it separately
+		auto count = scan_vector.size();
+		Vector validity_vector(LogicalType::UBIGINT, count);
+		GetOriginalColumn().Cast<ListColumnData>().ScanValidityForCheckpoint(scanned_rows, count, validity_vector);
+		auto offsets = scan_vector.Values<uint64_t>();
+		auto validity = validity_vector.Values<uint64_t>();
+		for (idx_t i = 0; i < count; i++) {
+			auto offset = offsets[i].GetValue();
+			pending_lengths.push_back(validity[i].IsValid() ? offset - previous_offset : INVALID_LENGTH);
+			previous_offset = offset;
+		}
+		scanned_rows += count;
 	}
 
 	void FlushSegmentInternal(unique_ptr<ColumnSegment> segment, idx_t segment_size) override {
-		if (segment->count > 0) {
-			// every segment stores the bounds of the column and the first segment stores the total
-			auto segment_data = length_data;
-			if (flushed_first_segment) {
-				segment_data.total_list_length = 0;
+		idx_t segment_count = segment->count;
+		if (segment_count > 0) {
+			// the segment stores the list length stats of exactly the rows it contains
+			auto &segment_stats = segment->GetStatsMutable();
+			if (pending_lengths.size() < segment_count) {
+				ListStats::SetLengthBounds(segment_stats, optional_idx(), optional_idx());
+			} else {
+				ListStats::ResetLengthData(segment_stats);
+				auto segment_data = ListStats::GetLengthData(segment_stats);
+				for (idx_t i = 0; i < segment_count; i++) {
+					auto length = pending_lengths.front();
+					pending_lengths.pop_front();
+					if (length == INVALID_LENGTH) {
+						continue;
+					}
+					segment_data.min_list_length = MinValue<uint64_t>(segment_data.min_list_length, length);
+					segment_data.max_list_length = MaxValue<uint64_t>(segment_data.max_list_length, length);
+					segment_data.total_list_length += length;
+				}
+				ListStats::SetLengthData(segment_stats, segment_data);
 			}
-			ListStats::SetLengthData(segment->GetStatsMutable(), segment_data);
-			flushed_first_segment = true;
 		}
 		ColumnCheckpointState::FlushSegmentInternal(std::move(segment), segment_size);
 	}

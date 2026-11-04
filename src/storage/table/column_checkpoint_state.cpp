@@ -21,7 +21,7 @@ unique_ptr<BaseStatistics> ColumnCheckpointState::GetStatistics() {
 	return std::move(global_stats);
 }
 
-void ColumnCheckpointState::InitializeStatistics(const BaseStatistics &column_stats) {
+void ColumnCheckpointState::ObserveScan(const Vector &scan_vector) {
 }
 
 shared_ptr<ColumnData> ColumnCheckpointState::CreateEmptyColumnData() {

@@ -1026,7 +1026,6 @@ ColumnData::Checkpoint(const RowGroup &row_group, ColumnCheckpointInfo &checkpoi
 	auto &partial_block_manager = checkpoint_info.GetPartialBlockManager();
 	auto checkpoint_state = CreateCheckpointState(row_group, partial_block_manager);
 	checkpoint_state->global_stats = BaseStatistics::CreateEmpty(type).ToUnique();
-	checkpoint_state->InitializeStatistics(stats);
 
 	if (!data.GetRootSegment()) {
 		// empty table: flush the empty list

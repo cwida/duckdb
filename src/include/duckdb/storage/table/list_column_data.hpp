@@ -66,6 +66,8 @@ public:
 	                          const ColumnSegmentInfoScanOptions &options) override;
 
 	void SetValidityData(shared_ptr<ValidityColumnData> validity_p);
+	//! Scans the committed validity of a range of rows into the validity mask of the result
+	void ScanValidityForCheckpoint(idx_t offset_in_column, idx_t count, Vector &result);
 	void SetChildData(shared_ptr<ColumnData> child_column_p);
 
 	const BaseStatistics &GetChildStats(const ColumnData &child) const override;
