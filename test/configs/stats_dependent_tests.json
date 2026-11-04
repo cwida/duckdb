@@ -88,6 +88,12 @@
         "test/sql/optimizer/secure_view_statistics.test",
         "test/sql/window/test_window_agg_stats_propagation.test"
       ]
+    },
+    {
+      "reason": "Trampoline independent-source wave parallelism is sized by optimizer cardinality estimates.",
+      "paths": [
+        "test/sql/cte/trampoline/trampoline_source_sizing.test"
+      ]
     }
   ]
 }
