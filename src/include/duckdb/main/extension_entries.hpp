@@ -1504,6 +1504,7 @@ static constexpr ExtensionEntry EXTENSION_SETTINGS[] = {
     {"s3_url_compatibility_mode", "httpfs"},
     {"s3_url_scheme_aliases", "httpfs"},
     {"s3_url_style", "httpfs"},
+    {"s3_use_global_endpoint", "httpfs"},
     {"s3_use_ssl", "httpfs"},
     {"s3_version_id_pinning", "httpfs"},
     {"sqlite_all_varchar", "sqlite_scanner"},
