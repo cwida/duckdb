@@ -91,7 +91,8 @@ SinkCombineResultType PhysicalRecursiveCTE::Combine(ExecutionContext &context, O
 SourceResultType PhysicalRecursiveCTE::GetDataInternal(ExecutionContext &context, DataChunk &chunk,
                                                        OperatorSourceInput &input) const {
 	auto &gstate = sink_state->Cast<RecursiveCTEState>();
-	return gstate.GetData(context, chunk, input.global_state.Cast<RecursiveCTEGlobalSourceState>());
+	return gstate.GetData(context, chunk, input.global_state.Cast<RecursiveCTEGlobalSourceState>(),
+	                      input.interrupt_state);
 }
 
 unique_ptr<GlobalSourceState> PhysicalRecursiveCTE::GetGlobalSourceState(ClientContext &context) const {
