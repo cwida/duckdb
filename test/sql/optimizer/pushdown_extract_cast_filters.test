@@ -35,7 +35,10 @@ SELECT v.n::INTEGER FROM {SOURCE} WHERE v.n::VARCHAR <> 'bad' AND id IN (1, 3) O
 42
 7
 
-# joins drop rows as well
+# joins drop rows as well, without the join filter that would already drop the row in the scan
+statement ok
+SET disabled_optimizers = 'join_filter_pushdown'
+
 query I
 SELECT v.n::INTEGER FROM {SOURCE} WHERE id IN (SELECT unnest([1, 3])) ORDER BY id
 ----
@@ -53,6 +56,9 @@ SELECT v.n::INTEGER FROM {SOURCE} WHERE id NOT IN (SELECT unnest([0, 2])) ORDER 
 ----
 42
 7
+
+statement ok
+SET disabled_optimizers = ''
 
 # a cast the filter itself needs still runs on every row
 statement error
