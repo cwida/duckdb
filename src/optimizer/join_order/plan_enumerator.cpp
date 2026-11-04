@@ -406,6 +406,18 @@ bool PlanEnumerator::SolveJoinOrderExactly() {
 }
 
 bool PlanEnumerator::SolveJoinOrderApproximately() {
+	// Keep the incoming join order as a candidate for the greedy search.
+	for (auto &op : query_graph_manager.GetJoinOperators()) {
+		auto &left = op->left_relations.get();
+		auto &right = op->right_relations.get();
+		if (plans.find(left) == plans.end() || plans.find(right) == plans.end()) {
+			continue;
+		}
+		auto &connections = GetConnections(left, right);
+		if (!connections.empty()) {
+			EmitPair(left, right, connections);
+		}
+	}
 	// at this point, we exited the dynamic programming but did not compute the final join order because it took too
 	// long instead, we use a greedy heuristic to obtain a join ordering now we use Greedy Operator Ordering to
 	// construct the result tree first we start out with all the base relations (the to-be-joined relations)
