@@ -16,10 +16,12 @@
 #include "duckdb/planner/operator/logical_aggregate.hpp"
 #include "duckdb/planner/operator/logical_column_data_get.hpp"
 #include "duckdb/planner/operator/logical_comparison_join.hpp"
+#include "duckdb/planner/operator/logical_cteref.hpp"
 #include "duckdb/planner/operator/logical_distinct.hpp"
 #include "duckdb/planner/operator/logical_dummy_scan.hpp"
 #include "duckdb/planner/operator/logical_expression_get.hpp"
 #include "duckdb/planner/operator/logical_filter.hpp"
+#include "duckdb/planner/operator/logical_materialized_cte.hpp"
 #include "duckdb/planner/operator/logical_projection.hpp"
 #include "duckdb/parser/expression_map.hpp"
 
@@ -54,10 +56,12 @@ static bool HasImplicitBitstringAggregate(const LogicalOperator &op) {
 	return false;
 }
 
-void DuplicateEliminatedDomainOptimizer::Optimize(LogicalOperator &op) {
+void DuplicateEliminatedDomainOptimizer::Optimize(unique_ptr<LogicalOperator> &op) {
 	// Implicit bitstring bounds depend on statistics, including those propagated through CTE references.
-	if (!HasImplicitBitstringAggregate(op)) {
+	if (!HasImplicitBitstringAggregate(*op)) {
+		op->ResolveOperatorTypes();
 		VisitOperator(op);
+		op->ResolveOperatorTypes();
 	}
 }
 
@@ -335,9 +339,9 @@ static bool HasRuntimeFilterTargets(LogicalAggregate &aggregate) {
 	return !targets.empty();
 }
 
-static bool IsProfitable(ClientContext &context, LogicalAggregate &aggregate, LogicalComparisonJoin &restriction,
-                         LogicalOperator &domain) {
-	RelationStatsExtractor extractor(context);
+static bool IsProfitable(RelationStatsExtractor &extractor, LogicalAggregate &aggregate,
+                         LogicalComparisonJoin &restriction, LogicalOperator &domain, double key_input_rows,
+                         double source_read_write_work) {
 	auto input = extractor.Extract(*aggregate.children[0]);
 	auto groups = extractor.Extract(aggregate);
 	auto keys = extractor.Extract(domain);
@@ -358,13 +362,12 @@ static bool IsProfitable(ClientContext &context, LogicalAggregate &aggregate, Lo
 	auto restricted_rows = estimate.cardinality;
 	auto original_groups = static_cast<double>(groups->cardinality);
 	auto restricted_groups = static_cast<double>(group_count);
-	auto fixed_key_rows = static_cast<double>(domain.children[0]->Cast<LogicalExpressionGet>().expressions.size());
 	auto distinct_key_rows = static_cast<double>(keys->cardinality);
 	// Cancel unchanged input/caller work and the consumer's identical output.
 	auto canonical = EstimateAggregateWork(aggregate, input_rows, original_groups);
 	auto candidate = EstimateAggregateWork(aggregate, restricted_rows, restricted_groups) +
 	                 EstimateSemiJoinWork(input_rows, restricted_rows, distinct_key_rows) +
-	                 EstimateFixedDomainWork(fixed_key_rows, distinct_key_rows);
+	                 EstimateFixedDomainWork(key_input_rows, distinct_key_rows) + source_read_write_work;
 	return IsCheaper(candidate, canonical);
 }
 
@@ -477,7 +480,115 @@ static bool TryOptimizeRestriction(Optimizer &optimizer, LogicalAggregate &aggre
 	return true;
 }
 
-static bool TryOptimizeDomain(Optimizer &optimizer, LogicalComparisonJoin &join, idx_t aggregate_side) {
+static optional_ptr<LogicalCTERef> FindSharedKey(LogicalOperator &op, idx_t &key) {
+	if (op.type == LogicalOperatorType::LOGICAL_PROJECTION) {
+		auto index = ReferenceIndex(*op.expressions[key], *op.children[0]);
+		if (!index.IsValid()) {
+			return nullptr;
+		}
+		key = index.GetIndex();
+		return FindSharedKey(*op.children[0], key);
+	}
+	if (op.type == LogicalOperatorType::LOGICAL_DISTINCT) {
+		return FindSharedKey(*op.children[0], key);
+	}
+	if (op.type != LogicalOperatorType::LOGICAL_CTE_REF) {
+		return nullptr;
+	}
+	auto &reference = op.Cast<LogicalCTERef>();
+	return reference.is_recurring || reference.correlated_columns ? nullptr : &reference;
+}
+
+bool DuplicateEliminatedDomainOptimizer::TryOptimizeRuntimeDomain(unique_ptr<LogicalOperator> &op,
+                                                                  LogicalAggregate &aggregate, idx_t aggregate_side,
+                                                                  idx_t demand_index) {
+	auto &join = op->Cast<LogicalComparisonJoin>();
+	if (join.join_type != JoinType::SINGLE && HasRuntimeFilterTargets(aggregate)) {
+		return false;
+	}
+	auto &demand = *join.children[1 - aggregate_side];
+	auto source_key = demand_index;
+	auto shared = FindSharedKey(demand, source_key);
+	optional_ptr<LogicalOperator> source;
+	TableIndex owner_index;
+	if (shared) {
+		if (cte_scopes.size() != 1 || !cte_scopes[0]) {
+			return false;
+		}
+		auto &owner = *cte_scopes[0];
+		// An unfiltered old reader already prevents scalar CTE pushdown; do not invalidate a dependency proof.
+		if (shared->cte_index != owner.table_index || owner.filter_dependency || HasSharedSource(*owner.children[0])) {
+			return false;
+		}
+		source = *owner.children[0];
+		owner_index = owner.table_index;
+	} else {
+		if (!cte_scopes.empty() || HasSharedSource(demand) || HasSharedSource(aggregate) ||
+		    !LogicalSubtreeIsRepeatable(demand)) {
+			return false;
+		}
+		source = demand;
+		source_key = demand_index;
+		owner_index = optimizer.binder.GenerateTableIndex();
+	}
+	RelationStatsExtractor extractor(optimizer.context, [&](TableIndex index) -> optional_ptr<LogicalOperator> {
+		return index == owner_index ? source : nullptr;
+	});
+	auto source_stats = extractor.Extract(*source);
+	if (!source_stats) {
+		return false;
+	}
+	source->ResolveOperatorTypes();
+	auto source_types = source->types;
+	auto names = AggregateRewriteHelper::GenerateColumnNames("domain", source_types.size());
+	auto key_reference =
+	    make_uniq<LogicalCTERef>(optimizer.binder.GenerateTableIndex(), owner_index, source_types, names);
+	vector<unique_ptr<Expression>> key_expression;
+	key_expression.push_back(
+	    make_uniq<BoundColumnRefExpression>(source_types[source_key], key_reference->GetColumnBindings()[source_key]));
+	auto projection = make_uniq<LogicalProjection>(optimizer.binder.GenerateTableIndex(), std::move(key_expression));
+	projection->children.push_back(std::move(key_reference));
+	auto domain = make_uniq<LogicalDistinct>(DistinctType::DISTINCT);
+	domain->distinct_targets.push_back(
+	    make_uniq<BoundColumnRefExpression>(source_types[source_key], projection->GetColumnBindings()[0]));
+	domain->children.push_back(std::move(projection));
+	auto restriction = make_uniq<LogicalComparisonJoin>(JoinType::SEMI);
+	restriction->conditions.emplace_back(aggregate.groups[0]->Copy(), domain->distinct_targets[0]->Copy(),
+	                                     join.conditions[0].GetComparisonType());
+	auto source_rows = static_cast<double>(source_stats->cardinality);
+	// CTE readers scan the full row. A new owner also writes it and replaces the consumer with another reader.
+	auto source_read_write_work = (shared ? 1 : 3) * source_rows * static_cast<double>(source_types.size());
+	if (!IsProfitable(extractor, aggregate, *restriction, *domain, source_rows, source_read_write_work)) {
+		return false;
+	}
+	restriction->children.push_back(std::move(aggregate.children[0]));
+	restriction->children.push_back(std::move(domain));
+	aggregate.children[0] = std::move(restriction);
+	if (!shared) {
+		unique_ptr<LogicalOperator> definition;
+		ColumnBindingRewrite::RewriteChild(
+		    op, 1 - aggregate_side, [&](unique_ptr<LogicalOperator> &child, BindingReplacementGraph &bindings) {
+			    auto reference =
+			        make_uniq<LogicalCTERef>(optimizer.binder.GenerateTableIndex(), owner_index, source_types, names);
+			    auto old_bindings = child->GetColumnBindings();
+			    auto new_bindings = reference->GetColumnBindings();
+			    for (idx_t index = 0; index < old_bindings.size(); index++) {
+				    if (!bindings.Find(old_bindings[index])) {
+					    bindings.Add(old_bindings[index], new_bindings[index]);
+				    }
+			    }
+			    replacements.Merge(bindings);
+			    definition = std::move(child);
+			    child = std::move(reference);
+		    });
+		op = make_uniq<LogicalMaterializedCTE>("domain_source", owner_index, source_types.size(), std::move(definition),
+		                                       std::move(op), CTEMaterialize::CTE_MATERIALIZE_ALWAYS);
+	}
+	return true;
+}
+
+bool DuplicateEliminatedDomainOptimizer::TryOptimizeDomain(unique_ptr<LogicalOperator> &op, idx_t aggregate_side) {
+	auto &join = op->Cast<LogicalComparisonJoin>();
 	auto &condition = join.conditions[0];
 	auto &aggregate_key = aggregate_side == 0 ? condition.GetLHS() : condition.GetRHS();
 	auto &demand_key = aggregate_side == 0 ? condition.GetRHS() : condition.GetLHS();
@@ -493,7 +604,7 @@ static bool TryOptimizeDomain(Optimizer &optimizer, LogicalComparisonJoin &join,
 	}
 	vector<vector<unique_ptr<Expression>>> rows;
 	if (!CopyFixedKeys(*join.children[1 - aggregate_side], demand_index.GetIndex(), demand_key.GetReturnType(), rows)) {
-		return false;
+		return TryOptimizeRuntimeDomain(op, *aggregate, aggregate_side, demand_index.GetIndex());
 	}
 	auto key_index = optimizer.binder.GenerateTableIndex();
 	auto fixed =
@@ -513,7 +624,9 @@ static bool TryOptimizeDomain(Optimizer &optimizer, LogicalComparisonJoin &join,
 	auto restriction = make_uniq<LogicalComparisonJoin>(JoinType::SEMI);
 	restriction->conditions.emplace_back(aggregate->groups[0]->Copy(), domain->distinct_targets[0]->Copy(),
 	                                     condition.GetComparisonType());
-	if (!IsProfitable(optimizer.context, *aggregate, *restriction, *domain)) {
+	RelationStatsExtractor extractor(optimizer.context);
+	auto key_input_rows = static_cast<double>(domain->children[0]->Cast<LogicalExpressionGet>().expressions.size());
+	if (!IsProfitable(extractor, *aggregate, *restriction, *domain, key_input_rows, 0)) {
 		return false;
 	}
 	// All analysis borrows have expired. Preserve every original binding and payload column.
@@ -523,30 +636,47 @@ static bool TryOptimizeDomain(Optimizer &optimizer, LogicalComparisonJoin &join,
 	return true;
 }
 
-void DuplicateEliminatedDomainOptimizer::VisitOperator(LogicalOperator &op) {
-	if (op.type == LogicalOperatorType::LOGICAL_RECURSIVE_CTE) {
+void DuplicateEliminatedDomainOptimizer::VisitOperator(unique_ptr<LogicalOperator> &op) {
+	replacements = BindingReplacementGraph();
+	if (op->type == LogicalOperatorType::LOGICAL_RECURSIVE_CTE) {
 		return;
 	}
+	BindingReplacementGraph child_replacements;
 	// Visit only original children; generated domain operators are never reconsidered.
-	VisitOperatorChildren(op);
-	if (op.type != LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
-		return;
+	for (idx_t child_index = 0; child_index < op->children.size(); child_index++) {
+		auto is_cte = op->type == LogicalOperatorType::LOGICAL_MATERIALIZED_CTE;
+		if (is_cte) {
+			// The owner is not visible in its definition, but that child is still a nested scope.
+			cte_scopes.push_back(child_index == 1 ? &op->Cast<LogicalMaterializedCTE>() : nullptr);
+		}
+		ColumnBindingRewrite::RewriteChild(op, child_index,
+		                                   [&](unique_ptr<LogicalOperator> &child, BindingReplacementGraph &bindings) {
+			                                   VisitOperator(child);
+			                                   bindings = std::move(replacements);
+			                                   child_replacements.Merge(bindings);
+		                                   });
+		if (is_cte) {
+			cte_scopes.pop_back();
+		}
 	}
-	auto &join = op.Cast<LogicalComparisonJoin>();
-	if (join.conditions.size() != 1 || !join.expressions.empty() || !join.duplicate_eliminated_columns.empty()) {
-		return;
+	replacements = std::move(child_replacements);
+	if (op->type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
+		auto &join = op->Cast<LogicalComparisonJoin>();
+		if (join.conditions.size() == 1 && join.expressions.empty() && join.duplicate_eliminated_columns.empty()) {
+			auto &condition = join.conditions[0];
+			if (condition.IsComparison() &&
+			    (condition.GetComparisonType() == ExpressionType::COMPARE_EQUAL ||
+			     condition.GetComparisonType() == ExpressionType::COMPARE_NOT_DISTINCT_FROM)) {
+				auto join_type = join.join_type;
+				auto rewritten = join_type == JoinType::INNER && TryOptimizeDomain(op, 0);
+				if (!rewritten &&
+				    (join_type == JoinType::INNER || join_type == JoinType::LEFT || join_type == JoinType::SINGLE)) {
+					TryOptimizeDomain(op, 1);
+				}
+			}
+		}
 	}
-	auto &condition = join.conditions[0];
-	if (!condition.IsComparison() || (condition.GetComparisonType() != ExpressionType::COMPARE_EQUAL &&
-	                                  condition.GetComparisonType() != ExpressionType::COMPARE_NOT_DISTINCT_FROM)) {
-		return;
-	}
-	if (join.join_type == JoinType::INNER && TryOptimizeDomain(optimizer, join, 0)) {
-		return;
-	}
-	if (join.join_type == JoinType::INNER || join.join_type == JoinType::LEFT || join.join_type == JoinType::SINGLE) {
-		TryOptimizeDomain(optimizer, join, 1);
-	}
+	replacements = replacements.ScopedToBoundary(op->GetColumnBindings());
 }
 
 } // namespace duckdb
