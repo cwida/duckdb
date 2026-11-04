@@ -40,7 +40,7 @@ class CSVCast {
 	template <class OP, class T>
 	static bool TemplatedTryCastDecimalVector(const CSVReaderOptions &options, Vector &input_vector,
 	                                          Vector &result_vector, idx_t count, CastParameters &parameters,
-	                                          uint8_t width, uint8_t scale, idx_t &line_error) {
+	                                          uint32_t width, uint32_t scale, idx_t &line_error) {
 		D_ASSERT(input_vector.GetType().id() == LogicalTypeId::VARCHAR);
 		bool all_converted = true;
 		auto &validity_mask = FlatVector::ValidityMutable(result_vector);

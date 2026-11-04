@@ -64,6 +64,7 @@ add_library_unity(
   window_self_join.cpp
   row_number_rewriter.cpp
   sampling_pushdown.cpp
+  scalar_aggregate_merger.cpp
   type_pushdown.cpp
   scalar_fn_pushdown.cpp
   self_join_aggregate.cpp

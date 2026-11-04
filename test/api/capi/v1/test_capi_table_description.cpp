@@ -124,3 +124,26 @@ TEST_CASE("Test getting the table names of a query in the C API", "[capi]") {
 	duckdb_destroy_value(&table_name_values);
 	tester.Cleanup();
 }
+
+TEST_CASE("Test the table description of a view keeps the open transaction in the C API", "[capi]") {
+	CAPITester tester;
+	REQUIRE(tester.OpenDatabase(nullptr));
+	REQUIRE_NO_FAIL(tester.Query("CREATE TABLE u(k INTEGER)"));
+	REQUIRE_NO_FAIL(tester.Query("CREATE VIEW vw AS SELECT 1 AS k"));
+
+	REQUIRE_NO_FAIL(tester.Query("BEGIN TRANSACTION"));
+	REQUIRE_NO_FAIL(tester.Query("INSERT INTO u VALUES (1)"));
+	duckdb_table_description table_description = nullptr;
+	auto status = duckdb_table_description_create(tester.connection, nullptr, "vw", &table_description);
+	REQUIRE(status == DuckDBError);
+	REQUIRE(string(duckdb_table_description_error(table_description)) ==
+	        "No table with that schema+name could be located");
+	duckdb_table_description_destroy(&table_description);
+	REQUIRE_NO_FAIL(tester.Query("INSERT INTO u VALUES (2)"));
+	REQUIRE_NO_FAIL(tester.Query("COMMIT"));
+
+	auto result = tester.Query("SELECT count(*), sum(k) FROM u");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->Fetch<int64_t>(0, 0) == 2);
+	REQUIRE(result->Fetch<int64_t>(1, 0) == 3);
+}

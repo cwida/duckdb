@@ -36,9 +36,7 @@ static idx_t GetValueWidth(const ParquetColumnSchema &schema) {
 
 void ByteStreamSplitDecoder::InitializePage() {
 	auto &block = reader.block;
-	// Subtract 1 from length as the block is allocated with 1 extra byte,
-	// but the byte stream split encoder needs to know the correct data size.
-	bss_decoder = make_uniq<BssDecoder>(block->ptr, block->len - 1, GetValueWidth(reader.Schema()));
+	bss_decoder = make_uniq<BssDecoder>(block->ptr, block->len, GetValueWidth(reader.Schema()));
 	block->inc(block->len);
 }
 
