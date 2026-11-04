@@ -555,3 +555,134 @@ query I
 SELECT last_value FROM duckdb_sequences() WHERE sequence_name = 'seq_probe_lazy';
 ----
 NULL
+
+# piecewise merge joins emit full child layouts: pruning projection maps go through
+# the shared projection fallback
+statement ok
+SET nested_loop_join_threshold = 0;
+
+# a volatile probe operand stays at the join under the merge strategy
+statement ok
+CREATE SEQUENCE seq_pmj_probe START 1;
+
+query II
+SELECT l.x, r.y
+FROM (VALUES (10::BIGINT)) l(x)
+JOIN (VALUES (2::BIGINT)) r(y)
+    ON l.x + nextval('seq_pmj_probe') > r.y;
+----
+10	2
+
+# a volatile build operand is projected into the build child and evaluated once per build row
+statement ok
+CREATE SEQUENCE seq_pmj_build START 1;
+
+query II
+SELECT l.x, r.y
+FROM (VALUES (10::BIGINT)) l(x)
+JOIN (VALUES (2::BIGINT)) r(y)
+    ON l.x > r.y + nextval('seq_pmj_build');
+----
+10	2
+
+query I
+SELECT currval('seq_pmj_build');
+----
+1
+
+# unmatched probe rows after the fallback projection
+statement ok
+CREATE SEQUENCE seq_pmj_left START 1;
+
+query II
+SELECT l.x, r.y
+FROM (VALUES (10::BIGINT), (1::BIGINT)) l(x)
+LEFT JOIN (VALUES (2::BIGINT)) r(y)
+    ON l.x > r.y + nextval('seq_pmj_left')
+ORDER BY ALL;
+----
+1	NULL
+10	2
+
+# a RIGHT join flips to LEFT at plan time: the moved operand then prunes the probe layout
+statement ok
+CREATE SEQUENCE seq_pmj_right START 1;
+
+query II
+SELECT l.x, r.y
+FROM (VALUES (10::BIGINT)) l(x)
+RIGHT JOIN (VALUES (2::BIGINT), (20::BIGINT)) r(y)
+    ON l.x > r.y + nextval('seq_pmj_right') * 0
+ORDER BY ALL;
+----
+10	2
+NULL	20
+
+# the FULL join right scan path emits unmatched build rows
+statement ok
+CREATE SEQUENCE seq_pmj_full START 1;
+
+query II
+SELECT l.x, r.y
+FROM (VALUES (10::BIGINT), (1::BIGINT)) l(x)
+FULL JOIN (VALUES (2::BIGINT), (20::BIGINT)) r(y)
+    ON l.x > r.y + nextval('seq_pmj_full') * 0
+ORDER BY ALL;
+----
+1	NULL
+10	2
+NULL	20
+
+# matched, unmatched and empty-input ASOF SEMI/ANTI output paths under the merge strategy
+query II
+SELECT o.k, q.n
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT l.n FROM (VALUES (3, 'payload')) l(x, n)
+    ASOF SEMI JOIN (VALUES (2)) r(ts) ON l.x - o.k >= r.ts
+) q ORDER BY ALL;
+----
+1	payload
+
+query II
+SELECT o.k, q.x
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT l.x FROM (VALUES (3)) l(x)
+    ASOF ANTI JOIN (VALUES (2)) r(ts) ON l.x - o.k >= r.ts
+) q ORDER BY ALL;
+----
+2	3
+
+query II
+SELECT o.k, q.x
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT l.x FROM (VALUES (3)) l(x)
+    ASOF ANTI JOIN (SELECT 2 AS ts WHERE 1=0) r ON l.x - o.k >= r.ts
+) q ORDER BY ALL;
+----
+1	3
+2	3
+
+# a correlated probe of a quantified range comparison routes through the extremum rewrite
+query II
+SELECT o.k, q.matches
+FROM (VALUES (1), (2)) o(k), LATERAL (
+    SELECT (l.i + o.k) > ANY (SELECT x FROM (VALUES (2)) b(x)) AS matches
+    FROM (VALUES (1)) l(i)
+) q ORDER BY ALL;
+----
+1	false
+2	true
+
+statement ok
+RESET nested_loop_join_threshold;
+
+# five-row inputs choose the merge strategy with default settings
+statement ok
+CREATE SEQUENCE seq_pmj_default START 1;
+
+query I
+SELECT count(*) FROM (SELECT range::BIGINT AS x FROM range(5)) l
+JOIN (SELECT range::BIGINT AS y FROM range(5)) r
+    ON l.x > r.y + nextval('seq_pmj_default') * 0;
+----
+10

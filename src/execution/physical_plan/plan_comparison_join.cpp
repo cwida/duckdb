@@ -248,7 +248,8 @@ PhysicalOperator &PhysicalPlanGenerator::PlanComparisonJoin(LogicalComparisonJoi
 		return join;
 	}
 
-	// range joins apply both projection maps, the nested loop join only applies the left one of a MARK join
+	// the IE join applies both projection maps, the nested loop join only applies the left one of a MARK join,
+	// and the piecewise merge and blockwise joins emit full child layouts
 	idx_t nested_loop_join_threshold = Settings::Get<NestedLoopJoinThresholdSetting>(context);
 	if (left.estimated_cardinality < nested_loop_join_threshold ||
 	    right.estimated_cardinality < nested_loop_join_threshold) {
@@ -268,9 +269,11 @@ PhysicalOperator &PhysicalPlanGenerator::PlanComparisonJoin(LogicalComparisonJoi
 		                            std::move(op.filter_pushdown));
 	}
 	if (can_merge) {
-		// range join: use piecewise merge join
-		return Make<PhysicalPiecewiseMergeJoin>(op, left, right, std::move(op.conditions), op.join_type,
-		                                        op.estimated_cardinality, std::move(op.filter_pushdown));
+		// range join: use piecewise merge join, which emits full child layouts
+		auto pruned = ExtractPrunedJoinProjection(op, left, right, true, true);
+		auto &join = Make<PhysicalPiecewiseMergeJoin>(op, left, right, std::move(op.conditions), op.join_type,
+		                                              op.estimated_cardinality, std::move(op.filter_pushdown));
+		return RestorePrunedJoinProjection(op, join, std::move(pruned));
 	}
 	if (PhysicalNestedLoopJoin::IsSupported(op.conditions, op.join_type)) {
 		// inequality join: use nested loop, which only applies the left map of a MARK join
