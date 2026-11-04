@@ -419,7 +419,7 @@ AggregateFunction GetSumAggregate(PhysicalType type) {
 		auto function = AggregateFunction::UnaryAggregate<SumState<int64_t>, bool, hugeint_t, IntegerSumOperation>(
 		    LogicalType::BOOLEAN, LogicalType::HUGEINT);
 		function.GetSignature().GetParameter(0).SetName("arg");
-		function.SetStatisticsCallback(SumPropagateStats);
+		function.SetStatisticsCallback(SumPropagateStats, AggregateStatisticsEffect::VALUE_PRESERVING);
 		function.SetOrderDependent(AggregateOrderDependent::NOT_ORDER_DEPENDENT);
 		return function;
 	}
@@ -427,7 +427,7 @@ AggregateFunction GetSumAggregate(PhysicalType type) {
 		auto function = AggregateFunction::UnaryAggregate<SumState<int64_t>, int16_t, hugeint_t, IntegerSumOperation>(
 		    LogicalType::SMALLINT, LogicalType::HUGEINT);
 		function.GetSignature().GetParameter(0).SetName("arg");
-		function.SetStatisticsCallback(SumPropagateStats);
+		function.SetStatisticsCallback(SumPropagateStats, AggregateStatisticsEffect::VALUE_PRESERVING);
 		function.SetOrderDependent(AggregateOrderDependent::NOT_ORDER_DEPENDENT);
 		return function;
 	}
@@ -437,7 +437,7 @@ AggregateFunction GetSumAggregate(PhysicalType type) {
 		    AggregateFunction::UnaryAggregate<SumState<hugeint_t>, int32_t, hugeint_t, SumToHugeintOperation>(
 		        LogicalType::INTEGER, LogicalType::HUGEINT);
 		function.GetSignature().GetParameter(0).SetName("arg");
-		function.SetStatisticsCallback(SumPropagateStats);
+		function.SetStatisticsCallback(SumPropagateStats, AggregateStatisticsEffect::VALUE_PRESERVING);
 		function.SetOrderDependent(AggregateOrderDependent::NOT_ORDER_DEPENDENT);
 		return function;
 	}
@@ -446,7 +446,7 @@ AggregateFunction GetSumAggregate(PhysicalType type) {
 		    AggregateFunction::UnaryAggregate<SumState<hugeint_t>, int64_t, hugeint_t, SumToHugeintOperation>(
 		        LogicalType::BIGINT, LogicalType::HUGEINT);
 		function.GetSignature().GetParameter(0).SetName("arg");
-		function.SetStatisticsCallback(SumPropagateStats);
+		function.SetStatisticsCallback(SumPropagateStats, AggregateStatisticsEffect::VALUE_PRESERVING);
 		function.SetOrderDependent(AggregateOrderDependent::NOT_ORDER_DEPENDENT);
 		return function;
 	}
@@ -455,7 +455,7 @@ AggregateFunction GetSumAggregate(PhysicalType type) {
 		    AggregateFunction::UnaryAggregate<SumState<hugeint_t>, hugeint_t, hugeint_t, HugeintSumOperation>(
 		        LogicalType::HUGEINT, LogicalType::HUGEINT);
 		function.GetSignature().GetParameter(0).SetName("arg");
-		function.SetStatisticsCallback(SumPropagateStats);
+		function.SetStatisticsCallback(SumPropagateStats, AggregateStatisticsEffect::VALUE_PRESERVING);
 		function.SetOrderDependent(AggregateOrderDependent::NOT_ORDER_DEPENDENT);
 		function.SetFallible(); // adding HUGEINT values to the HUGEINT accumulator throws on overflow
 		return function;
@@ -471,7 +471,7 @@ AggregateFunction GetDecimalSumAggregate(const LogicalType &input_type) {
 	    AggregateFunction::UnaryAggregate<SumState<hugeint_t>, INPUT_TYPE, hugeint_t, DecimalSumOperation<OP>>(
 	        input_type, LogicalType::HUGEINT);
 	function.GetSignature().GetParameter(0).SetName("arg");
-	function.SetStatisticsCallback(SumPropagateStats);
+	function.SetStatisticsCallback(SumPropagateStats, AggregateStatisticsEffect::VALUE_PRESERVING);
 	function.SetOrderDependent(AggregateOrderDependent::NOT_ORDER_DEPENDENT);
 	return function;
 }

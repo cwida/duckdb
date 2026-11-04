@@ -298,7 +298,7 @@ AggregateFunction CountFunctionBase::GetFunction() {
 	fun.SetOrderDependent(AggregateOrderDependent::NOT_ORDER_DEPENDENT);
 	fun.SetCollationHandling(FunctionCollationHandling::PUSH_DISTINCT_COLLATIONS);
 	fun.SetStructStateExport(GetCountStateType);
-	fun.SetStatisticsCallback(CountPropagateStats);
+	fun.SetStatisticsCallback(CountPropagateStats, AggregateStatisticsEffect::VALUE_PRESERVING);
 	return fun;
 }
 
