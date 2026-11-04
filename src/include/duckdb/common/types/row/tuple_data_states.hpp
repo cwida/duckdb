@@ -150,6 +150,8 @@ struct TupleDataChunkState {
 struct SortKeyPayloadState {
 	TupleDataChunkState &sort_key_chunk_state;
 	SortKeyType sort_key_type;
+	idx_t begin = 0;
+	idx_t end = STANDARD_VECTOR_SIZE;
 };
 
 struct TupleDataAppendState {

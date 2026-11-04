@@ -49,6 +49,11 @@ public:
 	static void MoveTmpFile(ClientContext &context, const string &tmp_file_path);
 	static string GetNonTmpFile(ClientContext &context, const string &tmp_file_path);
 	static void ReturnStatistics(DataChunk &chunk, CopyToFileInfo &written_file_info);
+	//! Adds the RETURN_STATS row of a COPY that wrote no file, so that RETURN_COLUMN_TYPES can still return the types
+	static void ReturnNoFileStatistics(DataChunk &chunk);
+	//! Sets the last column of every row in the chunk to the RETURN_COLUMN_TYPES value
+	static void ReturnColumnTypes(DataChunk &chunk, const vector<Identifier> &query_names,
+	                              const vector<LogicalType> &query_types);
 
 	bool Rotate() const;
 
@@ -135,6 +140,9 @@ public:
 	CopyOverwriteMode overwrite_mode;
 	//! What to return, e.g., number of written rows
 	CopyFunctionReturnType return_type;
+	//! The names and types of the copied query, for RETURN_COLUMN_TYPES
+	vector<Identifier> query_names;
+	vector<LogicalType> query_types;
 	//! Whether to write an empty file if there was no data
 	bool write_empty_file;
 
@@ -146,6 +154,8 @@ public:
 	//! Directory (relative to file_path) of a partition's files, replacing the hive layout if set. Evaluated per
 	//! partition over a single row holding the partition values, in partition_columns order.
 	unique_ptr<Expression> partition_path_expression;
+	//! Statistics of the partition columns, if known
+	vector<unique_ptr<BaseStatistics>> partition_stats;
 
 	//! If the data should be sorted
 	vector<BoundOrderByNode> order_columns;

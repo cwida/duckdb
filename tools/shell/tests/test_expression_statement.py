@@ -102,6 +102,33 @@ def test_opt_out(shell):
     result = test.run()
     result.check_stderr("syntax error")
 
+def test_remove_grammar_extension(shell):
+    test = (
+        ShellTest(shell)
+        .statement("CALL remove_grammar_extension('shell');")
+        .statement("SELECT current_setting('active_grammar_extensions');")
+    )
+    result = test.run()
+    result.check_stdout("[]")
+    test = (
+        ShellTest(shell)
+        .statement("CALL remove_grammar_extension('shell');")
+        .statement("1 + 1;")
+    )
+    result = test.run()
+    result.check_stderr("syntax error")
+
+def test_add_grammar_extension_is_idempotent(shell):
+    test = (
+        ShellTest(shell)
+        .statement("CALL add_grammar_extension('shell');")
+        .statement("SELECT current_setting('active_grammar_extensions');")
+        .statement("1 + 1;")
+    )
+    result = test.run()
+    result.check_stdout("[shell]")
+    result.check_stdout("2")
+
 def test_survives_reopen(shell):
     test = (
         ShellTest(shell)

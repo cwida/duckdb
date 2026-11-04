@@ -913,26 +913,26 @@ struct ArgsKwargsBindData : public FunctionData {
 static unique_ptr<FunctionData> ArgsKwargsBind(BindScalarFunctionInput &input) {
 	auto result = make_uniq<ArgsKwargsBindData>();
 	auto &bound_function = input.GetBoundFunction();
-	auto &names = *input.GetArgumentNames();
-	for (idx_t i = 0; i < names.size(); i++) {
+	const auto argument_count = input.GetArguments().size();
+	for (idx_t i = 0; i < argument_count; i++) {
 		switch (bound_function.GetArgumentParameterKind(i)) {
 		case FunctionParameterKind::VAR_POSITIONAL:
 			result->labels.push_back("*");
 			break;
 		case FunctionParameterKind::POSITIONAL_ONLY:
-			result->labels.push_back("/" + names[i].GetIdentifierName());
+			result->labels.push_back("/" + input.GetArgumentName(i).GetIdentifierName());
 			break;
 		case FunctionParameterKind::VAR_KEYWORD:
-			result->labels.push_back("**" + names[i].GetIdentifierName());
+			result->labels.push_back("**" + input.GetArgumentName(i).GetIdentifierName());
 			break;
 		default:
-			result->labels.push_back(names[i].GetIdentifierName());
+			result->labels.push_back(input.GetArgumentName(i).GetIdentifierName());
 			break;
 		}
 	}
 	result->varargs_count = bound_function.GetVarArgsCount();
 	result->kwargs_count = bound_function.GetKwargsCount();
-	result->kwargs_offset = names.size() - result->kwargs_count;
+	result->kwargs_offset = argument_count - result->kwargs_count;
 	return std::move(result);
 }
 

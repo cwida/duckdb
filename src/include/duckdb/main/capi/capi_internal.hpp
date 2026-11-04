@@ -29,6 +29,9 @@
 
 namespace duckdb {
 
+//! Allocate payloads before exposing a flat vector through the v1 C API.
+void PrepareCAPIVector(Vector &result);
+
 struct DBInstanceCacheWrapper {
 	unique_ptr<DBInstanceCache> instance_cache;
 };

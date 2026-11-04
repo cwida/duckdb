@@ -6,10 +6,11 @@
   "inherit_skip_tests": "test/configs/force_storage.json",
   "skip_tests": [
     {
-      "reason": "Vector type changes due to fetch row",
+      "reason": "Behavior changes when forcing row fetches",
       "paths": [
         "test/sql/storage/compression/rle/rle_constant.test",
-        "test/sql/storage/compression/fsst/fsst_corrupt_decoded_length.test"
+        "test/sql/storage/compression/fsst/fsst_corrupt_decoded_length.test",
+        "test/sql/storage/compression/zstd/zstd_corrupt_count.test"
       ]
     },
     {

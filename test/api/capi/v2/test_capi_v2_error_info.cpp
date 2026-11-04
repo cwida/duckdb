@@ -136,6 +136,13 @@ TEST_CASE("V2 error: set_text rejects a null view", "[capi_v2][error]") {
 	duckdb_v2_error_info_destroy(&err);
 }
 
+TEST_CASE("V2 error: setters on a null info handle are no-ops", "[capi_v2][error]") {
+	REQUIRE(duckdb_v2_error_info_set_code(nullptr, DUCKDB_V2_ERROR_API) == DUCKDB_V2_ERROR_NONE);
+	auto text = Convert("x");
+	REQUIRE(duckdb_v2_error_info_set_text(nullptr, &text) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_error_info_set_text(nullptr, nullptr) == DUCKDB_V2_ERROR_NONE);
+}
+
 // ===========================================================================
 // Default mode: the parse boundary renders the LINE/caret annotation. The parse
 // error surfaces from the next() that reaches the failing statement, not from
@@ -147,7 +154,7 @@ TEST_CASE("V2 error: statement_iterator_next renders the location like the eager
 
 	// parse_sql parses nothing, so it succeeds; the first next() yields "SELECT 1".
 	duckdb_v2_statement_iterator_handle iter = nullptr;
-	REQUIRE(duckdb_v2_parse_sql(fx.conn, "SELECT 1; SELEKT 2", &iter, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_parse_sql(fx.conn, "SELECT 1; SELEKT 2", true, &iter, nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_sql_statement_handle stmt = nullptr;
 	REQUIRE(duckdb_v2_statement_iterator_next(iter, &stmt, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(stmt != nullptr);
@@ -183,7 +190,7 @@ TEST_CASE("V2 error: errors_as_json makes the parse boundary emit JSON", "[capi_
 
 	// The single statement fails to parse; the error surfaces from the first next().
 	duckdb_v2_statement_iterator_handle iter = nullptr;
-	REQUIRE(duckdb_v2_parse_sql(fx.conn, "SELEKT 1", &iter, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_parse_sql(fx.conn, "SELEKT 1", true, &iter, nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_sql_statement_handle stmt = nullptr;
 	duckdb_v2_error_info_handle err = nullptr;
 	REQUIRE(duckdb_v2_statement_iterator_next(iter, &stmt, &err) == DUCKDB_V2_ERROR_QUERY_PARSER);

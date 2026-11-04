@@ -15,6 +15,18 @@
     {
       "reason": "Explicit constraint check mode requires storage version v2.0.0 or higher.",
       "paths": [
+        "test/optimizer/remove_redundant_order_keys_deferred.test"
+      ]
+    },
+    {
+      "reason": "The AT clause is only serialized with storage version v2.0.0 or higher.",
+      "paths": [
+        "test/sql/json/test_deserialize_at_clause.test"
+      ]
+    },
+    {
+      "reason": "Explicit constraint check mode requires storage version v2.0.0 or higher.",
+      "paths": [
         "test/sql/constraints/deferred/test_alter_constraint_check_mode.test",
         "test/sql/constraints/deferred/test_deferred_alter.test",
         "test/sql/constraints/deferred/test_deferred_checkpoint.test_slow",
@@ -25,7 +37,9 @@
         "test/sql/constraints/deferred/test_deferred_statements.test",
         "test/sql/constraints/deferred/test_deferred_syntax.test",
         "test/sql/constraints/deferred/test_deferred_trigger.test",
-        "test/sql/constraints/deferred/test_deferred_unique_pk.test"
+        "test/sql/constraints/deferred/test_deferred_unique_pk.test",
+        "test/sql/window/test_window_degenerate_frames.test",
+        "test/optimizer/remove_redundant_order_keys.test"
       ]
     },
     {
@@ -54,16 +68,19 @@
         "test/sql/catalog/view/secure_view.test",
         "test/sql/optimizer/secure_view_explain.test",
         "test/sql/optimizer/secure_view_pushdown.test",
+        "test/sql/pragma/profiling/test_profiling_bytes_scanned_secure_view.test",
         "test/sql/optimizer/secure_view_statistics.test",
         "test/sql/sql_export/secure_view_sql_export.test",
-        "test/sql/sql_export/secure_view_predicates.test"
+        "test/sql/sql_export/secure_view_predicates.test",
+        "test/sql/optimizer/secure_view_fallible_functions.test"
       ]
     },
     {
       "reason": "Stored aggregate-state and TUPLE columns require v2.0.0 storage.",
       "paths": [
         "test/sql/sql_export/empty_aggregate_state.test",
-        "test/sql/sql_export/mark_condition_shapes.test"
+        "test/sql/sql_export/mark_condition_shapes.test",
+        "test/sql/types/variant/variant_struct_field_subquery.test"
       ]
     }
   ]

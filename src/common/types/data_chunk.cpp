@@ -80,8 +80,8 @@ idx_t DataChunk::DeriveSize() const {
 			return v.size();
 		}
 	}
-	if (data.empty()) {
-		// a column-less chunk has nothing to derive a cardinality from; without an explicit count it is empty
+	if (data.empty() || !vector_caches.empty()) {
+		// a column-less chunk, or an initialized chunk whose columns are all unset, is empty without an explicit count
 		return 0;
 	}
 	throw InternalException(
@@ -336,7 +336,9 @@ void DataChunk::Serialize(Serializer &serializer, bool compressed_serialization)
 		list.WriteObject([&](Serializer &object) {
 			// Reference the vector to avoid potentially mutating it during serialization
 			Vector serialized_vector(data[i].GetType());
-			serialized_vector.Reference(data[i]);
+			if (data[i].GetBufferRef()) {
+				serialized_vector.Reference(data[i]);
+			}
 			serialized_vector.Serialize(object, compressed_serialization);
 		});
 	});

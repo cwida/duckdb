@@ -1,0 +1,61 @@
+# name: test/sql/copy/parquet/byte_stream_split_flba.test
+# description: Read FIXED_LEN_BYTE_ARRAY columns (DECIMAL, BLOB, FLOAT16) encoded using the byte stream split encoding
+# group: [parquet]
+
+require parquet
+
+statement ok
+PRAGMA enable_verification
+
+statement ok
+CREATE VIEW bss AS SELECT * FROM '{DATA_DIR}/parquet-testing/byte_stream_split_flba.parquet'
+
+# each _bss column holds the same values as its PLAIN-encoded _plain twin
+query IIIIIII
+SELECT count(*),
+       count(*) FILTER (WHERE dec_7_3_bss IS DISTINCT FROM dec_7_3_plain),
+       count(*) FILTER (WHERE dec_19_4_bss IS DISTINCT FROM dec_19_4_plain),
+       count(*) FILTER (WHERE dec_38_10_bss IS DISTINCT FROM dec_38_10_plain),
+       count(*) FILTER (WHERE fixed_16_bss IS DISTINCT FROM fixed_16_plain),
+       count(*) FILTER (WHERE fixed_20_bss IS DISTINCT FROM fixed_20_plain),
+       count(*) FILTER (WHERE float16_bss IS DISTINCT FROM float16_plain)
+FROM bss
+----
+1000	0	0	0	0	0	0
+
+query IIIIIII
+SELECT count(*), count(dec_7_3_bss), count(dec_19_4_bss), count(dec_38_10_bss), count(fixed_16_bss),
+       count(fixed_20_bss), count(float16_bss)
+FROM bss
+----
+1000	908	908	908	908	908	908
+
+# a filter on another column makes the byte stream split columns skip values within and across pages
+query I
+SELECT count(*) FROM bss
+WHERE id % 7 = 3
+  AND (dec_7_3_bss IS DISTINCT FROM dec_7_3_plain
+       OR dec_19_4_bss IS DISTINCT FROM dec_19_4_plain
+       OR dec_38_10_bss IS DISTINCT FROM dec_38_10_plain
+       OR fixed_16_bss IS DISTINCT FROM fixed_16_plain
+       OR fixed_20_bss IS DISTINCT FROM fixed_20_plain
+       OR float16_bss IS DISTINCT FROM float16_plain)
+----
+0
+
+query I
+SELECT count(*) FROM bss WHERE id BETWEEN 390 AND 410 AND dec_38_10_bss IS NOT DISTINCT FROM dec_38_10_plain
+----
+21
+
+# filters on the byte stream split columns themselves
+query I
+SELECT count(*) = (SELECT count(*) FROM bss WHERE dec_19_4_plain > 0) FROM bss WHERE dec_19_4_bss > 0
+----
+true
+
+query I
+SELECT count(*) = (SELECT count(*) FROM bss WHERE fixed_16_plain < '\x80'::BLOB)
+FROM bss WHERE fixed_16_bss < '\x80'::BLOB
+----
+true

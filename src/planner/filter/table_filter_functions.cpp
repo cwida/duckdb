@@ -127,7 +127,7 @@ unique_ptr<FunctionData> TableFilterFunctionDeserialize(Deserializer &deserializ
 	if (function.GetName() == DynamicFilterScalarFun::NAME) {
 		return make_uniq<DynamicFilterFunctionData>(nullptr);
 	}
-	throw InternalException("Unsupported table filter function \"%s\" during deserialization", function.GetName());
+	throw InternalException("Unsupported table filter function %s during deserialization", function.GetName());
 }
 
 } // namespace duckdb

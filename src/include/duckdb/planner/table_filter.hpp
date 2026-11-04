@@ -53,7 +53,7 @@ public:
 	template <class TARGET>
 	TARGET &Cast() {
 		if (filter_type != TARGET::TYPE) {
-			throw InternalException("Failed to cast to type - table filter type mismatch");
+			InternalException::Throw("Failed to cast to type - table filter type mismatch");
 		}
 		return reinterpret_cast<TARGET &>(*this);
 	}
@@ -61,7 +61,7 @@ public:
 	template <class TARGET>
 	const TARGET &Cast() const {
 		if (filter_type != TARGET::TYPE) {
-			throw InternalException("Failed to cast to type - table filter type mismatch");
+			InternalException::Throw("Failed to cast to type - table filter type mismatch");
 		}
 		return reinterpret_cast<const TARGET &>(*this);
 	}

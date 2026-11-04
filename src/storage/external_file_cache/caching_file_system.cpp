@@ -5,12 +5,14 @@
 #include "duckdb/common/enums/cache_validation_mode.hpp"
 #include "duckdb/common/enums/destroy_buffer_upon.hpp"
 #include "duckdb/common/enums/memory_tag.hpp"
+#include "duckdb/common/exception.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/parallel/task_executor.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
 #include "duckdb/storage/buffer/block_handle.hpp"
+#include "duckdb/storage/buffer/buffer_pool.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
 #include "duckdb/storage/external_file_cache/external_file_cache.hpp"
 #include "duckdb/storage/external_file_cache/external_file_cache_util.hpp"
@@ -22,10 +24,30 @@ class DatabaseInstance;
 
 namespace {
 
-// Allocate an uncached read buffer to make sure it's de-allocated immediately, and its metadata is not stored in the
-// eviction queue.
+// Destroy the uncached buffer and its metadata on unpin; its allocation can still be reused.
 BufferHandle AllocateUncachedReadBuffer(BufferManager &buffer_manager, idx_t size) {
-	auto buffer = buffer_manager.Allocate(MemoryTag::EXTERNAL_FILE_CACHE, size);
+	BufferHandle buffer;
+	const auto header_size = Storage::DEFAULT_BLOCK_HEADER_SIZE;
+	if (size >= 256ULL * 1024 && size <= 64ULL * 1024 * 1024 - header_size) {
+		const auto capacity = NextPowerOfTwo(size + header_size);
+		const auto limit = buffer_manager.GetMaxMemory();
+		const auto used = buffer_manager.GetBufferPool().GetUsedMemory(false);
+		const auto available = limit - MinValue(limit, used);
+		auto &scheduler = TaskScheduler::GetScheduler(buffer_manager.GetDatabase());
+		const auto workers = MaxValue<idx_t>(1, scheduler.NumberOfThreads() + scheduler.NumberOfAsyncThreads());
+		// Leave room for a second read per worker before rounding pinned buffers.
+		// Changes to rounding should be tested with ClickBench on Parquet on a 192-core machine.
+		if (capacity <= available / workers / 2) {
+			try {
+				buffer = buffer_manager.Allocate(MemoryTag::EXTERNAL_FILE_CACHE, capacity - header_size);
+			} catch (const OutOfMemoryException &) {
+				// Concurrent allocations may have consumed the headroom.
+			}
+		}
+	}
+	if (!buffer.IsValid()) {
+		buffer = buffer_manager.Allocate(MemoryTag::EXTERNAL_FILE_CACHE, size);
+	}
 	buffer.GetBlockHandle()->GetMemory().SetDestroyBufferUpon(DestroyBufferUpon::UNPIN);
 	return buffer;
 }
@@ -357,12 +379,22 @@ Allocator &CachingFileHandle::GetBufferAllocator() const {
 	return external_file_cache.GetBufferManager().GetBufferAllocator();
 }
 
+bool CachingFileHandle::ReadsAreCached() {
+	return external_file_cache.IsEnabled() && external_file_cache.ShouldCacheFile(path.path) && CanUseCache();
+}
+
 FileBufferHandleGroup CachingFileHandle::Read(const idx_t nr_bytes, const idx_t location) {
+	static const vector<pair<idx_t, idx_t>> no_absorb_ranges;
+	return Read(nr_bytes, location, no_absorb_ranges);
+}
+
+FileBufferHandleGroup CachingFileHandle::Read(const idx_t nr_bytes, const idx_t location,
+                                              const vector<pair<idx_t, idx_t>> &absorb_ranges) {
 	if (nr_bytes == 0) {
 		return FileBufferHandleGroup();
 	}
 
-	if (!external_file_cache.IsEnabled() || !external_file_cache.ShouldCacheFile(path.path) || !CanUseCache()) {
+	if (!ReadsAreCached()) {
 		auto buf = AllocateUncachedReadBuffer(external_file_cache.GetBufferManager(), nr_bytes);
 		ReadUncached(buf.GetDataMutable(), nr_bytes, location);
 		vector<FileBufferHandleGroup::MemoryHandle> mem_handles;
@@ -404,7 +436,7 @@ FileBufferHandleGroup CachingFileHandle::Read(const idx_t nr_bytes, const idx_t 
 	}
 	fetch_end = MinValue(fetch_end, file_size);
 	auto blocks = external_file_cache.AcquireBlocks(*current_cached_file, fetch_location, fetch_end - fetch_location,
-	                                                max_block_size);
+	                                                max_block_size, absorb_ranges.empty() ? nullptr : &absorb_ranges);
 	const idx_t num_blocks = blocks.size();
 
 	// Schedule block fetch tasks for all blocks.
@@ -612,6 +644,31 @@ bool CachingFileHandle::TryGetNetworkThroughput(NetworkThroughputEstimate &resul
 		return true;
 	}
 	return throughput_estimator.TryEstimate(result);
+}
+
+idx_t CachingFileHandle::CountCachedBlocks(idx_t location, idx_t nr_bytes) {
+	if (nr_bytes == 0 || !external_file_cache.IsEnabled() || !external_file_cache.ShouldCacheFile(path.path) ||
+	    !CanUseCache()) {
+		return 0;
+	}
+	auto current_cached_file = EnsureCachedFileCurrent();
+	return ExternalFileCache::CountSmallAvailableBlocks(*current_cached_file, location, nr_bytes,
+	                                                    external_file_cache.GetCacheMaxBlockSize(path.path));
+}
+
+bool CachingFileHandle::IsCached(idx_t location, idx_t nr_bytes) {
+	if (!external_file_cache.IsEnabled() || !external_file_cache.ShouldCacheFile(path.path) || !CanUseCache()) {
+		return false;
+	}
+	if (nr_bytes == 0) {
+		return true;
+	}
+	auto current_cached_file = EnsureCachedFileCurrent();
+	return ExternalFileCache::IsRangeAvailable(*current_cached_file, location, nr_bytes);
+}
+
+idx_t CachingFileHandle::GetMaxMemory() const {
+	return external_file_cache.GetBufferManager().GetMaxMemory();
 }
 
 void CachingFileHandle::ReadAndRecord(QueryContext context, data_ptr_t buffer, idx_t nr_bytes, idx_t location) {

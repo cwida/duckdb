@@ -16,7 +16,7 @@ SELECT (CASE WHEN i % 2 = 0 THEN i::DECIMAL(4,1)::VARIANT ELSE i::DECIMAL(4,2)::
 0.0
 1.00
 
-load __TEST_DIR__/variant_stats_merge_decimal.db
+load {TEST_DIR}/variant_stats_merge_decimal.db
 
 statement ok
 SET variant_minimum_shredding_size = 0

@@ -54,13 +54,15 @@ SELECT (col1 + 1) AS k, k IN (SELECT ColID + k FROM tbl_ProductSales) FROM anoth
 112	0
 1112	0
 
-# controversial: this fails in postgres but succeeds in sqlite
-# col1 + 1 is a grouping column so could theoretically be used in the subquery
-# but as it is not a column reference directly we fail to bind it here
-statement error
+# this used to fail in postgres but succeeds in sqlite (and will hopefully succeed in postgres 19!):
+# col1 + 1 is a grouping expression, so it can be referenced from the subquery even though it is not a plain column reference
+query I
 SELECT (col1 + 1) IN (SELECT ColID + (col1 + 1) FROM tbl_ProductSales) FROM another_T GROUP BY (col1 + 1);
 ----
-<REGEX>:.*Binder Error.*must be part of an aggregate function.*
+false
+false
+false
+false
 
 # this should fail, col1 + 42 is not a grouping column
 statement error

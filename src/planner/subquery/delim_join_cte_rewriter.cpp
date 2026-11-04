@@ -408,7 +408,7 @@ static bool PushEligibleFilterExpressionsIntoDelimJoinInputs(unique_ptr<LogicalO
 
 	bool changed = false;
 	auto &delim_join = input.get().Cast<LogicalComparisonJoin>();
-	if (!projections.empty() && delim_join.join_type != JoinType::INNER && delim_join.join_type != JoinType::LEFT) {
+	if (!projections.empty() && PropagatesBuildSide(delim_join.join_type)) {
 		return false;
 	}
 	for (auto &projection : projections) {
@@ -1152,7 +1152,7 @@ bool GeneratedDedupRefEliminator::RewriteSubtree(unique_ptr<LogicalOperator> &op
 		if (RewriteSubtree(op->children[child_idx], preserve_selected_domain, child_replacements, child_under_aggregate,
 		                   under_evidence_side)) {
 			ColumnBindingRewrite::ApplyToChild(op, child_idx, std::move(old_child_bindings), child_replacements);
-			replacements.Merge(child_replacements);
+			replacements.Merge(child_replacements.ScopedToBoundary(op->children[child_idx]->GetColumnBindings()));
 			rewritten = true;
 		}
 	}
@@ -1432,6 +1432,7 @@ bool GeneratedDedupRefEliminator::PreserveJoinAsSemi(unique_ptr<LogicalOperator>
 
 	ColumnBindingReplacer replacer;
 	replacement_bindings.AddTo(replacer);
+	replacer.BuildIndex();
 	replacer.stop_operator = join.get();
 	replacer.VisitOperator(rewrite_root);
 	ReplaceOperatorBindings(rewrite_root, dedup_ref->output_bindings, generated_output_replacements, join.get());
@@ -1552,6 +1553,7 @@ bool GeneratedDedupRefEliminator::PreserveFilterCrossProductAsSemi(unique_ptr<Lo
 	filter_op = std::move(replacement_op);
 	ColumnBindingReplacer replacer;
 	replacement_bindings.AddTo(replacer);
+	replacer.BuildIndex();
 	replacer.stop_operator = filter_op.get();
 	replacer.VisitOperator(rewrite_root);
 	ReplaceOperatorBindings(rewrite_root, dedup_ref->output_bindings, generated_output_replacements, filter_op.get());
@@ -1691,6 +1693,7 @@ bool GeneratedDedupRefEliminator::RemoveJoin(unique_ptr<LogicalOperator> &join, 
 
 	ColumnBindingReplacer replacer;
 	replacement_bindings.AddTo(replacer);
+	replacer.BuildIndex();
 	replacer.VisitOperator(rewrite_root);
 	ReplaceOperatorBindings(rewrite_root, dedup_ref->output_bindings, generated_output_replacements);
 	replacements.Merge(replacement_bindings);
@@ -1812,6 +1815,7 @@ bool GeneratedDedupRefEliminator::RemoveFilterCrossProduct(unique_ptr<LogicalOpe
 
 	ColumnBindingReplacer replacer;
 	replacement_bindings.AddTo(replacer);
+	replacer.BuildIndex();
 	replacer.VisitOperator(rewrite_root);
 	replacements.Merge(replacement_bindings);
 	return true;
@@ -2284,6 +2288,7 @@ bool GeneratedDomainJoinEliminator::RemoveGeneratedDedupJoin(unique_ptr<LogicalO
 
 	ColumnBindingReplacer column_replacer;
 	replacement_bindings.AddTo(column_replacer);
+	column_replacer.BuildIndex();
 	column_replacer.VisitOperator(*rewrite_root);
 	ReplaceOperatorBindings(*rewrite_root, dedup_ref->output_bindings, generated_output_replacements);
 	replacements.Merge(replacement_bindings);
@@ -2448,7 +2453,7 @@ bool GeneratedDomainJoinEliminator::TryRewriteOnce(unique_ptr<LogicalOperator> &
 		if (TryRewriteOnce(child, child_replacements, child_under_aggregate, child_under_evidence_side,
 		                   child_negated_marker_filter_above)) {
 			ColumnBindingRewrite::ApplyToChild(op, child_idx, std::move(old_child_bindings), child_replacements);
-			replacements.Merge(child_replacements);
+			replacements.Merge(child_replacements.ScopedToBoundary(op->children[child_idx]->GetColumnBindings()));
 			return true;
 		}
 	}
@@ -2517,6 +2522,10 @@ static bool SingleJoinRHSIsDeduplicated(LogicalComparisonJoin &join) {
 
 	auto &aggr = current_op.get().Cast<LogicalAggregate>();
 	if (!aggr.grouping_functions.empty()) {
+		return false;
+	}
+	if (aggr.grouping_sets.size() > 1) {
+		// multiple grouping sets emit one row per set, so the groups do not determine a unique row
 		return false;
 	}
 
@@ -2716,6 +2725,7 @@ BindingReplacementGraph DelimJoinCTERewriter::MaterializeDelimJoinAsCTE(unique_p
 		auto projection_replacements = CreateConstructedBindingReplacements(old_left_bindings, projected_left_bindings);
 		CorrelatedColumnBindingReplacer projection_replacer;
 		projection_replacements.AddTo(projection_replacer);
+		projection_replacer.BuildIndex();
 		projection_replacer.stop_operator = plan->children[1];
 		projection_replacer.VisitOperator(*plan);
 		output_replacements.Merge(projection_replacements);
@@ -2746,6 +2756,7 @@ BindingReplacementGraph DelimJoinCTERewriter::MaterializeDelimJoinAsCTE(unique_p
 	plan->children[0] = std::move(left_cte_ref);
 	ColumnBindingReplacer replacer;
 	binding_replacements.AddTo(replacer);
+	replacer.BuildIndex();
 	replacer.stop_operator = plan->children[1];
 	replacer.VisitOperator(*plan);
 
@@ -2817,7 +2828,8 @@ BindingReplacementGraph DelimJoinCTERewriter::RewriteDelimJoinsToCTEs(unique_ptr
 		auto child_replacements = RewriteDelimJoinsToCTEs(child, rewrite_root, child_null_rejecting_filter_above,
 		                                                  child_preserve_evidence_side);
 		ColumnBindingRewrite::ApplyToChild(plan, child_idx, std::move(old_child_bindings), child_replacements);
-		output_replacements.Merge(child_replacements);
+		// Scope to the child's output boundary: operators above cannot see bindings that no longer resolve into it
+		output_replacements.Merge(child_replacements.ScopedToBoundary(plan->children[child_idx]->GetColumnBindings()));
 	}
 	if (plan->type == LogicalOperatorType::LOGICAL_DELIM_JOIN) {
 		auto &join = plan->Cast<LogicalComparisonJoin>();
@@ -2830,7 +2842,7 @@ BindingReplacementGraph DelimJoinCTERewriter::RewriteDelimJoinsToCTEs(unique_ptr
 		}
 		auto materialize_replacements = MaterializeDelimJoinAsCTE(
 		    plan, rewrite_root, null_rejecting_filter_above, preserve_evidence_side, preserve_nested_evidence_side);
-		output_replacements.Merge(materialize_replacements);
+		output_replacements.Merge(materialize_replacements.ScopedToBoundary(plan->GetColumnBindings()));
 	}
 	return output_replacements;
 }

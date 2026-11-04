@@ -1,6 +1,7 @@
 #include "json_common.hpp"
 #include "yyjson_memory.hpp"
 #include "duckdb/common/exception/binder_exception.hpp"
+#include "duckdb/common/type_visitor.hpp"
 
 namespace duckdb {
 
@@ -55,13 +56,15 @@ public:
 	}
 
 	inline bool IsWildCard() {
-		return key == "*";
+		// a quoted "*" is a regular key
+		return !quoted && key == "*";
 	}
 
 public:
 	idx_t chars_read;
 	bool recursive;
 	string key;
+	bool quoted = false;
 };
 
 static inline JSONKeyReadResult ReadString(const char *ptr, const char *const end, const bool escaped) {
@@ -170,6 +173,7 @@ static inline JSONKeyReadResult ReadKey(const char *ptr, const char *const end) 
 	}
 	if (escaped) {
 		result.chars_read += 2; // Account for surrounding quotes
+		result.quoted = true;
 	}
 	if (recursive) {
 		result.chars_read += 1;
@@ -450,6 +454,91 @@ static yyjson_mut_val *MutValShallowCopy(yyjson_mut_doc *doc, yyjson_mut_val *va
 		break;
 	}
 	return result;
+}
+
+bool JSONCommon::NumbersAsRaw(const LogicalType &type) {
+	return TypeVisitor::Contains(type, LogicalTypeId::DECIMAL);
+}
+
+bool JSONCommon::NumbersAsRaw(const vector<LogicalType> &types) {
+	for (auto &type : types) {
+		if (NumbersAsRaw(type)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+yyjson_read_flag JSONCommon::GetReadFlag(yyjson_read_flag flag, bool numbers_as_raw) {
+	if (numbers_as_raw) {
+		flag &= ~YYJSON_READ_BIGNUM_AS_RAW;
+		flag |= YYJSON_READ_NUMBER_AS_RAW;
+	}
+	return flag;
+}
+
+//! Whether the value, or a value nested in it, is a number kept as text that ReadRawNumber parses
+static bool HasRawNumber(yyjson_val *val) {
+	// the values of an immutable document are contiguous: a container is followed by all of its children
+	yyjson_val number;
+	for (auto cur = val; cur < unsafe_yyjson_get_next(val); cur++) {
+		if (unsafe_yyjson_is_raw(cur) && JSONCommon::ReadRawNumber(cur, number)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+//! Replaces a number kept as text by the number the default flags would have read, in place
+static void ParseRawNumber(yyjson_mut_val *val) {
+	yyjson_val number;
+	if (!JSONCommon::ReadRawNumber(unsafe_yyjson_get_str(val), number)) {
+		return;
+	}
+	switch (unsafe_yyjson_get_subtype(&number)) {
+	case YYJSON_SUBTYPE_UINT:
+		yyjson_mut_set_uint(val, unsafe_yyjson_get_uint(&number));
+		break;
+	case YYJSON_SUBTYPE_SINT:
+		yyjson_mut_set_sint(val, unsafe_yyjson_get_sint(&number));
+		break;
+	default:
+		yyjson_mut_set_real(val, unsafe_yyjson_get_real(&number));
+		break;
+	}
+}
+
+string_t JSONRawNumberWriter::Write(yyjson_val *val) {
+	if (!HasRawNumber(val)) {
+		return JSONCommon::WriteVal<yyjson_val>(val, alc);
+	}
+	if (!doc) {
+		doc = JSONCommon::CreateDocument(alc);
+	}
+	auto copy = yyjson_val_mut_copy(doc, val);
+	// iterative, like MutValMutCopy, so that deeply nested values do not overflow the stack
+	containers.clear();
+	if (unsafe_yyjson_is_raw(copy)) {
+		ParseRawNumber(copy);
+	} else if (unsafe_yyjson_is_ctn(copy) && unsafe_yyjson_get_len(copy) > 0) {
+		containers.push_back(copy);
+	}
+	while (!containers.empty()) {
+		auto container = containers.back();
+		containers.pop_back();
+		// the children of a container form a circular list - the container points to the last child
+		auto last = reinterpret_cast<yyjson_mut_val *>(container->uni.ptr);
+		auto child = last;
+		do {
+			if (unsafe_yyjson_is_raw(child)) {
+				ParseRawNumber(child);
+			} else if (unsafe_yyjson_is_ctn(child) && unsafe_yyjson_get_len(child) > 0) {
+				containers.push_back(child);
+			}
+			child = child->next;
+		} while (child != last);
+	}
+	return JSONCommon::WriteVal<yyjson_mut_val>(copy, alc);
 }
 
 yyjson_mut_val *JSONCommon::MutValMutCopy(yyjson_mut_doc *doc, yyjson_mut_val *val) {

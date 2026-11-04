@@ -228,3 +228,39 @@ query I
 SELECT '5.5e-8'::DECIMAL(18,6)
 ----
 0.000000
+
+# decimals that a positive exponent moves before the decimal point count towards the width
+statement error
+SELECT '0.2e5'::DECIMAL(4,0)
+----
+Conversion Error
+
+statement error
+SELECT '-0.2e5'::DECIMAL(4,0)
+----
+Conversion Error
+
+statement error
+SELECT '218.91127e7'::DECIMAL(10,2)
+----
+Conversion Error
+
+statement error
+SELECT '0.12345e4'::DECIMAL(4,1)
+----
+Conversion Error
+
+statement error
+SELECT '0.99e38'::DECIMAL(37,0)
+----
+Conversion Error
+
+query III
+SELECT TRY_CAST('0.92e19' AS DECIMAL(17,0)), TRY_CAST('0.92e19' AS DECIMAL(18,0)), TRY_CAST('0.92e19' AS DECIMAL(19,0))
+----
+NULL	NULL	9200000000000000000
+
+query IIIIII
+SELECT '0.2e4'::DECIMAL(4,0), '-0.2e4'::DECIMAL(4,0), '0.9999e4'::DECIMAL(4,0), '0.1234e3'::DECIMAL(4,1), '218.91127e7'::DECIMAL(12,2), '0.99e38'::DECIMAL(38,0)
+----
+2000	-2000	9999	123.4	2189112700.00	99000000000000000000000000000000000000

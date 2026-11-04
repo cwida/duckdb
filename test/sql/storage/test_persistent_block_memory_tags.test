@@ -1,0 +1,62 @@
+# name: test/sql/storage/test_persistent_block_memory_tags.test
+# description: Blocks of the database file are accounted under the memory tag of their owner
+# group: [storage]
+
+load {TEST_DIR}/persistent_block_memory_tags.db
+
+statement ok
+CREATE TABLE t (i BIGINT PRIMARY KEY, s VARCHAR USING COMPRESSION uncompressed);
+
+statement ok
+INSERT INTO t SELECT range, repeat('x', 10000) FROM range(10000);
+
+statement ok
+CHECKPOINT;
+
+# the index and metadata blocks written by the checkpoint stay loaded
+query II
+SELECT tag, memory_usage_bytes > 0 FROM duckdb_memory() WHERE tag IN ('ART_INDEX', 'METADATA') ORDER BY tag;
+----
+ART_INDEX	true
+METADATA	true
+
+query I
+SELECT sum(strlen(s)) FROM t;
+----
+100000000
+
+# the scan reads the overflow string blocks written by the checkpoint
+query I
+SELECT memory_usage_bytes > 0 FROM duckdb_memory() WHERE tag = 'OVERFLOW_STRINGS';
+----
+true
+
+restart
+
+# loading the catalog reads metadata blocks
+query I
+SELECT memory_usage_bytes > 0 FROM duckdb_memory() WHERE tag = 'METADATA';
+----
+true
+
+# the constraint check only reads metadata and index blocks
+statement error
+INSERT INTO t VALUES (42, 'duplicate');
+----
+Duplicate key
+
+query I
+SELECT memory_usage_bytes FROM duckdb_memory() WHERE tag = 'BASE_TABLE';
+----
+0
+
+query I
+SELECT sum(strlen(s)) FROM t;
+----
+100000000
+
+# the scan reads the overflow string blocks from disk
+query I
+SELECT memory_usage_bytes > 0 FROM duckdb_memory() WHERE tag = 'OVERFLOW_STRINGS';
+----
+true

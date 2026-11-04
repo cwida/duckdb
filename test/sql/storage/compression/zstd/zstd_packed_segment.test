@@ -1,0 +1,47 @@
+# name: test/sql/storage/compression/zstd/zstd_packed_segment.test
+# description: Read a packed Zstd segment at the end of a block
+# group: [zstd]
+
+require vector_size 2048
+
+statement ok
+ATTACH '{TEST_DIR}/zstd_packed_segment.db' AS db (STORAGE_VERSION 'v1.2.0', BLOCK_SIZE 16384);
+
+statement ok
+SET threads=1;
+
+statement ok
+CREATE TABLE db.t(p VARCHAR USING COMPRESSION UNCOMPRESSED, s VARCHAR USING COMPRESSION ZSTD);
+
+# Leave only three bytes after the packed Zstd segment, too few for a block ID.
+statement ok
+INSERT INTO db.t SELECT CASE WHEN i=0 THEN repeat('b',809) ELSE repeat('a',7) END, 'string-' || lpad(i::VARCHAR,9,'0') FROM range(1000) t(i);
+
+statement ok
+CHECKPOINT db;
+
+statement ok
+DETACH db;
+
+load {TEST_DIR}/zstd_packed_segment.db readonly
+
+statement ok
+USE zstd_packed_segment;
+
+query II
+SELECT compression, block_offset FROM pragma_storage_info('t') WHERE column_name='s' AND segment_type='VARCHAR';
+----
+ZSTD	11816
+
+query I
+SELECT SUM(strlen(s)) FROM t;
+----
+16000
+
+statement ok
+SET debug_force_fetch_row=true;
+
+query I
+SELECT SUM(strlen(s)) FROM t;
+----
+16000

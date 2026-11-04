@@ -2,12 +2,15 @@
 
 #include "duckdb/common/operator/add.hpp"
 #include "duckdb/common/operator/multiply.hpp"
+#include "duckdb/common/operator/subtract.hpp"
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/common/types/time.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/common/helper.hpp"
 #include "duckdb/common/typedefs.hpp"
 #include "duckdb/common/types/interval.hpp"
+#include "duckdb/common/operator/add.hpp"
+#include "duckdb/common/operator/multiply.hpp"
 
 namespace duckdb {
 
@@ -26,7 +29,12 @@ static int64_t ImpalaTimestampToMicroseconds(const Int96 &impala_timestamp) {
 	int64_t days_since_epoch = ImpalaTimestampToDays(impala_timestamp);
 	auto nanoseconds = Load<int64_t>(const_data_ptr_cast(impala_timestamp.value));
 	auto microseconds = nanoseconds / NANOSECONDS_PER_MICRO;
-	return days_since_epoch * MICROSECONDS_PER_DAY + microseconds;
+	int64_t result;
+	if (!TryMultiplyOperator::Operation<int64_t, int64_t, int64_t>(days_since_epoch, MICROSECONDS_PER_DAY, result) ||
+	    !TryAddOperator::Operation<int64_t, int64_t, int64_t>(result, microseconds, result)) {
+		throw InvalidInputException("Int96 timestamp is out of range");
+	}
+	return result;
 }
 
 static int64_t ImpalaTimestampToNanoseconds(const Int96 &impala_timestamp) {
@@ -37,7 +45,8 @@ static int64_t ImpalaTimestampToNanoseconds(const Int96 &impala_timestamp) {
 	if (days_since_epoch < 0) {
 		//	Don't saturate the minimum value by going past it
 		if (!TryMultiplyOperator::Operation(days_since_epoch + 1, NANOSECONDS_PER_DAY, day_nanoseconds) ||
-		    !TryAddOperator::Operation(day_nanoseconds, nanoseconds - NANOSECONDS_PER_DAY, result)) {
+		    !TrySubtractOperator::Operation(nanoseconds, NANOSECONDS_PER_DAY, nanoseconds) ||
+		    !TryAddOperator::Operation(day_nanoseconds, nanoseconds, result)) {
 			// out of range for TIMESTAMP_NS - saturate to -infinity
 			return timestamp_ns_t::ninfinity().value;
 		}

@@ -37,7 +37,7 @@ shared_ptr<BlockHandle> UncompressedStringSegmentState::GetHandle(BlockManager &
 		throw DataCorruptionException(
 		    "Corrupted uncompressed string segment: overflow string block is not owned by the segment");
 	}
-	auto result = manager.RegisterBlock(block_id);
+	auto result = manager.RegisterBlock(block_id, MemoryTag::OVERFLOW_STRINGS);
 	handles.insert(make_pair(block_id, result));
 	return result;
 }
@@ -50,7 +50,7 @@ void UncompressedStringSegmentState::RegisterBlock(BlockManager &manager_p, bloc
 		                        block_id);
 	}
 	auto &manager = block_manager ? *block_manager : manager_p;
-	auto result = manager.RegisterBlock(block_id);
+	auto result = manager.RegisterBlock(block_id, MemoryTag::OVERFLOW_STRINGS);
 	handles.insert(make_pair(block_id, std::move(result)));
 	on_disk_blocks.push_back(block_id);
 	on_disk_block_set.insert(block_id);

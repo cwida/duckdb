@@ -1,0 +1,13 @@
+diff --git a/src/hnsw/hnsw_optimize_expr.cpp b/src/hnsw/hnsw_optimize_expr.cpp
+index 5ff53f3..b5e62c0 100644
+--- a/src/hnsw/hnsw_optimize_expr.cpp
++++ b/src/hnsw/hnsw_optimize_expr.cpp
+@@ -82,7 +82,7 @@ public:
+ 
+ 	static void Optimize(OptimizerExtensionInput &input, unique_ptr<LogicalOperator> &plan) {
+ 		ExpressionRewriter rewriter(input.context);
+-		rewriter.rules.push_back(make_uniq<CosineDistanceRule>(rewriter));
++		rewriter.AddRule(make_uniq<CosineDistanceRule>(rewriter));
+ 		rewriter.VisitOperator(*plan);
+ 	}
+ };

@@ -1,0 +1,55 @@
+# name: test/sql/storage/compression/roaring/roaring_run_boundaries.test
+# description: Read trailing Roaring runs in full and partial containers
+# group: [roaring]
+
+require block_size 262144
+
+load {TEST_DIR}/roaring_run_boundaries.db readwrite v1.5.0
+
+foreach rows 255 2048 2113
+
+statement ok
+SET force_compression = 'roaring'
+
+# One long run, then repeated runs that use compressed endpoints in larger containers.
+statement ok
+CREATE TABLE test AS
+SELECT i,
+       i % 2048 < 16 AS single_run,
+       i % 64 < 16 AS repeated_run,
+       CASE WHEN i % 2048 < 16 THEN i ELSE NULL END AS single_null,
+       CASE WHEN i % 64 < 16 THEN i ELSE NULL END AS repeated_null
+FROM range({rows}) t(i)
+
+statement ok
+CHECKPOINT
+
+restart
+
+query I
+SELECT count(DISTINCT column_name) FROM pragma_storage_info('test')
+WHERE column_name IN ('single_run', 'repeated_run', 'single_null', 'repeated_null')
+  AND compression = 'Roaring'
+----
+4
+
+foreach fetch false true
+
+statement ok
+SET debug_force_fetch_row = {fetch}
+
+query I
+SELECT count(*) FROM test
+WHERE single_run IS DISTINCT FROM (i % 2048 < 16)
+   OR repeated_run IS DISTINCT FROM (i % 64 < 16)
+   OR single_null IS DISTINCT FROM CASE WHEN i % 2048 < 16 THEN i ELSE NULL END
+   OR repeated_null IS DISTINCT FROM CASE WHEN i % 64 < 16 THEN i ELSE NULL END
+----
+0
+
+endloop
+
+statement ok
+DROP TABLE test
+
+endloop

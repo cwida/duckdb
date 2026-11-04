@@ -1,0 +1,36 @@
+# name: test/optimizer/pushdown/join_filter_pushdown_sample.test
+# description: Join filters preserve seeded samples pushed into scans
+# group: [pushdown]
+
+statement ok
+SET threads=1;
+
+statement ok
+SET disabled_optimizers='statistics_propagation,join_order,build_side_probe_side,compressed_materialization,projection_pullup,projection_placement';
+
+# Two row groups, so a join filter could skip one before sampling consumes its random numbers.
+statement ok
+CREATE TABLE sampled_probe AS SELECT i AS id, (i // 122880)::BIGINT AS k FROM range(245760) r(i);
+
+statement ok
+CREATE TABLE sampled_build AS SELECT 1::BIGINT AS k;
+
+statement ok
+CREATE TABLE sampled_reference AS SELECT * FROM sampled_probe USING SAMPLE 50 PERCENT (system, 42);
+
+query I
+SELECT count(*) = (SELECT count(*) FROM sampled_reference WHERE k=1)
+FROM (SELECT * FROM sampled_probe USING SAMPLE 50 PERCENT (system, 42)) probe
+JOIN sampled_build USING (k);
+----
+true
+
+# A partition-key filter must not alter the sample below a window either.
+query II
+SELECT count(*) = (SELECT count(*) FROM sampled_reference WHERE k=1),
+       min(n) = (SELECT count(*) FROM sampled_reference WHERE k=1)
+FROM (SELECT id, k, count(*) OVER (PARTITION BY k) AS n
+      FROM (SELECT * FROM sampled_probe USING SAMPLE 50 PERCENT (system, 42))) probe
+JOIN sampled_build USING (k);
+----
+true	true

@@ -88,6 +88,11 @@ void FilenamePattern::SetFilenamePattern(const string &pattern) {
 		// if we have ONLY a literal we add an offset at the end
 		segments.emplace_back(FileNameSegmentType::OFFSET);
 	}
+	if (segments.empty()) {
+		// an explicitly empty pattern is stored as one empty literal: an empty segment list is the
+		// legacy marker in deserialization, which would reconstruct the offset segment it implies
+		segments.emplace_back(string());
+	}
 }
 
 string FilenamePattern::CreateFilename(FileSystem &fs, const string &path, const string &extension,

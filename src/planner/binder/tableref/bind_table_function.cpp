@@ -64,20 +64,20 @@ static TableFunctionBindType GetTableFunctionBindType(TableFunctionCatalogEntry 
 		} else if (function.function || function.bind_replace || function.bind_operator) {
 			has_standard_table_function = true;
 		} else {
-			throw InternalException("Function \"%s\" has neither in_out_function nor function defined",
+			throw InternalException("Function %s has neither in_out_function nor function defined",
 			                        table_function.name);
 		}
 	}
 	if (has_table_parameter) {
 		if (table_function.functions.Size() != 1) {
 			throw InternalException(
-			    "Function \"%s\" has a TABLE parameter, and multiple function overloads - this is not supported",
+			    "Function %s has a TABLE parameter, and multiple function overloads - this is not supported",
 			    table_function.name);
 		}
 		return TableFunctionBindType::TABLE_PARAMETER_FUNCTION;
 	}
 	if (has_in_out_function && has_standard_table_function) {
-		throw InternalException("Function \"%s\" is both an in_out_function and a table function", table_function.name);
+		throw InternalException("Function %s is both an in_out_function and a table function", table_function.name);
 	}
 	return has_in_out_function ? TableFunctionBindType::TABLE_IN_OUT_FUNCTION
 	                           : TableFunctionBindType::STANDARD_TABLE_FUNCTION;
@@ -253,14 +253,13 @@ BoundStatement Binder::BindTableFunctionInternal(BoundTableFunction &table_funct
 				}
 				new_plan->ResolveOperatorTypes();
 				if (new_plan->types.size() != return_names.size()) {
-					throw InternalException("Failed to bind \"%s\": return_types/names must have same size",
+					throw InternalException("Failed to bind %s: return_types/names must have same size",
 					                        table_function.GetName());
 				}
 				for (auto &binding : new_plan->GetColumnBindings()) {
 					if (binding.table_index != bind_index) {
-						throw InternalException(
-						    "Failed to bind \"%s\": root bind index must be the passed in bind index",
-						    table_function.GetName());
+						throw InternalException("Failed to bind %s: root bind index must be the passed in bind index",
+						                        table_function.GetName());
 					}
 				}
 				auto setof_column_name = ApplyPostgresSetofAliasCompatibility(table_function, ref, return_names);
@@ -286,7 +285,7 @@ BoundStatement Binder::BindTableFunctionInternal(BoundTableFunction &table_funct
 			}
 		}
 		if (!table_function.bind) {
-			throw BinderException("Failed to bind \"%s\": nullptr returned from bind_replace without bind function",
+			throw BinderException("Failed to bind %s: nullptr returned from bind_replace without bind function",
 			                      table_function.GetName());
 		}
 		bind_data = table_function.bind(context, bind_input, return_types, return_names);
@@ -312,18 +311,17 @@ BoundStatement Binder::BindTableFunctionInternal(BoundTableFunction &table_funct
 			}
 		}
 	} else {
-		throw InvalidInputException("Cannot call function \"%s\" directly - it has no bind function",
+		throw InvalidInputException("Cannot call function %s directly - it has no bind function",
 		                            table_function.GetName());
 	}
 	if (bind_data && !bind_data->SupportStatementCache()) {
 		SetAlwaysRequireRebind();
 	}
 	if (return_types.size() != return_names.size()) {
-		throw InternalException("Failed to bind \"%s\": return_types/names must have same size",
-		                        table_function.GetName());
+		throw InternalException("Failed to bind %s: return_types/names must have same size", table_function.GetName());
 	}
 	if (return_types.empty()) {
-		throw InternalException("Failed to bind \"%s\": Table function must return at least one column",
+		throw InternalException("Failed to bind %s: Table function must return at least one column",
 		                        table_function.GetName());
 	}
 	auto setof_column_name = ApplyPostgresSetofAliasCompatibility(table_function, ref, return_names);
@@ -423,12 +421,15 @@ BoundStatement Binder::Bind(TableFunctionRef &ref) {
 	// it names an attached database, and otherwise the outermost schema of a (possibly nested) schema path.
 	EntryLookupInfo table_function_lookup(CatalogType::TABLE_FUNCTION_ENTRY, QualifiedName(fexpr.FunctionName()),
 	                                      error_context);
-	auto bound_name = BindTableName(fexpr.GetQualifiedName());
+	auto bound_name = BindTableName(entry_retriever, fexpr.GetQualifiedName());
 	auto &func_catalog =
 	    *GetCatalogEntry(EntryLookupInfo(table_function_lookup, bound_name), OnEntryNotFound::THROW_EXCEPTION);
 
 	if (func_catalog.type == CatalogType::TABLE_MACRO_ENTRY) {
 		auto &macro_func = func_catalog.Cast<TableMacroCatalogEntry>();
+		if (!func_catalog.ParentCatalog().IsSystemCatalog()) {
+			GetStatementProperties().RegisterDBRead(func_catalog.ParentCatalog(), context);
+		}
 		auto query_node = BindTableMacro(fexpr, macro_func, 0);
 		D_ASSERT(query_node);
 
@@ -478,19 +479,27 @@ BoundStatement Binder::Bind(TableFunctionRef &ref) {
 	}
 
 	// selection, named-argument checking, folding and casting all happen in the function binder
-	FunctionBinder function_binder(*this);
-	vector<Value> parameters;
-	named_argument_map_t named_parameters;
-	auto best_function_idx =
-	    table_in_out ? function_binder.BindTableInOutFunction(function.name, function.functions, subquery.types, error)
-	                 : function_binder.BindFunction(function.name, function.functions, positional_arguments,
-	                                                named_arguments, parameters, named_parameters, error);
-	if (!best_function_idx.IsValid()) {
+	unique_ptr<ResolvedTableFunction> resolved;
+	if (table_in_out) {
+		// the arguments are the columns of the subquery
+		auto selection = FunctionBinder::SelectFunction(context, function.functions, subquery.types);
+		if (selection.IsSuccess()) {
+			auto definition = selection.GetBinding().GetFunction<TableFunction>();
+			resolved = make_uniq<ResolvedTableFunction>(BoundTableFunction(definition));
+		} else {
+			error = selection.GetError();
+		}
+	} else {
+		FunctionBinder function_binder(*this);
+		resolved = function_binder.BindTableFunction(function.functions, positional_arguments, named_arguments, error);
+	}
+	if (!resolved) {
 		error.AddQueryLocation(ref);
 		error.Throw();
 	}
-	// copied out of the set: BindTableFunctionInternal fills in the bound return types
-	BoundTableFunction table_function(function.functions.GetFunctionByOffset(best_function_idx.GetIndex()));
+	auto &table_function = resolved->function;
+	auto &parameters = resolved->parameters;
+	auto &named_parameters = resolved->named_parameters;
 
 	vector<LogicalType> input_table_types;
 	vector<Identifier> input_table_names;

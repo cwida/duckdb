@@ -4,6 +4,8 @@
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
+#include "duckdb/planner/expression/bound_cast_expression.hpp"
+#include "duckdb/planner/expression_binder.hpp"
 
 namespace duckdb {
 
@@ -71,11 +73,43 @@ ExpressionType ComparisonGetExpressionType(FunctionToStringInput &input) {
 	return TYPE;
 }
 
+//! Cast the arguments of a comparison to a common type - both for comparison operators and for "="(a, b)
+template <ExpressionType TYPE>
+static unique_ptr<FunctionData> ComparisonBind(BindScalarFunctionInput &input) {
+	auto &context = input.GetClientContext();
+	auto &arguments = input.GetArguments();
+	auto left_type = ExpressionBinder::GetExpressionReturnType(*arguments[0]);
+	auto right_type = ExpressionBinder::GetExpressionReturnType(*arguments[1]);
+	LogicalType input_type;
+	if (!BoundComparisonExpression::TryBindComparison(context, left_type, right_type, input_type, TYPE)) {
+		throw BinderException("Cannot compare values of type %s and type %s - an explicit cast is required",
+		                      left_type.ToString(), right_type.ToString());
+	}
+	for (auto &argument : arguments) {
+		argument = BoundCastExpression::AddCastToType(context, std::move(argument), input_type,
+		                                              input_type.id() == LogicalTypeId::ENUM);
+		ExpressionBinder::PushCollation(context, argument, input_type);
+	}
+	return nullptr;
+}
+
+//! The arguments of a deserialized comparison have already been cast - so it should not be bound again
+static void ComparisonSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data,
+                                const BoundScalarFunction &function) {
+}
+
+static unique_ptr<FunctionData> ComparisonDeserialize(Deserializer &deserializer, BoundScalarFunction &function) {
+	return nullptr;
+}
+
 template <ExpressionType TYPE>
 static ScalarFunction GetComparisonFunctionInternal(const string &name) {
-	ScalarFunction comparison_fun(Identifier(name), {}, LogicalType::BOOLEAN, ComparisonFunction<TYPE>);
+	ScalarFunction comparison_fun(Identifier(name), {}, LogicalType::BOOLEAN, ComparisonFunction<TYPE>,
+	                              ComparisonBind<TYPE>);
 	comparison_fun.GetSignature().AddParameter("left", LogicalType::ANY).AddParameter("right", LogicalType::ANY);
 	comparison_fun.SetGetExpressionTypeCallback(ComparisonGetExpressionType<TYPE>);
+	comparison_fun.SetSerializeCallback(ComparisonSerialize);
+	comparison_fun.SetDeserializeCallback(ComparisonDeserialize);
 	if constexpr (TYPE == ExpressionType::COMPARE_DISTINCT_FROM || TYPE == ExpressionType::COMPARE_NOT_DISTINCT_FROM) {
 		comparison_fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
 	}
@@ -153,6 +187,18 @@ unique_ptr<Expression> BoundComparisonExpression::Create(ExpressionType type, un
 	auto result = make_uniq<BoundFunctionExpression>(BoundScalarFunction(GetComparisonFunction(type)),
 	                                                 std::move(children), nullptr, true);
 	return std::move(result);
+}
+
+unique_ptr<Expression> BoundComparisonExpression::Bind(ClientContext &context, ExpressionType type,
+                                                       unique_ptr<Expression> left, unique_ptr<Expression> right) {
+	vector<unique_ptr<Expression>> children;
+	children.push_back(std::move(left));
+	children.push_back(std::move(right));
+
+	BoundScalarFunction function(GetComparisonFunction(type));
+	BindScalarFunctionInput input(context, function, children);
+	function.GetBindCallback()(input);
+	return make_uniq<BoundFunctionExpression>(std::move(function), std::move(children), nullptr, true);
 }
 
 bool BoundComparisonExpression::IsComparison(ExpressionType type) {

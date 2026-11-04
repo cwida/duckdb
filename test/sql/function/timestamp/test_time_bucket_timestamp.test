@@ -803,9 +803,10 @@ statement error
 select time_bucket('3 months'::interval, '2019-05-05 00:00:00'::timestamp, '-2000000000 months'::interval);
 ----
 
-statement error
+query I
 select time_bucket('1 microseconds'::interval, '290309-12-21 (BC) 23:59:59.999999'::timestamp);
 ----
+290309-12-21 (BC) 23:59:59.999999
 
 query I
 select time_bucket('1 microseconds'::interval, '290309-12-22 (BC) 00:00:00'::timestamp);

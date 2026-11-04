@@ -1,0 +1,92 @@
+# name: test/sql/join/inner/test_prefix_range_filter_allnull_pruning.test
+# description: Prefix range join filters prune probe row groups whose statistics prove every value is NULL
+# group: [inner]
+
+statement ok
+ATTACH '{TEST_DIR}/prf_allnull_pruning.duckdb' AS prf_allnull (ROW_GROUP_SIZE 2048);
+
+statement ok
+USE prf_allnull;
+
+statement ok
+SET disabled_optimizers = 'join_order,build_side_probe_side,compressed_materialization,statistics_propagation';
+
+statement ok
+CREATE TABLE prf_probe AS
+SELECT CASE WHEN i BETWEEN 2048 AND 4095 THEN NULL ELSE i END::BIGINT AS k
+FROM range(6144) t(i);
+
+statement ok
+CREATE TABLE prf_build AS
+SELECT (100 + i)::BIGINT AS k FROM range(300) t(i)
+UNION ALL
+SELECT (3000 + i)::BIGINT AS k FROM range(300) t(i)
+UNION ALL
+SELECT (4200 + i)::BIGINT AS k FROM range(300) t(i);
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM prf_probe p JOIN prf_build b ON p.k = b.k;
+----
+analyzed_plan	<REGEX>:(?s).*IN.*PRF.*\(k\).*
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM prf_probe p JOIN prf_build b ON p.k = b.k;
+----
+analyzed_plan	<REGEX>:(?s).*Row Groups Scanned: 2 / 3.*
+
+query III
+SELECT count(*), min(p.k), max(p.k) FROM prf_probe p JOIN prf_build b ON p.k = b.k;
+----
+600	100	4499
+
+statement ok
+SET disabled_optimizers = 'join_order,build_side_probe_side,compressed_materialization,statistics_propagation,join_filter_pushdown';
+
+query III
+SELECT count(*), min(p.k), max(p.k) FROM prf_probe p JOIN prf_build b ON p.k = b.k;
+----
+600	100	4499
+
+statement ok
+SET disabled_optimizers = 'join_order,build_side_probe_side,compressed_materialization,statistics_propagation';
+
+statement ok
+CREATE TABLE prf_probe_mixed AS
+SELECT CASE WHEN i % 2 = 0 THEN NULL ELSE i END::BIGINT AS k
+FROM range(6144) t(i);
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM prf_probe_mixed p JOIN prf_build b ON p.k = b.k;
+----
+analyzed_plan	<REGEX>:(?s).*Row Groups Scanned: 3 / 3.*
+
+query III
+SELECT count(*), min(p.k), max(p.k) FROM prf_probe_mixed p JOIN prf_build b ON p.k = b.k;
+----
+450	101	4499
+
+require strinline
+
+statement ok
+CREATE TABLE prf_probe_str AS
+SELECT CASE WHEN i BETWEEN 2048 AND 4095 THEN NULL ELSE lpad(i::VARCHAR, 4, '0') END AS k
+FROM range(6144) t(i);
+
+statement ok
+CREATE TABLE prf_build_str AS
+SELECT lpad((100 + i)::VARCHAR, 4, '0') AS k FROM range(300) t(i);
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM prf_probe_str p JOIN prf_build_str b ON p.k = b.k;
+----
+analyzed_plan	<REGEX>:(?s).*IN.*PRF.*\(k\).*
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM prf_probe_str p JOIN prf_build_str b ON p.k = b.k;
+----
+analyzed_plan	<REGEX>:(?s).*Row Groups Scanned: 1 / 3.*
+
+query I
+SELECT count(*) FROM prf_probe_str p JOIN prf_build_str b ON p.k = b.k;
+----
+300

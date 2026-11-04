@@ -27,6 +27,7 @@ public:
 	VectorStringBuffer();
 	explicit VectorStringBuffer(Allocator &allocator);
 	VectorStringBuffer(Allocator &allocator, capacity_t capacity);
+	VectorStringBuffer(AllocatedData allocation, capacity_t capacity);
 	explicit VectorStringBuffer(capacity_t capacity);
 	explicit VectorStringBuffer(data_ptr_t data_ptr_p, count_t count);
 	explicit VectorStringBuffer(AllocatedData &&data_p, count_t count);

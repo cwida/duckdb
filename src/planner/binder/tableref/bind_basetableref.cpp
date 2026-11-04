@@ -118,15 +118,15 @@ unique_ptr<BoundAtClause> Binder::BindAtClause(optional_ptr<AtClause> at_clause)
 	return make_uniq<BoundAtClause>(at_clause->Unit(), std::move(val));
 }
 
-vector<CatalogSearchEntry> Binder::GetSearchPath(Catalog &catalog, const Identifier &schema_name,
+vector<CatalogSearchEntry> Binder::GetSearchPath(Catalog &catalog, const vector<Identifier> &schema_path,
                                                  bool default_schema_precedence) {
 	vector<CatalogSearchEntry> view_search_path;
 	auto &catalog_name = catalog.GetName();
-	if (!schema_name.empty()) {
-		view_search_path.emplace_back(catalog_name, schema_name);
+	if (!schema_path.empty()) {
+		view_search_path.push_back(CatalogSearchEntry::FromSchemaPath(catalog_name, schema_path));
 	}
 	auto default_schema = catalog.GetDefaultSchema();
-	if (default_schema && schema_name.empty() && schema_name != *default_schema) {
+	if (default_schema && schema_path.empty() && !default_schema->empty()) {
 		view_search_path.emplace_back(catalog_name, *default_schema);
 	}
 	//! Signal that this catalog should be checked, regardless of the schema in the reference
@@ -135,7 +135,11 @@ vector<CatalogSearchEntry> Binder::GetSearchPath(Catalog &catalog, const Identif
 }
 
 void Binder::SetSearchPath(Catalog &catalog, const Identifier &schema) {
-	auto search_path = GetSearchPath(catalog, schema);
+	SetSearchPath(catalog, vector<Identifier> {schema});
+}
+
+void Binder::SetSearchPath(Catalog &catalog, const vector<Identifier> &schema_path) {
+	auto search_path = GetSearchPath(catalog, schema_path);
 	entry_retriever.SetSearchPath(std::move(search_path));
 }
 
@@ -304,6 +308,9 @@ BoundStatement Binder::Bind(BaseTableRef &ref) {
 	case CatalogType::VIEW_ENTRY: {
 		// the node is a view: get the query that the view represents
 		auto &view_catalog_entry = table_or_view->Cast<ViewCatalogEntry>();
+		if (!view_catalog_entry.ParentCatalog().IsSystemCatalog()) {
+			GetStatementProperties().RegisterDBRead(view_catalog_entry.ParentCatalog(), context);
+		}
 		// expanding nested views can take a long time, allow the query to be interrupted
 		context.InterruptCheck();
 		// We need to use a new binder for the view that doesn't reference any CTEs
@@ -331,7 +338,7 @@ BoundStatement Binder::Bind(BaseTableRef &ref) {
 
 		// when binding a view, we always look into the catalog/schema where the view is stored first
 		auto view_search_path =
-		    GetSearchPath(view_catalog_entry.ParentCatalog(), view_catalog_entry.ParentSchema().name, true);
+		    GetSearchPath(view_catalog_entry.ParentCatalog(), view_catalog_entry.ParentSchema().GetSchemaPath(), true);
 		view_binder->entry_retriever.SetSearchPath(std::move(view_search_path));
 		// propagate the AT clause through the view
 		view_binder->entry_retriever.SetAtClause(entry_at_clause);

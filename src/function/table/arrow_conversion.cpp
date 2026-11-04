@@ -43,6 +43,11 @@ idx_t GetEffectiveOffset(const ArrowArray &array, int64_t parent_offset, idx_t c
 	return UnsafeNumericCast<idx_t>(array.offset + parent_offset) + chunk_offset;
 }
 
+//! The children of a struct or a sparse union share its slots, so below a list they start at its offset too
+static int64_t GetChildNestedOffset(const ArrowArray &array, int64_t nested_offset) {
+	return nested_offset == -1 ? -1 : nested_offset + array.offset;
+}
+
 template <class T>
 T *ArrowBufferData(ArrowArray &array, idx_t buffer_idx) {
 	return (T *)array.buffers[buffer_idx]; // NOLINT
@@ -142,7 +147,6 @@ static void GetValidityMask(ValidityMask &mask, ArrowArray &array, idx_t chunk_o
 
 void ArrowToDuckDBConversion::SetValidityMask(Vector &vector, ArrowArray &array, idx_t chunk_offset, idx_t size,
                                               int64_t parent_offset, int64_t nested_offset, bool add_null) {
-	D_ASSERT(vector.GetVectorType() == VectorType::FLAT_VECTOR);
 	auto &mask = FlatVector::ValidityMutable(vector);
 	GetValidityMask(mask, array, chunk_offset, size, parent_offset, nested_offset, add_null);
 }
@@ -282,13 +286,6 @@ static void ArrowToDuckDBList(Vector &vector, ArrowArray &array, idx_t chunk_off
 	auto &child_array = *array.children[0];
 	auto &child_type = list_info.GetChild();
 
-	if (list_size == 0 && start_offset == 0) {
-		D_ASSERT(!child_array.dictionary);
-		ArrowToDuckDBConversion::ColumnArrowToDuckDB(child_vector, child_array, chunk_offset, child_state, list_size,
-		                                             child_type, -1);
-		return;
-	}
-
 	auto array_physical_type = child_type.GetPhysicalType();
 	switch (array_physical_type) {
 	case ArrowArrayPhysicalType::DICTIONARY_ENCODED:
@@ -338,7 +335,10 @@ static void ArrowToDuckDBArray(Vector &vector, ArrowArray &array, idx_t chunk_of
 	}
 
 	// Broadcast the validity mask to the child vector
-	if (array_mask.CanHaveNull()) {
+	auto broadcast_validity = [&]() {
+		if (!array_mask.CanHaveNull()) {
+			return;
+		}
 		auto &child_validity_mask = FlatVector::ValidityMutable(child_vector);
 		for (idx_t i = 0; i < size; i++) {
 			if (!array_mask.RowIsValid(i)) {
@@ -347,12 +347,14 @@ static void ArrowToDuckDBArray(Vector &vector, ArrowArray &array, idx_t chunk_of
 				}
 			}
 		}
-	}
+	};
+	broadcast_validity();
 
 	auto &child_state = array_state.GetChild(0);
 	auto &child_array = *array.children[0];
 	auto &child_type = array_info.GetChild();
-	if (child_count == 0 && child_offset == 0) {
+	bool run_end_encoded = child_type.GetPhysicalType() == ArrowArrayPhysicalType::RUN_END_ENCODED;
+	if (child_count == 0 && child_offset == 0 && !run_end_encoded) {
 		D_ASSERT(!child_array.dictionary);
 		ArrowToDuckDBConversion::ColumnArrowToDuckDB(child_vector, child_array, chunk_offset, child_state, child_count,
 		                                             child_type, -1);
@@ -361,9 +363,21 @@ static void ArrowToDuckDBArray(Vector &vector, ArrowArray &array, idx_t chunk_of
 			ArrowToDuckDBConversion::ColumnArrowToDuckDBDictionary(child_vector, child_array, chunk_offset, child_state,
 			                                                       child_count, child_type,
 			                                                       NumericCast<int64_t>(child_offset));
+		} else if (run_end_encoded) {
+			ArrowToDuckDBConversion::ColumnArrowToDuckDBRunEndEncoded(child_vector, child_array, chunk_offset,
+			                                                          child_state, child_count, child_type,
+			                                                          NumericCast<int64_t>(child_offset));
+			// decoding sets the validity of every child row again
+			broadcast_validity();
 		} else {
+			// a nested list or array sets its validity again, so it takes the broadcast NULLs as its parent mask
+			ValidityMask child_parent_mask;
+			if (array_mask.CanHaveNull()) {
+				child_parent_mask.Copy(FlatVector::Validity(child_vector), child_count);
+			}
 			ArrowToDuckDBConversion::ColumnArrowToDuckDB(child_vector, child_array, chunk_offset, child_state,
-			                                             child_count, child_type, NumericCast<int64_t>(child_offset));
+			                                             child_count, child_type, NumericCast<int64_t>(child_offset),
+			                                             array_mask.CanHaveNull() ? &child_parent_mask : nullptr);
 		}
 	}
 }
@@ -391,6 +405,9 @@ static void SetVectorString(Vector &vector, idx_t size, char *cdata, const T *of
 	for (idx_t row_idx = 0; row_idx < size; row_idx++) {
 		if (FlatVector::IsNull(vector, row_idx)) {
 			continue;
+		}
+		if (offsets[row_idx + 1] < offsets[row_idx]) {
+			throw ConversionException("Arrow string offsets must be non-decreasing");
 		}
 		auto cptr = cdata + offsets[row_idx];
 		auto str_len = offsets[row_idx + 1] - offsets[row_idx];
@@ -1220,14 +1237,16 @@ void ArrowToDuckDBConversion::ColumnArrowToDuckDB(Vector &vector, ArrowArray &ar
 		auto &struct_info = arrow_type.GetTypeInfo<ArrowStructInfo>();
 		auto &child_entries = StructVector::GetEntries(vector);
 		auto &struct_validity_mask = FlatVector::ValidityMutable(vector);
+		const auto child_offset = parent_offset + NumericCast<uint64_t>(array.offset);
+		const auto child_nested_offset = GetChildNestedOffset(array, nested_offset);
 		for (idx_t child_idx = 0; child_idx < NumericCast<idx_t>(array.n_children); child_idx++) {
 			auto &child_entry = child_entries[child_idx];
 			auto &child_array = *array.children[child_idx];
 			auto &child_type = struct_info.GetChild(child_idx);
 			auto &child_state = array_state.GetChild(child_idx);
 
-			ArrowToDuckDBConversion::SetValidityMask(child_entry, child_array, chunk_offset, size, array.offset,
-			                                         nested_offset);
+			ArrowToDuckDBConversion::SetValidityMask(child_entry, child_array, chunk_offset, size,
+			                                         NumericCast<int64_t>(child_offset), child_nested_offset);
 			if (struct_validity_mask.CanHaveNull()) {
 				auto &child_validity_mark = FlatVector::ValidityMutable(child_entry);
 				for (idx_t i = 0; i < size; i++) {
@@ -1241,17 +1260,16 @@ void ArrowToDuckDBConversion::ColumnArrowToDuckDB(Vector &vector, ArrowArray &ar
 			switch (array_physical_type) {
 			case ArrowArrayPhysicalType::DICTIONARY_ENCODED:
 				ArrowToDuckDBConversion::ColumnArrowToDuckDBDictionary(
-				    child_entry, child_array, chunk_offset, child_state, size, child_type, nested_offset,
-				    &struct_validity_mask, NumericCast<uint64_t>(array.offset));
+				    child_entry, child_array, chunk_offset, child_state, size, child_type, child_nested_offset,
+				    &struct_validity_mask, child_offset);
 				break;
 			case ArrowArrayPhysicalType::RUN_END_ENCODED:
 				ColumnArrowToDuckDBRunEndEncoded(child_entry, child_array, chunk_offset, child_state, size, child_type,
-				                                 nested_offset, &struct_validity_mask,
-				                                 NumericCast<uint64_t>(array.offset));
+				                                 child_nested_offset, &struct_validity_mask, child_offset);
 				break;
 			case ArrowArrayPhysicalType::DEFAULT:
 				ColumnArrowToDuckDB(child_entry, child_array, chunk_offset, child_state, size, child_type,
-				                    nested_offset, &struct_validity_mask, NumericCast<uint64_t>(array.offset), false);
+				                    child_nested_offset, &struct_validity_mask, child_offset, false);
 				break;
 			default:
 				throw NotImplementedException("ArrowArrayPhysicalType not recognized");
@@ -1270,6 +1288,7 @@ void ArrowToDuckDBConversion::ColumnArrowToDuckDB(Vector &vector, ArrowArray &ar
 		auto &validity_mask = FlatVector::ValidityMutable(vector);
 		auto &union_info = arrow_type.GetTypeInfo<ArrowStructInfo>();
 		const auto member_offset = parent_offset + NumericCast<uint64_t>(array.offset);
+		const auto member_nested_offset = GetChildNestedOffset(array, nested_offset);
 		duckdb::vector<Vector> children;
 		for (idx_t child_idx = 0; child_idx < NumericCast<idx_t>(array.n_children); child_idx++) {
 			Vector child(members[child_idx].second, size);
@@ -1279,23 +1298,24 @@ void ArrowToDuckDBConversion::ColumnArrowToDuckDB(Vector &vector, ArrowArray &ar
 
 			// the members of a sparse union have the same length as the union - they are scanned at the same offset
 			ArrowToDuckDBConversion::SetValidityMask(child, child_array, chunk_offset, size,
-			                                         NumericCast<int64_t>(member_offset), nested_offset);
+			                                         NumericCast<int64_t>(member_offset), member_nested_offset);
 			auto array_physical_type = child_type.GetPhysicalType();
 
 			switch (array_physical_type) {
 			case ArrowArrayPhysicalType::DICTIONARY_ENCODED:
 				ArrowToDuckDBConversion::ColumnArrowToDuckDBDictionary(child, child_array, chunk_offset, child_state,
-				                                                       size, child_type, nested_offset, &validity_mask,
-				                                                       member_offset);
+				                                                       size, child_type, member_nested_offset,
+				                                                       &validity_mask, member_offset);
 				break;
 			case ArrowArrayPhysicalType::RUN_END_ENCODED:
 				ArrowToDuckDBConversion::ColumnArrowToDuckDBRunEndEncoded(child, child_array, chunk_offset, child_state,
-				                                                          size, child_type, nested_offset,
+				                                                          size, child_type, member_nested_offset,
 				                                                          &validity_mask, member_offset);
 				break;
 			case ArrowArrayPhysicalType::DEFAULT:
 				ArrowToDuckDBConversion::ColumnArrowToDuckDB(child, child_array, chunk_offset, child_state, size,
-				                                             child_type, nested_offset, &validity_mask, member_offset);
+				                                             child_type, member_nested_offset, &validity_mask,
+				                                             member_offset);
 				break;
 			default:
 				throw NotImplementedException("ArrowArrayPhysicalType not recognized");
@@ -1459,6 +1479,27 @@ static bool CanContainNull(const ArrowArray &array, const ValidityMask *parent_m
 	return parent_mask->CanHaveNull();
 }
 
+// Arrow's null type converts to a constant vector, and FlatVector::SetNull needs flat vectors along its recursion
+// into STRUCT and ARRAY children, which never reaches LIST contents.
+static void FlattenForSetNull(Vector &vector) {
+	if (vector.GetVectorType() != VectorType::FLAT_VECTOR) {
+		vector.Flatten();
+		return;
+	}
+	switch (vector.GetType().InternalType()) {
+	case PhysicalType::STRUCT:
+		for (auto &entry : StructVector::GetEntries(vector)) {
+			FlattenForSetNull(entry);
+		}
+		break;
+	case PhysicalType::ARRAY:
+		FlattenForSetNull(ArrayVector::GetChildMutable(vector));
+		break;
+	default:
+		break;
+	}
+}
+
 void ArrowToDuckDBConversion::ColumnArrowToDuckDBDictionary(Vector &vector, ArrowArray &array, idx_t chunk_offset,
                                                             ArrowArrayScanState &array_state, idx_t size,
                                                             const ArrowType &arrow_type, int64_t nested_offset,
@@ -1476,7 +1517,6 @@ void ArrowToDuckDBConversion::ColumnArrowToDuckDBDictionary(Vector &vector, Arro
 		auto dict_length = NumericCast<idx_t>(array.dictionary->length);
 		auto base_vector = make_uniq<Vector>(vector.GetType(), dict_length + 1);
 		ArrowToDuckDBConversion::SetValidityMask(*base_vector, *array.dictionary, 0, dict_length, 0, 0, has_nulls);
-		FlatVector::ValidityMutable(*base_vector).SetInvalid(dict_length);
 		auto &dictionary_type = arrow_type.GetDictionary();
 		auto arrow_physical_type = dictionary_type.GetPhysicalType();
 		;
@@ -1502,6 +1542,9 @@ void ArrowToDuckDBConversion::ColumnArrowToDuckDBDictionary(Vector &vector, Arro
 		// dict_length. Re-extend before sizing so the sentinel slot stays in bounds.
 		base_vector->Reserve(dict_length + 1);
 		FlatVector::SetSize(*base_vector, count_t(dict_length + 1));
+		// nested children of the sentinel slot hold uninitialized data unless they are marked NULL as well
+		FlattenForSetNull(*base_vector);
+		FlatVector::SetNull(*base_vector, dict_length, true);
 		array_state.AddDictionary(std::move(base_vector), array.dictionary);
 	}
 	auto offset_type = arrow_type.GetDuckType();

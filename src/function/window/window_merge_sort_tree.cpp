@@ -90,8 +90,6 @@ void WindowMergeSortTreeLocalState::Sink(ExecutionContext &context, DataChunk &c
 }
 
 void WindowMergeSortTreeLocalState::ExecuteSortTask(ExecutionContext &context, InterruptState &interrupt) {
-	PostIncrement<atomic<idx_t>> on_completed(window_tree.tasks_completed);
-
 	switch (build_stage) {
 	case WindowMergeSortStage::COMBINE: {
 		auto &local_sink = *window_tree.local_sinks[build_task];
@@ -108,14 +106,24 @@ void WindowMergeSortTreeLocalState::ExecuteSortTask(ExecutionContext &context, I
 		OperatorSourceInput source {*sort_global, *sort_local, interrupt};
 		sort.MaterializeColumnData(context, source);
 		window_tree.sorted = sort.GetColumnData(source);
+		//	Allocate the tree from the sorted data as part of this task,
+		//	so that a failure here does not leave a half-allocated tree for another thread to retry.
+		window_tree.MeasurePayloadBlocks();
 		break;
 	}
 	case WindowMergeSortStage::SORTED:
 		BuildLeaves();
 		break;
+	case WindowMergeSortStage::FINISH:
+		window_tree.Finished();
+		break;
 	default:
 		break;
 	}
+
+	//	Completion means success: a failed task never completes its stage,
+	//	and the threads waiting for the stage leave through the executor's interrupt.
+	++window_tree.tasks_completed;
 }
 
 idx_t WindowMergeSortTree::MeasurePayloadBlocks() {
@@ -172,7 +180,6 @@ bool WindowMergeSortTree::TryPrepareSortStage(WindowMergeSortTreeLocalState &lst
 			return false;
 		}
 		//	Move on to building the tree in parallel
-		MeasurePayloadBlocks();
 		total_tasks = local_sinks.size();
 		tasks_completed = 0;
 		tasks_assigned = 0;
@@ -185,11 +192,21 @@ bool WindowMergeSortTree::TryPrepareSortStage(WindowMergeSortTreeLocalState &lst
 			lstate.build_task = tasks_assigned++;
 			return true;
 		} else if (tasks_completed < tasks_assigned) {
-			lstate.build_stage = WindowMergeSortStage::FINISHED;
 			// Sleep while other tasks finish
 			return false;
 		}
-		Finished();
+		// All leaves are built, so move on to finishing the tree (1 task)
+		total_tasks = 1;
+		tasks_completed = 0;
+		tasks_assigned = 0;
+		lstate.build_stage = build_stage = WindowMergeSortStage::FINISH;
+		lstate.build_task = tasks_assigned++;
+		return true;
+	case WindowMergeSortStage::FINISH:
+		if (tasks_completed < tasks_assigned) {
+			//	Wait for the single task to finish
+			return false;
+		}
 		break;
 	case WindowMergeSortStage::FINISHED:
 		break;
@@ -203,6 +220,9 @@ bool WindowMergeSortTree::TryPrepareSortStage(WindowMergeSortTreeLocalState &lst
 void WindowMergeSortTreeLocalState::Finalize(ExecutionContext &context, InterruptState &interrupt) {
 	// Sort, merge and build the tree in parallel
 	while (window_tree.build_stage.load() != WindowMergeSortStage::FINISHED) {
+		//	A failed task never completes its stage, so the waiting threads
+		//	leave through the interrupt that the executor raises for the failure
+		context.client.InterruptCheck();
 		if (window_tree.TryPrepareSortStage(*this)) {
 			ExecuteSortTask(context, interrupt);
 		} else {
@@ -211,11 +231,11 @@ void WindowMergeSortTreeLocalState::Finalize(ExecutionContext &context, Interrup
 	}
 }
 
-void WindowMergeSortTree::Build() {
+void WindowMergeSortTree::Build(ClientContext &context) {
 	if (mst32) {
-		mst32->Build();
+		mst32->Build(context);
 	} else {
-		mst64->Build();
+		mst64->Build(context);
 	}
 }
 

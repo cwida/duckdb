@@ -288,39 +288,53 @@ struct BignumToDoubleErrorCast {
 	}
 };
 
+struct BignumToIntErrorCast {
+	template <class SRC, class DST>
+	static inline bool Operation(SRC input, DST &result, CastParameters &parameters) {
+		if (Bignum::BignumToInt(input, result, parameters.strict)) {
+			return true;
+		}
+		HandleCastError::AssignError(StringUtil::Format("BIGNUM value %s is out of range for type %s",
+		                                                Bignum::BignumToVarchar(input),
+		                                                TypeIdToString(GetTypeId<DST>())),
+		                             parameters);
+		return false;
+	}
+};
+
 BoundCastInfo DefaultCasts::BignumCastSwitch(BindCastInput &input, const LogicalType &source,
                                              const LogicalType &target) {
 	D_ASSERT(source.id() == LogicalTypeId::BIGNUM);
 	// now switch on the result type
 	switch (target.id()) {
 	case LogicalTypeId::TINYINT:
-		return BoundCastInfo(&VectorCastHelpers::TryCastLoop<bignum_t, int8_t, BignumToIntCast>);
+		return BoundCastInfo(&VectorCastHelpers::TryCastErrorLoop<bignum_t, int8_t, BignumToIntErrorCast>);
 	case LogicalTypeId::UTINYINT:
-		return BoundCastInfo(&VectorCastHelpers::TryCastLoop<bignum_t, uint8_t, BignumToIntCast>);
+		return BoundCastInfo(&VectorCastHelpers::TryCastErrorLoop<bignum_t, uint8_t, BignumToIntErrorCast>);
 
 	case LogicalTypeId::SMALLINT:
-		return BoundCastInfo(&VectorCastHelpers::TryCastLoop<bignum_t, int16_t, BignumToIntCast>);
+		return BoundCastInfo(&VectorCastHelpers::TryCastErrorLoop<bignum_t, int16_t, BignumToIntErrorCast>);
 
 	case LogicalTypeId::USMALLINT:
-		return BoundCastInfo(&VectorCastHelpers::TryCastLoop<bignum_t, uint16_t, BignumToIntCast>);
+		return BoundCastInfo(&VectorCastHelpers::TryCastErrorLoop<bignum_t, uint16_t, BignumToIntErrorCast>);
 
 	case LogicalTypeId::INTEGER:
-		return BoundCastInfo(&VectorCastHelpers::TryCastLoop<bignum_t, int32_t, BignumToIntCast>);
+		return BoundCastInfo(&VectorCastHelpers::TryCastErrorLoop<bignum_t, int32_t, BignumToIntErrorCast>);
 
 	case LogicalTypeId::UINTEGER:
-		return BoundCastInfo(&VectorCastHelpers::TryCastLoop<bignum_t, uint32_t, BignumToIntCast>);
+		return BoundCastInfo(&VectorCastHelpers::TryCastErrorLoop<bignum_t, uint32_t, BignumToIntErrorCast>);
 
 	case LogicalTypeId::BIGINT:
-		return BoundCastInfo(&VectorCastHelpers::TryCastLoop<bignum_t, int64_t, BignumToIntCast>);
+		return BoundCastInfo(&VectorCastHelpers::TryCastErrorLoop<bignum_t, int64_t, BignumToIntErrorCast>);
 
 	case LogicalTypeId::UBIGINT:
-		return BoundCastInfo(&VectorCastHelpers::TryCastLoop<bignum_t, uint64_t, BignumToIntCast>);
+		return BoundCastInfo(&VectorCastHelpers::TryCastErrorLoop<bignum_t, uint64_t, BignumToIntErrorCast>);
 
 	case LogicalTypeId::HUGEINT:
-		return BoundCastInfo(&VectorCastHelpers::TryCastLoop<bignum_t, hugeint_t, BignumToIntCast>);
+		return BoundCastInfo(&VectorCastHelpers::TryCastErrorLoop<bignum_t, hugeint_t, BignumToIntErrorCast>);
 
 	case LogicalTypeId::UHUGEINT:
-		return BoundCastInfo(&VectorCastHelpers::TryCastLoop<bignum_t, uhugeint_t, BignumToIntCast>);
+		return BoundCastInfo(&VectorCastHelpers::TryCastErrorLoop<bignum_t, uhugeint_t, BignumToIntErrorCast>);
 
 	case LogicalTypeId::VARCHAR:
 		return BoundCastInfo(&VectorCastHelpers::StringCast<bignum_t, BignumCastToVarchar>);

@@ -439,7 +439,7 @@ TEST_CASE("Test C-API Arrow conversion functions", "[capi][arrow]") {
 		// 4. Prepare Arrow schema for roundtrip
 		duckdb_logical_type type = duckdb_create_logical_type(DUCKDB_TYPE_INTEGER);
 		duckdb_logical_type types[1] = {type};
-		const char *names[1] = {strdup("i")};
+		const char *names[1] = {"i"};
 		ArrowSchemaWrapper arrow_schema_wrapper;
 		duckdb_arrow_options arrow_options;
 		duckdb_connection_get_arrow_options(tester.connection, &arrow_options);
@@ -473,7 +473,6 @@ TEST_CASE("Test C-API Arrow conversion functions", "[capi][arrow]") {
 		REQUIRE(all_arrow_values == all_duckdb_values);
 
 		// 6. Cleanup
-		free((void *)names[0]);
 		duckdb_destroy_arrow_converted_schema(&converted_schema);
 		for (auto arrow_array : arrow_arrays) {
 			if (arrow_array.release) {
@@ -490,7 +489,7 @@ TEST_CASE("Test C-API Arrow conversion functions", "[capi][arrow]") {
 	SECTION("C-API Arrow Tess Null pointer inputs") {
 		duckdb_error_data err;
 		duckdb_logical_type type = duckdb_create_logical_type(DUCKDB_TYPE_INTEGER);
-		const char *names[1] = {strdup("i")};
+		const char *names[1] = {"i"};
 		// Test duckdb_to_arrow_schema
 		ArrowSchema duckdb_arrow_schema;
 		err = duckdb_to_arrow_schema(nullptr, &type, names, 1, &duckdb_arrow_schema);
@@ -546,7 +545,6 @@ TEST_CASE("Test C-API Arrow conversion functions", "[capi][arrow]") {
 		REQUIRE(err != nullptr);
 		duckdb_destroy_error_data(&err);
 		duckdb_destroy_arrow_options(&arrow_options);
-		free((void *)names[0]);
 	}
 
 	SECTION("data_chunk_from_arrow keeps the array alive while any of its columns is referenced") {
@@ -751,6 +749,83 @@ TEST_CASE("Test C-API Arrow conversion of unaligned buffers", "[capi][arrow]") {
 	duckdb_destroy_arrow_converted_schema(&converted_schema);
 }
 
+TEST_CASE("Test C-API appending an Arrow chunk larger than the vector size with casts", "[capi][arrow]") {
+	CAPITester tester;
+	REQUIRE(tester.OpenDatabase(nullptr));
+
+	constexpr idx_t ROWS = 10000;
+	vector<int64_t> values(ROWS);
+	for (idx_t i = 0; i < ROWS; i++) {
+		values[i] = static_cast<int64_t>(i);
+	}
+
+	constexpr idx_t COLUMNS = 3;
+	const void *buffers[2] = {nullptr, values.data()};
+	const char *names[COLUMNS] = {"same", "narrow", "text"};
+	ArrowSchema child_schemas[COLUMNS];
+	ArrowSchema *child_schema_ptrs[COLUMNS];
+	ArrowArray child_arrays[COLUMNS];
+	ArrowArray *child_array_ptrs[COLUMNS];
+	for (idx_t i = 0; i < COLUMNS; i++) {
+		child_schemas[i] = ArrowSchema();
+		child_schemas[i].format = "l";
+		child_schemas[i].name = names[i];
+		child_schemas[i].flags = ARROW_FLAG_NULLABLE;
+		child_schemas[i].release = ReleaseUnalignedSchema;
+		child_schema_ptrs[i] = &child_schemas[i];
+
+		child_arrays[i] = ArrowArray();
+		child_arrays[i].length = ROWS;
+		child_arrays[i].n_buffers = 2;
+		child_arrays[i].buffers = buffers;
+		child_arrays[i].release = ReleaseUnalignedArray;
+		child_array_ptrs[i] = &child_arrays[i];
+	}
+
+	ArrowSchema schema = ArrowSchema();
+	schema.format = "+s";
+	schema.name = "";
+	schema.n_children = COLUMNS;
+	schema.children = child_schema_ptrs;
+	schema.release = ReleaseUnalignedSchema;
+
+	const void *struct_buffers[1] = {nullptr};
+	ArrowArray array = ArrowArray();
+	array.length = ROWS;
+	array.n_buffers = 1;
+	array.buffers = struct_buffers;
+	array.n_children = COLUMNS;
+	array.children = child_array_ptrs;
+	array.release = ReleaseUnalignedArray;
+
+	duckdb_arrow_converted_schema converted_schema = nullptr;
+	auto err = duckdb_schema_from_arrow(tester.connection, &schema, &converted_schema);
+	REQUIRE(err == nullptr);
+	duckdb_data_chunk chunk = nullptr;
+	err = duckdb_data_chunk_from_arrow(tester.connection, &array, converted_schema, &chunk);
+	REQUIRE(err == nullptr);
+	REQUIRE(duckdb_data_chunk_get_size(chunk) == ROWS);
+
+	// "same" needs no cast, "narrow" and "text" are cast by the appender
+	REQUIRE_NO_FAIL(tester.Query("CREATE TABLE large_cast(same BIGINT, narrow INTEGER, text VARCHAR)"));
+	duckdb_appender appender;
+	REQUIRE(duckdb_appender_create(tester.connection, nullptr, "large_cast", &appender) == DuckDBSuccess);
+	REQUIRE(duckdb_append_data_chunk(appender, chunk) == DuckDBSuccess);
+	REQUIRE(duckdb_appender_destroy(&appender) == DuckDBSuccess);
+
+	auto result = tester.Query("SELECT COUNT(*), SUM(same), SUM(narrow), SUM(text::BIGINT), "
+	                           "COUNT(*) FILTER (WHERE same <> narrow OR same::VARCHAR <> text) FROM large_cast");
+	REQUIRE_NO_FAIL(*result);
+	REQUIRE(result->Fetch<int64_t>(0, 0) == ROWS);
+	REQUIRE(result->Fetch<int64_t>(1, 0) == 49995000);
+	REQUIRE(result->Fetch<int64_t>(2, 0) == 49995000);
+	REQUIRE(result->Fetch<int64_t>(3, 0) == 49995000);
+	REQUIRE(result->Fetch<int64_t>(4, 0) == 0);
+
+	duckdb_destroy_data_chunk(&chunk);
+	duckdb_destroy_arrow_converted_schema(&converted_schema);
+}
+
 TEST_CASE("Test C-API Arrow string views retain data after aligned scratch is released", "[capi][arrow]") {
 	CAPITester tester;
 	REQUIRE(tester.OpenDatabase(nullptr));
@@ -820,4 +895,176 @@ TEST_CASE("Test C-API Arrow string views retain data after aligned scratch is re
 			}
 		}
 	}
+}
+
+// A hand-built ArrowArray whose shape disagrees with its resolved schema must be rejected cleanly,
+// instead of indexing into a children array that doesn't match the schema's column count.
+TEST_CASE("Test C-API Arrow array shape validation", "[capi][arrow]") {
+	CAPITester tester;
+	REQUIRE(tester.OpenDatabase(nullptr));
+
+	ArrowSchema child_schema = {};
+	child_schema.format = "i";
+	child_schema.name = "a";
+	child_schema.release = ReleaseUnalignedSchema;
+	ArrowSchema *children[] = {&child_schema};
+	ArrowSchema schema = {};
+	schema.format = "+s";
+	schema.n_children = 1;
+	schema.children = children;
+	schema.release = ReleaseUnalignedSchema;
+
+	duckdb_arrow_converted_schema converted = nullptr;
+	REQUIRE(duckdb_schema_from_arrow(tester.connection, &schema, &converted) == nullptr);
+
+	int32_t data[1] = {42};
+	const void *child_buffers[] = {nullptr, data};
+	ArrowArray child_array = {};
+	child_array.length = 1;
+	child_array.n_buffers = 2;
+	child_array.buffers = child_buffers;
+	child_array.release = ReleaseUnalignedArray;
+
+	SECTION("fewer children than the schema expects") {
+		ArrowArray array = {};
+		array.length = 1;
+		array.n_children = 0;
+		array.children = nullptr;
+		array.release = ReleaseUnalignedArray;
+
+		duckdb_data_chunk chunk = nullptr;
+		auto err = duckdb_data_chunk_from_arrow(tester.connection, &array, converted, &chunk);
+		REQUIRE(err != nullptr);
+		duckdb_destroy_error_data(&err);
+	}
+
+	SECTION("child length does not match the array length") {
+		child_array.length = 5;
+		ArrowArray *arrays[] = {&child_array};
+		ArrowArray array = {};
+		array.length = 1;
+		array.n_children = 1;
+		array.children = arrays;
+		array.release = ReleaseUnalignedArray;
+
+		duckdb_data_chunk chunk = nullptr;
+		auto err = duckdb_data_chunk_from_arrow(tester.connection, &array, converted, &chunk);
+		REQUIRE(err != nullptr);
+		duckdb_destroy_error_data(&err);
+	}
+
+	SECTION("matching shape is accepted") {
+		ArrowArray *arrays[] = {&child_array};
+		ArrowArray array = {};
+		array.length = 1;
+		array.n_children = 1;
+		array.children = arrays;
+		array.release = ReleaseUnalignedArray;
+
+		duckdb_data_chunk chunk = nullptr;
+		REQUIRE(duckdb_data_chunk_from_arrow(tester.connection, &array, converted, &chunk) == nullptr);
+		auto vector = duckdb_data_chunk_get_vector(chunk, 0);
+		REQUIRE(static_cast<int32_t *>(duckdb_vector_get_data(vector))[0] == 42);
+		duckdb_destroy_data_chunk(&chunk);
+	}
+
+	duckdb_destroy_arrow_converted_schema(&converted);
+}
+
+// Non-monotonic (decreasing) Arrow string offsets must be rejected, instead of wrapping around to
+// produce a string_t whose length claims nearly 4GB over a tiny underlying data buffer.
+TEST_CASE("Test C-API Arrow rejects non-monotonic string offsets", "[capi][arrow]") {
+	CAPITester tester;
+	REQUIRE(tester.OpenDatabase(nullptr));
+
+	constexpr idx_t ROWS = 2;
+	// offsets[2] (5) is less than offsets[1] (10): a classic 32-bit offset underflow when subtracted.
+	const int32_t bad_offsets[ROWS + 1] = {0, 10, 5};
+	const char data[16] = {0};
+	const void *buffers[] = {nullptr, bad_offsets, data};
+
+	ArrowSchema child_schema = {};
+	child_schema.format = "u";
+	child_schema.name = "a";
+	child_schema.release = ReleaseUnalignedSchema;
+	ArrowSchema *children[] = {&child_schema};
+	ArrowSchema schema = {};
+	schema.format = "+s";
+	schema.n_children = 1;
+	schema.children = children;
+	schema.release = ReleaseUnalignedSchema;
+
+	ArrowArray child_array = {};
+	child_array.length = ROWS;
+	child_array.n_buffers = 3;
+	child_array.buffers = buffers;
+	child_array.release = ReleaseUnalignedArray;
+	ArrowArray *arrays[] = {&child_array};
+	const void *struct_buffers[] = {nullptr};
+	ArrowArray array = {};
+	array.length = ROWS;
+	array.n_buffers = 1;
+	array.buffers = struct_buffers;
+	array.n_children = 1;
+	array.children = arrays;
+	array.release = ReleaseUnalignedArray;
+
+	duckdb_arrow_converted_schema converted = nullptr;
+	REQUIRE(duckdb_schema_from_arrow(tester.connection, &schema, &converted) == nullptr);
+	duckdb_data_chunk chunk = nullptr;
+	auto err = duckdb_data_chunk_from_arrow(tester.connection, &array, converted, &chunk);
+	REQUIRE(err != nullptr);
+	duckdb_destroy_error_data(&err);
+	duckdb_destroy_arrow_converted_schema(&converted);
+}
+
+TEST_CASE("Test C-API Arrow round trip of timestamps below the first midnight of the range", "[capi][arrow]") {
+	if (STANDARD_VECTOR_SIZE < 3) {
+		return;
+	}
+	CAPITester tester;
+	REQUIRE(tester.OpenDatabase(nullptr));
+	REQUIRE_NO_FAIL(
+	    tester.Query("CREATE TABLE source AS SELECT * FROM (VALUES (make_timestamp(-9223372036854775807 - 1)), "
+	                 "(make_timestamp(-9223372022400000001)), (make_timestamp(9223372036854775806))) t(ts)"));
+	REQUIRE_NO_FAIL(tester.Query("CREATE TABLE target (ts TIMESTAMP)"));
+
+	duckdb_result result;
+	REQUIRE(duckdb_query(tester.connection, "SELECT ts FROM source", &result) == DuckDBSuccess);
+	auto chunk = duckdb_fetch_chunk(result);
+	REQUIRE(chunk);
+
+	duckdb_arrow_options arrow_options;
+	duckdb_connection_get_arrow_options(tester.connection, &arrow_options);
+	ArrowArray arrow_array;
+	REQUIRE(duckdb_data_chunk_to_arrow(arrow_options, chunk, &arrow_array) == nullptr);
+	auto type = duckdb_create_logical_type(DUCKDB_TYPE_TIMESTAMP);
+	const char *names[] = {"ts"};
+	ArrowSchemaWrapper arrow_schema;
+	REQUIRE(duckdb_to_arrow_schema(arrow_options, &type, names, 1, &arrow_schema.arrow_schema) == nullptr);
+	duckdb_arrow_converted_schema converted = nullptr;
+	REQUIRE(duckdb_schema_from_arrow(tester.connection, &arrow_schema.arrow_schema, &converted) == nullptr);
+	duckdb_data_chunk imported = nullptr;
+	REQUIRE(duckdb_data_chunk_from_arrow(tester.connection, &arrow_array, converted, &imported) == nullptr);
+
+	duckdb_appender appender;
+	REQUIRE(duckdb_appender_create(tester.connection, nullptr, "target", &appender) == DuckDBSuccess);
+	REQUIRE(duckdb_append_data_chunk(appender, imported) == DuckDBSuccess);
+	REQUIRE(duckdb_appender_destroy(&appender) == DuckDBSuccess);
+
+	auto rendered = tester.Query("SELECT ts::VARCHAR FROM target ORDER BY ts");
+	REQUIRE_NO_FAIL(*rendered);
+	REQUIRE(rendered->Fetch<string>(0, 0) == "290309-12-21 (BC) 19:59:05.224192");
+	REQUIRE(rendered->Fetch<string>(0, 1) == "290309-12-21 (BC) 23:59:59.999999");
+	REQUIRE(rendered->Fetch<string>(0, 2) == "294247-01-10 04:00:54.775806");
+
+	duckdb_destroy_data_chunk(&imported);
+	if (arrow_array.release) {
+		arrow_array.release(&arrow_array);
+	}
+	duckdb_destroy_arrow_converted_schema(&converted);
+	duckdb_destroy_logical_type(&type);
+	duckdb_destroy_arrow_options(&arrow_options);
+	duckdb_destroy_data_chunk(&chunk);
+	duckdb_destroy_result(&result);
 }

@@ -45,6 +45,27 @@ idx_t ChangedRows(QueryResult &result) {
 	return ArrowFormat::ChangedRows(arrays.front()->arrow_array);
 }
 
+//! Rejects an array whose shape disagrees with the resolved schema before anything reads it, so a malformed
+//! array is an input error rather than a crash inside the conversion (mirrors CV2ValidateArrowArray).
+void ValidateArrowArrayShape(duckdb::ArrowTableSchema &arrow_table, const ArrowArray &array) {
+	auto column_count = arrow_table.GetTypes().size();
+	if (duckdb::NumericCast<idx_t>(array.n_children) != column_count) {
+		throw duckdb::InvalidInputException("Arrow array child count does not match the schema's column count");
+	}
+	if (column_count > 0 && !array.children) {
+		throw duckdb::InvalidInputException("Arrow array has null children");
+	}
+	for (idx_t i = 0; i < column_count; i++) {
+		auto *child_array = array.children[i];
+		if (!child_array || !child_array->release) {
+			throw duckdb::InvalidInputException("Arrow array child is null or already released");
+		}
+		if (child_array->length != array.length) {
+			throw duckdb::InvalidInputException("Arrow array child length does not match the array length");
+		}
+	}
+}
+
 } // namespace
 
 duckdb_error_data duckdb_to_arrow_schema(duckdb_arrow_options arrow_options, duckdb_logical_type *types,
@@ -132,6 +153,14 @@ duckdb_error_data duckdb_data_chunk_from_arrow(duckdb_connection connection, str
 	auto arrow_table = reinterpret_cast<duckdb::ArrowTableSchema *>(converted_schema);
 	auto conn = reinterpret_cast<Connection *>(connection);
 	auto &types = arrow_table->GetTypes();
+
+	try {
+		ValidateArrowArrayShape(*arrow_table, *arrow_array);
+	} catch (const duckdb::Exception &ex) {
+		return duckdb_create_error_data(DUCKDB_ERROR_INVALID_INPUT, ex.what());
+	} catch (const std::exception &ex) {
+		return duckdb_create_error_data(DUCKDB_ERROR_INVALID_INPUT, ex.what());
+	}
 
 	auto dchunk = duckdb::make_uniq<duckdb::DataChunk>();
 	dchunk->Initialize(duckdb::Allocator::DefaultAllocator(), types, duckdb::NumericCast<idx_t>(arrow_array->length));

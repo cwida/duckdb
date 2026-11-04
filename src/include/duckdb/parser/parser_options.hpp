@@ -38,6 +38,8 @@ public:
 	optional_ptr<const ExtensionCallbackManager> extensions;
 	AllowParserOverride parser_override_setting = AllowParserOverride::DEFAULT_OVERRIDE;
 	shared_ptr<CompiledGrammar> compiled_grammar;
+	//! The client context the statement is parsed for (not set when parsing without a client context)
+	optional_ptr<ClientContext> context;
 };
 
 } // namespace duckdb

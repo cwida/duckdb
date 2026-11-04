@@ -54,7 +54,7 @@ shared_ptr<BlockHandle> BufferManager::RegisterSmallMemory(MemoryTag tag, const 
 	throw NotImplementedException("This type of BufferManager can not create 'small-memory' blocks");
 }
 
-Allocator &BufferManager::GetBufferAllocator() {
+BufferAllocator &BufferManager::GetBufferAllocator() {
 	throw NotImplementedException("This type of BufferManager does not have an Allocator");
 }
 

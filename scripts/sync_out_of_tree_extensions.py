@@ -508,19 +508,16 @@ def merge_vcpkg_manifests(synced_extension_names, external_dir, repo_root, outpu
     dependencies_dict = []
     overlay_ports = []
     overlay_triplets = []
-    found_any = False
 
     openssl_version = os.environ.get('OPENSSL_VERSION_OVERRIDE', '3.6.0')
 
     def fold_in_manifest(manifest_dir):
         # Read <manifest_dir>/vcpkg.json (if present) into the accumulators, resolving
         # its overlay paths relative to that directory. Returns True if it was read.
-        nonlocal found_any
         vcpkg_json_path = manifest_dir / 'vcpkg.json'
         if not vcpkg_json_path.exists():
             return False
 
-        found_any = True
         base_dir = manifest_dir.resolve()
 
         with open(vcpkg_json_path, encoding='utf-8') as f:
@@ -548,10 +545,8 @@ def merge_vcpkg_manifests(synced_extension_names, external_dir, repo_root, outpu
     out_path = output_dir / 'vcpkg.json'
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if not found_any:
-        # No extensions need vcpkg.  Write an empty manifest so that CMake can
-        # always find build/vcpkg.json when VCPKG_MANIFEST_DIR is set, but vcpkg
-        # will install nothing.
+    if not dependencies_str and not dependencies_dict:
+        # an empty vcpkg.json counts as no dependency; the empty manifest keeps VCPKG_MANIFEST_DIR valid for cmake
         with open(out_path, 'w', encoding='utf-8') as f:
             json.dump({'dependencies': []}, f, ensure_ascii=False, indent=4)
             f.write('\n')

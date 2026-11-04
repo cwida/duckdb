@@ -384,15 +384,18 @@ query II nosort res_kurtosis_pop1
 SELECT g, finalize(kurtosis_pop(d) EXPORT_STATE) FROM dummy GROUP BY g ORDER BY g;
 ----
 
-query T
-SELECT kurtosis(d) EXPORT_STATE FROM dummy;
+# the state holds the count, the mean and the central moments M2..M4
+query IIIII
+SELECT st.n, st.mean, st.m2, st.m3, st.m4
+FROM (SELECT (kurtosis(d) EXPORT_STATE)::STRUCT(n UBIGINT, mean DOUBLE, m2 DOUBLE, m3 DOUBLE, m4 DOUBLE) st FROM dummy);
 ----
-{'n': 100, 'sum': 4950.0, 'sum_sqr': 328350.0, 'sum_cub': 24502500.0, 'sum_four': 1950333330.0}
+100	49.5	83325.0	0.0	124958336.25
 
-query T
-SELECT kurtosis_pop(d) EXPORT_STATE FROM dummy;
+query IIIII
+SELECT st.n, st.mean, st.m2, st.m3, st.m4
+FROM (SELECT (kurtosis_pop(d) EXPORT_STATE)::STRUCT(n UBIGINT, mean DOUBLE, m2 DOUBLE, m3 DOUBLE, m4 DOUBLE) st FROM dummy);
 ----
-{'n': 100, 'sum': 4950.0, 'sum_sqr': 328350.0, 'sum_cub': 24502500.0, 'sum_four': 1950333330.0}
+100	49.5	83325.0	0.0	124958336.25
 
 # You're holding it wrong:
 

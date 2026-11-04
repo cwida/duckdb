@@ -192,7 +192,8 @@ protected:
 	PhysicalOperator &PlanDelimJoin(LogicalComparisonJoin &op);
 	PhysicalOperator &ExtractAggregateExpressions(PhysicalOperator &child, vector<unique_ptr<Expression>> &expressions,
 	                                              vector<unique_ptr<Expression>> &groups,
-	                                              optional_ptr<vector<GroupingSet>> grouping_sets);
+	                                              optional_ptr<vector<GroupingSet>> grouping_sets,
+	                                              bool extract_filters = true);
 
 private:
 	ClientContext &context;

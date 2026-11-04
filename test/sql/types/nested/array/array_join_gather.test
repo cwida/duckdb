@@ -1,0 +1,74 @@
+# name: test/sql/types/nested/array/array_join_gather.test
+# description: Gather build-side ARRAY columns in joins where only some of the probe rows match
+# group: [array]
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES ([0, 9]::BIGINT[2]), ([1, 8]), ([5, 2])) v(x);
+
+statement ok
+CREATE TABLE s AS SELECT * FROM (VALUES ([0, 9]::BIGINT[2]), ([5, 2])) v(x);
+
+query II
+SELECT t.x, s.x FROM t LEFT JOIN s ON s.x = t.x ORDER BY t.x
+----
+[0, 9]	[0, 9]
+[1, 8]	NULL
+[5, 2]	[5, 2]
+
+query II
+SELECT t.x, s.x FROM s RIGHT JOIN t ON s.x = t.x ORDER BY t.x
+----
+[0, 9]	[0, 9]
+[1, 8]	NULL
+[5, 2]	[5, 2]
+
+# every third probe row matches
+statement ok
+CREATE TABLE big_t AS SELECT i, [i, i + 1, i + 2]::BIGINT[3] x FROM range(100000) r(i);
+
+statement ok
+CREATE TABLE big_s AS SELECT [i, i + 1, i + 2]::BIGINT[3] x, i::VARCHAR || 'nnnnnnnn' AS str FROM range(0, 100000, 3) r(i);
+
+query III
+SELECT count(*), count(big_s.x), count(*) FILTER (WHERE big_s.x <> big_t.x) FROM big_t LEFT JOIN big_s ON big_s.x = big_t.x
+----
+100000	33334	0
+
+# arrays nested in a struct and in a list
+statement ok
+CREATE TABLE nested_t AS SELECT i, {'a': [i, i + 1]::BIGINT[2], 'b': i} s, [[i, i]::BIGINT[2]] l FROM range(10000) r(i);
+
+statement ok
+CREATE TABLE nested_s AS SELECT i, {'a': [i, i + 1]::BIGINT[2], 'b': i} s, [[i, i]::BIGINT[2]] l FROM range(0, 10000, 3) r(i);
+
+query II
+SELECT count(nested_s.i), count(*) FILTER (WHERE nested_s.s <> nested_t.s OR nested_s.l <> nested_t.l) FROM nested_t LEFT JOIN nested_s ON nested_s.i = nested_t.i
+----
+3334	0
+
+# correlated subqueries are planned as SINGLE joins
+query II
+SELECT count(sub), count(*) FILTER (WHERE i % 3 = 0 AND sub IS DISTINCT FROM x) FROM (SELECT i, x, (SELECT x FROM big_s WHERE big_s.x = big_t.x) sub FROM big_t)
+----
+33334	0
+
+# only a prefix of the probe rows matches - the unmatched rows must remain NULL
+statement ok
+CREATE TABLE prefix_t AS SELECT i FROM range(10) r(i);
+
+statement ok
+CREATE TABLE prefix_s AS SELECT i, {'a': [i, i + 1]::BIGINT[2], 'b': i} s FROM range(2) r(i);
+
+query II
+SELECT prefix_t.i, prefix_s.s FROM prefix_t LEFT JOIN prefix_s ON prefix_s.i = prefix_t.i ORDER BY prefix_t.i
+----
+0	{'a': [0, 1], 'b': 0}
+1	{'a': [1, 2], 'b': 1}
+2	NULL
+3	NULL
+4	NULL
+5	NULL
+6	NULL
+7	NULL
+8	NULL
+9	NULL

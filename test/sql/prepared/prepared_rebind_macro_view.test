@@ -1,0 +1,87 @@
+# name: test/sql/prepared/prepared_rebind_macro_view.test
+# description: Prepared statements are re-bound when a macro or view they use is replaced or dropped
+# group: [prepared]
+
+statement ok
+CREATE MACRO m(x) AS x + 1;
+
+statement ok
+PREPARE q AS SELECT m(10);
+
+query I
+EXECUTE q;
+----
+11
+
+statement ok
+CREATE OR REPLACE MACRO m(x) AS x * 100;
+
+query I
+EXECUTE q;
+----
+1000
+
+statement ok
+DROP MACRO m;
+
+statement error
+EXECUTE q;
+----
+<REGEX>:Catalog Error.*
+
+statement ok
+CREATE VIEW v AS SELECT 1 AS a;
+
+statement ok
+PREPARE qv AS SELECT * FROM v;
+
+query I
+EXECUTE qv;
+----
+1
+
+statement ok
+CREATE OR REPLACE VIEW v AS SELECT 2 AS a;
+
+query I
+EXECUTE qv;
+----
+2
+
+statement ok
+CREATE TEMP MACRO t(x) AS x + 1;
+
+statement ok
+PREPARE qt AS SELECT t(1);
+
+query I
+EXECUTE qt;
+----
+2
+
+statement ok
+CREATE OR REPLACE TEMP MACRO t(x) AS x + 50;
+
+query I
+EXECUTE qt;
+----
+51
+
+statement ok
+CREATE MACRO tm() AS TABLE SELECT 1 AS a;
+
+statement ok
+PREPARE qtm AS SELECT * FROM tm();
+
+query I
+EXECUTE qtm;
+----
+1
+
+statement ok
+CREATE OR REPLACE MACRO tm() AS TABLE SELECT 2 AS a;
+
+query I
+EXECUTE qtm;
+----
+2

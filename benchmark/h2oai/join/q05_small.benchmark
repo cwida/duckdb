@@ -1,0 +1,10 @@
+# name: benchmark/h2oai/join/q05_small.benchmark
+# description: Run the small query 05 from the H2OAI join benchmark
+# group: [join]
+
+template benchmark/h2oai/join/h2oai.benchmark.in
+QUERY_NUMBER=5_small
+QUERY_NUMBER_PADDED=05_small
+RESULT_COLUMNS=IIIIIII
+RESULT_QUERY=SELECT COUNT(DISTINCT big_id1), COUNT(DISTINCT big_id2), COUNT(DISTINCT big_id4), COUNT(DISTINCT big_id5), COUNT(DISTINCT big_id6), SUM(v2), COUNT(*) FROM ans
+RESULT_ANSWER=10	10000	10	10000	989913	49430209.6859874	989913

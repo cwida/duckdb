@@ -49,3 +49,38 @@ SELECT e IS NULL, b IS NULL, v IS NULL, n IS NULL, v, n FROM t ORDER BY ALL
 false	false	false	false	c	(empty)
 false	false	false	true	(empty)	NULL
 true	true	true	false	NULL	x
+
+# the format name is case-insensitive
+statement ok
+DROP TABLE t;
+
+statement ok
+DROP TYPE m;
+
+statement ok
+CREATE TYPE mood AS ENUM ('', 'ok');
+
+statement ok
+CREATE TABLE t(id INT, v VARCHAR, b BLOB, e mood);
+
+statement ok
+INSERT INTO t VALUES (1, '', ''::BLOB, ''), (2, NULL, NULL, NULL), (3, 'x', 'x'::BLOB, 'ok');
+
+statement ok
+EXPORT DATABASE '{TEST_DIR}/export_csv_empty_strings_upper' (FORMAT CSV);
+
+statement ok
+DROP TABLE t;
+
+statement ok
+DROP TYPE mood;
+
+statement ok
+IMPORT DATABASE '{TEST_DIR}/export_csv_empty_strings_upper';
+
+query IIII
+SELECT id, v IS NULL AS v_null, b IS NULL AS b_null, e IS NULL AS e_null FROM t ORDER BY id;
+----
+1	false	false	false
+2	true	true	true
+3	false	false	false

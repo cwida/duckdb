@@ -10,12 +10,15 @@
 
 #include "duckdb/common/winapi.hpp"
 #include "duckdb/common/string.hpp"
+#include "duckdb/common/vector.hpp"
+#include "duckdb/common/optional_ptr.hpp"
 #include <stdint.h>
 #include "duckdb/common/types/string_type.hpp"
 
 namespace duckdb {
 class StringHeap;
 class ArenaAllocator;
+class ClientContext;
 
 struct bignum_t {
 	string_t data;
@@ -41,6 +44,26 @@ enum AbsoluteNumberComparison : uint8_t {
 	GREATER = 1,
 	// If compared number is smaller
 	SMALLER = 2,
+};
+
+//! A bignum magnitude is handled as base 2^32 digits
+using digit_t = uint32_t;
+using twodigit_t = uint64_t;
+
+//! Per-vector scratch digit buffers and interrupt-check state for BIGNUM multiplication and division
+struct BignumArithmeticState {
+	explicit BignumArithmeticState(optional_ptr<ClientContext> context = nullptr) : context(context) {
+	}
+
+	optional_ptr<ClientContext> context;
+	//! Digit operations performed since the last interrupt check
+	idx_t work_since_interrupt_check = 0;
+	unsafe_vector<digit_t> lhs_digits;
+	unsafe_vector<digit_t> rhs_digits;
+	unsafe_vector<digit_t> result_digits;
+	unsafe_vector<digit_t> remainder_digits;
+	unsafe_vector<digit_t> normalized_dividend;
+	unsafe_vector<digit_t> normalized_divisor;
 };
 
 struct BignumIntermediate {
@@ -73,11 +96,18 @@ struct BignumIntermediate {
 	void AddInPlace(ArenaAllocator &allocator, const BignumIntermediate &rhs);
 	//! Adds two BignumIntermediates and returns a string_t result, equivalent of a +
 	static string_t Add(StringHeap &heap, const BignumIntermediate &lhs, const BignumIntermediate &rhs);
+	//! Multiplies two BignumIntermediates and returns a string_t result, equivalent of a *
+	static string_t Multiply(StringHeap &heap, BignumArithmeticState &state, const BignumIntermediate &lhs,
+	                         const BignumIntermediate &rhs);
+	//! Truncating division (a // b) or, with want_remainder, the remainder with the sign of the dividend (a % b)
+	//! Returns false without writing a result when the divisor is zero
+	static bool TryDivMod(StringHeap &heap, BignumArithmeticState &state, const BignumIntermediate &lhs,
+	                      const BignumIntermediate &rhs, bool want_remainder, string_t &result);
 	//! Negates a value, e.g., -x
 	string_t Negate(StringHeap &heap) const;
 	void NegateInPlace();
-	//! Exports to a bignum, either arena allocated
-	bignum_t ToBignum(ArenaAllocator &allocator);
+	//! Exports to an arena-allocated bignum, trimmed on the way out; the intermediate itself is left as it is
+	bignum_t ToBignum(ArenaAllocator &allocator) const;
 	//! Check if an over/underflow has occurred
 	static bool OverOrUnderflow(data_ptr_t data, idx_t size, bool is_negative);
 	bool OverOrUnderflow() const;

@@ -1,0 +1,22 @@
+# name: test/issues/general/test_26175_bind_once.test
+# description: The SELECT of an INSERT with ON CONFLICT is bound once, so a table function argument is evaluated once
+# group: [general]
+
+statement ok
+CREATE TABLE seq_t (i INT PRIMARY KEY);
+
+statement ok
+CREATE SEQUENCE s;
+
+statement ok
+INSERT INTO seq_t SELECT * FROM range(nextval('s')) ON CONFLICT DO NOTHING;
+
+query I
+SELECT i FROM seq_t;
+----
+0
+
+query I
+SELECT currval('s');
+----
+1

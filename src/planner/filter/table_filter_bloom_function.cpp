@@ -15,6 +15,7 @@
 #include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/common/vector_size.hpp"
 #include "duckdb/execution/expression_executor_state.hpp"
+#include "duckdb/execution/ht_entry.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include "duckdb/storage/statistics/numeric_stats.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
@@ -39,6 +40,8 @@ static_assert(BITS_PER_SECTOR == sizeof(uint64_t) * 8, "a bloom filter sector mu
 static constexpr idx_t MAX_MEMORY_FRACTION = 64;
 
 void BloomFilter::Initialize(ClientContext &context_p, idx_t number_of_rows) {
+	// a published filter is shared with probe-side consumers and must stay immutable
+	D_ASSERT(!published);
 	BufferManager &buffer_manager = BufferManager::GetBufferManager(context_p);
 
 	// a capped filter stays complete - fewer sectors only raise the false positive rate, and Seal drops a
@@ -49,13 +52,17 @@ void BloomFilter::Initialize(ClientContext &context_p, idx_t number_of_rows) {
 	num_sectors = MinValue(GetNumberOfSectors(number_of_rows), budget_sectors);
 	bitmask = num_sectors - 1;
 
-	buf_ = buffer_manager.GetBufferAllocator().Allocate(64 + num_sectors * sizeof(uint64_t));
-	// make sure blocks is a 64-byte aligned pointer, i.e., cache-line aligned
-	bf = reinterpret_cast<uint64_t *>((64ULL + reinterpret_cast<uint64_t>(buf_.get())) & ~63ULL);
+	if (allocated_sectors < num_sectors) {
+		buf_ = buffer_manager.GetBufferAllocator().Allocate(64 + num_sectors * sizeof(uint64_t));
+		// make sure blocks is a 64-byte aligned pointer, i.e., cache-line aligned
+		bf = reinterpret_cast<uint64_t *>((64ULL + reinterpret_cast<uint64_t>(buf_.get())) & ~63ULL);
+		allocated_sectors = num_sectors;
+	}
 	std::fill_n(bf, num_sectors, 0);
 
 	initialized = true;
 	sealed = false;
+	useful = false;
 }
 
 void BloomFilter::Fold(idx_t new_num_sectors) {
@@ -119,6 +126,7 @@ void BloomFilter::Seal(ClientContext &context) {
 			std::copy_n(bf, num_sectors, compacted_bf);
 			buf_ = std::move(compacted_buf);
 			bf = compacted_bf;
+			allocated_sectors = num_sectors;
 		}
 	}
 	sealed = true;
@@ -178,10 +186,14 @@ idx_t BloomFilter::LookupHashes(const Vector &hashes_v, SelectionVector &result_
 	D_ASSERT(hashes_v.GetType() == LogicalType::HASH);
 
 	const auto hashes = FlatVector::GetData<uint64_t>(hashes_v);
+	const bool prefetch = count >= 128 && num_sectors * sizeof(uint64_t) >= 1024ULL * 1024ULL;
 	idx_t found_count = 0;
 	for (idx_t i = 0; i < count; i++) {
 		result_sel.set_index(found_count, i);
 		found_count += LookupOne(hashes[i]);
+		if (prefetch) {
+			PrefetchHashTableEntry(i, count, [&](idx_t next_idx) { return &bf[hashes[next_idx] & bitmask]; });
+		}
 	}
 	return found_count;
 }
@@ -192,10 +204,15 @@ idx_t BloomFilter::LookupHashes(const Vector &hashes_v, const SelectionVector &s
 	D_ASSERT(hashes_v.GetType() == LogicalType::HASH);
 
 	const auto hashes = FlatVector::GetData<uint64_t>(hashes_v);
+	const bool prefetch = count >= 128 && num_sectors * sizeof(uint64_t) >= 1024ULL * 1024ULL;
 	idx_t found_count = 0;
 	for (idx_t i = 0; i < count; i++) {
 		result_sel.set_index(found_count, i);
 		found_count += LookupOne(hashes[sel.get_index_unsafe(i)]);
+		if (prefetch) {
+			PrefetchHashTableEntry(
+			    i, count, [&](idx_t next_idx) { return &bf[hashes[sel.get_index_unsafe(next_idx)] & bitmask]; });
+		}
 	}
 	return found_count;
 }
@@ -269,9 +286,8 @@ static idx_t SelectBloomFilter(Vector &input, const BloomFilterFunctionData &fun
 	state.Prepare(count);
 	auto &hashes = state.hashes;
 	VectorOperations::Hash(input, hashes, count);
-	UnifiedVectorFormat input_data;
-	input.ToUnifiedFormat(input_data);
-	auto &bloom_sel = input_data.validity.CannotHaveNull() ? result_sel : state.bloom_sel;
+	auto validity = input.Validity();
+	auto &bloom_sel = validity.CannotHaveNull() ? result_sel : state.bloom_sel;
 	idx_t bloom_count;
 	if (hashes.GetVectorType() == VectorType::CONSTANT_VECTOR) {
 		bloom_count = func_data.filter->LookupOne(*ConstantVector::GetData<hash_t>(hashes)) ? count : 0;
@@ -282,8 +298,18 @@ static idx_t SelectBloomFilter(Vector &input, const BloomFilterFunctionData &fun
 		bloom_count = func_data.filter->LookupHashes(hashes, bloom_sel, count);
 	}
 
-	if (input_data.validity.CannotHaveNull()) {
+	if (validity.CannotHaveNull()) {
 		return bloom_count;
+	}
+
+	if (func_data.filters_null_values) {
+		idx_t result_count = 0;
+		for (idx_t i = 0; i < bloom_count; i++) {
+			const auto row_idx = bloom_sel.get_index(i);
+			result_sel.set_index(result_count, row_idx);
+			result_count += validity.IsValid(row_idx);
+		}
+		return result_count;
 	}
 
 	idx_t result_count = 0;
@@ -293,9 +319,8 @@ static idx_t SelectBloomFilter(Vector &input, const BloomFilterFunctionData &fun
 		if (matched) {
 			bloom_idx++;
 		}
-		const auto input_idx = input_data.sel->get_index(i);
 		bool passed;
-		if (!input_data.validity.RowIsValid(input_idx)) {
+		if (!validity.IsValid(i)) {
 			passed = !func_data.filters_null_values;
 		} else {
 			passed = matched;

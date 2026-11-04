@@ -262,6 +262,9 @@ unique_ptr<FunctionData> ListReduceBind(BindScalarFunctionInput &input) {
 	// cast in place, so that the bound lambda expression stays intact as a child of the function
 	bound_lambda_expr.LambdaExprMutable() = std::move(cast_lambda_expr);
 	bound_function.SetReturnType(bound_lambda_expr.LambdaExpr()->GetReturnType());
+	if (bound_lambda_expr.LambdaExpr()->IsVolatile()) {
+		bound_function.SetVolatile();
+	}
 	return make_uniq<ListLambdaBindData>(bound_function.GetReturnType(), bound_lambda_expr.LambdaExpr()->Copy(),
 	                                     has_index, has_initial);
 }

@@ -247,13 +247,13 @@ unique_ptr<ExportAggregateBindData> BindExportedAggregate(ClientContext &context
 	}
 	auto &aggr_entry = func.Cast<AggregateFunctionCatalogEntry>();
 
-	ErrorData error;
 	FunctionBinder function_binder(context);
-	auto best_function = function_binder.BindFunction(aggr_entry.name, aggr_entry.functions, argument_types, error);
-	if (!best_function.IsValid()) {
-		throw BinderException("Could not re-bind exported aggregate %s: %s", function_name, error.Message());
+	auto best_function = FunctionBinder::SelectFunction(context, aggr_entry.functions, argument_types);
+	if (!best_function.IsSuccess()) {
+		throw BinderException("Could not re-bind exported aggregate %s: %s", function_name,
+		                      best_function.GetError().Message());
 	}
-	const auto &aggr = aggr_entry.functions.GetFunctionByOffset(best_function.GetIndex());
+	const auto aggr = best_function.GetBinding().GetFunction<AggregateFunction>();
 	const auto &signature = aggr->GetSignature();
 	for (idx_t arg_idx = 0; arg_idx < argument_types.size(); arg_idx++) {
 		if (argument_types[arg_idx].id() != LogicalTypeId::ANY) {
@@ -284,7 +284,9 @@ unique_ptr<ExportAggregateBindData> BindExportedAggregate(ClientContext &context
 		}
 	}
 
-	auto [bound_aggr, bind_info] = function_binder.ResolveFunction(aggr, args);
+	vector<pair<Identifier, unique_ptr<Expression>>> keyword_args;
+	auto [bound_aggr, bind_info] =
+	    function_binder.ResolveAggregateFunction(best_function.GetBinding(), args, keyword_args);
 
 	const auto &bound_args = bound_aggr.GetArguments();
 	bool signature_matches = bound_args.size() == argument_types.size();
@@ -945,13 +947,13 @@ ExportAggregateFunction::Bind(unique_ptr<BoundAggregateExpression> child_aggrega
 		throw BinderException("Cannot use EXPORT_STATE for non-combinable function %s", bound_function.GetName());
 	}
 	if (bound_function.HasExportAggregateStateCallback() != bound_function.HasImportAggregateStateCallback()) {
-		throw InternalException("Aggregate function \"%s\" must define either both or neither of the "
+		throw InternalException("Aggregate function %s must define either both or neither of the "
 		                        "export_aggregate_state/import_aggregate_state callbacks",
 		                        bound_function.GetName());
 	}
 	if (!bound_function.HasGetStateTypeCallback()) {
 		throw NotImplementedException(
-		    "Aggregate function \"%s\" does not have a state type callback defined - cannot export state",
+		    "Aggregate function %s does not have a state type callback defined - cannot export state",
 		    bound_function.GetName());
 	}
 	D_ASSERT(bound_function.HasStateSizeCallback());
@@ -1043,6 +1045,8 @@ AggregateFunction CombineAggrFun::GetFunction() {
 	                                  CombineAggrBind, nullptr, nullptr, nullptr);
 	function.GetSignature().AddParameter("arg", LogicalTypeId::ANY);
 	function.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+	// importing states validates them, and the underlying combine can throw (e.g. mismatched approx_top_k k values)
+	function.SetFallible();
 	return function;
 }
 
@@ -1054,6 +1058,8 @@ AggregateFunctionSet CombineAggrFun::GetFunctions() {
 	                                  CombineAggrBind, nullptr, nullptr, nullptr);
 	repeated.GetSignature().AddParameter("arg", LogicalTypeId::ANY).AddParameter("multiplicities", LogicalType::BIGINT);
 	repeated.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+	// importing states validates them, and the repeated combine throws on multiplicity overflow
+	repeated.SetFallible();
 	set.AddFunction(std::move(repeated));
 	return set;
 }

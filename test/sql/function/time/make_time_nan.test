@@ -1,0 +1,23 @@
+# name: test/sql/function/time/make_time_nan.test
+# description: make_time / make_timestamp reject non-finite seconds
+# group: [time]
+
+statement error
+SELECT make_time(1, 2, 'nan'::DOUBLE);
+----
+<REGEX>:Conversion Error.*Time out of range.*
+
+statement error
+SELECT make_time(1, 2, 'inf'::DOUBLE);
+----
+<REGEX>:Conversion Error.*Time out of range.*
+
+statement error
+SELECT make_timestamp(2000, 1, 1, 12, 30, 'nan'::DOUBLE);
+----
+<REGEX>:Conversion Error.*Time out of range.*
+
+query I
+SELECT make_time(1, 2, 3.5);
+----
+01:02:03.5

@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <stdint.h>
 #include <string.h>
 #include <string>
@@ -216,20 +217,26 @@ vector<idx_t> GetChildIndices(const UnifiedVariantVectorData &variant, idx_t row
 		for (idx_t i = 0; i < nested_data.child_count; i++) {
 			child_indices.push_back(i);
 		}
-		return child_indices;
-	}
-	auto shredded_fields = shredding_state->ObjectFields();
+	} else {
+		auto &shredded_fields = shredding_state->ObjectFields();
 
-	for (idx_t i = 0; i < nested_data.child_count; i++) {
-		auto keys_index = variant.GetKeysIndex(row, i + nested_data.children_idx);
-		auto &key = variant.GetKey(row, keys_index);
+		for (idx_t i = 0; i < nested_data.child_count; i++) {
+			auto keys_index = variant.GetKeysIndex(row, i + nested_data.children_idx);
+			auto &key = variant.GetKey(row, keys_index);
 
-		if (shredded_fields.count(key.GetString())) {
-			//! This field is shredded on, omit it from the value
-			continue;
+			if (shredded_fields.count(key)) {
+				//! This field is shredded on, omit it from the value
+				continue;
+			}
+			child_indices.push_back(i);
 		}
-		child_indices.push_back(i);
 	}
+	// Object field IDs and offsets must follow UTF-8 field name order, even with an unsorted dictionary.
+	std::sort(child_indices.begin(), child_indices.end(), [&](idx_t left, idx_t right) {
+		auto left_key = variant.GetKeysIndex(row, left + nested_data.children_idx);
+		auto right_key = variant.GetKeysIndex(row, right + nested_data.children_idx);
+		return variant.GetKey(row, left_key) < variant.GetKey(row, right_key);
+	});
 	return child_indices;
 }
 

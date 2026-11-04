@@ -35,10 +35,10 @@ SELECT try_strptime(s, ['%Y-%m-%d %H:%M:%S %Z', '%Y-%m-%d %H:%M:%S']) FROM (VALU
 NULL
 
 statement ok
-COPY (SELECT * FROM (VALUES (1, '2024-01-01 00:00:00 Asia/Tokyo'), (2, '2024-01-01 00:00:00')) t(i, ts)) TO '__TEST_DIR__/tz_rows.csv' (HEADER)
+COPY (SELECT * FROM (VALUES (1, '2024-01-01 00:00:00 Asia/Tokyo'), (2, '2024-01-01 00:00:00')) t(i, ts)) TO '{TEST_DIR}/tz_rows.csv' (HEADER)
 
 query II
-SELECT * FROM read_csv('__TEST_DIR__/tz_rows.csv', columns={'i': 'INTEGER', 'ts': 'TIMESTAMPTZ'}) ORDER BY i
+SELECT * FROM read_csv('{TEST_DIR}/tz_rows.csv', columns={'i': 'INTEGER', 'ts': 'TIMESTAMPTZ'}) ORDER BY i
 ----
 1	2023-12-31 15:00:00+00
 2	2024-01-01 00:00:00+00

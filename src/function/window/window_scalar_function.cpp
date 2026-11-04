@@ -42,175 +42,74 @@ struct ScalarWindowBindData : public FunctionData {
 	unique_ptr<Expression> wexpr;
 };
 
-//	A degenerate frame holds at most the current row, which these exclusions remove
-idx_t DegenerateFrameWidth(const BoundWindowExpression &wexpr) {
-	switch (wexpr.WindowExclude()) {
-	case WindowExcludeMode::CURRENT_ROW:
-	case WindowExcludeMode::GROUP:
-		return 0;
-	default:
-		return 1;
-	}
-}
-
-void AggregateScalarFunc(DataChunk &args, ExpressionState &state, Vector &result) {
-	auto &func_expr = state.expr.Cast<BoundFunctionExpression>();
-	auto &scalar_info = func_expr.BindInfo()->Cast<ScalarWindowBindData>();
-	auto &wexpr = scalar_info.wexpr->Cast<BoundWindowExpression>();
-	auto bind_info = wexpr.BindInfo().get();
-
-	//	Is the frame empty?
-	const idx_t width = DegenerateFrameWidth(wexpr);
-
-	auto &client = scalar_info.client;
-	ThreadContext thread(client);
-	ExecutionContext context(client, thread, nullptr);
-	auto &allocator = Allocator::Get(client);
-	ArenaAllocator arena_allocator(allocator);
-	const auto count = args.size();
-
-	//	Aggregate each row separately
-	AggregateObject aggr(wexpr);
-	AggregateStateInput agg_input(aggr.function, bind_info);
-
-	auto callbacks = aggr.function.GetCallbacks();
-	const idx_t state_size = callbacks.GetStateSizeCallback()(agg_input);
-	vector<data_t> agg_state(state_size * count);
-
-	//	Allocate the states
-	Vector statev(LogicalType::POINTER);
-	auto states = FlatVector::GetDataMutable<data_ptr_t>(statev);
-	auto state_ptr = agg_state.data();
-	for (idx_t i = 0; i < count; ++i) {
-		states[i] = state_ptr;
-		state_ptr += state_size;
-	}
-
-	//	Initialise the states
-	auto initialize = callbacks.GetStateInitCallback();
-	initialize(agg_input, states, count);
-
-	//	Update the state if the frame is not empty
-	AggregateFinalizeInputData aggr_bind_info(aggr.function, bind_info, arena_allocator);
-	if (width) {
-		//	The arguments reference the input row
-		DataChunk inputs;
-		ExpressionExecutor input_exec(client);
-		vector<LogicalType> input_types;
-		for (const auto &child : wexpr.GetChildren()) {
-			input_exec.AddExpression(*child);
-			input_types.emplace_back(child->GetReturnType());
-		}
-		if (!input_types.empty()) {
-			inputs.Initialize(allocator, input_types);
-			input_exec.Execute(args, inputs);
-			inputs.CheckCardinality(count);
-		} else {
-			inputs.SetCardinalityUnsafe(count);
-		}
-
-		//	Rows rejected by the filter leave their state empty
-		auto update = aggr.function.GetCallbacks().GetStateUpdateCallback();
-		if (wexpr.Filter()) {
-			SelectionVector sel(count);
-			ExpressionExecutor filter_exec(client, *wexpr.Filter());
-			const auto update_count = filter_exec.SelectExpression(args, sel);
-			inputs.Slice(sel, update_count);
-			Vector update_states(statev, sel, update_count);
-			update(inputs.data.data(), aggr_bind_info, inputs.ColumnCount(), update_states, update_count);
-		} else {
-			update(inputs.data.data(), aggr_bind_info, inputs.ColumnCount(), statev, count);
-		}
-	}
-
-	//	Finalize the states
-	auto finalize = aggr.function.GetCallbacks().GetStateFinalizeCallback();
-	finalize(statev, aggr_bind_info, result, count, 0);
-
-	//	Deallocate the states
-	auto destructor = callbacks.GetStateDestructorCallback();
-	if (destructor) {
-		destructor(statev, aggr_bind_info, count);
-	}
-}
-
 void WindowScalarFunc(DataChunk &args, ExpressionState &state, Vector &result) {
 	auto &func_expr = state.expr.Cast<BoundFunctionExpression>();
 	auto &scalar_info = func_expr.BindInfo()->Cast<ScalarWindowBindData>();
 	auto &wexpr = scalar_info.wexpr->Cast<BoundWindowExpression>();
 
-	//	Is the frame empty?
-	const idx_t width = DegenerateFrameWidth(wexpr);
-
 	auto &client = scalar_info.client;
 	ThreadContext thread(client);
 	ExecutionContext context(client, thread, nullptr);
 	auto &allocator = Allocator::Get(client);
 	ArenaAllocator arena_allocator(allocator);
 	const auto count = args.size();
-	if (width) {
-		//	Build shared expressions
-		WindowSharedExpressions shared;
-		WindowExecutor wexec(wexpr, shared);
 
-		DataChunk coll_chunk;
-		ExpressionExecutor coll_exec(client);
-		shared.PrepareCollection(coll_exec, coll_chunk);
+	//	Build shared expressions
+	WindowSharedExpressions shared;
+	auto wexec = WindowExecutor::Factory(wexpr, client, shared);
 
-		//	Build acceleration data
-		//	One partition in which every row is its own peer group, so the frame is the current row
-		ValidityMask partition_mask;
-		partition_mask.Initialize(count);
-		partition_mask.SetAllInvalid(count);
-		partition_mask.SetValid(0);
-		ValidityMask order_mask;
-		order_mask.Initialize(count);
-		auto gsink = wexec.GetGlobalState(client, count, partition_mask, order_mask);
-		auto lsink = wexec.GetLocalState(context, *gsink);
+	DataChunk coll_chunk;
+	ExpressionExecutor coll_exec(client);
+	shared.PrepareCollection(coll_exec, coll_chunk);
 
-		//	Compute fully materialised expressions
-		auto &buffer_manager = BufferManager::GetBufferManager(client);
-		auto collection = make_uniq<WindowCollection>(buffer_manager, count, coll_chunk.GetTypes());
-		if (coll_chunk.data.empty()) {
-			coll_chunk.SetChildCardinality(count);
-		} else {
-			coll_exec.Execute(args, coll_chunk);
-			auto builder = make_uniq<WindowBuilder>(*collection);
-			builder->Sink(coll_chunk, 0);
-		}
+	//	Build acceleration data
+	//	`count` partitions in which every row is its own peer group, so the frame is the current row
+	ValidityMask partition_mask;
+	partition_mask.Initialize(count);
+	ValidityMask order_mask;
+	order_mask.Initialize(count);
+	auto gsink = wexec->GetGlobalState(client, count, partition_mask, order_mask);
+	auto lsink = wexec->GetLocalState(context, *gsink);
 
-		// Compute sink expressions
-		DataChunk sink_chunk;
-		ExpressionExecutor sink_exec(client);
-		shared.PrepareSink(sink_exec, sink_chunk);
-		if (sink_chunk.data.empty()) {
-			sink_chunk.SetChildCardinality(count);
-		} else {
-			sink_exec.Execute(args, sink_chunk);
-		}
-
-		InterruptState interrupt;
-		OperatorSinkInput sink {*gsink, *lsink, interrupt};
-		wexec.Sink(context, sink_chunk, coll_chunk, 0, sink);
-
-		collection->Combine(shared.coll_validity);
-		wexec.Finalize(context, collection, sink);
-
-		//	Evaluate
-		DataChunk eval_chunk;
-		ExpressionExecutor eval_exec(client);
-		shared.PrepareEvaluate(eval_exec, eval_chunk);
-		if (eval_chunk.data.empty()) {
-			eval_chunk.SetChildCardinality(count);
-		} else {
-			eval_exec.Execute(args, eval_chunk);
-		}
-
-		wexec.Evaluate(context, 0, eval_chunk, result, sink, count);
+	//	Compute fully materialised expressions
+	auto &buffer_manager = BufferManager::GetBufferManager(client);
+	auto collection = make_uniq<WindowCollection>(buffer_manager, count, coll_chunk.GetTypes());
+	if (coll_chunk.data.empty()) {
+		coll_chunk.SetChildCardinality(count);
 	} else {
-		result.SetVectorType(VectorType::CONSTANT_VECTOR);
-		ConstantVector::SetNull(result, true);
+		coll_exec.Execute(args, coll_chunk);
+		auto builder = make_uniq<WindowBuilder>(*collection);
+		builder->Sink(coll_chunk, 0);
 	}
+
+	// Compute sink expressions
+	DataChunk sink_chunk;
+	ExpressionExecutor sink_exec(client);
+	shared.PrepareSink(sink_exec, sink_chunk);
+	if (sink_chunk.data.empty()) {
+		sink_chunk.SetChildCardinality(count);
+	} else {
+		sink_exec.Execute(args, sink_chunk);
+	}
+
+	InterruptState interrupt;
+	OperatorSinkInput sink {*gsink, *lsink, interrupt};
+	wexec->Sink(context, sink_chunk, coll_chunk, 0, sink);
+
+	collection->Combine(shared.coll_validity);
+	wexec->Finalize(context, collection, sink);
+
+	//	Evaluate
+	DataChunk eval_chunk;
+	ExpressionExecutor eval_exec(client);
+	shared.PrepareEvaluate(eval_exec, eval_chunk);
+	if (eval_chunk.data.empty()) {
+		eval_chunk.SetChildCardinality(count);
+	} else {
+		eval_exec.Execute(args, eval_chunk);
+	}
+
+	wexec->Evaluate(context, 0, eval_chunk, result, sink, count);
 }
 
 } // namespace
@@ -223,12 +122,16 @@ unique_ptr<Expression> FunctionBinder::BindScalarWindowFunction(BoundWindowExpre
 		children.emplace_back(make_uniq<BoundReferenceExpression>(input_types[col_idx], col_idx));
 	}
 	auto &aggr = wexpr.AggregateFunction();
-	auto func = aggr ? AggregateScalarFunc : WindowScalarFunc;
-	ScalarFunction scalar(wexpr.GetName(), input_types, wexpr.GetReturnType(), func);
+	ScalarFunction scalar(wexpr.GetName(), input_types, wexpr.GetReturnType(), WindowScalarFunc);
 	if (aggr) {
 		scalar.SetProperties(aggr->GetProperties());
 	} else {
 		scalar.SetProperties(wexpr.WindowFunction()->GetProperties());
+	}
+	// the wrapper also executes the window expression's children (e.g. casts) and validates frame boundary
+	// expressions at runtime, not just the function itself
+	if (wexpr.CanThrow() || wexpr.StartExpr() || wexpr.EndExpr()) {
+		scalar.SetFallible();
 	}
 	//	NULLs in the input row do not imply a NULL result
 	scalar.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);

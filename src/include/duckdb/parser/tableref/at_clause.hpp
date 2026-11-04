@@ -21,6 +21,9 @@ public:
 	const Identifier &Unit() {
 		return unit;
 	}
+	const unique_ptr<ParsedExpression> &Expression() const {
+		return expr;
+	}
 	unique_ptr<ParsedExpression> &ExpressionMutable() {
 		return expr;
 	}

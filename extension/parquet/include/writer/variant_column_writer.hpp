@@ -46,7 +46,18 @@ public:
 	}
 
 public:
-	case_insensitive_map_t<VariantAnalyzeData> fields;
+	VariantAnalyzeData &GetOrCreateField(const string_t &name) {
+		auto entry = fields.find(name);
+		if (entry != fields.end()) {
+			return entry->second;
+		}
+		return fields[field_names.AddBlob(name)];
+	}
+
+public:
+	case_insensitive_string_map_t<VariantAnalyzeData> fields;
+	//! Owns the keys of 'fields'
+	StringHeap field_names;
 };
 
 struct ArrayAnalyzeData {
@@ -79,7 +90,7 @@ public:
 	~VariantColumnWriter() override = default;
 
 public:
-	idx_t FinalizeSchema(vector<duckdb_parquet::SchemaElement> &schemas) override;
+	idx_t FinalizeSchema(duckdb_parquet::SchemaElementList &schemas) override;
 	unique_ptr<ParquetAnalyzeSchemaState> AnalyzeSchemaInit() override;
 	void AnalyzeSchema(ParquetAnalyzeSchemaState &state, Vector &input, idx_t count) override;
 	void AnalyzeSchemaFinalize(const ParquetAnalyzeSchemaState &state) override;
@@ -108,6 +119,7 @@ public:
 	}
 
 public:
+	static LogicalType GetParquetVariantType(optional_ptr<LogicalType> shredding = nullptr);
 	static ScalarFunction GetTransformFunction(bool preserve_nulls = false);
 	//! 'variant_bytes_to_variant': decode a binary Variant value (metadata followed by value)
 	//! into a VARIANT. The inverse of 'variant_to_parquet_variant'.

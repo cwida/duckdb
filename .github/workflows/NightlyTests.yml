@@ -767,10 +767,11 @@ jobs:
 
      - name: Test
        shell: bash
+       timeout-minutes: 45
        # HASH_ZERO=1 triggers hash collisions; some test statements can turn
-       # into quadratic runtime and thus very slow. Report tests >30s, but only
-       # fail when a test runtime exceeds 2 minutes.
-       run: make unittest_relassert T="--track-runtime 30 --batch-timeout 120 --test-config=test/configs/hash_zero.json"
+       # quadratic. Isolate each test and report body timeouts without failing;
+       # correctness failures and cleanup hangs still fail the job.
+       run: make unittest_relassert T="--track-runtime 30 --batch-size 1 --batch-timeout 60 --timeout-policy warn --test-config=test/configs/hash_zero.json"
 
 
   bwc-build:

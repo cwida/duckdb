@@ -6,6 +6,7 @@
 #include "duckdb/common/filename_pattern.hpp"
 #include "duckdb/common/index_vector.hpp"
 #include "duckdb/common/local_file_system.hpp"
+#include "duckdb/main/database_manager.hpp"
 #include "duckdb/common/exception/parser_exception.hpp"
 #include "duckdb/function/table/read_csv.hpp"
 #include "duckdb/main/client_context.hpp"
@@ -97,38 +98,12 @@ identifier_map_t<CopyOption> Binder::GetFullCopyOptionsList(const CopyFunction &
 		copy_options["return_files"] = CopyOption(LogicalType::BOOLEAN, CopyOptionMode::WRITE_ONLY);
 		copy_options["preserve_order"] = CopyOption(LogicalType::BOOLEAN, CopyOptionMode::WRITE_ONLY);
 		copy_options["return_stats"] = CopyOption(LogicalType::BOOLEAN, CopyOptionMode::WRITE_ONLY);
+		copy_options["return_column_types"] = CopyOption(LogicalType::BOOLEAN, CopyOptionMode::WRITE_ONLY);
 		copy_options["write_partition_columns"] = CopyOption(LogicalType::BOOLEAN, CopyOptionMode::WRITE_ONLY);
 		copy_options["write_empty_file"] = CopyOption(LogicalType::BOOLEAN, CopyOptionMode::WRITE_ONLY);
 		copy_options["hive_file_pattern"] = CopyOption(LogicalType::BOOLEAN, CopyOptionMode::WRITE_ONLY);
 	}
 	return copy_options;
-}
-
-static idx_t ParseBytesArg(const Identifier &name, Value &arg) {
-	if (arg.IsNull()) {
-		throw BinderException("NULL is not supported as a valid option for COPY option \"%s\"",
-		                      StringUtil::Upper(name.GetIdentifierName()));
-	}
-	optional_idx result;
-	if (arg.type().id() == LogicalTypeId::VARCHAR) {
-		result = DBConfig::ParseMemoryLimit(arg.ToString());
-	} else {
-		auto cast_arg = arg.DefaultTryCastAs(LogicalType::UBIGINT);
-		if (!cast_arg) {
-			throw BinderException("Unable to parse bytes from \"%s\" for copy option \"%s\" ", arg.ToString(),
-			                      StringUtil::Upper(name.GetIdentifierName()));
-		}
-		auto bytes = cast_arg->GetValue<idx_t>();
-		if (bytes != DConstants::INVALID_INDEX) {
-			result = bytes;
-		}
-	}
-	if (!result.IsValid()) {
-		// e.g. '-1' or 'none', which ParseMemoryLimit parses as unlimited
-		throw BinderException("Copy option \"%s\" must be a valid size, not \"%s\"",
-		                      StringUtil::Upper(name.GetIdentifierName()), arg.ToString());
-	}
-	return result.GetIndex();
 }
 
 struct CopyToParsedOptions {
@@ -147,6 +122,7 @@ struct CopyToParsedOptions {
 	optional<bool> hive_file_pattern;
 	optional<PreserveOrderType> preserve_order;
 	optional<CopyFunctionReturnType> return_type;
+	optional<bool> return_column_types;
 	unique_ptr<ParsedExpression> partition_path;
 
 	bool UserSetUseTmpFile() const {
@@ -182,7 +158,8 @@ struct CopyToParsedOptions {
 	}
 
 	CopyFunctionReturnType ReturnType() const {
-		return return_type.value_or(CopyFunctionReturnType::CHANGED_ROWS);
+		auto result = return_type.value_or(CopyFunctionReturnType::CHANGED_ROWS);
+		return return_column_types.value_or(false) ? GetCopyFunctionReturnTypeWithColumnTypes(result) : result;
 	}
 
 	void SetFilenamePattern(const string &pattern) {
@@ -335,7 +312,7 @@ static void ValidateCopyToOptionCombinations(const CopyToParsedOptions &options,
 			throw BinderException("Can't combine HIVE_FILE_PATTERN and PARTITION_PATH for COPY");
 		}
 	}
-	if (options.ReturnType() == CopyFunctionReturnType::WRITTEN_FILE_STATISTICS &&
+	if (GetCopyFunctionBaseReturnType(options.ReturnType()) == CopyFunctionReturnType::WRITTEN_FILE_STATISTICS &&
 	    !function.copy_to_get_written_statistics) {
 		throw NotImplementedException("RETURN_STATS is not supported for the \"%s\" copy format", format);
 	}
@@ -523,6 +500,8 @@ BoundStatement Binder::BindCopyTo(CopyStatement &stmt, const CopyFunction &funct
 			if (GetBooleanArg(context, option_values)) {
 				parsed_options.SetReturnType(CopyFunctionReturnType::WRITTEN_FILE_STATISTICS);
 			}
+		} else if (option_name == "return_column_types") {
+			parsed_options.return_column_types = GetBooleanArg(context, option_values);
 		} else if (option_name == "write_partition_columns") {
 			parsed_options.write_partition_columns = GetBooleanArg(context, option_values);
 		} else if (option_name == "write_empty_file") {
@@ -537,6 +516,15 @@ BoundStatement Binder::BindCopyTo(CopyStatement &stmt, const CopyFunction &funct
 	ValidateCopyToOptionCombinations(parsed_options, function, stmt.info->format);
 	auto resolved_options = ResolveCopyToOptions(context, stmt.info->file_path, std::move(parsed_options));
 
+	// RETURN_COLUMN_TYPES describes the query before the copy function can change its types (e.g., CSV casts every
+	// column to VARCHAR), with the names the copy writes
+	vector<Identifier> query_names;
+	vector<LogicalType> query_types;
+	if (CopyFunctionReturnsColumnTypes(resolved_options.return_type)) {
+		query_names = select_node.names;
+		QueryResult::DeduplicateColumns(query_names);
+		query_types = select_node.types;
+	}
 	// Allow the copy function to intercept the select list and types and push a new projection on top of the plan
 	if (function.copy_to_select) {
 		auto bindings = select_node.plan->GetColumnBindings();
@@ -573,6 +561,11 @@ BoundStatement Binder::BindCopyTo(CopyStatement &stmt, const CopyFunction &funct
 	auto unique_column_names = select_node.names;
 	QueryResult::DeduplicateColumns(unique_column_names);
 	auto file_path = stmt.info->file_path;
+	if (!file_path.empty() && !FileSystem::IsRemoteFile(file_path) &&
+	    DatabaseManager::Get(context).IsAttachedDatabaseFile(context, file_path)) {
+		// writing to the file of an attached database would corrupt it
+		throw BinderException("Cannot COPY to \"%s\": the file belongs to an attached database", file_path);
+	}
 
 	ValidateCopyToOutputColumns(resolved_options, select_node.names.size());
 
@@ -611,6 +604,8 @@ BoundStatement Binder::BindCopyTo(CopyStatement &stmt, const CopyFunction &funct
 	copy->partition_columns = std::move(resolved_options.partition_cols);
 	copy->write_empty_file = resolved_options.write_empty_file;
 	copy->return_type = resolved_options.return_type;
+	copy->query_names = std::move(query_names);
+	copy->query_types = std::move(query_types);
 	copy->preserve_order = resolved_options.preserve_order;
 	copy->hive_file_pattern = resolved_options.hive_file_pattern;
 	copy->order_columns = std::move(resolved_options.order_columns);
@@ -628,6 +623,9 @@ BoundStatement Binder::BindCopyTo(CopyStatement &stmt, const CopyFunction &funct
 		break;
 	case CopyFunctionReturnType::CHANGED_ROWS_AND_FILE_LIST:
 	case CopyFunctionReturnType::WRITTEN_FILE_STATISTICS:
+	case CopyFunctionReturnType::CHANGED_ROWS_AND_COLUMN_TYPES:
+	case CopyFunctionReturnType::CHANGED_ROWS_AND_FILE_LIST_AND_COLUMN_TYPES:
+	case CopyFunctionReturnType::WRITTEN_FILE_STATISTICS_AND_COLUMN_TYPES:
 		properties.return_type = StatementReturnType::QUERY_RESULT;
 		break;
 	default:

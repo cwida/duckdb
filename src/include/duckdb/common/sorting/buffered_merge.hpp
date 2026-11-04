@@ -60,7 +60,8 @@ private:
 //! of the two pieces goes through the scratch buffer when it fits, otherwise this is a plain std::rotate; neither
 //! allocates.
 template <class SORT_KEY, class ITERATOR>
-ITERATOR BufferedRotate(ITERATOR first, ITERATOR middle, ITERATOR last, SORT_KEY *buffer, const idx_t buffer_count) {
+ITERATOR BufferedRotate(const ITERATOR &first, const ITERATOR &middle, const ITERATOR &last, SORT_KEY *buffer,
+                        const idx_t buffer_count) {
 	const auto left_count = static_cast<idx_t>(middle - first);
 	const auto right_count = static_cast<idx_t>(last - middle);
 	if (left_count > right_count && right_count <= buffer_count) {
@@ -180,7 +181,7 @@ public:
 	}
 
 	template <class ITERATOR, class COMPARE>
-	void operator()(ITERATOR first, ITERATOR middle, ITERATOR last, const COMPARE &compare) const {
+	void operator()(const ITERATOR &first, const ITERATOR &middle, const ITERATOR &last, const COMPARE &compare) const {
 		BufferedMerge<SORT_KEY>(first, middle, last, compare, keys, count);
 	}
 

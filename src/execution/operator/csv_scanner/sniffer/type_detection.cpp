@@ -247,7 +247,7 @@ bool CSVSniffer::CanYouCastIt(ClientContext &context, const string_t value, cons
 		return Time::TryConvertTime(value_ptr, value_size, pos, dummy_value, true);
 	}
 	case LogicalTypeId::DECIMAL: {
-		uint8_t width, scale;
+		uint32_t width, scale;
 		type.GetDecimalProperties(width, scale);
 		if (decimal_separator == ',') {
 			switch (type.InternalType()) {

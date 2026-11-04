@@ -1,0 +1,19 @@
+# name: benchmark/micro/order/string_sort_prefix_outlier.benchmark
+# description: Sort long common-prefix keys with one near-final earlier-byte outlier
+# group: [order]
+
+name Order By (String Prefix Outlier)
+group micro
+subgroup order
+resultmode streaming drop
+
+load
+SET threads=1;
+SET memory_limit='2GB';
+CREATE TABLE strings AS
+SELECT CASE WHEN i=524286 THEN repeat('a',8)||'b'||repeat('a',247)
+            ELSE repeat('a',256) END || substr(md5(i::VARCHAR),1,16) AS s
+FROM range(524288) t(i);
+
+run
+SELECT s FROM strings ORDER BY s;

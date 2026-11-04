@@ -1,0 +1,81 @@
+# name: test/sql/profiling/test_failed_query_profile.test
+# description: Queries that fail during execution still emit their profile
+# group: [profiling]
+
+require json
+
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/failed_query_profile.json';
+
+statement error
+SELECT CASE WHEN i = 5000 THEN error('boom') END FROM range(10000) t(i);
+----
+boom
+
+statement ok
+PRAGMA disable_profiling;
+
+query II
+SELECT prof.query.sql LIKE '%error(''boom'')%', len(prof.operator) > 0
+FROM read_json('{TEST_DIR}/failed_query_profile.json') prof;
+----
+true	true
+
+# a query that fails before planning must not leave the previous profile behind
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/failed_prepare_profile.json';
+
+statement ok
+SELECT 42;
+
+statement error
+SELECT * FROM table_that_does_not_exist;
+----
+does not exist
+
+statement ok
+PRAGMA disable_profiling;
+
+query I
+SELECT prof.result FROM read_json('{TEST_DIR}/failed_prepare_profile.json') prof;
+----
+error
+
+# the next successful query gets its own profile
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/after_failure_profile.json';
+
+statement ok
+SELECT 43;
+
+statement ok
+PRAGMA disable_profiling;
+
+query I
+SELECT prof.query.sql LIKE '%43%' FROM read_json('{TEST_DIR}/after_failure_profile.json') prof;
+----
+true
+
+# a profile that cannot be written does not replace the error of the query that failed
+statement ok
+PRAGMA enable_profiling = 'json';
+
+statement ok
+PRAGMA profiling_output = '{TEST_DIR}/no_such_directory/profile.json';
+
+statement error
+SELECT CASE WHEN i = 5000 THEN error('boom') END FROM range(10000) t(i);
+----
+boom
+
+statement ok
+PRAGMA disable_profiling;

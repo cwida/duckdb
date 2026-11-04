@@ -109,6 +109,18 @@ SELECT count(*) FROM tz WHERE date_trunc('decade', x) = TIMESTAMPTZ '0001-01-01 
 ----
 1
 
+# ICU truncates to an era by setting the year to zero, which moves across the BC/AD boundary
+statement ok
+CREATE TABLE eras AS SELECT * FROM (VALUES ('0002-06-01 (BC)'::TIMESTAMPTZ), (TIMESTAMPTZ '0002-06-01 00:00:00+00')) t(x);
+
+statement ok
+SELECT date_trunc('era', x) FROM eras ORDER BY ALL;
+
+query I
+SELECT count(*) FROM eras WHERE date_trunc('era', x) >= TIMESTAMPTZ '0001-01-01 00:00:00+00';
+----
+1
+
 # truncating years before the common era rounds towards zero
 statement ok
 CREATE TABLE b AS SELECT * FROM (VALUES (TIMESTAMP '0151-06-01 (BC)'), (TIMESTAMP '0050-01-01')) t(x);

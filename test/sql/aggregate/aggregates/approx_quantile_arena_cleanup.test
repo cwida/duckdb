@@ -1,0 +1,26 @@
+# name: test/sql/aggregate/aggregates/approx_quantile_arena_cleanup.test
+# description: Reuse aggregate arena storage after an out-of-memory error
+# group: [aggregates]
+
+statement ok
+SET threads=4;
+
+loop n 0 3
+
+statement ok
+SET memory_limit='32MiB';
+
+statement error
+SELECT sum(q) FROM (SELECT approx_quantile(i, 0.5) AS q FROM range(1000000) t(i) GROUP BY i % 100000);
+----
+Out of Memory
+
+statement ok
+SET memory_limit='256MiB';
+
+query I
+SELECT count(*) FROM (SELECT approx_quantile(i, 0.5) AS q FROM range(100000) t(i) GROUP BY i % 1000) WHERE q IS NOT NULL;
+----
+1000
+
+endloop

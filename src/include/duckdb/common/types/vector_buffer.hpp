@@ -95,6 +95,9 @@ public:
 	virtual data_ptr_t GetData() {
 		return nullptr;
 	}
+	virtual data_ptr_t GetDataMutable() {
+		return GetData();
+	}
 	virtual idx_t Capacity() const {
 		throw InternalException("VectorBuffer does not have a capacity");
 	}

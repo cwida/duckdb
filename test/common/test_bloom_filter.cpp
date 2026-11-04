@@ -70,3 +70,48 @@ TEST_CASE("Sealing marks a saturated bloom filter as not useful", "[bloom_filter
 	// even a saturated filter must keep every inserted key
 	REQUIRE(CountKeyRange(filter, 0, ACTUAL_COUNT) == ACTUAL_COUNT);
 }
+
+TEST_CASE("Bloom vector lookup respects counts and selected source rows", "[bloom_filter]") {
+	DuckDB db;
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("SET memory_limit='512MB'"));
+	auto &context = *con.context;
+	const auto vector_rows = MaxValue<idx_t>(160, STANDARD_VECTOR_SIZE + 17);
+
+	Vector hashes(LogicalType::HASH, vector_rows);
+	for (idx_t i = 0; i < vector_rows; i++) {
+		hashes.SetValue(i, Value::HASH(Hash(i % 3 == 0 ? i % 8 : (1ULL << 21) + i)));
+	}
+	FlatVector::SetSize(hashes, count_t(vector_rows));
+
+	// Accurate build cardinality keeps the large filter above the prefetch threshold after sealing.
+	for (idx_t build_count : {idx_t(8), idx_t(1) << 20}) {
+		BloomFilter filter;
+		filter.Initialize(context, build_count);
+		InsertKeyRange(filter, 0, build_count);
+		filter.Seal(context);
+		REQUIRE(filter.IsUseful());
+
+		for (idx_t count : {idx_t(0), idx_t(1), idx_t(63), idx_t(64), idx_t(65), idx_t(127), idx_t(128), idx_t(129),
+		                    vector_rows - 1}) {
+			for (bool mapped : {false, true}) {
+				CAPTURE(build_count, count, mapped);
+				SelectionVector input_sel(count), result_sel(count);
+				vector<idx_t> expected;
+				for (idx_t i = 0; i < count; i++) {
+					input_sel.set_index(i, vector_rows - i - 1);
+					const auto row = mapped ? input_sel.get_index(i) : i;
+					if (filter.LookupOne(hashes.GetValue(row).GetValue<hash_t>())) {
+						expected.push_back(i);
+					}
+				}
+				const auto found_count = mapped ? filter.LookupHashes(hashes, input_sel, result_sel, count)
+				                                : filter.LookupHashes(hashes, result_sel, count);
+				REQUIRE(found_count == expected.size());
+				for (idx_t i = 0; i < found_count; i++) {
+					REQUIRE(result_sel.get_index(i) == expected[i]);
+				}
+			}
+		}
+	}
+}

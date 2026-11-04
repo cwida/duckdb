@@ -250,6 +250,12 @@ idx_t Blob::FromBase64Size(string_t str) {
 template <bool ALLOW_PADDING>
 uint32_t DecodeBase64Bytes(const string_t &str, const_data_ptr_t input_data, idx_t base_idx) {
 	int decoded_bytes[4];
+	if (ALLOW_PADDING && input_data[base_idx + 2] == Blob::BASE64_PADDING &&
+	    input_data[base_idx + 3] != Blob::BASE64_PADDING) {
+		// padding must be at the end: data cannot follow the padding
+		throw ConversionException("Could not decode string \"%s\" as base64: data after the padding at position %d",
+		                          str.GetString(), base_idx + 3);
+	}
 	for (idx_t decode_idx = 0; decode_idx < 4; decode_idx++) {
 		if (ALLOW_PADDING && decode_idx >= 2 && input_data[base_idx + decode_idx] == Blob::BASE64_PADDING) {
 			// the last two bytes of a base64 string can have padding: in this case we set the byte to 0

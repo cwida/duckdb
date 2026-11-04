@@ -94,3 +94,14 @@ true
 
 statement ok
 select json_serialize_plan('select blob ''\\x00''');
+
+# statements with parameters cannot be planned: this is a regular error
+query I
+SELECT json_serialize_plan('select $1') LIKE '%"error_type":"invalid input"%';
+----
+true
+
+query I
+SELECT json_serialize_plan('select ?') LIKE '%"error_type":"invalid input"%';
+----
+true

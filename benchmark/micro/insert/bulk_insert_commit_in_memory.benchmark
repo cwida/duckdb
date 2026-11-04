@@ -1,0 +1,29 @@
+# name: benchmark/micro/insert/bulk_insert_commit_in_memory.benchmark
+# description: Commit of a 20M-row batch insert into an in-memory table
+# group: [insert]
+
+name Commit Batch Insert In Memory (20M rows)
+group insert
+
+storage transient
+
+load
+SET preserve_insertion_order = true;
+CREATE TABLE src AS SELECT range AS id FROM range(20000000);
+CREATE TABLE t (id BIGINT);
+BEGIN;
+INSERT INTO t SELECT * FROM src;
+
+run
+COMMIT
+
+cleanup
+DROP TABLE t;
+CREATE TABLE t (id BIGINT);
+BEGIN;
+INSERT INTO t SELECT * FROM src;
+
+result_query II
+SELECT count(*), sum(id) FROM t
+----
+20000000	199999990000000

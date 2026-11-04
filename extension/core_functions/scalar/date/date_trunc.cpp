@@ -2,6 +2,7 @@
 #include "duckdb/common/enums/date_part_specifier.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/operator/cast_operators.hpp"
+#include "duckdb/common/operator/multiply.hpp"
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/common/types/time.hpp"
 #include "duckdb/common/types/timestamp.hpp"
@@ -83,7 +84,7 @@ struct DateTrunc {
 		template <class TA, class TR>
 		static inline TR Operation(TA input) {
 			date_t date = Date::GetMondayOfCurrentWeek(input);
-			return Date::SubtractDays(date, (Date::ExtractISOWeekNumber(date) - 1) * Interval::DAYS_PER_WEEK);
+			return Date::SubtractDays(date, int64_t(Date::ExtractISOWeekNumber(date) - 1) * Interval::DAYS_PER_WEEK);
 		}
 	};
 
@@ -102,7 +103,11 @@ struct DateTrunc {
 		const int64_t v = ts.value;
 		// Round towards negative infinity instead of 0
 		const int64_t q = v / interval_us - (v % interval_us != 0 && v < 0 ? 1 : 0);
-		return timestamp_t(q * interval_us);
+		int64_t result;
+		if (!TryMultiplyOperator::Operation(q, interval_us, result) || result == NumericLimits<int64_t>::Minimum()) {
+			throw ConversionException("Date out of range in timestamp conversion");
+		}
+		return timestamp_t(result);
 	}
 
 	struct HourOperator {

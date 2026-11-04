@@ -5,33 +5,33 @@
 require parquet
 
 statement error
-COPY (SELECT i % 7 p FROM range(100) r(i)) TO '__TEST_DIR__/bf.parquet' (BLOOM_FILTER_FALSE_POSITIVE_RATIO 2)
+COPY (SELECT i % 7 p FROM range(100) r(i)) TO '{TEST_DIR}/bf.parquet' (BLOOM_FILTER_FALSE_POSITIVE_RATIO 2)
 ----
 bloom_filter_false_positive_ratio must be greater than 0 and at most 1
 
 statement error
-COPY (SELECT i % 7 p FROM range(100) r(i)) TO '__TEST_DIR__/bf.parquet' (BLOOM_FILTER_FALSE_POSITIVE_RATIO 'nan')
+COPY (SELECT i % 7 p FROM range(100) r(i)) TO '{TEST_DIR}/bf.parquet' (BLOOM_FILTER_FALSE_POSITIVE_RATIO 'nan')
 ----
 bloom_filter_false_positive_ratio must be greater than 0 and at most 1
 
 statement error
-COPY (SELECT i % 7 p FROM range(100) r(i)) TO '__TEST_DIR__/bf.parquet' (BLOOM_FILTER_FALSE_POSITIVE_RATIO 'inf')
+COPY (SELECT i % 7 p FROM range(100) r(i)) TO '{TEST_DIR}/bf.parquet' (BLOOM_FILTER_FALSE_POSITIVE_RATIO 'inf')
 ----
 bloom_filter_false_positive_ratio must be greater than 0 and at most 1
 
 statement ok
-COPY (SELECT i % 7 p FROM range(100) r(i)) TO '__TEST_DIR__/bf.parquet' (BLOOM_FILTER_FALSE_POSITIVE_RATIO 1)
+COPY (SELECT i % 7 p FROM range(100) r(i)) TO '{TEST_DIR}/bf.parquet' (BLOOM_FILTER_FALSE_POSITIVE_RATIO 1)
 
 statement ok
-COPY (SELECT i % 7 p FROM range(100) r(i)) TO '__TEST_DIR__/bf.parquet' (BLOOM_FILTER_FALSE_POSITIVE_RATIO 0.01)
+COPY (SELECT i % 7 p FROM range(100) r(i)) TO '{TEST_DIR}/bf.parquet' (BLOOM_FILTER_FALSE_POSITIVE_RATIO 0.01)
 
 query I
-SELECT sum(p) FROM '__TEST_DIR__/bf.parquet'
+SELECT sum(p) FROM '{TEST_DIR}/bf.parquet'
 ----
 295
 
 statement error
-COPY (SELECT 1 i) TO '__TEST_DIR__/rgs.parquet' (ROW_GROUP_SIZE 18446744073709551615)
+COPY (SELECT 1 i) TO '{TEST_DIR}/rgs.parquet' (ROW_GROUP_SIZE 18446744073709551615)
 ----
 BATCH_SIZE/ROW_GROUP_SIZE value 18446744073709551615 is too large
 

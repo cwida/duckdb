@@ -122,6 +122,13 @@ public:
 		D_ASSERT(sealed);
 		return useful;
 	}
+	bool IsPublished() const {
+		return published;
+	}
+	//! Marks the filter as handed to a probe-side consumer: it must stay immutable afterwards
+	void MarkPublished() {
+		published = true;
+	}
 
 	static idx_t GetNumberOfSectors(idx_t number_of_rows);
 
@@ -135,11 +142,14 @@ private:
 
 private:
 	idx_t num_sectors;
+	//! Sector capacity of buf_, so an unpublished filter can be reused across recursive iterations
+	idx_t allocated_sectors = 0;
 	uint64_t bitmask; // num_sectors - 1 -> used to get the sector offset
 
 	bool initialized = false;
 	bool sealed = false;
 	bool useful = false;
+	bool published = false;
 	AllocatedData buf_;
 	uint64_t *bf;
 };

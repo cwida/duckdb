@@ -1,0 +1,36 @@
+# name: test/sql/pragma/profiling/test_profiling_operator_name.test
+# description: The JSON profile reports the name of each operator next to its type
+# group: [profiling]
+
+statement ok
+CREATE TABLE integers AS SELECT range AS i FROM range(100);
+
+query II
+EXPLAIN (ANALYZE, FORMAT json) SELECT i FROM integers WHERE i > 10;
+----
+analyzed_plan	<REGEX>:.*"name": "SEQ_SCAN".*"type": "TABLE_SCAN".*
+
+# The text renderer titles each box by the operator type
+query II
+EXPLAIN ANALYZE SELECT i FROM integers WHERE i > 10;
+----
+analyzed_plan	<REGEX>:.*Table Scan.*
+
+statement ok
+SET tracked_metrics = ['operator.type'];
+
+query II
+EXPLAIN (ANALYZE, FORMAT json) SELECT i FROM integers WHERE i > 10;
+----
+analyzed_plan	<!REGEX>:.*"name".*
+
+statement ok
+RESET tracked_metrics;
+
+statement ok
+SET legacy_metrics_format = true;
+
+query II
+EXPLAIN (ANALYZE, FORMAT json) SELECT i FROM integers WHERE i > 10;
+----
+analyzed_plan	<REGEX>:.*"operator_name": "SEQ_SCAN".*

@@ -166,6 +166,10 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 	// bind inside the children of the window function
 	// we set the inside_window flag to true to prevent binding nested window functions
 	inside_window = true;
+	// window arguments are evaluated by the window operator, where a transported error flag has no
+	// consumer; nested subqueries in them bind as plain subqueries
+	const auto save_transport_try_errors = transport_try_errors;
+	transport_try_errors = false;
 	ErrorData error;
 	vector<unique_ptr<Expression>> bound_args;
 	for (auto &child : window.GetArgumentsMutable()) {
@@ -211,6 +215,7 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 	}
 
 	inside_window = false;
+	transport_try_errors = save_transport_try_errors;
 	if (error.HasError()) {
 		// failed to bind children of window function
 		return BindResult(std::move(error));
@@ -304,20 +309,20 @@ BindResult BaseSelectBinder::BindWindowExpression(WindowExpression &window, idx_
 		// TODO: Move this into the binder
 		auto &bound_function = *window_bound_function->WindowFunction();
 		if (window.Distinct() && !bound_function.CanDistinct()) {
-			throw BinderException(error_context, "DISTINCT is not implemented for the window function \"%s\"",
+			throw BinderException(error_context, "DISTINCT is not implemented for the window function %s",
 			                      window.FunctionName());
 		}
 		if (window.Filter() && !bound_function.CanFilter()) {
-			throw BinderException(error_context, "FILTER is not implemented for the window function \"%s\"",
+			throw BinderException(error_context, "FILTER is not implemented for the window function %s",
 			                      window.FunctionName());
 		}
 		if (!window.ArgOrders().empty() && !bound_function.CanOrderBy()) {
-			throw BinderException(error_context, "ORDER BY is not supported for the window function \"%s\"",
+			throw BinderException(error_context, "ORDER BY is not supported for the window function %s",
 			                      window.FunctionName());
 		}
 		if (window.WindowExclude() != WindowExcludeMode::NO_OTHER && !window.ArgOrders().empty() &&
 		    !bound_function.CanExclude()) {
-			throw BinderException(error_context, "EXCLUDE is not supported for the window function \"%s\"",
+			throw BinderException(error_context, "EXCLUDE is not supported for the window function %s",
 			                      window.FunctionName());
 		}
 		if (window.HasIgnoreNulls() && !bound_function.CanIgnoreNulls()) {

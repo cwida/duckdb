@@ -53,6 +53,79 @@ select [{'a': 1, 'b': [1]}::VARIANT]::JSON
 ----
 [{"a":1,"b":[1]}]
 
+# Deeply nested VARIANTs must fail with a query error when reaching the nesting limit
+statement error
+WITH RECURSIVE t(d, v) AS (
+    SELECT 0, [1]::VARIANT
+    UNION ALL
+    SELECT d + 1, [v]::VARIANT FROM t WHERE d < 128
+)
+SELECT to_json(v) FROM t WHERE d = 128;
+----
+<REGEX>:.*VARIANT exceeds maximum recursion depth.*
+
+statement error
+WITH RECURSIVE t(d, v) AS (
+    SELECT 0, {'x': 1}::VARIANT
+    UNION ALL
+    SELECT d + 1, {'x': v}::VARIANT FROM t WHERE d < 128
+)
+SELECT to_json(v) FROM t WHERE d = 128;
+----
+<REGEX>:.*VARIANT exceeds maximum recursion depth.*
+
+statement error
+WITH RECURSIVE t(d, v) AS (
+    SELECT 0, [1]::VARIANT
+    UNION ALL
+    SELECT d + 1, [v]::VARIANT FROM t WHERE d < 128
+)
+SELECT json_array(v) FROM t WHERE d = 128;
+----
+<REGEX>:.*VARIANT exceeds maximum recursion depth.*
+
+statement error
+WITH RECURSIVE t(d, v) AS (
+    SELECT 0, [1]::VARIANT
+    UNION ALL
+    SELECT d + 1, [v]::VARIANT FROM t WHERE d < 128
+)
+SELECT array_to_json([v]) FROM t WHERE d = 128;
+----
+<REGEX>:.*VARIANT exceeds maximum recursion depth.*
+
+statement error
+WITH RECURSIVE t(d, v) AS (
+    SELECT 0, [1]::VARIANT
+    UNION ALL
+    SELECT d + 1, [v]::VARIANT FROM t WHERE d < 128
+)
+SELECT row_to_json({'v': v}) FROM t WHERE d = 128;
+----
+<REGEX>:.*VARIANT exceeds maximum recursion depth.*
+
+statement error
+WITH RECURSIVE t(d, v) AS (
+    SELECT 0, [1]::VARIANT
+    UNION ALL
+    SELECT d + 1, [v]::VARIANT FROM t WHERE d < 128
+)
+SELECT json_object('v', v) FROM t WHERE d = 128;
+----
+<REGEX>:.*VARIANT exceeds maximum recursion depth.*
+
+statement error
+COPY (
+    WITH RECURSIVE t(d, v) AS (
+        SELECT 0, [1]::VARIANT
+        UNION ALL
+        SELECT d + 1, [v]::VARIANT FROM t WHERE d < 128
+    )
+    SELECT v FROM t WHERE d = 128
+) TO '{TEST_DIR}/deep_variant.json' (FORMAT JSON);
+----
+<REGEX>:.*VARIANT exceeds maximum recursion depth.*
+
 statement error
 select to_json({n: 42}, {extra: 'argument'})
 ----
@@ -388,3 +461,38 @@ query I
 SELECT row(1, 'a')::JSON::TUPLE(INTEGER, VARCHAR);
 ----
 (1, a)
+
+# Check both node traversal branches at the exact recursion boundary.
+foreach wrapper [v] {'x':v}
+
+query I
+WITH RECURSIVE t(d, v) AS (
+    SELECT 0, 1::VARIANT
+    UNION ALL
+    SELECT d + 1, {wrapper}::VARIANT FROM t WHERE d < 127
+)
+SELECT to_json(v) IS NOT NULL FROM t WHERE d = 127;
+----
+true
+
+statement error
+WITH RECURSIVE t(d, v) AS (
+    SELECT 0, 1::VARIANT
+    UNION ALL
+    SELECT d + 1, {wrapper}::VARIANT FROM t WHERE d < 128
+)
+SELECT to_json(v) FROM t WHERE d = 128;
+----
+<REGEX>:.*VARIANT exceeds maximum recursion depth of 128.*
+
+query T
+SELECT to_json({'x': [1, 2]}::VARIANT);
+----
+{"x":[1,2]}
+
+endloop
+
+query I
+SELECT json_array_length(to_json(range(1024)::VARIANT));
+----
+1024

@@ -212,6 +212,14 @@ struct HandleTraits<ColumnDescription> {
 	using handle = duckdb_v2_column_description_handle;
 };
 template <>
+struct HandleTraits<QueryMetrics> {
+	using handle = duckdb_v2_query_metrics_handle;
+};
+template <>
+struct HandleTraits<QueryMetricsNode> {
+	using handle = duckdb_v2_query_metrics_node_handle;
+};
+template <>
 struct HandleTraits<FileSystem> {
 	using handle = duckdb_v2_file_system_handle;
 };
@@ -222,6 +230,10 @@ struct HandleTraits<FileHandle> {
 template <>
 struct HandleTraits<FileOpenOptions> {
 	using handle = duckdb_v2_file_open_options_handle;
+};
+template <>
+struct HandleTraits<Stats> {
+	using handle = duckdb_v2_stats_handle;
 };
 
 } // namespace detail
@@ -268,7 +280,7 @@ namespace {
 }
 
 template <class F, class... ARGS>
-auto CheckedAPICall(F &&func, ARGS &&... args) -> void {
+auto CheckedAPICall(F &&func, ARGS &&...args) -> void {
 	duckdb_v2_error_info_handle err = nullptr;
 	const auto code = func(std::forward<ARGS>(args)..., &err);
 	if (code != DUCKDB_V2_ERROR_NONE) {
@@ -410,7 +422,7 @@ auto ExecutePreparedArrow(duckdb_v2_prepared_statement_handle prepared, const Pa
 // then a buffer with room for the terminator receives the text. The library
 // never allocates, so there is nothing to free.
 template <class F, class... ARGS>
-auto RenderText(F &&func, ARGS &&... args) -> std::string {
+auto RenderText(F &&func, ARGS &&...args) -> std::string {
 	idx_t length = 0;
 	CheckedAPICall(func, args..., static_cast<char *>(nullptr), static_cast<idx_t>(0), &length);
 	std::string out;
@@ -981,9 +993,9 @@ auto StatementIterator::Next() -> SqlStatement {
 	return detail::HandleFactory::Make<SqlStatement>(statement);
 }
 
-auto Connection::ParseSQL(const char *sql) -> StatementIterator {
+auto Connection::ParseSQL(const char *sql, bool apply_invalidation_policy) -> StatementIterator {
 	duckdb_v2_statement_iterator_handle iterator = nullptr;
-	CheckedAPICall(duckdb_v2_parse_sql, handle(), sql, &iterator);
+	CheckedAPICall(duckdb_v2_parse_sql, handle(), sql, apply_invalidation_policy, &iterator);
 	return detail::HandleFactory::Make<StatementIterator>(iterator);
 }
 
@@ -1639,6 +1651,16 @@ auto Connection::DescribeTable(const QualifiedName &name) const -> TableDescript
 	duckdb_v2_table_description_handle _h = nullptr;
 	CheckedAPICall(duckdb_v2_connection_describe_table, handle(), name.handle(), &_h);
 	return detail::HandleFactory::Make<TableDescription>(_h);
+}
+
+auto Connection::EnableProfiling(bool enabled) -> void {
+	CheckedAPICall(duckdb_v2_connection_enable_profiling, handle(), enabled);
+}
+
+auto Connection::GetQueryMetrics() const -> QueryMetrics {
+	duckdb_v2_query_metrics_handle _h = nullptr;
+	CheckedAPICall(duckdb_v2_connection_get_query_metrics, handle(), &_h);
+	return detail::HandleFactory::Make<QueryMetrics>(_h);
 }
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -3124,6 +3146,33 @@ auto ToCValue(AggregateFunction::DistinctDependence value) -> DUCKDB_V2_FUNCTION
 } // namespace
 
 //----------------------------------------------------------------------------------------------------------------------
+// Statistics
+//----------------------------------------------------------------------------------------------------------------------
+
+Stats::Stats(void *impl) : detail::Handle<Stats>(impl) {
+}
+
+auto Stats::CanHaveNull() const -> bool {
+	bool result = false;
+	CheckedAPICall(duckdb_v2_stats_can_have_null, handle(), &result);
+	return result;
+}
+
+auto Stats::CanHaveValid() const -> bool {
+	bool result = false;
+	CheckedAPICall(duckdb_v2_stats_can_have_valid, handle(), &result);
+	return result;
+}
+
+auto Stats::SetCanHaveNull(bool value) -> void {
+	CheckedAPICall(duckdb_v2_stats_set_can_have_null, handle(), value);
+}
+
+auto Stats::SetCanHaveValid(bool value) -> void {
+	CheckedAPICall(duckdb_v2_stats_set_can_have_valid, handle(), value);
+}
+
+//----------------------------------------------------------------------------------------------------------------------
 // Scalar Function
 //----------------------------------------------------------------------------------------------------------------------
 
@@ -3137,19 +3186,21 @@ struct ScalarFunctionInfo {
 	ScalarFunction::BindCallback bind_callback = nullptr;
 	ScalarFunction::InitCallback init_callback = nullptr;
 	ScalarFunction::ExecCallback exec_callback = nullptr;
+	ScalarFunction::StatsCallback stats_callback = nullptr;
 	detail::UserData user_data;
 
 	ScalarFunctionInfo(ScalarFunction::ResolveTypesCallback resolve_types_callback,
 	                   ScalarFunction::BindCallback bind_callback, ScalarFunction::InitCallback init_callback,
-	                   ScalarFunction::ExecCallback exec_callback, detail::UserData user_data)
+	                   ScalarFunction::ExecCallback exec_callback, ScalarFunction::StatsCallback stats_callback,
+	                   detail::UserData user_data)
 	    : resolve_types_callback(resolve_types_callback), bind_callback(bind_callback), init_callback(init_callback),
-	      exec_callback(exec_callback), user_data(std::move(user_data)) {
+	      exec_callback(exec_callback), stats_callback(stats_callback), user_data(std::move(user_data)) {
 	}
 
 	bool operator==(const ScalarFunctionInfo &other) const {
 		return resolve_types_callback == other.resolve_types_callback && bind_callback == other.bind_callback &&
 		       init_callback == other.init_callback && exec_callback == other.exec_callback &&
-		       user_data.get() == other.user_data.get();
+		       stats_callback == other.stats_callback && user_data.get() == other.user_data.get();
 	}
 };
 
@@ -3322,6 +3373,31 @@ auto ScalarFunction::SetExecCallback(ExecCallback callback) & -> ScalarFunction 
 	return *this;
 }
 
+auto ScalarFunction::SetStatsCallback(StatsCallback callback) & -> ScalarFunction & {
+	if (!callback) {
+		CheckedAPICall(duckdb_v2_scalar_function_set_stats_callback, handle(), nullptr);
+		stats_callback = nullptr;
+		return *this;
+	}
+
+	static auto trampoline = [](duckdb_v2_scalar_function_stats_info_handle info, duckdb_v2_context_handle context,
+	                            duckdb_v2_error_info_handle *err) {
+		WithExceptionGuard(err, [&]() {
+			void *user_data = nullptr;
+			CheckedAPICall(duckdb_v2_scalar_function_stats_get_user_data, info, &user_data);
+			const auto &function = *static_cast<ScalarFunctionInfo *>(user_data);
+
+			auto input =
+			    detail::HandleFactory::Make<StatsInput>(static_cast<void *>(info), static_cast<void *>(context));
+			function.stats_callback(input);
+		});
+	};
+
+	CheckedAPICall(duckdb_v2_scalar_function_set_stats_callback, handle(), trampoline);
+	stats_callback = callback;
+	return *this;
+}
+
 auto ScalarFunction::SetStability(FunctionStability value) & -> ScalarFunction & {
 	CheckedAPICall(duckdb_v2_scalar_function_set_property, handle(), DUCKDB_V2_FUNCTION_PROPERTY_STABILITY,
 	               ToCValue(value));
@@ -3350,7 +3426,7 @@ auto ScalarFunction::PrepareRegistration() -> void {
 	// The callback table rides the C user_data slot so the trampolines can find
 	// it; the user's own data (SetUserData, moved out here) rides inside it.
 	auto info = std::unique_ptr<ScalarFunctionInfo>(new ScalarFunctionInfo(
-	    resolve_types_callback, bind_callback, init_callback, exec_callback, std::move(user_data)));
+	    resolve_types_callback, bind_callback, init_callback, exec_callback, stats_callback, std::move(user_data)));
 	duckdb_v2_opaque opaque {info.get(), detail::TypedDelete<ScalarFunctionInfo>,
 	                         detail::TypedEquals<ScalarFunctionInfo>};
 	CheckedAPICall(duckdb_v2_scalar_function_set_user_data, handle(), &opaque);
@@ -3464,6 +3540,51 @@ auto ScalarFunction::ExecInput::GetContext() -> Context & {
 	return context;
 }
 
+void *ScalarFunction::StatsInput::GetBindDataInternal() const {
+	void *bind_data = nullptr;
+	CheckedAPICall(duckdb_v2_scalar_function_stats_get_bind_data,
+	               static_cast<duckdb_v2_scalar_function_stats_info_handle>(args), &bind_data);
+	return RequireBindData(bind_data);
+}
+
+void *ScalarFunction::StatsInput::GetUserDataInternal() const {
+	void *user_data = nullptr;
+	CheckedAPICall(duckdb_v2_scalar_function_stats_get_user_data,
+	               static_cast<duckdb_v2_scalar_function_stats_info_handle>(args), &user_data);
+	const auto &function = *static_cast<const ScalarFunctionInfo *>(user_data);
+	return RequireUserData(function.user_data);
+}
+
+auto ScalarFunction::StatsInput::GetArgumentCounts() const -> ArgumentCounts {
+	idx_t counts[4] = {};
+	CheckedAPICall(duckdb_v2_scalar_function_stats_get_arg_count,
+	               static_cast<duckdb_v2_scalar_function_stats_info_handle>(args), &counts[0], &counts[1], &counts[2],
+	               &counts[3]);
+	return ToArgumentCounts(counts[0], counts[1], counts[2], counts[3]);
+}
+
+auto ScalarFunction::StatsInput::GetArgCount() const -> idx_t {
+	return GetArgumentCounts().Total();
+}
+
+auto ScalarFunction::StatsInput::GetArgStats(idx_t index) const -> Stats {
+	duckdb_v2_stats_handle stats = nullptr;
+	CheckedAPICall(duckdb_v2_scalar_function_stats_get_arg_stats,
+	               static_cast<duckdb_v2_scalar_function_stats_info_handle>(args), index, &stats);
+	return detail::HandleFactory::Make<Stats>(stats);
+}
+
+auto ScalarFunction::StatsInput::GetResultStats() const -> Stats {
+	duckdb_v2_stats_handle stats = nullptr;
+	CheckedAPICall(duckdb_v2_scalar_function_stats_get_result_stats,
+	               static_cast<duckdb_v2_scalar_function_stats_info_handle>(args), &stats);
+	return detail::HandleFactory::Make<Stats>(stats);
+}
+
+auto ScalarFunction::StatsInput::GetContext() -> Context & {
+	return context;
+}
+
 //----------------------------------------------------------------------------------------------------------------------
 // Aggregate Function
 //----------------------------------------------------------------------------------------------------------------------
@@ -3482,6 +3603,7 @@ struct AggregateFunctionInfo {
 	AggregateFunction::CombineCallback combine_callback = nullptr;
 	AggregateFunction::FinalizeCallback finalize_callback = nullptr;
 	AggregateFunction::DestroyCallback destroy_callback = nullptr;
+	AggregateFunction::StatsCallback stats_callback = nullptr;
 	detail::UserData user_data;
 
 	AggregateFunctionInfo(AggregateFunction::BindCallback bind_callback, AggregateFunction::SizeCallback size_callback,
@@ -3489,17 +3611,19 @@ struct AggregateFunctionInfo {
 	                      AggregateFunction::UpdateCallback update_callback,
 	                      AggregateFunction::CombineCallback combine_callback,
 	                      AggregateFunction::FinalizeCallback finalize_callback,
-	                      AggregateFunction::DestroyCallback destroy_callback, detail::UserData user_data)
+	                      AggregateFunction::DestroyCallback destroy_callback,
+	                      AggregateFunction::StatsCallback stats_callback, detail::UserData user_data)
 	    : bind_callback(bind_callback), size_callback(size_callback), init_callback(init_callback),
 	      update_callback(update_callback), combine_callback(combine_callback), finalize_callback(finalize_callback),
-	      destroy_callback(destroy_callback), user_data(std::move(user_data)) {
+	      destroy_callback(destroy_callback), stats_callback(stats_callback), user_data(std::move(user_data)) {
 	}
 
 	bool operator==(const AggregateFunctionInfo &other) const {
 		return bind_callback == other.bind_callback && size_callback == other.size_callback &&
 		       init_callback == other.init_callback && update_callback == other.update_callback &&
 		       combine_callback == other.combine_callback && finalize_callback == other.finalize_callback &&
-		       destroy_callback == other.destroy_callback && user_data.get() == other.user_data.get();
+		       destroy_callback == other.destroy_callback && stats_callback == other.stats_callback &&
+		       user_data.get() == other.user_data.get();
 	}
 };
 
@@ -3728,6 +3852,31 @@ auto AggregateFunction::SetDestroyCallback(DestroyCallback callback) & -> Aggreg
 	return *this;
 }
 
+auto AggregateFunction::SetStatsCallback(StatsCallback callback) & -> AggregateFunction & {
+	if (!callback) {
+		CheckedAPICall(duckdb_v2_aggregate_function_set_stats_callback, handle(), nullptr);
+		stats_callback = nullptr;
+		return *this;
+	}
+
+	static auto trampoline = [](duckdb_v2_aggregate_function_stats_info_handle info, duckdb_v2_context_handle context,
+	                            duckdb_v2_error_info_handle *err) {
+		WithExceptionGuard(err, [&]() {
+			void *user_data = nullptr;
+			CheckedAPICall(duckdb_v2_aggregate_function_stats_get_user_data, info, &user_data);
+			const auto &function = *static_cast<AggregateFunctionInfo *>(user_data);
+
+			auto input =
+			    detail::HandleFactory::Make<StatsInput>(static_cast<void *>(info), static_cast<void *>(context));
+			function.stats_callback(input);
+		});
+	};
+
+	CheckedAPICall(duckdb_v2_aggregate_function_set_stats_callback, handle(), trampoline);
+	stats_callback = callback;
+	return *this;
+}
+
 auto AggregateFunction::SetStability(FunctionStability value) & -> AggregateFunction & {
 	CheckedAPICall(duckdb_v2_aggregate_function_set_property, handle(), DUCKDB_V2_FUNCTION_PROPERTY_STABILITY,
 	               ToCValue(value));
@@ -3769,7 +3918,7 @@ auto AggregateFunction::PrepareRegistration() -> void {
 	// it; the user's own data (SetUserData, moved out here) rides inside it.
 	auto info = std::unique_ptr<AggregateFunctionInfo>(
 	    new AggregateFunctionInfo(bind_callback, size_callback, init_callback, update_callback, combine_callback,
-	                              finalize_callback, destroy_callback, std::move(user_data)));
+	                              finalize_callback, destroy_callback, stats_callback, std::move(user_data)));
 	duckdb_v2_opaque opaque {info.get(), detail::TypedDelete<AggregateFunctionInfo>,
 	                         detail::TypedEquals<AggregateFunctionInfo>};
 	CheckedAPICall(duckdb_v2_aggregate_function_set_user_data, handle(), &opaque);
@@ -3992,6 +4141,51 @@ auto AggregateFunction::DestroyInput::GetStates() const -> void ** {
 	return states;
 }
 
+void *AggregateFunction::StatsInput::GetBindDataInternal() const {
+	void *bind_data = nullptr;
+	CheckedAPICall(duckdb_v2_aggregate_function_stats_get_bind_data,
+	               static_cast<duckdb_v2_aggregate_function_stats_info_handle>(args), &bind_data);
+	return RequireAggregateBindData(bind_data);
+}
+
+void *AggregateFunction::StatsInput::GetUserDataInternal() const {
+	void *user_data = nullptr;
+	CheckedAPICall(duckdb_v2_aggregate_function_stats_get_user_data,
+	               static_cast<duckdb_v2_aggregate_function_stats_info_handle>(args), &user_data);
+	const auto &function = *static_cast<const AggregateFunctionInfo *>(user_data);
+	return RequireAggregateUserData(function.user_data);
+}
+
+auto AggregateFunction::StatsInput::GetArgumentCounts() const -> ArgumentCounts {
+	idx_t counts[4] = {};
+	CheckedAPICall(duckdb_v2_aggregate_function_stats_get_arg_count,
+	               static_cast<duckdb_v2_aggregate_function_stats_info_handle>(args), &counts[0], &counts[1],
+	               &counts[2], &counts[3]);
+	return ToArgumentCounts(counts[0], counts[1], counts[2], counts[3]);
+}
+
+auto AggregateFunction::StatsInput::GetArgCount() const -> idx_t {
+	return GetArgumentCounts().Total();
+}
+
+auto AggregateFunction::StatsInput::GetArgStats(idx_t index) const -> Stats {
+	duckdb_v2_stats_handle stats = nullptr;
+	CheckedAPICall(duckdb_v2_aggregate_function_stats_get_arg_stats,
+	               static_cast<duckdb_v2_aggregate_function_stats_info_handle>(args), index, &stats);
+	return detail::HandleFactory::Make<Stats>(stats);
+}
+
+auto AggregateFunction::StatsInput::GetResultStats() const -> Stats {
+	duckdb_v2_stats_handle stats = nullptr;
+	CheckedAPICall(duckdb_v2_aggregate_function_stats_get_result_stats,
+	               static_cast<duckdb_v2_aggregate_function_stats_info_handle>(args), &stats);
+	return detail::HandleFactory::Make<Stats>(stats);
+}
+
+auto AggregateFunction::StatsInput::GetContext() -> Context & {
+	return context;
+}
+
 //----------------------------------------------------------------------------------------------------------------------
 // Table Function
 //----------------------------------------------------------------------------------------------------------------------
@@ -4012,6 +4206,7 @@ struct TableFunctionInfo {
 	TableFunction::PartitioningCallback partitioning_callback = nullptr;
 	TableFunction::ClaimBatchCallback claim_batch_callback = nullptr;
 	TableFunction::GetBindInfoCallback get_bind_info_callback = nullptr;
+	TableFunction::StatsCallback stats_callback = nullptr;
 	detail::UserData user_data;
 
 	TableFunctionInfo(TableFunction::BindCallback bind_callback, TableFunction::InitGlobalCallback init_global_callback,
@@ -4021,12 +4216,14 @@ struct TableFunctionInfo {
 	                  TableFunction::PartitionDataCallback partition_data_callback,
 	                  TableFunction::PartitioningCallback partitioning_callback,
 	                  TableFunction::ClaimBatchCallback claim_batch_callback,
-	                  TableFunction::GetBindInfoCallback get_bind_info_callback, detail::UserData user_data)
+	                  TableFunction::GetBindInfoCallback get_bind_info_callback,
+	                  TableFunction::StatsCallback stats_callback, detail::UserData user_data)
 	    : bind_callback(bind_callback), init_global_callback(init_global_callback),
 	      init_local_callback(init_local_callback), exec_callback(exec_callback), progress_callback(progress_callback),
 	      filter_pushdown_callback(filter_pushdown_callback), partition_data_callback(partition_data_callback),
 	      partitioning_callback(partitioning_callback), claim_batch_callback(claim_batch_callback),
-	      get_bind_info_callback(get_bind_info_callback), user_data(std::move(user_data)) {
+	      get_bind_info_callback(get_bind_info_callback), stats_callback(stats_callback),
+	      user_data(std::move(user_data)) {
 	}
 
 	bool operator==(const TableFunctionInfo &other) const {
@@ -4037,7 +4234,8 @@ struct TableFunctionInfo {
 		       partition_data_callback == other.partition_data_callback &&
 		       partitioning_callback == other.partitioning_callback &&
 		       claim_batch_callback == other.claim_batch_callback &&
-		       get_bind_info_callback == other.get_bind_info_callback && user_data.get() == other.user_data.get();
+		       get_bind_info_callback == other.get_bind_info_callback && stats_callback == other.stats_callback &&
+		       user_data.get() == other.user_data.get();
 	}
 };
 
@@ -4367,6 +4565,31 @@ auto TableFunction::SetGetBindInfoCallback(GetBindInfoCallback callback) & -> Ta
 	return *this;
 }
 
+auto TableFunction::SetStatsCallback(StatsCallback callback) & -> TableFunction & {
+	if (!callback) {
+		CheckedAPICall(duckdb_v2_table_function_set_stats_callback, handle(), nullptr);
+		stats_callback = nullptr;
+		return *this;
+	}
+
+	static auto trampoline = [](duckdb_v2_table_function_stats_info_handle info, duckdb_v2_context_handle context,
+	                            duckdb_v2_error_info_handle *err) {
+		WithExceptionGuard(err, [&]() {
+			void *user_data = nullptr;
+			CheckedAPICall(duckdb_v2_table_function_stats_get_user_data, info, &user_data);
+			const auto &function = *static_cast<TableFunctionInfo *>(user_data);
+
+			auto input =
+			    detail::HandleFactory::Make<StatsInput>(static_cast<void *>(info), static_cast<void *>(context));
+			function.stats_callback(input);
+		});
+	};
+
+	CheckedAPICall(duckdb_v2_table_function_set_stats_callback, handle(), trampoline);
+	stats_callback = callback;
+	return *this;
+}
+
 auto TableFunction::SetProjectionPushdown(bool enable) & -> TableFunction & {
 	CheckedAPICall(duckdb_v2_table_function_set_projection_pushdown, handle(), enable);
 	return *this;
@@ -4378,7 +4601,7 @@ auto TableFunction::PrepareRegistration() -> void {
 	auto info = std::unique_ptr<TableFunctionInfo>(new TableFunctionInfo(
 	    bind_callback, init_global_callback, init_local_callback, exec_callback, progress_callback,
 	    filter_pushdown_callback, partition_data_callback, partitioning_callback, claim_batch_callback,
-	    get_bind_info_callback, std::move(user_data)));
+	    get_bind_info_callback, stats_callback, std::move(user_data)));
 	duckdb_v2_opaque opaque {info.get(), detail::TypedDelete<TableFunctionInfo>,
 	                         detail::TypedEquals<TableFunctionInfo>};
 	CheckedAPICall(duckdb_v2_table_function_set_user_data, handle(), &opaque);
@@ -4885,6 +5108,39 @@ auto MultiFileFunction::SetFileExtension(const std::string &extension) & -> Mult
 }
 
 auto MultiFileFunction::PrepareRegistration() -> void {
+}
+
+void *TableFunction::StatsInput::GetBindDataInternal() const {
+	void *bind_data = nullptr;
+	CheckedAPICall(duckdb_v2_table_function_stats_get_bind_data,
+	               static_cast<duckdb_v2_table_function_stats_info_handle>(args), &bind_data);
+	return RequireTableBindData(bind_data);
+}
+
+void *TableFunction::StatsInput::GetUserDataInternal() const {
+	void *user_data = nullptr;
+	CheckedAPICall(duckdb_v2_table_function_stats_get_user_data,
+	               static_cast<duckdb_v2_table_function_stats_info_handle>(args), &user_data);
+	const auto &function = *static_cast<const TableFunctionInfo *>(user_data);
+	return RequireTableUserData(function.user_data);
+}
+
+auto TableFunction::StatsInput::GetColumnIndex() const -> idx_t {
+	idx_t column_index = 0;
+	CheckedAPICall(duckdb_v2_table_function_stats_get_column_index,
+	               static_cast<duckdb_v2_table_function_stats_info_handle>(args), &column_index);
+	return column_index;
+}
+
+auto TableFunction::StatsInput::GetResultStats() const -> Stats {
+	duckdb_v2_stats_handle stats = nullptr;
+	CheckedAPICall(duckdb_v2_table_function_stats_get_result_stats,
+	               static_cast<duckdb_v2_table_function_stats_info_handle>(args), &stats);
+	return detail::HandleFactory::Make<Stats>(stats);
+}
+
+auto TableFunction::StatsInput::GetContext() -> Context & {
+	return context;
 }
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -6739,6 +6995,78 @@ auto TableDescription::IsReadOnly() const -> bool {
 	bool result = false;
 	CheckedAPICall(duckdb_v2_table_description_is_readonly, handle(), &result);
 	return result;
+}
+
+//----------------------------------------------------------------------------------------------------------------------
+// Query Metrics
+//----------------------------------------------------------------------------------------------------------------------
+
+QueryMetrics::QueryMetrics(void *impl) : detail::Handle<QueryMetrics>(impl) {
+}
+
+QueryMetrics::~QueryMetrics() {
+	auto _h = handle();
+	duckdb_v2_query_metrics_destroy(&_h);
+}
+
+auto QueryMetrics::GetRoot() const -> QueryMetricsNode {
+	duckdb_v2_query_metrics_node_handle _h = nullptr;
+	CheckedAPICall(duckdb_v2_query_metrics_get_root, handle(), &_h);
+	return detail::HandleFactory::Make<QueryMetricsNode>(_h);
+}
+
+QueryMetricsNode::QueryMetricsNode(void *impl) : detail::Handle<QueryMetricsNode>(impl) {
+}
+
+QueryMetricsNode::~QueryMetricsNode() {
+	/* Nodes are borrowed from their snapshot, so we don't destroy the handle here */
+}
+
+auto QueryMetricsNode::GetName() const -> std::string_view {
+	duckdb_v2_str name = {nullptr, 0};
+	CheckedAPICall(duckdb_v2_query_metrics_node_get_name, handle(), &name);
+	return FromStr(name);
+}
+
+auto QueryMetricsNode::GetChildCount() const -> idx_t {
+	idx_t count = 0;
+	CheckedAPICall(duckdb_v2_query_metrics_node_get_child_count, handle(), &count);
+	return count;
+}
+
+auto QueryMetricsNode::GetChild(idx_t index) const -> QueryMetricsNode {
+	duckdb_v2_query_metrics_node_handle _h = nullptr;
+	CheckedAPICall(duckdb_v2_query_metrics_node_get_child, handle(), index, &_h);
+	return detail::HandleFactory::Make<QueryMetricsNode>(_h);
+}
+
+auto QueryMetricsNode::GetMetricCount() const -> idx_t {
+	idx_t count = 0;
+	CheckedAPICall(duckdb_v2_query_metrics_node_get_metric_count, handle(), &count);
+	return count;
+}
+
+auto QueryMetricsNode::GetMetricName(idx_t index) const -> std::string_view {
+	duckdb_v2_str name = {nullptr, 0};
+	CheckedAPICall(duckdb_v2_query_metrics_node_get_metric_name, handle(), index, &name);
+	return FromStr(name);
+}
+
+auto QueryMetricsNode::GetMetricValue(idx_t index) const -> Value {
+	duckdb_v2_value_handle value = nullptr;
+	CheckedAPICall(duckdb_v2_query_metrics_node_get_metric_value, handle(), index, &value);
+	return detail::HandleFactory::Make<Value>(value);
+}
+
+auto QueryMetricsNode::GetMetric(std::string_view name) const -> std::optional<Value> {
+	const auto name_str = ToStr(name);
+	duckdb_v2_value_handle value = nullptr;
+	bool present = false;
+	CheckedAPICall(duckdb_v2_query_metrics_node_get_metric, handle(), &name_str, &value, &present);
+	if (!present) {
+		return std::nullopt;
+	}
+	return detail::HandleFactory::Make<Value>(value);
 }
 
 //----------------------------------------------------------------------------------------------------------------------

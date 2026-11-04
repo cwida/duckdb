@@ -398,7 +398,7 @@ static bool BindPushdownAggregates(ClientContext &context, LogicalAggregate &agg
 		auto lower_binding = ColumnBinding(lower_aggregate_index, ProjectionIndex(i));
 		arguments.push_back(make_uniq<BoundColumnRefExpression>(lower_type, lower_binding));
 		auto combine_function = GetBuiltinAggregateFunction(context, CombineAggrFun::Name, {lower_type});
-		auto upper_aggregate = function_binder.BindAggregateFunction(std::move(combine_function), std::move(arguments));
+		auto upper_aggregate = function_binder.BindAggregateFunction(combine_function, std::move(arguments));
 		if (!upper_aggregate->GetReturnType().IsAggregateState()) {
 			return false;
 		}
@@ -565,7 +565,7 @@ static unique_ptr<BoundAggregateExpression> DEBindAggregate(ClientContext &conte
 		return nullptr;
 	}
 	FunctionBinder function_binder(context);
-	return function_binder.BindAggregateFunction(std::move(func), std::move(children));
+	return function_binder.BindAggregateFunction(func, std::move(children));
 }
 
 static unique_ptr<BoundAggregateExpression> DEBindCombineAggr(ClientContext &context,
@@ -942,12 +942,12 @@ bool PartialAggregatePushdown::TryOwnerOuterCountPushdown(unique_ptr<LogicalOper
 	auto aggregate_stats = stats_extractor.Extract(*join.children[info.aggregate_side]);
 	auto key_stats = aggregate_stats ? aggregate_stats->GetColumnStats(aggregate_key) : nullptr;
 	if (!aggregate_stats || !key_stats ||
-	    (key_stats->distinct_count.source != DistinctCountSource::EXACT &&
-	     key_stats->distinct_count.source != DistinctCountSource::HLL)) {
+	    (key_stats->total_domain.source != DistinctCountSource::EXACT &&
+	     key_stats->total_domain.source != DistinctCountSource::HLL)) {
 		return false;
 	}
 	const auto aggregate_cardinality = aggregate_stats->cardinality;
-	const auto key_count = MinValue(key_stats->distinct_count.distinct_count, aggregate_cardinality);
+	const auto key_count = MinValue(key_stats->total_domain.distinct_count, aggregate_cardinality);
 	if (aggregate_cardinality == 0 || key_count == 0 ||
 	    static_cast<double>(aggregate_cardinality) <
 	        static_cast<double>(PartialAggregatePushdownHeuristics::MIN_AGGREGATE_TO_DIMENSION_RATIO) *

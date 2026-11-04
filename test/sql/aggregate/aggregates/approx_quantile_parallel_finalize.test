@@ -32,7 +32,20 @@ endloop
 statement ok
 CREATE TABLE big AS SELECT i % 3000 AS g, (i * 7919) % 97 AS v FROM range(1500000) r(i);
 
+loop i 0 5
+
 query I
 SELECT count(*) FROM (SELECT approx_quantile(v, 0.5) AS q FROM big GROUP BY g) WHERE q BETWEEN 0 AND 96;
 ----
 3000
+
+# Copied sink states grow during combine. Constant groups give an exact oracle for both overloads.
+query I
+SELECT count(*) FROM (
+	SELECT g, approx_quantile(g, 0.5) AS q, approx_quantile(g, [0, 0.5, 1]) AS qs
+	FROM big GROUP BY g
+) WHERE q = g AND qs = [g, g, g];
+----
+3000
+
+endloop

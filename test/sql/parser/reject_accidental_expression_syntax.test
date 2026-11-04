@@ -48,12 +48,12 @@ SELECT a[:-:2], a[2:-1], a[:-2], a[-2:] FROM (SELECT [1, 2, 3] a);
 statement error
 SELECT abs(x INT := 1);
 ----
-cannot have a type
+Parser Error: syntax error at or near "INT"
 
 statement error
 SELECT * FROM range(x INT := 3);
 ----
-cannot have a type
+Parser Error: syntax error at or near "INT"
 
 statement ok
 CREATE TEMP MACRO m(a INT := 1) AS a + 1;
@@ -63,21 +63,42 @@ SELECT m(), m(a := 5);
 ----
 2	6
 
-# a number has at most one dot
+# a number has at most one dot, and none in its exponent
 statement error
 SELECT 1.2.3;
 ----
-syntax error
+Parser Error: syntax error at or near "1.2.3"
 
 statement error
 SELECT 1..2;
 ----
-syntax error
+Parser Error: syntax error at or near "1..2"
 
 statement error
 SELECT .5.;
 ----
-syntax error
+Parser Error: syntax error at or near ".5."
+
+# a dot after such a number does not start a method call or field access
+statement error
+SELECT 1.5.abs();
+----
+Parser Error: syntax error at or near "1.5."
+
+statement error
+SELECT 1e5.abs();
+----
+Parser Error: syntax error at or near "1e5."
+
+statement error
+SELECT 1..abs();
+----
+Parser Error: syntax error at or near "1.."
+
+statement error
+SELECT 1.5.x;
+----
+Parser Error: syntax error at or near "1.5."
 
 query IIIIII
 SELECT 1.5, .5, 1., 1e5, 1.5e-3, 1_000.5;

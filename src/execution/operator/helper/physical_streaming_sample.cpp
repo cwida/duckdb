@@ -114,6 +114,11 @@ bool PhysicalStreamingSample::ParallelOperator() const {
 	return !sample_options->repeatable;
 }
 
+void PhysicalStreamingSample::InitializeOutputChunk(Allocator &allocator, DataChunk &chunk) const {
+	// every output column only references or slices the input
+	chunk.Initialize(allocator, types, vector<bool>(types.size(), false));
+}
+
 unique_ptr<OperatorState> PhysicalStreamingSample::GetOperatorState(ExecutionContext &context) const {
 	if (!ParallelOperator()) {
 		// Repeatable single thread: use the specified seed for deterministic results
@@ -146,7 +151,8 @@ OperatorResultType PhysicalStreamingSample::Execute(ExecutionContext &context, D
 InsertionOrderPreservingMap<string> PhysicalStreamingSample::ParamsToString() const {
 	InsertionOrderPreservingMap<string> result;
 	if (sample_options->is_percentage) {
-		result["Sample Method"] = EnumUtil::ToString(sample_options->method) + ": " + to_string(100 * percentage) + "%";
+		result["Sample Method"] =
+		    EnumUtil::ToString(sample_options->method) + ": " + StringUtil::ToString(100 * percentage) + "%";
 	} else {
 		result["Sample Method"] = EnumUtil::ToString(sample_options->method) + ": " + to_string(rows) + " rows";
 	}

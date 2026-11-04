@@ -1,7 +1,6 @@
 duckdb_extension_load(legacy_parser
     LOAD_TESTS
-    APPLY_PATCHES
     GIT_URL https://github.com/duckdb/duckdb-legacy-parser
-    GIT_TAG 0912e6734679d7df918da4af387bade6ff429d01
+    GIT_TAG bcdf276132fe3a09afcc707c1cdff39096989404
     INCLUDE_DIR src/include
     )

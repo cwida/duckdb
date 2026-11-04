@@ -1,0 +1,30 @@
+# name: test/sql/copy/partitioned/partitioned_full_outer_hash_join.test
+# description: Partitioned COPY of a FULL OUTER hash join must not deadlock between the join source and the flush
+# group: [partitioned]
+
+require parquet
+
+statement ok
+PRAGMA threads=8;
+
+# Flush early so that the partitioned sink waits for every producer while the hash table is still being scanned
+statement ok
+SET partitioned_write_flush_threshold=4096;
+
+statement ok
+CREATE TABLE a AS SELECT i AS k, i % 1000 AS v FROM range(2000000) t(i);
+
+statement ok
+CREATE TABLE b AS SELECT i * 2 AS k, i % 7 AS w FROM range(2000000) t(i);
+
+statement ok
+COPY (
+	SELECT a.k AS ak, a.v, b.k AS bk, b.w, hash(a.k, b.k) % 2 AS part
+	FROM a FULL OUTER JOIN b ON a.k = b.k
+) TO '{TEST_DIR}/partitioned_full_outer_hash_join' (FORMAT PARQUET, PARTITION_BY (part));
+
+query III
+SELECT count(*), count(ak), count(bk)
+FROM read_parquet('{TEST_DIR}/partitioned_full_outer_hash_join/**/*.parquet')
+----
+3000000	2000000	2000000

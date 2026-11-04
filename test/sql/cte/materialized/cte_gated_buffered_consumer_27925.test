@@ -1,0 +1,59 @@
+# name: test/sql/cte/materialized/cte_gated_buffered_consumer_27925.test
+# description: A CTE read under both LIMIT and ORDER BY must not deadlock (issue 27925)
+# group: [materialized]
+
+require vector_size 2048
+
+set query_timeout 60
+
+# Issue 27925: one CTE read under both LIMIT and ORDER BY, combined through a cross product. The
+# LIMIT probe's buffered consumer is gated behind the aggregate build side, which only finishes once
+# the producer does, so the producer parks at the exchange watermark.
+query II
+WITH dude AS (SELECT range AS k FROM range(1000000))
+SELECT *
+FROM (SELECT * FROM dude LIMIT 1) a,
+     (SELECT count(*) FROM (SELECT k FROM dude ORDER BY k)) b;
+----
+0	1000000
+
+# The dbt-shaped original: a grouped CTE read by a LIMIT-OFFSET consumer and a window-function
+# consumer, right-joined. Deadlocked with the default optimizer at the branch base.
+statement ok
+CREATE TABLE own AS
+SELECT DATE '2024-01-01' AS report_date,
+       i AS plant_id_eia,
+       'g' || (i % 7) AS generator_id,
+       CASE WHEN i = 0 THEN 1.05 WHEN i = 1 THEN 0.99 ELSE 0.5 END AS fraction_owned
+FROM range(300000) r(i);
+
+query I
+WITH OwnSum AS (
+    SELECT report_date, plant_id_eia, generator_id,
+           sum(fraction_owned) AS fraction_owned, 1 AS toy_join
+    FROM own
+    GROUP BY report_date, plant_id_eia, generator_id
+    HAVING fraction_owned IS NOT NULL
+), OwnSumInvalid AS (
+    SELECT * FROM OwnSum WHERE fraction_owned > 1.02
+    LIMIT 1000000 OFFSET 0
+), PercentileScores AS (
+    SELECT fraction_owned,
+           row_number() OVER w AS "row_number",
+           percent_rank() OVER w AS "percent_rank"
+    FROM OwnSum
+    WINDOW w AS (ORDER BY fraction_owned)
+), PercentileMissing AS (
+    SELECT percent_rank AS pct_missing, 1 AS toy_join
+    FROM PercentileScores
+    WHERE fraction_owned >= 0.98
+    LIMIT 1
+), Summary AS (
+    SELECT * FROM OwnSumInvalid RIGHT JOIN PercentileMissing USING (toy_join)
+)
+SELECT count(*) FROM Summary WHERE (report_date IS NOT NULL) OR (pct_missing >= 0.5);
+----
+1
+
+statement ok
+DROP TABLE own;

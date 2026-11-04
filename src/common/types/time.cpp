@@ -278,10 +278,11 @@ string Time::ToString(dtime_t time) {
 	return string(buffer.get(), length);
 }
 
-string Time::ToUTCOffset(int hour_offset, int minute_offset) {
-	dtime_t time((hour_offset * Interval::MINS_PER_HOUR + minute_offset) * Interval::MICROS_PER_MINUTE);
+string Time::ToUTCOffset(int hour_offset, int minute_offset, int second_offset) {
+	dtime_t time(((hour_offset * Interval::MINS_PER_HOUR + minute_offset) * Interval::SECS_PER_MINUTE + second_offset) *
+	             Interval::MICROS_PER_SEC);
 
-	char buffer[1 + 2 + 1 + 2];
+	char buffer[1 + 2 + 1 + 2 + 1 + 2];
 	idx_t length = 0;
 	buffer[length++] = (time.value < 0 ? '-' : '+');
 	time.value = std::abs(time.value);
@@ -291,9 +292,14 @@ string Time::ToUTCOffset(int hour_offset, int minute_offset) {
 
 	TimeToStringCast::FormatTwoDigits(buffer + length, time_units[0]);
 	length += 2;
-	if (time_units[1]) {
+	if (time_units[1] || time_units[2]) {
 		buffer[length++] = ':';
 		TimeToStringCast::FormatTwoDigits(buffer + length, time_units[1]);
+		length += 2;
+	}
+	if (time_units[2]) {
+		buffer[length++] = ':';
+		TimeToStringCast::FormatTwoDigits(buffer + length, time_units[2]);
 		length += 2;
 	}
 

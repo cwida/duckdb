@@ -1,0 +1,98 @@
+# name: test/sql/optimizer/barrier_projection_siblings.test
+# description: Projection pushdown keeps barriers after retained sibling filters
+# group: [optimizer]
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'}
+
+statement ok
+CREATE TABLE guard_rows(b VARCHAR, c VARCHAR, d INTEGER)
+
+statement ok
+INSERT INTO guard_rows VALUES ('hidden', '-1', 0), ('shown', '1', 0), ('shown', '1', 0), ('hidden', NULL, 0)
+
+# The cast predicate stays above the projection. The barrier must stay with it.
+query I
+WITH src AS (SELECT b,c,d FROM guard_rows)
+SELECT count(*) FROM src WHERE c::INTEGER>d AND __internal_barrier(CASE WHEN b='hidden' THEN error('hidden row') ELSE true END)
+----
+2
+
+# Conjunct order does not change the barrier contract.
+query I
+WITH src AS (SELECT b,c,d FROM guard_rows)
+SELECT count(*) FROM src WHERE __internal_barrier(CASE WHEN b='hidden' THEN error('hidden row') ELSE true END) AND c::INTEGER>d
+----
+2
+
+# A materialized input provides the same rows and result.
+query I
+WITH src AS MATERIALIZED (SELECT b,c,d FROM guard_rows)
+SELECT count(*) FROM src WHERE c::INTEGER>d AND __internal_barrier(CASE WHEN b='hidden' THEN error('hidden row') ELSE true END)
+----
+2
+
+# A computed projection can also retain a protecting filter.
+query I
+WITH src AS (SELECT b,c,d+1 AS threshold FROM guard_rows)
+SELECT count(*) FROM src WHERE c::INTEGER>=threshold AND __internal_barrier(CASE WHEN b='hidden' THEN error('hidden row') ELSE true END)
+----
+2
+
+# A volatile projected value cannot be duplicated below the projection.
+statement ok
+CREATE SEQUENCE guard_sequence
+
+query I
+SELECT count(*) FROM (SELECT b,CASE WHEN b='shown' THEN nextval('guard_sequence') ELSE 0 END AS n FROM guard_rows) src
+WHERE n>0 AND __internal_barrier(CASE WHEN b='hidden' THEN error('hidden row') ELSE true END)
+----
+2
+
+query I
+SELECT currval('guard_sequence')
+----
+2
+
+# Explicit inlining has the same barrier ordering requirement.
+query I
+WITH src AS NOT MATERIALIZED (SELECT b,c,d FROM guard_rows)
+SELECT count(*) FROM src WHERE c::INTEGER>d AND __internal_barrier(CASE WHEN b='hidden' THEN error('hidden row') ELSE true END)
+----
+2
+
+# The barrier still reports errors on surviving rows.
+statement error
+WITH src AS (SELECT b,c,d FROM guard_rows)
+SELECT count(*) FROM src WHERE c::INTEGER>d AND __internal_barrier(error('surviving row'))
+----
+surviving row
+
+# Ordinary filters and barriers without retained siblings can still reach scans.
+statement ok
+CREATE TABLE pushdown_rows AS SELECT i FROM range(10) t(i)
+
+query II
+EXPLAIN SELECT * FROM (SELECT i AS k FROM pushdown_rows) WHERE k=4
+----
+physical_plan	<REGEX>:[\s\S]*SEQ_SCAN[\s\S]*Filters: i = 4[\s\S]*
+
+query II
+EXPLAIN SELECT * FROM (SELECT i AS k FROM pushdown_rows) WHERE __internal_barrier(k=4)
+----
+physical_plan	<REGEX>:[\s\S]*SEQ_SCAN[\s\S]*__internal_barrier[\s\S]*
+
+query I
+SELECT * FROM (SELECT i AS k FROM pushdown_rows) WHERE __internal_barrier(k=4)
+----
+4
+
+# Computed materialized producers keep filtering before unrelated throwing projections.
+query I
+WITH computed AS MATERIALIZED (
+    SELECT i+1 AS k, CASE WHEN i=0 THEN error('filtered projection') ELSE i END AS v
+    FROM pushdown_rows
+)
+SELECT sum(v) FROM computed WHERE k=2
+----
+1

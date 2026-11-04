@@ -2,7 +2,7 @@
 # description: Concurrent bulk-append commits to separate tables flush their blocks before the WAL lock
 # group: [optimistic_write]
 
-load __TEST_DIR__/concurrent_bulk_append_commits.db
+load {TEST_DIR}/concurrent_bulk_append_commits.db
 
 statement ok
 SET checkpoint_threshold='999999GB';

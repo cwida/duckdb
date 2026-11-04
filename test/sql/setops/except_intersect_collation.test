@@ -23,7 +23,7 @@ INSERT INTO c VALUES ('a');
 foreach optimizers '' 'unused_columns'
 
 statement ok
-SET disabled_optimizers=${optimizers};
+SET disabled_optimizers={optimizers};
 
 query I
 SELECT count(*) FROM ((SELECT s COLLATE NOCASE AS c FROM a WHERE id > 0) EXCEPT (SELECT s FROM b));

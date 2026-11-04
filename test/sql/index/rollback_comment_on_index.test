@@ -1,0 +1,86 @@
+# name: test/sql/index/rollback_comment_on_index.test
+# description: Rolling back COMMENT ON INDEX keeps the index, rolling back CREATE INDEX removes it
+# group: [index]
+
+load {TEST_DIR}/rollback_comment_on_index.db
+
+statement ok
+CREATE TABLE t (i INTEGER, j INTEGER)
+
+statement ok
+CREATE UNIQUE INDEX idx ON t (i)
+
+statement ok
+COMMENT ON INDEX idx IS 'a'
+
+statement ok
+BEGIN
+
+statement ok
+COMMENT ON INDEX idx IS 'b'
+
+statement ok
+ROLLBACK
+
+query T
+SELECT comment FROM duckdb_indexes() WHERE index_name = 'idx'
+----
+a
+
+statement error
+INSERT INTO t VALUES (1, 1), (1, 1)
+----
+Constraint Error
+
+# the index is also written to disk with the changed table
+statement ok
+INSERT INTO t VALUES (1, 1)
+
+statement ok
+CHECKPOINT
+
+restart
+
+statement error
+INSERT INTO t VALUES (1, 2)
+----
+Constraint Error
+
+# rolling back the creation of an index removes it, also when it was commented on
+statement ok
+BEGIN
+
+statement ok
+CREATE UNIQUE INDEX idx_j ON t (j)
+
+statement ok
+COMMENT ON INDEX idx_j IS 'x'
+
+statement ok
+ROLLBACK
+
+query I
+SELECT COUNT(*) FROM duckdb_indexes() WHERE index_name = 'idx_j'
+----
+0
+
+statement ok
+INSERT INTO t VALUES (2, 1)
+
+# rolling back DROP INDEX and CREATE INDEX of the same name keeps the old index
+statement ok
+BEGIN
+
+statement ok
+DROP INDEX idx
+
+statement ok
+CREATE UNIQUE INDEX idx ON t (i)
+
+statement ok
+ROLLBACK
+
+statement error
+INSERT INTO t VALUES (1, 3)
+----
+Constraint Error

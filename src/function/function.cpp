@@ -326,7 +326,7 @@ void FunctionSignature::Verify() const {
 			found_default_value = true;
 		} else if (found_default_value) {
 			throw InvalidInputException(
-			    "Parameters with default values must be at the end of the parameter list. Parameter '%s' does not "
+			    "Parameters with default values must be at the end of the parameter list. Parameter %s does not "
 			    "have a default value but follows a parameter with a default value.",
 			    param.GetName());
 		}
@@ -387,7 +387,7 @@ void FunctionSignature::Verify() const {
 		// a named argument binds to a parameter of its name first, so an option of the same name is never reached
 		for (auto &param : parameters) {
 			if (param.AcceptsName() && typed_kwargs->Find(param.GetName())) {
-				throw InvalidInputException("Option '%s' has the same name as a parameter", param.GetName());
+				throw InvalidInputException("Option %s has the same name as a parameter", param.GetName());
 			}
 		}
 	}
@@ -636,8 +636,9 @@ Value BindFunctionInput::GetConstant(idx_t arg_idx, bool accept_null) const {
 	}
 	// Use the argument name if available, otherwise use the argument index
 	string argument_name;
-	if (argument_names && arg_idx < argument_names->size() && !argument_names->at(arg_idx).empty()) {
-		argument_name = StringUtil::Format("The %s argument", argument_names->at(arg_idx));
+	const auto resolved_count = function.GetPositionalArgumentCount() + function.GetNamedArguments().size();
+	if (arg_idx < resolved_count && !GetArgumentName(arg_idx).empty()) {
+		argument_name = StringUtil::Format("The %s argument", GetArgumentName(arg_idx));
 	} else {
 		argument_name = StringUtil::Format("Argument #%llu", arg_idx + 1);
 	}
@@ -647,7 +648,7 @@ Value BindFunctionInput::GetConstant(idx_t arg_idx, bool accept_null) const {
 	}
 	auto value = ExpressionExecutor::EvaluateScalar(context, expr);
 	if (!accept_null && value.IsNull()) {
-		throw BinderException(expr, "%s in function '%s' must not be NULL", argument_name, function.GetName());
+		throw BinderException(expr, "%s in function %s must not be NULL", argument_name, function.GetName());
 	}
 	return value;
 }
@@ -671,7 +672,11 @@ optional<Value> BindFunctionInput::TryGetConstant(idx_t arg_idx) const {
 	if (!expr.IsFoldable()) {
 		return {};
 	}
-	return ExpressionExecutor::EvaluateScalar(context, expr);
+	Value result;
+	if (!ExpressionExecutor::TryEvaluateScalar(context, expr, result)) {
+		return {};
+	}
+	return result;
 }
 
 optional<Value> BindFunctionInput::TryGetConstant(const Identifier &name) const {
@@ -682,15 +687,28 @@ optional<Value> BindFunctionInput::TryGetConstant(const Identifier &name) const 
 	return {};
 }
 
-optional_idx BindFunctionInput::GetArgumentIndex(const Identifier &name) const {
-	if (!argument_names) {
-		throw InternalException("Function '%s' was bound without argument names, cannot look up argument '%s' by name",
-		                        function.GetName(), name);
+const Identifier &BindFunctionInput::GetArgumentName(idx_t arg_idx) const {
+	static const Identifier UNNAMED;
+	// The binder lays the arguments out in the order of the signature: the positional ones fill the standard
+	// parameters, then "*args" - the named ones are keyword-only parameters or "**kwargs"
+	const auto positional_count = function.GetPositionalArgumentCount();
+	if (arg_idx >= positional_count) {
+		auto &named_arguments = function.GetNamedArguments();
+		if (arg_idx - positional_count >= named_arguments.size()) {
+			throw InternalException("%s: Argument index %llu is out of range", function.GetName(), arg_idx);
+		}
+		return named_arguments[arg_idx - positional_count];
 	}
-	// The binder resolves every argument to a slot and reports its name: the signature parameter name for standard
-	// and keyword-only parameters, or the name the caller used for "**kwargs".
-	for (idx_t arg_idx = 0; arg_idx < argument_names->size(); arg_idx++) {
-		if ((*argument_names)[arg_idx] == name) {
+	if (arg_idx < signature.GetPositionalParameterCount()) {
+		return signature.GetParameter(arg_idx).GetName();
+	}
+	return UNNAMED;
+}
+
+optional_idx BindFunctionInput::GetArgumentIndex(const Identifier &name) const {
+	const auto resolved_count = function.GetPositionalArgumentCount() + function.GetNamedArguments().size();
+	for (idx_t arg_idx = 0; arg_idx < resolved_count; arg_idx++) {
+		if (GetArgumentName(arg_idx) == name) {
 			return optional_idx(arg_idx);
 		}
 	}

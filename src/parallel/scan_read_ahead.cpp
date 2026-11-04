@@ -1,6 +1,7 @@
 
 #include "duckdb/parallel/scan_read_ahead.hpp"
 
+#include "duckdb/common/file_system.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/logging/log_type.hpp"
 #include "duckdb/logging/logger.hpp"
@@ -91,18 +92,11 @@ private:
 	ScanReadAhead &read_ahead;
 };
 
-//! Async task that opens one file ahead of decoding and releases the pending-open count when destroyed
+//! Async task that opens one file ahead of decoding
 class FileOpenTask : public BaseExecutorTask {
 public:
-	FileOpenTask(TaskExecutor &executor, shared_ptr<atomic<idx_t>> pending_opens_p, std::function<void()> open_fn_p,
-	             std::function<void()> cancel_fn_p)
-	    : BaseExecutorTask(executor), pending_opens(std::move(pending_opens_p)), open_fn(std::move(open_fn_p)),
-	      cancel_fn(std::move(cancel_fn_p)) {
-		++*pending_opens;
-	}
-	~FileOpenTask() override {
-		// the executor counts the task as finished before it is destroyed, the read-ahead may be gone by now
-		--*pending_opens;
+	FileOpenTask(TaskExecutor &executor, std::function<void()> open_fn_p, std::function<void()> cancel_fn_p)
+	    : BaseExecutorTask(executor), open_fn(std::move(open_fn_p)), cancel_fn(std::move(cancel_fn_p)) {
 	}
 
 	void ExecuteTask() override {
@@ -115,21 +109,51 @@ public:
 	}
 
 private:
-	shared_ptr<atomic<idx_t>> pending_opens;
 	std::function<void()> open_fn;
 	std::function<void()> cancel_fn;
 };
 
 ScanReadAheadJob::~ScanReadAheadJob() = default;
 
+//! The file descriptor limit is per process, so all scans share one count
+static atomic<idx_t> &OpenFileCount() {
+	static atomic<idx_t> count {0};
+	return count;
+}
+
+ReadAheadOpenFile::ReadAheadOpenFile() {
+	++OpenFileCount();
+}
+
+ReadAheadOpenFile::~ReadAheadOpenFile() {
+	--OpenFileCount();
+}
+
+idx_t ReadAheadOpenFile::Count() {
+	return OpenFileCount().load();
+}
+
+static idx_t GetOpenFileBudget(ClientContext &context) {
+	idx_t file_descriptor_limit = Settings::Get<DebugFileDescriptorLimitSetting>(context);
+	if (file_descriptor_limit == 0) {
+		auto system_limit = FileSystem::GetFileDescriptorLimit();
+		if (!system_limit.IsValid()) {
+			return NumericLimits<idx_t>::Maximum();
+		}
+		file_descriptor_limit = system_limit.GetIndex();
+	}
+	// files hold their descriptors until their readers close, so only use a share of the limit
+	return FileSystem::GetFileDescriptorShare(file_descriptor_limit);
+}
+
 ScanReadAhead::ScanReadAhead(ClientContext &context, idx_t read_ahead_depth_p,
                              unique_ptr<ManagedAsyncMemoryGovernor> memory_governor_p)
     : context(context), read_ahead_depth(read_ahead_depth_p), memory_governor(std::move(memory_governor_p)),
       open_window(MaxValue<idx_t>(TaskScheduler::GetScheduler(context).NumberOfAsyncThreads() * 2,
-                                  memory_governor ? 0 : read_ahead_depth)) {
+                                  memory_governor ? 0 : read_ahead_depth)),
+      open_file_budget(GetOpenFileBudget(context)) {
 	D_ASSERT(read_ahead_depth_p > 0);
 	backlog_budget = memory_governor ? memory_governor->BackpressureBudget() : NumericLimits<idx_t>::Maximum();
-	pending_opens = make_shared_ptr<atomic<idx_t>>(0);
 	executor = make_shared_ptr<TaskExecutor>(context, TaskSchedulerType::ASYNC);
 }
 
@@ -257,10 +281,11 @@ ScanReadAheadAcquire ScanReadAhead::AcquireJob(ClientContext &context, TableFunc
 			continue;
 		}
 		// park until the job's scheduled I/O completes, the last I/O task to finish wakes the scan task
-		if (job->io_completion->TryPark(data_p)) {
+		// a parked task frees its thread for one that opens another file, so not while the open file budget is full
+		if (CanScheduleOpen(0) && job->io_completion->TryPark(data_p)) {
 			return ScanReadAheadAcquire::PARKED;
 		}
-		// parking is not available to this caller or the I/O has already completed
+		// parking is not available to this caller, the open file budget is full or the I/O has already completed
 		WaitForJob(*job);
 		return ScanReadAheadAcquire::ACQUIRED;
 	}
@@ -272,12 +297,16 @@ void ScanReadAhead::SetDone() {
 
 idx_t ScanReadAhead::ReservationDepth() const {
 	// over budget one job stays queued, claimed jobs hold the budget until their task resumes
-	return pending_io_bytes.load() >= backlog_budget.load() ? 1 : read_ahead_depth;
+	const bool over_budget =
+	    pending_io_bytes.load() >= backlog_budget.load() || ReadAheadOpenFile::Count() >= open_file_budget;
+	return over_budget ? 1 : read_ahead_depth;
 }
 
 bool ScanReadAhead::TryReserveSlot() {
 	// take the minimum job charge up front so concurrent producers cannot all pass the budget check together
-	const bool over_budget = pending_io_bytes.fetch_add(MINIMUM_JOB_IO_CHARGE) >= backlog_budget.load();
+	const bool over_memory_budget = pending_io_bytes.fetch_add(MINIMUM_JOB_IO_CHARGE) >= backlog_budget.load();
+	// queued jobs keep their files open, so the open file budget bounds the queue too
+	const bool over_budget = over_memory_budget || ReadAheadOpenFile::Count() >= open_file_budget;
 	const idx_t depth = over_budget ? 1 : read_ahead_depth;
 	if (active_jobs.fetch_add(1) >= depth) {
 		--active_jobs;
@@ -316,6 +345,7 @@ void ScanReadAhead::PushJob(unique_ptr<ScanReadAheadJob> job, vector<unique_ptr<
 		memory_governor->UpdateReservation(pending_io_bytes.load() + MINIMUM_JOB_IO_CHARGE);
 		backlog_budget = memory_governor->BackpressureBudget();
 	}
+	DUCKDB_LOG(context, ReadAheadBudgetLogType, pending_io_bytes.load(), backlog_budget.load(), active_jobs.load());
 	// producers push concurrently, so admit jobs to the queue in batch-index order
 	if (job->batch_index < next_batch_index || !pending_jobs.emplace(job->batch_index, std::move(job)).second) {
 		throw InternalException("Read-ahead jobs must have unique batch indexes, assigned densely from 0");
@@ -336,12 +366,11 @@ void ScanReadAhead::PushError(ErrorData error) {
 }
 
 void ScanReadAhead::ScheduleFileOpen(std::function<void()> open_fn, std::function<void()> cancel_fn) {
-	// the task holds the count from construction to destruction, so it stays balanced even if scheduling throws
-	executor->ScheduleTask(make_uniq<FileOpenTask>(*executor, pending_opens, std::move(open_fn), std::move(cancel_fn)));
+	executor->ScheduleTask(make_uniq<FileOpenTask>(*executor, std::move(open_fn), std::move(cancel_fn)));
 }
 
-bool ScanReadAhead::CanScheduleOpen() const {
-	return pending_opens->load() < open_window;
+bool ScanReadAhead::CanScheduleOpen(idx_t files_ahead) const {
+	return files_ahead < open_window && ReadAheadOpenFile::Count() < open_file_budget;
 }
 
 bool ScanReadAhead::TryRunPendingTask() {

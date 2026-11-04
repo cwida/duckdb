@@ -1,0 +1,57 @@
+# name: test/sql/join/inner/distinctness_statistics_filter.test
+# description: A non-NULL proof enables runtime filtering for a distinctness join
+# group: [inner]
+
+statement ok
+SET threads=1;
+
+statement ok
+SET disabled_optimizers='join_order,build_side_probe_side,compressed_materialization';
+
+statement ok
+CREATE TABLE probe AS SELECT (1000000000000+i)::BIGINT k FROM range(100000) t(i);
+
+# Full build statistics cover the probe range; only execution discovers the singleton key.
+statement ok
+CREATE TABLE build(k BIGINT, selected BOOLEAN);
+
+statement ok
+INSERT INTO build VALUES (1000000000000, false), (1000000000042, true), (1000000099999, false);
+
+query I
+SELECT count(*) FROM probe p JOIN build b ON p.k IS NOT DISTINCT FROM b.k WHERE selected;
+----
+1
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM probe p JOIN build b ON p.k IS NOT DISTINCT FROM b.k WHERE selected;
+----
+analyzed_plan	<REGEX>:.*Dynamic.*Filters:.*k.*=.*1000000000042.*
+
+# Introducing NULL on one input preserves the ordinary-join rewrite.
+statement ok
+INSERT INTO probe VALUES (NULL);
+
+query I
+SELECT count(*) FROM probe p JOIN build b ON b.k IS NOT DISTINCT FROM p.k WHERE selected;
+----
+1
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM probe p JOIN build b ON b.k IS NOT DISTINCT FROM p.k WHERE selected;
+----
+analyzed_plan	<REGEX>:.*Dynamic.*Filters:.*k.*=.*1000000000042.*
+
+# With both inputs nullable, NULL-to-NULL matches must remain available.
+statement ok
+INSERT INTO build VALUES (NULL, true);
+
+query I
+SELECT count(*) FROM probe p JOIN build b ON p.k IS NOT DISTINCT FROM b.k WHERE selected;
+----
+2
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM probe p JOIN build b ON p.k IS NOT DISTINCT FROM b.k WHERE selected;
+----
+analyzed_plan	<REGEX>:.*Conditions:.*k IS NOT DISTINCT FROM k.*

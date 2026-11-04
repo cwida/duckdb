@@ -46,7 +46,7 @@ statement ok
 INSERT INTO csv_source VALUES(1,'a'),(2,NULL);
 
 statement ok
-COPY csv_source TO '__TEST_DIR__/generic_source.csv' (HEADER,DELIMITER '|');
+COPY csv_source TO '{TEST_DIR}/generic_source.csv' (HEADER,DELIMITER '|');
 
 foreach mode none explain_sql_strict
 
@@ -54,7 +54,7 @@ statement ok
 SET debug_verify_statement='{mode}';
 
 query IT nosort source_0
-SELECT * FROM read_csv('__TEST_DIR__/generic_source.csv', header := true, delim := '|', auto_detect := true) ORDER BY i;
+SELECT * FROM read_csv('{TEST_DIR}/generic_source.csv', header := true, delim := '|', auto_detect := true) ORDER BY i;
 
 endloop
 
@@ -66,7 +66,7 @@ statement ok
 SET debug_verify_statement='{mode}';
 
 query I nosort source_1
-SELECT count(*) FROM read_csv('__TEST_DIR__/generic_source.csv', header := true, delim := '|', auto_detect := true);
+SELECT count(*) FROM read_csv('{TEST_DIR}/generic_source.csv', header := true, delim := '|', auto_detect := true);
 
 endloop
 
@@ -78,14 +78,14 @@ statement ok
 SET debug_verify_statement='{mode}';
 
 query IT nosort source_2
-SELECT i,filename FROM read_csv('__TEST_DIR__/generic_source.csv', header := true, delim := '|', auto_detect := true,filename := true) ORDER BY i;
+SELECT i,filename FROM read_csv('{TEST_DIR}/generic_source.csv', header := true, delim := '|', auto_detect := true,filename := true) ORDER BY i;
 
 endloop
 
 reset label source_2
 
 statement ok
-COPY (SELECT * FROM (VALUES (10,1),(10,1),(NULL,1),(20,2),(30,NULL)) t(i,p)) TO '__TEST_DIR__/retained_predicates_CSV' (FORMAT CSV,PARTITION_BY(p),HEADER);
+COPY (SELECT * FROM (VALUES (10,1),(10,1),(NULL,1),(20,2),(30,NULL)) t(i,p)) TO '{TEST_DIR}/retained_predicates_CSV' (FORMAT CSV,PARTITION_BY(p),HEADER);
 
 statement ok
 SET debug_verify_serializer=false;
@@ -96,19 +96,19 @@ statement ok
 SET debug_verify_statement='{mode}';
 
 query I nosort file_predicate_CSV0
-SELECT i FROM read_csv('__TEST_DIR__/retained_predicates_CSV/*/*.csv',hive_partitioning := true) WHERE p=1 ORDER BY i;
+SELECT i FROM read_csv('{TEST_DIR}/retained_predicates_CSV/*/*.csv',hive_partitioning := true) WHERE p=1 ORDER BY i;
 
 query I nosort file_predicate_CSV1
-SELECT i FROM read_csv('__TEST_DIR__/retained_predicates_CSV/*/*.csv',hive_partitioning := true) WHERE p IS NULL ORDER BY i;
+SELECT i FROM read_csv('{TEST_DIR}/retained_predicates_CSV/*/*.csv',hive_partitioning := true) WHERE p IS NULL ORDER BY i;
 
 query I nosort file_predicate_CSV2
-SELECT i FROM read_csv('__TEST_DIR__/retained_predicates_CSV/*/*.csv',hive_partitioning := true) WHERE p IN (1,2) AND i>15 ORDER BY i;
+SELECT i FROM read_csv('{TEST_DIR}/retained_predicates_CSV/*/*.csv',hive_partitioning := true) WHERE p IN (1,2) AND i>15 ORDER BY i;
 
 query I nosort file_predicate_CSV3
-SELECT i FROM read_csv('__TEST_DIR__/retained_predicates_CSV/*/*.csv',hive_partitioning := true) WHERE p>=1 OR p IS NULL ORDER BY i;
+SELECT i FROM read_csv('{TEST_DIR}/retained_predicates_CSV/*/*.csv',hive_partitioning := true) WHERE p>=1 OR p IS NULL ORDER BY i;
 
 query I nosort file_predicate_CSV4
-SELECT i FROM read_csv('__TEST_DIR__/retained_predicates_CSV/*/*.csv',hive_partitioning := true) WHERE array_to_string([p::VARCHAR, 'x'], '/') = '1/x' ORDER BY i;
+SELECT i FROM read_csv('{TEST_DIR}/retained_predicates_CSV/*/*.csv',hive_partitioning := true) WHERE array_to_string([p::VARCHAR, 'x'], '/') = '1/x' ORDER BY i;
 
 endloop
 
@@ -123,7 +123,7 @@ reset label file_predicate_CSV3
 reset label file_predicate_CSV4
 
 statement ok
-COPY (SELECT * FROM (VALUES (10,1),(10,1),(NULL,1),(20,2),(30,NULL)) t(i,p)) TO '__TEST_DIR__/retained_predicates_parquet' (FORMAT parquet,PARTITION_BY(p));
+COPY (SELECT * FROM (VALUES (10,1),(10,1),(NULL,1),(20,2),(30,NULL)) t(i,p)) TO '{TEST_DIR}/retained_predicates_parquet' (FORMAT parquet,PARTITION_BY(p));
 
 # Retaining arguments across plan serialization requires the v2.0.0 format.
 statement ok
@@ -140,19 +140,19 @@ statement ok
 SET debug_verify_statement='{mode}';
 
 query I nosort file_predicate_parquet0
-SELECT i FROM read_parquet('__TEST_DIR__/retained_predicates_parquet/*/*.parquet',hive_partitioning := true) WHERE p=1 ORDER BY i;
+SELECT i FROM read_parquet('{TEST_DIR}/retained_predicates_parquet/*/*.parquet',hive_partitioning := true) WHERE p=1 ORDER BY i;
 
 query I nosort file_predicate_parquet1
-SELECT i FROM read_parquet('__TEST_DIR__/retained_predicates_parquet/*/*.parquet',hive_partitioning := true) WHERE p IS NULL ORDER BY i;
+SELECT i FROM read_parquet('{TEST_DIR}/retained_predicates_parquet/*/*.parquet',hive_partitioning := true) WHERE p IS NULL ORDER BY i;
 
 query I nosort file_predicate_parquet2
-SELECT i FROM read_parquet('__TEST_DIR__/retained_predicates_parquet/*/*.parquet',hive_partitioning := true) WHERE p IN (1,2) AND i>15 ORDER BY i;
+SELECT i FROM read_parquet('{TEST_DIR}/retained_predicates_parquet/*/*.parquet',hive_partitioning := true) WHERE p IN (1,2) AND i>15 ORDER BY i;
 
 query I nosort file_predicate_parquet3
-SELECT i FROM read_parquet('__TEST_DIR__/retained_predicates_parquet/*/*.parquet',hive_partitioning := true) WHERE p>=1 OR p IS NULL ORDER BY i;
+SELECT i FROM read_parquet('{TEST_DIR}/retained_predicates_parquet/*/*.parquet',hive_partitioning := true) WHERE p>=1 OR p IS NULL ORDER BY i;
 
 query I nosort file_predicate_parquet4
-SELECT i FROM read_parquet('__TEST_DIR__/retained_predicates_parquet/*/*.parquet',hive_partitioning := true) WHERE array_to_string([p::VARCHAR, 'x'], '/') = '1/x' ORDER BY i;
+SELECT i FROM read_parquet('{TEST_DIR}/retained_predicates_parquet/*/*.parquet',hive_partitioning := true) WHERE array_to_string([p::VARCHAR, 'x'], '/') = '1/x' ORDER BY i;
 
 endloop
 

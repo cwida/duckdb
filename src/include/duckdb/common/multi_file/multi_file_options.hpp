@@ -68,7 +68,12 @@ struct MultiFileOptions {
 	DUCKDB_API void Serialize(Serializer &serializer) const;
 	DUCKDB_API static MultiFileOptions Deserialize(Deserializer &source);
 	DUCKDB_API void AddBatchInfo(BindInfo &bind_info) const;
-	DUCKDB_API void AutoDetectHivePartitioning(MultiFileList &files, ClientContext &context);
+	//! Settle the hive partitioning options against each other and against the files: hive_types implies
+	//! hive_partitioning, and the type of a partition key the caller did not give is taken from the values
+	//! in the paths. With detect_partitioning, WHETHER the files are partitioned is taken from the paths
+	//! too; a caller that already knows the scan's schema passes false and asks for partitioning itself
+	DUCKDB_API void AutoDetectHivePartitioning(MultiFileList &files, ClientContext &context,
+	                                           bool detect_partitioning = true);
 	DUCKDB_API static bool AutoDetectHivePartitioningInternal(MultiFileList &files, ClientContext &context);
 	DUCKDB_API void AutoDetectHiveTypesInternal(MultiFileList &files, ClientContext &context);
 	DUCKDB_API void VerifyHiveTypesArePartitions(const std::map<string, string> &partitions) const;

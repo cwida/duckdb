@@ -74,3 +74,26 @@ endloop
 
 statement ok
 SET disabled_optimizers = '';
+
+statement ok
+CREATE SEQUENCE in_seq START 2;
+
+query I
+SELECT nextval('in_seq') IN (1, 2);
+----
+true
+
+query I
+SELECT currval('in_seq');
+----
+2
+
+query I
+SELECT nextval('in_seq') NOT IN (1, 2);
+----
+true
+
+query I
+SELECT currval('in_seq');
+----
+3

@@ -1,0 +1,120 @@
+module: stats
+#
+# Statistics describe the values an expression or a column can produce. The engine propagates them through a query
+# plan and uses them to simplify it, e.g. to fold `x IS NULL` to false when `x` cannot be NULL. A function takes part
+# in that propagation through its stats callback (`[[scalar_function_set_stats_callback]]`,
+# `[[aggregate_function_set_stats_callback]]`, `[[table_function_set_stats_callback]]`), which reads the statistics of
+# its arguments and narrows the statistics of its result.
+#
+# Every statistic states what can occur, never what does occur: `true` means a kind of value may be present, `false`
+# guarantees it is absent. The engine relies on the guarantees, so a statistic that claims less than the data holds
+# produces wrong query results.
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Handles
+#-----------------------------------------------------------------------------------------------------------------------
+handles:
+  stats:
+    description: |
+      A borrowed opaque handle to the statistics of an expression or a column. A stats callback receives it for the
+      result it describes and for each of its arguments; it is valid only for the duration of that callback.
+
+      The statistics of an argument are read-only, and the setters fail on them. The statistics of the result start
+      out unknown, with every kind of value possible, and the callback narrows them through the setters. A callback
+      that leaves the result unchanged tells the engine nothing.
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Functions
+#-----------------------------------------------------------------------------------------------------------------------
+functions:
+  #---------------------------------------------------------------------------------------------------------------------
+  # Validity
+  #---------------------------------------------------------------------------------------------------------------------
+  stats_can_have_null:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-02" ]
+    description: |
+      Returns whether the values described can include NULL.
+
+      False guarantees that every value is non-NULL.
+    parameters:
+      stats:
+        type: stats
+        description: The statistics to read.
+      out:
+        type: bool
+        indirection: 1
+        kind: OUT
+        description: Receives true if a value can be NULL, false if none can.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  stats_can_have_valid:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-02" ]
+    description: |
+      Returns whether the values described can include a valid, non-NULL value.
+
+      False guarantees that every value is NULL. When both this and `[[stats_can_have_null]]` are false, there are no
+      values at all.
+    parameters:
+      stats:
+        type: stats
+        description: The statistics to read.
+      out:
+        type: bool
+        indirection: 1
+        kind: OUT
+        description: Receives true if a value can be non-NULL, false if none can.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  stats_set_can_have_null:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-02" ]
+    description: |
+      Sets whether the values described can include NULL.
+
+      Setting false is a guarantee the engine relies on: a NULL among the values then produces wrong query results.
+      Setting true is always safe. Fails with `ERROR_INPUT_INVALID` on read-only statistics, such as those of an
+      argument.
+    parameters:
+      stats:
+        type: stats
+        description: The statistics to modify.
+      value:
+        type: bool
+        description: True if a value can be NULL, false if none can.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  stats_set_can_have_valid:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-10-02" ]
+    description: |
+      Sets whether the values described can include a valid, non-NULL value.
+
+      Setting false is a guarantee the engine relies on: a non-NULL value among the values then produces wrong query
+      results. Setting true is always safe. Fails with `ERROR_INPUT_INVALID` on read-only statistics, such as those of
+      an argument.
+    parameters:
+      stats:
+        type: stats
+        description: The statistics to modify.
+      value:
+        type: bool
+        description: True if a value can be non-NULL, false if none can.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR

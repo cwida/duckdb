@@ -1,0 +1,51 @@
+# name: test/sql/copy/parquet/read_ahead/recheck_prefetch_log.test
+# description: A scan state reused after its row group was pruned logs only the prefetch ranges of its new row group
+# group: [read_ahead]
+
+require parquet
+
+require vector_size 2048
+
+statement ok
+SET threads=1
+
+statement ok
+SET async_threads=1
+
+statement ok
+SET read_ahead_depth=2
+
+statement ok
+SET disable_parquet_prefetching=false
+
+statement ok
+COPY (
+    SELECT CASE
+        WHEN r < 2048 THEN r
+        WHEN r < 4096 THEN r + 100000
+        WHEN r < 6144 THEN r - 8192
+        ELSE r - 14336
+    END AS i
+    FROM range(8192) t(r)
+    ORDER BY r
+) TO '{TEST_DIR}/recheck_reuse.parquet' (FORMAT parquet, ROW_GROUP_SIZE 2048)
+
+statement ok
+CALL enable_logging('ParquetPrefetch')
+
+query I
+SELECT i FROM read_parquet('{TEST_DIR}/recheck_reuse.parquet', prefetch_strategy='whole_group') ORDER BY i LIMIT 3
+----
+-8192
+-8191
+-8190
+
+# row group 1 is pruned by the Top-N boundary after its I/O was scheduled, the state that held it must not carry its
+# prefetch ranges into the log of the next row group it decodes
+query II
+SELECT row_group_id, len(prefetch_groups) FROM duckdb_logs_parsed('ParquetPrefetch')
+WHERE file_path LIKE '%recheck_reuse.parquet' ORDER BY row_group_id
+----
+0	1
+2	1
+3	1

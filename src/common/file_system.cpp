@@ -32,7 +32,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#ifdef __MVS__
+#ifndef __EMSCRIPTEN__
 #include <sys/resource.h>
 #endif
 
@@ -287,6 +287,25 @@ string FileSystem::GetWorkingDirectory() {
 }
 
 #endif
+
+optional_idx FileSystem::GetFileDescriptorLimit() {
+#if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
+	struct rlimit limit;
+	if (getrlimit(RLIMIT_NOFILE, &limit) != 0 || limit.rlim_cur == RLIM_INFINITY) {
+		return optional_idx();
+	}
+	if (limit.rlim_cur >= NumericLimits<idx_t>::Maximum()) {
+		return optional_idx();
+	}
+	return optional_idx(static_cast<idx_t>(limit.rlim_cur));
+#else
+	return optional_idx();
+#endif
+}
+
+idx_t FileSystem::GetFileDescriptorShare(idx_t file_descriptor_limit) {
+	return MaxValue<idx_t>(file_descriptor_limit / 8, 1);
+}
 
 string FileSystem::JoinPath(const string &a, const string &b) {
 	// A remote URL may carry a "?query" suffix (object version, requester-pays, an SSE-C key, ...).
