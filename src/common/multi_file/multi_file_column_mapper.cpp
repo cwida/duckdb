@@ -289,6 +289,35 @@ static unique_ptr<Expression> ApplyPushdownExtract(ClientContext &context, uniqu
 	return expr;
 }
 
+static bool HasFilter(optional_ptr<TableFilterSet> filters, MultiFileGlobalIndex global_index) {
+	if (!filters) {
+		return false;
+	}
+	for (auto &it : *filters) {
+		if (MultiFileGlobalIndex(it.GetIndex()).GetIndex() == global_index.GetIndex()) {
+			return true;
+		}
+	}
+	return false;
+}
+
+//! Folds the extract of a missing column's default to the constant the filters on the column are evaluated against
+static unique_ptr<Expression> FoldDefaultExtract(ClientContext &context, unique_ptr<Expression> expr, bool has_filter) {
+	if (!expr->IsFoldable()) {
+		return expr;
+	}
+	Value value;
+	if (ExpressionExecutor::TryEvaluateScalar(context, *expr, value)) {
+		return make_uniq<BoundConstantExpression>(std::move(value));
+	}
+	if (!has_filter) {
+		// the extract runs on the rows of the file instead, so a file without rows raises no error
+		return expr;
+	}
+	// a filter needs the constant, so the error of the fold surfaces here
+	return make_uniq<BoundConstantExpression>(ExpressionExecutor::EvaluateScalar(context, *expr, true));
+}
+
 static bool IsNullConstant(const Expression &expr) {
 	return expr.GetExpressionType() == ExpressionType::VALUE_CONSTANT &&
 	       expr.Cast<BoundConstantExpression>().GetValue().IsNull();
@@ -892,11 +921,8 @@ ResultColumnMapping MultiFileColumnMapper::CreateColumnMappingByMapper(const Col
 			auto default_value = std::move(column_map.default_value);
 			if (global_id.IsPushdownExtract()) {
 				default_value = ApplyPushdownExtract(context, std::move(default_value), global_id);
-				if (default_value->IsFoldable()) {
-					// the filters on a missing column are evaluated against its constant
-					auto value = ExpressionExecutor::EvaluateScalar(context, *default_value, true);
-					default_value = make_uniq<BoundConstantExpression>(std::move(value));
-				}
+				default_value =
+				    FoldDefaultExtract(context, std::move(default_value), HasFilter(global_filters, global_idx));
 			}
 			reader_data.expressions.push_back(std::move(default_value));
 			continue;

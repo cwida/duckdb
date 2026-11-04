@@ -73,3 +73,26 @@ SELECT a, s.x FROM read_parquet(['{TEST_DIR}/missing_extract_1.parquet', '{TEST_
 1	1
 2	NULL
 3	NULL
+
+# a default whose field does not cast fails only on the rows of a file that lacks the column
+statement ok
+COPY (SELECT 6 AS a WHERE false) TO '{TEST_DIR}/missing_extract_empty.parquet' (FIELD_IDS {a: 1})
+
+query I
+SELECT s.n::INTEGER FROM read_parquet('{TEST_DIR}/missing_extract_empty.parquet', schema := MAP {1: {name: 'a', type: 'INTEGER', default_value: NULL}, 2: {name: 's', type: 'STRUCT(n VARCHAR)', default_value: {'n': 'bad'}}})
+----
+
+query I
+SELECT s.n::INTEGER FROM read_parquet('{TEST_DIR}/missing_extract_2.parquet', schema := MAP {1: {name: 'a', type: 'INTEGER', default_value: NULL}, 2: {name: 's', type: 'STRUCT(n VARCHAR)', default_value: {'n': 'bad'}}}) WHERE a = 99
+----
+
+statement error
+SELECT s.n::INTEGER FROM read_parquet('{TEST_DIR}/missing_extract_2.parquet', schema := MAP {1: {name: 'a', type: 'INTEGER', default_value: NULL}, 2: {name: 's', type: 'STRUCT(n VARCHAR)', default_value: {'n': 'bad'}}})
+----
+<REGEX>:.*Could not convert string 'bad'.*
+
+# a filter on the field needs the constant, so the failure surfaces before the file is read
+statement error
+SELECT a FROM read_parquet('{TEST_DIR}/missing_extract_2.parquet', schema := MAP {1: {name: 'a', type: 'INTEGER', default_value: NULL}, 2: {name: 's', type: 'STRUCT(n VARCHAR)', default_value: {'n': 'bad'}}}) WHERE s.n::INTEGER > 5
+----
+<REGEX>:.*Could not convert string 'bad'.*
