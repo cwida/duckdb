@@ -1,0 +1,81 @@
+# name: test/sql/optimizer/pushdown_extract_cast_filters.test
+# description: A cast on an extracted field stays above a filter or join that drops rows, so it never runs on them
+# group: [optimizer]
+
+require parquet
+
+statement ok
+CREATE TABLE cast_rows AS SELECT * FROM (VALUES (0, 'bad'), (1, '42'), (3, '7')) t(id, s);
+
+statement ok
+CREATE TABLE cast_variant AS SELECT id, {'n': s}::VARIANT AS v FROM cast_rows;
+
+statement ok
+COPY cast_variant TO '{TEST_DIR}/pushdown_extract_cast_filters.parquet';
+
+foreach SOURCE cast_variant read_parquet('{TEST_DIR}/pushdown_extract_cast_filters.parquet')
+
+# an IN list leaves a filter above the scan, which excludes the row that does not cast
+query I
+SELECT v.n::INTEGER FROM {SOURCE} WHERE id IN (1, 3) ORDER BY id
+----
+42
+7
+
+query I
+SELECT v.n::INTEGER FROM {SOURCE} WHERE id = 1 OR id = 3 ORDER BY id
+----
+42
+7
+
+# the same with the filter on another extracted field next to it
+query I
+SELECT v.n::INTEGER FROM {SOURCE} WHERE v.n::VARCHAR <> 'bad' AND id IN (1, 3) ORDER BY id
+----
+42
+7
+
+# joins drop rows as well
+query I
+SELECT v.n::INTEGER FROM {SOURCE} WHERE id IN (SELECT unnest([1, 3])) ORDER BY id
+----
+42
+7
+
+query I
+SELECT v.n::INTEGER FROM {SOURCE} JOIN (SELECT unnest([1, 3]) AS j) ON j = id ORDER BY id
+----
+42
+7
+
+query I
+SELECT v.n::INTEGER FROM {SOURCE} WHERE id NOT IN (SELECT unnest([0, 2])) ORDER BY id
+----
+42
+7
+
+# a cast the filter itself needs still runs on every row
+statement error
+SELECT v.n::INTEGER FROM {SOURCE} WHERE v.n::INTEGER > 10 AND id IN (1, 3)
+----
+<REGEX>:.*Conversion Error.*bad.*
+
+endloop
+
+# the extract is still pushed into the scan, only the cast stays above the filter
+query II
+EXPLAIN SELECT v.n::INTEGER FROM read_parquet('{TEST_DIR}/pushdown_extract_cast_filters.parquet') WHERE id IN (1, 3)
+----
+physical_plan	<REGEX>:.*CAST\(v AS INTEGER\).*Filter.*READ_PARQUET.*v\.n.*
+
+# a filter the scan applies itself keeps the cast in the scan
+query II
+EXPLAIN SELECT v.n::INTEGER FROM read_parquet('{TEST_DIR}/pushdown_extract_cast_filters.parquet') WHERE id > 0
+----
+physical_plan	<!REGEX>:.*CAST\(v AS INTEGER\).*
+
+query I
+SELECT v.n::INTEGER FROM read_parquet('{TEST_DIR}/pushdown_extract_cast_filters.parquet') WHERE id > 0 ORDER BY id
+----
+42
+7

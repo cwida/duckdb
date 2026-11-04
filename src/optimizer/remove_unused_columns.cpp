@@ -582,9 +582,13 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 		remove.VisitOperator(op.children[0]);
 		return;
 	}
+	case LogicalOperatorType::LOGICAL_FILTER:
+		KeepCastsAbove();
+		break;
 	case LogicalOperatorType::LOGICAL_ASOF_JOIN:
 	case LogicalOperatorType::LOGICAL_DELIM_JOIN:
 	case LogicalOperatorType::LOGICAL_COMPARISON_JOIN: {
+		KeepCastsAbove();
 		if (analyze || everything_referenced) {
 			break;
 		}
@@ -632,6 +636,7 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 		break;
 	}
 	case LogicalOperatorType::LOGICAL_ANY_JOIN:
+		KeepCastsAbove();
 		break;
 	case LogicalOperatorType::LOGICAL_UNION: {
 		auto &setop = op.Cast<LogicalSetOperation>();
@@ -1095,7 +1100,8 @@ void RemoveUnusedColumns::WritePushdownExtractColumns(
 		}
 		D_ASSERT(struct_extract.components.size() > depth);
 		auto &component = struct_extract.components[depth];
-		auto &expr = component.cast ? *component.cast : component.extract;
+		auto push_cast = component.cast && struct_extract.push_cast;
+		auto &expr = push_cast ? *component.cast : component.extract;
 
 		auto return_type = expr->GetReturnType();
 
@@ -1107,7 +1113,7 @@ void RemoveUnusedColumns::WritePushdownExtractColumns(
 		auto &new_expr = expr->Cast<BoundColumnRefExpression>();
 		new_expr.SetReturnType(return_type);
 
-		auto column_index = callback(*entry, component.cast ? &(*component.cast)->GetReturnType() : nullptr);
+		auto column_index = callback(*entry, push_cast ? &(*component.cast)->GetReturnType() : nullptr);
 		new_expr.BindingMutable().column_index = column_index;
 		RecordSecureViewReplacement(old_binding, new_expr.Binding(), std::move(source));
 	}
@@ -1567,6 +1573,15 @@ void BaseColumnPruner::SetMode(BaseColumnPrunerMode mode) {
 
 BaseColumnPrunerMode BaseColumnPruner::GetMode() const {
 	return mode;
+}
+
+void BaseColumnPruner::KeepCastsAbove() {
+	// a cast in the scan would run on the rows that the filter or join below the reference drops
+	for (auto &entry : column_references) {
+		for (auto &struct_extract : entry.second.struct_extracts) {
+			struct_extract.push_cast = false;
+		}
+	}
 }
 
 bool BaseColumnPruner::HandleStructExtract(unique_ptr<Expression> &expr_p,
