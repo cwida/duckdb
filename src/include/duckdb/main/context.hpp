@@ -40,8 +40,8 @@ public:
 	DUCKDB_API explicit Context(DatabaseInstance &db);
 	DUCKDB_API ~Context();
 
-	//! Turns these into the services of the given client context: creates the client config, the connection logger,
-	//! the query profiler, the file opener and the client file system.
+	//! Turns these into the services of the given client context: creates the client config, the query profiler,
+	//! the file opener and the client file system. The connection logger is set by the context (see SetLogger).
 	//! The context must own these services - it is kept as a back reference.
 	void InitializeClient(ClientContext &context);
 

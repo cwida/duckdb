@@ -45,8 +45,6 @@ void Context::InitializeClient(ClientContext &context_p) {
 	D_ASSERT(!context);
 	context = &context_p;
 	config = make_uniq<ClientConfig>();
-	LoggingContext logging_context(LogContextScope::CONNECTION);
-	logger = db.GetLogManager().CreateLogger(logging_context, true);
 	file_opener = make_uniq<ClientContextFileOpener>(context_p);
 	client_file_system = make_uniq<ClientFileSystem>(context_p);
 	profiler = make_shared_ptr<QueryProfiler>(context_p);
