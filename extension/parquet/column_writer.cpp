@@ -562,6 +562,9 @@ unique_ptr<ColumnWriter> ColumnWriter::CreateWriterRecursive(ClientContext &cont
 	case LogicalTypeId::GEOMETRY:
 		return make_uniq<StandardColumnWriter<string_t, string_t, ParquetGeometryOperator>>(writer, std::move(schema),
 		                                                                                    path_in_schema);
+	case LogicalTypeId::GEOGRAPHY:
+		return make_uniq<StandardColumnWriter<string_t, string_t, ParquetGeographyOperator>>(writer, std::move(schema),
+		                                                                                     path_in_schema);
 	case LogicalTypeId::VARCHAR:
 		return make_uniq<StandardColumnWriter<string_t, string_t, ParquetStringOperator>>(writer, std::move(schema),
 		                                                                                  path_in_schema);

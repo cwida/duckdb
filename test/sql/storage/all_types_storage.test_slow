@@ -3,7 +3,7 @@
 # group: [storage]
 
 # load the DB from disk
-load {TEST_DIR}/all_types_storage.db readwrite v2.0.0
+load {TEST_DIR}/all_types_storage.db readwrite v2.1.0
 
 statement ok
 CREATE TABLE all_types AS SELECT * FROM test_all_types();

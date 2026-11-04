@@ -123,6 +123,16 @@ static void CheckTypeIsSupported(const LogicalType &logical_type, AttachedDataba
 				                required, db.GetName(), current);
 			}
 		} break;
+		case LogicalTypeId::GEOGRAPHY: {
+			const auto storage_version = db.GetStorageManager().GetStorageVersion();
+			if (storage_version < Geometry::GEOGRAPHY_VERSION_ADDED) {
+				auto required = GetStorageVersionName(Geometry::GEOGRAPHY_VERSION_ADDED, false);
+				auto current = GetStorageVersionName(storage_version, false);
+				throw NotImplementedException("GEOGRAPHY columns are not supported in storage versions prior to %s "
+				                              "(database %s is using storage version %s)",
+				                              required, db.GetName(), current);
+			}
+		} break;
 		default:
 			break;
 		}

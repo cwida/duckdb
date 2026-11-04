@@ -427,7 +427,8 @@ duckdb_state duckdb_register_logical_type(duckdb_connection connection, duckdb_l
 }
 
 char *duckdb_geometry_type_get_crs(duckdb_logical_type type) {
-	if (!AssertLogicalTypeId(type, duckdb::LogicalTypeId::GEOMETRY)) {
+	if (!AssertLogicalTypeId(type, duckdb::LogicalTypeId::GEOMETRY) &&
+	    !AssertLogicalTypeId(type, duckdb::LogicalTypeId::GEOGRAPHY)) {
 		return nullptr;
 	}
 	auto &logical_type = *(reinterpret_cast<duckdb::LogicalType *>(type));

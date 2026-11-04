@@ -135,6 +135,8 @@ VariantComparisonType GetVariantComparisonType(VariantLogicalType type) {
 		return VariantComparisonType::BITSTRING;
 	case VariantLogicalType::GEOMETRY:
 		return VariantComparisonType::GEOMETRY;
+	case VariantLogicalType::GEOGRAPHY:
+		return VariantComparisonType::GEOGRAPHY;
 	case VariantLogicalType::ARRAY:
 		return VariantComparisonType::ARRAY;
 	case VariantLogicalType::OBJECT:

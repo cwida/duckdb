@@ -1,0 +1,331 @@
+# name: test/sql/types/geo/geography_stats.test
+# description: GEOGRAPHY statistics: antimeridian-aware extents, seams, poles and degenerate cases
+# group: [geo]
+
+# Stats are not preserved when serialized in the stats() function, so this doesnt work
+require no_alternative_verify
+
+# ---------------------------------------------------------------------------------------------------
+# Antimeridian-crossing data produces a wrapped extent (x_min > x_max)
+# ---------------------------------------------------------------------------------------------------
+
+statement ok
+CREATE TABLE t_wrap(g GEOGRAPHY);
+
+statement ok
+INSERT INTO t_wrap VALUES ('LINESTRING(170 10, -170 20)');
+
+query IIII
+SELECT s.extent.x_min, s.extent.x_max, s.extent.y_min, s.extent.y_max
+FROM (SELECT stats(g) s FROM t_wrap LIMIT 1);
+----
+170.0	-170.0	10.0	20.0
+
+# The wrapped extent matches points on and across the antimeridian, but not the far side
+query I
+SELECT count(*) FROM t_wrap WHERE g && 'POINT(180 15)'::GEOGRAPHY;
+----
+1
+
+query I
+SELECT count(*) FROM t_wrap WHERE g && 'POINT(-180 15)'::GEOGRAPHY;
+----
+1
+
+query I
+SELECT count(*) FROM t_wrap WHERE g && 'POINT(0 15)'::GEOGRAPHY;
+----
+0
+
+# Overlapping in (wrapped) X but disjoint in Y does not match
+query I
+SELECT count(*) FROM t_wrap WHERE g && 'POINT(180 50)'::GEOGRAPHY;
+----
+0
+
+# ---------------------------------------------------------------------------------------------------
+# +180 and -180 are the same longitude: merging both seam representations yields a point extent,
+# not the full circle, and either representation matches the other.
+# ---------------------------------------------------------------------------------------------------
+
+statement ok
+CREATE TABLE t_seam(g GEOGRAPHY);
+
+statement ok
+INSERT INTO t_seam VALUES ('POINT(-180 0)'), ('POINT(180 0)');
+
+query II
+SELECT s.extent.x_min = s.extent.x_max, abs(s.extent.x_min::DOUBLE) FROM (SELECT stats(g) s FROM t_seam LIMIT 1);
+----
+true	180.0
+
+query I
+SELECT count(*) FROM t_seam WHERE g && 'POINT(180 0)'::GEOGRAPHY;
+----
+2
+
+query I
+SELECT count(*) FROM t_seam WHERE g && 'POINT(-180 0)'::GEOGRAPHY;
+----
+2
+
+query I
+SELECT count(*) FROM t_seam WHERE g && 'POINT(179 0)'::GEOGRAPHY;
+----
+0
+
+# ---------------------------------------------------------------------------------------------------
+# Two half-circle spans merge into the canonical full-circle extent [-180, 180]
+# ---------------------------------------------------------------------------------------------------
+
+statement ok
+CREATE TABLE t_full(g GEOGRAPHY);
+
+statement ok
+INSERT INTO t_full VALUES ('LINESTRING(-90 0, 0 0, 90 0)'), ('LINESTRING(90 0, 179 0, -90 0)');
+
+query II
+SELECT s.extent.x_min, s.extent.x_max FROM (SELECT stats(g) s FROM t_full LIMIT 1);
+----
+-180.0	180.0
+
+# Each row still only matches its own (half-circle) extent
+query I
+SELECT count(*) FROM t_full WHERE g && 'POINT(123 0)'::GEOGRAPHY;
+----
+1
+
+query I
+SELECT count(*) FROM t_full WHERE g && 'POINT(0 0)'::GEOGRAPHY;
+----
+1
+
+# ---------------------------------------------------------------------------------------------------
+# vertex_extract stats: a wrapped X extent must not become an inverted (min > max) numeric range
+# on the extracted coordinate, which would wrongly prune numeric filters.
+# ---------------------------------------------------------------------------------------------------
+
+statement ok
+CREATE TABLE t_vx(g GEOGRAPHY);
+
+statement ok
+INSERT INTO t_vx VALUES ('POINT(179 0)'), ('POINT(-179 0)');
+
+query I
+SELECT count(*) FROM t_vx WHERE g.x > 178;
+----
+1
+
+query I
+SELECT count(*) FROM t_vx WHERE g.x < -178;
+----
+1
+
+query I
+SELECT count(*) FROM t_vx WHERE g.x > 179.5;
+----
+0
+
+# +180 and -180 are the same longitude to the arc math, so an arc ending at 180 contains a stored
+# -180. The numeric X range must then cover both seam values.
+statement ok
+CREATE TABLE t_vx_seam(g GEOGRAPHY);
+
+statement ok
+INSERT INTO t_vx_seam VALUES ('POINT(-159.6 0)');
+
+statement ok
+INSERT INTO t_vx_seam SELECT ('POINT(' || x || ' 0)')::GEOGRAPHY FROM range(-140, 180, 20) r(x);
+
+statement ok
+INSERT INTO t_vx_seam VALUES ('POINT(180 0)'), ('POINT(-180 0)');
+
+query II
+SELECT s.extent.x_min, s.extent.x_max FROM (SELECT stats(g) s FROM t_vx_seam LIMIT 1);
+----
+-159.6	180.0
+
+query I
+SELECT count(*) FROM t_vx_seam WHERE g.x = -180;
+----
+1
+
+query I
+SELECT count(*) FROM t_vx_seam WHERE g.x < -170;
+----
+1
+
+query I
+SELECT count(*) FROM t_vx_seam WHERE g.x > 170;
+----
+1
+
+# The arc containment test rounds at ~1 ulp, so a coordinate one ulp past the arc end can be
+# absorbed without widening the arc. The numeric X range is padded to cover it.
+statement ok
+CREATE TABLE t_vx_ulp(g GEOGRAPHY);
+
+statement ok
+INSERT INTO t_vx_ulp VALUES ('POINT(-89.628983761736379 0)'), ('POINT(-16.448723746794428 0)'), ('POINT(-16.448723746794425 0)');
+
+query I
+SELECT count(*) FROM t_vx_ulp WHERE g.x = -16.448723746794425;
+----
+1
+
+query I
+SELECT count(*) FROM t_vx_ulp WHERE g.x > -16.448723746794428;
+----
+1
+
+# ---------------------------------------------------------------------------------------------------
+# Poles: Y stays a plain min/max axis
+# ---------------------------------------------------------------------------------------------------
+
+statement ok
+CREATE TABLE t_pole(g GEOGRAPHY);
+
+statement ok
+INSERT INTO t_pole VALUES ('POINT(0 90)'), ('POINT(0 -90)');
+
+query II
+SELECT s.extent.y_min, s.extent.y_max FROM (SELECT stats(g) s FROM t_pole LIMIT 1);
+----
+-90.0	90.0
+
+# ---------------------------------------------------------------------------------------------------
+# Regression: stored coordinates must always match themselves through the zonemap.
+# These exact coordinate sets used to produce extents that excluded their own inputs by ~1e-14
+# degrees (the merged extent endpoint was recomputed arithmetically instead of reusing the input
+# coordinate), so the row group was wrongly pruned and count(*) returned 0.
+# ---------------------------------------------------------------------------------------------------
+
+statement ok
+CREATE TABLE t_ulp(g GEOGRAPHY);
+
+statement ok
+INSERT INTO t_ulp VALUES
+	('POINT(180 0)'),
+	('POINT(-34.436061507319117 0)'),
+	('POINT(-21.644696034872688 0)'),
+	('POINT(-33.974438731270403 0)');
+
+query I
+SELECT count(*) FROM t_ulp WHERE g && 'POINT(-21.644696034872688 0)'::GEOGRAPHY;
+----
+1
+
+query I
+SELECT count(*) FROM t_ulp WHERE g && 'POINT(-34.436061507319117 0)'::GEOGRAPHY;
+----
+1
+
+statement ok
+CREATE TABLE t_ulp2(g GEOGRAPHY);
+
+statement ok
+INSERT INTO t_ulp2 VALUES ('POINT(-128.20366710520983 0)'), ('POINT(22.404613198913019 0)');
+
+query I
+SELECT count(*) FROM t_ulp2 WHERE g && 'POINT(22.404613198913019 0)'::GEOGRAPHY;
+----
+1
+
+# ---------------------------------------------------------------------------------------------------
+# Non-finite ordinates: a NaN or Inf X/Y in a non-empty vertex is not a valid geography coordinate
+# (WKT cannot express these; build the WKB by hand)
+# ---------------------------------------------------------------------------------------------------
+
+# LINESTRING(0 0, NaN 0, 5 5)
+statement error
+SELECT ST_GeogFromWKB(from_hex('01020000000300000000000000000000000000000000000000000000000000F87F000000000000000000000000000014400000000000001440'));
+----
+GEOGRAPHY
+
+# LINESTRING(0 0, 0 NaN, 5 5)
+statement error
+SELECT ST_GeogFromWKB(from_hex('010200000003000000000000000000000000000000000000000000000000000000000000000000F87F00000000000014400000000000001440'));
+----
+GEOGRAPHY
+
+# LINESTRING(0 0, Inf 0)
+statement error
+SELECT ST_GeogFromWKB(from_hex('01020000000200000000000000000000000000000000000000000000000000f07f0000000000000000'));
+----
+GEOGRAPHY
+
+# POINT(NaN NaN) is the empty point: still a valid geography
+query I
+SELECT ST_AsText(ST_GeogFromWKB(from_hex('0101000000000000000000F87F000000000000F87F')));
+----
+POINT EMPTY
+
+# ---------------------------------------------------------------------------------------------------
+# GEOMETRY accepts a NaN ordinate, but it must degrade the stats axis to unknown instead of
+# shrink-wrapping around the remaining values (which used to allow wrong zonemap pruning)
+# ---------------------------------------------------------------------------------------------------
+
+statement ok
+CREATE TABLE t_nan(g GEOMETRY);
+
+# LINESTRING(0 0, NaN 0, 5 5): X extent is unknown, Y extent is exact
+statement ok
+INSERT INTO t_nan SELECT ST_GeomFromWKB(from_hex('01020000000300000000000000000000000000000000000000000000000000F87F000000000000000000000000000014400000000000001440'));
+
+query IIII
+SELECT isinf(s.extent.x_min::DOUBLE), isinf(s.extent.x_max::DOUBLE), s.extent.y_min, s.extent.y_max
+FROM (SELECT stats(g) s FROM t_nan LIMIT 1);
+----
+true	true	0.0	5.0
+
+# The row is still found through the zonemap despite the NaN vertex
+query I
+SELECT count(*) FROM t_nan WHERE g && 'POINT(0 0)'::GEOMETRY;
+----
+1
+
+# ---------------------------------------------------------------------------------------------------
+# Empty geographies do not contribute to the extent and never intersect
+# ---------------------------------------------------------------------------------------------------
+
+statement ok
+CREATE TABLE t_empty(g GEOGRAPHY);
+
+statement ok
+INSERT INTO t_empty VALUES ('POINT EMPTY'), ('POINT(10 10)'), (NULL);
+
+query IIII
+SELECT s.extent.x_min, s.extent.x_max, s.has_empty_geom, s.has_null
+FROM (SELECT stats(g) s FROM t_empty LIMIT 1);
+----
+10.0	10.0	true	true
+
+query I
+SELECT count(*) FROM t_empty WHERE g && 'POINT(10 10)'::GEOGRAPHY;
+----
+1
+
+# ---------------------------------------------------------------------------------------------------
+# A CRS-only cast keeps the statistics; a cast to GEOMETRY does not
+# ---------------------------------------------------------------------------------------------------
+
+query IIII
+SELECT s.extent.x_min, s.extent.x_max, s.extent.y_min, s.extent.y_max
+FROM (SELECT stats(g::GEOGRAPHY('OGC:CRS84')) s FROM t_wrap LIMIT 1);
+----
+170.0	-170.0	10.0	20.0
+
+query II
+SELECT s.extent.x_min, s.extent.x_max FROM (SELECT stats(g::GEOMETRY) s FROM t_wrap LIMIT 1);
+----
+-inf	inf
+
+query II
+EXPLAIN SELECT count(*) FROM t_wrap WHERE g::GEOGRAPHY('OGC:CRS84') && 'POINT(0 15)'::GEOGRAPHY('OGC:CRS84');
+----
+physical_plan	<REGEX>:[\s\S]*Empty Result[\s\S]*
+
+query I
+SELECT count(*) FROM t_wrap WHERE g::GEOGRAPHY('OGC:CRS84') && 'POINT(180 15)'::GEOGRAPHY('OGC:CRS84');
+----
+1

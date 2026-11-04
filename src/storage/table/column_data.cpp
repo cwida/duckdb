@@ -1175,7 +1175,7 @@ static PersistentColumnData GetPersistentColumnDataType(Deserializer &deserializ
 		return result;
 	}
 	case ExtraPersistentColumnDataType::GEOMETRY: {
-		if (column_type.id() != LogicalTypeId::GEOMETRY) {
+		if (column_type.id() != LogicalTypeId::GEOMETRY && column_type.id() != LogicalTypeId::GEOGRAPHY) {
 			throw DataCorruptionException("GEOMETRY column data found for a column of type %s", column_type);
 		}
 		const auto &geometry_data = extra_data->Cast<GeometryPersistentColumnData>();
@@ -1525,14 +1525,17 @@ void ColumnData::Verify(RowGroup &parent) {
 #ifdef DEBUG
 	data.Verify();
 
+	const auto is_geo_type = [](LogicalTypeId id) {
+		return id == LogicalTypeId::GEOMETRY || id == LogicalTypeId::GEOGRAPHY;
+	};
 	bool is_geometry_child_column = false;
-	if (type.id() == LogicalTypeId::GEOMETRY && this->parent && this->parent->type.id() == LogicalTypeId::GEOMETRY) {
-		// Geometry child column
+	if (is_geo_type(type.id()) && this->parent && is_geo_type(this->parent->type.id())) {
+		// Geometry/geography child column
 		is_geometry_child_column = true;
 	}
 
 	if (type.InternalType() == PhysicalType::STRUCT || type.InternalType() == PhysicalType::ARRAY ||
-	    (type.id() == LogicalTypeId::GEOMETRY && !is_geometry_child_column)) {
+	    (is_geo_type(type.id()) && !is_geometry_child_column)) {
 		// structs and fixed size lists don't have segments
 		D_ASSERT(!data.GetRootSegment());
 		return;
@@ -1555,7 +1558,7 @@ void ColumnData::Verify(RowGroup &parent) {
 shared_ptr<ColumnData> ColumnData::CreateColumn(BlockManager &block_manager, DataTableInfo &info, idx_t column_index,
                                                 const LogicalType &type, ColumnDataType data_type,
                                                 optional_ptr<ColumnData> parent) {
-	if (type.id() == LogicalTypeId::GEOMETRY) {
+	if (type.id() == LogicalTypeId::GEOMETRY || type.id() == LogicalTypeId::GEOGRAPHY) {
 		return make_shared_ptr<GeoColumnData>(block_manager, info, column_index, type, data_type, parent);
 	}
 	if (type.id() == LogicalTypeId::VARIANT) {

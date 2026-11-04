@@ -4,10 +4,14 @@
 #include "duckdb/storage/table/variant_column_data.hpp"
 
 #include "duckdb/common/serializer/deserializer.hpp"
+#include "duckdb/common/type_visitor.hpp"
+#include "duckdb/common/types/geometry.hpp"
 #include "duckdb/function/variant/variant_shredding.hpp"
+#include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/settings.hpp"
 #include "duckdb/storage/statistics/struct_stats.hpp"
 #include "duckdb/storage/statistics/variant_stats.hpp"
+#include "duckdb/storage/storage_manager.hpp"
 #include "duckdb/storage/table/append_state.hpp"
 #include "duckdb/storage/table/column_checkpoint_state.hpp"
 #include "duckdb/storage/table/data_table_info.hpp"
@@ -759,6 +763,11 @@ unique_ptr<ColumnCheckpointState> VariantColumnData::Checkpoint(const RowGroup &
 		auto &type_entries = StructType::GetChildTypes(shredded_type);
 		if (type_entries.size() != 2) {
 			//! We couldn't determine a shredding type from the data
+			should_shred = false;
+		}
+		if (TypeVisitor::Contains(shredded_type, LogicalTypeId::GEOGRAPHY) &&
+		    db.GetStorageManager().GetStorageVersion() < Geometry::GEOGRAPHY_VERSION_ADDED) {
+			//! GEOGRAPHY cannot be written to the storage versions that predate it
 			should_shred = false;
 		}
 	}

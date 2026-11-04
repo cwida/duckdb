@@ -989,6 +989,22 @@ Value Value::GEOMETRY(const_data_ptr_t data, idx_t len) {
 	return result;
 }
 
+Value Value::GEOGRAPHY(const_data_ptr_t data, idx_t len, const CoordinateReferenceSystem &crs) {
+	Value result;
+	result.type_ = LogicalType::GEOGRAPHY(crs); // construct type explicitly so that we get the ExtraTypeInfo
+	result.is_null = false;
+	result.value_info_ = make_shared_ptr<StringValueInfo>(string(const_char_ptr_cast(data), len));
+	return result;
+}
+
+Value Value::GEOGRAPHY(const_data_ptr_t data, idx_t len) {
+	Value result;
+	result.type_ = LogicalType::GEOGRAPHY(); // construct type explicitly so that we get the ExtraTypeInfo
+	result.is_null = false;
+	result.value_info_ = make_shared_ptr<StringValueInfo>(string(const_char_ptr_cast(data), len));
+	return result;
+}
+
 Value Value::TYPE(const LogicalType &type) {
 	MemoryStream stream;
 	SerializationOptions options;
@@ -1755,6 +1771,7 @@ string Value::ToSQLString() const {
 	case LogicalTypeId::BLOB:
 	case LogicalTypeId::BIT:
 	case LogicalTypeId::GEOMETRY:
+	case LogicalTypeId::GEOGRAPHY:
 		return "'" + ToString() + "'::" + type_.ToString();
 	case LogicalTypeId::VARCHAR:
 	case LogicalTypeId::ENUM: {
@@ -2311,9 +2328,9 @@ void Value::SerializeInternal(Serializer &serializer, bool serialize_type) const
 		if (type_.id() == LogicalTypeId::BLOB) {
 			auto blob_str = Blob::ToString(StringValue::Get(*this));
 			serializer.WriteProperty(102, "value", blob_str);
-		} else if (type_.id() == LogicalTypeId::GEOMETRY) {
-			if (!serializer.ShouldSerialize(StorageVersion::V1_5_0)) {
-				// Write as old-style SPATIAL format
+		} else if (type_.id() == LogicalTypeId::GEOMETRY || type_.id() == LogicalTypeId::GEOGRAPHY) {
+			if (type_.id() == LogicalTypeId::GEOMETRY && !serializer.ShouldSerialize(StorageVersion::V1_5_0)) {
+				// Write as old-style SPATIAL format (GEOMETRY only - GEOGRAPHY has no legacy form)
 				string blob;
 				Geometry::ToSpatialGeometry(StringValue::Get(*this), blob);
 				auto text = Blob::ToString(blob);
@@ -2582,10 +2599,13 @@ Value Value::Deserialize(Deserializer &deserializer) {
 		if (type.id() == LogicalTypeId::BLOB) {
 			auto str = deserializer.ReadProperty<string>(102, "value");
 			new_value.value_info_ = make_shared_ptr<StringValueInfo>(Blob::ToBlob(str));
-		} else if (type.id() == LogicalTypeId::GEOMETRY) {
+		} else if (type.id() == LogicalTypeId::GEOMETRY || type.id() == LogicalTypeId::GEOGRAPHY) {
 			auto text = deserializer.ReadProperty<string>(102, "value");
+			// GEOGRAPHY is always WKB; GEOMETRY defaults to the legacy SPATIAL format when the property is absent.
+			const auto default_format =
+			    type.id() == LogicalTypeId::GEOGRAPHY ? GeometryStorageType::WKB : GeometryStorageType::SPATIAL;
 			auto type = deserializer.ReadPropertyWithExplicitDefault<GeometryStorageType>(103, "geometry_format",
-			                                                                              GeometryStorageType::SPATIAL);
+			                                                                              default_format);
 
 			auto blob = Blob::ToBlob(text);
 			if (type == GeometryStorageType::WKB) {

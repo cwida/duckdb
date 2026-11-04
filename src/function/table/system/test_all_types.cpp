@@ -377,6 +377,12 @@ vector<TestType> TestAllTypesFun::GetTestTypes(const bool use_large_enum, const 
 	auto max_tuple_val = Value::TUPLE({Value::INTEGER(42), Value("🦆🦆🦆🦆🦆🦆")});
 	result.emplace_back(tuple_type, "tuple", min_tuple_val, max_tuple_val);
 
+	// geography - added last so existing column positions are unchanged
+	// coordinates stay within the canonical GEOGRAPHY ranges
+	auto min_geography = Value("POINT EMPTY").DefaultCastAs(LogicalType::GEOGRAPHY());
+	auto max_geography = Value("LINESTRING (-180 -90, 180 90)").DefaultCastAs(LogicalType::GEOGRAPHY());
+	result.emplace_back(LogicalType::GEOGRAPHY(), "geography", min_geography, max_geography);
+
 	return result;
 }
 

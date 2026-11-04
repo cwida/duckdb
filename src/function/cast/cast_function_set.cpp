@@ -169,6 +169,14 @@ static auto RelaxedTypeMatch(MAP &map, const LogicalType &type) -> decltype(map.
 		}
 		return map.find(LogicalType::ANY);
 	}
+	case LogicalTypeId::GEOGRAPHY: {
+		// a GEOGRAPHY with a CRS matches the casts of the GEOGRAPHY without a CRS
+		auto entry = map.find(LogicalType::GEOGRAPHY());
+		if (entry != map.end()) {
+			return entry;
+		}
+		return map.find(LogicalType::ANY);
+	}
 	default:
 		return map.find(LogicalType::ANY);
 	}

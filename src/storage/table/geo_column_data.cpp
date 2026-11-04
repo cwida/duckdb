@@ -353,7 +353,8 @@ unique_ptr<ColumnCheckpointState> GeoColumnData::Checkpoint(const RowGroup &row_
 	// Shredded columns are always re-written from scratch, and the stats are recomputes, do the empty stats of the
 	// inner layout type is a correct default in these cases.
 	unique_ptr<BaseStatistics> shredded_stats;
-	if (base_column->GetType().id() != LogicalTypeId::GEOMETRY) {
+	const auto base_id = base_column->GetType().id();
+	if (base_id != LogicalTypeId::GEOMETRY && base_id != LogicalTypeId::GEOGRAPHY) {
 		shredded_stats = BaseStatistics::CreateEmpty(base_column->GetType()).ToUnique();
 	}
 	auto &old_column_stats = shredded_stats ? *shredded_stats : old_stats;
@@ -480,7 +481,12 @@ unique_ptr<ColumnCheckpointState> GeoColumnData::Checkpoint(const RowGroup &row_
 	// We cant specialize empty geometries, because we cant represent zero-vertex geometries in those layouts
 	const auto has_empty = flags.HasEmptyGeometry() || flags.HasEmptyPart();
 
-	if (has_mixed_type || has_only_geometry_collection || has_only_invalid || has_empty) {
+	// Only single-point GEOGRAPHY shreds: the shredded layouts keep per-ordinate vertex stats, which cannot
+	// represent the geodetic coverage extent zonemap pruning relies on (edge bulge, pole-enclosing rings, and
+	// the antimeridian-wrapped arc any multi-vertex row can span). A single point's extent is its coordinates.
+	const auto has_geodetic_extent = type.id() == LogicalTypeId::GEOGRAPHY && new_geom_type != GeometryType::POINT;
+
+	if (has_mixed_type || has_only_geometry_collection || has_only_invalid || has_empty || has_geodetic_extent) {
 		// Cant specialize, keep column
 		checkpoint_state->inner_column = base_column;
 		checkpoint_state->inner_column_state =
@@ -687,6 +693,21 @@ void GeoColumnData::InterpretStats(const BaseStatistics &source, BaseStatistics 
 	extent.x_max = NumericStats::GetMax<double>(vert_stats[0]);
 	extent.y_min = NumericStats::GetMin<double>(vert_stats[1]);
 	extent.y_max = NumericStats::GetMax<double>(vert_stats[1]);
+
+	// For GEOGRAPHY, the per-ordinate min/max only covers the vertices. That is exact for single points,
+	// but any multi-vertex row has a wider coverage extent: its bounding arc may wrap the antimeridian
+	// (which a numeric X range cannot express), geodesic edges bulge poleward beyond their vertices, and
+	// rings can enclose a pole. None of that is reconstructible from per-ordinate stats, so widen X (and
+	// Y for layouts with edges) to the full globe. Checkpoint never shreds such columns (see
+	// has_geodetic_extent), so this is a defensive guard that keeps pruning sound should that ever change.
+	if (target.GetType().id() == LogicalTypeId::GEOGRAPHY && geom_type != GeometryType::POINT) {
+		extent.x_min = -180.0;
+		extent.x_max = 180.0;
+		if (geom_type != GeometryType::MULTIPOINT) {
+			extent.y_min = -90.0;
+			extent.y_max = 90.0;
+		}
+	}
 
 	switch (vert_type) {
 	case VertexType::XYZ:

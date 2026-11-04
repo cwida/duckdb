@@ -1,0 +1,259 @@
+# name: test/sql/types/geo/geography_coverage.test
+# description: GEOGRAPHY extents bound coverage: geodesic edge bulge, pole-enclosing rings, ambiguous edges
+# group: [geo]
+
+# Stats are not preserved when serialized in the stats() function, so this doesnt work
+require no_alternative_verify
+
+# ---------------------------------------------------------------------------------------------------
+# Geodesic edges bulge poleward: a segment between two points at 45N over 90 degrees of longitude
+# reaches ~54.7356N (tan(phi_max) = tan(45) / cos(45)).
+# ---------------------------------------------------------------------------------------------------
+
+query II
+SELECT 'LINESTRING(0 45, 90 45)'::GEOGRAPHY && 'POINT(45 54)'::GEOGRAPHY,
+       'LINESTRING(0 45, 90 45)'::GEOGRAPHY && 'POINT(45 55)'::GEOGRAPHY;
+----
+true	false
+
+statement ok
+CREATE TABLE t_bulge(g GEOGRAPHY);
+
+statement ok
+INSERT INTO t_bulge VALUES ('LINESTRING(0 45, 90 45)');
+
+query IIII
+SELECT round(s.extent.y_max::DOUBLE, 4), s.extent.y_min, s.extent.x_min, s.extent.x_max
+FROM (SELECT stats(g) s FROM t_bulge LIMIT 1);
+----
+54.7356	45.0	0.0	90.0
+
+# The southern mirror bulges south
+query II
+SELECT 'LINESTRING(0 -45, 90 -45)'::GEOGRAPHY && 'POINT(45 -54)'::GEOGRAPHY,
+       'LINESTRING(0 -45, 90 -45)'::GEOGRAPHY && 'POINT(45 -55)'::GEOGRAPHY;
+----
+true	false
+
+# Meridian and equator segments are geodesics themselves: no bulge
+query II
+SELECT 'LINESTRING(10 10, 10 50)'::GEOGRAPHY && 'POINT(10 60)'::GEOGRAPHY,
+       'LINESTRING(-89 0, 89 0)'::GEOGRAPHY && 'POINT(0 45)'::GEOGRAPHY;
+----
+false	false
+
+# The planar GEOMETRY interpretation of the same coordinates does not bulge
+query I
+SELECT 'LINESTRING(0 45, 90 45)'::GEOMETRY && 'POINT(45 54)'::GEOMETRY;
+----
+false
+
+# ---------------------------------------------------------------------------------------------------
+# Edges cover the longitudes between their endpoints, even where the vertices alone do not: the
+# vertices of LINESTRING(0 10, 170 10, -170 10, 0 10) fit in the arc from 0 east to -170, but its last
+# edge runs from -170 east to 0, reaching ~63.6975N at -85.
+# ---------------------------------------------------------------------------------------------------
+
+query III
+SELECT 'LINESTRING(0 10, 170 10, -170 10, 0 10)'::GEOGRAPHY && 'POINT(-85 63.69)'::GEOGRAPHY,
+       'LINESTRING(0 10, 170 10, -170 10, 0 10)'::GEOGRAPHY && 'POINT(-85 50)'::GEOGRAPHY,
+       'LINESTRING(0 10, 170 10, -170 10, 0 10)'::GEOGRAPHY && 'POINT(-85 64)'::GEOGRAPHY;
+----
+true	true	false
+
+statement ok
+CREATE TABLE t_lon_cover(g GEOGRAPHY);
+
+statement ok
+INSERT INTO t_lon_cover VALUES ('LINESTRING(0 10, 170 10, -170 10, 0 10)');
+
+query IIII
+SELECT s.extent.x_min, s.extent.x_max, s.extent.y_min, round(s.extent.y_max::DOUBLE, 4)
+FROM (SELECT stats(g) s FROM t_lon_cover LIMIT 1);
+----
+-180.0	180.0	10.0	63.6975
+
+# Row groups covering the last edge are not pruned
+query I
+SELECT count(*) FROM t_lon_cover WHERE g && 'POINT(-85 63.69)'::GEOGRAPHY;
+----
+1
+
+# ---------------------------------------------------------------------------------------------------
+# Polygon interiors follow the interior-on-the-left rule (S2's convention, and BigQuery's with
+# oriented => TRUE; BigQuery's default instead takes the smaller of the two regions)
+# ---------------------------------------------------------------------------------------------------
+
+# A shell winding east around the globe encloses the north pole (the interior is on the left of the
+# eastward travel direction); the equator side is not covered.
+query II
+SELECT 'POLYGON((0 80, 90 80, 180 80, -90 80, 0 80))'::GEOGRAPHY && 'POINT(12 90)'::GEOGRAPHY,
+       'POLYGON((0 80, 90 80, 180 80, -90 80, 0 80))'::GEOGRAPHY && 'POINT(12 0)'::GEOGRAPHY;
+----
+true	false
+
+# The same ring wound west encloses everything EXCEPT the northern cap: the south pole is inside,
+# the north pole is not, and points near the equator are covered.
+query III
+SELECT 'POLYGON((0 80, -90 80, 180 80, 90 80, 0 80))'::GEOGRAPHY && 'POINT(12 90)'::GEOGRAPHY,
+       'POLYGON((0 80, -90 80, 180 80, 90 80, 0 80))'::GEOGRAPHY && 'POINT(12 -90)'::GEOGRAPHY,
+       'POLYGON((0 80, -90 80, 180 80, 90 80, 0 80))'::GEOGRAPHY && 'POINT(12 0)'::GEOGRAPHY;
+----
+false	true	true
+
+# Antarctica-style: a shell winding west around the globe at 80S encloses the south pole
+query II
+SELECT 'POLYGON((0 -80, -90 -80, 180 -80, 90 -80, 0 -80))'::GEOGRAPHY && 'POINT(5 -90)'::GEOGRAPHY,
+       'POLYGON((0 -80, -90 -80, 180 -80, 90 -80, 0 -80))'::GEOGRAPHY && 'POINT(5 90)'::GEOGRAPHY;
+----
+true	false
+
+statement ok
+CREATE TABLE t_polar(g GEOGRAPHY);
+
+statement ok
+INSERT INTO t_polar VALUES ('POLYGON((0 80, 90 80, 180 80, -90 80, 0 80))');
+
+query IIII
+SELECT s.extent.x_min, s.extent.x_max, s.extent.y_min, s.extent.y_max
+FROM (SELECT stats(g) s FROM t_polar LIMIT 1);
+----
+-180.0	180.0	80.0	90.0
+
+# An east-winding ring straddling the equator encloses the north pole side only
+query II
+SELECT 'POLYGON((0 10, 90 -10, 180 10, -90 -10, 0 10))'::GEOGRAPHY && 'POINT(5 90)'::GEOGRAPHY,
+       'POLYGON((0 10, 90 -10, 180 10, -90 -10, 0 10))'::GEOGRAPHY && 'POINT(5 -90)'::GEOGRAPHY;
+----
+true	false
+
+# A counterclockwise shell encloses its bounded side: tight bounds
+query II
+SELECT 'POLYGON((0 0, 10 0, 10 10, 0 10, 0 0))'::GEOGRAPHY && 'POINT(5 5)'::GEOGRAPHY,
+       'POLYGON((0 0, 10 0, 10 10, 0 10, 0 0))'::GEOGRAPHY && 'POINT(50 50)'::GEOGRAPHY;
+----
+true	false
+
+# A clockwise shell encloses the complement of its bounded side: it covers (almost) everything
+query II
+SELECT 'POLYGON((0 0, 0 10, 10 10, 10 0, 0 0))'::GEOGRAPHY && 'POINT(50 50)'::GEOGRAPHY,
+       'POLYGON((0 0, 0 10, 10 10, 10 0, 0 0))'::GEOGRAPHY && 'POINT(-120 -45)'::GEOGRAPHY;
+----
+true	true
+
+# Orientation is decided on the sphere, not in planar lon/lat: the edge (0 45)->(90 45) bulges to
+# 54.7N, above the third vertex at 46N, so this ring is clockwise on the sphere (a planar shoelace
+# would call it counterclockwise) and its interior is the complement of the sliver.
+query II
+SELECT 'POLYGON((0 45, 90 45, 45 46, 0 45))'::GEOGRAPHY && 'POINT(0 0)'::GEOGRAPHY,
+       'POLYGON((0 45, 45 46, 90 45, 0 45))'::GEOGRAPHY && 'POINT(0 0)'::GEOGRAPHY;
+----
+true	false
+
+# The southern mirror dips below the third vertex instead, so the same vertex order is
+# counterclockwise there and keeps tight bounds
+query II
+SELECT 'POLYGON((0 -45, 90 -45, 45 -46, 0 -45))'::GEOGRAPHY && 'POINT(0 0)'::GEOGRAPHY,
+       'POLYGON((0 -45, 45 -46, 90 -45, 0 -45))'::GEOGRAPHY && 'POINT(0 0)'::GEOGRAPHY;
+----
+false	true
+
+# Holes never extend the interior: a counterclockwise shell with a (clockwise) hole keeps tight
+# bounds - the hole's orientation must not trigger the complement rule.
+query II
+SELECT 'POLYGON((0 0, 20 0, 20 20, 0 20, 0 0), (5 5, 5 15, 15 15, 15 5, 5 5))'::GEOGRAPHY && 'POINT(10 10)'::GEOGRAPHY,
+       'POLYGON((0 0, 20 0, 20 20, 0 20, 0 0), (5 5, 5 15, 15 15, 15 5, 5 5))'::GEOGRAPHY && 'POINT(50 50)'::GEOGRAPHY;
+----
+true	false
+
+# ---------------------------------------------------------------------------------------------------
+# A vertex on (or within rounding of) the geodesic through its neighbours is not a corner: the turn
+# there is noise, so the interior side follows the travel direction, as at an edge apex. These rings
+# run east along the top, so they are clockwise and cover the complement; the vertex at longitude 45
+# sits on the (0 45)->(90 45) edge, ~5e-14 and ~2e-8 degrees below its apex of 54.73561031724535N.
+# ---------------------------------------------------------------------------------------------------
+
+query III
+SELECT 'POLYGON((0 45, 90 45, 45 40, 0 45))'::GEOGRAPHY && 'POINT(0 0)'::GEOGRAPHY,
+       'POLYGON((0 45, 45 54.7356103172453, 90 45, 45 40, 0 45))'::GEOGRAPHY && 'POINT(0 0)'::GEOGRAPHY,
+       'POLYGON((0 45, 45 54.7356103, 90 45, 45 40, 0 45))'::GEOGRAPHY && 'POINT(0 0)'::GEOGRAPHY;
+----
+true	true	true
+
+# The counterclockwise mirrors keep tight bounds
+query III
+SELECT 'POLYGON((0 45, 45 40, 90 45, 0 45))'::GEOGRAPHY && 'POINT(0 0)'::GEOGRAPHY,
+       'POLYGON((0 45, 45 40, 90 45, 45 54.7356103172453, 0 45))'::GEOGRAPHY && 'POINT(0 0)'::GEOGRAPHY,
+       'POLYGON((0 45, 45 40, 90 45, 45 54.7356103, 0 45))'::GEOGRAPHY && 'POINT(0 0)'::GEOGRAPHY;
+----
+false	false	false
+
+# ---------------------------------------------------------------------------------------------------
+# A ring whose last vertex does not repeat the first is closed implicitly: the closing edge counts
+# ---------------------------------------------------------------------------------------------------
+
+# Clockwise shell: the interior is the complement with or without the closing vertex
+query II
+SELECT 'POLYGON((0 20, 10 10, 10 0, 5 11, 0 0))'::GEOGRAPHY && 'POINT(50 50)'::GEOGRAPHY,
+       'POLYGON((0 20, 10 10, 10 0, 5 11, 0 0, 0 20))'::GEOGRAPHY && 'POINT(50 50)'::GEOGRAPHY;
+----
+true	true
+
+# Counterclockwise shell whose closing edge (170 10)->(0 10) is its highest, bulging to ~63.7N at 85
+query III
+SELECT 'POLYGON((0 10, 20 0, 100 0, 170 10))'::GEOGRAPHY && 'POINT(85 60)'::GEOGRAPHY,
+       'POLYGON((0 10, 20 0, 100 0, 170 10))'::GEOGRAPHY && 'POINT(85 65)'::GEOGRAPHY,
+       'POLYGON((0 10, 20 0, 100 0, 170 10))'::GEOGRAPHY && 'POINT(-100 30)'::GEOGRAPHY;
+----
+true	false	false
+
+query III
+SELECT 'POLYGON((0 10, 20 0, 100 0, 170 10, 0 10))'::GEOGRAPHY && 'POINT(85 60)'::GEOGRAPHY,
+       'POLYGON((0 10, 20 0, 100 0, 170 10, 0 10))'::GEOGRAPHY && 'POINT(85 65)'::GEOGRAPHY,
+       'POLYGON((0 10, 20 0, 100 0, 170 10, 0 10))'::GEOGRAPHY && 'POINT(-100 30)'::GEOGRAPHY;
+----
+true	false	false
+
+# ---------------------------------------------------------------------------------------------------
+# An edge whose great circle runs (nearly) through the poles crosses one when its endpoints lie about
+# half a circle of longitude apart; the shorter arc passes the pole on the endpoints' side.
+# ---------------------------------------------------------------------------------------------------
+
+query IIII
+SELECT 'LINESTRING(0 89.99, 179.999999997 89.99)'::GEOGRAPHY && 'POINT(90 89.999)'::GEOGRAPHY,
+       'LINESTRING(0 89.99, 179.999999997 89.99)'::GEOGRAPHY && 'POINT(90 90)'::GEOGRAPHY,
+       'LINESTRING(0 89.99, 179.999999997 89.99)'::GEOGRAPHY && 'POINT(90 0)'::GEOGRAPHY,
+       'LINESTRING(0 -89.99, 179.999999997 -89.99)'::GEOGRAPHY && 'POINT(90 -89.999)'::GEOGRAPHY;
+----
+true	true	false	true
+
+# ---------------------------------------------------------------------------------------------------
+# (Near-)antipodal endpoints make the geodesic ambiguous: the extent covers the whole globe
+# ---------------------------------------------------------------------------------------------------
+
+query II
+SELECT 'LINESTRING(-90 0, 90 0)'::GEOGRAPHY && 'POINT(0 90)'::GEOGRAPHY,
+       'LINESTRING(0 45, 180 -45)'::GEOGRAPHY && 'POINT(90 0)'::GEOGRAPHY;
+----
+true	true
+
+# ---------------------------------------------------------------------------------------------------
+# Zonemap pruning agrees with the row-level operator for bulging edges
+# ---------------------------------------------------------------------------------------------------
+
+statement ok
+CREATE TABLE t_prune(g GEOGRAPHY);
+
+statement ok
+INSERT INTO t_prune VALUES ('LINESTRING(0 45, 90 45)'), ('POINT(0 -45)');
+
+# The bulge row must be found when probing above the vertex latitudes
+query I
+SELECT count(*) FROM t_prune WHERE g && 'POINT(45 54)'::GEOGRAPHY;
+----
+1
+
+query I
+SELECT count(*) FROM t_prune WHERE (g && 'POINT(45 54)'::GEOGRAPHY) OR random() < -1;
+----
+1

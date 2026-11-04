@@ -152,3 +152,89 @@ TEST_CASE("Test C API GEOMETRY vector cast to and from BLOB", "[capi]") {
 	duckdb_destroy_data_chunk(&blob_chunk);
 	duckdb_destroy_logical_type(&blob_type);
 }
+
+TEST_CASE("Test C API GEOGRAPHY type support", "[capi]") {
+	CAPITester tester;
+	duckdb::unique_ptr<CAPIResult> result;
+
+	REQUIRE(tester.OpenDatabase(nullptr));
+	REQUIRE_NO_FAIL(tester.Query("CREATE TABLE t1 (data GEOGRAPHY('OGC:CRS84'))"));
+	REQUIRE_NO_FAIL(tester.Query("INSERT INTO t1 VALUES ('POINT(42 13)')"));
+
+	result = tester.Query("SELECT data FROM t1");
+	REQUIRE_NO_FAIL(*result);
+
+	REQUIRE(result->ColumnType(0) == DUCKDB_TYPE_GEOGRAPHY);
+
+	auto chunk = result->FetchChunk(0);
+	REQUIRE(chunk);
+
+	auto vec = duckdb_data_chunk_get_vector(chunk->GetChunk(), 0);
+
+	auto type = duckdb_vector_get_column_type(vec);
+
+	REQUIRE(duckdb_get_type_id(type) == DUCKDB_TYPE_GEOGRAPHY);
+	auto crs = duckdb_geometry_type_get_crs(type);
+	REQUIRE(crs);
+	REQUIRE(strcmp(crs, "OGC:CRS84") == 0);
+	duckdb_free(crs);
+
+	duckdb_destroy_logical_type(&type);
+
+	auto blob = *static_cast<duckdb_string_t *>(duckdb_vector_get_data(vec));
+
+	REQUIRE(duckdb_string_t_length(blob) == 21);
+
+	auto data = duckdb_string_t_data(&blob);
+
+	uint8_t le = 0;
+	uint32_t meta = 0;
+	double x;
+	double y;
+
+	memcpy(&le, data, 1);
+	memcpy(&meta, data + 1, 4);
+	memcpy(&x, data + 5, 8);
+	memcpy(&y, data + 13, 8);
+
+	REQUIRE(le == 1);
+	REQUIRE(meta == 0x00000001); // WKB for POINT
+	REQUIRE(x == 42);
+	REQUIRE(y == 13);
+}
+
+static const uint8_t GEOG_POINT_WKB[] = {0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                                         0x45, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2A, 0x40}; // POINT (42 13)
+
+TEST_CASE("Test C API GEOGRAPHY value cast to and from BLOB", "[capi]") {
+	auto geog_type = duckdb_create_logical_type(DUCKDB_TYPE_GEOGRAPHY);
+
+	// Creating a GEOGRAPHY list from a BLOB value casts the WKB to GEOGRAPHY
+	auto blob_val = duckdb_create_blob(GEOG_POINT_WKB, sizeof(GEOG_POINT_WKB));
+	auto list_val = duckdb_create_list_value(geog_type, &blob_val, 1);
+	REQUIRE(list_val);
+	auto geog_val = duckdb_get_list_child(list_val, 0);
+	REQUIRE(geog_val);
+	REQUIRE(duckdb_get_type_id(duckdb_get_value_type(geog_val)) == DUCKDB_TYPE_GEOGRAPHY);
+
+	auto wkt = duckdb_get_varchar(geog_val);
+	REQUIRE(string(wkt) == "POINT (42 13)");
+	duckdb_free(wkt);
+
+	// Reading a GEOGRAPHY value as a BLOB casts it to WKB
+	auto wkb = duckdb_get_blob(geog_val);
+	REQUIRE(wkb.size == sizeof(GEOG_POINT_WKB));
+	REQUIRE(memcmp(wkb.data, GEOG_POINT_WKB, sizeof(GEOG_POINT_WKB)) == 0);
+	duckdb_free(wkb.data);
+
+	// Valid WKB outside the canonical ranges (POINT (42 1337)) cannot be cast to GEOGRAPHY
+	auto out_of_range_val = duckdb_create_blob(POINT_WKB, sizeof(POINT_WKB));
+	auto out_of_range_list = duckdb_create_list_value(geog_type, &out_of_range_val, 1);
+	REQUIRE(!out_of_range_list);
+
+	duckdb_destroy_value(&out_of_range_val);
+	duckdb_destroy_value(&geog_val);
+	duckdb_destroy_value(&list_val);
+	duckdb_destroy_value(&blob_val);
+	duckdb_destroy_logical_type(&geog_type);
+}

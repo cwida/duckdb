@@ -8,12 +8,20 @@
     "type": "scalar_function"
   },
   {
+    "name": "st_geogfromwkb",
+    "parameters": "wkb",
+    "description": "Creates a geography from Well-Known Binary (WKB) representation, validating the canonical coordinate ranges",
+    "example": "ST_GeogFromWKB(X'01010000000000000000000000000000000000000000000000')",
+    "categories": ["geometry"],
+    "type": "scalar_function"
+  },
+  {
     "name": "st_aswkb",
     "parameters": "geom",
     "description": "Returns the Well-Known Binary (WKB) representation of the geometry",
     "example": "st_aswkb(ST_GeomFromWKB(X'01010000000000000000000000000000000000000000000000000'))",
     "categories": ["geometry"],
-    "type": "scalar_function",
+    "type": "scalar_function_set",
     "aliases": ["st_asbinary"]
   },
   {
@@ -22,7 +30,7 @@
     "description": "Returns the Well-Known Text (WKT) representation of the geometry",
     "example": "ST_AsText(ST_GeomFromWKB(X'01010000000000000000000000000000000000000000000000'))",
     "categories": ["geometry"],
-    "type": "scalar_function",
+    "type": "scalar_function_set",
     "aliases": ["st_aswkt"]
   },
   {
@@ -31,7 +39,7 @@
     "description": "Returns true if the geometries bounding boxes intersect",
     "example": "'POINT(5 5)'::GEOMETRY && 'LINESTRING(0 0, 10 20)'::GEOMETRY;",
     "categories": ["geometry"],
-    "type": "scalar_function",
+    "type": "scalar_function_set",
     "aliases": ["&&"]
   },
   {
@@ -39,14 +47,14 @@
     "parameters": "geom",
     "description": "Returns the Coordinate Reference System (CRS) identifier of the geometry",
     "categories": ["geometry"],
-    "type": "scalar_function"
+    "type": "scalar_function_set"
   },
   {
     "name": "st_setcrs",
     "parameters": "geom,crs",
     "description": "Sets the Coordinate Reference System (CRS) identifier of the geometry",
     "categories": ["geometry"],
-    "type": "scalar_function"
+    "type": "scalar_function_set"
   },
   {
     "name": "vertex_extract",
@@ -54,6 +62,6 @@
     "description": "Extracts the specified coordinate (X, Y, Z, M) from a point geometry",
     "example": "vertex_extract('POINT(1 2 3)', 'Z')",
     "categories": ["geometry"],
-    "type": "scalar_function"
+    "type": "scalar_function_set"
   }
 ]

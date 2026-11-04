@@ -146,7 +146,8 @@ RowGroupCollection::RowGroupCollection(shared_ptr<DataTableInfo> info_p, BlockMa
 	// If the table contains shredded types (variant / geometry) then we can't append to an existing row group
 	for (auto &type : types) {
 		if (TypeVisitor::Contains(type, LogicalTypeId::VARIANT) ||
-		    TypeVisitor::Contains(type, LogicalTypeId::GEOMETRY)) {
+		    TypeVisitor::Contains(type, LogicalTypeId::GEOMETRY) ||
+		    TypeVisitor::Contains(type, LogicalTypeId::GEOGRAPHY)) {
 			row_group_append_mode = RowGroupAppendMode::REQUIRE_NEW;
 			can_append_to_checkpointed_row_group = false;
 			break;

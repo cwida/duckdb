@@ -353,16 +353,17 @@ public:
 
 class GeoStatisticsState final : public ColumnWriterStatistics {
 public:
-	explicit GeoStatisticsState() : has_stats(false) {
+	explicit GeoStatisticsState(GeometryModel geometry_model) : has_stats(false), geometry_model(geometry_model) {
 		geo_stats.SetEmpty();
 	}
 
 	bool has_stats;
+	GeometryModel geometry_model;
 	GeometryStatsData geo_stats;
 
 public:
 	void Update(const string_t &val) {
-		geo_stats.Update(val);
+		geo_stats.Update(val, geometry_model);
 		has_stats = true;
 	}
 	bool HasGeoStats() override {
@@ -376,7 +377,8 @@ public:
 		if (!other.has_stats) {
 			return;
 		}
-		geo_stats.Merge(other.geo_stats);
+		D_ASSERT(geometry_model == other.geometry_model);
+		geo_stats.Merge(other.geo_stats, geometry_model);
 		has_stats = true;
 	}
 	void WriteGeoStats(duckdb_parquet::GeospatialStatistics &stats) override {

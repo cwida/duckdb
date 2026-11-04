@@ -153,14 +153,16 @@ static unique_ptr<ParsedExpression> IntervalExpression(const interval_t &value) 
 
 static unique_ptr<ParsedExpression> GeometryExpression(const Value &value) {
 	auto &type = value.type();
+	const bool geography = type.id() == LogicalTypeId::GEOGRAPHY;
 	unique_ptr<ParsedExpression> result;
 	if (value.IsNull()) {
 		auto geometry = GeoType::HasCRS(type) ? Value("GEOMETRYCOLLECTION EMPTY") : Value();
-		result = CastTo(LogicalType::GEOMETRY(), ConstantExpression::FromValue(geometry));
+		result = CastTo(geography ? LogicalType::GEOGRAPHY() : LogicalType::GEOMETRY(),
+		                ConstantExpression::FromValue(geometry));
 	} else {
 		vector<unique_ptr<ParsedExpression>> arguments;
 		arguments.push_back(ConstantExpression::FromValue(Value::BLOB_RAW(StringValue::Get(value))));
-		result = ValueFunction("st_geomfromwkb", std::move(arguments));
+		result = ValueFunction(geography ? "st_geogfromwkb" : "st_geomfromwkb", std::move(arguments));
 	}
 	if (!GeoType::HasCRS(type)) {
 		return result;
@@ -201,14 +203,16 @@ static bool HasUnsupportedVariantKeys(const VariantNode &node) {
 bool ConstantExpression::RequiresTypeWitness(const LogicalType &type) {
 	return TypeVisitor::Contains(type, [&](const LogicalType &child) {
 		return child.IsAggregateState() || child.id() == LogicalTypeId::TYPE ||
-		       (child.id() == LogicalTypeId::GEOMETRY && GeoType::HasCRS(child)) ||
+		       ((child.id() == LogicalTypeId::GEOMETRY || child.id() == LogicalTypeId::GEOGRAPHY) &&
+		        GeoType::HasCRS(child)) ||
 		       (type.id() != LogicalTypeId::VARCHAR && child.id() == LogicalTypeId::VARCHAR &&
 		        !StringType::GetCollation(child).empty());
 	});
 }
 
 static unique_ptr<ParsedExpression> NestedValueExpression(const LogicalType &type, optional_ptr<const Value> value) {
-	if (type.IsAggregateState() || type.id() == LogicalTypeId::GEOMETRY || type.id() == LogicalTypeId::TYPE ||
+	if (type.IsAggregateState() || type.id() == LogicalTypeId::GEOMETRY || type.id() == LogicalTypeId::GEOGRAPHY ||
+	    type.id() == LogicalTypeId::TYPE ||
 	    (type.id() != LogicalTypeId::TUPLE && TypeExpression::CanRepresent(type) &&
 	     !ConstantExpression::RequiresTypeWitness(type))) {
 		return ConstantExpression::FromValue(value ? value->WithType(type) : Value(type));
@@ -315,7 +319,7 @@ unique_ptr<ParsedExpression> ConstantExpression::FromValue(const Value &value) {
 		arguments.push_back(FromValue(Value(TypeValue::GetType(value))));
 		return ValueFunction("get_type", std::move(arguments));
 	}
-	if (type.id() == LogicalTypeId::GEOMETRY) {
+	if (type.id() == LogicalTypeId::GEOMETRY || type.id() == LogicalTypeId::GEOGRAPHY) {
 		auto result = GeometryExpression(value);
 		return type.HasAlias() ? CastTo(type, std::move(result)) : std::move(result);
 	}

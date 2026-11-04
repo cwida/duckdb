@@ -97,6 +97,34 @@ ScalarFunction StGeomfromwkbFun::GetFunction() {
 	return function;
 }
 
+static void FromWKBGeographyFunction(DataChunk &input, ExpressionState &state, Vector &result) {
+	Geometry::FromBinary(input.data[0], result, input.size(), true);
+
+	// Validate that all geographies fall within the canonical coordinate ranges.
+	UnifiedVectorFormat vdata;
+	result.ToUnifiedFormat(vdata);
+	const auto blobs = UnifiedVectorFormat::GetData<string_t>(vdata);
+	for (idx_t i = 0; i < input.size(); i++) {
+		const auto idx = vdata.sel->get_index(i);
+		if (!vdata.validity.RowIsValid(idx)) {
+			continue;
+		}
+		if (!Geometry::IsValidGeography(blobs[idx])) {
+			throw InvalidInputException("ST_GeogFromWKB: coordinates are outside the canonical GEOGRAPHY ranges "
+			                            "(longitude/X must be within [-180, 180], latitude/Y within [-90, 90])");
+		}
+	}
+}
+
+ScalarFunction StGeogfromwkbFun::GetFunction() {
+	ScalarFunction function({}, LogicalType::GEOGRAPHY(), FromWKBGeographyFunction);
+	function.GetSignature().AddParameter("wkb", LogicalType::BLOB);
+	function.SetStatisticsCallback(FromWKBStats);
+	// throws when the input is not valid WKB, or is outside the canonical GEOGRAPHY ranges
+	function.SetFallible();
+	return function;
+}
+
 static void ToWKBFunction(DataChunk &input, ExpressionState &state, Vector &result) {
 	UnaryExecutor::Execute<string_t, string_t>(input.data[0], result, [&](const string_t &geom) {
 		// TODO: convert to internal representation
@@ -106,10 +134,14 @@ static void ToWKBFunction(DataChunk &input, ExpressionState &state, Vector &resu
 	StringVector::AddHeapReference(input.data[0], result);
 }
 
-ScalarFunction StAswkbFun::GetFunction() {
-	ScalarFunction function({}, LogicalType::BLOB, ToWKBFunction);
-	function.GetSignature().AddParameter("geom", LogicalType::GEOMETRY());
-	return function;
+ScalarFunctionSet StAswkbFun::GetFunctions() {
+	ScalarFunctionSet set;
+	for (const auto &geo_type : {LogicalType::GEOMETRY(), LogicalType::GEOGRAPHY()}) {
+		ScalarFunction function({}, LogicalType::BLOB, ToWKBFunction);
+		function.GetSignature().AddParameter("geom", geo_type);
+		set.AddFunction(function);
+	}
+	return set;
 }
 
 static void ToWKTFunction(DataChunk &input, ExpressionState &state, Vector &result) {
@@ -118,20 +150,25 @@ static void ToWKTFunction(DataChunk &input, ExpressionState &state, Vector &resu
 	                                           [&](const string_t &geom) { return Geometry::ToString(heap, geom); });
 }
 
-ScalarFunction StAstextFun::GetFunction() {
-	ScalarFunction function({}, LogicalType::VARCHAR, ToWKTFunction);
-	function.GetSignature().AddParameter("geom", LogicalType::GEOMETRY());
-	return function;
+ScalarFunctionSet StAstextFun::GetFunctions() {
+	ScalarFunctionSet set;
+	for (const auto &geo_type : {LogicalType::GEOMETRY(), LogicalType::GEOGRAPHY()}) {
+		ScalarFunction function({}, LogicalType::VARCHAR, ToWKTFunction);
+		function.GetSignature().AddParameter("geom", geo_type);
+		set.AddFunction(function);
+	}
+	return set;
 }
 
+template <GeometryModel MODEL>
 static void IntersectsExtentFunction(DataChunk &input, ExpressionState &state, Vector &result) {
 	BinaryExecutor::Execute<string_t, string_t, bool>(
 	    input.data[0], input.data[1], result, [](const string_t &lhs_geom, const string_t &rhs_geom) {
 		    auto lhs_extent = GeometryExtent::Empty();
 		    auto rhs_extent = GeometryExtent::Empty();
 
-		    const auto lhs_is_empty = Geometry::GetExtent(lhs_geom, lhs_extent) == 0;
-		    const auto rhs_is_empty = Geometry::GetExtent(rhs_geom, rhs_extent) == 0;
+		    const auto lhs_is_empty = Geometry::GetExtent(lhs_geom, lhs_extent, MODEL) == 0;
+		    const auto rhs_is_empty = Geometry::GetExtent(rhs_geom, rhs_extent, MODEL) == 0;
 
 		    if (lhs_is_empty || rhs_is_empty) {
 			    // One of the geometries is empty
@@ -139,7 +176,7 @@ static void IntersectsExtentFunction(DataChunk &input, ExpressionState &state, V
 		    }
 
 		    // Don't take Z and M into account for intersection test
-		    return lhs_extent.IntersectsXY(rhs_extent);
+		    return lhs_extent.IntersectsXY(rhs_extent, MODEL);
 	    });
 }
 
@@ -147,6 +184,7 @@ static void IntersectsExtentFunction(DataChunk &input, ExpressionState &state, V
 // boxes intersect. One argument must be a constant geometry; the other is the column we prune against. Both
 // operands' statistics are derived for us (the constant's geometry stats already carry its bounding box, and
 // the column's look through any CRS-only cast), so this works regardless of which side the constant is on.
+template <GeometryModel MODEL>
 static FilterPropagateResult IntersectsExtentFilterPrune(const FunctionStatisticsPruneInput &input) {
 	auto &children = input.function.GetChildren();
 	if (children.size() != 2) {
@@ -183,11 +221,11 @@ static FilterPropagateResult IntersectsExtentFilterPrune(const FunctionStatistic
 		// An empty constant geometry never intersects anything.
 		return FilterPropagateResult::FILTER_ALWAYS_FALSE;
 	}
-	if (!const_extent.IntersectsXY(col_extent)) {
+	if (!const_extent.IntersectsXY(col_extent, MODEL)) {
 		// The column zonemap does not intersect the constant: no row can match.
 		return FilterPropagateResult::FILTER_ALWAYS_FALSE;
 	}
-	if (const_extent.ContainsXY(col_extent)) {
+	if (const_extent.ContainsXY(col_extent, MODEL)) {
 		// The constant fully covers the column zonemap, so every row that is represented in the zonemap
 		// matches. Rows that are not represented in it do not: NULL rows (the predicate evaluates to NULL
 		// for them) and empty geometries (which contribute no vertices, but never intersect anything).
@@ -200,13 +238,24 @@ static FilterPropagateResult IntersectsExtentFilterPrune(const FunctionStatistic
 	return FilterPropagateResult::NO_PRUNING_POSSIBLE;
 }
 
-ScalarFunction StIntersectsExtentFun::GetFunction() {
-	ScalarFunction function({}, LogicalType::BOOLEAN, IntersectsExtentFunction);
-	function.GetSignature()
+ScalarFunctionSet StIntersectsExtentFun::GetFunctions() {
+	ScalarFunctionSet set;
+
+	ScalarFunction geom_func({}, LogicalType::BOOLEAN, IntersectsExtentFunction<GeometryModel::PLANAR>);
+	geom_func.GetSignature()
 	    .AddParameter("geom1", LogicalType::GEOMETRY())
 	    .AddParameter("geom2", LogicalType::GEOMETRY());
-	function.SetFilterPruneCallback(IntersectsExtentFilterPrune);
-	return function;
+	geom_func.SetFilterPruneCallback(IntersectsExtentFilterPrune<GeometryModel::PLANAR>);
+	set.AddFunction(geom_func);
+
+	ScalarFunction geog_func({}, LogicalType::BOOLEAN, IntersectsExtentFunction<GeometryModel::GEODETIC>);
+	geog_func.GetSignature()
+	    .AddParameter("geom1", LogicalType::GEOGRAPHY())
+	    .AddParameter("geom2", LogicalType::GEOGRAPHY());
+	geog_func.SetFilterPruneCallback(IntersectsExtentFilterPrune<GeometryModel::GEODETIC>);
+	set.AddFunction(geog_func);
+
+	return set;
 }
 
 static Value GetCRSValue(const LogicalType &logical_type) {
@@ -223,9 +272,13 @@ static void CRSFunction(DataChunk &args, ExpressionState &state, Vector &result)
 	result.Reference(GetCRSValue(type), count_t(args.size()));
 }
 
+static bool IsGeoType(LogicalTypeId id) {
+	return id == LogicalTypeId::GEOMETRY || id == LogicalTypeId::GEOGRAPHY;
+}
+
 static unique_ptr<Expression> BindCRSFunctionExpression(FunctionBindExpressionInput &input) {
 	const auto &return_type = input.children[0]->GetReturnType();
-	if (return_type.id() != LogicalTypeId::GEOMETRY) {
+	if (!IsGeoType(return_type.id())) {
 		// parameter - unknown return type
 		return nullptr;
 	}
@@ -235,7 +288,7 @@ static unique_ptr<Expression> BindCRSFunctionExpression(FunctionBindExpressionIn
 
 static void CRSFunctionResolveTypes(ResolveScalarFunctionTypesInput &input) {
 	auto &argument_type = input.GetArgumentType(0);
-	if (argument_type.id() != LogicalTypeId::GEOMETRY) {
+	if (!IsGeoType(argument_type.id())) {
 		return;
 	}
 
@@ -243,18 +296,29 @@ static void CRSFunctionResolveTypes(ResolveScalarFunctionTypesInput &input) {
 	input.GetBoundFunction().GetArguments()[0] = argument_type;
 }
 
-ScalarFunction StCrsFun::GetFunction() {
-	ScalarFunction geom_func({}, LogicalType::VARCHAR, CRSFunction);
-	geom_func.SetResolveTypesCallback(CRSFunctionResolveTypes);
-	geom_func.GetSignature().AddParameter("geom", LogicalType::GEOMETRY());
-	geom_func.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
-	geom_func.SetBindExpressionCallback(BindCRSFunctionExpression);
-	return geom_func;
+ScalarFunctionSet StCrsFun::GetFunctions() {
+	ScalarFunctionSet set;
+	for (const auto &geo_type : {LogicalType::GEOMETRY(), LogicalType::GEOGRAPHY()}) {
+		ScalarFunction func({}, LogicalType::VARCHAR, CRSFunction);
+		func.SetResolveTypesCallback(CRSFunctionResolveTypes);
+		func.GetSignature().AddParameter("geom", geo_type);
+		func.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+		func.SetBindExpressionCallback(BindCRSFunctionExpression);
+		set.AddFunction(func);
+	}
+	return set;
 }
 
 static unique_ptr<FunctionData> SetCRSBind(BindScalarFunctionInput &input) {
 	auto &context = input.GetClientContext();
 	auto &bound_function = input.GetBoundFunction();
+	auto &arguments = input.GetArguments();
+
+	// Preserve the input kind (GEOMETRY vs GEOGRAPHY) in the result type.
+	const bool is_geography = arguments[0]->GetReturnType().id() == LogicalTypeId::GEOGRAPHY;
+	const auto make_type = [&](const string &crs) {
+		return is_geography ? LogicalType::GEOGRAPHY(crs) : LogicalType::GEOMETRY(crs);
+	};
 
 	// Check if the CRS is set in the second argument
 	const auto crs_val = input.GetConstant(1);
@@ -267,10 +331,10 @@ static unique_ptr<FunctionData> SetCRSBind(BindScalarFunctionInput &input) {
 	// Try to convert to identify
 	const auto lookup = CoordinateReferenceSystem::TryIdentify(context, crs_str);
 	if (lookup) {
-		bound_function.SetReturnType(LogicalType::GEOMETRY(lookup->GetDefinition()));
+		bound_function.SetReturnType(make_type(lookup->GetDefinition()));
 	} else {
 		// Pass on the raw string (better than nothing)
-		bound_function.SetReturnType(LogicalType::GEOMETRY(crs_str));
+		bound_function.SetReturnType(make_type(crs_str));
 	}
 	return nullptr;
 }
@@ -279,10 +343,14 @@ static void SetCRSFunction(DataChunk &args, ExpressionState &state, Vector &resu
 	result.Reinterpret(args.data[0]);
 }
 
-ScalarFunction StSetcrsFun::GetFunction() {
-	ScalarFunction geom_func({}, LogicalType::GEOMETRY(), SetCRSFunction, SetCRSBind);
-	geom_func.GetSignature().AddParameter("geom", LogicalType::GEOMETRY()).AddParameter("crs", LogicalType::VARCHAR);
-	return geom_func;
+ScalarFunctionSet StSetcrsFun::GetFunctions() {
+	ScalarFunctionSet set;
+	for (const auto &geo_type : {LogicalType::GEOMETRY(), LogicalType::GEOGRAPHY()}) {
+		ScalarFunction func({}, geo_type, SetCRSFunction, SetCRSBind);
+		func.GetSignature().AddParameter("geom", geo_type).AddParameter("crs", LogicalType::VARCHAR);
+		set.AddFunction(func);
+	}
+	return set;
 }
 
 namespace {
@@ -383,8 +451,13 @@ static auto VertexExtractStats(ClientContext &context, FunctionStatisticsInput &
 	}
 
 	if (bind_data.vertex_index == 0 && extent.HasXY()) { // X
-		NumericStats::SetMin(new_stats, extent.x_min);
-		NumericStats::SetMax(new_stats, extent.x_max);
+		// A GEOGRAPHY extent is a longitude arc (it may wrap, and +180/-180 are the same longitude), so
+		// it is converted to a plain numeric range over the stored coordinate values.
+		const auto geometry_model = Geometry::GetModel(input.child_stats[0].GetType());
+		double x_min, x_max;
+		extent.GetNumericXRange(geometry_model, x_min, x_max);
+		NumericStats::SetMin(new_stats, x_min);
+		NumericStats::SetMax(new_stats, x_max);
 		return new_stats.ToUnique();
 	}
 	if (bind_data.vertex_index == 1 && extent.HasXY()) { // Y
@@ -466,15 +539,20 @@ static auto VertexExtractFunction(DataChunk &input, ExpressionState &state, Vect
 	});
 }
 
-ScalarFunction VertexExtractFun::GetFunction() {
-	auto fun = ScalarFunction({}, LogicalTypeId::DOUBLE, VertexExtractFunction, VertexExtractBind, VertexExtractStats);
-	fun.GetSignature()
-	    .AddParameter("geom", LogicalType::GEOMETRY())
-	    .AddParameter("coordinate", LogicalTypeId::VARCHAR)
-	    .SetReturnType(LogicalType::DOUBLE);
+ScalarFunctionSet VertexExtractFun::GetFunctions() {
+	ScalarFunctionSet set;
+	for (const auto &geo_type : {LogicalType::GEOMETRY(), LogicalType::GEOGRAPHY()}) {
+		auto fun =
+		    ScalarFunction({}, LogicalTypeId::DOUBLE, VertexExtractFunction, VertexExtractBind, VertexExtractStats);
+		fun.GetSignature()
+		    .AddParameter("geom", geo_type)
+		    .AddParameter("coordinate", LogicalTypeId::VARCHAR)
+		    .SetReturnType(LogicalType::DOUBLE);
 
-	fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
-	return fun;
+		fun.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+		set.AddFunction(fun);
+	}
+	return set;
 }
 
 } // namespace duckdb

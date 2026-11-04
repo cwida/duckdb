@@ -541,7 +541,9 @@ void Vector::Serialize(Serializer &serializer, bool compressed_serialization) {
 	}
 	ToUnifiedFormat(vdata);
 
-	if (logical_type.id() == LogicalTypeId::GEOMETRY && serializer.ShouldSerialize(Geometry::VERSION_ADDED)) {
+	const bool is_geo_type =
+	    logical_type.id() == LogicalTypeId::GEOMETRY || logical_type.id() == LogicalTypeId::GEOGRAPHY;
+	if (is_geo_type && serializer.ShouldSerialize(Geometry::VERSION_ADDED)) {
 		serializer.WriteProperty<GeometryStorageType>(99, "geometry_format", GeometryStorageType::WKB);
 	}
 
@@ -563,11 +565,12 @@ void Vector::Serialize(Serializer &serializer, bool compressed_serialization) {
 		auto ptr = make_unsafe_uniq_array_uninitialized<data_t>(write_size);
 		VectorOperations::WriteToStorage(*this, ptr.get());
 		serializer.WriteProperty(102, "data", ptr.get(), write_size);
-	} else if (logical_type.id() == LogicalTypeId::GEOMETRY) {
+	} else if (is_geo_type) {
 		auto geoms = UnifiedVectorFormat::GetData<string_t>(vdata);
 
-		// Are we targeting an older serialization version?
-		if (!serializer.ShouldSerialize(StorageVersion::V1_5_0)) {
+		// Are we targeting an older serialization version? GEOGRAPHY has no legacy SPATIAL form, so it always
+		// uses WKB (and LogicalType::Serialize already rejects writing it to versions older than v1.5.0).
+		if (logical_type.id() == LogicalTypeId::GEOMETRY && !serializer.ShouldSerialize(StorageVersion::V1_5_0)) {
 			// Serialize data as old-style SPATIAL format
 			string blob;
 			serializer.WriteList(102, "data", count, [&](Serializer::List &list, idx_t i) {
@@ -726,12 +729,18 @@ void Vector::Deserialize(Deserializer &deserializer, idx_t count) {
 		return;
 	}
 
+	const bool is_geo_type =
+	    logical_type.id() == LogicalTypeId::GEOMETRY || logical_type.id() == LogicalTypeId::GEOGRAPHY;
 	auto geometry_format = GeometryStorageType::WKB;
 	if (logical_type.id() == LogicalTypeId::GEOMETRY) {
 		// Try to read the geometry format, but default to the old SPATIAL format for older versions that did not
 		// serialize this property
 		geometry_format = deserializer.ReadPropertyWithExplicitDefault<GeometryStorageType>(
 		    99, "geometry_format", GeometryStorageType::SPATIAL);
+	} else if (logical_type.id() == LogicalTypeId::GEOGRAPHY) {
+		// GEOGRAPHY always uses WKB - it never had a legacy SPATIAL representation.
+		geometry_format = deserializer.ReadPropertyWithExplicitDefault<GeometryStorageType>(99, "geometry_format",
+		                                                                                    GeometryStorageType::WKB);
 	}
 
 	auto &validity = FlatVector::ValidityMutable(*this);
@@ -750,7 +759,7 @@ void Vector::Deserialize(Deserializer &deserializer, idx_t count) {
 		deserializer.ReadProperty(102, "data", ptr.get(), column_size);
 
 		VectorOperations::ReadFromStorage(ptr.get(), count, *this);
-	} else if (logical_type.id() == LogicalTypeId::GEOMETRY) {
+	} else if (is_geo_type) {
 		auto blobs = FlatVector::GetDataMutable<string_t>(*this);
 
 		if (geometry_format == GeometryStorageType::WKB) {

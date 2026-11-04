@@ -169,6 +169,7 @@ void EncodeVariantValue(const VariantNode &it, SINK &sink) {
 		break;
 	case VariantComparisonType::BLOB:
 	case VariantComparisonType::GEOMETRY:
+	case VariantComparisonType::GEOGRAPHY:
 		VariantEncodeString(sink, it.GetString(), false);
 		break;
 	case VariantComparisonType::BITSTRING: {

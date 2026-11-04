@@ -468,6 +468,13 @@ Value StandardVectorBuffer::GetValue(const LogicalType &type, idx_t index) const
 		}
 		return Value::GEOMETRY(const_data_ptr_cast(str.GetData()), str.GetSize());
 	}
+	case LogicalTypeId::GEOGRAPHY: {
+		auto str = reinterpret_cast<const string_t *>(data_ptr)[index];
+		if (GeoType::HasCRS(type)) {
+			return Value::GEOGRAPHY(const_data_ptr_cast(str.GetData()), str.GetSize(), GeoType::GetCRS(type));
+		}
+		return Value::GEOGRAPHY(const_data_ptr_cast(str.GetData()), str.GetSize());
+	}
 	case LogicalTypeId::LEGACY_AGGREGATE_STATE: {
 		auto str = reinterpret_cast<const string_t *>(data_ptr)[index];
 		return Value::LEGACY_AGGREGATE_STATE(type, const_data_ptr_cast(str.GetData()), str.GetSize());

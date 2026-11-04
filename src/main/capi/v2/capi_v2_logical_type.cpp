@@ -26,7 +26,7 @@ namespace {
 //  - the remaining bind-time-only ids (SQLNULL, UNKNOWN) which only exist
 //    inside the planner / UDF binding paths,
 //  - parameterised types (DECIMAL, LIST, STRUCT, TUPLE, MAP, ARRAY, UNION,
-//    ENUM, VARIANT, GEOMETRY), which need parameters to bind.
+//    ENUM, VARIANT, GEOMETRY, GEOGRAPHY), which need parameters to bind.
 bool IsPrimitiveCreatable(LogicalTypeId id) {
 	switch (id) {
 	case LogicalTypeId::ANY:
@@ -168,6 +168,7 @@ idx_t TypeParamCount(const LogicalType &type) {
 	case LogicalTypeId::VARCHAR:
 		return StringType::GetCollation(type).empty() ? 0 : 1;
 	case LogicalTypeId::GEOMETRY:
+	case LogicalTypeId::GEOGRAPHY:
 		return GeoType::HasCRS(type) ? 1 : 0;
 	default:
 		return 0;
@@ -205,6 +206,7 @@ Value TypeParamValue(const LogicalType &type, idx_t index, duckdb_v2_identifier_
 		out_name = duckdb_v2_identifier_t {"collation", 9};
 		return Value(StringType::GetCollation(type));
 	case LogicalTypeId::GEOMETRY:
+	case LogicalTypeId::GEOGRAPHY:
 		return Value(GeoType::GetCRS(type).GetDefinition());
 	default:
 		throw InternalException("TypeParamValue called for a kind without parameters");

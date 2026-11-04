@@ -814,6 +814,7 @@ void ForceVariantShredding::SetGlobal(DatabaseInstance *_, DBConfig &config, con
 		case LogicalTypeId::INTERVAL:
 		case LogicalTypeId::BIT:
 		case LogicalTypeId::GEOMETRY:
+		case LogicalTypeId::GEOGRAPHY:
 			break;
 		default:
 			throw InvalidInputException("Variants can not be shredded on type: %s", type.ToString());

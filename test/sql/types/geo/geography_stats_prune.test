@@ -1,0 +1,122 @@
+# name: test/sql/types/geo/geography_stats_prune.test
+# description: GEOGRAPHY zonemap pruning stays sound across row groups, checkpoints and the antimeridian
+# group: [geo]
+
+require noforcestorage
+
+statement ok
+ATTACH '{TEST_DIR}/geography_prune.db' AS geodb (ROW_GROUP_SIZE 2048, STORAGE_VERSION 'v2.1.0');
+
+statement ok
+USE geodb;
+
+# A 64x64 grid of 4096 points straddling the antimeridian (x in [178, 180] u [-179.9375, -178.0625])
+# covering the latitude range [-90, 86.4], split over multiple row groups.
+statement ok
+CREATE TABLE geogs AS
+SELECT
+	i,
+	printf('POINT(%.6f %.6f)',
+		CASE WHEN x > 180 THEN x - 360 ELSE x END,
+		y
+	)::GEOGRAPHY AS g
+FROM (
+	SELECT
+		i,
+		178.0 + (i % 64) * 0.0625 AS x,
+		-90.0 + (i // 64) * 2.8 AS y
+	FROM range(4096) t(i)
+);
+
+# Every probed stored coordinate must match itself: a miss means its row group's extent excluded one
+# of its own coordinates and the zonemap wrongly pruned it.
+query I
+SELECT count(*) FROM geogs WHERE g && 'POINT(178.000000 -90.000000)'::GEOGRAPHY;
+----
+1
+
+query I
+SELECT count(*) FROM geogs WHERE g && 'POINT(-178.062500 86.400000)'::GEOGRAPHY;
+----
+1
+
+query I
+SELECT count(*) FROM geogs WHERE g && 'POINT(-179.937500 -34.000000)'::GEOGRAPHY;
+----
+1
+
+# Points stored at exactly x=180 are found when probed from either side of the seam
+query I
+SELECT count(*) FROM geogs WHERE g && 'POINT(180.000000 -90.000000)'::GEOGRAPHY;
+----
+1
+
+query I
+SELECT count(*) FROM geogs WHERE g && 'POINT(-180.000000 -90.000000)'::GEOGRAPHY;
+----
+1
+
+# A probe outside the grid matches nothing
+query I
+SELECT count(*) FROM geogs WHERE g && 'POINT(0 0)'::GEOGRAPHY;
+----
+0
+
+# An antimeridian-crossing probe box: x in [179, 180] u [-180, -179] covers 33 of the 64 grid
+# columns, over all 64 latitudes. The result must agree with a scan that defeats pruning.
+query I
+SELECT count(*) FROM geogs WHERE g && 'MULTIPOINT(179 -90, -179 90)'::GEOGRAPHY;
+----
+2112
+
+query I
+SELECT count(*) FROM geogs WHERE (g && 'MULTIPOINT(179 -90, -179 90)'::GEOGRAPHY) OR i < 0;
+----
+2112
+
+# ---------------------------------------------------------------------------------------------------
+# The same holds for the persisted statistics after a checkpoint + re-attach
+# ---------------------------------------------------------------------------------------------------
+
+statement ok
+USE memory;
+
+statement ok
+DETACH geodb;
+
+statement ok
+ATTACH '{TEST_DIR}/geography_prune.db' AS geodb;
+
+statement ok
+USE geodb;
+
+query I
+SELECT count(*) FROM geogs WHERE g && 'POINT(178.000000 -90.000000)'::GEOGRAPHY;
+----
+1
+
+query I
+SELECT count(*) FROM geogs WHERE g && 'POINT(-178.062500 86.400000)'::GEOGRAPHY;
+----
+1
+
+query I
+SELECT count(*) FROM geogs WHERE g && 'POINT(-180.000000 -90.000000)'::GEOGRAPHY;
+----
+1
+
+query I
+SELECT count(*) FROM geogs WHERE g && 'POINT(0 0)'::GEOGRAPHY;
+----
+0
+
+query I
+SELECT count(*) FROM geogs WHERE g && 'MULTIPOINT(179 -90, -179 90)'::GEOGRAPHY;
+----
+2112
+
+statement ok
+USE memory;
+
+statement ok
+DETACH geodb;

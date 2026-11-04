@@ -457,6 +457,7 @@ bool VariantUtils::VariantSupportsType(const LogicalType &type) {
 	case LogicalTypeId::INTERVAL:
 	case LogicalTypeId::BIT:
 	case LogicalTypeId::GEOMETRY:
+	case LogicalTypeId::GEOGRAPHY:
 	case LogicalTypeId::DECIMAL:
 		return true;
 	default:

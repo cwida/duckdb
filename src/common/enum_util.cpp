@@ -3005,6 +3005,24 @@ GateStatus EnumUtil::FromString<GateStatus>(const char *value) {
 	return static_cast<GateStatus>(StringUtil::StringToEnum(GetGateStatusValues(), 2, "GateStatus", value));
 }
 
+const StringUtil::EnumStringLiteral *GetGeometryModelValues() {
+	static constexpr StringUtil::EnumStringLiteral values[] {
+		{ static_cast<uint32_t>(GeometryModel::PLANAR), "PLANAR" },
+		{ static_cast<uint32_t>(GeometryModel::GEODETIC), "GEODETIC" }
+	};
+	return values;
+}
+
+template<>
+const char* EnumUtil::ToChars<GeometryModel>(GeometryModel value) {
+	return StringUtil::EnumToString(GetGeometryModelValues(), 2, "GeometryModel", static_cast<uint32_t>(value));
+}
+
+template<>
+GeometryModel EnumUtil::FromString<GeometryModel>(const char *value) {
+	return static_cast<GeometryModel>(StringUtil::StringToEnum(GetGeometryModelValues(), 2, "GeometryModel", value));
+}
+
 const StringUtil::EnumStringLiteral *GetGeometryStorageTypeValues() {
 	static constexpr StringUtil::EnumStringLiteral values[] {
 		{ static_cast<uint32_t>(GeometryStorageType::SPATIAL), "SPATIAL" },
@@ -3967,6 +3985,7 @@ const StringUtil::EnumStringLiteral *GetLogicalTypeIdValues() {
 		{ static_cast<uint32_t>(LogicalTypeId::VALIDITY), "VALIDITY" },
 		{ static_cast<uint32_t>(LogicalTypeId::UUID), "UUID" },
 		{ static_cast<uint32_t>(LogicalTypeId::GEOMETRY), "GEOMETRY" },
+		{ static_cast<uint32_t>(LogicalTypeId::GEOGRAPHY), "GEOGRAPHY" },
 		{ static_cast<uint32_t>(LogicalTypeId::STRUCT), "STRUCT" },
 		{ static_cast<uint32_t>(LogicalTypeId::LIST), "LIST" },
 		{ static_cast<uint32_t>(LogicalTypeId::MAP), "MAP" },
@@ -3984,12 +4003,12 @@ const StringUtil::EnumStringLiteral *GetLogicalTypeIdValues() {
 
 template<>
 const char* EnumUtil::ToChars<LogicalTypeId>(LogicalTypeId value) {
-	return StringUtil::EnumToString(GetLogicalTypeIdValues(), 54, "LogicalTypeId", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetLogicalTypeIdValues(), 55, "LogicalTypeId", static_cast<uint32_t>(value));
 }
 
 template<>
 LogicalTypeId EnumUtil::FromString<LogicalTypeId>(const char *value) {
-	return static_cast<LogicalTypeId>(StringUtil::StringToEnum(GetLogicalTypeIdValues(), 54, "LogicalTypeId", value));
+	return static_cast<LogicalTypeId>(StringUtil::StringToEnum(GetLogicalTypeIdValues(), 55, "LogicalTypeId", value));
 }
 
 const StringUtil::EnumStringLiteral *GetLogicalTypeInfoTypeValues() {
@@ -7405,6 +7424,7 @@ const StringUtil::EnumStringLiteral *GetVariantComparisonTypeValues() {
 		{ static_cast<uint32_t>(VariantComparisonType::TIME_TZ), "TIME_TZ" },
 		{ static_cast<uint32_t>(VariantComparisonType::INTERVAL), "INTERVAL" },
 		{ static_cast<uint32_t>(VariantComparisonType::GEOMETRY), "GEOMETRY" },
+		{ static_cast<uint32_t>(VariantComparisonType::GEOGRAPHY), "GEOGRAPHY" },
 		{ static_cast<uint32_t>(VariantComparisonType::BITSTRING), "BITSTRING" },
 		{ static_cast<uint32_t>(VariantComparisonType::ARRAY), "ARRAY" },
 		{ static_cast<uint32_t>(VariantComparisonType::OBJECT), "OBJECT" },
@@ -7415,12 +7435,12 @@ const StringUtil::EnumStringLiteral *GetVariantComparisonTypeValues() {
 
 template<>
 const char* EnumUtil::ToChars<VariantComparisonType>(VariantComparisonType value) {
-	return StringUtil::EnumToString(GetVariantComparisonTypeValues(), 16, "VariantComparisonType", static_cast<uint32_t>(value));
+	return StringUtil::EnumToString(GetVariantComparisonTypeValues(), 17, "VariantComparisonType", static_cast<uint32_t>(value));
 }
 
 template<>
 VariantComparisonType EnumUtil::FromString<VariantComparisonType>(const char *value) {
-	return static_cast<VariantComparisonType>(StringUtil::StringToEnum(GetVariantComparisonTypeValues(), 16, "VariantComparisonType", value));
+	return static_cast<VariantComparisonType>(StringUtil::StringToEnum(GetVariantComparisonTypeValues(), 17, "VariantComparisonType", value));
 }
 
 const StringUtil::EnumStringLiteral *GetVariantLogicalTypeValues() {
@@ -7460,6 +7480,7 @@ const StringUtil::EnumStringLiteral *GetVariantLogicalTypeValues() {
 		{ static_cast<uint32_t>(VariantLogicalType::BITSTRING), "BITSTRING" },
 		{ static_cast<uint32_t>(VariantLogicalType::GEOMETRY), "GEOMETRY" },
 		{ static_cast<uint32_t>(VariantLogicalType::TIMESTAMP_NANOS_TZ), "TIMESTAMP_NANOS_TZ" },
+		{ static_cast<uint32_t>(VariantLogicalType::GEOGRAPHY), "GEOGRAPHY" },
 		{ static_cast<uint32_t>(VariantLogicalType::ENUM_SIZE), "ENUM_SIZE" }
 	};
 	return values;

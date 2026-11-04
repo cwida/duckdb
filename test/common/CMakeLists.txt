@@ -16,6 +16,7 @@ add_library_unity(
   test_file_system.cpp
   test_fsst.cpp
   test_gzip_file_system.cpp
+  test_geometry_extent.cpp
   test_caching_file_system_wrapper.cpp
   test_external_file_cache.cpp
   test_expression_executor.cpp

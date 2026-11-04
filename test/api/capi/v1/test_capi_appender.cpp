@@ -1279,12 +1279,12 @@ TEST_CASE("Test the appender with parallel appends and multiple data types in th
 
 	char *err_msg;
 
-	// Open DB. The empty struct type requires storage version v2.0.0.
+	// Open DB. The empty struct type requires storage version v2.0.0, and GEOGRAPHY requires v2.1.0.
 	auto test_dir = TestDirectoryPath();
 	auto path = test_dir + "/test.db";
 	duckdb_config config;
 	REQUIRE(duckdb_create_config(&config) == DuckDBSuccess);
-	REQUIRE(duckdb_set_config(config, "storage_compatibility_version", "v2.0.0") == DuckDBSuccess);
+	REQUIRE(duckdb_set_config(config, "storage_compatibility_version", "v2.1.0") == DuckDBSuccess);
 	duckdb_database db;
 	REQUIRE(duckdb_open_ext(path.c_str(), &db, config, &err_msg) == DuckDBSuccess);
 	duckdb_destroy_config(&config);

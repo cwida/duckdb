@@ -78,6 +78,9 @@
         "test/sql/copy/parquet/read_ahead/readahead_depth_learning.test",
         "test/sql/copy/parquet/read_ahead/readahead_io_budget.test_slow",
         "test/sql/types/geo/geometry_vertex_extract.test",
+        "test/sql/types/geo/geography_coverage.test",
+        "test/sql/types/geo/geography_shred.test",
+        "test/sql/types/geo/geography_stats.test",
         "test/issues/general/test_24298.test",
         "test/sql/optimizer/secure_view_statistics.test",
         "test/sql/window/test_window_agg_stats_propagation.test"

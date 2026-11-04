@@ -1,0 +1,77 @@
+# name: test/sql/types/geo/geography_variant.test
+# description: GEOGRAPHY values stored in VARIANT
+# group: [geo]
+
+require json
+
+query III
+SELECT variant_type(g::VARIANT), g::VARIANT::GEOGRAPHY, g::VARIANT::JSON
+FROM (SELECT 'POINT(1 2)'::GEOGRAPHY g);
+----
+GEOGRAPHY	POINT (1 2)	"POINT (1 2)"
+
+query II
+SELECT variant_type(v, 'g'), variant_extract(v, 'g')::GEOGRAPHY
+FROM (SELECT {'g': 'LINESTRING(0 0, 10 10)'::GEOGRAPHY}::VARIANT v);
+----
+GEOGRAPHY	LINESTRING (0 0, 10 10)
+
+query I
+SELECT NULL::GEOGRAPHY::VARIANT IS NULL;
+----
+true
+
+# GEOGRAPHY and GEOMETRY are distinct variant types
+query II
+SELECT ('POINT(1 2)'::GEOGRAPHY)::VARIANT = ('POINT(1 2)'::GEOMETRY)::VARIANT,
+       ('POINT(1 2)'::GEOGRAPHY)::VARIANT = ('POINT(1 2)'::GEOGRAPHY)::VARIANT;
+----
+false	true
+
+query I
+SELECT variant_contains(['POINT(1 2)'::GEOGRAPHY]::VARIANT, ('POINT(1 2)'::GEOGRAPHY)::VARIANT);
+----
+true
+
+statement ok
+SET variant_minimum_shredding_size = 0;
+
+# Storage versions that predate GEOGRAPHY keep the values unshredded
+statement ok
+ATTACH '{TEST_DIR}/geography_variant_v2_0_0.db' AS v20 (STORAGE_VERSION 'v2.0.0');
+
+statement ok
+CREATE TABLE v20.t AS SELECT ('POINT(' || (i % 180) || ' 1)')::GEOGRAPHY::VARIANT v FROM range(3000) r(i);
+
+statement ok
+CHECKPOINT v20;
+
+query I
+SELECT count(*) FROM pragma_storage_info('v20.t') WHERE segment_type = 'GEOGRAPHY';
+----
+0
+
+query III
+SELECT count(*), count(DISTINCT v::GEOGRAPHY), any_value(variant_type(v)) FROM v20.t;
+----
+3000	180	GEOGRAPHY
+
+# Newer storage versions shred the values into a GEOGRAPHY column
+statement ok
+ATTACH '{TEST_DIR}/geography_variant_v2_1_0.db' AS v21 (STORAGE_VERSION 'v2.1.0');
+
+statement ok
+CREATE TABLE v21.t AS SELECT ('POINT(' || (i % 180) || ' 1)')::GEOGRAPHY::VARIANT v FROM range(3000) r(i);
+
+statement ok
+CHECKPOINT v21;
+
+query I
+SELECT count(*) > 0 FROM pragma_storage_info('v21.t') WHERE segment_type = 'GEOGRAPHY';
+----
+true
+
+query III
+SELECT count(*), count(DISTINCT v::GEOGRAPHY), any_value(variant_type(v)) FROM v21.t;
+----
+3000	180	GEOGRAPHY

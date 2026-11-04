@@ -220,6 +220,8 @@ public:
 
 	DUCKDB_API static Value GEOMETRY(const_data_ptr_t data, idx_t len);
 	DUCKDB_API static Value GEOMETRY(const_data_ptr_t data, idx_t len, const CoordinateReferenceSystem &crs);
+	DUCKDB_API static Value GEOGRAPHY(const_data_ptr_t data, idx_t len);
+	DUCKDB_API static Value GEOGRAPHY(const_data_ptr_t data, idx_t len, const CoordinateReferenceSystem &crs);
 
 	DUCKDB_API static Value TYPE(const LogicalType &type);
 	DUCKDB_API static Value TYPE(const string_t &serialized_type);

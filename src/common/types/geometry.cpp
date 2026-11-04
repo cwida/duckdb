@@ -1308,9 +1308,8 @@ string_t Geometry::ToString(StringHeap &heap, const string_t &geom) {
 	return heap.AddString(buffer.data(), buffer.size());
 }
 
-pair<GeometryType, VertexType> Geometry::GetType(const string_t &wkb) {
-	BlobReader reader(wkb.GetData(), static_cast<uint32_t>(wkb.GetSize()));
-
+//! Read and validate the byte order and type of a WKB geometry
+static pair<GeometryType, VertexType> ReadGeometryHeader(BlobReader &reader) {
 	// Read the byte order (should always be 1 for little-endian)
 	const auto byte_order = reader.Read<uint8_t>();
 	if (byte_order != 1) {
@@ -1334,125 +1333,794 @@ pair<GeometryType, VertexType> Geometry::GetType(const string_t &wkb) {
 	return {geom_type, vert_type};
 }
 
-template <class VERTEX_TYPE = VertexXY>
-static uint32_t ParseVerticesInternal(BlobReader &reader, GeometryExtent &extent, uint32_t vert_count, bool check_nan) {
-	uint32_t count = 0;
-
-	// Issue a single .Reserve() for all vertices, to minimize bounds checking overhead
-	const auto ptr = const_data_ptr_cast(reader.Reserve(vert_count * sizeof(VERTEX_TYPE)));
-#if DUCKDB_IS_BIG_ENDIAN
-	double be_buffer[sizeof(VERTEX_TYPE)];
-	auto be_ptr = reinterpret_cast<const_data_ptr_t>(be_buffer);
-#endif
-	for (uint32_t vert_idx = 0; vert_idx < vert_count; vert_idx++) {
-#if DUCKDB_IS_BIG_ENDIAN
-		auto vert_ofs = vert_idx * sizeof(VERTEX_TYPE);
-		for (idx_t i = 0; i < sizeof(VERTEX_TYPE) / sizeof(double); ++i) {
-			be_buffer[i] = LoadLE<double>(ptr + vert_ofs + i * sizeof(double));
-		}
-		VERTEX_TYPE vertex = Load<VERTEX_TYPE>(be_ptr);
-#else
-		VERTEX_TYPE vertex = Load<VERTEX_TYPE>(ptr + vert_idx * sizeof(VERTEX_TYPE));
-#endif
-		if (check_nan && vertex.AllNan()) {
-			continue;
-		}
-
-		extent.Extend(vertex);
-		count++;
-	}
-	return count;
-}
-
-static uint32_t ParseVertices(BlobReader &reader, GeometryExtent &extent, uint32_t vert_count, VertexType type,
-                              bool check_nan) {
-	switch (type) {
-	case VertexType::XY:
-		return ParseVerticesInternal<VertexXY>(reader, extent, vert_count, check_nan);
-	case VertexType::XYZ:
-		return ParseVerticesInternal<VertexXYZ>(reader, extent, vert_count, check_nan);
-	case VertexType::XYM:
-		return ParseVerticesInternal<VertexXYM>(reader, extent, vert_count, check_nan);
-	case VertexType::XYZM:
-		return ParseVerticesInternal<VertexXYZM>(reader, extent, vert_count, check_nan);
-	default:
-		throw InvalidInputException("Unsupported vertex type %d in WKB", static_cast<int>(type));
-	}
-}
-
-uint32_t Geometry::GetExtent(const string_t &wkb, GeometryExtent &extent) {
-	bool has_any_empty = false;
-	return GetExtent(wkb, extent, has_any_empty);
-}
-
-uint32_t Geometry::GetExtent(const string_t &wkb, GeometryExtent &extent, bool &has_any_empty) {
+pair<GeometryType, VertexType> Geometry::GetType(const string_t &wkb) {
 	BlobReader reader(wkb.GetData(), static_cast<uint32_t>(wkb.GetSize()));
+	return ReadGeometryHeader(reader);
+}
 
-	uint32_t vertex_count = 0;
+//----------------------------------------------------------------------------------------------------------------------
+// Geometry visitor
+//----------------------------------------------------------------------------------------------------------------------
 
-	while (!reader.IsAtEnd()) {
-		const auto byte_order = reader.Read<uint8_t>();
-		if (byte_order != 1) {
-			throw InvalidInputException("Unsupported byte order %d in WKB", byte_order);
-		}
-		const auto meta = reader.Read<uint32_t>();
-		const auto type_id = (meta & 0x0000FFFF) % 1000;
-		const auto flag_id = (meta & 0x0000FFFF) / 1000;
-		if (type_id < 1 || type_id > 7) {
-			throw InvalidInputException("Unsupported geometry type %d in WKB", type_id);
-		}
-		if (flag_id > 3) {
-			throw InvalidInputException("Unsupported geometry flag %d in WKB", flag_id);
-		}
-		const auto geom_type = static_cast<GeometryType>(type_id);
-		const auto vert_type = static_cast<VertexType>(flag_id);
+namespace {
 
-		switch (geom_type) {
-		case GeometryType::POINT: {
-			const auto parsed_count = ParseVertices(reader, extent, 1, vert_type, true);
-			if (parsed_count == 0) {
-				has_any_empty = true;
-				continue;
-			}
-			vertex_count += parsed_count;
-		} break;
-		case GeometryType::LINESTRING: {
-			const auto vert_count = reader.Read<uint32_t>();
-			if (vert_count == 0) {
-				has_any_empty = true;
-				continue;
-			}
-			vertex_count += ParseVertices(reader, extent, vert_count, vert_type, false);
-		} break;
-		case GeometryType::POLYGON: {
-			const auto ring_count = reader.Read<uint32_t>();
-			if (ring_count == 0) {
-				has_any_empty = true;
-				continue;
-			}
-			for (uint32_t ring_idx = 0; ring_idx < ring_count; ring_idx++) {
-				const auto vert_count = reader.Read<uint32_t>();
-				if (vert_count == 0) {
-					has_any_empty = true;
-					continue;
-				}
-				vertex_count += ParseVertices(reader, extent, vert_count, vert_type, false);
-			}
-		} break;
-		case GeometryType::MULTIPOINT:
-		case GeometryType::MULTILINESTRING:
-		case GeometryType::MULTIPOLYGON:
-		case GeometryType::GEOMETRYCOLLECTION: {
+//! Receives the parts and vertices of a WKB geometry from VisitGeometry. Each part is entered and left with its index
+//! within its parent (0 for the root) and its number of children: vertices, rings or parts. An empty point has no
+//! vertex. Implementations should be final and passed to VisitGeometry as their own type, so that the calls are direct
+//! and can be inlined.
+class GeometryVisitor {
+public:
+	virtual ~GeometryVisitor() = default;
+
+	virtual void EnterPoint(idx_t part_idx, idx_t vert_count) {
+	}
+	virtual void LeavePoint(idx_t part_idx, idx_t vert_count) {
+	}
+	virtual void EnterLineString(idx_t part_idx, idx_t vert_count) {
+	}
+	virtual void LeaveLineString(idx_t part_idx, idx_t vert_count) {
+	}
+	virtual void EnterPolygon(idx_t part_idx, idx_t ring_count) {
+	}
+	virtual void LeavePolygon(idx_t part_idx, idx_t ring_count) {
+	}
+	virtual void EnterPolygonRing(idx_t ring_idx, idx_t vert_count) {
+	}
+	virtual void LeavePolygonRing(idx_t ring_idx, idx_t vert_count) {
+	}
+	virtual void EnterMultiPoint(idx_t part_idx, idx_t part_count) {
+	}
+	virtual void LeaveMultiPoint(idx_t part_idx, idx_t part_count) {
+	}
+	virtual void EnterMultiLineString(idx_t part_idx, idx_t part_count) {
+	}
+	virtual void LeaveMultiLineString(idx_t part_idx, idx_t part_count) {
+	}
+	virtual void EnterMultiPolygon(idx_t part_idx, idx_t part_count) {
+	}
+	virtual void LeaveMultiPolygon(idx_t part_idx, idx_t part_count) {
+	}
+	virtual void EnterGeometryCollection(idx_t part_idx, idx_t part_count) {
+	}
+	virtual void LeaveGeometryCollection(idx_t part_idx, idx_t part_count) {
+	}
+
+	virtual void OnVertexXY(const VertexXY &vertex) = 0;
+	virtual void OnVertexXYZ(const VertexXYZ &vertex) = 0;
+	virtual void OnVertexXYM(const VertexXYM &vertex) = 0;
+	virtual void OnVertexXYZM(const VertexXYZM &vertex) = 0;
+};
+
+//! Walks the parts of a WKB geometry whose vertices are all of type VERTEX_TYPE
+template <class VERTEX_TYPE, class VISITOR>
+class GeometryWalker {
+public:
+	//! Visit a geometry of the given type, whose header has already been read
+	static void Visit(BlobReader &reader, GeometryType type, idx_t part_idx, VISITOR &visitor, idx_t depth) {
+		switch (type) {
+		case GeometryType::POINT:
+			VisitPoint(reader, part_idx, visitor);
+			break;
+		case GeometryType::LINESTRING:
+			VisitLineString(reader, part_idx, visitor);
+			break;
+		case GeometryType::POLYGON:
+			VisitPolygon(reader, part_idx, visitor);
+			break;
+		case GeometryType::MULTIPOINT: {
 			const auto part_count = reader.Read<uint32_t>();
-			if (part_count == 0) {
-				has_any_empty = true;
+			visitor.EnterMultiPoint(part_idx, part_count);
+			for (uint32_t i = 0; i < part_count; i++) {
+				ReadPartHeader(reader, GeometryType::POINT);
+				VisitPoint(reader, i, visitor);
 			}
+			visitor.LeaveMultiPoint(part_idx, part_count);
+		} break;
+		case GeometryType::MULTILINESTRING: {
+			const auto part_count = reader.Read<uint32_t>();
+			visitor.EnterMultiLineString(part_idx, part_count);
+			for (uint32_t i = 0; i < part_count; i++) {
+				ReadPartHeader(reader, GeometryType::LINESTRING);
+				VisitLineString(reader, i, visitor);
+			}
+			visitor.LeaveMultiLineString(part_idx, part_count);
+		} break;
+		case GeometryType::MULTIPOLYGON: {
+			const auto part_count = reader.Read<uint32_t>();
+			visitor.EnterMultiPolygon(part_idx, part_count);
+			for (uint32_t i = 0; i < part_count; i++) {
+				ReadPartHeader(reader, GeometryType::POLYGON);
+				VisitPolygon(reader, i, visitor);
+			}
+			visitor.LeaveMultiPolygon(part_idx, part_count);
+		} break;
+		case GeometryType::GEOMETRYCOLLECTION: {
+			if (depth >= Geometry::MAX_RECURSION_DEPTH) {
+				throw InvalidInputException("Geometry exceeds maximum recursion depth of %d",
+				                            Geometry::MAX_RECURSION_DEPTH);
+			}
+			const auto part_count = reader.Read<uint32_t>();
+			visitor.EnterGeometryCollection(part_idx, part_count);
+			for (uint32_t i = 0; i < part_count; i++) {
+				const auto part_type = ReadPartHeader(reader);
+				Visit(reader, part_type, i, visitor, depth + 1);
+			}
+			visitor.LeaveGeometryCollection(part_idx, part_count);
 		} break;
 		default:
-			throw InvalidInputException("Unsupported geometry type %d in WKB", static_cast<int>(geom_type));
+			throw InvalidInputException("Unsupported geometry type %d in WKB", static_cast<int>(type));
 		}
 	}
-	return vertex_count;
+
+private:
+	static VERTEX_TYPE LoadVertex(const_data_ptr_t ptr) {
+#if DUCKDB_IS_BIG_ENDIAN
+		double be_buffer[VERTEX_TYPE::WIDTH];
+		for (idx_t i = 0; i < VERTEX_TYPE::WIDTH; i++) {
+			be_buffer[i] = LoadLE<double>(ptr + i * sizeof(double));
+		}
+		return Load<VERTEX_TYPE>(reinterpret_cast<const_data_ptr_t>(be_buffer));
+#else
+		return Load<VERTEX_TYPE>(ptr);
+#endif
+	}
+
+	static void OnVertex(VISITOR &visitor, const VertexXY &vertex) {
+		visitor.OnVertexXY(vertex);
+	}
+	static void OnVertex(VISITOR &visitor, const VertexXYZ &vertex) {
+		visitor.OnVertexXYZ(vertex);
+	}
+	static void OnVertex(VISITOR &visitor, const VertexXYM &vertex) {
+		visitor.OnVertexXYM(vertex);
+	}
+	static void OnVertex(VISITOR &visitor, const VertexXYZM &vertex) {
+		visitor.OnVertexXYZM(vertex);
+	}
+
+	static void VisitVertices(BlobReader &reader, uint32_t vert_count, VISITOR &visitor) {
+		// Issue a single .Reserve() for all vertices, to minimize bounds checking overhead
+		const auto ptr = const_data_ptr_cast(reader.Reserve(vert_count * sizeof(VERTEX_TYPE)));
+		for (uint32_t vert_idx = 0; vert_idx < vert_count; vert_idx++) {
+			OnVertex(visitor, LoadVertex(ptr + vert_idx * sizeof(VERTEX_TYPE)));
+		}
+	}
+
+	static void VisitPoint(BlobReader &reader, idx_t part_idx, VISITOR &visitor) {
+		const auto vertex = LoadVertex(const_data_ptr_cast(reader.Reserve(sizeof(VERTEX_TYPE))));
+		// An empty point has all-NaN ordinates
+		const idx_t vert_count = vertex.AllNan() ? 0 : 1;
+		visitor.EnterPoint(part_idx, vert_count);
+		if (vert_count != 0) {
+			OnVertex(visitor, vertex);
+		}
+		visitor.LeavePoint(part_idx, vert_count);
+	}
+
+	static void VisitLineString(BlobReader &reader, idx_t part_idx, VISITOR &visitor) {
+		const auto vert_count = reader.Read<uint32_t>();
+		visitor.EnterLineString(part_idx, vert_count);
+		VisitVertices(reader, vert_count, visitor);
+		visitor.LeaveLineString(part_idx, vert_count);
+	}
+
+	static void VisitPolygon(BlobReader &reader, idx_t part_idx, VISITOR &visitor) {
+		const auto ring_count = reader.Read<uint32_t>();
+		visitor.EnterPolygon(part_idx, ring_count);
+		for (uint32_t ring_idx = 0; ring_idx < ring_count; ring_idx++) {
+			const auto vert_count = reader.Read<uint32_t>();
+			visitor.EnterPolygonRing(ring_idx, vert_count);
+			VisitVertices(reader, vert_count, visitor);
+			visitor.LeavePolygonRing(ring_idx, vert_count);
+		}
+		visitor.LeavePolygon(part_idx, ring_count);
+	}
+
+	//! Read the header of a collection part, which must have the same vertex type as the root
+	static GeometryType ReadPartHeader(BlobReader &reader) {
+		const auto header = ReadGeometryHeader(reader);
+		if (header.second != VERTEX_TYPE::TYPE) {
+			throw InvalidInputException("Geometry has inconsistent Z/M dimensions, starting at position %zu",
+			                            reader.GetPosition());
+		}
+		return header.first;
+	}
+
+	static void ReadPartHeader(BlobReader &reader, GeometryType expected_type) {
+		const auto type = ReadPartHeader(reader);
+		if (type != expected_type) {
+			throw InvalidInputException("Unexpected geometry type %d in a collection of type %d at position %zu",
+			                            static_cast<int>(type), static_cast<int>(expected_type) + 3,
+			                            reader.GetPosition());
+		}
+	}
+};
+
+//! Walk a WKB geometry, calling the visitor for each of its parts and vertices
+template <class VISITOR>
+void VisitGeometry(const string_t &wkb, VISITOR &visitor) {
+	BlobReader reader(wkb.GetData(), static_cast<uint32_t>(wkb.GetSize()));
+	const auto header = ReadGeometryHeader(reader);
+	switch (header.second) {
+	case VertexType::XY:
+		GeometryWalker<VertexXY, VISITOR>::Visit(reader, header.first, 0, visitor, 0);
+		break;
+	case VertexType::XYZ:
+		GeometryWalker<VertexXYZ, VISITOR>::Visit(reader, header.first, 0, visitor, 0);
+		break;
+	case VertexType::XYM:
+		GeometryWalker<VertexXYM, VISITOR>::Visit(reader, header.first, 0, visitor, 0);
+		break;
+	case VertexType::XYZM:
+		GeometryWalker<VertexXYZM, VISITOR>::Visit(reader, header.first, 0, visitor, 0);
+		break;
+	default:
+		throw InvalidInputException("Unsupported vertex type %d in WKB", static_cast<int>(header.second));
+	}
+	if (!reader.IsAtEnd()) {
+		throw InvalidInputException("Unexpected trailing data at position %zu", reader.GetPosition());
+	}
+}
+
+} // namespace
+
+//----------------------------------------------------------------------------------------------------------------------
+// Geodetic (GEOGRAPHY) coverage extents
+//----------------------------------------------------------------------------------------------------------------------
+// GEOGRAPHY edges are geodesics (great-circle arcs), which can bulge poleward past their endpoints, and polygon rings
+// can enclose a pole. The geodetic extent therefore bounds what the geometry covers, not just its coordinates.
+// (i.e., we cant just accumulate the min/max of all the coordinates individually)
+//
+// For example, the edge from A (60W, 45N) to B (60E, 45N), drawn in lon/lat:
+//
+//     63N             _.--''''''--._
+//               _.-''                ''-._         geodesic: great-circle arc, bulges poleward
+//           _.-'                          '-._
+//     45N  A*--------------------------------*B    planar: straight line in lon/lat
+//          60W              0               60E
+//
+// The geodesic reaches ~63.4N at longitude 0, so a latitude range over the endpoints alone (45N) would miss it.
+// Longitude is monotone along any edge spanning less than half a circle, so an edge covers the short arc between its
+// endpoints' longitudes. The vertices alone may not: LINESTRING(0 10, 170 10, -170 10, 0 10) has vertices within the
+// arc from 0 east to -170, but its last edge runs from -170 east to 0.
+//
+// Here's a mini-glossary to help understanding the following code:
+// - Longitude / Latitude: degrees east in [-180, 180] and degrees north in [-90, 90].
+// - Great circle: a circle on the sphere whose center is the sphere's center, e.g. the equator.
+// - Geodesic: the shortest path between two points on the sphere, an arc of the great circle through both.
+// - Meridian: a line of constant longitude, running from pole to pole.
+// - Antipodal: diametrically opposite, e.g. the two poles. Every great circle through one point also passes through
+//   its antipode, so the geodesic between them is ambiguous.
+// - Apex: the northernmost or southernmost point of a great circle.
+// - Bulge: the part of an edge that reaches beyond the latitudes of its endpoints, towards a pole.
+// - Winding: the total signed longitude change around a ring, about +-360 degrees if the ring encircles a pole.
+// - Shell / hole: the first ring of a polygon and the remaining ones. The interior lies to the left of the direction
+//   of travel along the ring.
+
+namespace {
+
+constexpr double DEG_TO_RAD = 0.017453292519943295;
+
+//! Outward padding for computed apex latitudes, in degrees
+constexpr double APEX_EPSILON = 1e-9;
+
+//! Edges spanning within this many degrees of half a circle of longitude are ambiguous
+constexpr double HALF_CIRCLE_EPSILON = 1e-9;
+
+//! Tolerance for dimensionless quantities on the unit sphere (sines and cosines)
+constexpr double UNIT_EPSILON = 1e-14;
+
+struct Vec2 {
+	double x;
+	double y;
+
+	double Cross(const Vec2 &o) const {
+		return x * o.y - y * o.x;
+	}
+};
+
+struct Vec3 {
+	double x;
+	double y;
+	double z;
+
+	Vec3 Cross(const Vec3 &o) const {
+		return {y * o.z - z * o.y, z * o.x - x * o.z, x * o.y - y * o.x};
+	}
+	double Dot(const Vec3 &o) const {
+		return x * o.x + y * o.y + z * o.z;
+	}
+};
+
+//! A point on the sphere, in degrees
+struct LonLat {
+	double lon;
+	double lat;
+
+	//! Signed eastward longitude difference in degrees, in [-180, 180]
+	static double LonDelta(double from, double to) {
+		double d = to - from;
+		if (d > 180.0) {
+			d -= 360.0;
+		} else if (d < -180.0) {
+			d += 360.0;
+		}
+		return d;
+	}
+
+	Vec3 ToCartesian() const {
+		const double phi = lat * DEG_TO_RAD;
+		const double lam = lon * DEG_TO_RAD;
+		return {std::cos(phi) * std::cos(lam), std::cos(phi) * std::sin(lam), std::sin(phi)};
+	}
+
+	//! Initial (east, north) tangent of the geodesic from this point towards `to`, unnormalized
+	Vec2 DirectionTo(const LonLat &to) const {
+		const double phi_from = lat * DEG_TO_RAD;
+		const double phi_to = to.lat * DEG_TO_RAD;
+		const double dl = LonDelta(lon, to.lon) * DEG_TO_RAD;
+		return {std::sin(dl) * std::cos(phi_to),
+		        std::cos(phi_from) * std::sin(phi_to) - std::sin(phi_from) * std::cos(phi_to) * std::cos(dl)};
+	}
+};
+
+//! A great-circle arc from p1 to p2, spanning less than half a circle
+struct GeodesicEdge {
+	LonLat p1;
+	LonLat p2;
+
+	//! Signed eastward longitude change from p1 to p2, in degrees, in [-180, 180]
+	double GetLonDelta() const {
+		return LonLat::LonDelta(p1.lon, p2.lon);
+	}
+
+	//! Whether `lon` lies within the longitudes the edge passes through
+	bool ContainsLon(double lon) const {
+		const double delta = GetLonDelta();
+		const double offset = LonLat::LonDelta(p1.lon, lon);
+		return delta > 0 ? (offset >= 0 && offset <= delta) : (offset <= 0 && offset >= delta);
+	}
+
+	//! Latitude range reached by the edge, including any poleward bulge past its endpoints.
+	//! Returns false if the edge is ambiguous (endpoints nearly antipodal).
+	bool TryGetLatRange(double &min_lat, double &max_lat) const {
+		min_lat = MinValue(p1.lat, p2.lat);
+		max_lat = MaxValue(p1.lat, p2.lat);
+
+		// The endpoints only bound a planar edge.
+		// On the sphere it can bulge poleward, which is what the rest of this function computes.
+
+		const double delta = GetLonDelta();
+
+		if (!(std::fabs(delta) < 180.0 - HALF_CIRCLE_EPSILON)) {
+			// Spans (nearly) half a circle of longitude, or NaN
+			return false;
+		}
+		if (delta == 0.0) {
+			// This is a meridian arc, i.e. same longitude, i.e. no bulge
+			return true;
+		}
+
+		const Vec3 c1 = p1.ToCartesian();
+		const Vec3 c2 = p2.ToCartesian();
+		const Vec3 n = c1.Cross(c2);
+		const double nxy = std::hypot(n.x, n.y);
+		const double nlen = std::hypot(nxy, n.z);
+
+		if (!(nlen > UNIT_EPSILON)) {
+			// Coincident endpoints (e.g. a pole under two longitudes) are fine, antipodal ones are ambiguous
+			return c1.Dot(c2) > 0;
+		}
+		if (std::fabs(n.z) <= UNIT_EPSILON * nlen) {
+			// The great circle runs (nearly) through the poles, where all of its longitude change happens, so the edge
+			// crosses a pole iff it spans about half a circle. The shorter arc crosses the pole nearer to the
+			// endpoints.
+			if (std::fabs(delta) > 90.0) {
+				const double lat_sum = p1.lat + p2.lat;
+				if (lat_sum > 0) {
+					max_lat = 90.0;
+				} else if (lat_sum < 0) {
+					min_lat = -90.0;
+				} else {
+					return false;
+				}
+			}
+			return true;
+		}
+		// Northernmost point of the great circle, atan2 stays well-conditioned near the pole, unlike asin(nxy / nlen)
+		const double apex_lat = std::atan2(nxy, std::fabs(n.z)) / DEG_TO_RAD;
+		const double apex_lon = std::atan2(-n.y * n.z, -n.x * n.z) / DEG_TO_RAD;
+
+		if (ContainsLon(apex_lon) && apex_lat > max_lat) {
+			max_lat = apex_lat;
+		}
+
+		// The southernmost point is antipodal to the northernmost
+		const double south_apex_lon = apex_lon > 0 ? apex_lon - 180.0 : apex_lon + 180.0;
+
+		if (ContainsLon(south_apex_lon) && -apex_lat < min_lat) {
+			min_lat = -apex_lat;
+		}
+		return true;
+	}
+};
+
+//! Side of the boundary that a ring's interior lies on at its highest point. SOUTH is the bounded, pole-free side.
+enum class InteriorSide : int8_t { UNKNOWN, SOUTH, NORTH };
+
+//! Coverage state of a linestring or polygon ring, accumulated vertex by vertex
+class GeodeticRingState {
+public:
+	//! Add the next vertex, extending the extent with the edge from the previous one
+	void AddVertex(GeometryExtent &extent, const LonLat &vertex) {
+		if (vertex_count == 0) {
+			first_vertex = vertex;
+		} else {
+			AddEdge(extent, last_vertex, vertex);
+			if (vertex_count == 1) {
+				second_vertex = vertex;
+			}
+		}
+		last_vertex = vertex;
+		vertex_count++;
+	}
+
+	//! Close the ring, adding the closing edge unless the last vertex already repeats the first (+180 and -180 are the
+	//! same longitude). The closing vertex's successor is the second vertex.
+	void CloseRing(GeometryExtent &extent) {
+		if (vertex_count < 2) {
+			return;
+		}
+		if (LonLat::LonDelta(last_vertex.lon, first_vertex.lon) != 0.0 || last_vertex.lat != first_vertex.lat) {
+			AddEdge(extent, last_vertex, first_vertex);
+		}
+		ResolvePending(second_vertex);
+	}
+
+	//! Apply the ring state to the extent. A shell's interior lies on the left of the travel direction (as in S2),
+	//! with the orientation read off at the ring's highest point, since a planar shoelace fails when edges bulge.
+	//! Holes never extend the interior, so only their edges contribute.
+	void Finish(GeometryExtent &extent, bool is_shell) const {
+		if (ambiguous) {
+			ExtendFullGlobe(extent);
+			return;
+		}
+		if (!is_shell) {
+			return;
+		}
+		// The winding thresholds lie halfway between whole turns
+		if (std::fabs(winding) >= 540.0) {
+			// Wound around the globe more than once: not a simple ring
+			ExtendFullGlobe(extent);
+			return;
+		}
+		if (std::fabs(winding) >= 180.0) {
+			// Wound around the globe once: east encloses the north pole, west the south pole
+			extent.x_min = -180.0;
+			extent.x_max = 180.0;
+			if (winding > 0) {
+				extent.y_max = MaxValue(extent.y_max, 90.0);
+			} else {
+				extent.y_min = MinValue(extent.y_min, -90.0);
+			}
+			return;
+		}
+		if (top_conflict || top_side != InteriorSide::SOUTH || top_lat >= 90.0) {
+			// Clockwise (the interior is the complement), or the orientation is undefined (cusp, degenerate, on a pole)
+			ExtendFullGlobe(extent);
+		}
+		// Otherwise counterclockwise: the interior lies within the boundary's extent
+	}
+
+private:
+	//! Add the edge prev -> cur, extending the extent with its longitude and latitude ranges
+	void AddEdge(GeometryExtent &extent, const LonLat &prev, const LonLat &cur) {
+		const GeodesicEdge edge = {prev, cur};
+		double min_lat = 0;
+		double max_lat = 0;
+		if (!edge.TryGetLatRange(min_lat, max_lat)) {
+			ambiguous = true;
+			return;
+		}
+		const double delta = edge.GetLonDelta();
+		winding += delta;
+		ResolvePending(cur);
+		if (delta > 0) {
+			extent.ExtendXArc(prev.lon, cur.lon);
+		} else if (delta < 0) {
+			extent.ExtendXArc(cur.lon, prev.lon);
+		}
+		// The endpoints are already in the extent, and computed apexes beyond them are padded outward
+		if (min_lat < MinValue(prev.lat, cur.lat)) {
+			extent.y_min = MinValue(extent.y_min, MaxValue(min_lat - APEX_EPSILON, -90.0));
+		}
+		if (max_lat > MaxValue(prev.lat, cur.lat)) {
+			extent.y_max = MaxValue(extent.y_max, MinValue(max_lat + APEX_EPSILON, 90.0));
+			// A smooth highest point: traveling east puts the interior (on the left) north of it
+			SubmitTop(max_lat, delta > 0 ? InteriorSide::NORTH : InteriorSide::SOUTH);
+		}
+		if (cur.lat >= top_lat) {
+			// A vertex's interior side needs the next vertex, so it is kept pending until the following edge
+			pending = true;
+			pending_vertex = cur;
+			pending_prev = prev;
+		}
+	}
+
+	//! Submit the pending vertex's interior side, now that its successor is known
+	void ResolvePending(const LonLat &next) {
+		if (!pending) {
+			return;
+		}
+		const auto &v = pending_vertex;
+		const Vec2 to_next = v.DirectionTo(next);
+		const Vec2 to_prev = v.DirectionTo(pending_prev);
+		const bool next_descends = to_next.y < -UNIT_EPSILON;
+		const bool prev_descends = to_prev.y < -UNIT_EPSILON;
+		if (next_descends && prev_descends) {
+			// A corner: traversed prev -> v -> next with both edges leaving v heading south, the interior (on the left)
+			// is pole-free iff the turn at v is a left turn
+			const double cross = to_next.Cross(to_prev);
+			SubmitTop(v.lat,
+			          cross > 0 ? InteriorSide::SOUTH : (cross < 0 ? InteriorSide::NORTH : InteriorSide::UNKNOWN));
+		} else {
+			// An edge that does not descend from v peaks at or past v, possibly higher by less than the rounding of its
+			// apex. The boundary is smooth there, so as at an apex, traveling east puts the interior north of it.
+			if (!next_descends) {
+				SubmitTop(v.lat, SideOfTravel(to_next.x));
+			}
+			if (!prev_descends) {
+				SubmitTop(v.lat, SideOfTravel(-to_prev.x));
+			}
+		}
+		pending = false;
+	}
+
+	//! Interior side at a smooth boundary point, given the eastward component of the travel direction there
+	static InteriorSide SideOfTravel(double east) {
+		if (east > UNIT_EPSILON) {
+			return InteriorSide::NORTH;
+		}
+		if (east < -UNIT_EPSILON) {
+			return InteriorSide::SOUTH;
+		}
+		return InteriorSide::UNKNOWN;
+	}
+
+	//! Record the interior side at a boundary point at `lat`, if it is (one of) the highest
+	void SubmitTop(double lat, InteriorSide side) {
+		if (lat > top_lat) {
+			top_lat = lat;
+			top_side = side;
+			top_conflict = side == InteriorSide::UNKNOWN;
+		} else if (lat == top_lat && side != top_side) {
+			top_conflict = true;
+		}
+	}
+
+	//! Extend the extent to cover the entire globe
+	static void ExtendFullGlobe(GeometryExtent &extent) {
+		extent.x_min = -180.0;
+		extent.x_max = 180.0;
+		extent.y_min = MinValue(extent.y_min, -90.0);
+		extent.y_max = MaxValue(extent.y_max, 90.0);
+	}
+
+private:
+	//! Number of vertices added so far, and the first, second and last of them
+	idx_t vertex_count = 0;
+	LonLat first_vertex = {0, 0};
+	LonLat second_vertex = {0, 0};
+	LonLat last_vertex = {0, 0};
+	//! Accumulated signed longitude change in degrees, ~+-360 for a ring that winds around a pole
+	double winding = 0;
+	//! Highest latitude reached by the boundary (vertices and edge apexes)
+	double top_lat = -std::numeric_limits<double>::infinity();
+	//! Side of the boundary the interior lies on at top_lat
+	InteriorSide top_side = InteriorSide::UNKNOWN;
+	//! The boundary reaches top_lat with conflicting interior sides (a cusp or degenerate ring)
+	bool top_conflict = false;
+	//! A highest vertex whose interior side awaits the next vertex
+	bool pending = false;
+	LonLat pending_vertex = {0, 0};
+	LonLat pending_prev = {0, 0};
+	//! Saw a (nearly) antipodal edge, whose geodesic is ambiguous and may pass arbitrarily close to a pole
+	bool ambiguous = false;
+};
+
+} // namespace
+
+//----------------------------------------------------------------------------------------------------------------------
+// Extents
+//----------------------------------------------------------------------------------------------------------------------
+
+namespace {
+
+//! Extends an extent with the vertices of a geometry, counting them and whether any part is empty
+class ExtentVisitor : public GeometryVisitor {
+public:
+	explicit ExtentVisitor(GeometryExtent &extent) : extent(extent) {
+	}
+
+	uint32_t GetVertexCount() const {
+		return vertex_count;
+	}
+	bool HasAnyEmpty() const {
+		return has_any_empty;
+	}
+
+	void EnterPoint(idx_t part_idx, idx_t vert_count) override {
+		MarkIfEmpty(vert_count);
+	}
+	void EnterLineString(idx_t part_idx, idx_t vert_count) override {
+		MarkIfEmpty(vert_count);
+	}
+	void EnterPolygon(idx_t part_idx, idx_t ring_count) override {
+		MarkIfEmpty(ring_count);
+	}
+	void EnterPolygonRing(idx_t ring_idx, idx_t vert_count) override {
+		MarkIfEmpty(vert_count);
+	}
+	void EnterMultiPoint(idx_t part_idx, idx_t part_count) override {
+		MarkIfEmpty(part_count);
+	}
+	void EnterMultiLineString(idx_t part_idx, idx_t part_count) override {
+		MarkIfEmpty(part_count);
+	}
+	void EnterMultiPolygon(idx_t part_idx, idx_t part_count) override {
+		MarkIfEmpty(part_count);
+	}
+	void EnterGeometryCollection(idx_t part_idx, idx_t part_count) override {
+		MarkIfEmpty(part_count);
+	}
+
+protected:
+	void MarkIfEmpty(idx_t child_count) {
+		if (child_count == 0) {
+			has_any_empty = true;
+		}
+	}
+
+protected:
+	GeometryExtent &extent;
+	uint32_t vertex_count = 0;
+	bool has_any_empty = false;
+};
+
+//! Extends the extent with every vertex
+class PlanarExtentVisitor final : public ExtentVisitor {
+public:
+	explicit PlanarExtentVisitor(GeometryExtent &extent) : ExtentVisitor(extent) {
+	}
+
+	void OnVertexXY(const VertexXY &vertex) override {
+		AddVertex(vertex);
+	}
+	void OnVertexXYZ(const VertexXYZ &vertex) override {
+		AddVertex(vertex);
+	}
+	void OnVertexXYM(const VertexXYM &vertex) override {
+		AddVertex(vertex);
+	}
+	void OnVertexXYZM(const VertexXYZM &vertex) override {
+		AddVertex(vertex);
+	}
+
+private:
+	template <class VERTEX_TYPE>
+	void AddVertex(const VERTEX_TYPE &vertex) {
+		extent.Extend(vertex, GeometryModel::PLANAR);
+		vertex_count++;
+	}
+};
+
+//! Extends the extent with the coverage of every vertex, geodesic edge, and polygon interior
+class GeodeticExtentVisitor final : public ExtentVisitor {
+public:
+	explicit GeodeticExtentVisitor(GeometryExtent &extent) : ExtentVisitor(extent) {
+	}
+
+	void EnterLineString(idx_t part_idx, idx_t vert_count) override {
+		ExtentVisitor::EnterLineString(part_idx, vert_count);
+		if (vert_count > 0) {
+			ring = GeodeticRingState();
+			in_ring = true;
+		}
+	}
+	void LeaveLineString(idx_t part_idx, idx_t vert_count) override {
+		if (in_ring) {
+			ring.Finish(extent, false);
+			in_ring = false;
+		}
+	}
+	void EnterPolygon(idx_t part_idx, idx_t ring_count) override {
+		ExtentVisitor::EnterPolygon(part_idx, ring_count);
+		is_shell = true;
+	}
+	void EnterPolygonRing(idx_t ring_idx, idx_t vert_count) override {
+		ExtentVisitor::EnterPolygonRing(ring_idx, vert_count);
+		if (vert_count > 0) {
+			ring = GeodeticRingState();
+			in_ring = true;
+		}
+	}
+	void LeavePolygonRing(idx_t ring_idx, idx_t vert_count) override {
+		if (in_ring) {
+			ring.CloseRing(extent);
+			ring.Finish(extent, is_shell);
+			in_ring = false;
+			// The first non-empty ring is the shell, the rest are holes
+			is_shell = false;
+		}
+	}
+
+	void OnVertexXY(const VertexXY &vertex) override {
+		AddVertex(vertex);
+	}
+	void OnVertexXYZ(const VertexXYZ &vertex) override {
+		AddVertex(vertex);
+	}
+	void OnVertexXYM(const VertexXYM &vertex) override {
+		AddVertex(vertex);
+	}
+	void OnVertexXYZM(const VertexXYZM &vertex) override {
+		AddVertex(vertex);
+	}
+
+private:
+	template <class VERTEX_TYPE>
+	void AddVertex(const VERTEX_TYPE &vertex) {
+		extent.Extend(vertex, GeometryModel::GEODETIC);
+		vertex_count++;
+		if (in_ring) {
+			ring.AddVertex(extent, {vertex.x, vertex.y});
+		}
+	}
+
+private:
+	//! State of the current linestring or polygon ring
+	GeodeticRingState ring;
+	bool in_ring = false;
+	//! Whether the next non-empty ring of the current polygon is its shell
+	bool is_shell = false;
+};
+
+template <class VISITOR>
+uint32_t GetExtentInternal(const string_t &wkb, GeometryExtent &extent, bool &has_any_empty) {
+	VISITOR visitor(extent);
+	VisitGeometry(wkb, visitor);
+	if (visitor.HasAnyEmpty()) {
+		has_any_empty = true;
+	}
+	return visitor.GetVertexCount();
+}
+
+} // namespace
+
+uint32_t Geometry::GetExtent(const string_t &wkb, GeometryExtent &extent, GeometryModel model) {
+	bool has_any_empty = false;
+	return GetExtent(wkb, extent, has_any_empty, model);
+}
+
+uint32_t Geometry::GetExtent(const string_t &wkb, GeometryExtent &extent, bool &has_any_empty, GeometryModel model) {
+	if (model == GeometryModel::GEODETIC) {
+		return GetExtentInternal<GeodeticExtentVisitor>(wkb, extent, has_any_empty);
+	}
+	return GetExtentInternal<PlanarExtentVisitor>(wkb, extent, has_any_empty);
+}
+
+bool Geometry::IsValidGeography(const string_t &wkb) {
+	// Coordinates must lie within X in [-180, 180] and Y in [-90, 90], so the planar extent suffices
+	auto extent = GeometryExtent::Empty();
+	const auto vertex_count = GetExtent(wkb, extent, GeometryModel::PLANAR);
+	if (vertex_count == 0) {
+		return true;
+	}
+	// A non-finite X or Y (e.g. NaN) leaves the axis unset, and the geodetic math requires finite values
+	if (!extent.HasX() || !extent.HasY()) {
+		return false;
+	}
+	return extent.x_min >= -180.0 && extent.x_max <= 180.0 && extent.y_min >= -90.0 && extent.y_max <= 90.0;
 }
 
 //----------------------------------------------------------------------------------------------------------------------

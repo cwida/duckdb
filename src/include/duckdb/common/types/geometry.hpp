@@ -34,6 +34,14 @@ enum class GeometryType : uint8_t {
 
 enum class VertexType : uint8_t { XY = 0, XYZ = 1, XYM = 2, XYZM = 3 };
 
+//! How coordinates are interpreted when computing and comparing extents
+enum class GeometryModel : uint8_t {
+	//! Exact vertex min/max on a plane (GEOMETRY)
+	PLANAR = 0,
+	//! Coverage extent on the sphere, with an antimeridian-aware longitude axis (GEOGRAPHY)
+	GEODETIC = 1,
+};
+
 struct VertexXY {
 	static constexpr auto TYPE = VertexType::XY;
 	static constexpr auto HAS_Z = false;
@@ -153,39 +161,121 @@ public:
 		return std::isfinite(m_min) && std::isfinite(m_max);
 	}
 
-	void Extend(const VertexXY &vertex) {
-		ExtendAxis(x_min, x_max, vertex.x);
+	// NOTE: planar (GEOMETRY) extents are exact vertex min/max. Geodetic (GEOGRAPHY) extents are
+	// *coverage* extents: Geometry::GetExtent additionally bounds the geodesic edges between the
+	// vertices (great-circle arcs bulge poleward beyond their endpoints) and the polygon interiors
+	// under the interior-on-the-left rule (S2's convention): a shell winding east around the globe
+	// encloses the north pole, one winding west the south pole, a shell that is counterclockwise on
+	// the sphere encloses its bounded side, and a clockwise one encloses the complement - covering
+	// (almost) the whole globe, so ESRI-style clockwise shells get full-globe extents. Orientation is
+	// decided on the sphere, not in planar lon/lat. This follows the precedent of other spherical
+	// engines that write coverage bounds into Parquet geospatial statistics; the bounds are wider than
+	// the Parquet spec's coordinate-based bbox definition, which is safe for any reader.
+	//
+	// The orientation rule is a convention, not a standard. The Parquet GEOGRAPHY spec says nothing
+	// about ring orientation, OGC Simple Features only describes it for planar polygons, and
+	// GeoParquet's optional `orientation` metadata only RECOMMENDS counterclockwise shells for
+	// spherical edges, noting that readers otherwise typically take the smaller of the two regions.
+	// BigQuery also takes the smaller region by default, and applies interior-on-the-left only with
+	// `oriented => TRUE`. Under the smaller-region reading, a shell whose left side is larger than a
+	// hemisphere (e.g. a ring along 30S winding east) has the other side as its interior, which these
+	// extents do not cover. GEOGRAPHY predicates must therefore use the same rule as the extents.
+
+	// GeometryModel::GEODETIC enables antimeridian-aware longitude (X axis) math used by GEOGRAPHY:
+	// the X axis is treated as a circular [-180,180] degree axis where an arc may wrap (x_min > x_max),
+	// meaning the longitude range is [x_min, 180] u [-180, x_max]. The Y axis is never wrapped.
+	// GeometryModel::PLANAR is exact min/max, as used by GEOMETRY.
+	//
+	// The antimeridian seam is the only point identity the geodetic math models: +180 and -180 are
+	// treated as the same longitude. The poles are NOT identified - at y = +/-90 every longitude is
+	// physically the same point, but e.g. POINT(0 90) and POINT(90 90) still have disjoint coordinate
+	// extents (consistent with the coordinate-extent contract above). A geometric predicate that
+	// understands pole identity must account for this itself for pole-touching data.
+
+	void Extend(const VertexXY &vertex, GeometryModel model = GeometryModel::PLANAR) {
+		ExtendX(vertex.x, model);
 		ExtendAxis(y_min, y_max, vertex.y);
 	}
 
-	void Extend(const VertexXYZ &vertex) {
-		ExtendAxis(x_min, x_max, vertex.x);
+	void Extend(const VertexXYZ &vertex, GeometryModel model = GeometryModel::PLANAR) {
+		ExtendX(vertex.x, model);
 		ExtendAxis(y_min, y_max, vertex.y);
 		ExtendAxis(z_min, z_max, vertex.z);
 	}
 
-	void Extend(const VertexXYM &vertex) {
-		ExtendAxis(x_min, x_max, vertex.x);
+	void Extend(const VertexXYM &vertex, GeometryModel model = GeometryModel::PLANAR) {
+		ExtendX(vertex.x, model);
 		ExtendAxis(y_min, y_max, vertex.y);
 		ExtendAxis(m_min, m_max, vertex.m);
 	}
 
-	void Extend(const VertexXYZM &vertex) {
-		ExtendAxis(x_min, x_max, vertex.x);
+	void Extend(const VertexXYZM &vertex, GeometryModel model = GeometryModel::PLANAR) {
+		ExtendX(vertex.x, model);
 		ExtendAxis(y_min, y_max, vertex.y);
 		ExtendAxis(z_min, z_max, vertex.z);
 		ExtendAxis(m_min, m_max, vertex.m);
 	}
 
-	void Merge(const GeometryExtent &other) {
-		MergeAxis(x_min, x_max, other.x_min, other.x_max);
+	// Extend the geodetic X (longitude) axis to cover the eastward arc from lo to hi
+	void ExtendXArc(double lo, double hi) {
+		if (!LonInRange(lo) || !LonInRange(hi)) {
+			// NaN or out-of-contract longitudes make the whole axis unknown, as in ExtendX
+			x_min = UNKNOWN_MIN;
+			x_max = UNKNOWN_MAX;
+			return;
+		}
+		if (!std::isfinite(x_min) || !std::isfinite(x_max)) {
+			if (x_min == EMPTY_MIN) {
+				x_min = lo;
+				x_max = hi;
+			}
+			// Otherwise the X axis is unknown; keep it unknown.
+			return;
+		}
+		LonArcMerge(x_min, x_max, lo, hi, x_min, x_max);
+	}
+
+	void Merge(const GeometryExtent &other, GeometryModel model = GeometryModel::PLANAR) {
 		MergeAxis(y_min, y_max, other.y_min, other.y_max);
 		MergeAxis(z_min, z_max, other.z_min, other.z_max);
 		MergeAxis(m_min, m_max, other.m_min, other.m_max);
+
+		// Only the X axis is special-cased for geodetic merging, and only when both arcs are finite.
+		// A non-finite axis is "empty" or "unknown" and MergeAxis correctly propagates both.
+		const bool both_finite =
+		    std::isfinite(x_min) && std::isfinite(x_max) && std::isfinite(other.x_min) && std::isfinite(other.x_max);
+		if (model == GeometryModel::GEODETIC && both_finite) {
+			if (LonInRange(x_min) && LonInRange(x_max) && LonInRange(other.x_min) && LonInRange(other.x_max)) {
+				LonArcMerge(x_min, x_max, other.x_min, other.x_max, x_min, x_max);
+			} else {
+				// Out-of-contract longitudes (only possible for data that bypassed validation): the arc
+				// math is undefined for them, so degrade to unknown rather than risk an under-covering arc.
+				x_min = UNKNOWN_MIN;
+				x_max = UNKNOWN_MAX;
+			}
+		} else {
+			MergeAxis(x_min, x_max, other.x_min, other.x_max);
+		}
 	}
 
-	bool IntersectsXY(const GeometryExtent &other) const {
-		return !(x_min > other.x_max || x_max < other.x_min || y_min > other.y_max || y_max < other.y_min);
+	bool IntersectsXY(const GeometryExtent &other, GeometryModel model = GeometryModel::PLANAR) const {
+		if (y_min > other.y_max || y_max < other.y_min) {
+			return false;
+		}
+		const bool both_finite =
+		    std::isfinite(x_min) && std::isfinite(x_max) && std::isfinite(other.x_min) && std::isfinite(other.x_max);
+		if (model == GeometryModel::GEODETIC && both_finite) {
+			if (!LonInRange(x_min) || !LonInRange(x_max) || !LonInRange(other.x_min) || !LonInRange(other.x_max)) {
+				// Out-of-contract longitudes: cannot decide, err on the side of intersecting.
+				return true;
+			}
+			// Widened by LON_EPSILON: a false "no intersection" here prunes rows, so round toward "intersects".
+			return LonArcContains(x_min, x_max, other.x_min, LON_EPSILON) ||
+			       LonArcContains(other.x_min, other.x_max, x_min, LON_EPSILON);
+		}
+		// Plain (and the non-finite empty/unknown cases): the inequalities handle +/- inf and NaN
+		// conservatively (any NaN comparison is false, so NaN yields "intersects").
+		return !(x_min > other.x_max || x_max < other.x_min);
 	}
 
 	bool IntersectsXYZM(const GeometryExtent &other) const {
@@ -193,11 +283,59 @@ public:
 		         z_min > other.z_max || z_max < other.z_min || m_min > other.m_max || m_max < other.m_min);
 	}
 
-	bool ContainsXY(const GeometryExtent &other) const {
-		return x_min <= other.x_min && x_max >= other.x_max && y_min <= other.y_min && y_max >= other.y_max;
+	bool ContainsXY(const GeometryExtent &other, GeometryModel model = GeometryModel::PLANAR) const {
+		if (!(y_min <= other.y_min && y_max >= other.y_max)) {
+			return false;
+		}
+		const bool both_finite =
+		    std::isfinite(x_min) && std::isfinite(x_max) && std::isfinite(other.x_min) && std::isfinite(other.x_max);
+		if (model == GeometryModel::GEODETIC && both_finite) {
+			if (!LonInRange(x_min) || !LonInRange(x_max) || !LonInRange(other.x_min) || !LonInRange(other.x_max)) {
+				// Out-of-contract longitudes: cannot decide, err on the side of not containing.
+				return false;
+			}
+			// Narrowed by LON_EPSILON: a false "contains" can elide a filter entirely, so round toward
+			// "does not contain".
+			return LonArcContainsArc(x_min, x_max, other.x_min, other.x_max, -LON_EPSILON);
+		}
+		return x_min <= other.x_min && x_max >= other.x_max;
+	}
+
+	// The X axis as a plain numeric [min, max] range over the raw coordinate values, e.g. for numeric
+	// statistics of the extracted X ordinate. A geodetic arc is widened to the full range when it wraps
+	// or touches the seam (a coordinate of either sign may be stored for the same longitude), and is
+	// otherwise padded by LON_EPSILON to cover coordinates the rounded arc math absorbed.
+	void GetNumericXRange(GeometryModel model, double &out_min, double &out_max) const {
+		out_min = x_min;
+		out_max = x_max;
+		if (model != GeometryModel::GEODETIC || !HasX()) {
+			return;
+		}
+		if (x_min > x_max || x_min == -180.0 || x_max == 180.0) {
+			out_min = -180.0;
+			out_max = 180.0;
+			return;
+		}
+		out_min = MaxValue(x_min - LON_EPSILON, -180.0);
+		out_max = MinValue(x_max + LON_EPSILON, 180.0);
 	}
 
 private:
+	// The X axis of a geodetic extent is an eastward arc on the longitude circle: it covers the
+	// longitudes traveled going east from x_min to x_max, so x_min > x_max means the arc crosses
+	// the antimeridian. [-180, 180] is the canonical full-circle arc, and +180/-180 denote the same
+	// physical longitude. Arc endpoints are always actual input coordinates (or +/-180 for the full
+	// circle) and are never synthesized with arithmetic. The containment tests still round at ~1 ulp
+	// of 360 degrees, so a merge can absorb a coordinate up to that far beyond an endpoint without
+	// widening the arc: the public predicates guard this with LON_EPSILON in the safe direction, and
+	// GetNumericXRange pads by it.
+	static constexpr double LON_EPSILON = 1e-9; // ~0.1mm of longitude at the equator
+
+	// Is this longitude within the canonical [-180, 180] range the arc math requires?
+	static bool LonInRange(double x) {
+		return x >= -180.0 && x <= 180.0;
+	}
+
 	//! A NaN coordinate cannot be placed on the axis, so it makes the range of the axis unknown
 	static void ExtendAxis(double &min, double &max, double value) {
 		if (std::isnan(value)) {
@@ -217,6 +355,94 @@ private:
 		}
 		min = MinValue(min, other_min);
 		max = MaxValue(max, other_max);
+	}
+
+	// Canonicalize the antimeridian seam: +180 and -180 are the same longitude.
+	static double LonCanon(double x) {
+		return x == 180.0 ? -180.0 : x;
+	}
+
+	// Eastward angular distance (degrees) from a to b, in [0, 360). Inputs finite, in [-180, 180].
+	static double LonEastDist(double a, double b) {
+		double d = LonCanon(b) - LonCanon(a);
+		if (d < 0.0) {
+			d += 360.0;
+		}
+		return d;
+	}
+
+	// Eastward width of the arc [lo, hi], in [0, 360]. Only the full circle [-180, 180] has width 360.
+	static double LonArcWidth(double lo, double hi) {
+		if (lo == -180.0 && hi == 180.0) {
+			return 360.0;
+		}
+		return LonEastDist(lo, hi);
+	}
+
+	// Does the arc [lo, hi] contain the longitude p, with the given slack (may be negative)?
+	static bool LonArcContains(double lo, double hi, double p, double slack = 0.0) {
+		return LonEastDist(lo, p) <= LonArcWidth(lo, hi) + slack;
+	}
+
+	// Does the outer arc fully contain the inner arc, with the given slack (may be negative)?
+	static bool LonArcContainsArc(double olo, double ohi, double ilo, double ihi, double slack = 0.0) {
+		const double ow = LonArcWidth(olo, ohi);
+		if (ow >= 360.0) {
+			return true;
+		}
+		const double off = LonEastDist(olo, ilo);
+		return off <= ow + slack && off + LonArcWidth(ilo, ihi) <= ow + slack;
+	}
+
+	// Merge two arcs into a covering arc, writing the result to out_lo/out_hi (which may alias the
+	// inputs). The narrowest covering arc starts at one arc's start and ends at one arc's end: try
+	// those four candidates with their exact endpoint values and keep the narrowest one that covers
+	// both inputs. If none does (the arcs jointly cover the whole circle), the result is the full circle.
+	static void LonArcMerge(double also, double ahi, double blo, double bhi, double &out_lo, double &out_hi) {
+		const double cand_lo[4] = {also, also, blo, blo};
+		const double cand_hi[4] = {ahi, bhi, ahi, bhi};
+		double best_lo = -180.0;
+		double best_hi = 180.0;
+		double best_width = 360.0;
+		for (idx_t i = 0; i < 4; i++) {
+			if (!LonArcContainsArc(cand_lo[i], cand_hi[i], also, ahi) ||
+			    !LonArcContainsArc(cand_lo[i], cand_hi[i], blo, bhi)) {
+				continue;
+			}
+			const double width = LonArcWidth(cand_lo[i], cand_hi[i]);
+			if (width < best_width) {
+				best_width = width;
+				best_lo = cand_lo[i];
+				best_hi = cand_hi[i];
+			}
+		}
+		out_lo = best_lo;
+		out_hi = best_hi;
+	}
+
+	// Extend the X (longitude) axis to include x. For geodetic this uses circular arc math.
+	void ExtendX(double x, GeometryModel model) {
+		if (model == GeometryModel::PLANAR) {
+			ExtendAxis(x_min, x_max, x);
+			return;
+		}
+		if (std::isnan(x) || !LonInRange(x)) {
+			// A NaN or out-of-contract longitude (only possible for data that bypassed validation)
+			// makes the whole axis unknown.
+			x_min = UNKNOWN_MIN;
+			x_max = UNKNOWN_MAX;
+			return;
+		}
+		if (!std::isfinite(x_min) || !std::isfinite(x_max)) {
+			if (x_min == EMPTY_MIN) {
+				// First vertex into an empty extent.
+				x_min = x;
+				x_max = x;
+			}
+			// Otherwise the X axis is "unknown" (infinite); keep it unknown.
+			return;
+		}
+		LonArcMerge(x_min, x_max, x, x, x_min, x_max);
 	}
 
 public:
@@ -273,6 +499,8 @@ class Geometry {
 public:
 	static constexpr idx_t MAX_RECURSION_DEPTH = 16;
 	static constexpr StorageVersion VERSION_ADDED = StorageVersion::V1_5_0; // Added to core in DuckDB v1.5.0
+	//! GEOGRAPHY shares the WKB representation, but was only added to core in DuckDB v2.1.0
+	static constexpr StorageVersion GEOGRAPHY_VERSION_ADDED = StorageVersion::V2_1_0;
 
 	//! Check for legayc geometry type (pre v1.5)
 	static bool IsSpatialGeometryType(const LogicalType &type);
@@ -300,9 +528,19 @@ public:
 	//! Get the geometry type and vertex type from the WKB
 	DUCKDB_API static pair<GeometryType, VertexType> GetType(const string_t &wkb);
 
+	//! The geometry model used for statistics and extent predicates of the given GEOMETRY or GEOGRAPHY type
+	static GeometryModel GetModel(const LogicalType &type) {
+		return type.id() == LogicalTypeId::GEOGRAPHY ? GeometryModel::GEODETIC : GeometryModel::PLANAR;
+	}
+
 	//! Update the bounding box, return number of vertices processed
-	DUCKDB_API static uint32_t GetExtent(const string_t &wkb, GeometryExtent &extent);
-	DUCKDB_API static uint32_t GetExtent(const string_t &wkb, GeometryExtent &extent, bool &has_any_empty);
+	DUCKDB_API static uint32_t GetExtent(const string_t &wkb, GeometryExtent &extent,
+	                                     GeometryModel model = GeometryModel::PLANAR);
+	DUCKDB_API static uint32_t GetExtent(const string_t &wkb, GeometryExtent &extent, bool &has_any_empty,
+	                                     GeometryModel model = GeometryModel::PLANAR);
+	//! Whether the geometry's coordinates lie within the canonical GEOGRAPHY ranges
+	//! (X in [-180, 180], Y in [-90, 90]). Empty geometries are always valid.
+	DUCKDB_API static bool IsValidGeography(const string_t &wkb);
 
 	//! Convert to vectorized format
 	DUCKDB_API static void ToVectorizedFormat(const Vector &source, Vector &target, idx_t count, GeometryType geom_type,

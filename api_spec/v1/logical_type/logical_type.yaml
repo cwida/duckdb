@@ -462,10 +462,10 @@ functions:
     parameters:
       type:
         type: logical_type
-        description: The GEOMETRY type.
+        description: The GEOMETRY or GEOGRAPHY type.
     return_type: char
     return_pointer: 1
     description: |
-      Gets the CRS (Coordinate Reference System) of a GEOMETRY type.
+      Gets the CRS (Coordinate Reference System) of a GEOMETRY or GEOGRAPHY type.
       Result must be freed with `duckdb_free`.
-    return_description: The CRS of the GEOMETRY type, or NULL if the type is not a GEOMETRY type.
+    return_description: The CRS of the type, or NULL if the type is neither a GEOMETRY nor a GEOGRAPHY type.

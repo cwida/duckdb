@@ -31,6 +31,7 @@ enum class VariantComparisonType : uint8_t {
 	TIME_TZ,      // TIME WITH TIME ZONE
 	INTERVAL,
 	GEOMETRY,
+	GEOGRAPHY,
 	BITSTRING,
 	ARRAY,
 	OBJECT,

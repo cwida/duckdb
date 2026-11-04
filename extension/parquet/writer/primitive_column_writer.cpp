@@ -469,10 +469,15 @@ void PrimitiveColumnWriter::SetParquetStatistics(PrimitiveColumnWriterState &sta
 	if (state.stats_state->HasGeoStats()) {
 		auto gpq_version = writer.GetGeoParquetVersion();
 
-		const auto has_real_stats = gpq_version == GeoParquetVersion::NONE || gpq_version == GeoParquetVersion::BOTH ||
-		                            gpq_version == GeoParquetVersion::V2;
-		const auto has_json_stats = gpq_version == GeoParquetVersion::V1 || gpq_version == GeoParquetVersion::BOTH ||
-		                            gpq_version == GeoParquetVersion::V2;
+		// GEOGRAPHY is not representable in GeoParquet (which assumes planar edges): it always writes the native
+		// Parquet geospatial statistics and is never added to the GeoParquet JSON metadata.
+		const auto is_geography = column_schema.type.id() == LogicalTypeId::GEOGRAPHY;
+
+		const auto has_real_stats = is_geography || gpq_version == GeoParquetVersion::NONE ||
+		                            gpq_version == GeoParquetVersion::BOTH || gpq_version == GeoParquetVersion::V2;
+		const auto has_json_stats =
+		    !is_geography && (gpq_version == GeoParquetVersion::V1 || gpq_version == GeoParquetVersion::BOTH ||
+		                      gpq_version == GeoParquetVersion::V2);
 
 		if (has_real_stats) {
 			// Write the parquet native geospatial statistics

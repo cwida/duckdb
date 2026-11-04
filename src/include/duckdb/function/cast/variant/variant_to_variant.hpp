@@ -111,6 +111,9 @@ struct VariantToVariantSizeAnalyzer {
 	static uint32_t VisitGeometry(const string_t &geom, AnalyzeState &state) {
 		return VisitString(geom, state);
 	}
+	static uint32_t VisitGeography(const string_t &geog, AnalyzeState &state) {
+		return VisitString(geog, state);
+	}
 	static uint32_t VisitBitstring(const string_t &bits, AnalyzeState &state) {
 		return VisitString(bits, state);
 	}
@@ -213,6 +216,9 @@ struct VariantToVariantDataWriter {
 	}
 	static void VisitGeometry(const string_t &geom, WriteState &state) {
 		return VisitString(geom, state);
+	}
+	static void VisitGeography(const string_t &geog, WriteState &state) {
+		return VisitString(geog, state);
 	}
 	static void VisitBitstring(const string_t &bits, WriteState &state) {
 		return VisitString(bits, state);

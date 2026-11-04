@@ -1,0 +1,161 @@
+# name: test/sql/types/geo/geography_shred.test
+# description: GEOGRAPHY only shreds single points; other layouts keep WKB so coverage extents survive checkpoints
+# group: [geo]
+
+load {TEST_DIR}/test_geography_shred.db readwrite v2.1.0
+
+statement ok
+PRAGMA wal_autocheckpoint='1TB';
+
+statement ok
+PRAGMA disable_checkpoint_on_shutdown
+
+statement ok
+SET geometry_minimum_shredding_size = 0;
+
+statement ok
+CREATE TABLE pts(g GEOGRAPHY);
+
+statement ok
+INSERT INTO pts SELECT ('POINT(' || (170 + i % 20) || ' ' || (i % 7) || ')')::GEOGRAPHY FROM range(100) t(i)
+WHERE 170 + i % 20 <= 180;
+
+statement ok
+CREATE TABLE mpts(g GEOGRAPHY);
+
+statement ok
+INSERT INTO mpts SELECT 'MULTIPOINT(179 0, -179 1)'::GEOGRAPHY FROM range(100);
+
+statement ok
+CREATE TABLE bulge(g GEOGRAPHY);
+
+statement ok
+INSERT INTO bulge SELECT 'LINESTRING(0 45, 90 45)'::GEOGRAPHY FROM range(100);
+
+statement ok
+CREATE TABLE wrap(g GEOGRAPHY);
+
+statement ok
+INSERT INTO wrap SELECT 'LINESTRING(170 10, -170 20)'::GEOGRAPHY FROM range(100);
+
+statement ok
+CREATE TABLE cap(g GEOGRAPHY);
+
+statement ok
+INSERT INTO cap SELECT 'POLYGON((0 80, 90 80, 180 80, -90 80, 0 80))'::GEOGRAPHY FROM range(100);
+
+statement ok
+CHECKPOINT
+
+# Point layouts shred, layouts with edges stay in WKB
+query I
+SELECT list(DISTINCT segment_type ORDER BY segment_type) FROM pragma_storage_info('pts');
+----
+[DOUBLE, VALIDITY]
+
+# A multipoint can span the antimeridian, which per-ordinate stats cannot express: it stays WKB too
+query I
+SELECT list(DISTINCT segment_type ORDER BY segment_type) FROM pragma_storage_info('mpts');
+----
+[GEOGRAPHY, VALIDITY]
+
+query I
+SELECT list(DISTINCT segment_type ORDER BY segment_type) FROM pragma_storage_info('bulge');
+----
+[GEOGRAPHY, VALIDITY]
+
+query I
+SELECT list(DISTINCT segment_type ORDER BY segment_type) FROM pragma_storage_info('wrap');
+----
+[GEOGRAPHY, VALIDITY]
+
+query I
+SELECT list(DISTINCT segment_type ORDER BY segment_type) FROM pragma_storage_info('cap');
+----
+[GEOGRAPHY, VALIDITY]
+
+restart
+
+# The coverage extents are preserved: edge bulge, antimeridian wrap and pole enclosure
+query IIII
+SELECT s.extent.x_min, s.extent.x_max, s.extent.y_min, round(s.extent.y_max::DOUBLE, 4)
+FROM (SELECT stats(g) s FROM bulge LIMIT 1);
+----
+0.0	90.0	45.0	54.7356
+
+query IIII
+SELECT s.extent.x_min, s.extent.x_max, s.extent.y_min, s.extent.y_max
+FROM (SELECT stats(g) s FROM wrap LIMIT 1);
+----
+170.0	-170.0	10.0	20.0
+
+query IIII
+SELECT s.extent.x_min, s.extent.x_max, s.extent.y_min, s.extent.y_max
+FROM (SELECT stats(g) s FROM cap LIMIT 1);
+----
+-180.0	180.0	80.0	90.0
+
+# Zonemap pruning agrees with the row-level operator after the restart
+query I
+SELECT count(*) FROM bulge WHERE g && 'POINT(45 54)'::GEOGRAPHY;
+----
+100
+
+query I
+SELECT count(*) FROM bulge WHERE g && 'POINT(45 55)'::GEOGRAPHY;
+----
+0
+
+query I
+SELECT count(*) FROM wrap WHERE g && 'POINT(180 15)'::GEOGRAPHY;
+----
+100
+
+query I
+SELECT count(*) FROM wrap WHERE g && 'POINT(0 15)'::GEOGRAPHY;
+----
+0
+
+query I
+SELECT count(*) FROM cap WHERE g && 'POINT(12 90)'::GEOGRAPHY;
+----
+100
+
+query I
+SELECT count(*) FROM cap WHERE g && 'POINT(12 0)'::GEOGRAPHY;
+----
+0
+
+# Shredded point layouts keep exact vertex extents
+query IIII
+SELECT s.extent.x_min, s.extent.x_max, s.extent.y_min, s.extent.y_max
+FROM (SELECT stats(g) s FROM pts LIMIT 1);
+----
+170.0	180.0	0.0	6.0
+
+query I
+SELECT count(*) FROM pts WHERE g && 'POINT(-180 0)'::GEOGRAPHY;
+----
+1
+
+# The multipoint's wrapped arc [179, -179] covers the seam
+query IIII
+SELECT s.extent.x_min, s.extent.x_max, s.extent.y_min, s.extent.y_max
+FROM (SELECT stats(g) s FROM mpts LIMIT 1);
+----
+179.0	-179.0	0.0	1.0
+
+query I
+SELECT count(*) FROM mpts WHERE g && 'POINT(180 0)'::GEOGRAPHY;
+----
+100
+
+query I
+SELECT count(*) FROM mpts WHERE g && 'POINT(179 0)'::GEOGRAPHY;
+----
+100
+
+query I
+SELECT count(*) FROM mpts WHERE g && 'POINT(0 0)'::GEOGRAPHY;
+----
+0

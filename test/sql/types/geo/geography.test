@@ -1,0 +1,132 @@
+# name: test/sql/types/geo/geography.test
+# description: Test the GEOGRAPHY type
+# group: [geo]
+
+# Basic DDL and VARCHAR (WKT) cast round-trip
+statement ok
+CREATE TABLE g1(id INT, g GEOGRAPHY);
+
+statement ok
+INSERT INTO g1 VALUES
+	(1, 'POINT(1 2)'),
+	(2, 'LINESTRING(0 0, 1 1, 2 2)'),
+	(3, 'POLYGON((0 0, 4 0, 4 4, 0 4, 0 0))'),
+	(4, NULL);
+
+query II
+SELECT id, ST_AsText(g) FROM g1 ORDER BY id;
+----
+1	POINT (1 2)
+2	LINESTRING (0 0, 1 1, 2 2)
+3	POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0))
+4	NULL
+
+# Round-trip through WKB using the geography-specific constructor
+query II
+SELECT id, ST_AsText(ST_GeogFromWKB(ST_AsWKB(g))) FROM g1 ORDER BY id;
+----
+1	POINT (1 2)
+2	LINESTRING (0 0, 1 1, 2 2)
+3	POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0))
+4	NULL
+
+# vertex_extract works on GEOGRAPHY
+query II
+SELECT vertex_extract('POINT(1 2)'::GEOGRAPHY, 'x'), vertex_extract('POINT(1 2)'::GEOGRAPHY, 'y');
+----
+1.0	2.0
+
+# Canonical range validation: inclusive boundaries are valid
+query I
+SELECT ST_AsText('POINT(180 90)'::GEOGRAPHY);
+----
+POINT (180 90)
+
+query I
+SELECT ST_AsText('POINT(-180 -90)'::GEOGRAPHY);
+----
+POINT (-180 -90)
+
+# Out-of-range coordinates error on CAST
+statement error
+SELECT 'POINT(181 0)'::GEOGRAPHY;
+----
+GEOGRAPHY
+
+statement error
+SELECT 'POINT(0 91)'::GEOGRAPHY;
+----
+GEOGRAPHY
+
+# TRY_CAST yields NULL for out-of-range coordinates
+query I
+SELECT TRY_CAST('POINT(181 0)' AS GEOGRAPHY);
+----
+NULL
+
+# ST_GeogFromWKB also validates ranges (build an out-of-range WKB via a geometry)
+statement error
+SELECT ST_GeogFromWKB(ST_AsWKB('POINT(181 0)'::GEOMETRY));
+----
+GEOGRAPHY
+
+# Explicit casts between GEOMETRY and GEOGRAPHY work in both directions
+query I
+SELECT ST_AsText('POINT(1 2)'::GEOMETRY::GEOGRAPHY);
+----
+POINT (1 2)
+
+query I
+SELECT ST_AsText('POINT(1 2)'::GEOGRAPHY::GEOMETRY);
+----
+POINT (1 2)
+
+# GEOMETRY -> GEOGRAPHY cast validates ranges
+statement error
+SELECT 'POINT(200 0)'::GEOMETRY::GEOGRAPHY;
+----
+GEOGRAPHY
+
+# There is no implicit cast between GEOMETRY and GEOGRAPHY: mixing them in the && operator (whose overloads
+# are (GEOMETRY,GEOMETRY) and (GEOGRAPHY,GEOGRAPHY)) has no implicit resolution and must error.
+statement error
+SELECT 'POINT(1 2)'::GEOMETRY && 'POINT(1 2)'::GEOGRAPHY;
+----
+
+# Antimeridian-aware bounding box intersection (the && operator).
+# A geography linestring spanning the antimeridian intersects a point near +180,
+# because the geodetic bounding box wraps around the antimeridian.
+query I
+SELECT 'LINESTRING(170 0, -170 0)'::GEOGRAPHY && 'POINT(179 0)'::GEOGRAPHY;
+----
+true
+
+# The same coordinates as planar GEOMETRY do NOT intersect (naive bounding box spans -170..170).
+query I
+SELECT 'LINESTRING(170 0, -170 0)'::GEOMETRY && 'POINT(179 0)'::GEOMETRY;
+----
+false
+
+# Two geographies that both straddle the antimeridian intersect there (overlapping latitudes)
+query I
+SELECT 'LINESTRING(160 0, -160 0)'::GEOGRAPHY && 'LINESTRING(175 0, -175 0)'::GEOGRAPHY;
+----
+true
+
+# CRS support mirrors GEOMETRY
+query I
+SELECT ST_CRS('POINT(1 2)'::GEOGRAPHY('OGC:CRS84'));
+----
+OGC:CRS84
+
+# ST_SetCRS preserves the GEOGRAPHY type
+query T
+SELECT ST_CRS(ST_SetCRS('POINT(1 2)'::GEOGRAPHY, 'OGC:CRS84'));
+----
+OGC:CRS84
+
+# The type name round-trips through the catalog
+query I
+SELECT typeof('POINT(1 2)'::GEOGRAPHY);
+----
+GEOGRAPHY

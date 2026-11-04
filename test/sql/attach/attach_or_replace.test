@@ -3,13 +3,13 @@
 # group: [attach]
 
 statement ok
-ATTACH '{TEST_DIR}/attach_or_replace.db' AS db1 (STORAGE_VERSION 'v2.0.0');
+ATTACH '{TEST_DIR}/attach_or_replace.db' AS db1 (STORAGE_VERSION 'v2.1.0');
 
 statement ok
 CREATE TABLE db1.all_types AS SELECT * FROM test_all_types();
 
 statement ok
-ATTACH '{TEST_DIR}/attach_or_replace_new.db' AS db2 (STORAGE_VERSION 'v2.0.0');
+ATTACH '{TEST_DIR}/attach_or_replace_new.db' AS db2 (STORAGE_VERSION 'v2.1.0');
 
 statement ok
 CREATE TABLE db2.all_types_new AS SELECT * FROM test_all_types();

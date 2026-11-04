@@ -1,0 +1,26 @@
+diff --git a/test/sql/data_inlining/data_inlining_types.test b/test/sql/data_inlining/data_inlining_types.test
+index 4654a1de..579899cc 100644
+--- a/test/sql/data_inlining/data_inlining_types.test
++++ b/test/sql/data_inlining/data_inlining_types.test
+@@ -31,7 +31,7 @@ date_array,
+ timestamp_array,
+ timestamptz_array,
+ timestamp,
+-list_of_fixed_int_array, hugeint, uhugeint, interval, time_tz, date, blob, varchar, timestamp_s, timestamp_ms, timestamp_ns,timestamp_tz, time_ns, tuple) FROM test_all_types();
++list_of_fixed_int_array, hugeint, uhugeint, interval, time_tz, date, blob, varchar, timestamp_s, timestamp_ms, timestamp_ns,timestamp_tz, time_ns, tuple, geography) FROM test_all_types();
+ 
+ query I nosort alltypes
+ FROM all_types
+diff --git a/test/sql/types/all_types.test b/test/sql/types/all_types.test
+index 17254492..1d6744fb 100644
+--- a/test/sql/types/all_types.test
++++ b/test/sql/types/all_types.test
+@@ -27,7 +27,7 @@ fixed_nested_varchar_array,
+ fixed_struct_array,
+ struct_of_fixed_array,
+ fixed_array_of_int_list,
+-list_of_fixed_int_array, hugeint, uhugeint, interval, time_tz, time_ns, tuple) FROM test_all_types();
++list_of_fixed_int_array, hugeint, uhugeint, interval, time_tz, time_ns, tuple, geography) FROM test_all_types();
+ 
+ query I nosort alltypes
+ FROM all_types

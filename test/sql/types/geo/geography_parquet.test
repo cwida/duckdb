@@ -1,0 +1,177 @@
+# name: test/sql/types/geo/geography_parquet.test
+# description: Round-trip the GEOGRAPHY type through Parquet (native GEOGRAPHY logical type)
+# group: [geo]
+
+require parquet
+
+statement ok
+CREATE TABLE g1(id INT, g GEOGRAPHY);
+
+statement ok
+INSERT INTO g1 VALUES
+	(1, 'POINT(1 2)'),
+	(2, 'LINESTRING(0 0, 1 1, 2 2)'),
+	(3, 'POLYGON((0 0, 4 0, 4 4, 0 4, 0 0))'),
+	(4, NULL);
+
+statement ok
+COPY g1 TO '{TEST_DIR}/geography.parquet' (FORMAT 'parquet');
+
+# The column reads back as GEOGRAPHY (native Parquet GEOGRAPHY logical type)
+query I
+SELECT typeof(g) FROM '{TEST_DIR}/geography.parquet' LIMIT 1;
+----
+GEOGRAPHY
+
+# Values round-trip
+query II
+SELECT id, ST_AsText(g) FROM '{TEST_DIR}/geography.parquet' ORDER BY id;
+----
+1	POINT (1 2)
+2	LINESTRING (0 0, 1 1, 2 2)
+3	POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0))
+4	NULL
+
+# Antimeridian-spanning geography produces a wrapped (xmin > xmax) bounding box in the Parquet
+# native geospatial statistics, which round-trips and stays usable for the && predicate.
+statement ok
+CREATE TABLE g2(g GEOGRAPHY);
+
+statement ok
+INSERT INTO g2 VALUES ('LINESTRING(170 0, -170 0)');
+
+statement ok
+COPY g2 TO '{TEST_DIR}/geography_am.parquet' (FORMAT 'parquet');
+
+query I
+SELECT g && 'POINT(179 0)'::GEOGRAPHY FROM '{TEST_DIR}/geography_am.parquet';
+----
+true
+
+# The wrapped bounding box is visible in the file metadata
+query IIII
+SELECT t.geo_bbox.xmin, t.geo_bbox.xmax, t.geo_bbox.ymin, t.geo_bbox.ymax
+FROM parquet_metadata('{TEST_DIR}/geography_am.parquet') t;
+----
+170.0	-170.0	0.0	0.0
+
+# With a page index, every page keeps its own statistics, which are merged into the column chunk. That merge is
+# geodetic too: pages east and west of the antimeridian combine into the wrapped arc [170, -170], not [-179, 179].
+statement ok
+CREATE TABLE g_pages AS
+SELECT ('POINT(' || CASE WHEN i < 3000 THEN 170 + i % 10 ELSE -179 + i % 10 END || ' 0)')::GEOGRAPHY g
+FROM range(6000) t(i);
+
+statement ok
+COPY g_pages TO '{TEST_DIR}/geography_pages.parquet' (FORMAT 'parquet', DATA_PAGE_SIZE_LIMIT 4096, WRITE_PAGE_INDEX true);
+
+query I
+SELECT count(*) > 1 FROM parquet_page_index('{TEST_DIR}/geography_pages.parquet');
+----
+true
+
+query II
+SELECT t.geo_bbox.xmin, t.geo_bbox.xmax FROM parquet_metadata('{TEST_DIR}/geography_pages.parquet') t;
+----
+170.0	-170.0
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/geography_pages.parquet' WHERE g && 'POINT(180 0)'::GEOGRAPHY;
+----
+0
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/geography_pages.parquet' WHERE g && 'POINT(-179 0)'::GEOGRAPHY;
+----
+300
+
+# Row-group pruning through the Parquet geospatial statistics stays sound: every stored coordinate
+# matches itself when probed through a fresh scan of the file.
+statement ok
+COPY (
+	SELECT printf('POINT(%.6f %.6f)',
+		CASE WHEN x > 180 THEN x - 360 ELSE x END,
+		-80.0 + (i // 64) * 2.5
+	)::GEOGRAPHY AS g
+	FROM (SELECT i, 178.0 + (i % 64) * 0.0625 AS x FROM range(4096) t(i))
+) TO '{TEST_DIR}/geography_grid.parquet' (FORMAT 'parquet', ROW_GROUP_SIZE 1000);
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/geography_grid.parquet' WHERE g && 'POINT(178.000000 -80.000000)'::GEOGRAPHY;
+----
+1
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/geography_grid.parquet' WHERE g && 'POINT(-178.062500 77.500000)'::GEOGRAPHY;
+----
+1
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/geography_grid.parquet' WHERE g && 'POINT(-180.000000 -80.000000)'::GEOGRAPHY;
+----
+1
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/geography_grid.parquet' WHERE g && 'POINT(0 0)'::GEOGRAPHY;
+----
+0
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/geography_grid.parquet' WHERE g && 'MULTIPOINT(179 -90, -179 90)'::GEOGRAPHY;
+----
+2112
+
+# Geography bboxes are written (and read back) as *coverage* bounds: the geodesic edge bulge of a
+# linestring is part of its bbox, so probing the bulge region above the vertex latitudes still finds
+# the row through the file statistics.
+statement ok
+COPY (
+	SELECT 'LINESTRING(0 45, 90 45)'::GEOGRAPHY AS g
+	UNION ALL
+	SELECT printf('POINT(%.6f -45.000000)', -170.0 + i * 0.01)::GEOGRAPHY FROM range(2000) t(i)
+) TO '{TEST_DIR}/geography_bulge.parquet' (FORMAT 'parquet', ROW_GROUP_SIZE 500);
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/geography_bulge.parquet' WHERE g && 'POINT(45 54)'::GEOGRAPHY;
+----
+1
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/geography_bulge.parquet' WHERE g && 'POINT(45 55)'::GEOGRAPHY;
+----
+0
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/geography_bulge.parquet' WHERE g && 'POINT(-165.000000 -45.000000)'::GEOGRAPHY;
+----
+1
+
+# A file with an out-of-range longitude (written by DuckDB, then patched to POINT(517.25 2), bbox included).
+# Its metadata and other columns are readable, but reading the GEOGRAPHY values is rejected.
+query I
+SELECT column_type FROM (DESCRIBE FROM 'data/parquet-testing/broken/geography_out_of_range.parquet') WHERE column_name = 'g';
+----
+GEOGRAPHY
+
+query I
+SELECT id FROM 'data/parquet-testing/broken/geography_out_of_range.parquet' ORDER BY id;
+----
+1
+2
+3
+
+query II
+SELECT geo_bbox.xmin, geo_bbox.xmax FROM parquet_metadata('data/parquet-testing/broken/geography_out_of_range.parquet')
+WHERE path_in_schema = 'g';
+----
+1.0	517.25
+
+statement error
+SELECT g FROM 'data/parquet-testing/broken/geography_out_of_range.parquet';
+----
+Invalid Input Error: ST_GeogFromWKB: coordinates are outside the canonical GEOGRAPHY ranges
+
+statement error
+SELECT count(*) FROM 'data/parquet-testing/broken/geography_out_of_range.parquet' WHERE g && 'POINT(100 2)'::GEOGRAPHY;
+----
+Invalid Input Error: ST_GeogFromWKB: coordinates are outside the canonical GEOGRAPHY ranges

@@ -194,6 +194,7 @@ BoundCastInfo DefaultCasts::GetDefaultCastFunction(BindCastInput &input, const L
 	case LogicalTypeId::ARRAY:
 		return ArrayCastSwitch(input, source, target);
 	case LogicalTypeId::GEOMETRY:
+	case LogicalTypeId::GEOGRAPHY:
 		return GeoCastSwitch(input, source, target);
 	case LogicalTypeId::TYPE:
 		return TypeCastSwitch(input, source, target);

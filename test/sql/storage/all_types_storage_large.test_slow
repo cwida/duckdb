@@ -2,7 +2,7 @@
 # description: Test all types storage (large)
 # group: [storage]
 
-load {TEST_DIR}/all_types_storage.db readwrite v2.0.0
+load {TEST_DIR}/all_types_storage.db readwrite v2.1.0
 
 foreach compression <compression>
 

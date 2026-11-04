@@ -255,6 +255,7 @@ static LogicalType GetJSONType(StructNames &const_struct_names, const LogicalTyp
 	case LogicalTypeId::DECIMAL:
 	// GEOMETRY is emitted as either WKT or GeoJSON, so it must reach CreateValues untouched
 	case LogicalTypeId::GEOMETRY:
+	case LogicalTypeId::GEOGRAPHY:
 		return type;
 	case LogicalTypeId::VARIANT:
 		return LogicalType::JSON();
@@ -1033,7 +1034,8 @@ static void CreateValues(const StructNames &names, yyjson_mut_doc *doc, yyjson_m
 		CreateValuesFromDefaultCast(doc, vals, value_v, count);
 		break;
 	}
-	case LogicalTypeId::GEOMETRY: {
+	case LogicalTypeId::GEOMETRY:
+	case LogicalTypeId::GEOGRAPHY: {
 		if (options.geometry_format == JSONGeometryFormat::GEOJSON) {
 			CreateValuesGeometry(doc, vals, value_v, count);
 		} else {

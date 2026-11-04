@@ -56,7 +56,7 @@ CREATE MACRO all_types_data() AS TABLE (
 				'bignum', 'time_ns', 'timestamp_s', 'timestamp_ms', 'timestamp_tz',
 				'time_tz', 'interval', 'bit', 'dec_4_1', 'timestamp_tz_ns',
 				'blob', -- Parquet VARIANT reads blobs as base64.
-				'geometry' -- Not supported yet.
+				'geometry', 'geography' -- Not supported yet.
 			]
 		])::VARIANT FROM test_all_types()
 	)

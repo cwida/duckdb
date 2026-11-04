@@ -1031,7 +1031,8 @@ unique_ptr<ColumnReader> ParquetReader::CreateReaderRecursive(ClientContext &con
 }
 
 static bool IsGeometryType(const SchemaElement &s_ele, const ParquetFileMetadataCache &metadata, idx_t depth,
-                           string &crs) {
+                           string &crs, bool &is_geography) {
+	is_geography = false;
 	const auto is_blob = s_ele.__isset.type && s_ele.type == Type::BYTE_ARRAY;
 	if (!is_blob) {
 		return false;
@@ -1048,6 +1049,8 @@ static bool IsGeometryType(const SchemaElement &s_ele, const ParquetFileMetadata
 
 	const auto is_native_geog = s_ele.__isset.logicalType && s_ele.logicalType.__isset.GEOGRAPHY;
 	if (is_native_geog) {
+		// The edge-interpolation algorithm is ignored on read; any GEOGRAPHY logical type maps to GEOGRAPHY.
+		is_geography = true;
 		if (s_ele.logicalType.GEOGRAPHY.__isset.crs) {
 			crs = s_ele.logicalType.GEOGRAPHY.crs;
 		}
@@ -1138,7 +1141,8 @@ ParquetColumnSchema ParquetReader::ParseSchemaRecursive(idx_t depth, idx_t max_d
 
 	// Check for geometry type
 	string crs;
-	if (IsGeometryType(s_ele, *metadata, depth, crs)) {
+	bool is_geography = false;
+	if (IsGeometryType(s_ele, *metadata, depth, crs, is_geography)) {
 		// Geometries in both GeoParquet and native parquet are stored as a WKB-encoded BLOB.
 		// Because we don't just want to validate that the WKB encoding is correct, but also transform it into
 		// little-endian if necessary, we cant just make use of the StringColumnReader without heavily modifying it.
@@ -1151,10 +1155,10 @@ ParquetColumnSchema ParquetReader::ParseSchemaRecursive(idx_t depth, idx_t max_d
 		LogicalType target_type;
 
 		auto lookup = CoordinateReferenceSystem::TryIdentify(context, crs);
-		if (lookup) {
-			target_type = LogicalType::GEOMETRY(*lookup);
+		if (is_geography) {
+			target_type = lookup ? LogicalType::GEOGRAPHY(*lookup) : LogicalType::GEOGRAPHY();
 		} else {
-			target_type = LogicalType::GEOMETRY();
+			target_type = lookup ? LogicalType::GEOMETRY(*lookup) : LogicalType::GEOMETRY();
 		}
 
 		// Inner BLOB schema

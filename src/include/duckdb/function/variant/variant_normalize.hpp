@@ -66,6 +66,7 @@ struct VariantNormalizer {
 	static void VisitBlob(const string_t &blob, VariantNormalizerState &state);
 	static void VisitBignum(const string_t &bignum, VariantNormalizerState &state);
 	static void VisitGeometry(const string_t &geom, VariantNormalizerState &state);
+	static void VisitGeography(const string_t &geog, VariantNormalizerState &state);
 	static void VisitBitstring(const string_t &bits, VariantNormalizerState &state);
 
 	template <typename T>

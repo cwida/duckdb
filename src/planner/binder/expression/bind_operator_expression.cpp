@@ -264,7 +264,7 @@ BindResult ExpressionBinder::BindExpression(OperatorExpression &op, idx_t depth)
 		if (extract_expr_type.id() != LogicalTypeId::STRUCT && extract_expr_type.id() != LogicalTypeId::UNION &&
 		    extract_expr_type.id() != LogicalTypeId::MAP && extract_expr_type.id() != LogicalTypeId::SQLNULL &&
 		    !extract_expr_type.IsJSONType() && extract_expr_type.id() != LogicalTypeId::VARIANT &&
-		    extract_expr_type.id() != LogicalTypeId::GEOMETRY) {
+		    extract_expr_type.id() != LogicalTypeId::GEOMETRY && extract_expr_type.id() != LogicalTypeId::GEOGRAPHY) {
 			return BindResult(StringUtil::Format("Cannot extract field %s from expression \"%s\" because it is not a "
 			                                     "struct, union, map, json or geometry",
 			                                     name_exp.ToString(), extract_exp.ToString()));
@@ -293,7 +293,8 @@ BindResult ExpressionBinder::BindExpression(OperatorExpression &op, idx_t depth)
 					const_exp.SetReturnType(LogicalType::VARCHAR);
 				}
 			}
-		} else if (extract_expr_type.id() == LogicalTypeId::GEOMETRY) {
+		} else if (extract_expr_type.id() == LogicalTypeId::GEOMETRY ||
+		           extract_expr_type.id() == LogicalTypeId::GEOGRAPHY) {
 			function_name = "vertex_extract";
 		} else {
 			function_name = "struct_extract";

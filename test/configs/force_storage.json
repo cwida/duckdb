@@ -73,6 +73,11 @@
         "test/sql/types/geo/geometry_vertex_extract.test",
         "test/sql/types/geo/geometry_shred_more.test",
         "test/sql/types/geo/geometry_from_wkb_stats.test",
+        "test/sql/types/geo/geography.test",
+        "test/sql/types/geo/geography_blob_cast.test",
+        "test/sql/types/geo/geography_coverage.test",
+        "test/sql/types/geo/geography_parquet.test",
+        "test/sql/types/geo/geography_stats.test",
         "test/sql/sample/can_sample_from_ingested_files.test"
       ]
     },
@@ -141,6 +146,7 @@
         "test/fuzzer/duckfuzz/to_weeks_overflow.test",
         "test/fuzzer/duckfuzz/tuple_data_empty_heap.test",
         "test/fuzzer/duckfuzz/union_dict_tag.test",
+        "test/fuzzer/duckfuzz/vector_type.test",
         "test/fuzzer/duckfuzz/visit_operator_expressions_in_column_lifetime_analyzer.test",
         "test/fuzzer/duckfuzz/window_negate_stats.test",
         "test/fuzzer/duckfuzz/window_null_range.test",
@@ -165,6 +171,7 @@
         "test/sql/aggregate/aggregates/mode_test_all_types.test_slow",
         "test/sql/aggregate/aggregates/quantile_test_all_types.test_slow",
         "test/sql/copy/csv/duck_fuzz/test_internal_4048.test",
+        "test/sql/copy/parquet/writer/parquet_test_all_types.test",
         "test/sql/function/generic/least_greatest_types.test",
         "test/sql/function/list/aggregates/minmax_all_types.test_slow",
         "test/sql/function/list/list_distinct.test",

@@ -75,6 +75,8 @@ struct VariantStatsVisitor {
 	}
 	static void VisitGeometry(const string_t &geom, VariantShreddingStats &stats, idx_t stats_column_index) {
 	}
+	static void VisitGeography(const string_t &geog, VariantShreddingStats &stats, idx_t stats_column_index) {
+	}
 	static void VisitBitstring(const string_t &bits, VariantShreddingStats &stats, idx_t stats_column_index) {
 	}
 
@@ -221,6 +223,8 @@ static unordered_set<VariantLogicalType> GetVariantType(const LogicalType &type)
 		return {VariantLogicalType::BITSTRING};
 	case LogicalTypeId::GEOMETRY:
 		return {VariantLogicalType::GEOMETRY};
+	case LogicalTypeId::GEOGRAPHY:
+		return {VariantLogicalType::GEOGRAPHY};
 	default:
 		throw BinderException("Type '%s' can't be translated to a VARIANT type", type.ToString());
 	}
@@ -387,6 +391,8 @@ static LogicalType ProduceShreddedType(VariantLogicalType type_id) {
 		return LogicalTypeId::BIT;
 	case VariantLogicalType::GEOMETRY:
 		return LogicalTypeId::GEOMETRY;
+	case VariantLogicalType::GEOGRAPHY:
+		return LogicalTypeId::GEOGRAPHY;
 	case VariantLogicalType::OBJECT:
 	case VariantLogicalType::ARRAY:
 		throw InternalException("Already handled above");

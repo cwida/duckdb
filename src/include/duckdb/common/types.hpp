@@ -246,6 +246,7 @@ enum class LogicalTypeId : uint8_t {
 	UUID = 54,
 
 	GEOMETRY = 60,
+	GEOGRAPHY = 61,
 
 	STRUCT = 100,
 	LIST = 101,
@@ -574,6 +575,9 @@ public:
 	DUCKDB_API static LogicalType GEOMETRY();                                          // NOLINT
 	DUCKDB_API static LogicalType GEOMETRY(const string &crs);
 	DUCKDB_API static LogicalType GEOMETRY(const CoordinateReferenceSystem &crs);
+	DUCKDB_API static LogicalType GEOGRAPHY();                                           // NOLINT
+	DUCKDB_API static LogicalType GEOGRAPHY(const string &crs);
+	DUCKDB_API static LogicalType GEOGRAPHY(const CoordinateReferenceSystem &crs);
 	// ANY but with special rules (default is LogicalType::ANY, 5)
 	DUCKDB_API static LogicalType ANY_PARAMS(LogicalType target, idx_t cast_score = 5); // NOLINT
 	DUCKDB_API static LogicalType TEMPLATE(const string &name);                         // NOLINT

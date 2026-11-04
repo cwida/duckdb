@@ -285,6 +285,9 @@ typedef enum DUCKDB_TYPE {
 
 	//! duckdb_timestamp (nanoseconds)
 	DUCKDB_TYPE_TIMESTAMP_TZ_NS = 42,
+
+	//! GEOGRAPHY type, WKB blob with spherical edges
+	DUCKDB_TYPE_GEOGRAPHY = 43,
 } DUCKDB_TYPE;
 
 /*!
@@ -5579,13 +5582,13 @@ DUCKDB_C_API duckdb_state duckdb_register_logical_type(duckdb_connection con, du
 
 #if DUCKDB_API_VERSION_AT_LEAST(1, 5, 6)
 /*!
- * Gets the CRS (Coordinate Reference System) of a GEOMETRY type. Result must be freed with `duckdb_free`.
+ * Gets the CRS (Coordinate Reference System) of a GEOMETRY or GEOGRAPHY type. Result must be freed with `duckdb_free`.
  *
  * history:
  * - unstable: v1.5.2
  * - stable: v1.5.6
  *
- * @param type The GEOMETRY type.
+ * @param type The GEOMETRY or GEOGRAPHY type.
  * @return char*
  */
 DUCKDB_C_API char *duckdb_geometry_type_get_crs(duckdb_logical_type type);

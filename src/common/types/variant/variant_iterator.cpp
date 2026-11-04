@@ -369,6 +369,8 @@ static VariantLogicalType ShreddedTypeId(const ShreddedVariantIterator &content,
 		return VariantLogicalType::BITSTRING;
 	case LogicalTypeId::GEOMETRY:
 		return VariantLogicalType::GEOMETRY;
+	case LogicalTypeId::GEOGRAPHY:
+		return VariantLogicalType::GEOGRAPHY;
 	default:
 		throw NotImplementedException("Shredded VARIANT type '%s' is not supported by VariantNode", type.ToString());
 	}

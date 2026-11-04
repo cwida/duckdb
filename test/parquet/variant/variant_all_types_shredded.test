@@ -24,7 +24,8 @@ create macro data() as table (
 			'dec_4_1', -- Parquet VARIANT doesn't have int16_t DECIMAL
 -- Conversion isn't 1-to-1
 			'blob', -- data is base64-encoded in parquet read
-			'geometry' -- FIXME: not supported for now
+			'geometry', -- FIXME: not supported for now
+			'geography' -- FIXME: not supported for now
 		]
 	])::VARIANT var from test_all_types()
 )

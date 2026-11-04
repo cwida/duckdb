@@ -238,6 +238,8 @@ const char *BuiltinTypeName(LogicalTypeId id) {
 		return "VARIANT";
 	case LogicalTypeId::GEOMETRY:
 		return "GEOMETRY";
+	case LogicalTypeId::GEOGRAPHY:
+		return "GEOGRAPHY";
 	case LogicalTypeId::DECIMAL:
 		return "DECIMAL";
 	case LogicalTypeId::ENUM:
@@ -303,6 +305,7 @@ unique_ptr<TypeExpression> TypeExpression::FromLogicalType(const LogicalType &ty
 		break;
 	}
 	case LogicalTypeId::GEOMETRY:
+	case LogicalTypeId::GEOGRAPHY:
 		if (GeoType::HasCRS(type)) {
 			children.push_back(LiteralChild(ConstantExpression::String(GeoType::GetCRS(type).GetDefinition())));
 		}

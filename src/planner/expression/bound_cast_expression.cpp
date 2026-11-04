@@ -416,6 +416,11 @@ bool BoundCastExpression::CastCanThrow(const LogicalType &source_type, const Log
 	if (source_type.id() == LogicalTypeId::GEOMETRY && target_type.id() == LogicalTypeId::GEOMETRY) {
 		return false;
 	}
+	// The same holds for geography -> geography, and geography -> geometry needs no coordinate validation
+	if (source_type.id() == LogicalTypeId::GEOGRAPHY &&
+	    (target_type.id() == LogicalTypeId::GEOGRAPHY || target_type.id() == LogicalTypeId::GEOMETRY)) {
+		return false;
+	}
 	// Casting from a string requires parsing it, which throws whenever the string is not a valid representation of
 	// the target type. Types that sit above VARCHAR in the coercion lattice (e.g. UUID, BLOB, BIT, nested types)
 	// would otherwise be considered safe by the max-type check below.

@@ -54,6 +54,7 @@ enums:
       TYPE_GEOMETRY: {value: 40, description: "GEOMETRY type, WKB blob"}
       TYPE_VARIANT: {value: 41, description: "VARIANT type"}
       TYPE_TIMESTAMP_TZ_NS: {value: 42, description: "duckdb_timestamp (nanoseconds)"}
+      TYPE_GEOGRAPHY: {value: 43, description: "GEOGRAPHY type, WKB blob with spherical edges"}
   pending_state:
     lifecycle:
       - ["stable", "v0.5.0", "2022-09-04"]

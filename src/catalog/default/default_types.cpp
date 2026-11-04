@@ -328,48 +328,76 @@ void RegisterVariantConstructors(TypeConstructorSet &set) {
 }
 
 //----------------------------------------------------------------------------------------------------------------------
-// GEOMETRY Type
+// GEOMETRY / GEOGRAPHY Types
 //----------------------------------------------------------------------------------------------------------------------
-LogicalType BindDefaultGeometryType(BindLogicalTypeInput &input) {
-	return LogicalType::GEOMETRY();
+static LogicalType BindDefaultGeoType(bool geography) {
+	return geography ? LogicalType::GEOGRAPHY() : LogicalType::GEOMETRY();
 }
 
-LogicalType BindGeometryType(BindLogicalTypeInput &input) {
+LogicalType BindDefaultGeometryType(BindLogicalTypeInput &input) {
+	return BindDefaultGeoType(false);
+}
+
+LogicalType BindDefaultGeographyType(BindLogicalTypeInput &input) {
+	return BindDefaultGeoType(true);
+}
+
+static LogicalType BindGeoType(BindLogicalTypeInput &input, bool geography) {
+	const char *type_name = geography ? "GEOGRAPHY" : "GEOMETRY";
+
 	// FIXME: Use extension/ClientContext to expand incomplete/shorthand CRS definitions
 	auto &crs = StringValue::Get(input.modifiers[0].GetValue());
 
 	if (!input.context) {
-		throw BinderException(input.query_location,
-		                      "Cannot create GEOMETRY type with coordinate system without a connection");
+		throw BinderException(input.query_location, "Cannot create %s type with coordinate system without a connection",
+		                      type_name);
 	}
 
 	const auto crs_result = CoordinateReferenceSystem::TryIdentify(*input.context, crs);
 	if (!crs_result) {
 		if (Settings::Get<IgnoreUnknownCrsSetting>(*input.context)) {
-			// Ignored by user configuration - return generic GEOMETRY type
-			return LogicalType::GEOMETRY();
+			// Ignored by user configuration - return generic GEOMETRY/GEOGRAPHY type
+			return BindDefaultGeoType(geography);
 		}
 
 		throw BinderException(
 		    input.GetLocation(0),
-		    "Encountered unrecognized coordinate system '%s' when trying to create GEOMETRY type\n"
+		    "Encountered unrecognized coordinate system '%s' when trying to create %s type\n"
 		    "The coordinate system definition may be incomplete or invalid. Your options are as follows:\n"
 		    "* Load an extension that can identify this coordinate system\n"
 		    "* Provide a full coordinate system definition in e.g. \"PROJJSON\" or \"WKT2\" format\n"
 		    "* Set the 'ignore_unknown_crs' configuration option to drop the coordinate system from the resulting "
-		    "geometry type and make this error go away",
-		    crs);
+		    "type and make this error go away",
+		    crs, type_name);
 	}
 
-	return LogicalType::GEOMETRY(crs_result->GetDefinition());
+	return geography ? LogicalType::GEOGRAPHY(crs_result->GetDefinition())
+	                 : LogicalType::GEOMETRY(crs_result->GetDefinition());
 }
 
-void RegisterGeometryConstructors(TypeConstructorSet &set) {
-	set.AddFunction(TypeConstructor(TypeConstructor::Signature(), BindDefaultGeometryType));
+LogicalType BindGeometryType(BindLogicalTypeInput &input) {
+	return BindGeoType(input, false);
+}
+
+LogicalType BindGeographyType(BindLogicalTypeInput &input) {
+	return BindGeoType(input, true);
+}
+
+static void RegisterGeoConstructors(TypeConstructorSet &set, bind_logical_type_function_t bind_default,
+                                    bind_logical_type_function_t bind_with_crs) {
+	set.AddFunction(TypeConstructor(TypeConstructor::Signature(), bind_default));
 
 	auto signature = TypeConstructor::Signature();
 	signature.AddParameter("crs", LogicalType::VARCHAR);
-	set.AddFunction(TypeConstructor(std::move(signature), BindGeometryType));
+	set.AddFunction(TypeConstructor(std::move(signature), bind_with_crs));
+}
+
+void RegisterGeometryConstructors(TypeConstructorSet &set) {
+	RegisterGeoConstructors(set, BindDefaultGeometryType, BindGeometryType);
+}
+
+void RegisterGeographyConstructors(TypeConstructorSet &set) {
+	RegisterGeoConstructors(set, BindDefaultGeographyType, BindGeographyType);
 }
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -385,7 +413,7 @@ struct DefaultType {
 	constructor_registration_t register_constructors;
 };
 
-using builtin_type_array = std::array<DefaultType, 83>;
+using builtin_type_array = std::array<DefaultType, 84>;
 
 const builtin_type_array BUILTIN_TYPES = {{{"decimal", LogicalTypeId::DECIMAL, RegisterDecimalConstructors},
                                            {"dec", LogicalTypeId::DECIMAL, RegisterDecimalConstructors},
@@ -469,6 +497,7 @@ const builtin_type_array BUILTIN_TYPES = {{{"decimal", LogicalTypeId::DECIMAL, R
                                            {"double", LogicalTypeId::DOUBLE, nullptr},
                                            {"float8", LogicalTypeId::DOUBLE, nullptr},
                                            {"geometry", LogicalTypeId::GEOMETRY, RegisterGeometryConstructors},
+                                           {"geography", LogicalTypeId::GEOGRAPHY, RegisterGeographyConstructors},
                                            {"type", LogicalTypeId::TYPE, nullptr}}};
 
 TypeConstructorSet GetConstructors(const DefaultType &entry, const Identifier &name) {

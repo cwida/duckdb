@@ -12,6 +12,7 @@
     "Aggregate state columns are not supported in storage versions prior to v2.0.0",
     "TUPLE columns are not supported in storage versions prior to v2.0.0",
     "VARIANT columns are not supported in storage versions prior to v1.5.0",
+    "GEOGRAPHY columns are not supported in storage versions prior to v2.1.0",
     "Typed macro parameters are only supported for storage versions v1.4.0 and higher",
     "CREATE SECURE VIEW is only supported for storage versions v2.0.0 and higher"
   ],
@@ -138,6 +139,8 @@
         "test/sql/types/geo/geometry_crs_projjson.test",
         "test/sql/types/geo/geometry_crs_wkt2.test",
         "test/sql/types/geo/geometry_vertex_extract.test",
+        "test/sql/types/geo/geography.test",
+        "test/sql/types/geo/geography_parquet.test",
         "test/geoparquet/disabled.test",
         "test/geoparquet/geoarrow.test",
         "test/geoparquet/mixed.test",

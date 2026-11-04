@@ -775,6 +775,11 @@ static bool CastVariant(FromVariantConversionData &conversion_data, Vector &resu
 			return CastVariantToPrimitive<VariantDirectConversion<string_t, VariantLogicalType::GEOMETRY>>(
 			    conversion_data, result, sel, offset, count, row, string_payload);
 		}
+		case LogicalTypeId::GEOGRAPHY: {
+			StringConversionPayload string_payload(result);
+			return CastVariantToPrimitive<VariantDirectConversion<string_t, VariantLogicalType::GEOGRAPHY>>(
+			    conversion_data, result, sel, offset, count, row, string_payload);
+		}
 		case LogicalTypeId::VARCHAR: {
 			if (target_type.IsJSONType()) {
 				return CastVariantToJSON(conversion_data, result, sel, offset, count, row);
@@ -957,6 +962,7 @@ BoundCastInfo DefaultCasts::VariantCastSwitch(BindCastInput &input, const Logica
 	case LogicalTypeId::ARRAY:
 		return BoundCastInfo(CastFromVARIANT, std::move(cast_data));
 	case LogicalTypeId::GEOMETRY:
+	case LogicalTypeId::GEOGRAPHY:
 		return BoundCastInfo(CastFromVARIANT, std::move(cast_data));
 	case LogicalTypeId::VARCHAR: {
 		return BoundCastInfo(CastFromVARIANT, std::move(cast_data));

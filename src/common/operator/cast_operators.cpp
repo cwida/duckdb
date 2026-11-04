@@ -1877,6 +1877,23 @@ bool TryCastToGeometry::Operation(string_t input, string_t &result, Vector &resu
 	return false;
 }
 
+template <>
+bool TryCastToGeography::Operation(string_t input, string_t &result, Vector &result_vector,
+                                   CastParameters &parameters) {
+	// Parse the WKT text into WKB, then validate the canonical GEOGRAPHY coordinate ranges.
+	if (!Geometry::FromString(input, result, StringVector::GetStringHeap(result_vector), parameters.strict,
+	                          parameters.cast_source ? parameters.cast_source->GetQueryLocation() : QueryLocation())) {
+		return false;
+	}
+	if (!Geometry::IsValidGeography(result)) {
+		HandleCastError::AssignError("Geometry coordinates are outside the canonical GEOGRAPHY ranges "
+		                             "(longitude/X must be within [-180, 180], latitude/Y within [-90, 90])",
+		                             parameters);
+		return false;
+	}
+	return true;
+}
+
 //===--------------------------------------------------------------------===//
 // Cast To Date
 //===--------------------------------------------------------------------===//

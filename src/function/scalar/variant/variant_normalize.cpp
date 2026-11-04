@@ -112,6 +112,9 @@ void VariantNormalizer::VisitBignum(const string_t &bignum, VariantNormalizerSta
 void VariantNormalizer::VisitGeometry(const string_t &geom, VariantNormalizerState &state) {
 	return VisitString(geom, state);
 }
+void VariantNormalizer::VisitGeography(const string_t &geog, VariantNormalizerState &state) {
+	return VisitString(geog, state);
+}
 void VariantNormalizer::VisitBitstring(const string_t &bits, VariantNormalizerState &state) {
 	return VisitString(bits, state);
 }
