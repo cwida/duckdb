@@ -47,6 +47,9 @@ public:
 
 	//! Information for WITH ORDINALITY
 	optional_idx ordinality_idx;
+	//! Whether the function consumes a TABLE parameter: its input rows form one invocation,
+	//! so the ordinality numbering continues across them instead of restarting per row
+	bool table_input = false;
 
 	OrderPreservationType OperatorOrder() const override {
 		return function.order_preservation_type;
