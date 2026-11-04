@@ -1145,18 +1145,16 @@ void JSONReader::FinalizeBuffer(JSONReaderScanState &scan_state) {
 	}
 
 	// we read something
-	// skip over the array start if required
-	if (!scan_state.is_last) {
-		if (scan_state.buffer_index.GetIndex() == 0) {
-			// the file starts at the buffer offset, which leaves room for the end of a previous buffer when the file
-			// is read in parallel
-			idx_t bom_size = 0;
-			StringUtil::SkipBOM(scan_state.buffer_ptr + scan_state.buffer_offset,
-			                    scan_state.buffer_size - scan_state.buffer_offset, bom_size);
-			scan_state.buffer_offset += bom_size;
-			if (GetFormat() == JSONFormat::ARRAY) {
-				SkipOverArrayStart(scan_state);
-			}
+	// skip over the BOM and the array start if required
+	if (scan_state.buffer_index.GetIndex() == 0 && scan_state.buffer_size >= scan_state.buffer_offset) {
+		// the file starts at the buffer offset, which leaves room for the end of a previous buffer when the file
+		// is read in parallel
+		idx_t bom_size = 0;
+		StringUtil::SkipBOM(scan_state.buffer_ptr + scan_state.buffer_offset,
+		                    scan_state.buffer_size - scan_state.buffer_offset, bom_size);
+		scan_state.buffer_offset += bom_size;
+		if (GetFormat() == JSONFormat::ARRAY) {
+			SkipOverArrayStart(scan_state);
 		}
 	}
 	// then finalize the buffer
