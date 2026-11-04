@@ -2,6 +2,9 @@
 # description: Scans that skip the vectors a row id filter rejects return the rows of the row ids
 # group: [optimizer]
 
+# the test process exits without a message on Windows
+require notwindows
+
 # 300000 rows in three row groups, row id i holds k = (i * 7919) % 300000 and g = 'geom i'
 statement ok
 CREATE TABLE r (k BIGINT PRIMARY KEY, g VARCHAR, risk BIGINT, zone VARCHAR, score DOUBLE);
