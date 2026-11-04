@@ -463,14 +463,6 @@ void NumericColumnData::RevertAppend(row_t new_count) {
 //----------------------------------------------------------------------------------------------------------------------
 // Fetch
 //----------------------------------------------------------------------------------------------------------------------
-idx_t NumericColumnData::Fetch(ColumnScanState &state, row_t row_id, Vector &result) {
-	auto &column = Pinned(state);
-	Vector typed(column.type, STANDARD_VECTOR_SIZE);
-	auto fetch_count = column.Fetch(state, row_id, typed);
-	ToCanonical(typed, fetch_count, result);
-	return fetch_count;
-}
-
 void NumericColumnData::FetchRows(TransactionData transaction, ColumnFetchState &state,
                                   const StorageIndex &storage_index, const idx_t *offsets, const SelectionVector &sel,
                                   idx_t fetch_count, Vector &result, idx_t result_offset) {

@@ -111,10 +111,6 @@ void RowIdColumnData::Select(TransactionData transaction, idx_t vector_index, Co
 	state.offset_in_column += GetVectorCount(vector_index);
 }
 
-idx_t RowIdColumnData::Fetch(ColumnScanState &state, row_t row_id, Vector &result) {
-	throw InternalException("Fetch is not supported for row id columns");
-}
-
 void RowIdColumnData::FetchRows(TransactionData transaction, ColumnFetchState &state, const StorageIndex &storage_index,
                                 const idx_t *offsets, const SelectionVector &sel, idx_t fetch_count, Vector &result,
                                 idx_t result_offset) {
