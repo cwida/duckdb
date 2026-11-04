@@ -33,6 +33,7 @@ private:
 private:
 	Binder &binder;
 	bool cte_deliminator_enabled;
+	bool defer_domain_reductions = false;
 	vector<TableIndex> generated_dedup_cte_indexes;
 	set<TableIndex> marker_indexes;
 	set<TableIndex> preserve_marker_indexes;

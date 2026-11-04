@@ -1,0 +1,166 @@
+# name: test/optimizer/deferred_domain_plan.test
+# description: Generated domains are kept or removed according to downstream work
+# group: [optimizer]
+
+statement ok
+CREATE TABLE fact_data AS SELECT (i%1000)::INTEGER k,(i%13)::INTEGER j,i v FROM range(10000)t(i);
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k,(SELECT sum(v) FROM fact_data f WHERE f.k=d.k)
+FROM (VALUES(1),(7))d(k);
+----
+physical_plan	<REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k,d.j,(SELECT sum(v) FROM fact_data f WHERE f.k=d.k AND f.j=d.j)
+FROM (VALUES(1,1),(7,7))d(k,j);
+----
+physical_plan	<REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+# The same two-key demand covers the entire input domain here.
+statement ok
+CREATE TABLE low_domain AS SELECT (i%2)::INTEGER k,0::INTEGER j,i v FROM range(10000)t(i);
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k,(SELECT sum(v) FROM low_domain f WHERE f.k=d.k)
+FROM (VALUES(0),(1))d(k);
+----
+physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k,d.j,(SELECT sum(v) FROM low_domain f WHERE f.k=d.k AND f.j=d.j)
+FROM (VALUES(0,0),(1,0))d(k,j);
+----
+physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+# A selective domain avoids building a large MARK join hash table.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k,d.j,EXISTS(SELECT 1 FROM fact_data f WHERE f.k=d.k AND f.j=d.j)
+FROM (VALUES(1,1),(7,7))d(k,j);
+----
+physical_plan	<REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+# Keeping all evidence keys adds an unnecessary build and probe.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k,d.j,EXISTS(SELECT 1 FROM low_domain f WHERE f.k=d.k AND f.j=d.j)
+FROM (VALUES(0,0),(1,0))d(k,j);
+----
+physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+# SELECT * exposes the correlation key under two different projection aliases.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k,d.j,EXISTS(SELECT * FROM low_domain f WHERE f.k=d.k AND f.j=d.j)
+FROM (VALUES(0,0),(1,0))d(k,j);
+----
+physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+# Each generated owner contains the previous evidence query.
+statement ok
+CREATE TABLE evidence_callers(k INTEGER);
+
+statement ok
+INSERT INTO evidence_callers VALUES (0),(1);
+
+statement ok
+CREATE TABLE other_evidence AS SELECT * FROM low_domain;
+
+statement ok
+CREATE TABLE third_evidence AS SELECT * FROM low_domain;
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k FROM evidence_callers d
+WHERE EXISTS(SELECT * FROM low_domain f WHERE f.k=d.k)
+AND (EXISTS(SELECT * FROM other_evidence f WHERE f.k=d.k)
+     OR EXISTS(SELECT * FROM third_evidence f WHERE f.k=d.k));
+----
+physical_plan	<!REGEX>:[\s\S]*"Groups"[\s\S]*
+
+query I rowsort
+SELECT d.k FROM evidence_callers d
+WHERE EXISTS(SELECT * FROM low_domain f WHERE f.k=d.k)
+AND (EXISTS(SELECT * FROM other_evidence f WHERE f.k=d.k)
+     OR EXISTS(SELECT * FROM third_evidence f WHERE f.k=d.k));
+----
+0
+1
+
+# Other readers still need this producer after the optional domains disappear.
+query II
+EXPLAIN (FORMAT JSON)
+WITH d AS MATERIALIZED (SELECT * FROM (VALUES(0),(1))t(k))
+SELECT d.k,(SELECT sum(v) FROM low_domain f WHERE f.k=d.k),
+       (SELECT count(*) FROM d e WHERE e.k=d.k)
+FROM d;
+----
+physical_plan	<REGEX>:[\s\S]*"CTE Name": "d"[\s\S]*
+
+query II
+EXPLAIN (FORMAT JSON)
+WITH d AS MATERIALIZED (SELECT * FROM (VALUES(0),(1))t(k))
+SELECT d.k,(SELECT sum(v) FROM low_domain f WHERE f.k=d.k),
+       (SELECT count(*) FROM d e WHERE e.k=d.k)
+FROM d;
+----
+physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+# Widening aggregate output must not introduce a throwing cast on an unrequested group.
+statement ok
+CREATE TABLE expansion_guard AS
+SELECT (i=9999)::INTEGER k,CASE WHEN i=9999 THEN 3000000000 ELSE 1 END v FROM range(10000)t(i);
+
+statement ok
+SET disabled_optimizers='filter_pullup,filter_pushdown,join_filter_pushdown';
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k,(SELECT CAST(sum(v) AS INTEGER) FROM expansion_guard f WHERE f.k=d.k)
+FROM (VALUES(0))d(k);
+----
+physical_plan	<REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+# TRY_CAST is safe on the additional group and permits the cheaper unrestricted aggregate.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k,(SELECT TRY_CAST(sum(v) AS INTEGER) FROM expansion_guard f WHERE f.k=d.k)
+FROM (VALUES(0))d(k);
+----
+physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+# Floating-point overflow produces infinity; integer multiplication can throw.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k,(SELECT max(v)::DOUBLE * 1e308 FROM expansion_guard f WHERE f.k=d.k)
+FROM (VALUES(0))d(k);
+----
+physical_plan	<!REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+query II
+EXPLAIN (FORMAT JSON)
+SELECT d.k,(SELECT max(v) * 4000000000::BIGINT FROM expansion_guard f WHERE f.k=d.k)
+FROM (VALUES(0))d(k);
+----
+physical_plan	<REGEX>:[\s\S]*"Join Type": "(RIGHT_)?SEMI"[\s\S]*
+
+statement ok
+RESET disabled_optimizers;
+
+# Statistics-dependent bounds retain the pre-deferral binder behavior.
+statement ok
+CREATE TABLE bit_keys(k INTEGER);
+
+statement ok
+INSERT INTO bit_keys VALUES (2),(4),(6);
+
+query I
+SELECT bit_length((SELECT bitstring_agg(k) FROM bit_keys i WHERE i.k=o.k))
+FROM (SELECT 2 k)o;
+----
+5

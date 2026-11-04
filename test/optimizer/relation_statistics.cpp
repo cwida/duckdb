@@ -788,7 +788,7 @@ TEST_CASE("Projection and window preserve the statistics source", "[optimizer][r
 	auto child_stats = CreateStats({input}, {10}, 100);
 	child_stats.row_retention = 0.04;
 	child_stats.columns[0].total_domain = DistinctCount(100, DistinctCountSource::EXACT);
-	child_stats.columns[0].semi_anti_join_domain_evidence.TightenFilterDomainBound(10);
+	child_stats.columns[0].semi_anti_join_domain_evidence.TightenDomainBound(10);
 	auto projection = CreateProjectedDummy(TableIndex(10), TableIndex(20));
 	auto projected =
 	    RelationStatisticsHelper::ExtractProjectionStats(projection->Cast<LogicalProjection>(), child_stats);
@@ -809,7 +809,7 @@ TEST_CASE("Grouping sets discard inherited SEMI domain evidence", "[optimizer][r
 	auto input = ColumnBinding(TableIndex(10), ProjectionIndex(0));
 	auto child_stats = CreateStats({input}, {1}, 1);
 	child_stats.columns[0].semi_anti_join_domain_evidence.MarkUnique();
-	child_stats.columns[0].semi_anti_join_domain_evidence.TightenFilterDomainBound(1);
+	child_stats.columns[0].semi_anti_join_domain_evidence.TightenDomainBound(1);
 	LogicalAggregate aggregate(TableIndex(20), TableIndex(30), vector<unique_ptr<Expression>>());
 	aggregate.groups.push_back(make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, input));
 	aggregate.grouping_sets.emplace_back();
@@ -850,7 +850,7 @@ TEST_CASE("Delim SEMI and ANTI joins use domain coverage", "[optimizer][relation
 	auto right_stats = CreateStats({right_binding}, {100}, 100);
 	right_stats.columns[0].total_domain = DistinctCount(1000, DistinctCountSource::EXACT);
 	right_stats.row_retention = 0.1;
-	right_stats.columns[0].semi_anti_join_domain_evidence.TightenFilterDomainBound(100);
+	right_stats.columns[0].semi_anti_join_domain_evidence.TightenDomainBound(100);
 	LogicalComparisonJoin delim_join(JoinType::SEMI, LogicalOperatorType::LOGICAL_DELIM_JOIN);
 	delim_join.conditions.emplace_back(make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, left_binding),
 	                                   make_uniq<BoundColumnRefExpression>(LogicalType::INTEGER, right_binding),
@@ -1006,9 +1006,9 @@ TEST_CASE("Shared key filters restrict domains only with supported input statist
 				auto right_stats = CreateStats({b}, {bound}, 100);
 				left_stats.columns[0].total_domain = DistinctCount(10, DistinctCountSource::MIN_MAX);
 				right_stats.columns[0].total_domain = DistinctCount(10, source);
-				left_stats.columns[0].semi_anti_join_domain_evidence.TightenFilterDomainBound(1);
+				left_stats.columns[0].semi_anti_join_domain_evidence.TightenDomainBound(1);
 				if (filter_both) {
-					right_stats.columns[0].semi_anti_join_domain_evidence.TightenFilterDomainBound(bound);
+					right_stats.columns[0].semi_anti_join_domain_evidence.TightenDomainBound(bound);
 				} else {
 					// A modeled current domain or uniqueness is not an explicit filter restriction.
 					right_stats.columns[0].semi_anti_join_domain_evidence.MarkUnique();

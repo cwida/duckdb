@@ -194,7 +194,7 @@ GROUP BY o.k
 1	60
 3	180
 
-# A correlated aggregate can reuse an equivalent materialized payload when the producer only adds a unique relation.
+# A redundant NULL guard on the domain key does not prevent equivalent materialized payload reuse.
 statement ok
 SET delim_join_as_cte = true
 
@@ -239,7 +239,7 @@ EXPLAIN WITH outer_rows AS MATERIALIZED (
   SELECT f.k, min(f.cost) AS cost
   FROM payload_fact f, payload_supplier s, payload_region r
   WHERE s.id = f.supplier_id AND s.region_id = r.id AND r.name = 'EUROPE'
-    AND f.k IN (SELECT k FROM outer_rows)
+    AND f.k IS NOT NULL AND f.k IN (SELECT k FROM outer_rows)
   GROUP BY f.k
 )
 SELECT o.name, o.address, o.phone, o.k, o.label, o.cost
@@ -260,7 +260,7 @@ EXPLAIN WITH outer_rows AS MATERIALIZED (
   SELECT f.k, min(f.cost) AS cost
   FROM payload_fact f, payload_supplier s, payload_region r
   WHERE s.id = f.supplier_id AND s.region_id = r.id AND r.name = 'EUROPE'
-    AND f.k IN (SELECT k FROM outer_rows)
+    AND f.k IS NOT NULL AND f.k IN (SELECT k FROM outer_rows)
   GROUP BY f.k
 )
 SELECT o.name, o.address, o.phone, o.k, o.label, o.cost
@@ -281,7 +281,7 @@ WITH outer_rows AS MATERIALIZED (
   SELECT f.k, min(f.cost) AS cost
   FROM payload_fact f, payload_supplier s, payload_region r
   WHERE s.id = f.supplier_id AND s.region_id = r.id AND r.name = 'EUROPE'
-    AND f.k IN (SELECT k FROM outer_rows)
+    AND f.k IS NOT NULL AND f.k IN (SELECT k FROM outer_rows)
   GROUP BY f.k
 )
 SELECT o.name, o.address, o.phone, o.k, o.label, o.cost

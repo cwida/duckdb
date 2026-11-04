@@ -170,7 +170,7 @@ EXPLAIN ANALYZE WITH d AS MATERIALIZED (
 )
 SELECT count(*)
 FROM d lhs
-WHERE v < (SELECT avg(v) + 1 FROM d rhs WHERE rhs.k = lhs.k);
+WHERE v < (SELECT avg(v) FROM d rhs WHERE rhs.k = lhs.k);
 ----
 analyzed_plan	<REGEX>:.*Execution Mode: HYBRID_FANOUT.*Fanout Mode: DIRECT.*Direct Consumers: (1|2).*Buffered Consumers: 0.*Materialized Consumers: 1.*
 

@@ -269,11 +269,19 @@ static bool IsDomainCorrelationFilter(const TableFilter &filter, const TableColu
 		return false;
 	}
 	auto &expression = *filter.Cast<ExpressionFilter>().expr;
-	if (expression.GetExpressionType() != ExpressionType::COMPARE_NOT_DISTINCT_FROM || expression.IsVolatile()) {
+	if (expression.IsVolatile()) {
 		return false;
 	}
 	vector<reference<const Expression>> children;
 	ExpressionIterator::EnumerateChildren(expression, [&](const Expression &child) { children.push_back(child); });
+	// The ordinary equality in the domain SEMI already rejects NULL core keys.
+	if (expression.GetExpressionType() == ExpressionType::OPERATOR_IS_NOT_NULL && children.size() == 1 &&
+	    children[0].get().GetExpressionClass() == ExpressionClass::BOUND_REF) {
+		return true;
+	}
+	if (expression.GetExpressionType() != ExpressionType::COMPARE_NOT_DISTINCT_FROM) {
+		return false;
+	}
 	if (children.size() == 2 && Expression::Equals(children[0].get(), children[1].get())) {
 		return true;
 	}

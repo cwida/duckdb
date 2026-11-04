@@ -36,6 +36,8 @@ public:
 	bool delim_flipped = false;
 	//! (If join_type == MARK) can this comparison join be converted from a mark join to semi
 	bool convert_mark_to_semi = true;
+	//! A generated SEMI whose removal predicates are already applied to the preserved input.
+	bool optional_delim_domain = false;
 	//! Scans where we should push generated filters into (if any)
 	unique_ptr<JoinFilterPushdownInfo> filter_pushdown;
 

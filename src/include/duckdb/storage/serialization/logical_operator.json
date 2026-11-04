@@ -558,6 +558,12 @@
         "name": "predicate",
         "type": "Expression*",
         "status": "deleted"
+      },
+      {
+        "id": 209,
+        "name": "optional_delim_domain",
+        "type": "bool",
+        "default": "false"
       }
     ],
     "constructor": [
