@@ -698,11 +698,22 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 		const auto work_units = MaxValue<idx_t>(chunk_units, 1);
 		frontier_workers = MaxValue<idx_t>(MinValue(MinValue(row_limit, work_units), configured_threads), 1);
 	}
-	const auto has_independent_source = plan.has_source_tasks || plan.has_parallel_source;
-	const auto source_task_workers = has_independent_source ? configured_threads : frontier_workers;
-	const auto go_parallel = has_independent_source
-	                             ? configured_threads > 1
-	                             : (frontier_workers > 1 && input_rows >= TRAMPOLINE_PARALLEL_MIN_ROWS);
+	// Independent sources parallelize on their own work estimate: a branch body scanning a large
+	// base table (or draining a large window/range-join materialization) keeps full source
+	// parallelism regardless of its wave size, but a small independent source must not drag a
+	// cheap wave through the parallel event machinery, so it only joins a wave that is already
+	// worth parallelizing.
+	idx_t source_task_workers = frontier_workers;
+	bool parallel_source_pays = false;
+	if ((plan.has_source_tasks || plan.has_parallel_source) &&
+	    plan.max_independent_source_rows >= TRAMPOLINE_PARALLEL_MIN_ROWS) {
+		const auto source_row_limit =
+		    (plan.max_independent_source_rows + TRAMPOLINE_ROWS_PER_THREAD - 1) / TRAMPOLINE_ROWS_PER_THREAD;
+		source_task_workers = MaxValue<idx_t>(MinValue(source_row_limit, configured_threads), 1);
+		parallel_source_pays = source_task_workers > 1;
+	}
+	const auto go_parallel =
+	    parallel_source_pays || (frontier_workers > 1 && input_rows >= TRAMPOLINE_PARALLEL_MIN_ROWS);
 	const auto workers = go_parallel ? MaxValue(frontier_workers, source_task_workers) : idx_t(1);
 
 	// reset every sink that belongs to the executed plan; the trampoline keeps its routed

@@ -88,6 +88,9 @@ struct RecursiveCTEPipelineSchedulePlan {
 	bool has_source_tasks = false;
 	//! Any execute stage reads a source that parallelizes independently of recursive inputs
 	bool has_parallel_source = false;
+	//! Largest estimated row count among independent sources (parallel scans and
+	//! source-task operators) outside invariant builds
+	idx_t max_independent_source_rows = 0;
 	bool source_tasks_write_recursive_output = false;
 };
 

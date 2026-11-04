@@ -818,6 +818,11 @@ BuildRecursivePipelineSchedulePlan(const vector<shared_ptr<MetaPipeline>> &meta_
 			has_parallel_source =
 			    source && source->ParallelSource() && source->type == PhysicalOperatorType::TABLE_SCAN;
 			plan->has_parallel_source = plan->has_parallel_source || has_parallel_source;
+			if ((has_parallel_source || has_source_tasks) &&
+			    invariant_build_pipelines.find(pipeline) == invariant_build_pipelines.end()) {
+				plan->max_independent_source_rows =
+				    MaxValue(plan->max_independent_source_rows, source->estimated_cardinality);
+			}
 		}
 		recursive_stage_indices[stage_idx] = plan->stages.size();
 		auto metric_type = pipeline_metric_types.find(pipeline);
