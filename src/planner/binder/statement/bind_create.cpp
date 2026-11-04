@@ -426,11 +426,16 @@ void Binder::CheckMacroStorageVersion(Catalog &catalog, const CreateMacroInfo &i
 
 void Binder::CollectMacroDependencies(ClientContext &context, Catalog &catalog, CreateMacroInfo &info,
                                       optional_ptr<CatalogEntry> exclude) {
+	auto original_dependencies = std::move(info.dependencies);
 	info.dependencies = LogicalDependencyList();
-	if (!Settings::Get<EnableMacroDependenciesSetting>(context)) {
+	if (!Settings::Get<EnableMacroDependenciesSetting>(context) && original_dependencies.Set().empty()) {
+		// dependency tracking is off and the entry carries no dependencies: nothing to rebuild
 		return;
 	}
 	auto binder = Binder::CreateBinder(context);
+	// resolve unqualified references from the entry's own schema, not the caller's search path
+	auto macro_search_path = binder->GetSearchPath(catalog, info.GetQualifiedName().SchemaPath(), true);
+	binder->entry_retriever.SetSearchPath(std::move(macro_search_path));
 	auto &dependencies = info.dependencies;
 	const auto binder_callback = [&dependencies, &catalog, exclude](CatalogEntry &entry) {
 		if (&catalog != &entry.ParentCatalog()) {
@@ -443,6 +448,7 @@ void Binder::CollectMacroDependencies(ClientContext &context, Catalog &catalog, 
 		}
 		dependencies.AddDependency(entry);
 	};
+	bool rebind_failed = false;
 	for (auto &function : info.macros) {
 		vector<LogicalType> dummy_types;
 		vector<Identifier> dummy_names;
@@ -453,7 +459,7 @@ void Binder::CollectMacroDependencies(ClientContext &context, Catalog &catalog, 
 		auto this_macro_binding =
 		    make_uniq<DummyBinding>(dummy_types, dummy_names, info.GetFunctionName().GetIdentifierName());
 		binder->macro_binding = this_macro_binding.get();
-		// a member that fails to bind contributes no dependencies instead of blocking the caller
+		ErrorData error;
 		if (info.type == CatalogType::MACRO_ENTRY) {
 			BoundSelectNode sel_node;
 			SelectBinder select_binder(*binder, context, sel_node);
@@ -462,8 +468,11 @@ void Binder::CollectMacroDependencies(ClientContext &context, Catalog &catalog, 
 			ExpressionBinder::QualifyColumnNames(*binder, expression);
 			try {
 				auto bind_result = select_binder.Bind(expression, 0, false);
-				(void)bind_result;
-			} catch (const std::exception &) { // NOLINT: bind failures are intentionally non-fatal here
+				if (bind_result.HasError()) {
+					error = std::move(bind_result.error);
+				}
+			} catch (const std::exception &ex) {
+				error = ErrorData(ex);
 			}
 		} else {
 			D_ASSERT(info.type == CatalogType::TABLE_MACRO_ENTRY);
@@ -477,8 +486,20 @@ void Binder::CollectMacroDependencies(ClientContext &context, Catalog &catalog, 
 			    });
 			try {
 				dummy_binder->Bind(*query_node);
-			} catch (const std::exception &) { // NOLINT: bind failures are intentionally non-fatal here
+			} catch (const std::exception &ex) {
+				error = ErrorData(ex);
 			}
+		}
+		// unresolved parameters are expected for untyped members, like at CREATE
+		if (error.HasError() && error.Type() != ExceptionType::PARAMETER_NOT_RESOLVED) {
+			rebind_failed = true;
+		}
+	}
+	if (rebind_failed) {
+		// a member that no longer binds leaves its dependencies unknown: keep the original list as
+		// a conservative superset instead of silently dropping protection
+		for (auto &dep : original_dependencies.Set()) {
+			info.dependencies.AddDependency(dep);
 		}
 	}
 }

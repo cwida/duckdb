@@ -305,6 +305,66 @@ SELECT dep_holder(1);
 ----
 <REGEX>:.*(Catalog Error|not exist).*
 
+# disabling dependency tracking after CREATE does not strip registered protection on a member drop
+statement ok
+CREATE TABLE dep_toggled(i INTEGER);
+
+statement ok
+CREATE MACRO dep_toggle_holder(x INTEGER) AS (SELECT count(*) FROM dep_toggled), (x VARCHAR) AS x;
+
+statement ok
+SET enable_macro_dependencies = false;
+
+statement ok
+DROP MACRO dep_toggle_holder(VARCHAR);
+
+statement error
+DROP TABLE dep_toggled;
+----
+<REGEX>:.*depend.*
+
+statement ok
+DROP TABLE dep_toggled CASCADE;
+
+statement ok
+SET enable_macro_dependencies = true;
+
+# the rebuild resolves unqualified references from the entry's schema, not the session's path
+statement ok
+CREATE SCHEMA dep_s1;
+
+statement ok
+CREATE SCHEMA dep_s2;
+
+statement ok
+USE dep_s1;
+
+statement ok
+CREATE TABLE dep_src(i INTEGER);
+
+statement ok
+CREATE MACRO dep_path_holder(x INTEGER) AS TABLE (SELECT i FROM dep_src), (x VARCHAR) AS TABLE (SELECT 0 AS i);
+
+statement ok
+USE dep_s2;
+
+statement ok
+DROP MACRO TABLE dep_s1.dep_path_holder(VARCHAR);
+
+statement error
+DROP TABLE dep_s1.dep_src;
+----
+<REGEX>:.*depend.*
+
+statement ok
+USE memory.main;
+
+statement ok
+DROP SCHEMA dep_s1 CASCADE;
+
+statement ok
+DROP SCHEMA dep_s2 CASCADE;
+
 statement ok
 SET enable_macro_dependencies = false;
 
