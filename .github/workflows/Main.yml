@@ -356,7 +356,9 @@ jobs:
       run: |
         rm -rf build/relassert
         tar -xzf build/relassert-artifact.tar.gz -C build
-        ls -lh build/relassert/test/unittest
+        ls -lh build/relassert/duckdb
+        ls -lh build/relassert/extension/test/test.duckdb_extension
+        ls -lh build/relassert/test/extensions/duckdb_tests.duckdb_extension
 
     - name: Set DUCKDB_INSTALL_LIB for ADBC tests
       run: echo "DUCKDB_INSTALL_LIB=$(find "$PWD" -name 'libduck*.so' | head -n 1)" >> "$GITHUB_ENV"

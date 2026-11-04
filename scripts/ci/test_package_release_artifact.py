@@ -18,7 +18,14 @@ class PackageReleaseArtifactTest(unittest.TestCase):
         environment["ARTIFACT_OUTPUT_DIR"] = str(output_dir)
         command = ["make", target]
         command.extend(f"{name}={value}" for name, value in variables.items())
-        subprocess.run(command, cwd=REPO_ROOT, env=environment, check=True, capture_output=True, text=True)
+        subprocess.run(
+            command,
+            cwd=REPO_ROOT,
+            env=environment,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
 
     def test_cli_release_artifact(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -128,9 +135,15 @@ class PackageReleaseArtifactTest(unittest.TestCase):
                         "duckdb_static_extension.h",
                     },
                 )
-                self.assertEqual(archive.extractfile(members["libduckdb_static.a"]).read(), b"library")
+                self.assertEqual(
+                    archive.extractfile(members["libduckdb_static.a"]).read(),
+                    b"library",
+                )
                 self.assertEqual(archive.extractfile(members["libduckdb_shell.a"]).read(), b"shell")
-                self.assertEqual(archive.extractfile(members["libcore_functions_extension.a"]).read(), b"extension")
+                self.assertEqual(
+                    archive.extractfile(members["libcore_functions_extension.a"]).read(),
+                    b"extension",
+                )
 
     def test_release_artifact_includes_native_test_probe(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -162,18 +175,19 @@ class PackageReleaseArtifactTest(unittest.TestCase):
             root = Path(temp_dir)
             source = root / "windows-build"
             (source / "src").mkdir(parents=True)
-            (source / "test" / "extension").mkdir(parents=True)
+            (source / "test" / "extensions").mkdir(parents=True)
             (source / "extension" / "json").mkdir(parents=True)
+            (source / "extension" / "test").mkdir(parents=True)
 
-            for path in [source / "duckdb.exe", source / "test" / "unittest.exe"]:
-                path.write_bytes(b"executable")
-                path.chmod(0o644)
+            (source / "duckdb.exe").write_bytes(b"executable")
+            (source / "duckdb.exe").chmod(0o644)
             (source / "test" / "run.py").write_text("# runner\n", encoding="utf-8")
             (source / "test" / "run.bat").write_text("@echo off\n", encoding="utf-8")
             (source / "src" / "duckdb.dll").write_bytes(b"shared")
             (source / "src" / "duckdb_static.lib").write_bytes(b"static")
             (source / "extension" / "json" / "json_extension.lib").write_bytes(b"extension library")
-            (source / "test" / "extension" / "demo.duckdb_extension").write_bytes(b"test extension")
+            (source / "extension" / "test" / "test.duckdb_extension").write_bytes(b"test extension")
+            (source / "test" / "extensions" / "duckdb_tests.duckdb_extension").write_bytes(b"test bundle")
 
             archive_path = root / "release-artifact.tar.gz"
             environment = os.environ.copy()
@@ -196,17 +210,16 @@ class PackageReleaseArtifactTest(unittest.TestCase):
                 members = {member.name: member for member in archive.getmembers()}
                 expected = {
                     "release/duckdb.exe",
-                    "release/test/unittest.exe",
                     "release/test/run.py",
                     "release/test/run.bat",
                     "release/src/duckdb.dll",
                     "release/src/duckdb_static.lib",
                     "release/extension/json/json_extension.lib",
-                    "release/test/extension/demo.duckdb_extension",
+                    "release/extension/test/test.duckdb_extension",
+                    "release/test/extensions/duckdb_tests.duckdb_extension",
                 }
                 self.assertTrue(expected.issubset(members))
                 self.assertTrue(members["release/duckdb.exe"].mode & stat.S_IXUSR)
-                self.assertTrue(members["release/test/unittest.exe"].mode & stat.S_IXUSR)
 
 
 if __name__ == "__main__":

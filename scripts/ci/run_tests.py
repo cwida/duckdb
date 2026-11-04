@@ -39,6 +39,9 @@ ANSI_TEAL = "\033[36m"
 ANSI_DARK_GRAY = "\033[90m"
 ANSI_RESET = "\033[0m"
 FAILURE_MARKER = "================================================================"
+TEST_EXTENSION_OVERRIDE: Path | None = None
+TEST_ROOT_OVERRIDES: list[Path] = []
+TEST_BUNDLE_ROOT_OVERRIDES: list[Path] = []
 
 
 def enable_line_buffering():
@@ -60,6 +63,7 @@ def stop_requested():
 class TestRunnerConfig:
     test_list: Path
     unittest_bin: str
+    test_config: str | None
     test_flags: str
     patterns: list[str]
     test_command: str
@@ -154,10 +158,18 @@ class BatchRunState:
         self.failed_count += 1
 
     def add_failed_attempt(
-        self, batch_idx: int, lines: list[str], reproduce_batch: list[str], failed_test_names: list[str]
+        self,
+        batch_idx: int,
+        lines: list[str],
+        reproduce_batch: list[str],
+        failed_test_names: list[str],
     ):
         self.failed_attempts.setdefault(batch_idx, []).append(
-            FailedAttempt(lines=lines, reproduce_batch=reproduce_batch, failed_test_names=failed_test_names)
+            FailedAttempt(
+                lines=lines,
+                reproduce_batch=reproduce_batch,
+                failed_test_names=failed_test_names,
+            )
         )
 
     def record_failed_test_names(self, attempts: list[FailedAttempt]):
@@ -282,6 +294,82 @@ def load_tests(path: Path):
     return tests
 
 
+def sql_string(value: str | Path):
+    return "'" + os.fspath(value).replace("'", "''") + "'"
+
+
+def sql_string_list(values):
+    return "[" + ", ".join(sql_string(value) for value in values) + "]"
+
+
+def resolve_test_protocol_paths(duckdb_bin: str):
+    build_dir = Path(duckdb_bin).resolve().parent
+    test_extension = TEST_EXTENSION_OVERRIDE or build_dir / "extension" / "test" / "test.duckdb_extension"
+    test_roots = TEST_ROOT_OVERRIDES or [
+        Path.cwd() / "test",
+        Path.cwd() / "third_party" / "sqllogictest" / "test",
+    ]
+    bundle_roots = TEST_BUNDLE_ROOT_OVERRIDES or [build_dir / "test" / "extensions"]
+    return (
+        test_extension.resolve(),
+        [path.resolve() for path in test_roots],
+        [path.resolve() for path in bundle_roots],
+    )
+
+
+def core_functions_load_statement(duckdb_bin: str):
+    core_functions = (
+        Path(duckdb_bin).resolve().parent / "extension" / "core_functions" / "core_functions.duckdb_extension"
+    )
+    if not core_functions.is_file():
+        return ""
+    return f"LOAD {sql_string(core_functions)};\n"
+
+
+def build_test_protocol_sql(duckdb_bin: str, query: str):
+    test_extension, _, _ = resolve_test_protocol_paths(duckdb_bin)
+    return core_functions_load_statement(duckdb_bin) + f"LOAD {sql_string(test_extension)};\n" + query + "\n"
+
+
+def run_test_protocol_query(
+    duckdb_bin: str,
+    query: str,
+    coverage_profile_dir: Path | None = None,
+    test_config: str | None = None,
+):
+    child_env = os.environ.copy()
+    if test_config is not None:
+        child_env["DUCKDB_TEST_CONFIG"] = os.fspath(Path(test_config).resolve())
+    if coverage_profile_dir is not None:
+        coverage_profile_dir.mkdir(parents=True, exist_ok=True)
+        child_env["LLVM_PROFILE_FILE"] = coverage_profile_file_pattern(coverage_profile_dir)
+    return subprocess.run(
+        [duckdb_bin, "-unsigned", "-batch", "-jsonlines"],
+        input=build_test_protocol_sql(duckdb_bin, query),
+        text=True,
+        encoding="utf8",
+        errors="backslashreplace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=child_env,
+    )
+
+
+def read_test_selectors(test_list_files: list[Path] | None):
+    selectors = []
+    for path in test_list_files or []:
+        with path.open("r", encoding="utf8") as test_file:
+            for line in test_file:
+                line = line.strip()
+                if not line or line.startswith("#") or line == "name\tgroup":
+                    continue
+                selector = line.split("\t", 1)[0]
+                if selector.startswith('"') and selector.endswith('"'):
+                    selector = selector[1:-1].replace("\\,", ",").replace('\\"', '"').replace("\\\\", "\\")
+                selectors.append(selector)
+    return selectors
+
+
 def build_test_command(config: TestRunnerConfig, test_list: str):
     test_flags = shlex.split(config.test_flags)
     if "--emit-test-events" not in test_flags:
@@ -364,27 +452,21 @@ def generate_test_list(
     test_list_files: list[Path] | None = None,
     coverage_profile_dir: Path | None = None,
     error_output=None,
+    test_config: str | None = None,
 ):
-    # Catch can return a non-zero status code for list commands when tests
-    # are found, so we accept non-zero if stdout still contains test output.
-    list_file_args = []
-    if test_list_files:
-        list_file_args = [arg for test_list_file in test_list_files for arg in ("-f", str(test_list_file))]
-    command = [unittest_bin, *shlex.split(test_flags), "--list-tests", *list_file_args, *patterns]
-    child_env = os.environ.copy()
-    if coverage_profile_dir is not None:
-        coverage_profile_dir.mkdir(parents=True, exist_ok=True)
-        child_env["LLVM_PROFILE_FILE"] = coverage_profile_file_pattern(coverage_profile_dir)
-    proc = subprocess.run(
-        command,
-        text=True,
-        encoding="utf8",
-        errors="backslashreplace",
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        env=child_env,
+    _, test_roots, bundle_roots = resolve_test_protocol_paths(unittest_bin)
+    selectors = [*read_test_selectors(test_list_files), *patterns]
+    include_slow = any(
+        selector == "*" or selector.endswith((".test_slow", ".test_coverage")) or "[.]" in selector
+        for selector in selectors
     )
-    if proc.returncode != 0 and not proc.stdout:
+    query = (
+        "SELECT test_id, is_slow FROM test_scan("
+        f"{sql_string_list(selectors)}, {sql_string_list(test_roots)}, {sql_string_list(bundle_roots)}, "
+        f"{'true' if include_slow else 'false'});"
+    )
+    proc = run_test_protocol_query(unittest_bin, query, coverage_profile_dir, test_config)
+    if proc.returncode != 0:
         print(
             "Stderr:",
             proc.stderr,
@@ -392,8 +474,16 @@ def generate_test_list(
             file=error_output if error_output is not None else sys.stderr,
             flush=True,
         )
-        raise RuntimeError(f"failed to generate test list from {unittest_bin} (exit: {proc.returncode})")
-    test_file.write(proc.stdout)
+        raise RuntimeError(f"failed to scan tests using {unittest_bin} (exit: {proc.returncode})")
+    for line in proc.stdout.splitlines():
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(row, dict) or not isinstance(row.get("test_id"), str):
+            continue
+        group = "[.]" if row.get("is_slow") else ""
+        test_file.write(f"{row['test_id']}\t{group}\n")
     test_file.flush()
 
 
@@ -406,12 +496,15 @@ def open_test_list(
     test_list_files: list[Path] | None = None,
     coverage_profile_dir: Path | None = None,
 ):
-    if test_list is not None and (test_list_files is None or len(test_list_files) == 1):
-        yield test_list
-        return
-
     with tempfile.NamedTemporaryFile(mode="w", encoding="utf8", delete=False) as test_file:
-        generate_test_list(test_file, unittest_bin, test_flags, patterns, test_list_files, coverage_profile_dir)
+        generate_test_list(
+            test_file,
+            unittest_bin,
+            test_flags,
+            patterns,
+            test_list_files,
+            coverage_profile_dir,
+        )
     result = Path(test_file.name)
     yield result
     result.unlink()
@@ -572,7 +665,8 @@ EXPLICIT_MESSAGE_PATTERN = re.compile(r"^\s*explicitly with message:\s*$")
 # Catch prints source locations as "path:line:" with GCC/Clang and as "path(line):" with MSVC
 CATCH_ASSERTION_LOCATION_PATTERN = re.compile(r"^(.+?)(?::(\d+)|\((\d+)\)): FAILED:$")
 SANITIZER_PATTERN = re.compile(
-    r"(AddressSanitizer|LeakSanitizer|ThreadSanitizer|UndefinedBehaviorSanitizer)", flags=re.IGNORECASE
+    r"(AddressSanitizer|LeakSanitizer|ThreadSanitizer|UndefinedBehaviorSanitizer)",
+    flags=re.IGNORECASE,
 )
 SANITIZER_OR_ASSERT_PATTERN = re.compile(
     r"(AddressSanitizer|LeakSanitizer|ThreadSanitizer|UndefinedBehaviorSanitizer|runtime error:|assert)",
@@ -942,8 +1036,14 @@ def extract_wrong_result_sections(stderr_lines: list[str]):
 def parse_stderr_failure_info(stderr_lines: list[str], batch):
     test_name, line_number = find_failing_test(stderr_lines, batch)
     stderr_non_empty_lines = [line.strip() for line in stderr_lines if line.strip()]
-    wrong_result_line = next((line for line in stderr_non_empty_lines if WRONG_RESULT_PATTERN.match(line)), None)
-    mismatch_context = next((line for line in stderr_non_empty_lines if line.startswith("Mismatch on row ")), None)
+    wrong_result_line = next(
+        (line for line in stderr_non_empty_lines if WRONG_RESULT_PATTERN.match(line)),
+        None,
+    )
+    mismatch_context = next(
+        (line for line in stderr_non_empty_lines if line.startswith("Mismatch on row ")),
+        None,
+    )
     mismatch_line = next((line for line in stderr_non_empty_lines if "<>" in line), None)
     expected_result_lines, actual_result_lines = extract_wrong_result_sections(stderr_lines)
     query_failure_lines = extract_query_failure_diagnostics(stderr_lines)
@@ -1094,7 +1194,9 @@ def parse_failure_info(message: str | None, stdout: str, stderr: str, batch, ret
     if preferred_assertion is not None:
         # the assertion line number refers to the C++ source, it is only used for the assertion snippet
         test_name, line_number = retarget_failing_test(
-            preferred_assertion.test_name or stdout_info.last_started_test, test_name, line_number
+            preferred_assertion.test_name or stdout_info.last_started_test,
+            test_name,
+            line_number,
         )
         reproduce_batch = [test_name] if test_name else list(batch)
         snippet_lines = preferred_assertion.snippet_lines
@@ -1110,7 +1212,9 @@ def parse_failure_info(message: str | None, stdout: str, stderr: str, batch, ret
         if stdout_info.fallback_failure_block:
             stdout_failure_test_name, stdout_failure_block = stdout_info.fallback_failure_block
             test_name, line_number = retarget_failing_test(
-                stdout_failure_test_name or stdout_info.last_started_test, test_name, line_number
+                stdout_failure_test_name or stdout_info.last_started_test,
+                test_name,
+                line_number,
             )
             reproduce_batch = [test_name] if test_name else list(batch)
             detail_lines.extend(stdout_failure_block)
@@ -1227,7 +1331,13 @@ def render_failure_lines_with_diagnostics(failure: FailureInfo, stdout: str, std
     return lines
 
 
-def format_batch_failure(batch, config: TestRunnerConfig, attempt_summaries, recovered: bool, retry_count: int):
+def format_batch_failure(
+    batch,
+    config: TestRunnerConfig,
+    attempt_summaries,
+    recovered: bool,
+    retry_count: int,
+):
     reproduce_batch = batch
     rerun_parts = [shlex.quote(format_unittest_bin_for_display(config.unittest_bin))]
     rerun_parts.extend(shlex.split(config.test_flags))
@@ -1259,7 +1369,7 @@ def format_unittest_bin_for_display(unittest_bin: str):
 
 def format_test_runner_for_display(unittest_bin: str):
     runner_name = "run.py" if os.name == "nt" else "run"
-    return format_unittest_bin_for_display(os.fspath(Path(unittest_bin).with_name(runner_name)))
+    return format_unittest_bin_for_display(os.fspath(Path(unittest_bin).resolve().parent / "test" / runner_name))
 
 
 def escape_catch_test_name(test_name: str):
@@ -1272,7 +1382,10 @@ def quote_catch_test_name(test_name: str):
 
 
 def format_failed_tests_reproducer(
-    unittest_bin: str, test_flags: str, failed_test_configs: list[str], failed_test_names: list[str]
+    unittest_bin: str,
+    test_flags: str,
+    failed_test_configs: list[str],
+    failed_test_names: list[str],
 ):
     runner = format_test_runner_for_display(unittest_bin)
     command = [runner]
@@ -1327,7 +1440,10 @@ def extract_test_runtimes(stdout: str, stderr: str):
 
 def summarize_failure_output(message: str | None, stdout: str, stderr: str, batch, returncode: int | None = None):
     failure = parse_failure_info(message, stdout, stderr, batch, returncode)
-    return render_failure_lines_with_diagnostics(failure, stdout, stderr), failure.reproduce_batch
+    return (
+        render_failure_lines_with_diagnostics(failure, stdout, stderr),
+        failure.reproduce_batch,
+    )
 
 
 def format_failed_test_retry_target(test_name: str | None, batch_info):
@@ -1442,7 +1558,13 @@ def strip_skipped_test_summary_lines(lines: list[str]):
 
 def extract_skipped_test_output(stdout: str, stderr: str):
     event_summary = extract_skip_events(stdout, stderr)
-    saw_end_event, skipped_names, skipped_reason_names, partial_names, partial_reason_names = event_summary
+    (
+        saw_end_event,
+        skipped_names,
+        skipped_reason_names,
+        partial_names,
+        partial_reason_names,
+    ) = event_summary
     stdout_count, stdout_reasons = parse_skipped_test_summary(stdout)
     stderr_count, stderr_reasons = parse_skipped_test_summary(stderr)
     reasons = stdout_reasons or stderr_reasons
@@ -1500,9 +1622,8 @@ def find_executable(name: str):
 
 def build_dir_from_unittest_path(unittest_bin: str):
     path = Path(unittest_bin).resolve()
-    parents = path.parents
-    if len(parents) >= 2:
-        return parents[1]
+    if path.parent.name == "test":
+        return path.parents[1]
     return path.parent
 
 
@@ -1513,7 +1634,7 @@ def collect_coverage_objects(unittest_bin: str):
     object_candidates = []
     object_candidates.extend((build_dir / "src").glob("libduckdb.*"))
     object_candidates.extend((build_dir / "extension").glob("**/*.duckdb_extension"))
-    object_candidates.extend((build_dir / "test" / "extension").glob("**/*.duckdb_extension"))
+    object_candidates.extend((build_dir / "test" / "extensions").glob("**/*.duckdb_extension"))
     for candidate in sorted(object_candidates):
         if candidate.suffix not in {".dylib", ".so", ".dll", ".duckdb_extension"}:
             continue
@@ -1547,12 +1668,22 @@ def generate_coverage_report(source_root: Path, unittest_bin: str, profile_dir: 
         return 1
     coverage_css_file = source_root / "scripts" / "ci" / "codecov.css"
     if not coverage_css_file.is_file():
-        print(f"error: coverage stylesheet not found at {coverage_css_file}", file=sys.stderr)
+        print(
+            f"error: coverage stylesheet not found at {coverage_css_file}",
+            file=sys.stderr,
+        )
         return 1
 
     report_dir.mkdir(parents=True, exist_ok=True)
     merged_profile = profile_dir / "merged.profdata"
-    merge_command = [llvm_profdata, "merge", "-sparse", "--failure-mode=all", "-o", os.fspath(merged_profile)]
+    merge_command = [
+        llvm_profdata,
+        "merge",
+        "-sparse",
+        "--failure-mode=all",
+        "-o",
+        os.fspath(merged_profile),
+    ]
     merge_command.extend(os.fspath(path) for path in profraw_files)
     merge_proc = subprocess.run(merge_command, check=False)
     if merge_proc.returncode != 0:
@@ -1620,26 +1751,18 @@ def run_batch(config: TestRunnerConfig, batch):
     timed_out = False
     peak_rss_bytes = 0
     child_env = os.environ.copy()
-    # Omit printing "FAILURES SUMMARY" block at the end of each unittest process.
-    child_env["SUMMARIZE_FAILURES"] = "0"
+    if config.test_config is not None:
+        child_env["DUCKDB_TEST_CONFIG"] = os.fspath(Path(config.test_config).resolve())
     if config.coverage_profile_dir is not None:
         config.coverage_profile_dir.mkdir(parents=True, exist_ok=True)
         child_env["LLVM_PROFILE_FILE"] = coverage_profile_file_pattern(config.coverage_profile_dir)
 
-    # On Windows the child process cannot reopen a NamedTemporaryFile while it
-    # is still open here, so keep it after close and unlink it ourselves.
-    with tempfile.NamedTemporaryFile(mode="w", encoding="utf8", delete=False) as batch_file:
-        # SQL-only batches are loaded as literal paths by TryReadExactSQLLogicTestFilter.
-        # Quote other batches so every entry goes through Catch, including SQL paths.
-        if all(name.endswith((".test", ".test_slow", ".test_coverage")) for name in batch):
-            batch_file.write("\n".join(batch))
-        else:
-            batch_file.write("\n".join(quote_catch_test_name(name) for name in batch))
-        batch_file.write("\n")
-        batch_file.flush()
-        batch_file_path = Path(batch_file.name)
-
-    command = build_test_command(config, shlex.quote(str(batch_file_path)))
+    _, test_roots, bundle_roots = resolve_test_protocol_paths(config.unittest_bin)
+    query = (
+        "SELECT * FROM test_run("
+        f"{sql_string_list(batch)}, {sql_string_list(test_roots)}, {sql_string_list(bundle_roots)});"
+    )
+    sql = build_test_protocol_sql(config.unittest_bin, query)
     # Capture the child's stdout/stderr to temp files rather than pipes, avoid deadlock
     # between a process.wait() and a full unread pipe.
     stdout_capture = tempfile.NamedTemporaryFile(mode="w+b", delete=False)
@@ -1654,11 +1777,17 @@ def run_batch(config: TestRunnerConfig, batch):
 
     try:
         proc = subprocess.Popen(
-            shlex.split(command),
+            [config.unittest_bin, "-unsigned", "-batch", "-jsonlines"],
+            stdin=subprocess.PIPE,
             stdout=stdout_capture,
             stderr=stderr_capture,
             env=child_env,
+            text=True,
+            encoding="utf8",
+            errors="backslashreplace",
         )
+        proc.stdin.write(sql)
+        proc.stdin.close()
         deadline = time.monotonic() + config.batch_timeout_seconds
 
         while proc.poll() is None:
@@ -1691,24 +1820,78 @@ def run_batch(config: TestRunnerConfig, batch):
             if rss_bytes is not None:
                 peak_rss_bytes = max(peak_rss_bytes, rss_bytes)
             failed = proc.returncode != 0
-            invalid_filters = [line for line in strip_ansi(stdout).splitlines() if line.startswith("Invalid Filter:")]
-            if not failed and invalid_filters:
+            rows = {}
+            non_result_lines = []
+            for line in stdout.splitlines():
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    non_result_lines.append(line)
+                    continue
+                if isinstance(row, dict) and isinstance(row.get("test_id"), str):
+                    rows[row["test_id"]] = row
+                else:
+                    non_result_lines.append(line)
+
+            event_lines = []
+            failure_lines = []
+            skipped_rows = []
+            for test_id in batch:
+                row = rows.get(test_id)
+                if row is None:
+                    failed = True
+                    allow_retry = False
+                    message = f"test_run did not return a result for {test_id}"
+                    failure_lines.extend([f"1. {test_id}:1", message])
+                    continue
+                status = row.get("status")
+                duration_ms = row.get("duration_ms")
+                if isinstance(duration_ms, (int, float)):
+                    event_lines.append(f"{test_id} took {duration_ms / 1000.0:.3f}s")
+                event_status = "ok"
+                if status == "failed":
+                    failed = True
+                    event_status = "error"
+                    failure_lines.append(f"1. {test_id}:1")
+                    for failure in row.get("failures") or []:
+                        failure_lines.append(str(failure))
+                    if row.get("message"):
+                        failure_lines.append(str(row["message"]))
+                    if message is None:
+                        message = f"test failed: {test_id}"
+                elif status == "skipped":
+                    event_status = "skip-requirement"
+                    skipped_rows.append(row)
+                elif status != "passed":
+                    failed = True
+                    allow_retry = False
+                    event_status = "error"
+                    message = f"test_run returned invalid status {status!r} for {test_id}"
+                    failure_lines.extend([f"1. {test_id}:1", message])
+                event = {
+                    "version": 2,
+                    "event": "end",
+                    "name": test_id,
+                    "status": event_status,
+                }
+                if row.get("message"):
+                    event["data"] = row["message"]
+                event_lines.append(TEST_EVENT_MARKER + json.dumps(event, separators=(",", ":")))
+
+            if config.fail_require_skip and skipped_rows:
                 failed = True
                 allow_retry = False
-                message = "error: " + invalid_filters[0]
-            if not failed and config.fail_require_skip:
-                require_skip_lines = find_require_skip_lines(stdout) + find_require_skip_lines(stderr)
-                if require_skip_lines:
-                    failed = True
-                    message = "error: detected require-based skipped tests: " + require_skip_lines[0]
-
-                    allow_retry = False
+                message = f"error: detected require-based skipped test: {skipped_rows[0]['test_id']}"
+            stdout = normalize_output("\n".join([*non_result_lines, *event_lines]) + ("\n" if event_lines else ""))
+            if failure_lines:
+                stderr = normalize_output(
+                    stderr + ("\n" if stderr and not stderr.endswith("\n") else "") + "\n".join(failure_lines) + "\n"
+                )
     except OSError as exc:
         failed = True
         stderr = str(exc)
         message = "failed to launch batch command"
     finally:
-        batch_file_path.unlink(missing_ok=True)
         stdout_capture.close()
         stderr_capture.close()
         Path(stdout_capture.name).unlink(missing_ok=True)
@@ -1732,7 +1915,14 @@ def find_require_skip_lines(output: str):
     return re.findall(pattern, output, flags=re.MULTILINE)
 
 
-def submit_batch(executor, config: TestRunnerConfig, batch, future_to_batch, batch_idx: int, attempt: int):
+def submit_batch(
+    executor,
+    config: TestRunnerConfig,
+    batch,
+    future_to_batch,
+    batch_idx: int,
+    attempt: int,
+):
     future = executor.submit(run_batch, config, batch)
     future_to_batch[future] = {
         "batch_idx": batch_idx,
@@ -1875,6 +2065,15 @@ def parse_args(argv: list[str] | None = None):
     if argv is None:
         argv = sys.argv[1:]
     parser = argparse.ArgumentParser()
+    parser.add_argument("--test-extension", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--test-root", action="append", type=Path, default=[], help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--test-bundle-root",
+        action="append",
+        type=Path,
+        default=[],
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--test-list", type=Path)
     parser.add_argument("--changed-tests", type=Path, help="extra test list file; requires --test-list")
     parser.add_argument(
@@ -1933,7 +2132,11 @@ def parse_args(argv: list[str] | None = None):
         action="store_true",
         help="fail a batch if unittest output reports skipped tests for `require ...` reasons",
     )
-    parser.add_argument("--coverage-report", type=Path, help="write an LCOV HTML coverage report to this directory")
+    parser.add_argument(
+        "--coverage-report",
+        type=Path,
+        help="write an LCOV HTML coverage report to this directory",
+    )
     # Accept options interleaved with positional patterns, e.g.:
     #   run_tests.py bin "[tag]" --fail-fast test/sql/foo.test
     return parser.parse_intermixed_args(argv)
@@ -1978,7 +2181,9 @@ def build_config_invocations(test_configs: list[str], base_flags: str):
         return [ConfigInvocation(label="default", test_flags=base_flags, test_config=None)]
     return [
         ConfigInvocation(
-            label=test_config, test_flags=build_test_flags(base_flags, test_config), test_config=test_config
+            label=test_config,
+            test_flags=build_test_flags(base_flags, test_config),
+            test_config=test_config,
         )
         for test_config in test_configs
     ]
@@ -1991,6 +2196,7 @@ def create_temp_test_list(
     test_list_files: list[Path] | None,
     coverage_profile_dir: Path | None = None,
     error_output=None,
+    test_config: str | None = None,
 ):
     with tempfile.NamedTemporaryFile(mode="w", encoding="utf8", delete=False) as test_file:
         generate_test_list(
@@ -2001,6 +2207,7 @@ def create_temp_test_list(
             test_list_files,
             coverage_profile_dir,
             error_output,
+            test_config,
         )
         return Path(test_file.name)
 
@@ -2022,30 +2229,35 @@ def run_single_config(
 ):
     output = output if output is not None else sys.stdout
     if stop_requested():
-        return ConfigRunResult(returncode=130, passed_tests=0, failed_tests=0, skipped_tests=0, elapsed_seconds=0.0)
+        return ConfigRunResult(
+            returncode=130,
+            passed_tests=0,
+            failed_tests=0,
+            skipped_tests=0,
+            elapsed_seconds=0.0,
+        )
     if print_config_header:
         print(f"=== config run: {invocation.label} ===", file=output)
     generated_test_list: Path | None = None
     try:
-        if args.test_list is not None and len(test_list_files) == 1:
-            test_list_path = args.test_list
+        create_args = (
+            unittest_bin,
+            invocation.test_flags,
+            args.patterns,
+            test_list_files,
+            args.coverage_profile_dir,
+            output,
+            invocation.test_config,
+        )
+        if executor is None:
+            generated_test_list = create_temp_test_list(*create_args)
         else:
-            create_args = (
-                unittest_bin,
-                invocation.test_flags,
-                args.patterns,
-                test_list_files,
-                args.coverage_profile_dir,
-                output,
-            )
-            if executor is None:
-                generated_test_list = create_temp_test_list(*create_args)
-            else:
-                generated_test_list = executor.submit(create_temp_test_list, *create_args).result()
-            test_list_path = generated_test_list
+            generated_test_list = executor.submit(create_temp_test_list, *create_args).result()
+        test_list_path = generated_test_list
         config = TestRunnerConfig(
             test_list=test_list_path,
             unittest_bin=unittest_bin,
+            test_config=invocation.test_config,
             test_flags=invocation.test_flags,
             patterns=args.patterns,
             test_command=args.test_command,
@@ -2064,17 +2276,32 @@ def run_single_config(
 
         tests = load_tests(config.test_list)
         if stop_requested():
-            return ConfigRunResult(returncode=130, passed_tests=0, failed_tests=0, skipped_tests=0, elapsed_seconds=0.0)
+            return ConfigRunResult(
+                returncode=130,
+                passed_tests=0,
+                failed_tests=0,
+                skipped_tests=0,
+                elapsed_seconds=0.0,
+            )
         if len(tests) == 0:
             print(f"error: no tests selected for config '{invocation.label}'", file=output)
-            return ConfigRunResult(returncode=1, passed_tests=0, failed_tests=1, skipped_tests=0, elapsed_seconds=0.0)
+            return ConfigRunResult(
+                returncode=1,
+                passed_tests=0,
+                failed_tests=1,
+                skipped_tests=0,
+                elapsed_seconds=0.0,
+            )
         stabilization_tests = []
         if args.changed_tests is not None:
             merged_names = {test.name for test in tests}
             base_names = {test.name for test in load_tests(args.test_list)}
             changed_test_names = merged_names - base_names
             added_test_count = len(changed_test_names)
-            print(f"added {added_test_count} tests from --changed-tests file to the smoke test run", file=output)
+            print(
+                f"added {added_test_count} tests from --changed-tests file to the smoke test run",
+                file=output,
+            )
             changed_test_name_set = set(changed_test_names)
             stabilization_tests = [test for test in tests if test.name in changed_test_name_set]
         elif args.stabilize_tests:
@@ -2123,14 +2350,20 @@ def run_single_config(
         for rerun_idx in range(max(fast_extra_runs, slow_extra_runs)):
             rerun_round = rerun_idx + 1
             if rerun_idx < fast_extra_runs and fast_tests:
-                print(f"stabilization rerun {rerun_round}/{fast_extra_runs} for fast tests", file=output)
+                print(
+                    f"stabilization rerun {rerun_round}/{fast_extra_runs} for fast tests",
+                    file=output,
+                )
                 fast_batches = list(chunked(fast_tests, compute_batch_size(len(fast_tests), config)))
                 fast_result = run_test_batches(fast_batches, len(fast_tests))
                 if fast_result.returncode != 0:
                     stabilization_failed = True
                     stabilization_failed_test_names.extend(fast_result.failed_test_names)
             if rerun_idx < slow_extra_runs and slow_tests:
-                print(f"stabilization rerun {rerun_round}/{slow_extra_runs} for slow tests", file=output)
+                print(
+                    f"stabilization rerun {rerun_round}/{slow_extra_runs} for slow tests",
+                    file=output,
+                )
                 slow_batches = list(chunked(slow_tests, compute_batch_size(len(slow_tests), config)))
                 slow_result = run_test_batches(slow_batches, len(slow_tests))
                 if slow_result.returncode != 0:
@@ -2158,7 +2391,13 @@ def run_single_config(
 
 
 def failed_config_run_result():
-    return ConfigRunResult(returncode=1, passed_tests=0, failed_tests=1, skipped_tests=0, elapsed_seconds=0.0)
+    return ConfigRunResult(
+        returncode=1,
+        passed_tests=0,
+        failed_tests=1,
+        skipped_tests=0,
+        elapsed_seconds=0.0,
+    )
 
 
 def print_config_run_summary(run_result: ConfigRunResult):
@@ -2186,7 +2425,10 @@ def print_config_run_summary(run_result: ConfigRunResult):
 
 
 def print_buffered_config_run(
-    invocation: ConfigInvocation, output: StringIO, run_result: ConfigRunResult, use_config_groups: bool
+    invocation: ConfigInvocation,
+    output: StringIO,
+    run_result: ConfigRunResult,
+    use_config_groups: bool,
 ):
     if use_config_groups:
         print(f"::group::test config: {invocation.label}")
@@ -2212,7 +2454,11 @@ def main(argv: list[str] | None = None):
 
 
 def main_impl(argv: list[str] | None = None):
+    global TEST_EXTENSION_OVERRIDE, TEST_ROOT_OVERRIDES, TEST_BUNDLE_ROOT_OVERRIDES
     args = parse_args(argv)
+    TEST_EXTENSION_OVERRIDE = args.test_extension
+    TEST_ROOT_OVERRIDES = args.test_root
+    TEST_BUNDLE_ROOT_OVERRIDES = args.test_bundle_root
     args.coverage_profile_dir = None
     if args.timeout_policy == "warn" and args.batch_size != 1:
         print("error: --timeout-policy warn requires --batch-size 1")
@@ -2224,7 +2470,7 @@ def main_impl(argv: list[str] | None = None):
         print("error: --changed-tests requires --test-list", file=sys.stderr)
         return 1
     if not args.unittest_bin:
-        print("error: missing unittest binary", file=sys.stderr)
+        print("error: missing DuckDB shell", file=sys.stderr)
         return 1
 
     test_list_files = [path for path in [args.test_list, args.changed_tests] if path is not None]
@@ -2302,7 +2548,7 @@ def main_impl(argv: list[str] | None = None):
                         False,
                         batch_executor,
                         buffers[config_idx],
-                        next_config_event.set if next_config_event is not None else None,
+                        (next_config_event.set if next_config_event is not None else None),
                     )
                 finally:
                     if next_config_event is not None:
@@ -2328,7 +2574,12 @@ def main_impl(argv: list[str] | None = None):
                             traceback.print_exc(file=buffers[config_idx])
                             run_result = failed_config_run_result()
                         config_results[config_idx] = run_result
-                        print_buffered_config_run(invocation, buffers[config_idx], run_result, use_config_groups)
+                        print_buffered_config_run(
+                            invocation,
+                            buffers[config_idx],
+                            run_result,
+                            use_config_groups,
+                        )
 
         if any(run_result is not None and run_result.returncode == 130 for run_result in config_results):
             print("interrupted")
@@ -2352,7 +2603,10 @@ def main_impl(argv: list[str] | None = None):
         report_returncode = 0
         if args.coverage_report is not None:
             report_returncode = generate_coverage_report(
-                Path.cwd().resolve(), unittest_bin, args.coverage_profile_dir, args.coverage_report
+                Path.cwd().resolve(),
+                unittest_bin,
+                args.coverage_profile_dir,
+                args.coverage_report,
             )
     finally:
         if coverage_profile_tmp is not None:
@@ -2364,7 +2618,14 @@ def main_impl(argv: list[str] | None = None):
         if failed_test_names:
             print()
             print("reproduce all failed tests:")
-            print(format_failed_tests_reproducer(unittest_bin, args.test_flags, failed_test_configs, failed_test_names))
+            print(
+                format_failed_tests_reproducer(
+                    unittest_bin,
+                    args.test_flags,
+                    failed_test_configs,
+                    failed_test_names,
+                )
+            )
         return 1
     if args.coverage_report is not None and report_returncode != 0:
         return report_returncode
@@ -2403,7 +2664,11 @@ def invoke(argv: list[str], cwd: Path | None = None) -> InvocationResult:
             returncode = int(main(argv) or 0)
     finally:
         os.chdir(old_cwd)
-    return InvocationResult(returncode=returncode, stdout=stdout_buffer.getvalue(), stderr=stderr_buffer.getvalue())
+    return InvocationResult(
+        returncode=returncode,
+        stdout=stdout_buffer.getvalue(),
+        stderr=stderr_buffer.getvalue(),
+    )
 
 
 def run_tests(
@@ -2482,9 +2747,12 @@ def run_tests(
                 if result["failed"]:
                     if handle_failed_batch(ctx, batch_info, result):
                         continue
-                    skipped_count, skipped_reasons, partial_names, partial_reason_names = extract_skipped_test_output(
-                        result["stdout"], result["stderr"]
-                    )
+                    (
+                        skipped_count,
+                        skipped_reasons,
+                        partial_names,
+                        partial_reason_names,
+                    ) = extract_skipped_test_output(result["stdout"], result["stderr"])
                     total_skipped_tests += skipped_count
                     partially_skipped_test_names.update(partial_names)
                     for reason, count in skipped_reasons.items():
@@ -2503,9 +2771,12 @@ def run_tests(
                                 retry_count=batch_info["attempt"],
                             )
                         )
-                    skipped_count, skipped_reasons, partial_names, partial_reason_names = extract_skipped_test_output(
-                        result["stdout"], result["stderr"]
-                    )
+                    (
+                        skipped_count,
+                        skipped_reasons,
+                        partial_names,
+                        partial_reason_names,
+                    ) = extract_skipped_test_output(result["stdout"], result["stderr"])
                     total_skipped_tests += skipped_count
                     partially_skipped_test_names.update(partial_names)
                     for reason, count in skipped_reasons.items():
@@ -2523,12 +2794,21 @@ def run_tests(
     elapsed = time.monotonic() - start
     total_partially_skipped_tests = len(partially_skipped_test_names)
     if stop_requested():
-        return ConfigRunResult(returncode=130, passed_tests=0, failed_tests=0, skipped_tests=0, elapsed_seconds=elapsed)
+        return ConfigRunResult(
+            returncode=130,
+            passed_tests=0,
+            failed_tests=0,
+            skipped_tests=0,
+            elapsed_seconds=elapsed,
+        )
     exit_code = 0
     if state.failed_count:
         exit_code = 1
     elif state.timed_out_test_names:
-        print(f"finished in {elapsed:.0f}s with {len(state.timed_out_test_names)} timeout warnings", file=output)
+        print(
+            f"finished in {elapsed:.0f}s with {len(state.timed_out_test_names)} timeout warnings",
+            file=output,
+        )
     elif total_skipped_tests or total_partially_skipped_tests:
         skip_parts = []
         if total_skipped_tests:
@@ -2550,7 +2830,10 @@ def run_tests(
         for reason in sorted(partial_skip_reason_test_names):
             print(f"{reason}: {len(partial_skip_reason_test_names[reason])}", file=output)
     failed_tests = state.failed_count
-    passed_tests = max(0, completed_tests - failed_tests - total_skipped_tests - len(state.timed_out_test_names))
+    passed_tests = max(
+        0,
+        completed_tests - failed_tests - total_skipped_tests - len(state.timed_out_test_names),
+    )
     failed_test_names = []
     for batch in batches:
         for test_name in batch:

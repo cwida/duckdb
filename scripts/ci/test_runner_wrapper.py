@@ -6,15 +6,29 @@ from contextlib import contextmanager
 from pathlib import Path
 
 
-def resolve_unittest_path(wrapper_path: str | Path, unittest_name: str) -> Path:
-    return Path(wrapper_path).resolve().parent / unittest_name
+def resolve_duckdb_path(wrapper_path: str | Path, duckdb_name: str) -> Path:
+    return Path(wrapper_path).resolve().parent.parent / duckdb_name
 
 
 def build_run_tests_argv(
-    forwarded_args: list[str], wrapper_path: str | Path, unittest_name: str = "unittest"
+    forwarded_args: list[str],
+    wrapper_path: str | Path,
+    duckdb_name: str = "duckdb",
+    test_roots: list[str] | None = None,
 ) -> list[str]:
-    unittest_path = resolve_unittest_path(wrapper_path, unittest_name)
-    return [os.fspath(unittest_path), *forwarded_args]
+    wrapper_dir = Path(wrapper_path).resolve().parent
+    build_dir = wrapper_dir.parent
+    result = [
+        os.fspath(resolve_duckdb_path(wrapper_path, duckdb_name)),
+        "--test-extension",
+        os.fspath(build_dir / "extension" / "test" / "test.duckdb_extension"),
+        "--test-bundle-root",
+        os.fspath(build_dir / "test" / "extensions"),
+    ]
+    for test_root in test_roots or []:
+        if test_root:
+            result.extend(["--test-root", test_root])
+    return [*result, *forwarded_args]
 
 
 @contextmanager
@@ -32,7 +46,8 @@ def main(
     *,
     wrapper_path: str | Path | None = None,
     source_root: str | Path | None = None,
-    unittest_name: str = "unittest",
+    duckdb_name: str = "duckdb",
+    test_roots: list[str] | None = None,
 ) -> int:
     if forwarded_args is None:
         forwarded_args = sys.argv[1:]
@@ -45,12 +60,12 @@ def main(
     if os.fspath(source_root_path) not in sys.path:
         sys.path.insert(0, os.fspath(source_root_path))
 
-    unittest_path = resolve_unittest_path(wrapper_path, unittest_name)
-    if not unittest_path.is_file():
-        print(f"error: expected sibling unittest binary at {unittest_path}", file=sys.stderr)
+    duckdb_path = resolve_duckdb_path(wrapper_path, duckdb_name)
+    if not duckdb_path.is_file():
+        print(f"error: expected DuckDB shell at {duckdb_path}", file=sys.stderr)
         return 1
 
     from scripts.ci import run_tests
 
     with pushd(source_root_path):
-        return int(run_tests.main(build_run_tests_argv(forwarded_args, wrapper_path, unittest_name)) or 0)
+        return int(run_tests.main(build_run_tests_argv(forwarded_args, wrapper_path, duckdb_name, test_roots)) or 0)

@@ -66,33 +66,6 @@ jobs:
       if: ${{ !inputs.skip_tests }}
       run: make unittest_release
 
-    # SQL navigation needs the query_break hook and locals that release builds optimize away.
-    - name: Build debug executable for LLDB
-      if: ${{ !inputs.skip_tests }}
-      timeout-minutes: 60
-      env:
-        DISABLE_SHELL: 1
-        # Debug enables extra conversion warnings; keep them non-fatal for the LLDB fixture build.
-        TREAT_WARNINGS_AS_ERRORS: 0
-        EXTRA_CMAKE_VARIABLES: -DTREAT_WARNINGS_AS_ERRORS=OFF
-      run: python3 scripts/ci/retry.py -- make debug
-
-    - name: LLDB helper tests
-      id: lldb-tests
-      if: ${{ !inputs.skip_tests }}
-      timeout-minutes: 5
-      run: |
-        python3 scripts/lldb/tests/run_tests.py --unittest build/debug/test/unittest \
-          --lldb "$(xcrun --find lldb)" \
-          --coverage-dir build/lldb-coverage
-
-    - name: Upload LLDB coverage
-      if: ${{ !cancelled() && steps.lldb-tests.outcome != 'skipped' }}
-      uses: actions/upload-artifact@v7
-      with:
-        name: lldb-coverage-osx
-        path: build/lldb-coverage
-
   xcode-release:
     # Builds binaries for osx_arm64 and osx_amd64
     name: OSX Release
@@ -177,21 +150,27 @@ jobs:
           mkdir -p \
             build/release_arm64/libs \
             build/release_arm64/src \
-            build/release_arm64/test/extension \
+            build/release_arm64/extension/test \
+            build/release_arm64/test/extensions \
             build/release_amd64/libs \
             build/release_amd64/src \
-            build/release_amd64/test/extension
+            build/release_amd64/extension/test \
+            build/release_amd64/test/extensions
           lipo -extract arm64 -output build/release_arm64/duckdb build/release/duckdb
           lipo -extract x86_64 -output build/release_amd64/duckdb build/release/duckdb
-          lipo -extract arm64 -output build/release_arm64/test/unittest build/release/test/unittest
-          lipo -extract x86_64 -output build/release_amd64/test/unittest build/release/test/unittest
           cp -p build/release/test/run build/release_arm64/test/run
           cp -p build/release/test/run build/release_amd64/test/run
 
-          for extension in build/release/test/extension/*.duckdb_extension; do
+          for extension in build/release/extension/test/*.duckdb_extension; do
             extension_name="$(basename "$extension")"
-            lipo -extract arm64 -output "build/release_arm64/test/extension/$extension_name" "$extension"
-            lipo -extract x86_64 -output "build/release_amd64/test/extension/$extension_name" "$extension"
+            lipo -extract arm64 -output "build/release_arm64/extension/test/$extension_name" "$extension"
+            lipo -extract x86_64 -output "build/release_amd64/extension/test/$extension_name" "$extension"
+          done
+
+          for extension in build/release/test/extensions/*.duckdb_extension; do
+            extension_name="$(basename "$extension")"
+            lipo -extract arm64 -output "build/release_arm64/test/extensions/$extension_name" "$extension"
+            lipo -extract x86_64 -output "build/release_amd64/test/extensions/$extension_name" "$extension"
           done
 
           for library in build/release/src/libduckdb*.dylib; do
@@ -353,12 +332,6 @@ jobs:
         if: ${{ !inputs.skip_tests }}
         run: |
           python -m pytest tools/shell/tests --shell-binary build/release/duckdb
-
-      - name: Unittest Stdin Tests
-        shell: bash
-        if: ${{ !inputs.skip_tests }}
-        run: |
-          python -m pytest tools/sqllogic/tests --unittest-binary build/release/test/unittest
 
       - name: Examples
         shell: bash
