@@ -461,3 +461,14 @@ query I
 SELECT count(*) FROM lowest WHERE timezone('GMT+01:00', utc) = TIMESTAMP '1970-01-01 01:00:00';
 ----
 1
+
+# a shift onto -infinity is an error, which the bounds must not fold away
+statement ok
+CREATE TABLE edge AS SELECT make_timestamp((-9223372033254775807)::BIGINT - 1 + range)::TIMESTAMPTZ AS ts FROM range(3);
+
+query I
+SELECT TRY(timezone('GMT-01:00', ts) < TIMESTAMP '1970-01-01') FROM edge ORDER BY ts;
+----
+true
+NULL
+true

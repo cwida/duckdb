@@ -755,9 +755,15 @@ struct ICUTimeZoneFunc : public ICUDateFunc {
 		    !DST(hi).IsFinite()) {
 			return nullptr;
 		}
+		// a shift onto -infinity is an error rather than a value
+		const auto lo_value = Value::CreateValue(DST(lo));
+		const auto hi_value = Value::CreateValue(DST(hi));
+		if (StatisticsPropagator::HoldsNegativeInfinity(lo_value, hi_value)) {
+			return nullptr;
+		}
 		auto result = NumericStats::CreateEmpty(input.expr.GetReturnType());
-		NumericStats::SetMin(result, Value::CreateValue(DST(lo)));
-		NumericStats::SetMax(result, Value::CreateValue(DST(hi)));
+		NumericStats::SetMin(result, lo_value);
+		NumericStats::SetMax(result, hi_value);
 		result.CombineValidity(child_stats[0], child_stats[1]);
 		return result.ToUnique();
 	}

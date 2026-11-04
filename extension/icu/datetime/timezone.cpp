@@ -252,7 +252,6 @@ void SimpleTimeZone::GetOffsetRange(int64_t start_millis, int64_t end_millis, in
 	max_offset = raw + dst;
 	sample(end_millis);
 
-	// sample both sides of every boundary inside the interval
 	int32_t start_year;
 	int32_t end_year;
 	int8_t month, dom, dow;
@@ -358,7 +357,6 @@ void OlsonTimeZone::GetHistoricalOffsetRange(int64_t start_sec, int64_t end_sec,
 	auto total_offset = [](const TZTypeOffset &offsets) {
 		return (offsets.raw_offset + offsets.dst_offset) * int32_t(MILLIS_PER_SECOND);
 	};
-	// the offsets in effect at the start, and the ones taking effect at every transition up to the end
 	const auto begin = data.transitions;
 	const auto stop = begin + data.transition_count;
 	auto transition = std::upper_bound(begin, stop, start_sec);
