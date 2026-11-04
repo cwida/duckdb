@@ -276,13 +276,38 @@ static vector<LogicalType> AggregateStateArgumentTypes(const LogicalType &state_
 	return result;
 }
 
+static string UnsupportedAtStorageVersion(AttachedDatabase &db, StorageVersion storage_version, const string &what,
+                                          StorageVersion required) {
+	return StringUtil::Format("%s are not supported in storage versions prior to %s (database %s is using storage "
+	                          "version %s)",
+	                          what, GetStorageVersionName(required, false), db.GetName(),
+	                          GetStorageVersionName(storage_version, false));
+}
+
+static string WideDecimalUnsupportedReason(AttachedDatabase &db, StorageVersion storage_version) {
+	auto what = StringUtil::Format("DECIMAL columns wider than %d digits", Decimal::MAX_WIDTH_INT128);
+	return UnsupportedAtStorageVersion(db, storage_version, what, Decimal::WIDE_VERSION_ADDED);
+}
+
+//! Whether a type holds a DECIMAL stored as a BIGNUM blob, the argument types of aggregate states included
+static bool ContainsWideDecimal(const LogicalType &logical_type) {
+	return TypeVisitor::Contains(logical_type, [&](const LogicalType &type) {
+		if (type.IsAggregateState()) {
+			for (auto &argument_type : AggregateStateArgumentTypes(type)) {
+				if (ContainsWideDecimal(argument_type)) {
+					return true;
+				}
+			}
+			return false;
+		}
+		return type.id() == LogicalTypeId::DECIMAL && Decimal::IsWide(DecimalType::GetWidth(type));
+	});
+}
+
 string StorageManager::GetUnsupportedTypeReason(const LogicalType &logical_type) const {
 	const auto storage_version = GetStorageVersion();
 	auto unsupported = [&](const string &what, StorageVersion required) {
-		return StringUtil::Format("%s are not supported in storage versions prior to %s (database %s is using storage "
-		                          "version %s)",
-		                          what, GetStorageVersionName(required, false), db.GetName(),
-		                          GetStorageVersionName(storage_version, false));
+		return UnsupportedAtStorageVersion(db, storage_version, what, required);
 	};
 	string reason;
 	TypeVisitor::Contains(logical_type, [&](const LogicalType &type) {
@@ -316,8 +341,7 @@ string StorageManager::GetUnsupportedTypeReason(const LogicalType &logical_type)
 		case LogicalTypeId::DECIMAL:
 			// decimals wider than 38 digits are stored as BIGNUM blobs, which older engines cannot read
 			if (storage_version < Decimal::WIDE_VERSION_ADDED && Decimal::IsWide(DecimalType::GetWidth(type))) {
-				auto what = StringUtil::Format("DECIMAL columns wider than %d digits", Decimal::MAX_WIDTH_INT128);
-				reason = unsupported(what, Decimal::WIDE_VERSION_ADDED);
+				reason = WideDecimalUnsupportedReason(db, storage_version);
 			}
 			break;
 		case LogicalTypeId::VARIANT:
@@ -354,7 +378,22 @@ void StorageManager::CheckTypeIsSupported(const LogicalType &type) const {
 	}
 }
 
-void StorageManager::CheckExpressionTypesAreSupported(const ParsedExpression &expression) const {
+string StorageManager::GetUnsupportedDecimalWidthReason(const LogicalType &type) const {
+	const auto storage_version = GetStorageVersion();
+	if (storage_version >= Decimal::WIDE_VERSION_ADDED || !ContainsWideDecimal(type)) {
+		return string();
+	}
+	return WideDecimalUnsupportedReason(db, storage_version);
+}
+
+void StorageManager::CheckDecimalWidthIsSupported(const LogicalType &type) const {
+	auto reason = GetUnsupportedDecimalWidthReason(type);
+	if (!reason.empty()) {
+		throw InvalidInputException(reason);
+	}
+}
+
+void StorageManager::CheckExpressionDecimalsAreSupported(const ParsedExpression &expression) const {
 	if (GetStorageVersion() >= StorageVersion::V2_0_0) {
 		// from v2.0.0 on a CAST stores its target as a type expression, which the reading engine binds itself
 		return;
@@ -367,10 +406,10 @@ void StorageManager::CheckExpressionTypesAreSupported(const ParsedExpression &ex
 		work.pop_back();
 		switch (expr.GetExpressionClass()) {
 		case ExpressionClass::CAST:
-			CheckTypeIsSupported(UnboundType::TryDefaultBind(expr.Cast<CastExpression>().TargetType()));
+			CheckDecimalWidthIsSupported(UnboundType::TryDefaultBind(expr.Cast<CastExpression>().TargetType()));
 			break;
 		case ExpressionClass::SUBQUERY:
-			CheckQueryTypesAreSupported(*expr.Cast<SubqueryExpression>().Subquery()->node);
+			CheckQueryDecimalsAreSupported(*expr.Cast<SubqueryExpression>().Subquery()->node);
 			break;
 		default:
 			break;
@@ -380,12 +419,12 @@ void StorageManager::CheckExpressionTypesAreSupported(const ParsedExpression &ex
 	}
 }
 
-void StorageManager::CheckQueryTypesAreSupported(QueryNode &node) const {
+void StorageManager::CheckQueryDecimalsAreSupported(QueryNode &node) const {
 	if (GetStorageVersion() >= StorageVersion::V2_0_0) {
 		return;
 	}
 	ParsedExpressionIterator::EnumerateQueryNodeChildren(
-	    node, [&](unique_ptr<ParsedExpression> &child) { CheckExpressionTypesAreSupported(*child); });
+	    node, [&](unique_ptr<ParsedExpression> &child) { CheckExpressionDecimalsAreSupported(*child); });
 }
 
 bool StorageManager::HasWAL() const {

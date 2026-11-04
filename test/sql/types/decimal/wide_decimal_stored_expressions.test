@@ -88,6 +88,30 @@ CREATE TABLE old.t(i INTEGER CHECK ((i::DECIMAL(39,0))::INTEGER > 0));
 ----
 DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
 
+# casts to other types a column of this storage version cannot hold are stored, as before wide decimals
+statement ok
+CREATE TABLE old.pairs(is_null BOOLEAN, a INTEGER, b INTEGER);
+
+statement ok
+INSERT INTO old.pairs VALUES (true, NULL, NULL), (false, 1, 2);
+
+statement ok
+CREATE VIEW old.v_tuple AS SELECT CASE WHEN is_null THEN NULL::TUPLE(INTEGER, INTEGER) ELSE row(a, b) END AS t, a::VARIANT AS u FROM old.pairs;
+
+query II
+SELECT t, u FROM old.v_tuple ORDER BY ALL
+----
+(1, 2)	1
+NULL	NULL
+
+statement ok
+CREATE MACRO old.m_tuple(x) AS (x, x)::TUPLE(INTEGER, INTEGER);
+
+query I
+SELECT old.m_tuple(3)
+----
+(3, 3)
+
 # the same expressions with types those engines read are stored
 statement ok
 CREATE VIEW old.v AS SELECT (1::DECIMAL(38,0))::INTEGER AS n;
@@ -114,6 +138,12 @@ query IIII
 SELECT old.m(), (SELECT n FROM old.v), old.m_cast(3), (SELECT j FROM old.t)
 ----
 1	1	6	1
+
+query III
+SELECT t, u, old.m_tuple(a) FROM old.v_tuple, old.pairs WHERE NOT is_null ORDER BY ALL
+----
+(1, 2)	1	(1, 1)
+NULL	NULL	(1, 1)
 
 statement ok
 DETACH old;
