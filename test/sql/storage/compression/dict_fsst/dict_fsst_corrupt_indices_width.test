@@ -1,0 +1,32 @@
+# name: test/sql/storage/compression/dict_fsst/dict_fsst_corrupt_indices_width.test
+# description: A DICT_FSST dictionary-index width above 32 must be rejected
+# group: [dict_fsst]
+
+require vector_size 2048
+
+unzip data/storage/corrupt/dict_fsst_corrupt_indices_width.db.gz {TEST_DIR}/dict_fsst_corrupt_indices_width.db
+
+load {TEST_DIR}/dict_fsst_corrupt_indices_width.db readonly
+
+statement ok
+USE dict_fsst_corrupt_indices_width
+
+query I
+SELECT compression FROM pragma_storage_info('t') WHERE column_name='s' AND compression='DICT_FSST' LIMIT 1;
+----
+DICT_FSST
+
+statement error
+SELECT count(DISTINCT s) FROM t;
+----
+Data Corruption Error: Failed to scan dictionary string - bitpacking width was invalid. Database file appears to be corrupted.
+
+restart
+
+statement ok
+SET debug_force_fetch_row=true;
+
+statement error
+SELECT count(DISTINCT s) FROM t;
+----
+Data Corruption Error: Failed to scan dictionary string - bitpacking width was invalid. Database file appears to be corrupted.

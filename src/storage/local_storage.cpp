@@ -5,6 +5,7 @@
 
 #include "duckdb/catalog/catalog_entry/duck_table_entry.hpp"
 #include "duckdb/main/attached_database.hpp"
+#include "duckdb/main/valid_checker.hpp"
 #include "duckdb/planner/table_filter.hpp"
 #include "duckdb/storage/data_table.hpp"
 #include "duckdb/storage/partial_block_manager.hpp"
@@ -220,30 +221,45 @@ void LocalTableStorage::AppendToIndexes(DuckTransaction &transaction, TableAppen
 	auto error = AppendToIndexes(transaction, collection, index_list, table.GetTypes(), append_state.current_row);
 	if (error.HasError()) {
 		// Revert all appended row IDs.
-		row_t current_row = append_state.row_start;
-		// Remove the data from the indexes, if any.
-		for (auto &chunk : collection.Chunks(transaction)) {
-			if (current_row >= append_state.current_row) {
-				// Finished deleting all rows from the index.
-				break;
-			}
-			// Remove the chunk.
-			try {
-				index_list.RevertAppend(chunk, current_row);
-			} catch (std::exception &ex) { // LCOV_EXCL_START
-				error = ErrorData(ex);
-				break;
-			} // LCOV_EXCL_STOP
-
-			current_row += UnsafeNumericCast<row_t>(chunk.size());
+		auto revert_error = RevertAppendToIndexes(transaction, append_state.row_start, append_state.current_row);
+		if (revert_error.HasError()) {
+			revert_error.Throw();
 		}
-
-#ifdef DEBUG
-		// Verify that our index memory is stable.
-		table.VerifyIndexBuffers();
-#endif
 		error.Throw();
 	}
+}
+
+ErrorData LocalTableStorage::RevertAppendToIndexes(DuckTransaction &transaction, row_t row_start, row_t row_end) {
+	auto &table = table_ref.get();
+	if (!table.HasIndexes()) {
+		return ErrorData();
+	}
+	auto &index_list = table.GetDataTableInfo()->GetIndexes();
+	auto &collection = *row_groups->collection;
+	ErrorData error;
+	row_t current_row = row_start;
+	// Remove the data from the indexes, if any.
+	for (auto &chunk : collection.Chunks(transaction)) {
+		if (current_row >= row_end) {
+			// Finished deleting all rows from the index.
+			break;
+		}
+		// Remove the chunk.
+		try {
+			index_list.RevertAppend(chunk, current_row);
+		} catch (std::exception &ex) { // LCOV_EXCL_START
+			error = ErrorData(ex);
+			break;
+		} // LCOV_EXCL_STOP
+
+		current_row += UnsafeNumericCast<row_t>(chunk.size());
+	}
+
+#ifdef DEBUG
+	// Verify that our index memory is stable.
+	table.VerifyIndexBuffers();
+#endif
+	return error;
 }
 
 PhysicalIndex LocalTableStorage::CreateOptimisticCollection(unique_ptr<OptimisticWriteCollection> collection) {
@@ -622,8 +638,27 @@ void LocalStorage::Flush(DataTable &table, LocalTableStorage &storage, optional_
 		storage.Rollback();
 		// append to the indexes
 		storage.AppendToIndexes(transaction, append_state);
+		const auto index_end = append_state.current_row;
 		// after that is successful - append to the table
-		storage.AppendToTable(transaction, append_state);
+		try {
+			storage.AppendToTable(transaction, append_state);
+		} catch (...) {
+			// remove the rows and index entries that the failed append added
+			try {
+				table.RevertFailedAppend(append_state);
+				// free the memory of the reverted rows before this storage is scanned again
+				append_state.row_group_append_state.states.reset();
+				append_state.row_groups.reset();
+				auto error = storage.RevertAppendToIndexes(transaction, append_state.row_start, index_end);
+				if (error.HasError()) {
+					error.Throw();
+				}
+			} catch (std::exception &ex) {
+				ValidChecker::Invalidate(table.db.GetDatabase(),
+				                         "Failed to revert a failed append: " + ErrorData(ex).RawMessage());
+			}
+			throw;
+		}
 	}
 	// table_entry is set through the append path (InitializeAppend/Append/LocalMerge/Alter)
 	D_ASSERT(storage.table_entry);

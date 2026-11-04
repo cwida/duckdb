@@ -23,6 +23,7 @@ add_library_unity(
   move_constants.cpp
   not_comparison_simplification.cpp
   not_conjunction_simplification.cpp
+  or_range_merge.cpp
   ordered_aggregate_optimizer.cpp
   predicate_factoring.cpp
   regex_optimizations.cpp

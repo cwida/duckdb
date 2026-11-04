@@ -1228,6 +1228,11 @@ void DataTable::RevertAppendInternal(idx_t start_row) {
 	row_groups->RevertAppendInternal(start_row);
 }
 
+void DataTable::RevertFailedAppend(TableAppendState &state) {
+	D_ASSERT(IsMainTable());
+	row_groups->RevertFailedAppend(state);
+}
+
 void DataTable::RevertAppend(DuckTransaction &transaction, idx_t start_row, idx_t count) {
 	lock_guard<mutex> lock(append_lock);
 

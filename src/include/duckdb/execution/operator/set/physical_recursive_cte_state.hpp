@@ -76,9 +76,25 @@ struct RecursiveCTEScheduleStage {
 	idx_t dependency_count;
 };
 
+struct RecursiveCTESchedulePipeline {
+	RecursiveCTESchedulePipeline(Pipeline &pipeline_p, bool is_invariant_p)
+	    : pipeline(pipeline_p), is_invariant(is_invariant_p) {
+	}
+
+	reference<Pipeline> pipeline;
+	//! Whether the pipeline's meta-pipeline is invariant; invariant producers keep the configured thread count
+	bool is_invariant;
+};
+
 struct RecursiveCTEPipelineSchedulePlan {
 	vector<RecursiveCTEScheduleStage> stages;
+	//! Every pipeline of the meta-pipelines this plan schedules, in traversal order, for the per-iteration resets
+	//! and executor registration; a pipeline shared by two meta-pipelines appears once per meta-pipeline
+	vector<RecursiveCTESchedulePipeline> pipelines;
 	vector<reference<Pipeline>> initialize_on_schedule_pipelines;
+	//! Deduplicated intermediate operators of this plan's execute stages. Their global operator
+	//! state is invalidated exactly once per iteration, before any stage prepares or executes.
+	vector<reference<PhysicalOperator>> invalidate_operators;
 	idx_t execute_pipeline_count = 0;
 	idx_t cte_scan_pipeline_count = 0;
 	bool has_source_tasks = false;

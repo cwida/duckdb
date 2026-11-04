@@ -1,0 +1,76 @@
+# name: test/sql/storage/checkpoint/checkpoint_without_transactions.test
+# description: Checkpoint a reopened database before it has started a transaction
+# group: [checkpoint]
+
+load {TEST_DIR}/checkpoint_without_transactions.db
+
+statement ok
+PRAGMA force_checkpoint;
+
+statement ok
+CREATE SCHEMA persisted;
+
+statement ok
+CREATE TABLE persisted.t (i INTEGER);
+
+statement ok
+INSERT INTO persisted.t VALUES (42), (NULL), (42);
+
+statement ok
+CREATE VIEW persisted.v AS SELECT * FROM persisted.t;
+
+statement ok
+CHECKPOINT;
+
+restart
+
+# Shutdown must include the catalog loaded from disk, even without a new transaction.
+restart
+
+query I rowsort
+SELECT * FROM persisted.v;
+----
+42
+42
+NULL
+
+# A checkpoint after a new commit must retain both loaded and newly inserted rows.
+statement ok
+INSERT INTO persisted.t VALUES (43);
+
+restart
+
+query I rowsort
+SELECT * FROM persisted.v;
+----
+42
+42
+43
+NULL
+
+# DETACH also checkpoints without a client context.
+statement ok
+ATTACH '{TEST_DIR}/detach_without_transactions.db' AS other;
+
+statement ok
+CREATE TABLE other.t AS SELECT 42 AS i;
+
+statement ok
+DETACH other;
+
+statement ok
+ATTACH '{TEST_DIR}/detach_without_transactions.db' AS other;
+
+statement ok
+DETACH other;
+
+statement ok
+ATTACH '{TEST_DIR}/detach_without_transactions.db' AS other;
+
+query I
+SELECT i FROM other.t;
+----
+42
+
+statement ok
+DETACH other;

@@ -1,0 +1,47 @@
+# name: test/optimizer/joins/filter_projection_map_reconstruction.test
+# description: Keep the projection map of the filter above a reordered join tree in sync with its new column order
+# group: [joins]
+
+statement ok
+CREATE TABLE t(i INTEGER, b BOOLEAN);
+
+statement ok
+INSERT INTO t VALUES (1, TRUE), (2, FALSE), (NULL, NULL);
+
+statement ok
+CREATE TABLE s(i INTEGER);
+
+statement ok
+INSERT INTO s VALUES (1), (3);
+
+query I
+SELECT count(*) FROM (
+	SELECT b.i <> ANY (SELECT i FROM s)
+	FROM t AS a
+	LEFT JOIN t AS b ON a.b = b.b AND b.i IN (SELECT i FROM s)
+	WHERE (SELECT 3) = 3 OR a.i IS NULL
+);
+----
+3
+
+query II rowsort
+SELECT a.i, b.i <> ANY (SELECT i FROM s)
+FROM t AS a
+LEFT JOIN t AS b ON a.b = b.b AND b.i IN (SELECT i FROM s)
+WHERE (SELECT 3) = 3 OR a.i IS NULL;
+----
+1	true
+2	NULL
+NULL	NULL
+
+query I
+WITH c AS (
+	SELECT a.i, b.i <> ANY (SELECT i FROM s)
+	FROM t AS a
+	LEFT JOIN t AS b ON a.b = b.b AND b.i IN (SELECT i FROM s)
+	WHERE (SELECT COUNT(*) FROM (VALUES (1), (2), (3))) = 3
+	   OR (a.i IS NULL AND a.i IS NOT NULL)
+)
+SELECT (SELECT COUNT(*) FROM c);
+----
+3

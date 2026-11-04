@@ -1,0 +1,105 @@
+# name: test/sql/subquery/lateral/lateral_null_propagation_shortcut.test
+# description: The decorrelation NULL-propagation shortcut must not drop rows observable above the aggregate
+# group: [lateral]
+
+# an enclosing grouping-sets aggregate observes the inner aggregate's row: two outer rows, cardinality error
+statement error
+SELECT o.k, (
+    SELECT GROUPING(a.s)
+    FROM (SELECT sum(i.v) AS s FROM (VALUES (1, 42)) AS i(k, v) WHERE i.k = o.k) AS a
+    GROUP BY GROUPING SETS ((a.s), ())
+) FROM (VALUES (7)) AS o(k);
+----
+<REGEX>:.*More than one row returned by a subquery.*
+
+# lateral variant of the nested aggregate: one row per outer grouping set for present and missing keys
+query III
+SELECT o.k, a2.gm, a2.c
+FROM (VALUES (1), (7)) AS o(k),
+LATERAL (
+    SELECT GROUPING(a.s) AS gm, count(*) AS c
+    FROM (SELECT sum(i.v) AS s FROM (VALUES (1, 42)) AS i(k, v) WHERE i.k = o.k) AS a
+    GROUP BY GROUPING SETS ((a.s), ())
+) AS a2
+ORDER BY ALL;
+----
+1	0	1
+1	1	1
+7	0	1
+7	1	1
+
+# a window function observes the inner aggregate's row
+query II
+SELECT o.k, (
+    SELECT row_number() OVER ()
+    FROM (SELECT sum(i.v) AS s FROM (VALUES (1, 42)) AS i(k, v) WHERE i.k = o.k) AS a
+) FROM (VALUES (1), (7)) AS o(k)
+ORDER BY ALL;
+----
+1	1
+7	1
+
+# a cross product multiplies the inner aggregate's row with non-NULL rows
+statement error
+SELECT (
+    SELECT b.x + a.s
+    FROM (SELECT sum(i.v) AS s FROM (VALUES (1, 42)) AS i(k, v) WHERE i.k = o.k) AS a,
+         (VALUES (1), (2)) AS b(x)
+) FROM (VALUES (7)) AS o(k);
+----
+<REGEX>:.*More than one row returned by a subquery.*
+
+query II
+SELECT o.k, a2.r
+FROM (VALUES (1), (7)) AS o(k),
+LATERAL (
+    SELECT b.x + a.s AS r
+    FROM (SELECT sum(i.v) AS s FROM (VALUES (1, 42)) AS i(k, v) WHERE i.k = o.k) AS a,
+         (VALUES (1), (2)) AS b(x)
+) AS a2
+ORDER BY ALL;
+----
+1	43
+1	44
+7	NULL
+7	NULL
+
+# DISTINCT below an inner lateral join keeps the aggregate row for missing keys
+query II
+SELECT o.k, a.s
+FROM (VALUES (1), (7)) AS o(k),
+LATERAL (SELECT DISTINCT sum(i.v) AS s FROM (VALUES (1, 42)) AS i(k, v) WHERE i.k = o.k) AS a
+ORDER BY ALL;
+----
+1	42
+7	NULL
+
+# ORDER BY below an inner lateral join keeps the aggregate row for missing keys
+query II
+SELECT o.k, a.s
+FROM (VALUES (1), (7)) AS o(k),
+LATERAL (SELECT sum(i.v) AS s FROM (VALUES (1, 42)) AS i(k, v) WHERE i.k = o.k ORDER BY 1) AS a
+ORDER BY ALL;
+----
+1	42
+7	NULL
+
+# a UNION ALL branch contributes rows next to the aggregate's row
+statement error
+SELECT (
+    SELECT sum(i.v) FROM (VALUES (1, 42)) AS i(k, v) WHERE i.k = o.k
+    UNION ALL
+    SELECT 1
+) FROM (VALUES (7)) AS o(k);
+----
+<REGEX>:.*More than one row returned by a subquery.*
+
+# the shortcut still applies to a plain scalar aggregate: missing keys yield NULL, not an error
+query II
+SELECT o.k, (
+    SELECT sum(i.v) FROM (VALUES (1, 42)) AS i(k, v) WHERE i.k = o.k
+) FROM (VALUES (1), (7)) AS o(k)
+ORDER BY ALL;
+----
+1	42
+7	NULL

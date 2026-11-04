@@ -406,7 +406,7 @@
     },
     {
         "name": "debug_force_fetch_row",
-        "description": "Force per-row fetching during scans.",
+        "description": "Read the rows of scans through the fetch by row id.",
         "type": "BOOLEAN",
         "default_scope": "local",
         "default_value": "false",
@@ -662,9 +662,7 @@
         "type": "BOOLEAN",
         "default_scope": "local",
         "default_value": "true",
-        "on_callbacks": [
-            "set"
-        ]
+        "is_deprecated": true
     },
     {
         "name": "dialect_compatibility_mode",
@@ -801,9 +799,6 @@
         "type": "BOOLEAN",
         "default_scope": "global",
         "default_value": "false",
-        "on_callbacks": [
-            "set"
-        ],
         "is_deprecated": true
     },
     {
@@ -865,9 +860,7 @@
         "type": "BOOLEAN",
         "default_scope": "local",
         "default_value": "true",
-        "on_callbacks": [
-            "set"
-        ]
+        "is_deprecated": true
     },
     {
         "name": "errors_as_json",
@@ -883,9 +876,7 @@
         "type": "BOOLEAN",
         "scope": "global",
         "default_value": "true",
-        "on_callbacks": [
-            "set"
-        ]
+        "is_deprecated": true
     },
     {
         "name": "explain_output",
@@ -907,10 +898,7 @@
         "type": "VARCHAR",
         "scope": "global",
         "default_value": "",
-        "is_deprecated": true,
-        "on_callbacks": [
-            "set"
-        ]
+        "is_deprecated": true
     },
     {
         "name": "extension_repository_directory",
@@ -998,9 +986,7 @@
         "type": "BOOLEAN",
         "scope": "global",
         "default_value": "false",
-        "on_callbacks": [
-            "set"
-        ]
+        "is_deprecated": true
     },
     {
         "name": "force_compression",
@@ -1148,9 +1134,7 @@
         "type": "BOOLEAN",
         "default_scope": "local",
         "default_value": "false",
-        "on_callbacks": [
-            "set"
-        ]
+        "is_deprecated": true
     },
     {
         "name": "legacy_metrics_format",
@@ -1158,9 +1142,6 @@
         "type": "BOOLEAN",
         "default_scope": "local",
         "default_value": "false",
-        "on_callbacks": [
-            "set"
-        ],
         "is_deprecated": true
     },
     {
@@ -1279,10 +1260,7 @@
         "type": "BOOLEAN",
         "default_scope": "global",
         "default_value": "false",
-        "is_deprecated": true,
-        "on_callbacks": [
-            "set"
-        ]
+        "is_deprecated": true
     },
     {
         "name": "operator_memory_limit",
@@ -1390,10 +1368,7 @@
         "type": "BOOLEAN",
         "default_scope": "global",
         "default_value": "false",
-        "is_deprecated": true,
-        "on_callbacks": [
-            "set"
-        ]
+        "is_deprecated": true
     },
     {
         "name": "profiling_coverage",
@@ -1459,7 +1434,8 @@
         "default_value": "partial",
         "custom_implementation": [
             "set"
-        ]
+        ],
+        "is_deprecated": true
     },
     {
         "name": "scalar_subquery_error_on_multiple_rows",
@@ -1539,7 +1515,8 @@
         "default_value": "DEFAULT",
         "custom_implementation": [
             "set"
-        ]
+        ],
+        "is_deprecated": true
     },
     {
         "name": "temp_directory",

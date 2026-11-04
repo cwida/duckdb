@@ -49,3 +49,16 @@ EXPLAIN ANALYZE SELECT count(*) FROM edge_tz WHERE epoch(t) < 922337203685477580
 
 statement ok
 EXPLAIN SELECT count(*) FROM edge_tz WHERE epoch_us(t) > -9223372036854775806;
+
+# the finite INT64_MIN sorts below the -infinity sentinel
+statement ok
+CREATE TABLE below_tz(t TIMESTAMPTZ);
+
+statement ok
+INSERT INTO below_tz VALUES (make_timestamptz(-9223372036854775807 - 1)), (make_timestamptz(-9223372036854775806)), ('-infinity'), (NULL);
+
+query III
+SELECT (SELECT count(*) FROM below_tz WHERE epoch_us(t) <= -9223372036854775806), (SELECT count(*) FROM below_tz WHERE epoch_us(t) < 0),
+       (SELECT count(*) FROM below_tz WHERE epoch_us(t) >= -9223372036854775806);
+----
+2	2	1

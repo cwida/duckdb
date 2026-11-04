@@ -47,7 +47,7 @@ struct ICUDateFunc {
 	template <typename SRC, typename DST>
 	static inline DST TruncCast(const SRC &src) {
 		DST dst;
-		if (SRC::PRECISION == DST::PRECISION) {
+		if (SRC::PRECISION == DST::PRECISION || !src.IsFinite()) {
 			dst.value = src.value;
 		} else {
 			//	Truncate towards -infinity, not epoch.
@@ -100,6 +100,8 @@ struct ICUDateFunc {
 
 	//! Binds a default calendar object for use by the function
 	static duckdb::unique_ptr<FunctionData> Bind(BindScalarFunctionInput &input);
+	//! Binds the calendar of the TimeZone and Calendar settings for a cast, whose result then depends on them
+	static duckdb::unique_ptr<CastData> BindCastData(BindCastInput &input);
 	//! Initializes a CalendarCacheState from the function's BindData
 	static duckdb::unique_ptr<FunctionLocalState>
 	InitCalendarCache(ExpressionState &state, const BoundFunctionExpression &expr, FunctionData *bind_data);

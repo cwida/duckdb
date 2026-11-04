@@ -107,6 +107,12 @@ enum class HTTPRetryOutcomeOwner : uint8_t {
 	COORDINATOR
 };
 
+//! A throttled retry charged to the quota of a host
+struct HTTPThrottledRetryCharge {
+	shared_ptr<HTTPRetryQuota> quota;
+	int64_t cost;
+};
+
 //! Operation-local budget shared by synchronous nested retry loops, never concurrent loops. One budget is one
 //! logical operation (one `amz-sdk-invocation-id`): every send it makes, including corrected re-sends, is one of
 //! its attempts, as in the AWS SDK's attempt loop. The host quota is settled once per operation, when its outcome is
@@ -157,8 +163,9 @@ public:
 	//! Who settles this operation's outcome.
 	DUCKDB_API HTTPRetryOutcomeOwner Owner() const;
 	//! The coordinator's final word, for a coordinator that validates the response after its Run returned: the
-	//! operation succeeded, refund the last admitted retry to the quota it was charged to, or NO_RETRY_REFUND to the
-	//! bound quota. Settles once; a later report of the same operation changes nothing. Coordinator-owned budgets only.
+	//! operation succeeded, refund the last admitted retry and the throttled retries before it to the quotas they were
+	//! charged to, or NO_RETRY_REFUND to the bound quota. Settles once; a later report of the same operation changes
+	//! nothing. Coordinator-owned budgets only.
 	DUCKDB_API void ReportSuccess();
 	//! The coordinator's final word: the operation failed, the last admitted retry is not refunded. Coordinator-owned
 	//! budgets only.
@@ -188,7 +195,7 @@ private:
 	void Settle(bool success);
 	//! Explicit decisions and reports belong to a coordinator-owned budget; anything else is a programming error.
 	void RequireCoordinator(const char *what) const;
-	//! Forget the last admitted retry, so that nothing is refunded for it.
+	//! Forget the last admitted retry and the throttled retries before it, so that nothing is refunded for them.
 	void ForgetLastRetry();
 
 private:
@@ -218,6 +225,10 @@ private:
 	//! Quota and tokens of the most recent admitted retry, refunded on success.
 	shared_ptr<HTTPRetryQuota> last_retry_quota;
 	int64_t last_retry_cost = 0;
+	bool last_retry_throttled = false;
+	//! Quotas and tokens of the throttled retries before the most recent one, refunded on success as well, as a host
+	//! that throttles requests which then get through is not failing
+	vector<HTTPThrottledRetryCharge> earlier_throttled_retries;
 	bool quota_exhausted = false;
 	bool corrections_exhausted = false;
 };

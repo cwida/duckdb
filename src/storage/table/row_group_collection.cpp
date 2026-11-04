@@ -801,7 +801,8 @@ void RowGroupCollection::RevertAppendInternal(idx_t new_end_idx) {
 		return;
 	}
 	auto last_segment = row_groups->GetLastSegment(l);
-	if (last_segment->GetRowEnd() <= new_end_idx) {
+	if (last_segment->GetRowEnd() <= new_end_idx && last_segment->GetRowStart() < new_end_idx) {
+		// nothing to revert, unless a row group starts at the row (a failed append can leave it empty)
 		return;
 	}
 	D_ASSERT(new_end_idx >= row_groups->GetBaseRowId());
@@ -823,10 +824,25 @@ void RowGroupCollection::RevertAppendInternal(idx_t new_end_idx) {
 		new_total_rows += entry.GetNode().count;
 		reverted_row_groups->AppendSegment(rlock, entry.ReferenceNode(), row_start);
 	}
+	if (reverted_row_groups->GetSegmentCount(rlock) < segment_count) {
+		// the reverted append created a row group, so the row group that is last again might not take appends
+		SetRowGroupAppendMode(RowGroupAppendMode::SUGGEST_NEW);
+	}
 	SetRowGroups(std::move(reverted_row_groups));
 	total_rows = new_total_rows;
 	next_row_id = new_end_idx - row_groups->GetBaseRowId();
 	D_ASSERT(next_row_id.load() >= total_rows.load());
+}
+
+void RowGroupCollection::RevertFailedAppend(TableAppendState &state) {
+	auto start_row = NumericCast<idx_t>(state.row_start);
+	auto start_row_group = state.start_row_group;
+	if (start_row_group && start_row_group->GetRowStart() < start_row) {
+		// the columns of the row group that the append started in hold rows past its count
+		auto &row_group = start_row_group->GetNode();
+		row_group.RevertAppend(row_group.count);
+	}
+	RevertAppendInternal(start_row);
 }
 
 void RowGroupCollection::CleanupAppend(VisibilityBound lowest_visibility_bound, idx_t start, idx_t count) {

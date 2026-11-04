@@ -21,7 +21,7 @@ SELECT sec::VARCHAR, msec::VARCHAR, micros::VARCHAR, nanos::VARCHAR FROM ts_prec
 query IIII
 SELECT EXTRACT(microseconds FROM sec), EXTRACT(microseconds FROM msec), EXTRACT(microseconds FROM micros), EXTRACT(microseconds FROM nanos) FROM ts_precision
 ----
-45000000	45123000	45123456	45123457
+45000000	45123000	45123456	45123456
 
 # we only support precisions 0, 3, 6, and 9
 # any other precision is rounded up (e.g. 1/2 -> 3, 4/5 -> 6, 7/8 -> 9)

@@ -37,6 +37,14 @@ GeneratedTransformProcess::GeneratedTransformProcess(PEGTransformer &transformer
 	info.initialize(transformer, *this);
 }
 
+void GeneratedTransformProcess::ThrowMissingResult(idx_t slot) const {
+	throw InternalException("Missing transformer result for slot %llu in rule '%s'", slot, info.name);
+}
+
+void GeneratedTransformProcess::ThrowUnexpectedResultType(idx_t slot) const {
+	throw InternalException("Unexpected transformer result type for slot %llu in rule '%s'", slot, info.name);
+}
+
 void GeneratedTransformProcess::ReserveChildSlots(idx_t count) {
 	child_results.resize(count);
 	// a rule pushes at most one child per slot, so the pending list never has to grow either

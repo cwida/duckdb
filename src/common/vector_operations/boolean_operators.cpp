@@ -14,6 +14,52 @@ namespace {
 // AND/OR
 //===--------------------------------------------------------------------===//
 template <class OP>
+void FlatBooleanNullmask(const Vector &left, const Vector &right, Vector &result, idx_t count) {
+	D_ASSERT(&left != &result && &right != &result);
+	// we use uint8 to avoid load of gunk bools
+	auto left_data = FlatVector::GetData<uint8_t>(left);
+	auto right_data = FlatVector::GetData<uint8_t>(right);
+	auto &left_validity = FlatVector::Validity(left);
+	auto &right_validity = FlatVector::Validity(right);
+
+	result.SetVectorType(VectorType::FLAT_VECTOR);
+	FlatVector::SetSize(result, count);
+	auto result_data = FlatVector::GetDataMutable<bool>(result);
+	auto &result_validity = FlatVector::ValidityMutable(result);
+	result_validity.Reset(count);
+
+	if (left_validity.CannotHaveNull() && right_validity.CannotHaveNull()) {
+		for (idx_t i = 0; i < count; i++) {
+			result_data[i] = OP::SimpleOperation(left_data[i] > 0, right_data[i] > 0);
+		}
+		return;
+	}
+	// process 64 rows at a time, computing the result validity for the whole entry at once
+	const auto entry_count = ValidityMask::EntryCount(count);
+	for (idx_t entry_idx = 0; entry_idx < entry_count; entry_idx++) {
+		const auto base_idx = entry_idx * ValidityMask::BITS_PER_VALUE;
+		const auto entry_size = MinValue<idx_t>(ValidityMask::BITS_PER_VALUE, count - base_idx);
+		validity_t left_bits = 0;
+		validity_t right_bits = 0;
+		for (idx_t i = 0; i < entry_size; i++) {
+			const bool left_value = left_data[base_idx + i] > 0;
+			const bool right_value = right_data[base_idx + i] > 0;
+			result_data[base_idx + i] = OP::SimpleOperation(left_value, right_value);
+			left_bits |= validity_t(left_value) << i;
+			right_bits |= validity_t(right_value) << i;
+		}
+		auto valid_bits = OP::ResultValidity(left_bits, right_bits, left_validity.GetValidityEntry(entry_idx),
+		                                     right_validity.GetValidityEntry(entry_idx));
+		// rows past the end of the vector are marked valid
+		valid_bits |= ~ValidityMask::EntryWithValidBits(entry_size);
+		if (!ValidityMask::AllValid(valid_bits)) {
+			result_validity.EnsureWritable();
+			result_validity.GetData()[entry_idx] = valid_bits;
+		}
+	}
+}
+
+template <class OP>
 void TemplatedBooleanNullmask(const Vector &left, const Vector &right, Vector &result) {
 	const auto count = (left.GetVectorType() == VectorType::CONSTANT_VECTOR) ? right.size() : left.size();
 	D_ASSERT(left.GetType().id() == LogicalTypeId::BOOLEAN && right.GetType().id() == LogicalTypeId::BOOLEAN &&
@@ -32,6 +78,10 @@ void TemplatedBooleanNullmask(const Vector &left, const Vector &right, Vector &r
 		if (is_null) {
 			ConstantVector::SetNull(result, count_t(count));
 		}
+		return;
+	}
+	if (left.GetVectorType() == VectorType::FLAT_VECTOR && right.GetVectorType() == VectorType::FLAT_VECTOR) {
+		FlatBooleanNullmask<OP>(left, right, result, count);
 		return;
 	}
 	// perform generic loop
@@ -83,6 +133,10 @@ struct TernaryAnd {
 	static bool SimpleOperation(bool left, bool right) {
 		return left && right;
 	}
+	//! The result is valid if both sides are valid, or if either side is a valid FALSE
+	static validity_t ResultValidity(validity_t left, validity_t right, validity_t left_valid, validity_t right_valid) {
+		return (left_valid & right_valid) | (left_valid & ~left) | (right_valid & ~right);
+	}
 	static bool Operation(bool left, bool right, bool left_null, bool right_null, bool &result) {
 		if (left_null && right_null) {
 			// both NULL:
@@ -131,6 +185,10 @@ Basically:
 struct TernaryOr {
 	static bool SimpleOperation(bool left, bool right) {
 		return left || right;
+	}
+	//! The result is valid if both sides are valid, or if either side is a valid TRUE
+	static validity_t ResultValidity(validity_t left, validity_t right, validity_t left_valid, validity_t right_valid) {
+		return (left_valid & right_valid) | (left_valid & left) | (right_valid & right);
 	}
 	static bool Operation(bool left, bool right, bool left_null, bool right_null, bool &result) {
 		if (left_null && right_null) {

@@ -1,8 +1,11 @@
 #include "duckdb/execution/operator/schema/physical_attach.hpp"
 
 #include "duckdb/catalog/catalog.hpp"
+#include "duckdb/catalog/catalog_entry/duck_schema_entry.hpp"
+#include "duckdb/catalog/duck_catalog.hpp"
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/execution/operator/helper/launch_external_resource.hpp"
+#include "duckdb/logging/logger.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/database_manager.hpp"
@@ -13,6 +16,38 @@
 #include "duckdb/main/database_path_and_type.hpp"
 
 namespace duckdb {
+
+//! Warn when a DuckLake metadata catalog is attached as a plain DuckDB database
+static void WarnIfDuckLakeMetadata(ClientContext &context, AttachedDatabase &attached_db, const string &path) {
+	auto &catalog = attached_db.GetCatalog();
+	if (!catalog.IsDuckCatalog()) {
+		return;
+	}
+	auto default_schema = catalog.GetDefaultSchema();
+	if (!default_schema) {
+		return;
+	}
+	// scan the committed entries, a catalog lookup would open a transaction on the database
+	bool has_metadata_table = false;
+	catalog.Cast<DuckCatalog>().ScanSchemas(VisibilityBound::AllCommitted(), [&](DuckSchemaEntry &schema) {
+		if (schema.GetParentSchema() || schema.name != *default_schema) {
+			return;
+		}
+		schema.Scan(CatalogType::TABLE_ENTRY, VisibilityBound::AllCommitted(), [&](CatalogEntry &entry) {
+			if (entry.type == CatalogType::TABLE_ENTRY && entry.name == "ducklake_metadata") {
+				has_metadata_table = true;
+			}
+		});
+	});
+	if (!has_metadata_table) {
+		return;
+	}
+	DUCKDB_LOG_WARNING(context,
+	                   "\"%s\" is a DuckLake metadata catalog, attached as a DuckDB database: only the DuckLake "
+	                   "metadata tables are visible. Use \"ATTACH 'ducklake:%s'\" to attach the DuckLake, or "
+	                   "\"(TYPE duckdb)\" to attach the metadata catalog without this warning.",
+	                   path, path);
+}
 
 //===--------------------------------------------------------------------===//
 // Source
@@ -61,6 +96,8 @@ SourceResultType PhysicalAttach::GetDataInternal(ExecutionContext &context, Data
 			    .TryDelete();
 		}
 	};
+	shared_ptr<AttachedDatabase> attached_db;
+	bool warn_ducklake_metadata = false;
 	try {
 		if (attach_info->external_resource) {
 			ApplyLaunchedResource(launched, *attach_info);
@@ -89,14 +126,26 @@ SourceResultType PhysicalAttach::GetDataInternal(ExecutionContext &context, Data
 			name = Identifier(AttachedDatabase::ExtractDatabaseName(path, fs));
 		}
 
+		// an explicit TYPE duckdb or a hidden attach (e.g. by DuckLake itself) opens the metadata on purpose
+		warn_ducklake_metadata = options.db_type.empty() && options.visibility == AttachVisibility::SHOWN;
+
 		// check ATTACH IF NOT EXISTS
 		auto &db_manager = DatabaseManager::Get(context.client);
-		db_manager.AttachDatabase(context.client, *attach_info, options);
+		auto existing_db = db_manager.GetDatabase(name);
+		attached_db = db_manager.AttachDatabase(context.client, *attach_info, options);
+		// IF NOT EXISTS / OR REPLACE can return the existing attachment without opening the path
+		if (attached_db == existing_db) {
+			warn_ducklake_metadata = false;
+		}
 	} catch (...) {
 		// Compensating teardown (best-effort): a resource we just PROVISIONED has nothing owning it yet.
 		// A borrowed (referenced) resource is never torn down here.
 		reap_if_owned();
 		throw;
+	}
+	// the database is attached and owns the resource, so a warnings_as_errors throw must not reap it
+	if (warn_ducklake_metadata) {
+		WarnIfDuckLakeMetadata(context.client, *attached_db, attach_info->path);
 	}
 	return SourceResultType::FINISHED;
 }

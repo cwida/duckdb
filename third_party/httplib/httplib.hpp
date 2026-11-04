@@ -115,8 +115,9 @@
 #define CPPHTTPLIB_REQUEST_URI_MAX_LENGTH 8192
 #endif
 
+// DuckDB: 64 KiB instead of 8 KiB; github.com sends a content-security-policy line of over 9 KiB
 #ifndef CPPHTTPLIB_HEADER_MAX_LENGTH
-#define CPPHTTPLIB_HEADER_MAX_LENGTH 8192
+#define CPPHTTPLIB_HEADER_MAX_LENGTH 65536
 #endif
 
 #ifndef CPPHTTPLIB_HEADER_MAX_COUNT
@@ -15144,9 +15145,11 @@ inline bool ClientImpl::process_request(Stream &strm, Request &req,
   // Body
   if ((res.status != StatusCode::NoContent_204) && req.method != "HEAD" &&
       req.method != "CONNECT") {
+    // DuckDB: a redirect without Location cannot be followed (S3's 301 names the
+    // region in a header and the body instead), so it is handed over as a response
     auto redirect = 300 < res.status && res.status < 400 &&
                     res.status != StatusCode::NotModified_304 &&
-                    follow_location_;
+                    follow_location_ && res.has_header("Location");
 
     if (req.response_handler && !redirect) {
       if (!req.response_handler(res)) {

@@ -85,7 +85,7 @@ SELECT tbl.a FROM "{DATA_DIR}/parquet-testing/arrow/alltypes_plain.parquet" tbl(
 query II
 EXPLAIN SELECT tbl.a, tbl.b, tbl.c FROM "{DATA_DIR}/parquet-testing/arrow/alltypes_plain.parquet" tbl(a,b,c) WHERE (a<2 OR a>3) AND (a=1 OR a=4) AND (b=false OR c=1);
 ----
-physical_plan	<REGEX>:.*PARQUET_SCAN.*Filters:.*a < 2.*OR.*a > 3.*AND.*a = 1.*OR.*a = 4.*
+physical_plan	<REGEX>:.*PARQUET_SCAN.*Filters:.*a < 2.*OR.*a > 3.*AND.*a IN \(1, 4\).*
 
 query III
 SELECT tbl.a, tbl.b, tbl.c FROM "{DATA_DIR}/parquet-testing/arrow/alltypes_plain.parquet" tbl(a,b,c) WHERE (a<2 OR a>3) AND (a=1 OR a=4) AND (b=false OR c=1) ORDER BY a;

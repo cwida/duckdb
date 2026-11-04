@@ -347,13 +347,7 @@ shared_ptr<const AggregateFunction> GetCollatedMinMaxFunction(ClientContext &con
 		    name);
 	}
 
-	FunctionBinder function_binder(context);
-	ErrorData error;
-	auto best_function = function_binder.BindFunction(func->name, func->functions, types, error);
-	if (!best_function.IsValid()) {
-		throw BinderException("Fail to find corresponding function for collation min/max: %s", error.Message());
-	}
-	return func->functions.GetFunctionByOffset(best_function.GetIndex());
+	return func->functions.GetFunctionByArguments(context, types);
 }
 
 //! Whether min/max over the type are computed through arg_min/arg_max over the collated value
@@ -584,8 +578,7 @@ unique_ptr<FunctionData> MinMaxNBind(BindAggregateFunctionInput &input) {
 			collated_arguments.push_back(std::move(collated_arg));
 			collated_arguments.push_back(std::move(arguments[1]));
 			FunctionBinder function_binder(context);
-			auto expr =
-			    function_binder.BindAggregateFunction(std::move(collated_function), std::move(collated_arguments));
+			auto expr = function_binder.BindAggregateFunction(collated_function, std::move(collated_arguments));
 			arguments = std::move(expr->GetChildrenMutable());
 			function.ReplaceImplementation(expr->Function());
 			return std::move(expr->BindInfoMutable());
@@ -607,6 +600,7 @@ AggregateFunction GetMinMaxNFunction() {
 	                      FunctionNullHandling::DEFAULT_NULL_HANDLING, nullptr, MinMaxNBind<COMPARATOR>, nullptr);
 	fun.GetSignature().AddParameter("arg", LogicalTypeId::ANY).AddParameter("n", LogicalType::BIGINT);
 	fun.SetUnbindCallback(MinMaxUnbind);
+	fun.SetFallible(); // the update callback rejects NULL and out-of-range n values at runtime
 	return fun;
 }
 

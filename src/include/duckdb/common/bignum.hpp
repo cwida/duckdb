@@ -106,8 +106,8 @@ struct BignumIntermediate {
 	//! Negates a value, e.g., -x
 	string_t Negate(StringHeap &heap) const;
 	void NegateInPlace();
-	//! Exports to a bignum, either arena allocated
-	bignum_t ToBignum(ArenaAllocator &allocator);
+	//! Exports to an arena-allocated bignum, trimmed on the way out; the intermediate itself is left as it is
+	bignum_t ToBignum(ArenaAllocator &allocator) const;
 	//! Check if an over/underflow has occurred
 	static bool OverOrUnderflow(data_ptr_t data, idx_t size, bool is_negative);
 	bool OverOrUnderflow() const;

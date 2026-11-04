@@ -51,6 +51,10 @@ public:
 	DUCKDB_API bool CanScan(LoggingTargetTable table);
 
 	DUCKDB_API void SetConfig(DatabaseInstance &db, const LogConfig &config);
+	//! The config together with its storage, to put back with RestoreConfig when a change fails
+	DUCKDB_API pair<LogConfig, shared_ptr<LogStorage>> GetConfigAndStorage();
+	//! Puts back a config and its storage as GetConfigAndStorage returned them
+	DUCKDB_API void RestoreConfig(const LogConfig &config, shared_ptr<LogStorage> storage);
 	DUCKDB_API void SetEnableLogging(bool enable);
 	DUCKDB_API void SetLogMode(LogMode mode);
 	DUCKDB_API void SetLogLevel(LogLevel level);

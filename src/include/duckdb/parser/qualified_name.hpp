@@ -88,6 +88,16 @@ struct QualifiedName {
 	const Identifier &Name() const {
 		return path.empty() ? empty : path.back();
 	}
+	//! The (possibly nested) schema qualification between the catalog and the name
+	vector<Identifier> SchemaPath() const {
+		vector<Identifier> result;
+		for (idx_t i = path.size() >= 3 ? 1 : 0; i + 1 < path.size(); i++) {
+			if (!path[i].empty()) {
+				result.push_back(path[i]);
+			}
+		}
+		return result;
+	}
 	//! The full underlying path. Most callers should use Catalog()/Schema()/Name(); this is for multi-level schema
 	//! support (e.g. nested CREATE SCHEMA), where the qualification can be deeper than [catalog, schema].
 	const vector<Identifier> &Path() const {

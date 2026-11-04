@@ -1,0 +1,48 @@
+# name: test/sql/attach/attach_detach_catalog_scan.test_slow
+# description: Scanning all catalogs must not race with DETACH of a database that does not start a transaction on scan
+# group: [attach]
+
+require sqlite_scanner
+
+statement ok
+SET autoinstall_known_extensions=true;
+
+statement ok
+SET autoload_known_extensions=true;
+
+statement ok
+ATTACH '{TEST_DIR}/catalog_scan_init.sqlite' AS init (TYPE sqlite);
+
+statement ok
+CREATE TABLE init.t(x INTEGER);
+
+statement ok
+DETACH init
+
+concurrentloop i 0 8
+
+loop k 0 200
+
+onlyif i<4
+statement maybe
+ATTACH '{TEST_DIR}/catalog_scan_init.sqlite' AS lite_{i} (TYPE sqlite, READ_ONLY)
+----
+
+onlyif i<4
+statement maybe
+DETACH lite_{i}
+----
+
+onlyif i>=4
+statement maybe
+SELECT count(*) FROM duckdb_tables()
+----
+
+onlyif i>=4
+statement maybe
+SELECT count(*) FROM duckdb_schemas() WHERE database_name LIKE 'lite_%'
+----
+
+endloop
+
+endloop

@@ -37,9 +37,31 @@ TEST_CASE("Test live query metrics of a running query are readable from another 
 		                            "WHERE metric_name = 'io.total_bytes_read' AND connection_id = " +
 		                            to_string(con.context->GetConnectionId()));
 		REQUIRE(CHECK_COLUMN(result, 0, {true}));
+		REQUIRE(LiveMetric(con, MetricIOTotalReadOperations::Name) > 0);
 	}
 	DeleteDatabase(path);
 }
+
+// smaller vectors run the sort out of memory before it spills
+#if STANDARD_VECTOR_SIZE >= 2048
+TEST_CASE("Test live query metrics show that a running query has spilled", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("SET temp_directory = '" + TestCreatePath("live_query_metrics_spill") + "'"));
+	REQUIRE_NO_FAIL(con.Query("SET threads = 1"));
+	REQUIRE_NO_FAIL(con.Query("SET preserve_insertion_order = false"));
+	REQUIRE_NO_FAIL(con.Query("SET memory_limit = '100MB'"));
+
+	// sorting ~160MB under a 100MB limit spills before the first chunk is returned; the query is still running
+	auto streaming = OpenStream(con, "SELECT i FROM range(20000000) t(i) ORDER BY i DESC");
+	auto chunk = streaming->Fetch();
+	if (streaming->HasError()) {
+		FAIL(streaming->GetError());
+	}
+	REQUIRE(chunk);
+	REQUIRE(LiveMetric(con, MetricSystemTotalBytesSpilled::Name) > 0);
+}
+#endif
 
 //! Allocates a buffer when a query begins, before the statement is planned, and holds it until the query ends
 struct AllocateAtQueryBeginState : public ClientContextState {

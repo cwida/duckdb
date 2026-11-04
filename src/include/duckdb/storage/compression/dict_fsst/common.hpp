@@ -1,8 +1,6 @@
 #pragma once
 
 #include "duckdb/common/typedefs.hpp"
-#include "duckdb/common/bitpacking.hpp"
-#include "duckdb/storage/string_uncompressed.hpp"
 #include "fsst.h"
 
 namespace duckdb {
@@ -39,7 +37,13 @@ public:
 	//! Dictionary header size at the beginning of the string segment (offset + length)
 	static constexpr uint16_t DICTIONARY_HEADER_SIZE = sizeof(dict_fsst_compression_header_t);
 	static constexpr idx_t STRING_SIZE_LIMIT = 16384;
+	//! Dictionary size from which the writer considers FSST encoding it, and the saving it has to achieve
+	static constexpr idx_t DICTIONARY_ENCODE_THRESHOLD = 4096;
 };
+
+static inline bool IsEncoded(DictionaryAppendState state) {
+	return state == DictionaryAppendState::ENCODED || state == DictionaryAppendState::ENCODED_ALL_UNIQUE;
+}
 
 } // namespace dict_fsst
 

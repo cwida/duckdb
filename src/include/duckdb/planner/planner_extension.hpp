@@ -16,6 +16,7 @@ namespace duckdb {
 struct DBConfig;
 class Binder;
 class ClientContext;
+class SQLStatement;
 
 //! The PlannerExtensionInfo holds static information relevant to the planner extension
 struct PlannerExtensionInfo {
@@ -32,6 +33,7 @@ struct PlannerExtensionInput {
 };
 
 //! The post_bind function runs after binding succeeds, allowing modification of the bound statement
+typedef void (*pre_bind_function_t)(PlannerExtensionInput &input, SQLStatement &statement);
 typedef void (*post_bind_function_t)(PlannerExtensionInput &input, BoundStatement &statement);
 
 typedef GetSQLValueFunctionReturnType (*get_sql_value_function_t)(PlannerExtensionInput &input,
@@ -40,6 +42,11 @@ typedef GetSQLValueFunctionReturnType (*get_sql_value_function_t)(PlannerExtensi
 
 class PlannerExtension {
 public:
+	//! The pre-bind function of the planner extension.
+	//! Takes the statement that is about to be bound. This runs right before the binder binds the statement,
+	//! allowing e.g. a catalog to start loading the entries the statement references.
+	pre_bind_function_t pre_bind_function = nullptr;
+
 	//! The post-bind function of the planner extension.
 	//! Takes a bound statement as input, which it can modify in place.
 	//! This runs after the binder has successfully bound the statement,

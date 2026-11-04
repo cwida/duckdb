@@ -79,6 +79,8 @@ public:
 		head->current_position += len;
 		return result;
 	}
+	//! Resize in place when possible, otherwise copy into this arena. The source may belong to another live arena.
+	//! Equal sizes return the source unchanged.
 	DUCKDB_API data_ptr_t Reallocate(data_ptr_t pointer, idx_t old_size, idx_t size);
 
 	DUCKDB_API data_ptr_t AllocateAligned(idx_t size);

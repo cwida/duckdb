@@ -498,7 +498,11 @@ bool WindowDistinctSortTree::TryNextRun(idx_t &level_idx, idx_t &run_idx) {
 
 		++build_level;
 		if (build_level >= tree.size()) {
-			zipped_tree.tree.clear();
+			//	Release the levels but keep the vector intact, as other threads may still be reading its size
+			for (auto &level : zipped_tree.tree) {
+				auto released_elements = std::move(level.first);
+				auto released_offsets = std::move(level.second);
+			}
 			return false;
 		}
 

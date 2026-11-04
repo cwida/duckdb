@@ -48,7 +48,7 @@ static unique_ptr<FunctionData> ExternalResourcesBind(ClientContext &context, Ta
                                                       vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto result = make_uniq<ExternalResourcesBindData>();
 	for (auto &np : input.named_parameters) {
-		if (StringUtil::Lower(np.first.GetIdentifierName()) == "discover" && !np.second.IsNull()) {
+		if (np.first == "discover" && !np.second.IsNull()) {
 			result->discover = BooleanValue::Get(np.second);
 		}
 	}
@@ -86,7 +86,8 @@ static void DiscoverExternalResources(ClientContext &context, const ExternalReso
                                       const set<string> &managed_handles, vector<ExternalResourceRow> &rows) {
 	// Separate internal connection (the current connection's context lock is held here), resolving the
 	// callback in the type's registration-time search path.
-	Connection con(DatabaseInstance::GetDatabase(context));
+	auto callback_con = CreateExternalResourceCallbackConnection(DatabaseInstance::GetDatabase(context), &context);
+	auto &con = *callback_con;
 	if (!type.search_path.empty()) {
 		auto set_res = con.Query("SET search_path = " + Value(type.search_path).ToSQLString());
 		if (set_res->HasError()) {

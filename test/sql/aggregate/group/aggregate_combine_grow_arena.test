@@ -1,0 +1,19 @@
+# name: test/sql/aggregate/group/aggregate_combine_grow_arena.test
+# description: Grow arena-backed aggregate states copied from another hash table
+# group: [group]
+
+statement ok
+SET threads = 4
+
+statement ok
+PRAGMA verify_parallelism
+
+query I
+SELECT sum(list_sum(top2))
+FROM (
+    SELECT i % 50000 AS g, arg_max(i, i, 2) AS top2
+    FROM range(100000) t(i)
+    GROUP BY g
+)
+----
+4999950000

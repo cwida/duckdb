@@ -1,6 +1,7 @@
 #include "catch.hpp"
 #include "test_helpers.hpp"
 #include "duckdb/main/http/http_util.hpp"
+#include "duckdb/execution/operator/helper/physical_set.hpp"
 #include "duckdb/common/local_file_system.hpp"
 
 #include <set>
@@ -260,4 +261,83 @@ TEST_CASE("Test secret_directory configuration update after secret creation", "[
 	// Try to update the secret directory and expect failure as the secret manager is already initialized
 	auto update_secret_directory = con.Query("SET secret_directory='new_secret_dir';");
 	REQUIRE_FAIL(update_secret_directory);
+}
+
+TEST_CASE("Test warnings_as_errors in the startup config", "[api]") {
+	DBConfig config;
+	REQUIRE_NOTHROW(config.SetOptionByName("warnings_as_errors", Value::BOOLEAN(false)));
+	REQUIRE_THROWS_WITH(config.SetOptionByName("warnings_as_errors", Value::BOOLEAN(true)),
+	                    Catch::Contains("startup config"));
+	// string values, as the C API passes them
+	REQUIRE_NOTHROW(config.SetOptionByName("warnings_as_errors", Value("false")));
+	REQUIRE_THROWS_WITH(config.SetOptionByName("warnings_as_errors", Value("true")), Catch::Contains("startup config"));
+	REQUIRE_THROWS_WITH(config.SetOptionByName("warnings_as_errors", Value()), Catch::Contains("cannot be NULL"));
+	DuckDB db(nullptr, &config);
+	Connection con(db);
+	auto result = con.Query("SELECT current_setting('warnings_as_errors')");
+	REQUIRE(CHECK_COLUMN(result, 0, {false}));
+}
+
+TEST_CASE("Test deprecated extension options warn when set", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	auto &config = DBConfig::GetConfig(*db.instance);
+	config.AddExtensionOption("my_deprecated_option", "A deprecated option", LogicalType::BOOLEAN, Value(false),
+	                          nullptr, SetScope::SESSION, false, true);
+	config.AddExtensionOption("my_option", "An option", LogicalType::BOOLEAN, Value(false));
+
+	REQUIRE_NO_FAIL(con.Query("SET enable_logging=true"));
+	REQUIRE_NO_FAIL(con.Query("SET warnings_as_errors=true"));
+
+	auto result = con.Query("SET my_deprecated_option=true");
+	REQUIRE(result->HasError());
+	REQUIRE(StringUtil::Contains(result->GetError(),
+	                             "The 'my_deprecated_option' setting is deprecated and will be removed"));
+	REQUIRE_NO_FAIL(con.Query("RESET my_deprecated_option"));
+	REQUIRE_NO_FAIL(con.Query("SET my_option=true"));
+
+	// setting the option directly, as ducklake does, warns as well
+	ExtensionOption option;
+	REQUIRE(config.TryGetExtensionOption(Identifier("my_deprecated_option"), option));
+	REQUIRE_THROWS_WITH(PhysicalSet::SetExtensionVariable(*con.context, option, SetScope::SESSION, Value(true)),
+	                    Catch::Contains("is deprecated"));
+	option = ExtensionOption();
+	REQUIRE(config.TryGetExtensionOption(Identifier("my_option"), option));
+	REQUIRE_NOTHROW(PhysicalSet::SetExtensionVariable(*con.context, option, SetScope::SESSION, Value(true)));
+
+	result = con.Query("SELECT count(*) FROM duckdb_settings() WHERE name = 'my_deprecated_option'");
+	REQUIRE(CHECK_COLUMN(result, 0, {0}));
+	result = con.Query("SELECT count(*) FROM duckdb_settings(deprecated := true) WHERE name = 'my_deprecated_option'");
+	REQUIRE(CHECK_COLUMN(result, 0, {1}));
+}
+
+TEST_CASE("Test every deprecated setting warns when set", "[api]") {
+	DuckDB db(nullptr);
+	Connection con(db);
+	REQUIRE_NO_FAIL(con.Query("SET enable_logging=true"));
+	REQUIRE_NO_FAIL(con.Query("SET warnings_as_errors=true"));
+	// profiling_mode only has a value while profiling is on
+	REQUIRE_NO_FAIL(con.Query("SET enable_profiling='no_output'"));
+
+	auto settings = con.Query("SELECT name, value FROM duckdb_settings(deprecated := true) ORDER BY name");
+	REQUIRE_NO_FAIL(*settings);
+	idx_t checked = 0;
+	while (auto chunk = settings->Fetch()) {
+		for (idx_t i = 0; i < chunk->size(); i++) {
+			auto name = chunk->GetValue(0, i).ToString();
+			auto value = chunk->GetValue(1, i).ToSQLString();
+			INFO(name);
+			// setting a deprecated setting to its current value warns, which warnings_as_errors turns into an error
+			auto result = con.Query(StringUtil::Format("SET %s = %s", name, value));
+			REQUIRE(result->HasError());
+			if (name == "vacuum_rebuild_indexes") {
+				// only settable in the startup config, so it never reaches the warning
+				REQUIRE(StringUtil::Contains(result->GetError(), "while database is running"));
+			} else {
+				REQUIRE(StringUtil::Contains(result->GetError(), "deprecated"));
+			}
+			checked++;
+		}
+	}
+	REQUIRE(checked > 0);
 }

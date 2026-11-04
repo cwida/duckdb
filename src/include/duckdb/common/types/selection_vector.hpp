@@ -9,8 +9,11 @@
 #pragma once
 
 #include "duckdb/common/allocator.hpp"
+#include "duckdb/common/array_ptr.hpp"
 #include "duckdb/common/common.hpp"
 #include "duckdb/common/numeric_utils.hpp"
+#include "duckdb/common/optional.hpp"
+#include "duckdb/common/optional_ptr.hpp"
 #include "duckdb/common/types.hpp"
 #include "duckdb/common/vector_size.hpp"
 
@@ -172,6 +175,12 @@ public:
 	void Verify(idx_t count, idx_t vector_size) const;
 	void Sort(idx_t count);
 	idx_t GetAllocationSize() const;
+
+	//! Select stable i + offset positions from optionally mapped matches; return the true count.
+	//! Outputs need count entries, including scratch; all buffers must be disjoint.
+	DUCKDB_API static idx_t SelectFromBoolean(const bool *matches, optional_ptr<const SelectionVector> match_sel,
+	                                          idx_t count, optional<array_ptr<sel_t>> true_sel,
+	                                          optional<array_ptr<sel_t>> false_sel = {}, idx_t offset = 0);
 
 private:
 	sel_t *sel_vector;

@@ -54,6 +54,11 @@ SET table_function_identifier_conversion='ENABLE_IMPLICIT_STRING';
 ----
 The 'table_function_identifier_conversion' setting is deprecated and will be removed in a future release.
 
+statement error
+SET lambda_syntax='DISABLE_SINGLE_ARROW';
+----
+The 'lambda_syntax' setting is deprecated and will be removed in a future release.
+
 # the global scope warns as well
 statement error
 SET GLOBAL experimental_metadata_reuse=false;
@@ -72,6 +77,9 @@ RESET regex_match_operator_semantics;
 
 statement ok
 RESET table_function_identifier_conversion;
+
+statement ok
+RESET lambda_syntax;
 
 # invalid values are still rejected before the deprecation warning is emitted
 statement error

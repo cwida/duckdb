@@ -34,7 +34,8 @@ tpcds_append_information::tpcds_append_information(duckdb::ClientContext &contex
 		auto collection = optimistic_writer->CreateCollection(table_entry->GetStorage(), types, partial_manager_type);
 		auto &row_collection = *collection->collection;
 		row_collection.InitializeEmpty();
-		row_collection.InitializeAppend(append_state);
+		// the transaction id keeps the rows invisible to other transactions until the commit
+		row_collection.InitializeAppend(duckdb::DuckTransaction::Get(context, table_entry->catalog), append_state);
 		optimistic_collection_index =
 		    table_entry->GetStorage().CreateOptimisticCollection(context, std::move(collection));
 		optimistic_collection = table_entry->GetStorage().GetOptimisticCollection(context, optimistic_collection_index);
@@ -156,9 +157,8 @@ void tpcds_append_information::FinalizeOptimisticAppend() {
 		return;
 	}
 	FlushChunk();
-	auto transaction_data = duckdb::TransactionData::Unversioned();
 	auto &row_collection = *optimistic_collection->collection;
-	row_collection.FinalizeAppend(transaction_data, append_state);
+	row_collection.FinalizeAppend(append_state.transaction, append_state);
 	finalized = true;
 }
 

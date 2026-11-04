@@ -128,7 +128,7 @@ LogicalType VariantColumnWriter::TransformTypedValueRecursive(const LogicalType 
 	}
 }
 
-static LogicalType GetParquetVariantType(optional_ptr<LogicalType> shredding = nullptr) {
+LogicalType VariantColumnWriter::GetParquetVariantType(optional_ptr<LogicalType> shredding) {
 	child_list_t<LogicalType> children;
 	children.emplace_back("metadata", LogicalType::BLOB);
 	children.emplace_back("value", LogicalType::BLOB);
@@ -158,9 +158,9 @@ static unique_ptr<FunctionData> BindTransform(BindScalarFunctionInput &input) {
 		}
 		auto type_str = input.GetNonNullConstant(1);
 		auto shredded_type = TransformStringToLogicalType(type_str.GetValue<string>(), context);
-		bound_function.SetReturnType(GetParquetVariantType(shredded_type));
+		bound_function.SetReturnType(VariantColumnWriter::GetParquetVariantType(shredded_type));
 	} else {
-		bound_function.SetReturnType(GetParquetVariantType());
+		bound_function.SetReturnType(VariantColumnWriter::GetParquetVariantType());
 	}
 
 	return nullptr;

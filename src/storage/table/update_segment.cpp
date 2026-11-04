@@ -1,6 +1,5 @@
 #include "duckdb/storage/table/update_segment.hpp"
 
-#include "duckdb/common/exception/transaction_exception.hpp"
 #include "duckdb/common/printer.hpp"
 #include "duckdb/storage/table/column_data.hpp"
 #include "duckdb/transaction/duck_transaction.hpp"
@@ -407,7 +406,7 @@ void UpdateSegment::FetchUpdates(TransactionData transaction, idx_t vector_index
 	AddHeapReference(result);
 }
 
-UpdateNode::UpdateNode(BufferManager &manager) : allocator(manager) {
+UpdateNode::UpdateNode(BufferManager &manager) : allocator(manager, false) {
 }
 
 UpdateNode::~UpdateNode() {
@@ -907,42 +906,19 @@ void UpdateSegment::CleanupUpdate(UpdateInfo &info) {
 }
 
 //===--------------------------------------------------------------------===//
-// Check for conflicts in update
+// Find the update of the transaction
 //===--------------------------------------------------------------------===//
-static void CheckForConflicts(UndoBufferPointer next_ptr, TransactionData transaction, row_t *ids,
-                              const SelectionVector &sel, idx_t count, row_t offset, UndoBufferReference &node_ref) {
+//! The transaction's own update of the vector, if any (conflicts are detected in the version info)
+static UndoBufferReference GetTransactionUpdate(UndoBufferPointer next_ptr, TransactionData transaction) {
 	while (next_ptr.IsSet()) {
 		auto pin = next_ptr.Pin();
 		auto &info = UpdateInfo::Get(pin);
 		if (info.version_number == transaction.GetTransactionId()) {
-			// this UpdateInfo belongs to the current transaction, set it in the node
-			node_ref = std::move(pin);
-		} else if (info.version_number.load() >= transaction.view.visibility_bound) {
-			// potential conflict, check that tuple ids do not conflict
-			// as both ids and info->tuples are sorted, this is similar to a merge join
-			idx_t i = 0, j = 0;
-			auto tuples = info.GetTuples();
-			while (true) {
-				auto id = ids[sel.get_index(i)] - offset;
-				if (id == tuples[j]) {
-					throw TransactionException("Conflict on update!");
-				} else if (id < tuples[j]) {
-					// id < the current tuple in info, move to next id
-					i++;
-					if (i == count) {
-						break;
-					}
-				} else {
-					// id > the current tuple, move to next tuple in info
-					j++;
-					if (j == info.N) {
-						break;
-					}
-				}
-			}
+			return pin;
 		}
 		next_ptr = info.next;
 	}
+	return UndoBufferReference();
 }
 
 //===--------------------------------------------------------------------===//
@@ -1644,11 +1620,10 @@ void UpdateSegment::Update(TransactionData transaction, DuckTableEntry &table_en
 	UnifiedVectorFormat update_format;
 	update_p.ToUnifiedFormat(update_format);
 
-	// update statistics
-	{
-		lock_guard<mutex> stats_guard(stats_lock);
-		statistics_update_function(this, stats, update_format, count);
-	}
+	// the statistics of this update join those of the segment only once it cannot fail anymore, as RowGroup::Update
+	// publishes them after the next update of the column, which must not see the values of a failed update
+	SegmentStatistics update_stats(type);
+	statistics_update_function(this, update_stats, update_format, count);
 	// rows updated to NULL take part too: they keep their current value
 	SelectionVector sel;
 
@@ -1672,6 +1647,7 @@ void UpdateSegment::Update(TransactionData transaction, DuckTableEntry &table_en
 		// we could do it otherwise - but that would require merging updates in order to find the current values
 		count = get_effective_updates(update_format, ids, count, sel, base_data, vector_offset);
 		if (count == 0) {
+			MergeStatistics(update_stats.statistics);
 			return;
 		}
 	}
@@ -1722,10 +1698,8 @@ void UpdateSegment::Update(TransactionData transaction, DuckTableEntry &table_en
 	auto root_pin = root_pointer.Pin();
 	auto &root_info = UpdateInfo::Get(root_pin);
 	if (transaction.transaction) {
-		// check if there are any conflicts and search for the update info that belongs to this transaction
-		UndoBufferReference node_ref;
-		CheckForConflicts(root_info.next, transaction, ids, sel, count, UnsafeNumericCast<row_t>(vector_offset),
-		                  node_ref);
+		// search for the update info that belongs to this transaction
+		auto node_ref = GetTransactionUpdate(root_info.next, transaction);
 		optional_ptr<UpdateInfo> node;
 		if (node_ref.IsSet()) {
 			node = &UpdateInfo::Get(node_ref);
@@ -1808,6 +1782,7 @@ void UpdateSegment::Update(TransactionData transaction, DuckTableEntry &table_en
 	// write the new values into the root
 	merge_update_function(root_info, update_format, ids, count, sel, vector_offset);
 	root_info.Verify();
+	MergeStatistics(update_stats.statistics);
 }
 
 bool UpdateSegment::HasUpdates() const {

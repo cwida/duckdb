@@ -224,9 +224,23 @@ TemporaryFileIndex TemporaryFileHandle::TryGetBlockIndex(idx_t block_header_size
 	return TemporaryFileIndex(identifier, block_index, block_header_size, buffer_type);
 }
 
+FileHandle &TemporaryFileHandle::GetIOHandle(data_ptr_t buffer, const idx_t size, const idx_t offset) {
+	if (!handle->GetFlags().DirectIO() || (AlignPointer<Storage::SECTOR_SIZE>(buffer) == buffer &&
+	                                       size % Storage::SECTOR_SIZE == 0 && offset % Storage::SECTOR_SIZE == 0)) {
+		return *handle;
+	}
+
+	TemporaryFileLock lock(file_lock);
+	if (!buffered_handle) {
+		auto &fs = FileSystem::GetFileSystem(db);
+		buffered_handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ | FileFlags::FILE_FLAGS_WRITE);
+	}
+	return *buffered_handle;
+}
+
 unique_ptr<FileBuffer> TemporaryFileHandle::ReadTemporaryBuffer(QueryContext context,
                                                                 const TemporaryFileIndex &index_in_file,
-                                                                unique_ptr<FileBuffer> buffer) const {
+                                                                unique_ptr<FileBuffer> buffer) {
 	auto block_index = index_in_file.block_index.GetIndex();
 	D_ASSERT(buffer->GetHeaderSize() == index_in_file.block_header_size.GetIndex());
 	AllocatedData compressed_buffer;
@@ -239,9 +253,9 @@ unique_ptr<FileBuffer> TemporaryFileHandle::ReadTemporaryBuffer(QueryContext con
 		read_size = buffer->AllocSize();
 	} else {
 		// compressed - read into separate compression buffer first
-		compressed_buffer = Allocator::Get(db).Allocate(TemporaryBufferSizeToSize(identifier.size));
-		read_buffer = compressed_buffer.get();
-		read_size = compressed_buffer.GetSize();
+		read_size = TemporaryBufferSizeToSize(identifier.size);
+		compressed_buffer = Allocator::Get(db).Allocate(read_size + Storage::SECTOR_SIZE - 1);
+		read_buffer = AlignPointer<Storage::SECTOR_SIZE>(compressed_buffer.get());
 	}
 
 	idx_t read_position = GetPositionInFile(block_index);
@@ -254,7 +268,7 @@ unique_ptr<FileBuffer> TemporaryFileHandle::ReadTemporaryBuffer(QueryContext con
 		//! Decrypt the compressed buffer.
 		EncryptionEngine::DecryptTemporaryBuffer(db, read_buffer, read_size, encryption_metadata);
 	} else {
-		handle->Read(context, read_buffer, read_size, read_position);
+		GetIOHandle(read_buffer, read_size, read_position).Read(context, read_buffer, read_size, read_position);
 	}
 
 	if (is_uncompressed) {
@@ -264,13 +278,13 @@ unique_ptr<FileBuffer> TemporaryFileHandle::ReadTemporaryBuffer(QueryContext con
 	// Decompress into buffer.
 	// The leading length word and the compressed payload both come off disk, so validate them before
 	// handing them to zstd: an oversized length would make ZSTD_decompress read past compressed_buffer.
-	const auto compressed_size = Load<idx_t>(compressed_buffer.get());
-	if (compressed_size > compressed_buffer.GetSize() - sizeof(idx_t)) {
+	const auto compressed_size = Load<idx_t>(read_buffer);
+	if (compressed_size > read_size - sizeof(idx_t)) {
 		throw IOException("Corrupt temporary file: compressed block claims %llu bytes but only %llu are available",
-		                  compressed_size, compressed_buffer.GetSize() - sizeof(idx_t));
+		                  compressed_size, read_size - sizeof(idx_t));
 	}
-	const auto decompressed_size = duckdb_zstd::ZSTD_decompress(
-	    buffer->InternalBuffer(), buffer->AllocSize(), compressed_buffer.get() + sizeof(idx_t), compressed_size);
+	const auto decompressed_size = duckdb_zstd::ZSTD_decompress(buffer->InternalBuffer(), buffer->AllocSize(),
+	                                                            read_buffer + sizeof(idx_t), compressed_size);
 	if (duckdb_zstd::ZSTD_isError(decompressed_size)) {
 		throw IOException("Corrupt temporary file: failed to decompress block (%s)",
 		                  duckdb_zstd::ZSTD_getErrorName(decompressed_size));
@@ -283,7 +297,7 @@ unique_ptr<FileBuffer> TemporaryFileHandle::ReadTemporaryBuffer(QueryContext con
 }
 
 void TemporaryFileHandle::WriteTemporaryBuffer(QueryContext context, FileBuffer &buffer, const idx_t block_index,
-                                               AllocatedData &compressed_buffer) const {
+                                               AllocatedData &compressed_buffer) {
 	// We group DEFAULT_BLOCK_ALLOC_SIZE blocks into the same file.
 	D_ASSERT(buffer.AllocSize() == BufferManager::GetBufferManager(db).GetBlockAllocSize());
 	bool is_uncompressed = identifier.size == TemporaryBufferSize::DEFAULT;
@@ -295,7 +309,7 @@ void TemporaryFileHandle::WriteTemporaryBuffer(QueryContext context, FileBuffer 
 		write_size = buffer.AllocSize();
 	} else {
 		// write the compressed buffer to the file
-		write_buffer = compressed_buffer.get();
+		write_buffer = AlignPointer<Storage::SECTOR_SIZE>(compressed_buffer.get());
 		write_size = TemporaryBufferSizeToSize(identifier.size);
 	}
 	idx_t write_position = GetPositionInFile(block_index);
@@ -306,8 +320,7 @@ void TemporaryFileHandle::WriteTemporaryBuffer(QueryContext context, FileBuffer 
 		handle->Write(context, encryption_metadata, DEFAULT_ENCRYPTED_BUFFER_HEADER_SIZE, write_position);
 		handle->Write(context, write_buffer, write_size, write_position + DEFAULT_ENCRYPTED_BUFFER_HEADER_SIZE);
 	} else {
-		// write file directly
-		handle->Write(context, write_buffer, write_size, write_position);
+		GetIOHandle(write_buffer, write_size, write_position).Write(context, write_buffer, write_size, write_position);
 	}
 }
 
@@ -325,6 +338,7 @@ bool TemporaryFileHandle::DeleteIfEmpty() {
 		return false;
 	}
 	// the file is empty: delete it
+	buffered_handle.reset();
 	handle.reset();
 	auto &fs = FileSystem::GetFileSystem(db);
 	fs.RemoveFile(path);
@@ -349,6 +363,17 @@ void TemporaryFileHandle::CreateFileIfNotExists(TemporaryFileLock &) {
 	}
 	auto &fs = FileSystem::GetFileSystem(db);
 	auto open_flags = FileFlags::FILE_FLAGS_READ | FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE;
+// Experimental direct I/O requires an explicit compiler definition.
+#if defined(DUCKDB_TEMPORARY_FILE_DIRECT_IO) && (!defined(__sun) || !defined(__SVR4))
+	if (!IsEncrypted()) {
+		try {
+			handle = fs.OpenFile(path, open_flags | FileFlags::FILE_FLAGS_DIRECT_IO);
+			return;
+		} catch (const IOException &) {
+			// Some filesystems cannot open files with direct I/O.
+		}
+	}
+#endif
 	handle = fs.OpenFile(path, open_flags);
 }
 
@@ -580,11 +605,12 @@ TemporaryFileManager::CompressBuffer(TemporaryFileCompressionAdaptivity &compres
 	const auto compression_level = static_cast<int>(level);
 	D_ASSERT(compression_level >= duckdb_zstd::ZSTD_minCLevel() && compression_level <= duckdb_zstd::ZSTD_maxCLevel());
 	const auto zstd_bound = duckdb_zstd::ZSTD_compressBound(buffer.AllocSize());
-	compressed_buffer = Allocator::Get(db).Allocate(sizeof(idx_t) + zstd_bound);
-	const auto zstd_size = duckdb_zstd::ZSTD_compress(compressed_buffer.get() + sizeof(idx_t), zstd_bound,
+	compressed_buffer = Allocator::Get(db).Allocate(sizeof(idx_t) + zstd_bound + Storage::SECTOR_SIZE - 1);
+	const auto compressed_ptr = AlignPointer<Storage::SECTOR_SIZE>(compressed_buffer.get());
+	const auto zstd_size = duckdb_zstd::ZSTD_compress(compressed_ptr + sizeof(idx_t), zstd_bound,
 	                                                  buffer.InternalBuffer(), buffer.AllocSize(), compression_level);
 	D_ASSERT(!duckdb_zstd::ZSTD_isError(zstd_size));
-	Store<idx_t>(zstd_size, compressed_buffer.get());
+	Store<idx_t>(zstd_size, compressed_ptr);
 	const auto compressed_size = sizeof(idx_t) + zstd_size;
 
 	if (compressed_size > TemporaryBufferSizeToSize(MaximumCompressedTemporaryBufferSize())) {

@@ -214,6 +214,16 @@ CALL disable_logging();
 ----
 the configuration has been locked
 
+statement error
+CALL add_grammar_extension('shell');
+----
+the configuration has been locked
+
+statement error
+CALL remove_grammar_extension('shell');
+----
+the configuration has been locked
+
 query I
 SELECT current_setting('enable_logging')::BOOLEAN;
 ----

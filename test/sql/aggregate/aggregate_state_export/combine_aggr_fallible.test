@@ -1,0 +1,45 @@
+# name: test/sql/aggregate/aggregate_state_export/combine_aggr_fallible.test
+# description: combine_aggr validates imported states and must be registered as fallible
+# group: [aggregate_state_export]
+
+# importing an invalid sketch raises as a regular error in plain aggregation
+
+statement error
+SELECT combine_aggr(to_aggregate_state({'precision': 99::UTINYINT, 'registers': []::USMALLINT[]},
+                                       'approx_count_distinct', ['INTEGER']));
+----
+Invalid approx_count_distinct state - expected precision 10, got 99
+
+# the degenerate CURRENT ROW frame scalarizes combine_aggr into a window scalar function that
+# copies the aggregate's properties - the error must stay a regular error instead of becoming an
+# internal "not marked as fallible" error
+
+statement error
+SELECT combine_aggr(s) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW)
+FROM (SELECT to_aggregate_state({'precision': 99::UTINYINT, 'registers': []::USMALLINT[]},
+                                'approx_count_distinct', ['INTEGER']) s) t;
+----
+Invalid approx_count_distinct state - expected precision 10, got 99
+
+# a fallible error mode blocks whole-dictionary execution of the scalarized aggregate
+
+statement ok
+SET debug_verify_vector='dictionary_expression';
+
+query I rowsort
+SELECT finalize(combine_aggr(to_aggregate_state(v, 'sum', ['INTEGER']))
+                OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW))
+FROM (VALUES (1), (2)) t(v);
+----
+1
+2
+
+statement ok
+RESET debug_verify_vector;
+
+# valid state combination is unaffected
+
+query I
+SELECT finalize(combine_aggr(to_aggregate_state(v, 'sum', ['INTEGER']))) FROM (VALUES (1), (2)) t(v);
+----
+3

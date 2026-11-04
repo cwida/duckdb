@@ -1,5 +1,6 @@
 #include "duckdb.hpp"
 #include "duckdb/common/enums/expression_type.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/parser/expression/conjunction_expression.hpp"
 #include "duckdb/parser/expression/star_expression.hpp"
 #include "duckdb/parser/grammar_extension.hpp"
@@ -175,6 +176,14 @@ public:
 	vector<GrammarChange> GetChanges() const override {
 		vector<GrammarChange> changes;
 		changes.push_back(GrammarChange::AddChoice("ReservedKeyword", "'EXTEND'"));
+		// AGGREGATE is an unreserved keyword in the host grammar: an unreserved keyword stays a valid identifier
+		auto is_aggregate = [](const PEGExpression &expr) {
+			return expr.type == PEGExpression::Type::LITERAL &&
+			       StringUtil::CIEquals(expr.text.GetString(), "AGGREGATE");
+		};
+		changes.push_back(GrammarChange::RemoveChoice("UnreservedKeyword", is_aggregate));
+		changes.push_back(GrammarChange::RemoveChoice("BareLabelKeyword", is_aggregate));
+		changes.push_back(GrammarChange::AddChoice("ReservedKeyword", "'AGGREGATE'"));
 		changes.push_back(
 		    GrammarChange::AddRule("PipeSelectAtom <- PipeSource PipeStage+", StartPipeSelectAtomTransform));
 		changes.push_back(GrammarChange::AddRule("PipeSource <- FromClause / SelectStatementType / SelectParens"));

@@ -86,6 +86,7 @@ static bool IsValidOperator(ExpressionType type, idx_t child_count) {
 		return child_count >= 2;
 	case ExpressionType::OPERATOR_UNPACK:
 	case ExpressionType::OPERATOR_TRY:
+	case ExpressionType::OPERATOR_HAS_ERROR:
 	case ExpressionType::OPERATOR_NOT:
 	case ExpressionType::OPERATOR_IS_NULL:
 	case ExpressionType::OPERATOR_IS_NOT_NULL:

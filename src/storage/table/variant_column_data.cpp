@@ -751,9 +751,8 @@ unique_ptr<ColumnCheckpointState> VariantColumnData::Checkpoint(const RowGroup &
 
 	LogicalType shredded_type;
 	if (should_shred) {
-		if (config.options.force_variant_shredding.id() != LogicalTypeId::INVALID) {
-			shredded_type = config.options.force_variant_shredding;
-		} else {
+		shredded_type = config.GetForceVariantShredding();
+		if (shredded_type.id() == LogicalTypeId::INVALID) {
 			shredded_type = GetShreddedType();
 		}
 		D_ASSERT(shredded_type.id() == LogicalTypeId::STRUCT);

@@ -205,9 +205,9 @@ Scalar Function with name no_such_function_xyz does not exist
 
 # ---------------------------------------------------------------- coalesce written as a function call
 # COALESCE(...) has a grammar rule of its own, so the plain path never names it. Spelling it as a
-# function call - quoted, or schema-qualified - is therefore a deliberate catalog lookup that a user
-# macro can own, and the rewrite must not take it away. The method chain has no grammar form, so
-# there the rewrite is the only route.
+# quoted function call is therefore a deliberate catalog lookup that a user macro can own, and the
+# rewrite must not take it away. The method chain has no grammar form, so there the rewrite is the
+# only route, and a qualification other than main is the column the function is called on.
 
 statement ok
 CREATE SCHEMA s;
@@ -219,9 +219,9 @@ statement ok
 CREATE MACRO s.coalesce(a, b) AS 777;
 
 query II
-SELECT "coalesce"(NULL, 5), s.coalesce(NULL, 5);
+SELECT "coalesce"(NULL, 5), s.coalesce(NULL, 5) FROM (SELECT 1 AS s);
 ----
-999	777
+999	1
 
 # the grammar form ignores the macro, exactly as before
 query I
@@ -296,3 +296,11 @@ statement error
 SELECT (NULL).coalesce(5) FILTER (WHERE true);
 ----
 syntax error
+
+# The qualified form x.f(y) is a method call too, and the function call grammar accepts FILTER on it.
+# A rewritten name rejects FILTER there, like DISTINCT and ORDER BY.
+
+statement error
+SELECT x.construct_array(1) FILTER (WHERE false) FROM (SELECT 2 AS x);
+----
+FILTER is not supported in CONSTRUCT_ARRAY expressions

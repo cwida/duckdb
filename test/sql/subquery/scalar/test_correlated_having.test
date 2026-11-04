@@ -112,7 +112,7 @@ EXPLAIN SELECT (SELECT avg(inner_values.i) * 0.2
                 HAVING true)
 FROM outer_values;
 ----
-logical_opt	<REGEX>:.*Join Type: INNER.*Conditions: i IS NOT DISTINCT FROM .*
+logical_opt	<REGEX>:.*Join Type: INNER.*Conditions: i (=|IS NOT DISTINCT FROM) .*
 
 query II
 EXPLAIN SELECT (SELECT coalesce(avg(inner_values.i), 0)
@@ -121,7 +121,7 @@ EXPLAIN SELECT (SELECT coalesce(avg(inner_values.i), 0)
                 HAVING true)
 FROM outer_values;
 ----
-logical_opt	<REGEX>:.*Join Type: LEFT.*Conditions: i IS NOT DISTINCT FROM .*
+logical_opt	<REGEX>:.*Join Type: LEFT.*Conditions: i (=|IS NOT DISTINCT FROM) .*
 
 statement ok
 SET disabled_optimizers='';

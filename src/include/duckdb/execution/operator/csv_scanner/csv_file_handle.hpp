@@ -63,6 +63,14 @@ public:
 	idx_t UncompressedBytesRead() const {
 		return uncompressed_bytes_read.load(std::memory_order_relaxed);
 	}
+	//! The bytes of the stored file read since the last call - for a compressed file, its compressed bytes. Bytes read
+	//! again are not returned again
+	idx_t TakeStoredBytesRead() {
+		return stored_bytes_untaken.exchange(0);
+	}
+	void AddStoredBytesRead(idx_t bytes) {
+		stored_bytes_untaken += bytes;
+	}
 
 private:
 	QueryContext context;
@@ -73,6 +81,9 @@ private:
 	bool on_disk_file = false;
 	bool is_pipe = false;
 	atomic<idx_t> uncompressed_bytes_read {0};
+	atomic<idx_t> stored_bytes_untaken {0};
+	//! How far into the stored file sequential reads have counted, so a read again after a seek is not counted twice
+	idx_t stored_bytes_counted = 0;
 
 	idx_t file_size = 0;
 

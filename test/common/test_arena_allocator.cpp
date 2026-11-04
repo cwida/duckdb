@@ -112,3 +112,32 @@ TEST_CASE("Arena tail shrinking makes discarded capacity reusable", "[arena_allo
 	memset(buffer + keep_size, 84, old_size - keep_size);
 	REQUIRE(buffer[old_size - 1] == 84);
 }
+
+TEST_CASE("Arena reallocations can copy allocations from another arena", "[arena_allocator]") {
+	Allocator allocator([](PrivateAllocatorData *, idx_t size) { return data_ptr_cast(std::malloc(size)); },
+	                    [](PrivateAllocatorData *, data_ptr_t pointer, idx_t) { std::free(pointer); },
+	                    [](PrivateAllocatorData *, data_ptr_t pointer, idx_t, idx_t size) {
+		                    return data_ptr_cast(std::realloc(pointer, size));
+	                    },
+	                    nullptr);
+	ArenaAllocator source(allocator, 1);
+	ArenaAllocator target(allocator, 1);
+	const idx_t old_size = 64;
+	const idx_t size = GENERATE(32, 128);
+	const idx_t occupied = GENERATE(0, 1, 128);
+	if (occupied != 0) {
+		memset(target.Allocate(occupied), 13, occupied);
+	}
+	auto pointer = source.Allocate(old_size);
+	memset(pointer, 42, old_size);
+	auto result = target.Reallocate(pointer, old_size, size);
+	REQUIRE(result != pointer);
+	REQUIRE(pointer[0] == 42);
+	REQUIRE(pointer[old_size - 1] == 42);
+	source.FreeAll();
+	for (idx_t i = 0; i < MinValue(old_size, size); i++) {
+		REQUIRE(result[i] == 42);
+	}
+	memset(result, 84, size);
+	REQUIRE(result[size - 1] == 84);
+}

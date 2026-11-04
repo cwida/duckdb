@@ -115,6 +115,20 @@ void LogManager::SetConfig(DatabaseInstance &db, const LogConfig &config_p) {
 	// We need extra handling for switching storage
 	SetLogStorageInternal(db, config_p.storage);
 
+	// keep the storage name as SetLogStorageInternal lowercased it, so that it is recognized when set again
+	auto new_config = config_p;
+	new_config.storage = config.storage;
+	SetConfigInternal(std::move(new_config));
+}
+
+pair<LogConfig, shared_ptr<LogStorage>> LogManager::GetConfigAndStorage() {
+	unique_lock<mutex> lck(lock);
+	return make_pair(config, log_storage);
+}
+
+void LogManager::RestoreConfig(const LogConfig &config_p, shared_ptr<LogStorage> storage) {
+	unique_lock<mutex> lck(lock);
+	log_storage = std::move(storage);
 	SetConfigInternal(config_p);
 }
 
@@ -285,6 +299,7 @@ void LogManager::RegisterDefaultLogTypes() {
 	RegisterLogType(make_uniq<AdaptiveFilterLogType>());
 	RegisterLogType(make_uniq<ParquetPrefetchLogType>());
 	RegisterLogType(make_uniq<AsyncTaskScheduleLogType>());
+	RegisterLogType(make_uniq<ReadAheadBudgetLogType>());
 	RegisterLogType(make_uniq<ExternalResourceLogType>());
 	RegisterLogType(make_uniq<ProgressVerificationLogType>());
 }

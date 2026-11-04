@@ -80,19 +80,26 @@ public:
 		radix->Combine(context, *global, *locals[index]);
 	}
 
-	idx_t ScanGroupCount() {
+	idx_t ScanGroupCount(optional_ptr<const Value> expected_aggregate = nullptr) {
 		radix->Finalize(*con.context, *global);
 		radix->MaxThreads(*global);
 		auto source = radix->GetGlobalSourceState(*con.context);
 		auto local_source = radix->GetLocalSourceState(context);
 		OperatorSourceInput input {*source, *local_source, interrupt};
 		DataChunk output;
-		output.Initialize(Allocator::Get(*con.context), chunk.GetTypes());
+		auto types = chunk.GetTypes();
+		types.insert(types.end(), op.aggregate_return_types.begin(), op.aggregate_return_types.end());
+		output.Initialize(Allocator::Get(*con.context), types);
 		idx_t count = 0;
 		while (true) {
 			output.Reset();
 			const auto result = radix->GetData(context, output, *global, input);
 			REQUIRE(result != SourceResultType::BLOCKED);
+			if (expected_aggregate) {
+				for (idx_t row = 0; row < output.size(); row++) {
+					REQUIRE(output.GetValue(1, row) == *expected_aggregate);
+				}
+			}
 			count += output.size();
 			if (result == SourceResultType::FINISHED) {
 				return count;
@@ -182,6 +189,77 @@ TEST_CASE("Increasing the reservation preserves an underfull aggregate table", "
 	REQUIRE(global.GetThreadLimit() > old_limit);
 	REQUIRE(local.ht->Count() == old_count + STANDARD_VECTOR_SIZE);
 	REQUIRE_FALSE(local.spilling);
+}
+
+TEST_CASE("Arena pressure requests enough reservation to keep aggregate states resident", "[radix_ht_sink]") {
+	for (const bool combine_other_worker : {false, true}) {
+		CAPTURE(combine_other_worker);
+		RadixSinkFixture fixture("1GB", true);
+		fixture.Keys(0, STANDARD_VECTOR_SIZE);
+		fixture.Sink();
+		if (combine_other_worker) {
+			fixture.Sink(1);
+			fixture.Combine(1);
+		}
+		auto &local = fixture.Local();
+		auto &global = fixture.Global();
+		auto &ht = *local.ht;
+		const Value payload(string(8 * 1024 * 1024 / STANDARD_VECTOR_SIZE, 'p'));
+		fixture.SetPayload(payload);
+		// Grow real states on hits, stopping before the sink makes its pressure decision.
+		ht.AddChunk(fixture.chunk, fixture.payload, fixture.filter);
+		const auto total_size = ht.GetSizeInBytes();
+		const auto arena_size = ht.GetAggregateAllocator()->AllocationSize();
+		REQUIRE(arena_size * 5 > total_size * 4);
+		REQUIRE(ht.Count() + STANDARD_VECTOR_SIZE < ht.ResizeThreshold());
+		global.temporary_memory_state->SetRemainingSizeAndUpdateReservation(
+		    *fixture.con.context, 3 * global.number_of_threads * total_size / 2);
+		const auto old_limit = global.GetThreadLimit();
+		REQUIRE(total_size <= old_limit);
+		REQUIRE(global.StatePressureExceeded(ht));
+
+		fixture.SetPayload(Value(LogicalType::VARCHAR));
+		fixture.Sink();
+		REQUIRE(global.GetThreadLimit() > old_limit);
+		REQUIRE_FALSE(global.StatePressureExceeded(ht));
+		REQUIRE_FALSE(global.external);
+		REQUIRE_FALSE(local.spilling);
+		REQUIRE(local.abandoned_exported_data.empty());
+		REQUIRE(ht.Count() == STANDARD_VECTOR_SIZE);
+		REQUIRE(ht.GetAdaptivityState().HLLEnabled());
+		fixture.Combine(0);
+		REQUIRE(fixture.ScanGroupCount(payload) == STANDARD_VECTOR_SIZE);
+	}
+}
+
+TEST_CASE("Arena pressure still exports when the reservation cannot grow enough", "[radix_ht_sink]") {
+	for (const bool force_external : {false, true}) {
+		CAPTURE(force_external);
+		RadixSinkFixture fixture("64MB", true);
+		if (force_external) {
+			REQUIRE_NO_FAIL(fixture.con.Query("SET debug_force_external=true"));
+		}
+		fixture.Keys(0, STANDARD_VECTOR_SIZE);
+		fixture.Sink();
+		auto &local = fixture.Local();
+		auto &global = fixture.Global();
+		auto &ht = *local.ht;
+		const Value payload(string(8 * 1024 * 1024 / STANDARD_VECTOR_SIZE, 'p'));
+		fixture.SetPayload(payload);
+		ht.AddChunk(fixture.chunk, fixture.payload, fixture.filter);
+		REQUIRE(ht.Count() + STANDARD_VECTOR_SIZE < ht.ResizeThreshold());
+		REQUIRE(global.StatePressureExceeded(ht));
+
+		fixture.SetPayload(Value(LogicalType::VARCHAR));
+		fixture.Sink();
+		REQUIRE(global.temporary_memory_state->GetReservation() < global.temporary_memory_state->GetRemainingSize());
+		REQUIRE(global.external);
+		REQUIRE(local.spilling);
+		REQUIRE_FALSE(local.abandoned_exported_data.empty());
+		REQUIRE(ht.GetAggregateAllocator()->AllocationSize() == 0);
+		fixture.Combine(0);
+		REQUIRE(fixture.ScanGroupCount(payload) == STANDARD_VECTOR_SIZE);
+	}
 }
 
 TEST_CASE("A reduced reservation does not prevent external aggregation", "[radix_ht_sink]") {
@@ -503,6 +581,101 @@ TEST_CASE("Failed adaptive growth preserves rows and falls back to the existing 
 	}
 	fixture.Combine(0);
 	REQUIRE(fixture.ScanGroupCount() == 65536);
+}
+
+TEST_CASE("Aggregate append pins are released before spilling", "[radix_ht_sink]") {
+	const auto group_count = MinValue<idx_t>(16, STANDARD_VECTOR_SIZE);
+	for (const bool acquire : {false, true}) {
+		CAPTURE(acquire);
+		RadixSinkFixture fixture("128MB");
+		fixture.Global().temporary_memory_state->SetMinimumReservation(64 * 1024 * 1024);
+		fixture.Global().temporary_memory_state->SetRemainingSizeAndUpdateReservation(*fixture.con.context,
+		                                                                              64 * 1024 * 1024);
+		fixture.Global().config.SetRadixBits(3);
+		fixture.Keys(0, group_count, 192000 / group_count);
+		fixture.Sink();
+		auto &ht = *fixture.Local().ht;
+		REQUIRE(ht.GetRadixBits() >= 3);
+		REQUIRE(ht.Count() == group_count);
+		REQUIRE(ht.GetPartitionedData().Count() == 0);
+		fixture.Global().any_abandoned = true;
+		// Leave completed blocks available for eviction alongside the current append blocks.
+		for (idx_t i = 0; i < 7; i++) {
+			ht.Abandon();
+			ht.AddChunk(fixture.chunk, fixture.payload, fixture.filter);
+		}
+		const auto materialized = ht.GetMaterializedCount();
+		REQUIRE(materialized == 8 * group_count);
+		auto &manager = BufferManager::GetBufferManager(*fixture.con.context);
+		{
+			auto competing_allocation =
+			    manager.GetBufferAllocator().Allocate(manager.GetMaxMemory() - manager.GetUsedMemory() - 65536);
+			if (acquire) {
+				auto data = ht.AcquirePartitionedData();
+				REQUIRE(data->Count() == materialized);
+				REQUIRE(ht.GetMaterializedCount() == 0);
+				continue;
+			}
+			REQUIRE_NOTHROW(ht.Abandon());
+			REQUIRE(ht.GetMaterializedCount() == materialized);
+		}
+		// A pressure episode may be followed by another resident append to a partial block.
+		for (idx_t i = 0; i < 3; i++) {
+			ht.AddChunk(fixture.chunk, fixture.payload, fixture.filter);
+			ht.Abandon();
+		}
+		REQUIRE(ht.GetMaterializedCount() == materialized + 3 * group_count);
+		fixture.Combine(0);
+		REQUIRE(fixture.ScanGroupCount() == group_count);
+	}
+}
+
+TEST_CASE("Abandoned aggregate blocks can be evicted before the next sink call", "[radix_ht_sink]") {
+	for (const bool direct : {false, true}) {
+		if (direct && STANDARD_VECTOR_SIZE < 64) {
+			continue;
+		}
+		CAPTURE(direct);
+		const auto group_count = MinValue<idx_t>(direct ? 64 : 16, STANDARD_VECTOR_SIZE);
+		RadixSinkFixture fixture("128MB");
+		fixture.Global().temporary_memory_state->SetMinimumReservation(64 * 1024 * 1024);
+		fixture.Global().temporary_memory_state->SetRemainingSizeAndUpdateReservation(*fixture.con.context,
+		                                                                              64 * 1024 * 1024);
+		fixture.Global().config.SetRadixBits(3);
+		fixture.Keys(0, group_count, 192000 / group_count);
+		fixture.Sink();
+		auto &ht = *fixture.Local().ht;
+		REQUIRE(ht.GetRadixBits() == 3);
+		REQUIRE(ht.Count() == group_count);
+		REQUIRE(ht.GetPartitionedData().Count() == (direct ? group_count : 0));
+		ht.EnableHLL(false);
+		// Exercise the sink's occupancy-triggered abandon without growing a large key domain.
+		fixture.Local().local_sink_capacity = STANDARD_VECTOR_SIZE;
+		for (idx_t i = 0; i < 32; i++) {
+			fixture.Sink();
+			REQUIRE(ht.Count() == 0);
+		}
+		fixture.Local().local_sink_capacity = ht.Capacity();
+		fixture.Sink();
+		REQUIRE_FALSE(fixture.Global().external);
+		REQUIRE(ht.Count() == group_count);
+		REQUIRE(ht.GetMaterializedCount() == 33 * group_count);
+		auto &manager = BufferManager::GetBufferManager(*fixture.con.context);
+		const auto used = manager.GetUsedMemory();
+		const idx_t extra = 2 * 1024 * 1024;
+		REQUIRE(used > extra);
+		REQUIRE(used < manager.GetMaxMemory());
+		{
+			// Reclaim completed blocks while the current groups are still referenced by the hash table.
+			auto allocation = manager.GetBufferAllocator().Allocate(manager.GetMaxMemory() - used + extra);
+			allocation.get()[0] = 1;
+			REQUIRE(ht.AddChunk(fixture.chunk, fixture.payload, fixture.filter) == 0);
+			REQUIRE(ht.Count() == group_count);
+			REQUIRE(ht.GetMaterializedCount() == 33 * group_count);
+		}
+		fixture.Combine(0);
+		REQUIRE(fixture.ScanGroupCount() == group_count);
+	}
 }
 
 } // namespace duckdb
