@@ -782,12 +782,19 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 	// branch's source routing for the rest of the invocation.
 	const auto has_independent_source = plan.has_source_tasks || plan.has_parallel_source;
 	auto &route = gstate.source_routes[branch_idx - 1];
-	const auto arbitrate = has_independent_source && configured_threads > 1 && !RequiresRounds();
+	// waves running the full plan carry the one-time invariant builds, which would contaminate
+	// a probe's reference measurement, so arbitration starts once the retained builds stand
+	const auto arbitrate = has_independent_source && configured_threads > 1 && !RequiresRounds() &&
+	                       (branch.invariant_meta_pipelines.empty() || materialized);
 	bool source_parallel = parallel_source_pays;
 	if (arbitrate && route.mode != TrampolineBranchSourceRoute::Mode::ESTIMATE) {
 		source_parallel = route.parallel;
 		if (source_parallel && source_task_workers <= 1) {
 			source_task_workers = configured_threads;
+		} else if (!source_parallel) {
+			// a pinned or probing inline route must not leak estimate-sized source workers
+			// into a wave that parallelizes on the frontier criterion
+			source_task_workers = frontier_workers;
 		}
 	}
 	const auto go_parallel = source_parallel || (frontier_workers > 1 && input_rows >= TRAMPOLINE_PARALLEL_MIN_ROWS);
