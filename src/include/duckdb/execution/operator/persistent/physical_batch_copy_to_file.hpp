@@ -25,6 +25,7 @@ public:
 public:
 	PhysicalBatchCopyToFile(PhysicalPlan &physical_plan, vector<LogicalType> types, CopyFunction function,
 	                        unique_ptr<FunctionData> bind_data, idx_t estimated_cardinality);
+	~PhysicalBatchCopyToFile() override;
 
 public:
 	InsertionOrderPreservingMap<string> ParamsToString() const override;
