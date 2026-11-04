@@ -1,0 +1,51 @@
+# name: test/sql/copy/parquet/issue_27456_constant_stats.test
+# description: IS NULL filter must not prune PLAIN pages whose statistics are constant but that contain nulls
+# group: [parquet]
+
+require parquet
+
+# The file below has a single PLAIN-encoded page per column, with page statistics min == max ('x' / 'y')
+# and null_count > 0. Reading without a filter is correct, but a pushed-down IS NULL filter used to prune
+# the page based on the constant statistics (which say nothing about nulls), turning every value into NULL
+# and then matching all rows.
+
+query II
+SELECT rid, c FROM 'test/sql/copy/parquet/issue_27456_constant_stats.parquet' WHERE c IS NULL ORDER BY rid
+----
+0	NULL
+2	NULL
+4	NULL
+
+query II
+SELECT rid, b FROM 'test/sql/copy/parquet/issue_27456_constant_stats.parquet' WHERE b IS NULL ORDER BY rid
+----
+0	NULL
+2	NULL
+4	NULL
+
+query II
+SELECT rid, c FROM 'test/sql/copy/parquet/issue_27456_constant_stats.parquet' WHERE c IS NOT NULL ORDER BY rid
+----
+1	x
+3	x
+5	x
+
+query I
+SELECT count(*) FROM 'test/sql/copy/parquet/issue_27456_constant_stats.parquet' WHERE NOT (c IS NOT NULL)
+----
+3
+
+query I
+SELECT count(*) FROM 'test/sql/copy/parquet/issue_27456_constant_stats.parquet' WHERE coalesce(c, 'z') = 'z'
+----
+3
+
+query II
+SELECT rid, c FROM 'test/sql/copy/parquet/issue_27456_constant_stats.parquet' ORDER BY rid
+----
+0	NULL
+1	x
+2	NULL
+3	x
+4	NULL
+5	x

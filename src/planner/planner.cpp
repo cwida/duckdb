@@ -208,6 +208,7 @@ void Planner::CreatePlan(SQLStatement &statement) {
 	try {
 		auto binding_timer = profiler.StartTimer<MetricPlannerBindingTime>();
 		binder->SetParameters(bound_parameters);
+		binder->SetStatementParameters(statement.named_param_map);
 		RunPreBindExtensions(context, *binder, statement);
 		auto bound_statement = binder->Bind(statement);
 		binding_timer.EndTimer();

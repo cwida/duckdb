@@ -1,0 +1,275 @@
+# name: test/sql/copy/parquet/bloom_filter_coalesced_memory.test_slow
+# description: Coalesced Bloom filter memory use and retained-byte limits
+# group: [parquet]
+
+require parquet
+
+require vector_size 2048
+
+require no_alternative_verify
+
+statement ok
+SET threads = 1;
+
+statement ok
+COPY (SELECT (range % 4000) * 2 AS x FROM range(8388608))
+TO '{TEST_DIR}/bloom_coalesced_memory.parquet' (ROW_GROUP_SIZE 16384, DICTIONARY_SIZE_LIMIT 10000);
+
+query III
+SELECT count(*), min(bloom_filter_length), max(bloom_filter_length)
+FROM parquet_metadata('{TEST_DIR}/bloom_coalesced_memory.parquet');
+----
+512	8209	8209
+
+statement ok
+SET enable_external_file_cache = false;
+
+statement ok
+SET parquet_prefetch_column_gap = 16384;
+
+# The shared plan exceeds its share of the memory limit; individual reads still fit.
+statement ok
+SET memory_limit = '8MB';
+
+foreach disabled true false
+
+statement ok
+SET disable_parquet_prefetching = {disabled};
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/bloom_coalesced_memory.parquet' WHERE x = 1;
+----
+0
+
+endloop
+
+statement ok
+RESET memory_limit;
+
+# Statistics leave every other filter, with gaps too large to merge.
+statement ok
+COPY (SELECT (range // 16384 % 2) * 100000 + (range % 4000) * 2 AS x FROM range(16777216))
+TO '{TEST_DIR}/bloom_singletons.parquet' (ROW_GROUP_SIZE 16384, DICTIONARY_SIZE_LIMIT 10000);
+
+statement ok
+SET parquet_prefetch_column_gap = 4096;
+
+statement ok
+SET memory_limit = '4MB';
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/bloom_singletons.parquet' WHERE x = 1;
+----
+0
+
+statement ok
+RESET memory_limit;
+
+# Surviving filters merge in pairs: 94 bytes per pair still needs a 4 KiB buffer.
+statement ok
+COPY (SELECT (range // 4096 % 2) * 100 + (range % 4) * 2 AS x FROM range(8388608))
+TO '{TEST_DIR}/bloom_small_pairs.parquet' (ROW_GROUP_SIZE 2048);
+
+query III
+SELECT count(*), min(bloom_filter_length), max(bloom_filter_length)
+FROM parquet_metadata('{TEST_DIR}/bloom_small_pairs.parquet');
+----
+4096	47	47
+
+statement ok
+SET parquet_prefetch_column_gap = 0;
+
+statement ok
+SET memory_limit = '4MB';
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/bloom_small_pairs.parquet' WHERE x = 1;
+----
+0
+
+statement ok
+RESET memory_limit;
+
+statement ok
+SET parquet_prefetch_column_gap = 16384;
+
+# Divide the filter bytes across the available scan workers.
+foreach threads 1 8
+
+statement ok
+SET threads = {threads};
+
+statement ok
+CALL enable_logging('FileSystem');
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/bloom_coalesced_memory.parquet' WHERE x = 1;
+----
+0
+
+statement ok
+CALL disable_logging();
+
+query III
+SELECT count(*) = {threads}, max(bytes) <= (512 * 8209) // {threads}, sum(bytes) = 512 * 8209
+FROM duckdb_logs_parsed('FileSystem')
+WHERE op = 'READ' AND parse_filename(path) = 'bloom_coalesced_memory.parquet'
+  AND pos >= (SELECT min(bloom_filter_offset) FROM parquet_metadata('{TEST_DIR}/bloom_coalesced_memory.parquet'))
+  AND pos + bytes <= (SELECT max(bloom_filter_offset + bloom_filter_length) FROM parquet_metadata('{TEST_DIR}/bloom_coalesced_memory.parquet'));
+----
+true	true	true
+
+statement ok
+CALL truncate_duckdb_logs();
+
+endloop
+
+statement ok
+SET threads = 1;
+
+statement ok
+COPY (SELECT (range % 4000) * 2 AS x, (range % 4000) * 2 AS y FROM range(8388608))
+TO '{TEST_DIR}/bloom_coalesced_cache.parquet' (ROW_GROUP_SIZE 16384, DICTIONARY_SIZE_LIMIT 10000);
+
+statement ok
+SET enable_external_file_cache = true;
+
+statement ok
+SET cache_local_files = true;
+
+statement ok
+SET external_file_cache_local_max_block_size = 16384;
+
+# Cached reads must also respect the memory budget across both columns.
+statement ok
+SET memory_limit = '14MB';
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/bloom_coalesced_cache.parquet' WHERE x = 0 AND y = 0;
+----
+2098
+
+statement ok
+RESET memory_limit;
+
+# Check retained-byte limits with a fresh buffer pool.
+restart
+
+statement ok
+SET cache_local_files = false;
+
+statement ok
+SET threads = 1;
+
+statement ok
+SET enable_external_file_cache = false;
+
+# Four bands repeat in pairs of groups, with 64 KiB filters.
+statement ok
+COPY (SELECT (range // 65536 % 4) * 100000 + (range % 32768) * 2 AS x FROM range(34078720))
+TO '{TEST_DIR}/bloom_coalesced_limit.parquet' (ROW_GROUP_SIZE 32768, DICTIONARY_SIZE_LIMIT 100000);
+
+query III
+SELECT count(*), min(bloom_filter_length), max(bloom_filter_length)
+FROM parquet_metadata('{TEST_DIR}/bloom_coalesced_limit.parquet');
+----
+1040	65553	65553
+
+statement ok
+CREATE MACRO bloom_reads() AS TABLE
+SELECT count(*) AS reads, sum(bytes) AS bytes FROM duckdb_logs_parsed('FileSystem')
+WHERE op = 'READ' AND parse_filename(path) = 'bloom_coalesced_limit.parquet'
+  AND pos >= (SELECT min(bloom_filter_offset) FROM parquet_metadata('{TEST_DIR}/bloom_coalesced_limit.parquet'))
+  AND pos + bytes <= (SELECT max(bloom_filter_offset + bloom_filter_length) FROM parquet_metadata('{TEST_DIR}/bloom_coalesced_limit.parquet'));
+
+# Separate pairs each fit, but retaining all 260 pairs would exceed 32 MiB.
+statement ok
+SET parquet_prefetch_column_gap = 4096;
+
+statement ok
+CALL enable_logging('FileSystem');
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/bloom_coalesced_limit.parquet' WHERE x IN (1, 200001);
+----
+0
+
+statement ok
+CALL disable_logging();
+
+query II
+SELECT reads, bytes FROM bloom_reads();
+----
+520	34087560
+
+statement ok
+CALL truncate_duckdb_logs();
+
+# The needed filters fit in 32 MiB, but merging across the gaps would exceed it.
+statement ok
+SET parquet_prefetch_column_gap = 33554432;
+
+statement ok
+CALL enable_logging('FileSystem');
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/bloom_coalesced_limit.parquet' WHERE x = 1;
+----
+0
+
+statement ok
+CALL disable_logging();
+
+query II
+SELECT reads, bytes FROM bloom_reads();
+----
+260	17043780
+
+
+statement ok
+RESET memory_limit;
+
+# Each file has about 25 MiB of filters, below the per-column cap.
+statement ok
+COPY (SELECT (range % 122880)::INTEGER * 2 AS x FROM range(12288000))
+TO '{TEST_DIR}/bloom_glob_source.parquet' (ROW_GROUP_SIZE 122880, DICTIONARY_SIZE_LIMIT 200000);
+
+query III
+SELECT count(*), min(bloom_filter_length), max(bloom_filter_length)
+FROM parquet_metadata('{TEST_DIR}/bloom_glob_source.parquet');
+----
+100	262161	262161
+
+loop file 0 8
+
+statement ok
+COPY (SELECT content FROM read_blob('{TEST_DIR}/bloom_glob_source.parquet'))
+TO '{TEST_DIR}/bloom_memory_glob_{file}.parquet' (FORMAT BLOB);
+
+endloop
+
+restart
+
+statement ok
+SET cache_local_files = false;
+
+statement ok
+SET memory_limit = '64MB';
+
+foreach threads 4 18
+
+statement ok
+SET threads = {threads};
+
+query I
+SELECT count(*) FROM '{TEST_DIR}/bloom_memory_glob_*.parquet' WHERE x = 1;
+----
+0
+
+# A subsequent scan must also succeed after the first query has released its buffers.
+query I
+SELECT count(*) FROM '{TEST_DIR}/bloom_memory_glob_*.parquet' WHERE x = 0;
+----
+800
+
+endloop
