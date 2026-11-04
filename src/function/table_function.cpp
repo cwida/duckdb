@@ -22,9 +22,9 @@ BaseTableFunction::BaseTableFunction(table_function_t function_, table_function_
                                      table_function_init_global_t init_global, table_function_init_local_t init_local)
     : bind(bind), bind_replace(nullptr), bind_operator(nullptr), init_global(init_global), init_local(init_local),
       function(function_), in_out_function(nullptr), in_out_function_final(nullptr), statistics(nullptr),
-      statistics_extended(nullptr), dependency(nullptr), cardinality(nullptr), get_metrics(nullptr),
-      pushdown_complex_filter(nullptr), pushdown_expression(nullptr), to_string(nullptr), table_scan_progress(nullptr),
-      get_partition_data(nullptr), get_bind_info(nullptr), get_table_entry(nullptr),
+      statistics_extended(nullptr), dependency(nullptr), cardinality(nullptr), cardinality_postfilter(nullptr),
+      get_metrics(nullptr), pushdown_complex_filter(nullptr), pushdown_expression(nullptr), to_string(nullptr),
+      table_scan_progress(nullptr), get_partition_data(nullptr), get_bind_info(nullptr), get_table_entry(nullptr),
       projection_expression_pushdown(nullptr), get_multi_file_reader(nullptr), supports_pushdown_type(nullptr),
       supports_pushdown_extract(nullptr), is_repeatable(nullptr), get_partition_info(nullptr),
       get_partition_stats(nullptr), get_virtual_columns(nullptr), get_row_id_columns(nullptr), set_scan_order(nullptr),
@@ -92,6 +92,7 @@ BoundTableFunction::BoundTableFunction(shared_ptr<const TableFunction> function_
 	statistics_extended = function.statistics_extended;
 	dependency = function.dependency;
 	cardinality = function.cardinality;
+	cardinality_postfilter = function.cardinality_postfilter;
 	get_metrics = function.get_metrics;
 	pushdown_complex_filter = function.pushdown_complex_filter;
 	pushdown_expression = function.pushdown_expression;
@@ -169,6 +170,7 @@ bool BaseTableFunction::operator==(const BaseTableFunction &rhs) const {
 	       init_global == rhs.init_global && init_local == rhs.init_local && function == rhs.function &&
 	       in_out_function == rhs.in_out_function && in_out_function_final == rhs.in_out_function_final &&
 	       statistics == rhs.statistics && dependency == rhs.dependency && cardinality == rhs.cardinality &&
+	       cardinality_postfilter == rhs.cardinality_postfilter &&
 	       pushdown_complex_filter == rhs.pushdown_complex_filter && pushdown_expression == rhs.pushdown_expression &&
 	       to_string == rhs.to_string && to_sql == rhs.to_sql && table_scan_progress == rhs.table_scan_progress &&
 	       get_partition_data == rhs.get_partition_data && get_bind_info == rhs.get_bind_info &&

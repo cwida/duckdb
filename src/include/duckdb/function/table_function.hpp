@@ -502,6 +502,10 @@ public:
 	//! (Optional) cardinality function
 	//! Returns the expected cardinality of this scan
 	table_function_cardinality_t cardinality;
+	//! (Optional) post-filter cardinality function.
+	//! If a function defines pushdown_complex_filter, returns the expected cardinality of the scan after pushing
+	//! filters in pushdown_complex_filter
+	table_function_cardinality_t cardinality_postfilter;
 	//! (Optional) returns profiling metrics for this table scan operator
 	table_function_get_metrics_t get_metrics;
 	//! (Optional) pushdown a set of arbitrary filter expressions, rather than only simple comparisons with a constant

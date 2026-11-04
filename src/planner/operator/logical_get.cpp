@@ -323,6 +323,16 @@ idx_t LogicalGet::EstimateSourceCardinality(ClientContext &context) {
 	return 1;
 }
 
+idx_t LogicalGet::EstimateSourceCardinalityPostFilter(ClientContext &context) {
+	if (function.pushdown_complex_filter && function.cardinality_postfilter && bind_data) {
+		auto node_stats = function.cardinality_postfilter(context, bind_data.get());
+		if (node_stats && node_stats->has_estimated_cardinality) {
+			return node_stats->estimated_cardinality;
+		}
+	}
+	return EstimateSourceCardinality(context);
+}
+
 void LogicalGet::SetScanOrder(unique_ptr<RowGroupOrderOptions> options) {
 	if (!function.set_scan_order) {
 		throw InternalException("LogicalGet::SetScanOrder called but function does not have scan order defined");
