@@ -133,6 +133,75 @@ static idx_t FilterFraction(idx_t cardinality, double fraction) {
 	                                                    double(cardinality) * fraction)));
 }
 
+class IntegerRangeEstimate {
+public:
+	explicit IntegerRangeEstimate(const BaseStatistics &statistics) : statistics(statistics) {
+	}
+
+	bool AddBound(ExpressionType comparison, const Value &constant) {
+		if (constant.IsNull() || !constant.type().EqualsIncludingCollation(statistics.GetType()) ||
+		    statistics.GetStatsType() != StatisticsType::NUMERIC_STATS || !NumericStats::HasMinMax(statistics)) {
+			return false;
+		}
+		switch (constant.type().id()) {
+		case LogicalTypeId::TINYINT:
+		case LogicalTypeId::SMALLINT:
+		case LogicalTypeId::INTEGER:
+		case LogicalTypeId::BIGINT:
+		case LogicalTypeId::UTINYINT:
+		case LogicalTypeId::USMALLINT:
+		case LogicalTypeId::UINTEGER:
+		case LogicalTypeId::UBIGINT:
+			break;
+		default:
+			return false;
+		}
+		if (!has_bounds) {
+			lower = NumericStats::Min(statistics).GetValue<hugeint_t>();
+			upper = NumericStats::Max(statistics).GetValue<hugeint_t>();
+			if (lower > upper) {
+				return false;
+			}
+			// Widen before endpoint arithmetic: a complete 64-bit interval has 2^64 values.
+			count = upper - lower + 1;
+			has_bounds = true;
+		}
+		auto value = constant.GetValue<hugeint_t>();
+		switch (comparison) {
+		case ExpressionType::COMPARE_LESSTHAN:
+			upper = MinValue(upper, value - 1);
+			break;
+		case ExpressionType::COMPARE_LESSTHANOREQUALTO:
+			upper = MinValue(upper, value);
+			break;
+		case ExpressionType::COMPARE_GREATERTHAN:
+			lower = MaxValue(lower, value + 1);
+			break;
+		case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
+			lower = MaxValue(lower, value);
+			break;
+		default:
+			throw InternalException("Expected a range comparison");
+		}
+		return true;
+	}
+
+	optional<double> Fraction() const {
+		if (!has_bounds) {
+			return {};
+		}
+		auto matching = MaxValue(hugeint_t(0), upper - lower + 1);
+		return Hugeint::Cast<double>(matching) / Hugeint::Cast<double>(count);
+	}
+
+private:
+	const BaseStatistics &statistics;
+	hugeint_t lower;
+	hugeint_t upper;
+	hugeint_t count;
+	bool has_bounds = false;
+};
+
 static optional_ptr<const RelationColumnStats> FilterColumn(const Expression &expr,
                                                             const RelationColumnStatsLookup &columns,
                                                             const vector<ColumnBinding> &positional_bindings) {
@@ -183,7 +252,7 @@ static FilterEstimate EstimateEqualityRows(idx_t cardinality, ExpressionType typ
 static FilterEstimate EstimateComparisonRows(idx_t cardinality, const BoundFunctionExpression &comparison,
                                              const RelationColumnStatsLookup &columns,
                                              const vector<ColumnBinding> &positional_bindings,
-                                             FilterPropagateResult pruning) {
+                                             FilterPropagateResult pruning, optional_ptr<IntegerRangeEstimate> range) {
 	const auto selectivity = RelationStatisticsHelper::DEFAULT_SELECTIVITY;
 	auto &children = comparison.GetChildren();
 	auto type = comparison.GetExpressionType();
@@ -221,6 +290,10 @@ static FilterEstimate EstimateComparisonRows(idx_t cardinality, const BoundFunct
 	case ExpressionType::COMPARE_LESSTHANOREQUALTO:
 	case ExpressionType::COMPARE_GREATERTHAN:
 	case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
+		if (range && value->GetExpressionClass() == ExpressionClass::BOUND_CONSTANT &&
+		    range->AddBound(type, value->Cast<BoundConstantExpression>().GetValue())) {
+			return {cardinality, true};
+		}
 		return {FilterFraction(cardinality, selectivity), true};
 	default:
 		return {cardinality, false};
@@ -231,7 +304,8 @@ static FilterEstimate EstimateFilterRows(idx_t cardinality, const Expression &ex
                                          const RelationColumnStatsLookup &columns,
                                          const vector<ColumnBinding> &positional_bindings,
                                          optional_ptr<ClientContext> context = nullptr,
-                                         optional_ptr<const BaseStatistics> scan_statistics = nullptr) {
+                                         optional_ptr<const BaseStatistics> scan_statistics = nullptr,
+                                         optional_ptr<IntegerRangeEstimate> range = nullptr) {
 	if (ExpressionFilter::IsRootOptionalExpression(expr)) {
 		return {cardinality, true};
 	}
@@ -239,7 +313,7 @@ static FilterEstimate EstimateFilterRows(idx_t cardinality, const Expression &ex
 		FilterEstimate result {cardinality, true};
 		for (auto &child : expr.Cast<BoundConjunctionExpression>().GetChildren()) {
 			result.Combine(
-			    EstimateFilterRows(cardinality, *child, columns, positional_bindings, context, scan_statistics));
+			    EstimateFilterRows(cardinality, *child, columns, positional_bindings, context, scan_statistics, range));
 		}
 		return result;
 	}
@@ -269,7 +343,7 @@ static FilterEstimate EstimateFilterRows(idx_t cardinality, const Expression &ex
 	}
 	if (BoundComparisonExpression::IsComparison(expr)) {
 		return EstimateComparisonRows(cardinality, expr.Cast<BoundFunctionExpression>(), columns, positional_bindings,
-		                              pruning);
+		                              pruning, range);
 	}
 	return {cardinality, false};
 }
@@ -344,8 +418,16 @@ RelationStats RelationStatisticsHelper::ExtractGetStats(LogicalGet &get, ClientC
 		vector<ColumnBinding> bindings {ColumnBinding(get.table_index, entry.GetIndex())};
 		D_ASSERT(filter.column_indexes.size() <= 1);
 		auto &statistics = scan_statistics[entry.GetIndex().GetIndex()];
+		IntegerRangeEstimate range(statistics);
 		estimate.Combine(
-		    EstimateFilterRows(base_table_cardinality, *filter.expr, columns, bindings, context, statistics));
+		    EstimateFilterRows(base_table_cardinality, *filter.expr, columns, bindings, context, statistics, range));
+		auto fraction = range.Fraction();
+		if (fraction) {
+			// Intersect same-column bounds before applying the default-selectivity floor.
+			auto range_cardinality =
+			    *fraction == 0 ? 0 : FilterFraction(base_table_cardinality, MaxValue(DEFAULT_SELECTIVITY, *fraction));
+			estimate.Combine({range_cardinality, true});
+		}
 	}
 	ApplyFilterEstimate(result, estimate);
 	for (auto &column : result.columns) {
