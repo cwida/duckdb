@@ -2,6 +2,7 @@
 #include "duckdb/common/vector/struct_vector.hpp"
 #include "duckdb/storage/statistics/struct_stats.hpp"
 #include "duckdb/storage/statistics/base_statistics.hpp"
+#include "duckdb/storage/statistics/stats_struct_fields.hpp"
 #include "duckdb/common/types/vector.hpp"
 
 #include "duckdb/common/serializer/serializer.hpp"
@@ -128,6 +129,23 @@ child_list_t<Value> StructStats::ToStruct(const BaseStatistics &stats) {
 	}
 	result.emplace_back("child_stats", Value::STRUCT(std::move(child_info)));
 	return result;
+}
+
+void StructStats::SetFromStruct(BaseStatistics &stats, StatsStructFields &fields) {
+	auto children = fields.Get("child_stats");
+	if (!children) {
+		return;
+	}
+	StatsStructFields child_fields(*children, fields.FieldPath("child_stats"));
+	auto &child_types = StructType::GetChildTypes(stats.GetType());
+	for (idx_t i = 0; i < child_types.size(); i++) {
+		auto &name = child_types[i].first.GetIdentifierName();
+		auto child = child_fields.Get(name);
+		if (child) {
+			stats.child_stats[i].SetFromStruct(*child, child_fields.FieldPath(name));
+		}
+	}
+	child_fields.VerifyAllRead(stats.GetType());
 }
 
 void StructStats::Verify(const BaseStatistics &stats, const Vector &vector, const SelectionVector &sel, idx_t count) {

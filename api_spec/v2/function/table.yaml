@@ -1866,12 +1866,12 @@ functions:
       Retrieves the statistics of the column, for the callback to narrow.
 
       The statistics start out unknown, with every kind of value possible, and are of the column's type as the bind
-      callback declared it (see `[[stats_get_type]]`). The callback narrows them with the `stats_set_*` functions:
-      `[[stats_set_min]]` / `[[stats_set_max]]` for numeric bounds, `[[stats_set_string_min]]` /
-      `[[stats_set_string_max]]` for VARCHAR and BLOB, `[[stats_set_can_have_null]]` / `[[stats_set_can_have_valid]]`
-      for NULLs, `[[stats_set_child]]` for nested columns, and so on. Statistics built with `[[stats_create]]`, e.g.
-      combined from the files of a scan with `[[stats_merge]]`, are copied in with `[[stats_assign]]`. They describe
-      every value the scan produces for the column. Borrowed; valid only for the duration of the callback.
+      callback declared it. The callback narrows them with `[[stats_set_variant]]`, from a VARIANT in the shape the SQL
+      function `stats()` returns - e.g. `{'min': 20, 'max': 30, 'has_null': false}` for an INTEGER column, or the
+      statistics of the fields of a STRUCT column under `child_stats` - and with `[[stats_set_can_have_null]]` /
+      `[[stats_set_can_have_valid]]`. Statistics built with `[[stats_create]]`, e.g. combined from the files of a scan
+      with `[[stats_merge]]`, are copied in with `[[stats_assign]]`. They describe every value the scan produces for
+      the column. Borrowed; valid only for the duration of the callback.
     parameters:
       info:
         type: table_function_stats_info

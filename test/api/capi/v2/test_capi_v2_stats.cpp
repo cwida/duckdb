@@ -592,12 +592,60 @@ TEST_CASE("V2 stats: null arguments", "[capi_v2][stats]") {
 }
 
 // ---------------------------------------------------------------------------
-// Bounds: a table function reports min/max through the stats callback, and checks predicates against statistics it
-// builds itself. The function produces data its statistics exclude, so a query whose filter the statistics make
-// unsatisfiable returns a wrong count exactly when the optimizer acted on them.
+// Bounds: a table function reports min/max through the stats callback as a VARIANT, and checks predicates against
+// statistics it builds itself. The function produces data its statistics exclude, so a query whose filter the
+// statistics make unsatisfiable returns a wrong count exactly when the optimizer acted on them.
 // ---------------------------------------------------------------------------
 
 namespace {
+
+// Sets statistics from JSON text, the simplest way to build the VARIANT.
+DUCKDB_V2_ERROR SetStatsJSON(duckdb_v2_factory_handle factory, duckdb_v2_stats_handle stats, const char *json,
+                             duckdb_v2_error_info_handle *err) {
+	duckdb_v2_value_handle value = nullptr;
+	auto text = Convert(json);
+	auto rc = duckdb_v2_value_create_varchar(factory, &text, &value, err);
+	if (rc == DUCKDB_V2_ERROR_NONE) {
+		rc = duckdb_v2_stats_set_variant(stats, value, err);
+	}
+	duckdb_v2_value_destroy(&value);
+	return rc;
+}
+
+// The statistics rendered as text, "<error>" when they cannot be read.
+std::string StatsText(duckdb_v2_stats_handle stats) {
+	duckdb_v2_value_handle value = nullptr;
+	if (duckdb_v2_stats_get_variant(stats, &value, nullptr) != DUCKDB_V2_ERROR_NONE) {
+		return "<error>";
+	}
+	auto text = Render(value);
+	duckdb_v2_value_destroy(&value);
+	return text;
+}
+
+// Owned statistics of a type given as text, or null when they cannot be built.
+duckdb_v2_stats_handle StatsOfText(duckdb_v2_factory_handle factory, const char *type_text,
+                                   duckdb_v2_error_info_handle *err) {
+	auto text = Convert(type_text);
+	duckdb_v2_logical_type_handle type = nullptr;
+	duckdb_v2_stats_handle stats = nullptr;
+	if (duckdb_v2_factory_create_type_from_text(factory, &text, &type, err) == DUCKDB_V2_ERROR_NONE) {
+		duckdb_v2_stats_create(factory, type, &stats, err);
+	}
+	duckdb_v2_logical_type_destroy(&type);
+	return stats;
+}
+
+// Owned INTEGER statistics bounded by [min, max] without NULLs, or null when they cannot be built.
+duckdb_v2_stats_handle IntStats(duckdb_v2_factory_handle factory, int32_t min, int32_t max,
+                                duckdb_v2_error_info_handle *err) {
+	auto stats = StatsOfText(factory, "INTEGER", err);
+	if (stats) {
+		auto json = "{\"min\": " + std::to_string(min) + ", \"max\": " + std::to_string(max) + ", \"has_null\": false}";
+		SetStatsJSON(factory, stats, json.c_str(), err);
+	}
+	return stats;
+}
 
 // What a function's stats / pushdown callback does, passed as its user data.
 struct MinMaxMode {
@@ -616,11 +664,12 @@ struct MinMaxObserved {
 	DUCKDB_V2_ERROR type_mismatch_rc = DUCKDB_V2_ERROR_NONE;
 	void *user_data = nullptr;
 	idx_t column_index = 999;
-	DUCKDB_V2_LOGICAL_TYPE_ID stats_type = DUCKDB_V2_LOGICAL_TYPE_ID_INVALID;
+	DUCKDB_V2_ERROR set_rc = DUCKDB_V2_ERROR_NONE;
 	DUCKDB_V2_ERROR string_on_numeric_rc = DUCKDB_V2_ERROR_NONE;
 	DUCKDB_V2_ERROR destroy_borrowed_rc = DUCKDB_V2_ERROR_NONE;
 	bool borrowed_survives = false;
 	DUCKDB_V2_ERROR assign_rc = DUCKDB_V2_ERROR_NONE;
+	std::string result_text;
 	idx_t pushdown_checks = 0;
 	DUCKDB_V2_FILTER_PROPAGATE_RESULT check_result = DUCKDB_V2_FILTER_PROPAGATE_RESULT_NO_PRUNING_POSSIBLE;
 	DUCKDB_V2_ERROR merge_rc = DUCKDB_V2_ERROR_NONE;
@@ -636,20 +685,27 @@ void DeleteMinMaxGlobal(void *p) {
 	delete static_cast<MinMaxGlobal *>(p);
 }
 
+// Columns: i INTEGER, j INTEGER, s VARCHAR
 void MinMaxBindCb(duckdb_v2_function_bind_info_handle, duckdb_v2_table_function_bind_info_handle result,
                   duckdb_v2_context_handle context, duckdb_v2_error_info_handle *err) {
 	duckdb_v2_factory_handle factory = nullptr;
 	duckdb_v2_logical_type_handle integer = nullptr;
+	duckdb_v2_logical_type_handle varchar = nullptr;
 	if (duckdb_v2_context_get_factory(context, &factory, err) != DUCKDB_V2_ERROR_NONE ||
 	    duckdb_v2_factory_create_type_from_id(factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER, nullptr, nullptr, 0, &integer,
+	                                          err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_factory_create_type_from_id(factory, DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR, nullptr, nullptr, 0, &varchar,
 	                                          err) != DUCKDB_V2_ERROR_NONE) {
 		return;
 	}
 	auto i = StatsIdent("i");
 	auto j = StatsIdent("j");
+	auto s = StatsIdent("s");
 	duckdb_v2_table_function_bind_add_result_column(result, &i, integer, err);
 	duckdb_v2_table_function_bind_add_result_column(result, &j, integer, err);
+	duckdb_v2_table_function_bind_add_result_column(result, &s, varchar, err);
 	duckdb_v2_logical_type_destroy(&integer);
+	duckdb_v2_logical_type_destroy(&varchar);
 }
 
 void MinMaxInitGlobalCb(duckdb_v2_table_function_init_global_info_handle info, duckdb_v2_context_handle,
@@ -658,56 +714,44 @@ void MinMaxInitGlobalCb(duckdb_v2_table_function_init_global_info_handle info, d
 	duckdb_v2_table_function_init_global_set_global_state(info, &state, err);
 }
 
-void MinMaxExecCb(duckdb_v2_table_function_exec_info_handle info, duckdb_v2_context_handle,
+void MinMaxExecCb(duckdb_v2_table_function_exec_info_handle info, duckdb_v2_context_handle context,
                   duckdb_v2_error_info_handle *err) {
 	void *global_ptr = nullptr;
 	duckdb_v2_data_chunk_handle chunk = nullptr;
+	duckdb_v2_factory_handle factory = nullptr;
 	if (duckdb_v2_table_function_exec_get_global_state(info, &global_ptr, err) != DUCKDB_V2_ERROR_NONE ||
-	    duckdb_v2_table_function_exec_get_output_chunk(info, &chunk, err) != DUCKDB_V2_ERROR_NONE) {
+	    duckdb_v2_table_function_exec_get_output_chunk(info, &chunk, err) != DUCKDB_V2_ERROR_NONE ||
+	    duckdb_v2_context_get_factory(context, &factory, err) != DUCKDB_V2_ERROR_NONE) {
 		return;
 	}
 	g_mm.exec_calls++;
 	auto &global = *static_cast<MinMaxGlobal *>(global_ptr);
 	idx_t produced = global.produced < 3 ? 1 : 0;
 	global.produced += produced;
-	for (idx_t column = 0; column < 2; column++) {
+	for (idx_t column = 0; column < 3; column++) {
 		duckdb_v2_vector_handle vec = nullptr;
-		void *raw = nullptr;
 		if (duckdb_v2_data_chunk_get_vector(chunk, column, &vec, err) != DUCKDB_V2_ERROR_NONE ||
-		    duckdb_v2_vector_get_data_mutable(vec, &raw, err) != DUCKDB_V2_ERROR_NONE) {
+		    duckdb_v2_vector_set_size(vec, produced, err) != DUCKDB_V2_ERROR_NONE) {
 			return;
 		}
-		// Every row holds 7 - a value the reported statistics (min 20, max 30) exclude.
-		for (idx_t i = 0; i < produced; i++) {
-			static_cast<int32_t *>(raw)[i] = 7;
+		for (idx_t row = 0; row < produced; row++) {
+			if (column < 2) {
+				// Every row holds 7 - a value the reported statistics (min 20, max 30) exclude.
+				void *raw = nullptr;
+				if (duckdb_v2_vector_get_data_mutable(vec, &raw, err) == DUCKDB_V2_ERROR_NONE) {
+					static_cast<int32_t *>(raw)[row] = 7;
+				}
+			} else {
+				// Every row holds 'zebra' - a value after the reported maximum 'pear'.
+				duckdb_v2_value_handle zebra = nullptr;
+				auto text = Convert("zebra");
+				if (duckdb_v2_value_create_varchar(factory, &text, &zebra, err) == DUCKDB_V2_ERROR_NONE) {
+					duckdb_v2_vector_set_value(vec, row, zebra, err);
+				}
+				duckdb_v2_value_destroy(&zebra);
+			}
 		}
-		duckdb_v2_vector_set_size(vec, produced, err);
 	}
-}
-
-// Narrows INTEGER statistics to [min, max] without NULLs.
-void IntBounds(duckdb_v2_factory_handle factory, duckdb_v2_stats_handle stats, int32_t min, int32_t max,
-               duckdb_v2_error_info_handle *err) {
-	duckdb_v2_value_handle min_value = nullptr;
-	duckdb_v2_value_handle max_value = nullptr;
-	if (duckdb_v2_value_create_int(factory, min, &min_value, err) == DUCKDB_V2_ERROR_NONE &&
-	    duckdb_v2_value_create_int(factory, max, &max_value, err) == DUCKDB_V2_ERROR_NONE) {
-		duckdb_v2_stats_set_min(stats, min_value, err);
-		duckdb_v2_stats_set_max(stats, max_value, err);
-		duckdb_v2_stats_set_can_have_null(stats, false, err);
-	}
-	duckdb_v2_value_destroy(&min_value);
-	duckdb_v2_value_destroy(&max_value);
-}
-
-// Owned INTEGER statistics bounded by [min, max] without NULLs, or null when they cannot be built.
-duckdb_v2_stats_handle IntStats(duckdb_v2_factory_handle factory, duckdb_v2_logical_type_handle integer, int32_t min,
-                                int32_t max, duckdb_v2_error_info_handle *err) {
-	duckdb_v2_stats_handle stats = nullptr;
-	if (duckdb_v2_stats_create(factory, integer, &stats, err) == DUCKDB_V2_ERROR_NONE) {
-		IntBounds(factory, stats, min, max, err);
-	}
-	return stats;
 }
 
 void MinMaxStatsCb(duckdb_v2_table_function_stats_info_handle info, duckdb_v2_context_handle context,
@@ -726,29 +770,29 @@ void MinMaxStatsCb(duckdb_v2_table_function_stats_info_handle info, duckdb_v2_co
 	g_mm.user_data = user_data;
 	g_mm.column_index = column;
 
-	// The result statistics are of the declared column type.
-	duckdb_v2_logical_type_handle stats_type = nullptr;
-	if (duckdb_v2_stats_get_type(result, &stats_type, err) == DUCKDB_V2_ERROR_NONE) {
-		duckdb_v2_logical_type_get_id(stats_type, &g_mm.stats_type, err);
-	}
-
 	auto *mode = static_cast<MinMaxMode *>(user_data);
 	if (!mode || !mode->report) {
-		duckdb_v2_logical_type_destroy(&stats_type);
 		return;
 	}
 
+	if (column == 2) {
+		// The VARCHAR column: bounds in binary order, as a file format stores them
+		g_mm.set_rc =
+		    SetStatsJSON(factory, result, "{\"min\": \"apple\", \"max\": \"pear\", \"has_null\": false}", err);
+		g_mm.result_text = StatsText(result);
+		return;
+	}
 	if (mode->via_assign) {
 		// Statistics built by the function (as combined from its files) are copied into the result.
-		auto owned = IntStats(factory, stats_type, 20, 30, err);
+		auto owned = IntStats(factory, 20, 30, err);
 		g_mm.assign_rc = duckdb_v2_stats_assign(result, owned, err);
 		duckdb_v2_stats_destroy(&owned);
 	} else {
-		IntBounds(factory, result, 20, 30, err);
+		g_mm.set_rc = SetStatsJSON(factory, result, "{\"min\": 20, \"max\": 30, \"has_null\": false}", err);
 	}
-	// A string bound on numeric statistics is refused.
-	auto text = Convert("x");
-	g_mm.string_on_numeric_rc = duckdb_v2_stats_set_string_min(result, &text, true, nullptr);
+	g_mm.result_text = StatsText(result);
+	// A string bound on numeric statistics is refused, and leaves the bounds as they were.
+	g_mm.string_on_numeric_rc = SetStatsJSON(factory, result, "{\"min\": \"x\"}", nullptr);
 	// The borrowed result statistics cannot be destroyed, and stay usable.
 	auto borrowed = result;
 	g_mm.destroy_borrowed_rc = duckdb_v2_stats_destroy(&borrowed);
@@ -756,7 +800,6 @@ void MinMaxStatsCb(duckdb_v2_table_function_stats_info_handle info, duckdb_v2_co
 	g_mm.borrowed_survives = borrowed == result &&
 	                         duckdb_v2_stats_can_have_null(result, &can_have_null, nullptr) == DUCKDB_V2_ERROR_NONE &&
 	                         !can_have_null;
-	duckdb_v2_logical_type_destroy(&stats_type);
 }
 
 void MinMaxPushdownCb(duckdb_v2_table_function_filter_pushdown_info_handle info, duckdb_v2_context_handle context,
@@ -764,24 +807,21 @@ void MinMaxPushdownCb(duckdb_v2_table_function_filter_pushdown_info_handle info,
 	idx_t count = 0;
 	void *user_data = nullptr;
 	duckdb_v2_factory_handle factory = nullptr;
-	duckdb_v2_logical_type_handle integer = nullptr;
 	if (duckdb_v2_table_function_filter_pushdown_get_filter_count(info, &count, err) != DUCKDB_V2_ERROR_NONE ||
 	    duckdb_v2_table_function_filter_pushdown_get_user_data(info, &user_data, err) != DUCKDB_V2_ERROR_NONE ||
-	    duckdb_v2_context_get_factory(context, &factory, err) != DUCKDB_V2_ERROR_NONE ||
-	    duckdb_v2_factory_create_type_from_id(factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER, nullptr, nullptr, 0, &integer,
-	                                          err) != DUCKDB_V2_ERROR_NONE) {
+	    duckdb_v2_context_get_factory(context, &factory, err) != DUCKDB_V2_ERROR_NONE) {
 		return;
 	}
 	auto *mode = static_cast<MinMaxMode *>(user_data);
 	duckdb_v2_stats_handle stats = nullptr;
 	if (mode && mode->merged) {
 		// Merging [1, 20] into [5, 10] widens the bounds to [1, 20].
-		stats = IntStats(factory, integer, 5, 10, err);
-		auto other = IntStats(factory, integer, 1, 20, err);
+		stats = IntStats(factory, 5, 10, err);
+		auto other = IntStats(factory, 1, 20, err);
 		g_mm.merge_rc = duckdb_v2_stats_merge(stats, other, err);
 		duckdb_v2_stats_destroy(&other);
 	} else {
-		stats = IntStats(factory, integer, 20, 30, err);
+		stats = IntStats(factory, 20, 30, err);
 	}
 	if (stats) {
 		for (idx_t i = 0; i < count; i++) {
@@ -798,20 +838,15 @@ void MinMaxPushdownCb(duckdb_v2_table_function_filter_pushdown_info_handle info,
 				g_mm.check_error_rc = rc;
 			}
 			// Statistics of another type than the column are refused
-			duckdb_v2_logical_type_handle double_type = nullptr;
-			duckdb_v2_stats_handle double_stats = nullptr;
-			if (duckdb_v2_factory_create_type_from_id(factory, DUCKDB_V2_LOGICAL_TYPE_ID_DOUBLE, nullptr, nullptr, 0,
-			                                          &double_type, nullptr) == DUCKDB_V2_ERROR_NONE &&
-			    duckdb_v2_stats_create(factory, double_type, &double_stats, nullptr) == DUCKDB_V2_ERROR_NONE) {
+			auto double_stats = StatsOfText(factory, "DOUBLE", nullptr);
+			if (double_stats) {
 				g_mm.type_mismatch_rc =
 				    duckdb_v2_expression_check_statistics(context, filter, double_stats, &outcome, nullptr);
 			}
 			duckdb_v2_stats_destroy(&double_stats);
-			duckdb_v2_logical_type_destroy(&double_type);
 		}
 	}
 	duckdb_v2_stats_destroy(&stats);
-	duckdb_v2_logical_type_destroy(&integer);
 }
 
 void RegisterMinMax(duckdb_v2_connection_handle conn, const char *name, MinMaxMode *mode, bool with_stats,
@@ -853,6 +888,7 @@ TEST_CASE("V2 stats: table function min/max reach the optimizer", "[capi_v2][sta
 	// The data is 7; the reported minimum 20 makes "i < 15" unsatisfiable, so acting on the statistics yields 0 and the
 	// scan never runs.
 	REQUIRE(StatsQueryI64(fx.conn, "SELECT count(*) FROM mm_report() WHERE i < 15") == 0);
+	REQUIRE(g_mm.set_rc == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(g_mm.exec_calls == 0);
 	// "i > 100" exceeds the reported maximum 30: the scan does not run for it either.
 	g_mm = MinMaxObserved {};
@@ -860,12 +896,26 @@ TEST_CASE("V2 stats: table function min/max reach the optimizer", "[capi_v2][sta
 	REQUIRE(g_mm.exec_calls == 0);
 	REQUIRE(g_mm.user_data == &report);
 	REQUIRE(g_mm.column_index == 0);
-	REQUIRE(g_mm.stats_type == DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER);
+	REQUIRE(g_mm.result_text == "{'has_no_null': true, 'has_null': false, 'max': 30, 'min': 20}");
 	REQUIRE(g_mm.string_on_numeric_rc == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(g_mm.destroy_borrowed_rc == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(g_mm.borrowed_survives);
 
+	// The data is 'zebra'; the reported maximum 'pear' makes "s > 'tiger'" unsatisfiable.
+	g_mm = MinMaxObserved {};
+	REQUIRE(StatsQueryI64(fx.conn, "SELECT count(*) FROM mm_report() WHERE s > 'tiger'") == 0);
+	REQUIRE(g_mm.set_rc == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(g_mm.column_index == 2);
+	REQUIRE(g_mm.result_text ==
+	        "{'has_no_null': true, 'has_null': false, 'has_unicode': true, 'max': pear, 'min': apple}");
+	REQUIRE(g_mm.exec_calls == 0);
+	// 'banana' lies within the bounds: the scan runs
+	g_mm = MinMaxObserved {};
+	REQUIRE(StatsQueryI64(fx.conn, "SELECT count(*) FROM mm_report() WHERE s > 'banana'") == 3);
+	REQUIRE(g_mm.exec_calls > 0);
+
 	// A function whose callback leaves the statistics unknown is scanned and returns every row.
+	g_mm = MinMaxObserved {};
 	REQUIRE(StatsQueryI64(fx.conn, "SELECT count(*) FROM mm_silent() WHERE i < 15") == 3);
 	REQUIRE(g_mm.exec_calls > 0);
 
@@ -873,6 +923,7 @@ TEST_CASE("V2 stats: table function min/max reach the optimizer", "[capi_v2][sta
 	g_mm = MinMaxObserved {};
 	REQUIRE(StatsQueryI64(fx.conn, "SELECT count(*) FROM mm_assigned() WHERE i < 15") == 0);
 	REQUIRE(g_mm.assign_rc == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(g_mm.result_text == "{'has_no_null': true, 'has_null': false, 'max': 30, 'min': 20}");
 	REQUIRE(g_mm.exec_calls == 0);
 }
 
@@ -929,7 +980,8 @@ namespace {
 struct ShreddedObserved {
 	idx_t exec_calls = 0;
 	DUCKDB_V2_ERROR malformed_rc = DUCKDB_V2_ERROR_NONE;
-	DUCKDB_V2_ERROR assign_rc = DUCKDB_V2_ERROR_NONE;
+	DUCKDB_V2_ERROR set_rc = DUCKDB_V2_ERROR_NONE;
+	std::string result_text;
 	idx_t pushdown_checks = 0;
 	DUCKDB_V2_ERROR check_rc = DUCKDB_V2_ERROR_NONE;
 	DUCKDB_V2_FILTER_PROPAGATE_RESULT check_result = DUCKDB_V2_FILTER_PROPAGATE_RESULT_NO_PRUNING_POSSIBLE;
@@ -937,63 +989,11 @@ struct ShreddedObserved {
 
 ShreddedObserved g_shredded;
 
-// Owned statistics of a type given as text, or null when they cannot be built.
-duckdb_v2_stats_handle StatsOfText(duckdb_v2_factory_handle factory, const char *type_text,
-                                   duckdb_v2_error_info_handle *err) {
-	auto text = Convert(type_text);
-	duckdb_v2_logical_type_handle type = nullptr;
-	duckdb_v2_stats_handle stats = nullptr;
-	if (duckdb_v2_factory_create_type_from_text(factory, &text, &type, err) == DUCKDB_V2_ERROR_NONE) {
-		duckdb_v2_stats_create(factory, type, &stats, err);
-	}
-	duckdb_v2_logical_type_destroy(&type);
-	return stats;
-}
-
-// Owned VARIANT statistics shredded on STRUCT(x INTEGER): every value is an object whose x is an INTEGER in [1, 5].
-duckdb_v2_stats_handle ShreddedVariantStats(duckdb_v2_factory_handle factory, duckdb_v2_error_info_handle *err) {
-	// untyped_value_index 0 everywhere: no value fell back to the generic layout
-	auto untyped = StatsOfText(factory, "UINTEGER", err);
-	duckdb_v2_value_handle zero = nullptr;
-	if (duckdb_v2_value_create_uint(factory, 0, &zero, err) == DUCKDB_V2_ERROR_NONE) {
-		duckdb_v2_stats_set_constant(untyped, zero, err);
-	}
-	duckdb_v2_value_destroy(&zero);
-
-	auto integer = StatsOfText(factory, "INTEGER", err);
-	IntBounds(factory, integer, 1, 5, err);
-	auto x_node = StatsOfText(factory, "STRUCT(typed_value INTEGER, untyped_value_index UINTEGER)", err);
-	duckdb_v2_stats_set_child(x_node, 0, integer, err);
-	duckdb_v2_stats_set_child(x_node, 1, untyped, err);
-	duckdb_v2_stats_set_can_have_null(x_node, false, err);
-
-	auto object = StatsOfText(factory, "STRUCT(x STRUCT(typed_value INTEGER, untyped_value_index UINTEGER))", err);
-	duckdb_v2_stats_set_child(object, 0, x_node, err);
-	duckdb_v2_stats_set_can_have_null(object, false, err);
-
-	auto structured_text = Convert("STRUCT(x INTEGER)");
-	duckdb_v2_logical_type_handle structured = nullptr;
-	duckdb_v2_logical_type_handle layout = nullptr;
-	duckdb_v2_stats_handle layout_stats = nullptr;
-	duckdb_v2_stats_handle variant = nullptr;
-	if (duckdb_v2_factory_create_type_from_text(factory, &structured_text, &structured, err) == DUCKDB_V2_ERROR_NONE &&
-	    duckdb_v2_stats_variant_shredding_type(factory, structured, &layout, err) == DUCKDB_V2_ERROR_NONE &&
-	    duckdb_v2_stats_create(factory, layout, &layout_stats, err) == DUCKDB_V2_ERROR_NONE) {
-		duckdb_v2_stats_set_child(layout_stats, 0, object, err);
-		duckdb_v2_stats_set_child(layout_stats, 1, untyped, err);
-		if (duckdb_v2_stats_create_variant_shredded(factory, layout_stats, &variant, err) == DUCKDB_V2_ERROR_NONE) {
-			duckdb_v2_stats_set_can_have_null(variant, false, err);
-		}
-	}
-	duckdb_v2_stats_destroy(&layout_stats);
-	duckdb_v2_logical_type_destroy(&layout);
-	duckdb_v2_logical_type_destroy(&structured);
-	duckdb_v2_stats_destroy(&object);
-	duckdb_v2_stats_destroy(&x_node);
-	duckdb_v2_stats_destroy(&integer);
-	duckdb_v2_stats_destroy(&untyped);
-	return variant;
-}
+// Every value is an object whose field x is an INTEGER in [1, 5], stored in the structured layout throughout.
+const char *const SHREDDED_ON_X =
+    "{\"has_null\": false, \"shredding_state\": \"SHREDDED\", \"fully_shredded\": {\"x\": "
+    "{\"type\": \"INTEGER\", \"stats\": {\"min\": 1, \"max\": 5, \"has_null\": false, "
+    "\"has_no_null\": true}}}}";
 
 void ShreddedBindCb(duckdb_v2_function_bind_info_handle, duckdb_v2_table_function_bind_info_handle result,
                     duckdb_v2_context_handle context, duckdb_v2_error_info_handle *err) {
@@ -1029,16 +1029,13 @@ void ShreddedStatsCb(duckdb_v2_table_function_stats_info_handle info, duckdb_v2_
 	    duckdb_v2_context_get_factory(context, &factory, err) != DUCKDB_V2_ERROR_NONE) {
 		return;
 	}
-	// A plain STRUCT(x INTEGER) is not a shredded layout and is refused before it can reach the optimizer.
-	auto malformed = StatsOfText(factory, "STRUCT(x INTEGER)", err);
-	duckdb_v2_stats_handle malformed_variant = nullptr;
-	g_shredded.malformed_rc = duckdb_v2_stats_create_variant_shredded(factory, malformed, &malformed_variant, nullptr);
-	duckdb_v2_stats_destroy(&malformed_variant);
-	duckdb_v2_stats_destroy(&malformed);
-
-	auto variant = ShreddedVariantStats(factory, err);
-	g_shredded.assign_rc = duckdb_v2_stats_assign(result, variant, err);
-	duckdb_v2_stats_destroy(&variant);
+	// A nested type is not shredded on as a whole: an object is described by its fields.
+	g_shredded.malformed_rc = SetStatsJSON(factory, result,
+	                                       "{\"shredding_state\": \"SHREDDED\", \"fully_shredded\": {\"type\": "
+	                                       "\"STRUCT(x INTEGER)\", \"stats\": {}}}",
+	                                       nullptr);
+	g_shredded.set_rc = SetStatsJSON(factory, result, SHREDDED_ON_X, err);
+	g_shredded.result_text = StatsText(result);
 }
 
 void ShreddedPushdownCb(duckdb_v2_table_function_filter_pushdown_info_handle info, duckdb_v2_context_handle context,
@@ -1049,7 +1046,10 @@ void ShreddedPushdownCb(duckdb_v2_table_function_filter_pushdown_info_handle inf
 	    duckdb_v2_context_get_factory(context, &factory, err) != DUCKDB_V2_ERROR_NONE) {
 		return;
 	}
-	auto variant = ShreddedVariantStats(factory, err);
+	auto variant = StatsOfText(factory, "VARIANT", err);
+	if (variant && SetStatsJSON(factory, variant, SHREDDED_ON_X, err) != DUCKDB_V2_ERROR_NONE) {
+		duckdb_v2_stats_destroy(&variant);
+	}
 	for (idx_t i = 0; i < count && variant; i++) {
 		duckdb_v2_expression_handle filter = nullptr;
 		if (duckdb_v2_table_function_filter_pushdown_get_filter(info, i, &filter, err) != DUCKDB_V2_ERROR_NONE) {
@@ -1093,7 +1093,10 @@ TEST_CASE("V2 stats: shredded VARIANT statistics reach variant_extract", "[capi_
 	// x is fully shredded and never NULL: "variant_extract(v, 'x') IS NULL" is unsatisfiable, so the scan never runs.
 	REQUIRE(StatsQueryI64(fx.conn, "SELECT count(*) FROM vs_report() WHERE variant_extract(v, 'x') IS NULL") == 0);
 	REQUIRE(g_shredded.malformed_rc == DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(g_shredded.assign_rc == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(g_shredded.set_rc == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(g_shredded.result_text == "{'fully_shredded': {'x': {'stats': {'has_no_null': true, 'has_null': false, "
+	                                  "'max': 5, 'min': 1}, 'type': INTEGER}}, 'has_no_null': true, 'has_null': false, "
+	                                  "'shredding_state': SHREDDED}");
 	REQUIRE(g_shredded.exec_calls == 0);
 	// "IS NOT NULL" always holds: nothing is pruned and the (empty) function is scanned.
 	REQUIRE(StatsQueryI64(fx.conn, "SELECT count(*) FROM vs_report() WHERE variant_extract(v, 'x') IS NOT NULL") == 0);
@@ -1107,83 +1110,115 @@ TEST_CASE("V2 stats: shredded VARIANT statistics reach variant_extract", "[capi_
 	REQUIRE(g_shredded.check_result == DUCKDB_V2_FILTER_PROPAGATE_RESULT_ALWAYS_FALSE);
 }
 
+// ---------------------------------------------------------------------------
+// Owned statistics, driven directly.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Sets statistics from JSON text and returns the error message, or an empty string on success.
+std::string SetStatsJSONMessage(duckdb_v2_factory_handle factory, duckdb_v2_stats_handle stats, const char *json,
+                                DUCKDB_V2_ERROR &rc) {
+	duckdb_v2_error_info_handle err = nullptr;
+	rc = SetStatsJSON(factory, stats, json, &err);
+	std::string message;
+	if (err) {
+		duckdb_v2_str text = {nullptr, 0};
+		duckdb_v2_error_info_get_text(err, &text);
+		message = Convert(text);
+	}
+	duckdb_v2_error_info_destroy(&err);
+	return message;
+}
+
+} // namespace
+
 TEST_CASE("V2 stats: owned statistics narrow, merge and assign", "[capi_v2][stats][statistics]") {
 	EnvFixture fx;
 
-	duckdb_v2_logical_type_handle integer = nullptr;
-	REQUIRE(duckdb_v2_factory_create_type_from_id(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER, nullptr, nullptr, 0,
-	                                              &integer, nullptr) == DUCKDB_V2_ERROR_NONE);
-
-	duckdb_v2_stats_handle stats = nullptr;
-	REQUIRE(duckdb_v2_stats_create(fx.factory, integer, &stats, nullptr) == DUCKDB_V2_ERROR_NONE);
-
-	duckdb_v2_logical_type_handle stats_type = nullptr;
-	REQUIRE(duckdb_v2_stats_get_type(stats, &stats_type, nullptr) == DUCKDB_V2_ERROR_NONE);
-	DUCKDB_V2_LOGICAL_TYPE_ID id = DUCKDB_V2_LOGICAL_TYPE_ID_INVALID;
-	duckdb_v2_logical_type_get_id(stats_type, &id, nullptr);
-	REQUIRE(id == DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER);
-	duckdb_v2_logical_type_destroy(&stats_type);
+	auto stats = StatsOfText(fx.factory, "INTEGER", nullptr);
+	REQUIRE(stats != nullptr);
 
 	// Created statistics start out unknown and are writable.
 	bool can_have_null = false;
 	REQUIRE(duckdb_v2_stats_can_have_null(stats, &can_have_null, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(can_have_null);
+	REQUIRE(StatsText(stats) == "{'has_no_null': true, 'has_null': true}");
+
+	// A STRUCT value built with the value API sets the parts it mentions, the rest keeps its value.
 	duckdb_v2_value_handle five = nullptr;
 	duckdb_v2_value_handle ten = nullptr;
 	REQUIRE(duckdb_v2_value_create_int(fx.factory, 5, &five, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_value_create_int(fx.factory, 10, &ten, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_stats_set_min(stats, five, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_stats_set_max(stats, ten, nullptr) == DUCKDB_V2_ERROR_NONE);
+	const duckdb_v2_identifier_t names[] = {StatsIdent("min"), StatsIdent("max")};
+	const duckdb_v2_value_handle children[] = {five, ten};
+	duckdb_v2_value_handle bounds = nullptr;
+	REQUIRE(duckdb_v2_value_create_struct(fx.factory, names, children, 2, &bounds, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_stats_set_variant(stats, bounds, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(StatsText(stats) == "{'has_no_null': true, 'has_null': true, 'max': 10, 'min': 5}");
 	REQUIRE(duckdb_v2_stats_set_can_have_null(stats, false, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_stats_set_distinct_count(stats, 6, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_stats_can_have_null(stats, &can_have_null, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(!can_have_null);
+	REQUIRE(SetStatsJSON(fx.factory, stats, "{\"approx_unique\": 6}", nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(StatsText(stats) == "{'approx_unique': 6, 'has_no_null': true, 'has_null': false, 'max': 10, 'min': 5}");
+	// A bound given as a JSON number is cast to the column's type
+	REQUIRE(SetStatsJSON(fx.factory, stats, "{\"min\": 4.0}", nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(StatsText(stats) == "{'approx_unique': 6, 'has_no_null': true, 'has_null': false, 'max': 10, 'min': 4}");
 
 	// Merge in a wider part of the column: the bounds widen to [1, 20], and NULLs can occur again.
-	duckdb_v2_stats_handle other = nullptr;
-	REQUIRE(duckdb_v2_stats_create(fx.factory, integer, &other, nullptr) == DUCKDB_V2_ERROR_NONE);
-	duckdb_v2_value_handle one = nullptr;
-	duckdb_v2_value_handle twenty = nullptr;
-	REQUIRE(duckdb_v2_value_create_int(fx.factory, 1, &one, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_value_create_int(fx.factory, 20, &twenty, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_stats_set_min(other, one, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_stats_set_max(other, twenty, nullptr) == DUCKDB_V2_ERROR_NONE);
+	auto other = IntStats(fx.factory, 1, 20, nullptr);
+	REQUIRE(duckdb_v2_stats_set_can_have_null(other, true, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_stats_merge(stats, other, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_stats_can_have_null(stats, &can_have_null, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(can_have_null);
+	REQUIRE(StatsText(stats) == "{'approx_unique': 6, 'has_no_null': true, 'has_null': true, 'max': 20, 'min': 1}");
 
 	// Assigning replaces everything: the NULL-free [1, 20] of "other" is taken over, after narrowing it.
 	REQUIRE(duckdb_v2_stats_set_can_have_null(other, false, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_stats_assign(stats, other, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_stats_can_have_null(stats, &can_have_null, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(!can_have_null);
+	REQUIRE(StatsText(stats) == "{'has_no_null': true, 'has_null': false, 'max': 20, 'min': 1}");
 
-	// A VARCHAR value does not cast to the INTEGER statistics, and VARCHAR statistics do not merge or assign.
-	duckdb_v2_value_handle text_value = nullptr;
-	auto text = Convert("not an int");
-	REQUIRE(duckdb_v2_value_create_varchar(fx.factory, &text, &text_value, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_stats_set_min(stats, text_value, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
-	duckdb_v2_logical_type_handle varchar = nullptr;
-	duckdb_v2_stats_handle text_stats = nullptr;
-	REQUIRE(duckdb_v2_factory_create_type_from_id(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_VARCHAR, nullptr, nullptr, 0,
-	                                              &varchar, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_stats_create(fx.factory, varchar, &text_stats, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_stats_set_string_min(text_stats, &text, true, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_stats_set_min(text_stats, five, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	// Statistics of another type do not merge or assign.
+	auto text_stats = StatsOfText(fx.factory, "VARCHAR", nullptr);
 	REQUIRE(duckdb_v2_stats_merge(stats, text_stats, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_stats_assign(stats, text_stats, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 
-	duckdb_v2_value_destroy(&text_value);
+	// Refused values name the field, and leave the statistics as they were.
+	DUCKDB_V2_ERROR rc;
+	auto message = SetStatsJSONMessage(fx.factory, stats, "{\"min\": \"not an int\"}", rc);
+	REQUIRE(rc == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(message.find("'min'") != std::string::npos);
+	message = SetStatsJSONMessage(fx.factory, stats, "{\"min\": 0, \"has_unicode\": false}", rc);
+	REQUIRE(rc == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(message.find("'has_unicode'") != std::string::npos);
+	REQUIRE(StatsText(stats) == "{'has_no_null': true, 'has_null': false, 'max': 20, 'min': 1}");
+	REQUIRE(SetStatsJSONMessage(fx.factory, stats, "{\"has_null\": \"maybe\"}", rc).find("'has_null'") !=
+	        std::string::npos);
+	REQUIRE(rc == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(SetStatsJSON(fx.factory, stats, "42", nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(SetStatsJSON(fx.factory, stats, "[1, 2]", nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(SetStatsJSON(fx.factory, stats, "not json", nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(SetStatsJSON(fx.factory, stats, "null", nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_stats_set_variant(stats, five, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	duckdb_v2_value_handle null_value = nullptr;
+	duckdb_v2_logical_type_handle variant_type = nullptr;
+	auto variant_text = Convert("VARIANT");
+	REQUIRE(duckdb_v2_factory_create_type_from_text(fx.factory, &variant_text, &variant_type, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_value_create_null(fx.factory, variant_type, &null_value, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_stats_set_variant(stats, null_value, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(StatsText(stats) == "{'has_no_null': true, 'has_null': false, 'max': 20, 'min': 1}");
+	// An empty object describes nothing
+	REQUIRE(SetStatsJSON(fx.factory, stats, "{}", nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(StatsText(stats) == "{'has_no_null': true, 'has_null': false, 'max': 20, 'min': 1}");
+
+	duckdb_v2_value_destroy(&null_value);
+	duckdb_v2_logical_type_destroy(&variant_type);
+	duckdb_v2_value_destroy(&bounds);
 	duckdb_v2_value_destroy(&five);
 	duckdb_v2_value_destroy(&ten);
-	duckdb_v2_value_destroy(&one);
-	duckdb_v2_value_destroy(&twenty);
 	duckdb_v2_stats_destroy(&text_stats);
 	duckdb_v2_stats_destroy(&other);
 	duckdb_v2_stats_destroy(&stats);
 	REQUIRE(stats == nullptr);
-	duckdb_v2_logical_type_destroy(&varchar);
-	duckdb_v2_logical_type_destroy(&integer);
 
 	// Null-safety of destroy.
 	REQUIRE(duckdb_v2_stats_destroy(nullptr) == DUCKDB_V2_ERROR_NONE);
@@ -1191,168 +1226,142 @@ TEST_CASE("V2 stats: owned statistics narrow, merge and assign", "[capi_v2][stat
 	REQUIRE(duckdb_v2_stats_destroy(&already_null) == DUCKDB_V2_ERROR_NONE);
 }
 
-TEST_CASE("V2 stats: nested, geometry and variant statistics", "[capi_v2][stats][statistics]") {
+TEST_CASE("V2 stats: statistics of every kind round-trip through a VARIANT", "[capi_v2][stats][statistics]") {
 	EnvFixture fx;
 
-	duckdb_v2_logical_type_handle integer = nullptr;
-	REQUIRE(duckdb_v2_factory_create_type_from_id(fx.factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER, nullptr, nullptr, 0,
-	                                              &integer, nullptr) == DUCKDB_V2_ERROR_NONE);
-	duckdb_v2_value_handle five = nullptr;
-	REQUIRE(duckdb_v2_value_create_int(fx.factory, 5, &five, nullptr) == DUCKDB_V2_ERROR_NONE);
-
-	// LIST(INTEGER): the element statistics are child 0 and must be INTEGER statistics.
-	auto list_text = Convert("INTEGER[]");
-	duckdb_v2_logical_type_handle list = nullptr;
-	REQUIRE(duckdb_v2_factory_create_type_from_text(fx.factory, &list_text, &list, nullptr) == DUCKDB_V2_ERROR_NONE);
-	duckdb_v2_stats_handle list_stats = nullptr;
-	duckdb_v2_stats_handle element_stats = nullptr;
-	REQUIRE(duckdb_v2_stats_create(fx.factory, list, &list_stats, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_stats_create(fx.factory, integer, &element_stats, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_stats_set_constant(element_stats, five, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_stats_set_child(list_stats, 0, element_stats, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_stats_set_child(list_stats, 1, element_stats, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(duckdb_v2_stats_set_child(list_stats, 0, list_stats, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(duckdb_v2_stats_set_child(list_stats, 0, nullptr, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_stats_set_child(element_stats, 0, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(duckdb_v2_stats_set_min(list_stats, five, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
-
-	// GEOMETRY: an extent whose minimum exceeds its maximum is refused, as is an unknown WKB type code.
-	auto geometry_text = Convert("GEOMETRY");
-	duckdb_v2_logical_type_handle geometry = nullptr;
-	REQUIRE(duckdb_v2_factory_create_type_from_text(fx.factory, &geometry_text, &geometry, nullptr) ==
-	        DUCKDB_V2_ERROR_NONE);
-	duckdb_v2_stats_handle geometry_stats = nullptr;
-	REQUIRE(duckdb_v2_stats_create(fx.factory, geometry, &geometry_stats, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_stats_set_geometry_extent(geometry_stats, 0, 10, 0, 10, true, 1, 2, false, 0, 0, nullptr) ==
-	        DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_stats_set_geometry_extent(geometry_stats, 10, 0, 0, 10, false, 0, 0, false, 0, 0, nullptr) ==
-	        DUCKDB_V2_ERROR_INPUT_INVALID);
-	const int32_t point_and_polygon[] = {1, 2003};
-	REQUIRE(duckdb_v2_stats_set_geometry_types(geometry_stats, point_and_polygon, 2, nullptr) == DUCKDB_V2_ERROR_NONE);
-	// codes outside the ISO WKB table are refused, also a well-formed list holding one
-	const int32_t rejected_codes[] = {9999, 0, 1000, -1, 8};
-	for (auto code : rejected_codes) {
-		const int32_t with_bogus[] = {1, code};
-		REQUIRE(duckdb_v2_stats_set_geometry_types(geometry_stats, &code, 1, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
-		REQUIRE(duckdb_v2_stats_set_geometry_types(geometry_stats, with_bogus, 2, nullptr) ==
-		        DUCKDB_V2_ERROR_INPUT_INVALID);
-	}
-	const int32_t all_vertex_types[] = {1, 1001, 2001, 3007};
-	REQUIRE(duckdb_v2_stats_set_geometry_types(geometry_stats, all_vertex_types, 4, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_stats_set_geometry_types(geometry_stats, nullptr, 0, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_stats_set_geometry_extent(list_stats, 0, 1, 0, 1, false, 0, 0, false, 0, 0, nullptr) ==
-	        DUCKDB_V2_ERROR_INPUT_INVALID);
-
-	// VARIANT shredded on INTEGER: the shredded layout is STRUCT(typed_value INTEGER, untyped_value_index UINTEGER).
-	duckdb_v2_logical_type_handle shredding = nullptr;
-	REQUIRE(duckdb_v2_stats_variant_shredding_type(fx.factory, integer, &shredding, nullptr) == DUCKDB_V2_ERROR_NONE);
-	DUCKDB_V2_LOGICAL_TYPE_ID shredding_id = DUCKDB_V2_LOGICAL_TYPE_ID_INVALID;
-	duckdb_v2_logical_type_get_id(shredding, &shredding_id, nullptr);
-	REQUIRE(shredding_id == DUCKDB_V2_LOGICAL_TYPE_ID_STRUCT);
-	duckdb_v2_stats_handle shredded_stats = nullptr;
-	duckdb_v2_stats_handle variant_stats = nullptr;
-	REQUIRE(duckdb_v2_stats_create(fx.factory, shredding, &shredded_stats, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_stats_set_child(shredded_stats, 0, element_stats, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_stats_create_variant_shredded(fx.factory, shredded_stats, &variant_stats, nullptr) ==
-	        DUCKDB_V2_ERROR_NONE);
-	duckdb_v2_logical_type_handle variant_type = nullptr;
-	REQUIRE(duckdb_v2_stats_get_type(variant_stats, &variant_type, nullptr) == DUCKDB_V2_ERROR_NONE);
-	DUCKDB_V2_LOGICAL_TYPE_ID variant_id = DUCKDB_V2_LOGICAL_TYPE_ID_INVALID;
-	duckdb_v2_logical_type_get_id(variant_type, &variant_id, nullptr);
-	REQUIRE(variant_id == DUCKDB_V2_LOGICAL_TYPE_ID_VARIANT);
-	// Shredded VARIANT statistics claim nothing about NULLs until narrowed.
-	bool can_have_null = false;
-	bool can_have_valid = false;
-	REQUIRE(duckdb_v2_stats_can_have_null(variant_stats, &can_have_null, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_stats_can_have_valid(variant_stats, &can_have_valid, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(can_have_null);
-	REQUIRE(can_have_valid);
-	REQUIRE(duckdb_v2_stats_set_can_have_null(variant_stats, false, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_stats_can_have_null(variant_stats, &can_have_null, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(!can_have_null);
-
-	// Only a tree of typed_value nodes is a shredded layout: other statistics are refused at construction.
-	auto shredded_rc = [&](const char *layout_text, std::string *message = nullptr) {
-		auto text = Convert(layout_text);
-		duckdb_v2_logical_type_handle layout = nullptr;
-		REQUIRE(duckdb_v2_factory_create_type_from_text(fx.factory, &text, &layout, nullptr) == DUCKDB_V2_ERROR_NONE);
-		duckdb_v2_stats_handle layout_stats = nullptr;
-		duckdb_v2_stats_handle result = nullptr;
-		REQUIRE(duckdb_v2_stats_create(fx.factory, layout, &layout_stats, nullptr) == DUCKDB_V2_ERROR_NONE);
-		duckdb_v2_error_info_handle err = nullptr;
-		auto rc = duckdb_v2_stats_create_variant_shredded(fx.factory, layout_stats, &result, &err);
-		if (err && message) {
-			duckdb_v2_str err_text = {nullptr, 0};
-			duckdb_v2_error_info_get_text(err, &err_text);
-			*message = Convert(err_text);
-		}
-		duckdb_v2_error_info_destroy(&err);
-		REQUIRE((rc == DUCKDB_V2_ERROR_NONE) == (result != nullptr));
-		duckdb_v2_stats_destroy(&result);
-		duckdb_v2_stats_destroy(&layout_stats);
-		duckdb_v2_logical_type_destroy(&layout);
-		return rc;
+	// Each case: the type, JSON text to set, and what the statistics read back as.
+	struct RoundTrip {
+		const char *type;
+		const char *json;
+		const char *expected;
 	};
-	std::string message;
-	REQUIRE(shredded_rc("STRUCT(x INTEGER)", &message) == DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(message.find("STRUCT(x INTEGER)") != std::string::npos);
-	REQUIRE(shredded_rc("STRUCT(typed_value INTEGER, untyped_value_index INTEGER)") == DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(shredded_rc("STRUCT(typed_value INTEGER, untyped_value_index UINTEGER, other INTEGER)") ==
-	        DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(shredded_rc("STRUCT(value INTEGER, untyped_value_index UINTEGER)") == DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(shredded_rc("VARIANT") == DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(shredded_rc("INTEGER[]") == DUCKDB_V2_ERROR_INPUT_INVALID);
-	// nested fields and elements must be nodes themselves
-	REQUIRE(shredded_rc("STRUCT(typed_value STRUCT(x STRUCT(y INTEGER)), untyped_value_index UINTEGER)") ==
-	        DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(shredded_rc("STRUCT(typed_value INTEGER[][], untyped_value_index UINTEGER)") ==
-	        DUCKDB_V2_ERROR_INPUT_INVALID);
-	// a primitive layout and nodes without untyped_value_index are accepted
-	REQUIRE(shredded_rc("INTEGER") == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(shredded_rc("STRUCT(typed_value STRUCT(x INTEGER, y STRUCT(typed_value INTEGER[])))") ==
-	        DUCKDB_V2_ERROR_NONE);
+	const RoundTrip cases[] = {
+	    {"DECIMAL(10, 2)", "{\"min\": 1.5, \"max\": 2.25, \"has_null\": false}",
+	     "{'has_no_null': true, 'has_null': false, 'max': 2.25, 'min': 1.50}"},
+	    {"DATE", "{\"min\": \"2024-01-01\", \"max\": \"2024-12-31\"}",
+	     "{'has_no_null': true, 'has_null': true, 'max': 2024-12-31, 'min': 2024-01-01}"},
+	    // a single bound is kept, but only rendered once both are known
+	    {"DOUBLE", "{\"max\": 1.5}", "{'has_no_null': true, 'has_null': true}"},
+	    {"VARCHAR",
+	     "{\"min\": \"a\", \"max\": \"z\", \"has_unicode\": false, \"min_string_length\": 1, \"max_string_length\": 8, "
+	     "\"total_string_length\": 1234}",
+	     "{'has_no_null': true, 'has_null': true, 'has_unicode': false, 'max': z, 'max_string_length': 8, 'min': a, "
+	     "'min_string_length': 1, 'total_string_length': 1234}"},
+	    // non-ASCII bytes and backslashes are rendered as \xNN, and read back from that rendering
+	    {"BLOB", "{\"min\": \"\\\\x00\\\\x5C\", \"max\": \"\\\\xFF\"}",
+	     "{'has_no_null': true, 'has_null': true, 'has_unicode': true, 'max': '\\\\xFF', 'min': '\\\\x00\\\\x5C'}"},
+	    {"INTEGER[]", "{\"child_stats\": {\"min\": 1, \"max\": 3, \"has_null\": false}, \"has_null\": false}",
+	     "{'child_stats': {'has_no_null': true, 'has_null': false, 'max': 3, 'min': 1}, 'has_no_null': true, "
+	     "'has_null': false}"},
+	    {"INTEGER[2]", "{\"child_stats\": {\"min\": 1, \"max\": 3}}",
+	     "{'child_stats': {'has_no_null': true, 'has_null': true, 'max': 3, 'min': 1}, 'has_no_null': true, "
+	     "'has_null': true}"},
+	    {"STRUCT(a INTEGER, b VARCHAR)",
+	     "{\"child_stats\": {\"b\": {\"min\": \"d\", \"max\": \"m\", \"has_null\": false}}}",
+	     "{'child_stats': {'a': {'has_no_null': true, 'has_null': true}, 'b': {'has_no_null': true, 'has_null': false, "
+	     "'has_unicode': true, 'max': m, 'min': d}}, 'has_no_null': true, 'has_null': true}"},
+	    {"MAP(VARCHAR, INTEGER)", "{\"child_stats\": {\"child_stats\": {\"value\": {\"min\": 0, \"max\": 7}}}}",
+	     "{'child_stats': {'child_stats': {'key': {'has_no_null': true, 'has_null': true, 'has_unicode': true}, "
+	     "'value': {'has_no_null': true, 'has_null': true, 'max': 7, 'min': 0}}, 'has_no_null': true, "
+	     "'has_null': true}, 'has_no_null': true, 'has_null': true}"},
+	    {"GEOMETRY",
+	     "{\"extent\": {\"x_min\": 0, \"x_max\": 10, \"y_min\": -5, \"y_max\": 5, \"z_min\": 1, \"z_max\": 2}, "
+	     "\"types\": [\"point\", \"polygon_z\"], \"has_empty_geom\": false, \"has_empty_part\": false}",
+	     "{'extent': {'x_max': 10.0, 'x_min': 0.0, 'y_max': 5.0, 'y_min': -5.0, 'z_max': 2.0, 'z_min': 1.0}, "
+	     "'has_empty_geom': false, 'has_empty_part': false, 'has_no_null': true, 'has_non_empty_geom': true, "
+	     "'has_non_empty_part': true, 'has_null': true, 'types': [point, polygon_z]}"},
+	    {"VARIANT", "{\"shredding_state\": \"NOT_SHREDDED\"}",
+	     "{'has_no_null': true, 'has_null': true, 'shredding_state': NOT_SHREDDED}"},
+	    // a list of objects whose field n is a BIGINT throughout
+	    {"VARIANT",
+	     "{\"shredding_state\": \"SHREDDED\", \"fully_shredded\": {\"child_stats\": {\"n\": {\"type\": \"BIGINT\", "
+	     "\"stats\": {\"min\": 1, \"max\": 9, \"has_null\": false}}}}}",
+	     "{'fully_shredded': {'child_stats': {'n': {'stats': {'has_no_null': true, 'has_null': false, 'max': 9, "
+	     "'min': 1}, 'type': BIGINT}}}, 'has_no_null': true, 'has_null': true, 'shredding_state': SHREDDED}"},
+	    // a list of objects whose field s is a VARCHAR for some values, with others in the generic layout
+	    {"VARIANT",
+	     "{\"shredding_state\": \"SHREDDED\", \"partially_shredded\": {\"child_stats\": {\"s\": {\"type\": "
+	     "\"VARCHAR\", \"stats\": {\"min\": \"a\", \"max\": \"c\"}}}}}",
+	     "{'has_no_null': true, 'has_null': true, 'partially_shredded': {'child_stats': {'s': {'stats': "
+	     "{'has_no_null': true, 'has_null': true, 'has_unicode': true, 'max': c, 'min': a}, 'type': VARCHAR}}}, "
+	     "'shredding_state': SHREDDED}"},
+	};
+	for (auto &test : cases) {
+		auto stats = StatsOfText(fx.factory, test.type, nullptr);
+		REQUIRE(stats != nullptr);
+		DUCKDB_V2_ERROR rc;
+		auto message = SetStatsJSONMessage(fx.factory, stats, test.json, rc);
+		INFO(test.type << ": " << message);
+		REQUIRE(rc == DUCKDB_V2_ERROR_NONE);
+		REQUIRE(StatsText(stats) == test.expected);
 
-	// The layout derived for a nested type wraps every level and is accepted.
-	auto nested_text = Convert("STRUCT(x INTEGER, y INTEGER[])");
-	duckdb_v2_logical_type_handle nested = nullptr;
-	REQUIRE(duckdb_v2_factory_create_type_from_text(fx.factory, &nested_text, &nested, nullptr) ==
-	        DUCKDB_V2_ERROR_NONE);
-	duckdb_v2_logical_type_handle nested_shredding = nullptr;
-	REQUIRE(duckdb_v2_stats_variant_shredding_type(fx.factory, nested, &nested_shredding, nullptr) ==
-	        DUCKDB_V2_ERROR_NONE);
-	auto expected_text =
-	    Convert("STRUCT(typed_value STRUCT(x STRUCT(typed_value INTEGER, untyped_value_index UINTEGER), "
-	            "y STRUCT(typed_value STRUCT(typed_value INTEGER, untyped_value_index UINTEGER)[], "
-	            "untyped_value_index UINTEGER)), untyped_value_index UINTEGER)");
-	duckdb_v2_logical_type_handle expected = nullptr;
-	REQUIRE(duckdb_v2_factory_create_type_from_text(fx.factory, &expected_text, &expected, nullptr) ==
-	        DUCKDB_V2_ERROR_NONE);
-	bool same_layout = false;
-	REQUIRE(duckdb_v2_logical_type_is_equal(nested_shredding, expected, &same_layout, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(same_layout);
-	duckdb_v2_stats_handle nested_stats = nullptr;
-	duckdb_v2_stats_handle nested_variant = nullptr;
-	REQUIRE(duckdb_v2_stats_create(fx.factory, nested_shredding, &nested_stats, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(duckdb_v2_stats_create_variant_shredded(fx.factory, nested_stats, &nested_variant, nullptr) ==
-	        DUCKDB_V2_ERROR_NONE);
-	REQUIRE(nested_variant != nullptr);
-	duckdb_v2_stats_destroy(&nested_variant);
-	duckdb_v2_stats_destroy(&nested_stats);
-	duckdb_v2_logical_type_destroy(&expected);
-	duckdb_v2_logical_type_destroy(&nested_shredding);
-	duckdb_v2_logical_type_destroy(&nested);
+		// What was read back sets the same statistics again
+		duckdb_v2_value_handle variant = nullptr;
+		REQUIRE(duckdb_v2_stats_get_variant(stats, &variant, nullptr) == DUCKDB_V2_ERROR_NONE);
+		auto again = StatsOfText(fx.factory, test.type, nullptr);
+		REQUIRE(duckdb_v2_stats_set_variant(again, variant, nullptr) == DUCKDB_V2_ERROR_NONE);
+		REQUIRE(StatsText(again) == test.expected);
+		duckdb_v2_value_destroy(&variant);
+		duckdb_v2_stats_destroy(&again);
+		duckdb_v2_stats_destroy(&stats);
+	}
 
-	duckdb_v2_logical_type_destroy(&variant_type);
-	duckdb_v2_stats_destroy(&variant_stats);
-	duckdb_v2_stats_destroy(&shredded_stats);
-	duckdb_v2_logical_type_destroy(&shredding);
-	duckdb_v2_stats_destroy(&geometry_stats);
-	duckdb_v2_logical_type_destroy(&geometry);
-	duckdb_v2_stats_destroy(&element_stats);
-	duckdb_v2_stats_destroy(&list_stats);
-	duckdb_v2_logical_type_destroy(&list);
-	duckdb_v2_value_destroy(&five);
-	duckdb_v2_logical_type_destroy(&integer);
+	// Unknown statistics read back as they are: a GEOMETRY extent renders its unknown bounds as infinities.
+	auto geometry = StatsOfText(fx.factory, "GEOMETRY", nullptr);
+	auto unknown_geometry = "{'extent': {'x_max': inf, 'x_min': -inf, 'y_max': inf, 'y_min': -inf}, 'has_empty_geom': "
+	                        "true, 'has_empty_part': true, 'has_no_null': true, 'has_non_empty_geom': true, "
+	                        "'has_non_empty_part': true, 'has_null': true}";
+	REQUIRE(StatsText(geometry) == unknown_geometry);
+	duckdb_v2_value_handle variant = nullptr;
+	REQUIRE(duckdb_v2_stats_get_variant(geometry, &variant, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_stats_set_variant(geometry, variant, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(StatsText(geometry) == unknown_geometry);
+	duckdb_v2_value_destroy(&variant);
+
+	// Malformed parts are refused with a message naming the field, and leave the statistics as they were.
+	struct Malformed {
+		const char *type;
+		const char *json;
+		const char *field;
+	};
+	const Malformed malformed[] = {
+	    {"INTEGER[]", "{\"child_stats\": {\"min\": \"x\"}}", "'child_stats.min'"},
+	    {"INTEGER[]", "{\"child_stats\": 5}", "'child_stats'"},
+	    {"STRUCT(a INTEGER)", "{\"child_stats\": {\"b\": {\"min\": 1}}}", "'child_stats.b'"},
+	    {"STRUCT(a INTEGER)", "{\"child_stats\": {\"a\": {\"min\": 1, \"other\": 2}}}", "'child_stats.a.other'"},
+	    {"GEOMETRY", "{\"extent\": {\"x_min\": \"left\"}}", "'extent.x_min'"},
+	    {"GEOMETRY", "{\"extent\": {\"w_min\": 1}}", "'extent.w_min'"},
+	    {"GEOMETRY", "{\"types\": [\"circle\"]}", "'types'"},
+	    {"GEOMETRY", "{\"types\": \"point\"}", "'types'"},
+	    {"VARCHAR", "{\"min\": \"\\\\xZZ\"}", "'min'"},
+	    {"VARIANT", "{\"shredding_state\": \"SOMEWHAT\"}", "'shredding_state'"},
+	    {"VARIANT",
+	     "{\"shredding_state\": \"NOT_SHREDDED\", \"fully_shredded\": {\"type\": \"INTEGER\", \"stats\": {}}}",
+	     "'fully_shredded'"},
+	    {"VARIANT", "{\"fully_shredded\": {\"type\": \"NOSUCHTYPE\", \"stats\": {}}}", "'fully_shredded.type'"},
+	    {"VARIANT", "{\"fully_shredded\": {\"type\": \"VARIANT\", \"stats\": {}}}", "'fully_shredded.type'"},
+	    {"VARIANT", "{\"fully_shredded\": {\"type\": \"INTEGER\", \"stats\": {\"min\": \"x\"}}}",
+	     "'fully_shredded.stats.min'"},
+	    {"VARIANT", "{\"fully_shredded\": {\"x\": {\"type\": \"INTEGER\"}}}", "'fully_shredded.x"},
+	    {"VARIANT", "{\"fully_shredded\": {}}", "'fully_shredded'"},
+	    {"VARIANT",
+	     "{\"fully_shredded\": {\"type\": \"INTEGER\", \"stats\": {}}, \"partially_shredded\": {\"type\": "
+	     "\"INTEGER\", \"stats\": {}}}",
+	     "'partially_shredded'"},
+	};
+	for (auto &test : malformed) {
+		auto stats = StatsOfText(fx.factory, test.type, nullptr);
+		REQUIRE(stats != nullptr);
+		auto before = StatsText(stats);
+		DUCKDB_V2_ERROR rc;
+		auto message = SetStatsJSONMessage(fx.factory, stats, test.json, rc);
+		INFO(test.type << " " << test.json << ": " << message);
+		REQUIRE(rc == DUCKDB_V2_ERROR_INPUT_INVALID);
+		REQUIRE(message.find(test.field) != std::string::npos);
+		REQUIRE(StatsText(stats) == before);
+		duckdb_v2_stats_destroy(&stats);
+	}
+	duckdb_v2_stats_destroy(&geometry);
 }
 
 } // namespace test_capi_v2

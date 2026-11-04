@@ -15,6 +15,7 @@
 
 namespace duckdb {
 class BaseStatistics;
+class StatsStructFields;
 struct SelectionVector;
 
 class GeometryTypeSet {
@@ -339,6 +340,8 @@ struct GeometryStats {
 	DUCKDB_API static void Deserialize(Deserializer &deserializer, BaseStatistics &base);
 
 	DUCKDB_API static child_list_t<Value> ToStruct(const BaseStatistics &stats);
+	//! Sets the parts of the statistics the struct fields describe (the inverse of ToStruct)
+	DUCKDB_API static void SetFromStruct(BaseStatistics &stats, StatsStructFields &fields);
 
 	DUCKDB_API static void Update(BaseStatistics &stats, const string_t &value);
 	DUCKDB_API static void Merge(BaseStatistics &stats, const BaseStatistics &other);

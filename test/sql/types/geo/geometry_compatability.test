@@ -139,4 +139,4 @@ checkpoint;
 query I
 select stats(g) from t_all_types limit 1
 ----
-{'approx_unique': 30, 'extent': {'m_max': 14.0, 'm_min': 4.0, 'x_max': 11.0, 'x_min': 1.0, 'y_max': 12.0, 'y_min': 2.0, 'z_max': 13.0, 'z_min': 3.0}, 'has_empty_geom': false, 'has_empty_part': false, 'has_no_null': true, 'has_non_empty_geom': true, 'has_non_empty_part': true, 'has_null': false}
+{'approx_unique': 30, 'extent': {'m_max': 14.0, 'm_min': 4.0, 'x_max': 11.0, 'x_min': 1.0, 'y_max': 12.0, 'y_min': 2.0, 'z_max': 13.0, 'z_min': 3.0}, 'has_empty_geom': false, 'has_empty_part': false, 'has_no_null': true, 'has_non_empty_geom': true, 'has_non_empty_part': true, 'has_null': false, 'types': [point, linestring, polygon, multipoint, multilinestring, multipolygon, geometrycollection, point_z, linestring_z, polygon_z, multipoint_z, multilinestring_z, multipolygon_z, geometrycollection_z, point_m, linestring_m, polygon_m, multipoint_m, multilinestring_m, multipolygon_m, geometrycollection_m, point_zm, linestring_zm, polygon_zm, multipoint_zm, multilinestring_zm, multipolygon_zm, geometrycollection_zm]}

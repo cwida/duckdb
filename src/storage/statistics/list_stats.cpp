@@ -1,6 +1,7 @@
 #include "duckdb/common/vector/list_vector.hpp"
 #include "duckdb/storage/statistics/list_stats.hpp"
 #include "duckdb/storage/statistics/base_statistics.hpp"
+#include "duckdb/storage/statistics/stats_struct_fields.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/vector.hpp"
 
@@ -90,6 +91,13 @@ child_list_t<Value> ListStats::ToStruct(const BaseStatistics &stats) {
 	child_list_t<Value> result;
 	result.emplace_back("child_stats", child_stats.ToStruct());
 	return result;
+}
+
+void ListStats::SetFromStruct(BaseStatistics &stats, StatsStructFields &fields) {
+	auto child = fields.Get("child_stats");
+	if (child) {
+		GetChildStats(stats).SetFromStruct(*child, fields.FieldPath("child_stats"));
+	}
 }
 
 void ListStats::Verify(const BaseStatistics &stats, const Vector &vector, const SelectionVector &sel, idx_t count) {

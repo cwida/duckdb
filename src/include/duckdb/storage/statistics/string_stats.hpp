@@ -20,6 +20,7 @@ class BaseStatistics;
 struct SelectionVector;
 class Vector;
 class Value;
+class StatsStructFields;
 template <class T>
 struct StatsWriter;
 
@@ -113,6 +114,8 @@ struct StringStats {
 	DUCKDB_API static void Deserialize(Deserializer &deserializer, BaseStatistics &base);
 
 	DUCKDB_API static child_list_t<Value> ToStruct(const BaseStatistics &stats);
+	//! Sets the parts of the statistics the struct fields describe (the inverse of ToStruct)
+	DUCKDB_API static void SetFromStruct(BaseStatistics &stats, StatsStructFields &fields);
 
 	DUCKDB_API static FilterPropagateResult CheckZonemap(const BaseStatistics &stats, ExpressionType comparison_type,
 	                                                     array_ptr<const Value> constants);

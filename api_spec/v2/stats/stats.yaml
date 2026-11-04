@@ -8,6 +8,9 @@ module: stats
 # its result. A function can also build statistics of its own with `[[stats_create]]`, e.g. to check a pushed-down
 # filter against the statistics of a row group with `[[expression_check_statistics]]`.
 #
+# Statistics are read and written as a VARIANT value, in the shape the SQL function `stats()` returns: see
+# `[[stats_get_variant]]` and `[[stats_set_variant]]`.
+#
 # Every statistic states what can occur, never what does occur: `true` means a kind of value may be present, `false`
 # guarantees it is absent. The engine relies on the guarantees, so a statistic that claims less than the data holds
 # produces wrong query results.
@@ -127,6 +130,99 @@ functions:
     return_type: ERROR
 
   #---------------------------------------------------------------------------------------------------------------------
+  # Statistics as a VARIANT
+  #---------------------------------------------------------------------------------------------------------------------
+  stats_get_variant:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-04" ]
+    description: |
+      Returns the statistics as a VARIANT value: an object with one field per known statistic, exactly what the SQL
+      function `stats()` returns for the same statistics. `stats(42)` for example gives
+      `{'approx_unique': 1, 'has_no_null': true, 'has_null': false, 'max': 42, 'min': 42}`.
+
+      Every statistics object has `has_null` and `has_no_null` (whether NULLs and non-NULL values can occur) and, when
+      known, `approx_unique` (the estimated number of distinct values). The other fields depend on the type, and a
+      field is absent when that statistic is unknown:
+
+      - numeric types (integers, floating point numbers, DECIMAL, dates, times, timestamps, INTERVAL, UUID, BOOLEAN):
+        `min` and `max`, values of the column's type;
+      - VARCHAR and BLOB: `min` and `max` (bounds in binary order, rendered like a BLOB: non-ASCII bytes and
+        backslashes as `\xNN` escapes), `has_unicode`, `min_string_length`, `max_string_length` and
+        `total_string_length`;
+      - LIST and ARRAY: `child_stats`, the statistics object of the elements;
+      - STRUCT: `child_stats`, an object with the statistics of each field by name; a MAP is a LIST of
+        `STRUCT(key, value)` entries, so its keys and values are
+        `child_stats.child_stats.key` and `child_stats.child_stats.value`;
+      - GEOMETRY: `extent`, an object with the bounding box `x_min`, `x_max`, `y_min`, `y_max` and, when the
+        geometries have those coordinates, `z_min`, `z_max`, `m_min`, `m_max`; `types`, the list of geometry types
+        the column holds (`'point'`, `'linestring_z'`, `'polygon_m'`, `'multipoint_zm'`, ...); and the flags
+        `has_empty_geom`, `has_non_empty_geom`, `has_empty_part` and `has_non_empty_part`;
+      - VARIANT: `shredding_state` (`'SHREDDED'` when the values are stored in a structured layout, `'NOT_SHREDDED'`,
+        `'INCONSISTENT'` or `'UNINITIALIZED'`), and for a shredded column `fully_shredded` and `partially_shredded`:
+        trees over the structured layout whose leaves are `{'type': <type name>, 'stats': <statistics object>}` for
+        the values shredded on that type, whose arrays are `{'child_stats': <node>}` and whose objects hold a node per
+        field. A node under `fully_shredded` has every value in the structured layout, so that a filter on it can be
+        answered from its statistics; a node under `partially_shredded` also has values that fell back to the generic
+        layout. `{'shredding_state': 'SHREDDED', 'fully_shredded': {'x': {'type': 'INTEGER', 'stats': {'min': 1,
+        'max': 5, 'has_null': false, 'has_no_null': true}}}}` describes objects whose field `x` is an INTEGER in
+        [1, 5] throughout.
+
+      The returned value is owned by the caller and must be destroyed via `[[value_destroy]]`.
+    role: getter
+    belongs_to: stats
+    parameters:
+      stats:
+        type: stats
+        description: The statistics to read.
+      variant:
+        type: value
+        indirection: 1
+        kind: OUT
+        description: Receives the owned VARIANT value.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  stats_set_variant:
+    lifecycle:
+      - [ "unstable", "v2.0.0", "2026-11-04" ]
+    description: |
+      Sets the statistics from a VARIANT value in the shape `[[stats_get_variant]]` returns: every field the object has
+      replaces that statistic, what it does not mention keeps its value. The result statistics of a stats callback start
+      out unknown, so `{'min': 20, 'max': 30, 'has_null': false}` on an INTEGER column reports exactly those bounds and
+      the absence of NULLs; a nested field such as `child_stats.x` or `extent.z_min` narrows that part only, and a
+      `fully_shredded` / `partially_shredded` tree replaces the shredding of a VARIANT column as a whole.
+
+      The value is a VARIANT, or anything that converts to one with the built-in casts: a STRUCT built with
+      `[[value_create_struct]]` (`{'min': 20, 'max': 30}`), or a VARCHAR holding JSON text (`{"min": 20, "max": 30}`),
+      which is parsed as JSON. Bounds are cast to the column's type, so a JSON number sets the minimum of a DECIMAL or
+      DATE column; string bounds are rendered like BLOBs and may be truncated prefixes, as a file format stores them.
+      Each statistic states what can occur: a bound that excludes a value the scan then produces, or `has_null: false`
+      for a column with NULLs, produces wrong query results. A geometry `types` list names the types the column holds
+      with the names `[[stats_get_variant]]` returns; a shredded `type` is a type name such as `'INTEGER'` or
+      `'DECIMAL(10, 2)'`.
+
+      Fails with `ERROR_INPUT_INVALID` for a NULL value, a value that is not an object, a field the statistics of the
+      type do not have, a field whose value does not convert (the message names the field, e.g. `child_stats.a.min`),
+      or read-only statistics such as those of an argument. A failure leaves the statistics as they were.
+    role: method
+    belongs_to: stats
+    parameters:
+      stats:
+        type: stats
+        description: The statistics to set.
+      variant:
+        type: value
+        description: The statistics as a VARIANT value, or a value that converts to one. Borrowed.
+      err:
+        type: error_info
+        indirection: 1
+        description: Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`.
+    return_type: ERROR
+
+  #---------------------------------------------------------------------------------------------------------------------
   # Construction
   #---------------------------------------------------------------------------------------------------------------------
   stats_create:
@@ -136,9 +232,10 @@ functions:
       Creates the statistics of a column of the given type through a factory.
 
       The statistics start out unknown: they claim nothing about the values (NULLs and non-NULL values may occur, no
-      bounds, and the statistics of the children of a nested type are unknown too). Narrow them with the `stats_set_*`
-      functions. The caller owns the returned handle and must destroy it with `[[stats_destroy]]`. A stats callback does
-      not need this: it narrows the result statistics it receives in place.
+      bounds, and the statistics of the children of a nested type are unknown too). Narrow them with
+      `[[stats_set_variant]]`, `[[stats_set_can_have_null]]` and `[[stats_set_can_have_valid]]`. The caller owns the
+      returned handle and must destroy it with `[[stats_destroy]]`. A stats callback does not need this: it narrows
+      the result statistics it receives in place.
     role: constructor
     belongs_to: stats
     parameters:
@@ -159,81 +256,15 @@ functions:
         description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
     return_type: ERROR
 
-  stats_create_variant_shredded:
-    lifecycle:
-      - [ "unstable", "v2.0.0", "2026-10-30" ]
-    description: |
-      Creates the statistics of a VARIANT column that is shredded: its values are stored in a structured ("typed")
-      layout next to the generic one, and `shredded_stats` describe that layout.
-
-      The structured layout is a tree of `STRUCT(typed_value <T>, untyped_value_index UINTEGER)` nodes - one per field
-      of an OBJECT, per element of an ARRAY and per primitive leaf - whose type `[[stats_variant_shredding_type]]`
-      derives from the structured type the values are shredded on; `shredded_stats` must be statistics of that type.
-      Within a node, the statistics of `typed_value` describe the values stored in the typed layout and those of
-      `untyped_value_index` whether any value fell back to the generic layout: a node whose `untyped_value_index` is
-      known to hold no index (its minimum and maximum are 0, and it holds no NULL) is fully shredded, so that a filter
-      on the field can be answered from the typed statistics. Fails with `ERROR_INPUT_INVALID` for statistics that do
-      not describe such a layout, e.g. a plain `STRUCT(x INTEGER)` or a node whose `untyped_value_index` is not a
-      UINTEGER. The resulting VARIANT statistics claim nothing about NULLs; narrow them with
-      `[[stats_set_can_have_null]]` and `[[stats_set_can_have_valid]]`. The caller owns the returned handle and must
-      destroy it with `[[stats_destroy]]`.
-    role: constructor
-    belongs_to: stats
-    parameters:
-      factory:
-        type: factory
-        description: The factory to create the statistics through.
-      shredded_stats:
-        type: stats
-        description: The statistics of the shredded layout. Borrowed and copied.
-      stats:
-        type: stats
-        indirection: 1
-        kind: OUT
-        description: On success, receives the newly created VARIANT statistics. Owned by the caller.
-      err:
-        type: error_info
-        indirection: 1
-        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
-    return_type: ERROR
-
-  stats_variant_shredding_type:
-    lifecycle:
-      - [ "unstable", "v2.0.0", "2026-10-30" ]
-    description: |
-      Derives the type of the shredded layout of a VARIANT column from the structured type its values are shredded on:
-      every level of the structured type - a STRUCT (an OBJECT), a LIST (an ARRAY) or a primitive type - is wrapped in a
-      `STRUCT(typed_value <level>, untyped_value_index UINTEGER)`. Statistics of this type describe the shredded layout
-      for `[[stats_create_variant_shredded]]`.
-    parameters:
-      factory:
-        type: factory
-        description: The factory to create the type through.
-      structured_type:
-        type: logical_type
-        description: The structured type the values are shredded on. Borrowed.
-      type:
-        type: logical_type
-        indirection: 1
-        kind: OUT
-        description: On success, receives the type of the shredded layout. Owned by the caller, destroy via
-          `[[logical_type_destroy]]`.
-      err:
-        type: error_info
-        indirection: 1
-        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
-    return_type: ERROR
-
   stats_destroy:
     lifecycle:
       - [ "unstable", "v2.0.0", "2026-10-30" ]
     description: |
-      Destroys statistics created with `[[stats_create]]` or `[[stats_create_variant_shredded]]`, releasing their
-      resources.
+      Destroys statistics created with `[[stats_create]]`, releasing their resources.
 
       Null-safe: passing a null pointer or null handle is a no-op. The handle is set to null on return to prevent
       double-destruction. Fails with `ERROR_INPUT_INVALID` for the borrowed statistics a stats callback receives, which
-      the engine owns. Statistics that were set as a child or merged into others were copied, so destroying them
+      the engine owns. Statistics that were merged into or assigned to others were copied, so destroying them
       afterwards does not affect those.
     role: destructor
     belongs_to: stats
@@ -245,185 +276,8 @@ functions:
     return_type: ERROR
 
   #---------------------------------------------------------------------------------------------------------------------
-  # Bounds and values
+  # Combining statistics
   #---------------------------------------------------------------------------------------------------------------------
-  stats_set_min:
-    lifecycle:
-      - [ "unstable", "v2.0.0", "2026-10-30" ]
-    description: |
-      Sets the minimum value of a numeric column (an integer, a floating point number, a DECIMAL, a date / time /
-      timestamp, an INTERVAL, a UUID or a BOOLEAN): no value of the column is smaller. The value is cast to the column's
-      type; a NULL value removes the bound. Fails with `ERROR_INPUT_INVALID` for statistics of a type without a numeric
-      minimum (use `[[stats_set_string_min]]` for VARCHAR and BLOB), a value that does not cast to the type, or
-      read-only statistics.
-    role: method
-    belongs_to: stats
-    parameters:
-      stats:
-        type: stats
-        description: The statistics to narrow.
-      value:
-        type: value
-        description: The minimum value. Borrowed and copied.
-      err:
-        type: error_info
-        indirection: 1
-        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
-    return_type: ERROR
-
-  stats_set_max:
-    lifecycle:
-      - [ "unstable", "v2.0.0", "2026-10-30" ]
-    description: |
-      Sets the maximum value of a numeric column: no value of the column is larger. The value is cast to the column's
-      type; a NULL value removes the bound. A FLOAT / DOUBLE column that can hold NaN values, which compare larger than
-      any number, must report NaN as its maximum. Fails with `ERROR_INPUT_INVALID` for statistics of a type without a
-      numeric maximum, a value that does not cast to the type, or read-only statistics.
-    role: method
-    belongs_to: stats
-    parameters:
-      stats:
-        type: stats
-        description: The statistics to narrow.
-      value:
-        type: value
-        description: The maximum value. Borrowed and copied.
-      err:
-        type: error_info
-        indirection: 1
-        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
-    return_type: ERROR
-
-  stats_set_string_min:
-    lifecycle:
-      - [ "unstable", "v2.0.0", "2026-10-30" ]
-    description: |
-      Sets the minimum of a VARCHAR or BLOB column: no value of the column sorts before `value` (in binary order). An
-      exact minimum is a value of the column; a truncated one is a prefix of the minimum (as a file format stores it),
-      which may then be shorter than the values and need not be valid UTF-8. The bytes are borrowed and copied. Fails
-      with `ERROR_INPUT_INVALID` for statistics of another type or read-only statistics.
-    role: method
-    belongs_to: stats
-    parameters:
-      stats:
-        type: stats
-        description: The statistics to narrow.
-      value:
-        type: str
-        indirection: 1
-        description: The minimum, or a prefix of it. Borrowed and copied.
-      is_exact:
-        type: bool
-        description: Whether `value` is the minimum itself rather than a truncated prefix of it.
-      err:
-        type: error_info
-        indirection: 1
-        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
-    return_type: ERROR
-
-  stats_set_string_max:
-    lifecycle:
-      - [ "unstable", "v2.0.0", "2026-10-30" ]
-    description: |
-      Sets the maximum of a VARCHAR or BLOB column: no value of the column sorts after `value` (in binary order). An
-      exact maximum is a value of the column; a truncated one is a prefix that sorts after every value (as a file format
-      stores it), which may then be shorter than the values and need not be valid UTF-8. The bytes are borrowed and
-      copied. Fails with `ERROR_INPUT_INVALID` for statistics of another type or read-only statistics.
-    role: method
-    belongs_to: stats
-    parameters:
-      stats:
-        type: stats
-        description: The statistics to narrow.
-      value:
-        type: str
-        indirection: 1
-        description: The maximum, or a truncated bound of it. Borrowed and copied.
-      is_exact:
-        type: bool
-        description: Whether `value` is the maximum itself rather than a truncated bound.
-      err:
-        type: error_info
-        indirection: 1
-        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
-    return_type: ERROR
-
-  stats_set_constant:
-    lifecycle:
-      - [ "unstable", "v2.0.0", "2026-10-30" ]
-    description: |
-      Makes the statistics those of a column whose every value is `value`: its minimum and maximum are the value (for a
-      VARCHAR / BLOB column its exact bounds, together with its length), and it holds no other value. A NULL value
-      describes a column of NULLs. The value is cast to the column's type and is borrowed and copied. Replaces what the
-      statistics claimed before. Fails with `ERROR_INPUT_INVALID` when the value does not cast to the type or for
-      read-only statistics.
-    role: method
-    belongs_to: stats
-    parameters:
-      stats:
-        type: stats
-        description: The statistics to set.
-      value:
-        type: value
-        description: The only value of the column. Borrowed and copied.
-      err:
-        type: error_info
-        indirection: 1
-        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
-    return_type: ERROR
-
-  stats_set_distinct_count:
-    lifecycle:
-      - [ "unstable", "v2.0.0", "2026-10-30" ]
-    description: |
-      Sets the estimated number of distinct values of the column (0: unknown). Fails with `ERROR_INPUT_INVALID` for
-      read-only statistics.
-    role: method
-    belongs_to: stats
-    parameters:
-      stats:
-        type: stats
-        description: The statistics to narrow.
-      count:
-        type: idx
-        description: The estimated number of distinct values.
-      err:
-        type: error_info
-        indirection: 1
-        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
-    return_type: ERROR
-
-  #---------------------------------------------------------------------------------------------------------------------
-  # Nested types
-  #---------------------------------------------------------------------------------------------------------------------
-  stats_set_child:
-    lifecycle:
-      - [ "unstable", "v2.0.0", "2026-10-30" ]
-    description: |
-      Sets the statistics of a child of a nested column: the elements of a LIST or ARRAY column (child 0), or the field
-      at `child_index` of a STRUCT column (a MAP column is a LIST of `STRUCT(key, value)` entries: its entries are child
-      0, whose children 0 and 1 are the keys and the values). The child statistics must be of the child's type; they are
-      borrowed and copied. A null child resets the child's statistics to unknown. Fails with `ERROR_INPUT_INVALID` for
-      statistics of a type without children, an index out of range, child statistics of another type, or read-only
-      statistics.
-    role: method
-    belongs_to: stats
-    parameters:
-      stats:
-        type: stats
-        description: The statistics to narrow.
-      child_index:
-        type: idx
-        description: The index of the child.
-      child:
-        type: stats
-        description: The statistics of the child, or null for unknown statistics. Borrowed and copied.
-      err:
-        type: error_info
-        indirection: 1
-        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
-    return_type: ERROR
-
   stats_merge:
     lifecycle:
       - [ "unstable", "v2.0.0", "2026-10-30" ]
@@ -466,112 +320,6 @@ functions:
       other:
         type: stats
         description: The statistics to copy. Borrowed.
-      err:
-        type: error_info
-        indirection: 1
-        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
-    return_type: ERROR
-
-  #---------------------------------------------------------------------------------------------------------------------
-  # Geometry
-  #---------------------------------------------------------------------------------------------------------------------
-  stats_set_geometry_extent:
-    lifecycle:
-      - [ "unstable", "v2.0.0", "2026-10-30" ]
-    description: |
-      Sets the bounding box of a GEOMETRY column: every vertex of every geometry lies within it. The Z and M bounds are
-      only set when the geometries have those coordinates (`has_z` / `has_m`); otherwise they are unknown, also when an
-      earlier call set them. Replaces the bounding box set before. Fails with `ERROR_INPUT_INVALID` for statistics of
-      another type, a minimum larger than its maximum, or read-only statistics.
-    role: method
-    belongs_to: stats
-    parameters:
-      stats:
-        type: stats
-        description: The statistics to narrow.
-      x_min:
-        type: f64
-        description: The smallest X coordinate.
-      x_max:
-        type: f64
-        description: The largest X coordinate.
-      y_min:
-        type: f64
-        description: The smallest Y coordinate.
-      y_max:
-        type: f64
-        description: The largest Y coordinate.
-      has_z:
-        type: bool
-        description: Whether the Z bounds are given.
-      z_min:
-        type: f64
-        description: The smallest Z coordinate (when `has_z`).
-      z_max:
-        type: f64
-        description: The largest Z coordinate (when `has_z`).
-      has_m:
-        type: bool
-        description: Whether the M bounds are given.
-      m_min:
-        type: f64
-        description: The smallest M coordinate (when `has_m`).
-      m_max:
-        type: f64
-        description: The largest M coordinate (when `has_m`).
-      err:
-        type: error_info
-        indirection: 1
-        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
-    return_type: ERROR
-
-  stats_set_geometry_types:
-    lifecycle:
-      - [ "unstable", "v2.0.0", "2026-10-30" ]
-    description: |
-      Sets the geometry types a GEOMETRY column holds, as ISO WKB type codes (e.g. 1 for a Point, 1001 for a Point with
-      a Z coordinate, 2003 for a Polygon with an M coordinate): the column holds no geometry of another type. Replaces
-      the types set before; an empty list makes the types unknown again. Fails with `ERROR_INPUT_INVALID` for statistics
-      of another type, an unknown type code, or read-only statistics.
-    role: method
-    belongs_to: stats
-    parameters:
-      stats:
-        type: stats
-        description: The statistics to narrow.
-      wkb_types:
-        type: i32
-        indirection: 1
-        const: true
-        description: The ISO WKB type codes of the geometries the column holds. Borrowed and copied.
-      count:
-        type: idx
-        description: The number of type codes.
-      err:
-        type: error_info
-        indirection: 1
-        description: "Optional. On failure, receives an opaque info handle the caller must destroy via `[[error_info_destroy]]`."
-    return_type: ERROR
-
-  #---------------------------------------------------------------------------------------------------------------------
-  # Type
-  #---------------------------------------------------------------------------------------------------------------------
-  stats_get_type:
-    lifecycle:
-      - [ "unstable", "v2.0.0", "2026-10-30" ]
-    description: |
-      Retrieves the type of the column or expression the statistics describe.
-    role: method
-    belongs_to: stats
-    parameters:
-      stats:
-        type: stats
-        description: The statistics.
-      type:
-        type: logical_type
-        indirection: 1
-        kind: OUT
-        description: Receives the type. Owned by the caller, destroy via `[[logical_type_destroy]]`.
       err:
         type: error_info
         indirection: 1

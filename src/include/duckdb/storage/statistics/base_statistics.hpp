@@ -139,6 +139,12 @@ public:
 
 	Value ToStruct() const;
 	string ToString() const;
+	//! Builds statistics of `type` from a struct (or VARIANT object) in the shape ToStruct produces: the parts
+	//! it describes are set, the rest stays unknown
+	DUCKDB_API static BaseStatistics FromStruct(const LogicalType &type, const Value &value);
+	//! Sets the parts of the statistics a struct (or VARIANT object) in the shape ToStruct produces describes;
+	//! `path` prefixes the field names in error messages
+	DUCKDB_API void SetFromStruct(const Value &value, const string &path = string());
 
 	idx_t GetDistinctCount();
 	static BaseStatistics FromConstant(const Value &input);

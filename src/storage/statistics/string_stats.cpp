@@ -11,6 +11,8 @@
 #include "utf8proc_wrapper.hpp"
 #include "duckdb/common/types/blob.hpp"
 #include "duckdb/storage/statistics/stats_writer.hpp"
+#include "duckdb/storage/statistics/stats_struct_fields.hpp"
+#include "duckdb/common/error_data.hpp"
 
 namespace duckdb {
 
@@ -822,6 +824,51 @@ child_list_t<Value> StringStats::ToStruct(const BaseStatistics &stats) {
 		result.emplace_back("total_string_length", Value::UBIGINT(string_data.total_string_length));
 	}
 	return result;
+}
+
+//! The bytes of a bound as ToStruct renders it: non-ASCII bytes and backslashes as \xNN escapes
+static string StringStatsBoundBytes(StatsStructFields &fields, const string &name, const Value &value) {
+	auto &text = StringValue::Get(value);
+	for (auto c : text) {
+		if (static_cast<unsigned char>(c) > 127) {
+			// not a rendering: take the bytes as they are
+			return text;
+		}
+	}
+	try {
+		return Blob::ToBlob(string_t(text));
+	} catch (std::exception &ex) {
+		ErrorData error(ex);
+		fields.Throw(name, StringUtil::Format("'%s' is not a string bound: %s", text, error.RawMessage()));
+	}
+}
+
+void StringStats::SetFromStruct(BaseStatistics &stats, StatsStructFields &fields) {
+	auto &string_data = GetDataUnsafe(stats);
+	Value field;
+	// the rendering does not tell an exact bound from a truncated one: take both as possibly truncated
+	if (fields.TryGet("min", LogicalType::VARCHAR, field)) {
+		auto bytes = StringStatsBoundBytes(fields, "min", field);
+		SetMin(stats, string_t(bytes), StringStatsType::TRUNCATED_STATS);
+	}
+	if (fields.TryGet("max", LogicalType::VARCHAR, field)) {
+		auto bytes = StringStatsBoundBytes(fields, "max", field);
+		SetMax(stats, string_t(bytes), StringStatsType::TRUNCATED_STATS);
+	}
+	if (fields.TryGet("has_unicode", LogicalType::BOOLEAN, field)) {
+		string_data.has_unicode = BooleanValue::Get(field);
+	}
+	if (fields.TryGet("min_string_length", LogicalType::UINTEGER, field)) {
+		string_data.has_min_string_length = true;
+		string_data.min_string_length = UIntegerValue::Get(field);
+	}
+	if (fields.TryGet("max_string_length", LogicalType::UINTEGER, field)) {
+		SetMaxStringLength(stats, UIntegerValue::Get(field));
+	}
+	if (fields.TryGet("total_string_length", LogicalType::UBIGINT, field)) {
+		string_data.has_total_string_length = true;
+		string_data.total_string_length = UBigIntValue::Get(field);
+	}
 }
 
 void StringStats::Verify(const BaseStatistics &stats, const Vector &vector, const SelectionVector &sel, idx_t count) {
