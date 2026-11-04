@@ -1,0 +1,31 @@
+# name: test/sql/cte/recursive_inline_blocked_source.test
+# description: Inline recursive execution services executor tasks while a source blocks
+# group: [cte]
+
+# With threads == external_threads there are zero internal worker threads. An async-yielding
+# source (dbgen schedules its continuation as an executor task and returns BLOCKED) can then
+# only make progress on the coordinating thread. The inline wait must pump executor tasks like
+# the event path does. A bare condition-variable wait deadlocks the query below.
+# max_execution_time bounds partial regressions through the wait's deadline check. A full
+# reintroduction of the deadlock is only caught by the runner's process timeout.
+
+require tpch
+
+statement ok
+SET threads=1;
+
+statement ok
+SET external_threads=1;
+
+statement ok
+SET max_execution_time=60000;
+
+query I
+WITH RECURSIVE t(lvl, n) AS (
+	SELECT 1, 0::BIGINT
+	UNION ALL
+	SELECT lvl + 1, (SELECT count(*) FROM dbgen(sf = 0.001)) FROM t WHERE lvl < 2
+)
+SELECT count(*) FROM t;
+----
+2
