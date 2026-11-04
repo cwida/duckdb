@@ -136,13 +136,13 @@ struct JSONConverterBase {
 	static yyjson_mut_val *VisitDecimal(T val, uint32_t width, uint32_t scale, yyjson_mut_doc *doc) {
 		string val_str;
 		if constexpr (std::is_same_v<T, int16_t>) {
-			val_str = Decimal::ToString(val, static_cast<uint8_t>(width), static_cast<uint8_t>(scale));
+			val_str = Decimal::ToString(val, width, scale);
 		} else if constexpr (std::is_same_v<T, int32_t>) {
-			val_str = Decimal::ToString(val, static_cast<uint8_t>(width), static_cast<uint8_t>(scale));
+			val_str = Decimal::ToString(val, width, scale);
 		} else if constexpr (std::is_same_v<T, int64_t>) {
-			val_str = Decimal::ToString(val, static_cast<uint8_t>(width), static_cast<uint8_t>(scale));
+			val_str = Decimal::ToString(val, width, scale);
 		} else if constexpr (std::is_same_v<T, hugeint_t>) {
-			val_str = Decimal::ToString(val, static_cast<uint8_t>(width), static_cast<uint8_t>(scale));
+			val_str = Decimal::ToString(val, width, scale);
 		} else {
 			throw InternalException("Unhandled decimal type");
 		}

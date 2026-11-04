@@ -30,6 +30,8 @@ struct JoinOrderUtil {
 	static bool HasValidJoinEndpoints(const FilterInfo &filter);
 	static bool HasDisjointJoinEndpoints(const FilterInfo &filter);
 	static RelationIndex GetBindingRelation(const ColumnBinding &binding);
+	//! Extract a column binding through invertible, non-TRY casts.
+	static ColumnBinding GetEquivalenceBinding(const Expression &expression);
 };
 
 class JoinPredicate {
@@ -133,7 +135,6 @@ public:
 	const vector<reference<JoinPredicate>> &GetSelectivityPredicates() const;
 	const vector<reference<JoinPredicate>> &GetGraphPredicates() const;
 	const vector<JoinEqualityClass> &GetEqualityClasses() const;
-	bool HasLeftJoinPredicates() const;
 
 	bool HasDirectCompositeEquality(JoinRelationSet &pair) const;
 
@@ -143,7 +144,6 @@ private:
 	vector<reference<JoinPredicate>> equality_join_predicates;
 	vector<reference<JoinPredicate>> selectivity_predicates;
 	vector<reference<JoinPredicate>> graph_predicates;
-	bool has_left_join_predicates = false;
 	vector<JoinEqualityClass> equality_classes;
 	reference_map_t<JoinRelationSet, RelationPairEqualitySummary> equality_pairs;
 };

@@ -104,8 +104,19 @@ struct VariantStatsVisitor {
 		}
 	}
 
+	static bool ChildrenTooDeep(const VariantNestedData &nested_data, idx_t depth, VariantShreddingStats &stats) {
+		if (!nested_data.child_count || depth + 1 < VariantVisitor<VariantStatsVisitor>::MAX_RECURSION_DEPTH) {
+			return false;
+		}
+		stats.SetTooDeep();
+		return true;
+	}
+
 	static void VisitArray(const UnifiedVariantVectorData &variant, idx_t row, const VariantNestedData &nested_data,
 	                       idx_t depth, VariantShreddingStats &stats, idx_t stats_column_index) {
+		if (ChildrenTooDeep(nested_data, depth, stats)) {
+			return;
+		}
 		auto &element_stats = stats.GetOrCreateElement(stats_column_index);
 		auto index = element_stats.index;
 		VariantVisitor<VariantStatsVisitor>::VisitArrayItems(variant, row, nested_data, depth, stats, index);
@@ -113,6 +124,9 @@ struct VariantStatsVisitor {
 
 	static void VisitObject(const UnifiedVariantVectorData &variant, idx_t row, const VariantNestedData &nested_data,
 	                        idx_t depth, VariantShreddingStats &stats, idx_t stats_column_index) {
+		if (ChildrenTooDeep(nested_data, depth, stats)) {
+			return;
+		}
 		//! Then visit the fields in sorted order
 		for (idx_t i = 0; i < nested_data.child_count; i++) {
 			auto source_children_idx = nested_data.children_idx + i;
@@ -446,14 +460,14 @@ bool VariantShreddingStats::GetShreddedTypeInternal(const VariantColumnStatsData
 				//! Do not include empty field names in the shredded type!
 				continue;
 			}
-			auto field_name = entry.first.GetString();
-			if (!field_names.emplace(field_name).second) {
+			//! the set only refers to the name, which the stats own for as long as this runs
+			if (!field_names.emplace(entry.first).second) {
 				//! STRUCT field names are case-insensitive, but VARIANT object keys are case-sensitive.
 				return false;
 			}
 			LogicalType child_type;
 			if (GetShreddedTypeInternal(child_column, child_type, total_value_count, force_partial)) {
-				child_types.emplace_back(field_name, child_type);
+				child_types.emplace_back(entry.first.GetString(), child_type);
 			}
 		}
 		if (child_types.empty()) {
@@ -477,8 +491,7 @@ bool VariantShreddingStats::GetShreddedTypeInternal(const VariantColumnStatsData
 		return true;
 	}
 	if (type_index == static_cast<uint8_t>(VariantLogicalType::DECIMAL)) {
-		auto shredded_type = LogicalType::DECIMAL(static_cast<uint8_t>(column.decimal_width),
-		                                          static_cast<uint8_t>(column.decimal_scale));
+		auto shredded_type = LogicalType::DECIMAL(column.decimal_width, column.decimal_scale);
 		out_type = SetShreddedType(shredded_type, fully_consistent);
 		return true;
 	}
@@ -495,7 +508,7 @@ LogicalType VariantShreddingStats::GetShreddedType(bool force_partial) const {
 	child_list_t<LogicalType> child_types;
 	child_types.emplace_back("unshredded", VariantShredding::GetUnshreddedType());
 	LogicalType shredded_type;
-	if (GetShreddedTypeInternal(root_column, shredded_type, optional_idx(), force_partial)) {
+	if (!too_deep && GetShreddedTypeInternal(root_column, shredded_type, optional_idx(), force_partial)) {
 		child_types.emplace_back("shredded", shredded_type);
 	}
 	return LogicalType::STRUCT(child_types);
@@ -842,6 +855,12 @@ void VariantColumnData::DebugShred(Vector &variant, idx_t count) {
 	//! will be partially shredded (i.e. fall back to the unshredded/overlay component)
 	VariantShreddingStats stats;
 	stats.Update(materialized, 1);
+	//! the later values are shredded too, so none of them can be nested too deep for the normalizer
+	VariantShreddingStats depth_stats;
+	depth_stats.Update(materialized, count);
+	if (depth_stats.IsTooDeep()) {
+		return;
+	}
 	//! force_partial keeps the overlay columns so that later values that don't match the first value's
 	//! schema are partially shredded instead of failing to shred
 	auto shredded_struct_type = stats.GetShreddedType(true);

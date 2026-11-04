@@ -1,0 +1,253 @@
+# name: test/sql/optimizer/scalar_aggregate_merge_plan.test
+# description: The plans of sibling scalar aggregates over the same table read it once
+# group: [optimizer]
+
+# the tables here are small: merge sibling aggregates over every table that has a row
+statement ok
+SET scalar_aggregate_merge_threshold = 1
+
+# sales: quantities 1-100, a DECIMAL with NULLs, a key, a value and a name; sales2 is a copy, empty_sales has no rows
+statement ok
+CREATE TABLE sales AS SELECT
+    (i % 100 + 1)::INTEGER AS q,
+    CASE WHEN i % 17 = 0 THEN NULL ELSE ((i % 1000) / 10)::DECIMAL(7,2) END AS disc,
+    (((i * 7) % 5000) / 100)::DECIMAL(7,2) AS paid,
+    (i % 50)::INTEGER AS k,
+    i AS v,
+    'n' || (i % 7) AS name
+FROM range(5000) r(i);
+
+statement ok
+CREATE TABLE sales2 AS FROM sales;
+
+statement ok
+CREATE TABLE empty_sales AS FROM sales LIMIT 0;
+
+statement ok
+CREATE TABLE reason AS SELECT i AS r_sk FROM range(5) r(i);
+
+# two dimensions of sales: dim1 on k, dim2 on q
+statement ok
+CREATE TABLE dim1 AS SELECT i::INTEGER AS dk, CASE WHEN i % 3 = 0 THEN 'a' WHEN i % 3 = 1 THEN 'b' ELSE 'c' END AS dname FROM range(50) r(i);
+
+statement ok
+CREATE TABLE dim2 AS SELECT (i + 1)::INTEGER AS qk, (i % 10)::INTEGER AS h FROM range(100) r(i);
+
+# two_keys: the keys 1 and 2, one row each
+statement ok
+CREATE TABLE two_keys(k INTEGER);
+
+statement ok
+INSERT INTO two_keys VALUES (1), (2);
+
+# ---- the plans read each table once ------------------------------------------------------------------------------
+
+query II
+EXPLAIN SELECT CASE WHEN (SELECT count(*) FROM sales WHERE q BETWEEN 1 AND 20) > 900 THEN (SELECT avg(disc) FROM sales WHERE q BETWEEN 1 AND 20)
+            ELSE (SELECT avg(paid) FROM sales WHERE q BETWEEN 1 AND 20) END AS b1,
+       CASE WHEN (SELECT count(*) FROM sales WHERE q BETWEEN 21 AND 40) > 1100 THEN (SELECT avg(disc) FROM sales WHERE q BETWEEN 21 AND 40)
+            ELSE (SELECT avg(paid) FROM sales WHERE q BETWEEN 21 AND 40) END AS b2
+FROM reason WHERE r_sk = 1
+----
+physical_plan	<REGEX>:[\s\S]*Table: (\S*\.)?sales\b[\s\S]*
+
+query II
+EXPLAIN SELECT CASE WHEN (SELECT count(*) FROM sales WHERE q BETWEEN 1 AND 20) > 900 THEN (SELECT avg(disc) FROM sales WHERE q BETWEEN 1 AND 20)
+            ELSE (SELECT avg(paid) FROM sales WHERE q BETWEEN 1 AND 20) END AS b1,
+       CASE WHEN (SELECT count(*) FROM sales WHERE q BETWEEN 21 AND 40) > 1100 THEN (SELECT avg(disc) FROM sales WHERE q BETWEEN 21 AND 40)
+            ELSE (SELECT avg(paid) FROM sales WHERE q BETWEEN 21 AND 40) END AS b2
+FROM reason WHERE r_sk = 1
+----
+physical_plan	<!REGEX>:[\s\S]*Table: (\S*\.)?sales\b[\s\S]*Table: (\S*\.)?sales\b[\s\S]*
+
+# disabled, the table is scanned once per range: the common subplan optimizer shares the subqueries with the same
+# filter, but it cannot share scans with different filters
+statement ok
+SET disabled_optimizers = 'scalar_aggregate_merge'
+
+query II
+EXPLAIN SELECT CASE WHEN (SELECT count(*) FROM sales WHERE q BETWEEN 1 AND 20) > 900 THEN (SELECT avg(disc) FROM sales WHERE q BETWEEN 1 AND 20)
+            ELSE (SELECT avg(paid) FROM sales WHERE q BETWEEN 1 AND 20) END AS b1,
+       CASE WHEN (SELECT count(*) FROM sales WHERE q BETWEEN 21 AND 40) > 1100 THEN (SELECT avg(disc) FROM sales WHERE q BETWEEN 21 AND 40)
+            ELSE (SELECT avg(paid) FROM sales WHERE q BETWEEN 21 AND 40) END AS b2
+FROM reason WHERE r_sk = 1
+----
+physical_plan	<REGEX>:([\s\S]*Table: (\S*\.)?sales\b){2}[\s\S]*
+
+statement ok
+RESET disabled_optimizers
+
+# two tables, each read once; DISTINCT aggregates; derived tables; the joined shapes read dim2 once
+query II
+EXPLAIN SELECT (SELECT count(*) FILTER (WHERE k = 1) FROM sales WHERE q < 50) AS a, (SELECT count(*) FROM sales WHERE q >= 50) AS b,
+       (SELECT count(*) FROM sales WHERE k = 2 AND q < 50) AS c, (SELECT sum(paid) FROM sales WHERE k = 2 AND q >= 50) AS d,
+       (SELECT count(*) FROM sales2 WHERE q < 10) AS e, (SELECT count(*) FROM sales2 WHERE q > 90) AS f
+----
+physical_plan	<!REGEX>:[\s\S]*Table: (\S*\.)?sales2?\b[\s\S]*Table: (\S*\.)?sales2?\b[\s\S]*Table: (\S*\.)?sales2?\b[\s\S]*
+
+query II
+EXPLAIN SELECT * FROM
+    (SELECT avg(paid) AS a1, count(paid) AS c1, count(DISTINCT paid) AS d1 FROM sales WHERE q BETWEEN 1 AND 5) b1,
+    (SELECT avg(paid) AS a2, count(paid) AS c2, count(DISTINCT paid) AS d2 FROM sales WHERE q BETWEEN 6 AND 10) b2,
+    (SELECT avg(paid) AS a3, count(paid) AS c3, count(DISTINCT paid) AS d3 FROM sales WHERE q BETWEEN 11 AND 15 AND (k = 1 OR v > 4000)) b3
+----
+physical_plan	<!REGEX>:[\s\S]*Table: (\S*\.)?sales\b[\s\S]*Table: (\S*\.)?sales\b[\s\S]*
+
+query II
+EXPLAIN SELECT * FROM
+    (SELECT count(*) AS c1 FROM sales, dim1, dim2 WHERE sales.k = dim1.dk AND sales.q = dim2.qk AND dim1.dname = 'a' AND dim2.h BETWEEN 0 AND 2) s1,
+    (SELECT count(*) AS c2 FROM sales, dim1, dim2 WHERE sales.k = dim1.dk AND sales.q = dim2.qk AND dim1.dname = 'a' AND dim2.h BETWEEN 3 AND 5) s2,
+    (SELECT count(*) AS c3 FROM sales, dim1, dim2 WHERE sales.k = dim1.dk AND sales.q = dim2.qk AND dim1.dname = 'a' AND (dim2.h = 9 OR dim2.qk < 4)) s3
+----
+physical_plan	<!REGEX>:[\s\S]*Table: (\S*\.)?dim2\b[\s\S]*Table: (\S*\.)?dim2\b[\s\S]*
+
+# the OR of the branches' own predicates is a new expression and goes through the expression rewriter: predicate
+# factoring derives the filter on h from it, and the scan of dim2 carries that filter
+query II
+EXPLAIN SELECT * FROM
+    (SELECT count(*) AS c1 FROM sales, dim1, dim2 WHERE sales.k = dim1.dk AND sales.q = dim2.qk AND dim1.dname = 'a' AND dim2.h = 1 AND dim2.qk < 50) s1,
+    (SELECT count(*) AS c2 FROM sales, dim1, dim2 WHERE sales.k = dim1.dk AND sales.q = dim2.qk AND dim1.dname = 'a' AND dim2.h = 2 AND dim2.qk >= 50) s2,
+    (SELECT count(*) AS c3 FROM sales, dim1, dim2 WHERE sales.k = dim1.dk AND sales.q = dim2.qk AND dim1.dname = 'a' AND dim2.h = 3 AND dim2.qk < 50) s3
+----
+physical_plan	<REGEX>:[\s\S]*Table: (\S*\.)?dim2\b[\s\S]*Filters:[\s\S]*h = 1[\s\S]*h = 3[\s\S]*
+
+query II
+EXPLAIN SELECT (SELECT sum(paid) FROM sales, dim1 WHERE sales.k = dim1.dk AND dim1.dname = 'a') AS a,
+       (SELECT avg(disc) FROM sales, dim1 WHERE sales.k = dim1.dk AND dim1.dname = 'b') AS b,
+       (SELECT max(q) FROM sales, dim1 WHERE dim1.dk = sales.k AND dim1.dname = 'c') AS c
+----
+physical_plan	<!REGEX>:[\s\S]*Table: (\S*\.)?dim1\b[\s\S]*Table: (\S*\.)?dim1\b[\s\S]*
+
+# ---- shapes that are left alone keep their scans -----------------------------------------------------------------
+
+# a grouped subquery is no one-row branch
+query II
+EXPLAIN SELECT (SELECT count(*) FROM sales WHERE q < 10) AS a, (SELECT max(c) FROM (SELECT count(*) AS c FROM sales WHERE q > 10 GROUP BY k)) AS b
+----
+physical_plan	<REGEX>:([\s\S]*Table: (\S*\.)?sales\b){2}[\s\S]*
+
+# a HAVING may leave no row, a LIMIT is no branch either
+query II
+EXPLAIN SELECT (SELECT count(*) FROM sales WHERE q < 10 HAVING count(*) > 5) AS a, (SELECT count(*) FROM sales WHERE q > 10) AS b,
+       (SELECT count(*) FROM (FROM sales WHERE q > 20 LIMIT 100)) AS c
+----
+physical_plan	<REGEX>:([\s\S]*Table: (\S*\.)?sales\b){3}[\s\S]*
+
+# a volatile condition, and an argument that may fail on another branch's rows (its own rows are none)
+query II
+EXPLAIN SELECT (SELECT count(*) FROM sales WHERE q > 50) AS a, (SELECT count(CAST(name AS INTEGER)) FROM sales WHERE name = 'n3x') AS b,
+       (SELECT count(*) FROM sales WHERE random() < 2) AS c
+----
+physical_plan	<REGEX>:([\s\S]*Table: (\S*\.)?sales\b){3}[\s\S]*
+
+# a cast that may fail in the condition
+query II
+EXPLAIN SELECT (SELECT count(*) FROM sales WHERE q > 50) AS a, (SELECT count(*) FROM sales WHERE CAST(name AS INTEGER) = 5) AS b
+----
+physical_plan	<REGEX>:([\s\S]*Table: (\S*\.)?sales\b){2}[\s\S]*
+
+# order-sensitive aggregates, with and without an ORDER BY of their own
+query II
+EXPLAIN SELECT (SELECT first(paid) FROM sales WHERE q < 10) AS a, (SELECT first(paid ORDER BY v) FROM sales WHERE q < 10) AS b,
+       (SELECT count(*) FROM sales WHERE q > 10) AS c
+----
+physical_plan	<REGEX>:([\s\S]*Table: (\S*\.)?sales\b){3}[\s\S]*
+
+# a correlated subquery is a join, not a cross product
+query II
+EXPLAIN SELECT k, (SELECT count(*) FROM sales s2 WHERE s2.k = s1.k AND s2.q < 10) AS c FROM sales s1
+----
+physical_plan	<REGEX>:([\s\S]*Table: (\S*\.)?sales\b){2}[\s\S]*
+
+# over a join, branches whose own conditions read two different tables
+query II
+EXPLAIN SELECT (SELECT count(*) FROM sales, dim1, dim2 WHERE sales.k = dim1.dk AND sales.q = dim2.qk AND dim1.dname = 'a') AS a,
+       (SELECT count(*) FROM sales, dim1, dim2 WHERE sales.k = dim1.dk AND sales.q = dim2.qk AND dim2.h = 2) AS b
+----
+physical_plan	<REGEX>:([\s\S]*Table: (\S*\.)?sales\b){2}[\s\S]*
+
+# a join condition one branch has and the other lacks
+query II
+EXPLAIN SELECT (SELECT count(*) FROM sales, dim1 WHERE sales.k = dim1.dk AND dim1.dname = 'a') AS a,
+       (SELECT count(*) FROM sales, dim1 WHERE sales.v = dim1.dk AND dim1.dname = 'a') AS b
+----
+physical_plan	<REGEX>:([\s\S]*Table: (\S*\.)?sales\b){2}[\s\S]*
+
+# different tables
+query II
+EXPLAIN SELECT (SELECT count(*) FROM sales, dim1 WHERE sales.k = dim1.dk AND dim1.dname = 'a') AS a,
+       (SELECT count(*) FROM sales, dim2 WHERE sales.q = dim2.qk AND dim2.h = 1) AS b
+----
+physical_plan	<REGEX>:([\s\S]*Table: (\S*\.)?sales\b){2}[\s\S]*
+
+# a table read twice in one branch is a self-join, whose copies would not pair up with another branch's: no aggregate
+# gets a FILTER
+query II
+EXPLAIN SELECT (SELECT count(*) FROM sales x, sales y WHERE x.v = y.v AND x.q < 3) AS c,
+       (SELECT count(*) FROM sales x, sales y WHERE x.v = y.v AND x.q > 97) AS d
+----
+physical_plan	<!REGEX>:[\s\S]*FILTER[\s\S]*
+
+# an explicit JOIN ... ON is a join, not a cross product
+query II
+EXPLAIN SELECT (SELECT count(*) FROM sales JOIN dim2 ON sales.q = dim2.qk WHERE dim2.h = 4) AS e,
+       (SELECT count(*) FROM sales JOIN dim2 ON sales.q = dim2.qk WHERE dim2.h = 5) AS f
+----
+physical_plan	<!REGEX>:[\s\S]*FILTER[\s\S]*
+
+# a sample, and a virtual column
+query II
+EXPLAIN SELECT (SELECT count(*) FROM sales TABLESAMPLE 50%) AS a, (SELECT count(*) FROM sales WHERE q > 10) AS b,
+       (SELECT count(*) FROM sales WHERE rowid < 10) AS c
+----
+physical_plan	<REGEX>:([\s\S]*Table: (\S*\.)?sales\b){3}[\s\S]*
+
+# a cast that fails to fold stays in the plan: the other branch's rows would reach it through the CASE, in the
+# argument as in the FILTER
+query II
+EXPLAIN SELECT (SELECT sum(CASE WHEN k = 1 THEN 1 ELSE CAST('bad' AS INTEGER) END) FROM two_keys WHERE k = 1) AS a,
+       (SELECT count(*) FILTER (WHERE CASE WHEN k = 1 THEN true ELSE CAST('bad' AS INTEGER) = 1 END) FROM two_keys WHERE k = 1) AS b,
+       (SELECT count(*) FROM two_keys WHERE k = 2) AS c
+----
+physical_plan	<REGEX>:([\s\S]*Table: (\S*\.)?two_keys\b){3}[\s\S]*
+
+# ---- the size gate: a catalog table merges when it has at least scalar_aggregate_merge_threshold rows -------------
+
+# by default, size never merges a catalog table
+statement ok
+RESET scalar_aggregate_merge_threshold
+
+query II
+EXPLAIN SELECT (SELECT count(*) FROM sales WHERE q < 10) AS a, (SELECT sum(paid) FROM sales WHERE q > 90) AS b
+----
+physical_plan	<REGEX>:([\s\S]*Table: (\S*\.)?sales\b){2}[\s\S]*
+
+# sales has 5000 rows
+statement ok
+SET scalar_aggregate_merge_threshold = 5001
+
+query II
+EXPLAIN SELECT (SELECT count(*) FROM sales WHERE q < 10) AS a, (SELECT sum(paid) FROM sales WHERE q > 90) AS b
+----
+physical_plan	<REGEX>:([\s\S]*Table: (\S*\.)?sales\b){2}[\s\S]*
+
+statement ok
+SET scalar_aggregate_merge_threshold = 5000
+
+query II
+EXPLAIN SELECT (SELECT count(*) FROM sales WHERE q < 10) AS a, (SELECT sum(paid) FROM sales WHERE q > 90) AS b
+----
+physical_plan	<!REGEX>:[\s\S]*Table: (\S*\.)?sales\b[\s\S]*Table: (\S*\.)?sales\b[\s\S]*
+
+# over a join, one table of that size is enough (dim1 has 50 rows)
+query II
+EXPLAIN SELECT (SELECT sum(paid) FROM sales, dim1 WHERE sales.k = dim1.dk AND dim1.dname = 'a') AS a,
+       (SELECT avg(disc) FROM sales, dim1 WHERE sales.k = dim1.dk AND dim1.dname = 'b') AS b
+----
+physical_plan	<!REGEX>:[\s\S]*Table: (\S*\.)?dim1\b[\s\S]*Table: (\S*\.)?dim1\b[\s\S]*
+
+# the tables of the other branches are not counted: dim1 alone stays below
+query II
+EXPLAIN SELECT (SELECT count(*) FROM dim1 WHERE dname = 'a') AS a, (SELECT count(*) FROM dim1 WHERE dname = 'b') AS b
+----
+physical_plan	<REGEX>:([\s\S]*Table: (\S*\.)?dim1\b){2}[\s\S]*

@@ -155,7 +155,12 @@ void ListSelectFunction(const DataChunk &args, ExpressionState &state, Vector &r
 	}
 	ListVector::SetListSize(result, offset);
 
-	if (result_length > 0) {
+	if (ListVector::GetListSize(list) == 0) {
+		// an empty input child has nothing to slice: every selected entry is NULL
+		for (idx_t i = 0; i < offset; i++) {
+			FlatVector::SetNull(result_entry, i, true);
+		}
+	} else if (result_length > 0) {
 		result_entry.Slice(input_entry, result_selection_vec, offset);
 		result_entry.Flatten();
 

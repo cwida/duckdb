@@ -108,7 +108,10 @@ duckdb_hugeint FetchInternals<hugeint_t>(void *source_address) {
 template <>
 bool CastDecimalCInternal(duckdb_result *source, duckdb_decimal &result, idx_t col, idx_t row) {
 	auto result_data = (duckdb::DuckDBResultData *)source->internal_data;
-	result_data->result->GetTypes()[col].GetDecimalProperties(result.width, result.scale);
+	uint32_t width, scale;
+	result_data->result->GetTypes()[col].GetDecimalProperties(width, scale);
+	result.width = duckdb::NumericCast<uint8_t>(width);
+	result.scale = duckdb::NumericCast<uint8_t>(scale);
 	auto source_address = UnsafeFetchPtr<hugeint_t>(source, col, row);
 
 	if (result.width > duckdb::Decimal::MAX_WIDTH_INT64) {

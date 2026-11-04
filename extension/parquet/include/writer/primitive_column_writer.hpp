@@ -101,6 +101,8 @@ public:
 	//! Dictionary pages must be below 2GB. Unlike data pages, there's only one dictionary page.
 	//! For this reason we go with a much higher, but still a conservative upper bound of 1GB;
 	static constexpr const idx_t MAX_UNCOMPRESSED_DICT_PAGE_SIZE = 1073741824ULL;
+	//! Fallback filters are dropped unless the compressed column chunk is at least this many times larger
+	static constexpr const idx_t MIN_COMPRESSED_TO_FILTER_RATIO = 2;
 
 public:
 	unique_ptr<ColumnWriterState> InitializeWriteState(duckdb_parquet::RowGroup &row_group) override;
