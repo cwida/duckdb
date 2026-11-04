@@ -80,10 +80,11 @@ struct TrampolineBranchPipelines {
 //! invocation. The trigger bounds (a parallel wave at or below 2 ms, an inline wave at
 //! 8 ms or above) and the 2x row-comparability window are heuristics sized around the
 //! measured event-machinery cost, not guarantees. One probe per branch per invocation,
-//! no arbitration under lockstep rounds or before invariant builds are retained, and
-//! contaminated or incomparable probes fall back to the estimate. Large waves always
-//! parallelize through the frontier-sized workers. The recursive CTE sizes on frontier
-//! work alone and reads no independent-source estimate.
+//! no arbitration under lockstep rounds, with a single configured thread, or until the
+//! branch's invariant builds are retained (a branch whose builds never materialize keeps
+//! the estimate route), and contaminated or incomparable probes fall back to the
+//! estimate. Large waves always parallelize through the frontier-sized workers. The
+//! recursive CTE sizes on frontier work alone and reads no independent-source estimate.
 //!
 //! Admission (BRANCH DISTINCT). Round-wide full-row admission against all rows
 //! ever routed to the branch, yielding one admitted wave per round. Admission

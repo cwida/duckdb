@@ -724,10 +724,12 @@ public:
 	}
 };
 
-//! Finish-stage events complete through dependency chains on whichever worker finished the
-//! last dependency task, without creating tasks of their own. The recursive event waiter
-//! sleeps on the completion signal, so these wrappers forward their completion to it; the
-//! finalize semantics are the wrapped events' own.
+//! Finish-stage events may run their finalize work inside Schedule() on whichever worker
+//! completed their last dependency, or through tasks of their own when the finalize blocks.
+//! The recursive event waiter sleeps on the completion signal, so these wrappers forward
+//! their completion to it. The finalize semantics are the wrapped events' own. A blocked
+//! finish task's reschedule still wakes only the executor's condition variable and is
+//! covered by the waiter's bounded timeout.
 template <class EVENT>
 class RecursiveSignallingEvent : public EVENT {
 public:
@@ -1236,8 +1238,9 @@ void WaitForRecursiveEvents(Executor &executor, vector<shared_ptr<Event>> &event
 			continue;
 		}
 		if (completion_signal) {
-			// woken promptly by any recursive task completion; the bounded timeout covers
-			// tasks that finish without signalling (finish and prepare-finish events)
+			// woken promptly by recursive task completions and reschedules and by stage-event
+			// completions; the bounded timeout covers the residue, which is blocked
+			// finish/finalize task reschedules and events inserted mid-graph
 			completion_signal->AwaitFor(RECURSIVE_BOUNDED_WAIT);
 		} else {
 			executor.WaitForTask();
