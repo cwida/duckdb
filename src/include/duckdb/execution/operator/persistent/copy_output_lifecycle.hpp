@@ -9,7 +9,6 @@
 #pragma once
 
 #include "duckdb/common/mutex.hpp"
-#include "duckdb/common/set.hpp"
 #include "duckdb/common/string.hpp"
 #include "duckdb/common/vector.hpp"
 
@@ -30,10 +29,9 @@ public:
 	~CopyOutputLifecycle();
 
 public:
-	void RegisterFile(string path) DUCKDB_EXCLUDES(lock);
+	//! Registers an output file, returning whether its writer syncs it to stable storage before closing it
+	bool RegisterFile(string path) DUCKDB_EXCLUDES(lock);
 	void RegisterCreatedDirectory(string path) DUCKDB_EXCLUDES(lock);
-	//! With FSYNC, syncs a finished local file to stable storage
-	void SyncFile(const string &path) DUCKDB_EXCLUDES(lock);
 	//! With FSYNC, syncs the directories holding the synced files and the created directories
 	void SyncDirectories() DUCKDB_EXCLUDES(lock);
 	void MarkSuccessful() noexcept DUCKDB_EXCLUDES(lock);
@@ -42,6 +40,8 @@ private:
 	struct FileEntry {
 		string path;
 		CopyOutputOwnership ownership = CopyOutputOwnership::PRESERVE;
+		//! Whether the file and the directory holding its name are synced to stable storage
+		bool synced = false;
 	};
 
 private:
@@ -55,7 +55,6 @@ private:
 	annotated_mutex lock;
 	vector<FileEntry> files DUCKDB_GUARDED_BY(lock);
 	vector<string> created_directories DUCKDB_GUARDED_BY(lock);
-	set<string> synced_file_directories DUCKDB_GUARDED_BY(lock);
 	bool successful DUCKDB_GUARDED_BY(lock) = false;
 };
 

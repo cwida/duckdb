@@ -128,8 +128,9 @@ public:
 		if (initialized.load(std::memory_order_relaxed)) {
 			return;
 		}
-		output_lifecycle.RegisterFile(op.file_path);
+		auto fsync = output_lifecycle.RegisterFile(op.file_path);
 		auto new_global_state = op.function.copy_to_initialize_global(context, *op.bind_data, op.file_path);
+		new_global_state->fsync = fsync;
 		if (op.function.initialize_operator) {
 			op.function.initialize_operator(*new_global_state, op);
 		}
@@ -343,7 +344,6 @@ SinkFinalizeType PhysicalBatchCopyToFile::FinalFlush(ClientContext &context, Glo
 	gstate.memory_manager.FinalCheck();
 	if (function.copy_to_finalize && gstate.global_state) {
 		function.copy_to_finalize(context, *bind_data, *gstate.global_state);
-		gstate.output_lifecycle.SyncFile(file_path);
 		if (use_tmp_file) {
 			PhysicalCopyToFile::MoveTmpFile(context, file_path);
 		}

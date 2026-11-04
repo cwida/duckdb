@@ -37,6 +37,29 @@ TEST_DIR/fsync_single.parquet
 statement ok
 CALL truncate_duckdb_logs()
 
+# compressed files are synced through their compression
+statement ok
+COPY (SELECT 42 AS i) TO '{TEST_DIR}/fsync_single.csv.gz' (FSYNC)
+
+statement ok
+COPY (SELECT 42 AS i) TO '{TEST_DIR}/fsync_single.csv.zst' (FSYNC)
+
+query I
+SELECT replace(path, '{TEST_DIR}', 'TEST_DIR') FROM duckdb_logs_parsed('FileSystem') WHERE op = 'SYNC' ORDER BY ALL
+----
+TEST_DIR
+TEST_DIR
+TEST_DIR/fsync_single.csv.gz
+TEST_DIR/fsync_single.csv.zst
+
+query II
+SELECT (SELECT i FROM '{TEST_DIR}/fsync_single.csv.gz'), (SELECT i FROM '{TEST_DIR}/fsync_single.csv.zst')
+----
+42	42
+
+statement ok
+CALL truncate_duckdb_logs()
+
 # an existing file is replaced by a temporary file, which is synced before it is renamed
 statement ok
 COPY (SELECT 43 AS i) TO '{TEST_DIR}/fsync_single.parquet' (FSYNC)

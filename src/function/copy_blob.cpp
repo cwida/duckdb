@@ -175,6 +175,9 @@ void WriteBlobFinalize(ClientContext &context, FunctionData &bind_data, GlobalFu
 	auto &state = gstate.Cast<WriteBlobGlobalState>();
 	lock_guard<mutex> glock(state.lock);
 
+	if (state.fsync) {
+		state.handle->Sync();
+	}
 	state.handle->Close();
 }
 
@@ -193,6 +196,7 @@ void BuiltinFunctions::RegisterCopyFunctions() {
 	info.copy_to_finalize = WriteBlobFinalize;
 	info.prepare_batch = WriteBlobPrepareBatch;
 	info.flush_batch = WriteBlobFlushBatch;
+	info.supports_fsync = true;
 	info.extension = "blob";
 
 	AddFunction(info);

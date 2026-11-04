@@ -324,6 +324,9 @@ static void ValidateCopyToOptionCombinations(const CopyToParsedOptions &options,
 	    !function.copy_to_get_written_statistics) {
 		throw NotImplementedException("RETURN_STATS is not supported for the \"%s\" copy format", format);
 	}
+	if (options.Fsync() && !function.supports_fsync) {
+		throw NotImplementedException("FSYNC is not supported for the \"%s\" copy format", format);
+	}
 }
 
 static void ValidateCopyToOutputColumns(const CopyToResolvedOptions &options, idx_t column_count) {

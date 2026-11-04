@@ -17,6 +17,9 @@
 #include <chrono>
 #include <condition_variable>
 #include <future>
+#ifndef _WIN32
+#include <sys/stat.h>
+#endif
 
 using namespace duckdb;
 
@@ -829,3 +832,44 @@ TEST_CASE("Abandoning multi-chunk COPY statistics preserves finalized files", "[
 	}
 	RemoveDirectoryIfPresent(fs, output);
 }
+
+TEST_CASE("COPY rejects FSYNC for a copy function that cannot sync its files", "[api][copy]") {
+	DuckDB db(nullptr);
+	Connection connection(db);
+	auto info = make_shared_ptr<LifecycleCopyInfo>();
+	RegisterLifecycleCopyFunction(db, "copy_lifecycle_no_fsync", info);
+	auto output = TestCreatePath("copy_lifecycle_no_fsync.test");
+
+	auto result = connection.Query(
+	    StringUtil::Format("COPY (SELECT 42 AS i) TO '%s' (FORMAT copy_lifecycle_no_fsync, FSYNC)", output));
+	REQUIRE_FAIL(result);
+	REQUIRE(StringUtil::Contains(result->GetError(), "FSYNC is not supported"));
+	REQUIRE(info->initialized_paths.empty());
+}
+
+#ifndef _WIN32
+TEST_CASE("COPY with FSYNC syncs the handle of a file that cannot be reopened for writing", "[api][copy]") {
+	DuckDB db(nullptr);
+	Connection connection(db);
+	auto &fs = FileSystem::GetFileSystem(*connection.context);
+	auto output = TestCreatePath("copy_fsync_read_only.csv");
+	fs.TryRemoveFile(output);
+	REQUIRE_NO_FAIL(connection.Query("CALL enable_logging('FileSystem')"));
+
+	// the file is created read-only, so it cannot be reopened for writing
+	auto previous_mask = umask(0222);
+	auto result = connection.Query(StringUtil::Format("COPY (SELECT 42 AS i) TO '%s' (FSYNC)", output));
+	umask(previous_mask);
+	REQUIRE_NO_FAIL(*result);
+
+	struct stat status;
+	REQUIRE(stat(output.c_str(), &status) == 0);
+	REQUIRE((status.st_mode & 0222) == 0);
+	result = connection.Query(StringUtil::Format(
+	    "SELECT count(*) FROM duckdb_logs_parsed('FileSystem') WHERE op = 'SYNC' AND path = '%s'", output));
+	REQUIRE(CHECK_COLUMN(result, 0, {1}));
+	result = connection.Query(StringUtil::Format("SELECT i FROM '%s'", output));
+	REQUIRE(CHECK_COLUMN(result, 0, {42}));
+	fs.RemoveFile(output);
+}
+#endif

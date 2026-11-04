@@ -2,6 +2,7 @@
 
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/opener_file_system.hpp"
+#include "duckdb/common/set.hpp"
 #include "duckdb/main/client_context.hpp"
 
 #include <algorithm>
@@ -73,10 +74,14 @@ void CopyOutputLifecycle::Cleanup() {
 	}
 }
 
-void CopyOutputLifecycle::RegisterFile(string path) {
+bool CopyOutputLifecycle::RegisterFile(string path) {
+	auto &fs = FileSystem::GetFileSystem(context);
 	auto ownership = GetOwnership(path);
+	// remote files and pipes are not synced
+	auto synced = fsync && !fs.IsRemoteFile(path) && !fs.IsPipe(path);
 	annotated_lock_guard<annotated_mutex> guard(lock);
-	files.push_back({std::move(path), ownership});
+	files.push_back({std::move(path), ownership, synced});
+	return synced;
 }
 
 void CopyOutputLifecycle::RegisterCreatedDirectory(string path) {
@@ -97,21 +102,6 @@ static string ParentDirectory(FileSystem &fs, const string &path) {
 	return pos == 0 ? separator : path.substr(0, pos);
 }
 
-void CopyOutputLifecycle::SyncFile(const string &path) {
-	if (!fsync) {
-		return;
-	}
-	auto &fs = FileSystem::GetFileSystem(context);
-	// remote paths and pipes are not synced
-	if (fs.IsRemoteFile(path) || fs.IsPipe(path)) {
-		return;
-	}
-	fs.OpenFile(path, FileFlags::FILE_FLAGS_WRITE)->Sync();
-	auto directory = ParentDirectory(fs, path);
-	annotated_lock_guard<annotated_mutex> guard(lock);
-	synced_file_directories.insert(std::move(directory));
-}
-
 void CopyOutputLifecycle::SyncDirectories() {
 #ifndef _WIN32
 	if (!fsync) {
@@ -121,7 +111,11 @@ void CopyOutputLifecycle::SyncDirectories() {
 	set<string> directories;
 	{
 		annotated_lock_guard<annotated_mutex> guard(lock);
-		directories = synced_file_directories;
+		for (auto &file : files) {
+			if (file.synced) {
+				directories.insert(ParentDirectory(client_fs, file.path));
+			}
+		}
 		for (auto &directory : created_directories) {
 			if (!FileSystem::IsRemoteFile(directory)) {
 				directories.insert(ParentDirectory(client_fs, directory));

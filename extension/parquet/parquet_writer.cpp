@@ -1498,7 +1498,7 @@ void ParquetWriter::FlushBloomFilters() {
 	bloom_filters.clear();
 }
 
-void ParquetWriter::Finalize() {
+void ParquetWriter::Finalize(bool fsync) {
 	InitializeSchemaElements();
 
 	// dump the remaining bloom filters right before footer, not if stuff is encrypted
@@ -1564,6 +1564,9 @@ void ParquetWriter::Finalize() {
 		written_stats->extra_info["row_group_count"] = Value::UBIGINT(NumberOfRowGroups());
 	}
 
+	if (fsync) {
+		writer->Sync();
+	}
 	// flush to disk
 	writer->Close();
 	writer.reset();
