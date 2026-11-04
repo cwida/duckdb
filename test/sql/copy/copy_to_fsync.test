@@ -6,6 +6,9 @@ require notwindows
 
 require parquet
 
+# the FileSystem log does not survive the restarts of the forced storage configs
+require noforcestorage
+
 statement ok
 CALL enable_logging('FileSystem')
 
