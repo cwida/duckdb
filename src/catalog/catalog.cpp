@@ -31,6 +31,7 @@
 #include "duckdb/parser/parsed_data/create_type_info.hpp"
 #include "duckdb/parser/parsed_data/create_view_info.hpp"
 #include "duckdb/parser/parsed_data/drop_info.hpp"
+#include "duckdb/parser/parsed_data/extra_drop_info.hpp"
 #include "duckdb/parser/statement/create_statement.hpp"
 #include "duckdb/planner/parsed_data/bound_create_table_info.hpp"
 #include "duckdb/planner/binder.hpp"
@@ -449,6 +450,13 @@ void Catalog::DropEntry(ClientContext &context, DropInfo &info) {
 		return;
 	}
 
+	if (info.extra_drop_info && info.extra_drop_info->info_type == ExtraDropInfoType::FUNCTION_SIGNATURE_INFO &&
+	    !IsDuckCatalog()) {
+		// a catalog implementation that does not know about member-granular drops would silently
+		// drop the whole entry instead of the named overload
+		throw NotImplementedException("DROP with a parameter type list is not supported for catalog type \"%s\"",
+		                              GetCatalogType());
+	}
 	lookup.schema->DropEntry(context, info);
 }
 
