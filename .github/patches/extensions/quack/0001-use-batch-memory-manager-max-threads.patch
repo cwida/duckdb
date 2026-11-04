@@ -1,0 +1,15 @@
+diff --git a/src/quack_rebalancer_sink.cpp b/src/quack_rebalancer_sink.cpp
+index 41aeca6..67e1aa0 100644
+--- a/src/quack_rebalancer_sink.cpp
++++ b/src/quack_rebalancer_sink.cpp
+@@ -13,9 +13,7 @@ idx_t QuackRebalancerGlobalState::MaxThreads(idx_t source_max_threads) {
+ 	if (order_mode != AppendOrderMode::PARALLEL_ORDERED) {
+ 		return source_max_threads;
+ 	}
+-	auto &memory_manager = core->MemoryManager();
+-	memory_manager.SetMemorySize(source_max_threads * minimum_memory_per_thread);
+-	return MinValue<idx_t>(source_max_threads, memory_manager.AvailableMemory() / minimum_memory_per_thread + 1);
++	return core->MemoryManager().MaxThreads(source_max_threads);
+ }
+ 
+ unique_ptr<QuackRebalancerGlobalState> MakeQuackRebalancerGlobalState(ClientContext &context,

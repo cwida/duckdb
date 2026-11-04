@@ -70,7 +70,7 @@ class BatchInsertGlobalState : public GlobalSinkState {
 public:
 	BatchInsertGlobalState(ClientContext &context, DuckTableEntry &table, const idx_t minimum_memory_per_thread)
 	    : memory_manager(context, minimum_memory_per_thread), table(table), insert_count(0),
-	      optimistically_written(false), minimum_memory_per_thread(minimum_memory_per_thread) {
+	      optimistically_written(false) {
 		row_group_size = table.GetStorage().GetRowGroupSize();
 		table.GetStorage().BindIndexes(context);
 	}
@@ -84,7 +84,6 @@ public:
 	vector<RowGroupBatchEntry> collections;
 	idx_t next_start = 0;
 	atomic<bool> optimistically_written;
-	idx_t minimum_memory_per_thread;
 
 	bool ReadyToMerge(const idx_t count) const;
 	void ScheduleMergeTasks(ClientContext &context, const idx_t min_batch_index);
@@ -94,10 +93,7 @@ public:
 	                   const PhysicalIndex collection_index, optional_ptr<OptimisticDataWriter> writer = nullptr);
 
 	idx_t MaxThreads(const idx_t source_max_threads) override {
-		// try to request 4MB per column per thread
-		memory_manager.SetMemorySize(source_max_threads * minimum_memory_per_thread);
-		// cap the concurrent threads working on this task based on the amount of available memory
-		return MinValue<idx_t>(source_max_threads, memory_manager.AvailableMemory() / minimum_memory_per_thread + 1);
+		return memory_manager.MaxThreads(source_max_threads);
 	}
 };
 
@@ -585,6 +581,7 @@ SinkFinalizeType PhysicalBatchInsert::Finalize(Pipeline &pipeline, Event &event,
 		optimistic_writer.Merge(*writer);
 		optimistic_writer.FinalFlush();
 		memory_manager.FinalCheck();
+		memory_manager.Release();
 		return SinkFinalizeType::READY;
 	}
 
@@ -610,6 +607,7 @@ SinkFinalizeType PhysicalBatchInsert::Finalize(Pipeline &pipeline, Event &event,
 	g_state.collections.clear();
 	data_table.FinalizeLocalAppend(append_state);
 	memory_manager.FinalCheck();
+	memory_manager.Release();
 	return SinkFinalizeType::READY;
 }
 

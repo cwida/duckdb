@@ -1,0 +1,27 @@
+# name: test/sql/export/export_csv_memory.test_slow
+# description: EXPORT DATABASE to CSV frees each table's writer buffers once its file is finished
+# group: [export]
+
+loop i 0 8
+
+statement ok
+CREATE TABLE t{i} AS SELECT i, i::VARCHAR || 'abcdefghij' AS s, hash(i) AS h, hash(i)::DOUBLE AS d FROM range(500000) r(i);
+
+endloop
+
+statement ok
+SET threads=4;
+
+statement ok
+SET memory_limit='128MB';
+
+statement ok
+EXPORT DATABASE '{TEST_DIR}/export_csv_memory' (FORMAT csv);
+
+statement ok
+RESET memory_limit;
+
+query II
+SELECT count(*), sum(i) FROM '{TEST_DIR}/export_csv_memory/*.csv'
+----
+4000000	999998000000

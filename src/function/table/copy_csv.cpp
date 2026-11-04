@@ -297,6 +297,8 @@ struct GlobalWriteCSVData : public GlobalFunctionData {
 
 	void Close() {
 		file_writer->Close();
+		lock_guard<mutex> guard(local_state_lock);
+		local_states.clear();
 	}
 
 private:

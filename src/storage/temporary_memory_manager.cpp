@@ -115,6 +115,16 @@ unique_ptr<TemporaryMemoryState> TemporaryMemoryManager::Register(ClientContext 
 	return result;
 }
 
+idx_t TemporaryMemoryManager::GetActiveStateCount() {
+	const annotated_lock_guard<annotated_mutex> guard(lock);
+	return active_states.size();
+}
+
+idx_t TemporaryMemoryManager::GetTotalReservation() {
+	const annotated_lock_guard<annotated_mutex> guard(lock);
+	return reservation;
+}
+
 void TemporaryMemoryManager::UpdateState(ClientContext &context, TemporaryMemoryState &temporary_memory_state) {
 	UpdateConfiguration(context);
 

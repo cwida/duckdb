@@ -56,6 +56,7 @@ add_library_unity(
   test_radix_ht_sink.cpp
   test_utf8_codepoint_oob.cpp
   test_temporary_memory_manager.cpp
+  test_batch_memory_manager.cpp
   test_tuple_data_allocation.cpp
   test_versioning_utils.cpp
   test_value_to_sql_string.cpp

@@ -17,15 +17,17 @@ namespace duckdb {
 
 class BatchMemoryManager : public StateWithBlockableTasks {
 public:
+	//! Registers with the temporary memory manager only when the memory is first requested, so a sink whose pipeline
+	//! has not started does not hold a reservation
 	BatchMemoryManager(ClientContext &context, idx_t initial_memory_request)
-	    : context(context), unflushed_memory_usage(0), min_batch_index(0), available_memory(0),
-	      can_increase_memory(true) {
-		memory_state = TemporaryMemoryManager::Get(context).Register(context);
-		SetMemorySize(initial_memory_request);
+	    : context(context), initial_memory_request(initial_memory_request), unflushed_memory_usage(0),
+	      min_batch_index(0), available_memory(0), can_increase_memory(true) {
 	}
 
 private:
 	ClientContext &context;
+	//! The minimum memory per thread, which is also the smallest first request
+	idx_t initial_memory_request;
 	//! Temporary memory state
 	unique_ptr<TemporaryMemoryState> memory_state;
 	//! Total memory usage of unflushed rows
@@ -36,14 +38,21 @@ private:
 	atomic<idx_t> available_memory;
 	//! Whether or not we can request additional memory
 	bool can_increase_memory;
+	//! Guards the reservation. Only the temporary memory manager's lock is taken while holding it, so it can be
+	//! acquired under the pipeline's sink lock and under the blocked-task lock without forming a cycle
+	annotated_mutex reservation_lock;
 
-public:
-	void SetMemorySize(idx_t size) {
+private:
+	void SetMemorySize(idx_t size) DUCKDB_REQUIRES(reservation_lock) {
 		// request at most 1/4th of all available memory
 		idx_t total_max_memory = BufferManager::GetBufferManager(context).GetOperatorMemoryLimit();
 		idx_t request_cap = total_max_memory / 4;
 
 		size = MinValue<idx_t>(size, request_cap);
+		if (!memory_state) {
+			memory_state = TemporaryMemoryManager::Get(context).Register(context);
+			size = MaxValue<idx_t>(size, MinValue<idx_t>(initial_memory_request, request_cap));
+		}
 		if (size <= available_memory) {
 			return;
 		}
@@ -58,11 +67,21 @@ public:
 		available_memory = next_reservation;
 	}
 
-	void IncreaseMemory() {
+	void IncreaseMemory() DUCKDB_REQUIRES(reservation_lock) {
 		if (!can_increase_memory) {
 			return;
 		}
-		SetMemorySize(available_memory * 2);
+		SetMemorySize(MaxValue<idx_t>(available_memory * 2, initial_memory_request));
+	}
+
+public:
+	//! Requests memory for the given number of threads and returns how many threads that memory supports
+	idx_t MaxThreads(idx_t source_max_threads) {
+		const annotated_lock_guard<annotated_mutex> guard(reservation_lock);
+		// try to request the initial memory per thread
+		SetMemorySize(source_max_threads * initial_memory_request);
+		// cap the concurrent threads working on this task based on the amount of available memory
+		return MinValue<idx_t>(source_max_threads, available_memory / initial_memory_request + 1);
 	}
 
 	bool OutOfMemory(idx_t batch_index) {
@@ -74,6 +93,7 @@ public:
 			const annotated_lock_guard<annotated_mutex> guard(lock);
 			if (batch_index > min_batch_index) {
 				// exceeded available memory and we are not the minimum batch index- try to increase it
+				const annotated_lock_guard<annotated_mutex> reservation_guard(reservation_lock);
 				IncreaseMemory();
 				if (unflushed_memory_usage >= available_memory) {
 					// STILL out of memory
@@ -127,6 +147,15 @@ public:
 			throw InternalException("Unflushed memory usage is not zero at finalize but %llu",
 			                        unflushed_memory_usage.load());
 		}
+	}
+
+	//! Gives the reservation back once everything is flushed. Optional: the destructor gives it back at the end of
+	//! the query, but releasing early lets later sinks in the same query, e.g. EXPORT DATABASE, use the memory
+	void Release() {
+		const annotated_lock_guard<annotated_mutex> guard(reservation_lock);
+		memory_state.reset();
+		available_memory = 0;
+		can_increase_memory = false;
 	}
 };
 

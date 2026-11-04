@@ -98,6 +98,10 @@ public:
 	static TemporaryMemoryManager &Get(ClientContext &context);
 	//! Register a TemporaryMemoryState
 	unique_ptr<TemporaryMemoryState> Register(ClientContext &context);
+	//! Get the number of registered states
+	idx_t GetActiveStateCount();
+	//! Get the sum of the reservations of all registered states
+	idx_t GetTotalReservation();
 
 private:
 	//! Get the default minimum reservation
