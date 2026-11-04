@@ -126,6 +126,9 @@ public:
 	bool ShouldUseBufferedConsumer(Pipeline &pipeline) const;
 	void RegisterBufferedConsumer(Pipeline &pipeline, idx_t consumer_idx);
 	void RegisterMaterializedConsumer(idx_t consumer_idx);
+	//! Converts an already registered buffered consumer to a materialized one, before execution starts. Used when
+	//! the schedule gates the consumer's execute behind its own producer's completion, so it could never drain.
+	void DemoteBufferedConsumer(idx_t consumer_idx);
 	CTEExecutionMode GetExecutionMode() const;
 	bool UseStreamingExchange() const;
 

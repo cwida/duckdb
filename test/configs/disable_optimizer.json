@@ -51,6 +51,7 @@
     {
       "reason": "Checks evaluation counts after optimizer filter pushdown.",
       "paths": [
+        "test/sql/table_function/external_resources_where_pruning.test",
         "test/optimizer/pushdown/lateral_projection_evaluation.test",
         "test/optimizer/pushdown/cte_domain_join_filter.test"
       ]
@@ -173,6 +174,8 @@
     {
       "reason": "Parquet prefetch strategies and I/O metrics require optimizer rewrites.",
       "paths": [
+        "test/sql/copy/parquet/bloom_filter_coalesced_memory.test_slow",
+        "test/sql/copy/parquet/bloom_filter_coalesced_reads.test",
         "test/sql/copy/parquet/parquet_prefetch_first_group_cost.test",
         "test/sql/copy/parquet/parquet_prefetch_overlapping_ranges.test",
         "test/sql/copy/parquet/read_ahead/readahead_dynamic_pruning.test",
@@ -266,6 +269,11 @@
       "paths": [
         "test/sql/json/test_execute_serialized_reexecute.test"
       ]
+    },
+    {
+      "reason": "Without optimizer cardinality estimates the probe consumer is kept materialized by cost, so no cycle demotion occurs.",
+      "paths": [
+        "test/sql/cte/materialized/cte_buffered_consumer_cycle_demotion.test"      ]
     }
   ]
 }

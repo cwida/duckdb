@@ -16,7 +16,7 @@ namespace duckdb {
 JSONBufferHandle::JSONBufferHandle(JSONReader &reader, idx_t buffer_index_p, idx_t readers_p, AllocatedData buffer_p,
                                    idx_t buffer_size_p, idx_t buffer_start_p)
     : reader(reader), buffer_index(buffer_index_p), readers(readers_p), buffer(std::move(buffer_p)),
-      buffer_size(buffer_size_p), buffer_start(buffer_start_p) {
+      buffer_size(buffer_size_p), buffer_start(buffer_start_p), remainder_start(DConstants::INVALID_INDEX) {
 }
 
 JSONFileHandle::JSONFileHandle(QueryContext context_p, unique_ptr<FileHandle> file_handle_p, Allocator &allocator_p)
@@ -947,12 +947,25 @@ bool JSONReader::CopyRemainderFromPreviousBuffer(JSONReaderScanState &scan_state
 	}
 
 	// First we find the newline in the previous block
+	auto prev_buffer_data = char_ptr_cast(previous_buffer_handle->buffer.get());
 	idx_t prev_buffer_size = previous_buffer_handle->buffer_size - previous_buffer_handle->buffer_start;
-	auto prev_buffer_ptr = char_ptr_cast(previous_buffer_handle->buffer.get()) + previous_buffer_handle->buffer_size;
+	auto prev_buffer_ptr = prev_buffer_data + previous_buffer_handle->buffer_size;
 	// the first buffer of a file that is only a byte order mark holds nothing past it
-	auto prev_object_start =
-	    prev_buffer_size == 0 ? prev_buffer_ptr : PreviousNewline(prev_buffer_ptr, prev_buffer_size);
-	auto prev_object_size = NumericCast<idx_t>(prev_buffer_ptr - prev_object_start);
+	const char *prev_newline = prev_buffer_size == 0 ? nullptr : PreviousNewline(prev_buffer_ptr, prev_buffer_size);
+	idx_t prev_object_offset;
+	if (prev_newline && *prev_newline == '\n') {
+		prev_object_offset = NumericCast<idx_t>(prev_newline - prev_buffer_data) + 1;
+	} else {
+		// The previous block has no newline, so wait until it has copied its own remainder
+		while ((prev_object_offset = previous_buffer_handle->remainder_start.load()) == DConstants::INVALID_INDEX) {
+			if (HasThrown()) {
+				return false;
+			}
+		}
+	}
+	SkipWhitespace(prev_buffer_data, prev_object_offset, previous_buffer_handle->buffer_size);
+	auto prev_object_start = prev_buffer_data + prev_object_offset;
+	auto prev_object_size = previous_buffer_handle->buffer_size - prev_object_offset;
 
 	D_ASSERT(scan_state.buffer_offset == options.maximum_object_size);
 	if (prev_object_size > scan_state.buffer_offset) {
@@ -961,16 +974,13 @@ bool JSONReader::CopyRemainderFromPreviousBuffer(JSONReaderScanState &scan_state
 	// Now copy the data to our reconstruct buffer
 	memcpy(scan_state.buffer_ptr + scan_state.buffer_offset - prev_object_size, prev_object_start, prev_object_size);
 
-	// Just a newline, or nothing. A single byte without a newline before it is a value, such as a 1 at the end of a
-	// file. This is checked before the previous buffer is released
-	const bool no_remainder = prev_object_size == 0 || (prev_object_size == 1 && *prev_object_start == '\n');
-
 	// We copied the object, so we are no longer reading the previous buffer
 	if (--previous_buffer_handle->readers == 0) {
 		RemoveBuffer(*previous_buffer_handle);
 	}
 
-	if (no_remainder) {
+	// Nothing but whitespace was left in the previous buffer
+	if (prev_object_size == 0) {
 		return false;
 	}
 	scan_state.buffer_offset -= prev_object_size;
@@ -1193,6 +1203,7 @@ void JSONReader::FinalizeBufferInternal(JSONReaderScanState &scan_state, Allocat
 		if (scan_state.buffer_index.GetIndex() != 0) {
 			CopyRemainderFromPreviousBuffer(scan_state);
 		}
+		scan_state.current_buffer_handle->remainder_start = scan_state.buffer_offset;
 	}
 
 	scan_state.prev_buffer_remainder = 0;
