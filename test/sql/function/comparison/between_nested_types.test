@@ -1,0 +1,174 @@
+# name: test/sql/function/comparison/between_nested_types.test
+# description: Exercise BETWEEN selection for nested types
+# group: [comparison]
+
+statement ok
+CREATE TABLE sheet(cell STRUCT(col VARCHAR, "row" INTEGER));
+
+statement ok
+INSERT INTO sheet VALUES
+  ({'col': 'A', 'row': 1}), ({'col': 'A', 'row': 2}), ({'col': 'A', 'row': 3}),
+  ({'col': 'B', 'row': 1}), ({'col': 'B', 'row': 2}),
+  ({'col': 'C', 'row': 1}),
+  (NULL),
+  ({'col': NULL, 'row': 1}),
+  ({'col': 'A', 'row': NULL});
+
+# constant bounds are folded back into a single BETWEEN by the filter combiner
+query I
+SELECT count(*) FROM sheet WHERE cell BETWEEN {'col': 'A', 'row': 1} AND {'col': 'B', 'row': 2};
+----
+6
+
+query II
+SELECT cell.col, cell."row" FROM sheet WHERE cell BETWEEN {'col': 'A', 'row': 2} AND {'col': 'B', 'row': 1} ORDER BY ALL;
+----
+A	2
+A	3
+A	NULL
+B	1
+
+# exclusive and half-inclusive bound combinations
+query II
+SELECT cell.col, cell."row" FROM sheet WHERE cell > {'col': 'A', 'row': 2} AND cell <= {'col': 'B', 'row': 1} ORDER BY ALL;
+----
+A	3
+A	NULL
+B	1
+
+query II
+SELECT cell.col, cell."row" FROM sheet WHERE cell >= {'col': 'A', 'row': 2} AND cell < {'col': 'B', 'row': 1} ORDER BY ALL;
+----
+A	2
+A	3
+A	NULL
+
+query II
+SELECT cell.col, cell."row" FROM sheet WHERE cell > {'col': 'A', 'row': 2} AND cell < {'col': 'B', 'row': 1} ORDER BY ALL;
+----
+A	3
+A	NULL
+
+# NOT BETWEEN
+query II
+SELECT cell.col, cell."row" FROM sheet WHERE cell NOT BETWEEN {'col': 'A', 'row': 1} AND {'col': 'B', 'row': 2} ORDER BY ALL;
+----
+C	1
+NULL	1
+
+# a volatile input binds to a single BETWEEN directly, without the optimizer
+query II
+SELECT cell.col, cell."row" FROM sheet
+WHERE (CASE WHEN random() >= 0 THEN cell END) BETWEEN {'col': 'A', 'row': 1} AND {'col': 'B', 'row': 2}
+ORDER BY ALL;
+----
+A	1
+A	2
+A	3
+A	NULL
+B	1
+B	2
+
+# BETWEEN in a projection over structs
+query I
+SELECT cell BETWEEN {'col': 'A', 'row': 1} AND {'col': 'B', 'row': 2} FROM sheet ORDER BY ALL;
+----
+false
+false
+true
+true
+true
+true
+true
+true
+NULL
+
+# non-constant bounds stay a conjunction of comparisons: differential against the folded plan
+query I
+SELECT count(*) FROM sheet AS s, (SELECT {'col': 'A', 'row': 1}::STRUCT(col VARCHAR, "row" INTEGER) lo,
+                                         {'col': 'B', 'row': 2}::STRUCT(col VARCHAR, "row" INTEGER) hi) b
+WHERE s.cell BETWEEN b.lo AND b.hi;
+----
+6
+
+# BETWEEN as part of a larger conjunction (select receives an incoming selection vector)
+query II
+SELECT cell.col, cell."row" FROM sheet
+WHERE cell."row" = 1 AND cell BETWEEN {'col': 'A', 'row': 1} AND {'col': 'B', 'row': 2}
+ORDER BY ALL;
+----
+A	1
+B	1
+
+# a NULL row ahead of a qualifying row: the select callback sees sel-compacted inputs
+statement ok
+CREATE TABLE null_first(cell STRUCT(col VARCHAR, "row" INTEGER));
+
+statement ok
+INSERT INTO null_first VALUES (NULL), ({'col': 'A', 'row': NULL});
+
+query I
+SELECT count(*) FROM null_first WHERE cell BETWEEN {'col': 'A', 'row': 1} AND {'col': 'B', 'row': 2};
+----
+1
+
+# nested structs
+statement ok
+CREATE TABLE nested(v STRUCT(a STRUCT(x INTEGER, y VARCHAR), b INTEGER));
+
+statement ok
+INSERT INTO nested VALUES
+  ({'a': {'x': 1, 'y': 'a'}, 'b': 1}),
+  ({'a': {'x': 1, 'y': 'b'}, 'b': 0}),
+  ({'a': {'x': 2, 'y': 'a'}, 'b': 5}),
+  ({'a': NULL, 'b': 2}),
+  (NULL);
+
+query I
+SELECT count(*) FROM nested WHERE v BETWEEN {'a': {'x': 1, 'y': 'a'}, 'b': 1} AND {'a': {'x': 2, 'y': 'a'}, 'b': 5};
+----
+3
+
+# lists
+statement ok
+CREATE TABLE lists(l INTEGER[]);
+
+statement ok
+INSERT INTO lists VALUES ([]), ([1]), ([1, 2]), ([1, NULL]), ([2]), ([3, 0]), (NULL);
+
+query I
+SELECT l FROM lists WHERE l BETWEEN [1] AND [2] ORDER BY ALL;
+----
+[1]
+[1, 2]
+[1, NULL]
+[2]
+
+# lists of structs
+query I
+SELECT count(*) FROM (VALUES ([{'k': 1}]), ([{'k': 2}]), ([{'k': 3}])) t(v)
+WHERE v BETWEEN [{'k': 1}] AND [{'k': 2}];
+----
+2
+
+# fixed-size arrays
+query I
+SELECT count(*) FROM (VALUES (array_value(1, 1)), (array_value(1, 2)), (array_value(2, 1))) t(v)
+WHERE v BETWEEN array_value(1, 1) AND array_value(1, 9);
+----
+2
+
+# selection vectors spanning multiple vectors and both bound checks
+statement ok
+CREATE TABLE many AS SELECT {'col': chr(65 + (i % 3)::INTEGER), 'row': i // 3} AS cell FROM range(9000) t(i);
+
+query I
+SELECT count(*) FROM many WHERE cell BETWEEN {'col': 'A', 'row': 100} AND {'col': 'B', 'row': 200};
+----
+3101
+
+query I
+SELECT count(*) FROM many AS m, (VALUES ({'col': 'A', 'row': 100}, {'col': 'B', 'row': 200})) b(lo, hi)
+WHERE m.cell BETWEEN b.lo AND b.hi;
+----
+3101
