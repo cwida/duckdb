@@ -375,9 +375,10 @@ AsyncResult TableFunctionFileReader::Scan(ClientContext &context, GlobalTableFun
 	input.async_result = AsyncResultType::IMPLICIT;
 	input.results_execution_mode = AsyncResultsExecutionMode::SYNCHRONOUS;
 	function.function(context, input, chunk);
-	if (!lstate.batch_metrics_collected) {
-		// the first scan of a batch can count what it scans (Parquet counts a row group then), and the file may
-		// already have been finished - collect it, as ScheduleIO does
+	if (!lstate.batch_metrics_collected || chunk.size() == 0) {
+		// the file may already have been finished while this batch was scanned, so what the scan counted is collected
+		// here - once the first scan of the batch has run (Parquet counts a row group then), and again when the batch
+		// ends (a function that counts as it reads, like CSV, counts until then)
 		CollectMetrics(context, gstate);
 		lstate.batch_metrics_collected = true;
 	}
@@ -789,6 +790,13 @@ static void TableFunctionMultiFileGetMetrics(TableFunctionGetMetricsInput &input
 				continue;
 			}
 			reader_data->reader->Cast<TableFunctionFileReader>().CollectMetrics(input.context, scan_state);
+		}
+	}
+	if (input.local_state) {
+		// a batch this thread stopped short, e.g. at a LIMIT, can have counted more for a file that is already finished
+		auto &local = input.local_state->Cast<MultiFileLocalState>();
+		if (local.job && local.job->reader) {
+			local.job->reader->Cast<TableFunctionFileReader>().CollectMetrics(input.context, scan_state);
 		}
 	}
 	lock_guard<mutex> metrics_guard(scan_state.metrics_lock);

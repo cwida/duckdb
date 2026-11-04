@@ -341,6 +341,16 @@ static idx_t ValidateAsOfConditions(LogicalComparisonJoin &op, vector<idx_t> &eq
 }
 
 PhysicalOperator &PhysicalPlanGenerator::PlanAsOfJoin(LogicalComparisonJoin &op) {
+#ifdef D_ASSERT_IS_ENABLED
+	// The sorted ASOF operator emits the full left payload in child order (see column_lifetime_analyzer.cpp),
+	// so the only supported left projection maps are empty or full-width identity.
+	if (op.join_type != JoinType::MARK && !op.left_projection_map.empty()) {
+		D_ASSERT(op.left_projection_map.size() == op.children[0]->GetColumnBindings().size());
+		for (idx_t i = 0; i < op.left_projection_map.size(); i++) {
+			D_ASSERT(op.left_projection_map[i].GetIndex() == i);
+		}
+	}
+#endif
 	// If we have a predicate and its a "simple" join, then we can just plan a regular join
 	switch (op.join_type) {
 	case JoinType::SEMI:

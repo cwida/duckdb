@@ -5,9 +5,21 @@
   "inherit_skip_tests": "test/configs/stats_dependent_tests.json",
   "skip_tests": [
     {
+      "reason": "Rejecting corrupt Parquet geometry statistics requires optimizer statistics propagation.",
+      "paths": [
+        "test/parquet/corrupt/geometry_add_wkb_type_oob.test"
+      ]
+    },
+    {
       "reason": "Counts the evaluations of volatile filters that only the optimizer pushes down or keeps above.",
       "paths": [
         "test/optimizer/pushdown/volatile_filter_aggregate_distinct.test"
+      ]
+    },
+    {
+      "reason": "Checks filter reordering performed by the optimizer.",
+      "paths": [
+        "test/optimizer/struct_cast_can_throw_reordering.test"
       ]
     },
     {

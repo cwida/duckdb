@@ -1,0 +1,192 @@
+# name: test/sql/cast/struct_cast_can_throw.test
+# description: The cast fallibility analysis must pair STRUCT fields by name, like cast execution
+# group: [cast]
+
+statement ok
+CREATE TABLE structs(s STRUCT(a INTEGER, b TINYINT));
+
+statement ok
+INSERT INTO structs VALUES ({'a': 100000, 'b': 1});
+
+# reordered target fields: a narrows to SMALLINT by name, so the cast throws a conversion error
+# (the positional pairs a -> BIGINT and b -> SMALLINT would not throw)
+statement error
+SELECT CAST(s AS STRUCT(b BIGINT, a SMALLINT)) FROM structs
+----
+<REGEX>:Conversion Error.*out of range.*
+
+# the same cast of a constant struct
+statement error
+SELECT CAST({'a': 100000, 'b': 1::TINYINT} AS STRUCT(b BIGINT, a SMALLINT))
+----
+<REGEX>:Conversion Error.*out of range.*
+
+# target fields in declaration order still report the conversion error
+statement error
+SELECT CAST(s AS STRUCT(a SMALLINT, b BIGINT)) FROM structs
+----
+<REGEX>:Conversion Error.*out of range.*
+
+# TRY_CAST turns the failing field into NULL
+query I
+SELECT TRY_CAST(s AS STRUCT(b BIGINT, a SMALLINT)) FROM structs
+----
+{'b': 1, 'a': NULL}
+
+# reordered target fields where every name-matched cast widens: values land in the name-matched fields
+query I
+SELECT CAST(s AS STRUCT(b SMALLINT, a BIGINT)) FROM structs
+----
+{'b': 1, 'a': 100000}
+
+# an unmatched target field becomes NULL, which never throws
+query I
+SELECT CAST(s AS STRUCT(a BIGINT, b BIGINT, c BIGINT)) FROM structs
+----
+{'a': 100000, 'b': 1, 'c': NULL}
+
+# an unmatched source field is dropped, only the name-matched fields are cast
+query I
+SELECT CAST(s AS STRUCT(b BIGINT)) FROM structs
+----
+{'b': 1}
+
+# the dropped field a would overflow its positional counterpart, but by name only b -> b is cast
+query I
+SELECT CAST(s AS STRUCT(b SMALLINT)) FROM structs
+----
+{'b': 1}
+
+# differing sizes with a narrowing name match still report the conversion error
+statement error
+SELECT CAST(s AS STRUCT(a SMALLINT, b BIGINT, c BIGINT)) FROM structs
+----
+<REGEX>:Conversion Error.*out of range.*
+
+# no matching member at all is a binder error
+statement error
+SELECT CAST(s AS STRUCT(z INTEGER)) FROM structs
+----
+<REGEX>:Binder Error.*matching member.*
+
+# reordered struct nested in a LIST
+statement ok
+CREATE TABLE struct_lists(l STRUCT(a INTEGER, b TINYINT)[]);
+
+statement ok
+INSERT INTO struct_lists VALUES ([{'a': 100000, 'b': 1}]);
+
+statement error
+SELECT CAST(l AS STRUCT(b BIGINT, a SMALLINT)[]) FROM struct_lists
+----
+<REGEX>:Conversion Error.*out of range.*
+
+query I
+SELECT CAST(l AS STRUCT(b SMALLINT, a BIGINT)[]) FROM struct_lists
+----
+[{'b': 1, 'a': 100000}]
+
+# reordered struct nested in a MAP value
+statement ok
+CREATE TABLE struct_maps(m MAP(INTEGER, STRUCT(a INTEGER, b TINYINT)));
+
+statement ok
+INSERT INTO struct_maps VALUES (MAP {1: {'a': 100000, 'b': 1}});
+
+statement error
+SELECT CAST(m AS MAP(INTEGER, STRUCT(b BIGINT, a SMALLINT))) FROM struct_maps
+----
+<REGEX>:Conversion Error.*out of range.*
+
+query I
+SELECT CAST(m AS MAP(INTEGER, STRUCT(b SMALLINT, a BIGINT))) FROM struct_maps
+----
+{1={'b': 1, 'a': 100000}}
+
+# a map key cast that drops a struct field can merge distinct keys: the uniqueness check throws
+statement ok
+CREATE TABLE merge_keys(m MAP(STRUCT(a INTEGER, b INTEGER), INTEGER));
+
+statement ok
+INSERT INTO merge_keys VALUES (map([{'a': 1, 'b': 10}, {'a': 1, 'b': 20}], [100, 200]));
+
+statement error
+SELECT CAST(m AS MAP(STRUCT(a BIGINT), INTEGER)) FROM merge_keys
+----
+<REGEX>:Invalid Input Error.*Map keys must be unique.*
+
+# the same key cast succeeds when the remaining fields stay unique
+query I
+SELECT CAST(m AS MAP(STRUCT(b BIGINT), INTEGER)) FROM merge_keys
+----
+{{'b': 10}=100, {'b': 20}=200}
+
+# a non-invertible scalar key cast can also merge keys, even though no child cast throws
+statement ok
+CREATE TABLE double_keys(m MAP(BIGINT, INTEGER));
+
+statement ok
+INSERT INTO double_keys VALUES (map([9007199254740993, 9007199254740992], [1, 2]));
+
+statement error
+SELECT CAST(m AS MAP(DOUBLE, INTEGER)) FROM double_keys
+----
+<REGEX>:Invalid Input Error.*Map keys must be unique.*
+
+# an invertible widening key cast cannot merge keys
+query I
+SELECT CAST(m AS MAP(HUGEINT, INTEGER)) FROM double_keys
+----
+{9007199254740993=1, 9007199254740992=2}
+
+# reordering at both struct levels
+statement ok
+CREATE TABLE nested(s STRUCT(x STRUCT(a INTEGER, b TINYINT), y INTEGER));
+
+statement ok
+INSERT INTO nested VALUES ({'x': {'a': 100000, 'b': 1}, 'y': 1});
+
+statement error
+SELECT CAST(s AS STRUCT(y BIGINT, x STRUCT(b BIGINT, a SMALLINT))) FROM nested
+----
+<REGEX>:Conversion Error.*out of range.*
+
+query I
+SELECT CAST(s AS STRUCT(y BIGINT, x STRUCT(b SMALLINT, a BIGINT))) FROM nested
+----
+{'y': 1, 'x': {'b': 1, 'a': 100000}}
+
+# unnamed structs keep positional pairing (constructed at query time, TUPLE columns need v2 storage)
+statement ok
+CREATE TABLE unnamed(x INTEGER, y TINYINT);
+
+statement ok
+INSERT INTO unnamed VALUES (100000, 1);
+
+statement error
+SELECT CAST(ROW(x, y) AS STRUCT(a SMALLINT, b BIGINT)) FROM unnamed
+----
+<REGEX>:Conversion Error.*out of range.*
+
+query I
+SELECT CAST(ROW(x, y) AS STRUCT(a BIGINT, b SMALLINT)) FROM unnamed
+----
+{'a': 100000, 'b': 1}
+
+statement error
+SELECT CAST(ROW(x, y) AS STRUCT(a BIGINT)) FROM unnamed
+----
+<REGEX>:.*Cannot cast STRUCTs of different size.*
+
+# a throwing reordered struct cast behind a guard: the guard must keep short-circuiting the cast
+statement ok
+CREATE TABLE guarded(g VARCHAR, s STRUCT(a INTEGER, b TINYINT));
+
+statement ok
+INSERT INTO guarded VALUES ('keep', {'a': 1, 'b': 1}), ('keep', {'a': 100000, 'b': 2});
+
+query I
+SELECT g FROM guarded WHERE g LIKE 'ke%' OR CAST(s AS STRUCT(b BIGINT, a SMALLINT)) = {'b': 1, 'a': 1}::STRUCT(b BIGINT, a SMALLINT)
+----
+keep
+keep

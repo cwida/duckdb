@@ -423,12 +423,19 @@ bool PlanEnumerator::SolveJoinOrderApproximately() {
 		double cost;
 	};
 	vector<GreedyCandidate> candidates;
-	auto EmitCandidate = [&](JoinRelationSet &left, JoinRelationSet &right) {
+	auto EmitOrientation = [&](JoinRelationSet &left, JoinRelationSet &right) -> optional_ptr<DPJoinNode> {
 		auto &connection = GetConnections(left, right);
 		if (connection.empty()) {
-			return;
+			return nullptr;
 		}
-		auto node = EmitPair(left, right, connection);
+		return EmitPair(left, right, connection);
+	};
+	auto EmitCandidate = [&](JoinRelationSet &left, JoinRelationSet &right) {
+		// non-commutative joins (e.g. LEFT, SEMI, ANTI) are only valid in one orientation
+		auto node = EmitOrientation(left, right);
+		if (!node) {
+			node = EmitOrientation(right, left);
+		}
 		if (node) {
 			candidates.push_back({&left, &right, node->cost});
 		}

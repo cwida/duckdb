@@ -789,6 +789,24 @@ TEST_CASE("V2 scalar: function properties", "[capi_v2][scalar_function]") {
 	// With default null handling this would be NULL without invoking the callback.
 	REQUIRE(QueryI32(fx.conn, "SELECT COALESCE(always42(NULL::INTEGER), -1)") == 42);
 
+	// The catalog reports CONSISTENT_WITHIN_QUERY, and index keys cannot contain the function.
+	function = MakeScalar(fx.conn, "prop_query");
+	sig = SigOf(function);
+	SigParam(sig, "a", integer);
+	REQUIRE(duckdb_v2_function_signature_set_return_type(sig, integer, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_scalar_function_set_exec_callback(function, Const42Exec, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_scalar_function_set_property(function, DUCKDB_V2_FUNCTION_PROPERTY_STABILITY,
+	                                               DUCKDB_V2_FUNCTION_PROPERTY_STABILITY_CONSISTENT_WITHIN_QUERY,
+	                                               nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_connection_register_scalar_function(fx.conn, function, nullptr) == DUCKDB_V2_ERROR_NONE);
+	duckdb_v2_scalar_function_destroy(&function);
+
+	REQUIRE(QueryI32(fx.conn, "SELECT prop_query(1)") == 42);
+	REQUIRE(QueryI32(fx.conn, "SELECT count(*)::INTEGER FROM duckdb_functions() WHERE function_name = 'prop_query' "
+	                          "AND stability = 'CONSISTENT_WITHIN_QUERY'") == 1);
+	REQUIRE(RunSql(fx.conn, "CREATE TABLE prop_keys (a INTEGER)") == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(RunSql(fx.conn, "CREATE INDEX prop_index ON prop_keys ((prop_query(a)))") == DUCKDB_V2_ERROR_QUERY_BINDER);
+
 	// Invalid combinations are rejected.
 	function = MakeScalar(fx.conn, "prop_errors");
 	// A value that does not belong to the key.

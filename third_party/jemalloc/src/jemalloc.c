@@ -596,11 +596,13 @@ arena_choose_hard(tsd_t *tsd, bool internal) {
 				arena = arena_init_locked(tsd_tsdn(tsd),
 				    choose[j], &arena_config_default);
 				if (arena == NULL) {
-					malloc_mutex_unlock(tsd_tsdn(tsd),
-					    &arenas_lock);
-					return NULL;
+					/* DuckDB shares arena 0 without memory for a new one. */
+					choose[j] = 0;
+					arena = arena_get(tsd_tsdn(tsd), 0,
+					    false);
+				} else {
+					is_new_arena[j] = true;
 				}
-				is_new_arena[j] = true;
 				if (!!j == internal) {
 					ret = arena;
 				}

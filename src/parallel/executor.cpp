@@ -26,6 +26,10 @@
 #include <algorithm>
 #include <chrono>
 
+#ifdef __EMSCRIPTEN_PTHREADS__
+#include <emscripten/threading.h>
+#endif
+
 namespace duckdb {
 
 Executor::Executor(ClientContext &context) : context(context), executor_tasks(0), blocked_thread_time(0) {
@@ -452,6 +456,10 @@ QueryResultState Executor::ExecuteTask() {
 			TaskScheduler::GetScheduler(context).GetTaskFromProducer(*producer, task);
 		}
 		if (!task && !HasError()) {
+#ifdef __EMSCRIPTEN_PTHREADS__
+			// A positive sleep services the dlopen queue while another worker owns the task.
+			emscripten_thread_sleep(1);
+#endif
 			return IdleState();
 		}
 		if (task) {

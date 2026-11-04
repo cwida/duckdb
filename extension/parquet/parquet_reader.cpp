@@ -271,7 +271,7 @@ static uint64_t DetermineAcceptedColumnGap(ClientContext &context, ParquetReader
 }
 
 static void ParseParquetFooter(const_data_ptr_t buffer, const string &file_path, idx_t file_size,
-                               const shared_ptr<const ParquetEncryptionConfig> &encryption_config, uint32_t &footer_len,
+                               const shared_ptr<const ParquetEncryptionConfig> &encryption_config, idx_t &footer_len,
                                bool &footer_encrypted) {
 	if (memcmp(buffer + 4, "PAR1", 4) == 0) {
 		footer_encrypted = false;
@@ -290,7 +290,7 @@ static void ParseParquetFooter(const_data_ptr_t buffer, const string &file_path,
 	// read four-byte footer length from just before the end magic bytes
 	footer_len = Load<uint32_t>(buffer);
 	if (footer_len == 0 || file_size < 12 + footer_len) {
-		throw InvalidInputException("Footer length error in file '%s'", file_path);
+		throw DataCorruptionException("Footer length error in file '%s'", file_path);
 	}
 }
 
@@ -306,7 +306,7 @@ LoadMetadata(ClientContext &context, Allocator &allocator, CachingFileHandle &fi
 	}
 
 	bool footer_encrypted;
-	uint32_t footer_len;
+	idx_t footer_len;
 	// footer size is not provided - read it from the back
 	if (!footer_size.IsValid()) {
 		// We have to do two reads here:
@@ -345,7 +345,7 @@ LoadMetadata(ClientContext &context, Allocator &allocator, CachingFileHandle &fi
 		    file_size < 12 + provided_footer_len) {
 			throw InvalidInputException("Invalid footer length provided for file '%s'", file_handle.GetPath());
 		}
-		footer_len = UnsafeNumericCast<uint32_t>(provided_footer_len);
+		footer_len = provided_footer_len;
 
 		idx_t total_footer_len = footer_len + 8;
 		auto metadata_pos = file_size - total_footer_len;
@@ -355,7 +355,7 @@ LoadMetadata(ClientContext &context, Allocator &allocator, CachingFileHandle &fi
 		auto read_head = transport.GetReadHead(metadata_pos);
 		auto data_ptr = read_head->buffer_ptr;
 
-		uint32_t read_footer_len;
+		idx_t read_footer_len;
 		ParseParquetFooter(data_ptr + footer_len, file_handle.GetPath(), file_size, encryption_config, read_footer_len,
 		                   footer_encrypted);
 		if (read_footer_len != footer_len) {
@@ -1891,12 +1891,15 @@ FilterPropagateResult ParquetReader::CheckRowGroupFilterStatistics(ClientContext
 	return prune_result;
 }
 
-bool ParquetReader::DynamicFiltersExcludeRowGroup(ClientContext &context, ParquetReaderScanState &state) {
+bool ParquetReader::FiltersExcludeRowGroup(ClientContext &context, ParquetReaderScanState &state,
+                                           bool dynamic_filters_only) {
 	for (auto &scan_filter : state.scan_filters) {
-		auto &expr_filter =
-		    ExpressionFilter::GetExpressionFilter(scan_filter.filter, "ParquetReader::DynamicFiltersExcludeRowGroup");
-		if (!ExpressionFilter::ContainsInternalFunction(*expr_filter.expr, DynamicFilterScalarFun::NAME)) {
-			continue;
+		if (dynamic_filters_only) {
+			auto &expr_filter =
+			    ExpressionFilter::GetExpressionFilter(scan_filter.filter, "ParquetReader::FiltersExcludeRowGroup");
+			if (!ExpressionFilter::ContainsInternalFunction(*expr_filter.expr, DynamicFilterScalarFun::NAME)) {
+				continue;
+			}
 		}
 		auto &column_reader = state.GetColumnReader(MultiFileLocalIndex(scan_filter.filter_idx));
 		auto prune_result = CheckRowGroupFilterStatistics(context, state, column_reader, scan_filter.filter);
@@ -1925,6 +1928,11 @@ void ParquetReader::PrepareRowGroupBuffer(ClientContext &context, ParquetReaderS
 		                            GetFileName(), group.num_rows);
 	}
 	auto row_group_num_rows = NumericCast<idx_t>(group.num_rows);
+
+	if (filters && row_group_num_rows > 0 && state.offset_in_group == row_group_num_rows) {
+		// the row group is already ruled out (statistics pass or an earlier column): no Bloom filter reads
+		return;
+	}
 
 	if (filters) {
 		// filters contain output chunk index, not file col idx!
@@ -2309,6 +2317,11 @@ ParquetPrefetchStrategy ParquetReader::RegisterRowGroupReads(ClientContext &cont
 	state.group_offset = GetRowGroupOffset(*this, state.group_index);
 
 	auto &group = GetGroup(state);
+	// rule the row group out on the statistics of all filters before any column reads a Bloom filter
+	if (filters && group.num_rows > 0 && FiltersExcludeRowGroup(context, state, false)) {
+		rows_read += NumericCast<idx_t>(group.num_rows);
+		state.offset_in_group = NumericCast<idx_t>(group.num_rows);
+	}
 	// several readers can read the same column chunk (e.g. two fields of one variant column), count each chunk once
 	unordered_set<idx_t> scanned_column_chunks;
 	for (idx_t i = 0; i < column_ids.size(); i++) {
@@ -2561,7 +2574,7 @@ AsyncResult ParquetReader::Process(ClientContext &context, ParquetReaderScanStat
 	    Logger::Get(context).ShouldLog(ParquetPrefetchLogType::NAME, ParquetPrefetchLogType::LEVEL);
 	const idx_t group_num_rows = GetGroup(state).num_rows;
 	// Queued row groups may predate the current dynamic filter. Do not revisit a partially decoded chunk.
-	if (state.offset_in_group == 0 && !state.resuming_payload && DynamicFiltersExcludeRowGroup(context, state)) {
+	if (state.offset_in_group == 0 && !state.resuming_payload && FiltersExcludeRowGroup(context, state, true)) {
 		rows_read += group_num_rows;
 		state.offset_in_group = group_num_rows;
 	}

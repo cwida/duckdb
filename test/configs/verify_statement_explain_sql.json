@@ -112,6 +112,12 @@
       "paths": [
         "test/sql/collate/collate_distinct_aggregate_icu.test"
       ]
+    },
+    {
+      "reason": "The internal EXPLAIN and the generated SQL change the pipelines of the probes, so their logging context spans differ",
+      "paths": [
+        "test/sql/table_function/range_lateral_threads.test"
+      ]
     }
   ]
 }

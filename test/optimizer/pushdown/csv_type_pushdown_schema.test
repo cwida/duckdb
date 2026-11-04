@@ -1,0 +1,73 @@
+# name: test/optimizer/pushdown/csv_type_pushdown_schema.test
+# description: A cast is not pushed into read_csv when the scan maps its files onto a custom schema
+# group: [pushdown]
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+COPY (SELECT * FROM (VALUES (1, 'a'), (2, 'b'), (3, 'c')) t(id, s)) TO '{TEST_DIR}/type_pushdown_schema.csv' (HEADER false);
+
+# the files are read as text and mapped onto the 'schema' types, the way the glue extension maps Hive text files
+statement ok
+CREATE MACRO schema_scan() AS TABLE
+SELECT * FROM read_csv('{TEST_DIR}/type_pushdown_schema.csv', header = false, auto_detect = false,
+    columns = {'id': 'VARCHAR', 's': 'VARCHAR'},
+    schema = MAP {'id': {name: 'id', type: 'INTEGER', default_value: NULL},
+                  's': {name: 's', type: 'VARCHAR', default_value: NULL}});
+
+query II
+SELECT * FROM schema_scan() ORDER BY id;
+----
+1	a
+2	b
+3	c
+
+# the cast stays in the plan
+query II
+EXPLAIN SELECT CAST(id AS VARCHAR) FROM schema_scan();
+----
+physical_plan	<REGEX>:.*CAST.*
+
+query I
+SELECT CAST(id AS VARCHAR) FROM schema_scan() ORDER BY 1;
+----
+1
+2
+3
+
+query I
+SELECT CAST(id AS BIGINT) FROM schema_scan() ORDER BY 1;
+----
+1
+2
+3
+
+query II
+SELECT CAST(s AS VARCHAR), CAST(id AS VARCHAR) FROM schema_scan() ORDER BY 1;
+----
+a	1
+b	2
+c	3
+
+# complementary FILTERs share CAST(id AS VARCHAR), which is pulled into a projection right above the scan
+query II
+SELECT count(*) FILTER (WHERE CAST(id AS VARCHAR) = '1'), count(*) FILTER (WHERE NOT (CAST(id AS VARCHAR) = '1'))
+FROM schema_scan();
+----
+1	2
+
+# without a custom schema the cast is still pushed into the reader
+query II
+EXPLAIN SELECT CAST(id AS VARCHAR) FROM read_csv('{TEST_DIR}/type_pushdown_schema.csv', header = false,
+    auto_detect = false, columns = {'id': 'INTEGER', 's': 'VARCHAR'});
+----
+physical_plan	<!REGEX>:.*CAST.*
+
+query I
+SELECT CAST(id AS VARCHAR) FROM read_csv('{TEST_DIR}/type_pushdown_schema.csv', header = false,
+    auto_detect = false, columns = {'id': 'INTEGER', 's': 'VARCHAR'}) ORDER BY 1;
+----
+1
+2
+3

@@ -1,0 +1,20 @@
+# name: benchmark/micro/aggregate/list_aggregate_grouped_resident.benchmark
+# description: Grouped list states remain resident when memory is available
+# group: [aggregate]
+
+name List Aggregate (Grouped, Resident)
+group aggregate
+
+init
+SET threads=8;
+SET memory_limit='8GB';
+
+load
+CREATE TABLE src AS
+SELECT i % 200000 AS g, (i * 7919) % 1000003 AS v FROM range(20000000) t(i);
+
+run
+SELECT count(s) FROM (SELECT g, list(v) AS s FROM src GROUP BY g);
+
+result I
+200000
