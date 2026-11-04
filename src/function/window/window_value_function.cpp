@@ -1450,27 +1450,83 @@ static void FillInterpolateFunc(Vector &result, idx_t i, WindowCursor &cursor, i
 	data[i] = InterpolateOperator::Operation<T>(y0, slope, y1);
 }
 
-//! The bignum_t tier of decimals: like the hugeint tier, the exact delta between the ends is scaled by the slope in
-//! DOUBLE, truncated towards zero and added to the exact start value, NULL if the result does not fit the width
+//! The delta between the ends of a wide FILL scaled by the slope and truncated towards zero, as the hugeint tier
+//! computes it in DOUBLE; beyond the DOUBLE range the slope is applied exactly as mantissa / 2^shift. Reports whether
+//! a fraction was dropped and the sign of the scaled delta, which decide the truncation of an extrapolated sum
+static string ScaleFillDelta(const bignum_t &delta, double slope, StringHeap &heap, BignumArithmeticState &state,
+                             bool &fraction_dropped, bool &negative) {
+	const auto scaled = BignumDecimal::ToDouble(delta, 0) * slope;
+	if (std::isfinite(scaled)) {
+		const auto integer_part = std::trunc(scaled);
+		fraction_dropped = scaled != integer_part;
+		negative = scaled < 0;
+		return BignumDecimal::FromDouble(integer_part);
+	}
+	int exponent;
+	const double fraction = std::frexp(std::fabs(slope), &exponent);
+	auto mantissa = static_cast<int64_t>(std::ldexp(fraction, 53));
+	int shift = 53 - exponent;
+	if (shift > 1023) {
+		// a slope below 2^-970 keeps the mantissa bits that the widest double power of two can divide by
+		mantissa = shift - 1023 >= 63 ? 0 : mantissa >> (shift - 1023);
+		shift = 1023;
+	}
+	const string mantissa_blob = BignumDecimal::FromInteger(hugeint_t(slope < 0 ? -mantissa : mantissa));
+	const bignum_t mantissa_value {string_t(mantissa_blob)};
+	const BignumIntermediate mantissa_intermediate(mantissa_value);
+	const BignumIntermediate delta_intermediate(delta);
+	const bignum_t product {BignumIntermediate::Multiply(heap, state, delta_intermediate, mantissa_intermediate)};
+	const BignumIntermediate product_intermediate(product);
+	negative = BignumDecimal::IsNegative(product);
+	fraction_dropped = false;
+	const string power_blob = BignumDecimal::FromDouble(std::ldexp(1.0, std::abs(shift)));
+	const bignum_t power_value {string_t(power_blob)};
+	const BignumIntermediate power(power_value);
+	if (shift < 0) {
+		return BignumIntermediate::Multiply(heap, state, product_intermediate, power).GetString();
+	}
+	string_t quotient;
+	string_t remainder;
+	if (!BignumIntermediate::TryDivMod(heap, state, product_intermediate, power, quotient, remainder)) {
+		throw InternalException("FILL: division by a power of two failed");
+	}
+	fraction_dropped = !BignumDecimal::IsZero(bignum_t(remainder));
+	return quotient.GetString();
+}
+
+//! The bignum_t tier of decimals, which rounds like the hugeint tier: the exact delta between the ends is scaled by the
+//! slope, an interpolation truncates the scaled delta towards zero and an extrapolation the sum, NULL if the result
+//! does not fit the width
 static void FillInterpolateBignum(Vector &result, idx_t i, WindowCursor &cursor, idx_t lo, idx_t hi, double slope) {
+	if (!std::isfinite(slope)) {
+		return;
+	}
 	// an intermediate refers to the bytes of the bignum_t it is built from, which therefore outlives it
 	StringHeap heap;
+	BignumArithmeticState state;
 	const auto y0 = cursor.GetCell<bignum_t>(0, lo);
 	const auto y1 = cursor.GetCell<bignum_t>(0, hi);
 	const BignumIntermediate start(y0);
 	const BignumIntermediate end(y1);
-	const bignum_t negated_start(start.Negate(heap));
+	const bignum_t negated_start {start.Negate(heap)};
 	const BignumIntermediate negated(negated_start);
-	const bignum_t delta(BignumIntermediate::Add(heap, end, negated));
-	const auto offset = std::trunc(BignumDecimal::ToDouble(delta, 0) * slope);
-	string offset_blob;
-	if (!BignumDecimal::TryFromDouble(offset, Decimal::MAX_WIDTH_DECIMAL, 0, offset_blob)) {
-		return;
+	const bignum_t delta {BignumIntermediate::Add(heap, end, negated)};
+	bool fraction_dropped;
+	bool scaled_negative;
+	const string offset_blob = ScaleFillDelta(delta, slope, heap, state, fraction_dropped, scaled_negative);
+	const bignum_t offset_value {string_t(offset_blob)};
+	const BignumIntermediate offset(offset_value);
+	bignum_t filled {BignumIntermediate::Add(heap, start, offset)};
+	// an extrapolation truncates the sum: a dropped fraction of the opposite sign moves it one towards zero
+	const bool extrapolating = slope < 0 || slope > 1;
+	if (extrapolating && fraction_dropped && !BignumDecimal::IsZero(filled) &&
+	    BignumDecimal::IsNegative(filled) != scaled_negative) {
+		const BignumIntermediate sum(filled);
+		const string step_blob = BignumDecimal::FromInteger(hugeint_t(BignumDecimal::IsNegative(filled) ? 1 : -1));
+		const bignum_t step_value {string_t(step_blob)};
+		const BignumIntermediate step(step_value);
+		filled = bignum_t(BignumIntermediate::Add(heap, sum, step));
 	}
-	const string_t offset_string(offset_blob);
-	const bignum_t offset_value(offset_string);
-	const BignumIntermediate offset_intermediate(offset_value);
-	const bignum_t filled(BignumIntermediate::Add(heap, start, offset_intermediate));
 	if (!BignumDecimal::FitsWidth(filled, DecimalType::GetWidth(result.GetType()))) {
 		return;
 	}

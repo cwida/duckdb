@@ -59,6 +59,8 @@ public:
 	//! Converts a double to the BIGNUM blob of the unscaled value of a DECIMAL(width, scale), returns false if it does
 	//! not fit
 	DUCKDB_API static bool TryFromDouble(double value, uint32_t width, uint32_t scale, string &result);
+	//! The BIGNUM blob of a finite double with an integral value, every such value converts exactly
+	DUCKDB_API static string FromDouble(double value);
 
 	//! Converts a two's complement integer of "size" bytes (big- or little-endian) into the BIGNUM blob of its value
 	DUCKDB_API static string FromTwosComplement(const_data_ptr_t data, idx_t size, bool big_endian);

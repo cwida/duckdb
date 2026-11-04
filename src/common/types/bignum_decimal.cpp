@@ -585,4 +585,20 @@ bool BignumDecimal::TryFromDouble(double value, uint32_t width, uint32_t scale, 
 	return TryParse(text.c_str(), text.size(), width, scale, result);
 }
 
+string BignumDecimal::FromDouble(double value) {
+	D_ASSERT(std::isfinite(value) && std::trunc(value) == value);
+	int exponent;
+	const double fraction = std::frexp(std::fabs(value), &exponent);
+	const auto mantissa = static_cast<uint64_t>(std::ldexp(fraction, 53));
+	const int shift = exponent - 53;
+	string text = value < 0 ? "-" : "";
+	if (shift >= 0) {
+		text += IntegerDigits(mantissa, static_cast<idx_t>(shift));
+	} else {
+		// an integral value below 2^53 keeps no fraction bits
+		text += to_string(-shift >= 64 ? 0 : mantissa >> static_cast<idx_t>(-shift));
+	}
+	return Bignum::VarcharToBignum(string_t(text));
+}
+
 } // namespace duckdb

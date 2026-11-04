@@ -316,3 +316,60 @@ SELECT k, fill(v) OVER (ORDER BY k) FROM (VALUES
 1	99999999999999999999999999999999999999999999999999.5
 3	99999999999999999999999999999999999999999999999999.7
 4	99999999999999999999999999999999999999999999999999.8
+
+# extrapolation truncates the final value towards zero, like the hugeint tier, not the offset
+foreach width 38 39 76
+
+query II
+SELECT k, fill(v::DECIMAL({width},0)) OVER (ORDER BY k) FROM (VALUES (0, NULL), (1, 1), (3, 2), (5, NULL)) t(k, v) ORDER BY k;
+----
+0	0
+1	1
+3	2
+5	3
+
+query II
+SELECT k, fill(v::DECIMAL({width},0)) OVER (ORDER BY k) FROM (VALUES (0, NULL), (1, -1), (3, -2), (5, NULL)) t(k, v) ORDER BY k;
+----
+0	0
+1	-1
+3	-2
+5	-3
+
+query II
+SELECT k, fill(v::DECIMAL({width},0)) OVER (ORDER BY k) FROM (VALUES (0, NULL), (1, 2), (4, 3), (5, NULL), (6, NULL), (7, NULL)) t(k, v) ORDER BY k;
+----
+0	1
+1	2
+4	3
+5	3
+6	3
+7	4
+
+endloop
+
+# an offset wider than the type still fills when the result fits, the scaled delta carries DOUBLE precision
+query II
+SELECT k, (fill(v) OVER (ORDER BY k))::DOUBLE FROM (VALUES (0, ('-9' || repeat('0', 254))::DECIMAL(255,0)),
+  (3, NULL), (4, ('9' || repeat('0', 254))::DECIMAL(255,0))) t(k, v) ORDER BY k;
+----
+0	-9e+254
+3	4.5e+254
+4	9e+254
+
+query II
+SELECT k, (fill(v) OVER (ORDER BY k))::DOUBLE FROM (VALUES (0, ('-9' || repeat('0', 37))::DECIMAL(38,0)),
+  (3, NULL), (4, ('9' || repeat('0', 37))::DECIMAL(38,0))) t(k, v) ORDER BY k;
+----
+0	-9e+37
+3	4.5e+37
+4	9e+37
+
+# a result beyond the width stays NULL
+query II
+SELECT k, fill(v) OVER (ORDER BY k) FROM (VALUES (1, ('9' || repeat('0', 38))::DECIMAL(39,0)),
+  (2, ('9' || repeat('9', 38))::DECIMAL(39,0)), (3, NULL)) t(k, v) ORDER BY k;
+----
+1	900000000000000000000000000000000000000
+2	999999999999999999999999999999999999999
+3	NULL
