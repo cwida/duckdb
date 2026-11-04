@@ -87,12 +87,20 @@ TEST_CASE("V2: value_create_null rejects null type / null out", "[capi_v2][value
 TEST_CASE("V2: value constructors reject a null payload pointer", "[capi_v2][value][null]") {
 	EnvFixture fx;
 	duckdb_v2_value_handle v = nullptr;
-	REQUIRE(duckdb_v2_value_create_varchar(fx.factory, nullptr, &v, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_value_create_varchar(fx.factory, nullptr, 1, &v, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_value_create_hugeint(fx.factory, nullptr, &v, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_value_create_uhugeint(fx.factory, nullptr, &v, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_value_create_interval(fx.factory, nullptr, &v, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_value_create_decimal(fx.factory, nullptr, 18, 3, &v, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(v == nullptr);
+
+	// A NULL payload with a zero length is the empty string.
+	REQUIRE(duckdb_v2_value_create_varchar(fx.factory, nullptr, 0, &v, nullptr) == DUCKDB_V2_ERROR_NONE);
+	const char *text = nullptr;
+	idx_t text_length = 1;
+	REQUIRE(duckdb_v2_value_get_varchar(v, &text, &text_length, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(text_length == 0);
+	duckdb_v2_value_destroy(&v);
 }
 
 TEST_CASE("V2: value_is_null distinguishes NULL from non-NULL", "[capi_v2][value][null]") {
@@ -221,30 +229,35 @@ TEST_CASE("V2: VARCHAR round-trips its bytes and borrows them", "[capi_v2][value
 	// An embedded NUL: the payload is a byte range, not a C string.
 	const char raw[4] = {'a', '\0', 'b', 'c'};
 	duckdb_v2_value_handle v = nullptr;
-	auto value_str = duckdb_v2_str {raw, 4};
-	REQUIRE(duckdb_v2_value_create_varchar(fx.factory, &value_str, &v, nullptr) == DUCKDB_V2_ERROR_NONE);
+	auto value_str = std::string_view {raw, 4};
+	REQUIRE(duckdb_v2_value_create_varchar(fx.factory, value_str.data(), value_str.size(), &v, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
 
 	// The borrow is stable: two reads hand back the same pointer.
-	duckdb_v2_str first = {nullptr, 0};
-	duckdb_v2_str second = {nullptr, 0};
-	REQUIRE(duckdb_v2_value_get_varchar(v, &first, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(first.len == 4);
-	REQUIRE(std::memcmp(first.ptr, raw, 4) == 0);
-	REQUIRE(duckdb_v2_value_get_varchar(v, &second, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(second.ptr == first.ptr);
+	const char *first = nullptr;
+	idx_t first_length = 0;
+	const char *second = nullptr;
+	idx_t second_length = 0;
+	REQUIRE(duckdb_v2_value_get_varchar(v, &first, &first_length, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(first_length == 4);
+	REQUIRE(std::memcmp(first, raw, 4) == 0);
+	REQUIRE(duckdb_v2_value_get_varchar(v, &second, &second_length, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(std::string_view(second, second_length) == std::string_view(first, first_length));
 	duckdb_v2_value_destroy(&v);
 
 	// Empty: a null pointer is valid when the length is 0.
-	auto value_str2 = duckdb_v2_str {nullptr, 0};
-	REQUIRE(duckdb_v2_value_create_varchar(fx.factory, &value_str2, &v, nullptr) == DUCKDB_V2_ERROR_NONE);
+	auto value_str2 = std::string_view();
+	REQUIRE(duckdb_v2_value_create_varchar(fx.factory, value_str2.data(), value_str2.size(), &v, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
 	REQUIRE(ConsumeValue<std::string>(v).empty());
 
 	// The engine rejects invalid UTF-8 at construction.
 	const char bad_utf8[2] = {'\xC0', '\x00'};
 	duckdb_v2_value_handle bad = nullptr;
 	duckdb_v2_error_info_handle err = nullptr;
-	auto value_str3 = duckdb_v2_str {bad_utf8, 2};
-	REQUIRE(duckdb_v2_value_create_varchar(fx.factory, &value_str3, &bad, &err) != DUCKDB_V2_ERROR_NONE);
+	auto value_str3 = std::string_view {bad_utf8, 2};
+	REQUIRE(duckdb_v2_value_create_varchar(fx.factory, value_str3.data(), value_str3.size(), &bad, &err) !=
+	        DUCKDB_V2_ERROR_NONE);
 	REQUIRE(bad == nullptr);
 	REQUIRE(err != nullptr);
 	duckdb_v2_error_info_destroy(&err);
@@ -262,8 +275,9 @@ TEST_CASE("V2: BLOB takes any bytes and reads back through get_blob", "[capi_v2]
 	// VARCHAR is text and has its own getter; the two do not stand in for
 	// each other.
 	auto text = MakeVarcharValue(fx.factory, "abc");
-	duckdb_v2_str out = {nullptr, 0};
-	REQUIRE(duckdb_v2_value_get_blob(text, &out, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	const char *out = nullptr;
+	idx_t out_length = 0;
+	REQUIRE(duckdb_v2_value_get_blob(text, &out, &out_length, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	duckdb_v2_value_destroy(&text);
 }
 
@@ -278,9 +292,10 @@ TEST_CASE("V2: typed getters refuse a mismatched type and a NULL value", "[capi_
 
 	// VARCHAR is the exception: it hands back a pointer into the value, and a
 	// converted copy would not outlive the call, so it stays exact.
-	duckdb_v2_str str = {nullptr, 0};
+	const char *str = nullptr;
+	idx_t str_length = 0;
 	duckdb_v2_error_info_handle err = nullptr;
-	REQUIRE(duckdb_v2_value_get_varchar(v, &str, &err) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_value_get_varchar(v, &str, &str_length, &err) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(err != nullptr);
 	duckdb_v2_error_info_destroy(&err);
 	duckdb_v2_value_destroy(&v);
@@ -329,17 +344,17 @@ TEST_CASE("V2: typed constructors and getters null-arg refusals", "[capi_v2][val
 	REQUIRE(duckdb_v2_value_create_int(fx.factory, 1, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 
 	// A null byte range is only valid empty.
-	auto value_str = duckdb_v2_str {nullptr, 4};
-	REQUIRE(duckdb_v2_value_create_varchar(fx.factory, &value_str, &v, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_value_create_varchar(fx.factory, nullptr, 4, &v, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(v == nullptr);
 
 	int32_t out = 0;
 	REQUIRE(duckdb_v2_value_get_int(nullptr, &out, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	auto probe = MakeInt32Value(fx.factory, 1);
 	REQUIRE(duckdb_v2_value_get_int(probe, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
-	duckdb_v2_str str = {nullptr, 0};
-	REQUIRE(duckdb_v2_value_get_varchar(nullptr, &str, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(duckdb_v2_value_get_blob(probe, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	const char *str = nullptr;
+	idx_t str_length = 0;
+	REQUIRE(duckdb_v2_value_get_varchar(nullptr, &str, &str_length, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_value_get_blob(probe, nullptr, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	duckdb_v2_value_destroy(&probe);
 }
 
@@ -353,7 +368,7 @@ namespace {
 // Builds through the typed constructor, reads back through the matching
 // getter, and pins the rendering, so the unit is checked from both sides.
 template <class T, class MAKE, class READ>
-void RequireTemporalRoundTrip(MAKE make, READ read, T payload, const char *expected_text) {
+void RequireTemporalRoundTrip(MAKE make, READ read, T payload, std::string_view expected_text) {
 	duckdb_v2_value_handle v = nullptr;
 	auto create_rc = make(payload, &v);
 	T out {};
@@ -614,9 +629,10 @@ std::vector<uint8_t> BignumDecode(const uint8_t *storage, idx_t storage_len, boo
 
 // The storage bytes of a BIGNUM value, read through the byte-string getter.
 std::vector<uint8_t> BignumMagnitude(duckdb_v2_value_handle v, bool &out_is_negative) {
-	duckdb_v2_str storage = {nullptr, 0};
-	REQUIRE(duckdb_v2_value_get_blob(v, &storage, nullptr) == DUCKDB_V2_ERROR_NONE);
-	return BignumDecode(reinterpret_cast<const uint8_t *>(storage.ptr), storage.len, out_is_negative);
+	const char *storage = nullptr;
+	idx_t storage_length = 0;
+	REQUIRE(duckdb_v2_value_get_blob(v, &storage, &storage_length, nullptr) == DUCKDB_V2_ERROR_NONE);
+	return BignumDecode(reinterpret_cast<const uint8_t *>(storage), storage_length, out_is_negative);
 }
 
 } // namespace
@@ -676,8 +692,9 @@ TEST_CASE("V2: value_get_blob refuses a NULL BIGNUM", "[capi_v2][value][bignum]"
 	duckdb_v2_value_handle nv = nullptr;
 	REQUIRE(duckdb_v2_value_create_null(fx.factory, bn_lt, &nv, nullptr) == DUCKDB_V2_ERROR_NONE);
 
-	duckdb_v2_str out = {nullptr, 0};
-	REQUIRE(duckdb_v2_value_get_blob(nv, &out, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	const char *out = nullptr;
+	idx_t out_length = 0;
+	REQUIRE(duckdb_v2_value_get_blob(nv, &out, &out_length, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	duckdb_v2_value_destroy(&nv);
 	duckdb_v2_logical_type_destroy(&bn_lt);
 }
@@ -795,8 +812,9 @@ TEST_CASE("V2: BIT takes its wire bytes", "[capi_v2][value][bit]") {
 	// five of 0b000'10101.
 	const char wire[2] = {3, '\x15'};
 	duckdb_v2_value_handle v = nullptr;
-	auto value_str = duckdb_v2_str {wire, 2};
-	REQUIRE(duckdb_v2_value_create_bit(fx.factory, &value_str, &v, nullptr) == DUCKDB_V2_ERROR_NONE);
+	auto value_str = std::string_view {wire, 2};
+	REQUIRE(duckdb_v2_value_create_bit(fx.factory, value_str.data(), value_str.size(), &v, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
 	REQUIRE(Render(v) == "10101");
 	// The same bytes come back through the byte-string getter.
 	REQUIRE(ConsumeBlob(v) == std::string(wire, 2));
@@ -804,8 +822,7 @@ TEST_CASE("V2: BIT takes its wire bytes", "[capi_v2][value][bit]") {
 	// The header byte is mandatory.
 	auto out = reinterpret_cast<duckdb_v2_value_handle>(0x1);
 	duckdb_v2_error_info_handle err = nullptr;
-	auto value_str2 = duckdb_v2_str {nullptr, 0};
-	REQUIRE(duckdb_v2_value_create_bit(fx.factory, &value_str2, &out, &err) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_value_create_bit(fx.factory, nullptr, 0, &out, &err) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(out == nullptr);
 	REQUIRE(err != nullptr);
 	duckdb_v2_error_info_destroy(&err);
@@ -817,9 +834,9 @@ TEST_CASE("V2: BIGNUM takes its storage bytes from the codec", "[capi_v2][value]
 	// value from those bytes, read them back, decode to the same magnitude.
 	const uint8_t magnitude[] = {0x01, 0x02, 0x03};
 	auto storage = BignumEncode(magnitude, 3, false);
-	duckdb_v2_str bytes {reinterpret_cast<const char *>(storage.data()), storage.size()};
+	std::string_view bytes {reinterpret_cast<const char *>(storage.data()), storage.size()};
 	duckdb_v2_value_handle v = nullptr;
-	REQUIRE(duckdb_v2_value_create_bignum(fx.factory, &bytes, &v, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_value_create_bignum(fx.factory, bytes.data(), bytes.size(), &v, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(Render(v) == "66051");
 	bool is_negative = true;
 	auto out_magnitude = BignumMagnitude(v, is_negative);
@@ -830,16 +847,18 @@ TEST_CASE("V2: BIGNUM takes its storage bytes from the codec", "[capi_v2][value]
 	// Negatives are stored bit-inverted, so the storage bytes are not the
 	// magnitude; the codec is what translates.
 	auto negative = BignumEncode(magnitude, 3, true);
-	duckdb_v2_str neg_bytes {reinterpret_cast<const char *>(negative.data()), negative.size()};
-	REQUIRE(duckdb_v2_value_create_bignum(fx.factory, &neg_bytes, &v, nullptr) == DUCKDB_V2_ERROR_NONE);
+	std::string_view neg_bytes {reinterpret_cast<const char *>(negative.data()), negative.size()};
+	REQUIRE(duckdb_v2_value_create_bignum(fx.factory, neg_bytes.data(), neg_bytes.size(), &v, nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
 	REQUIRE(Render(v) == "-66051");
 	duckdb_v2_value_destroy(&v);
 
 	// A header with no magnitude byte is not addressable storage.
 	const char short_bytes[3] = {0, 0, 0};
 	auto out = reinterpret_cast<duckdb_v2_value_handle>(0x1);
-	auto value_str = duckdb_v2_str {short_bytes, 3};
-	REQUIRE(duckdb_v2_value_create_bignum(fx.factory, &value_str, &out, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	auto value_str = std::string_view {short_bytes, 3};
+	REQUIRE(duckdb_v2_value_create_bignum(fx.factory, value_str.data(), value_str.size(), &out, nullptr) ==
+	        DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(out == nullptr);
 }
 
@@ -851,12 +870,12 @@ TEST_CASE("V2: failure path populates error info", "[capi_v2][value][error]") {
 	EnvFixture fx;
 	duckdb_v2_value_handle v = nullptr;
 	duckdb_v2_error_info_handle err = nullptr;
-	auto value_str = duckdb_v2_str {nullptr, 4};
-	REQUIRE(duckdb_v2_value_create_varchar(fx.factory, &value_str, &v, &err) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_value_create_varchar(fx.factory, nullptr, 4, &v, &err) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(err != nullptr);
-	duckdb_v2_str msg = {nullptr, 0};
-	REQUIRE(duckdb_v2_error_info_get_text(err, &msg) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(msg.len > 0);
+	const char *msg = nullptr;
+	idx_t msg_length = 0;
+	REQUIRE(duckdb_v2_error_info_get_text(err, &msg, &msg_length) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(msg_length > 0);
 	duckdb_v2_error_info_destroy(&err);
 }
 
@@ -1024,7 +1043,7 @@ duckdb_v2_value_handle V2I32(duckdb_v2_factory_handle factory, int32_t x) {
 	return MakeInt32Value(factory, x);
 }
 
-duckdb_v2_value_handle V2Varchar(duckdb_v2_factory_handle factory, const char *s) {
+duckdb_v2_value_handle V2Varchar(duckdb_v2_factory_handle factory, std::string_view s) {
 	return MakeVarcharValue(factory, s);
 }
 
@@ -1098,7 +1117,7 @@ duckdb_v2_value_handle V2Struct(duckdb_v2_factory_handle factory, const std::vec
                                 std::vector<duckdb_v2_value_handle> children) {
 	StrArray name_views;
 	for (auto *n : names) {
-		name_views.push_back(Convert(n));
+		name_views.push_back(n ? n : "");
 	}
 	duckdb_v2_value_handle v = nullptr;
 	auto rc = duckdb_v2_value_create_struct(factory, name_views.ptrs(), name_views.lengths(),
@@ -1351,9 +1370,9 @@ TEST_CASE("V2: composite constructors invalid-arg refusals", "[capi_v2][value][c
 	REQUIRE(duckdb_v2_value_create_struct(fx.factory, nullptr, nullptr, fields, 1, &out, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
 	// Field names must contain valid UTF-8.
-	duckdb_v2_identifier_t invalid_name = Convert("\x80");
-	REQUIRE(duckdb_v2_value_create_struct(fx.factory, &invalid_name.ptr, &invalid_name.len, fields, 1, &out, nullptr) ==
-	        DUCKDB_V2_ERROR_INPUT_INVALID);
+	StrArray invalid_name = {"\x80"};
+	REQUIRE(duckdb_v2_value_create_struct(fx.factory, invalid_name.ptrs(), invalid_name.lengths(), fields, 1, &out,
+	                                      nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(out == nullptr);
 	duckdb_v2_value_destroy(&one);
 }
@@ -1609,9 +1628,9 @@ TEST_CASE("V2: VARIANT cells are read by casting them", "[capi_v2][value][varian
 TEST_CASE("V2: VARIANT values are built by casting into them", "[capi_v2][value][variant]") {
 	EnvFixture f;
 	duckdb_v2_logical_type_handle variant_type = nullptr;
-	auto text_str = Convert("VARIANT");
-	REQUIRE(duckdb_v2_factory_create_type_from_text(f.factory, &text_str, &variant_type, nullptr) ==
-	        DUCKDB_V2_ERROR_NONE);
+	std::string_view text_str = "VARIANT";
+	REQUIRE(duckdb_v2_factory_create_type_from_text(f.factory, text_str.data(), text_str.size(), &variant_type,
+	                                                nullptr) == DUCKDB_V2_ERROR_NONE);
 
 	// In: any value casts to VARIANT. Out: back to the same type.
 	auto original = MakeInt32Value(f.factory, 42);
@@ -1664,9 +1683,10 @@ TEST_CASE("V2: GEOMETRY values cast to and from WKB BLOBs", "[capi_v2][value][ca
 
 	// The byte-string getter does not read GEOMETRY directly; cast to BLOB to get the WKB
 	auto geom = MakeValueFromText(fx.factory, geom_type, "POINT(42 1337)");
-	duckdb_v2_str str = {nullptr, 0};
+	const char *str = nullptr;
+	idx_t str_length = 0;
 	duckdb_v2_error_info_handle err = nullptr;
-	REQUIRE(duckdb_v2_value_get_blob(geom, &str, &err) != DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_value_get_blob(geom, &str, &str_length, &err) != DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_error_info_destroy(&err);
 
 	duckdb_v2_value_handle wkb = nullptr;

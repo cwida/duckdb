@@ -4,8 +4,8 @@
 
 namespace duckdb::capiv2 {
 
-auto ConvertIdentifierName(duckdb_v2_identifier_t name) -> std::string_view {
-	auto bytes = Convert(name);
+auto ConvertIdentifierName(const char *name, idx_t name_length) -> std::string_view {
+	auto bytes = Convert(name, name_length);
 	if (!Utf8Proc::IsValid(bytes.data(), bytes.size())) {
 		throw InvalidInputException("Identifier is not valid UTF-8");
 	}
@@ -36,9 +36,9 @@ std::string_view string_view_array::operator[](idx_t i) const {
 
 using namespace duckdb::capiv2;
 
-DUCKDB_V2_ERROR duckdb_v2_validate_utf8(const duckdb_v2_str *text, duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_validate_utf8(const char *text, idx_t text_length, duckdb_v2_error_info_handle *err) {
 	return WithErrorHandler(err, [&]() {
-		auto bytes = Convert(text);
+		auto bytes = Convert(text, text_length);
 		if (!duckdb::Utf8Proc::IsValid(bytes.data(), bytes.size())) {
 			throw duckdb::InvalidInputException("Input is not valid UTF-8");
 		}

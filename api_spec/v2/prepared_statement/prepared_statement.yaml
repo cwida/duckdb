@@ -112,7 +112,7 @@ functions:
 
       `parameter_values` binds the statement's parameters as constants for this execution. Binding is positional by
       default ($1 = element 0); supply `parameter_names` to bind by name instead, where a non-empty entry binds its
-      value to that named parameter ($name, matched case-insensitively) and a {NULL, 0} entry stays positional. Pass
+      value to that named parameter ($name, matched case-insensitively) and an empty entry stays positional. Pass
       NULL for both arrays, or a count of 0, for a statement without parameters. Both arrays are borrowed and copied
       in, so the caller still owns and destroys them. A key set that does not match the statement's parameters is
       rejected with `ERROR_INPUT_INVALID`, with one exception: a named parameter left without a value reads the

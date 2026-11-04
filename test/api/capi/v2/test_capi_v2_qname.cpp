@@ -13,10 +13,9 @@ namespace test_capi_v2 {
 
 namespace {
 
-duckdb_v2_qname_handle QNameParse(const char *text) {
+duckdb_v2_qname_handle QNameParse(std::string_view text) {
 	duckdb_v2_qname_handle name = nullptr;
-	auto text_str = Convert(text);
-	REQUIRE(duckdb_v2_qname_parse(&text_str, &name, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_qname_parse(text.data(), text.size(), &name, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(name != nullptr);
 	return name;
 }
@@ -24,7 +23,7 @@ duckdb_v2_qname_handle QNameParse(const char *text) {
 duckdb_v2_qname_handle QNameCreate(const std::vector<const char *> &parts) {
 	StrArray views;
 	for (auto *part : parts) {
-		views.push_back(Convert(part));
+		views.push_back(std::string_view(part));
 	}
 	duckdb_v2_qname_handle name = nullptr;
 	REQUIRE(duckdb_v2_qname_create(views.ptrs(), views.lengths(), views.size(), &name, nullptr) ==
@@ -37,9 +36,10 @@ std::vector<std::string> QNameParts(duckdb_v2_qname_handle name) {
 	REQUIRE(duckdb_v2_qname_get_part_count(name, &count, nullptr) == DUCKDB_V2_ERROR_NONE);
 	std::vector<std::string> out;
 	for (idx_t i = 0; i < count; i++) {
-		duckdb_v2_identifier_t part = {nullptr, 0};
-		REQUIRE(duckdb_v2_qname_get_part(name, i, &part, nullptr) == DUCKDB_V2_ERROR_NONE);
-		out.push_back(Convert(part));
+		const char *part = nullptr;
+		idx_t part_length = 0;
+		REQUIRE(duckdb_v2_qname_get_part(name, i, &part, &part_length, nullptr) == DUCKDB_V2_ERROR_NONE);
+		out.push_back(std::string(part, part_length));
 	}
 	return out;
 }
@@ -77,8 +77,9 @@ TEST_CASE("V2 qname: create and inspect", "[capi_v2][qname]") {
 	REQUIRE(QNameParts(three) == std::vector<std::string> {"cat", "sch", "tbl"});
 
 	// Reading past the end is refused rather than silently empty.
-	duckdb_v2_identifier_t part = {nullptr, 0};
-	REQUIRE(duckdb_v2_qname_get_part(one, 1, &part, nullptr) == DUCKDB_V2_ERROR_INPUT_OUT_OF_RANGE);
+	const char *part = nullptr;
+	idx_t part_length = 0;
+	REQUIRE(duckdb_v2_qname_get_part(one, 1, &part, &part_length, nullptr) == DUCKDB_V2_ERROR_INPUT_OUT_OF_RANGE);
 
 	duckdb_v2_qname_destroy(&one);
 	duckdb_v2_qname_destroy(&two);
@@ -146,49 +147,51 @@ TEST_CASE("V2 qname: construction refusals", "[capi_v2][qname]") {
 	REQUIRE(duckdb_v2_qname_create(nullptr, nullptr, 0, &name, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(name == nullptr);
 
-	StrArray four = {Convert("a"), Convert("b"), Convert("c"), Convert("d")};
+	StrArray four = {std::string_view("a"), std::string_view("b"), std::string_view("c"), std::string_view("d")};
 	REQUIRE(duckdb_v2_qname_create(four.ptrs(), four.lengths(), 4, &name, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 
-	StrArray with_empty = {Convert("a"), Convert("")};
+	StrArray with_empty = {std::string_view("a"), std::string_view("")};
 	REQUIRE(duckdb_v2_qname_create(with_empty.ptrs(), with_empty.lengths(), 2, &name, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
-	StrArray with_invalid_utf8 = {Convert("a"), Convert("\x80")};
+	StrArray with_invalid_utf8 = {std::string_view("a"), std::string_view("\x80")};
 	REQUIRE(duckdb_v2_qname_create(with_invalid_utf8.ptrs(), with_invalid_utf8.lengths(), 2, &name, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
 
-	StrArray one = {Convert("a")};
+	StrArray one = {std::string_view("a")};
 	REQUIRE(duckdb_v2_qname_create(nullptr, nullptr, 1, &name, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_qname_create(one.ptrs(), nullptr, 1, &name, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_qname_create(one.ptrs(), one.lengths(), 1, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
-	StrArray null_with_length = {duckdb_v2_str {nullptr, 1}};
+	StrArray null_with_length;
+	null_with_length.push_back(nullptr, 1);
 	REQUIRE(duckdb_v2_qname_create(null_with_length.ptrs(), null_with_length.lengths(), 1, &name, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(name == nullptr);
 
 	// Reject unusable text, invalid UTF-8 and excess parts.
-	auto text_str = Convert("");
-	REQUIRE(duckdb_v2_qname_parse(&text_str, &name, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
-	auto text_str2 = Convert("a.\x80");
-	REQUIRE(duckdb_v2_qname_parse(&text_str2, &name, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	std::string_view text_str = "";
+	REQUIRE(duckdb_v2_qname_parse(text_str.data(), text_str.size(), &name, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	std::string_view text_str2 = "a.\x80";
+	REQUIRE(duckdb_v2_qname_parse(text_str2.data(), text_str2.size(), &name, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(name == nullptr);
-	auto text_str3 = Convert("a.b.c.d");
-	REQUIRE(duckdb_v2_qname_parse(&text_str3, &name, nullptr) != DUCKDB_V2_ERROR_NONE);
-	auto text_str4 = Convert("\"unterminated");
-	REQUIRE(duckdb_v2_qname_parse(&text_str4, &name, nullptr) != DUCKDB_V2_ERROR_NONE);
+	std::string_view text_str3 = "a.b.c.d";
+	REQUIRE(duckdb_v2_qname_parse(text_str3.data(), text_str3.size(), &name, nullptr) != DUCKDB_V2_ERROR_NONE);
+	std::string_view text_str4 = "\"unterminated";
+	REQUIRE(duckdb_v2_qname_parse(text_str4.data(), text_str4.size(), &name, nullptr) != DUCKDB_V2_ERROR_NONE);
 }
 
 TEST_CASE("V2 qname: null arguments and destroy null-safety", "[capi_v2][qname]") {
 	auto name = QNameCreate({"tbl"});
 
 	idx_t count = 0;
-	duckdb_v2_identifier_t part = {nullptr, 0};
+	const char *part = nullptr;
+	idx_t part_length = 0;
 	idx_t length = 0;
 	bool result = false;
 	uint64_t hash = 0;
 	REQUIRE(duckdb_v2_qname_get_part_count(nullptr, &count, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_qname_get_part_count(name, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(duckdb_v2_qname_get_part(nullptr, 0, &part, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(duckdb_v2_qname_get_part(name, 0, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_qname_get_part(nullptr, 0, &part, &part_length, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(duckdb_v2_qname_get_part(name, 0, nullptr, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_qname_render(nullptr, nullptr, 0, &length, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_qname_render(name, nullptr, 0, nullptr, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_qname_equals(nullptr, name, &result, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);

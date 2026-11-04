@@ -71,20 +71,23 @@ namespace capiv2 {
 //----------------------------------------------------------------------------------------------------------------------
 // Conversion Helpers
 //----------------------------------------------------------------------------------------------------------------------
-inline auto Convert(duckdb_v2_str str) -> std::string_view {
-	if (!str.ptr) {
-		if (str.len > 0) {
+inline auto Convert(const char *ptr, idx_t len) -> std::string_view {
+	if (!ptr) {
+		if (len > 0) {
 			throw InvalidInputException("byte range cannot be null unless it is empty");
 		}
 		return std::string_view();
 	}
-	return std::string_view(str.ptr, str.len);
+	return std::string_view(ptr, len);
 }
-inline auto Convert(const duckdb_v2_str *str) -> std::string_view {
-	if (!str) {
-		throw InvalidInputException("byte range cannot be null");
-	}
-	return Convert(*str);
+// Writes a borrowed string to an out-param pointer/length pair.
+inline void SetStringOut(const char **out, idx_t *out_length, std::string_view str) {
+	*out = str.data();
+	*out_length = str.size();
+}
+inline void SetStringOut(const char **out, idx_t *out_length, const Identifier &ident) {
+	*out = ident.c_str();
+	*out_length = ident.size();
 }
 
 //! A borrowed, parallel pointer/length UTF-8 string array of `count` entries as passed through the API. A NULL array
@@ -109,23 +112,8 @@ private:
 };
 
 // Validates identifier UTF-8 and returns its text; throws on invalid input. Defined in capi_v2_utf8.cpp.
-auto ConvertIdentifierName(duckdb_v2_identifier_t name) -> std::string_view;
-inline auto ConvertIdentifierName(const duckdb_v2_identifier_t *name) -> std::string_view {
-	if (!name) {
-		throw InvalidInputException("identifier cannot be null");
-	}
-	return ConvertIdentifierName(*name);
-}
+auto ConvertIdentifierName(const char *name, idx_t name_length) -> std::string_view;
 
-inline auto Convert(std::string_view str) -> duckdb_v2_str {
-	return duckdb_v2_str {str.data(), str.size()};
-}
-inline auto Convert(const string &str) -> duckdb_v2_str {
-	return duckdb_v2_str {str.data(), str.size()};
-}
-inline auto Convert(const Identifier &ident) -> duckdb_v2_identifier_t {
-	return duckdb_v2_identifier_t {ident.c_str(), ident.size()};
-}
 inline auto Convert(duckdb_v2_hugeint_t value) -> hugeint_t {
 	return hugeint_t(value.upper, value.lower);
 }
@@ -756,8 +744,9 @@ bool IsNullArgument(const T &arg) {
 	return arg == nullptr;
 }
 
-inline bool IsNullArgument(const duckdb_v2_str *arg) {
-	return !arg || (!arg->ptr && arg->len > 0);
+// A string argument is invalid when its pointer is null while it carries a non-zero length.
+inline bool IsNullArgument(const char *arg, idx_t arg_length) {
+	return !arg && arg_length > 0;
 }
 
 // Check if an argument is null and return DUCKDB_V2_ERROR_INPUT_INVALID with a message if it is.
@@ -766,6 +755,13 @@ inline bool IsNullArgument(const duckdb_v2_str *arg) {
 #define DUCKDB_CHECK_ARG(arg)                                                                                          \
 	do {                                                                                                               \
 		if (duckdb::capiv2::IsNullArgument(arg)) {                                                                     \
+			return duckdb::capiv2::NullArgumentError(err, __func__, #arg);                                             \
+		}                                                                                                              \
+	} while (0)
+// The pointer/length form of DUCKDB_CHECK_ARG for a string argument.
+#define DUCKDB_CHECK_STR_ARG(arg, arg_length)                                                                          \
+	do {                                                                                                               \
+		if (duckdb::capiv2::IsNullArgument(arg, arg_length)) {                                                         \
 			return duckdb::capiv2::NullArgumentError(err, __func__, #arg);                                             \
 		}                                                                                                              \
 	} while (0)
@@ -882,11 +878,11 @@ inline shared_ptr<ConnectionBusySlotV2> GetBusySlot(ClientContext &context) {
 //! the sink sees the full length up front. Its only influence on the outcome is
 //! the error slot: a code it sets is rethrown as the matching exception type,
 //! which WithErrorHandler then maps straight back.
-inline void InvokeTextSink(duckdb_v2_text_sink_fn sink, duckdb_v2_str text, void *user_data) {
+inline void InvokeTextSink(duckdb_v2_text_sink_fn sink, std::string_view text, void *user_data) {
 	// The slot is always live: sinks populate it, they never allocate or destroy it.
 	CV2ErrorInfo info;
 	auto handle = Convert(&info);
-	sink(&text, user_data, &handle);
+	sink(text.data(), text.size(), user_data, &handle);
 	if (info.HasError()) {
 		info.ThrowAsException();
 	}

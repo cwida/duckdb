@@ -153,18 +153,16 @@ DUCKDB_V2_ERROR duckdb_v2_instance_destroy(duckdb_v2_instance_handle *instance) 
 	});
 }
 
-DUCKDB_V2_ERROR duckdb_v2_instance_attach(duckdb_v2_instance_handle instance, const duckdb_v2_identifier_t *name,
-                                          const duckdb_v2_str *path, duckdb_v2_attach_options_handle options,
+DUCKDB_V2_ERROR duckdb_v2_instance_attach(duckdb_v2_instance_handle instance, const char *name, idx_t name_length,
+                                          const char *path, idx_t path_length, duckdb_v2_attach_options_handle options,
                                           bool make_default, duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(instance);
-	DUCKDB_CHECK_ARG(path);
-	if (name) {
-		DUCKDB_CHECK_ARG(name);
-	}
+	DUCKDB_CHECK_STR_ARG(path, path_length);
+	DUCKDB_CHECK_STR_ARG(name, name_length);
 	return WithErrorHandler(err, [&]() {
 		auto &wrapper = *Convert(instance);
-		duckdb::Identifier attach_name = name ? duckdb::Identifier(ConvertIdentifierName(name)) : duckdb::Identifier();
-		wrapper.Attach(duckdb::string(Convert(path)), attach_name, Convert(options), make_default);
+		duckdb::Identifier attach_name(ConvertIdentifierName(name, name_length));
+		wrapper.Attach(duckdb::string(Convert(path, path_length)), attach_name, Convert(options), make_default);
 	});
 }
 
@@ -180,15 +178,16 @@ DUCKDB_V2_ERROR duckdb_v2_attach_options_create(duckdb_v2_instance_handle instan
 	});
 }
 
-DUCKDB_V2_ERROR duckdb_v2_attach_options_set(duckdb_v2_attach_options_handle options, const duckdb_v2_identifier_t *key,
-                                             const duckdb_v2_str *setting, duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_attach_options_set(duckdb_v2_attach_options_handle options, const char *key, idx_t key_length,
+                                             const char *setting, idx_t setting_length,
+                                             duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(options);
-	DUCKDB_CHECK_ARG(key);
-	DUCKDB_CHECK_ARG(setting);
+	DUCKDB_CHECK_STR_ARG(key, key_length);
+	DUCKDB_CHECK_STR_ARG(setting, setting_length);
 	return WithErrorHandler(err, [&]() {
 		// Keys are unquoted SQL identifiers, which the parser lowercases.
-		auto lowered = duckdb::StringUtil::Lower(duckdb::string(ConvertIdentifierName(key)));
-		Convert(options)->options[lowered] = duckdb::Value(duckdb::string(Convert(setting)));
+		auto lowered = duckdb::StringUtil::Lower(duckdb::string(ConvertIdentifierName(key, key_length)));
+		Convert(options)->options[lowered] = duckdb::Value(duckdb::string(Convert(setting, setting_length)));
 	});
 }
 
@@ -204,30 +203,32 @@ DUCKDB_V2_ERROR duckdb_v2_attach_options_destroy(duckdb_v2_attach_options_handle
 	});
 }
 
-DUCKDB_V2_ERROR duckdb_v2_instance_detach(duckdb_v2_instance_handle instance, const duckdb_v2_identifier_t *name,
+DUCKDB_V2_ERROR duckdb_v2_instance_detach(duckdb_v2_instance_handle instance, const char *name, idx_t name_length,
                                           duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(instance);
-	DUCKDB_CHECK_ARG(name);
+	DUCKDB_CHECK_STR_ARG(name, name_length);
 	return WithErrorHandler(err, [&]() {
 		auto &wrapper = *Convert(instance);
-		wrapper.Detach(duckdb::Identifier(ConvertIdentifierName(name)));
+		wrapper.Detach(duckdb::Identifier(ConvertIdentifierName(name, name_length)));
 	});
 }
 
-DUCKDB_V2_ERROR duckdb_v2_instance_set_default(duckdb_v2_instance_handle instance, const duckdb_v2_identifier_t *name,
+DUCKDB_V2_ERROR duckdb_v2_instance_set_default(duckdb_v2_instance_handle instance, const char *name, idx_t name_length,
                                                duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(instance);
-	DUCKDB_CHECK_ARG(name);
+	DUCKDB_CHECK_STR_ARG(name, name_length);
 	return WithErrorHandler(err, [&]() {
 		auto &wrapper = *Convert(instance);
-		wrapper.SetDefault(duckdb::Identifier(ConvertIdentifierName(name)));
+		wrapper.SetDefault(duckdb::Identifier(ConvertIdentifierName(name, name_length)));
 	});
 }
 
-DUCKDB_V2_ERROR duckdb_v2_library_version(duckdb_v2_str *out_version, duckdb_v2_error_info_handle *err) {
+DUCKDB_V2_ERROR duckdb_v2_library_version(const char **out_version, idx_t *out_version_length,
+                                          duckdb_v2_error_info_handle *err) {
 	DUCKDB_CHECK_ARG(out_version);
+	DUCKDB_CHECK_ARG(out_version_length);
 	return WithErrorHandler(err, [&]() {
 		const auto version = duckdb::DuckDB::LibraryVersion();
-		*out_version = duckdb_v2_str {version, std::strlen(version)};
+		SetStringOut(out_version, out_version_length, std::string_view(version));
 	});
 }

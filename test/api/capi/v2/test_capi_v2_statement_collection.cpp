@@ -50,9 +50,9 @@ duckdb_v2_column_data_collection_handle CollMake(duckdb_v2_factory_handle factor
 	return cdc;
 }
 
-duckdb_v2_sql_statement_handle CollParse(duckdb_v2_connection_handle conn, const char *sql) {
+duckdb_v2_sql_statement_handle CollParse(duckdb_v2_connection_handle conn, std::string_view sql) {
 	duckdb_v2_statement_iterator_handle iter = nullptr;
-	REQUIRE(duckdb_v2_parse_sql(conn, sql, strlen(sql), true, &iter, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_parse_sql(conn, sql.data(), sql.size(), true, &iter, nullptr) == DUCKDB_V2_ERROR_NONE);
 	duckdb_v2_sql_statement_handle stmt = nullptr;
 	auto rc = duckdb_v2_statement_iterator_next(iter, &stmt, nullptr);
 	duckdb_v2_statement_iterator_destroy(&iter);
@@ -61,16 +61,15 @@ duckdb_v2_sql_statement_handle CollParse(duckdb_v2_connection_handle conn, const
 	return stmt;
 }
 
-DUCKDB_V2_ERROR CollBind(duckdb_v2_sql_statement_handle stmt, const char *name,
+DUCKDB_V2_ERROR CollBind(duckdb_v2_sql_statement_handle stmt, std::string_view name,
                          duckdb_v2_column_data_collection_handle cdc,
                          const std::vector<const char *> &column_names = {}) {
-	auto name_id = Convert(name);
 	StrArray names;
 	for (auto column_name : column_names) {
-		names.push_back(Convert(column_name));
+		names.push_back(std::string_view(column_name));
 	}
-	return duckdb_v2_statement_add_collection(stmt, &name_id, cdc, names.ptrs(), names.lengths(), names.size(),
-	                                          nullptr);
+	return duckdb_v2_statement_add_collection(stmt, name.data(), name.size(), cdc, names.ptrs(), names.lengths(),
+	                                          names.size(), nullptr);
 }
 
 // The BIGINT values of the first column of a result, which is destroyed.
@@ -99,7 +98,7 @@ std::vector<int64_t> CollExecute(duckdb_v2_connection_handle conn, duckdb_v2_sql
 	return CollDrainI64(result);
 }
 
-std::vector<int64_t> CollQuery(duckdb_v2_connection_handle conn, const char *sql) {
+std::vector<int64_t> CollQuery(duckdb_v2_connection_handle conn, std::string_view sql) {
 	duckdb_v2_result_handle result = nullptr;
 	REQUIRE(Query(conn, sql, &result) == DUCKDB_V2_ERROR_NONE);
 	return CollDrainI64(result);
@@ -210,10 +209,11 @@ TEST_CASE("V2 statement collection: shadows a table and binds into the statement
 	idx_t count = 0;
 	REQUIRE(duckdb_v2_schema_get_count(schema, &count, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(count == 1);
-	duckdb_v2_identifier_t name = {nullptr, 0};
+	const char *name = nullptr;
+	idx_t name_length = 0;
 	duckdb_v2_logical_type_handle type = nullptr;
-	REQUIRE(duckdb_v2_schema_get_field(schema, 0, &name, &type, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(std::string(name.ptr, name.len) == "amount");
+	REQUIRE(duckdb_v2_schema_get_field(schema, 0, &name, &name_length, &type, nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(std::string(name, name_length) == "amount");
 	duckdb_v2_schema_destroy(&schema);
 
 	REQUIRE(CollExecute(fx.conn, stmt) == std::vector<int64_t> {7});
@@ -242,16 +242,16 @@ TEST_CASE("V2 statement collection: refusals", "[capi_v2][statement_collection]"
 	REQUIRE(CollBind(stmt, "", cdc) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(CollBind(stmt, "other", cdc, {"a", "b"}) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(CollBind(stmt, "other", cdc, {""}) == DUCKDB_V2_ERROR_INPUT_INVALID);
-	auto name = Convert("other");
-	REQUIRE(duckdb_v2_statement_add_collection(stmt, &name, cdc, nullptr, nullptr, 1, nullptr) ==
+	std::string_view name = "other";
+	REQUIRE(duckdb_v2_statement_add_collection(stmt, name.data(), name.size(), cdc, nullptr, nullptr, 1, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
 
 	// Null arguments.
-	REQUIRE(duckdb_v2_statement_add_collection(nullptr, &name, cdc, nullptr, nullptr, 0, nullptr) ==
+	REQUIRE(duckdb_v2_statement_add_collection(nullptr, name.data(), name.size(), cdc, nullptr, nullptr, 0, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(duckdb_v2_statement_add_collection(stmt, nullptr, cdc, nullptr, nullptr, 0, nullptr) ==
+	REQUIRE(duckdb_v2_statement_add_collection(stmt, nullptr, 1, cdc, nullptr, nullptr, 0, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(duckdb_v2_statement_add_collection(stmt, &name, nullptr, nullptr, nullptr, 0, nullptr) ==
+	REQUIRE(duckdb_v2_statement_add_collection(stmt, name.data(), name.size(), nullptr, nullptr, nullptr, 0, nullptr) ==
 	        DUCKDB_V2_ERROR_INPUT_INVALID);
 
 	// The refusals left the statement as it was.
