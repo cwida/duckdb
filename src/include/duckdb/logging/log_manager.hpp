@@ -39,8 +39,6 @@ public:
 	unique_ptr<Logger> CreateLogger(const LoggingContext &context, const LogConfigSnapshot &snapshot);
 	//! Refreshes the snapshot if the config changed since it was taken, and creates a logger from it
 	unique_ptr<Logger> CreateLogger(const LoggingContext &context, LogConfigSnapshot &snapshot);
-	//! Brings the snapshot up to date, only locking if the config changed since it was taken
-	void RefreshConfigSnapshot(LogConfigSnapshot &snapshot);
 
 	RegisteredLoggingContext RegisterLoggingContext(const LoggingContext &context);
 

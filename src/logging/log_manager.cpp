@@ -30,7 +30,11 @@ unique_ptr<Logger> LogManager::CreateLogger(const LoggingContext &context, const
 }
 
 unique_ptr<Logger> LogManager::CreateLogger(const LoggingContext &context, LogConfigSnapshot &snapshot) {
-	RefreshConfigSnapshot(snapshot);
+	if (!snapshot.config || snapshot.version != config_version.load()) {
+		annotated_unique_lock<annotated_mutex> lck(lock);
+		snapshot.config = config;
+		snapshot.version = config_version.load();
+	}
 	return CreateLoggerInternal(context, snapshot.config);
 }
 
@@ -40,15 +44,6 @@ unique_ptr<Logger> LogManager::CreateLoggerInternal(const LoggingContext &contex
 		return make_uniq<NopLogger>(*this);
 	}
 	return make_uniq<ThreadSafeLogger>(logger_config, RegisterLoggingContextInternal(context), *this);
-}
-
-void LogManager::RefreshConfigSnapshot(LogConfigSnapshot &snapshot) {
-	if (snapshot.config && snapshot.version == config_version.load()) {
-		return;
-	}
-	annotated_unique_lock<annotated_mutex> lck(lock);
-	snapshot.config = config;
-	snapshot.version = config_version.load();
 }
 
 RegisteredLoggingContext LogManager::RegisterLoggingContext(const LoggingContext &context) {
