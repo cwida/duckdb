@@ -1,0 +1,77 @@
+# name: test/sql/optimizer/secure_view_join_order.test
+# description: Test join reordering of star joins over secure views
+# group: [optimizer]
+
+statement ok
+SET profiling_renderer_settings = MAP {'operator_casing': 'upper'};
+
+statement ok
+CREATE TABLE fact AS SELECT i AS id, i % 1000 AS d1, i % 997 AS d2, i % 991 AS d3, i AS v FROM range(200000) t(i);
+
+statement ok
+CREATE TABLE dim1 AS SELECT i AS k, i % 7 AS a FROM range(1000) t(i);
+
+statement ok
+CREATE TABLE dim2 AS SELECT i AS k, i % 5 AS b FROM range(997) t(i);
+
+statement ok
+CREATE TABLE dim3 AS SELECT i AS k, i % 3 AS c FROM range(991) t(i);
+
+statement ok
+CREATE VIEW fact_regular AS SELECT * FROM fact;
+
+statement ok
+CREATE SECURE VIEW fact_secure AS SELECT * FROM fact;
+
+statement ok
+CREATE VIEW fact_regular_filtered AS SELECT * FROM fact WHERE id < 100000;
+
+statement ok
+CREATE SECURE VIEW fact_secure_filtered AS SELECT * FROM fact WHERE id < 100000;
+
+# the dimensions are only connected through the fact table, so a plan that is not reordered has a cross product
+query II
+EXPLAIN SELECT count(*) FROM dim1, dim2, dim3, fact_secure f
+WHERE f.d1 = dim1.k AND f.d2 = dim2.k AND f.d3 = dim3.k AND dim1.a = 1 AND dim2.b = 2 AND dim3.c = 0
+----
+physical_plan	<!REGEX>:[\s\S]*CROSS_PRODUCT[\s\S]*
+
+query II
+EXPLAIN SELECT count(*) FROM dim1, dim2, dim3, fact_secure_filtered f
+WHERE f.d1 = dim1.k AND f.d2 = dim2.k AND f.d3 = dim3.k AND dim1.a = 1 AND dim2.b = 2 AND dim3.c = 0
+----
+physical_plan	<!REGEX>:[\s\S]*CROSS_PRODUCT[\s\S]*
+
+# the secure view is still a boundary in the reordered plan
+query II
+EXPLAIN SELECT count(*) FROM dim1, dim2, dim3, fact_secure_filtered f
+WHERE f.d1 = dim1.k AND f.d2 = dim2.k AND f.d3 = dim3.k AND dim1.a = 1 AND dim2.b = 2 AND dim3.c = 0
+----
+physical_plan	<REGEX>:[\s\S]*SECURE_VIEW[\s\S]*
+
+# same results as the regular views
+query II nosort star_unfiltered
+SELECT count(*), sum(v) FROM dim1, dim2, dim3, fact_regular f
+WHERE f.d1 = dim1.k AND f.d2 = dim2.k AND f.d3 = dim3.k AND dim1.a = 1 AND dim2.b = 2 AND dim3.c = 0
+----
+
+query II nosort star_unfiltered
+SELECT count(*), sum(v) FROM dim1, dim2, dim3, fact_secure f
+WHERE f.d1 = dim1.k AND f.d2 = dim2.k AND f.d3 = dim3.k AND dim1.a = 1 AND dim2.b = 2 AND dim3.c = 0
+----
+
+query II nosort star_filtered
+SELECT count(*), sum(v) FROM dim1, dim2, dim3, fact_regular_filtered f
+WHERE f.d1 = dim1.k AND f.d2 = dim2.k AND f.d3 = dim3.k AND dim1.a = 1 AND dim2.b = 2 AND dim3.c = 0
+----
+
+query II nosort star_filtered
+SELECT count(*), sum(v) FROM dim1, dim2, dim3, fact_secure_filtered f
+WHERE f.d1 = dim1.k AND f.d2 = dim2.k AND f.d3 = dim3.k AND dim1.a = 1 AND dim2.b = 2 AND dim3.c = 0
+----
+
+# a predicate pushed into the view does not change the estimate the view reports (a regular view reports ~40,000)
+query II
+EXPLAIN SELECT count(*) FROM fact_secure_filtered f JOIN dim1 ON f.d1 = dim1.k WHERE f.v > 150000
+----
+physical_plan	<REGEX>:[\s\S]*SECURE_VIEW[^╰]*~200,000 rows[\s\S]*

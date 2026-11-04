@@ -136,6 +136,13 @@ TEST_CASE("V2 error: set_text rejects a null view", "[capi_v2][error]") {
 	duckdb_v2_error_info_destroy(&err);
 }
 
+TEST_CASE("V2 error: setters on a null info handle are no-ops", "[capi_v2][error]") {
+	REQUIRE(duckdb_v2_error_info_set_code(nullptr, DUCKDB_V2_ERROR_API) == DUCKDB_V2_ERROR_NONE);
+	auto text = Convert("x");
+	REQUIRE(duckdb_v2_error_info_set_text(nullptr, &text) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(duckdb_v2_error_info_set_text(nullptr, nullptr) == DUCKDB_V2_ERROR_NONE);
+}
+
 // ===========================================================================
 // Default mode: the parse boundary renders the LINE/caret annotation. The parse
 // error surfaces from the next() that reaches the failing statement, not from

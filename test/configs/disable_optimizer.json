@@ -125,6 +125,8 @@
         "test/sql/function/generic/test_barrier.test",
         "test/sql/join/asof/test_asof_limit.test",
         "test/sql/optimizer/secure_view_pushdown.test",
+        "test/sql/optimizer/secure_view_join_filter_pushdown.test",
+        "test/sql/optimizer/secure_view_join_order.test",
         "test/sql/optimizer/test_in_rewrite_rule.test",
         "test/optimizer/unused_window_columns.test",
         "test/sql/storage/compression/rle/rle_constant.test",
@@ -174,6 +176,8 @@
     {
       "reason": "Parquet prefetch strategies and I/O metrics require optimizer rewrites.",
       "paths": [
+        "test/sql/copy/parquet/bloom_filter_coalesced_memory.test_slow",
+        "test/sql/copy/parquet/bloom_filter_coalesced_reads.test",
         "test/sql/copy/parquet/parquet_prefetch_first_group_cost.test",
         "test/sql/copy/parquet/parquet_prefetch_overlapping_ranges.test",
         "test/sql/copy/parquet/read_ahead/readahead_dynamic_pruning.test",
