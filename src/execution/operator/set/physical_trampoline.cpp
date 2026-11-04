@@ -22,6 +22,12 @@ static constexpr const idx_t TRAMPOLINE_ROWS_PER_THREAD = STANDARD_VECTOR_SIZE /
 // Pure frontier work (no independent source tasks) must amortize the event-graph setup of a
 // parallel wave; below this input size the inline path wins for cheap branch plans
 static constexpr const idx_t TRAMPOLINE_PARALLEL_MIN_ROWS = 16 * STANDARD_VECTOR_SIZE;
+// A parallel wave at or below this wall time cannot have gained over inline execution (it is
+// within the parallel event machinery's own setup cost), so it warrants one inline probe
+static constexpr const idx_t TRAMPOLINE_ROUTE_FAST_WAVE_NS = 2000000;
+// An inline wave above this wall time leaves enough room for source parallelism to pay for
+// the event machinery, so it warrants one parallel probe
+static constexpr const idx_t TRAMPOLINE_ROUTE_SLOW_WAVE_NS = 8000000;
 
 PhysicalTrampoline::PhysicalTrampoline(PhysicalPlan &physical_plan, Identifier ctename, TableIndex table_index,
                                        vector<LogicalType> types, idx_t selector_idx, PhysicalOperator &seed,
@@ -113,6 +119,59 @@ public:
 	}
 };
 
+//! Measured arbitration of the estimate-driven source-parallelism choice for one branch.
+//! Cardinality estimates mispredict source work in both directions, so a wave whose wall time
+//! contradicts its route triggers one probe wave on the other route, and the faster of the two
+//! comparable waves pins the branch's source routing for the rest of the invocation.
+struct TrampolineBranchSourceRoute {
+	enum class Mode : uint8_t { ESTIMATE, PROBE, PINNED };
+
+	Mode mode = Mode::ESTIMATE;
+	//! The probe's or pinned decision's route
+	bool parallel = false;
+	//! Wall time and wave rows of the reference wave the probe compares against
+	idx_t reference_ns = 0;
+	idx_t reference_rows = 0;
+	//! One probe per invocation
+	bool probed = false;
+
+	void Observe(bool ran_parallel, bool valid, idx_t rows, idx_t wall_ns) {
+		if (mode == Mode::PINNED) {
+			return;
+		}
+		if (mode == Mode::PROBE) {
+			if (!valid) {
+				// the wave ended up on a different route than intended; re-arm the estimate
+				mode = Mode::ESTIMATE;
+				return;
+			}
+			const auto lo = MaxValue<idx_t>(MinValue(reference_rows, rows), 1);
+			const auto hi = MaxValue(reference_rows, rows);
+			if (hi > 2 * lo) {
+				// wave sizes too different for a conclusion
+				mode = Mode::ESTIMATE;
+				return;
+			}
+			if (wall_ns >= reference_ns) {
+				parallel = !parallel;
+			}
+			mode = Mode::PINNED;
+			return;
+		}
+		if (probed) {
+			return;
+		}
+		if (ran_parallel ? wall_ns > TRAMPOLINE_ROUTE_FAST_WAVE_NS : wall_ns < TRAMPOLINE_ROUTE_SLOW_WAVE_NS) {
+			return;
+		}
+		probed = true;
+		mode = Mode::PROBE;
+		parallel = !ran_parallel;
+		reference_ns = wall_ns;
+		reference_rows = rows;
+	}
+};
+
 class TrampolineState : public GlobalSinkState {
 public:
 	TrampolineState(ClientContext &context, const PhysicalTrampoline &op)
@@ -124,6 +183,7 @@ public:
 		const auto branch_count = op.BranchCount();
 		staged.resize(branch_count + 1);
 		invariant_materialized.resize(branch_count, false);
+		source_routes.resize(branch_count);
 		for (idx_t branch_idx = 0; branch_idx <= branch_count; branch_idx++) {
 			pending.push_back(make_uniq<TrampolineWaveQueue>());
 		}
@@ -175,6 +235,8 @@ public:
 	bool initialized = false;
 	//! Per branch, whether its invariant builds are materialized and retained
 	vector<bool> invariant_materialized;
+	//! Per branch, the measured arbitration of its source-parallelism route
+	vector<TrampolineBranchSourceRoute> source_routes;
 
 	//! Reusable empty collections, bounded to keep at most a few buffers alive
 	static constexpr idx_t RECYCLED_COLLECTIONS = 8;
@@ -714,9 +776,25 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 		source_task_workers = MaxValue<idx_t>(MinValue(source_row_limit, configured_threads), 1);
 		parallel_source_pays = source_task_workers > 1;
 	}
-	const auto go_parallel =
-	    parallel_source_pays || (frontier_workers > 1 && input_rows >= TRAMPOLINE_PARALLEL_MIN_ROWS);
+	// The estimate is output cardinality, not source work, and mispredicts in both directions.
+	// Measured arbitration overrides it: a wave whose wall time contradicts its route triggers
+	// one probe wave on the other route, and the faster of two comparable waves pins the
+	// branch's source routing for the rest of the invocation.
+	const auto has_independent_source = plan.has_source_tasks || plan.has_parallel_source;
+	auto &route = gstate.source_routes[branch_idx - 1];
+	const auto arbitrate = has_independent_source && configured_threads > 1 && !RequiresRounds();
+	bool source_parallel = parallel_source_pays;
+	if (arbitrate && route.mode != TrampolineBranchSourceRoute::Mode::ESTIMATE) {
+		source_parallel = route.parallel;
+		if (source_parallel && source_task_workers <= 1) {
+			source_task_workers = configured_threads;
+		}
+	}
+	const auto go_parallel = source_parallel || (frontier_workers > 1 && input_rows >= TRAMPOLINE_PARALLEL_MIN_ROWS);
 	const auto workers = go_parallel ? MaxValue(frontier_workers, source_task_workers) : idx_t(1);
+	// a wave that ends up on a different route than the probe intended cannot conclude anything
+	const auto probe_valid = route.mode != TrampolineBranchSourceRoute::Mode::PROBE || go_parallel == route.parallel;
+	const auto measure_route = arbitrate && route.mode != TrampolineBranchSourceRoute::Mode::PINNED;
 
 	// reset every sink that belongs to the executed plan; the trampoline keeps its routed
 	// state, and materialized invariant builds keep theirs
@@ -747,6 +825,7 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 	    collect_metrics ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
 	RecursiveSchedulingContext scheduling_context {executor, scheduler, collect_metrics ? &gstate.metrics : nullptr,
 	                                               collect_metrics ? gstate.epoch_metrics.get() : nullptr, go_parallel};
+	const auto route_start = measure_route ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
 	if (go_parallel) {
 		vector<shared_ptr<Event>> events;
 		ScheduleRecursivePlan(plan, scheduling_context, events,
@@ -756,6 +835,12 @@ void PhysicalTrampoline::ExecuteBranchPipelines(ExecutionContext &context, idx_t
 		// single-threaded wave: run the shared inline plan executor, which creates missing
 		// operator state per ready stage and skips the finish events of flagged trivial stages
 		ExecuteRecursiveInlinePlan(scheduling_context, plan);
+	}
+	if (measure_route) {
+		const auto route_ns = NumericCast<idx_t>(
+		    std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - route_start)
+		        .count());
+		route.Observe(go_parallel, probe_valid, gstate.current_input ? gstate.current_input->Count() : 0, route_ns);
 	}
 	if (can_cache_invariant && !materialized &&
 	    InvariantRecursiveBuildsRemainReusable(branch.invariant_meta_pipelines)) {
