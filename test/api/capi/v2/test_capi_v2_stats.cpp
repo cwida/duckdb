@@ -1,7 +1,9 @@
 #include "test_capi_v2.hpp"
 
 #include <cstring>
+#include <initializer_list>
 #include <string>
+#include <utility>
 #include <vector>
 
 // ---------------------------------------------------------------------------
@@ -617,16 +619,127 @@ DUCKDB_V2_ERROR SetStatsStruct(duckdb_v2_factory_handle factory, duckdb_v2_stats
 	return rc;
 }
 
-// Sets statistics from JSON text, the compact way to spell a test case: the text is accepted like the output of
-// stats().
-DUCKDB_V2_ERROR SetStatsJSON(duckdb_v2_factory_handle factory, duckdb_v2_stats_handle stats, const char *json,
-                             duckdb_v2_error_info_handle *err) {
+// A value spelled as a tree, the compact way to write a nested statistics struct in a test case; BuildValue turns it
+// into a value with the typed constructors, duckdb_v2_value_create_struct and duckdb_v2_value_create_list.
+struct ValueSpec {
+	enum class Kind { NULL_VALUE, BOOL, INT, DOUBLE, TEXT, STRUCT, LIST };
+	Kind kind = Kind::NULL_VALUE;
+	bool b = false;
+	int32_t i = 0;
+	double d = 0;
+	const char *s = nullptr;
+	std::vector<std::pair<const char *, ValueSpec>> fields;
+	std::vector<ValueSpec> items;
+};
+
+ValueSpec Null() {
+	return ValueSpec();
+}
+ValueSpec Bool(bool b) {
+	ValueSpec spec;
+	spec.kind = ValueSpec::Kind::BOOL;
+	spec.b = b;
+	return spec;
+}
+ValueSpec Int(int32_t i) {
+	ValueSpec spec;
+	spec.kind = ValueSpec::Kind::INT;
+	spec.i = i;
+	return spec;
+}
+ValueSpec Dbl(double d) {
+	ValueSpec spec;
+	spec.kind = ValueSpec::Kind::DOUBLE;
+	spec.d = d;
+	return spec;
+}
+ValueSpec Str(const char *s) {
+	ValueSpec spec;
+	spec.kind = ValueSpec::Kind::TEXT;
+	spec.s = s;
+	return spec;
+}
+ValueSpec Obj(std::initializer_list<std::pair<const char *, ValueSpec>> fields) {
+	ValueSpec spec;
+	spec.kind = ValueSpec::Kind::STRUCT;
+	spec.fields.assign(fields.begin(), fields.end());
+	return spec;
+}
+ValueSpec Arr(std::initializer_list<ValueSpec> items) {
+	ValueSpec spec;
+	spec.kind = ValueSpec::Kind::LIST;
+	spec.items.assign(items.begin(), items.end());
+	return spec;
+}
+
+// The owned value a spec describes, or null when it cannot be built; a NULL is an INTEGER NULL, a list takes the type
+// of its first item.
+duckdb_v2_value_handle BuildValue(duckdb_v2_factory_handle factory, const ValueSpec &spec,
+                                  duckdb_v2_error_info_handle *err) {
 	duckdb_v2_value_handle value = nullptr;
-	auto text = Convert(json);
-	auto rc = duckdb_v2_value_create_varchar(factory, &text, &value, err);
-	if (rc == DUCKDB_V2_ERROR_NONE) {
-		rc = duckdb_v2_stats_set_value(stats, value, err);
+	duckdb_v2_logical_type_handle type = nullptr;
+	std::vector<duckdb_v2_identifier_t> names;
+	std::vector<duckdb_v2_value_handle> children;
+	switch (spec.kind) {
+	case ValueSpec::Kind::NULL_VALUE:
+		if (duckdb_v2_factory_create_type_from_id(factory, DUCKDB_V2_LOGICAL_TYPE_ID_INTEGER, nullptr, nullptr, 0,
+		                                          &type, err) == DUCKDB_V2_ERROR_NONE) {
+			duckdb_v2_value_create_null(factory, type, &value, err);
+		}
+		break;
+	case ValueSpec::Kind::BOOL:
+		duckdb_v2_value_create_bool(factory, spec.b, &value, err);
+		break;
+	case ValueSpec::Kind::INT:
+		duckdb_v2_value_create_int(factory, spec.i, &value, err);
+		break;
+	case ValueSpec::Kind::DOUBLE:
+		duckdb_v2_value_create_double(factory, spec.d, &value, err);
+		break;
+	case ValueSpec::Kind::TEXT: {
+		auto text = Convert(spec.s);
+		duckdb_v2_value_create_varchar(factory, &text, &value, err);
+		break;
 	}
+	case ValueSpec::Kind::STRUCT: {
+		bool ok = true;
+		for (auto &field : spec.fields) {
+			names.push_back(StatsIdent(field.first));
+			children.push_back(BuildValue(factory, field.second, err));
+			ok = ok && children.back();
+		}
+		if (ok) {
+			duckdb_v2_value_create_struct(factory, names.data(), children.data(), children.size(), &value, err);
+		}
+		break;
+	}
+	case ValueSpec::Kind::LIST: {
+		bool ok = !spec.items.empty();
+		for (auto &item : spec.items) {
+			children.push_back(BuildValue(factory, item, err));
+			ok = ok && children.back();
+		}
+		if (ok && duckdb_v2_value_get_logical_type(children[0], &type, err) == DUCKDB_V2_ERROR_NONE) {
+			duckdb_v2_value_create_list(factory, type, children.data(), children.size(), &value, err);
+		}
+		break;
+	}
+	}
+	for (auto &child : children) {
+		duckdb_v2_value_destroy(&child);
+	}
+	duckdb_v2_logical_type_destroy(&type);
+	return value;
+}
+
+// Builds the value a spec describes and sets the statistics from it.
+DUCKDB_V2_ERROR SetStatsSpec(duckdb_v2_factory_handle factory, duckdb_v2_stats_handle stats, const ValueSpec &spec,
+                             duckdb_v2_error_info_handle *err) {
+	auto value = BuildValue(factory, spec, err);
+	if (!value) {
+		return DUCKDB_V2_ERROR_API;
+	}
+	auto rc = duckdb_v2_stats_set_value(stats, value, err);
 	duckdb_v2_value_destroy(&value);
 	return rc;
 }
@@ -887,11 +1000,12 @@ void MinMaxStatsCb(duckdb_v2_table_function_stats_info_handle info, duckdb_v2_co
 		g_mm.assign_rc = duckdb_v2_stats_assign(result, owned, err);
 		duckdb_v2_stats_destroy(&owned);
 	} else {
-		g_mm.set_rc = SetStatsJSON(factory, result, "{\"min\": 20, \"max\": 30, \"has_null\": false}", err);
+		g_mm.set_rc =
+		    SetStatsSpec(factory, result, Obj({{"min", Int(20)}, {"max", Int(30)}, {"has_null", Bool(false)}}), err);
 	}
 	g_mm.result_text = StatsText(result);
 	// A string bound on numeric statistics is refused, and leaves the bounds as they were.
-	g_mm.string_on_numeric_rc = SetStatsJSON(factory, result, "{\"min\": \"x\"}", nullptr);
+	g_mm.string_on_numeric_rc = SetStatsSpec(factory, result, Obj({{"min", Str("x")}}), nullptr);
 	// The borrowed result statistics cannot be destroyed, and stay usable.
 	auto borrowed = result;
 	g_mm.destroy_borrowed_rc = duckdb_v2_stats_destroy(&borrowed);
@@ -1104,10 +1218,12 @@ struct ShreddedObserved {
 ShreddedObserved g_shredded;
 
 // Every value is an object whose field x is an INTEGER in [1, 5], stored in the structured layout throughout.
-const char *const SHREDDED_ON_X =
-    "{\"has_null\": false, \"shredding_state\": \"SHREDDED\", \"fully_shredded\": {\"x\": "
-    "{\"type\": \"INTEGER\", \"stats\": {\"min\": 1, \"max\": 5, \"has_null\": false, "
-    "\"has_no_null\": true}}}}";
+ValueSpec ShreddedOnX() {
+	auto x_stats = Obj({{"min", Int(1)}, {"max", Int(5)}, {"has_null", Bool(false)}, {"has_no_null", Bool(true)}});
+	return Obj({{"has_null", Bool(false)},
+	            {"shredding_state", Str("SHREDDED")},
+	            {"fully_shredded", Obj({{"x", Obj({{"type", Str("INTEGER")}, {"stats", x_stats}})}})}});
+}
 
 void ShreddedBindCb(duckdb_v2_function_bind_info_handle, duckdb_v2_table_function_bind_info_handle result,
                     duckdb_v2_context_handle context, duckdb_v2_error_info_handle *err) {
@@ -1144,11 +1260,10 @@ void ShreddedStatsCb(duckdb_v2_table_function_stats_info_handle info, duckdb_v2_
 		return;
 	}
 	// A nested type is not shredded on as a whole: an object is described by its fields.
-	g_shredded.malformed_rc = SetStatsJSON(factory, result,
-	                                       "{\"shredding_state\": \"SHREDDED\", \"fully_shredded\": {\"type\": "
-	                                       "\"STRUCT(x INTEGER)\", \"stats\": {}}}",
-	                                       nullptr);
-	g_shredded.set_rc = SetStatsJSON(factory, result, SHREDDED_ON_X, err);
+	auto struct_leaf = Obj({{"type", Str("STRUCT(x INTEGER)")}, {"stats", Obj({})}});
+	g_shredded.malformed_rc = SetStatsSpec(
+	    factory, result, Obj({{"shredding_state", Str("SHREDDED")}, {"fully_shredded", struct_leaf}}), nullptr);
+	g_shredded.set_rc = SetStatsSpec(factory, result, ShreddedOnX(), err);
 	g_shredded.result_text = StatsText(result);
 }
 
@@ -1161,7 +1276,7 @@ void ShreddedPushdownCb(duckdb_v2_table_function_filter_pushdown_info_handle inf
 		return;
 	}
 	auto variant = StatsOfText(factory, "VARIANT", err);
-	if (variant && SetStatsJSON(factory, variant, SHREDDED_ON_X, err) != DUCKDB_V2_ERROR_NONE) {
+	if (variant && SetStatsSpec(factory, variant, ShreddedOnX(), err) != DUCKDB_V2_ERROR_NONE) {
 		duckdb_v2_stats_destroy(&variant);
 	}
 	for (idx_t i = 0; i < count && variant; i++) {
@@ -1230,11 +1345,11 @@ TEST_CASE("V2 stats: shredded VARIANT statistics reach variant_extract", "[capi_
 
 namespace {
 
-// Sets statistics from JSON text and returns the error message, or an empty string on success.
-std::string SetStatsJSONMessage(duckdb_v2_factory_handle factory, duckdb_v2_stats_handle stats, const char *json,
+// Sets statistics from the value a spec describes and returns the error message, or an empty string on success.
+std::string SetStatsSpecMessage(duckdb_v2_factory_handle factory, duckdb_v2_stats_handle stats, const ValueSpec &spec,
                                 DUCKDB_V2_ERROR &rc) {
 	duckdb_v2_error_info_handle err = nullptr;
-	rc = SetStatsJSON(factory, stats, json, &err);
+	rc = SetStatsSpec(factory, stats, spec, &err);
 	std::string message;
 	if (err) {
 		duckdb_v2_str text = {nullptr, 0};
@@ -1277,12 +1392,12 @@ TEST_CASE("V2 stats: owned statistics narrow, merge and assign", "[capi_v2][stat
 	REQUIRE(SetStatsStruct(fx.factory, stats, {"min", "max"}, {five, ten}, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(StatsText(stats) == "{'min': 5, 'max': 10, 'has_null': true, 'has_no_null': true}");
 	REQUIRE(duckdb_v2_stats_set_can_have_null(stats, false, nullptr) == DUCKDB_V2_ERROR_NONE);
-	REQUIRE(SetStatsJSON(fx.factory, stats, "{\"approx_unique\": 6}", nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(SetStatsSpec(fx.factory, stats, Obj({{"approx_unique", Int(6)}}), nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(StatsText(stats) == "{'min': 5, 'max': 10, 'has_null': false, 'has_no_null': true, 'approx_unique': 6}");
 	// A bound of another type is cast to the column's type
-	REQUIRE(SetStatsJSON(fx.factory, stats, "{\"min\": 4.0}", nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(SetStatsSpec(fx.factory, stats, Obj({{"min", Dbl(4.0)}}), nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(StatsText(stats) == "{'min': 4, 'max': 10, 'has_null': false, 'has_no_null': true, 'approx_unique': 6}");
-	// A NULL field leaves that statistic unchanged, whether built as a value or given as JSON
+	// A NULL field leaves that statistic unchanged
 	duckdb_v2_logical_type_handle integer_type = nullptr;
 	duckdb_v2_value_handle null_int = nullptr;
 	auto eight = MakeInt32Value(fx.factory, 8);
@@ -1291,8 +1406,8 @@ TEST_CASE("V2 stats: owned statistics narrow, merge and assign", "[capi_v2][stat
 	REQUIRE(duckdb_v2_value_create_null(fx.factory, integer_type, &null_int, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(SetStatsStruct(fx.factory, stats, {"min", "max"}, {null_int, eight}, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(StatsText(stats) == "{'min': 4, 'max': 8, 'has_null': false, 'has_no_null': true, 'approx_unique': 6}");
-	REQUIRE(SetStatsJSON(fx.factory, stats, "{\"max\": null, \"approx_unique\": null, \"has_null\": true}", nullptr) ==
-	        DUCKDB_V2_ERROR_NONE);
+	REQUIRE(SetStatsSpec(fx.factory, stats, Obj({{"max", Null()}, {"approx_unique", Null()}, {"has_null", Bool(true)}}),
+	                     nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(StatsText(stats) == "{'min': 4, 'max': 8, 'has_null': true, 'has_no_null': true, 'approx_unique': 6}");
 	REQUIRE(duckdb_v2_stats_set_can_have_null(stats, false, nullptr) == DUCKDB_V2_ERROR_NONE);
 
@@ -1331,29 +1446,31 @@ TEST_CASE("V2 stats: owned statistics narrow, merge and assign", "[capi_v2][stat
 
 	// Refused values name the field, and leave the statistics as they were.
 	DUCKDB_V2_ERROR rc;
-	auto message = SetStatsJSONMessage(fx.factory, stats, "{\"min\": \"not an int\"}", rc);
+	auto message = SetStatsSpecMessage(fx.factory, stats, Obj({{"min", Str("not an int")}}), rc);
 	REQUIRE(rc == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(message.find("'min'") != std::string::npos);
-	message = SetStatsJSONMessage(fx.factory, stats, "{\"min\": 0, \"has_unicode\": false}", rc);
+	message = SetStatsSpecMessage(fx.factory, stats, Obj({{"min", Int(0)}, {"has_unicode", Bool(false)}}), rc);
 	REQUIRE(rc == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(message.find("'has_unicode'") != std::string::npos);
 	REQUIRE(StatsText(stats) == "{'min': 1, 'max': 20, 'has_null': false, 'has_no_null': true}");
-	REQUIRE(SetStatsJSONMessage(fx.factory, stats, "{\"has_null\": \"maybe\"}", rc).find("'has_null'") !=
+	REQUIRE(SetStatsSpecMessage(fx.factory, stats, Obj({{"has_null", Str("maybe")}}), rc).find("'has_null'") !=
 	        std::string::npos);
 	REQUIRE(rc == DUCKDB_V2_ERROR_INPUT_INVALID);
-	// Values that are not a struct of statistics
-	REQUIRE(SetStatsJSON(fx.factory, stats, "42", nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(SetStatsJSON(fx.factory, stats, "[1, 2]", nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(SetStatsJSON(fx.factory, stats, "not json", nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
-	REQUIRE(SetStatsJSON(fx.factory, stats, "null", nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	// Values that are not a struct of statistics: a number, a list, and text, which is not parsed but refused by type
 	REQUIRE(duckdb_v2_stats_set_value(stats, five, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(SetStatsSpec(fx.factory, stats, Arr({Int(1), Int(2)}), nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
+	message = SetStatsSpecMessage(fx.factory, stats, Str("{\"min\": 20, \"max\": 30}"), rc);
+	REQUIRE(rc == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(message.find("VARCHAR") != std::string::npos);
+	message = SetStatsSpecMessage(fx.factory, stats, Str("{'min': 20, 'max': 30}"), rc);
+	REQUIRE(rc == DUCKDB_V2_ERROR_INPUT_INVALID);
+	REQUIRE(message.find("VARCHAR") != std::string::npos);
 	duckdb_v2_value_handle null_variant = nullptr;
 	REQUIRE(duckdb_v2_value_create_null(fx.factory, variant_type, &null_variant, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(duckdb_v2_stats_set_value(stats, null_variant, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(duckdb_v2_stats_set_value(stats, null_int, nullptr) == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(StatsText(stats) == "{'min': 1, 'max': 20, 'has_null': false, 'has_no_null': true}");
 	// An empty struct describes nothing
-	REQUIRE(SetStatsJSON(fx.factory, stats, "{}", nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(SetStatsStruct(fx.factory, stats, {}, {}, nullptr) == DUCKDB_V2_ERROR_NONE);
 	REQUIRE(StatsText(stats) == "{'min': 1, 'max': 20, 'has_null': false, 'has_no_null': true}");
 
@@ -1397,7 +1514,7 @@ TEST_CASE("V2 stats: bounds keep the column's type", "[capi_v2][stats][statistic
 	REQUIRE(min_days == days_2024_01_01);
 	duckdb_v2_value_destroy(&min_field);
 	DUCKDB_V2_ERROR rc;
-	auto message = SetStatsJSONMessage(fx.factory, dates, "{\"min\": 0}", rc);
+	auto message = SetStatsSpecMessage(fx.factory, dates, Obj({{"min", Int(0)}}), rc);
 	REQUIRE(rc == DUCKDB_V2_ERROR_INPUT_INVALID);
 	REQUIRE(message.find("'min'") != std::string::npos);
 	REQUIRE(StatsText(dates) == "{'min': 2024-01-01, 'max': 2024-12-31, 'has_null': true, 'has_no_null': true}");
@@ -1407,7 +1524,8 @@ TEST_CASE("V2 stats: bounds keep the column's type", "[capi_v2][stats][statistic
 
 	// A DECIMAL bound is a DECIMAL value of the column's width and scale.
 	auto decimals = StatsOfText(fx.factory, "DECIMAL(10, 2)", nullptr);
-	REQUIRE(SetStatsJSON(fx.factory, decimals, "{\"min\": 1.5, \"max\": 2.25}", nullptr) == DUCKDB_V2_ERROR_NONE);
+	REQUIRE(SetStatsSpec(fx.factory, decimals, Obj({{"min", Dbl(1.5)}, {"max", Dbl(2.25)}}), nullptr) ==
+	        DUCKDB_V2_ERROR_NONE);
 	auto max_field = StatsField(decimals, "max");
 	REQUIRE(max_field != nullptr);
 	REQUIRE(TypeIdOf(max_field) == DUCKDB_V2_LOGICAL_TYPE_ID_DECIMAL);
@@ -1499,65 +1617,82 @@ TEST_CASE("V2 stats: string bounds are the bytes they are given", "[capi_v2][sta
 TEST_CASE("V2 stats: statistics of every kind round-trip through a value", "[capi_v2][stats][statistics]") {
 	EnvFixture fx;
 
-	// Each case: the type, JSON text to set, and what the statistics read back as.
+	// Each case: the type, the struct to set, and what the statistics read back as.
 	struct RoundTrip {
 		const char *type;
-		const char *json;
+		ValueSpec value;
 		const char *expected;
 	};
+	auto n_leaf =
+	    Obj({{"type", Str("BIGINT")}, {"stats", Obj({{"min", Int(1)}, {"max", Int(9)}, {"has_null", Bool(false)}})}});
+	auto s_leaf = Obj({{"type", Str("VARCHAR")}, {"stats", Obj({{"min", Str("a")}, {"max", Str("c")}})}});
 	const RoundTrip cases[] = {
-	    {"DECIMAL(10, 2)", "{\"min\": 1.5, \"max\": 2.25, \"has_null\": false}",
+	    {"DECIMAL(10, 2)", Obj({{"min", Dbl(1.5)}, {"max", Dbl(2.25)}, {"has_null", Bool(false)}}),
 	     "{'min': 1.50, 'max': 2.25, 'has_null': false, 'has_no_null': true}"},
-	    {"DATE", "{\"min\": \"2024-01-01\", \"max\": \"2024-12-31\"}",
+	    {"DATE", Obj({{"min", Str("2024-01-01")}, {"max", Str("2024-12-31")}}),
 	     "{'min': 2024-01-01, 'max': 2024-12-31, 'has_null': true, 'has_no_null': true}"},
 	    // a single bound is kept, but only rendered once both are known
-	    {"DOUBLE", "{\"max\": 1.5}", "{'has_null': true, 'has_no_null': true}"},
+	    {"DOUBLE", Obj({{"max", Dbl(1.5)}}), "{'has_null': true, 'has_no_null': true}"},
 	    {"VARCHAR",
-	     "{\"min\": \"a\", \"max\": \"z\", \"has_unicode\": false, \"min_string_length\": 1, \"max_string_length\": 8, "
-	     "\"total_string_length\": 1234}",
+	     Obj({{"min", Str("a")},
+	          {"max", Str("z")},
+	          {"has_unicode", Bool(false)},
+	          {"min_string_length", Int(1)},
+	          {"max_string_length", Int(8)},
+	          {"total_string_length", Int(1234)}}),
 	     "{'min': a, 'max': z, 'has_unicode': false, 'min_string_length': 1, 'max_string_length': 8, "
 	     "'total_string_length': 1234, 'has_null': true, 'has_no_null': true}"},
 	    // a backslash in a string bound is a character
-	    {"VARCHAR", "{\"min\": \"C:\\\\temp\", \"max\": \"a\\\\x41\"}",
+	    {"VARCHAR", Obj({{"min", Str("C:\\temp")}, {"max", Str("a\\x41")}}),
 	     "{'min': 'C:\\\\temp', 'max': 'a\\\\x41', 'has_unicode': true, 'has_null': true, 'has_no_null': true}"},
-	    {"INTEGER[]", "{\"child_stats\": {\"min\": 1, \"max\": 3, \"has_null\": false}, \"has_null\": false}",
+	    {"INTEGER[]",
+	     Obj({{"child_stats", Obj({{"min", Int(1)}, {"max", Int(3)}, {"has_null", Bool(false)}})},
+	          {"has_null", Bool(false)}}),
 	     "{'child_stats': {'min': 1, 'max': 3, 'has_null': false, 'has_no_null': true}, 'has_null': false, "
 	     "'has_no_null': true}"},
-	    {"INTEGER[2]", "{\"child_stats\": {\"min\": 1, \"max\": 3}}",
+	    {"INTEGER[2]", Obj({{"child_stats", Obj({{"min", Int(1)}, {"max", Int(3)}})}}),
 	     "{'child_stats': {'min': 1, 'max': 3, 'has_null': true, 'has_no_null': true}, 'has_null': true, "
 	     "'has_no_null': true}"},
 	    {"STRUCT(a INTEGER, b VARCHAR)",
-	     "{\"child_stats\": {\"b\": {\"min\": \"d\", \"max\": \"m\", \"has_null\": false}}}",
+	     Obj({{"child_stats", Obj({{"b", Obj({{"min", Str("d")}, {"max", Str("m")}, {"has_null", Bool(false)}})}})}}),
 	     "{'child_stats': {'a': {'has_null': true, 'has_no_null': true}, 'b': {'min': d, 'max': m, 'has_unicode': "
 	     "true, "
 	     "'has_null': false, 'has_no_null': true}}, 'has_null': true, 'has_no_null': true}"},
 	    // a NULL child leaves that field's statistics unchanged
-	    {"STRUCT(a INTEGER, b VARCHAR)", "{\"child_stats\": {\"a\": null, \"b\": {\"min\": \"d\", \"max\": \"m\"}}}",
+	    {"STRUCT(a INTEGER, b VARCHAR)",
+	     Obj({{"child_stats", Obj({{"a", Null()}, {"b", Obj({{"min", Str("d")}, {"max", Str("m")}})}})}}),
 	     "{'child_stats': {'a': {'has_null': true, 'has_no_null': true}, 'b': {'min': d, 'max': m, 'has_unicode': "
 	     "true, "
 	     "'has_null': true, 'has_no_null': true}}, 'has_null': true, 'has_no_null': true}"},
-	    {"MAP(VARCHAR, INTEGER)", "{\"child_stats\": {\"child_stats\": {\"value\": {\"min\": 0, \"max\": 7}}}}",
+	    {"MAP(VARCHAR, INTEGER)",
+	     Obj({{"child_stats", Obj({{"child_stats", Obj({{"value", Obj({{"min", Int(0)}, {"max", Int(7)}})}})}})}}),
 	     "{'child_stats': {'child_stats': {'key': {'has_unicode': true, 'has_null': true, 'has_no_null': true}, "
 	     "'value': {'min': 0, 'max': 7, 'has_null': true, 'has_no_null': true}}, 'has_null': true, "
 	     "'has_no_null': true}, 'has_null': true, 'has_no_null': true}"},
 	    {"GEOMETRY",
-	     "{\"extent\": {\"x_min\": 0, \"x_max\": 10, \"y_min\": -5, \"y_max\": 5, \"z_min\": 1, \"z_max\": 2}, "
-	     "\"types\": [\"point\", \"polygon_z\"], \"has_empty_geom\": false, \"has_empty_part\": false}",
+	     Obj({{"extent", Obj({{"x_min", Int(0)},
+	                          {"x_max", Int(10)},
+	                          {"y_min", Int(-5)},
+	                          {"y_max", Int(5)},
+	                          {"z_min", Int(1)},
+	                          {"z_max", Int(2)}})},
+	          {"types", Arr({Str("point"), Str("polygon_z")})},
+	          {"has_empty_geom", Bool(false)},
+	          {"has_empty_part", Bool(false)}}),
 	     "{'extent': {'x_min': 0.0, 'x_max': 10.0, 'y_min': -5.0, 'y_max': 5.0, 'z_min': 1.0, 'z_max': 2.0}, "
 	     "'types': [point, polygon_z], 'has_empty_geom': false, 'has_non_empty_geom': true, 'has_empty_part': false, "
 	     "'has_non_empty_part': true, 'has_null': true, 'has_no_null': true}"},
-	    {"VARIANT", "{\"shredding_state\": \"NOT_SHREDDED\"}",
+	    {"VARIANT", Obj({{"shredding_state", Str("NOT_SHREDDED")}}),
 	     "{'shredding_state': NOT_SHREDDED, 'has_null': true, 'has_no_null': true}"},
 	    // a list of objects whose field n is a BIGINT throughout
 	    {"VARIANT",
-	     "{\"shredding_state\": \"SHREDDED\", \"fully_shredded\": {\"child_stats\": {\"n\": {\"type\": \"BIGINT\", "
-	     "\"stats\": {\"min\": 1, \"max\": 9, \"has_null\": false}}}}}",
+	     Obj({{"shredding_state", Str("SHREDDED")}, {"fully_shredded", Obj({{"child_stats", Obj({{"n", n_leaf}})}})}}),
 	     "{'shredding_state': SHREDDED, 'fully_shredded': {'child_stats': {'n': {'type': BIGINT, 'stats': {'min': 1, "
 	     "'max': 9, 'has_null': false, 'has_no_null': true}}}}, 'has_null': true, 'has_no_null': true}"},
 	    // a list of objects whose field s is a VARCHAR for some values, with others in the generic layout
 	    {"VARIANT",
-	     "{\"shredding_state\": \"SHREDDED\", \"partially_shredded\": {\"child_stats\": {\"s\": {\"type\": "
-	     "\"VARCHAR\", \"stats\": {\"min\": \"a\", \"max\": \"c\"}}}}}",
+	     Obj({{"shredding_state", Str("SHREDDED")},
+	          {"partially_shredded", Obj({{"child_stats", Obj({{"s", s_leaf}})}})}}),
 	     "{'shredding_state': SHREDDED, 'partially_shredded': {'child_stats': {'s': {'type': VARCHAR, 'stats': "
 	     "{'min': a, 'max': c, 'has_unicode': true, 'has_null': true, 'has_no_null': true}}}}, 'has_null': true, "
 	     "'has_no_null': true}"},
@@ -1566,7 +1701,7 @@ TEST_CASE("V2 stats: statistics of every kind round-trip through a value", "[cap
 		auto stats = StatsOfText(fx.factory, test.type, nullptr);
 		REQUIRE(stats != nullptr);
 		DUCKDB_V2_ERROR rc;
-		auto message = SetStatsJSONMessage(fx.factory, stats, test.json, rc);
+		auto message = SetStatsSpecMessage(fx.factory, stats, test.value, rc);
 		INFO(test.type << ": " << message);
 		REQUIRE(rc == DUCKDB_V2_ERROR_NONE);
 		REQUIRE(StatsText(stats) == test.expected);
@@ -1591,34 +1726,35 @@ TEST_CASE("V2 stats: statistics of every kind round-trip through a value", "[cap
 	// Malformed parts are refused with a message naming the field, and leave the statistics as they were.
 	struct Malformed {
 		const char *type;
-		const char *json;
+		ValueSpec value;
 		const char *field;
 	};
+	auto empty_int_leaf = Obj({{"type", Str("INTEGER")}, {"stats", Obj({})}});
 	const Malformed malformed[] = {
-	    {"INTEGER[]", "{\"child_stats\": {\"min\": \"x\"}}", "'child_stats.min'"},
-	    {"INTEGER[]", "{\"child_stats\": 5}", "'child_stats'"},
-	    {"STRUCT(a INTEGER)", "{\"child_stats\": {\"b\": {\"min\": 1}}}", "'child_stats.b'"},
-	    {"STRUCT(a INTEGER)", "{\"child_stats\": {\"a\": {\"min\": 1, \"other\": 2}}}", "'child_stats.a.other'"},
-	    {"DATE", "{\"min\": \"2024-01-01\", \"max\": 20241231}", "'max'"},
-	    {"GEOMETRY", "{\"extent\": {\"x_min\": \"left\"}}", "'extent.x_min'"},
-	    {"GEOMETRY", "{\"extent\": {\"w_min\": 1}}", "'extent.w_min'"},
-	    {"GEOMETRY", "{\"types\": [\"circle\"]}", "'types'"},
-	    {"GEOMETRY", "{\"types\": \"point\"}", "'types'"},
-	    {"VARIANT", "{\"shredding_state\": \"SOMEWHAT\"}", "'shredding_state'"},
-	    {"VARIANT",
-	     "{\"shredding_state\": \"NOT_SHREDDED\", \"fully_shredded\": {\"type\": \"INTEGER\", \"stats\": {}}}",
+	    {"INTEGER[]", Obj({{"child_stats", Obj({{"min", Str("x")}})}}), "'child_stats.min'"},
+	    {"INTEGER[]", Obj({{"child_stats", Int(5)}}), "'child_stats'"},
+	    {"STRUCT(a INTEGER)", Obj({{"child_stats", Obj({{"b", Obj({{"min", Int(1)}})}})}}), "'child_stats.b'"},
+	    {"STRUCT(a INTEGER)", Obj({{"child_stats", Obj({{"a", Obj({{"min", Int(1)}, {"other", Int(2)}})}})}}),
+	     "'child_stats.a.other'"},
+	    {"DATE", Obj({{"min", Str("2024-01-01")}, {"max", Int(20241231)}}), "'max'"},
+	    {"GEOMETRY", Obj({{"extent", Obj({{"x_min", Str("left")}})}}), "'extent.x_min'"},
+	    {"GEOMETRY", Obj({{"extent", Obj({{"w_min", Int(1)}})}}), "'extent.w_min'"},
+	    {"GEOMETRY", Obj({{"types", Arr({Str("circle")})}}), "'types'"},
+	    {"GEOMETRY", Obj({{"types", Str("point")}}), "'types'"},
+	    {"VARIANT", Obj({{"shredding_state", Str("SOMEWHAT")}}), "'shredding_state'"},
+	    {"VARIANT", Obj({{"shredding_state", Str("NOT_SHREDDED")}, {"fully_shredded", empty_int_leaf}}),
 	     "'fully_shredded'"},
-	    {"VARIANT", "{\"fully_shredded\": {\"type\": \"NOSUCHTYPE\", \"stats\": {}}}", "'fully_shredded.type'"},
-	    {"VARIANT", "{\"fully_shredded\": {\"type\": \"VARIANT\", \"stats\": {}}}", "'fully_shredded.type'"},
-	    {"VARIANT", "{\"fully_shredded\": {\"type\": \"INTEGER\", \"stats\": {\"min\": \"x\"}}}",
+	    {"VARIANT", Obj({{"fully_shredded", Obj({{"type", Str("NOSUCHTYPE")}, {"stats", Obj({})}})}}),
+	     "'fully_shredded.type'"},
+	    {"VARIANT", Obj({{"fully_shredded", Obj({{"type", Str("VARIANT")}, {"stats", Obj({})}})}}),
+	     "'fully_shredded.type'"},
+	    {"VARIANT", Obj({{"fully_shredded", Obj({{"type", Str("INTEGER")}, {"stats", Obj({{"min", Str("x")}})}})}}),
 	     "'fully_shredded.stats.min'"},
-	    {"VARIANT", "{\"fully_shredded\": {\"x\": {\"type\": \"INTEGER\"}}}", "'fully_shredded.x"},
-	    {"VARIANT", "{\"fully_shredded\": {}}", "'fully_shredded'"},
+	    {"VARIANT", Obj({{"fully_shredded", Obj({{"x", Obj({{"type", Str("INTEGER")}})}})}}), "'fully_shredded.x"},
+	    {"VARIANT", Obj({{"fully_shredded", Obj({})}}), "'fully_shredded'"},
 	    // a NULL node describes nothing, so the tree is empty
-	    {"VARIANT", "{\"fully_shredded\": {\"x\": null}}", "'fully_shredded'"},
-	    {"VARIANT",
-	     "{\"fully_shredded\": {\"type\": \"INTEGER\", \"stats\": {}}, \"partially_shredded\": {\"type\": "
-	     "\"INTEGER\", \"stats\": {}}}",
+	    {"VARIANT", Obj({{"fully_shredded", Obj({{"x", Null()}})}}), "'fully_shredded'"},
+	    {"VARIANT", Obj({{"fully_shredded", empty_int_leaf}, {"partially_shredded", empty_int_leaf}}),
 	     "'partially_shredded'"},
 	};
 	for (auto &test : malformed) {
@@ -1626,8 +1762,8 @@ TEST_CASE("V2 stats: statistics of every kind round-trip through a value", "[cap
 		REQUIRE(stats != nullptr);
 		auto before = StatsText(stats);
 		DUCKDB_V2_ERROR rc;
-		auto message = SetStatsJSONMessage(fx.factory, stats, test.json, rc);
-		INFO(test.type << " " << test.json << ": " << message);
+		auto message = SetStatsSpecMessage(fx.factory, stats, test.value, rc);
+		INFO(test.type << " " << test.field << ": " << message);
 		REQUIRE(rc == DUCKDB_V2_ERROR_INPUT_INVALID);
 		REQUIRE(message.find(test.field) != std::string::npos);
 		REQUIRE(StatsText(stats) == before);

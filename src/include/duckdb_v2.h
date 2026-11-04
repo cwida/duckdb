@@ -4925,15 +4925,14 @@ DUCKDB_C_API DUCKDB_V2_ERROR duckdb_v2_stats_get_value(duckdb_v2_stats_handle st
  * names the types the column holds with the names `duckdb_v2_stats_get_value()` returns; a shredded `type` is a type
  * name such as `'INTEGER'` or `'DECIMAL(10, 2)'`.
  *
- * The output of the SQL function `stats()` is accepted too: a VARIANT is read as the struct it holds, and a VARCHAR is
- * parsed as JSON text (`{"min": 20, "max": 30}`), with the field values cast as above. Note that `stats()` renders
- * string bounds as text, with `\xNN` escapes for bytes outside printable ASCII, and that text is the bound it sets;
- * copy exact bounds with `duckdb_v2_stats_get_value()`.
+ * The output of the SQL function `stats()` is accepted too: a VARIANT is read as the struct it holds, with the field
+ * values cast as above. Note that `stats()` renders string bounds as text, with `\xNN` escapes for bytes outside
+ * printable ASCII, and that text is the bound it sets; copy exact bounds with `duckdb_v2_stats_get_value()`.
  *
  * Each statistic states what can occur: a bound that excludes a value the scan then produces, or `has_null: false` for
  * a column with NULLs, produces wrong query results.
  *
- * Fails with `ERROR_INPUT_INVALID` for a NULL value, a value that is not a STRUCT (or does not convert to one), a field
+ * Fails with `ERROR_INPUT_INVALID` for a NULL value, a value that is not a STRUCT (or a VARIANT holding one), a field
  * the statistics of the type do not have, a field whose value does not convert (the message names the field, e.g.
  * `child_stats.a.min`), or read-only statistics such as those of an argument. A failure leaves the statistics as they
  * were.

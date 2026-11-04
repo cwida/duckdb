@@ -1,9 +1,6 @@
 #include "duckdb/main/capi_v2/capi_v2_internal.hpp"
 #include "duckdb/main/capi_v2/capi_v2_function_internal.hpp"
 
-#include "duckdb/common/error_data.hpp"
-#include "duckdb/storage/statistics/stats_struct_fields.hpp"
-
 namespace duckdb::capiv2 {
 
 BaseStatistics &CV2Stats::GetMutableStats(const char *function_name) {
@@ -11,22 +8,6 @@ BaseStatistics &CV2Stats::GetMutableStats(const char *function_name) {
 		throw InvalidInputException("%s: the statistics are read-only", function_name);
 	}
 	return *mutable_stats;
-}
-
-//! The statistics value as a STRUCT: a VARCHAR holds JSON text and a VARIANT (such as the output of stats()) is
-//! converted; anything else is left to StatsStructFields, which refuses what is not a STRUCT
-static Value StatsValueAsStruct(const Value &input) {
-	if (input.type().id() != LogicalTypeId::VARCHAR || input.IsNull()) {
-		return StatsStructFields::Plain(input);
-	}
-	try {
-		auto json = input.type().IsJSONType() ? input : input.WithType(LogicalType::JSON());
-		return StatsStructFields::Plain(json.DefaultCastAs(LogicalType::VARIANT()));
-	} catch (std::exception &ex) {
-		ErrorData error(ex);
-		throw InvalidInputException("duckdb_v2_stats_set_value: the text is not a JSON object of statistics: %s",
-		                            error.RawMessage());
-	}
 }
 
 } // namespace duckdb::capiv2
@@ -39,7 +20,6 @@ using namespace duckdb::capiv2;
 
 using duckdb::BaseStatistics;
 using duckdb::InvalidInputException;
-using duckdb::LogicalType;
 using duckdb::StatsInfo;
 using duckdb::Value;
 
@@ -100,10 +80,9 @@ DUCKDB_V2_ERROR duckdb_v2_stats_set_value(duckdb_v2_stats_handle stats, duckdb_v
 	DUCKDB_CHECK_ARG(value);
 	return WithErrorHandler(err, [&]() {
 		auto &result = Convert(stats)->GetMutableStats("duckdb_v2_stats_set_value");
-		auto fields = StatsValueAsStruct(*Convert(value));
 		// set a copy so that a refused value leaves the statistics as they were
 		auto updated = result.Copy();
-		updated.SetFromStruct(fields);
+		updated.SetFromStruct(*Convert(value));
 		result = std::move(updated);
 	});
 }
