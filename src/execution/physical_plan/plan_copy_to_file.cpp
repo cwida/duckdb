@@ -39,7 +39,6 @@ PhysicalOperator &PhysicalPlanGenerator::CreatePlan(LogicalCopyToFile &op, Physi
 	} else if (op.preserve_order == PreserveOrderType::DONT_PRESERVE_ORDER) {
 		preserve_insertion_order = false;
 	}
-	// the batch copy rotates files by size between whole batches, which keeps the order
 	bool ordered_rotation = op.file_size_bytes.IsValid() && !op.batches_per_file.IsValid() &&
 	                        preserve_insertion_order && supports_batch_index && SupportsOrderedRotation(op.function);
 	if (op.per_thread_output || (op.rotate && !ordered_rotation) || op.partition_output ||

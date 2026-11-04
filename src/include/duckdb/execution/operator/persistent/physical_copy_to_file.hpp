@@ -73,7 +73,7 @@ public:
 
 public:
 	static string GetTrimmedPath(ClientContext &context, const string &file_path);
-	//! Checks an output directory for existing files, as the overwrite mode asks
+	//! Checks an output directory for existing files according to the overwrite mode
 	static void CheckDirectory(FileSystem &fs, const string &file_path, CopyOverwriteMode overwrite_mode);
 	//! Creates the output directory of a copy that writes several files, or checks the existing one
 	static void PrepareOutputDirectory(FileSystem &fs, const string &file_path, CopyOverwriteMode overwrite_mode,
@@ -81,7 +81,7 @@ public:
 	static void MoveTmpFile(ClientContext &context, const string &tmp_file_path);
 	static string GetNonTmpFile(ClientContext &context, const string &tmp_file_path);
 	static void ReturnStatistics(DataChunk &chunk, const string &file_path, const CopyToFileInfo &info);
-	//! Adds the RETURN_STATS rows of the written files from the offset of the source state, a chunk per call
+	//! Appends the next chunk of RETURN_STATS rows of the written files
 	static SourceResultType ReturnWrittenFileStatistics(ClientContext &context, DataChunk &chunk,
 	                                                    CopyToFileGlobalSourceState &source_state,
 	                                                    const vector<unique_ptr<CopyToFileInfo>> &written_files,

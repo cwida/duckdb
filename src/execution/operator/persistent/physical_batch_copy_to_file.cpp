@@ -146,7 +146,6 @@ public:
 		initialized.store(true, std::memory_order_release);
 	}
 
-	//! Opens the next file and returns its state
 	unique_ptr<GlobalFunctionData> OpenFile(ClientContext &context, const PhysicalBatchCopyToFile &op) {
 		auto file_path = op.file_path;
 		if (op.file_options.RotatesFiles()) {
@@ -180,7 +179,6 @@ public:
 		file_batches = 0;
 	}
 
-	//! Whether the file being written holds batches and reached the size
 	bool FileReachedSize(const PhysicalBatchCopyToFile &op) {
 		return op.file_options.RotatesFiles() && file_batches > 0 &&
 		       op.function.file_size_bytes(*global_state) >= op.file_options.file_size_bytes.GetIndex();
