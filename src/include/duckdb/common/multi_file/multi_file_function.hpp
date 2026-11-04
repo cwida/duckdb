@@ -1192,34 +1192,55 @@ public:
 		}
 		// NOTE: we do not want to parse the file metadata for the sole purpose of getting column statistics
 		const bool multiple_files = bind_data.file_list->GetExpandResult() == FileExpandResult::MULTIPLE_FILES;
-		if (multiple_files && !bind_data.file_options.union_by_name) {
-			// multiple files, but no union_by_name: no luck!
+		// multiple files: only if every file was opened at bind (union_by_name, maximum_sample_files or
+		// maximum_files_for_stats)
+		if (multiple_files && bind_data.union_readers.size() != bind_data.file_list->GetTotalFileCount()) {
 			return nullptr;
 		}
+		auto get_statistics = [&](BaseUnionData &reader) {
+			unique_ptr<BaseStatistics> stats;
+			try {
+				stats = reader.GetStatistics(context, col_name);
+			} catch (std::exception &ex) {
+				// statistics that cannot be decoded just mean there are none - the data itself may still read fine
+				if (ErrorData(ex).Type() == ExceptionType::INTERRUPT) {
+					throw;
+				}
+				return unique_ptr<BaseStatistics>();
+			}
+			if (stats && (stats->GetType() != bind_data.types[primary_index] ||
+			              (!bind_data.file_options.bound_schema.empty() &&
+			               !bind_data.MatchesPhysicalColumn(primary_index, col_name, stats->GetType())))) {
+				// Positional child statistics require the physical root to match the scan's output layout.
+				return unique_ptr<BaseStatistics>();
+			}
+			return stats;
+		};
 		unique_ptr<BaseStatistics> result;
-		try {
+		if (multiple_files) {
+			for (auto &union_reader : bind_data.union_readers) {
+				auto rows = union_reader->TryGetCardinalityEstimate();
+				if (rows.IsValid() && rows.GetIndex() == 0) {
+					// an empty file has no statistics, and no values the merged bounds must cover
+					continue;
+				}
+				auto stats = get_statistics(*union_reader);
+				if (!stats) {
+					return nullptr;
+				}
+				if (!result) {
+					result = std::move(stats);
+				} else {
+					result->Merge(*stats);
+				}
+			}
+		} else {
 			result = bind_data.initial_reader->GetStatistics(context, col_name);
 			if (result && !bind_data.file_options.bound_schema.empty() &&
 			    !bind_data.MatchesPhysicalColumn(primary_index, col_name, result->GetType())) {
 				// Check the whole root before interpreting an extracted child's positional statistics.
 				return nullptr;
 			}
-			if (result && multiple_files) {
-				for (idx_t i = 1; i < bind_data.union_readers.size(); i++) {
-					auto &union_reader = *bind_data.union_readers[i];
-					auto stats = union_reader.GetStatistics(context, col_name);
-					if (!stats || result->GetType() != stats->GetType()) {
-						return nullptr;
-					}
-					result->Merge(*stats);
-				}
-			}
-		} catch (std::exception &ex) {
-			// undecodable statistics of one of multiple files just mean there are none - the data may still read fine
-			if (!multiple_files || ErrorData(ex).Type() == ExceptionType::INTERRUPT) {
-				throw;
-			}
-			return nullptr;
 		}
 		if (!result || !column_index.IsPushdownExtract()) {
 			return result;
@@ -1299,8 +1320,9 @@ public:
 		if (file_list_cardinality_estimate) {
 			return file_list_cardinality_estimate;
 		}
-		if (data.file_options.union_by_name) {
-			// for UNION BY NAME - check if we can get a cardinality estimate from the (already opened) union readers
+		if (!data.union_readers.empty() && (data.file_options.union_by_name || data.union_readers.size() > 1) &&
+		    data.union_readers.size() == data.file_list->GetTotalFileCount()) {
+			// check if we can get a cardinality estimate from the (already opened) union readers
 			bool has_exact_cardinality = true;
 			idx_t cardinality = 0;
 			for (auto &union_data : data.union_readers) {
@@ -1312,7 +1334,8 @@ public:
 				cardinality += file_cardinality.GetIndex();
 			}
 			if (has_exact_cardinality) {
-				return make_uniq<NodeStatistics>(cardinality);
+				// counted from the files, so also the maximum, as a table scan reports its count
+				return make_uniq<NodeStatistics>(cardinality, cardinality);
 			}
 		}
 		// get the file count - for >500 files we allow an estimate
