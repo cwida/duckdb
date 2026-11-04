@@ -1,0 +1,97 @@
+# name: test/sql/aggregate/aggregates/test_kahan_precision.test
+# description: fsum and favg compensate rounding errors regardless of operand magnitude and do not produce NaN on overflow
+# group: [aggregates]
+
+# small values summed before the large values cancel
+query II
+SELECT printf('%.17g', fsum(v)), printf('%.17g', favg(v)) FROM (VALUES (1e16::DOUBLE), (1.0), (-1e16)) t(v);
+----
+1	0.33333333333333331
+
+query I
+SELECT printf('%.17g', fsum(v)) FROM (VALUES (1.0::DOUBLE), (1e100), (1.0), (-1e100)) t(v);
+----
+2
+
+# small values added to a large value that later cancels
+query I
+SELECT printf('%.17g', fsum(v)) FROM (
+	SELECT 3.6686354453820154e17::DOUBLE AS v
+	UNION ALL SELECT 37.0::DOUBLE FROM range(14)
+	UNION ALL SELECT -3.6686354453820154e17::DOUBLE
+);
+----
+518
+
+# the input is larger than the running sum
+query II
+SELECT printf('%.17g', favg(v)), printf('%.17g', fsum(v)) FROM (VALUES (0.1::DOUBLE), (0.3)) t(v);
+----
+0.20000000000000001	0.40000000000000002
+
+# an overflowing running sum yields infinity instead of NaN
+query II
+SELECT fsum(v), favg(v) FROM (VALUES (1e308::DOUBLE), (1e308), (-1e308)) t(v);
+----
+inf	inf
+
+query II
+SELECT fsum(v), favg(v) FROM (VALUES (-1e308::DOUBLE), (-1e308), (1e308)) t(v);
+----
+-inf	-inf
+
+query II
+SELECT fsum(v), favg(v) FROM (VALUES (1.0::DOUBLE), ('inf'::DOUBLE), (2.0)) t(v);
+----
+inf	inf
+
+query II
+SELECT isnan(fsum(v)), isnan(favg(v)) FROM (VALUES ('inf'::DOUBLE), ('-inf'::DOUBLE)) t(v);
+----
+true	true
+
+query II
+SELECT isnan(fsum(v)), isnan(favg(v)) FROM (VALUES (1.0::DOUBLE), ('nan'::DOUBLE)) t(v);
+----
+true	true
+
+query II
+SELECT fsum(v), favg(v) FROM (VALUES (NULL::DOUBLE)) t(v);
+----
+NULL	NULL
+
+# combining states: window segment trees
+query II
+SELECT DISTINCT printf('%.17g', fsum(v) OVER w), printf('%.17g', favg(v) OVER w) FROM (
+	SELECT i, CASE WHEN i = 0 THEN 1e16::DOUBLE WHEN i = 999 THEN -1e16::DOUBLE ELSE 1.0 END AS v
+	FROM range(1000) r(i)
+) WINDOW w AS (ORDER BY i ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING);
+----
+998	0.998
+
+query I
+SELECT DISTINCT fsum(v) OVER (ORDER BY i ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) FROM (
+	SELECT i, CASE WHEN i = 999 THEN -1e308::DOUBLE ELSE 1e308::DOUBLE END AS v FROM range(1000) r(i)
+);
+----
+inf
+
+# combining states: parallel aggregation over many row groups
+statement ok
+SET threads=4;
+
+statement ok
+CREATE TABLE big AS
+SELECT i, CASE WHEN i = 0 THEN 1e16::DOUBLE WHEN i = 999999 THEN -1e16::DOUBLE ELSE 1.0 END AS v
+FROM range(1000000) r(i);
+
+query II
+SELECT printf('%.17g', fsum(v)), printf('%.17g', favg(v)) FROM big;
+----
+999998	0.99999800000000005
+
+query III
+SELECT i % 2 AS g, printf('%.17g', fsum(v)), printf('%.17g', favg(v)) FROM big GROUP BY g ORDER BY g;
+----
+0	10000000000500000	20000000001
+1	-9999999999500000	-19999999999
