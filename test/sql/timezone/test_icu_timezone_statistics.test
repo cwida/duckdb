@@ -100,6 +100,122 @@ EXPLAIN ANALYZE SELECT count(*) FROM locals_ns WHERE timezone('America/Los_Angel
 ----
 analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*
 
+#################### pruning before the epoch ####################
+
+# three row groups of a day each around the fall back of 1966, at 09:00 UTC on October 30
+statement ok
+CREATE TABLE sixties AS SELECT to_timestamp(-100224000 + (range // 2048) * 86400 + (range % 2048) * 25) AS utc FROM range(6144);
+
+# 01:30 occurred twice, at 08:30 and 09:30 UTC
+query I
+SELECT count(*) FROM sixties WHERE timezone('America/Los_Angeles', utc) = TIMESTAMP '1966-10-30 01:30:00';
+----
+2
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM sixties WHERE timezone('America/Los_Angeles', utc) = TIMESTAMP '1966-10-30 01:30:00';
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*
+
+# the local day of the fall back has 25 hours, which the second and third row groups hold
+query I
+SELECT count(*) FROM sixties
+WHERE timezone('America/Los_Angeles', utc) >= TIMESTAMP '1966-10-30' AND timezone('America/Los_Angeles', utc) < TIMESTAMP '1966-10-31';
+----
+2192
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM sixties
+WHERE timezone('America/Los_Angeles', utc) >= TIMESTAMP '1966-10-30' AND timezone('America/Los_Angeles', utc) < TIMESTAMP '1966-10-31';
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 2 / 3.*
+
+# the same days as local times, of which a repeated one resolves to the later instant
+statement ok
+CREATE TABLE sixties_local AS SELECT TIMESTAMP '1966-10-29' + to_seconds((range // 2048) * 86400 + (range % 2048) * 25) AS local FROM range(6144);
+
+query I
+SELECT count(*) FROM sixties_local WHERE timezone('America/Los_Angeles', local) = TIMESTAMPTZ '1966-10-30 09:30:00+00';
+----
+1
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM sixties_local WHERE timezone('America/Los_Angeles', local) = TIMESTAMPTZ '1966-10-30 09:30:00+00';
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*
+
+query I
+SELECT count(*) FROM sixties_local WHERE timezone('America/Los_Angeles', local) = TIMESTAMPTZ '1966-10-30 08:30:00+00';
+----
+0
+
+# the spring forward of 1966, at 09:00 UTC on April 24, when the local hour from 01:00 did not exist
+statement ok
+CREATE TABLE sixties_spring AS SELECT to_timestamp(-116553600 + (range // 2048) * 86400 + (range % 2048) * 25) AS utc FROM range(6144);
+
+# a local time in the gap matches no instant, which the bounds of the row group around it cannot tell
+query I
+SELECT count(*) FROM sixties_spring WHERE timezone('America/Los_Angeles', utc) = TIMESTAMP '1966-04-24 01:30:00';
+----
+0
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM sixties_spring WHERE timezone('America/Los_Angeles', utc) = TIMESTAMP '1966-04-24 01:30:00';
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*
+
+# the local day of the spring forward has 23 hours
+query I
+SELECT count(*) FROM sixties_spring
+WHERE timezone('America/Los_Angeles', utc) >= TIMESTAMP '1966-04-24' AND timezone('America/Los_Angeles', utc) < TIMESTAMP '1966-04-25';
+----
+1904
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM sixties_spring
+WHERE timezone('America/Los_Angeles', utc) >= TIMESTAMP '1966-04-24' AND timezone('America/Los_Angeles', utc) < TIMESTAMP '1966-04-25';
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 2 / 3.*
+
+# Los Angeles went from local mean time, 7:52:58 behind UTC, to standard time at 20:00 UTC on 1883-11-18
+statement ok
+CREATE TABLE lmt AS SELECT to_timestamp(-2717643600 + range) AS utc FROM range(6144);
+
+# the local times from 12:00:00 to 12:07:01 occurred twice, all within the second row group
+query I
+SELECT count(*) FROM lmt WHERE timezone('America/Los_Angeles', utc) = TIMESTAMP '1883-11-18 12:05:00';
+----
+2
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM lmt WHERE timezone('America/Los_Angeles', utc) = TIMESTAMP '1883-11-18 12:05:00';
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*
+
+query I
+SELECT count(*) FROM lmt WHERE timezone('America/Los_Angeles', utc) = TIMESTAMP '1883-11-18 11:30:00';
+----
+1
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM lmt WHERE timezone('America/Los_Angeles', utc) = TIMESTAMP '1883-11-18 11:30:00';
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*
+
+# the same seconds as local times
+statement ok
+CREATE TABLE lmt_local AS SELECT TIMESTAMP '1883-11-18 11:07:02' + to_seconds(range) AS local FROM range(6144);
+
+query I
+SELECT count(*) FROM lmt_local WHERE timezone('America/Los_Angeles', local) = TIMESTAMPTZ '1883-11-18 20:05:00+00';
+----
+1
+
+query II
+EXPLAIN ANALYZE SELECT count(*) FROM lmt_local WHERE timezone('America/Los_Angeles', local) = TIMESTAMPTZ '1883-11-18 20:05:00+00';
+----
+analyzed_plan	<REGEX>:.*Row Groups Scanned: 1 / 3.*
+
 #################### tight bounds ####################
 
 # a day without a transition in the era of the recurring rule, so the bounds are the shifted ends
@@ -142,6 +258,30 @@ physical_plan	<REGEX>:.*Empty Result.*
 
 query II
 EXPLAIN SELECT utc FROM old_day WHERE timezone('America/Los_Angeles', utc) = TIMESTAMP '1998-12-31 15:59:59.999999';
+----
+physical_plan	<REGEX>:.*Empty Result.*
+
+# a day of local mean time before the first transition, 7:52:58 behind UTC
+statement ok
+CREATE TABLE lmt_day AS SELECT to_timestamp(-2840140800 + range * 3600) AS utc FROM range(25);
+
+query II
+EXPLAIN SELECT utc FROM lmt_day WHERE timezone('America/Los_Angeles', utc) = TIMESTAMP '1880-01-01 16:07:02';
+----
+physical_plan	<!REGEX>:.*Empty Result.*
+
+query II
+EXPLAIN SELECT utc FROM lmt_day WHERE timezone('America/Los_Angeles', utc) = TIMESTAMP '1880-01-01 16:07:02.000001';
+----
+physical_plan	<REGEX>:.*Empty Result.*
+
+query II
+EXPLAIN SELECT utc FROM lmt_day WHERE timezone('America/Los_Angeles', utc) = TIMESTAMP '1879-12-31 16:07:02';
+----
+physical_plan	<!REGEX>:.*Empty Result.*
+
+query II
+EXPLAIN SELECT utc FROM lmt_day WHERE timezone('America/Los_Angeles', utc) = TIMESTAMP '1879-12-31 16:07:01.999999';
 ----
 physical_plan	<REGEX>:.*Empty Result.*
 
