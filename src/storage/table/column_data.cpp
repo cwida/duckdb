@@ -32,9 +32,6 @@
 #include "duckdb/storage/table/data_table_info.hpp"
 #include "duckdb/storage/table/append_state.hpp"
 #include "duckdb/storage/table/scan_state.hpp"
-#include "duckdb/common/vector_operations/vector_operations.hpp"
-
-#include <algorithm>
 
 namespace duckdb {
 
@@ -904,34 +901,13 @@ void ColumnData::FetchBaseRows(const QueryContext &context, const idx_t *offsets
 void ColumnData::FetchBaseRows(row_t *row_ids, idx_t count, Vector &result, idx_t row_group_start) {
 	D_ASSERT(count > 0 && count <= STANDARD_VECTOR_SIZE);
 	vector<idx_t> offsets(count);
-	bool sorted = true;
 	for (idx_t i = 0; i < count; i++) {
 		if (row_ids[i] < UnsafeNumericCast<row_t>(row_group_start)) {
 			throw InternalException("ColumnData::FetchBaseRows - row id out of range");
 		}
 		offsets[i] = UnsafeNumericCast<idx_t>(row_ids[i]) - row_group_start;
-		if (i > 0 && offsets[i] <= offsets[i - 1]) {
-			sorted = false;
-		}
 	}
-	if (sorted) {
-		FetchBaseRows(QueryContext(), offsets.data(), *FlatVector::IncrementalSelectionVector(), count, result, 0);
-		return;
-	}
-	// Scan in row-id order so consecutive rows stay one scan, then put values back in update order.
-	SelectionVector order(count);
-	for (idx_t i = 0; i < count; i++) {
-		order.set_index(i, i);
-	}
-	std::sort(order.data(), order.data() + count,
-	          [&](sel_t left, sel_t right) { return offsets[left] < offsets[right]; });
-	Vector sorted_rows(result.GetType(), count);
-	FetchBaseRows(QueryContext(), offsets.data(), order, count, sorted_rows, 0);
-	SelectionVector scatter(count);
-	for (idx_t i = 0; i < count; i++) {
-		scatter.set_index(order.get_index(i), i);
-	}
-	VectorOperations::Copy(sorted_rows, result, scatter, count, 0, 0);
+	FetchBaseRows(QueryContext(), offsets.data(), *FlatVector::IncrementalSelectionVector(), count, result, 0);
 }
 
 void ColumnData::Update(TransactionData transaction, DuckTableEntry &table_entry, idx_t column_index,

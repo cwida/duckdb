@@ -1,5 +1,4 @@
 #include "duckdb/storage/table/standard_column_data.hpp"
-#include "duckdb/common/vector/flat_vector.hpp"
 #include "duckdb/storage/table/scan_state.hpp"
 #include "duckdb/storage/table/update_segment.hpp"
 #include "duckdb/storage/table/append_state.hpp"
@@ -161,11 +160,7 @@ void StandardColumnData::Update(TransactionData transaction, DuckTableEntry &tab
                                 Vector &update_vector, row_t *row_ids, idx_t update_count, idx_t row_group_start) {
 	Vector base_vector(type, update_count);
 	FetchBaseRows(row_ids, update_count, base_vector, row_group_start);
-
-	// a row is NULL when either the data column or the validity column says so
-	Vector validity_vector(validity->type, update_count);
-	validity->FetchBaseRows(row_ids, update_count, validity_vector, row_group_start);
-	FlatVector::ValidityMutable(base_vector).Combine(validity_vector, update_count);
+	validity->FetchBaseRows(row_ids, update_count, base_vector, row_group_start);
 
 	UpdateInternal(transaction, table_entry, column_index, update_vector, row_ids, update_count, base_vector,
 	               row_group_start);
