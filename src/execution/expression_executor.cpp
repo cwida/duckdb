@@ -142,6 +142,11 @@ void ExpressionExecutor::ExecuteExpression(idx_t expr_idx, Vector &result) {
 	Execute(*expressions[expr_idx], states[expr_idx]->root_state.get(), nullptr, chunk ? chunk->size() : 1, result);
 }
 
+void ExpressionExecutor::ExecuteExpression(idx_t expr_idx, Vector &result, const SelectionVector &sel, idx_t count) {
+	D_ASSERT(expr_idx < expressions.size());
+	Execute(*expressions[expr_idx], states[expr_idx]->root_state.get(), &sel, count, result);
+}
+
 Value ExpressionExecutor::EvaluateScalar(ClientContext &context, const Expression &expr, bool allow_unfoldable) {
 	D_ASSERT(allow_unfoldable || expr.IsFoldable());
 	D_ASSERT(expr.IsScalar());

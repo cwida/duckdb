@@ -46,11 +46,11 @@ struct NumericBlob {
 	//! unspecified) when a value does not fit
 	DUCKDB_API static bool TryDecode(Vector &canonical, idx_t count, Vector &typed);
 	//! The unscaled 128-bit value and the scale (without trailing zeros) of a blob; false beyond 38 digits
-	DUCKDB_API static bool TryDecodeUnscaled(const string_t &blob, hugeint_t &unscaled, uint8_t &scale);
+	DUCKDB_API static bool TryDecodeUnscaled(const string_t &blob, hugeint_t &unscaled, uint32_t &scale);
 	//! Writes the blob of unscaled * 10^-scale into a buffer of MAX_BLOB_SIZE bytes and returns its length
-	DUCKDB_API static idx_t EncodeUnscaled(hugeint_t unscaled, uint8_t scale, data_ptr_t buffer);
+	DUCKDB_API static idx_t EncodeUnscaled(hugeint_t unscaled, uint32_t scale, data_ptr_t buffer);
 	//! Adds the blob of unscaled * 10^-scale to a canonical NUMERIC vector
-	DUCKDB_API static string_t AddUnscaled(Vector &result, hugeint_t unscaled, uint8_t scale);
+	DUCKDB_API static string_t AddUnscaled(Vector &result, hugeint_t unscaled, uint32_t scale);
 	//! Strips the trailing zeros of the fractional part of decimal text (and the point if nothing remains)
 	DUCKDB_API static string NormalizeText(const string &text);
 };

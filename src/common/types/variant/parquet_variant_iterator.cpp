@@ -559,8 +559,8 @@ string_t ParquetVariantNode::GetString() const {
 
 VariantDecimalProperties ParquetVariantNode::GetDecimalProperties() const {
 	if (kind == Kind::SHREDDED) {
-		uint8_t width;
-		uint8_t scale;
+		uint32_t width;
+		uint32_t scale;
 		view->typed_type.GetDecimalProperties(width, scale);
 		return VariantDecimalProperties(width, scale);
 	}

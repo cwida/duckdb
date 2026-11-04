@@ -81,7 +81,7 @@ string ParquetDecimalUtils::ReadWideDecimalValue(const_data_ptr_t pointer, idx_t
 	return BignumDecimal::FromTwosComplement(pointer, size, true);
 }
 
-idx_t ParquetDecimalUtils::WideDecimalByteLength(uint8_t width) {
+idx_t ParquetDecimalUtils::WideDecimalByteLength(uint32_t width) {
 	// a decimal of "width" digits needs log2(10^width) bits plus a sign bit
 	return static_cast<idx_t>(std::ceil((static_cast<double>(width) * 3.3219280948873626 + 1) / 8.0));
 }

@@ -41,7 +41,7 @@ class CSVCast {
 	template <class OP, class T>
 	static bool TemplatedTryCastDecimalVector(const CSVReaderOptions &options, Vector &input_vector,
 	                                          Vector &result_vector, idx_t count, CastParameters &parameters,
-	                                          uint8_t width, uint8_t scale, idx_t &line_error) {
+	                                          uint32_t width, uint32_t scale, idx_t &line_error) {
 		D_ASSERT(input_vector.GetType().id() == LogicalTypeId::VARCHAR);
 		bool all_converted = true;
 		auto &validity_mask = FlatVector::ValidityMutable(result_vector);
@@ -104,7 +104,7 @@ class CSVCast {
 
 	//! Parses wide (BIGNUM-backed) decimals written with a comma as the decimal separator
 	static bool TryCastWideDecimalVectorCommaSeparated(Vector &input_vector, Vector &result_vector, idx_t count,
-	                                                   uint8_t width, uint8_t scale, idx_t &line_error) {
+	                                                   uint32_t width, uint32_t scale, idx_t &line_error) {
 		D_ASSERT(input_vector.GetType().id() == LogicalTypeId::VARCHAR);
 		bool all_converted = true;
 		auto &validity_mask = FlatVector::ValidityMutable(result_vector);
@@ -128,8 +128,8 @@ class CSVCast {
 
 public:
 	//! Parses a wide (BIGNUM-backed) decimal from text written with the given decimal separator
-	static bool TryParseWideDecimal(const char *value_ptr, idx_t size, char decimal_separator, uint8_t width,
-	                                uint8_t scale, string &result) {
+	static bool TryParseWideDecimal(const char *value_ptr, idx_t size, char decimal_separator, uint32_t width,
+	                                uint32_t scale, string &result) {
 		// like the fixed-size decimals: a period is not a valid character when the comma separates
 		return BignumDecimal::TryParse(value_ptr, size, width, scale, result, decimal_separator);
 	}

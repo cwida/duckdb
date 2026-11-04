@@ -21,7 +21,7 @@ namespace {
 //! An exact value: unscaled * 10^-scale when it fits 128 bits, otherwise (wide decimals) its canonical blob
 struct NumericValueRef {
 	bool wide = false;
-	uint8_t scale = 0;
+	uint32_t scale = 0;
 	hugeint_t unscaled;
 	string_t blob;
 };
@@ -88,7 +88,7 @@ struct NumericStateValue : public NumericValueRef {
 		alloc_size = 0;
 	}
 
-	void SetUnscaled(hugeint_t unscaled_p, uint8_t scale_p) {
+	void SetUnscaled(hugeint_t unscaled_p, uint32_t scale_p) {
 		wide = false;
 		unscaled = unscaled_p;
 		scale = scale_p;
@@ -197,7 +197,7 @@ struct NumericInput {
 	unique_ptr<Vector> canonical;
 	UnifiedVectorFormat data;
 	PhysicalType physical = PhysicalType::INVALID;
-	uint8_t scale = 0;
+	uint32_t scale = 0;
 	//! Whether the values are known to be small enough for a run to be summed in 64 bits without checks
 	bool small_values = false;
 };
@@ -333,7 +333,7 @@ struct NumericMinMax {
 		}
 	}
 
-	static inline void MergeUnscaled(STATE &state, hugeint_t unscaled, uint8_t scale) {
+	static inline void MergeUnscaled(STATE &state, hugeint_t unscaled, uint32_t scale) {
 		if (!state.is_set) {
 			state.is_set = true;
 			state.value.SetUnscaled(unscaled, scale);
@@ -635,7 +635,7 @@ struct NumericFirst {
 //! the scale changes, so the common case costs one checked 64-bit addition per value
 struct NumericSumState {
 	bool is_set;
-	uint8_t scale;
+	uint32_t scale;
 	int64_t narrow;
 	hugeint_t wide;
 
@@ -652,7 +652,7 @@ struct NumericSumState {
 	}
 
 	//! Brings the sum to a larger scale
-	inline void Rescale(uint8_t new_scale) {
+	inline void Rescale(uint32_t new_scale) {
 		D_ASSERT(new_scale > scale);
 		Fold();
 		if (!Hugeint::TryMultiply(wide, Hugeint::POWERS_OF_TEN[new_scale - scale], wide)) {
@@ -661,7 +661,7 @@ struct NumericSumState {
 		scale = new_scale;
 	}
 
-	inline void AddWide(hugeint_t value, uint8_t value_scale) {
+	inline void AddWide(hugeint_t value, uint32_t value_scale) {
 		if (!is_set) {
 			is_set = true;
 			scale = value_scale;
@@ -680,7 +680,7 @@ struct NumericSumState {
 		}
 	}
 
-	inline void AddNarrow(int64_t value, uint8_t value_scale) {
+	inline void AddNarrow(int64_t value, uint32_t value_scale) {
 		if (!is_set) {
 			is_set = true;
 			scale = value_scale;
@@ -720,21 +720,21 @@ struct NumericSumState {
 //! Adds a value of a representation to a sum: 64-bit representations take the narrow path
 template <class T>
 struct SumValue {
-	static inline void Add(NumericSumState &state, T value, uint8_t scale) {
+	static inline void Add(NumericSumState &state, T value, uint32_t scale) {
 		state.AddNarrow(int64_t(value), scale);
 	}
 };
 
 template <>
 struct SumValue<hugeint_t> {
-	static inline void Add(NumericSumState &state, hugeint_t value, uint8_t scale) {
+	static inline void Add(NumericSumState &state, hugeint_t value, uint32_t scale) {
 		state.AddWide(value, scale);
 	}
 };
 
 template <>
 struct SumValue<uint64_t> {
-	static inline void Add(NumericSumState &state, uint64_t value, uint8_t scale) {
+	static inline void Add(NumericSumState &state, uint64_t value, uint32_t scale) {
 		state.AddWide(Hugeint::Convert(value), scale);
 	}
 };
@@ -860,14 +860,14 @@ struct NumericSum {
 		}
 	}
 
-	static inline void Add(STATE &state, hugeint_t value, uint8_t scale) {
+	static inline void Add(STATE &state, hugeint_t value, uint32_t scale) {
 		state.AddWide(value, scale);
 	}
 
 	//! Wide values: the sum stays within 38 digits or overflows
 	static inline void AddBlob(STATE &state, string_t blob) {
 		hugeint_t unscaled;
-		uint8_t scale;
+		uint32_t scale;
 		if (!NumericBlob::TryDecodeUnscaled(blob, unscaled, scale)) {
 			STATE::Overflow();
 		}

@@ -150,7 +150,7 @@ BoundCastInfo DefaultCasts::ToNumericCastSwitch(BindCastInput &input, const Logi
 //! The decimal text of every value, the same whatever its representation: no exponent, no trailing zeros
 //! Writes the decimal text of a fixed-size DECIMAL representation without the trailing zeros of the fraction
 template <class T>
-static void WriteDecimalText(const Vector &typed, idx_t count, uint8_t width, uint8_t scale, Vector &result) {
+static void WriteDecimalText(const Vector &typed, idx_t count, uint32_t width, uint32_t scale, Vector &result) {
 	UnifiedVectorFormat vdata;
 	typed.ToUnifiedFormat(vdata);
 	auto data = UnifiedVectorFormat::GetData<T>(vdata);
@@ -269,9 +269,9 @@ static bool SameBits(Vector &source, const Vector &typed, const LogicalType &tar
 	if (type.InternalType() != target.InternalType() || !NumericType::IsExact(target)) {
 		return false;
 	}
-	uint8_t source_scale = type.id() == LogicalTypeId::DECIMAL ? DecimalType::GetScale(type) : 0;
+	uint32_t source_scale = type.id() == LogicalTypeId::DECIMAL ? DecimalType::GetScale(type) : 0;
 	hugeint_t min, max;
-	uint8_t target_scale;
+	uint32_t target_scale;
 	if (!NumericType::TryGetRepresentationRange(target, min, max, target_scale) || target_scale != source_scale) {
 		return false;
 	}

@@ -913,7 +913,7 @@ bool LogicalType::SupportsRegularUpdate() const {
 	}
 }
 
-bool LogicalType::GetDecimalProperties(uint8_t &width, uint8_t &scale) const {
+bool LogicalType::GetDecimalProperties(uint32_t &width, uint32_t &scale) const {
 	switch (id()) {
 	case LogicalTypeId::SQLNULL:
 		width = 0;
@@ -1003,8 +1003,8 @@ static LogicalType DecimalSizeCheck(const LogicalType &left, const LogicalType &
 	auto width = DecimalType::GetWidth(right);
 	auto scale = DecimalType::GetScale(right);
 
-	uint8_t other_width;
-	uint8_t other_scale;
+	uint32_t other_width;
+	uint32_t other_scale;
 	bool success = left.GetDecimalProperties(other_width, other_scale);
 	if (!success) {
 		throw InternalException("Type provided to DecimalSizeCheck was not a numeric type");
@@ -1012,12 +1012,12 @@ static LogicalType DecimalSizeCheck(const LogicalType &left, const LogicalType &
 	D_ASSERT(other_scale == 0);
 	const auto effective_width = width - scale;
 	if (other_width > effective_width) {
-		idx_t new_width = idx_t(other_width) + scale;
+		uint32_t new_width = other_width + scale;
 		//! Cap the width at max, if an actual value exceeds this, an exception will be thrown later
 		if (new_width > Decimal::MAX_WIDTH_DECIMAL) {
 			new_width = Decimal::MAX_WIDTH_DECIMAL;
 		}
-		return LogicalType::DECIMAL(NumericCast<uint8_t>(new_width), scale);
+		return LogicalType::DECIMAL(new_width, scale);
 	}
 	return right;
 }
@@ -1548,23 +1548,23 @@ LogicalType LogicalType::WithExtensionInfo(unique_ptr<ExtensionTypeInfo> info) c
 //===--------------------------------------------------------------------===//
 // Decimal Type
 //===--------------------------------------------------------------------===//
-uint8_t DecimalType::GetWidth(const LogicalType &type) {
+uint32_t DecimalType::GetWidth(const LogicalType &type) {
 	D_ASSERT(type.id() == LogicalTypeId::DECIMAL);
 	auto &info = type.GetTypeInfo();
 	return info.Cast<DecimalTypeInfo>().width;
 }
 
-uint8_t DecimalType::GetScale(const LogicalType &type) {
+uint32_t DecimalType::GetScale(const LogicalType &type) {
 	D_ASSERT(type.id() == LogicalTypeId::DECIMAL);
 	auto &info = type.GetTypeInfo();
 	return info.Cast<DecimalTypeInfo>().scale;
 }
 
-uint8_t DecimalType::MaxWidth() {
+uint32_t DecimalType::MaxWidth() {
 	return Decimal::MAX_WIDTH_DECIMAL;
 }
 
-LogicalType LogicalType::DECIMAL(uint8_t width, uint8_t scale) {
+LogicalType LogicalType::DECIMAL(uint32_t width, uint32_t scale) {
 	D_ASSERT(width >= scale);
 	auto type_info = make_uniq<DecimalTypeInfo>(width, scale);
 	return LogicalType(LogicalTypeId::DECIMAL, std::move(type_info));

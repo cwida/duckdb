@@ -63,10 +63,10 @@ namespace {
 struct ExactRange {
 	hugeint_t min;
 	hugeint_t max;
-	uint8_t scale = 0;
+	uint32_t scale = 0;
 };
 
-bool AlignScale(ExactRange &range, uint8_t scale) {
+bool AlignScale(ExactRange &range, uint32_t scale) {
 	if (range.scale == scale) {
 		return true;
 	}
@@ -158,7 +158,7 @@ bool TryGetOperandRange(Vector &arg, Vector &typed, idx_t count, ExactRange &ran
 	return NumericType::TryGetRepresentationRange(type, range.min, range.max, range.scale);
 }
 
-void GetOperandDigits(const LogicalType &type, uint8_t &integer_digits, uint8_t &scale) {
+void GetOperandDigits(const LogicalType &type, uint32_t &integer_digits, uint32_t &scale) {
 	if (type.id() == LogicalTypeId::SQLNULL) {
 		integer_digits = 0;
 		scale = 0;
@@ -242,7 +242,7 @@ bool TryResultRange(NumericDispatchKind kind, vector<ExactRange> ranges, ExactRa
 			result.min = MinValue(result.min, candidates[i]);
 			result.max = MaxValue(result.max, candidates[i]);
 		}
-		result.scale = NumericCast<uint8_t>(scale);
+		result.scale = NumericCast<uint32_t>(scale);
 		return true;
 	}
 	auto scale = MaxValue(ranges[0].scale, ranges[1].scale);
@@ -262,7 +262,7 @@ bool TryResultRange(NumericDispatchKind kind, vector<ExactRange> ranges, ExactRa
 //! The result representation sized by the digits of the operand representations (beyond 128 bits)
 //! A representation sized by digits is capped at the widest DECIMAL: the wide kernels then check every result for
 //! overflow, as the binder's own clamped wide decimal arithmetic does
-LogicalType ClampedForDigits(idx_t integer_digits, uint8_t scale) {
+LogicalType ClampedForDigits(idx_t integer_digits, uint32_t scale) {
 	// scale never exceeds the widest DECIMAL (callers that sum scales check that first), so a full-width scale leaves
 	// no room for integer digits: cap them and let the wide kernel check the result for overflow at run time
 	if (integer_digits + scale > Decimal::MAX_WIDTH_DECIMAL) {
@@ -272,19 +272,19 @@ LogicalType ClampedForDigits(idx_t integer_digits, uint8_t scale) {
 }
 
 LogicalType ResultTypeByDigits(NumericDispatchKind kind, vector<unique_ptr<Vector>> &typed) {
-	uint8_t left_digits, left_scale;
+	uint32_t left_digits, left_scale;
 	GetOperandDigits(typed[0]->GetType(), left_digits, left_scale);
 	if (typed.size() == 1) {
 		return NumericType::ForDigits(left_digits, left_scale);
 	}
-	uint8_t right_digits, right_scale;
+	uint32_t right_digits, right_scale;
 	GetOperandDigits(typed[1]->GetType(), right_digits, right_scale);
 	if (kind == NumericDispatchKind::MULTIPLY) {
 		idx_t scale = idx_t(left_scale) + right_scale;
 		if (scale > Decimal::MAX_WIDTH_DECIMAL) {
 			throw OutOfRangeException("NUMERIC multiplication needs more than %d digits", Decimal::MAX_WIDTH_DECIMAL);
 		}
-		return ClampedForDigits(idx_t(left_digits) + right_digits, NumericCast<uint8_t>(scale));
+		return ClampedForDigits(idx_t(left_digits) + right_digits, NumericCast<uint32_t>(scale));
 	}
 	return ClampedForDigits(idx_t(MaxValue(left_digits, right_digits)) + 1, MaxValue(left_scale, right_scale));
 }
@@ -299,7 +299,7 @@ vector<LogicalType> WidenedKernelTypes(NumericDispatchKind kind, vector<unique_p
 		// the decimal multiplication keeps the scales of its operands and adds their widths: widen the first operand so
 		// the sum of the widths covers the result, and lift it past the fixed-size tiers when the result needs that
 		auto result_width = DecimalType::GetWidth(result_type);
-		uint8_t widths[2], scales[2];
+		uint32_t widths[2], scales[2];
 		for (idx_t i = 0; i < 2; i++) {
 			auto &type = typed[i]->GetType();
 			if (type.id() == LogicalTypeId::SQLNULL) {
@@ -307,11 +307,11 @@ vector<LogicalType> WidenedKernelTypes(NumericDispatchKind kind, vector<unique_p
 				scales[i] = 0;
 			} else if (have_ranges) {
 				scales[i] = ranges[i].scale;
-				widths[i] = NumericCast<uint8_t>(MaxValue<idx_t>(
+				widths[i] = NumericCast<uint32_t>(MaxValue<idx_t>(
 				    MaxValue(NumericType::Digits(ranges[i].min), NumericType::Digits(ranges[i].max)), scales[i]));
 			} else {
 				NumericType::GetDigits(type, widths[i], scales[i]);
-				widths[i] = NumericCast<uint8_t>(widths[i] + scales[i]);
+				widths[i] += scales[i];
 			}
 		}
 		idx_t left_width = MaxValue<idx_t>(widths[0], result_width > widths[1] ? result_width - widths[1] : 0);
@@ -326,7 +326,7 @@ vector<LogicalType> WidenedKernelTypes(NumericDispatchKind kind, vector<unique_p
 		if (left_width > Decimal::MAX_WIDTH_DECIMAL) {
 			throw OutOfRangeException("NUMERIC multiplication needs more than %d digits", Decimal::MAX_WIDTH_DECIMAL);
 		}
-		cast_types.push_back(LogicalType::DECIMAL(NumericCast<uint8_t>(left_width), scales[0]));
+		cast_types.push_back(LogicalType::DECIMAL(NumericCast<uint32_t>(left_width), scales[0]));
 		cast_types.push_back(LogicalType::DECIMAL(MaxValue(widths[1], scales[1]), scales[1]));
 	} else {
 		for (idx_t i = 0; i < typed.size(); i++) {
@@ -339,7 +339,7 @@ vector<LogicalType> WidenedKernelTypes(NumericDispatchKind kind, vector<unique_p
 //! Whether a representation holds every value of a range
 bool RepresentationHolds(const LogicalType &type, const ExactRange &range) {
 	hugeint_t min, max;
-	uint8_t scale;
+	uint32_t scale;
 	if (!NumericType::TryGetRepresentationRange(type, min, max, scale)) {
 		return false;
 	}
@@ -560,7 +560,7 @@ bool TryConvertUnchecked(Vector &source, const ExactRange &range, Vector &target
 		return false;
 	}
 	hugeint_t target_min, target_max;
-	uint8_t target_scale;
+	uint32_t target_scale;
 	if (!NumericType::TryGetRepresentationRange(target_type, target_min, target_max, target_scale)) {
 		return false;
 	}
@@ -605,7 +605,7 @@ void FinishResult(const LogicalType &return_type, Vector &typed_result, idx_t co
 		auto &result_type = typed_result.GetType();
 		ShreddedNumericRange range;
 		bool known;
-		uint8_t result_scale = result_type.id() == LogicalTypeId::DECIMAL ? DecimalType::GetScale(result_type) : 0;
+		uint32_t result_scale = result_type.id() == LogicalTypeId::DECIMAL ? DecimalType::GetScale(result_type) : 0;
 		if (interval && interval->scale == result_scale) {
 			// every possible result lies in the interval of the operand ranges
 			range.valid = true;
@@ -765,7 +765,7 @@ void NumericDispatchFunction(DataChunk &args, ExpressionState &state, Vector &re
 			return;
 		}
 		// rounding to a negative precision can carry into one more digit: the kernel runs one digit wider
-		uint8_t digits, scale;
+		uint32_t digits, scale;
 		NumericType::GetDigits(typed[0]->GetType(), digits, scale);
 		auto wider = NumericType::ForDigits(idx_t(digits) + 1, 0);
 		auto widened = make_uniq<Vector>(wider, count);

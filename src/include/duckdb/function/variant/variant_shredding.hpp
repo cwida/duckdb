@@ -50,6 +50,13 @@ public:
 
 public:
 	void Update(const Vector &input, idx_t count);
+	//! A value is nested too deep for the visitors that write the shredded data, so the column stays unshredded
+	void SetTooDeep() {
+		too_deep = true;
+	}
+	bool IsTooDeep() const {
+		return too_deep;
+	}
 	//! If force_partial is set, every level keeps its 'untyped_value_index' (overlay) column even when the
 	//! sampled values are fully consistent - allowing later inconsistent values to be partially shredded.
 	LogicalType GetShreddedType(bool force_partial = false) const;
@@ -63,6 +70,7 @@ private:
 	vector<VariantColumnStatsData> columns;
 	//! Owns the field names referenced by the 'field_stats' of the columns
 	StringHeap field_names;
+	bool too_deep = false;
 };
 
 struct VariantShredding {

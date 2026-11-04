@@ -361,9 +361,6 @@ bool DictFSSTAnalyzeState::Analyze(const Vector &input) {
 		}
 		auto &str = entry.GetValue();
 		auto str_len = str.GetSize();
-		if (str_len > max_string_length) {
-			max_string_length = str_len;
-		}
 		if (str_len >= string_size_limit) {
 			// A segment cannot be spread out over multiple blocks, so if a string cannot fit in an empty segment
 			// the encoding will fail

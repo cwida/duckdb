@@ -99,7 +99,10 @@ DatabaseInstance::~DatabaseInstance() {
 	if (db_manager) {
 		db_manager->ResetDatabases();
 	}
-	config.http_transport_manager->Close();
+	// an instance whose initialization failed may not have every member yet, and a destructor cannot throw
+	if (config.http_transport_manager) {
+		config.http_transport_manager->Close();
+	}
 	// destroy child elements
 	connection_manager.reset();
 	object_cache.reset();
@@ -115,7 +118,9 @@ DatabaseInstance::~DatabaseInstance() {
 	buffer_manager.reset();
 
 	// Flush allocations and disable the background thread.
-	config.block_allocator->FlushOnShutdown();
+	if (config.block_allocator) {
+		config.block_allocator->FlushOnShutdown();
+	}
 	Allocator::SetBackgroundThreads(false);
 	// after all destruction is complete clear the cache entry
 	config.db_cache_entry.reset();

@@ -15,7 +15,7 @@ namespace duckdb {
 //! The exact range of the values of a NUMERIC vector, as unscaled values at the scale of its representation
 struct ShreddedNumericRange {
 	bool valid = false;
-	uint8_t scale = 0;
+	uint32_t scale = 0;
 	hugeint_t min;
 	hugeint_t max;
 };

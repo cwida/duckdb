@@ -33,7 +33,7 @@ public:
 	const Value &Max() const {
 		return max;
 	}
-	uint8_t Scale() const {
+	uint32_t Scale() const {
 		return scale;
 	}
 
@@ -65,7 +65,7 @@ public:
 private:
 	bool has_values = false;
 	//! The fractional digits the values need
-	uint8_t scale = 0;
+	uint32_t scale = 0;
 	//! The minimum and maximum as DECIMAL values of the scale
 	Value min;
 	Value max;

@@ -42,7 +42,7 @@ string NumericType::NotExactMessage(const LogicalType &type) {
 	                          type.ToString());
 }
 
-void NumericType::GetDigits(const LogicalType &type, uint8_t &integer_digits, uint8_t &scale) {
+void NumericType::GetDigits(const LogicalType &type, uint32_t &integer_digits, uint32_t &scale) {
 	scale = 0;
 	switch (type.id()) {
 	case LogicalTypeId::TINYINT:
@@ -69,7 +69,7 @@ void NumericType::GetDigits(const LogicalType &type, uint8_t &integer_digits, ui
 		break;
 	case LogicalTypeId::DECIMAL:
 		scale = DecimalType::GetScale(type);
-		integer_digits = NumericCast<uint8_t>(DecimalType::GetWidth(type) - scale);
+		integer_digits = DecimalType::GetWidth(type) - scale;
 		break;
 	default:
 		throw InternalException("NumericType::GetDigits called on non-exact type %s", type.ToString());
@@ -114,7 +114,7 @@ static LogicalType SignedIntegerType(idx_t rank) {
 	}
 }
 
-static LogicalType DecimalForDigits(idx_t integer_digits, uint8_t scale) {
+static LogicalType DecimalForDigits(idx_t integer_digits, uint32_t scale) {
 	auto width = integer_digits + scale;
 	if (width > Decimal::MAX_WIDTH_DECIMAL) {
 		throw OutOfRangeException("NUMERIC value needs %d digits, more than the maximum of %d", width,
@@ -123,7 +123,7 @@ static LogicalType DecimalForDigits(idx_t integer_digits, uint8_t scale) {
 	if (width < 1) {
 		width = 1;
 	}
-	return LogicalType::DECIMAL(NumericCast<uint8_t>(width), scale);
+	return LogicalType::DECIMAL(NumericCast<uint32_t>(width), scale);
 }
 
 bool NumericType::TryWiden(const LogicalType &left, const LogicalType &right, LogicalType &result) {
@@ -139,7 +139,7 @@ bool NumericType::TryWiden(const LogicalType &left, const LogicalType &right, Lo
 		result = SignedIntegerType(MaxValue(left_rank, right_rank));
 		return true;
 	}
-	uint8_t left_digits, left_scale, right_digits, right_scale;
+	uint32_t left_digits, left_scale, right_digits, right_scale;
 	GetDigits(left, left_digits, left_scale);
 	GetDigits(right, right_digits, right_scale);
 	return TryForDigits(MaxValue(left_digits, right_digits), MaxValue(left_scale, right_scale), result);
@@ -163,7 +163,7 @@ bool NumericType::IsCanonicalStorage(const LogicalType &type) {
 	return type.id() == LogicalTypeId::BLOB;
 }
 
-bool NumericType::TryForRange(const Value &min, const Value &max, uint8_t scale, LogicalType &result) {
+bool NumericType::TryForRange(const Value &min, const Value &max, uint32_t scale, LogicalType &result) {
 	if (min.IsNull() || max.IsNull()) {
 		result = DefaultType();
 		return true;
@@ -180,7 +180,7 @@ bool NumericType::TryForRange(const Value &min, const Value &max, uint8_t scale,
 	return TryForDigits(integer_digits, scale, result);
 }
 
-uint8_t NumericType::IntegerDigits(const Value &value) {
+uint32_t NumericType::IntegerDigits(const Value &value) {
 	if (value.IsNull()) {
 		return 0;
 	}
@@ -203,10 +203,10 @@ uint8_t NumericType::IntegerDigits(const Value &value) {
 		digits++;
 		pos++;
 	}
-	return NumericCast<uint8_t>(digits);
+	return NumericCast<uint32_t>(digits);
 }
 
-LogicalType NumericType::ForRange(const Value &min, const Value &max, uint8_t scale) {
+LogicalType NumericType::ForRange(const Value &min, const Value &max, uint32_t scale) {
 	LogicalType result;
 	if (!TryForRange(min, max, scale, result)) {
 		throw OutOfRangeException("NUMERIC values %s and %s have no common representation: they need more than %d "
@@ -230,7 +230,7 @@ idx_t NumericType::Digits(hugeint_t value) {
 	return digits;
 }
 
-LogicalType NumericType::ForUnscaledRange(hugeint_t min, hugeint_t max, uint8_t scale) {
+LogicalType NumericType::ForUnscaledRange(hugeint_t min, hugeint_t max, uint32_t scale) {
 	if (scale == 0) {
 		if (min >= NumericLimits<int8_t>::Minimum() && max <= NumericLimits<int8_t>::Maximum()) {
 			return LogicalType::TINYINT;
@@ -252,10 +252,10 @@ LogicalType NumericType::ForUnscaledRange(hugeint_t min, hugeint_t max, uint8_t 
 		throw OutOfRangeException("NUMERIC value needs %d digits, more than the maximum of %d", width,
 		                          Decimal::MAX_WIDTH_DECIMAL);
 	}
-	return LogicalType::DECIMAL(NumericCast<uint8_t>(width), scale);
+	return LogicalType::DECIMAL(NumericCast<uint32_t>(width), scale);
 }
 
-LogicalType NumericType::ForDigits(idx_t integer_digits, uint8_t scale) {
+LogicalType NumericType::ForDigits(idx_t integer_digits, uint32_t scale) {
 	if (scale == 0) {
 		if (integer_digits <= 2) {
 			return LogicalType::TINYINT;
@@ -276,7 +276,7 @@ LogicalType NumericType::ForDigits(idx_t integer_digits, uint8_t scale) {
 	return DecimalForDigits(integer_digits, scale);
 }
 
-bool NumericType::TryGetRepresentationRange(const LogicalType &type, hugeint_t &min, hugeint_t &max, uint8_t &scale) {
+bool NumericType::TryGetRepresentationRange(const LogicalType &type, hugeint_t &min, hugeint_t &max, uint32_t &scale) {
 	scale = 0;
 	switch (type.id()) {
 	case LogicalTypeId::TINYINT:
@@ -529,7 +529,7 @@ bool NumericType::TryForDigits(idx_t integer_digits, idx_t fractional_digits, Lo
 	    integer_digits + fractional_digits > Decimal::MAX_WIDTH_DECIMAL) {
 		return false;
 	}
-	type = ForDigits(integer_digits, NumericCast<uint8_t>(fractional_digits));
+	type = ForDigits(integer_digits, NumericCast<uint32_t>(fractional_digits));
 	return true;
 }
 
@@ -543,10 +543,10 @@ bool NumericType::TryParseLiteral(const string &text, Value &result) {
 		throw OutOfRangeException("NUMERIC value needs %d digits, more than the maximum of %d", width,
 		                          Decimal::MAX_WIDTH_DECIMAL);
 	}
-	auto scale = NumericCast<uint8_t>(fractional_digits);
+	auto scale = NumericCast<uint32_t>(fractional_digits);
 	auto plain = HasExponent(text.c_str(), text.size()) ? ExpandExponent(text.c_str(), text.size())
 	                                                    : text.substr(begin, end - begin);
-	auto decimal = Value(plain).DefaultTryCastAs(LogicalType::DECIMAL(NumericCast<uint8_t>(width), scale));
+	auto decimal = Value(plain).DefaultTryCastAs(LogicalType::DECIMAL(NumericCast<uint32_t>(width), scale));
 	if (!decimal) {
 		return false;
 	}
@@ -632,7 +632,7 @@ LogicalType NumericType::ResolveCastTarget(const LogicalType &source, const Logi
 	return ResolveCastTargetInternal(source, target);
 }
 
-LogicalType NumericType::WidestType(uint8_t scale) {
+LogicalType NumericType::WidestType(uint32_t scale) {
 	return LogicalType::DECIMAL(Decimal::MAX_WIDTH_DECIMAL, scale);
 }
 

@@ -48,8 +48,8 @@ LogicalType BindDefaultDecimalType(BindLogicalTypeInput &input) {
 }
 
 LogicalType BindDecimalType(BindLogicalTypeInput &input) {
-	auto width = input.modifiers[0].GetValue().GetValue<uint8_t>();
-	auto scale = input.modifiers[1].GetValue().GetValue<uint8_t>();
+	auto width = input.modifiers[0].GetValue().GetValue<uint32_t>();
+	auto scale = input.modifiers[1].GetValue().GetValue<uint32_t>();
 
 	if (width < 1 || width > Decimal::MAX_WIDTH_DECIMAL) {
 		throw BinderException(input.GetLocation(0), "DECIMAL type width must be between 1 and %d",

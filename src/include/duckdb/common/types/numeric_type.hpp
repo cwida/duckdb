@@ -23,32 +23,32 @@ struct NumericType {
 	//! The representation of a NUMERIC column that holds no values
 	DUCKDB_API static LogicalType DefaultType();
 	//! The number of integer digits and the scale that an exact type can hold
-	DUCKDB_API static void GetDigits(const LogicalType &type, uint8_t &integer_digits, uint8_t &scale);
+	DUCKDB_API static void GetDigits(const LogicalType &type, uint32_t &integer_digits, uint32_t &scale);
 	//! The narrowest representation that holds every value of both inputs (type-level widening, used for inserts)
 	DUCKDB_API static LogicalType Widen(const LogicalType &left, const LogicalType &right);
 	//! The same; false when there is no common representation (the values would need more than 255 digits)
 	DUCKDB_API static bool TryWiden(const LogicalType &left, const LogicalType &right, LogicalType &result);
 	//! The narrowest representation for values in [min, max] with the given number of fractional digits
 	//! (value-level, used for the bound type of a column and the storage type of a row group)
-	DUCKDB_API static LogicalType ForRange(const Value &min, const Value &max, uint8_t scale);
+	DUCKDB_API static LogicalType ForRange(const Value &min, const Value &max, uint32_t scale);
 	//! The same; false when there is no common representation
-	DUCKDB_API static bool TryForRange(const Value &min, const Value &max, uint8_t scale, LogicalType &result);
+	DUCKDB_API static bool TryForRange(const Value &min, const Value &max, uint32_t scale, LogicalType &result);
 	//! The storage type of a row group whose values have no common representation: their canonical encoding
 	DUCKDB_API static LogicalType CanonicalStorageType();
 	DUCKDB_API static bool IsCanonicalStorage(const LogicalType &type);
 	//! The number of integer digits of an exact numeric value (0 for |value| < 1)
-	DUCKDB_API static uint8_t IntegerDigits(const Value &value);
+	DUCKDB_API static uint32_t IntegerDigits(const Value &value);
 	//! The number of decimal digits of an unscaled value
 	DUCKDB_API static idx_t Digits(hugeint_t value);
 	//! The narrowest representation for unscaled values in [min, max] at the given scale
-	DUCKDB_API static LogicalType ForUnscaledRange(hugeint_t min, hugeint_t max, uint8_t scale);
+	DUCKDB_API static LogicalType ForUnscaledRange(hugeint_t min, hugeint_t max, uint32_t scale);
 	//! The narrowest representation for values with the given number of integer digits and scale
-	DUCKDB_API static LogicalType ForDigits(idx_t integer_digits, uint8_t scale);
+	DUCKDB_API static LogicalType ForDigits(idx_t integer_digits, uint32_t scale);
 	//! The unscaled value range a fixed-size exact representation can hold; false for representations beyond 128 bits
 	DUCKDB_API static bool TryGetRepresentationRange(const LogicalType &type, hugeint_t &min, hugeint_t &max,
-	                                                 uint8_t &scale);
+	                                                 uint32_t &scale);
 	//! The widest supported representation of exact numbers with the given scale
-	DUCKDB_API static LogicalType WidestType(uint8_t scale);
+	DUCKDB_API static LogicalType WidestType(uint32_t scale);
 	//! Whether the type is NUMERIC or has NUMERIC nested anywhere inside it
 	DUCKDB_API static bool ContainsNumeric(const LogicalType &type);
 	//! The type with every NUMERIC replaced by the default representation

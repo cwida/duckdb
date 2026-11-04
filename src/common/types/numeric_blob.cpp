@@ -120,7 +120,7 @@ inline void WriteDigits(uint64_t value, data_t *digits, idx_t &pos) {
 }
 
 //! Writes the blob of magnitude * 10^-scale into the buffer and returns its length
-idx_t EncodeMagnitude(uhugeint_t magnitude, bool negative, uint8_t scale, data_ptr_t buffer) {
+idx_t EncodeMagnitude(uhugeint_t magnitude, bool negative, uint32_t scale, data_ptr_t buffer) {
 	if (magnitude.upper == 0 && magnitude.lower == 0) {
 		buffer[0] = NUMERIC_CLASS_ZERO;
 		return 1;
@@ -275,7 +275,7 @@ struct DigitGroups {
 //! Writes the blob of a 64-bit magnitude (not zero) into `blob`, which must have room for the digits of all its
 //! groups plus the header and terminator; returns the length
 template <bool NEGATIVE>
-inline idx_t EncodeSmall(const DigitQuads &quads, const DigitGroups &groups, uint8_t scale, data_ptr_t blob) {
+inline idx_t EncodeSmall(const DigitQuads &quads, const DigitGroups &groups, uint32_t scale, data_ptr_t blob) {
 	auto digit_count = groups.DigitCount();
 	auto significant = digit_count - groups.TrailingZeros(quads);
 	BlobHeader::Write(blob, NEGATIVE, int64_t(digit_count) - 1 - int64_t(scale));
@@ -314,7 +314,7 @@ inline idx_t TrailingZeroDigits(uint32_t group_word) {
 
 //! Encodes a magnitude of at most eight digits (not zero) as the words of an inlined string_t, assembled in registers
 template <bool NEGATIVE>
-inline InlineWords EncodeInline(const DigitQuads &quads, uint64_t high, uint64_t low, uint8_t scale) {
+inline InlineWords EncodeInline(const DigitQuads &quads, uint64_t high, uint64_t low, uint32_t scale) {
 	auto top = high != 0 ? high : low;
 	idx_t top_digits = top >= 1000 ? 4 : top >= 100 ? 3 : top >= 10 ? 2 : 1;
 	idx_t digit_count = top_digits;
@@ -360,7 +360,7 @@ inline void StoreWords(string_t *slot, InlineWords words) {
 
 //! Encodes one value into its slot; the writer provides the heap for blobs that do not inline
 template <class T>
-inline void EncodeValue(const DigitQuads &quads, T value, uint8_t scale, string_t *slot,
+inline void EncodeValue(const DigitQuads &quads, T value, uint32_t scale, string_t *slot,
                         VectorWriter<string_t> &writer) {
 	bool negative;
 	auto magnitude = Magnitude<T>::Get(value, negative);
@@ -407,7 +407,7 @@ inline void EncodeValue(const DigitQuads &quads, T value, uint8_t scale, string_
 
 //! Encodes the values of a fixed-size representation
 template <class T>
-void EncodeTyped(Vector &typed, idx_t count, uint8_t scale, Vector &result) {
+void EncodeTyped(Vector &typed, idx_t count, uint32_t scale, Vector &result) {
 	auto &quads = Quads();
 	UnifiedVectorFormat vdata;
 	typed.ToUnifiedFormat(vdata);
@@ -435,7 +435,7 @@ void EncodeTyped(Vector &typed, idx_t count, uint8_t scale, Vector &result) {
 
 //! The digits of a blob as an unscaled 128-bit value at the given scale; false when the value does not fit the scale
 //! or 128 bits
-bool TryGetMagnitude(const BlobView &view, uint8_t scale, uhugeint_t &magnitude) {
+bool TryGetMagnitude(const BlobView &view, uint32_t scale, uhugeint_t &magnitude) {
 	// the digits form an integer that is scaled by 10^(adjusted + 1 - digit_count): bring it to the target scale
 	int64_t shift = view.adjusted + 1 - int64_t(view.digit_count) + int64_t(scale);
 	if (shift < 0 || view.digit_count + idx_t(shift) > NUMERIC_MAX_INT128_DIGITS) {
@@ -501,7 +501,7 @@ bool TryDecodeTyped(Vector &canonical, idx_t count, const LogicalType &type, Vec
 	UnifiedVectorFormat vdata;
 	canonical.ToUnifiedFormat(vdata);
 	auto data = UnifiedVectorFormat::GetData<string_t>(vdata);
-	uint8_t scale = 0;
+	uint32_t scale = 0;
 	bool bounded = false;
 	uhugeint_t limit;
 	if (type.id() == LogicalTypeId::DECIMAL) {
@@ -694,7 +694,7 @@ void NumericBlob::Digits(const string_t &blob, idx_t &integer_digits, idx_t &fra
 	}
 }
 
-bool NumericBlob::TryDecodeUnscaled(const string_t &blob, hugeint_t &unscaled, uint8_t &scale) {
+bool NumericBlob::TryDecodeUnscaled(const string_t &blob, hugeint_t &unscaled, uint32_t &scale) {
 	auto view = ParseBlob(blob);
 	if (view.zero) {
 		unscaled = 0;
@@ -706,7 +706,7 @@ bool NumericBlob::TryDecodeUnscaled(const string_t &blob, hugeint_t &unscaled, u
 	if (fractional_digits > Decimal::MAX_WIDTH_INT128) {
 		return false;
 	}
-	scale = NumericCast<uint8_t>(fractional_digits);
+	scale = NumericCast<uint32_t>(fractional_digits);
 	uhugeint_t magnitude;
 	if (!TryGetMagnitude(view, scale, magnitude)) {
 		return false;
@@ -714,13 +714,13 @@ bool NumericBlob::TryDecodeUnscaled(const string_t &blob, hugeint_t &unscaled, u
 	return FromMagnitude<hugeint_t>::Get(magnitude, view.negative, unscaled);
 }
 
-idx_t NumericBlob::EncodeUnscaled(hugeint_t unscaled, uint8_t scale, data_ptr_t buffer) {
+idx_t NumericBlob::EncodeUnscaled(hugeint_t unscaled, uint32_t scale, data_ptr_t buffer) {
 	bool negative;
 	auto magnitude = Magnitude<hugeint_t>::Get(unscaled, negative);
 	return EncodeMagnitude(magnitude, negative, scale, buffer);
 }
 
-string_t NumericBlob::AddUnscaled(Vector &result, hugeint_t unscaled, uint8_t scale) {
+string_t NumericBlob::AddUnscaled(Vector &result, hugeint_t unscaled, uint32_t scale) {
 	D_ASSERT(result.GetType().id() == LogicalTypeId::NUMERIC);
 	data_t buffer[NUMERIC_MAX_BLOB_SIZE];
 	auto length = EncodeUnscaled(unscaled, scale, buffer);
@@ -783,7 +783,7 @@ string NumericBlob::NormalizeText(const string &text) {
 //===--------------------------------------------------------------------===//
 // Vectors
 //===--------------------------------------------------------------------===//
-static uint8_t ScaleOf(const LogicalType &type) {
+static uint32_t ScaleOf(const LogicalType &type) {
 	return type.id() == LogicalTypeId::DECIMAL ? DecimalType::GetScale(type) : 0;
 }
 

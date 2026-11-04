@@ -16,8 +16,8 @@ namespace duckdb {
 namespace {
 
 struct WideDecimalCastInput {
-	WideDecimalCastInput(Vector &result_p, CastParameters &parameters, const LogicalType &source_type, uint8_t width_p,
-	                     uint8_t scale_p)
+	WideDecimalCastInput(Vector &result_p, CastParameters &parameters, const LogicalType &source_type, uint32_t width_p,
+	                     uint32_t scale_p)
 	    : result(result_p), vector_cast_data(result_p, parameters),
 	      source_is_decimal(source_type.id() == LogicalTypeId::DECIMAL),
 	      source_width(source_is_decimal ? DecimalType::GetWidth(source_type) : 0),
@@ -28,11 +28,11 @@ struct WideDecimalCastInput {
 	VectorTryCastData vector_cast_data;
 	//! Whether the source is a decimal, and its width and scale (a BIGNUM source has scale 0)
 	bool source_is_decimal;
-	uint8_t source_width;
-	uint8_t source_scale;
+	uint32_t source_width;
+	uint32_t source_scale;
 	//! The width and scale of a decimal target
-	uint8_t width;
-	uint8_t scale;
+	uint32_t width;
+	uint32_t scale;
 
 	string_t StoreBlob(const string &blob) {
 		return StringVector::AddStringOrBlob(result, blob.data(), blob.size());
@@ -237,8 +237,8 @@ struct WideDecimalToBool {
 template <class RESULT, class OP>
 bool ExecuteFromWideDecimal(Vector &source, Vector &result, idx_t count, CastParameters &parameters) {
 	auto &result_type = result.GetType();
-	uint8_t width = 0;
-	uint8_t scale = 0;
+	uint32_t width = 0;
+	uint32_t scale = 0;
 	if (result_type.id() == LogicalTypeId::DECIMAL) {
 		width = DecimalType::GetWidth(result_type);
 		scale = DecimalType::GetScale(result_type);
