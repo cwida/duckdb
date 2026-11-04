@@ -144,26 +144,11 @@ void StandardColumnData::RevertAppend(row_t new_count) {
 	validity->RevertAppend(new_count);
 }
 
-idx_t StandardColumnData::Fetch(ColumnScanState &state, row_t row_id, Vector &result) {
-	// fetch validity mask
-	if (state.child_states.empty()) {
-		ColumnScanState child_state(state.parent);
-		child_state.scan_options = state.scan_options;
-		state.child_states.push_back(std::move(child_state));
-	}
-	auto scan_count = ColumnData::Fetch(state, row_id, result);
-	validity->Fetch(state.child_states[0], row_id, result);
-	return scan_count;
-}
-
 void StandardColumnData::Update(TransactionData transaction, DuckTableEntry &table_entry, idx_t column_index,
                                 Vector &update_vector, row_t *row_ids, idx_t update_count, idx_t row_group_start) {
-	ColumnScanState standard_state(nullptr);
-	ColumnScanState validity_state(nullptr);
-	Vector base_vector(type);
-
-	FetchUpdateData(standard_state, row_ids, base_vector, row_group_start);
-	validity->FetchUpdateData(validity_state, row_ids, base_vector, row_group_start);
+	Vector base_vector(type, update_count);
+	FetchBaseRows(row_ids, update_count, base_vector, row_group_start);
+	validity->FetchBaseRows(row_ids, update_count, base_vector, row_group_start);
 
 	UpdateInternal(transaction, table_entry, column_index, update_vector, row_ids, update_count, base_vector,
 	               row_group_start);
