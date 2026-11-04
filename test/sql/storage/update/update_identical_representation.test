@@ -1,0 +1,66 @@
+# name: test/sql/storage/update/update_identical_representation.test
+# description: Test update with values that compare equal but have distinct representations (Issue #27457)
+# group: [update]
+
+# load the DB from disk
+load {TEST_DIR}/update_identical_representation.db
+
+statement ok
+CREATE TABLE t (id INTEGER, f DOUBLE, i INTERVAL);
+
+statement ok
+INSERT INTO t VALUES (1, '-0.0'::DOUBLE, INTERVAL '30 days'),
+                     (2, '0.0'::DOUBLE,  INTERVAL '1 month'),
+                     (3, '1.5'::DOUBLE,  INTERVAL '24 hours');
+
+statement ok
+UPDATE t SET f = '0.0'::DOUBLE, i = INTERVAL '1 month' WHERE id = 1;
+
+statement ok
+UPDATE t SET f = '-0.0'::DOUBLE, i = INTERVAL '30 days' WHERE id = 2;
+
+statement ok
+UPDATE t SET i = INTERVAL '1 day' WHERE id = 3;
+
+query ITRT
+SELECT id, f::VARCHAR, i, DATE '2024-02-01' + i FROM t ORDER BY id;
+----
+1	0.0	1 month	2024-03-01 00:00:00
+2	-0.0	30 days	2024-03-02 00:00:00
+3	1.5	1 day	2024-02-02 00:00:00
+
+restart
+
+query ITRT
+SELECT id, f::VARCHAR, i, DATE '2024-02-01' + i FROM t ORDER BY id;
+----
+1	0.0	1 month	2024-03-01 00:00:00
+2	-0.0	30 days	2024-03-02 00:00:00
+3	1.5	1 day	2024-02-02 00:00:00
+
+# Test FLOAT
+statement ok
+CREATE TABLE tf (id INTEGER, f FLOAT);
+
+statement ok
+INSERT INTO tf VALUES (1, '-0.0'::FLOAT), (2, '0.0'::FLOAT);
+
+statement ok
+UPDATE tf SET f = '0.0'::FLOAT WHERE id = 1;
+
+statement ok
+UPDATE tf SET f = '-0.0'::FLOAT WHERE id = 2;
+
+query IT
+SELECT id, f::VARCHAR FROM tf ORDER BY id;
+----
+1	0.0
+2	-0.0
+
+restart
+
+query IT
+SELECT id, f::VARCHAR FROM tf ORDER BY id;
+----
+1	0.0
+2	-0.0

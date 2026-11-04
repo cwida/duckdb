@@ -7,6 +7,7 @@
 #include "duckdb/storage/statistics/stats_writer.hpp"
 
 #include <algorithm>
+#include <cmath>
 
 namespace duckdb {
 
@@ -1294,6 +1295,32 @@ idx_t GetEffectiveUpdatesValidity(UnifiedVectorFormat &update, row_t *ids, idx_t
 }
 
 template <class T>
+static inline bool StorageValueEquals(const T &left, const T &right) {
+	return left == right;
+}
+
+template <>
+inline bool StorageValueEquals<float>(const float &left, const float &right) {
+	if (std::isnan(left) && std::isnan(right)) {
+		return true;
+	}
+	return left == right && std::signbit(left) == std::signbit(right);
+}
+
+template <>
+inline bool StorageValueEquals<double>(const double &left, const double &right) {
+	if (std::isnan(left) && std::isnan(right)) {
+		return true;
+	}
+	return left == right && std::signbit(left) == std::signbit(right);
+}
+
+template <>
+inline bool StorageValueEquals<interval_t>(const interval_t &left, const interval_t &right) {
+	return left.months == right.months && left.days == right.days && left.micros == right.micros;
+}
+
+template <class T>
 idx_t TemplatedGetEffectiveUpdates(UnifiedVectorFormat &update, row_t *ids, idx_t count, SelectionVector &sel,
                                    Vector &base_data, idx_t id_offset) {
 	auto data = UnifiedVectorFormat::GetData<T>(update);
@@ -1311,7 +1338,8 @@ idx_t TemplatedGetEffectiveUpdates(UnifiedVectorFormat &update, row_t *ids, idx_
 		auto original_idx = UnsafeNumericCast<idx_t>(ids[sel_idx]) - id_offset;
 		// NULL values in the updates should have been filtered out before
 		D_ASSERT(update.validity.RowIsValid(update_idx));
-		if (original_validity.RowIsValid(original_idx) && data[update_idx] == original_data[original_idx]) {
+		if (original_validity.RowIsValid(original_idx) &&
+		    StorageValueEquals(data[update_idx], original_data[original_idx])) {
 			// data is equivalent - skip
 			continue;
 		}
