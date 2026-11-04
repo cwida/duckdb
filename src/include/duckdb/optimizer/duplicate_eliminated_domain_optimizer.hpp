@@ -22,5 +22,6 @@ public:
 
 private:
 	Optimizer &optimizer;
+	bool preserve_input_statistics = false;
 };
 } // namespace duckdb
