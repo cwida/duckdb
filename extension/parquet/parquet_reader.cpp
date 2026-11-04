@@ -2495,8 +2495,8 @@ void ParquetReader::InitializeScan(ClientContext &context, ParquetReaderScanStat
 	state.use_page_index = true;
 	context.TryGetCurrentSetting("parquet_use_page_index", state.use_page_index);
 	if (filters) {
-		state.adaptive_filter_cache.InitializeAdaptiveFilter(*filters, filter_global_indices, context.logger,
-		                                                     file.path);
+		state.adaptive_filter_cache.InitializeAdaptiveFilter(*filters, filter_global_indices,
+		                                                     context.services->GetLoggerPtr(), file.path);
 		for (auto &entry : *filters) {
 			state.scan_filters.emplace_back(context, entry.GetIndex(), entry.Filter());
 		}

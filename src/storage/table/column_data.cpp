@@ -493,7 +493,8 @@ FilterPropagateResult ColumnData::CheckZonemap(ColumnScanState &state, TableFilt
 	checked_segment = IsDirectNullCheckFilter(filter) && !state.child_states.empty() && state.child_states[0].current
 	                      ? state.child_states[0].current
 	                      : state.current;
-	auto prune_result = CheckSegmentStatistics(state.context.GetClientContext(), *checked_segment, expr_filter);
+	auto prune_result = CheckSegmentStatistics(Context::TryGetClientContext(state.context.GetServices()),
+	                                           *checked_segment, expr_filter);
 	if (prune_result == FilterPropagateResult::NO_PRUNING_POSSIBLE) {
 		return FilterPropagateResult::NO_PRUNING_POSSIBLE;
 	}
@@ -503,7 +504,7 @@ FilterPropagateResult ColumnData::CheckZonemap(ColumnScanState &state, TableFilt
 		return prune_result;
 	}
 	// combine the update and original prune result
-	auto context = state.context.GetClientContext();
+	auto context = Context::TryGetClientContext(state.context.GetServices());
 	FilterPropagateResult update_result =
 	    context ? expr_filter.CheckStatistics(*context, *update_stats) : expr_filter.CheckStatistics(*update_stats);
 	if (prune_result == update_result) {

@@ -1,19 +1,18 @@
 #include "duckdb/common/serializer/async_memory_governor.hpp"
 
 #include "duckdb/common/helper.hpp"
-#include "duckdb/main/client_context.hpp"
+#include "duckdb/main/context.hpp"
 #include "duckdb/parallel/task_scheduler.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
 #include "duckdb/storage/temporary_memory_manager.hpp"
 
 namespace duckdb {
 
-ManagedAsyncMemoryGovernor::ManagedAsyncMemoryGovernor(ClientContext &client_context_p)
-    : client_context(client_context_p) {
-	auto &scheduler = TaskScheduler::GetScheduler(client_context);
+ManagedAsyncMemoryGovernor::ManagedAsyncMemoryGovernor(Context &services_p) : services(services_p) {
+	auto &scheduler = services.GetTaskScheduler();
 	auto regular_threads = MaxValue<idx_t>(NumericCast<idx_t>(scheduler.NumberOfThreads()), 1);
 	auto async_threads = NumericCast<idx_t>(scheduler.NumberOfAsyncThreads());
-	auto max_memory = BufferManager::GetBufferManager(client_context).GetMaxMemory();
+	auto max_memory = services.GetBufferManager().GetMaxMemory();
 	max_pending_bytes = MinValue(ManagedAsyncMemoryConfig::MAX_PENDING_BYTES_PER_THREAD * regular_threads,
 	                             max_memory / ManagedAsyncMemoryConfig::MAX_PENDING_MEMORY_LIMIT_DIVISOR);
 	min_pending_bytes =
@@ -21,7 +20,7 @@ ManagedAsyncMemoryGovernor::ManagedAsyncMemoryGovernor(ClientContext &client_con
 	                                         max_memory / ManagedAsyncMemoryConfig::MIN_PENDING_MEMORY_LIMIT_DIVISOR));
 	// A reservation is only useful when drain tasks run asynchronously; synchronous draining bounds itself.
 	if (async_threads > 0 && max_pending_bytes > 0) {
-		memory_state = TemporaryMemoryManager::Get(client_context).Register(client_context);
+		memory_state = TemporaryMemoryManager::Get(services).Register(services);
 		memory_state->SetMinimumReservation(min_pending_bytes);
 		memory_state->SetZero();
 	}
@@ -62,7 +61,7 @@ void ManagedAsyncMemoryGovernor::UpdateReservation(idx_t current_pending_bytes) 
 		}
 
 		auto previous_reservation = current_reservation;
-		memory_state->SetRemainingSizeAndUpdateReservation(client_context, next_request);
+		memory_state->SetRemainingSizeAndUpdateReservation(services, next_request);
 		memory_request_bytes = next_request;
 		current_reservation = memory_state->GetReservation();
 		if (current_reservation <= previous_reservation) {
