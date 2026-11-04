@@ -3,7 +3,6 @@
 #include "duckdb/common/string_util.hpp"
 #include "grego.hpp"
 
-#include <algorithm>
 #include <climits>
 #include <cstdio>
 #include <cstdlib>
@@ -357,14 +356,23 @@ void OlsonTimeZone::GetHistoricalOffsetRange(int64_t start_sec, int64_t end_sec,
 	auto total_offset = [](const TZTypeOffset &offsets) {
 		return (offsets.raw_offset + offsets.dst_offset) * int32_t(MILLIS_PER_SECOND);
 	};
-	const auto begin = data.transitions;
-	const auto stop = begin + data.transition_count;
-	auto transition = std::upper_bound(begin, stop, start_sec);
-	auto transition_index = static_cast<int32_t>(transition - begin) - 1;
-	min_offset = total_offset(OffsetsAt(transition_index));
+	// the first transition after the start
+	const auto transition_count = int32_t(data.transition_count);
+	int32_t lower = 0;
+	int32_t upper = transition_count;
+	while (lower < upper) {
+		const auto middle = lower + (upper - lower) / 2;
+		if (data.transitions[middle] <= start_sec) {
+			lower = middle + 1;
+		} else {
+			upper = middle;
+		}
+	}
+	min_offset = total_offset(OffsetsAt(lower - 1));
 	max_offset = min_offset;
-	for (; transition != stop && *transition <= end_sec; ++transition) {
-		const auto total = total_offset(OffsetsAt(++transition_index));
+	for (auto transition_index = lower;
+	     transition_index < transition_count && data.transitions[transition_index] <= end_sec; transition_index++) {
+		const auto total = total_offset(OffsetsAt(transition_index));
 		min_offset = MinValue(min_offset, total);
 		max_offset = MaxValue(max_offset, total);
 	}
