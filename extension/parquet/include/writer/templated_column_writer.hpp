@@ -743,10 +743,11 @@ private:
 		}
 	}
 
-	template <bool ALL_VALID, class INPUT>
-	void WriteDictionaryIndexRows(WriteStream &temp_writer, ColumnWriterStatistics *stats,
-	                              StandardWriterPageState<SRC, TGT, OP> &page_state, INPUT input, idx_t r,
-	                              idx_t chunk_end) {
+	//! Write the dictionary index of every valid row, resolving each index through the provided resolver
+	template <bool ALL_VALID, class INPUT, class RESOLVE>
+	void WriteDictionaryRows(WriteStream &temp_writer, ColumnWriterStatistics *stats,
+	                         StandardWriterPageState<SRC, TGT, OP> &page_state, INPUT input, idx_t r, idx_t chunk_end,
+	                         RESOLVE resolve) {
 		// the page index needs the bounds of every page, which the dictionary cannot provide
 		const bool stats_per_occurrence = STATS_PER_OCCURRENCE || writer.WritePageIndex();
 		for (; r < chunk_end; r++) {
@@ -757,8 +758,7 @@ private:
 			if (stats_per_occurrence) {
 				OP::template HandleStats<SRC, TGT>(stats, OP::template Operation<SRC, TGT>(src_value));
 			}
-			const auto value_index = page_state.dictionary.GetIndex(src_value);
-			page_state.dict_encoder.WriteValue(temp_writer, value_index);
+			page_state.dict_encoder.WriteValue(temp_writer, resolve(r, src_value));
 		}
 	}
 
@@ -766,7 +766,9 @@ private:
 	void WriteDictionaryIndexes(WriteStream &temp_writer, ColumnWriterStatistics *stats,
 	                            StandardWriterPageState<SRC, TGT, OP> &page_state, INPUT input, idx_t r,
 	                            idx_t chunk_end) {
-		WriteDictionaryIndexRows<ALL_VALID>(temp_writer, stats, page_state, input, r, chunk_end);
+		WriteDictionaryRows<ALL_VALID>(
+		    temp_writer, stats, page_state, input, r, chunk_end,
+		    [&](idx_t, const SRC &src_value) { return page_state.dictionary.GetIndex(src_value); });
 	}
 
 	//! Look up the dictionary index of each referenced entry once
@@ -777,27 +779,21 @@ private:
 		const auto entry_count = input.EntryCount();
 		if (entry_count > chunk_end - r) {
 			// a dictionary larger than the rows costs more to resolve per entry than per row
-			WriteDictionaryIndexRows<ALL_VALID>(temp_writer, stats, page_state, input, r, chunk_end);
+			WriteDictionaryRows<ALL_VALID>(
+			    temp_writer, stats, page_state, input, r, chunk_end,
+			    [&](idx_t, const SRC &src_value) { return page_state.dictionary.GetIndex(src_value); });
 			return;
 		}
 		static constexpr uint32_t UNRESOLVED = NumericLimits<uint32_t>::Maximum();
 		vector<uint32_t> entry_indexes(entry_count, UNRESOLVED);
-		// the page index needs the bounds of every page, which the dictionary cannot provide
-		const bool stats_per_occurrence = STATS_PER_OCCURRENCE || writer.WritePageIndex();
-		for (; r < chunk_end; r++) {
-			if (!ALL_VALID && !input.RowIsValid(r)) {
-				continue;
-			}
-			const auto &src_value = input.Value(r);
-			if (stats_per_occurrence) {
-				OP::template HandleStats<SRC, TGT>(stats, OP::template Operation<SRC, TGT>(src_value));
-			}
-			auto &value_index = entry_indexes[input.Entry(r)];
-			if (value_index == UNRESOLVED) {
-				value_index = page_state.dictionary.GetIndex(src_value);
-			}
-			page_state.dict_encoder.WriteValue(temp_writer, value_index);
-		}
+		WriteDictionaryRows<ALL_VALID>(temp_writer, stats, page_state, input, r, chunk_end,
+		                               [&](idx_t row, const SRC &src_value) {
+			                               auto &value_index = entry_indexes[input.Entry(row)];
+			                               if (value_index == UNRESOLVED) {
+				                               value_index = page_state.dictionary.GetIndex(src_value);
+			                               }
+			                               return value_index;
+		                               });
 	}
 
 	template <bool ALL_VALID, class INPUT>
