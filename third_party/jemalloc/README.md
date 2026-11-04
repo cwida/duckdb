@@ -256,9 +256,10 @@ tcache_enabled_set(tsd_t *tsd, bool enabled) {
 ```
 
 In `madvise_MADV_DONTNEED_zeroes_pages` in `pages.c`, return instead of falling through when the probe page cannot be
-mapped. The function runs once during `pages_boot`, and without memory it would `memset` through `MAP_FAILED`.
-Returning 0 marks `MADV_DONTNEED` as faulty, so purged pages are zeroed with `memset` instead of being assumed zero,
-which is correct on every kernel.
+mapped. The probe runs during allocator bootstrap, and without memory it would `memset` through `MAP_FAILED`.
+Returning 0 marks `MADV_DONTNEED` as faulty: `pages_purge_forced` then reports failure, freed extents are recorded as
+not zeroed, and reuse that needs zeroed pages falls back to `memset`, so zeroing never relies on `MADV_DONTNEED`. The
+flag stays set for the lifetime of the process, which can keep more memory resident than a successful probe would.
 ```c++
 	if (addr == MAP_FAILED) {
 		malloc_write("<jemalloc>: Cannot allocate memory for "
