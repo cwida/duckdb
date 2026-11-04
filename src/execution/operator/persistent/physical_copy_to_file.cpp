@@ -25,6 +25,7 @@
 #include "duckdb/main/settings.hpp"
 #include "duckdb/storage/buffer_manager.hpp"
 #include "duckdb/execution/operator/persistent/copy_batch_slicer.hpp"
+#include "duckdb/execution/operator/persistent/copy_file_lifecycle.hpp"
 #include "duckdb/execution/operator/persistent/copy_output_lifecycle.hpp"
 #include "fmt/format.h"
 
@@ -171,34 +172,6 @@ private:
 //===--------------------------------------------------------------------===//
 // Copy File Lifecycle Declarations
 //===--------------------------------------------------------------------===//
-enum class CopyFileLifecycleWaitMode : uint8_t { INTERRUPTIBLE, DRAIN };
-
-class CopyFileLifecycleJob {
-public:
-	bool IsFinished() const {
-		return finished.load(std::memory_order_acquire);
-	}
-
-	void Complete() {
-		finished.store(true, std::memory_order_release);
-	}
-
-	void CompleteException(const std::exception_ptr &error_p) {
-		error = error_p;
-		Complete();
-	}
-
-	void Rethrow() const {
-		if (error) {
-			std::rethrow_exception(error);
-		}
-	}
-
-private:
-	atomic<bool> finished {false};
-	std::exception_ptr error;
-};
-
 class FileStateOpenJob : public CopyFileLifecycleJob {
 public:
 	void Complete(unique_ptr<GlobalFileState> file_state_p) {
@@ -307,152 +280,6 @@ struct PartitionFileRequest {
 	PartitionFileOpenRequest open_request;
 	vector<FileStateHandle> files_to_finalize;
 };
-
-template <class FUNC>
-class CopyFileLifecycleTask;
-
-class CopyFileLifecycleExecutor {
-	static constexpr idx_t MIN_PENDING_TASKS = 4096;
-
-public:
-	explicit CopyFileLifecycleExecutor(ClientContext &context_p)
-	    : context(context_p), executor(context_p, TaskSchedulerType::ASYNC) {
-		auto &scheduler = TaskScheduler::GetScheduler(context);
-		async_threads = scheduler.NumberOfAsyncThreads();
-		auto regular_threads = scheduler.NumberOfThreads();
-		max_pending_tasks = MaxValue<idx_t>(MIN_PENDING_TASKS, (async_threads + regular_threads) * 4);
-	}
-
-	~CopyFileLifecycleExecutor() {
-		// A queued task's Cancel reaches back into this object (GetError, FinishTask). Join here, while every
-		// member is still alive, rather than leaving it to ~TaskExecutor, which runs after error_lock and error
-		// have already been destroyed. CancelAndDrain does not throw.
-		executor.CancelAndDrain();
-	}
-
-public:
-	template <class FUNC>
-	void Schedule(shared_ptr<CopyFileLifecycleJob> job, CopyFileLifecycleWaitMode mode, FUNC &&task);
-	void WaitForJob(CopyFileLifecycleJob &job, CopyFileLifecycleWaitMode mode);
-	void WaitAll(CopyFileLifecycleWaitMode mode);
-	void WorkOnTaskOrYield();
-	void FinishTask();
-	void PushError(const std::exception_ptr &error);
-	//! The first error pushed by a task, if any
-	std::exception_ptr GetError();
-
-private:
-	bool WorkOnTask(bool throw_error = true);
-	void WaitForTaskSlot(CopyFileLifecycleWaitMode mode);
-	void ThrowError();
-
-private:
-	ClientContext &context;
-	TaskExecutor executor;
-	idx_t async_threads;
-	idx_t max_pending_tasks;
-	atomic<idx_t> pending_tasks {0};
-	mutex error_lock;
-	std::exception_ptr error;
-};
-
-class CopyFileLifecycleTaskFinishGuard {
-public:
-	explicit CopyFileLifecycleTaskFinishGuard(CopyFileLifecycleExecutor &lifecycle_p) : lifecycle(lifecycle_p) {
-	}
-
-	~CopyFileLifecycleTaskFinishGuard() {
-		Finish();
-	}
-
-	void Finish() {
-		if (!finished) {
-			lifecycle.FinishTask();
-			finished = true;
-		}
-	}
-
-private:
-	CopyFileLifecycleExecutor &lifecycle;
-	bool finished = false;
-};
-
-template <class FUNC>
-class CopyFileLifecycleTask : public BaseExecutorTask {
-public:
-	CopyFileLifecycleTask(TaskExecutor &executor_p, CopyFileLifecycleExecutor &lifecycle_p,
-	                      shared_ptr<CopyFileLifecycleJob> job_p, FUNC task_p)
-	    : BaseExecutorTask(executor_p), lifecycle(lifecycle_p), job(std::move(job_p)), task(std::move(task_p)) {
-	}
-
-	~CopyFileLifecycleTask() override {
-		// Neither ExecuteTask nor Cancel ran, because the executor could not take the task at all. The job
-		// waiter and pending_tasks still have to be settled, or a waiter spins with nothing left to run.
-		if (settled) {
-			return;
-		}
-		try {
-			Cancel();
-		} catch (...) { // NOLINT
-		}
-	}
-
-public:
-	void ExecuteTask() override {
-		settled = true;
-		CopyFileLifecycleTaskFinishGuard finish_guard(lifecycle);
-		try {
-			task();
-			if (!job->IsFinished()) {
-				job->Complete();
-			}
-		} catch (...) {
-			auto error = std::current_exception();
-			job->CompleteException(error);
-			lifecycle.PushError(error);
-		}
-	}
-
-	void Cancel() override {
-		// the task is retired without running - settle the job, WaitForJob spins until it is finished
-		settled = true;
-		CopyFileLifecycleTaskFinishGuard finish_guard(lifecycle);
-		if (job->IsFinished()) {
-			return;
-		}
-		auto error = lifecycle.GetError();
-		if (!error) {
-			error = std::make_exception_ptr(InternalException("COPY file task was cancelled before it could run"));
-		}
-		job->CompleteException(error);
-	}
-
-	string TaskType() const override {
-		return "CopyFileLifecycleTask";
-	}
-
-private:
-	CopyFileLifecycleExecutor &lifecycle;
-	shared_ptr<CopyFileLifecycleJob> job;
-	FUNC task;
-	//! Whether ExecuteTask or Cancel ran, so the destructor knows the job and the count are settled
-	bool settled = false;
-};
-
-template <class FUNC>
-void CopyFileLifecycleExecutor::Schedule(shared_ptr<CopyFileLifecycleJob> job, CopyFileLifecycleWaitMode mode,
-                                         FUNC &&task) {
-	WaitForTaskSlot(mode);
-	auto job_ref = job;
-	using TaskType = CopyFileLifecycleTask<typename std::decay<FUNC>::type>;
-	auto lifecycle_task = make_uniq<TaskType>(executor, *this, std::move(job), std::forward<FUNC>(task));
-	// past this point the task settles pending_tasks itself, on the execute path and on the cancel path
-	++pending_tasks;
-	executor.ScheduleTask(std::move(lifecycle_task));
-	if (async_threads == 0) {
-		WaitForJob(*job_ref, mode);
-	}
-}
 
 //===--------------------------------------------------------------------===//
 // Copy State Declarations
@@ -1783,88 +1610,6 @@ static void FinalizeLifecycleFileState(ClientContext &context, copy_to_finalize_
 		throw InternalException("COPY file lifecycle finalize reached an empty file state");
 	}
 	finalize(context, bind_data, *state->data);
-}
-void CopyFileLifecycleExecutor::WaitForJob(CopyFileLifecycleJob &job, CopyFileLifecycleWaitMode mode) {
-	while (!job.IsFinished()) {
-		if (mode == CopyFileLifecycleWaitMode::INTERRUPTIBLE) {
-			context.InterruptCheck();
-		}
-		WorkOnTaskOrYield();
-	}
-	job.Rethrow();
-}
-
-void CopyFileLifecycleExecutor::WaitAll(CopyFileLifecycleWaitMode mode) {
-	if (mode == CopyFileLifecycleWaitMode::DRAIN) {
-		executor.WorkOnTasks();
-		ThrowError();
-		return;
-	}
-	while (pending_tasks.load(std::memory_order_acquire) > 0) {
-		context.InterruptCheck();
-		WorkOnTaskOrYield();
-	}
-	ThrowError();
-}
-
-void CopyFileLifecycleExecutor::FinishTask() {
-	--pending_tasks;
-}
-
-void CopyFileLifecycleExecutor::PushError(const std::exception_ptr &error_p) {
-	lock_guard<mutex> guard(error_lock);
-	if (!error) {
-		error = error_p;
-	}
-}
-
-std::exception_ptr CopyFileLifecycleExecutor::GetError() {
-	lock_guard<mutex> guard(error_lock);
-	return error;
-}
-
-bool CopyFileLifecycleExecutor::WorkOnTask(bool throw_error) {
-	shared_ptr<Task> task;
-	if (!executor.GetTask(task)) {
-		return false;
-	}
-#ifdef D_ASSERT_IS_ENABLED
-	const auto result = task->Execute(TaskExecutionMode::PROCESS_ALL);
-	D_ASSERT(result != TaskExecutionResult::TASK_BLOCKED);
-#else
-	task->Execute(TaskExecutionMode::PROCESS_ALL);
-#endif
-	task.reset();
-	if (throw_error) {
-		ThrowError();
-	}
-	return true;
-}
-
-void CopyFileLifecycleExecutor::WorkOnTaskOrYield() {
-	if (!WorkOnTask()) {
-		TaskScheduler::YieldThread();
-	}
-}
-
-void CopyFileLifecycleExecutor::WaitForTaskSlot(CopyFileLifecycleWaitMode mode) {
-	while (pending_tasks >= max_pending_tasks) {
-		if (mode == CopyFileLifecycleWaitMode::INTERRUPTIBLE) {
-			context.InterruptCheck();
-		}
-		if (async_threads == 0 || mode == CopyFileLifecycleWaitMode::DRAIN) {
-			WorkOnTaskOrYield();
-		} else {
-			TaskScheduler::YieldThread();
-		}
-	}
-}
-
-void CopyFileLifecycleExecutor::ThrowError() {
-	lock_guard<mutex> guard(error_lock);
-	if (error) {
-		std::rethrow_exception(error);
-	}
 }
 
 //===--------------------------------------------------------------------===//
