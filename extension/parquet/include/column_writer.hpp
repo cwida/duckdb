@@ -208,6 +208,11 @@ public:
 		throw NotImplementedException("Writer does not need analysis");
 	}
 
+	//! Whether Analyze and Write accept constant and dictionary vectors as the top-level column input
+	virtual bool HandlesCompactVectors() const {
+		return false;
+	}
+
 	virtual void Prepare(ColumnWriterState &state, ColumnWriterState *parent, Vector &vector, idx_t count,
 	                     bool vector_can_span_multiple_pages) = 0;
 
