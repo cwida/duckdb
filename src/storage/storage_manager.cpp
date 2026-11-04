@@ -7,6 +7,11 @@
 #include "duckdb/common/extension_type_info.hpp"
 #include "duckdb/common/type_visitor.hpp"
 #include "duckdb/common/types/decimal.hpp"
+#include "duckdb/parser/expression/cast_expression.hpp"
+#include "duckdb/parser/expression/subquery_expression.hpp"
+#include "duckdb/parser/parsed_expression_iterator.hpp"
+#include "duckdb/parser/query_node.hpp"
+#include "duckdb/parser/statement/select_statement.hpp"
 #include "duckdb/common/types/geometry.hpp"
 #include "duckdb/common/types/variant.hpp"
 #include "duckdb/logging/logger.hpp"
@@ -347,6 +352,40 @@ void StorageManager::CheckTypeIsSupported(const LogicalType &type) const {
 	if (!reason.empty()) {
 		throw InvalidInputException(reason);
 	}
+}
+
+void StorageManager::CheckExpressionTypesAreSupported(const ParsedExpression &expression) const {
+	if (GetStorageVersion() >= StorageVersion::V2_0_0) {
+		// from v2.0.0 on a CAST stores its target as a type expression, which the reading engine binds itself
+		return;
+	}
+	// a work list instead of recursion, the expression tree is user data
+	vector<reference<const ParsedExpression>> work;
+	work.emplace_back(expression);
+	while (!work.empty()) {
+		auto &expr = work.back().get();
+		work.pop_back();
+		switch (expr.GetExpressionClass()) {
+		case ExpressionClass::CAST:
+			CheckTypeIsSupported(UnboundType::TryDefaultBind(expr.Cast<CastExpression>().TargetType()));
+			break;
+		case ExpressionClass::SUBQUERY:
+			CheckQueryTypesAreSupported(*expr.Cast<SubqueryExpression>().Subquery()->node);
+			break;
+		default:
+			break;
+		}
+		ParsedExpressionIterator::EnumerateChildren(expr,
+		                                            [&](const ParsedExpression &child) { work.emplace_back(child); });
+	}
+}
+
+void StorageManager::CheckQueryTypesAreSupported(QueryNode &node) const {
+	if (GetStorageVersion() >= StorageVersion::V2_0_0) {
+		return;
+	}
+	ParsedExpressionIterator::EnumerateQueryNodeChildren(
+	    node, [&](unique_ptr<ParsedExpression> &child) { CheckExpressionTypesAreSupported(*child); });
 }
 
 bool StorageManager::HasWAL() const {

@@ -19,6 +19,8 @@
 namespace duckdb {
 struct AttachOptions;
 class ActiveCheckpointWrapper;
+class ParsedExpression;
+class QueryNode;
 class BlockManager;
 class Catalog;
 class CheckpointWriter;
@@ -141,6 +143,11 @@ public:
 	string GetUnsupportedTypeReason(const LogicalType &type) const;
 	//! Throws when a type cannot be stored at the storage version of this database.
 	void CheckTypeIsSupported(const LogicalType &type) const;
+	//! Throws when a stored expression casts to a type the storage version of this database cannot store: below
+	//! v2.0.0 a CAST serializes its target as a LogicalType
+	void CheckExpressionTypesAreSupported(const ParsedExpression &expression) const;
+	//! The same check over every expression of a stored query (a view or a table macro)
+	void CheckQueryTypesAreSupported(QueryNode &node) const;
 	bool CompressionIsEnabled() const {
 		return storage_options.compress_in_memory == CompressInMemory::COMPRESS;
 	}

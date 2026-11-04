@@ -1,0 +1,178 @@
+# name: test/sql/types/decimal/wide_decimal_stored_expressions.test
+# description: Wide decimal types inside stored expressions only reach the catalog of a database written before wide decimals where older engines can read them
+# group: [decimal]
+
+# Below storage version v2.0.0 a CAST stores its target as a LogicalType, which the engines of those versions cannot
+# read when it is wider than 38 digits.
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_stored_v140.db' AS old (STORAGE_VERSION 'v1.4.0');
+
+# a macro default folds under the decimal rules of the engines that read the database
+statement ok
+CREATE MACRO old.m(x := 1::DECIMAL(38,0) * 1::DECIMAL(38,0)) AS x;
+
+query II
+SELECT old.m(), typeof(old.m())
+----
+1	DECIMAL(38,0)
+
+query I
+SELECT typeof(1::DECIMAL(38,0) * 1::DECIMAL(38,0))
+----
+DECIMAL(76,0)
+
+# so a default that overflows those rules is rejected, as those engines reject it
+statement error
+CREATE MACRO old.m_overflow(x := repeat('9', 38)::DECIMAL(38,0) * 10::DECIMAL(38,0)) AS x;
+----
+<REGEX>:.*Overflow in multiplication.*
+
+# a default of an explicitly wide type is refused, like a wide parameter type
+statement error
+CREATE MACRO old.m_wide(x := 1::DECIMAL(39,0)) AS x;
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+# casts to wide types inside stored expressions are refused
+statement error
+CREATE VIEW old.v AS SELECT (1::DECIMAL(39,0))::INTEGER AS n;
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+statement error
+CREATE VIEW old.v AS SELECT (SELECT (1::DECIMAL(39,0))::INTEGER) AS n;
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+statement error
+CREATE VIEW old.v AS WITH c AS (SELECT (1::DECIMAL(39,0))::INTEGER AS n) SELECT n FROM c;
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+statement error
+CREATE VIEW old.v AS SELECT 1 AS n UNION ALL SELECT (1::DECIMAL(39,0))::INTEGER;
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+statement error
+CREATE MACRO old.m_cast(x) AS (x::DECIMAL(39,0) * 2)::INTEGER;
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+statement error
+CREATE MACRO old.m_table(x) AS TABLE SELECT (x::DECIMAL(39,0) * 2)::INTEGER AS n;
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+# a default is stored folded, so a wide intermediate type in it is not stored
+statement ok
+CREATE MACRO old.m_default(x := (1::DECIMAL(39,0))::INTEGER) AS x;
+
+query II
+SELECT old.m_default(), typeof(old.m_default())
+----
+1	INTEGER
+
+statement error
+CREATE TABLE old.t(i INTEGER DEFAULT (1::DECIMAL(39,0))::INTEGER);
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+statement error
+CREATE TABLE old.t(i INTEGER, j INTEGER AS ((i::DECIMAL(39,0))::INTEGER));
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+statement error
+CREATE TABLE old.t(i INTEGER CHECK ((i::DECIMAL(39,0))::INTEGER > 0));
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+# the same expressions with types those engines read are stored
+statement ok
+CREATE VIEW old.v AS SELECT (1::DECIMAL(38,0))::INTEGER AS n;
+
+statement ok
+CREATE MACRO old.m_cast(x) AS (x::DECIMAL(38,0) * 2)::INTEGER;
+
+statement ok
+CREATE TABLE old.t(i INTEGER DEFAULT (1::DECIMAL(38,0))::INTEGER, j INTEGER AS ((i::DECIMAL(38,0))::INTEGER), CHECK ((i::DECIMAL(38,0))::INTEGER > 0));
+
+statement ok
+INSERT INTO old.t(i) VALUES (DEFAULT);
+
+statement ok
+CHECKPOINT old;
+
+statement ok
+DETACH old;
+
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_stored_v140.db' AS old;
+
+query IIII
+SELECT old.m(), (SELECT n FROM old.v), old.m_cast(3), (SELECT j FROM old.t)
+----
+1	1	6	1
+
+statement ok
+DETACH old;
+
+# a database of storage version v2.0.0 stores a CAST as a type expression, which its engines bind themselves
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_stored_v200.db' AS old (STORAGE_VERSION 'v2.0.0');
+
+# the folded default of a macro is stored with its type: it folds under the rules of those engines
+statement ok
+CREATE MACRO old.m(x := 1::DECIMAL(38,0) * 1::DECIMAL(38,0)) AS x;
+
+query II
+SELECT old.m(), typeof(old.m())
+----
+1	DECIMAL(38,0)
+
+statement error
+CREATE MACRO old.m_wide(x := 1::DECIMAL(39,0)) AS x;
+----
+DECIMAL columns wider than 38 digits are not supported in storage versions prior to v2.1.0
+
+statement ok
+CHECKPOINT old;
+
+statement ok
+DETACH old;
+
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_stored_v200.db' AS old;
+
+query II
+SELECT old.m(), typeof(old.m())
+----
+1	DECIMAL(38,0)
+
+statement ok
+DETACH old;
+
+# the latest storage version stores all of them
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_stored_latest.db' AS new (STORAGE_VERSION 'latest');
+
+statement ok
+CREATE MACRO new.m(x := 1::DECIMAL(38,0) * 1::DECIMAL(38,0)) AS x;
+
+statement ok
+CREATE VIEW new.v AS SELECT (1::DECIMAL(39,0))::INTEGER AS n;
+
+statement ok
+CHECKPOINT new;
+
+statement ok
+DETACH new;
+
+statement ok
+ATTACH '{TEST_DIR}/wide_decimal_stored_latest.db' AS new;
+
+query III
+SELECT new.m(), typeof(new.m()), (SELECT n FROM new.v)
+----
+1	DECIMAL(76,0)	1

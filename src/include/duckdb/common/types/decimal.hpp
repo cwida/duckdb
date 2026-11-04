@@ -77,4 +77,17 @@ public:
 	//! Formats the unscaled value of a wide decimal (a BIGNUM blob)
 	static string ToString(bignum_t value, uint32_t width, uint32_t scale);
 };
+
+//! Binds decimal results as the engines before wide decimals did while in scope, when legacy is set: arithmetic and
+//! type combination stay within MAX_WIDTH_INT128 and a literal above 38 digits is a DOUBLE (see
+//! ClientContext::legacy_decimal_result_types)
+class LegacyDecimalResultTypeScope {
+public:
+	LegacyDecimalResultTypeScope(ClientContext &context, bool legacy);
+	~LegacyDecimalResultTypeScope();
+
+private:
+	ClientContext &context;
+	bool previous;
+};
 } // namespace duckdb

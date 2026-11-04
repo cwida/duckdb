@@ -102,9 +102,22 @@ DuckTableEntry::DuckTableEntry(Catalog &catalog, SchemaCatalogEntry &schema, Bou
 		return;
 	}
 
-	// the types of all columns are written to the catalog, those of the generated columns included
+	// the types of all columns are written to the catalog, those of the generated columns included, as are the
+	// default, generated and check expressions
+	auto &storage_manager = catalog.GetAttached().GetStorageManager();
 	for (auto &col_def : columns.Logical()) {
 		CheckTypeIsSupported(col_def.Type(), catalog.GetAttached());
+		if (col_def.HasDefaultValue()) {
+			storage_manager.CheckExpressionTypesAreSupported(col_def.DefaultValue());
+		}
+		if (col_def.Generated()) {
+			storage_manager.CheckExpressionTypesAreSupported(col_def.GeneratedExpression());
+		}
+	}
+	for (auto &constraint : constraints) {
+		if (constraint->type == ConstraintType::CHECK) {
+			storage_manager.CheckExpressionTypesAreSupported(*constraint->Cast<CheckConstraint>().expression);
+		}
 	}
 
 	// create the physical storage

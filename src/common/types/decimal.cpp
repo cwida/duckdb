@@ -25,6 +25,15 @@ uint32_t Decimal::MaxLiteralWidth(optional_ptr<ClientContext> context) {
 	return NumericLimits<uint32_t>::Maximum();
 }
 
+LegacyDecimalResultTypeScope::LegacyDecimalResultTypeScope(ClientContext &context, bool legacy)
+    : context(context), previous(context.legacy_decimal_result_types) {
+	context.legacy_decimal_result_types = legacy;
+}
+
+LegacyDecimalResultTypeScope::~LegacyDecimalResultTypeScope() {
+	context.legacy_decimal_result_types = previous;
+}
+
 uint32_t Decimal::CheckedWidth(idx_t width, const char *operation) {
 	if (width > NumericLimits<uint32_t>::Maximum()) {
 		throw OutOfRangeException("%s needs a DECIMAL of %llu digits, the width of a DECIMAL is at most %u", operation,

@@ -498,9 +498,15 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 			    });
 		}
 
-		// Constant-fold all default parameter expressions
+		// Constant-fold all default parameter expressions. The folded values are stored with their types: a database
+		// written before wide decimals folds them as the engines of its storage version do
 		identifier_map_t<Value> default_values;
 		identifier_set_t integer_literal_defaults;
+		const bool legacy_decimal_defaults =
+		    !info.temporary && attached.HasStorageManager() &&
+		    StorageManager::IsPriorToVersion(Decimal::WIDE_VERSION_ADDED,
+		                                     attached.GetStorageManager().GetStorageVersion());
+		LegacyDecimalResultTypeScope legacy_scope(context, legacy_decimal_defaults);
 		for (auto &it : function->default_parameters) {
 			auto &param_name = it.first;
 			auto &param_expr = it.second;
@@ -564,12 +570,23 @@ SchemaCatalogEntry &Binder::BindCreateFunctionInfo(CreateInfo &info) {
 		}
 
 		if (!info.temporary && attached.HasStorageManager()) {
-			// the parameter and return types are written to the catalog
+			// the parameter, default and return types are written to the catalog, and the stored expressions may cast
 			auto &storage_manager = attached.GetStorageManager();
 			for (const auto &type : function->types) {
 				storage_manager.CheckTypeIsSupported(type);
 			}
+			for (const auto &default_value : default_values) {
+				storage_manager.CheckTypeIsSupported(default_value.second.type());
+			}
 			storage_manager.CheckTypeIsSupported(function->return_type);
+			for (auto &default_parameter : function->default_parameters) {
+				storage_manager.CheckExpressionTypesAreSupported(*default_parameter.second);
+			}
+			if (info.type == CatalogType::MACRO_ENTRY) {
+				storage_manager.CheckExpressionTypesAreSupported(*function->Cast<ScalarMacroFunction>().expression);
+			} else {
+				storage_manager.CheckQueryTypesAreSupported(*function->Cast<TableMacroFunction>().query_node);
+			}
 		}
 
 		vector<LogicalType> dummy_types;
@@ -922,6 +939,13 @@ BoundStatement Binder::Bind(CreateStatement &stmt) {
 			if (existing_entry && existing_entry->type == CatalogType::VIEW_ENTRY) {
 				// IF EXISTS and the view already exists - avoid binding
 				base.binding_mode = CreateViewBindingMode::SKIP_BINDING;
+			}
+		}
+		if (base.query && !base.temporary) {
+			// the query of the view is stored, so its casts must target types the database can store
+			auto &attached = schema.ParentCatalog().GetAttached();
+			if (!attached.IsTemporary() && attached.HasStorageManager()) {
+				attached.GetStorageManager().CheckQueryTypesAreSupported(*base.query->node);
 			}
 		}
 		BindCreateViewInfo(base);
