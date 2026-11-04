@@ -529,17 +529,18 @@ static idx_t GetRecursivePipelineMaxThreads(Pipeline &pipeline, idx_t worker_lim
 	return MinValue(max_threads, worker_limit);
 }
 
-static void ProcessRecursiveExecutorTasks(Executor &executor);
+static bool PumpRecursiveExecutor(Executor &executor);
 
 //! Signal state whose wait keeps the recursive executor making progress. A blocked source may
 //! have scheduled its continuation as an executor task; with zero internal workers
 //! (threads == external_threads) that task can only ever run on the waiting thread, so a bare
 //! condition-variable wait deadlocks. The event path pumps tasks in WaitForRecursiveEvents;
-//! the inline waits must do the same.
+//! the inline waits must do the same while still waking immediately on the completion callback.
 struct RecursiveInterruptSignalState : public InterruptDoneSignalState {
-	//! Consume the signal if it fired; never blocks
-	bool ConsumeSignal() {
-		annotated_lock_guard<annotated_mutex> guard(lock);
+	//! Wait for the signal with a bounded timeout; true when the signal fired
+	bool AwaitFor(std::chrono::milliseconds timeout) {
+		annotated_unique_lock<annotated_mutex> guard(lock);
+		cv.wait_for(guard, timeout, [&]() { return done; });
 		if (!done) {
 			return false;
 		}
@@ -548,10 +549,15 @@ struct RecursiveInterruptSignalState : public InterruptDoneSignalState {
 	}
 
 	void AwaitWithExecutorProgress(Executor &executor) {
-		while (!ConsumeSignal()) {
-			// runs pending tasks (including the blocking continuation) and propagates executor
-			// errors; otherwise waits bounded, woken by task completion or reschedule
-			ProcessRecursiveExecutorTasks(executor);
+		// A completion callback notifies this signal directly and wakes the wait immediately.
+		// The timeout bounds the remaining wake source: another thread enqueueing an executor
+		// task instead of signalling, which the next pump iteration picks up.
+		static constexpr std::chrono::milliseconds BOUNDED_WAIT {Executor::WAIT_TIME};
+		while (true) {
+			PumpRecursiveExecutor(executor);
+			if (AwaitFor(BOUNDED_WAIT)) {
+				return;
+			}
 		}
 	}
 };
@@ -1164,10 +1170,24 @@ void RecordInvariantRetentionReuse(RecursiveCTEMetrics &metrics,
 	}
 }
 
-static void ProcessRecursiveExecutorTasks(Executor &executor) {
+//! Runs pending executor tasks; returns whether any ran. An executor error takes precedence
+//! over any other outcome, and an idle iteration enforces interrupts and the query deadline,
+//! which no task-side InterruptCheck call site can reach while nothing executes.
+static bool PumpRecursiveExecutor(Executor &executor) {
 	// Only drain the recursive executor here. Re-entering the outer query executor while waiting for
 	// recursive work can run unrelated tasks and used to break recursive completion tracking.
-	if (!executor.WorkOnTasks()) {
+	const auto did_work = executor.WorkOnTasks();
+	if (executor.HasError()) {
+		executor.ThrowException();
+	}
+	if (!did_work) {
+		executor.context.BlockingInterruptCheck();
+	}
+	return did_work;
+}
+
+static void ProcessRecursiveExecutorTasks(Executor &executor) {
+	if (!PumpRecursiveExecutor(executor)) {
 		executor.WaitForTask();
 	}
 	if (executor.HasError()) {

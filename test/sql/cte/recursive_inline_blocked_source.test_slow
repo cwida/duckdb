@@ -1,0 +1,44 @@
+# name: test/sql/cte/recursive_inline_blocked_source.test_slow
+# description: Inline recursive execution services executor tasks while a source blocks
+# group: [cte]
+# With threads == external_threads there are zero internal worker threads. An
+# async-yielding source (dbgen schedules its continuation as an executor task and returns
+# BLOCKED after every generation step; its ~1.6 s per-invocation text-pool setup is
+# scale-independent, which makes this a slow test - dsdgen is cheaper but does not
+# block in this shape) can then only make progress
+# on the coordinating thread. The inline wait must pump executor tasks like the event
+# path does; a bare condition-variable wait deadlocks both queries below.
+# max_execution_time bounds partial regressions, a full reintroduction of the deadlock is
+# only caught by the runner timeout. The finish-event BLOCKED arm shares the same wait but
+# is not pinnable from SQL: no in-tree operator returns a blocked operator finalize, and
+# the only blocked sink finalize (COPY TO FILE) cannot appear inside a recursive body.
+
+require tpch
+
+statement ok
+SET threads=2;
+
+statement ok
+SET external_threads=2;
+
+statement ok
+SET max_execution_time=60000;
+
+query II
+WITH RECURSIVE t(b, n) USING TRAMPOLINE (b) AS (
+	(VALUES (1, 0::BIGINT))
+	BRANCH 1: (SELECT 0, count(*) FROM dbgen(sf = 0.01))
+)
+SELECT * FROM t;
+----
+0	0
+
+query I
+WITH RECURSIVE t(lvl, n) AS (
+	SELECT 1, 0::BIGINT
+	UNION ALL
+	SELECT lvl + 1, (SELECT count(*) FROM dbgen(sf = 0.01)) FROM t WHERE lvl < 2
+)
+SELECT count(*) FROM t;
+----
+2
