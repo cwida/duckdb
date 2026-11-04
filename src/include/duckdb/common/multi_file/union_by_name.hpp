@@ -39,12 +39,6 @@ public:
 	              MultiFileOptions &file_options, MultiFileReader &multi_file_reader,
 	              MultiFileReaderInterface &interface, bool ignore_errors = false,
 	              TaskSchedulerType scheduler_type = TaskSchedulerType::REGULAR);
-
-	//! Merge the statistics of a column over the files. Null if some file with rows lacks the column or has it as a
-	//! type other than 'type'. Files known to be empty are skipped
-	DUCKDB_API static unique_ptr<BaseStatistics> MergeStatistics(ClientContext &context,
-	                                                             const vector<shared_ptr<BaseUnionData>> &readers,
-	                                                             const Identifier &name, const LogicalType &type);
 };
 
 } // namespace duckdb

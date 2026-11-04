@@ -65,31 +65,6 @@ UnionByName::ReadUnionData(ClientContext &context, const vector<OpenFileInfo> &f
 	return union_readers;
 }
 
-unique_ptr<BaseStatistics> UnionByName::MergeStatistics(ClientContext &context,
-                                                        const vector<shared_ptr<BaseUnionData>> &readers,
-                                                        const Identifier &name, const LogicalType &type) {
-	unique_ptr<BaseStatistics> result;
-	for (auto &reader : readers) {
-		if (!reader) {
-			return nullptr;
-		}
-		auto rows = reader->TryGetCardinalityEstimate();
-		if (rows.IsValid() && rows.GetIndex() == 0) {
-			continue;
-		}
-		auto statistics = reader->GetStatistics(context, name);
-		if (!statistics || statistics->GetType() != type) {
-			return nullptr;
-		}
-		if (!result) {
-			result = std::move(statistics);
-		} else {
-			result->Merge(*statistics);
-		}
-	}
-	return result;
-}
-
 vector<shared_ptr<BaseUnionData>> UnionByName::UnionCols(ClientContext &context, const vector<OpenFileInfo> &files,
                                                          vector<LogicalType> &union_col_types,
                                                          vector<Identifier> &union_col_names,
