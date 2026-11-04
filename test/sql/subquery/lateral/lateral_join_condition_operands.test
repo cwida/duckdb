@@ -449,7 +449,7 @@ query III
 SELECT l.x, r.y, s.z
 FROM (VALUES ('a')) l(x)
 JOIN (VALUES (10)) r(y)
-    ON length(l.x) + nextval('seq_cte') < r.y
+    ON length(l.x) < r.y + nextval('seq_cte')
 FULL OUTER JOIN (VALUES (1)) s(z)
     ON (SELECT length(l.x) + s.z) = 2;
 ----
@@ -511,3 +511,47 @@ RESET nested_loop_join_threshold;
 
 statement ok
 RESET delim_join_as_cte;
+
+# operand ownership does not imply eager evaluation: a correlated probe operand keeps
+# its computation at the join and only its outer references move into the probe child,
+# so an empty build input never evaluates it
+query II
+SELECT o.k, q.x
+FROM (VALUES ('bad')) o(k), LATERAL (
+    SELECT l.x
+    FROM (VALUES (1)) l(x)
+    ASOF ANTI JOIN range(0) r(y)
+        ON l.x + o.k::BIGINT >= r.y
+) q;
+----
+bad	1
+
+# the same laziness holds for probe rows padded by an empty LEFT build
+query III
+SELECT o.k, q.x, q.y
+FROM (VALUES ('bad')) o(k), LATERAL (
+    SELECT l.x, r.y
+    FROM (VALUES (1)) l(x)
+    LEFT JOIN range(0) r(y) ON l.x + o.k::BIGINT > r.y
+) q;
+----
+bad	1	NULL
+
+# a volatile probe operand over an empty build input never evaluates
+statement ok
+CREATE SEQUENCE seq_probe_lazy START 1;
+
+query II
+SELECT o.k, q.x
+FROM (VALUES (1)) o(k), LATERAL (
+    SELECT l.x FROM (VALUES (1)) l(x)
+    ASOF ANTI JOIN range(0) r(y)
+        ON l.x + nextval('seq_probe_lazy') + o.k >= r.y
+) q;
+----
+1	1
+
+query I
+SELECT last_value FROM duckdb_sequences() WHERE sequence_name = 'seq_probe_lazy';
+----
+NULL

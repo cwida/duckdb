@@ -707,8 +707,8 @@ void RecursiveDependentJoinPlanner::PlanJoinExpressions(LogicalOperator &op) {
 }
 
 static bool OperandRequiresOwnChildEvaluation(const Expression &expr, bool volatile_requires_child) {
-	// a volatile operand moves only where the join strategy does not already evaluate
-	// it lazily per row: MARK probes over empty builds, for example, must stay unevaluated
+	// a volatile operand moves only into a child whose rows the join evaluates unconditionally,
+	// pinning its evaluation to once per owning child row per domain
 	if (volatile_requires_child && expr.IsVolatile()) {
 		return true;
 	}
@@ -733,12 +733,14 @@ BindingReplacementGraph RecursiveDependentJoinPlanner::NormalizeJoinConditionOpe
 	}
 	auto &join = op->Cast<LogicalComparisonJoin>();
 	for (idx_t side = 0; side < 2; side++) {
-		// MARK probes over empty builds must keep their operands unevaluated, so only
-		// the outer references inside them are hoisted, never the operand itself
-		bool hoist_references_only = side == 0 && join.join_type == JoinType::MARK;
-		// a comparison condition operand evaluates in its owning child's scope: operands
-		// carrying outer references or volatile expressions move into that child, where
-		// dependency analysis and decorrelation see them like any other child expression
+		// a comparison condition operand evaluates in its owning child's scope, but ownership
+		// does not imply permission to evaluate eagerly: every join strategy streams the probe
+		// input and may skip its operands entirely over an empty build, so probe operands keep
+		// their computation at the join and hoist only their outer references into the child;
+		// the build input is always materialized and every split-comparison strategy keys it
+		// per row, so build operands containing outer references or volatile expressions move
+		// into the child entirely
+		const bool hoist_references_only = side == 0;
 		vector<optional_ptr<unique_ptr<Expression>>> operands;
 		for (auto &cond : join.conditions) {
 			if (!cond.IsComparison()) {
