@@ -12,6 +12,7 @@
 #include "duckdb/common/operator/decimal_cast_operators.hpp"
 #include "duckdb/common/operator/string_cast.hpp"
 #include "duckdb/common/serializer/deserializer.hpp"
+#include "duckdb/common/types/blob.hpp"
 #include "duckdb/common/types/geometry.hpp"
 #include "duckdb/common/types/value_map.hpp"
 #include "json_geojson.hpp"
@@ -319,6 +320,43 @@ static bool TransformFromString(yyjson_val *vals[], Vector &result, const idx_t 
 		options.error_message +=
 		    "\n If this error occurred during read_json, line/object number information is approximate";
 		success = false;
+	}
+	return success;
+}
+
+//! BLOB reads as the existing VARCHAR rendering, except JSON strings go through the VARCHAR -> BLOB cast so their
+//! \xNN escapes decode into bytes. Rendering non-strings through that cast would misread ordinary JSON escapes
+//! (e.g. \n is not a valid BLOB escape), so their rendered text is written directly as bytes instead.
+static bool TransformToBlob(yyjson_val *vals[], yyjson_alc *alc, Vector &result, const idx_t count,
+                            JSONTransformOptions &options) {
+	auto data = FlatVector::GetDataMutable<string_t>(result);
+	auto &validity = FlatVector::ValidityMutable(result);
+	JSONRawNumberWriter raw_writer(alc);
+
+	CastParameters parameters(options.strict_cast, &options.error_message);
+	bool success = true;
+	for (idx_t i = 0; i < count; i++) {
+		const auto &val = vals[i];
+		if (!val || unsafe_yyjson_is_null(val)) {
+			validity.SetInvalid(i);
+		} else if (unsafe_yyjson_is_str(val)) {
+			const auto &input = GetString(val);
+			idx_t blob_size;
+			if (!Blob::TryGetBlobSize(input, blob_size, parameters)) {
+				validity.SetInvalid(i);
+				if (success && options.strict_cast) {
+					options.object_index = i;
+					success = false;
+				}
+				continue;
+			}
+			auto blob = StringVector::EmptyString(result, blob_size);
+			Blob::ToBlob(input, reinterpret_cast<data_ptr_t>(blob.GetDataWriteable()));
+			blob.Finalize();
+			data[i] = blob;
+		} else if (!GetValueString(val, alc, data[i], result, options.numbers_as_raw ? &raw_writer : nullptr)) {
+			validity.SetInvalid(i);
+		}
 	}
 	return success;
 }
@@ -1163,12 +1201,13 @@ bool JSONTransform::Transform(yyjson_val *vals[], yyjson_alc *alc, Vector &resul
 	case LogicalTypeId::TIMESTAMP_MS:
 	case LogicalTypeId::TIMESTAMP_SEC:
 	case LogicalTypeId::UUID:
-	case LogicalTypeId::BLOB:
 		return TransformFromString(vals, result, count, options);
 	case LogicalTypeId::GEOMETRY:
 		return TransformGeometry(vals, result, count, options);
 	case LogicalTypeId::VARCHAR:
 		return TransformToString(vals, alc, result, count, options);
+	case LogicalTypeId::BLOB:
+		return TransformToBlob(vals, alc, result, count, options);
 	case LogicalTypeId::STRUCT:
 		return TransformObjectInternal(vals, alc, result, count, options, column_index);
 	case LogicalTypeId::TUPLE:
