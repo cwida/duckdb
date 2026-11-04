@@ -295,6 +295,23 @@ select json_transform('42', '"BLOB"')
 42
 
 query T
+select json_transform('"\\x42"', '"BLOB"')
+----
+B
+
+# objects and arrays read as BLOB keep the raw rendered text: ordinary JSON escapes are not interpreted as BLOB
+# escapes, and decimal numbers normalize the same way they do for VARCHAR
+query I
+select hex(json_transform('{"a": "x\ny"}', '"BLOB"'))
+----
+7B2261223A22785C6E79227D
+
+query I
+select hex(json_transform('["x\ny", {"b": "c\td"}]', '"BLOB"'))
+----
+5B22785C6E79222C7B2262223A22635C7464227D5D
+
+query T
 select json_transform('-42', '"VARCHAR"')
 ----
 -42

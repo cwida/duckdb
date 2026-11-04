@@ -372,6 +372,9 @@ struct TransformInput {
 		return rule ? rule : parse_result.GetRule();
 	}
 
+	//! Unwrap rule-less wrapper nodes (choice, present optional, unnamed single-child group); throws when none is left
+	TransformInput Unwrap() const;
+
 	optional_ptr<const CompiledGrammarRule> rule;
 	ParseResult &parse_result;
 };

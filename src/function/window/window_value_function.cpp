@@ -366,8 +366,8 @@ public:
 			if (offset_expr->HasParameter() || !offset_expr->IsFoldable()) {
 				return false;
 			}
-			auto offset_value = ExpressionExecutor::EvaluateScalar(client, *offset_expr);
-			if (offset_value.IsNull()) {
+			Value offset_value;
+			if (!ExpressionExecutor::TryEvaluateScalar(client, *offset_expr, offset_value) || offset_value.IsNull()) {
 				return false;
 			}
 			auto bigint_value = offset_value.DefaultTryCastAs(LogicalType::BIGINT);
@@ -397,7 +397,10 @@ public:
 		if (default_expr && (default_expr->HasParameter() || !default_expr->IsFoldable())) {
 			return false;
 		}
-		auto dflt_value = ExpressionExecutor::EvaluateScalar(client, *default_expr);
+		Value dflt_value;
+		if (!ExpressionExecutor::TryEvaluateScalar(client, *default_expr, dflt_value)) {
+			return false;
+		}
 		auto cast_value = dflt_value.DefaultTryCastAs(wexpr.GetReturnType());
 		if (!cast_value) {
 			return false;
@@ -1090,8 +1093,8 @@ public:
 		if (nth_expr && (nth_expr->HasParameter() || !nth_expr->IsFoldable())) {
 			return false;
 		}
-		auto nth_value = ExpressionExecutor::EvaluateScalar(client, *nth_expr);
-		if (nth_value.IsNull()) {
+		Value nth_value;
+		if (!ExpressionExecutor::TryEvaluateScalar(client, *nth_expr, nth_value) || nth_value.IsNull()) {
 			return false;
 		}
 		auto bigint_value = nth_value.DefaultTryCastAs(LogicalType::BIGINT);

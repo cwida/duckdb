@@ -289,10 +289,6 @@ void ListColumnData::RevertAppend(row_t new_count) {
 	child_column->RevertAppend(UnsafeNumericCast<row_t>(list_offset));
 }
 
-idx_t ListColumnData::Fetch(ColumnScanState &state, row_t row_id, Vector &result) {
-	throw NotImplementedException("List Fetch");
-}
-
 void ListColumnData::Update(TransactionData transaction, DuckTableEntry &table_entry, idx_t column_index,
                             Vector &update_vector, row_t *row_ids, idx_t update_count, idx_t row_group_start) {
 	throw NotImplementedException("List Update is not supported.");

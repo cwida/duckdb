@@ -475,10 +475,6 @@ void VariantColumnData::RevertAppend(row_t new_count) {
 	this->count = UnsafeNumericCast<idx_t>(new_count);
 }
 
-idx_t VariantColumnData::Fetch(ColumnScanState &state, row_t row_id, Vector &result) {
-	throw NotImplementedException("VARIANT Fetch");
-}
-
 void VariantColumnData::Update(TransactionData transaction, DuckTableEntry &table_entry, idx_t column_index,
                                Vector &update_vector, row_t *row_ids, idx_t update_count, idx_t row_group_start) {
 	throw NotImplementedException("VARIANT Update is not supported.");
