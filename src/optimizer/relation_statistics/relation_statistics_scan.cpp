@@ -350,9 +350,10 @@ static FilterEstimate EstimateFilterRows(idx_t cardinality, const Expression &ex
 
 static void ApplyFilterEstimate(RelationStats &stats, FilterEstimate estimate) {
 	if (!estimate.supported) {
-		if (estimate.cardinality == stats.cardinality) {
-			estimate.cardinality = FilterFraction(stats.cardinality, RelationStatisticsHelper::DEFAULT_SELECTIVITY);
-		}
+		// An unsupported conjunct retains its fallback even when another conjunct has a weaker estimate.
+		estimate.cardinality =
+		    MinValue(estimate.cardinality,
+		             FilterFraction(stats.cardinality, RelationStatisticsHelper::DEFAULT_SELECTIVITY));
 	}
 	RelationStatisticsHelper::ApplyCardinality(stats, estimate.cardinality);
 }
