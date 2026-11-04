@@ -20,6 +20,16 @@ NULL	NULL	NULL
 1	25000000	5000
 1	25000000	5000
 
+# Key-dependent and ancestor SUM callbacks do not change demanded results.
+query I
+SELECT sum(a.s) FROM (VALUES (0), (1)) d(k)
+LEFT JOIN (
+    SELECT f.k, sum(f.k) s FROM small_domain f
+    SEMI JOIN (SELECT DISTINCT k FROM (VALUES (0), (1)) keys(k)) old USING(k) GROUP BY f.k
+) a USING(k);
+----
+5001
+
 # Ordinary restriction must retain NULL exclusion for a null-safe consumer.
 query II
 SELECT d.k,a.s FROM (VALUES(0),(1),(NULL))d(k)

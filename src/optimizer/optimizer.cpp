@@ -264,7 +264,7 @@ void Optimizer::RunBuiltInOptimizers() {
 	if (!CTEContainsDML(*plan)) {
 		RunOptimizer(OptimizerType::DUPLICATE_ELIMINATED_DOMAIN, [&]() {
 			DuplicateEliminatedDomainOptimizer domain_optimizer(*this);
-			domain_optimizer.VisitOperator(*plan);
+			domain_optimizer.Optimize(*plan);
 		});
 	}
 

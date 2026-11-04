@@ -47,7 +47,50 @@ LEFT JOIN (
 ----
 physical_plan	<REGEX>:[\s\S]*repeated_keys[\s\S]*
 
-# Key aliases still feed the statistics-dependent bitstring callback.
+# Ordinary statistics callbacks may consume the restricted key.
+statement ok
+CREATE VIEW callback_groups AS
+SELECT d.k, a.s, a.n
+FROM (VALUES (1), (2)) d(k)
+LEFT JOIN (
+    SELECT f.k, sum(f.k) s, count(f.k) n
+    FROM fact f SEMI JOIN old_keys old USING(k) GROUP BY f.k
+) a USING(k);
+
+query II
+EXPLAIN (FORMAT JSON) SELECT * FROM callback_groups;
+----
+physical_plan	<!REGEX>:[\s\S]*repeated_keys[\s\S]*
+
+# Ancestor aggregate/window callbacks and materialized CTEs do not block replacement.
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(s), sum(n) FROM callback_groups;
+----
+physical_plan	<!REGEX>:[\s\S]*repeated_keys[\s\S]*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT sum(s) OVER () FROM callback_groups;
+----
+physical_plan	<!REGEX>:[\s\S]*repeated_keys[\s\S]*
+
+query II
+EXPLAIN (FORMAT JSON)
+WITH c AS MATERIALIZED (SELECT * FROM callback_groups) SELECT sum(s) FROM c;
+----
+physical_plan	<!REGEX>:[\s\S]*repeated_keys[\s\S]*
+
+# Only implicit bitstring bounds require the bailout.
+query II
+EXPLAIN (FORMAT JSON) SELECT bitstring_agg(k, 0, 999), sum(s) FROM callback_groups;
+----
+physical_plan	<!REGEX>:[\s\S]*repeated_keys[\s\S]*
+
+query II
+EXPLAIN (FORMAT JSON) SELECT bitstring_agg(k), sum(s) FROM callback_groups;
+----
+physical_plan	<REGEX>:[\s\S]*repeated_keys[\s\S]*
+
+# The implicit-bitstring bailout also covers aliases and computed arguments.
 query II rowsort
 SELECT d.k, bit_length(a.bits)
 FROM (VALUES (1)) d(k)

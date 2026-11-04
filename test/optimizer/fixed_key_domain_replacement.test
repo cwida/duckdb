@@ -65,6 +65,36 @@ LEFT JOIN (
 1	45010
 4	NULL
 
+# Ordinary callbacks can use the restricted key, including through CTE and window consumers.
+statement ok
+CREATE VIEW callback_groups AS
+SELECT d.k, a.s, a.n
+FROM (VALUES (1), (2)) d(k)
+LEFT JOIN (
+    SELECT f.k, sum(f.k) s, count(f.k) n
+    FROM fact f SEMI JOIN (
+        SELECT d.k FROM (VALUES (1), (2), (3)) d(k) LEFT JOIN fact_data USING(k)
+    ) old USING(k) GROUP BY f.k
+) a USING(k);
+
+query IIII rowsort
+WITH c AS MATERIALIZED (SELECT * FROM callback_groups)
+SELECT s, n, sum(s) OVER (), sum(n) OVER () FROM c;
+----
+11	11	31	21
+20	10	31	21
+
+query II
+SELECT sum(s), sum(n) FROM callback_groups;
+----
+31	21
+
+# Explicit bounds remain independent of statistics.
+query II
+SELECT bit_length(bitstring_agg(k, 0, 999)), bit_count(bitstring_agg(k, 0, 999)) FROM callback_groups;
+----
+1000	2
+
 # A filtered old source is only a superset of its actual surviving keys.
 query II rowsort
 SELECT d.k, a.s

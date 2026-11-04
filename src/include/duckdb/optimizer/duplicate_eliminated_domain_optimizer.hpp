@@ -18,10 +18,11 @@ class DuplicateEliminatedDomainOptimizer : public LogicalOperatorVisitor {
 public:
 	explicit DuplicateEliminatedDomainOptimizer(Optimizer &optimizer);
 
-	void VisitOperator(LogicalOperator &op) override;
+	void Optimize(LogicalOperator &op);
 
 private:
+	void VisitOperator(LogicalOperator &op) override;
+
 	Optimizer &optimizer;
-	bool preserve_input_statistics = false;
 };
 } // namespace duckdb

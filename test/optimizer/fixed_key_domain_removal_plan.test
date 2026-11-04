@@ -17,6 +17,17 @@ LEFT JOIN (SELECT f.k,sum(v)s FROM small_domain f
 ----
 physical_plan	<!REGEX>:[\s\S]*SEMI[\s\S]*
 
+# Statistics callbacks on the key and in ancestors do not prevent removal.
+query II
+EXPLAIN (FORMAT JSON)
+SELECT sum(a.s) FROM (VALUES (0), (1)) d(k)
+LEFT JOIN (
+    SELECT f.k, sum(f.k) s FROM small_domain f
+    SEMI JOIN (SELECT DISTINCT k FROM (VALUES (0), (1)) keys(k)) old USING(k) GROUP BY f.k
+) a USING(k);
+----
+physical_plan	<!REGEX>:[\s\S]*SEMI[\s\S]*
+
 # Removal also works when ordinary equality's NULL exclusion must be retained.
 query II
 EXPLAIN(FORMAT JSON)

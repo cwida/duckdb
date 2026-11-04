@@ -32,6 +32,35 @@ DuplicateEliminatedDomainOptimizer::DuplicateEliminatedDomainOptimizer(Optimizer
     : optimizer(optimizer_p) {
 }
 
+static bool HasImplicitBitstringAggregate(const LogicalOperator &op) {
+	bool found = false;
+	LogicalOperatorVisitor::EnumerateExpressions(op, [&](const unique_ptr<Expression> *expression) {
+		ExpressionIterator::VisitExpression<BoundAggregateExpression>(**expression, [&](const auto &aggregate) {
+			found |= aggregate.Function().GetName() == "bitstring_agg" && aggregate.Function().HasStatisticsCallback();
+		});
+		ExpressionIterator::VisitExpression<BoundWindowExpression>(**expression, [&](const auto &window) {
+			auto &function = window.AggregateFunction();
+			found |= function && function->GetName() == "bitstring_agg" && function->HasStatisticsCallback();
+		});
+	});
+	if (found) {
+		return true;
+	}
+	for (auto &child : op.children) {
+		if (HasImplicitBitstringAggregate(*child)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void DuplicateEliminatedDomainOptimizer::Optimize(LogicalOperator &op) {
+	// Implicit bitstring bounds depend on statistics, including those propagated through CTE references.
+	if (!HasImplicitBitstringAggregate(op)) {
+		VisitOperator(op);
+	}
+}
+
 static bool IsWorkReference(const Expression &expression) {
 	switch (expression.GetExpressionClass()) {
 	case ExpressionClass::BOUND_COLUMN_REF:
@@ -177,7 +206,7 @@ static bool CopyFixedKeys(LogicalOperator &op, idx_t key, const LogicalType &typ
 	}
 }
 
-//! Unlike demand extraction, this must not look through an operator that can remove keys.
+//! The old restriction must be proven to contain every demanded key.
 static bool CopyExactFixedKeys(LogicalOperator &op, idx_t key, const LogicalType &type,
                                vector<vector<unique_ptr<Expression>>> &rows) {
 	switch (op.type) {
@@ -252,39 +281,6 @@ static optional_ptr<LogicalComparisonJoin> FindRestriction(LogicalOperator &inpu
 		return nullptr;
 	}
 	return join;
-}
-
-static bool ReferencesRestrictionKey(const Expression &expression, LogicalOperator &input,
-                                     LogicalComparisonJoin &restriction) {
-	if (expression.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
-		bool depends_on_key = false;
-		ExpressionIterator::EnumerateChildren(expression, [&](const Expression &child) {
-			depends_on_key |= ReferencesRestrictionKey(child, input, restriction);
-		});
-		return depends_on_key;
-	}
-	if (input.type == LogicalOperatorType::LOGICAL_PROJECTION) {
-		auto index = ReferenceIndex(expression, input);
-		return index.IsValid() &&
-		       ReferencesRestrictionKey(*input.expressions[index.GetIndex()], *input.children[0], restriction);
-	}
-	return &input == &restriction && expression.Equals(restriction.conditions[0].GetLHS());
-}
-
-static bool HasKeyStatisticsCallback(LogicalAggregate &aggregate, LogicalComparisonJoin &restriction) {
-	for (auto &expression : aggregate.expressions) {
-		auto &bound = expression->Cast<BoundAggregateExpression>();
-		if (!bound.Function().HasStatisticsCallback()) {
-			continue;
-		}
-		for (auto &child : bound.GetChildren()) {
-			if (ReferencesRestrictionKey(*child, *aggregate.children[0], restriction)) {
-				// For example, implicit bitstring bounds can change even for surviving groups.
-				return true;
-			}
-		}
-	}
-	return false;
 }
 
 static bool HasSharedSource(LogicalOperator &op) {
@@ -456,8 +452,7 @@ static bool TryOptimizeRestriction(Optimizer &optimizer, LogicalAggregate &aggre
                                    unique_ptr<LogicalDistinct> &domain, ExpressionType consumer_comparison) {
 	vector<reference<LogicalProjection>> projections;
 	auto restriction = FindRestriction(*aggregate.children[0], *aggregate.groups[0], projections);
-	if (!restriction || HasKeyStatisticsCallback(aggregate, *restriction) ||
-	    HasSharedSource(*restriction->children[1])) {
+	if (!restriction || HasSharedSource(*restriction->children[1])) {
 		return false;
 	}
 	auto &condition = restriction->conditions[0];
@@ -502,8 +497,7 @@ static bool TryOptimizeRestriction(Optimizer &optimizer, LogicalAggregate &aggre
 	return true;
 }
 
-static bool TryOptimizeDomain(Optimizer &optimizer, LogicalComparisonJoin &join, idx_t aggregate_side,
-                              bool allow_rewrite) {
+static bool TryOptimizeDomain(Optimizer &optimizer, LogicalComparisonJoin &join, idx_t aggregate_side) {
 	auto &condition = join.conditions[0];
 	auto &aggregate_key = aggregate_side == 0 ? condition.GetLHS() : condition.GetRHS();
 	auto &demand_key = aggregate_side == 0 ? condition.GetRHS() : condition.GetLHS();
@@ -529,7 +523,7 @@ static bool TryOptimizeDomain(Optimizer &optimizer, LogicalComparisonJoin &join,
 	domain->distinct_targets.push_back(
 	    make_uniq<BoundColumnRefExpression>(demand_key.GetReturnType(), ColumnBinding(key_index, ProjectionIndex(0))));
 	domain->children.push_back(std::move(fixed));
-	if (allow_rewrite && TryOptimizeRestriction(optimizer, *aggregate, domain, condition.GetComparisonType())) {
+	if (TryOptimizeRestriction(optimizer, *aggregate, domain, condition.GetComparisonType())) {
 		return true;
 	}
 	// Replacing an existing restriction keeps its filter opportunity. A new one may duplicate the consumer's work.
@@ -553,24 +547,8 @@ void DuplicateEliminatedDomainOptimizer::VisitOperator(LogicalOperator &op) {
 	if (op.type == LogicalOperatorType::LOGICAL_RECURSIVE_CTE) {
 		return;
 	}
-	auto previous_preserve_statistics = preserve_input_statistics;
-	// CTE statistics can reach consumers outside the current ancestor path.
-	preserve_input_statistics |= op.type == LogicalOperatorType::LOGICAL_MATERIALIZED_CTE;
-	if (op.type == LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY) {
-		for (auto &expression : op.expressions) {
-			preserve_input_statistics |=
-			    expression->Cast<BoundAggregateExpression>().Function().HasStatisticsCallback();
-		}
-	} else if (op.type == LogicalOperatorType::LOGICAL_WINDOW) {
-		for (auto &expression : op.expressions) {
-			auto &window = expression->Cast<BoundWindowExpression>();
-			preserve_input_statistics |=
-			    window.AggregateFunction() && window.AggregateFunction()->HasStatisticsCallback();
-		}
-	}
 	// Visit only original children; generated domain operators are never reconsidered.
 	VisitOperatorChildren(op);
-	preserve_input_statistics = previous_preserve_statistics;
 	if (op.type != LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
 		return;
 	}
@@ -583,13 +561,11 @@ void DuplicateEliminatedDomainOptimizer::VisitOperator(LogicalOperator &op) {
 	                                  condition.GetComparisonType() != ExpressionType::COMPARE_NOT_DISTINCT_FROM)) {
 		return;
 	}
-	// Changing an existing restriction can change statistics observed by an ancestor aggregate.
-	auto allow_rewrite = !preserve_input_statistics;
-	if (join.join_type == JoinType::INNER && TryOptimizeDomain(optimizer, join, 0, allow_rewrite)) {
+	if (join.join_type == JoinType::INNER && TryOptimizeDomain(optimizer, join, 0)) {
 		return;
 	}
 	if (join.join_type == JoinType::INNER || join.join_type == JoinType::LEFT || join.join_type == JoinType::SINGLE) {
-		TryOptimizeDomain(optimizer, join, 1, allow_rewrite);
+		TryOptimizeDomain(optimizer, join, 1);
 	}
 }
 
