@@ -4,7 +4,6 @@
 #include "duckdb/common/enums/memory_tag.hpp"
 #include "duckdb/common/enums/storage_block_prefetch.hpp"
 #include "duckdb/common/exception.hpp"
-#include "duckdb/common/set.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/query_profiler.hpp"
@@ -393,7 +392,7 @@ BufferHandle StandardBufferManager::Pin(const QueryContext &context, shared_ptr<
 	unique_ptr<FileBuffer> reusable_buffer;
 	auto reservation =
 	    EvictBlocksOrThrow(context, block_memory.GetMemoryTag(), required_memory, &reusable_buffer,
-	                       "failed to pin block of size %s%s", StringUtil::BytesToHumanReadableString(required_memory));
+		                   "failed to pin block of size %s%s", StringUtil::BytesToHumanReadableString(required_memory));
 
 	// lock the handle again and repeat the check (in case anybody loaded in the meantime)
 	auto lock = block_memory.GetLock();
@@ -438,9 +437,13 @@ void StandardBufferManager::AddToEvictionQueue(shared_ptr<BlockHandle> &handle) 
 
 void StandardBufferManager::VerifyZeroReaders(BlockLock &lock, shared_ptr<BlockHandle> &handle) {
 #ifdef DUCKDB_DEBUG_DESTROY_BLOCKS
+	auto &buffer = handle->GetMemory().GetBuffer(lock);
+	// A failed persistence write can leave an empty, moved-from buffer.
+	if (buffer->Size() == 0) {
+		return;
+	}
 	unique_ptr<FileBuffer> replacement_buffer;
 	auto &block_allocator = BlockAllocator::Get(db);
-	auto &buffer = handle->GetMemory().GetBuffer(lock);
 	auto block_header_size = buffer->GetHeaderSize();
 	auto alloc_size = buffer->AllocSize() - block_header_size;
 	if (handle->GetMemory().GetBufferType() == FileBufferType::BLOCK) {
@@ -789,7 +792,7 @@ void StandardBufferManager::ReserveMemory(idx_t size) {
 	}
 	auto reservation =
 	    EvictBlocksOrThrow(QueryContext(), MemoryTag::EXTENSION, size, nullptr,
-	                       "failed to reserve memory data of size %s%s", StringUtil::BytesToHumanReadableString(size));
+		                   "failed to reserve memory data of size %s%s", StringUtil::BytesToHumanReadableString(size));
 	reservation.size = 0;
 }
 
@@ -843,13 +846,13 @@ data_ptr_t BufferAllocatorData::Reallocate(data_ptr_t pointer, idx_t old_size, i
 
 BufferAllocator::BufferAllocator(StandardBufferManager &manager)
     : Allocator([](PrivateAllocatorData *data, idx_t size) { return data->Cast<BufferAllocatorData>().Allocate(size); },
-                [](PrivateAllocatorData *data, data_ptr_t pointer, idx_t size) {
+	            [](PrivateAllocatorData *data, data_ptr_t pointer, idx_t size) {
 	                data->Cast<BufferAllocatorData>().Free(pointer, size);
                 },
-                [](PrivateAllocatorData *data, data_ptr_t pointer, idx_t old_size, idx_t size) {
+	            [](PrivateAllocatorData *data, data_ptr_t pointer, idx_t old_size, idx_t size) {
 	                return data->Cast<BufferAllocatorData>().Reallocate(pointer, old_size, size);
                 },
-                make_uniq<BufferAllocatorData>(manager)) {
+	            make_uniq<BufferAllocatorData>(manager)) {
 }
 
 HugeAllocation BufferAllocator::AllocateHuge(idx_t size) {

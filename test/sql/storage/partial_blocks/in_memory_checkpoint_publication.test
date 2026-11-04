@@ -1,5 +1,5 @@
-# name: test/sql/storage/partial_blocks/deferred_checkpoint_in_memory.test
-# description: In-memory publication supports compression, vacuum-only checkpoints, and incremental remapping.
+# name: test/sql/storage/partial_blocks/in_memory_checkpoint_publication.test
+# description: Table-local in-memory publication preserves compression, vacuum-only checkpoints, and remapping.
 # group: [partial_blocks]
 
 foreach compression true false
@@ -93,7 +93,7 @@ SELECT rowid, k, s FROM m.a WHERE k IN (1000,122880,123879) ORDER BY k;
 121880	122880	value-122880
 122879	123879	value-123879
 
-# Dropping one table must leave another occupant of a shared memory buffer readable.
+# Dropping one table must leave the other table's buffered data readable.
 statement ok
 DROP TABLE m.a;
 

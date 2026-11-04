@@ -1,5 +1,5 @@
-# name: test/sql/storage/partial_blocks/deferred_checkpoint_in_memory_abort.test
-# description: Aborting in-memory checkpoint preparation discards queued collections and packing buffers safely.
+# name: test/sql/storage/partial_blocks/in_memory_checkpoint_abort.test
+# description: In-memory checkpoint failures invalidate the database and allow safe teardown.
 # group: [partial_blocks]
 
 foreach compression true false
@@ -25,7 +25,7 @@ INSERT INTO m.b SELECT range, 'value-' || range::VARCHAR FROM range(128);
 statement ok
 SET debug_checkpoint_abort='in_memory_checkpoint';
 
-# The abort is after a table was prepared, before the final shared flush/publication.
+# Abort after a table has been checkpointed and published.
 statement error
 CHECKPOINT m;
 ----

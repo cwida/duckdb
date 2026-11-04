@@ -1,0 +1,71 @@
+# name: test/sql/storage/checkpoint/sql_maintenance_checkpoint_lock.test
+# description: SQL VACUUM and ANALYZE exclude checkpoints without making their transactions read-write.
+# group: [storage]
+
+require noforcestorage
+
+foreach operation VACUUM ANALYZE
+
+load {TEST_DIR}/sql_maintenance_checkpoint_lock_{operation}.db
+
+statement ok
+SET checkpoint_threshold='1TB';
+
+statement ok
+CREATE TABLE t(k INTEGER PRIMARY KEY);
+
+statement ok
+INSERT INTO t SELECT range FROM range(32);
+
+statement ok
+ATTACH '{TEST_DIR}/sql_maintenance_read_only_{operation}.db' AS other;
+
+statement ok
+CREATE TABLE other.t(k INTEGER PRIMARY KEY);
+
+statement ok
+INSERT INTO other.t VALUES (1), (2), (3);
+
+statement ok
+CHECKPOINT other;
+
+statement ok
+DETACH other;
+
+statement ok
+ATTACH '{TEST_DIR}/sql_maintenance_read_only_{operation}.db' AS other (READ_ONLY);
+
+statement ok maintenance
+BEGIN TRANSACTION READ ONLY;
+
+statement ok maintenance
+{operation} t;
+
+# Maintenance can still run in a read-only transaction and on multiple databases.
+statement ok maintenance
+{operation} other.t;
+
+# Reuse the transaction's existing checkpoint lock.
+statement ok maintenance
+{operation} t;
+
+statement error
+CHECKPOINT;
+----
+Cannot CHECKPOINT
+
+statement ok maintenance
+COMMIT;
+
+statement ok
+CHECKPOINT;
+
+query I
+SELECT count(*) FROM t;
+----
+32
+
+statement ok
+DETACH other;
+
+endloop

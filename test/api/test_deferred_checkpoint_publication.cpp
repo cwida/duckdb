@@ -10,6 +10,7 @@
 
 #include <chrono>
 #include <condition_variable>
+#include <future>
 #include <thread>
 
 using namespace duckdb;
@@ -308,4 +309,57 @@ TEST_CASE("Full checkpoint defers remapped collections under vacuum exclusion", 
 	RequireScalar(con, "SELECT rowid FROM a WHERE k=2048", 1048);
 	RequireScalar(con, "SELECT count(*) FROM a", 2048);
 	RequireScalar(con, "SELECT sum(v) FROM b", 324960);
+}
+
+TEST_CASE("SQL index maintenance waits for checkpoint publication", "[api][storage][checkpoint]") {
+	const string operation = GENERATE("VACUUM", "ANALYZE");
+	const bool concurrent_checkpoint = GENERATE(false, true);
+	CAPTURE(operation, concurrent_checkpoint);
+	GatedCheckpointDatabase database("sql_maintenance_during_checkpoint.db");
+	{
+		Connection con(*database.db);
+		Connection reader(*database.db);
+		Connection maintenance(*database.db);
+		REQUIRE_NO_FAIL(con.Query("SET threads=1"));
+		REQUIRE_NO_FAIL(con.Query("SET checkpoint_threshold='1TB'"));
+		REQUIRE_NO_FAIL(con.Query("SET force_compression='uncompressed'"));
+		REQUIRE_NO_FAIL(con.Query("SET debug_verify_blocks=true"));
+		REQUIRE_NO_FAIL(con.Query("PRAGMA disable_checkpoint_on_shutdown"));
+		REQUIRE_NO_FAIL(con.Query("CREATE TABLE a(k INTEGER PRIMARY KEY)"));
+		REQUIRE_NO_FAIL(con.Query("INSERT INTO a SELECT range FROM range(32)"));
+		REQUIRE_NO_FAIL(con.Query("CREATE TABLE b(k INTEGER)"));
+		if (concurrent_checkpoint) {
+			REQUIRE_NO_FAIL(reader.Query("BEGIN"));
+			RequireScalar(reader, "SELECT count(*) FROM a", 32);
+		}
+		REQUIRE_NO_FAIL(con.Query("INSERT INTO b VALUES (1)"));
+
+		std::promise<void> started;
+		auto started_future = started.get_future();
+		std::future<unique_ptr<QueryResult>> maintenance_result;
+		// Release the checkpoint before joining maintenance if an assertion fails.
+		CheckpointReleaseGuard release_guard {database};
+		database.StartCheckpoint(false);
+		maintenance_result = std::async(std::launch::async, [&]() {
+			started.set_value();
+			return maintenance.Query(operation + " a");
+		});
+		REQUIRE(started_future.wait_for(std::chrono::seconds(60)) == std::future_status::ready);
+		REQUIRE(maintenance_result.wait_for(std::chrono::milliseconds(500)) == std::future_status::timeout);
+
+		database.FinishCheckpoint();
+		REQUIRE_NO_FAIL(*database.checkpoint_result);
+		REQUIRE(maintenance_result.wait_for(std::chrono::seconds(60)) == std::future_status::ready);
+		auto result = maintenance_result.get();
+		REQUIRE_NO_FAIL(*result);
+		RequireScalar(con, "SELECT count(*) FROM a WHERE k=17", 1);
+		REQUIRE_FAIL(con.Query("INSERT INTO a VALUES (17)"));
+		if (concurrent_checkpoint) {
+			REQUIRE_NO_FAIL(reader.Query("ROLLBACK"));
+		}
+	}
+	database.Reopen();
+	Connection con(*database.db);
+	RequireScalar(con, "SELECT count(*) FROM a", 32);
+	RequireScalar(con, "SELECT count(*) FROM a WHERE k=17", 1);
 }
