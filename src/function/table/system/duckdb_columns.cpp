@@ -5,6 +5,7 @@
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/view_catalog_entry.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/numeric_utils.hpp"
 #include "duckdb/function/table/system_catalog_scanner.hpp"
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/main/client_data.hpp"
@@ -322,8 +323,8 @@ void ColumnHelper::WriteColumns(idx_t start_col, idx_t end_col, DataChunk &outpu
 		Value numeric_precision, numeric_scale, numeric_precision_radix;
 		switch (type.id()) {
 		case LogicalTypeId::DECIMAL:
-			numeric_precision = Value::INTEGER(DecimalType::GetWidth(type));
-			numeric_scale = Value::INTEGER(DecimalType::GetScale(type));
+			numeric_precision = Value::INTEGER(NumericCast<int32_t>(DecimalType::GetWidth(type)));
+			numeric_scale = Value::INTEGER(NumericCast<int32_t>(DecimalType::GetScale(type)));
 			numeric_precision_radix = Value::INTEGER(10);
 			break;
 		case LogicalTypeId::HUGEINT:

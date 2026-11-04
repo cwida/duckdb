@@ -110,7 +110,7 @@ string_t NumericHelper::FormatSigned(hugeint_t value, StringHeap &heap);
 
 struct DecimalToString {
 	template <class SIGNED>
-	static int DecimalLength(SIGNED value, uint8_t width, uint8_t scale) {
+	static int DecimalLength(SIGNED value, uint32_t width, uint32_t scale) {
 		using UNSIGNED = typename MakeUnsigned<SIGNED>::type;
 		if (scale == 0) {
 			// scale is 0: regular number
@@ -124,12 +124,12 @@ struct DecimalToString {
 		// integer length + 1 happens when the number is outside of that range
 		// in that case we print the integer number, but with one extra character ('.')
 		auto extra_characters = width > scale ? 2 : 1;
-		return MaxValue(scale + extra_characters + (value < 0 ? 1 : 0),
+		return MaxValue(UnsafeNumericCast<int>(scale) + extra_characters + (value < 0 ? 1 : 0),
 		                NumericHelper::SignedLength<SIGNED, UNSIGNED>(value) + 1);
 	}
 
 	template <class SIGNED>
-	static void FormatDecimal(SIGNED value, uint8_t width, uint8_t scale, char *dst, idx_t len) {
+	static void FormatDecimal(SIGNED value, uint32_t width, uint32_t scale, char *dst, idx_t len) {
 		using UNSIGNED = typename MakeUnsigned<SIGNED>::type;
 		char *end = dst + len;
 		if (value < 0) {
@@ -163,7 +163,7 @@ struct DecimalToString {
 	}
 
 	template <class SIGNED>
-	static string_t Format(SIGNED value, uint8_t width, uint8_t scale, StringHeap &heap) {
+	static string_t Format(SIGNED value, uint32_t width, uint32_t scale, StringHeap &heap) {
 		int len = DecimalLength<SIGNED>(value, width, scale);
 		string_t result = heap.EmptyString(NumericCast<size_t>(len));
 		FormatDecimal<SIGNED>(value, width, scale, result.GetDataWriteable(), UnsafeNumericCast<idx_t>(len));
@@ -173,13 +173,13 @@ struct DecimalToString {
 };
 
 template <>
-int DecimalToString::DecimalLength(hugeint_t value, uint8_t width, uint8_t scale);
+int DecimalToString::DecimalLength(hugeint_t value, uint32_t width, uint32_t scale);
 
 template <>
-string_t DecimalToString::Format(hugeint_t value, uint8_t width, uint8_t scale, StringHeap &heap);
+string_t DecimalToString::Format(hugeint_t value, uint32_t width, uint32_t scale, StringHeap &heap);
 
 template <>
-void DecimalToString::FormatDecimal(hugeint_t value, uint8_t width, uint8_t scale, char *dst, idx_t len);
+void DecimalToString::FormatDecimal(hugeint_t value, uint32_t width, uint32_t scale, char *dst, idx_t len);
 
 struct UhugeintToStringCast {
 	static string_t Format(uhugeint_t value, StringHeap &heap) {
