@@ -1,0 +1,70 @@
+# name: test/sql/catalog/function/drop_function_signature_persistence.test
+# description: Member drops survive checkpoint and restart
+# group: [function]
+
+load {TEST_DIR}/drop_function_signature_persistence.db
+
+statement ok
+SET enable_macro_dependencies = true;
+
+statement ok
+CREATE TABLE src(i INTEGER);
+
+statement ok
+CREATE MACRO pf(x INTEGER) AS (SELECT count(*) FROM src), (x VARCHAR) AS x, (x) AS 42;
+
+statement ok
+DROP MACRO pf(VARCHAR);
+
+restart
+
+statement ok
+SET enable_macro_dependencies = true;
+
+# the replacement entry with the surviving members was persisted
+query TT
+SELECT pf(1), pf(DATE '2024-01-01');
+----
+0	42
+
+statement error
+DROP MACRO pf(VARCHAR);
+----
+<REGEX>:.*has no overload with signature \(VARCHAR\).*
+
+# the rebuilt dependency list survived the restart
+statement error
+DROP TABLE src;
+----
+<REGEX>:.*depend.*
+
+statement ok
+CHECKPOINT;
+
+restart
+
+query T
+SELECT pf(1);
+----
+0
+
+statement ok
+DROP MACRO pf(ANY);
+
+restart
+
+statement error
+SELECT pf(DATE '2024-01-01');
+----
+<REGEX>:.*does not support the supplied arguments.*
+
+query T
+SELECT pf(1);
+----
+0
+
+statement ok
+DROP MACRO pf;
+
+statement ok
+DROP TABLE src;

@@ -140,6 +140,70 @@ DROP MACRO h(VARCHAR, VARCHAR);
 ----
 <REGEX>:.*has no overload with signature \(VARCHAR, VARCHAR\).*
 
+# type modifiers are part of the declared identity
+statement ok
+CREATE MACRO dm(x DECIMAL(10,2)) AS 1, (x INTEGER) AS 2;
+
+statement error
+DROP MACRO dm(DECIMAL);
+----
+<REGEX>:.*has no overload with signature \(DECIMAL\(18,3\)\).*
+
+statement ok
+DROP MACRO dm(DECIMAL(10,2));
+
+query T
+SELECT dm(1);
+----
+2
+
+statement ok
+DROP MACRO dm;
+
+# a schema-qualified name drops a member in that schema
+statement ok
+CREATE SCHEMA qs;
+
+statement ok
+CREATE MACRO qs.q(x INTEGER) AS 1, (x VARCHAR) AS 2;
+
+statement ok
+DROP MACRO qs.q(INTEGER);
+
+query T
+SELECT qs.q('x');
+----
+2
+
+statement ok
+DROP SCHEMA qs CASCADE;
+
+# the unquoted ANY keyword names untyped slots, a user type named "any" is quoted
+statement ok
+CREATE TYPE "any" AS STRUCT(i INTEGER);
+
+statement ok
+CREATE MACRO anyt(x "any") AS 1, (x INTEGER) AS 2;
+
+statement error
+DROP MACRO anyt(ANY);
+----
+<REGEX>:.*has no overload with signature \(ANY\).*
+
+statement ok
+DROP MACRO anyt("any");
+
+query T
+SELECT anyt(1);
+----
+2
+
+statement ok
+DROP MACRO anyt;
+
+statement ok
+DROP TYPE "any";
+
 # user types resolve before matching
 statement ok
 CREATE TYPE mood AS ENUM ('ok', 'sad');
