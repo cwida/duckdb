@@ -8,6 +8,12 @@
   ],
   "skip_tests": [
     {
+      "reason": "Tests that a parameter inside query() falls back to a variable only outside of prepared statements",
+      "paths": [
+        "test/sql/prepared/prepare_query_function_parameters.test"
+      ]
+    },
+    {
       "reason": "Parameters don't work here",
       "paths": [
         "test/sql/collate/test_collate_orderby_column_number.test",
