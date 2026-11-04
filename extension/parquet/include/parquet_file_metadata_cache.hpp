@@ -15,6 +15,7 @@
 #include "duckdb/common/unordered_map.hpp"
 #include "duckdb/storage/object_cache.hpp"
 #include "duckdb/storage/statistics/base_statistics.hpp"
+#include "parquet_column_schema.hpp"
 #include "parquet_geometry.hpp"
 #include "parquet_types.h"
 #include "duckdb/common/open_file_info.hpp"
@@ -82,14 +83,24 @@ public:
 	bool IsValid(CachingFileHandle &new_handle) const;
 	//! Return if a cache entry is valid.
 	ParquetCacheValidity IsValid(const OpenFileInfo &info, ClientContext &context) const;
-	//! The statistics of a column merged over all row groups, computed by 'compute' on first use. 'key' identifies the
-	//! column schema, the statistics are only reused for a column read as the same type
-	unique_ptr<BaseStatistics> GetColumnStatistics(const string &key, const LogicalType &type,
+	//! The statistics of a column merged over all row groups, computed by 'compute' on first use
+	unique_ptr<BaseStatistics> GetColumnStatistics(const ParquetColumnSchema &schema, bool can_have_nan,
 	                                               const std::function<unique_ptr<BaseStatistics>()> &compute);
 
 private:
+	struct ColumnStatisticsKey {
+		reference<const ParquetColumnSchema> schema;
+		bool can_have_nan;
+	};
+	struct ColumnStatisticsKeyHash {
+		hash_t operator()(const ColumnStatisticsKey &key) const;
+	};
+	struct ColumnStatisticsKeyEquality {
+		bool operator()(const ColumnStatisticsKey &a, const ColumnStatisticsKey &b) const;
+	};
 	struct CachedColumnStatistics {
-		LogicalType type;
+		//! Owns the schema referenced by the key of this entry
+		unique_ptr<const ParquetColumnSchema> schema;
 		//! nullptr if the column has no statistics
 		unique_ptr<BaseStatistics> statistics;
 	};
@@ -97,9 +108,9 @@ private:
 	timestamp_t last_modified;
 	string version_tag;
 	annotated_mutex column_statistics_lock;
-	// Maps from the column statistics key (column schema, type and options) to the statistics of that column merged
-	// over all row groups.
-	unordered_map<string, CachedColumnStatistics> column_statistics;
+	// Maps from a column schema and the options to the statistics of that column merged over all row groups.
+	unordered_map<ColumnStatisticsKey, CachedColumnStatistics, ColumnStatisticsKeyHash, ColumnStatisticsKeyEquality>
+	    column_statistics;
 };
 
 } // namespace duckdb

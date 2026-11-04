@@ -703,27 +703,11 @@ static unique_ptr<BaseStatistics> ReadColumnStatistics(const FileMetaData &file_
 	return column_stats;
 }
 
-//! Appends everything the statistics of a column depend on, besides its type and the options, to the key
-static void AppendColumnStatisticsKey(const ParquetColumnSchema &schema, string &key) {
-	const idx_t schema_index =
-	    schema.schema_index.IsValid() ? schema.schema_index.GetIndex() : DConstants::INVALID_INDEX;
-	key += StringUtil::Format("%d:%d:%d:%d:%d:%d:%d(", static_cast<int32_t>(schema.schema_type), schema_index,
-	                          schema.column_index, static_cast<int32_t>(schema.parquet_type),
-	                          static_cast<int32_t>(schema.type_info), schema.type_length, schema.type_scale);
-	for (auto &child : schema.children) {
-		AppendColumnStatisticsKey(child, key);
-		key += ',';
-	}
-	key += ')';
-}
-
 //! The statistics of a column merged over all row groups, cached with the file metadata
 static unique_ptr<BaseStatistics> ReadCachedColumnStatistics(ParquetFileMetadataCache &metadata,
                                                              const ParquetColumnSchema &column,
                                                              const ParquetOptions &parquet_options) {
-	auto key = StringUtil::Format("%s|%s|", parquet_options.can_have_nan ? "nan" : "", column.type.ToString());
-	AppendColumnStatisticsKey(column, key);
-	return metadata.GetColumnStatistics(key, column.type, [&]() {
+	return metadata.GetColumnStatistics(column, parquet_options.can_have_nan, [&]() {
 		return ReadColumnStatistics(metadata.metadata->file_metadata, column, parquet_options);
 	});
 }

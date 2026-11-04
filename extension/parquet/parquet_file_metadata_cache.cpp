@@ -57,22 +57,65 @@ optional_idx ParquetFileMetadataCache::GetEstimatedCacheMemory() const {
 	return memory;
 }
 
+//! Hashes everything the statistics of a column depend on
+static hash_t HashColumnStatisticsSchema(const ParquetColumnSchema &schema) {
+	const idx_t schema_index =
+	    schema.schema_index.IsValid() ? schema.schema_index.GetIndex() : DConstants::INVALID_INDEX;
+	hash_t result = CombineHash(Hash(static_cast<uint8_t>(schema.schema_type)), Hash(schema_index));
+	result = CombineHash(result, Hash(schema.column_index));
+	result = CombineHash(result, Hash(static_cast<int32_t>(schema.parquet_type)));
+	result = CombineHash(result, Hash(static_cast<uint8_t>(schema.type_info)));
+	result = CombineHash(result, Hash(schema.type_length));
+	result = CombineHash(result, Hash(schema.type_scale));
+	result = CombineHash(result, schema.type.Hash());
+	for (auto &child : schema.children) {
+		result = CombineHash(result, HashColumnStatisticsSchema(child));
+	}
+	return result;
+}
+
+//! Compares everything the statistics of a column depend on
+static bool ColumnStatisticsSchemaEquals(const ParquetColumnSchema &a, const ParquetColumnSchema &b) {
+	if (a.schema_type != b.schema_type || a.schema_index != b.schema_index || a.column_index != b.column_index ||
+	    a.parquet_type != b.parquet_type || a.type_info != b.type_info || a.type_length != b.type_length ||
+	    a.type_scale != b.type_scale || a.type != b.type || a.children.size() != b.children.size()) {
+		return false;
+	}
+	for (idx_t i = 0; i < a.children.size(); i++) {
+		if (!ColumnStatisticsSchemaEquals(a.children[i], b.children[i])) {
+			return false;
+		}
+	}
+	return true;
+}
+
+hash_t ParquetFileMetadataCache::ColumnStatisticsKeyHash::operator()(const ColumnStatisticsKey &key) const {
+	return CombineHash(HashColumnStatisticsSchema(key.schema), Hash(key.can_have_nan));
+}
+
+bool ParquetFileMetadataCache::ColumnStatisticsKeyEquality::operator()(const ColumnStatisticsKey &a,
+                                                                       const ColumnStatisticsKey &b) const {
+	return a.can_have_nan == b.can_have_nan && ColumnStatisticsSchemaEquals(a.schema, b.schema);
+}
+
 unique_ptr<BaseStatistics>
-ParquetFileMetadataCache::GetColumnStatistics(const string &key, const LogicalType &type,
+ParquetFileMetadataCache::GetColumnStatistics(const ParquetColumnSchema &schema, bool can_have_nan,
                                               const std::function<unique_ptr<BaseStatistics>()> &compute) {
 	{
 		const annotated_lock_guard<annotated_mutex> guard(column_statistics_lock);
-		auto entry = column_statistics.find(key);
-		if (entry != column_statistics.end() && entry->second.type == type) {
+		auto entry = column_statistics.find(ColumnStatisticsKey {schema, can_have_nan});
+		if (entry != column_statistics.end()) {
 			return entry->second.statistics ? entry->second.statistics->ToUnique() : nullptr;
 		}
 	}
-	// computed outside of the lock: a concurrent caller may compute the same statistics, the last one is kept
+	// computed outside of the lock: a concurrent caller may compute the same statistics, the first one is kept
 	auto statistics = compute();
+	CachedColumnStatistics cached;
+	cached.schema = make_uniq<const ParquetColumnSchema>(schema);
+	cached.statistics = statistics ? statistics->ToUnique() : nullptr;
+	ColumnStatisticsKey key {*cached.schema, can_have_nan};
 	const annotated_lock_guard<annotated_mutex> guard(column_statistics_lock);
-	auto &entry = column_statistics[key];
-	entry.type = type;
-	entry.statistics = statistics ? statistics->ToUnique() : nullptr;
+	column_statistics.emplace(key, std::move(cached));
 	return statistics;
 }
 
