@@ -4,10 +4,6 @@
 
 require parquet
 
-# compressed materialization adds casts of the join keys to the plans, always in debug builds
-statement ok
-SET disabled_optimizers = 'compressed_materialization'
-
 statement ok
 CREATE TABLE cast_rows AS SELECT * FROM (VALUES (0, 'bad'), (1, '42'), (3, '7')) t(id, s);
 
@@ -41,7 +37,7 @@ SELECT v.n::INTEGER FROM {SOURCE} WHERE v.n::VARCHAR <> 'bad' AND id IN (1, 3) O
 
 # joins drop rows as well, without the join filter that would already drop the row in the scan
 statement ok
-SET disabled_optimizers = 'compressed_materialization,join_filter_pushdown'
+SET disabled_optimizers = 'join_filter_pushdown'
 
 query I
 SELECT v.n::INTEGER FROM {SOURCE} WHERE id IN (SELECT unnest([1, 3])) ORDER BY id
@@ -62,7 +58,7 @@ SELECT v.n::INTEGER FROM {SOURCE} WHERE id NOT IN (SELECT unnest([0, 2])) ORDER 
 7
 
 statement ok
-SET disabled_optimizers = 'compressed_materialization'
+SET disabled_optimizers = ''
 
 # a cast the filter itself needs still runs on every row
 statement error
@@ -191,6 +187,10 @@ query I
 SELECT s.n::INTEGER FROM cast_unnest CROSS JOIN cast_empty
 ----
 
+# compressed materialization adds casts of the join keys to the plans below, always in debug builds
+statement ok
+SET disabled_optimizers = 'compressed_materialization'
+
 # a filter in another join input and the preserved side of an outer join do not keep casts above the scan
 statement ok
 CREATE TABLE cast_probe AS SELECT i::INTEGER AS i, {'n': i::VARCHAR} AS s FROM range(5) r(i);
@@ -213,6 +213,9 @@ query II
 EXPLAIN SELECT cast_probe.s.n::INTEGER FROM cast_build LEFT JOIN cast_probe USING (i)
 ----
 physical_plan	<REGEX>:.*CAST.*
+
+statement ok
+SET disabled_optimizers = ''
 
 query I
 SELECT cast_probe.i FROM (SELECT * FROM cast_build WHERE i IN (0, 2)) b JOIN cast_probe ON cast_probe.s.n::INTEGER = b.i ORDER BY 1
