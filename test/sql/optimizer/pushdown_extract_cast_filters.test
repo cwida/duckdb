@@ -110,3 +110,41 @@ query I
 SELECT s.n::INTEGER FROM (SELECT * FROM cast_once LIMIT 1) JOIN (SELECT 42 AS j) ON j = s.n::INTEGER
 ----
 42
+
+# a filter on two fields of one column is pushed back only partly once the fields are separate scan columns
+statement ok
+CREATE TABLE cast_two_fields AS
+SELECT {'a': i, 'b': i, 'n': n} AS s FROM (VALUES (0, 'bad'), (1, '42')) v(i, n);
+
+statement ok
+COPY cast_two_fields TO '{TEST_DIR}/pushdown_extract_cast_two_fields.parquet';
+
+foreach SOURCE cast_two_fields read_parquet('{TEST_DIR}/pushdown_extract_cast_two_fields.parquet')
+
+query I
+SELECT s.n::INTEGER FROM {SOURCE} WHERE s.a + s.b > 0
+----
+42
+
+# the cast the filter reads stays in the scan, the other moves above the filter
+query II
+SELECT s.n::INTEGER, s.a::VARCHAR FROM {SOURCE} WHERE s.a + s.b > 0 AND s.a::VARCHAR <> 'x'
+----
+42	1
+
+endloop
+
+# unnesting an empty list drops the row
+statement ok
+CREATE TABLE cast_unnest AS
+SELECT {'n': n} AS s, l FROM (VALUES ('bad', []::INTEGER[]), ('42', [1])) v(n, l);
+
+query I
+SELECT s.n::INTEGER FROM cast_unnest, unnest(l) u(x)
+----
+42
+
+# a sample drops rows as well
+query I
+SELECT s.n::INTEGER FROM cast_unnest USING SAMPLE 0 ROWS
+----

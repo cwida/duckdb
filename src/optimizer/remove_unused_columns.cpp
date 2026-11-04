@@ -583,6 +583,8 @@ void RemoveUnusedColumns::VisitOperator(unique_ptr<LogicalOperator> &op_ref) {
 		return;
 	}
 	case LogicalOperatorType::LOGICAL_FILTER:
+	case LogicalOperatorType::LOGICAL_UNNEST:
+	case LogicalOperatorType::LOGICAL_SAMPLE:
 		KeepCastsAbove();
 		break;
 	case LogicalOperatorType::LOGICAL_ASOF_JOIN:
@@ -1323,6 +1325,8 @@ void RemoveUnusedColumns::RemoveColumnsFromLogicalGet(LogicalGet &get, unique_pt
 	column_index_map<ProjectionIndex> child_map;
 	//! Created bindings per original_column (for pushdown extract verification)
 	unordered_map<idx_t, idx_t> created_bindings;
+	//! Positions of the new columns that apply a cast
+	unordered_set<idx_t> cast_positions;
 
 	// Create "selection vector" that contains all indices of the old 'column_ids' of the LogicalGet
 	//! i.e: This contains all the columns of the table
@@ -1424,6 +1428,9 @@ void RemoveUnusedColumns::RemoveColumnsFromLogicalGet(LogicalGet &get, unique_pt
 				    new_column_ids.emplace_back(std::move(new_index));
 				    original_ids.emplace_back(col_sel_idx);
 			    }
+			    if (cast_type) {
+				    cast_positions.insert(child_entry->second);
+			    }
 			    has_pushdown_extract = true;
 			    return child_entry->second;
 		    });
@@ -1517,9 +1524,73 @@ void RemoveUnusedColumns::RemoveColumnsFromLogicalGet(LogicalGet &get, unique_pt
 		// in scan order
 		if (op_ref->type == LogicalOperatorType::LOGICAL_FILTER) {
 			get.projection_ids.clear();
+			LiftCastsAboveFilter(get, op_ref, cast_positions);
 		}
 		return;
 	}
+}
+
+void RemoveUnusedColumns::LiftCastsAboveFilter(LogicalGet &get, unique_ptr<LogicalOperator> &op_ref,
+                                               const unordered_set<idx_t> &cast_positions) {
+	// the filter evaluates the casts it reads on every row anyway, the others must only see the rows that pass
+	auto &filter = op_ref->Cast<LogicalFilter>();
+	unordered_set<idx_t> filter_columns;
+	for (auto &expr : filter.expressions) {
+		ExpressionIterator::EnumerateExpression(expr, [&](Expression &child) {
+			if (child.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
+				return;
+			}
+			auto &binding = child.Cast<BoundColumnRefExpression>().Binding();
+			if (binding.table_index == get.table_index) {
+				filter_columns.insert(binding.column_index);
+			}
+		});
+	}
+	bool lift_any = false;
+	for (auto position : cast_positions) {
+		if (filter_columns.find(position) == filter_columns.end()) {
+			lift_any = true;
+			break;
+		}
+	}
+	if (!lift_any) {
+		return;
+	}
+	// the projection takes over the bindings of the scan, so nothing above has to change
+	auto old_index = get.table_index;
+	auto new_index = binder.GenerateTableIndex();
+	auto column_ids = get.GetColumnIds();
+	vector<unique_ptr<Expression>> expressions;
+	vector<ColumnBinding> old_bindings;
+	vector<ColumnBinding> new_bindings;
+	for (idx_t position = 0; position < column_ids.size(); position++) {
+		auto &column_id = column_ids[position];
+		auto scan_type = get.GetColumnType(column_id);
+		ColumnBinding binding(new_index, ProjectionIndex(position));
+		old_bindings.emplace_back(old_index, ProjectionIndex(position));
+		new_bindings.push_back(binding);
+		if (cast_positions.find(position) == cast_positions.end() ||
+		    filter_columns.find(position) != filter_columns.end()) {
+			expressions.push_back(make_uniq<BoundColumnRefExpression>(scan_type, binding));
+			continue;
+		}
+		// the scan returns the plain field, the projection casts it
+		auto &column_type = get.GetColumnType(ColumnIndex(column_id.GetPrimaryIndex()));
+		column_id.SetPushdownExtractType(column_type, nullptr);
+		auto field = make_uniq<BoundColumnRefExpression>(column_id.GetScanType(), binding);
+		expressions.push_back(BoundCastExpression::AddCastToType(context, std::move(field), scan_type));
+	}
+	get.SetColumnIds(std::move(column_ids));
+	get.table_index = new_index;
+	ColumnBindingReplacer replacer;
+	replacer.AddReplacements(old_bindings, new_bindings);
+	replacer.VisitOperator(filter);
+	auto projection = make_uniq<LogicalProjection>(old_index, std::move(expressions));
+	if (filter.has_estimated_cardinality) {
+		projection->SetEstimatedCardinality(filter.estimated_cardinality);
+	}
+	projection->children.push_back(std::move(op_ref));
+	op_ref = std::move(projection);
 }
 
 CTERefPruner::CTERefPruner(const TableIndex cte_index, const unordered_set<ProjectionIndex> &referenced_columns)

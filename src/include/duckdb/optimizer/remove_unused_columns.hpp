@@ -174,6 +174,9 @@ private:
 	void ApplySecureViewReplacements();
 	void RemoveColumnsFromLogicalColumnDataGet(LogicalColumnDataGet &get);
 	void RemoveColumnsFromLogicalGet(LogicalGet &get, unique_ptr<LogicalOperator> &op_ref);
+	//! Moves the casts pushed into the scan that a filter left above it does not read into a projection above it
+	void LiftCastsAboveFilter(LogicalGet &get, unique_ptr<LogicalOperator> &op_ref,
+	                          const unordered_set<idx_t> &cast_positions);
 	void VisitSecureView(LogicalSecureView &view);
 	void CheckPushdownExtract(LogicalOperator &op);
 	void RewriteExpressions(LogicalProjection &proj, idx_t expression_count);
