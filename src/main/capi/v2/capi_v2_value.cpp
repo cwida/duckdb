@@ -341,8 +341,8 @@ DUCKDB_V2_ERROR duckdb_v2_value_get_decimal(duckdb_v2_value_handle value, duckdb
 		RequireTypedValue(value, duckdb::LogicalTypeId::DECIMAL);
 		auto &v = *Convert(value);
 		auto &type = v.type();
-		*out_width = duckdb::DecimalType::GetWidth(type);
-		*out_scale = duckdb::DecimalType::GetScale(type);
+		*out_width = duckdb::NumericCast<uint8_t>(duckdb::DecimalType::GetWidth(type));
+		*out_scale = duckdb::NumericCast<uint8_t>(duckdb::DecimalType::GetScale(type));
 		// The storage tier follows from the width; widen it to the one form the
 		// caller always gets back.
 		switch (type.InternalType()) {

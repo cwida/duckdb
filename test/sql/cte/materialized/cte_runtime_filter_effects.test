@@ -61,13 +61,26 @@ CREATE TABLE wide(k BIGINT);
 statement ok
 INSERT INTO wide VALUES (1),(2),(5000000000);
 
-# Reconstructed key casts retain failed inputs so the original cast still raises its error.
-statement error
-WITH p AS MATERIALIZED (SELECT CAST(k AS INTEGER) k FROM wide)
+statement ok
+INSERT INTO b VALUES ('5000000000');
+
+# Join ordering supplies the cardinality estimates needed to schedule the filters before the CTE scan.
+statement ok
+SET disabled_optimizers='cte_filter_pusher,statistics_propagation,build_side_probe_side,compressed_materialization';
+
+# The overflow key matches the simplified runtime filter, but the original TRY_CAST must prevent a join match.
+query I
+WITH p AS MATERIALIZED (SELECT TRY_CAST(k AS INTEGER) k FROM wide)
 SELECT p.k FROM p JOIN b ON p.k=CAST(b.s AS BIGINT)
 UNION ALL SELECT p.k FROM p JOIN c ON p.k=CAST(c.s AS BIGINT);
 ----
-out of range
+2
+
+statement ok
+DELETE FROM b WHERE s='5000000000';
+
+statement ok
+SET disabled_optimizers='cte_filter_pusher,statistics_propagation,join_order,build_side_probe_side,compressed_materialization';
 
 statement ok
 CREATE SEQUENCE cte_effect_seq;
