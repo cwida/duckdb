@@ -65,7 +65,7 @@ struct VariantNumberKey {
 	//! The significant decimal digits ('0'..'9'), used when they fit inline
 	char inline_digits[INLINE_DIGITS];
 	//! The significant decimal digits, used instead of inline_digits when they do not fit (only BIGNUM
-	//! can produce magnitudes that large)
+	//! and decimals wider than 38 digits can produce magnitudes that large)
 	string digits;
 
 	//! Set the significant digits from the given span

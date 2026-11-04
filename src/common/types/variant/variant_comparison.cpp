@@ -184,7 +184,8 @@ VariantNumberKey VariantGetNumberKey(VariantLogicalType type_id, const VariantNo
 			const auto decimal_string = Bignum::BignumToVarchar(bignum_t(node.GetWideDecimal()));
 			const bool negative = !decimal_string.empty() && decimal_string[0] == '-';
 			const idx_t offset = negative ? 1 : 0;
-			return BuildNumberKey(negative, decimal_string.substr(offset), decimal_data.scale);
+			return BuildNumberKey(negative, decimal_string.data() + offset, decimal_string.size() - offset,
+			                      decimal_data.scale);
 		}
 		case PhysicalType::INT16:
 			unscaled = hugeint_t(Load<int16_t>(decimal_data.value_ptr));

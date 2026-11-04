@@ -86,6 +86,46 @@ SELECT '10'::DECIMAL(40,2)::VARIANT = 10::INTEGER::VARIANT;
 ----
 true
 
+# digit strings far beyond the inline capacity of the number sort key still order by value
+query I
+SELECT list(label ORDER BY v) FROM (VALUES
+	('huge', repeat('9', 3000)::DECIMAL(4294967295,0)::VARIANT),
+	('-huge', ('-' || repeat('9', 3000))::DECIMAL(4294967295,0)::VARIANT),
+	('wide', (repeat('7', 200) || '.' || repeat('3', 100))::DECIMAL(300,100)::VARIANT),
+	('-wide', ('-' || repeat('7', 200) || '.' || repeat('3', 100))::DECIMAL(300,100)::VARIANT),
+	('hugeint', 170141183460469231731687303715884105727::HUGEINT::VARIANT),
+	('narrow', '1.5'::DECIMAL(18,2)::VARIANT),
+	('int', -2::INTEGER::VARIANT),
+	('zero', 0::TINYINT::VARIANT),
+	('double', 1e300::DOUBLE::VARIANT)) t(label, v);
+----
+[-huge, -wide, int, zero, narrow, hugeint, wide, huge, double]
+
+# values that differ only in the last of thousands of digits
+query III
+SELECT (repeat('9', 2999) || '8')::DECIMAL(4294967295,0)::VARIANT < repeat('9', 3000)::DECIMAL(4294967295,0)::VARIANT,
+	repeat('9', 3000)::DECIMAL(4294967295,0)::VARIANT < ('1' || repeat('0', 3000))::DECIMAL(4294967295,0)::VARIANT,
+	repeat('9', 3000)::DECIMAL(4294967295,0)::VARIANT = repeat('9', 3000)::DECIMAL(4294967295,0)::VARIANT;
+----
+true	true	true
+
+# trailing zeros of a long fraction are stripped, so the value compares equal to its narrow forms
+query III
+SELECT ('1.5' || repeat('0', 99))::DECIMAL(300,100)::VARIANT = '1.5'::DECIMAL(18,2)::VARIANT,
+	(repeat('9', 50) || '.' || repeat('0', 100))::DECIMAL(300,100)::VARIANT = repeat('9', 50)::DECIMAL(60,0)::VARIANT,
+	(repeat('9', 50) || '.' || repeat('0', 99) || '1')::DECIMAL(300,100)::VARIANT > repeat('9', 50)::DECIMAL(60,0)::VARIANT;
+----
+true	true	true
+
+# ordering a column of long decimals through VARIANT agrees with ordering the decimals
+query I
+SELECT list(i ORDER BY v) = list(i ORDER BY d) FROM (
+	SELECT i, d, d::VARIANT v FROM (
+		SELECT i, ((CASE WHEN i % 3 = 0 THEN '-' ELSE '' END) || repeat(((i * 7) % 9 + 1)::VARCHAR, 40 + i) || '.' || repeat('5', i % 90 + 1))::DECIMAL(300,100) d
+		FROM range(100) t(i)));
+----
+true
+
 # a VARIANT to VARIANT cast keeps the value
 query I
 SELECT v::VARIANT::DECIMAL(40,2) FROM (SELECT '123456789012345678901234567890.12'::DECIMAL(40,2)::VARIANT v);
