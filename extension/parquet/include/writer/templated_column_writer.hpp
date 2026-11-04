@@ -552,9 +552,15 @@ private:
 		       (!state.dictionary.IsFull() || state.bloom_filter);
 	}
 
-	void AnalyzeValue(StandardColumnWriterState<SRC, TGT, OP> &state, const SRC &src_value) {
+	//! The distinct count extrapolation behind the fallback filter decision counts every analyzed value
+	void CountAnalyzedValue(StandardColumnWriterState<SRC, TGT, OP> &state) {
 		if (!state.dictionary.IsFull()) {
 			state.dictionary_values++;
+		}
+	}
+
+	void InsertAnalyzedValue(StandardColumnWriterState<SRC, TGT, OP> &state, const SRC &src_value) {
+		if (!state.dictionary.IsFull()) {
 			state.dictionary.template Insert<true>(src_value);
 			if (!state.dictionary.IsFull()) {
 				return;
@@ -564,6 +570,11 @@ private:
 		if (state.bloom_filter) {
 			InsertBloomFilterValue(*state.bloom_filter, src_value, OP::template Operation<SRC, TGT>(src_value));
 		}
+	}
+
+	void AnalyzeValue(StandardColumnWriterState<SRC, TGT, OP> &state, const SRC &src_value) {
+		CountAnalyzedValue(state);
+		InsertAnalyzedValue(state, src_value);
 	}
 
 	//! Extrapolates the distinct count, assuming the values seen so far are drawn uniformly from a fixed set
@@ -708,19 +719,16 @@ private:
 		}
 		vector<bool> inserted(entry_count, false);
 		for (idx_t row = 0; row < count; row++) {
+			if (!input.RowIsValid(row)) {
+				continue;
+			}
+			CountAnalyzedValue(state);
 			const auto entry = input.Entry(row);
 			if (inserted[entry]) {
-				// a repeated row cannot change the dictionary or the filter, but the distinct count
-				// extrapolation behind the fallback filter decision counts every analyzed row
-				if (!state.dictionary.IsFull() && input.RowIsValid(row)) {
-					state.dictionary_values++;
-				}
 				continue;
 			}
 			inserted[entry] = true;
-			if (input.RowIsValid(row)) {
-				AnalyzeValue(state, input.Value(row));
-			}
+			InsertAnalyzedValue(state, input.Value(row));
 		}
 		return true;
 	}
