@@ -1,0 +1,17 @@
+# name: benchmark/micro/array/array_cosine_distance_small.benchmark
+# description: Cosine distance between 20M FLOAT[3] arrays and a constant array
+# group: [array]
+
+name Array Cosine Distance Small
+group array
+
+load
+CREATE TABLE vectors AS
+SELECT [hash(i) % 100 + 1, hash(i + 1) % 100 + 1, hash(i + 2) % 100 + 1]::FLOAT[3] AS v
+FROM range(20000000) r(i);
+
+run
+SELECT round(max(array_cosine_distance(v, [1, 2, 3]::FLOAT[3])), 3) FROM vectors;
+
+result I
+0.719

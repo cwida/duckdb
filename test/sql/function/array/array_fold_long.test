@@ -1,0 +1,81 @@
+# name: test/sql/function/array/array_fold_long.test
+# description: Array distance functions on arrays longer than their partial sum width, with NULL elements
+# group: [array]
+
+foreach type FLOAT DOUBLE
+
+foreach size 15 16 37
+
+statement ok
+CREATE OR REPLACE TABLE t AS
+SELECT id,
+       list_transform(range({size}), lambda j: (id * 7 + j) % 11 - 5)::{type}[{size}] AS a,
+       list_transform(range({size}), lambda j: (id * 3 + j * 5) % 13 - 6)::{type}[{size}] AS b
+FROM range(1, 3001) r(id);
+
+# a NULL array and an array with a NULL element
+statement ok
+INSERT INTO t VALUES
+	(3001, NULL, list_transform(range({size}), lambda j: j)::{type}[{size}]),
+	(3002, list_transform(range({size}), lambda j: CASE WHEN j = 3 THEN NULL ELSE j END)::{type}[{size}], list_transform(range({size}), lambda j: j)::{type}[{size}]);
+
+statement ok
+CREATE OR REPLACE TABLE expected AS
+SELECT id,
+       list_sum(list_transform(range({size}), lambda j: a[j + 1]::DOUBLE * b[j + 1])) AS dot,
+       list_sum(list_transform(range({size}), lambda j: (a[j + 1]::DOUBLE - b[j + 1]) ** 2)) AS dist_sq,
+       list_sum(list_transform(range({size}), lambda j: a[j + 1]::DOUBLE ** 2)) AS norm_a,
+       list_sum(list_transform(range({size}), lambda j: b[j + 1]::DOUBLE ** 2)) AS norm_b
+FROM t
+WHERE id <= 3000;
+
+# all inputs are small integers, so the inner product is exact regardless of the summation order
+query IIIII
+SELECT count(*),
+       count(*) FILTER (WHERE array_inner_product(a, b) = dot),
+       count(*) FILTER (WHERE array_negative_inner_product(a, b) = -dot),
+       count(*) FILTER (WHERE abs(array_distance(a, b) - sqrt(dist_sq)) <= 1e-5 * sqrt(dist_sq)),
+       count(*) FILTER (WHERE abs(array_cosine_similarity(a, b) - dot / sqrt(norm_a * norm_b)) <= 1e-5)
+FROM t JOIN expected USING (id);
+----
+3000	3000	3000	3000	3000
+
+query I
+SELECT count(*) FILTER (WHERE abs(array_cosine_distance(a, b) - (1 - dot / sqrt(norm_a * norm_b))) <= 1e-5)
+FROM t JOIN expected USING (id);
+----
+3000
+
+# one side constant
+query I
+SELECT count(*) FILTER (WHERE array_inner_product(a, list_transform(range({size}), lambda j: j % 4 - 1)::{type}[{size}]) =
+                              list_sum(list_transform(range({size}), lambda j: a[j + 1]::DOUBLE * (j % 4 - 1))))
+FROM t
+WHERE id <= 3000;
+----
+3000
+
+# the rows next to the array with a NULL element are not affected by it
+query II
+SELECT count(array_inner_product(a, b)), count(*) FROM t WHERE id <> 3002;
+----
+3000	3001
+
+query I
+SELECT sum(array_inner_product(a, b)) = (SELECT sum(dot) FROM expected) FROM t WHERE id <> 3002;
+----
+true
+
+statement error
+SELECT array_inner_product(a, b) FROM t;
+----
+left argument can not contain NULL values
+
+statement error
+SELECT array_cosine_distance(b, a) FROM t WHERE id >= 3000;
+----
+right argument can not contain NULL values
+
+endloop
+
+endloop

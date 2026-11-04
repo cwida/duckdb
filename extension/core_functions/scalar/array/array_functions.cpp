@@ -72,6 +72,41 @@ static void ReadArrayElements(const VectorIterator<TYPE> &child_values, idx_t of
 	}
 }
 
+namespace {
+//! Gives access to the elements of each array in a vector - without copying them if they are flat and not NULL
+template <class TYPE>
+class ArrayElementReader {
+public:
+	ArrayElementReader(const Vector &vector, idx_t array_size, const char *side, const Identifier &func_name)
+	    : child(ArrayVector::GetChild(vector)), child_values(child.Values<TYPE>()), array_size(array_size),
+	      buffer(array_size), side(side), func_name(func_name) {
+		if (child.GetVectorType() == VectorType::FLAT_VECTOR) {
+			flat_data = FlatVector::GetData<TYPE>(child);
+			flat_validity = &FlatVector::Validity(child);
+		}
+	}
+
+	const TYPE *Read(idx_t array_idx) {
+		const auto offset = array_idx * array_size;
+		if (flat_validity && flat_validity->CheckAllValid(offset + array_size, offset)) {
+			return flat_data + offset;
+		}
+		ReadArrayElements(child_values, offset, array_size, buffer.data(), side, func_name);
+		return buffer.data();
+	}
+
+private:
+	const Vector &child;
+	VectorIterator<TYPE> child_values;
+	idx_t array_size;
+	vector<TYPE> buffer;
+	const char *side;
+	const Identifier &func_name;
+	const TYPE *flat_data = nullptr;
+	optional_ptr<const ValidityMask> flat_validity;
+};
+} // namespace
+
 //------------------------------------------------------------------------------
 // Element-wise combine functions
 //------------------------------------------------------------------------------
@@ -105,8 +140,6 @@ static void ArrayFixedCombine(DataChunk &args, ExpressionState &state, Vector &r
 	const auto &func_name = expr.Function().GetName();
 
 	const auto count = args.size();
-	auto lhs_values = ArrayVector::GetChild(args.data[0]).Values<TYPE>();
-	auto rhs_values = ArrayVector::GetChild(args.data[1]).Values<TYPE>();
 	auto &res_child = ArrayVector::GetChildMutable(result);
 
 	UnifiedVectorFormat lhs_format;
@@ -116,8 +149,8 @@ static void ArrayFixedCombine(DataChunk &args, ExpressionState &state, Vector &r
 	args.data[1].ToUnifiedFormat(rhs_format);
 
 	auto res_data = FlatVector::GetDataMutable<TYPE>(res_child);
-	TYPE lhs_data[N];
-	TYPE rhs_data[N];
+	ArrayElementReader<TYPE> lhs_reader(args.data[0], N, "left", func_name);
+	ArrayElementReader<TYPE> rhs_reader(args.data[1], N, "right", func_name);
 
 	for (idx_t i = 0; i < count; i++) {
 		const auto lhs_idx = lhs_format.sel->get_index(i);
@@ -128,9 +161,7 @@ static void ArrayFixedCombine(DataChunk &args, ExpressionState &state, Vector &r
 			continue;
 		}
 
-		ReadArrayElements(lhs_values, lhs_idx * N, N, lhs_data, "left", func_name);
-		ReadArrayElements(rhs_values, rhs_idx * N, N, rhs_data, "right", func_name);
-		OP::Operation(lhs_data, rhs_data, res_data + i * N, N);
+		OP::Operation(lhs_reader.Read(lhs_idx), rhs_reader.Read(rhs_idx), res_data + i * N, N);
 	}
 
 	if (count == 1) {
@@ -150,8 +181,6 @@ static void ArrayGenericFold(DataChunk &args, ExpressionState &state, Vector &re
 	const auto &func_name = expr.Function().GetName();
 
 	const auto count = args.size();
-	auto lhs_values = ArrayVector::GetChild(args.data[0]).Values<TYPE>();
-	auto rhs_values = ArrayVector::GetChild(args.data[1]).Values<TYPE>();
 
 	UnifiedVectorFormat lhs_format;
 	UnifiedVectorFormat rhs_format;
@@ -163,8 +192,8 @@ static void ArrayGenericFold(DataChunk &args, ExpressionState &state, Vector &re
 
 	const auto array_size = ArrayType::GetSize(args.data[0].GetType());
 	D_ASSERT(array_size == ArrayType::GetSize(args.data[1].GetType()));
-	vector<TYPE> lhs_data(array_size);
-	vector<TYPE> rhs_data(array_size);
+	ArrayElementReader<TYPE> lhs_reader(args.data[0], array_size, "left", func_name);
+	ArrayElementReader<TYPE> rhs_reader(args.data[1], array_size, "right", func_name);
 
 	for (idx_t i = 0; i < count; i++) {
 		const auto lhs_idx = lhs_format.sel->get_index(i);
@@ -175,9 +204,7 @@ static void ArrayGenericFold(DataChunk &args, ExpressionState &state, Vector &re
 			continue;
 		}
 
-		ReadArrayElements(lhs_values, lhs_idx * array_size, array_size, lhs_data.data(), "left", func_name);
-		ReadArrayElements(rhs_values, rhs_idx * array_size, array_size, rhs_data.data(), "right", func_name);
-		res_data[i] = OP::Operation(lhs_data.data(), rhs_data.data(), array_size);
+		res_data[i] = OP::Operation(lhs_reader.Read(lhs_idx), rhs_reader.Read(rhs_idx), array_size);
 	}
 
 	if (count == 1) {
