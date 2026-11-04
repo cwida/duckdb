@@ -94,9 +94,7 @@ void ClientContext::RefreshLoggerInternal() {
 }
 
 void ClientContext::ResetLoggerInternal(const LoggingContext &logging_context) {
-	auto &log_manager = db->GetLogManager();
-	log_manager.RefreshConfigSnapshot(log_config);
-	logger = log_manager.CreateLogger(logging_context, log_config);
+	logger = db->GetLogManager().CreateLogger(logging_context, log_config);
 }
 
 ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success, bool invalidate_transaction,

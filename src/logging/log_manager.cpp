@@ -29,6 +29,11 @@ unique_ptr<Logger> LogManager::CreateLogger(const LoggingContext &context, const
 	return CreateLoggerInternal(context, config);
 }
 
+unique_ptr<Logger> LogManager::CreateLogger(const LoggingContext &context, LogConfigSnapshot &snapshot) {
+	RefreshConfigSnapshot(snapshot);
+	return CreateLoggerInternal(context, snapshot.config);
+}
+
 unique_ptr<Logger> LogManager::CreateLoggerInternal(const LoggingContext &context,
                                                     const shared_ptr<const LogConfig> &logger_config) {
 	if (!logger_config->enabled) {

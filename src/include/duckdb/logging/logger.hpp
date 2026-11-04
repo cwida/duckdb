@@ -127,7 +127,6 @@ public:
 
 protected:
 	const shared_ptr<const LogConfig> config;
-	mutex lock;
 	const RegisteredLoggingContext context;
 };
 
