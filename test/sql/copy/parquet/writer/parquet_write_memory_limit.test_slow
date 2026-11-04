@@ -37,3 +37,9 @@ SET memory_limit='-1'
 query II
 SELECT * FROM '{TEST_DIR}/large_integers.parquet' EXCEPT FROM '{TEST_DIR}/large_integers2.parquet'
 ----
+
+# EXCEPT has set semantics, the count catches duplicated rows
+query I
+SELECT count(*) FROM '{TEST_DIR}/large_integers2.parquet'
+----
+100000000
